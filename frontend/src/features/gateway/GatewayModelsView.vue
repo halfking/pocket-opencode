@@ -78,8 +78,10 @@ import { ApiError } from '../../api/http'
 import * as gw from '../../api/gateway'
 import type { ModelTreeCredential } from '../../api/gateway'
 import { useConfirm } from '../../composables/useConfirm'
+import { useApiError } from '../../composables/useApiError'
 import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue'
 
+const apiError = useApiError()
 const route = useRoute()
 const router = useRouter()
 const { confirm } = useConfirm()
@@ -112,7 +114,7 @@ async function load() {
     if (e instanceof ApiError && e.status === 403) {
       error.value = '该网关账号权限不足，无法读取模型路由'
     } else {
-      error.value = e?.message || '加载失败'
+      error.value = apiError(e, 'errors.loadGatewayFailed')
     }
   } finally {
     loading.value = false
@@ -171,7 +173,7 @@ async function probe(model: string) {
     if (e instanceof ApiError && e.status === 403) {
       error.value = '探测需要 pocket admin 角色 + 网关 super_admin'
     } else {
-      error.value = e?.message || '探测失败'
+      error.value = apiError(e, 'errors.probeFailed')
     }
   } finally {
     probing.value = null
@@ -208,19 +210,19 @@ onMounted(load)
   border: 1px solid var(--border);
   background: var(--bg-subtle);
   color: var(--text-primary);
-  font-size: 14px;
+  font-size: var(--text-base);
 }
 .featured-toggle {
   display: flex;
   align-items: center;
   gap: 5px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-secondary);
   flex: none;
 }
 .status-bar {
   padding: var(--space-2) var(--space-3);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .status-err {
   background: color-mix(in srgb, var(--danger) 15%, transparent);
@@ -237,7 +239,7 @@ onMounted(load)
   padding: 40px 20px;
   text-align: center;
   color: var(--text-secondary);
-  font-size: 14px;
+  font-size: var(--text-base);
 }
 .model-list {
   display: flex;
@@ -257,12 +259,12 @@ onMounted(load)
 }
 .group-name {
   flex: 1;
-  font-size: 13px;
+  font-size: var(--text-smd);
   font-weight: 600;
   word-break: break-all;
 }
 .group-count {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-secondary);
 }
 .chevron {
@@ -270,7 +272,7 @@ onMounted(load)
   color: var(--text-secondary);
 }
 .group-sub {
-  font-size: 10px;
+  font-size: var(--text-xs);
   color: var(--text-secondary);
   margin-top: 2px;
 }
@@ -298,21 +300,21 @@ onMounted(load)
   flex: 1;
 }
 .cred-label {
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-weight: 500;
 }
 .cred-meta {
-  font-size: 10px;
+  font-size: var(--text-xs);
   color: var(--text-secondary);
   margin-top: 2px;
 }
 .cred-block {
-  font-size: 10px;
+  font-size: var(--text-xs);
   color: var(--danger);
   margin-top: 2px;
 }
 .cred-price {
-  font-size: 10px;
+  font-size: var(--text-xs);
   color: var(--text-secondary);
   flex: none;
 }
@@ -320,7 +322,7 @@ onMounted(load)
   width: 100%;
   margin-top: 8px;
   padding: 7px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   background: var(--bg-subtle);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm, 8px);
@@ -328,7 +330,7 @@ onMounted(load)
 }
 .footnote {
   margin-top: var(--space-3);
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-secondary);
   text-align: center;
 }

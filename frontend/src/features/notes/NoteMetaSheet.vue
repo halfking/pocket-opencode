@@ -5,6 +5,18 @@
         <span class="ai-summary-label">AI 即时总结</span>
         <p class="ai-summary-text">{{ aiSummary }}</p>
       </div>
+      <!--
+        生成中的状态与失败原因必须显示在这里。此前 NoteListView 一直在维护
+        summarizing / summarizeError 两个 ref，但两者**从未传给本组件**，
+        模板里也一次都没出现：失败时面板只显示字段、没有总结、也没有任何提示，
+        用户无法区分「还在生成」「失败了」「压根没触发」。
+        NoteListView 的注释写着「只是顶部多出一行错误提示」，那句话此前是假的。
+        样式沿用仓库既有约定（.status 中性 / .err 危险），见 MeetingDetailView。
+      -->
+      <p v-if="summaryLoading" class="status" role="status" aria-live="polite">
+        AI 总结生成中…
+      </p>
+      <p v-else-if="summaryError" class="err" role="alert">{{ summaryError }}</p>
       <label class="field">
         <span>标题</span>
         <input v-model="form.title" placeholder="自动生成或手动输入" />
@@ -57,6 +69,8 @@ const props = defineProps<{
   title?: string | null
   content?: string
   summary?: string | null
+  summaryError?: string
+  summaryLoading?: boolean
   domain?: string | null
   tags?: string[] | null
 }>()
@@ -147,22 +161,33 @@ function onClose() {
   white-space: pre-wrap;
 }
 .field { display: flex; flex-direction: column; gap: 6px; margin-bottom: var(--space-3); }
-.field > span { font-size: 12px; color: var(--text-muted); }
+/* 即时总结的「生成中 / 失败」提示。沿用仓库既有约定（见 MeetingDetailView:
+   .status 中性、.err 危险色），不新造带边框底色的样式盒。 */
+.status, .err {
+  margin: 0 0 var(--space-3);
+  padding: 8px 12px;
+  font-size: var(--text-sm);
+  line-height: 1.55;
+  background: var(--bg-card);
+  color: var(--text-secondary);
+}
+.err { color: var(--danger); }
+.field > span { font-size: var(--text-sm); color: var(--text-muted); }
 .field input {
   padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-md);
-  background: var(--bg-base); color: var(--text-primary); font-size: 14px;
+  background: var(--bg-base); color: var(--text-primary); font-size: var(--text-base);
 }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .chip {
   padding: 6px 12px; border-radius: 999px; border: 1px solid var(--border);
-  background: var(--bg-card); color: var(--text-secondary); font-size: 13px;
+  background: var(--bg-card); color: var(--text-secondary); font-size: var(--text-smd);
 }
 .chip.active { background: var(--brand-bg); color: var(--brand-primary); border-color: var(--brand-primary); }
 .tag-row { display: flex; gap: 8px; }
 .tag-row input { flex: 1; }
 .extract {
   flex-shrink: 0; padding: 0 10px; border-radius: var(--radius-md);
-  border: 1px solid var(--border); background: var(--bg-subtle); font-size: 12px;
+  border: 1px solid var(--border); background: var(--bg-subtle); font-size: var(--text-sm);
 }
 .actions { display: flex; gap: var(--space-2); margin-top: var(--space-2); }
 .btn { flex: 1; padding: 12px; border-radius: var(--radius-md); border: none; font-weight: 600; }

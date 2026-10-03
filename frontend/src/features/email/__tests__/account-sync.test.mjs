@@ -1,26 +1,14 @@
 /**
  * 邮箱账户 LWW 计划：远程新 → 下行；本地新且对得上远程 id/邮箱 → 上行。
  * 本地独有账户不能凭空上行（凭证不在镜像库）。
+ *
+ * 测的是**生产实现** account-sync.ts 导出的 planAccountSync。
+ * 早期这个文件自己复制了一份同名函数，于是生产 LWW 逻辑改动时测试
+ * 依然全绿——测试通过并不代表产品行为正确（假测试）。现在直接 import。
  */
 import { strict as assert } from 'node:assert'
 import { test } from 'node:test'
-
-const planAccountSync = (local, remote) => {
-  const localById = new Map(local.map((a) => [a.id, a]))
-  const remoteById = new Map(remote.map((a) => [a.id, a]))
-  const remoteByEmail = new Map(remote.map((a) => [a.emailAddress.toLowerCase(), a]))
-  const pullIds = []
-  const pushIds = []
-  for (const r of remote) {
-    const l = localById.get(r.id)
-    if (!l || r.updatedAt > l.updatedAt) pullIds.push(r.id)
-  }
-  for (const l of local) {
-    const r = remoteById.get(l.id) ?? remoteByEmail.get(l.emailAddress.toLowerCase())
-    if (r && l.updatedAt > r.updatedAt) pushIds.push(l.id)
-  }
-  return { pullIds, pushIds }
-}
+import { planAccountSync } from '../account-lww.ts'
 
 const stamp = (id, email, updatedAt) => ({ id, emailAddress: email, updatedAt })
 

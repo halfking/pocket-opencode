@@ -21,7 +21,9 @@ import {
   type SessionStats,
 } from './useSessionEvents'
 import { downloadTextFile, DownloadUnsupportedError } from '../../utils/download'
+import { useApiError } from '../../composables/useApiError'
 
+const apiError = useApiError()
 const props = defineProps<{
   visible: boolean
   sessionId: string
@@ -80,7 +82,7 @@ async function exportMarkdown(): Promise<void> {
     toast.success('已导出')
   } catch (e) {
     if (e instanceof DownloadUnsupportedError) {
-      toast.error(e.message)
+      toast.error(e.message) // raw-error-ok: 自有错误类，文案就是给人看的
       return
     }
     toast.error('导出失败')
@@ -193,7 +195,7 @@ async function exportMarkdown(): Promise<void> {
   flex: 0 0 auto;
   color: var(--text-muted);
   font-size: var(--text-xs);
-  font-family: 'SF Mono', Menlo, monospace;
+  font-family: var(--font-mono);
 }
 .stats-card {
   margin-bottom: var(--space-4);

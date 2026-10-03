@@ -193,6 +193,43 @@ test('error reason: 空流 → empty', async () => {
   assert.equal(rec.errors[0].reason, 'empty')
 })
 
+// 2026-09-30 真机回归：上游挂死时后端仍会先发一帧模型播报
+// {done:false, model} 再发终态帧，全程 0 个 content delta。
+// 修复前这条流被判成"成功"（sawDelta 被播报帧置真），气泡留空且不报错——
+// 用户只看到一个空气泡。空流守卫必须只认真正携带 content / tool_calls 的帧。
+test('error reason: 只有模型播报帧、零 content 的流 → empty（不得当成功）', async () => {
+  installDeps({
+    body: [
+      `data: ${JSON.stringify({ done: false, model: 'claude-fable-5' })}\n\n`,
+      `data: ${JSON.stringify({ done: true, finish_reason: 'stop', model: 'claude-fable-5' })}\n\n`,
+    ],
+  })
+  const { handlers, rec } = makeRecorder()
+  const h = aiStreamRuntime.spawnChat('empty-2', { messages: [] }, handlers)
+  await waitForStatus(h, 'error', 500)
+  // 播报帧仍会推给 UI（用于显示模型名），但不得有任何一个帧带正文
+  assert.equal(rec.deltas.filter((d) => d.content).length, 0)
+  assert.equal(rec.errors.length, 1)
+  assert.equal(rec.errors[0].reason, 'empty')
+  assert.match(rec.errors[0].err.message, /空流/)
+})
+
+// 同一场景的对照组：只要有 content，就必须是正常完成而不是空流错误
+test('对照组: 播报帧 + 有 content 的流 → done（空流守卫不误杀正常回答）', async () => {
+  installDeps({
+    body: [
+      `data: ${JSON.stringify({ done: false, model: 'minimax-m3' })}\n\n`,
+      `data: ${JSON.stringify({ content: '收到', done: false })}\n\n`,
+      `data: ${JSON.stringify({ done: true, finish_reason: 'stop' })}\n\n`,
+    ],
+  })
+  const { handlers, rec } = makeRecorder()
+  const h = aiStreamRuntime.spawnChat('notempty-1', { messages: [] }, handlers)
+  await waitForStatus(h, 'done', 500)
+  assert.equal(rec.errors.length, 0)
+  assert.equal(rec.deltas.map((d) => d.content || '').join(''), '收到')
+})
+
 test('watchdog: hidden 期间不 abort；visible 后流仍跑', async () => {
   installDeps({
     body: [

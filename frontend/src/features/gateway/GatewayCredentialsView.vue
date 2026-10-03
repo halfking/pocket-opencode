@@ -81,8 +81,10 @@ import { ApiError } from '../../api/http'
 import * as gw from '../../api/gateway'
 import type { GatewayCredential } from '../../api/gateway'
 import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue'
+import { useApiError } from '../../composables/useApiError'
 import { useConfirm } from '../../composables/useConfirm'
 
+const apiError = useApiError()
 const route = useRoute()
 const router = useRouter()
 const { confirm } = useConfirm()
@@ -104,7 +106,7 @@ async function load() {
     credentials.value = res.credentials ?? []
     meta.value = res.meta ?? null
   } catch (e: any) {
-    error.value = e?.message || '加载失败'
+    error.value = apiError(e, 'errors.loadGatewayFailed')
   } finally {
     loading.value = false
   }
@@ -145,7 +147,7 @@ async function act(c: GatewayCredential, kind: 'promote' | 'demote' | 'disable' 
     if (e instanceof ApiError && e.status === 403) {
       error.value = '需要 pocket admin 角色才能变更网关状态'
     } else {
-      error.value = e?.message || `${labels[kind]}失败`
+      error.value = apiError(e, 'errors.operateFailed')
     }
   } finally {
     busy.value = null
@@ -185,7 +187,7 @@ onMounted(load)
 }
 .status-bar {
   padding: var(--space-2) var(--space-3);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .status-err {
   background: color-mix(in srgb, var(--danger) 15%, transparent);
@@ -202,7 +204,7 @@ onMounted(load)
   padding: 40px 20px;
   text-align: center;
   color: var(--text-secondary);
-  font-size: 14px;
+  font-size: var(--text-base);
 }
 .list {
   display: flex;
@@ -222,7 +224,7 @@ onMounted(load)
 }
 .name {
   flex: 1;
-  font-size: 15px;
+  font-size: var(--text-md);
   font-weight: 600;
   display: flex;
   align-items: center;
@@ -251,12 +253,12 @@ onMounted(load)
   background: var(--text-secondary);
 }
 .sub {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-secondary);
   margin-top: 4px;
 }
 .chip {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   padding: 2px 7px;
   border-radius: var(--radius-full, 999px);
   background: var(--bg-subtle);
@@ -271,11 +273,11 @@ onMounted(load)
   flex-wrap: wrap;
 }
 .stat {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-secondary);
 }
 .stat b {
-  font-size: 13px;
+  font-size: var(--text-smd);
   color: var(--text-primary);
 }
 .stat b.ok {
@@ -289,7 +291,7 @@ onMounted(load)
 }
 .reason {
   margin-top: 8px;
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--warning);
   word-break: break-word;
 }
@@ -301,7 +303,7 @@ onMounted(load)
 .btn-ghost {
   flex: 1;
   padding: 7px;
-  font-size: 13px;
+  font-size: var(--text-smd);
   background: var(--bg-subtle);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm, 8px);
@@ -312,7 +314,7 @@ onMounted(load)
 }
 .footnote {
   margin-top: var(--space-3);
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-secondary);
   text-align: center;
 }

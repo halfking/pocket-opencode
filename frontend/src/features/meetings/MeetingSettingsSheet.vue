@@ -136,23 +136,23 @@ function onSave() {
 <style scoped>
 .meta { padding: 0 var(--space-1) var(--space-3); }
 .field { display: flex; flex-direction: column; gap: 6px; margin-bottom: var(--space-3); }
-.field > span { font-size: 12px; color: var(--text-muted); }
+.field > span { font-size: var(--text-sm); color: var(--text-muted); }
 .field input {
   flex: 1; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-md);
-  background: var(--bg-base); color: var(--text-primary); font-size: 14px;
+  background: var(--bg-base); color: var(--text-primary); font-size: var(--text-base);
 }
 .row { display: flex; gap: 8px; }
 .ghost {
   flex-shrink: 0; padding: 0 10px; border-radius: var(--radius-md);
-  border: 1px solid var(--border); background: var(--bg-subtle); font-size: 12px;
+  border: 1px solid var(--border); background: var(--bg-subtle); font-size: var(--text-sm);
 }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .chip {
   padding: 6px 12px; border-radius: 999px; border: 1px solid var(--border);
-  background: var(--bg-card); color: var(--text-secondary); font-size: 13px;
+  background: var(--bg-card); color: var(--text-secondary); font-size: var(--text-smd);
 }
 .chip.active { background: var(--brand-bg); color: var(--brand-primary); border-color: var(--brand-primary); }
-.hint { margin: 0; font-size: 12px; color: var(--text-muted); }
+.hint { margin: 0; font-size: var(--text-sm); color: var(--text-muted); }
 .save {
   width: 100%; padding: 12px; border: none; border-radius: var(--radius-md);
   background: var(--brand-primary); color: var(--text-inverse); font-weight: 600;

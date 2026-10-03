@@ -17,6 +17,7 @@ import { llmBffApi, type ChatMessage } from '../../api/llm-bff'
 import type { ChatStreamHandle } from '../../native/aiStreamRuntime'
 import { listNodes, getAvailableModels, getFeaturedModels } from '../../api/gateway'
 import { useToast } from '../../composables/useToast'
+import { storeApiError } from '../../api/store-error'
 import { useChatAgentStore } from '../../stores/chatAgentStore'
 
 export type ChatRole = 'system' | 'user' | 'assistant'
@@ -79,6 +80,7 @@ export interface ChatSettings {
   /** 按模态的默认模型（'auto' = 网关智能路由）。仅在会话模型为 auto 时生效。 */
   modelByModality: Record<ModalityKey, string>
 }
+
 
 const STORAGE_KEY_PREFIX = 'pocket:ai-chat:v2'
 const SETTINGS_KEY_PREFIX = 'pocket:ai-chat:settings:v2'
@@ -338,7 +340,7 @@ export const useAIChatStore = defineStore('ai-chat', () => {
       models.value = list
       ensureDefaultModel()
     } catch (e: any) {
-      modelsError.value = e?.message || String(e)
+      modelsError.value = storeApiError(e, 'errors.loadGatewayFailed')
       // 网关未配置时给出温和提示，不阻断 UI。
       if (!models.value.length) {
         toast.error('模型列表获取失败：请先在「设置 → AI 网关」配置网关密钥')
@@ -536,7 +538,7 @@ export const useAIChatStore = defineStore('ai-chat', () => {
     } catch (err) {
       const idx = conv.messages.indexOf(userMsg)
       if (idx >= 0) conv.messages.splice(idx, 1)
-      toast.error('发送失败：' + (err instanceof Error ? err.message : String(err)))
+      toast.error(storeApiError(err, 'errors.sendEmailFailed'))
       console.error('[ai-chat] send failed after user bubble pushed', err)
       return
     }
@@ -601,7 +603,7 @@ export const useAIChatStore = defineStore('ai-chat', () => {
           streamHandles.delete(streamKey)
           conv.updatedAt = Date.now()
           persist()
-          toast.error('生成失败：' + (err.message || String(err)))
+          toast.error(storeApiError(err, 'errors.operateFailed'))
         },
       },
       streamKey,
@@ -685,7 +687,7 @@ export const useAIChatStore = defineStore('ai-chat', () => {
           liveAssistant.error = err.message || String(err)
           streamHandles.delete(streamKey)
           persist()
-          toast.error('优化失败：' + (err.message || String(err)))
+          toast.error(storeApiError(err, 'errors.operateFailed'))
         },
       },
       streamKey,

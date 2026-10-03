@@ -18,7 +18,8 @@
 #   ./deploy/bin/start.sh --build      # 强制重新构建
 #   ./deploy/bin/start.sh --no-build   # 强制只用已存在镜像
 #   ./deploy/bin/start.sh --backend-only  # 只起 pocketd（不起 frontend）
-#   ./deploy/bin/start.sh --dry-run    # 不真起容器，只跑 detect + stage + healthcheck 模拟
+#   ./deploy/bin/start.sh --frontend-only # 只重建/更新 frontend（保留 pocketd）
+#   ./deploy/bin/start.sh --dry-run    # 不起容器、不创建发布版本；保留前置资源探测
 #   ./deploy/bin/start.sh --rollback   # 回滚到上一个 verified 版本
 # =====================================================================
 
@@ -32,6 +33,7 @@ source "${LIB_DIR}/blue-green.sh"
 
 BUILD_MODE="auto"
 BACKEND_ONLY=false
+FRONTEND_ONLY=false
 DRY_RUN=false
 ACTION="deploy"   # deploy | rollback
 while [[ $# -gt 0 ]]; do
@@ -39,21 +41,16 @@ while [[ $# -gt 0 ]]; do
     --build) BUILD_MODE="build"; shift ;;
     --no-build) BUILD_MODE="no-build"; shift ;;
     --backend-only) BACKEND_ONLY=true; shift ;;
+    --frontend-only) FRONTEND_ONLY=true; shift ;;
     --dry-run) DRY_RUN=true; shift ;;
     --rollback) ACTION="rollback"; shift ;;
-    --help) echo "用法: $0 [--build|--no-build] [--backend-only] [--dry-run] [--rollback]"; exit 0 ;;
+    --help) echo "用法: $0 [--build|--no-build] [--backend-only|--frontend-only] [--dry-run] [--rollback]"; exit 0 ;;
     *) echo "未知参数: $1"; exit 1 ;;
   esac
 done
-
-# ── blue-green：rollback 模式直接走 bg_rollback ──────────────────
-if [[ "${ACTION}" == "rollback" ]]; then
-  echo "━━━ rollback ━━━"
-  previous="$(bg_rollback)"
-  echo "  已回滚到 bin/${previous}"
-  # 回滚后再走一次 deploy（用旧版本镜像）
-  OPP_VERSION_BUILD="${previous}"
-  export OPP_VERSION_BUILD
+if [[ "$BACKEND_ONLY" == true && "$FRONTEND_ONLY" == true ]]; then
+  echo "❌ --backend-only 与 --frontend-only 不能同时使用" >&2
+  exit 1
 fi
 
 command -v docker >/dev/null 2>&1 || { echo "❌ docker 未安装"; exit 1; }
@@ -66,8 +63,24 @@ if [[ ! -f "${POCKET_ENV_FILE}" ]]; then
   echo "   252 : 手工填 ${POCKET_ENV_FILE}，再 ./deploy-252.sh" >&2
   exit 1
 fi
+# Prove the actual env_file target and permissions before any release switch.
+# Frontend-only deploys retain an already healthy backend. Dry runs remain plans.
+if [[ "$FRONTEND_ONLY" != true && "$DRY_RUN" != true ]]; then
+  python3 "${LIB_DIR}/check-databases.py" --env-file "$POCKET_ENV_FILE" --compose-file "$POCKET_COMPOSE_FILE"
+fi
 [[ -f "${POCKET_COMPOSE_FILE}" ]] || { echo "❌ compose 缺失: ${POCKET_COMPOSE_FILE}"; exit 1; }
 # http_ok 由 env.sh 提供（curl 优先，无则 wget）
+
+# ── blue-green：rollback 模式直接走 bg_rollback ──────────────────
+if [[ "${ACTION}" == "rollback" && "$DRY_RUN" != true ]]; then
+  echo "━━━ rollback ━━━"
+  previous="$(bg_rollback)"
+  echo "  已回滚到 bin/${previous}"
+  # 回滚后再走一次 deploy（用旧版本镜像）
+  OPP_VERSION_BUILD="${previous}"
+  export OPP_VERSION_BUILD
+fi
+
 
 # 离线 kx-base 镜像仅覆盖 arm64；amd64（如 252）必须用 save/load-images 流程，
 # 不能现场 --build。把架构门禁提到任何构建决策之前。
@@ -98,20 +111,19 @@ ip_addr_has() {
 if [[ -z "${OPP_VERSION_BUILD}" ]]; then
   bg_compute_id >/dev/null
 fi
-bg_init
-
-# 每次部署都 stage 一个新版本目录（bg_stage 会把当前 current 记为 previous）。
-# switch 推迟到健康检查通过之后：失败时 current 不动，无需回滚。
 BG_SWITCHED_EARLY=false
-if [[ ! -e "${POCKET_BIN_DIR}/${OPP_VERSION_BUILD}" ]] && [[ ! -L "${POCKET_BIN_DIR}/current" ]]; then
-  # 首次部署（无 current）：stage 后立即切换，让 compose snippet 等引用就位
-  echo "  🆕 bin/current 不存在，stage ${OPP_VERSION_BUILD} 并切换"
-  bg_stage "${OPP_VERSION_BUILD}"
-  bg_switch "${OPP_VERSION_BUILD}" "" >/dev/null
-  BG_SWITCHED_EARLY=true
-elif [[ ! -e "${POCKET_BIN_DIR}/${OPP_VERSION_BUILD}" ]]; then
-  echo "  🧩 stage 新版本 ${OPP_VERSION_BUILD}（current 保持不动，健康通过后切换）"
-  bg_stage "${OPP_VERSION_BUILD}"
+if [[ "$DRY_RUN" != true ]]; then
+  bg_init
+  # Stage a real release only. A dry run must not create a release candidate.
+  if [[ ! -e "${POCKET_BIN_DIR}/${OPP_VERSION_BUILD}" ]] && [[ ! -L "${POCKET_BIN_DIR}/current" ]]; then
+    echo "  🆕 bin/current 不存在，stage ${OPP_VERSION_BUILD} 并切换"
+    bg_stage "${OPP_VERSION_BUILD}"
+    bg_switch "${OPP_VERSION_BUILD}" "" >/dev/null
+    BG_SWITCHED_EARLY=true
+  elif [[ ! -e "${POCKET_BIN_DIR}/${OPP_VERSION_BUILD}" ]]; then
+    echo "  🧩 stage 新版本 ${OPP_VERSION_BUILD}（current 保持不动，健康通过后切换）"
+    bg_stage "${OPP_VERSION_BUILD}"
+  fi
 fi
 
 # 把 compose snippet（如果存在）拼到主 compose 上
@@ -148,15 +160,23 @@ frontend_image_exists() { docker image inspect "${FRONTEND_IMAGE}" >/dev/null 2>
 kx_base_exists()       { docker image inspect "${KX_BASE_TAG_EFFECTIVE}" >/dev/null 2>&1; }
 
 UP_ARGS=(-d --force-recreate)
+if [[ "$FRONTEND_ONLY" == true ]]; then
+  # Preserve the running pocketd and its data volume during a UI-only release.
+  http_ok "http://${POCKET_HTTP_PROBE_HOST}:${POCKET_HTTP_PORT}/healthz" || {
+    echo "❌ frontend-only 需要现有 pocketd 健康" >&2
+    exit 1
+  }
+  UP_ARGS+=(--no-deps)
+fi
 case "${BUILD_MODE}" in
   auto)
-    if backend_image_exists && { [[ "${BACKEND_ONLY}" == true ]] || frontend_image_exists; }; then
+    if { [[ "$FRONTEND_ONLY" == true ]] || backend_image_exists; } && { [[ "${BACKEND_ONLY}" == true ]] || frontend_image_exists; }; then
       UP_ARGS+=(--no-build)
       echo "▶ 镜像已存在，直接启动（--no-build；强制重建加 --build）"
-    elif kx_base_exists; then
-      check_arch_for_build || exit 1
+    elif [[ "$FRONTEND_ONLY" == true ]] || kx_base_exists; then
+      if [[ "$FRONTEND_ONLY" != true ]]; then check_arch_for_build || exit 1; fi
       UP_ARGS+=(--build)
-      echo "▶ 镜像缺失但 ${KX_BASE_TAG_EFFECTIVE} 可用，现场构建"
+      echo "▶ 所需镜像缺失，现场构建"
     else
       echo "❌ 既没有所需镜像，也没有 ${KX_BASE_TAG_EFFECTIVE}" >&2
       [[ "${BACKEND_ONLY}" == true ]] && echo "   （--backend-only：只需 ${BACKEND_IMAGE}）" >&2
@@ -166,17 +186,19 @@ case "${BUILD_MODE}" in
     fi
     ;;
   build)
-    kx_base_exists || {
+    if [[ "$FRONTEND_ONLY" != true ]] && ! kx_base_exists; then
       echo "❌ 构建需要 ${KX_BASE_TAG_EFFECTIVE}，当前未加载" >&2
       echo "   开发机: docker load -i ~/work/docker-base-images/lang-base/kx-base-go-vue-v2-alpine-slim-arm64.tar.gz" >&2
       echo "   服务器（amd64）: 勿现场构建；在 Mac 上 ./deploy/bin/build-images.sh --arch amd64 → save-images.sh → scp → load-images.sh" >&2
       exit 1
-    }
-    check_arch_for_build || exit 1
+    fi
+    if [[ "$FRONTEND_ONLY" != true ]]; then
+      check_arch_for_build || exit 1
+    fi
     UP_ARGS+=(--build)
     ;;
   no-build)
-    backend_image_exists || { echo "❌ 镜像不存在: ${BACKEND_IMAGE}"; exit 1; }
+    [[ "$FRONTEND_ONLY" == true ]] || backend_image_exists || { echo "❌ 镜像不存在: ${BACKEND_IMAGE}"; exit 1; }
     [[ "${BACKEND_ONLY}" == true ]] || frontend_image_exists || { echo "❌ 镜像不存在: ${FRONTEND_IMAGE}"; exit 1; }
     UP_ARGS+=(--no-build)
     ;;
@@ -202,7 +224,9 @@ fi
 
 mkdir -p "${POCKET_LOG_DIR}"
 START_TS="$(date +%Y%m%d-%H%M%S)"
-echo "${START_TS}" > "${POCKET_LOG_DIR}/.last-start"
+if [[ "$DRY_RUN" != true ]]; then
+  echo "${START_TS}" > "${POCKET_LOG_DIR}/.last-start"
+fi
 
 echo "━━━ start: ${POCKET_PROJECT_NAME} (${DEPLOY_ENV}) ━━━"
 echo "  ENV_FILE  = ${POCKET_ENV_FILE}"
@@ -212,16 +236,19 @@ echo "  LOG_DIR   = ${POCKET_LOG_DIR}"
 echo "  NET       = ${OPP_NET_NAME} (external=${OPP_NET_EXTERNAL})"
 echo "  HTTP_PORT = ${POCKET_HTTP_PORT}@${POCKET_PORT_BIND_IP}  FRONTEND_PORT = ${POCKET_FRONTEND_PORT}"
 
-echo "▶ docker compose up ${UP_ARGS[*]}$([[ "${BACKEND_ONLY}" == true ]] && echo ' pocketd')"
+DEPLOY_SERVICE=""
+if [[ "$BACKEND_ONLY" == true ]]; then DEPLOY_SERVICE="pocketd"; fi
+if [[ "$FRONTEND_ONLY" == true ]]; then DEPLOY_SERVICE="frontend"; fi
+echo "▶ docker compose up ${UP_ARGS[*]} ${DEPLOY_SERVICE}"
 if [[ "${DRY_RUN}" == true ]]; then
   echo "  🧪 --dry-run: 跳过 docker compose up，仅打印预期命令"
   printf '    %q ' "${DOCKER_COMPOSE[@]}" >&2
   printf ' %q' "${UP_ARGS[@]}" >&2
-  printf ' %s\n' "${BACKEND_ONLY:+pocketd}" >&2
+  printf ' %s\n' "$DEPLOY_SERVICE" >&2
   exit 0
 fi
-if [[ "${BACKEND_ONLY}" == true ]]; then
-  "${DOCKER_COMPOSE[@]}" up "${UP_ARGS[@]}" pocketd
+if [[ -n "$DEPLOY_SERVICE" ]]; then
+  "${DOCKER_COMPOSE[@]}" up "${UP_ARGS[@]}" "$DEPLOY_SERVICE"
 else
   "${DOCKER_COMPOSE[@]}" up "${UP_ARGS[@]}"
 fi

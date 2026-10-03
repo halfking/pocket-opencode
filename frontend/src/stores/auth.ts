@@ -148,6 +148,24 @@ export const useAuthStore = defineStore('auth', {
       await this.refreshSession()
     },
     /**
+     * 只清本地登录态，不打后端。
+     *
+     * BUG-I (2026-09-30)：供 api/http.ts 在「401 且 refresh 失败」时调用。
+     * 这种场景下后端必然拒绝 /api/auth/logout（token 已不可用），
+     * 调它只会白等一轮网络超时，把用户卡在死胡同里。
+     */
+    clearLocal() {
+      this.token = ''
+      this.user = ''
+      this.workspaceId = ''
+      this.userId = ''
+      this.authMethod = ''
+      localStorage.removeItem(TOKEN_KEY)
+      localStorage.removeItem(USER_KEY)
+      localStorage.removeItem(WS_KEY)
+      localStorage.removeItem(METHOD_KEY)
+    },
+    /**
      * Phase 1: 先调后端 /api/auth/logout 撤销 RedClaw session，再清本地。
      * 失败（401/网络）视作幂等成功，因为本地状态反正要被清。
      */
@@ -160,15 +178,7 @@ export const useAuthStore = defineStore('auth', {
           console.debug('logoutRemote failed (ignored):', e)
         }
       }
-      this.token = ''
-      this.user = ''
-      this.workspaceId = ''
-      this.userId = ''
-      this.authMethod = ''
-      localStorage.removeItem(TOKEN_KEY)
-      localStorage.removeItem(USER_KEY)
-      localStorage.removeItem(WS_KEY)
-      localStorage.removeItem(METHOD_KEY)
+      this.clearLocal()
     },
   },
 })

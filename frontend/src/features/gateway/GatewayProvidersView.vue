@@ -78,8 +78,10 @@ import { ApiError } from '../../api/http'
 import * as gw from '../../api/gateway'
 import type { GatewayProvider } from '../../api/gateway'
 import { useConfirm } from '../../composables/useConfirm'
+import { useApiError } from '../../composables/useApiError'
 import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue'
 
+const apiError = useApiError()
 const route = useRoute()
 const router = useRouter()
 const { confirm } = useConfirm()
@@ -105,7 +107,7 @@ async function load() {
     if (e instanceof ApiError && e.status === 403) {
       permissionHint.value = '该网关账号权限不足：供应商列表需要网关 super_admin 角色。到节点页重新探测可确认当前角色。'
     } else {
-      error.value = e?.message || '加载失败'
+      error.value = apiError(e, 'errors.loadGatewayFailed')
     }
   } finally {
     loading.value = false
@@ -146,7 +148,7 @@ async function toggle(p: GatewayProvider) {
     if (e instanceof ApiError && e.status === 403) {
       error.value = '需要 pocket admin 角色 + 网关 super_admin 才能变更供应商状态'
     } else {
-      error.value = e?.message || `${verb}失败`
+      error.value = apiError(e, 'errors.operateFailed')
     }
   } finally {
     busy.value = null
@@ -179,12 +181,12 @@ onMounted(load)
   border: 1px solid var(--border);
   background: var(--bg-subtle);
   color: var(--text-primary);
-  font-size: 14px;
+  font-size: var(--text-base);
   box-sizing: border-box;
 }
 .status-bar {
   padding: var(--space-2) var(--space-3);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .status-err {
   background: color-mix(in srgb, var(--danger) 15%, transparent);
@@ -201,7 +203,7 @@ onMounted(load)
   padding: 40px 20px;
   text-align: center;
   color: var(--text-secondary);
-  font-size: 14px;
+  font-size: var(--text-base);
 }
 .list {
   display: flex;
@@ -220,7 +222,7 @@ onMounted(load)
   gap: 8px;
 }
 .name {
-  font-size: 15px;
+  font-size: var(--text-md);
   font-weight: 600;
   display: flex;
   align-items: center;
@@ -245,12 +247,12 @@ onMounted(load)
   background: var(--text-secondary);
 }
 .sub {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-secondary);
   margin-top: 4px;
 }
 .chip {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   padding: 2px 7px;
   border-radius: var(--radius-full, 999px);
   background: var(--bg-subtle);
@@ -268,11 +270,11 @@ onMounted(load)
   flex-wrap: wrap;
 }
 .count {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-secondary);
 }
 .count b {
-  font-size: 13px;
+  font-size: var(--text-smd);
   color: var(--text-primary);
 }
 .count b.ok {
@@ -302,7 +304,7 @@ onMounted(load)
   background: var(--success);
 }
 .binding-text {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-secondary);
   flex: none;
 }
@@ -318,7 +320,7 @@ onMounted(load)
 .btn-ghost {
   flex: 1;
   padding: 7px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   background: var(--bg-subtle);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm, 8px);
@@ -333,6 +335,6 @@ onMounted(load)
   border: none;
   padding: 0;
   color: var(--primary, #4c8dff);
-  font-size: 13px;
+  font-size: var(--text-smd);
 }
 </style>

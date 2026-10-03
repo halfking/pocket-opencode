@@ -23,7 +23,7 @@
       </div>
       <div v-if="item.error" class="section">
         <p class="label err">错误</p>
-        <pre class="code err">{{ item.error }}</pre>
+        <pre class="code err">{{ apiError(item.error, 'errors.operateFailed') }}</pre>
       </div>
       <p v-if="item.durationMs != null" class="meta">耗时 {{ (item.durationMs / 1000).toFixed(1) }}s</p>
     </div>
@@ -33,23 +33,26 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import type { TimelineItem } from '../../localagent/runtime.ts'
+import { useApiError } from '../../composables/useApiError'
+import { ICON, type IconName } from '../../constants/icons'
 
+const apiError = useApiError()
 const props = defineProps<{ item: TimelineItem }>()
 const expanded = ref(false)
 
-const icon = computed(() => {
-  const map: Record<string, string> = {
-    current_time: 'schedule',
-    calculate: 'calculate',
-    device_info: 'smartphone',
-    http_fetch: 'public',
-    read_file: 'draft',
-    write_file: 'edit_document',
-    list_files: 'folder_open',
-    task_plan: 'checklist',
-    load_skill: 'bolt',
+const icon = computed<IconName>(() => {
+  const map: Record<string, IconName> = {
+    current_time: ICON.toolCurrentTime,
+    calculate: ICON.toolCalculate,
+    device_info: ICON.toolDeviceInfo,
+    http_fetch: ICON.toolHttpFetch,
+    read_file: ICON.toolReadFile,
+    write_file: ICON.toolWriteFile,
+    list_files: ICON.toolListFiles,
+    task_plan: ICON.toolTaskPlan,
+    load_skill: ICON.toolLoadSkill,
   }
-  return map[props.item.name ?? ''] ?? 'handyman'
+  return map[props.item.name ?? ''] ?? ICON.toolHandyman
 })
 
 const risky = computed(() => props.item.risk === 'medium' || props.item.risk === 'high')
@@ -103,15 +106,15 @@ const clippedResult = computed(() => {
   background: transparent;
   border: none;
   color: var(--text-primary);
-  font-size: 13px;
+  font-size: var(--text-smd);
   cursor: pointer;
   text-align: left;
 }
-.icon { font-size: 18px; color: var(--text-secondary); }
+.icon { font-size: var(--text-xl); color: var(--text-secondary); }
 .tool-card.st-running .icon { color: var(--brand-primary, #4c8dff); }
 .name { font-weight: var(--font-weight-semibold); }
 .risk-chip {
-  font-size: 10px;
+  font-size: var(--text-xs);
   padding: 1px 6px;
   border-radius: var(--radius-full);
   background: rgba(230, 159, 0, 0.14);
@@ -120,11 +123,11 @@ const clippedResult = computed(() => {
 .state-text {
   margin-left: auto;
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .tool-card.st-completed .state-text { color: var(--success, #2e7d32); }
 .tool-card.st-error .state-text { color: var(--danger, #e5484d); }
-.chev { font-size: 18px; color: var(--text-muted); }
+.chev { font-size: var(--text-xl); color: var(--text-muted); }
 
 .body {
   padding: 0 var(--space-3) var(--space-3);
@@ -134,7 +137,7 @@ const clippedResult = computed(() => {
 }
 .section .label {
   margin: 0 0 2px;
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-muted);
 }
 .section .label.err { color: var(--danger, #e5484d); }
@@ -144,7 +147,7 @@ const clippedResult = computed(() => {
   background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  font-size: 12px;
+  font-size: var(--text-sm);
   line-height: 1.5;
   white-space: pre-wrap;
   word-break: break-all;
@@ -152,5 +155,5 @@ const clippedResult = computed(() => {
   overflow-y: auto;
 }
 .code.err { color: var(--danger, #e5484d); }
-.meta { margin: 0; font-size: 11px; color: var(--text-muted); }
+.meta { margin: 0; font-size: var(--text-2xs); color: var(--text-muted); }
 </style>

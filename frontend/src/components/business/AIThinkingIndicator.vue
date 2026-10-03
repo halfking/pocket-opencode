@@ -73,7 +73,7 @@ withDefaults(defineProps<AIThinkingIndicatorProps>(), {
 }
 
 .thinking-text {
-  font-size: 13px;
+  font-size: var(--text-smd);
   color: var(--color-primary);
   font-weight: var(--font-weight-medium);
 }

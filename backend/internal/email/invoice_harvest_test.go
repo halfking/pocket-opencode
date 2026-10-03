@@ -29,7 +29,7 @@ func TestLooksLikeSpam(t *testing.T) {
 	}{
 		{"营销强信号", "promo@shop.com", "限时抢购 全场秒杀", "点击退订 Unsubscribe", false, false, true},
 		{"中奖诈骗", "lucky@draw.cn", "恭喜您获得大奖", "免费领取", false, false, true},
-		{"弱信号不足", "news@somewhere.com", "本周精选文章", "订阅更新 newsletter digest", false, false, false},
+		{"弱信号不足", "news@somewhere.com", "本周精选", "欢迎阅读", false, false, false},
 		{"正常账单不判垃圾", "billing@sftp.cn", "您有一张新发票", "电子发票 价税合计 ¥120.00", true, false, false},
 		{"重要邮件不判垃圾", "boss@corp.com", "促销活动方案", "请查阅", false, true, false},
 		{"白名单域不判垃圾", "noreply@meituan.com", "会员日大促秒杀", "限时抢购", false, false, false},
@@ -37,7 +37,7 @@ func TestLooksLikeSpam(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := LooksLikeSpam(c.from, c.subject, c.snippet, c.inv, c.imp)
+			got := LooksLikeSpam(c.from, c.subject, c.snippet, c.inv, c.imp, 1)
 			if got.Spam != c.want {
 				t.Fatalf("spam=%v score=%d why=%q, want %v", got.Spam, got.Score, got.Why, c.want)
 			}
@@ -61,6 +61,21 @@ func TestInvoiceFileName(t *testing.T) {
 	empty := &Invoice{}
 	if s := InvoiceFileName(empty); !strings.HasPrefix(s, "其他-未知单位-") {
 		t.Fatalf("empty invoice naming: %q", s)
+	}
+	// 有发票号时文件名带上它（2026-10-01 修撞名覆盖，见 invoice_filename_collision_test.go）。
+	// 这是「凭证可追溯 + 文件名唯一」的关键：同额同日同单位的不同票会互相覆盖。
+	withNo := &Invoice{
+		Category: "餐饮", Seller: "某某科技公司", Amount: 120.5,
+		InvoiceNo: "26332000008261110741", InvoiceDate: "2026/09/05",
+	}
+	wantNo := "餐饮-某某科技公司-120.50-2026-09-05-26332000008261110741.pdf"
+	if got := InvoiceFileName(withNo); got != wantNo {
+		t.Fatalf("got %q want %q", got, wantNo)
+	}
+	// 发票号里的非法字符同样要清洗，不能拼出路径分隔符
+	withNo.InvoiceNo = `NO/1:2`
+	if s := InvoiceFileName(withNo); strings.ContainsAny(s, `/\:*?"<>|`) {
+		t.Fatalf("invoice no must be sanitized, got %q", s)
 	}
 }
 
@@ -190,21 +205,56 @@ func TestExportInvoiceGrid(t *testing.T) {
 func TestWriteInvoiceSummaryDocs(t *testing.T) {
 	dir := t.TempDir()
 	invoices := []Invoice{
-		{Category: "餐饮", Seller: "甲", Amount: 100, InvoiceDate: "2026-09-01", Status: "downloaded", FileName: "a.pdf"},
+		// 真实产物里 downloaded 一定有 FilePath：saveInvoiceFile 先写文件、
+		// 再改状态（见 invoice_harvest.go）。原夹具没给 FilePath，于是这张票
+		// 在收紧后的口径下不计入合计，测试跟着暴露 —— 这正是要修的缺陷。
+		{Category: "餐饮", Seller: "甲", Amount: 100, InvoiceDate: "2026-09-01",
+			Status: "downloaded", FileName: "a.pdf", FilePath: "email-invoices/default/a.pdf"},
+		// pending：明细行照样要列出来（能追），但不进合计。
 		{Category: "交通", Seller: "乙", Amount: 23.45, InvoiceDate: "2026-09-02", Status: "pending"},
 	}
 	csvPath, mdPath, err := WriteInvoiceSummaryDocs(dir, "default", invoices)
 	if err != nil {
 		t.Fatal(err)
 	}
-	csvData, _ := os.ReadFile(csvPath)
-	if !strings.Contains(string(csvData), "123.45") {
-		t.Fatalf("csv total missing: %s", csvData)
+	// 合计只含已下载的 100.00。口径与 email.LedgerRows / server 的
+	// handleEmailInvoiceSummary 一致：三处若不一致，CSV、飞书表格和界面
+	// 会给出三个不同的总数，对账时没人说得清差在哪。
+	//
+	// 2026-10-02 更正：原来这里断言的是**字面量** `合计,,,,,,,100.00,`，
+	// 也就是把「金额落在第 8 列文件名」这个错误格式固化成了期望值——用例
+	// 一直在为 bug 背书。改为按列解析后断言金额在「金额」列。
+	recs := readSummaryCSV(t, csvPath)
+	header := recs[0]
+	amtCol := colIndex(t, header, "金额")
+	var totalCell string
+	for _, r := range recs {
+		if len(r) > 0 && r[0] == "合计" {
+			totalCell = r[amtCol]
+			break
+		}
+	}
+	if totalCell != "100.00" {
+		t.Fatalf("csv 合计应为 100.00（只计已下载）且位于「金额」列(%d)，实际 %q；整表:\n%s",
+			amtCol, totalCell, mustRead(t, csvPath))
+	}
+	// pending 那张的明细必须仍在表里：不计入合计 ≠ 从列表消失。
+	if !strings.Contains(mustRead(t, csvPath), "交通,乙,23.45") {
+		t.Fatalf("pending 发票的明细行丢失了:\n%s", mustRead(t, csvPath))
 	}
 	mdData, _ := os.ReadFile(mdPath)
-	if !strings.Contains(string(mdData), "合计金额 **123.45**") {
-		t.Fatalf("md total missing: %s", mdData)
+	if !strings.Contains(string(mdData), "合计金额 **100.00**") {
+		t.Fatalf("md 合计应为 100.00，实际:\n%s", mdData)
 	}
+}
+
+func mustRead(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return string(b)
 }
 
 func TestCSVSafeCell(t *testing.T) {

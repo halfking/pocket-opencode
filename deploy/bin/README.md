@@ -73,6 +73,9 @@ start.sh              # 启动 docker compose（自动 blue-green stage + health
 
 154 / 245 默认 `OPP_DEPLOY_PG=false`，detect 命中 252 内网（172.16.2.210:5432）后走 `remote` 模式，本机不起 PG。
 
+> **预检前置**：真实部署前 `start.sh` 会跑登录级数据库预检（python3/psql/redis-cli 依赖、
+> fail-closed 行为、MSYS 降级路径）——见 [PREFLIGHT.md](PREFLIGHT.md)。
+
 ## Blue-Green 切换
 
 每次 `deploy-*.sh` 都会：

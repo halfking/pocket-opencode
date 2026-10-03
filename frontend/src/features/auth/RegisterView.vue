@@ -176,7 +176,8 @@ async function requestCode() {
     step.value = 2
     startCooldown()
   } catch (e: any) {
-    error.value = e?.body?.error || e?.message || '发送验证码失败'
+    console.warn('[register] 发送验证码失败（原始信息）:', e?.body?.error || e?.message || e)
+    error.value = '发送验证码失败，请稍后重试'
   } finally {
     loading.value = false
   }
@@ -207,14 +208,15 @@ async function submit() {
     })
     await completeAuth(res.token, res.user, res.user_id, res.workspace_id)
   } catch (e: any) {
-    if (e?.body?.error) {
-      error.value = e.body.error
-    } else if (e?.status === 409) {
+    // 后端原始错误（e.body.error / e.message）常是英文技术码，直接上屏用户无法据此行动；
+    // 原始信息统一留档到控制台，界面上只给领域文案。
+    if (e?.body?.error) console.warn('[register] 注册失败（原始信息）:', e.body.error)
+    if (e?.status === 409) {
       error.value = '邮箱或用户名已被注册'
     } else if (e?.status === 400) {
-      error.value = e?.message || '验证码错误或已过期'
+      error.value = '验证码错误或已过期'
     } else {
-      error.value = e?.message || '注册失败'
+      error.value = '注册失败，请稍后重试'
     }
   } finally {
     loading.value = false
@@ -281,7 +283,7 @@ function onMasterPasswordCreated() {
 .resend { font-size: var(--text-xs); color: var(--text-secondary); margin: var(--space-1) 0 0 0; }
 .link-btn { background: transparent; border: none; color: var(--brand-primary); font-size: inherit; padding: 0; cursor: pointer; text-decoration: underline; }
 .link-btn:disabled { color: var(--text-tertiary, #999); cursor: not-allowed; text-decoration: none; }
-code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--bg-subtle); padding: 2px 6px; border-radius: 4px; font-size: 0.95em; }
+code { font-family: var(--font-mono); background: var(--bg-subtle); padding: 2px 6px; border-radius: 4px; font-size: 0.95em; }
 .error-message { margin-top: var(--space-3); padding: var(--space-3); background: var(--danger-bg); border: 1px solid var(--border); border-radius: var(--radius-md); color: var(--danger); font-size: var(--text-sm); text-align: center; }
 .back-link { text-align: center; margin-top: var(--space-4); font-size: var(--text-sm); }
 .back-link a { color: var(--brand-primary); text-decoration: none; }

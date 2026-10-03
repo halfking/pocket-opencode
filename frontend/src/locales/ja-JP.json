@@ -18,7 +18,8 @@
     "error": "エラー",
     "warning": "警告",
     "info": "情報",
-    "close": "閉じる"
+    "close": "閉じる",
+    "retry": "再試行"
   },
   "app": {
     "title": "Redclaw",
@@ -29,12 +30,21 @@
     "backButton": "戻る",
     "openMenu": "メニューを開く"
   },
+  "settingsMenu": {
+    "title": "メニュー",
+    "notLoggedIn": "未ログイン",
+    "viewAccount": "アカウントと設定を表示",
+    "groupSettings": "設定",
+    "groupOps": "運用・詳細",
+    "versionFootnote": "Redclaw · v{version}"
+  },
   "nav": {
     "mainNavigation": "メインナビゲーション",
     "ai": "AI",
     "aiChat": "チャット",
     "notes": "ノート",
     "meetings": "会議",
+    "rss": "RSS",
     "email": "メール",
     "more": "もっと見る",
     "moreFeatures": "その他の機能",
@@ -48,7 +58,62 @@
     "instances": "インスタンス",
     "costQuota": "コストと割り当て",
     "settings": "設定",
-    "localAgent": "ローカルエージェント"
+    "localAgent": "ローカルエージェント",
+    "home": "Home",
+    "study": "Study",
+    "flashcards": "フラッシュカード",
+    "messages": "メッセージ"
+  },
+  "routes": {
+    "login": "ログイン",
+    "selectServer": "サーバー選択",
+    "aiTools": "AI ツール",
+    "chat": "チャット",
+    "agents": "エージェント",
+    "createAgent": "エージェント作成",
+    "editAgent": "エージェント編集",
+    "agentDetail": "エージェント詳細",
+    "notes": "ノート",
+    "newNote": "新規ノート",
+    "noteDetail": "ノート詳細",
+    "editNote": "ノート編集",
+    "email": "メール",
+    "emailDetail": "メール詳細",
+    "dailySummary": "デイリーサマリー",
+    "summaryDetail": "サマリー詳細",
+    "emailAccounts": "メールアカウント",
+    "contacts": "連絡先",
+    "contactDetail": "連絡先詳細",
+    "vault": "パスワード保管庫",
+    "passwordDetail": "パスワード詳細",
+    "editPassword": "パスワード編集",
+    "pkmNotes": "ノート",
+    "meetings": "会議",
+    "startMeeting": "会議開始",
+    "meetingDetail": "会議詳細",
+    "instances": "インスタンス",
+    "tasks": "タスク",
+    "taskDetail": "タスク詳細",
+    "sessions": "セッション",
+    "session": "セッション",
+    "settings": "設定",
+    "aiModels": "AI モデル",
+    "permissionsPrivacy": "権限とプライバシー",
+    "scheduledTasks": "定期自動化",
+    "createAutomation": "自動化を作成",
+    "editAutomation": "自動化を編集",
+    "automationDetail": "自動化の詳細",
+    "costQuota": "コストとクォータ",
+    "gatewayNodes": "ゲートウェイノード",
+    "gatewayOverview": "ゲートウェイ概要",
+    "providers": "プロバイダー",
+    "credentials": "認証情報",
+    "credentialDetail": "認証情報の詳細",
+    "modelRouting": "モデルルーティング",
+    "modelCatalog": "モデルカタログ",
+    "routingConfig": "ルーティング設定",
+    "liveRequests": "リアルタイムリクエスト",
+    "notifications": "Notifications"
   },
   "settings": {
     "aiGateway": "AIゲートウェイ",
@@ -71,6 +136,19 @@
     "loginTime": "ログイン時刻",
     "currentConnection": "現在の接続",
     "server": "サーバー",
+    "backendServer": "バックエンドサーバー",
+    "backendHint": "ログイン・タスク・インスタンスはこの pocketd を使います。変更後は再ログインが必要です。",
+    "buildDefault": "ビルド既定",
+    "sameOrigin": "このサイト（同一オリジン）",
+    "productionServer": "本番環境（pocket.itestu.cn）",
+    "backupServer": "バックアップ（pocket.kxpms.cn）",
+    "customServer": "カスタム URL",
+    "customServerHint": "https:// のアドレスを入力",
+    "saveAndUse": "保存して使用",
+    "saving": "保存中…",
+    "healthOk": "接続済み",
+    "healthDown": "接続エラー",
+    "healthUnknown": "未確認",
     "instance": "インスタンス",
     "notSelected": "未選択",
     "appInfo": "アプリ情報",
@@ -78,6 +156,7 @@
     "version": "バージョン",
     "versionFormat": "v{version} (ビルド {buildNumber})",
     "buildDate": "ビルド日",
+    "buildDateNote": "（設定値。実測のビルド時刻ではありません）",
     "apiAddress": "APIアドレス",
     "privacy": "プライバシー",
     "permissionsPrivacy": "権限とプライバシー",
@@ -88,7 +167,7 @@
     "themeDark": "ダーク",
     "themeSystem": "システムに従う",
     "automation": "自動化",
-    "scheduledTasks": "スケジュールタスク",
+    "scheduledTasks": "定期自動化",
     "scheduledTasksDesc": "自動化タスクの作成、編集、表示",
     "checkUpdates": "更新を確認",
     "changeServer": "サーバーを変更",
@@ -96,28 +175,33 @@
     "logoutConfirm": "ログアウトしてもよろしいですか？",
     "newVersionAvailable": "新しいバージョン v{version} が利用可能です！\n\n変更内容:\n{changelog}",
     "alreadyLatest": "最新バージョンです！",
-    "checkUpdateFailed": "更新の確認に失敗しました。後でもう一度お試しください"
-  },
-  "settingsMenu": {
-    "title": "メニュー",
-    "notLoggedIn": "未ログイン",
-    "viewAccount": "アカウントと設定を表示",
-    "groupSettings": "設定",
-    "groupOps": "運用・詳細",
-    "versionFootnote": "Redclaw · v{version}"
+    "checkUpdateFailed": "更新の確認に失敗しました。後でもう一度お試しください",
+    "versionConfigUnavailable": "サーバーのバージョン設定が利用できないため、更新を確認できません。管理者に config/version.json の確認を依頼してください。{detail}",
+    "redclawIntegration": "RedClaw 連携",
+    "redclawConnected": "接続済み",
+    "redclawMisconfigured": "設定済み · 接続エラー",
+    "redclawDisabled": "無効",
+    "tenant": "テナント {id}",
+    "finance": "家計簿",
+    "financeDesc": "手動 + メモから自動記帳 · 月次の収支統計",
+    "language": "表示言語",
+    "apiAddressNotSaved": "アドレスを保存できませんでした。空でないか、URL 形式かを確認してください",
+    "buildDefaultUnreachable": "ビルド既定値 {url} はこの端末から到達できません（端末自身を指しています）。代わりに {fallback} を使用します。ローカルバックエンドを使う場合は「カスタムアドレス」に入力してください。"
   },
   "flashcards": {
     "list": {
       "title": "フラッシュカード",
       "empty": "デッキはまだありません",
-      "create": "デッキを作成",
+      "create": "新しいカード",
       "dueToday": "本日 {count} 件復習待ち"
     },
     "deck": {
       "title": "デッキ",
       "addCard": "カードを追加",
       "review": "復習する",
-      "noCards": "このデッキにはカードがありません"
+      "noCards": "このデッキにはカードがありません",
+      "create": "新しいデッキ",
+      "createPlaceholder": "デッキ名"
     },
     "review": {
       "title": "復習",
@@ -127,7 +211,9 @@
       "easy": "簡単",
       "remaining": "残り {count} 件",
       "complete": "本日の復習が完了しました",
-      "fuzzNote": "カードが同時期に集中しないよう、期日は ±5% の範囲で意図的に散らしています"
+      "fuzzNote": "カードが同時期に集中しないよう、期日は ±5% の範囲で意図的に散らしています",
+      "clozeCount": "{count} cloze",
+      "clozeHint": "Tap card to reveal"
     },
     "edit": {
       "title": "カード",
@@ -136,7 +222,21 @@
       "tags": "タグ",
       "save": "保存",
       "delete": "削除",
-      "confirmDelete": "このカードを削除しますか？"
+      "confirmDelete": "このカードを削除しますか？",
+      "template": "Card template",
+      "templateBasic": "Front · Back",
+      "templateCloze": "Cloze",
+      "clozeText": "Cloze text",
+      "clozePlaceholder": "e.g. The chemical formula of water is {{c1::H₂O::hydrogen dioxide}}, boiling at {{c2::100℃}}.",
+      "clozeHint": "Use {{c1::answer}} or {{c1::answer::hint}} to mark occlusions. Multiple cloze in one card review together.",
+      "clozeCount": "{count} occlusions",
+      "parentDeck": "Parent deck",
+      "parentDeckNone": "None (top level)",
+      "parentDeckSelf": "(self)",
+      "addImage": "Add image",
+      "addImageCamera": "Camera",
+      "addImageGallery": "Gallery",
+      "imagePickFailed": "Failed to pick image"
     },
     "permission": {
       "vivoTitle": "OpenPocket の毎日の通知を許可する",
@@ -148,7 +248,273 @@
     },
     "error": {
       "loadFailed": "フラッシュカードの読み込みに失敗しました",
+      "saveFailed": "カードを保存できませんでした",
       "syncConflict": "同期が競合しています — 再読み込みしてください"
+    },
+    "deckOptions": {
+      "title": "Deck options",
+      "notFound": "Deck not found",
+      "deckName": "Name",
+      "nameRequired": "Name is required",
+      "groupDaily": "Daily limits",
+      "newPerDay": "New cards per day",
+      "reviewsPerDay": "Reviews per day",
+      "groupLearning": "Learning steps",
+      "learningSteps": "Learning steps (min, comma-separated)",
+      "learningStepsHint": "e.g. 1, 10",
+      "graduatingInterval": "Graduating interval (days)",
+      "easyInterval": "Easy interval (days)",
+      "groupFsrs": "FSRS algorithm",
+      "desiredRetention": "Desired retention (0.5-0.99)",
+      "maximumInterval": "Maximum interval (days)",
+      "easyBonus": "Easy bonus (1.0-3.0)",
+      "hardInterval": "Hard interval (0.5-2.0)"
+    },
+    "browser": {
+      "title": "Card browser",
+      "resultCount": "{count} results",
+      "searchPlaceholder": "Search front / back text",
+      "allDecks": "All decks",
+      "allTags": "All tags",
+      "tagsSelected": "{count} tags",
+      "clear": "Clear filters",
+      "pickDeck": "Pick deck",
+      "pickTags": "Pick tags",
+      "noTags": "No tags yet",
+      "empty": "No matching cards",
+      "state": {
+        "all": "All states",
+        "new": "New",
+        "learning": "Learning",
+        "review": "Review",
+        "relearning": "Relearning"
+      }
+    },
+    "stats": {
+      "title": "Review stats",
+      "total": "Total",
+      "new": "New",
+      "young": "Young",
+      "mature": "Mature",
+      "distribution": "Distribution",
+      "reviewsPerDay": "Reviews / {days} days",
+      "lapsesPerDay": "Lapses / {days} days",
+      "retention": "Estimated retention",
+      "retentionHint": "Simplified estimate from {again}+{hard}+{good}+{easy} recent ratings",
+      "noReviewsYet": "No reviews in window",
+      "noLapses": "No Again ratings in window"
+    },
+    "io": {
+      "title": "Import / Export",
+      "exportTitle": "Export",
+      "exportDesc": "Bundle all notes + cards + decks into a JSON file you can share",
+      "exportBtn": "Export JSON",
+      "exportOk": "Exported {count} cards",
+      "exportFailed": "Export failed",
+      "importTitle": "Import",
+      "importDesc": "Pick a previously exported JSON file. Merge by id.",
+      "importBtn": "Pick file",
+      "importOk": "Merged {notes} notes / {cards} cards / {decks} decks",
+      "importFailed": "Import failed",
+      "notes": "Notes",
+      "cards": "Cards",
+      "decks": "Decks"
     }
+  },
+  "study": {
+    "hero": {
+      "today": "Today",
+      "cardsDue": "cards due",
+      "start": "Start review",
+      "review": "Start today review",
+      "allDone": "All done for today"
+    },
+    "decks": {
+      "title": "My decks",
+      "all": "All",
+      "empty": "No decks yet",
+      "create": "New deck",
+      "dueShort": "{count} due",
+      "stats": "View stats",
+      "browser": "Card browser"
+    },
+    "reminder": {
+      "title": "日次レビューのお知らせ",
+      "next": "次回：{time}",
+      "offline": "学習サービスに未接続のため、リマインダーは現在利用できません"
+    },
+    "notes": {
+      "title": "My notes",
+      "all": "All",
+      "voice": "Voice notes",
+      "hint": "Tap mic to record"
+    },
+    "capture": {
+      "add": "学習に追加",
+      "done": "学習に追加済み",
+      "toTask": "タスクに変換",
+      "taskDone": "タスクを作成しました",
+      "failed": "保存できませんでした。再試行してください。"
+    },
+    "streak": {
+      "days": "日連続",
+      "toNext": "あと {count} 日で {next} 日",
+      "milestoneReached": "{days} 日マイルストーン達成"
+    },
+    "due": {
+      "title": "本日の予定",
+      "cardsDue": "復習待ちカード",
+      "inboxWaiting": "受信トレイの未処理",
+      "reviewing": "レビュー待ち",
+      "tasksDue": "期限近いタスク",
+      "allClear": "本日の予定はありません"
+    },
+    "inbox": {
+      "title": "受信トレイ",
+      "empty": "受信トレイは空です",
+      "advance": "次へ進める"
+    },
+    "source": {
+      "note": "ノート",
+      "email": "メール",
+      "rss": "RSS",
+      "meeting": "会議",
+      "chat": "チャット",
+      "manual": "手動"
+    }
+  },
+  "email": {
+    "dailySummary": "デイリー要約",
+    "fetchHintNetwork": "バックグラウンド取得が完了しませんでした。同期済みメールを表示しています",
+    "fetchHintClassifierOff": "自動分類が無効です。メールは同期されましたが分類されていません",
+    "fetchHintAuth": "セッションの有効期限が切れました。再度ログインしてください。",
+    "fetchHintUnavailable": "バックグラウンドサービスを利用できません。メールは同期されました",
+    "fetchHintHttpError": "バックグラウンド取得が不完全です（{code}）。メッセージは同期済み"
+  },
+  "errors": {
+    "rssNotConfigured": "RSS フィードがまだ設定されていません。先にフィードを追加してください。",
+    "rssSourceMissing": "そのフィードは見つかりません。削除された可能性があります。",
+    "emailNotConfigured": "メールアカウントがまだ設定されていません。メール設定で追加してください。",
+    "emailAccountMissing": "そのアカウントは見つかりません。削除された可能性があります。",
+    "imapUnauthorized": "メールの認証が失効しました。再度認証してください。",
+    "imapFailed": "メールサーバーに接続できません。ネットワークとアカウント情報を確認してください。",
+    "sttNotConfigured": "音声認識がまだ設定されていません。",
+    "llmNotConfigured": "利用可能なモデルがまだ設定されていません。モデル設定で選択してください。",
+    "modelNotFound": "そのモデルが見つかりません。削除された可能性があります。",
+    "gatewayUnreachable": "モデルゲートウェイに接続できません。アドレスとネットワークを確認してください。",
+    "gatewayAdminMissing": "このゲートウェイノードには管理者アカウントが未設定です。先に「モデルゲートウェイ」のノード一覧で管理者のユーザー名とパスワードを入力してください",
+    "workspaceNotFound": "そのワークスペースが見つかりません。",
+    "notConfigured": "この機能はまだ設定されていません。",
+    "unauthorized": "認証の有効期限が切れました。再度ログインしてください。",
+    "notFound": "該当する項目が見つかりません。",
+    "timeout": "リクエストがタイムアウトしました。もう一度お試しください。",
+    "network": "サーバーに接続できません。ネットワークを確認してください。",
+    "rateLimited": "リクエストが多すぎます。しばらく待って再試行してください。",
+    "conflict": "すでに存在するか、状態が競合しています。",
+    "server": "サーバーでエラーが発生しました。しばらくしてからお試しください。",
+    "loadRssFailed": "フィードの読み込みに失敗しました",
+    "loadEmailFailed": "メールを読み込めませんでした。もう一度お試しください。",
+    "loadEmailBodyFailed": "本文の取得に失敗しました",
+    "loadEmailSettingsFailed": "メール設定を読み込めませんでした",
+    "sendEmailFailed": "送信に失敗しました",
+    "createTaskFailed": "タスクを作成できませんでした",
+    "loadInvoicesFailed": "請求書を読み込めませんでした",
+    "loadNotesFailed": "ノートを読み込めませんでした",
+    "loadMeetingsFailed": "会議を読み込めませんでした",
+    "loadFlashcardsFailed": "カードを読み込めませんでした",
+    "loadGatewayFailed": "ゲートウェイ情報を読み込めませんでした",
+    "loadTasksFailed": "タスクを読み込めませんでした",
+    "loadSessionsFailed": "セッションを読み込めませんでした",
+    "loadFinanceFailed": "家計簿を読み込めませんでした",
+    "loadSettingsFailed": "設定を読み込めませんでした",
+    "saveFailed": "保存できませんでした。もう一度お試しください。",
+    "operateFailed": "操作に失敗しました。もう一度お試しください。",
+    "summaryFailed": "要約を生成できませんでした。モデルゲートウェイの設定と接続を確認してください。",
+    "probeFailed": "プローブに失敗しました。対象アドレスに到達できるか確認してください。"
+  },
+  "due": {
+    "title": "今日の復習",
+    "cardsDue": "カードの期限",
+    "inboxWaiting": "未処理",
+    "reviewing": "復習中",
+    "tasksDue": "タスクの期限",
+    "allClear": "今日はやることがありません"
+  },
+  "reminder": {
+    "title": "毎日のダイジェスト",
+    "next": "次回：{time}",
+    "offline": "毎日の復習には学習サービスが必要です。再接続すると通知を有効にできます。"
+  },
+  "inbox": {
+    "title": "受信トレイ",
+    "empty": "まだ素材がありません。ノート・メール・RSS で「学習に追加」を使ってください。",
+    "advance": "学習を開始"
+  },
+  "notesHub": {
+    "title": "ノート",
+    "filter": {
+      "all": "すべて",
+      "manual": "手書きメモ",
+      "meeting": "会議メモ",
+      "pkm": "PKM ノート"
+    },
+    "action": {
+      "newNote": "新規メモ",
+      "startMeeting": "会議を開始",
+      "record": "録音でメモ"
+    },
+    "link": {
+      "allNotes": "すべてのメモ",
+      "allMeetings": "すべての会議",
+      "allPkm": "PKM を開く"
+    },
+    "empty": {
+      "title": "まだメモがありません",
+      "hint": "右下のマイクで最初のメモを撮るか、会議を開始してください",
+      "filtered": "このソースにはまだ何もありません"
+    },
+    "meta": {
+      "voice": "音声",
+      "pending": "処理中",
+      "minutes": "{count} 分",
+      "hoursMinutes": "{hours} 時間 {minutes} 分"
+    },
+    "count": {
+      "notes": "メモ {count} 件",
+      "meetings": "会議 {count} 件"
+    }
+  },
+  "messagesHub": {
+    "title": "メッセージ",
+    "filter": {
+      "all": "すべて",
+      "email": "メール",
+      "rss": "フィード",
+      "task": "タスク"
+    },
+    "action": {
+      "markAllRead": "すべて既読にする",
+      "openMail": "メールを開く",
+      "manageFeeds": "フィードを管理"
+    },
+    "empty": {
+      "title": "新着はありません",
+      "hint": "重要なメール、購読ニュース、タスクの更新がここに集まります"
+    },
+    "badge": {
+      "important": "重要"
+    },
+    "meta": {
+      "from": "{name} から",
+      "suggestedAction": "推奨：{action}"
+    },
+    "unreadBadge": "未読 {count}",
+    "partialFailure": "一部の読み込みに失敗：{sources}"
+  },
+  "timefmt": {
+    "justNow": "たった今",
+    "minutesAgo": "{count} 分前",
+    "hoursAgo": "{count} 時間前",
+    "daysAgo": "{count} 日前"
   }
 }

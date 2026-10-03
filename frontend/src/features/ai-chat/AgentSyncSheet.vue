@@ -2,6 +2,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { useChatAgentStore } from '../../stores/chatAgentStore'
 import { useToast } from '../../composables/useToast'
+import { useApiError } from '../../composables/useApiError'
 
 const props = defineProps<{
   show: boolean
@@ -14,6 +15,7 @@ const emit = defineEmits<{
 const agentStore = useChatAgentStore()
 const toast = useToast()
 const lastError = ref('')
+const apiError = useApiError()
 
 onMounted(() => {
   // 首次打开时探测同步可用性
@@ -53,7 +55,7 @@ async function handleUpload() {
       lastError.value = '云端版本比本地新，请先「下载」合并后再上传'
       toast.error('版本冲突：云端有更新的版本')
     } else {
-      lastError.value = e?.message || String(e)
+      lastError.value = apiError(e, '同步失败，请稍后重试')
       toast.error('上传失败')
     }
   }
@@ -69,7 +71,7 @@ async function handleDownload() {
       toast.info('云端无新内容')
     }
   } catch (e: any) {
-    lastError.value = e?.message || String(e)
+    lastError.value = apiError(e, '同步失败，请稍后重试')
     toast.error('下载失败')
   }
 }
@@ -188,7 +190,7 @@ function formatTime(ms: number): string {
 
 .sheet-header h2 {
   margin: 0;
-  font-size: 18px;
+  font-size: var(--text-xl);
   font-weight: 600;
 }
 
@@ -215,7 +217,7 @@ function formatTime(ms: number): string {
 .status-banner.error {
   background: color-mix(in srgb, var(--danger) 10%, transparent);
   color: var(--danger);
-  font-size: 13px;
+  font-size: var(--text-smd);
 }
 
 .banner-title {
@@ -224,7 +226,7 @@ function formatTime(ms: number): string {
 }
 
 .banner-hint {
-  font-size: 12px;
+  font-size: var(--text-sm);
   opacity: 0.85;
 }
 
@@ -243,7 +245,7 @@ function formatTime(ms: number): string {
 }
 
 .status-label {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-secondary, #6b7280);
   margin-bottom: 6px;
 }
@@ -255,7 +257,7 @@ function formatTime(ms: number): string {
 }
 
 .status-value-sm {
-  font-size: 13px;
+  font-size: var(--text-smd);
   color: var(--text-primary);
   font-weight: 500;
 }
@@ -266,7 +268,7 @@ function formatTime(ms: number): string {
 
 .hint {
   margin: 8px 0;
-  font-size: 13px;
+  font-size: var(--text-smd);
   color: var(--text-secondary, #6b7280);
   line-height: 1.5;
 }
@@ -293,7 +295,7 @@ function formatTime(ms: number): string {
   border-radius: 10px;
   background: var(--bg-secondary, #f9fafb);
   color: var(--text-primary);
-  font-size: 14px;
+  font-size: var(--text-base);
   font-weight: 500;
   cursor: pointer;
   transition: background 0.2s;

@@ -75,6 +75,18 @@
             <div class="face back" v-show="isFlipped">
               <small>{{ t('flashcards.edit.back') }}</small>
               <p>{{ currentNote?.back ?? '—' }}</p>
+              <!-- 英语牌组：背面带 IPA 与例句，给一个朗读入口（"单词及发音"这条需求的落点）。 -->
+              <button
+                v-if="canPronounce"
+                type="button"
+                class="pronounce"
+                data-testid="pronounce-example"
+                @click.stop="speakExample"
+              >
+                <span class="material-symbols-outlined">volume_up</span>
+                {{ pronouncing ? '停止朗读' : '朗读例句' }}
+              </button>
+              <p v-if="pronounceError" class="pronounce-error">{{ pronounceError }}</p>
               <div v-if="backMedia.length > 0" class="review-media">
                 <img
                   v-for="m in backMedia"
@@ -166,6 +178,7 @@ import FoldAwareLayout from './components/FoldAwareLayout.vue'
 import VivoBatteryWhitelistGuide from './components/VivoBatteryWhitelistGuide.vue'
 import ClozeRenderer from './components/ClozeRenderer.vue'
 import { useFlashcardsStore } from '../../stores/flashcards'
+import { usePronounce, extractExampleSentence } from '../../composables/usePronounce'
 import { parseCloze } from './utils/cloze'
 import { loadMediaDataUrl } from './utils/flashcardMedia'
 import type { FlashcardCard, FlashcardRating } from '../../types/flashcards'
@@ -196,6 +209,18 @@ const currentNote = computed(() => {
   if (!card) return null
   return store.notes.find((n) => n.id === card.noteId) ?? null
 })
+
+/* 英语牌组的发音：只有当背面能抽出英文例句时才显示按钮，
+ * 否则中文技术卡上会出现一个"朗读"却读不出东西的按钮。 */
+const { supported: ttsSupported, speakingId, errorMsg: pronounceError, speak: speakText } = usePronounce()
+const exampleSentence = computed(() => extractExampleSentence(currentNote.value?.back ?? ''))
+const canPronounce = computed(() => ttsSupported && exampleSentence.value.length > 0)
+const pronouncing = computed(() => speakingId.value === currentNote.value?.id)
+function speakExample() {
+  const n = currentNote.value
+  if (!n) return
+  void speakText(n.id, exampleSentence.value)
+}
 
 /* Cloze 渲染分支（Phase 3）：
  * - isClozeCard  → 模板为 cloze 时走 ClozeRenderer
@@ -297,8 +322,8 @@ const dueCountHint = computed(() => total.value)
   gap: var(--space-3);
   padding: var(--space-4);
 }
-.head h1 { flex: 1; margin: 0; font-size: 18px; color: var(--text-primary); }
-.head .progress { font-size: 13px; color: var(--text-secondary); }
+.head h1 { flex: 1; margin: 0; font-size: var(--text-xl); color: var(--text-primary); }
+.head .progress { font-size: var(--text-smd); color: var(--text-secondary); }
 .back-btn {
   border: 0;
   background: transparent;
@@ -334,10 +359,24 @@ const dueCountHint = computed(() => total.value)
   text-align: center;
   cursor: pointer;
 }
-.card-display p { font-size: 18px; color: var(--text-primary); margin: 0; line-height: 1.4; }
-.card-display small { display: block; font-size: 11px; color: var(--text-muted); margin-bottom: var(--space-2); }
+.card-display p { font-size: var(--text-xl); color: var(--text-primary); margin: 0; line-height: 1.4; }
+.card-display small { display: block; font-size: var(--text-2xs); color: var(--text-muted); margin-bottom: var(--space-2); }
 .card-display .back { color: var(--text-primary); }
 
+.pronounce {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: var(--space-3);
+  padding: 8px 14px;
+  border: 1px solid var(--brand-primary);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--brand-primary);
+  font: inherit;
+  cursor: pointer;
+}
+.pronounce-error { margin: var(--space-2) 0 0; font-size: var(--text-sm); color: var(--danger); }
 .review-media {
   display: flex;
   flex-wrap: wrap;
@@ -353,7 +392,7 @@ const dueCountHint = computed(() => total.value)
   border-radius: var(--radius-sm);
   background: var(--bg-subtle);
 }
-.hint { text-align: center; font-size: 12px; color: var(--brand-primary); margin: 0 0 var(--space-3); }
+.hint { text-align: center; font-size: var(--text-sm); color: var(--brand-primary); margin: 0 0 var(--space-3); }
 
 .ratings { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--space-2); padding: 0 var(--space-4); }
 .ratings.compact { grid-template-columns: 1fr 1fr; }
@@ -363,7 +402,7 @@ const dueCountHint = computed(() => total.value)
   border-radius: var(--radius-sm);
   padding: 10px 0;
   font: inherit;
-  font-size: 13px;
+  font-size: var(--text-smd);
   color: var(--text-primary);
   cursor: pointer;
   display: flex;
@@ -376,10 +415,10 @@ const dueCountHint = computed(() => total.value)
 .rating.hard { color: var(--warning, #f59e0b); }
 .rating.good { color: var(--success); }
 .rating.easy { color: var(--brand-primary); }
-.rating .material-symbols-outlined { font-size: 18px; }
+.rating .material-symbols-outlined { font-size: var(--text-xl); }
 
-.remaining { margin: var(--space-3) var(--space-4) 0; font-size: 12px; color: var(--text-secondary); }
-.fuzz-note { margin: var(--space-2) var(--space-4) var(--space-5); font-size: 11px; color: var(--text-muted); }
+.remaining { margin: var(--space-3) var(--space-4) 0; font-size: var(--text-sm); color: var(--text-secondary); }
+.fuzz-note { margin: var(--space-2) var(--space-4) var(--space-5); font-size: var(--text-2xs); color: var(--text-muted); }
 .complete {
   margin: var(--space-5) var(--space-4);
   padding: var(--space-5);
@@ -391,9 +430,9 @@ const dueCountHint = computed(() => total.value)
 
 .outer { padding: 0 var(--space-3); }
 .outer .head { padding-top: var(--space-3); padding-bottom: var(--space-2); }
-.outer .head h1 { font-size: 15px; }
+.outer .head h1 { font-size: var(--text-md); }
 .outer .card-display { min-height: 160px; margin: var(--space-2); padding: var(--space-3); }
-.outer .card-display p { font-size: 15px; }
+.outer .card-display p { font-size: var(--text-md); }
 .cta { padding: 0 var(--space-3); margin-top: var(--space-3); }
 .cta .primary {
   width: 100%;

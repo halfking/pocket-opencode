@@ -13,7 +13,7 @@
     </div>
 
     <div v-if="store.error" class="error" role="alert">
-      {{ store.error }}
+      {{ apiError(store.error, 'errors.loadSettingsFailed') }}
       <button type="button" @click="refresh">重试</button>
     </div>
 
@@ -63,12 +63,16 @@
 import { computed, onMounted, ref } from 'vue'
 import { useMarketplaceStore } from './store'
 import type { MarketplacePackage, PackageVersion, Visibility } from './types'
+import { useApiError } from '../../composables/useApiError'
 
+const apiError = useApiError()
 const store = useMarketplaceStore()
 const search = ref('')
 const installing = ref(false)
 const installTarget = ref<MarketplacePackage | null>(null)
 const expanded = ref<Record<string, PackageVersion[]>>({})
+// 版本缓存，独立于 expanded（纯 UI 展开状态）。与 AgentMarketView / WorkbuddyView 同形。
+const versionsByPackage = ref<Record<string, PackageVersion[]>>({})
 
 onMounted(() => {
   store.loadPackages('skill').catch(() => {})
@@ -106,6 +110,21 @@ async function openVersions(pkg: MarketplacePackage) {
   expanded.value = { ...expanded.value, [pkg.package_id]: list }
 }
 
+/**
+ * 按需加载某包的版本列表。
+ *
+ * BUG-Y 的另一半：安装流程原先假设「用户已经点过『查看版本』」，
+ * 于是从 `expanded` 里取——那是个纯 UI 展开状态，只有点过才会有值。
+ * 改成与 AgentMarketView / WorkbuddyView 相同的写法：走 store 的
+ * `versionsByPackage` 缓存，没缓存就加载。
+ */
+async function ensureVersionsLoaded(pkg: MarketplacePackage): Promise<PackageVersion[]> {
+  if (versionsByPackage.value[pkg.package_id]) return versionsByPackage.value[pkg.package_id]
+  const list = await store.loadVersions(pkg.package_id)
+  versionsByPackage.value = { ...versionsByPackage.value, [pkg.package_id]: list }
+  return list
+}
+
 function confirmInstall(pkg: MarketplacePackage) {
   installTarget.value = pkg
 }
@@ -113,9 +132,20 @@ function confirmInstall(pkg: MarketplacePackage) {
 async function runInstall() {
   if (!installTarget.value) return
   installing.value = true
-  // 选择该包最新已发布的 release（缺则提示不可安装）
-  const versions = expanded.value[installTarget.value.package_id]
-  const publishedVersion = versions?.find((v) => v.status === 'published')
+  const pkgId = installTarget.value.package_id
+  // BUG-Y（2026-09-30 真机验收）：原来这里直接读
+  //   const versions = expanded.value[pkgId]
+  // 而 `expanded` **只有用户点过「查看版本」之后才会有值**。于是：
+  //   点「安装」→ 弹确认框 → 点「确认安装」→ versions 为 undefined →
+  //   报「该包尚无已发布版本，无法安装。」
+  // 而那个包**确实有**已发布版本（`GET .../versions` 明确返回 status:"published"）。
+  // 结果：安装对任何没先展开过的包都必然失败，且给出与事实相反的提示。
+  //
+  // 注意 AgentMarketView / WorkbuddyView **本来就有** ensureVersionsLoaded，
+  // 只有这份是直接读 expanded —— 同一段逻辑写了三遍，只有这一遍写错了。
+  // 这里改成同一写法，不维护第三套。
+  const versions = await ensureVersionsLoaded(installTarget.value)
+  const publishedVersion = versions.find((v) => v.status === 'published')
   if (!publishedVersion) {
     store.error = '该包尚无已发布版本，无法安装。'
     installing.value = false
@@ -131,7 +161,12 @@ async function runInstall() {
     installTarget.value = null
     return
   }
-  await store.install({ release_id: release.release_id, target_env: '' })
+  // store.install 失败时返回 null 并把原因写进 store.error；原来忽略返回值，
+  // 于是**后端拒绝安装也是静默的** —— 弹窗一关，用户什么都不知道。
+  const inst = await store.install({ release_id: release.release_id, target_env: '' })
+  if (!inst) {
+    store.error = store.error || '安装失败，请重试。'
+  }
   installing.value = false
   installTarget.value = null
 }
@@ -149,22 +184,22 @@ function refresh() {
 .list { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-3); }
 .card { padding: var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-card); }
 .card header { display: flex; align-items: center; gap: 8px; }
-.card h2 { flex: 1; margin: 0; font-size: 15px; color: var(--text-primary); }
-.kind { font-size: 11px; padding: 3px 8px; border-radius: 999px; background: var(--brand-primary); color: var(--text-inverse); }
-.meta { margin: 7px 0; font-size: 13px; color: var(--text-secondary); }
-.permissions { display: flex; flex-wrap: wrap; gap: 6px; font-size: 12px; color: var(--text-secondary); align-items: center; }
+.card h2 { flex: 1; margin: 0; font-size: var(--text-md); color: var(--text-primary); }
+.kind { font-size: var(--text-2xs); padding: 3px 8px; border-radius: 999px; background: var(--brand-primary); color: var(--text-inverse); }
+.meta { margin: 7px 0; font-size: var(--text-smd); color: var(--text-secondary); }
+.permissions { display: flex; flex-wrap: wrap; gap: 6px; font-size: var(--text-sm); color: var(--text-secondary); align-items: center; }
 .chip { padding: 2px 8px; border-radius: 999px; background: var(--bg-subtle); color: var(--text-primary); }
 .card footer { display: flex; gap: 7px; margin-top: 11px; }
-.card footer button { flex: 1; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-card); color: var(--text-primary); padding: 7px 12px; font-size: 12px; }
+.card footer button { flex: 1; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-card); color: var(--text-primary); padding: 7px 12px; font-size: var(--text-sm); }
 .card footer .primary { color: var(--text-inverse); background: var(--brand-gradient); border: 0; }
 .state { padding: 48px 20px; text-align: center; color: var(--text-secondary); }
-.state .hint { color: var(--text-muted); font-size: 12px; }
-.error { margin: var(--space-3); padding: var(--space-3); color: var(--danger); background: var(--danger-bg); border-radius: var(--radius-sm); font-size: 13px; display: flex; justify-content: space-between; align-items: center; }
+.state .hint { color: var(--text-muted); font-size: var(--text-sm); }
+.error { margin: var(--space-3); padding: var(--space-3); color: var(--danger); background: var(--danger-bg); border-radius: var(--radius-sm); font-size: var(--text-smd); display: flex; justify-content: space-between; align-items: center; }
 .error button { border: 1px solid var(--danger); border-radius: var(--radius-sm); background: var(--bg-card); color: var(--danger); padding: 5px 10px; }
 .confirm-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.45); display: flex; align-items: center; justify-content: center; z-index: 50; }
 .confirm-dialog { background: var(--bg-card); border-radius: var(--radius-md); padding: var(--space-4); width: min(90vw, 360px); }
 .confirm-dialog h3 { margin: 0 0 var(--space-2); color: var(--text-primary); }
-.confirm-dialog p { color: var(--text-secondary); font-size: 13px; }
+.confirm-dialog p { color: var(--text-secondary); font-size: var(--text-smd); }
 .confirm-dialog .actions { display: flex; gap: var(--space-2); margin-top: var(--space-3); justify-content: flex-end; }
 .confirm-dialog button { border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-card); color: var(--text-primary); padding: 7px 14px; }
 .confirm-dialog .primary { color: var(--text-inverse); background: var(--brand-gradient); border: 0; }

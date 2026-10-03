@@ -8,17 +8,20 @@
       <span class="priority-chip" :class="task?.priority">
         {{ priorityText(task?.priority) }}
       </span>
-      <h1 class="title">{{ task?.title || '加载中...' }}</h1>
+      <h1 class="title">{{ task?.title || (loadError ? '任务不可用' : '加载中...') }}</h1>
       <span class="status-chip" :class="task?.status">
         {{ statusText(task?.status) }}
       </span>
     </div>
 
+    <!-- 加载失败必须看得见。少了这一块，失败会伪装成一个正常的任务页。 -->
+    <p v-if="loadError" class="load-error" role="alert">{{ loadError }}</p>
+
     <!-- Description -->
     <p v-if="task?.description" class="desc">{{ task.description }}</p>
 
     <!-- Stats strip -->
-    <div class="stats-strip">
+    <div v-if="task" class="stats-strip">
       <div class="stat">
         <span class="stat-icon">💬</span>
         <span class="stat-val">{{ task?.sessionCount || 0 }}</span>
@@ -37,7 +40,10 @@
     </div>
 
     <!-- Action Bar -->
-    <div class="action-bar">
+    <!-- 整条都用 v-if="task" 兜住：task 为 null 时 task?.status 的比较结果
+         （undefined !== 'active'）为真，按钮会渲染出来却什么都不做。
+         失败态由上面的 loadError 承担，这里不该再摆一排假控件。 -->
+    <div v-if="task" class="action-bar">
       <button
         v-if="task?.status !== 'active'"
         class="action-btn resume"
@@ -67,7 +73,10 @@
       </button>
     </div>
 
+    <TaskCollaborationPanel v-if="task?.id" :task-id="task.id" />
+
     <TaskSessionPanel
+      v-if="task"
       :current="bundle.current"
       :historical="bundle.historical"
       :local-only="bundle.localOnly"
@@ -117,15 +126,32 @@ import { ref, onMounted, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { api, type Task, type TaskSessionBundle, type TaskSessionBundleRow } from '../../api/client'
 import { useConfirm } from '../../composables/useConfirm'
+import { useToast } from '../../composables/useToast'
+import { markListDirty } from '../../composables/list-scene-store'
 import BottomSheet from '../../components/base/BottomSheet.vue'
 import TaskSessionPanel from './TaskSessionPanel.vue'
 import TaskSessionSheet from './TaskSessionSheet.vue'
+import TaskCollaborationPanel from './TaskCollaborationPanel.vue'
 
 const router = useRouter()
 const route = useRoute()
 const { confirm } = useConfirm()
+const toast = useToast()
 
 const task = ref<Task | null>(null)
+// loadError 必须与 task 分开，不能靠 task === null 兼表「加载中」和「加载失败」。
+//
+// 实测（2026-10-03 真机，GET /api/tasks/:id 返回 404）：原来这两种情况渲染
+// **完全一样** —— 标题都是「加载中...」，统计条都是 0 / 「-」。
+// 更糟的是 v-if="task?.status !== 'active'" 在 task 为 null 时求值为 true
+// （undefined !== 'active'），于是 ▶恢复 / ✅完成 连同无条件的 📎附加 / 🗑
+// 四个按钮照常渲染；点下去却被 confirmDelete / updateStatus 开头的
+// if (!task.value) return 静默吞掉。
+//
+// 结果是：一条**不存在**的任务，呈现为一个看起来完全正常、按钮齐全、
+// 但按什么都没反应的详情页。对照 /gateway/:nodeId 加载失败会明确显示
+// 「加载网关信息失败」——所以这是这一处漏了，不是全局约定。
+const loadError = ref('')
 const bundle = ref<TaskSessionBundle>({
   current: [],
   historical: [],
@@ -163,13 +189,24 @@ async function loadBundle(taskId: string) {
 
 async function loadTask() {
   const taskId = route.params.id as string
-  if (!taskId) return
+  loadError.value = ''
+  // 原来这里是 `if (!taskId) return` —— 早退后没有任何状态变化，标题会永远
+  // 停在「加载中...」，和「加载失败」长得一模一样。缺 id 也是一种要说出口的状态。
+  if (!taskId) {
+    task.value = null
+    loadError.value = '缺少任务 ID'
+    return
+  }
   try {
     task.value = await api.getTask(taskId)
     await loadBundle(taskId)
   } catch (e) {
     console.error('Failed to load task:', e)
     task.value = null
+    // 404 与其它失败对用户是两件事：一个是「没了」，一个是「再试试」。
+    // 不区分就会把网络抖动也说成任务被删，反过来也一样误导。
+    const status = (e as { status?: number })?.status
+    loadError.value = status === 404 ? '任务不存在或已被删除' : '任务加载失败，请重试'
   }
 }
 
@@ -182,10 +219,13 @@ async function updateStatus(status: string) {
   task.value.status = status as Task['status']
   try {
     await api.updateTask(task.value.id, { status })
+    // 列表页 TasksView 在 KeepAlive 名单里，返回时不会重新 onMounted。
+    // 状态是列表直接展示的列，不登记脏标记就会看到旧状态。
+    markListDirty('tasks')
   } catch (e) {
     task.value.status = old
     console.error('Failed to update status:', e)
-    alert('状态更新失败，请重试')
+    toast.error('状态更新失败，请重试')
   }
 }
 
@@ -194,10 +234,13 @@ async function confirmDelete() {
   const deleted = task.value
   try {
     await api.deleteTask(deleted.id)
+    // 必须在 push 之前登记：push 之后列表页立刻被激活，
+    // 顺序反了 consumeListDirty 会读到还没置位的状态。
+    markListDirty('tasks')
     router.push('/ai')
   } catch (e) {
     console.error('Failed to delete task:', e)
-    alert('删除失败，请重试')
+    toast.error('删除失败，请重试')
   }
 }
 
@@ -213,6 +256,7 @@ async function handleAttach() {
     await loadBundle(task.value.id)
     newSession.value = { sessionId: '', instanceId: '', role: 'primary' }
     showAttachModal.value = false
+    markListDirty('tasks')
   } catch (e) {
     console.error('Failed to attach session:', e)
   }
@@ -249,7 +293,7 @@ function formatDate(d?: string): string {
   margin-bottom: 8px;
 }
 .priority-chip {
-  font-size: 10px;
+  font-size: var(--text-xs);
   font-weight: 700;
   padding: 2px 8px;
   border-radius: 4px;
@@ -272,7 +316,7 @@ function formatDate(d?: string): string {
   white-space: nowrap;
 }
 .status-chip {
-  font-size: 10px;
+  font-size: var(--text-xs);
   font-weight: 600;
   padding: 2px 8px;
   border-radius: 999px;
@@ -282,8 +326,18 @@ function formatDate(d?: string): string {
 .status-chip.completed { background: var(--brand-bg); color: var(--brand-primary); }
 
 .desc {
-  font-size: 13px;
+  font-size: var(--text-smd);
   color: var(--text-secondary);
+  margin: 0 0 12px;
+  line-height: 1.5;
+}
+
+.load-error {
+  font-size: var(--text-smd);
+  color: var(--danger, #d93025);
+  background: var(--danger-bg, rgba(217, 48, 37, 0.08));
+  border-radius: var(--radius-sm, 6px);
+  padding: 10px 12px;
   margin: 0 0 12px;
   line-height: 1.5;
 }
@@ -305,14 +359,14 @@ function formatDate(d?: string): string {
   align-items: center;
   gap: 2px;
 }
-.stat-icon { font-size: 14px; }
+.stat-icon { font-size: var(--text-base); }
 .stat-val {
-  font-size: 13px;
+  font-size: var(--text-smd);
   font-weight: 700;
   color: var(--text-primary);
 }
 .stat-lbl {
-  font-size: 10px;
+  font-size: var(--text-xs);
   color: var(--text-muted);
 }
 
@@ -328,7 +382,7 @@ function formatDate(d?: string): string {
   align-items: center;
   gap: 4px;
   padding: 6px 12px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-weight: 600;
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -363,7 +417,7 @@ function formatDate(d?: string): string {
   margin-bottom: 10px;
 }
 .section-header h3 {
-  font-size: 14px;
+  font-size: var(--text-base);
   font-weight: 600;
   color: var(--text-primary);
   margin: 0;
@@ -372,7 +426,7 @@ function formatDate(d?: string): string {
   gap: 6px;
 }
 .badge {
-  font-size: 10px;
+  font-size: var(--text-xs);
   font-weight: 700;
   padding: 1px 6px;
   border-radius: 999px;
@@ -380,7 +434,7 @@ function formatDate(d?: string): string {
   color: var(--text-secondary);
 }
 .link-btn {
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-weight: 600;
   color: var(--brand-primary);
   background: none;
@@ -411,10 +465,10 @@ function formatDate(d?: string): string {
 }
 .session-info { flex: 1; min-width: 0; }
 .session-id {
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-weight: 600;
   color: var(--text-primary);
-  font-family: monospace;
+  font-family: var(--font-mono);
 }
 .session-tags {
   display: flex;
@@ -429,7 +483,7 @@ function formatDate(d?: string): string {
   color: var(--text-muted);
 }
 .chevron {
-  font-size: 14px;
+  font-size: var(--text-base);
   color: var(--text-muted);
   opacity: 0.5;
 }
@@ -438,7 +492,7 @@ function formatDate(d?: string): string {
   padding: 24px 0;
 }
 .empty-text {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-muted);
 }
 
@@ -448,7 +502,7 @@ function formatDate(d?: string): string {
 }
 .form-group label {
   display: block;
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-weight: 600;
   color: var(--text-secondary);
   margin-bottom: 4px;
@@ -457,7 +511,7 @@ function formatDate(d?: string): string {
 .form-group select {
   width: 100%;
   padding: 10px;
-  font-size: 14px;
+  font-size: var(--text-base);
   background: var(--bg-subtle);
   color: var(--text-primary);
   border: 1px solid transparent;
@@ -472,7 +526,7 @@ function formatDate(d?: string): string {
 .btn {
   flex: 1;
   padding: 10px;
-  font-size: 14px;
+  font-size: var(--text-base);
   font-weight: 600;
   border: none;
   border-radius: 10px;

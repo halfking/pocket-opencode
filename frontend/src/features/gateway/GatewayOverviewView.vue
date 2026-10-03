@@ -111,8 +111,10 @@ import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import * as gw from '../../api/gateway'
 import type { GatewayNode } from '../../api/gateway'
+import { useApiError } from '../../composables/useApiError'
 import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue'
 
+const apiError = useApiError()
 const route = useRoute()
 const router = useRouter()
 const nodeId = Number(route.params.nodeId)
@@ -143,7 +145,7 @@ async function load() {
     blockErrors.value = res.errors ?? {}
     generatedAt.value = new Date(res.generatedAt).toLocaleString()
   } catch (e: any) {
-    error.value = e?.message || '加载失败'
+    error.value = apiError(e, 'errors.loadGatewayFailed')
   } finally {
     loading.value = false
   }
@@ -209,7 +211,7 @@ onMounted(load)
   border: 1px solid var(--border);
   border-radius: var(--radius-sm, 8px);
   color: var(--text-primary);
-  font-size: 13px;
+  font-size: var(--text-smd);
   padding: 4px 6px;
 }
 .tab-nav {
@@ -223,7 +225,7 @@ onMounted(load)
 .tab {
   flex: none;
   padding: 6px 12px;
-  font-size: 13px;
+  font-size: var(--text-smd);
   background: var(--bg-subtle);
   border: 1px solid var(--border);
   border-radius: var(--radius-full, 999px);
@@ -231,7 +233,7 @@ onMounted(load)
 }
 .status-bar {
   padding: var(--space-2) var(--space-3);
-  font-size: 13px;
+  font-size: var(--text-smd);
 }
 .status-err {
   background: color-mix(in srgb, var(--danger) 15%, transparent);
@@ -244,7 +246,7 @@ onMounted(load)
   padding: 40px 20px;
   text-align: center;
   color: var(--text-secondary);
-  font-size: 14px;
+  font-size: var(--text-base);
 }
 .card {
   background: var(--bg-card);
@@ -254,7 +256,7 @@ onMounted(load)
   margin-bottom: var(--space-2-5);
 }
 .card-title {
-  font-size: 14px;
+  font-size: var(--text-base);
   font-weight: 600;
   margin: 0 0 var(--space-3);
   display: flex;
@@ -280,12 +282,12 @@ onMounted(load)
   color: var(--danger);
 }
 .metric-label {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-secondary);
   margin-top: 2px;
 }
 .chip {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   padding: 2px 7px;
   border-radius: var(--radius-full, 999px);
   background: var(--bg-subtle);
@@ -294,13 +296,13 @@ onMounted(load)
   color: var(--warning);
 }
 .block-error {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--danger);
   word-break: break-word;
 }
 .inline-warn {
   margin-top: var(--space-3);
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--warning);
 }
 .link-btn {
@@ -309,10 +311,10 @@ onMounted(load)
   border: none;
   padding: 0;
   color: var(--primary, #4c8dff);
-  font-size: 13px;
+  font-size: var(--text-smd);
 }
 .raw-json {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-secondary);
   background: var(--bg-subtle);
   padding: var(--space-2-5);
@@ -322,7 +324,7 @@ onMounted(load)
   max-height: 240px;
 }
 .footnote {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-secondary);
   text-align: center;
 }

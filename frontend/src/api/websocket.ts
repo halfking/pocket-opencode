@@ -1,5 +1,6 @@
-import { resolveApiBase } from '../config/api-base'
+import { resolveRuntimeApiBase } from '../config/api-base'
 import { nextReconnectDelay } from './reconnectPolicy'
+import { buildWebSocketUrl } from './websocket-url'
 
 // WebSocket 客户端管理
 class WebSocketClient {
@@ -21,9 +22,18 @@ class WebSocketClient {
       return
     }
 
+    const nextUrl = getWsUrl()
+    if (!nextUrl) {
+      // 基址不可用（未配置 / 非法 scheme）。这是配置问题不是网络抖动，
+      // 重连多少次都不会变好，因此不排重连——否则会变成停不下来的重连循环。
+      // 修好基址后调用方重新 connectWs() 即可。
+      console.warn('WebSocket connect skipped: API base 无法构造合法的 ws 地址')
+      return
+    }
+
     try {
       // 每次连接用当前 pocketd 基址 + 最新 token（设置里改基址后 reload 即可）
-      this.url = getWsUrl()
+      this.url = nextUrl
       this.ws = new WebSocket(this.url)
 
       this.ws.onopen = () => {
@@ -149,22 +159,18 @@ class WebSocketClient {
 const TOKEN_KEY = 'pocket_token'
 
 function wsHttpBase(): string {
-  return resolveApiBase() || (typeof window !== 'undefined' ? window.location.origin : '')
+  // 与 HTTP API 共用运行时解析：Capacitor 的 https://localhost 在缺少
+  // build default 时必须回退到生产/配置后的真实 pocketd 地址，不能让 WS
+  // 误连 WebView 自身并被 mixed-content 拦截。
+  return resolveRuntimeApiBase() || (typeof window !== 'undefined' ? window.location.origin : '')
 }
 
-function getWsUrl(): string {
-  const token = localStorage.getItem(TOKEN_KEY)
-  const baseWsUrl = wsHttpBase().replace(/^http/, 'ws') + '/ws'
-  
-  // 如果有token，将其作为查询参数附加到URL
-  if (token) {
-    return `${baseWsUrl}?token=${encodeURIComponent(token)}`
-  }
-  
-  return baseWsUrl
+/** 返回可用的 ws 地址；基址不可用时返回 null（= 不要连），而不是造一个非法 URL。 */
+function getWsUrl(): string | null {
+  return buildWebSocketUrl(wsHttpBase(), localStorage.getItem(TOKEN_KEY))
 }
 
-export const wsClient = new WebSocketClient(getWsUrl())
+export const wsClient = new WebSocketClient(getWsUrl() ?? '')
 
 /**
  * 延迟建立 WS 连接：仅在已登录（localStorage 中存在 pocket_token）时才 connect。

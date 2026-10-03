@@ -1,8 +1,33 @@
 /**
  * meetings API — 会议摘要/推荐/精翻，代理 pocketd → kxmemory / LLM
  */
-import { http } from './http'
+import { http, isAbortError } from './http'
 import type { ActionItem, LiveSummary, MeetingSegment, RecommendItem } from '../features/meetings/meetings-store'
+
+/**
+ * 会议链路长请求的客户端超时。
+ *
+ * 2026-10-03 普查出来的：这两个调用点原先**都没传 timeoutMs**，一律吃
+ * http.ts 的默认 30 秒，而后端各自的预算是
+ *
+ *   handleMeetingSummary  context.WithTimeout(r.Context(), 45*time.Second)  ← 45s
+ *   handleMeetingRefine   context.WithTimeout(r.Context(), 90*time.Second)  ← 90s
+ *
+ * （server_meeting.go:224 / 313）
+ *
+ * 两条全中：客户端 30s < 服务端 45s/90s。表现是「服务端写完了、前端报失败」
+ * ——会议摘要偶尔转不出来、事后精翻一按就报错，而且只要推理真的用满预算就
+ * **每次都失败**。
+ *
+ * 取值留出余量而不是与服务端相等：客户端计时含网络与鉴权开销，取相等值时
+ * 客户端实际总是先到点。
+ *
+ * 同文件还有第三条 handleTranscribeMeeting（120s）目前**前端没有调用点**
+ * （录音走 /api/stt/*），所以这里不给它配常量——留一个没人引用的常量只会
+ * 让下一个人以为它生效了。
+ */
+export const MEETING_SUMMARY_TIMEOUT_MS = 90_000
+export const MEETING_REFINE_TIMEOUT_MS = 150_000
 
 export interface SummaryResult {
   summary: string
@@ -48,6 +73,7 @@ export const meetingsApi = {
     segments: MeetingSegment[],
     prevSummary?: string,
     meta?: { title?: string; participants?: string[]; location?: string },
+    signal?: AbortSignal,
   ): Promise<SummaryResult> {
     try {
       const raw = await http<Record<string, unknown>>(`/api/meetings/${meetingId}/summary`, {
@@ -57,10 +83,15 @@ export const meetingsApi = {
           prev_summary: prevSummary,
           meta,
         }),
+        timeoutMs: MEETING_SUMMARY_TIMEOUT_MS,
+        signal,
       })
       return normalizeSummary(raw)
-    } catch {
-      return fallbackSummarize(segments, prevSummary)
+    } catch (e) {
+      // 中止不是「失败」：走到 fallback 会把用户主动取消，悄悄变成一份
+      // 降级摘要写进会议里——那比不做还糟（用户以为取消了，库里却有内容）。
+      if (isAbortError(e)) throw e
+      return fallbackSummarize(segments, prevSummary, signal)
     }
   },
 
@@ -90,6 +121,7 @@ export const meetingsApi = {
     segments: MeetingSegment[],
     targetLangs: string[] = ['en'],
     meta?: { title?: string; participants?: string[]; location?: string },
+    signal?: AbortSignal,
   ): Promise<RefineResult> {
     try {
       const raw = await http<Record<string, unknown>>(`/api/meetings/${meetingId}/refine`, {
@@ -99,10 +131,13 @@ export const meetingsApi = {
           target_langs: targetLangs,
           meta,
         }),
+        timeoutMs: MEETING_REFINE_TIMEOUT_MS,
+        signal,
       })
       return normalizeRefine(raw, segments)
-    } catch {
-      return fallbackRefine(segments)
+    } catch (e) {
+      if (isAbortError(e)) throw e
+      return fallbackRefine(segments, signal)
     }
   },
 
@@ -175,6 +210,7 @@ function normalizeActionItems(raw: unknown): ActionItem[] {
 async function fallbackSummarize(
   segments: MeetingSegment[],
   prevSummary?: string,
+  signal?: AbortSignal,
 ): Promise<SummaryResult> {
   const transcript = segments.map((s) =>
     `[${s.speakerLabel ?? '说话人'}] ${s.text}`,
@@ -191,9 +227,14 @@ async function fallbackSummarize(
         kind: 'meeting_summary',
         messages: [{ role: 'user', content: prompt }],
       }),
+      signal,
     })
     return parseSummaryJson(res.content)
-  } catch {
+  } catch (e) {
+    // 降级链自己也可能撞上中止（用户在兜底重试期间点了取消）。这里如果照旧
+    // 吞掉，就会把一次取消变成「转写前 200 字的摘要」——用户在界面上点了取消，
+    // 会议里却多了一段内容。宁可让中止继续往外抛。
+    if (isAbortError(e)) throw e
     return {
       summary: transcript.slice(0, 200) || '暂无摘要',
       keyPoints: [],
@@ -204,7 +245,7 @@ async function fallbackSummarize(
   }
 }
 
-async function fallbackRefine(segments: MeetingSegment[]): Promise<RefineResult> {
+async function fallbackRefine(segments: MeetingSegment[], signal?: AbortSignal): Promise<RefineResult> {
   const transcript = segments.map((s) =>
     `[${s.speakerLabel ?? '说话人'}] ${s.text}`,
   ).join('\n')
@@ -219,6 +260,7 @@ async function fallbackRefine(segments: MeetingSegment[]): Promise<RefineResult>
           content: `请润色以下会议转写（语篇规整 + 中英对照），返回 JSON：{"refined_transcript":"","translations":{},"structured_minutes":{"agenda":[],"decisions":[],"action_items":[],"next_meeting":null},"todos":[]}\n\n${transcript}`,
         }],
       }),
+      signal,
     })
     const parsed = JSON.parse(extractJson(res.content))
     return {
@@ -233,7 +275,10 @@ async function fallbackRefine(segments: MeetingSegment[]): Promise<RefineResult>
       todos: parsed.todos ?? [],
       fromFallback: true,
     }
-  } catch {
+  } catch (e) {
+    // 同 fallbackSummarize：中止必须继续往外抛，不能落到下面那份
+    // fromFallback 的拼装结果上。
+    if (isAbortError(e)) throw e
     return {
       refinedTranscript: transcript,
       translations: {},

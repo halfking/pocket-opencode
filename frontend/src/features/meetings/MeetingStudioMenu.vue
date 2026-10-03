@@ -64,13 +64,13 @@ function onPick(id: MeetingStudioAction) {
 .ops { display: flex; flex-direction: column; padding: 0 0 var(--space-3); }
 .op {
   width: 100%; min-height: 48px; padding: 0 16px; border: none; border-bottom: 1px solid var(--border-subtle);
-  background: transparent; color: var(--text-primary); font-size: 15px; text-align: left;
+  background: transparent; color: var(--text-primary); font-size: var(--text-md); text-align: left;
 }
 .op.danger { color: var(--danger); }
 .op:disabled { opacity: 0.45; }
 .hdr {
   min-height: 36px; padding: 0 10px; border: none; background: transparent;
-  color: var(--brand-primary); font-weight: 600; font-size: 13px;
+  color: var(--brand-primary); font-weight: 600; font-size: var(--text-smd);
 }
 .hdr.icon { width: 44px; }
 .hdr:disabled { opacity: 0.45; }

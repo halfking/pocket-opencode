@@ -20,7 +20,7 @@
 import { expect, type Page, type Locator } from '@playwright/test'
 
 export const E2E_USERNAME = process.env.E2E_USERNAME ?? 'admin'
-export const E2E_PASSWORD = process.env.E2E_PASSWORD ?? 'Veritrans&9527'
+export const E2E_PASSWORD = process.env.E2E_PASSWORD ?? ''
 /** 首次登录时若后端要求创建主密码，用它完成创建（可被环境变量覆盖） */
 export const E2E_MASTER_PASSWORD = process.env.E2E_MASTER_PASSWORD ?? 'e2e-master-pass-123'
 

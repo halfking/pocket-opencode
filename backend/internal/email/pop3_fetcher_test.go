@@ -10,9 +10,9 @@ import (
 )
 
 // startFakePOP3 起一个最小 RFC 1939 服务器：greeting + USER/PASS/STAT/UIDL/RETR。
-// 回归价值：此前状态行误用 textproto.ReadResponse(200)（只认 HTTP 数字 code），
+// 回归价值：此前状态行调用 textproto.ReadResponse(200)（只认 HTTP 数字 code），
 // 真实 163 服务器的 "+OK Welcome..." greeting 直接报 invalid response code；
-// 另有正文 bufio 与状态 bufio 双层缓冲互相吞数据的问题。两者都需要一个
+// 另有正文 bufio 与状态行 bufio 两层缓冲互相抢数据的问题。两者都只有一个
 // 会话级 fake server 才能暴露。
 func startFakePOP3(t *testing.T, messages map[int]string) net.Addr {
 	t.Helper()
@@ -69,7 +69,7 @@ func handle(conn net.Conn, messages map[int]string) {
 				continue
 			}
 			write("+OK\r\n")
-			// 行首 . 转义按 RFC 1939 byte-stuffing 处理
+			// 琛岄 . 杞箟鎸?RFC 1939 byte-stuffing 澶勭悊
 			for _, line := range strings.Split(body, "\r\n") {
 				if strings.HasPrefix(line, ".") {
 					line = "." + line
@@ -126,11 +126,33 @@ func TestFetchPOP3MailboxAuthRejected(t *testing.T) {
 			return
 		}
 		defer conn.Close()
-		// greeting / USER 响应 / PASS 响应
-		fmt.Fprint(conn, "+OK ready\r\n+OK\r\n-ERR Unable to log on\r\n")
+		// 与 handle() 同样的「先读后写」节奏：一次性把单条响应写完再读下一条命令
+		// Close。Windows 上会因接收缓冲区里还粘着未读的客户端命令而发 RST，
+		// 客户端下一次写直接撞到 wsasend WSAECONNABORTED，于是「这个用例测的
+		// 是传输层错误而不是它想断言的东西」——ERR 状态行被错传。
+		br := bufio.NewReader(conn)
+		readCmd := func() string {
+			line, err := br.ReadString('\n')
+			if err != nil {
+				return ""
+			}
+			return strings.TrimSpace(line)
+		}
+		fmt.Fprint(conn, "+OK ready\r\n")
+		if readCmd() == "" {
+			return
+		}
+		fmt.Fprint(conn, "+OK\r\n")
+		if readCmd() == "" {
+			return
+		}
+		fmt.Fprint(conn, "-ERR Unable to log on\r\n")
+		// 读到 EOF 再关，避免在客户端读完之后才 RST。
+		br.ReadString('\n')
 	}()
 	_, _, err = FetchPOP3Mailbox(context.Background(), ln.Addr().String(), false, "u", "bad", nil)
 	if err == nil || !strings.Contains(err.Error(), "Unable to log on") {
 		t.Fatalf("want server -ERR message surfaced, got %v", err)
 	}
 }
+

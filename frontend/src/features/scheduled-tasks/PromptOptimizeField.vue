@@ -29,6 +29,6 @@ defineEmits<{ 'update:modelValue': [value: string] }>()
 
 <style scoped>
 .field { display: flex; flex-direction: column; gap: 6px; }
-.label { font-size: 13px; font-weight: 600; color: var(--text-secondary); }
+.label { font-size: var(--text-smd); font-weight: 600; color: var(--text-secondary); }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
 </style>

@@ -116,6 +116,11 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_flashcard_cards_user_deleted ON flashcard_cards(user_id, deleted_at) WHERE deleted_at IS NOT NULL`,
 		`CREATE INDEX IF NOT EXISTS idx_flashcard_cards_user_deck_due ON flashcard_cards(user_id, deck_id, due)`,
 		`CREATE INDEX IF NOT EXISTS idx_flashcard_revlog_card ON flashcard_revlog(card_id, reviewed_at DESC)`,
+		// The per-card index above cannot serve a per-user time-range scan, which
+		// is what the study streak needs ("which days did this user review?").
+		// Without this the streak query degrades into a sequential scan of every
+		// review the user has ever logged.
+		`CREATE INDEX IF NOT EXISTS idx_flashcard_revlog_user_reviewed ON flashcard_revlog(user_id, reviewed_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_flashcard_deck_user_updated ON flashcard_deck_config(user_id, updated_at DESC)`,
 	}
 	for _, q := range stmts {
@@ -181,7 +186,19 @@ func (s *Store) GetNote(ctx context.Context, userID, id string) (*Note, error) {
 	return &n, nil
 }
 
-// ListNotesSince returns notes with updated_at > sinceSec, capped at limit.
+// 增量语义：返回 updated_at **>=** sinceSec 的行，不是 >。
+//
+// BUG-O（2026-09-30 真机验收）：原来这里是严格大于。配合客户端把 lastSyncedAt
+// 设成「本批数据的最大 updated_at」的水位线，严格大于会在**同一秒内的多条变更**
+// 上丢数据 —— 客户端先收到 A（updated_at=T，水位线=T），随后服务端在同一秒写入
+// B（updated_at=T），下一轮 since=T，`T > T` 不成立，B 永久拉不回来。
+//
+// 改成 >= 后会重复返回水位线那一秒的行，客户端 merge-by-id 是幂等的，
+// 重复拉取没有副作用；而漏数据是不可逆的。这个不对称是刻意的取舍。
+//
+// 同样的理由适用于 ListDeleted*Since 的 deleted_at 比较。
+//
+// ListNotesSince returns notes with updated_at >= sinceSec, capped at limit.
 func (s *Store) ListNotesSince(ctx context.Context, userID string, sinceSec int64, limit int) ([]*Note, error) {
 	if limit <= 0 || limit > 1000 {
 		limit = 500
@@ -190,7 +207,7 @@ func (s *Store) ListNotesSince(ctx context.Context, userID string, sinceSec int6
 		SELECT id, user_id, deck_id, front, back, tags, usn, created_at, updated_at,
 		       COALESCE(deleted_at, 0)
 		FROM flashcard_notes
-		WHERE user_id=$1 AND deleted_at IS NULL AND updated_at > $2
+		WHERE user_id=$1 AND deleted_at IS NULL AND updated_at >= $2
 		ORDER BY updated_at ASC LIMIT $3`,
 		userID, sinceSec, limit)
 	if err != nil {
@@ -209,7 +226,7 @@ func (s *Store) ListNotesSince(ctx context.Context, userID string, sinceSec int6
 	return out, rows.Err()
 }
 
-// ListDeletedNotesSince returns ids whose deleted_at > sinceSec, capped.
+// ListDeletedNotesSince returns ids whose deleted_at >= sinceSec, capped.
 func (s *Store) ListDeletedNotesSince(ctx context.Context, userID string, sinceSec int64, limit int) ([]string, error) {
 	if sinceSec <= 0 {
 		return nil, nil
@@ -219,7 +236,7 @@ func (s *Store) ListDeletedNotesSince(ctx context.Context, userID string, sinceS
 	}
 	rows, err := s.pool.Query(ctx, `
 		SELECT id FROM flashcard_notes
-		WHERE user_id=$1 AND deleted_at IS NOT NULL AND deleted_at > $2
+		WHERE user_id=$1 AND deleted_at IS NOT NULL AND deleted_at >= $2
 		ORDER BY deleted_at ASC LIMIT $3`,
 		userID, sinceSec, limit)
 	if err != nil {
@@ -358,7 +375,7 @@ func (s *Store) ListCardsSince(ctx context.Context, userID string, sinceSec int6
 		       reps, lapses, COALESCE(last_review_at, 0), usn, created_at, updated_at,
 		       COALESCE(deleted_at, 0)
 		FROM flashcard_cards
-		WHERE user_id=$1 AND deleted_at IS NULL AND updated_at > $2
+		WHERE user_id=$1 AND deleted_at IS NULL AND updated_at >= $2
 		ORDER BY updated_at ASC LIMIT $3`,
 		userID, sinceSec, limit)
 	if err != nil {
@@ -388,7 +405,7 @@ func (s *Store) ListDeletedCardsSince(ctx context.Context, userID string, sinceS
 	}
 	rows, err := s.pool.Query(ctx, `
 		SELECT id FROM flashcard_cards
-		WHERE user_id=$1 AND deleted_at IS NOT NULL AND deleted_at > $2
+		WHERE user_id=$1 AND deleted_at IS NOT NULL AND deleted_at >= $2
 		ORDER BY deleted_at ASC LIMIT $3`,
 		userID, sinceSec, limit)
 	if err != nil {
@@ -550,7 +567,7 @@ func (s *Store) ListDeckConfigsSince(ctx context.Context, userID string, sinceSe
 		       graduating_interval_days, easy_interval_days, fsrs_weights, desired_retention,
 		       usn, created_at, updated_at, COALESCE(deleted_at, 0)
 		FROM flashcard_deck_config
-		WHERE user_id=$1 AND deleted_at IS NULL AND updated_at > $2
+		WHERE user_id=$1 AND deleted_at IS NULL AND updated_at >= $2
 		ORDER BY updated_at ASC LIMIT $3`,
 		userID, sinceSec, limit)
 	if err != nil {
@@ -586,7 +603,7 @@ func (s *Store) ListDeletedDeckConfigsSince(ctx context.Context, userID string, 
 	}
 	rows, err := s.pool.Query(ctx, `
 		SELECT deck_id FROM flashcard_deck_config
-		WHERE user_id=$1 AND deleted_at IS NOT NULL AND deleted_at > $2
+		WHERE user_id=$1 AND deleted_at IS NOT NULL AND deleted_at >= $2
 		ORDER BY deleted_at ASC LIMIT $3`,
 		userID, sinceSec, limit)
 	if err != nil {
@@ -651,6 +668,44 @@ func (s *Store) ListRevLogsByCard(ctx context.Context, userID, cardID string, li
 		out = append(out, &r)
 	}
 	return out, rows.Err()
+}
+
+// ReviewTimestampsSince returns every review timestamp the user logged at or
+// after sinceUnix, oldest first. It is the review half of the study streak
+// (docs/学习muse/03-架构方案.md §3.3): a user who studies exclusively with
+// flashcards has no learning_items rows, and without this their streak would
+// read 0 forever.
+//
+// Raw timestamps come back rather than day indices so the caller owns the
+// timezone arithmetic — the same split the learning store uses.
+//
+// Like CountDueCards, this is scoped by user_id only. flashcard_revlog has no
+// workspace_id column, so user identity is the entire tenancy boundary here;
+// that is a pre-existing property of the flashcards schema, not something this
+// method introduces.
+func (s *Store) ReviewTimestampsSince(ctx context.Context, userID string, sinceUnix int64) ([]int64, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT reviewed_at
+		FROM flashcard_revlog
+		WHERE user_id = $1 AND reviewed_at >= $2
+		ORDER BY reviewed_at ASC`, userID, sinceUnix)
+	if err != nil {
+		return nil, fmt.Errorf("review timestamps since: %w", err)
+	}
+	defer rows.Close()
+
+	out := []int64{}
+	for rows.Next() {
+		var ts int64
+		if err := rows.Scan(&ts); err != nil {
+			return nil, fmt.Errorf("review timestamps since: scan: %w", err)
+		}
+		out = append(out, ts)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("review timestamps since: %w", err)
+	}
+	return out, nil
 }
 
 // CountDueCards returns cards whose due <= nowSec and state in (new=0,

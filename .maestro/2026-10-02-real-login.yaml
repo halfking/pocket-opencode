@@ -1,0 +1,48 @@
+# 真机登录流程（2026-10-03 按实测重写）
+#
+# ⚠️ 旧版文件头（2026-10-02）写的是「这条 flow 在真机上必然红，原因是
+# Capacitor WebView 对 uiautomator 完全不透明、Maestro 看不见 App 的任何文本」。
+# **那条结论已被证伪，不要照它做决定**：2026-10-03 实测 Maestro 2.11 能读到
+# App 的无障碍树——本轮多条 flow 都成功断言了 App 内的文本（「打开 PKM」
+# 「今日 Daily Note」「主导航」「首页」等）。所以问题不在「看不见」，
+# 而在**前提不成立**。
+#
+# 旧 flow 的第一句是 `assertVisible: 后端服务器`（只有登录页才有这行），
+# 2026-10-03 实测在这里就红了。失败现场的无障碍树是：
+#   AI 工具 / 快速提问 / 需要你介入 / 运行中 2 / 全部 2 …
+# —— **App 已经登录并在首页**。原因：scripts/maestro-run.mjs 的 preflight
+# 早就用 CDP 填过登录表单了，flow 启动时人根本不在登录页。
+# 这不是「环境限制」，是流程没有考虑「可能已经登录过」。
+#
+# 后半段的判据也一并更正：旧写法里的「打开菜单」来自**早已删除的抽屉式菜单**
+# （2026-09-05 抽屉收编成 MoreHubView，2026-10-03 一级导航又换成固定底部 tab），
+# 留着它只会让这条判据永远等不到。
+appId: com.kaixuan.opencode.pocket
+---
+# ---------- 登录段：只有在真的停在登录页时才走 ----------
+# 「后端服务器」这行只在登录页出现，且顺带把「App 到底连的哪个后端」
+# 这条最常出错的判据一起钉住——所以用它当条件，而不是当断言。
+- runFlow:
+    when:
+      visible: "后端服务器"
+    commands:
+      - tapOn: "输入密码"
+      - inputText: ${POCKET_DEV_PASS}
+      - hideKeyboard
+      # 登录按钮在两个字段都非空时才 enabled（LoginView 的 disabled 绑定），
+      # 所以 enabled=true 同时证明密码真的落进了 input —— 比断言文本更稳。
+      - extendedWaitUntil:
+          visible: { text: "登录", enabled: true }
+          timeout: 20000
+      - tapOn: { text: "登录", enabled: true }
+
+# ---------- 落点判据：登录后必须脱离登录态 ----------
+# 三种合法落点：进 App（底部导航已渲染）/ 创建主密码（D 态弹窗）/ 解锁本地数据（B 态）。
+# 「主导航」是 BottomNav 的 aria-label（zh-CN nav.mainNavigation）。
+- extendedWaitUntil:
+    visible: "创建主密码|解锁本地数据|主导航"
+    timeout: 60000
+- takeScreenshot: "logs/maestro/2026-10-02-real-login"
+
+# 硬判据：登录成功后不该还停在登录页。
+- assertNotVisible: "输入用户名"

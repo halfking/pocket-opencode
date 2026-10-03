@@ -11,6 +11,7 @@
   </BottomSheet>
 
   <BottomSheet v-model="moreOpen" title="邮件操作" height="auto" aria-label="更多邮件操作">
+    <button type="button" class="sheet-item" @click="emit('move')">移动到目录</button>
     <button type="button" class="sheet-item" @click="emit('forward')">转发</button>
     <button type="button" class="sheet-item" :disabled="converting" @click="emit('todo')">转 Todo</button>
     <button type="button" class="sheet-item" @click="emit('star')">
@@ -40,6 +41,7 @@ const emit = defineEmits<{
   'update:langOpen': [v: boolean]
   'update:moreOpen': [v: boolean]
   chooseLang: [lang: EmailLang]
+  move: []
   forward: []
   todo: []
   star: []
@@ -65,7 +67,7 @@ const moreOpen = computed({
   border: none;
   background: transparent;
   color: var(--text-primary);
-  font-size: 15px;
+  font-size: var(--text-md);
   cursor: pointer;
 }
 .sheet-item.on { color: var(--brand-primary); font-weight: 600; }

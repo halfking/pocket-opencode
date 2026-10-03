@@ -29,7 +29,14 @@
         <span class="material-symbols-outlined user-chevron" aria-hidden="true">chevron_right</span>
       </button>
 
-      <section v-for="group in groups" :key="group.title" class="menu-group">
+      <!--
+        2026-10-03：空分组不渲染。
+        「运维与高级」那一组的 items 是空的（2026-09-23 Phase 1 把 11 个入口迁去
+        MoreHubView 后留下的空壳），但 v-for 仍会渲染它的 <h4> 标题，于是抽屉里
+        出现一个只有标题、下面什么都没有的分区 —— 真机上看着就像渲染坏了。
+        注释写的是「本抽屉仅保留设置一组」，那就让代码和注释一致。
+      -->
+      <section v-for="group in nonEmptyGroups" :key="group.title" class="menu-group">
         <h4 class="group-title">{{ group.title }}</h4>
         <!--
           StaggerList：菜单组展开时交错入场。44 ms step 不会让用户等太久，但给
@@ -69,13 +76,14 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import BottomSheet from './BottomSheet.vue'
+import type { IconName } from '../../constants/icons'
 import StaggerList from './StaggerList.vue'
 import { useAuthStore } from '../../stores/auth'
-import { APP_VERSION } from '../../utils/version'
+import { resolveAppVersion } from '../../utils/version'
 
 defineProps<{ modelValue: boolean }>()
 const emit = defineEmits<{
@@ -86,9 +94,16 @@ const { t } = useI18n()
 const router = useRouter()
 const auth = useAuthStore()
 const userName = computed(() => auth.user)
-const version = computed(() => APP_VERSION.version)
+// 抽屉底部的「Redclaw · v{version}」同样必须显示设备上真装的那个构建。
+// 它过去读的是 TS 常量，于是无论装哪个 APK 都写同一个版本号 ——
+// 而这一行正是用户判断「我是不是最新版」时最先看的字。
+const version = ref('')
 
-interface MenuItem { to: string; icon: string; label: string }
+onMounted(async () => {
+  version.value = (await resolveAppVersion()).version
+})
+
+interface MenuItem { to: string; icon: IconName; label: string }
 interface MenuGroup { title: string; items: MenuItem[] }
 
 const groups = computed<MenuGroup[]>(() => [
@@ -106,10 +121,20 @@ const groups = computed<MenuGroup[]>(() => [
     // 3 个市场 / cost / gateway / instances / tasks / sessions）已迁到
     // MoreHubView (/more) 的 9 宫格 + 运维分组。
     // 本抽屉仅保留「设置」一组（账户卡片在上、版本号在下），专注账户中心角色。
+    //
+    // 这一组现在没有条目。留着它是为了将来往里加运维入口，但空分组**不会**
+    // 被渲染（见模板里的 nonEmptyGroups）—— 否则用户会看到一个只有标题的空分区。
     title: t('settingsMenu.groupOps'),
     items: [],
   },
 ])
+
+/** 过滤掉没有条目的分组。
+ *
+ *  分组是数据驱动的（将来可能按条件增删条目），所以「有没有条目」是运行时的，
+ *  模板里写死判断会立刻和 groups 脱节。这里从数据推导，模板只负责渲染。
+ */
+const nonEmptyGroups = computed<MenuGroup[]>(() => groups.value.filter((g) => g.items.length > 0))
 
 function go(to: string) {
   emit('update:modelValue', false)
@@ -171,7 +196,7 @@ function goAccount() {
 }
 
 .user-name {
-  font-size: 15px;
+  font-size: var(--text-md);
   font-weight: var(--font-weight-semibold);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -179,7 +204,7 @@ function goAccount() {
 }
 
 .user-action {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-secondary);
 }
 
@@ -193,7 +218,7 @@ function goAccount() {
 
 .group-title {
   margin: 0 0 var(--space-1) var(--space-1);
-  font-size: 11px;
+  font-size: var(--text-2xs);
   font-weight: var(--font-weight-semibold);
   text-transform: uppercase;
   letter-spacing: 0.4px;
@@ -246,19 +271,19 @@ function goAccount() {
 
 .menu-label {
   flex: 1;
-  font-size: 14px;
+  font-size: var(--text-base);
   font-weight: var(--font-weight-medium);
 }
 
 .menu-chevron {
-  font-size: 18px;
+  font-size: var(--text-xl);
   color: var(--text-tertiary, var(--text-muted));
 }
 
 .menu-foot {
   margin: 0;
   padding: 0 var(--space-1) var(--space-3);
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-tertiary, var(--text-muted));
   text-align: center;
 }

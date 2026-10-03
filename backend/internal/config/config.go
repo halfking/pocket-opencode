@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -32,7 +33,26 @@ type RSSConfig struct {
 	WeiboClientID           string
 	WeiboClientSecret       string
 	WeiboRedirectURL        string
+	// DigestEnabled 打开"每天一份全部信息摘要"的后台生成与推送。
+	DigestEnabled bool
+	// DigestHour / DigestMinute 是每天生成日报的本地时刻。
+	DigestHour   int
+	DigestMinute int
+	// DigestMaxPerSection 是日报里每个分类最多放几条。
+	DigestMaxPerSection int
+	// DigestIncludeSummary 决定日报条目是否带摘要（分享到微博/朋友圈时更完整）。
+	DigestIncludeSummary bool
+	// DigestStartupRun 启动后立即补一次，覆盖进程重启跨过计划时刻的情况。
+	DigestStartupRun bool
 }
+
+// DefaultAPKDownloadPath 是 /api/app/download 的默认 APK 路径。
+//
+// 它是原 handleDownloadAPK 里硬编码的那个值搬过来的，**故意保持不变**：
+// 搬进配置的目的是让部署方能改，而不是顺手改掉现网路径。改了默认值就等于
+// 悄悄换掉一个正在被某台机器依赖的路径，而那台机器不在仓库里、也不在本轮
+// 能观察到的范围内。
+const DefaultAPKDownloadPath = "/data/www/pocket.kxpms.cn/downloads/opencode-pocket-latest.apk"
 
 // Config holds all application configuration loaded from environment variables.
 // It supports multiple deployment phases including personal assistant features,
@@ -41,6 +61,14 @@ type Config struct {
 	Environment              string
 	HTTPPort                 string
 	DBPath                   string // 保留兼容；Postgres 迁移后仅用于 data 目录定位
+	DataDir                  string // POCKET_DATA_DIR：数据目录；留空则退回 Dir(DBPath)（见 ResolveDataDir）
+	// APKDownloadPath 是 /api/app/download 实际服务的 APK 文件路径。
+	//
+	// 为什么从硬编码搬进配置：原先它写死在 handleDownloadAPK 里
+	// （/data/www/pocket.kxpms.cn/downloads/opencode-pocket-latest.apk），
+	// 换一台主机、换一个域名都要改代码重新编译，而 APK 路径恰恰是最随部署
+	// 环境变化的东西。默认值与原硬编码值一致，未设置时行为不变。
+	APKDownloadPath          string // POCKET_APK_DOWNLOAD_PATH
 	PostgresDSN              string // Phase 0: pocket 后端统一数据层
 	PostgresSchema           string // pocket 私有的 PG schema 名（隔离共享 PG 上的其他模块表）
 	NPSBaseURL               string
@@ -57,7 +85,21 @@ type Config struct {
 	FeishuAppSecret    string
 	FeishuVerifyToken  string // url_verification.token 匹配（可选）
 	FeishuVerifySecret string // X-Lark-Signature 验签密钥（留空 = dev 模式跳过）
+	// 当前**未被任何代码消费**（2026-10-02 全仓核实）：飞书回调里没有
+	// 任何 V1 加密事件的解密路径。设这个环境变量不会有任何效果。
 	FeishuEncryptKey   string // V1 加密事件解密用（V2 不加密，留空即可）
+
+	// ---- 企业微信（WeCom）自建应用事件回调（m.kxpms.cn/callback/weixin）----
+	//
+	// 2026-10-02 用户拍板走**企业微信**而不是微信公众号：两者 URL 验证的加解密
+	// 算法相同，但签名参数名不同（企业微信 msg_signature 且把密文纳入签名，
+	// 公众号 signature 不含密文），POST 的响应格式也不同。详见 internal/wecom。
+	//
+	// 三项**缺一不可**：任一为空时 /callback/weixin 对签名请求一律 503 拒绝，
+	// 而不是放行——放行等于把回调端点变成任何人可伪造的公开入口。
+	WeComToken         string // POCKET_WECOM_TOKEN：自建应用「Token」
+	WeComEncodingAESKey string // POCKET_WECOM_ENCODING_AES_KEY：43 字符（不含 '='）
+	WeComCorpID        string // POCKET_WECOM_CORP_ID：企业 ID，用于校验密文尾部 receiveid
 
 	// ---- Phase 0: 个人助理模块新增配置 ----
 	// AI/STT 后端
@@ -82,7 +124,7 @@ type Config struct {
 	JWTSecret   string // POCKET_JWT_SECRET：签发/校验 app JWT
 	DevAuth     bool   // POCKET_DEV_AUTH：允许 dev bootstrap 用户登录（生产必须不设或 false）
 	DevAuthUser string // POCKET_AUTH_USER：dev bootstrap 用户名（缺省 admin）
-	DevAuthPass string // POCKET_AUTH_PASS：dev bootstrap 密码（缺省 Veritrans&9527；仅 POCKET_DEV_AUTH=true 时生效）
+	DevAuthPass string // POCKET_AUTH_PASS：dev bootstrap 密码（**无缺省值**；留空则 dev 旁路直接拒绝，仅 POCKET_DEV_AUTH=true 时生效）
 
 	// Marketplace 签名链路（ADR: docs/handoff/2026-09-05-marketplace-signing-chain-design.md）
 	// POCKET_MARKETPLACE_ROOT_PUBKEY：平台级 root ed25519 公钥（base64 或 hex 的
@@ -95,6 +137,9 @@ type Config struct {
 	EmailGoogleClientSecret    string // POCKET_EMAIL_GOOGLE_CLIENT_SECRET
 	EmailMicrosoftClientID     string // POCKET_EMAIL_MICROSOFT_CLIENT_ID
 	EmailMicrosoftClientSecret string // POCKET_EMAIL_MICROSOFT_CLIENT_SECRET
+	// 当前**未被任何代码消费**（2026-10-02 全仓核实）：OAuth 授权 URL 里的
+	// redirect_uri 取自请求体的 redirectUri 字段（server_assistant.go
+	// startEmailOAuth），不是这里。设这个环境变量不会有任何效果。
 	EmailOAuthRedirectURL      string // POCKET_EMAIL_OAUTH_REDIRECT_URL（默认 http://localhost:8088/callback/email/oauth）
 	EmailFetchEnabled          bool   // POCKET_EMAIL_FETCH_ENABLED（默认 true；CI/dev 可关闭）
 	EmailIMAPInsecureSkipVerify bool  // POCKET_EMAIL_IMAP_INSECURE_SKIP_VERIFY：跳过自签 IMAPS 证书校验（仅测试用）
@@ -104,10 +149,39 @@ type Config struct {
 	// 邮件流水线（收信→清理垃圾→提醒→发票采集→飞书/汇总）
 	EmailPipelineHour int    // POCKET_EMAIL_PIPELINE_HOUR：每日触发小时（本地时区，默认 8；<0 关闭定时）
 	EmailExecutionMode string // POCKET_EMAIL_EXECUTION_MODE：local（默认，设备本地执行）| server（委托远端编排）
+	// POCKET_EMAIL_SPAM_DRYRUN：true（默认）时每日流水线的清垃圾步骤只判定不 MOVE。
+	// 垃圾规则没在真实邮箱上验证过，先看判定结果，确认无误再置 false。
+	EmailSpamDryRun        bool
 	EmailServerPipelineURL string // POCKET_EMAIL_SERVER_PIPELINE_URL：server 模式的远端流水线 URL
+	// POCKET_EMAIL_PIPELINE_ADVISORY_LOCK：**默认 true**。
+	//
+	// 只作用于**每日定时**触发，不作用于 HTTP 手工触发（后者是用户显式
+	// 要求，不该被另一轮挡住）。多个 pocketd 共享同一个 PG 库时，进程内的
+	// emailPipelineMu 拦不住它们，于是同一点会跑 N 轮流水线，重要邮件提醒
+	// 被重复推 N 份（notifications 表除主键外无唯一约束）。
+	//
+	// 置 false 逃生用：无 PG 的纯本地部署，或需要手工重跑定时轮次。
+	EmailPipelineAdvisoryLock bool
+	// POCKET_EMAIL_CLASSIFY_VIA_GATEWAY：**默认 false**。
+	//
+	// true 时每日流水线的第 1.6 步用已配置的 LLM 网关给未归类邮件分类
+	// （需求 4「定时…然后进行处理」的必要环节：importance 是重要提醒的唯一
+	// 入口，而它只在分类里被写）。
+	//
+	// 为什么默认关：这条开关会**自动产生真实 LLM 调用与费用**。需求原文
+	// 没有说要每天自动花网关额度，这条属于产品取舍，不该由默认值替用户
+	// 决定——和 POCKET_EMAIL_SPAM_DRYRUN 默认 true 是同一类安全阀的思路，
+	// 但方向相反：那个是「别动用户邮件」，这个是「别替用户花钱」。
+	//
+	// 开着但网关没配时不会静默：流水线会走 Pusher/Notifier 之外的路径并在
+	// 报告里记下原因（见 email.Pipeline 的 ClassifySkip 字段）。
+	EmailClassifyViaGateway bool
 
 	// 飞书出站（发票推送）：复用回调的 AppID/Secret，另需接收群 chat_id
 	FeishuInvoiceChatID string // POCKET_FEISHU_INVOICE_CHAT_ID：发票文件推送目标群
+	// POCKET_FEISHU_INVOICE_FOLDER_TOKEN：共享台账（电子表格）建在哪个云空间目录；
+	// 为空则建在根目录。
+	FeishuInvoiceFolderToken string
 
 	// ---- Phase C: 龙虾无状态 AI 网关 ----
 	// pocketd 作为无状态代理：只转发嵌入/LLM 请求，不存任何用户数据。
@@ -211,6 +285,8 @@ func Load() Config {
 		Environment:              environment,
 		HTTPPort:                 getEnv("POCKET_HTTP_PORT", "8088"),
 		DBPath:                   getEnv("POCKET_DB_PATH", "./data/pocket.sqlite"),
+		DataDir:                  getEnv("POCKET_DATA_DIR", ""),
+		APKDownloadPath:          getEnv("POCKET_APK_DOWNLOAD_PATH", DefaultAPKDownloadPath),
 		NPSBaseURL:               getFirstEnv([]string{"POCKET_INSTANCE_DISCOVERY_BASE_URL", "POCKET_NPS_BASE_URL"}, ""),
 		NPSAuthKey:               getFirstEnv([]string{"POCKET_INSTANCE_DISCOVERY_AUTH_TOKEN", "POCKET_NPS_AUTH_KEY"}, ""),
 		NPSAuthCryptKey:          getFirstEnv([]string{"POCKET_INSTANCE_DISCOVERY_AUTH_SECRET", "POCKET_NPS_AUTH_CRYPT_KEY"}, ""),
@@ -225,6 +301,9 @@ func Load() Config {
 		FeishuVerifyToken:        getEnv("POCKET_FEISHU_VERIFY_TOKEN", ""),
 		FeishuVerifySecret:       getEnv("POCKET_FEISHU_VERIFY_SECRET", ""),
 		FeishuEncryptKey:         getEnv("POCKET_FEISHU_ENCRYPT_KEY", ""),
+		WeComToken:               getEnv("POCKET_WECOM_TOKEN", ""),
+		WeComEncodingAESKey:      getEnv("POCKET_WECOM_ENCODING_AES_KEY", ""),
+		WeComCorpID:              getEnv("POCKET_WECOM_CORP_ID", ""),
 		// Phase 0 个人助理模块
 		PostgresDSN:                getFirstEnv([]string{"POCKET_POSTGRES_DSN", "DATABASE_URL"}, ""),
 		PostgresSchema:             getEnv("POCKET_PG_SCHEMA", "opencode_pocket"),
@@ -256,9 +335,16 @@ func Load() Config {
 		// 邮件流水线
 		EmailPipelineHour:      getEnvInt("POCKET_EMAIL_PIPELINE_HOUR", 8),
 		EmailExecutionMode:     getEnv("POCKET_EMAIL_EXECUTION_MODE", "local"),
+		EmailSpamDryRun:        getEnv("POCKET_EMAIL_SPAM_DRYRUN", "true") == "true",
 		EmailServerPipelineURL: getEnv("POCKET_EMAIL_SERVER_PIPELINE_URL", ""),
+		// 默认 true：多实例共享一个库时必须由数据库裁决谁跑这一轮。
+		// 取不到锁会降级照跑（不是跳过），所以默认开着不会让流水线静默停摆。
+		EmailPipelineAdvisoryLock: getEnv("POCKET_EMAIL_PIPELINE_ADVISORY_LOCK", "true") == "true",
+		// 显式写 "true" 才开：这条会每天自动发真实 LLM 请求，默认必须是关。
+		EmailClassifyViaGateway: getEnv("POCKET_EMAIL_CLASSIFY_VIA_GATEWAY", "") == "true",
 		// 飞书出站（发票推送）
 		FeishuInvoiceChatID: getEnv("POCKET_FEISHU_INVOICE_CHAT_ID", ""),
+		FeishuInvoiceFolderToken: getEnv("POCKET_FEISHU_INVOICE_FOLDER_TOKEN", ""),
 		// Phase C 无状态 AI 网关
 		EmbedBaseURL: getEnv("POCKET_EMBED_BASE_URL", ""),
 		EmbedAPIKey:  getFirstEnv([]string{"POCKET_EMBED_API_KEY", "POCKET_OPENAI_API_KEY"}, ""),
@@ -306,6 +392,12 @@ func Load() Config {
 			WeiboClientID:         getEnv("POCKET_RSS_WEIBO_CLIENT_ID", ""),
 			WeiboClientSecret:     getEnv("POCKET_RSS_WEIBO_CLIENT_SECRET", ""),
 			WeiboRedirectURL:      getEnv("POCKET_RSS_WEIBO_REDIRECT_URL", ""),
+			DigestEnabled:         getEnv("POCKET_RSS_DIGEST_ENABLED", "true") == "true",
+			DigestHour:            getEnvInt("POCKET_RSS_DIGEST_HOUR", 8),
+			DigestMinute:          getEnvInt("POCKET_RSS_DIGEST_MINUTE", 30),
+			DigestMaxPerSection:   getEnvInt("POCKET_RSS_DIGEST_MAX_PER_SECTION", 8),
+			DigestIncludeSummary:  getEnv("POCKET_RSS_DIGEST_INCLUDE_SUMMARY", "true") == "true",
+			DigestStartupRun:      getEnv("POCKET_RSS_DIGEST_STARTUP_RUN", "true") == "true",
 		},
 		// WebAuthn / 生物识别
 		WebAuthnRPDisplayName: getEnv("POCKET_WEBAUTHN_RP_DISPLAY_NAME", ""),
@@ -442,6 +534,13 @@ func (c Config) Validate() error {
 	}
 	if c.RSS.MaxConcurrency < 1 {
 		return fmt.Errorf("POCKET_RSS_MAX_CONCURRENCY must be >= 1")
+	}
+	// 日报时刻越界会让 nextRun 算出一个"永远到不了"的时间点，日报就静默不发了。
+	if c.RSS.DigestHour < 0 || c.RSS.DigestHour > 23 {
+		return fmt.Errorf("POCKET_RSS_DIGEST_HOUR must be 0-23")
+	}
+	if c.RSS.DigestMinute < 0 || c.RSS.DigestMinute > 59 {
+		return fmt.Errorf("POCKET_RSS_DIGEST_MINUTE must be 0-59")
 	}
 
 	return nil
@@ -588,6 +687,49 @@ func (c Config) IsProduction() bool {
 	return value == "production" || value == "prod"
 }
 
+// ResolveDataDir 决定后端的数据目录（发票文件、master key、正文缓存、chat_agents
+// 库都落在这里）。
+//
+// **为什么需要单独一个函数**：dataDir 原本只有 `filepath.Dir(cfg.DBPath)` 一条路，
+// 而 DBPath 在 Postgres 迁移后已经**不再真的开 SQLite 库**（见 Config.DBPath 注释：
+// 「保留兼容；仅用于 data 目录定位」），默认值又是**相对**的 `./data/pocket.sqlite`。
+// 结果就是：数据目录取决于你从哪个目录启动二进制。这个坑咬过两次，两次症状
+// 完全不同，彼此也毫无关联，所以从日志上完全看不出是同一个根因：
+//
+//   - master key 落到别的目录 → 所有账户 `decrypt credential: cipher: message
+//     authentication failed`（两实例打出来的都是 "data/email_master.key"，看着一样）；
+//   - 发票采集写在 A 目录、下载时按 B 目录 os.Stat → 单张下载 404、
+//     A4 导出 400 `no harvested invoice files in selection`。
+//
+// 规则（顺序即优先级）：
+//  1. `POCKET_DATA_DIR` 非空 → 用它。这是显式指定，仓库里 5 个验证脚本
+//     （start-pocketd-verify / start-pocketd-email-verify / start-pocketd-classify-verify /
+//     verify-stt / start-local-backend）**早就按这个意图在设它了**，但在此之前
+//     它对后端完全是空转的（只被 loadCompanionOverlay 用来找 companion.env）。
+//  2. 否则退回 `Dir(DBPath)`，保持与旧行为一致。
+//  3. 两条路都转成**绝对路径**：绝对路径在进程运行期间不受 CWD 影响，
+//     且同一份配置无论从哪个目录启动都解析成同一个目录。
+//
+// 部署影响：无。容器里 `WORKDIR /app`（Dockerfile.pocketd-prebuilt:24），
+// 原本 `./data` 就解析成 `/app/data`，与 compose 设的 `POCKET_DATA_DIR=/app/data`
+// 是同一个目录 —— 这次只是让配置终于说了算。
+func ResolveDataDir(dbPath, override string) (string, error) {
+	candidate := strings.TrimSpace(override)
+	source := "POCKET_DATA_DIR"
+	if candidate == "" {
+		if strings.TrimSpace(dbPath) == "" {
+			return "", fmt.Errorf("config: cannot resolve data dir: both POCKET_DATA_DIR and POCKET_DB_PATH are empty")
+		}
+		candidate = filepath.Dir(dbPath)
+		source = "POCKET_DB_PATH"
+	}
+	abs, err := filepath.Abs(candidate)
+	if err != nil {
+		return "", fmt.Errorf("config: resolve data dir from %s (%q): %w", source, candidate, err)
+	}
+	return abs, nil
+}
+
 func loadCompanionOverlay() {
 	dataDir := strings.TrimSpace(os.Getenv("POCKET_DATA_DIR"))
 	if dataDir == "" {
@@ -613,3 +755,4 @@ func loadCompanionOverlay() {
 		_ = os.Setenv(k, v)
 	}
 }
+

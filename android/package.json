@@ -1,11 +1,9 @@
 {
-  "name": "opencode-pocket-android",
+  "name": "opencode-pocket-android-docs",
   "private": true,
+  "description": "指针目录：原生工程实际生成在 ../frontend/android/。不要在此安装依赖。",
   "scripts": {
-    "sync": "cap sync android",
-    "open": "cap open android"
-  },
-  "devDependencies": {
-    "@capacitor/cli": "^6.1.2"
+    "sync": "npm --prefix ../frontend exec cap sync android",
+    "open": "npm --prefix ../frontend exec cap open android"
   }
 }

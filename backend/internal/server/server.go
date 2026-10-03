@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -27,10 +28,13 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/config"
 	"github.com/halfking/pocket-opencode/backend/internal/email"
 	"github.com/halfking/pocket-opencode/backend/internal/feishu"
+	"github.com/halfking/pocket-opencode/backend/internal/wecom"
 	"github.com/halfking/pocket-opencode/backend/internal/finance"
 	"github.com/halfking/pocket-opencode/backend/internal/flashcards"
 	"github.com/halfking/pocket-opencode/backend/internal/identity"
 	"github.com/halfking/pocket-opencode/backend/internal/kxmemory"
+	"github.com/halfking/pocket-opencode/backend/internal/learning"
+	"github.com/halfking/pocket-opencode/backend/internal/learning/sources"
 	"github.com/halfking/pocket-opencode/backend/internal/llmbff"
 	"github.com/halfking/pocket-opencode/backend/internal/lobster"
 	"github.com/halfking/pocket-opencode/backend/internal/marketplace"
@@ -86,15 +90,29 @@ type Server struct {
 	emailStore       *email.Store
 	vaultStore       vaultSyncStorer
 	snippetStore     *snippet.Store
-	meetingStore     *meeting.Store
+	meetingStore     meeting.MeetingStore
 	chatSummaryStore *cs.Store
 	// flashcardStore holds the v1 spaced-repetition flashcard persistence
 	// (notes/cards/decks/revlogs). nil → /api/flashcards handlers return
 	// 503. SetFlashcardStore() is the public injection point used by
 	// cmd/pocketd/main.go.
 	flashcardStore *flashcards.Store
-	transcriber    *stt.Transcriber // nil = 云端 STT 兜底未配置
-	mcpClient      *mcp.Client      // nil = ACC 任务整合未配置（Phase 5 才激活）
+	// learningService backs /api/learning/*: the Learning Core that turns
+	// notes/email/RSS into spaced-repetition material with scheduled reminders
+	// (docs/学习muse/03-架构方案.md §2). nil → those routes return 503, exactly
+	// like the flashcard routes when Postgres is absent.
+	learningService *learning.Service
+	// learningSources resolves a content-domain row (note / email / RSS /
+	// meeting) into a title+summary for the one-click capture paths.
+	learningSources *sources.Resolver
+	transcriber     *stt.Transcriber // nil = 云端 STT 兜底未配置
+	// sttDiscovery 缓存网关 ASR 候选的真实探测结果（10 分钟 TTL）。
+	// 自动发现必须出网打网关，不能每次录音都重扫一遍。
+	sttDiscovery *stt.DiscoveryCache
+	// sttHTTPClient 是 STT 自动发现/试转的出网客户端。默认走 gatewayHTTPClient
+	// （带 SSRF 防护）；测试注入一个拒绝出网的实现，保证单测不打真实网关。
+	sttHTTPClient *http.Client
+	mcpClient     *mcp.Client // nil = ACC 任务整合未配置（Phase 5 才激活）
 	// RSS 订阅与分享（PG store + 后台 scheduler）。nil = 关闭模块。
 	// 由 cmd/pocketd/main.go 通过 SetRSSStore / SetRSSScheduler 注入。
 	rssStore     *rss.Store
@@ -142,6 +160,10 @@ type Server struct {
 	// 邮件流水线（收信→清理垃圾→提醒→发票采集→飞书/汇总）。惰性构造单例。
 	emailPipeline     *email.Pipeline
 	emailPipelineOnce sync.Once
+	// emailPipelineMu 串行化整轮流水线的执行（含本轮 dryRunSpam 覆盖）。
+	// Pipeline 是单例，定时任务与 HTTP 手动触发会并发进来；没有这把锁时，
+	// 一次手动 dryRunSpam:false 会在另一轮预演进行中把开关改掉。
+	emailPipelineMu sync.Mutex
 	// AI 对话智能体角色管理（PG Store 或 SQLiteStore 都实现 StoreIface）。
 	// nil = /api/chat-agents 返回 503。
 	chatAgentStore chatagent.StoreIface
@@ -296,6 +318,16 @@ func newServer(cfg config.Config, nps adapter.NPSAdapter, opencode adapter.OpenC
 		},
 	}
 
+	// STT 引擎：无论 main.go 是否传了 env 兜底 transcribe，都保证有一台
+	// 「按用户设置解析目标」的引擎。目标解析要看用户/工作区（设置页可手工调整），
+	// 所以引擎挂在 Server 上而不是进程级单例。
+	s.sttDiscovery = stt.NewDiscoveryCache(10 * time.Minute)
+	if s.transcriber == nil {
+		s.transcriber = stt.NewResolver(func(ctx context.Context, scope stt.Scope) (*stt.Target, error) {
+			return s.resolveSTTTarget(ctx, scope)
+		})
+	}
+
 	// 初始化 RedClaw 桥接（如果配置了 RedClaw）
 	if s.cfg.RedClawBaseURL != "" {
 		rcCfg := redclaw.ClientConfig{
@@ -319,8 +351,10 @@ func newServer(cfg config.Config, nps adapter.NPSAdapter, opencode adapter.OpenC
 
 // SetOpenCodeManagers 由 main.go 在 server.New 之后注入 OpenCode 域管理器。
 // 使用 setter 而非扩展 New 签名，避免参数膨胀。所有 manager 允许为 nil。
-func (s *Server) SetMeetingStore(ms *meeting.Store) {
-	s.meetingStore = ms
+func (s *Server) SetMeetingStore(ms meeting.MeetingStore) {
+	if ms != nil {
+		s.meetingStore = ms
+	}
 }
 
 func (s *Server) SetOpenCodeManagers(ocMgr *opencode.Manager, eventMgr *opencode.EventStreamManager, permMgr *opencode.PermissionManager, quesMgr *opencode.QuestionManager) {
@@ -450,6 +484,31 @@ func (s *Server) FlashcardStore() *flashcards.Store {
 	return s.flashcardStore
 }
 
+// SetLearningService wires the Learning Core (docs/学习muse/03-架构方案.md §2).
+// The scheduled-task executor gets the same service instance, so the digest
+// notification and the /api/learning/items/due response can never disagree.
+func (s *Server) SetLearningService(svc *learning.Service) {
+	s.learningService = svc
+}
+
+// LearningService returns the configured service (nil-safe).
+func (s *Server) LearningService() *learning.Service {
+	return s.learningService
+}
+
+// SetLearningSources wires the content-domain resolver used by the one-click
+// capture endpoints (/api/tasks/from-source and the title-less capture path).
+func (s *Server) SetLearningSources(r *sources.Resolver) {
+	s.learningSources = r
+}
+
+// MeetingStore returns the meeting store (nil-safe). cmd/pocketd uses it to
+// assemble the learning source resolver, because the store is created inside
+// newServer rather than in main.
+func (s *Server) MeetingStore() meeting.MeetingStore {
+	return s.meetingStore
+}
+
 // SetScheduledTaskScheduler wires manual-trigger access and scheduler
 // observability to the HTTP layer.
 func (s *Server) SetScheduledTaskScheduler(scheduler *scheduledtask.Scheduler) {
@@ -555,7 +614,14 @@ func requestBodyLimitMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		limit := int64(maxRequestBodyBytes)
 		switch {
+		// 前缀匹配已覆盖 transcribe / transcribe-full / transcribe-incremental
+		// 三个端点（它们都以 /api/stt/transcribe 开头）。这里显式列出是为了让
+		// 后续新增端点时能看到「音频体积白名单」这个清单，而不是靠前缀隐式命中。
+		case r.URL.Path == "/api/stt/transcribe-full":
+			// 整场录音的 base64 体积（两小时会议约 310MB），比单次转写大两个数量级。
+			limit = int64(maxFullAudioBytes*4/3 + 1024)
 		case strings.HasPrefix(r.URL.Path, "/api/stt/transcribe"),
+			strings.HasPrefix(r.URL.Path, "/api/stt/probe"),
 			strings.HasPrefix(r.URL.Path, "/api/meetings/") && strings.HasSuffix(r.URL.Path, "/transcribe"):
 			limit = maxAudioBodyBytes
 		case r.URL.Path == "/api/llm/stream" && r.Method == http.MethodPost:
@@ -598,6 +664,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/sessions/", s.requireAuth(s.handleSessions))
 	mux.HandleFunc("/api/sessions", s.requireAuth(s.handleAllSessions)) // 新增：获取所有会话
 	mux.HandleFunc("/api/tasks", s.requireAuth(s.handleTasks))
+	// 来源 → 任务（notes / email / rss / meeting），带 origin 溯源。
+	mux.HandleFunc("/api/tasks/from-source", s.requireAuth(s.handleTaskFromSource))
 	mux.HandleFunc("/api/tasks/", s.requireAuth(s.handleTaskOperations))
 	// P1 双向 MCP：委派任务创建到 ACC（acc_create_task）。与 /api/tasks 的
 	// source=acc 只读守卫分开——这里是显式的写路径，返回 ACC 创建的任务。
@@ -612,6 +680,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/app/download", s.handleDownloadAPK)
 	// 飞书事件回调 (m.kxpms.cn/callback/feishu 由 56 nginx 转发到 9010)
 	mux.HandleFunc("/callback/feishu", s.handleFeishuCallback)
+	// 企业微信事件回调 (m.kxpms.cn/callback/weixin)
+	//
+	// 与飞书一样**不套 requireAuth**：这两个端点由外部平台调用，
+	// 不会带本站的 JWT；它们的身份校验是各自协议的签名校验
+	// （飞书 X-Lark-Signature / 企业微信 msg_signature），
+	// 挂在 requireAuth 下面只会让签名请求永远 401。
+	mux.HandleFunc("/callback/weixin", s.handleWeComCallback)
 
 	// ---- Phase 0: 个人助理模块路由 ----
 	// 认证
@@ -648,6 +723,10 @@ func (s *Server) Handler() http.Handler {
 	// 未注入时返回 503（pgxpool 为 nil 的 remote-only 模式下自然降级）。
 	mux.HandleFunc("/api/flashcards", s.requireAuth(s.handleFlashcardsCollection))
 	mux.HandleFunc("/api/flashcards/", s.requireAuth(s.handleFlashcardsItem))
+	// 学习模块（docs/学习muse/03-架构方案.md §2）：/api/learning 与 /api/learning/。
+	// service 未注入时返回 503，与闪卡路由同一降级约定。
+	mux.HandleFunc("/api/learning", s.requireAuth(s.handleLearningCollection))
+	mux.HandleFunc("/api/learning/", s.requireAuth(s.handleLearningRouter))
 	// 代码片段
 	mux.HandleFunc("/api/snippets", s.requireAuth(s.handleSnippets))
 	mux.HandleFunc("/api/snippets/", s.requireAuth(s.handleSnippetOps))
@@ -665,6 +744,8 @@ func (s *Server) Handler() http.Handler {
 	// {id}/test-smtp (POST). See handleEmailAccountOps for routing.
 	mux.HandleFunc("/api/email/accounts/", s.requireAuth(s.handleEmailAccountOps))
 	mux.HandleFunc("/api/email/summaries", s.requireAuth(s.handleEmailSummaries))
+	// 历史回补：把 Sync 漏掉的历史邮件（每次只取最近 50 封）按日期窗口拉回。
+	mux.HandleFunc("/api/email/backfill", s.requireAuth(s.handleEmailBackfill))
 	mux.HandleFunc("/api/email/summaries/", s.requireAuth(s.handleEmailSummaryOps))
 	mux.HandleFunc("/api/email/vacations", s.requireAuth(s.handleEmailVacations))
 	mux.HandleFunc("/api/email/vacations/", s.requireAuth(s.handleEmailVacationOps))
@@ -680,6 +761,14 @@ func (s *Server) Handler() http.Handler {
 	// 发票自动整理（列表 + 按邮件手动提取；须在 /api/emails/ 子树之前声明）
 	mux.HandleFunc("/api/emails/invoices", s.requireAuth(s.handleEmailInvoices))
 	mux.HandleFunc("/api/emails/invoices/", s.requireAuth(s.handleEmailInvoiceDispatch))
+	// 自定义邮件目录（同服务器能力：IMAP CREATE/LIST/MOVE）+ 本地迁移操作日志
+	// 与「同步到服务器」按钮（可选/全量）。均须在 /api/emails/ 子树之前声明。
+	mux.HandleFunc("/api/email/folders", s.requireAuth(s.handleEmailFolders))
+	mux.HandleFunc("/api/email/folders/", s.requireAuth(s.handleEmailFolderOps))
+	mux.HandleFunc("/api/emails/move", s.requireAuth(s.handleEmailMove))
+	mux.HandleFunc("/api/emails/organize", s.requireAuth(s.handleEmailOrganize))
+	mux.HandleFunc("/api/emails/ops/sync", s.requireAuth(s.handleEmailOpsSync))
+	mux.HandleFunc("/api/emails/ops", s.requireAuth(s.handleEmailOpsLog))
 	mux.HandleFunc("/api/emails/", s.requireAuth(s.handleEmailOps))
 	// /api/email/accounts/test-smtp is intentionally NOT registered — the
 	// {id}/test-smtp path is dispatched by handleEmailAccountOps so the
@@ -693,6 +782,15 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/vault/sync/", s.requireAuth(s.handleVaultSync))
 	// STT 云端兜底（消耗外部 API 配额，必须认证）
 	mux.HandleFunc("/api/stt/transcribe", s.requireAuth(s.handleSttTranscribe))
+	// 语音转写设置：推荐模型 + 网关自动发现 + 用真实录音试转。
+	mux.HandleFunc("/api/stt/config", s.requireAuth(s.handleSTTConfig))
+	mux.HandleFunc("/api/stt/discover", s.requireAuth(s.handleSTTDiscover))
+	mux.HandleFunc("/api/stt/probe", s.requireAuth(s.handleSTTProbe))
+	// 长录音的**全量**转写（服务端按静音边界切段、逐段转写、按序聚合）与
+	// 录音进行中的**即时**转写（分段增量 + 跨段去重）。两者与 /api/stt/transcribe
+	// 共用同一套目标解析，因此通道/key/SSRF 防护完全一致。
+	mux.HandleFunc("/api/stt/transcribe-full", s.requireAuth(s.handleSttTranscribeFull))
+	mux.HandleFunc("/api/stt/transcribe-incremental", s.requireAuth(s.handleSttTranscribeIncremental))
 	mux.HandleFunc("/api/meetings", s.requireAuth(s.handleMeetings))
 	mux.HandleFunc("/api/meetings/", s.requireAuth(s.handleMeetingRouter))
 	// RSS 订阅：sources / items / filters / share 一棵子树。
@@ -845,26 +943,191 @@ func (s *Server) Handler() http.Handler {
 //
 // 把判断提到中间件层之后，所有 SSE/长连接路由只需要挂上前缀白名单即可。
 // WebSocket 升级走的是 gorilla/websocket 自己的 deadline，不在 WriteTimeout 管辖
-// 范围，所以这里只覆盖 SSE 路径。
+// 范围，所以这里只覆盖 SSE 路径 + 明确会跑很久的同步批处理端点。
 var longLivedPaths = []string{
 	"/api/llm/stream",         // S0-B LLM BFF 流式聊天
 	"/api/llm-gateway/nodes/", // 网关运维控制面（live-stream 等）
 	"/api/mobile/sessions/",   // 移动端 session SSE（含 /event）
 	"/api/llmbff/stream",      // 同上的历史别名（保留兼容）
+	// 邮件流水线的长耗时同步端点。这些**不是** SSE，但同样会被 30s
+	// WriteTimeout 掐断，而且掐断的表现极具误导性：
+	//
+	//   2026-10-01 实测：pipeline/run 实跑 1m30.67s，服务端日志记
+	//   `POST /api/email/pipeline/run - 200`，而客户端拿到的是
+	//   `UND_ERR_SOCKET: other side closed` + `bytesRead: 0` —— 一个字节
+	//   都没收到。原因是连接在 30s 处写 deadline 到期、连接已废，handler 在
+	//   1m30s 才 writeJSON，写不进去了。**「服务端 200 / 客户端空响应」的
+	//   组合以后看到，先来查这条白名单，别再当成网络抖动。**
+	//
+	// 两者都有明确的自身上界，不存在无界风险：pipeline/run 内部
+	// `context.WithTimeout(ctx, 15*time.Minute)`，harvest 是 5 分钟。
+	"/api/email/pipeline/run",      // 手动触发一轮完整流水线（实测 1m30s）
+	"/api/emails/invoices/harvest", // 只下载发票文件（自带 5 分钟预算）
+
+	// 语音转写：这些端点是「同步等上游 ASR 回来」的阻塞式调用，
+	// 服务端耗时上限远大于 http.Server 的 30s WriteTimeout：
+	//
+	//	/api/stt/transcribe-full         fullTranscribeTimeout = 10 分钟
+	//	/api/stt/transcribe-incremental  90 秒
+	//	/api/stt/transcribe              Transcriber 自身 120 秒
+	//	/api/stt/probe                   120 秒（试转一段真实语音）
+	//	/api/stt/discover                90 秒（逐个探测网关候选）
+	//
+	// 2026-10-01 实测的故障：不豁免时，一段 79 秒的会议录音转写耗时
+	// **30.17 秒**，后端日志明明打了 `[SLOW] POST /api/stt/transcribe-full - 200`，
+	// 客户端收到的却是**空响应**（curl exit 52 / PowerShell
+	// 「connection was closed by the server」）—— 写 deadline 在 handler
+	// 返回前就已经过期，服务器直接掐掉连接，一个字节都没发出去。
+	//
+	// 这个故障特别难查，因为它有三个伪装：
+	//   1. 后端日志写着 200，看起来是成功的；
+	//   2. 客户端拿到的是网络错误而不是 504，看不出是超时；
+	//   3. 耗时正好卡在 30 秒边界附近，**时快时慢、时好时坏**。
+	// 而「一场会议转写超过 30 秒」在真实部署里是常态（云端 ASR + 手机网络），
+	// 不是边角情况。
+	"/api/stt/transcribe", // 含 -full / -incremental（前缀已覆盖）
+	"/api/stt/probe",      // 试转，含真实上游调用
+	"/api/stt/discover",   // 网关候选逐个探测
+
+	// 手动对单封邮件做发票提取。它命中发票但缺开票日期时，会**只为这一封**
+	// 拉一次 IMAP 原文补日期（handleEmailInvoiceExtract:235），实测这一封就
+	// 能超过 30s。
+	//
+	// 2026-10-01 实测的故障：客户端拿到「基础连接已经关闭：连接被意外关闭」、
+	// 一个字节都没有（正是本段注释描述的「服务端成功 / 客户端空响应」），
+	// 而服务端其实已经把发票行建好了（summary 里 count=1、pending=1）——
+	// 也就是说**操作成功了，界面却报错**，用户会以为没提取而重复点击。
+	// 根因就是漏了这条白名单。
+	"/api/emails/invoices/extract",
+
+	// 会议链路。这四个动作都同步等推理/STT 回来，自身预算全部超过 30s：
+	//
+	//	/api/meetings/{id}/transcribe  handleTranscribeMeeting  120s
+	//	/api/meetings/{id}/refine      handleMeetingRefine        90s
+	//	/api/meetings/{id}/summary     handleMeetingSummary       45s
+	//
+	// 注意这里**不能**用 "/api/meetings/" 前缀整段豁免：那样连
+	// GET /api/meetings/{id}（纯数据库读，毫秒级）也会被解除写超时保护。
+	// 精确模式见 longLivedPatterns。
+
+	// 邮件自动归类。单封的网关分类器自带 25s 预算（classifyViaGateway），
+	// 而这个端点一次默认处理 20 封（handleEmailClassify: limit<=0 → 20），
+	// 串行下来最坏 500s。
+	//
+	// 2026-10-02 实测的故障：客户端 `POST /api/emails/classify {"limit":3}`
+	// 拿到「基础连接已经关闭：连接被意外关闭」，一个字节都没有——正是本段
+	// 描述的「服务端还在算 / 客户端空响应」。用户看到的就是"邮件没有自动
+	// 归纳整理的能力"，而后端其实一封都没写进去。
+	"/api/emails/classify",
+
+	// 历史回补。按日期窗口把 Sync 漏掉的邮件拉回来（每轮 50 封上限，
+	// maxMessages 可到 2000），全程同步 IMAP，必然超过 30s。
+	"/api/email/backfill",
+}
+
+// longLivedSuffixes 按**结尾**匹配白名单。
+//
+// 为什么需要它：有一类路由的耗时段固定在路径末尾，而资源 ID 在中间——
+//
+//	/api/notes/{id}/summarize     handleNoteSummarize  context 60s
+//	/api/emails/{id}/summarize    handleEmailSummary   同上
+//
+// 这两个都要同步等 LLM 回来（网关自动路由到 glm-5.2 这类推理模型时，
+// 单次实测 6s+）。用前缀表达只能把整个 /api/notes/、/api/emails/ 子树
+// 一起放宽——那会把一堆纯 DB 读写端点也解除写超时保护，粒度太粗。
+var longLivedSuffixes = []string{
+	"/summarize",
+}
+
+// longLivedExemption 是一次「手工豁免」的完整交代。
+type longLivedExemption struct {
+	// Route 是这个 handler 实际对应的请求路径。审计测试会拿它去
+	// longLivedPaths / longLivedSuffixes 里核对一遍——**光在账本上写
+	// 一行字是糊弄不过去的**，路径没被真正豁免，测试照样转红。
+	Route string
+	// Reason 是可核查的预算来源（文件 + 行号 + 时长）。
+	Reason string
+}
+
+// longLivedHandlerExemptions 记录那些**路由前缀比耗时段宽得多**、
+// 无法用前缀或后缀自动表达的 handler。
+//
+// 目前只有一处：发票 harvest 由 /api/emails/invoices/ 这个 router 按路径
+// 分段 switch 分发（不是 strings.HasSuffix，推不出 "/harvest"），
+// 而白名单里精确到 /api/emails/invoices/harvest。
+//
+// 这份账本是给人看的，也是给审计测试用的：新增条目必须写得出真实路径，
+// 且该路径必须真的在白名单里。
+var longLivedHandlerExemptions = map[string]longLivedExemption{
+	"handleEmailInvoiceHarvest": {
+		Route:  "/api/emails/invoices/harvest",
+		Reason: "server_email_invoice.go:322 context.WithTimeout 5 分钟，批量下载发票文件",
+	},
+}
+
+// longLivedPatterns 是**逐段**匹配的精确模式，`*` 代表恰好一个路径段。
+//
+// 为什么前缀和后缀都不够用：会议那组路由注册在 /api/meetings/ 下，
+// 真正花钱的是它下面那几个动作（transcribe / refine / summary）。
+//
+//	用前缀 "/api/meetings/"  → GET /api/meetings/{id} 这种毫秒级的数据库读
+//	                          也被解除写超时保护，范围过宽；
+//	用后缀 "/summary"        → /api/emails/invoices/summary 这类短端点被误伤
+//	                          （longlived_paths_test.go 明确断言它不该放宽）。
+var longLivedPatterns = []string{
+	"/api/meetings/*/transcribe",
+	"/api/meetings/*/refine",
+	"/api/meetings/*/summary",
+}
+
+// matchPathPattern 逐段比较；`*` 匹配恰好一个非空段。
+func matchPathPattern(pattern, path string) bool {
+	ps := strings.Split(strings.Trim(pattern, "/"), "/")
+	xs := strings.Split(strings.Trim(path, "/"), "/")
+	if len(ps) != len(xs) {
+		return false
+	}
+	for i := range ps {
+		if ps[i] == "*" {
+			if xs[i] == "" {
+				return false
+			}
+			continue
+		}
+		if ps[i] != xs[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func isLongLivedPath(path string) bool {
+	for _, p := range longLivedPaths {
+		if strings.HasPrefix(path, p) {
+			return true
+		}
+	}
+	for _, s := range longLivedSuffixes {
+		if strings.HasSuffix(path, s) {
+			return true
+		}
+	}
+	for _, pat := range longLivedPatterns {
+		if matchPathPattern(pat, path) {
+			return true
+		}
+	}
+	return false
 }
 
 func longLivedPathMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		path := r.URL.Path
-		for _, p := range longLivedPaths {
-			if strings.HasPrefix(path, p) {
-				// 只清"当前连接"的写 deadline，不动全局 server.WriteTimeout。
-				// 中间件包装过的 ResponseWriter（cors/logging/recovery）通常仍
-				// 支持 NewResponseController；不支持的则降级到被 30s 掐断。
-				rc := http.NewResponseController(w)
-				_ = rc.SetWriteDeadline(time.Time{})
-				break
-			}
+		if isLongLivedPath(r.URL.Path) {
+			// 只清"当前连接"的写 deadline，不动全局 server.WriteTimeout。
+			// 中间件包装过的 ResponseWriter（cors/logging/recovery）通常仍
+			// 支持 NewResponseController；不支持的则降级到被 30s 掐断。
+			rc := http.NewResponseController(w)
+			_ = rc.SetWriteDeadline(time.Time{})
 		}
 		next.ServeHTTP(w, r)
 	})
@@ -931,6 +1194,16 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleInstances(w http.ResponseWriter, r *http.Request) {
+	// BUG-AE：实例是**只读**资源（没有创建/删除 handler，前端 InstanceListView
+	// 也只有刷新与选择），但这个 handler 完全不看 r.Method，于是
+	// POST/DELETE/PUT /api/instances 也会回 200 + 完整实例列表（含 id 与心跳时间）。
+	// 危害和 BUG-AD 同形：调用方看到 200 会以为写成功了，实际什么都没发生。
+	// 回归：TestInstances_RejectsNonGET（撤掉这段会 4/4 子测试红）
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
 	var instances []model.PocketInstance
 
 	// 优先使用 Registry 中的实例
@@ -1265,6 +1538,33 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "invalid task status", http.StatusBadRequest)
 			return
 		}
+		// Work = task: the classification is a closed enum. Rejecting an
+		// unknown value (rather than storing it) is what keeps the frontend
+		// type picker and the stored data from drifting apart — the previous
+		// unchecked `category` field silently accepted anything.
+		if req.Type == "" {
+			req.Type = task.TypeOther
+		}
+		if !task.ValidType(req.Type) {
+			http.Error(w, "invalid task type", http.StatusBadRequest)
+			return
+		}
+		if req.Visibility == "" {
+			req.Visibility = task.VisibilityPrivate
+		}
+		if !task.ValidVisibility(req.Visibility) {
+			http.Error(w, "invalid task visibility", http.StatusBadRequest)
+			return
+		}
+		if !task.ValidOriginKind(req.OriginKind) {
+			http.Error(w, "invalid task origin kind", http.StatusBadRequest)
+			return
+		}
+		if req.RemindAt > 0 && req.DueAt > 0 && req.RemindAt > req.DueAt {
+			http.Error(w, "remindAt must not be after dueAt", http.StatusBadRequest)
+			return
+		}
+		req.TypeGroup = task.TypeGroup(req.Type)
 		if req.Status == "completed" {
 			http.Error(w, "new tasks cannot be completed", http.StatusConflict)
 			return
@@ -1272,9 +1572,38 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 		// 租户来自已认证 claims，忽略请求体里的 workspaceId，避免调用方把任务
 		// 写进别人的 workspace。
 		req.WorkspaceID = s.workspaceIDFromRequest(r)
+		// 创建者默认是 owner：没有 created_by 列时，owner_id 是「谁建的 /
+		// 现在归谁」的唯一可查来源，协作鉴权（CanReadWorkItem）依赖它。
+		// 显式传了 ownerId 的以请求为准（委派场景）。
+		if req.OwnerID == "" {
+			req.OwnerID = s.userIDFromRequest(r)
+		}
+		// A parent is validated the same way on create and on re-parent.
+		// This used to run only on PATCH, so POST could write a self-parenting
+		// row (a task that is its own parent makes the roll-up undecidable) or
+		// point at a parent id from another tenant.
+		if msg, ok := s.validateReparent(r, req.ID, req.ParentID); !ok {
+			http.Error(w, msg, http.StatusBadRequest)
+			return
+		}
 		if err := s.taskStore.CreateTask(r.Context(), &req); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
+		}
+		// 把创建者写进参与者名单，否则「谁在这条工作项上」在 UI 里是空的。
+		// 失败不阻断创建：owner_id 已经落库，鉴权仍然成立。
+		if err := s.taskStore.SetParticipants(r.Context(), req.ID, req.WorkspaceID, []task.Participant{
+			{UserID: req.OwnerID, Role: task.RoleOwner},
+		}); err != nil {
+			log.Printf("[tasks] seed owner participant for %s failed: %v", req.ID, err)
+		}
+		// `assignees` and the participant list are two views of the same fact.
+		// An assignee who is not a participant can neither open a private work
+		// item nor be notified about it, so the two are reconciled here and on
+		// every assignees write. Best effort for the same reason as above.
+		if err := s.taskStore.SyncAssigneeParticipants(r.Context(), req.ID, req.WorkspaceID,
+			req.OwnerID, req.Assignees); err != nil {
+			log.Printf("[tasks] sync assignees for %s failed: %v", req.ID, err)
 		}
 
 		// 广播任务创建事件
@@ -1424,6 +1753,43 @@ func (s *Server) handleTaskOperations(w http.ResponseWriter, r *http.Request) {
 			s.handleTaskRunEvents(w, r, parts[0])
 			return
 		}
+		// 协作：参与者名单、活动流、委派（P3，docs/学习muse §4）。
+		// 注意 `events` 已被 ACC 运行事件占用，协作活动流叫 `activity`；
+		// 而 `/api/tasks/delegate` 是「经 ACC 建任务」，委派到人走 `{id}/delegate`。
+		if len(parts) == 2 {
+			switch parts[1] {
+			case "participants":
+				if r.Method == http.MethodGet || r.Method == http.MethodPut {
+					s.handleTaskParticipants(w, r, parts[0])
+					return
+				}
+			case "activity":
+				if r.Method == http.MethodGet || r.Method == http.MethodPost {
+					s.handleTaskActivity(w, r, parts[0])
+					return
+				}
+			case "delegate":
+				if r.Method == http.MethodPost {
+					s.handleTaskDelegate(w, r, parts[0])
+					return
+				}
+			case "children":
+				if r.Method == http.MethodGet {
+					s.handleTaskChildren(w, r, parts[0])
+					return
+				}
+			case "subtasks":
+				if r.Method == http.MethodPost {
+					s.handleTaskSubtasks(w, r, parts[0])
+					return
+				}
+			case "approvals":
+				if r.Method == http.MethodGet {
+					s.handleTaskApprovals(w, r, parts[0])
+					return
+				}
+			}
+		}
 		// 任务详情会话正文（companion 透传，支持 after_seq 增量续传）
 		if len(parts) == 4 && parts[1] == "sessions" {
 			switch {
@@ -1474,16 +1840,33 @@ func (s *Server) handleTaskOperations(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		workspaceID := s.workspaceIDFromRequest(r)
-		current, err := s.taskStore.GetTaskScoped(r.Context(), path, workspaceID)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusNotFound)
+		current, ok := s.workItemWriteGuard(w, r, path, workspaceID)
+		if !ok {
 			return
 		}
 		if update.Status != nil && !isValidTaskStatus(*update.Status) {
 			http.Error(w, "invalid task status", http.StatusBadRequest)
 			return
 		}
+		if update.Type != nil && !task.ValidType(*update.Type) {
+			http.Error(w, "invalid task type", http.StatusBadRequest)
+			return
+		}
+		if update.Visibility != nil && !task.ValidVisibility(*update.Visibility) {
+			http.Error(w, "invalid task visibility", http.StatusBadRequest)
+			return
+		}
+		// Re-parenting is validated before the write: a cycle makes the
+		// progress roll-up undecidable, and a cross-workspace parent would
+		// leak another tenant's tree.
+		if update.ParentID != nil {
+			if msg, ok := s.validateReparent(r, path, *update.ParentID); !ok {
+				http.Error(w, msg, http.StatusBadRequest)
+				return
+			}
+		}
 		var updated *task.Task
+		var err error
 		if update.Status != nil && *update.Status == "completed" {
 			updated, err = s.taskStore.CompleteTaskScoped(r.Context(), path, workspaceID, update)
 		} else {
@@ -1499,6 +1882,20 @@ func (s *Server) handleTaskOperations(w http.ResponseWriter, r *http.Request) {
 		}
 		if current.Status != updated.Status {
 			s.auditTaskStatusChange(r, updated, current.Status)
+			// The actor is the authenticated caller, so it travels on the
+			// context rather than being read out of the request body.
+			s.notifyWorkItemStatusChange(withActor(r.Context(), s.userIDFromRequest(r)), current, updated, workspaceID)
+		}
+		// Re-assignment changes who is on the work item, so the participant
+		// list has to follow — otherwise the new assignee can neither open the
+		// private item nor hear about later changes to it.
+		if update.Assignees != nil {
+			if err := s.taskStore.SyncAssigneeParticipants(r.Context(), path, workspaceID,
+				updated.OwnerID, updated.Assignees); err != nil {
+				// The row is already updated; failing the request now would
+				// invite a retry of a write that succeeded.
+				log.Printf("[tasks] sync assignees for %s failed: %v", path, err)
+			}
 		}
 		s.broadcastTaskEvent("task_updated", updated)
 		w.Header().Set("Content-Type", "application/json")
@@ -1508,7 +1905,14 @@ func (s *Server) handleTaskOperations(w http.ResponseWriter, r *http.Request) {
 
 	// DELETE /api/tasks/{id} — 删除任务及其会话关联
 	if r.Method == http.MethodDelete {
-		if err := s.taskStore.DeleteTaskScoped(r.Context(), path, s.workspaceIDFromRequest(r)); err != nil {
+		workspaceID := s.workspaceIDFromRequest(r)
+		// 删除前必须先取回这条工作项：没有它就无从判断调用者是不是
+		// owner/participant，而「同 workspace 的普通成员删掉别人的
+		// private 工作项」正是这里原先缺失的护栏。
+		if _, ok := s.workItemWriteGuard(w, r, path, workspaceID); !ok {
+			return
+		}
+		if err := s.taskStore.DeleteTaskScoped(r.Context(), path, workspaceID); err != nil {
 			http.Error(w, err.Error(), http.StatusNotFound)
 			return
 		}
@@ -1519,6 +1923,43 @@ func (s *Server) handleTaskOperations(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.Error(w, "not found", http.StatusNotFound)
+}
+
+// workItemWriteGuard loads the work item and decides whether the authenticated
+// caller may modify or delete it. Writes belong to the owner and the
+// participants (task.CanWriteWorkItem) — workspace membership alone does not:
+// a private work item whose workspace happens to be shared stays private.
+// Consolidation §5.1 第三条：此前 PATCH/DELETE 只有 workspace 维度校验，
+// 同 workspace 普通成员可改删他人 private 工作项。
+//
+// On failure the response has already been written (404 unknown, 500 when the
+// participant list cannot be read — an unreadable list must never read as
+// "no participants", which would turn every private item into one anyone may
+// write) and ok is false.
+func (s *Server) workItemWriteGuard(w http.ResponseWriter, r *http.Request, taskID, workspaceID string) (*task.Task, bool) {
+	current, err := s.taskStore.GetTaskScoped(r.Context(), taskID, workspaceID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return nil, false
+	}
+	parts, err := s.taskStore.ListParticipants(r.Context(), taskID, workspaceID)
+	if err != nil {
+		http.Error(w, "read participants failed", http.StatusInternalServerError)
+		return nil, false
+	}
+	// 读与写分开判：连读都不行的人收 404 而不是 403——回 403 等于确认
+	// 「这个 id 存在」，把工作项 id 变成成员探测 oracle。跨 workspace 的
+	// id 仍然与「不存在」不可区分，GetTaskScoped 已保证这一点。
+	actor := s.userIDFromRequest(r)
+	if !task.CanReadWorkItem(current, parts, actor) {
+		http.Error(w, "task not found", http.StatusNotFound)
+		return nil, false
+	}
+	if !task.CanWriteWorkItem(current, parts, actor) {
+		http.Error(w, "not the owner or a participant of this work item", http.StatusForbidden)
+		return nil, false
+	}
+	return current, true
 }
 
 func (s *Server) handleAttachSession(w http.ResponseWriter, r *http.Request, taskID string) {
@@ -1954,31 +2395,61 @@ type VersionInfo struct {
 	ReleaseDate string   `json:"releaseDate"`
 }
 
+// ErrVersionConfigNotFound 表示版本配置文件一个候选路径都没命中。
+//
+// 它**曾经不存在**：loadVersionConfig 原来在这里静默回落一份内置默认值
+// （1.2.0 / build 2 / 一个写死的下载 URL），只打一行 Warning 就返回 nil error。
+// 代价不是「App 少报一次更新」，而是**App 拿一个和实际发版毫无关系的版本号
+// 去回答「你是不是最新的」**：配置路径写错 → 回落 1.2.0 → 真实发到 1.5.0
+// 的用户被告知「当前已是最新版本」。错的信息比没有信息更糟。
+//
+// 另一侧的账也要算清：两个启动脚本（start-pocketd-pg.ps1 /
+// start-pocketd-email-verify.ps1）都已显式设 POCKET_VERSION_CONFIG_PATH，
+// 仓库里 backend/config/version.json 也是被 git 跟踪的 —— 也就是说「找不到」
+// 在受支持的部署里本身就是异常，该冒泡而不是被吞掉。
+var ErrVersionConfigNotFound = errors.New("version config not found")
+
 // loadVersionConfig 从配置文件加载版本信息
+//
+// 契约（2026-10-02 起）：**找不到就返回 ErrVersionConfigNotFound**，不再回落
+// 默认值。调用方 handleCheckUpdate 把它翻成 503 + 明确 JSON，App 侧
+// checkUpdate() 对非 2xx 抛错、SettingsView 弹「检查更新失败」——
+// 这个失败是**真的**，且指向可修的原因，比一个自信的假版本号有用得多。
 func (s *Server) loadVersionConfig() (*VersionInfo, error) {
 	configPath := os.Getenv("POCKET_VERSION_CONFIG_PATH")
-	if configPath == "" {
-		// 默认路径：相对于可执行文件的 config/version.json
+	explicit := configPath != ""
+	if !explicit {
+		// 默认路径相对的是**进程工作目录**，不是可执行文件目录。
+		//
+		// 这一行注释原来写的是「相对于可执行文件」，而实现是 os.ReadFile 一个
+		// 相对路径 —— 相对 CWD。两句话不一致，代价是实打实的：
+		// scripts/start-pocketd-pg.ps1 与 start-pocketd-email-verify.ps1 都
+		// `Set-Location` 到仓库根再启 pocketd，于是 config/version.json 找不到，
+		// 而下面这个分支**静默回落默认值**（只打一行 Warning，返回 nil error），
+		// 于是 App 一直报 1.2.0 默认版本，没有任何报错指向真正原因。
+		// 两个脚本现在显式设 POCKET_VERSION_CONFIG_PATH 绕开它；这里把默认
+		// 路径的语义写对，免得下一个脚本再踩。
 		configPath = "config/version.json"
 	}
 
 	data, err := os.ReadFile(configPath)
+	tried := []string{configPath}
+	if err != nil && !explicit {
+		// CWD 找不到时再试可执行文件目录。部署布局常是 <root>/bin/pocketd 配
+		// <root>/config/version.json：从 <root> 启动能命中 CWD，从 <root>/bin
+		// 启动就落空。显式设了环境变量就不做这个猜测——那是有意的选择。
+		if exe, exeErr := os.Executable(); exeErr == nil {
+			alt := filepath.Join(filepath.Dir(exe), "config", "version.json")
+			tried = append(tried, alt)
+			if altData, altErr := os.ReadFile(alt); altErr == nil {
+				log.Printf("version config not at %s; using %s instead", configPath, alt)
+				data, err = altData, nil
+			}
+		}
+	}
 	if err != nil {
-		// 如果文件不存在，使用默认配置
-		log.Printf("Warning: version config not found at %s, using defaults: %v", configPath, err)
-		return &VersionInfo{
-			Version:     "1.2.0",
-			BuildNumber: 2,
-			DownloadURL: "http://14.103.169.56:8088/api/app/download",
-			FileSize:    4200000,
-			Changelog: []string{
-				"✨ 全新移动端 UI 设计",
-				"✨ 添加登录系统",
-				"🐛 修复若干已知问题",
-			},
-			ForceUpdate: false,
-			ReleaseDate: time.Now().Format("2006-01-02"),
-		}, nil
+		// 不再回落默认值。逐条列出试过的路径，否则排查者仍只能猜。
+		return nil, fmt.Errorf("%w: tried %s (last error: %v)", ErrVersionConfigNotFound, strings.Join(tried, ", "), err)
 	}
 
 	var versionInfo VersionInfo
@@ -2027,13 +2498,29 @@ func (s *Server) handleCheckUpdate(w http.ResponseWriter, r *http.Request) {
 	// 从配置文件加载最新版本信息
 	latestVersion, err := s.loadVersionConfig()
 	if err != nil {
+		if errors.Is(err, ErrVersionConfigNotFound) {
+			// 503 而不是 500：这是**部署配置**没配对，不是服务端内部错误。
+			// 而且必须把试过的路径原样回给客户端——App 侧的报错文案里
+			// 唯一的线索就是它。
+			log.Printf("ERROR: %v", err)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"error":   "version_config_not_found",
+				"message": "服务端版本配置缺失或路径不对，无法判断是否有更新",
+				"detail":  err.Error(),
+			})
+			return
+		}
 		log.Printf("Error loading version config: %v", err)
 		http.Error(w, "failed to load version info", http.StatusInternalServerError)
 		return
 	}
 
-	// 简单的版本比较
-	hasUpdate := req.CurrentVersion < latestVersion.Version || req.CurrentBuild < latestVersion.BuildNumber
+	// 版本判定走 hasUpdateAvailable（app_version_compare.go），不是字符串 `<`。
+	// 字典序从 1.10 / 1.10.10 起就全错：1.9 的设备收不到 1.10 的推送，
+	// 比服务端新的设备会被通知降级。症状是「永远不推送」，不报错不告警。
+	hasUpdate := hasUpdateAvailable(req.CurrentVersion, req.CurrentBuild, latestVersion.Version, latestVersion.BuildNumber)
 
 	resp := CheckUpdateResponse{
 		HasUpdate:   hasUpdate,
@@ -2057,12 +2544,37 @@ func (s *Server) handleDownloadAPK(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// APK 文件路径（实际部署时应该指向真实的 APK 文件）
-	apkPath := "/data/www/pocket.kxpms.cn/downloads/opencode-pocket-latest.apk"
+	apkPath := strings.TrimSpace(s.cfg.APKDownloadPath)
+	if apkPath == "" {
+		apkPath = config.DefaultAPKDownloadPath
+	}
+
+	// 先确认文件在，**再**设下载头。
+	//
+	// 原来的写法是先设 Content-Type/Content-Disposition 再 ServeFile。文件不在时
+	// ServeFile 回 404，而 http.Error 会覆盖 Content-Type、却**不会删掉**
+	// Content-Disposition —— 于是 404 响应带着
+	// `attachment; filename=opencode-pocket.apk`，浏览器/下载器会照字面存下一个
+	// 19 字节的假 APK。真实原因（服务器上没部署 APK）在客户端表现为
+	// 「安装时解析失败」，排查方向被彻底带偏。
+	//
+	// 实测（2026-10-03 GET /api/app/download）：404 + Content-Length: 19 +
+	// Content-Disposition: attachment; filename=opencode-pocket.apk。
+	st, err := os.Stat(apkPath)
+	if err != nil {
+		// 路径属于服务端部署信息，不回显给调用方；只进日志。
+		log.Printf("APK download unavailable: stat %s: %v", apkPath, err)
+		http.Error(w, "apk not available", http.StatusNotFound)
+		return
+	}
+	if st.IsDir() {
+		log.Printf("APK download misconfigured: %s is a directory", apkPath)
+		http.Error(w, "apk not available", http.StatusNotFound)
+		return
+	}
 
 	w.Header().Set("Content-Type", "application/vnd.android.package-archive")
 	w.Header().Set("Content-Disposition", "attachment; filename=opencode-pocket.apk")
-
 	http.ServeFile(w, r, apkPath)
 }
 
@@ -2070,6 +2582,15 @@ func (s *Server) handleDownloadAPK(w http.ResponseWriter, r *http.Request) {
 // 由 feishu.PublicEntry 包装，传入 wsHub.Broadcast 闭包以推送 WebSocket。
 func (s *Server) handleFeishuCallback(w http.ResponseWriter, r *http.Request) {
 	feishu.PublicEntry(s.cfg, func(msgType string, payload interface{}) {
+		s.wsHub.Broadcast(msgType, payload)
+	})(w, r)
+}
+
+// handleWeComCallback 处理企业微信事件回调（m.kxpms.cn/callback/weixin）。
+// 2026-10-02 用户拍板走企业微信自建应用（不是微信公众号）——响应格式不同，
+// 详见 internal/wecom 包注释。
+func (s *Server) handleWeComCallback(w http.ResponseWriter, r *http.Request) {
+	wecom.PublicEntry(s.cfg, func(msgType string, payload interface{}) {
 		s.wsHub.Broadcast(msgType, payload)
 	})(w, r)
 }

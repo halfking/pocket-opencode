@@ -27,6 +27,25 @@ type Store struct {
 
 var ErrNotFound = errors.New("email: not found")
 
+// AccountOwnedBy 判定某个邮件账户是否在 (userID, workspaceID) 作用域内。
+//
+// 这是"account_id 来自请求体"这类写路径的统一归属判据。凡是拿请求里的
+// account_id 去动数据或去动 IMAP 的，必须先过这一关——IMAP 侧尤其要紧：
+// Fetcher.dialAndLogin 只按 account_id 取凭据（GetAccountByID 不带用户维度），
+// 归属一旦没校验，调用方就能用别人的账户去连 IMAP、建目录、移信。
+func (s *Store) AccountOwnedBy(ctx context.Context, accountID, userID, workspaceID string) (bool, error) {
+	var ok bool
+	if err := s.pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM email_accounts
+			WHERE id = $1 AND user_id = $2 AND workspace_id = $3
+		)
+	`, accountID, userID, workspaceID).Scan(&ok); err != nil {
+		return false, err
+	}
+	return ok, nil
+}
+
 func NewStore(pool *pgxpool.Pool) (*Store, error) {
 	s := &Store{pool: pool}
 	if err := s.migrate(); err != nil {
@@ -37,6 +56,9 @@ func NewStore(pool *pgxpool.Pool) (*Store, error) {
 	}
 	if err := s.migrateInboxPurge(context.Background()); err != nil {
 		return nil, fmt.Errorf("email inbox purge migrate: %w", err)
+	}
+	if err := s.migrateFolders(context.Background()); err != nil {
+		return nil, fmt.Errorf("email folders migrate: %w", err)
 	}
 	return s, nil
 }
@@ -60,6 +82,26 @@ func (s *Store) migrate() error {
 		created_at BIGINT NOT NULL
 	);
 
+	-- 2026-10-02：把「同步失败」变成**可查询的事实**，而不是只进 stdout。
+	--
+	-- 为什么必须加：last_synced_at **只在成功时写**（成功出口在
+	-- fetcher.go 的「无新邮件早退」「拉到邮件」「POP3 兜底」三处，任何失败
+	-- 出口都直接 return error 不碰它）。于是「账户没被调度到」和「账户每
+	-- 60 秒被轮询一次但每次都失败」在库里长得**一模一样**。
+	--
+	-- 真实代价（2026-10-02 实测）：huangxutao@kxpms.cn 的水位停在
+	-- 01:37:22 长达 19 小时，期间调度器每分钟都在轮询它、每次都失败，
+	-- 而**库里没有任何一处记录过这件事**——唯一的线索是进程 stdout，
+	-- 而那个进程的 stdout 没有落任何文件。不看水位就完全发现不了。
+	--
+	-- last_attempt_at 是关键：它让上面两种状态**可区分**——
+	--   · last_synced_at 陈旧 + last_attempt_at 在推进 + sync_failures>0
+	--     ⇒ 在轮询但一直失败（查 last_sync_error）
+	--   · 两个时间都陈旧 ⇒ 压根没被轮到（查调度器/进程）
+	ALTER TABLE email_accounts ADD COLUMN IF NOT EXISTS last_attempt_at BIGINT NOT NULL DEFAULT 0;
+	ALTER TABLE email_accounts ADD COLUMN IF NOT EXISTS last_sync_error TEXT NOT NULL DEFAULT '';
+	ALTER TABLE email_accounts ADD COLUMN IF NOT EXISTS sync_failures INTEGER NOT NULL DEFAULT 0;
+
 	CREATE TABLE IF NOT EXISTS emails (
 		id TEXT PRIMARY KEY,
 		account_id TEXT NOT NULL,
@@ -77,7 +119,7 @@ func (s *Store) migrate() error {
 		is_read BOOLEAN DEFAULT FALSE,
 		is_starred BOOLEAN DEFAULT FALSE,
 		category TEXT,
-		importance TEXT,
+		importance TEXT CHECK (importance IN ('','high','medium','low')),
 		ai_summary TEXT,
 		suggested_action TEXT,
 		action_reason TEXT,
@@ -86,6 +128,34 @@ func (s *Store) migrate() error {
 		UNIQUE(account_id, message_id),
 		FOREIGN KEY (account_id) REFERENCES email_accounts(id) ON DELETE CASCADE
 	);
+	-- 重要度只能是 '' / high / medium / low。
+	--
+	-- 上面 CREATE TABLE 里那行内联 CHECK 只对**新库**生效，PostgreSQL 不会
+	-- 给已经建好的表补约束，所以老库需要这段幂等补丁。列级 CHECK 的自动名字
+	-- 就是 emails_importance_check，与内联那个同名，因此新库跑到这里会跳过。
+	--
+	-- 为什么要有这层兜底：同文件的 email_accounts.auth_type 早就有 CHECK，
+	-- 而 importance 一直没有。§7af 修了 NormalizeImportance（把 "High"/"高"/"1"
+	-- 归一成 high，无法识别的落空串）之后上层不再写脏值，但**历史脏值**仍会
+	-- 留在库里，而 splitReminderCandidates 用 case "high" 精确匹配——脏值既
+	-- 不触发提醒也不计入 unclassified，是最坏情况。约束让脏值进不来。
+	--
+	-- 空串是合法值，语义是「未分类」。列可空，NULL 同样表示未分类：
+	-- NULL IN (...) 求值为 NULL，而 CHECK 只在结果为 FALSE 时拒绝，所以
+	-- NULL 会照常放行——这一点是刻意的，不能改成 NOT NULL。
+	DO $pocket$
+	BEGIN
+		IF NOT EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = 'emails'::regclass
+			  AND conname = 'emails_importance_check'
+		) THEN
+			ALTER TABLE emails ADD CONSTRAINT emails_importance_check
+				CHECK (importance IN ('','high','medium','low'));
+		END IF;
+	END
+	$pocket$;
+
 	-- IMAP fallback 去重：仅当 message_id 缺失时按 (account_id, subject, date)
 	-- 去重。用部分唯一索引而非全局 UNIQUE 约束，否则两封不同 message_id
 	-- 但同主题同日期（如 "Daily report"、"Out of office"）的邮件会被
@@ -112,6 +182,14 @@ func (s *Store) migrate() error {
 		UNIQUE(user_id, summary_date)
 	);
 	CREATE INDEX IF NOT EXISTS idx_daily_summaries_user ON daily_summaries(user_id);
+	-- emails.updated_at：自定义目录的 move / 删除目录回退都写这一列，但 emails
+	-- 从来没有过这一列，导致 store_folders.go 的两条 UPDATE 在运行时直接
+	-- 报 column "updated_at" of relation "emails" does not exist
+	-- （TestFoldersAndOpsLog 与真机上的删除目录 500 都是它）。
+	-- 沿用本文件既有的幂等 ALTER 写法；存量行用 created_at 回填，避免新建行
+	-- updated_at 为 NULL 而老行有值的分叉。
+	ALTER TABLE emails ADD COLUMN IF NOT EXISTS updated_at BIGINT;
+	UPDATE emails SET updated_at = created_at WHERE updated_at IS NULL;
 	-- S0-A: workspace_id isolation (idempotent).
 	ALTER TABLE email_accounts ADD COLUMN IF NOT EXISTS workspace_id TEXT NOT NULL DEFAULT 'default';
 	ALTER TABLE emails ADD COLUMN IF NOT EXISTS workspace_id TEXT NOT NULL DEFAULT 'default';
@@ -182,6 +260,24 @@ func (s *Store) migrate() error {
 	-- 已派发的时间，防止流水线每轮重复推送同一封邮件。
 	ALTER TABLE email_accounts ADD COLUMN IF NOT EXISTS updated_at BIGINT NOT NULL DEFAULT 0;
 	ALTER TABLE emails ADD COLUMN IF NOT EXISTS notified_at BIGINT NOT NULL DEFAULT 0;
+	-- updated_at 是邮件的「最后修改时间」，供客户端增量同步取 MAX(updated_at)
+	-- 作 since、服务端按 updated_at > since 过滤（需求 6/7 的本地优先架构）。
+	--
+	-- 2026-10-02 补。此前**代码引用了这一列而 migrate 不建它**：
+	-- SetSummaryScoped（store.go:531）写的是
+	--   UPDATE emails e SET ai_summary = $1, updated_at = $2 ...
+	-- 而 CREATE TABLE 与上面那批补丁里都没有这一列。实测在全新 schema 上：
+	--   ERROR: column "updated_at" of relation "emails" does not exist (42703)
+	-- 即**手动总结在全新部署上直接失败**。
+	-- 真库 opencode_pocket 之所以有这一列，是历史上有人手工加过——
+	-- 那是迁移遗留，不是本仓库的 migrate 产物（见 §7ej）。
+	--
+	-- 口径：Unix **秒**，与 created_at / date 一致，也与客户端
+	-- MAX(updated_at) 的用法一致。故意不给 DEFAULT：填 0 只会让
+	-- "0 > since" 恒为假，把「没有值」伪装成「很旧」，那比 NULL 更难查
+	-- （NULL 至少能被 ListEmailsScoped:1700 的 UpdatedAt==0 → date 兜底识别）。
+	-- 真正的赋值由 InsertEmail 补齐，那是独立的一处改动。
+	ALTER TABLE emails ADD COLUMN IF NOT EXISTS updated_at BIGINT;
 	CREATE TABLE IF NOT EXISTS email_vacation_replies (
 		id TEXT PRIMARY KEY,
 		account_id TEXT NOT NULL REFERENCES email_accounts(id) ON DELETE CASCADE,
@@ -278,7 +374,7 @@ func (s *Store) ListAccounts(ctx context.Context, userID string) ([]Account, err
 // --- Emails ---
 
 func (s *Store) ListEmails(ctx context.Context, filter ListFilter) ([]Email, error) {
-	q := `SELECT id, account_id, from_address, from_name, subject, snippet, date, is_read, is_starred, category, importance, ai_summary, suggested_action, has_attachments FROM emails`
+	q := `SELECT id, account_id, from_address, from_name, subject, snippet, date, is_read, is_starred, category, importance, ai_summary, suggested_action, has_attachments, COALESCE(folder_name, '') FROM emails`
 	where := []string{}
 	args := []any{}
 	argIdx := 1
@@ -366,12 +462,28 @@ func (s *Store) MarkStarred(ctx context.Context, id string, starred bool) error 
 // 避免上层 handler 用 ListEmails + 客户端过滤这种 O(N) 写法。
 func (s *Store) GetEmailByID(ctx context.Context, id string) (*Email, error) {
 	var e Email
-	var fromName, subject, snippet, category, importance, aiSummary, suggestedAction sql.NullString
+	// 冲突记录：两侧都独立发现了「message_id 漏查会静默废掉 sameEmailMessage
+	// 的强确认分支」（本分支 bb1c5f10 带 invoice_selfheal_test.go，
+	// main 为 a706bf55），但 main 还多修了 body_purged——漏查它会让
+	// summarizeBody 的第一道守卫恒不触发，软删并清空正文的邮件会被 IMAP
+	// 重新回源、喂给 LLM、再把摘要写回已删除的行。取 main 侧（超集），
+	// 并保留本分支对 uid 134/135 两张同名 QQ Wallet 发票的说明。
+	var fromName, subject, snippet, category, importance, aiSummary, suggestedAction, messageID, folderName sql.NullString
+	var bodyPurged sql.NullBool
 	var uid sql.NullInt64
+	// message_id / body_purged 不是「顺手多查两列」，漏掉它们不产生任何错误信号，
+	// 只让下游拿到零值结构体、守卫分支在生产里从不执行：
+	//   - 少了 message_id：harvestOne -> recoverPOP3SourcedRaw ->
+	//     sameEmailMessage 拿 em.MessageID 做「真实 Message-ID 强确认/强否定」。
+	//     列没查出来 ⇒ emHasReal 恒 false ⇒ 生产里只剩 subject+from+同日的
+	//     弱判据，而真实数据里两张同名发票的头部完全一样（uid 134/135）。
+	//   - 少了 body_purged：server_email_summary.summarizeBody 第一道守卫
+	//     `if em.BodyPurged { return "" }` 恒不触发。
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, account_id, uid, from_address, from_name, subject, snippet, date, is_read, is_starred, category, importance, ai_summary, suggested_action, has_attachments
+		SELECT id, account_id, uid, from_address, from_name, message_id, subject, snippet, date, is_read, is_starred, category, importance, ai_summary, suggested_action, has_attachments,
+		       COALESCE(body_purged, FALSE), COALESCE(folder_name, '')
 		FROM emails WHERE id = $1
-	`, id).Scan(&e.ID, &e.AccountID, &uid, &e.FromAddress, &fromName, &subject, &snippet, &e.Date, &e.IsRead, &e.IsStarred, &category, &importance, &aiSummary, &suggestedAction, &e.HasAttachments)
+	`, id).Scan(&e.ID, &e.AccountID, &uid, &e.FromAddress, &fromName, &messageID, &subject, &snippet, &e.Date, &e.IsRead, &e.IsStarred, &category, &importance, &aiSummary, &suggestedAction, &e.HasAttachments, &bodyPurged, &folderName)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -380,6 +492,15 @@ func (s *Store) GetEmailByID(ctx context.Context, id string) (*Email, error) {
 	}
 	if uid.Valid {
 		e.UID = uid.Int64
+	}
+	if messageID.Valid {
+		e.MessageID = messageID.String
+	}
+	if bodyPurged.Valid {
+		e.BodyPurged = bodyPurged.Bool
+	}
+	if folderName.Valid {
+		e.FolderName = folderName.String
 	}
 	if fromName.Valid {
 		e.FromName = fromName.String
@@ -449,21 +570,101 @@ func (s *Store) SetClassification(ctx context.Context, id, category, importance,
 }
 
 // SetClassificationScoped updates classification only within one user/workspace.
+//
+// 不写 action_reason：老的调用方（规则引擎在 InsertEmail 时写入的依据）拿不到
+// 分类理由，强行用空串覆盖会抹掉已有值。AI 分类路径请用下面的
+// SetClassificationWithReasonScoped。
+// SetClassificationScoped updates classification only within one user/workspace.
+//
+// 2026-10-02 修正：importance 改成「规则判出的 high 对 AI 免疫」。
+//
+// 起因是一整条实测接起来的链：账户只配了 mark-important 时，入库后
+// importance='high' 而 category 仍为空；ListUnclassifiedScoped 挑待分类邮件
+// 过滤的是 **category**（不是 importance），于是这封照常进 AI 队列；LLM
+// 没给 importance 时 BuildClassifyWrites 只检查 category 就放行；最后这个
+// 方法是**全量覆盖**，importance 被写成 '' 或 'normal'。
+//
+// 结果：用户明确配了「这个发件人的邮件标重要」，被 AI 一句话降级，重要邮件
+// 提醒永远不发，且没有任何报错 —— 与「规则没落到库」症状相同，排查方向却
+// 相反，极其难定位。
+//
+// 口径：只有 high 受保护，且只在 AI 想把它降级时保护。其余情况（AI 给 high、
+// 旧值是 normal 或空）一律按 AI 的写，不做「一律保持 high」那种一刀切 ——
+// 那会让 AI 永远无法把邮件提升为重要。
+//
+// category 刻意不加同样保护：它归 AI 拥有（label-category 只在入库时播种），
+// 这是有意保留的语义边界，不是遗漏。
+//
+// 合并说明：本块原先在 main 侧的 5da2d9e9 里，但那次合并**没有把这段 SQL 带
+// 过来**——测试文件（store_classification_precedence_test.go）带过来了、实现没带，
+// 于是那两个用例在 main 上就一直红着。`git diff 5da2d9e9^ 5da2d9e9 -- store.go`
+// 可见原文。测试是红的这件事本身就是判据存在过的证据。
 func (s *Store) SetClassificationScoped(ctx context.Context, id, userID, workspaceID, category, importance, aiSummary, suggestedAction string) error {
 	_, err := s.pool.Exec(ctx, `
-		UPDATE emails e SET category = $1, importance = $2, ai_summary = $3, suggested_action = $4
+		UPDATE emails e SET category = $1,
+			importance = CASE WHEN e.importance = 'high' AND $2 <> 'high' THEN e.importance ELSE $2 END,
+			ai_summary = $3, suggested_action = $4
 		FROM email_accounts a
 		WHERE e.id = $5 AND e.account_id = a.id AND a.user_id = $6 AND a.workspace_id = $7
 	`, category, importance, aiSummary, suggestedAction, id, userID, workspaceID)
 	return err
 }
 
-// ON CONFLICT DO NOTHING 不指定冲突目标，PostgreSQL 会自动匹配任一唯一
-// 约束/索引：(account_id, message_id) 全局唯一约束，或 message_id IS NULL
-// 时的 (account_id, subject, date) 部分唯一索引。这样无论哪种冲突都不会
-// 抛错中断同步。
+// SetClassificationWithReasonScoped 在 SetClassificationScoped 的基础上补写
+// action_reason（AI 判定该重要度的依据）。
+//
+// 2026-10-01 补。kxmemory 的分类响应契约里带 action_reason
+// （docs/2026-07-02-kxmemory-api-contract.md），但客户端 DTO 漏了这个字段，
+// JSON 反序列化时静默丢弃，真库里 162 封已分类邮件的 action_reason 全是空串。
+// 「为什么这封被判为重要」拿不到，提醒就不可信——用户无法判断该不该点开。
+//
+// 与其它字段同口径「非空才写」：分类器没给理由时保留旧值，不用空串抹掉。
+func (s *Store) SetClassificationWithReasonScoped(ctx context.Context, id, userID, workspaceID, category, importance, aiSummary, suggestedAction, actionReason string) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE emails e SET category = $1, importance = $2, ai_summary = $3, suggested_action = $4,
+			action_reason = CASE WHEN $8 <> '' THEN $8 ELSE e.action_reason END
+		FROM email_accounts a
+		WHERE e.id = $5 AND e.account_id = a.id AND a.user_id = $6 AND a.workspace_id = $7
+	`, category, importance, aiSummary, suggestedAction, id, userID, workspaceID, actionReason)
+	return err
+}
+
+// SetSummaryScoped 只写 ai_summary，不动 category / importance / suggested_action。
+//
+// 为什么不能复用 SetClassificationScoped：那个是「全量覆盖」，调用方必须把四个
+// 字段都算齐才能安全使用。手动总结（/api/emails/{id}/summarize）只想补摘要，
+// 若拿它写，就得先把邮件现有的分类读出来再原样写回——多一次查询，还容易在
+// 并发分类时把别的进程刚写的结果覆盖掉。
+func (s *Store) SetSummaryScoped(ctx context.Context, id, userID, workspaceID, aiSummary string) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE emails e SET ai_summary = $1, updated_at = $2
+		FROM email_accounts a
+		WHERE e.id = $3 AND e.account_id = a.id AND a.user_id = $4 AND a.workspace_id = $5
+	`, aiSummary, time.Now().UnixMilli(), id, userID, workspaceID)
+	return err
+}
+
+// 冲突目标见 SQL 里的 `ON CONFLICT (id)`。历史注释曾写「不指定冲突目标，
+// PostgreSQL 自动匹配任一唯一约束」——与代码不符（代码一直写的是 (id)），
+// 这里按实际行为描述。
+//
+// 2026-10-01：冲突时**只**刷新 snippet，理由与边界见 SQL 注释。
+// InsertEmail 只关心「写成功没有」。需要区分「新插入」与「重跑刷新」的场景
+// 必须用 InsertEmailIfNew —— 见该函数关于「新邮件 N」虚报的说明。
 func (s *Store) InsertEmail(ctx context.Context, e Email) error {
-	_, err := s.pool.Exec(ctx,
+	_, err := s.InsertEmailIfNew(ctx, e)
+	return err
+}
+
+// InsertEmailIfNew 与 InsertEmail 写完全一样的一行，但**额外告诉你这是不是
+// 一次真正的插入**（inserted=true），而不是 ON CONFLICT 命中的刷新。
+//
+// 存在的理由：fetcher 拿写入成功与否统计「新邮件 N」。用 InsertEmail 的话，
+// 重复同步同一封已存在的邮件也会被计入，于是每次轮询都虚报一堆新邮件。
+// 判断依据是 `RETURNING (xmax = 0)`，由 PG 自己在同一条语句内给出，不存在
+// 「先查后插」的竞态窗口。
+func (s *Store) InsertEmailIfNew(ctx context.Context, e Email) (inserted bool, err error) {
+	err = s.pool.QueryRow(ctx,
 		// Two defects used to make this statement fail on every call, so no
 		// fetched email could ever be persisted:
 		//   1. a stray $19 with only 18 target columns ("INSERT has more
@@ -478,15 +679,51 @@ func (s *Store) InsertEmail(ctx context.Context, e Email) error {
 		//   - created_at = 本行入库时间（time.Now）
 		// 目前没有任何读路径消费 created_at，全部走 e.date；把 created_at 改成
 		// e.Date 只会复制 date 并丢掉入库时间，因此保持 time.Now()。
-		`INSERT INTO emails (id, account_id, workspace_id, message_id, uid, from_address, from_name, subject, snippet, date, is_read, is_starred, category, importance, ai_summary, suggested_action, action_reason, has_attachments, created_at)
-			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
-			 ON CONFLICT (id) DO NOTHING`,
+		//
+		// 2026-10-01 真机审计：原来是 `ON CONFLICT (id) DO NOTHING` —— 重跑同步
+		// 对已入库邮件**完全不写**，于是 snippet 成了只写一次的不可自愈字段。
+		// 后果很具体：DeriveSnippet 上线前写进去的原始 MIME 摘要（真机 100 个
+		// 通知正文里 46 个溢出、累计 12,311px 被祖先 overflow-x:hidden 静默裁掉）
+		// 永远留在库里，代码修好了数据也永远是坏的。
+		//
+		// 这里只让 snippet 变得可刷新，且刻意保持窄口径：
+		//   - 其余列一律不更新。is_read / is_starred / category / ai_summary 都是
+		//     用户或分类流程已经算好的状态，重跑同步不能覆盖（DO UPDATE 若带上它们，
+		//     每轮同步都会把「已读」标回未读）。
+		//   - EXCLUDED.snippet 为空时保留旧值。DeriveSnippet 在「疑似整段 MIME
+		//     又剥不干净」时会返回空串（宁可空着也不把 MIME 转储还给用户）；
+		//     若直接赋值，一次同步就能把正常摘要刷成空白，这比留着旧 MIME 更糟。
+		//   - subject / from_address 同样是从信封派生的，但本轮没有证据表明它们
+		//     出过错，暂不扩大刷新面。
+	//
+	// 2026-10-02 修正：importance / action_reason 也改为「规则判出来才刷新」。
+	// 原来连它们都不刷新，于是「先收信、后配 rules」这条路是断的：fetcher 里
+	// 算出的 importance=high 在 ON CONFLICT 分支被直接丢掉。症状极具迷惑性
+	// ——新邮件走 INSERT 有提醒，旧邮件走 DO UPDATE 永远补不上，而用户唯一能
+	// 让旧邮件重过一遍规则的办法（重置 last_synced_uid 重同步）走的正是
+	// ON CONFLICT。判据是 EXCLUDED 为空 = 这条规则没命中，此时必须保留旧值，
+	// 否则一次没配规则的重跑会把 AI 分类出的 importance 抹成空。
+	//
+	// category 刻意**不**加进来：label-category 只在入库时播种，之后由 AI
+	// 分类（SetClassificationScoped）拥有。若让规则在每次重跑时覆盖它，规则
+	// 就会反过来压过 AI 分类，与「AI 拥有分类结果」的既有语义相反。
+	//
+	// RETURNING (xmax = 0)：xmax 为 0 表示这一行走的是 INSERT 分支，非 0 表示
+	// 走的是 ON CONFLICT DO UPDATE 分支。这是判断「新邮件」的可靠信号——Exec
+	// 拿不到它，而靠「先查后插」会与并发同步竞态。
+	`INSERT INTO emails (id, account_id, workspace_id, message_id, uid, from_address, from_name, subject, snippet, date, is_read, is_starred, category, importance, ai_summary, suggested_action, action_reason, has_attachments, created_at, updated_at)
+			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
+			 ON CONFLICT (id) DO UPDATE SET
+			   snippet = CASE WHEN EXCLUDED.snippet <> '' THEN EXCLUDED.snippet ELSE emails.snippet END,
+			   importance = CASE WHEN EXCLUDED.importance <> '' THEN EXCLUDED.importance ELSE emails.importance END,
+			   action_reason = CASE WHEN EXCLUDED.action_reason <> '' THEN EXCLUDED.action_reason ELSE emails.action_reason END
+			 RETURNING (xmax = 0) AS inserted`,
 		e.ID, e.AccountID, defaultWorkspace(e.WorkspaceID), nullStr(e.MessageID), e.UID,
 		e.FromAddress, e.FromName, e.Subject, e.Snippet, e.Date,
 		e.IsRead, e.IsStarred, e.Category, e.Importance, e.AISummary, e.SuggestedAction,
-		nullStr(e.ActionReason), e.HasAttachments, time.Now().Unix())
+		nullStr(e.ActionReason), e.HasAttachments, time.Now().Unix(), time.Now().Unix()).Scan(&inserted)
 
-	return err
+	return inserted, err
 }
 
 func (s *Store) Close() error { return nil }
@@ -591,6 +828,7 @@ func (s *Store) GetSyncStatus(ctx context.Context, userID string) ([]AccountSync
 func (s *Store) GetSyncStatusScoped(ctx context.Context, userID, workspaceID string) ([]AccountSyncStatus, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT a.id, a.display_name, a.email_address, a.last_synced_uid, a.last_synced_at, a.enabled,
+		       COALESCE(a.last_attempt_at, 0), COALESCE(a.last_sync_error, ''), COALESCE(a.sync_failures, 0),
 		       COALESCE((SELECT COUNT(*) FROM emails e WHERE e.account_id=a.id AND e.is_read=FALSE), 0)
 		FROM email_accounts a WHERE a.user_id=$1 AND a.workspace_id=$2 ORDER BY a.created_at`, userID, workspaceID)
 	if err != nil {
@@ -601,7 +839,8 @@ func (s *Store) GetSyncStatusScoped(ctx context.Context, userID, workspaceID str
 	for rows.Next() {
 		var st AccountSyncStatus
 		var uid, at sql.NullInt64
-		if err := rows.Scan(&st.AccountID, &st.DisplayName, &st.EmailAddress, &uid, &at, &st.Enabled, &st.PendingCount); err != nil {
+		if err := rows.Scan(&st.AccountID, &st.DisplayName, &st.EmailAddress, &uid, &at, &st.Enabled,
+			&st.LastAttemptAt, &st.LastSyncError, &st.SyncFailures, &st.PendingCount); err != nil {
 			return nil, err
 		}
 		if uid.Valid {
@@ -636,18 +875,47 @@ func randomID(prefix string) string {
 //
 // 性能：date 是 BIGINT（Unix 秒）所以用 `date >= start AND date < end` 范围查
 // 询（避免时区问题），命中 idx_emails_date 索引。
-func (s *Store) ListEmailsByDay(ctx context.Context, userID, date string, tzOffsetSec int) ([]Email, error) {
-	t, err := time.Parse("2006-01-02", date)
-	if err != nil {
-		return nil, fmt.Errorf("invalid date %q: %w", date, err)
-	}
+// parseDayStart 把 "YYYY-MM-DD" 解析成该日在用户时区的**起始时刻**。
+//
+// ## 为什么不能用 time.Parse + .In()
+//
+// 曾这么写（ListEmailsByDay / ListEmailsByDayScoped 两处同款缺陷）：
+//
+//	t, _ := time.Parse("2006-01-02", date)   // -> UTC 午夜
+//	loc := time.FixedZone("user", tzOffsetSec)
+//	t = t.In(loc)                            // 只改 Location 字段
+//	startUnix := t.Unix()                    // 恒等于 UTC 午夜
+//
+// `time.Time.In()` 只改变**显示用**的 Location，底层时刻（Unix 值）不变。
+// 所以 tzOffsetSec 传什么都没用，日界恒为 UTC 午夜。
+//
+// 正确写法是 `time.ParseInLocation`：直接在目标时区把 "2026-10-02" 解释成该
+// 时区的午夜（东八区 -> UTC 2026-10-01 16:00）。
+//
+// ## 影响
+//
+// 需求 4 的每日摘要窗口整体错位一个时区。对东八区（+8），用户每天
+// 00:00-08:00 之间触发的摘要，取到的是「当地昨天 08:00 到今天 08:00」的邮件 ——
+// 而非用户认知里的「今天」。late/summary 的邮件归属日整体偏一天。
+func parseDayStart(date string, tzOffsetSec int) (time.Time, error) {
 	loc := time.FixedZone("user", tzOffsetSec)
-	t = t.In(loc)
+	t, err := time.ParseInLocation("2006-01-02", date, loc)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("invalid date %q: %w", date, err)
+	}
+	return t, nil
+}
+
+func (s *Store) ListEmailsByDay(ctx context.Context, userID, date string, tzOffsetSec int) ([]Email, error) {
+	t, err := parseDayStart(date, tzOffsetSec)
+	if err != nil {
+		return nil, err
+	}
 	startUnix := t.Unix()
 	endUnix := t.Add(24 * time.Hour).Unix()
 
 	rows, err := s.pool.Query(ctx, `
-		SELECT e.id, e.account_id, e.from_address, e.from_name, e.subject, e.snippet, e.date, e.is_read, e.is_starred, e.category, e.importance, e.ai_summary, e.suggested_action, e.has_attachments
+		SELECT e.id, e.account_id, e.from_address, e.from_name, e.subject, e.snippet, e.date, e.is_read, e.is_starred, e.category, e.importance, e.ai_summary, e.suggested_action, e.has_attachments, COALESCE(e.folder_name, '')
 		FROM emails e
 		JOIN email_accounts a ON a.id = e.account_id
 		WHERE a.user_id = $1 AND e.date >= $2 AND e.date < $3
@@ -661,9 +929,12 @@ func (s *Store) ListEmailsByDay(ctx context.Context, userID, date string, tzOffs
 	var out []Email
 	for rows.Next() {
 		var e Email
-		var fromName, subject, snippet, category, importance, aiSummary, suggestedAction sql.NullString
-		if err := rows.Scan(&e.ID, &e.AccountID, &e.FromAddress, &fromName, &subject, &snippet, &e.Date, &e.IsRead, &e.IsStarred, &category, &importance, &aiSummary, &suggestedAction, &e.HasAttachments); err != nil {
+		var fromName, subject, snippet, category, importance, aiSummary, suggestedAction, folderName sql.NullString
+		if err := rows.Scan(&e.ID, &e.AccountID, &e.FromAddress, &fromName, &subject, &snippet, &e.Date, &e.IsRead, &e.IsStarred, &category, &importance, &aiSummary, &suggestedAction, &e.HasAttachments, &folderName); err != nil {
 			return nil, err
+		}
+		if folderName.Valid {
+			e.FolderName = folderName.String
 		}
 		if fromName.Valid {
 			e.FromName = fromName.String
@@ -883,37 +1154,35 @@ func (s *Store) UpsertVacationScoped(ctx context.Context, v *VacationReply, user
 	v.UpdatedAt = time.Now().Unix()
 
 	// 1. 先确认目标 account 在 scope 内。
-	var ok bool
-	if err := s.pool.QueryRow(ctx, `
-		SELECT EXISTS (
-			SELECT 1 FROM email_accounts
-			WHERE id = $1 AND user_id = $2 AND workspace_id = $3
-		)
-	`, v.AccountID, userID, workspaceID).Scan(&ok); err != nil {
+	owned, err := s.AccountOwnedBy(ctx, v.AccountID, userID, workspaceID)
+	if err != nil {
 		return err
 	}
-	if !ok {
+	if !owned {
 		return ErrNotFound
 	}
 
 	// 2. 如果 record 已存在，再校验它绑定的 account 是否在 scope 内。
 	//    这一步阻止"创建 vacation 后修改 accountID 指向他人账户"的越权。
+	//    注意查的是**已存在那一行**绑的 account，与第 1 步的入参不是同一个，
+	//    所以不能复用 AccountOwnedBy。
 	if wasExisting {
+		var existingOwned bool
 		if err := s.pool.QueryRow(ctx, `
 			SELECT EXISTS (
 				SELECT 1 FROM email_vacation_replies r
 				JOIN email_accounts a ON a.id = r.account_id
 				WHERE r.id = $1 AND a.user_id = $2 AND a.workspace_id = $3
 			)
-		`, v.ID, userID, workspaceID).Scan(&ok); err != nil {
+		`, v.ID, userID, workspaceID).Scan(&existingOwned); err != nil {
 			return err
 		}
-		if !ok {
+		if !existingOwned {
 			return ErrNotFound
 		}
 	}
 
-	_, err := s.pool.Exec(ctx, `
+	_, err = s.pool.Exec(ctx, `
 		INSERT INTO email_vacation_replies
 			(id, account_id, workspace_id, enabled, start_at, end_at, subject, body_text, last_sent_at, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
@@ -1158,9 +1427,78 @@ func (s *Store) SetAccountAuthTypeScoped(ctx context.Context, id, userID, worksp
 	return err
 }
 
+// UpdateSyncState 记录一次**成功**的同步。
+//
+// 它同时把 last_attempt_at 推进到与 last_synced_at 相同的时刻，并清空
+// last_sync_error / sync_failures —— 「尝试过且成功了」和「从没尝试过」
+// 在这两列上必须能区分开，否则连上了、跑了一轮、又坏掉的情况会被读成
+// 「一切正常，只是最近没新邮件」。
 func (s *Store) UpdateSyncState(ctx context.Context, id string, lastUID int64, lastAt int64) error {
-	_, err := s.pool.Exec(ctx, `UPDATE email_accounts SET last_synced_uid = $2, last_synced_at = $3 WHERE id = $1`, id, lastUID, lastAt)
+	_, err := s.pool.Exec(ctx, `
+		UPDATE email_accounts
+		SET last_synced_uid = $2,
+		    last_synced_at = $3,
+		    last_attempt_at = $3,
+		    last_sync_error = '',
+		    sync_failures = 0
+		WHERE id = $1`, id, lastUID, lastAt)
 	return err
+}
+
+// RecordSyncFailure 记录一次**失败**的同步尝试。
+//
+// last_synced_uid / last_synced_at 一律不动：失败没有推进过任何进度，
+// 改了就是谎报水位（而谎报出来的水位正是这次要解决的问题本身）。
+//
+// errText 会截断——错误串可能带上服务端返回的长文本，也可能含账号信息；
+// 这一列是给人看的状态，不是日志归档。
+func (s *Store) RecordSyncFailure(ctx context.Context, id string, errText string) error {
+	const maxErr = 500
+	if len(errText) > maxErr {
+		errText = errText[:maxErr] + "…(truncated)"
+	}
+	_, err := s.pool.Exec(ctx, `
+		UPDATE email_accounts
+		SET last_attempt_at = $2,
+		    last_sync_error = $3,
+		    sync_failures = sync_failures + 1
+		WHERE id = $1`, id, time.Now().Unix(), errText)
+	return err
+}
+
+// AccountCredentialID 是一个账户的 ID 与其加密凭据。
+type AccountCredentialID struct {
+	ID               string
+	EmailAddress     string
+	CredentialCipher string
+}
+
+// ListEnabledAccountCredentials 返回所有**启用**账户的 ID 与加密凭据。
+//
+// 用途只有一个：启动自检（见 CheckCredentials）。config.Validate 只检查
+// POCKET_EMAIL_MASTER_KEY「非空」，不检查它对不对；一把**错**的 key 会让
+// 进程照常启动、界面照常打开，然后每一个账户都解不开凭据。要发现这种状态，
+// 必须在启动时真解一次。
+//
+// 刻意不返回明文，也不写库。
+func (s *Store) ListEnabledAccountCredentials(ctx context.Context) ([]AccountCredentialID, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, email_address, COALESCE(credential_encrypted, '')
+		FROM email_accounts WHERE enabled = TRUE ORDER BY created_at
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []AccountCredentialID
+	for rows.Next() {
+		var r AccountCredentialID
+		if err := rows.Scan(&r.ID, &r.EmailAddress, &r.CredentialCipher); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }
 
 // ListEnabledAccounts 返回所有启用的账户。
@@ -1418,6 +1756,71 @@ func (s *Store) UpdateAccountScoped(ctx context.Context, a *Account, userID, wor
 	return tx.Commit(ctx)
 }
 
+// ErrStaleWrite 表示 LWW 守卫拒绝了一次写：服务端这一行在客户端上次读到之后
+// 已经被改过（updated_at 比客户端携带的基准新）。调用方（HTTP 层）应回 409
+// 并附上服务端当前 updated_at，让客户端改走下行覆盖，而不是静默丢弃。
+var ErrStaleWrite = errors.New("email: account updated on server after client's base version")
+
+// UpdateAccountLWTScoped 是 UpdateAccountScoped 的 LWW 版本：带 baseUpdatedAt
+// 守卫，客户端携带「我上次读到的 updated_at」来写。
+//
+// 需求原文：「这个信息有最后修改时间，在服务端与客户端中，以最后时间为准来
+// 更新旧的一方。」旧实现无条件 `updated_at = now()` 覆盖，离线客户端回传
+// 旧配置会把服务端的新配置冲掉（last-write-by-arrival，不是 last-write-by-time）。
+//
+// 守卫用 `updated_at <= $base` 而不是 `<`：客户端的基准若因时钟偏差偏大，
+// 仍允许其写入（它手上的确实更新），只有「服务端被别人写得更晚」才拒绝。
+// 写入后的 updated_at 取 max(now, base+1)，保证单调递增——否则秒级时间戳
+// 可能与旧值相同，客户端下一轮会误判成「没变过」。
+//
+// baseUpdatedAt <= 0 时退化为旧行为（服务端无条件覆盖），供不带版本的旧客户端
+// 与服务端内部调用使用。
+func (s *Store) UpdateAccountLWTScoped(ctx context.Context, a *Account, userID, workspaceID, credential string, updateCredential bool, baseUpdatedAt int64) error {
+	if baseUpdatedAt <= 0 {
+		return s.UpdateAccountScoped(ctx, a, userID, workspaceID, credential, updateCredential)
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	next := time.Now().Unix()
+	if next <= baseUpdatedAt {
+		next = baseUpdatedAt + 1
+	}
+	a.UpdatedAt = next
+	query := `UPDATE email_accounts SET display_name=$1, imap_host=$2, imap_port=$3,
+		auth_type=$4, sync_interval_min=$5, rules=$6, enabled=$7, updated_at=$8
+		WHERE id=$9 AND user_id=$10 AND workspace_id=$11 AND updated_at <= $12`
+	args := []any{a.DisplayName, a.IMAPHost, a.IMAPPort, a.AuthType, a.SyncIntervalMin, nullStr(a.Rules), a.Enabled, next, a.ID, userID, workspaceID, baseUpdatedAt}
+	if updateCredential {
+		query = `UPDATE email_accounts SET display_name=$1, imap_host=$2, imap_port=$3,
+			auth_type=$4, sync_interval_min=$5, rules=$6, enabled=$7, updated_at=$8, credential_encrypted=$9
+			WHERE id=$10 AND user_id=$11 AND workspace_id=$12 AND updated_at <= $13`
+		args = []any{a.DisplayName, a.IMAPHost, a.IMAPPort, a.AuthType, a.SyncIntervalMin, nullStr(a.Rules), a.Enabled, next, credential, a.ID, userID, workspaceID, baseUpdatedAt}
+	}
+	res, err := tx.Exec(ctx, query, args...)
+	if err != nil {
+		return err
+	}
+	if res.RowsAffected() == 0 {
+		// 区分「不存在/不属于本 scope」与「存在但版本过期」：前者 404，后者 409。
+		var cur int64
+		err := s.pool.QueryRow(ctx,
+			`SELECT updated_at FROM email_accounts WHERE id=$1 AND user_id=$2 AND workspace_id=$3`,
+			a.ID, userID, workspaceID).Scan(&cur)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		a.UpdatedAt = cur
+		return ErrStaleWrite
+	}
+	return tx.Commit(ctx)
+}
+
 // DeleteAccountScoped deletes an account only when it belongs to the scope.
 func (s *Store) DeleteAccountScoped(ctx context.Context, id, userID, workspaceID string) error {
 	res, err := s.pool.Exec(ctx, `DELETE FROM email_accounts WHERE id=$1 AND user_id=$2 AND workspace_id=$3`, id, userID, workspaceID)
@@ -1433,7 +1836,9 @@ func (s *Store) DeleteAccountScoped(ctx context.Context, id, userID, workspaceID
 // ListEmailsScoped lists mail belonging to the requested user/workspace.
 func (s *Store) ListEmailsScoped(ctx context.Context, filter ListFilter, userID, workspaceID string) ([]Email, error) {
 	q := `SELECT e.id, e.account_id, e.from_address, e.from_name, e.subject, e.snippet, e.date,
-		e.is_read, e.is_starred, e.category, e.importance, e.ai_summary, e.suggested_action, e.has_attachments
+		e.is_read, e.is_starred, e.category, e.importance, e.ai_summary, e.suggested_action,
+		COALESCE(e.action_reason, ''), e.has_attachments,
+		COALESCE(e.folder_name, '')
 		FROM emails e JOIN email_accounts a ON a.id=e.account_id
 		WHERE a.user_id=$1 AND a.workspace_id=$2 AND COALESCE(e.deleted_at, 0)=0`
 	args := []any{userID, workspaceID}
@@ -1454,6 +1859,17 @@ func (s *Store) ListEmailsScoped(ctx context.Context, filter ListFilter, userID,
 	}
 	if filter.Uncategorized {
 		q += " AND (e.category IS NULL OR e.category = '')"
+	}
+	// Folder 过滤："" = 收件箱默认视图（不在任何目录里）；具体名字 = 该目录；
+	// "__all__" = 全部（清理/整理等跨目录场景）。迁移到目录的邮件会从
+	// 收件箱视图消失，但仍在目录视图与全量视图里可见。
+	switch filter.Folder {
+	case "__all__":
+	case "":
+		q += " AND COALESCE(e.folder_name, '') = ''"
+	default:
+		q += fmt.Sprintf(" AND COALESCE(e.folder_name, '') = $%d", len(args)+1)
+		args = append(args, filter.Folder)
 	}
 	if filter.Since > 0 {
 		sinceSec, sinceMs := filter.Since, filter.Since
@@ -1500,6 +1916,58 @@ func (s *Store) ListEmailsScoped(ctx context.Context, filter ListFilter, userID,
 	return out, rows.Err()
 }
 
+// CountEmailsScoped counts mail matching the same filter as ListEmailsScoped,
+// without the limit.
+//
+// 客户端缓存自愈要比「本地行数 vs 服务端行数」来判定缺口。用 listEmails 的
+// 返回长度当行数是错的：列表接口限流（上限 500），邮箱里超过 500 封时返回
+// 长度恒等于 limit，缺口信号被彻底抹平 —— 正是「邮件丢了但自愈不触发」的
+// 又一处根因。客户端 email-cache-heal 的 server-ahead 信号依赖这个真值。
+func (s *Store) CountEmailsScoped(ctx context.Context, filter ListFilter, userID, workspaceID string) (int64, error) {
+	q := `SELECT COUNT(*) FROM emails e JOIN email_accounts a ON a.id=e.account_id
+		WHERE a.user_id=$1 AND a.workspace_id=$2 AND COALESCE(e.deleted_at, 0)=0`
+	args := []any{userID, workspaceID}
+	if filter.AccountID != "" {
+		q += fmt.Sprintf(" AND e.account_id=$%d", len(args)+1)
+		args = append(args, filter.AccountID)
+	}
+	if filter.Category != "" {
+		q += fmt.Sprintf(" AND e.category=$%d", len(args)+1)
+		args = append(args, filter.Category)
+	}
+	if filter.Importance != "" {
+		q += fmt.Sprintf(" AND e.importance=$%d", len(args)+1)
+		args = append(args, filter.Importance)
+	}
+	if filter.UnreadOnly {
+		q += " AND e.is_read=FALSE"
+	}
+	if filter.Uncategorized {
+		q += " AND (e.category IS NULL OR e.category = '')"
+	}
+	if filter.Since > 0 {
+		// 与 ListEmailsScoped 的 since 语义逐字一致，否则 count 与 list
+		// 统计的不是同一个集合，客户端会拿两个不同集合的大小相减。
+		sinceSec, sinceMs := filter.Since, filter.Since
+		if sinceMs > 1_000_000_000_000 {
+			sinceSec = sinceMs / 1000
+		} else if sinceSec > 1_000_000_000 {
+			sinceMs = sinceSec * 1000
+		}
+		stamp := "GREATEST(e.date, COALESCE(e.processed_at, 0), e.created_at)"
+		q += fmt.Sprintf(
+			" AND ((%s > 1000000000000 AND %s > $%d) OR (%s <= 1000000000000 AND %s > $%d))",
+			stamp, stamp, len(args)+1, stamp, stamp, len(args)+2,
+		)
+		args = append(args, sinceMs, sinceSec)
+	}
+	var n int64
+	if err := s.pool.QueryRow(ctx, q, args...).Scan(&n); err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
 // ListDeletedEmailIDsScoped 返回 deleted_at 晚于 since 的软删除邮件 id
 // （墓碑清单），供客户端把「其他端已删除」的行从本地缓存移除。
 // since 语义与 ListFilter.Since 一致：Unix 秒；毫秒（>1e12）自动归一。
@@ -1538,19 +2006,35 @@ func (s *Store) ListDeletedEmailIDsScoped(ctx context.Context, since int64, user
 
 // GetEmailByIDScoped returns a message only within the requested scope.
 //
-// 比 scanEmail 多读 uid + body_path：handleEmailBody 用 uid 拉 IMAP 正文，
-// 用 body_path 判断加密缓存是否已落盘。其余 list 路径不需要这两列。
+// 比 scanEmail 多读 uid + body_path + message_id + body_purged：
+//   - handleEmailBody 用 uid 拉 IMAP 正文，用 body_path 判断加密缓存是否已落盘；
+//   - message_id 见 GetEmailByID 里的说明（漏掉会静默废掉发票自愈的强身份判据）；
+//   - body_purged 见下面的说明（漏掉会让 summarizeBody 的「禁止回源」守卫失效）。
 func (s *Store) GetEmailByIDScoped(ctx context.Context, id, userID, workspaceID string) (*Email, error) {
 	var e Email
-	var fromName, subject, snippet, category, importance, aiSummary, suggestedAction, bodyPath sql.NullString
+	// 冲突记录：两侧在本方法上**已经等价**——都查了 message_id 与 body_purged
+	// （两侧各自独立发现这两个字段「一直写、从不读」：body_purged 漏查会让
+	// server_email_summary.summarizeBody 的 `if em.BodyPurged { return "" }`
+	// 守卫恒不触发，已软删的邮件会被 IMAP 回源、喂给 LLM、再把摘要写回已删除
+	// 的行），差别只是 SELECT 的列顺序与 Scan 的对应位置。取 main 侧。
+	var fromName, subject, snippet, category, importance, aiSummary, suggestedAction, bodyPath, folderName, messageID, actionReason sql.NullString
+	var bodyPurged sql.NullBool
 	var uid sql.NullInt64
+	// message_id / body_purged 的理由同 GetEmailByID：这两列一旦漏查，
+	// 下游拿到的结构体就是「字段恒零值」，守卫分支在生产里从不执行，
+	// 而且不产生任何错误信号。
+	//
+	// action_reason 同样属于「写进库了但读路径从不读」的一类（q2）：详情页
+	// 要展示「为什么这封被判为重要」，缺了它用户只能看到结论看不到依据。
 	err := s.pool.QueryRow(ctx, `SELECT e.id, e.account_id, e.uid, e.from_address, e.from_name, e.subject, e.snippet,
-		e.date, e.is_read, e.is_starred, e.category, e.importance, e.ai_summary, e.suggested_action, e.has_attachments,
-		e.body_path
+		e.date, e.is_read, e.is_starred, e.category, e.importance, e.ai_summary, e.suggested_action,
+		COALESCE(e.action_reason, ''), e.has_attachments,
+		e.body_path, e.message_id, COALESCE(e.body_purged, FALSE), COALESCE(e.folder_name, '')
 		FROM emails e JOIN email_accounts a ON a.id=e.account_id
 		WHERE e.id=$1 AND a.user_id=$2 AND a.workspace_id=$3`, id, userID, workspaceID).
 		Scan(&e.ID, &e.AccountID, &uid, &e.FromAddress, &fromName, &subject, &snippet, &e.Date, &e.IsRead,
-			&e.IsStarred, &category, &importance, &aiSummary, &suggestedAction, &e.HasAttachments, &bodyPath)
+			&e.IsStarred, &category, &importance, &aiSummary, &suggestedAction, &actionReason, &e.HasAttachments, &bodyPath,
+			&messageID, &bodyPurged, &folderName)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -1559,6 +2043,18 @@ func (s *Store) GetEmailByIDScoped(ctx context.Context, id, userID, workspaceID 
 	}
 	if uid.Valid {
 		e.UID = uid.Int64
+	}
+	if messageID.Valid {
+		e.MessageID = messageID.String
+	}
+	if actionReason.Valid {
+		e.ActionReason = actionReason.String
+	}
+	if bodyPurged.Valid {
+		e.BodyPurged = bodyPurged.Bool
+	}
+	if folderName.Valid {
+		e.FolderName = folderName.String
 	}
 	if fromName.Valid {
 		e.FromName = fromName.String
@@ -1737,9 +2233,19 @@ func (s *Store) UpdateEmailFlagsScoped(ctx context.Context, id, userID, workspac
 
 func scanEmail(row interface{ Scan(...any) error }) (*Email, error) {
 	var e Email
-	var fromName, subject, snippet, category, importance, aiSummary, suggestedAction sql.NullString
+	var fromName, subject, snippet, category, importance, aiSummary, suggestedAction, actionReason, folderName sql.NullString
+	// action_reason 的位置在 suggested_action 之后、has_attachments 之前，与
+	// ListEmailsScoped 的 SELECT 列序一一对应。**加列时两边必须同步改** ——
+	// Scan 的位置错位不会编译报错，只会让每封邮件的字段整体串位（这里会让
+	// HasAttachments 拿到 action_reason 的值），且不产生任何错误信号。
+	//
+	// 为什么补这一列（q2）：action_reason 早就写进库了（SetClassificationWithReasonScoped
+	// / applyInlineRules），但**读路径从来没读过它**——于是「为什么这封被判为重要」
+	// 在列表和详情页都拿不到，提醒不可信、用户无法判断该不该点开。
+	// 真库实测 122/122 为空是另一个问题（上游 DTO 曾丢字段，已修），但读路径
+	// 缺失是独立的一处：即使有值也显示不出来。
 	err := row.Scan(&e.ID, &e.AccountID, &e.FromAddress, &fromName, &subject, &snippet, &e.Date, &e.IsRead,
-		&e.IsStarred, &category, &importance, &aiSummary, &suggestedAction, &e.HasAttachments)
+		&e.IsStarred, &category, &importance, &aiSummary, &suggestedAction, &actionReason, &e.HasAttachments, &folderName)
 	if err != nil {
 		return nil, err
 	}
@@ -1763,6 +2269,12 @@ func scanEmail(row interface{ Scan(...any) error }) (*Email, error) {
 	}
 	if suggestedAction.Valid {
 		e.SuggestedAction = suggestedAction.String
+	}
+	if actionReason.Valid {
+		e.ActionReason = actionReason.String
+	}
+	if folderName.Valid {
+		e.FolderName = folderName.String
 	}
 	return &e, nil
 }
@@ -1853,18 +2365,17 @@ func (s *Store) UpsertSummaryScoped(ctx context.Context, sum *DailySummary) erro
 // ListEmailsByDay joins on user_id only, so a multi-workspace user would get
 // every workspace's mail mixed into one summary.
 func (s *Store) ListEmailsByDayScoped(ctx context.Context, userID, workspaceID, date string, tzOffsetSec int) ([]Email, error) {
-	t, err := time.Parse("2006-01-02", date)
+	t, err := parseDayStart(date, tzOffsetSec)
 	if err != nil {
-		return nil, fmt.Errorf("invalid date %q: %w", date, err)
+		return nil, err
 	}
-	loc := time.FixedZone("user", tzOffsetSec)
-	t = t.In(loc)
 	startUnix := t.Unix()
 	endUnix := t.Add(24 * time.Hour).Unix()
 
 	rows, err := s.pool.Query(ctx, `
 		SELECT e.id, e.account_id, e.from_address, e.from_name, e.subject, e.snippet, e.date,
-		       e.is_read, e.is_starred, e.category, e.importance, e.ai_summary, e.suggested_action, e.has_attachments
+		       e.is_read, e.is_starred, e.category, e.importance, e.ai_summary, e.suggested_action, e.has_attachments,
+		       COALESCE(e.folder_name, '')
 		FROM emails e
 		JOIN email_accounts a ON a.id = e.account_id
 		WHERE a.user_id = $1 AND a.workspace_id = $2 AND e.date >= $3 AND e.date < $4
@@ -1879,12 +2390,15 @@ func (s *Store) ListEmailsByDayScoped(ctx context.Context, userID, workspaceID, 
 	var out []Email
 	for rows.Next() {
 		var e Email
-		var fromName, subject, snippet, category, importance, aiSummary, suggestedAction sql.NullString
+		var fromName, subject, snippet, category, importance, aiSummary, suggestedAction, folderName sql.NullString
 		if err := rows.Scan(&e.ID, &e.AccountID, &e.FromAddress, &fromName, &subject, &snippet, &e.Date,
-			&e.IsRead, &e.IsStarred, &category, &importance, &aiSummary, &suggestedAction, &e.HasAttachments); err != nil {
+			&e.IsRead, &e.IsStarred, &category, &importance, &aiSummary, &suggestedAction, &e.HasAttachments, &folderName); err != nil {
 			return nil, err
 		}
 		e.WorkspaceID = defaultWorkspace(workspaceID)
+		if folderName.Valid {
+			e.FolderName = folderName.String
+		}
 		if fromName.Valid {
 			e.FromName = fromName.String
 		}

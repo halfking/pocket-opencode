@@ -16,19 +16,30 @@ interface EmailFetchPlugin {
   schedule(opts: { intervalMs: number }): Promise<void>
 }
 
-let plugin: EmailFetchPlugin | null = null
+// BUG-G (2026-09-30)：Capacitor 的 registerPlugin() 返回**带 .then 的 thenable
+// 代理**。把它从 async 函数 return、或当作 .then() 回调的返回值，promise 决议
+// 都会去调它的 .then()，未实现的原生插件直接抛
+//   Error: "EmailFetch.then()" is not implemented on android
+// 这会让 email-fetch-run.ts 里写好的「原生不可用就静默降级为仅服务端拉取」
+// 变成未捕获异常。一律用非 thenable 的盒子 { value } 装载。
+type EmailFetchBox = { value: EmailFetchPlugin | null }
+
+let plugin: EmailFetchBox | null = null
 let loading: Promise<void> | null = null
 
-async function ensurePlugin(): Promise<EmailFetchPlugin | null> {
+async function ensurePlugin(): Promise<EmailFetchBox | null> {
   if (!Capacitor.isNativePlatform()) return null
   if (plugin) return plugin
   if (!loading) {
+    // 回调不返回值：赋值结果若被当作 promise 决议值，会再次触发 thenable 陷阱
     loading = Promise.resolve().then(() => {
+      let p: EmailFetchPlugin | null = null
       try {
-        plugin = (capRegisterPlugin as <T>(name: string) => T)('EmailFetch')
+        p = (capRegisterPlugin as <T>(name: string) => T)('EmailFetch')
       } catch {
-        plugin = null
+        p = null
       }
+      plugin = { value: p }
     })
   }
   await loading
@@ -36,7 +47,8 @@ async function ensurePlugin(): Promise<EmailFetchPlugin | null> {
 }
 
 export async function configureNativeEmailFetch(apiBase: string, token: string): Promise<boolean> {
-  const p = await ensurePlugin()
+  const box = await ensurePlugin()
+  const p = box?.value
   if (!p || !apiBase || !token) return false
   try {
     await p.configure({ apiBase: apiBase.replace(/\/$/, ''), token })
@@ -47,7 +59,7 @@ export async function configureNativeEmailFetch(apiBase: string, token: string):
 }
 
 export async function scheduleNativeEmailFetch(intervalMs: number): Promise<boolean> {
-  const p = await ensurePlugin()
+  const p = (await ensurePlugin())?.value
   if (!p) return false
   try {
     await p.schedule({ intervalMs })
@@ -58,7 +70,7 @@ export async function scheduleNativeEmailFetch(intervalMs: number): Promise<bool
 }
 
 export async function runNativeEmailFetch(): Promise<NativeEmailFetchResult> {
-  const p = await ensurePlugin()
+  const p = (await ensurePlugin())?.value
   if (!p) return { used: false, synced: 0, newCount: 0, classified: 0 }
   try {
     const r = await p.runNow()

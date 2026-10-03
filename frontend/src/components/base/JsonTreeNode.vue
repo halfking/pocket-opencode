@@ -94,7 +94,7 @@ function displayValue(v: unknown, t: string): string {
 
 <style scoped>
 .json-node {
-  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: inherit;
 }
 
@@ -128,7 +128,7 @@ function displayValue(v: unknown, t: string): string {
 }
 
 .json-toggle .material-symbols-outlined {
-  font-size: 14px;
+  font-size: var(--text-base);
 }
 
 .json-key {

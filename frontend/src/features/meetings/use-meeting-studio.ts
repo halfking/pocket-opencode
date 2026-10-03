@@ -2,6 +2,7 @@ import { computed, type Ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useConfirm } from '../../composables/useConfirm'
 import { useToast } from '../../composables/useToast'
+import { useApiError } from '../../composables/useApiError'
 import { deleteMeetingAudio } from '../../native/meeting-audio'
 import { canDispatchMeeting, type MeetingStudioAction } from './meeting-page-actions'
 import { archiveMeeting, deleteMeeting, unarchiveMeeting, type LocalMeeting } from './meetings-store'
@@ -13,6 +14,7 @@ export function useMeetingStudio(
 ) {
   const router = useRouter()
   const toast = useToast()
+  const apiError = useApiError()
   const { confirm } = useConfirm()
   const canDispatch = computed(() => meeting.value ? canDispatchMeeting(meeting.value) : false)
 
@@ -42,7 +44,7 @@ export function useMeetingStudio(
         toast.success('已下达任务给 ACC')
         await router.push(`/settings/scheduled-tasks/${task.id}`)
       } catch (e) {
-        toast.error(e instanceof Error ? e.message : '下达失败')
+        toast.error(apiError(e, 'errors.operateFailed'))
       }
       return
     }

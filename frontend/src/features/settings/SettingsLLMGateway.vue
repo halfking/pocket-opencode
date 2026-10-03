@@ -46,7 +46,7 @@
           v-model="form.baseURL"
           class="form-input"
           type="text"
-          placeholder="https://llmgo.kxpms.cn/v1"
+          placeholder="https://llm.kxpms.cn/v1"
           autocapitalize="off"
           autocorrect="off"
           spellcheck="false"
@@ -156,7 +156,13 @@ import { ref, computed, onMounted, reactive } from 'vue'
 import { useRouter } from 'vue-router'
 import { api, type GatewayConfig, type GatewayTestResult } from '../../api/client'
 import { createScrollHideChrome } from '../../composables/useScrollHideChrome'
+import { useApiError } from '../../composables/useApiError'
 import { saveSettingLocalFirst } from '../../native/config-sync/runtime'
+import {
+  DEFAULT_GATEWAY_BASE_URL,
+  DEFAULT_GATEWAY_FORMAT,
+  DEFAULT_GATEWAY_PREFERRED_MODELS,
+} from '../../constants/llm-gateway'
 
 const router = useRouter()
 
@@ -182,20 +188,20 @@ function measureChrome() {
 }
 
 const original = reactive<GatewayConfig>({
-  baseURL: '',
+  baseURL: DEFAULT_GATEWAY_BASE_URL,
   apiKeySet: false,
   apiKey: '',
-  models: [],
+  models: [...DEFAULT_GATEWAY_PREFERRED_MODELS],
   source: 'pocketd',
-  format: 'openai-chat',
-  preferredModels: [],
+  format: DEFAULT_GATEWAY_FORMAT,
+  preferredModels: [...DEFAULT_GATEWAY_PREFERRED_MODELS],
   formats: [],
 })
 
 const form = reactive({
-  baseURL: '',
+  baseURL: DEFAULT_GATEWAY_BASE_URL,
   apiKey: '',
-  format: 'openai-chat',
+  format: DEFAULT_GATEWAY_FORMAT,
 })
 
 /** 消息格式下拉框（优先服务端 formats，本地兜底同源常量）。 */
@@ -210,9 +216,13 @@ const formatOptions = computed(() =>
     : Object.entries(FORMAT_LABELS).map(([value, label]) => ({ value, label })),
 )
 
-/** 模型目录（测试连接后填充，勾选常用模型的候选）。 */
-const catalogModels = ref<string[]>([])
-const preferredSel = ref<Set<string>>(new Set())
+/**
+ * 模型目录（测试连接后填充，勾选常用模型的候选）。
+ * 初值用默认常用模型：离线 / 后端未起时那 9 个 chip 仍然可见可取消勾选，
+ * 而不是只留一句"测试连接后拉取目录"。后端返回真实目录后会整体替换它。
+ */
+const catalogModels = ref<string[]>([...DEFAULT_GATEWAY_PREFERRED_MODELS])
+const preferredSel = ref<Set<string>>(new Set(DEFAULT_GATEWAY_PREFERRED_MODELS))
 const modelSearch = ref('')
 
 /** 模型 id → 原厂分组。规则按前缀匹配，未识别归入「其他」（排在最后）。 */
@@ -275,6 +285,8 @@ const saving = ref(false)
 
 type StatusKind = 'info' | 'success' | 'error'
 const status = ref<{ kind: StatusKind; text: string } | null>(null)
+/** 后端/网络原文（如 "Failed to fetch"）不直接上屏，统一归一为可读文案。 */
+const apiError = useApiError()
 
 const canTest = computed(() => form.baseURL.trim().length > 0)
 const canSave = computed(
@@ -287,16 +299,28 @@ onMounted(async () => {
     const raw = await api.getGatewayConfig()
     const cfg = { ...raw, models: raw.models ?? [], preferredModels: raw.preferredModels ?? [] }
     Object.assign(original, cfg)
-    form.baseURL = cfg.baseURL
-    form.format = cfg.format || 'openai-chat'
+    // 后端为空时保留内置默认（用户可能在设置里存过空/半截配置）。
+    form.baseURL = cfg.baseURL || DEFAULT_GATEWAY_BASE_URL
+    form.format = cfg.format || DEFAULT_GATEWAY_FORMAT
+    // preferredModels 空 = 用户主动清空（= 展示全部），不回落默认，否则
+    // "清空"后每次进设置页又被悄悄勾回 9 个。
     preferredSel.value = new Set(cfg.preferredModels)
     // 目录已有缓存模型时直接可作为勾选候选
     if (cfg.models.length > 0) catalogModels.value = cfg.models
   } catch (err: any) {
-    setStatus('error', '加载失败：' + (err?.message || err))
+    // 拉不到后端配置（离线/后端未起）时，表单停留在内置默认值上，
+    // 状态条说明这一点，避免用户以为"没配置过"。
+    setStatus('error', `${apiError(err, 'errors.loadGatewayFailed')}（当前显示的是内置默认网关配置）`, 0)
   }
 })
 
+/**
+ * ttl 默认 5000ms 自动消失。
+ * 但「测试连接」的**结果本身就是这条提示的内容** —— 5 秒后自动清空，
+ * 用户扫一眼页面再回来就什么都不剩，还得重新点一次。
+ * 真机实测（360dp）：失败提示在 ~5s 后消失，页面回到无任何状态的样子。
+ * 所以结果类状态一律传 ttl=0（常驻到下一次操作），只有纯提示性的才用默认值。
+ */
 function setStatus(kind: StatusKind, text: string, ttl = 5000) {
   status.value = { kind, text }
   if (ttl > 0) {
@@ -319,18 +343,23 @@ async function onTest() {
     }
     const r: GatewayTestResult = await api.testGateway()
     if (r.ok) {
-      setStatus('success', `✓ 连通 (HTTP ${r.status}) · ${r.models?.length || 0} 个模型`)
+      setStatus('success', `✓ 连通 (HTTP ${r.status}) · ${r.models?.length || 0} 个模型`, 0)
       try {
         const cfg = await api.getGatewayConfig()
         Object.assign(original, cfg, { models: cfg.models ?? [], preferredModels: cfg.preferredModels ?? [] })
         if ((cfg.models ?? []).length > 0) catalogModels.value = cfg.models ?? []
         if ((r.models ?? []).length > 0) catalogModels.value = r.models ?? catalogModels.value
-      } catch {}
+      } catch {
+        // 连通性上面已经测通了（成功状态已设）。这里的 getGatewayConfig 只是
+        // 刷新本地快照，失败不影响已得出的结论，故静默。
+        // 护栏：src/__tests__/silent-catch-must-explain-itself.test.mjs
+      }
     } else {
-      setStatus('error', `✗ 失败：${r.error || r.response || 'HTTP ' + r.status}`)
+      setStatus('error', `✗ ${apiError(r, 'errors.gatewayUnreachable')}`, 0)
     }
   } catch (err: any) {
-    setStatus('error', '✗ ' + (err?.message || String(err)))
+    // 原来是 `'✗ ' + err.message`，真机上直接把 "Failed to fetch" 摆给用户
+    setStatus('error', `✗ ${apiError(err, 'errors.gatewayUnreachable')}`, 0)
   } finally {
     testing.value = false
   }
@@ -341,10 +370,10 @@ async function onSave() {
   try {
     const models = catalogModels.value.length > 0 ? catalogModels.value : original.models
     await persistGateway(models)
-    setStatus('success', '✓ 已保存到本地，并同步服务端')
+    setStatus('success', '✓ 已保存到本地，并同步服务端', 0)
     setTimeout(() => router.back(), 800)
   } catch (err: any) {
-    setStatus('error', '保存失败：' + (err?.message || err))
+    setStatus('error', `✗ ${apiError(err, 'errors.saveFailed')}`, 0)
   } finally {
     saving.value = false
   }
@@ -444,7 +473,8 @@ function goBack() {
 
 .title {
   flex: 1;
-  font-size: 16px;
+  /* 走 token：与 SettingsSTT 的 .title 保持同源，避免两边各自写死 px 后漂移。 */
+  font-size: var(--text-lg);
   font-weight: 600;
   color: var(--text-primary);
 }
@@ -452,7 +482,7 @@ function goBack() {
 .status-bar {
   flex: 0 0 auto;
   padding: 10px 16px;
-  font-size: 13px;
+  font-size: var(--text-smd);
   text-align: center;
   font-weight: 500;
   border-bottom: 1px solid var(--border);
@@ -492,7 +522,7 @@ function goBack() {
 }
 
 .form-label {
-  font-size: 13px;
+  font-size: var(--text-smd);
   font-weight: 600;
   color: var(--text-secondary);
 }
@@ -500,8 +530,8 @@ function goBack() {
 .form-input {
   width: 100%;
   padding: 12px 14px;
-  font-size: 14px;
-  font-family: 'SF Mono', Menlo, monospace;
+  font-size: var(--text-base);
+  font-family: var(--font-mono);
   background: var(--bg-card);
   color: var(--text-primary);
   border: 1px solid var(--border);
@@ -516,16 +546,18 @@ function goBack() {
 }
 
 .form-hint {
-  font-size: 12px;
+  /* 走 token：渲染值不变（--text-sm 就是 12px），与 SettingsSTT /
+     SettingsPermissionsView 的说明文字同源。 */
+  font-size: var(--text-sm);
   color: var(--text-muted);
 }
 
 .form-hint code {
-  font-family: 'SF Mono', Menlo, monospace;
+  font-family: var(--font-mono);
   background: var(--bg-subtle);
   padding: 1px 5px;
   border-radius: 4px;
-  font-size: 11px;
+  font-size: var(--text-2xs);
 }
 
 .form-hint .model-chip {
@@ -550,7 +582,7 @@ function goBack() {
 
 .key-row .form-input {
   flex: 1;
-  font-family: 'SF Mono', Menlo, monospace;
+  font-family: var(--font-mono);
 }
 
 .key-toggle {
@@ -560,7 +592,7 @@ function goBack() {
   border: 1px solid var(--border);
   background: var(--bg-card);
   cursor: pointer;
-  font-size: 18px;
+  font-size: var(--text-xl);
 }
 
 .action-row {
@@ -627,7 +659,7 @@ function goBack() {
   align-items: center;
   justify-content: space-between;
   padding: 10px 12px;
-  font-size: 13px;
+  font-size: var(--text-smd);
   font-weight: 600;
   color: var(--text-primary);
   cursor: pointer;
@@ -642,7 +674,7 @@ function goBack() {
 .group-head::after {
   content: '▾';
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: var(--text-sm);
   transition: transform 160ms ease;
 }
 
@@ -656,7 +688,7 @@ function goBack() {
 
 .group-count {
   margin-right: 10px;
-  font-size: 11px;
+  font-size: var(--text-2xs);
   font-weight: 500;
   color: var(--text-secondary);
   background: var(--bg-subtle);
@@ -690,7 +722,7 @@ function goBack() {
 }
 
 .chip-check {
-  font-size: 14px;
+  font-size: var(--text-base);
 }
 
 .chip-name {
@@ -704,7 +736,7 @@ function goBack() {
 .btn-primary {
   flex: 1;
   padding: 14px;
-  font-size: 14px;
+  font-size: var(--text-base);
   font-weight: 600;
   border: none;
   border-radius: 999px;

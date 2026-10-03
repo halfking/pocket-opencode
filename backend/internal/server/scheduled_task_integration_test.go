@@ -3,10 +3,13 @@ package server
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -15,24 +18,77 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// TestScheduledTaskEndToEnd 验证完整的 create → claim → execute → audit → WebSocket → history 闭环。
-// 这是一个集成测试，需要 PostgreSQL 可用才能运行。
-func TestScheduledTaskEndToEnd(t *testing.T) {
-	dsn := os.Getenv("POCKET_POSTGRES_DSN")
+const schedTaskITSchemaPrefix = "sched_task_it_test_"
+
+// newIsolatedSchedTaskPool 返回钉在一次性 schema 上的连接池。
+//
+// 原实现直接用 **POCKET_POSTGRES_DSN**（服务自己的生产连接串）：没有显式的
+// 测试开关，也没有 schema 隔离。这两个集成测试随后会建表、创建任务、跑
+// scheduler 循环并写审计行——全部落在生产 scheduled_tasks 表上，而且照报 ok。
+// 现在只认 POCKET_TEST_POSTGRES_DSN，并隔离 schema。
+func newIsolatedSchedTaskPool(t *testing.T) *pgxpool.Pool {
+	t.Helper()
+	dsn := os.Getenv("POCKET_TEST_POSTGRES_DSN")
 	if dsn == "" {
-		t.Skip("POCKET_POSTGRES_DSN not set; skipping integration test")
+		t.Skip("POCKET_TEST_POSTGRES_DSN not set; skipping integration test")
+	}
+	ctx := context.Background()
+
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		t.Fatalf("parse dsn: %v", err)
+	}
+	var suffix [8]byte
+	if _, err := rand.Read(suffix[:]); err != nil {
+		t.Fatalf("rand: %v", err)
+	}
+	schema := schedTaskITSchemaPrefix + hex.EncodeToString(suffix[:])
+
+	rootCfg := cfg.Copy()
+	delete(rootCfg.ConnConfig.RuntimeParams, "search_path")
+	rootPool, err := pgxpool.NewWithConfig(ctx, rootCfg)
+	if err != nil {
+		t.Skipf("pgx connect (root): %v", err)
+	}
+	if perr := rootPool.Ping(ctx); perr != nil {
+		rootPool.Close()
+		t.Skipf("PostgreSQL not reachable: %v", perr)
+	}
+	if _, err := rootPool.Exec(ctx, "CREATE SCHEMA "+schema); err != nil {
+		rootPool.Close()
+		t.Fatalf("create schema: %v", err)
 	}
 
-	srv, token := newTestServerWithAuth(t)
-	
-	// 初始化 scheduled task store 和 scheduler
-	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, dsn)
+	cfg.ConnConfig.RuntimeParams["search_path"] = schema + ",public"
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		t.Fatalf("failed to connect to PostgreSQL: %v", err)
 	}
-	defer pool.Close()
-	
+	t.Cleanup(func() {
+		pool.Close()
+		// 纵深防御：只 DROP 自己生成的那一个 schema 名。
+		if !strings.HasPrefix(schema, schedTaskITSchemaPrefix) {
+			return
+		}
+		cctx, ccancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer ccancel()
+		if _, err := rootPool.Exec(cctx, "DROP SCHEMA IF EXISTS "+schema+" CASCADE"); err != nil {
+			t.Logf("cleanup: drop schema %s: %v", schema, err)
+		}
+		rootPool.Close()
+	})
+	return pool
+}
+
+// TestScheduledTaskEndToEnd 验证完整的 create → claim → execute → audit → WebSocket → history 闭环。
+// 这是一个集成测试，需要 PostgreSQL 可用才能运行。
+func TestScheduledTaskEndToEnd(t *testing.T) {
+	srv, token := newTestServerWithAuth(t)
+
+	// 初始化 scheduled task store 和 scheduler
+	ctx := context.Background()
+	pool := newIsolatedSchedTaskPool(t)
+
 	store, err := scheduledtask.NewStore(ctx, pool)
 	if err != nil {
 		t.Fatalf("failed to initialize store: %v", err)
@@ -71,11 +127,11 @@ func TestScheduledTaskEndToEnd(t *testing.T) {
 		"name":          "E2E Test Task",
 		"description":   "Integration test webhook task",
 		"kind":          "webhook",
-		"schedule_kind": "interval",
-		"schedule_expr": "30s",
+		"scheduleKind": "interval",
+		"scheduleExpr": "30s",
 		"timezone":      "UTC",
 		"enabled":       true,
-		"timeout_sec":   10,
+		"timeoutSec":   10,
 		"payload": map[string]interface{}{
 			"url":    "https://httpbin.org/post",
 			"method": "POST",
@@ -185,8 +241,14 @@ func TestScheduledTaskEndToEnd(t *testing.T) {
 	auditCount := auditor.writes
 	auditor.mu.Unlock()
 	
-	if auditCount < 2 {
-		t.Fatalf("expected at least 2 audit events (create + run), got %d", auditCount)
+	// scheduler 对每次运行只写一条终态审计（scheduler.go:436 的
+	// "scheduler.task.run"），没有 started 审计；而任务"创建"的审计走的是
+	// server 自己的 s.Write(...)，不经过这个注入的 auditor。所以这里的期望值
+	// 是 1，不是 2 —— 原断言 ">= 2 (create + run)" 永远不可能成立。
+	// "至少两个事件"的语义由上面的 WebSocket 断言承担（started + terminal）。
+	if auditCount < 1 {
+		t.Fatalf("expected at least 1 audit event (task run), got %d", auditCount)
+		t.Fatalf("expected at least 1 audit event (task run), got %d", auditCount)
 	}
 	
 	// Step 7: Update the task
@@ -210,7 +272,10 @@ func TestScheduledTaskEndToEnd(t *testing.T) {
 	rr = httptest.NewRecorder()
 	h.ServeHTTP(rr, req)
 	
-	if rr.Code != http.StatusNoContent {
+	// DELETE 返回 200 + {"deleted": true}（scheduled_task_handler.go 的
+	// 写路径），不是 204。前端 scheduledTasksApi.remove() 只依赖"非 2xx 即失败"，
+	// 对状态码无要求，所以 200 与前端契约一致；原期望 204 已过时。
+	if rr.Code != http.StatusOK {
 		t.Fatalf("delete task failed: status=%d", rr.Code)
 	}
 	
@@ -266,20 +331,11 @@ func (a *testAuditor) Write(userID, tenantID, action, resource string, fields sc
 
 // TestScheduledTaskTenantIsolation 验证 workspace 隔离：用户只能看到自己 workspace 的任务
 func TestScheduledTaskTenantIsolation(t *testing.T) {
-	dsn := os.Getenv("POCKET_POSTGRES_DSN")
-	if dsn == "" {
-		t.Skip("POCKET_POSTGRES_DSN not set; skipping integration test")
-	}
-
 	srv, _ := newTestServerWithAuth(t)
-	
+
 	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		t.Fatalf("failed to connect to PostgreSQL: %v", err)
-	}
-	defer pool.Close()
-	
+	pool := newIsolatedSchedTaskPool(t)
+
 	store, err := scheduledtask.NewStore(ctx, pool)
 	if err != nil {
 		t.Fatalf("failed to initialize store: %v", err)
@@ -296,8 +352,8 @@ func TestScheduledTaskTenantIsolation(t *testing.T) {
 	taskInput := map[string]interface{}{
 		"name":          "Workspace 1 Task",
 		"kind":          "webhook",
-		"schedule_kind": "interval",
-		"schedule_expr": "1h",
+		"scheduleKind": "interval",
+		"scheduleExpr": "1h",
 		"enabled":       true,
 		"payload": map[string]interface{}{
 			"url":    "https://example.com",

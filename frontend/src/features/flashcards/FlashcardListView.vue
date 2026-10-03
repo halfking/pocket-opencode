@@ -30,19 +30,114 @@
 
         <div v-if="store.loading" class="state" role="status">{{ t('common.loading') || '加载中…' }}</div>
         <div v-else-if="store.error" class="error" role="alert">
-          {{ store.error }}
+          {{ apiError(store.error, t('flashcards.error.loadFailed')) }}
           <button type="button" @click="reload">{{ retryLabel }}</button>
         </div>
-        <div v-else-if="decks.length === 0" class="empty">
+        <div v-else-if="decks.length === 0" class="empty" data-testid="flashcards-empty">
           <p>{{ t('flashcards.list.empty') }}</p>
-          <button class="primary" type="button" @click="goCreate">{{ t('flashcards.list.create') }}</button>
+          <!--
+            BUG-U（2026-09-30）：零卡组时这里原本只有一个「新建卡片」按钮，
+            跳 /flashcards/new —— 但那页的「保存」在没有卡组时恒 disabled
+            （selectedDeckId 为空 → isValid false）。用户点进去才发现要先建组，
+            而建组入口是那页顶部的另一个输入框。**从零状态看，这是一个死胡同。**
+            现在零卡组时直接在本页内联建组；建完列表立刻出现，可继续点「新建卡片」。
+          -->
+          <form
+            class="deck-create"
+            data-testid="deck-create-form"
+            @submit.prevent="submitCreateDeck"
+          >
+            <input
+              v-model="newDeckName"
+              type="text"
+              :placeholder="t('flashcards.deck.createPlaceholder')"
+              :aria-label="t('flashcards.deck.create')"
+            />
+            <button class="primary" type="submit" :disabled="deckCreating || !newDeckName.trim()">
+              {{ deckCreating ? t('common.loading') : t('flashcards.deck.create') }}
+            </button>
+          </form>
+          <p v-if="deckError" class="error" role="alert">{{ deckError }}</p>
+          <!--
+            内置学习库：AI 知识点 / 智能体与大模型 / 英语单词+发音 / 英语常用句。
+            数据编译在后端二进制里，离线也能建库。导入幂等，重复点不会重复建卡。
+          -->
+          <div v-if="starterDecks.length" class="starter" data-testid="flashcards-starter">
+            <p class="starter-title">内置学习库（{{ starterDecks.reduce((a, d) => a + d.cardCount, 0) }} 张卡）</p>
+            <ul class="starter-list">
+              <li v-for="d in starterDecks" :key="d.deckId">
+                <span class="s-name">{{ d.name }}</span>
+                <span class="s-count">{{ d.cardCount }} 张</span>
+              </li>
+            </ul>
+            <button
+              type="button"
+              class="primary"
+              data-testid="flashcards-starter-import"
+              :disabled="starterImporting"
+              @click="importStarter"
+            >
+              {{ starterImporting ? t('common.loading') : '一键导入内置学习库' }}
+            </button>
+            <p v-if="starterMsg" class="starter-msg">{{ starterMsg }}</p>
+            <p v-if="starterError" class="error" role="alert">{{ starterError }}</p>
+          </div>
         </div>
 
         <main v-else class="list">
+          <!--
+            BUG-K follow-up（2026-09-30）：有卡组时列表页原本**没有**建组入口，
+            「新建卡组」只存在于 FlashcardEditView 顶部那个表单里 —— 于是加第 2 个
+            卡组必须先点「新建卡片」进编辑页才能建，入口语义和位置都不对。
+            这里补一个可展开的建组入口，复用同一套 newDeckName/submitCreateDeck。
+          -->
+          <div class="deck-new">
+            <button
+              type="button"
+              class="deck-toggle"
+              data-testid="deck-create-toggle"
+              :aria-expanded="showDeckForm"
+              @click="showDeckForm = !showDeckForm"
+            >
+              <span class="material-symbols-outlined">library_add</span>
+              <span>{{ t('flashcards.deck.create') }}</span>
+            </button>
+            <form
+              v-if="showDeckForm"
+              class="deck-create"
+              data-testid="deck-create-form-existing"
+              @submit.prevent="submitCreateDeck"
+            >
+              <input
+                v-model="newDeckName"
+                type="text"
+                :placeholder="t('flashcards.deck.createPlaceholder')"
+                :aria-label="t('flashcards.deck.create')"
+              />
+              <button class="primary" type="submit" :disabled="deckCreating || !newDeckName.trim()">
+                {{ deckCreating ? t('common.loading') : t('flashcards.deck.create') }}
+              </button>
+            </form>
+            <p v-if="deckError" class="error" role="alert">{{ deckError }}</p>
+            <button
+              v-if="starterDecks.length"
+              type="button"
+              class="deck-toggle"
+              data-testid="flashcards-starter-toggle"
+              :disabled="starterImporting"
+              @click="importStarter"
+            >
+              <span class="material-symbols-outlined">auto_awesome</span>
+              <span>{{ starterImporting ? t('common.loading') : '导入内置学习库' }}</span>
+            </button>
+            <p v-if="starterMsg" class="starter-msg">{{ starterMsg }}</p>
+            <p v-if="starterError" class="error" role="alert">{{ starterError }}</p>
+          </div>
           <article
             v-for="deck in decks"
             :key="deck.deckId"
             class="card"
+            data-testid="flashcards-deck-item"
             role="button"
             tabindex="0"
             @click="openDeck(deck.deckId)"
@@ -73,17 +168,20 @@
  * 依赖：stores/flashcards.ts（summaries）+ services/flashcards.ts。
  * Foldable：双 slot；外屏单卡紧凑视图，内屏完整列表。
  */
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import FoldAwareLayout from './components/FoldAwareLayout.vue'
 import { useFlashcardsStore } from '../../stores/flashcards'
+import { useApiError } from '../../composables/useApiError'
+import { flashcardsStarterApi, type StarterDeckSummary } from '../../api/flashcards-starter'
 
 defineOptions({ name: 'FlashcardListView' })
 
 const router = useRouter()
 const { t } = useI18n()
 const store = useFlashcardsStore()
+const apiError = useApiError()
 
 const decks = computed(() => store.deckSummaries)
 
@@ -95,7 +193,64 @@ function goCreate() {
   router.push('/flashcards/new')
 }
 
+// BUG-U：零卡组时的内联建组。store.createDeck 建完会把卡组合并进本地缓存并
+// persistCache，因此 decks computed 会立刻更新，空态自动消失。
+const newDeckName = ref('')
+const deckCreating = ref(false)
+const deckError = ref('')
+// BUG-K follow-up：有卡组时建组表单默认收起，点「新建卡组」才展开。
+const showDeckForm = ref(false)
+
+async function submitCreateDeck() {
+  const name = newDeckName.value.trim()
+  if (!name || deckCreating.value) return
+  deckCreating.value = true
+  deckError.value = ''
+  try {
+    await store.createDeck(name)
+    newDeckName.value = ''
+  } catch (err) {
+    deckError.value = apiError(err, t('flashcards.error.loadFailed'))
+  } finally {
+    deckCreating.value = false
+  }
+}
+
 const retryLabel = computed(() => t('flashcards.error.loadFailed') || 'Retry')
+
+// ===== 内置学习库 =====
+const starterDecks = ref<StarterDeckSummary[]>([])
+const starterImporting = ref(false)
+const starterMsg = ref('')
+const starterError = ref('')
+
+async function loadStarter() {
+  try {
+    const res = await flashcardsStarterApi.list()
+    starterDecks.value = res.decks ?? []
+  } catch (err) {
+    // 目录取不到不该挡住卡组列表本身：只提示，不阻断。
+    starterError.value = apiError(err, t('flashcards.error.loadFailed'))
+  }
+}
+
+async function importStarter() {
+  if (starterImporting.value) return
+  starterImporting.value = true
+  starterMsg.value = ''
+  starterError.value = ''
+  try {
+    const r = await flashcardsStarterApi.importAll()
+    starterMsg.value = r.cardsCreated > 0
+      ? `已导入 ${r.decks} 套牌组、${r.cardsCreated} 张卡${r.cardsSkipped > 0 ? `（${r.cardsSkipped} 张已存在，跳过）` : ''}`
+      : '内置学习库已经导入过了'
+    await store.refresh()
+  } catch (err) {
+    starterError.value = apiError(err, t('flashcards.error.loadFailed'))
+  } finally {
+    starterImporting.value = false
+  }
+}
 
 function totalLabel(total: number) {
   return `${total} cards`
@@ -107,7 +262,7 @@ async function reload() {
 
 onMounted(async () => {
   store.loadFromCache()
-  await store.refresh().catch(() => {})
+  await Promise.all([store.refresh().catch(() => {}), loadStarter()])
 })
 </script>
 
@@ -119,7 +274,7 @@ onMounted(async () => {
   justify-content: space-between;
   padding: var(--space-4) var(--space-4) var(--space-2);
 }
-.head h1 { margin: 0; font-size: 20px; color: var(--text-primary); }
+.head h1 { margin: 0; font-size: var(--text-xl); color: var(--text-primary); }
 .add-btn {
   border: 0;
   background: transparent;
@@ -129,6 +284,19 @@ onMounted(async () => {
   cursor: pointer;
 }
 .list { display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-3) var(--space-4) 100px; }
+.deck-new { display: flex; flex-direction: column; gap: var(--space-2); }
+.deck-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  align-self: flex-start;
+  border: 1px dashed var(--border);
+  background: transparent;
+  color: var(--text-primary);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md, 8px);
+  cursor: pointer;
+}
 .card {
   text-align: left;
   border: 1px solid var(--border);
@@ -143,16 +311,16 @@ onMounted(async () => {
   font: inherit;
 }
 .card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.card h2 { margin: 0; font-size: 15px; color: var(--text-primary); }
+.card h2 { margin: 0; font-size: var(--text-md); color: var(--text-primary); }
 .badge {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   padding: 3px 9px;
   border-radius: 999px;
   background: var(--brand-primary);
   color: var(--text-inverse);
 }
 .badge.empty { background: var(--bg-subtle); color: var(--text-secondary); }
-.meta { margin: 0; font-size: 12px; color: var(--text-secondary); display: flex; gap: 14px; }
+.meta { margin: 0; font-size: var(--text-sm); color: var(--text-secondary); display: flex; gap: 14px; }
 .empty { text-align: center; padding: 60px var(--space-4); color: var(--text-secondary); }
 .empty .primary {
   margin-top: var(--space-3);
@@ -162,6 +330,33 @@ onMounted(async () => {
   color: var(--text-inverse);
   border-radius: var(--radius-sm);
   cursor: pointer;
+}
+.empty .primary:disabled { opacity: 0.5; cursor: not-allowed; }
+.deck-create { display: flex; gap: var(--space-2); margin-top: var(--space-3); }
+.starter { margin-top: var(--space-4); text-align: left; }
+.starter-title { font-size: var(--text-sm); color: var(--text-secondary); margin: 0 0 var(--space-2); }
+.starter-list { list-style: none; margin: 0 0 var(--space-3); padding: 0; }
+.starter-list li { display: flex; justify-content: space-between; padding: 4px 0; font-size: var(--text-sm); }
+.starter-list .s-name { color: var(--text-primary); }
+.starter-list .s-count { color: var(--text-secondary); }
+.starter .primary {
+  padding: 10px 18px;
+  background: var(--brand-gradient);
+  border: 0;
+  color: var(--text-inverse);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.starter .primary:disabled { opacity: 0.5; cursor: not-allowed; }
+.starter-msg { margin-top: var(--space-2); font-size: var(--text-sm); color: var(--text-secondary); }
+.deck-create input {
+  flex: 1;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  color: var(--text-primary);
+  font: inherit;
 }
 .error { margin: var(--space-3); padding: var(--space-3); color: var(--danger); background: var(--danger-bg); border-radius: var(--radius-sm); display: flex; gap: 8px; align-items: center; }
 .error button { border: 1px solid var(--danger); background: transparent; color: var(--danger); padding: 4px 10px; border-radius: var(--radius-sm); cursor: pointer; }
@@ -180,5 +375,5 @@ onMounted(async () => {
 }
 .outer { padding: 0 var(--space-3); }
 .outer .head { padding-top: var(--space-3); padding-bottom: 0; }
-.outer .head h1 { font-size: 17px; }
+.outer .head h1 { font-size: var(--text-md); }
 </style>

@@ -2,7 +2,10 @@ package chatagent
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -10,6 +13,32 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
+const chatAgentTestSchemaPrefix = "chatagent_test_"
+
+// setupTestStore 起一个**隔离 schema** 里的 PG store。
+//
+// ## 为什么必须隔离（两侧各自实测过的同一个缺陷，不是理论风险）
+//
+// 原来的实现是 `pgxpool.New(ctx, dbURL)` —— **原样继承 DSN 的 search_path**。
+// 两个后果叠在一起：
+//
+//  1. 直接在生产 schema 上 store.Init() 建表、并对**活表**执行 DELETE。
+//     实测生产库后果：id 以 "custom" 开头的内置 agent
+//     `customer-success-manager`（客户成功经理）被 `id LIKE 'custom%'` 误伤删掉，
+//     而测试照报 ok。
+//  2. PG 的规则是「当前 schema 找不到就**回落到 public**」。本机
+//     `search_path=opencode_pocket` 里没有 chat_agents 表，于是它静默落到
+//     `public.chat_agents` —— 而那正是应用自己在用的那张表。
+//     症状：`TestStore_List_WorkspaceIsolation` 报
+//     `ws-a should see 2 agents (custom-a + builtin), got 278`。
+//
+// ## 修法
+//
+// 自己生成一个 schema，把 `search_path` **只**指向它（**不追加 public**）：
+// 既隔离了写入，又让「引用一张不存在的表」变成**报错**而不是静默落到 public ——
+// 静默回落正是这个缺陷的根因。收尾只 DROP 自己那一个 schema 名。
+//
+// 同一个模式见 `internal/email/store_workspace_test.go:61`。
 func setupTestStore(t *testing.T) (*Store, context.Context) {
 	t.Helper()
 	ctx := context.Background()
@@ -20,19 +49,55 @@ func setupTestStore(t *testing.T) (*Store, context.Context) {
 		t.Skip("POCKET_TEST_POSTGRES_DSN not set")
 	}
 
-	pool, err := pgxpool.New(ctx, dbURL)
-	if err != nil {
-		t.Skipf("PostgreSQL not available: %v", err)
+	// 随机后缀：并发跑测试时各自的 schema 互不干扰。
+	var suffix [8]byte
+	if _, err := rand.Read(suffix[:]); err != nil {
+		t.Fatalf("rand: %v", err)
 	}
-	// pgxpool.New 只解析 DSN 不建连：DSN 已设但 PG 不可达时要到 Ping 才能发现。
+	schema := chatAgentTestSchemaPrefix + hex.EncodeToString(suffix[:])
+
+	cfg, err := pgxpool.ParseConfig(dbURL)
+	if err != nil {
+		t.Skipf("parse pgx config: %v", err)
+	}
+	// root 连接必须**不带** search_path：带着的话 CREATE SCHEMA 会落在目标
+	// schema 里而不是 search_path 的第一个条目。
+	rootCfg := cfg.Copy()
+	delete(rootCfg.ConnConfig.RuntimeParams, "search_path")
+	rootPool, err := pgxpool.NewWithConfig(ctx, rootCfg)
+	if err != nil {
+		t.Skipf("pgx connect (root): %v", err)
+	}
+	// pgxpool 只解析 DSN 不建连：PG 不可达要到 Ping 才发现。
 	// 连接失败与环境未设 DSN 同待遇 t.Skip，避免预置问题污染 CI。
 	pingCtx, pingCancel := context.WithTimeout(ctx, 2*time.Second)
-	if perr := pool.Ping(pingCtx); perr != nil {
+	if perr := rootPool.Ping(pingCtx); perr != nil {
 		pingCancel()
-		pool.Close()
+		rootPool.Close()
 		t.Skipf("PostgreSQL not reachable: %v", perr)
 	}
 	pingCancel()
+	if _, err := rootPool.Exec(ctx, "CREATE SCHEMA "+schema); err != nil {
+		rootPool.Close()
+		t.Fatalf("create schema %s: %v", schema, err)
+	}
+	t.Cleanup(func() {
+		// 纵深防御：只 DROP 自己生成的那一个 schema 名。
+		if !strings.HasPrefix(schema, chatAgentTestSchemaPrefix) {
+			return
+		}
+		if _, err := rootPool.Exec(context.Background(), "DROP SCHEMA IF EXISTS "+schema+" CASCADE"); err != nil {
+			t.Logf("cleanup: drop schema %s: %v", schema, err)
+		}
+		rootPool.Close()
+	})
+
+	// **只**指向自己的 schema：不追加 public，让「表不存在」报错而不是回落。
+	cfg.ConnConfig.RuntimeParams["search_path"] = schema
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Skipf("create test pool: %v", err)
+	}
 	t.Cleanup(func() { pool.Close() })
 
 	store := NewStore(pool)
@@ -40,8 +105,9 @@ func setupTestStore(t *testing.T) (*Store, context.Context) {
 		t.Fatalf("Init failed: %v", err)
 	}
 
-	// 清空测试数据（'custom%' 覆盖精确 id 'custom' 与 'custom-a/b' 等变体）
-	if _, err := pool.Exec(ctx, "DELETE FROM chat_agents WHERE id LIKE 'test-%' OR id LIKE 'custom%' OR id IN ('builtin', 'builtin-agent', 'c1', 'c2')"); err != nil {
+	// 隔离 schema 是本函数刚建的，理论上没有历史数据；仍清一次以保证重复跑幂等。
+	// （显式枚举 id 的写法是隔离之前的补救，隔离后全表删除同样安全且更彻底。）
+	if _, err := pool.Exec(ctx, "DELETE FROM chat_agents"); err != nil {
 		t.Logf("cleanup warning: %v", err)
 	}
 

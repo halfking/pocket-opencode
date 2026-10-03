@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -16,7 +17,26 @@ const (
 	legacyWorkspaceID = "default"
 )
 
+// MeetingStore 是会议存储的抽象，内存版（*Store）与 PG 版（*PGStore）共用。
+//
+// 这里显式列出服务端与 learning resolver 真正调用到的方法，而不是直接拿
+// *Store 当依赖：server.Server 里的字段类型、SetMeetingStore 的入参、
+// learning/sources.Resolver 的字段三处都要跟着变，提前定死接口可以让
+// 编译器在注入点就把"少实现了某个方法"拦下来。
+type MeetingStore interface {
+	CreateScoped(req CreateMeetingRequest, ownerID, workspaceID string) (*Meeting, error)
+	GetScoped(id, ownerID, workspaceID string) (*Meeting, error)
+	ListScoped(ownerID, workspaceID string) ([]*Meeting, error)
+	UpdateScoped(m *Meeting, ownerID, workspaceID string) error
+	DeleteScoped(id, ownerID, workspaceID string) error
+	// DeletedIDsSince 见 pg_store.go 同名方法：查询失败时返回 nil 而非 error。
+	DeletedIDsSince(ownerID, workspaceID string, since time.Time) []string
+}
+
 // Store 会议记录存储（内存实现）
+//
+// ⚠️ 进程一重启即全部丢失。生产路径由 cmd/pocketd 注入 meeting.PGStore
+// 覆盖它（见 Server.SetMeetingStore）；没有 PG 的测试环境才用这份。
 type Store struct {
 	mu       sync.RWMutex
 	meetings map[string]*Meeting
@@ -30,6 +50,18 @@ type meetingTombstone struct {
 	workspaceID string
 	at          time.Time
 }
+
+// meetingIDSeq 保证同一进程内 ID 唯一。
+//
+// 为什么必须要它：ID 原先只有 `time.Now().UnixNano()`，而
+// **`time.Now()` 在很多环境（本仓库的 Windows 机器实测 1000 次调用
+// 只产生 1 个不同值）根本没有纳秒精度**。同一时钟刻度内连续创建的两条
+// 会议会拿到完全相同的 ID，而 `s.meetings[m.ID] = m` 让后者直接覆盖前者 ——
+// **创建成功、返回 201、库里却查不到**（实测 200 次创建只剩 6 条）。
+//
+// 加上单调递增的序号后，`nano_seq` 这一对在进程内必然唯一；跨进程则由
+// 纳秒部分区分。格式与 `finance.Store` / `chat_summary.Store` 保持一致。
+var meetingIDSeq atomic.Uint64
 
 // NewStore creates a new in-memory meeting store
 func NewStore() *Store {
@@ -63,7 +95,7 @@ func (s *Store) CreateScoped(req CreateMeetingRequest, ownerID, workspaceID stri
 
 	now := time.Now()
 	m := &Meeting{
-		ID:          fmt.Sprintf("mtg_%d", now.UnixNano()),
+		ID:          fmt.Sprintf("mtg_%d_%d", now.UnixNano(), meetingIDSeq.Add(1)),
 		OwnerID:     ownerID,
 		WorkspaceID: workspaceID,
 		Title:       req.Title,

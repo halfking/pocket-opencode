@@ -73,7 +73,7 @@ const handleBlur = (e: FocusEvent) => {
 .input {
   width: 100%;
   font-family: var(--font-sans);
-  font-size: 16px;
+  font-size: var(--text-lg);
   color: var(--color-text-primary);
   background: var(--color-bg-surface);
   border: 1px solid var(--color-border);
@@ -90,19 +90,19 @@ const handleBlur = (e: FocusEvent) => {
 .input--small {
   height: 32px;
   padding: 0 var(--space-3);
-  font-size: 14px;
+  font-size: var(--text-base);
 }
 
 .input--medium {
   height: 40px;
   padding: 0 var(--space-4);
-  font-size: 16px;
+  font-size: var(--text-lg);
 }
 
 .input--large {
   height: 48px;
   padding: 0 var(--space-4);
-  font-size: 18px;
+  font-size: var(--text-xl);
 }
 
 /* 状态 */

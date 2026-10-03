@@ -104,6 +104,23 @@ export async function createNote(input: FlashcardNoteInput): Promise<FlashcardNo
   })
 }
 
+/**
+ * 创建卡组（BUG-K，2026-09-30 真机验收）。
+ *
+ * 此前**没有任何创建卡组的路径**：后端没有 POST /api/flashcards/decks，
+ * 前端列表页的「新建卡组」按钮又直接跳 /flashcards/new（那是「新建卡片」页）。
+ * 于是新用户 decks=0 -> selectedDeckId 为空 -> 保存按钮恒 disabled，
+ * 闪卡模块从零状态完全不可用。
+ *
+ * deck 的 FSRS 参数由后端 store 填默认值，这里只给 name。
+ */
+export async function createDeck(name: string, deckId?: string): Promise<FlashcardDeckConfig> {
+  return http<FlashcardDeckConfig>(`${BASE}/decks`, {
+    method: 'POST',
+    body: JSON.stringify(deckId ? { name, deckId } : { name }),
+  })
+}
+
 /** 修改 note（契约 §2 PATCH /api/flashcards/notes/:id）。 */
 export async function patchNote(
   id: string,

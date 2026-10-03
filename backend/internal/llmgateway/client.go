@@ -15,6 +15,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -37,19 +38,52 @@ type Client struct {
 	BaseURL string // 如 https://llm-gateway.example.com
 	APIKey  string // 租户 API key（llm-gateway 签发）
 	Client  *http.Client
+	// Format 决定对话走哪种协议形态：
+	//   - "" / "openai-chat"：POST /v1/chat/completions（默认）；
+	//   - "anthropic-messages"：POST /v1/messages（见 anthropic.go）。
+	// 若 openai-chat 形态在传输层挂死/端点缺失，客户端会**自动回退**尝试
+	// anthropic-messages 一次，并把成功形态记进进程级 discoveredFormats，
+	// 后续请求直接走可用形态（详见 chatWithFormatFallback）。
+	Format string
 }
+
+// discoveredFormats 记录「某网关哪种协议形态实测可用」。key 是归一化后的
+// BaseURL。进程级缓存：第一次回退探测要付出一次 openai-chat 的失败代价
+//（ResponseHeaderTimeout 30s），之后同进程内直接走可用形态，不再重复付。
+var discoveredFormats sync.Map // baseURL(normalized) -> string
 
 // NewClient 构造 llm-gateway 客户端。baseURL 会自动归一化（剥离结尾的 /v1 与
 // 斜杠），详见 normalizeBaseURL。
 //
 // 超时策略：
 //   - 整体 Timeout 90s，留给长回答/流式首 token 充分时间；
-//   - Transport.ResponseHeaderTimeout 30s，避免上游对个别 model 挂死握手时
-//     整体请求一路等满 Timeout，导致前端聊天一直转圈。
-//     实测 2026-08-31：llm.kxpms.cn 在 preferred 模型里有两个 model 对
-//     /v1/chat/completions 既不返结果也不返错误（连接挂死），此前无该上限时
-//     会让前端等满 60s；加 ResponseHeaderTimeout 后能 30s 内即触发 client
-//     错误，handler 再把错误作为 SSE error 事件写回。
+//   - Transport.ResponseHeaderTimeout 60s。
+//
+// ## 为什么是 60s（2026-10-02 人工拍板）
+//
+// 这个值换过一次，两次的理由都留在下面，**别只改数字不改这里**。
+//
+// **30s 那一版（2026-08-31 加的）**：llm.kxpms.cn 在 preferred 模型里有两个
+// model 对 /v1/chat/completions 既不返结果也不返错误（连接挂死），此前无该
+// 上限时前端要等满 60s；加上 30s 后能 30s 内即触发 client 错误，handler 再把
+// 错误作为 SSE error 事件写回。
+//
+// **它的代价（也是本次拍板的原因）**：ResponseHeaderTimeout 约束的是「响应头
+// 何时到达」，而非流式调用要等上游**真正开始回包**才发头。对推理模型（本项目
+// 网关自动路由到 glm-5.2）这很致命：它先把 token 花在 reasoning_content 上，
+// 正文 content 最后才吐（2026-10-02 实测：一句 63 字的总结，reasoning 用了
+// 985 token）。于是任何给这类模型留了 >30s 预算的 handler，实际预算都被压到
+// 30s——例如 handleNoteSummarize 的 `context.WithTimeout(..., 60*time.Second)`
+// 只有前 30 秒是真能用的，30~60 秒是**死预算**：handler 以为有 60s，用户看到
+// 的是 30s 就「总结失败」。
+//
+// 取舍：把失败时间从 30s 拉长到最多 60s（整体 Timeout 仍是 90s，不会无界
+// 挂死），换取推理模型那 30~60s 真的可用。**上游真挂死时用户要多等，最坏
+// 60s 而不是 30s** —— 这是本次拍板接受的代价。
+//
+// 改动落地时 client_test.go 的 TestNewClient_TransportTimeouts 同步改成 60s；
+// 那条测试锁的是**数字**，并且额外锁住「ResponseHeaderTimeout 必须小于整体
+// Timeout」这条不变量（60 < 90 成立）。
 func NewClient(baseURL, apiKey string) *Client {
 	return &Client{
 		BaseURL: normalizeBaseURL(baseURL),
@@ -57,7 +91,7 @@ func NewClient(baseURL, apiKey string) *Client {
 		Client: &http.Client{
 			Timeout: 90 * time.Second,
 			Transport: &http.Transport{
-				ResponseHeaderTimeout: 30 * time.Second,
+				ResponseHeaderTimeout: 60 * time.Second,
 			},
 		},
 	}
@@ -157,9 +191,27 @@ type ChatResponse struct {
 	} `json:"usage"`
 }
 
-// Chat 调用 llm-gateway 的 chat completion（非流式）。
+// Chat 调用 llm-gateway 的 chat completion（非流式）。按 Format 分派协议形态，
+// openai-chat 失败时自动回退 anthropic-messages（见 chatWithFormatFallback）。
 func (c *Client) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, error) {
 	req.Stream = false
+	if c.Format == "anthropic-messages" {
+		return c.chatViaMessages(ctx, req)
+	}
+	if v, ok := discoveredFormats.Load(c.BaseURL); ok && v == "anthropic-messages" {
+		return c.chatViaMessages(ctx, req)
+	}
+	resp, err := c.chatOpenAI(ctx, req)
+	if err == nil {
+		return resp, nil
+	}
+	return c.chatWithFormatFallback(ctx, req, err, func() (*ChatResponse, error) {
+		return c.chatViaMessages(ctx, req)
+	})
+}
+
+// chatOpenAI 是原始的 /v1/chat/completions 调用（Chat 拆出的内核）。
+func (c *Client) chatOpenAI(ctx context.Context, req ChatRequest) (*ChatResponse, error) {
 	body, _ := json.Marshal(req)
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", c.BaseURL+"/v1/chat/completions", bytes.NewReader(body))
 	if err != nil {
@@ -188,6 +240,46 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, erro
 	return &out, nil
 }
 
+// chatWithFormatFallback 统一处理「openai-chat 形态不可用 → anthropic-messages
+// 兜底」的回退决策与成功后的形态记忆。retry 执行 anthropic 形态的调用。
+//
+// 只在这些情况回退（保守，避免掩盖真实配置错误）：
+//   - 传输层失败（超时/连接重置/ResponseHeaderTimeout）——llm.kxpms.cn 对
+//     /chat/completions 的已知症状就是「收下请求既不回结果也不回错误」；
+//   - HTTP 404/405/501——端点不存在/方法不对/未实现。
+// 鉴权失败(401/403)、配额(429)、模型无 provider(503 no_candidate) 等业务
+// 错误**不**回退：那些在 anthropic 形态下同样会失败，多打一次只会掩盖根因。
+func (c *Client) chatWithFormatFallback(ctx context.Context, req ChatRequest, openAIErr error, retry func() (*ChatResponse, error)) (*ChatResponse, error) {
+	if !shouldFallbackToAnthropic(openAIErr) {
+		return nil, openAIErr
+	}
+	resp, err := retry()
+	if err != nil {
+		// 回退也失败：返回原始错误，让上层看到 openai-chat 的真实症状。
+		return nil, openAIErr
+	}
+	discoveredFormats.Store(c.BaseURL, "anthropic-messages")
+	return resp, nil
+}
+
+// shouldFallbackToAnthropic 判定 openai-chat 的错误是否值得换 anthropic-messages
+// 形态重试一次。
+func shouldFallbackToAnthropic(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	for _, code := range []string{"404", "405", "501"} {
+		// 错误格式固定为 "llm-gateway chat <code>: ..."。
+		if strings.Contains(msg, " chat "+code+":") || strings.Contains(msg, " stream "+code+":") {
+			return true
+		}
+	}
+	// 传输层错误（超时/连接被重置等）没有状态码前缀，按「非 HTTP 状态错误」
+	// 处理：chatOpenAI 的传输错误消息以 "llm-gateway chat: " 开头（无数字）。
+	return strings.HasPrefix(msg, "llm-gateway chat: ") || strings.HasPrefix(msg, "llm-gateway stream: ")
+}
+
 // StreamDelta is one chunk of a streaming chat completion (OpenAI SSE shape).
 // Content is the incremental text; ToolCalls carries incremental tool call deltas
 // (OpenAI 增量模式: index + id/type/function.name/arguments 分帧到达); Usage is
@@ -209,8 +301,41 @@ type StreamDelta struct {
 // 提前终止流（客户端断连）。返回最终 usage（若 provider 在末帧返回）。
 //
 // 请求自动设置 stream=true 和 stream_options.include_usage=true。
+// 协议分派与回退策略同 Chat：anthropic-messages 直接走 /v1/messages 流式；
+// openai-chat 首帧未出即失败时换 anthropic 形态重试一次（已向客户端输出过
+// 内容的尝试不重试，避免同一气泡里重复作答）。
 func (c *Client) Stream(ctx context.Context, req ChatRequest, fn func(StreamDelta) bool) (*StreamDelta, error) {
 	req.Stream = true
+	if c.Format == "anthropic-messages" {
+		return c.streamViaMessages(ctx, req, fn)
+	}
+	if v, ok := discoveredFormats.Load(c.BaseURL); ok && v == "anthropic-messages" {
+		return c.streamViaMessages(ctx, req, fn)
+	}
+	answered := false
+	wrapped := func(d StreamDelta) bool {
+		if d.Content != "" || len(d.ToolCalls) > 0 {
+			answered = true
+		}
+		return fn(d)
+	}
+	final, err := c.streamOpenAI(ctx, req, wrapped)
+	if err == nil {
+		return final, nil
+	}
+	if answered || !shouldFallbackToAnthropic(err) {
+		return final, err
+	}
+	resp, rerr := c.streamViaMessages(ctx, req, fn)
+	if rerr != nil {
+		return final, err
+	}
+	discoveredFormats.Store(c.BaseURL, "anthropic-messages")
+	return resp, nil
+}
+
+// streamOpenAI 是原始的 /v1/chat/completions 流式调用（Stream 拆出的内核）。
+func (c *Client) streamOpenAI(ctx context.Context, req ChatRequest, fn func(StreamDelta) bool) (*StreamDelta, error) {
 	payload := map[string]any{
 		"model":       req.Model,
 		"messages":    req.Messages,

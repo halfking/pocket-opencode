@@ -120,6 +120,11 @@
         <span class="material-symbols-outlined" aria-hidden="true">send</span>
       </button>
     </div>
+    <!--
+      键盘提示从 placeholder 挪到这里（2026-10-03）。它在 360px 视口里被截断，
+      而这里有整行宽度。执行中时不再重复「Enter 发送」——那时输入框是禁用的。
+    -->
+    <p v-if="!store.running" class="key-hint">{{ COMPOSER_TEXT.keyHint }}</p>
     <p v-if="usageText" class="usage">{{ usageText }}</p>
   </div>
 </template>
@@ -159,9 +164,23 @@ function expertLabel(name: string): string {
   return map[name] ?? name
 }
 
-const placeholder = computed(() =>
-  store.running ? '任务执行中…' : '给本地智能体下达任务(Enter 发送,Shift+Enter 换行)',
-)
+// 2026-10-03：placeholder 原来把键盘提示也塞了进去
+// （「给本地智能体下达任务(Enter 发送,Shift+Enter 换行)」，31 个字符）。
+// 真机 CSS 视口只有 360px，那行字在输入框里被截到句子中间，看着像排版坏了。
+//
+// 现在 placeholder 只说「做什么」，键盘提示移到输入框下方的 hint 行
+// —— 那是它该待的地方：提示语属于辅助信息，不该挤占输入框里最显眼的位置。
+//
+// 刻意**不**为此引入 vue-i18n：本组件通篇是硬编码中文（expertLabel 的本地
+// map 也是这么写的），单独给两行文案接 i18n 会造成「一半多语言、一半不」的
+// 更糟状态。真正要修的是整个组件的本地化，那是另一件事。
+const COMPOSER_TEXT = {
+  running: '任务执行中…',
+  placeholder: '给本地智能体下达任务',
+  keyHint: 'Enter 发送 · Shift+Enter 换行',
+} as const
+
+const placeholder = computed(() => (store.running ? COMPOSER_TEXT.running : COMPOSER_TEXT.placeholder))
 
 const statusLabel = computed(() => {
   const s = store.activeSession?.status
@@ -260,7 +279,7 @@ watch(() => store.activeId, () => {
   border-radius: var(--radius-sm);
   background: var(--bg-subtle);
   color: var(--text-primary);
-  font-size: 13px;
+  font-size: var(--text-smd);
   padding: 0 var(--space-2);
   text-overflow: ellipsis;
 }
@@ -274,11 +293,11 @@ watch(() => store.activeId, () => {
   border-radius: var(--radius-full);
   background: var(--bg-subtle);
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: var(--text-sm);
   white-space: nowrap;
   cursor: pointer;
 }
-.chip-btn .material-symbols-outlined { font-size: 16px; }
+.chip-btn .material-symbols-outlined { font-size: var(--text-lg); }
 
 .pickers {
   padding: var(--space-2) var(--space-3);
@@ -288,8 +307,8 @@ watch(() => store.activeId, () => {
   flex-direction: column;
   gap: 6px;
 }
-.picker-label { margin: 0; font-size: 11px; color: var(--text-muted); }
-.picker-desc { margin: 0; font-size: 12px; color: var(--text-secondary); }
+.picker-label { margin: 0; font-size: var(--text-2xs); color: var(--text-muted); }
+.picker-desc { margin: 0; font-size: var(--text-sm); color: var(--text-secondary); }
 .chip-row { display: flex; flex-wrap: wrap; gap: 6px; }
 .chip {
   padding: 4px 12px;
@@ -297,7 +316,7 @@ watch(() => store.activeId, () => {
   border: 1px solid var(--border);
   background: var(--bg-subtle);
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: var(--text-sm);
   cursor: pointer;
 }
 .chip.active {
@@ -319,7 +338,7 @@ watch(() => store.activeId, () => {
   margin: auto;
   text-align: center;
   color: var(--text-muted);
-  font-size: 13px;
+  font-size: var(--text-smd);
   line-height: 2;
 }
 .row { display: flex; flex-direction: column; }
@@ -330,7 +349,7 @@ watch(() => store.activeId, () => {
   max-width: 86%;
   padding: var(--space-2) var(--space-3);
   border-radius: var(--radius-md);
-  font-size: 14px;
+  font-size: var(--text-base);
   line-height: 1.6;
   white-space: pre-wrap;
   word-break: break-word;
@@ -351,7 +370,7 @@ watch(() => store.activeId, () => {
 .system-note {
   margin: 0 auto;
   text-align: center;
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--danger, #e5484d);
   background: var(--bg-subtle);
   border: 1px solid var(--border);
@@ -360,7 +379,7 @@ watch(() => store.activeId, () => {
   max-width: 90%;
 }
 .status-pill {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-muted);
   background: var(--bg-subtle);
   border: 1px solid var(--border);
@@ -386,7 +405,7 @@ watch(() => store.activeId, () => {
   border-radius: var(--radius-md);
   background: var(--bg-subtle);
   color: var(--text-primary);
-  font-size: 14px;
+  font-size: var(--text-base);
   padding: var(--space-2) var(--space-3);
   line-height: 1.5;
 }
@@ -410,7 +429,17 @@ watch(() => store.activeId, () => {
   margin: 0;
   padding: 0 var(--space-3) var(--space-1);
   text-align: right;
-  font-size: 10px;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  background: var(--bg-card);
+}
+
+/* 键盘提示（2026-10-03 从 placeholder 挪到这里）。
+   左对齐、极淡、整行宽度 —— 它是辅助信息，不该和 placeholder 抢同一个位置。 */
+.key-hint {
+  margin: 0;
+  padding: 0 var(--space-3) var(--space-1);
+  font-size: var(--text-xs);
   color: var(--text-muted);
   background: var(--bg-card);
 }

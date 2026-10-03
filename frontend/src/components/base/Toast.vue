@@ -151,7 +151,7 @@ defineExpose({
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 16px;
+  font-size: var(--text-lg);
   font-weight: bold;
 }
 
@@ -161,13 +161,13 @@ defineExpose({
 }
 
 .toast-message {
-  font-size: 14px;
+  font-size: var(--text-base);
   font-weight: var(--font-weight-medium);
   line-height: 1.4;
 }
 
 .toast-description {
-  font-size: 12px;
+  font-size: var(--text-sm);
   opacity: 0.9;
   margin-top: var(--space-1);
   line-height: 1.4;
@@ -186,7 +186,7 @@ defineExpose({
   cursor: pointer;
   opacity: 0.8;
   padding: 0;
-  font-size: 16px;
+  font-size: var(--text-lg);
   transition: opacity var(--duration-fast) var(--ease-out);
 }
 

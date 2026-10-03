@@ -127,7 +127,7 @@ error:1404B458:SSL routines:ST_CONNECT:tlsv1 unrecognized name
 POCKET_HTTP_PORT=8088
 POCKET_MCP_ENABLED=true
 POCKET_MCP_URL=https://mcp.kxpms.cn/acc/mcp
-POCKET_MCP_API_KEY=sk-mcp-sa0cXjxzPKhU77CYNFiFDP1I7B4wMnBc
+POCKET_MCP_API_KEY=sk-mcp-<REDACTED-ROTATE-ME>
 ```
 
 ### 文件位置

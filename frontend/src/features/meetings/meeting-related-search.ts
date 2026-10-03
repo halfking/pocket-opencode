@@ -5,11 +5,11 @@ import {
   mergeRecommendations, parseWikipediaOpenSearch, wikipediaSearchUrl,
 } from './meeting-related'
 
-export async function searchRelatedNotes(query: string, limit = 3): Promise<RecommendItem[]> {
+export async function searchRelatedNotes(query: string, limit = 3, workspaceId = 'default'): Promise<RecommendItem[]> {
   const q = query.trim()
   if (!q) return []
   try {
-    const hits = await searchHybrid(q, limit)
+    const hits = await searchHybrid(q, limit, workspaceId)
     return hits.slice(0, limit).map((hit) => ({
       type: 'note' as const,
       id: hit.note.id,
@@ -73,10 +73,10 @@ export async function searchRelatedWeb(query: string): Promise<RecommendItem[]> 
 
 export async function searchRelatedContext(
   query: string,
-  opts?: { excludeMeetingId?: string },
+  opts?: { excludeMeetingId?: string; workspaceId?: string },
 ): Promise<RecommendItem[]> {
   const [notes, knowledge, web] = await Promise.all([
-    searchRelatedNotes(query),
+    searchRelatedNotes(query, 3, opts?.workspaceId ?? 'default'),
     searchRelatedMeetings(query, opts?.excludeMeetingId),
     searchRelatedWeb(query),
   ])

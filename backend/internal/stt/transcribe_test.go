@@ -1,0 +1,355 @@
+package stt
+
+import (
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+)
+
+// transcribeUpstream 造一个可控的 /audio/transcriptions 上游。
+type transcribeUpstream struct {
+	status    int
+	body      string
+	lastKey   string
+	lastMdl   string
+	lastLang  string
+	lastPromp string
+}
+
+func (u *transcribeUpstream) handler(t *testing.T) http.Handler {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/audio/transcriptions", func(w http.ResponseWriter, r *http.Request) {
+		u.lastKey = r.Header.Get("Authorization")
+		body, _ := io.ReadAll(io.LimitReader(r.Body, 8<<20))
+		u.lastMdl = multipartModel(string(body))
+		u.lastLang = multipartField(string(body), "language")
+		u.lastPromp = multipartField(string(body), "prompt")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(u.status)
+		_, _ = io.WriteString(w, u.body)
+	})
+	mux.HandleFunc("/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Model string `json:"model"`
+		}
+		_ = json.NewDecoder(io.LimitReader(r.Body, 32<<20)).Decode(&payload)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w,
+			`{"choices":[{"message":{"content":"您似乎没有附上录音文件。"}}],"usage":{"total_characters":0}}`)
+	})
+	return mux
+}
+
+func engineFor(t *testing.T, srv *httptest.Server, target *Target) *Transcriber {
+	t.Helper()
+	e := NewResolver(func(context.Context, Scope) (*Target, error) { return target, nil })
+	e.SetHTTPClient(srv.Client())
+	return e
+}
+
+// TestTranscribeForSuccessCarriesModelAndCost 成功转写要把模型/通道/成本一起带出来，
+// 否则设置页与成本看板拿不到「这次是谁转的、花了多少」。
+func TestTranscribeForSuccessCarriesModelAndCost(t *testing.T) {
+	up := &transcribeUpstream{status: 200, body: `{"text":"今天下午三点开项目评审会。"}`}
+	srv := httptest.NewServer(up.handler(t))
+	defer srv.Close()
+
+	// 1 秒 WAV → 时长 1000ms；0.18 美元/小时 → 0.00005 美元 = 0.005 美分
+	e := engineFor(t, srv, &Target{
+		BaseURL: srv.URL + "/v1", APIKey: "sk-test", Model: "gpt-4o-mini-transcribe",
+		Transport: TransportTranscriptions, Channel: ChannelExternal,
+		CostUSDPerHour: 0.18,
+	})
+	res, err := e.TranscribeFor(context.Background(), Scope{UserID: "u", WorkspaceID: "w"},
+		ToneWAV(8000, 1000), "a.wav")
+	if err != nil {
+		t.Fatalf("TranscribeFor: %v", err)
+	}
+	if res.Text != "今天下午三点开项目评审会。" {
+		t.Errorf("text=%q", res.Text)
+	}
+	if res.Model != "gpt-4o-mini-transcribe" || res.Transport != TransportTranscriptions {
+		t.Errorf("model/transport 没带出来：%+v", res)
+	}
+	if res.Channel != ChannelExternal {
+		t.Errorf("channel=%s", res.Channel)
+	}
+	if res.DurationMS < 900 || res.DurationMS > 1100 {
+		t.Errorf("durationMs=%d want ~1000", res.DurationMS)
+	}
+	// 0.18/h * (1/3600) h = 0.00005 USD = 0.005 cents
+	if res.CostCents < 0.004 || res.CostCents > 0.006 {
+		t.Errorf("costCents=%v want ~0.005", res.CostCents)
+	}
+	if up.lastKey != "Bearer sk-test" {
+		t.Errorf("Authorization=%q", up.lastKey)
+	}
+	if up.lastMdl != "gpt-4o-mini-transcribe" {
+		t.Errorf("上游收到的 model=%q", up.lastMdl)
+	}
+}
+
+// TestTranscribeForRejectsEmptyTranscript 上游 200 但没有文字，不能算成功——
+// 否则用户看到的是「录音结束，转写完成」，正文却是空的。
+func TestTranscribeForRejectsEmptyTranscript(t *testing.T) {
+	up := &transcribeUpstream{status: 200, body: `{"text":"   "}`}
+	srv := httptest.NewServer(up.handler(t))
+	defer srv.Close()
+
+	e := engineFor(t, srv, &Target{BaseURL: srv.URL + "/v1", APIKey: "k", Model: "m",
+		Transport: TransportTranscriptions, Channel: ChannelExternal})
+	_, err := e.TranscribeFor(context.Background(), Scope{}, ToneWAV(8000, 100), "a.wav")
+	if err == nil {
+		t.Fatal("空转写必须判失败")
+	}
+	if !strings.Contains(err.Error(), "empty transcript") {
+		t.Errorf("错误应说明空转写：%v", err)
+	}
+}
+
+// TestTranscribeForRejectsHallucinatedTranscript 复刻 2026-10-01 实测的网关行为：
+// 200 + 「您似乎没有附上录音文件」。这条守卫是整个功能的安全底线。
+func TestTranscribeForRejectsHallucinatedTranscript(t *testing.T) {
+	up := &transcribeUpstream{
+		status: 200,
+		body:   `{"text":"您好，您似乎没有附上录音文件。请重新上传需要转写的音频。"}`,
+	}
+	srv := httptest.NewServer(up.handler(t))
+	defer srv.Close()
+
+	e := engineFor(t, srv, &Target{BaseURL: srv.URL + "/v1", APIKey: "k", Model: "auto",
+		Transport: TransportTranscriptions, Channel: ChannelExternal})
+	_, err := e.TranscribeFor(context.Background(), Scope{}, ToneWAV(8000, 100), "a.wav")
+	if err == nil {
+		t.Fatal("幻觉文本必须判失败，不能当转写结果")
+	}
+	if !strings.Contains(err.Error(), "no audio") && !strings.Contains(err.Error(), "没有附上") {
+		t.Errorf("错误应点明「上游没收到音频」：%v", err)
+	}
+}
+
+// TestTranscribeForChatAudioDroppedIsRejected 走 chat-audio 形态时同样要拦。
+func TestTranscribeForChatAudioDroppedIsRejected(t *testing.T) {
+	up := &transcribeUpstream{status: 200, body: "{}"}
+	srv := httptest.NewServer(up.handler(t))
+	defer srv.Close()
+
+	e := engineFor(t, srv, &Target{BaseURL: srv.URL + "/v1", APIKey: "k", Model: "gpt-audio",
+		Transport: TransportChatAudio, Channel: ChannelGateway})
+	_, err := e.TranscribeFor(context.Background(), Scope{}, ToneWAV(8000, 100), "a.wav")
+	if err == nil {
+		t.Fatal("chat 形态丢音频必须判失败")
+	}
+	if !strings.Contains(err.Error(), "dropped the audio") {
+		t.Errorf("错误应说明上游丢了音频：%v", err)
+	}
+}
+
+// TestTranscribeForStripsThinkTags 推理模型会在正文前带 <think>…</think>，
+// 那不是转写内容，混进会议记录是噪音。
+func TestTranscribeForStripsThinkTags(t *testing.T) {
+	up := &transcribeUpstream{
+		status: 200,
+		body:   `{"text":"<think>用户让我转写这段录音。</think>今天下午三点开会。"}`,
+	}
+	srv := httptest.NewServer(up.handler(t))
+	defer srv.Close()
+
+	e := engineFor(t, srv, &Target{BaseURL: srv.URL + "/v1", APIKey: "k", Model: "m",
+		Transport: TransportTranscriptions, Channel: ChannelExternal})
+	res, err := e.TranscribeFor(context.Background(), Scope{}, ToneWAV(8000, 100), "a.wav")
+	if err != nil {
+		t.Fatalf("TranscribeFor: %v", err)
+	}
+	if strings.Contains(res.Text, "<think>") || strings.Contains(res.Text, "用户让我转写") {
+		t.Errorf("<think> 未被剥掉：%q", res.Text)
+	}
+	if res.Text != "今天下午三点开会。" {
+		t.Errorf("text=%q", res.Text)
+	}
+}
+
+// TestTranscribeForSendsLanguageField 转写请求必须带 language。
+//
+// 为什么这条要单独立测试：whisper / gpt-4o-transcribe 在**不传** language 时
+// 靠模型自己猜语种，中文会议录音会被判成英语——输出夹英文甚至整段转错，
+// 而请求本身 200 成功，任何只看「有没有转写出文字」的验收都发现不了。
+// 负控对照：把 transcriptions() 里那三行 language 去掉，本条立刻转红。
+func TestTranscribeForSendsLanguageField(t *testing.T) {
+	up := &transcribeUpstream{status: 200, body: `{"text":"今天下午三点开项目评审会。"}`}
+	srv := httptest.NewServer(up.handler(t))
+	defer srv.Close()
+
+	cases := []struct {
+		name string
+		lang string
+		want string
+	}{
+		{"未指定 → 默认中文", "", "zh"},
+		{"显式英文", "en", "en"},
+		{"地区后缀收敛", "zh-CN", "zh"},
+		{"大小写与空白收敛", "  JA  ", "ja"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			e := engineFor(t, srv, &Target{
+				BaseURL: srv.URL + "/v1", APIKey: "sk-test", Model: "gpt-4o-mini-transcribe",
+				Transport: TransportTranscriptions, Channel: ChannelExternal, Language: c.lang,
+			})
+			if _, err := e.TranscribeFor(context.Background(), Scope{}, ToneWAV(8000, 100), "a.wav"); err != nil {
+				t.Fatalf("TranscribeFor: %v", err)
+			}
+			if got := up.lastLang; got != c.want {
+				t.Errorf("language=%q want %q（未带 language 时上游会自行猜语种，中文会被当英语）", got, c.want)
+			}
+		})
+	}
+}
+
+// TestTranscribeForSendsSimplifiedChineseBiasPrompt 中文转写必须带简体偏置 prompt。
+//
+// 2026-10-01 本机 faster-whisper 实测（handoff §14）：简体的
+// 「帮我记一下明天要买牛奶和面包」被识别成繁体的
+// 「幫我記一下明天要買牛奶和麵包」——用字全对、字形不对。
+// 加上 initial_prompt 后同一段音频输出一字不差的简体。
+//
+// 这条要单独立测试的理由和上面 language 那条一样：**请求 200 成功、
+// 也确实有文本**，只验「有没有转写出文字」完全发现不了，必须断言
+// 请求体里到底带了什么。
+//
+// 负控对照：把 transcriptions() 里那段 `if strings.HasPrefix(lang, "zh")`
+// 去掉，中文用例会转红；把条件改成恒真，英文用例会转红。
+func TestTranscribeForSendsSimplifiedChineseBiasPrompt(t *testing.T) {
+	up := &transcribeUpstream{status: 200, body: `{"text":"今天下午三点开项目评审会。"}`}
+	srv := httptest.NewServer(up.handler(t))
+	defer srv.Close()
+
+	cases := []struct {
+		name      string
+		lang      string
+		wantField bool
+	}{
+		{"中文（含地区后缀）应带简体偏置", "zh-CN", true},
+		{"未指定语种（默认中文）应带", "", true},
+		{"英文录音不应带中文 prompt", "en", false},
+		{"日文不应带", "ja", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			e := engineFor(t, srv, &Target{
+				BaseURL: srv.URL + "/v1", APIKey: "sk-test", Model: "whisper-large-v3-turbo",
+				Transport: TransportTranscriptions, Channel: ChannelExternal, Language: c.lang,
+			})
+			if _, err := e.TranscribeFor(context.Background(), Scope{}, ToneWAV(8000, 100), "a.wav"); err != nil {
+				t.Fatalf("TranscribeFor: %v", err)
+			}
+			got := up.lastPromp
+			if c.wantField && got != SimplifiedChineseBiasPrompt {
+				t.Errorf("prompt=%q want %q（whisper 系模型中文默认吐繁体，没有这段偏置用户拿到的是繁体正文）",
+					got, SimplifiedChineseBiasPrompt)
+			}
+			if !c.wantField && got != "" {
+				t.Errorf("非中文语种不应带简体偏置，实际 prompt=%q（给英文录音塞中文 prompt 纯属添乱）", got)
+			}
+		})
+	}
+}
+
+// TestSimplifiedChineseBiasPromptMentionsSimplified 偏置文案本身必须真的在要求简体。
+// 护栏：有人把文案改成一句普通普通话时，本条立刻转红 —— 那样虽然仍有
+// prompt，但起不到偏置作用，而**没有任何功能测试会发现**（因为上游照收）。
+func TestSimplifiedChineseBiasPromptMentionsSimplified(t *testing.T) {
+	if !strings.Contains(SimplifiedChineseBiasPrompt, "简体") {
+		t.Errorf("偏置文案必须明确要求简体输出，实际：%q", SimplifiedChineseBiasPrompt)
+	}
+	if strings.ContainsAny(SimplifiedChineseBiasPrompt, "繁體") {
+		t.Errorf("偏置文案里不该出现繁体示例字（会与要求相矛盾）：%q", SimplifiedChineseBiasPrompt)
+	}
+}
+
+// TestTranscribeForDoesNotMutateResolverTarget 归一化不能就地改调用方的 Target：
+// resolver 常常返回缓存/共享的结构体，就地改会把上一次请求的语种带到下一次。
+func TestTranscribeForDoesNotMutateResolverTarget(t *testing.T) {
+	up := &transcribeUpstream{status: 200, body: `{"text":"好。"}`}
+	srv := httptest.NewServer(up.handler(t))
+	defer srv.Close()
+
+	shared := &Target{
+		BaseURL: srv.URL + "/v1", APIKey: "sk-test", Model: "gpt-4o-mini-transcribe",
+		Transport: TransportTranscriptions, Channel: ChannelExternal,
+	}
+	e := engineFor(t, srv, shared)
+	if _, err := e.TranscribeFor(context.Background(), Scope{}, ToneWAV(8000, 100), "a.wav"); err != nil {
+		t.Fatalf("TranscribeFor: %v", err)
+	}
+	if shared.Language != "" {
+		t.Errorf("resolver 返回的 Target 被就地改写了：Language=%q", shared.Language)
+	}
+}
+
+// TestTranscribeForPassesResolverError 解析失败（两条通道都不通）时，
+// 错误必须原样冒泡，用户才能看到「去设置里配一个」。
+func TestTranscribeForPassesResolverError(t *testing.T) {
+	e := NewResolver(func(context.Context, Scope) (*Target, error) {
+		return nil, errNoTargetForTest
+	})
+	_, err := e.TranscribeFor(context.Background(), Scope{}, ToneWAV(8000, 100), "a.wav")
+	if err == nil || !strings.Contains(err.Error(), errNoTargetForTest.Error()) {
+		t.Fatalf("解析错误应原样冒泡：%v", err)
+	}
+}
+
+var errNoTargetForTest = sttTestError("stt_unavailable: 网关暂无可用的语音转写模型；外部语音转写服务未配置 API Key")
+
+type sttTestError string
+
+func (e sttTestError) Error() string { return string(e) }
+
+// TestTranscribeForRejectsUnconfiguredTarget 缺 key / 缺模型要立刻报配置问题，
+// 而不是拿着空 key 去打上游换一个更难懂的错误。
+func TestTranscribeForRejectsUnconfiguredTarget(t *testing.T) {
+	cases := []struct {
+		name   string
+		target *Target
+		want   string
+	}{
+		{"缺 key", &Target{BaseURL: "https://x/v1", Model: "m", Transport: TransportTranscriptions}, "missing API key"},
+		{"缺模型", &Target{BaseURL: "https://x/v1", APIKey: "k", Transport: TransportTranscriptions}, "no ASR model"},
+		{"空 target", &Target{}, "missing API key"},
+	}
+	for _, c := range cases {
+		e := NewResolver(func(context.Context, Scope) (*Target, error) { return c.target, nil })
+		_, err := e.TranscribeFor(context.Background(), Scope{}, ToneWAV(8000, 100), "a.wav")
+		if err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s：err=%v want 包含 %q", c.name, err, c.want)
+		}
+	}
+}
+
+// TestTranscribeForRejectsEmptyAudio 空音频在出网前就该被拒。
+func TestTranscribeForRejectsEmptyAudio(t *testing.T) {
+	e := NewResolver(func(context.Context, Scope) (*Target, error) {
+		return &Target{BaseURL: "https://x/v1", APIKey: "k", Model: "m", Transport: TransportTranscriptions}, nil
+	})
+	if _, err := e.TranscribeFor(context.Background(), Scope{}, nil, "a.wav"); err == nil {
+		t.Fatal("空音频必须被拒")
+	}
+}
+
+// TestNewTranscriberKeepsStaticContract 旧的静态构造（env 兜底）必须保持原契约：
+// 没给 key 就直接报错，不出网。
+func TestNewTranscriberKeepsStaticContract(t *testing.T) {
+	tr := NewTranscriber("", "", "")
+	if _, err := tr.Transcribe(context.Background(), ToneWAV(8000, 100), "a.wav"); err == nil {
+		t.Fatal("无 key 的静态转写器必须直接报错")
+	}
+	tr2 := NewTranscriber("sk-x", "", "")
+	if _, err := tr2.Transcribe(context.Background(), ToneWAV(8000, 100), "a.wav"); err == nil {
+		t.Fatal("无上游可达时也该报错（说明它确实尝试了，而不是静默成功）")
+	}
+}

@@ -2,8 +2,77 @@
  * Email assistant API — multi-account IMAP aggregation, AI classification,
  * and daily summaries. See docs/2026-07-02-email-assistant-design.md.
  */
-import { http } from './http'
+import { http, LONG_REQUEST_TIMEOUT_MS } from './http'
+import { assertNotHTML } from './jsonGuard'
+import { resolveRuntimeApiBase } from '../config/api-base'
 import { useAuthStore } from '../stores/auth'
+
+/**
+ * 邮件流水线（收信 → 清垃圾 → 重要提醒 → 发票采集 → 飞书/汇总）的客户端超时。
+ *
+ * 2026-10-02 审计到的缺陷：`runPipeline()` 早先**没有**传 timeoutMs，于是吃
+ * 默认的 30s（http.ts 的 DEFAULT_TIMEOUT_MS）。而后端这一轮的实测耗时是
+ * **1m30.67s**（见 backend/internal/server/server.go 里 longLivedPaths 的
+ * 事故记录）。结果是必然的、每次都复现的：
+ *
+ *   - 30s 时前端 abort，报「操作失败」；
+ *   - 后端毫不知情，继续跑到 1m30s 把发票行建好、推完飞书；
+ *   - 用户以为没成，再点一次 → 第二个作业排队等 `emailPipelineMu`。
+ *
+ * 「操作成功但界面报错」和「用户重复点击」是两个后果，都比超时本身更糟。
+ *
+ * 取值必须**大于**后端自身的预算，否则前端会比服务端先放弃：
+ *   runEmailPipeline: context.WithTimeout(ctx, 15*time.Minute)
+ *   delegatePipeline: http.Client{Timeout: 16 * time.Minute}（server 模式委托）
+ * 所以取 17 分钟留出余量。这条约束由
+ * `__tests__/email-long-request-budget.test.mjs` 反推后端源码来守护。
+ */
+export const PIPELINE_TIMEOUT_MS = 17 * 60_000
+
+/** 历史回补（按日期窗口回 IMAP 取回）的客户端超时。 */
+export const BACKFILL_TIMEOUT_MS = 10 * 60_000
+
+/**
+ * 邮件归类（/api/emails/classify）的客户端超时。
+ *
+ * 与 PIPELINE_TIMEOUT_MS 同源的问题，但这里的账更难算，因为服务端**没有**
+ * 整体超时——它的预算来自一个循环：
+ *
+ *   handleEmailClassify（server_email_classify.go）
+ *     for 每封（默认 limit=20）:
+ *       classifyViaKxmemory  context.WithTimeout(ctx, 20s)   ← 先试 kxmemory
+ *       失败则回落 classifyViaGateway  context.WithTimeout(ctx, 25s)
+ *
+ * 所以单封最坏是 **20 + 25 = 45 秒**（kxmemory 慢/失败再走网关），20 封就是
+ * **900 秒 = 15 分钟**。而这��请求原先吃的是通用的 LONG_REQUEST_TIMEOUT_MS
+ * （120 秒）。
+ *
+ * 后果不是「慢一点」，是**静默截断**：120 秒时前端 abort，http 层断开连接，
+ * 而服务端 handler 的 ctx 派生自 r.Context()，于是服务端当场被杀——按 45s/封
+ * 算只能处理掉 2~3 封。剩下 17 封留在原地，用户看到的是
+ * `请求超时（120s）：/api/emails/classify` 这样一条**原始技术串**，
+ * 没有任何地方说「是超时，不是你没点对」。
+ *
+ * 这正是用户报的「邮件管理没有自动归纳整理的能力」最难查的那一种形态：
+ * 链路是通的、网关是好的，只是批太大、窗口太短。
+ *
+ * 取 16 分钟（> 900 秒），由 __tests__/email-long-request-budget.test.mjs
+ * 从后端源码反推 20s + 25s 与默认 limit 来守护。
+ */
+export const CLASSIFY_TIMEOUT_MS = 16 * 60_000
+
+/**
+ * 单封发票提取的客户端超时（要回 IMAP 拉原文）。
+ *
+ * 服务端 handleEmailInvoiceExtract **没有整体超时**——耗时全在
+ * `FetchMessageRaw(r.Context(), …)` 上。后端 longLivedPaths 的事故记录里
+ * 写着「命中发票但缺开票日期时，会只为这一封拉一次 IMAP 原文补日期，
+ * 实测这一封就能超过 30s」。
+ *
+ * 原来的症状正是那行注释描述的：发票行建好了，界面却报错，用户以为没提取
+ * 而反复点击。取 3 分钟，与 harvest 的 5 分钟同量级。
+ */
+export const INVOICE_EXTRACT_TIMEOUT_MS = 3 * 60_000
 
 export type EmailCategory =
   | 'work' | 'bill' | 'notification' | 'personal' | 'marketing' | 'spam'
@@ -111,6 +180,14 @@ export interface EmailBodyResult {
   purged?: boolean
 }
 
+/** /api/emails/{id}/summarize 的响应。 */
+export interface EmailSummaryResult {
+  emailId: string
+  summary: string
+  /** true = 复用已有摘要，本次没有调用 LLM。 */
+  cached: boolean
+}
+
 export interface EmailClassifyResult {
   emailId: string
   category?: string
@@ -139,9 +216,78 @@ export interface Email {
   importance?: EmailImportance
   aiSummary?: string
   suggestedAction?: string
+  /**
+   * AI 判定该重要度/分类的**依据**（如「包含截止日期且需回复确认」）。
+   *
+   * 与 `suggestedAction` 的区别：后者是「该做什么」（动作），本字段是
+   * 「为什么这么判」（理由）。少了它，用户看到一封被判为重要的邮件却
+   * 不知道为什么，提醒就不可信、也无法判断该不该点开。
+   *
+   * 空/缺省 = 上游没给理由（不是「没有理由」的否定表述）。
+   */
+  actionReason?: string
   hasAttachments: boolean
   /** 服务端变更时间（Unix ms）；缺省时客户端回退到 date。 */
   updatedAt?: number
+  /** 邮件所在目录（IMAP 信箱名）。空/缺省 = INBOX。 */
+  folderName?: string
+}
+
+// ── 自定义邮件目录 ──────────────────────────────────────────────────────
+
+export interface EmailFolder {
+  id: string
+  accountId: string
+  /** 完整 IMAP 信箱名（可含层级分隔符）。 */
+  name: string
+  displayName?: string
+  /** inbox/trash/junk/sent/drafts/archive/... 空 = 普通目录。 */
+  special?: string
+  /** user = 本产品创建；server = IMAP LIST 发现。 */
+  source?: string
+  serverSynced?: boolean
+  createdAt?: number
+  updatedAt?: number
+  /** 查询期派生字段：目录内邮件数。 */
+  extra?: { emailCount?: number }
+}
+
+export interface EmailOpsEntry {
+  id: string
+  accountId: string
+  emailId: string
+  uid?: number
+  action: 'move' | 'delete'
+  targetFolder?: string
+  subject?: string
+  status: 'pending' | 'applied' | 'failed' | 'skipped'
+  error?: string
+  idempotencyKey?: string
+  createdAt: number
+  updatedAt: number
+  appliedAt?: number
+}
+
+export interface EmailOpsSyncReport {
+  executed: number
+  applied: number
+  failed: number
+  skipped: number
+  remaining: number
+  errors?: string[]
+}
+
+export interface EmailOrganizeReport {
+  dryRun?: boolean
+  folder?: string
+  count?: number
+  ids?: string[]
+  reasons?: string[]
+  scanned?: number
+  moved?: number
+  applied?: number
+  pending?: number
+  errors?: string[]
 }
 
 export interface DailySummary {
@@ -163,6 +309,8 @@ export interface EmailFilter {
   limit?: number
   /** 只拉 updatedAt > since 的变更（Unix ms）。 */
   since?: number
+  /** 目录过滤：'' = 收件箱；具体目录名 = 该目录；'__all__' = 全部。 */
+  folder?: string
 }
 
 export const emailApi = {
@@ -210,7 +358,9 @@ export const emailApi = {
   // Emails
   // 响应信封：带 since 时附 deletedIds（软删除墓碑）与 serverTimeMs（服务器时钟），
   // 客户端据此做无刷新差异合并。见 docs/2026-09-09-list-sync-rules.md §增量同步协议。
-  listEmails(filter: EmailFilter = {}): Promise<{ emails: Email[]; deletedIds?: string[]; serverTimeMs?: number }> {
+  // total 是**不受 limit 影响**的匹配总数，用来做缓存缺口判定（见 email-cache-heal）；
+  // 老服务端不返回时为 undefined，调用方需退回 emails.length。
+  listEmails(filter: EmailFilter = {}): Promise<{ emails: Email[]; deletedIds?: string[]; serverTimeMs?: number; total?: number }> {
     const qs = new URLSearchParams()
     if (filter.accountId) qs.set('account_id', filter.accountId)
     if (filter.category) qs.set('category', filter.category)
@@ -218,6 +368,8 @@ export const emailApi = {
     if (filter.unreadOnly) qs.set('unread', '1')
     if (filter.limit) qs.set('limit', String(filter.limit))
     if (filter.since && filter.since > 0) qs.set('since', String(filter.since))
+    if (filter.folder === '__all__') qs.set('folder', '__all__')
+    else if (filter.folder) qs.set('folder', filter.folder)
     const q = qs.toString()
     return http(`/api/emails${q ? `?${q}` : ''}`)
   },
@@ -232,8 +384,47 @@ export const emailApi = {
   getEmailBody(id: string): Promise<EmailBodyResult> {
     return http(`/api/emails/${id}/body`)
   },
+  /**
+   * 服务端历史回补：让服务端按**日期窗口**从 IMAP 重新拉取最近 N 天的邮件
+   * 并入库（默认 30 天，见 backend/internal/email/backfill.go）。
+   *
+   * 为什么需要它：增量同步只按 `LastSyncedUID` 往后搜新邮件，且每轮只取最近
+   * 50 封。客户端再怎么样回补 `since`，也只能补回**服务端库里已有**的行——
+   * 如果那一天的邮件当初就没进过服务端库（被 50 封上限截断、或首次同步时
+   * 就在窗口外），客户端无论拉多少次都补不回来。这一层是唯一能回到 IMAP
+   * 源头重新取数的入口。
+   *
+   * 幂等：按 (account_id, message_id) 去重，重复调用安全。
+   */
+  backfill(opts: { accountId?: string; days?: number; maxMessages?: number } = {}, signal?: AbortSignal): Promise<{
+    accounts: Array<{ accountId: string; fetched: number; saved: number; skipped: number; days: number; error?: string }>
+  }> {
+    return http('/api/email/backfill', {
+      method: 'POST',
+      // 走 IMAP 逐批取回，30 天大邮箱要跑几十秒到几分钟，不能用默认超时。
+      timeoutMs: BACKFILL_TIMEOUT_MS,
+      signal,
+      body: JSON.stringify({
+        ...(opts.accountId ? { accountId: opts.accountId } : {}),
+        ...(opts.days ? { days: opts.days } : {}),
+        ...(opts.maxMessages ? { maxMessages: opts.maxMessages } : {}),
+      }),
+    })
+  },
   patchEmail(id: string, patch: { isRead?: boolean; isStarred?: boolean }): Promise<void> {
     return http(`/api/emails/${id}`, { method: 'PATCH', body: JSON.stringify(patch) })
+  },
+  /**
+   * 对单封邮件按需生成摘要。服务端是幂等的：已有摘要会直接返回
+   * （cached=true）而不再调 LLM，所以重复点击不会重复消耗 token。
+   */
+  summarizeEmail(id: string, signal?: AbortSignal): Promise<EmailSummaryResult> {
+    return http(`/api/emails/${encodeURIComponent(id)}/summarize`, {
+      method: 'POST',
+      signal,
+      // 总结要调 LLM，天然比普通读接口慢；给足超时再由用户中止。
+      timeoutMs: LONG_REQUEST_TIMEOUT_MS,
+    })
   },
   /**
    * 发送邮件：使用当前 user/workspace 第一个配置了 SMTP 的账户，除非显式
@@ -242,22 +433,131 @@ export const emailApi = {
   sendEmail(input: EmailSendInput): Promise<EmailSendResult> {
     return http('/api/email/send', { method: 'POST', body: JSON.stringify(input) })
   },
-  syncNow(accountId?: string): Promise<{ mode?: string; synced?: number; new?: number; failed?: string[] }> {
+  /**
+   * `failed` = 真的同步失败。
+   * `skipped` = 该账户已有一轮同步在跑，本轮被单飞锁正常跳过（不是失败）。
+   * 二者必须分开：把 skipped 混进 failed 会让一个健康的账户显示为红色，
+   * 并让后端往库里写一条假的失败记录。
+   *
+   * 2026-10-02 修复：这里原先既没传 timeoutMs、也没有 signal 形参，于是
+   * 既吃 http() 的默认 30s，又完全停不掉。
+   *
+   * 两半是同一个病：预算和中止必须一起给。
+   *
+   * ① 30s 默认超时过短。http.ts:56 注释把「同步/大音频/批量推理」点名为
+   *    天然慢的那一类，同文件的 classify / 发票提取 / 回填早就显式放宽到
+   *    LONG_REQUEST_TIMEOUT_MS，只有 syncNow 漏了。观察到的真实代价：
+   *    2026-10-02 23:37 一次同步里 imap.exmail.qq.com:993（112.49.56.19）
+   *    握手卡住，服务端打出
+   *      imap stage budget 50s exhausted … / SLOW step login took 50.001s
+   *    30s 时前端已抛 TimeoutError，界面报「请求超时（30s）：/api/emails/sync」，
+   *    而此刻另外 4 个账户早已同步完成、邮件其实到了。
+   *
+   * ② 但**加长超时不能变成"只能干等"**。这正是
+   *    src/api/long-task-terminable.test.mjs 的登记表要求 signal 的原因：
+   *    它把 timeoutMs >= 90s 的调用点当成「长任务」，逐个要求在册，
+   *    且在册的非 by-design 条目必须真的把 signal 传进 http 选项。
+   *    只放宽不接 signal 的话，用户就从「30s 后看到失败」变成「两分钟里
+   *    什么都干不了」——那不是修好。
+   *
+   * **这个 120s 覆盖的是「一个账户卡住」，不是「全部账户都卡住」**，别当成
+   * 保证：服务端 per-account 预算是 syncBudget=70s（fetcher.go:35），而
+   * backend/internal/email/diag_hard_deadline_test.go 记录的生产实测是 IMAP
+   * 单账户就占 80.1xx s（76 次，抖动仅十几毫秒），已经**超出** syncBudget；
+   * /api/emails/sync 又把所有启用账户串行跑完，N 个同时卡住时最坏是 N×80s。
+   * 真正的修法在服务端（把单账户工作量框进 syncBudget、或尽快返回部分结果），
+   * 那边已经有在跟的诊断。signal 就是留给这种「服务端还没修好」期间的出口。
+   */
+  syncNow(accountId?: string, signal?: AbortSignal): Promise<{ mode?: string; synced?: number; new?: number; failed?: string[]; skipped?: string[] }> {
     return http('/api/emails/sync', {
       method: 'POST',
       body: JSON.stringify(accountId ? { account_id: accountId } : {}),
+      timeoutMs: LONG_REQUEST_TIMEOUT_MS,
+      signal,
     })
   },
-  classifyInbox(limit = 20): Promise<EmailClassifyReport> {
+  /**
+   * 批量归类。传入 signal 可真正中止在途请求（不只是停批间循环），
+   * 对应需求「后台执行的 api 可以强行终止」。
+   */
+  classifyInbox(limit = 20, signal?: AbortSignal): Promise<EmailClassifyReport> {
     return http('/api/emails/classify', {
       method: 'POST',
       body: JSON.stringify({ limit }),
+      signal,
+      // 归类逐封调 LLM，天然慢；给足额度再由用户手动中止。
+      // 注意不能用通用的 120s：服务端单封最坏 45s × 20 封 = 900s，
+      // 见 CLASSIFY_TIMEOUT_MS 的注释。
+      timeoutMs: CLASSIFY_TIMEOUT_MS,
     })
   },
   purgeEmails(ids: string[]): Promise<{ purged: number }> {
     return http('/api/emails/purge', {
       method: 'POST',
       body: JSON.stringify({ ids }),
+    })
+  },
+
+  // ── 自定义邮件目录（同邮箱服务器能力：创建/列表/移动） ────────────────
+  listFolders(accountId?: string): Promise<{ folders: EmailFolder[] }> {
+    const qs = accountId ? `?account_id=${encodeURIComponent(accountId)}` : ''
+    return http(`/api/email/folders${qs}`)
+  },
+  /** 在服务器上真实创建目录（IMAP CREATE）并登记。 */
+  createFolder(accountId: string, name: string, displayName?: string): Promise<{ folder: EmailFolder }> {
+    return http('/api/email/folders', {
+      method: 'POST',
+      body: JSON.stringify({ accountId, name, displayName }),
+    })
+  },
+  /** 删除目录登记（目录内邮件退回收件箱视图；服务器目录本身不删）。 */
+  deleteFolder(id: string): Promise<{ deleted: boolean }> {
+    return http(`/api/email/folders/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  },
+  /**
+   * 移动邮件到目录（folder 传 '' = 移回收件箱）。本地立即生效并记操作日志，
+   * 服务端尽力即时 IMAP MOVE；失败的操作留在日志里等 /ops/sync 重放。
+   */
+  moveEmails(ids: string[], folder: string, signal?: AbortSignal): Promise<{ moved: number; applied: number; pending: number; errors?: string[]; folder?: string }> {
+    return http('/api/emails/move', {
+      method: 'POST',
+      body: JSON.stringify({ ids, folder }),
+      signal,
+      timeoutMs: LONG_REQUEST_TIMEOUT_MS,
+    })
+  },
+
+  // ── 本地迁移操作日志 + 同步按钮 ────────────────────────────────────────
+  /** 服务端操作日志（status: pending/applied/failed，空 = 全部）。 */
+  listOps(status?: string, limit?: number): Promise<{ ops: EmailOpsEntry[] }> {
+    const qs = new URLSearchParams()
+    if (status) qs.set('status', status)
+    if (limit) qs.set('limit', String(limit))
+    const q = qs.toString()
+    return http(`/api/emails/ops${q ? `?${q}` : ''}`)
+  },
+  /** 离线队列回放：把本地 pending 操作推给服务端日志（幂等键去重）。 */
+  pushOps(ops: { accountId: string; emailId: string; uid?: number; action: string; targetFolder?: string; subject?: string; idempotencyKey: string }[]): Promise<{ recorded: number }> {
+    return http('/api/emails/ops', { method: 'POST', body: JSON.stringify({ ops }) })
+  },
+  /** 同步执行：keys 传幂等键数组 = 可选同步；不传 = 全量 pending。 */
+  syncOps(keys?: string[], signal?: AbortSignal): Promise<EmailOpsSyncReport> {
+    return http('/api/emails/ops/sync', {
+      method: 'POST',
+      body: JSON.stringify(keys?.length ? { ids: keys } : {}),
+      signal,
+      timeoutMs: LONG_REQUEST_TIMEOUT_MS,
+    })
+  },
+
+  // ── 智能识别系统通知邮件 → 整理进目录 ─────────────────────────────────
+  /** dryRun=true 只预览（返回命中的 id 与原因）；false 直接整理。 */
+  organizeInbox(opts: { accountId?: string; folder?: string; dryRun?: boolean } = {}, signal?: AbortSignal): Promise<EmailOrganizeReport> {
+    return http('/api/emails/organize', {
+      method: 'POST',
+      body: JSON.stringify(opts),
+      signal,
+      timeoutMs: LONG_REQUEST_TIMEOUT_MS,
     })
   },
 
@@ -282,10 +582,23 @@ export const emailApi = {
     const q = qs.toString()
     return http(`/api/emails/invoices${q ? `?${q}` : ''}`)
   },
-  extractInvoice(emailId: string): Promise<EmailInvoiceExtractResult> {
+  /**
+   * 手动对单封邮件做发票提取。
+   *
+   * 2026-10-03：这里原先没传 timeoutMs，吃默认 30s。而服务端
+   * handleEmailInvoiceExtract **根本没有设整体超时**——它的耗时全在
+   * `emailFetcher.FetchMessageRaw(r.Context(), …)` 回 IMAP 拉原文上，
+   * 后端 longLivedPaths 的事故记录里写着「实测单封就能超过 30s」。
+   *
+   * 后果是仓库里早就记过的那一幕：**发票行建好了，界面却报错**，用户以为
+   * 没提取而反复点击。取 3 分钟，与 harvest 的 5 分钟同量级。
+   */
+  extractInvoice(emailId: string, signal?: AbortSignal): Promise<EmailInvoiceExtractResult> {
     return http('/api/emails/invoices/extract', {
       method: 'POST',
       body: JSON.stringify({ emailId }),
+      signal,
+      timeoutMs: INVOICE_EXTRACT_TIMEOUT_MS,
     })
   },
   setInvoiceStatus(id: string, status: EmailInvoiceStatus): Promise<void> {
@@ -296,22 +609,30 @@ export const emailApi = {
   },
   /**
    * 下载单张已采集发票 PDF（带鉴权的 blob；配合 utils/download.downloadFile
-   * 落盘/分享）。
+   * 静默落盘到系统「下载」目录）。
+   *
+   * 必须走 resolveRuntimeApiBase() 拼绝对地址：APK 里页面 origin 是
+   * https://localhost，相对路径 /api/* 会被 Capacitor WebView 的本地资源服务
+   * 兜底成 index.html（200, text/html）。真机实测（2026-10-01）：写出去的
+   * 「PDF」其实是 <!doctype html>，PdfRenderer 报 "file not in PDF format"，
+   * 旧实现还会把这份 HTML 当发票交给系统分享面板。
    */
   async fetchInvoiceFile(id: string): Promise<Blob> {
     const auth = useAuthStore()
-    const res = await fetch(`/api/emails/invoices/${encodeURIComponent(id)}/file`, {
+    const res = await fetch(`${resolveRuntimeApiBase()}/api/emails/invoices/${encodeURIComponent(id)}/file`, {
       headers: auth.token ? { Authorization: `Bearer ${auth.token}` } : undefined,
     })
     if (!res.ok) throw new Error(`下载失败（${res.status}）`)
+    assertNotHTML(res)
     return res.blob()
   },
   async fetchInvoiceThumb(id: string): Promise<Blob> {
     const auth = useAuthStore()
-    const res = await fetch(`/api/emails/invoices/${encodeURIComponent(id)}/thumb`, {
+    const res = await fetch(`${resolveRuntimeApiBase()}/api/emails/invoices/${encodeURIComponent(id)}/thumb`, {
       headers: auth.token ? { Authorization: `Bearer ${auth.token}` } : undefined,
     })
     if (!res.ok) throw new Error(`缩略图不可用（${res.status}）`)
+    assertNotHTML(res)
     return res.blob()
   },
   /** 合并导出 A4 网格 PDF（grid=2 → 2x2 每页 4 张；3 → 3x3 每页 9 张）。 */
@@ -324,10 +645,11 @@ export const emailApi = {
   async fetchInvoiceExport(file: string): Promise<Blob> {
     const auth = useAuthStore()
     const res = await fetch(
-      `/api/emails/invoices/export/download?file=${encodeURIComponent(file)}`,
+      `${resolveRuntimeApiBase()}/api/emails/invoices/export/download?file=${encodeURIComponent(file)}`,
       { headers: auth.token ? { Authorization: `Bearer ${auth.token}` } : undefined },
     )
     if (!res.ok) throw new Error(`下载失败（${res.status}）`)
+    assertNotHTML(res)
     return res.blob()
   },
   /** 推送发票到飞书；ids 省略 = 全部已下载未推送。失败回退共享汇总文档。 */
@@ -343,9 +665,21 @@ export const emailApi = {
   },
 
   // ── 邮件处理流水线 ──────────────────────────────────────────────────
-  /** 手动触发一轮：收信 → 清理垃圾 → 重要提醒 → 发票采集 → 飞书/汇总。 */
-  runPipeline(): Promise<EmailPipelineReport> {
-    return http('/api/email/pipeline/run', { method: 'POST', body: '{}' })
+  /**
+   * 手动触发一轮：收信 → 清理垃圾 → 重要提醒 → 发票采集 → 飞书/汇总。
+   *
+   * 传 signal 才能真正中止（需求「后台执行的 api 可以强行终止」）：服务端
+   * handler 把 r.Context() 一路传进 `context.WithTimeout(ctx, 15*time.Minute)`，
+   * 客户端断开即中止。
+   */
+  runPipeline(signal?: AbortSignal): Promise<EmailPipelineReport> {
+    return http('/api/email/pipeline/run', {
+      method: 'POST',
+      body: '{}',
+      signal,
+      // 必须给足：后端实测 1m30s，默认 30s 会让每次都「假失败」。
+      timeoutMs: PIPELINE_TIMEOUT_MS,
+    })
   },
 }
 
@@ -372,7 +706,11 @@ export interface EmailInvoice {
   extractedBy: 'rule' | 'llm'
   createdAt: number
   updatedAt: number
-  /** 文件采集产物：规范名 {费用类型}-{对方单位}-{金额}-{日期}.pdf。 */
+  /**
+   * 文件采集产物：规范名 {费用类型}-{对方单位}-{金额}-{日期}.pdf。
+   * 服务端可能再加两段后缀：可选的 `[-{发票号}]`，以及目标名已被另一张票
+   * 占用时的 `[-N]` 序号。按不透明字符串用，不要按 `-` 拆解解析字段。
+   */
   fileName?: string
   filePath?: string
   /** attachment=邮件附件 | pdf-url=正文链接直下 | xml-render=XML 解析重渲染 */
@@ -394,7 +732,15 @@ export interface EmailInvoiceListResult {
   invoices: EmailInvoice[]
   total: number
   filed: number
+  /**
+   * 单一币种时的合计额。多币种时后端返回 0 —— 跨币种的算术和不是金额，
+   * 想显示总额必须读 amounts 并按币种分组。
+   */
   amount: number
+  /** amount 对应的币种；多币种时为空串。 */
+  currency?: string
+  /** 按币种分组的合计。多币种时以它为准。 */
+  amounts?: Array<{ currency: string; amount: number; count: number }>
   hasMore?: boolean
   offset?: number
 }
@@ -418,12 +764,24 @@ export interface EmailInvoicePushResult {
   errors?: string[]
   shareDocCsv?: string
   shareDocMd?: string
+  /** 飞书共享台账（电子表格）链接；飞书未配置/未授权时为空。 */
+  shareDocUrl?: string
+  ledgerError?: string
   message?: string
 }
 
 export interface EmailInvoiceSummary {
   count: number
+  /**
+   * 仅在**单一币种**时有意义（与 /api/emails/invoices 的 amount 同口径）。
+   * 混入多种币种时它是 0 且 `amounts` 非空 —— 跨币种的算术和不是金额，
+   * 直接渲染这个标量会把外币当成人民币。消费前请优先读 `amounts`。
+   */
   amountTotal: number
+  /** amountTotal 对应的币种；单币种时非空，多币种时为空串。 */
+  currency?: string
+  /** 按币种分组的合计。多币种时**必须**逐组展示，不能合并成一个数。 */
+  amounts?: { currency: string; amount: number; count: number }[]
   downloaded: number
   pending: number
   failed: number
@@ -441,6 +799,8 @@ export interface EmailInvoiceSummary {
   }[]
   shareDocCsv?: string
   shareDocMd?: string
+  /** 飞书共享台账链接（别人可打开的电子表格，含清单与合计）。 */
+  shareDocUrl?: string
 }
 
 /** 一轮流水线的执行报告（对齐后端 email.PipelineReport）。 */
@@ -464,5 +824,14 @@ export interface EmailPipelineReport {
   feishuFailed: number
   shareDocCsv?: string
   shareDocMd?: string
+  /**
+   * 飞书共享台账链接。
+   *
+   * 后端 PipelineReport 自带 shareDocUrl（未配置飞书时省略），但这个类型
+   * 早于该字段加上：不声明的话定时跑产出的链接会被静默丢弃，只有手动推送
+   * 那条路径（走 EmailInvoicePushResult）才可能填上界面上的芯片。
+   */
+  shareDocUrl?: string
   errors?: string[]
 }
+

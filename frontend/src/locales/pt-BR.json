@@ -18,7 +18,8 @@
     "error": "Erro",
     "warning": "Aviso",
     "info": "Informação",
-    "close": "Fechar"
+    "close": "Fechar",
+    "retry": "Tentar novamente"
   },
   "app": {
     "title": "Redclaw",
@@ -29,12 +30,21 @@
     "backButton": "Voltar",
     "openMenu": "Abrir menu"
   },
+  "settingsMenu": {
+    "title": "Menu",
+    "notLoggedIn": "Não conectado",
+    "viewAccount": "Ver conta e configurações",
+    "groupSettings": "Configurações",
+    "groupOps": "Operações e avançado",
+    "versionFootnote": "Redclaw · v{version}"
+  },
   "nav": {
     "mainNavigation": "Navegação principal",
     "ai": "IA",
     "aiChat": "Chat",
     "notes": "Notas",
     "meetings": "Reuniões",
+    "rss": "RSS",
     "email": "E-mail",
     "more": "Mais",
     "moreFeatures": "Mais recursos",
@@ -48,7 +58,62 @@
     "instances": "Instâncias",
     "costQuota": "Custo e cota",
     "settings": "Configurações",
-    "localAgent": "Local Agent"
+    "localAgent": "Local Agent",
+    "home": "Home",
+    "study": "Study",
+    "flashcards": "Cartões de memorização",
+    "messages": "Mensagens"
+  },
+  "routes": {
+    "login": "Entrar",
+    "selectServer": "Selecionar servidor",
+    "aiTools": "Ferramentas de IA",
+    "chat": "Chat",
+    "agents": "Agentes",
+    "createAgent": "Criar agente",
+    "editAgent": "Editar agente",
+    "agentDetail": "Detalhe do agente",
+    "notes": "Notas",
+    "newNote": "Nova nota",
+    "noteDetail": "Detalhe da nota",
+    "editNote": "Editar nota",
+    "email": "E-mail",
+    "emailDetail": "Detalhe do e-mail",
+    "dailySummary": "Resumo diário",
+    "summaryDetail": "Detalhe do resumo",
+    "emailAccounts": "Contas de e-mail",
+    "contacts": "Contatos",
+    "contactDetail": "Detalhe do contato",
+    "vault": "Cofre",
+    "passwordDetail": "Detalhe da senha",
+    "editPassword": "Editar senha",
+    "pkmNotes": "Notas",
+    "meetings": "Reuniões",
+    "startMeeting": "Iniciar reunião",
+    "meetingDetail": "Detalhe da reunião",
+    "instances": "Instâncias",
+    "tasks": "Tarefas",
+    "taskDetail": "Detalhe da tarefa",
+    "sessions": "Sessões",
+    "session": "Sessão",
+    "settings": "Configurações",
+    "aiModels": "Modelos de IA",
+    "permissionsPrivacy": "Permissões e privacidade",
+    "scheduledTasks": "Automação agendada",
+    "createAutomation": "Criar automação",
+    "editAutomation": "Editar automação",
+    "automationDetail": "Detalhe da automação",
+    "costQuota": "Custo e cota",
+    "gatewayNodes": "Nós do gateway",
+    "gatewayOverview": "Visão geral do gateway",
+    "providers": "Provedores",
+    "credentials": "Credenciais",
+    "credentialDetail": "Detalhe das credenciais",
+    "modelRouting": "Roteamento de modelos",
+    "modelCatalog": "Catálogo de modelos",
+    "routingConfig": "Configuração de roteamento",
+    "liveRequests": "Requisições ao vivo",
+    "notifications": "Notifications"
   },
   "settings": {
     "aiGateway": "AI Gateway",
@@ -71,6 +136,19 @@
     "loginTime": "Login Time",
     "currentConnection": "Current Connection",
     "server": "Server",
+    "backendServer": "Servidor backend",
+    "backendHint": "Login, tarefas e instâncias usam este pocketd. Alterar exige entrar novamente.",
+    "buildDefault": "Padrão da build",
+    "sameOrigin": "Este site (mesma origem)",
+    "productionServer": "Produção (pocket.itestu.cn)",
+    "backupServer": "Backup (pocket.kxpms.cn)",
+    "customServer": "URL personalizada",
+    "customServerHint": "Informe um endereço https://",
+    "saveAndUse": "Salvar e usar",
+    "saving": "Salvando…",
+    "healthOk": "Conectado",
+    "healthDown": "Inacessível",
+    "healthUnknown": "Não verificado",
     "instance": "Instance",
     "notSelected": "Not Selected",
     "appInfo": "App Info",
@@ -78,9 +156,10 @@
     "version": "Version",
     "versionFormat": "v{version} (Build {buildNumber})",
     "buildDate": "Build Date",
+    "buildDateNote": "(valor configurado, não o horário de build medido)",
     "apiAddress": "API Address",
     "privacy": "Privacy",
-    "permissionsPrivacy": "Permissions & Privacy",
+    "permissionsPrivacy": "Permissões e privacidade",
     "permissionsDesc": "Microphone / Notifications / Biometric",
     "appearance": "Aparência",
     "theme": "Tema",
@@ -88,7 +167,7 @@
     "themeDark": "Escuro",
     "themeSystem": "Seguir sistema",
     "automation": "Automation",
-    "scheduledTasks": "Scheduled Tasks",
+    "scheduledTasks": "Automação agendada",
     "scheduledTasksDesc": "Create, edit and view automation tasks",
     "checkUpdates": "Check for Updates",
     "changeServer": "Change Server",
@@ -96,28 +175,33 @@
     "logoutConfirm": "Are you sure you want to log out?",
     "newVersionAvailable": "New version v{version} available!\n\nChangelog:\n{changelog}",
     "alreadyLatest": "Already on the latest version!",
-    "checkUpdateFailed": "Failed to check for updates, please try again later"
-  },
-  "settingsMenu": {
-    "title": "Menu",
-    "notLoggedIn": "Não conectado",
-    "viewAccount": "Ver conta e configurações",
-    "groupSettings": "Configurações",
-    "groupOps": "Operações e avançado",
-    "versionFootnote": "Redclaw · v{version}"
+    "checkUpdateFailed": "Failed to check for updates, please try again later",
+    "versionConfigUnavailable": "Configuração de versão do servidor indisponível; não é possível verificar atualizações. Peça ao administrador para conferir config/version.json. {detail}",
+    "redclawIntegration": "Integração RedClaw",
+    "redclawConnected": "Conectado",
+    "redclawMisconfigured": "Configurado · erro de conexão",
+    "redclawDisabled": "Não habilitado",
+    "tenant": "Locatário {id}",
+    "finance": "Contabilidade",
+    "financeDesc": "Manual + automático a partir de notas · receitas e despesas mensais",
+    "language": "Idioma da interface",
+    "apiAddressNotSaved": "Não foi possível salvar o endereço. Verifique se não está vazio e se é uma URL válida.",
+    "buildDefaultUnreachable": "O padrão de compilação {url} é inacessível neste dispositivo (aponta para o próprio dispositivo), então {fallback} é usado. Para acessar um backend na sua própria máquina, informe-o em Endereço personalizado."
   },
   "flashcards": {
     "list": {
       "title": "Flashcards",
       "empty": "Ainda não há baralhos",
-      "create": "Criar baralho",
+      "create": "Novo cartão",
       "dueToday": "{count} para revisar hoje"
     },
     "deck": {
       "title": "Baralho",
       "addCard": "Adicionar cartão",
       "review": "Revisar",
-      "noCards": "Este baralho não tem cartões"
+      "noCards": "Este baralho não tem cartões",
+      "create": "Novo baralho",
+      "createPlaceholder": "Nome do baralho"
     },
     "review": {
       "title": "Revisão",
@@ -127,7 +211,9 @@
       "easy": "Fácil",
       "remaining": "{count} restantes",
       "complete": "Sessão concluída",
-      "fuzzNote": "Os prazos são intencionalmente dispersos em ±5% para evitar acúmulo"
+      "fuzzNote": "Os prazos são intencionalmente dispersos em ±5% para evitar acúmulo",
+      "clozeCount": "{count} cloze",
+      "clozeHint": "Tap card to reveal"
     },
     "edit": {
       "title": "Cartão",
@@ -136,7 +222,21 @@
       "tags": "Etiquetas",
       "save": "Salvar",
       "delete": "Excluir",
-      "confirmDelete": "Excluir este cartão?"
+      "confirmDelete": "Excluir este cartão?",
+      "template": "Card template",
+      "templateBasic": "Front · Back",
+      "templateCloze": "Cloze",
+      "clozeText": "Cloze text",
+      "clozePlaceholder": "e.g. The chemical formula of water is {{c1::H₂O::hydrogen dioxide}}, boiling at {{c2::100℃}}.",
+      "clozeHint": "Use {{c1::answer}} or {{c1::answer::hint}} to mark occlusions. Multiple cloze in one card review together.",
+      "clozeCount": "{count} occlusions",
+      "parentDeck": "Parent deck",
+      "parentDeckNone": "None (top level)",
+      "parentDeckSelf": "(self)",
+      "addImage": "Add image",
+      "addImageCamera": "Camera",
+      "addImageGallery": "Gallery",
+      "imagePickFailed": "Failed to pick image"
     },
     "permission": {
       "vivoTitle": "Permita que o OpenPocket te avise todos os dias",
@@ -148,7 +248,273 @@
     },
     "error": {
       "loadFailed": "Não foi possível carregar os flashcards",
+      "saveFailed": "Não foi possível salvar o cartão",
       "syncConflict": "Conflito de sincronização — atualize a página"
+    },
+    "deckOptions": {
+      "title": "Deck options",
+      "notFound": "Deck not found",
+      "deckName": "Name",
+      "nameRequired": "Name is required",
+      "groupDaily": "Daily limits",
+      "newPerDay": "New cards per day",
+      "reviewsPerDay": "Reviews per day",
+      "groupLearning": "Learning steps",
+      "learningSteps": "Learning steps (min, comma-separated)",
+      "learningStepsHint": "e.g. 1, 10",
+      "graduatingInterval": "Graduating interval (days)",
+      "easyInterval": "Easy interval (days)",
+      "groupFsrs": "FSRS algorithm",
+      "desiredRetention": "Desired retention (0.5-0.99)",
+      "maximumInterval": "Maximum interval (days)",
+      "easyBonus": "Easy bonus (1.0-3.0)",
+      "hardInterval": "Hard interval (0.5-2.0)"
+    },
+    "browser": {
+      "title": "Card browser",
+      "resultCount": "{count} results",
+      "searchPlaceholder": "Search front / back text",
+      "allDecks": "All decks",
+      "allTags": "All tags",
+      "tagsSelected": "{count} tags",
+      "clear": "Clear filters",
+      "pickDeck": "Pick deck",
+      "pickTags": "Pick tags",
+      "noTags": "No tags yet",
+      "empty": "No matching cards",
+      "state": {
+        "all": "All states",
+        "new": "New",
+        "learning": "Learning",
+        "review": "Review",
+        "relearning": "Relearning"
+      }
+    },
+    "stats": {
+      "title": "Review stats",
+      "total": "Total",
+      "new": "New",
+      "young": "Young",
+      "mature": "Mature",
+      "distribution": "Distribution",
+      "reviewsPerDay": "Reviews / {days} days",
+      "lapsesPerDay": "Lapses / {days} days",
+      "retention": "Estimated retention",
+      "retentionHint": "Simplified estimate from {again}+{hard}+{good}+{easy} recent ratings",
+      "noReviewsYet": "No reviews in window",
+      "noLapses": "No Again ratings in window"
+    },
+    "io": {
+      "title": "Import / Export",
+      "exportTitle": "Export",
+      "exportDesc": "Bundle all notes + cards + decks into a JSON file you can share",
+      "exportBtn": "Export JSON",
+      "exportOk": "Exported {count} cards",
+      "exportFailed": "Export failed",
+      "importTitle": "Import",
+      "importDesc": "Pick a previously exported JSON file. Merge by id.",
+      "importBtn": "Pick file",
+      "importOk": "Merged {notes} notes / {cards} cards / {decks} decks",
+      "importFailed": "Import failed",
+      "notes": "Notes",
+      "cards": "Cards",
+      "decks": "Decks"
     }
+  },
+  "study": {
+    "hero": {
+      "today": "Today",
+      "cardsDue": "cards due",
+      "start": "Start review",
+      "review": "Start today review",
+      "allDone": "All done for today"
+    },
+    "decks": {
+      "title": "My decks",
+      "all": "All",
+      "empty": "No decks yet",
+      "create": "New deck",
+      "dueShort": "{count} due",
+      "stats": "View stats",
+      "browser": "Card browser"
+    },
+    "reminder": {
+      "title": "Lembrete de revisão diária",
+      "next": "Próximo: {time}",
+      "offline": "Serviço de aprendizagem off-line: lembretes indisponíveis no momento"
+    },
+    "notes": {
+      "title": "My notes",
+      "all": "All",
+      "voice": "Voice notes",
+      "hint": "Tap mic to record"
+    },
+    "capture": {
+      "add": "Adicionar ao aprendizado",
+      "done": "Adicionado ao aprendizado",
+      "toTask": "Converter em tarefa",
+      "taskDone": "Tarefa criada",
+      "failed": "Não foi possível salvar. Tente novamente."
+    },
+    "streak": {
+      "days": "dias seguidos",
+      "toNext": "Mais {count} para {next}",
+      "milestoneReached": "Marco de {days} dias alcançado"
+    },
+    "due": {
+      "title": "Pendências de hoje",
+      "cardsDue": "Cartões a revisar",
+      "inboxWaiting": "Caixa de entrada pendente",
+      "reviewing": "A revisar",
+      "tasksDue": "Tarefas pendentes",
+      "allClear": "Nada pendente hoje"
+    },
+    "inbox": {
+      "title": "Caixa de entrada",
+      "empty": "A caixa de entrada está vazia",
+      "advance": "Processar"
+    },
+    "source": {
+      "note": "Nota",
+      "email": "E-mail",
+      "rss": "RSS",
+      "meeting": "Reunião",
+      "chat": "Chat",
+      "manual": "Manual"
+    }
+  },
+  "email": {
+    "dailySummary": "Resumo diário",
+    "fetchHintNetwork": "O download em segundo plano não concluiu; exibindo as mensagens sincronizadas",
+    "fetchHintClassifierOff": "A categorização automática está desativada; mensagens sincronizadas sem categoria",
+    "fetchHintAuth": "Sua sessão expirou. Entre novamente.",
+    "fetchHintUnavailable": "Serviço em segundo plano indisponível; mensagens sincronizadas",
+    "fetchHintHttpError": "Busca em segundo plano incompleta ({code}); mensagens sincronizadas"
+  },
+  "errors": {
+    "rssNotConfigured": "Nenhuma fonte RSS configurada ainda. Adicione uma para começar.",
+    "rssSourceMissing": "Essa fonte não existe mais; ela pode ter sido removida.",
+    "emailNotConfigured": "Nenhuma caixa de e-mail configurada ainda. Adicione uma conta nas Configurações de e-mail.",
+    "emailAccountMissing": "Essa conta não existe mais; ela pode ter sido removida.",
+    "imapUnauthorized": "A autorização da caixa de e-mail expirou. Conecte-a novamente.",
+    "imapFailed": "Não foi possível contatar o servidor de e-mail. Verifique a rede e a conta.",
+    "sttNotConfigured": "A transcrição de voz ainda não foi configurada.",
+    "llmNotConfigured": "Nenhum modelo de linguagem configurado ainda. Escolha um nas Configurações de modelo.",
+    "modelNotFound": "Esse modelo não existe mais; ele pode ter sido removido.",
+    "gatewayUnreachable": "Não foi possível acessar o gateway de modelos. Verifique o endereço e a rede.",
+    "gatewayAdminMissing": "Este nó de gateway ainda não tem conta de administrador. Adicione primeiro o usuário e a senha em Gateway de modelos.",
+    "workspaceNotFound": "Espaço de trabalho não encontrado.",
+    "notConfigured": "Este recurso ainda não foi configurado.",
+    "unauthorized": "Sua sessão expirou. Entre novamente.",
+    "notFound": "Item não encontrado.",
+    "timeout": "A requisição expirou. Tente novamente.",
+    "network": "Não foi possível conectar ao servidor. Verifique sua rede.",
+    "rateLimited": "Muitas requisições. Aguarde um momento e tente de novo.",
+    "conflict": "Já existe ou conflita com o estado atual.",
+    "server": "O servidor encontrou um erro. Tente novamente mais tarde.",
+    "loadRssFailed": "Não foi possível carregar as fontes",
+    "loadEmailFailed": "Não foi possível carregar o e-mail. Tente novamente.",
+    "loadEmailBodyFailed": "Não foi possível carregar o corpo da mensagem",
+    "loadEmailSettingsFailed": "Não foi possível carregar as configurações de e-mail",
+    "sendEmailFailed": "Falha ao enviar",
+    "createTaskFailed": "Não foi possível criar a tarefa",
+    "loadInvoicesFailed": "Não foi possível carregar as faturas",
+    "loadNotesFailed": "Não foi possível carregar as notas",
+    "loadMeetingsFailed": "Não foi possível carregar as reuniões",
+    "loadFlashcardsFailed": "Não foi possível carregar os cartões",
+    "loadGatewayFailed": "Não foi possível carregar as informações do gateway",
+    "loadTasksFailed": "Não foi possível carregar as tarefas",
+    "loadSessionsFailed": "Não foi possível carregar as sessões",
+    "loadFinanceFailed": "Não foi possível carregar suas finanças",
+    "loadSettingsFailed": "Não foi possível carregar as configurações",
+    "saveFailed": "Não foi possível salvar. Tente novamente.",
+    "operateFailed": "A operação falhou. Tente novamente.",
+    "summaryFailed": "Não foi possível gerar o resumo. Verifique se o gateway de modelos está configurado e acessível.",
+    "probeFailed": "Sonda falhou. Verifique se o destino está acessível."
+  },
+  "due": {
+    "title": "Revisão de hoje",
+    "cardsDue": "Cartões pendentes",
+    "inboxWaiting": "A processar",
+    "reviewing": "Em revisão",
+    "tasksDue": "Tarefas pendentes",
+    "allClear": "Nada pendente hoje"
+  },
+  "reminder": {
+    "title": "Resumo diário",
+    "next": "Próximo: {time}",
+    "offline": "O resumo diário precisa do serviço de aprendizado. Reconecte para ativar os lembretes."
+  },
+  "inbox": {
+    "title": "Caixa de entrada",
+    "empty": "Nada coletado ainda. Use \"Adicionar ao aprendizado\" em uma nota, e-mail ou RSS.",
+    "advance": "Começar"
+  },
+  "notesHub": {
+    "title": "Notas",
+    "filter": {
+      "all": "Todas",
+      "manual": "Notas",
+      "meeting": "Reuniões",
+      "pkm": "Notas PKM"
+    },
+    "action": {
+      "newNote": "Nova nota",
+      "startMeeting": "Iniciar reunião",
+      "record": "Gravar uma nota"
+    },
+    "link": {
+      "allNotes": "Todas as notas",
+      "allMeetings": "Todas as reuniões",
+      "allPkm": "Abrir PKM"
+    },
+    "empty": {
+      "title": "Ainda sem notas",
+      "hint": "Toque no microfone para a primeira nota ou inicie uma reunião",
+      "filtered": "Ainda não há nada nesta fonte"
+    },
+    "meta": {
+      "voice": "Nota de voz",
+      "pending": "Processando",
+      "minutes": "{count} min",
+      "hoursMinutes": "{hours} h e {minutes} min"
+    },
+    "count": {
+      "notes": "{count} notas",
+      "meetings": "{count} reuniões"
+    }
+  },
+  "messagesHub": {
+    "title": "Mensagens",
+    "filter": {
+      "all": "Todos",
+      "email": "E-mail",
+      "rss": "Assinaturas",
+      "task": "Tarefas"
+    },
+    "action": {
+      "markAllRead": "Marcar tudo como lido",
+      "openMail": "Abrir e-mail",
+      "manageFeeds": "Gerenciar assinaturas"
+    },
+    "empty": {
+      "title": "Nada novo",
+      "hint": "E-mails importantes, notícias assinadas e tarefas chegam aqui"
+    },
+    "badge": {
+      "important": "Importante"
+    },
+    "meta": {
+      "from": "De {name}",
+      "suggestedAction": "Sugestão: {action}"
+    },
+    "unreadBadge": "{count} não lidas",
+    "partialFailure": "Algumas fontes não puderam carregar: {sources}"
+  },
+  "timefmt": {
+    "justNow": "agora mesmo",
+    "minutesAgo": "há {count} min",
+    "hoursAgo": "há {count} h",
+    "daysAgo": "há {count} d"
   }
 }

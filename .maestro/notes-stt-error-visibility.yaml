@@ -1,0 +1,187 @@
+# Maestro 真机功能流 · 笔记录音转写失败原因可见性
+#
+# 这条流守的是 2026-10-01 真机复现并修复的缺陷（见
+# docs/handoff/2026-10-01-stt-gateway-discovery.md §11）：
+#   录音中显示完整失败原因，点停止后横幅却变成「该功能尚未完成配置」。
+#
+# 为什么必须用 Maestro 而不是只看 CDP 读数：
+#   缺陷的整条链路是「后端 stt_unavailable 文案 → sttFailureText 归一 →
+#   rt.error → 渲染层」。前面每一段都有单测，缺的正是**最后一段在真机上
+#   到底显示什么**。这条流把「停止后仍能看到可行动原因」变成可重复执行的
+#   断言，而不是一次性的截图。
+#
+# 断言只认三样东西：
+#   1. 行动指引「语音转写」—— 说明是 sttFailureText 的成品文案，不是通用兜底
+#   2. 通用兜底的两个 i18n 文案**都不在**（errors.notConfigured / sttNotConfigured）
+#   3. 界面里不残留裸错误码与技术串
+# 兜底文案随 locale 变，断言它们不存在比断言新文案更抗改。
+#
+# 选择器为什么用 aria-label 而不是 class（2026-10-01 源码核验）：
+#   录音 FAB 是 frontend/src/features/notes/VoiceRecorderWidget.vue 的
+#     <button class="fab" :aria-label="recording ? '停止录音' : '开始录音'">
+#   它**没有 id 属性**，class 在 WebView a11y 树里也不保证暴露。
+#   aria-label 会进 content-desc，是 Maestro 唯一稳定的锚点。
+#   （本文件初版写的是 `tapOn: id: "fab"` —— 那是把 class 当 id 用，
+#     源码核验时就已判定不可靠，改掉了。）
+#
+# 前置（2026-10-01 实测，缺一即「连不上」）：
+#   1. adb reverse tcp:18099 tcp:18111
+#   2. pocketd 带 POCKET_DEV_AUTH=true（否则 corsMiddleware 不发 ACAO）
+#   3. 明文后端：APK 须以 CAP_ANDROID_SCHEME=http 构建，否则 fetch 一直 pending
+#   4. 设备麦克风权限已授予
+#   5. **设备语言必须是 zh-CN**（2026-10-02 首次实跑补上的一条，见下）
+#
+# ⚠️ 第 5 条是这条流第一次真正跑起来才发现的（2026-10-02，模拟器 emulator-5556）：
+#   模拟器默认 `en-US`，App 随之渲染**英文**底部导航（`en-US.json` 里就是
+#   `"study": "Study"`），于是 `tapOn: "学习"` 直接 FAILED。
+#   ⇒ 这不是产品缺陷，是**流把设备语言当成了隐含前提**：任何英文语言的设备
+#     跑这条流都会在同一处挂掉，而且挂得毫无信息量。
+#   本流下面的断言文案全是中文，所以正解是**把设备语言钉死**而不是把选择器改成双语：
+#     adb -s <serial> root
+#     adb -s <serial> shell setprop persist.sys.locale zh-CN
+#     adb -s <serial> shell setprop ctl.restart zygote   # 重启后等 boot_completed=1
+#     adb -s <serial> reverse tcp:18099 tcp:18099        # reverse 会在重启后丢，要重设
+#   （setprop persist.sys.locale 需要 root，否则报 "Failed to set property"。）
+#   底部导航的选择器仍写成双语，纯属兜底：万一又有人在英文设备上跑，它至少能
+#   走到下一个断言、而不是死在入口。
+#
+# 运行：
+#   $env:JAVA_HOME = 'C:\Program Files\Eclipse Adoptium\jdk-21.0.12.101-hotspot'
+#   $env:PATH     = "$env:JAVA_HOME\bin;$env:PATH"
+#   & C:\workspace\openpocket\logs\maestro\dist\maestro\bin\maestro.bat `
+#       --device 192.168.31.19:5555 test .maestro\notes-stt-error-visibility.yaml
+#
+# appId 用 sttdev 并存包：调试包带独立 applicationIdSuffix，与正式包数据隔离，
+# 不动用户正式 App 的后端设置（那会清掉登录态）。
+#
+# ⚠️ 这条流在 MIUI/HyperOS 真机上**需要驱动能装上才能跑**（2026-10-02 实测）：
+#   Maestro 每次开会话都会先 uninstall 再 install 驱动（调用链：
+#   AndroidDriver.open -> installMaestroApks -> installMaestroDriverApp -> install），
+#   而 MIUI 把 ADB 安装劫持到 com.miui.securitycenter 的确认页，
+#   对应开发者选项里的「USB 安装」开关。
+#   实测：adb install 与 pm install 均报 INSTALL_FAILED_USER_RESTRICTED；
+#   系统层 user_restriction 是 none（所以改 settings 的一系列开关都无效）；
+#   弹窗自动点「继续安装」连点 2 次被系统撤销；无 root。
+#   => 要跑这条流，先在手机「开发者选项 -> USB 安装」打开开关，
+#      并保持它为开的。一次成功安装 **不等于之后每次都能跑**。
+#
+#   另：驱动装上后可能失败在后续步骤。已实测的时序问题（已在本流下方补了等待）：
+#     11:38:42.123 Launching app / Stopping app during launch
+#     11:38:42.614 Launch app COMPLETED     <- 只用 0.5s，而 App 实测需 1.6s 才 Displayed
+#   它抢跑后去抓 hierarchy，抓到的是还没切完的桌面 -> `tapOn "学习|Study"` 报 Element not found。
+#   这很容易被误读成「选择器写错」或「设备语言不对」。
+#
+#   详见 docs/handoff/2026-10-02-stt-maestro-flow-not-closed-on-device.md。
+#
+#   本次真机验收走的是**不依赖 Maestro 驱动**的等价路径，结论同样有效：
+#     adb forward tcp:9333 localabstract:webview_devtools_remote_<pid>
+#     + CDP Runtime.evaluate 读 DOM 文本、element.click() 触发交互。
+#   为什么等价：这条流的断言**全部是文本断言**（assertVisible/NotVisible），
+#   而 uiautomator dump 在这个 WebView 上只吐出 8 个空节点
+#   （a11y 树未暴露），本来也读不到任何文案 —— CDP 是当前唯一能读到
+#   真实渲染文本的通道，反而比 uiautomator 更贴近「用户看到什么」。
+#   实测结论：7/7 断言通过（停止录音后仍显示可行动原因
+#   「外部语音转写服务未配置 API Key（设置 → 语音转写）」，
+#   两个通用兜底文案与裸错误码/技术串均未出现）。
+appId: com.kaixuan.opencode.pocket.sttdev
+---
+- launchApp:
+    clearState: false
+
+# 为什么要在这里等：2026-10-02 真机实测发现 Maestro 的 `Launch app`
+#   仅用 0.5s 就报 COMPLETED（日志 11:38:42.123 -> 11:38:42.614），
+#   而 App 实测需 1.6s 才 Displayed（am start -W: +1s624ms）。
+#   它抢跑后立即去抓 hierarchy，抓到的是还没切换完的桌面，
+#   因此 `tapOn "学习|Study"` 报 Element not found。
+#   这个失败很容易被误读成「选择器写错」或「设备语言不对」。
+- waitForAnimationToEnd:
+    timeout: 20000
+- extendedWaitUntil:
+    visible: "还没有笔记|AI 工具|解锁本地数据"
+    timeout: 30000
+
+# ---- 冷启动可能停在主密码解锁页，先处理掉 ----
+# 2026-10-02 真机（Redmi / Android 14 / WebView 126）实测补充：
+#   `inputText` 走软键盘路径会吞字符 —— 实测输入 13 位主密码后
+#   input.value.length 时而是 13 时而是 14（多余的位来自后续那次 tap
+#   落在输入框上、把键盘重新唤起）。口令错时页面**不报错**：
+#   LoginView.unlock() 的 catch 分支只在 initLobster 抛错时才写 error.value，
+#   而 AES-GCM 解密失败发生在更下游，于是界面表现为「点了没反应」。
+#   ⇒ 这条流在这里必须留够 extendedWaitUntil 超时，别把口令问题
+#     误读成路由没跳转。
+- runFlow:
+    when:
+      visible: "解锁本地数据"
+    commands:
+      - tapOn: "主密码"
+      - inputText: "PocketStt9527"
+      - hideKeyboard
+      - tapOn: "解锁"
+      - extendedWaitUntil:
+          visible: "AI 工具|首页"
+          timeout: 30000
+
+# ---- 进笔记页 ----
+# ⚠️ 2026-10-03 IA 重组修正：这一段原来只有一句 `tapOn: "学习|Study"`。
+#   重组**前**「学习」是一级 tab（底部导航：首页/学习/会议/更多），点一下就到；
+#   重组后一级 tab 变成 首页 / 笔记 / 消息 / 更多，「学习」下沉成了「更多」宫格里的
+#   第一格（MoreHubView items，MoreHubView.vue:12 `{ to: '/study', label: t('nav.study') }`）。
+#   底 tab 上已经没有「学习」这个节点 ⇒ `tapOn` 直接 FAILED / Element not found。
+#   这个报错形态与「设备语言不对」「选择器写错」完全一样，很容易被误读成前者。
+#   修法：先点「更多」进宫格，再点「学习」，并**每一步都断言**，否则「更多」没点开
+#   时后半句会静默走到别的格子（与 PKM flow 里 point 坐标误触录音是同一类教训）。
+- tapOn: "更多|More"
+- extendedWaitUntil:
+    visible: "学习|Study"
+    timeout: 20000
+- tapOn: "学习|Study"
+# 2026-10-02 真机首跑修正：这条流原本等的是「还没有笔记」，但那行文案
+#   在**学习 hub 页**上，录音 FAB 在**笔记页**（#/notes）。两者中间隔着
+#   一次「语音笔记」卡片点击 —— 原流在 hub 页等一个 hub 页永远不会出现的
+#   文案，必然超时。实测 hub 页的同类文案是「还没有牌组」。
+# 「语音笔记」在重组后仍是 study 页来源列表里的那一项（locales zh-CN.json
+#   `study.sources.voice` = 语音笔记），所以这条锚点本身没过期，过的只是它的父级。
+- extendedWaitUntil:
+    visible: "语音笔记"
+    timeout: 20000
+- tapOn: "语音笔记"
+- extendedWaitUntil:
+    visible: "还没有笔记"
+    timeout: 25000
+
+# ---- 开始录音（aria-label 随状态切换）----
+- tapOn: "开始录音"
+- extendedWaitUntil:
+    visible: "即时转写"
+    timeout: 25000
+
+# 等一轮增量转写返回。STT 未配置时后端 1 秒内就回 503，
+# 不需要真的录满一个分片周期，也不需要说话。
+- extendedWaitUntil:
+    visible: ".*外部语音转写服务未配置.*|.*网关暂无可用的语音转写模型.*|.*Failed to fetch.*"
+    timeout: 40000
+
+# ---- 停止录音，回到列表页 ----
+- tapOn: "停止录音"
+- extendedWaitUntil:
+    notVisible: "即时转写"
+    timeout: 30000
+
+# ---- 核心断言：停止后仍显示**可行动原因**，而不是通用兜底 ----
+# 判别力说明（2026-10-02 复核）：单看 `assertVisible: ".*语音转写.*"` 会以为它
+# 太宽 —— 通用兜底「语音转写服务尚未配置」同样含"语音转写"四字。但实测判别表：
+#   修复态（可行动原因）  A1=true  A2=true  A3=true  => PASS
+#   缺陷态（只剩兜底）    A1=true  A2=false A3=false => FAIL
+# 即 A1 单独没有判别力，**真正的判别力来自它与下面两条 assertNotVisible 串联**。
+# 三条是一条都不能删的整体，拆开单跑任一条都会得到错误的绿灯。
+# （顺带：想用「文本里含 设置/API Key/配置」当可行动判据是**不行**的 ——
+#   兜底文案本身就含"配置"二字，该判据在缺陷态同样为真。）
+- assertVisible: ".*语音转写.*"
+- assertNotVisible: "该功能尚未完成配置"
+- assertNotVisible: "语音转写服务尚未配置"
+
+# ---- 负向锚点：界面里不该出现任何裸错误码或技术串 ----
+- assertNotVisible: "stt_unavailable"
+- assertNotVisible: ".*i/o timeout.*"
+- assertNotVisible: ".*ERR_CONNECTION.*"
+- takeScreenshot: "logs/maestro/notes-stt-error-after-stop"

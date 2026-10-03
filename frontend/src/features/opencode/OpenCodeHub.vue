@@ -173,7 +173,7 @@ function formatLastSeen(timestamp: string): string {
 
 .back-btn, .refresh-btn {
   padding: 8px 12px;
-  font-size: 14px;
+  font-size: var(--text-base);
   background: transparent;
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -188,7 +188,9 @@ function formatLastSeen(timestamp: string): string {
 
 .top-bar h1 {
   flex: 1;
-  font-size: 20px;
+  /* 走 token：与设置页/邮件页的顶栏标题（`.title { font-size: var(--text-lg) }`）
+     同源。此前这里写死 20px，与全局 16px 差 25%，是用户报的「字体不对」之一。 */
+  font-size: var(--text-lg);
   font-weight: 600;
   color: var(--text-primary);
   margin: 0;
@@ -229,7 +231,7 @@ function formatLastSeen(timestamp: string): string {
 
 .retry-btn {
   padding: 12px 24px;
-  font-size: 14px;
+  font-size: var(--text-base);
   font-weight: 600;
   color: var(--text-inverse);
   background: var(--brand-gradient);
@@ -258,14 +260,14 @@ function formatLastSeen(timestamp: string): string {
 }
 
 .group-header h2 {
-  font-size: 18px;
+  font-size: var(--text-xl);
   font-weight: 600;
   color: var(--text-primary);
   margin: 0;
 }
 
 .instance-count {
-  font-size: 14px;
+  font-size: var(--text-base);
   padding: 4px 12px;
   background: var(--brand-bg);
   color: var(--brand-primary);
@@ -330,10 +332,10 @@ function formatLastSeen(timestamp: string): string {
 }
 
 .instance-id {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-muted);
   margin: 0 0 12px 0;
-  font-family: monospace;
+  font-family: var(--font-mono);
 }
 
 .instance-stats {
@@ -346,12 +348,12 @@ function formatLastSeen(timestamp: string): string {
   display: flex;
   align-items: center;
   gap: 4px;
-  font-size: 13px;
+  font-size: var(--text-smd);
   color: var(--text-secondary);
 }
 
 .stat-icon {
-  font-size: 14px;
+  font-size: var(--text-base);
 }
 
 .offline-text {
@@ -380,12 +382,12 @@ function formatLastSeen(timestamp: string): string {
 }
 
 .empty-state p {
-  font-size: 16px;
+  font-size: var(--text-lg);
   margin: 0 0 8px 0;
 }
 
 .empty-hint {
-  font-size: 14px;
+  font-size: var(--text-base);
   color: var(--text-muted);
 }
 </style>

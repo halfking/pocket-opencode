@@ -55,9 +55,10 @@
     display: none;
   }
 
-  /* 平板横屏布局优化 */
+  /* 平板横屏布局优化。基准字号走 token：styles.css 的 body 基准本来就是
+     var(--text-base)，这里若写死像素，将来整体调档时断点基准会被漏掉。 */
   body {
-    font-size: 15px;
+    font-size: var(--text-md);
   }
 }
 
@@ -68,7 +69,7 @@
   }
 
   body {
-    font-size: 16px;
+    font-size: var(--text-lg);
   }
 }
 
@@ -164,7 +165,7 @@
   input[type="password"],
   input[type="email"],
   textarea {
-    font-size: 16px; /* 防止iOS缩放 */
+    font-size: var(--text-lg); /* 防止iOS缩放 */
   }
 }
 

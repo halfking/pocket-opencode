@@ -67,11 +67,11 @@ function icon(type: string): string {
   to { opacity: 1; transform: translateY(0); }
 }
 
-.alert-icon { flex-shrink: 0; font-size: 16px; }
+.alert-icon { flex-shrink: 0; font-size: var(--text-lg); }
 
 .alert-msg {
   flex: 1;
-  font-size: 13px;
+  font-size: var(--text-smd);
   line-height: 1.4;
   color: var(--text-primary);
 }
@@ -79,7 +79,7 @@ function icon(type: string): string {
 .alert-close {
   border: none;
   background: none;
-  font-size: 18px;
+  font-size: var(--text-xl);
   color: var(--text-muted);
   cursor: pointer;
   padding: 0;

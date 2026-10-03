@@ -32,6 +32,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -468,8 +469,16 @@ func (svc *Service) Dispatch(ctx context.Context, ev Event) (*DispatchResult, er
 
 // ---- helpers ----
 
+// notifyIDSeq 与时间戳一起构成通知 ID。
+//
+// 不能只用纳秒时间戳：本机实测 1000 次 time.Now() 只产生 1 个不同值，
+// 同一刻度内落库的两条通知会拿到相同 ID，主键冲突会直接丢行。通知是
+// 事件驱动的批量写入，恰恰最容易落进同一个时钟刻度。
+// 详见 internal/meeting/store.go 的 meetingIDSeq 注释与 BUG-R。
+var notifyIDSeq atomic.Uint64
+
 func genID(prefix string) string {
-	return fmt.Sprintf("%s_%d", prefix, time.Now().UnixNano())
+	return fmt.Sprintf("%s_%d_%d", prefix, time.Now().UnixNano(), notifyIDSeq.Add(1))
 }
 
 func orDefault(s, def string) string {

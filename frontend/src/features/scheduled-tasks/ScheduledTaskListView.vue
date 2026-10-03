@@ -10,7 +10,7 @@
       <label class="filter"><input v-model="enabledOnly" type="checkbox" @change="load" /> 仅显示启用</label>
       <button type="button" class="refresh" :disabled="store.loading" @click="load">刷新</button>
     </div>
-    <div v-if="store.error" class="error" role="alert">{{ store.error }} <button @click="load">重试</button></div>
+    <div v-if="store.error" class="error" role="alert">{{ apiError(store.error, 'errors.loadTasksFailed') }} <button @click="load">重试</button></div>
     <div v-if="store.loading" class="state">加载中…</div>
     <div v-else-if="store.tasks.length === 0" class="state"><p>还没有自动化任务</p><button class="primary" @click="router.push('/settings/scheduled-tasks/new')">创建自动化</button></div>
     <main v-else class="list">
@@ -40,17 +40,26 @@ import { useScheduledTasksStore } from './store'
 import { formatTimestamp, taskKindLabel, type ScheduledTask } from './types'
 import { describeTaskSchedule } from './schedule-plan'
 import { useListScene } from '../../composables/use-list-scene'
+import { useApiError } from '../../composables/useApiError'
+import { useConfirm } from '../../composables/useConfirm'
 
 defineOptions({ name: 'ScheduledTaskListView' })
 
+const apiError = useApiError()
 const router = useRouter()
 const store = useScheduledTasksStore()
+const { confirm } = useConfirm()
 const enabledOnly = ref(false)
 
 function load() { return store.load(enabledOnly.value).catch(() => {}) }
 async function toggle(task: ScheduledTask) { await store.update(task.id, { enabled: !task.enabled }).catch(() => {}) }
 async function remove(task: ScheduledTask) {
-  if (!window.confirm(`删除自动化「${task.name}」？`)) return
+  // BUG-AQ：原来是 window.confirm。它在 Android WebView 里是**同步阻塞**的，
+  // 会卡住渲染进程 JS 线程——真机实测点「删除」后应用彻底假死，连 CDP 的
+  // `1+1` 都不再返回，只能 am force-stop。项目早已确立 ConfirmDialog 为
+  // 全局唯一确认弹窗，这里是漏网的一处。
+  const ok = await confirm({ title: '删除自动化', message: `删除自动化「${task.name}」？`, confirmText: '删除', danger: true })
+  if (!ok) return
   await store.remove(task.id).catch(() => {})
 }
 function open(id: string) { router.push(`/settings/scheduled-tasks/${id}`) }
@@ -63,7 +72,7 @@ useListScene('scheduled-tasks', load)
 .page { min-height: 100%; background: var(--bg-base); }
 .header-action { color: var(--brand-primary); }
 .toolbar { display: flex; justify-content: space-between; align-items: center; padding: var(--space-3); border-bottom: 1px solid var(--border); }
-.filter { color: var(--text-secondary); font-size: 13px; display: flex; gap: 8px; align-items: center; }
+.filter { color: var(--text-secondary); font-size: var(--text-smd); display: flex; gap: 8px; align-items: center; }
 .refresh, .card-actions button, .primary, .error button { border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-card); color: var(--text-primary); padding: 7px 12px; cursor: pointer; }
 .list { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-3); }
 .list-inner { display: flex; flex-direction: column; gap: var(--space-2); position: relative; }
@@ -74,11 +83,11 @@ useListScene('scheduled-tasks', load)
 .tlist-leave-to { opacity: 0; transform: translateX(28px); }
 .tlist-move { transition: transform 0.3s ease; }
 .card { padding: var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-card); cursor: pointer; }
-.card-head { display: flex; align-items: center; gap: 8px; } h2 { flex: 1; margin: 0; font-size: 15px; color: var(--text-primary); }
-.status { font-size: 11px; padding: 3px 8px; border-radius: 999px; } .status.on { color: var(--success); background: var(--success-bg); } .status.off { color: var(--text-secondary); background: var(--bg-subtle); }
-.description { margin: 7px 0; font-size: 13px; color: var(--text-secondary); }
-.meta { display: flex; flex-wrap: wrap; gap: 10px; font-size: 12px; color: var(--text-primary); margin-top: 7px; } .meta.secondary { color: var(--text-muted); }
-.card-actions { display: flex; gap: 7px; margin-top: 11px; } .card-actions button { flex: 1; font-size: 12px; } .card-actions .danger { color: var(--danger); }
+.card-head { display: flex; align-items: center; gap: 8px; } h2 { flex: 1; margin: 0; font-size: var(--text-md); color: var(--text-primary); }
+.status { font-size: var(--text-2xs); padding: 3px 8px; border-radius: 999px; } .status.on { color: var(--success); background: var(--success-bg); } .status.off { color: var(--text-secondary); background: var(--bg-subtle); }
+.description { margin: 7px 0; font-size: var(--text-smd); color: var(--text-secondary); }
+.meta { display: flex; flex-wrap: wrap; gap: 10px; font-size: var(--text-sm); color: var(--text-primary); margin-top: 7px; } .meta.secondary { color: var(--text-muted); }
+.card-actions { display: flex; gap: 7px; margin-top: 11px; } .card-actions button { flex: 1; font-size: var(--text-sm); } .card-actions .danger { color: var(--danger); }
 .state { padding: 48px 20px; text-align: center; color: var(--text-secondary); } .primary { color: var(--text-inverse); background: var(--brand-gradient); border: 0; }
-.error { margin: var(--space-3); padding: var(--space-3); color: var(--danger); background: var(--danger-bg); border-radius: var(--radius-sm); font-size: 13px; } .error button { margin-left: 8px; }
+.error { margin: var(--space-3); padding: var(--space-3); color: var(--danger); background: var(--danger-bg); border-radius: var(--radius-sm); font-size: var(--text-smd); } .error button { margin-left: 8px; }
 </style>

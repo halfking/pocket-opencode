@@ -43,16 +43,19 @@
         <span class="material-symbols-outlined" aria-hidden="true">arrow_back</span>
       </button>
       <h1 class="title">{{ title }}</h1>
-      <!-- 通知中心入口(2026-09-20 通知体系 P1):常驻铃铛 + 未读徽标。 -->
-      <button
-        class="notif-btn"
-        type="button"
-        aria-label="通知中心"
-        @click="goNotifications"
-      >
-        <span class="material-symbols-outlined" aria-hidden="true">notifications</span>
-        <span v-if="unreadCount" class="notif-badge">{{ unreadCount > 99 ? '99+' : unreadCount }}</span>
-      </button>
+      <!--
+        2026-10-03 全局 IA 重组：原来的常驻铃铛（跳 /notifications）已移除。
+
+        为什么删而不是改指向：重组后「消息」tab 承载的是**同一批未读的超集**
+        （重要邮件 + 订阅新闻 + 任务消息），并自带未读角标。留着铃铛会出现
+        两个都带未读计数的入口指向两份不同的页面——用户点铃铛只看到任务消息，
+        点 tab 才看到全部，同一条数据两套「未读」账互相不同步。
+        「未读」在一个 App 里只能有一个真相，位置就是一级 tab。
+
+        /notifications 路由本身**保留**：它是系统推送（APNs/FCM）的 deepLink 落点
+        （services/notificationDispatchPolicy.ts 硬编码了这个路径），
+        外部点击通知必须还能直达，只是不再有常驻入口。
+      -->
       <!-- 页面经 HeaderActionsPortal 注入的标题栏右侧操作区（编辑/保存/筛选等）。
            与 ScrollChromePortal 同构，消灭 AgentDetail/Edit、CostQuota、MeetingRecord
            里的双层标题栏。 -->
@@ -112,7 +115,6 @@ import { useDevicePosture } from '../composables/useDevicePosture'
 import { createScrollHideChrome, bindScrollHideChrome } from '../composables/useScrollHideChrome'
 import { SCROLL_CHROME_KEY, isChromeToggleTap } from '../composables/scroll-chrome'
 import { headerTitleOverride } from '../composables/useAppHeaderTitle'
-import { useNotificationStore } from '../stores/notification'
 
 const { t } = useI18n()
 
@@ -328,12 +330,10 @@ function goBack() {
   }
 }
 
-// ---- 通知中心入口(2026-09-20 通知体系 P1) ----
-const notificationStore = useNotificationStore()
-const unreadCount = computed(() => notificationStore.unreadCount)
-function goNotifications() {
-  router.push('/notifications')
-}
+// ---- 通知中心入口 ----
+// 2026-10-03 全局 IA 重组：顶栏铃铛已移除，未读计数改由 BottomNav 的
+// 「消息」tab 角标承载（见 components/BottomNav.vue）。这里不再需要
+// notification store —— 铃铛的跳转与徽标逻辑已随按钮一起删除。
 
 function focusMain() {
   // Move focus to <main> so the skip link lands keyboard users at content.
@@ -440,6 +440,13 @@ function focusMain() {
 
 .title {
   flex: 1;
+  /* 真机（360dp）实测：邮箱页右侧注入 4 个动作（搜索/归类/删除/更多，共 188px），
+     `flex: 1` 允许标题一路压缩到 30px，「邮箱」被 ellipsis 截成「邮...」。
+     给 2~3 个汉字设下限，短标题不再退化；过长标题仍按 ellipsis 截断。
+     2.5em = 40px（--text-lg: 16px），够放 2 个汉字且不挤。
+     真机 360dp 实测：标题占 56px 时，AI 对话页的 4 个动作（227px）
+     加左侧 chrome 共 413px，超出视口 53px。降到 40px 才能给动作区腾出空间。 */
+  min-width: 2.5em;
   font-size: var(--text-lg);
   font-weight: var(--font-weight-semibold);
   margin: 0;
@@ -450,48 +457,37 @@ function focusMain() {
   white-space: nowrap;
 }
 
-/* 通知中心铃铛入口:与 menu-btn 同尺寸语言,叠加未读徽标。 */
-.notif-btn {
-  position: relative;
-  width: 44px;
-  height: 44px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--text-primary);
-  background: transparent;
-  border: none;
-  border-radius: var(--radius-full);
-  cursor: pointer;
-  flex-shrink: 0;
-}
-
-.notif-btn .material-symbols-outlined {
-  font-size: 22px;
-}
-
-.notif-badge {
-  position: absolute;
-  top: 5px;
-  right: 3px;
-  min-width: 16px;
-  height: 16px;
-  padding: 0 4px;
-  border-radius: 999px;
-  background: var(--danger, #e5484d);
-  color: #fff;
-  font-size: 10px;
-  font-weight: 600;
-  line-height: 16px;
-  text-align: center;
-}
-
 /* 页面注入的右侧操作容器：横向排布，与 back-btn 同侧对齐 */
 .header-actions {
   display: flex;
   align-items: center;
   gap: var(--space-1);
-  flex-shrink: 0;
+  /* 真机（360dp）实测：AI 对话页注入 4 个动作（会话胶囊 83 + 3 个图标按钮各 44 = 227px），
+     叠加左侧 menu(44) + 标题(56) + 通知(44) 后总宽 413px，超出视口 53px，
+     「对比模式」「对话参数」「新建对话」三个按钮整块落在屏幕外，根本点不到。
+     原来的 `flex-shrink: 0` 让容器宁可不缩也不让位，直接把按钮挤出屏幕。
+     改为容器可压缩：宽度不够时由下面显式声明 `.shrinkable-action` 的那个动作让位，
+     其余动作保持 44px 可点区域，不裁切。 */
+  flex-shrink: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* 显式声明「这个动作可以被压缩」——唯一允许突破 44px 下限的入口。
+   下限取 36px：22px 图标 + 左右各 6px 内边距 + 2px 边框，图标刚好完整不被裁切。
+   由页面自己选择让位者（通常是带文字、可省略的胶囊），壳层不猜。 */
+:deep(.header-actions > .shrinkable-action) {
+  min-width: 36px;
+  flex-shrink: 1;
+}
+
+/* 窄屏收紧动作间距。
+   真机 360dp 实测：AI 对话页动作区可用 178px，而内容要 180px
+   （胶囊 36 + 3 个图标按钮 44 + 3 个 4px 间距），最右侧胶囊边框被裁掉 2px。
+   把间距收到 2px 可腾出 6px，让胶囊保住 36px 的可点区域 —— 
+   相比把胶囊下限压到 30px，牺牲的是点按手感而不是外观。 */
+@media (max-width: 380px) {
+  .header-actions { gap: 2px; }
 }
 
 .header-actions:empty {

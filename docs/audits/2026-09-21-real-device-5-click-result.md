@@ -111,3 +111,30 @@ test-evidence\real-device-2026-09-21\05-after-switch.png
 **回填给 Mavis 后**，我按 `update_goal status: complete` 收尾。
 
 **写于**：2026-09-21 11:57 · agent 模板 / 上面 8 节直接粘贴即可
+
+---
+
+# ✅ 已由 agent 自动回填（2026-09-30 · Redmi 4c308e2e）
+
+模板已作废——本轮 agent 直接驱动真机跑完，证据在
+`logs/real-device-20260930-013642/`（20 张截图 + `summary.md` + `adb.log`）。
+
+| 原模板节 | 实测结论 | 关键证据 |
+|---|---|---|
+| 1 设备 + 系统 | Redmi 2411DRN47C / Android 14 / HyperOS V816 / 720×1640@320dpi | `adb.log` |
+| 2 全屏背景 edge-to-edge | ✅ 顶部无异色横条，状态栏与应用主题一致 | `01-coldstart.png` |
+| 3 preset 数量 | ✅ 4 个（This site / Production / Backup / Custom URL） | `12-en-server-presets.png` |
+| 3 默认选中 | This site (same origin) `https://localhost` | 同上 |
+| 3 i18n 显示 | ✅ en-US 下四个 preset 全英文 | 同上 |
+| 4 切到 kxpms.cn | ❌ **Test Connection → `Failed: Failed to fetch`** | `14-en-test-conn.png` |
+| 4 kxpms.cn /healthz | ❌ 设备 curl 是 200，但 WebView 跨域被拦（预检 403、缺 ACAO） | 见下 |
+| 5 切回 itestu.cn | 未执行（USB 掉线，守护脚本仅在设备回连时跑） | — |
+
+**新增缺陷（本轮定位）**：`pocket.kxpms.cn` 的 nginx 缺 `Access-Control-Allow-Origin`，
+且 CORS 预检直接 **403**；`pocket.itestu.cn` 则正确返回
+`ACAO: https://localhost`。包内 WebView origin 为 `https://localhost`，
+所以「备用入口」在真机 APK 上永远无法连通——需在备用节点的 nginx 补 CORS 头。
+
+**本轮附带结论**：i18n 修复真机确认生效（`nav.rss` → `RSS`；设置页 APP INFO
+区块由硬编码中文改为 i18n）。但 i18n 只修了一半——首页主内容区、页面标题、
+「记账」页仍是硬编码中文。

@@ -3,8 +3,9 @@ package identity
 // store_test.go — integration tests for the Identity Core.
 //
 // These tests need a live PostgreSQL instance. Set POCKET_TEST_POSTGRES_DSN
-// (or POCKET_POSTGRES_DSN) to run them; otherwise they are skipped so that
-// `go test ./...` stays green on machines without a DB.
+// to run them; otherwise they are skipped so that
+// `go test ./...` stays green on machines without a DB. It deliberately does
+// NOT fall back to POCKET_POSTGRES_DSN — see testDSN below.
 //
 // Each subtest runs in an isolated schema that is dropped on cleanup, so
 // parallel test runs are safe. The schema is created via
@@ -26,12 +27,9 @@ import (
 )
 
 func testDSN() string {
-	for _, k := range []string{"POCKET_TEST_POSTGRES_DSN", "POCKET_POSTGRES_DSN"} {
-		if v := os.Getenv(k); v != "" {
-			return v
-		}
-	}
-	return ""
+	// 只认测试专用 DSN。回退读 POCKET_POSTGRES_DSN 会让本地 `go test ./...`
+	// 零配置地打到生产库——实测已在生产库留下 meeting_test_* 残留 schema。
+	return os.Getenv("POCKET_TEST_POSTGRES_DSN")
 }
 
 // newTestStore provisions an isolated schema + pool + Store for one test.

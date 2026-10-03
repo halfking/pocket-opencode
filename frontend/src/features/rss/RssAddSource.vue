@@ -2,6 +2,8 @@
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { rssApi, type RSSSeed, type RSSCandidate } from '../../api/rss'
+import { useI18n } from 'vue-i18n'
+import { toUserMessage } from '../../api/error-message'
 
 const router = useRouter()
 const step = ref<'input' | 'discover' | 'confirm'>('input')
@@ -12,6 +14,7 @@ const errorMsg = ref('')
 const busy = ref(false)
 const interval = ref('30m')
 const enabled = ref(true)
+const { t } = useI18n()
 
 async function start() {
   const url = inputUrl.value.trim()
@@ -63,7 +66,7 @@ async function addDirect() {
     await rssApi.addSource({ url: inputUrl.value.trim(), enabled: enabled.value, fetchInterval: interval.value })
     router.replace({ name: 'rss' })
   } catch (e: any) {
-    errorMsg.value = e?.message ?? String(e)
+    errorMsg.value = toUserMessage(e, t, t('errors.operateFailed'))
   } finally {
     busy.value = false
   }
@@ -140,24 +143,24 @@ function back() {
 .rss-add { padding: 16px; max-width: 720px; margin: 0 auto; }
 .bar { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
 .bar h3 { margin: 0; flex: 1; }
-.step label { display: block; margin: 8px 0 4px; color: var(--text-muted); font-size: 13px; }
+.step label { display: block; margin: 8px 0 4px; color: var(--text-muted); font-size: var(--text-smd); }
 .step input[type="text"], .step input:not([type]) { width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 6px; box-sizing: border-box; }
 .btn { display: inline-flex; align-items: center; gap: 4px; padding: 8px 16px; border: 1px solid var(--border); background: var(--bg-elevated); border-radius: 6px; cursor: pointer; margin-top: 8px; }
-.btn-primary { background: var(--accent); color: white; border-color: var(--accent); }
+.btn-primary { background: var(--brand-primary); color: white; border-color: var(--brand-primary); }
 .icon { padding: 4px 8px; border: none; background: transparent; cursor: pointer; font-size: 20px; }
 .error { padding: 8px 12px; background: var(--err-bg); color: var(--err-fg); border-radius: 6px; margin-bottom: 8px; }
-.divider { text-align: center; margin: 16px 0; color: var(--text-muted); font-size: 12px; position: relative; }
+.divider { text-align: center; margin: 16px 0; color: var(--text-muted); font-size: var(--text-sm); position: relative; }
 .divider::before, .divider::after { content: ''; display: inline-block; width: 30%; vertical-align: middle; border-top: 1px solid var(--border); margin: 0 8px; }
 .seeds, .candidates { list-style: none; padding: 0; }
 .seeds li, .candidates li { padding: 12px; border: 1px solid var(--border); border-radius: 6px; margin-bottom: 8px; cursor: pointer; }
 .seeds li:hover, .candidates li:hover { background: var(--bg-hover); }
 .seed-title { font-weight: 600; }
-.seed-url { font-size: 12px; color: var(--text-muted); word-break: break-all; }
-.badge { display: inline-block; padding: 2px 6px; background: var(--accent); color: white; border-radius: 10px; font-size: 11px; margin-right: 4px; }
+.seed-url { font-size: var(--text-sm); color: var(--text-muted); word-break: break-all; }
+.badge { display: inline-block; padding: 2px 6px; background: var(--brand-primary); color: white; border-radius: 10px; font-size: var(--text-2xs); margin-right: 4px; }
 .badge.subtle { background: var(--bg-hover); color: var(--text-secondary); }
 .candidates li { display: flex; gap: 8px; align-items: center; }
-.cand-url { font-family: monospace; font-size: 13px; word-break: break-all; }
-.cand-title { font-size: 12px; color: var(--text-muted); }
+.cand-url { font-family: var(--font-mono); font-size: var(--text-smd); word-break: break-all; }
+.cand-title { font-size: var(--text-sm); color: var(--text-muted); }
 .manual { display: flex; gap: 8px; align-items: center; }
 .manual input { flex: 1; }
 .options { display: flex; gap: 16px; margin-top: 16px; }

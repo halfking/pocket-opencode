@@ -1,0 +1,176 @@
+# Maestro 真机功能流 · 闪卡写路径（BUG-K / L / O / U）
+#
+# ⚠️ 2026-10-01 重写。旧版 flow 从写出来那天起就跑不通，原因是**它描述的是旧 UI**：
+#   旧版第 1 步 tap「新建卡片」后断言「卡组名称」——那是 BUG-K 修之前的页面。
+#   BUG-K 之后建卡组被挪到**列表页**（零卡组时内联表单 / 有卡组时 deck-toggle 展开），
+#   FlashcardEditView 上**已经没有**「卡组名称」字段了（那里只有卡组下拉 select）。
+#   实测失败现场：~/.maestro/tests/2026-10-01_062539/flashcards-write/screen-hierarchy/
+#
+# 真机可见结构（scripts/diag-page-elements.mjs 实测，不是读模板猜的）：
+#   #/flashcards 零卡组时：
+#     div.empty[data-testid=flashcards-empty]  文本「暂无卡组 新建卡组」（两个节点合并！）
+#     form.deck-create[data-testid=deck-create-form]
+#     input  aria-label=新建卡组  placeholder=卡组名称
+#     button.primary 文本「新建卡组」  **初始 disabled=true**（没填名字）
+#   #/flashcards/decks/:id 内屏：
+#     button.add-btn  aria-label=添加卡片(Add card)
+#     button.review-btn 文本「开始复习」  :disabled="dueCount === 0"
+#
+# 断言写法上的三条硬规矩（都踩过）：
+#   1. Maestro `visible` 是**整串全匹配**。WebView 把同一容器里的多个 span 合并成
+#      一个可访问性节点（实测「暂无卡组 新建卡组」「次卡组3354 今日待复习 0 张 ...」），
+#      所以列表/卡片类断言必须用正则 `前缀.*`。
+#   2. 断言 disabled 状态用**选择器状态**（`{ text: ..., enabled: false }`），
+#      不要用旧版那种「新建卡组[disabled]」文本技巧——那不是 Maestro 的语法。
+#   3. 中英双 locale 用 `中文|English` 正则交替（模拟器默认英文、真机中文）。
+#
+# 前置（必须做，否则断言会假绿）：
+#   node scripts/flashcards-test-fixture.mjs
+# 它会清空 PG 闪卡表**并**清 App 的 flashcards:v1 缓存。清不掉的話上一轮
+# 「回归卡组」「回归正面」会一直留在列表里，功能彻底坏掉时断言照样绿。
+# 不清的话列表页会走 deck-toggle 分支，零卡组那条分支根本测不到。
+#
+# 运行：
+#   node scripts/maestro-run.mjs .maestro/flashcards-write.yaml
+appId: com.kaixuan.opencode.pocket
+---
+# ---------- 0. 前置：harness 已真实登录，起点是 #/ai ----------
+# ⚠️ 2026-10-02：原先这里是 `- runFlow: _login.yaml`。但 _login.yaml 的登录走
+#    Maestro 的 `inputText: ${POCKET_DEV_PASS}`，而 Maestro 实测把它展开成
+#    **字面量 "undefined"**（.maestro/_probe-env.yaml 坐实：框内容
+#    adminPWLEN-undefined）。登录已改由 scripts/maestro-run.mjs 的 preflight
+#    用 CDP 填真实 LoginView 表单完成，本流程不再需要 _login.yaml。
+#    如实记录覆盖变窄：软键盘那套手势（tap 输入框起键盘 → inputText →
+#    hideKeyboard → tap 提交）本流程不再走。走的是同一个表单、同一个
+#    POST /api/auth/login、同一个 401/200 判定。键盘路径单列为遗留项。
+# ⚠️ 2026-10-03 真机实测：锚点文本随 IA 重组变了。原来等的是「AI 工具」——
+# 重组**前**首页 tab 的标签；现在一级 tab 是 首页 / 笔记 / 消息 / 更多
+# （BottomNav.vue items，locales zh-CN nav.home = 首页）。不改这里的话本 flow
+# 会在第一条断言就中止：`Assertion is false: "AI 工具" is visible`。
+- extendedWaitUntil:
+    visible: "首页"
+    timeout: 45000
+- assertVisible: "首页"
+- assertNotVisible: "密码登录"
+
+# ---------- 1. 进闪卡（不在底部主导航里，在「更多」九宫格内）----------
+# ⚠️ retryTapIfNoChange 不是凑数：2026-10-01 08:16 实测点「更多」后 Maestro 报
+# COMPLETED 但页面**没动**（仍停在 #/ai），「闪卡」断言 20s 超时失败；
+# 08:08 同一段是过的 ⇒ 抖动，不是回归（两次 APK 只差 BUG-AS 修复，不碰导航）。
+# 这正是 _login.yaml 注释里记过的坑：tap 底部导航会被吞掉，且没有结果校验、看起来像成功。
+- extendedWaitUntil:
+    visible: "更多|More"
+    timeout: 45000
+- tapOn:
+    text: "更多|More"
+    retryTapIfNoChange: true
+- extendedWaitUntil:
+    visible: "闪卡|Flashcards|Flashcard"
+    timeout: 40000
+- tapOn: "闪卡|Flashcards|Flashcard"
+
+# ---------- 2. BUG-U：零卡组时必须**就地**有建卡组入口 ----------
+# 修前这里是死胡同：零卡组只能点「新建卡片」进编辑页，而那页保存恒 disabled
+# （selectedDeckId 为空 → isValid 恒 false），用户点进去才发现要先建组。
+- extendedWaitUntil:
+    visible: { text: "暂无卡组.*" }
+    timeout: 25000
+
+# 按钮初始必须 enabled=false —— 这正是 BUG-K 的判据之一（没填名字不许提交）
+- assertVisible: { text: "新建卡组|New deck", enabled: false }
+
+# ---------- 3. 填卡组名 → 按钮解禁 → 建组 ----------
+# ⚠️ 这个 input 在可访问性树里是 `[android.widget.EditText] t="" cd=""`——
+#   placeholder（卡组名称）和 aria-label（新建卡组）**都没有暴露**给 Android，
+#   所以既不能 tapOn 文本也不能 assertVisible 它，只能按坐标点。
+#   坐标来自本页实测 bounds [28,378][492,480]（设备 720x1640）
+#   → 中心 (260,429) → 36%,26%。
+#   **百分比不能跨页面/跨状态复用**，改了布局必须重新量。
+#   好在点歪了不会静默通过：点不到输入框 → 按钮不会解禁 → 下面那条断言必红。
+- tapOn: { point: "36%,26%" }
+- inputText: "回归卡组"
+- extendedWaitUntil:
+    visible: { text: "新建卡组|New deck", enabled: true }
+    timeout: 15000
+# ⚠️ 提交这一步改用 Enter 键，不用 tapOn。
+#   实测（2026-10-01）：状态完全正确（input 里有名字、按钮 enabled=true、
+#   bounds [506,402][692,480]），但 Maestro 的 tap —— 无论加不加
+#   retryTapIfNoChange —— 都报 COMPLETED 却**没有触发 form 的 submit**：
+#   空态不消失、PG 0 行、后端连请求都没收到。
+#   而页面内直接 b.click() 是好的（探针 decks=1、无错误）
+#   ⇒ **产品没坏，是 WebView 没把这次合成 tap 当成 click**。
+#   单行 input 处于 form 内时按 Enter 会走浏览器的隐式提交，这条路不依赖合成点击。
+- pressKey: Enter
+# ⚠️ 这里**不能**只断言「回归卡组」可见 —— 建卡组表单的 input 里就装着这个字符串，
+#   2026-10-01 就因为这个假通过了一次：input 的值把断言喂饱了，卡组其实压根没建出来
+#   （PG 0 行、后端日志里连请求都没有）。零状态空态在建成功后必然消失，用它当判据。
+- extendedWaitUntil:
+    notVisible: { text: "暂无卡组.*" }
+    timeout: 25000
+- assertVisible: { text: ".*今日待复习.*" }
+
+# ---------- 4. 进卡组 → 建卡片 ----------
+- tapOn: { text: "回归卡组.*" }
+- extendedWaitUntil:
+    visible: ".*添加卡片.*|.*Add card.*"
+    timeout: 20000
+# BUG-O 判据（修前恒 disabled，因为卡组里 0 张卡）
+- assertVisible: { text: ".*开始复习.*|.*Review.*", enabled: false }
+- tapOn: ".*添加卡片.*|.*Add card.*"
+
+# ---------- 5. 填正反面 ----------
+# ⚠️ 两个 textarea 只能按坐标点，原因有两条，都是实测出来的：
+#   1. 文本「正面」会**先**匹配到模板切换按钮「compare_arrows 正面 · 反面」，
+#      tapOn 打到的是那个 tab，不是输入框（2026-10-01 踩过：输入全落到错误的地方，
+#      保存按钮始终不解禁）。
+#   2. textarea 的 placeholder 在可访问性树里未必暴露成 text（闪卡建卡组那个
+#      input 实测 t="" cd=""），没有稳定的文本选择器可用。
+# 坐标来自 scripts/diag-textarea-bounds.mjs 实测（dpr=2，视口 360x820）：
+#   正面 cssRect[14,188,332,100] → 中心 50%,29%
+#   背面 cssRect[14,365,332,139] → 中心 50%,53%
+#   保存按钮 .save-link 中心 91%,8%（底部 .primary 在 100% 处，会被主导航压住）
+# 点歪了不会静默通过：输入没进去 → 保存按钮不解禁 → 下面那条断言必红。
+- extendedWaitUntil:
+    visible: { text: "保存|Save" }
+    timeout: 20000
+- tapOn: { point: "50%,29%" }
+- inputText: "回归正面"
+- tapOn: { point: "50%,53%" }
+- inputText: "回归背面"
+# 保存按钮必须随正反面填入而解禁 —— 这条同时证明两次输入都落进了 textarea
+- extendedWaitUntil:
+    visible: { text: "保存|Save", enabled: true }
+    timeout: 20000
+- tapOn: { text: "保存|Save", enabled: true }
+
+# ---------- 6. BUG-O 核心断言：回到卡组页必须看得到刚建的卡片 ----------
+# 修前：POST 201、PG 有数据，但客户端 cards 数组里自始至终没有这张卡，
+# 「开始复习」恒 disabled、列表不出现 —— 只看状态码/落库会误判成通过。
+- extendedWaitUntil:
+    visible: { text: ".*回归正面.*" }
+    timeout: 30000
+# ⚠️ 收尾判据用**内容**而不是 enabled 状态。实测（2026-10-01）：
+#   卡组页有**两个**文本都是「开始复习」的按钮 —— 外屏 `.review`（在 FoldAwareLayout
+#   的外屏槽，rect 实测 [0,0,0,0]，真机上不可见）和内屏 `.primary.review-btn`。
+#   于是 `{ text: ".*开始复习.*", enabled: true }` 有歧义：extendedWaitUntil 匹配到了
+#   一个、紧接着的 assertVisible 匹配到另一个 → 必然时红时绿。
+#   改成断言**到期数本身**（修前恒为 0 张），无歧义且比「能不能点」更硬。
+#   这条同时覆盖 BUG-O：修前 card 拉不回来，dueCount 恒 0。
+# BUG-AS 的真机端到端判据（2026-10-01 08:20 确证）。
+#
+# 修复前在真机上的实测（不是静态推断）：
+#   PG 里卡片 state=0、due 已过；服务端 /due 返回 totalDue=1；
+#   客户端 store.dueByDeck 却是空 Map；把同样四条判据就地重算得 [[deck,1]]；
+#   给 cards 换一个同内容的新数组强制失效后，dueByDeck 立刻变成 [[deck,1]]。
+#   ⇒ 它**自己从不重算**：nowSec() 读 Date.now()，不是响应式依赖，又没有任何定时器推进。
+#
+# 所以这里的判据必须是「不重新挂载也能变对」。timeout 给到 90s：
+# 到期数靠 30s tick 推进，30s 超时恰好等于一个 tick、没有余量，必然随机红。
+- extendedWaitUntil:
+    visible: { text: ".*今日待复习 1 张.*" }
+    timeout: 90000
+- assertVisible: { text: ".*今日待复习 1 张.*" }
+# 后置断言：数字变了，但页面没被重新挂载、卡片没消失。
+# 少了这两条，「退出页面再进来也能显示 1」这种非响应式修法同样能蒙混过关 —— 而那正是修复前的行为。
+- assertVisible: { text: ".*回归正面.*" }
+- assertVisible: { text: ".*开始复习.*", enabled: true }

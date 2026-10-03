@@ -104,7 +104,7 @@ function onVisibleChange(v: boolean) {
 
 .meta-title {
   margin: 0 0 var(--space-4);
-  font-size: 16px;
+  font-size: var(--text-lg);
   font-weight: 600;
 }
 
@@ -113,12 +113,12 @@ function onVisibleChange(v: boolean) {
   flex-direction: column;
   gap: 6px;
   margin-bottom: var(--space-3);
-  font-size: 13px;
+  font-size: var(--text-smd);
 }
 
 .field span:first-child {
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 
 .field input {
@@ -127,7 +127,7 @@ function onVisibleChange(v: boolean) {
   border-radius: var(--radius-md);
   background: var(--bg-base);
   color: var(--text-primary);
-  font-size: 14px;
+  font-size: var(--text-base);
 }
 
 .field.readonly {
@@ -145,7 +145,7 @@ function onVisibleChange(v: boolean) {
   color: var(--text-inverse);
   border: none;
   border-radius: var(--radius-md);
-  font-size: 15px;
+  font-size: var(--text-md);
   font-weight: 600;
   cursor: pointer;
 }

@@ -175,11 +175,13 @@ import { emailApi } from '../../api/email'
 import type { EmailAccount as ApiEmailAccount, EmailCredentialInput } from '../../api/email'
 import { ApiError } from '../../api/http'
 import { useConfirm } from '../../composables/useConfirm'
+import { useApiError } from '../../composables/useApiError'
 
 const router = useRouter()
 const accounts = ref<EmailAccount[]>([])
 const loading = ref(true)
 const { confirm } = useConfirm()
+const apiError = useApiError()
 
 const showForm = ref(false)
 const testing = ref(false)
@@ -393,9 +395,8 @@ async function onTestSmtp() {
     form.clearSmtpCredential = false
   } catch (e) {
     testOk.value = false
-    testMsg.value = e instanceof ApiError
-      ? `SMTP 测试失败：HTTP ${e.status} ${e.message}`
-      : `SMTP 测试失败：${e instanceof Error ? e.message : '未知错误'}`
+    const status = e instanceof ApiError ? `HTTP ${e.status} ` : ''
+    testMsg.value = `SMTP 测试失败：${status}${apiError(e, '未知错误')}`
   } finally {
     smtpTesting.value = false
   }
@@ -472,13 +473,10 @@ async function testAndSave() {
     showForm.value = false
   } catch (e) {
     testOk.value = false
-    if (e instanceof ApiError) {
-      testMsg.value = `连接失败：HTTP ${e.status} ${e.message}`
-    } else if (e instanceof Error) {
-      testMsg.value = `连接失败：${e.message}`
-    } else {
-      testMsg.value = '连接失败：未知错误'
-    }
+    // 状态码是可行动的诊断信息（404 / 535 / 401 各指向不同处理），保留；
+    // 但 message 是后端原文（可能是英文技术串），交给 apiError 映射成用户文案。
+    const status = e instanceof ApiError ? `（HTTP ${e.status}）` : ''
+    testMsg.value = `连接失败${status}：${apiError(e, '未知错误')}`
   } finally {
     testing.value = false
   }
@@ -540,7 +538,7 @@ onMounted(loadList)
 
 <style scoped>
 .state { text-align: center; color: var(--text-secondary); padding: var(--space-6); }
-.hint { font-size: 12px; color: var(--text-muted); margin-top: var(--space-2); }
+.hint { font-size: var(--text-sm); color: var(--text-muted); margin-top: var(--space-2); }
 
 .account-list { display: flex; flex-direction: column; gap: var(--space-2); }
 .account-card {
@@ -552,15 +550,15 @@ onMounted(loadList)
   gap: var(--space-2);
 }
 .acct-main { flex: 1; min-width: 0; }
-.acct-name { font-weight: 600; color: var(--text-primary); font-size: 14px; }
-.acct-addr { font-size: 12px; color: var(--text-secondary); margin-top: 2px; }
-.acct-meta { display: flex; gap: var(--space-1); align-items: center; font-size: 11px; color: var(--text-muted); margin-top: var(--space-1); }
+.acct-name { font-weight: 600; color: var(--text-primary); font-size: var(--text-base); }
+.acct-addr { font-size: var(--text-sm); color: var(--text-secondary); margin-top: 2px; }
+.acct-meta { display: flex; gap: var(--space-1); align-items: center; font-size: var(--text-2xs); color: var(--text-muted); margin-top: var(--space-1); }
 .sep { color: var(--border-strong); }
 .acct-actions { display: flex; gap: var(--space-1); }
 .icon-btn {
   border: none; background: var(--bg-subtle);
   width: 32px; height: 32px; border-radius: var(--radius-sm);
-  font-size: 14px; cursor: pointer; color: var(--text-secondary);
+  font-size: var(--text-base); cursor: pointer; color: var(--text-secondary);
 }
 .icon-btn:active { background: var(--border); }
 .icon-btn.danger { color: var(--danger); }
@@ -572,8 +570,8 @@ onMounted(loadList)
   padding: var(--space-4);
   box-shadow: var(--shadow-sm);
 }
-.form-title { font-size: 16px; font-weight: 600; margin: 0 0 var(--space-3); color: var(--text-primary); }
-.templates-label { font-size: 13px; color: var(--text-secondary); margin-bottom: var(--space-2); }
+.form-title { font-size: var(--text-lg); font-weight: 600; margin: 0 0 var(--space-3); color: var(--text-primary); }
+.templates-label { font-size: var(--text-smd); color: var(--text-secondary); margin-bottom: var(--space-2); }
 .template-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-2); }
 .tpl-btn {
   border: 1px solid var(--border);
@@ -585,20 +583,20 @@ onMounted(loadList)
 }
 .tpl-btn.selected { border-color: var(--brand-primary); background: var(--brand-bg); }
 .tpl-icon { font-size: 22px; }
-.tpl-name { font-size: 13px; font-weight: 600; color: var(--text-primary); }
-.tpl-host { font-size: 11px; color: var(--text-muted); }
+.tpl-name { font-size: var(--text-smd); font-weight: 600; color: var(--text-primary); }
+.tpl-host { font-size: var(--text-2xs); color: var(--text-muted); }
 
 .form-fields { display: flex; flex-direction: column; gap: var(--space-3); margin-top: 0; }
 .field { display: flex; flex-direction: column; gap: var(--space-1); }
-.field-label { font-size: 12px; color: var(--text-secondary); }
-.hint-inline { font-size: 11px; color: var(--text-muted); margin-left: var(--space-1); }
+.field-label { font-size: var(--text-sm); color: var(--text-secondary); }
+.hint-inline { font-size: var(--text-2xs); color: var(--text-muted); margin-left: var(--space-1); }
 .input {
   border: 1px solid var(--border);
   background: var(--bg-base);
   color: var(--text-primary);
   padding: var(--space-2) var(--space-3);
   border-radius: var(--radius-sm);
-  font-size: 14px;
+  font-size: var(--text-base);
   outline: none;
 }
 .input:focus { border-color: var(--brand-primary); }
@@ -609,11 +607,11 @@ onMounted(loadList)
   padding-top: var(--space-2);
   border-top: 1px solid var(--border);
 }
-.section-title { font-size: 13px; font-weight: 600; color: var(--text-primary); }
-.section-hint { font-size: 11px; color: var(--text-muted); }
+.section-title { font-size: var(--text-smd); font-weight: 600; color: var(--text-primary); }
+.section-hint { font-size: var(--text-2xs); color: var(--text-muted); }
 .checkbox-field {
   display: flex; align-items: center; gap: var(--space-2);
-  font-size: 12px; color: var(--text-secondary);
+  font-size: var(--text-sm); color: var(--text-secondary);
 }
 
 .form-actions { display: flex; gap: var(--space-2); margin-top: var(--space-1); }
@@ -624,7 +622,7 @@ onMounted(loadList)
   color: var(--text-primary);
   padding: var(--space-3);
   border-radius: var(--radius-md);
-  font-size: 14px;
+  font-size: var(--text-base);
   cursor: pointer;
 }
 .ghost-btn:active { background: var(--bg-subtle); }
@@ -635,7 +633,7 @@ onMounted(loadList)
   color: var(--text-inverse);
   padding: var(--space-3);
   border-radius: var(--radius-md);
-  font-size: 14px;
+  font-size: var(--text-base);
   font-weight: 600;
   cursor: pointer;
 }

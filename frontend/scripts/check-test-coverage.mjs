@@ -1,0 +1,221 @@
+// check-test-coverage.mjs — 孤儿测试卡口：**存在却从不被任何 gates 脚本执行的测试文件，新增即失败**。
+//
+// 为什么要有它（这不是洁癖，是一个已经真实发生过的回归通道）：
+//   2026-10-01 查出前端 146 个测试文件里只有 32 个被某个 npm script 引用，114 个是孤儿。
+//   其中 `email-cid-images.test.mjs` 里有个用例名字就叫「cid 内嵌图被解析成 data URI
+//   （**用户报的「详情缺失图片」**）」——护栏就是为那条投诉写的，却一次都没跑过。
+//   于是 2026-09-30「缺的是数据不是渲染」的修复可以随时静默回归，而 gates 全绿。
+//   同一轮还发现 css-vars / teleport-deep / stt / email-heal 等多类护栏都是这个下场。
+//   结论是**系统性问题不是单点**，所以要有卡口，否则下一轮还会漏。
+//
+// 4cd6e7e 已经把 `test:all` 改成 `node --test "src/**/*.test.mjs"`，覆盖到位了；但那还剩两个洞：
+//   ① glob 写错 / 前缀变了 / 新测试落在 src 之外 → node **不报错**，只是安静地少跑，退出码仍是 0；
+//   ② 有人把某个 script 从 gates 里摘掉（比如为了"先让 CI 绿"），那个 script 覆盖的文件立刻变孤儿，
+//      而 gates 依然全绿。
+// 本卡口把这两条都变成硬失败：
+//   - 覆盖范围只认 **从 gates 可达**（传递闭包）的脚本，定义在别处的 script 不算数；
+//   - 枚举用自己写的 glob 匹配器把每个脚本的测试 glob 展开到真实文件上，
+//     任何一个 *.test.mjs 没被覆盖就失败；看起来像测试 glob 却匹配 0 个文件的也失败（静默失配探测器）。
+//   - 运行时那一半（"真的被执行过、且产出用例"）由 run-mjs-tests.mjs + 普查 reporter 负责。
+import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs'
+import { join, dirname, relative, sep } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { spawnSync } from 'node:child_process'
+
+const here = dirname(fileURLToPath(import.meta.url))
+const ROOT = join(here, '..')
+
+const SKIP_DIRS = new Set(['node_modules', 'dist', 'build', 'coverage', '.vite', '.wrangler', '.git'])
+
+// 强制卡口的测试类：.mjs 与 .ts 都必须被执行。
+// （曾经以为 .ts "跑不了"——那是 4cd6e7e 的结论。2026-10-02 实测：55 个 .test.ts 里
+//   54 个共 333 个用例在 node 22 下全部通过，只有 flashcardIo.test.ts 因源码无扩展名
+//   import 跑不起来。333 个从不执行的测试比 91 个 .mjs 更值得接进 gates。）
+const ENFORCED_SUFFIXES = ['.test.mjs', '.test.ts']
+
+function walk(dir, suffix, out = []) {
+  for (const name of readdirSync(dir)) {
+    if (SKIP_DIRS.has(name)) continue
+    const p = join(dir, name)
+    if (statSync(p).isDirectory()) walk(p, suffix, out)
+    else if (name.endsWith(suffix)) out.push(relative(ROOT, p).split(sep).join('/'))
+  }
+  return out
+}
+
+// ── glob → 正则，语义对齐 node 的 `**`（可跨 0..n 层目录），`*` 不跨 `/` ──
+function globToRegExp(glob) {
+  let re = ''
+  for (let i = 0; i < glob.length; i++) {
+    const c = glob[i]
+    if (c === '*') {
+      if (glob[i + 1] === '*') {
+        if (glob[i + 2] === '/') {
+          re += '(?:[^/]*(?:/[^/]*)*/)?' // '**/' 允许 0 层
+          i += 2
+        } else {
+          re += '.*'
+          i += 1
+        }
+      } else re += '[^/]*'
+    } else if (c === '?') re += '[^/]'
+    else re += c.replace(/[.+^${}()|[\]\\]/g, '\\$&')
+  }
+  return new RegExp('^' + re + '$')
+}
+
+function matchAll(glob, files) {
+  const re = globToRegExp(glob)
+  return files.filter((f) => re.test(f))
+}
+
+// 取出命令里的 token（尊重引号，因为 glob 在 package.json 里是带引号的）
+function tokenize(cmd) {
+  const out = []
+  const re = /"([^"]*)"|'([^']*)'|(\S+)/g
+  let m
+  while ((m = re.exec(cmd))) out.push(m[1] ?? m[2] ?? m[3])
+  return out
+}
+
+const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
+const scripts = pkg.scripts ?? {}
+
+// ── 1. 从 gates 出发的传递闭包 ──
+// 2026-10-03：gates 的执行方式从 package.json 里的一条 `&&` 长串改成了
+// `node scripts/run-gates.mjs` + 名单在 gates.json（见 run-gates.mjs 头注释）。
+// 于是**不能再只靠正则从 gates 的命令串里抠 `npm run X`**：gates 自己那一条
+// 已经不含任何 npm run，闭包会退化成「只有 gates 一个脚本」，
+// 而它恰好一个测试文件都不覆盖 —— 判据不会报错，只会得出「191 个全是孤儿」。
+// 这就是本次实测踩到的：改完 gates 结构，孤儿卡口立刻从「0 孤儿」变「191 孤儿」。
+//
+// 所以种子从两处取：gates.json 的名单（现行，权威）+ gates 命令串里的 npm run（兼容旧结构）。
+const GATES_LIST = join(ROOT, 'gates.json')
+let gateNames = []
+if (existsSync(GATES_LIST)) {
+  const doc = JSON.parse(readFileSync(GATES_LIST, 'utf8'))
+  if (!Array.isArray(doc.gates)) {
+    console.error('❌ gates.json 里没有 gates 数组 —— 孤儿卡口无法确定哪些脚本算「gates 可达」')
+    process.exit(2)
+  }
+  gateNames = doc.gates
+  // 名单里写了一个不存在的 script 名：run-gates.mjs 会挡住真跑，但这里的结论
+  // 仍会基于一份残缺的可达集合算出来。宁可当场拒绝给结论。
+  const ghost = gateNames.filter((n) => typeof scripts[n] !== 'string')
+  if (ghost.length) {
+    console.error(`❌ gates.json 里有 ${ghost.length} 个名字在 package.json 的 scripts 里不存在：${ghost.join(', ')}`)
+    process.exit(2)
+  }
+}
+
+const reachable = new Set()
+const queue = ['gates', ...gateNames]
+while (queue.length) {
+  const name = queue.pop()
+  if (reachable.has(name)) continue
+  reachable.add(name)
+  const cmd = scripts[name]
+  if (!cmd) continue
+  for (const m of cmd.matchAll(/npm\s+run\s+([\w:.-]+)/g)) {
+    if (!reachable.has(m[1])) queue.push(m[1])
+  }
+}
+const unreachable = Object.keys(scripts).filter((n) => !reachable.has(n))
+
+// ── 2. 收集覆盖来源 ──
+// 2a. 枚举型 runner：它自己遍历文件系统，覆盖范围由它单点定义（--print-coverage）
+const enumerators = new Set()
+for (const name of reachable) {
+  for (const tok of tokenize(scripts[name] ?? '')) {
+    const m = tok.match(/^(?:[\w./\\-]*[\\/])?run-mjs-tests\.mjs$/)
+    if (m) enumerators.add(join(ROOT, tok.replace(/^.*?(scripts[\\/])/, '$1').replace(/\//g, sep)))
+  }
+}
+
+const patterns = [] // { glob, from, matched }
+for (const runner of enumerators) {
+  const res = spawnSync(process.execPath, [runner, '--print-coverage'], { cwd: ROOT, encoding: 'utf8' })
+  if (res.status !== 0) {
+    console.error(`❌ ${relative(ROOT, runner)} --print-coverage 失败：${(res.stderr || '').trim()}`)
+    process.exit(2)
+  }
+  for (const glob of res.stdout.trim().split(/\r?\n/).filter(Boolean)) {
+    patterns.push({ glob, from: relative(ROOT, runner).split(sep).join('/') })
+  }
+}
+
+// 2b. 硬编码文件列表 / 内联 glob：只认 gates 可达的脚本
+//     glob（带 *）与显式文件路径都收：glob 匹配不到东西时 node 不报错，显式路径写错时
+//     node 会直接报错——但那要等到真跑 gates 才发现，不如在这里一次性核对。
+for (const name of reachable) {
+  for (const tok of tokenize(scripts[name] ?? '')) {
+    if (!tok.includes('.test.mjs') && !tok.includes('.test.ts')) continue
+    patterns.push({ glob: tok, from: `npm run ${name}` })
+  }
+}
+
+// ── 3. 判据 ──
+// 豁免清单与运行时普查共用一份：只登记"确实跑不起来"或"确实零产出"的存量，
+// 每条必须写理由。豁免指向**已不存在**的文件时硬失败——否则删掉文件就等于永久免检。
+const WAIVERS = JSON.parse(readFileSync(join(here, 'test-coverage-waivers.json'), 'utf8'))
+const waived = { ...(WAIVERS.unrunnable ?? {}), ...(WAIVERS.zeroCase ?? {}) }
+
+const found = ENFORCED_SUFFIXES.flatMap((s) => walk(ROOT, s)).sort()
+if (!found.length) {
+  console.error(`❌ 整个 frontend/ 下没找到任何测试文件（${ENFORCED_SUFFIXES.join(' / ')}）—— 判据本身失效了，别空转绿灯。`)
+  process.exit(2)
+}
+const staleWaivers = Object.keys(waived).filter((f) => !found.includes(f))
+const enforced = found.filter((f) => !waived[f])
+
+for (const p of patterns) p.matched = matchAll(p.glob, enforced)
+const covered = new Set(patterns.flatMap((p) => p.matched))
+const orphans = enforced.filter((f) => !covered.has(f))
+// 静默失配：看起来是测试 glob，却一个真实文件都没匹配到
+const deadGlobs = patterns.filter((p) => p.matched.length === 0)
+
+const byExt = (list, ext) => list.filter((f) => f.endsWith(ext)).length
+console.log(
+  `【孤儿测试卡口】gates 可达脚本 ${reachable.size} 个 · 测试文件 ${found.length} 个` +
+    `（.mjs ${byExt(found, '.test.mjs')} / .ts ${byExt(found, '.test.ts')}，其中 ${Object.keys(waived).length} 个在豁免名单）`,
+)
+for (const p of patterns) {
+  if (!p.glob.includes('*')) continue // 显式文件路径只统计数量，逐个打印会淹没真正的信号
+  const via = p.matched.length === 0 ? ' ❗零匹配' : ''
+  console.log(`    ${p.glob}  ← ${p.from}（覆盖 ${p.matched.length}）${via}`)
+}
+const explicit = patterns.filter((p) => !p.glob.includes('*'))
+const explicitMiss = explicit.filter((p) => p.matched.length === 0)
+console.log(`    另有 ${explicit.length} 条显式文件路径（test:native / test:stt 等分组脚本），全部命中`)
+console.log(`    被覆盖 ${covered.size} / ${enforced.length}${orphans.length ? ` · **孤儿 ${orphans.length}**` : ''}\n`)
+
+if (staleWaivers.length) {
+  console.error('❌ 豁免名单里有文件已经不存在了——这会让"删掉测试"变成永久免检，请清理：')
+  for (const f of staleWaivers) console.error(`   ${f}`)
+  console.error('   （文件已删 → 从 test-coverage-waivers.json 移除；文件被改名 → 改成新名字）\n')
+  process.exit(1)
+}
+
+if (deadGlobs.length || explicitMiss.length) {
+  console.error('❌ 以下 gates 脚本里的测试 glob / 路径一个文件都没匹配到（静默失配，node 不会报错）：')
+  for (const p of [...deadGlobs, ...explicitMiss]) console.error(`   ${p.glob}  ← ${p.from}`)
+  console.error('   路径/前缀写错时 node --test 会安静地什么都不跑，退出码仍是 0。\n')
+}
+
+if (orphans.length) {
+  console.error('❌ 以下测试文件从未被任何 gates 可达的 npm script 执行：')
+  for (const f of orphans) console.error(`   ${f}`)
+  console.error('\n两种可能，选一种：① 把它接进 gates（推荐：glob 或 --print-coverage 声明覆盖）；')
+  console.error('② 它其实不需要存在，删掉。')
+  console.error('注意「写在某个没接进 gates 的 script 里」不算数——没人跑它等于没有护栏。\n')
+  process.exit(1)
+}
+
+for (const [f, why] of Object.entries(waived)) {
+  console.log(`   豁免 ${f}\n      ${why}`)
+}
+console.log(`\n✅ 无孤儿测试文件（gates 可达脚本 ${reachable.size} 个，覆盖 ${covered.size}/${enforced.length}）`)
+if (unreachable.length) {
+  console.log(`   （定义在 gates 之外、因此不计入覆盖的 script：${unreachable.join(', ')}）`)
+}
+process.exit(0)

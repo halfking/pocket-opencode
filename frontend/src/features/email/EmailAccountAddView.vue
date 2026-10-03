@@ -108,12 +108,13 @@
 import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { emailApi } from '../../api/email'
-import { ApiError } from '../../api/http'
 import {
   EMAIL_PROVIDERS, type EmailProviderId, inferProviderId, providerById,
 } from './providers'
+import { useApiError } from '../../composables/useApiError'
 
 const router = useRouter()
+const apiError = useApiError()
 const step = ref<1 | 2 | 3>(1)
 const providerId = ref<EmailProviderId>('qq')
 const provider = computed(() => providerById(providerId.value))
@@ -185,15 +186,47 @@ async function saveAndVerify() {
       syncIntervalMin: 15,
       enabled: true,
       password: credential.value.trim(),
-      smtpPassword: credential.value.trim(),
+      // BUG-AB（2026-09-30 真机走查发现，证据见 handoff §4.29）：
+      // 这里原来是无条件的 `smtpPassword: credential.trim()`，而同对象里的
+      // smtpHost / smtpPort 都按「填了才发」处理 —— **漏了密码这一项**。
+      //
+      // 后端契约明确「SMTP 可选」：smtpHost 为空就按「未配置 SMTP」建账户
+      // （server_assistant.go 的注释就是这么写的），但一旦同时收到 smtpPassword
+      // 就会走 validateSMTPInput(nil, …) 并以 400 拒绝
+      // 「smtpHost required when smtpPassword is provided」。
+      //
+      // 于是：**只填邮箱地址 + IMAP 密码 + IMAP 主机、不碰 SMTP 的普通用户，
+      // 通过 UI 永远添加不了邮箱账户**（实测 POST 400，账户一条都没写进库）。
+      //
+      // 修法与同仓库 EmailAccountSetup.testAndSave 的写法保持一致 ——
+      // 那份早就正确地按 smtpHost 是否填写来决定要不要带密码。
+      ...(smtpHost.value.trim()
+        ? { smtpPassword: credential.value.trim() }
+        : {}),
     })
     try {
       const sync = await emailApi.syncNow(created.id)
-      imapOk.value = true
-      imapMsg.value = `同步成功，新邮件 ${sync.new ?? 0} 封`
+      // BUG-AC（2026-09-30 真机走查发现，证据见 handoff §4.30）：
+      // 后端 handleEmailSync **即使账户全部连不上也返回 200**，把失败的地址收在
+      // failed 数组里（实测 body = {"failed":["…"],"synced":0,"new":0}），
+      // 而且 `failed` 字段在 api/email.ts 的类型里**一直都声明了**。
+      //
+      // 原来这里只读 sync.new 并无条件 imapOk = true，于是
+      // 「保存并测试收发」这个**以验证连通性为目的**的页面，
+      // 会把「连不上」显示成「IMAP：同步成功，新邮件 0 封」，
+      // 并让 resultOk = true → 顶部显示「已保存并验证」。
+      // 等于验证根本没发生，界面却给出了成功结论。
+      const failed = Array.isArray(sync.failed) ? sync.failed : []
+      if (failed.length) {
+        imapOk.value = false
+        imapMsg.value = `连接失败：${failed.join('、')}`
+      } else {
+        imapOk.value = true
+        imapMsg.value = `同步成功，新邮件 ${sync.new ?? 0} 封`
+      }
     } catch (e) {
       imapOk.value = false
-      imapMsg.value = e instanceof ApiError ? e.message : (e instanceof Error ? e.message : 'IMAP 失败')
+      imapMsg.value = apiError(e, 'IMAP 失败')
     }
     if (smtpHost.value.trim()) {
       try {
@@ -202,7 +235,7 @@ async function saveAndVerify() {
         smtpMsg.value = smtp.smtp
       } catch (e) {
         smtpOk.value = false
-        smtpMsg.value = e instanceof ApiError ? e.message : (e instanceof Error ? e.message : 'SMTP 失败')
+        smtpMsg.value = apiError(e, 'SMTP 失败')
       }
     } else {
       smtpOk.value = true
@@ -213,7 +246,7 @@ async function saveAndVerify() {
       : `已保存 ${created.emailAddress}，但连接未全部通过`
     step.value = 3
   } catch (e) {
-    formError.value = e instanceof ApiError ? `保存失败：${e.message}` : (e instanceof Error ? e.message : '保存失败')
+    formError.value = apiError(e, '保存失败')
   } finally {
     busy.value = false
   }
@@ -235,21 +268,21 @@ async function saveAndVerify() {
   background: var(--bg-base);
 }
 .back-btn { border: 0; background: transparent; color: var(--text-primary); padding: 4px; }
-.page-title { margin: 0; font-size: 18px; }
-.steps { color: var(--text-muted); font-size: 12px; }
+.page-title { margin: 0; font-size: var(--text-xl); }
+.steps { color: var(--text-muted); font-size: var(--text-sm); }
 .panel { display: flex; flex-direction: column; gap: var(--space-2); }
-.hint, .auth-box p { margin: 0; color: var(--text-secondary); font-size: 13px; }
+.hint, .auth-box p { margin: 0; color: var(--text-secondary); font-size: var(--text-smd); }
 .prov {
   text-align: left; border: 1px solid var(--border); background: var(--bg-card);
   border-radius: var(--radius-md); padding: var(--space-3); cursor: pointer;
 }
 .prov strong { display: block; }
-.prov span { font-size: 12px; color: var(--text-muted); }
-.field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-secondary); }
+.prov span { font-size: var(--text-sm); color: var(--text-muted); }
+.field { display: flex; flex-direction: column; gap: 4px; font-size: var(--text-sm); color: var(--text-secondary); }
 .input { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: var(--space-2); background: var(--bg-base); color: var(--text-primary); }
-.auth-box { background: var(--bg-subtle); border-radius: var(--radius-md); padding: var(--space-3); font-size: 13px; }
+.auth-box { background: var(--bg-subtle); border-radius: var(--radius-md); padding: var(--space-3); font-size: var(--text-smd); }
 .auth-box ol { margin: var(--space-2) 0; padding-left: 1.2rem; }
-.adv { display: flex; flex-direction: column; gap: var(--space-2); font-size: 13px; }
+.adv { display: flex; flex-direction: column; gap: var(--space-2); font-size: var(--text-smd); }
 .adv-title { margin: 0; font-weight: 600; color: var(--text-primary); }
 .host-port { display: grid; grid-template-columns: 1fr 5.5rem; gap: var(--space-2); }
 .link, .ghost, .primary { border-radius: var(--radius-md); padding: var(--space-2) var(--space-3); cursor: pointer; }

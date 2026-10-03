@@ -9,6 +9,26 @@ const config: CapacitorConfig = {
     // 导致真机访问 localhost 打不开页面。API 地址由前端代码里的
     // VITE_API_BASE（构建期注入 http://192.168.31.45:8088）决定。
     cleartext: true,
+
+    // BUG-F 修复 (2026-09-30)：WebView 本地页面的 scheme。
+    //
+    // 默认 'https' 时页面 origin = https://localhost。此时 http:// 的 XHR 由
+    // WebSettings.setMixedContentMode(MIXED_CONTENT_ALWAYS_ALLOW) 放行
+    // （仅 DEBUG 分支，release 走 NEVER_ALLOW），所以 REST 调用能通。
+    //
+    // 但 WebSocket 不受 mixed content mode 管辖：Chromium >= 111 的
+    // "Insecure WebSocket" 策略会【硬阻断】从安全上下文发起的 ws:// 连接，
+    // 控制台报 "attempted to connect to the insecure WebSocket endpoint ...
+    // Insecure access is deprecated."，随后 WebSocket error → 无限重连。
+    // 真机上表现为任务流式输出 / 审批 / 会话推送等实时通道全部失效。
+    //
+    // 改用 'http' 后页面 origin = http://localhost，与后端 http/ws 同为
+    // 非安全上下文，mixed content 规则不再适用：XHR 走 CORS（后端
+    // corsMiddleware 对 dev 放行 http://localhost），ws:// 直接放行。
+    //
+    // 这里保留 'https' 为默认值：生产环境后端应走 HTTPS + wss，届时不需要
+    // 降级。仅在本地/内网 HTTP 后端联调时用 CAP_ANDROID_SCHEME=http 构建。
+    androidScheme: (process.env.CAP_ANDROID_SCHEME as 'http' | 'https') ?? 'https',
   },
   android: {
     allowMixedContent: true,

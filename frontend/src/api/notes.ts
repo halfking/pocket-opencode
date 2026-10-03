@@ -6,6 +6,16 @@
  */
 import { http } from './http'
 
+/**
+ * 笔记即时总结的客户端超时。
+ *
+ * 服务端 handleNoteSummarize 给到 60 秒（server_assistant.go:610 的
+ * `context.WithTimeout(r.Context(), 60*time.Second)`）。取 90 秒留余量：
+ * 客户端计时从请求发出开始，服务端的从 handler 进来开始，两者之间还有
+ * 网络与鉴权开销，**取相等值时客户端实际总是先到点**。
+ */
+export const NOTE_SUMMARIZE_TIMEOUT_MS = 90_000
+
 export type NoteDomain = 'work' | 'study' | 'life' | 'idea'
 export type NoteContentType = 'voice' | 'text' | 'mixed'
 
@@ -71,9 +81,19 @@ export const notesApi = {
   /**
    * 即时总结（语音草稿收尾后立刻调用）。
    * 后端走 llmBFF 智能路由；失败时返回空 summary，前端不阻塞流程。
+   *
+   * 2026-10-03：这里原先没传 timeoutMs，吃的是默认 30s，而服务端
+   * handleNoteSummarize 是 `context.WithTimeout(r.Context(), 60*time.Second)`
+   * （server_assistant.go:610）。**客户端比服务端先放弃**，所以推理一慢就变成
+   * 「服务端算完了、前端报失败」——这正是用户报的「没有即时总结」里最难查的
+   * 那一类：后端日志写着 200，界面却拿不到 summary。
    */
-  summarize(id: string): Promise<{ summary: string; model?: string }> {
-    return http(`/api/notes/${id}/summarize`, { method: 'POST' })
+  summarize(id: string, signal?: AbortSignal): Promise<{ summary: string; model?: string }> {
+    return http(`/api/notes/${id}/summarize`, {
+      method: 'POST',
+      timeoutMs: NOTE_SUMMARIZE_TIMEOUT_MS,
+      signal,
+    })
   },
   /** Hybrid search across notes. */
   search(query: string): Promise<{ notes: Note[] }> {

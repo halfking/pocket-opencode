@@ -86,18 +86,21 @@ import { onMounted, ref, reactive } from 'vue'
 import { useRouter } from 'vue-router'
 import { EmptyState } from '../../components'
 import ScrollChromePortal from '@/components/layout/ScrollChromePortal.vue'
-import { keystore } from '../../native/keystore'
+import { keystore, isKeystoreAvailable, isNotImplementedError } from '../../native/keystore'
 import * as vaultStore from './vault-store'
 import * as syncStore from './sync-store'
 import { isCryptoReady } from '../../native/crypto'
 import type { VaultEntryMeta } from './vault-store'
 import { useListScene } from '../../composables/use-list-scene'
+import { useToast } from '../../composables/useToast'
+import { useApiError } from '../../composables/useApiError'
 
 defineOptions({ name: 'VaultListView' })
 
 const initialized = ref(false)
 const unlocked = ref(false)
 const initError = ref('')
+const apiError = useApiError()
 const master = ref('')
 const entries = ref<VaultEntryMeta[]>([])
 const showAdd = ref(false)
@@ -105,16 +108,41 @@ const syncing = ref(false)
 const syncStatus = ref<{ type: 'ok' | 'err'; msg: string } | null>(null)
 
 const router = useRouter()
+const toast = useToast()
 
 const newEntry = reactive({
   title: '', username: '', url: '', category: 'login', password: '', notes: '',
 })
 
+// BUG-AT（2026-10-01 真机取证）：Android 模块里**没有** KeystorePlugin.java，
+// Capacitor.Plugins 19 个插件里也没有 Keystore，所有方法 reject
+// `"Keystore" plugin is not implemented on android`。
+//
+// 原实现只对**探针那一个方法**做了 crypto 降级，initialized 因此为真、界面照常显示
+// 「解锁密码箱 / 指纹·面容解锁」，而其余 11 个方法仍直接抛错——
+// 用户点一下就撞原始英文技术错误。更糟的是另一条降级路径把原因说成
+// 「主密码尚未设置」，与真实原因（插件不存在）完全无关，把人和排查都带偏。
+//
+// 现在：先问「这个平台到底能不能用」，不能用就**如实说不可用**，
+// 宁可少一个入口，也不给一个必然失败的操作。
+const UNSUPPORTED_MSG = '当前平台未提供密码箱原生插件，功能不可用。'
+
+const supported = ref<boolean | null>(null)
+
 async function probe() {
+  if (!(await isKeystoreAvailable())) {
+    supported.value = false
+    initialized.value = false
+    unlocked.value = false
+    // 注意：这里绝不能写「主密码尚未设置」——那与真实原因无关。
+    initError.value = UNSUPPORTED_MSG
+    return
+  }
+  supported.value = true
   try {
     initialized.value = await keystore.isVaultInitialized()
   } catch {
-    // cap-keystore 不可用（Web/dev）：用本地 crypto 降级
+    // 插件在、但探针失败：这时才轮到本地 crypto 降级
     initialized.value = isCryptoReady()
     if (!initialized.value) {
       initError.value = '主密码尚未设置（登录后自动初始化）'
@@ -136,7 +164,9 @@ async function unlockBio() {
     unlocked.value = true
     await load()
   } catch (e: any) {
-    initError.value = e.message
+    // BUG-AT：插件缺失时 e.message 是 `"Keystore" plugin is not implemented on android`
+    // 这种原始英文技术错误，直接显示等于把内部实现扔给用户。
+    initError.value = isNotImplementedError(e) ? UNSUPPORTED_MSG : '解锁失败，请重试'
   }
 }
 
@@ -155,7 +185,7 @@ async function load() {
   try {
     entries.value = await vaultStore.listEntries()
   } catch (e: any) {
-    initError.value = e.message
+    initError.value = isNotImplementedError(e) ? UNSUPPORTED_MSG : '读取密码箱失败'
   }
 }
 
@@ -169,7 +199,7 @@ async function generate() {
   try {
     const pwd = await keystore.generatePassword({ length: 20, upper: true, lower: true, digits: true, symbols: true })
     await navigator.clipboard.writeText(pwd).catch(() => {})
-    alert('已生成并复制（30秒后剪贴板自动清空）')
+    toast.success('已生成并复制（30秒后剪贴板自动清空）')
   } catch {
     // cap-keystore 不可用：用 Web Crypto 生成
     const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*'
@@ -177,12 +207,12 @@ async function generate() {
     crypto.getRandomValues(arr)
     const pwd = Array.from(arr, (n) => chars[n % chars.length]).join('')
     await navigator.clipboard.writeText(pwd).catch(() => {})
-    alert('已生成并复制（30秒后剪贴板自动清空）')
+    toast.success('已生成并复制（30秒后剪贴板自动清空）')
   }
 }
 
 async function saveNew() {
-  if (!newEntry.title) { alert('请输入标题'); return }
+  if (!newEntry.title) { toast.error('请输入标题'); return }
   await vaultStore.saveEntry({
     title: newEntry.title,
     username: newEntry.username || undefined,
@@ -214,7 +244,7 @@ async function cloudSync() {
       syncStatus.value = { type: 'ok', msg: '本地和云端均为空，无需同步' }
     }
   } catch (e: any) {
-    syncStatus.value = { type: 'err', msg: `同步失败: ${e.message || e}` }
+    syncStatus.value = { type: 'err', msg: apiError(e, '同步失败') }
   } finally {
     syncing.value = false
   }
@@ -241,7 +271,7 @@ input {
 }
 .btn-primary { background: var(--brand-gradient); color: var(--text-inverse); border: none; padding: var(--space-3); border-radius: var(--radius-md); font-weight: var(--font-weight-semibold); cursor: pointer; }
 .btn-bio { background: var(--bg-card); color: var(--brand-primary); border: 1px solid var(--brand-primary); padding: var(--space-3); border-radius: var(--radius-md); font-weight: 600; cursor: pointer; }
-.error { color: var(--danger); font-size: 13px; text-align: center; }
+.error { color: var(--danger); font-size: var(--text-smd); text-align: center; }
 .add-form {
   display: flex; flex-direction: column; gap: var(--space-2);
   margin-bottom: var(--space-3); padding: var(--space-3);
@@ -249,12 +279,12 @@ input {
 }
 .add-form input, .add-form select, .add-form textarea {
   padding: var(--space-2); border-radius: var(--radius-sm);
-  border: 1px solid var(--border); background: var(--bg-card); color: var(--text-primary); font-size: 14px;
+  border: 1px solid var(--border); background: var(--bg-card); color: var(--text-primary); font-size: var(--text-base);
 }
 .add-form textarea { resize: vertical; min-height: 60px; }
 .sync-status {
   margin-bottom: var(--space-3); padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius-sm); font-size: 13px;
+  border-radius: var(--radius-sm); font-size: var(--text-smd);
 }
 .sync-status.ok { background: var(--success-bg); color: var(--success); }
 .sync-status.err { background: var(--danger-bg); color: var(--danger); }
@@ -262,7 +292,7 @@ input {
 .vault-page { height: 100%; min-height: 0; }
 .vault-unlocked { height: 100%; min-height: 0; display: flex; flex-direction: column; }
 .vault-body { flex: 1; min-height: 0; }
-.btn-ghost { background: var(--bg-card); border: 1px solid var(--border); color: var(--text-primary); padding: var(--space-2) var(--space-3); border-radius: var(--radius-md); font-size: 13px; cursor: pointer; }
+.btn-ghost { background: var(--bg-card); border: 1px solid var(--border); color: var(--text-primary); padding: var(--space-2) var(--space-3); border-radius: var(--radius-md); font-size: var(--text-smd); cursor: pointer; }
 .state { text-align: center; color: var(--text-secondary); padding: var(--space-6); }
 .entry-list { display: flex; flex-direction: column; gap: var(--space-2); }
 .entry-card {
@@ -279,7 +309,7 @@ input {
 }
 .entry-icon { font-size: 22px; }
 .entry-body { flex: 1; }
-.entry-title { font-weight: 600; font-size: 14px; }
-.entry-user { color: var(--text-secondary); font-size: 12px; }
+.entry-title { font-weight: 600; font-size: var(--text-base); }
+.entry-user { color: var(--text-secondary); font-size: var(--text-sm); }
 .arrow { color: var(--text-muted); }
 </style>

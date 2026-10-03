@@ -4,7 +4,9 @@ import { useRoute, useRouter } from 'vue-router'
 import { useChatAgentStore, departmentLabel } from '../../stores/chatAgentStore'
 import { useToast } from '../../composables/useToast'
 import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue'
+import { useApiError } from '../../composables/useApiError'
 
+const apiError = useApiError()
 const route = useRoute()
 const router = useRouter()
 const agentStore = useChatAgentStore()
@@ -138,7 +140,7 @@ async function handleSave() {
       router.push(`/agents/${created.id}`)
     }
   } catch (err: any) {
-    toast.error(`保存失败：${err.message || err}`)
+    toast.error(apiError(err, 'errors.saveFailed'))
   } finally {
     saving.value = false
   }
@@ -304,7 +306,7 @@ async function handleSave() {
   border-radius: 8px;
   background: var(--warning-bg);
   color: var(--warning);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 
 /* 头像快选 */
@@ -337,7 +339,7 @@ async function handleSave() {
 
 .field-label {
   display: block;
-  font-size: 13px;
+  font-size: var(--text-smd);
   font-weight: 600;
   color: var(--text-secondary);
   margin-bottom: 6px;
@@ -352,7 +354,7 @@ async function handleSave() {
   padding: 10px 12px;
   border: 1px solid var(--border);
   border-radius: 8px;
-  font-size: 14px;
+  font-size: var(--text-base);
   background: var(--bg-base);
   color: var(--text-primary);
   font-family: inherit;
@@ -369,15 +371,15 @@ async function handleSave() {
 }
 
 .prompt-input {
-  font-family: 'SF Mono', Menlo, monospace;
-  font-size: 13px;
+  font-family: var(--font-mono);
+  font-size: var(--text-smd);
   line-height: 1.6;
   resize: vertical;
 }
 
 .field-hint {
   margin-top: 6px;
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-muted);
 }
 
@@ -386,7 +388,7 @@ async function handleSave() {
   background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: 6px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--brand-primary);
   cursor: pointer;
 }

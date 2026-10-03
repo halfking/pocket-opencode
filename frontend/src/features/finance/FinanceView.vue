@@ -97,10 +97,12 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { financeApi, type FinanceStats, type FinanceTransaction, type FinanceParseResult } from '../../api/finance'
 import { useToast } from '../../composables/useToast'
+import { useApiError } from '../../composables/useApiError'
 import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue'
 
 defineOptions({ name: 'FinanceView' })
 
+const apiError = useApiError()
 const toast = useToast()
 const loading = ref(false)
 const error = ref('')
@@ -158,7 +160,7 @@ async function load() {
       statsError.value = '统计加载失败，以下金额可能不准确'
     }
   } catch (e: any) {
-    error.value = e?.message || '加载失败'
+    error.value = apiError(e, 'errors.loadFinanceFailed')
   } finally {
     loading.value = false
   }
@@ -201,7 +203,7 @@ async function quickConfirm() {
     quickText.value = ''
     await load()
   } catch (e: any) {
-    toast.error(e?.message || '入账失败')
+    toast.error(apiError(e, 'errors.operateFailed'))
   }
 }
 
@@ -211,7 +213,7 @@ async function remove(tx: FinanceTransaction) {
     txs.value = txs.value.filter((t) => t.id !== tx.id)
     await load()
   } catch (e: any) {
-    toast.error(e?.message || '删除失败')
+    toast.error(apiError(e, 'errors.operateFailed'))
   }
 }
 
@@ -230,54 +232,54 @@ onMounted(load)
   background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px;
 }
 .stat { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-.stat-label { font-size: 11px; color: var(--text-secondary); }
-.stat-val { font-size: 15px; font-weight: 700; color: var(--text-primary); word-break: break-all; }
+.stat-label { font-size: var(--text-2xs); color: var(--text-secondary); }
+.stat-val { font-size: var(--text-md); font-weight: 700; color: var(--text-primary); word-break: break-all; }
 .stat-val.income { color: var(--success, #10b981); }
 .stat-val.expense { color: var(--danger); }
 .quick-add {
   display: flex; gap: 8px; margin: 0 var(--space-3) var(--space-2);
 }
 .quick-input {
-  flex: 1; padding: 10px 12px; font-size: 14px;
+  flex: 1; padding: 10px 12px; font-size: var(--text-base);
   background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px;
   color: var(--text-primary); outline: none;
 }
 .quick-input:focus { border-color: var(--brand-primary); }
 .quick-btn {
-  flex: none; padding: 0 16px; font-size: 13px; border-radius: 10px; border: none;
+  flex: none; padding: 0 16px; font-size: var(--text-smd); border-radius: 10px; border: none;
   background: var(--brand-primary, #4c8dff); color: #fff; cursor: pointer;
 }
 .quick-btn:disabled { opacity: 0.5; }
 .quick-preview {
   display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-  margin: 0 var(--space-3) var(--space-2); padding: 8px 12px; font-size: 12px;
+  margin: 0 var(--space-3) var(--space-2); padding: 8px 12px; font-size: var(--text-sm);
   background: var(--bg-card); border: 1px dashed var(--border); border-radius: 10px;
   color: var(--text-secondary);
 }
 .quick-preview.err { color: var(--warning, #f59e0b); border-color: var(--warning, #f59e0b); }
 .pv-btn {
-  margin-left: auto; padding: 5px 12px; font-size: 12px;
+  margin-left: auto; padding: 5px 12px; font-size: var(--text-sm);
   background: var(--bg-subtle); border: 1px solid var(--border); border-radius: 8px;
   color: var(--text-primary); cursor: pointer;
 }
 .pv-btn.confirm { background: var(--brand-primary, #4c8dff); border-color: transparent; color: #fff; }
 .pv-btn + .pv-btn { margin-left: 0; }
 .status-err {
-  margin: 0 var(--space-3) var(--space-2); padding: var(--space-2) var(--space-3); font-size: 12px;
+  margin: 0 var(--space-3) var(--space-2); padding: var(--space-2) var(--space-3); font-size: var(--text-sm);
   background: color-mix(in srgb, var(--danger) 12%, transparent); color: var(--danger); border-radius: 8px;
 }
 .stats-warn {
-  margin: 0 var(--space-3) var(--space-2); padding: var(--space-2) var(--space-3); font-size: 12px;
+  margin: 0 var(--space-3) var(--space-2); padding: var(--space-2) var(--space-3); font-size: var(--text-sm);
   background: color-mix(in srgb, var(--warning, #f59e0b) 12%, transparent); color: var(--warning, #f59e0b); border-radius: 8px;
 }
 .cat-row { display: flex; gap: 6px; flex-wrap: wrap; padding: 0 var(--space-3) var(--space-2); }
 .cat-chip {
-  font-size: 11px; padding: 3px 9px; border-radius: 999px;
+  font-size: var(--text-2xs); padding: 3px 9px; border-radius: 999px;
   background: var(--bg-subtle); border: 1px solid var(--border); color: var(--text-secondary);
 }
 .body { padding: 0 var(--space-3) 100px; display: flex; flex-direction: column; gap: var(--space-2); }
-.state { padding: 40px 20px; text-align: center; color: var(--text-secondary); font-size: 14px; }
-.hint { font-size: 12px; margin-top: 8px; }
+.state { padding: 40px 20px; text-align: center; color: var(--text-secondary); font-size: var(--text-base); }
+.hint { font-size: var(--text-sm); margin-top: 8px; }
 .tx-card {
   display: flex; align-items: flex-start; gap: 10px;
   background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px;
@@ -286,28 +288,28 @@ onMounted(load)
 .tx-icon {
   flex: none; width: 32px; height: 32px; border-radius: 50%;
   display: flex; align-items: center; justify-content: center;
-  font-size: 15px; font-weight: 700;
+  font-size: var(--text-md); font-weight: 700;
 }
 .tx-icon.expense { background: color-mix(in srgb, var(--danger) 12%, transparent); color: var(--danger); }
 .tx-icon.income { background: color-mix(in srgb, var(--success, #10b981) 12%, transparent); color: var(--success, #10b981); }
 .tx-main { flex: 1; min-width: 0; }
 .tx-top { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
-.tx-category { font-size: 14px; font-weight: 600; color: var(--text-primary); }
-.tx-amount { flex: none; font-size: 15px; font-weight: 700; }
+.tx-category { font-size: var(--text-base); font-weight: 600; color: var(--text-primary); }
+.tx-amount { flex: none; font-size: var(--text-md); font-weight: 700; }
 .tx-amount.expense { color: var(--danger); }
 .tx-amount.income { color: var(--success, #10b981); }
-.tx-meta { display: flex; align-items: center; gap: 8px; margin-top: 4px; font-size: 11px; color: var(--text-secondary); }
+.tx-meta { display: flex; align-items: center; gap: 8px; margin-top: 4px; font-size: var(--text-2xs); color: var(--text-secondary); }
 .src-badge {
-  padding: 1px 7px; border-radius: 999px; font-size: 10px;
+  padding: 1px 7px; border-radius: 999px; font-size: var(--text-xs);
   background: var(--bg-subtle); border: 1px solid var(--border);
 }
 .tx-note {
-  margin-top: 4px; font-size: 11px; color: var(--text-muted);
+  margin-top: 4px; font-size: var(--text-2xs); color: var(--text-muted);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .tx-del {
   flex: none; background: none; border: none; color: var(--text-muted);
   cursor: pointer; padding: 2px;
 }
-.tx-del .material-symbols-outlined { font-size: 18px; }
+.tx-del .material-symbols-outlined { font-size: var(--text-xl); }
 </style>

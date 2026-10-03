@@ -1,0 +1,154 @@
+# Maestro 真机功能流 · 任务写路径（创建 → 列表回显 → 进详情）
+#
+# ✅ 2026-10-02：不再是半成品，可以当回归测试跑了。
+#    此前第 6 步是**故意失败**的（一句永不成立的断言，用来导出任务详情页的
+#    可访问性树），文件头标着「不要当回归测试」。那一轮真跑（2026-10-02_224548）
+#    导出成功后已补成真断言，前 5 步在同一次运行里全过。
+#    落库独立复核（不只看屏幕）：
+#      opencode_pocket.tasks → task-1790952387600 | active | Maestro任务
+#    前置：node scripts/tasks-crud-fixture.mjs
+#    （删掉上一轮同名任务；否则第 5 步会假通过——Maestro 判 visible 只看
+#      节点在不在无障碍树里，不看它是不是上一轮留下的。）
+#
+# ── 写这个 flow 时踩到并已确认的三条纪律（都是实测，不是推测）──────────
+#
+# 1. **重排之后不能立刻 tap 坐标会变的元素。**
+#    最初这版是「先 tap 收起（折叠分诊区）→ 再 tap + 新任务」，后者报 COMPLETED
+#    但弹窗死活不开。`+ 新任务` 在重排前后坐标差 ~1100px（y≈1368 → y≈202）。
+#    WebView 是**异步发布**无障碍树的：收起点完 DOM 已重排、树还没跟上，
+#    Maestro 取到的仍是旧坐标，于是 tap 落在旧位置的任务列表上，点了个寂寞。
+#    ⇒ 去掉「收起」这一步就通了；等价做法是重排后先等一个会随之变化的判据。
+#    推论：`retryTapIfNoChange` 救不了这种情况——任务列表里「无响应 · 13 小时」
+#    这类相对时间在持续变化，屏幕永远「变了」，它压根不会重试。
+#
+# 2. **`+ 新任务` 必须写成正则 `\+ 新任务`。**
+#    直接写 "+ 新任务" 时 `+` 被当成正则量词。
+#
+# 3. **弹窗里的 input 在可访问性树里是 `[EditText] t="" cd=""`**——
+#    placeholder（输入任务标题）和 label 都不暴露，既不能 tapOn 文本也不能
+#    assertVisible，只能按坐标。坐标来自 Maestro 自己的失败现场导出
+#    （~/.maestro/tests/2026-10-01_123209/.../step-023-*.json，设备 720x1640）：
+#      标题 input [40,628][680,710]  → 中心 (360,669) → 50%,41%
+#      描述 textarea [40,776][680,896] → 中心 (360,836) → 50%,51%
+#      「创建」 [136,1490][234,1568]，标题为空时 **enabled=false**（与 Vue
+#      `:disabled="!newTask.title"` 一致）——正好可以当「输入真的落进去了」的判据。
+#    百分比**不能跨页面/跨状态复用**，改布局必须重量。
+#    点歪了不会静默通过：输入没进去 → 「创建」不解禁 → 那条断言必红。
+#
+# ── 与既有 verify-task-writepath.mjs 的分工（别把两者混为一谈）────────
+#   本 flow：走 **Maestro 真实触摸 + Android 无障碍树**，验 UI 层。
+#   verify-task-writepath.mjs：走 CDP 的 DOM .click()，每步用 **PostgreSQL 直查**
+#   作判据，验的是「真的落库了」。两者互补，都不可省。
+#
+# 运行：node scripts/maestro-run.mjs .maestro/tasks-crud.yaml
+appId: com.kaixuan.opencode.pocket
+---
+# ---------- 0. 前置：harness 已真实登录，起点是 #/ai ----------
+# ⚠️ 2026-10-02：原先这里是 `- runFlow: _login.yaml`。但 _login.yaml 的登录走
+#    Maestro 的 `inputText: ${POCKET_DEV_PASS}`，而 Maestro 实测把它展开成
+#    **字面量 "undefined"**（.maestro/_probe-env.yaml 坐实：框内容
+#    adminPWLEN-undefined）。登录已改由 scripts/maestro-run.mjs 的 preflight
+#    用 CDP 填真实 LoginView 表单完成，本流程不再需要 _login.yaml。
+#    如实记录覆盖变窄：软键盘那套手势本流程不再走（见 handoff §4.82.5）。
+# 前置可复现：node scripts/tasks-crud-fixture.mjs（删掉上一轮同名任务，
+# 否则第 5 步的列表回显会假通过——功能彻底坏掉时断言照样绿）。
+- extendedWaitUntil:
+    visible: "AI 工具"
+    timeout: 45000
+- assertVisible: "AI 工具"
+- assertNotVisible: "密码登录"
+
+# ---- 1. 回任务看板 ----
+# ⚠️ _login.yaml 最后停在「会议」（它要点受保护路由把锁定守卫逼出来），
+#    所以必须显式点底部导航的「首页」，不能假设已在 #/ai。
+#    这条 extendedWaitUntil 同时充当「重排后等树稳定」的作用，别删。
+- tapOn: "首页"
+# ⚠️ 两条等待都不能省，缺一条就会出现「tap 报 COMPLETED 但弹窗不开」：
+#   1. 等「+ 新任务」出现 —— 它是本流程要点的按钮。
+#   2. 等动画收敛 —— **任务数据是异步到达的**：登录后先渲染空态
+#      （按钮在 y≈208），数据到了之后列表撑开、按钮整体下移到 y≈1368，
+#      差 ~1100px。只等「按钮出现」的话，等待可能在空态就满足，
+#      紧接着的 tap 拿到的是**数据到达前**的坐标 ⇒ 点了个寂寞。
+#      这和「先点收起再点按钮」是同一个坑的两种触发方式
+#      （一次由用户操作触发，一次由数据加载触发）。
+- waitForAnimationToEnd:
+    timeout: 15000
+- extendedWaitUntil:
+    visible: "\\+ 新任务"
+    timeout: 30000
+- assertVisible: "\\+ 新任务"
+
+# ---- 2. 打开创建弹窗 ----
+- tapOn: "\\+ 新任务"
+- extendedWaitUntil:
+    visible: "创建任务"
+    timeout: 20000
+- assertVisible: "创建任务"
+
+# ---- 3. 填标题 ----
+- tapOn: { point: "50%,41%" }
+- inputText: "Maestro任务"
+- hideKeyboard
+# 「创建」必须随标题填入而解禁 —— 这条同时证明输入真的落进了 input。
+# 修成「点得开弹窗就当通过」正是 notes-crud.yaml 当初假绿过的地方。
+- extendedWaitUntil:
+    visible: { text: "创建", enabled: true }
+    timeout: 20000
+- assertVisible: { text: "创建", enabled: true }
+
+# ---- 4. 提交 ----
+- tapOn: { text: "创建", enabled: true }
+# 弹窗必须关掉。没关掉就说明提交没生效（后端 4xx 也会这样）。
+- extendedWaitUntil:
+    notVisible: "创建任务"
+    timeout: 30000
+- assertNotVisible: "创建任务"
+
+# ---- 5. 列表必须回显（先滚动到它**真的露出来**）----
+# ⚠️ 这里踩了一个会假通过的坑：新建的卡片排在最后，bounds 实测是
+#    [94,1638][606,1640] —— **只有 2px 高**，整张卡在折叠线以下、还被底部
+#    主导航（y≥1496）压着。Maestro 照样把 `visible: "Maestro任务.*"` 判成真
+#    （它只看节点在不在树里，不看露出多少），于是 assert 绿了，
+#    紧接着的 tapOn 打在 y≈1639 的两像素窄条上 —— 落在 tabbar 区域，点了个寂寞。
+#    ⇒ 必须先 scrollUntilVisible 且要求 visibilityPercentage，
+#      让「可见」回到「用户真看得见」这个含义上。
+# 用正则而不是纯字符串：WebView 会把卡片里的 span 合并成整串节点。
+# ⚠️ 固定标题的重跑风险：上一轮崩在中间会留下同名卡片，让这条假通过。
+#    与 notes-crud.yaml 同样的取舍（那边是「MaestroPKM笔记」），
+#    收尾的 notVisible 会在这种情况下报红而不是假绿。
+- scrollUntilVisible:
+    element: { text: "Maestro任务.*" }
+    direction: DOWN
+    visibilityPercentage: 60
+    timeout: 25000
+- assertVisible: { text: "Maestro任务.*" }
+
+# ---- 6. 进详情：从列表进详情页，标题必须带过去（2026-10-02 补完）----
+# ⚠️ 这一步此前是**故意失败**的（第 6 步写着一句永不成立的断言，用来导出
+#    详情页的可访问性树），文件头也标着「半成品，不要当回归测试」。
+#    2026-10-02 真跑一轮导出后已补完，现在它是一条真的会红的回归。
+#    证据：~/.maestro/tests/2026-10-02_224548/tasks-crud/screen-hierarchy/
+#    step-024-*.json（43 个文本节点，摘录见下）。抽取脚本
+#    scripts/_dump-a11y.mjs 的字段名要注意：文本在 **attributes.text**，
+#    顶层是 {children:[...]}，类名是 attributes.class，bounds 是字符串
+#    "[l,t][r,b]"。
+#      [TextView] 任务详情          @[132,88][588,136]
+#      [TextView] Maestro任务       @[116,206][552,258]
+#      [TextView] 进行中            @[584,216][644,246]
+#      [Button]  ⏸ 暂停            @[48,452][186,512]  clickable=true
+#      [TextView] 还没有子任务 / 还没有动态 / 当前 0 / 历史 0
+- tapOn: { text: "Maestro任务.*" }
+- extendedWaitUntil:
+    visible: "任务详情"
+    timeout: 25000
+# 详情页专属标记：列表页的「+ 新任务」必须消失。
+# 这条不是凑数——它证明真的离开了列表页，而不是弹窗关了但没跳转。
+- assertNotVisible: "\\+ 新任务"
+# 跨页一致性：列表里点的这张卡，详情页必须显示同一个标题。
+# 写反了（详情页回落到别的任务 / 空白）这条就红。
+- assertVisible: { text: "Maestro任务.*" }
+# 状态徽章 + 动作行：动作行是 enabled 的 Button，不是静态文字。
+- assertVisible: "进行中"
+- assertVisible: { text: ".*暂停.*" }
+
+- takeScreenshot: "logs/maestro/tasks-crud-detail"

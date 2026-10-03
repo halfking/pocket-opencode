@@ -28,6 +28,29 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_DIR="${ROOT_DIR}"
 export DEPLOY_ENV="${DEPLOY_ENV:-local}"
 
+# Scoped lifecycle entry: never use compose down to stop only the UI.
+if [[ "${1:-}" == "--stop-frontend" ]]; then
+  [[ $# -eq 1 ]] || { echo "--stop-frontend 不接受其他参数" >&2; exit 2; }
+  [[ "$DEPLOY_ENV" == "local" ]] || { echo "--stop-frontend 仅允许 local" >&2; exit 2; }
+  exec bash "$ROOT_DIR/deploy/bin/stop.sh" --frontend-only
+fi
+
+# Validate before config/resource mutations.
+want_frontend=false want_backend=false
+for arg in "$@"; do
+  case "$arg" in
+    --frontend-only) want_frontend=true ;;
+    --backend-only) want_backend=true ;;
+    --build|--no-build|--dry-run|--rollback) ;;
+    --help) echo "用法: $0 [--build|--no-build] [--frontend-only|--backend-only] [--dry-run] [--rollback]"; exit 0 ;;
+    *) echo "未知参数: $arg" >&2; exit 1 ;;
+  esac
+done
+if [[ "$want_frontend" == true && "$want_backend" == true ]]; then
+  echo "--frontend-only 与 --backend-only 不能同时使用" >&2
+  exit 1
+fi
+
 # ── 本地开关：必须在 source env.sh 之前预设 ──────────────────────
 # env.sh 对这些变量用 `:=` 兜底，若在 source 之后再赋值会因"已非空"而不生效
 # （实测导致 OPP_DEPLOY_PG 恒为 false、PG 端口恒为 15432，DSN 不写入）。
@@ -70,11 +93,29 @@ esac
 
 echo "  PG 拓扑: deploy=${OPP_DEPLOY_PG} target=${OPP_PG_HOST}:${OPP_PG_PORT}"
 
+# A dry run must be read-only even when a DB deployment flag is true.
+if [[ " $* " == *" --dry-run "* ]]; then
+  echo "  🧪 dry-run: 计划 init-dirs → DB 复用/唯一性检查 → 配置 → 数据库预检 → start"
+  # 清单只服务计划展示；本机 ps/docker 不支持（如 Windows MSYS 的 ps 无 -axo）
+  # 不该判死 dry-run。真实预检（--can-create / --env-file）仍 fail-closed。
+  python3 "$LIB_DIR/check-databases.py" --inventory \
+    || echo "  ⚠️  数据库清单在本机不可用（ps/docker 受限）；计划仅供参考"
+  if [[ -f "$POCKET_ENV_FILE" && " $* " != *" --frontend-only "* ]]; then
+    python3 "$LIB_DIR/check-databases.py" --env-file "$POCKET_ENV_FILE" --compose-file "$POCKET_COMPOSE_FILE"
+  else
+    echo "  数据库预检待实际后端部署执行（现有配置未改写）"
+  fi
+  echo "  flags: $*"
+  exit 0
+fi
+
 # ── 1) 建目录 ──────────────────────────────────────────────────────
 "${SCRIPT_DIR}/deploy/bin/init-dirs.sh"
 
 # ── 2) DB 复用 vs 容器化 ─────────────────────────────────────────
-"${SCRIPT_DIR}/deploy/bin/ensure-databases.sh"
+# Preserve OPP_*_MODE in this shell; a child process cannot export back.
+source "${SCRIPT_DIR}/deploy/bin/ensure-databases.sh"
+SCRIPT_DIR="$ROOT_DIR"
 
 # ── 3) 生成 .env.local（首次或密码缺）─────────────────────────────
 DSN_PLACEHOLDER='SET_PG_PASSWORD_HERE'
@@ -100,7 +141,9 @@ write_env_template() {
     exit 1
   fi
   read -r DEV_JWT_SECRET _ < <(openssl rand -hex 24)
-  cat > "${POCKET_ENV_FILE}" <<EOF
+  local template_file
+  template_file="$(mktemp -t pocket-template.XXXXXX)"
+  cat > "${template_file}" <<EOF
 # openpocket 本地部署 .env（deploy-local.sh 自动生成，请按需修改）
 # 加 POCKET_ENV_DEBUG=1 或 OPP_DEBUG=1 重跑可看到生效路径。密码等敏感项勿提交仓库。
 # 端口调整用环境变量（不在此文件）：POCKET_HTTP_PORT / POCKET_FRONTEND_PORT
@@ -136,11 +179,24 @@ POCKET_EMAIL_FETCH_ENABLED=false
 POCKET_FEISHU_APP_ID=
 POCKET_KXMEMORY_BASE_URL=
 
-# ---- 自有 kaixuan OpenAI 兼容网关（真值由 envs 注入，勿手写真 key）----
-POCKET_LLM_GATEWAY_URL=https://llmgo.kxpms.cn/v1
+# ---- 自有 OpenAI 兼容网关（https://llm.kxpms.cn/v1）----
+# key 留空时 pocketd 回落到内置默认 key（internal/opencode.DefaultLLMGatewayAPIKey），
+# 真值仍优先取 envs 注入的 POCKET_LLM_GATEWAY_API_KEY。
+POCKET_LLM_GATEWAY_URL=https://llm.kxpms.cn/v1
 POCKET_LLM_GATEWAY_API_KEY=
 EOF
-  chmod 600 "${POCKET_ENV_FILE}"
+  # Database provisioning may already have written a DSN. Fill missing keys,
+  # preserving all existing credentials and settings.
+  python3 - "$template_file" "$POCKET_ENV_FILE" <<'PYENV'
+import pathlib, sys
+template, target = map(pathlib.Path, sys.argv[1:])
+existing = target.read_text() if target.exists() else ""
+keys = {line.split("=", 1)[0] for line in existing.splitlines() if "=" in line and not line.startswith("#")}
+lines = [line for line in template.read_text().splitlines() if "=" not in line or line.startswith("#") or line.split("=", 1)[0] not in keys]
+target.write_text(existing.rstrip() + "\n" + "\n".join(lines) + "\n")
+target.chmod(0o600)
+PYENV
+  rm -f "$template_file"
 }
 
 # 注入 PG 密码到 DSN（端口不写死，按 env.sh 派生的为准）
@@ -163,29 +219,27 @@ inject_llm_gateway() {
   local loader="${ENVS_LOADER:-$HOME/workspace/ai-native-tools/envs/loader.sh}"
   local key=""
   if [[ -x "${loader}" ]]; then
-    key="$(bash "${loader}" query POCKET_LLM_GATEWAY_API_KEY 2>/dev/null | awk '{print $1}')"
+    key="$(bash "${loader}" query POCKET_LLM_GATEWAY_API_KEY 2>/dev/null | awk '{print $1}')" || key=""
   fi
-  python3 - "${env_file}" "${key}" <<'PY'
-import pathlib, sys
+  OPP_GATEWAY_KEY="$key" python3 - "${env_file}" <<'PY'
+import os, pathlib, sys
 path = pathlib.Path(sys.argv[1])
-key = sys.argv[2].strip()
+key = os.environ.get("OPP_GATEWAY_KEY", "").strip()
 text = path.read_text() if path.exists() else ""
+existing_key = next((ln.split("=", 1)[1] for ln in text.splitlines() if ln.startswith("POCKET_LLM_GATEWAY_API_KEY=")), "")
 lines = [ln for ln in text.splitlines() if not ln.startswith("POCKET_LLM_GATEWAY_URL=") and not ln.startswith("POCKET_LLM_GATEWAY_API_KEY=")]
 while lines and lines[-1] == "":
     lines.pop()
-lines.append("POCKET_LLM_GATEWAY_URL=https://llmgo.kxpms.cn/v1")
-if key:
-    lines.append(f"POCKET_LLM_GATEWAY_API_KEY={key}")
-else:
-    lines.append("POCKET_LLM_GATEWAY_API_KEY=")
+lines.append("POCKET_LLM_GATEWAY_URL=https://llm.kxpms.cn/v1")
+lines.append(f"POCKET_LLM_GATEWAY_API_KEY={key or existing_key}")
 path.write_text("\n".join(lines) + "\n")
 path.chmod(0o600)
-print("  🔑 injected POCKET_LLM_GATEWAY_URL=https://llmgo.kxpms.cn/v1")
-print("  🔑 POCKET_LLM_GATEWAY_API_KEY", "set" if key else "empty (envs miss)")
+print("  🔑 injected POCKET_LLM_GATEWAY_URL=https://llm.kxpms.cn/v1")
+print("  🔑 POCKET_LLM_GATEWAY_API_KEY", "loaded" if key else "preserved" if existing_key else "empty (pocketd falls back to built-in default key)")
 PY
 }
 
-if [[ ! -f "${POCKET_ENV_FILE}" ]]; then
+if [[ ! -f "${POCKET_ENV_FILE}" ]] || ! grep -q '^POCKET_JWT_SECRET=' "$POCKET_ENV_FILE"; then
   PG_PASS="${OPP_PG_PASSWORD:-${DSN_PLACEHOLDER}}"
   write_env_template
   if [[ "${OPP_PG_MODE}" == "external" ]] || [[ "${OPP_PG_MODE}" == "container" ]]; then
@@ -205,7 +259,7 @@ elif grep -q "${DSN_PLACEHOLDER}" "${POCKET_ENV_FILE}" 2>/dev/null && [[ -n "${O
 fi
 
 # ── 4) 拉起服务 ───────────────────────────────────────────────────
-if [[ -f "${POCKET_ENV_FILE}" ]]; then
+if [[ -f "${POCKET_ENV_FILE}" && " $* " != *" --frontend-only "* ]]; then
   inject_llm_gateway "${POCKET_ENV_FILE}"
 fi
 exec "${SCRIPT_DIR}/deploy/bin/start.sh" "$@"

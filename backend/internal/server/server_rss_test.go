@@ -8,6 +8,8 @@ package server
 import (
 	"strings"
 	"testing"
+
+	"github.com/halfking/pocket-opencode/backend/internal/rss"
 )
 
 // TestRSSPathTail 验证子路径提取工具。
@@ -29,24 +31,46 @@ func TestRSSPathTail(t *testing.T) {
 	}
 }
 
-// TestRSSSeedListHasExpectedEntries 验证 seeds 列表含关键源（不依赖 Server 构造）。
-func TestRSSSeedListHasExpectedEntries(t *testing.T) {
-	if len(rssSeedFeeds) < 3 {
-		t.Fatalf("expected at least 3 seeds, got %d", len(rssSeedFeeds))
+// TestRSSStarterCatalogHasExpectedEntries 验证内置推荐源目录含 IT/财经/时事三类
+// 且中英文都有（不依赖 Server 构造）。
+//
+// 这条测试之前锁的是 rssSeedFeeds —— 那份硬编码列表只有 5 条、全是科技/设计，
+// 用户要的"财经 + 实事"根本不在里面。数据源换成了 rss.StarterFeeds，断言也跟着
+// 换成"三类都必须有"。
+func TestRSSStarterCatalogHasExpectedEntries(t *testing.T) {
+	feeds := rss.StarterFeeds
+	if len(feeds) < 9 {
+		t.Fatalf("expected at least 9 recommended feeds, got %d", len(feeds))
 	}
-	foundHN, foundCN := false, false
-	for _, s := range rssSeedFeeds {
-		if strings.Contains(strings.ToLower(s.Title), "hacker news") {
-			foundHN = true
+	var it, finance, news, zh, en, hn int
+	for _, f := range feeds {
+		switch f.Category {
+		case rss.CategoryIT:
+			it++
+		case rss.CategoryFinance:
+			finance++
+		case rss.CategoryNews:
+			news++
+		default:
+			t.Errorf("feed %q has unexpected category %q", f.URL, f.Category)
 		}
-		if s.Language == "zh" {
-			foundCN = true
+		if f.Language == "zh" {
+			zh++
+		}
+		if f.Language == "en" {
+			en++
+		}
+		if strings.Contains(strings.ToLower(f.Title), "hacker news") {
+			hn++
 		}
 	}
-	if !foundHN {
-		t.Errorf("seed list should include a Hacker News entry")
+	if it == 0 || finance == 0 || news == 0 {
+		t.Errorf("catalog must cover all three categories, got it=%d finance=%d news=%d", it, finance, news)
 	}
-	if !foundCN {
-		t.Errorf("seed list should include at least one Chinese feed")
+	if zh == 0 || en == 0 {
+		t.Errorf("catalog must be bilingual, got zh=%d en=%d", zh, en)
+	}
+	if hn == 0 {
+		t.Errorf("catalog should include a Hacker News entry")
 	}
 }

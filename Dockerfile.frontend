@@ -3,9 +3,16 @@ WORKDIR /app
 COPY frontend/package*.json ./
 RUN npm ci
 COPY frontend ./
+# This Dockerfile produces the Nginx Web app, whose /api path is same-origin.
+# The native Capacitor bundle uses build-mobile.mjs with an explicit API base.
+ENV MOBILE_ALLOW_EMPTY_API_BASE=1
 RUN npm run build
 
-FROM nginx:alpine
+# nginx 必须钉在 stable 线：floating 的 nginx:alpine 会漂到 mainline（实测 1.31.5），
+# 在 CentOS 7（kernel 3.10 / Docker 26.1.4）上 master 起不来——
+# `pwrite() "/run/nginx.pid" failed (1: Operation not permitted)`，nginx:1.24-alpine 同机正常
+# （154 实机 A/B 对照，2026-09-30；见 handoff BUG-AJ）。
+FROM nginx:1.24-alpine
 COPY --from=build /app/dist /usr/share/nginx/html
 COPY deploy/本地方案/nginx.conf /etc/nginx/conf.d/default.conf
 EXPOSE 80

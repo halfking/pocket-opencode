@@ -224,7 +224,7 @@ POCKET_INSTANCE_CATALOG_JSON=[{"id":"acc-mcp","displayName":"ACC MCP Server","ap
 # MCP 配置 (已启用，有 TLS 问题)
 POCKET_MCP_ENABLED=true
 POCKET_MCP_URL=https://mcp.kxpms.cn/acc/mcp
-POCKET_MCP_API_KEY=sk-mcp-sa0cXjxzPKhU77CYNFiFDP1I7B4wMnBc
+POCKET_MCP_API_KEY=sk-mcp-<REDACTED-ROTATE-ME>
 ```
 
 ---

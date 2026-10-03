@@ -63,6 +63,7 @@ import { ref, onMounted, onActivated } from 'vue'
 import { useRouter } from 'vue-router'
 import { api } from '../../api/client'
 import { persistSelectedInstance } from '../../native/config-sync/prefs'
+import { useApiError } from '../../composables/useApiError'
 import { Skeleton, EmptyState } from '../../components'
 import ScrollChromePortal from '@/components/layout/ScrollChromePortal.vue'
 
@@ -82,6 +83,7 @@ const currentServer = ref<any>(null)
 const instances = ref<Instance[]>([])
 const loading = ref(true)
 const error = ref<string | null>(null)
+const apiError = useApiError()
 
 onMounted(() => {
   // 加载当前服务器
@@ -109,7 +111,7 @@ async function loadInstances() {
     console.log('✅ 加载到实例:', instances.value.length, instances.value)
   } catch (err: any) {
     console.error('❌ 加载实例失败:', err)
-    error.value = `加载失败: ${err.message || '未知错误'}`
+    error.value = apiError(err, 'errors.loadSettingsFailed')
     instances.value = []
   } finally {
     loading.value = false
@@ -234,7 +236,7 @@ function selectInstance(instance: Instance) {
   font-size: var(--text-xs);
   color: var(--text-muted);
   margin: 0;
-  font-family: monospace;
+  font-family: var(--font-mono);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

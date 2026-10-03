@@ -1,0 +1,322 @@
+﻿[
+    {
+        "url":  "https://www.huxiu.com/rss/0.xml",
+        "title":  "虎嗅网",
+        "category":  "it",
+        "status":  0,
+        "ctype":  "",
+        "items":  0,
+        "ms":  15168,
+        "err":  "The operation has timed out."
+    },
+    {
+        "url":  "https://www.ithome.com/rss/",
+        "title":  "IT之家",
+        "category":  "it",
+        "status":  200,
+        "ctype":  "text/xml; charset=utf-8",
+        "items":  60,
+        "ms":  145,
+        "err":  ""
+    },
+    {
+        "url":  "https://www.cnbeta.com.tw/backend.php",
+        "title":  "cnBeta",
+        "category":  "it",
+        "status":  0,
+        "ctype":  "",
+        "items":  0,
+        "ms":  15021,
+        "err":  "The operation has timed out."
+    },
+    {
+        "url":  "https://www.oschina.net/news/rss",
+        "title":  "开源中国",
+        "category":  "it",
+        "status":  200,
+        "ctype":  "application/rss+xml;charset=UTF-8",
+        "items":  50,
+        "ms":  422,
+        "err":  ""
+    },
+    {
+        "url":  "https://feeds.feedburner.com/oreilly/radar",
+        "title":  "O\u0027Reilly Radar",
+        "category":  "it",
+        "status":  0,
+        "ctype":  "",
+        "items":  0,
+        "ms":  15023,
+        "err":  "The operation has timed out."
+    },
+    {
+        "url":  "https://www.lwn.net/headlines/rss",
+        "title":  "LWN",
+        "category":  "it",
+        "status":  200,
+        "ctype":  "application/xml",
+        "items":  15,
+        "ms":  2501,
+        "err":  ""
+    },
+    {
+        "url":  "https://newsletter.pragmaticengineer.com/feed",
+        "title":  "The Pragmatic Engineer",
+        "category":  "it",
+        "status":  0,
+        "ctype":  "",
+        "items":  0,
+        "ms":  4611,
+        "err":  "无法连接到远程服务器"
+    },
+    {
+        "url":  "https://www.anthropic.com/news/rss.xml",
+        "title":  "Anthropic News",
+        "category":  "it",
+        "status":  404,
+        "ctype":  "",
+        "items":  0,
+        "ms":  1220,
+        "err":  "远程服务器返回错误: (404) 未找到。"
+    },
+    {
+        "url":  "https://huggingface.co/blog/feed.xml",
+        "title":  "Hugging Face Blog",
+        "category":  "it",
+        "status":  0,
+        "ctype":  "",
+        "items":  0,
+        "ms":  14822,
+        "err":  "无法连接到远程服务器"
+    },
+    {
+        "url":  "https://deepmind.google/blog/rss.xml",
+        "title":  "Google DeepMind Blog",
+        "category":  "it",
+        "status":  0,
+        "ctype":  "",
+        "items":  0,
+        "ms":  15035,
+        "err":  "The operation has timed out."
+    },
+    {
+        "url":  "https://www.cloudflare.com/cdn-cgi/trace",
+        "title":  "(probe: cloudflare reachable)",
+        "category":  "it",
+        "status":  0,
+        "ctype":  "",
+        "items":  0,
+        "ms":  14381,
+        "err":  "基础连接已经关闭: 未能为 SSL/TLS 安全通道建立信任关系。"
+    },
+    {
+        "url":  "https://www.cls.cn/api/rss",
+        "title":  "财联社",
+        "category":  "finance",
+        "status":  404,
+        "ctype":  "",
+        "items":  0,
+        "ms":  125,
+        "err":  "远程服务器返回错误: (404) 未找到。"
+    },
+    {
+        "url":  "https://rss.cnbc.com/rss",
+        "title":  "CNBC (alias)",
+        "category":  "finance",
+        "status":  0,
+        "ctype":  "",
+        "items":  0,
+        "ms":  50,
+        "err":  "The remote name could not be resolved: \u0027rss.cnbc.com\u0027"
+    },
+    {
+        "url":  "https://seekingalpha.com/market_currents.xml",
+        "title":  "Seeking Alpha",
+        "category":  "finance",
+        "status":  200,
+        "ctype":  "application/xml; charset=utf-8",
+        "items":  7,
+        "ms":  319,
+        "err":  ""
+    },
+    {
+        "url":  "https://www.barrons.com/articles.rss",
+        "title":  "Barron\u0027s",
+        "category":  "finance",
+        "status":  403,
+        "ctype":  "",
+        "items":  0,
+        "ms":  2523,
+        "err":  "远程服务器返回错误: (403) 已禁止。"
+    },
+    {
+        "url":  "https://fortune.com/feed/fortune-feeds/?id=3230629",
+        "title":  "Fortune",
+        "category":  "finance",
+        "status":  200,
+        "ctype":  "application/xml; charset=UTF-8",
+        "items":  10,
+        "ms":  271,
+        "err":  ""
+    },
+    {
+        "url":  "https://www.investors.com/rss",
+        "title":  "Investor\u0027s Business Daily",
+        "category":  "finance",
+        "status":  0,
+        "ctype":  "",
+        "items":  0,
+        "ms":  15015,
+        "err":  "The operation has timed out."
+    },
+    {
+        "url":  "https://www.nasdaq.com/feed/rssoutbound?category=Markets",
+        "title":  "Nasdaq Markets",
+        "category":  "finance",
+        "status":  200,
+        "ctype":  "application/rss+xml; charset=UTF-8",
+        "items":  15,
+        "ms":  2251,
+        "err":  ""
+    },
+    {
+        "url":  "https://www.cnbc.com/id/20910258/device/rss/rss.html",
+        "title":  "CNBC Economy",
+        "category":  "finance",
+        "status":  200,
+        "ctype":  "application/xml",
+        "items":  30,
+        "ms":  474,
+        "err":  ""
+    },
+    {
+        "url":  "https://www.jiemian.com/rss",
+        "title":  "界面新闻",
+        "category":  "finance",
+        "status":  404,
+        "ctype":  "",
+        "items":  0,
+        "ms":  241,
+        "err":  "远程服务器返回错误: (404) 未找到。"
+    },
+    {
+        "url":  "https://rss.cnstock.com/rss/news.xml",
+        "title":  "中国证券网",
+        "category":  "finance",
+        "status":  0,
+        "ctype":  "",
+        "items":  0,
+        "ms":  16,
+        "err":  "The remote name could not be resolved: \u0027rss.cnstock.com\u0027"
+    },
+    {
+        "url":  "https://www.stcn.com/rss.xml",
+        "title":  "证券时报",
+        "category":  "finance",
+        "status":  404,
+        "ctype":  "",
+        "items":  0,
+        "ms":  561,
+        "err":  "远程服务器返回错误: (404) 未找到。"
+    },
+    {
+        "url":  "https://www.yicai.com/feed",
+        "title":  "第一财经(feed)",
+        "category":  "finance",
+        "status":  200,
+        "ctype":  "text/html; charset=utf-8",
+        "items":  0,
+        "ms":  173,
+        "err":  ""
+    },
+    {
+        "url":  "https://www.zaobao.com.sg/realtime/world/rss.xml",
+        "title":  "联合早报(新)",
+        "category":  "news",
+        "status":  404,
+        "ctype":  "",
+        "items":  0,
+        "ms":  719,
+        "err":  "远程服务器返回错误: (404) 未找到。"
+    },
+    {
+        "url":  "https://rsshub.rssforever.com/zhihu/hotlist",
+        "title":  "知乎热榜(镜像)",
+        "category":  "news",
+        "status":  503,
+        "ctype":  "",
+        "items":  0,
+        "ms":  877,
+        "err":  "远程服务器返回错误: (503) 服务器不可用。"
+    },
+    {
+        "url":  "https://www.chinanews.com.cn/rss/scroll-news.xml",
+        "title":  "中新网滚动",
+        "category":  "news",
+        "status":  200,
+        "ctype":  "text/xml",
+        "items":  30,
+        "ms":  76,
+        "err":  ""
+    },
+    {
+        "url":  "https://www.chinanews.com.cn/rss/world.xml",
+        "title":  "中新网国际",
+        "category":  "news",
+        "status":  200,
+        "ctype":  "text/xml",
+        "items":  30,
+        "ms":  37,
+        "err":  ""
+    },
+    {
+        "url":  "https://www.chinanews.com.cn/rss/importnews.xml",
+        "title":  "中新网要闻",
+        "category":  "news",
+        "status":  200,
+        "ctype":  "text/xml",
+        "items":  30,
+        "ms":  25,
+        "err":  ""
+    },
+    {
+        "url":  "https://news.cctv.com/rss/china.xml",
+        "title":  "央视新闻",
+        "category":  "news",
+        "status":  404,
+        "ctype":  "",
+        "items":  0,
+        "ms":  243,
+        "err":  "远程服务器返回错误: (404) 未找到。"
+    },
+    {
+        "url":  "https://www.thepaper.cn/rss",
+        "title":  "澎湃新闻",
+        "category":  "news",
+        "status":  200,
+        "ctype":  "text/html; charset=utf-8",
+        "items":  0,
+        "ms":  273,
+        "err":  ""
+    },
+    {
+        "url":  "https://plink.anyfeeder.com/newscn/bjnews",
+        "title":  "北京新闻(镜像)",
+        "category":  "news",
+        "status":  0,
+        "ctype":  "",
+        "items":  0,
+        "ms":  12785,
+        "err":  "基础连接已经关闭: 发送时发生错误。"
+    },
+    {
+        "url":  "https://www.infoq.cn/feed/news",
+        "title":  "InfoQ 快讯",
+        "category":  "news",
+        "status":  200,
+        "ctype":  "application/xml; charset=utf-8",
+        "items":  20,
+        "ms":  213,
+        "err":  ""
+    }
+]

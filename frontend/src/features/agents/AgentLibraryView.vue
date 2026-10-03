@@ -3,6 +3,8 @@ import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useChatAgentStore } from '../../stores/chatAgentStore'
 import { useConfirm } from '../../composables/useConfirm'
+import { useToast } from '../../composables/useToast'
+import { useApiError } from '../../composables/useApiError'
 import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue'
 import AgentSyncSheet from '../ai-chat/AgentSyncSheet.vue'
 
@@ -11,6 +13,8 @@ defineOptions({ name: 'AgentLibraryView' })
 const router = useRouter()
 const agentStore = useChatAgentStore()
 const { confirm } = useConfirm()
+const toast = useToast()
+const apiError = useApiError()
 
 const searchQuery = ref('')
 const selectedDepartment = ref<string>('') // 空字符串 = 全部
@@ -92,7 +96,7 @@ async function handleDelete(agentId: string, agentName: string, isBuiltin: boole
     : `确定要删除角色"${agentName}"吗？`
   if (!(await confirm({ title: '删除角色', message, confirmText: '删除', danger: true }))) return
   agentStore.deleteAgent(agentId).catch((err) => {
-    alert(`删除失败：${err.message || err}`)
+    toast.error(apiError(err, '删除失败'))
   })
 }
 </script>
@@ -261,7 +265,7 @@ async function handleDelete(agentId: string, agentName: string, isBuiltin: boole
   padding: 10px 16px;
   border: 1px solid var(--border);
   border-radius: 8px;
-  font-size: 14px;
+  font-size: var(--text-base);
   background: var(--bg-base);
   color: var(--text-primary);
 }
@@ -286,7 +290,7 @@ async function handleDelete(agentId: string, agentName: string, isBuiltin: boole
   border: 1px solid var(--border);
   border-radius: 16px;
   background: var(--bg-base);
-  font-size: 13px;
+  font-size: var(--text-smd);
   white-space: nowrap;
   cursor: pointer;
   color: var(--text-secondary);
@@ -308,7 +312,7 @@ async function handleDelete(agentId: string, agentName: string, isBuiltin: boole
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 13px;
+  font-size: var(--text-smd);
   color: var(--text-secondary);
   cursor: pointer;
 }
@@ -324,7 +328,7 @@ async function handleDelete(agentId: string, agentName: string, isBuiltin: boole
   text-align: center;
   padding: 40px 20px;
   color: var(--text-secondary);
-  font-size: 14px;
+  font-size: var(--text-base);
 }
 
 .create-btn {
@@ -334,7 +338,7 @@ async function handleDelete(agentId: string, agentName: string, isBuiltin: boole
   color: var(--text-inverse);
   border: none;
   border-radius: 8px;
-  font-size: 14px;
+  font-size: var(--text-base);
   cursor: pointer;
 }
 
@@ -344,7 +348,7 @@ async function handleDelete(agentId: string, agentName: string, isBuiltin: boole
 
 .group-header {
   margin: 0 0 12px;
-  font-size: 14px;
+  font-size: var(--text-base);
   font-weight: 600;
   color: var(--text-secondary);
   padding-left: 4px;
@@ -390,13 +394,13 @@ async function handleDelete(agentId: string, agentName: string, isBuiltin: boole
 }
 
 .agent-name {
-  font-size: 15px;
+  font-size: var(--text-md);
   font-weight: 600;
   color: var(--text-primary);
 }
 
 .custom-badge {
-  font-size: 10px;
+  font-size: var(--text-xs);
   padding: 2px 6px;
   background: var(--brand-primary);
   color: var(--text-inverse);
@@ -404,7 +408,7 @@ async function handleDelete(agentId: string, agentName: string, isBuiltin: boole
 }
 
 .agent-desc {
-  font-size: 13px;
+  font-size: var(--text-smd);
   color: var(--text-secondary);
   line-height: 1.4;
   margin-bottom: 4px;
@@ -415,7 +419,7 @@ async function handleDelete(agentId: string, agentName: string, isBuiltin: boole
 }
 
 .agent-dept {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-muted);
 }
 

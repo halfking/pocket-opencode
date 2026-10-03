@@ -18,7 +18,8 @@
     "error": "操作失败",
     "warning": "警告",
     "info": "提示",
-    "close": "关闭"
+    "close": "关闭",
+    "retry": "重试"
   },
   "app": {
     "title": "Redclaw",
@@ -59,7 +60,9 @@
     "settings": "设置",
     "localAgent": "本地智能体",
     "home": "首页",
-    "study": "学习"
+    "study": "学习",
+    "flashcards": "闪卡",
+    "messages": "消息"
   },
   "routes": {
     "login": "登录",
@@ -153,6 +156,7 @@
     "version": "版本号",
     "versionFormat": "v{version} (Build {buildNumber})",
     "buildDate": "构建日期",
+    "buildDateNote": "（配置值，非实测构建时间）",
     "apiAddress": "API 地址",
     "privacy": "隐私",
     "permissionsPrivacy": "权限与隐私",
@@ -171,20 +175,33 @@
     "logoutConfirm": "确定要退出登录吗?",
     "newVersionAvailable": "发现新版本 v{version}！\n\n更新内容:\n{changelog}",
     "alreadyLatest": "当前已是最新版本！",
-    "checkUpdateFailed": "检查更新失败，请稍后重试"
+    "checkUpdateFailed": "检查更新失败，请稍后重试",
+    "versionConfigUnavailable": "服务端版本配置不可用，无法判断是否有新版本。请管理员检查 config/version.json。{detail}",
+    "redclawIntegration": "RedClaw 集成",
+    "redclawConnected": "已连接",
+    "redclawMisconfigured": "已配置 · 连接异常",
+    "redclawDisabled": "未启用",
+    "tenant": "租户 {id}",
+    "finance": "记账",
+    "financeDesc": "手动 + 笔记自动入账 · 月度收支统计",
+    "language": "界面语言",
+    "apiAddressNotSaved": "地址未能保存，请检查输入是否为空或格式不正确",
+    "buildDefaultUnreachable": "构建默认值 {url} 在本设备上不可达（它指向设备自身），已改用 {fallback}。若要连本机后端，请在「自定义地址」里明确填写。"
   },
   "flashcards": {
     "list": {
       "title": "闪卡",
       "empty": "暂无卡组",
-      "create": "新建卡组",
+      "create": "新建卡片",
       "dueToday": "今日待复习 {count} 张"
     },
     "deck": {
       "title": "卡组",
       "addCard": "添加卡片",
       "review": "开始复习",
-      "noCards": "该卡组暂无卡片"
+      "noCards": "该卡组暂无卡片",
+      "create": "新建卡组",
+      "createPlaceholder": "卡组名称"
     },
     "review": {
       "title": "复习",
@@ -195,7 +212,7 @@
       "remaining": "剩余 {count} 张",
       "complete": "本次复习完成",
       "fuzzNote": "为避免集中到期，卡片到期时间会刻意在 ±5% 内散开",
-      "clozeCount": "{{count}} 处挖空",
+      "clozeCount": "{count} 处挖空",
       "clozeHint": "点击卡片显示答案"
     },
     "edit": {
@@ -212,7 +229,7 @@
       "clozeText": "挖空文本",
       "clozePlaceholder": "例如：水的化学式是 {{c1::H₂O::氢二氧}}，沸点是 {{c2::100℃}}。",
       "clozeHint": "用 {{c1::答案}} 或 {{c1::答案::提示}} 标记挖空。同一卡片可有多个挖空，复习时一并复习。",
-      "clozeCount": "{{count}} 处挖空",
+      "clozeCount": "{count} 处挖空",
       "parentDeck": "父牌组",
       "parentDeckNone": "无（顶级）",
       "parentDeckSelf": "（自身）",
@@ -231,6 +248,7 @@
     },
     "error": {
       "loadFailed": "加载闪卡失败",
+      "saveFailed": "保存卡片失败",
       "syncConflict": "同步冲突，请刷新重试"
     },
     "deckOptions": {
@@ -254,11 +272,11 @@
     },
     "browser": {
       "title": "卡片浏览器",
-      "resultCount": "{{count}} 条结果",
+      "resultCount": "{count} 条结果",
       "searchPlaceholder": "搜索 front / back 文本",
       "allDecks": "全部卡组",
       "allTags": "全部标签",
-      "tagsSelected": "{{count}} 个标签",
+      "tagsSelected": "{count} 个标签",
       "clear": "清除过滤",
       "pickDeck": "选择卡组",
       "pickTags": "选择标签",
@@ -279,10 +297,10 @@
       "young": "学习中",
       "mature": "已毕业",
       "distribution": "状态分布",
-      "reviewsPerDay": "{{days}} 天复习曲线",
-      "lapsesPerDay": "{{days}} 天遗忘曲线",
+      "reviewsPerDay": "{days} 天复习曲线",
+      "lapsesPerDay": "{days} 天遗忘曲线",
       "retention": "记忆保持率",
-      "retentionHint": "基于最近 {{again}}+{{hard}}+{{good}}+{{easy}} 次评分的简化估算",
+      "retentionHint": "基于最近 {again}+{hard}+{good}+{easy} 次评分的简化估算",
       "noReviewsYet": "最近没有复习记录",
       "noLapses": "近期没有 Again 评分"
     },
@@ -291,12 +309,12 @@
       "exportTitle": "导出",
       "exportDesc": "把所有笔记 + cards + decks 打包成 JSON 文件，可分享到其他设备",
       "exportBtn": "导出 JSON",
-      "exportOk": "已导出 {{count}} 张卡片",
+      "exportOk": "已导出 {count} 张卡片",
       "exportFailed": "导出失败",
       "importTitle": "导入",
       "importDesc": "选择之前导出的 JSON 文件，按 id 自动合并",
       "importBtn": "选择文件",
-      "importOk": "成功合并 {{notes}} 张 notes / {{cards}} 张 cards / {{decks}} 个 decks",
+      "importOk": "成功合并 {notes} 张 notes / {cards} 张 cards / {decks} 个 decks",
       "importFailed": "导入失败",
       "notes": "笔记",
       "cards": "卡片",
@@ -316,15 +334,187 @@
       "all": "全部",
       "empty": "还没有牌组",
       "create": "新建牌组",
-      "dueShort": "{{count}} 待复习",
+      "dueShort": "{count} 待复习",
       "stats": "查看统计",
       "browser": "卡片浏览器"
+    },
+    "reminder": {
+      "title": "每日回顾提醒",
+      "next": "下次：{time}",
+      "offline": "学习服务未连接，提醒暂不可用"
     },
     "notes": {
       "title": "我的笔记",
       "all": "全部",
       "voice": "语音笔记",
       "hint": "麦克风一键录入"
+    },
+    "capture": {
+      "add": "加入学习",
+      "done": "已加入学习",
+      "toTask": "转为任务",
+      "taskDone": "已创建任务",
+      "failed": "保存失败，请重试"
+    },
+    "streak": {
+      "days": "天连续",
+      "toNext": "再有 {count} 天到 {next} 天",
+      "milestoneReached": "已达成 {days} 天里程碑"
+    },
+    "due": {
+      "title": "今日待办",
+      "cardsDue": "待复习卡片",
+      "inboxWaiting": "收件箱待处理",
+      "reviewing": "待回顾",
+      "tasksDue": "待办任务",
+      "allClear": "今天没有待办"
+    },
+    "inbox": {
+      "title": "收件箱",
+      "empty": "收件箱已清空",
+      "advance": "推进处理"
+    },
+    "source": {
+      "note": "笔记",
+      "email": "邮件",
+      "rss": "RSS",
+      "meeting": "会议",
+      "chat": "对话",
+      "manual": "手工"
     }
+  },
+  "email": {
+    "dailySummary": "每日摘要",
+    "fetchHintNetwork": "后台收信未完成，已显示已同步邮件",
+    "fetchHintClassifierOff": "自动归类服务未启用，邮件已同步但未自动分类",
+    "fetchHintAuth": "登录状态已失效，请重新登录",
+    "fetchHintUnavailable": "后台服务暂不可用，邮件已同步",
+    "fetchHintHttpError": "后台收信未完成（{code}），已显示已同步邮件"
+  },
+  "errors": {
+    "rssNotConfigured": "RSS 订阅源尚未配置，请先添加一个订阅源",
+    "rssSourceMissing": "找不到该订阅源，可能已被删除",
+    "emailNotConfigured": "邮箱尚未配置，请先在邮箱设置中添加账户",
+    "emailAccountMissing": "找不到该邮箱账户，可能已被删除",
+    "imapUnauthorized": "邮箱授权已失效，请重新授权",
+    "imapFailed": "连接邮箱服务器失败，请检查网络与账户信息",
+    "sttNotConfigured": "语音转写服务尚未配置",
+    "llmNotConfigured": "尚未配置可用的大模型，请先在模型设置中选择",
+    "modelNotFound": "找不到该模型，可能已被移除",
+    "gatewayUnreachable": "无法连接模型网关，请检查网关地址与网络",
+    "gatewayAdminMissing": "该网关节点尚未补录 Admin 账号，请先在「模型网关」的节点列表里填写 Admin 用户名和密码",
+    "workspaceNotFound": "找不到该工作区",
+    "notConfigured": "该功能尚未完成配置",
+    "unauthorized": "身份验证已失效，请重新登录",
+    "notFound": "找不到对应的内容",
+    "timeout": "请求超时，请稍后重试",
+    "network": "无法连接服务器，请检查网络",
+    "rateLimited": "操作过于频繁，请稍后再试",
+    "conflict": "内容已存在或状态冲突",
+    "server": "服务器开小差了，请稍后重试",
+    "loadRssFailed": "加载订阅源失败",
+    "loadEmailFailed": "加载邮件失败，请稍后重试。",
+    "loadEmailBodyFailed": "正文拉取失败",
+    "loadEmailSettingsFailed": "加载邮箱设置失败",
+    "sendEmailFailed": "发送失败",
+    "createTaskFailed": "创建任务失败",
+    "loadInvoicesFailed": "加载发票失败",
+    "loadNotesFailed": "加载笔记失败",
+    "loadMeetingsFailed": "加载会议记录失败",
+    "loadFlashcardsFailed": "加载卡片失败",
+    "loadGatewayFailed": "加载网关信息失败",
+    "loadTasksFailed": "加载任务失败",
+    "loadSessionsFailed": "加载会话失败",
+    "loadFinanceFailed": "加载账单失败",
+    "loadSettingsFailed": "加载设置失败",
+    "saveFailed": "保存失败，请稍后重试",
+    "operateFailed": "操作失败，请稍后重试",
+    "summaryFailed": "总结生成失败，请确认已配置并可用的模型网关",
+    "probeFailed": "探测失败，请检查目标地址是否可达"
+  },
+  "due": {
+    "title": "今日回顾",
+    "cardsDue": "卡片到期",
+    "inboxWaiting": "待处理",
+    "reviewing": "复习中",
+    "tasksDue": "任务到期",
+    "allClear": "今天没有待学内容"
+  },
+  "reminder": {
+    "title": "每日回顾提醒",
+    "next": "下次：{time}",
+    "offline": "每日回顾需要学习服务，重新连接后可开启提醒。"
+  },
+  "inbox": {
+    "title": "学习收件箱",
+    "empty": "还没有收集材料。在笔记、邮件或 RSS 里选择「加入学习」即可。",
+    "advance": "开始学习"
+  },
+  "notesHub": {
+    "title": "笔记",
+    "filter": {
+      "all": "全部",
+      "manual": "手记",
+      "meeting": "会议纪要",
+      "pkm": "PKM 笔记"
+    },
+    "action": {
+      "newNote": "新建笔记",
+      "startMeeting": "开始会议",
+      "record": "录音记一笔"
+    },
+    "link": {
+      "allNotes": "全部笔记",
+      "allMeetings": "全部会议",
+      "allPkm": "打开 PKM"
+    },
+    "empty": {
+      "title": "还没有笔记",
+      "hint": "点右下角录音记下第一条，或开始一次会议",
+      "filtered": "这个来源还没有内容"
+    },
+    "meta": {
+      "voice": "语音",
+      "pending": "处理中",
+      "minutes": "{count} 分钟",
+      "hoursMinutes": "{hours} 小时 {minutes} 分钟"
+    },
+    "count": {
+      "notes": "{count} 条笔记",
+      "meetings": "{count} 场会议"
+    }
+  },
+  "messagesHub": {
+    "title": "消息",
+    "filter": {
+      "all": "全部",
+      "email": "邮件",
+      "rss": "订阅",
+      "task": "任务"
+    },
+    "action": {
+      "markAllRead": "全部已读",
+      "openMail": "打开邮箱",
+      "manageFeeds": "管理订阅"
+    },
+    "empty": {
+      "title": "没有新消息",
+      "hint": "重要邮件、订阅新闻和任务消息会汇总到这里"
+    },
+    "badge": {
+      "important": "重要"
+    },
+    "meta": {
+      "from": "来自 {name}",
+      "suggestedAction": "建议：{action}"
+    },
+    "unreadBadge": "{count} 未读",
+    "partialFailure": "部分来源未能加载：{sources}"
+  },
+  "timefmt": {
+    "justNow": "刚刚",
+    "minutesAgo": "{count} 分钟前",
+    "hoursAgo": "{count} 小时前",
+    "daysAgo": "{count} 天前"
   }
 }

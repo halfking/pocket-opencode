@@ -126,12 +126,12 @@
           <span class="retention-num">{{ estimatedRetention.toFixed(1) }}%</span>
         </div>
         <p class="retention-hint">
-          t('flashcards.stats.retentionHint', {
+          {{ t('flashcards.stats.retentionHint', {
             again: ratingBreakdown.again,
             hard: ratingBreakdown.hard,
             good: ratingBreakdown.good,
             easy: ratingBreakdown.easy,
-          })
+          }) }}
         </p>
       </section>
     </main>
@@ -326,7 +326,7 @@ onMounted(() => {
   gap: var(--space-2);
   padding: var(--space-4);
 }
-.head h1 { flex: 1; margin: 0; font-size: 18px; color: var(--text-primary); }
+.head h1 { flex: 1; margin: 0; font-size: var(--text-xl); color: var(--text-primary); }
 .back-btn {
   border: 0;
   background: transparent;
@@ -342,7 +342,7 @@ onMounted(() => {
   background: var(--bg-card);
   color: var(--text-secondary);
   border-radius: var(--radius-sm);
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-weight: var(--font-weight-medium);
   cursor: pointer;
 }
@@ -386,7 +386,7 @@ onMounted(() => {
 
 .stat .label {
   margin-top: 4px;
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-tertiary);
 }
 
@@ -402,7 +402,7 @@ onMounted(() => {
 
 .chart-card h3 {
   margin: 0;
-  font-size: 13px;
+  font-size: var(--text-smd);
   font-weight: var(--font-weight-semibold);
   color: var(--text-secondary);
 }
@@ -420,7 +420,7 @@ onMounted(() => {
 }
 
 .pie-text {
-  font-size: 18px;
+  font-size: var(--text-xl);
   font-weight: var(--font-weight-bold);
   fill: var(--text-primary);
 }
@@ -444,7 +444,7 @@ onMounted(() => {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  font-size: 13px;
+  font-size: var(--text-smd);
   color: var(--text-primary);
 }
 
@@ -494,7 +494,7 @@ onMounted(() => {
 
 .empty-line {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-tertiary);
   text-align: center;
 }
@@ -520,7 +520,7 @@ onMounted(() => {
 }
 
 .retention-num {
-  font-size: 18px;
+  font-size: var(--text-xl);
   font-weight: var(--font-weight-bold);
   color: var(--text-primary);
   min-width: 64px;
@@ -529,7 +529,7 @@ onMounted(() => {
 
 .retention-hint {
   margin: 0;
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-tertiary);
   line-height: 1.4;
 }

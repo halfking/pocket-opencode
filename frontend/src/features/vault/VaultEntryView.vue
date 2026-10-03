@@ -191,7 +191,9 @@ import * as vaultStore from './vault-store'
 import type { VaultEntry } from './vault-store'
 import { useConfirm } from '../../composables/useConfirm'
 import { markListDirty } from '../../composables/list-scene-store'
+import { useApiError } from '../../composables/useApiError'
 
+const apiError = useApiError()
 const route = useRoute()
 const router = useRouter()
 const { confirm } = useConfirm()
@@ -381,7 +383,7 @@ async function onSave() {
     markListDirty('vault')
     router.push(`/vault/${entry.value.id}`)
   } catch (e: any) {
-    showToast(`保存失败：${e.message || e}`, 'danger')
+    showToast(apiError(e, 'errors.saveFailed'), 'danger')
   } finally {
     saving.value = false
   }
@@ -403,7 +405,7 @@ async function onDelete() {
     markListDirty('vault')
     router.push('/vault')
   } catch (e: any) {
-    showToast(`删除失败：${e.message || e}`, 'danger')
+    showToast(apiError(e, 'errors.operateFailed'), 'danger')
     deleting.value = false
   }
 }
@@ -431,7 +433,7 @@ async function load() {
     if (isEdit.value) loadForm()
     startTotpTicker()
   } catch (err: any) {
-    showToast(`加载失败：${err.message || err}`, 'danger')
+    showToast(apiError(err, 'errors.loadSettingsFailed'), 'danger')
     entry.value = null
   } finally {
     loading.value = false
@@ -487,7 +489,7 @@ onBeforeUnmount(() => {
 .state { text-align: center; color: var(--text-secondary); padding: var(--space-6); }
 
 .header-extra { display: inline-flex; align-items: center; }
-.entry-icon { font-size: 18px; }
+.entry-icon { font-size: var(--text-xl); }
 
 .entry-header {
   display: flex; align-items: center; gap: var(--space-3);
@@ -510,23 +512,23 @@ onBeforeUnmount(() => {
 .field { padding: var(--space-3) 0; border-bottom: 1px solid var(--border); }
 .field:last-child { border-bottom: none; }
 .field-label {
-  font-size: 12px; color: var(--text-muted); margin-bottom: var(--space-1);
+  font-size: var(--text-sm); color: var(--text-muted); margin-bottom: var(--space-1);
   display: flex; align-items: center; justify-content: space-between;
 }
-.totp-hint { font-size: 11px; color: var(--text-muted); }
+.totp-hint { font-size: var(--text-2xs); color: var(--text-muted); }
 .field-row { display: flex; align-items: center; gap: var(--space-2); flex-wrap: nowrap; }
 .field-value {
   flex: 1; min-width: 0;
-  font-size: 14px; color: var(--text-primary);
+  font-size: var(--text-base); color: var(--text-primary);
   word-break: break-all; line-height: 1.5;
 }
-.field-value.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 15px; }
+.field-value.mono { font-family: var(--font-mono); font-size: var(--text-md); }
 .field-value.link { color: var(--brand-primary); text-decoration: none; }
 .field-value.notes { white-space: pre-wrap; }
 .field-icon-btn {
   background: var(--bg-subtle); border: 1px solid var(--border);
   border-radius: var(--radius-sm); padding: 6px 10px;
-  font-size: 13px; cursor: pointer; color: var(--text-primary);
+  font-size: var(--text-smd); cursor: pointer; color: var(--text-primary);
   white-space: nowrap; flex-shrink: 0;
 }
 .field-icon-btn:active { opacity: 0.7; }
@@ -552,14 +554,14 @@ onBeforeUnmount(() => {
 .totp-remaining.urgent { background: var(--danger); color: var(--text-inverse); }
 
 .meta {
-  font-size: 12px; color: var(--text-muted); padding: 0 var(--space-2);
+  font-size: var(--text-sm); color: var(--text-muted); padding: 0 var(--space-2);
 }
 
 .actions { display: flex; gap: var(--space-3); padding-top: var(--space-2); }
 .action-btn {
   flex: 1; padding: var(--space-3) var(--space-2);
   border-radius: var(--radius-md); border: 1px solid var(--border);
-  background: var(--bg-card); font-size: 14px; font-weight: 500;
+  background: var(--bg-card); font-size: var(--text-base); font-weight: 500;
   cursor: pointer; color: var(--text-primary);
 }
 .action-btn:active { opacity: 0.7; }
@@ -572,12 +574,12 @@ onBeforeUnmount(() => {
 
 /* edit form */
 .form-group { display: flex; flex-direction: column; gap: var(--space-1); margin-bottom: var(--space-3); }
-.form-group label { font-size: 12px; color: var(--text-secondary); font-weight: 500; }
+.form-group label { font-size: var(--text-sm); color: var(--text-secondary); font-weight: 500; }
 .form-group input, .form-group select, .form-group textarea {
   width: 100%; padding: var(--space-3);
   border-radius: var(--radius-md); border: 1px solid var(--border);
   background: var(--bg-card); color: var(--text-primary);
-  font-size: 14px; box-sizing: border-box;
+  font-size: var(--text-base); box-sizing: border-box;
 }
 .form-group textarea { resize: vertical; min-height: 80px; font-family: inherit; }
 

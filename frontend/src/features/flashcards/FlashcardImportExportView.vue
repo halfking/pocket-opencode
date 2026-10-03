@@ -172,7 +172,7 @@ onMounted(() => {
   gap: var(--space-2);
   padding: var(--space-4);
 }
-.head h1 { flex: 1; margin: 0; font-size: 18px; color: var(--text-primary); }
+.head h1 { flex: 1; margin: 0; font-size: var(--text-xl); color: var(--text-primary); }
 .back-btn {
   border: 0;
   background: transparent;
@@ -204,19 +204,19 @@ onMounted(() => {
   align-items: center;
   gap: var(--space-1);
   margin: 0;
-  font-size: 14px;
+  font-size: var(--text-base);
   font-weight: var(--font-weight-semibold);
   color: var(--text-primary);
 }
 
 .card h2 .material-symbols-outlined {
-  font-size: 18px;
+  font-size: var(--text-xl);
   color: var(--brand-primary);
 }
 
 .muted {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-secondary);
   line-height: 1.4;
 }
@@ -239,7 +239,7 @@ onMounted(() => {
 }
 
 .stats dt {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-tertiary);
   text-transform: uppercase;
   letter-spacing: 0.4px;
@@ -247,7 +247,7 @@ onMounted(() => {
 
 .stats dd {
   margin: 0;
-  font-size: 18px;
+  font-size: var(--text-xl);
   font-weight: var(--font-weight-bold);
   color: var(--text-primary);
 }
@@ -263,13 +263,13 @@ onMounted(() => {
   border: 0;
   border-radius: var(--radius-md);
   font: inherit;
-  font-size: 14px;
+  font-size: var(--text-base);
   font-weight: var(--font-weight-semibold);
   cursor: pointer;
 }
 
 .primary:disabled { opacity: 0.5; cursor: not-allowed; }
-.primary .material-symbols-outlined { font-size: 18px; }
+.primary .material-symbols-outlined { font-size: var(--text-xl); }
 
 .hidden-input { display: none; }
 
@@ -277,7 +277,7 @@ onMounted(() => {
   margin: 0;
   padding: var(--space-3);
   border-radius: var(--radius-sm);
-  font-size: 13px;
+  font-size: var(--text-smd);
 }
 .message.ok { background: var(--success-bg); color: var(--success); }
 .message.err { background: var(--danger-bg); color: var(--danger); }

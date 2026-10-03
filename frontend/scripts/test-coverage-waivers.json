@@ -1,0 +1,9 @@
+{
+  "note": "孤儿测试卡口的两份豁免清单，run-mjs-tests.mjs（运行时普查）与 check-test-coverage.mjs（静态覆盖）共用同一份，避免两处漂移。只登记存量，不许新增；引用了不存在的文件会硬失败（stale waiver），防止豁免变成永久免检。",
+  "unrunnable": {
+    "src/features/flashcards/utils/__tests__/flashcardIo.test.ts": "被测源文件 src/features/flashcards/utils/flashcardIo.ts 用无扩展名 import（'../native/pocket-native'），Node 的 ESM 解析器要求显式扩展名，node --test 直接 ERR_MODULE_NOT_FOUND。修它要给 tsconfig 开 allowImportingTsExtensions 并改源码 import，属于另一个 PR。2026-10-02 实测：55 个 .test.ts 里只有它跑不起来，其余 54 个共 333 个用例全部通过。"
+  },
+  "zeroCase": {
+    "src/native/__tests__/recordingRuntimeMimeFallback.test.mjs": "STT 会话遗留的空占位：全文只有 3 行注释，自称 placeholder，实际 mime 回退用例在 recorderMime.test.mjs。它当年存在的原因是「空文件会让 test runner discovery 抱怨」，而现在用的是 glob，空文件无害。之所以不删：wt-stt 上还有一个 STT 会话在动这块，可能正要补上用例。补完或删除后请从这里移除。"
+  }
+}

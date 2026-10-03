@@ -8,22 +8,22 @@ import deDE from '../locales/de-DE.json'
 import frFR from '../locales/fr-FR.json'
 import esES from '../locales/es-ES.json'
 import ptBR from '../locales/pt-BR.json'
+import {
+  LOCALE_STORAGE_KEY,
+  SUPPORT_LOCALES,
+  matchLocale,
+  resolveInitialLocale,
+  type LocaleType,
+} from './locale-resolve'
+import { onMissingKey } from './missing-key'
 
-// 语言代码类型
-export type LocaleType = 'zh-CN' | 'zh-TW' | 'en-US' | 'ja-JP' | 'ko-KR' | 'de-DE' | 'fr-FR' | 'es-ES' | 'pt-BR'
-
-// 支持的语言列表
-export const SUPPORT_LOCALES: LocaleType[] = [
-  'zh-CN',
-  'zh-TW',
-  'en-US',
-  'ja-JP',
-  'ko-KR',
-  'de-DE',
-  'fr-FR',
-  'es-ES',
-  'pt-BR'
-]
+export {
+  LOCALE_STORAGE_KEY,
+  SUPPORT_LOCALES,
+  matchLocale,
+  resolveInitialLocale,
+  type LocaleType,
+}
 
 // 语言名称映射
 export const LOCALE_NAMES: Record<LocaleType, string> = {
@@ -38,27 +38,54 @@ export const LOCALE_NAMES: Record<LocaleType, string> = {
   'pt-BR': 'Português'
 }
 
-// 获取浏览器语言
-export function getBrowserLocale(): LocaleType {
-  const browserLang = navigator.language
-  
-  // 精确匹配
-  if (SUPPORT_LOCALES.includes(browserLang as LocaleType)) {
-    return browserLang as LocaleType
+function readPersistedLocale(): string | null {
+  try {
+    if (typeof localStorage === 'undefined') return null
+    return localStorage.getItem(LOCALE_STORAGE_KEY)
+  } catch {
+    return null
   }
-  
-  // 语言前缀匹配（如 en 匹配 en-US）
-  const langPrefix = browserLang.split('-')[0]
-  const matchedLocale = SUPPORT_LOCALES.find(locale => locale.startsWith(langPrefix))
-  
-  return matchedLocale || 'en-US' // 默认英文
+}
+
+/**
+ * 设备候选语言。
+ *
+ * 关键：Android WebView 的 `navigator.language` / `Intl.*` 不跟随系统语言
+ * ——真机 (Redmi 14R 5G / Android 14，getprop persist.sys.locale=zh-CN) 上
+ * 它们恒为 'en-US'，真实系统语言只出现在 `navigator.languages` 的后续项。
+ * 必须把整个候选表一起交给 resolveInitialLocale，只看第一个会丢掉 zh-CN。
+ */
+function deviceLocaleCandidates(): string[] {
+  const out: string[] = []
+  if (typeof navigator !== 'undefined') {
+    if (Array.isArray(navigator.languages)) out.push(...navigator.languages)
+    if (navigator.language) out.push(navigator.language)
+  }
+  return out
+}
+
+/** 实际启动语言：用户显式选择 > 设备候选语言 > en-US。 */
+export function resolveStartupLocale(): LocaleType {
+  return resolveInitialLocale({
+    persisted: readPersistedLocale(),
+    candidates: deviceLocaleCandidates(),
+  })
+}
+
+/** 兼容旧名：等价于 resolveStartupLocale()。 */
+export function getBrowserLocale(): LocaleType {
+  return resolveStartupLocale()
 }
 
 // 创建 i18n 实例
 const i18n = createI18n({
   legacy: false, // 使用 Composition API 模式
-  locale: getBrowserLocale(), // 默认语言
+  locale: resolveStartupLocale(), // 默认语言（用户选择 > 设备语言）
   fallbackLocale: 'en-US', // 回退语言
+  // BUG-AO：缺 key 原本完全静默——`study.due.allClear` 这类「代码在用、
+  // 语言文件里没有」的 key 会把字符串直接甩到界面上，且没有任何告警，
+  // 只能靠人肉看截图发现。这里补一条去重后的 console.warn（见 missing-key.ts）。
+  missing: onMissingKey,
   messages: {
     'zh-CN': zhCN,
     'zh-TW': zhTW,
@@ -71,5 +98,19 @@ const i18n = createI18n({
     'pt-BR': ptBR
   }
 })
+
+if (typeof document !== 'undefined') {
+  document.documentElement.lang = i18n.global.locale.value
+}
+
+/**
+ * 真正切换界面语言：写 i18n runtime + <html lang>。
+ * 此前 setLocale / applyAppPrefs 只改 <html lang> 或只改 localStorage，
+ * 界面语言纹丝不动——语言因此「保存了但不生效」。
+ */
+export function applyLocale(locale: LocaleType): void {
+  i18n.global.locale.value = locale
+  if (typeof document !== 'undefined') document.documentElement.lang = locale
+}
 
 export default i18n

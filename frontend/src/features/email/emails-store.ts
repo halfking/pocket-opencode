@@ -7,6 +7,7 @@
 import { localDB } from '../../native/local-db'
 import { encryptString } from '../../native/crypto'
 import { buildMirrorAccountWrite } from './account-mirror-write'
+import { normalizeAccountStamp } from './account-lww'
 import { emailDateToMs } from './cleanup-filter'
 
 export interface EmailAccount {
@@ -41,11 +42,20 @@ export interface LocalEmail {
   importance: string | null
   aiSummary: string | null
   suggestedAction: string | null
+  /**
+   * AI 判重要度的依据（q2）。null = 上游没给理由。
+   *
+   * 与 suggestedAction 的分工：后者是「该做什么」，本字段是「为什么这么判」。
+   * 判为重要时没有它，提醒就不可信——用户无法判断该不该点开。
+   */
+  actionReason: string | null
   hasAttachments: boolean
   createdAt: number
   updatedAt: number
   deletedAt: number
   bodyPurged: boolean
+  /** 邮件所在目录（IMAP 信箱名）。空 = INBOX。 */
+  folder: string
 }
 
 export interface ListFilter {
@@ -54,6 +64,8 @@ export interface ListFilter {
   importance?: string
   unreadOnly?: boolean
   uncategorized?: boolean
+  /** 目录过滤：'' = 收件箱（默认）；具体目录名 = 该目录；'__all__' = 全部。 */
+  folder?: string
   limit?: number
   offset?: number
 }
@@ -75,7 +87,10 @@ export async function saveAccount(input: {
 }): Promise<string> {
   const id = `acct-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
   const encrypted = await encryptCredential(input.password)
-  const now = Date.now()
+  // created_at / updated_at 用**秒**：updated_at 是 LWW 的基准，必须与服务端
+  // 同单位（服务端 email_accounts.updated_at 是 Unix 秒）。此前这里写
+  // Date.now()（毫秒），而读侧又不归一，导致同一列混着两种单位。
+  const now = Math.floor(Date.now() / 1000)
   await localDB.run(
     `INSERT INTO local_email_accounts
        (id, display_name, email_address, imap_host, imap_port, auth_type, credential_encrypted,
@@ -168,6 +183,11 @@ export async function listEmails(filter: ListFilter = {}): Promise<LocalEmail[]>
   if (filter.importance) { sql += ' AND importance = ?'; vals.push(filter.importance) }
   if (filter.unreadOnly) { sql += ' AND is_read = 0' }
   if (filter.uncategorized) { sql += " AND (category IS NULL OR category = '')" }
+  // 目录过滤与服务端同语义：'' = 收件箱（不在任何目录里）；具体名 = 该目录；
+  // '__all__' = 全部。迁移到目录的邮件从收件箱视图消失、在目录视图可见。
+  if (filter.folder === '__all__') { /* 不过滤 */ }
+  else if (filter.folder) { sql += " AND IFNULL(folder, '') = ?"; vals.push(filter.folder) }
+  else { sql += " AND IFNULL(folder, '') = ''" }
   sql += ' AND IFNULL(deleted_at, 0) = 0'
   sql += ' ORDER BY date DESC LIMIT ? OFFSET ?'
   vals.push(filter.limit ?? 200, filter.offset ?? 0)
@@ -180,20 +200,27 @@ export async function upsertEmail(e: Partial<LocalEmail> & { accountId: string; 
   const id = e.id || `email-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
   const now = Date.now()
   const updatedAt = e.updatedAt && e.updatedAt > 0 ? e.updatedAt : now
-  const existing = await localDB.queryOne<{ deleted_at: number | null; body_purged: number | null }>(
-    'SELECT deleted_at, body_purged FROM local_emails WHERE id = ?',
+  const existing = await localDB.queryOne<{ deleted_at: number | null; body_purged: number | null; folder: string | null }>(
+    'SELECT deleted_at, body_purged, folder FROM local_emails WHERE id = ?',
     [id],
   )
   if (existing && (Number(existing.deleted_at) > 0 || Number(existing.body_purged) === 1)) {
     return false
   }
+  // 待同步的本地移动不能被服务端快照打回：本地已在某目录（且还有 pending 的
+  // 迁移操作）时保留本地 folder，等「同步到服务器」完成后再随服务端收敛。
+  let folder = e.folder ?? null
+  if (existing && existing.folder) {
+    const { hasPendingOpsForEmail } = await import('./email-folders-store')
+    if (await hasPendingOpsForEmail(id)) folder = existing.folder
+  }
   try {
     await localDB.run(
       `INSERT INTO local_emails
          (id, account_id, message_id, uid, from_address, from_name, subject, snippet,
-          date, is_read, is_starred, category, importance, ai_summary, suggested_action,
-          has_attachments, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+          date, is_read, is_starred, category, importance, ai_summary, suggested_action, action_reason,
+          has_attachments, created_at, updated_at, folder)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
        ON CONFLICT(id) DO UPDATE SET
          subject=excluded.subject,
          snippet=excluded.snippet,
@@ -202,6 +229,10 @@ export async function upsertEmail(e: Partial<LocalEmail> & { accountId: string; 
          importance=excluded.importance,
          ai_summary=excluded.ai_summary,
          suggested_action=excluded.suggested_action,
+         -- COALESCE：服务端这轮没带理由时保留本地已有值。与服务端
+         -- SetClassificationWithReasonScoped 的「非空才写」同一口径，
+         -- 否则一次不带 reason 的同步会把已判定的依据抹掉。
+         action_reason=COALESCE(excluded.action_reason, local_emails.action_reason),
          has_attachments=excluded.has_attachments,
          -- 已读/星标是本地用户操作状态：服务端不做权威回传（IMAP seen 不同步），
          -- 同步覆盖会把用户刚在详情页标记的状态抹掉，故保留本地值。
@@ -209,22 +240,34 @@ export async function upsertEmail(e: Partial<LocalEmail> & { accountId: string; 
          is_starred=local_emails.is_starred,
          uid=COALESCE(excluded.uid, local_emails.uid),
          message_id=COALESCE(excluded.message_id, local_emails.message_id),
+         folder=COALESCE(excluded.folder, local_emails.folder),
          updated_at=excluded.updated_at`,
       [id, e.accountId, e.messageId ?? null, e.uid ?? null, e.fromAddress, e.fromName ?? null,
        e.subject ?? null, e.snippet ?? null, e.date, e.isRead ? 1 : 0, e.isStarred ? 1 : 0,
        e.category ?? null, e.importance ?? null, e.aiSummary ?? null, e.suggestedAction ?? null,
-       e.hasAttachments ? 1 : 0, now, updatedAt],
+       e.actionReason ?? null,
+       e.hasAttachments ? 1 : 0, now, updatedAt, folder],
     )
     return true
-  } catch {
+  } catch (err) {
+    // 不能裸吞：任何 DB 错误都会被当成「不是新邮件」而静默丢弃。
+    // 最典型的是 account_id 外键失败——对应账户没进 local_email_accounts
+    // 时（account-sync 会按 isLocalTestAddress 跳过 *.local 账户），每一封
+    // 邮件都写不进去，用户只看到「暂无邮件」，界面、接口、日志全无痕迹。
+    // 真机实测就是这样静默丢了 6 封邮件。
+    console.warn('[email] upsert into local mirror failed:', id, err)
     return false
   }
 }
 
 /**
- * 从服务端全量拉取近端邮件并 upsert 到本地镜像（用于收件箱离线浏览）。
- * 上游必须带 category / importance（kxmemory 分类完成前的邮件为 NULL，会
- * 在 WS 收到 email.classified 后由 handleClassifiedEvent 补齐）。
+ * 按 id 逐条删除本地镜像里的邮件（用户主动删除时调用）。
+ *
+ * 注意这是**删除**，不是同步。服务端把邮件删掉后本地并不会自动跟着删：
+ * `email-cache-heal` 只检测「本地缺东西」（empty / server-ahead / stale），
+ * 没有「本地比服务端多」这一路；账号被删时服务端还会
+ * `email_accounts → emails → email_invoices` 三级 ON DELETE CASCADE，
+ * 而本地镜像不会收到任何通知。详见 handoff round24 §25。
  */
 export async function deleteEmailsByIds(ids: string[]): Promise<void> {
   for (const id of ids) {
@@ -241,6 +284,33 @@ export async function maxEmailUpdatedAt(): Promise<number> {
 }
 
 /**
+ * 本地未删除邮件数（墓碑行不算）。
+ *
+ * 缓存自愈要用它和服务端行数比大小。直接用 listEmails({limit:1}).length
+ * 只能拿到「有没有」而拿不到「有多少」，判定不出服务端是否领先。
+ */
+export async function countLocalEmails(): Promise<number> {
+  const row = await localDB.queryOne<{ c: number | null }>(
+    'SELECT COUNT(*) AS c FROM local_emails WHERE IFNULL(deleted_at, 0) = 0',
+  )
+  return Number(row?.c) || 0
+}
+
+/**
+ * 本地最新一封邮件的 `date`（毫秒），0 表示本地没有邮件。
+ *
+ * 判定缓存新鲜度**必须**用 date 而不是 updated_at：updated_at 会被重跑同步
+ * 刷新，一封一年前的邮件重跑后 updated_at 也是今天，拿它判新鲜度会把
+ * 陈旧缓存误判成「很新」，正好漏掉用户报的这类丢失。
+ */
+export async function newestLocalEmailDate(): Promise<number> {
+  const row = await localDB.queryOne<{ m: number | null }>(
+    'SELECT MAX(date) AS m FROM local_emails WHERE IFNULL(deleted_at, 0) = 0',
+  )
+  return Number(row?.m) || 0
+}
+
+/**
  * 从服务端增量拉取邮件并写入本地镜像。
  *
  * 增量同步协议（docs/2026-09-09-list-sync-rules.md）：
@@ -250,11 +320,43 @@ export async function maxEmailUpdatedAt(): Promise<number> {
  * - 写入路径始终先落本地 SQLite，列表随后从本地读（本地优先）。
  */
 export async function syncEmailsFromServer(limit = 200, since = 0): Promise<number> {
+  const r = await syncEmailsFromServerDetailed(limit, since)
+  return r.inserted
+}
+
+export interface SyncEmailsResult {
+  /** 本页写入本地成功的行数。 */
+  inserted: number
+  /** 本页收到的总行数（含重复）。 */
+  received: number
+  /** 本页携带的软删除墓碑数。 */
+  tombstones: number
+  /** 未能写入本地镜像的行数。 */
+  failed: number
+  /** 本页收到邮件里最早的 date（毫秒），用于回补翻页锚点。 */
+  oldestDateMs: number
+}
+
+/**
+ * 带明细的增量拉取。
+ *
+ * 回补翻页需要一个「本页实际收到的最早一封」作为锚点（见
+ * email-cache-heal.nextPageSince），只返回写入条数拿不到它；同时把
+ * received/failed/tombstones 分开，避免「拉到了但一条没写进去」被
+ * 当成同步成功。
+ */
+export async function syncEmailsFromServerDetailed(limit = 200, since = 0): Promise<SyncEmailsResult> {
   const { emailApi } = await import('../../api/email')
   const res = await emailApi.listEmails({ limit, since: since > 0 ? since : undefined })
+  const incoming = (res.emails ?? []).slice(0, limit)
   let n = 0
-  for (const e of (res.emails ?? []).slice(0, limit)) {
+  // 「没写进去」和「本来就有」在返回值上无法区分，两者混在一起会让调用方
+  // 以为同步成功。单独计数并告警，避免又变成一条查不出根因的静默路径。
+  let failed = 0
+  let oldestDateMs = 0
+  for (const e of incoming) {
     const dateMs = emailDateToMs(typeof e.date === 'number' ? e.date : Date.parse(String(e.date)) || 0) || Date.now()
+    if (oldestDateMs === 0 || dateMs < oldestDateMs) oldestDateMs = dateMs
     const ok = await upsertEmail({
       id: e.id,
       accountId: e.accountId,
@@ -273,8 +375,17 @@ export async function syncEmailsFromServer(limit = 200, since = 0): Promise<numb
       suggestedAction: e.suggestedAction ?? null,
       hasAttachments: !!e.hasAttachments,
       updatedAt: e.updatedAt && e.updatedAt > 0 ? e.updatedAt : dateMs,
+      folder: e.folderName ?? '',
     })
     if (ok) n++
+    else failed++
+  }
+  if (failed > 0) {
+    console.warn(
+      `[email] ${failed}/${incoming.length} 封未能写入本地镜像。` +
+      '最常见原因是 account_id 外键失败：该账户没被写进 local_email_accounts' +
+      '（account-sync 会按 isLocalTestAddress 跳过 *.local 账户），此时收件箱会一直显示为空。',
+    )
   }
   const tombstones = res.deletedIds ?? []
   if (tombstones.length > 0) {
@@ -282,7 +393,7 @@ export async function syncEmailsFromServer(limit = 200, since = 0): Promise<numb
     const { purgeEmailsLocal } = await import('./email-soft-delete')
     await purgeEmailsLocal(tombstones)
   }
-  return n
+  return { inserted: n, received: incoming.length, tombstones: tombstones.length, failed, oldestDateMs }
 }
 
 export async function markRead(id: string, read: boolean): Promise<void> {
@@ -293,10 +404,28 @@ export async function setStarred(id: string, starred: boolean): Promise<void> {
   await localDB.run('UPDATE local_emails SET is_starred = ? WHERE id = ?', [starred ? 1 : 0, id])
 }
 
+/** 本地记录邮件目录变更（服务端 move API 成功后调用，保持两端一致）。 */
+export async function setFolder(id: string, folder: string): Promise<void> {
+  await localDB.run('UPDATE local_emails SET folder = ? WHERE id = ?', [folder || '', id])
+}
+
 export async function setAiClassification(id: string, category: string, importance: string, summary: string, action: string): Promise<void> {
   await localDB.run(
     'UPDATE local_emails SET category = ?, importance = ?, ai_summary = ?, suggested_action = ? WHERE id = ?',
     [category, importance, summary, action, id],
+  )
+}
+
+/**
+ * 只写摘要，不动 category / importance / suggested_action。
+ *
+ * 手动总结（详情页「总结」按钮）只需要补 ai_summary。若复用 setAiClassification
+ * 就得把现有分类原样写回，容易与并发的自动分类互相覆盖。
+ */
+export async function setAiSummary(id: string, summary: string): Promise<void> {
+  await localDB.run(
+    'UPDATE local_emails SET ai_summary = ? WHERE id = ?',
+    [summary, id],
   )
 }
 
@@ -314,7 +443,7 @@ export async function getEmail(id: string): Promise<LocalEmail | null> {
     from_address: string; from_name: string | null; subject: string | null;
     snippet: string | null; date: number; is_read: number; is_starred: number;
     category: string | null; importance: string | null; ai_summary: string | null;
-    suggested_action: string | null; has_attachments: number; created_at: number
+    suggested_action: string | null; action_reason: string | null; has_attachments: number; created_at: number
   }>('SELECT * FROM local_emails WHERE id = ?', [id])
   return row ? rowToEmail(row) : null
 }
@@ -335,6 +464,8 @@ export interface EmailClassifiedPayload {
   category?: string | null
   importance?: string | null
   summary?: string | null
+  /** AI 判重要度的依据（q2）。null = 服务端这轮没给理由。 */
+  actionReason?: string | null
 }
 
 /** 视图层订阅用的字段三元组。 */
@@ -374,13 +505,16 @@ export async function handleClassifiedEvent(payload: EmailClassifiedPayload): Pr
   const summary = payload.summary ?? null
 
   // 用 COALESCE：服务器字段为 null 时保留本地原值，避免覆盖用户手动设置的字段。
+  // action_reason 同口径：这一轮没带理由不代表判定变了，抹掉会让已判为重要的
+  // 邮件突然失去「为什么」——那正是这个字段存在的理由。
   await localDB.run(
     `UPDATE local_emails
        SET category = COALESCE(?, category),
            importance = COALESCE(?, importance),
-           ai_summary = COALESCE(?, ai_summary)
+           ai_summary = COALESCE(?, ai_summary),
+           action_reason = COALESCE(?, action_reason)
      WHERE id = ?`,
-    [category, importance, summary, payload.email_id],
+    [category, importance, summary, payload.actionReason ?? null, payload.email_id],
   )
 
   emailClassifiedHandlers.forEach((cb) => {
@@ -397,7 +531,10 @@ function rowToAccount(r: any): EmailAccount {
     imapHost: r.imap_host, imapPort: r.imap_port, authType: r.auth_type,
     syncIntervalMin: r.sync_interval_min, lastSyncedUid: r.last_synced_uid,
     lastSyncedAt: r.last_synced_at, enabled: r.enabled === 1, createdAt: r.created_at,
-    updatedAt: r.updated_at ?? 0,
+    // updated_at 必须归一成秒：本列混存过毫秒（saveAccount 写 Date.now()），
+    // 而它要拿去做 LWW 比较并当上行基准。单位错了会静默架空服务端守卫。
+    // lastSyncedAt / createdAt 各自另有语义，**不要**一起归一。
+    updatedAt: normalizeAccountStamp(r.updated_at),
   }
 }
 
@@ -407,11 +544,13 @@ function rowToEmail(r: any): LocalEmail {
     fromAddress: r.from_address, fromName: r.from_name, subject: r.subject,
     snippet: r.snippet, date: r.date, isRead: r.is_read === 1, isStarred: r.is_starred === 1,
     category: r.category, importance: r.importance, aiSummary: r.ai_summary,
-    suggestedAction: r.suggested_action, hasAttachments: r.has_attachments === 1,
+    suggestedAction: r.suggested_action, actionReason: r.action_reason ?? null,
+    hasAttachments: r.has_attachments === 1,
     createdAt: r.created_at,
     updatedAt: r.updated_at ?? 0,
     deletedAt: Number(r.deleted_at) || 0,
     bodyPurged: r.body_purged === 1,
+    folder: r.folder || '',
   }
 }
 

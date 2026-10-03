@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -76,6 +77,32 @@ type Scheduler struct {
 
 	lastTick atomic.Int64
 	nextTick atomic.Int64
+
+	// nextPipeline 下一次每日流水线的触发时刻（unix 秒），0 = 未排期。
+	// 用于运维观测「定时到底排到几点」，与 LastTickUnix 对称。
+	nextPipeline atomic.Int64
+
+	// startMu 保护 started / startCtx。SetPipelineRunner 允许在 Start 之后
+	// 调用（cmd/pocketd 里 server 实例晚于 scheduler 构造），因此「注入」和
+	// 「已启动」是两个独立事件，需要在同一把锁下判定，避免重复起 loop。
+	startMu      sync.Mutex
+	started      bool
+	startCtx     context.Context
+	pipelineOnce sync.Once
+	// stopOnce 让 Stop 幂等。裸 close(s.stop) 被调用两次会 panic
+	// （close of closed channel），而 Scheduler 是由 main 的 defer 持有的
+	// 生命周期对象——将来任何「先 Stop 再 Stop」的收尾路径（测试里 teardown
+	// 与用例体各调一次、优雅退出分两处触发）都会把整个进程带走。
+	stopOnce sync.Once
+	nowFn    func() time.Time
+}
+
+// now 返回当前时间；测试可替换 nowFn 驱动定时触发。
+func (s *Scheduler) now() time.Time {
+	if s.nowFn != nil {
+		return s.nowFn()
+	}
+	return time.Now()
 }
 
 // OAuthProviderConfig describes how to refresh tokens for a given provider.
@@ -110,6 +137,7 @@ func NewScheduler(store *Store, fetcher *Fetcher, enabled bool) *Scheduler {
 		providers: make(map[string]OAuthProviderConfig),
 		stop:      make(chan struct{}),
 		enabled:   enabled,
+		nowFn:     time.Now,
 	}
 	s.tzOffsetSec.Store(int64(defaultTimezoneOffsetSec))
 	return s
@@ -151,9 +179,46 @@ func (s *Scheduler) SetIntentExecutor(executor IntentExecutor) {
 
 // SetPipelineRunner 注入每日流水线执行器；hour<0 表示关闭定时触发
 // （手动 API 仍可用）。不注入 runner 时 loop 不启动。
+//
+// 允许在 Start() 之后调用：cmd/pocketd 里 emailScheduler 先 Start()，
+// server 实例（含流水线依赖）稍后才构造完毕。若此时才注入 runner，这里
+// 直接补起 pipelineLoop，避免「配好了却永远不触发」的死代码。
 func (s *Scheduler) SetPipelineRunner(runner PipelineRunner, hour int) {
+	s.startMu.Lock()
 	s.pipelineRunner = runner
 	s.pipelineHour = hour
+	started := s.started
+	ctx := s.startCtx
+	s.startMu.Unlock()
+
+	if runner == nil || hour < 0 {
+		return
+	}
+	if !started {
+		return // Start() 会按当时的依赖状态决定是否起 loop
+	}
+	s.startPipelineLoop(ctx)
+}
+
+// startPipelineLoop 幂等起每日流水线 loop（pipelineOnce 保证只起一个）。
+func (s *Scheduler) startPipelineLoop(ctx context.Context) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	s.pipelineOnce.Do(func() {
+		// hour 要在锁内读：SetPipelineRunner 正在同一把锁下写它，
+		// 锁外读就是一次真实的数据竞争（-race 会报，且可能打出与本轮不符的 hour）。
+		s.startMu.Lock()
+		hour := s.pipelineHour
+		s.startMu.Unlock()
+		log.Printf("[email/scheduler] daily pipeline runner injected (hour=%d)", hour)
+		go s.pipelineLoop(ctx)
+	})
+}
+
+// NextPipelineUnix 返回下一次每日流水线的触发时刻（unix 秒）；0 = 未排期。
+func (s *Scheduler) NextPipelineUnix() int64 {
+	return s.nextPipeline.Load()
 }
 
 // SetTimezoneOffset 设置用户时区偏移（秒），用于 DailySummary 的"日"边界。
@@ -173,6 +238,10 @@ func (s *Scheduler) Start(ctx context.Context) {
 		log.Printf("[email/scheduler] disabled via cfg.EmailFetchEnabled=false")
 		return
 	}
+	s.startMu.Lock()
+	s.started = true
+	s.startCtx = ctx
+	s.startMu.Unlock()
 	// Fetch polling only makes sense with an IMAP fetcher; deployments without
 	// one (intent-only / summary-only scheduler, tests) must not spin a ticker
 	// whose tick() would be a no-op. The other loops already gate themselves on
@@ -191,12 +260,25 @@ func (s *Scheduler) Start(ctx context.Context) {
 		go s.refreshLoop(ctx)
 	}
 	if s.pipelineRunner != nil && s.pipelineHour >= 0 {
-		go s.pipelineLoop(ctx)
+		s.startPipelineLoop(ctx)
 	}
 }
 
-// Stop 停止调度器。
-func (s *Scheduler) Stop() { close(s.stop) }
+// Stop 停止调度器。可重复调用，且在 Start 从未被调用过时也安全。
+//
+// 与 scheduledtask.Scheduler.Stop 的既定模式对齐（nil 守卫 + sync.Once），
+// 顺带把「幂等」这件事写进注释：裸 close 在第二次调用时会 panic。
+//
+// 刻意**不**像 scheduledtask 那样 wg.Wait()：这里的 loop（pollLoop /
+// pipelineLoop / …）是裸 go 起的，没有 WaitGroup 可等；而 pipelineLoop 正在
+// 等待时它持有一次最长 30 分钟的 runner.RunEmailPipeline 调用，让 Stop
+// 阻塞那么久本身就是新的问题。要等优雅收尾是另一件事，不在本次范围内。
+func (s *Scheduler) Stop() {
+	if s == nil {
+		return
+	}
+	s.stopOnce.Do(func() { close(s.stop) })
+}
 
 // LastTickUnix 返回最后一次 tick 的 Unix 时间戳。
 func (s *Scheduler) LastTickUnix() int64 {
@@ -550,6 +632,36 @@ func (s *Scheduler) sendVacationReply(ctx context.Context, delivery *VacationDel
 	})
 }
 
+// accountDueForSync 是 pollLoop 的到期判据，抽成纯函数是为了让测试能验
+// 「同步写没写 last_synced_at」的**后果**，而不是在测试里抄一份判据
+// （抄的那份和线上那份漂移了也测不出来）。
+//
+// now / lastSyncedAt 都是 Unix 秒；intervalMin <= 0 时按 15 分钟兜底。
+func accountDueForSync(now, lastSyncedAt, intervalMin int64) bool {
+	if intervalMin <= 0 {
+		intervalMin = 15
+	}
+	intervalSec := intervalMin * 60
+	// lastSyncedAt == 0（从没成功同步过）永远算到期。
+	return !(lastSyncedAt > 0 && now-lastSyncedAt < intervalSec)
+}
+
+// classifySkipOnce 保证「自动分类被跳过」这条告警每个进程只说一次。
+//
+// 轮询是每账户每分钟一轮，若不加限制就是每分钟 5 行同样的字。日志被
+// 重复内容淹没时，真正的新问题反而看不见——这与「不记日志」是两种失败，
+// 前者会让人养成忽略日志的习惯。
+var classifySkipOnce sync.Once
+
+// neverSyncedOnce 同理：每轮 tick 都会经过这个判断，不加限制就是每分钟
+// 重复同一段告警。账号从「从没同步过」变成「已同步」是配置/凭据修好后的事，
+// 那种情况下 dead 变空、这条自然不再打，不需要复位 Once。
+var neverSyncedOnce sync.Once
+
+// logPrefix 让告警里的排查指引指向本包自己的日志前缀，避免写死字符串后
+// 与实际输出的 [email/scheduler] 不一致（判据指向错误的日志源比不指更糟）。
+const logPrefix = "[email/scheduler]"
+
 func (s *Scheduler) tick(ctx context.Context) {
 	// nil fetcher is a supported degraded mode (intent/summary-only scheduler,
 	// tests). Fetch sync is the only thing tick does, so without a fetcher this
@@ -568,17 +680,20 @@ func (s *Scheduler) tick(ctx context.Context) {
 		log.Printf("[email/scheduler] list accounts: %v", err)
 		return
 	}
+	// 开了却从没同步成功过的账户：需求 1 对它等于没实现，而失败分支每分钟
+	// 只刷一行日志就滚走了。只说一次（每轮重报会变成每分钟 N 行噪音）。
+	if dead := NeverSyncedAccounts(accounts); len(dead) > 0 {
+		neverSyncedOnce.Do(func() {
+			log.Printf("[email/scheduler] ⚠ %s",
+				neverSyncedWarning(len(dead), len(accounts), strings.Join(dead, ", ")))
+		})
+	}
 	now := time.Now().Unix()
 	for _, a := range accounts {
-		interval := int64(a.SyncIntervalMin)
-		if interval <= 0 {
-			interval = 15
-		}
-		intervalSec := interval * 60
-		if a.LastSyncedAt > 0 && now-a.LastSyncedAt < intervalSec {
+		accountID := a.ID
+		if !accountDueForSync(now, a.LastSyncedAt, int64(a.SyncIntervalMin)) {
 			continue
 		}
-		accountID := a.ID
 		userID := a.UserID
 		wsID := defaultWorkspace(a.WorkspaceID)
 		go func() {
@@ -594,10 +709,36 @@ func (s *Scheduler) tick(ctx context.Context) {
 			defer cancel()
 			n, err := s.fetcher.Sync(ctx, accountID)
 			if err != nil {
+				// 上一轮（或另一条流水线）还在同步这个账户：是并发保护正常
+				// 生效，不是故障。报 failed 会让每分钟的日志都挂一条假警。
+				//
+				// 同理**不能**落库：sync_failures 每分钟加一涨到几千，
+				// 而这条路径几秒后就会成功——一个会自愈的状态被记成
+				// 「连续失败 N 次」，比不记更糟。
+				if errors.Is(err, ErrSyncInFlight) {
+					return
+				}
+				// 真失败：落库，让「在轮询但一直失败」成为可查询的事实。
+				// 2026-10-02 实测 kxpms 连挂 19 小时，库里没有任何记录。
+				if s.store != nil {
+					if rerr := s.store.RecordSyncFailure(ctx, accountID, err.Error()); rerr != nil {
+						log.Printf("[email/scheduler] record sync failure %s: %v", accountID, rerr)
+					}
+				}
 				log.Printf("[email/scheduler] sync %s failed: %v", accountID, err)
 				return
 			}
-			if s.kxmem == nil || userID == "" || !ShouldProcessAfterFetch(1, n) {
+			if reason := ClassifySkipReason(s.kxmem != nil, userID); reason != "" {
+				// 每个账户每次轮询都会走到这里，所以只说一次——否则就是每分钟
+				// 5 行同样的告警，真正出事时反而看不见。
+				classifySkipOnce.Do(func() {
+					log.Printf("[email/scheduler] 同步后**不执行**自动分类：%s。"+
+						"后果：新到邮件的 importance 恒为空，需求 4 不会提醒。"+
+						"（/api/emails/classify 手工触发不受影响）", reason)
+				})
+				return
+			}
+			if !ShouldProcessAfterFetch(1, n) {
 				return
 			}
 			if _, cerr := ClassifyUnclassified(ctx, s.store, s.kxmem, userID, wsID, 20); cerr != nil {
@@ -609,30 +750,42 @@ func (s *Scheduler) tick(ctx context.Context) {
 
 // pipelineLoop 每日在 pipelineHour 点（本地时区）触发一轮完整流水线。
 // 与 dailySummaryLoop 相同的 nextTime 模式：触发后立即排下一天。
+//
+// 等待时长用注入时钟 s.now() 计算（而不是 time.Until），测试可以替换 nowFn
+// 把触发点拉到几百毫秒内，从而真正验证「到点会跑」而不必等到第二天。
 func (s *Scheduler) pipelineLoop(ctx context.Context) {
 	for {
+		s.startMu.Lock()
 		hour := s.pipelineHour
-		if hour < 0 {
+		runner := s.pipelineRunner
+		s.startMu.Unlock()
+		if runner == nil || hour < 0 {
 			return
 		}
 		if hour > 23 {
 			hour = 23
 		}
-		next := nextTime(hour, 0, 0)
+		next := nextTimeAt(s.now(), hour, 0, 0)
+		s.nextPipeline.Store(next.Unix())
 		log.Printf("[email/scheduler] pipeline scheduled at %s", next.Format(time.RFC3339))
+		delay := next.Sub(s.now())
+		if delay < 0 {
+			delay = 0
+		}
 		select {
 		case <-s.stop:
 			return
 		case <-ctx.Done():
 			return
-		case <-time.After(time.Until(next)):
+		case <-time.After(delay):
 		}
 		runCtx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
-		rep := s.pipelineRunner.RunEmailPipeline(runCtx)
+		rep := runner.RunEmailPipeline(runCtx)
 		cancel()
 		if rep != nil && len(rep.Errors) > 0 {
 			log.Printf("[email/scheduler] pipeline finished with %d errors: %v", len(rep.Errors), rep.Errors)
 		}
+		s.nextPipeline.Store(0)
 	}
 }
 
@@ -794,7 +947,11 @@ func (s *Scheduler) summarizeUser(ctx context.Context, userID, workspaceID, date
 }
 
 func nextTime(hour, min, sec int) time.Time {
-	now := time.Now()
+	return nextTimeAt(time.Now(), hour, min, sec)
+}
+
+// nextTimeAt 是 nextTime 的可注入时钟版本（pipelineLoop 与测试共用）。
+func nextTimeAt(now time.Time, hour, min, sec int) time.Time {
 	next := time.Date(now.Year(), now.Month(), now.Day(), hour, min, sec, 0, now.Location())
 	if !next.After(now) {
 		next = next.Add(24 * time.Hour)

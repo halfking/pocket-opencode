@@ -155,13 +155,13 @@ defineExpose({
 
 .card-icon {
   flex-shrink: 0;
-  font-size: 18px;
+  font-size: var(--text-xl);
   line-height: 1;
 }
 
 .card-title {
   flex: 1;
-  font-size: 14px;
+  font-size: var(--text-base);
   font-weight: var(--font-weight-semibold);
   color: var(--color-text-primary);
   overflow: hidden;
@@ -171,7 +171,7 @@ defineExpose({
 
 .card-time {
   flex-shrink: 0;
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--color-text-tertiary);
   white-space: nowrap;
 }
@@ -187,7 +187,7 @@ defineExpose({
   border: none;
   border-radius: var(--radius-sm);
   color: var(--color-text-secondary);
-  font-size: 16px;
+  font-size: var(--text-lg);
   cursor: pointer;
   transition: all var(--duration-fast) var(--ease-out);
 }
@@ -198,7 +198,7 @@ defineExpose({
 }
 
 .card-preview {
-  font-size: 13px;
+  font-size: var(--text-smd);
   color: var(--color-text-secondary);
   line-height: 1.4;
   overflow: hidden;
@@ -214,7 +214,7 @@ defineExpose({
 }
 
 .tag {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   padding: 2px 8px;
   background: var(--color-bg-base);
   color: var(--color-text-tertiary);
@@ -234,7 +234,7 @@ defineExpose({
 }
 
 .expanded-view .card-title {
-  font-size: 16px;
+  font-size: var(--text-lg);
 }
 
 .close-btn {
@@ -248,7 +248,7 @@ defineExpose({
   border: none;
   border-radius: var(--radius-md);
   color: var(--color-text-tertiary);
-  font-size: 18px;
+  font-size: var(--text-xl);
   cursor: pointer;
   transition: all var(--duration-fast) var(--ease-out);
 }
@@ -259,7 +259,7 @@ defineExpose({
 }
 
 .card-content {
-  font-size: 14px;
+  font-size: var(--text-base);
   line-height: 1.6;
   color: var(--color-text-primary);
 }

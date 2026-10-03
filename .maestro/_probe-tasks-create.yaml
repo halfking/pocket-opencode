@@ -1,0 +1,49 @@
+# 一次性探针 flow（**故意失败**，让 Maestro 把这一项的可访问性树落盘）。
+#
+# 目的：拿到「创建任务」弹窗在**真机无障碍树**里的真实文案与控件，
+# 好把 .maestro/tasks-crud.yaml 的选择器一次写对。
+#
+# 为什么不用 uiautomator dump：本机它被 SIGKILL(137) 连挂 5 次。
+# 为什么不用 CDP 抓：这台设备上 `maestro hierarchy` 跑完之后 WebView 的
+# devtools socket 就不接受连接了（CDP_UNREACHABLE），得重启 App 才恢复。
+# 只有「让 Maestro 自己失败」这条不依赖上述任何一条。
+#
+# ⚠️ 这个 flow **永远失败**，是设计如此。不要把它当成回归测试。
+appId: com.kaixuan.opencode.pocket
+---
+- runFlow: _login.yaml
+
+# ⚠️ _login.yaml 为了把锁定守卫逼出来，最后停在底部导航的「会议」上（受保护路由）。
+#    所以回到任务看板必须**显式点底部导航的「首页」**，不能假设已在 #/ai。
+#    实测踩过：探针直接 tapOn "+ 新任务"，报 Element not found，
+#    而失败现场导出的树里页面标题是「会议」——是导航位置不对，不是选择器错。
+- tapOn: "首页"
+- extendedWaitUntil:
+    visible: "\\+ 新任务"
+    timeout: 30000
+
+# ⚠️ 2026-10-01 12:20~12:35 单变量实验：
+#    去掉「收起」这一步后，tap "+ 新任务" 才真的打开了弹窗。
+#    之前每次都是「先 tap 收起 → 再 tap + 新任务」，后者报 COMPLETED 但弹窗不开。
+#    两个元素在重排前后**坐标差 1100px**（+ 新任务 从 y≈1368 移到 y≈202）。
+#    WebView 是**异步发布**无障碍树的：收起点完，DOM 已重排、a11y 树还没跟上，
+#    Maestro 此刻取到的仍是旧坐标，于是把 tap 落在了旧位置（任务列表区域），
+#    点了个寂寞。⇒ 纪律：**任何会改变布局的操作之后，不能立刻 tap 坐标会变的元素**；
+#    要么先等一个会随重排变化的判据稳定，要么干脆别重排。
+# （本 flow 后续不需要折叠分诊区，列表本来就在可视区内。）
+
+# 打开创建弹窗
+# ⚠️ retryTapIfNoChange 不是凑数，是这台设备的既有坑（见 flashcards-write.yaml:78-85）：
+#    Maestro 的合成 tap 会报 COMPLETED 却**没被 WebView 当成 click**，页面纹丝不动。
+#    闪卡建卡组那次就是这样——状态全对但 form 没 submit，后端连请求都没收到。
+#    加 retryTapIfNoChange 让它「没变化就再点一次」。
+- tapOn:
+    text: "\\+ 新任务"
+    retryTapIfNoChange: true
+- extendedWaitUntil:
+    visible: "创建任务"
+    timeout: 20000
+- assertVisible: "创建任务"
+
+# 故意失败，导出弹窗的可访问性树
+- assertVisible: "ZZZ_故意失败_导出创建弹窗可访问性树"

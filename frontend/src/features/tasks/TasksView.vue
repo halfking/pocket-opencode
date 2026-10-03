@@ -29,6 +29,19 @@
         @click="onToggleQuickPrompt"
       >
         <span class="material-symbols-outlined" aria-hidden="true">forum</span>
+        <!-- sr-only 的文字子节点不是冗余，是**唯一**能让读屏和 UI 自动化
+             拿到这个名字的东西。aria-label 在这个组合下会被丢掉：
+             button 带 aria-pressed ⇒ Chromium 把 role 算成 button，但
+             Android 桥接层把它映射成 android.widget.ToggleButton，
+             而**该桥接只保留来自内容子节点的文字，丢掉纯 aria-label**。
+             2026-10-03 vivo V2436A / Android 16 实测：改之前 uiautomator
+             dump 出来是 ToggleButton{text='', contentDescription=''}，
+             读屏播报为空、Maestro 永远 assert 不到「快速提问」；
+             加了这个非 aria-hidden 的文字节点后，同一棵树里
+             ToggleButton{text='快速提问'}，断言立刻成立。
+             Chromium 侧两种写法算出的 name 都是「快速提问」，所以别拿
+             DevTools 的 a11y 面板当判据——它看不到这一层丢失。 -->
+        <span class="sr-only">快速提问</span>
       </button>
       <button
         class="triage-pill"
@@ -114,42 +127,88 @@
       <div class="section-header">
         <h2>
           <span class="dot pulse" />运行中
-          <span class="badge">{{ activeTasks.length }}</span>
+          <span class="badge">{{ visibleActiveTasks.length }}</span>
         </h2>
         <button class="link-btn" @click="showCreateModal = true">+ 新任务</button>
         <button class="link-btn acc-delegate-btn" @click="openAccDelegate">委托 ACC</button>
       </div>
 
+      <!--
+        工作 = 任务：按类型分类（docs/学习muse/03-架构方案.md §1）。
+        两行 chip：先按 typeGroup 折叠（工作 / 生活 / 学习 / 其他），
+        再按到期收窄（逾期 / 今天 / 本周）。默认不过滤，行为与改造前一致。
+      -->
+      <div class="work-filters" data-testid="task-filters">
+        <div class="filter-row">
+          <button
+            v-for="g in GROUP_CHIPS"
+            :key="g.key"
+            class="chip"
+            :class="{ active: typeGroupFilter === g.key }"
+            type="button"
+            :data-testid="`task-group-${g.key || 'all'}`"
+            @click="typeGroupFilter = g.key"
+          >
+            {{ g.label }}
+            <span v-if="g.count > 0" class="chip-count">{{ g.count }}</span>
+          </button>
+        </div>
+        <div class="filter-row">
+          <button
+            v-for="d in DUE_CHIPS"
+            :key="d.key"
+            class="chip subtle"
+            :class="{ active: dueFilter === d.key }"
+            type="button"
+            :data-testid="`task-due-${d.key || 'any'}`"
+            @click="dueFilter = d.key"
+          >
+            {{ d.label }}
+          </button>
+        </div>
+      </div>
+
       <Skeleton v-if="loading" :count="3" />
 
-      <div v-else-if="activeTasks.length > 0" class="task-scroll">
-        <div
-          v-for="task in activeTasks"
-          :key="task.id"
-          class="task-card compact"
-          @click="onTaskClick(task.id)"
-          @touchstart="onTaskTouchStart(task, $event)"
-          @touchmove="onTouchMove"
-          @touchend="onTouchEnd"
-        >
-          <div class="priority-bar" :class="task.priority" />
-          <div class="task-body">
-            <div class="task-title">{{ task.title }}</div>
-            <div class="task-meta-row">
-              <span v-if="signalFor(task)" class="health-signal" :class="'tone-' + signalFor(task)!.tone">
-                <span class="health-dot" />{{ signalFor(task)!.action }}<template v-if="signalFor(task)!.since"> · {{ signalFor(task)!.since }}</template>
-              </span>
-              <span v-if="task.instanceName" class="instance-tag">{{ task.instanceName }}</span>
-            </div>
+      <div v-else-if="visibleActiveTasks.length > 0" class="task-scroll">
+        <template v-for="group in groupedActiveTasks" :key="group.key">
+          <div v-if="group.label" class="group-label" :data-testid="`task-group-label-${group.key}`">
+            {{ group.label }}
+            <span class="badge">{{ group.tasks.length }}</span>
           </div>
-          <span class="chevron">›</span>
-        </div>
+          <div
+            v-for="task in group.tasks"
+            :key="task.id"
+            class="task-card compact"
+            @click="onTaskClick(task.id)"
+            @touchstart="onTaskTouchStart(task, $event)"
+            @touchmove="onTouchMove"
+            @touchend="onTouchEnd"
+          >
+            <div class="priority-bar" :class="task.priority" />
+            <div class="task-body">
+              <div class="task-title">{{ task.title }}</div>
+              <div class="task-meta-row">
+                <span v-if="signalFor(task)" class="health-signal" :class="'tone-' + signalFor(task)!.tone">
+                  <span class="health-dot" />{{ signalFor(task)!.action }}<template v-if="signalFor(task)!.since"> · {{ signalFor(task)!.since }}</template>
+                </span>
+                <span v-if="task.instanceName" class="instance-tag">{{ task.instanceName }}</span>
+                <span v-if="task.type && task.type !== 'other'" class="type-tag">{{ typeLabel(task.type) }}</span>
+                <span v-if="dueChip(task)" class="due-tag" :class="dueChip(task)!.tone">{{ dueChip(task)!.text }}</span>
+                <span v-if="(task.assignees?.length ?? 0) > 0" class="assignee-tag">
+                  {{ task.assignees!.length }} 人协作
+                </span>
+              </div>
+            </div>
+            <span class="chevron">›</span>
+          </div>
+        </template>
       </div>
 
       <div v-else class="empty-inline">
         <EmptyState
           icon="📋"
-          title="暂无运行中的任务"
+          :title="activeTasks.length > 0 ? '当前筛选下没有任务' : '暂无运行中的任务'"
           hint="点击「+ 新任务」创建，或长按任务卡片操作"
           size="sm"
           variant="inline"
@@ -326,6 +385,18 @@
           <label>描述</label>
           <textarea v-model="newTask.description" placeholder="输入任务描述" rows="2" />
         </div>
+        <!--
+          工作 = 任务：创建时就定分类与期限，而不是建完再补。
+          分类是闭合枚举（后端 worktype.go 校验，非法值 400），下拉只给合法值。
+        -->
+        <div class="form-group">
+          <label>分类</label>
+          <select v-model="newTask.type" data-testid="create-task-type">
+            <option v-for="opt in TYPE_OPTIONS" :key="opt.value" :value="opt.value">
+              {{ opt.group }} · {{ opt.label }}
+            </option>
+          </select>
+        </div>
         <div class="form-row">
           <div class="form-group half">
             <label>优先级</label>
@@ -340,6 +411,20 @@
             <select v-model="newTask.status">
               <option value="active">进行中</option>
               <option value="blocked">已阻塞</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group half">
+            <label>截止日期</label>
+            <input v-model="newTask.dueDate" type="date" data-testid="create-task-due" />
+          </div>
+          <div class="form-group half">
+            <label>提醒</label>
+            <select v-model="newTask.remindOffset">
+              <option value="0">不提醒</option>
+              <option value="3600">提前 1 小时</option>
+              <option value="86400">提前 1 天</option>
             </select>
           </div>
         </div>
@@ -378,7 +463,7 @@
           />
           <div class="char-counter">{{ accDraft.description.length }} / 500</div>
         </div>
-        <div v-if="accStore.error" class="acc-error">{{ accStore.error }}</div>
+        <div v-if="accStore.error" class="acc-error">{{ apiError(accStore.error, 'errors.operateFailed') }}</div>
       </div>
       <template #footer>
         <button class="btn cancel" :disabled="accStore.submitting" @click="closeAccDelegate">取消</button>
@@ -424,10 +509,11 @@
 <script setup lang="ts">
 import { ref, computed, inject, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { api, type Task } from '../../api/client'
+import { api, type Task, type TaskTypeGroup } from '../../api/client'
 import { readSelectedInstance } from '../../config/selected-instance'
 import wsClient from '../../api/websocket'
 import { useToast } from '../../composables/useToast'
+import { useListScene } from '../../composables/use-list-scene'
 import { useApprovalAlerts } from '../../composables/useApprovalAlerts'
 import { useAccTasksStore } from '../../stores/accTasks'
 import { useAuthStore } from '../../stores/auth'
@@ -443,6 +529,7 @@ import {
 import { useConfirm } from '../../composables/useConfirm'
 import BottomSheet from '../../components/base/BottomSheet.vue'
 import { SCROLL_CHROME_KEY } from '../../composables/scroll-chrome'
+import { useApiError } from '../../composables/useApiError'
 import {
   QUICK_PROMPT_DEFAULT,
   closeQuickPrompt,
@@ -452,6 +539,7 @@ import {
 
 defineOptions({ name: 'TasksView' })
 
+const apiError = useApiError()
 const router = useRouter()
 const { confirm } = useConfirm()
 
@@ -630,7 +718,39 @@ const newTask = ref({
   description: '',
   priority: 'medium',
   status: 'active',
+  // 工作=任务的分类与期限（docs/学习muse/03-架构方案.md §1）。
+  // dueDate 用 <input type="date"> 的 yyyy-mm-dd，提交时换算成 unix 秒。
+  type: 'other' as string,
+  dueDate: '',
+  remindOffset: 0,
 })
+
+/** 分类下拉的候选：与后端 worktype.go 的 typeGroups 一一对应（闭合枚举）。 */
+const TYPE_OPTIONS: Array<{ value: string; label: string; group: string }> = [
+  { value: 'dev', label: '开发', group: '工作' },
+  { value: 'ops', label: '运维', group: '工作' },
+  { value: 'project', label: '项目', group: '工作' },
+  { value: 'meeting', label: '会议', group: '工作' },
+  { value: 'doc', label: '文档', group: '工作' },
+  { value: 'comms', label: '沟通', group: '工作' },
+  { value: 'admin', label: '行政', group: '工作' },
+  { value: 'errand', label: '杂事', group: '生活' },
+  { value: 'family', label: '家庭', group: '生活' },
+  { value: 'finance', label: '财务', group: '生活' },
+  { value: 'health', label: '健康', group: '生活' },
+  { value: 'study', label: '学习', group: '学习' },
+  { value: 'research', label: '研究', group: '学习' },
+  { value: 'review', label: '复盘', group: '学习' },
+  { value: 'other', label: '未分类', group: '其他' },
+]
+
+/** yyyy-mm-dd → 当天 23:59 的 unix 秒；空值或非法值返回 0（不设期限）。 */
+function parseDueDate(value: string): number {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return 0
+  const d = new Date(`${value}T23:59:00`)
+  const sec = d.getTime()
+  return Number.isFinite(sec) ? Math.floor(sec / 1000) : 0
+}
 
 // ── Delegate to ACC ──
 const toast = useToast()
@@ -694,6 +814,148 @@ const completedTasks = computed(() =>
     .sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''))
 )
 
+// ── 工作=任务：类型分组 + 到期筛选（docs/学习muse/03-架构方案.md §1.2）──
+//
+// 分组键优先用服务端返回的 typeGroup；老数据 / ACC 与 OpenCode 投影没有这个
+// 字段时回落到 type 的前缀表，再回落到 'other'。这样老任务不会因为缺字段
+// 消失，只是没有自己的分类标签。
+
+const TYPE_GROUP_OF: Record<string, TaskTypeGroup> = {
+  dev: 'work', ops: 'work', project: 'work', meeting: 'work',
+  doc: 'work', comms: 'work', admin: 'work',
+  errand: 'life', family: 'life', finance: 'life', health: 'life',
+  study: 'learning', research: 'learning', review: 'learning',
+  other: 'other',
+}
+
+const GROUP_ORDER: TaskTypeGroup[] = ['work', 'life', 'learning', 'other']
+const GROUP_LABEL: Record<TaskTypeGroup, string> = {
+  work: '工作',
+  life: '生活',
+  learning: '学习',
+  other: '未分类',
+}
+
+const TYPE_LABEL: Record<string, string> = {
+  dev: '开发', ops: '运维', project: '项目', meeting: '会议',
+  doc: '文档', comms: '沟通', admin: '行政',
+  errand: '杂事', family: '家庭', finance: '财务', health: '健康',
+  study: '学习', research: '研究', review: '复盘',
+  other: '未分类',
+}
+
+function groupOf(task: Task): TaskTypeGroup {
+  if (task.typeGroup && task.typeGroup in GROUP_LABEL) return task.typeGroup
+  const byType = task.type ? TYPE_GROUP_OF[task.type] : undefined
+  return byType ?? 'other'
+}
+
+function typeLabel(type: string): string {
+  return TYPE_LABEL[type] ?? type
+}
+
+const typeGroupFilter = ref<TaskTypeGroup | ''>('')
+const dueFilter = ref<'' | 'overdue' | 'today' | 'week'>('')
+
+function isOverdue(task: Task, nowSec: number): boolean {
+  return (task.dueAt ?? 0) > 0 && task.dueAt! < nowSec
+}
+
+function endOfToday(nowSec: number): number {
+  const d = new Date(nowSec * 1000)
+  d.setHours(23, 59, 59, 999)
+  return Math.floor(d.getTime() / 1000)
+}
+
+function matchesDueFilter(task: Task, nowSec: number): boolean {
+  if (dueFilter.value === '') return true
+  const due = task.dueAt ?? 0
+  // 没有截止时间的任务在"逾期/今天/本周"下不显示：按到期筛选时，
+  // 把无期限任务混进来会让筛选结果看不出意义。
+  if (due <= 0) return false
+  if (dueFilter.value === 'overdue') return due < nowSec
+  if (dueFilter.value === 'today') return due <= endOfToday(nowSec)
+  return due <= nowSec + 7 * 86400
+}
+
+const visibleActiveTasks = computed(() => {
+  const nowSec = Math.floor(Date.now() / 1000)
+  return activeTasks.value.filter(
+    (t) =>
+      (typeGroupFilter.value === '' || groupOf(t) === typeGroupFilter.value) &&
+      matchesDueFilter(t, nowSec),
+  )
+})
+
+const GROUP_CHIPS = computed(() => [
+  { key: '' as TaskTypeGroup | '', label: '全部', count: activeTasks.value.length },
+  ...GROUP_ORDER.map((g) => ({
+    key: g,
+    label: GROUP_LABEL[g],
+    count: activeTasks.value.filter((t) => groupOf(t) === g).length,
+  })),
+])
+
+const DUE_CHIPS: Array<{ key: '' | 'overdue' | 'today' | 'week'; label: string }> = [
+  { key: '', label: '全部期限' },
+  { key: 'overdue', label: '已逾期' },
+  { key: 'today', label: '今天' },
+  { key: 'week', label: '本周' },
+]
+
+/**
+ * 分组后的运行中任务。只保留非空组；当用户已经选了某个分组时不再重复
+ * 显示组标题（chip 已经说明了当前在看哪一组）。
+ */
+const groupedActiveTasks = computed(() => {
+  const list = visibleActiveTasks.value
+  if (typeGroupFilter.value !== '') {
+    return [{ key: typeGroupFilter.value as string, label: '', tasks: list }]
+  }
+  return GROUP_ORDER.map((g) => ({
+    key: g,
+    label: GROUP_LABEL[g],
+    tasks: list
+      .filter((t) => groupOf(t) === g)
+      .sort((a, b) => {
+        // 有截止时间的排前面且按时间升序；都没有时沿用 updatedAt 倒序。
+        const da = a.dueAt ?? 0
+        const db = b.dueAt ?? 0
+        if (da && db) return da - db
+        if (da) return -1
+        if (db) return 1
+        return (b.updatedAt || '').localeCompare(a.updatedAt || '')
+      }),
+  })).filter((g) => g.tasks.length > 0)
+})
+
+/** 到期小标签：逾期 / 今天 HH:MM / MM-DD。返回 null 表示不显示。 */
+function dueChip(task: Task): { text: string; tone: 'overdue' | 'today' | 'later' } | null {
+  const due = task.dueAt ?? 0
+  if (due <= 0) return null
+  const nowSec = Math.floor(Date.now() / 1000)
+  if (due < nowSec) {
+    return { text: `逾期 ${formatDue(due, nowSec)}`, tone: 'overdue' }
+  }
+  if (due <= endOfToday(nowSec)) {
+    return { text: `今天 ${formatClock(due)}`, tone: 'today' }
+  }
+  return { text: formatDue(due, nowSec), tone: 'later' }
+}
+
+function formatClock(unixSec: number): string {
+  const d = new Date(unixSec * 1000)
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+}
+
+function formatDue(unixSec: number, nowSec: number): string {
+  const d = new Date(unixSec * 1000)
+  const today = new Date(nowSec * 1000)
+  const sameYear = d.getFullYear() === today.getFullYear()
+  const md = `${d.getMonth() + 1}-${String(d.getDate()).padStart(2, '0')}`
+  return sameYear ? md : `${d.getFullYear()}-${md}`
+}
+
 // ── Pull-down close (BottomSheet 已具备内建下拉关闭，无需再外挂) ──
 
 /** 状态从无变有"需要你"时自动展开折叠区（业界即时提醒惯例）。
@@ -708,6 +970,14 @@ watch(
 )
 
 // ── Lifecycle ──
+// 本视图在 App.vue 的 KeepAlive include 名单里（LIST_CACHE_NAMES 有 'TasksView'），
+// 进 /tasks/:id 只是被**失活**、不会卸载，所以 onMounted 不会重跑。
+// 之前没有任何 onActivated / useListScene，返回时列表保持进入详情前的样子。
+// WS 只覆盖 task_created / task_updated / session_attached，**没有删除事件**，
+// 于是「在详情页删掉任务 → 返回」列表里那条还在。
+// 详情页三处写操作已改为 markListDirty('tasks')，这里按脏标记刷新。
+useListScene('tasks', handleRefresh)
+
 onMounted(() => {
   currentInstance.value = readSelectedInstance()
   loadTasks()
@@ -741,7 +1011,16 @@ async function handleRefresh() {
 async function loadTasks() {
   loading.value = true
   try {
-    const instanceTasks = await api.getTasks(undefined, { source: 'opencode' })
+    // BUG-AL：这里原本传 `{ source: 'opencode' }`，但 handleCreate 建出来的任务
+    // 硬编码 `source: 'local'`（同文件 ~1059 行）。两个值永远不相交，于是
+    // **通过这个 UI 创建的任务，在自己的列表里永远看不见**——实测
+    // `GET /api/tasks` 返回 5 条（全是 local），`?source=opencode` 返回 0 条。
+    //
+    // 本视图是任务聚合看板（active/blocked/completed 三段都由 tasks.value 驱动），
+    // 且 ACC 委托产出的是 source='acc'，同样会被这个过滤吃掉。
+    // stores/opencode.ts 调 getTasks(instanceId) 本就不带 source 过滤，两处口径必须一致，
+    // 所以这里去掉 source 过滤，按 workspace 返回全部任务。
+    const instanceTasks = await api.getTasks(undefined)
     tasks.value = (instanceTasks || []).map((t: any) => ({
       ...t,
       instanceName: t.instanceName || currentInstance.value?.displayName || currentInstance.value?.name || '',
@@ -790,12 +1069,23 @@ function handleSessionAttached(link: any) {
 async function handleCreate() {
   if (!newTask.value.title) return
   try {
+    const dueAt = parseDueDate(newTask.value.dueDate)
+    // 提醒时间不能晚于截止时间；选了「提前 N」但没填截止日时按无提醒处理，
+    // 否则后端会 400（remindAt must not be after dueAt）。
+    const remindAt =
+      dueAt > 0 && newTask.value.remindOffset > 0 && dueAt - newTask.value.remindOffset > 0
+        ? dueAt - newTask.value.remindOffset
+        : 0
     const task: Task = {
       id: `task-${Date.now()}`,
       title: newTask.value.title,
       description: newTask.value.description,
       status: newTask.value.status as any,
       priority: newTask.value.priority as any,
+      type: newTask.value.type,
+      typeGroup: TYPE_GROUP_OF[newTask.value.type] as TaskTypeGroup,
+      dueAt: dueAt || undefined,
+      remindAt: remindAt || undefined,
       workstreamId: currentInstance.value?.id,
       source: 'local',
       createdAt: new Date().toISOString(),
@@ -803,7 +1093,15 @@ async function handleCreate() {
       sessionCount: 0,
     }
     await api.createTask(task)
-    newTask.value = { title: '', description: '', priority: 'medium', status: 'active' }
+    newTask.value = {
+      title: '',
+      description: '',
+      priority: 'medium',
+      status: 'active',
+      type: 'other',
+      dueDate: '',
+      remindOffset: 0,
+    }
     showCreateModal.value = false
     loadTasks()
   } catch (e) {
@@ -923,7 +1221,7 @@ async function ctxUpdateStatus(status: string) {
   } catch (e) {
     task.status = old
     console.error('Failed to update task:', e)
-    alert('操作失败，请重试')
+    toast.error('操作失败，请重试')
   }
 }
 
@@ -936,7 +1234,7 @@ async function ctxDelete() {
     closeContextMenu()
   } catch (e) {
     console.error('Failed to delete task:', e)
-    alert('删除失败，请重试')
+    toast.error('删除失败，请重试')
   }
 }
 
@@ -1135,7 +1433,7 @@ function timeAgo(dateStr?: string): string {
   border: 1px solid var(--border);
   background: var(--bg-card);
   color: var(--text-primary);
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-weight: var(--font-weight-medium);
   cursor: pointer;
   white-space: nowrap;
@@ -1150,9 +1448,9 @@ function timeAgo(dateStr?: string): string {
   border-color: color-mix(in srgb, var(--danger) 35%, var(--border));
   background: color-mix(in srgb, var(--danger) 8%, var(--bg-card));
 }
-.triage-dot { font-size: 10px; line-height: 1; }
+.triage-dot { font-size: var(--text-xs); line-height: 1; }
 .triage-text {
-  font-size: 12px;
+  font-size: var(--text-sm);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1184,13 +1482,13 @@ function timeAgo(dateStr?: string): string {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-weight: var(--font-weight-semibold);
   color: var(--danger);
 }
-.triage-card-head .link-btn { font-size: 11px; }
+.triage-card-head .link-btn { font-size: var(--text-2xs); }
 .triage-empty {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-muted);
   text-align: center;
   padding: 8px 0;
@@ -1213,7 +1511,7 @@ function timeAgo(dateStr?: string): string {
 }
 .attn-kind {
   flex-shrink: 0;
-  font-size: 10px;
+  font-size: var(--text-xs);
   font-weight: 700;
   padding: 1px 6px;
   border-radius: 4px;
@@ -1229,7 +1527,7 @@ function timeAgo(dateStr?: string): string {
 .attn-title {
   flex: 1;
   min-width: 0;
-  font-size: 13px;
+  font-size: var(--text-smd);
   font-weight: 600;
   color: var(--text-primary);
   overflow: hidden;
@@ -1238,7 +1536,7 @@ function timeAgo(dateStr?: string): string {
 }
 .attn-wait {
   flex-shrink: 0;
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-muted);
 }
 .attn-actions {
@@ -1250,7 +1548,7 @@ function timeAgo(dateStr?: string): string {
 .attn-btn {
   min-height: 36px;
   padding: 6px 14px;
-  font-size: 13px;
+  font-size: var(--text-smd);
   font-weight: 600;
   border-radius: 8px;
   border: 1px solid var(--border);
@@ -1294,7 +1592,7 @@ function timeAgo(dateStr?: string): string {
   padding: 0 2px;
 }
 .section-header h2 {
-  font-size: 13px;
+  font-size: var(--text-smd);
   font-weight: 600;
   color: var(--text-secondary);
   margin: 0;
@@ -1324,7 +1622,7 @@ function timeAgo(dateStr?: string): string {
 }
 
 .badge {
-  font-size: 10px;
+  font-size: var(--text-xs);
   font-weight: 700;
   padding: 1px 6px;
   border-radius: 999px;
@@ -1342,7 +1640,7 @@ function timeAgo(dateStr?: string): string {
 }
 
 .link-btn {
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-weight: 600;
   color: var(--brand-primary);
   background: none;
@@ -1356,18 +1654,18 @@ function timeAgo(dateStr?: string): string {
   margin-left: 8px;
 }
 .acc-hint {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-muted);
   margin: -8px 0 14px;
 }
 .char-counter {
   text-align: right;
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-muted);
   margin-top: 4px;
 }
 .acc-error {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--danger);
   background: var(--danger-bg, rgba(239, 68, 68, 0.08));
   padding: 6px 10px;
@@ -1410,7 +1708,7 @@ function timeAgo(dateStr?: string): string {
   min-width: 0;
 }
 .task-title {
-  font-size: 13px;
+  font-size: var(--text-smd);
   font-weight: 600;
   color: var(--text-primary);
   overflow: hidden;
@@ -1434,7 +1732,7 @@ function timeAgo(dateStr?: string): string {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-size: 11px;
+  font-size: var(--text-2xs);
   font-weight: 600;
   min-width: 0;
   overflow: hidden;
@@ -1465,7 +1763,7 @@ function timeAgo(dateStr?: string): string {
   }
 }
 .instance-tag {
-  font-size: 10px;
+  font-size: var(--text-xs);
   font-weight: 600;
   padding: 1px 6px;
   border-radius: 4px;
@@ -1477,25 +1775,136 @@ function timeAgo(dateStr?: string): string {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.instance-tag.sm {
-  font-size: 9px;
+/* ── 工作=任务：分类 chip / 到期筛选（docs/学习muse/03-架构方案.md §1.2） ── */
+.work-filters {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0 var(--space-1);
+}
+
+.filter-row {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.filter-row::-webkit-scrollbar {
+  display: none;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  padding: 5px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  cursor: pointer;
+  min-height: 30px;
+}
+
+.chip.active {
+  border-color: var(--brand-primary);
+  background: var(--brand-bg);
+  color: var(--brand-primary);
+  font-weight: 600;
+}
+
+.chip.subtle {
+  font-size: var(--text-2xs);
+  padding: 4px 9px;
+  min-height: 26px;
+}
+
+.chip-count {
+  font-size: var(--text-xs);
+  font-family: var(--font-mono);
+  opacity: 0.75;
+}
+
+/* 分组标题：只在"全部"视图出现，选中某个分组时 chip 已经说明看的是哪组。 */
+.group-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: var(--space-2) var(--space-1) 0;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--text-tertiary);
+}
+
+.type-tag {
+  font-size: var(--text-xs);
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
+  line-height: 14px;
+  flex-shrink: 0;
+}
+
+.due-tag {
+  font-size: var(--text-xs);
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 4px;
+  line-height: 14px;
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+}
+
+.due-tag.overdue {
+  background: rgba(220, 38, 38, 0.12);
+  color: #dc2626;
+}
+
+.due-tag.today {
+  background: rgba(234, 88, 12, 0.12);
+  color: #ea580c;
+}
+
+.due-tag.later {
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
+}
+
+.assignee-tag {
+  font-size: var(--text-xs);
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--brand-bg);
+  color: var(--brand-primary);
+  line-height: 14px;
+  flex-shrink: 0;
+}
+
+.instance-tag.sm {  font-size: 9px;
   padding: 0px 4px;
 }
 .meta-muted {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-muted);
   display: inline-flex;
   align-items: center;
   gap: 2px;
 }
 .meta-muted .meta-icon {
-  font-size: 10px;
+  font-size: var(--text-xs);
 }
 .meta-muted.time {
-  font-size: 10px;
+  font-size: var(--text-xs);
 }
 .chevron {
-  font-size: 16px;
+  font-size: var(--text-lg);
   color: var(--text-muted);
   flex-shrink: 0;
   opacity: 0.5;
@@ -1508,7 +1917,7 @@ function timeAgo(dateStr?: string): string {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-weight: 600;
   color: var(--text-secondary);
   margin-bottom: 6px;
@@ -1558,7 +1967,7 @@ function timeAgo(dateStr?: string): string {
   min-width: 0;
 }
 .session-title {
-  font-size: 13px;
+  font-size: var(--text-smd);
   font-weight: 500;
   color: var(--text-primary);
   overflow: hidden;
@@ -1579,7 +1988,7 @@ function timeAgo(dateStr?: string): string {
   text-align: center;
 }
 .empty-text {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-muted);
 }
 
@@ -1588,7 +1997,7 @@ function timeAgo(dateStr?: string): string {
   cursor: pointer;
 }
 .expand-icon {
-  font-size: 16px;
+  font-size: var(--text-lg);
   color: var(--text-muted);
   transition: transform 200ms;
 }
@@ -1616,7 +2025,7 @@ function timeAgo(dateStr?: string): string {
   align-items: center;
   justify-content: space-between;
   padding: 2px 2px 6px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-weight: var(--font-weight-medium);
   color: var(--text-secondary);
 }
@@ -1669,7 +2078,7 @@ function timeAgo(dateStr?: string): string {
   flex: 1;
   border: none;
   background: transparent;
-  font-size: 13px;
+  font-size: var(--text-smd);
   color: var(--text-primary);
   resize: none;
   outline: none;
@@ -1687,7 +2096,7 @@ function timeAgo(dateStr?: string): string {
   height: 32px;
   border-radius: 50%;
   border: none;
-  font-size: 16px;
+  font-size: var(--text-lg);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1764,7 +2173,7 @@ function timeAgo(dateStr?: string): string {
 }
 .form-group label {
   display: block;
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-weight: 600;
   color: var(--text-secondary);
   margin-bottom: 4px;
@@ -1774,7 +2183,7 @@ function timeAgo(dateStr?: string): string {
 .form-group select {
   width: 100%;
   padding: 10px;
-  font-size: 14px;
+  font-size: var(--text-base);
   background: var(--bg-subtle);
   color: var(--text-primary);
   border: 1px solid transparent;
@@ -1798,7 +2207,7 @@ function timeAgo(dateStr?: string): string {
 .btn {
   flex: 1;
   padding: 10px;
-  font-size: 14px;
+  font-size: var(--text-base);
   font-weight: 600;
   border: none;
   border-radius: 10px;
@@ -1841,5 +2250,19 @@ function timeAgo(dateStr?: string): string {
 .ctx-btn.danger {
   color: var(--danger);
   border-color: var(--danger-bg);
+}
+/* 只给读屏/自动化看的文字节点。见模板里那段注释：aria-label 在
+   aria-pressed 按钮上会被 Android 桥接丢掉，必须有一个真实的文字子节点。
+   规则与 BottomNav/MessagesHubView/PromptOptimizeField 保持一致。 */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 </style>

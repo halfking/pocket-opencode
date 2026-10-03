@@ -183,7 +183,17 @@ func (p *dynamicGatewayBFFProvider) clientFor(wsID, userID string) (*llmgateway.
 	if cfg.BaseURL == "" || cfg.APIKey == "" {
 		return nil, llmbff.ErrNotConfigured
 	}
-	return llmgateway.NewClient(cfg.BaseURL, cfg.APIKey), nil
+	// Format 透传（openai-chat / anthropic-messages）：2026-10-01 审计确认
+	// 生产网关 llm.kxpms.cn 不提供 /v1/chat/completions，仅 /v1/messages 可用。
+	// 配置为 anthropic-messages 时直接走对应协议；配置为 openai-chat 时客户端
+	// 仍保留传输层失败自动回退（llmgateway.Client 注释），两层配合保证
+	// 默认配置下翻译/对话也能出字。
+	c := llmgateway.NewClient(cfg.BaseURL, cfg.APIKey)
+	switch cfg.Format {
+	case "anthropic-messages":
+		c.Format = "anthropic-messages"
+	}
+	return c, nil
 }
 
 // resolveChatModel 处理前端传过来的 model：

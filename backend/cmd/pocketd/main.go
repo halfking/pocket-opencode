@@ -26,10 +26,13 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/flashcards"
 	"github.com/halfking/pocket-opencode/backend/internal/identity"
 	"github.com/halfking/pocket-opencode/backend/internal/kxmemory"
+	"github.com/halfking/pocket-opencode/backend/internal/learning"
+	"github.com/halfking/pocket-opencode/backend/internal/learning/sources"
 	"github.com/halfking/pocket-opencode/backend/internal/llmbff"
 	"github.com/halfking/pocket-opencode/backend/internal/llmgateway"
 	"github.com/halfking/pocket-opencode/backend/internal/lobster"
 	"github.com/halfking/pocket-opencode/backend/internal/marketplace"
+	"github.com/halfking/pocket-opencode/backend/internal/meeting"
 	"github.com/halfking/pocket-opencode/backend/internal/mcp"
 	"github.com/halfking/pocket-opencode/backend/internal/migration"
 	"github.com/halfking/pocket-opencode/backend/internal/notes"
@@ -59,10 +62,22 @@ func main() {
 	}
 
 	// Ensure data directory exists (still used for version.json, APK cache, etc.)
-	dataDir := filepath.Dir(cfg.DBPath)
+	//
+	// 必须用 config.ResolveDataDir 而不是裸的 filepath.Dir(cfg.DBPath)：
+	// DBPath 在 Postgres 迁移后已不再真的开 SQLite 库，默认值又是相对的
+	// `./data/pocket.sqlite`，于是数据目录取决于**从哪个目录启动二进制**。
+	// 这个根因咬过两次且症状毫无关联 —— master key 落到别的目录导致所有账户
+	// `decrypt credential: cipher: message authentication failed`；发票采集写
+	// 在 A 目录、下载按 B 目录 os.Stat 导致单张 404 / A4 导出 400。
+	// 详见 config.ResolveDataDir 的注释。
+	dataDir, err := config.ResolveDataDir(cfg.DBPath, cfg.DataDir)
+	if err != nil {
+		log.Fatalf("Failed to resolve data directory: %v", err)
+	}
 	if err := os.MkdirAll(dataDir, 0755); err != nil {
 		log.Fatalf("Failed to create data directory: %v", err)
 	}
+	log.Printf("data dir = %s", dataDir)
 
 	// ---- Phase 0: shared PostgreSQL pool (replaces per-module SQLite) ----
 	// 可选依赖：未配置时降级为"无本地任务存储"模式，仅依赖 ACC/llm-gateway 等远程服务
@@ -88,6 +103,7 @@ func main() {
 		scheduledTaskStore *scheduledtask.Store
 		marketplaceStore   *marketplace.Store
 		financeStore       finance.FinanceStore
+	meetingStore       meeting.MeetingStore
 		rssStore           *rss.Store
 		// v1 闪卡模块（docs/flashcards-contract.md §1, §5）。PG 就绪时构造
 		// store 与 EnsureSchema；remote-only 模式下保持 nil，handler 返 503。
@@ -96,6 +112,16 @@ func main() {
 		// scheduler；scheduler 启动之后，notifycenter 块构造完成后再
 		// 通过 SetNotifier 注入通知客户端（详见下方 notifycenter 块注释）。
 		flashcardExec *scheduledexecutors.FlashcardReviewExecutor
+		// 学习核心（docs/学习muse/03-架构方案.md §2）。依赖 flashcards store
+		// （到期卡数）与 task store（今日到期工作项），两者任一缺失时仍可用，
+		// 对应计数项按 0 处理。PG 未就绪时保持 nil，/api/learning/* 返 503。
+		learningService *learning.Service
+		// 来源解析器：notes/email/rss/meeting → 学习条目标题/摘要。
+		learningSources *sources.Resolver
+		// 学习域每日回顾 executor：与 flashcardExec 同样的晚绑通知客户端。
+		learningExec *scheduledexecutors.LearningDigestExecutor
+		// 工作项一次性提醒 executor（P4），同样晚绑。
+		workItemExec *scheduledexecutors.WorkItemReminderExecutor
 		// scheduler 引用：同样为 notifycenter 的晚绑保留 —— 定时任务失败
 		// 通知（2026-09-20 通知体系）在 notifycenter 就绪后注入 schedRef。
 		schedRef *scheduledtask.Scheduler
@@ -131,6 +157,15 @@ func main() {
 			log.Fatalf("finance store: %v", err)
 		}
 		financeStore = fs
+		// 会议存储同款：内存版重启即清空，会议逐字稿/摘要/待办会全丢。
+		// 4 张表（含墓碑表）都是新引入，fail-fast 语义与 flashcards 一致。
+		mtgCtx, mtgCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		mts, err := meeting.NewPGStore(mtgCtx, pool)
+		mtgCancel()
+		if err != nil {
+			log.Fatalf("meeting store: %v", err)
+		}
+		meetingStore = mts
 		ms, err := initMarketplaceStore(context.Background(), pool)
 		if err != nil {
 			log.Fatalf("marketplace store: %v", err)
@@ -160,6 +195,27 @@ func main() {
 		}
 		fcCancel()
 		flashcardStore = fcs
+		// 学习核心：两表新引入，同样 fail-fast（保持与 flashcards 一致的启动语义）。
+		// NewStore 内部用 background context 建表（与 task.NewStore 同风格），
+		// 启动期没有请求可取消。
+		ls, err := learning.NewStore(pool)
+		if err != nil {
+			log.Fatalf("learning store: %v", err)
+		}
+		// taskStore 已在上面构造完成（104 行），因此这里可以把它作为到期工作项
+		// 计数器接进学习摘要；两者共享同一 pool 与同一 workspace 语义。
+		learningService = learning.NewService(ls, flashcardStore, taskStore)
+		// 闪卡复习也计入连续学习天数。*flashcards.Store 结构化满足
+		// learning.ReviewDayCounter，无需包装类型。少了这一步，只刷闪卡、
+		// 不收集材料的用户连续天数会一直是 0。
+		if flashcardStore != nil {
+			learningService.SetReviewDayCounter(flashcardStore)
+		}
+		// Compile-time proof that *flashcards.Store structurally satisfies the
+		// interface. Without this, renaming a method on either side would only
+		// be caught when someone set the counter — and only if flashcardStore
+		// happened to be non-nil in that build.
+		var _ learning.ReviewDayCounter = (*flashcards.Store)(nil)
 		if marketplaceStore != nil {
 			log.Println("Module stores initialized (PG, scheduled tasks and marketplace enabled)")
 		} else {
@@ -197,19 +253,11 @@ func main() {
 		}
 		userStore = us
 		if n, _ := us.CountUsers(context.Background()); n == 0 {
-			user := cfg.DevAuthUser
-			pass := cfg.DevAuthPass
-			if user == "" {
-				user = "admin"
-			}
-			if pass == "" {
-				if !cfg.DevAuth {
-					log.Printf("WARN: users table empty and POCKET_DEV_AUTH not set; refusing to auto-create admin/admin")
-				} else {
-					pass = "admin"
-				}
-			}
-			if pass != "" {
+			create, user, pass, note := bootstrapDecision(cfg.DevAuthUser, cfg.DevAuthPass)
+			switch {
+			case note != "":
+				log.Printf("WARN: %s", note)
+			case create:
 				if err := us.InsertUser(context.Background(), &auth.User{ID: "user-" + user, Username: user, Role: "admin"}, pass, ""); err != nil {
 					log.Printf("WARN: bootstrap first user %q: %v", user, err)
 				} else {
@@ -379,17 +427,57 @@ func main() {
 			log.Printf("WARN: email master key: %v — email fetcher disabled", err)
 		} else {
 			if cfg.EmailMasterKey == "" {
-				log.Printf("WARN: POCKET_EMAIL_MASTER_KEY not set; auto-generated key persisted to %s/email_master.key", dataDir)
+				// 这里不再单独 Abs：dataDir 在 main 开头已由 ResolveDataDir 解析成绝对路径。
+				// 原来这处补丁只护住了这行日志输出，护不住真正写文件的 EnsureMasterKey /
+				// NewFileBodyCache —— 那才是出事的地方，所以两次故障都还会发生。
+				log.Printf("WARN: POCKET_EMAIL_MASTER_KEY not set; using auto-generated key at %s",
+					filepath.Join(dataDir, "email_master.key"))
 			}
 			ec, err := email.NewCrypto(key)
 			if err != nil {
 				log.Printf("WARN: email crypto init: %v — fetcher disabled", err)
 			} else {
 				emailCrypto = ec
+				// 启动自检：config.Validate 只保证 POCKET_EMAIL_MASTER_KEY「非空」，
+				// 不保证它「对」。一把错的 key 会让进程照常启动、调度器照常打印
+				// "Email scheduler started"，然后每个账户每次同步都撞
+				// `decrypt credential: …` —— 从外面看服务在跑，实际一封新邮件都收不到。
+				// 实测过：某台机器磁盘上有 4 处 email_master.key，只有 1 把能解开
+				// 真实库 5 个账户的凭据，用另外 3 把启动全程零报错（docs §7bf）。
+				// 这里把「key 拿错了」从静默变成启动日志里的一行。
+				if emailStore != nil {
+					if chk, cerr := email.CheckCredentials(context.Background(), emailStore, emailCrypto); cerr != nil {
+						log.Printf("WARN: email credential self-check failed to run: %v", cerr)
+					} else if chk.AllFailed() {
+						log.Printf("ERROR: %s", chk.Summary())
+						log.Printf("ERROR:   凭据是用 POCKET_EMAIL_MASTER_KEY（或 <dataDir>/email_master.key）加密的，"+
+							"当前这把它一把都解不开。请确认这个环境的 key 与写入凭据时用的是同一把；"+
+							"改 key 前不要直接重启，否则所有邮箱都会停止同步。")
+						// 同一把 key 还封着 **LLM 网关的 API key**
+						// （llm_gateway_store.go:198 的 decryptAPIKey 用的是同一个 cipher）。
+						// 不点破的后果很具体：运维看到"邮件解不开"，去修邮件，
+						// 而网关 key 那边只会安静地退回 env、env 没设就是**没有 key**，
+						// 于是"归类/总结/发票提取/语音转写全部不工作"会被当成另一件事
+						// 另开一轮排查。2026-10-02 本机实测：18100 那个实例同时命中
+						// 邮件 0/5 与 `[llm-gateway] decrypt api key: cipher: message
+						// authentication failed`，两边同一个根因。
+						log.Printf("ERROR:   同一把 key 也封着 LLM 网关的 API key。" +
+							"如果启动日志里有 `[llm-gateway] … decrypt api key: cipher: message authentication failed`、"+
+							"或网关显示未配置/调用全失败，**根因就是这一条**，不必另查。")
+					} else if !chk.AllDecryptable() {
+						log.Printf("WARN: %s", chk.Summary())
+					} else {
+						log.Printf("Email credential self-check: %s", chk.Summary())
+					}
+				}
 				emailPending = email.NewPendingOAuth()
 				go emailPending.GCLoop(context.Background())
 				if emailStore != nil {
 					emailFetcher = email.NewFetcherWithOptions(emailStore, emailCrypto, cfg.EmailIMAPInsecureSkipVerify, cfg.EmailIMAPUseStartTLS)
+					// POP3 降级路径的 UID 是位置序号而非 IMAP UID，事后无法用它
+					// IMAP FETCH 回原文（会取到另一封邮件）。所以在 POP3 同步的
+					// 那一刻把原文加密落盘，采集器再读缓存。见 email/body_cache.go。
+					emailFetcher.BodyCache = email.NewFileBodyCache(dataDir, emailCrypto)
 					emailScheduler = email.NewScheduler(emailStore, emailFetcher, cfg.EmailFetchEnabled)
 					// 注入 kxmemory 客户端（可选）：未配置时 DailySummary 自动降级到 log-only。
 					if kxmem != nil {
@@ -419,7 +507,8 @@ func main() {
 					emailScheduler.SetVacationSender(server.NewSMTPVacationSender())
 					// 消费 email_action_intents（route-folder / trigger-autoreply）。
 					// emailStore / emailCrypto 在本块上方已构造（与 vacation sender 同源）。
-					emailScheduler.SetIntentExecutor(server.NewIntentExecutor(emailStore, emailCrypto))
+					// emailFetcher 同时作为 route-folder 的真实 IMAP MOVE 执行器注入。
+					emailScheduler.SetIntentExecutor(server.NewIntentExecutor(emailStore, emailCrypto, emailFetcher))
 					// 时区：默认 UTC+8（中国大陆）；可由 POCKET_TIMEZONE_OFFSET_SEC 覆盖。
 					emailScheduler.SetTimezoneOffset(cfg.TimezoneOffsetSec)
 					emailScheduler.Start(context.Background())
@@ -462,15 +551,20 @@ func main() {
 	var embedder aigate.Embedder
 	var llm aigate.LLMClient
 
-	// 网关 base：显式配置优先，否则回退到默认网关（https://llmgo.kxpms.cn/v1）。
+	// 网关 base：显式配置优先，否则回退到默认网关（https://llm.kxpms.cn/v1）。
 	// 注意 NewClient 会自动剥离结尾的 /v1，因此无论写不带还是带 /v1 都能正确拼接。
+	// key 同理：env 优先，未注入时用内置的自家网关默认 key——否则未配 env 的
+	// 实例会因为 key 为空掉进直连分支，/api/embed、/api/llm/chat 直接 503。
 	gwBase := cfg.LLMGatewayURL
 	if gwBase == "" {
 		gwBase = opencode.DefaultLLMGatewayBaseURL
 	}
-	if gwBase != "" && cfg.LLMGatewayAPIKey != "" {
+	gwKey := cfg.LLMGatewayAPIKey
+	// 没有 env 就没有 key：不回落到任何内置密钥。运营方未配置的实例应当是
+	// 「网关未配置」（embed/chat 503），而不是悄悄用仓库里一把能计费的 key。
+	if gwBase != "" && gwKey != "" {
 		// 企业网关模式：代理到 llm-gateway-go（统一流量治理/审计/限流）
-		gwClient := llmgateway.NewClient(gwBase, cfg.LLMGatewayAPIKey)
+		gwClient := llmgateway.NewClient(gwBase, gwKey)
 		embedder = &llmGatewayEmbedderAdapter{gwClient, cfg.EmbedModel}
 		llm = &llmGatewayLLMAdapter{gwClient}
 		log.Printf("LLM/Embed gateway enabled (enterprise): %s", gwBase)
@@ -582,6 +676,12 @@ func main() {
 	if financeStore != nil {
 		srv.SetFinanceStore(financeStore)
 	}
+	// 必须在下面 sources.New(..., srv.MeetingStore()) 之前注入，
+	// 否则 learning resolver 会拿到已被替换掉的那份内存 store。
+	if meetingStore != nil {
+		srv.SetMeetingStore(meetingStore)
+		log.Println("Meeting store: PostgreSQL (meetings + tombstones persisted)")
+	}
 	if scheduledTaskStore != nil {
 		srv.SetScheduledTaskStore(scheduledTaskStore)
 	}
@@ -609,11 +709,27 @@ func main() {
 	if flashcardStore != nil {
 		srv.SetFlashcardStore(flashcardStore)
 	}
+	// Learning Core：注入 service（nil 时 /api/learning/* 返 503）。
+	if learningService != nil {
+		srv.SetLearningService(learningService)
+	}
+	// 来源解析器：让「一键加入学习 / 转为任务」只需要一个 source id。
+	// meeting store 由 newServer 内部构造，因此这里从 srv 取而不是用本地变量。
+	learningSources = sources.New(notesStore, emailStore, rssStore, srv.MeetingStore())
+	srv.SetLearningSources(learningSources)
+	if learningService != nil {
+		learningService.SetResolver(learningSources)
+	}
+	// Held beyond this block: the scheduled work-item reminder executor needs
+	// the same store to resolve each user's do-not-disturb timezone, which is
+	// how a 22:30 window means 22:30 *where the user is*.
+	var userSettingsRepo usersetting.Repository
 	if pool != nil {
 		if us, err := usersetting.NewStore(pool); err != nil {
 			log.Printf("WARN: user settings store: %v", err)
 		} else {
 			srv.SetUserSettingsStore(us)
+			userSettingsRepo = us
 			log.Println("User settings dual-store enabled (PG)")
 		}
 	}
@@ -667,6 +783,13 @@ func main() {
 	// OAuthBroadcaster 接口。
 	if emailScheduler != nil {
 		emailScheduler.SetBroadcaster(srv.WSHub())
+		// 每日定时流水线（收信→清垃圾→重要提醒→发票采集→飞书推送/共享汇总）。
+		// *server.Server 自身实现 email.PipelineRunner：RunEmailPipeline 按
+		// EmailExecutionMode 决定在本进程跑（默认 local）还是委托远端编排。
+		// 这一句是「每天定时处理」成立的前提——漏掉它则清垃圾/发票采集/飞书推送
+		// 只能手动 POST /api/email/pipeline/run 触发。
+		// hour<0（POCKET_EMAIL_PIPELINE_HOUR）关闭定时，手动触发仍可用。
+		emailScheduler.SetPipelineRunner(srv, cfg.EmailPipelineHour)
 	}
 
 	// 注入 audit writer：email 包内 oauth callback / scheduler refresh+revoke
@@ -799,8 +922,9 @@ func main() {
 	// /api/llm/models）。采用「动态 Provider」：每次请求时按 workspace 解析网关配置
 	// （启动环境变量 POCKET_LLM_GATEWAY_URL/_API_KEY 的默认值 + 运行时
 	// /api/llm-gateway/config 保存的配置），因此用户在「设置 → AI 模型」里修改网关
-	// 后，对话功能无需重启 pocketd 即可生效。POCKET_LLM_GATEWAY_API_KEY 仍必须配置
-	// （或在设置里保存），否则对话请求会返回 503。
+	// 后，对话功能无需重启 pocketd 即可生效。网关地址/密钥缺省时回落到内置默认
+	// （https://llm.kxpms.cn/v1 + POCKET_LLM_GATEWAY_API_KEY），
+	// POCKET_LLM_GATEWAY_URL/_API_KEY 仍可用于换成别的租户网关。
 	{
 		provider := server.NewDynamicLLMGatewayBFFProvider(func(wsID, userID string) server.GatewayConfig {
 			return srv.ResolveGatewayForUser(userID, wsID)
@@ -947,6 +1071,29 @@ func main() {
 				registered++
 			}
 		}
+		// 学习域每日回顾：与闪卡 executor 同构，晚绑通知客户端。
+		if learningService != nil {
+			learningExec = scheduledexecutors.NewLearningDigestExecutor(learningService, nil)
+			if err := sched.Register(learningExec); err != nil {
+				log.Printf("WARN: register learning digest scheduled executor: %v", err)
+			} else {
+				registered++
+			}
+		}
+		// 工作项一次性提醒（P4）：消费 tasks.remind_at，与上面两个 executor
+		// 同构晚绑通知客户端。
+		if taskStore != nil {
+			workItemExec = scheduledexecutors.NewWorkItemReminderExecutor(taskStore, nil)
+			// Per-user do-not-disturb: the window is expressed in the owner's
+			// local time, so without this the executor would apply one zone to
+			// everybody and a 23:50 reminder would push at 23:50 UTC.
+			workItemExec.SetQuietPreferences(scheduledexecutors.NewSettingsQuietPreferences(userSettingsRepo))
+			if err := sched.Register(workItemExec); err != nil {
+				log.Printf("WARN: register work item reminder scheduled executor: %v", err)
+			} else {
+				registered++
+			}
+		}
 		srv.SetScheduledTaskScheduler(sched)
 		schedRef = sched
 		sched.Start(context.Background())
@@ -970,9 +1117,40 @@ func main() {
 			if flashcardExec != nil {
 				flashcardExec.SetNotifier(svc)
 			}
+			// 学习域每日回顾 executor 同样的晚绑路径。
+			if learningExec != nil {
+				learningExec.SetNotifier(svc)
+			}
+			// 工作项提醒 executor 同上。
+			if workItemExec != nil {
+				workItemExec.SetNotifier(svc)
+			}
 			// 定时任务失败通知（2026-09-20）：同一晚绑路径注入 scheduler。
 			if schedRef != nil {
 				schedRef.SetNotifier(svc)
+			}
+			// 每日「全部信息摘要」：日报服务同样在这之后才拿得到通知出口。
+			// 放在这个 if 里是必须的：没有 notifycenter 就没有"每天收到"这件事。
+			if rssStore != nil && cfg.RSS.Enabled && cfg.RSS.DigestEnabled {
+				digestSvc := rss.NewDigestService(rssStore, &rssDigestNotifier{svc: svc}, rss.Scope{
+					UserID:      "local",
+					WorkspaceID: "default",
+				}, rss.DigestServiceOptions{
+					AtHour:         cfg.RSS.DigestHour,
+					AtMinute:       cfg.RSS.DigestMinute,
+					Opts: rss.DigestOptions{
+						MaxPerSection:  cfg.RSS.DigestMaxPerSection,
+						IncludeSummary: cfg.RSS.DigestIncludeSummary,
+					},
+					StartupRunOnStart: cfg.RSS.DigestStartupRun,
+				})
+				if err := digestSvc.Start(context.Background()); err != nil {
+					log.Printf("WARN: rss digest service start failed: %v", err)
+				} else {
+					defer digestSvc.Stop()
+					log.Printf("RSS daily digest started (at=%02d:%02d, max_per_section=%d, startup_run=%v)",
+						cfg.RSS.DigestHour, cfg.RSS.DigestMinute, cfg.RSS.DigestMaxPerSection, cfg.RSS.DigestStartupRun)
+				}
 			}
 			log.Println("Notification Center enabled (inbox + rules + WS foreground push)")
 		}

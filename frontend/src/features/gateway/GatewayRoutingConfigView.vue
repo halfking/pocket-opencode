@@ -155,6 +155,7 @@ import { useRoute } from 'vue-router'
 import * as gw from '../../api/gateway'
 import type { WorkType, TaskDefaultRouting } from '../../api/gateway'
 import { useToast } from '../../composables/useToast'
+import { useApiError } from '../../composables/useApiError'
 import { useConfirm } from '../../composables/useConfirm'
 
 const route = useRoute()
@@ -169,6 +170,7 @@ const L1_TASKS = ['chat', 'reasoning', 'code', 'agent', 'creative', 'long_contex
 const loading = ref(false)
 const saving = ref(false)
 const error = ref('')
+const apiError = useApiError()
 
 // 任务类型
 const workTypes = ref<WorkType[]>([])
@@ -234,7 +236,7 @@ async function reload() {
       }
     }
   } catch (e: any) {
-    error.value = e?.message || String(e)
+    error.value = apiError(e, 'errors.loadGatewayFailed')
   } finally {
     loading.value = false
   }
@@ -262,7 +264,7 @@ async function saveRoutes(wt: WorkType) {
     editing.value = ''
     toast.success(`已更新「${wt.key}」的路由`)
   } catch (e: any) {
-    toast.error('保存失败：' + (e?.message || String(e)))
+    toast.error(apiError(e, 'errors.saveFailed'))
   } finally {
     saving.value = false
   }
@@ -285,7 +287,7 @@ async function createDefault() {
     toast.success('已新增默认路由')
     await reload()
   } catch (e: any) {
-    toast.error('新增失败：' + (e?.message || String(e)))
+    toast.error(apiError(e, 'errors.operateFailed'))
   } finally {
     saving.value = false
   }
@@ -304,7 +306,7 @@ async function removeDefault(d: TaskDefaultRouting) {
     toast.success('已删除')
     await reload()
   } catch (e: any) {
-    toast.error('删除失败：' + (e?.message || String(e)))
+    toast.error(apiError(e, 'errors.operateFailed'))
   } finally {
     saving.value = false
   }
@@ -329,7 +331,7 @@ async function saveFeatured() {
     toast.success('精选模型已保存')
     editingFeatured.value = false
   } catch (e: any) {
-    toast.error('保存失败：' + (e?.message || String(e)))
+    toast.error(apiError(e, 'errors.saveFailed'))
   } finally {
     saving.value = false
   }
@@ -345,65 +347,65 @@ onMounted(reload)
   position: sticky; top: 0; z-index: var(--z-base);
 }
 .tab {
-  flex: 1; padding: 12px 0; font-size: 14px; background: none;
+  flex: 1; padding: 12px 0; font-size: var(--text-base); background: none;
   border: none; border-bottom: 2px solid transparent; color: var(--text-secondary);
   cursor: pointer;
 }
 .tab.active { color: var(--primary, #4c8dff); border-bottom-color: var(--primary, #4c8dff); font-weight: 600; }
 .status-err {
-  padding: 10px 16px; font-size: 12px;
+  padding: 10px 16px; font-size: var(--text-sm);
   background: color-mix(in srgb, var(--danger) 12%, transparent); color: var(--danger);
   display: flex; align-items: center; gap: 8px;
 }
-.link-btn { background: none; border: none; color: var(--primary, #4c8dff); cursor: pointer; font-size: 12px; }
+.link-btn { background: none; border: none; color: var(--primary, #4c8dff); cursor: pointer; font-size: var(--text-sm); }
 .body { padding: var(--space-3); display: flex; flex-direction: column; gap: var(--space-3); }
-.state { padding: 40px 20px; text-align: center; color: var(--text-secondary); font-size: 14px; }
+.state { padding: 40px 20px; text-align: center; color: var(--text-secondary); font-size: var(--text-base); }
 .card {
   background: var(--bg-card); border: 1px solid var(--border);
   border-radius: 12px; padding: var(--space-3);
 }
-.card-h { margin: 0 0 10px; font-size: 14px; font-weight: 600; display: flex; align-items: center; gap: 10px; }
+.card-h { margin: 0 0 10px; font-size: var(--text-base); font-weight: 600; display: flex; align-items: center; gap: 10px; }
 .wt-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-.wt-key { font-size: 15px; font-weight: 600; }
-.wt-sub { font-size: 11px; color: var(--text-secondary); margin-top: 2px; }
+.wt-key { font-size: var(--text-md); font-weight: 600; }
+.wt-sub { font-size: var(--text-2xs); color: var(--text-secondary); margin-top: 2px; }
 .off { color: var(--danger); }
-.wt-desc { font-size: 12px; color: var(--text-secondary); margin: 8px 0; line-height: 1.6; }
+.wt-desc { font-size: var(--text-sm); color: var(--text-secondary); margin: 8px 0; line-height: 1.6; }
 .route-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .route-chip {
-  font-size: 11px; padding: 4px 9px; border-radius: 999px;
+  font-size: var(--text-2xs); padding: 4px 9px; border-radius: 999px;
   background: var(--bg-subtle); border: 1px solid var(--border); color: var(--text-primary);
   display: inline-flex; align-items: center; gap: 4px;
 }
-.chip-x { background: none; border: none; color: var(--danger); cursor: pointer; padding: 0; font-size: 13px; }
-.none { font-size: 12px; color: var(--text-muted); }
+.chip-x { background: none; border: none; color: var(--danger); cursor: pointer; padding: 0; font-size: var(--text-smd); }
+.none { font-size: var(--text-sm); color: var(--text-muted); }
 .route-editor { margin-top: 10px; }
 .routes-input, .inp {
-  width: 100%; box-sizing: border-box; padding: 10px 12px; font-size: 13px;
+  width: 100%; box-sizing: border-box; padding: 10px 12px; font-size: var(--text-smd);
   background: var(--bg-base); color: var(--text-primary);
   border: 1px solid var(--border); border-radius: 10px; outline: none; font-family: inherit;
 }
-.routes-input { font-family: 'SF Mono', Menlo, monospace; resize: vertical; }
+.routes-input { font-family: var(--font-mono); resize: vertical; }
 .routes-input:focus, .inp:focus { border-color: var(--primary, #4c8dff); }
 .editor-actions { display: flex; gap: 8px; margin-top: 8px; }
 .mini-btn {
-  padding: 7px 14px; font-size: 12px; border-radius: 999px; cursor: pointer;
+  padding: 7px 14px; font-size: var(--text-sm); border-radius: 999px; cursor: pointer;
   background: var(--bg-subtle); border: 1px solid var(--border); color: var(--text-primary);
 }
 .mini-btn.primary { background: var(--primary, #4c8dff); border-color: transparent; color: #fff; }
 .mini-btn.danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 40%, transparent); }
 .mini-btn:disabled { opacity: 0.5; }
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px; }
-.form-grid label { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--text-secondary); }
+.form-grid label { display: flex; flex-direction: column; gap: 4px; font-size: var(--text-2xs); color: var(--text-secondary); }
 .form-grid label:nth-child(5), .form-grid label:nth-child(6) { grid-column: span 1; }
 .row-card { display: flex; align-items: center; gap: 10px; }
 .d-main { flex: 1; min-width: 0; }
-.d-model { font-size: 14px; font-weight: 600; word-break: break-all; }
-.d-meta { font-size: 11px; color: var(--text-secondary); margin-top: 2px; }
-.d-reason { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+.d-model { font-size: var(--text-base); font-weight: 600; word-break: break-all; }
+.d-meta { font-size: var(--text-2xs); color: var(--text-secondary); margin-top: 2px; }
+.d-reason { font-size: var(--text-2xs); color: var(--text-muted); margin-top: 2px; }
 .raw-json {
-  margin: 0; padding: 10px; font-size: 11px; line-height: 1.6;
+  margin: 0; padding: 10px; font-size: var(--text-2xs); line-height: 1.6;
   background: var(--bg-subtle); border-radius: 8px; overflow-x: auto;
-  font-family: 'SF Mono', Menlo, monospace; color: var(--text-primary);
+  font-family: var(--font-mono); color: var(--text-primary);
   white-space: pre-wrap; word-break: break-all;
 }
 </style>

@@ -9,14 +9,15 @@
 # 模拟器。与 Dockerfile.frontend 的 runtime stage 完全等价。
 #
 # Build args:
-#   FRONTEND_BASE_IMAGE — 默认 nginx:alpine
+#   FRONTEND_BASE_IMAGE — 默认 nginx:1.24-alpine（与 Dockerfile.frontend 同步钉 stable；
+#     floating nginx:alpine 在 CentOS 7 上起不来，见 handoff BUG-AJ）
 #
 # 用法（由 build-images.sh 调用）：
 #   docker build --platform linux/amd64 \
 #     -f deploy/docker/Dockerfile.frontend-prebuilt \
 #     -t opencode-pocket-frontend:<tag> <ctx 目录，内含 dist/ 与 nginx.conf>
 
-ARG FRONTEND_BASE_IMAGE=nginx:alpine
+ARG FRONTEND_BASE_IMAGE=nginx:1.24-alpine
 
 FROM ${FRONTEND_BASE_IMAGE}
 

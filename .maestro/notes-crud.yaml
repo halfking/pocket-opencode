@@ -1,0 +1,85 @@
+# Maestro 真机功能流 · PKM 笔记写路径（创建 → 改名 → 回列表可见）
+#
+# ⚠️ 2026-10-01 重写。这份 flow 之前测的根本不是这个模块：
+#   旧版第一行是 tapOn(id: "notes-action")，而 notes-action 是 **CSS class 不是 id**，
+#   永远匹配不到；旧版的「一句话概括」「全屏编辑」占位符属于**另一个**笔记 UI
+#   （`/notes/*` 的 NoteListView / NoteEditView），而底部「更多」里的「PKM笔记」
+#   进的是 PKM 模块（`/pkm/*` 的 PkmTodayView / PkmNoteView + PkmEditor）。
+#   也就是说旧版 flow 从写出来那天起就没通过过，只是没人真跑过。
+#
+# PKM 编辑器的真实结构（scripts/diag-pkm-editor.mjs 实测）：
+#   标题  input.pkm-title，占位与初值都是「无标题」
+#   正文  div.tiptap.ProseMirror（contenteditable）
+#   按钮  只有「返回」(arrow_back) 与「通知中心」——**没有保存按钮**（自动保存）
+#   列表页空态有个 .empty-action 按钮，文案就是「新建笔记」
+#
+# ⚠️ 匹配语义（2026-10-01 踩坑后修正，务必别改回纯字符串）：
+#   Maestro 的 `visible` 是**整串全匹配**，不是子串包含。而 WebView 会把
+#   `<li class="note-item">` 里的三个 span（n-title / n-snippet / n-date）**合并成
+#   一个可访问性 TextView**，实测节点文本是 `MaestroPKM笔记空笔记10/1`。
+#   所以列表断言必须用正则 `标题.*`，写纯字符串会永远失败——
+#   2026-10-01 就因为这个误判了一轮「修复后仍看不到笔记」，而实际上 DB 与 DOM 都已正确。
+#   编辑页的 input 是独立节点，值为「无标题」/新标题本身，纯字符串可匹配。
+#   失败时的现场证据：~/.maestro/tests/2026-10-01_055405/.../step-039-*.json
+#
+# 覆盖范围与边界：
+#   ✅ 创建（点「新建笔记」→ 得到一个真 id 的笔记）
+#   ✅ 改名（改标题 → 回列表能看到新标题）
+#   ❌ **删除**：PKM 模块**没有任何删除入口**。pkm-store.ts:127 有 deleteNote()，
+#      但整个 features/pkm 下没有任何 UI 调用它。这是发现的产品缺口，不是 flow 漏了。
+#      需要产品侧决定是否补入口，或确认删除统一走 `/notes/:id` 那套。
+#
+# 运行：
+#   node scripts/maestro-run.mjs .maestro/notes-crud.yaml
+#   务必走启动器：裸调 maestro 会触发 driver 重装，MIUI 拦下安装就把 driver 卸了。
+appId: com.kaixuan.opencode.pocket
+---
+# ---------- 0. 前置：harness 已登录 + 已解锁本地库，起点在 #/ai ----------
+# ⚠️ 2026-10-02：原先这里是 `- runFlow: _login.yaml`。但 _login.yaml 的登录走
+#    Maestro 的 `inputText: ${POCKET_DEV_PASS}`，而 Maestro 实测把它展开成
+#    **字面量 "undefined"**（.maestro/_probe-env.yaml 坐实：框内容
+#    adminPWLEN-undefined）。登录已改由 scripts/maestro-run.mjs 的 preflight
+#    用 CDP 填真实 LoginView 表单完成；本地 SQLCipher 库的主密码解锁也已
+#    上移到同处的 ensureLocalDbUnlocked()（同样走 CDP，按 placeholder 定位，
+#    不依赖坐标）。_login.yaml 在本流程里已无必要。
+#    如实记录覆盖变窄：软键盘那套手势本流程不再走（见 handoff §4.82.5）。
+# 前置可复现：node scripts/pkm-test-fixture.mjs（删掉上一轮同名笔记，
+# 否则最后一步的列表回显会假通过——Maestro 判 visible 只看节点在不在
+# 无障碍树里，不看它是不是上一轮留下的）。
+# ⚠️ 2026-10-03 真机实测：锚点文本随 IA 重组变了。
+# 原来等的是「AI 工具」——那是重组**前**首页 tab 的标签。重组后一级 tab 是
+# 首页 / 笔记 / 消息 / 更多（BottomNav.vue items），于是这一行 45s 超时、
+# 整条 flow 在第一条断言就中止，报 `Assertion is false: "AI 工具" is visible`。
+# 「首页」是新 tab 的真实标签（locales/zh-CN.json nav.home）。
+- extendedWaitUntil:
+    visible: "首页"
+    timeout: 45000
+- assertVisible: "首页"
+- assertNotVisible: "密码登录"
+
+- runFlow: _goto-pkm.yaml
+
+# ---- 创建 ----
+- tapOn: "新建笔记"
+- extendedWaitUntil:
+    visible: { text: "^无标题$" }
+    timeout: 25000
+- assertVisible: { text: "^无标题$" }
+
+# ---- 改名（标题输入框初值就是「无标题」，先清后写）----
+- tapOn: { text: "^无标题$" }
+- eraseText
+- inputText: "MaestroPKM笔记"
+- hideKeyboard
+- extendedWaitUntil:
+    visible: { text: "^MaestroPKM笔记$" }
+    timeout: 15000
+- assertVisible: { text: "^MaestroPKM笔记$" }
+
+# ---- 回列表：必须能看到新标题，否则「写进去但读不到」也算失败 ----
+# 用正则而不是纯字符串：列表项三个 span 被 WebView 合并成「标题+摘要+日期」一个节点。
+- tapOn: "返回"
+- extendedWaitUntil:
+    visible: { text: "MaestroPKM笔记.*" }
+    timeout: 25000
+- assertVisible: { text: "MaestroPKM笔记.*" }

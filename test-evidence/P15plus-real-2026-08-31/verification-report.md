@@ -193,7 +193,7 @@ classes9.dex:
 
 ### 3.1 LLM 网关初始化(baseURL + APIKey + 9 模型偏好)
 
-**用户需求**:网关默认配置 `https://llm.kxpms.cn/v1` + `sk-6tGLjzlzUIOuMxh6qhOVRK9eznOTVAkQ3JxRZrvWECrK51YV`,偏好模型 9 个:`glm-5.2`、`minimax-m3`、`kimi-k3`、`claude-sonnet-5`、`gpt-5.6-terra`、`claude-opus-5`、`claude-fable-5`、`gpt-5.6-sol`、`gemini-3.5-flash`。
+**用户需求**:网关默认配置 `https://llm.kxpms.cn/v1` + `<REDACTED-2026-10-01-see-handoff>`,偏好模型 9 个:`glm-5.2`、`minimax-m3`、`kimi-k3`、`claude-sonnet-5`、`gpt-5.6-terra`、`claude-opus-5`、`claude-fable-5`、`gpt-5.6-sol`、`gemini-3.5-flash`。
 
 **操作步骤**:
 1. 主机 curl 直接调用后端 API(`/api/llm-gateway/config` POST 接受 baseURL + apiKey)

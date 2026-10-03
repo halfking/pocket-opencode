@@ -59,6 +59,15 @@ export async function writeLocalSetting(input: {
   const dirty = input.dirty ?? 1
   const payload = JSON.stringify(input.payload ?? {})
   const secret = input.secretEncrypted ?? ''
+  // BUG-AP：本文件里唯一没有 isReady() 守卫的写函数（listLocalSettings /
+  // getLocalSetting / markSettingClean / deleteLocalSetting 都有）。
+  // 本地库未就绪（未解锁、迁移未完成）时 localDB.run 会抛，
+  // 而调用方（scheduled-tasks store）把这种「本地缓存写失败」
+  // 误判成「服务端创建失败」，进而伪造一条不同 id 的草稿并排队推送，
+  // 结果服务端出现重复任务。缓存写失败应当降级而不是炸掉整条链路。
+  if (!localDB.isReady()) {
+    return { namespace: input.namespace, id: input.id, payload, secretEncrypted: secret, updatedAt, dirty }
+  }
   await localDB.run(
     `INSERT INTO local_user_settings (namespace, id, payload, secret_encrypted, updated_at, dirty)
      VALUES (?, ?, ?, ?, ?, ?)

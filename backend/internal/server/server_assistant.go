@@ -8,6 +8,7 @@ package server
 // 确保端到端骨架可运行、可测试。
 
 import (
+	"bytes"
 	"context"
 	"crypto/subtle"
 	"encoding/base64"
@@ -24,7 +25,9 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/halfking/pocket-opencode/backend/internal/aigate"
 	"github.com/halfking/pocket-opencode/backend/internal/auth"
@@ -34,6 +37,7 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/llmbff"
 	"github.com/halfking/pocket-opencode/backend/internal/notes"
 	"github.com/halfking/pocket-opencode/backend/internal/redclaw"
+	"github.com/halfking/pocket-opencode/backend/internal/stt"
 	ws "github.com/halfking/pocket-opencode/backend/internal/websocket"
 )
 
@@ -94,7 +98,7 @@ func (s *Server) userIDFromRequest(r *http.Request) string {
 //     RedClaw /api/v1/auth/login,拿到 RedClaw 颁发的 HS256 JWT 后原样
 //     回给前端（前端存进 localStorage 的 pocket_token）。
 //  2. RedClaw 不可达 + POCKET_DEV_AUTH=true（开发/故障恢复）：
-//     走本地 dev 旁路（admin / Veritrans&9527），本地 jwtSigner 签发。
+//     走本地 dev 旁路（需显式设置 POCKET_AUTH_USER/PASS；不再有内置缺省口令）。
 //  3. legacy 模式（POCKET_AUTH_LEGACY_ONLY=true）：直接走原本地 users 表。
 //
 // 兼容性：legacy/dev 模式仍保留 EnsureDefaultWorkspace + RecordShadow
@@ -197,8 +201,18 @@ type devCreds struct {
 	email    string
 }
 
-// devBypassCredentials 按 POCKET_AUTH_USER/PASS（缺省 admin / Veritrans&9527）
-// constant-time 校验 dev 旁路凭据。仅当 POCKET_DEV_AUTH=true 时由调用方触发。
+// devBypassCredentials 按 POCKET_AUTH_USER/PASS 校验 dev 旁路凭据。
+// 仅当 POCKET_DEV_AUTH=true 时由调用方触发。
+//
+// 2026-10-02：此前这里在 DevAuthPass 为空时回落到一个**写死在源码里**的
+// 默认口令。那把口令在 8 个受跟踪文件里明文出现（server_assistant.go、
+// start-dev.sh、verify-stt*.ps1、verify-https-prod.mjs、docs/archive/…），
+// 任何拿到仓库的人都知道，于是「dev 模式」实际等于「公开口令的 admin 旁路」。
+// 上一轮 336c883 已经把 bootstrap 建号路径的同类问题修掉（拒绝用内置口令建号），
+// 这条旁路是同一问题的残留入口。
+//
+// 现在：没有显式配置口令就**拒绝旁路**，并告警。要用 dev 旁路就必须显式给
+// POCKET_AUTH_PASS——那属于本机开发者的显式选择，不会随仓库扩散。
 func (s *Server) devBypassCredentials(username, password string) (devCreds, bool) {
 	devUser := s.cfg.DevAuthUser
 	if devUser == "" {
@@ -206,9 +220,10 @@ func (s *Server) devBypassCredentials(username, password string) (devCreds, bool
 	}
 	devPass := s.cfg.DevAuthPass
 	if devPass == "" {
-		// 未显式配置密码时给出一次性告警,便于审计发现默认凭据在用。
-		devPass = "Veritrans&9527"
-		log.Printf("WARN: POCKET_AUTH_PASS not set; using built-in dev default password")
+		// 不再回退到任何内置口令。缺配置 = 不提供旁路。
+		log.Printf("WARN: POCKET_AUTH_PASS not set; dev auth bypass disabled. " +
+			"Set POCKET_AUTH_PASS explicitly to use the dev bypass.")
+		return devCreds{}, false
 	}
 	if subtle.ConstantTimeCompare([]byte(username), []byte(devUser)) == 1 &&
 		subtle.ConstantTimeCompare([]byte(password), []byte(devPass)) == 1 {
@@ -401,6 +416,12 @@ func (s *Server) handleNoteOperations(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, found)
+	case http.MethodPut, http.MethodPatch:
+		// BUG-N（2026-09-30 由 scripts/probe-write-methods.mjs 的 method 级
+		// 探测发现）：前端 notesApi.update 打 PUT /api/notes/:id，而这里此前
+		// 只有 GET/DELETE，notes.Store 也没有任何更新方法 -> 编辑笔记恒 405。
+		// PUT 与 PATCH 走同一套部分更新语义：字段缺失=不改，显式空串=清空。
+		s.handleNoteUpdate(w, r, id, uid, wsID)
 	case http.MethodDelete:
 		if err := s.notesStore.DeleteScoped(r.Context(), id, uid, wsID); err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
@@ -410,6 +431,69 @@ func (s *Server) handleNoteOperations(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "GET/DELETE only")
 	}
+}
+
+// handleNoteUpdate — PUT/PATCH /api/notes/{id}
+//
+// 解析成指针字段的 patch：JSON 里缺席的字段保持 nil（不改），显式给出的
+// 字段才会写。空串是"清空"而不是"不改"，这与前端 Partial<NoteInput> 的
+// 预期一致，也让"清空标题"成为可表达的操作。
+func (s *Server) handleNoteUpdate(w http.ResponseWriter, r *http.Request, id, uid, wsID string) {
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "read body: "+err.Error())
+		return
+	}
+	var in struct {
+		Title         *string `json:"title"`
+		Content       *string `json:"content"`
+		ContentType   *string `json:"contentType"`
+		Domain        *string `json:"domain"`
+		Tags          *string `json:"tags"`
+		AudioPath     *string `json:"audioPath"`
+		AudioDuration *int    `json:"audioDuration"`
+	}
+	if len(bytes.TrimSpace(body)) > 0 {
+		if err := json.Unmarshal(body, &in); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+			return
+		}
+	}
+	// 前端 Note.tags 是 string[]，而库里/Note.Tags 是 JSON 数组字符串。
+	// 两种形态都接受，避免前端改形状时静默丢标签。
+	if in.Tags != nil {
+		var asArray []string
+		if err := json.Unmarshal([]byte(*in.Tags), &asArray); err == nil {
+			b, _ := json.Marshal(asArray)
+			s := string(b)
+			in.Tags = &s
+		}
+	}
+
+	updated, err := s.notesStore.UpdateNoteScoped(r.Context(), id, uid, wsID, notes.NotePatch{
+		Title:         in.Title,
+		Content:       in.Content,
+		ContentType:   in.ContentType,
+		Domain:        in.Domain,
+		Tags:          in.Tags,
+		AudioPath:     in.AudioPath,
+		AudioDuration: in.AudioDuration,
+	})
+	if err != nil {
+		if errors.Is(err, notes.ErrNoteNotFound) {
+			writeError(w, http.StatusNotFound, "note not found")
+			return
+		}
+		// 字段级校验失败（domain/contentType 越界、tags 不是 JSON 数组）属于
+		// 客户端输入错误，store 只能用 error 表达，这里按 400 返回。
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if updated == nil {
+		writeError(w, http.StatusNotFound, "note not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, updated)
 }
 
 // handleNoteClassify — POST /api/notes/{id}/classify
@@ -523,6 +607,22 @@ func (s *Server) handleNoteSummarize(w http.ResponseWriter, r *http.Request, id 
 		return
 	}
 
+	// 这个 60 秒的预算**现在是真能用的**（2026-10-02 人工拍板，见
+	// llmgateway/client.go 的同名注释）。此前它有一段死预算，这里记一下
+	// 「为什么曾经不是」，免得日后有人看着 60s 猜错：
+	//
+	// 当时 llmgateway.Client 的 `Transport.ResponseHeaderTimeout = 30s`，
+	// 而响应头要到上游**真正开始回包**才发出。对本路由的模型（网关自动
+	// 路由到 glm-5.2，推理模型，先把 token 花在 reasoning_content 上、正文
+	// 最后才吐）来说，"开始回包"本来就可能晚于 30 秒，于是实际预算是
+	// min(60s, 30s) = **30 秒**，30~60 秒这一段是死预算：handler 以为自己有
+	// 60s，用户看到的却是 30s 就「总结失败」。
+	//
+	// ResponseHeaderTimeout 已调为 60s，两者对齐，死预算消除。代价是上游真
+	// 挂死时本路由的失败时间从 30s 变成最多 60s（llmgateway 整体 Timeout
+	// 仍是 90s，不会无界挂死）——这是拍板接受的取舍。
+	//
+	// 前端 NOTE_SUMMARIZE_TIMEOUT_MS=90s 大于服务端 60s，两端不打架。
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
 
@@ -537,7 +637,21 @@ func (s *Server) handleNoteSummarize(w http.ResponseWriter, r *http.Request, id 
 			{Role: "user", Content: prompt},
 		},
 		Temperature: 0.3,
-		MaxTokens:   300,
+		// 300 → 2048。
+		//
+		// 网关（https://llm.kxpms.cn/v1）自动路由到的 glm-5.2 是**推理模型**：
+		// 它先把 token 花在 reasoning_content 上，正文 content 最后才吐。
+		// 2026-10-02 实测同一段提示词：
+		//
+		//	max_tokens=300   → content 长度 0，finish_reason=length，
+		//	                    usage.completion_tokens 恰好 300（推理吃光）
+		//	max_tokens=2000  → content 63 字，finish_reason=stop，
+		//	                    reasoning 985 + 正文 63
+		//
+		// 也就是说 300 这个预算下，模型**答了**，但接口返回 HTTP 200 +
+		// summary 空串，界面上就表现为「没有即时总结」——一个字节都不报错。
+		// 笔记总结只要 3~5 句话，2048 足够容纳推理开销加正文。
+		MaxTokens: 2048,
 		User:        uid,
 	}
 
@@ -1060,6 +1174,10 @@ func (s *Server) updateEmailAccount(w http.ResponseWriter, r *http.Request, acc 
 		SMTPHost     *string `json:"smtpHost"`
 		SMTPPort     *int    `json:"smtpPort"`
 		SMTPPassword *string `json:"smtpPassword"`
+		// UpdatedAt 是客户端本地镜像里这一行的时间戳（LWW 基准版本）。
+		// 省略/0 = 旧客户端，服务端无条件覆盖；带上则做 last-write-by-time
+		// 守卫：服务端比它新就回 409 + 当前 updated_at，让客户端改走下行。
+		UpdatedAt *int64 `json:"updatedAt"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
@@ -1142,9 +1260,21 @@ func (s *Server) updateEmailAccount(w http.ResponseWriter, r *http.Request, acc 
 	}
 
 	uid := s.userIDFromRequest(r)
-	if err := s.emailStore.UpdateAccountScoped(r.Context(), acc, uid, workspaceID, encrypted, updateCredential); err != nil {
+	var baseUpdatedAt int64
+	if body.UpdatedAt != nil && *body.UpdatedAt > 0 {
+		baseUpdatedAt = *body.UpdatedAt
+	}
+	if err := s.emailStore.UpdateAccountLWTScoped(r.Context(), acc, uid, workspaceID, encrypted, updateCredential, baseUpdatedAt); err != nil {
 		if errors.Is(err, email.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "account not found")
+			return
+		}
+		if errors.Is(err, email.ErrStaleWrite) {
+			// 服务端这份更新：附上当前 updated_at，客户端可直接覆盖本地镜像。
+			writeJSON(w, http.StatusConflict, map[string]any{
+				"error":     "stale write: server copy is newer",
+				"updatedAt": acc.UpdatedAt,
+			})
 			return
 		}
 		writeError(w, http.StatusInternalServerError, "update account: "+err.Error())
@@ -1238,6 +1368,8 @@ func (s *Server) handleEmails(w http.ResponseWriter, r *http.Request) {
 		Category:   r.URL.Query().Get("category"),
 		Importance: r.URL.Query().Get("importance"),
 		UnreadOnly: r.URL.Query().Get("unread") == "1",
+		// folder：空 = 收件箱默认视图；具体目录名 = 该目录；"__all__" = 全部。
+		Folder: r.URL.Query().Get("folder"),
 	}
 	if v := r.URL.Query().Get("limit"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
@@ -1254,11 +1386,20 @@ func (s *Server) handleEmails(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// total 是**不受 limit 影响**的匹配总数（CountEmailsScoped）。客户端缓存
+	// 自愈要比「本地行数 vs 服务端行数」，若拿 len(list) 当总数，邮箱超过
+	// limit 时这个数字恒等于 limit，缺口信号会被彻底抹平。
+	total, err := s.emailStore.CountEmailsScoped(r.Context(), f, s.userIDFromRequest(r), s.workspaceIDFromRequest(r))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	// 增量同步信封：serverTimeMs 供客户端校正时钟漂移；带 since 时附带
 	// 软删除墓碑（deletedIds），客户端据此移除本地缓存行（无刷新删除）。
 	resp := map[string]any{
 		"emails":       list,
 		"serverTimeMs": time.Now().UnixMilli(),
+		"total":        total,
 	}
 	if f.Since > 0 {
 		deletedIDs, err := s.emailStore.ListDeletedEmailIDsScoped(r.Context(), f.Since, s.userIDFromRequest(r), s.workspaceIDFromRequest(r), 500)
@@ -1593,13 +1734,7 @@ func (s *Server) handleEmailBody(w http.ResponseWriter, r *http.Request, emailID
 	//    （em.BodyPath 来自 GetEmailByIDScoped 的 body_path 列；旧逻辑每次盲试文件。）
 	if em.BodyPath != "" {
 		if cached, _ := s.readCachedEmailBody(ctx, emailID, em.UID); cached != nil {
-			display := email.ExtractDisplayBody(cached)
-			writeJSON(w, http.StatusOK, map[string]any{
-				"emailId": emailID,
-				"source":  "cache",
-				"bytes":   len(display),
-				"body":    display,
-			})
+			writeJSON(w, http.StatusOK, s.emailBodyResponse(emailID, "cache", cached))
 			return
 		}
 	}
@@ -1614,34 +1749,102 @@ func (s *Server) handleEmailBody(w http.ResponseWriter, r *http.Request, emailID
 		writeError(w, http.StatusUnprocessableEntity, "email missing imap uid")
 		return
 	}
-	body, err := s.emailFetcher.FetchBody(ctx, em.AccountID, em.UID, maxBodyBytes)
+	// 3) 主路径取整封原文（BODY.PEEK[]），而不是 BODY[TEXT]。
+	//
+	// BODY[TEXT] 是服务器端就挑好的纯文本，HTML 分支、cid 内联图、附件结构
+	// 在这一步已经全部丢失；而前端唯一的详情入口 EmailDetailView 拿到响应后
+	// 直接交给 extractEmailBody()——它需要完整 MIME 树才能把
+	// <img src="cid:..."> 内联成 data URI、在 multipart/alternative 里选 HTML。
+	// 两者对不上，就是真机报的「详情展示不正常、缺失图片或内容」。
+	cacheFormat := bodyCacheFormatMIME
+	body, err := s.emailFetcher.FetchMessageRaw(ctx, em.AccountID, em.UID)
 	if err != nil {
-		raw, rawErr := s.emailFetcher.FetchMessageRaw(ctx, em.AccountID, em.UID)
-		if rawErr != nil {
-			log.Printf("[email/body] imap fetch email=%s account=%s uid=%d: %v; raw: %v", emailID, em.AccountID, em.UID, err, rawErr)
+		// 整封原文拿不到（部分服务器/代理对 BODY[] 有限制）→ 退回 BODY[TEXT]。
+		// 此时只剩纯文本，详情会退化成无图无 HTML 的纯文本模式，但好过整封报错。
+		text, terr := s.emailFetcher.FetchBody(ctx, em.AccountID, em.UID, maxBodyBytes)
+		if terr != nil {
+			log.Printf("[email/body] imap fetch email=%s account=%s uid=%d: raw: %v; text: %v", emailID, em.AccountID, em.UID, err, terr)
 			writeError(w, http.StatusBadGateway, "imap fetch failed")
 			return
 		}
-		body = raw
+		log.Printf("[email/body] email=%s uid=%d: BODY[] unavailable (%v), fell back to BODY[TEXT]（详情将无图无 HTML）", emailID, em.UID, err)
+		body = text
+		// 兜底正文按 text 版本落盘：它是该服务器能给的最好结果，下次直接命中，
+		// 不当 legacy 处理（否则服务器不支持 BODY[] 时会每次详情都回源重拉）。
+		cacheFormat = bodyCacheFormatText
 	}
-	if writeErr := s.writeCachedEmailBody(ctx, emailID, body); writeErr != nil {
+	if writeErr := s.writeCachedEmailBody(ctx, emailID, body, cacheFormat); writeErr != nil {
 		log.Printf("[email/body] cache write email=%s: %v", emailID, writeErr)
 		// 缓存写失败仍返回内容，避免阻塞前端
 	}
 	if markErr := s.emailStore.MarkEmailBodyCached(ctx, emailID, bodyCacheRelativePath(emailID), len(body)); markErr != nil && !errors.Is(markErr, email.ErrNotFound) {
 		log.Printf("[email/body] mark body cached email=%s: %v", emailID, markErr)
 	}
-	display := email.ExtractDisplayBody(body)
-	writeJSON(w, http.StatusOK, map[string]any{
+	writeJSON(w, http.StatusOK, s.emailBodyResponse(emailID, "imap", body))
+}
+
+// emailBodyResponse 组装 /api/emails/{id}/body 的响应。
+//
+// body 字段承载的是「整封 MIME 原文」，不是拍平后的展示文本：前端
+// EmailDetailView 是唯一消费者，它拿到 body 后交给 extractEmailBody()
+// 解析——cid 内联图、multipart/alternative 选分支、quoted-printable 与
+// GB2312 解码全都依赖完整 MIME 树。之前这里返回
+// ExtractDisplayBody(BodyText) 拍平结果，且那份 body 来自 BODY[TEXT]
+// （服务器端已丢掉 HTML/内嵌图/附件），于是详情页永远只剩一段纯文本。
+//
+// 非 MIME 输入（旧版本缓存下来的拍平文本、或 BODY[TEXT] 回退结果）仍然要
+// 能显示，故保留 ExtractDisplayBody 兜底。
+//
+// **8bit 非 UTF-8 报文必须走兜底分支**（2026-10-01 真机审计 P0：正文乱码）：
+// 直接 `string(raw)` 再交给 encoding/json 时，非法 UTF-8 字节会被**替换成
+// U+FFFD**，GBK 正文在到达浏览器之前就已经永久丢失（实测 `��Ķ�`）。前端
+// 拿到后再怎么按 GBK 解都救不回来。ParseMIMEMessage 会按部件声明的 charset
+// 正确解码，所以这里先判 UTF-8 合法性，不合法就改用它。
+func (s *Server) emailBodyResponse(emailID, source string, raw []byte) map[string]any {
+	if _, err := email.ParseMIMEMessage(raw); err != nil {
+		display := email.ExtractDisplayBody(raw)
+		return map[string]any{
+			"emailId": emailID,
+			"source":  source,
+			"bytes":   len(display),
+			"body":    display,
+		}
+	}
+	if !utf8.Valid(raw) {
+		// 报文里有非 UTF-8 字节（GBK/Big5 系的 8bit 正文）。原样 string(raw)
+		// 会在 JSON 序列化时被替换成 U+FFFD，务必改走按 charset 解码的兜底。
+		display := email.ExtractDisplayBody(raw)
+		return map[string]any{
+			"emailId": emailID,
+			"source":  source,
+			"bytes":   len(display),
+			"body":    display,
+		}
+	}
+	return map[string]any{
 		"emailId": emailID,
-		"source":  "imap",
-		"bytes":   len(display),
-		"body":    display,
-	})
+		"source":  source,
+		"bytes":   len(raw),
+		"body":    string(raw),
+	}
 }
 
 // bodyCacheDirName 缓存目录名；放在 dataDir 内、模式 0700，仅进程可读。
 const bodyCacheDirName = "email-bodies"
+
+// 正文缓存格式版本（文件布局：8 字节 UID + 1 字节 format + 密文）。
+//
+// 历史包袱：2026-10-01 之前的版本没有 format 字节，密文紧跟在 8 字节 UID
+// 之后，且部分内容是旧逻辑落进去的「拍平展示文本」（ExtractDisplayBody），
+// 前端拿它解析不出 cid 内联图/HTML 分支，详情页表现为「只显示一部分」。
+// base64 密文首字符取值域是 A-Za-z0-9+/=（最小 0x2B），不可能撞上 0x01/0x02，
+// 所以把「第 9 字节不是已知版本号」判为 legacy：读路径视为未命中（自愈——
+// 下一次访问会回源 IMAP 重拉完整 MIME 并以 v1 覆写），不再让旧缓存永久占坑。
+const (
+	bodyCacheFormatLegacy byte = 0x00 // 旧版文件（无 format 字节），读时按未命中处理
+	bodyCacheFormatMIME   byte = 0x01 // 完整 MIME 原文（BODY.PEEK[]）
+	bodyCacheFormatText   byte = 0x02 // BODY[TEXT] 兜底纯文本（服务器不支持 BODY[] 时合法产物，不触发自愈）
+)
 
 // emailIDPathSafe 报告 email ID 是否可安全用于拼接缓存文件路径。
 // 客户端推送路径允许自带 ID，含路径分隔符（或 ".."）的 ID 会把
@@ -1670,8 +1873,9 @@ func (s *Server) bodyCacheDir() (string, error) {
 	return dir, nil
 }
 
-// readCachedEmailBody 读缓存并解密；不存在 / 损坏 / UID 不匹配时返回 nil+nil。
-// 缓存头部写入 8 字节 UID，便于账号迁移后定位旧 UID 失效。
+// readCachedEmailBody 读缓存并解密；不存在 / 损坏 / UID 不匹配 / legacy 格式时返回 nil+nil。
+// 缓存头部写入 8 字节 UID + 1 字节格式版本，便于账号迁移后定位旧 UID 失效、
+// 以及让旧「拍平文本」缓存在下次访问时自动回源重拉（见 bodyCacheFormat* 注释）。
 func (s *Server) readCachedEmailBody(ctx context.Context, emailID string, expectedUID int64) ([]byte, error) {
 	if !emailIDPathSafe(emailID) {
 		return nil, nil
@@ -1688,14 +1892,20 @@ func (s *Server) readCachedEmailBody(ctx context.Context, emailID string, expect
 		}
 		return nil, err
 	}
-	if len(data) < 8 {
+	if len(data) < 9 {
 		return nil, nil
 	}
 	prefixUID := int64(binary.BigEndian.Uint64(data[:8]))
 	if expectedUID > 0 && prefixUID != expectedUID {
 		return nil, nil // 旧缓存，视为未命中
 	}
-	bodyEnc := string(data[8:])
+	switch data[8] {
+	case bodyCacheFormatMIME, bodyCacheFormatText:
+		// 已知格式，继续解密。
+	default:
+		return nil, nil // legacy（无版本字节）：视为未命中，触发回源自愈
+	}
+	bodyEnc := string(data[9:])
 	body, err := s.emailCrypto.DecryptString(bodyEnc)
 	if err != nil {
 		return nil, nil // 损坏视为未命中
@@ -1703,8 +1913,8 @@ func (s *Server) readCachedEmailBody(ctx context.Context, emailID string, expect
 	return []byte(body), nil
 }
 
-// writeCachedEmailBody 原子写入（临时文件 + rename），避免 reader 撞上半文件。
-func (s *Server) writeCachedEmailBody(ctx context.Context, emailID string, body []byte) error {
+// writeCachedEmailBody 以指定格式版本原子写入（临时文件 + rename），避免 reader 撞上半文件。
+func (s *Server) writeCachedEmailBody(ctx context.Context, emailID string, body []byte, format byte) error {
 	if !emailIDPathSafe(emailID) {
 		return fmt.Errorf("email id not safe for cache path")
 	}
@@ -1727,10 +1937,11 @@ func (s *Server) writeCachedEmailBody(ctx context.Context, emailID string, body 
 			_ = os.Remove(tmpPath)
 		}
 	}()
-	hdr := make([]byte, 8)
+	hdr := make([]byte, 9)
 	// UID 在缓存写入时被省略（0），让 readCachedEmailBody 跳过 UID 校验，
 	// 避免 sync 增量 UID 改变导致命中旧内容。
-	binary.BigEndian.PutUint64(hdr, 0)
+	binary.BigEndian.PutUint64(hdr[:8], 0)
+	hdr[8] = format
 	if _, err := tmp.Write(hdr); err != nil {
 		_ = tmp.Close()
 		return err
@@ -1777,6 +1988,16 @@ func (s *Server) handleEmailOps(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.handleEmailBody(w, r, id)
+		return
+	}
+	// /api/emails/{id}/summarize — POST 对单封邮件按需生成摘要（已有则直接返回）。
+	if strings.HasSuffix(remain, "/summarize") {
+		id := strings.TrimSuffix(remain, "/summarize")
+		if id == "" {
+			writeError(w, http.StatusBadRequest, "missing email id")
+			return
+		}
+		s.handleEmailSummarize(w, r, id)
 		return
 	}
 	// /api/emails/{id} — GET 详情 / PATCH 标记已读。
@@ -1924,6 +2145,19 @@ func (s *Server) handleEmailSync(w http.ResponseWriter, r *http.Request) {
 	totalSaved := 0
 	synced := 0
 	failed := []string{}
+	// skipped = 本轮**没有真的失败**，而是该账户已有一轮同步在跑，本次调用
+	// 被 ErrSyncInFlight 正常跳过（fetcher.go 的 per-account 单飞锁）。
+	//
+	// 为什么必须单独成一类：scheduler.tick（scheduler.go:718）和 pipeline
+	// （pipeline.go:156）都已识别 ErrSyncInFlight，只有这条 HTTP 入口没有。
+	// 于是「正确跳过」被当成「同步失败」——响应里给用户报红一个其实好着的
+	// 账户，并且额外调 RecordSyncFailure 往库里写一条**假的失败记录**。
+	// 实测 2026-10-03：5 个账户全部同步成功（QQ uid 推进到 10410），响应却是
+	// {"synced":4,"failed":["56551681@qq.com"]}，因为定时器与手工 POST 同时
+	// 打到了同一个账户。那条假记录会一直挂在账户上，把后续「服务端在拒登」
+	// 这类排查引向错误方向——与 2026-10-02 记的 credential health 分类混淆
+	// 是同一类误判。
+	skipped := []string{}
 	for _, acc := range accounts {
 		if !acc.Enabled {
 			continue
@@ -1934,6 +2168,17 @@ func (s *Server) handleEmailSync(w http.ResponseWriter, r *http.Request) {
 			return s.emailFetcher.Sync(syncCtx, acc.ID)
 		}()
 		if ferr != nil {
+			if syncSkippedNotFailed(ferr) {
+				log.Printf("[email/sync] account %s (%s): skipped, a sync is already in flight", acc.ID, acc.EmailAddress)
+				skipped = append(skipped, acc.EmailAddress)
+				continue
+			}
+			// 落库：手工触发失败也要变成可查询的事实。定时链路在
+			// scheduler.tick 里也记，两条入口都记，缺一条就会出现
+			// 「只有定时失败查得到、手工失败查不到」这种半截可观测性。
+			if rerr := s.emailStore.RecordSyncFailure(r.Context(), acc.ID, ferr.Error()); rerr != nil {
+				log.Printf("[email/sync] record failure %s: %v", acc.ID, rerr)
+			}
 			log.Printf("[email/sync] account %s (%s): %v", acc.ID, acc.EmailAddress, ferr)
 			failed = append(failed, acc.EmailAddress)
 			continue
@@ -1966,7 +2211,24 @@ func (s *Server) handleEmailSync(w http.ResponseWriter, r *http.Request) {
 	if len(failed) > 0 {
 		result["failed"] = failed
 	}
+	if len(skipped) > 0 {
+		result["skipped"] = skipped
+	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+// syncSkippedNotFailed 判定一次 per-account Sync 错误是「被单飞锁正常跳过」
+// 还是「真的同步失败」。
+//
+// 抽成函数是为了能钉住它：`emailFetcher` 是具体类型 *email.Fetcher 而不是接口，
+// handler 测试没法注入一个必然返回 ErrSyncInFlight 的假 fetcher——硬要造就得
+// 真的跑一轮 in-flight 同步，测试会依赖 IMAP 与时序。判定本身是纯函数，
+// 在这里钉住，handler 只负责调用。
+//
+// 用 errors.Is 而不是 ==：fetcher.go:650 是 fmt.Errorf("%w: %s", ...) 包过的，
+// 裸比较永远不成立——这正是它当初漏网的原因之一。
+func syncSkippedNotFailed(ferr error) bool {
+	return errors.Is(ferr, email.ErrSyncInFlight)
 }
 
 // handleEmailSyncStatus — POST /api/email/sync/status
@@ -2034,8 +2296,8 @@ func (s *Server) classifyEmailsAsync(emails []email.Email, userID, workspaceID s
 	// 回写分类结果
 	classified := 0
 	for _, result := range resp.Results {
-		if err := s.emailStore.SetClassificationScoped(ctx, result.EmailID, userID, workspaceID,
-			result.Category, result.Importance, result.Summary, result.SuggestedAction); err != nil {
+		if err := s.emailStore.SetClassificationWithReasonScoped(ctx, result.EmailID, userID, workspaceID,
+			result.Category, result.Importance, result.Summary, result.SuggestedAction, result.ActionReason); err != nil {
 			log.Printf("[kxmemory] update email %s classification failed: %v", result.EmailID, err)
 			continue
 		}
@@ -2128,6 +2390,18 @@ func (s *Server) handleVaultSync(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid body")
+			return
+		}
+		// BUG-AG：空 blob 必须拒。vault 的同步语义是「上传整块密文」，
+		// 空 blob 不是「清空密码箱」，而是「客户端这次没拿到数据」。
+		// 现实触发路径很现实：原生 Keystore 插件缺失 → keystore.ts 的
+		// StubKeystore 抛错/返回空 → 同步逻辑把空串传上来 → 这里一旦照收，
+		// 用户已存的密文就被覆盖清空，而响应是 200 {"ok":true}，
+		// 前端还会广播「已同步」—— 与 BUG-AC 同一形状，但后果是**丢数据**。
+		// 恢复走 POST /api/vault/sync/{version}/restore，不靠上传空串。
+		// 回归：TestVaultSync_RejectsEmptyBlob（撤掉这段会红，body 正是 {"ok":true}）
+		if strings.TrimSpace(body.Blob) == "" {
+			writeError(w, http.StatusBadRequest, "blob is required (refusing to overwrite the stored vault with an empty payload)")
 			return
 		}
 		if err := s.vaultStore.PutLatest(r.Context(), s.workspaceIDFromRequest(r), uid, body.Blob, body.Version); err != nil {
@@ -2226,7 +2500,12 @@ func audioFilenameForContentType(contentType string) string {
 
 func (s *Server) handleSttTranscribe(w http.ResponseWriter, r *http.Request) {
 	if s.transcriber == nil {
-		writeError(w, http.StatusServiceUnavailable, "STT cloud not configured (set POCKET_GROQ_API_KEY)")
+		// 错误码前缀是前后端契约：前端 api/error-message.ts 用
+		// extractErrorCode() 取 `code:` 前半段做精确匹配，映射到
+		// errors.sttNotConfigured（"语音转写服务尚未配置"）。
+		// 不带码时只能落到通用 not configured 文案（"该功能尚未完成配置"），
+		// 用户不知道该去配什么。
+		writeError(w, http.StatusServiceUnavailable, "stt_unavailable: STT cloud not configured (set POCKET_GROQ_API_KEY)")
 		return
 	}
 	if r.Method != http.MethodPost {
@@ -2309,21 +2588,42 @@ func (s *Server) handleSttTranscribe(w http.ResponseWriter, r *http.Request) {
 		filename = "audio.wav"
 	}
 
-	// 调用 Groq Whisper Large v3 Turbo
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	// 目标由该用户的语音转写设置解析（网关自动发现 / 外部服务 / env 兜底），
+	// 不再写死 Groq Whisper。整段 base64 上传 + 推理比普通 CRUD 慢一个量级，
+	// 而录音停止链路是同步等它的，30s 太紧，给到 120s。
+	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
 	defer cancel()
 
-	result, err := s.transcriber.Transcribe(ctx, audioData, filename)
+	scope := stt.Scope{UserID: s.userIDFromRequest(r), WorkspaceID: s.workspaceIDFromRequest(r)}
+	result, err := s.transcriber.TranscribeFor(ctx, scope, audioData, filename)
 	if err != nil {
 		log.Printf("[stt] transcribe failed: %v", err)
-		writeError(w, http.StatusBadGateway, "transcription failed: "+err.Error())
+		// 已经带错误码的（stt_unavailable: …）原样回传：前端 error-message.ts
+		// 取第一个冒号前的 [a-z0-9_]+ 当错误码，再套一层前缀会让它匹配失败，
+		// 用户就只能看到通用「服务端错误」而不是可行动的原因。
+		msg := err.Error()
+		if !strings.HasPrefix(msg, "stt_unavailable:") {
+			msg = "transcription failed: " + msg
+		}
+		writeError(w, http.StatusBadGateway, msg)
 		return
 	}
 
-	log.Printf("[stt] transcribed %d bytes (%s) -> %d chars", len(audioData), filename, len(result.Text))
+	log.Printf("[stt] transcribed %d bytes (%s) via %s/%s -> %d chars",
+		len(audioData), filename, result.Channel, result.Model, len(result.Text))
+	// 字段与 stt.Result 一一对应。costCents/durationMs 不是"顺手加上"的：
+	// frontend/src/api/stt.ts 的 cloudTranscribe() 已经在读 res.costCents，
+	// 这里不返回就等于成本统计永远是 undefined，而且没有任何报错——
+	// 这种"契约写了一半"的缺口最难查。
 	writeJSON(w, http.StatusOK, map[string]any{
 		"text":       result.Text,
 		"confidence": result.Confidence,
+		"model":      result.Model,
+		"channel":    result.Channel,
+		"transport":  result.Transport,
+		"label":      result.Label,
+		"costCents":  result.CostCents,
+		"durationMs": result.DurationMS,
 	})
 }
 
@@ -2331,10 +2631,16 @@ func (s *Server) handleSttTranscribe(w http.ResponseWriter, r *http.Request) {
 // 辅助
 // =====================================================================
 
+// randomIDSeq 与时间戳一起保证 ID 在进程内唯一。
+var randomIDSeq atomic.Uint64
+
 // randomID 生成带前缀的简易 ID。Phase 0 骨架用，后续可换 UUID/kseq。
 func randomID(prefix string) string {
-	// 用纳秒级时间戳足够避免单用户场景冲突。
-	return fmt.Sprintf("%s-%d", prefix, time.Now().UnixNano())
+	// 原注释写的是「用纳秒级时间戳足够避免单用户场景冲突」——**这个假设是错的**。
+	// 本机实测 1000 次 time.Now() 只产生 1 个不同值，纳秒时间戳在负载下
+	// 几乎必然重复；会议 store 曾因此静默丢失 194/200 条记录（BUG-R）。
+	// 单进程内加单调序号即可，同刻度内也不会撞。
+	return fmt.Sprintf("%s-%d-%d", prefix, time.Now().UnixNano(), randomIDSeq.Add(1))
 }
 
 var _ = notes.Note{} // keep import if temporarily unused

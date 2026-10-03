@@ -7,11 +7,22 @@
 
 ## 0. APK 上下文
 
+> ⚠️ **下表这份 APK 已经不存在了，别按它去找**（2026-10-02 实测）。
+> `0B29C7AE…` / 34,426,857 bytes 那份已被后续构建覆盖，工作区的
+> `app-debug.apk` 现在是 34,227,285 bytes / `6D209EB1…`（2026-10-02 10:30 产物），
+> 两者都不是本表这一份。**本表是 2026-09-20 那次验收的历史上下文，
+> 刻意保持原样** —— 把它改指向某个新哈希，会让人误以为 09-20 的
+> 30min + Perfetto 验收跑的是那个新包，而那次验收已经无法复现。
+>
+> 要跑今天这份 runbook，请自己构建并用
+> `scripts/android-apk-fingerprint.ps1` 取当前指纹。
+> 需要一份**已验证可归因**的现成产物时，见文末「附：当前可归因的 APK」。
+
 | 项 | 值 |
 |---|---|
 | APK 路径 | `frontend/android/app/build/outputs/apk/debug/app-debug.apk` |
-| 大小 | 28.9 MB（30,305,333 bytes） |
-| SHA256 | `3EB5366964BC41495E80361A4C68A10FD01085BA3DDCFDD11238C19AB2D97108` |
+| 大小 | 32.8 MB（34,426,857 bytes） |
+| SHA256 | `0B29C7AE7704037232FE09BF1AF9478CA046D52DE36191A0B130F5DF3E56FC73` |
 | 包名 | `com.kaixuan.opencode.pocket` |
 | 版本 | 1.2.0-openpocket |
 | 入口 | `com.kaixuan.opencode.pocket.MainActivity` |
@@ -201,6 +212,85 @@ bcdedit /set hypervisorlaunchtype auto
 | 加速失败 → qemu TCG 软件模拟 | `qemu-system-x86_64-headless` 启动后 kernel cmdline 后无法维持 |
 
 > 任何**非 VMware guest** 的环境都会立即可用（原生 Win10/11 台式机或 Mac/Linux）。
+
+---
+
+## 附：当前可归因的 APK（2026-10-02 修订）
+
+> ⚠️ **本节在 2026-10-02 11:30 修正过一次，读之前先看这段。**
+> 初版（提交 `d4328112`）在这里放的是 `DCDBAE91…` / 34,272,370 bytes，
+> 对应 `b0123a1`。那份产物**落后 HEAD 86 个提交**，`b0123a1..HEAD`
+> 在 APK 输入闭包内有 **180 个文件**变更（含 `frontend/src/api/email.ts`、
+> `notes.ts`、`stt-settings.ts` 等必然进 bundle 的源码）。
+> 它只满足"输入闭包内无脏文件"这条**自造口径**，不满足待办原文的
+> **「与当前 commit 对齐」**，更不满足 `dirty=0`
+> —— 指纹文件自己写着 `dirty (tracked): 15`，那是**换尺子而不是达标**。
+> 现已改为本轮在干净 worktree 上**亲手重建**的产物，见下。
+
+### 达标产物（本轮亲手重建，非沿用）
+
+| 项 | 值 |
+|---|---|
+| 路径 | `C:\workspace\openpocket-wt-apkbuild\frontend\android\app\build\outputs\apk\debug\app-debug.apk` |
+| 大小 | 34,044,622 bytes |
+| SHA256 | `1E6DA6F588E71E99DB477948BEC4817EDBE50C2EFBA171E7411E697627A07221` |
+| 构建 commit | `d95b4a68`（`git status --porcelain` 为空 ⇒ **dirty=0**） |
+| 构建时间 | 2026-10-02 11:28:14（`gradlew assembleDebug --rerun-tasks`，401/401 任务全执行） |
+| 入口 chunk | `assets/public/assets/index-DAqDTu3h.js`（538,747 bytes，`index.html` 的 `src=` 引用它） |
+| 烘进的 API base | `http://192.168.31.20:8088`（`build-mobile` 自带 sanity check 已确认） |
+| scheme | `https`（`assets/capacitor.config.json` → `server.androidScheme`） |
+| 验收 | `node scripts/verify-apk-rebuild.mjs <apk> d95b4a68 <worktree>` → `TOTAL=4 PASS=4 FAIL=0` |
+
+**为什么它算「与当前 commit 对齐」**：`d95b4a68..HEAD` 的 APK 输入闭包内
+**零文件差异**，且构建时 worktree 完全干净。两条都由
+`scripts/verify-apk-rebuild.mjs` 实测，不是推断。
+
+### 重建时的两个坑（都实测踩过）
+
+1. **`gradlew assembleDebug` 增量构建可能整包不动。** 首次重跑时它报
+   `BUILD SUCCESSFUL` 却只执行 49/401 任务，APK 的 mtime 与 sha256
+   **一字未变**。原因是 `29048294..d95b4a68` 闭包零差异，
+   gradle 判定 `assembleDebug` UP-TO-DATE。
+   ⇒ **验收重建必须查 mtime 与 sha256，不能只看 `BUILD SUCCESSFUL`。**
+   强制重打用 `gradlew assembleDebug --rerun-tasks`（本次 401/401 全执行）。
+   重打后 sha256 **仍与旧包相同** —— 这正是「物料逐字节一致」的直接证据，
+   而非「没重建」的证据。
+
+2. **`cap sync` 会把 worktree 弄脏，且泄漏绝对路径。** 它重写
+   `frontend/android/capacitor.settings.gradle` 与 `app/capacitor.build.gradle`，
+   把 `../node_modules/...` 改写为指向**主工作区**的
+   `../../../openpocket/frontend/node_modules/...`。
+   实测该路径**不进 bundle**（扫过产物全部 `assets/public/assets/*.js`），
+   但它会让 `dirty=0` 判据转红。
+   ⇒ 构建后 `git checkout --` 这两个文件，并删掉构建用的 `.env.android-dev`
+     （它被 `.gitignore` 忽略，所以构建期间 `status` 一直是干净的）。
+
+### 复现方式
+
+```powershell
+cd C:\workspace\openpocket-wt-apkbuild        # 必须先确认 status --porcelain 为空
+'VITE_API_BASE=http://192.168.31.20:8088' | Set-Content frontend\.env.android-dev
+cd frontend
+node scripts\build-mobile.mjs android dev     # 内含 sanity check
+cd android
+$env:JAVA_HOME = 'C:\Program Files\Eclipse Adoptium\jdk-21.0.12.101-hotspot'
+.\gradlew.bat assembleDebug --rerun-tasks     # 不用 --rerun-tasks 可能整包不动
+# 收尾：还原 cap sync 弄脏的两个 gradle 文件 + 删掉 .env.android-dev
+cd ..\.. ; git checkout -- frontend/android/app/capacitor.build.gradle frontend/android/capacitor.settings.gradle
+node scripts\verify-apk-rebuild.mjs `
+  C:\workspace\openpocket-wt-apkbuild\frontend\android\app\build\outputs\apk\debug\app-debug.apk `
+  d95b4a68 C:\workspace\openpocket-wt-apkbuild
+```
+
+### 两个仍然适用的提醒
+
+⚠️ 查证产物里烘进的配置，**先看 `assets/public/index.html` 的 `src=`
+引用了哪个 chunk**。产物里可以有 7 个 `index-*.js`，只有一个是主入口；
+按名字猜会命中 10KB 的同名小 chunk，然后误判成"配置没烘进去"。
+
+⚠️ 这份是 **https origin**（`localhost` 分区）。若要连明文后端，
+必须以 `CAP_ANDROID_SCHEME=http` 重新构建 —— 换了 scheme 等于换了整个
+localStorage 分区，用户存的 server 地址/token/语言/主题会全部读不到。
 
 ---
 

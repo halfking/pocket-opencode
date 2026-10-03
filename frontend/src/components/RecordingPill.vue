@@ -129,7 +129,7 @@ async function onStop() {
   border: none;
   background: transparent;
   color: var(--text-primary);
-  font-size: 13px;
+  font-size: var(--text-smd);
   padding: 6px 4px;
 }
 .rec-dot {
@@ -157,7 +157,7 @@ async function onStop() {
 }
 
 .rec-secs {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   opacity: 0.7;
   margin-left: 6px;
   color: var(--danger, #e5484d);

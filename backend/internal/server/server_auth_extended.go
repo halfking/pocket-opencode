@@ -31,7 +31,10 @@ import (
 // handleAuthSendCode — POST /api/auth/send-code
 //
 // Body: {"email": "...", "purpose": "register|reset|login"}
-// 响应：200 {"ok": true, "ttl_sec": 300, "debug_code": "123456"}（debug_code 仅当 POCKET_SMTP_DEBUG_ECHO=true 且 SMTP 未配置时）
+// 响应：200 {"ok": true, "ttl_sec": 300, "delivery": "smtp"|"none", "debug_code": "123456"}
+//
+// delivery = "none" 表示本部署未配置 SMTP，验证码只入库、根本不会发出邮件。
+// debug_code 仅当 POCKET_SMTP_DEBUG_ECHO=true 且 SMTP 未配置时出现。
 func (s *Server) handleAuthSendCode(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "POST only")
@@ -55,6 +58,14 @@ func (s *Server) handleAuthSendCode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// delivery 描述「这台部署有没有邮件通道」，是全局部署事实，与该邮箱是否
+	// 已注册无关，因此不破坏防枚举。前端据此避免把「邮件根本没发出去」当成
+	// 「已发送」推进到下一步——否则忘记密码会静默地把用户卡死在第 2 步。
+	delivery := "smtp"
+	if s.smtpClient == nil {
+		delivery = "none"
+	}
+
 	code, ttlSec, err := s.codeStore.Generate(r.Context(), body.Email, purpose, clientIP(r))
 	if err != nil {
 		if errors.Is(err, auth.ErrRateLimited) {
@@ -63,18 +74,18 @@ func (s *Server) handleAuthSendCode(w http.ResponseWriter, r *http.Request) {
 		}
 		if errors.Is(err, auth.ErrEmailInvalid) {
 			// 邮箱格式无效：同样恒返 200（防枚举），不写库
-			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "ttl_sec": 0})
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "ttl_sec": 0, "delivery": delivery})
 			return
 		}
 		log.Printf("WARN: send-code generate: %v", err)
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "ttl_sec": 0})
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "ttl_sec": 0, "delivery": delivery})
 		return
 	}
 
 	// 发邮件：失败仅 log（频控已成功消耗；用户后续可重试）
 	go s.sendCodeEmail(code, ttlSec, body.Email, purpose)
 
-	resp := map[string]any{"ok": true, "ttl_sec": ttlSec}
+	resp := map[string]any{"ok": true, "ttl_sec": ttlSec, "delivery": delivery}
 	// Debug 回显：SMTP 未配置 + 启用 debug 时，把 code 暴露给前端 dev 面板
 	if s.cfg.SMTPDebugEcho && s.smtpClient == nil {
 		resp["debug_code"] = code

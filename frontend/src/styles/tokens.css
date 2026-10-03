@@ -88,9 +88,21 @@
   --spacing-section-gap: var(--space-5);    /* 区块间距：18px */
   --spacing-inline-gap: var(--space-2);     /* 行内元素间距：8px */
 
-  /* 字体大小层级 - 更明确的视觉层次 */
-  --text-xs: 10px;    /* 极小文本（时间戳、徽章） */
-  --text-sm: 12px;    /* 小文本（元信息） */
+  /* 字体大小层级 - 更明确的视觉层次
+     完整阶梯：10 / 11 / 12 / 13 / 14 / 15 / 16 / 18
+     11px 与 13px 是本轮补的两档。此前刻度里没有对应值，全仓 348 处
+     11px(142) + 13px(206) 只能写死像素——而写死像素的真正代价不是难看，是
+     **将来整体调档时它们不会跟着变**：正文全变了、这些角标和徽章纹丝不动，
+     层级越调越乱。补档是零视觉变化的纯替换（数值不变，只是引用方式变了）。
+
+     注意：这两档与 348 处替换**必须同一步落地**，不能只补刻度。
+     font-size-token-equal.test.mjs 的判据是「凡数值等于某个 token 就不许写死
+     像素」，而它**现读 tokens.css**——只补刻度而不替换，会让那 348 处当场
+     变成违规（实测：# fail 2，报 348 处）。 */
+  --text-2xs: 11px;   /* 徽章角标、图标旁说明（xs 与 sm 之间） */
+  --text-xs:  10px;   /* 极小文本（时间戳、徽章） */
+  --text-sm:  12px;   /* 小文本（元信息） */
+  --text-smd: 13px;   /* 小文本加（正文旁注；sm 与 base 之间） */
   --text-base: 14px;  /* 主体文本 */
   --text-md: 15px;    /* 强调文本（标题） */
   --text-lg: 16px;    /* 大标题 */
@@ -118,6 +130,16 @@
     "Helvetica Neue",
     Arial,
     sans-serif;
+  /* 等宽栈的**收尾必须回落到 CJK 无衬线**，这是本项目设置页「字体不对、
+     显示错位」的根因修复：
+       Android WebView 把泛型 `monospace` 解析成 Droid Sans Mono —— 纯拉丁
+       等宽字体，**一个中文字形都没有**。中文内容一旦落进等宽样式（本项目
+       到处都是：网关地址旁边就是「AI 网关」中文标签、会话标题、邮件主题、
+       工具名），浏览器只能逐字回退到另一套中文字体。拉丁字母与中文来自
+       两套 x-height/基线度量不同的字体，于是同一行里出现高低不齐、字重
+       不一致的「一半对一半错」字形 —— 用户看到的就是显示错误。
+       把 sans 栈接在 monospace 之后，等宽只作用于它真正有字形的拉丁/数字，
+       中文回落到与全站正文同一套字体，行内度量重新对齐。 */
   --font-mono:
     "JetBrains Mono",
     "Fira Code",
@@ -125,7 +147,9 @@
     SFMono-Regular,
     Menlo,
     Consolas,
-    monospace;
+    "Roboto Mono",
+    monospace,
+    var(--font-sans);
 
   /* Shadows */
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
@@ -167,14 +191,13 @@
   /* 底部 sheet 弹入（BottomNav more-panel 等此前引用但未定义） */
   --ease-spring: cubic-bezier(0.32, 0.72, 0, 1);
 
-  /* Legacy aliases — 兼容旧组件 --color-* 命名 */
-  --color-primary: var(--brand-primary);
   /* Legacy aliases — 历史组件直接引用过这批从未定义的变量（全部命中硬编码
      亮色 fallback，暗色下整块发白）。统一映射到规范 token，引用方随
      --bg-card / --border 等的暗色覆盖自动联动。 */
   --bg-primary: var(--bg-card);
   --border-color: var(--border);
   --primary-color: var(--brand-primary);
+  --color-primary: var(--brand-primary);
   --primary-color-light: var(--brand-bg);
   --bg-hover: var(--bg-subtle);
   --color-primary-rgb: 102, 126, 234;
@@ -191,6 +214,33 @@
   --color-success: var(--success);
   --color-warning: var(--warning);
   --color-error: var(--danger);
+  --color-danger-rgb: 239, 68, 68;
+
+  /* ── 第二批补齐（真机审计发现）─────────────────────────────────────
+     下面这批变量此前**从未定义**，却有 19 处组件裸引用（无 fallback）。
+     裸引用的后果不是「回退到默认值」，而是整条声明作废：背景不生效，
+     白字直接落在浅色底上，对比度约 1.1:1。
+     真机上表现为 RSS「新增源」按钮、DiffBlock 的增删行、Dialog 阴影、
+     flashcards 三级文字、邮件设置分隔线等处发白 / 不可读。
+     全部映射到规范 token，暗色模式下随基础 token 自动联动。 */
+  --bg: var(--bg-base);
+  --bg-secondary: var(--bg-card);
+  --border-subtle: var(--border);
+  --text-tertiary: var(--text-muted);
+  --text-faint: var(--text-muted);
+  --err-bg: var(--danger-bg);
+  --err-fg: var(--danger);
+  --warn: var(--warning);
+  --info-soft: var(--info-bg);
+  --success-soft: var(--success-bg);
+  --danger-soft: var(--danger-bg);
+  --gradient-primary: var(--brand-gradient);
+  --radius-xl: var(--radius-lg);
+  --space-8: 24px;
+  --space-10: 32px;
+  --duration-slow: 320ms;
+  --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.1);
+  --shadow-2xl: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
 }
 
 /* 深色令牌在两处等价声明（系统跟随 + 手动强制），改动需两处同步：
@@ -212,6 +262,8 @@
     --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
     --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.4);
     --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.5);
+    --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.6);
+    --shadow-2xl: 0 25px 50px -12px rgba(0, 0, 0, 0.7);
     --cat-work-bg: rgba(59, 130, 246, 0.2);
     --cat-bill-bg: rgba(245, 158, 11, 0.2);
     --cat-personal-bg: rgba(236, 72, 153, 0.2);
@@ -234,6 +286,8 @@
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
   --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.4);
   --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.5);
+  --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.6);
+  --shadow-2xl: 0 25px 50px -12px rgba(0, 0, 0, 0.7);
   --cat-work-bg: rgba(59, 130, 246, 0.2);
   --cat-bill-bg: rgba(245, 158, 11, 0.2);
   --cat-personal-bg: rgba(236, 72, 153, 0.2);

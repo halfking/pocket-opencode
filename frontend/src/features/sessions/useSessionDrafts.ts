@@ -15,6 +15,7 @@
  */
 
 import { ref, watch, onBeforeUnmount, getCurrentInstance, type Ref } from 'vue'
+import type { IconName } from '../../constants/icons'
 import {
   MemoryDraftStore,
   SqliteDraftStore,
@@ -39,7 +40,7 @@ export interface QuickCommand {
   /** 非空 = 点击需先二次确认（仅"停下"）。 */
   confirmText?: string
   /** 面板行图标（Material Symbols 子集内；P1.5 chips→面板引入）。 */
-  icon?: string
+  icon?: IconName
   /** 输入框底部工具行最左侧的 44×44 常驻方形按钮（其余收进"更多指令"面板）。 */
   primary?: boolean
 }

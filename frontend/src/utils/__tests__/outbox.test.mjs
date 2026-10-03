@@ -99,18 +99,41 @@ test('succeed: sets state and preserves cursor', () => {
   assert.equal(s.cursor, 'cursor-42')
 })
 
-test('failForRetry: returns to queued with a positive backoff', () => {
-  const r = enqueue({ workspaceId: 'w', action: 'x', payload: {}, idempotencyKey: 'k' })
+test('failForRetry: 退回 queued，退避落在 [now, now+base) 且允许为 0', () => {
+  // 旧断言是 `f.nextAttemptAt > c.createdAt`，而 backoffMs 是 **full jitter**：
+  //   Math.floor(Math.random() * exp)，exp = 1000 ⇒ 取到 0 的概率 1/1000。
+  // enqueue 与 failForRetry 落在同一毫秒（本测试里几乎必然如此）时，
+  // `next=0` 就让 nextAttemptAt === createdAt，旧断言假红。
+  // 也就是说这条断言和实现保证的算法**自相矛盾**，不是实现坏了。
+  // 能断言的只有两条：调度不早于 now，且不超过上限。
+  const r = enqueue({ workspaceId: 'w', action: 'x', payload: {}, idempotencyKey: 'k' }, 1000)
   const c = claim(r) // attempts = 1
-  const f = failForRetry(c, 'network')
+  const now = 20_000
+  const f = failForRetry(c, 'network', now)
   assert.equal(f.state, 'queued')
   assert.equal(f.lastError, 'network')
-  assert.ok(f.nextAttemptAt > c.createdAt)
+  assert.ok(f.nextAttemptAt >= now, `nextAttemptAt=${f.nextAttemptAt} 早于 now=${now}`)
+  assert.ok(f.nextAttemptAt < now + 1000, `nextAttemptAt=${f.nextAttemptAt} 超出 base 上限`)
+
+  // 负控：jitter 取 0 时 nextAttemptAt === now 是**合法**取值。
+  // 这条把契约钉死——若哪天实现改成保证正延迟，这里会红并提示同步更新测试。
+  const realRandom = Math.random
+  Math.random = () => 0
+  try {
+    assert.equal(failForRetry(c, 'network', now).nextAttemptAt, now)
+  } finally {
+    Math.random = realRandom
+  }
 })
 
-test('backoffMs: bounded by cap', () => {
-  const big = backoffMs({ attempts: 20 }, 20, 1000, 5000)
-  assert.ok(big >= 0 && big <= 5000)
+test('backoffMs: 落在 [0, exp) 内并被 cap 封顶', () => {
+  // 只验区间，不验「一定为正」——那正是旧断言的错处。
+  for (let i = 0; i < 200; i++) {
+    const v = backoffMs({ attempts: 1 }, 1, 1000, 5000)
+    assert.ok(Number.isInteger(v) && v >= 0 && v < 1000, `越界: ${v}`)
+  }
+  const big = backoffMs({ attempts: 20 }, 20, 20, 1000)
+  assert.ok(big >= 0 && big <= 1000)
 })
 
 test('shouldDeadLetter: by attempts', () => {

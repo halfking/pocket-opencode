@@ -421,7 +421,7 @@ const handleNavChange = (id: string) => {
   background: var(--color-bg-base);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
-  font-size: 18px;
+  font-size: var(--text-xl);
   cursor: pointer;
   transition: all var(--duration-fast) var(--ease-out);
 }
@@ -447,19 +447,19 @@ const handleNavChange = (id: string) => {
 }
 
 .group-icon {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--color-text-tertiary);
   transition: transform var(--duration-fast) var(--ease-out);
 }
 
 .group-title {
-  font-size: 14px;
+  font-size: var(--text-base);
   font-weight: var(--font-weight-semibold);
   color: var(--color-text-primary);
 }
 
 .group-count {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--color-text-tertiary);
 }
 
@@ -487,7 +487,7 @@ const handleNavChange = (id: string) => {
 }
 
 .section-title {
-  font-size: 14px;
+  font-size: var(--text-base);
   font-weight: var(--font-weight-semibold);
   color: var(--color-text-secondary);
   margin: 0 0 var(--space-3) 0;
@@ -529,7 +529,7 @@ const handleNavChange = (id: string) => {
   padding: var(--space-2) var(--space-3);
   background: var(--color-bg-base);
   border-radius: var(--radius-md);
-  font-size: 13px;
+  font-size: var(--text-smd);
   line-height: 1.5;
 }
 
@@ -549,11 +549,11 @@ const handleNavChange = (id: string) => {
   align-items: center;
   gap: var(--space-2);
   padding: var(--space-2);
-  font-size: 13px;
+  font-size: var(--text-smd);
 }
 
 .suggestion-icon {
-  font-size: 18px;
+  font-size: var(--text-xl);
 }
 
 .action-buttons {
@@ -572,12 +572,12 @@ const handleNavChange = (id: string) => {
   align-items: center;
   gap: var(--space-2);
   padding: var(--space-2);
-  font-size: 12px;
+  font-size: var(--text-sm);
   margin-bottom: var(--space-2);
 }
 
 .notif-icon {
-  font-size: 16px;
+  font-size: var(--text-lg);
 }
 
 .notif-text {

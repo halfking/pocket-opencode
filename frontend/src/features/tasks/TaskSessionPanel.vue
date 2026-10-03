@@ -70,16 +70,16 @@ function tokenLine(row: TaskSessionRow): string {
 
 <style scoped>
 .task-session-panel { display: flex; flex-direction: column; gap: 12px; }
-.usage { font-size: 12px; color: var(--text-secondary, #666); }
-.lane h3 { margin: 0 0 8px; font-size: 14px; display: inline-block; }
+.usage { font-size: var(--text-sm); color: var(--text-secondary, #666); }
+.lane h3 { margin: 0 0 8px; font-size: var(--text-base); display: inline-block; }
 .badge { font-weight: 400; opacity: 0.7; }
 .link-btn { float: right; background: none; border: 0; color: var(--accent, #3b82f6); }
-.empty { font-size: 13px; color: var(--text-secondary, #888); margin: 0; }
+.empty { font-size: var(--text-smd); color: var(--text-secondary, #888); margin: 0; }
 .session-row {
   display: block; width: 100%; text-align: left;
   padding: 10px 0; border: 0; border-bottom: 1px solid var(--border, #eee);
   background: transparent; color: inherit;
 }
-.title { font-size: 14px; }
-.meta { font-size: 12px; color: var(--text-secondary, #888); display: flex; gap: 8px; }
+.title { font-size: var(--text-base); }
+.meta { font-size: var(--text-sm); color: var(--text-secondary, #888); display: flex; gap: 8px; }
 </style>

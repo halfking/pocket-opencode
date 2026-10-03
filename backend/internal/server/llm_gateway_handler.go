@@ -14,6 +14,7 @@ import (
 
 	"github.com/halfking/pocket-opencode/backend/internal/model"
 	"github.com/halfking/pocket-opencode/backend/internal/opencode"
+	"github.com/halfking/pocket-opencode/backend/internal/usersetting"
 )
 
 // gatewayFormats 是设置页「消息格式」下拉框的可选项（对齐 llm-gateway-go
@@ -53,10 +54,14 @@ type llmGatewayState struct {
 // has been persisted for the workspace. We keep it deterministic so GET is
 // idempotent across requests.
 //
-// 2026-09-21: 优先 POCKET_LLM_GATEWAY_URL env；未设置时回落到
-// opencode.DefaultLLMGatewayBaseURL（已切换为 https://llmgo.kxpms.cn/v1）。APIKey
-// 同样 env-first：API Key 只读 POCKET_LLM_GATEWAY_API_KEY；preferred
-// 模型列表来自 opencode.DefaultLLMGatewayPreferredModels。
+// 2026-09-30: 优先 POCKET_LLM_GATEWAY_URL env；未设置时回落到
+// opencode.DefaultLLMGatewayBaseURL（https://llm.kxpms.cn/v1）。
+//
+// APIKey 只认 POCKET_LLM_GATEWAY_API_KEY，**没有内置默认值**：曾经这里回落到
+// 源码里的明文租户 key，于是「网关永远显示已配置」，运营方没配过的实例也会
+// 拿这把 key 去调网关计费（邮件分类、STT 探测都走这条）。没有 env 时就是
+// 未配置，设置页提示填 key、integration_status 如实报 disabled。
+// preferred 模型列表来自 opencode.DefaultLLMGatewayPreferredModels。
 func defaultLLMGatewayState() llmGatewayState {
 	models := append([]string(nil), opencode.DefaultLLMGatewayPreferredModels...)
 	preferred := append([]string(nil), opencode.DefaultLLMGatewayPreferredModels...)
@@ -69,25 +74,14 @@ func defaultLLMGatewayState() llmGatewayState {
 	}
 }
 
-// obsoleteLocalGatewayURL 识别本机 docker 旧默认（8782）+ 2026-08-31 的旧域名。
-// 切到 llmgo.kxpms.cn 后，老的 llm.kxpms.cn 行也要重写，避免一直打旧地址。
+// obsoleteLocalGatewayURL 只认本机 docker 旧默认（8782）。
+//
+// 2026-09-30 回退：此前这里还把 https://llm.kxpms.cn 当成 obsolete 强制改写到
+// llmgo.kxpms.cn，但用户指定的正式网关就是 llm.kxpms.cn，实测可用。那条改写会让
+// 设置页填写的地址被 rewriteObsoleteGateway 悄悄打回，配置形同虚设——已移除。
 func obsoleteLocalGatewayURL(u string) bool {
 	low := strings.ToLower(strings.TrimSpace(u))
-	if strings.Contains(low, "llm-gateway-local-8782") {
-		return true
-	}
-	if strings.HasPrefix(low, "https://llm.kxpms.cn") || strings.HasPrefix(low, "http://llm.kxpms.cn") {
-		return true
-	}
-	return false
-}
-
-// pickAPIKey 取第一个非空候选。不再回退仓库内写死的租户 key。
-func pickAPIKey(primary, fallback string) string {
-	if strings.TrimSpace(primary) != "" {
-		return primary
-	}
-	return fallback
+	return strings.Contains(low, "llm-gateway-local-8782")
 }
 
 // EnsureLLMGatewayDefaults seeds a default config for any workspace that has no
@@ -119,6 +113,21 @@ func (s *Server) EnsureLLMGatewayDefaults(workspaceIDs ...string) {
 			// 密文不可解（如 JWT secret 轮换后 cipher 校验失败）或行损坏：
 			// 用 env 默认配置覆写毒化行，而不是永远跳过——否则每次启动都
 			// 解密失败并静默回退，租户配置再也救不回来。
+			//
+			// 但"自愈"绝不能变成"毁配置"：SaveConfig 会先把该 workspace 全部
+			// 行置为 inactive 再插新的 active 行。当 env 也没配 key 时
+			//（def.APIKey == ""，这是 POCKET_LLM_GATEWAY_API_KEY 未设时的常态），
+			// 这次覆写等于：把一条"只是暂时解不开"的行，连同它本来可用的
+			// 旧 active 行一起废掉，换成一条永久没有 key 的行——配置从
+			// "解不开但还在"变成"永久丢失"，且不可逆。
+			//
+			// 因此 env 无 key 时只告警、不落库：宁可保持"读不出来"让用户
+			// 去设置页重新填 key，也不要静默销毁已有配置。
+			if strings.TrimSpace(def.APIKey) == "" {
+				log.Printf("[llm-gateway] default-seed LoadConfig failed for %s: %v; "+
+					"跳过自愈（env 未配置 POCKET_LLM_GATEWAY_API_KEY，覆写会清掉现有 key）", wsID, err)
+				continue
+			}
 			log.Printf("[llm-gateway] default-seed LoadConfig failed for %s: %v; self-healing with env defaults", wsID, err)
 			if saveErr := s.llmGWStore.SaveConfig(context.Background(), wsID, def); saveErr != nil {
 				log.Printf("[llm-gateway] default-seed self-heal SaveConfig failed for %s: %v", wsID, saveErr)
@@ -127,15 +136,64 @@ func (s *Server) EnsureLLMGatewayDefaults(workspaceIDs ...string) {
 		}
 		if existing != nil {
 			if obsoleteLocalGatewayURL(existing.BaseURL) {
-				if saveErr := s.llmGWStore.SaveConfig(context.Background(), wsID, def); saveErr != nil {
+				// 这里要改的只是 URL，绝不能拿 def 覆盖整份配置。
+				//
+				// 原来的写法是 SaveConfig(wsID, def)：def 的 APIKey 只来自
+				// POCKET_LLM_GATEWAY_API_KEY 且无内置默认值，env 没配时就是空串。
+				// 于是一个**解密得好好的**遗留配置（key、models、preferred_models
+				// 全在）在启动时被换成一条没有 key 的行——而且这条路径不需要任何
+				// 解密失败就会触发，只要 base_url 里带 llm-gateway-local-8782。
+				//
+				// 正确语义就是这行注释说的"把旧的本机网关地址改写成正式网关"：
+				// 保留读出来的状态，只规范化 URL 与 format。
+				migrated := rewriteObsoleteGateway(*existing)
+				if saveErr := s.llmGWStore.SaveConfig(context.Background(), wsID, migrated); saveErr != nil {
 					log.Printf("[llm-gateway] replace obsolete local gateway failed for %s: %v", wsID, saveErr)
 				} else {
-					log.Printf("[llm-gateway] replaced obsolete local gateway for workspace=%s baseURL=%s", wsID, def.BaseURL)
+					log.Printf("[llm-gateway] replaced obsolete local gateway for workspace=%s baseURL=%s", wsID, migrated.BaseURL)
+				}
+			} else if existing.APIKey == "" && strings.TrimSpace(def.APIKey) != "" {
+				// 补 key 的空洞（2026-10-02 真机实测）。
+
+				// 为什么需要这一支：一条 api_key_encrypted 为空的 active 行
+				// **不是**"解不开"，decryptString 对空串直接返回 ("", nil)，
+				// 于是上面 err != nil 的自愈分支永远不触发；而 existing != nil
+				// 又让本函数直接 continue。结果是：哪怕运维后来把
+				// POCKET_LLM_GATEWAY_API_KEY 配好了，那一行也永远停在空 key 上，
+				// 该 workspace 的 chat/embed 全部硬 503，App 内没有任何提示，
+				// 唯一出路是用户自己去设置页重填一遍 key。
+
+				// 实测证据：2026-10-02 21:08 那次启动明确设了
+				// POCKET_LLM_GATEWAY_API_KEY，日志对 workspace=default 打的仍是
+				// `loaded config from DB`，而 llm_gateway_configs id=1 至今
+				// api_key_encrypted='' 、is_active=true。
+
+				// 语义上和 HTTP 入口对齐：POST /api/llm-gateway/config 本身就
+				// 拒绝把首份配置存成空 key（"apiKey required for first
+				// configuration"），启动播种不该绕过这条约束去制造同样的状态。
+				// 同样只改 key，不碰用户自己的 baseURL / models / preferred。
+				backfilled := *existing
+				backfilled.APIKey = def.APIKey
+				if saveErr := s.llmGWStore.SaveConfig(context.Background(), wsID, backfilled); saveErr != nil {
+					log.Printf("[llm-gateway] backfill empty gateway key failed for %s: %v", wsID, saveErr)
+				} else {
+					log.Printf("[llm-gateway] backfilled empty gateway key from env for workspace=%s baseURL=%s",
+						wsID, backfilled.BaseURL)
 				}
 			}
 			continue
 		}
 
+		// 首份播种同样不许写出空 key 的 active 行：上面 err != nil 那一支已经
+		// 为「env 无 key 时覆写会毁掉现有配置」踩过一次坑，这里是同一个坑的
+		// 另一半——新建时 def.APIKey 为空（env 未配）同样会落一条永久不可用
+		// 的 active 行，而 GET /api/llm-gateway/config 本来就会回落到
+		// defaultLLMGatewayState()，跳过的唯一可观察差别是 DB 里少一行空洞。
+		if strings.TrimSpace(def.APIKey) == "" {
+			log.Printf("[llm-gateway] default-seed skipped for %s: POCKET_LLM_GATEWAY_API_KEY not set; "+
+				"不写入空 key 的 active 行（写入后没有任何启动路径能修复它）", wsID)
+			continue
+		}
 		if err := s.llmGWStore.SaveConfig(context.Background(), wsID, def); err != nil {
 			log.Printf("[llm-gateway] default-seed SaveConfig failed for %s: %v", wsID, err)
 			continue
@@ -327,6 +385,12 @@ func (s *Server) handleLLMGatewayConfig(w http.ResponseWriter, r *http.Request) 
 		if s.llmGWCache != nil {
 			s.llmGWCache.replace(workspaceID, current)
 		}
+		// 关键：effectiveGatewayState 在读的时候还会用 user setting 覆盖 baseURL
+		// （server_user_settings.go 的 seedAdminGatewaySetting 写下的 llm_gateway
+		// 行）。只写工作区快照会出现「保存成功但读回旧地址」：真机实测 POST 200
+		// 之后紧接着 GET 仍返回上一个域名，对话也照旧打旧网关——两个域名都通时
+		// 更容易被误判为"配置生效了"。这里把用户级设置一并同步，两处不再分叉。
+		s.syncGatewayUserSetting(r, workspaceID, current)
 		// 审计：baseURL/apiKey 配置变更。detail 只暴露 baseURL host 与
 		// 是否携带 apiKey，绝不写 apiKey 原文（也绝不走 redact —— 这里
 		// 就不让它进入 detail 字符串）。
@@ -340,6 +404,54 @@ func (s *Server) handleLLMGatewayConfig(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "baseURL": current.BaseURL, "models": current.Models})
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// syncGatewayUserSetting 把刚保存的网关配置同步到请求者自己的 llm_gateway
+// 用户设置，确保「工作区快照」与「用户设置」不因读写路径不同而分叉。
+// 失败只记日志不阻断：用户设置是覆盖层，缺失时读路径会回落到工作区快照。
+func (s *Server) syncGatewayUserSetting(r *http.Request, workspaceID string, st llmGatewayState) {
+	if s == nil || s.userSettings == nil {
+		return
+	}
+	userID := s.userIDFromRequest(r)
+	if strings.TrimSpace(userID) == "" {
+		return
+	}
+	log.Printf("[llm-gateway] sync user setting: user=%s ws=%s base=%s keySet=%t", userID, workspaceID, st.BaseURL, st.APIKey != "")
+	payload, err := json.Marshal(map[string]any{
+		"baseURL": st.BaseURL, "format": normalizeGatewayFormat(st.Format),
+		"models": st.Models, "preferredModels": st.PreferredModels,
+	})
+	if err != nil {
+		log.Printf("[llm-gateway] sync user setting: marshal payload: %v", err)
+		return
+	}
+	// usersetting 用 unix 秒做 LWW（lww.go 的 DecidePut：相同则保留服务端行）。
+	// 直接写 time.Now().Unix() 会在"同一秒内已有一次写入"时被静默丢弃——
+	// 表现为保存成功但读回旧值，正是本次要消灭的现象。
+	//
+	// 抬 1 秒是这里唯一的手段，但**抬多少**要小心：
+	//   - 抬到「至少比现有行新」才能保证本次写入生效（否则 DecidePut 判 Keep，
+	//     写被静默丢弃，又回到「保存成功但读回旧值」）。
+	//   - 但也不能无限往后推：别的写入方都用 time.Now().Unix()，一旦本行被推到
+	//     墙钟之前的时间点，那些写入会被 LWW 判 Keep 而**永久**拒绝。
+	// 两者取平衡：正常情况（现有行不领先）只抬到「比现有行新 1 秒」；
+	// 若现有行已经领先墙钟（历史遗留的坏数据），那 1 秒偏移已经存在，
+	// 此时**必须**以现有行为基准继续写入，否则这次保存会直接丢失。
+	now := time.Now().Unix()
+	updatedAt := now
+	if existing, err := s.userSettings.Get(userID, workspaceID, "llm_gateway", "default"); err == nil && existing != nil {
+		if existing.UpdatedAt >= now {
+			updatedAt = existing.UpdatedAt + 1
+		}
+	}
+	if _, err := s.userSettings.Put(usersetting.Record{
+		UserID: userID, WorkspaceID: workspaceID,
+		Namespace: "llm_gateway", ID: "default",
+		Payload: payload, Secret: st.APIKey, UpdatedAt: updatedAt,
+	}); err != nil {
+		log.Printf("[llm-gateway] sync user setting failed (non-fatal): %v", err)
 	}
 }
 
@@ -553,22 +665,45 @@ func (s *Server) LoadLLMGatewayFromDB(workspaceIDs ...string) {
 			wsID = "default"
 		}
 		st, err := s.llmGWStore.LoadConfig(context.Background(), wsID)
+		// fromDB 记录这份状态是否真的来自数据库。后面凡是"要落库"的动作都必须
+		// 带上它：一次失败的加载拼出来的 state 带着空的 key，写回去就是毁配置。
+		fromDB := err == nil
 		if err != nil {
-			// 与 EnsureLLMGatewayDefaults 同理：不可解密/损坏的行自愈为
-			// env 默认配置，避免每次启动重复解密失败且无法恢复。
-			log.Printf("[llm-gateway] load from DB failed for %s: %v; self-healing with env defaults", wsID, err)
+			// LoadConfig 的契约（llm_gateway_store.go）：**没有 active 行时返回
+			// (nil, nil)，不报错**。所以这个 err != nil 分支永远不可能是"给新
+			// workspace 首次 seed"（那由下面的 st == nil 走 env 默认值），它只可能
+			// 发生在一份真实配置已经存在、但解不开或读不出来之后。
+			//
+			// 而 SaveConfig 的语义是"先把该 workspace 全部行 is_active=false，再插
+			// 一条新的 active 行"。在这里无条件调它，等于用 defaultLLMGatewayState()
+			// 覆盖那份配置；而该 default 的 APIKey 只来自 POCKET_LLM_GATEWAY_API_KEY
+			// 且无内置默认值，env 没配时就是空串——原本"解不开但还在"的 key 被换成
+			// 一条永久没有 key 的行，配置不可逆地丢失。这条路径比
+			// EnsureLLMGatewayDefaults 的同一处更危险：cmd/pocketd/main.go 在启动时
+			// 对**每个 workspace** 调本函数，一次解密失败就全员遭殃。
+			//
+			// 与 EnsureLLMGatewayDefaults 保持同一口径：env 无 key 时只告警、不落库，
+			// 磁盘上那份行原样保留，等 key 修好后下次启动就能读回来。
 			def := defaultLLMGatewayState()
-			if saveErr := s.llmGWStore.SaveConfig(context.Background(), wsID, def); saveErr != nil {
-				log.Printf("[llm-gateway] self-heal SaveConfig failed for %s: %v", wsID, saveErr)
-				continue
+			if strings.TrimSpace(def.APIKey) == "" {
+				log.Printf("[llm-gateway] load from DB failed for %s: %v; 跳过自愈落库"+
+					"（env 未配置 POCKET_LLM_GATEWAY_API_KEY，覆写会把该 workspace 的 active 行"+
+					"换成一条无 key 的行，配置不可逆丢失）；内存退回 env 默认值，磁盘行保留", wsID, err)
+				st = &def
+			} else {
+				log.Printf("[llm-gateway] load from DB failed for %s: %v; self-healing with env defaults", wsID, err)
+				if saveErr := s.llmGWStore.SaveConfig(context.Background(), wsID, def); saveErr != nil {
+					log.Printf("[llm-gateway] self-heal SaveConfig failed for %s: %v", wsID, saveErr)
+					continue
+				}
+				st = &def
 			}
-			st = &def
 		}
 		if st == nil {
 			continue
 		}
 		rewritten := rewriteObsoleteGateway(*st)
-		if rewritten.BaseURL != st.BaseURL && s.llmGWStore != nil {
+		if fromDB && rewritten.BaseURL != st.BaseURL && s.llmGWStore != nil {
 			if saveErr := s.llmGWStore.SaveConfig(context.Background(), wsID, rewritten); saveErr != nil {
 				log.Printf("[llm-gateway] rewrite obsolete URL persist failed for %s: %v", wsID, saveErr)
 			} else {

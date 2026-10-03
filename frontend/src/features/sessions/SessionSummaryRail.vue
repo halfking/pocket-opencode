@@ -131,11 +131,11 @@ function jump(index: number): void {
   background: linear-gradient(180deg, #f5eadc 0%, #f0e2bc 100%);
 }
 .rail-icon {
-  font-size: 15px;
+  font-size: var(--text-md);
 }
 .rail-text {
   writing-mode: vertical-rl;
-  font-size: 11px;
+  font-size: var(--text-2xs);
   font-weight: var(--font-weight-semibold);
   letter-spacing: 3px;
 }
@@ -174,7 +174,7 @@ function jump(index: number): void {
   color: #6d5514;
 }
 .head-icon {
-  font-size: 18px;
+  font-size: var(--text-xl);
 }
 .panel-title {
   flex: 1 1 auto;

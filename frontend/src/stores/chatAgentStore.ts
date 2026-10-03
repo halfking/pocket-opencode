@@ -5,6 +5,7 @@ import type { ChatAgent, SyncPayload, SyncResult, SyncStatus } from '../types/ch
 import { enqueueConfigPush } from '../native/config-sync/outbox'
 import { nowUnixSec } from '../native/config-sync/planner'
 import { listLocalSettings, writeLocalIfNewer, writeLocalSetting } from '../native/config-sync/settings-store'
+import { storeApiError } from '../api/store-error'
 
 // 部门中文标签（key = agency-agents-zh 仓库目录名，含自定义角色可能出现的部门）。
 // 不再硬编码数量：部门列表与计数由 store.departments 按实际加载的角色动态计算。
@@ -105,7 +106,7 @@ export const useChatAgentStore = defineStore('chatAgent', () => {
         agents.value = local.map((row) => row.payload as ChatAgent)
         error.value = ''
       } else {
-        error.value = e?.message || String(e)
+        error.value = storeApiError(e, 'errors.loadSettingsFailed')
         throw e
       }
     } finally {
@@ -232,7 +233,7 @@ export const useChatAgentStore = defineStore('chatAgent', () => {
       if (e?.status === 503) {
         syncAvailable.value = false
       } else {
-        syncError.value = e?.message || String(e)
+        syncError.value = storeApiError(e, 'errors.server')
       }
     }
   }
@@ -261,7 +262,7 @@ export const useChatAgentStore = defineStore('chatAgent', () => {
         syncError.value = `版本冲突：服务端版本 ${body.server_version || '?'} 比本地新`
         throw e
       }
-      syncError.value = e?.message || String(e)
+      syncError.value = storeApiError(e, 'errors.server')
       throw e
     } finally {
       syncing.value = false
@@ -315,7 +316,7 @@ export const useChatAgentStore = defineStore('chatAgent', () => {
       await refreshSyncStatus()
       return { merged: merged.length, downloaded }
     } catch (e: any) {
-      syncError.value = e?.message || String(e)
+      syncError.value = storeApiError(e, 'errors.server')
       throw e
     } finally {
       syncing.value = false

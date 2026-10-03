@@ -107,15 +107,15 @@ function toggleWeekday(day: number) {
 
 <style scoped>
 .plan { border: 1px solid var(--border); border-radius: var(--radius-md); padding: var(--space-3); display: flex; flex-direction: column; gap: var(--space-2); }
-legend { font-size: 13px; font-weight: 600; color: var(--text-secondary); }
-label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; font-weight: 600; color: var(--text-secondary); }
-input, select { width: 100%; box-sizing: border-box; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-card); color: var(--text-primary); font: inherit; font-size: 14px; }
+legend { font-size: var(--text-smd); font-weight: 600; color: var(--text-secondary); }
+label { display: flex; flex-direction: column; gap: 6px; font-size: var(--text-smd); font-weight: 600; color: var(--text-secondary); }
+input, select { width: 100%; box-sizing: border-box; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-card); color: var(--text-primary); font: inherit; font-size: var(--text-base); }
 .chips { display: flex; gap: 7px; }
 .chips.wrap { flex-wrap: wrap; }
 .chips button { flex: 1; padding: 9px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-card); color: var(--text-primary); cursor: pointer; }
 .chips.wrap button { flex: none; min-width: 44px; }
 .chips button.active { background: var(--brand-primary); color: var(--text-inverse); border-color: var(--brand-primary); }
 .grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3); }
-.summary { margin: 0; font-size: 13px; font-weight: 600; color: var(--text-primary); }
-.custom-hint { margin: 0; font-size: 12px; color: var(--text-muted); }
+.summary { margin: 0; font-size: var(--text-smd); font-weight: 600; color: var(--text-primary); }
+.custom-hint { margin: 0; font-size: var(--text-sm); color: var(--text-muted); }
 </style>

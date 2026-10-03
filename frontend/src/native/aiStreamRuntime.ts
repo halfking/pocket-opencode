@@ -404,7 +404,7 @@ class AiStreamRuntime {
       const reader = res.body.getReader()
       const decoder = new TextDecoder()
       let buf = ''
-      let sawDelta = false
+      let sawContent = false
       let finalUsage: ChatStreamDelta['usage'] | undefined
 
       while (true) {
@@ -418,7 +418,7 @@ class AiStreamRuntime {
           if (!chunk.startsWith('data: ')) continue
           const data = chunk.slice(6)
           if (data === '[DONE]') {
-            this.completeEntry(entry, finalUsage, sawDelta)
+            this.completeEntry(entry, finalUsage, sawContent)
             return
           }
           let delta: ChatStreamDelta
@@ -434,7 +434,7 @@ class AiStreamRuntime {
             return
           }
           if (delta.retry && !delta.content && !delta.done) {
-            // 进度帧：单独通知 onRetry，但不计入 sawDelta / 不计入 replay（仅终态帧值得 replay）
+            // 进度帧：单独通知 onRetry，但不计入 sawContent / 不计入 replay（仅终态帧值得 replay）
             for (const sub of entry.subs) {
               try {
                 sub.handlers.onRetry?.(delta.retry!)
@@ -446,7 +446,12 @@ class AiStreamRuntime {
             continue
           }
           if (delta.usage) finalUsage = delta.usage
-          sawDelta = true
+          // 只有真正携带作答的帧才算「有内容」：纯模型播报帧
+          // （{done:false, model}）和 retry 进度帧都没有 content。
+          // 若把它们也算作「收到过帧」，completeEntry 里的空流守卫
+          // （!sawContent && !finalUsage）就会被绕过——上游挂死时后端仍会先发一帧
+          // 模型名，于是「零内容」被判成成功，气泡留空且不报错（空气泡陷阱）。
+          if (delta.content || delta.tool_calls?.length) sawContent = true
           // 维护 replay 缓冲（终态帧也保留，迟到订阅方能拿到 usage）
           entry.replay.push(delta)
           if (entry.replay.length > MAX_REPLAY_FRAMES) {
@@ -463,7 +468,7 @@ class AiStreamRuntime {
         }
       }
       // 流正常关闭
-      this.completeEntry(entry, finalUsage, sawDelta)
+      this.completeEntry(entry, finalUsage, sawContent)
     } catch (err) {
       if ((err as Error).name === 'AbortError') {
         // 用户主动 abort 已由 abort() 处理；这里到的是 watchdog/network 触发的 abort
@@ -477,9 +482,9 @@ class AiStreamRuntime {
     }
   }
 
-  private completeEntry(entry: StreamEntry, finalUsage: ChatStreamDelta['usage'] | undefined, sawDelta: boolean): void {
+  private completeEntry(entry: StreamEntry, finalUsage: ChatStreamDelta['usage'] | undefined, sawContent: boolean): void {
     if (entry.status !== 'running') return // 已被 abort / error 接管
-    if (!sawDelta && !finalUsage) {
+    if (!sawContent && !finalUsage) {
       // 流正常关闭但一帧都没有：视为错误而非静默成功（空气泡陷阱）
       this.failEntry(entry, new Error('模型未返回内容（空流）'), 'empty')
       return

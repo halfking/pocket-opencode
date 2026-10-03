@@ -115,8 +115,8 @@ useListScene('contacts')
 .contacts-page { padding: 16px; padding-bottom: 96px; }
 .page-header { display: flex; justify-content: space-between; gap: 10px; align-items: flex-start; margin-bottom: 15px; }
 h1 { margin: 0; font-size: 24px; }
-.page-header p { margin: 5px 0 0; font-size: 12px; color: var(--text-secondary); }
-.primary { border: 0; border-radius: var(--radius-md); background: var(--brand-primary); color: var(--text-inverse); padding: 9px 12px; cursor: pointer; font-size: 12px; }
+.page-header p { margin: 5px 0 0; font-size: var(--text-sm); color: var(--text-secondary); }
+.primary { border: 0; border-radius: var(--radius-md); background: var(--brand-primary); color: var(--text-inverse); padding: 9px 12px; cursor: pointer; font-size: var(--text-sm); }
 .primary:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--brand-primary); }
 .primary:disabled { opacity: .55; }
 .search { width: 100%; box-sizing: border-box; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-md); margin-bottom: 12px; background: var(--bg-card); color: var(--text-primary); font: inherit; }
@@ -124,10 +124,10 @@ h1 { margin: 0; font-size: 24px; }
 .contact-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 7px; }
 .contact-list li { display: flex; align-items: center; gap: 10px; padding: 11px; background: var(--bg-card); border-radius: var(--radius-lg); cursor: pointer; }
 .contact-list li:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--brand-primary); }
-.avatar { width: 38px; height: 38px; border-radius: 50%; display: grid; place-items: center; background: var(--brand-primary); color: var(--text-inverse); font-size: 13px; font-weight: 700; flex-shrink: 0; }
+.avatar { width: 38px; height: 38px; border-radius: 50%; display: grid; place-items: center; background: var(--brand-primary); color: var(--text-inverse); font-size: var(--text-smd); font-weight: 700; flex-shrink: 0; }
 .main { min-width: 0; flex: 1; display: grid; gap: 3px; }
 .main strong, .main span, .main small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.main span, .main small { color: var(--text-secondary); font-size: 11px; }
-.count { color: var(--text-muted); font-size: 11px; }
-.message { color: var(--text-secondary); font-size: 12px; text-align: center; }
+.main span, .main small { color: var(--text-secondary); font-size: var(--text-2xs); }
+.count { color: var(--text-muted); font-size: var(--text-2xs); }
+.message { color: var(--text-secondary); font-size: var(--text-sm); text-align: center; }
 </style>

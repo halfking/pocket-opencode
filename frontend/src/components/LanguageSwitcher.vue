@@ -52,7 +52,7 @@ const handleLocaleChange = () => {
   border-radius: var(--radius-sm);
   background-color: var(--bg-card);
   color: var(--text-primary);
-  font-size: 14px;
+  font-size: var(--text-base);
   cursor: pointer;
   transition: border-color 0.3s;
 }

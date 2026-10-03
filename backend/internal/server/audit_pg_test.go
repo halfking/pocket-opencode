@@ -12,19 +12,15 @@ import (
 )
 
 // newTestPGAuditStore creates an isolated schema for a server audit integration
-// test. POCKET_TEST_POSTGRES_DSN takes precedence; POCKET_POSTGRES_DSN is a
-// compatible fallback so all PG test helpers follow the same convention.
+// test. It reads POCKET_TEST_POSTGRES_DSN only — the POCKET_POSTGRES_DSN
+// fallback was removed on 2026-10-02 (see the comment in the body below).
 func newTestPGAuditStore(t *testing.T) (*redclaw.PGAuditStore, func()) {
 	t.Helper()
-	dsn := ""
-	for _, key := range []string{"POCKET_TEST_POSTGRES_DSN", "POCKET_POSTGRES_DSN"} {
-		if value := os.Getenv(key); value != "" {
-			dsn = value
-			break
-		}
-	}
+	// 只认测试专用 DSN。回退读 POCKET_POSTGRES_DSN 会让本地 `go test ./...`
+	// 零配置地打到生产库——实测已在生产库留下 meeting_test_* 残留 schema。
+	dsn := os.Getenv("POCKET_TEST_POSTGRES_DSN")
 	if dsn == "" {
-		t.Skip("POCKET_TEST_POSTGRES_DSN or POCKET_POSTGRES_DSN not set; skipping server audit PG integration test")
+		t.Skip("POCKET_TEST_POSTGRES_DSN not set; skipping server audit PG integration test")
 	}
 
 	ctx := context.Background()

@@ -15,7 +15,7 @@ import { CapacitorSQLite, SQLiteConnection, SQLiteDBConnection } from '@capacito
 import { initSqliteWeb } from './sqlite-web-init'
 import { isWebFallbackRuntime } from './runtime-platform'
 import type { SqlDb, SqlRow } from './sqlDb'
-import { SCHEMA_SQL, splitSqlStatements } from './schema'
+import { SCHEMA_SQL, splitSqlStatements, normalizeTriggerForPluginExecute } from './schema'
 import { localDbNeedsOpen } from './local-db-init'
 
 const MEETINGS_V2_COLUMNS = [
@@ -68,6 +68,20 @@ const EMAIL_SYNC_V1_COLUMNS = [
 const EMAIL_INBOX_V1_COLUMNS = [
   { table: 'local_emails', column: 'deleted_at', sql: 'ALTER TABLE local_emails ADD COLUMN deleted_at INTEGER DEFAULT 0' },
   { table: 'local_emails', column: 'body_purged', sql: 'ALTER TABLE local_emails ADD COLUMN body_purged INTEGER DEFAULT 0' },
+]
+
+// 自定义邮件目录 + 本地迁移操作日志（2026-10-01）：
+//   - local_emails.folder 记录邮件所在目录（空 = INBOX）；
+//   - local_email_folders 是服务端目录的本地镜像；
+//   - local_email_ops 是本地移动/删除操作的离线队列，同步按钮把 pending 推给
+//     服务端 /api/emails/ops（幂等键去重），由服务端经 IMAP 真正迁移。
+const EMAIL_FOLDERS_V1_COLUMNS = [
+  { table: 'local_emails', column: 'folder', sql: "ALTER TABLE local_emails ADD COLUMN folder TEXT DEFAULT ''" },
+  // q2：AI 判定重要度的依据。服务端早就写进 emails.action_reason 了，但读路径
+  // 从没读过它，于是「为什么这封被判为重要」在列表页拿不到 —— 提醒不可信。
+  // 已存在的本地库不会因为改了 CREATE TABLE 而补列（SQLite 的
+  // CREATE TABLE IF NOT EXISTS 对老库是 no-op），所以必须有这条迁移。
+  { table: 'local_emails', column: 'action_reason', sql: 'ALTER TABLE local_emails ADD COLUMN action_reason TEXT' },
 ]
 
 const LIST_SYNC_V1_COLUMNS = [
@@ -174,13 +188,19 @@ class LocalDB {
     let applied = 0
     let failed = 0
     for (const stmt of statements) {
-      const one = stmt.endsWith(';') ? stmt : `${stmt};`
+      // BUG-AH：切分正确还不够 —— 插件的 Android execute 会按字面量 `;\n` 再切一次，
+      // 触发体里的「分号 + 换行」会把 CREATE TRIGGER 截断成半条语句。
+      // 真机实测：三个 FTS 触发器一个都没建成，而 FTS 虚表建出来了
+      // （虚表体内没有分号，所以幸存）。详见 schema.ts 里
+      // normalizeTriggerForPluginExecute 的实验表。
+      const one = normalizeTriggerForPluginExecute(stmt)
+      const withSemi = one.endsWith(';') ? one : `${one};`
       try {
-        await this.conn.execute(one, false)
+        await this.conn.execute(withSemi, false)
         applied++
       } catch (e) {
         failed++
-        console.warn('[localDB] skip schema stmt:', one.slice(0, 60), e)
+        console.warn('[localDB] skip schema stmt:', withSemi.slice(0, 60), e)
       }
     }
     if (failed > 0) {
@@ -224,7 +244,62 @@ class LocalDB {
     } catch (e) {
       console.warn('[localDB] email inbox v1 migration failed:', e)
     }
+    try {
+      await this.runEmailFoldersV1Migration()
+    } catch (e) {
+      console.warn('[localDB] email folders v1 migration failed:', e)
+    }
     this.initialized = true
+  }
+
+  /** 自定义邮件目录 + 本地迁移操作日志（2026-10-01）。 */
+  private async runEmailFoldersV1Migration(): Promise<void> {
+    if (!this.conn) return
+    await this.conn.execute(`
+      CREATE TABLE IF NOT EXISTS _schema_migrations (
+        version TEXT PRIMARY KEY,
+        description TEXT,
+        applied_at INTEGER NOT NULL
+      );
+    `, false)
+    for (const col of EMAIL_FOLDERS_V1_COLUMNS) {
+      try { await this.conn.execute(col.sql, false) } catch { /* 列可能已存在 */ }
+    }
+    await this.conn.execute(`
+      CREATE TABLE IF NOT EXISTS local_email_folders (
+        id TEXT PRIMARY KEY,
+        account_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        display_name TEXT NOT NULL DEFAULT '',
+        special TEXT NOT NULL DEFAULT '',
+        source TEXT NOT NULL DEFAULT 'user',
+        server_synced INTEGER NOT NULL DEFAULT 0,
+        email_count INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        UNIQUE(account_id, name)
+      );
+    `, false)
+    await this.conn.execute(`
+      CREATE TABLE IF NOT EXISTS local_email_ops (
+        id TEXT PRIMARY KEY,
+        account_id TEXT NOT NULL,
+        email_id TEXT NOT NULL,
+        uid INTEGER NOT NULL DEFAULT 0,
+        action TEXT NOT NULL,
+        target_folder TEXT NOT NULL DEFAULT '',
+        subject TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'pending',
+        error TEXT NOT NULL DEFAULT '',
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_email_ops_status ON local_email_ops(status);
+    `, false)
+    await this.conn.execute(
+      "INSERT OR IGNORE INTO _schema_migrations (version, description, applied_at) VALUES ('2026-10-01-email-folders-v1', '自定义目录/本地迁移操作日志', strftime('%s', 'now') * 1000);",
+      false,
+    )
   }
 
   /** 会议模块 v2：为旧库补列，列已存在则跳过 */
@@ -237,13 +312,13 @@ class LocalDB {
         applied_at INTEGER NOT NULL
       );
     `, false)
-    const done = await this.queryOne<{ version: string }>(
+    const done = await this.queryForMigration<{ version: string }>(
       "SELECT version FROM _schema_migrations WHERE version = '2026-07-15-meetings-v2'",
     )
     if (done) return
 
     for (const col of MEETINGS_V2_COLUMNS) {
-      const exists = await this.queryOne<{ cnt: number }>(
+      const exists = await this.queryForMigration<{ cnt: number }>(
         `SELECT COUNT(*) AS cnt FROM pragma_table_info('${col.table}') WHERE name = ?`,
         [col.column],
       )
@@ -278,13 +353,13 @@ class LocalDB {
         applied_at INTEGER NOT NULL
       );
     `, false)
-    const done = await this.queryOne<{ version: string }>(
+    const done = await this.queryForMigration<{ version: string }>(
       "SELECT version FROM _schema_migrations WHERE version = '2026-09-07-email-sync-v1'",
     )
     if (done) return
 
     for (const col of EMAIL_SYNC_V1_COLUMNS) {
-      const exists = await this.queryOne<{ cnt: number }>(
+      const exists = await this.queryForMigration<{ cnt: number }>(
         `SELECT COUNT(*) AS cnt FROM pragma_table_info('${col.table}') WHERE name = ?`,
         [col.column],
       )
@@ -312,7 +387,7 @@ class LocalDB {
       );
     `, false)
     for (const col of LIST_SYNC_V1_COLUMNS) {
-      const exists = await this.queryOne<{ cnt: number }>(
+      const exists = await this.queryForMigration<{ cnt: number }>(
         `SELECT COUNT(*) AS cnt FROM pragma_table_info('${col.table}') WHERE name = ?`,
         [col.column],
       )
@@ -418,7 +493,7 @@ class LocalDB {
       false,
     )
     for (const col of LIVE_RECORD_V1_COLUMNS) {
-      const exists = await this.queryOne<{ cnt: number }>(
+      const exists = await this.queryForMigration<{ cnt: number }>(
         `SELECT COUNT(*) AS cnt FROM pragma_table_info('${col.table}') WHERE name = ?`,
         [col.column],
       )
@@ -443,13 +518,13 @@ class LocalDB {
         applied_at INTEGER NOT NULL
       );
     `, false)
-    const done = await this.queryOne<{ version: string }>(
+    const done = await this.queryForMigration<{ version: string }>(
       "SELECT version FROM _schema_migrations WHERE version = '2026-09-08-notes-capture-v1'",
     )
     if (done) return
 
     for (const col of NOTES_CAPTURE_V1_COLUMNS) {
-      const exists = await this.queryOne<{ cnt: number }>(
+      const exists = await this.queryForMigration<{ cnt: number }>(
         `SELECT COUNT(*) AS cnt FROM pragma_table_info('${col.table}') WHERE name = ?`,
         [col.column],
       )
@@ -478,30 +553,50 @@ class LocalDB {
     )
     await this.conn.execute('CREATE INDEX IF NOT EXISTS idx_notes_status ON local_notes(status) WHERE deleted_at IS NULL;', false).catch(() => {})
 
+    // BUG-AH：三个 FTS 触发器原来是把**多语句字符串**整块丢给
+    // `this.conn.execute()`。触发器体里本来就带分号（`local_notes_ad` / `_au`
+    // 体内各有 1~2 条以 `;` 结尾的语句），插件按「单条语句」解析，
+    // 于是从第一个分号处截断 → `incomplete input (code 1)`，
+    // **三个触发器一个都没建成**（真机 sqlite_master 实测：只有 FTS 虚表与
+    // 它的影子表，零个 trigger）。
+    //
+    // 后果不是报错而是**索引悄悄失同步**：搜索走
+    // `local_notes_fts MATCH`（notes-search.ts），而 ad/au 缺失意味着
+    // 删改笔记不会从索引里摘掉旧行 → 搜到已删除或旧内容的笔记。
+    // 之前 `notes-fts-ready.ts` 的全量回灌让行数一度对得上，掩盖了这一点。
+    //
+    // 修法与 SCHEMA_SQL 路径保持一致：交给 splitSqlStatements 切分后逐条执行
+    // （那条路已被证明有效 —— FTS 虚表就是它建出来的）。
+    // 回归/证伪：scripts/check-fts-triggers-device.mjs 直接查设备上的 sqlite_master。
+    const ftsTriggerDdl = `
+      CREATE TRIGGER IF NOT EXISTS local_notes_ai AFTER INSERT ON local_notes BEGIN
+        INSERT INTO local_notes_fts(rowid, title, content)
+        VALUES (new.rowid, new.title, COALESCE(NULLIF(new.search_text, ''), new.content));
+      END;
+      CREATE TRIGGER IF NOT EXISTS local_notes_ad AFTER DELETE ON local_notes BEGIN
+        INSERT INTO local_notes_fts(local_notes_fts, rowid, title, content)
+        VALUES ('delete', old.rowid, old.title, COALESCE(NULLIF(old.search_text, ''), old.content));
+      END;
+      CREATE TRIGGER IF NOT EXISTS local_notes_au AFTER UPDATE ON local_notes BEGIN
+        INSERT INTO local_notes_fts(local_notes_fts, rowid, title, content)
+        VALUES ('delete', old.rowid, old.title, COALESCE(NULLIF(old.search_text, ''), old.content));
+        INSERT INTO local_notes_fts(rowid, title, content)
+        VALUES (new.rowid, new.title, COALESCE(NULLIF(new.search_text, ''), new.content));
+      END;
+    `
+    const ftsTriggerStmts = splitSqlStatements(ftsTriggerDdl)
+    if (ftsTriggerStmts.length !== 3) {
+      // 切分数量不对说明 DDL 写坏了，宁可报错也不要静默建一半
+      throw new Error(`[localDB] FTS trigger DDL split into ${ftsTriggerStmts.length} statements, expected 3`)
+    }
+
     try {
       await this.conn.execute('DROP TRIGGER IF EXISTS local_notes_ai;', false)
       await this.conn.execute('DROP TRIGGER IF EXISTS local_notes_ad;', false)
       await this.conn.execute('DROP TRIGGER IF EXISTS local_notes_au;', false)
-      await this.conn.execute(`
-        CREATE TRIGGER IF NOT EXISTS local_notes_ai AFTER INSERT ON local_notes BEGIN
-          INSERT INTO local_notes_fts(rowid, title, content)
-          VALUES (new.rowid, new.title, COALESCE(NULLIF(new.search_text, ''), new.content));
-        END;
-      `, false)
-      await this.conn.execute(`
-        CREATE TRIGGER IF NOT EXISTS local_notes_ad AFTER DELETE ON local_notes BEGIN
-          INSERT INTO local_notes_fts(local_notes_fts, rowid, title, content)
-          VALUES ('delete', old.rowid, old.title, COALESCE(NULLIF(old.search_text, ''), old.content));
-        END;
-      `, false)
-      await this.conn.execute(`
-        CREATE TRIGGER IF NOT EXISTS local_notes_au AFTER UPDATE ON local_notes BEGIN
-          INSERT INTO local_notes_fts(local_notes_fts, rowid, title, content)
-          VALUES ('delete', old.rowid, old.title, COALESCE(NULLIF(old.search_text, ''), old.content));
-          INSERT INTO local_notes_fts(rowid, title, content)
-          VALUES (new.rowid, new.title, COALESCE(NULLIF(new.search_text, ''), new.content));
-        END;
-      `, false)
+      for (const one of ftsTriggerStmts) {
+        await this.conn.execute(normalizeTriggerForPluginExecute(one), false)
+      }
     } catch (e) {
       console.warn('[localDB] notes FTS trigger rebuild skipped:', e)
     }
@@ -523,7 +618,7 @@ class LocalDB {
       );
     `, false)
     for (const col of MEETINGS_STUDIO_V1_COLUMNS) {
-      const exists = await this.queryOne<{ cnt: number }>(
+      const exists = await this.queryForMigration<{ cnt: number }>(
         `SELECT COUNT(*) AS cnt FROM pragma_table_info('${col.table}') WHERE name = ?`,
         [col.column],
       )
@@ -611,6 +706,38 @@ class LocalDB {
   /** 查询单行，无结果返回 null。 */
   async queryOne<T = Record<string, unknown>>(sql: string, values: unknown[] = []): Promise<T | null> {
     const rows = await this.query<T>(sql, values)
+    return rows.length > 0 ? rows[0] : null
+  }
+
+  /**
+   * 迁移专用的免守卫查询（BUG-AI）。
+   *
+   * 背景：`init()` 在开头把 `initialized = false`，直到**所有迁移跑完**才置 true；
+   * 而 `query/execute/run` 都先 `requireReady()`，于是 init 期间调用必抛
+   * 「LocalDB 未初始化，请先调用 init(dbSecret)」。
+   *
+   * 真机实测（https 包，`diag-finance-view-vanish.mjs` 抓的 console）：
+   * 7 个迁移里有 6 个整条挂掉，只剩 console.warn：
+   *   [localDB] meetings v2 migration failed: LocalDB 未初始化…
+   *   [localDB] email sync v1 / live record v1 / notes capture v1
+   *   [localDB] meetings studio v1 / list sync v1 migration failed: …
+   * 全新安装看不出问题（SCHEMA_SQL 已经建全表），
+   * 但**增量迁移要补的那些列，老库永远补不上** —— 典型升级期才爆的坑。
+   *
+   * 为什么之前只坏一半：`runEmailInboxV1Migration` 早就发现了这件事
+   * （388-391 行的注释写着「init 期间 initialized=false，requireReady 会抛错，
+   * 旧库永远补不上列」），并在那一个方法里改用 `this.conn.execute` 绕开 ——
+   * 但另外 6 个方法还在走带守卫的助手。修一处不够。
+   *
+   * 这里只放行「有连接」这一条必要条件，不放宽任何 SQL 校验。
+   */
+  private async queryForMigration<T = Record<string, unknown>>(
+    sql: string,
+    values: unknown[] = [],
+  ): Promise<T | null> {
+    if (!this.conn) throw new Error('LocalDB 未初始化：连接不存在')
+    const res = await this.conn.query(sql, values)
+    const rows = (res.values ?? []) as T[]
     return rows.length > 0 ? rows[0] : null
   }
 

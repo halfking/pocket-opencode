@@ -1,0 +1,111 @@
+# 进入 PKM 笔记页（笔记相关 flow 用 runFlow 引用）
+#
+# 为什么单独抽一个：本项目的本地 SQLCipher 库是**按需解锁**的——
+# 守卫只在「导航到依赖本地库的路由」那一刻才判定。所以：
+#   启动后停在 #/ai 时看起来一切正常（打开菜单可见、AI 工具页正常），
+#   但本地库其实**还锁着**。
+# 于是「先检查是否已解锁」这种写法必然漏判：#/ai 不依赖本地库，检查永远通过。
+# 唯一可靠的做法就是**先去目标页，让守卫把解锁页弹出来，再解锁**。
+# 2026-10-01 真机首次跑 Maestro 就栽在这里：旧 _login.yaml 拿「打开菜单可见」
+# 当已解锁标志，结果一进笔记页就被弹回解锁页。
+#
+# 交互方式的实测结论（真机 720x1640 / CSS 360x820 / dpr=2）：
+#   ✅ tapOn: "文本"  可用
+#   ❌ tapOn: {point: "88%,95%"}  两次都没命中（Maestro 报 COMPLETED 但页面不动）
+#   ❌ evalScript: ${location.hash = '#/more'}
+#      → TypeError: Cannot set property 'hash' of undefined
+#        说明 evalScript 不在 WebView 的 JS 上下文里跑，不能用来做 hash 导航
+# 所以这里一律用文本点击，并用 extendedWaitUntil 兜住状态切换。
+appId: com.kaixuan.opencode.pocket
+---
+# 进「更多」之前先确认 AI 工具页内容与底部导航都渲染完了。
+# 底部导航是 position:fixed 一直在屏幕上，但页面还在做数据加载时点它，
+# 实测有两种失败形态：① 元素还没进视图树，tapOn 直接 FAILED；
+#   ② 元素在、报 COMPLETED，但路由没变。所以这里既等页面内容，也等目标本身。
+- extendedWaitUntil:
+    visible: "主导航"
+    timeout: 30000
+# ⚠️ 2026-10-03 真机实测：目标从「更多」改成了「笔记」。
+# 旧写法点底部「更多」、再点宫格里的「PKM笔记」——那是 IA 重组**之前**的入口。
+# 2026-10-03 一级 tab 收敛为 首页 / 笔记 / 消息 / 更多之后：
+#   · 「PKM笔记」已从「更多」宫格移除（MoreHubView 的 items 里没有它了）
+#   · PKM 工作台改由一级 tab「笔记」(/notes) 页里的「打开 PKM」按钮进入
+# 旧流程的实测症状：在 `visible: "PKM笔记"` 上 20s 超时，整条 flow 中止。
+- extendedWaitUntil:
+    visible: "笔记"
+    timeout: 20000
+
+- tapOn: "笔记"
+- waitForAnimationToEnd:
+    timeout: 3000
+
+# ⚠️ 重试必须写成「不会失败的命令」：Maestro 遇到失败的断言会**直接中止整条 flow**，
+#    所以任何 extendedWaitUntil 一旦超时，后面的补救根本没机会跑（实测踩过）。
+#    正确做法是：先用 runFlow when 做条件判断（判断本身不算失败），
+#    把可能失败的等待放在最后一条。
+- runFlow:
+    when:
+      notVisible: "打开 PKM"
+    commands:
+      - tapOn: "笔记"
+      - waitForAnimationToEnd:
+          timeout: 3000
+
+# ⚠️ 2026-10-03 真机证据（本条是**定位**出来的，不是推测）：
+# 失败现场 maestro 的 screen-hierarchy 快照 step-015 抓到的可见节点是
+#   全部 11 / 手记 / 会议纪要 11 / PKM 笔记 + 一长串会议条目 + 底部导航
+# ——「打开 PKM」**不在里面**。它在 NotesHubView 里排在整张列表**之后**
+# （见 NotesHubView 的 see-all 区块），而那台机上会议纪要有 11 条，
+# 于是它在**首屏之下**：Maestro 的可见性只看视口内节点，滚不到就永远匹配不上。
+# 旧路径（更多 → 宫格里的 PKM笔记）在宫格首屏，所以从前不需要滚动——
+# 这就是「换了入口之后同一个 flow 从能过变成必红」的真实原因。
+# 「打开 PKM」现在常驻在**列表之前**（2026-10-03 真机实测两次改位置，见
+# NotesHubView 里的说明），所以这里不需要滚动。
+# ⚠️ 别再加回 scrollUntilVisible：它曾把点击落到**会议详情**上并触发录音——
+# 列表滚完之后坐标已经漂了，而 bottom-list 元素天然容易被点错。
+# 入口在手边的另一个好处：这条 flow 也不再依赖「滚到底部」。
+- extendedWaitUntil:
+    visible: "打开 PKM"
+    timeout: 20000
+- assertVisible: "打开 PKM"
+
+- tapOn: "打开 PKM"
+- waitForAnimationToEnd:
+    timeout: 3000
+
+# ⚠️ 必须**硬断言真的到了 PKM 页**，不能就这么往下走。
+# 2026-10-03 真机实测踩过：漏掉这一步时，流程在「笔记」hub 上就已经匹配到了
+# 头部的 aria-label=新建笔记（hub 自己也有一个同名按钮），于是 tapOn 进的
+# 是 /notes/new 的 NoteEditView（标题/正文/分类/标签/✓创建），
+# 而本流程后面等的是 PKM 编辑器那个**预填「无标题」**的输入框 ——
+# 报错会指向上游那个无辜的 `^无标题$`，真实原因（页面根本没到 PKM）被埋掉。
+# 「走错页要响」比「走错页还继续」值钱。
+# PKM 页独有的标题（两种日更状态）：今日 Daily Note / 继续今日笔记。
+- extendedWaitUntil:
+    visible: "今日 Daily Note|继续今日笔记"
+    timeout: 20000
+- assertVisible: "今日 Daily Note|继续今日笔记"
+
+# 守卫判定：本地库没解锁会把会话改写成 #/login?returnTo=/pkm/today&unlock=1
+#
+# ⚠️ 2026-10-02：这里原来是一段 runFlow，用坐标点密码框 + `inputText: ${POCKET_MASTER}`
+#    去解锁。**那条路径必然失效** —— Maestro 把 ${...} 展开成字符串，变量不在它
+#    变量域里时就是字面量 "undefined"（与 ${POCKET_DEV_PASS} 同一个缺陷）。
+#    本文件自己的第 16 行注释其实已经点破了机制：
+#      `evalScript: ${location.hash='#/more'}` → Cannot set property 'hash' of undefined
+#      「说明 evalScript 不在 WebView 的 JS 上下文里跑」
+#    真机复核（2026-10-02）：这个解锁分支**不是死代码**，确实会被触发——
+#    导航到 #/pkm/today 会落到 `#/login?...&unlock=1`，localStorage 里有
+#    `pocket_crypto_salt`（PBKDF2 盐 ⇒ 主密码设过），解锁屏只有一个
+#    placeholder=输入主密码解锁 的密码框。
+#
+#    解锁已上移到 scripts/maestro-run.mjs 的 ensureLocalDbUnlocked()（用 CDP 按
+#    placeholder 定位，不依赖坐标）。本文件改为**硬断言**：解锁屏出现就红。
+#    为什么不再写成 runFlow when —— 那种写法在条件不满足时静默跳过，
+#    于是「harness 的解锁悄悄回归了」这件事没有任何人会看见。断言要响。
+- assertNotVisible: "解锁本地数据"
+
+- extendedWaitUntil:
+    visible: "新建笔记"
+    timeout: 60000
+- assertVisible: "新建笔记"

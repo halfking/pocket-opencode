@@ -166,8 +166,8 @@ function buildTree(value: unknown, key?: string, depth = 0, path: string[] = [])
   background: var(--bg-tertiary, #f8f8f8);
   border-radius: 6px;
   overflow: hidden;
-  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
-  font-size: 12px;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
   line-height: 1.5;
 }
 
@@ -207,7 +207,7 @@ function buildTree(value: unknown, key?: string, depth = 0, path: string[] = [])
   border: 1px solid transparent;
   border-radius: 4px;
   padding: 2px 8px;
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-secondary, #666);
   cursor: pointer;
 }
@@ -246,7 +246,7 @@ function buildTree(value: unknown, key?: string, depth = 0, path: string[] = [])
 }
 
 .json-fs-btn .material-symbols-outlined {
-  font-size: 18px;
+  font-size: var(--text-xl);
 }
 
 .json-body {
@@ -258,7 +258,7 @@ function buildTree(value: unknown, key?: string, depth = 0, path: string[] = [])
 
 .json-block.is-fullscreen .json-body {
   padding: 16px 24px;
-  font-size: 14px;
+  font-size: var(--text-base);
 }
 
 .json-text {
@@ -270,7 +270,7 @@ function buildTree(value: unknown, key?: string, depth = 0, path: string[] = [])
 
 .json-hint {
   margin-top: 4px;
-  font-size: 10px;
+  font-size: var(--text-xs);
   color: var(--text-tertiary, #999);
 }
 </style>

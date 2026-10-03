@@ -1,0 +1,5 @@
+=== F. 反证（docker stop 直停容器名）===
+pocketd STOPPED: GET :18080/api/healthz -> 504 body=<html>
+<head><title>504 Gateway Time-ou
+pocketd STOPPED: GET :18080/healthz    -> 200 body=frontend ok
+pocketd RESTARTED: GET :18080/api/healthz -> 200 body=ok

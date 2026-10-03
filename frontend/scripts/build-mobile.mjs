@@ -14,6 +14,21 @@
 // Skip vite typecheck (fast path):
 //   MOBILE_FAST=1 node scripts/build-mobile.mjs ios dev
 //
+// Build the coexisting STT debug package (android only):
+//   node scripts/build-mobile.mjs android dev --sttdev
+//   -> vite build + cap sync + `gradlew assembleDebug -PsttDevApp`
+//
+//   Why this exists: `-PsttDevApp` flips applicationIdSuffix to ".sttdev", giving a
+//   package that can sit on the phone next to the real one with separate data
+//   (app/build.gradle). That is how STT getsmessed with on-device recording without
+//   touching the user's installed app. But the flag lived only in gradle, so the
+//   sanctioned build path stopped at `cap sync` and the gradle step was a
+//   hand-typed incantation that nothing verified — a mistyped property silently
+//   yields a **main-package** APK that would overwrite the real app on install.
+//
+//   So this flag does not just pass the property; it asserts the produced
+//   artifact really is the coexisting one (see verifySttdevArtifact).
+//
 // Behaviour:
 //   - Validates args (platform ∈ {ios, android}; env ∈ {dev, staging, prod}).
 //   - Picks a vite --mode profile: ios-dev | android-dev | staging | production.
@@ -37,7 +52,7 @@
 // empty. Override only in exceptional cases with MOBILE_ALLOW_EMPTY_API_BASE=1.
 
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -53,9 +68,23 @@ function usage(exitCode = 1) {
   process.exit(exitCode);
 }
 
-const [, , platform, env] = process.argv;
+const [, , platform, env, ...rest] = process.argv;
 if (!platform || !PLATFORMS.has(platform)) usage();
 if (!env || !ENVS.has(env)) usage();
+
+// --sttdev is a build VARIANT, orthogonal to platform/env. Reject it on iOS
+// instead of ignoring it: silently dropping the flag would hand back a
+// main-package build while the caller believes they got the coexisting one.
+const sttdev = rest.includes("--sttdev");
+const unknownFlags = rest.filter((a) => a !== "--sttdev");
+if (unknownFlags.length) {
+  console.error(`[build-mobile] unknown argument(s): ${unknownFlags.join(" ")}`);
+  usage();
+}
+if (sttdev && platform !== "android") {
+  console.error("[build-mobile] --sttdev is android-only (it drives app/build.gradle)");
+  process.exit(1);
+}
 
 function modeFor(platform, env) {
   if (env === "dev") return `${platform}-dev`;
@@ -158,13 +187,51 @@ if (build.status !== 0) {
   process.exit(build.status ?? 1);
 }
 
+// 产物级门禁：确认「读原生构建身份」的修复**真的进了 dist/**。
+//
+// 为什么要这一层：判据与 vue-tsc 都跑在**源码**上，两者都绿并不代表修复进了
+// APK —— vite 会 tree-shake，改名/拆包也能让代码「还在仓库里、但不在产物里」。
+// 这正是 §4.74.2 的形态：仓库里是对的、设备上跑的不是，而没有任何一步会红。
+//
+// 放在 cap sync **之前**：门禁失败时 dist 还没被拷进原生工程，不会留下一个
+// 「已经 cap sync 过、但 bundle 是旧的」的平台目录。
+console.log(`[build-mobile] verify build identity in artifact`);
+const identity = spawnSync("node", ["scripts/verify-build-identity.mjs"], {
+  cwd: frontendRoot,
+  env: envVars,
+  stdio: "inherit",
+  shell: true,
+});
+if (identity.status !== 0) {
+  console.error(
+    `[build-mobile] build-identity gate failed (exit=${identity.status}) — ` +
+      `产物里缺少「读原生版本」相关内容，APK 会继续显示硬编码常量（§4.74.2）。` +
+      `已停止，未执行 cap sync。`
+  );
+  process.exit(identity.status ?? 1);
+}
+
 console.log(`[build-mobile] cap sync ${platform}`);
+// BUG-V3 (2026-10-01): this spawnSync must pass shell:true on Windows.
+// `npx` ships as npx.cmd, and spawnSync without a shell cannot execute a
+// .cmd — it returns status:null with error ENOENT, which the check below
+// then reports as "cap sync failed (exit=null)". Measured on this machine:
+//
+//   spawnSync("npx", ["--version"])              -> status=null  error=ENOENT
+//   spawnSync("npx", ["--version"], {shell:true}) -> status=0     "10.9.8"
+//
+// Effect before the fix: the sanctioned Android build path could never finish
+// on Windows even though `vite build` had already succeeded — the artifact on
+// disk was left half-updated and the script exited nonzero. Matches the above
+// vite-build call, which already passes shell:true.
 const sync = spawnSync("npx", ["cap", "sync", platform], {
   cwd: frontendRoot,
   env: envVars,
   stdio: "inherit",
+  shell: true,
 });
 if (sync.status !== 0) {
+  if (sync.error) console.error(`[build-mobile] cap sync could not start: ${sync.error.code || sync.error.message}`);
   console.error(`[build-mobile] cap sync failed (exit=${sync.status})`);
   process.exit(sync.status ?? 1);
 }
@@ -181,17 +248,108 @@ if (sync.status !== 0) {
     process.exit(1);
   }
   if (effectiveAPIBase) {
-    // -F 固定字符串匹配：URL 中的 + ? | 等不再有正则转义/alternation 风险；
-    // grep 退出码 1（无匹配）与 2（出错）都必须让构建失败，绝不降级跳过。
+    // BUG-V4 (2026-10-01): this used to shell out to `grep -rlF`. grep does not
+    // exist on Windows, so execFileSync threw ENOENT and the catch below
+    // reported it as "expected API base ... not found in dist/assets" — a
+    // message that sends you hunting for a VITE_API_BASE problem that does not
+    // exist. Verified locally: the base was in dist/assets the whole time.
+    // Reading the bundle from Node removes the platform dependency, and lets a
+    // genuine read error be reported as a read error instead of a false miss.
+    // (The original intent is preserved: a missing base must still be FATAL —
+    // a silently-skipped check is exactly how the 2026-09-05 empty-base APK shipped.)
+    let hit = null;
+    let readError = null;
     try {
-      execFileSync("grep", ["-rlF", effectiveAPIBase, distAssets], { encoding: "utf8" });
+      const walk = (dir) => {
+        for (const entry of readdirSync(dir, { withFileTypes: true })) {
+          const p = path.join(dir, entry.name);
+          if (entry.isDirectory()) walk(p);
+          else if (/\.(js|mjs|css|html|json)$/.test(entry.name) && readFileSync(p, "utf8").includes(effectiveAPIBase)) {
+            hit = p;
+            return;
+          }
+        }
+      };
+      walk(distAssets);
+      if (!hit && readFileSync(distIndex, "utf8").includes(effectiveAPIBase)) hit = distIndex;
     } catch (e) {
+      readError = e;
+    }
+    if (readError) {
+      console.error(`[build-mobile] sanity check could not read the bundle: ${readError.code || readError.message}`);
+      console.error("[build-mobile] this is a READ failure, not a missing API base");
+      process.exit(1);
+    }
+    if (!hit) {
       console.error(`[build-mobile] sanity check failed: expected API base ${effectiveAPIBase} not found in dist/assets`);
       console.error("[build-mobile] verify that VITE_API_BASE is exported into the build environment");
       process.exit(1);
     }
-    console.log(`[build-mobile] sanity check passed: ${effectiveAPIBase} present in bundle`);
+    console.log(`[build-mobile] sanity check passed: ${effectiveAPIBase} present in ${path.relative(frontendRoot, hit)}`);
   }
 }
 
-console.log(`[build-mobile] OK — ${platform}/${env} (mode=${mode})`);
+// ---- sttdev variant: gradle assembleDebug + assert the artifact is the
+// coexisting package, not the main one -------------------------------------
+//
+// The assertion is the point. `assembleDebug -PsttDevApp` is only a *request*:
+// if app/build.gradle ever drops the `if (project.hasProperty('sttDevApp'))`
+// branch, gradle still exits 0 and emits an APK — a **main-package** APK that
+// `adb install -r` would happily push over the user's real app. Nothing in the
+// gradle output distinguishes the two, and the damage only shows up later, on
+// the user's data. So we read what was actually produced.
+function verifySttdevArtifact() {
+  const meta = path.join(
+    frontendRoot, "android", "app", "build", "outputs", "apk", "debug", "output-metadata.json"
+  );
+  if (!existsSync(meta)) {
+    console.error(`[build-mobile] sttdev verification failed: ${path.relative(frontendRoot, meta)} not found`);
+    console.error("[build-mobile] gradle reported success but produced no APK metadata — treating as FATAL");
+    console.error("[build-mobile] (a main-package APK here would overwrite the user's installed app on install)");
+    process.exit(1);
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync(meta, "utf8"));
+  } catch (e) {
+    // A read/parse failure must NOT be reported as "wrong applicationId":
+    // the distinction matters, because the first means "the build is broken" and
+    // the second means "the build is fine but you built the wrong thing".
+    console.error(`[build-mobile] sttdev verification could not parse metadata: ${e.code || e.message}`);
+    console.error("[build-mobile] this is a READ failure, not a wrong-applicationId failure");
+    process.exit(1);
+  }
+  const appId = parsed?.applicationId;
+  if (typeof appId !== "string" || !appId.endsWith(".sttdev")) {
+    console.error(`[build-mobile] sttdev verification failed: applicationId=${JSON.stringify(appId)}`);
+    console.error("[build-mobile] expected it to end with '.sttdev'. The APK that was built is the MAIN package —");
+    console.error("[build-mobile] installing it would overwrite the user's real app. Do not install it.");
+    process.exit(1);
+  }
+  const attrs = parsed?.elements?.[0]?.attributes;
+  const versionName = Array.isArray(attrs) ? attrs.find((a) => a?.name === "versionName")?.value : undefined;
+  console.log(
+    `[build-mobile] sttdev artifact verified: applicationId=${appId}` +
+    (versionName ? ` versionName=${versionName}` : "")
+  );
+}
+
+if (sttdev) {
+  const androidDir = path.join(frontendRoot, "android");
+  const gradlew = process.platform === "win32" ? "gradlew.bat" : "./gradlew";
+  console.log("[build-mobile] gradle assembleDebug -PsttDevApp (coexisting package)");
+  const g = spawnSync(gradlew, ["--no-daemon", "assembleDebug", "-PsttDevApp"], {
+    cwd: androidDir,
+    env: envVars,
+    stdio: "inherit",
+    shell: process.platform === "win32",
+  });
+  if (g.status !== 0) {
+    if (g.error) console.error(`[build-mobile] gradle could not start: ${g.error.code || g.error.message}`);
+    console.error(`[build-mobile] gradle failed (exit=${g.status})`);
+    process.exit(g.status ?? 1);
+  }
+  verifySttdevArtifact();
+}
+
+console.log(`[build-mobile] OK — ${platform}/${env} (mode=${mode}${sttdev ? ", variant=sttdev" : ""})`);

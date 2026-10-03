@@ -148,7 +148,7 @@ function select(id: string) {
 }
 
 .parent-icon .material-symbols-outlined {
-  font-size: 18px;
+  font-size: var(--text-xl);
 }
 
 .parent-info {
@@ -160,14 +160,14 @@ function select(id: string) {
 }
 
 .parent-label {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-tertiary, var(--text-muted));
   text-transform: uppercase;
   letter-spacing: 0.4px;
 }
 
 .parent-path {
-  font-size: 14px;
+  font-size: var(--text-base);
   font-weight: var(--font-weight-medium);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -175,7 +175,7 @@ function select(id: string) {
 }
 
 .chev {
-  font-size: 18px;
+  font-size: var(--text-xl);
   color: var(--text-tertiary, var(--text-muted));
 }
 
@@ -188,7 +188,7 @@ function select(id: string) {
 
 .picker-title {
   margin: 0;
-  font-size: 15px;
+  font-size: var(--text-md);
   font-weight: var(--font-weight-semibold);
 }
 
@@ -241,7 +241,7 @@ function select(id: string) {
 
 .picker-note {
   margin-left: var(--space-2);
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-tertiary);
 }
 </style>

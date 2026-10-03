@@ -49,7 +49,12 @@ func (s *Server) handleEmailInvoices(w http.ResponseWriter, r *http.Request) {
 			"invoices": page.Invoices,
 			"total":    page.Total,
 			"filed":    page.Filed,
+			// amount/currency 仅在**单一币种**时有意义（多币种时 amount=0、
+			// currency=""）。多币种请读 amounts（按币种分组的合计），
+			// 前端绝不能把跨币种的数渲染成 ¥。
 			"amount":   page.Amount,
+			"currency": page.Currency,
+			"amounts":  page.Amounts,
 			"hasMore":  page.HasMore,
 			"offset":   offset,
 		})
@@ -77,6 +82,8 @@ func (s *Server) handleEmailInvoiceDispatch(w http.ResponseWriter, r *http.Reque
 	switch {
 	case rest == "extract":
 		s.handleEmailInvoiceExtract(w, r)
+	case rest == "harvest":
+		s.handleEmailInvoiceHarvest(w, r)
 	case rest == "export":
 		s.handleEmailInvoiceExport(w, r)
 	case rest == "push":
@@ -195,7 +202,7 @@ func (s *Server) handleEmailInvoiceExtract(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-inv, hit := email.ExtractInvoice(*e, "")
+	inv, hit := email.ExtractInvoice(*e, "")
 	log.Printf("[email/extract] enter email=%s uid=%d first_hit=%v fetcherNil=%v", e.ID, e.UID, hit, s.emailFetcher == nil)
 	if !hit {
 		// 摘要/主题没命中时拉正文：先 AES-GCM 缓存，无缓存主动从 IMAP
@@ -228,12 +235,103 @@ inv, hit := email.ExtractInvoice(*e, "")
 		writeJSON(w, http.StatusOK, map[string]any{"matched": false, "message": "未识别到发票/账单信息"})
 		return
 	}
+	// 命中了但没有开票日期：IMAP 路径只落 envelope，正文里的「开票日期」看不到，
+	// 规范文件名会退化成下载当天。补读一次正文（只针对这一封，不批量外呼）。
+	if inv.InvoiceDate == "" && e.UID > 0 && s.emailFetcher != nil {
+		if raw, ferr := s.emailFetcher.FetchMessageRaw(r.Context(), e.AccountID, e.UID); ferr == nil {
+			if parsed, perr := email.ParseMIMEMessage(raw); perr == nil {
+				text := parsed.TextBody
+				if text == "" {
+					text = parsed.HTMLBody
+				}
+				if d := email.ParseInvoiceDate(text); d != "" {
+					inv.InvoiceDate = d
+					log.Printf("[email/extract] backfilled invoice date=%s email=%s", d, e.ID)
+				}
+			}
+		}
+	}
 	saved, err := s.emailStore.UpsertInvoice(r.Context(), inv, userID, wsID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"matched": true, "invoice": saved})
+}
+
+// handleEmailInvoiceHarvest — POST /api/emails/invoices/harvest {ids?: []}
+// 只下载发票文件（附件 / 正文链接 / XML 重渲染），**不做任何邮箱写操作**。
+//
+// 为什么必须有这个端点：手动「提取」只建档不下载，下载逻辑一直挂在
+// Pipeline.Run 里；而流水线第 2 步会把广告邮件 MOVE 进真实邮箱的垃圾箱。
+// 于是「我想现在就把这张发票的文件拿到手」在真实邮箱上只能靠整条流水线 ——
+// 为了一个文件去改动真实邮箱，这不是一个可接受的入口。
+//
+// ids 省略 = 抓该 scope 下全部待下载（status 为 new/pending）的发票。
+func (s *Server) handleEmailInvoiceHarvest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "POST only")
+		return
+	}
+	if s.emailStore == nil {
+		writeError(w, http.StatusServiceUnavailable, "email store not configured")
+		return
+	}
+	if s.emailFetcher == nil {
+		writeError(w, http.StatusServiceUnavailable, "email fetcher not configured (IMAP unavailable)")
+		return
+	}
+	var body struct {
+		IDs []string `json:"ids"`
+	}
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&body)
+	}
+	uid := s.userIDFromRequest(r)
+	wsID := s.workspaceIDFromRequest(r)
+
+	var invoices []email.Invoice
+	if len(body.IDs) > 0 {
+		got, err := s.emailStore.ListInvoicesByIDScoped(r.Context(), body.IDs, uid, wsID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		invoices = got
+	} else {
+		got, err := s.emailStore.ListInvoicesScoped(r.Context(), uid, wsID, "", 200)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		for _, inv := range got {
+			if inv.Status == "new" || inv.Status == "pending" || inv.FilePath == "" {
+				invoices = append(invoices, inv)
+			}
+		}
+	}
+	if len(invoices) == 0 {
+		writeJSON(w, http.StatusOK, map[string]any{"processed": 0, "message": "没有待下载的发票"})
+		return
+	}
+
+	harvester := s.ensureInvoiceHarvester()
+	if harvester == nil {
+		writeError(w, http.StatusServiceUnavailable, "invoice harvester not configured")
+		return
+	}
+	// 必须有超时：采集要连真实 IMAP 拉原文、再按需下载附件链接。
+	// 直接用 r.Context() 的话，服务商一慢（实测 QQ 邮箱单封 >90s），
+	// HTTP 请求会一直挂着，前端按钮转圈到天荒地老。流水线那边有 15 分钟
+	// 上限，这里给 5 分钟——单张发票远够用。
+	runCtx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
+	defer cancel()
+	res := harvester.HarvestInvoices(runCtx, invoices)
+	log.Printf("[email/harvest] manual harvest user=%s ws=%s invoices=%d result=%+v", uid, wsID, len(invoices), res)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"processed": res.Processed,
+		"result":    res,
+	})
 }
 
 func (s *Server) handleEmailInvoiceOps(w http.ResponseWriter, r *http.Request) {

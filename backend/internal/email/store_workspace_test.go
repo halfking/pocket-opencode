@@ -3,9 +3,16 @@ package email
 // store_workspace_test.go — workspace-isolation integration tests for the email
 // store's scoped methods.
 //
-// These need a live PostgreSQL instance. Set POCKET_TEST_POSTGRES_DSN (or
-// POCKET_POSTGRES_DSN) to run them; otherwise they skip so `go test ./...`
-// stays green on machines without a DB.
+// These need a live PostgreSQL instance. Set POCKET_TEST_POSTGRES_DSN to run
+// them; otherwise they skip so `go test ./...` stays green on machines without
+// a DB.
+//
+// ⚠ POCKET_TEST_POSTGRES_DSN only — there is deliberately **no** fallback to
+// POCKET_POSTGRES_DSN (see testDSN below). This header used to advertise the
+// fallback ("or POCKET_POSTGRES_DSN"), which contradicted the code and told
+// readers that pointing the tests at the live database was supported. It is
+// not, and doing it has already left meeting_test_* schemas in the production
+// database. Corrected 2026-10-03.
 //
 // Each test runs in its own schema, dropped on cleanup, so parallel runs are
 // safe.
@@ -15,6 +22,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -22,12 +30,9 @@ import (
 )
 
 func testDSN() string {
-	for _, k := range []string{"POCKET_TEST_POSTGRES_DSN", "POCKET_POSTGRES_DSN"} {
-		if v := os.Getenv(k); v != "" {
-			return v
-		}
-	}
-	return ""
+	// 只认测试专用 DSN。回退读 POCKET_POSTGRES_DSN 会让本地 `go test ./...`
+	// 零配置地打到生产库——实测已在生产库留下 meeting_test_* 残留 schema。
+	return os.Getenv("POCKET_TEST_POSTGRES_DSN")
 }
 
 // newWorkspaceTestStore provisions an isolated schema + pool + Store.
@@ -54,12 +59,36 @@ func newWorkspaceTestStore(t *testing.T) (*Store, func()) {
 		t.Fatalf("create schema: %v", err)
 	}
 
+	// 清理**必须在这里就注册**，不能等函数返回 cleanup 再由调用方 defer。
+	//
+	// 2026-10-02 实测：下面还有三处 t.Fatalf（parse dsn / scoped pool /
+	// NewStore migrate），而 t.Fatalf 走的是 runtime.Goexit() —— 栈上的
+	// defer 会跑，但**还没被返回的 cleanup 永远不会执行**，schema 就留在
+	// 生产库里了。当时实测残留 2 个 email_ws_test_* schema（各 9 张表）。
+	//
+	// cleanup 用 sync.Once 保证幂等：调用方显式 defer cleanup() 与
+	// t.Cleanup 收尾时都会触发一次，两条路径都安全。
+	var pool *pgxpool.Pool
+	var dropOnce sync.Once
+	cleanup := func() {
+		dropOnce.Do(func() {
+			if pool != nil {
+				pool.Close()
+			}
+			if _, err := rootPool.Exec(context.Background(), "DROP SCHEMA "+schema+" CASCADE"); err != nil {
+				t.Logf("drop schema %s: %v", schema, err)
+			}
+			rootPool.Close()
+		})
+	}
+	t.Cleanup(cleanup)
+
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
 		t.Fatalf("parse dsn: %v", err)
 	}
 	cfg.ConnConfig.RuntimeParams["search_path"] = schema + ",public"
-	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	pool, err = pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		t.Fatalf("scoped pool: %v", err)
 	}
@@ -69,13 +98,6 @@ func newWorkspaceTestStore(t *testing.T) (*Store, func()) {
 		t.Fatalf("NewStore (migrate): %v", err)
 	}
 
-	cleanup := func() {
-		pool.Close()
-		if _, err := rootPool.Exec(context.Background(), "DROP SCHEMA "+schema+" CASCADE"); err != nil {
-			t.Logf("drop schema %s: %v", schema, err)
-		}
-		rootPool.Close()
-	}
 	return store, cleanup
 }
 

@@ -4,11 +4,13 @@ import {
   API_BASE_STORAGE_KEY,
   PRODUCTION_API_BASE,
   displayApiBase,
+  isCapacitorShellOrigin,
   normalizeApiBase,
   persistApiBase,
   probeHealthz,
   readApiBaseOverride,
   resolveApiBase,
+  resolveRuntimeApiBase,
 } from './api-base.ts'
 
 function memoryStorage(init: Record<string, string> = {}): Storage {
@@ -64,11 +66,16 @@ describe('resolveApiBase', () => {
     )
   })
 
-  it('empty override forces same-origin even when build default exists', () => {
+  it('uses explicit same-origin on Web but keeps the backend on a Capacitor shell', () => {
     assert.equal(
-      resolveApiBase({ override: '', buildDefault: 'https://build.example' }),
+      resolveApiBase({ override: '', buildDefault: 'https://build.example', pageOrigin: 'https://app.example' }),
       '',
     )
+    assert.equal(
+      resolveApiBase({ override: '', buildDefault: 'https://build.example', pageOrigin: 'http://localhost' }),
+      'https://build.example',
+    )
+    assert.equal(resolveApiBase({ override: '', buildDefault: '', pageOrigin: 'https://localhost' }), '')
   })
 
   it('missing override falls back to build default then origin', () => {
@@ -108,6 +115,60 @@ describe('persist and read override', () => {
   })
 })
 
+describe('isCapacitorShellOrigin / resolveRuntimeApiBase (BUG-J)', () => {
+  // BUG-J 回归锁：BUG-F 引入 CAP_ANDROID_SCHEME=http 逃生舱后，页面 origin
+  // 变成 http://localhost，而旧守卫只认 https://localhost，导致同源回退失效，
+  // /api/* 全部落到 WebView 本地 index.html。
+  it('recognizes every Capacitor shell scheme, not just https', () => {
+    for (const origin of [
+      'https://localhost',
+      'http://localhost',
+      'capacitor://localhost',
+      'HTTPS://LOCALHOST',
+    ]) {
+      assert.equal(isCapacitorShellOrigin(origin), true, `expected shell origin: ${origin}`)
+    }
+  })
+
+  it('does not treat a real backend or a port-bearing origin as the shell', () => {
+    for (const origin of [
+      'http://localhost:8088',
+      'https://app.example',
+      'http://192.168.31.20:8088',
+      '',
+      undefined,
+      null,
+    ]) {
+      assert.equal(isCapacitorShellOrigin(origin as string), false, `unexpected shell origin: ${origin}`)
+    }
+  })
+
+  it('falls back to the production base on an http Capacitor shell', () => {
+    assert.equal(
+      resolveRuntimeApiBase({ override: null, buildDefault: '', pageOrigin: 'http://localhost' }),
+      PRODUCTION_API_BASE,
+    )
+  })
+
+  it('keeps honoring an explicit base on an http Capacitor shell', () => {
+    assert.equal(
+      resolveRuntimeApiBase({
+        override: 'http://localhost:8088',
+        buildDefault: '',
+        pageOrigin: 'http://localhost',
+      }),
+      'http://localhost:8088',
+    )
+  })
+
+  it('stays same-origin for a plain web page with no configured base', () => {
+    assert.equal(
+      resolveRuntimeApiBase({ override: null, buildDefault: '', pageOrigin: 'https://app.example' }),
+      '',
+    )
+  })
+})
+
 describe('probeHealthz', () => {
   it('accepts HTTP 200 with body ok', async () => {
     const result = await probeHealthz('https://pocket.itestu.cn', async (input) => {
@@ -115,6 +176,30 @@ describe('probeHealthz', () => {
       return new Response('ok', { status: 200 })
     })
     assert.deepEqual(result, { ok: true })
+  })
+
+  it('checks the API through the same-origin proxy when /healthz is only the frontend', async () => {
+    const requested: string[] = []
+    const result = await probeHealthz('http://localhost:4175/', async (input) => {
+      requested.push(String(input))
+      return requested.length === 1
+        ? new Response('frontend ok', { status: 200 })
+        : new Response('ok', { status: 200 })
+    })
+    assert.deepEqual(requested, [
+      'http://localhost:4175/healthz',
+      'http://localhost:4175/api/healthz',
+    ])
+    assert.deepEqual(result, { ok: true })
+  })
+
+  it('reports a failed API behind a healthy frontend', async () => {
+    const result = await probeHealthz('http://localhost:4175', async (input) =>
+      String(input).endsWith('/api/healthz')
+        ? new Response('upstream down', { status: 502 })
+        : new Response('frontend ok', { status: 200 }),
+    )
+    assert.deepEqual(result, { ok: false, error: 'HTTP 502' })
   })
 
   it('fails on non-ok body or network error', async () => {

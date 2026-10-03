@@ -146,7 +146,9 @@ import { useOpenCodeStore } from '../../stores/opencode'
 import type { OpenCodeSession, HistoryEvent } from '../../stores/opencode'
 import { useToast } from '../../composables/useToast'
 import { downloadTextFile, DownloadUnsupportedError } from '../../utils/download'
+import { useApiError } from '../../composables/useApiError'
 
+const apiError = useApiError()
 const router = useRouter()
 const route = useRoute()
 const openCodeStore = useOpenCodeStore()
@@ -265,7 +267,7 @@ ${history.value.map(e => `- [${formatTime(e.timestamp)}] ${getActorName(e.actor)
     toast.success('已导出')
   } catch (e) {
     if (e instanceof DownloadUnsupportedError) {
-      toast.error(e.message)
+      toast.error(e.message) // raw-error-ok: 自有错误类，文案就是给人看的
       return
     }
     toast.error('导出失败')
@@ -349,7 +351,7 @@ function getActorName(actor: string): string {
 
 .back-btn, .export-btn {
   padding: 8px 12px;
-  font-size: 14px;
+  font-size: var(--text-base);
   background: transparent;
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -364,7 +366,9 @@ function getActorName(actor: string): string {
 
 .top-bar h1 {
   flex: 1;
-  font-size: 20px;
+  /* 走 token：与设置页/邮件页的顶栏标题（`.title { font-size: var(--text-lg) }`）
+     同源。此前这里写死 20px，与全局 16px 差 25%，是用户报的「字体不对」之一。 */
+  font-size: var(--text-lg);
   font-weight: 600;
   color: var(--text-primary);
   margin: 0;
@@ -432,7 +436,7 @@ function getActorName(actor: string): string {
 .status-badge {
   padding: 6px 14px;
   border-radius: 20px;
-  font-size: 13px;
+  font-size: var(--text-smd);
   font-weight: 600;
 }
 
@@ -459,24 +463,24 @@ function getActorName(actor: string): string {
 }
 
 .info-item .label {
-  font-size: 13px;
+  font-size: var(--text-smd);
   color: var(--text-muted);
 }
 
 .info-item .value {
-  font-size: 15px;
+  font-size: var(--text-md);
   color: var(--text-primary);
   font-weight: 500;
 }
 
 .info-item .value.code {
-  font-family: monospace;
-  font-size: 13px;
+  font-family: var(--font-mono);
+  font-size: var(--text-smd);
   color: var(--brand-primary);
 }
 
 .stats-card h3, .summary-card h3, .timeline-card h3 {
-  font-size: 16px;
+  font-size: var(--text-lg);
   font-weight: 600;
   margin: 0 0 16px 0;
   color: var(--text-primary);
@@ -526,7 +530,7 @@ function getActorName(actor: string): string {
 }
 
 .stat-label {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-secondary);
 }
 
@@ -559,7 +563,7 @@ function getActorName(actor: string): string {
 
 .refresh-summary-btn {
   padding: 8px 16px;
-  font-size: 13px;
+  font-size: var(--text-smd);
   background: var(--brand-primary);
   color: var(--text-inverse);
   border: none;
@@ -575,7 +579,7 @@ function getActorName(actor: string): string {
 }
 
 .timeline-count {
-  font-size: 13px;
+  font-size: var(--text-smd);
   padding: 4px 10px;
   background: var(--brand-bg);
   color: var(--brand-primary);
@@ -614,7 +618,7 @@ function getActorName(actor: string): string {
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 16px;
+  font-size: var(--text-lg);
 }
 
 .timeline-event.message .event-icon {
@@ -651,7 +655,7 @@ function getActorName(actor: string): string {
 }
 
 .event-actor {
-  font-size: 13px;
+  font-size: var(--text-smd);
   font-weight: 600;
   padding: 2px 8px;
   border-radius: 4px;
@@ -673,12 +677,12 @@ function getActorName(actor: string): string {
 }
 
 .event-time {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-muted);
 }
 
 .event-body {
-  font-size: 14px;
+  font-size: var(--text-base);
   color: var(--text-secondary);
   line-height: 1.5;
   margin-bottom: 8px;
@@ -694,7 +698,7 @@ function getActorName(actor: string): string {
 }
 
 .metadata-item {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-secondary);
 }
 
@@ -726,7 +730,7 @@ function getActorName(actor: string): string {
 
 .retry-btn {
   padding: 12px 24px;
-  font-size: 14px;
+  font-size: var(--text-base);
   font-weight: 600;
   color: var(--text-inverse);
   background: var(--brand-primary);

@@ -261,7 +261,7 @@ onMounted(load)
 }
 .status-bar {
   padding: var(--space-2) var(--space-3);
-  font-size: 13px;
+  font-size: var(--text-smd);
 }
 .status-ok {
   background: color-mix(in srgb, var(--success) 15%, transparent);
@@ -282,10 +282,10 @@ onMounted(load)
   padding: 40px 20px;
   text-align: center;
   color: var(--text-secondary);
-  font-size: 14px;
+  font-size: var(--text-base);
 }
 .hint {
-  font-size: 12px;
+  font-size: var(--text-sm);
   margin-top: 8px;
 }
 .node-list {
@@ -306,7 +306,7 @@ onMounted(load)
 }
 .node-name {
   flex: 1;
-  font-size: 15px;
+  font-size: var(--text-md);
   font-weight: 600;
   display: flex;
   align-items: center;
@@ -332,7 +332,7 @@ onMounted(load)
   background: var(--text-secondary);
 }
 .node-url {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-secondary);
   margin-top: 4px;
   word-break: break-all;
@@ -345,7 +345,7 @@ onMounted(load)
   flex-wrap: wrap;
 }
 .chip {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   padding: 2px 7px;
   border-radius: var(--radius-full, 999px);
   background: var(--bg-subtle);
@@ -361,11 +361,11 @@ onMounted(load)
   color: var(--text-secondary);
 }
 .time {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-secondary);
 }
 .node-error {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--danger);
   margin: 8px 0 0;
   word-break: break-word;
@@ -378,7 +378,7 @@ onMounted(load)
 .btn-ghost {
   flex: 1;
   padding: 7px;
-  font-size: 13px;
+  font-size: var(--text-smd);
   background: var(--bg-subtle);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm, 8px);
@@ -390,7 +390,7 @@ onMounted(load)
 .btn-primary {
   flex: 1;
   padding: 10px;
-  font-size: 14px;
+  font-size: var(--text-base);
   background: var(--primary, #4c8dff);
   border: none;
   border-radius: var(--radius-sm, 8px);
@@ -398,7 +398,7 @@ onMounted(load)
 }
 .footnote {
   margin-top: var(--space-3);
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--warning);
 }
 .sheet-mask {
@@ -418,13 +418,13 @@ onMounted(load)
   padding: var(--space-4) var(--space-3) var(--space-5);
 }
 .sheet-title {
-  font-size: 16px;
+  font-size: var(--text-lg);
   font-weight: 600;
   margin: 0 0 var(--space-3);
 }
 .form-label {
   display: block;
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-secondary);
   margin: var(--space-2-5) 0 4px;
 }
@@ -435,11 +435,11 @@ onMounted(load)
   border-radius: var(--radius-sm, 8px);
   background: var(--bg-subtle);
   color: var(--text-primary);
-  font-size: 14px;
+  font-size: var(--text-base);
   box-sizing: border-box;
 }
 .form-hint {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-secondary);
   margin-top: 4px;
 }
@@ -448,7 +448,7 @@ onMounted(load)
   align-items: center;
   gap: 8px;
   margin-top: var(--space-3);
-  font-size: 14px;
+  font-size: var(--text-base);
 }
 .sheet-actions {
   display: flex;

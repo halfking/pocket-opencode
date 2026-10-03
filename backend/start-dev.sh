@@ -30,9 +30,18 @@ if [ -n "$OLD_PIDS" ]; then
 fi
 
 # dev 登录冒烟凭据：脚本原先从不导出 POCKET_AUTH_PASS，登录测试一直发空密码。
-# 未显式设置时回退到后端 dev 缺省（admin / Veritrans&9527）。
+#
+# 2026-10-02：这里原先回退到一个**写死在仓库里**的默认口令。它同时是后端
+# devBypassCredentials 的内置缺省，两边一致才让冒烟测试通过——但代价是这把
+# admin 口令随仓库公开。后端那侧已经改成「无显式配置即拒绝旁路」，这里同步：
+# 本地开发者显式给 POCKET_AUTH_PASS，不给就如实跳过登录冒烟，而不是拿一把
+# 公开口令去换一次绿灯。
 export POCKET_AUTH_USER="${POCKET_AUTH_USER:-admin}"
-export POCKET_AUTH_PASS="${POCKET_AUTH_PASS:-Veritrans&9527}"
+if [ -z "${POCKET_AUTH_PASS:-}" ]; then
+  echo "  [skip] POCKET_AUTH_PASS not set -> login smoke test skipped (no built-in default password)" >&2
+else
+  export POCKET_AUTH_PASS
+fi
 
 # AI 网关配置：从仓库根 .env 读取（不回显密钥），保证 /api/llm/* 开箱可用。
 ROOT_ENV="$(cd "$SCRIPT_DIR/.." && pwd)/.env"
@@ -55,7 +64,9 @@ if [ -f "$ROOT_ENV" ]; then
   GW_KEY="$(read_env_key POCKET_LLM_GATEWAY_API_KEY)"
   export POCKET_LLM_GATEWAY_URL="${POCKET_LLM_GATEWAY_URL:-$GW_URL}"
   export POCKET_LLM_GATEWAY_API_KEY="${POCKET_LLM_GATEWAY_API_KEY:-$GW_KEY}"
-  echo "AI 网关: ${POCKET_LLM_GATEWAY_URL:-<未配置>} (key: ${POCKET_LLM_GATEWAY_API_KEY:+已注入})"
+  # env 没注入时 pocketd 会回落到内置默认网关（opencode.DefaultLLMGateway*），
+  # 这里照实打印来源，别再显示成"未配置"——那会让人以为对话不可用。
+  echo "AI 网关: ${POCKET_LLM_GATEWAY_URL:-https://llm.kxpms.cn/v1 (内置默认)} (key: ${POCKET_LLM_GATEWAY_API_KEY:+env 已注入}${POCKET_LLM_GATEWAY_API_KEY:-内置默认})"
 fi
 
 # 私网/loopback 放行：本地 dev 环境有时需要连内网 AI 网关（如 192.168.x.x），

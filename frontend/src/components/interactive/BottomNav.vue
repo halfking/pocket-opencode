@@ -139,7 +139,7 @@ defineExpose({
 }
 
 .nav-label {
-  font-size: 10px;                 /* 修改：11px → 10px */
+  font-size: var(--text-xs);                 /* 修改：11px → 10px */
   font-weight: var(--font-weight-medium);
   line-height: 1;
   white-space: nowrap;

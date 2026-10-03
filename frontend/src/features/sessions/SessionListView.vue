@@ -117,9 +117,11 @@ import { ref, computed, onMounted, onActivated } from 'vue'
 import { useRouter } from 'vue-router'
 import { api } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
+import { useApiError } from '@/composables/useApiError'
 import { Skeleton, EmptyState, PullToRefresh, SwipeableListItem, type SwipeAction } from '@/components'
 import ScrollChromePortal from '@/components/layout/ScrollChromePortal.vue'
 import { useConfirm } from '@/composables/useConfirm'
+import { useToast } from '@/composables/useToast'
 import { useListScene } from '@/composables/use-list-scene'
 import { listSnapshots, upsertSnapshots } from '@/native/list-sync/snapshot-store'
 import {
@@ -157,11 +159,13 @@ const LEGACY_ARCHIVE_KEY = 'archived_session_ids'
 const router = useRouter()
 const auth = useAuthStore()
 const { confirm } = useConfirm()
+const toast = useToast()
 
 const sessions = ref<Session[]>([])
 const instances = ref<Instance[]>([])
 const loading = ref(false)
 const error = ref('')
+const apiError = useApiError()
 const searchQuery = ref('')
 const selectedInstanceId = ref('')
 const offset = ref(0)
@@ -261,7 +265,7 @@ async function loadSessions() {
       sessions.value = snap.sessions
       total.value = snap.total
     } else {
-      error.value = err.message || '加载会话失败'
+      error.value = apiError(err, 'errors.loadSessionsFailed')
     }
   } finally {
     loading.value = false
@@ -351,7 +355,7 @@ function unarchiveSession(session: Session) {
 async function deleteSession(session: Session) {
   const instId = selectedInstanceId.value
   if (!instId) {
-    alert('请先选择实例再删除会话')
+    toast.warning('请先选择实例再删除会话')
     return
   }
   if (!(await confirm({ title: '删除会话', message: `确定删除会话「${session.title}」？`, confirmText: '删除', danger: true }))) return
@@ -360,7 +364,7 @@ async function deleteSession(session: Session) {
     sessions.value = sessions.value.filter((s) => s.id !== session.id)
     total.value = Math.max(0, total.value - 1)
   } catch (err: any) {
-    alert('删除失败: ' + (err.message || '未知错误'))
+    toast.error(apiError(err, '删除失败'))
   }
 }
 
@@ -640,7 +644,7 @@ useListScene('sessions', () => {
   margin: 0;
   font-size: var(--text-xs);
   color: var(--text-muted);
-  font-family: monospace;
+  font-family: var(--font-mono);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

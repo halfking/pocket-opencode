@@ -22,8 +22,8 @@ const label = computed(() => ({
 </script>
 
 <style scoped>
-.mic-status { display: flex; align-items: center; gap: 7px; margin: 0 0 12px; padding: 8px 10px; border-radius: 8px; background: var(--bg-card); color: var(--text-secondary); font-size: 12px; text-align: left; }
+.mic-status { display: flex; align-items: center; gap: 7px; margin: 0 0 12px; padding: 8px 10px; border-radius: 8px; background: var(--bg-card); color: var(--text-secondary); font-size: var(--text-sm); text-align: left; }
 .mic-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-muted); }
 .mic-granted .mic-dot { background: var(--success); }.mic-denied .mic-dot { background: var(--danger); }.mic-unavailable .mic-dot { background: var(--warning); }
-.mic-action { margin-left: auto; border: 0; background: transparent; color: var(--brand-primary); cursor: pointer; font-size: 12px; }
+.mic-action { margin-left: auto; border: 0; background: transparent; color: var(--brand-primary); cursor: pointer; font-size: var(--text-sm); }
 </style>

@@ -159,7 +159,7 @@
             >
               <Card>
                 <p>← 左滑或右滑试试 →</p>
-                <p style="font-size: 12px; color: var(--color-text-tertiary);">
+                <p style="font-size: var(--text-sm); color: var(--color-text-tertiary);">
                   左滑：收藏 | 右滑：删除
                 </p>
               </Card>
@@ -429,7 +429,7 @@ const loadMoreItems = async () => {
 .subtitle {
   margin: 0;
   opacity: 0.9;
-  font-size: 14px;
+  font-size: var(--text-base);
 }
 
 .demo-sections {
@@ -454,7 +454,7 @@ const loadMoreItems = async () => {
 }
 
 .demo-block h3 {
-  font-size: 16px;
+  font-size: var(--text-lg);
   font-weight: var(--font-weight-semibold);
   color: var(--color-text-secondary);
   margin: 0 0 var(--space-3) 0;

@@ -184,17 +184,57 @@ CREATE TABLE IF NOT EXISTS local_emails (
     importance TEXT,                 -- high / medium / low
     ai_summary TEXT,                 -- LLM 分类时返回的摘要（只发 snippet 给 LLM）
     suggested_action TEXT,
+    action_reason TEXT,               -- AI 判重要度的依据（q2；老库靠 local-db.ts 的 COLUMN_MIGRATIONS 补列）
     has_attachments INTEGER DEFAULT 0,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL DEFAULT 0,
     deleted_at INTEGER NOT NULL DEFAULT 0,
     body_purged INTEGER NOT NULL DEFAULT 0,
+    folder TEXT DEFAULT '',          -- 所在目录（IMAP 信箱名，空 = INBOX；2026-10-01）
     UNIQUE(account_id, message_id),
     FOREIGN KEY (account_id) REFERENCES local_email_accounts(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_emails_date ON local_emails(date DESC);
 CREATE INDEX IF NOT EXISTS idx_emails_updated ON local_emails(updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_emails_unread ON local_emails(is_read) WHERE is_read = 0;
+
+-- ============================================================
+-- 自定义邮件目录镜像（2026-10-01）：服务端 email_folders 的离线缓存。
+-- folder 记录邮件所在目录名（空 = INBOX），与 emails.folder_name 对齐；
+-- 列已内联在 local_emails 的 CREATE TABLE 里（旧库由 local-db 迁移补列）。
+-- ============================================================
+CREATE TABLE IF NOT EXISTS local_email_folders (
+    id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL,
+    name TEXT NOT NULL,              -- 完整 IMAP 信箱名
+    display_name TEXT NOT NULL DEFAULT '',
+    special TEXT NOT NULL DEFAULT '', -- inbox/trash/junk/sent/... 空=普通
+    source TEXT NOT NULL DEFAULT 'user', -- user=本产品创建 server=服务器发现
+    server_synced INTEGER NOT NULL DEFAULT 0,
+    email_count INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    UNIQUE(account_id, name)
+);
+
+-- ============================================================
+-- 本地迁移操作日志（2026-10-01）：移动/删除先记 pending，同步按钮推送
+-- 服务端 /api/emails/ops（幂等键去重），由服务端经 IMAP 真正迁移/删除。
+-- ============================================================
+CREATE TABLE IF NOT EXISTS local_email_ops (
+    id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL,
+    email_id TEXT NOT NULL,
+    uid INTEGER NOT NULL DEFAULT 0,
+    action TEXT NOT NULL,            -- move | delete
+    target_folder TEXT NOT NULL DEFAULT '',
+    subject TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending', -- pending | pushed | applied | failed
+    error TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_email_ops_status ON local_email_ops(status);
 
 -- ============================================================
 -- 发票本地镜像（服务端 /api/emails/invoices 的离线缓存）
@@ -683,4 +723,41 @@ export function splitSqlStatements(sql: string): string[] {
   }
   push()
   return statements
+}
+
+/**
+ * normalizeTriggerForPluginExecute — 修 BUG-AH。
+ *
+ * splitSqlStatements 能把触发体**完整**交给插件，但插件还会再害一次：
+ * `@capacitor-community/sqlite` 的 Android `execute` 会按**字面量 `;` + LF**
+ * 切分语句，于是
+ *
+ *     CREATE TRIGGER ... BEGIN
+ *       INSERT ... ;
+ *     END;
+ *
+ * 会从那个 `;\n` 处被截断，前半截单独送去编译 →
+ * `Execute: incomplete input (code 1): , while compiling: CREATE TRIGGER ...`。
+ *
+ * 真机二分实验（scripts/exp-trigger-bisect.mjs，7 组）锁定了判别条件：
+ *
+ * | 用例 | 特征 | 结果 |
+ * |---|---|---|
+ * | 1 | LF 多行，体内有 `;\n` | ❌ |
+ * | 2 | 同一段 SQL 压成一行 | ✅ |
+ * | 3/4/5 | 去掉 COALESCE/NULLIF、多行 | ❌（说明与表达式无关） |
+ * | 6 | CRLF 多行（无 `;\n`） | ✅ |
+ * | 7 | **多行**、有内部分号，但 `;` 后跟**空格** | ✅ |
+ * | 8 | **单行**，但体内含 `;\n` | ❌ |
+ *
+ * 7 与 8 互为判别：变量是「`;` 后面是不是 LF」，不是「多不多行」、
+ * 也不是「有没有内部分号」。CRLF 能活下来正是因为 `;\n` 这两个字符不出现。
+ *
+ * 修法：只对 CREATE TRIGGER 语句，把「分号 + 换行」压成「分号 + 空格」。
+ * 只动触发器是因为只有它们的触发体天然含分号；普通语句不碰，
+ * 也就不可能误伤字符串字面量里的换行。
+ */
+export function normalizeTriggerForPluginExecute(stmt: string): string {
+  if (!/^\s*CREATE\s+(TEMP\s+|TEMPORARY\s+)?TRIGGER\b/i.test(stmt)) return stmt
+  return stmt.replace(/;[ \t]*\r?\n\s*/g, '; ')
 }

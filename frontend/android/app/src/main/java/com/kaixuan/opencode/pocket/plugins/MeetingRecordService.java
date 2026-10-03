@@ -49,15 +49,32 @@ public class MeetingRecordService extends Service {
 
   @Override
   public int onStartCommand(Intent intent, int flags, int startId) {
-    if (intent != null && ACTION_STOP.equals(intent.getAction())) {
+    // START_STICKY 被系统重启时 intent 是 null。此时绝不能开录：会录进一个
+    // meetingId="" 的幽灵会议，用户既看不到自己开了录音，也找不到这份音频。
+    if (intent == null) {
+      BackgroundMicPlugin.reportStart(false, "录音服务被系统重启，但已丢失录音会话信息，未开始录音");
+      stopSelf();
+      return START_NOT_STICKY;
+    }
+    if (ACTION_STOP.equals(intent.getAction())) {
       stopCapture();
       stopForeground(true);
       stopSelf();
       return START_NOT_STICKY;
     }
-    meetingId = intent != null ? intent.getStringExtra(EXTRA_MEETING) : "";
-    String deviceId = intent != null ? intent.getStringExtra(EXTRA_DEVICE) : null;
-    startForegroundCompat();
+    String m = intent.getStringExtra(EXTRA_MEETING);
+    meetingId = m != null ? m : "";
+    String deviceId = intent.getStringExtra(EXTRA_DEVICE);
+    try {
+      startForegroundCompat();
+    } catch (Exception e) {
+      // 最常见是 RECORD_AUDIO 未授予：startForeground(..., TYPE_MICROPHONE)
+      // 会抛 SecurityException。不接住就是无声崩溃，而 JS 那边已经把
+      // nativeMode 置为 true，用户只会看到「正在录音」却没有任何声音。
+      BackgroundMicPlugin.reportStart(false, "无法进入后台录音状态：" + describe(e));
+      stopSelf();
+      return START_NOT_STICKY;
+    }
     startCapture(deviceId);
     return START_STICKY;
   }
@@ -118,11 +135,20 @@ public class MeetingRecordService extends Service {
       }
     }
     if (rec == null) {
-      BackgroundMicPlugin.emitError("无法打开麦克风");
+      failAndQuit("无法打开麦克风（可能被其他应用占用或权限被回收）");
       return;
     }
     recorder = rec;
-    rec.startRecording();
+    try {
+      rec.startRecording();
+    } catch (Exception e) {
+      rec.release();
+      recorder = null;
+      failAndQuit("麦克风启动失败：" + describe(e));
+      return;
+    }
+    // 真正开始采音了才回报启动成功——此时 JS 的 start() 才会 resolve。
+    BackgroundMicPlugin.reportStart(true, null);
     int frame = SAMPLE_RATE / 10 * channels;
     short[] buf = new short[frame];
     ByteArrayOutputStream pcm = new ByteArrayOutputStream();
@@ -210,6 +236,30 @@ public class MeetingRecordService extends Service {
     b.putInt(dataLen);
     b.put(pcm);
     return b.array();
+  }
+
+  /**
+   * 启动期失败：回报失败 → 撤下「正在录音」通知 → 结束服务。
+   *
+   * 不这样做的话，服务已经 startForeground 过了，却没有任何录音线程在跑，
+   * 用户会一直看到一条「正在录音进行中」的常驻通知，而实际上一个字也录不到。
+   */
+  private void failAndQuit(String message) {
+    BackgroundMicPlugin.emitError(message);
+    BackgroundMicPlugin.reportStart(false, message);
+    running = false;
+    try {
+      stopForeground(true);
+    } catch (Exception ignored) {
+      // 已在前台之外时忽略
+    }
+    stopSelf();
+  }
+
+  private static String describe(Throwable t) {
+    if (t == null) return "未知错误";
+    String m = t.getMessage();
+    return (m != null && !m.isEmpty()) ? m : t.getClass().getSimpleName();
   }
 
   private void stopCapture() {

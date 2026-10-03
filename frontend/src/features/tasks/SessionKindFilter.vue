@@ -38,7 +38,7 @@ button {
   color: inherit;
   border-radius: 999px;
   padding: 4px 10px;
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 button.on { background: var(--accent, #3b82f6); color: #fff; border-color: transparent; }
 </style>

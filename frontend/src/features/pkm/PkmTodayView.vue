@@ -62,7 +62,14 @@
       </ul>
 
       <!-- 新建 FAB -->
-      <button class="fab" @click="newNote">＋</button>
+      <!-- ⚠️ 2026-10-03 真机实测补的无障碍名：这里原来只有一个裸「＋」。
+           后果不只是读屏用户找不到「新建笔记」—— **库里一旦已有笔记，
+           空态那个 action-label=新建笔记 的按钮就不渲染了**，
+           于是全页再没有任何可按文本匹配的新建入口：
+           实测 notes-crud 在 `visible: 新建笔记` 上超时 60s 报红，
+           而那台设备上 PKM 编辑器功能完全正常（有笔记、有预填「无标题」）。
+           有了 aria-label，有无笔记时都是同一个可定位元素。 -->
+      <button class="fab" :aria-label="'新建笔记'" @click="newNote">＋</button>
     </div>
 </template>
 
@@ -79,10 +86,12 @@ import {
 } from './pkm-store'
 import { useAuthStore } from '../../stores/auth'
 import { EmptyState, ErrorState, Loading } from '../../components'
+import { useApiError } from '../../composables/useApiError'
 import { useListScene } from '../../composables/use-list-scene'
 
 defineOptions({ name: 'PkmTodayView' })
 
+const apiError = useApiError()
 const router = useRouter()
 const auth = useAuthStore()
 const workspaceId = auth.workspaceId || 'default'
@@ -106,7 +115,7 @@ async function loadRecent() {
     notes.value = await listNotes({ workspaceId, limit: 50 })
     dailyExists.value = !!(await getDailyNote(todayKey, workspaceId))
   } catch (e: any) {
-    loadError.value = e?.message || '加载笔记失败，请稍后重试。'
+    loadError.value = apiError(e, 'errors.loadNotesFailed')
   } finally {
     loading.value = false
   }
@@ -122,7 +131,7 @@ async function onSearch() {
   try {
     notes.value = await searchNotes(query.value, { workspaceId })
   } catch (e: any) {
-    loadError.value = e?.message || '搜索笔记失败，请稍后重试。'
+    loadError.value = apiError(e, 'errors.operateFailed')
   } finally {
     loading.value = false
   }
@@ -206,12 +215,12 @@ useListScene('pkm-today', loadRecent)
   opacity: 0.85;
 }
 .daily-title {
-  font-size: 16px;
+  font-size: var(--text-lg);
   font-weight: 700;
   margin: 0 0 4px;
 }
 .daily-hint {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-secondary, #666);
   margin: 0;
 }
@@ -223,7 +232,7 @@ useListScene('pkm-today', loadRecent)
   padding: 10px 14px;
   border: 1px solid var(--border, #e5e7eb);
   border-radius: 10px;
-  font-size: 14px;
+  font-size: var(--text-base);
   background: var(--bg-input, #fff);
 }
 .note-list {
@@ -243,18 +252,18 @@ useListScene('pkm-today', loadRecent)
   background: var(--bg-hover, #f7f7f9);
 }
 .n-title {
-  font-size: 15px;
+  font-size: var(--text-md);
   font-weight: 600;
 }
 .n-snippet {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-secondary, #888);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .n-date {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-tertiary, #aaa);
 }
 .fab {

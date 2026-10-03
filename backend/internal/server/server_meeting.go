@@ -10,10 +10,12 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/halfking/pocket-opencode/backend/internal/aigate"
 	"github.com/halfking/pocket-opencode/backend/internal/kxmemory"
 	"github.com/halfking/pocket-opencode/backend/internal/meeting"
+	"github.com/halfking/pocket-opencode/backend/internal/stt"
 )
 
 // handleMeetingRouter dispatches /api/meetings/{id}/{action} and per-meeting
@@ -116,18 +118,26 @@ func (s *Server) handleTranscribeMeeting(w http.ResponseWriter, r *http.Request,
 		writeError(w, http.StatusBadRequest, "empty audio data")
 		return
 	}
-	if s.transcriber != nil {
-		result, err := s.transcriber.Transcribe(r.Context(), audioData, "meeting.wav")
-		if err != nil {
-			m.Status = "failed"
-			_ = s.meetingStore.UpdateScoped(m, uid, workspaceID)
-			writeError(w, http.StatusBadGateway, "transcription failed: "+err.Error())
-			return
+	// 转写目标由该用户的语音转写设置解析，不再写死 Groq Whisper；
+	// 会议录音停止链路是同步等推理结果的，30s 太紧，给到 120s。
+	scope := stt.Scope{UserID: uid, WorkspaceID: workspaceID}
+	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
+	defer cancel()
+	result, err := s.transcriber.TranscribeFor(ctx, scope, audioData, "meeting.wav")
+	if err != nil {
+		m.Status = "failed"
+		_ = s.meetingStore.UpdateScoped(m, uid, workspaceID)
+		// 已带错误码的（stt_unavailable: …）原样回传。api/error-message.ts 取
+		// 第一个冒号前的 [a-z0-9_]+ 当错误码；再套 "transcription failed: "
+		// 前缀会让它匹配失败，用户就只能看到通用「服务端错误」。
+		msg := err.Error()
+		if !strings.HasPrefix(msg, "stt_unavailable:") {
+			msg = "transcription failed: " + msg
 		}
-		m.Transcript = result.Text
-	} else {
-		m.Transcript = "（STT 未配置，请设置 POCKET_GROQ_API_KEY）"
+		writeError(w, http.StatusBadGateway, msg)
+		return
 	}
+	m.Transcript = result.Text
 	m.Status = "transcribed"
 	if err := s.meetingStore.UpdateScoped(m, uid, workspaceID); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to persist transcript")
@@ -443,11 +453,34 @@ func parseRefineJSON(content string) (map[string]any, error) {
 	return parsed, nil
 }
 
+// truncateStr 按字节截断到最多 n 字节，但**回退到完整字符边界**。
+//
+// 为什么不直接 s[:n]：中文一个字 3 字节，切在字的中间会产出非法 UTF-8。
+// 2026-10-02 实测该串被 PostgreSQL 直接拒绝：
+//
+//	ERROR: invalid byte sequence for encoding "UTF8" (SQLSTATE 22021)
+//
+// 也就是说后果不是"存成乱码"，而是**写入直接失败**。本函数有三条调用点
+// 的结果会入库或返回给客户端，全都会踩到：
+//
+//	server_email_summary.go:226   邮件 AI 摘要 → SetClassificationScoped 写库
+//	server_meeting_ingest.go:186  笔记 snippet → 写库
+//	server_meeting.go:437         会议摘要兜底 → JSON 返回
+//
+// 保留"字节上限"是有意的：这些上限都是按字节定的（500/200），改成字符上限
+// 会让中文内容的体积涨 3 倍。回退最多丢 3 个字节，代价可以忽略。
+//
+// 同包 invoice_pdf.go 里的 truncateRunes 是**字符**上限 + 省略号，两种语义
+// 各有其用，不要混用。
 func truncateStr(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
-	return s[:n]
+	cut := s[:n]
+	for len(cut) > 0 && !utf8.ValidString(cut) {
+		cut = cut[:len(cut)-1]
+	}
+	return cut
 }
 
 // handleSttTranscribeBase64 — 支持 base64 音频转写（云端 Groq Whisper）

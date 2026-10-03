@@ -20,6 +20,7 @@
 import { ref, watch, type Ref } from 'vue'
 import { api, type TaskSessionBundleRow, type TaskSessionMessage } from '../../api/client'
 import type { SessionMsgKind } from './SessionKindFilter.vue'
+import { useApiError } from '../../composables/useApiError'
 
 export interface UseTaskSessionSheetArgs {
   taskId: Ref<string> | string
@@ -39,6 +40,7 @@ export interface UseTaskSessionSheetReturn {
 }
 
 export function useTaskSessionSheet(args: UseTaskSessionSheetArgs): UseTaskSessionSheetReturn {
+  const apiError = useApiError()
   const taskIdRef: Ref<string> = typeof args.taskId === 'string'
     ? ref(args.taskId)
     : args.taskId
@@ -91,7 +93,7 @@ export function useTaskSessionSheet(args: UseTaskSessionSheetArgs): UseTaskSessi
       )
       messages.value = data.messages || []
     } catch (e) {
-      error.value = e instanceof Error ? e.message : '加载失败'
+      error.value = apiError(e, 'errors.loadSessionsFailed')
       messages.value = []
     } finally {
       loading.value = false

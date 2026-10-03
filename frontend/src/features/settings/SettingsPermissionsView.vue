@@ -136,8 +136,12 @@ import {
   type SettingsPermissionName,
 } from '../../composables/permission-settings'
 import type { PermissionStatus } from '../../composables/permission-action'
+import { useConfirm } from '../../composables/useConfirm'
+import { useToast } from '../../composables/useToast'
 
 const router = useRouter()
+const { confirm } = useConfirm()
+const toast = useToast()
 const mic = useMicPermission()
 const notif = useNotificationPermission()
 const camera = useNativePermission('camera')
@@ -254,7 +258,7 @@ async function refreshAll() {
 async function openSystemSettings(name: SettingsPermissionName) {
   const opened = await appSettings.openPermissionSettings(name)
   if (!opened) {
-    alert('无法打开系统设置。请到系统设置中找到本应用后手动开启对应权限。')
+    toast.error('无法打开系统设置。请到系统设置中找到本应用后手动开启对应权限。')
   }
 }
 
@@ -317,11 +321,18 @@ async function handlePhotosClick() {
 
 async function handleBiometricClick() {
   if (!Capacitor.isNativePlatform()) {
-    alert('当前为 Web 环境，指纹登录需在 Android App 中使用。')
+    toast.warning('当前为 Web 环境，指纹登录需在 Android App 中使用。')
     return
   }
   if (nativeBiometricBound.value) {
-    if (confirm('解绑后登录页将不再出现指纹登录，需重新用密码登录并绑定。确定解绑？')) {
+    // BUG-AQ：原为裸 confirm()（同步阻塞），在 Android WebView 里会卡死渲染进程。
+    const ok = await confirm({
+      title: '解绑指纹登录',
+      message: '解绑后登录页将不再出现指纹登录，需重新用密码登录并绑定。确定解绑？',
+      confirmText: '解绑',
+      danger: true,
+    })
+    if (ok) {
       await unbindBiometricCredential()
       await refreshBiometricBinding()
     }
@@ -556,7 +567,11 @@ onMounted(async () => {
 }
 
 .hint {
-  font-size: var(--text-xs);
+  /* 说明文字与 SettingsSTT / SettingsLLMGateway 的 .form-hint 同档（12px）。
+     此前这里是 var(--text-xs)=10px，而那档 token 在 tokens.css 里注明用途是
+     「极小文本（时间戳、徽章）」——套到两行中文说明段落上会明显偏小，
+     正是用户报的「设置页显示错误」。 */
+  font-size: var(--text-sm);
   color: var(--text-muted);
   line-height: 1.6;
   margin: var(--space-2) 0 0;

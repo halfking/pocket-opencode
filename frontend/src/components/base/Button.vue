@@ -77,19 +77,19 @@ const handleClick = (event: MouseEvent) => {
 .button--small {
   height: 28px;                    /* 修改：32px → 28px */
   padding: 0 var(--space-2-5);     /* 修改：space-3 → space-2-5 (10px) */
-  font-size: 13px;                 /* 修改：14px → 13px */
+  font-size: var(--text-smd);                 /* 修改：14px → 13px */
 }
 
 .button--medium {
   height: 36px;                    /* 修改：40px → 36px */
   padding: 0 var(--space-4);       /* 14px */
-  font-size: 14px;                 /* 修改：16px → 14px */
+  font-size: var(--text-base);                 /* 修改：16px → 14px */
 }
 
 .button--large {
   height: 42px;                    /* 修改：48px → 42px */
   padding: 0 var(--space-5);       /* 18px */
-  font-size: 16px;                 /* 修改：18px → 16px */
+  font-size: var(--text-lg);                 /* 修改：18px → 16px */
 }
 
 /* Primary 变体 */

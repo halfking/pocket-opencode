@@ -10,6 +10,12 @@
 - `scripts/android-apk-classes-audit.ps1`：逐 dex 完整审计
 - `scripts/android-apk-classes-fast.ps1`：raw byte 扫描 14 个 dex 文件
 
+> **2026-09-30 修复（假阴性）**：fast 脚本原先只扫 `%TEMP%\apk-dex-extract`，
+> **自己不负责解压**。该目录为空/过期时会 6/6 全报 `NOT FOUND`，与真机 APK 实际
+> 状态完全无关（当日复现一次，误判为"11/11 关键类丢失"）。现改为：每次先从当前 APK
+> 解压全部 `classes*.dex` 再扫，并在 `< 11` 个 needle 命中时以非零码退出。
+> 当轮实测：**13/14 命中**（`MainApplication` 缺失属预期，见 §2）。
+
 ## 1. APK 内 dex 文件清单（14 个）
 
 | dex | 大小 |

@@ -196,7 +196,7 @@ const handleCancel = () => {
 }
 
 .dialog-title {
-  font-size: 18px;
+  font-size: var(--text-xl);
   font-weight: var(--font-weight-semibold);
   color: var(--color-text-primary);
   margin: 0;

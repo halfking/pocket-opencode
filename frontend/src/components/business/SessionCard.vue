@@ -105,7 +105,7 @@ const handleClick = () => {
 }
 
 .session-title {
-  font-size: 16px;
+  font-size: var(--text-lg);
   font-weight: var(--font-weight-semibold);
   color: var(--color-text-primary);
   margin: 0;
@@ -115,7 +115,7 @@ const handleClick = () => {
 }
 
 .session-preview {
-  font-size: 14px;
+  font-size: var(--text-base);
   color: var(--color-text-secondary);
   margin: 0;
   overflow: hidden;
@@ -132,7 +132,7 @@ const handleClick = () => {
 }
 
 .session-time {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--color-text-tertiary);
   white-space: nowrap;
 }
@@ -144,7 +144,7 @@ const handleClick = () => {
   background: var(--color-error);
   color: var(--text-inverse);
   border-radius: var(--radius-full);
-  font-size: 11px;
+  font-size: var(--text-2xs);
   font-weight: var(--font-weight-bold);
   display: flex;
   align-items: center;

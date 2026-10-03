@@ -13,6 +13,17 @@ type SchedulerStore interface {
 	GetSource(context.Context, string, Scope) (*Source, error)
 	ListFilterRules(context.Context, Scope) ([]FilterRule, error)
 }
+
+// scopeLister 是可选接口：实现了它，调度器就会按库里真实存在的作用域轮询，
+// 而不是只认启动时写死的那个。
+//
+// 为什么要这个：scheduler 以前只有 NewScheduler 传入的单个 Scope
+// （cmd/pocketd/main.go 里是 local/default），而订阅源是通过 API 按真实
+// 用户+工作区写入的。结果就是"订阅看起来成功了，但后台一条都没拉回来"，
+// 因为那些源根本不在扫描范围内。
+type scopeLister interface {
+	ListActiveScopes(context.Context) ([]Scope, error)
+}
 type Scheduler struct {
 	store               SchedulerStore
 	fetcher             *Fetcher
@@ -73,16 +84,53 @@ func (s *Scheduler) loop(ctx context.Context) {
 	}
 }
 func (s *Scheduler) scan(ctx context.Context) {
-	sources, err := s.store.ClaimDueSources(ctx, s.scope, time.Now().UTC(), s.maxParallel)
+	// 每个作用域独立取规则：规则本身也是按 (user, workspace) 存的，
+	// 拿别人的规则去过滤别人的源等于没有过滤。
+	for _, sc := range s.scopes(ctx) {
+		s.scanScope(ctx, sc)
+	}
+}
+
+// scopes 返回本次要扫描的作用域：库里真实存在的 + 构造时传入的兜底。
+func (s *Scheduler) scopes(ctx context.Context) []Scope {
+	out := []Scope{}
+	if lister, ok := s.store.(scopeLister); ok {
+		scopes, err := lister.ListActiveScopes(ctx)
+		if err != nil {
+			if !errors.Is(err, context.Canceled) {
+				log.Printf("[rss] list active scopes: %v", err)
+			}
+		} else {
+			out = append(out, scopes...)
+		}
+	}
+	// 兜底作用域始终保留：它可能还没有任何源（刚启动时），但下一 tick 可能有。
+	if s.scope.valid() && !containsScope(out, s.scope) {
+		out = append(out, s.scope)
+	}
+	return out
+}
+
+func containsScope(list []Scope, sc Scope) bool {
+	for _, x := range list {
+		if x == sc {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Scheduler) scanScope(ctx context.Context, sc Scope) {
+	sources, err := s.store.ClaimDueSources(ctx, sc, time.Now().UTC(), s.maxParallel)
 	if err != nil {
 		if !errors.Is(err, context.Canceled) {
-			log.Printf("[rss] claim due sources: %v", err)
+			log.Printf("[rss] claim due sources (%s/%s): %v", sc.UserID, sc.WorkspaceID, err)
 		}
 		return
 	}
-	rules, err := s.store.ListFilterRules(ctx, s.scope)
+	rules, err := s.store.ListFilterRules(ctx, sc)
 	if err != nil {
-		log.Printf("[rss] list rules: %v", err)
+		log.Printf("[rss] list rules (%s/%s): %v", sc.UserID, sc.WorkspaceID, err)
 		return
 	}
 	for i := range sources {

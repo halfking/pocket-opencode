@@ -124,8 +124,10 @@ import { ApiError } from '../../api/http'
 import * as gw from '../../api/gateway'
 import type { CredentialModelStatus, GatewayCredential, ModelEffectiveState } from '../../api/gateway'
 import { useConfirm } from '../../composables/useConfirm'
+import { useApiError } from '../../composables/useApiError'
 import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue'
 
+const apiError = useApiError()
 const route = useRoute()
 const router = useRouter()
 const { confirm } = useConfirm()
@@ -154,7 +156,7 @@ async function load() {
     cred.value = res.credentials?.[0] ?? null
     if (!cred.value) error.value = '未找到该凭据'
   } catch (e: any) {
-    error.value = e?.message || '加载失败'
+    error.value = apiError(e, 'errors.loadGatewayFailed')
   } finally {
     loading.value = false
   }
@@ -202,7 +204,7 @@ async function toggle(m: CredentialModelStatus, action: 'online' | 'offline') {
     if (e instanceof ApiError && e.status === 403) {
       error.value = '需要 pocket admin 角色才能变更模型状态'
     } else {
-      error.value = e?.message || `${verb}失败`
+      error.value = apiError(e, 'errors.operateFailed')
     }
   } finally {
     busyModel.value = null
@@ -269,7 +271,7 @@ onMounted(load)
 }
 .status-bar {
   padding: var(--space-2) var(--space-3);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .status-err {
   background: color-mix(in srgb, var(--danger) 15%, transparent);
@@ -286,7 +288,7 @@ onMounted(load)
   padding: 32px 20px;
   text-align: center;
   color: var(--text-secondary);
-  font-size: 14px;
+  font-size: var(--text-base);
 }
 .card {
   background: var(--bg-card);
@@ -301,25 +303,25 @@ onMounted(load)
   flex-wrap: wrap;
 }
 .sum-meta {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-secondary);
   margin-top: 8px;
 }
 .reason {
   margin-top: 8px;
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--warning);
   word-break: break-word;
 }
 .chip {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   padding: 2px 7px;
   border-radius: var(--radius-full, 999px);
   background: var(--bg-subtle);
   color: var(--text-secondary);
 }
 .chip-sm {
-  font-size: 10px;
+  font-size: var(--text-xs);
 }
 .chip-ok {
   color: var(--success);
@@ -339,7 +341,7 @@ onMounted(load)
 .filter {
   flex: none;
   padding: 6px 12px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   background: var(--bg-subtle);
   border: 1px solid var(--border);
   border-radius: var(--radius-full, 999px);
@@ -372,7 +374,7 @@ onMounted(load)
 }
 .model-name {
   flex: 1;
-  font-size: 13px;
+  font-size: var(--text-smd);
   font-weight: 600;
   word-break: break-all;
 }
@@ -401,11 +403,11 @@ onMounted(load)
   margin-top: 8px;
 }
 .m {
-  font-size: 10px;
+  font-size: var(--text-xs);
   color: var(--text-secondary);
 }
 .m b {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-primary);
   margin-left: 3px;
 }
@@ -428,7 +430,7 @@ onMounted(load)
   flex-wrap: wrap;
 }
 .tag {
-  font-size: 10px;
+  font-size: var(--text-xs);
   padding: 1px 6px;
   border-radius: var(--radius-full, 999px);
   background: var(--bg-subtle);
@@ -451,7 +453,7 @@ onMounted(load)
 }
 .model-reason {
   margin-top: 6px;
-  font-size: 10px;
+  font-size: var(--text-xs);
   color: var(--warning);
   word-break: break-word;
 }
@@ -463,7 +465,7 @@ onMounted(load)
 .btn-ghost {
   flex: 1;
   padding: 6px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   background: var(--bg-subtle);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm, 8px);

@@ -1,0 +1,13 @@
+{
+  "note": "允许存在的「导出了但无人调用」符号；只许减少不许增加。",
+  "dead": [
+    "assets.ts:assetsApi",
+    "auth.ts:resetPassword",
+    "gateway.ts:getCredentialHistory",
+    "gateway.ts:getNode",
+    "gateway.ts:getRoutingHealth",
+    "gateway.ts:getWorkTypeStats",
+    "gateway.ts:updateTaskDefault",
+    "gateway.ts:updateWorkType"
+  ]
+}

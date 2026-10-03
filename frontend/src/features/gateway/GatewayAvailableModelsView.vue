@@ -73,6 +73,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { getAvailableModels, type AvailableModelFamily } from '../../api/gateway'
+import { useApiError } from '../../composables/useApiError'
 import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue'
 
 const route = useRoute()
@@ -81,6 +82,7 @@ const nodeId = Number(route.params.nodeId)
 
 const loading = ref(false)
 const error = ref('')
+const apiError = useApiError()
 const families = ref<AvailableModelFamily[]>([])
 const activeMod = ref<string>('')
 const expanded = ref('')
@@ -125,7 +127,7 @@ async function load() {
     const res = await getAvailableModels(nodeId)
     families.value = res.families ?? []
   } catch (e: any) {
-    error.value = e?.message || String(e)
+    error.value = apiError(e, 'errors.loadGatewayFailed')
   } finally {
     loading.value = false
   }
@@ -145,24 +147,24 @@ onMounted(load)
   overflow-x: auto; background: var(--bg-card); border-bottom: 1px solid var(--border);
 }
 .chip {
-  flex: none; padding: 5px 12px; font-size: 12px;
+  flex: none; padding: 5px 12px; font-size: var(--text-sm);
   background: var(--bg-subtle); border: 1px solid var(--border);
   border-radius: 999px; color: var(--text-secondary);
 }
 .chip.active { background: var(--primary, #4c8dff); color: #fff; border-color: transparent; }
 .status-err {
-  padding: var(--space-2) var(--space-3); font-size: 12px;
+  padding: var(--space-2) var(--space-3); font-size: var(--text-sm);
   background: color-mix(in srgb, var(--danger) 12%, transparent); color: var(--danger);
 }
 .body { padding: var(--space-3); display: flex; flex-direction: column; gap: var(--space-3); }
-.state { padding: 40px 20px; text-align: center; color: var(--text-secondary); font-size: 14px; }
-.hint { font-size: 12px; margin-top: 8px; }
+.state { padding: 40px 20px; text-align: center; color: var(--text-secondary); font-size: var(--text-base); }
+.hint { font-size: var(--text-sm); margin-top: 8px; }
 .family {
   background: var(--bg-card); border: 1px solid var(--border);
   border-radius: 12px; overflow: hidden;
 }
 .family-name {
-  margin: 0; padding: 10px 14px; font-size: 13px; font-weight: 600;
+  margin: 0; padding: 10px 14px; font-size: var(--text-smd); font-weight: 600;
   color: var(--text-secondary); background: var(--bg-subtle);
 }
 .model-row {
@@ -171,16 +173,16 @@ onMounted(load)
   flex-wrap: wrap;
 }
 .model-main { flex: 1; min-width: 0; }
-.model-name { font-size: 14px; color: var(--text-primary); font-weight: 500; word-break: break-all; }
+.model-name { font-size: var(--text-base); color: var(--text-primary); font-weight: 500; word-break: break-all; }
 .star { color: var(--warning); }
-.model-meta { font-size: 11px; color: var(--text-secondary); margin-top: 3px; word-break: break-all; }
-.mono { font-family: 'SF Mono', Menlo, monospace; }
+.model-meta { font-size: var(--text-2xs); color: var(--text-secondary); margin-top: 3px; word-break: break-all; }
+.mono { font-family: var(--font-mono); }
 .modality-badge {
-  flex: none; font-size: 10px; padding: 3px 8px; border-radius: 999px;
+  flex: none; font-size: var(--text-xs); padding: 3px 8px; border-radius: 999px;
   background: var(--bg-subtle); color: var(--text-secondary); border: 1px solid var(--border);
 }
 .modality-badge[data-mod='vision'] { color: var(--primary, #4c8dff); }
 .model-detail { width: 100%; padding-top: 6px; }
-.detail-line { font-size: 11px; color: var(--text-secondary); margin-top: 4px; word-break: break-all; }
+.detail-line { font-size: var(--text-2xs); color: var(--text-secondary); margin-top: 4px; word-break: break-all; }
 .detail-line b { color: var(--text-primary); margin-right: 6px; }
 </style>

@@ -376,7 +376,7 @@ onMounted(() => {
 .subtitle {
   margin: 0;
   opacity: 0.9;
-  font-size: 14px;
+  font-size: var(--text-base);
 }
 
 .header-actions {
@@ -389,7 +389,7 @@ onMounted(() => {
 }
 
 .section-title {
-  font-size: 18px;
+  font-size: var(--text-xl);
   font-weight: var(--font-weight-semibold);
   color: var(--color-text-primary);
   margin: 0 0 var(--space-4) 0;
@@ -443,7 +443,7 @@ onMounted(() => {
 }
 
 .action-label {
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-weight: var(--font-weight-medium);
   color: var(--color-text-secondary);
   text-align: center;

@@ -478,7 +478,7 @@ onBeforeUnmount(() => {
   min-height: 88px;
   max-height: 40vh;
   padding: var(--space-3, 12px) var(--space-4, 16px);
-  font-size: 16px;
+  font-size: var(--text-lg);
   line-height: 1.6;
   font-family: inherit;
   color: var(--color-text-primary);
@@ -532,7 +532,7 @@ onBeforeUnmount(() => {
   border-radius: 0 0 0 var(--radius-md, 8px);
   background: rgba(0, 0, 0, 0.55);
   color: var(--text-inverse);
-  font-size: 14px;
+  font-size: var(--text-base);
   line-height: 20px;
   cursor: pointer;
 }
@@ -587,7 +587,7 @@ onBeforeUnmount(() => {
 .uc-tool .material-symbols-outlined { font-size: 22px; }
 
 .uc-hint {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--color-text-tertiary);
   white-space: nowrap;
 }
@@ -605,14 +605,14 @@ onBeforeUnmount(() => {
   border-radius: var(--radius-full, 999px);
   background: var(--color-bg-surface);
   color: var(--color-text-secondary);
-  font-size: 13px;
+  font-size: var(--text-smd);
   cursor: pointer;
 }
 .uc-chip--on {
   border-color: var(--color-primary, #4f6ef7);
   color: var(--color-primary, #4f6ef7);
 }
-.uc-chip-emoji { font-size: 15px; }
+.uc-chip-emoji { font-size: var(--text-md); }
 /* 未选角色时的专家人员图标（与全 App Material Symbols 图标语言统一） */
 .uc-chip-icon { font-size: 17px; flex-shrink: 0; }
 .uc-chip-label {
@@ -632,12 +632,12 @@ onBeforeUnmount(() => {
   border-radius: var(--radius-full, 999px);
   background: var(--brand-bg);
   color: var(--brand-primary);
-  font-size: 13px;
+  font-size: var(--text-smd);
   cursor: pointer;
 }
 .uc-opt:disabled { opacity: 0.45; cursor: default; }
 .uc-opt--working { animation: uc-pulse 1.2s ease-in-out infinite; }
-.uc-opt .material-symbols-outlined { font-size: 18px; }
+.uc-opt .material-symbols-outlined { font-size: var(--text-xl); }
 
 /* 提交按钮 */
 .uc-submit {
@@ -650,12 +650,12 @@ onBeforeUnmount(() => {
   border-radius: var(--radius-full, 999px);
   background: var(--color-primary, #4f6ef7);
   color: var(--text-inverse);
-  font-size: 14px;
+  font-size: var(--text-base);
   font-weight: 600;
   cursor: pointer;
 }
 .uc-submit:disabled { opacity: 0.45; cursor: default; }
-.uc-submit .material-symbols-outlined { font-size: 18px; }
+.uc-submit .material-symbols-outlined { font-size: var(--text-xl); }
 .uc--single .uc-submit { width: 40px; padding: 0; justify-content: center; }
 
 .uc-file-hidden { display: none; }
@@ -681,7 +681,7 @@ onBeforeUnmount(() => {
 }
 .uc-fs-title {
   flex: 1;
-  font-size: 15px;
+  font-size: var(--text-md);
   font-weight: 600;
   color: var(--color-text-primary);
   overflow: hidden;
@@ -689,7 +689,7 @@ onBeforeUnmount(() => {
   white-space: nowrap;
 }
 .uc-fs-count {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--color-text-tertiary);
 }
 .uc-fs-collapse {

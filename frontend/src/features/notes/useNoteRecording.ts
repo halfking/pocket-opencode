@@ -19,6 +19,7 @@ export function useNoteRecording() {
     start: () => rt.start(),
     stop: () => rt.stop(),
     toggle: () => rt.toggle(),
+    cancelTranscription: () => rt.cancelTranscription(),
     consumePendingResult: () => rt.consumePendingResult(),
   }
 }

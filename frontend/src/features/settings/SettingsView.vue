@@ -52,6 +52,20 @@
         <div v-if="testResult" :class="['test-result', testResult.ok ? 'ok' : 'fail']">
           {{ testResult.text }}
         </div>
+        <!--
+          2026-10-01：会议与笔记录音转文字的模型与通道。
+          放在 AI 网关卡片里，因为 STT 走的就是这台网关（外部通道另算）。
+        -->
+        <div class="setting-item entry" data-testid="settings-stt-entry" @click="openSttEditor">
+          <div class="setting-icon"><span class="material-symbols-outlined">graphic_eq</span></div>
+          <div class="setting-content">
+            <div class="setting-label">语音转写</div>
+            <div class="setting-value small">
+              会议与笔记录音转文字的模型与通道
+            </div>
+          </div>
+          <span class="material-symbols-outlined chevron">chevron_right</span>
+        </div>
       </div>
 
       <!-- 用户信息 -->
@@ -93,6 +107,13 @@
             </div>
           </div>
         </div>
+        <div class="setting-item">
+          <div class="setting-icon"><span class="material-symbols-outlined">translate</span></div>
+          <div class="setting-content">
+            <div class="setting-label">{{ t('settings.language') }}</div>
+            <LanguageSwitcher />
+          </div>
+        </div>
       </div>
 
       <!-- 当前连接：后端服务器 = pocketd API 基址；实例是其下游 -->
@@ -123,12 +144,12 @@
         <div class="setting-item">
           <div class="setting-icon"><span class="material-symbols-outlined">hub</span></div>
           <div class="setting-content">
-            <div class="setting-label">RedClaw 集成</div>
+            <div class="setting-label">{{ t('settings.redclawIntegration') }}</div>
             <div class="setting-value">
-              <span v-if="redclaw.connected === true" class="rc-ok">● 已连接</span>
-              <span v-else-if="redclaw.connected === false" class="rc-down">● 已配置 · 连接异常</span>
-              <span v-else class="rc-off">● 未启用</span>
-              <template v-if="redclaw.tenantId"> · 租户 {{ redclaw.tenantId }}</template>
+              <span v-if="redclaw.connected === true" class="rc-ok">● {{ t('settings.redclawConnected') }}</span>
+              <span v-else-if="redclaw.connected === false" class="rc-down">● {{ t('settings.redclawMisconfigured') }}</span>
+              <span v-else class="rc-off">● {{ t('settings.redclawDisabled') }}</span>
+              <template v-if="redclaw.tenantId"> · {{ t('settings.tenant', { id: redclaw.tenantId }) }}</template>
             </div>
           </div>
         </div>
@@ -141,21 +162,23 @@
           <div class="setting-icon"><span class="material-symbols-outlined">smartphone</span></div>
           <div class="setting-content">
             <div class="setting-label">{{ t('settings.appName') }}</div>
-            <div class="setting-value">{{ APP_VERSION.name }}</div>
+            <div class="setting-value">{{ appVersion.name }}</div>
           </div>
         </div>
         <div class="setting-item">
           <div class="setting-icon"><span class="material-symbols-outlined">info</span></div>
           <div class="setting-content">
             <div class="setting-label">{{ t('settings.version') }}</div>
-            <div class="setting-value">{{ t('settings.versionFormat', { version: APP_VERSION.version, buildNumber: APP_VERSION.buildNumber }) }}</div>
+            <div class="setting-value">{{ t('settings.versionFormat', { version: appVersion.version, buildNumber: appVersion.buildNumber }) }}</div>
           </div>
         </div>
         <div class="setting-item">
           <div class="setting-icon"><span class="material-symbols-outlined">event</span></div>
           <div class="setting-content">
             <div class="setting-label">{{ t('settings.buildDate') }}</div>
-            <div class="setting-value">{{ APP_VERSION.buildDate }}</div>
+            <!-- 有编译期时间戳就说明那是真实构建时刻，不必再标注；
+                 退回常量日期时才提示「这是配置值」，避免把旧日期误读成构建时间。 -->
+            <div class="setting-value">{{ appVersion.buildDate }}<span v-if="!appVersion.fromNative" class="setting-hint"> {{ t('settings.buildDateNote') }}</span></div>
           </div>
         </div>
       </div>
@@ -187,8 +210,8 @@
         <div class="setting-item entry" @click="router.push('/finance')">
           <div class="setting-icon"><span class="material-symbols-outlined">account_balance_wallet</span></div>
           <div class="setting-content">
-            <div class="setting-label">记账</div>
-            <div class="setting-value">手动 + 笔记自动入账 · 月度收支统计</div>
+            <div class="setting-label">{{ t('settings.finance') }}</div>
+            <div class="setting-value">{{ t('settings.financeDesc') }}</div>
           </div>
           <span class="material-symbols-outlined chevron">chevron_right</span>
         </div>
@@ -220,22 +243,28 @@
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { APP_VERSION, canDownloadApk, checkUpdate } from '../../utils/version'
+import { useApiError } from '../../composables/useApiError'
+import type { IconName } from '../../constants/icons'
+import { APP_VERSION, canDownloadApk, checkUpdate, resolveAppVersion, VersionConfigUnavailableError, type ResolvedAppVersion } from '../../utils/version'
 import { runtimePlatform } from '../../native/runtime-platform'
 import { api, type GatewayConfig, type GatewayTestResult } from '../../api/client'
 import { http } from '../../api/http'
 import { displayApiBase, probeHealthz, resolveApiBase } from '../../config/api-base'
 import { clearSelectedInstance, readSelectedInstance } from '../../config/selected-instance'
 import { useConfirm } from '../../composables/useConfirm'
+import { useToast } from '../../composables/useToast'
 import { useThemeStore, type ThemePreference } from '../../stores/theme'
+import LanguageSwitcher from '../../components/LanguageSwitcher.vue'
 
 const router = useRouter()
 const { confirm } = useConfirm()
+const toast = useToast()
 const { t } = useI18n()
+const apiError = useApiError()
 const theme = useThemeStore()
 
 // 皮肤三选项（图标 + 词条），选中即调用 setPreference 全局生效
-const themeOptions: { value: ThemePreference; label: string; icon: string }[] = [
+const themeOptions: { value: ThemePreference; label: string; icon: IconName }[] = [
   { value: 'light', label: t('settings.themeLight'), icon: 'light_mode' },
   { value: 'dark', label: t('settings.themeDark'), icon: 'dark_mode' },
   { value: 'system', label: t('settings.themeSystem'), icon: 'brightness_auto' },
@@ -263,7 +292,15 @@ const redclaw = ref<{ connected: boolean | null; tenantId: string }>({
   tenantId: '',
 })
 
+// 「应用信息」显示的是**设备上真正装的那个构建**，不是 TS 常量。
+// 初值用常量保证首帧就有内容，onMounted 后被原生值替换。
+// 这样「跑的是不是最新包」终于能从界面上直接看出来——这正是 §4.74.2 缺的。
+const appVersion = ref<ResolvedAppVersion>({ ...APP_VERSION, fromNative: false })
+
 onMounted(async () => {
+  // 先解析设备真实版本：读原生失败会自己回退常量，不会中断后面的加载。
+  appVersion.value = await resolveAppVersion()
+
   // 历史版本曾把裸用户名（非 JSON）写入 pocket_user，坏值不得中断挂载流程
   // （曾导致后续 AI 网关配置加载被跳过、区块恒显"未配置"）。
   const readJSON = <T,>(key: string): T | null => {
@@ -323,11 +360,12 @@ async function testGateway() {
     } else {
       testResult.value = {
         ok: false,
-        text: t('settings.testFailed', { error: r.error || r.response || 'HTTP ' + r.status }),
+        text: t('settings.testFailed', { error: apiError(r, 'errors.gatewayUnreachable') }),
       }
     }
   } catch (err: any) {
-    testResult.value = { ok: false, text: '✗ ' + (err?.message || String(err)) }
+    // 原来是 `'✗ ' + err.message`，网络不通时直接把 "Failed to fetch" 摆给用户
+    testResult.value = { ok: false, text: '✗ ' + apiError(err, 'errors.gatewayUnreachable') }
   } finally {
     testing.value = false
   }
@@ -335,6 +373,11 @@ async function testGateway() {
 
 function openGatewayEditor() {
   router.push('/settings/llm-gateway')
+}
+
+/** 语音转写配置：录音转文字用哪个模型、走网关还是外部服务。 */
+function openSttEditor() {
+  router.push('/settings/stt')
 }
 
 function formatLoginTime(): string {
@@ -347,18 +390,30 @@ async function checkForUpdates() {
   try {
     const response = await checkUpdate()
     if (response.hasUpdate && !canDownloadApk()) {
-      alert(`当前平台（${runtimePlatform()}）暂无可用的应用内更新渠道`)
+      toast.warning(`当前平台（${runtimePlatform()}）暂无可用的应用内更新渠道`)
     } else if (response.hasUpdate) {
-      alert(t('settings.newVersionAvailable', {
+      // 更新日志较长：默认 3s toast 读不完，给足时长并保留关闭按钮
+      toast.info(t('settings.newVersionAvailable', {
         version: response.latest?.version,
         changelog: response.latest?.changelog.join('\n')
-      }))
+      }), { duration: 15000, closable: true })
     } else {
-      alert(t('settings.alreadyLatest'))
+      toast.success(t('settings.alreadyLatest'))
     }
   } catch (error) {
+    if (error instanceof VersionConfigUnavailableError) {
+      // 这不是「稍后重试」类故障：服务端版本配置缺失/路径不对，
+      // 重试多少次都是同一个结果。给一条指向真正原因的提示，
+      // 并把服务端回传的候选路径原样带出来（唯一可定位的线索）。
+      console.error('服务端版本配置不可用:', error.detail ?? error.message)
+      toast.error(
+        t('settings.versionConfigUnavailable', { detail: error.detail ?? '' }),
+        { duration: 15000, closable: true }
+      )
+      return
+    }
     console.error('检查更新失败:', error)
-    alert(t('settings.checkUpdateFailed'))
+    toast.error(t('settings.checkUpdateFailed'))
   }
 }
 
@@ -485,9 +540,15 @@ async function handleLogout() {
   color: var(--text-secondary);
 }
 
+/* 「构建日期」旁的来源标注：说明这个日期是配置值而不是实测构建时间。 */
+.setting-hint {
+  font-size: var(--text-xs);
+  opacity: 0.75;
+}
+
 .setting-value.small {
   font-size: var(--text-xs);
-  font-family: monospace;
+  font-family: var(--font-mono);
   word-break: break-all;
 }
 
@@ -515,7 +576,7 @@ async function handleLogout() {
 }
 
 .theme-option .material-symbols-outlined {
-  font-size: 18px;
+  font-size: var(--text-xl);
 }
 
 .theme-option.active {

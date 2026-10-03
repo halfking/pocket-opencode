@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS rss_sources (
  fetch_interval BIGINT NOT NULL DEFAULT 3600, next_fetch_at TIMESTAMPTZ, last_fetched_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
  UNIQUE(user_id,workspace_id,url));
 CREATE INDEX IF NOT EXISTS idx_rss_sources_due ON rss_sources(user_id,workspace_id,enabled,next_fetch_at);
+ALTER TABLE rss_sources ADD COLUMN IF NOT EXISTS category TEXT NOT NULL DEFAULT '';
 CREATE TABLE IF NOT EXISTS rss_items (
  id TEXT PRIMARY KEY, source_id TEXT NOT NULL REFERENCES rss_sources(id) ON DELETE CASCADE, user_id TEXT NOT NULL, workspace_id TEXT NOT NULL,
  guid TEXT NOT NULL DEFAULT '', hash TEXT NOT NULL, url TEXT NOT NULL DEFAULT '', title TEXT NOT NULL DEFAULT '', author TEXT NOT NULL DEFAULT '', summary TEXT NOT NULL DEFAULT '', content TEXT NOT NULL DEFAULT '', language TEXT NOT NULL DEFAULT '', categories JSONB NOT NULL DEFAULT '[]'::jsonb,
@@ -64,6 +65,11 @@ CREATE INDEX IF NOT EXISTS idx_rss_drafts_scope ON rss_drafts(user_id,workspace_
 CREATE TABLE IF NOT EXISTS rss_publish_attempts (
  id TEXT PRIMARY KEY,draft_id TEXT NOT NULL REFERENCES rss_drafts(id) ON DELETE CASCADE,item_id TEXT NOT NULL DEFAULT '',user_id TEXT NOT NULL,workspace_id TEXT NOT NULL,platform TEXT NOT NULL,remote_id TEXT NOT NULL DEFAULT '',status TEXT NOT NULL DEFAULT 'pending',error TEXT NOT NULL DEFAULT '',attempted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
 CREATE INDEX IF NOT EXISTS idx_rss_attempts_scope ON rss_publish_attempts(user_id,workspace_id,attempted_at DESC);
+CREATE TABLE IF NOT EXISTS rss_digests (
+ id TEXT PRIMARY KEY, user_id TEXT NOT NULL, workspace_id TEXT NOT NULL, digest_date DATE NOT NULL,
+ headline TEXT NOT NULL DEFAULT '', body TEXT NOT NULL DEFAULT '', sections JSONB NOT NULL DEFAULT '[]'::jsonb,
+ item_count INTEGER NOT NULL DEFAULT 0, generated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE(user_id,workspace_id,digest_date));
+CREATE INDEX IF NOT EXISTS idx_rss_digests_scope_date ON rss_digests(user_id,workspace_id,digest_date DESC);
 `)
 	return err
 }
@@ -79,19 +85,19 @@ func (s *Store) CreateSource(ctx context.Context, req CreateSourceRequest, sc Sc
 		req.FetchInterval = time.Hour
 	}
 	now := time.Now().UTC()
-	x := &Source{ID: id("src"), UserID: sc.UserID, WorkspaceID: sc.WorkspaceID, URL: strings.TrimSpace(req.URL), Title: req.Title, Description: req.Description, SiteURL: req.SiteURL, Language: req.Language, Enabled: req.Enabled, Status: SourceActive, FetchInterval: req.FetchInterval, CreatedAt: now, UpdatedAt: now}
+	x := &Source{ID: id("src"), UserID: sc.UserID, WorkspaceID: sc.WorkspaceID, URL: strings.TrimSpace(req.URL), Title: req.Title, Description: req.Description, SiteURL: req.SiteURL, Language: req.Language, Category: strings.ToLower(strings.TrimSpace(req.Category)), Enabled: req.Enabled, Status: SourceActive, FetchInterval: req.FetchInterval, CreatedAt: now, UpdatedAt: now}
 	if !req.Enabled {
 		x.Status = SourceDisabled
 	}
 	x.NextFetchAt = &now
-	_, err := s.pool.Exec(ctx, `INSERT INTO rss_sources(id,user_id,workspace_id,url,title,description,site_url,language,status,enabled,fetch_interval,next_fetch_at,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$13)`, x.ID, x.UserID, x.WorkspaceID, x.URL, x.Title, x.Description, x.SiteURL, x.Language, x.Status, x.Enabled, int64(x.FetchInterval/time.Second), x.NextFetchAt, x.CreatedAt)
+	_, err := s.pool.Exec(ctx, `INSERT INTO rss_sources(id,user_id,workspace_id,url,title,description,site_url,language,category,status,enabled,fetch_interval,next_fetch_at,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$14)`, x.ID, x.UserID, x.WorkspaceID, x.URL, x.Title, x.Description, x.SiteURL, x.Language, x.Category, x.Status, x.Enabled, int64(x.FetchInterval/time.Second), x.NextFetchAt, x.CreatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("create source: %w", err)
 	}
 	return x, nil
 }
 
-const sourceCols = `id,user_id,workspace_id,url,title,description,site_url,language,etag,last_modified,status,enabled,error,fetch_interval,next_fetch_at,last_fetched_at,created_at,updated_at`
+const sourceCols = `id,user_id,workspace_id,url,title,description,site_url,language,category,etag,last_modified,status,enabled,error,fetch_interval,next_fetch_at,last_fetched_at,created_at,updated_at`
 
 // sourceColsReturning qualifies each column with the update target alias `s`
 // for UPDATE ... FROM queries, where bare names would be ambiguous against
@@ -101,7 +107,7 @@ var sourceColsReturning = `s.` + strings.ReplaceAll(sourceCols, `,`, `,s.`)
 func scanSource(r pgx.Row) (*Source, error) {
 	var x Source
 	var sec int64
-	err := r.Scan(&x.ID, &x.UserID, &x.WorkspaceID, &x.URL, &x.Title, &x.Description, &x.SiteURL, &x.Language, &x.ETag, &x.LastModified, &x.Status, &x.Enabled, &x.Error, &sec, &x.NextFetchAt, &x.LastFetchedAt, &x.CreatedAt, &x.UpdatedAt)
+	err := r.Scan(&x.ID, &x.UserID, &x.WorkspaceID, &x.URL, &x.Title, &x.Description, &x.SiteURL, &x.Language, &x.Category, &x.ETag, &x.LastModified, &x.Status, &x.Enabled, &x.Error, &sec, &x.NextFetchAt, &x.LastFetchedAt, &x.CreatedAt, &x.UpdatedAt)
 	x.FetchInterval = time.Duration(sec) * time.Second
 	return &x, err
 }
@@ -143,7 +149,7 @@ func (s *Store) UpdateSource(ctx context.Context, id string, req UpdateSourceReq
 			return nil, err
 		}
 	}
-	_, e := s.pool.Exec(ctx, `UPDATE rss_sources SET url=COALESCE($1,url),title=COALESCE($2,title),description=COALESCE($3,description),site_url=COALESCE($4,site_url),language=COALESCE($5,language),enabled=COALESCE($6,enabled),fetch_interval=COALESCE($7,fetch_interval),status=COALESCE($8,status),updated_at=NOW() WHERE id=$9 AND user_id=$10 AND workspace_id=$11`, req.URL, req.Title, req.Description, req.SiteURL, req.Language, req.Enabled, durationSec(req.FetchInterval), req.Status, id, sc.UserID, sc.WorkspaceID)
+	_, e := s.pool.Exec(ctx, `UPDATE rss_sources SET url=COALESCE($1,url),title=COALESCE($2,title),description=COALESCE($3,description),site_url=COALESCE($4,site_url),language=COALESCE($5,language),category=COALESCE($6,category),enabled=COALESCE($7,enabled),fetch_interval=COALESCE($8,fetch_interval),status=COALESCE($9,status),updated_at=NOW() WHERE id=$10 AND user_id=$11 AND workspace_id=$12`, req.URL, req.Title, req.Description, req.SiteURL, req.Language, req.Category, req.Enabled, durationSec(req.FetchInterval), req.Status, id, sc.UserID, sc.WorkspaceID)
 	if e != nil {
 		return nil, e
 	}

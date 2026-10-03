@@ -1,0 +1,66 @@
+diff --git a/backend/internal/stt/discovery.go b/backend/internal/stt/discovery.go
+--- a/backend/internal/stt/discovery.go
++++ b/backend/internal/stt/discovery.go
+@@ -297,6 +297,23 @@ func ProbeModel(ctx context.Context, client *http.Client, baseURL, apiKey, model
+ 			out.Status, out.Detail = ProbeNoProvider, providerDetail(status2, err2)
+ 			return out
+ 		}
++		// 走到这里说明 /audio/transcriptions 已经是 404/405（见上面的 switch）。
++		// 如果 chat 侧同样是 404/405，那就是「这个网关压根没开转写端点」，
++		// 而不是「探测过程出错了」。
++		//
++		// 不单独判出去的后果很具体：会落到 ProbeFailed，而
++		// server_stt_settings.go 的 describeProbe 对 ProbeFailed 拼的是
++		// "探测失败(" + Detail + ")"，Detail 里带着上游返回的原始响应体，
++		// 于是设置页直接把这坨东西甩给用户：
++		//   探测失败(http 404: {"error":{"code":"no_candidate",…}})
++		// ProbeEndpointMissing 本来就配了「无转写端点」这句中文文案，
++		// 但在这之前生产代码从没给它赋过值，是个死常量。
++		// TestProbeClassifiesBothTransportsMissing 守住这条。
++		if status2 == http.StatusNotFound || status2 == http.StatusMethodNotAllowed {
++			out.Status, out.Detail = ProbeEndpointMissing,
++				"网关未提供转写端点（/audio/transcriptions 与 chat 音频输入均为 404/405）"
++			return out
++		}
+ 		detail := firstLine(err2)
+ 		if status2 != 0 {
+ 			detail = fmt.Sprintf("http %d: %s", status2, detail)
+diff --git a/backend/internal/stt/discovery_test.go b/backend/internal/stt/discovery_test.go
+--- a/backend/internal/stt/discovery_test.go
++++ b/backend/internal/stt/discovery_test.go
+@@ -229,6 +229,35 @@ func TestLooksLikeMissingAudio(t *testing.T) {
+ 	}
+ }
+ 
++// TestProbeClassifiesBothTransportsMissing 网关两种传输形态都不存在时，
++// 必须判 endpoint_missing 而不是 failed。
++//
++// 这条守的是 2026-10-01 审计发现的真实缺陷：ProbeEndpointMissing 是个死常量
++// （声明了、配了中文文案，但生产代码从不赋值），于是「网关没开转写端点」
++// 全都落到 ProbeFailed，设置页把上游原始 JSON 拼成
++// 「探测失败(http 404: {"choices":…})」甩给用户。
++func TestProbeClassifiesBothTransportsMissing(t *testing.T) {
++	f := &fakeGateway{
++		models:         []GatewayModel{{ID: "no-asr-here"}},
++		transcriptions: map[string]int{}, // 空 map → 假网关回 404
++		chatStatus:     map[string]int{}, // 空 map → 假网关也回 404
++	}
++	srv := httptest.NewServer(f.handler(t))
++	defer srv.Close()
++
++	c := ProbeModel(context.Background(), srv.Client(), srv.URL+"/v1", "key", "no-asr-here")
++	if c.Status != ProbeEndpointMissing {
++		t.Fatalf("status=%s want %s（detail=%s）", c.Status, ProbeEndpointMissing, c.Detail)
++	}
++	if c.Usable() {
++		t.Error("没有转写端点的网关不能被判为可用")
++	}
++	// Detail 会进设置页文案，绝不能是上游原始响应体。
++	if strings.Contains(c.Detail, "{") || strings.Contains(c.Detail, "choices") {
++		t.Errorf("Detail 泄漏了上游原始响应体：%q", c.Detail)
++	}
++}
++
+ // TestProbePrefersTranscriptionsEndpoint 外部服务（OpenAI/Groq 兼容）走
+ // /audio/transcriptions 就该直接判 ok，不再去试 chat。
+ func TestProbePrefersTranscriptionsEndpoint(t *testing.T) {

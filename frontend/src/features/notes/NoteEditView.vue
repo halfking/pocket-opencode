@@ -97,6 +97,7 @@ import type { LocalNote, NoteMediaInput } from './notes-store'
 import { ErrorState, UnifiedComposer } from '../../components'
 import { useAuthStore } from '../../stores/auth'
 import { markListDirty } from '../../composables/list-scene-store'
+import { useApiError } from '../../composables/useApiError'
 import {
   attachmentsToMedia,
   extractTagsForForm,
@@ -105,6 +106,7 @@ import {
   tagsFromArray,
 } from './note-edit-helpers'
 
+const apiError = useApiError()
 const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
@@ -196,7 +198,7 @@ async function load() {
       hydrate(existing)
     }
   } catch (e: any) {
-    loadError.value = e?.message || '加载笔记失败，请稍后重试。'
+    loadError.value = apiError(e, 'errors.loadNotesFailed')
   } finally {
     loading.value = false
   }
@@ -250,7 +252,7 @@ async function onSave() {
   } catch (e: any) {
     console.warn('[note] 保存失败:', e)
     saving.value = false
-    saveError.value = e?.message || '保存失败，请稍后重试'
+    saveError.value = apiError(e, 'errors.saveFailed')
   }
 }
 
@@ -265,8 +267,8 @@ function goBack() {
 .state { text-align: center; color: var(--text-secondary); padding: var(--space-6); }
 .edit-form { display: flex; flex-direction: column; gap: var(--space-4); padding-bottom: 120px; }
 .form-group { display: flex; flex-direction: column; gap: var(--space-2); }
-.form-group label { font-size: 13px; font-weight: 600; color: var(--text-secondary); }
-.form-group .hint { font-size: 11px; font-weight: 400; color: var(--text-muted); }
+.form-group label { font-size: var(--text-smd); font-weight: 600; color: var(--text-secondary); }
+.form-group .hint { font-size: var(--text-2xs); font-weight: 400; color: var(--text-muted); }
 .tags-input {
   flex: 1; padding: var(--space-3); border-radius: var(--radius-md);
   border: 1px solid var(--border); background: var(--bg-card); color: var(--text-primary);
@@ -274,10 +276,10 @@ function goBack() {
 .tag-row { display: flex; gap: 8px; }
 .extract-btn, .video-btn {
   padding: 8px 12px; border-radius: var(--radius-md);
-  border: 1px solid var(--border); background: var(--bg-subtle); font-size: 12px;
+  border: 1px solid var(--border); background: var(--bg-subtle); font-size: var(--text-sm);
 }
 .hidden-file { display: none; }
-.media-hint { margin: 4px 0 0; font-size: 12px; color: var(--text-muted); }
+.media-hint { margin: 4px 0 0; font-size: var(--text-sm); color: var(--text-muted); }
 .domain-chips { display: flex; flex-wrap: wrap; gap: var(--space-2); }
 .chip {
   padding: var(--space-2) var(--space-4); border-radius: var(--radius-full);

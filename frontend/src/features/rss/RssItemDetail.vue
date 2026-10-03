@@ -2,6 +2,9 @@
 import { ref, onMounted, computed } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { rssApi, type RSSItem } from '../../api/rss'
+import { useI18n } from 'vue-i18n'
+import { toUserMessage } from '../../api/error-message'
+import AddToLearningButton from '../study/AddToLearningButton.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -12,6 +15,7 @@ const shareOpen = ref(false)
 const shareCaption = ref('')
 const shareResult = ref<{ copyText?: string; deepLink?: string; hint?: string } | null>(null)
 const shareBusy = ref(false)
+const { t } = useI18n()
 
 async function load() {
   loading.value = true
@@ -25,7 +29,7 @@ async function load() {
       } catch { /* ignore */ }
     }
   } catch (e: any) {
-    errorMsg.value = e?.message ?? String(e)
+    errorMsg.value = toUserMessage(e, t, t('errors.loadRssFailed'))
   } finally {
     loading.value = false
   }
@@ -68,7 +72,7 @@ async function toggleStar() {
   try {
     item.value = await rssApi.setStarred(item.value.id, newStar)
   } catch (e: any) {
-    errorMsg.value = e?.message ?? String(e)
+    errorMsg.value = toUserMessage(e, t, t('errors.operateFailed'))
   }
 }
 
@@ -97,6 +101,11 @@ function back() {
         <a :href="item.url" target="_blank" rel="noopener">原文 ↗</a>
       </div>
       <div v-if="item.summary" class="summary">{{ item.summary }}</div>
+      <!-- P2：RSS 条目 → 学习条目（读过的订阅会按记忆法则回来找你） -->
+      <div v-if="item" class="rss-actions">
+        <AddToLearningButton source-kind="rss" :source-id="item.id" />
+        <AddToLearningButton source-kind="rss" :source-id="item.id" as-task task-type="research" />
+      </div>
       <div v-if="item.content" class="content" v-html="item.content"></div>
     </article>
 
@@ -149,28 +158,28 @@ function back() {
 <style scoped>
 .rss-detail { padding: 16px; max-width: 720px; margin: 0 auto; }
 .bar { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
-.title-clamp { flex: 1; font-size: 18px; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.title-clamp { flex: 1; font-size: var(--text-xl); margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .empty { padding: 32px; text-align: center; color: var(--text-muted); }
 .error { padding: 8px 12px; background: var(--err-bg); color: var(--err-fg); border-radius: 6px; margin-bottom: 8px; }
 .article { padding: 12px 0; }
-.meta-row { font-size: 12px; color: var(--text-muted); display: flex; gap: 12px; margin-bottom: 12px; }
-.meta-row a { color: var(--accent); }
-.summary { font-size: 15px; line-height: 1.6; margin-bottom: 16px; }
-.content { font-size: 14px; line-height: 1.6; }
+.meta-row { font-size: var(--text-sm); color: var(--text-muted); display: flex; gap: 12px; margin-bottom: 12px; }
+.meta-row a { color: var(--brand-primary); }
+.summary { font-size: var(--text-md); line-height: 1.6; margin-bottom: 16px; }
+.content { font-size: var(--text-base); line-height: 1.6; }
 .actions-bar { position: sticky; bottom: 0; display: flex; gap: 8px; padding: 12px; background: var(--bg); border-top: 1px solid var(--border); }
 .btn { display: inline-flex; align-items: center; gap: 4px; padding: 8px 16px; border: 1px solid var(--border); background: var(--bg-elevated); border-radius: 6px; cursor: pointer; }
-.btn-primary { background: var(--accent); color: white; border-color: var(--accent); }
+.btn-primary { background: var(--brand-primary); color: white; border-color: var(--brand-primary); }
 .icon { padding: 4px 8px; border: none; background: transparent; cursor: pointer; font-size: 20px; }
 .modal-mask { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; z-index: 1000; }
 .modal { background: var(--bg-elevated); border-radius: 8px; padding: 16px; width: 90%; max-width: 520px; }
 .modal header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
-.caption-input label { display: block; font-size: 12px; color: var(--text-muted); margin-bottom: 4px; }
+.caption-input label { display: block; font-size: var(--text-sm); color: var(--text-muted); margin-bottom: 4px; }
 .caption-input textarea { width: 100%; box-sizing: border-box; padding: 6px; border: 1px solid var(--border); border-radius: 6px; }
 .share-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; }
 .preview-card img { width: 100%; height: auto; border-radius: 6px; }
 .share-buttons { display: flex; flex-direction: column; gap: 8px; }
 .share-buttons .btn { justify-content: center; }
-.result { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); font-size: 13px; }
+.result { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); font-size: var(--text-smd); }
 .result pre { white-space: pre-wrap; word-break: break-all; padding: 6px; background: var(--bg); border-radius: 4px; }
 .hint { color: var(--text-muted); font-style: italic; margin-top: 4px; }
 </style>

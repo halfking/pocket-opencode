@@ -95,13 +95,13 @@ function save() {
 
 .sheet-title {
   margin: 0 0 var(--space-2);
-  font-size: 16px;
+  font-size: var(--text-lg);
   font-weight: 600;
 }
 
 .sheet-hint {
   margin: 0 0 var(--space-4);
-  font-size: 13px;
+  font-size: var(--text-smd);
   color: var(--text-muted);
   line-height: 1.5;
 }
@@ -110,7 +110,7 @@ function save() {
   padding: var(--space-4);
   text-align: center;
   color: var(--text-muted);
-  font-size: 14px;
+  font-size: var(--text-base);
 }
 
 .speaker-list {
@@ -142,13 +142,13 @@ function save() {
 
 .name {
   flex: 1;
-  font-size: 15px;
+  font-size: var(--text-md);
   font-weight: 500;
   color: var(--text-primary);
 }
 
 .tag {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   padding: 2px 8px;
   background: var(--bg-subtle);
   border-radius: var(--radius-full);
@@ -160,17 +160,17 @@ function save() {
   flex-direction: column;
   gap: 6px;
   margin-bottom: var(--space-3);
-  font-size: 13px;
+  font-size: var(--text-smd);
 }
 
-.field span { color: var(--text-muted); font-size: 12px; }
+.field span { color: var(--text-muted); font-size: var(--text-sm); }
 
 .field input {
   padding: 10px 12px;
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
   background: var(--bg-base);
-  font-size: 14px;
+  font-size: var(--text-base);
 }
 
 .save-btn {
@@ -180,7 +180,7 @@ function save() {
   color: var(--text-inverse);
   border: none;
   border-radius: var(--radius-md);
-  font-size: 15px;
+  font-size: var(--text-md);
   font-weight: 600;
   cursor: pointer;
 }

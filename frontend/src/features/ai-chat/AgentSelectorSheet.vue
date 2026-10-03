@@ -177,7 +177,7 @@ function close() {
   padding: 10px 16px;
   border: 1px solid var(--border);
   border-radius: 8px;
-  font-size: 15px;
+  font-size: var(--text-md);
   background: var(--bg-subtle);
   color: var(--text-primary);
 }
@@ -200,7 +200,7 @@ function close() {
   border-radius: 16px;
   background: var(--bg-elevated);
   color: var(--text-primary);
-  font-size: 14px;
+  font-size: var(--text-base);
   white-space: nowrap;
   cursor: pointer;
   transition: all 0.2s;
@@ -230,7 +230,7 @@ function close() {
 }
 
 .group-header {
-  font-size: 14px;
+  font-size: var(--text-base);
   font-weight: 600;
   color: var(--text-secondary);
   margin-bottom: 8px;
@@ -267,14 +267,14 @@ function close() {
 }
 
 .agent-name {
-  font-size: 15px;
+  font-size: var(--text-md);
   font-weight: 500;
   margin-bottom: 4px;
   color: var(--text-primary);
 }
 
 .agent-desc {
-  font-size: 13px;
+  font-size: var(--text-smd);
   color: var(--text-secondary);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -294,7 +294,7 @@ function close() {
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--bg-elevated);
-  font-size: 15px;
+  font-size: var(--text-md);
   color: var(--text-secondary);
   cursor: pointer;
 }

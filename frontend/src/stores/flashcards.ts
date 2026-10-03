@@ -14,6 +14,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import {
+  createDeck as createDeckSvc,
   createNote,
   deleteNote,
   dueCount as fetchDueCountSvc,
@@ -24,6 +25,7 @@ import {
   recordReview,
 } from '../services/flashcards'
 import { useFsrs } from '../composables/useFsrs'
+import { dueNowSec, liveNowSec, startDueClock } from './flashcardDueClock'
 import type {
   FlashcardCard,
   FlashcardDeckConfig,
@@ -155,11 +157,19 @@ function mergeById<T extends { id: string; updatedAt?: number } | { deckId: stri
   return [...map.values()]
 }
 
-function nowSec(): number {
-  return Math.floor(Date.now() / 1000)
-}
-
+/**
+ * BUG-AS（handoff §4.55）：这里原本是个直接读 `Date.now()` 的 `liveNowSec()`。
+ * 三个到期判据 computed 依赖它，而 `Date.now()` 不是响应式依赖 ⇒
+ * 卡片在页面打开期间跨过到期时刻，computed 不重算，到期数与「开始复习」都卡住。
+ *
+ * 现在拆成两个来源，写之前先想清楚要哪一个：
+ *   - `dueNowSec()`：响应式，专门给**到期判据**用（computed 依赖它才会重算）
+ *   - `liveNowSec()`：真实时间，给**记录时间戳**用（enqueuedAt / reviewedAt 等），
+ *     免得被 tick 间隔拖成最多 30 秒的旧值
+ */
 export const useFlashcardsStore = defineStore('flashcards', () => {
+  // 到期数要随时间自己走（BUG-AS）：时钟是模块级单例，这里启动一次即可
+  startDueClock()
   const notes = ref<FlashcardNote[]>([])
   const cards = ref<FlashcardCard[]>([])
   const deckConfigs = ref<FlashcardDeckConfig[]>([])
@@ -184,7 +194,8 @@ export const useFlashcardsStore = defineStore('flashcards', () => {
 
   // ---------- computed ----------
   const dueByDeck = computed(() => {
-    const now = nowSec()
+    // 响应式时间：卡片在页面打开期间跨过到期时刻时，本 computed 才会重算（BUG-AS）
+    const now = dueNowSec()
     const map = new Map<string, number>()
     for (const card of cards.value) {
       if (card.deletedAt && card.deletedAt > 0) continue
@@ -209,7 +220,7 @@ export const useFlashcardsStore = defineStore('flashcards', () => {
         updatedAt: cfg.updatedAt,
       })
     }
-    const now = nowSec()
+    const now = dueNowSec()
     for (const card of cards.value) {
       if (card.deletedAt && card.deletedAt > 0) continue
       let summary = summaries.get(card.deckId)
@@ -236,7 +247,7 @@ export const useFlashcardsStore = defineStore('flashcards', () => {
   })
 
   const dueCardsForDeck = computed(() => (deckId: string) => {
-    const now = nowSec()
+    const now = dueNowSec()
     return cards.value
       .filter((c) => c.deckId === deckId && !(c.deletedAt && c.deletedAt > 0))
       .filter((c) => {
@@ -293,8 +304,32 @@ export const useFlashcardsStore = defineStore('flashcards', () => {
         notes.value = notes.value.filter((n) => !deletedSet.has(n.id))
         cards.value = cards.value.filter((c) => !deletedSet.has(c.id))
       }
-      if (typeof envelope.serverTimeMs === 'number') {
-        lastSyncedAt.value = Math.floor(envelope.serverTimeMs / 1000)
+      // BUG-O（2026-09-30 真机验收）：水位线必须取**本次实际收到的最大
+      // updatedAt**，不能取 serverTimeMs。
+      //
+      // 后端过滤是 `updated_at > $since`（严格大于，flashcards/store.go:361）。
+      // 原实现把 lastSyncedAt 设成 floor(serverTimeMs/1000)，也就是"服务器
+      // 此刻的时间"。凡是在「写入完成」与「这次拉取」之间发生的变更，其
+      // updated_at 小于这个水位线，下一次 since 更大，于是**永远拉不回来**。
+      //
+      // 真机上的具体表现：UI 新建卡片 -> POST /api/flashcards/notes 201，
+      // 服务端同时生成 note 和 card（card 的 id 由服务端生成，客户端本地
+      // 根本没有这条记录，只能靠 sync 拉）。但随后一次 sync 把 lastSyncedAt
+      // 推到服务端当前时间，card 的 updated_at 落在水位线之前 —— 卡组详情页
+      // 「开始复习」恒 disabled，卡片永远不出现，而 PG 里数据明明在、宿主侧
+      // 直接调 since=0 也能拿到。
+      //
+      // 没有数据时保持原水位线不动：空结果不代表"服务端此刻之前都已同步"。
+      const maxUpdated = [
+        ...(envelope.notes ?? []),
+        ...(envelope.cards ?? []),
+        ...(envelope.decks ?? []),
+      ].reduce((acc, item) => {
+        const ts = typeof item?.updatedAt === 'number' ? item.updatedAt : 0
+        return ts > acc ? ts : acc
+      }, 0)
+      if (maxUpdated > 0) {
+        lastSyncedAt.value = maxUpdated
       }
       persistCache()
     } catch (e: any) {
@@ -308,7 +343,7 @@ export const useFlashcardsStore = defineStore('flashcards', () => {
   /** 入队一个新 outbox 事件（按 seq 自增；online 时立即 flush）。 */
   function enqueue(item: OutboxItem) {
     const seq = (outbox.value[outbox.value.length - 1]?.seq ?? 0) + 1
-    outbox.value = [...outbox.value, { ...item, seq, enqueuedAt: nowSec() }]
+    outbox.value = [...outbox.value, { ...item, seq, enqueuedAt: liveNowSec() }]
     persistOutbox()
     if (online.value) void flushOutbox()
   }
@@ -318,7 +353,7 @@ export const useFlashcardsStore = defineStore('flashcards', () => {
     const idx = cards.value.findIndex((c) => c.id === cardId)
     if (idx < 0) return null
     const prev = cards.value[idx]
-    const now = nowSec()
+    const now = liveNowSec()
     const updated = useFsrs().applyReview(prev, rating, now)
     cards.value = [
       ...cards.value.slice(0, idx),
@@ -363,7 +398,7 @@ export const useFlashcardsStore = defineStore('flashcards', () => {
       cardId,
       rating,
       elapsedMs,
-      reviewedAt: nowSec(),
+      reviewedAt: liveNowSec(),
       fsrs: {
         due: card.due,
         state: card.state,
@@ -462,10 +497,28 @@ export const useFlashcardsStore = defineStore('flashcards', () => {
   /** 视图层辅助：按 deckId 拉一次服务端 due 数，失败时退回本地计算。 */
   async function fetchDueCount(deckIdArg: string): Promise<number> {
     try {
-      return await fetchDueCountSvc(deckIdArg, nowSec())
+      return await fetchDueCountSvc(deckIdArg, liveNowSec())
     } catch {
       return dueByDeck.value.get(deckIdArg) ?? 0
     }
+  }
+
+  /**
+   * 创建卡组（BUG-K，2026-09-30 真机验收）。
+   *
+   * 此前**没有任何创建卡组的路径**：后端无 POST /api/flashcards/decks，
+   * 前端列表页「新建卡组」又直接跳 /flashcards/new（新建卡片页）。
+   * 结果 decks=0 → selectedDeckId 为空 → 保存恒 disabled，闪卡从零状态不可用。
+   *
+   * 走服务端建（后端会填 FSRS 默认值），成功后合并进本地缓存并返回。
+   */
+  async function createDeck(name: string): Promise<FlashcardDeckConfig> {
+    const created = await createDeckSvc(name.trim())
+    const idx = deckConfigs.value.findIndex((d) => d.deckId === created.deckId)
+    if (idx >= 0) deckConfigs.value.splice(idx, 1, created)
+    else deckConfigs.value.push(created)
+    persistCache()
+    return created
   }
 
   /**
@@ -480,7 +533,7 @@ export const useFlashcardsStore = defineStore('flashcards', () => {
   function saveDeckConfig(next: FlashcardDeckConfig) {
     const idx = deckConfigs.value.findIndex((d) => d.deckId === next.deckId)
     if (idx < 0) return
-    const updated = { ...next, updatedAt: nowSec() }
+    const updated = { ...next, updatedAt: liveNowSec() }
     deckConfigs.value.splice(idx, 1, updated)
     persistCache()
   }
@@ -531,6 +584,7 @@ export const useFlashcardsStore = defineStore('flashcards', () => {
     enqueuePatchCard,
     applyReviewLocally,
     fetchDueCount,
+    createDeck,
     saveDeckConfig,
     replaceAllNotes,
     replaceAllCards,

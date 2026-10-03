@@ -174,7 +174,7 @@ onMounted(() => {
   padding: var(--space-4);
   gap: var(--space-3);
 }
-.head h1 { flex: 1; margin: 0; font-size: 18px; color: var(--text-primary); }
+.head h1 { flex: 1; margin: 0; font-size: var(--text-xl); color: var(--text-primary); }
 .back-btn, .add-btn {
   border: 0;
   background: transparent;
@@ -207,7 +207,7 @@ onMounted(() => {
   text-align: center;
 }
 .metric-num { display: block; font-size: 22px; font-weight: 600; color: var(--text-primary); }
-.metric-label { font-size: 11px; color: var(--text-secondary); }
+.metric-label { font-size: var(--text-2xs); color: var(--text-secondary); }
 
 .actions { display: flex; gap: var(--space-3); padding: var(--space-4); }
 .actions button {
@@ -219,7 +219,7 @@ onMounted(() => {
   color: var(--text-primary);
   cursor: pointer;
   font: inherit;
-  font-size: 14px;
+  font-size: var(--text-base);
 }
 .actions .primary { background: var(--brand-gradient); color: var(--text-inverse); border: 0; }
 .actions button:disabled { opacity: 0.5; cursor: not-allowed; }
@@ -237,12 +237,12 @@ onMounted(() => {
   color: inherit;
   font: inherit;
 }
-.card .front { margin: 0; font-size: 14px; color: var(--text-primary); }
+.card .front { margin: 0; font-size: var(--text-base); color: var(--text-primary); }
 .card .meta {
   margin: 0;
   display: flex;
   justify-content: space-between;
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-secondary);
 }
 .state { padding: 2px 8px; border-radius: 999px; }
@@ -253,7 +253,7 @@ onMounted(() => {
 
 .empty { padding: 60px var(--space-4); text-align: center; color: var(--text-secondary); }
 
-.outer .head h1 { font-size: 15px; }
+.outer .head h1 { font-size: var(--text-md); }
 .outer { padding: 0 var(--space-3); }
 .review {
   margin: var(--space-4) var(--space-3) 0;
@@ -264,11 +264,11 @@ onMounted(() => {
   color: var(--text-inverse);
   cursor: pointer;
   font: inherit;
-  font-size: 14px;
+  font-size: var(--text-base);
 }
 .review:disabled { opacity: 0.5; cursor: not-allowed; }
 .badge {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   padding: 3px 9px;
   border-radius: 999px;
   background: var(--brand-primary);

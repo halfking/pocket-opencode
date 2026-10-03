@@ -82,12 +82,15 @@ import { onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { emailApi, type EmailAccount } from '../../api/email'
 import { previewEmailCleanup, runEmailCleanup, type EmailCleanupItem } from '../../api/email-cleanup'
-import { ApiError } from '../../api/http'
 import { deleteEmailsByIds } from './emails-store'
 import { formatEmailRelTime, hasCleanupConstraint } from './cleanup-filter'
 import { isLocalTestAddress } from './providers'
+import { useConfirm } from '../../composables/useConfirm'
+import { useApiError } from '../../composables/useApiError'
 
 const router = useRouter()
+const { confirm } = useConfirm()
+const apiError = useApiError()
 const accounts = ref<EmailAccount[]>([])
 const subject = ref('')
 const from = ref('')
@@ -142,7 +145,7 @@ async function syncFirst() {
     const fail = r.failed?.length ? `，失败 ${r.failed.length}` : ''
     syncMsg.value = `已同步 ${r.synced ?? 0} 个账户，新邮件 ${r.new ?? 0}${fail}`
   } catch (e) {
-    syncMsg.value = e instanceof ApiError ? e.message : (e instanceof Error ? e.message : '同步失败')
+    syncMsg.value = apiError(e, '同步失败')
   } finally {
     syncing.value = false
   }
@@ -177,7 +180,7 @@ async function preview() {
     resultMsg.value = r.matched === 0 ? '没有匹配的邮件' : `将处理 ${r.matched} 封`
     resultOk.value = true
   } catch (e) {
-    formError.value = e instanceof ApiError ? e.message : (e instanceof Error ? e.message : '预览失败')
+    formError.value = apiError(e, '预览失败')
   } finally {
     busy.value = false
   }
@@ -186,7 +189,14 @@ async function preview() {
 async function confirmDelete() {
   const f = previewedFilter.value
   if (!f || !previewed.value) return
-  if (!window.confirm(`确认把 ${matched.value} 封邮件移到垃圾箱？此操作会同步到邮箱服务器。`)) return
+  // BUG-AQ：原为 window.confirm（同步阻塞），在 Android WebView 里会卡死渲染进程。
+  const ok = await confirm({
+    title: '移到垃圾箱',
+    message: `确认把 ${matched.value} 封邮件移到垃圾箱？此操作会同步到邮箱服务器。`,
+    confirmText: '移到垃圾箱',
+    danger: true,
+  })
+  if (!ok) return
   busy.value = true
   formError.value = ''
   try {
@@ -200,7 +210,7 @@ async function confirmDelete() {
     resetPreview()
   } catch (e) {
     resultOk.value = false
-    resultMsg.value = e instanceof ApiError ? e.message : (e instanceof Error ? e.message : '清理失败')
+    resultMsg.value = apiError(e, '清理失败')
   } finally {
     busy.value = false
   }
@@ -227,11 +237,16 @@ onMounted(async () => {
   background: var(--bg-base);
 }
 .back-btn { border: 0; background: transparent; color: var(--text-primary); padding: 4px; }
-.page-title { margin: 0; font-size: 18px; }
-.hint, .muted { margin: 0; color: var(--text-muted); font-size: 12px; }
-.field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-secondary); }
+.page-title { margin: 0; font-size: var(--text-xl); }
+.hint, .muted { margin: 0; color: var(--text-muted); font-size: var(--text-sm); }
+.field { display: flex; flex-direction: column; gap: 4px; font-size: var(--text-sm); color: var(--text-secondary); }
 .input { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: var(--space-2); background: var(--bg-base); color: var(--text-primary); }
-.dates { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-2); }
+/* 真机（360dp）实测：grid `1fr` 实际是 `minmax(auto, 1fr)`，auto 下限取子项 min-content，
+   而 `<input type="date">` 在 Android WebView 里的 min-content 约 180px，
+   两列各撑到 180px + gap 8 = 368px，比容器 332px 多出 36px ——「结束日期」整块溢出屏幕。
+   改用 minmax(0, 1fr) 允许列窄于输入框的固有宽度，并给输入框 min-width: 0。 */
+.dates { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-2); }
+.dates .input { min-width: 0; width: 100%; }
 .actions { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; }
 .primary, .ghost, .danger { border-radius: var(--radius-md); padding: var(--space-2) var(--space-3); cursor: pointer; }
 .primary { border: 0; background: var(--brand-primary); color: var(--text-inverse); font-weight: 600; }
@@ -240,9 +255,9 @@ onMounted(async () => {
 .primary:disabled, .danger:disabled, .ghost:disabled { opacity: 0.5; cursor: not-allowed; }
 .err { color: var(--danger); margin: 0; }
 .ok { color: var(--success); margin: 0; }
-.failed { margin: 0; padding-left: 1.2rem; color: var(--danger); font-size: 12px; }
+.failed { margin: 0; padding-left: 1.2rem; color: var(--danger); font-size: var(--text-sm); }
 .preview { display: flex; flex-direction: column; gap: var(--space-2); }
 .row { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-md); padding: var(--space-2); }
-.from { font-weight: 600; font-size: 13px; }
-.subj { font-size: 14px; }
+.from { font-weight: 600; font-size: var(--text-smd); }
+.subj { font-size: var(--text-base); }
 </style>

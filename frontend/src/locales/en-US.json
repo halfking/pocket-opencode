@@ -18,7 +18,8 @@
     "error": "Error",
     "warning": "Warning",
     "info": "Info",
-    "close": "Close"
+    "close": "Close",
+    "retry": "Retry"
   },
   "app": {
     "title": "Redclaw",
@@ -43,6 +44,7 @@
     "aiChat": "Chat",
     "notes": "Notes",
     "meetings": "Meetings",
+    "rss": "RSS",
     "email": "Email",
     "more": "More",
     "moreFeatures": "More features",
@@ -58,18 +60,59 @@
     "settings": "Settings",
     "localAgent": "Local Agent",
     "home": "Home",
-    "study": "Study"
+    "study": "Study",
+    "flashcards": "Flashcards",
+    "messages": "Messages"
   },
   "routes": {
-    "settings": "Settings",
-    "aiModels": "AI Models",
-    "scheduledTasks": "Scheduled Automation",
-    "permissionsPrivacy": "Permissions & Privacy",
-    "costQuota": "Cost & Quota",
-    "gatewayNodes": "Gateway Nodes",
+    "login": "Sign in",
+    "selectServer": "Select server",
+    "aiTools": "AI Tools",
+    "chat": "Chat",
+    "agents": "Agents",
+    "createAgent": "Create agent",
+    "editAgent": "Edit agent",
+    "agentDetail": "Agent detail",
+    "notes": "Notes",
+    "newNote": "New note",
+    "noteDetail": "Note detail",
+    "editNote": "Edit note",
+    "email": "Email",
+    "emailDetail": "Email detail",
+    "dailySummary": "Daily summary",
+    "summaryDetail": "Summary detail",
+    "emailAccounts": "Email accounts",
+    "contacts": "Contacts",
+    "contactDetail": "Contact detail",
+    "vault": "Vault",
+    "passwordDetail": "Password detail",
+    "editPassword": "Edit password",
+    "pkmNotes": "PKM Notes",
+    "meetings": "Meetings",
+    "startMeeting": "Start meeting",
+    "meetingDetail": "Meeting detail",
     "instances": "Instances",
     "tasks": "Tasks",
+    "taskDetail": "Task detail",
     "sessions": "Sessions",
+    "session": "Session",
+    "settings": "Settings",
+    "aiModels": "AI Models",
+    "permissionsPrivacy": "Permissions & Privacy",
+    "scheduledTasks": "Scheduled Automation",
+    "createAutomation": "Create automation",
+    "editAutomation": "Edit automation",
+    "automationDetail": "Automation detail",
+    "costQuota": "Cost & Quota",
+    "gatewayNodes": "Gateway Nodes",
+    "gatewayOverview": "Gateway overview",
+    "providers": "Providers",
+    "credentials": "Credentials",
+    "credentialDetail": "Credential detail",
+    "modelRouting": "Model routing",
+    "modelCatalog": "Model catalog",
+    "routingConfig": "Routing config",
+    "liveRequests": "Live requests",
     "notifications": "Notifications"
   },
   "settings": {
@@ -113,6 +156,7 @@
     "version": "Version",
     "versionFormat": "v{version} (Build {buildNumber})",
     "buildDate": "Build Date",
+    "buildDateNote": "(configured value, not the measured build time)",
     "apiAddress": "API Address",
     "privacy": "Privacy",
     "permissionsPrivacy": "Permissions & Privacy",
@@ -131,20 +175,33 @@
     "logoutConfirm": "Are you sure you want to log out?",
     "newVersionAvailable": "New version v{version} available!\n\nChangelog:\n{changelog}",
     "alreadyLatest": "Already on the latest version!",
-    "checkUpdateFailed": "Failed to check for updates, please try again later"
+    "checkUpdateFailed": "Failed to check for updates, please try again later",
+    "versionConfigUnavailable": "Server version config unavailable, cannot tell whether an update exists. Ask the admin to check config/version.json. {detail}",
+    "redclawIntegration": "RedClaw Integration",
+    "redclawConnected": "Connected",
+    "redclawMisconfigured": "Configured · connection error",
+    "redclawDisabled": "Not enabled",
+    "tenant": "Tenant {id}",
+    "finance": "Bookkeeping",
+    "financeDesc": "Manual + auto from notes · monthly income & expenses",
+    "language": "Language",
+    "apiAddressNotSaved": "The address could not be saved. Check that it is not empty and is a valid URL.",
+    "buildDefaultUnreachable": "Build default {url} is unreachable on this device (it points at the device itself), so {fallback} is used instead. To reach a backend on your own machine, enter it under Custom address."
   },
   "flashcards": {
     "list": {
       "title": "Flashcards",
       "empty": "No decks yet",
-      "create": "Create deck",
+      "create": "New card",
       "dueToday": "{count} due today"
     },
     "deck": {
       "title": "Deck",
       "addCard": "Add card",
       "review": "Review",
-      "noCards": "This deck has no cards"
+      "noCards": "This deck has no cards",
+      "create": "New deck",
+      "createPlaceholder": "Deck name"
     },
     "review": {
       "title": "Review",
@@ -155,7 +212,7 @@
       "remaining": "{count} remaining",
       "complete": "Session complete",
       "fuzzNote": "Cards are intentionally scattered within ±5% to prevent clustering",
-      "clozeCount": "{{count}} cloze",
+      "clozeCount": "{count} cloze",
       "clozeHint": "Tap card to reveal"
     },
     "edit": {
@@ -172,7 +229,7 @@
       "clozeText": "Cloze text",
       "clozePlaceholder": "e.g. The chemical formula of water is {{c1::H₂O::hydrogen dioxide}}, boiling at {{c2::100℃}}.",
       "clozeHint": "Use {{c1::answer}} or {{c1::answer::hint}} to mark occlusions. Multiple cloze in one card review together.",
-      "clozeCount": "{{count}} occlusions",
+      "clozeCount": "{count} occlusions",
       "parentDeck": "Parent deck",
       "parentDeckNone": "None (top level)",
       "parentDeckSelf": "(self)",
@@ -191,6 +248,7 @@
     },
     "error": {
       "loadFailed": "Could not load flashcards",
+      "saveFailed": "Could not save the card",
       "syncConflict": "Sync conflict — please refresh"
     },
     "deckOptions": {
@@ -214,11 +272,11 @@
     },
     "browser": {
       "title": "Card browser",
-      "resultCount": "{{count}} results",
+      "resultCount": "{count} results",
       "searchPlaceholder": "Search front / back text",
       "allDecks": "All decks",
       "allTags": "All tags",
-      "tagsSelected": "{{count}} tags",
+      "tagsSelected": "{count} tags",
       "clear": "Clear filters",
       "pickDeck": "Pick deck",
       "pickTags": "Pick tags",
@@ -239,10 +297,10 @@
       "young": "Young",
       "mature": "Mature",
       "distribution": "Distribution",
-      "reviewsPerDay": "Reviews / {{days}} days",
-      "lapsesPerDay": "Lapses / {{days}} days",
+      "reviewsPerDay": "Reviews / {days} days",
+      "lapsesPerDay": "Lapses / {days} days",
       "retention": "Estimated retention",
-      "retentionHint": "Simplified estimate from {{again}}+{{hard}}+{{good}}+{{easy}} recent ratings",
+      "retentionHint": "Simplified estimate from {again}+{hard}+{good}+{easy} recent ratings",
       "noReviewsYet": "No reviews in window",
       "noLapses": "No Again ratings in window"
     },
@@ -251,12 +309,12 @@
       "exportTitle": "Export",
       "exportDesc": "Bundle all notes + cards + decks into a JSON file you can share",
       "exportBtn": "Export JSON",
-      "exportOk": "Exported {{count}} cards",
+      "exportOk": "Exported {count} cards",
       "exportFailed": "Export failed",
       "importTitle": "Import",
       "importDesc": "Pick a previously exported JSON file. Merge by id.",
       "importBtn": "Pick file",
-      "importOk": "Merged {{notes}} notes / {{cards}} cards / {{decks}} decks",
+      "importOk": "Merged {notes} notes / {cards} cards / {decks} decks",
       "importFailed": "Import failed",
       "notes": "Notes",
       "cards": "Cards",
@@ -276,15 +334,187 @@
       "all": "All",
       "empty": "No decks yet",
       "create": "New deck",
-      "dueShort": "{{count}} due",
+      "dueShort": "{count} due",
       "stats": "View stats",
       "browser": "Card browser"
+    },
+    "reminder": {
+      "title": "Daily review reminder",
+      "next": "Next: {time}",
+      "offline": "Learning service is offline; reminders are unavailable for now"
     },
     "notes": {
       "title": "My notes",
       "all": "All",
       "voice": "Voice notes",
       "hint": "Tap mic to record"
+    },
+    "capture": {
+      "add": "Add to learning",
+      "done": "Added to learning",
+      "toTask": "Convert to task",
+      "taskDone": "Task created",
+      "failed": "Could not save. Try again."
+    },
+    "streak": {
+      "days": "day streak",
+      "toNext": "{count} more to {next}",
+      "milestoneReached": "{days}-day milestone reached"
+    },
+    "due": {
+      "title": "Today's due",
+      "cardsDue": "Cards due",
+      "inboxWaiting": "Inbox waiting",
+      "reviewing": "To review",
+      "tasksDue": "Tasks due",
+      "allClear": "Nothing due today"
+    },
+    "inbox": {
+      "title": "Inbox",
+      "empty": "Inbox is empty",
+      "advance": "Advance"
+    },
+    "source": {
+      "note": "Note",
+      "email": "Email",
+      "rss": "RSS",
+      "meeting": "Meeting",
+      "chat": "Chat",
+      "manual": "Manual"
     }
+  },
+  "email": {
+    "dailySummary": "Daily digest",
+    "fetchHintNetwork": "Background fetching did not finish; showing synced messages",
+    "fetchHintClassifierOff": "Auto-categorization is off; messages synced but not categorized",
+    "fetchHintAuth": "Your session expired. Please sign in again.",
+    "fetchHintUnavailable": "Background service unavailable; messages synced",
+    "fetchHintHttpError": "Background fetch incomplete ({code}); messages synced"
+  },
+  "errors": {
+    "rssNotConfigured": "No RSS feed configured yet. Add a feed to get started.",
+    "rssSourceMissing": "That feed no longer exists; it may have been removed.",
+    "emailNotConfigured": "No mailbox configured yet. Add an account in Mail settings.",
+    "emailAccountMissing": "That mailbox no longer exists; it may have been removed.",
+    "imapUnauthorized": "Mailbox authorization expired. Please reconnect it.",
+    "imapFailed": "Could not reach the mail server. Check your network and account details.",
+    "sttNotConfigured": "Speech-to-text is not configured yet.",
+    "llmNotConfigured": "No language model configured yet. Pick one in Model settings.",
+    "modelNotFound": "That model no longer exists; it may have been removed.",
+    "gatewayUnreachable": "Cannot reach the model gateway. Check its address and your network.",
+    "gatewayAdminMissing": "This gateway node has no admin account yet. Add the admin username and password in Model Gateway first.",
+    "workspaceNotFound": "That workspace could not be found.",
+    "notConfigured": "This feature has not been configured yet.",
+    "unauthorized": "Your session expired. Please sign in again.",
+    "notFound": "The requested item could not be found.",
+    "timeout": "The request timed out. Please try again.",
+    "network": "Cannot reach the server. Check your network.",
+    "rateLimited": "Too many requests. Please slow down and try again.",
+    "conflict": "That already exists or conflicts with the current state.",
+    "server": "The server hit an error. Please try again later.",
+    "loadRssFailed": "Could not load your feeds",
+    "loadEmailFailed": "Could not load the email. Please try again.",
+    "loadEmailBodyFailed": "Could not load the message body",
+    "loadEmailSettingsFailed": "Could not load mail settings",
+    "sendEmailFailed": "Sending failed",
+    "createTaskFailed": "Could not create the task",
+    "loadInvoicesFailed": "Could not load invoices",
+    "loadNotesFailed": "Could not load notes",
+    "loadMeetingsFailed": "Could not load meetings",
+    "loadFlashcardsFailed": "Could not load cards",
+    "loadGatewayFailed": "Could not load gateway information",
+    "loadTasksFailed": "Could not load tasks",
+    "loadSessionsFailed": "Could not load sessions",
+    "loadFinanceFailed": "Could not load your finances",
+    "loadSettingsFailed": "Could not load settings",
+    "saveFailed": "Could not save. Please try again.",
+    "operateFailed": "That action failed. Please try again.",
+    "summaryFailed": "Could not generate a summary. Check that a model gateway is configured and reachable.",
+    "probeFailed": "Probe failed. Check that the target is reachable."
+  },
+  "due": {
+    "title": "Today's review",
+    "cardsDue": "Cards due",
+    "inboxWaiting": "To process",
+    "reviewing": "In review",
+    "tasksDue": "Tasks due",
+    "allClear": "Nothing due today"
+  },
+  "reminder": {
+    "title": "Daily digest",
+    "next": "Next: {time}",
+    "offline": "Daily review needs the learning service. Reconnect to enable reminders."
+  },
+  "inbox": {
+    "title": "Inbox",
+    "empty": "Nothing collected yet. Use \"Add to learning\" on a note, email or RSS item.",
+    "advance": "Start studying"
+  },
+  "notesHub": {
+    "title": "Notes",
+    "filter": {
+      "all": "All",
+      "manual": "Notes",
+      "meeting": "Meetings",
+      "pkm": "PKM notes"
+    },
+    "action": {
+      "newNote": "New note",
+      "startMeeting": "Start meeting",
+      "record": "Record a note"
+    },
+    "link": {
+      "allNotes": "All notes",
+      "allMeetings": "All meetings",
+      "allPkm": "Open PKM"
+    },
+    "empty": {
+      "title": "No notes yet",
+      "hint": "Tap the mic to capture your first note, or start a meeting",
+      "filtered": "Nothing in this source yet"
+    },
+    "meta": {
+      "voice": "Voice",
+      "pending": "Processing",
+      "minutes": "{count} min",
+      "hoursMinutes": "{hours} h {minutes} min"
+    },
+    "count": {
+      "notes": "{count} notes",
+      "meetings": "{count} meetings"
+    }
+  },
+  "messagesHub": {
+    "title": "Messages",
+    "filter": {
+      "all": "All",
+      "email": "Email",
+      "rss": "Feeds",
+      "task": "Tasks"
+    },
+    "action": {
+      "markAllRead": "Mark all read",
+      "openMail": "Open mail",
+      "manageFeeds": "Manage feeds"
+    },
+    "empty": {
+      "title": "Nothing new",
+      "hint": "Important mail, subscribed news and task updates land here"
+    },
+    "badge": {
+      "important": "Important"
+    },
+    "meta": {
+      "from": "From {name}",
+      "suggestedAction": "Suggested: {action}"
+    },
+    "unreadBadge": "{count} unread",
+    "partialFailure": "Some sources failed to load: {sources}"
+  },
+  "timefmt": {
+    "justNow": "just now",
+    "minutesAgo": "{count} min ago",
+    "hoursAgo": "{count} h ago",
+    "daysAgo": "{count} d ago"
   }
 }

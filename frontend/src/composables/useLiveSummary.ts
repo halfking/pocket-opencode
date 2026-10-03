@@ -3,6 +3,7 @@
  */
 import { ref, watch, unref, type MaybeRef, type Ref } from 'vue'
 import { meetingsApi, toLiveSummary } from '../api/meetings'
+import { isAbortError } from '../api/http'
 import { updateMeeting, type LiveSummary, type MeetingSegment, type RecommendItem } from '../features/meetings/meetings-store'
 import { topicShift } from '../features/meetings/topic-change'
 
@@ -57,6 +58,8 @@ export function useLiveSummary(
         await updateMeeting(id, { recommendations: recs })
       }
     } catch (e) {
+      // 中止不打 warn：那是用户（或上层换场）主动停的，不是故障。
+      if (isAbortError(e)) return
       console.warn('[live-summary] update failed:', e)
     } finally {
       isUpdating.value = false

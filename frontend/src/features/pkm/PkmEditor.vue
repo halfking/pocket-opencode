@@ -30,12 +30,25 @@ import { Editor, EditorContent } from '@tiptap/vue-3'
 import StarterKit from '@tiptap/starter-kit'
 import { Wikilink } from './wikilink'
 import { getNote, saveNote, type PkmNote } from './pkm-store'
+import { useAuthStore } from '../../stores/auth'
 
 const props = defineProps<{
   noteId: string
   /** 可选 dailyDate，传入则保存时带上（Daily Note 用）。 */
   dailyDate?: string
 }>()
+
+const auth = useAuthStore()
+
+/**
+ * 资产表 local_assets 按 workspace_id 分区。自动保存写的是**更新**路径，
+ * 一旦漏传 workspaceId 就会让 asset-store.ts:114 的 `?? 'default'` 把新建的行
+ * 留在 default 分区，而列表页按 auth.workspaceId 读 —— 「改完标题回去看不到」。
+ * 与 NoteEditView 的同名函数保持一致。
+ */
+function currentWorkspaceId(): string {
+  return auth.workspaceId || 'default'
+}
 
 const emit = defineEmits<{
   (e: 'navigate', target: string): void
@@ -92,6 +105,7 @@ async function doSave() {
       title: title.value || '无标题',
       html,
       dailyDate: props.dailyDate,
+      workspaceId: currentWorkspaceId(),
     })
     currentNote.value = saved
     lastSaved.value = true
@@ -145,7 +159,7 @@ onBeforeUnmount(() => {
   min-height: 200px;
   outline: none;
   line-height: 1.7;
-  font-size: 15px;
+  font-size: var(--text-md);
 }
 .pkm-body :deep(.wikilink) {
   color: var(--accent, #2563eb);
@@ -162,7 +176,7 @@ onBeforeUnmount(() => {
   position: fixed;
   bottom: 80px;
   right: 16px;
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-secondary, #888);
   background: var(--bg-elevated, #fff);
   padding: 3px 8px;

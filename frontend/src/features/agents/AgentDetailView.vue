@@ -133,7 +133,7 @@ function goToEdit() {
   align-items: center;
   justify-content: center;
   color: var(--text-secondary);
-  font-size: 14px;
+  font-size: var(--text-base);
 }
 
 .detail-content {
@@ -178,7 +178,7 @@ function goToEdit() {
 }
 
 .custom-badge {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   padding: 3px 8px;
   background: var(--brand-primary);
   color: var(--text-inverse);
@@ -192,7 +192,7 @@ function goToEdit() {
 }
 
 .role-dept {
-  font-size: 13px;
+  font-size: var(--text-smd);
   color: var(--text-secondary);
 }
 
@@ -209,19 +209,19 @@ function goToEdit() {
 
 .section-title {
   margin: 0;
-  font-size: 14px;
+  font-size: var(--text-base);
   font-weight: 600;
   color: var(--text-primary);
 }
 
 .section-hint {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-muted);
 }
 
 .role-desc {
   margin: 0;
-  font-size: 14px;
+  font-size: var(--text-base);
   color: var(--text-secondary);
   line-height: 1.6;
   padding: 16px;
@@ -234,7 +234,7 @@ function goToEdit() {
   background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: 10px;
-  font-size: 13px;
+  font-size: var(--text-smd);
   line-height: 1.6;
   color: var(--text-primary);
   overflow-x: auto;
@@ -247,9 +247,9 @@ function goToEdit() {
   font-weight: 600;
 }
 
-.prompt-preview :deep(h1) { font-size: 16px; }
-.prompt-preview :deep(h2) { font-size: 15px; }
-.prompt-preview :deep(h3) { font-size: 14px; }
+.prompt-preview :deep(h1) { font-size: var(--text-lg); }
+.prompt-preview :deep(h2) { font-size: var(--text-md); }
+.prompt-preview :deep(h3) { font-size: var(--text-base); }
 
 .prompt-preview :deep(p) {
   margin: 8px 0;
@@ -269,8 +269,8 @@ function goToEdit() {
   background: var(--bg-base);
   padding: 2px 6px;
   border-radius: 4px;
-  font-family: 'SF Mono', Menlo, monospace;
-  font-size: 12px;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
 }
 
 .prompt-preview :deep(strong) {
@@ -284,7 +284,7 @@ function goToEdit() {
   background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: 8px;
-  font-size: 13px;
+  font-size: var(--text-smd);
   color: var(--brand-primary);
   cursor: pointer;
 }
@@ -301,7 +301,7 @@ function goToEdit() {
   align-items: center;
   padding: 8px 0;
   border-bottom: 1px solid var(--border);
-  font-size: 13px;
+  font-size: var(--text-smd);
 }
 
 .meta-row:last-child {
@@ -317,7 +317,7 @@ function goToEdit() {
 }
 
 .mono {
-  font-family: 'SF Mono', Menlo, monospace;
-  font-size: 12px;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
 }
 </style>

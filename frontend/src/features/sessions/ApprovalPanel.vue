@@ -335,7 +335,7 @@ onBeforeUnmount(() => {
 .card-id {
   font-size: var(--text-xs);
   color: var(--text-muted);
-  font-family: monospace;
+  font-family: var(--font-mono);
 }
 
 .card-body { display: flex; flex-direction: column; gap: var(--space-1); }
@@ -351,10 +351,10 @@ onBeforeUnmount(() => {
   width: 36px;
 }
 .value { color: var(--text-primary); word-break: break-word; }
-.value.action { font-family: monospace; font-weight: var(--font-weight-semibold); }
+.value.action { font-family: var(--font-mono); font-weight: var(--font-weight-semibold); }
 .res {
   display: inline-block;
-  font-family: monospace;
+  font-family: var(--font-mono);
   font-size: var(--text-xs);
   background: var(--overlay-subtle);
   border-radius: var(--radius-sm);
@@ -437,7 +437,7 @@ onBeforeUnmount(() => {
   font-family: 'Material Symbols Outlined', 'Material Icons';
   font-weight: normal;
   font-style: normal;
-  font-size: 18px;
+  font-size: var(--text-xl);
   line-height: 1;
 }
 </style>

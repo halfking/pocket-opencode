@@ -12,7 +12,7 @@
     <HeaderActionsPortal>
       <button
         v-if="conversations.length > 1 || active"
-        class="chat-convo-btn"
+        class="chat-convo-btn shrinkable-action"
         type="button"
         :aria-label="'切换会话'"
         @click="toggleDrawer"
@@ -115,7 +115,7 @@
             <!-- auto 回退重试进度：正文到达前/后都以一行灰色小字透出 -->
             <div v-if="a.retryHint" class="msg-retry">{{ a.retryHint }}</div>
             <footer v-if="a.usage" class="usage">≈ {{ a.usage.total_tokens }} tokens</footer>
-            <div v-if="a.error" class="msg-error">{{ a.error }}</div>
+            <div v-if="a.error" class="msg-error">{{ apiError(a.error, 'errors.operateFailed') }}</div>
             <div v-if="a.interrupted" class="msg-interrupted">⚠️ 生成被中断（页面刷新或应用重启）</div>
             <div class="msg-actions">
               <button class="act" @click="copy(a)">复制</button>
@@ -455,7 +455,9 @@ import AgentSelectorSheet from './AgentSelectorSheet.vue'
 import BottomSheet from '../../components/base/BottomSheet.vue'
 import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue'
 import UnifiedComposer from '../../components/business/UnifiedComposer.vue'
+import { useApiError } from '../../composables/useApiError'
 
+const apiError = useApiError()
 const store = useAIChatStore()
 const router = useRouter()
 const route = useRoute()
@@ -938,7 +940,7 @@ function formatTime(ts: number): string {
   border: 1px solid var(--border);
   background: var(--bg-base);
   color: var(--text-primary);
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-weight: var(--font-weight-medium);
   cursor: pointer;
   flex-shrink: 0;
@@ -947,7 +949,7 @@ function formatTime(ts: number): string {
 }
 .chip:active { background: var(--bg-subtle); }
 .chip.ghost { background: transparent; color: var(--text-secondary); }
-.chip-icon { font-size: 14px; flex-shrink: 0; }
+.chip-icon { font-size: var(--text-base); flex-shrink: 0; }
 .chip-label {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -955,9 +957,17 @@ function formatTime(ts: number): string {
   min-width: 0;
 }
 
-/* 注入 AppLayout header-actions 的按钮样式（与 AppLayout 默认 :deep 样式叠加，
-   但我们要更紧凑、可显示文字标签）。 */
-:deep(.chat-convo-btn) {
+/* 注入 AppLayout header-actions 的按钮样式（与 AppLayout 默认样式叠加，
+   但我们要更紧凑、可显示文字标签）。
+
+   ⚠ 必须用 scoped 自身选择器，不能用 :deep()。
+   这几个按钮经 HeaderActionsPortal **teleport** 到 AppLayout 的 .header-actions，
+   scope 属性只挂在按钮自己身上，祖先链上没有任何带 data-v 的元素。
+   `:deep(.chat-convo-btn)` 编译成 `[data-v-x] .chat-convo-btn`（要求祖先带 scope）→ 永不匹配；
+   写成 `.chat-convo-btn` 编译成 `.chat-convo-btn[data-v-x]`（挂在自身）→ 正常命中。
+   真机实测证据：修复前构建产物里是 `[data-v-eb36f3e2] .chat-convo-btn{...}`，
+   computed style 显示 radius 落到 8px、背景透明 —— 胶囊的样式一条都没生效。 */
+.chat-convo-btn {
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -969,29 +979,34 @@ function formatTime(ts: number): string {
   background: var(--bg-subtle);
   color: var(--text-primary);
   border: 1px solid var(--border);
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-weight: var(--font-weight-medium);
   cursor: pointer;
   transition: background var(--duration-fast) var(--ease-out);
   white-space: nowrap;
   overflow: hidden;
 }
-:deep(.chat-convo-btn:active) { background: var(--border); }
-:deep(.chat-convo-btn .material-symbols-outlined) { font-size: 16px; flex-shrink: 0; }
-:deep(.chat-convo-btn .convo-label) {
+.chat-convo-btn:active { background: var(--border); }
+.chat-convo-btn .material-symbols-outlined { font-size: var(--text-lg); flex-shrink: 0; }
+.chat-convo-btn .convo-label {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   min-width: 0;
 }
 
-:deep(.chat-icon-btn.active) { color: var(--brand-primary); background: var(--brand-bg); }
+.chat-icon-btn.active { color: var(--brand-primary); background: var(--brand-bg); }
 
-/* 窄屏（≤380px）隐藏 chip 文字标签，只保留图标，腾出更多空间给标题 */
+/* 窄屏（≤380px）隐藏 chip 文字标签，只保留图标，腾出更多空间给标题。
+   360dp 实测：顶栏 4 个动作必须挤进 ~180px，会话胶囊因此只留图标，
+   同时把左右内边距从 10px 收到 6px（下限 22 图标 + 12 内边距 + 2 边框 = 36px），
+   否则它会顶掉右侧「对话参数」「新建对话」两个按钮。
+   同上：teleport 内容不能用 :deep()，这里写 scoped 自身选择器。 */
 @media (max-width: 380px) {
   .context-row { padding: 6px var(--space-3); gap: 6px; }
   .chip-label { display: none; }
-  :deep(.chat-convo-btn .convo-label) { display: none; }
+  .chat-convo-btn .convo-label { display: none; }
+  .chat-convo-btn { padding: 0 6px; }
 }
 
 /* 对比条 */
@@ -1007,7 +1022,7 @@ function formatTime(ts: number): string {
   font-family: var(--font-sans);
 }
 .cs-label {
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-weight: 500;
   line-height: 1.2;
   color: var(--text-secondary);
@@ -1015,7 +1030,7 @@ function formatTime(ts: number): string {
 }
 .cs-chip {
   flex: none;
-  font-size: 12px;
+  font-size: var(--text-sm);
   line-height: 1.2;
   font-weight: 500;
   padding: 4px 10px;
@@ -1027,7 +1042,7 @@ function formatTime(ts: number): string {
 }
 .cs-edit {
   flex: none;
-  font-size: 12px;
+  font-size: var(--text-sm);
   line-height: 1.2;
   font-weight: 500;
   color: var(--brand-primary);
@@ -1055,7 +1070,7 @@ function formatTime(ts: number): string {
   max-width: 100%;
   padding: 10px 14px;
   border-radius: 14px;
-  font-size: 15px;
+  font-size: var(--text-md);
   line-height: 1.6;
   word-break: break-word;
   white-space: normal;
@@ -1076,11 +1091,11 @@ function formatTime(ts: number): string {
   padding: 10px;
   border-radius: 8px;
   overflow-x: auto;
-  font-size: 13px;
+  font-size: var(--text-smd);
 }
 .ai-bubble :deep(code) {
-  font-family: 'SF Mono', Menlo, monospace;
-  font-size: 13px;
+  font-family: var(--font-mono);
+  font-size: var(--text-smd);
 }
 .ai-bubble :deep(p) { margin: 6px 0; }
 .ai-bubble :deep(ul), .ai-bubble :deep(ol) { padding-left: 20px; margin: 6px 0; }
@@ -1088,30 +1103,30 @@ function formatTime(ts: number): string {
 @keyframes blink { 50% { opacity: 0; } }
 
 .msg-model {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   font-weight: 600;
   color: var(--brand-primary);
   margin: 0 4px 4px;
 }
 
 .usage-row, .usage {
-  font-size: 10px;
+  font-size: var(--text-xs);
   color: var(--text-muted);
   margin: 3px 2px 0;
 }
 .msg-error {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--danger);
   margin-top: 3px;
 }
 .msg-interrupted {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--warning, #f59e0b);
   margin-top: 3px;
 }
 /* auto 回退重试进度提示（retry 帧）：灰色小字，风格同 msg-error 但不告警 */
 .msg-retry {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-muted);
   margin-top: 3px;
 }
@@ -1123,7 +1138,7 @@ function formatTime(ts: number): string {
   margin: 5px 2px 0;
 }
 .act {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: var(--text-secondary);
   background: none;
   border: none;
@@ -1156,7 +1171,7 @@ function formatTime(ts: number): string {
   margin-bottom: 5px;
 }
 .cc-model {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   font-weight: 600;
   color: var(--brand-primary);
   overflow: hidden;
@@ -1176,10 +1191,10 @@ function formatTime(ts: number): string {
 }
 .empty-emoji { font-size: 40px; }
 .empty-title { font-size: 17px; font-weight: 600; margin: 8px 0 4px; color: var(--text-primary); }
-.empty-sub { font-size: 13px; color: var(--text-secondary); line-height: 1.5; }
+.empty-sub { font-size: var(--text-smd); color: var(--text-secondary); line-height: 1.5; }
 .empty-suggestions { display: flex; flex-direction: column; gap: 8px; margin-top: 16px; }
 .sug {
-  font-size: 13px;
+  font-size: var(--text-smd);
   padding: 10px 14px;
   border-radius: 10px;
   border: 1px solid var(--border);
@@ -1281,13 +1296,13 @@ function formatTime(ts: number): string {
   border-radius: 0 0 0 8px;
   background: rgba(0, 0, 0, 0.55);
   color: var(--text-inverse);
-  font-size: 12px;
+  font-size: var(--text-sm);
   line-height: 1;
   cursor: pointer;
 }
 .attach-hint {
   flex: none;
-  font-size: 10px;
+  font-size: var(--text-xs);
   color: var(--text-muted);
   white-space: nowrap;
 }
@@ -1310,7 +1325,7 @@ function formatTime(ts: number): string {
 /* 模态徽标 & 设置行 */
 .modality-badge {
   flex: none;
-  font-size: 10px;
+  font-size: var(--text-xs);
   padding: 2px 7px;
   border-radius: 999px;
   background: var(--bg-subtle);
@@ -1327,7 +1342,7 @@ function formatTime(ts: number): string {
 }
 .modality-name {
   flex: 0 0 64px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-secondary);
 }
 .modality-sel { flex: 1; }
@@ -1340,7 +1355,7 @@ function formatTime(ts: number): string {
   color: var(--text-primary);
   border-radius: 16px;
   padding: 10px 14px;
-  font-size: 14px;
+  font-size: var(--text-base);
   line-height: 1.5;
   max-height: 120px;
   outline: none;
@@ -1375,7 +1390,7 @@ function formatTime(ts: number): string {
   padding: 8px 4px;
   border: none;
   background: transparent;
-  font-size: 13px;
+  font-size: var(--text-smd);
   color: var(--text-secondary);
   border-bottom: 2px solid transparent;
   cursor: pointer;
@@ -1404,10 +1419,10 @@ function formatTime(ts: number): string {
 .conv-item.active { background: var(--bg-subtle); }
 .conv-main { flex: 1; min-width: 0; }
 .conv-title {
-  font-size: 13px; font-weight: 500; color: var(--text-primary);
+  font-size: var(--text-smd); font-weight: 500; color: var(--text-primary);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.conv-meta { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+.conv-meta { font-size: var(--text-2xs); color: var(--text-muted); margin-top: 2px; }
 .conv-act {
   display: flex;
   align-items: center;
@@ -1420,12 +1435,12 @@ function formatTime(ts: number): string {
   border-radius: 6px;
   cursor: pointer;
 }
-.conv-act .material-symbols-outlined { font-size: 18px; }
+.conv-act .material-symbols-outlined { font-size: var(--text-xl); }
 .conv-act:active { color: var(--brand-primary); background: var(--bg-subtle); }
 .conv-act.danger:active { color: var(--danger); }
-.conv-empty { text-align: center; color: var(--text-muted); padding: 30px; font-size: 13px; }
+.conv-empty { text-align: center; color: var(--text-muted); padding: 30px; font-size: var(--text-smd); }
 
-.sheet-state { font-size: 13px; color: var(--text-secondary); padding: 8px 0; line-height: 1.5; }
+.sheet-state { font-size: var(--text-smd); color: var(--text-secondary); padding: 8px 0; line-height: 1.5; }
 .link-btn { color: var(--brand-primary); background: none; border: none; cursor: pointer; margin-left: 6px; }
 
 .model-list { display: flex; flex-direction: column; gap: 3px; margin-bottom: 10px; }
@@ -1437,22 +1452,22 @@ function formatTime(ts: number): string {
 .model-item.checked { border-color: var(--brand-primary); background: color-mix(in srgb, var(--brand-primary) 8%, transparent); }
 .model-item.plain { justify-content: flex-start; border: 1px solid var(--border); }
 .model-check { width: 16px; height: 16px; accent-color: var(--brand-primary); }
-.model-name { flex: 1; font-size: 13px; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-name { flex: 1; font-size: var(--text-smd); color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .model-name .star { color: var(--warning, #f59e0b); margin-right: 2px; }
-.model-current { font-size: 10px; color: var(--brand-primary); }
+.model-current { font-size: var(--text-xs); color: var(--brand-primary); }
 .sheet-confirm {
   width: 100%; padding: 12px; border: none; border-radius: 999px;
-  background: var(--brand-primary, #4c8dff); color: var(--text-inverse); font-size: 15px; font-weight: 600;
+  background: var(--brand-primary, #4c8dff); color: var(--text-inverse); font-size: var(--text-md); font-weight: 600;
   cursor: pointer;
 }
 
 /* 设置字段 */
 .field { margin-bottom: 16px; }
-.field-label { font-size: 13px; font-weight: 600; color: var(--text-secondary); margin-bottom: 6px; }
-.field-hint { font-size: 11px; color: var(--text-muted); margin-top: 4px; line-height: 1.4; }
+.field-label { font-size: var(--text-smd); font-weight: 600; color: var(--text-secondary); margin-bottom: 6px; }
+.field-hint { font-size: var(--text-2xs); color: var(--text-muted); margin-top: 4px; line-height: 1.4; }
 .field input[type='range'] { width: 100%; accent-color: var(--brand-primary); }
 .num-input, .sys-input, .sel-input {
-  width: 100%; padding: 9px 12px; font-size: 14px;
+  width: 100%; padding: 9px 12px; font-size: var(--text-base);
   background: var(--bg-base); color: var(--text-primary);
   border: 1px solid var(--border); border-radius: 8px; outline: none;
 }
@@ -1481,12 +1496,12 @@ function formatTime(ts: number): string {
   min-width: 0;
 }
 .agent-card-name {
-  font-size: 15px;
+  font-size: var(--text-md);
   font-weight: 600;
   margin-bottom: 4px;
 }
 .agent-card-desc {
-  font-size: 13px;
+  font-size: var(--text-smd);
   color: var(--text-secondary);
   line-height: 1.4;
 }
@@ -1496,14 +1511,14 @@ function formatTime(ts: number): string {
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--bg-base);
-  font-size: 14px;
+  font-size: var(--text-base);
   cursor: pointer;
 }
 .no-agent {
   text-align: center;
   padding: 16px;
   color: var(--text-secondary);
-  font-size: 14px;
+  font-size: var(--text-base);
 }
 .no-agent p {
   margin: 0 0 12px 0;
@@ -1514,7 +1529,7 @@ function formatTime(ts: number): string {
   border-radius: 8px;
   background: var(--bg-base);
   color: var(--brand-primary);
-  font-size: 14px;
+  font-size: var(--text-base);
   font-weight: 500;
   cursor: pointer;
 }
@@ -1525,7 +1540,7 @@ function formatTime(ts: number): string {
   padding: 10px;
   background: transparent;
   border: none;
-  font-size: 13px;
+  font-size: var(--text-smd);
   color: var(--brand-primary);
   cursor: pointer;
   text-align: center;
@@ -1546,6 +1561,6 @@ function formatTime(ts: number): string {
 .modality-badge[data-mod='embedding'] { color: var(--text-muted); }
 
 .modality-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
-.modality-name { flex: none; font-size: 12px; color: var(--text-secondary); min-width: 80px; }
+.modality-name { flex: none; font-size: var(--text-sm); color: var(--text-secondary); min-width: 80px; }
 .modality-sel { flex: 1; }
 </style>

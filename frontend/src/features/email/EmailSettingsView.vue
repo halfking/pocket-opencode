@@ -240,7 +240,9 @@ import { isLocalTestAddress } from './providers'
 import { EmptyState } from '../../components'
 import { useToast } from '../../composables/useToast'
 import { useConfirm } from '../../composables/useConfirm'
+import { useApiError } from '../../composables/useApiError'
 
+const apiError = useApiError()
 const router = useRouter()
 const toast = useToast()
 const { confirm } = useConfirm()
@@ -301,7 +303,7 @@ async function loadAll() {
       loadError.value = sync.error
     }
   } catch (e: any) {
-    loadError.value = e?.message || '加载邮箱设置失败'
+    loadError.value = apiError(e, 'errors.loadEmailSettingsFailed')
   } finally {
     loading.value = false
   }
@@ -347,7 +349,7 @@ async function saveRules(a: EmailAccount) {
     Object.assign(a, updated)
     toast.success(`已保存「${a.displayName}」过滤策略（${payload.rules.length} 条）`)
   } catch (e: any) {
-    toast.error(e?.message || '保存过滤策略失败')
+    toast.error(apiError(e, 'errors.saveFailed'))
   } finally {
     savingRulesId.value = ''
   }
@@ -361,7 +363,7 @@ async function toggleEnabled(a: EmailAccount, enabled: boolean) {
     Object.assign(a, updated)
     toast.success(enabled ? `已启用 ${a.displayName}` : `已停用 ${a.displayName}`)
   } catch (e: any) {
-    toast.error(e?.message || '更新失败')
+    toast.error(apiError(e, 'errors.operateFailed'))
   }
 }
 
@@ -371,7 +373,7 @@ async function syncNow(a: EmailAccount) {
     const r = await emailApi.syncNow(a.id)
     toast.success(`同步完成：新邮件 ${r.new ?? 0} 封`)
   } catch (e: any) {
-    toast.error(e?.message || '同步失败')
+    toast.error(apiError(e, 'errors.operateFailed'))
   } finally {
     syncingId.value = ''
   }
@@ -383,7 +385,7 @@ async function testSmtp(a: EmailAccount) {
     const r = await emailApi.testSmtp(a.id)
     toast.success(`SMTP 测试通过：${r.smtp}`)
   } catch (e: any) {
-    toast.error(e?.message || 'SMTP 测试失败')
+    toast.error(apiError(e, 'errors.operateFailed'))
   } finally {
     testingId.value = ''
   }
@@ -405,7 +407,7 @@ async function removeAccount(a: EmailAccount) {
     accounts.value = accounts.value.filter((x) => x.id !== a.id)
     toast.success('已删除')
   } catch (e: any) {
-    toast.error(e?.message || '删除失败')
+    toast.error(apiError(e, 'errors.operateFailed'))
   }
 }
 
@@ -422,7 +424,7 @@ async function saveInterval(a: EmailAccount, raw: string) {
     Object.assign(a, updated)
     toast.success('已保存同步间隔')
   } catch (e: any) {
-    toast.error(e?.message || '保存失败')
+    toast.error(apiError(e, 'errors.saveFailed'))
   }
 }
 
@@ -477,7 +479,7 @@ async function doSaveVacation(a: EmailAccount, v: VacationReply) {
     delete vacDrafts.value[a.id]
     toast.success(`已保存「${a.displayName}」自动回复`)
   } catch (e: any) {
-    toast.error(e?.message || '保存自动回复失败')
+    toast.error(apiError(e, 'errors.saveFailed'))
   } finally {
     savingVacId.value = ''
   }
@@ -518,7 +520,10 @@ function goBack() {
 .page-title {
   flex: 1;
   min-width: 0;
-  font-size: 17px;
+  /* 与另两个邮件子页（EmailAccountAddView / EmailSpamCleanupView）的 .page-title
+     同源。那两页是 18px，这里是 17px —— 全应用没有任何 token 等于 17px，
+     所以它既偏离了同族兄弟，也脱离了整个字号体系。--text-xl 恰好就是 18px。 */
+  font-size: var(--text-xl);
   font-weight: 600;
   margin: 0;
   overflow: hidden;
@@ -533,7 +538,7 @@ function goBack() {
 }
 .state { text-align: center; color: var(--text-secondary); padding: var(--space-8); }
 .state.error { color: var(--danger); }
-.link-btn { background: none; border: none; color: var(--brand-primary); cursor: pointer; font-size: 14px; }
+.link-btn { background: none; border: none; color: var(--brand-primary); cursor: pointer; font-size: var(--text-base); }
 
 .sections {
   flex: 1;
@@ -561,15 +566,15 @@ function goBack() {
   display: flex; align-items: center; justify-content: space-between;
   gap: var(--space-2); margin-bottom: var(--space-2);
 }
-.card-head h3 { margin: 0; font-size: 15px; font-weight: 600; }
+.card-head h3 { margin: 0; font-size: var(--text-md); font-weight: 600; }
 .head-actions { display: flex; align-items: center; gap: var(--space-1); flex-shrink: 0; }
-.head-hint { font-size: 11px; color: var(--text-muted); }
+.head-hint { font-size: var(--text-2xs); color: var(--text-muted); }
 
 .primary-btn {
   border: none; border-radius: var(--radius-md);
   background: var(--brand-primary); color: var(--text-inverse);
   padding: 6px 10px;
-  font-size: 12px; font-weight: 600; cursor: pointer;
+  font-size: var(--text-sm); font-weight: 600; cursor: pointer;
 }
 .primary-btn.slim { margin-top: var(--space-2); }
 .primary-btn:disabled { opacity: 0.5; cursor: not-allowed; }
@@ -580,16 +585,16 @@ function goBack() {
   border-bottom: 1px solid var(--border-subtle);
 }
 .acct-row:last-child { border-bottom: none; }
-.acct-name { font-size: 14px; font-weight: 600; }
-.acct-sub { font-size: 12px; color: var(--text-secondary); }
+.acct-name { font-size: var(--text-base); font-weight: 600; }
+.acct-sub { font-size: var(--text-sm); color: var(--text-secondary); }
 .acct-sub.muted { color: var(--text-muted); }
 .acct-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; }
 
-.switch { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-secondary); cursor: pointer; }
+.switch { display: inline-flex; align-items: center; gap: 6px; font-size: var(--text-sm); color: var(--text-secondary); cursor: pointer; }
 .mini-btn {
   border: 1px solid var(--border); border-radius: var(--radius-md);
   background: var(--bg-subtle); color: var(--text-primary);
-  padding: 6px 10px; font-size: 12px; cursor: pointer;
+  padding: 6px 10px; font-size: var(--text-sm); cursor: pointer;
 }
 .mini-btn.danger { color: var(--danger); border-color: var(--danger); }
 .mini-btn:disabled { opacity: 0.5; cursor: not-allowed; }
@@ -598,9 +603,9 @@ function goBack() {
 .rule-block { padding: var(--space-3) 0; border-bottom: 1px solid var(--border-subtle); }
 .rule-block:last-child { border-bottom: none; }
 .rule-block-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: var(--space-2); }
-.rule-acct { font-size: 13px; font-weight: 600; }
-.legacy-hint { margin: 0 0 var(--space-2); font-size: 11px; color: var(--warning); }
-.rule-empty { font-size: 12px; color: var(--text-muted); padding: var(--space-2) 0; }
+.rule-acct { font-size: var(--text-smd); font-weight: 600; }
+.legacy-hint { margin: 0 0 var(--space-2); font-size: var(--text-2xs); color: var(--warning); }
+.rule-empty { font-size: var(--text-sm); color: var(--text-muted); padding: var(--space-2) 0; }
 .rule-row {
   display: flex; flex-direction: column; gap: var(--space-2);
   padding: var(--space-2); margin-bottom: var(--space-2);
@@ -608,39 +613,39 @@ function goBack() {
 }
 .rule-select, .rule-pattern, .rule-param, .proc-input {
   padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-md);
-  background: var(--bg-card); color: var(--text-primary); font-size: 13px;
+  background: var(--bg-card); color: var(--text-primary); font-size: var(--text-smd);
 }
 .rule-pattern { width: 100%; box-sizing: border-box; }
 .rule-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; }
-.rule-act { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text-secondary); cursor: pointer; }
+.rule-act { display: inline-flex; align-items: center; gap: 4px; font-size: var(--text-sm); color: var(--text-secondary); cursor: pointer; }
 .rule-param { width: 110px; }
 
 /* 处理逻辑 */
 .proc-block { padding: var(--space-3) 0; border-bottom: 1px solid var(--border-subtle); }
 .proc-block:last-of-type { border-bottom: none; }
-.proc-head { font-size: 13px; font-weight: 600; margin-bottom: var(--space-2); }
+.proc-head { font-size: var(--text-smd); font-weight: 600; margin-bottom: var(--space-2); }
 .proc-row {
   display: flex; align-items: center; justify-content: space-between; gap: var(--space-3);
-  margin-bottom: var(--space-2); font-size: 13px; color: var(--text-secondary);
+  margin-bottom: var(--space-2); font-size: var(--text-smd); color: var(--text-secondary);
 }
 .proc-input { width: 170px; }
 .proc-input.wide { flex: 1; }
 .proc-area {
   flex: 1; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-md);
-  background: var(--bg-card); color: var(--text-primary); font-size: 13px; font-family: inherit;
+  background: var(--bg-card); color: var(--text-primary); font-size: var(--text-smd); font-family: inherit;
   box-sizing: border-box;
 }
 .vacation { margin-top: var(--space-2); padding: var(--space-3); background: var(--bg-subtle); border-radius: var(--radius-md); }
 .vac-head {
   display: flex; align-items: center; justify-content: space-between;
-  font-size: 13px; font-weight: 600; margin-bottom: var(--space-2);
+  font-size: var(--text-smd); font-weight: 600; margin-bottom: var(--space-2);
 }
 .vac-form .proc-row { margin-bottom: var(--space-2); }
 .queue-note {
   margin-top: var(--space-3); padding: var(--space-3);
   background: var(--bg-subtle); border-radius: var(--radius-md);
-  font-size: 12px; color: var(--text-secondary); line-height: 1.6;
+  font-size: var(--text-sm); color: var(--text-secondary); line-height: 1.6;
 }
-.queue-note h4 { margin: 0 0 4px; font-size: 12px; }
+.queue-note h4 { margin: 0 0 4px; font-size: var(--text-sm); }
 .queue-note code { background: var(--bg-card); padding: 1px 4px; border-radius: 4px; }
 </style>

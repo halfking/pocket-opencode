@@ -2,6 +2,7 @@ package email
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"strings"
 
@@ -45,6 +46,39 @@ func isImageBytes(data []byte) bool {
 	return kind == "jpeg" || kind == "png" || kind == "webp"
 }
 
+// pdfHasPages 判断字节内容是不是「至少有一页的可用 PDF」。
+//
+// 为什么必须单独判：isPDFBytes 只看 `%PDF` magic，而实测有一批邮件带来的
+// 退化 PDF 能过 magic —— 只有 Catalog、没有页树，69 字节：
+//
+//	%PDF-1.4
+//	1 0 obj<</Type/Catalog>>endobj
+//	trailer<</Root 1 0 R>>
+//	%%EOF
+//
+// 它们被 saveInvoiceFile 写盘并置 status=downloaded，于是台账里凭空多出一张
+// 金额为 0 的「发票」，文件名也就成了 `其他-<单位>-0.00-<日期>.pdf`；
+// 而导出时 pdfcpu 遍历页树会 panic（见 export_pdf.go 的 pdfPageCountSafe），
+// 采集侧却在源源不断制造导出侧不得不防御性跳过的文件。
+//
+// 判据用 pdfcpu 的权威解析（api.PageCount），**不**用字节扫 `/Type /Page`：
+// 压缩对象流（PDF 1.5+ 的 xref stream / object stream）里的页字典在明文里
+// 根本扫不到，那样会把好件误杀——这正是本仓库 PDF 几何测量踩过的坑。
+//
+// pdfcpu 对畸形件是 panic 而不是 error，所以这里必须 recover。
+func pdfHasPages(data []byte) (ok bool, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			ok, err = false, fmt.Errorf("unreadable pdf: %v", r)
+		}
+	}()
+	n, perr := api.PageCount(bytes.NewReader(data), nil)
+	if perr != nil {
+		return false, perr
+	}
+	return n >= 1, nil
+}
+
 // InvoiceFileNameWithExt 与 InvoiceFileName 相同，但允许 jpg/png 等扩展名。
 func InvoiceFileNameWithExt(inv *Invoice, ext string) string {
 	name := InvoiceFileName(inv)
@@ -82,7 +116,26 @@ func ExtractInvoiceThumb(data []byte) (thumb []byte, contentType string, ok bool
 	return img, ct, true
 }
 
-func firstPDFEmbeddedImage(data []byte) ([]byte, string, error) {
+// firstPDFEmbeddedImage 抽出第一页里的第一张嵌入图。
+//
+// 发票附件是外部输入，而 pdfcpu v0.11.0 对退化 PDF（只有 Catalog、没有页树）
+// 会 panic：model.skipStringLit（pkg/pdfcpu/model/parse.go:1273）报
+// `slice bounds out of range [-1:]`，经 api.ExtractImagesRaw 冒到调用方。
+//
+// 同一批代码里的导出路径早就为这件事定过规矩并且做了防御
+// （export_pdf.go 的 exportNUp / pdfPageCountSafe：「绝不让它冒到 handler」，
+// 配套用例 TestExportInvoiceGrid_SkipsMalformedPDFAndKeepsGoodOnes）。
+// 这里当时漏了，于是 GET /api/emails/invoices/{id}/thumb 遇到畸形发票时
+// 表现为 500 而不是 404 thumbnail unavailable。
+//
+// 现在按同一条规矩补上：panic 转成普通 error，由 ExtractInvoiceThumb 当成
+// 「抽不出缩略图」。注意必须用**具名返回值**，否则 recover 里改不动 err。
+func firstPDFEmbeddedImage(data []byte) (img []byte, fileType string, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			img, fileType, err = nil, "", fmt.Errorf("unreadable invoice pdf: %v", r)
+		}
+	}()
 	pages, err := api.ExtractImagesRaw(bytes.NewReader(data), []string{"1"}, nil)
 	if err != nil {
 		return nil, "", err

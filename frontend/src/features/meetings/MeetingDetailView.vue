@@ -31,6 +31,21 @@
             @append="onAppendUtterance"
           />
         </section>
+        <div class="meeting-learning">
+          <!--
+            P2：会议待办进 PG tasks（origin_kind=meeting）。
+            之前这条链路是断的 —— 会议待办只写进移动端本地 SQLite 的
+            local_todos 表，PC 端和其他设备都看不到，负责人也退化成描述里
+            的「负责人：xxx」字符串。服务端按 (meeting, action text) 幂等，
+            所以重复点不会产生两份。
+          -->
+          <AddToLearningButton
+            source-kind="meeting"
+            :source-id="meetingId"
+            as-task
+            task-type="meeting"
+          />
+        </div>
         <MeetingInsightPanel
           :summary="liveSummary || meeting.liveSummary"
           :final-summary="meeting.summary"
@@ -87,6 +102,7 @@ import { captureDeviceLocation, formatCapturedTitle } from './meeting-meta'
 import { mergeRecommendations, relatedQueryFromTranscript } from './meeting-related'
 import { searchRelatedContext } from './meeting-related-search'
 import { createMeetingTodos, handoffTodoToAcc, shareTodoWithPerson } from './meeting-todo-persist'
+import AddToLearningButton from '../study/AddToLearningButton.vue'
 import type { MeetingTodoDraft } from './meeting-todos'
 import type { MeetingStudioAction } from './meeting-page-actions'
 import { useMeetingStudio } from './use-meeting-studio'
@@ -97,10 +113,14 @@ import MeetingMicDock from './MeetingMicDock.vue'
 import MeetingSettingsSheet from './MeetingSettingsSheet.vue'
 import MeetingStudioMenu from './MeetingStudioMenu.vue'
 import SpeakerLabelSheet from './SpeakerLabelSheet.vue'
+import { useApiError } from '../../composables/useApiError'
+import { useAuthStore } from '../../stores/auth'
 
+const apiError = useApiError()
 const route = useRoute()
 const router = useRouter()
 const toast = useToast()
+const auth = useAuthStore()
 const meetingId = computed(() => String(route.params.id || ''))
 const loading = ref(true)
 const meeting = ref<LocalMeeting | null>(null)
@@ -197,7 +217,7 @@ async function onSummarize() {
     await load()
     toast.success('已生成当前总结')
   } catch (e) {
-    toast.error(e instanceof Error ? e.message : '总结失败')
+    toast.error(e instanceof Error ? e.message : apiError(e, 'errors.operateFailed'))
   } finally { summarizing.value = false }
 }
 
@@ -225,7 +245,7 @@ async function onShareTodo(draft: MeetingTodoDraft) {
     await shareTodoWithPerson(draft, meeting.value?.title || '')
     toast.success('已生成转交内容')
   } catch (e) {
-    toast.error(e instanceof Error ? e.message : '转交失败')
+    toast.error(e instanceof Error ? e.message : apiError(e, 'errors.operateFailed'))
   }
 }
 
@@ -235,7 +255,7 @@ async function onAccTodo(draft: MeetingTodoDraft) {
     toast.success('已转交 ACC')
     router.push(`/settings/scheduled-tasks/${task.id}`)
   } catch (e) {
-    toast.error(e instanceof Error ? e.message : '转交 ACC 失败')
+    toast.error(e instanceof Error ? e.message : apiError(e, 'errors.operateFailed'))
   }
 }
 
@@ -252,7 +272,11 @@ function onOpenRelated(item: RecommendItem) {
 
 async function refreshRelated() {
   const q = relatedQueryFromTranscript(displaySegments.value.map((s) => s.text))
-  noteRecs.value = await searchRelatedContext(q, { excludeMeetingId: meetingId.value })
+  // 笔记按 workspace_id 分区，不传会落到 'default'、关联笔记永远为空
+  noteRecs.value = await searchRelatedContext(q, {
+    excludeMeetingId: meetingId.value,
+    workspaceId: auth.workspaceId || 'default',
+  })
 }
 
 onMounted(async () => {
@@ -281,7 +305,7 @@ onUnmounted(() => {
 <style scoped>
 .studio { display: flex; flex-direction: column; height: 100%; min-height: 0; }
 .state { padding: var(--space-3); }
-.status, .err { margin: 0; padding: 8px 12px; font-size: 12px; flex-shrink: 0; }
+.status, .err { margin: 0; padding: 8px 12px; font-size: var(--text-sm); flex-shrink: 0; }
 .status { color: var(--text-secondary); background: var(--bg-card); }
 .err { color: var(--danger); }
 .split {
@@ -292,7 +316,7 @@ onUnmounted(() => {
 .speakers-btn {
   position: fixed; left: var(--space-4); bottom: calc(var(--app-safe-bottom, 12px) + var(--space-4));
   height: 40px; padding: 0 12px; border-radius: 999px; border: 1px solid var(--border);
-  background: var(--bg-card); z-index: var(--z-fab); font-size: 13px;
+  background: var(--bg-card); z-index: var(--z-fab); font-size: var(--text-smd);
 }
 @media (max-width: 720px) {
   .split { grid-template-columns: 1fr; grid-template-rows: minmax(0, 7fr) minmax(140px, 3fr); }

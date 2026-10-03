@@ -240,12 +240,12 @@ onUnmounted(() => {
   overflow-x: auto;
 }
 .s-item {
-  font-size: 10px;
+  font-size: var(--text-xs);
   color: var(--text-secondary);
   flex: none;
 }
 .s-item b {
-  font-size: 14px;
+  font-size: var(--text-base);
   color: var(--text-primary);
   margin-left: 3px;
 }
@@ -269,7 +269,7 @@ onUnmounted(() => {
 .dim {
   flex: none;
   padding: 5px 11px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   background: var(--bg-subtle);
   border: 1px solid var(--border);
   border-radius: var(--radius-full, 999px);
@@ -282,7 +282,7 @@ onUnmounted(() => {
 }
 .status-bar {
   padding: var(--space-2) var(--space-3);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .status-err {
   background: color-mix(in srgb, var(--danger) 15%, transparent);
@@ -295,10 +295,10 @@ onUnmounted(() => {
   padding: 40px 20px;
   text-align: center;
   color: var(--text-secondary);
-  font-size: 14px;
+  font-size: var(--text-base);
 }
 .hint {
-  font-size: 12px;
+  font-size: var(--text-sm);
   margin-top: 8px;
 }
 .lane-list {
@@ -319,14 +319,14 @@ onUnmounted(() => {
   margin-bottom: 7px;
 }
 .lane-name {
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .lane-stats {
-  font-size: 10px;
+  font-size: var(--text-xs);
   display: flex;
   gap: 4px;
   flex: none;
@@ -384,7 +384,7 @@ onUnmounted(() => {
   padding: var(--space-4) var(--space-3) var(--space-5);
 }
 .sheet-title {
-  font-size: 16px;
+  font-size: var(--text-lg);
   font-weight: 600;
   margin: 0 0 var(--space-3);
 }
@@ -393,7 +393,7 @@ onUnmounted(() => {
   grid-template-columns: 72px 1fr;
   gap: 7px 12px;
   margin: 0 0 var(--space-4);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .detail dt {
   color: var(--text-secondary);
@@ -411,7 +411,7 @@ onUnmounted(() => {
 .btn-primary {
   width: 100%;
   padding: 11px;
-  font-size: 14px;
+  font-size: var(--text-base);
   background: var(--primary, #4c8dff);
   border: none;
   border-radius: var(--radius-sm, 8px);

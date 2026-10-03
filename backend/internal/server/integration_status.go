@@ -92,25 +92,40 @@ func (s *Server) handleIntegrationStatus(w http.ResponseWriter, r *http.Request)
 	}
 
 	// llm-gateway：不能用 llmGWCache 非空（newServer 无条件创建）也不
-	// 能用 snapshot.BaseURL（default 态带硬编码回退 URL）判定。配置信
-	// 号 = env 显式设置 或 cache 里有该 workspace 的持久化条目
-	// （POST /api/llm-gateway/config 保存并从 PG 加载）。
-	gwConfigured := os.Getenv("POCKET_LLM_GATEWAY_URL") != "" ||
-		s.llmGWCache.has(s.workspaceIDFromRequest(r))
-	if gwConfigured {
-		resp.Integrations["llm_gateway"] = integrationEntry{
-			Enabled:      true,
-			Configured:   true,
-			Read:         true,
-			Write:        false, // 当前仅提供模型列表 / 探测 / 配置；写视为「启用配置」语义，不在只读 scope
-			Capabilities: "models / nodes / probe / config",
-		}
-	} else {
+	// 能用 snapshot.BaseURL（default 态带硬编码回退 URL）判定"是否显式配置过"。
+	//
+	// 但"显式配置"从 2026-09-30 起不再是可用性的前提：opencode 里内置了自家
+	// 网关的地址与 key，未配 env 的全新实例照样能对话。此时若仍按老口径报
+	// disabled，运维看到的就是"网关没配"却实际能跑——诊断页说谎比不报更糟。
+	// 所以口径改为「凭据是否齐全」，并用 capabilities 标出配置来源：
+	//   env / persisted = 显式配置；builtin-default = 用内置默认。
+	workspaceID := s.workspaceIDFromRequest(r)
+	gwSource := ""
+	switch {
+	case os.Getenv("POCKET_LLM_GATEWAY_URL") != "" || os.Getenv("POCKET_LLM_GATEWAY_API_KEY") != "":
+		gwSource = "env"
+	case s.llmGWCache != nil && s.llmGWCache.has(workspaceID):
+		gwSource = "persisted"
+	}
+	gwConfigured := gwSource != "" || s.effectiveGatewayState("", workspaceID).APIKey != ""
+	if !gwConfigured {
 		resp.Integrations["llm_gateway"] = integrationEntry{
 			Enabled:      false,
 			Configured:   false,
-			Capabilities: "disabled: gateway not explicitly configured",
+			Capabilities: "disabled: no gateway credentials (env unset and no built-in default key)",
 		}
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+	if gwSource == "" {
+		gwSource = "builtin-default"
+	}
+	resp.Integrations["llm_gateway"] = integrationEntry{
+		Enabled:      true,
+		Configured:   true,
+		Read:         true,
+		Write:        false, // 当前仅提供模型列表 / 探测 / 配置；写视为「启用配置」语义，不在只读 scope
+		Capabilities: "models / nodes / probe / config (source: " + gwSource + ")",
 	}
 
 	writeJSON(w, http.StatusOK, resp)

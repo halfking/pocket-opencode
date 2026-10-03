@@ -129,12 +129,12 @@ defineExpose({ isVivoOriginOS, dismiss, visible })
 }
 .head h3 {
   margin: 0 0 6px;
-  font-size: 15px;
+  font-size: var(--text-md);
   color: var(--text-primary);
 }
 .hint {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--text-sm);
   line-height: 1.55;
   color: var(--text-secondary);
 }
@@ -142,7 +142,7 @@ defineExpose({ isVivoOriginOS, dismiss, visible })
   border: 0;
   background: transparent;
   color: var(--text-secondary);
-  font-size: 18px;
+  font-size: var(--text-xl);
   line-height: 1;
   padding: 0 6px;
   cursor: pointer;
@@ -167,7 +167,7 @@ defineExpose({ isVivoOriginOS, dismiss, visible })
   border-radius: 999px;
   background: var(--brand-primary, var(--brand-gradient, #4f6df5));
   color: var(--text-inverse, #fff);
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-weight: 600;
   display: inline-flex;
   align-items: center;
@@ -175,13 +175,13 @@ defineExpose({ isVivoOriginOS, dismiss, visible })
 }
 .body .title {
   margin: 0 0 4px;
-  font-size: 13px;
+  font-size: var(--text-smd);
   color: var(--text-primary);
   font-weight: 500;
 }
 .body .desc {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--text-sm);
   line-height: 1.55;
   color: var(--text-secondary);
 }
@@ -196,7 +196,7 @@ defineExpose({ isVivoOriginOS, dismiss, visible })
   color: var(--text-inverse, #fff);
   padding: 8px 16px;
   border-radius: var(--radius-sm);
-  font-size: 13px;
+  font-size: var(--text-smd);
   cursor: pointer;
 }
 </style>
