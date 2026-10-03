@@ -2098,3 +2098,49 @@ XML 腿的**输入侧**在真实数据上仍是 0 条。本诊断用的是
 正确做法是：得出「查到了 X」之后，先翻一遍 handoff 看这条是否已记过，
 再决定它是「新发现」还是「独立复核」。**复核有价值，但谎报成新发现会
 让下一轮误以为这条只有我知道。**
+## 三十七、A4 是**手动**产物：08:00 若新增发票，现有 A4 立刻过时
+
+### 37.1 查实：A4 不在定时流水线里
+
+全仓 `ExportInvoiceGrid(Detailed)` 的调用方只有：
+
+- `internal/email/export_pdf.go` 自身（包一层）
+- 大量 `_test.go`（诊断与单测）
+- **`handleEmailInvoiceExport`** —— `POST /api/emails/invoices/export`
+
+流水线 `Pipeline.Run` 的步骤里**没有 A4**。它生成的是
+`BuildInvoiceSummaryDocs` 的 MD/CSV（`invoices-summary-*.md|csv`），
+A4 网格 PDF 只能由人在界面上点导出。
+
+⇒ 路由清单（`server_email_pipeline.go:5-11`）也印证这一点：
+summary 是 `GET` 一行说明，export 是 `POST` 带 `{ids,grid}`。
+
+### 37.2 为什么这一条现在重要
+
+第 1.5 步的积压里还有 **16 封**待拉 IMAP 原文的邮件，
+预算 `maxInvoiceBodyFetches=24/轮` ⇒ **08:00 那一轮一轮就能清完**。
+其中有几封**有可能**是真发票：
+
+- `invoice+statements+acct_…`「Your receipt from X #2662-4636-8457」
+- `noreply@github.com`「[GitHub] Payment Receipt for halfking」
+
+而信用卡电子账单（平安/招商）会被 `admitDebtNotice` 拒掉
+（`f20ed001` 已在运行二进制里），小米扣款通知之类也没有发票语义。
+
+⇒ **台账行数在 08:00 之后可能不再是 7 行。** 若真的新增了票：
+
+1. 汇总 MD/CSV 会自动重出（**表头仍是「文件」**——见第三十四节，旧二进制）
+2. **A4 不会自动重出** ⇒ 盘面上 `invoices-a4-*-20261003-161137.*`
+   那对（已验证正确的 6 张）就**只覆盖到 08:00 之前**，需要手动重出
+
+### 37.3 复核时怎么判「有没有新增」
+
+不要只看行数变没变，按顺序：
+
+1. 读 `email_invoices` 的 `created_at`，看有没有**今天 08:00 之后**的行；
+2. 有新增就跑一次金额溯源诊断（门控 `POCKET_DIAG_AMOUNT_PROV=1`
+   + 显式 DSN/SCHEMA/DATA_DIR），确认新行的金额能回到来源、
+   且**没有**「信用额度/应还款」这类语义告警；
+3. 有新增且溯源通过 ⇒ 提醒用户「A4 需要在界面重出一次」。
+
+**别把「A4 没跟着变」当成缺陷**——它是手动产物，本就不自动更新。
