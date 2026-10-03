@@ -779,4 +779,52 @@ admin 口令。本节绕开这个限制：**直接调用生产导出函数
 ⇒ 这不改变 12.2 的顺序要求：先定语义 + 加闸 + 剔除，再重出。
 重出时 A4 与汇总单会同时变干净，不必分两步。
 
+---
+
+## 十四、五条下载腿的真实覆盖 —— 需求原文里点名的两条腿到底走过没有
+
+需求原文：「原邮件中有 PDF 下载地址（可直接下载已有 PDF），
+也有 XML 数据格式（可解析后重新渲染）」。这两条腿的实现都在
+（`invoice_harvest.go:339/347/359/374/395` 五个 `file_source`），
+但**真实数据只走过其中三条**。
+
+### 14.1 台账实测（`GROUP BY status, file_source`）
+
+| file_source | 条数 | 金额 | 对应实现 | 真实走过 |
+|---|---|---|---|---|
+| `attachment` | 3 | 513.40 | 邮件直接带 PDF 附件 | ✅（但这 3 张是自注入件） |
+| `pdf-url` | 1 | 3500.00 | 正文里的 PDF 下载链接 | ✅ 创客家 |
+| `zip-pdf` | 2 | 24.61 | ZIP 包里的票面 PDF | ✅ 两张通行费 |
+| `xml-render` | **0** | — | 邮件带 XML 附件 → 解析后渲染 | ❌ **从未走过** |
+| `zip-xml-render` | **0** | — | ZIP 里只有 XML → 渲染 | ❌ **从未走过** |
+| （空）+ pending | 1 | 58000.00 | 工行对账单幽灵行 | — |
+
+⇒ 需求点名的「XML 解析后重新渲染」这条腿，**在真实邮件上从未被触发过**。
+不是「跑了没成功」，是**一次都没机会跑**（至今没有一封邮件带 XML 发票）。
+
+顺带：`zip-pdf` 2 条说明「可能需要多次操作才能下载到发票」那个场景
+（通行费票是 ZIP 包）在真实数据上确实发生过，且工作正常。
+
+### 14.2 XML 腿的字体依赖在这台机器上是**满足**的
+
+`RenderInvoiceXMLPDF` 依赖 `FindChineseFont` 找到含中文字形的 ttf，
+全落空时 `harvestOne` 的 XML 分支恒记 failed。实测本机（Windows）：
+
+    FindChineseFont("") = "C:\Windows\Fonts\simhei.ttf"，fontHasCJK = true
+
+候选表里有 Windows 条目（`invoice_pdf.go` `systemFontCandidates`：
+`simhei.ttf` / `Deng.ttf` / `simfang.ttf` / `simkai.ttf` /
+`NotoSansSC-VF.ttf`），且都在 `C:\Windows\Fonts` 下真实存在。
+**所以这条腿缺的不是字体，是一封带 XML 的邮件。**
+
+⇒ 想验它，得人工造一封带 XML 发票附件的邮件走一遍采集；或者接受
+「代码路径有测试、真实数据未覆盖」这个状态并记录在案。
+
+### 14.3 图片 → A4 PDF 那条腿
+
+`normalizeInvoiceFilesToPDF` 里的 `imageFileToA4PDF` 会在导出时把图片
+铺成 A4 单页 PDF。但它拿到的路径是「台账行的 FilePath」，
+而图片若来自邮件附件，落库时 `file_source` 也是 `attachment` ——
+**与 PDF 附件不可区分**。本机磁盘上没有图片发票，故该路径真实数据 0 条。
+
 
