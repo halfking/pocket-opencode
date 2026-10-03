@@ -418,13 +418,39 @@ func isBoundaryLine(line string) bool {
 	return strings.HasPrefix(line, "--") && !strings.Contains(line, ":")
 }
 
+// startsWithBoundaryLine 判断 BODY[TEXT] 的**首个非空行**是不是 boundary 行。
+//
+// ⚠️ 2026-10-04 真库 + 真 IMAP 实测修正：这里原先是「首行必须是 boundary」，
+// 而 BODY[TEXT] 的首行常常是**空行**，boundary 落在第二行：
+//
+//	首[0] ""
+//	首[1] "------=_Part_21554049_1801402642.1790152695491"
+//	首[2] "Content-Type: text/html; charset=\"UTF-8\""
+//	尾[-2] "------=_Part_21554049_1801402642.1790152695491--"
+//
+// （同一形态的第二种 boundary：`----==_mimepart_6ab9d1503b4e7_e511d8145119`）
+//
+// 首行判否 ⇒ mimeParts 返回 nil ⇒ snippetFromMIMEParts 返回 "" ⇒
+// 流程掉到第 2 步，而第 2 步的 containsMIMESource 又**正确地**认出这是
+// MIME 源码（它确实是）⇒ 末尾 return ""。两道闸都没错，错的是第一道
+// 闸认不出 boundary 在第二行。
+//
+// 代价不是一次性显示空白：store.go 的「空串=不覆盖」把这一格永久冻结，
+// 重跑多少次 backfill 都填不上。真库 32 行，受影响的全是 GitHub 通知、
+// GitLab MR 这类普通业务邮件。
+//
+// 跳过的是**空行**，不是任意内容行 —— 后者会让「首行是正文」的普通邮件
+// 也被当成分片，风险大得多。
 func startsWithBoundaryLine(s string) bool {
-	nl := strings.IndexAny(s, "\r\n")
-	first := s
-	if nl >= 0 {
-		first = s[:nl]
+	lines := strings.SplitAfter(s, "\n")
+	for _, ln := range lines {
+		trimmed := strings.TrimRight(ln, "\r\n")
+		if strings.TrimSpace(trimmed) == "" {
+			continue
+		}
+		return isBoundaryLine(trimmed)
 	}
-	return isBoundaryLine(strings.TrimRight(first, "\r"))
+	return false
 }
 
 // SnippetFromParsed 从已解析的邮件里取一行可展示的摘要。
