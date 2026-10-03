@@ -218,7 +218,17 @@ func TestFetcherUsesDeriveSnippetAtEverySnippetSite(t *testing.T) {
 		}
 	}
 
-	if n := strings.Count(codeText, "DeriveSnippet("); n != 3 {
-		t.Errorf("fetcher.go + backfill.go 里的 DeriveSnippet 调用数 = %d，期望 3（按需补拉 / IMAP 批量主路径 / POP3 HTML 回退）", n)
+	// 计数不是形式主义：2026-10-01 一次 merge 把 fetcher.go 的三处调用点连同
+	// 本护栏一起删掉，DeriveSnippet 退化成死代码，8 个纯函数用例照样全绿。
+	// 数字从 3 变成 4 是 2026-10-03 加的 BODY[] 补拉（见
+	// fetchSnippetOnConnected 函数头），四个点位是：
+	//   1. IMAP 批量主路径（backfill.go 的 emailFromMessage）
+	//   2. 按需补拉 BODY[TEXT]（fetchSnippetOnConnected）
+	//   3. 补拉整封 BODY[]（fetchSnippetOnConnected，BODY[TEXT] 取不到正文时）
+	//   4. POP3 的 HTML 回退（fetcher.go）
+	// 少了任何一处，用例报出来的数字会变；多了也一样。
+	if n := strings.Count(codeText, "DeriveSnippet("); n != 4 {
+		t.Errorf("fetcher.go + backfill.go 里的 DeriveSnippet 调用数 = %d，期望 4"+
+			"（IMAP 批量主路径 / 按需补拉 BODY[TEXT] / 补拉整封 BODY[] / POP3 HTML 回退）", n)
 	}
 }

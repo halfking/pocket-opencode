@@ -68,6 +68,15 @@ type imapServer struct {
 	// bodyByUID 是各 UID 的正文（fetcher_inproc_test 用；junk 用例留空）。
 	bodyByUID map[int64]string
 
+	// wholeByUID 是各 UID 的**整封报文**（`BODY[]` 请求的应答）。
+	//
+	// 为什么需要它：同一个 UID 对 `BODY[TEXT]` 与 `BODY[]` 必须能回**不同**的
+	// 字节。真实服务器就是这样——`BODY[TEXT]` 给首个 text part，而 `BODY[]`
+	// 给整封。2026-10-03 的摘要缺陷正是靠这条差异修的：前者对某些邮件只回
+	// 「分片头 + 一段前缀」，取不到正文；后者完整。
+	// 为 nil 时行为与从前完全一致（都回 bodyByUID），所以既有用例不受影响。
+	wholeByUID map[int64]string
+
 	// ignorePartial 让服务器**无视**部分取、照发全文。
 	//
 	// 为什么需要它：handleFetch 默认会按 `<off.size>` 截断，于是
@@ -387,6 +396,15 @@ func (s *imapServer) handleFetch(tag, rest string, w *bufio.Writer) {
 	for k, v := range s.bodyByUID {
 		bodies[k] = v
 	}
+	// `BODY[]`（section spec 为空）要回整封报文。判据用 requestedSectionSpec
+	// 的**同一个**函数，不能另写一份正则 —— 两份判据一旦漂移，这个服务器就会
+	// 对一种请求回错内容，而症状是「摘要恒空」这种完全指错方向的东西。
+	section := requestedSectionSpec(rest)
+	if section == "" {
+		for k, v := range s.wholeByUID {
+			bodies[k] = v
+		}
+	}
 	s.mu.Unlock()
 
 	// FETCH 的第一个字段才是序号集：`FETCH 11 (BODY[TEXT]<0.64>)`。
@@ -459,7 +477,6 @@ func (s *imapServer) handleFetch(tag, rest string, w *bufio.Writer) {
 	// 响应里 offset 必须回显：matchFetchItemBodySection 用
 	// `(cmd.Partial == nil) != (resp.Partial == nil)` 判不匹配，
 	// Size 反而**不能**回显（注释：not echoed back by the server）。
-	section := requestedSectionSpec(rest)
 	partial := ""
 	if m := partialRe.FindStringSubmatch(rest); m != nil {
 		partial = "<" + m[1] + ">"
