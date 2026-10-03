@@ -42,6 +42,55 @@ func DeriveSnippet(raw []byte, maxRunes int) string {
 		maxRunes = 500
 	}
 
+	// 0) **BODY[TEXT] 分片**：先按 MIME part 拆开再取摘要。
+	//
+	//    ## 这是 2026-10-03 晚定位到的真·在产泄漏根因
+	//
+	//    IMAP 对 multipart 邮件的 BODY[TEXT] 返回的是「**去掉顶层头之后的
+	//    整个 body 部分**」，里面依次是：
+	//
+	//    	----…-Part_1
+	//    	Content-Type: text/plain; charset=utf-8
+	//    	Content-Transfer-Encoding: quoted-printable
+	//
+	//    	<part1 正文>
+	//    	----…-Part_2
+	//    	Content-Type: text/html; charset=utf-8
+	//    	…
+	//    	----…-Part_1--
+	//
+	//    而下面第 1 步的 mimeCandidates **只丢掉第一行 boundary**。于是
+	//    ParseMIMEMessage 把 part1 的头当成顶层头，把「part1 正文 + part2 的
+	//    头 + part2 的正文」整体当作一封邮件的 body。后果是 TextBody 里必然
+	//    带着 part2 的 Content-* 头与 boundary token ⇒ containsMIMESource
+	//    判 true。
+	//
+	//    **这里必须说清楚：那次判据并没有误判。** 实测（真库真实报文原文，
+	//    em-1298896153）TextBody 第 15/16 行确实是
+	//    `Content-Type: text/html; charset=utf-8` 与
+	//    `Content-Transfer-Encoding: quoted-printable` —— 它**真的**是 MIME
+	//    源码。判据是对的，**被丢掉的是正确答案**：TextBody 的开头
+	//    「订阅到期提醒 nick，您好：…」是完全正常可读的正文。
+	//
+	//    于是流程掉到第 2 步，而第 2 步的 HTML 分支**当时没有任何 MIME 判据**
+	//    （纯文本分支才有），htmlToText 把整段分片原样吐出来 ⇒ 列表页上
+	//    显示 `----_NmP-…-Part_1 Content-Type: text/plain; … =E8=AE=A2…`。
+	//
+	//    ## 为什么不能靠放宽 containsMIMESource 来修
+	//
+	//    放宽它就等于把第 1 步那份「带内层头」的 TextBody 当正文放行 ——
+	//    那是**用更隐蔽的泄漏换更显眼的泄漏**。正确的修法是补一个候选：
+	//    把分片**按 part 切开**，每个 part 单独解析，优先 text/plain。
+	//
+	//    真库 25 个真实样本实测（diag_live_snippet_replay_test.go）：
+	//    只取第一个 part = OK 12 / EMPTY 13 / 泄漏 0；
+	//    按类型优先级全拆   = OK 21 / EMPTY 4  / 泄漏 0。
+	//    修前这 25 个在 BODY[TEXT] 出口上 **25/25 全部泄漏**。
+	//    剩下 4 个取不到正文，落空串是安全的一侧（它们今天正在泄漏）。
+	if s := snippetFromMIMEParts(raw); s != "" {
+		return truncateRunes(s, maxRunes)
+	}
+
 	// 1) 正常情况：整封 MIME 能解析出正文。
 	//
 	//    BODY[TEXT] 对 multipart 邮件返回的是**正文部分**，它总是以一行
@@ -85,7 +134,18 @@ func DeriveSnippet(raw []byte, maxRunes int) string {
 	//    或者只有一段裸 HTML。这时**先判断是不是 HTML**，别让它原样透出。
 	if s := normalizeWhitespace(string(raw)); s != "" {
 		if looksLikeHTML(s) {
-			if h := htmlToText(s); h != "" {
+			// ⚠️ 这一分支在 2026-10-03 晚之前**完全没有 MIME 判据**，
+			// 是上面那次在产泄漏真正的出口：第 1 步因为分片里内层 part 的
+			// Content-* 头而正确地拒收（判据没错，拒的是「带内层头的
+			// TextBody」），流程落到这里，htmlToText(s) 于是把
+			// boundary + Content-* 头 + 未解码的 quoted-printable 正文
+			// 原样压成一行吐给用户。
+			//
+			// 现在补上与纯文本分支同一条闸门。判据跑在**压平后的 s** 上：
+			// s 就是要返回给用户的那一份，判据必须指向它。
+			// （行锚点在这里全部失效，靠的正是 token 判据 —— 这也是
+			// containsMIMESource 存在的理由。）
+			if h := htmlToText(s); h != "" && !containsMIMESource(h) {
 				return truncateRunes(h, maxRunes)
 			}
 			return ""
@@ -155,6 +215,111 @@ func DeriveSnippet(raw []byte, maxRunes int) string {
 	//    宁可返回空串，也不把 Content-Type / boundary 转储给用户看 ——
 	//    「退回原文」正是这个缺陷本身。
 	return ""
+}
+
+// snippetFromMIMEParts 把 BODY[TEXT] 分片按 MIME part 拆开，
+// 优先 text/plain、其次 text/html，返回第一个**干净且非空**的正文。
+//
+// 输入不是分片（普通完整报文，没有开头的 boundary 行）时立刻返回空串，
+// 让 DeriveSnippet 走原有的解析路径 —— 这一步对完整报文必须是**零影响**，
+// 否则就是拿一类邮件的改善换另一类邮件的回归。
+//
+// 每个 part 都带自己的 Content-* 头，因此可以直接喂 ParseMIMEMessage。
+// 判据仍是 containsMIMESource：某个 part 解出来还带 MIME 源码就跳过它，
+// 继续试下一个 —— 宁可少一段摘要，也不放走转储。
+func snippetFromMIMEParts(raw []byte) string {
+	parts := mimeParts(raw)
+	if len(parts) == 0 {
+		return ""
+	}
+	// 两轮：先收齐所有候选，再按 text/plain → text/html 的顺序取。
+	//
+	// 不写成「边走边返回」：那样会取到**第一个** part 的正文，而 multipart
+	// 邮件的第一个 part 常常不是正文（实测 25 个真实样本，只取第一个 part
+	// 只有 12 个拿到摘要，13 个落空）。
+	var plain, html []string
+	for _, p := range parts {
+		for _, cand := range mimeCandidates(p) {
+			msg, err := ParseMIMEMessage(cand)
+			if err != nil {
+				continue
+			}
+			if t := normalizeWhitespace(msg.TextBody); t != "" && !containsMIMESource(msg.TextBody) {
+				plain = append(plain, stripTrailingBoundary(t))
+			}
+			if h := htmlToText(msg.HTMLBody); h != "" && !containsMIMESource(msg.HTMLBody) {
+				html = append(html, h)
+			}
+		}
+	}
+	for _, group := range [][]string{plain, html} {
+		for _, s := range group {
+			if s != "" {
+				return s
+			}
+		}
+	}
+	return ""
+}
+
+// mimeParts 把 BODY[TEXT] 分片拆成一个个 part 的原始字节。
+//
+// 判据刻意保守：**首行必须**是一个不含冒号、以 `--` 开头的 boundary 行，
+// 否则返回 nil（视为「这不是分片」）。正文第一行恰好是 `--` 开头的情况
+// 会在这里被排除，代价是那一封走老路径；反过来若放宽，则任何正文里带
+// `--` 行的邮件都会被切碎，风险大得多。
+func mimeParts(raw []byte) [][]byte {
+	if !startsWithBoundaryLine(string(raw)) {
+		return nil
+	}
+	lines := strings.SplitAfter(string(raw), "\n")
+	var (
+		parts   [][]byte
+		cur     []string
+		started bool
+	)
+	for _, ln := range lines {
+		trimmed := strings.TrimRight(ln, "\r\n")
+		if isBoundaryLine(trimmed) {
+			if started && !isBlankPart(cur) {
+				parts = append(parts, []byte(strings.Join(cur, "")))
+			}
+			cur = nil
+			started = true
+			continue
+		}
+		cur = append(cur, ln)
+	}
+	if started && !isBlankPart(cur) {
+		parts = append(parts, []byte(strings.Join(cur, "")))
+	}
+	return parts
+}
+
+// isBlankPart 判断累积出来的 part 是否只有空白。
+//
+// 结束 boundary（`----…-Part_1--`）之后通常还跟一个空行；不滤掉它，
+// 就会多产出一个「只有换行」的 part，解析必然失败，纯属噪音。
+func isBlankPart(lines []string) bool {
+	for _, ln := range lines {
+		if strings.TrimSpace(ln) != "" {
+			return false
+		}
+	}
+	return true
+}
+
+func isBoundaryLine(line string) bool {
+	return strings.HasPrefix(line, "--") && !strings.Contains(line, ":")
+}
+
+func startsWithBoundaryLine(s string) bool {
+	nl := strings.IndexAny(s, "\r\n")
+	first := s
+	if nl >= 0 {
+		first = s[:nl]
+	}
+	return isBoundaryLine(strings.TrimRight(first, "\r"))
 }
 
 // SnippetFromParsed 从已解析的邮件里取一行可展示的摘要。
