@@ -199,7 +199,9 @@ resize:vertical }`，并给「列表里每项一个」的紧凑型留 `.textarea
 > 收紧后又冒出 2 条 `.settings-section`（358×363）告警，核实它是普通
 > `DIV`、不可点、无 role、6 个子元素——分区卡片，不是图标背景。
 
-### 需求④ 大模型/录音原生化 + 后台存活 —— 代码层核查通过
+### 需求④ 大模型/录音原生化 + 后台存活 —— 代码层核查 + **设备实测都通过**
+
+代码层：
 
 - Manifest：`MeetingRecordService`（`foregroundServiceType="microphone"`）、
   `AiStreamService`（`dataSync`）、`FOREGROUND_SERVICE*` / `WAKE_LOCK` /
@@ -218,8 +220,53 @@ resize:vertical }`，并给「列表里每项一个」的紧凑型留 `.textarea
 - 相关测试：`test:native:all` **183/183**、`test:stt` **97/97**、
   `unmount-must-not-abort-streams` 6/6，全绿。
 
-**未验证**：需要真实大模型端点与真实录音权限才能做 30 分钟后台实测，
-本轮没有可用后端，属遗留项。
+**设备实测（本节推翻了本轮早先的「环境受限做不了」结论）**：
+
+> 早先我判断「模拟器 `-no-audio` 无音频输入源录不了音、未配网关发不出流式
+> 请求，所以只能做代码层核查」。**两个前提都只测了一半就下了结论**——
+> 录音权限其实 `granted=true`、`dumpsys media.audio_policy` 里有 4 个输入设备，
+> 录音能跑；流式则可以用一个本地慢速 SSE 端点代替真实网关。
+> 这与本轮开头「`VirtualizationFirmwareEnabled=False` → 模拟器起不来」是
+> **同一类错误**：拿环境推断当定论，不实际探一下就收工。
+
+造上游的办法（不改动仓库代码）：`HttpListener` 起一个永结束的 SSE
+（每 2 秒吐一行），`adb reverse tcp:8099 tcp:8099` 让设备能访问，再把 App
+设置里的网关地址指到 `http://127.0.0.1:8099/v1`。
+（注意 API 基址优先级是 `localStorage > VITE_API_BASE > 同源`，
+构建期注入在设备上没生效，写 `localStorage.pocket_api_base` 最省事。）
+
+**流式这条腿**（`/ai-chat` 发送后按 HOME 切后台 85 秒）：
+
+| 判据 | 实测 |
+|---|---|
+| 后台窗口内服务端仍在推流 | **39 个 chunk 到达**（18:13:40–18:15:05，每 2 秒一个） |
+| App 进程未被杀掉 | `pid = 2122` 全程未变（5 次采样） |
+| 后台期有原生前台服务 | `AiStreamService` `isForeground=true`、`types=0x1`（DATA_SYNC）、通知 `ONGOING_EVENT\|NO_CLEAR` |
+| 机制层终态符合仓库既有约定 | 出现 retry chip「上游模型不可用，已切换到 … 重试…」，`docs/guides/E2E_CI.md:52` 明确「90s 后下发 `context deadline exceeded` 也是合法终态」 |
+
+> 探针本身也翻过两次车，都留在这里：`chunk` 计数**不是单调的**——App 会重试，
+> 每次重试是新请求、编号从 1 重数，所以「chunk 增长 = 0」是度量缺陷而不是
+> 失败，改成「按时间戳数窗口内的 chunk 行数」才得到 39 这个真值。
+> 另外 `Write-Output` 与 `return` 混在同一个输出流里会让 `$a.chunk` 取到 `$null`。
+
+**录音这条腿**（`/#/meetings` → 直接调 `BackgroundMic.start()`）：
+
+| 判据 | 实测 |
+|---|---|
+| 插件 Promise 有结论 | `resolved`（不是静默挂起） |
+| 服务真的进了前台 | `MeetingRecordService` `isForeground=true`、`types=0x00000080`（MICROPHONE）、通知 `ONGOING_EVENT\|NO_CLEAR` |
+| 切后台 80 秒存活 | T0/T1(+5s)/T2(+40s)/T3(+80s)/T4 五次采样均 `service=yes isForeground=true`，`pid=2122` 未变 |
+| 录音计时跨后台继续走 | 回前台后 **02:18 → 02:30**（12 秒真实推进，非冻结） |
+| 失败是诚实报的 | 转写失败时明确显示「网关暂无可用的语音转写模型（扫描失败：… resolved address is not allowed）」+「外部语音转写服务未配置 API Key」，**没有假装成功** |
+
+最后一条是这一腿真正要验的东西。`BackgroundMicPlugin` 的文件头把
+「显示正在录音、切后台也不提示、一整场没有声音」列为典型静默失效；
+实测下来这条路径的**成功与失败都给出了明确结论**，符合它自己声明的契约。
+
+> 又一次差点误报：中途看到页面出现「🎤 录音」而服务列表里没有
+> `MeetingRecordService`，差点当成静默失效。核实后发现那只是**开始录音的
+> 入口按钮**，不是进行中状态——真正的进行中状态带实时计时（「录音中 00:04」）。
+> 和需求② 里「44px 标题框」那次一样：**先确认现象是什么，再判定是不是缺陷。**
 
 ## 3. 验证
 
@@ -246,18 +293,21 @@ resize:vertical }`，并给「列表里每项一个」的紧凑型留 `.textarea
 | toast 压工具行 | 底边 255px vs 输入区顶边 289.7px（重叠 34.7px） | `worstOverlapPx = 0`（295px vs 289.7px） | `21-toast-clears-composer.png` |
 | **两个 `#app`** | `.app-layout` 193.286 = 529.667 − 336.381，工具行整条消失 | `#app` 数量 1；`.app-root` = 529.667；工具行完整可见 | `26-…-clean.png` → `29-aichat-kb-fixed.png` |
 | autoGrow 裁 2px | `scrollHeight 121 / clientHeight 119`，`hiddenPx 2` | `clientHeight 121`，`hiddenPx 0`，`fits: true` | `35-…-sweep.png` → `37-…-border-fix.png` |
+| 流式切后台 | — | 后台 85s 内 **39 个 chunk** 到达、`pid` 未变、`AiStreamService isForeground=true` | `logs/sse-probe.log` |
+| 录音切后台 | — | `MeetingRecordService types=0x80`，后台 80s 存活，计时 **02:18 → 02:30** | `logs/bg-survival.txt` |
 
 判据本身的可靠性用**变异测试**验过：把每个修复改回坏写法，确认对应断言
-真的会红（`✅ 判据拦住了`），避免留下「永远绿」的假护栏。toast 那批 5 条与
-根布局那批 5 条共 10 条变异全部被拦住。
+真的会红。**13 条变异全部被拦住**（清单见 §8.1），避免留下「永远绿」的假护栏。
 
 ## 4. 遗留
 
-1. **需求④ 的 30 分钟后台实测**本轮做不了，两个前提都不具备：
-   模拟器是 `swiftshader` 软件渲染 + `-no-audio`，**没有音频输入源录不了音**；
-   同时没配真实大模型网关（`/ai-chat` 报「请先在「设置 → AI 网关」配置网关
-   密钥」），流式请求也发不出去。代码层核查已通过（§2 需求④），
-   剩下的是环境受限，不是代码问题。
+1. **需求④ 的后台存活已从「未验证」转为设备实测通过**（流式 + 录音两条腿，
+   数据见 §2 需求④）。此前那条「`-no-audio` 录不了音 / 没网关发不出流式」的
+   判断是**只探了一半就下的结论**，实测两个前提都不成立。
+   **30 分钟长时程仍未跑**——本轮只做到 85 秒（流式）与 80 秒（录音）两个
+   窗口；跑满 30 分钟需要真机或一台能久跑的模拟器，宿主内存扛不住（§0.1）。
+   代码侧 30 分钟 WakeLock 已核查，但**长时程本身未经实测**，不能拿
+   「WakeLock 配的是 30 分钟」反推「30 分钟内不会断」。
 2. **需求③ 的「方形背景逐屏检查」已走完**（解锁主密码后 17 条路由实测，
    结论见 §2 需求③：异常大 0 / 字形裁切 0 / 背景尺寸异常 0）。
    此前记的「`.icon-btn` 没有全局最小尺寸约束」是代码结构事实，
