@@ -95,6 +95,30 @@ if (cacheErr) {
   process.exit(1)
 }
 
+// ⚠️ 2026-10-04 修的竞态：清完缓存**立刻 force-stop App**。
+//
+// 实测（真机，PG 已清零）：列表页仍显示上一轮的「回归卡组」，
+// CDP 读回 localStorage 里 `flashcards:v1` 的 deckConfigs **又出现了**，
+// 且其 updatedAt 晚于清场时刻。
+//
+// 原因：本脚本只做了 `removeItem`，而 **App 进程一直在跑**，
+// 内存里的 store 仍持有卡组，随后持久化时把缓存原样写回磁盘。
+// ⇒ 清完之后必须没有进程能再回写。
+//
+// 顺序很要紧：**先 CDP 清（需要 App 活着），再 force-stop**。
+// 反过来先 force-stop 的话 CDP 连不上，缓存根本清不掉。
+// flow 的启动器（maestro-run.mjs）在清场之后会重启 App，所以这里安全。
+const adbBin = 'C:/Users/86133/AppData/Local/Android/platform-tools/adb.exe'
+const serial = process.env.POCKET_SERIAL || '192.168.31.19:5555'
+try {
+  execFileSync(adbBin, ['-s', serial, 'shell', 'am', 'force-stop', PKG], { timeout: 30000 })
+  console.log(`  已 force-stop ${PKG}（否则运行中的 store 会把缓存写回）`)
+} catch (e) {
+  console.log(`  (force-stop 失败：${String(e?.message || e).split('\n')[0]})`)
+  console.log('  ⚠️ App 仍在运行的话，它可能把闪卡缓存写回 —— 这轮会测错分支。')
+  process.exit(1)
+}
+
 q(`DELETE FROM ${SCHEMA}.flashcard_revlog WHERE card_id IN (
      SELECT c.id FROM ${SCHEMA}.flashcard_cards c WHERE c.user_id = '${USER}')`)
 q(`DELETE FROM ${SCHEMA}.flashcard_cards WHERE user_id = '${USER}'`)
