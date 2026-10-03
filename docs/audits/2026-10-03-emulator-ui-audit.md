@@ -36,6 +36,38 @@ usable`，实测 **70 秒** `boot_completed=1`。
 > 教训：这类推断要用工具自己的探测（`-accel-check`）+ 真的 boot 一次来确认，
 > 不要拿 CIM 字段当定论。
 
+### 0.1 模拟器本身在本机会反复掉线（后半程的主要时间黑洞）
+
+`pocket-test` 用了大半程后开始出问题：`adb devices` 直接空、`device` 与
+`offline` 之间反复跳、`logcat` 里打出 `BOOT_FAILURE` 与
+`flags_health_check ... resetting flags`（说明系统判定 boot 循环）。
+宿主只有 15.9 GB 内存，qemu 一路涨到 5.9 GB、可用内存掉到 1.9 GB 时
+boot 会卡在 `init.svc.bootanim=running` 十分钟以上。
+
+处置与结论：
+
+1. 强杀 qemu 后内存立刻回到 7.4 GB，冷启动恢复正常 —— **先看内存再怪别的**。
+2. `emulator -wipe-data` 被安全策略拦下（不可逆销毁数据盘），**没有绕过**。
+   改用**新建 AVD**（`pocket-test2`，纯增量、不销毁任何东西），
+   `avdmanager create avd -k system-images;android-35;google_apis;x86_64 -d pixel_6`，
+   再把 `hw.ramSize` / `hw.gpu.*` 写进 `config.ini`。这条比 wipe 干净。
+3. `adb kill-server` 会让设备列表整个清空，qemu 会在几秒内重新注册，
+   但**别在 boot 期间反复 kill/start-server**，会把它推回 offline。
+4. 新 AVD **没有网络**：`ip route` 空、`wlan0` 是 `NO-CARRIER`、
+   `ping 10.0.2.2` 报 `Network is unreachable`。而 `10.0.2.2` 是模拟器
+   访问宿主的别名，**登录就卡在这里**。
+
+第 4 条的绕法（本轮实际用上的）：`adb reverse tcp:8088 tcp:8088` +
+把 App 的 API 基址指到 `http://127.0.0.1:8088`。`adb reverse` 走 adb
+传输而不是设备网络栈，所以 `wlan0` 挂着也能通——页面里
+`fetch('http://127.0.0.1:8088/healthz')` 返回 200 `ok` 即为证。
+
+> 注意 API 基址的优先级是 `localStorage > VITE_API_BASE > 同源`
+> （`src/config/api-base.ts`）。构建期注入 `VITE_API_BASE` 在这台设备上
+> 没生效（App 实际解析到 `https://pocket.itestu.cn`，登录因此失败），
+> **最省事的做法是直接写 `localStorage.pocket_api_base`** 再 reload，
+> 不用为了换地址重打一次包。
+
 ## 1. 代码基线
 
 - 拉取前本地 main 落后 origin/main **243 个提交**、无本地独有提交 → `--ff-only` 干净快进到 `cafb3d6c`。
@@ -173,11 +205,26 @@ resize:vertical }`，并给「列表里每项一个」的紧凑型留 `.textarea
 | 项目 | 命令 | 结果 |
 |---|---|---|
 | 类型检查 | `npm run typecheck` | EXIT=0 |
-| 前端全量 | `npm run test:all` | **pass 1841 / fail 0**（基线 1804 + 新增 37） |
+| 前端全量 | `npm run test:all` | **pass 1869 / fail 0**（基线 1804 + 新增 40），206 个测试文件全部实际执行 |
+| Go 构建 / 静态检查 | `go build ./...` / `go vet ./...` | EXIT=0 / EXIT=0（本轮 6 个缺陷全在前端，Go 侧未再改动） |
 | 移动端构建 | `node scripts/build-mobile.mjs android dev` | OK，sanity check 通过 |
 | APK | `gradlew assembleDebug` | **BUILD SUCCESSFUL**，32.7 MB |
 | 安装 | `adb install -r -g` | Success |
 | 启动 | `am start` | `mCurrentFocus=…MainActivity` |
+
+判据本身的可靠性用**变异测试**验过：把每个修复改回坏写法，确认对应断言
+真的会红。13 条变异全部被拦住（清单见 §8.1），避免留下「永远绿」的假护栏。
+
+### 3.1 设备实测的六条硬数据
+
+| 缺陷 | 修复前 | 修复后 | 证据截图 |
+|---|---|---|---|
+| 键盘无信号 | `--kb-inset=""`、`innerHeight === vv.height` | `--android-ime-inset=336.38`、`kbInset=336.38` | `02-keyboard-password.png` |
+| fixed 遮罩不吃键盘 | `.dialog-mask` 底 915；按钮 bottom 600 vs 键盘上沿 579 | 遮罩底边 = 键盘上沿 | `08-after-login.png` |
+| 下拉指示器叠内容 | 与 `.work-filters` 完全重叠，opacity 0.25 | `opacity: 0`，指示器底 109 < 内容顶 153 | `09-after-master.png` |
+| toast 压工具行 | 底边 255px vs 输入区顶边 289.7px（重叠 34.7px） | `worstOverlapPx = 0`（295px vs 289.7px） | `21-toast-clears-composer.png` |
+| **两个 `#app`** | `.app-layout` 193.286 = 529.667 − 336.381，工具行整条消失 | `#app` 数量 1；`.app-root` = 529.667；工具行完整可见 | `26-…-clean.png` → `29-aichat-kb-fixed.png` |
+| autoGrow 裁 2px | `scrollHeight 121 / clientHeight 119` | 见 §7.6 | `35-textarea-sweep.png` |
 
 判据本身的可靠性用**变异测试**验过：把每个修复改回坏写法，确认对应断言
 真的会红（`✅ 判据拦住了`），避免留下「永远绿」的假护栏。toast 那批 5 条与
@@ -200,14 +247,22 @@ resize:vertical }`，并给「列表里每项一个」的紧凑型留 `.textarea
    `http://10.0.2.2:8088`（模拟器访问宿主的别名）。
 5. `gradle-wrapper.properties` 的 `networkTimeout` 10s → 180s 是本轮改的，
    10s 对 214 MB 分发包必然超时，属于真实缺陷，建议保留。
-6. **模拟器进程会自行退出**（本轮撞到两次，`adb devices` 直接空）。
-   重启约 70s 恢复，不影响结论，但批量走查时要把「设备掉线」当作正常故障
-   重新 `adb wait-for-device`，别误读成应用崩溃。
+6. **模拟器进程会自行退出**（本轮后半段撞到 5 次，`adb devices` 直接空、
+   `device`/`offline` 反复跳、logcat 打 `BOOT_FAILURE`）。宿主 15.9 GB 内存
+   被 qemu 吃到只剩 1.9 GB 时 boot 会卡十分钟以上；强杀后内存立刻回到
+   7.4 GB 并恢复正常。批量走查时要把「设备掉线」当正常故障重新
+   `adb wait-for-device`，别误读成应用崩溃。处置细节见 §0.1。
 7. **本轮发现的需求① 覆盖盲区值得单独记**：键盘避让此前只在登录/注册页
    验过（那两页是全屏固定定位表单，不吃根布局的 flex 链），而
    `/ai-chat` 这种「自管滚动 + 底部停靠输入区」的页面当时是破的（§7.5）。
    也就是说「登录页验过」不能推广成「键盘避让已修好」——
    后面新增任何带输入区的停靠式页面，都要在**键盘弹起态**下走一遍。
+8. **§7.6 那 2px 的修复只做到了单测 + 变异验证，没能在设备上复量**：
+   补丁打完之后模拟器开始反复掉线（§0.1）。它的判据是纯算术
+   （`scrollHeight + 上下边框`），已有 2 条新断言精确到像素
+   （121 → 123px / 无边框时 240px 不变）+ 3 条变异全部被拦住，
+   但**设备侧 after 值没有实测数字**，补验时按 §5 的探针跑
+   `textarea-sweep.js` 即可（预期 `/local-agent` 的 `hiddenPx` 从 2 变 0）。
 
 ## 5. 复现本轮实测
 
