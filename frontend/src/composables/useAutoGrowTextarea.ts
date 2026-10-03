@@ -23,6 +23,13 @@
  * 若哪天改成 content-box，`height = scrollHeight` 会把 padding+border 再加
  * 一遍，每敲一次多长几像素、无限增长。所以这里显式写死 border-box。
  *
+ * ②的边界：border-box 下 `height` 覆盖的是「padding 盒 + 上下边框」，而
+ * `scrollHeight` 是「内容 + padding、**不含边框**」。直接写 `height =
+ * scrollHeight` 会让内容盒比内容矮一个上下边框之和——实测 1px 边框的
+ * textarea 写入长文后 `scrollHeight 121 / clientHeight 119`，**最后一行被
+ * 裁掉 2px**。这正是用户说的「内容看不完整」，所以要把上下边框补回去。
+ * 负控见 `__tests__/useAutoGrowTextarea.test.mjs` 的「border-box 下补边框」一条。
+ *
  * 上限不在 JS 里复制：max-height 交给 CSS（.uc-input 是 40vh），超过后由
  * `overflow-y: auto` 接管滚动。两段行为一次到位，也省得 JS 与 CSS 两处
  * 上限数字漂移。
@@ -49,8 +56,16 @@ export function autoGrow(el?: HTMLTextAreaElement | null): void {
   target.style.boxSizing = 'border-box'
   // ① 先归零，让浏览器按内容重新排版
   target.style.height = 'auto'
-  // ② 再写回内容真实高度（scrollHeight 已含 padding，不含 border）
-  target.style.height = `${target.scrollHeight}px`
+  // ② 再写回内容真实高度。scrollHeight 已含 padding、不含 border，而
+  //    border-box 的 height 覆盖 padding 盒 + 上下边框，所以必须把边框补回去，
+  //    否则内容盒比内容矮 2×边框，最后一行被裁（实测 1px 边框 → 裁 2px）。
+  //    经 ownerDocument 取而不是全局 getComputedStyle：SSR / Node 单测里
+  //    没有该全局函数，退化成 0 边框（无边框时本就无需补偿）。
+  const view = target.ownerDocument?.defaultView
+  const cs = view?.getComputedStyle ? view.getComputedStyle(target) : null
+  const borderY =
+    (parseFloat(cs?.borderTopWidth ?? '') || 0) + (parseFloat(cs?.borderBottomWidth ?? '') || 0)
+  target.style.height = `${target.scrollHeight + borderY}px`
 }
 
 /**
