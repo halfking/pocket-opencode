@@ -112,6 +112,25 @@ resize:vertical }`，并给「列表里每项一个」的紧凑型留 `.textarea
 `resize: vertical` + focus ring），但**全仓 0 处引用**，是死代码——
 21 处 textarea 全部是裸标签各自手写尺寸。
 
+**全仓普查（12 个路由，实测不是推断）**：判据写成可量化的
+「`scrollHeight <= clientHeight + 1` 才算内容装得下」，往每个框灌一段
+现实长度的文本再量，**只找到 6 个多行框**（其余路由无 textarea）：
+
+| 位置 | 类型 | 默认高 | 装得下 | 长高 |
+|---|---|---|---|---|
+| `/ai-chat` 输入框 | composer(autoGrow) | 99px | ✅ | ✅ 99→126→331 |
+| `/notes/new` 标题 | composer(single-line) | 44px | ✅ | ✅ 44→118→275 |
+| `/notes/new` 正文 | composer(autoGrow) | 101px | ✅ | ✅ 101→126→331 |
+| `/local-agent` `.draft` | composer(autoGrow) | 40px | ⚠️ 裁 2px | ✅ 40→121 |
+| `/flashcards/new` Front | plain | 100px | ✅ | 手动 resize |
+| `/flashcards/new` Back | plain | 139px | ✅ | 手动 resize |
+
+唯一失分项是 `/local-agent` 那 2px → §7.6。
+**差点改错的地方**：普查第一眼看到「笔记标题框只有 44px、resize: none」
+像是需求② 说的「太小」，但灌长文本后它 44→118→275 跟得很稳，且标题
+语义上就是单行——真按「44px 不好看」去垫高才是把判据拍成了审美。
+所以判据必须是「内容装不装得下」，不是「看起来大不大」。
+
 ### 需求③ 图标与方形背景 —— 图标侧通过，方形背景需实机逐屏看
 
 - `check:icons`：134 个名字全在字体子集内，`check:icons:visual` 生成
@@ -238,7 +257,7 @@ adb forward tcp:9222 localabstract:webview_devtools_remote_<pid>
 **教训**：进程级问题的日志要当第一现场看。上面四次我都在猜环境变量名，
 而 `pocketd` 一启动就把「哪个变量没到」打在日志里了——先看日志能省掉三轮试错。
 
-## 7. 本轮新发现并修复的五个缺陷
+## 7. 本轮新发现并修复的六个缺陷
 
 按发现顺序（都在模拟器上实测复现过）：
 
@@ -356,13 +375,50 @@ adb forward tcp:9222 localabstract:webview_devtools_remote_<pid>
 `document.querySelector('#app').__vue_app__` 拿 pinia，
 `__vue_app__` 挂在 mount 元素上，取到的仍是挂载容器，不受影响。
 
-## 8. 新增护栏汇总（本轮共 37 条）
+**设备复验**（模拟器 API 35，键盘净高 336.38px）：
+
+| 环节 | 修复前 | 修复后 |
+|---|---|---|
+| DOM 里 `#app` 数量 | 2（嵌套） | **1** |
+| 外层 `#app` 高度 | 529.667 | 529.667 |
+| 内层（`.app-root`）高度 | **193.286**（= 529.667 − 336.381） | **529.667**（= 100% 接力） |
+| `main.content` 高度 | 148.5 | **484.9** |
+| `.composer` | 142.5..344.3（溢出被裁） | **364.9..566.7**（完整落在键盘上沿 578.6 之上） |
+| 工具行（麦克风/相机/发送） | **整条消失** | **完整可见**（截图 `29-aichat-kb-fixed.png`） |
+
+### 7.6 autoGrow 在 border-box 下少算边框，最后一行被裁 2px
+
+需求②「内容展示要尽可能完整、不要看不完整」的最后一处漏网。
+
+`useAutoGrowTextarea` 的核心是 `height = el.scrollHeight`。但 `scrollHeight`
+是「内容 + padding、**不含 border**」，而它同时把 `boxSizing` 锁成
+`border-box`——border-box 下 `height` 覆盖的是「padding 盒 + 上下边框」。
+两者口径差一个上下边框之和，于是内容盒比内容矮 2px。
+
+设备实测（`/local-agent` 的 `.draft`，1px 边框）：
+
+```
+写入一段现实长度的任务描述后：scrollHeight = 121, clientHeight = 119  → 裁 2px
+```
+
+修法：`height = scrollHeight + borderTopWidth + borderBottomWidth`，
+边框值经 `target.ownerDocument.defaultView.getComputedStyle` 取，
+取不到（SSR / Node 单测）时退化成 0 而不是抛错。
+
+**这一条值得记的是判据的来历**：不是「看起来好像少了两像素」，而是先把
+「内容装得下」的必要条件写成可量化的 `scrollHeight <= clientHeight`，
+再拿现实长度文本灌进去逐页量。12 个路由跑下来只有 6 个多行框，
+其中 5 个本来就合格，唯一的失分项就是这 2px——**如果当初按「44px 太小了」
+的直觉去改笔记标题框，就会改错地方**（标题框是语义单行，autoGrow +
+30vh 上限是对的）。
+
+## 8. 新增护栏汇总（本轮共 40 条）
 
 | 文件 | 条数 | 守什么 |
 |---|---|---|
 | `useKeyboardInset.test.mjs` | 9 | overlay/resize 双路径、迟滞、聚焦字段顶出（位移量精确到 32px）、非文本控件不误触发 |
 | `keyboard-avoidance-prereq.test.mjs` | 4 | 原生读 `Type.ime()`、JS 消费变量、AppLayout 滚动前提、居中方式 |
-| `useAutoGrowTextarea.test.mjs` | 6 | 长内容跟高、删内容缩回、不累积、boxSizing 锁死、先归零再写回 |
+| `useAutoGrowTextarea.test.mjs` | 8 | 长内容跟高、删内容缩回、不累积、boxSizing 锁死、**border-box 补边框**、无边框不加、先归零再写回、空值静默 |
 | `fixed-overlay-keyboard.test.mjs` | 2 | 含输入框的 fixed 遮罩必须消费 `--kb-inset`；BottomSheet 既有写法回归 |
 | `pullToRefreshIndicator.test.mjs` | 6 | 静止位移/不透明度、阈值露出、超拉钳位、单调性、源码形状防漂移 |
 | `toastBottomInset.test.mjs` | 5 | `max` 而非相加、`--kb-inset` 只加一次、发布「整条带」而非自身高度、基准是 `#app` 而非 `innerHeight`、卸载清零 |
@@ -370,7 +426,30 @@ adb forward tcp:9222 localabstract:webview_devtools_remote_<pid>
 
 其中五处是**源码形状断言**（判据与实现钉在一起，防「实现改了、判据没改」）。
 
-### 8.1 两条判据为什么写成「形状」而不是「行为」
+### 8.1 判据做过变异测试，不是「永远绿」
+
+把每个修复改回坏写法，确认对应断言真的会红：
+
+```
+✅ toast: max 退回相加（tabbar 会被算两遍）
+✅ toast: 退回只算 tabbar 的旧写法
+✅ composer: 退回发布自身高度
+✅ composer: 改用 innerHeight（键盘会被算两遍）
+✅ composer: 去掉卸载清零
+✅ App.vue 根节点加回 id="app"
+✅ App.vue 根节点不给高度（height:100% 链断）
+✅ #app 规则里再加一次 --kb-inset 扣减
+✅ index.html 再加一个 id="app"
+✅ main.ts 改挂到别的选择器
+✅ autoGrow: 去掉边框补偿
+✅ autoGrow: 只补上边框不补下边框
+✅ autoGrow: 无条件加 4px（凭空加像素）
+```
+
+13 条变异全部被拦住。没有这一步，形状断言很容易变成「看着挺严、
+其实正则永远匹配不上」的假护栏。
+
+### 8.2 两条判据为什么写成「形状」而不是「行为」
 
 `toastBottomInset` 与 `rootLayoutHeight` 守的都是**结构性前提**：
 
@@ -381,7 +460,7 @@ adb forward tcp:9222 localabstract:webview_devtools_remote_<pid>
 - `id="app"` 重复是纯 DOM 结构问题，行为上只在键盘在场时显形，Node 侧
   完全没有布局引擎可依赖。
 
-代价是判据与实现贴得紧，实现改名要同步改判据——这正是本轮集中使用源码
+代价是判据与实现贴得紧，实现改名要同步改判据——这正是集中使用源码
 形状断言时要防的漂移，故每个文件头都写清了「为什么这条必须存在」，
 并配了变异测试证明它不是空转。
 这类断言在本仓库是第一次集中使用——它不优雅，但比复制一份算式更安全：
