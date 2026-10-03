@@ -34,13 +34,31 @@
 // MIME 现场算，**根本不读 DB 这一列**。全树 `e.HasAttachments` 只被 store 的
 // 扫描器读进结构体，没有任何业务逻辑消费它。
 //
-// 那一列唯一的消费者是前端的 📎 标记（emails-store → EmailInboxView）。
-// 它确实有真缺陷：POP3 路径正确置位（fetcher.go:974），但 IMAP 路径只有
-// envelope、事后唯一机会 `MarkEmailBodyCached`（store.go:1925）写的是
-// `has_attachments = COALESCE(has_attachments, FALSE)` —— 恒等操作，
-// 全树 `HasAttachments: true` 只出现在测试文件里。实测 120 封为真的 0 封。
+// 它的消费方只有前端的 📎 标记（emails-store → EmailInboxView）。
 //
-// 所以它导致的是**前端 📎 标记在 IMAP/客户端推送的邮件上恒为不显示**，
+// ## ⚠ 这一段原本写的「真缺陷」**已经修了，别再照着它去查**
+//
+// 原文（2026-10-03 08:25 的测量）：真实库 120 封里 has_attachments=true 的
+// 0 封，而唯一能置位的 POP3 路径在本部署产出为 0，据此判定为缺陷。
+// 修法是给 IMAP 的 `fetchOpts` 加 BodyStructure
+//（fetcher_attachment.go，24a8656b，2026-10-02 08:44 落地）。
+// 「全树 HasAttachments: true 只出现在测试文件里」这句话**当时就不准确、
+// 现在更不准确** —— 它只扫过 fetcher 与 store，没扫 fetcher_attachment.go。
+//
+// 2026-10-03 19:40 复核（schema opencode_pocket，183 封）：true 的 6 封
+//**全部**来自 POP3 路径（id 前缀 em-pop3-），IMAP 来源的 134 封里 0 封为真。
+//
+// 关键：这个 0 是 **0/0，不是「修复无效」的证据**。真实库里没有一封
+//「已知带附件的 IMAP 邮件」可以当正控 —— 已知带附件的真实邮件是 QQ Wallet
+// 电子发票 3 封与通行费电子发票 2 封，而它们**全是 POP3 来源**
+//（本部署有账户的 IMAP 每轮 50s 预算耗尽后会回退 POP3，库里 49 封 POP3
+// 来源的行（id 前缀 em-pop3-<accountID>-<uidl>，见 pop3_fetcher.go:563）
+// 里 45 封属 56551681@qq.com，而带附件的 6 封**全部**属它）。所以真实
+// 环境下这一半**仍未验证**，
+// 验证条件是：一封走 IMAP 路径、且确实带附件的真实邮件被同步进来。
+// 在那之前，说它「好了」和说它「没好」都没有证据。
+//
+// 它导致/曾导致的是**前端 📎 标记在 IMAP 来源的邮件上可能不显示**，
 // 而不是发票建档失败。两件事，别混。
 //
 // ## 数据是活的
