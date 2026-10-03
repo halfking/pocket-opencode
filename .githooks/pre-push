@@ -1,0 +1,167 @@
+#!/bin/sh
+# pre-push -- run the FULL test suite at push time, so no human has to enumerate
+# what was verified in the commit message.
+#
+# Why this hook exists (measured 2026-10-03)
+# -----------------------------------------
+# The verification line of commit a5de5f96 read:
+#   "verified: go build ./... passes; internal/rss, internal/flashcards,
+#    internal/config, internal/server all pass"
+# That sentence is NOT false. It is BOUNDED -- it did not include
+# internal/repohygiene, and that is exactly where the red was
+# (TestNoCommittedSecrets). So the commit claiming "fixed" landed on main with a real red.
+#
+# The failure shape is not "someone lied". It is "the checklist was a SUBSET".
+# A human lists a few packages they remember touching; a reader reads a bounded
+# sentence as an unbounded one. Any list a human writes has an edge, and the edge
+# is where the red hides. So this hook does not ask anyone to write a list: it
+# computes the answer at push time.
+#   backend/** changed  -> go test ./...        (full suite, never a subset)
+#   frontend/** changed -> npm run gates
+# Non-zero blocks the push.
+#
+# HOW THE INPUT IS READ -- this is the part that was wrong first
+# --------------------------------------------------------------
+# The first version of this hook read the pushed refs from the environment:
+#     PRE_PUSH_REMOTE_SHA / PRE_PUSH_LOCAL_SHA
+# Git sets NO such variables. It passes one line per ref on STDIN:
+#     <local ref> <local sha> <remote ref> <remote sha>
+# With `set -u` in front, the first real `git push` died with
+#     line 49: PRE_PUSH_LOCAL_SHA: unbound variable
+# and blocked EVERY push. The unit harness passed 10/10 because it EXPORTED those
+# two variables itself -- the harness invented the interface it was testing, so it
+# could never catch that the interface was fictional. Lesson recorded in the repo
+# history: a green harness proves nothing about an interface it supplies itself.
+# Stdin is the only real source, and the end-to-end push is the only real test.
+#
+# Escape hatch
+# ------------
+# SKIP_PREPUSH=1 skips, but it REQUIRES SKIP_PREPUSH_REASON and prints the reason,
+# so the skip is visible in the push log. An empty reason is rejected outright:
+# a silent skip is precisely the shape of the 2026-10-03 incident.
+#
+# Why not "run only the packages that changed"
+# -------------------------------------------
+# That just moves the subset from the commit message into the hook: miss one
+# package and you miss the red. It is slow instead (the full backend suite is
+# ~15 min in CI), so it only runs when backend/** actually changed.
+#
+# This file is deliberately pure ASCII (no non-ASCII bytes anywhere, including the
+# echoed messages). A shell hook has no encoding contract across Git Bash, WSL,
+# Linux and macOS, and a mangled message is the one thing a person debugging a
+# blocked push cannot afford. The reasoning lives in docs/, in UTF-8, where it
+# belongs. Chinese is not a style preference here; it is a correctness constraint.
+
+set -eu
+
+REPO_ROOT=$(git rev-parse --show-toplevel)
+cd "$REPO_ROOT"
+
+ZERO=0000000000000000000000000000000000000000
+EMPTY_TREE=$(git hash-object -t tree /dev/null)
+
+# ---- read the refs git actually gives us, on stdin -------------------------
+# Union the touched paths across every ref being pushed; a push can carry several.
+CHANGED=""
+SEEN_REFS=0
+while read -r LOCAL_REF LOCAL_SHA REMOTE_REF REMOTE_SHA; do
+  [ -n "${LOCAL_SHA:-}" ] || continue
+  SEEN_REFS=$((SEEN_REFS + 1))
+  # A brand-new remote ref has an all-zero (or empty) remote sha: everything the local
+  # sha reaches counts as changed. Otherwise compare against what the remote already has.
+  if [ -n "$REMOTE_SHA" ] && [ "$REMOTE_SHA" != "$ZERO" ]; then
+    FROM=$REMOTE_SHA
+  else
+    FROM=$EMPTY_TREE
+  fi
+  FILES=$(git diff --name-only "$FROM" "$LOCAL_SHA" 2>/dev/null || true)
+  if [ -n "$FILES" ]; then
+    CHANGED="$CHANGED
+$FILES"
+  fi
+done
+
+if [ "$SEEN_REFS" -eq 0 ]; then
+  # No ref lines (some invocations, or a manual run): fall back to the worktree.
+  CHANGED=$(git status --porcelain | awk '{print $2}' || true)
+  echo "[pre-push] no ref lines on stdin; falling back to the current worktree."
+fi
+
+if [ -z "$CHANGED" ]; then
+  echo "[pre-push] nothing to compare; treating as full scope."
+  NEED_BACKEND=1
+  NEED_FRONTEND=1
+else
+  NEED_BACKEND=0
+  NEED_FRONTEND=0
+  for f in $CHANGED; do
+    case "$f" in
+      backend/*) NEED_BACKEND=1 ;;
+      frontend/*) NEED_FRONTEND=1 ;;
+    esac
+  done
+fi
+
+if [ "$NEED_BACKEND" -eq 0 ] && [ "$NEED_FRONTEND" -eq 0 ]; then
+  echo "[pre-push] push touches neither backend/ nor frontend/; no gate needed. Allowing."
+  exit 0
+fi
+
+if [ "${SKIP_PREPUSH:-}" = "1" ]; then
+  REASON="${SKIP_PREPUSH_REASON:-}"
+  if [ -z "$REASON" ]; then
+    echo "[pre-push] FAIL: SKIP_PREPUSH=1 was set without SKIP_PREPUSH_REASON."
+    echo "         The escape hatch must carry a reason; a silent skip is the 2026-10-03 shape."
+    exit 2
+  fi
+  echo "[pre-push] WARN: skipping the full gates. Reason: $REASON"
+  exit 0
+fi
+
+FAILED=0
+
+if [ "$NEED_BACKEND" -eq 1 ]; then
+  if ! command -v go >/dev/null 2>&1; then
+    echo "[pre-push] FAIL: backend/ changed but go is not on PATH."
+    echo "         A gate with no toolchain must refuse to conclude, never assume green."
+    FAILED=1
+  else
+    echo "[pre-push] -- backend: go test ./... (full suite, not a subset) --"
+    if (cd backend && go test ./...); then
+      echo "[pre-push] backend full suite green."
+    else
+      echo "[pre-push] FAIL: backend full suite is red; push rejected."
+      echo "         If the red is pre-existing rather than introduced here, put the evidence"
+      echo "         in SKIP_PREPUSH_REASON instead of shipping a bounded claim."
+      FAILED=1
+    fi
+  fi
+fi
+
+if [ "$NEED_FRONTEND" -eq 1 ]; then
+  if ! command -v node >/dev/null 2>&1; then
+    echo "[pre-push] FAIL: frontend/ changed but node is not on PATH."
+    FAILED=1
+  elif [ ! -d frontend/node_modules ]; then
+    echo "[pre-push] FAIL: frontend/node_modules is missing, so npm run gates cannot run."
+    echo "         Measured: without deps, gate 11 (check:icons) dies on 'Cannot find package harfbuzzjs'."
+    echo "         Run: cd frontend && npm ci"
+    FAILED=1
+  else
+    echo "[pre-push] -- frontend: npm run gates --"
+    if (cd frontend && npm run gates); then
+      echo "[pre-push] frontend gates green."
+    else
+      echo "[pre-push] FAIL: frontend gates red; push rejected."
+      FAILED=1
+    fi
+  fi
+fi
+
+if [ "$FAILED" -ne 0 ]; then
+  echo "[pre-push] gates did not all pass; this push is rejected."
+  exit 1
+fi
+
+echo "[pre-push] OK: all gates passed. Allowing."
+exit 0

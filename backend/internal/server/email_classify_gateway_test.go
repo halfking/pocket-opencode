@@ -82,9 +82,9 @@ func TestParseGatewayClassification_MissingImportanceDefaultsMedium(t *testing.T
 
 func TestParseGatewayClassification_RejectsUnusableOutput(t *testing.T) {
 	cases := map[string]string{
-		"空串":       "",
-		"纯文本":       "我觉得这封邮件挺重要的",
-		"截断的 JSON":  `{"category":"bil`,
+		"空串":          "",
+		"纯文本":         "我觉得这封邮件挺重要的",
+		"截断的 JSON":    `{"category":"bil`,
 		"没有 category": `{"importance":"high","summary":"x"}`,
 		"category 为空": `{"category":"","importance":"high"}`,
 	}

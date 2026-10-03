@@ -171,7 +171,7 @@ func seedLedgerInvoices(t *testing.T, store *Store, userID, wsID, acctID string,
 		emailID := "em-ledger-" + string(rune('a'+i))
 		if err := store.InsertEmail(ctx, Email{
 			ID: emailID, AccountID: acctID, WorkspaceID: wsID,
-			MessageID: emailID + "@example.com",
+			MessageID:   emailID + "@example.com",
 			FromAddress: "billing@vendor.test", Subject: inv.Subject, Snippet: "x",
 			Date: time.Date(2026, 9, 28, 10, 0, 0, 0, time.UTC).Unix(),
 		}); err != nil {
@@ -269,4 +269,3 @@ func TestPublishLedgerScoped_ReusesPublishedSheet(t *testing.T) {
 		t.Fatalf("another user inherited somebody else's sheet: %q", url)
 	}
 }
-

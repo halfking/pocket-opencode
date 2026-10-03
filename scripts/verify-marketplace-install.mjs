@@ -46,17 +46,23 @@ const API_HOST = '127.0.0.1'
 // API 端口：跟随后端。写死 8088 时，脚本会对着一个**可能根本没人监听**的端口
 // 打 API，而判据照样往下跑 —— 拿到一堆看似「接口不通」的假失败。
 // 与 §4.89（API base 改 env）同一类，这里是端口。
-const API_PORT = Number(process.env.POCKET_API_PORT || 8088);
+const API_PORT = Number(process.env.POCKET_API_PORT || 8088)
+
+// PG schema：跟随后端配置（backend/internal/config/config.go 的 POCKET_PG_SCHEMA，默认值相同）。
+// 写死 opencode_pocket 会让本脚本只能对着共享库跑 —— 失败时 SEED 就留在别人的库里。
+//
+// ⚠️ 必须在模块顶层：24abc616 曾把这行插进 resolvePsql() 的 **for 循环体**里
+// （嵌套深度 2），而 315/320/344 行的 `${SCHEMA}` 都在模块顶层 ——
+// 一旦 sql() 被调用就 ReferenceError，而且这个脚本只在真机排障时手动跑，
+// 所以它坏了很久都没人知道。门禁：node scripts/check-pg-schema-scope.mjs
+const SCHEMA = process.env.POCKET_PG_SCHEMA || 'opencode_pocket'
+if (SCHEMA !== 'opencode_pocket') console.log(`PG schema = ${SCHEMA}（非共享库）`)
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const adb = (a, t = 60000) => execFileSync(ADB, a, { encoding: 'utf8', timeout: t, maxBuffer: 33554432 })
 
 // ---------- psql 解析（logs/ 是 gitignored，worktree 里没有） ----------
 function resolvePsql() {
   for (const c of [process.env.POCKET_PSQL, 'logs/pg/dist2/pgsql/bin/psql.exe', 'C:/workspace/openpocket/logs/pg/dist2/pgsql/bin/psql.exe'].filter(Boolean)) {
-// PG schema：跟随后端配置（backend/internal/config/config.go 的 POCKET_PG_SCHEMA，默认值相同）。
-// 写死 opencode_pocket 会让本脚本只能对着共享库跑 —— 失败时 SEED 就留在别人的库里。
-const SCHEMA = process.env.POCKET_PG_SCHEMA || 'opencode_pocket';
-if (SCHEMA !== 'opencode_pocket') console.log(`PG schema = ${SCHEMA}（非共享库）`);
     try { execFileSync(c, ['--version'], { stdio: 'ignore' }); return c } catch { /* next */ }
   }
   console.error('找不到 psql.exe，请设置 POCKET_PSQL')

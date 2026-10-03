@@ -59,19 +59,19 @@ func (a *ACPStdioAdapter) getOrCreateTransport(ctx context.Context, ref AgentRef
 func (a *ACPStdioAdapter) Capabilities(ctx context.Context, ref AgentRef) (*AgentCapabilities, error) {
 	// 所有 ACP agents 都支持完整协议
 	return &AgentCapabilities{
-		LoadSession:        true,
-		ListSessions:       true,
-		DeleteSession:      true,
-		SetMode:            true,
-		SetConfigOption:    false,
-		PromptImage:        true,
-		PromptAudio:        true,
-		PromptEmbedCtx:     true,
-		MCPHTTP:            false,
-		MCPSSE:             false,
-		Permission:         true,
-		Question:           true,
-		Streaming:          true,
+		LoadSession:     true,
+		ListSessions:    true,
+		DeleteSession:   true,
+		SetMode:         true,
+		SetConfigOption: false,
+		PromptImage:     true,
+		PromptAudio:     true,
+		PromptEmbedCtx:  true,
+		MCPHTTP:         false,
+		MCPSSE:          false,
+		Permission:      true,
+		Question:        true,
+		Streaming:       true,
 	}, nil
 }
 
@@ -303,7 +303,7 @@ func (a *ACPStdioAdapter) SubscribeEvents(ctx context.Context, ref AgentRef) (<-
 	events := make(chan AgentEvent, 32)
 
 	// 启动后台 goroutine：从 Recv 拉帧，转发到 events
-		go func() {
+	go func() {
 		defer close(events)
 		for {
 			frame, err := tr.Recv(ctx)

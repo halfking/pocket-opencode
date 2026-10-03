@@ -23,8 +23,8 @@ import (
 type MockAgentAdapter struct {
 	mu          sync.Mutex
 	sessions    map[string]*AgentSession
-	sessionList []string                     // 保持创建顺序
-	messages    map[string][]AgentMessage    // sessionID → messages
+	sessionList []string                  // 保持创建顺序
+	messages    map[string][]AgentMessage // sessionID → messages
 	nextID      atomic.Int64
 	nextMsgID   atomic.Int64
 

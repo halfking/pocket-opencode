@@ -28,7 +28,6 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/config"
 	"github.com/halfking/pocket-opencode/backend/internal/email"
 	"github.com/halfking/pocket-opencode/backend/internal/feishu"
-	"github.com/halfking/pocket-opencode/backend/internal/wecom"
 	"github.com/halfking/pocket-opencode/backend/internal/finance"
 	"github.com/halfking/pocket-opencode/backend/internal/flashcards"
 	"github.com/halfking/pocket-opencode/backend/internal/identity"
@@ -57,6 +56,7 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/task"
 	"github.com/halfking/pocket-opencode/backend/internal/usersetting"
 	ws "github.com/halfking/pocket-opencode/backend/internal/websocket"
+	"github.com/halfking/pocket-opencode/backend/internal/wecom"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 

@@ -6,16 +6,16 @@
 // clients OR the llm-gateway-go-3 client). Its responsibilities, per the S0
 // design (spec §3.2 decision 2):
 //
-//   1. Provide ONE request/response vocabulary for the whole backend so S1/S2/S3
-//      business code never has to know whether a call is going to aigate or
-//      llm-gateway.
-//   2. Relay SSE streaming chat completions (the gateway supports stream=true;
-//      the old aigate.LLMClient only did non-stream).
-//   3. Record per-call token / cost usage into model_usage, scoped by
-//      workspace_id, so S3-Console can render cost dashboards.
-//   4. Keep the gateway admin token inside the backend — it is read from PG by
-//      the server and handed to this package as a Provider; it NEVER crosses
-//      the BFF boundary to the mobile client (spec §6 risk R6).
+//  1. Provide ONE request/response vocabulary for the whole backend so S1/S2/S3
+//     business code never has to know whether a call is going to aigate or
+//     llm-gateway.
+//  2. Relay SSE streaming chat completions (the gateway supports stream=true;
+//     the old aigate.LLMClient only did non-stream).
+//  3. Record per-call token / cost usage into model_usage, scoped by
+//     workspace_id, so S3-Console can render cost dashboards.
+//  4. Keep the gateway admin token inside the backend — it is read from PG by
+//     the server and handed to this package as a Provider; it NEVER crosses
+//     the BFF boundary to the mobile client (spec §6 risk R6).
 //
 // Design notes:
 //   - This package deliberately does NOT import aigate or llmgateway. It only
@@ -228,14 +228,14 @@ func (s *Service) Embed(ctx context.Context, req EmbedRequest, kind string) (*Em
 
 // Usage aggregates the S3 dashboard reads.
 type UsageSummary struct {
-	WorkspaceID     string    `json:"workspace_id"`
-	PeriodStart     time.Time `json:"period_start"`
-	PeriodEnd       time.Time `json:"period_end"`
-	TotalTokens     int       `json:"total_tokens"`
-	PromptTokens    int       `json:"prompt_tokens"`
-	CompletionTokens int      `json:"completion_tokens"`
-	TotalCostUSD    float64   `json:"total_cost_usd"`
-	CallCount       int       `json:"call_count"`
+	WorkspaceID      string    `json:"workspace_id"`
+	PeriodStart      time.Time `json:"period_start"`
+	PeriodEnd        time.Time `json:"period_end"`
+	TotalTokens      int       `json:"total_tokens"`
+	PromptTokens     int       `json:"prompt_tokens"`
+	CompletionTokens int       `json:"completion_tokens"`
+	TotalCostUSD     float64   `json:"total_cost_usd"`
+	CallCount        int       `json:"call_count"`
 }
 
 // Summarizer reads back usage aggregates for S3 dashboards. Backed by

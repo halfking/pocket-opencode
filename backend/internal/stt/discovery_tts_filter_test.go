@@ -6,8 +6,9 @@ import "testing"
 // asrNameRe 里的 `voice` 会把**语音合成**模型拉进 ASR 候选。
 //
 // 现象（Redmi 真机，录音停止后的失败提示原文）：
-//   网关暂无可用的语音转写模型（mimo-v2.5-asr=网关无上游 provider；
-//   mimo-v2.5-tts-voiceclone=网关无上游 provider；mimo-v2.5-tts-voicedesign=…）
+//
+//	网关暂无可用的语音转写模型（mimo-v2.5-asr=网关无上游 provider；
+//	mimo-v2.5-tts-voiceclone=网关无上游 provider；mimo-v2.5-tts-voicedesign=…）
 //
 // 用户看到「语音转写失败」却收到两个 TTS 模型名，比只报一句通用文案更困惑。
 // 另外探测预算是硬约束（maxProbeCandidates=6，网关限流实测 12 次/分钟），

@@ -8,15 +8,15 @@ import (
 
 // VersionInfo 版本信息
 type VersionInfo struct {
-	Version     string    `json:"version"`      // 版本号 如 "1.2.0"
-	BuildNumber int       `json:"buildNumber"`  // 构建号
-	ReleaseDate time.Time `json:"releaseDate"`  // 发布日期
-	DownloadURL string    `json:"downloadUrl"`  // APK 下载地址
-	FileSize    int64     `json:"fileSize"`     // 文件大小（字节）
-	MD5         string    `json:"md5"`          // MD5 校验
-	Changelog   []string  `json:"changelog"`    // 更新日志
-	ForceUpdate bool      `json:"forceUpdate"`  // 是否强制更新
-	MinVersion  string    `json:"minVersion"`   // 最低兼容版本
+	Version     string    `json:"version"`     // 版本号 如 "1.2.0"
+	BuildNumber int       `json:"buildNumber"` // 构建号
+	ReleaseDate time.Time `json:"releaseDate"` // 发布日期
+	DownloadURL string    `json:"downloadUrl"` // APK 下载地址
+	FileSize    int64     `json:"fileSize"`    // 文件大小（字节）
+	MD5         string    `json:"md5"`         // MD5 校验
+	Changelog   []string  `json:"changelog"`   // 更新日志
+	ForceUpdate bool      `json:"forceUpdate"` // 是否强制更新
+	MinVersion  string    `json:"minVersion"`  // 最低兼容版本
 }
 
 // CheckUpdateRequest 检查更新请求
@@ -83,7 +83,7 @@ func (h *UpdateHandler) HandleCheckUpdate(w http.ResponseWriter, r *http.Request
 
 	// 比较版本
 	hasUpdate := compareVersion(req.CurrentVersion, h.latestVersion.Version)
-	
+
 	resp := CheckUpdateResponse{
 		HasUpdate:   hasUpdate,
 		ForceUpdate: h.latestVersion.ForceUpdate,
@@ -113,10 +113,10 @@ func (h *UpdateHandler) HandleDownloadAPK(w http.ResponseWriter, r *http.Request
 
 	// 实际实现中应该从文件系统或云存储读取 APK 文件
 	apkPath := "/data/www/pocket.kxpms.cn/downloads/opencode-pocket-latest.apk"
-	
+
 	w.Header().Set("Content-Type", "application/vnd.android.package-archive")
 	w.Header().Set("Content-Disposition", "attachment; filename=opencode-pocket.apk")
-	
+
 	http.ServeFile(w, r, apkPath)
 }
 

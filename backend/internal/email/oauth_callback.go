@@ -52,7 +52,6 @@ func NewPendingEntryWithWorkspace(accountID, userID, workspaceID, providerID, em
 	}
 }
 
-
 // PendingOAuth 是内存 map，存储 state → pendingEntry。
 type PendingOAuth struct {
 	mu      sync.RWMutex
@@ -166,22 +165,22 @@ func HandleOAuthCallback(cfg OAuthCallbackConfig) http.HandlerFunc {
 			return
 		}
 		// 加密并持久化 refresh_token 和 access_token
-			refreshEnc, err := cfg.Crypto.EncryptString(tokens.RefreshToken)
-			if err != nil {
-				recordAudit(entry.UserID, entry.WorkspaceID, "email.oauth.completed.error",
-					"email_account:"+entry.AccountID,
-					AuditFields{Success: false, Detail: "encrypt_refresh_failed"})
-				http.Error(w, "encrypt refresh token failed", http.StatusInternalServerError)
-				return
-			}
-			accessEnc, err := cfg.Crypto.EncryptString(tokens.AccessToken)
-			if err != nil {
-				recordAudit(entry.UserID, entry.WorkspaceID, "email.oauth.completed.error",
-					"email_account:"+entry.AccountID,
-					AuditFields{Success: false, Detail: "encrypt_access_failed"})
-				http.Error(w, "encrypt access token failed", http.StatusInternalServerError)
-				return
-			}
+		refreshEnc, err := cfg.Crypto.EncryptString(tokens.RefreshToken)
+		if err != nil {
+			recordAudit(entry.UserID, entry.WorkspaceID, "email.oauth.completed.error",
+				"email_account:"+entry.AccountID,
+				AuditFields{Success: false, Detail: "encrypt_refresh_failed"})
+			http.Error(w, "encrypt refresh token failed", http.StatusInternalServerError)
+			return
+		}
+		accessEnc, err := cfg.Crypto.EncryptString(tokens.AccessToken)
+		if err != nil {
+			recordAudit(entry.UserID, entry.WorkspaceID, "email.oauth.completed.error",
+				"email_account:"+entry.AccountID,
+				AuditFields{Success: false, Detail: "encrypt_access_failed"})
+			http.Error(w, "encrypt access token failed", http.StatusInternalServerError)
+			return
+		}
 		expiresAt := time.Now().Add(time.Duration(tokens.ExpiresIn) * time.Second).Unix()
 		if err := cfg.Store.UpsertOAuthTokenScoped(r.Context(), entry.AccountID, entry.UserID, entry.WorkspaceID, refreshEnc, accessEnc, expiresAt, tokens.Scope); err != nil {
 			log.Printf("[oauth] upsert token: %v", err)
@@ -192,9 +191,9 @@ func HandleOAuthCallback(cfg OAuthCallbackConfig) http.HandlerFunc {
 			return
 		}
 		// 更新 account.auth_type = "oauth2"
-			if err := cfg.Store.SetAccountAuthTypeScoped(r.Context(), entry.AccountID, entry.UserID, entry.WorkspaceID, "oauth2"); err != nil {
-				log.Printf("[oauth] set auth type: %v", err)
-			}
+		if err := cfg.Store.SetAccountAuthTypeScoped(r.Context(), entry.AccountID, entry.UserID, entry.WorkspaceID, "oauth2"); err != nil {
+			log.Printf("[oauth] set auth type: %v", err)
+		}
 		// 成功：写一条审计事件；detail 仅包含 provider 与 expires_in，
 		// 绝不含 token 字符串本身。
 		recordAudit(entry.UserID, entry.WorkspaceID, "email.oauth.completed",

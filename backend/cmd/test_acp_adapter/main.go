@@ -28,7 +28,7 @@ func main() {
 	// 注：这里我们用 MockAgentAdapter 模拟，因为真正的 ACPAdapter 需要实现完整协议
 	log.Println("=== 步骤 2: 创建 Mock Agent Adapter ===")
 	mockAdapter := agent.NewMockAgentAdapter()
-	
+
 	ref := agent.AgentRef{Type: "acp-mock", Target: "test"}
 	if err := reg.Register(ref, mockAdapter); err != nil {
 		log.Fatalf("Register failed: %v", err)
@@ -55,7 +55,7 @@ func main() {
 	// 5. 创建 session
 	log.Println("\n=== 步骤 5: 创建 Session ===")
 	sess, err := regAdapter.CreateSession(ctx, ref, &agent.CreateSessionRequest{
-		Title: "ACP test session",
+		Title:      "ACP test session",
 		WorkingDir: "/tmp",
 	})
 	if err != nil {

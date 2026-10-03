@@ -79,13 +79,13 @@ func TestDiagMergePlan(t *testing.T) {
 		t.Fatalf("query: %v", err)
 	}
 	type grp struct {
-		acct, subj                                       string
-		imapID, pop3ID                                   string
-		imapUID, pop3UID                                 int64
-		imapNotif, pop3Notif                             *int64
-		imapImp, pop3Imp, imapCat, pop3Cat               string
-		imapRead, imapStar, pop3Read, pop3Star           bool
-		imapInv, pop3Inv                                 int
+		acct, subj                             string
+		imapID, pop3ID                         string
+		imapUID, pop3UID                       int64
+		imapNotif, pop3Notif                   *int64
+		imapImp, pop3Imp, imapCat, pop3Cat     string
+		imapRead, imapStar, pop3Read, pop3Star bool
+		imapInv, pop3Inv                       int
 	}
 	var groups []grp
 	for rows.Next() {

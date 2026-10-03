@@ -23,7 +23,7 @@ import (
 )
 
 // realICBCStatementSnippet 是生产库里那封邮件的**真实** snippet 片段
-//（字段名与顺序照原样：还款日在前、账单周期与生成日在后）。
+// （字段名与顺序照原样：还款日在前、账单周期与生成日在后）。
 const realICBCStatementSnippet = "信 用 卡 对 账 单 尊敬的客户,您好! 感谢您使用工商银行信用卡，我行24小时服务专线95588竭诚为您服务。 " +
 	"重要提示： 贷记卡到期还款日 2026年10月25日 账单周期 2026年09月01日—2026年09月30日 " +
 	"对账单生成日 2026年09月30日 需 还 款 明 细 卡号后四位币种 应还款额 最低还款额信用额度 " +
@@ -31,12 +31,12 @@ const realICBCStatementSnippet = "信 用 卡 对 账 单 尊敬的客户,您好
 
 func realICBCStatementEmail() Email {
 	return Email{
-		ID:           "em-1298896144-acct-x-5",
-		AccountID:    "acct-x",
-		Subject:      "中国工商银行客户对账单(ICBC Peony Card Bank Statement)",
-		FromAddress:  "bill@icbc.com.cn",
-		FromName:     "中国工商银行",
-		Snippet:      realICBCStatementSnippet,
+		ID:          "em-1298896144-acct-x-5",
+		AccountID:   "acct-x",
+		Subject:     "中国工商银行客户对账单(ICBC Peony Card Bank Statement)",
+		FromAddress: "bill@icbc.com.cn",
+		FromName:    "中国工商银行",
+		Snippet:     realICBCStatementSnippet,
 	}
 }
 
@@ -147,7 +147,7 @@ func TestAdmitDebtNotice_DirectTable(t *testing.T) {
 		{"对账单 发票号码 12345678", false, true},
 		{"Amount due 500.00 USD", false, false},
 		{"Account statement 发票号码 87654321", false, true},
-		{"Account statement", false, false}, // 匹配债务形态且无发票语义 → 拒
+		{"Account statement", false, false},   // 匹配债务形态且无发票语义 → 拒
 		{"本月服务账单已生成，请在 App 内查看", false, true}, // 只是提到「账单」，不是对账单形态
 		{"增值税电子普通发票 价税合计 100.00", false, true},
 	}

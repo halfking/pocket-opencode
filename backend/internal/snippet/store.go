@@ -78,7 +78,7 @@ func (s *Store) CreateScoped(req CreateSnippetRequest, ownerID, workspaceID stri
 	}
 
 	s.snippets[snip.ID] = snip
-	
+
 	// Return a copy to prevent external mutation
 	return copySnippet(snip), nil
 }
@@ -98,7 +98,7 @@ func (s *Store) Get(id string) (*Snippet, error) {
 	if !ok {
 		return nil, fmt.Errorf("snippet not found: %s", id)
 	}
-	
+
 	// Return a copy to prevent external mutation
 	return copySnippet(snip), nil
 }
@@ -310,11 +310,11 @@ func copySnippet(snip *Snippet) *Snippet {
 	if snip == nil {
 		return nil
 	}
-	
+
 	// Copy tags slice
 	tagsCopy := make([]string, len(snip.Tags))
 	copy(tagsCopy, snip.Tags)
-	
+
 	return &Snippet{
 		ID:          snip.ID,
 		OwnerID:     snip.OwnerID,

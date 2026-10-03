@@ -7,7 +7,7 @@ import (
 
 func TestRecognizer_DecimalAmounts(t *testing.T) {
 	r := NewRecognizer()
-	
+
 	tests := []struct {
 		input    string
 		expected float64
@@ -17,7 +17,7 @@ func TestRecognizer_DecimalAmounts(t *testing.T) {
 		{"买咖啡花了25.00块钱", 25.00},
 		{"加油花了300.50元", 300.50},
 	}
-	
+
 	for _, tt := range tests {
 		result := r.Parse(tt.input)
 		if result == nil {
@@ -32,7 +32,7 @@ func TestRecognizer_DecimalAmounts(t *testing.T) {
 
 func TestRecognizer_CurrencySymbols(t *testing.T) {
 	r := NewRecognizer()
-	
+
 	tests := []struct {
 		input    string
 		expected float64
@@ -41,7 +41,7 @@ func TestRecognizer_CurrencySymbols(t *testing.T) {
 		{"买书花了$25.5", 25.5},
 		{"充值了¥ 100元", 100},
 	}
-	
+
 	for _, tt := range tests {
 		result := r.Parse(tt.input)
 		if result == nil {
@@ -56,7 +56,7 @@ func TestRecognizer_CurrencySymbols(t *testing.T) {
 
 func TestRecognizer_VariousSuffixes(t *testing.T) {
 	r := NewRecognizer()
-	
+
 	tests := []struct {
 		input    string
 		expected float64
@@ -67,7 +67,7 @@ func TestRecognizer_VariousSuffixes(t *testing.T) {
 		{"吃饭花了38钱", 38},
 		{"吃饭花了38", 38},
 	}
-	
+
 	for _, tt := range tests {
 		result := r.Parse(tt.input)
 		if result == nil {
@@ -91,7 +91,7 @@ func TestRecognizer_ZeroAmount(t *testing.T) {
 func TestRecognizer_NegativeAmount(t *testing.T) {
 	r := NewRecognizer()
 	// The regex doesn't include negative sign in the pattern
-	// So "花了-100块" will actually match "100块" 
+	// So "花了-100块" will actually match "100块"
 	result := r.Parse("花了-100块")
 	// It will match the number 100, not nil
 	if result == nil {
@@ -159,7 +159,7 @@ func TestRecognizer_WhitespaceOnly(t *testing.T) {
 
 func TestRecognizer_IncomeVariations(t *testing.T) {
 	r := NewRecognizer()
-	
+
 	tests := []string{
 		"收到了1000块",
 		"收入1000元",
@@ -168,7 +168,7 @@ func TestRecognizer_IncomeVariations(t *testing.T) {
 		"收款1000",
 		"回款1000块钱",
 	}
-	
+
 	for _, input := range tests {
 		result := r.Parse(input)
 		if result == nil {
@@ -183,7 +183,7 @@ func TestRecognizer_IncomeVariations(t *testing.T) {
 
 func TestRecognizer_ExpenseCategories(t *testing.T) {
 	r := NewRecognizer()
-	
+
 	tests := []struct {
 		input    string
 		category string
@@ -205,7 +205,7 @@ func TestRecognizer_ExpenseCategories(t *testing.T) {
 		{"花了100块", "餐饮"}, // "花了" triggers 餐饮
 		{"支付了100块", "其他"},
 	}
-	
+
 	for _, tt := range tests {
 		result := r.Parse(tt.input)
 		if result == nil {
@@ -220,7 +220,7 @@ func TestRecognizer_ExpenseCategories(t *testing.T) {
 
 func TestRecognizer_IncomeCategories(t *testing.T) {
 	r := NewRecognizer()
-	
+
 	tests := []struct {
 		input    string
 		category string
@@ -234,7 +234,7 @@ func TestRecognizer_IncomeCategories(t *testing.T) {
 		{"收到红包500块", "其他收入"},
 		{"收入1000元", "其他收入"},
 	}
-	
+
 	for _, tt := range tests {
 		result := r.Parse(tt.input)
 		if result == nil {
@@ -261,15 +261,15 @@ func TestRecognizer_NotePreservation(t *testing.T) {
 
 func TestRecognizer_CaseInsensitive(t *testing.T) {
 	r := NewRecognizer()
-	
+
 	// Chinese doesn't have case, but test mixed scenarios
 	result1 := r.Parse("吃饭花了50块")
 	result2 := r.Parse("吃饭花了50块")
-	
+
 	if result1 == nil || result2 == nil {
 		t.Fatal("expected non-nil results")
 	}
-	
+
 	if result1.Type != result2.Type {
 		t.Error("case handling inconsistent")
 	}
@@ -277,7 +277,7 @@ func TestRecognizer_CaseInsensitive(t *testing.T) {
 
 func TestRecognizer_NilInput(t *testing.T) {
 	r := NewRecognizer()
-	
+
 	// Empty string
 	result := r.Parse("")
 	if result != nil {
@@ -302,7 +302,7 @@ func TestRecognizer_AmountOnly(t *testing.T) {
 
 func TestRecognizer_EdgeCaseDecimalPrecision(t *testing.T) {
 	r := NewRecognizer()
-	
+
 	tests := []struct {
 		input    string
 		expected float64
@@ -312,7 +312,7 @@ func TestRecognizer_EdgeCaseDecimalPrecision(t *testing.T) {
 		{"花了100.00元", 100.00},
 		{"花了9999.99块", 9999.99},
 	}
-	
+
 	for _, tt := range tests {
 		result := r.Parse(tt.input)
 		if result == nil {

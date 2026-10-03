@@ -68,7 +68,9 @@ var isolatedSchemaRe = regexp.MustCompile(`"(\w*_test_)`)
 //
 // 危害不在于「读到脏数据」，而在于**产出假结论**：
 // reminder_notified_diag_test.go 的判据是
-//     if highUnnotified == 0 { 结论：remindersSent=0 符合设计，不是缺陷 }
+//
+//	if highUnnotified == 0 { 结论：remindersSent=0 符合设计，不是缺陷 }
+//
 // DSN 指向 public 而非生产 schema 时它扫到 0 行，highUnnotified 自然是 0，
 // 于是输出「不是缺陷」。**查空库永远「符合设计」。**
 //
@@ -76,9 +78,11 @@ var isolatedSchemaRe = regexp.MustCompile(`"(\w*_test_)`)
 // 限定符，同样完全依赖 search_path。
 //
 // 反例（这些**不**该被判红）：
-//   · 显式带 schema. 前缀的查询（`FROM <schema>.emails`）——不依赖 search_path；
-//   · 刻意不钉的（diag_schema_present_test.go：它要站「默认视角」查
-//     schema 是否存在，查的是 information_schema 不是业务表）。
+//
+//	· 显式带 schema. 前缀的查询（`FROM <schema>.emails`）——不依赖 search_path；
+//	· 刻意不钉的（diag_schema_present_test.go：它要站「默认视角」查
+//	  schema 是否存在，查的是 information_schema 不是业务表）。
+//
 // 这两类靠本判据抓不到，所以规则 5 只在「用了 pgxpool.New(直连) 且全文无
 // search_path 相关代码」时报警——宁可漏报，不可对正确写法误报。
 var dsnSearchPathHelperReUnpinned = regexp.MustCompile(`pgxpool\.New\s*\(\s*ctx\s*,`)
@@ -109,7 +113,6 @@ var searchPathAnyRe = regexp.MustCompile(`(?:\[\s*"search_path"\s*\]\s*=|search_
 // 也就是说它们**完全不依赖 search_path**——查哪个库由 SQL 自己写死了。
 // 规则 5 必须放过这种正确写法，否则就是逼人把安全代码改危险。
 var qualifiedTableRe = regexp.MustCompile("(?i)FROM\\s+`?\\+?schema\\+?`?\\.")
-
 
 // productionDSNRe 匹配测试**代码**里对生产 DSN 变量字面量的引用。
 //
@@ -153,6 +156,7 @@ var pgProductionDSNWriteOnly = map[string]string{
 // 旧实现只剥「整行是注释」的行，剥不掉两件事，而这两件都能让违规代码隐身：
 //   - 行尾注释：`schema := x // 顺便说一句 POCKET_POSTGRES_DSN`
 //   - 块注释的中间行（不以 * 开头）
+//
 // 另外 `//` 必须要求前面不是 `:`，否则 `"https://..."` 会被当成注释起点
 // 把整行截断——那是「因为判据太宽而漏报」，方向同样危险。
 func stripGoComments(src string) string {
@@ -264,6 +268,26 @@ var pgSafeWithoutIsolation = map[string]string{
 	//     换 schema 需改代码；且它绕开 NewStore（那会 migrate 建表，是写操作）。
 	"internal/email/diag_spam_preview_test.go": "只读真实库探针：无写语句（仅一条 SELECT）；需 POCKET_DIAG_SPAM_PREVIEW=1 + POCKET_DIAG_PG。隔离靠 SQL 里显式限定 `FROM opencode_pocket.emails`（:77）而非 search_path，故不依赖 DSN 的 search_path。弱点：schema 名硬编码，换库需改代码",
 
+	// internal/email/diag_stale_debt_notice_row_test.go（2026-10-03，登记过两次）：
+	//     这个文件**同一形态已经犯过两次**，所以单独写清楚，免得后来人只看到一个
+	//     文件名就去改护栏：
+	//   · 第一次：ee912940 提交该文件时用了 POCKET_TEST_POSTGRES_DSN 配硬编码
+	//     `opencode_pocket`，把 internal/server 跑成红的（同形态的前例见上面
+	//     diag_spam_preview_test.go 的登记）。
+	//   · 第二次：并发会话补登豁免，把当时的弱点照实登记（schema 硬编码、只读
+	//     靠「文件里没有写语句」维持、读的是测试变量名却查生产 schema）。
+	//     本次把这些弱点**真的修掉**了，登记随之改写 —— 留旧文本会变成对
+	//     一个已不存在形态的描述（还引用了已不再使用的变量名）。
+	//   · 现在的形态：DSN 与 schema 都从 POCKET_REAL_MAIL_DSN /
+	//     POCKET_REAL_MAIL_SCHEMA 显式传入且**都没有缺省值**（缺省会让人在
+	//     不知情时打到生产库）；只读由数据库侧强制
+	//     （default_transaction_read_only = on，写尝试直接报错）。
+	//   · 指向生产 schema 仍是**目的**：隔离库里没有那张
+	//     inv_1790903383222583800_1 行，只会输出「查无此行」的假结论。
+	// 登记在 pgSafeWithoutIsolation（不是 pgAllowlistedWrites）：全文件 0 写
+	// 语句，只有 2 条 pool.Query（均为 SELECT）。
+	"internal/email/diag_stale_debt_notice_row_test.go": "只读真实库诊断：全文件 0 写语句（2 条 pool.Query 均为 SELECT）；需 POCKET_DIAG_STALE_ROW=1 显式开关 + POCKET_REAL_MAIL_DSN + POCKET_REAL_MAIL_SCHEMA（**两者都无缺省值**，缺省会误打生产库）。它**必须**指向生产 schema——那一行（inv_1790903383222583800_1，58000.00）只存在于生产库，隔离库只会输出「查无此行」这种假结论。只读由**数据库强制**：连接 default_transaction_read_only = on，写尝试直接报错，不靠「文件里没有写语句」这句话；search_path 由 RuntimeParams 显式设为 POCKET_REAL_MAIL_SCHEMA，表名不带 schema 限定符。判定链复用生产函数 ExtractInvoice / admitDebtNotice / GetInvoiceByEmailID，不重抄。查无此行时 t.Fatal，避免把「行没了」读成「问题不存在」",
+
 	// internal/email/pipeline_lock_test.go（2026-10-03 新增）：
 	//   · 它**确实**隔离，只是隔离逻辑在被复用的助手里，本文件因此没有
 	//     isolatedSchemaRe 要找的 `"*_test_` 字面量（schema 名由 helper 现场生成）。
@@ -366,14 +390,7 @@ var pgSafeWithoutIsolation = map[string]string{
 	"internal/email/diag_merge_plan_test.go":     "只读真实库诊断：全文件 0 写语句；需显式 diag 开关 + POCKET_REAL_MAIL_DSN（合并迁移**预演**，只出计划不执行）",
 	"internal/email/diag_rest_dupes_test.go":     "只读真实库诊断：全文件 0 写语句；需显式 diag 开关 + POCKET_REAL_MAIL_DSN（剩余重复候选的定性排查）",
 
-	// 工行信用卡对账单那张「phantom 58000」存量行的定性诊断（2026-10-03）。
-	// 单独成组，理由同下面 diag_invoice_backlog_test.go：它**必须**指向生产
-	// schema —— 那一行只存在于生产库，隔离库跑出来是「查无此行」这种假结论。
-	// 不同点：DSN 与 schema **都没有缺省值**（缺省会让人在不知情时打到生产库），
-	// 且只读由数据库强制（RuntimeParams 里 default_transaction_read_only = on），
-	// 不靠「代码里只有 SELECT」这句话。判定链复用生产函数 ExtractInvoice /
-	// admitDebtNotice / GetInvoiceByEmailID，不重抄。
-	"internal/email/diag_stale_debt_notice_row_test.go": "只读真实库诊断：全文件 0 写语句；需 POCKET_DIAG_STALE_ROW=1 显式开关 + POCKET_REAL_MAIL_DSN + POCKET_REAL_MAIL_SCHEMA（**两者都无缺省值**，缺省会误打生产库）。它**必须**指向生产 schema——那一行（inv_1790903383222583800_1，58000.00）只存在于生产库，隔离库只会输出「查无此行」这种假结论。只读由数据库强制：连接 default_transaction_read_only = on，写尝试直接报错；search_path 由 RuntimeParams 显式设为 POCKET_REAL_MAIL_SCHEMA。判定链复用生产函数 ExtractInvoice / admitDebtNotice / GetInvoiceByEmailID，不重抄。查无此行时 t.Fatal，避免把「行没了」读成「问题不存在」",
+
 
 	// 需求 2 的判定预演。**单独成组**：它的 key 比上面那组长，会把整组的
 	// 对齐列宽都撑开，逼着 gofmt 重排那几行与本次改动无关的邻居；空行分开
@@ -903,8 +920,10 @@ func TestSearchPathHelperJudgeIsNotVacuous(t *testing.T) {
 // 这条测试存在是因为一次负控失败：第一版把 searchPathAnyRe 写成
 // `regexp.MustCompile("search_path")`——匹配**字面量**。于是把
 // RuntimeParams 那行删掉之后判据**仍然转不了红**，因为文件里剩下的
-//     t.Fatalf("verify search_path: %v", err)
-//     t.Logf("search_path verified: current_schema() = %q", …)
+//
+//	t.Fatalf("verify search_path: %v", err)
+//	t.Logf("search_path verified: current_schema() = %q", …)
+//
 // 这些**运行时字符串**里照样有那个词。
 //
 // 「提到 search_path」不等于「设置了 search_path」。判据锚错了位置就会

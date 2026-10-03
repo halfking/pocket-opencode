@@ -83,7 +83,7 @@ type MailFolder struct {
 	// Source: user = 本产品创建；server = IMAP LIST 发现。
 	Source string `json:"source,omitempty"`
 	// ServerSynced 表示目录已在 IMAP 服务器上真实存在（user 目录创建后置真）。
-	ServerSynced bool `json:"serverSynced"`
+	ServerSynced bool  `json:"serverSynced"`
 	CreatedAt    int64 `json:"createdAt"`
 	UpdatedAt    int64 `json:"updatedAt"`
 	// Extra 承载查询期的派生字段（如目录内邮件数），不入库。

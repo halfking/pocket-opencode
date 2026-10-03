@@ -36,9 +36,11 @@ const DefaultLLMGatewayBaseURL = "https://llm.kxpms.cn/v1"
 //
 // 2026-10-02 用户改口径：首选模型由 glm-5.2 改为 **glm-5.3**（其余 8 个不变、
 // 顺序不变）。实测依据（2026-10-02，key 取自 .env 的 POCKET_LLM_GATEWAY_API_KEY）：
-//   GET  /v1/models            → 200，606 个模型，glm-5.3 在目录里
-//   POST /v1/chat/completions  → 200，非流式 content="OK"
-//   POST /v1/chat/completions  → 200，SSE 正常，先出 reasoning_content 再出 content
+//
+//	GET  /v1/models            → 200，606 个模型，glm-5.3 在目录里
+//	POST /v1/chat/completions  → 200，非流式 content="OK"
+//	POST /v1/chat/completions  → 200，SSE 正常，先出 reasoning_content 再出 content
+//
 // 注意 glm-5.3 与 glm-5.2 一样是推理模型：max_tokens 给小了（例如 64）会把预算
 // 全花在 reasoning_content 上，content 为空串、finish_reason=length。这是上游
 // 模型的性质，不是链路故障——非流式 max_tokens=32 时同样返回过 content="OK"。
@@ -53,11 +55,13 @@ const DefaultLLMGatewayBaseURL = "https://llm.kxpms.cn/v1"
 //
 // 但**刻意没有重排**：对 llm.kxpms.cn 做了三轮独立探测（每模型 30s/45s 窗口），
 // 结论互相打架——
-//   claude-fable-5  4.2s ✅ / 5.0s ✅ / 30s 超时 ❌
-//   claude-sonnet-5 45s 超时 ❌ / 4.4s ✅
-//   minimax-m3      4.0s ✅ / 1.7s ✅ / 2.0s ✅
-//   gpt-5.4          45s 超时 ❌ / 30s 超时 ❌
-//   glm-5.2          HTTP 200 但 0 个 content delta（三轮一致）
+//
+//	claude-fable-5  4.2s ✅ / 5.0s ✅ / 30s 超时 ❌
+//	claude-sonnet-5 45s 超时 ❌ / 4.4s ✅
+//	minimax-m3      4.0s ✅ / 1.7s ✅ / 2.0s ✅
+//	gpt-5.4          45s 超时 ❌ / 30s 超时 ❌
+//	glm-5.2          HTTP 200 但 0 个 content delta（三轮一致）
+//
 // 也就是说上游可用性是波动的，单次或两次探测不足以支撑「把谁排前面」的结论，
 // 那只会把噪声固化进默认值。20s 尝试窗本身也不宜调低——代码注释记录过
 // kimi-k3 长 prompt 首 token 实测 >20s，调低会误杀慢而可用的模型。
@@ -89,9 +93,10 @@ type LLMGatewayConfig struct {
 // BuildOpenCodeConfigContent 构造 OPENCODE_CONFIG_CONTENT JSON 字符串。
 //
 // 产出结构遵循 OpenCode V1 schema（packages/core/src/v1/config/provider.ts）：
-//   provider.<id>.npm = "@ai-sdk/openai-compatible"
-//   provider.<id>.options.baseURL + apiKey
-//   model = <providerID>/<modelID>
+//
+//	provider.<id>.npm = "@ai-sdk/openai-compatible"
+//	provider.<id>.options.baseURL + apiKey
+//	model = <providerID>/<modelID>
 //
 // 注入方式：
 //   - 若 pocketd 拉起 opencode 子进程：写入环境变量 OPENCODE_CONFIG_CONTENT
@@ -119,8 +124,8 @@ func BuildOpenCodeConfigContent(cfg LLMGatewayConfig, defaultModel string) (stri
 	doc := map[string]interface{}{
 		"provider": map[string]interface{}{
 			providerID: map[string]interface{}{
-				"name":    "Pocket LLM Gateway",
-				"npm":     "@ai-sdk/openai-compatible",
+				"name": "Pocket LLM Gateway",
+				"npm":  "@ai-sdk/openai-compatible",
 				"options": map[string]interface{}{
 					"baseURL": cfg.BaseURL,
 					"apiKey":  cfg.APIKey,

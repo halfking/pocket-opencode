@@ -106,9 +106,9 @@ func (s *PGStore) CreateScopedWithStatus(req CreateTransactionRequest, ownerID, 
 		tx.ID, tx.OwnerID, tx.WorkspaceID, tx.Type, tx.Amount,
 		tx.Category, tx.Note, tx.Tags, tx.ProjectID, tx.Source, tx.NoteRef, tx.CreatedAt,
 	)
-		if err != nil {
-			return nil, false, fmt.Errorf("insert transaction: %w", err)
-		}
+	if err != nil {
+		return nil, false, fmt.Errorf("insert transaction: %w", err)
+	}
 	if tag.RowsAffected() == 0 && req.NoteRef != "" {
 		// 并发下另一请求已插入：返回那条既有记录
 		if existing, gerr := s.getByNoteRef(ctx, req.NoteRef, ownerID, workspaceID); gerr == nil && existing != nil {

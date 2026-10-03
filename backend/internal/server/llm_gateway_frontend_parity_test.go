@@ -71,7 +71,7 @@ func TestFrontendLLMGatewayDefaultsMatchBackend(t *testing.T) {
 	want := opencode.DefaultLLMGatewayPreferredModels
 	if !slices.Equal(got, want) {
 		t.Fatalf("前端兜底预填与后端 seed 不一致：\n  前端 %s\n  后端 %s\n"+
-			"前端这份是「后端没起来时的兜底预填」（见该文件头注释），" +
+			"前端这份是「后端没起来时的兜底预填」（见该文件头注释），"+
 			"两边不一致意味着离线用户和在线用户看到的默认模型不同，且不会有任何报错。",
 			got, want)
 	}

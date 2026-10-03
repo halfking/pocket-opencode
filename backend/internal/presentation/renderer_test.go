@@ -77,7 +77,7 @@ func TestRenderer_RenderHTML_XSSProtection(t *testing.T) {
 	if strings.Contains(html, "<img src=") && !strings.Contains(html, "&lt;img src=") {
 		t.Error("XSS vulnerability: unescaped img tag with src attribute")
 	}
-	
+
 	// More importantly: verify that the dangerous content appears ONLY in escaped form
 	// The content should be inside our template's <h1> or <p> tags as text, not as executable HTML
 	if strings.Contains(html, "<h1><script>") || strings.Contains(html, "<p><script>") {
@@ -94,7 +94,7 @@ func TestRenderer_RenderHTML_XSSProtection(t *testing.T) {
 	if !strings.Contains(html, "&lt;img") {
 		t.Error("expected escaped img tag")
 	}
-	
+
 	// Most important: verify structure is safe - user content is inside text nodes, not attributes/tags
 	// The title should be: <title>ESCAPED_CONTENT</title>
 	// The slide content should be: <h1>ESCAPED_CONTENT</h1> and <p>ESCAPED_CONTENT</p>

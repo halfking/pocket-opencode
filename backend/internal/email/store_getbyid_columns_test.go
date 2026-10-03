@@ -122,11 +122,11 @@ func TestGetEmailByID_MessageIDFeedsSameEmailMessage(t *testing.T) {
 	ctx := context.Background()
 
 	const (
-		userID = "u-msgid"
-		wsID   = "ws-msgid"
-		acctID = "acct-msgid"
+		userID  = "u-msgid"
+		wsID    = "ws-msgid"
+		acctID  = "acct-msgid"
 		emailID = "em-msgid-1"
-		msgID  = "real.777@example.com"
+		msgID   = "real.777@example.com"
 	)
 	seedAccount(t, store, acctID, userID, wsID)
 	if err := store.InsertEmail(ctx, Email{

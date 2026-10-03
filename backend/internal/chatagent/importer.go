@@ -23,15 +23,16 @@ type FrontMatter struct {
 // ParseAgentFile 从一个 .md 文件解析出 Agent。
 //
 // 文件格式：
-//   ---
-//   name: AI 工程师
-//   description: 精通机器学习...
-//   emoji: 🤖
-//   color: purple
-//   ---
 //
-//   # AI 工程师
-//   你是**AI 工程师**...
+//	---
+//	name: AI 工程师
+//	description: 精通机器学习...
+//	emoji: 🤖
+//	color: purple
+//	---
+//
+//	# AI 工程师
+//	你是**AI 工程师**...
 //
 // 返回的 Agent.ID 从文件名提取（去掉 .md 后缀），Department 从目录名提取。
 func ParseAgentFile(path string) (*Agent, error) {
@@ -85,10 +86,10 @@ func ParseAgentFile(path string) (*Agent, error) {
 // 注意：仓库根目录（"."）不在内，所以仓库自身的根 .md 文件仍会被考虑
 // （由 UPSTREAM.md / 全大写文件名规则进一步过滤）。
 var skipDirs = map[string]struct{}{
-	".git":      {},
-	".github":   {},
-	".vscode":   {},
-	".idea":     {},
+	".git":         {},
+	".github":      {},
+	".vscode":      {},
+	".idea":        {},
 	"node_modules": {},
 }
 

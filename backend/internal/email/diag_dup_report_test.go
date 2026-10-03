@@ -53,9 +53,9 @@ func TestDiagDuplicateReport(t *testing.T) {
 	}
 	type rec struct {
 		id, acct, msgID, subj, from, ts, cat, imp string
-		uid                                        int64
-		att, body, read, star, notified            bool
-		inv, intent                                int
+		uid                                       int64
+		att, body, read, star, notified           bool
+		inv, intent                               int
 	}
 	var all []rec
 	for rows.Next() {

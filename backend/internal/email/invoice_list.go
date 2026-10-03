@@ -18,8 +18,8 @@ type InvoiceListPage struct {
 	// 混入多种币种时它是 0，且 Amounts 非空——跨币种的算术和不是金额，
 	// 给一个「看起来正常」的标量会直接误导（前端会把它渲染成 ¥）。
 	// 调用方应当优先读 Amounts；只有在 len(Amounts) <= 1 时才用 Amount。
-	Amount   float64
-	Amounts  []CurrencyTotal
+	Amount  float64
+	Amounts []CurrencyTotal
 	// Currency 是 Amount 对应的币种（单币种时非空）。
 	Currency string
 }
@@ -184,6 +184,7 @@ func (s *Store) InvoiceListStats(ctx context.Context, userID, workspaceID, statu
 	}
 	return st, nil
 }
+
 // attachEmailDates 批量补来源邮件收到时间（Unix 秒）。
 func (s *Store) attachEmailDates(ctx context.Context, invoices []Invoice) error {
 	if len(invoices) == 0 {

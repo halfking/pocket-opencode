@@ -32,6 +32,8 @@
 //   node scripts/run-gates.mjs              跑全部门禁
 //   node scripts/run-gates.mjs --list       只打印名单与接线核对结果，不执行
 //   node scripts/run-gates.mjs --only <名>  只跑指定门禁（可重复），用于定位
+//   node scripts/run-gates.mjs --ci          跑 gates.json 的 ciRuns 名单（CI 专用，见规则 5）
+//   node scripts/run-gates.mjs --list       追加打印本地/CI 的分工核对结果
 
 import { spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
@@ -111,11 +113,52 @@ if (unhooked.length)
       '\n要接进门槛就加到 gates.json 的 gates；要刻意不接就在 notGates 里写明理由。',
   )
 
+// ---- 防空跑第 5 类：新加的门禁没接进 CI -------------------------------------
+// 2026-10-03 实测：CI 的 frontend.yml 是逐条手列命令，而 23 条 gates 里当时只有
+// check:test-coverage 与 check:crlf-needles 进了 CI，其余只在开发者本机跑。
+// 护栏存在但没人执行，等于没有护栏 —— 与「146 个测试文件只有 32 个被引用」同一类事故。
+// 修法不是把 12 个名字硬写进 workflow（那样每加一条门禁又要人记得同步，漂移照旧），
+// 而是让 CI 侧也变成**数据**：gates.json 的 ciRuns 是「本机之外由 CI 跑」的名单，
+// ciCoveredElsewhere 是「已在 workflow 里手列、因此不重复跑」及其理由。
+// 于是「新加一条 check:* 却没接进 CI」从静默变成退出码非 0。
+const ciRuns = Array.isArray(doc.ciRuns) ? doc.ciRuns : []
+const ciElsewhere = doc.ciCoveredElsewhere || {}
+const ciUnknown = ciRuns.filter((n) => !list.includes(n))
+if (ciUnknown.length)
+  die(
+    `ciRuns 里有 ${ciUnknown.length} 个名字不在 gates 里（改名或已删？）：\n` +
+      ciUnknown.map((n) => `  - ${n}`).join('\n'),
+  )
+const ciDup = ciRuns.filter((n, i) => ciRuns.indexOf(n) !== i)
+if (ciDup.length) die(`ciRuns 里有重复项：${[...new Set(ciDup)].join(', ')}`)
+const ciOrphanElsewhere = Object.keys(ciElsewhere).filter((n) => !list.includes(n))
+if (ciOrphanElsewhere.length)
+  die(
+    `ciCoveredElsewhere 里有 ${ciOrphanElsewhere.length} 个名字已不在 gates 里（应删掉该理由）：\n` +
+      ciOrphanElsewhere.map((n) => `  - ${n}`).join('\n'),
+  )
+const unhookedCi = list.filter((n) => !ciRuns.includes(n) && !(n in ciElsewhere))
+if (unhookedCi.length)
+  die(
+    `gates 里有 ${unhookedCi.length} 条既不在 ciRuns、也不在 ciCoveredElsewhere —— CI 不会跑它们：\n` +
+      unhookedCi.map((n) => `  - ${n}`).join('\n') +
+      '\n要 CI 跑就加进 ciRuns（CI 侧无需改 workflow）；已在 workflow 手列就写进 ciCoveredElsewhere 并说明理由。',
+  )
+const ciDupElsewhere = list.filter(
+  (n) => ciRuns.includes(n) && n in ciElsewhere,
+)
+if (ciDupElsewhere.length)
+  die(`这些门禁同时出现在 ciRuns 与 ciCoveredElsewhere，CI 会跑两遍：${ciDupElsewhere.join(', ')}`)
+
 // ---- 命令行 --------------------------------------------------------------
 const argv = process.argv.slice(2)
 const wantsList = argv.includes('--list')
 const only = []
 for (let i = 0; i < argv.length; i += 1) if (argv[i] === '--only') only.push(argv[i + 1])
+
+// --ci：跑 ciRuns 名单。它是 --only 的数据驱动版本，所以 CI 侧不需要同步任何名字。
+const wantsCi = argv.includes('--ci')
+if (wantsCi) for (const n of ciRuns) only.push(n)
 
 const runList = only.length ? list.filter((n) => only.includes(n)) : list
 if (only.length) {
@@ -127,6 +170,9 @@ if (only.length) {
 const NPM = process.platform === 'win32' ? 'npm.cmd' : 'npm'
 
 if (wantsList) {
+  console.log(`[gates] CI 分工：--ci 跑 ${ciRuns.length} 条，另有 ${Object.keys(ciElsewhere).length} 条在 workflow 里手列`)
+  for (const n of ciRuns) console.log(`  ci        ${n}`)
+  for (const n of Object.keys(ciElsewhere)) console.log(`  elsewhere ${n} —— ${ciElsewhere[n]}`)
   console.log(`[gates] 名单 ${list.length} 项，接线核对通过（无重复 / 无悬空 / 无未接线的 check:*）`)
   list.forEach((n, i) => console.log(`  ${String(i + 1).padStart(2)}. ${n}`))
   const excluded = Object.keys(notGates)

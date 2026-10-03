@@ -672,9 +672,10 @@ func decodeCharset(data []byte, charset string) ([]byte, error) {
 // 同一条路径也把 `------=_Part_… Content-Type: …` 灌进 assistant 上下文。
 //
 // 拆开看它原本想覆盖的两种情形：
-//   · 旧版本缓存下来的**拍平展示文本**（非 MIME）——不是 MIME 源码，
-//     containsMIMESource 放行，行为不变；
-//   · 真正的 MIME 源码但解析失败——**正是要拦的那一类**。
+//
+//	· 旧版本缓存下来的**拍平展示文本**（非 MIME）——不是 MIME 源码，
+//	  containsMIMESource 放行，行为不变；
+//	· 真正的 MIME 源码但解析失败——**正是要拦的那一类**。
 //
 // 所以判据不是「解析成功没有」，而是「这段文本本身是不是 MIME 源码」：
 // 是就返回空串（宁可没有正文，也不要 MIME 转储），不是就照旧返回。

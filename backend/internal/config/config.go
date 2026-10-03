@@ -20,19 +20,19 @@ const DevDefaultJWTSecret = "pocket-dev-insecure-secret-0000000000"
 // Durations and limits are validated at startup so a bad deployment cannot
 // accidentally create an unbounded outbound fetcher.
 type RSSConfig struct {
-	Enabled                 bool
-	FetchInterval           time.Duration
-	DefaultSourceInterval   time.Duration
-	HTTPTimeout             time.Duration
-	MaxBodyBytes            int64
-	MaxConcurrency          int
-	RetentionDays           int
-	DiscoverySearchURL      string
-	DiscoverySearchAPIKey   string
-	PublishMode             string // share_only | weibo
-	WeiboClientID           string
-	WeiboClientSecret       string
-	WeiboRedirectURL        string
+	Enabled               bool
+	FetchInterval         time.Duration
+	DefaultSourceInterval time.Duration
+	HTTPTimeout           time.Duration
+	MaxBodyBytes          int64
+	MaxConcurrency        int
+	RetentionDays         int
+	DiscoverySearchURL    string
+	DiscoverySearchAPIKey string
+	PublishMode           string // share_only | weibo
+	WeiboClientID         string
+	WeiboClientSecret     string
+	WeiboRedirectURL      string
 	// DigestEnabled 打开"每天一份全部信息摘要"的后台生成与推送。
 	DigestEnabled bool
 	// DigestHour / DigestMinute 是每天生成日报的本地时刻。
@@ -58,10 +58,10 @@ const DefaultAPKDownloadPath = "/data/www/pocket.kxpms.cn/downloads/opencode-poc
 // It supports multiple deployment phases including personal assistant features,
 // AI gateway integration, email processing, and enterprise backend connectivity.
 type Config struct {
-	Environment              string
-	HTTPPort                 string
-	DBPath                   string // 保留兼容；Postgres 迁移后仅用于 data 目录定位
-	DataDir                  string // POCKET_DATA_DIR：数据目录；留空则退回 Dir(DBPath)（见 ResolveDataDir）
+	Environment string
+	HTTPPort    string
+	DBPath      string // 保留兼容；Postgres 迁移后仅用于 data 目录定位
+	DataDir     string // POCKET_DATA_DIR：数据目录；留空则退回 Dir(DBPath)（见 ResolveDataDir）
 	// APKDownloadPath 是 /api/app/download 实际服务的 APK 文件路径。
 	//
 	// 为什么从硬编码搬进配置：原先它写死在 handleDownloadAPK 里
@@ -87,7 +87,7 @@ type Config struct {
 	FeishuVerifySecret string // X-Lark-Signature 验签密钥（留空 = dev 模式跳过）
 	// 当前**未被任何代码消费**（2026-10-02 全仓核实）：飞书回调里没有
 	// 任何 V1 加密事件的解密路径。设这个环境变量不会有任何效果。
-	FeishuEncryptKey   string // V1 加密事件解密用（V2 不加密，留空即可）
+	FeishuEncryptKey string // V1 加密事件解密用（V2 不加密，留空即可）
 
 	// ---- 企业微信（WeCom）自建应用事件回调（m.kxpms.cn/callback/weixin）----
 	//
@@ -97,9 +97,9 @@ type Config struct {
 	//
 	// 三项**缺一不可**：任一为空时 /callback/weixin 对签名请求一律 503 拒绝，
 	// 而不是放行——放行等于把回调端点变成任何人可伪造的公开入口。
-	WeComToken         string // POCKET_WECOM_TOKEN：自建应用「Token」
+	WeComToken          string // POCKET_WECOM_TOKEN：自建应用「Token」
 	WeComEncodingAESKey string // POCKET_WECOM_ENCODING_AES_KEY：43 字符（不含 '='）
-	WeComCorpID        string // POCKET_WECOM_CORP_ID：企业 ID，用于校验密文尾部 receiveid
+	WeComCorpID         string // POCKET_WECOM_CORP_ID：企业 ID，用于校验密文尾部 receiveid
 
 	// ---- Phase 0: 个人助理模块新增配置 ----
 	// AI/STT 后端
@@ -140,14 +140,14 @@ type Config struct {
 	// 当前**未被任何代码消费**（2026-10-02 全仓核实）：OAuth 授权 URL 里的
 	// redirect_uri 取自请求体的 redirectUri 字段（server_assistant.go
 	// startEmailOAuth），不是这里。设这个环境变量不会有任何效果。
-	EmailOAuthRedirectURL      string // POCKET_EMAIL_OAUTH_REDIRECT_URL（默认 http://localhost:8088/callback/email/oauth）
-	EmailFetchEnabled          bool   // POCKET_EMAIL_FETCH_ENABLED（默认 true；CI/dev 可关闭）
-	EmailIMAPInsecureSkipVerify bool  // POCKET_EMAIL_IMAP_INSECURE_SKIP_VERIFY：跳过自签 IMAPS 证书校验（仅测试用）
-	EmailIMAPUseStartTLS bool           // POCKET_EMAIL_IMAP_USE_STARTTLS：走明文 IMAP 143 + STARTTLS 升级（自签测试 server 用）
-	TimezoneOffsetSec          int    // POCKET_TIMEZONE_OFFSET_SEC：用户时区偏移秒（默认 28800 = UTC+8）
+	EmailOAuthRedirectURL       string // POCKET_EMAIL_OAUTH_REDIRECT_URL（默认 http://localhost:8088/callback/email/oauth）
+	EmailFetchEnabled           bool   // POCKET_EMAIL_FETCH_ENABLED（默认 true；CI/dev 可关闭）
+	EmailIMAPInsecureSkipVerify bool   // POCKET_EMAIL_IMAP_INSECURE_SKIP_VERIFY：跳过自签 IMAPS 证书校验（仅测试用）
+	EmailIMAPUseStartTLS        bool   // POCKET_EMAIL_IMAP_USE_STARTTLS：走明文 IMAP 143 + STARTTLS 升级（自签测试 server 用）
+	TimezoneOffsetSec           int    // POCKET_TIMEZONE_OFFSET_SEC：用户时区偏移秒（默认 28800 = UTC+8）
 
 	// 邮件流水线（收信→清理垃圾→提醒→发票采集→飞书/汇总）
-	EmailPipelineHour int    // POCKET_EMAIL_PIPELINE_HOUR：每日触发小时（本地时区，默认 8；<0 关闭定时）
+	EmailPipelineHour  int    // POCKET_EMAIL_PIPELINE_HOUR：每日触发小时（本地时区，默认 8；<0 关闭定时）
 	EmailExecutionMode string // POCKET_EMAIL_EXECUTION_MODE：local（默认，设备本地执行）| server（委托远端编排）
 	// POCKET_EMAIL_SPAM_DRYRUN：true（默认）时每日流水线的清垃圾步骤只判定不 MOVE。
 	// 垃圾规则没在真实邮箱上验证过，先看判定结果，确认无误再置 false。
@@ -231,7 +231,7 @@ type Config struct {
 	SchedulerWebhookTimeout time.Duration // POCKET_SCHEDULER_WEBHOOK_TIMEOUT（默认 30s）
 
 	// RSS 信息订阅与发布（独立于 scheduledtask，按源定时抓取）
-	RSS                        RSSConfig
+	RSS                   RSSConfig
 	WebAuthnRPID          string // POCKET_WEBAUTHN_RP_ID：RP ID（必须是 origin 的有效域名，如 "pocket.example.com"）
 	WebAuthnRPOrigin      string // POCKET_WEBAUTHN_RP_ORIGIN：客户端 origin（如 "https://pocket.example.com"）
 	WebAuthnRPDisplayName string // POCKET_WEBAUTHN_RP_DISPLAY_NAME：RP 展示名（用户看到的"登录为 xxx"）
@@ -305,33 +305,33 @@ func Load() Config {
 		WeComEncodingAESKey:      getEnv("POCKET_WECOM_ENCODING_AES_KEY", ""),
 		WeComCorpID:              getEnv("POCKET_WECOM_CORP_ID", ""),
 		// Phase 0 个人助理模块
-		PostgresDSN:                getFirstEnv([]string{"POCKET_POSTGRES_DSN", "DATABASE_URL"}, ""),
-		PostgresSchema:             getEnv("POCKET_PG_SCHEMA", "opencode_pocket"),
-		GroqAPIKey:                 getEnv("POCKET_GROQ_API_KEY", ""),
-		KxMemoryBaseURL:            getEnv("POCKET_KXMEMORY_BASE_URL", ""),
-		KxMemoryNoteClassifyPath:   getEnv("POCKET_KXMEMORY_NOTE_CLASSIFY_PATH", "/v1/notes/classify"),
-		KxMemoryEmailClassifyPath:  getEnv("POCKET_KXMEMORY_EMAIL_CLASSIFY_PATH", "/v1/emails/classify"),
-		KxMemoryDailySummaryPath:   getEnv("POCKET_KXMEMORY_DAILY_SUMMARY_PATH", "/v1/emails/daily-summary"),
-		EmailMasterKey:             getEnv("POCKET_EMAIL_MASTER_KEY", ""),
-		MCPBaseURL:                 getEnv("POCKET_MCP_BASE_URL", ""),
-		MCPAPIKey:                  getEnv("POCKET_MCP_API_KEY", ""),
-		MCPInsecureTLS:             getEnv("POCKET_MCP_INSECURE_TLS", "") == "true",
-		MCPTenantID:                getEnv("POCKET_MCP_TENANT_ID", ""),
-		MCPScopeString:             getEnv("POCKET_MCP_SCOPES", "tasks,sessions"),
-			JWTSecret:                  getEnv("POCKET_JWT_SECRET", DevDefaultJWTSecret),
-		DevAuth:                    getEnv("POCKET_DEV_AUTH", "") == "true",
-		DevAuthUser:                getEnv("POCKET_AUTH_USER", ""),
-		DevAuthPass:                getEnv("POCKET_AUTH_PASS", ""),
-		MarketplaceRootPubKey:      getEnv("POCKET_MARKETPLACE_ROOT_PUBKEY", ""),
-		EmailGoogleClientID:        getEnv("POCKET_EMAIL_GOOGLE_CLIENT_ID", ""),
-		EmailGoogleClientSecret:    getEnv("POCKET_EMAIL_GOOGLE_CLIENT_SECRET", ""),
-		EmailMicrosoftClientID:     getEnv("POCKET_EMAIL_MICROSOFT_CLIENT_ID", ""),
-		EmailMicrosoftClientSecret: getEnv("POCKET_EMAIL_MICROSOFT_CLIENT_SECRET", ""),
-		EmailOAuthRedirectURL:      getEnv("POCKET_EMAIL_OAUTH_REDIRECT_URL", "http://localhost:8088/callback/email/oauth"),
-		EmailFetchEnabled:          getEnv("POCKET_EMAIL_FETCH_ENABLED", "true") == "true",
+		PostgresDSN:                 getFirstEnv([]string{"POCKET_POSTGRES_DSN", "DATABASE_URL"}, ""),
+		PostgresSchema:              getEnv("POCKET_PG_SCHEMA", "opencode_pocket"),
+		GroqAPIKey:                  getEnv("POCKET_GROQ_API_KEY", ""),
+		KxMemoryBaseURL:             getEnv("POCKET_KXMEMORY_BASE_URL", ""),
+		KxMemoryNoteClassifyPath:    getEnv("POCKET_KXMEMORY_NOTE_CLASSIFY_PATH", "/v1/notes/classify"),
+		KxMemoryEmailClassifyPath:   getEnv("POCKET_KXMEMORY_EMAIL_CLASSIFY_PATH", "/v1/emails/classify"),
+		KxMemoryDailySummaryPath:    getEnv("POCKET_KXMEMORY_DAILY_SUMMARY_PATH", "/v1/emails/daily-summary"),
+		EmailMasterKey:              getEnv("POCKET_EMAIL_MASTER_KEY", ""),
+		MCPBaseURL:                  getEnv("POCKET_MCP_BASE_URL", ""),
+		MCPAPIKey:                   getEnv("POCKET_MCP_API_KEY", ""),
+		MCPInsecureTLS:              getEnv("POCKET_MCP_INSECURE_TLS", "") == "true",
+		MCPTenantID:                 getEnv("POCKET_MCP_TENANT_ID", ""),
+		MCPScopeString:              getEnv("POCKET_MCP_SCOPES", "tasks,sessions"),
+		JWTSecret:                   getEnv("POCKET_JWT_SECRET", DevDefaultJWTSecret),
+		DevAuth:                     getEnv("POCKET_DEV_AUTH", "") == "true",
+		DevAuthUser:                 getEnv("POCKET_AUTH_USER", ""),
+		DevAuthPass:                 getEnv("POCKET_AUTH_PASS", ""),
+		MarketplaceRootPubKey:       getEnv("POCKET_MARKETPLACE_ROOT_PUBKEY", ""),
+		EmailGoogleClientID:         getEnv("POCKET_EMAIL_GOOGLE_CLIENT_ID", ""),
+		EmailGoogleClientSecret:     getEnv("POCKET_EMAIL_GOOGLE_CLIENT_SECRET", ""),
+		EmailMicrosoftClientID:      getEnv("POCKET_EMAIL_MICROSOFT_CLIENT_ID", ""),
+		EmailMicrosoftClientSecret:  getEnv("POCKET_EMAIL_MICROSOFT_CLIENT_SECRET", ""),
+		EmailOAuthRedirectURL:       getEnv("POCKET_EMAIL_OAUTH_REDIRECT_URL", "http://localhost:8088/callback/email/oauth"),
+		EmailFetchEnabled:           getEnv("POCKET_EMAIL_FETCH_ENABLED", "true") == "true",
 		EmailIMAPInsecureSkipVerify: getEnv("POCKET_EMAIL_IMAP_INSECURE_SKIP_VERIFY", "") == "true",
-		EmailIMAPUseStartTLS:       getEnv("POCKET_EMAIL_IMAP_USE_STARTTLS", "") == "true",
-		TimezoneOffsetSec:          getEnvInt("POCKET_TIMEZONE_OFFSET_SEC", 28800),
+		EmailIMAPUseStartTLS:        getEnv("POCKET_EMAIL_IMAP_USE_STARTTLS", "") == "true",
+		TimezoneOffsetSec:           getEnvInt("POCKET_TIMEZONE_OFFSET_SEC", 28800),
 		// 邮件流水线
 		EmailPipelineHour:      getEnvInt("POCKET_EMAIL_PIPELINE_HOUR", 8),
 		EmailExecutionMode:     getEnv("POCKET_EMAIL_EXECUTION_MODE", "local"),
@@ -343,7 +343,7 @@ func Load() Config {
 		// 显式写 "true" 才开：这条会每天自动发真实 LLM 请求，默认必须是关。
 		EmailClassifyViaGateway: getEnv("POCKET_EMAIL_CLASSIFY_VIA_GATEWAY", "") == "true",
 		// 飞书出站（发票推送）
-		FeishuInvoiceChatID: getEnv("POCKET_FEISHU_INVOICE_CHAT_ID", ""),
+		FeishuInvoiceChatID:      getEnv("POCKET_FEISHU_INVOICE_CHAT_ID", ""),
 		FeishuInvoiceFolderToken: getEnv("POCKET_FEISHU_INVOICE_FOLDER_TOKEN", ""),
 		// Phase C 无状态 AI 网关
 		EmbedBaseURL: getEnv("POCKET_EMBED_BASE_URL", ""),
@@ -423,7 +423,7 @@ func Load() Config {
 		// 一键回滚
 		AuthLegacyOnly: getEnv("POCKET_AUTH_LEGACY_ONLY", "") == "true",
 		// SSO
-		RedClawSsoEnabled: getEnv("POCKET_REDCLAW_SSO_ENABLED", "") == "true",
+		RedClawSsoEnabled:  getEnv("POCKET_REDCLAW_SSO_ENABLED", "") == "true",
 		RedClawLLMFallback: getEnv("POCKET_REDCLAW_LLM_FALLBACK", "") == "true",
 	}
 }
@@ -755,4 +755,3 @@ func loadCompanionOverlay() {
 		_ = os.Setenv(k, v)
 	}
 }
-

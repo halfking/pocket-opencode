@@ -46,8 +46,9 @@ import (
 // ai_summary 122 封全有值。两者同源 ⇒ 分类器返回了，是这里扔掉的。
 //
 // 负控（两路互补）：
-//   A. 把 Reason: row.ActionReason 去掉 -> reason 为空 -> 本用例转红
-//   B. 改回调 SetClassificationScoped -> 该列不写 -> 本用例转红
+//
+//	A. 把 Reason: row.ActionReason 去掉 -> reason 为空 -> 本用例转红
+//	B. 改回调 SetClassificationScoped -> 该列不写 -> 本用例转红
 func TestClassifyRunPersistsActionReason(t *testing.T) {
 	store, cleanup := newWorkspaceTestStore(t)
 	defer cleanup()
@@ -103,12 +104,12 @@ func (f *classifyReasonKxmem) ClassifyEmails(_ context.Context, req kxmemory.Cla
 	results := make([]kxmemory.EmailClassificationResult, 0, len(req.Emails))
 	for _, e := range req.Emails {
 		results = append(results, kxmemory.EmailClassificationResult{
-			EmailID:      e.EmailID,
-			Category:     "work",
-			Importance:   "high",
-			Summary:      "张经理要求周五前确认 Q3 预算",
+			EmailID:         e.EmailID,
+			Category:        "work",
+			Importance:      "high",
+			Summary:         "张经理要求周五前确认 Q3 预算",
 			SuggestedAction: "reply",
-			ActionReason: f.reason,
+			ActionReason:    f.reason,
 		})
 	}
 	return &kxmemory.ClassifyEmailsResponse{Results: results}, nil

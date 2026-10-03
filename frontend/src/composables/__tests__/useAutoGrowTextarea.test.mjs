@@ -112,6 +112,42 @@ test('autoGrow 对空值静默返回（组件卸载后 watcher 仍可能触发�
   assert.doesNotThrow(() => autoGrow(undefined), '传 undefined 不该抛')
 })
 
+test('border-box 下把上下边框补进 height（否则最后一行被裁掉几个像素）', async () => {
+  const { autoGrow } = await freshModule()
+  const el = fakeTextarea(121)
+  // 真实 DOM 里 textarea 通常有 1px 上下边框。scrollHeight 不含边框，
+  // 而 border-box 的 height 覆盖 padding 盒 + 边框 —— 不补就矮 2px。
+  el.ownerDocument = {
+    defaultView: {
+      getComputedStyle: () => ({ borderTopWidth: '1px', borderBottomWidth: '1px' }),
+    },
+  }
+
+  autoGrow(el)
+
+  assert.equal(
+    el.style.height,
+    '123px',
+    '实测 /local-agent 的 .draft：写入长文后 scrollHeight=121 / clientHeight=119，' +
+      '最后一行被裁 2px。scrollHeight 不含 border，border-box 的 height 覆盖' +
+      'padding 盒 + 上下边框，所以必须把 borderTop + borderBottom 补回去。',
+  )
+})
+
+test('无边框时高度仍等于 scrollHeight（补偿不能凭空加像素）', async () => {
+  const { autoGrow } = await freshModule()
+  const el = fakeTextarea(240)
+  el.ownerDocument = {
+    defaultView: {
+      getComputedStyle: () => ({ borderTopWidth: '0px', borderBottomWidth: '0px' }),
+    },
+  }
+
+  autoGrow(el)
+
+  assert.equal(el.style.height, '240px', '无边框就不该有任何补偿')
+})
+
 test('autoGrow 先归零再写回 —— 归零这一步是删字能缩回去的前提', async () => {
   const { autoGrow } = await freshModule()
   const el = fakeTextarea(200)

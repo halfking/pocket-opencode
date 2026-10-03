@@ -494,8 +494,9 @@ func skipAt(body string, from int) int {
 // 人加白名单绕过去，那它比没有更糟。
 //
 // 判据改成"这个 skip 有没有挂在一条判空的 if 上"：
-//   · if testDSN() == "" { t.Skip(...) }      → 放行（无库跳过，有库必跑）
-//   · t.Skip(...) 出现在任何 if 之前            → 判红（任何环境都不跑）
+//
+//	· if testDSN() == "" { t.Skip(...) }      → 放行（无库跳过，有库必跑）
+//	· t.Skip(...) 出现在任何 if 之前            → 判红（任何环境都不跑）
 //
 // 已知残留的宽松：一条与 DSN 无关但恰好形如 `if x == ""` 的 if 也能放行。
 // 这里不追求完备——判据过宽的代价（放过退化）远小于过窄（逼人加白名单）。
@@ -521,8 +522,9 @@ func skipIsDSNGated(body string, idx int) (bool, string) {
 // 那 5 条需要真库的用例，是不是还接着那个会自建隔离 schema 的夹具？
 //
 // 两种退化都会让它转红：
-//   · 有人把某条用例的 newWorkspaceTestStore 换成自己 new 一个裸 pool（不隔离）；
-//   · 有人在用例开头加一句 t.Skip，于是它在任何环境下都不再断言任何东西。
+//
+//	· 有人把某条用例的 newWorkspaceTestStore 换成自己 new 一个裸 pool（不隔离）；
+//	· 有人在用例开头加一句 t.Skip，于是它在任何环境下都不再断言任何东西。
 func TestDailyPipelineLock_DBBackedTestsStayWired(t *testing.T) {
 	src, err := os.ReadFile(filepath.Join(".", "pipeline_lock_test.go"))
 	if err != nil {

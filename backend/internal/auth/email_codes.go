@@ -151,8 +151,8 @@ func (s *CodeStore) Verify(ctx context.Context, email string, purpose CodePurpos
 	defer rows.Close()
 
 	type candidate struct {
-		id    int64
-		hash  string
+		id   int64
+		hash string
 	}
 	var candidates []candidate
 	for rows.Next() {

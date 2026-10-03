@@ -304,7 +304,7 @@ func (s *Server) handleRSSStarterCatalog(w http.ResponseWriter, r *http.Request)
 }
 
 type rssImportStarterBody struct {
-	Categories      []string `json:"categories"`
+	Categories     []string `json:"categories"`
 	MaxPerCategory int      `json:"maxPerCategory"`
 	Enabled        *bool    `json:"enabled"`
 }
@@ -330,9 +330,9 @@ func (s *Server) handleRSSImportStarter(w http.ResponseWriter, r *http.Request) 
 		enabled = *body.Enabled
 	}
 	result, err := st.ImportStarterSources(r.Context(), s.rssScopeFromClaims(r), rss.StarterImportOptions{
-		Categories:      body.Categories,
+		Categories:     body.Categories,
 		MaxPerCategory: body.MaxPerCategory,
-		Enabled:         enabled,
+		Enabled:        enabled,
 	})
 	if err != nil {
 		writeRSSError(w, err)

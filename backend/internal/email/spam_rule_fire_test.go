@@ -66,6 +66,7 @@ func TestLooksLikeSpam_DoesNotFireOnWorkMail(t *testing.T) {
 // 同时把两种「非垃圾」区分开：
 //   - 豁免（invoiceCandidate / 白名单域）：压根没参与评分 → Score=0, Why=""
 //   - 评过分但不够线：Score>0, Why 有内容
+//
 // 调用方要靠这个区别决定「是否值得人工看一眼」。
 func TestLooksLikeSpam_ExposesScoreBelowThreshold(t *testing.T) {
 	// 只有弱信号（发件人 30 分），达不到 100 阈值。

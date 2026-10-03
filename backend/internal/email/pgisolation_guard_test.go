@@ -203,8 +203,8 @@ func TestStripGoComments(t *testing.T) {
 		{`/* os.Getenv("PG_DSN") */ y`, `y`, `PG_DSN`},
 		{`s := "os.Getenv(\"PG_DSN\")"`, `PG_DSN`, ``}, // 字符串字面量必须保留
 		{"u := `os.Getenv(\"PG_DSN\")`", `PG_DSN`, ``}, // 原始字符串
-		{`r := 'a' // 注释`, `'a'`, ``},              // rune 字面量不误伤
-		{`url := "http://x" // 备注`, `http://x`, ``}, // 字符串里的 // 不是注释
+		{`r := 'a' // 注释`, `'a'`, ``},                  // rune 字面量不误伤
+		{`url := "http://x" // 备注`, `http://x`, ``},    // 字符串里的 // 不是注释
 	}
 	for _, c := range cases {
 		got := stripGoComments([]byte(c.in))

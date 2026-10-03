@@ -12,7 +12,7 @@ import (
 // DailyPipelineLockKey 是每日定时流水线的跨进程锁键的**后半段**。
 //
 // 用 hashtextextended 而不是自己算 hash，与本包既有的 advisory 用法保持一致
-//（见 store.go 的 vacation 领取锁），避免两处算出不同的 int64。
+// （见 store.go 的 vacation 领取锁），避免两处算出不同的 int64。
 //
 // 实际拿去加锁的键是 "<当前 schema>:" + 本常量，见 dailyPipelineLockKey。
 // 原因见该函数的说明：advisory lock 按**数据库**生效、与 schema 无关，

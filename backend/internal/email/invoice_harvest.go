@@ -79,7 +79,7 @@ var invoiceLinkHints = []string{
 var (
 	reHTMLHrefs = regexp.MustCompile(`(?i)href\s*=\s*["']([^"'h][^"']*(?:https?:)?[^"']*)["']|href\s*=\s*["'](https?://[^"']+)["']`)
 	reBareURLs  = regexp.MustCompile(`https?://[^\s<>"'\)\]，。；]+`)
-	reSkippable  = regexp.MustCompile(`(?i)(unsubscribe|\.png|\.jpg|\.jpeg|\.gif|\.css|\.js|\.ico|facebook|twitter|doubleclick|google-analytics|mailto:|tel:)`)
+	reSkippable = regexp.MustCompile(`(?i)(unsubscribe|\.png|\.jpg|\.jpeg|\.gif|\.css|\.js|\.ico|facebook|twitter|doubleclick|google-analytics|mailto:|tel:)`)
 )
 
 // HarvestAll 对所有待采集发票执行一轮下载/渲染。
@@ -167,7 +167,18 @@ func (h *InvoiceHarvester) HarvestInvoices(ctx context.Context, invoices []Invoi
 // 是同一条语句里赋的值，所以比 message_id 可靠（message_id 现在已改成优先取
 // 真实 Message-ID 头，不再有 `pop3-` 前缀特征）。
 func isPOP3SourcedEmail(e Email) bool {
-	return strings.HasPrefix(e.ID, "em-pop3-")
+	return IsPOP3SourcedEmailID(e.ID)
+}
+
+// IsPOP3SourcedEmailID 是上面那条判据的导出形式，判据只此一处。
+//
+// 为什么要导出：server 包的 GET /api/emails/{id}/body 也需要同一判据来拦住
+// 「拿 POP3 位置序号去 UID FETCH」—— 2026-10-03 真机实测那条路径会对 POP3
+// 邮件报 502，而在 IMAP 可用时它会**静默返回另一封邮件的正文**。让 server
+// 自己再写一遍 `strings.HasPrefix(id, "em-pop3-")` 就是两份判据，改一处漏
+// 一处的后果是错邮件正文被当成对的显示出来。
+func IsPOP3SourcedEmailID(id string) bool {
+	return strings.HasPrefix(id, "em-pop3-")
 }
 
 // harvestOne 处理单条发票记录，返回最终状态。
@@ -205,7 +216,7 @@ func sameEmailMessage(em *Email, raw []byte) bool {
 	}
 	if em.Date > 0 && parsed.Date.Unix() > 0 {
 		const day = 24 * time.Hour
-		diff := time.Duration(em.Date - parsed.Date.Unix()) * time.Second
+		diff := time.Duration(em.Date-parsed.Date.Unix()) * time.Second
 		if diff < 0 {
 			diff = -diff
 		}
@@ -425,10 +436,11 @@ func (h *InvoiceHarvester) markRetry(ctx context.Context, inv *Invoice, msg stri
 // 磁盘上只剩最后写入的那张，另一张的凭证永久丢失。
 //
 // 判据是**内容**而不是存在性：
-//   · 目标不存在 → 用它；
-//   · 目标已存在且内容**相同** → 仍用它（同一张票的重跑必须幂等，
-//     否则每次补跑都多出 `-2`、`-3`，台账被副本淹没）；
-//   · 目标已存在但内容**不同** → 说明是另一张票，换 `-2`、`-3`……
+//
+//	· 目标不存在 → 用它；
+//	· 目标已存在且内容**相同** → 仍用它（同一张票的重跑必须幂等，
+//	  否则每次补跑都多出 `-2`、`-3`，台账被副本淹没）；
+//	· 目标已存在但内容**不同** → 说明是另一张票，换 `-2`、`-3`……
 //
 // 这正是 InvoiceFileName 注释里写下的「若后续发现它也发生，应在
 // saveInvoiceFile 里检测目标已存在并加序号，而不是继续往文件名里塞字段」。

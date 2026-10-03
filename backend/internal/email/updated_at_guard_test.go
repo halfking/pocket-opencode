@@ -90,7 +90,7 @@ func TestGuard_EmailsUpdatedAtConsistency(t *testing.T) {
 	// 这是「变异对所选用例是 no-op」的近亲：
 	// **两处断言共用一份可变状态，后执行的那处会继承前一处的作用。**
 	const rowForSummary = "em-upd-summary" // 只给断点 1 用，会被 SetSummaryScoped 写
-	const rowForInsert = "em-upd-insert"  // 只给断点 2 用，不许任何别的写路径碰
+	const rowForInsert = "em-upd-insert"   // 只给断点 2 用，不许任何别的写路径碰
 
 	insert := func(id, subject string) {
 		t.Helper()

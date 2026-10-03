@@ -175,7 +175,7 @@ func TestListEmailsByDayScoped_HonorsTZOffset(t *testing.T) {
 	date := dayStart.Format("2006-01-02")
 
 	// 两封都在「本地 10-02」内，但分居 UTC 午夜两侧：
-	localEarly := dayStart.Add(1 * time.Hour)  // 本地 01:00 -> UTC 10-01 17:00
+	localEarly := dayStart.Add(1 * time.Hour) // 本地 01:00 -> UTC 10-01 17:00
 	localNoon := dayStart.Add(12 * time.Hour) // 本地 12:00 -> UTC 10-02 04:00
 	localLate := dayStart.Add(23 * time.Hour) // 本地 23:00 -> UTC 10-02 15:00
 
@@ -195,7 +195,10 @@ func TestListEmailsByDayScoped_HonorsTZOffset(t *testing.T) {
 	for _, e := range got {
 		ids[e.ID] = true
 	}
-	for _, want := range []struct{ id string; at time.Time }{
+	for _, want := range []struct {
+		id string
+		at time.Time
+	}{
 		{"early", localEarly}, {"noon", localNoon}, {"late", localLate},
 	} {
 		if !ids[want.id] {
@@ -221,7 +224,7 @@ func TestParseDayStart(t *testing.T) {
 		tz       int
 		wantUnix int64
 	}{
-		{"UTC", 0, 1790899200},                      // 2026-10-02T00:00Z
+		{"UTC", 0, 1790899200},                     // 2026-10-02T00:00Z
 		{"east+8", 8 * 3600, 1790899200 - 8*3600},  // 2026-10-01T16:00Z
 		{"west-5", -5 * 3600, 1790899200 + 5*3600}, // 2026-10-02T05:00Z
 	} {

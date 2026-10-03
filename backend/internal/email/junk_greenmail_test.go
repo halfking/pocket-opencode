@@ -3,7 +3,7 @@
 // junk_greenmail_test.go — 需求 2「移到垃圾邮件箱」的真实 IMAP 链路验证。
 //
 // 为什么需要它：junk.go 的定位与移动逻辑此前只有纯函数层面的覆盖
-//（junk_mailbox_test.go），**没有任何测试真正驱动过 UID MOVE**。
+// （junk_mailbox_test.go），**没有任何测试真正驱动过 UID MOVE**。
 // 而 fetcher_greenmail_test.go 挂在同一个 build tag 下却只覆盖同步，不覆盖 MOVE。
 //
 // 这一层要证明的是纯函数证明不了的三件事：
@@ -14,12 +14,13 @@
 //     只断言返回值不够，那只能证明没报错。
 //
 // 前置：
-//   docker run -d --rm --name greenmail-test -p 3025:3025 -p 3993:3993 \
-//     greenmail/standalone:latest -Dgreenmail.setup.test.all \
-//     -Dgreenmail.users=huangxutao@kxmail.local:h8pass
-//   通过 3025 SMTP 投递若干封邮件到 huangxutao@kxmail.local
-//   env PG_DSN=postgresql://...:.../pocket?sslmode=disable go test -tags=greenmail \
-//     ./internal/email/ -run TestMoveToJunkGreenmail -v
+//
+//	docker run -d --rm --name greenmail-test -p 3025:3025 -p 3993:3993 \
+//	  greenmail/standalone:latest -Dgreenmail.setup.test.all \
+//	  -Dgreenmail.users=huangxutao@kxmail.local:h8pass
+//	通过 3025 SMTP 投递若干封邮件到 huangxutao@kxmail.local
+//	env PG_DSN=postgresql://...:.../pocket?sslmode=disable go test -tags=greenmail \
+//	  ./internal/email/ -run TestMoveToJunkGreenmail -v
 package email
 
 import (

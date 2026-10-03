@@ -3,27 +3,28 @@
 //
 // It owns three concerns (spec §3.2 decision 5):
 //
-//   1. Persistence — the `notifications` table is the in-app notification
-//      inbox (the "Notification Center" tab on mobile). Every dispatched event
-//      that survives the rule filter gets a row here, so the user can review
-//      what they missed even if the push didn't get tapped.
-//   2. Rules — `notification_rules` decide WHICH events become notifications
-//      and WHICH channels they use. A rule binds (event_source, event_type)
-//      → channels + quiet_hours. Without a matching rule, an event is dropped
-//      (or falls through to a default rule).
-//   3. Delivery — the Sender interface abstracts the push channel. S0 ships
-//      two implementations:
-//        - WebsocketSender: pushes to the foreground via the existing ws.Hub
-//          (zero-latency, free, works while app is open)
-//        - NoopPushSender: placeholder for APNs/FCM. The real APNs/FCM
-//          implementation is a deployment-time task (needs certificates +
-//          provider SDK); the interface is stable so it drops in later.
+//  1. Persistence — the `notifications` table is the in-app notification
+//     inbox (the "Notification Center" tab on mobile). Every dispatched event
+//     that survives the rule filter gets a row here, so the user can review
+//     what they missed even if the push didn't get tapped.
+//  2. Rules — `notification_rules` decide WHICH events become notifications
+//     and WHICH channels they use. A rule binds (event_source, event_type)
+//     → channels + quiet_hours. Without a matching rule, an event is dropped
+//     (or falls through to a default rule).
+//  3. Delivery — the Sender interface abstracts the push channel. S0 ships
+//     two implementations:
+//     - WebsocketSender: pushes to the foreground via the existing ws.Hub
+//     (zero-latency, free, works while app is open)
+//     - NoopPushSender: placeholder for APNs/FCM. The real APNs/FCM
+//     implementation is a deployment-time task (needs certificates +
+//     provider SDK); the interface is stable so it drops in later.
 //
 // Why a new package instead of extending internal/notification:
-//   internal/notification only defines Event types (no storage, no rules, no
-//   delivery). Reusing it would blur its role. notifycenter owns the full
-//   pipeline; internal/notification stays as a pure event-vocabulary package
-//   that notifycenter and other modules import.
+//
+//	internal/notification only defines Event types (no storage, no rules, no
+//	delivery). Reusing it would blur its role. notifycenter owns the full
+//	pipeline; internal/notification stays as a pure event-vocabulary package
+//	that notifycenter and other modules import.
 package notifycenter
 
 import (
@@ -50,27 +51,27 @@ const (
 
 // Notification is one row in the inbox.
 type Notification struct {
-	ID           string          `json:"id"`
-	WorkspaceID  string          `json:"workspace_id"`
-	UserID       string          `json:"user_id"`
-	Source       string          `json:"source"`        // task / email / meeting / ledger / agent / system
-	Kind         string          `json:"kind"`          // event_type, e.g. task.completed
-	Title        string          `json:"title"`
-	Body         string          `json:"body"`
-	Payload      json.RawMessage `json:"payload,omitempty"`
-	Priority     string          `json:"priority"`      // low / normal / high / urgent
-	ReadAt       int64           `json:"read_at,omitempty"`
-	CreatedAt    int64           `json:"created_at"`
+	ID          string          `json:"id"`
+	WorkspaceID string          `json:"workspace_id"`
+	UserID      string          `json:"user_id"`
+	Source      string          `json:"source"` // task / email / meeting / ledger / agent / system
+	Kind        string          `json:"kind"`   // event_type, e.g. task.completed
+	Title       string          `json:"title"`
+	Body        string          `json:"body"`
+	Payload     json.RawMessage `json:"payload,omitempty"`
+	Priority    string          `json:"priority"` // low / normal / high / urgent
+	ReadAt      int64           `json:"read_at,omitempty"`
+	CreatedAt   int64           `json:"created_at"`
 }
 
 // Rule decides what happens to an event.
 type Rule struct {
 	ID            string   `json:"id"`
 	WorkspaceID   string   `json:"workspace_id"`
-	Source        string   `json:"source"`         // empty = wildcard
-	Kind          string   `json:"kind"`           // empty = wildcard
-	Channels      []string `json:"channels"`       // websocket / apns / fcm / inbox
-	Priority      string   `json:"priority"`       // default priority for matching events
+	Source        string   `json:"source"`          // empty = wildcard
+	Kind          string   `json:"kind"`            // empty = wildcard
+	Channels      []string `json:"channels"`        // websocket / apns / fcm / inbox
+	Priority      string   `json:"priority"`        // default priority for matching events
 	QuietStartMin int      `json:"quiet_start_min"` // quiet-hours window (minutes from midnight, local)
 	QuietEndMin   int      `json:"quiet_end_min"`
 	Enabled       bool     `json:"enabled"`

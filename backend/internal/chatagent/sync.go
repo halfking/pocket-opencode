@@ -35,12 +35,13 @@ type SyncResult struct {
 // SyncStore 管理 chat_agent_sync 云端同步表（PostgreSQL）。
 //
 // 表结构：
-//   workspace_id TEXT NOT NULL,
-//   user_id      TEXT NOT NULL,
-//   version      BIGINT NOT NULL,   -- 单调递增版本号（毫秒时间戳）
-//   agents_json  TEXT NOT NULL,     -- JSON 序列化的 Agent 数组
-//   updated_at   BIGINT NOT NULL,
-//   PRIMARY KEY (workspace_id, user_id)
+//
+//	workspace_id TEXT NOT NULL,
+//	user_id      TEXT NOT NULL,
+//	version      BIGINT NOT NULL,   -- 单调递增版本号（毫秒时间戳）
+//	agents_json  TEXT NOT NULL,     -- JSON 序列化的 Agent 数组
+//	updated_at   BIGINT NOT NULL,
+//	PRIMARY KEY (workspace_id, user_id)
 type SyncStore struct {
 	pool *pgxpool.Pool
 }

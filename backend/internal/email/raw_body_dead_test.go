@@ -82,7 +82,7 @@ func TestMapJobsToKeptPositions_DeferredJobsDoNotAliasKeptZero(t *testing.T) {
 	// 正面点名被守的性质：顺延的 job 绝不能映到 0，
 	// 否则它会读到 bodies[0]（另一封邮件的解析结果）。
 	if pos[0] == 0 || pos[2] == 0 {
-		t.Fatalf("a deferred job maps to position 0 — reading bodies[0] would splice "+
+		t.Fatalf("a deferred job maps to position 0 — reading bodies[0] would splice " +
 			"one message's body into another's invoice record")
 	}
 }

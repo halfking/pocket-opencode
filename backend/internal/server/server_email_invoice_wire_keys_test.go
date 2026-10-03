@@ -222,7 +222,7 @@ func TestInvoiceSummaryWire_AmountsKeysAreLowerCamel(t *testing.T) {
 		t.Errorf("标量 amountTotal/currency = %v/%q，want 3500/CNY", raw.AmountTotal, raw.Currency)
 	}
 }
-//
+
 // 为什么单币种那条不够：多币种时前端只走 amounts 分支，标量是 0。
 // 「只把标量填对、amounts 仍然错键」这种实现能通过单币种用例里的一半断言，
 // 而真机上恰好是这条路在显示 ¥NaN。

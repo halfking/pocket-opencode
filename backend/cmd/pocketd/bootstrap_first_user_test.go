@@ -9,8 +9,8 @@ func TestBootstrapDecision(t *testing.T) {
 	t.Run("没有口令就不建（旧实现会拿 6 字符的 admin 去撞 8 字符下限，必然失败）", func(t *testing.T) {
 		create, user, pass, note := bootstrapDecision("", "")
 		if create {
-			t.Fatalf("create = true with a built-in default password; "+
-				"它只有 6 字符，必然被 validatePassword（>= 8）拒掉，"+
+			t.Fatalf("create = true with a built-in default password; " +
+				"它只有 6 字符，必然被 validatePassword（>= 8）拒掉，" +
 				"等于留下一条注定失败的恢复路径")
 		}
 		if pass != "" {

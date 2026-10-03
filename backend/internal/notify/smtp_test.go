@@ -11,8 +11,8 @@ import (
 
 // mockSMTPServer 最小 SMTP 服务器（无 TLS 路径，仅用于 plain/无认证场景）。
 type mockSMTPServer struct {
-	ln     net.Listener
-	mu     sync.Mutex
+	ln      net.Listener
+	mu      sync.Mutex
 	gotMail []string
 	gotFrom string
 	gotTo   string

@@ -109,7 +109,7 @@ func TestHasInvoiceAttachment_ZipOnlyEmailStillPasses(t *testing.T) {
 		Data:        raw,
 	}}
 	if !HasInvoiceAttachment(atts) {
-		t.Error("只有电子发票 zip 的邮件没通过建档门槛；"+
+		t.Error("只有电子发票 zip 的邮件没通过建档门槛；" +
 			"金额只印在附件里的真实发票会在 ExtractInvoiceLoose 的丢弃门槛前被扔掉")
 	}
 	// 反向护栏：一个装着照片的普通 zip **不该**算票据附件，

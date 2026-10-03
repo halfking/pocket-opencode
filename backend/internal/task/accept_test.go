@@ -177,7 +177,7 @@ func TestAcceptTask_LatePendingDoesNotReopenAccepted(t *testing.T) {
 	}
 	// Attach a session so a late projection event has a target.
 	link := &SessionLink{
-		TaskID: created.ID,
+		TaskID:     created.ID,
 		InstanceID: "inst-1", SessionID: "sess-1",
 		Role: "owner",
 	}
