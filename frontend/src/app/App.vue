@@ -1,5 +1,29 @@
 <template>
-  <div id="app">
+  <!--
+    根节点**不能**再带 id="app"（2026-10-03 模拟器 API 35 实测）。
+
+    index.html 的挂载点就是 <div id="app">，而 main.ts 走 app.mount("#app")：
+    Vue 保留挂载容器、把本组件渲染成它的子节点。于是 DOM 里出现了两个嵌套的
+    #app，而 `#app { height: calc(100% - var(--kb-inset)) }`（styles.css 与本文件
+    各写一份）会同时命中两者 —— 键盘净高被**扣两遍**。
+
+    实测（/ai-chat，模拟器 API 35，键盘净高 336.38px）：
+
+        外层 #app  = 100% - 336.38 = 529.67
+        内层 #app  = 529.67 - 336.38 = 193.29   ← 与实测 193.286 逐位吻合
+
+    后果是整条 flex 链塌到 193px：main.content 被压到 148.5px，而
+    .composer 高 201.8px 溢出后被 main.content 的 overflow:hidden 裁掉——
+    **输入框的工具行（麦克风/相机/附件/角色/优化/发送）整条消失**，
+    tabbar 也被顶到 y=947（视口外）。也就是需求① 在旗舰页上其实是破的，
+    只是无键盘时 --kb-inset=0、两层等高，看不出异常。
+
+    改法：id 归挂载点独占，本根节点只留 class。#app 的高度/裁切规则继续由
+    styles.css 与本文件各写一份（双写只为样式表注入顺序无关），现在只命中
+    挂载点一次。诊断脚本用 document.querySelector('#app').__vue_app__ 拿
+    pinia，取到的正是挂载容器（__vue_app__ 挂在 mount 元素上），不受影响。
+  -->
+  <div class="app-root">
     <!--
       ✅ 修复：用 AppLayout 包裹 router-view，让共享的 TopBar + BottomNav 全局生效。
       否则每个 view 都要自己实现顶栏/底栏，会出现重复 UI 或不一致（如之前的
@@ -165,10 +189,23 @@ body {
 }
 
 #app {
+  /* 挂载点（index.html 的 <div id="app">）的规则。App.vue 的根节点是它的子节点，
+     刻意不再带 id="app"：两个 #app 会让下面这条 calc(100% - var(--kb-inset))
+     扣两遍键盘高度（实测数据见 template 注释）。 */
   /* 软键盘避让：--kb-inset 由 useKeyboardInset 实时写入（visualViewport
      高度差）。键盘弹起时根布局收缩，flex 停靠的输入区贴住键盘上沿，
      滚动容器随之收缩供聚焦字段对齐到输入区上沿之上。 */
   height: calc(100% - var(--kb-inset, 0px));
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* App.vue 根节点。它必须**自己定高**：`.app-layout` 是 height:100%，若这一层
+   高度 auto，百分比就落回 auto，flex 链（top-bar / main.content / bottom-nav）
+   会整体塌成内容高度——main.content 拿不到剩余空间，输入区被裁。
+   键盘净高只在上一层的 #app 扣一次，这里只做 100% 接力。 */
+.app-root {
+  height: 100%;
   min-height: 0;
   overflow: hidden;
 }
