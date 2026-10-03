@@ -3,6 +3,28 @@
 > 2026-10-03 实测后成文。本文**解释机制，不是名单**。
 > 名单的权威只有一处：`frontend/gates.json`。本文若与它冲突，以它为准。
 
+## 装 pre-push 钩子前必须知道的一件事：它是**仓库级共享**的
+
+`scripts/install-git-hooks.ps1` 做的是 `git config core.hooksPath .githooks`。
+这个键写在**共用的 `.git/config`** 里，不是某个 worktree 私有的。实测：
+
+```
+$ git -C <某个 worktree> config core.hooksPath .githooks
+$ git -C <主工作区>       config core.hooksPath
+.githooks          # 主工作区立刻看到
+```
+
+`git rev-parse --git-common-dir` 在主工作区与 worktree 里指向**同一个** `.git`，所以
+**从任何 worktree 装这个钩子，会让这个仓库所有 worktree 的 push 都开始跑全量后端测试**。
+
+后果要正视：并行会话正在 push 时，钩子会让它的 `go test ./...` 跑十几分钟，
+一旦某条既有的红被算到它头上，**它的 push 会被拒绝，而且它不知道为什么**。
+所以本轮没有安装它（实测后已把 `core.hooksPath` 还原为空）。
+
+什么时候装：合并进 main 之后、且确认没有并行会话在 push 时。
+装完自己验一次：`git config core.hooksPath` 应为 `.githooks`，
+然后 `git config --unset core.hooksPath` 可以随时还原。
+
 ## 一句话
 
 本地跑全量 23 条；CI 跑其中的 12 条 `check:*`，另外 11 条由 CI 里已存在的步骤覆盖。

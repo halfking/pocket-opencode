@@ -21,6 +21,15 @@
 #   flashcards, config, server all pass", which was true, but it silently excluded
 #   internal/repohygiene -- where the red actually was. Any list a human writes has a
 #   boundary. A hook computes the answer at push time and nobody can shrink it.
+#
+# READ THIS BEFORE RUNNING IT -- the setting is REPO-WIDE, not per-worktree:
+#   `git config core.hooksPath` is written to the shared .git/config. Measured 2026-10-03:
+#   setting it from one worktree makes every other worktree of this repo see it too
+#   (git rev-parse --git-common-dir resolves to the same .git in all of them).
+#   Consequence: while a parallel session is pushing, its push would suddenly run the
+#   full backend suite, and a pre-existing red would block it for reasons it cannot see.
+#   Install only when no parallel session is pushing. Undo with:
+#     git config --unset core.hooksPath
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
