@@ -1,0 +1,94 @@
+# Maestro 真机功能流 · 会议入口与「开始会议录音」跳转
+#
+# 为什么要这条：会议是产品的核心闭环（录音 → 转写 → 纪要 → 任务），但真机 rig
+# 里**从没有一条 flow 走过会议入口**。已有 8 条 flow 覆盖了 首页/笔记/消息/更多
+# 四个一级 tab 与闪卡，唯独 /meetings 只被 notes-crud 间接路过。
+#
+# 值得专门测的原因是这个转场壳（MeetingRecordView.vue）：
+#   onMounted 里 createMeeting() → router.replace('/meetings/:id', {record:'1'})，
+#   **catch 分支直接 router.replace('/meetings')**。
+#   也就是说——建会议失败（本地库没解锁、写入失败、captureDeviceLocation 抛错）
+#   时，界面表现是「点开始会议后弹回列表」，**没有任何错误提示**。
+#   用户看到的就是「按了没反应 / 什么都不发生」。
+#   这类静默失败只有真机能看见：assertVisible 一条都绿，但根本没进详情页。
+#
+# 因此本 flow 的核心判据是**「确实进了详情页」**，而不是「点了开始会议没报错」。
+#
+# 副作用声明：本 flow 会在设备本地库**创建一条会议记录**（这是它的目的）。
+# 它不录音、不产生音频文件，点完即退。
+#
+# 运行：
+#   node scripts/maestro-run.mjs .maestro/meetings-entry.yaml
+appId: com.kaixuan.opencode.pocket
+---
+# ---------- 0. 先保证站在有底部导航的页面上 ----------
+# 2026-10-03 15:33 实测：preflight 自称已复位到 #/ai，但 App 可能停在上一轮
+# 遗留的深链页；而 /email/:id 的 meta 是 bottomNav:false，那页的树里没有
+# 首页/笔记/消息 ⇒ 照惯例先 assertVisible 首页 会**永远不可能通过**。
+- runFlow:
+    when:
+      notVisible: "首页"
+    commands:
+      - tapOn: "返回"
+      - waitForAnimationToEnd:
+          timeout: 3000
+- extendedWaitUntil:
+    visible: "首页"
+    timeout: 30000
+- assertVisible: "首页"
+- assertNotVisible: "密码登录"
+
+# ---------- 1. 进「更多」 ----------
+# MIUI 会吞掉底部导航 tap（报 COMPLETED 但界面没动）。两个动作都要：
+# retryTapIfNoChange 管第一次，runFlow 补点管第二次。
+- tapOn:
+    text: "更多|More"
+    retryTapIfNoChange: true
+- extendedWaitUntil:
+    visible: "更多功能"
+    timeout: 40000
+- runFlow:
+    when:
+      notVisible: "更多功能"
+    commands:
+      - tapOn: "更多|More"
+      - waitForAnimationToEnd:
+          timeout: 3000
+- extendedWaitUntil:
+    visible: "更多功能"
+    timeout: 30000
+
+# ---------- 2. 进「会议」 ----------
+- tapOn: "会议"
+- extendedWaitUntil:
+    visible: "开始会议录音"
+    timeout: 40000
+- assertVisible: "开始会议录音"
+
+# ---------- 3. 核心：点「开始会议录音」必须真的进详情页 ----------
+# 这是本 flow 唯一有判别力的部分。MeetingRecordView 的 catch 分支会把
+# 一切失败都吞成「弹回列表」，所以「没报错」不等于「成功」。
+- tapOn: "开始会议录音"
+- extendedWaitUntil:
+    visible: "会议详情"
+    timeout: 40000
+
+# ⚠️ 2026-10-03 15:45 实测修正：本条原先等的是「开始录音」，红了 68s。
+#   失败现场显示**我们其实已经成功进了详情页**，而且已经在录了：
+#   可见「会议详情 / 录音中 00:41 / 正在聆听… / 停止录音」。
+#   原因是 MeetingRecordView replace 过去时带 `?record=1`，
+#   **自动开始录音** ⇒ 录音 dock 的 aria-label 已经是「停止录音」。
+#   ⇒ 等「开始录音」是在等一个已经翻过去的状态。
+#   正确判据是「会议详情」这个页本身，加上 dock 二态之一。
+- assertVisible: "会议详情"
+- assertVisible: "(开始录音|停止录音)"
+
+# 录音界面独有的元素：即时总结面板（右侧滚动更新摘要）
+- assertVisible: "即时总结"
+
+# ---------- 4. 负向锚点 ----------
+# 「还没有会议记录」是**列表页**的空态文案。它若出现，说明 createMeeting
+# 抛错后我们其实停在列表上——即那条静默失败。
+- assertNotVisible: "还没有会议记录"
+- assertNotVisible: "密码登录"
+- takeScreenshot: "logs/maestro/meetings-record"
