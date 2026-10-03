@@ -492,6 +492,22 @@ var pgSafeWithoutIsolation = map[string]string{
 	"internal/email/ledger_realdata_diag_test.go":   "只读真实库探针：无写语句；需 POCKET_REAL_MAIL_DSN + POCKET_REAL_MAIL_SCHEMA（核对台账合计口径在真实数据上的变化）",
 	"internal/email/reminder_notified_diag_test.go": "只读真实库探针：0 写语句；**2026-10-02 复核发现它此前从不设置 search_path**，危害是产出**假结论**——它的判据 `if highUnnotified == 0 { 不是缺陷 }` 在查空库时必然成立。现已改为 RuntimeParams 覆盖 + current_schema() 验证。登记在 pgAllowlistedWrites 的理由同上（该文件在规则 5 下受检）",
 
+	// 2026-10-04：824a0391（QP 编码 HTML 泄漏那条）带进来的分阶段诊断探针，
+	// 与上面同族，但**门控变量名不同**，所以不能靠上面几条的推理顺带覆盖。
+	// 逐项核对（命令与结果记在 handoff round39）：
+	//   · 写语句：扫 INSERT|UPDATE|DELETE|DROP|TRUNCATE|ALTER|CREATE，**0 命中**；
+	//     `.Exec(` **0 次**；DB 调用只有 3 处 pool.Query / pool.QueryRow。
+	//   · 门控：PG_DSN + POCKET_REAL_KEYS，**均无缺省值**，缺任一即 t.Skip；
+	//     PG_DSN 与 CI 设的 POCKET_TEST_POSTGRES_DSN 是不同变量 ⇒ CI 里恒 skip。
+	//   · 它要读的是**真实库里那批仍带 QP 源码的 snippet**，用
+	//     `current_schema()` 读回值与 DSN 里的 search_path 逐字比对，
+	//     不一致即 t.Fatalf（L85-90，注释写明「以为钉住了是这个缺陷家族的标志」）。
+	//     自建隔离 schema 会让「哪些行还脏」这个问题查成空集并输出
+	//     「已全部干净」的假结论 —— 与 reminder_notified_diag_test.go 同理。
+	//   · 规则 4 独立生效：本文件一旦出现写语句仍会判红（豁免的只是
+	//     「自建隔离 schema」这一项）。
+	"internal/email/diag_real_fetch_snippet_stages_test.go": "只读真实库分阶段诊断（824a0391 引入）：0 写语句、.Exec( 0 次、3 处 pool.Query；需 PG_DSN + POCKET_REAL_KEYS 双重开关（**均无缺省值**，与 CI 的 POCKET_TEST_POSTGRES_DSN 是不同变量，故 CI 里恒 skip）；search_path 取自 DSN 并用 current_schema() 读回逐字校验，不符即 Fatal。它要定位的是真实库里仍带 QP 源码的那批 snippet，自建隔离 schema 会让它查成空集并输出「已全部干净」的假结论。**规则 4 会在本文件出现写语句时判红**",
+
 	// ===== 2026-10-02 合并 email 分支时本护栏新增判红的 7 个，逐个核过 =====
 	//
 	// 背景：email 分支上有一批 2026-10-01 的只读诊断探针，此前 main 的护栏
