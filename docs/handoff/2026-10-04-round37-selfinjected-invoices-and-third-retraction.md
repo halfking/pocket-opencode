@@ -828,3 +828,59 @@ admin 口令。本节绕开这个限制：**直接调用生产导出函数
 **与 PDF 附件不可区分**。本机磁盘上没有图片发票，故该路径真实数据 0 条。
 
 
+
+## 十五、自发自收闸点：条件已在真库验证（2026-10-04 03:5x）
+
+前十四节把「剔除 3 行」列为阻塞项，卡在一个未验证的前提上：判据是什么。
+本节用真库（只读）把这个问题问到底，得到两个可执行结论。
+
+### 15.1 判据在真库上零假阳性
+
+判据取 lower(emails.from_address) = lower(email_accounts.email_address)，
+即「这封发票邮件的发件人就是收信账户自己」。逐行实测：
+
+| 台账行 | 金额 | file_source | from_address | = 账户地址 |
+|---|---|---|---|---|
+| inv_1790957532670968300_1 | 126.00 | attachment | 56551681@qq.com | **是** |
+| inv_1790957532673098600_2 | 328.50 | attachment | 56551681@qq.com | **是** |
+| inv_1791011450357733400_3 | 58.90 | attachment | 56551681@qq.com | **是** |
+| inv_1790884695419622800_1 | 3500.00 | pdf-url | dzfp@mail.171win.com | 否 |
+| inv_1791011450356727600_2 | 5.61 | zip-pdf | service@invoice.txffp.com | 否 |
+| inv_1791011450349291800_1 | 19.00 | zip-pdf | service@invoice.txffp.com | 否 |
+| inv_1790903383222583800_1 | 58000.00 | （pending） | webmaster@icbc.com.cn | 否 |
+
+3 行命中、4 行未命中，与「513.40 是自注入」这个已知结论逐行对上。
+**真发票无一被误判**（3500.00 / 5.61 / 19.00 三行发件人分别是创客家、
+通行费平台，都不是账户自身）。
+
+剔除后的合计（CNY，跨币种不合并，只认 downloaded/filed）：
+
+- 自注入（应剔除）：3 行 = 513.40
+- 真发票（应保留）：3 行 = 3524.61
+- pending（无结论）：1 行 = 58000.00
+- 现状合计 4038.01 = 513.40 + 3524.61 ✓ 与既有记录一致
+
+### 15.2 撤回一条旧结论：闸点位置并不缺账号地址
+
+此前记录「dmitDebtNotice 拿不到账号自身地址，加不进去」，并据此把闸点
+标为受阻。本节实测该说法不成立：
+
+- extractInvoiceCandidates(ctx, accounts []Account, ...)（pipeline.go:533）
+  的 ccounts **就在作用域内**，是 []Account 值切片；
+- Account.EmailAddress（model.go:14）与 Email.FromAddress（model.go:39）
+  两个字段都存在；
+- 闸点所在循环（pipeline.go:583）同时持有 e（含 FromAddress）与
+  ccounts（含 EmailAddress），scope map 只是没存地址，**不影响可取性**。
+
+所以闸点可直接写成：在 pipeline.go:583 的建 job 之前，先用
+ccountByID[e.AccountID].EmailAddress 判定自发自收并跳过。
+
+### 15.3 仍然待人拍板的部分（不是技术问题）
+
+判据与位置都已确定，剩下的是**财务语义**，两条路后果不同：
+
+- 路线 A：自发自收**彻底不入账**（跳过，不建台账行）
+- 路线 B：入账但打标记，**合计时排除**（行还在，便于追溯）
+
+另外，本节全部为只读查询（default_transaction_read_only=on），
+**未删任何行、未改任何数据**。
