@@ -170,7 +170,7 @@ function back() {
 .btn { display: inline-flex; align-items: center; gap: 4px; padding: 8px 16px; border: 1px solid var(--border); background: var(--bg-elevated); border-radius: 6px; cursor: pointer; }
 .btn-primary { background: var(--brand-primary); color: white; border-color: var(--brand-primary); }
 .icon { padding: 4px 8px; border: none; background: transparent; cursor: pointer; font-size: 20px; }
-.modal-mask { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; z-index: 1000; }
+.modal-mask { position: fixed; /* 底边随 --kb-inset 抬升：键盘在场时浮层收在键盘上沿之上，弹层内的输入框与确认按钮不会被盖住。同 BottomSheet.vue。 */ inset: 0 0 var(--kb-inset, 0px) 0; background: rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; z-index: 1000; }
 .modal { background: var(--bg-elevated); border-radius: 8px; padding: 16px; width: 90%; max-width: 520px; }
 .modal header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
 .caption-input label { display: block; font-size: var(--text-sm); color: var(--text-muted); margin-bottom: 4px; }
