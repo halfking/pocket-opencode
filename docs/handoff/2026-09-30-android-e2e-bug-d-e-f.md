@@ -13117,6 +13117,11 @@ import 排序/字段对齐 + 新文件 `scripts/check-gofmt.mjs`），HEAD 与 o
 「导出 patch 存档」这一步因此没有可导的东西（`logs/wt-a32-gofmt.patch` 是 0 字节，已弃用；
 唯一单独存下的是 `logs/wt-a32-check-gofmt.mjs`）。
 
+> **【round36 更正，本节该结论已过时】** 上面「需要有人把这两个提交并回 main」这条
+> **本轮已执行完毕**：`331ba4f3` / `12a49913` 所在的 `audit/gofmt-debt-20261003`
+> 分支已整体并入 `main`（合并提交见 §4.127.3），且 gofmt 门在 main 上实跑通过
+> （909 个 .go，真债 0）。原结论在 round34 当时成立，保留原文不改写。
+
 教训记一笔：**备份路径本身也会坏**。第一版 `git diff --binary > $out` 在 PS 里产出 0 字节，
 一度像「改动没了」；真实原因是并发会话提交了改动。判据是 `git status` + `git log`，不是 patch 大小。
 
@@ -13149,22 +13154,214 @@ import 排序/字段对齐 + 新文件 `scripts/check-gofmt.mjs`），HEAD 与 o
 
 未提交（并发会话在同一 main 上活动，本轮不 commit / 不 push）。
 
+> **【round36 更正】** 上面「未提交」已过时：这批改动在 round36 已随
+> `15463298` → 合并提交并入 `main`。详见 §4.127。
+
 ### §4.126.8 留给下一轮的
 
 1. **App 端还差一步手动确认**：后端侧已经实测通了（:18100 返回 200 + 原文，前端解析零违规），
    但**真机上还没让 App 指向 18100 看过一眼 POP3 邮件详情**（App 的 API base 存在
    localStorage 的 `pocket_api_base`，当前是 `http://127.0.0.1:18099`）。
    要做：`adb reverse tcp:18100 tcp:18100` + 改 App 的 api_base，或等 18100 这类实例常驻。
-2. **把 `331ba4f3` / `12a49913` 并回 main**（现在只挂在 wt-a32 的 detached HEAD 上）。
+2. ~~**把 `331ba4f3` / `12a49913` 并回 main**（现在只挂在 wt-a32 的 detached HEAD 上）。~~
+   **【round36 已完成】** `audit/gofmt-debt-20261003` 整体并入 main，门禁实跑通过，见 §4.127.3。
 3. **11 条 stash 的人工 review**（逐行核验给不了「零丢失」证明）。
 4. **列表摘要的 QP 脏数据是另一个问题**：真机 `/api/emails` 返回里，IMAP 路径的三封新邮件
    （FlatRouter / 招商银行 / GitHub）`snippet` 仍是 `----=_Part_… Content-Type: … =E8=AE=A2…`
    这种「边界行 + 部件头 + 未解码 QP」形态。那是**后端** `SnippetFromParsed` 产出、落库存量，
    与本轮的前端解析器无关（§round26 判定过「库里那批是历史脏数据」，但这几封是**今天新入库**的，
    值得单独查一次当前代码对它们会产出什么）。
-5. `gofmt` 全仓仍不干净（CRLF 债），并发会话的 §4.125 正在处理；本轮新文件已 gofmt 干净。
+5. ~~`gofmt` 全仓仍不干净（CRLF 债），并发会话的 §4.125 正在处理。~~
+   **【round36 已完成】** §4.125 已并入 main，`check:gofmt` 门在 main 上实跑：909 个 .go、
+   归一化行尾后真债 0。**但 CRLF 伪债仍在**（811 个文件被裸 `gofmt -l` 报出），
+   按 §4.125.2 的决定「不统一行尾」，这条是**有意保留**的，不要当欠债去还。
 6. **隔离实例的做法值得固化成脚本**：本轮 `logs/dump-proc-env.ps1` +
    `logs/start-round34-18100.ps1` 手工拼出来的，下次别再手搓。
    两个坑记在这：① `.ps1` 文件必须存**带 BOM 的 UTF-8**，否则 PS 5.1 按 ANSI 解码中文，
    报出来的是 `Missing closing '}'` 这种与中文无关的语法错误；
    ② PS 5.1 的 `Add-Type` 是 C# 5 编译器，**没有 `out` discard**，得先声明变量。
+---
+
+## §4.127 round36 审计：同步主干 + 并回两条实质分支，并修掉两个「门禁自己红」的真缺陷
+
+### §4.127.0 范围与并发实况
+
+本轮是被 `/goal` 拉起来的修正轮，开工时的工作面：
+
+- 本地 `main` 在 `5ed22d93`，落后 `origin/main` 34 个提交；**且工作区有 7 个文件的未提交在制品**。
+- 在制品是 round34（§4.126）的成果，当时因「并发会话在同一 main 上活动」刻意没提交。
+- 两个并发 worktree：`openpocket-wt-a32`（`audit/gofmt-debt-20261003`）、
+  `openpocket-wt-e2e`（`fix/pg-schema-scope-20261003`）。
+
+开工前的三项实况核验（都实测，不靠推断）：
+
+- `git status --porcelain` 有 7 个文件（3 改 4 新），`git stash list` 有 **11 条** 2026-09-30~10-01 的旧 stash。
+- 近 90 分钟内**没有任何源码文件被写过**（只有 `logs/pg/data/**` 与 `logs/*.log`，
+  是 18099 那个长跑实例在动）⇒ 当时没有活跃的源码写者。
+- 但两分钟后 `fix/pg-schema-scope-20261003` 就多了一个提交（18:47）⇒ **并发会话确实在**。
+  结论：本轮**不碰**这两个 worktree 的分支，只从 main 侧合并。
+
+**先保全再动手**：在制品提交到 `wip/round34-preserve`（`15463298`）后才开始同步主干。
+理由是本仓历史上出现过并行会话 `git stash -u` 卷走未提交工作（2026-10-01 实测），
+而这次的在制品正好是「一个已实测通过的真修复 + 三条护栏」，卷走就是净损失。
+
+### §4.127.1 真缺陷 1：`ee912940` 把 `internal/server` 跑成了红
+
+`origin/main` 顶端提交 `ee912940`（只读诊断：工行对账单那张存量行）新增了
+`backend/internal/email/diag_stale_debt_notice_row_test.go`。该文件**打开 PostgreSQL 连接**，
+但没有登记进 `internal/server/pg_test_isolation_guard_test.go` 的 `pgSafeWithoutIsolation`，
+于是 `TestPGTestsNeverTargetTheProductionSchema` 判红 ⇒ **main 上的后端测试是红的**。
+
+**先做对照再定性**（这一步不能省）：
+
+| 跑在哪 | 扫描的 `_test.go` 数 | 结果 |
+|---|---|---|
+| 纯 `origin/main`（不带本轮任何改动） | 518 | **FAIL**，同一条，指同一个文件 |
+| 合并本轮在制品后 | 520（+2 是本轮新增的两个 server 侧用例） | FAIL，同一条 |
+
+⇒ 结论：**不是本轮引入的既有问题，而是 `ee912940` 带进主干的红**。这正是记忆里那条
+「验证结论必须有对照证据」的用处——不跑对照就会把它误记成自己造成的回归。
+
+**修法**：照本仓库既有的同类口径补登记（`diag_spam_preview_test.go` 等 20 来个只读真实库探针都是这么登记的）。
+登记理由里如实写明三处弱点，而不是写成「安全」了事：
+
+- **schema 名硬编码**（换 schema 需改代码）；
+- **「只读」靠「文件里没有写语句」维持**，而不是像 `diag_invoice_backlog_test.go` 那样由
+  `SET default_transaction_read_only = on` 在**数据库侧**强制；
+- **第 59 行那句 `RuntimeParams["search_path"] = "opencode_pocket"` 钉的是生产 schema，
+  不是 `*_test_` schema**——它**不是隔离措施**。该文件全部查询都写了
+  `FROM opencode_pocket.email_invoices` / `.emails`，所以无害；但那行代码
+  **看起来**像做了防护而实际不构成防护，是最容易让人误判为「已隔离」的地方。
+
+> **判据侧的教训**：这不是这个文件第一次漏登记。上一轮 `diag_spam_preview_test.go`
+> 已经犯过一次（提交 `4de72306` 时漏掉，把 `internal/server` 跑成红，后来补登）。
+> **同一个坑在同一个文件类别上连续犯两次** ⇒ 光靠「下次记得」无效，
+> 值得考虑把「新 `_test.go` 打开 PG 就必须同时出现在 allowlist 或带 `_test_` schema」
+> 做成提交期检查（§4.127.6 留给下一轮）。
+
+### §4.127.2 真缺陷 2：合并把一条「CI 覆盖不变量」的新旧差暴露成红
+
+前端 `npm run gates` 判红：
+
+```
+[gates] ❌ gates 里有 1 条既不在 ciRuns、也不在 ciCoveredElsewhere —— CI 不会跑它们：
+  - check:pg-schema-scope
+```
+
+**根因不是「有人忘了」，而是两条时间线交错**，追到底是这样：
+
+- `audit/gofmt-debt-20261003` 分支引入了一个**新的不变量**：`gates.json` 里新增
+  `ciRuns` / `ciCoveredElsewhere` 两个字段，并要求**每一条 gate 都必须落在两者之一**，
+  否则 CI 不会跑到它而门禁本地会绿。
+- 而 `origin/main` 上**根本没有这两个字段**（实测 `ciRuns: (无此字段)`），
+  因为那个不变量是 gofmt 分支带来的。
+- main 最新加的 `check:pg-schema-scope`（`7be3300a` 那批）进了 `gates` 数组，
+  在没有不变量的世界里完全合法。
+
+⇒ 合并把两条线接上，那条 gate 立刻变成「本地跑、CI 不跑」。**这是真缺陷**：
+一个门禁如果只有人能手动跑，它拦住的下一次回归就只取决于有没有人记得跑。
+
+**修法**：先实测该脚本自身可靠（`check:pg-schema-scope` 自测 7/7 通过，
+含 3 条负控 + 2 条假阳性防护），再按门禁自己给出的指引加进 `ciRuns`。
+
+**顺带被 `check:test-coverage` 回答掉的一个疑问**（记下来省得下一轮重问）：
+`package.json` 里的 `test:ia`（`node scripts/ia-smoke.mjs`，`4e21dea3` 引入）
+也**不在** `gates.json` 里，看着像同一个缺口。门禁的输出里它被明确列进
+「定义在 gates 之外、因此不计入覆盖的 script」那一串，与 `audit:vm-gaps`、
+`check:icons:visual` 等并列 ⇒ **这是已声明的状态，不是缺口**。
+（它不是 `*.test.mjs`，所以孤儿测试卡口管不到它；孤儿卡口在本轮的口径是
+「207/207 被覆盖，2 个在豁免名单」。）
+
+### §4.127.3 分支审计：两条未合并分支都判定为「有用，已并入」
+
+按「>1h 未合并且不活跃」的判据扫全仓 9 条分支，`merge-base --is-ancestor` 逐条实测：
+
+| 分支 | 合并状态 | 判定 |
+|---|---|---|
+| `audit/round35-secret-gate` | 已并入 origin/main | 无独有内容，可删 |
+| `origin/fix/2026-10-03-keyboard-overlay-and-multiline-input` | 已并入 origin/main | 无独有内容，可删 |
+| `origin/audit/gofmt-debt-20261003` | **未合并** | 实质内容，见下 |
+| `audit/gofmt-debt-20261003`（本地，wt-a32） | **未合并，12 个独有提交** | 实质内容，已并入 |
+| `origin/fix/2026-10-03-autogrow-border-compensation` | **未合并，5 个独有提交** | 实质内容，已并入 |
+| `fix/pg-schema-scope-20261003`（wt-e2e） | 未合并 | 并发会话在用，**本轮不动** |
+
+**① gofmt 分支**（`331ba4f3`→`17b0178a`，12 提交 / 185 文件）：§4.126.6 点名要并回 main 的那批。
+内容 = 173 个 .go 的 gofmt 格式归一 + `scripts/check-gofmt.mjs` 门禁 + pre-push 车道
++ 顺手修 `package.json` 里 3 处已提交的缩进损坏（零语义）。
+判「有用」的理由不是「提交多」，而是**它在 main 上实跑通过**：909 个 `.go`，
+归一化行尾后**真债 0**。这条门禁的设计也值得记一笔：它**不用**裸 `gofmt -l`
+（那在本机会 100% 报出 811 个文件，量的不是格式是行尾），而是先归一化再判，
+并且**每次运行先自测**「gofmt 是否还会对纯 CRLF 文件报红」——前提不成立就 exit 1 而不是放行。
+
+**② autogrow 分支**（`7052a180` + 4 个 docs 提交，3 文件）：一个 2px 的真修复。
+`border-box` 下 `height` 覆盖的是「padding 盒 + 上下边框」，而 `scrollHeight` 是
+「内容 + padding、**不含边框**」，直接写 `height = scrollHeight` 会让内容盒矮一个
+上下边框之和——实测 1px 边框时 `scrollHeight 121 / clientHeight 119`，**最后一行被裁 2px**。
+判「有用」的理由是**它有正反两条控**：`border-box 下补边框 ⇒ 123px`，
+`无边框时不补偿 ⇒ 240px`。只写正向的「多加了 2px」是没法排除「无条件加 2px」的。
+
+**没删的**：`audit/gofmt-debt-20261003` 与 `fix/pg-schema-scope-20261003`
+**虽然内容已并入 main，但它们各自被一个 worktree 检出且都有活跃提交**。
+删它们会打掉并发会话的工作面，且 `git branch -d` 对被检出的分支本就会拒绝。
+⇒ 本轮只删「已并入 + 无 worktree + 不活跃」的那几条。
+
+### §4.127.4 消解冲突时踩的判据坑：`=======` 在真实文档里**不是**唯一字面量
+
+两个分支都往 `docs/handoff/2026-09-30-android-e2e-bug-d-e-f.md` 的 EOF 追加整节
+（main 侧 §4.126、gofmt 分支 §4.125），两侧**没有任何一行是同一行的两个版本**，
+所以正确解法不是二选一，而是**按节号排序后两节都保留**（§4.125 在前、§4.126 在后）。
+
+手工剪贴 220+190 行不现实，写脚本。**脚本第一版被自己的断言拦下了**：
+
+```
+Error: 标记 "=======" 出现 13 次，预期 1 次；不消解
+```
+
+这份 handoff 里有 12 处 Markdown 下划线用的就是 `=======`。
+第一版用 `text.indexOf('=======')` 找中段标记 —— 在真实文档里**会切在错误的行上**，
+而且是在**已经写了一部分之后**才暴露。第二版改成「按整行相等匹配」，
+且只在**冲突块区间内**取中段标记（`sHit < i < eHit`），并断言总数里只有 1 个落在区间内。
+消解后仍保留 `行数恰好 -3`（丢掉 3 个标记行）的守恒断言。
+
+> 归到一条通用规则：**Git 冲突标记不是「在文件里唯一」的字面量。**
+> 凡是靠 `indexOf`/`countOf` 切真实文档的脚本，都要按整行匹配并加区间约束。
+> （与 §4.126.2 里「判据自己错了三次」是同一条纪律的另一个实例：
+> 判据出错的方向都是**看起来更精确、实际更宽**。）
+
+### §4.127.5 本轮测试
+
+| 命令 | 结果 |
+|---|---|
+| `go build ./...`（backend） | 通过 |
+| `go vet ./...`（backend） | 通过 |
+| `go test ./...`（backend，**逐包 `-count=1` 计时**） | 全部 ok；最慢 `internal/repohygiene` 28.1s，`internal/server` 22.2s |
+| `TestPGTestsNeverTargetTheProductionSchema` 修复前 | FAIL（origin/main 同样 FAIL，对照已做） |
+| `TestPGTestsNeverTargetTheProductionSchema` 修复后 | **ok** |
+| `POCKET_DIAG_POP3_RAW=<data> go test ./internal/server/ -run "POP3\|EmailBody"` | ok；**真实语料 49 封：解出 49、解不出 0、不像报文 0** |
+| `POCKET_DIAG_REAL_BODIES=<明文目录> node --test email-body-real-corpus-replay.test.mjs` | **3/3 通过**（含判据自检那条） |
+| `node scripts/check-gofmt.mjs` | 通过：909 个 .go / 裸报 811（**纯行尾伪债**）/ 真债 **0** |
+| `npm run check:pg-schema-scope` | 判据自测 7/7；19 个脚本的 SCHEMA 声明全在模块顶层 |
+| `npm run gates`（前端 24 条） | 见 §4.127.2，修复后全绿 |
+
+一条量纲记录：首轮 `go test ./...` 跑了 300s 没结束就被我自己的包装超时掐掉，
+日志里停在 57 行。当时看到两个 `partguard.test` / `schema.test` 进程跑了 9 分钟，
+一度像卡死。**实测结论是：那两个进程不属于 backend 模块**（backend 里没有这两个包，
+逐包计时复跑也没有任何一个包超过 30s）。教训照旧：**超时只说明「没在窗口内跑完」，
+不能推断「卡住」**；逐包计时复跑才是判据。
+
+### §4.127.6 留给下一轮的
+
+1. **新 `_test.go` 打开 PG 却忘了登记 `pgSafeWithoutIsolation` 这件事已经连续犯两次**
+   （`diag_spam_preview_test.go` / `diag_stale_debt_notice_row_test.go`），
+   两次都把 `internal/server` 跑成红。补一个提交期检查：新文件含 PG 连接但既无
+   `*_test_` schema 字面量、也不在 allowlist ⇒ 直接拒绝提交。
+2. **`diag_stale_debt_notice_row_test.go` 的「只读」是约定而非强制**。若要加固，
+   加 `SET default_transaction_read_only = on`（同 `diag_invoice_backlog_test.go` 的做法）。
+   本轮**刻意没改**——它是有意指向生产 schema 的只读诊断，改它属于另一件事。
+3. **11 条 stash 仍未做人工 review**（§4.126.8 第 3 条，本轮未动）。
+4. **§4.126.8 第 1 条（真机指向 18100 看 POP3 邮件详情）仍未做**——本轮无设备。
+5. **§4.126.8 第 4 条（列表摘要 QP 脏数据）仍未查**。
+6. **CRLF 伪债（811 个文件）按 §4.125.2 的决定有意保留**，不要当欠债去还；
+   但**新增**文件应写 LF，否则它们会混进这 811 个里。
+7. `scripts/pre-push-ab.sh` 里有硬编码的 `/c/Program Files/Git/bin/sh.exe`，
+   换机即失效。它是测试 harness 而非产品代码，本轮未改；用之前先确认路径。

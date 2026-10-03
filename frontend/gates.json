@@ -29,6 +29,7 @@
     "check:gofmt"
   ],
   "ciRuns": [
+    "check:pg-schema-scope",
     "check:dueclock",
     "check:callback-routes",
     "check:edge-route-reach",
