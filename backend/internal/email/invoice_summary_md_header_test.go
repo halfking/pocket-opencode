@@ -99,21 +99,39 @@ func TestInvoiceSummaryMarkdown_HeaderMatchesColumnContent(t *testing.T) {
 	}
 
 	// 1) 末列表头字面量。
-	const wantLastHeader = "核验"
-	if got := header[len(header)-1]; got != wantLastHeader {
-		t.Errorf("末列表头=%q，want %q。这一列填的是 InvoiceVerifiedLabel"+
-			"（已核验/未核验），写成「文件」会让读者以为该列是文件名——"+
-			"而文件名在 r[8]，根本没进 Markdown", got, wantLastHeader)
+	//
+	// 2026-10-05：末列不再是「核验」——加列时末尾追加了「备注」（人工标注理由），
+	// 所以核验列往前挪了一位。核验列**按位置**断言而不是「最后一列」：
+	// 「末列」这种断言在每次加列时都要改，而它保护的其实是「表头最后一格
+	// 说的是它那一格真正装的东西」——位置断言同样能保护，且不会在加列时
+	// 变成一个必须跟着改的仪式。
+	const (
+		wantHeader       = "备注"
+		wantVerifyHeader = "核验"
+		verifyCol        = 6
+	)
+	if got := header[len(header)-1]; got != wantHeader {
+		t.Errorf("末列表头=%q，want %q。这一列填的是 InvoiceHumanNote（人工标注理由）",
+			got, wantHeader)
+	}
+	if got := header[verifyCol]; got != wantVerifyHeader {
+		t.Errorf("第 %d 列表头=%q，want %q", verifyCol+1, got, wantVerifyHeader)
 	}
 
-	// 2) 每一行末列的取值必须落在独立字面量集合里。
+	// 2) 核验列的取值必须落在独立字面量集合里。
+	//
+	// 集合含三种值：已核验 / 未核验 / 「<分类>·不计入合计」。第三种是人工
+	// 声明非发票的行（2026-10-05 加）——这里用**前缀通配**而不是把两种分类
+	// 都列成字面量：词表 invoiceHumanMarkExcludedClasses 增加第三种分类时，
+	// 本判据不必跟着改；而它仍然能抓住「这一列装的不是核验状态」。
 	wantLabels := map[string]bool{"已核验": true, "未核验": true}
 	for _, row := range dataRows {
-		last := row[len(row)-1]
-		if !wantLabels[last] {
-			t.Errorf("末列取值=%q，不在 {已核验,未核验} 内。表头说核验、内容却"+
-				"不是核验状态（若这里填的是文件名，说明该加一列而不是改表头）：行=%v",
-				last, row)
+		got := row[verifyCol]
+		marked := strings.HasSuffix(got, "·不计入合计")
+		if !wantLabels[got] && !marked {
+			t.Errorf("核验列取值=%q，不在 {已核验,未核验} 也不以「·不计入合计」结尾。"+
+				"表头说核验、内容却不是核验状态（若这里填的是文件名，说明该加一列而不是改表头）：行=%v",
+				got, row)
 		}
 	}
 

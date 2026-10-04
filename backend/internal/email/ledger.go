@@ -12,6 +12,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"strings"
 	"time"
 )
 
@@ -111,8 +112,84 @@ func SumByCurrency(invs []Invoice) []CurrencyTotal {
 // 这类行**不删除**，仍出现在明细里并标记为「未核验」（见 InvoiceVerifiedLabel）：
 // 删掉就再也看不见「有一封 58,000 的东西需要人去追」，而保留但不标记
 // 则会让用户以为表里的每一行都参与了合计。
+//
+// ## 2026-10-05 补：人工声明「这不是发票/不是发票凭证」的行也不计入
+//
+// round44 实测的两行营销横幅正是这个形态：status=downloaded、FilePath 非空、
+// 落盘件确实是个文件——**纯机械判据完全看不出它不是发票**，于是它们以
+// 「已核验」的身份占掉 CNY 合计的 61.1%。人已经看过并标注了（last_error 里的
+// 【人工标注】），但标注在台账里成立、在**交付物里不存在**（last_error 不是导出列），
+// 于是看汇总单的人依然按 61.1% 那一列去对账。
+//
+// 所以人工声明必须能**改口径**，而不只是留个备注。判据仍只有这一处，
+// 三条消费路径（LedgerRows / WriteInvoiceSummaryDocs / InvoiceListStats）
+// 自动同口径——这正是本函数存在的理由。
 func InvoiceCountsTowardTotal(inv Invoice) bool {
+	if InvoiceExcludedByHumanMark(inv) {
+		return false
+	}
 	return (inv.Status == "downloaded" || inv.Status == "filed") && inv.FilePath != ""
+}
+
+// invoiceHumanMarkExcludedClasses 是「人工声明这一行不该计入发票合计」的
+// **分类词表**。只有精确落在词表里的分类才改变合计口径。
+//
+// 为什么用词表而不是 `strings.Contains(mark, "非发票")`：标注是自由文本，
+// 「不是发票凭证缺失」「非发票抬头待补」这类句子里也含「非发票」三个字。
+// 用子串匹配判**财务合计**会把不相干的行悄悄剔掉——而合计算错时，
+// 没有任何人会发现。词表外的写法一律按「没有声明」处理（该行仍按机械判据计入），
+// 宁可多算也不悄悄少算；要新增分类必须显式改这张表。
+var invoiceHumanMarkExcludedClasses = []string{"非发票凭证", "非发票"}
+
+// InvoiceHumanMarkClass 解析 last_error 里**人工标注**的分类。
+//
+// 没有人工标注、或者分类不在 invoiceHumanMarkExcludedClasses 里时返回 ""。
+// 形态约定：`【人工标注】<分类>（<子类>）：<理由>`，例如
+// `【人工标注】非发票凭证（营销横幅）：落盘件为 572×140 …`。
+//
+// 采集侧会在标注后面追加「 | 本轮采集：<本轮原因>」（见 composeHarvestRetryMessage），
+// 分类只在**第一段**里，所以先按该分隔符截断。
+func InvoiceHumanMarkClass(inv Invoice) string {
+	s := strings.TrimSpace(inv.LastError)
+	if !strings.HasPrefix(s, invoiceHumanMarkPrefix) {
+		return ""
+	}
+	s = strings.TrimSpace(strings.TrimPrefix(s, invoiceHumanMarkPrefix))
+	if i := strings.Index(s, " | "); i >= 0 {
+		s = s[:i]
+	}
+	// 分类是「第一个分隔符之前」的那段文本。逐个分隔符裁剪（每裁一次都变短，
+	// 于是最终留下的是最早出现的那个分隔符之前的内容）。
+	for _, sep := range []string{"（", "(", "：", ":", "。", "；", ";", "、", "!"} {
+		if i := strings.Index(s, sep); i >= 0 {
+			s = s[:i]
+		}
+	}
+	s = strings.TrimSpace(s)
+	for _, c := range invoiceHumanMarkExcludedClasses {
+		if s == c {
+			return c
+		}
+	}
+	return ""
+}
+
+// InvoiceExcludedByHumanMark 回答「人是否已声明这一行不是发票/不是发票凭证」。
+func InvoiceExcludedByHumanMark(inv Invoice) bool {
+	return InvoiceHumanMarkClass(inv) != ""
+}
+
+// InvoiceHumanNote 是**导出用的备注文本**：人工标注去掉机器前缀后的理由。
+//
+// 为什么单独一个函数而不是各处 TrimPrefix：导出有两条路径（CSV / MD）
+// 加一个飞书台账，三处各写一遍前缀常量，就有三处可以各自漂移。
+// 无人工标注时返回 ""，导出列留空。
+func InvoiceHumanNote(inv Invoice) string {
+	s := strings.TrimSpace(inv.LastError)
+	if !strings.HasPrefix(s, invoiceHumanMarkPrefix) {
+		return ""
+	}
+	return strings.TrimSpace(strings.TrimPrefix(s, invoiceHumanMarkPrefix))
 }
 
 // InvoiceVerifiedLabel 是明细行里「核验」列的取值。
@@ -120,7 +197,15 @@ func InvoiceCountsTowardTotal(inv Invoice) bool {
 // 口径必须与 InvoiceCountsTowardTotal 严格一致：判据说不计的，这里就写
 // 「未核验」。两处若各写各的，会出现「标着已核验却不计入合计」的行，
 // 那比没有这一列更难排查。
+//
+// 2026-10-05 起多一种取值：人工声明非发票的行写「<分类>·不计入合计」。
+// 不复用「未核验」是刻意的——「未核验」暗示「**还没核**，待会会核」，
+// 而这一行是**已经核过了，结论是它不是发票**。两者跟进动作不同：
+// 前者去重试采集，后者去追对账／删掉。用同一个词就是把这个区别抹掉。
 func InvoiceVerifiedLabel(inv Invoice) string {
+	if cls := InvoiceHumanMarkClass(inv); cls != "" {
+		return cls + "·不计入合计"
+	}
 	if InvoiceCountsTowardTotal(inv) {
 		return "已核验"
 	}
@@ -149,7 +234,7 @@ func InvoiceVerifiedLabel(inv Invoice) string {
 func LedgerRows(invs []Invoice) (rows [][]any, totals []CurrencyTotal) {
 	rows = make([][]any, 0, len(invs)+2)
 	rows = append(rows, []any{
-		"费用类型", "对方单位", "金额", "币种", "发票号", "开票日期", "状态", "核验", "文件名", "来源邮件",
+		"费用类型", "对方单位", "金额", "币种", "发票号", "开票日期", "状态", "核验", "文件名", "来源邮件", "备注",
 	})
 	// 按币种分组累加。单一币种（当前真实数据 7 张全是 CNY）时只出一行合计，
 	// 与旧行为完全一致；混入外币时每个币种各出一行——USD 与 CNY 直接相加
@@ -167,9 +252,14 @@ func LedgerRows(invs []Invoice) (rows [][]any, totals []CurrencyTotal) {
 		// 而 failed 与「未核验」在状态列上长得一样（都是 new/failed），
 		// 用户无法分辨「这张失败了」和「这张只是个自称的金额」——前者
 		// 该重试，后者该去追对账单，两种跟进动作不一样。
+		//
+		// 「备注」列（2026-10-05 加）：人工标注的理由原文。没有它时，
+		// 标注只存在于 last_error 里——台账里看得见、**交付物里不存在**，
+		// 于是看汇总单的人无从知道某行为何被剔出合计（round44 实测）。
 		rows = append(rows, []any{
 			inv.Category, inv.Seller, round2(inv.Amount), cur,
 			inv.InvoiceNo, inv.InvoiceDate, inv.Status, InvoiceVerifiedLabel(inv), inv.FileName, inv.Subject,
+			InvoiceHumanNote(inv),
 		})
 		// 合计：判据是唯一的 InvoiceCountsTowardTotal，与
 		// WriteInvoiceSummaryDocs、InvoiceListStats 共用同一个函数。
@@ -213,7 +303,7 @@ func LedgerRows(invs []Invoice) (rows [][]any, totals []CurrencyTotal) {
 	return rows, totals
 }
 
-// ledgerTotalRow 拼出合计行，列数与 LedgerRows 的表头严格一致（10 列）。
+// ledgerTotalRow 拼出合计行，列数与 LedgerRows 的表头严格一致（11 列）。
 //
 // 单独抽出来是因为合计行此前散在三个分支里各写一遍字面量，加「核验」列时
 // 漏改一处就会让飞书表格按错误的列数写入、或把张数写进「核验」列。
@@ -221,11 +311,15 @@ func LedgerRows(invs []Invoice) (rows [][]any, totals []CurrencyTotal) {
 // 张数必须写「计入 N 张 / 共 M 张」而不是「共 M 张」：真实库 2 行发票里只有
 // 1 行进了合计，写「共 2 张」会让读者以为 3,500 是那 2 张的总额——纸面上
 // 看不出错，账上就是错的。
+// 位置说明（2026-10-05 记录，本轮**未改**）：这段文字一直落在索引 8，
+// 也就是表头的「文件名」列（合计行的文件名格本来就是空的，所以看不出别扭）。
+// 判据 invoice_total_parity_test.go 把这个下标钉住了。移动它属于改既有
+// 契约而不是修本轮缺陷——真要挪，得连同表头一起设计，不能在加列时顺手做。
 func ledgerTotalRow(sum float64, currency string, counted, total int) []any {
 	return []any{
-		"合计", "", sum, currency, "", "", "",
-		"",
+		"合计", "", sum, currency, "", "", "", "",
 		fmt.Sprintf("计入 %d 张 / 共 %d 张", counted, total),
+		"",
 		"",
 	}
 }
@@ -240,11 +334,11 @@ func currencyOrDefault(c string) string {
 	return c
 }
 
-// LedgerCellRange 把行数换算成 "<sheetId>!A1:J<n>" 形式的写入范围。
-// 列数固定 10（表头宽度，2026-10-02 加「核验」列后由 9 变 10），
+// LedgerCellRange 把行数换算成 "<sheetId>!A1:K<n>" 形式的写入范围。
+// 列数固定 11（表头宽度，2026-10-05 加「备注」列后由 10 变 11），
 // 行数 = 表头 + 明细 + 合计。
 func LedgerCellRange(sheetID string, rows [][]any) string {
-	cols := 10
+	cols := 11
 	return fmt.Sprintf("%s!A1:%s%d", sheetID, columnName(cols), len(rows))
 }
 

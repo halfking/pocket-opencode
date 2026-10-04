@@ -105,6 +105,9 @@ func TestInvoiceSummaryMarkdown_EveryColumnCarriesItsOwnValue(t *testing.T) {
 		"日期", sentinelDate,
 		"状态", sentinelStatus,
 		"核验", "未核验",
+		// 2026-10-05 加的末列。哨兵票没有人工标注 ⇒ 期望空串。
+		// 这里刻意**不**用 InvoiceHumanNote 算期望（同上：不能用被测函数算期望）。
+		"备注", "",
 	}
 	if len(row) != len(want)/2 {
 		t.Fatalf("明细行 %d 格，表头 %d 列", len(row), len(want)/2)
@@ -155,7 +158,8 @@ func TestInvoiceSummaryMarkdown_EveryColumnCarriesItsOwnValue(t *testing.T) {
 // 期望值是**独立字面量** `10`，不是 `len(header)`——否则有人把两边一起改窄，
 // 判据跟着变，绿灯就毫无意义（这是第三十一节记的同一条纪律）。
 func TestWriteInvoiceSummaryDocs_SharedHeaderMatchesCSVWidth(t *testing.T) {
-	const wantSharedWidth = 10 // 费用类型/对方单位/金额/币种/发票号/日期/状态/核验/文件名/来源邮件
+	// 2026-10-05：10 → 11（末尾追加「备注」）。仍是**独立字面量**，不是 len(header)。
+	const wantSharedWidth = 11 // 费用类型/对方单位/金额/币种/发票号/日期/状态/核验/文件名/来源邮件/备注
 
 	dir := t.TempDir()
 	invs := []Invoice{{
@@ -192,6 +196,11 @@ func TestWriteInvoiceSummaryDocs_SharedHeaderMatchesCSVWidth(t *testing.T) {
 		}
 		if header[8] != "文件名" {
 			t.Errorf("共享表头第 9 列=%q，want 文件名（位置 8，从 0 起）", header[8])
+		}
+		// 2026-10-05 新增：末列必须是「备注」。它是**追加**列，所以
+		// 既有位置的语义（8=文件名、7=核验）不能被挤动。
+		if header[10] != "备注" {
+			t.Errorf("共享表头第 11 列=%q，want 备注（位置 10，从 0 起）", header[10])
 		}
 	}
 	// 数据行的列数也必须等于表头。
