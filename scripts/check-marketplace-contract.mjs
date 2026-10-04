@@ -63,12 +63,29 @@ function extractPaths(src) {
 
 const src = readFileSync(API_TS, 'utf8')
 const { base, paths } = extractPaths(src)
+// 这里保留 exit 2：解析不出自己的输入 ⇒ **判据自身跑不起来**，
+// 与「环境没准备好」不是一回事（见下面两处 exit 3 的说明）。
 if (!base) { console.error('❌ 没能从 api.ts 解析出 base —— 判据失效，别下结论'); process.exit(2) }
 console.log(`api.ts 的 base = ${base}`)
 console.log(`抽出 ${paths.length} 条路径\n`)
 
+// 退出码语义（2026-10-05 统一，对齐 run-gates.mjs 的约定）：
+//
+//	0  = 跑到了被检查对象且通过
+//	1  = 跑到了被检查对象且**不通过**（真判红）
+//	2  = 判据自身跑不起来（解析不出自己的输入、脚本有 bug）
+//	3  = **前置缺失**：根本没跑到被检查对象，拒绝给结论
+//
+// 原来后两处前置缺失也报 2。危害不在数字本身，在于 2 与 1 在一次全量扫描里
+// 长得一样：看到「红」的人会先去查脚本/判据，而真正要做的是「先把隔离后端起起来」。
+// 一条前置门禁最常见的失败原因就是环境没起，把它归到「判据坏了」那一档，
+// 就会有人去改不该改的代码。
 const health = await fetch(`${BASE}/healthz`, { signal: AbortSignal.timeout(5000) }).catch((e) => ({ status: 'ERR:' + e.message }))
-if (health.status !== 200) { console.error(`隔离后端 ${BASE} 不通（${health.status}）`); process.exit(2) }
+if (health.status !== 200) {
+  console.error(`[前置缺失] 隔离后端 ${BASE} 不通（${health.status}）—— 这次没有跑到被检查对象，`)
+  console.error('  所以退出码是 3 而不是 1。先起隔离后端再重跑；不要把这一条当成判红去排查。')
+  process.exit(3)
+}
 
 const login = await fetch(`${BASE}/api/auth/login`, {
   method: 'POST', headers: { 'content-type': 'application/json' },
@@ -76,7 +93,11 @@ const login = await fetch(`${BASE}/api/auth/login`, {
   signal: AbortSignal.timeout(15000),
 })
 const { token } = await login.json()
-if (!token) { console.error('登录不通，拿不到有效 token —— 下面全是 401，会被误读成「路由没注册」'); process.exit(2) }
+if (!token) {
+  console.error('[前置缺失] 登录不通，拿不到有效 token —— 下面全是 401，会被误读成「路由没注册」。')
+  console.error('  这次同样没跑到被检查对象，退出码是 3 而不是 1。')
+  process.exit(3)
+}
 console.log(`登录 200，token ${String(token).length} 字符（**带凭证**，所以 401 不会再冒充成路由缺失）\n`)
 
 // 只读 GET 路径集合。写方法（submit/publish/install/revoke/review）**不探测** ——
