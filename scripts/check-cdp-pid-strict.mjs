@@ -9,14 +9,15 @@
 // 所以这里在 force-stop + 重启过程中反复开通道，统计：
 //   - throw 的次数（应当 > 0，说明窗口真实存在）
 //   - 成功次数中 socket 后缀与目标 pid 不符的次数（必须为 0）
-import { execFileSync } from 'node:child_process'
+import { adbOrExit } from './lib/adb-prereq.mjs'
 import { openCdp } from './lib/adb-cdp.mjs'
 
 const PKG = 'com.kaixuan.opencode.pocket'
 const S = process.env.POCKET_SERIAL || '192.168.31.19:5555'
-const adbBin = 'C:/Users/86133/AppData/Local/Android/platform-tools/adb.exe'
-const adb = (a, t = 20000) =>
-  execFileSync(adbBin, ['-s', S, ...a], { encoding: 'utf8', timeout: t, maxBuffer: 33554432 })
+// 设备不在 ⇒ exit 3「没跑到被检查对象」，不再抛未捕获异常（见 lib/adb-prereq.mjs）。
+// 这道门把「openCdp 抛出的次数」当成回归指标，所以**不能**把 adb 的失败
+// 混进 throwKinds —— 那会把「设备没连上」记成「openCdp 抛了」。
+const adb = (a, t = 20000) => adbOrExit(a, { timeout: t, label: 'check-cdp-pid-strict' })
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 let ok = 0

@@ -1,0 +1,31 @@
+{
+  "_comment": "check-dev-pass-sourcing.mjs 的基线棘轮存量清单。key 形如 file|rule|text，**故意不含行号**（行号一漂就全判陈旧）。只对不在此清单里的新增违规判红。用 --write-baseline 重录。",
+  "counts": {
+    "scripts/audit-list-views.mjs|hardcoded-fallback|const MASTER = process.env.POCKET_MASTER || 'PocketTest2026'": 1,
+    "scripts/check-dev-pass-sourcing.mjs|hardcoded-fallback|text: \"const MASTER = process.env.POCKET_MASTER || 'PocketTest2026'\",": 1,
+    "scripts/check-dev-pass-sourcing.mjs|hardcoded-fallback|text: \"const TOKEN = process.env.POCKET_TOKEN || 'Abcdef123456'\",": 1,
+    "scripts/diag-marketplace-agents.mjs|hardcoded-fallback|const MASTER = process.env.POCKET_MASTER || 'PocketTest2026'": 1,
+    "scripts/diag-master-pw-realinput.mjs|hardcoded-fallback|const MASTER_ASCII = process.env.POCKET_MASTER_ASCII || 'testpass123'": 1,
+    "scripts/diag-route-guard.mjs|hardcoded-fallback|const MASTER = process.env.POCKET_MASTER || 'PocketTest2026'": 1,
+    "scripts/diag-scheduled-create.mjs|hardcoded-fallback|const MASTER = process.env.POCKET_MASTER || 'PocketTest2026'": 1,
+    "scripts/diag-smoke-stuck.mjs|hardcoded-fallback|const MASTER = process.env.POCKET_MASTER || 'PocketTest2026'": 1,
+    "scripts/diag-study-i18n-render.mjs|hardcoded-fallback|const MASTER = process.env.POCKET_MASTER || 'PocketTest2026'": 1,
+    "scripts/diag-task-create-ui.mjs|hardcoded-fallback|const MASTER = process.env.POCKET_MASTER || 'PocketTest2026'": 1,
+    "scripts/diag-task-create-ui2.mjs|hardcoded-fallback|const MASTER = process.env.POCKET_MASTER || 'PocketTest2026'": 1,
+    "scripts/diag-task-list.mjs|hardcoded-fallback|const MASTER = process.env.POCKET_MASTER || 'PocketTest2026'": 1,
+    "scripts/diag-task-route.mjs|hardcoded-fallback|const MASTER = process.env.POCKET_MASTER || 'PocketTest2026'": 1,
+    "scripts/diag-tasks-api.mjs|hardcoded-fallback|const MASTER = process.env.POCKET_MASTER || 'PocketTest2026'": 1,
+    "scripts/diag-tasks-source-filter.mjs|hardcoded-fallback|const MASTER = process.env.POCKET_MASTER || 'PocketTest2026'": 1,
+    "scripts/hier-dump.mjs|hardcoded-fallback|const MASTER = process.env.POCKET_MASTER || 'PocketTest2026'": 1,
+    "scripts/route-coverage-sweep.mjs|hardcoded-fallback|const secret = process.env.POCKET_JWT_SECRET || 'pocket-dev-insecure-secret-0000000000'": 1,
+    "scripts/smoke-routes.mjs|hardcoded-fallback|const MASTER = process.env.POCKET_MASTER || 'PocketTest2026'": 1,
+    "scripts/unlock-master.mjs|hardcoded-fallback|const MASTER=process.env.POCKET_MASTER||'PocketTest2026';": 1,
+    "scripts/verify-bug-aq-no-freeze.mjs|hardcoded-fallback|const MASTER = process.env.POCKET_MASTER || 'PocketTest2026'": 1,
+    "scripts/verify-notes-crud.mjs|hardcoded-fallback|const MASTER = process.env.POCKET_MASTER || 'PocketTest2026'": 1,
+    "scripts/verify-notes-inputtext.mjs|hardcoded-fallback|const MASTER=process.env.POCKET_MASTER||'PocketTest2026';": 1,
+    "scripts/verify-notes-writepath.mjs|hardcoded-fallback|const MASTER=process.env.POCKET_MASTER||'PocketTest2026';": 1,
+    "scripts/verify-scheduled-task-writepath.mjs|hardcoded-fallback|const MASTER = process.env.POCKET_MASTER || 'PocketTest2026'": 1,
+    "scripts/verify-task-writepath.mjs|hardcoded-fallback|const MASTER = process.env.POCKET_MASTER || 'PocketTest2026'": 1,
+    "scripts/verify-vault-writepath.mjs|hardcoded-fallback|const MASTER=process.env.POCKET_MASTER||'PocketTest2026';": 1
+  }
+}

@@ -30,7 +30,9 @@
     "check:blankline-bloat",
     "check:maestro-flows",
     "check:env-example",
-    "check:hide-app-header"
+    "check:hide-app-header",
+    "check:fixed-cdp-ports",
+    "check:dev-pass-sourcing"
   ],
   "ciRuns": [
     "check:pg-schema-scope",
@@ -49,7 +51,9 @@
     "check:blankline-bloat",
     "check:maestro-flows",
     "check:env-example",
-    "check:hide-app-header"
+    "check:hide-app-header",
+    "check:fixed-cdp-ports",
+    "check:dev-pass-sourcing"
   ],
   "ciCoveredElsewhere": {
     "typecheck": "frontend.yml 的 frontend-lint job 已手列 `npm run typecheck`",
