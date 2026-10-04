@@ -425,6 +425,74 @@ round43 记录过同一批包的对照：`internal/email` **不设 DSN 时 19s�
 
 ---
 
+## 三点五、提交与推送的实况（2026-10-04 19:08 → 19:2x）
+
+### 并发会话抢先 merge + push，我的提交是被它带上远端的
+
+```
+19:08   开工提交：fetch 后发现 origin/main 比本地**新 15 个提交**
+        （并发会话的 maestro / UI / gates / styles 工作）
+19:09   逐文件核对重叠：我的 7 个路径远端**一个都没动**（无冲突风险）
+19:10:27 git commit → 560f4a78（7 files, 1554 insertions, 纯新增）
+19:10:33 **别人**在这个 worktree 跑了 `git pull origin main` → 049bca53
+19:10   我自己再跑 git merge origin/main → "Already up to date"
+19:11+  origin/main 已经就是 049bca53 ⇒ 并发会话**连 push 一起做了**
+```
+
+reflog 是唯一能看清这件事的证据（`git status` 连读两次都「干净」，
+`git log HEAD..origin/main` 在提交后突然从 15 变 0）：
+
+```
+049bca53 HEAD@{2026-10-04 19:10:33}: pull origin main: Merge made by the 'ort' strategy.
+560f4a78 HEAD@{2026-10-04 19:10:27}: commit: fix(email): 人工标注会被采集流程整段覆盖…
+```
+
+⇒ **我没有执行 push，提交是经由并发会话那次 pull 的 push 进的远端。**
+已核实两件事：`560f4a78` 是 `origin/main` 的祖先；5 个关键文件的 blob 哈希
+本地与远端**逐个一致**（内容没有被改写）。
+
+⇒ **教训**：`git fetch` 之后 `HEAD..origin/main` 计数为 0
+**不等于**「我合并过了」，也可能是**别人刚替我合并并推送了**。
+这两种情况在 `git status` 和 `git log` 上长得一模一样，
+**只有 reflog 能分辨**——前者是「我做的」，后者是「别人做的」。
+
+### ⚠ main 现在是**红的**，但不是本轮造成的
+
+`go test ./internal/server/ -run TestPGTestsNeverTargetTheProductionSchema` 报：
+
+```
+internal/flashcards/seed_pg_test.go: 测试读取了 POCKET_POSTGRES_DSN（服务自己的生产连接串）1 处。
+```
+
+**归属核实（三步，都有证据）**：
+
+| 步骤 | 结果 |
+|---|---|
+| `git log -- backend/internal/flashcards/seed_pg_test.go` | 引入提交是 `11481002 feat(ui,shell): z-index 阶梯…`——**并发会话的**，不在我的 `560f4a78` 里 |
+| 该文件在 `87249317`（合并前的远端头）上已存在且已读该 env | 是 |
+| **负控**：在 `87249317` 上实跑该护栏 | **同样红，报同一句话** |
+
+⇒ **合并前 main 就已经是红的**，这次 merge 只是把它带过来，没有引入新问题。
+该文件注释写着「POCKET_TEST_POSTGRES_DSN takes precedence, POCKET_POSTGRES_DSN
+is the fallback」——测试回落去读**生产连接串**，正是这条护栏要拦的事。
+
+**本轮没有动它**：修法有两条且都涉及别人的设计判断（删掉 fallback，
+还是在 allowlist 登记并写明理由），不在「提交并推送」的授权内。**下一轮处理。**
+
+### 其余门禁现状（合并后全量跑）
+
+- `go build ./...` / `go vet ./...` → exit 0
+- `go test ./...`（设 DSN）→ **1 处 FAIL**，即上面那条 flashcards 护栏；
+  `internal/email` 包本身 ok
+- node 门禁：19 个 `check-*.mjs` 里 **14 绿 5 红**。逐个查清归属：
+  - `check-device-token.mjs` → 需要命令行参数（`<dumpfile> <port…>`），是工具不是门禁
+  - `check-fts-triggers-device.mjs` → 需要 `lobster` 库连接
+  - `check-marketplace-contract.mjs` → 需要 127.0.0.1:18101 上起隔离后端
+  - `check-dev-pass-sourcing.mjs` / `check-fixed-cdp-ports.mjs` → 命中全在
+    `scripts/verify-*.mjs`（android 设备探针），**负控确认在 `87249317` 上同样红**
+- CI 实际只跑 `backend.yml` 的 check-smart-quotes 与
+  `frontend/scripts/run-gates.mjs --ci`，上面这 5 个**都不在 CI 路径上**。
+
 ## 四、遗留风险（如实记，不藏）
 
 1. **⚠ 最重要：标注没有传导到汇总单。** 横幅两行仍以 `downloaded / 已核验`
@@ -502,4 +570,21 @@ round43 记录过同一批包的对照：`internal/email` **不设 DSN 时 19s�
 TestMarkRetry_* 三条在不设 DSN 时静默跳过）；变异做双向；还原用显式反向替换，
 `git checkout --` 在变异入索引后会取回变异版；改既有护栏必须在 handoff 里
 单独说明。
+
+⚠ 开工前先看 §三点五：main 上有一条**别人带进来的红**
+（`internal/flashcards/seed_pg_test.go` 读生产 DSN），负控确认它在本轮之前
+就已经是红的。不要把它算到 round44 头上，也不要因为「不是我弄的」就不管。
 ```
+
+---
+
+## 六、提交与推送记录
+
+| 时间 | 事件 |
+|---|---|
+| 19:10:27 | `git commit` → `560f4a78`（7 files, 1554 insertions, 纯新增） |
+| 19:10:33 | 并发会话 `git pull origin main` → 合并提交 `049bca53` |
+| 19:11+ | 并发会话 push；`origin/main = 049bca53`，本地领先 0 |
+
+工作树与两个 worktree 均已复核干净；`logs/.round44-commit-msg.txt` 等临时
+产物**未入库**（`logs/` 已 gitignore）。
