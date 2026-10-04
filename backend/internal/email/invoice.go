@@ -602,17 +602,68 @@ func classifyInvoiceKind(text string) string {
 	}
 }
 
+// categoryTokenBoundary 与 e54d797d 的 `keywordBoundaryClass` **刻意写成同一个**：
+// 同一个缺陷模式（裸关键词撞子串）要在所有入口堵住，两处判据就不能各写各的。
+//
+// 两侧不得是字母/数字/下划线，也不得是 URL 与标点常见形态
+// （. - _ / : ? & = # @ + %）。把 URL 分隔符算进「词内」是刻意的：
+// `s3.amazonaws.com` 里的 aws 前后都是 URL 字符，不是独立词。
+const categoryTokenBoundary = `[^0-9A-Za-z_\-./:?&=+#@%]`
+
+// categoryASCIITokens 是费用类型判定里**必须按词边界**匹配的英文词元。
+//
+// 为什么（2026-10-04 真实交付物里肉眼可见）：分类原本对英文关键词也用
+// `strings.Contains`，而邮件 snippet 里**到处都是 URL**（图片 CDN、下载链接、
+// 退订链接、base64 串）。一张 Stripe 收据的正文里有
+// `https://stripe-images.s3.amazonaws.com/…`，其中 `aws` 子串让分类判成
+// 「通信」，产物文件名成了 `通信-X-8.00-2026-10-04.pdf`。
+// 这与 41.2 修的 `vat` 撞 `activation` **同源**：那次只给发票候选判定
+// （`invoiceKeywordHit`）加了词边界，**漏了费用类型这条通路**。
+//
+// amazon / tencent **试过又收回了**（2026-10-04 真实库实测），原因如实记：
+// 我一度把 `Amazon Web Services`、`Tencent Cloud Computing` 这两个英文拼写
+// 补进词元表（它们原先认不出来，中文写法「腾讯」「阿里云」却在），但 978 封
+// 全量对跑显示这样会**误伤**：一封会议促销邮件（`promotion@news.ecloudrover.com`，
+// 正文含「亚马逊云科技 **amazon** quick 能力解读」）从「其他」被拉成「通信」。
+// ⇒ 品牌词一旦独立成词元，任何**提到**该品牌的营销内容都会命中，
+// 而费用类型判定的输入是邮件全文，不是发票特征——
+// 这类补全需要的是发票专属线索（账单号/开票主体），不是品牌名。
+// 词边界修复保留，词元表不扩。
+//
+// 已知仍未补的同类缺口（如实记，不在本轮扩范围）：`aliyun` / `alibaba cloud` /
+// `Tencent Cloud` 等英文写法同样认不出来（腾讯云发票现在被判「其他」）。
+// 补它们要先有一份「哪些英文写法在真实语料里只出现在发票上」的证据。
+var categoryASCIITokens = func() map[string]*regexp.Regexp {
+	out := make(map[string]*regexp.Regexp, 5)
+	for _, kw := range []string{"restaurant", "hotel", "aws", "azure", "saas"} {
+		out[kw] = regexp.MustCompile(`(?i)(^|` + categoryTokenBoundary + `)` + kw + `(` + categoryTokenBoundary + `|$)`)
+	}
+	return out
+}()
+
+// hasCategoryToken 英文词元按词边界匹配；其余（中文）仍用子串。
+//
+// 中文不加边界是刻意的：汉字没有「词内含子词」这回事，
+// 与 41.3 对 `invoiceKeywordHit` 的处理一致。
+func hasCategoryToken(t, kw string) bool {
+	if re, ok := categoryASCIITokens[kw]; ok {
+		return re.MatchString(t)
+	}
+	return strings.Contains(t, kw)
+}
+
 // classifyInvoiceCategory 按销售方/主题/正文关键词推断消费类目（对齐 finance 的类目习惯）。
 func classifyInvoiceCategory(parts ...string) string {
 	t := strings.ToLower(strings.Join(parts, " "))
 	switch {
-	case strings.Contains(t, "餐"), strings.Contains(t, "美团"), strings.Contains(t, "饿了么"), strings.Contains(t, "肯德基"), strings.Contains(t, "麦当劳"), strings.Contains(t, "咖啡"), strings.Contains(t, "restaurant"):
+	case strings.Contains(t, "餐"), strings.Contains(t, "美团"), strings.Contains(t, "饿了么"), strings.Contains(t, "肯德基"), strings.Contains(t, "麦当劳"), strings.Contains(t, "咖啡"), hasCategoryToken(t, "restaurant"):
 		return "餐饮"
 	case strings.Contains(t, "滴滴"), strings.Contains(t, "出行"), strings.Contains(t, "航空"), strings.Contains(t, "铁路"), strings.Contains(t, "12306"), strings.Contains(t, "出租车"), strings.Contains(t, "加油"), strings.Contains(t, "交通"):
 		return "交通"
-	case strings.Contains(t, "酒店"), strings.Contains(t, "住宿"), strings.Contains(t, "民宿"), strings.Contains(t, "hotel"):
+	case strings.Contains(t, "酒店"), strings.Contains(t, "住宿"), strings.Contains(t, "民宿"), hasCategoryToken(t, "hotel"):
 		return "住宿"
-	case strings.Contains(t, "话费"), strings.Contains(t, "移动"), strings.Contains(t, "联通"), strings.Contains(t, "电信"), strings.Contains(t, "宽带"), strings.Contains(t, "腾讯"), strings.Contains(t, "阿里云"), strings.Contains(t, "aws"), strings.Contains(t, "azure"), strings.Contains(t, "软件"), strings.Contains(t, "saas"), strings.Contains(t, "订阅"):
+	case strings.Contains(t, "话费"), strings.Contains(t, "移动"), strings.Contains(t, "联通"), strings.Contains(t, "电信"), strings.Contains(t, "宽带"), strings.Contains(t, "腾讯"), strings.Contains(t, "阿里云"),
+		hasCategoryToken(t, "aws"), hasCategoryToken(t, "azure"), strings.Contains(t, "软件"), hasCategoryToken(t, "saas"), strings.Contains(t, "订阅"):
 		return "通信"
 	case strings.Contains(t, "办公"), strings.Contains(t, "文具"), strings.Contains(t, "打印"), strings.Contains(t, "京东"), strings.Contains(t, "淘宝"), strings.Contains(t, "天猫"), strings.Contains(t, "办公用品"):
 		return "办公"

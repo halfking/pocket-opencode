@@ -3390,3 +3390,128 @@ X (https://about.x.com) X Receipt from X $8.00 Paid September 17, 2026
 
 ⇒ **待授权替换的目标是 `pocketd-official-565388a2.exe`**，
 不要用 `c47fd995`，也不要用更早的 `db64bb98`。
+
+## 第四十九节（2026-10-04 08:36–09:05）**第四十一节那个缺陷模式，我只堵了一半**
+
+起因是把今早那份要交财务的汇总文档**打开看**（第四十七节那条
+「交付物本身要打开看」的规矩），在 `invoices-summary-20261004-080022.md`
+第 11 行看到：
+
+```
+| 通信 | X | 8.00 USD |  |  | downloaded | 已核验 |
+```
+
+一个 **Stripe 软件订阅收据**被标成「**通信**」（话费/宽带类），
+于是产物文件名是 `通信-X-8.00-2026-10-04.pdf` —— 需求原文
+`{费用类型}-{对方单位}-{金额}-{日期}.pdf` 里的费用类型是错的。
+
+### 49.1 根因：`s3.amazonaws.com` 里的 `aws` 子串
+
+`classifyInvoiceCategory`（`invoice.go`）对**英文**关键词也用 `strings.Contains`。
+该邮件 snippet 原文含：
+
+```
+(invoice illustration [https://stripe-images.s3.amazonaws.com/emails/…])
+```
+
+`s3.amazonaws.com` 里的 **`aws`** 子串直接命中 → 判「通信」。
+
+**这与第四十一节修的 `vat` 撞 `activation`、`billing` 撞 URL 路径段
+是同一个缺陷模式：裸关键词撞子串。** 而那次我**只**给发票**候选**判定
+（`invoiceKeywordHit`）加了词边界，**费用类型这条通路漏了**。
+
+⇒ **可执行的一条**：同一个模式要在所有入口用**同一套**判据堵。
+「我已经修好了一个入口」≠「这个缺陷没了」——
+修复前应先 grep 这个关键词还出现在哪些 `Contains` 调用里。
+（本次的 `categoryTokenBoundary` 与 41.3 的 `keywordBoundaryClass`
+刻意写成同一个定义，就是为了让这个约束在代码里可见。）
+
+### 49.2 修法：英文词元按词边界匹配，中文关键词不动
+
+新增 `categoryASCIITokens` + `hasCategoryToken`，覆盖
+`restaurant / hotel / aws / azure / saas` 五个英文词元。
+中文仍用子串——汉字没有「词内含子词」，与 41.3 对 `invoiceKeywordHit`
+的处理一致。
+
+### 49.3 **试过又收回的一处**（本节第二个值得记的点）
+
+我一度顺手把 `Amazon Web Services` / `Tencent Cloud Computing`
+这两个**英文拼写**补进词元表——因为原先词表里有中文「腾讯」「阿里云」，
+唯独英文写法认不出来（`Amazon Web Services` 里没有连续的 `aws`）。
+看起来是明显的补全。
+
+**真实库 978 封全量对跑把这条路否掉了**：
+
+```
+其他 -> 通信   [promotion@news.ecloudrover.com]
+               【诚邀线上参会】…企业级 AI Agent 构建、治理与应用实践(AD)
+```
+
+回查命中词：`亚马逊云科技 **amazon** quick 能力解读`。
+
+⇒ **品牌词一旦独立成词元，任何「提到」该品牌的营销内容都会命中**，
+而费用类型判定的输入是**邮件全文**，不是发票特征。
+3 条腾讯云发票（`其他→通信`，本意中的改进）换来 1 条促销邮件误判，**不划算**。
+
+已收回 `amazon` / `tencent`，词边界修复保留，词元表不扩。
+缺口用 `TestClassifyInvoiceCategory_KnownEnglishVendorGap` **显式钉住**
+（断言当前真实行为 = 「其他」，并在失败信息里写明「若你要补这个缺口，
+请先证明不会把提到该品牌的营销邮件带进来」），
+而不是让缺口悄悄存在、或用注释糊过去。
+
+### 49.4 真实库全量对跑：**11 行变化，方向全部是 `通信 -> 其他`，新增误判 0**
+
+```
+语料总数      : 978
+新旧类目不同  : 11
+    通信 -> 其他   [no-reply@amazonaws.com]              Amazon Web Services Account Alert
+    通信 -> 其他   [invoice+statements+…@stripe.com]     Your receipt from X #2662-4636-8457
+    通信 -> 其他   [ccsvc@message.cmbchina.com]          每日信用管家  ×9
+```
+
+逐条看过，**没有一条是新的误判**：
+
+- `amazonaws` 里的 `aws` 让一封 **AWS 账户告警**被判成通信——不是通信支出；
+- Stripe X 收据——本节的目标修复；
+- 9 封招商「每日信用管家」是**信用卡对账单**，本来就不该是通信
+  （它们也不会进台账，`admitDebtNotice` 早就拦住了）。
+
+**`其他 -> 通信` 一条都没有** ⇒ 这次改动**只去噪、不新增**。
+
+### 49.5 判据 4 条 + 负控实测转红
+
+`backend/internal/email/invoice_category_url_boundary_test.go`：
+
+| 用例 | 钉住什么 |
+|---|---|
+| `RealStripeReceiptNotTelecom` | **缺陷复现**，逐字复制真实 snippet，期望「其他」是独立字面量 |
+| `ASCIIKeywordsInURLsAreNotSignals`（6 条） | 一次钉全 `amazonaws` / `/aws/` / `xaWSy` / `myhotels-` / `restaurants` / `azure.png`，避免只修 `aws` 一个、下次换个域名再来一遍 |
+| `RealSignalsStillWork`（10 条） | **反向保护**：AWS/azure/SaaS/腾讯云/阿里云/美团/滴滴/酒店/京东/未知供应商 全部照旧 |
+| `KnownEnglishVendorGap` | **把缺口钉成显式断言**，而不是靠注释掩盖 |
+
+实现前 6 条转红（含 2 条我以为该过、实测暴露是先存缺口的反向保护用例）。
+负控：把 `hasCategoryToken` 的词边界分支删掉、退回裸 `Contains` ⇒ 转红。
+
+### 49.6 本节实测
+
+- `go test ./internal/email/ ./internal/config/ ./internal/server/ -count=1` 全绿
+  （14.59s / 0.80s / 21.00s）——含 `./internal/server/`
+- `go build ./...` exit=0；`go vet ./internal/email/` 通过
+- gofmt 真债 0；smart-quotes 通过；blankline-bloat 通过
+- 两个改动文件行尾均 CRLF（新判据原为 LF，已归一）
+- 探针跑完即删，`git status` 只有 `invoice.go` 与新判据文件
+
+### 49.7 顺带看一眼交付物本身（第四十七节那条规矩）
+
+`invoices-summary-20261004-080022.md` 与 `.csv` 都**打开逐行核对**过：
+
+- **CSV 是好的**：10 列、含「文件名」与「来源邮件」、表头与内容一致、
+  合计按币种分列、带 UTF-8 BOM。
+- **MD 的缺陷**：① 表头第 7 列写「文件」、内容是「已核验/未核验」
+  （代码已修，待上线）；② **MD 全篇没有文件名**，财务拿到 MD 无法把行
+  对应到文件——好在 CSV 有，所以我**没有**擅自给 MD 加宽列
+  （那是待拍板项；且 CSV 已经满足需求，加列要同步合计行形状）。
+- MD 里 `58000.00` 那行（幽灵发票）日期显示 `2026-10-25`，
+  是**未来日期**（工行对账单的到期还款日）。金额**没有**被计入合计
+  （`计入合计 9 张`，CNY 10392.21 已逐项核对等于 8 张 downloaded 之和），
+  但它仍以一行形式出现在要交给财务的文档里 ⇒ 删 58000 行那项授权仍然必要。
