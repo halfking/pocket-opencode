@@ -3,8 +3,14 @@ package email
 import (
 	"bytes"
 	"fmt"
+	"image"
 	"io"
 	"strings"
+
+	// 注册 JPEG / PNG 解码器，供 image.DecodeConfig 读图片尺寸用。
+	// 只读配置不解码像素，所以这两个空导入的代价只是注册解码器。
+	_ "image/jpeg"
+	_ "image/png"
 
 	"github.com/pdfcpu/pdfcpu/pkg/api"
 )
@@ -44,6 +50,70 @@ func invoiceMediaType(kind string) string {
 func isImageBytes(data []byte) bool {
 	kind, _ := DetectInvoiceMedia(data)
 	return kind == "jpeg" || kind == "png" || kind == "webp"
+}
+
+// bannerAspectRatio 是「这东西像横幅而不像一份文档」的长宽比阈值。
+//
+// 标定依据（两个实测值，不是一句「横幅都很宽」）：
+//
+//	观测到的营销横幅 572 x 140  → 4.09
+//	A4 票面 竖版 0.707 / 横版 1.414
+//
+// 2.5 落在 1.414 与 4.09 之间，两侧余量都不小。
+// 判别式是「像不像一份**文档**」，不是「是不是图」——后者对横幅
+// 问一百遍答案也是 true（`isImageBytes` 就是栽在这里）。
+const bannerAspectRatio = 2.5
+
+// imagePlausibleAsVoucher 判断一份图片**有没有可能是发票凭证**。
+//
+// 与 isImageBytes 的分工：isImageBytes 回答「这是不是图片」，
+// 本函数回答「这张图像不像一份票据」。两件事都要问——
+// 只问前一个，营销横幅会被存成发票文件并标成 downloaded/已核验，
+// 金额直接进财务合计（2026-10-04 08:00 那轮：6071.00 + 283.20 =
+// 6354.20 CNY，占 CNY 合计 10392.21 的 61.1%，两个文件 SHA256 相同，
+// 内容是印着「用心服务 贴心用户」的百望平台宣传横幅）。
+//
+// 只用几何、不用 OCR：判据必须能在**采信当场**跑完，且不许猜内容。
+// 572x140 与 A4 的 0.707/1.414 差着一个数量级，这个差距不需要识别文字。
+//
+// 三个刻意取舍：
+//
+//  1. **不用最小尺寸下限。** 仓库里 `TestHarvestOne_ImageAttachmentKeepsImageExtension`
+//     的夹具是一张 1x1 最小 PNG，而我没有一张真实拍照发票样本可用来标定下限。
+//     「没有证据就不改」——加了会打红一条既有护栏，且那个下限是编的。
+//  2. **解码不出尺寸就放行（fail-open）。** webp 没有 stdlib 解码器，
+//     DecodeConfig 会报 unsupported format。宁可放过一张 webp 横幅，
+//     也不要因为「测不出尺寸」把真票判死。代价是 webp 这条路仍有洞，
+//     已记进 handoff 遗留风险。
+//  3. **不动 isImageBytes。** 它还被 ExtractInvoiceThumb / DetectInvoiceMedia
+//     用着；列表页缩略图场景下横幅**本来就该**能显示，把闸门加在
+//     isImageBytes 上会把缩略图一起弄坏。
+func imagePlausibleAsVoucher(data []byte) bool {
+	if !isImageBytes(data) {
+		// 不是图片：PDF / XML / zip 的准入另有其判，不归本函数管。
+		return true
+	}
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil || cfg.Width <= 0 || cfg.Height <= 0 {
+		// 测不出尺寸 → 放行（见上文取舍 2）。
+		return true
+	}
+	long, short := cfg.Width, cfg.Height
+	if short > long {
+		long, short = short, long
+	}
+	return float64(long)/float64(short) < bannerAspectRatio
+}
+
+// voucherRejectionReason 给出可写进 last_error 的原因文本，
+// 便于运维在台账上直接看出「这一行是横幅不是票」。
+func voucherRejectionReason(data []byte) string {
+	if cfg, _, err := image.DecodeConfig(bytes.NewReader(data)); err == nil {
+		return fmt.Sprintf("image is banner-shaped (%dx%d, aspect %.2f >= %.1f), not a document",
+			cfg.Width, cfg.Height, float64(max(cfg.Width, cfg.Height))/float64(min(cfg.Width, cfg.Height)),
+			bannerAspectRatio)
+	}
+	return "image is banner-shaped, not a document"
 }
 
 // pdfHasPages 判断字节内容是不是「至少有一页的可用 PDF」。
