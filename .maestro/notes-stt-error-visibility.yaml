@@ -31,6 +31,31 @@
 #   4. 设备麦克风权限已授予
 #   5. **设备语言必须是 zh-CN**（2026-10-02 首次实跑补上的一条，见下）
 #
+# ---------- ⚠️ 第 6 条：必须先跑夹具，否则本流恒红（2026-10-04 补）----------
+#   node scripts/stt-error-fixture.mjs --induce
+#   node scripts/maestro-run.mjs .maestro/notes-stt-error-visibility.yaml
+#   node scripts/stt-error-fixture.mjs --restore     <-- 跑完必须还原
+#
+# 为什么：ASR 开通后（mimo-v2.5-asr 有了上游 provider），后端**再也不会**返回
+# `stt_unavailable:`。而本流的断言正是围绕这条带错误码的可行动原因 ——
+# 前提消失，flow 恒红，于是它**等于没有护栏**（不是回归，见下）。
+#
+# 夹具怎么造这个前提：把 STT 的 gatewayModel 指向一个不存在的模型。
+# server_stt_settings.go 的 gatewayTarget() 里有
+#   `stt_unavailable: 网关模型 %q 当前不可用（…）` 这条分支，
+# 于是后端确定性地给出带错误码的原因。实测返回里含「外部语音转写服务未配置」，
+# **正好命中本流现有的断言正则**，所以 flow 一行都不用改。
+#
+# ⚠️ 别把「本流红了」读成「产品坏了」。判别式：
+#   后端有没有吐 `stt_unavailable:` —— 有则是产品问题，没有则是前提没造出来。
+#   2026-10-04 实测：注入前红（页面只有泛化的「转写失败，将在下一段重试」），
+#   注入后 2/2 绿。
+#
+# 另注：429 限流**本来就该**显示泛化提示。frontend/src/api/stt-error.ts 只放行
+# `SHOWABLE_STT_CODES`（目前仅 stt_unavailable），注释写明「没有稳定错误码 =
+# 可能是技术串（超时/DNS/panic），不展示」。所以限流场景下看不到可行动原因
+# 是**符合当前契约**的，别当缺陷报。
+#
 # ⚠️ 第 5 条是这条流第一次真正跑起来才发现的（2026-10-02，模拟器 emulator-5556）：
 #   模拟器默认 `en-US`，App 随之渲染**英文**底部导航（`en-US.json` 里就是
 #   `"study": "Study"`），于是 `tapOn: "学习"` 直接 FAILED。
