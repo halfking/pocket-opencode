@@ -178,7 +178,9 @@ function buildTree(value: unknown, key?: string, depth = 0, path: string[] = [])
 .json-block.is-fullscreen {
   position: fixed;
   inset: 0;
-  z-index: 999;
+  /* 2026-10-04：999 → --z-sheet。999 曾是随手取的「够大」值，但它落在
+     --z-bottom-nav(70) 与 --z-sheet(1300) 之间，既盖不住底板也盖不住弹层。 */
+  z-index: var(--z-sheet);
   background: var(--bg-primary, #fff);
   border-radius: 0;
   max-height: none;

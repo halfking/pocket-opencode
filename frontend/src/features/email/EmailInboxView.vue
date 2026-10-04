@@ -187,7 +187,7 @@
       </TransitionGroup>
       <div v-if="emails.length > 0" ref="moreEl" class="more">
         <!-- 加载中：转圈 + 文案淡入淡出；静态提示则保持常驻，不做位移。 -->
-        <span v-if="pageState.loadingMore" class="more-loading">
+        <span v-if="pageLoading" class="more-loading">
           <span class="material-symbols-outlined more-spin" aria-hidden="true">progress_activity</span>
           <span>正在加载更早的邮件…</span>
         </span>
@@ -199,7 +199,7 @@
           **整个 vite build 失败**，APK 出不来。
         -->
         <Transition v-else name="morefade" mode="out-in">
-          <span v-if="pageState.hasMore" key="hint">上滑加载更早的邮件</span>
+          <span v-if="hasMore" key="hint">上滑加载更早的邮件</span>
           <span v-else key="end" class="more-end">已到最早一封</span>
         </Transition>
       </div>
@@ -235,7 +235,6 @@ import { useI18n } from 'vue-i18n'
 import { Skeleton, EmptyState, PullToRefresh, DbLockedState } from '../../components'
 import ScrollChromePortal from '@/components/layout/ScrollChromePortal.vue'
 import HeaderActionsPortal from '@/components/layout/HeaderActionsPortal.vue'
-import { useListSentinel } from '../../composables/use-list-sentinel'
 import * as emailsStore from './emails-store'
 import { emailApi } from '../../api/email'
 import type { LocalEmail } from './emails-store'
@@ -245,15 +244,9 @@ import { readEmailBodyLocal, writeEmailBodyLocal } from './email-body-cache.ts'
 import { extractEmailBody } from './email-body-format.ts'
 import { recordOpsEntry } from './email-folders-store'
 import EmailFolderPickerSheet from './EmailFolderPickerSheet.vue'
-import {
-  INBOX_PAGE_SIZE,
-  advanceInboxPage,
-  applyRefreshPage,
-  createInboxPageState,
-  mergeInboxPages,
-  resetInboxPage,
-  shouldAutoLoadMore,
-} from './email-inbox-pagination.ts'
+import { INBOX_PAGE_SIZE } from './email-inbox-pagination.ts'
+import { inboxMergeRows, makeInboxFetchPage } from './email-inbox-adapter.ts'
+import { useContinuousList } from '../../composables/useContinuousList'
 import { runDelegatedEmailFetch } from './email-fetch-run'
 import { sanitizeFetchHint } from './email-fetch-plan'
 import { formatEmailRelTime } from './cleanup-filter'
@@ -291,7 +284,6 @@ function emailCardAriaLabel(m: LocalEmail): string {
 const router = useRouter()
 const route = useRoute()
 const { t } = useI18n()
-const emails = ref<LocalEmail[]>([])
 const loading = ref(true)
 const loadError = ref('')
 const activeCategory = ref<string>('')
@@ -301,22 +293,54 @@ const inbox = useEmailInbox()
 const categoryChips = INBOX_CATEGORY_CHIPS
 const sinceLocal = ref('')
 const untilLocal = ref('')
-const shownEmails = computed(() => inbox.visibleEmails(emails.value))
 // 目录视图：/email?folder=<name> 时只看该目录（空串 = 收件箱默认视图）。
 const activeFolder = ref(typeof route.query.folder === 'string' ? route.query.folder : '')
+
+/**
+ * 2026-10-06：从 `useListSentinel` + `email-inbox-pagination.ts` 的自研状态机
+ * 迁到 Hyper 连续加载内核（`lib/shell/continuousList.ts` + 本文件上方的适配层）。
+ *
+ * 三个参数各自对应 UI规范 07 §2.5 逐条核对出的结论：
+ *  - `refreshPolicy: 'merge'`：下拉刷新只把第 1 页的新值**并到顶部**并保留
+ *    已翻开的分页。原先靠 `applyRefreshPage` 手工实现，且它与「翻页」共用
+ *    `advanceInboxPage` 导致游标被刷新推走——那正是 07 §2.8 修掉的缺陷。
+ *    内核在**结构上**把两条路径分开（refresh 走 preserveCursor，append 才
+ *    推进 nextPage），同类缺陷不会再发生。
+ *  - `mergeRows: inboxMergeRows`：排序是领域知识，内核刻意不替调用方决定。
+ *  - `fetchPage`：`hasMore` 由适配层从「这页取满没有」推导，所以**不需要**
+ *    给本地库加 total 查询。
+ */
+const {
+  rows: emails,
+  status: listStatus,
+  hasMore,
+  sentinelRef: moreEl,
+  refresh: refreshList,
+  resetQuery: resetListQuery,
+  loadMore,
+} = useContinuousList<LocalEmail>({
+  fetchPage: makeInboxFetchPage(
+    {
+      readPage: (c, offset, f) => readInboxPage(c, offset, f),
+      getCategory: () => activeCategory.value,
+      getFolder: () => activeFolder.value,
+      countAll: () => emailsStore.countLocalEmails(),
+    },
+    INBOX_PAGE_SIZE,
+  ),
+  pageSize: INBOX_PAGE_SIZE,
+  refreshPolicy: 'merge',
+  mergeRows: inboxMergeRows,
+})
+
+/** 「正在翻页」——模板用它显示转圈。内核的状态枚举比旧的布尔组合更直接。 */
+const pageLoading = computed(() => listStatus.value === 'loadingNext')
+
+const shownEmails = computed(() => inbox.visibleEmails(emails.value))
 const moveOpen = ref(false)
 const moveBusy = ref(false)
 const organizing = ref(false)
 
-/**
- * 分页游标状态。
- *
- * nextOffset 只按「数据库已返回过的原始行数」推进，**不用 emails.length**：
- * 下拉同步会把新邮件插到列表顶部，此后列表长度与已索取行数不再相等，若拿长度
- * 当 offset，下一批会跳过中间那几封（负控实测：刷新后旧游标取到 f,g,h，
- * d,e,f 永久丢失）。详见 email-inbox-pagination.ts。
- */
-const pageState = ref(createInboxPageState())
 const refreshing = ref(false)
 
 /**
@@ -381,16 +405,19 @@ async function onPurge() {
  * replace=true 时整表替换（切分类 / 首屏）；false 时把结果并入现有列表
  * （下拉刷新与后台同步），避免把用户已翻开的分页丢掉。
  */
+/**
+ * 重读本地第一页。
+ *
+ * ⚠️ 2026-10-06 迁移：分页状态已由 `useContinuousList` 持有，本函数**不再**
+ * 自行推进游标或合并分页。`replace` 参数随之失去意义（整表重读与合并重读
+ * 都由内核的 `refreshPolicy` 决定），保留它只是不想改调用点。
+ *
+ * 后台流程仍在多处调用它（拉完新邮件、归类完成后），要的都是
+ * 「把本地最新状态反映到列表上」——这正是内核 refresh 的职责。
+ */
 async function showLocal(replace = true) {
-  const page = await readInboxPage(activeCategory.value, 0, activeFolder.value)
-  if (replace) {
-    emails.value = page
-    pageState.value = advanceInboxPage(createInboxPageState(), page.length, page.length, INBOX_PAGE_SIZE)
-  } else {
-    const { list, addedCount } = applyRefreshPage(emails.value, page)
-    emails.value = list
-    pageState.value = advanceInboxPage(pageState.value, page.length, addedCount, INBOX_PAGE_SIZE)
-  }
+  void replace
+  await refreshList()
 }
 
 /**
@@ -507,32 +534,6 @@ async function load() {
   })()
 }
 
-/**
- * 上滑加载下一页。
- *
- * 关键点：
- *  - offset 取自 pageState.nextOffset（已索取行数），不是 emails.length；
- *  - 追加走去重合并，游标只按 fetchedCount 推进；
- *  - 加载中直接返回，防并发翻页。
- */
-async function loadMore() {
-  if (loading.value || pageState.value.loadingMore || !pageState.value.hasMore) return
-  pageState.value = { ...pageState.value, loadingMore: true }
-  try {
-    const page = await readInboxPage(activeCategory.value, pageState.value.nextOffset, activeFolder.value)
-    const merged = mergeInboxPages(emails.value, page)
-    const addedCount = merged.length - emails.value.length
-    emails.value = merged
-    pageState.value = advanceInboxPage(pageState.value, page.length, addedCount, INBOX_PAGE_SIZE)
-  } catch {
-    // 读失败：解除 loading 让用户能重试，游标不动（重试同一页不会漏数据）。
-    pageState.value = { ...pageState.value, loadingMore: false }
-  }
-  // 填不满一屏时继续补页（见 recheckSentinel 注释）。
-  void recheckSentinel()
-}
-
-const { moreEl } = useListSentinel(loadMore)
 
 /**
  * 回顶按钮的显示阈值：约一屏半。
@@ -579,16 +580,13 @@ async function recheckSentinel() {
   if (!el) return
   const sentinelTop = el.getBoundingClientRect().top
   const viewportHeight = window.innerHeight || document.documentElement.clientHeight
-  if (shouldAutoLoadMore({
-    hasMore: pageState.value.hasMore,
-    loadingMore: pageState.value.loadingMore,
-    sentinelTop,
-    viewportHeight,
-  })) {
-    await loadMore()
-    // 递归直到填满或到底（每层都让出一帧，避免同步递归卡住主线程）。
-    if (pageState.value.hasMore && !pageState.value.loadingMore) void recheckSentinel()
-  }
+  // 内核没有内建这个补判（它的 rootMargin 240px 覆盖了绝大多数情形，
+  // 但「追加后哨兵仍持续相交 ⇒ IO 不再回调」这个边界仍需调用方兜一次）。
+  if (!hasMore.value || pageLoading.value) return
+  if (sentinelTop > viewportHeight + 120) return
+  await loadMore()
+  // 递归直到填满或到底（每层都让出一帧，避免同步递归卡住主线程）。
+  if (hasMore.value && !pageLoading.value) void recheckSentinel()
 }
 
 /** 下拉刷新：只拉最新并合并到顶部，保留已加载的分页与滚动位置。 */
@@ -596,12 +594,13 @@ async function onRefresh() {
   if (refreshing.value) return
   refreshing.value = true
   try {
+    const before = new Set(emails.value.map((m) => m.id))
     await pullInboxFromServer()
-    const page = await readInboxPage(activeCategory.value, 0, activeFolder.value)
-    const { list, addedCount } = applyRefreshPage(emails.value, page)
-    emails.value = list
-    // 刷新不改游标：已加载的分页仍然有效，nextOffset 继续指向「已索取过的行数」。
-    syncHint.value = addedCount > 0 ? `新增 ${addedCount} 封邮件` : '已是最新'
+    // 内核的 merge：第 1 页新值并到顶部、**保留已翻开的分页**、游标不退回
+    // （preserveCursor）。这正是 07 §2.8 那个缺陷的正确形态。
+    await refreshList()
+    const added = emails.value.filter((m) => !before.has(m.id)).length
+    syncHint.value = added > 0 ? `新增 ${added} 封邮件` : '已是最新'
   } catch (e: any) {
     syncHint.value = sanitizeFetchHint(e?.message || '') || '刷新失败'
   } finally {
@@ -611,9 +610,8 @@ async function onRefresh() {
 function setCategory(c: string) {
   if (activeCategory.value === c) return
   activeCategory.value = c
-  // 换分类 = 换一份数据，游标归零并整表替换。
-  pageState.value = resetInboxPage(pageState.value)
-  void load()
+  // 换分类 = 换一份数据：提升代次、清游标、回到首页（内核内部完成）。
+  resetListQuery()
 }
 /**
  * 点进详情：**不等待**任何网络。
@@ -645,8 +643,7 @@ watch(() => inbox.search.value, (s) => {
 // 目录视图标题：进入目录时把页头换成目录名，返回收件箱恢复默认。
 watch(activeFolder, (f) => {
   setHeaderTitle(f ? `目录：${f}` : null)
-  pageState.value = resetInboxPage(pageState.value)
-  void load()
+  resetListQuery()
 })
 // 目录页点目录跳 /email?folder=x：KeepAlive 下组件不重建，靠路由查询驱动。
 watch(() => route.query.folder, (v) => {

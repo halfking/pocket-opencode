@@ -37,7 +37,8 @@
         v-if="canGoBack"
         class="back-btn"
         type="button"
-        :aria-label="t('layout.backButton')"
+        :aria-label="backAffordance.label"
+        :title="backAffordance.label"
         @click="goBack"
       >
         <span class="material-symbols-outlined" aria-hidden="true">arrow_back</span>
@@ -101,7 +102,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch, watchEffect, nextTick, onUnmounted, provide } from 'vue'
+import { computed, ref, watch, watchEffect, nextTick, onMounted, onUnmounted, provide } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { App as CapApp } from '@capacitor/app'
@@ -115,6 +116,8 @@ import { useDevicePosture } from '../composables/useDevicePosture'
 import { createScrollHideChrome, bindScrollHideChrome } from '../composables/useScrollHideChrome'
 import { SCROLL_CHROME_KEY, isChromeToggleTap } from '../composables/scroll-chrome'
 import { headerTitleOverride } from '../composables/useAppHeaderTitle'
+import { getShellRuntime, dispatchBack } from '../lib/shell'
+import { useAuthStore } from '../stores/auth'
 
 const { t } = useI18n()
 
@@ -122,6 +125,33 @@ const route = useRoute()
 const router = useRouter()
 const { isFoldableExpanded } = useBreakpoint()
 const { hingeRect, hingeOrientation } = useDevicePosture()
+
+/**
+ * Hyper 运行时单例（2026-10-04）。
+ *
+ * 它把导航上下文、标题真源、返回裁决绑成一个整体，供顶栏返回钮与
+ * Android 系统返回共用。scope 在登出/换账号时由 auth store 调
+ * `setScope()` 更新——在那之前是空 scope，条目不带任何账号归属，
+ * 因此不会被误当作「上一个账号的历史」恢复。
+ */
+const shellRuntime = getShellRuntime(router as never)
+
+/**
+ * 账号域 → 导航上下文 scope（2026-10-04）。
+ *
+ * 登出与换账号必须让 Hyper 上下文整体作废：导航条目与页面标题里含姓名、
+ * 收件人、筛选条件，留在内存里等下一个人登录就是跨账号泄漏。
+ * 登出时 `userId`/`workspaceId` 被清空，scope 变回空串，`setScope` 同样会触发
+ * 清理（见 runtime.ts 里那条注释——早期实现在这里有缺陷）。
+ */
+const authStore = useAuthStore()
+watch(
+  () => [authStore.userId, authStore.workspaceId] as const,
+  ([userId, workspaceId]) => {
+    shellRuntime.setScope({ serverId: workspaceId || '', accountId: userId || '' })
+  },
+  { immediate: true },
+)
 
 const mainEl = ref<HTMLElement | null>(null)
 const menuOpen = ref(false)
@@ -148,7 +178,29 @@ if (import.meta.env.DEV && route.query.openMenu) {
   })
 }
 
-const title = computed(() => headerTitleOverride.value || (route.meta.title as string) || 'Redclaw')
+/**
+ * 顶栏标题（2026-10-04 起经 TitleResolver）。
+ *
+ * 改造前这里是 `headerTitleOverride.value || route.meta.title || 'Redclaw'` ——
+ * 顶栏读路由 meta，页面读自己的 DOM，是两条独立路径。后果是异步实体名
+ * （例如邮件详情里到达的联系人名）到达时两边会短暂不一致，旧页面的晚到响应
+ * 还能覆盖新页面标题。
+ *
+ * 现在顶栏与页面共用同一个解析结果：`override > 已登记标题 > meta 回落`。
+ * `headerTitleOverride` 仍保留最高优先级，因为它是页面**显式**的临时覆盖
+ * （例如列表录音时长），语义上强于自动解析。
+ */
+const title = computed(() => {
+  // ⚠️ 必须显式读 version：store 的其余状态是普通模块变量，没有响应式依赖。
+  // 不读它，这个 computed 只会算一次，路由变了标题也不动（判据见
+  // navigationContext.test.mjs 的 version 用例）。
+  void shellRuntime.store.version
+  return (
+    headerTitleOverride.value ||
+    shellRuntime.titles.resolve(shellRuntime.store.snapshot(), shellRuntime.store).title ||
+    'Redclaw'
+  )
+})
 
 /* Android 系统返回：抽屉开着时先关抽屉，而不是把返回事件交给 WebView
    （默认行为会导航后退甚至退出应用，抽屉仍留在屏幕上）。仅原生壳生效。 */
@@ -166,18 +218,107 @@ if (Capacitor.isNativePlatform()) {
       // 因为锁定态退出 app 比绕过验证更严重。
       return
     }
-    // 有历史则后退；栈空（根页面）时退出应用——接管了 backButton 就必须
-    // 兜底 Capacitor 被覆盖的默认退出行为，否则用户无法退出。
-    if (window.history.state?.back == null) {
-      void CapApp.exitApp()
-    } else {
-      window.history.back()
-    }
+    // 2026-10-04：抽屉与解锁态这两个前置守卫保持原样（它们优先级高于任何
+    // 导航仲裁）。之后的决策交给 BackDispatcher 统一裁决，避免这里与左上角
+    // 返回钮各判各的、出现「关了两层」或「关了弹窗又跳路由」。
+    void submitSystemBack()
   })
   onUnmounted(() => {
     void backSub.then(h => h.remove()).catch(() => {})
   })
 }
+
+/**
+ * 系统返回的统一出口（2026-10-04）。
+ *
+ * 交给 BackDispatcher 裁决，让它与左上角返回钮共用同一套优先级
+ * （先关最上层覆盖层 → 脏表单拒绝则消费 → 页面回退 → 安全 fallback →
+ * 交还系统）。它**永不返回 undefined**，因此这里能可靠区分
+ * 「已处理」与「没处理」，后者才需要我们兜底退出应用。
+ */
+async function submitSystemBack() {
+  const outcome = await dispatchBack(shellRuntime)
+  if (outcome.kind === 'handed-to-system' || outcome.kind === 'noop') {
+    // 没有可回退的页面：接管了 backButton 就必须兜底 Capacitor 被覆盖的
+    // 默认退出行为，否则用户在根页面无法退出 App。
+    if (window.history.state?.back == null) {
+      void CapApp.exitApp()
+    } else {
+      window.history.back()
+    }
+  }
+  // blocked / overlay-closed / overlay-rejected / page-popped 都已就地处理。
+  // overlay-rejected 尤其**不能**再退，否则就是「返回穿透到背景路由」。
+}
+
+/**
+ * Esc 与内容区左滑手势（2026-10-04）——补齐返回的第 3、4 个来源。
+ *
+ * 之前只有返回钮与 Android 硬件返回，两者各判各的。现在四个来源都只发意图，
+ * 由 BackDispatcher 裁决一次。
+ *
+ * 手势判据沿用 UI规范 07 §7 的初始值：12px 死区 + `|dx| > 1.3|dy|` 方向锁，
+ * 命中后**消费该次手势**（不触发 click），且必须在**同一根手指**上完成——
+ * 出现第二指或 touchcancel 就放弃，避免和页面内横滑（表格/轮播）打架。
+ *
+ * ⚠️ 这条只处理**应用内容区**的快捷返回，不碰系统边缘返回手势：
+ * 浏览器 Safari 不能保证用 JS 阻止系统边缘手势，也不该假装能。
+ */
+const SWIPE_DEAD_ZONE_PX = 12
+const SWIPE_ANGLE_RATIO = 1.3
+
+let swipeStartX = 0
+let swipeStartY = 0
+let swipeTracking = false
+
+function onTouchStart(e: TouchEvent) {
+  if (e.touches.length !== 1) {
+    swipeTracking = false
+    return
+  }
+  // 输入控件内的触摸不参与（否则会抢走文本选择）
+  const t = e.target as HTMLElement | null
+  if (t?.closest?.('input, textarea, select, [contenteditable], [data-hyper-gesture="ignore"]')) {
+    swipeTracking = false
+    return
+  }
+  swipeStartX = e.touches[0].clientX
+  swipeStartY = e.touches[0].clientY
+  swipeTracking = true
+}
+
+function onTouchEnd(e: TouchEvent) {
+  if (!swipeTracking) return
+  swipeTracking = false
+  const t = e.changedTouches?.[0]
+  if (!t) return
+  const dx = t.clientX - swipeStartX
+  const dy = t.clientY - swipeStartY
+  // 死区 + 方向锁：只有明确横向才归本手势
+  if (Math.abs(dx) < SWIPE_DEAD_ZONE_PX) return
+  if (Math.abs(dx) <= Math.abs(dy) * SWIPE_ANGLE_RATIO) return
+  // 只识别**左滑返回**（本项目需求，与 iOS 常见的右滑返回不同）
+  if (dx > 0) return
+  void dispatchBack(shellRuntime)
+}
+
+function onKeydown(e: KeyboardEvent) {
+  // Esc 只关可关闭的上层，不默认退出整个 App（UI规范 06 §5）
+  if (e.key !== 'Escape' && e.key !== 'Esc') return
+  void dispatchBack(shellRuntime)
+}
+
+onMounted(() => {
+  document.addEventListener('keydown', onKeydown)
+  mainEl.value?.addEventListener('touchstart', onTouchStart, { passive: true })
+  mainEl.value?.addEventListener('touchend', onTouchEnd, { passive: true })
+})
+
+onUnmounted(() => {
+  document.removeEventListener('keydown', onKeydown)
+  mainEl.value?.removeEventListener('touchstart', onTouchStart)
+  mainEl.value?.removeEventListener('touchend', onTouchEnd)
+})
 // hideAppHeader：视图自带全屏头部（会话工作台等）时隐藏壳层顶栏与全局状态条，
 // 避免与视图头部双层堆叠（P1.5 界面减负；meta 契约此前只被 ScrollChromePortal 消费）。
 const showTopBar = computed(
@@ -196,6 +337,20 @@ const showBottomNav = computed(() => {
   }
   return true
 })
+/**
+ * 返回钮的语义由仲裁器决定（UI规范 06 §5）：页面「返回」/ 弹窗「关闭」/
+ * 专注「退出专注」。UI 只渲染，不自己判断。
+ *
+ * ⚠️ 可见性**仍**由 `meta.canGoBack` 决定，未改成「按上下文是否有前驱」。
+ * 原因：现有 40+ 条路由逐个声明 canGoBack，改判据会让一部分历史深链入口
+ * 突然不显示返回钮 —— 那是行为回归，不是改进。接前驱判据需要逐路由核对，
+ * 列入 UI规范 09 的 H1 剩余项。
+ */
+const backAffordance = computed(() => {
+  void shellRuntime.store.version
+  return shellRuntime.back.affordance(shellRuntime.store.snapshot())
+})
+
 const canGoBack = computed(() => Boolean(route.meta.canGoBack))
 
 type ScrollMode = 'shell' | 'self' | 'split'
@@ -305,28 +460,36 @@ watch(foldHingePx, (v) => {
 }, { immediate: true })
 
 /**
- * 返回策略：
- * 1. sessionStorage 标记是否"从首页栈出发"——根路由 `/ai`、`/tasks` 等。
- * 2. 如果当前就是从首页 push 来的（"isHomeRoot = false"），直接 router.back()
- *    会回到首页，结果可预测。
- * 3. 如果当前就在首页根（isHomeRoot = true），router.back() 会落到 entry 空白页，
- *    应保持 push('/ai') 兜底。
+ * 返回策略（2026-10-04 起先经 BackDispatcher，再落到首页兜底）。
  *
- * 这种方式不依赖 window.history.length，避免 Capacitor WebView 启动期
- * length 起点异常与深链入口干扰。
+ * 为什么不是直接 router.back()：左上角返回钮与 Android 系统返回必须走
+ * **同一套**优先级，否则会出现「系统返回先关了弹窗，返回钮又跳了一页」。
+ * 所以这里先问仲裁器；只有它明确说「没有可回退的页面」时，才用下面的
+ * 首页兜底。
+ *
+ * 兜底仍按 sessionStorage 标记判断是否"从首页栈出发"（根路由 `/ai` 等）：
+ *  1. 从首页 push 来的 → router.back() 回首页，结果可预测；
+ *  2. 就在首页根 → router.back() 会落到 entry 空白页，改用 push('/ai')。
+ * 这样不依赖 window.history.length，避免 Capacitor WebView 启动期 length
+ * 起点异常与深链入口干扰。
  */
-function goBack() {
+async function goBack() {
   const FALLBACK_HOME = '/ai'
-  if (typeof sessionStorage === 'undefined') {
-    router.push(FALLBACK_HOME)
-    return
-  }
-  const cameFromHome = sessionStorage.getItem('pocket:navigatedFromHome') === '1'
-  if (cameFromHome) {
-    sessionStorage.removeItem('pocket:navigatedFromHome')
-    router.back()
-  } else {
-    router.push(FALLBACK_HOME)
+  const outcome = await dispatchBack(shellRuntime)
+  // page-popped 表示已由仲裁器完成回退；overlay-* / blocked 都已就地处理。
+  if (outcome.kind === 'page-popped') return
+  if (outcome.kind === 'handed-to-system' || outcome.kind === 'noop') {
+    if (typeof sessionStorage === 'undefined') {
+      void router.push(FALLBACK_HOME)
+      return
+    }
+    const cameFromHome = sessionStorage.getItem('pocket:navigatedFromHome') === '1'
+    if (cameFromHome) {
+      sessionStorage.removeItem('pocket:navigatedFromHome')
+      router.back()
+    } else {
+      void router.push(FALLBACK_HOME)
+    }
   }
 }
 

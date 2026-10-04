@@ -305,7 +305,10 @@ defineExpose({
 .toggle-btn {
   position: fixed;
   right: var(--space-4);
-  bottom: calc(80px + var(--space-4)); /* 避开底部导航 */
+  /* 2026-10-06：原 calc(80px + var(--space-4)) 的 80px 是在手工复刻
+     --bottom-chrome-height(56px)，注释「避开底部导航」正说明它必须让开底栏。
+     数字与 token 脱钩 ⇒ 底栏变高时静默失效。改用 token（实测位移 18px）。 */
+  bottom: calc(var(--bottom-chrome-height) + var(--space-6)); /* 避开底部导航 */
   width: 48px;
   height: 48px;
   display: flex;
@@ -318,7 +321,11 @@ defineExpose({
   font-size: 20px;
   box-shadow: var(--shadow-lg);
   cursor: pointer;
-  z-index: 100;
+  /* 原 100 是裸数字。归位到 --z-fab(60)：本按钮 bottom 已是
+     76px > --bottom-chrome-height(56px)，与底栏无重叠，层级只需高于
+     --z-sticky(50) 的吸顶栏——原先 100 > 底栏(70) 属于「靠更大的数字
+     掩盖了没让开底栏」，底栏一旦加高就会立刻穿帮。 */
+  z-index: var(--z-fab);
   transition: all var(--duration-base) var(--ease-spring);
 }
 

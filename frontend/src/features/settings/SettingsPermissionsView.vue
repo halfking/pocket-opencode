@@ -586,7 +586,10 @@ onMounted(async () => {
 .bind-overlay {
   position: fixed;
   /* 底边随 --kb-inset 抬升：键盘在场时浮层收在键盘上沿之上，弹层内的输入框与确认按钮不会被盖住。同 BottomSheet.vue。 */ inset: 0 0 var(--kb-inset, 0px) 0;
-  z-index: 40;
+  /* 2026-10-04：由裸 40 改为 --z-sheet。
+     依据：本文件自己的注释写着「同 BottomSheet.vue」，而 BottomSheet.vue:190 用的是
+     --z-sheet(1300)；且 40 低于 --z-sticky(50) ⇒ 整屏遮罩会被壳层顶栏压在上面。 */
+  z-index: var(--z-sheet);
   background: var(--color-bg-overlay, rgba(0, 0, 0, 0.45));
   display: flex;
   align-items: flex-end;

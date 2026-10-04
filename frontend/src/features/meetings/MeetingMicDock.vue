@@ -22,7 +22,13 @@ defineEmits<{ toggle: [] }>()
 .mic {
   position: fixed;
   right: var(--space-4);
-  bottom: calc(var(--app-safe-bottom, 12px) + var(--space-4));
+  /* 2026-10-06 修正：原为 calc(var(--app-safe-bottom,12px) + var(--space-4))
+     = 14px，而 BottomNav 高 var(--bottom-chrome-height) = 56px
+     （--bottomnav-height 56 + --app-safe-bottom）。本按钮高 56px ⇒ 底栏压住
+     其中 42px（75%），且 .mic 的 z-index 是 --z-fab(60) < --z-bottom-nav(70)
+     ⇒ 底栏绘制在按钮之上。改为跟随 chrome token，与 MeetingListView 的
+     悬浮按钮同源。 */
+  bottom: calc(var(--bottom-chrome-height) + var(--space-4));
   min-width: 72px; height: 56px; padding: 0 16px;
   border: none; border-radius: 999px;
   background: var(--brand-gradient, linear-gradient(135deg, #667eea, #764ba2));

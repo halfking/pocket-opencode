@@ -44,6 +44,7 @@
     "check:vm-gaps": "node scripts/check-viewmodel-gaps.mjs",
     "check:icons": "node scripts/check-icon-subset.mjs && node scripts/check-icon-font.mjs",
     "check:icons:visual": "node scripts/build-icon-harness.mjs",
+    "check:e2e-responsive": "cd ../e2e/web && npx playwright test responsive-shell --reporter=list",
     "build:icons": "node scripts/build-material-symbols-subset.mjs",
     "verify:android": "npm run gates && powershell -ExecutionPolicy Bypass -File ../scripts/android-apk-fingerprint.ps1 && powershell -ExecutionPolicy Bypass -File ../scripts/android-apk-classes-fast.ps1 && powershell -ExecutionPolicy Bypass -File ../scripts/android-apk-static-verify.ps1 && powershell -ExecutionPolicy Bypass -File ../scripts/android-apk-so-audit.ps1"
   },

@@ -63,6 +63,7 @@
     "check:crlf-needles": "frontend.yml 已手列（2026-10-02 接入，跨行 needle 脆弱性）"
   },
   "notGates": {
-    "check:icons:visual": "node scripts/build-icon-harness.mjs —— 生成供人眼打开的图标验证页（frontend/.icon-harness/index.html），是构建器不是判定器：它没有「通过/不通过」的退出码语义。把它接进 gates 只会让每跑一次门禁就重建一次静态页，而它的产物本来就是按需手工打开的。"
+    "check:icons:visual": "node scripts/build-icon-harness.mjs —— 生成供人眼打开的图标验证页（frontend/.icon-harness/index.html），是构建器不是判定器：它没有「通过/不通过」的退出码语义。把它接进 gates 只会让每跑一次门禁就重建一次静态页，而它的产物本来就是按需手工打开的。",
+    "check:e2e-responsive": "npx playwright test responsive-shell（e2e/web 独立包，dev server 在 127.0.0.1:4174）。不接进默认 gates 的理由：它需要一个**先跑起来**的 vite dev server，而 gates 是无服务的前置检查链；把它接进去会让 `npm run gates` 在 CI 上必然失败。跑法见 docs/UI规范/10-门禁与真机验收.md §6。"
   }
 }
