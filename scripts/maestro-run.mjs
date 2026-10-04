@@ -1571,6 +1571,16 @@ const maestroEnv = {
   POCKET_MASTER: process.env.POCKET_MASTER || 'PocketTest2026',
   JAVA_HOME: resolveJavaHome() || process.env.JAVA_HOME,
   MAESTRO_CLI_NO_ANALYTICS: 'true',
+
+  // 强制 JVM 按 UTF-8 输出。2026-10-04 实测踩到：Windows 上 JVM 跟随系统
+  // ANSI 代码页（GBK）输出，中文断言在失败信息里全变成 U+FFFD ——
+  // `[Failed] xxx (Assertion is false: "?????" is visible)`，码点全是 fffd，
+  // **哪个断言红了根本读不出来**，只能靠反复跑 + 猜哪个元素没出现。
+  // 本轮就因为它把「红在 更多功能 / 定时自动化 / 仅显示启用 / 返回」这四种
+  // 完全不同的失败压成了同一串问号，绕了好几轮才定位到真因。
+  //
+  // 追加而非覆盖：调用方（run-maestro.ps1 等）可能已经带了别的 JVM 参数。
+  JAVA_TOOL_OPTIONS: `${process.env.JAVA_TOOL_OPTIONS ?? ''} -Dfile.encoding=UTF-8 -Dsun.stdout.encoding=UTF-8 -Dsun.stderr.encoding=UTF-8`.trim(),
 }
 
 const runOne = (flow) =>

@@ -34,6 +34,7 @@
     ".maestro/meetings-entry.yaml",
     ".maestro/messages-hub.yaml",
     ".maestro/more-grid-reach.yaml",
+    ".maestro/more-entries-open.yaml",
     ".maestro/notes-crud.yaml",
     { "file": ".maestro/notes-stt-error-visibility.yaml", "appId": "com.kaixuan.opencode.pocket.sttdev" },
     ".maestro/settings-llm-gateway.yaml",
