@@ -17,6 +17,8 @@
 | 4 | 残留目录 `openpocket-wt-a31` / `-upsert` | 前者 0 文件；后者 2559 文件经 blob 哈希证明**无未合并工作** ⇒ 已删除 | 强（见 §3.2） |
 | 5 | 缺陷 A：两道债务门禁永远红 | **已修**：改成基线棘轮，并**接进 gates + CI** | 强（自测 + 真仓库负控 + CI 名单核对） |
 | 6 | 缺陷 B：3 个真机门禁把「设备不在」报成「判红」 | **已修**：改 exit 3「前置缺失」 | 强（双向分类器负控） |
+| 6b | 缺陷 B 续：`check-device-token` 缺参/缺文件报 exit 1 | **已修**：同归 exit 3（§4.4） | 强 |
+| 6c | 缺陷 B 的最后一块：两条新门禁**在 LF（CI）下的行为** | **已实测**：LF 检出下 148/26 完全一致，负控同样转红（§4.5） | 强（补上了本轮原先「无证据」的那一条） |
 | 7 | 缺陷 C：`check-dev-pass-sourcing` 的 ROOT 依赖 cwd | **已修**（接线时才暴露，见 §4.3） | 强 |
 | 8 | 24h 内 146 个提交 | 逐条读完不现实，也不该假装读完。本轮按**主题分组 + 挑高风险项实测**审计，方法与边界写在 §5 | 如实标注 |
 
@@ -305,6 +307,52 @@ runner 调用过**，「必须从仓库根跑」这个隐含前提从没被验�
 改为与其它根级门禁一致，用 `import.meta.url` 推导。验证：分别从仓库根与
 `frontend/` 两个 cwd 跑，判定与 selftest 均 exit 0。
 
+### 4.4 缺陷 B 的续：`check-device-token` 把「用法错误」也报成 exit 1
+
+§2.2 里我把它标成「工具不是门禁，未改」。**那条判断是错的**——
+它与刚修的三道门是同一个缺陷类，而且它本来就已经用 exit 2 表示
+「dump 读到了但没找到 token」，说明作者心里有三态，只是没对齐。
+
+实测三种情形（改前 → 改后）：
+
+| 情形 | 改前 | 改后 |
+|---|---|---|
+| 完全无参 | exit 1（像判红） | **exit 3** |
+| 只给端口、漏掉 dumpfile | 走到 `readFileSync(undefined)` 抛**未捕获 ENOENT**，exit 1 | **exit 3** |
+| dumpfile 路径不存在 | 未捕获 ENOENT，exit 1 | **exit 3** |
+| dump 可读但无 token（正向） | exit 2 | **exit 2（语义未动）** |
+
+⇒ 全量扫描从「12 绿 / 5 红」变成 **14 绿 / 4 前置缺失(exit 3) / 1 exit 2**，
+**零模糊退出码**。剩下那条 exit 2 是 `check-marketplace-contract`
+（需要先起 18101 隔离后端），它至少与判红可分，本轮不再动。
+
+### 4.5 补上「CI 上真的绿」的证据（本轮原先标为无证据的那条）
+
+两条新门禁接进了 `ciRuns`，但我第一遍只在 Windows（**CRLF** 工作区）验过，
+而 CI 是 **LF** 检出（仓库无 `.gitattributes`，本机 `core.autocrlf=true`）。
+这一条不补，就是拿「Windows 绿」冒充「CI 绿」。
+
+做法：`git -c core.autocrlf=false clone --depth 1` 到 `D:\temp\r45-lfcheck`，
+先**实测确认**该克隆里 `check-fixed-cdp-ports.mjs` 的 CRLF 个数 = 0（纯 LF），
+再在这个环境里跑：
+
+| 判据 | LF 检出结果 | 与 Windows 侧对比 |
+|---|---|---|
+| cdp-ports selftest | exit 0，真仓库「148 处存量 / 基线 148 key / 新增 0」 | 完全一致 |
+| dev-pass selftest | exit 0 | 完全一致 |
+| cdp-ports 判定 | 148 处，新增 0，**已消失 0 处** | 一致 |
+| dev-pass 判定 | 26 处，新增 0，**已消失 0 处** | 一致 |
+| **LF 下负控**：加一处真违规 | 149 处，新增 1，**exit 1** | 与 Windows 侧同样转红 |
+| 撤除后 | 148 / 26，新增 0，exit 0，克隆恢复干净 | 一致 |
+
+⚠️ 「**已消失 0 处**」这一栏是本次验证里最要紧的一格：如果检测器在 LF 下
+一个都检不出（正则里残留了 `\r` 假设之类），那么 148 条会全部消失，
+`new` 仍然是 0，**退出码照样是 0** —— 一个不漏报的棘轮和一个干净的仓库
+长得一模一样。所以必须同时看「已消失」这一栏。
+负控那两条则证明方向没反：LF 下真加一处违规仍然转红。
+
+克隆已删除（在回收站），仓库本体未动。
+
 ---
 
 ## 五、24 小时内 146 个提交：我怎么审的，以及没审什么
@@ -344,12 +392,15 @@ git shortlog -sn --since='2026-10-04 00:00' origin/main      → 139 halfking / 
 2. **round44 §四 的第一顺位仍未做**：人工标注没传导到 `invoices-summary-*.md`，
    横幅两行仍以 `downloaded / 已核验` 占 CNY 合计 61.1%。要改的是**导出口径**，
    本轮**未获授权、也未做**。
-3. **两条新接进 CI 的门禁在 Linux 上的行为未实测。** 本轮只在 Windows 跑通。
-   风险已尽量消除（检测全部按行做、路径已 `replace(/\\/g,'/')` 归一，
-   裸 `gofmt`/CRLF 类假报已识别），但**「CI 上真的绿」这件事本轮没有证据**，
-   下一轮应看一次 CI 实跑结果。
-4. **`check-device-token.mjs` 仍用 exit 1 报 usage**（§2.2），与刚修的
-   exit 3 约定不一致。本轮判定它是工具不是门禁，未改。
+3. ~~**两条新接进 CI 的门禁在 Linux 上的行为未实测。**~~ **已补（§4.5）**：
+   LF 检出克隆里 148/26 完全一致、负控同样转红，「已消失 0 处」证明检测器
+   在 LF 下确实还在检出。**仍未实测的只剩「Linux 本身」**（路径大小写、
+   git/Node 版本差异），但这条风险的主要来源（行尾、路径分隔符）已被实测排除。
+4. ~~**`check-device-token.mjs` 仍用 exit 1 报 usage**~~ **已修（§4.4）**：
+   缺参、漏 dumpfile、dumpfile 不存在三种情形现在都是 exit 3，
+   全量扫描变成 **14 绿 / 4 前置缺失 / 1 exit 2，零模糊退出码**。
+   残留：`check-marketplace-contract.mjs` 用 exit 2 表示「18101 后端没起」，
+   按 run-gates 约定它更像 3（前置缺失）而非 2（门禁自身报错），本轮未动。
 5. **`git stash` 仍有 11 条**（最旧 2026-10-01，`openpocket` 仓库）。
    内容未审。清理不在本轮授权内。
 6. **回收站未清空**：本轮移入 3 个目录，其中 `openpocket-wt-upsert` 118.8 MB。
@@ -374,10 +425,11 @@ git shortlog -sn --since='2026-10-04 00:00' origin/main      → 139 halfking / 
    注意：不设 DSN 时 `go test ./...` 报 0 FAIL 是**假绿**，别当通过。
 
 2. 复核 round45 接进 CI 的两条新门禁在 Linux 上真的绿
-   （check:fixed-cdp-ports / check:dev-pass-sourcing，在 frontend.yml 的
-   gates-parity job 里）。本轮只在 Windows 验过。基线文件在
-   scripts/baselines/*.json，key 不含行号是刻意设计，别"顺手"改成含行号——
-   那是 z-index-ladder ALLOWLIST 踩过的坑（round43 §2.1）。
+   （check:fixed-cdp-ports / check:dev-pass-sourcing）。
+   round45 已用 LF 检出克隆验过（148/26 一致、负控同样转红），
+   剩下只看 GitHub Actions 的**实跑结果**即可，不必再本地模拟行尾。
+   基线文件在 scripts/baselines/*.json，key 不含行号是刻意设计，
+   别「顺手」改成含行号——那是 z-index-ladder ALLOWLIST 踩过的坑（round43 §2.1）。
 
 3. 仍未获授权、仍是第一顺位：让人工标注传导到交付物。
    `invoices-summary-*.md` / `.csv` 里横幅两行仍占 CNY 合计 61.1%，
@@ -390,8 +442,9 @@ git shortlog -sn --since='2026-10-04 00:00' origin/main      → 139 halfking / 
    `maxInvoiceBodyFetches=24` 的每轮预算挤掉（拿当轮流水线报告，
    看 InvoiceBodyFetchDeferred 字段），不要猜。
 
-5. `check-device-token.mjs` 无参时仍 exit 1（应与 exit 3 约定一致）。
-   round45 判定它是工具不是门禁所以没改；下一轮若接线进任何 runner，先改它。
+5. `check-marketplace-contract.mjs` 用 exit 2 表示「18101 隔离后端没起」，
+   按 run-gates 自己的约定（3/4 = 拒绝给结论，2 = 门禁自身报错）它更像 3。
+   round45 未动；下一轮若要统一退出码语义，从它开始。
 
 6. 本机没有 Android 设备（adb 192.168.31.19:5555 not found）。
    round45 把三道真机门禁的"设备不在"改成 exit 3，但**没验过设备在时
