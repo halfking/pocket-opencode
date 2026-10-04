@@ -365,9 +365,29 @@ func (h *InvoiceHarvester) harvestOne(ctx context.Context, inv *Invoice) string 
 		}
 	}
 
+	// bannerErrs：被 imagePlausibleAsVoucher 拒掉的非凭证图片。
+	// 与 linkErrs 分开记，因为两者的处置完全不同——链接失败值得重试，
+	// 而「邮件里只有一张横幅」重试多少次都不会变好。
+	var bannerErrs []string
+
 	// 1) PDF / 图片附件（拍照发票常见 jpg/png）
+	//
+	// 图片要多过一道 imagePlausibleAsVoucher：isImageBytes 只问「是不是图片」，
+	// 而营销横幅对这个问题答 true。1da030ab 挡住了 `src=` 那条**候选收集**的路，
+	// 附件这条路它没管，也管不着（内联 cid: 图片同样会被解成附件）。
+	// 真实后果见 invoice_banner_voucher_admission_test.go：两张 SHA256 相同的
+	// 百望宣传横幅被存成两笔「已核验」发票，金额占当轮 CNY 合计的 61.1%。
 	for _, att := range parsed.Attachments {
-		if isPDFBytes(att.Data) || isImageBytes(att.Data) {
+		if isPDFBytes(att.Data) {
+			return h.saveInvoiceFile(ctx, inv, att.Data, "attachment")
+		}
+		if isImageBytes(att.Data) {
+			if !imagePlausibleAsVoucher(att.Data) {
+				why := "附件 " + att.Filename + "：" + voucherRejectionReason(att.Data)
+				log.Printf("[email/invoice-harvest] reject non-voucher image invoice=%s: %s", inv.ID, why)
+				bannerErrs = append(bannerErrs, why)
+				continue
+			}
 			return h.saveInvoiceFile(ctx, inv, att.Data, "attachment")
 		}
 	}
@@ -379,11 +399,27 @@ func (h *InvoiceHarvester) harvestOne(ctx context.Context, inv *Invoice) string 
 	// 原实现那条「既不是 PDF 也不是 err」的情况是静默的，last_error 最后只
 	// 报成 `no usable pdf/xml found`，把「链接存在但拿回来不对」误说成
 	// 「邮件里没有发票文件」。这正是需求「多次操作才能下载到」最需要看清的一步。
+	//
+	// 图片同样要过 imagePlausibleAsVoucher：候选收集侧只排除了 `src=`，
+	// 而 `<a href="…banner.jpg">` 与正文裸 URL 两条路照收不误
+	// （1da030ab 的反向保护第 1 条恰恰要求 href 必须仍被收走——收候选是对的，
+	// 缺的是收下来之后的采信闸门）。
 	var linkErrs []string
 	for _, u := range extractInvoiceURLs(parsed.HTMLBody + "\n" + parsed.TextBody) {
 		data, dlErr := h.downloadPDF(ctx, u)
-		if dlErr == nil && (isPDFBytes(data) || isImageBytes(data)) {
-			return h.saveInvoiceFile(ctx, inv, data, "pdf-url")
+		if dlErr == nil {
+			switch {
+			case isPDFBytes(data):
+				return h.saveInvoiceFile(ctx, inv, data, "pdf-url")
+			case isImageBytes(data):
+				if imagePlausibleAsVoucher(data) {
+					return h.saveInvoiceFile(ctx, inv, data, "pdf-url")
+				}
+				why := u + "：" + voucherRejectionReason(data)
+				log.Printf("[email/invoice-harvest] reject non-voucher image invoice=%s: %s", inv.ID, why)
+				bannerErrs = append(bannerErrs, why)
+				continue
+			}
 		}
 		why := "下载内容不是 PDF/图片"
 		if dlErr != nil {
@@ -412,6 +448,18 @@ func (h *InvoiceHarvester) harvestOne(ctx context.Context, inv *Invoice) string 
 
 	// 链接存在但都拿不到发票时，把每个链接的失败原因写进 last_error，
 	// 而不是笼统的「邮件里没有 pdf/xml」。
+	//
+	// bannerErrs 单列：被横幅闸门拒掉的候选要能被运维一眼看出来，
+	// 否则 last_error 只会报成「没有可用 pdf/xml」——那句话会把
+	// 「拿回来的是张标语」误说成「邮件里没有发票」，正是 2026-10-04
+	// 那两行至今没人能解释的根因。
+	if len(bannerErrs) > 0 {
+		if len(linkErrs) > 0 {
+			return h.markRetry(ctx, inv, "取到的图片不是发票凭证（横幅/装饰图）："+
+				strings.Join(bannerErrs, "; ")+"；另有链接失败："+strings.Join(linkErrs, "; "))
+		}
+		return h.markRetry(ctx, inv, "取到的图片不是发票凭证（横幅/装饰图）："+strings.Join(bannerErrs, "; "))
+	}
 	if len(linkErrs) > 0 {
 		return h.markRetry(ctx, inv, "发票链接未能取到 PDF 文件："+strings.Join(linkErrs, "; "))
 	}
@@ -806,7 +854,24 @@ func InvoiceFileName(inv *Invoice) string {
 	amount := strconv.FormatFloat(inv.Amount, 'f', 2, 64)
 	date := strings.ReplaceAll(inv.InvoiceDate, "/", "-")
 	if date == "" {
-		date = time.Now().Format("2006-01-02")
+		// 原来这里填 `time.Now().Format("2006-01-02")`，也就是**下载当天**。
+		// 那是往凭证文件名里塞了一个**编造的日期**，而且台账那一列是空的——
+		// 同一份数据在文件名里「有日期」、在汇总单里「没日期」，两边自相矛盾，
+		// 而文件名那份更像真的。真实产物（2026-10-04 08:00 那轮）：
+		//
+		//	通信-X-8.00-2026-10-04.pdf     ← 日期段是下载日，台账「日期」列是空的
+		//
+		// 这与 round37 §35 那条（金额取自信用额度、日期取自到期还款日）
+		// 是同一类缺陷：一个**看起来权威的错值**，比留空危险得多。
+		//
+		// 顺带修掉一个非确定性：填当天日期意味着同一张票**隔天重试就会得到
+		// 另一个文件名**，而 pickFreeInvoicePath 是按「目标名 + 内容相同」去重的，
+		// 名字一变目标就不存在 → 写出第二份副本，同一张票在目录里出现两次。
+		//
+		// 用显式占位而不是留空：留空会让名字变成 `通信-X-8.00-.pdf`，
+		// 可读性差、也容易被误当成解析失败。`未知日期` 与既有的
+		// `未知单位` 兜底是同一套约定。
+		date = "未知日期"
 	}
 	name := fmt.Sprintf("%s-%s-%s-%s", category, seller, amount, date)
 	if no := sanitizeFileName(inv.InvoiceNo, ""); no != "" {

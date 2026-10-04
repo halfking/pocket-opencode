@@ -55,14 +55,34 @@ func assertNoLabelSegment(t *testing.T, name string) {
 	// `fmt.Sprintf("%s-%s-%s-%s", category, seller, amount, date)` 一一对应；
 	// 日期占 3 段（年-月-日），末尾可选 1 段发票号。这样不依赖发票号是否解析出来，
 	// 也不会被日期里的连字符绊住。
+	//
+	// ---- round43 增补：显式占位形态 ----
+	//
+	// 上面那条「日期占 3 段」其实**隐含依赖了发票日期一定存在**。而它以前
+	// 之所以总是存在，是因为 `InvoiceFileName` 在日期为空时填 `time.Now()`
+	// ——那个「日期」是**下载当天**，编的（真实产物 `通信-X-8.00-2026-10-04.pdf`
+	// 的台账「日期」列是空的）。
+	//
+	// round43 把那个兜底换成显式占位 `未知日期`（占 1 段），本断言因此要认
+	// 这一种形态。**只多认一种合法形态，不放松任何既有保证**：列头段检查照旧
+	// 在最前面逐段跑，金额形态照旧要验，日期已知时那三段的 年-月-日 校验
+	// 也照旧。
 	segs := strings.Split(body, "-")
+	if !regexp.MustCompile(`^\d+\.\d{2}$`).MatchString(segs[2]) {
+		t.Errorf("文件名 %q 第 3 段 %q 不是金额形态（数字.两位小数）", name, segs[2])
+	}
+	if segs[3] == "未知日期" {
+		// 显式占位：{类别}-{单位}-{金额}-未知日期[-发票号]
+		if len(segs) != 4 && len(segs) != 5 {
+			t.Errorf("文件名 %q 用了「未知日期」占位，段数应为 4 或 5，实际 %d: %v",
+				name, len(segs), segs)
+		}
+		return
+	}
 	if len(segs) < 6 {
 		t.Errorf("文件名 %q 只有 %d 段，不符合 {费用类型}-{对方单位}-{金额}-{日期}[-{发票号}] 的段结构: %v",
 			name, len(segs), segs)
 		return
-	}
-	if !regexp.MustCompile(`^\d+\.\d{2}$`).MatchString(segs[2]) {
-		t.Errorf("文件名 %q 第 3 段 %q 不是金额形态（数字.两位小数）", name, segs[2])
 	}
 	ymd := segs[len(segs)-4 : len(segs)-1]
 	if !regexp.MustCompile(`^\d{4}$`).MatchString(ymd[0]) ||
