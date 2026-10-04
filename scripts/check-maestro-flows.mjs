@@ -328,6 +328,12 @@ function traceAnchors(anchors, corpus, runtimeAnchors) {
 function collectCommands(cmds, depth = 0) {
   const out = []
   for (const c of cmds) {
+    // ⚠️ 裸写法是**合法** Maestro 命令（`- launchApp` / `- back` / `- hideKeyboard`），
+    //   在 YAML 里它们是字符串而不是对象。2026-10-04 之前这里直接 continue 掉了，
+    //   于是所有裸命令对**整个命令词表检查**都是隐形的 —— `- tapOnn` 这种拼错
+    //   的裸命令能一路过到底线。真实的例子：`_connectivity-sttdev.yaml` 里的
+    //   `- launchApp` 谁都没看见，直到它在真机上把 App 弄死才暴露。
+    if (typeof c === 'string') { out.push({ name: c, depth }); continue }
     if (typeof c !== 'object' || c === null) continue
     const name = Object.keys(c)[0]
     if (!name) continue
@@ -377,7 +383,11 @@ function checkFlowSource(entry, src, corpus) {
     return 1
   }
   const appId = header.appId ?? doc.appId
-  const cmds = Array.isArray(doc) ? doc.filter((c) => typeof c === 'object' && c !== null) : []
+  // ⚠️ 留一份**未过滤**的原始命令数组：`rawCmds` 里的裸写法命令（`- launchApp`
+  //   这类字符串项）才是某些检查唯一能看到它们的入口，见下方 launchApp 禁令。
+  //   `cmds` 是给选择器溯源用的（它要的是对象形式的断言），两者不能互相替代。
+  const rawCmds = Array.isArray(doc) ? doc : []
+  const cmds = rawCmds.filter((c) => typeof c === 'object' && c !== null)
   console.log(`  appId: ${appId}`)
   // 夹具声明要出现在报告里：它是「这条流的前置/后置由 harness 代劳」的
   // 唯一可见处。不打出来的话，读报告的人无从知道前置是谁做的。
@@ -423,7 +433,25 @@ function checkFlowSource(entry, src, corpus) {
     console.log(`  note 注释区有 emoji（仅注释，不影响执行）: ${srcEmoji[0]}`)
   }
 
-  // 4. 选择器可溯源
+  // 4. flow 里禁止 launchApp（2026-10-04 真机实测出的硬约束）
+  //
+  // 后果不是「多启动一次」那么轻：Maestro 的 launchApp 先 am force-stop，
+  // 随后的 start 被 MIUI 的 com.miui.securitycenter wakepath 确认框拦下，
+  // App 从此回不到前台。实测它先让本条流红在「找不到页面」，
+  // 再把 App 弄死，于是**下一条**流开跑前的 pidof 为空、
+  // harness 带栈崩掉，后面的 flow 一条都没跑 —— 而报告里只看得到本条的红，
+  // 读起来像「跑过了」，实际是「没跑」。
+  //
+  // preflight 已经用 adb（force-stop + monkey）把 App 拉起来，那条路径实测可靠。
+  // 所以这不是「建议」，是禁令：写了就是会带崩整批。
+  const launchApp = collectCommands(rawCmds).filter((c) => c.name === 'launchApp')
+  if (launchApp.length) {
+    console.log(`  FAIL flow 里出现 launchApp ×${launchApp.length}（MIUI 上会 force-stop 后被 wakepath 拦下，App 回不到前台并带崩整批）`)
+    console.log('       删掉它：preflight 已经把 App 拉起来了。详见 .maestro/_connectivity-sttdev.yaml 头部。')
+    problems++
+  }
+
+  // 5. 选择器可溯源
   const anchors = collectAnchors(cmds)
   if (entry.kind === 'probe') {
     // 探针流（_probe-*.yaml）**故意**断言匹配不到，用来 dump 可访问性树。
@@ -568,6 +596,10 @@ function selftest() {
   // reset 语义必须与 fixture 分开：合并的后果是「一键毁数据」而不是「少做一步」
   results.push({ name: '配置守卫 reset 与 fixture 不混用', pass: resetIsDistinct() })
 
+  // launchApp 禁令：必须能报出，且不误伤正常流
+  results.push({ name: '禁令 flow 里的 launchApp 被报出', pass: launchAppIsBanned() })
+  results.push({ name: '禁令 不误伤没有 launchApp 的流', pass: !bannedWithoutLaunchApp() })
+
   const bad = results.filter((r) => !r.pass)
   for (const r of results) console.log(`  ${r.pass ? '通过' : '失败'}  ${r.name}`)
   console.log(`\n自检: ${results.length - bad.length}/${results.length} 通过`)
@@ -591,6 +623,35 @@ function unknownTopKeyIsRejected() {
   // 且允许 _ 前缀文档键
   if (!/if \(k\.startsWith\('_'\)\) continue/.test(src)) return false
   return true
+}
+
+/**
+ * launchApp 禁令的**两个方向**都要验。
+ *
+ * 只验「该报的报了」不够 —— 禁令本身也可以变成一个静默把真流挡住的开关，
+ * 所以同时要验「没有 launchApp 的正常流不会被误判」。
+ * ⚠️ 注入必须真的进到命令区：这里断言 printed 里出现该 FAIL 文案，
+ *    若 checkFlowSource 因别的原因提前返回，这条会假通过，
+ *    所以同时要求另一条（无 launchApp）**不**产生该文案。
+ */
+function launchAppIsBanned() {
+  const realLog = console.log
+  const printed = []
+  console.log = (...a) => printed.push(a.join(' '))
+  const n = checkFlowSource({ file: '.maestro/_st-launchapp.yaml' },
+    yamlOf('com.kaixuan.opencode.pocket', ['- launchApp', '- assertVisible: "AI 工具"']), loadCorpus())
+  console.log = realLog
+  return n > 0 && printed.some((l) => l.includes('出现 launchApp'))
+}
+
+function bannedWithoutLaunchApp() {
+  const realLog = console.log
+  const printed = []
+  console.log = (...a) => printed.push(a.join(' '))
+  const n = checkFlowSource({ file: '.maestro/_st-nolaunch.yaml' },
+    yamlOf('com.kaixuan.opencode.pocket', ['- assertVisible: "AI 工具"']), loadCorpus())
+  console.log = realLog
+  return printed.some((l) => l.includes('出现 launchApp')) || n < 0
 }
 
 /**
