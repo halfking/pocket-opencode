@@ -10,22 +10,26 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// flashcardsTestDSN 只认测试专用 DSN。
+//
+// **不要**加「为空时回退读 POCKET_POSTGRES_DSN」——那是服务自己的生产连接串。
+// 本文件确实建了随机 schema 并把 search_path 钉上去（数据层面隔离是对的），
+// 但回退之后 `CREATE SCHEMA` / `EnsureSchema()` 会在**生产数据库**上执行：
+// 只带生产 DSN 的本地 `go test ./...` 会零配置地连上生产库、建表建 schema，
+// 然后报告 ok。CI 只设 POCKET_TEST_POSTGRES_DSN，所以这条路径在 CI 上看不见。
+// 与其余 ~15 个包的约定一致（见 internal/task/store_test.go 的 pgDSN 等）。
+func flashcardsTestDSN() string {
+	return os.Getenv("POCKET_TEST_POSTGRES_DSN")
+}
+
 // newTestPGFlashcardStore brings up a Store against an isolated PG schema
 // (random suffix, dropped on cleanup) so the bootstrap seed can be verified
-// against real PostgreSQL without touching the dev schema. Same DSN
-// convention as the other PG integration tests: POCKET_TEST_POSTGRES_DSN
-// takes precedence, POCKET_POSTGRES_DSN is the fallback; no DSN → skip.
+// against real PostgreSQL without touching the dev schema.
 func newTestPGFlashcardStore(t *testing.T) (*Store, func()) {
 	t.Helper()
-	dsn := ""
-	for _, key := range []string{"POCKET_TEST_POSTGRES_DSN", "POCKET_POSTGRES_DSN"} {
-		if value := os.Getenv(key); value != "" {
-			dsn = value
-			break
-		}
-	}
+	dsn := flashcardsTestDSN()
 	if dsn == "" {
-		t.Skip("POCKET_TEST_POSTGRES_DSN or POCKET_POSTGRES_DSN not set; skipping flashcards seed PG integration test")
+		t.Skip("POCKET_TEST_POSTGRES_DSN not set; skipping flashcards seed PG integration test")
 	}
 
 	ctx := context.Background()
