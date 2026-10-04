@@ -149,7 +149,31 @@ var (
 	// 不抽的话销售方会退化成发件地址，规范文件名变成
 	// 「其他-noreply@<发件域名>-3500.00-….pdf」，对账时看不出是谁开的票。
 	reSellerFromSubject = regexp.MustCompile(`(?:来自|由)\s*([^,，;；。]{2,40}?)(?:开具|开具的|提供|提供的|的)?\s*(?:电子)?(?:发票|账单|收据|票据)`)
-	reTitle             = regexp.MustCompile(`(?:发票抬头|抬头|购买方名称|购买方)[:：\s]*([^\s,，;；。]{2,60})`)
+
+	// reSellerFromIssuerPhrase 识别「XX 为您开具了电子发票」这个语序。
+	//
+	// 与 reSellerFromSubject 的差别有三点，任何一点都足以让它失配：
+	//  1. **语序相反** —— reSellerFromSubject 是「来自/由 + 单位 + 开具」，
+	//     这里是「单位 + 为您开具了 + 发票」；
+	//  2. **位置不同** —— reSellerFromSubject 只作用于 subject，
+	//     而实测这一形态出现在**正文**（详见下面注释里的真实样本）；
+	//  3. **没有前缀词** —— 正文里不含「来自」「由」，也不含「销售方」「开票方」，
+	//     所以 reSeller 同样不匹配。
+	//
+	// 真实样本（2026-10-04 08:00 定时流水线产出，百望 pis.baiwang.com 的
+	// 「电子发票下载」邮件，snippet 原文未改写）：
+	//
+	//	尊敬的 杭州开轩科技有限公司 用户，您好： 浙江智谱新篇科技有限公司为您开具了电子发票
+	//
+	// 修它之前，seller 落到 FromName 兜底，而那封邮件的 from_name 字面就是
+	// 「系统服务」（平台的发件人显示名），于是规范文件名变成
+	// `其他-系统服务-6071.00-2026-09-15-….jpg`——需求原文 `{费用类型}-{对方单位}-…`
+	// 里的「对方单位」直接是废的，财务看不出是谁开的票。
+	//
+	// 捕获组刻意不收「。」与「，」等标点，也不跨空白；再用 looksLikeEntityName
+	// 兜一道（至少 2 个汉字或 3 个字母），避免把「尊敬的用户」这类短语收进来。
+	reSellerFromIssuerPhrase = regexp.MustCompile(`([\p{Han}（）()A-Za-z0-9·&.\-]{2,40}?)\s*为您\s*开具了?\s*(?:电子)?(?:发票|账单|收据|票据)`)
+	reTitle                  = regexp.MustCompile(`(?:发票抬头|抬头|购买方名称|购买方)[:：\s]*([^\s,，;；。]{2,60})`)
 )
 
 // invoiceLabelWords 是电子发票邮件里**当列头用的标签词**。
@@ -788,6 +812,16 @@ func ExtractInvoiceLoose(e Email, bodyText string, hasInvoiceAttachment bool) (*
 		// 正文里没有「销售方：」时，主题里的「来自XX的发票」往往就是开票方。
 		if m := reSellerFromSubject.FindStringSubmatch(subject); m != nil {
 			inv.Seller = strings.TrimSpace(m[1])
+		}
+	}
+	if inv.Seller == "" {
+		// 「XX 为您开具了电子发票」：开票方在正文里，但语序是 reSeller 与
+		// reSellerFromSubject 都认不出的那一支。必须在 FromName 兜底**之前**试
+		// ——否则它会被平台的发件人显示名盖掉（真实样本里 from_name=「系统服务」）。
+		if m := reSellerFromIssuerPhrase.FindStringSubmatch(joined); m != nil {
+			if s := strings.TrimSpace(m[1]); looksLikeEntityName(s) {
+				inv.Seller = s
+			}
 		}
 	}
 	if inv.Seller == "" {
