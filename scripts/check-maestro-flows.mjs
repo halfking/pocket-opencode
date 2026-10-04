@@ -57,8 +57,42 @@ const DEFAULT_APP_ID = 'com.kaixuan.opencode.pocket'
  * 拼成 runtimeAnchor）却被静默忽略的话，检查会少放行一堆锚点，
  * 而输出看上去一切正常 —— 这正是「判据失明」最难发现的样子。
  */
-const ENTRY_KEYS = new Set(['file', 'appId', 'kind', 'runtimeAnchors'])
+const ENTRY_KEYS = new Set(['file', 'appId', 'kind', 'runtimeAnchors', 'fixture', 'reset'])
 const TOP_KEYS = new Set(['flows', 'runtimeAnchors', 'defaultAppId'])
+
+/**
+ * 夹具脚本路径**由名字推导**，不另建一张映射表。
+ *
+ * 为什么要推导：checker 与 maestro-run.mjs 都要用这张表。若两边各写一份
+ * 映射，就会出现「checker 放行的名字 harness 认不出」这种两份真相 ——
+ * 而它的表现是 flow 悄悄少了前置/后置步骤，正是「判据失明」的样子。
+ * 约定：`fixture: stt-error` ⇒ `scripts/stt-error-fixture.mjs`，
+ * harness 以 `--induce` / `--restore` 两个参数调用它。
+ *
+ * ⚠️ `fixture` 与 `reset` 是**两种语义，不是同义词**，别合并：
+ *   · fixture —— 制造一个前提，跑完**必须还原**（哨兵模型留在库里
+ *     就等于用户的语音转写是坏的）。
+ *   · reset   —— 一次性把场景清干净，**没有「还原」这回事**。
+ *     flashcards-test-fixture 清的是「零卡组」这个起点；给它的「还原」
+ *     再跑一遍，等于把 flow 刚建好的卡组和卡片又删掉 —— 既破坏数据，
+ *     也让 flow 的收尾断言失去意义。
+ *     合并成一个开关的后果是「一键毁数据」，不是「少做一步」。
+ */
+const fixtureScript = (name) => join(ROOT, 'scripts', `${name}-fixture.mjs`)
+
+/** 校验一个夹具/清场名字；不合法就响亮退出（不静默跳过）。 */
+function assertFixtureName(file, key, name) {
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(String(name))) {
+    console.log(`FAIL ${file} 的 ${key} "${name}" 名字不合法（只允许小写字母/数字/连字符）`)
+    process.exit(1)
+  }
+  if (!existsSync(fixtureScript(String(name)))) {
+    // 名字写错 ⇒ 脚本不存在 ⇒ harness 拼出的路径也跑不起来。
+    // 这里必须响亮退出而不是跳过：静默跳过等于「前置没做但没人知道」。
+    console.log(`FAIL ${file} 声明的 ${key} "${name}" 没有对应脚本 ${fixtureScript(String(name))}`)
+    process.exit(1)
+  }
+}
 
 function loadConfig() {
   const raw = JSON.parse(readFileSync(join(ROOT, 'scripts', '.maestro-flows.json'), 'utf8'))
@@ -106,11 +140,19 @@ function loadConfig() {
       console.log(`FAIL ${e.file} 的 kind 只能是 "probe" 或 "main"，实际 ${JSON.stringify(e.kind)}`)
       process.exit(1)
     }
+    if (e.fixture !== undefined) assertFixtureName(e.file, 'fixture', e.fixture)
+    if (e.reset !== undefined) assertFixtureName(e.file, 'reset', e.reset)
+    if (e.fixture !== undefined && e.reset !== undefined) {
+      console.log(`FAIL ${e.file} 同时声明了 fixture 和 reset —— 两者语义不同（一个要还原、一个是清场），请只留一个`)
+      process.exit(1)
+    }
     cfg.entries.push({
       file: e.file,
       appId: e.appId,
       kind: e.kind ?? 'main',
       runtimeAnchors: e.runtimeAnchors ?? [],
+      fixture: e.fixture,
+      reset: e.reset,
     })
   }
   return cfg
@@ -337,6 +379,10 @@ function checkFlowSource(entry, src, corpus) {
   const appId = header.appId ?? doc.appId
   const cmds = Array.isArray(doc) ? doc.filter((c) => typeof c === 'object' && c !== null) : []
   console.log(`  appId: ${appId}`)
+  // 夹具声明要出现在报告里：它是「这条流的前置/后置由 harness 代劳」的
+  // 唯一可见处。不打出来的话，读报告的人无从知道前置是谁做的。
+  if (entry.fixture) console.log(`  fixture: ${entry.fixture}（harness 跑前 --induce、跑后 --restore）`)
+  if (entry.reset) console.log(`  reset: ${entry.reset}（harness 跑前清场一次，**不还原**）`)
   console.log(`  文档数: 2（头部 + 命令列表）  命令数: ${cmds.length}`)
 
   // 1. 命令词表
@@ -515,6 +561,13 @@ function selftest() {
   // 配置守卫：未知字段必须响亮拒绝（写错 key 被静默忽略 = 判据失明）
   results.push({ name: '配置守卫 未知字段被拒', pass: unknownTopKeyIsRejected() })
 
+  // 夹具守卫：声明了 fixture 却没有对应脚本 ⇒ 必须响亮拒绝，不能静默跳过
+  // （静默跳过 = 前置没做，但报告看上去一切正常）。
+  results.push({ name: '配置守卫 夹具脚本缺失被拒', pass: fixtureGuardIsWired() })
+
+  // reset 语义必须与 fixture 分开：合并的后果是「一键毁数据」而不是「少做一步」
+  results.push({ name: '配置守卫 reset 与 fixture 不混用', pass: resetIsDistinct() })
+
   const bad = results.filter((r) => !r.pass)
   for (const r of results) console.log(`  ${r.pass ? '通过' : '失败'}  ${r.name}`)
   console.log(`\n自检: ${results.length - bad.length}/${results.length} 通过`)
@@ -537,6 +590,55 @@ function unknownTopKeyIsRejected() {
   if (!/FAIL 配置顶层出现未知字段/.test(src)) return false
   // 且允许 _ 前缀文档键
   if (!/if \(k\.startsWith\('_'\)\) continue/.test(src)) return false
+  return true
+}
+
+/**
+ * 夹具守卫 + harness 接线的验证。
+ *
+ * 为什么只做到「源码里确实有」这一层：loadConfig 内部直接 process.exit(1)，
+ * 自检里不能让它把进程带走（与 unknownTopKeyIsRejected 同理）。
+ * 真正的行为证据在真机跑那条流时拿：夹具 induce → flow 通过 → restore，
+ * 每一步都用 psql 查过 user_settings。源码这一层只保证「规则还在、接线还在」。
+ */
+function fixtureGuardIsWired() {
+  const src = readFileSync(join(ROOT, 'scripts', 'check-maestro-flows.mjs'), 'utf8')
+  // 规则还在：fixture 是允许字段
+  if (!/ENTRY_KEYS = new Set\(\[[^\]]*'fixture'/.test(src)) return false
+  // 规则还在：脚本缺失时报错
+  if (!/声明的 fixture/.test(src)) return false
+  // 接线还在：harness 真的按名字拼出脚本路径并调用了 --induce / --restore
+  const harness = readFileSync(join(ROOT, 'scripts', 'maestro-run.mjs'), 'utf8')
+  if (!/\$\{name\}-fixture\.mjs/.test(harness)) return false
+  if (!harness.includes("'--induce'") || !harness.includes("'--restore'")) return false
+  // 关键：还原必须挂在 finally 上。挂在「flow 成功之后」的话，
+  // flow 一红就把哨兵模型留在库里 = 用户的语音转写从此是坏的。
+  return /finally\s*\{[^}]*runFixture/.test(harness)
+}
+
+/**
+ * `reset` 必须与 `fixture` 保持两种语义。
+ *
+ * 验证点：
+ *   1. 配置里 reset 是独立字段，且同时声明两者会被拒；
+ *   2. harness 跑 reset 时**不传任何参数**（清场脚本不接受 --induce/--restore）；
+ *   3. harness 的 finally 只对 fixture 调 --restore，reset 不进还原分支。
+ * 第 3 条是安全性的要害：若 reset 也走还原，清场就会被再跑一遍，
+ * 把 flow 刚建的卡组连同断言依据一起删掉。
+ */
+function resetIsDistinct() {
+  const src = readFileSync(join(ROOT, 'scripts', 'check-maestro-flows.mjs'), 'utf8')
+  if (!/ENTRY_KEYS = new Set\(\[[^\]]*'reset'/.test(src)) return false
+  if (!/同时声明了 fixture 和 reset/.test(src)) return false
+  const harness = readFileSync(join(ROOT, 'scripts', 'maestro-run.mjs'), 'utf8')
+  // reset 走「无参数」调用
+  if (!/runFixture\(fx\.name, undefined\)/.test(harness)) return false
+  // finally 里只认 kind === 'fixture'
+  if (!/fx\?\.kind === 'fixture'/.test(harness)) return false
+  // 且 reset 分支里不得出现 --induce / --restore
+  const resetBranch = harness.slice(harness.indexOf("fx.kind === 'reset'"))
+  const branchEnd = resetBranch.indexOf('} else')
+  if (branchEnd > 0 && /--(induce|restore)/.test(resetBranch.slice(0, branchEnd))) return false
   return true
 }
 

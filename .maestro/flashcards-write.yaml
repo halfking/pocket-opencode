@@ -30,6 +30,21 @@
 # 「回归卡组」「回归正面」会一直留在列表里，功能彻底坏掉时断言照样绿。
 # 不清的话列表页会走 deck-toggle 分支，零卡组那条分支根本测不到。
 #
+# ⚠️ 2026-10-04：这一步现已**由 harness 自动执行**。本条在
+#   scripts/.maestro-flows.json 里声明了 `"reset": "flashcards-test"`，
+#   scripts/maestro-run.mjs 会在跑本条之前调一次清场脚本。
+#   声明成 `reset` 而不是 `fixture` 是因为语义不同：本清场脚本**没有**
+#   「还原」这一步，给它补一次还原等于把本条刚建好的卡组和卡片删掉。
+#
+#   修的是什么（真机实测，不是推断）：本条此前**只能跑一次**。
+#   上一轮建出的「回归卡组」会留在列表里，于是下一次跑挂在第 2 段
+#   `visible: 暂无卡组.*` 上 —— 报错指向「零卡组入口不见了」，
+#   与「选择器写错」「产品坏了」长得一模一样。
+#   2026-10-04 真机复现与修复同轮完成：清场前 before=1|1|1|0、
+#   清场后 after=0|0|0|0、重启后自证 decks=0，本条 1m10s 通过。
+#
+#   手工直调 maestro 时仍需自己先跑上面那行 node 命令。
+#
 # 运行：
 #   node scripts/maestro-run.mjs .maestro/flashcards-write.yaml
 appId: com.kaixuan.opencode.pocket

@@ -31,10 +31,15 @@
 #   4. 设备麦克风权限已授予
 #   5. **设备语言必须是 zh-CN**（2026-10-02 首次实跑补上的一条，见下）
 #
-# ---------- ⚠️ 第 6 条：必须先跑夹具，否则本流恒红（2026-10-04 补）----------
-#   node scripts/stt-error-fixture.mjs --induce
-#   node scripts/maestro-run.mjs .maestro/notes-stt-error-visibility.yaml
-#   node scripts/stt-error-fixture.mjs --restore     <-- 跑完必须还原
+# ---------- 第 6 条：先跑夹具，否则本流恒红（2026-10-04 起已自动化）----------
+#   本条已**不需要手工执行**：scripts/.maestro-flows.json 里给本条声明了
+#   `"fixture": "stt-error"`，harness（scripts/maestro-run.mjs）在跑前调
+#   `node scripts/stt-error-fixture.mjs --induce`，并在 **finally** 里调
+#   `--restore`（flow 红了也还原 —— 哨兵模型留在库里就等于用户的语音转写是坏的）。
+#   手工直调 maestro 时仍需自己按下面三步走：
+#     node scripts/stt-error-fixture.mjs --induce
+#     node scripts/maestro-run.mjs .maestro/notes-stt-error-visibility.yaml
+#     node scripts/stt-error-fixture.mjs --restore     <-- 跑完必须还原
 #
 # 为什么：ASR 开通后（mimo-v2.5-asr 有了上游 provider），后端**再也不会**返回
 # `stt_unavailable:`。而本流的断言正是围绕这条带错误码的可行动原因 ——
