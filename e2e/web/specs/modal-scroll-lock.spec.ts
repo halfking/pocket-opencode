@@ -114,25 +114,40 @@ test('③ 弹层关闭后逐项精确恢复原 inline 值（写 "" 会抹掉页�
   await openInbox(page)
   const info = await markBackgroundScroller(page)
   expect(info, '找不到背景宿主').not.toBeNull()
-  const before = await page.evaluate(() => {
-    const h = document.querySelector<HTMLElement>('[data-bg-scroller]')!
-    return { overflow: h.style.overflow, overflowY: h.style.overflowY, computed: getComputedStyle(h).overflowY }
-  })
+
+  // ⚠️ 量具自证（缺了这条，③ 会恒真）：本仓 `/email` 的 `.refresh-content`
+  // **本来就没有 inline overflow**（值来自 CSS class），直接比对
+  // before/after 得到的是 `'' === ''` —— 恒成立，验不出任何东西。
+  // 所以先人为写入一个**只有本用例设过**的非空 inline 值，让「恢复」有得可失。
+  const SENTINEL = 'auto'
+  const setInline = () =>
+    page.evaluate((v) => {
+      document.querySelector<HTMLElement>('[data-bg-scroller]')!.style.overflowY = v
+    }, SENTINEL)
+  const readInline = () =>
+    page.evaluate(
+      () => document.querySelector<HTMLElement>('[data-bg-scroller]')!.style.overflowY,
+    )
+
+  await setInline()
+  expect(await readInline(), '前置条件：inline 值已就位').toBe(SENTINEL)
 
   await openMoveSheet(page, true)
   await page.waitForTimeout(1200)
+  // 前提自证：锁**确实覆盖过**这个值，否则第 ④ 步的恢复是空谈
+  expect(await readInline(), '锁未生效 ⇒ 本用例后续断言没有意义').toBe('hidden')
+
   await openMoveSheet(page, false)
   await page.waitForTimeout(1000)
 
-  const after = await page.evaluate(() => {
-    const h = document.querySelector<HTMLElement>('[data-bg-scroller]')!
-    return { overflow: h.style.overflow, overflowY: h.style.overflowY, computed: getComputedStyle(h).overflowY }
-  })
+  // ★ 真正有牙的一步：必须精确回到 SENTINEL。粗暴写 '' 会红。
+  expect(await readInline(), `关闭后应精确恢复为 ${SENTINEL}`).toBe(SENTINEL)
+  expect(await readBg(page), '恢复后宿主应可滚').toBe(0)
 
-  expect(after.overflow, `inline overflow 应精确恢复为 ${JSON.stringify(before.overflow)}`).toBe(before.overflow)
-  expect(after.overflowY).toBe(before.overflowY)
-  expect(after.computed, '关闭后宿主必须重新可滚').toBe(before.computed)
-  expect(await readBg(page), '恢复后应能真的滚').toBe(0)
+  // 复原页面自身状态，别把测试残留留给同 worker 的后续用例
+  await page.evaluate(
+    () => (document.querySelector<HTMLElement>('[data-bg-scroller]')!.style.overflowY = ''),
+  )
 })
 
 test('④ 现状刻画（对本次修复无牙）：真实滚轮打不动背景，是因为遮罩盖满视口', async ({ page }) => {
