@@ -196,7 +196,7 @@ function refresh() {
 .state .hint { color: var(--text-muted); font-size: var(--text-sm); }
 .error { margin: var(--space-3); padding: var(--space-3); color: var(--danger); background: var(--danger-bg); border-radius: var(--radius-sm); font-size: var(--text-smd); display: flex; justify-content: space-between; align-items: center; }
 .error button { border: 1px solid var(--danger); border-radius: var(--radius-sm); background: var(--bg-card); color: var(--danger); padding: 5px 10px; }
-.confirm-overlay { position: fixed; /* 底边随 --kb-inset 抬升：键盘在场时浮层收在键盘上沿之上，弹层内的输入框与确认按钮不会被盖住。同 BottomSheet.vue。 */ inset: 0 0 var(--kb-inset, 0px) 0; background: rgba(0,0,0,0.45); display: flex; align-items: center; justify-content: center; z-index: 50; }
+.confirm-overlay { position: fixed; /* 底边随 --kb-inset 抬升：键盘在场时浮层收在键盘上沿之上，弹层内的输入框与确认按钮不会被盖住。同 BottomSheet.vue。 */ inset: 0 0 var(--kb-inset, 0px) 0; background: rgba(0,0,0,0.45); display: flex; align-items: center; justify-content: center; z-index: var(--z-dialog); }
 .confirm-dialog { background: var(--bg-card); border-radius: var(--radius-md); padding: var(--space-4); width: min(90vw, 360px); }
 .confirm-dialog h3 { margin: 0 0 var(--space-2); color: var(--text-primary); }
 .confirm-dialog p { color: var(--text-secondary); font-size: var(--text-smd); }

@@ -102,9 +102,14 @@
               <span class="time">{{ relTime(n.updatedAt) }}</span>
             </div>
           </div>
-          <div v-if="notes.length > 0" ref="moreEl" class="more">
+          <div v-if="notes.length > 0" ref="sentinelRef" class="more">
             <span v-if="loadingMore">加载中…</span>
-            <span v-else-if="hasMore">上拉加载更多</span>
+            <button v-else-if="listStatus === 'failed'" type="button" class="more-retry" @click="retry">
+              加载失败，点击重试
+            </button>
+            <button v-else-if="hasMore" type="button" class="more-retry" @click="loadMore">
+              {{ needsManualLoad ? '继续加载' : '加载更多' }}
+            </button>
             <span v-else>没有更多了</span>
           </div>
         </div>
@@ -141,7 +146,7 @@ import { notesApi } from '../../api/notes'
 import { useNoteRecording } from './useNoteRecording'
 import { noteRecorderUiState } from './note-recording'
 import { searchNotesWithIntent, type NoteSearchBriefing } from './note-search'
-import { useListSentinel } from '../../composables/use-list-sentinel'
+import { useContinuousList } from '../../composables/useContinuousList'
 import { DEFAULT_LIST_PAGE_SIZE, pageHasMore } from '../../native/list-sync/page'
 import * as notesStore from './notes-store'
 import type { LocalNote } from './notes-store'
@@ -154,10 +159,8 @@ defineOptions({ name: 'NoteListView' })
 const router = useRouter()
 const auth = useAuthStore()
 const apiError = useApiError()
-const notes = ref<LocalNote[]>([])
-const loading = ref(true)
-const loadingMore = ref(false)
-const hasMore = ref(false)
+// notes / loading / loadingMore / hasMore 已由下方 useContinuousList 接管
+// （分页数据 + 状态），此处不再重复声明。
 const query = ref('')
 const dbNotReady = ref(false)
 const showSearch = ref(false)
@@ -234,56 +237,83 @@ function currentWorkspaceId(): string {
   return auth.workspaceId || 'default'
 }
 
-async function load() {
-  loading.value = true
-  dbNotReady.value = false
-  try {
-    const page = await notesStore.listNotes({
+/**
+ * 列表数据源：2026-10-04 从 `useListSentinel` 迁到 Hyper 的
+ * `useContinuousList`（第二个迁移页，样板见 MeetingListView）。
+ *
+ * 换来的：代次（切 domain 后旧响应不回写）、失败态（保留已加载行 + 显式重试）、
+ * 耗尽态、KeepAlive pause/resume、按 id 去重与同页原位替换。
+ *
+ * ⚠️ 搜索态与分页态是**两条独立路径**，不能混：
+ *   - 分页结果落在 `pagedNotes`（控制器持有）；
+ *   - 搜索结果落在 `searchResults`（页面持有）。
+ * 早先把搜索结果直接写进 `notes.value`，那在迁移后会立刻被控制器的下一次
+ * emit 覆盖掉——搜索结果会「闪一下就没」。所以用 `notes` computed 合并。
+ */
+const {
+  rows: pagedNotes,
+  status: listStatus,
+  hasMore,
+  needsManualLoad,
+  sentinelRef,
+  resetQuery,
+  retry,
+  loadMore,
+} = useContinuousList<LocalNote>({
+  pageSize: DEFAULT_LIST_PAGE_SIZE,
+  fetchPage: async ({ page }) => {
+    const res = await notesStore.listNotes({
       limit: DEFAULT_LIST_PAGE_SIZE,
-      offset: 0,
+      // 后端是 offset 型，控制器是 page 型（从 1 起）
+      offset: (page - 1) * DEFAULT_LIST_PAGE_SIZE,
       domain: domain.value === 'all' ? undefined : domain.value,
       workspaceId: currentWorkspaceId(),
     })
-    notes.value = page
-    hasMore.value = pageHasMore(page.length)
-    const drafts = await notesStore.listDraftNotes(currentWorkspaceId())
-    draftBanner.value = drafts[0] ?? null
+    return {
+      rows: res,
+      total: Number.MAX_SAFE_INTEGER,
+      hasMore: pageHasMore(res.length),
+    }
+  },
+})
+
+/** 搜索结果；null = 不在搜索态，展示分页数据。 */
+const searchResults = ref<LocalNote[] | null>(null)
+
+/** 模板统一读它：搜索态优先，否则读分页数据。 */
+const notes = computed<LocalNote[]>(() => searchResults.value ?? pagedNotes.value)
+
+const loading = computed(
+  () => listStatus.value === 'idle' && notes.value.length === 0 && !dbNotReady.value,
+)
+const loadingMore = computed(() => listStatus.value === 'loadingNext' || listStatus.value === 'refreshing')
+
+async function load() {
+  dbNotReady.value = false
+  // 离开搜索态，回到分页
+  searchResults.value = null
+  try {
+    resetQuery()
   } catch (e: unknown) {
     if (e instanceof Error && e.message.includes('LocalDB 未初始化')) dbNotReady.value = true
-  } finally {
-    loading.value = false
   }
-}
-
-async function loadMore() {
-  if (loading.value || loadingMore.value || !hasMore.value || query.value.trim()) return
-  loadingMore.value = true
+  // 草稿横幅与分页无关，单独取
   try {
-    const page = await notesStore.listNotes({
-      limit: DEFAULT_LIST_PAGE_SIZE,
-      offset: notes.value.length,
-      domain: domain.value === 'all' ? undefined : domain.value,
-      workspaceId: currentWorkspaceId(),
-    })
-    const seen = new Set(notes.value.map((n) => n.id))
-    notes.value = [...notes.value, ...page.filter((n) => !seen.has(n.id))]
-    hasMore.value = pageHasMore(page.length)
-  } finally {
-    loadingMore.value = false
+    const drafts = await notesStore.listDraftNotes(currentWorkspaceId())
+    draftBanner.value = drafts[0] ?? null
+  } catch {
+    draftBanner.value = null
   }
 }
-
-const { moreEl } = useListSentinel(loadMore)
 
 async function onSearch() {
   const q = query.value.trim()
   if (!q) { briefing.value = null; await load(); return }
-  loading.value = true
   try {
     briefing.value = await searchNotesWithIntent(q, currentWorkspaceId())
-    notes.value = briefing.value.results.map((r) => r.note)
-  } finally {
-    loading.value = false
+    searchResults.value = briefing.value.results.map((r) => r.note)
+  } catch {
+    searchResults.value = null
   }
 }
 
@@ -448,6 +478,19 @@ useListScene('notes', load)
 }
 .note-meta { display: flex; gap: 8px; margin-top: 8px; font-size: var(--text-xs); color: var(--text-muted); }
 .time { margin-left: auto; }
+.more-retry {
+  display: block;
+  width: 100%;
+  padding: 10px 12px;
+  background: transparent;
+  color: var(--text-secondary);
+  border: none;
+  /* 触控目标下限：compact 档主操作 ≥44px 是红线 */
+  min-height: 44px;
+  font-size: var(--text-smd);
+  cursor: pointer;
+}
+.more-retry:active { opacity: 0.6; }
 .more { padding: 16px 0 24px; text-align: center; font-size: var(--text-sm); color: var(--text-muted); }
 .sr-only {
   position: absolute;

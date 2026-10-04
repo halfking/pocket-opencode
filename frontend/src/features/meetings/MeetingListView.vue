@@ -54,9 +54,17 @@
               </div>
             </div>
           </SwipeableListItem>
-          <div v-if="meetings.length > 0" ref="moreEl" class="more">
+          <div v-if="meetings.length > 0" ref="sentinelRef" class="more">
             <span v-if="loadingMore">加载中…</span>
-            <span v-else-if="hasMore">上拉加载更多</span>
+            <!-- 失败：显式重试。旧实现失败后停在半截且没有任何重试入口。 -->
+            <button v-else-if="listStatus === 'failed'" type="button" class="more-retry" @click="retry">
+              加载失败，点击重试
+            </button>
+            <!-- 显式入口：既是哨兵不可用（needsManualLoad）时的降级路径，
+                 也让「上拉加载更多」在无手势设备上仍然可达。 -->
+            <button v-else-if="hasMore" type="button" class="more-retry" @click="loadMore">
+              {{ needsManualLoad ? '继续加载' : '加载更多' }}
+            </button>
             <span v-else>没有更多了</span>
           </div>
         </div>
@@ -75,9 +83,9 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { useListSentinel } from '../../composables/use-list-sentinel'
+import { useContinuousList } from '../../composables/useContinuousList'
 import { DEFAULT_LIST_PAGE_SIZE, pageHasMore } from '../../native/list-sync/page'
 import {
   Skeleton, EmptyState, DbLockedState, PullToRefresh, SwipeableListItem,
@@ -99,52 +107,67 @@ defineOptions({ name: 'MeetingListView' })
 
 const router = useRouter()
 const dbNotReady = ref(false)
-const loading = ref(true)
-const loadingMore = ref(false)
-const hasMore = ref(false)
 const starting = ref(false)
 const filter = ref<MeetingListFilter>('active')
-const meetings = ref<LocalMeeting[]>([])
 const filters = MEETING_LIST_FILTERS
 
+/**
+ * 列表数据源：2026-10-04 从 `useListSentinel` 迁到 Hyper 的
+ * `useContinuousList`（首个迁移页）。
+ *
+ * 迁移换来的东西（旧的 `loadMore` 缺这些）：
+ *  - **代次**：切换筛选后上一页的慢响应不再回写（`resetQuery()` 提升代次）。
+ *  - **失败态**：读失败保留已加载行并显示显式重试，而不是静默停在半截。
+ *  - **耗尽态**：`status==='exhausted'` 后断开 observer，不再空转请求。
+ *  - **KeepAlive**：停用时 pause（断开 observer），回页时 resume 并重测 sentinel。
+ *  - **去重**：按稳定 `m.id` 去重并同页原位替换。
+ *
+ * 保留的行为：首屏仍由 `load()` 语义承担（immediate），`dbNotReady` 仍由
+ * fetchPage 内捕获 —— LocalDB 未初始化是这个页面特有的错误，不是通用失败。
+ */
+const {
+  rows: meetings,
+  status: listStatus,
+  hasMore,
+  needsManualLoad,
+  sentinelRef,
+  resetQuery,
+  retry,
+  loadMore,
+} = useContinuousList<LocalMeeting>({
+  pageSize: DEFAULT_LIST_PAGE_SIZE,
+  fetchPage: async ({ page }) => {
+    const res = await listMeetings(DEFAULT_LIST_PAGE_SIZE, {
+      archived: filter.value === 'archived',
+      // 后端是 offset 型，控制器是 page 型（从 1 起）。
+      offset: (page - 1) * DEFAULT_LIST_PAGE_SIZE,
+    })
+    return {
+      rows: res,
+      // 本地库不提供 total，用「本页是否满」推导，与原 pageHasMore 语义一致。
+      total: Number.MAX_SAFE_INTEGER,
+      hasMore: pageHasMore(res.length),
+    }
+  },
+})
+
+const loading = computed(() => listStatus.value === 'idle' && meetings.value.length === 0 && !dbNotReady.value)
+const loadingMore = computed(() => listStatus.value === 'loadingNext' || listStatus.value === 'refreshing')
+
 async function load() {
-  loading.value = true
   dbNotReady.value = false
   try {
-    const page = await listMeetings(DEFAULT_LIST_PAGE_SIZE, {
-      archived: filter.value === 'archived',
-      offset: 0,
-    })
-    meetings.value = page
-    hasMore.value = pageHasMore(page.length)
+    resetQuery()
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e)
     if (msg.includes('LocalDB 未初始化')) dbNotReady.value = true
-  } finally {
-    loading.value = false
   }
 }
-
-async function loadMore() {
-  if (loading.value || loadingMore.value || !hasMore.value) return
-  loadingMore.value = true
-  try {
-    const page = await listMeetings(DEFAULT_LIST_PAGE_SIZE, {
-      archived: filter.value === 'archived',
-      offset: meetings.value.length,
-    })
-    const seen = new Set(meetings.value.map((m) => m.id))
-    meetings.value = [...meetings.value, ...page.filter((m) => !seen.has(m.id))]
-    hasMore.value = pageHasMore(page.length)
-  } finally {
-    loadingMore.value = false
-  }
-}
-
-const { moreEl } = useListSentinel(loadMore)
 
 async function onFilter(next: MeetingListFilter) {
   filter.value = next
+  // ⚠️ 换筛选必须走 resetQuery()（提升代次 + 清游标 + 回到首页），
+  // 不能沿用旧游标继续追加，否则会看到上一个筛选的残留行。
   await load()
 }
 
@@ -217,5 +240,19 @@ useListScene('meetings', load)
 }
 .fab.recording { background: var(--danger); }
 .fab:disabled { opacity: 0.7; }
+.more-retry {
+  display: block;
+  width: 100%;
+  padding: 10px 12px;
+  background: transparent;
+  color: var(--text-dim, #888);
+  border: none;
+  /* 用 token：13px 恰好等于 --text-smd，写死像素会被 font-size-token-equal 门禁判红 */
+  font-size: var(--text-smd);
+  cursor: pointer;
+  /* 触控目标下限：主操作 ≥44px 是 compact 红线 */
+  min-height: 44px;
+}
+.more-retry:active { opacity: 0.6; }
 .more { padding: 16px 0 24px; text-align: center; font-size: var(--text-sm); color: var(--text-muted); }
 </style>

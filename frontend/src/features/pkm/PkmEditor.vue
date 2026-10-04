@@ -174,7 +174,9 @@ onBeforeUnmount(() => {
 }
 .pkm-saving {
   position: fixed;
-  bottom: 80px;
+  /* 2026-10-06：原裸 80px 是在手工复刻 --bottom-chrome-height（56px）。
+     数字一旦与 token 脱钩，底栏变高时这里会静默失效 ⇒ 改用 token。 */
+  bottom: calc(var(--bottom-chrome-height) + var(--space-6));
   right: 16px;
   font-size: var(--text-2xs);
   color: var(--text-secondary, #888);

@@ -161,19 +161,29 @@
   --bottomnav-height: 56px;   /* 原 60px */
 
   /* Z-index 注册表 —— 全局唯一权威。新增浮层必须在此登记，禁止散落字面值。
-     分层语义从低到高：
-       base     页面内普通浮层（下拉、sticky 工具栏）
-       sticky   壳层标题栏 / GlobalStatusBar
-       bottomnav 底部导航
-       fab      悬浮操作按钮（需在导航之上、弹层之下）
-       sheet    BottomSheet 遮罩与面板
-       dialog   Dialog / ConfirmDialog 模态
-       alert    全局警示（MasterPassword 等系统级模态）
-       toast    轻提示（永远最上） */
+     由 styles/__tests__/z-index-ladder.test.mjs 守住：未登记的 `--z-*`、
+     与 token 冲突的 fallback、以及未登记的裸数字 z-index 都会让门禁变红。
+
+     分层语义**按下面的声明顺序从低到高**（此前的注释把 fab 列在 bottomnav
+     之上，与实际取值 60 < 70 矛盾，已按取值修正）：
+       base       页面内普通浮层（下拉、sticky 工具栏）
+       sticky     壳层标题栏 / GlobalStatusBar
+       fab        悬浮操作按钮（**在底部导航之下**、弹层之上）
+       bottomnav  底部导航
+       popover    悬浮提示 / 气泡（须在导航与 sticky 之上）
+       sheet      BottomSheet 遮罩与面板
+       dialog     Dialog / ConfirmDialog 模态
+       alert      全局警示（MasterPassword 等系统级模态）
+       update     强制更新横幅
+       toast      轻提示（永远最上） */
   --z-base: 10;
   --z-sticky: 50;
   --z-fab: 60;
   --z-bottom-nav: 70;
+  /* 2026-10-04 新增。此前两处 tooltip 写 var(--z-popover, 30)，而 --z-popover
+     从未定义 ⇒ 实际取 30，**低于** --z-sticky(50) 与 --z-bottom-nav(70)，
+     于是提示气泡被吸顶栏与底栏盖住。 */
+  --z-popover: 100;
   --z-sheet: 1300;
   --z-dialog: 1400;
   --z-alert: 1500;

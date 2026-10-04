@@ -111,8 +111,10 @@ async function onStop() {
 .rec-pill {
   position: fixed;
   right: var(--space-4, 16px);
-  bottom: calc(var(--app-safe-bottom, 12px) + 72px);
-  z-index: var(--z-fab, 40);
+  /* 2026-10-06：原 calc(var(--app-safe-bottom,12px) + 72px) 里的 72 是手工
+     复刻「底栏 56 + 间隙」⇒ 与 token 脱钩。改用 chrome token（实测位移 2px）。 */
+  bottom: calc(var(--bottom-chrome-height) + var(--space-4));
+  z-index: var(--z-fab);
   display: flex;
   align-items: center;
   gap: 4px;

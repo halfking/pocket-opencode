@@ -1571,6 +1571,67 @@ const maestroEnv = {
   POCKET_MASTER: process.env.POCKET_MASTER || 'PocketTest2026',
   JAVA_HOME: resolveJavaHome() || process.env.JAVA_HOME,
   MAESTRO_CLI_NO_ANALYTICS: 'true',
+
+  // 强制 JVM 按 UTF-8 输出。2026-10-04 实测踩到：Windows 上 JVM 跟随系统
+  // ANSI 代码页（GBK）输出，中文断言在失败信息里全变成 U+FFFD ——
+  // `[Failed] xxx (Assertion is false: "?????" is visible)`，码点全是 fffd，
+  // **哪个断言红了根本读不出来**，只能靠反复跑 + 猜哪个元素没出现。
+  // 本轮就因为它把「红在 更多功能 / 定时自动化 / 仅显示启用 / 返回」这四种
+  // 完全不同的失败压成了同一串问号，绕了好几轮才定位到真因。
+  //
+  // 追加而非覆盖：调用方（run-maestro.ps1 等）可能已经带了别的 JVM 参数。
+  JAVA_TOOL_OPTIONS: `${process.env.JAVA_TOOL_OPTIONS ?? ''} -Dfile.encoding=UTF-8 -Dsun.stdout.encoding=UTF-8 -Dsun.stderr.encoding=UTF-8`.trim(),
+}
+
+// ---- 夹具（2026-10-04）----------------------------------------------------
+//
+// 有些 flow 的判据依赖一个**前提**，前提不成立时它会恒红，于是等于没有护栏。
+// notes-stt-error-visibility 就是这种：ASR 开通后后端不再返回
+// `stt_unavailable:`，而它的断言正是围绕这条带错误码的可行动原因。
+//
+// 声明写在 scripts/.maestro-flows.json 的 `fixture` 字段上，脚本路径**由名字
+// 推导**（`fixture: stt-error` ⇒ `scripts/stt-error-fixture.mjs`），不另建
+// 映射表 —— 两边各写一份就会出现「checker 放行的名字 harness 认不出」。
+//
+// ⚠️ 还原必须挂在 finally 上，不能是「flow 通过之后」：
+//   夹具把 STT 的 gatewayModel 指到一个不存在的模型，留在库里就等于
+//   **用户的语音转写是坏的**。flow 失败恰恰是最需要还原的时刻。
+const fixtureFor = (() => {
+  const map = new Map()
+  let list = []
+  try {
+    const raw = JSON.parse(readFileSync(resolve(ROOT, 'scripts', '.maestro-flows.json'), 'utf8'))
+    list = Array.isArray(raw) ? raw : (raw?.flows ?? [])
+  } catch (e) {
+    console.error(`[fixture] ⚠️ 读不到 scripts/.maestro-flows.json（${e.message}），本轮不跑任何夹具。`)
+    return map
+  }
+  for (const e of list) {
+    if (!e || typeof e !== 'object' || !e.file) continue
+    if (e.fixture) map.set(String(e.file), { kind: 'fixture', name: String(e.fixture) })
+    else if (e.reset) map.set(String(e.file), { kind: 'reset', name: String(e.reset) })
+  }
+  return map
+})()
+
+const fixtureScript = (name) => resolve(ROOT, 'scripts', `${name}-fixture.mjs`)
+
+/** 跑夹具/清场的一步。mode 为 undefined 时表示「不带参数跑」（清场用）。 */
+function runFixture(name, mode) {
+  const script = fixtureScript(name)
+  if (!existsSync(script)) {
+    console.error(`[fixture] ❌ 找不到夹具脚本 ${script}`)
+    return false
+  }
+  const args = mode ? [script, mode] : [script]
+  const r = spawnSync(process.execPath, args, { cwd: ROOT, stdio: 'inherit', env: maestroEnv })
+  const how = mode ? `${name} ${mode}` : `${name}（清场，无参数）`
+  if (r.status !== 0) {
+    console.error(`[fixture] ❌ ${how} 失败（退出码 ${r.status}）`)
+    return false
+  }
+  console.log(`[fixture] ✅ ${how}`)
+  return true
 }
 
 const runOne = (flow) =>
@@ -1585,8 +1646,33 @@ let r = { status: 0 }
 for (const [i, flow] of flows.entries()) {
   if (i > 0) await resetToStart()
   await gotoPreRoute()
+  const fx = fixtureFor.get(flow)
+  if (fx) {
+    // 前提没造出来就不能跑 flow：那会让这条流红在一个「本就不该红」的原因上，
+    // 而失败点离根隔得很远（页面只显示泛化提示 / 空态不出现）。宁可响亮退出。
+    if (fx.kind === 'reset') {
+      // 清场没有「还原」：它的产物就是 flow 的起点（零卡组之类）。
+      // 失败时也不用还原 —— 它本来就是「清到空」。
+      if (!runFixture(fx.name, undefined)) {
+        console.error('[fixture] ❌ 清场失败，跳过本条 flow（场景没回到起点，它会测成另一条分支）')
+        process.exit(1)
+      }
+    } else if (!runFixture(fx.name, '--induce')) {
+      // 反过来仍要尝试还原：induce 可能改了一半。
+      console.error('[fixture] ❌ induce 失败，跳过本条 flow（前提不成立时它必红，不是产品回归）')
+      runFixture(fx.name, '--restore')
+      process.exit(1)
+    }
+  }
   if (flows.length > 1) console.log(`\n──────── flow ${i + 1}/${flows.length}: ${flow} ────────`)
-  const one = runOne(flow)
+  let one = { status: 0 }
+  try {
+    one = runOne(flow)
+  } finally {
+    // 无论 flow 绿还是红都还原，见上面「还原必须挂在 finally 上」。
+    // reset 不进这个分支 —— 它的「还原」等于把 flow 的产出删掉。
+    if (fx?.kind === 'fixture') runFixture(fx.name, '--restore')
+  }
   if (one.status !== 0) r = one   // 保留失败那次的返回码，交给下面的归因逻辑
 }
 if (flows.length > 1) console.log(`\n[suite] ${flows.length} 条 flow 跑完`)

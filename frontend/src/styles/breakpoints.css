@@ -1,22 +1,30 @@
 /**
- * breakpoints.css — 响应式断点与工具类
+ * breakpoints.css — 响应式断点与工具类（CSS 侧镜像）
  *
- * 断点规范（与 useBreakpoint composable 保持一致）：
- *   - compact : < 560px
- *   - medium  : 560px – 839px
- *   - expanded: 840px – 1279px
- *   - wide    : >= 1280px
+ * ⚠️ 本文件的断点数字是 `composables/useBreakpoint.ts` 里 TS 常量的**镜像**。
+ * 两者必须同步，由 `styles/__tests__/breakpoint-mirror.test.mjs` 守住：
+ * 任何一侧单独改数字都会让门禁变红。
  *
- * 使用 CSS 变量可在 JS 里读取，工具类可在模板里条件渲染。
+ * 档位阶梯（SSOT = useBreakpoint.ts）：
+ *   compact : < 560px     手机竖屏、窄浏览器
+ *   medium  : 560–839px   大屏手机横屏、平板竖屏
+ *   expanded: 840–1279px  平板横屏、小窗
+ *   wide    : >= 1280px   桌面（专业形态，红线区）
+ *
+ * 具名子档：
+ *   narrow  : <= 380px    compact 内的超窄屏（SE / 折叠屏外屏）
+ *   过去散落的裸 `@media (max-width: 380px)` 属于「第三套阶梯」，
+ *   与 JS 侧对不上；现在登记在这里，并要求使用方改用 .bp-* 工具类
+ *   或 isNarrow 开关。
+ *
+ * 禁止事项：新增断点魔法数；新增范围语法媒体查询（必须用传统 min/max-width）。
  */
 
 :root {
-  --bp-compact-max: 559px;
   --bp-medium-min: 560px;
-  --bp-medium-max: 839px;
   --bp-expanded-min: 840px;
-  --bp-expanded-max: 1279px;
   --bp-wide-min: 1280px;
+  --bp-narrow-max: 380px;
 }
 
 /* compact / folded-closed */
@@ -44,4 +52,13 @@
 @media (min-width: 1280px) {
   .bp-show-on-wide { display: initial; }
   .bp-hide-on-wide { display: none; }
+}
+
+/* narrow —— compact 内的具名子档。 */
+.bp-hide-on-narrow { display: initial; }
+.bp-show-on-narrow { display: none; }
+
+@media (max-width: 380px) {
+  .bp-hide-on-narrow { display: none; }
+  .bp-show-on-narrow { display: initial; }
 }

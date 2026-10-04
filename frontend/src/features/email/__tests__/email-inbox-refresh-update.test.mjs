@@ -124,14 +124,30 @@ test('空 id 的脏数据既不新增也不覆盖别人的行', () => {
 
 // ── 接线护栏：纯函数测试证明不了「刷新真的走了这条路径」 ─────────────────────
 
-test('接线：两处刷新路径都把重新读到的页交给 applyRefreshPage', (t) => {
+test('接线：刷新走内核的 merge，且页面侧不再自行合并分页', (t) => {
   const src = readFileSync(join(here, '..', 'EmailInboxView.vue'), 'utf8')
   // 与本仓其他源码扫描护栏一致：先剥注释，否则「删掉接线只留注释」也能满足断言。
   const code = src
     .replace(/\/\*[\s\S]*?\*\//g, ' ')
     .replace(/(^|[^:])\/\/[^\n]*/g, '$1 ')
-  const calls = code.match(/applyRefreshPage\(\s*emails\.value\s*,\s*page\s*\)/g) || []
-  assert.equal(calls.length, 2,
-    'showLocal(false) 与下拉刷新两处都必须调用 applyRefreshPage(emails.value, page)')
-  t.diagnostic(`applyRefreshPage 调用点数 = ${calls.length}`)
+
+  // ① 合并语义由内核承担，策略必须显式声明成 'merge'。
+  //    默认是 'replace'，漏写会让下拉刷新把用户弹回第 1 页
+  //    （并把已翻开的分页丢掉）——那是 §2.8 修的那个缺陷换了个形态。
+  assert.match(code, /refreshPolicy:\s*'merge'/,
+    '必须显式声明 refreshPolicy: \'merge\'，否则刷新会走 replace 语义')
+  assert.match(code, /mergeRows:\s*inboxMergeRows/,
+    '必须把 mergeRows 交给 inboxMergeRows：排序是领域知识，内核不替调用方决定')
+
+  // ② 页面侧**不得**再自行调 applyRefreshPage / mergeInboxPages 合并分页——
+  //    那是迁移前的实现，留着就等于同时存在两套合并逻辑（07 §2.9）。
+  const legacy = code.match(/applyRefreshPage\(|mergeInboxPages\(/g) || []
+  assert.equal(legacy.length, 0,
+    `页面侧残留 ${legacy.length} 处旧合并调用；合并已由内核 merge 策略承担`)
+
+  // ③ 两条刷新入口都要真的走内核 refresh。
+  const refreshCalls = code.match(/await refreshList\(\)/g) || []
+  assert.ok(refreshCalls.length >= 2,
+    'showLocal 与下拉刷新两处都必须调用内核的 refreshList()')
+  t.diagnostic(`refreshList 调用点数 = ${refreshCalls.length}`)
 })

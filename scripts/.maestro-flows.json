@@ -1,4 +1,54 @@
-[
-  ".maestro/notes-stt-error-visibility.yaml",
-  ".maestro/_connectivity-sttdev.yaml"
-]
+{
+  "_comment": "check-maestro-flows.mjs 的检查清单。条目可以是字符串（用默认期望）或对象。",
+  "_entryFields": "file 必填；appId 覆盖默认期望包；kind: probe 表示故意失败的探针流（跳过选择器溯源）；runtimeAnchors 是本流专属的运行时数据锚点。",
+  "_runtimeAnchorsWhy": {
+    "凯轩企业邮": "scripts/seed_email_accounts.sh 写库的账户显示名，不是语言包文案",
+    "huangxutao@kxpms.cn": "同上：种子账户地址，界面渲染自 DB",
+    "56551681@qq.com": "同上",
+    "feikemanager@163.com": "同上",
+    "feikemanager1@163.com": "同上",
+    "kimmy.huang@163.com": "同上",
+    "回归卡组": "flashcards-write.yaml 自己 inputText 打出来的卡组名（该文件第 91 行）",
+    "回归正面": "同上（第 159 行）",
+    "MaestroPKM笔记": "notes-crud.yaml 自己 inputText 打出来的笔记标题（该文件第 72 行）"
+  },
+  "_runtimeAnchorsRule": "2026-10-04 实测：以上 9 条在 frontend/src 全量语料里零命中（用 node 独立扫 .vue/.ts/.json 确认），即它们确实是数据不是代码。新增条目前请同样先验证它不在源码里；匹配时按剥掉正则修饰后的子串比较，所以 `.*kimmy\\.huang@163\\.com.*` 能命中裸字面量声明。",
+  "defaultAppId": "com.kaixuan.opencode.pocket",
+  "runtimeAnchors": [
+    "凯轩企业邮",
+    "huangxutao@kxpms.cn",
+    "56551681@qq.com",
+    "feikemanager@163.com",
+    "feikemanager1@163.com",
+    "kimmy.huang@163.com",
+    "回归卡组",
+    "回归正面",
+    "MaestroPKM笔记"
+  ],
+  "flows": [
+    ".maestro/2026-10-02-real-login.yaml",
+    ".maestro/email-accounts.yaml",
+    ".maestro/email-browse.yaml",
+    { "file": ".maestro/flashcards-write.yaml", "reset": "flashcards-test" },
+    ".maestro/login-gesture.yaml",
+    ".maestro/meetings-entry.yaml",
+    ".maestro/messages-hub.yaml",
+    ".maestro/more-grid-reach.yaml",
+    ".maestro/more-entries-open.yaml",
+    ".maestro/notes-crud.yaml",
+    { "file": ".maestro/notes-stt-error-visibility.yaml", "appId": "com.kaixuan.opencode.pocket.sttdev", "fixture": "stt-error" },
+    ".maestro/settings-llm-gateway.yaml",
+    ".maestro/smoke-login.yaml",
+    ".maestro/tasks-crud.yaml",
+    { "file": ".maestro/_connectivity-sttdev.yaml", "appId": "com.kaixuan.opencode.pocket.sttdev" },
+    ".maestro/_connectivity.yaml",
+    ".maestro/_dismiss-system-dialogs.yaml",
+    ".maestro/_goto-pkm.yaml",
+    ".maestro/_login.yaml",
+    { "file": ".maestro/_probe-a11y.yaml", "kind": "probe" },
+    { "file": ".maestro/_probe-budget.yaml", "kind": "probe" },
+    { "file": ".maestro/_probe-tap.yaml", "kind": "probe" },
+    { "file": ".maestro/_probe-tasks-create.yaml", "kind": "probe" },
+    ".maestro/_set-master-password.yaml"
+  ]
+}
