@@ -107,10 +107,34 @@ function loadCorpus() {
  * 只存在于语言包里而不在 .vue 里（实测「学习」就只在 zh-CN.json）。
  * 只搜 .vue 会把这类合法锚点误判成「找不到出处」。
  */
+// Android 运行时权限框 / 系统 UI 的按钮文案。
+//
+// 这些字符串由**系统**绘制，永远不可能出现在 App 源码或语言包里，
+// 所以「在源码里找不到出处」对它们是必然的假阳性，而不是 bug。
+// 2026-10-04 实测踩到：MIUI 的麦克风权限框三个按钮是
+//   拒绝 / 本次使用允许 / 仅在使用中允许
+// flow 用它当 tapOn 锚点，于是被溯源检查判成「真机上大概率匹配不到」——
+// 而这条 flow 当时其实**跑得通**（注入前提后 2/2 绿）。
+//
+// ⚠️ 刻意做窄：只有这几条**实测出现在本项目真机上的系统文案**才豁免，
+// 且**必须打印出来**（见下方 traceAnchors 的 exempted 桶）——
+// 静默放过会让这条检查自己变瞎，那比误报更糟。
+// 新增条目前先确认它确实是系统文案，而不是忘了在 App 里写的锚点。
+const SYSTEM_DIALOG_TEXTS = new Set([
+  '拒绝',            // 权限框：拒绝
+  '本次使用允许',    // 权限框：仅本次
+  '仅在使用中允许',  // 权限框：仅使用期间（2026-10-04 实测，本项目录音流用它）
+  '我知道了',        // MIUI 首次启动弹窗
+  '始终允许',
+  '仅此一次',
+])
+
 function traceAnchors(anchors, corpus) {
   const missing = []
   const unchecked = []
+  const exempted = []
   for (const a of anchors) {
+    if (SYSTEM_DIALOG_TEXTS.has(a.trim())) { exempted.push(a); continue }
     if (a.startsWith('id:')) {
       // id 锚点必须在源码里真的是 id 属性，class 不算 ——
       // 这条正是要拦的 bug：把 class="fab" 写成 id: "fab"。
@@ -125,7 +149,7 @@ function traceAnchors(anchors, corpus) {
     const notFound = lits.filter((l) => !corpus.includes(l))
     if (notFound.length) missing.push(`${a}  （源码中找不到: ${notFound.join(' / ')}）`)
   }
-  return { missing, unchecked }
+  return { missing, unchecked, exempted }
 }
 
 /** 收集命令名，顺带展开 runFlow 的内嵌 commands。 */
@@ -206,13 +230,18 @@ function checkFlow(f, corpus) {
 
   // 4. 选择器可溯源
   const anchors = collectAnchors(cmds)
-  const { missing, unchecked } = traceAnchors(anchors, corpus)
+  const { missing, unchecked, exempted } = traceAnchors(anchors, corpus)
   if (missing.length) {
     console.log('  FAIL 以下选择器在源码里找不到出处（真机上大概率匹配不到）:')
     missing.forEach((a) => console.log(`    - ${a}`))
     problems++
   } else {
-    console.log(`  选择器溯源：${anchors.length} 条正向锚点全部在源码中找到出处`)
+    const checked = anchors.length - unchecked.length - exempted.length
+    console.log(`  选择器溯源：${checked} 条正向锚点在源码中找到出处`)
+  }
+  if (exempted.length) {
+    // 豁免必须可见：否则「这条检查放过了一条选择器」这件事没人知道。
+    console.log(`  note ${exempted.length} 条按系统弹窗文案豁免（不在 App 源码里属正常）: ${exempted.join(' / ')}`)
   }
   if (unchecked.length) {
     console.log(`  note ${unchecked.length} 条锚点剥不出可查字面量，未做溯源: ${unchecked.join(' / ')}`)
