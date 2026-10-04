@@ -466,12 +466,73 @@ var invoiceKeywordASCII = []string{"invoice", "receipt", "vat", "e-invoice", "bi
 // 乘以邮件数。判据 invoice_keyword_wordboundary_test.go 只验行为不验性能，
 // 但这个开销是能避免的，就不留下。
 //
-// 边界两侧不得是：字母 / 数字 / 下划线，也不得是 URL 与标点里常见的形态
-// （. - _ / : ? & = # @ + %）。把 URL 分隔符也算进「词内」是刻意的：
-// `console.aws.amazon.com/billing/home` 里的 billing 是**路径段**，语义是
-// 「账单页面的地址」而不是「这是一张账单」；只挡字母数字的话 `/billing/`
-// 照样命中。
-const keywordBoundaryClass = `^|[^0-9A-Za-z_\-./:?&=+#@%]`
+// 边界分**两级**判定，这两级解决的是两类不同的问题（2026-10-04 修正）：
+//
+//	① 词字符：字母 / 数字 / 下划线。命中词紧邻其一 ⇒ 它是更长词的一部分
+//	   （`vat` 撞 `activation` / `private`）。**单侧就足以否决**。
+//	② URL 标点：`- . / : ? & = # @ + %`。命中词**两侧都是**它时，
+//	   才判定它是 URL 里的一个路径段（`console.aws.amazon.com/billing/home`）。
+//
+// ## 为什么 ② 必须是「两侧」而不是「任一侧」（本轮修的真缺陷）
+//
+// 把 URL 标点整个塞进「词内」类（e54d797d 的写法）会把**正常标点**也当成词的一部分，
+// 于是常见的发票主题**全部漏判**。本轮逐条实测（修复前 invoiceKeywordHit 返回值）：
+//
+//	Invoice: ACME Corp                  → false   ← 漏判
+//	Your invoice: https://…/inv.pdf     → false   ← 漏判
+//	Receipt: #2662-4636-8457            → false   ← 漏判
+//	Invoice#INV-2026-0001               → false   ← 漏判
+//	Invoice/Receipt for September       → false   ← 漏判
+//
+// 费用类型侧同源、同症状（修复前 classifyInvoiceCategory 的返回值）：
+//
+//	AWS: 您的账单                        → 其他   ← 原本是「通信」
+//	Stripe receipt for SaaS. Thanks!    → 其他   ← 原本是「通信」
+//	invoice from a hotel.com partner    → 其他   ← 原本是「住宿」
+//
+// 也就是说 e54d797d 修掉了一批假阳性，同时**静默造出了一批真发票的假阴性**：
+// 它把 24 格拉原文预算里的假阳性换成了真发票被挤掉，而反向保护用例
+// （invoice_keyword_wordboundary_test.go 的 StillAcceptsRealInvoiceSemantics）
+// 只用了空格分隔的形态（"Your invoice is ready"），**恰好绕开了所有出问题的标点**。
+//
+// 「单侧是 URL 标点」是正常标点，不是路径段：Invoice: 的冒号、hotel.com 的点，
+// 都不构成「这个词只存在于 URL 里」的证据。
+const (
+	// asciiTokenWordChar 是标准的「词字符」，构成硬边界。
+	asciiTokenWordChar = `0-9A-Za-z_`
+	// asciiTokenURLPunct 是邮件正文里几乎只出现在 URL 里的标点。
+	// 两侧**同时**出现才判定为 URL 路径段（见上面的说明）。
+	asciiTokenURLPunct = `-./:?&=+#@%`
+)
+
+// asciiTokenRegex 构造「按词边界」的英文词元正则。
+//
+// 捕获组 1/2 是左右边界，`^`/`$` 匹配成功时这两组是**零宽**（start==end），
+// asciiTokenHit 靠这一点区分「文本开头/结尾」与「真的有个邻居字符」。
+func asciiTokenRegex(kw string) *regexp.Regexp {
+	return regexp.MustCompile(`(?i)(^|[^` + asciiTokenWordChar + `])` + regexp.QuoteMeta(kw) + `([^` + asciiTokenWordChar + `]|$)`)
+}
+
+// asciiTokenHit 判断 t 里是否出现 kw 这个**独立词元**。
+//
+// 两级判定见 asciiTokenWordChar 的注释：紧邻词字符 ⇒ 否决；
+// 两侧都是 URL 标点 ⇒ 判为 URL 路径段，也否决。其余算命中。
+func asciiTokenHit(t, kw string, re *regexp.Regexp) bool {
+	for _, m := range re.FindAllStringSubmatchIndex(t, -1) {
+		leftURL, rightURL := false, false
+		if m[2] != m[3] && strings.IndexByte(asciiTokenURLPunct, t[m[2]]) >= 0 {
+			leftURL = true
+		}
+		if m[4] != m[5] && strings.IndexByte(asciiTokenURLPunct, t[m[4]]) >= 0 {
+			rightURL = true
+		}
+		if leftURL && rightURL {
+			continue
+		}
+		return true
+	}
+	return false
+}
 
 // invoiceKeywordASCIINegPhrases 是「含发票词但**不是**发票语义」的英文短语。
 //
@@ -489,11 +550,10 @@ var invoiceKeywordASCIINegPhrases = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)\bbilling\s+(cycle|period)\b`),
 }
 
-var invoiceKeywordASCIIRegexes = func() []*regexp.Regexp {
-	out := make([]*regexp.Regexp, 0, len(invoiceKeywordASCII))
+var invoiceKeywordASCIIRegexes = func() map[string]*regexp.Regexp {
+	out := make(map[string]*regexp.Regexp, len(invoiceKeywordASCII))
 	for _, kw := range invoiceKeywordASCII {
-		out = append(out, regexp.MustCompile(
-			`(?i)(`+keywordBoundaryClass+`)`+regexp.QuoteMeta(kw)+`($|[^0-9A-Za-z_\-./:?&=+#@%])`))
+		out[kw] = asciiTokenRegex(kw)
 	}
 	return out
 }()
@@ -512,8 +572,8 @@ func invoiceKeywordHit(text string) bool {
 	}
 	// 英文关键词：按预编译的词边界正则逐个匹配，见 invoiceKeywordASCII 的注释。
 	hit := false
-	for _, re := range invoiceKeywordASCIIRegexes {
-		if re.MatchString(t) {
+	for kw, re := range invoiceKeywordASCIIRegexes {
+		if asciiTokenHit(t, kw, re) {
 			hit = true
 			break
 		}
@@ -602,13 +662,18 @@ func classifyInvoiceKind(text string) string {
 	}
 }
 
-// categoryTokenBoundary 与 e54d797d 的 `keywordBoundaryClass` **刻意写成同一个**：
-// 同一个缺陷模式（裸关键词撞子串）要在所有入口堵住，两处判据就不能各写各的。
+// categoryTokenBoundary 已删除（2026-10-04 修正）。它**刻意**与 e54d797d 的
+// `keywordBoundaryClass` 写成同一个字符类，本意是「同一个缺陷模式在所有入口堵住」，
+// 但把同一段有缺陷的判据复制到第二个入口，效果是**同一个假阴性也复制了一份**：
+// `AWS: 您的账单`、`SaaS.`、`hotel.com` 三种形态在费用类型侧同样被误判成「其他」
+// （实测见 asciiTokenURLPunct 的注释）。
 //
-// 两侧不得是字母/数字/下划线，也不得是 URL 与标点常见形态
-// （. - _ / : ? & = # @ + %）。把 URL 分隔符算进「词内」是刻意的：
-// `s3.amazonaws.com` 里的 aws 前后都是 URL 字符，不是独立词。
-const categoryTokenBoundary = `[^0-9A-Za-z_\-./:?&=+#@%]`
+// ⇒ 「两处判据不能各写各的」要落到**共用一个函数**上，不是共用一个字符类。
+// 现在两侧都走 asciiTokenHit，边界规则只剩一份实现。
+//
+// 修正后的规则：紧邻词字符 ⇒ 否决；两侧都是 URL 标点 ⇒ 判为 URL 路径段，也否决。
+// `s3.amazonaws.com` 里的 aws 前后是字母，由①否决；`/billing/home` 里的
+// billing 前后都是 `/`，由②否决。单侧标点（`AWS:`、`hotel.com`）不再被误伤。
 
 // categoryASCIITokens 是费用类型判定里**必须按词边界**匹配的英文词元。
 //
@@ -636,7 +701,7 @@ const categoryTokenBoundary = `[^0-9A-Za-z_\-./:?&=+#@%]`
 var categoryASCIITokens = func() map[string]*regexp.Regexp {
 	out := make(map[string]*regexp.Regexp, 5)
 	for _, kw := range []string{"restaurant", "hotel", "aws", "azure", "saas"} {
-		out[kw] = regexp.MustCompile(`(?i)(^|` + categoryTokenBoundary + `)` + kw + `(` + categoryTokenBoundary + `|$)`)
+		out[kw] = asciiTokenRegex(kw)
 	}
 	return out
 }()
@@ -647,7 +712,7 @@ var categoryASCIITokens = func() map[string]*regexp.Regexp {
 // 与 41.3 对 `invoiceKeywordHit` 的处理一致。
 func hasCategoryToken(t, kw string) bool {
 	if re, ok := categoryASCIITokens[kw]; ok {
-		return re.MatchString(t)
+		return asciiTokenHit(t, kw, re)
 	}
 	return strings.Contains(t, kw)
 }

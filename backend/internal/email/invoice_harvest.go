@@ -78,11 +78,18 @@ var invoiceLinkHints = []string{
 
 var (
 	reHTMLHrefs = regexp.MustCompile(`(?i)href\s*=\s*["']([^"'h][^"']*(?:https?:)?[^"']*)["']|href\s*=\s*["'](https?://[^"']+)["']`)
-	// reHTMLSrcs 匹配内联资源属性（img/src、background 等）里的 URL。
+	// reHTMLSrcs 匹配内联资源属性（img/src、background、poster 等）里的 URL。
 	//
 	// 它**不参与**候选收集，只用来把「这个 URL 是图片不是下载链接」这件事
 	// 记下来——见 extractInvoiceURLs 里 inline 那段注释。
-	reHTMLSrcs  = regexp.MustCompile(`(?i)\bsrc\s*=\s*["']([^"']+)["']`)
+	//
+	// 属性名用 `\b(?:src|background|poster)\b` 而不是只写 `src`（2026-10-04 修正）：
+	// 原实现的注释声称覆盖 background，正则却只匹配 `src=`，于是
+	// `<div background="https://cdn.x.com/mail/banner?w=750&h=200">` 里的横幅
+	// 仍会被 reBareURLs 捞进候选——**注释与代码不一致，读者无从察觉**，
+	// 而那正是本函数要堵的同一个营销横幅泄漏。
+	// `\b` 开头让 `data-src=` 也一并覆盖（`-` 之后是词边界）。
+	reHTMLSrcs  = regexp.MustCompile(`(?i)\b(?:src|background|poster)\s*=\s*["']([^"']+)["']`)
 	reBareURLs  = regexp.MustCompile(`https?://[^\s<>"'\)\]，。；]+`)
 	reSkippable = regexp.MustCompile(`(?i)(unsubscribe|\.png|\.jpg|\.jpeg|\.gif|\.css|\.js|\.ico|facebook|twitter|doubleclick|google-analytics|mailto:|tel:)`)
 )
