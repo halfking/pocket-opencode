@@ -70,6 +70,36 @@ type handoffFile struct {
 // 发票号本身还可能带连字符，按最后一个 "-" 切会切出发票号片段。
 var reFileNameDate = regexp.MustCompile(`-(\d{4}-\d{2}-\d{2})\.pdf$`)
 
+// isInvoiceDiskFile 判断一个磁盘文件是不是「凭证」，**PDF 与图片都算**。
+//
+// ## 为什么必须包含图片（2026-10-04 真实数据上的假警报）
+//
+// 需求原文写的是「形成 pdf 文件或**其它相关文件**」，而 `saveInvoiceFile`
+// 用 `DetectInvoiceMedia` 决定扩展名——拍照发票落盘就是 `.jpg`（见
+// `invoice_attachment_harvest_wiring_test.go` 的图片分支用例）。
+//
+// 而这个诊断第一版磁盘侧**只列 `.pdf`**（`strings.HasSuffix(name, ".pdf")`），
+// 于是「台账声称的文件在不在磁盘上」这条判据拿 PDF 集合去比所有台账行，
+// **每一张图片发票都被判成「台账有·磁盘无」**。真实数据上当场误报 2 行：
+//
+//	[台账有·磁盘无] 其他-系统服务-6071.00-….jpg —— 交付时会被财务追问「凭证在哪」，而目录里根本没有它
+//	[台账有·磁盘无] 其他-系统服务-283.20-….jpg  —— 同上
+//
+// 而这两个文件**明明在磁盘上**（把 jpg 打开看得到内容）。
+// 更坏的是这条判据用 `t.Errorf`，于是**诊断整体变红**——
+// 一个专门用来回答「凭证齐不齐」的诊断，在凭证其实齐的时候报警。
+//
+// ⇒ 这与「判据只覆盖了一种可能来源」同族：不是判据太松，是**覆盖面**有洞。
+func isInvoiceDiskFile(name string) bool {
+	n := strings.ToLower(name)
+	for _, ext := range []string{".pdf", ".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"} {
+		if strings.HasSuffix(n, ext) {
+			return true
+		}
+	}
+	return false
+}
+
 func TestDiagInvoiceHandoffIntegrity(t *testing.T) {
 	if os.Getenv("POCKET_DIAG_HANDOFF") != "1" {
 		t.Skip("set POCKET_DIAG_HANDOFF=1 (+ POCKET_REAL_MAIL_DSN / POCKET_REAL_MAIL_SCHEMA / " +
@@ -89,14 +119,14 @@ func TestDiagInvoiceHandoffIntegrity(t *testing.T) {
 			"\n不设就没有「扫到空目录 ⇒ 一切干净」这个假结论可用——本诊断的价值全在扫到真实文件。")
 	}
 
-	// ---- 磁盘侧：只列 PDF，按内容哈希分组（不靠文件名判断重复） ----
+	// ---- 磁盘侧：只列发票文件（PDF **与图片**），按内容哈希分组（不靠文件名判断重复） ----
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatalf("读发票目录 %s 失败：%v", dir, err)
 	}
 	var files []handoffFile
 	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(strings.ToLower(e.Name()), ".pdf") {
+		if e.IsDir() || !isInvoiceDiskFile(e.Name()) {
 			continue
 		}
 		p := filepath.Join(dir, e.Name())
@@ -109,10 +139,11 @@ func TestDiagInvoiceHandoffIntegrity(t *testing.T) {
 		files = append(files, handoffFile{name: e.Name(), size: int64(len(b)), sha: hex.EncodeToString(sum[:])})
 	}
 	if len(files) == 0 {
-		t.Fatalf("%s 里一个 PDF 都没有——目录指错了，本诊断会输出「一切干净」的假结论", dir)
+		t.Fatalf("%s 里一个发票文件都没有——目录指错了，本诊断会输出「一切干净」的假结论", dir)
 	}
 	sort.Slice(files, func(i, j int) bool { return files[i].name < files[j].name })
-	t.Logf("[diag] 发票目录 %s：%d 个 PDF（测量时刻 %s）", dir, len(files), time.Now().Format("15:04:05"))
+	t.Logf("[diag] 发票目录 %s：%d 个发票文件（PDF + 图片，测量时刻 %s）",
+		dir, len(files), time.Now().Format("15:04:05"))
 
 	// ---- 台账侧：downloaded 行的 file_name / file_path / invoice_date ----
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -369,7 +400,7 @@ func TestDiagInvoiceHandoffIntegrity(t *testing.T) {
 		}
 	}
 	t.Logf("[diag] 汇总：台账缺文件 %d / 磁盘孤儿 %d / 内容重复组 %d / 日期打架组 %d"+
-		"（目录 %d 个 PDF，台账 %d 行）", missing, orphans, dupGroups, mismatch, len(files), len(claimed))
+		"（目录 %d 个发票文件，台账 %d 行）", missing, orphans, dupGroups, mismatch, len(files), len(claimed))
 	t.Logf("[diag] 判据 0：自发自收 %d 行 / 夹具 %d / 退化件 %d / 摘要页 %d"+
 		"；按文件去重后实际待定性 **%d** 个（多条判据可能命中同一文件）",
 		len(selfSent), len(fixture), len(degenerate), len(sysSummary), len(flagged))
