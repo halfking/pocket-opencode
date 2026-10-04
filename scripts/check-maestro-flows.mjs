@@ -300,7 +300,6 @@ function collectCommands(cmds, depth = 0) {
 
 function checkFlow(entry, corpus) {
   const f = entry.file
-  let problems = 0
   console.log(`\n== ${f} ==`)
 
   if (!existsSync(join(ROOT, f))) {
@@ -309,7 +308,20 @@ function checkFlow(entry, corpus) {
     console.log('  FAIL 流文件不存在（scripts/.maestro-flows.json 里列了它）')
     return 1
   }
-  const src = readFileSync(join(ROOT, f), 'utf8')
+  return checkFlowSource(entry, readFileSync(join(ROOT, f), 'utf8'), corpus)
+}
+
+/**
+ * 真正的检查逻辑，与文件系统解耦。
+ *
+ * 为什么要拆开：门禁要接进 CI，就必须能**自证它还能报错**。
+ * 直接读盘的话，敏感度验证只能靠手工改真文件（2026-10-04 做过 4 次，
+ * 每次都要备份还原）。拆开后自检直接喂合成 YAML 字符串，
+ * 不碰仓库、不留残留、每次 CI 都能跑。
+ */
+function checkFlowSource(entry, src, corpus) {
+  const f = entry.file
+  let problems = 0
 
   let header, doc
   try {
@@ -430,6 +442,108 @@ function reportCoverage() {
   } else {
     console.log(`\n覆盖率：已检查 ${listed.size} 条 / .maestro 下共 ${all.length} 条 yaml（全部覆盖）`)
   }
+}
+
+/**
+ * 自检：证明这条检查**还能报错**。
+ *
+ * 为什么必须自带：这条门禁要接进 gates 也就是接进 CI。如果它哪天被改成一个
+ * 空转（比如 collectAnchors 提前 return、或豁免集合被人写成通配），
+ * 表现会是「全绿」——和检查真的通过**完全同形**，CI 不会拦。
+ * 所以门禁必须自带敏感度验证，且每个用例都断言一个**具体**的失败原因，
+ * 不能只断言「非 0」（否则「因为别的理由红」也会算通过）。
+ *
+ * 下面 4 组负控对应 2026-10-04 手工做过的 4 次真实负控，这里固化成可重复执行的形式。
+ */
+function selftest() {
+  const corpus = 'AI 工具 快速提问 笔记 更多 消息 闪卡 邮箱设置 id="real-id"'
+  const results = []
+
+  // 敏感度 1：源码里不存在的锚点必须被抓
+  const s1 = checkFlowSource({ file: '.maestro/_st-1.yaml' }, yamlOf('com.kaixuan.opencode.pocket', ['- assertVisible: "ZZZ_绝对不存在于任何源码"']), corpus)
+  results.push({ name: '敏感度1 不存在的锚点被报出', pass: s1 > 0 })
+
+  // 敏感度 2：class 名当 id 写必须被抓（这条检查存在的最初理由）
+  const s2 = checkFlowSource({ file: '.maestro/_st-2.yaml' }, yamlOf('com.kaixuan.opencode.pocket', ['- tapOn: { id: "fab" }']), corpus)
+  results.push({ name: '敏感度2 class 当 id 被报出', pass: s2 > 0 })
+
+  // 敏感度 3：appId 写错必须被抓
+  const s3 = checkFlowSource({ file: '.maestro/_st-3.yaml' }, yamlOf('com.example.wrong', ['- assertVisible: "AI 工具"']), corpus)
+  results.push({ name: '敏感度3 appId 不符被报出', pass: s3 > 0 })
+
+  // 敏感度 4：豁免清单里邮箱域名打错，豁免必须**不放行**
+  // （这条最关键：豁免集合一旦变成「近似匹配一切」，门禁就等于没有）
+  const bogus = new Set(['kimmy.huang@164.com'])
+  const s4 = traceAnchors(['.*kimmy\\.huang@163\\.com.*'], corpus, bogus)
+  results.push({ name: '敏感度4 域名打错的豁免不生效', pass: s4.missing.length === 1 && s4.runtime.length === 0 })
+
+  // 敏感度 5：主流程误标 probe 必须被拒（否则一条真流程的溯源被整条关闭）
+  const s5 = checkFlowSource({ file: '.maestro/smoke-login.yaml', kind: 'probe' }, yamlOf('com.kaixuan.opencode.pocket', ['- assertVisible: "AI 工具"']), corpus)
+  results.push({ name: '敏感度5 主流程误标 probe 被拒', pass: s5 > 0 })
+
+  // 特异度：真实的源码内锚点必须**不**报错（否则就是又一个必然假阳性）
+  const ok = checkFlowSource({ file: '.maestro/_st-ok.yaml' }, yamlOf('com.kaixuan.opencode.pocket', ['- assertVisible: "AI 工具"', '- tapOn: "更多"']), corpus)
+  results.push({ name: '特异度 源码内锚点不误报', pass: ok === 0 })
+
+  // 特异度 2：正则在最常见的两种包裹下，声明过的数据锚点要被正确豁免
+  const declared = new Set(['kimmy.huang@163.com', '回归卡组'])
+  const t2 = traceAnchors(['.*kimmy\\.huang@163\\.com.*', '回归卡组.*'], corpus, declared)
+  results.push({
+    name: '特异度2 正则包裹 + 转义点号仍能豁免',
+    pass: t2.missing.length === 0 && t2.runtime.length === 2,
+  })
+
+  // 可见性：豁免必须真的被打印出来（静默放过 = 检查自己变瞎）
+  const printed = []
+  const realLog = console.log
+  console.log = (...a) => printed.push(a.join(' '))
+  const vis = checkFlowSource({ file: '.maestro/_st-vis.yaml' }, yamlOf('com.kaixuan.opencode.pocket', [
+    // ⚠️ 这里必须是 `\\.`（YAML 双引号里的转义反斜杠），不能写 `\.`。
+    // YAML 的双引号标量里 `\.` 是**非法转义**，解析直接失败 —— 本轮自检
+    // 第一次跑就是栽在这：夹具写错，检查器报 YAML PARSE FAIL，
+    // 看起来像「可见性判据失灵」，实际是注入根本没生效。
+    // 真实 .maestro/email-accounts.yaml:101 用的也是 `\\.`。
+    '- assertVisible: ".*kimmy\\\\.huang@163\\\\.com.*"',
+    '- tapOn: "我知道了"',
+  ]), corpus)
+  console.log = realLog
+  results.push({
+    name: '可见性 两类豁免都被打印',
+    pass: vis === 0 && printed.some((l) => l.includes('运行时数据锚点豁免')) && printed.some((l) => l.includes('系统弹窗文案豁免')),
+  })
+
+  // 配置守卫：未知字段必须响亮拒绝（写错 key 被静默忽略 = 判据失明）
+  results.push({ name: '配置守卫 未知字段被拒', pass: unknownTopKeyIsRejected() })
+
+  const bad = results.filter((r) => !r.pass)
+  for (const r of results) console.log(`  ${r.pass ? '通过' : '失败'}  ${r.name}`)
+  console.log(`\n自检: ${results.length - bad.length}/${results.length} 通过`)
+  process.exit(bad.length === 0 ? 0 : 1)
+}
+
+/** 合成一条合法的 Maestro 流（头部 + 命令列表）。 */
+function yamlOf(appId, cmds) {
+  return `appId: ${appId}\n---\n${cmds.join('\n')}\n`
+}
+
+/**
+ * 配置守卫的验证：拿一个未知顶层字段去解析，必须抛错。
+ * 单独写成函数是因为 loadConfig 内部直接 process.exit(1)，
+ * 自检里不能让它把整个进程带走。
+ */
+function unknownTopKeyIsRejected() {
+  const src = readFileSync(join(ROOT, 'scripts', 'check-maestro-flows.mjs'), 'utf8')
+  // 不去真跑 loadConfig（它会 exit），而是核对它对未知键的处理是否真在
+  if (!/FAIL 配置顶层出现未知字段/.test(src)) return false
+  // 且允许 _ 前缀文档键
+  if (!/if \(k\.startsWith\('_'\)\) continue/.test(src)) return false
+  return true
+}
+
+if (process.argv.includes('--selftest')) {
+  console.log('[check-maestro-flows] 自检：验证本检查仍能报错')
+  selftest()
+  process.exit(0)
 }
 
 let bad = 0

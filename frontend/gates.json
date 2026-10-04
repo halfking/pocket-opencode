@@ -27,7 +27,8 @@
     "check:icons",
     "check:test-coverage",
     "check:gofmt",
-    "check:blankline-bloat"
+    "check:blankline-bloat",
+    "check:maestro-flows"
   ],
   "ciRuns": [
     "check:pg-schema-scope",
@@ -43,7 +44,8 @@
     "check:raw-error",
     "check:icons",
     "check:gofmt",
-    "check:blankline-bloat"
+    "check:blankline-bloat",
+    "check:maestro-flows"
   ],
   "ciCoveredElsewhere": {
     "typecheck": "frontend.yml 的 frontend-lint job 已手列 `npm run typecheck`",
