@@ -1642,8 +1642,51 @@ const runOne = (flow) =>
     env: maestroEnv,
   })
 
+/**
+ * 每条流之前确认 App 还活着；死了就按 preflight 已验证的路径拉回来。
+ *
+ * 2026-10-04 真机实测（sttdev 批次）：第 1 条流失败后，第 2 条流开跑前的
+ * `resetToStart()` 里 `adb shell pidof <包名>` 返回空，adb() 直接抛异常，
+ * 整个 node 进程带栈崩掉 —— 后果有三条，缺一不可：
+ *   ① 第 2 条及以后的 flow **一条都没跑**，而报告里只看到第 1 条的红；
+ *   ② 末尾那段「App 被强杀 / MIUI wakepath」归因逻辑**永远执行不到**
+ *      （它在循环之后，进程已经死了），于是最该被说清的原因被吞掉；
+ *   ③ 退出码来自未捕获异常，看不出是「App 掉了」还是「harness 坏了」。
+ *
+ * ⇒ 判据必须自己长出这个分支：App 不在 → 拉回来 → 拉不起来就**响亮退出**。
+ *   沉默崩掉比红更有害：它让「没跑」看起来像「跑过了」。
+ */
+async function ensureAppAlive() {
+  const pid = () => {
+    try { return adb(['shell', 'pidof', PKG], 15000).trim() } catch { return '' }
+  }
+  if (pid()) return true
+
+  console.error(`\n[per-flow] ⚠️  ${PKG} 进程不在了（pidof 为空），正在重新拉起…`)
+  try {
+    adb(['shell', 'monkey', '-p', PKG, '-c', 'android.intent.category.LAUNCHER', '1'], 30000)
+  } catch (e) {
+    console.error(`        启动意图发不出去：${String(e.message || e).split('\n')[0]}`)
+  }
+  // 给它一点时间自己起来；不 blind wait 是因为下一步还要回读 pidof 自证。
+  for (let k = 0; k < 20; k++) {
+    await sleep(1500)
+    if (pid()) { console.error(`[per-flow] ✅ ${PKG} 已重新拉起，继续跑后面的 flow`); return true }
+  }
+
+  console.error(`[per-flow] ❌ 拉起 ${PKG} 失败，剩余 ${flows.length - i - 1} 条 flow 都不会跑。`)
+  console.error('        典型成因（MIUI 真机实测）：flow 里的 launchApp 会先 force-stop，')
+  console.error('        而随后的 start 被 com.miui.securitycenter 的 wakepath 确认框拦下，')
+  console.error('        App 从此回不到前台。规避：flow 里不要写 launchApp（preflight 已经')
+  console.error('        把它拉起来了），或在「设置 → 应用管理 → 授权管理 → 后台弹出界面」')
+  console.error('        里放行本 App。')
+  console.error('        ⚠️ 剩下的 flow 是**没跑**而不是「跑过且失败」，别把这份结果当成全绿。')
+  return false
+}
+
 let r = { status: 0 }
 for (const [i, flow] of flows.entries()) {
+  if (!(await ensureAppAlive())) process.exit(1)
   if (i > 0) await resetToStart()
   await gotoPreRoute()
   const fx = fixtureFor.get(flow)
