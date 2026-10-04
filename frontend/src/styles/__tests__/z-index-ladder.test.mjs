@@ -49,7 +49,7 @@
 import { strict as assert } from 'node:assert'
 import { test } from 'node:test'
 import { readFileSync, readdirSync } from 'node:fs'
-import { join, dirname } from 'node:path'
+import { join, dirname, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
@@ -121,7 +121,15 @@ function collect() {
   }
   walk(SRC)
   for (const full of files) {
-    const rel = full.slice(SRC.length + 1)
+    // ⚠️ 必须把分隔符统一成 `/`。2026-10-04 实测踩到：
+    //   files 是用 join() 收集的，Windows 上得到 `features\email\EmailInboxView.vue`
+    //   （反斜杠），而 ALLOWLIST 的 key 写的是正斜杠 ⇒ 两者永不相等 ⇒
+    //   15 条 key 里有 11 条被判成「陈旧条目」，其中 4 条 styles.css 反而因为
+    //   相对路径里没有分隔符而侥幸匹配。失败现场看起来像「行号漂移」，
+    //   实际是**分隔符不一致**—— 逐行核对过，那 11 行的 z-index 都好好地
+    //   待在该行上，一个都没漂。
+    //   这类 bug 只在 Windows 上复现，Linux CI 上是绿的。
+    const rel = full.slice(SRC.length + 1).split(sep).join('/')
     readFileSync(full, 'utf8')
       .split('\n')
       .forEach((line, i) => {

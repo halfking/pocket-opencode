@@ -45,7 +45,7 @@
 import { strict as assert } from 'node:assert'
 import { test } from 'node:test'
 import { readFileSync, readdirSync } from 'node:fs'
-import { join, dirname } from 'node:path'
+import { join, dirname, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
@@ -170,7 +170,9 @@ const countBraces = (s) => (s.match(/\{/g) || []).length - (s.match(/\}/g) || []
 function collectFixedBottom() {
   const out = []
   for (const f of collectFiles()) {
-    const rel = f.slice(SRC.length + 1)
+    // 同 z-index-ladder.test.mjs：join() 在 Windows 上给的是反斜杠，
+    // ALLOWLIST 的 key 是正斜杠，不归一化就会把「存在」判成「陈旧」。
+    const rel = f.slice(SRC.length + 1).split(sep).join('/')
     for (const r of parseRules(readFileSync(f, 'utf8'), rel)) {
       if (r.decls.position !== 'fixed') continue
       if (!('bottom' in r.decls)) continue
