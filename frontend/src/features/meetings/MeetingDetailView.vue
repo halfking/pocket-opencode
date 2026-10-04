@@ -314,7 +314,10 @@ onUnmounted(() => {
 }
 .transcript { min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
 .speakers-btn {
-  position: fixed; left: var(--space-4); bottom: calc(var(--app-safe-bottom, 12px) + var(--space-4));
+  /* 2026-10-06 修正：原 bottom = 14px < --bottom-chrome-height 56px，而本按钮
+     自身只有 40px 高 ⇒ **整颗按钮 100% 落在底栏区域内**，再加上
+     z-index: --z-fab(60) < --z-bottom-nav(70)，它被底栏完全盖住、点不到。 */
+  position: fixed; left: var(--space-4); bottom: calc(var(--bottom-chrome-height) + var(--space-4));
   height: 40px; padding: 0 12px; border-radius: 999px; border: 1px solid var(--border);
   background: var(--bg-card); z-index: var(--z-fab); font-size: var(--text-smd);
 }

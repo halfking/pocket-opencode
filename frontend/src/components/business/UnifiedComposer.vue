@@ -736,7 +736,7 @@ onBeforeUnmount(() => {
   position: fixed;
   /* 底边随 --kb-inset 抬升：键盘弹起时整页编辑器贴住键盘上沿（input 工具行可见） */
   inset: 0 0 var(--kb-inset, 0px) 0;
-  z-index: var(--z-sheet, 1000);
+  z-index: var(--z-sheet);
   display: flex;
   flex-direction: column;
   background: var(--color-bg-surface);

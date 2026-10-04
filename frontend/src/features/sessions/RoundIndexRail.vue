@@ -206,7 +206,10 @@ const scrubTip = computed(() => {
   background: rgba(23, 23, 28, 0.92);
   color: #fff;
   pointer-events: none;
-  z-index: var(--z-popover, 30);
+  /* --z-popover 已于 2026-10-04 在 tokens.css 登记（100）。
+     旧的 fallback 30 低于 --z-sticky(50) 与 --z-bottom-nav(70)，
+     会让这个 tooltip 被吸顶栏与底栏盖住，故不再保留 fallback。 */
+  z-index: var(--z-popover);
   box-shadow: var(--shadow-lg);
 }
 .tip-label {

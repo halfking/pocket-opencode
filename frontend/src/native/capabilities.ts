@@ -14,6 +14,19 @@
  *   - Web fallback always remains available; the caller is responsible
  *     for picking the right path.
  *
+ * ⚠️ 与 `src/lib/shell/capabilities.ts` 的边界（2026-10-04 记）：
+ *
+ *   本模块   —— **原生基元可用性**：biometric / keystore / push / network，
+ *               扁平 boolean，受 feature flag 裁剪（`clampHarmonyNativeCapabilities`
+ *               还额外处理 HarmonyOS）。面向业务 store 与设置页。
+ *   shell 版 —— **Hyper 运行时能力协商**：带 `protocolVersion`、分层
+ *               `continuation` 策略、agent/skillFormat，面向 Hyper 页面。
+ *
+ * 两者答的都是「这个宿主能不能做 X」，**故意不合并**：形状、裁剪来源、消费者
+ * 都不同。合并会让 feature flag 逻辑渗进 Hyper 协议，或反过来。
+ * ⚠️ 现状：**两个模块目前都没有 UI 消费者**（2026-10-04 实测 grep 确认），
+ * 因此都不进 bundle。新增消费者时先读这段，别再另造第三套。
+ *
  * PR14 does NOT:
  *   - Implement the actual native plugin. The repo's Capacitor Android
  *     plugin set is owned by the Android/Capacitor track (see ADR-009).

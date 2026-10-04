@@ -137,7 +137,7 @@ function isActive(item: NavItem) {
   display: flex;
   align-items: stretch;
   justify-content: space-around;
-  z-index: var(--z-bottom-nav, 20);
+  z-index: var(--z-bottom-nav);
   will-change: transform;
   transform: translate3d(0, var(--bottom-chrome-hide, 0px), 0);
 }
