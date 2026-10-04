@@ -1614,6 +1614,18 @@ const fixtureFor = (() => {
   return map
 })()
 
+/** 配置里标了 kind=subflow 的流 —— 它们只能被父流 runFlow 引用。 */
+const subFlows = new Set((() => {
+  const out = new Set()
+  try {
+    const raw = JSON.parse(readFileSync(resolve(ROOT, 'scripts', '.maestro-flows.json'), 'utf8'))
+    for (const e of (Array.isArray(raw) ? raw : (raw?.flows ?? []))) {
+      if (e && typeof e === 'object' && e.kind === 'subflow' && e.file) out.add(String(e.file))
+    }
+  } catch { /* 配置读不到就当没有子流，不阻断 */ }
+  return out
+})())
+
 const fixtureScript = (name) => resolve(ROOT, 'scripts', `${name}-fixture.mjs`)
 
 /** 跑夹具/清场的一步。mode 为 undefined 时表示「不带参数跑」（清场用）。 */
@@ -1686,6 +1698,16 @@ async function ensureAppAlive() {
 
 let r = { status: 0 }
 for (const [i, flow] of flows.entries()) {
+  if (subFlows.has(flow)) {
+    // 独立跑子流必然红在一个**本就不该红**的断言上，而且失败点离根很远：
+    // `_set-master-password` 独立跑会在「确认」按钮上 Element not found，
+    // 因为它假定的「创建主密码」弹窗只在**从没有过主密码**时存在；
+    // 设备上早就设过了。那句报错与「产品坏了」「选择器写错」长得一模一样。
+    console.error(`[subflow] ❌ ${flow} 是子流，不能独立运行。`)
+    console.error('          它只被父流在 `runFlow: when: visible: …` 条件下引用。')
+    console.error('          要验它，请跑引用它的父流。')
+    process.exit(1)
+  }
   if (!(await ensureAppAlive())) process.exit(1)
   if (i > 0) await resetToStart()
   await gotoPreRoute()

@@ -49,6 +49,6 @@
     { "file": ".maestro/_probe-budget.yaml", "kind": "probe" },
     { "file": ".maestro/_probe-tap.yaml", "kind": "probe" },
     { "file": ".maestro/_probe-tasks-create.yaml", "kind": "probe" },
-    ".maestro/_set-master-password.yaml"
+    { "file": ".maestro/_set-master-password.yaml", "kind": "subflow" }
   ]
 }

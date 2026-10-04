@@ -136,8 +136,8 @@ function loadConfig() {
       console.log(`FAIL 配置条目缺 file 字段: ${JSON.stringify(e)}`)
       process.exit(1)
     }
-    if (e.kind !== undefined && e.kind !== 'probe' && e.kind !== 'main') {
-      console.log(`FAIL ${e.file} 的 kind 只能是 "probe" 或 "main"，实际 ${JSON.stringify(e.kind)}`)
+    if (e.kind !== undefined && e.kind !== 'probe' && e.kind !== 'main' && e.kind !== 'subflow') {
+      console.log(`FAIL ${e.file} 的 kind 只能是 "probe" / "main" / "subflow"，实际 ${JSON.stringify(e.kind)}`)
       process.exit(1)
     }
     if (e.fixture !== undefined) assertFixtureName(e.file, 'fixture', e.fixture)
@@ -155,7 +155,37 @@ function loadConfig() {
       reset: e.reset,
     })
   }
+
+  // kind: subflow 的**自证**：必须真被某个父流 runFlow 引用。
+  //
+  // 2026-10-04 真机实测踩到：`_set-master-password.yaml` 是子流 —— 它只被
+  // `_login.yaml` 在 `runFlow when visible: 创建主密码` 下引用，自身**没有**任何
+  // 存在性判断。而配置把它当普通独立流登记，于是「跑全部 24 条」必然在它身上红：
+  // 设备已设过主密码 ⇒ 那个弹窗根本不存在 ⇒ `Element not found: 确认`。
+  // 报错指向「确认按钮不见了」，与「产品坏了」和「选择器写错」长得一模一样。
+  //
+  // 标成 subflow 是对症的修法（它本来就不是独立跑的），但光标还不够：
+  // 标了却没被引用 = 死代码。所以这条必须自己会长出那个分支。
+  for (const sub of cfg.entries.filter((e) => e.kind === 'subflow')) {
+    const base = sub.file.split('/').pop()
+    const referenced = cfg.entries
+      .filter((e) => e.file !== sub.file)
+      .some((e) => runFlowRefs(e.file, base))
+    if (!referenced) {
+      console.log(`FAIL ${sub.file} 标成了 kind=subflow，但仓里没有任何其它流用 runFlow 引用它（死子流）`)
+      process.exit(1)
+    }
+  }
   return cfg
+}
+
+/** 这个文件里有没有 `runFlow: <base>`（子流引用）。 */
+function runFlowRefs(file, base) {
+  try {
+    return readFileSync(join(ROOT, file), 'utf8').includes(`runFlow: ${base}`)
+  } catch {
+    return false
+  }
 }
 
 const CFG = loadConfig()
@@ -516,6 +546,13 @@ function reportCoverage() {
   } else {
     console.log(`\n覆盖率：已检查 ${listed.size} 条 / .maestro 下共 ${all.length} 条 yaml（全部覆盖）`)
   }
+  // 子流**被检查**，但不是独立可跑的。把这个区别说出来，否则「24/24 全覆盖」
+  // 会被读成「24 条都能单独跑」——而 _set-master-password 这类就是跑不得的。
+  const subs = CFG.entries.filter((e) => e.kind === 'subflow')
+  if (subs.length) {
+    console.log(`  其中 ${subs.length} 条是子流（被检查，但只能由父流 runFlow 引用，不可独立运行）:`)
+    subs.forEach((e) => console.log(`    - ${e.file}`))
+  }
 }
 
 /**
@@ -600,6 +637,10 @@ function selftest() {
   results.push({ name: '禁令 flow 里的 launchApp 被报出', pass: launchAppIsBanned() })
   results.push({ name: '禁令 不误伤没有 launchApp 的流', pass: !bannedWithoutLaunchApp() })
 
+  // 子流守卫：标了 subflow 却没人引用 = 死子流，必须报出；
+  // 以及 harness 必须拒跑子流（否则报错会指向「确认按钮不见了」这种误导点）。
+  results.push({ name: '配置守卫 死子流被拒', pass: subflowGuardIsWired() })
+
   const bad = results.filter((r) => !r.pass)
   for (const r of results) console.log(`  ${r.pass ? '通过' : '失败'}  ${r.name}`)
   console.log(`\n自检: ${results.length - bad.length}/${results.length} 通过`)
@@ -652,6 +693,24 @@ function bannedWithoutLaunchApp() {
     yamlOf('com.kaixuan.opencode.pocket', ['- assertVisible: "AI 工具"']), loadCorpus())
   console.log = realLog
   return printed.some((l) => l.includes('出现 launchApp')) || n < 0
+}
+
+/**
+ * 子流守卫 + harness 拒跑子流的验证。
+ *
+ * 两层都要在，缺一层就会出现「看起来在查、实际不管用」：
+ *   checker：标了 subflow 却没人 runFlow 引用 ⇒ 死子流 ⇒ 报红。
+ *   harness：有人独立跑子流 ⇒ 明确拒绝并说明原因。
+ * 少了 harness 那层，独立跑子流会红在「确认按钮不见了」——
+ * 报错点离根隔了整条调用链，读起来像产品坏了。
+ */
+function subflowGuardIsWired() {
+  const src = readFileSync(join(ROOT, 'scripts', 'check-maestro-flows.mjs'), 'utf8')
+  if (!/死子流/.test(src)) return false
+  if (!/runFlow: \$\{base\}|runFlowRefs/.test(src)) return false
+  if (!/子流（被检查，但只能由父流/.test(src)) return false
+  const harness = readFileSync(join(ROOT, 'scripts', 'maestro-run.mjs'), 'utf8')
+  return /subFlows\.has\(flow\)/.test(harness) && /是子流，不能独立运行/.test(harness)
 }
 
 /**
