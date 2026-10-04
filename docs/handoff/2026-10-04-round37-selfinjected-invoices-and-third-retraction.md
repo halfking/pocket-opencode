@@ -4030,3 +4030,88 @@ w.Header().Set("Content-Type", "application/pdf")   // 对 .csv / .md 也照样
 三条都是「查清楚、如实记、留给拍板」：
 ① 兜底路径通（撤回一个假缺口）；② CSV 导出静默截断（规模上来才发作）；
 ③ MIME 头写死（低影响）。**没有任何未经授权的行为改动。**
+
+## 第五十四节（2026-10-04 09:15–09:25）核实一个挂了很久的「缺口」：XML 重渲染这条路**其实是通的**
+
+待办里长期挂着一条「**XML 腿真实数据 0 条**」。
+我一度怀疑它已经过时了——台账里那两张通行费发票的 `file_source=zip-pdf`，
+而通行费发票的形态正是 **zip + XML**。查完发现**不能这样推断**，但缺口本身也不成立。
+
+### 54.1 先分清两件不同的事：`zip-pdf` **不等于**走过 XML 重渲染
+
+`invoice_harvest.go` 里 zip 分支有两条路：
+
+```go
+for _, pdf := range zc.PDFs {                     // zip 里自带票面 PDF
+    if !isPDFBytes(pdf) { continue }
+    return h.saveInvoiceFile(ctx, inv, pdf, "zip-pdf")      // ← 直接用 PDF，不渲染
+}
+if h.XMLRenderer != nil {                          // zip 里**只有 XML**
+    for _, x := range zc.XMLs {
+        pdfBytes, rerr := h.XMLRenderer(…)                   // 解析后重新渲染
+        return h.saveInvoiceFile(ctx, inv, pdfBytes, "zip-xml-render")
+    }
+}
+```
+
+⇒ 通行费那两张走的是**第一条**：文件直接取自 zip 里的票面 PDF。
+它们**没有**经过「解析后重新渲染」。
+
+**但有一个容易漏掉的细节**：同一个分支里，第 336 行仍然对 zip 内的每个 XML 调了
+`ParseInvoiceXML` + `mergeXMLFields`。所以对这两张票来说——
+**XML 解析跑了**（票号/金额/日期等字段来源之一），**XML 重渲染没跑**。
+这两个「0 条」不是一回事，混起来就会得出「XML 那条腿完全没被碰过」的错误印象。
+
+全库 `file_source` 分布（实测）：
+
+| file_source | 行数 | 说明 |
+|---|---:|---|
+| `attachment` | 4 | 3 张自注入腾讯云 + 1 张 X Corp |
+| `pdf-url` | 3 | 1 张真创客家 + **2 张营销横幅** |
+| `zip-pdf` | 2 | 通行费；XML 解析跑了，**重渲染没跑** |
+| `zip-xml-render` | **0** | 重渲染从未在真实数据上触发 |
+| （空）/ pending | 3 | 58000 + Apple ×2，无文件 |
+
+### 54.2 「真实数据 0 条」是真的，但**能力本身已就绪且可用**
+
+逐步核实，没有一步是推断：
+
+1. **生产有注入**：`server_email_pipeline.go:197`
+   `XMLRenderer: … email.RenderInvoiceXMLPDF(font, inv, xmlRaw)`。
+2. **本机找得到中文字体**：`C:\Windows\Fonts\simhei.ttf` 存在（9.3 MB）；
+   `data/fonts/` 不存在、`POCKET_EMAIL_PDF_FONT_PATH` 未设 ⇒ 走系统候选这条。
+3. **探测真的能命中**（跑现成的 `TestDiagXMLRender`，只读）：
+   ```
+   FindChineseFont("C:\workspace\openpocket\data") = "C:\Windows\Fonts\simhei.ttf"
+     字体 9.3 MB
+     有字段 18658 字节 / 15 个文本算子    空 17248 字节 / 11 个文本算子
+     中文以子集字形索引写入内容流（不按文本断言，可用性由 fontHasCJK 保证）
+     结论：XML → 重新渲染 这条腿在本机**可用**
+   ```
+4. **端到端判据全绿**：`TestFindChineseFont_ThenRenderXMLInvoice`、
+   `TestInvoiceSource_XMLAttachment_RendersPDF`、`TestXMLInvoiceEndToEnd_RenderPDF`、
+   `TestHarvestOne_XMLAttachmentRendersThroughHarvester`、
+   `TestHarvestOne_XMLRendererNilFailsExplicitly`、`TestPickCJKFont_*` 全部通过。
+
+⇒ **待办那条要改口径**：不是「XML 腿没做/坏了」，而是
+**「XML 重渲染已实现、已接线、本机验证可用，但还没有真实邮件触发过它」**。
+
+### 54.3 剩下的未知是什么（如实说）
+
+能力可用 ≠ 能吃下真实世界的 XML。仍未知的是：
+真实开票平台的 XML **命名空间/结构差异**会不会让 `ParseInvoiceXML` 解析不出来，
+以及票面所需字段在那些 XML 里是否齐全。这两件事**只能用真实样本回答**，
+而至今没有样本（`zip-xml-render` 0 行）。
+
+⇒ **好消息是失败是安全的**：`XMLRenderer` 为 nil 或渲染报错时，
+`harvestOne` 走 `failed` 分支并写 `last_error`
+（`TestHarvestOne_XMLRendererNilFailsExplicitly` 钉住「不许返回 downloaded」），
+用户能看见并重试；不会出现「产出一张空白 PDF 冒充发票」那种更糟的情况
+（字体探测已经强制要求真有中文字形，正是为了防这个）。
+
+### 54.4 本节同样没有改任何代码
+
+全是核实与口径订正。**第 54.2 的结论方向与我前几轮相反**——
+连着几轮都在往下查更糟的东西，这轮查出来的是「这条路其实一直可用」，
+但它同样需要证据（现成诊断 + 5 条端到端判据 + 字体探测的实测输出），
+不能因为「感觉应该没问题」就改口径。
