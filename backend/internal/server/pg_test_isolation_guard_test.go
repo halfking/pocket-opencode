@@ -340,6 +340,16 @@ var pgSafeWithoutIsolation = map[string]string{
 	// 再 DELETE（影响行数不等计划即回滚），最后才 Commit。
 	"internal/email/diag_purge_injected_invoices_test.go": "会真删 email_invoices 行，且**必须**指向生产库（指向隔离库就失去意义，故不能自建 _test_ schema）：默认只出计划（DB 侧 default_transaction_read_only 强制 + CREATE TEMP TABLE 自证），删除需额外 POCKET_DIAG_PURGE_EXEC=1；DSN/schema 无缺省值、search_path 覆盖式设置并用 current_schema() 读回校验；备份与删除同事务，行数不符即回滚。写语句登记见 pgAllowlistedWrites",
 
+	// internal/email/diag_mark_false_ledger_rows_test.go（2026-10-04 round44 新增）：
+	// 与上面那条 purge 同族，**会真的 UPDATE email_invoices**，所以两张表都登记。
+	// 它**不能**自建 `*_test_` schema：它要标注的就是生产台账里那 3 行假数据，
+	// 指向隔离库会输出「没有待标注行」的假结论。
+	//
+	// 与 purge 的关键差别（本轮特意分开记）：它**不删任何行、不改任何 status**，
+	// 只改写 last_error，授权是「保留并标注」。不可逆性因此低一档，
+	// 但备份与回读校验的严格程度不减。
+	"internal/email/diag_mark_false_ledger_rows_test.go": "会真改写 email_invoices.last_error（**不删行、不改 status**，授权为「保留并标注」），且**必须**指向生产库（隔离库没有那 3 行假数据）：默认只出计划（DB 侧 default_transaction_read_only 强制 + CREATE TEMP TABLE 自证），写库需额外 POCKET_DIAG_ANNOTATE_EXEC=1；DSN/schema 无缺省值、search_path 覆盖式设置并用 current_schema() 读回校验；选行用三个精确取值（两个发票号 + seller+amount）并硬断言行数恰好 3，0 行或 4 行即拒绝；单事务内先 CREATE TABLE 备份（回读行数须等于待写数）再 UPDATE（逐行断言 RowsAffected()==1）再同事务回读比对，不一致即回滚。写语句登记见 pgAllowlistedWrites",
+
 	// internal/email/diag_spam_preview_test.go（2026-10-03 补登，提交 4de72306 时漏了，
 	// 当时把 internal/server 跑成了红的）：
 	//   · 只读：全文件只有一条 SELECT，INSERT/UPDATE/DELETE/DROP/CREATE 一个都没有。
@@ -655,6 +665,20 @@ var pgAllowlistedWrites = map[string]string{
 	// 不等即回滚），再 DELETE（影响行数不等计划即回滚），最后才 Commit ——
 	// 不存在「删了但没备份」。指向生产 schema 是目的。
 	"internal/email/diag_purge_injected_invoices_test.go": "会真删 email_invoices 行：默认只出计划（DB 侧 default_transaction_read_only 强制 + CREATE TEMP TABLE 自证），删除需额外 POCKET_DIAG_PURGE_EXEC=1；DSN/schema 无缺省值、search_path 覆盖式设置并用 current_schema() 读回校验；备份与删除同事务，行数不符即回滚",
+
+	// internal/email/diag_mark_false_ledger_rows_test.go（2026-10-04 round44 新增）：
+	// 写语句只有 UPDATE email_invoices SET last_error（**不删行、不改 status**）
+	// 与同事务的 CREATE TABLE <备份表> AS SELECT。
+	// 逐条核过（不是照抄 purge 那条的措辞）：
+	//   · `.Exec(` 的调用点共 2 处 —— CREATE TEMP TABLE（只读自证，**必须失败**，
+	//     成功即 t.Fatal）与 CREATE TABLE 备份（仅在 EXEC 闸打开后才可达）；
+	//     UPDATE 走 tx.Exec，在同一事务内。
+	//   · 真正的写只有那 1 条 UPDATE，WHERE 是 `id = $1`（来自三个精确取值的
+	//     选行结果），不是 `LIKE`、不是全表。
+	//   · 四道闸：POCKET_DIAG_ANNOTATE=1 + POCKET_REAL_MAIL_DSN/SCHEMA（无缺省值）
+	//     + POCKET_DIAG_ANNOTATE_EXEC=1（额外这一条才写）。
+	//   · 备份与写入同事务，且同事务内回读比对，不一致即回滚。
+	"internal/email/diag_mark_false_ledger_rows_test.go": "会真改写 email_invoices.last_error（1 条 UPDATE，WHERE id=$1 来自三个精确取值的选行；**不删行、不改 status**）与同事务的 CREATE TABLE 备份；默认只出计划（DB 侧 default_transaction_read_only 强制 + CREATE TEMP TABLE 自证），写库需额外 POCKET_DIAG_ANNOTATE_EXEC=1；DSN/schema 无缺省值、search_path 覆盖式设置并用 current_schema() 读回校验；选行硬断言恰好 3 行；备份行数须等于待写数，UPDATE 逐行断言 RowsAffected()==1，同事务回读不一致即回滚",
 
 	// internal/email/store_upsert_messageid_test.go：**刻意不登记**（2026-10-04）。
 	// 它曾经登记在这里，理由是「会真写 emails 行，所以不隔离 schema 不安全」。

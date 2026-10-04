@@ -466,8 +466,43 @@ func (h *InvoiceHarvester) harvestOne(ctx context.Context, inv *Invoice) string 
 	return h.markRetry(ctx, inv, "no usable pdf/xml found in message")
 }
 
+// invoiceHumanMarkPrefix 是「这一行是人看过、确认它不是发票」的标记前缀。
+//
+// 为什么需要它（2026-10-04 round44 实测）：harvest 每轮处理
+// `status IN ('new','pending')`（MaxInvoiceAttempts=8），而 markRetry 原本是
+// **整段覆盖** `inv.LastError = msg`。于是工行对账单那行（status=pending、
+// attempts=2）一旦被人工标注「非发票」，下一轮采集失败就会把标注原样抹掉，
+// 换回一句笼统的「发票链接未能取到 PDF 文件」——
+// **人工判断被机器的例行失败覆盖掉，比不标还糟**。
+//
+// 约定：人工标注一律以本前缀开头。采集侧看到带前缀的旧值就不再覆盖它，
+// 而是把本轮原因**追加**在后面（`标注 | 本轮采集：…`），两边信息都留得住。
+//
+// 不改 status：台账的 status 约束是 ('new','pending','downloaded','failed','filed')，
+// 加 'void' 会牵动所有读 status 的地方（导出、统计、A4 排版），
+// 而 row43/44 的授权是「保留并标注」——保留就意味着不动 status。
+const invoiceHumanMarkPrefix = "【人工标注】"
+
+// composeHarvestRetryMessage 决定新一轮采集失败后 last_error 该写成什么。
+//
+// 抽成纯函数是为了让它**可被真调用测试**：markRetry 需要一个 *Store 才能跑，
+// 而 Store 是具体类型没法打桩，于是判据只能去匹配源码文本——
+// 那样写出来的判据会被 `false && …` 这类短路写法骗过（实测踩过：
+// 注释也记着「判据匹配注释里的字面文本，等于给退化开了后门」）。
+// 提成纯函数后，「人工标注不被覆盖」这条断言打的是**生产代码本身**。
+func composeHarvestRetryMessage(prior, msg string) string {
+	if strings.HasPrefix(prior, invoiceHumanMarkPrefix) {
+		return prior + " | 本轮采集：" + msg
+	}
+	return msg
+}
+
 // markRetry 下载未成功：pending 等下一轮；重试超限转 failed。
+//
+// 人工标注优先：旧 last_error 带 invoiceHumanMarkPrefix 时，本轮原因追加其后，
+// 绝不覆盖（见常量注释里的实测理由）。
 func (h *InvoiceHarvester) markRetry(ctx context.Context, inv *Invoice, msg string) string {
+	msg = composeHarvestRetryMessage(inv.LastError, msg)
 	if inv.Attempts >= MaxInvoiceAttempts {
 		inv.Status = "failed"
 		inv.LastError = msg
