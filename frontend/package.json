@@ -37,6 +37,7 @@
     "check:blankline-bloat": "node ../scripts/check-blankline-bloat.mjs",
     "check:maestro-flows": "node ../scripts/check-maestro-flows.mjs --selftest && node ../scripts/check-maestro-flows.mjs",
     "check:env-example": "node ../scripts/check-env-example.mjs --selftest && node ../scripts/check-env-example.mjs",
+    "check:hide-app-header": "node ../scripts/check-hide-app-header.mjs --selftest && node ../scripts/check-hide-app-header.mjs",
     "check:test-coverage": "node scripts/check-test-coverage.mjs",
     "check:i18n": "node scripts/check-i18n-keys.mjs",
     "check:i18n-translated": "node scripts/check-i18n-translated.mjs",
