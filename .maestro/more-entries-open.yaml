@@ -79,29 +79,41 @@ appId: com.kaixuan.opencode.pocket
 #   ① 空态里那个（ScheduledTaskListView.vue:15）只在 `tasks.length === 0`
 #      时渲染，用户建了第一条任务就消失（notes-crud 已经为同类原因
 #      把「还没有笔记」去掉了）。
-#   ② 头部那个（:4，走 HeaderActionsPortal）在本路由上**根本不会渲染** ——
+#   ② 头部那个（:4，走 HeaderActionsPortal）在本路由上**曾经根本不渲染** ——
 #      路由 meta 声明了 hideAppHeader: true，而 HeaderActionsPortal.vue:48
 #      的渲染条件正是 `hideAppHeader !== true`。
-#   于是只要用户有任务，这个页面上就一个「创建自动化」都不剩。
 #   「仅显示启用」「刷新」都在 :9-12 的 toolbar 里，无条件渲染，才是该用的判据。
 - assertVisible: "刷新"
 
-# ---------- 3. 回宫格 ----------
-# ⚠️ 这里用 Maestro 的 `back`（系统返回）而不是 `tapOn: "返回"`，
-#   因为定时任务页**根本没有返回键** —— 2026-10-04 真机实测，
-#   报错原文就是 `Element not found: Text matching regex: 返回`。
-#   机制：/settings/scheduled-tasks 的 meta 声明了 hideAppHeader: true，
-#   而 AppLayout.vue:183 的 showTopBar = showTopBar !== false && hideAppHeader !== true
-#   ⇒ 壳层顶栏（连同 :37 那个 v-if="canGoBack" 的返回按钮）整体不渲染；
-#   视图自身（ScheduledTaskListView.vue:1-33）也没有自备的返回/标题。
-#   ⇒ 这是一个**产品缺陷**（入口在、页面在、但页内无路可退，只能靠系统返回），
-#   已单独记录，不在本 flow 的修复范围内。本 flow 走系统返回继续往下测。
-- back
+# ---------- 3. 死路回归护栏（2026-10-04 修复后新增）----------
+#
+# 这一段是本 flow 判别力最强的部分，它钉住的是一个**真机实证过的产品缺陷**：
+# 该路由曾声明 hideAppHeader: true，导致壳层顶栏整体不渲染
+# （AppLayout.vue:183），连带返回按钮（:37 v-if="canGoBack"）与
+# HeaderActionsPortal 注入的「创建自动化」（:48）一起消失；而视图自身
+# 既无返回也无标题 ⇒ 页面在、入口在，但**页内无路可退**，且用户一旦有任务
+# 「创建自动化」一个都不剩。修复是去掉这 5 条路由（含 /settings/permissions）的
+# hideAppHeader，由 scripts/check-hide-app-header.mjs 在 CI 侧守住契约。
+#
+# 真机对照（同一台设备、同一轮登录）：
+#   修前探针：assertNotVisible 返回 ✅ / assertNotVisible 创建自动化 ✅
+#   修后验收：assertVisible 返回 ✅ / 定时任务 ✅ / 创建自动化 ✅
+# 三者同时在，才说明顶栏真的回来了、且没把视图自己的内容顶掉。
+- assertVisible: "返回"
+- assertVisible: "定时任务"
+- assertVisible: "创建自动化"
+
+# ---------- 4. 回宫格 ----------
+# 走**页面上的返回键**而不是系统 back —— 返回键现在存在，这正是本 flow 要验的东西。
+# 精确地说：若有人把 hideAppHeader 加回去，**先红的是第 3 段的 assertVisible**，
+# 这条 tapOn 压根轮不到执行。这里保留它是因为存在 ≠ 可用 ——
+# 判据只证明「返回键在屏幕上」，得再走一次才能证明「它真的能退回去」。
+- tapOn: "返回"
 - extendedWaitUntil:
     visible: "更多功能"
     timeout: 30000
 
-# ---------- 4. 成本与配额：滚到可见再点 ----------
+# ---------- 5. 成本与配额：滚到可见再点 ----------
 # 「成本与配额」在**运维与高级**分组，初始视口外。
 # ⚠️ 必须 scrollUntilVisible 而不是固定次数 swipe：滚动距离依赖设备分辨率与
 #   行高，换一台机就错位。WebView 的可见性判定是**视口内**而非 DOM 内，
