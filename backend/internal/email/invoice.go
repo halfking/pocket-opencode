@@ -100,6 +100,27 @@ var (
 	// 2026-09-01，仍然是错的（只比 2026-10-25 好一点，仍然错）。
 	// reInvoiceDate 也抓不到它：那里的标签是「日期」二字，「生成日」不含。
 	reStatementDate = regexp.MustCompile(`(?i)(?:对账单生成日|账单生成日|对账日期|账单日期|出账日|statement\s*date)\s*[:：]?\s*(\d{4}[-/年.]\d{1,2}[-/月.]\d{1,2}|\d{8})日?`)
+	// reLabeledEnglishDate 匹配「标签 + 英文月份名日期」，如
+	// `Paid September 17, 2026` / `Date: Sept. 3, 2026`。
+	//
+	// 为什么**必须带标签**（2026-10-04 真实库实测）：上面三层的日期组全是
+	// 数字形态（`\d{4}[-/年.]\d{1,2}[-/月.]\d{1,2}` 或 `\d{8}`），
+	// 压根没有英文月份的通路 ⇒ 台账里唯一一行 invoice_date 为空的
+	// （`inv_1791072004984034300_1`，Stripe 收据，正文明写
+	// "X Receipt from X $8.00 Paid September 17, 2026"）只能退化成**采集当天**，
+	// 文件名 `通信-X-8.00-2026-10-04.pdf` 里的日期是错的。
+	//
+	// 但**裸**英文日期不能放开：`September 17, 2026` 这种形态在真实语料里大量
+	// 出现在与开票无关的地方（订阅续订日、营销活动日、CI 通知里的日期），
+	// 抽中了就是「一个看起来正常、实则无关」的开票日期——**比空值更坏**，
+	// 因为它骗得过人眼也骗得过复核。宁可漏抽（回落采集当天，与现状一致）。
+	//
+	// 只支持 `Month DD, YYYY`（含 `Sept.`、`21st` 这类形态），
+	// 不支持 `DD Month YYYY`：真实库里唯一一例就是前者。
+	reLabeledEnglishDate = regexp.MustCompile(`(?i)(?:开票日期|发票日期|开票时间|日期|\bdate\b|\bpaid\b|\bissued\b|\binvoice\s+date\b)` +
+		`\s*[:：]?\s*` +
+		`(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?` +
+		`\s+(\d{1,2})(?:st|nd|rd|th)?\s*,?\s+(\d{4})\b`)
 	// 货币代码 / 符号前缀。
 	//
 	// 为什么加 ISO 4217 代码（2026-10-01 真实数据）：QQ Wallet 英文发票写
@@ -695,7 +716,80 @@ func parseInvoiceDateAt(text string, now time.Time) string {
 			}
 		}
 	}
+	// 第 4 层：带标签的英文月份名日期。**排在最后**是刻意的——
+	// 上面三层能抽出来的照旧抽，只有它们都返回 "" 时才可能到这里。
+	// ⇒ 这一层是纯增量，不可能改变任何已有的抽取结果
+	// （invoice_date_english_test.go 的 CNLabelStillWinsOverEnglish 钉这条）。
+	//
+	// 组下标写成常量而不是裸数字：这个 bug 真实发生过一次——标签写的是
+	// **非捕获组** `(?:…)`，子匹配其实只有 4 个（整串+月+日+年），
+	// 而我当时按「标签也是捕获组」写成 m[2]/m[3]/m[4] 并加了 `len(m) < 5`
+	// 的守卫，于是守卫把**整条新通路静默 continue 掉了**：正则匹配成功、
+	// 函数照旧返回 ""、测试报的是「抽不出日期」。
+	// ⇒ **写 `len(m) < N` 守卫前先确认 N 是对的**，否则它不是保护是静默关停。
+	for _, m := range reLabeledEnglishDate.FindAllStringSubmatch(text, -1) {
+		if len(m) < enEnglishDateGroups {
+			continue
+		}
+		day, _ := strconv.Atoi(m[enEnglishDateDay])
+		year, _ := strconv.Atoi(m[enEnglishDateYear])
+		d := normalizeEnglishInvoiceDate(year, englishMonthNumber(m[enEnglishDateMonth]), day)
+		if d != "" && !isFutureInvoiceDate(d, now) {
+			return d
+		}
+	}
 	return ""
+}
+
+// reLabeledEnglishDate 的捕获组下标。标签是**非捕获组**，所以没有「标签组」，
+// 月/日/年分别从 1 开始。
+const (
+	enEnglishDateMonth = 1
+	enEnglishDateDay   = 2
+	enEnglishDateYear  = 3
+	// enEnglishDateGroups 是子匹配的**总**长度（含 [0] 整串）。
+	enEnglishDateGroups = 4
+)
+
+// englishMonths 把英文月份名（含缩写）映射到月份数字。
+//
+// 兜底返回 0 而不是 1：若无效时返回 1，任何非月份名都会被静默当成 1 月，
+// 而 1 月又常常落在「过去的合法日期」里——这类静默兜底比直接失败危险得多。
+var englishMonths = map[string]int{
+	"jan": 1, "january": 1,
+	"feb": 2, "february": 2,
+	"mar": 3, "march": 3,
+	"apr": 4, "april": 4,
+	"may": 5,
+	"jun": 6, "june": 6,
+	"jul": 7, "july": 7,
+	"aug": 8, "august": 8,
+	"sep": 9, "sept": 9, "september": 9,
+	"oct": 10, "october": 10,
+	"nov": 11, "november": 11,
+	"dec": 12, "december": 12,
+}
+
+// englishMonthNumber 大小写不敏感，并容忍缩写后面的点（`Sept.`）。
+func englishMonthNumber(name string) int {
+	key := strings.ToLower(strings.TrimSpace(name))
+	key = strings.TrimSuffix(key, ".")
+	return englishMonths[key]
+}
+
+// normalizeEnglishInvoiceDate 把年/月/日归一化成 YYYY-MM-DD，无效则返回 ""。
+//
+// 回读校验不能省：`time.Date(2026, February, 30, …)` 会**静默进位**成 3 月 2 日，
+// 于是一个不存在的日期变成了一个看起来完全正常的日期。
+func normalizeEnglishInvoiceDate(year, month, day int) string {
+	if year < 1970 || year > 2999 || month < 1 || month > 12 || day < 1 || day > 31 {
+		return ""
+	}
+	t := time.Date(year, time.Month(month), day, 0, 0, 0, 0, time.UTC)
+	if t.Year() != year || int(t.Month()) != month || t.Day() != day {
+		return ""
+	}
+	return t.Format("2006-01-02")
 }
 
 // isFutureInvoiceDate 判断 YYYY-MM-DD 是否比 now 晚了超过 1 天。
