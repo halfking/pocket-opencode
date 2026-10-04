@@ -108,3 +108,68 @@ tabbar 容器 = `[0,1496][720,1640]` ⇒ 中心 **(630,1585)**。
 ⇒ 判断页面状态请用 **Maestro 的 `screen-hierarchy/*.json`**（它能读到 WebView 节点）
 或直接截图；`uiautomator dump` 在这个 App 上不可用。两者不能混用，
 混用会造出一个不存在的 bug。
+
+## 四、`notes-stt-error-visibility` 变红：是前提消失，不是回归
+
+ASR 开通（第一节）之后这条 flow 必然转红。实测失败现场：
+
+```
+录音 00:41 | 即时转写 | 转写失败，将在下一段重试 | 停止录音
+```
+
+看起来像「失败原因对用户不可见」的缺陷，**但读完代码可以排除这个解释**。
+
+### 4.1 展示规则是刻意做窄的
+
+`frontend/src/api/stt-error.ts`（2026-10-01 引入）：
+
+```ts
+const SHOWABLE_STT_CODES = [STT_UNAVAILABLE_CODE]   // 只有 'stt_unavailable'
+
+export function sttFailureText(err, fallback) {
+  const raw = rawText(err).trim()
+  for (const code of SHOWABLE_STT_CODES) {
+    if (!raw.startsWith(`${code}:`)) continue
+    return truncate(raw.slice(code.length + 1).trim(), MAX_REASON_LEN)
+  }
+  // 没有稳定错误码 = 可能是技术串（超时 / DNS / panic），不展示。
+  return fallback
+}
+```
+
+文件头注释写明了取舍：i18n 通用兜底会把后端整理好的**可行动**原因盖掉，
+所以对带 `stt_unavailable:` 的错误开个特例；但**没有稳定错误码的一律不展示**，
+因为那些是技术噪音。
+
+后端侧对得上：`internal/stt/transcribe_test.go:307`
+`stt_unavailable: 网关暂无可用的语音转写模型；外部语音转写服务未配置 API Key`。
+
+### 4.2 429 走通用兜底是**符合设计**的
+
+网关限流是常态而非意外——`internal/stt/discovery.go:146` 注释原话：
+「网关限流很紧（**实测 12 次/分钟**），无上限会把设置页点成 429」。
+
+429 不带 `stt_unavailable:` 前缀 ⇒ `sttFailureText` 必然返回 fallback。
+所以界面上出现「转写失败，将在下一段重试」是**当前契约下的正确行为**，
+不是这条 flow 当初要守的缺陷（那个缺陷是「真实原因只进 console.warn」，
+2026-10-01 已修，见 `api/__tests__/stt-error.test.mjs` 的两条反向断言）。
+
+### 4.3 结论与待决
+
+**这条 flow 现在红，是因为它断言的 `stt_unavailable` 前提在本环境已不复存在**
+（ASR 已有 provider）。它**不是**回归，**也不是**产品缺陷。
+
+要让它重新有意义，需要你拍板走哪条：
+
+- **A. 保持它作为「无可用目标」专用流**，但必须能**制造**出该前提
+  （例如临时把 STT 模型指到一个不存在的、或临时清掉外部服务配置），
+  否则它在本环境永远红，等于没有护栏。
+- **B. 改断言适配新常态**：守住「429 限流时提示可理解且不误导」，
+  而不是守住 `stt_unavailable` 文案。
+- **C. 补产品能力**：让后端为 429 也返回带稳定码的整理文案
+  （例如 `stt_rate_limited: 上游限流，正在重试`），
+  并把它加进 `SHOWABLE_STT_CODES`。这样用户至少知道「等一会儿就好」，
+  而不是只看到一句「将在下一段重试」。
+
+C 是唯一能真正改善用户体验的，但会改动前后端的错误展示契约，
+**未擅自实施**。
