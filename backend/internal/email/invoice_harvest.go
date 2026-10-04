@@ -78,6 +78,11 @@ var invoiceLinkHints = []string{
 
 var (
 	reHTMLHrefs = regexp.MustCompile(`(?i)href\s*=\s*["']([^"'h][^"']*(?:https?:)?[^"']*)["']|href\s*=\s*["'](https?://[^"']+)["']`)
+	// reHTMLSrcs 匹配内联资源属性（img/src、background 等）里的 URL。
+	//
+	// 它**不参与**候选收集，只用来把「这个 URL 是图片不是下载链接」这件事
+	// 记下来——见 extractInvoiceURLs 里 inline 那段注释。
+	reHTMLSrcs  = regexp.MustCompile(`(?i)\bsrc\s*=\s*["']([^"']+)["']`)
 	reBareURLs  = regexp.MustCompile(`https?://[^\s<>"'\)\]，。；]+`)
 	reSkippable = regexp.MustCompile(`(?i)(unsubscribe|\.png|\.jpg|\.jpeg|\.gif|\.css|\.js|\.ico|facebook|twitter|doubleclick|google-analytics|mailto:|tel:)`)
 )
@@ -678,6 +683,34 @@ func HasInvoiceAttachment(atts []ParsedAttachment) bool {
 func extractInvoiceURLs(body string) []string {
 	seen := map[string]bool{}
 	var out []string
+
+	// 内联资源（img/src 等）里的 URL 一律不算下载候选。
+	//
+	// 为什么不能只靠 reSkippable 的图片扩展名（2026-10-04 真实产出教训）：
+	// 那条跳过规则只认 URL 里**有没有** `.png/.jpg/.jpeg/.gif`，
+	// 而动态图片地址常写成 `…/banner?w=750&h=200` —— **没有扩展名**，
+	// 于是 `<img src="https://cdn.baiwang.com/mail/banner?w=750&h=200&ticket=abc123">`
+	// 被 reBareURLs 捞进候选。采集器下载它、`isImageBytes` 对任意 JPEG 放行，
+	// 于是营销横幅被存成了发票文件（台账里两张「票」的文件实际是印着
+	// 「用心服务 贴心用户」的横幅，两个文件 SHA256 相同）。
+	//
+	// 「跳过内联图片」这个**意图本来就是既有的**——reSkippable 里的
+	// `\.png|\.jpg|\.jpeg|\.gif` 就是它，invoice_harvest_test.go 里那个
+	// `<img src="https://cdn.cn/pic.png"/>` 用例也钉住了。
+	// 这次只是把实现从「看扩展名」换成「看它来自哪个属性」，
+	// 意图不变，**覆盖面变大**：不再依赖对方用什么后缀发图。
+	inline := map[string]bool{}
+	for _, m := range reHTMLSrcs.FindAllStringSubmatch(body, -1) {
+		for _, g := range m[1:] {
+			if g == "" {
+				continue
+			}
+			g = strings.TrimRight(strings.TrimSpace(g), ").,;")
+			g = strings.ReplaceAll(g, "&amp;", "&")
+			inline[g] = true
+		}
+	}
+
 	add := func(u string) {
 		u = strings.TrimRight(strings.TrimSpace(u), ").,;")
 		u = strings.ReplaceAll(u, "&amp;", "&")
@@ -685,6 +718,9 @@ func extractInvoiceURLs(body string) []string {
 			return
 		}
 		if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
+			return
+		}
+		if inline[u] {
 			return
 		}
 		if reSkippable.MatchString(u) {
