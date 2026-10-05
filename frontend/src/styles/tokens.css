@@ -66,6 +66,13 @@
   --cat-study-bg: rgba(6, 182, 212, 0.15);
   --cat-life-bg: rgba(249, 115, 22, 0.15);
 
+  /* 日历三类条目（日程 / 任务截止 / 定时任务）。
+   * 三个色相刻意拉开距离（蓝 / 琥珀 / 紫），且都配了图标与文字，
+   * 所以色觉障碍用户靠图标+文字也能区分，不依赖颜色单独表意。 */
+  --cal-source-event: #3b82f6;
+  --cal-source-task: #f59e0b;
+  --cal-source-scheduled: #8b5cf6;
+
   /* Radius - 更锐利的圆角（Codex 风格） */
   --radius-sm: 6px;   /* 原 8px */
   --radius-md: 8px;   /* 原 12px */
@@ -269,6 +276,10 @@
     --cat-personal-bg: rgba(236, 72, 153, 0.2);
     --cat-notification-bg: rgba(107, 114, 128, 0.25);
     --cat-marketing-bg: rgba(139, 92, 246, 0.2);
+    /* 深色底下调亮一档：与浅色同色相在 #1f1f29 上对比不足。 */
+    --cal-source-event: #60a5fa;
+    --cal-source-task: #fbbf24;
+    --cal-source-scheduled: #a78bfa;
   }
 }
 
@@ -293,4 +304,9 @@
   --cat-personal-bg: rgba(236, 72, 153, 0.2);
   --cat-notification-bg: rgba(107, 114, 128, 0.25);
   --cat-marketing-bg: rgba(139, 92, 246, 0.2);
+  /* ② 深色主题（非媒体查询块）里同样要有一份，否则显式切主题时日历
+   * 条目会退回浅色值、在深底上几乎看不清。 */
+  --cal-source-event: #60a5fa;
+  --cal-source-task: #fbbf24;
+  --cal-source-scheduled: #a78bfa;
 }

@@ -62,7 +62,8 @@
     "home": "Home",
     "study": "Study",
     "flashcards": "Tarjetas",
-    "messages": "Mensajes"
+    "messages": "Mensajes",
+    "calendar": "Calendario"
   },
   "routes": {
     "login": "Iniciar sesión",
@@ -430,7 +431,9 @@
     "saveFailed": "No se pudo guardar. Inténtalo de nuevo.",
     "operateFailed": "La operación falló. Inténtalo de nuevo.",
     "summaryFailed": "No se pudo generar el resumen. Comprueba que la pasarela de modelos esté configurada y accesible.",
-    "probeFailed": "Sonda fallida. Comprueba que el destino sea accesible."
+    "probeFailed": "Sonda fallida. Comprueba que el destino sea accesible.",
+    "loadCalendarFailed": "No se pudo cargar el calendario",
+    "saveCalendarFailed": "No se pudo guardar el evento"
   },
   "due": {
     "title": "Repaso de hoy",
@@ -509,12 +512,60 @@
       "suggestedAction": "Sugerencia: {action}"
     },
     "unreadBadge": "{count} sin leer",
-    "partialFailure": "Algunas fuentes no se pudieron cargar: {sources}"
+    "partialFailure": "Algunas fuentes no se pudieron cargar: {sources}",
+    "view": {
+      "label": "Vista",
+      "timeline": "Cronología"
+    }
   },
   "timefmt": {
     "justNow": "ahora mismo",
     "minutesAgo": "hace {count} min",
     "hoursAgo": "hace {count} h",
     "daysAgo": "hace {count} d"
+  },
+  "calendar": {
+    "action": {
+      "newEvent": "Nuevo evento",
+      "editEvent": "Editar evento",
+      "deleteEvent": "Eliminar evento",
+      "today": "Hoy",
+      "prevMonth": "Mes anterior",
+      "nextMonth": "Mes siguiente",
+      "addOnDay": "Añadir un evento ese día",
+      "openSource": "Abrir origen"
+    },
+    "filter": {
+      "label": "Filtrar fuentes"
+    },
+    "source": {
+      "event": "Eventos",
+      "task": "Vencimiento de tarea",
+      "scheduled": "Automatizaciones"
+    },
+    "field": {
+      "title": "Título",
+      "start": "Inicio",
+      "end": "Fin",
+      "allDay": "Todo el día",
+      "location": "Ubicación",
+      "note": "Nota"
+    },
+    "placeholder": {
+      "title": "p. ej. Revisión trimestral"
+    },
+    "label": {
+      "allDay": "Todo el día",
+      "dueBy": "Vence"
+    },
+    "badge": {
+      "done": "Hecho"
+    },
+    "empty": {
+      "day": "No hay nada programado ese día"
+    },
+    "aria": {
+      "entriesCount": "{n} elementos"
+    }
   }
 }

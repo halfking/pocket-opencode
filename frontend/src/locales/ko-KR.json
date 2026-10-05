@@ -62,7 +62,8 @@
     "home": "Home",
     "study": "Study",
     "flashcards": "플래시카드",
-    "messages": "메시지"
+    "messages": "메시지",
+    "calendar": "캘린더"
   },
   "routes": {
     "login": "로그인",
@@ -430,7 +431,9 @@
     "saveFailed": "저장하지 못했습니다. 다시 시도하세요.",
     "operateFailed": "작업에 실패했습니다. 다시 시도하세요.",
     "summaryFailed": "요약을 생성하지 못했습니다. 모델 게이트웨이가 설정되어 있고 연결 가능한지 확인하세요.",
-    "probeFailed": "프로브에 실패했습니다. 대상 주소에 접근 가능한지 확인하세요."
+    "probeFailed": "프로브에 실패했습니다. 대상 주소에 접근 가능한지 확인하세요.",
+    "loadCalendarFailed": "캘린더를 불러오지 못했습니다",
+    "saveCalendarFailed": "일정을 저장하지 못했습니다"
   },
   "due": {
     "title": "오늘의 복습",
@@ -509,12 +512,60 @@
       "suggestedAction": "추천: {action}"
     },
     "unreadBadge": "읽지 않음 {count}",
-    "partialFailure": "일부 소스 불러오기 실패: {sources}"
+    "partialFailure": "일부 소스 불러오기 실패: {sources}",
+    "view": {
+      "label": "보기 방식",
+      "timeline": "타임라인"
+    }
   },
   "timefmt": {
     "justNow": "방금",
     "minutesAgo": "{count}분 전",
     "hoursAgo": "{count}시간 전",
     "daysAgo": "{count}일 전"
+  },
+  "calendar": {
+    "action": {
+      "newEvent": "일정 만들기",
+      "editEvent": "일정 편집",
+      "deleteEvent": "일정 삭제",
+      "today": "오늘",
+      "prevMonth": "이전 달",
+      "nextMonth": "다음 달",
+      "addOnDay": "이 날짜에 일정 추가",
+      "openSource": "원본 열기"
+    },
+    "filter": {
+      "label": "출처 필터"
+    },
+    "source": {
+      "event": "일정",
+      "task": "작업 마감",
+      "scheduled": "자동화"
+    },
+    "field": {
+      "title": "제목",
+      "start": "시작",
+      "end": "종료",
+      "allDay": "종일",
+      "location": "장소",
+      "note": "메모"
+    },
+    "placeholder": {
+      "title": "예: 분기 검토"
+    },
+    "label": {
+      "allDay": "종일",
+      "dueBy": "마감"
+    },
+    "badge": {
+      "done": "완료"
+    },
+    "empty": {
+      "day": "이 날에는 일정이 없습니다"
+    },
+    "aria": {
+      "entriesCount": "{n}건"
+    }
   }
 }

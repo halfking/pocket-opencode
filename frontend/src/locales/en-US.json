@@ -62,7 +62,8 @@
     "home": "Home",
     "study": "Study",
     "flashcards": "Flashcards",
-    "messages": "Messages"
+    "messages": "Messages",
+    "calendar": "Calendar"
   },
   "routes": {
     "login": "Sign in",
@@ -430,7 +431,9 @@
     "saveFailed": "Could not save. Please try again.",
     "operateFailed": "That action failed. Please try again.",
     "summaryFailed": "Could not generate a summary. Check that a model gateway is configured and reachable.",
-    "probeFailed": "Probe failed. Check that the target is reachable."
+    "probeFailed": "Probe failed. Check that the target is reachable.",
+    "loadCalendarFailed": "Failed to load the calendar",
+    "saveCalendarFailed": "Failed to save the event"
   },
   "due": {
     "title": "Today's review",
@@ -509,12 +512,60 @@
       "suggestedAction": "Suggested: {action}"
     },
     "unreadBadge": "{count} unread",
-    "partialFailure": "Some sources failed to load: {sources}"
+    "partialFailure": "Some sources failed to load: {sources}",
+    "view": {
+      "label": "View",
+      "timeline": "Timeline"
+    }
   },
   "timefmt": {
     "justNow": "just now",
     "minutesAgo": "{count} min ago",
     "hoursAgo": "{count} h ago",
     "daysAgo": "{count} d ago"
+  },
+  "calendar": {
+    "action": {
+      "newEvent": "New event",
+      "editEvent": "Edit event",
+      "deleteEvent": "Delete event",
+      "today": "Today",
+      "prevMonth": "Previous month",
+      "nextMonth": "Next month",
+      "addOnDay": "Add an event on this day",
+      "openSource": "Open source"
+    },
+    "filter": {
+      "label": "Filter sources"
+    },
+    "source": {
+      "event": "Events",
+      "task": "Task due",
+      "scheduled": "Automations"
+    },
+    "field": {
+      "title": "Title",
+      "start": "Start",
+      "end": "End",
+      "allDay": "All day",
+      "location": "Location",
+      "note": "Note"
+    },
+    "placeholder": {
+      "title": "e.g. Quarterly review"
+    },
+    "label": {
+      "allDay": "All day",
+      "dueBy": "Due"
+    },
+    "badge": {
+      "done": "Done"
+    },
+    "empty": {
+      "day": "Nothing scheduled on this day"
+    },
+    "aria": {
+      "entriesCount": "{n} items"
+    }
   }
 }

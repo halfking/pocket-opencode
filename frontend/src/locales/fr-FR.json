@@ -62,7 +62,8 @@
     "home": "Home",
     "study": "Study",
     "flashcards": "Cartes mémoire",
-    "messages": "Messages"
+    "messages": "Messages",
+    "calendar": "Calendrier"
   },
   "routes": {
     "login": "Connexion",
@@ -430,7 +431,9 @@
     "saveFailed": "Échec de l'enregistrement. Veuillez réessayer.",
     "operateFailed": "L'action a échoué. Veuillez réessayer.",
     "summaryFailed": "Impossible de générer le résumé. Vérifiez qu'une passerelle de modèle est configurée et joignable.",
-    "probeFailed": "Sonde échouée. Vérifiez que la cible est joignable."
+    "probeFailed": "Sonde échouée. Vérifiez que la cible est joignable.",
+    "loadCalendarFailed": "Échec du chargement du calendrier",
+    "saveCalendarFailed": "Échec de l'enregistrement de l'événement"
   },
   "due": {
     "title": "Révision du jour",
@@ -509,12 +512,60 @@
       "suggestedAction": "Suggestion : {action}"
     },
     "unreadBadge": "{count} non lus",
-    "partialFailure": "Certaines sources n’ont pas pu être chargées : {sources}"
+    "partialFailure": "Certaines sources n’ont pas pu être chargées : {sources}",
+    "view": {
+      "label": "Affichage",
+      "timeline": "Chronologie"
+    }
   },
   "timefmt": {
     "justNow": "à l'instant",
     "minutesAgo": "il y a {count} min",
     "hoursAgo": "il y a {count} h",
     "daysAgo": "il y a {count} j"
+  },
+  "calendar": {
+    "action": {
+      "newEvent": "Nouvel événement",
+      "editEvent": "Modifier l'événement",
+      "deleteEvent": "Supprimer l'événement",
+      "today": "Aujourd'hui",
+      "prevMonth": "Mois précédent",
+      "nextMonth": "Mois suivant",
+      "addOnDay": "Ajouter un événement ce jour",
+      "openSource": "Ouvrir la source"
+    },
+    "filter": {
+      "label": "Filtrer les sources"
+    },
+    "source": {
+      "event": "Événements",
+      "task": "Échéance de tâche",
+      "scheduled": "Automatisations"
+    },
+    "field": {
+      "title": "Titre",
+      "start": "Début",
+      "end": "Fin",
+      "allDay": "Toute la journée",
+      "location": "Lieu",
+      "note": "Commentaire"
+    },
+    "placeholder": {
+      "title": "ex. Revue trimestrielle"
+    },
+    "label": {
+      "allDay": "Toute la journée",
+      "dueBy": "Échéance"
+    },
+    "badge": {
+      "done": "Terminé"
+    },
+    "empty": {
+      "day": "Rien de prévu ce jour-là"
+    },
+    "aria": {
+      "entriesCount": "{n} éléments"
+    }
   }
 }

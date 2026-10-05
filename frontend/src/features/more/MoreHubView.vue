@@ -80,6 +80,7 @@ import { useAuthStore } from '../../stores/auth'
 import { isKeystoreAvailable } from '../../native/keystore'
 import { applyCapabilityGates, type HubItem } from './hubItems.ts'
 import { APP_VERSION, resolveAppVersion } from '../../utils/version'
+import { ICON } from '../../constants/icons'
 
 defineOptions({ name: 'MoreHubView' })
 
@@ -122,6 +123,11 @@ const mainFeatures = computed<HubItem[]>(() => [
   //
   // 这类和 BUG-P 是同一类问题（入口存在但去不到），但更糟：BUG-P 是少一个入口，
   // BUG-Q 是有一个入口指向虚空。两者都不会被「接口能通 / 路由表里有」的验收抓到。
+  //
+  // 2026-10-06：日历入口从 More 宫格移除，搬进「消息」tab 的「时间线｜日历」分段。
+  // 不是「漏删」——是有意收口：同一个功能挂在两个一级入口下，用户会开始怀疑
+  // 两边看到的是不是同一份数据（它们确实是，但用户无从判断）。
+  // /calendar 路由本身保留，仍可深链直接进月视图。
   { to: '/settings/scheduled-tasks', icon: 'schedule', label: t('routes.scheduledTasks') },
   { to: '/marketplace/skills', icon: 'extension', label: t('nav.skillMarket') },
   { to: '/marketplace/agents', icon: 'smart_toy', label: t('nav.agentMarket') },

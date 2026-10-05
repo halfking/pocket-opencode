@@ -32,39 +32,94 @@
 
   路由：`/messages`；进入：BottomNav 4 tab 的「消息」入口。
   深链：/email/:id、/rss/items/:id、/notifications 均保留。
+
+  ## 2026-10-06：日历搬进本 tab，作为第二档看法
+
+  顶部现在有两档：**时间线**（原来这一屏）与**日历**（月视图 + 当日议程）。
+  独立路由 /calendar 仍保留，可直接深链进月视图。
+
+  放在这里的理由不是「日历属于消息」，而是两件事本来就是一件：
+  时间线回答「有什么要我处理」，月视图回答「什么时候」。
+  用户问「我周三几点有空」时，他脑子里那批待办和那天的日程是同一张图；
+  让他在两个一级入口之间来回跳，等于要求他自己做平台该做的聚合。
+
+  形态上刻意**没有**把日历塞进来源 chips 当第 4 档——见 setView 处的注释。
+  代价是本视图从「一条流」变成了「两档互斥的流」，所以：
+  - 标题栏动作跟着档走（时间线：全部已读/管理订阅；日历：新建日程）。
+    HeaderActionsPortal 的注入点全 App 唯一，同页挂两份是抢同一个容器。
+  - 来源 chips 只在时间线档出现。日历自带来源筛选（勾掉即隐藏一类条目），
+    再套一层「全部/邮件/订阅/任务」会让人以为月格受邮件未读数影响。
+  - 三个来源的 per-source 降级条也只属于时间线档：切到日历时，
+    「邮件订阅挂了」横在月视图上方，而它管的事用户这会儿看不见。
 -->
 <template>
   <div class="msg-hub">
     <HeaderActionsPortal>
+        <!--
+          标题栏动作跟着分段走，不是两套并存。
+          日历那一档要的是「新建日程」；时间线这一档要的是「全部已读 / 管理订阅」。
+          同时全渲染会挤成 3 个图标按钮——HeaderActionsPortal 的注入点
+          #app-header-actions 是全 App 唯一的一个节点，同页两份 slot 是抢同一个容器。
+        -->
+        <template v-if="view === 'timeline'">
+          <button
+            class="hdr-action"
+            type="button"
+            :aria-label="t('messagesHub.action.markAllRead')"
+            :disabled="!visibleUnread"
+            data-testid="msg-hub-mark-all"
+            @click="markAllRead"
+          >
+            <span class="material-symbols-outlined" aria-hidden="true">done_all</span>
+          </button>
+          <button
+            class="hdr-action"
+            type="button"
+            :aria-label="t('messagesHub.action.manageFeeds')"
+            data-testid="msg-hub-manage-feeds"
+            @click="go('/rss')"
+          >
+            <span class="material-symbols-outlined" aria-hidden="true">rss_feed</span>
+          </button>
+        </template>
+        <!-- 日历在嵌入态不注入自己的标题栏（见 CalendarView 注释），动作上收到这里，
+             通过 CalendarView expose 出来的 openCreate 触发新建面板。 -->
         <button
+          v-else
           class="hdr-action"
           type="button"
-          :aria-label="t('messagesHub.action.markAllRead')"
-          :disabled="!visibleUnread"
-          data-testid="msg-hub-mark-all"
-          @click="markAllRead"
+          :aria-label="t('calendar.action.newEvent')"
+          data-testid="msg-hub-new-event"
+          @click="newEventFromHeader()"
         >
-          <span class="material-symbols-outlined" aria-hidden="true">done_all</span>
-        </button>
-        <button
-          class="hdr-action"
-          type="button"
-          :aria-label="t('messagesHub.action.manageFeeds')"
-          data-testid="msg-hub-manage-feeds"
-          @click="go('/rss')"
-        >
-          <span class="material-symbols-outlined" aria-hidden="true">rss_feed</span>
+          <span class="material-symbols-outlined" aria-hidden="true">add</span>
         </button>
       </HeaderActionsPortal>
 
       <ScrollChromePortal>
+        <!-- 「看什么」：两种形态互斥。与下面的来源 chips（「看哪部分」）是两层，
+             顺序上先分层再筛选——反过来的话用户会以为月视图也被邮件的筛选管着。 -->
+        <ViewSegmentBar
+          :model-value="view"
+          :options="viewOptions"
+          :aria-label="t('messagesHub.view.label')"
+          @update:model-value="setView"
+        />
+
+        <!-- 来源 chips 只对时间线有意义：月视图有自己的来源筛选（勾掉即隐藏一类条目），
+             再套一层「全部/邮件/订阅/任务」只会让用户以为月格被邮件的未读数影响。 -->
         <SourceFilterBar
+          v-if="view === 'timeline'"
           v-model="source"
           :options="sourceOptions"
           :aria-label="t('messagesHub.title')"
         />
       </ScrollChromePortal>
 
+      <!-- 时间线这一档的全部内容。三个来源的降级条 / 骨架屏 / 列表 / 空态
+           都属于这一档：切到日历时它们必须整体消失，否则一个「邮件订阅挂了」
+           的提示会横在月视图上方，而它管的事用户这会儿根本看不见。 -->
+      <template v-if="view === 'timeline'">
       <!-- per-source 降级条：哪个来源没加载上就点名哪个，不牵连已成功的来源。
            只在**确实有来源失败**时出现，全部成功时不占任何纵向空间。 -->
       <p v-if="failedSources.length" class="src-error" role="status" data-testid="msg-hub-src-error">
@@ -135,15 +190,34 @@
           </button>
         </nav>
       </template>
+      </template>
+
+      <!--
+        日历这一档。用 defineAsyncComponent 而不是静态 import：
+        /messages 本身就是懒加载路由，静态 import 会把日历（Intl 时区换算 +
+        月宫格 + 3 个来源的 feed 解析）并进同一个 chunk，等于让「只想看未读邮件」
+        的用户为日历付首屏流量。异步组件保证它仍是独立 chunk，点到这一档才下载。
+
+        embedded：告诉 CalendarView 不要注入自己的标题栏（动作已上收到上面）。
+        状态不隔离——useCalendarStore 是 Pinia 单例，与 /calendar 路由共用同一份，
+        所以「时间线 → 日历 → 时间线」来回切不会重新取数或丢掉当前月份。
+      -->
+      <AsyncCalendarView
+        v-else
+        ref="calendarRef"
+        embedded
+        data-testid="msg-hub-calendar"
+      />
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, defineAsyncComponent, onMounted, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { EmptyState, Skeleton } from '../../components'
 import SourceFilterBar from '../../components/interactive/SourceFilterBar.vue'
+import ViewSegmentBar from '../../components/interactive/ViewSegmentBar.vue'
 import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue'
 import ScrollChromePortal from '../../components/layout/ScrollChromePortal.vue'
 import { ICON, type IconName } from '../../constants/icons'
@@ -151,13 +225,24 @@ import { rssApi } from '../../api/rss'
 import { useNotificationStore } from '../../stores/notification'
 import { listEmails, markRead as markEmailRead, type LocalEmail } from '../email/emails-store'
 import { notificationSourceLabel } from './sourceLabels'
+import { hubViewQuery, parseHubView, type HubView } from './hub-view.ts'
 import { formatRelative, toEpochSeconds } from '../../utils/relative-time'
 
 defineOptions({ name: 'MessagesHubView' })
 
 const { t } = useI18n()
 const router = useRouter()
+const route = useRoute()
 const notifications = useNotificationStore()
+
+/**
+ * 日历是「消息」这一 tab 的第二档看法，异步挂载。
+ * 见模板里的注释：这里用 defineAsyncComponent 而不是静态 import，是为了不让
+ * 日历代码进 /messages 的 chunk。
+ */
+const AsyncCalendarView = defineAsyncComponent(() => import('../calendar/CalendarView.vue'))
+/** 嵌入态的 CalendarView 实例；只用到它 expose 出来的 openCreate。 */
+const calendarRef = ref<{ openCreate?: () => void } | null>(null)
 
 type RowKind = 'email' | 'rss' | 'task'
 interface HubRow {
@@ -184,7 +269,45 @@ type Source = 'all' | RowKind
 
 const PAGE = 50
 
+/**
+ * 「消息」tab 的两档看法：倒序统一时间线 / 月视图 + 当日议程。
+ *
+ * 为什么不把日历做成来源 chips 里的第 4 档：chips 的语义是**筛选**——
+ * 底下永远是同一条流，它换的是「流里看哪几类」，所以能带未读角标。
+ * 日历是另一种**形态**，点下去底下的东西要整个换掉。混成一个控件时，
+ * 用户点「日历」发现下面还是一条消息流，或者月视图上方挂着「未读 12」的角标，
+ * 都会去找一个并不存在的过滤关系。
+ */
 const source = ref<Source>('all')
+// 从 URL 起步而不是恒为 'timeline'：/messages?view=calendar 要能直接进日历档，
+// 这样「今天的日程」可以被分享/收藏。解析与 query 拼装都在 hub-view.ts 里，
+// 因为「切档不能吃掉 ?source= 深链」这条要求只有一个用例守得住，内联写会漏。
+const view = ref<HubView>(parseHubView(route.query.view))
+
+const viewOptions = computed(() => [
+  { value: 'timeline', label: t('messagesHub.view.timeline'), icon: ICON.viewTimeline },
+  // 复用 nav.calendar，不再加一个同义的 messagesHub.view.calendar：
+  // 同一个词在同一个界面出现两次就该共用一个 key，否则改文案必漏一处。
+  { value: 'calendar', label: t('nav.calendar'), icon: ICON.viewCalendar },
+])
+
+/**
+ * 切分段。用 replace 而不是 push：切档不是一次「前进」，
+ * 否则连点几下分段之后，用户要按十几次后退才能离开这个 tab。
+ */
+function setView(next: string) {
+  const target = parseHubView(next)
+  view.value = target
+  const query = hubViewQuery(target, route.query)
+  // 同一个引用 = 已经在目标态，跳过这次导航（否则空转一次 replace 改写同一个 URL）
+  if (query !== route.query) void router.replace({ query })
+}
+
+/** 标题栏「新建日程」：动作在宿主，真正开面板的是嵌入的日历。 */
+function newEventFromHeader() {
+  calendarRef.value?.openCreate?.()
+}
+
 const loading = ref(true)
 /** 加载失败的来源（用 i18n 的来源名展示给用户）。空数组 = 三个都成功。 */
 const failedSources = ref<string[]>([])

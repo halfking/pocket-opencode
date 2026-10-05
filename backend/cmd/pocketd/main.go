@@ -18,6 +18,7 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/agentbridge"
 	"github.com/halfking/pocket-opencode/backend/internal/aigate"
 	"github.com/halfking/pocket-opencode/backend/internal/auth"
+	"github.com/halfking/pocket-opencode/backend/internal/calendar"
 	"github.com/halfking/pocket-opencode/backend/internal/chatagent"
 	"github.com/halfking/pocket-opencode/backend/internal/config"
 	"github.com/halfking/pocket-opencode/backend/internal/db"
@@ -101,6 +102,7 @@ func main() {
 		emailStore         *email.Store
 		vaultStore         *vault.Store
 		scheduledTaskStore *scheduledtask.Store
+		calendarService    *calendar.Service
 		marketplaceStore   *marketplace.Store
 		financeStore       finance.FinanceStore
 		meetingStore       meeting.MeetingStore
@@ -152,6 +154,14 @@ func main() {
 			log.Fatalf("scheduled task store: %v", err)
 		}
 		scheduledTaskStore = sts
+		// 日历服务：日程事件表 + 跨域 feed。这里必须接**真实的 PG 源**而不是
+		// 静态空源 —— 传 StaticSources{nil} 会让日历只显示日程事件，
+		// 任务截止与定时任务会静默消失，而这正是本功能要解决的事。
+		calSvc, err := calendar.NewService(pool, calendar.PGBridges{Pool: pool})
+		if err != nil {
+			log.Fatalf("calendar service: %v", err)
+		}
+		calendarService = calSvc
 		fs, err := finance.NewPGStore(context.Background(), pool)
 		if err != nil {
 			log.Fatalf("finance store: %v", err)
@@ -684,6 +694,9 @@ func main() {
 	}
 	if scheduledTaskStore != nil {
 		srv.SetScheduledTaskStore(scheduledTaskStore)
+	}
+	if calendarService != nil {
+		srv.SetCalendarService(calendarService)
 	}
 	// RSS：注入 store + 构造后台 scheduler（与 emailScheduler 同 lifecycle 模式）。
 	// 关闭条件：RSS 开关显式为 false 或 store 构造失败；默认 POCKET_RSS_ENABLED=true 时启用。

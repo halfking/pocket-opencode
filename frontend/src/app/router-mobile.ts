@@ -37,6 +37,10 @@ const ScheduledTaskListView = () => import('../features/scheduled-tasks/Schedule
 const ScheduledTaskDetailView = () => import('../features/scheduled-tasks/ScheduledTaskDetailView.vue')
 const ScheduledTaskEditView = () => import('../features/scheduled-tasks/ScheduledTaskEditView.vue')
 
+// 日历：统一 feed（日程 + 任务截止 + 定时任务）。路由级懒加载：
+// 日历逻辑（含 Intl 时区换算）只在进入 /calendar 时才下载。
+const CalendarView = () => import('../features/calendar/CalendarView.vue')
+
 // 通知中心(2026-09-20 通知体系 P1):inbox 列表 + 已读管理。
 const NotificationsView = () => import('../features/notifications/NotificationsView.vue')
 
@@ -520,6 +524,12 @@ const router = createRouter({
       name: 'scheduled-task-detail',
       component: ScheduledTaskDetailView,
       meta: { requiresAuth: true, title: '定时任务详情', bottomNav: false, canGoBack: true, hideAppHeader: true }
+    },
+    {
+      path: '/calendar',
+      name: 'calendar',
+      component: CalendarView,
+      meta: { requiresAuth: true, title: '日历', bottomNav: false, canGoBack: true, hideAppHeader: true }
     },
     // ---- Flashcards v1（FSRS 间隔重复）----
     // 路由顺序：list → new → notes/:noteId/edit → decks/:deckId → review

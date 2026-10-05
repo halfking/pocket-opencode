@@ -23,6 +23,7 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/agentbridge"
 	"github.com/halfking/pocket-opencode/backend/internal/aigate"
 	"github.com/halfking/pocket-opencode/backend/internal/auth"
+	"github.com/halfking/pocket-opencode/backend/internal/calendar"
 	cs "github.com/halfking/pocket-opencode/backend/internal/chat_summary"
 	"github.com/halfking/pocket-opencode/backend/internal/chatagent"
 	"github.com/halfking/pocket-opencode/backend/internal/config"
@@ -78,6 +79,7 @@ type Server struct {
 	taskStore              *task.Store
 	scheduledTaskStore     *scheduledtask.Store
 	scheduledTaskScheduler *scheduledtask.Scheduler
+	calendarService        *calendar.Service
 	userSettings           usersetting.Repository
 	companion              *CompanionClient
 	registry               *registry.Registry
@@ -472,6 +474,13 @@ func (s *Server) SetScheduledTaskStore(store *scheduledtask.Store) {
 	s.scheduledTaskStore = store
 }
 
+// SetCalendarService wires the calendar service after Server construction,
+// mirroring SetScheduledTaskStore: a setter avoids expanding the already
+// compatibility-sensitive New constructor.
+func (s *Server) SetCalendarService(svc *calendar.Service) {
+	s.calendarService = svc
+}
+
 // SetFlashcardStore wires the v1 spaced-repetition flashcard persistence.
 // Mirrors SetScheduledTaskStore: passed positionally to New() but also
 // available as a setter for tests or late-binding cases.
@@ -672,6 +681,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/tasks/delegate", s.requireAuth(s.handleDelegateTask))
 	mux.HandleFunc("/api/scheduled-tasks", s.requireAuth(s.handleScheduledTasks))
 	mux.HandleFunc("/api/scheduled-tasks/", s.requireAuth(s.handleScheduledTaskOperations))
+	// 日历：统一 feed（日程 + 任务截止 + 定时任务）与管理 CRUD。
+	mux.HandleFunc("/api/calendar/events", s.requireAuth(s.handleCalendarEvents))
+	mux.HandleFunc("/api/calendar/events/", s.requireAuth(s.handleCalendarEventOperations))
 	mux.HandleFunc("/api/config/models", s.requireAuth(s.handleModelConfig))
 	mux.HandleFunc("/api/config/reload", s.requireAuth(s.handleConfigReload))
 	mux.HandleFunc("/api/config/models/test", s.requireAuth(s.handleModelTest))

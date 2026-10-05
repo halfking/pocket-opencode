@@ -62,7 +62,8 @@
     "home": "Home",
     "study": "Study",
     "flashcards": "Karteikarten",
-    "messages": "Nachrichten"
+    "messages": "Nachrichten",
+    "calendar": "Kalender"
   },
   "routes": {
     "login": "Anmelden",
@@ -430,7 +431,9 @@
     "saveFailed": "Speichern fehlgeschlagen. Bitte erneut versuchen.",
     "operateFailed": "Aktion fehlgeschlagen. Bitte erneut versuchen.",
     "summaryFailed": "Zusammenfassung konnte nicht erstellt werden. Prüfe, ob ein Modell-Gateway konfiguriert und erreichbar ist.",
-    "probeFailed": "Probe fehlgeschlagen. Prüfe, ob die Zieladresse erreichbar ist."
+    "probeFailed": "Probe fehlgeschlagen. Prüfe, ob die Zieladresse erreichbar ist.",
+    "loadCalendarFailed": "Kalender konnte nicht geladen werden",
+    "saveCalendarFailed": "Termin konnte nicht gespeichert werden"
   },
   "due": {
     "title": "Heutige Wiederholung",
@@ -509,12 +512,60 @@
       "suggestedAction": "Vorschlag: {action}"
     },
     "unreadBadge": "{count} ungelesen",
-    "partialFailure": "Einige Quellen konnten nicht geladen werden: {sources}"
+    "partialFailure": "Einige Quellen konnten nicht geladen werden: {sources}",
+    "view": {
+      "label": "Ansicht",
+      "timeline": "Zeitleiste"
+    }
   },
   "timefmt": {
     "justNow": "gerade eben",
     "minutesAgo": "vor {count} Min.",
     "hoursAgo": "vor {count} Std.",
     "daysAgo": "vor {count} T."
+  },
+  "calendar": {
+    "action": {
+      "newEvent": "Neuer Termin",
+      "editEvent": "Termin bearbeiten",
+      "deleteEvent": "Termin löschen",
+      "today": "Heute",
+      "prevMonth": "Vorheriger Monat",
+      "nextMonth": "Nächster Monat",
+      "addOnDay": "An diesem Tag einen Termin hinzufügen",
+      "openSource": "Quelle öffnen"
+    },
+    "filter": {
+      "label": "Quellen filtern"
+    },
+    "source": {
+      "event": "Termine",
+      "task": "Aufgabenfällig",
+      "scheduled": "Automationen"
+    },
+    "field": {
+      "title": "Titel",
+      "start": "Beginn",
+      "end": "Ende",
+      "allDay": "Ganztägig",
+      "location": "Ort",
+      "note": "Notiz"
+    },
+    "placeholder": {
+      "title": "z. B. Quartalsreview"
+    },
+    "label": {
+      "allDay": "Ganztägig",
+      "dueBy": "Fällig"
+    },
+    "badge": {
+      "done": "Erledigt"
+    },
+    "empty": {
+      "day": "An diesem Tag ist nichts geplant"
+    },
+    "aria": {
+      "entriesCount": "{n} Einträge"
+    }
   }
 }

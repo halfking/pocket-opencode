@@ -62,7 +62,8 @@
     "home": "首页",
     "study": "学习",
     "flashcards": "闪卡",
-    "messages": "消息"
+    "messages": "消息",
+    "calendar": "日历"
   },
   "routes": {
     "login": "登录",
@@ -430,7 +431,9 @@
     "saveFailed": "保存失败，请稍后重试",
     "operateFailed": "操作失败，请稍后重试",
     "summaryFailed": "总结生成失败，请确认已配置并可用的模型网关",
-    "probeFailed": "探测失败，请检查目标地址是否可达"
+    "probeFailed": "探测失败，请检查目标地址是否可达",
+    "loadCalendarFailed": "加载日历失败",
+    "saveCalendarFailed": "保存日程失败"
   },
   "due": {
     "title": "今日回顾",
@@ -509,12 +512,60 @@
       "suggestedAction": "建议：{action}"
     },
     "unreadBadge": "{count} 未读",
-    "partialFailure": "部分来源未能加载：{sources}"
+    "partialFailure": "部分来源未能加载：{sources}",
+    "view": {
+      "label": "查看方式",
+      "timeline": "时间线"
+    }
   },
   "timefmt": {
     "justNow": "刚刚",
     "minutesAgo": "{count} 分钟前",
     "hoursAgo": "{count} 小时前",
     "daysAgo": "{count} 天前"
+  },
+  "calendar": {
+    "action": {
+      "newEvent": "新建日程",
+      "editEvent": "编辑日程",
+      "deleteEvent": "删除日程",
+      "today": "今天",
+      "prevMonth": "上个月",
+      "nextMonth": "下个月",
+      "addOnDay": "在这天添加日程",
+      "openSource": "打开来源"
+    },
+    "filter": {
+      "label": "筛选来源"
+    },
+    "source": {
+      "event": "日程",
+      "task": "任务截止",
+      "scheduled": "自动化"
+    },
+    "field": {
+      "title": "标题",
+      "start": "开始时间",
+      "end": "结束时间",
+      "allDay": "全天",
+      "location": "地点",
+      "note": "备注"
+    },
+    "placeholder": {
+      "title": "例如：季度评审"
+    },
+    "label": {
+      "allDay": "全天",
+      "dueBy": "截止"
+    },
+    "badge": {
+      "done": "已完成"
+    },
+    "empty": {
+      "day": "这一天还没有安排"
+    },
+    "aria": {
+      "entriesCount": "{n} 项安排"
+    }
   }
 }

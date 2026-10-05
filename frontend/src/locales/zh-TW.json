@@ -62,7 +62,8 @@
     "home": "Home",
     "study": "Study",
     "flashcards": "閃卡",
-    "messages": "訊息"
+    "messages": "訊息",
+    "calendar": "行事曆"
   },
   "routes": {
     "login": "登入",
@@ -430,7 +431,9 @@
     "saveFailed": "儲存失敗，請稍後重試",
     "operateFailed": "操作失敗，請稍後重試",
     "summaryFailed": "摘要產生失敗，請確認已設定且可用的模型閘道",
-    "probeFailed": "探測失敗，請檢查目標位址是否可達"
+    "probeFailed": "探測失敗，請檢查目標位址是否可達",
+    "loadCalendarFailed": "載入行事曆失敗",
+    "saveCalendarFailed": "儲存行程失敗"
   },
   "due": {
     "title": "今日回顧",
@@ -509,12 +512,60 @@
       "suggestedAction": "建議：{action}"
     },
     "unreadBadge": "{count} 未讀",
-    "partialFailure": "部分來源未能載入：{sources}"
+    "partialFailure": "部分來源未能載入：{sources}",
+    "view": {
+      "label": "檢視方式",
+      "timeline": "時間軸"
+    }
   },
   "timefmt": {
     "justNow": "剛剛",
     "minutesAgo": "{count} 分鐘前",
     "hoursAgo": "{count} 小時前",
     "daysAgo": "{count} 天前"
+  },
+  "calendar": {
+    "action": {
+      "newEvent": "新增行程",
+      "editEvent": "編輯行程",
+      "deleteEvent": "刪除行程",
+      "today": "今天",
+      "prevMonth": "上個月",
+      "nextMonth": "下個月",
+      "addOnDay": "在這天新增行程",
+      "openSource": "開啟來源"
+    },
+    "filter": {
+      "label": "篩選來源"
+    },
+    "source": {
+      "event": "行程",
+      "task": "任務期限",
+      "scheduled": "自動化"
+    },
+    "field": {
+      "title": "標題",
+      "start": "開始時間",
+      "end": "結束時間",
+      "allDay": "整天",
+      "location": "地點",
+      "note": "備註"
+    },
+    "placeholder": {
+      "title": "例如：季度檢討"
+    },
+    "label": {
+      "allDay": "整天",
+      "dueBy": "截止"
+    },
+    "badge": {
+      "done": "已完成"
+    },
+    "empty": {
+      "day": "這一天還沒有安排"
+    },
+    "aria": {
+      "entriesCount": "{n} 項安排"
+    }
   }
 }

@@ -62,7 +62,8 @@
     "home": "Home",
     "study": "Study",
     "flashcards": "Cartões de memorização",
-    "messages": "Mensagens"
+    "messages": "Mensagens",
+    "calendar": "Calendário"
   },
   "routes": {
     "login": "Entrar",
@@ -430,7 +431,9 @@
     "saveFailed": "Não foi possível salvar. Tente novamente.",
     "operateFailed": "A operação falhou. Tente novamente.",
     "summaryFailed": "Não foi possível gerar o resumo. Verifique se o gateway de modelos está configurado e acessível.",
-    "probeFailed": "Sonda falhou. Verifique se o destino está acessível."
+    "probeFailed": "Sonda falhou. Verifique se o destino está acessível.",
+    "loadCalendarFailed": "Falha ao carregar o calendário",
+    "saveCalendarFailed": "Falha ao salvar o evento"
   },
   "due": {
     "title": "Revisão de hoje",
@@ -509,12 +512,60 @@
       "suggestedAction": "Sugestão: {action}"
     },
     "unreadBadge": "{count} não lidas",
-    "partialFailure": "Algumas fontes não puderam carregar: {sources}"
+    "partialFailure": "Algumas fontes não puderam carregar: {sources}",
+    "view": {
+      "label": "Visualização",
+      "timeline": "Linha do tempo"
+    }
   },
   "timefmt": {
     "justNow": "agora mesmo",
     "minutesAgo": "há {count} min",
     "hoursAgo": "há {count} h",
     "daysAgo": "há {count} d"
+  },
+  "calendar": {
+    "action": {
+      "newEvent": "Novo evento",
+      "editEvent": "Editar evento",
+      "deleteEvent": "Excluir evento",
+      "today": "Hoje",
+      "prevMonth": "Mês anterior",
+      "nextMonth": "Próximo mês",
+      "addOnDay": "Adicionar um evento neste dia",
+      "openSource": "Abrir origem"
+    },
+    "filter": {
+      "label": "Filtrar fontes"
+    },
+    "source": {
+      "event": "Eventos",
+      "task": "Prazo da tarefa",
+      "scheduled": "Automações"
+    },
+    "field": {
+      "title": "Título",
+      "start": "Início",
+      "end": "Fim",
+      "allDay": "Dia inteiro",
+      "location": "Local",
+      "note": "Observação"
+    },
+    "placeholder": {
+      "title": "ex. Revisão trimestral"
+    },
+    "label": {
+      "allDay": "Dia inteiro",
+      "dueBy": "Prazo"
+    },
+    "badge": {
+      "done": "Concluído"
+    },
+    "empty": {
+      "day": "Nada agendado neste dia"
+    },
+    "aria": {
+      "entriesCount": "{n} itens"
+    }
   }
 }

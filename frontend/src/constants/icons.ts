@@ -136,6 +136,20 @@ export const ICON = {
   toolLoadSkill: 'bolt',
   toolTaskPlan: 'checklist',
 
+  // ── features/calendar/types.ts：SOURCE_META 是数据表，模板写 {{ }}，扫不到 ──
+  // 这三个是日历里三类条目的图标。缺任何一个 → 字体子集把它裁掉 →
+  // 真机显示成 CALENDAR_MONTH 这样的字面量而不是图标。
+  calendarSourceEvent: 'event',
+  calendarSourceTask: 'task_alt',
+  calendarSourceScheduled: 'schedule',
+  // ── features/messages/MessagesHubView.vue：顶部「时间线｜日历」分段控件 ──
+  // 动态名，由 ViewSegmentBar 渲染成 {{ opt.icon }}，静态扫描抓不到，必须登记。
+  // 原来叫 moreCalendar（More 宫格里的日历入口）。日历搬进「消息」tab 后
+  // More 里那个入口被删掉，常量名跟着搬家——否则它会变成没人引用的死常量，
+  // 而死常量正是「文档/注册表说有、代码里其实没接线」的最灵敏探针。
+  viewCalendar: 'calendar_month',
+  viewTimeline: 'notifications',
+
   // ── features/ai-chat/AIChatView.vue：跨行插值，正则扫不到 ──
   chatAgent: 'person',
 } as const
