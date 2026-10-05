@@ -43,36 +43,59 @@ appId: com.kaixuan.opencode.pocket
 #   重组前底部导航是 首页 · 学习 · 会议 · 更多（见本文件历史注释），
 #   重组后是 首页 · 笔记 · 消息 · 更多（BottomNav.vue:100-105），
 #   而会议作为**笔记的一种来源**下沉进了 NotesHubView
-#   （NotesHubView.vue:44-46：常驻按钮 data-testid="notes-hub-start-meeting"
-#     → go('/meetings/new')）。
+#   （NotesHubView.vue:41-49：顶栏图标按钮，aria-label = t('notesHub.action.startMeeting')，
+#     @click="go('/meetings/new')"）。
 #
 #   本文件原先的 `tapOn: "更多" → tapOn: "会议" → 等「开始会议录音」` 在新 IA 下
 #   **没有落点**：`frontend/src/features/more/hubItems.ts` 里 grep 不到任何
 #   meetings/会议 —— 「更多」宫格确实没有会议项。
-#   实测失败点正是 `Assert that "开始会议录音" is visible`（前面「更多功能」都过了），
-#   与这个判断一致。
 #
-#   ⇒ 改走笔记 tab 的常驻入口。用 data-testid 而不是中文文案：
-#   文案随 i18n 变，testid 是契约。
+#   ⚠️⚠️ 2026-10-05 二次修正——**上一版我改错了，改法本身也有问题**：
+#   我当时写成按 `data-testid="notes-hub-start-meeting"` 定位，理由是
+#   「文案随 i18n 变，testid 是契约」。**这个理由是错的**：
+#   Maestro 走的是 Android **无障碍树**，而 `data-testid` 是 DOM 属性，
+#   **不出现在无障碍树里** ⇒ `visible: "notes-hub-start-meeting"` 恒为 false。
+#   实测失败点正是这条。
+#   正确做法是用**真实可见文案**，实测值来自 `src/locales/zh-CN.json`：
+#     notesHub.action.startMeeting = 「开始会议」   ← 不是「开始会议录音」
+#   多语言并写（`|Notes`、`开始会议|Start meeting`）以免换语言就红。
+#
+#   另：这个按钮是**纯图标**（内含 <span class="material-symbols-outlined">mic</span>，
+#   aria-hidden），所以可见文本只有 aria-label 这一条路。
 - tapOn:
     text: "笔记|Notes"
     retryTapIfNoChange: true
 - extendedWaitUntil:
-    visible: "notes-hub-start-meeting"
+    visible: "开始会议|Start meeting"
     timeout: 40000
+# MIUI 会吞掉底部导航 tap（报 COMPLETED 但界面没动）——补点一次。
 - runFlow:
     when:
-      notVisible: "notes-hub-start-meeting"
+      notVisible: "开始会议|Start meeting"
     commands:
       - tapOn:
           text: "笔记|Notes"
       - waitForAnimationToEnd:
           timeout: 3000
-- tapOn: "notes-hub-start-meeting"
+- extendedWaitUntil:
+    visible: "开始会议|Start meeting"
+    timeout: 30000
+- tapOn:
+    text: "开始会议|Start meeting"
+    retryTapIfNoChange: true
 
 # ---------- 2. 会议录音页 ----------
+# ⚠️ 这里**不能**用「会议详情」当判据（既有坏断言，本轮实测钉死）：
+#   `grep 会议详情` 在 src 下只命中 router-mobile.ts:323 的 `meta.title`
+#   与若干注释，**页面模板里根本不渲染这段文字** ⇒
+#   `assertVisible: "会议详情"` 是**恒假**的，与设备/产品状态无关。
+#   （MeetingRecordView.vue 只是跳转壳：onMounted 里 createMeeting 后
+#    router.replace({name:'meeting-detail', query:{record:'1'}})；
+#    真正渲染的是 MeetingDetailView。）
+#   真正可见的是 dock 的 aria-label 二态（MeetingMicDock.vue:6）：
+#     :aria-label="recording ? '停止录音' : '开始录音'"
 - extendedWaitUntil:
-    visible: "开始会议录音|会议详情"
+    visible: "开始录音|停止录音"
     timeout: 40000
 
 # ---------- 3. 核心：点「开始会议录音」必须真的进详情页 ----------
@@ -119,21 +142,22 @@ appId: com.kaixuan.opencode.pocket
     optional: true
 
 - extendedWaitUntil:
-    visible: "会议详情"
+    visible: "开始录音|停止录音"
     timeout: 40000
 
-# ⚠️ 2026-10-03 15:45 实测修正：本条原先等的是「开始录音」，红了 68s。
-#   失败现场显示**我们其实已经成功进了详情页**，而且已经在录了：
-#   可见「会议详情 / 录音中 00:41 / 正在聆听… / 停止录音」。
+# ⚠️ 2026-10-03 15:45 实测修正：等「开始录音」红了 68s。
 #   原因是 MeetingRecordView replace 过去时带 `?record=1`，
 #   **自动开始录音** ⇒ 录音 dock 的 aria-label 已经是「停止录音」。
-#   ⇒ 等「开始录音」是在等一个已经翻过去的状态。
-#   正确判据是「会议详情」这个页本身，加上 dock 二态之一。
-- assertVisible: "会议详情"
+#   ⇒ 判据必须是 dock 的**二态之一**，不是某一个具体状态。
+#
+# ⚠️⚠️ 2026-10-05 实测修正（本条原先等的是「会议详情」，**恒假**）：
+#   「会议详情」只出现在 router-mobile.ts:323 的 `meta.title`，
+#   页面模板从不渲染它 ⇒ 这条断言与设备/产品状态**完全无关**，只是永远不成立。
+#   本轮把它换成 dock 的二态 —— 那是真正能证明「进了详情页并且在录音」的可见元素。
 - assertVisible: "(开始录音|停止录音)"
 
-# 录音界面独有的元素：即时总结面板（右侧滚动更新摘要）
-- assertVisible: "即时总结"
+# 录音界面独有的元素：即时总结面板（MeetingInsightPanel.vue:2 的 aria-label）
+- assertVisible: "即时总结|会议纪要"
 
 # ---------- 4. 负向锚点 ----------
 # 「还没有会议记录」是**列表页**的空态文案。它若出现，说明 createMeeting

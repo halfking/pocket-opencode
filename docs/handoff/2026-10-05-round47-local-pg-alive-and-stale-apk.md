@@ -391,6 +391,54 @@ adb -s <serial> shell pm grant <pkg> android.permission.CAMERA
 设过主密码的设备上，`need` 直接返回 `'no'`，整段是死代码——
 所以它能在仓库里安静地活着，直到环境一变才第一次被真正执行。
 
+### 2.9 ⚠️ `data-testid` 对 Maestro **无效**，而「会议详情」是**恒假断言**
+
+修完 2.8 后跑 meetings 流，`tapOn: "笔记|Notes"` 报 COMPLETED，
+但下一条 `visible: "notes-hub-start-meeting"` 失败。两处都是我的错：
+
+**(a) 我用 `data-testid` 定位按钮，理由写的是「文案随 i18n 变，testid 是契约」。**
+**这个理由是错的**：Maestro 走 Android **无障碍树**，而 `data-testid` 是
+**DOM 属性，不出现在无障碍树里** ⇒ 任何 `visible:`/`tapOn:` 命中它都恒为 false。
+
+正确做法是用**真实可见文案**。实测值来自 `src/locales/zh-CN.json:92`：
+
+```
+notesHub.action.startMeeting = 「开始会议」     ← 不是「开始会议录音」
+```
+
+而且那个按钮是**纯图标**（内含 `aria-hidden` 的 material icon），
+所以可见文本**只有 aria-label 这一条路**。
+
+⇒ 推论：**`data-testid` 只对浏览器/E2E 有效，对 Maestro 一律无效。**
+本仓 `NotesHubView.vue` 里有一批 `data-testid`（`notes-hub-start-meeting` 等），
+它们对 CDP 探查很有用（`.scratch/probe-*.mjs` 就是靠 DOM 查），
+**但不能直接搬进 flow 的选择器**。
+
+**(b) `assertVisible: "会议详情"` 是恒假断言（既有坏判据，本轮实测钉死）。**
+
+```
+$ grep 会议详情 frontend/src
+router-mobile.ts:323:  meta: { ..., title: '会议详情', ... }     ← 只有 meta.title
+RecordingPill.vue:5:   录音宿主页(会议详情 / 会话页 / 笔记页)后…   ← 注释
+NotesHubView.vue:81:   …(实测误点进了会议详情并触发了录音)。      ← 注释
+```
+
+**页面模板从不渲染「会议详情」这三个字** ⇒ 这条断言与设备状态、
+产品行为**完全无关**，它只是永远不成立。而 `MeetingRecordView.vue`
+本身只是个跳转壳（`onMounted` → `createMeeting()` →
+`router.replace({name:'meeting-detail', query:{record:'1'}})`），
+真正渲染的是 `MeetingDetailView`。
+
+⇒ 已把三处「会议详情」全换成**真正可见**的判据：
+- `MeetingMicDock.vue:6` 的 `:aria-label="recording ? '停止录音' : '开始录音'"`
+- `MeetingInsightPanel.vue:2` 的 `:aria-label="isRecording ? '即时总结' : '会议纪要'"`
+
+**教训**：一条恒假断言**不会自己暴露**。它会一直红，而人会去查设备、
+查产品、查时序——**没人会去怀疑判据本身恒假**。
+所以拿到「这条断言红了」时，第一个要问的不是「产品坏在哪」，
+而是「**这条判据在本设备上有没有可能为真**」。
+`grep` 一下断言文本在源码里出不出现，是成本最低的判别力自检。
+
 ### 5.1 本轮未完成（正在收尾）
 
 1. **重建 APK 并重装**：`gradlew assembleDebug` 已启动，装完要**重跑那 8 条流**，
