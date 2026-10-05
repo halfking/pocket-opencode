@@ -72,7 +72,10 @@ func TestEmailsImportanceCheckAcceptsNormalizedValues(t *testing.T) {
 }
 
 // 列必须保持可空：NULL 与空串一样表示「未分类」。若把 CHECK 写成
-// `importance <> ”` 或加 NOT NULL，「未分类」的表示方式就被掐死了一条。
+//
+//	importance <> ''
+//
+// 或加 NOT NULL，「未分类」的表示方式就被掐死了一条。
 func TestEmailsImportanceColumnStaysNullable(t *testing.T) {
 	store, cleanup := newWorkspaceTestStore(t)
 	defer cleanup()

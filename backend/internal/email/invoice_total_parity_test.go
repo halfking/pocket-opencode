@@ -186,8 +186,9 @@ func TestInvoiceTotalParity_ColumnCountMatchesHeader(t *testing.T) {
 	if header[7] != "核验" {
 		t.Errorf("表头第 8 列 = %v，want 核验", header[7])
 	}
-	// 列宽 9 → 10 后写入范围必须跟着变，否则最后一列写不出去
-	if got := LedgerCellRange("sht", rows); got != "sht!A1:J4" {
-		t.Errorf("LedgerCellRange = %q，want sht!A1:J4（4 行 × 10 列）", got)
+	// 列宽 9 → 10 → 11（2026-10-05 加「备注」）后写入范围必须跟着变，
+	// 否则最后一列写不出去
+	if got := LedgerCellRange("sht", rows); got != "sht!A1:K4" {
+		t.Errorf("LedgerCellRange = %q，want sht!A1:K4（4 行 × 11 列）", got)
 	}
 }

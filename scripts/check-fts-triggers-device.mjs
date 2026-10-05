@@ -9,16 +9,17 @@
 //   1. local_notes_fts 虚表存在吗？—— 不存在则搜索路径整个走不通
 //   2. local_notes_ai / _ad / _au 三个触发器各在不在？—— 缺 ad/au = 删改不清索引
 //   3. 索引里当前有几行？与 local_notes 实际行数对不对得上？
-import { execFileSync } from 'node:child_process';
+import { adbOrExit } from './lib/adb-prereq.mjs'
 import { requireDevPass } from './lib/dev-pass.mjs'
-const ADB = 'C:/Users/86133/AppData/Local/Android/platform-tools/adb.exe';
 const SERIAL = process.env.POCKET_SERIAL || '192.168.31.19:5555';
 const PKG = 'com.kaixuan.opencode.pocket';
 const PORT = process.env.POCKET_CDP_PORT || '9284';
 const DB = process.env.POCKET_SQLITE_DB || 'lobster';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const adb = (a, t = 60000) => execFileSync(ADB, a, { encoding: 'utf8', timeout: t, maxBuffer: 33554432 });
+// 设备不在 ⇒ exit 3「没跑到被检查对象」，不再抛未捕获异常（见 lib/adb-prereq.mjs）。
+// 这道门把 -s 写在自己的 args 里，所以 serial 传 null 免得出现两个 -s。
+const adb = (a, t = 60000) => adbOrExit(a, { serial: null, timeout: t, label: 'check-fts-triggers-device' });
 
 const pid = adb(['-s', SERIAL, 'shell', `pidof ${PKG}`]).trim().split(/\s+/)[0];
 if (!pid) { console.log('APP_NOT_RUNNING'); process.exit(2) }

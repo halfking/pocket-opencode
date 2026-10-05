@@ -42,15 +42,43 @@
 //    宁可漏，不要一条红的守门脚本被当成噪声忽略掉。
 //
 // 用法：
-//   node scripts/check-dev-pass-sourcing.mjs            # 默认 exit 1
+//   node scripts/check-dev-pass-sourcing.mjs            # 只对**新增**违规 exit 1
 //   node scripts/check-dev-pass-sourcing.mjs --list     # 只列不判
 //   node scripts/check-dev-pass-sourcing.mjs --selftest # 判据自检
+//   node scripts/check-dev-pass-sourcing.mjs --write-baseline # 重录基线（有意为之才用）
+//
+// ⚠️ 2026-10-05：本门已从「有任何命中就 exit 1」改成**基线棘轮**。
+//    原形态下存量 24 处 ⇒ 这道门永远红 ⇒ 既拦不住东西也没人敢接进 gates。
+//    机制与理由见 scripts/lib/baseline-ratchet.mjs。
+//    key 形如 `file|rule|text`，**不含行号**（行号一漂就全判陈旧）。
 import { readFileSync, readdirSync, writeFileSync, unlinkSync } from 'node:fs'
-import { join, relative } from 'node:path'
+import { dirname, join, relative, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import {
+  countKeysBy,
+  diffRatchet,
+  loadBaseline,
+  ratchetSelfTestCases,
+  writeBaseline,
+} from './lib/baseline-ratchet.mjs'
 
-const ROOT = process.cwd()
+// ⚠️ ROOT 必须由**脚本自身位置**推导，不能用 process.cwd()。
+//    这道门在 2026-10-05 之前从未被任何 runner 调用过，所以「必须从仓库根
+//    目录跑」这个隐含前提从没被验证过：接进 gates 后 npm run 的 cwd 是
+//    frontend/，于是它会去扫 frontend/scripts/、去找 frontend/scripts/baselines/…，
+//    找不到就 exit 2 —— 门禁一接线就红，且报错信息与真实原因毫无关系。
+//    其余根级门禁（check-fixed-cdp-ports 等）都用 import.meta.url，此处对齐。
+const HERE = dirname(fileURLToPath(import.meta.url))
+const ROOT = resolve(HERE, '..')
 const SELFTEST = process.argv.includes('--selftest')
 const LIST = process.argv.includes('--list')
+const WRITE_BASELINE = process.argv.includes('--write-baseline')
+const BASELINE_PATH = join(ROOT, 'scripts', 'baselines', 'dev-pass-sourcing.json')
+const BASELINE_COMMENT =
+  'check-dev-pass-sourcing.mjs 的基线棘轮存量清单。key 形如 file|rule|text，' +
+  '**故意不含行号**（行号一漂就全判陈旧）。只对不在此清单里的新增违规判红。' +
+  '用 --write-baseline 重录。'
+const keyOf = (h) => `${h.file}|${h.rule}|${h.text}`
 
 /** 递归收集 scripts/ 下的 .mjs */
 function collect(dir, out = []) {
@@ -184,7 +212,32 @@ function selftest() {
     if (!ok) bad++
     console.log(`  变盲对照：关掉「${r.name}」→ ${full} → ${blind}（差 ${d}，期望 1）${ok ? ' ✅' : ' ❌'}`)
   }
-  console.log(bad ? `\n❌ 判据自检失败 ${bad} 项` : '\n✅ 判据自检通过：能报出该报的、能放过该放过的、变盲会漏报')
+  // ---- 棘轮自测（2026-10-05 新增，机制见 lib/baseline-ratchet.mjs） ----
+  // 本门的命中字段是 {file, line, rule, text}，所以 key 用 file|rule|text。
+  const inBaselineHit = {
+    file: 'synthetic.mjs',
+    line: 13,
+    rule: 'hardcoded-fallback',
+    text: "const MASTER = process.env.POCKET_MASTER || 'PocketTest2026'",
+  }
+  const newHit = {
+    file: 'synthetic2.mjs',
+    line: 3,
+    rule: 'hardcoded-fallback',
+    text: "const TOKEN = process.env.POCKET_TOKEN || 'Abcdef123456'",
+  }
+  for (const f of ratchetSelfTestCases({
+    diff: (h, b) => diffRatchet(h, b, keyOf),
+    keyFn: keyOf,
+    inBaselineHit,
+    newHit,
+    sameHit2: { ...inBaselineHit, line: 14 },
+    driftKey: 'synthetic.mjs|hardcoded-fallback|__OLD_LINE_13__',
+  })) {
+    bad++
+    console.log(`  ❌ ${f}`)
+  }
+  console.log(bad ? `\n❌ 判据自检失败 ${bad} 项` : '\n✅ 判据自检通过：能报出该报的、能放过该放过的、变盲会漏报、棘轮只在新增时转红')
   return bad === 0
 }
 
@@ -196,15 +249,65 @@ if (SELFTEST) {
 
 const files = collect(join(ROOT, 'scripts'))
 const hits = scan(files)
+
+// --write-baseline：重录基线。这等于宣布「这些存量暂时不判红」，
+// 必须显眼，不能和普通判定混在一条命令里，否则「顺手跑一下」就会把门禁洗绿。
+if (WRITE_BASELINE) {
+  const counts = writeBaseline(BASELINE_PATH, countKeysBy(hits, keyOf), BASELINE_COMMENT)
+  console.log(
+    `已写入基线：${BASELINE_PATH}\n  key ${Object.keys(counts).length} 个 / 命中 ${hits.length} 处`,
+  )
+  console.log('⚠️ 这一步等于宣布「这些存量暂时不判红」。请在提交信息里写清为什么。')
+  process.exit(0)
+}
+
 if (hits.length === 0) {
   console.log(`扫描 ${files.length} 个 .mjs：没有从源码刮口令 / 没有硬编码口令兜底`)
   process.exit(0)
 }
-if (!LIST) console.log(`扫描 ${files.length} 个 .mjs，发现 ${hits.length} 处\n`)
-for (const h of hits) console.log(`  ${h.file}:${h.line}  [${h.rule}]  ${h.text}`)
-if (!LIST) {
-  console.log('\n修法：口令只从环境取（process.env.POCKET_PROBE_PASS / POCKET_MASTER），')
-  console.log('      缺就**在碰设备之前**大声退出（exit 2），不要拿着空口令继续跑——')
-  console.log('      那会把「未鉴权的 401」印成「路由有问题」。')
+if (LIST) {
+  console.log(`扫描 ${files.length} 个 .mjs，发现 ${hits.length} 处\n`)
+  for (const h of hits) console.log(`  ${h.file}:${h.line}  [${h.rule}]  ${h.text}`)
+  process.exit(0)
 }
-process.exit(LIST ? 0 : 1)
+
+let baseline
+try {
+  baseline = loadBaseline(BASELINE_PATH)
+} catch (e) {
+  // 门禁自身报错（exit 2）≠ 判红（exit 1）：基线坏了是「判据跑不起来」。
+  console.error(`[check-dev-pass-sourcing] 基线读取失败：${e.message}`)
+  process.exit(2)
+}
+if (!baseline) {
+  console.error(
+    '[check-dev-pass-sourcing] 基线文件不存在：scripts/baselines/dev-pass-sourcing.json\n' +
+      '  录基线：node scripts/check-dev-pass-sourcing.mjs --write-baseline',
+  )
+  process.exit(2)
+}
+
+const { newHits, removed } = diffRatchet(hits, baseline, keyOf)
+const baselineCount = Object.values(baseline).reduce((a, b) => a + b, 0)
+console.log(`扫描 ${files.length} 个 .mjs，命中 ${hits.length} 处`)
+console.log(
+  `基线棘轮：存量 ${baselineCount} 处（基线 key ${Object.keys(baseline).length} 个）→ ` +
+    `本次实测 ${hits.length} 处，新增 ${newHits.length} 处，已消失 ${removed.length} 处`,
+)
+
+if (newHits.length) {
+  console.error('\n❌ 以下是**新增**违规（不在基线里），必须改掉：')
+  for (const h of newHits) console.error(`  ${h.file}:${h.line}  [${h.rule}]  ${h.text}`)
+  console.error('\n修法：口令只从环境取（process.env.POCKET_PROBE_PASS / POCKET_MASTER），')
+  console.error('      缺就**在碰设备之前**大声退出（exit 2），不要拿着空口令继续跑——')
+  console.error('      那会把「未鉴权的 401」印成「路由有问题」。')
+  console.error('若这确实是「已知且暂时接受」的存量，用 --write-baseline 重录，并在提交信息里写明为什么。')
+  process.exit(1)
+}
+if (removed.length) {
+  console.log(`\n✅ 无新增违规。另外有 ${removed.length} 处存量已消失（棘轮可以收紧了）：`)
+  for (const k of removed.slice(0, 10)) console.log(`  - ${k}`)
+  console.log('如需把基线同步收紧：node scripts/check-dev-pass-sourcing.mjs --write-baseline')
+}
+console.log(`\n✅ 无新增违规（存量 ${hits.length} 处不判红，这是棘轮的约定）。`)
+process.exit(0)

@@ -48,6 +48,14 @@ load_env_file() {
   [ -f "$file" ] || { err "env file not found: $file"; return 1; }
   local line key value
   while IFS= read -r line || [ -n "$line" ]; do
+    # 剥掉行尾的 CR。⚠️ 本仓 core.autocrlf=true，Windows 上 checkout 出来的
+    # .env 是 CRLF；`read -r` 只剥 \n 不剥 \r，于是每个值都会带上一个尾随 \r。
+    # 后果全是静默的：
+    #   getEnvInt:  strconv.Atoi("8088\r") 失败 → 静默回落默认值（端口/超时全变）
+    #   getEnv:     字符串值尾部多一个 \r（URL 末尾多一个字符，调用方基本不校验）
+    # 换句话说「照 .env.example 配出来的服务能启动、/healthz 回 200，但配置没生效」。
+    # 只影响 CRLF 文件；Linux 上 .env 是 LF，这行是 no-op。
+    line="${line%$'\r'}"
     case "$line" in
       ''|'#'*) continue ;;
       *'#'*) line="${line%%#*}" ;;   # strip trailing comment (unquoted values only)

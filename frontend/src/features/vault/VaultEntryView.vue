@@ -585,7 +585,10 @@ onBeforeUnmount(() => {
 
 /* toast */
 .toast {
-  position: fixed; bottom: var(--space-6); left: 50%;
+  /* 2026-10-06 修正：原 bottom: var(--space-6) = 20px，低于
+     --bottom-chrome-height(56px)，且 z-index: --z-fab(60) < --z-bottom-nav(70)
+     ⇒ toast 下沿被底栏压住。改为跟随 chrome token。 */
+  position: fixed; bottom: calc(var(--bottom-chrome-height) + var(--space-6)); left: 50%;
   transform: translateX(-50%);
   background: var(--danger); color: var(--text-inverse);
   padding: var(--space-3) var(--space-5);

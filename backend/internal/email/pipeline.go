@@ -74,6 +74,9 @@ type Pipeline struct {
 	SpamDryRun bool
 	// AccountSyncTimeout 单账户同步墙钟上限；<=0 时用 DefaultAccountSyncTimeout。
 	AccountSyncTimeout time.Duration
+	// A4Grid 是每日 A4 网格导出阶段的格数（2=2x2，3=3x3）。其它值（默认 0）
+	// 关闭该阶段，报告里 A4ExportSkip 会写明关闭原因。见 pipeline_a4.go。
+	A4Grid int
 }
 
 // EmailClassifier 对一个 (user, workspace) 下的未归类邮件跑一次分类，
@@ -374,8 +377,18 @@ type PipelineReport struct {
 	ShareDocCSV             string        `json:"shareDocCsv,omitempty"`
 	ShareDocMD              string        `json:"shareDocMd,omitempty"`
 	// ShareDocURL 是飞书共享台账链接（未配置飞书时为空，本地 CSV/MD 仍会生成）。
-	ShareDocURL string   `json:"shareDocUrl,omitempty"`
-	Errors      []string `json:"errors,omitempty"`
+	ShareDocURL string `json:"shareDocUrl,omitempty"`
+	// A4* 是每日 A4 网格导出阶段的结果（见 pipeline_a4.go）。该阶段默认关闭
+	// （POCKET_EMAIL_A4_GRID 未设为 2/3）。
+	//
+	// A4ExportSkip 存在的意义是让「没导出」与「压根没有票」可区分：把阶段打开
+	// 之后，字段为空会长成「导出成功了但没东西可导」的样子。
+	A4ExportPath    string   `json:"a4ExportPath,omitempty"`
+	A4ExportCount   int      `json:"a4ExportCount,omitempty"`
+	A4ExportSkipped []string `json:"a4ExportSkipped,omitempty"`
+	A4ExportMarked  int      `json:"a4ExportMarked,omitempty"`
+	A4ExportSkip    string   `json:"a4ExportSkip,omitempty"`
+	Errors          []string `json:"errors,omitempty"`
 }
 
 // AddError 记录非致命错误（流水线继续跑完）。
@@ -476,6 +489,10 @@ func (p *Pipeline) Run(ctx context.Context) *PipelineReport {
 			rep.ShareDocCSV = csvPath
 			rep.ShareDocMD = mdPath
 		}
+		// A4 网格导出（见 pipeline_a4.go）。必须放在 scope 循环**内**：
+		// 一个发票文件只属于一个 workspace，放到循环外就只会导出最后一个
+		// scope 的票，其它工作区的票永远拿不到可打印凭证。
+		p.exportPendingA4(ctx, rep, sc[0], sc[1], invoices)
 	}
 	return rep
 }
@@ -1321,8 +1338,13 @@ func (p *Pipeline) BuildInvoiceSummaryDocs(ctx context.Context, userID, workspac
 //
 // 2026-10-02 加「核验」列：与 ledger.go 的飞书表头保持同一组列。两侧列数/
 // 列序必须一致，否则用户在飞书表格和本地 CSV 之间对照时会错位。
+//
+// 2026-10-05 加「备注」列：人工标注的理由原文。理由见 invoiceHumanMarkClass
+// 处的说明——标注原先只活在 last_error 里，而 last_error 不是导出列，
+// 于是「这一行被人判定为不是发票」这件事在**交付物里完全不存在**，
+// 而该行仍以「已核验」占着合计（round44 实测占 61.1%）。
 var invoiceSummaryHeader = []string{
-	"费用类型", "对方单位", "金额", "币种", "发票号", "日期", "状态", "核验", "文件名", "来源邮件",
+	"费用类型", "对方单位", "金额", "币种", "发票号", "日期", "状态", "核验", "文件名", "来源邮件", "备注",
 }
 
 // invoiceSummaryTotalRow 生成合计行，长度与表头一致，金额落在「金额」列。
@@ -1389,6 +1411,7 @@ func WriteInvoiceSummaryDocs(dataDir, workspaceID string, invoices []Invoice) (s
 		rows = append(rows, []string{
 			inv.Category, inv.Seller, fmt.Sprintf("%.2f", amount), inv.Currency,
 			inv.InvoiceNo, inv.InvoiceDate, inv.Status, InvoiceVerifiedLabel(inv), inv.FileName, inv.Subject,
+			InvoiceHumanNote(inv),
 		})
 		// 计入合计的门槛用**唯一**判据 InvoiceCountsTowardTotal，与 LedgerRows
 		// 逐字共用同一个函数。此前这里和 ledger.go 各写了一份逐字符相同的
@@ -1485,11 +1508,19 @@ func WriteInvoiceSummaryDocs(dataDir, workspaceID string, invoices []Invoice) (s
 	// 绝不给一个无币种的裸数字。两者说的是不同的事，必须都在。
 	md.WriteString(fmt.Sprintf("生成时间：%s · 共 %d 张（计入合计 %d 张）· 合计金额 **%s**\n\n",
 		time.Now().Format("2006-01-02 15:04"), len(invoices), counted, amountSummary))
-	md.WriteString("| 费用类型 | 对方单位 | 金额 | 发票号 | 日期 | 状态 | 文件 |\n")
-	md.WriteString("|---|---|---:|---|---|---|---|\n")
+	md.WriteString("| 费用类型 | 对方单位 | 金额 | 发票号 | 日期 | 状态 | 核验 | 备注 |\n")
+	// 末列是**核验状态**（r[7]=InvoiceVerifiedLabel），不是文件名。
+	// 原先这里写的是「| 文件 |」——表头说文件、内容是「已核验/未核验」，
+	// 而文件名在 r[8]，从头到尾没进过 Markdown。CSV 侧是「核验」与
+	// 「文件名」两列分开的，没有这个问题。
+	// 要在 MD 里也带文件名就**加一列**，不要把这一列改名了事——
+	// 下方合计行的列数假设依赖这个 7 列形状。
+	//
+	// 2026-10-05 加第 8 列「备注」（r[10]，追加在末尾所以既有下标不动）。
+	md.WriteString("|---|---|---:|---|---|---|---|---|\n")
 	for _, r := range rows {
-		md.WriteString(fmt.Sprintf("| %s | %s | %s %s | %s | %s | %s | %s |\n",
-			r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7]))
+		md.WriteString(fmt.Sprintf("| %s | %s | %s %s | %s | %s | %s | %s | %s |\n",
+			r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], mdSafeCell(r[10])))
 	}
 	// 多币种时在明细表后附逐币种合计，单币种不加（与 CSV 一行合计对应）。
 	if len(sumByCur) > 0 {
@@ -1524,6 +1555,23 @@ func WriteInvoiceSummaryDocs(dataDir, workspaceID string, invoices []Invoice) (s
 		return csvPath, "", err
 	}
 	return csvPath, mdPath, nil
+}
+
+// mdSafeCell 转义会破坏 Markdown 表格的字符。
+//
+// 为什么只有「备注」列用它：备注是**唯一**的机器写入的自由文本
+// （人工标注原文），其余列要么受控（状态/核验/币种），要么是解析来的
+// 业务字段。竖线会把一行劈成两行、换行会提前结束该行——两者都会让
+// 汇总单**渲染错位**而没有任何报错。
+//
+// 其它列的同类缺口是既有的（对方单位/文件名理论上也可能含竖线），
+// 本轮不顺手扩范围：改了会让既有期望值全部变动，却不是本轮要修的缺陷。
+func mdSafeCell(s string) string {
+	s = strings.ReplaceAll(s, "|", "\\|")
+	s = strings.ReplaceAll(s, "\r\n", " ")
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.ReplaceAll(s, "\r", " ")
+	return s
 }
 
 // csvSafeCell 防 CSV 公式注入（=/-/+/@ 开头的单元格前置单引号）并转义引号。

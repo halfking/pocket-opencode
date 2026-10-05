@@ -36,8 +36,10 @@ func (r *recordingRow) Scan(dest ...any) error {
 }
 
 // splitColumns splits a SELECT list on top-level commas, ignoring commas
-// inside parentheses or quotes. `COALESCE(workstream_id, ”)` contains a comma
-// that must not split the list.
+// inside parentheses or quotes. This contains a comma that must not split the
+// list:
+//
+//	COALESCE(workstream_id, '')
 func splitColumns(list string) []string {
 	var out []string
 	depth := 0

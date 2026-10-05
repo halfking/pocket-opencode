@@ -480,7 +480,7 @@ const router = createRouter({
       path: '/settings/permissions',
       name: 'settings-permissions',
       component: () => import('../features/settings/SettingsPermissionsView.vue'),
-      meta: { requiresAuth: true, title: '权限与隐私', bottomNav: false, canGoBack: true, hideAppHeader: true }
+      meta: { requiresAuth: true, title: '权限与隐私', bottomNav: false, canGoBack: true }
     },
     // ---- Phase 4: 移动分布式 AI 工作平台 · 市场三大入口 ----
     {
@@ -501,29 +501,50 @@ const router = createRouter({
       component: WorkbuddyView,
       meta: { requiresAuth: true, title: '工作搭子', bottomNav: false, canGoBack: true, hideAppHeader: true },
     },
+    // ⚠️ 2026-10-04 去掉本组 4 条路由的 hideAppHeader（含 /settings/permissions 共 5 条）。
+    //
+    // 契约（AppLayout.vue:181）：hideAppHeader 只用于「视图自带全屏头部」时，
+    // 用来避免与视图头部双层堆叠。而本组视图**没有**自带头部，且它们用
+    // HeaderActionsPortal 注入顶栏按钮（ScheduledTaskListView.vue:3-7 的
+    // 「创建自动化」），那个 portal 的渲染条件恰恰是 `hideAppHeader !== true`。
+    //
+    // 于是声明 hideAppHeader 的直接后果是**四件东西一起消失**：
+    //   · 壳层顶栏（AppLayout.vue:183）
+    //   · 顶栏里的返回按钮（AppLayout.vue:37 v-if="canGoBack"）
+    //   · 页面标题
+    //   · 视图通过 portal 注入的所有顶栏按钮（HeaderActionsPortal.vue:48）
+    // 而路由又声明了 canGoBack: true ⇒ 用户在一个「该退不退」的页面里。
+    //
+    // 真机实证（Xiaomi 2411DRN47C，/settings/scheduled-tasks）：
+    // 探针两条负向断言都成立 —— `返回` 不存在、`创建自动化` 不存在；
+    // 同轮 `仅显示启用`/`刷新` 正常渲染（不是空页）。
+    // 且用户一旦有任务，「创建自动化」在页面上一个都不剩（空态那个随数据消失）。
+    //
+    // 判据：scripts/check-hide-app-header.mjs（已接进 gates + CI），
+    // 会对「声明 hideAppHeader 但视图没有自备头部」的路由判红。
     {
       path: '/settings/scheduled-tasks',
       name: 'scheduled-tasks',
       component: ScheduledTaskListView,
-      meta: { requiresAuth: true, title: '定时任务', bottomNav: false, canGoBack: true, hideAppHeader: true }
+      meta: { requiresAuth: true, title: '定时任务', bottomNav: false, canGoBack: true },
     },
     {
       path: '/settings/scheduled-tasks/new',
       name: 'scheduled-task-new',
       component: ScheduledTaskEditView,
-      meta: { requiresAuth: true, title: '创建定时任务', bottomNav: false, canGoBack: true, hideAppHeader: true }
+      meta: { requiresAuth: true, title: '创建定时任务', bottomNav: false, canGoBack: true }
     },
     {
       path: '/settings/scheduled-tasks/:id/edit',
       name: 'scheduled-task-edit',
       component: ScheduledTaskEditView,
-      meta: { requiresAuth: true, title: '编辑定时任务', bottomNav: false, canGoBack: true, hideAppHeader: true }
+      meta: { requiresAuth: true, title: '编辑定时任务', bottomNav: false, canGoBack: true }
     },
     {
       path: '/settings/scheduled-tasks/:id',
       name: 'scheduled-task-detail',
       component: ScheduledTaskDetailView,
-      meta: { requiresAuth: true, title: '定时任务详情', bottomNav: false, canGoBack: true, hideAppHeader: true }
+      meta: { requiresAuth: true, title: '定时任务详情', bottomNav: false, canGoBack: true }
     },
     {
       path: '/calendar',

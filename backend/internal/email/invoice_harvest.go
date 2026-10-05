@@ -78,6 +78,18 @@ var invoiceLinkHints = []string{
 
 var (
 	reHTMLHrefs = regexp.MustCompile(`(?i)href\s*=\s*["']([^"'h][^"']*(?:https?:)?[^"']*)["']|href\s*=\s*["'](https?://[^"']+)["']`)
+	// reHTMLSrcs 匹配内联资源属性（img/src、background、poster 等）里的 URL。
+	//
+	// 它**不参与**候选收集，只用来把「这个 URL 是图片不是下载链接」这件事
+	// 记下来——见 extractInvoiceURLs 里 inline 那段注释。
+	//
+	// 属性名用 `\b(?:src|background|poster)\b` 而不是只写 `src`（2026-10-04 修正）：
+	// 原实现的注释声称覆盖 background，正则却只匹配 `src=`，于是
+	// `<div background="https://cdn.x.com/mail/banner?w=750&h=200">` 里的横幅
+	// 仍会被 reBareURLs 捞进候选——**注释与代码不一致，读者无从察觉**，
+	// 而那正是本函数要堵的同一个营销横幅泄漏。
+	// `\b` 开头让 `data-src=` 也一并覆盖（`-` 之后是词边界）。
+	reHTMLSrcs  = regexp.MustCompile(`(?i)\b(?:src|background|poster)\s*=\s*["']([^"']+)["']`)
 	reBareURLs  = regexp.MustCompile(`https?://[^\s<>"'\)\]，。；]+`)
 	reSkippable = regexp.MustCompile(`(?i)(unsubscribe|\.png|\.jpg|\.jpeg|\.gif|\.css|\.js|\.ico|facebook|twitter|doubleclick|google-analytics|mailto:|tel:)`)
 )
@@ -353,9 +365,29 @@ func (h *InvoiceHarvester) harvestOne(ctx context.Context, inv *Invoice) string 
 		}
 	}
 
+	// bannerErrs：被 imagePlausibleAsVoucher 拒掉的非凭证图片。
+	// 与 linkErrs 分开记，因为两者的处置完全不同——链接失败值得重试，
+	// 而「邮件里只有一张横幅」重试多少次都不会变好。
+	var bannerErrs []string
+
 	// 1) PDF / 图片附件（拍照发票常见 jpg/png）
+	//
+	// 图片要多过一道 imagePlausibleAsVoucher：isImageBytes 只问「是不是图片」，
+	// 而营销横幅对这个问题答 true。1da030ab 挡住了 `src=` 那条**候选收集**的路，
+	// 附件这条路它没管，也管不着（内联 cid: 图片同样会被解成附件）。
+	// 真实后果见 invoice_banner_voucher_admission_test.go：两张 SHA256 相同的
+	// 百望宣传横幅被存成两笔「已核验」发票，金额占当轮 CNY 合计的 61.1%。
 	for _, att := range parsed.Attachments {
-		if isPDFBytes(att.Data) || isImageBytes(att.Data) {
+		if isPDFBytes(att.Data) {
+			return h.saveInvoiceFile(ctx, inv, att.Data, "attachment")
+		}
+		if isImageBytes(att.Data) {
+			if !imagePlausibleAsVoucher(att.Data) {
+				why := "附件 " + att.Filename + "：" + voucherRejectionReason(att.Data)
+				log.Printf("[email/invoice-harvest] reject non-voucher image invoice=%s: %s", inv.ID, why)
+				bannerErrs = append(bannerErrs, why)
+				continue
+			}
 			return h.saveInvoiceFile(ctx, inv, att.Data, "attachment")
 		}
 	}
@@ -367,11 +399,27 @@ func (h *InvoiceHarvester) harvestOne(ctx context.Context, inv *Invoice) string 
 	// 原实现那条「既不是 PDF 也不是 err」的情况是静默的，last_error 最后只
 	// 报成 `no usable pdf/xml found`，把「链接存在但拿回来不对」误说成
 	// 「邮件里没有发票文件」。这正是需求「多次操作才能下载到」最需要看清的一步。
+	//
+	// 图片同样要过 imagePlausibleAsVoucher：候选收集侧只排除了 `src=`，
+	// 而 `<a href="…banner.jpg">` 与正文裸 URL 两条路照收不误
+	// （1da030ab 的反向保护第 1 条恰恰要求 href 必须仍被收走——收候选是对的，
+	// 缺的是收下来之后的采信闸门）。
 	var linkErrs []string
 	for _, u := range extractInvoiceURLs(parsed.HTMLBody + "\n" + parsed.TextBody) {
 		data, dlErr := h.downloadPDF(ctx, u)
-		if dlErr == nil && (isPDFBytes(data) || isImageBytes(data)) {
-			return h.saveInvoiceFile(ctx, inv, data, "pdf-url")
+		if dlErr == nil {
+			switch {
+			case isPDFBytes(data):
+				return h.saveInvoiceFile(ctx, inv, data, "pdf-url")
+			case isImageBytes(data):
+				if imagePlausibleAsVoucher(data) {
+					return h.saveInvoiceFile(ctx, inv, data, "pdf-url")
+				}
+				why := u + "：" + voucherRejectionReason(data)
+				log.Printf("[email/invoice-harvest] reject non-voucher image invoice=%s: %s", inv.ID, why)
+				bannerErrs = append(bannerErrs, why)
+				continue
+			}
 		}
 		why := "下载内容不是 PDF/图片"
 		if dlErr != nil {
@@ -400,14 +448,61 @@ func (h *InvoiceHarvester) harvestOne(ctx context.Context, inv *Invoice) string 
 
 	// 链接存在但都拿不到发票时，把每个链接的失败原因写进 last_error，
 	// 而不是笼统的「邮件里没有 pdf/xml」。
+	//
+	// bannerErrs 单列：被横幅闸门拒掉的候选要能被运维一眼看出来，
+	// 否则 last_error 只会报成「没有可用 pdf/xml」——那句话会把
+	// 「拿回来的是张标语」误说成「邮件里没有发票」，正是 2026-10-04
+	// 那两行至今没人能解释的根因。
+	if len(bannerErrs) > 0 {
+		if len(linkErrs) > 0 {
+			return h.markRetry(ctx, inv, "取到的图片不是发票凭证（横幅/装饰图）："+
+				strings.Join(bannerErrs, "; ")+"；另有链接失败："+strings.Join(linkErrs, "; "))
+		}
+		return h.markRetry(ctx, inv, "取到的图片不是发票凭证（横幅/装饰图）："+strings.Join(bannerErrs, "; "))
+	}
 	if len(linkErrs) > 0 {
 		return h.markRetry(ctx, inv, "发票链接未能取到 PDF 文件："+strings.Join(linkErrs, "; "))
 	}
 	return h.markRetry(ctx, inv, "no usable pdf/xml found in message")
 }
 
+// invoiceHumanMarkPrefix 是「这一行是人看过、确认它不是发票」的标记前缀。
+//
+// 为什么需要它（2026-10-04 round44 实测）：harvest 每轮处理
+// `status IN ('new','pending')`（MaxInvoiceAttempts=8），而 markRetry 原本是
+// **整段覆盖** `inv.LastError = msg`。于是工行对账单那行（status=pending、
+// attempts=2）一旦被人工标注「非发票」，下一轮采集失败就会把标注原样抹掉，
+// 换回一句笼统的「发票链接未能取到 PDF 文件」——
+// **人工判断被机器的例行失败覆盖掉，比不标还糟**。
+//
+// 约定：人工标注一律以本前缀开头。采集侧看到带前缀的旧值就不再覆盖它，
+// 而是把本轮原因**追加**在后面（`标注 | 本轮采集：…`），两边信息都留得住。
+//
+// 不改 status：台账的 status 约束是 ('new','pending','downloaded','failed','filed')，
+// 加 'void' 会牵动所有读 status 的地方（导出、统计、A4 排版），
+// 而 row43/44 的授权是「保留并标注」——保留就意味着不动 status。
+const invoiceHumanMarkPrefix = "【人工标注】"
+
+// composeHarvestRetryMessage 决定新一轮采集失败后 last_error 该写成什么。
+//
+// 抽成纯函数是为了让它**可被真调用测试**：markRetry 需要一个 *Store 才能跑，
+// 而 Store 是具体类型没法打桩，于是判据只能去匹配源码文本——
+// 那样写出来的判据会被 `false && …` 这类短路写法骗过（实测踩过：
+// 注释也记着「判据匹配注释里的字面文本，等于给退化开了后门」）。
+// 提成纯函数后，「人工标注不被覆盖」这条断言打的是**生产代码本身**。
+func composeHarvestRetryMessage(prior, msg string) string {
+	if strings.HasPrefix(prior, invoiceHumanMarkPrefix) {
+		return prior + " | 本轮采集：" + msg
+	}
+	return msg
+}
+
 // markRetry 下载未成功：pending 等下一轮；重试超限转 failed。
+//
+// 人工标注优先：旧 last_error 带 invoiceHumanMarkPrefix 时，本轮原因追加其后，
+// 绝不覆盖（见常量注释里的实测理由）。
 func (h *InvoiceHarvester) markRetry(ctx context.Context, inv *Invoice, msg string) string {
+	msg = composeHarvestRetryMessage(inv.LastError, msg)
 	if inv.Attempts >= MaxInvoiceAttempts {
 		inv.Status = "failed"
 		inv.LastError = msg
@@ -678,6 +773,34 @@ func HasInvoiceAttachment(atts []ParsedAttachment) bool {
 func extractInvoiceURLs(body string) []string {
 	seen := map[string]bool{}
 	var out []string
+
+	// 内联资源（img/src 等）里的 URL 一律不算下载候选。
+	//
+	// 为什么不能只靠 reSkippable 的图片扩展名（2026-10-04 真实产出教训）：
+	// 那条跳过规则只认 URL 里**有没有** `.png/.jpg/.jpeg/.gif`，
+	// 而动态图片地址常写成 `…/banner?w=750&h=200` —— **没有扩展名**，
+	// 于是 `<img src="https://cdn.baiwang.com/mail/banner?w=750&h=200&ticket=abc123">`
+	// 被 reBareURLs 捞进候选。采集器下载它、`isImageBytes` 对任意 JPEG 放行，
+	// 于是营销横幅被存成了发票文件（台账里两张「票」的文件实际是印着
+	// 「用心服务 贴心用户」的横幅，两个文件 SHA256 相同）。
+	//
+	// 「跳过内联图片」这个**意图本来就是既有的**——reSkippable 里的
+	// `\.png|\.jpg|\.jpeg|\.gif` 就是它，invoice_harvest_test.go 里那个
+	// `<img src="https://cdn.cn/pic.png"/>` 用例也钉住了。
+	// 这次只是把实现从「看扩展名」换成「看它来自哪个属性」，
+	// 意图不变，**覆盖面变大**：不再依赖对方用什么后缀发图。
+	inline := map[string]bool{}
+	for _, m := range reHTMLSrcs.FindAllStringSubmatch(body, -1) {
+		for _, g := range m[1:] {
+			if g == "" {
+				continue
+			}
+			g = strings.TrimRight(strings.TrimSpace(g), ").,;")
+			g = strings.ReplaceAll(g, "&amp;", "&")
+			inline[g] = true
+		}
+	}
+
 	add := func(u string) {
 		u = strings.TrimRight(strings.TrimSpace(u), ").,;")
 		u = strings.ReplaceAll(u, "&amp;", "&")
@@ -685,6 +808,9 @@ func extractInvoiceURLs(body string) []string {
 			return
 		}
 		if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
+			return
+		}
+		if inline[u] {
 			return
 		}
 		if reSkippable.MatchString(u) {
@@ -763,7 +889,24 @@ func InvoiceFileName(inv *Invoice) string {
 	amount := strconv.FormatFloat(inv.Amount, 'f', 2, 64)
 	date := strings.ReplaceAll(inv.InvoiceDate, "/", "-")
 	if date == "" {
-		date = time.Now().Format("2006-01-02")
+		// 原来这里填 `time.Now().Format("2006-01-02")`，也就是**下载当天**。
+		// 那是往凭证文件名里塞了一个**编造的日期**，而且台账那一列是空的——
+		// 同一份数据在文件名里「有日期」、在汇总单里「没日期」，两边自相矛盾，
+		// 而文件名那份更像真的。真实产物（2026-10-04 08:00 那轮）：
+		//
+		//	通信-X-8.00-2026-10-04.pdf     ← 日期段是下载日，台账「日期」列是空的
+		//
+		// 这与 round37 §35 那条（金额取自信用额度、日期取自到期还款日）
+		// 是同一类缺陷：一个**看起来权威的错值**，比留空危险得多。
+		//
+		// 顺带修掉一个非确定性：填当天日期意味着同一张票**隔天重试就会得到
+		// 另一个文件名**，而 pickFreeInvoicePath 是按「目标名 + 内容相同」去重的，
+		// 名字一变目标就不存在 → 写出第二份副本，同一张票在目录里出现两次。
+		//
+		// 用显式占位而不是留空：留空会让名字变成 `通信-X-8.00-.pdf`，
+		// 可读性差、也容易被误当成解析失败。`未知日期` 与既有的
+		// `未知单位` 兜底是同一套约定。
+		date = "未知日期"
 	}
 	name := fmt.Sprintf("%s-%s-%s-%s", category, seller, amount, date)
 	if no := sanitizeFileName(inv.InvoiceNo, ""); no != "" {

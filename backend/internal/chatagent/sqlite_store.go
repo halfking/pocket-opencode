@@ -254,7 +254,7 @@ func (s *SQLiteStore) List(ctx context.Context, workspaceID, department string) 
 }
 
 // Update 更新角色（自定义与内置均可——内置专家库允许维护）。自定义角色
-// 仅允许所属 workspace 修改；内置行按其自身 workspace_id（”）定位。
+// 仅允许所属 workspace 修改；内置行按其自身 workspace_id（空串）定位。
 func (s *SQLiteStore) Update(ctx context.Context, workspaceID string, a *Agent) error {
 	if s.db == nil {
 		return fmt.Errorf("sqlite store: db not configured")

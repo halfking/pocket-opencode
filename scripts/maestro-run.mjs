@@ -152,6 +152,23 @@ if (!flows.length) {
 const adb = (args, t = 60000) =>
   execFileSync(ADB, ['-s', DEVICE, ...args], { encoding: 'utf8', timeout: t, maxBuffer: 33554432 })
 
+/**
+ * 「查不到」是**有效答案**的那些命令必须走这个（真机 4c308e2e / MIUI 实测）。
+ *
+ * 为什么：execFileSync 在退出码非 0 时**抛异常**。而 `pidof <不存在的包>` 退 1、
+ * `cat /proc/net/unix | grep -o 'webview_devtools_remote_[0-9]*'` 在无命中时也退 1 ——
+ * 两者都是**正常**的「没找到」。用 adb() 读它们，代码永远走不到
+ * `if (!pid) throw new Error('APP_NOT_RUNNING')` 那一支，
+ * 而是直接以未捕获异常把整个跑批打死，崩点与真实原因隔了好几跳。
+ */
+const adbSoft = (args, t = 60000) => {
+  try {
+    return execFileSync(ADB, ['-s', DEVICE, ...args], { encoding: 'utf8', timeout: t, maxBuffer: 33554432 })
+  } catch (e) {
+    return (e && e.stdout) || ''   // 「查不到」时 stdout 通常为空，退化成空串
+  }
+}
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 /** 一次性 CDP 求值：连上当前 App 的 WebView，评估一个表达式，拿回值后断开。 */
@@ -191,12 +208,44 @@ function bindCdpForward(sock) {
 }
 
 async function cdpEval(expr, ms = 8000) {
-  const pid = adb(['shell', 'pidof', PKG], 15000).trim().split(/\s+/)[0]
+  const pid = adbSoft(['shell', 'pidof', PKG], 15000).trim().split(/\s+/)[0]
   if (!pid) throw new Error('APP_NOT_RUNNING')
-  const socks = adb(['shell', `cat /proc/net/unix | grep -o 'webview_devtools_remote_[0-9]*'`], 15000)
+  // socket 是 App 起来**之后**才注册的，pidof 返回得比它早。
+  // 所以这里等它出现（有界），而不是「等不到就退而求其次连别的」——
+  // 后者正是连错 App 的根源，而连错之后**没有任何报错**。
+  const listSocks = () => adbSoft(['shell', `cat /proc/net/unix | grep -o 'webview_devtools_remote_[0-9]*'`], 15000)
     .split(/\r?\n/).map((l) => l.trim().replace('@', '')).filter(Boolean)
-  const sock = socks.find((s) => s.endsWith(`_${pid}`)) || socks[socks.length - 1]
-  if (!sock) throw new Error('NO_DEVTOOLS_SOCKET')
+  let socks = []
+  for (let i = 0; i < 15; i++) {
+    socks = listSocks()
+    if (socks.some((s) => s.endsWith(`_${pid}`))) break
+    if (i === 0 && socks.length && !socks.some((s) => s.endsWith(`_${pid}`))) {
+      // 只提示一次，避免把「正常等 socket」刷成一片警告
+      console.log(`[cdp] 等待 pid=${pid} 的 devtools socket（现有：${[...new Set(socks)].join(', ') || '无'}）…`)
+    }
+    await sleep(1000)
+  }
+  if (!socks.length) throw new Error('NO_DEVTOOLS_SOCKET')
+  // ⚠️ 2026-10-04 修：原来这里是 `find(…) || socks[socks.length - 1]`。
+  // 本机同时装着 com.kaixuan.opencode.pocket 与 …pocket.sttdev，两个
+  // webview_devtools_remote_<pid> 都是**活的**，「取最后一个」会连到**另一个 App**，
+  // 而 /json/list 与 Runtime.evaluate 一切正常、不报错。
+  //
+  // 这条通道比 lib/adb-cdp.mjs 那条更危险：它是 preflight 用来**填登录表单、
+  // 填主密码、复位路由**的。一旦连错包，preflight 会把登录态、路由全写到另一个 App 上，
+  // 然后对着另一个 App 的 hash 判「登录成功/失败」——结论与被测对象无关。
+  const sock = socks.find((s) => s.endsWith(`_${pid}`))
+  if (!sock) {
+    const others = [...new Set(socks.filter((s) => !s.endsWith(`_${pid}`)))]
+    throw new Error(
+      `CDP_SOCKET_PID_MISMATCH：等 15s 仍没有 pid=${pid}（${PKG}）的 webview devtools socket。` +
+      `设备上现有：${[...new Set(socks)].join(', ')}。` +
+      (others.length
+        ? `其中可能属于**其它 App**（本机装了多个包时常见），连过去会静默操作错误的 WebView。`
+        : '看起来都是死进程残留。') +
+      '不要退回连别的 socket。'
+    )
+  }
   const port = bindCdpForward(sock)   // 端口被占用会重试，见 bindCdpForward 的注释
   try {
     const page = (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()).find((t) => t.type === 'page')
@@ -239,12 +288,21 @@ async function cdpEval(expr, ms = 8000) {
  *  其它调用方仍用精确匹配——那里「必须停在这个路由」就是真实要求。 */
 async function setRoute(hash, readyExpr, timeoutMs = 30000, opts = {}) {
   const settle = opts.settle === true
-  const pid = adb(['shell', 'pidof', PKG], 15000).trim().split(/\s+/)[0]
+  const pid = adbSoft(['shell', 'pidof', PKG], 15000).trim().split(/\s+/)[0]
   if (!pid) return false
-  const socks = adb(['shell', `cat /proc/net/unix | grep -o 'webview_devtools_remote_[0-9]*'`], 15000)
+  const socks = adbSoft(['shell', `cat /proc/net/unix | grep -o 'webview_devtools_remote_[0-9]*'`], 15000)
     .split(/\r?\n/).map((l) => l.trim().replace('@', '')).filter(Boolean)
-  const sock = socks.find((s) => s.endsWith(`_${pid}`)) || socks[socks.length - 1]
-  if (!sock) return false
+  // ★ 2026-10-06 修：setRoute 里原来是 `find(…) || socks[socks.length - 1]`。
+  //   cdpEval 侧在 2026-10-04 已经把这个兜底删掉并写了理由，**这里漏了**。
+  //   本机同时装着 com.kaixuan.opencode.pocket 与 …pocket.sttdev，两个
+  //   webview_devtools_remote_<pid> 都是活的，「取最后一个」会连到**另一个 App**，
+  //   而 /json/list 与 Runtime.evaluate 一切正常、**不报任何错** ——
+  //   结果是断言在另一个 App 上匹配。真机 4c308e2e 上两个包并存，已实测会踩中。
+  const sock = socks.find((s) => s.endsWith(`_${pid}`))
+  if (!sock) {
+    console.log(`[cdp] pid=${pid} 的 socket 没出现（现有：${[...new Set(socks)].join(', ') || '无'}）`)
+    return false
+  }
   let port
   try {
     port = bindCdpForward(sock)      // 端口被占用会重试
@@ -512,6 +570,82 @@ async function assertDeviceReachesBackend() {
     console.log(`[preflight] 设备侧 curl 不可用，跳过（映射本身已核对为 tcp:${port} → tcp:${port}）`)
   }
   console.log(`[preflight] 设备可达后端 ${base}（reverse tcp:${dev} → tcp:${port}）✅`)
+
+  // ⚠️ 2026-10-04 补：**POCKET_API_BASE_OVERRIDE=0 时，App 走的是构建期那个 LAN 基址，
+  //    reverse 通道完全用不上。** 上面那句「设备可达后端」此时是**误导**——
+  //    它证明的是 reverse 通，不是 App 真正要走的那条路通。
+  //
+  // 实测踩过：设备重启后（pid 从 31052 变成 1315）设备→主机 LAN 方向 100% 丢包
+  //（同 /24 网段、IP 都没变、主机能 ping 到设备、反向不行，防火墙 Public/Private 档都是禁用的），
+  // App 登录页显示「登录失败，请检查网络连接与后端地址后重试」、token 长度 0。
+  // 而 preflight 只在 30s 后报一句「❌ 登录后仍停在登录页（30s），last hash=(超时)」
+  // —— 把一个网络问题伪装成登录问题，排查方向整个被带偏（先去查了后端接口，实测 200 正常）。
+  //
+  // ⇒ 这里在跑 flow 之前就把「App 真正要走的那条路通不通」验掉，通不了就直接说清楚是哪一条。
+  if (process.env.POCKET_API_BASE_OVERRIDE === '0') {
+    let lanBase = process.env.POCKET_API_BASE_LAN || null
+    if (!lanBase) {
+      for (const p of [resolve('frontend/.env.android-dev'), resolve('../frontend/.env.android-dev')]) {
+        if (!existsSync(p)) continue
+        const hit = (readFileSync(p, 'utf8').match(/VITE_API_BASE\s*=\s*(\S+)/) || [])[1]
+        if (hit) { lanBase = hit; break }
+      }
+    }
+    // ⚠️ 读不到就**响亮告警**，不许静默跳过。
+    //   本 worktree 里 frontend/.env.android-dev 常常不存在（那个文件只在使用
+    //   build-mobile 的 worktree 里），于是这条守卫会**整段失效且一声不吭** ——
+    //   「判据存在但不触发」比「没有判据」更危险，因为它让人以为有网。
+    //   兜底从 App 自己读：登录页页脚就渲染着当前后端地址。
+    if (!lanBase) {
+      try {
+        lanBase = (await cdpEval(`(function(){
+          try {
+            var m = (document.body.innerText || '').match(/http:\\/\\/[^\\s]{4,60}/g) || [];
+            return m.filter(function(u){ return /:\\d{4,5}/.test(u) })[0] || null;
+          } catch (e) { return null }
+        })()`)) || null
+      } catch { /* 取不到就按下面的告警走 */ }
+    }
+    if (!lanBase) {
+      console.error('[preflight] ⚠️ POCKET_API_BASE_OVERRIDE=0，但**读不到 App 实际会用的构建期基址**')
+      console.error('           （frontend/.env.android-dev 不存在，页内也没扫到 http://…:port）')
+      console.error('           ⇒ 「设备能否到达构建期基址」这条守卫现在是**失效**的，本轮不会替你验它。')
+      console.error('           可用 POCKET_API_BASE_LAN=http://<host>:<port> 显式指定以恢复该校验。')
+    } else {
+      // 设备侧 timeout 兜底：curl -m 5 之外再加一层 shell timeout，
+      // 否则遇到黑洞地址（丢包不回 RST）时 adb shell 会一直挂着。
+      const probeCmd = `timeout 12 curl -s -m 5 -o /dev/null -w '%{http_code}' ${lanBase}/healthz`
+      try {
+        const code = adb(['shell', probeCmd], 25000).trim()
+        if (code !== '200') {
+          console.error(`[preflight] ❌ POCKET_API_BASE_OVERRIDE=0 ⇒ App 走构建期基址 ${lanBase}，`)
+          console.error(`           但设备 curl ${lanBase}/healthz 返回 "${code}"（拿不到 200）。`)
+          console.error(`           reverse 通道（127.0.0.1:${dev}）是通的，但**这一轮用不上**。`)
+          console.error(`           ⇒ 别去查登录/后端：先修设备到主机的网络，或去掉 POCKET_API_BASE_OVERRIDE=0 走 reverse。`)
+          return false
+        }
+        console.log(`[preflight] 构建期基址 ${lanBase} 设备侧可达（200）✅`)
+      } catch (e) {
+        const msg = String(e?.message || e)
+        // ⚠️ 这里必须区分两种失败，**不能一律降级成告警**（2026-10-04 自踩）：
+        //   「设备没装 curl」  → 探不了，守卫确实失效，响亮告警但继续；
+        //   「探测本身到不了」 → 黑洞地址会让 adb shell 超时抛错，而这**本身就是
+        //     「App 走这个基址会连不上」的证据**。当成「curl 不可用」放过，
+        //     等于把唯一的判据在最该报警的时候关掉。
+        if (/not found|command not found|enoent/i.test(msg)) {
+          console.error(`[preflight] ⚠️ 设备上没有 curl，无法验证 ${lanBase} 是否可达`)
+          console.error('           ⇒ 这条守卫现在是**失效**的，本轮不会替你验构建期基址。')
+          console.error('           （reverse 通道是通的；如果 App 其实走的是构建期基址，登录会失败。）')
+        } else {
+          console.error(`[preflight] ❌ 探测 ${lanBase} 失败：${msg.split('\n')[0].slice(0, 120)}`)
+          console.error('           设备连**探测**都做不到 ⇒ 走到这个基址必然连不上。')
+          console.error(`           reverse 通道（127.0.0.1:${dev}）是通的，但**这一轮用不上**。`)
+          console.error('           ⇒ 修设备到主机的网络，或去掉 POCKET_API_BASE_OVERRIDE=0 走 reverse。')
+          return false
+        }
+      }
+    }
+  }
   return true
 }
 
@@ -771,14 +905,21 @@ async function preflight() {
   const deadline = Date.now() + 60000
   while (Date.now() < deadline) {
     await sleep(1500)
-    const pid = adb(['shell', 'pidof', PKG]).trim()
+    const pid = adbSoft(['shell', 'pidof', PKG]).trim()
     if (!pid) continue
     const resumed = adb(['shell', 'dumpsys', 'activity', 'activities'], 30000)
     // 注意别写成 topResumedActivity=\S*\s*<包名>：实际输出是
     //   topResumedActivity=ActivityRecord{6194969 u0 com.kaixuan.opencode.pocket/.MainActivity
     // 中间夹着 `u0`，\S* 跨不过空格，会**永远不匹配**——
     // 于是把「App 明明在前台」误报成「60s 未进前台」。踩过，别改回去。
-    if (/topResumedActivity.*opencode\.pocket/.test(resumed)) {
+    // ★ 2026-10-06 修：原判据 `/topResumedActivity.*opencode\.pocket/` 会把
+    //   …opencode.pocket.**sttdev** 也判成「在前台」——两包并存时前台是 sttdev
+    //   它照样通过，等于没有判据。
+    //   ⚠️ 这里**不能用 \b**：sttdev 的包名在 `pocket` 之后紧跟一个 `.`，
+    //   而 `.` 是非词字符，`\b` 正好在那里成立 ⇒ 判据仍然恒真（我第一版就这么写，
+    //   自测当场抓到：sttdev 在前台仍返回 true）。必须要求包名后接 `/`（类名分隔）
+    //   或行尾/空白，不能只要求「不是词字符」。
+    if (new RegExp(`topResumedActivity.*\\b${PKG.replace(/\./g, '\\.')}(?:/|\\s|$)`).test(resumed)) {
       console.log(`[preflight] App 已在前台 pid=${pid.trim()}`)
       await assertFetchIntact()
       if (!(await assertAppUsesReverseBase())) return false
@@ -1110,6 +1251,141 @@ if (process.env.POCKET_SKIP_CDP_LOGIN !== '1') {
     console.error(`[preflight] ❌ 提交登录失败：${clicked}`)
     process.exit(3)
   }
+  // ⚠️ 2026-10-04 补：**登录后可能压着「创建主密码」弹窗**，它会挡住路由跳转。
+  //
+  // 现场：登录**其实成功了**（pocket_token 291 字符，与后端一致，
+  // /api/auth/login 实测 200），但对话框让 `location.hash` 一直停在
+  // `#/login` ⇒ 下面「等 hash 离开 #/login」30s 超时 ⇒ **误报登录失败**。
+  // 这条弹窗在「设备上还没有主密码」时必然出现（首登、或 App 数据被清过）。
+  //
+  // ⚠️⚠️ 填值手法试了四轮才成功，全部记在这里，别再走回头路：
+  //   ① native setter + input 事件        → 值不进 v-model，提示不变
+  //   ② 补 change/blur/keyup + 回读校验     → 仍不行
+  //   ③ 只填第一个密码框                    → 漏了「再次输入主密码」那个
+  //   ④ 逐字符派发键盘事件                  → 仍不行
+  //   ⑤ **CDP `el.focus()` + adb `input text`（系统级真实输入）→ 成功**
+  //      真机实测：焦点落在正确框、两框值都是 11、弹窗消失、hash 跳到 #/ai。
+  // 原理：CDP 直接设 value 绕过了 Vue 的事件链；而 `input text` 走系统输入
+  // 通路，v-model 一定收得到。用 focus 选框则避开了坐标换算在滚动页面上的错位。
+  const master = process.env.POCKET_MASTER
+  // ★ 2026-10-06 修：这里原来把 adb 路径**硬编码**成另一台 Windows 开发机的
+  //   C:/Users/86133/…，绕过了顶部 whichFirst 那套解析（本机是 /opt/homebrew/bin/adb）。
+  //   后果形态极具误导性：每次填框都报 spawnSync …adb.exe ENOENT，
+  //   而日志打的是「主密码弹窗：两框已输入，长度=[14,0,0]」——
+  //   看着像**第二框不接受这么长的口令**，实际是**那条命令压根没跑起来**。
+  //   serial 同理，不再另开一份默认值（ DEVICE 已由 POCKET_SERIAL 解析）。
+  const adbBin = ADB
+  const serial = DEVICE
+  const ash = (cmd) => execFileSync(adbBin, ['-s', serial, 'shell', cmd], {
+    encoding: 'utf8', timeout: 30000, maxBuffer: 33554432,
+  })
+  // ★ 2026-10-06 修：`input text ${master}` 不加引号，口令里的 shell 元字符会被
+  //   **设备侧 shell** 解释掉。实测一个 14 位口令（13 字母数字 + 1 元字符）
+  //   只填进去 9 位，报出来的还是「两框已输入，长度=[14,9,0]」。
+  //   修法：单引号包住，并转义内部的单引号。
+  const shQuote = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`
+  const inputText = (s) => ash(`input text ${shQuote(s)}`)
+  let masterDialogHandled = false
+  for (let i = 0; i < 4; i++) {
+    await sleep(800)
+    const need = await cdpEval(`(function(){
+      try {
+        if ((document.body.innerText||'').indexOf('创建主密码') < 0) return 'no'
+        var ins = Array.from(document.querySelectorAll('input'))
+        var p1 = ins.filter(function(x){ return /至少/.test(x.placeholder||'') })[0]
+        var p2 = ins.filter(function(x){ return /再次|确认主密码|重复/.test(x.placeholder||'') })[0]
+        if (!p1) return 'no-input1'
+        if (!p2) return 'no-input2'
+        return 'present'
+      } catch (e) { return 'err:' + String(e).slice(0, 80) }
+    })()`)
+    if (need === 'no') { masterDialogHandled = true; break }
+    if (need !== 'present') {
+      console.log(`[preflight] ⚠️ 「创建主密码」弹窗在但处理不了：${need}`)
+      break
+    }
+    // 逐个框：CDP focus 选框（确定）→ adb input text 敲键盘（v-model 才收得到）
+    //
+    // ⚠️ 2026-10-05 修的真 bug：这里原来写的是
+    //     return ${JSON.stringify(which)}.test(x.placeholder||'')
+    //   `JSON.stringify('至少')` 产出的是**字符串字面量** `"至少"`，而字符串
+    //   没有 .test 方法 ⇒ 抛 `TypeError: "至少".test is not a function`。
+    //
+    //   为什么之前一直没暴露：这段只在**设备上还没有主密码**时才会走到
+    //   （首登、或 App 数据被清过——本轮卸载重装正好制造了这个状态）。
+    //   之前所有轮次设备上都已设过主密码，`need` 直接返回 'no'，这段是死代码。
+    //   典型的「长期不可达分支里藏着类型错误」：它安静地坏着，直到环境一变
+    //   才第一次被真正执行。
+    //
+    //   后果形态极具误导性：`need` 的**检测**那一侧（1250/1251 行）写的是
+    //   正则字面量 `/至少/.test`，所以它能正确判定「弹窗在、两个框都在」并
+    //   继续往下走；只有**填值**这一侧炸掉。于是循环每次在第一个框上失败就
+    //   `break`，第二个框永远没被填，值停在 `长度=[8,0,0]`，最后报成
+    //   「登录后仍停在登录页（30s）」——**离真因隔了三跳**，看起来像登录坏了。
+    //
+    //   修法用 new RegExp 而不是把斜杠拼进字符串：既保持 JSON.stringify 的
+    //   转义/防注入意图，类型又是对的。
+    for (const which of ['至少', '再次']) {
+      const f = await cdpEval(`(function(){
+        try {
+          var ins = Array.from(document.querySelectorAll('input'))
+          var re = new RegExp(${JSON.stringify(which)})
+          var el = ins.filter(function(x){ return re.test(x.placeholder||'') })[0]
+          if (!el) return 'no-el'
+          el.focus()
+          return document.activeElement === el ? 'focused' : 'focus-failed'
+        } catch (e) { return 'err:' + String(e).slice(0,80) }
+      })()`)
+      if (f !== 'focused') { console.log(`[preflight] ⚠️ focus 失败(/${which}/)：${f}`); break }
+      await sleep(400)
+      try {
+        ash('input keyevent 123')
+        for (let k = 0; k < 40; k++) ash('input keyevent 67')
+        await sleep(250)
+        inputText(master || '')
+      } catch (e) {
+        console.log(`[preflight] ⚠️ 系统级输入失败：${String(e?.message || e).split('\n')[0]}`)
+        break
+      }
+      await sleep(700)
+    }
+    const lens = await cdpEval(`JSON.stringify(Array.from(document.querySelectorAll('input'))
+        .filter(function(i){ return (i.type||'')==='password' })
+        .map(function(e){ return e.value.length }))`)
+    console.log(`[preflight] 主密码弹窗：两框已输入，长度=${lens}`)
+
+    // ⚠️⚠️ 2026-10-05 修的真缺陷（本文件此前**从未点过确认按钮**）：
+    //   下面 `if (masterDialogHandled)` 那段里有现成的 `b.click()`，
+    //   但 `masterDialogHandled` **只在 `need === 'no'`（弹窗已经不在）时**才为 true。
+    //   而弹窗**在场**的那条路径（need==='present' → 填两框）走完上面的循环后，
+    //   标志仍是 false ⇒ 整段点击确认被跳过 ⇒ 弹窗永远开着 ⇒
+    //   后面「等 hash 离开 #/login」30s 超时 ⇒ 报成「登录后仍停在登录页」。
+    //
+    //   现场（emulator-5554，Android 14）：
+    //     填值前 [8,0,0] → 修好填值通路后 [8,8,8]，两个主密码框都拿到了值，
+    //     截图里「确认」按钮是**激活态**（深蓝实心，不是 disabled）——
+    //     也就是说**只差最后一下点击**，而这一步从来没被执行过。
+    //     上一轮轮次日志里那行 `主密码弹窗确认：no-confirm` 是从**另一条路径**
+    //     （need==='no'，即设备上已设过主密码）打出来的，
+    //     **不能**当成「点击逻辑已验证可用」的证据。
+    //
+    //   ⇒ 判据从「弹窗是否还在」改成「本轮是否处理过弹窗」。
+    masterDialogHandled = true
+  }
+  if (masterDialogHandled) {
+    try { ash('input keyevent 111') } catch { /* 收键盘失败不致命 */ }
+    await sleep(500)
+    const ok = await cdpEval(`(function(){
+      try {
+        var b = Array.from(document.querySelectorAll('button'))
+                 .filter(function(x){ return /^(确认|确定|OK|Confirm)$/.test((x.textContent||'').trim()) })[0]
+        if (!b) return 'no-confirm'
+        b.click(); return 'confirmed'
+      } catch (e) { return 'err:' + String(e).slice(0,80) }
+    })()`)
+    console.log(`[preflight] 主密码弹窗确认：${ok}`)
+    await sleep(2500)
+  }
   // 等它真的离开登录页。点完立刻读会读到还没跳转的旧 hash。
   let landed = '(超时)'
   for (let i = 0; i < 30; i++) {
@@ -1286,6 +1562,80 @@ if (!isMiui) {
 //   换成另一个。所以复位放在 harness，用 CDP 直接改路由，不靠 UI 导航猜。
 const START_ROUTE = process.env.POCKET_START_ROUTE || '#/ai'
 
+// POCKET_PRE_ROUTE：每条 flow 开始前用 **CDP** 把路由切到指定页面。
+//
+// ## 它是什么
+//
+// 一个**诊断用逃生口**，不是修复。它的用途只有一个：把「导航没发生」和
+// 「页面坏了」这两种红法区分开 —— 前者用本功能把页面送到位，如果 flow 随即
+// 转绿，那问题在导航链路；仍然红，那问题在页面里。
+//
+// ## 观察到的现象（不是结论）
+//
+// 底部 tabbar 的 `tapOn` 在这台设备上**有时**报 COMPLETED 而页面没动，
+// `retryTapIfNoChange` 也不触发。`_goto-pkm.yaml` 注释里记过两次同样观察。
+// 另有一条更硬的约束：flow 内部**无法**用脚本改 hash 绕开它 ——
+//
+//	evalScript: ${location.hash = '#/more'}
+//	  → TypeError: Cannot set property 'hash' of undefined
+//	    （evalScript **不在 WebView 的 JS 上下文里**跑）
+//
+// 而 harness 这一侧有 CDP（lib/adb-cdp.mjs 的 ev，**是**在 WebView 上下文里）。
+// 实测 scripts/probe-cdp-route.mjs：设 location.hash='#/more' → 页面内容真的
+// 切成「更多功能 / 学习 / 对话 / 会议 / 邮箱 / 定时自动化 / 闪卡 / 设置 …」。
+//
+// ## ⚠️ 归因更正（2026-10-04）：别把这个当「MIUI 吞 tap」的证据
+//
+// 2026-10-04 早先那轮，`email-accounts` / `flashcards-write` 都红在
+// 「找不到目标页」，当时记下的归因是「MIUI 吞掉底部 tab tap」。
+// **这个归因是错的**，用对照实验推翻了：
+//
+//   同时做了两件事 —— ① 打开 POCKET_PRE_ROUTE；② 清掉首页 7 条
+//   自造的测试探针任务（Maestro任务×5 / PG matrix probe×2），它们此前把
+//   首页的「需要你介入」面板占满。
+//
+//	关掉 POCKET_PRE_ROUTE、清完探针后，email-accounts **2/2 通过（47s）**。
+//
+// ⇒ 真正的原因是**测试残留数据把导航区盖住了**（tap 落在面板上，
+// 不是被系统吞掉），不是设备级的 MIUI bug。两件事一起动过、只按「开/关
+// pre-route」归因，就会把绕过手段误当成修复，并把错误结论写进注释传播出去。
+// 记这一条是因为这正是本注释上一版的错误。
+//
+// ## 为什么必须自证「真的到了」
+//
+// setRoute 只能证明 **hash 变了**，不能证明**页面切了**。所以这里额外读一次
+// body.innerText，并用 POCKET_PRE_ROUTE_MARK（正则）判「确实在目标页」。
+// 负控实测：MARK 填一个绝不可能出现的字符串 → 守卫响亮报「页面自证失败」
+// 并打印页面内容前 220 字。
+const PRE_ROUTE = (process.env.POCKET_PRE_ROUTE || '').trim()
+const PRE_ROUTE_MARK = (process.env.POCKET_PRE_ROUTE_MARK || '').trim()
+
+async function gotoPreRoute() {
+  if (!PRE_ROUTE) return
+  const sep = PRE_ROUTE.includes('?') ? '&' : '?'
+  const want = `${PRE_ROUTE}${sep}__preroute=${Date.now()}`
+  const ok = await setRoute(want, 'true', 8000)
+  let h = '(读不到)'
+  let body = ''
+  try {
+    h = String(await cdpEval('location.hash') || '')
+    body = String(await cdpEval('document.body.innerText') || '').replace(/\s+/g, ' ')
+  } catch { /* 通道也坏了；下面的 mark 判据会报出来 */ }
+  const line = `[pre-route] ${ok ? '✅' : '⚠️ '} ${PRE_ROUTE} → ${h}`
+  if (PRE_ROUTE_MARK) {
+    const re = new RegExp(PRE_ROUTE_MARK)
+    if (re.test(body)) {
+      console.log(`${line} · 页面自证通过（/${PRE_ROUTE_MARK}/ 命中）`)
+      return
+    }
+    console.error(`${line} · ❌ 页面自证**失败**：/${PRE_ROUTE_MARK}/ 没命中。`)
+    console.error(`   页面内容前 220 字：${body.slice(0, 220)}`)
+    console.error(`   ⇒ flow 很可能仍会红在「找不到目标页」。这不是 flow 的问题，是导航没到位。`)
+    return
+  }
+  console.log(`${line} · 页面内容前 120 字：${body.slice(0, 120)}`)
+}
+
 /** 每条 flow 之前的复位：造一次真实 hash 变化，让路由守卫重算。 */
 async function resetToStart() {
   const want = `${START_ROUTE}?__reflow=${Date.now()}`
@@ -1305,6 +1655,79 @@ const maestroEnv = {
   POCKET_MASTER: process.env.POCKET_MASTER || 'PocketTest2026',
   JAVA_HOME: resolveJavaHome() || process.env.JAVA_HOME,
   MAESTRO_CLI_NO_ANALYTICS: 'true',
+
+  // 强制 JVM 按 UTF-8 输出。2026-10-04 实测踩到：Windows 上 JVM 跟随系统
+  // ANSI 代码页（GBK）输出，中文断言在失败信息里全变成 U+FFFD ——
+  // `[Failed] xxx (Assertion is false: "?????" is visible)`，码点全是 fffd，
+  // **哪个断言红了根本读不出来**，只能靠反复跑 + 猜哪个元素没出现。
+  // 本轮就因为它把「红在 更多功能 / 定时自动化 / 仅显示启用 / 返回」这四种
+  // 完全不同的失败压成了同一串问号，绕了好几轮才定位到真因。
+  //
+  // 追加而非覆盖：调用方（run-maestro.ps1 等）可能已经带了别的 JVM 参数。
+  JAVA_TOOL_OPTIONS: `${process.env.JAVA_TOOL_OPTIONS ?? ''} -Dfile.encoding=UTF-8 -Dsun.stdout.encoding=UTF-8 -Dsun.stderr.encoding=UTF-8`.trim(),
+}
+
+// ---- 夹具（2026-10-04）----------------------------------------------------
+//
+// 有些 flow 的判据依赖一个**前提**，前提不成立时它会恒红，于是等于没有护栏。
+// notes-stt-error-visibility 就是这种：ASR 开通后后端不再返回
+// `stt_unavailable:`，而它的断言正是围绕这条带错误码的可行动原因。
+//
+// 声明写在 scripts/.maestro-flows.json 的 `fixture` 字段上，脚本路径**由名字
+// 推导**（`fixture: stt-error` ⇒ `scripts/stt-error-fixture.mjs`），不另建
+// 映射表 —— 两边各写一份就会出现「checker 放行的名字 harness 认不出」。
+//
+// ⚠️ 还原必须挂在 finally 上，不能是「flow 通过之后」：
+//   夹具把 STT 的 gatewayModel 指到一个不存在的模型，留在库里就等于
+//   **用户的语音转写是坏的**。flow 失败恰恰是最需要还原的时刻。
+const fixtureFor = (() => {
+  const map = new Map()
+  let list = []
+  try {
+    const raw = JSON.parse(readFileSync(resolve(ROOT, 'scripts', '.maestro-flows.json'), 'utf8'))
+    list = Array.isArray(raw) ? raw : (raw?.flows ?? [])
+  } catch (e) {
+    console.error(`[fixture] ⚠️ 读不到 scripts/.maestro-flows.json（${e.message}），本轮不跑任何夹具。`)
+    return map
+  }
+  for (const e of list) {
+    if (!e || typeof e !== 'object' || !e.file) continue
+    if (e.fixture) map.set(String(e.file), { kind: 'fixture', name: String(e.fixture) })
+    else if (e.reset) map.set(String(e.file), { kind: 'reset', name: String(e.reset) })
+  }
+  return map
+})()
+
+/** 配置里标了 kind=subflow 的流 —— 它们只能被父流 runFlow 引用。 */
+const subFlows = new Set((() => {
+  const out = new Set()
+  try {
+    const raw = JSON.parse(readFileSync(resolve(ROOT, 'scripts', '.maestro-flows.json'), 'utf8'))
+    for (const e of (Array.isArray(raw) ? raw : (raw?.flows ?? []))) {
+      if (e && typeof e === 'object' && e.kind === 'subflow' && e.file) out.add(String(e.file))
+    }
+  } catch { /* 配置读不到就当没有子流，不阻断 */ }
+  return out
+})())
+
+const fixtureScript = (name) => resolve(ROOT, 'scripts', `${name}-fixture.mjs`)
+
+/** 跑夹具/清场的一步。mode 为 undefined 时表示「不带参数跑」（清场用）。 */
+function runFixture(name, mode) {
+  const script = fixtureScript(name)
+  if (!existsSync(script)) {
+    console.error(`[fixture] ❌ 找不到夹具脚本 ${script}`)
+    return false
+  }
+  const args = mode ? [script, mode] : [script]
+  const r = spawnSync(process.execPath, args, { cwd: ROOT, stdio: 'inherit', env: maestroEnv })
+  const how = mode ? `${name} ${mode}` : `${name}（清场，无参数）`
+  if (r.status !== 0) {
+    console.error(`[fixture] ❌ ${how} 失败（退出码 ${r.status}）`)
+    return false
+  }
+  console.log(`[fixture] ✅ ${how}`)
+  return true
 }
 
 const runOne = (flow) =>
@@ -1315,11 +1738,90 @@ const runOne = (flow) =>
     env: maestroEnv,
   })
 
+/**
+ * 每条流之前确认 App 还活着；死了就按 preflight 已验证的路径拉回来。
+ *
+ * 2026-10-04 真机实测（sttdev 批次）：第 1 条流失败后，第 2 条流开跑前的
+ * `resetToStart()` 里 `adb shell pidof <包名>` 返回空，adb() 直接抛异常，
+ * 整个 node 进程带栈崩掉 —— 后果有三条，缺一不可：
+ *   ① 第 2 条及以后的 flow **一条都没跑**，而报告里只看到第 1 条的红；
+ *   ② 末尾那段「App 被强杀 / MIUI wakepath」归因逻辑**永远执行不到**
+ *      （它在循环之后，进程已经死了），于是最该被说清的原因被吞掉；
+ *   ③ 退出码来自未捕获异常，看不出是「App 掉了」还是「harness 坏了」。
+ *
+ * ⇒ 判据必须自己长出这个分支：App 不在 → 拉回来 → 拉不起来就**响亮退出**。
+ *   沉默崩掉比红更有害：它让「没跑」看起来像「跑过了」。
+ */
+async function ensureAppAlive() {
+  const pid = () => {
+    try { return adb(['shell', 'pidof', PKG], 15000).trim() } catch { return '' }
+  }
+  if (pid()) return true
+
+  console.error(`\n[per-flow] ⚠️  ${PKG} 进程不在了（pidof 为空），正在重新拉起…`)
+  try {
+    adb(['shell', 'monkey', '-p', PKG, '-c', 'android.intent.category.LAUNCHER', '1'], 30000)
+  } catch (e) {
+    console.error(`        启动意图发不出去：${String(e.message || e).split('\n')[0]}`)
+  }
+  // 给它一点时间自己起来；不 blind wait 是因为下一步还要回读 pidof 自证。
+  for (let k = 0; k < 20; k++) {
+    await sleep(1500)
+    if (pid()) { console.error(`[per-flow] ✅ ${PKG} 已重新拉起，继续跑后面的 flow`); return true }
+  }
+
+  console.error(`[per-flow] ❌ 拉起 ${PKG} 失败，剩余 ${flows.length - i - 1} 条 flow 都不会跑。`)
+  console.error('        典型成因（MIUI 真机实测）：flow 里的 launchApp 会先 force-stop，')
+  console.error('        而随后的 start 被 com.miui.securitycenter 的 wakepath 确认框拦下，')
+  console.error('        App 从此回不到前台。规避：flow 里不要写 launchApp（preflight 已经')
+  console.error('        把它拉起来了），或在「设置 → 应用管理 → 授权管理 → 后台弹出界面」')
+  console.error('        里放行本 App。')
+  console.error('        ⚠️ 剩下的 flow 是**没跑**而不是「跑过且失败」，别把这份结果当成全绿。')
+  return false
+}
+
 let r = { status: 0 }
 for (const [i, flow] of flows.entries()) {
+  if (subFlows.has(flow)) {
+    // 独立跑子流必然红在一个**本就不该红**的断言上，而且失败点离根很远：
+    // `_set-master-password` 独立跑会在「确认」按钮上 Element not found，
+    // 因为它假定的「创建主密码」弹窗只在**从没有过主密码**时存在；
+    // 设备上早就设过了。那句报错与「产品坏了」「选择器写错」长得一模一样。
+    console.error(`[subflow] ❌ ${flow} 是子流，不能独立运行。`)
+    console.error('          它只被父流在 `runFlow: when: visible: …` 条件下引用。')
+    console.error('          要验它，请跑引用它的父流。')
+    process.exit(1)
+  }
+  if (!(await ensureAppAlive())) process.exit(1)
   if (i > 0) await resetToStart()
+  await gotoPreRoute()
+  const fx = fixtureFor.get(flow)
+  if (fx) {
+    // 前提没造出来就不能跑 flow：那会让这条流红在一个「本就不该红」的原因上，
+    // 而失败点离根隔得很远（页面只显示泛化提示 / 空态不出现）。宁可响亮退出。
+    if (fx.kind === 'reset') {
+      // 清场没有「还原」：它的产物就是 flow 的起点（零卡组之类）。
+      // 失败时也不用还原 —— 它本来就是「清到空」。
+      if (!runFixture(fx.name, undefined)) {
+        console.error('[fixture] ❌ 清场失败，跳过本条 flow（场景没回到起点，它会测成另一条分支）')
+        process.exit(1)
+      }
+    } else if (!runFixture(fx.name, '--induce')) {
+      // 反过来仍要尝试还原：induce 可能改了一半。
+      console.error('[fixture] ❌ induce 失败，跳过本条 flow（前提不成立时它必红，不是产品回归）')
+      runFixture(fx.name, '--restore')
+      process.exit(1)
+    }
+  }
   if (flows.length > 1) console.log(`\n──────── flow ${i + 1}/${flows.length}: ${flow} ────────`)
-  const one = runOne(flow)
+  let one = { status: 0 }
+  try {
+    one = runOne(flow)
+  } finally {
+    // 无论 flow 绿还是红都还原，见上面「还原必须挂在 finally 上」。
+    // reset 不进这个分支 —— 它的「还原」等于把 flow 的产出删掉。
+    if (fx?.kind === 'fixture') runFixture(fx.name, '--restore')
+  }
   if (one.status !== 0) r = one   // 保留失败那次的返回码，交给下面的归因逻辑
 }
 if (flows.length > 1) console.log(`\n[suite] ${flows.length} 条 flow 跑完`)

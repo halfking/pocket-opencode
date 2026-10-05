@@ -1,11 +1,11 @@
 /** 读解锁页密码框是否真的有内容（只读，不改状态）——用来判定 tap/input 是否生效，
  *  而不是看 Maestro 报没报 COMPLETED。坐标点击没有结果校验，COMPLETED 不代表生效。 */
-import { execFileSync } from 'node:child_process'
-const ADB = 'C:/Users/86133/AppData/Local/Android/platform-tools/adb.exe'
+import { adbOrExit } from './lib/adb-prereq.mjs'
 const S = process.env.POCKET_SERIAL || '192.168.31.19:5555'
 const PKG = 'com.kaixuan.opencode.pocket'
 const PORT = '9412'
-const adb = (a, t = 60000) => execFileSync(ADB, ['-s', S, ...a], { encoding: 'utf8', timeout: t, maxBuffer: 33554432 })
+// 设备不在 ⇒ exit 3「没跑到被检查对象」，不再抛未捕获异常（见 lib/adb-prereq.mjs）。
+const adb = (a) => adbOrExit(a, { label: 'check-unlock-focus' })
 const pid = adb(['shell', `pidof ${PKG}`]).trim().split(/\s+/)[0]
 if (!pid) { console.log('APP_NOT_RUNNING'); process.exit(2) }
 const socks = adb(['shell', `cat /proc/net/unix | grep -o 'webview_devtools_remote_[0-9]*'`]).split(/\r?\n/).map((l) => l.trim().replace('@', '')).filter(Boolean)

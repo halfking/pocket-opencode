@@ -146,7 +146,8 @@ function jump(index: number): void {
   top: 0;
   right: 0;
   bottom: 0;
-  z-index: var(--z-popover, 30);
+  /* 同 RoundIndexRail：--z-popover 已登记，不再保留会落到 30 的 fallback。 */
+  z-index: var(--z-popover);
   width: min(320px, 82vw);
   display: flex;
   flex-direction: column;

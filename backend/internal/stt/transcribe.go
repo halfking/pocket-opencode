@@ -20,6 +20,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -156,7 +157,7 @@ func (t *Transcriber) TranscribeFor(ctx context.Context, scope Scope, audio []by
 	var text, usedTransport string
 	switch transport {
 	case TransportChatAudio:
-		status, chatText, usage, chatErr := tryChatAudio(ctx, t.client, target.BaseURL, target.APIKey, target.Model, audio)
+		status, chatText, usage, chatErr := tryChatAudio(ctx, t.client, target.BaseURL, target.APIKey, target.Model, audioFormatFromFilename(filename), audio)
 		if chatErr != nil {
 			return nil, fmt.Errorf("stt %s %d: %s", target.Model, status, firstLine(chatErr))
 		}
@@ -309,3 +310,15 @@ func wavDurationSeconds(data []byte) (float64, bool) {
 
 // AudioBase64 供测试与调试复用：把任意字节转成标准 base64。
 func AudioBase64(b []byte) string { return base64.StdEncoding.EncodeToString(b) }
+
+// audioFormatFromFilename 从上传文件名的扩展名推断 input_audio.format。
+// 与网关侧的推断口径一致（网关 audioFileFormat 同一张表）：小米桥接仅
+// 接受 wav/mp3，其它扩展名原样透传、由上游错误明示。
+func audioFormatFromFilename(filename string) string {
+	switch strings.ToLower(strings.TrimPrefix(filepath.Ext(filename), ".")) {
+	case "wav", "mp3", "webm", "ogg", "oga", "m4a", "mp4", "flac", "aac", "opus":
+		return strings.ToLower(strings.TrimPrefix(filepath.Ext(filename), "."))
+	default:
+		return "wav"
+	}
+}

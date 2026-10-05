@@ -4,9 +4,24 @@ package email
 // 供 scripts/imap-fixture-mails.mjs 当附件用（IMAP 夹具需要真实可解析的 PDF，
 // 否则采集器落盘的是退化文件，A4 网格导出会被跳过）。
 //
-// 用法：go test ./internal/email -run TestGenerateFixtureInvoicePDFBase64
-// 然后把 <dataDir>/email-invoices/exports/fixture-invoice.b64 的内容贴进夹具。
+// 用法：POCKET_EMAIL_GEN_FIXTURE=1 go test ./internal/email -run TestGenerateFixtureInvoicePDFBase64
+// 然后把 **os.TempDir()/fixture-invoice.b64** 的内容贴进夹具。
 // 默认不参与常规测试（需要显式加 -run 或设 POCKET_EMAIL_GEN_FIXTURE=1）。
+//
+// ## 为什么写 os.TempDir() 而不是 dataDir（2026-10-04 订正）
+//
+// 这段用法说明原先写的是 `<dataDir>/email-invoices/exports/fixture-invoice.b64`，
+// 与代码不符——代码早已改成 `os.TempDir()`。而**那句过时的说明本身有害**：
+// 它让读者以为「跑一次生成器就会往**真实发票数据目录**里写文件」，
+// 于是没人敢删真实目录里的同名残留。
+//
+// 后果是真实代价：`data/email-invoices/ws_user-admin/` 里至今躺着两份
+// 由本生成器在**修复前**（mtime 2026-09-30 23:38 / 2026-10-01 08:00）写进去的
+// 夹具文件 `其他-云服务开票中心-1280.00-2026-09-28.pdf` 与
+// `其他-云服务开票中心-发票抬头-1280.00-2026-09-28.pdf`
+// （两份 SHA256 相同，均 1537 字节），它们会出现在「磁盘/库对账」的
+// 「无对应行」清单里，被误当成业务损失或业务孤儿。
+// ⇒ **夹具绝不能落进真实数据目录**；生成器只写系统临时目录。
 
 import (
 	"encoding/base64"

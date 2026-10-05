@@ -4,13 +4,36 @@
 # applicationIdSuffix，用于 STT 真机联调，与正式包数据隔离。
 # 正式包那条流的断言（全部正常 / AI 工具）在这里同样成立。
 #
-# 断言文本里不要放 emoji（如 🟢）——Java 正则里该字符会导致匹配异常、
-# 整条断言直接判 false（2026-09-30 实测踩过）。状态胶囊的真实可见文本
-# 是「全部正常」，用它作为 WebSocket 连上的外部可观测面。
+# ⚠️ 这里**不写 launchApp**（2026-10-04 真机实测后补）。本文件原先有
+#   `- launchApp`，后果是整批测试被它带崩：
+#   ① 本条红在断言上；
+#   ② 更糟的是它把 App **弄死了** —— Maestro 的 launchApp 先 force-stop，
+#      随后的 start 被 MIUI 的 com.miui.securitycenter wakepath 确认框拦下，
+#      App 从此回不到前台；
+#   ③ 于是下一条流开跑前的 pidof 返回空，harness 带栈崩掉，
+#      后面的 flow 一条都没跑，而报告里只看得到本条的红。
+# harness 已为 (3) 补了「App 不在就先拉回来、拉不起来就响亮退出」的守卫，
+# 但根因是 (2)：App 是被本条 flow 自己写的那行 launchApp 弄死的。
+# preflight 已经用 adb（force-stop + monkey）把 App 拉起来了，这条路径实测可靠。
+#
+# ⚠️ 断言**不要**用「全部正常」（2026-10-04 真机实测后修）。本文件原先是
+#   `_connectivity.yaml` 的旧拷贝，一直在断言 `.*(全部正常|解锁本地数据).*`，
+#   而主包那条早已把这个断言删掉并在注释里写明原因（此处照抄）：
+#     「全部正常」是 TasksView 分诊条的标签，只在 triage.hasAttention === false
+#     （没有需要介入/疑似卡死的任务）时才出现；而且 <380px 窄屏下 CSS 会
+#     直接隐藏这段文字（TasksView.vue:1443）。
+#   本机视口实测 360×820 CSS px（dpr=2，物理 720×1640），360 < 380 ⇒
+#   **这段文字被 CSS 硬隐藏**，这条断言在这台设备上永远不可能通过 ——
+#   不是 flaky，是确定性失败。
+#   原断言里的「解锁本地数据」方向也正好是反的：它出现在**登录/解锁页**，
+#   是「其实没登录」的证据，主包那条对它断言的是 assertNotVisible。
+#
+# 判据与主包保持一致：页面标题 + 常驻交互入口，并显式排除停在登录/解锁页。
 appId: com.kaixuan.opencode.pocket.sttdev
 ---
-- launchApp
 - extendedWaitUntil:
-    visible: ".*(全部正常|解锁本地数据).*"
+    visible: ".*AI 工具.*"
     timeout: 45000
-- assertVisible: ".*AI 工具.*"
+- assertVisible: "AI 工具"
+- assertNotVisible: "输入用户名"
+- assertNotVisible: "解锁本地数据"

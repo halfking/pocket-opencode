@@ -169,9 +169,14 @@
   }
 }
 
-/* === 平板上更宽敞的列表 === */
-@media (min-width: 768px) {
-  /* 平板专用样式 */
+/* === 平板/大屏上更宽敞的列表 ===
+ * 断点取 SSOT 的 medium 边界（560px），不再用裸的 768px：
+ * 768 落在 medium 带（560–839）内部，与 JS 侧档位对不上，
+ * 于是 768–839 这一段「CSS 以为是平板、JS 以为是 medium」。
+ * 2026-10-04 断点漂移门禁（breakpoint-mirror.test.mjs）落地时对齐。
+ * ⚠️ 可见影响：560–767px 现在也会拿到这段更宽松的行内边距。 */
+@media (min-width: 560px) {
+  /* 平板/大屏专用样式 */
   .list-item {
     padding: var(--space-lg) var(--space-xl);
   }

@@ -32,6 +32,11 @@ import i18n from "./i18n"
 import "./styles.css"
 import "./styles/tokens.css"
 import "./styles/responsive.css"
+// 2026-10-04 修复孤儿文件：breakpoints.css 从未被任何入口 import，
+// 于是断点阶梯的 CSS 镜像（--bp-* 变量与 .bp-* 工具类）根本没进产物。
+// 门禁只保证它与 TS 常量一致，却保证不了它被打包——这类「文档与门禁都绿、
+// 但东西没上线」的空档靠接线补上。narrow 子档工具类现在才真正可用。
+import "./styles/breakpoints.css"
 import "./styles/material-symbols.css"
 
 // StatusBar 控制权已迁到 App.vue 的 setup 生命周期（start/stop 绑定组件卸载），

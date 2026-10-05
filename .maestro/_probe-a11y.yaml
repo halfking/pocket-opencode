@@ -3,17 +3,35 @@
 #      而 Maestro 只在断言失败时落盘。跑完去
 #      ~/.maestro/tests/<最新时间戳>/_probe-a11y/screen-hierarchy/ 读 JSON。
 # 不要把它当成回归测试，它**永远失败**，这是设计如此。
+#
+# ⚠️ 2026-10-04：它的失败点必须是**最后一条** `ZZZ_故意失败_…` —— 只有那里
+# 失败，Maestro 才会把当页的 screen-hierarchy 落盘，那才是本探针的工作产物。
+# 实测它却红在第 14 行 `闪卡|Flashcards|Flashcard`：底部导航那一下
+# `tapOn: "更多|More"` 少了 `retryTapIfNoChange`，点下去路由没跳，
+# 于是「闪卡」当然找不到。⇒ 探针在到达工作点之前就断了，**没导出任何树**。
+# 这比它红更糟：红是设计如此，没树是真的什么都没拿到。
 appId: com.kaixuan.opencode.pocket
 ---
 - runFlow: _login.yaml
 - extendedWaitUntil:
     visible: "更多|More"
     timeout: 45000
-- tapOn: "更多|More"
+# retryTapIfNoChange：底部导航在 MIUI 上会「报 COMPLETED 但路由没跳」，
+# 与 more-grid-reach / more-entries-open 里记的是同一件事。
+- tapOn:
+    text: "更多|More"
+    retryTapIfNoChange: true
 - extendedWaitUntil:
-    visible: "闪卡|Flashcards|Flashcard"
+    visible: "更多功能"
+    timeout: 30000
+- scrollUntilVisible:
+    element:
+      text: "闪卡|Flashcards|Flashcard"
+    direction: DOWN
     timeout: 20000
-- tapOn: "闪卡|Flashcards|Flashcard"
+- tapOn:
+    text: "闪卡|Flashcards|Flashcard"
+    retryTapIfNoChange: true
 - extendedWaitUntil:
     visible: ".*回归卡组.*"
     timeout: 25000

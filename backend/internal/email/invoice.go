@@ -100,6 +100,27 @@ var (
 	// 2026-09-01，仍然是错的（只比 2026-10-25 好一点，仍然错）。
 	// reInvoiceDate 也抓不到它：那里的标签是「日期」二字，「生成日」不含。
 	reStatementDate = regexp.MustCompile(`(?i)(?:对账单生成日|账单生成日|对账日期|账单日期|出账日|statement\s*date)\s*[:：]?\s*(\d{4}[-/年.]\d{1,2}[-/月.]\d{1,2}|\d{8})日?`)
+	// reLabeledEnglishDate 匹配「标签 + 英文月份名日期」，如
+	// `Paid September 17, 2026` / `Date: Sept. 3, 2026`。
+	//
+	// 为什么**必须带标签**（2026-10-04 真实库实测）：上面三层的日期组全是
+	// 数字形态（`\d{4}[-/年.]\d{1,2}[-/月.]\d{1,2}` 或 `\d{8}`），
+	// 压根没有英文月份的通路 ⇒ 台账里唯一一行 invoice_date 为空的
+	// （`inv_1791072004984034300_1`，Stripe 收据，正文明写
+	// "X Receipt from X $8.00 Paid September 17, 2026"）只能退化成**采集当天**，
+	// 文件名 `通信-X-8.00-2026-10-04.pdf` 里的日期是错的。
+	//
+	// 但**裸**英文日期不能放开：`September 17, 2026` 这种形态在真实语料里大量
+	// 出现在与开票无关的地方（订阅续订日、营销活动日、CI 通知里的日期），
+	// 抽中了就是「一个看起来正常、实则无关」的开票日期——**比空值更坏**，
+	// 因为它骗得过人眼也骗得过复核。宁可漏抽（回落采集当天，与现状一致）。
+	//
+	// 只支持 `Month DD, YYYY`（含 `Sept.`、`21st` 这类形态），
+	// 不支持 `DD Month YYYY`：真实库里唯一一例就是前者。
+	reLabeledEnglishDate = regexp.MustCompile(`(?i)(?:开票日期|发票日期|开票时间|日期|\bdate\b|\bpaid\b|\bissued\b|\binvoice\s+date\b)` +
+		`\s*[:：]?\s*` +
+		`(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?` +
+		`\s+(\d{1,2})(?:st|nd|rd|th)?\s*,?\s+(\d{4})\b`)
 	// 货币代码 / 符号前缀。
 	//
 	// 为什么加 ISO 4217 代码（2026-10-01 真实数据）：QQ Wallet 英文发票写
@@ -149,7 +170,31 @@ var (
 	// 不抽的话销售方会退化成发件地址，规范文件名变成
 	// 「其他-noreply@<发件域名>-3500.00-….pdf」，对账时看不出是谁开的票。
 	reSellerFromSubject = regexp.MustCompile(`(?:来自|由)\s*([^,，;；。]{2,40}?)(?:开具|开具的|提供|提供的|的)?\s*(?:电子)?(?:发票|账单|收据|票据)`)
-	reTitle             = regexp.MustCompile(`(?:发票抬头|抬头|购买方名称|购买方)[:：\s]*([^\s,，;；。]{2,60})`)
+
+	// reSellerFromIssuerPhrase 识别「XX 为您开具了电子发票」这个语序。
+	//
+	// 与 reSellerFromSubject 的差别有三点，任何一点都足以让它失配：
+	//  1. **语序相反** —— reSellerFromSubject 是「来自/由 + 单位 + 开具」，
+	//     这里是「单位 + 为您开具了 + 发票」；
+	//  2. **位置不同** —— reSellerFromSubject 只作用于 subject，
+	//     而实测这一形态出现在**正文**（详见下面注释里的真实样本）；
+	//  3. **没有前缀词** —— 正文里不含「来自」「由」，也不含「销售方」「开票方」，
+	//     所以 reSeller 同样不匹配。
+	//
+	// 真实样本（2026-10-04 08:00 定时流水线产出，百望 pis.baiwang.com 的
+	// 「电子发票下载」邮件，snippet 原文未改写）：
+	//
+	//	尊敬的 杭州开轩科技有限公司 用户，您好： 浙江智谱新篇科技有限公司为您开具了电子发票
+	//
+	// 修它之前，seller 落到 FromName 兜底，而那封邮件的 from_name 字面就是
+	// 「系统服务」（平台的发件人显示名），于是规范文件名变成
+	// `其他-系统服务-6071.00-2026-09-15-….jpg`——需求原文 `{费用类型}-{对方单位}-…`
+	// 里的「对方单位」直接是废的，财务看不出是谁开的票。
+	//
+	// 捕获组刻意不收「。」与「，」等标点，也不跨空白；再用 looksLikeEntityName
+	// 兜一道（至少 2 个汉字或 3 个字母），避免把「尊敬的用户」这类短语收进来。
+	reSellerFromIssuerPhrase = regexp.MustCompile(`([\p{Han}（）()A-Za-z0-9·&.\-]{2,40}?)\s*为您\s*开具了?\s*(?:电子)?(?:发票|账单|收据|票据)`)
+	reTitle                  = regexp.MustCompile(`(?:发票抬头|抬头|购买方名称|购买方)[:：\s]*([^\s,，;；。]{2,60})`)
 )
 
 // invoiceLabelWords 是电子发票邮件里**当列头用的标签词**。
@@ -166,9 +211,20 @@ var (
 //
 // reSeller 匹配「销售方」后吃掉换行，把「发票抬头」当成了销售方名字。
 // 后果直击需求「发票文件格式：{费用类型}-{对方单位}-{金额}-{日期}.pdf」：
-// 文件名多出一段变成 5 段（真实产物：
-// `其他-云服务开票中心-发票抬头-1280.00-2026-09-28.pdf`），而第 5 段
-// 「发票抬头」是**买方**的列头，根本不是对方单位，对账时认不出人。
+// 文件名多出一段变成 5 段，而第 5 段「发票抬头」是**买方**的列头，
+// 根本不是对方单位，对账时认不出人。
+//
+// **别拿磁盘上那个文件当证据**（2026-10-04 更正）：这里原先写着
+// 「真实产物：`其他-云服务开票中心-发票抬头-1280.00-2026-09-28.pdf`」
+// ——**那是错的**。该文件解压后正文是 `VAT E-INVOICE (IMAP fixture)`，
+// 是 `gen_fixture_invoice_test.go` 的夹具泄漏进了真实数据目录；
+// 只读查过台账 7 行，没有任何 5 段名。而且 (云服务开票中心, 1280.00,
+// 2026-09-28) 这组三元组在 invoice_retry_test.go /
+// invoice_sources_e2e_test.go / invoice_attachment_harvest_wiring_test.go
+// 里全是夹具常量。
+//
+// ⇒ 本条描述的是**代码路径的形态**（喂进拍平的表头就会产出 5 段名），
+// 不是「生产上已经产出过」的观测。目前**缺一份真实的生产样本**。
 //
 // 本文件 reSeller 上方的注释早就写着「值要取**冒号/空格之后第一个非标签词**」——
 // 那是**意图**，实现里从来没有这个判断。这里补上。
@@ -386,18 +442,152 @@ func sellerFromFollowingLines(joined string, after int) string {
 }
 
 // invoiceKeywordHit 判断文本是否像发票/账单邮件（主题或正文关键词）。
+// invoiceKeywordASCII 是必须**按词边界**匹配的英文关键词。
+//
+// 为什么单独一列：这些词在英文里是普通业务词，子串巧合极多
+// （2026-10-04 真实库逐封实测，971 封未建档邮件里的命中情况）：
+//
+//	billing ← "this billing cycle"（GitHub 套餐周期）
+//	         ← console.aws.amazon.com/billing/home（AWS 控制台 URL）
+//	vat     ← "activation" / "activate" / "private" 里的子串
+//	         ← NVIDIA GTC 会议邀请这类营销邮件
+//
+// 那一批邮件一封都不是发票，却会占掉 maxInvoiceBodyFetches=24/轮 的拉原文预算，
+// 把真发票挤到下一轮。
+//
+// 中文关键词**不需要**词边界：汉字没有「词内含子词」这回事，
+// 「发票」两个字连续出现就是发票语义。中文那侧原样保留 Contains 行为。
+var invoiceKeywordASCII = []string{"invoice", "receipt", "vat", "e-invoice", "billing"}
+
+// invoiceKeywordASCIIRegexes 是上面每个英文关键词的**预编译**词边界正则。
+//
+// 为什么预编译：invoiceKeywordHit 在流水线的候选扫描里对**每封邮件**调用一次
+// （实测 90 天窗口 978 封），每次调用现场 MustCompile 五个正则等于把常量开销
+// 乘以邮件数。判据 invoice_keyword_wordboundary_test.go 只验行为不验性能，
+// 但这个开销是能避免的，就不留下。
+//
+// 边界分**两级**判定，这两级解决的是两类不同的问题（2026-10-04 修正）：
+//
+//	① 词字符：字母 / 数字 / 下划线。命中词紧邻其一 ⇒ 它是更长词的一部分
+//	   （`vat` 撞 `activation` / `private`）。**单侧就足以否决**。
+//	② URL 标点：`- . / : ? & = # @ + %`。命中词**两侧都是**它时，
+//	   才判定它是 URL 里的一个路径段（`console.aws.amazon.com/billing/home`）。
+//
+// ## 为什么 ② 必须是「两侧」而不是「任一侧」（本轮修的真缺陷）
+//
+// 把 URL 标点整个塞进「词内」类（e54d797d 的写法）会把**正常标点**也当成词的一部分，
+// 于是常见的发票主题**全部漏判**。本轮逐条实测（修复前 invoiceKeywordHit 返回值）：
+//
+//	Invoice: ACME Corp                  → false   ← 漏判
+//	Your invoice: https://…/inv.pdf     → false   ← 漏判
+//	Receipt: #2662-4636-8457            → false   ← 漏判
+//	Invoice#INV-2026-0001               → false   ← 漏判
+//	Invoice/Receipt for September       → false   ← 漏判
+//
+// 费用类型侧同源、同症状（修复前 classifyInvoiceCategory 的返回值）：
+//
+//	AWS: 您的账单                        → 其他   ← 原本是「通信」
+//	Stripe receipt for SaaS. Thanks!    → 其他   ← 原本是「通信」
+//	invoice from a hotel.com partner    → 其他   ← 原本是「住宿」
+//
+// 也就是说 e54d797d 修掉了一批假阳性，同时**静默造出了一批真发票的假阴性**：
+// 它把 24 格拉原文预算里的假阳性换成了真发票被挤掉，而反向保护用例
+// （invoice_keyword_wordboundary_test.go 的 StillAcceptsRealInvoiceSemantics）
+// 只用了空格分隔的形态（"Your invoice is ready"），**恰好绕开了所有出问题的标点**。
+//
+// 「单侧是 URL 标点」是正常标点，不是路径段：Invoice: 的冒号、hotel.com 的点，
+// 都不构成「这个词只存在于 URL 里」的证据。
+const (
+	// asciiTokenWordChar 是标准的「词字符」，构成硬边界。
+	asciiTokenWordChar = `0-9A-Za-z_`
+	// asciiTokenURLPunct 是邮件正文里几乎只出现在 URL 里的标点。
+	// 两侧**同时**出现才判定为 URL 路径段（见上面的说明）。
+	asciiTokenURLPunct = `-./:?&=+#@%`
+)
+
+// asciiTokenRegex 构造「按词边界」的英文词元正则。
+//
+// 捕获组 1/2 是左右边界，`^`/`$` 匹配成功时这两组是**零宽**（start==end），
+// asciiTokenHit 靠这一点区分「文本开头/结尾」与「真的有个邻居字符」。
+func asciiTokenRegex(kw string) *regexp.Regexp {
+	return regexp.MustCompile(`(?i)(^|[^` + asciiTokenWordChar + `])` + regexp.QuoteMeta(kw) + `([^` + asciiTokenWordChar + `]|$)`)
+}
+
+// asciiTokenHit 判断 t 里是否出现 kw 这个**独立词元**。
+//
+// 两级判定见 asciiTokenWordChar 的注释：紧邻词字符 ⇒ 否决；
+// 两侧都是 URL 标点 ⇒ 判为 URL 路径段，也否决。其余算命中。
+func asciiTokenHit(t, kw string, re *regexp.Regexp) bool {
+	for _, m := range re.FindAllStringSubmatchIndex(t, -1) {
+		leftURL, rightURL := false, false
+		if m[2] != m[3] && strings.IndexByte(asciiTokenURLPunct, t[m[2]]) >= 0 {
+			leftURL = true
+		}
+		if m[4] != m[5] && strings.IndexByte(asciiTokenURLPunct, t[m[4]]) >= 0 {
+			rightURL = true
+		}
+		if leftURL && rightURL {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// invoiceKeywordASCIINegPhrases 是「含发票词但**不是**发票语义」的英文短语。
+//
+// 与词边界是**两类不同**的问题，混为一谈就会修错：
+//
+//	· 词边界解决的是 vat 撞 activation、billing 撞 URL 路径段 —— 子串巧合；
+//	· 这里解决的是 billing 撞 "this billing cycle"（服务计费周期）—— 词边界
+//	  **正确**命中了一个确实存在、但语义无关的词。
+//
+// 真实库实测：GitHub Actions 分钟耗尽提醒（"You have used 100% so far this
+// billing cycle"）会被放行，一封都不是发票，白占一格拉原文预算。
+//
+// 短语**内部**的空格必须能匹配，所以用 \b 包裹整体而不是逐词加边界类。
+var invoiceKeywordASCIINegPhrases = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)\bbilling\s+(cycle|period)\b`),
+}
+
+var invoiceKeywordASCIIRegexes = func() map[string]*regexp.Regexp {
+	out := make(map[string]*regexp.Regexp, len(invoiceKeywordASCII))
+	for _, kw := range invoiceKeywordASCII {
+		out[kw] = asciiTokenRegex(kw)
+	}
+	return out
+}()
+
+// invoiceKeywordHit 判断一段文本（通常是 subject + snippet）是否含发票语义。
 func invoiceKeywordHit(text string) bool {
 	t := strings.ToLower(text)
 	for _, kw := range []string{
+		// 中文关键词：不需要词边界（汉字无「词内含子词」）。
 		"发票", "电子发票", "增值税", "开票", "票据", "收据",
-		"invoice", "receipt", "vat", "e-invoice", "billing",
 		"账单", "对账单", "订单确认", "支付成功", "扣款",
 	} {
 		if strings.Contains(t, kw) {
 			return true
 		}
 	}
-	return false
+	// 英文关键词：按预编译的词边界正则逐个匹配，见 invoiceKeywordASCII 的注释。
+	hit := false
+	for kw, re := range invoiceKeywordASCIIRegexes {
+		if asciiTokenHit(t, kw, re) {
+			hit = true
+			break
+		}
+	}
+	if !hit {
+		return false
+	}
+	// 命中了英文词，再排除「含该词但语义无关」的短语（见上面负向短语的注释）。
+	for _, re := range invoiceKeywordASCIINegPhrases {
+		if re.MatchString(t) {
+			return false
+		}
+	}
+	return true
 }
 
 // InvoiceCandidate 判断邮件主题+摘要是否命中发票/账单关键词。
@@ -472,17 +662,73 @@ func classifyInvoiceKind(text string) string {
 	}
 }
 
+// categoryTokenBoundary 已删除（2026-10-04 修正）。它**刻意**与 e54d797d 的
+// `keywordBoundaryClass` 写成同一个字符类，本意是「同一个缺陷模式在所有入口堵住」，
+// 但把同一段有缺陷的判据复制到第二个入口，效果是**同一个假阴性也复制了一份**：
+// `AWS: 您的账单`、`SaaS.`、`hotel.com` 三种形态在费用类型侧同样被误判成「其他」
+// （实测见 asciiTokenURLPunct 的注释）。
+//
+// ⇒ 「两处判据不能各写各的」要落到**共用一个函数**上，不是共用一个字符类。
+// 现在两侧都走 asciiTokenHit，边界规则只剩一份实现。
+//
+// 修正后的规则：紧邻词字符 ⇒ 否决；两侧都是 URL 标点 ⇒ 判为 URL 路径段，也否决。
+// `s3.amazonaws.com` 里的 aws 前后是字母，由①否决；`/billing/home` 里的
+// billing 前后都是 `/`，由②否决。单侧标点（`AWS:`、`hotel.com`）不再被误伤。
+
+// categoryASCIITokens 是费用类型判定里**必须按词边界**匹配的英文词元。
+//
+// 为什么（2026-10-04 真实交付物里肉眼可见）：分类原本对英文关键词也用
+// `strings.Contains`，而邮件 snippet 里**到处都是 URL**（图片 CDN、下载链接、
+// 退订链接、base64 串）。一张 Stripe 收据的正文里有
+// `https://stripe-images.s3.amazonaws.com/…`，其中 `aws` 子串让分类判成
+// 「通信」，产物文件名成了 `通信-X-8.00-2026-10-04.pdf`。
+// 这与 41.2 修的 `vat` 撞 `activation` **同源**：那次只给发票候选判定
+// （`invoiceKeywordHit`）加了词边界，**漏了费用类型这条通路**。
+//
+// amazon / tencent **试过又收回了**（2026-10-04 真实库实测），原因如实记：
+// 我一度把 `Amazon Web Services`、`Tencent Cloud Computing` 这两个英文拼写
+// 补进词元表（它们原先认不出来，中文写法「腾讯」「阿里云」却在），但 978 封
+// 全量对跑显示这样会**误伤**：一封会议促销邮件（`promotion@news.ecloudrover.com`，
+// 正文含「亚马逊云科技 **amazon** quick 能力解读」）从「其他」被拉成「通信」。
+// ⇒ 品牌词一旦独立成词元，任何**提到**该品牌的营销内容都会命中，
+// 而费用类型判定的输入是邮件全文，不是发票特征——
+// 这类补全需要的是发票专属线索（账单号/开票主体），不是品牌名。
+// 词边界修复保留，词元表不扩。
+//
+// 已知仍未补的同类缺口（如实记，不在本轮扩范围）：`aliyun` / `alibaba cloud` /
+// `Tencent Cloud` 等英文写法同样认不出来（腾讯云发票现在被判「其他」）。
+// 补它们要先有一份「哪些英文写法在真实语料里只出现在发票上」的证据。
+var categoryASCIITokens = func() map[string]*regexp.Regexp {
+	out := make(map[string]*regexp.Regexp, 5)
+	for _, kw := range []string{"restaurant", "hotel", "aws", "azure", "saas"} {
+		out[kw] = asciiTokenRegex(kw)
+	}
+	return out
+}()
+
+// hasCategoryToken 英文词元按词边界匹配；其余（中文）仍用子串。
+//
+// 中文不加边界是刻意的：汉字没有「词内含子词」这回事，
+// 与 41.3 对 `invoiceKeywordHit` 的处理一致。
+func hasCategoryToken(t, kw string) bool {
+	if re, ok := categoryASCIITokens[kw]; ok {
+		return asciiTokenHit(t, kw, re)
+	}
+	return strings.Contains(t, kw)
+}
+
 // classifyInvoiceCategory 按销售方/主题/正文关键词推断消费类目（对齐 finance 的类目习惯）。
 func classifyInvoiceCategory(parts ...string) string {
 	t := strings.ToLower(strings.Join(parts, " "))
 	switch {
-	case strings.Contains(t, "餐"), strings.Contains(t, "美团"), strings.Contains(t, "饿了么"), strings.Contains(t, "肯德基"), strings.Contains(t, "麦当劳"), strings.Contains(t, "咖啡"), strings.Contains(t, "restaurant"):
+	case strings.Contains(t, "餐"), strings.Contains(t, "美团"), strings.Contains(t, "饿了么"), strings.Contains(t, "肯德基"), strings.Contains(t, "麦当劳"), strings.Contains(t, "咖啡"), hasCategoryToken(t, "restaurant"):
 		return "餐饮"
 	case strings.Contains(t, "滴滴"), strings.Contains(t, "出行"), strings.Contains(t, "航空"), strings.Contains(t, "铁路"), strings.Contains(t, "12306"), strings.Contains(t, "出租车"), strings.Contains(t, "加油"), strings.Contains(t, "交通"):
 		return "交通"
-	case strings.Contains(t, "酒店"), strings.Contains(t, "住宿"), strings.Contains(t, "民宿"), strings.Contains(t, "hotel"):
+	case strings.Contains(t, "酒店"), strings.Contains(t, "住宿"), strings.Contains(t, "民宿"), hasCategoryToken(t, "hotel"):
 		return "住宿"
-	case strings.Contains(t, "话费"), strings.Contains(t, "移动"), strings.Contains(t, "联通"), strings.Contains(t, "电信"), strings.Contains(t, "宽带"), strings.Contains(t, "腾讯"), strings.Contains(t, "阿里云"), strings.Contains(t, "aws"), strings.Contains(t, "azure"), strings.Contains(t, "软件"), strings.Contains(t, "saas"), strings.Contains(t, "订阅"):
+	case strings.Contains(t, "话费"), strings.Contains(t, "移动"), strings.Contains(t, "联通"), strings.Contains(t, "电信"), strings.Contains(t, "宽带"), strings.Contains(t, "腾讯"), strings.Contains(t, "阿里云"),
+		hasCategoryToken(t, "aws"), hasCategoryToken(t, "azure"), strings.Contains(t, "软件"), hasCategoryToken(t, "saas"), strings.Contains(t, "订阅"):
 		return "通信"
 	case strings.Contains(t, "办公"), strings.Contains(t, "文具"), strings.Contains(t, "打印"), strings.Contains(t, "京东"), strings.Contains(t, "淘宝"), strings.Contains(t, "天猫"), strings.Contains(t, "办公用品"):
 		return "办公"
@@ -586,7 +832,80 @@ func parseInvoiceDateAt(text string, now time.Time) string {
 			}
 		}
 	}
+	// 第 4 层：带标签的英文月份名日期。**排在最后**是刻意的——
+	// 上面三层能抽出来的照旧抽，只有它们都返回 "" 时才可能到这里。
+	// ⇒ 这一层是纯增量，不可能改变任何已有的抽取结果
+	// （invoice_date_english_test.go 的 CNLabelStillWinsOverEnglish 钉这条）。
+	//
+	// 组下标写成常量而不是裸数字：这个 bug 真实发生过一次——标签写的是
+	// **非捕获组** `(?:…)`，子匹配其实只有 4 个（整串+月+日+年），
+	// 而我当时按「标签也是捕获组」写成 m[2]/m[3]/m[4] 并加了 `len(m) < 5`
+	// 的守卫，于是守卫把**整条新通路静默 continue 掉了**：正则匹配成功、
+	// 函数照旧返回 ""、测试报的是「抽不出日期」。
+	// ⇒ **写 `len(m) < N` 守卫前先确认 N 是对的**，否则它不是保护是静默关停。
+	for _, m := range reLabeledEnglishDate.FindAllStringSubmatch(text, -1) {
+		if len(m) < enEnglishDateGroups {
+			continue
+		}
+		day, _ := strconv.Atoi(m[enEnglishDateDay])
+		year, _ := strconv.Atoi(m[enEnglishDateYear])
+		d := normalizeEnglishInvoiceDate(year, englishMonthNumber(m[enEnglishDateMonth]), day)
+		if d != "" && !isFutureInvoiceDate(d, now) {
+			return d
+		}
+	}
 	return ""
+}
+
+// reLabeledEnglishDate 的捕获组下标。标签是**非捕获组**，所以没有「标签组」，
+// 月/日/年分别从 1 开始。
+const (
+	enEnglishDateMonth = 1
+	enEnglishDateDay   = 2
+	enEnglishDateYear  = 3
+	// enEnglishDateGroups 是子匹配的**总**长度（含 [0] 整串）。
+	enEnglishDateGroups = 4
+)
+
+// englishMonths 把英文月份名（含缩写）映射到月份数字。
+//
+// 兜底返回 0 而不是 1：若无效时返回 1，任何非月份名都会被静默当成 1 月，
+// 而 1 月又常常落在「过去的合法日期」里——这类静默兜底比直接失败危险得多。
+var englishMonths = map[string]int{
+	"jan": 1, "january": 1,
+	"feb": 2, "february": 2,
+	"mar": 3, "march": 3,
+	"apr": 4, "april": 4,
+	"may": 5,
+	"jun": 6, "june": 6,
+	"jul": 7, "july": 7,
+	"aug": 8, "august": 8,
+	"sep": 9, "sept": 9, "september": 9,
+	"oct": 10, "october": 10,
+	"nov": 11, "november": 11,
+	"dec": 12, "december": 12,
+}
+
+// englishMonthNumber 大小写不敏感，并容忍缩写后面的点（`Sept.`）。
+func englishMonthNumber(name string) int {
+	key := strings.ToLower(strings.TrimSpace(name))
+	key = strings.TrimSuffix(key, ".")
+	return englishMonths[key]
+}
+
+// normalizeEnglishInvoiceDate 把年/月/日归一化成 YYYY-MM-DD，无效则返回 ""。
+//
+// 回读校验不能省：`time.Date(2026, February, 30, …)` 会**静默进位**成 3 月 2 日，
+// 于是一个不存在的日期变成了一个看起来完全正常的日期。
+func normalizeEnglishInvoiceDate(year, month, day int) string {
+	if year < 1970 || year > 2999 || month < 1 || month > 12 || day < 1 || day > 31 {
+		return ""
+	}
+	t := time.Date(year, time.Month(month), day, 0, 0, 0, 0, time.UTC)
+	if t.Year() != year || int(t.Month()) != month || t.Day() != day {
+		return ""
+	}
+	return t.Format("2006-01-02")
 }
 
 // isFutureInvoiceDate 判断 YYYY-MM-DD 是否比 now 晚了超过 1 天。
@@ -703,6 +1022,16 @@ func ExtractInvoiceLoose(e Email, bodyText string, hasInvoiceAttachment bool) (*
 		// 正文里没有「销售方：」时，主题里的「来自XX的发票」往往就是开票方。
 		if m := reSellerFromSubject.FindStringSubmatch(subject); m != nil {
 			inv.Seller = strings.TrimSpace(m[1])
+		}
+	}
+	if inv.Seller == "" {
+		// 「XX 为您开具了电子发票」：开票方在正文里，但语序是 reSeller 与
+		// reSellerFromSubject 都认不出的那一支。必须在 FromName 兜底**之前**试
+		// ——否则它会被平台的发件人显示名盖掉（真实样本里 from_name=「系统服务」）。
+		if m := reSellerFromIssuerPhrase.FindStringSubmatch(joined); m != nil {
+			if s := strings.TrimSpace(m[1]); looksLikeEntityName(s) {
+				inv.Seller = s
+			}
 		}
 	}
 	if inv.Seller == "" {

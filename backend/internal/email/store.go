@@ -586,7 +586,9 @@ func (s *Store) SetClassification(ctx context.Context, id, category, importance,
 // importance='high' 而 category 仍为空；ListUnclassifiedScoped 挑待分类邮件
 // 过滤的是 **category**（不是 importance），于是这封照常进 AI 队列；LLM
 // 没给 importance 时 BuildClassifyWrites 只检查 category 就放行；最后这个
-// 方法是**全量覆盖**，importance 被写成 ” 或 'normal'。
+// 方法是**全量覆盖**，importance 被写成下面两者之一：
+//
+//	'' 或 'normal'
 //
 // 结果：用户明确配了「这个发件人的邮件标重要」，被 AI 一句话降级，重要邮件
 // 提醒永远不发，且没有任何报错 —— 与「规则没落到库」症状相同，排查方向却

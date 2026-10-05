@@ -162,6 +162,11 @@ type Config struct {
 	//
 	// 置 false 逃生用：无 PG 的纯本地部署，或需要手工重跑定时轮次。
 	EmailPipelineAdvisoryLock bool
+	// POCKET_EMAIL_A4_GRID：每日流水线的 A4 网格导出格数（2=2x2，3=3x3）。
+	// **默认 0 = 关闭**。显式给 2 或 3 才让定时流水线把「已下载但还没进过
+	// A4 网格」的发票自动拼一份可打印 PDF——需求原文要的「打印后可直接剪裁
+	// 作为凭证」在无人值守跑完一天后必须有产物，而在这之前只有人点按钮才有。
+	EmailA4Grid int
 	// POCKET_EMAIL_CLASSIFY_VIA_GATEWAY：**默认 false**。
 	//
 	// true 时每日流水线的第 1.6 步用已配置的 LLM 网关给未归类邮件分类
@@ -342,6 +347,7 @@ func Load() Config {
 		EmailPipelineAdvisoryLock: getEnv("POCKET_EMAIL_PIPELINE_ADVISORY_LOCK", "true") == "true",
 		// 显式写 "true" 才开：这条会每天自动发真实 LLM 请求，默认必须是关。
 		EmailClassifyViaGateway: getEnv("POCKET_EMAIL_CLASSIFY_VIA_GATEWAY", "") == "true",
+		EmailA4Grid:             getEnvInt("POCKET_EMAIL_A4_GRID", 0),
 		// 飞书出站（发票推送）
 		FeishuInvoiceChatID:      getEnv("POCKET_FEISHU_INVOICE_CHAT_ID", ""),
 		FeishuInvoiceFolderToken: getEnv("POCKET_FEISHU_INVOICE_FOLDER_TOKEN", ""),

@@ -5,6 +5,7 @@ import (
 	"go/parser"
 	"go/printer"
 	"go/token"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -63,30 +64,87 @@ func wireFuncBodies(t *testing.T, path string) string {
 }
 
 func TestBodyHasInvoiceLink_IsWiredOnRawMIME(t *testing.T) {
-	src := wireFuncBodies(t, "fetcher.go")
-
-	// 1) fetcher.go 里必须有 bodyHasInvoiceLink 的**调用**（不是只有定义）。
-	if !strings.Contains(src, "bodyHasInvoiceLink(") {
+	// 1) fetcher.go 里必须有 bodyHasInvoiceLink 的**调用**（不是只有定义），
+	//    并且逐个取出实参。
+	//
+	// 这里必须走 AST 而不是正则。2026-10-03 负控实测：先用
+	// `bodyHasInvoiceLink\(([^()]*)\)` 收实参，把实参换成
+	// `[]byte(DeriveSnippet(raw, 500))` —— **护栏全绿**。
+	// 原因很直白：负控那个实参自带括号，`[^()]*` 匹配不上，坏的那个调用点
+	// 被静默跳过，只剩下另一个合法调用点通过检查。
+	// 「判据扫不到坏形态」和「判据没发现缺陷」在结果上完全一样。
+	args := bodyHasInvoiceLinkArgs(t, "fetcher.go")
+	if len(args) == 0 {
 		t.Fatal("fetcher.go 里没有 bodyHasInvoiceLink 的调用 —— q3 的判据没接线")
 	}
+	// 调用点数钉死。少一个就是有人把某个调用点搬走了，而那时上面那些
+	// 逐个实参的检查会「因为没东西可查」而全绿。
+	if len(args) != 2 {
+		t.Errorf("fetcher.go 里 bodyHasInvoiceLink 的调用点数 = %d，期望 2"+
+			"（BODY[TEXT] 那次、补拉 BODY[] 那次）", len(args))
+	}
 
-	// 2) 调用的实参必须是原始字节，不是 DeriveSnippet 的返回值。
+	// 2) **每一个**调用点的实参都必须是原始 MIME 字节，不是 DeriveSnippet 的结果。
 	//
 	// 这条是承重的：负控把实参换成 snippet（= href 里的 URL 已被 htmlToText
-	// 删掉）时，本条必须转红。判据是「实参里出现 DeriveSnippet」就报错。
-	i := strings.Index(src, "bodyHasInvoiceLink(")
-	call := src[i:]
-	if end := strings.Index(call, ")"); end > 0 {
-		call = call[:end+1]
-	}
-	if strings.Contains(call, "DeriveSnippet") {
-		t.Errorf("bodyHasInvoiceLink 的实参用了 DeriveSnippet 的结果：%s —— "+
-			"htmlToText 会把 href 里的 URL 整个删掉，链接判据将恒为 false", call)
-	}
-	if !strings.Contains(call, "bs.Bytes") {
-		t.Errorf("bodyHasInvoiceLink 的实参不是原始 MIME 字节：%s", call)
+	// 删掉）时，本条必须转红。
+	//
+	// 2026-10-03 改动：本条原来只查 fetcher.go 里的**第一个**调用点，且要求
+	// 实参字面写成 `bs.Bytes`。补拉整封那次改动把字节变量改名成 raw/whole，
+	// 于是它在报「实参不是原始 MIME 字节：bodyHasInvoiceLink(raw)」——
+	// 报的是变量名，不是那个真正要守的性质。
+	//
+	// 改成「逐个调用点 + 实参必须是裸标识符」之后，判据盯的是**性质**
+	// 而不是拼写，并且新加的那个调用点自动进入守护范围。
+	// 裸标识符这个要求不是放松：bodyHasInvoiceLink 收 []byte，而摘要变量
+	// 是 string，想把 snippet 传进来必须显式转换（`[]byte(snippet)`），
+	// 那就不是裸标识符了。类型系统已经替我们挡住了那条路。
+	for _, arg := range args {
+		if strings.Contains(arg, "DeriveSnippet") {
+			t.Errorf("bodyHasInvoiceLink 的实参用了 DeriveSnippet 的结果：%s —— "+
+				"htmlToText 会把 href 里的 URL 整个删掉，链接判据将恒为 false", arg)
+		}
+		if !bareIdentRe.MatchString(arg) {
+			t.Errorf("bodyHasInvoiceLink 的实参不是裸的原始字节变量：%s —— "+
+				"必须是未经 DeriveSnippet 的 []byte", arg)
+		}
 	}
 }
+
+// bodyHasInvoiceLinkArgs 用 AST 取出文件里所有 bodyHasInvoiceLink 调用的实参源码。
+//
+// 注释已被剥掉（ParseComments 保留注释，但下面只取表达式节点，注释不会混进来）。
+func bodyHasInvoiceLinkArgs(t *testing.T, path string) []string {
+	t.Helper()
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
+	if err != nil {
+		t.Fatalf("parse %s: %v", path, err)
+	}
+	var out []string
+	ast.Inspect(f, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		ident, ok := call.Fun.(*ast.Ident)
+		if !ok || ident.Name != "bodyHasInvoiceLink" {
+			return true
+		}
+		for _, a := range call.Args {
+			var b strings.Builder
+			if err := printer.Fprint(&b, fset, a); err != nil {
+				t.Fatalf("打印实参失败：%v", err)
+			}
+			out = append(out, b.String())
+		}
+		return true
+	})
+	return out
+}
+
+// bareIdentRe 匹配一个裸标识符（可选地取 & 后再一个标识符）。
+var bareIdentRe = regexp.MustCompile(`^&?[A-Za-z_][A-Za-z0-9_]*$`)
 
 // backfill.go 那条接线同样要守：HasAttachments 必须或上链接判据。
 // 少了它，判据算出来了也传不到 Email 结构体上。

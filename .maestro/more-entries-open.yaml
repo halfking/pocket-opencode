@@ -1,0 +1,135 @@
+# Maestro 真机流 · 「更多」宫格入口**真的进得去**（不止看得见）
+#
+# 为什么需要这条流：more-grid-reach 已经断言了宫格里 17 个入口**可见**，
+# 但那只是「入口可达」——**没有任何一条流真的点进去过**。
+# 「入口还在、功能其实是坏的」（BUG-Q 那类：点了跳空白页 / 404）正好躲在这
+# 两种验证之间。所以本 flow 点进去，断言**目标页独有**的文案。
+#
+# 到达判据为什么用目标页独有的文案，而不是宫格名：
+# 宫格项的文案（如「定时自动化」）在**宫格上就已经可见**，拿它当判据等于没判。
+# 所以用只可能出现在目标页的元素：
+#   定时任务列表 → 「仅显示启用」「创建自动化」「刷新」（均无条件渲染）
+#   成本与配额   → 「时间范围」「用量汇总」
+#
+# ⚠️ 刻意**不**断言的文案（它们绑在数据状态上，有数据就消失/变形）：
+#   · 「还没有自动化任务」—— 一旦用户建了第一条任务就消失（notes-crud
+#     已经因为同类问题把「还没有笔记」这类空态断言去掉了）
+#   · 「调用次数」「输入 Tokens」—— CostQuotaView.vue:41 是
+#     `v-else-if="usage"`，call_count 为 0 时整块 metric 不渲染
+#   · 「当前离线，仅展示上次缓存数据。」—— 依赖 WebSocket 连通性，
+#     断言它「不可见」等于把网络抖动算成回归
+#
+# 所有锚点取自源码，不靠肉眼截图猜：
+#   仅显示启用 / 创建自动化 / 刷新  ← features/scheduled-tasks/ScheduledTaskListView.vue:4,10,11
+#   时间范围 / 用量汇总             ← features/cost/CostQuotaView.vue:14,36
+#
+# 前置：登录态、路由复位都由 harness（scripts/maestro-run.mjs 的 preflight）保证。
+# 登录动作不在本 flow —— 理由见 smoke-login.yaml 头部第 1 条。
+#
+# 实测状态（2026-10-04，Xiaomi 2411DRN47C）：
+#   走真实底部导航            → 17s 通过
+#   带 -PreRoute '#/more'     → 20s 通过
+# 两种起点都验过，所以它不依赖 CDP 送到位。
+appId: com.kaixuan.opencode.pocket
+---
+
+# ---------- 1. 进「更多」宫格 ----------
+# 用 runFlow + when 而不是无条件 tap：重跑到一半时这条流可能已经站在宫格上，
+# 再点一次「更多」会跳到别的页面。notes-stt-error-visibility 用的是同一招。
+- runFlow:
+    when:
+      notVisible: "更多功能"
+    commands:
+      - tapOn:
+          text: "更多|More"
+          retryTapIfNoChange: true
+      - waitForAnimationToEnd:
+          timeout: 3000
+- extendedWaitUntil:
+    visible: "更多功能"
+    timeout: 30000
+
+# ---------- 2. 定时自动化：点进去 ----------
+# 「定时自动化」在主功能区第一屏（more-grid-reach 实测无需滚动即可见），
+# 所以这里不必 scrollUntilVisible —— 少了它就少一个会自己漂移的旋钮。
+- assertVisible: "定时自动化"
+# ⚠️ 这里必须带 retryTapIfNoChange（2026-10-04 真机实测）：
+#   裸 `tapOn: 定时自动化` 会报 COMPLETED 但**路由没跳**，目标页 30s 不出现。
+#   诊断证据（三步，都是对照不是推测）：
+#     ① 同一台设备、同一轮登录，先用 CDP 直接送到 #/settings/scheduled-tasks
+#        —— 页面 701ms 就渲染出「仅显示启用」，_probe-sched-page 直接通过。
+#        ⇒ **页面本身是好的**，问题不在页面。
+#     ② 排除路由/守卫：MoreHubView 的 go() 就是 router.push(to)，无任何守卫；
+#        /settings/scheduled-tasks 的 meta 无 requiresLobster 等额外前置。
+#     ③ 排除 i18n 未加载：定时自动化/更多功能/成本与配额 都在 zh-CN.json 里有值。
+#   ⇒ 剩下的唯一未证环节就是「这一下 tap 有没有真的落到按钮上」，
+#     而那与底部导航 tap 是同一类症状（WebView 桥接把可点性挂在父节点上，
+#     合成 tap 有时打不进去）。retryTapIfNoChange 是官方针对
+#     「点下去 UI 没变化」的手段，先用它验证这个归因。
+- tapOn:
+    text: "定时自动化"
+    retryTapIfNoChange: true
+# 到达判据用「仅显示启用」：它只存在于 ScheduledTaskListView，
+# 宫格上不可能出现。用它才能区分「真的跳走了」和「宫格项点了个寂寞」。
+- extendedWaitUntil:
+    visible: "仅显示启用"
+    timeout: 30000
+# ⚠️ 刻意**不**断言「创建自动化」——2026-10-04 真机实测踩到了：
+#   它在这个页面上**两个来源都不可靠**。
+#   ① 空态里那个（ScheduledTaskListView.vue:15）只在 `tasks.length === 0`
+#      时渲染，用户建了第一条任务就消失（notes-crud 已经为同类原因
+#      把「还没有笔记」去掉了）。
+#   ② 头部那个（:4，走 HeaderActionsPortal）在本路由上**曾经根本不渲染** ——
+#      路由 meta 声明了 hideAppHeader: true，而 HeaderActionsPortal.vue:48
+#      的渲染条件正是 `hideAppHeader !== true`。
+#   「仅显示启用」「刷新」都在 :9-12 的 toolbar 里，无条件渲染，才是该用的判据。
+- assertVisible: "刷新"
+
+# ---------- 3. 死路回归护栏（2026-10-04 修复后新增）----------
+#
+# 这一段是本 flow 判别力最强的部分，它钉住的是一个**真机实证过的产品缺陷**：
+# 该路由曾声明 hideAppHeader: true，导致壳层顶栏整体不渲染
+# （AppLayout.vue:183），连带返回按钮（:37 v-if="canGoBack"）与
+# HeaderActionsPortal 注入的「创建自动化」（:48）一起消失；而视图自身
+# 既无返回也无标题 ⇒ 页面在、入口在，但**页内无路可退**，且用户一旦有任务
+# 「创建自动化」一个都不剩。修复是去掉这 5 条路由（含 /settings/permissions）的
+# hideAppHeader，由 scripts/check-hide-app-header.mjs 在 CI 侧守住契约。
+#
+# 真机对照（同一台设备、同一轮登录）：
+#   修前探针：assertNotVisible 返回 ✅ / assertNotVisible 创建自动化 ✅
+#   修后验收：assertVisible 返回 ✅ / 定时任务 ✅ / 创建自动化 ✅
+# 三者同时在，才说明顶栏真的回来了、且没把视图自己的内容顶掉。
+- assertVisible: "返回"
+- assertVisible: "定时任务"
+- assertVisible: "创建自动化"
+
+# ---------- 4. 回宫格 ----------
+# 走**页面上的返回键**而不是系统 back —— 返回键现在存在，这正是本 flow 要验的东西。
+# 精确地说：若有人把 hideAppHeader 加回去，**先红的是第 3 段的 assertVisible**，
+# 这条 tapOn 压根轮不到执行。这里保留它是因为存在 ≠ 可用 ——
+# 判据只证明「返回键在屏幕上」，得再走一次才能证明「它真的能退回去」。
+- tapOn: "返回"
+- extendedWaitUntil:
+    visible: "更多功能"
+    timeout: 30000
+
+# ---------- 5. 成本与配额：滚到可见再点 ----------
+# 「成本与配额」在**运维与高级**分组，初始视口外。
+# ⚠️ 必须 scrollUntilVisible 而不是固定次数 swipe：滚动距离依赖设备分辨率与
+#   行高，换一台机就错位。WebView 的可见性判定是**视口内**而非 DOM 内，
+#   所以「存在但没滚到」与「不存在」在断言里长得一模一样（more-grid-reach
+#   2026-10-03 15:53 实测踩过：没逐项滚就断言，红在「会话」）。
+- scrollUntilVisible:
+    element:
+      text: "成本与配额"
+    direction: DOWN
+    timeout: 20000
+    visibilityPercentage: 100
+- assertVisible: "成本与配额"
+- tapOn: "成本与配额"
+- extendedWaitUntil:
+    visible: "时间范围"
+    timeout: 30000
+# 「用量汇总」在 loading 结束后才渲染（CostQuotaView.vue:33 的 v-else 分支），
+# 所以上面那条 extendedWaitUntil 同时也是「加载完成」的判据。
+- assertVisible: "用量汇总"

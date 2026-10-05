@@ -90,7 +90,7 @@ watch(
 
 <style scoped>
 .overlay {
-  position: fixed; inset: 0; z-index: 80;
+  position: fixed; inset: 0; z-index: var(--z-sheet);
   background: color-mix(in srgb, #000 45%, transparent);
   display: flex; align-items: flex-end; justify-content: center;
 }

@@ -1156,7 +1156,7 @@ func (s *Server) handleEmailAccountOps(w http.ResponseWriter, r *http.Request) {
 //   - 只有携带 smtpHost 才会写 SMTP 列。单独传 smtpPort/smtpPassword 以前会被
 //     静默丢弃，现在直接返回 400——静默成功比报错更难排查。
 //   - smtpHost 传空字符串表示清空 SMTP 配置，此时 port 一并归零。
-//   - smtpPassword 省略 → 保留原凭证；传 ” → 清空；传非空 → 重新加密写入。
+//   - smtpPassword 省略 → 保留原凭证；传空字符串 → 清空；传非空 → 重新加密写入。
 func (s *Server) updateEmailAccount(w http.ResponseWriter, r *http.Request, acc *email.Account, workspaceID string) {
 	var body struct {
 		DisplayName     *string `json:"displayName"`

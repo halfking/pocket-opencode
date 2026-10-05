@@ -241,6 +241,7 @@ func (s *Server) ensurePipeline() *email.Pipeline {
 			// 默认预演：清垃圾会 IMAP MOVE 真实邮件，规则没在真实邮箱上验证过，
 			// 无人值守地搬用户邮件风险太大。置 POCKET_EMAIL_SPAM_DRYRUN=false 才真移。
 			SpamDryRun: s.cfg.EmailSpamDryRun,
+			A4Grid:     s.cfg.EmailA4Grid,
 		}
 		// 第 1.6 步分类。默认不注入 Classifier ⇒ 整步跳过，报告里记 ClassifySkip。
 		// 需求 4 的提醒依赖 importance，而 importance 只在这里被写入。

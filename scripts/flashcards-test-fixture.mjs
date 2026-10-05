@@ -59,29 +59,96 @@ if (DRY) {
   process.exit(0)
 }
 
+// adb 小工具：清缓存要在「App 活着」时做，自证要「重启后再读」，
+// 两头都要驱动 App，所以 sh() 必须在 CDP 块之前就绪。
+const adbBin = 'C:/Users/86133/AppData/Local/Android/platform-tools/adb.exe'
+const serial = process.env.POCKET_SERIAL || '192.168.31.19:5555'
+const sh = (cmd) => execFileSync(adbBin, ['-s', serial, 'shell', cmd], {
+  encoding: 'utf8', timeout: 30000, maxBuffer: 33554432,
+})
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+const launchApp = async () => {
+  sh(`monkey -p ${PKG} -c android.intent.category.LAUNCHER 1`)
+  // devtools socket 是 App 起来之后才注册的，等久一点，别在半路去连。
+  for (let i = 0; i < 20; i++) {
+    await sleep(700)
+    try { const c = await openCdp({ pkg: PKG }); await c.close(); return true } catch { /* 还没起来 */ }
+  }
+  return false
+}
+
+// ⚠️ 2026-10-04 定死的关键一步：**清之前先把 App 导航到不挂闪卡 store 的路由。**
+//
+// 现象（01:13 那轮真机 flow）：本夹具报告「localStorage 清理成功」、PG 也清到 0|0|0|0，
+// 但 App 重启后 `flashcards:v1` 里**又出现了**上一轮的「回归卡组」，
+// flow 于是挂在第一条断言「暂无卡组不可见」—— 看起来像产品坏了，其实是前置没生效。
+//
+// 机制（双向对照实测，不是推测）：
+//   停在 #/flashcards（store 已挂载、内存持有卡组）时 removeItem：
+//     removeItem 后立刻读 = 空 ✅，但 force-stop + 重启后**卡组又回来了** ❌
+//   先导航到 #/ai（store 未挂载、无内存可写）时 removeItem：
+//     removeItem 后 = 空 ✅，force-stop + 重启后**仍然为空** ✅
+//
+// 对照脚本：scripts/diag-flashcard-clear-nav-away.mjs（正向）
+//           scripts/diag-flashcard-clear-negctl.mjs （负控，store 挂载时确实写回）
+//
+// ⇒ 旧做法「removeItem 后立刻 force-stop」只是把窗口压小，窗口仍在。
+//    真正管用的是**让 store 根本没挂载**，内存里没有可写回的东西。
+// 之所以会写回：stores/flashcards.ts 没有 watcher / pagehide / 防抖，
+// 但 syncFromServer() 结束时会 persistCache()，而闪卡页会触发它。
+//
+// ⚠️ 路由选择：必须是**已登录也能安全停留**的路由，且不能挂闪卡 store。
+//    用 #/ai（首页）：未登录时会被弹回 #/login，那不影响——
+//    我们只关心「离开 #/flashcards」，导航是否真的落地由下面的回读校验。
+
 // CDP 通道走共享 helper（2026-10-02）：端口由 adb 分配（tcp:0），不再硬绑 9420。
 // 硬编码端口是**同机所有会话共享**的状态——本机同时有别的会话在驱同一台设备，
 // 撞上时 adb 抛 10048，而那句报错指向装置，看不出真问题是「上次没清干净」。
 let cdp = null
 try { cdp = await openCdp({ pkg: PKG }) }
-catch (e) { console.log(`  (跳过 localStorage 清理：${String(e?.message || e).split('\n')[0]})`); console.log('  (flow 的启动器会重启 App；未清缓存则这轮不覆盖零卡组分支)'); }
+catch (e) {
+  const msg = String(e?.message || e)
+  if (/APP_NOT_RUNNING|CDP_SOCKET_PID_MISMATCH|NO_DEVTOOLS_SOCKET/.test(msg)) {
+    console.log(`  App 没在跑/通道未就绪，先拉起来再清（否则清不了磁盘上的 localStorage）`)
+    if (await launchApp()) cdp = await openCdp({ pkg: PKG })
+  }
+  if (!cdp) {
+    console.log(`  ❌ 无法连接 App 的 CDP：${msg.split('\n')[0]}`)
+    console.log('   清不掉 localStorage 就等于没清场，这轮不能跑。')
+    process.exit(1)
+  }
+}
 
 let cacheErr = ''
 try {
-  if (cdp) {
-    const expr = `(() => { const k=${JSON.stringify(CACHE_KEYS)}; const had=k.map(x=>[x, localStorage.getItem(x)!==null]); k.forEach(x=>localStorage.removeItem(x)); return JSON.stringify(had) })()`
-    // 原来这里是「超时/异常就打印一句『未确认』然后继续跑 PG 删除，最后照样 ✅」。
-    // 那是把「零状态前置没生效」印成了成功：缓存没清 ⇒ 列表回显上一轮的卡组
-    // ⇒ 这轮测的是 deck-toggle 分支而不是零卡组分支，而且**不会红**。
-    // 现在改成硬失败——判据分不清就不许当它绿。
-    const res = await cdp.ev(expr)
-    if (typeof res !== 'string' || !res.startsWith('[[')) {
-      throw new Error(`CDP 返回了非预期形状：${JSON.stringify(res)?.slice(0, 200)}`)
-    }
-    const had = JSON.parse(res)
-    console.log(`  localStorage 清理：${JSON.stringify(had)}`)
-    if (!had.some(([, v]) => v)) console.log('  (本来就没有缓存键)')
+  // ① 先离开闪卡路由（关键，见上面的大段注释）
+  const navHash = await cdp.ev(`(() => { location.hash = '#/ai'; return 1 })()`)
+  void navHash
+  await sleep(2000)
+  const landed = await cdp.ev('location.hash')
+  // 只要求「**离开了闪卡页**」。未登录时 #/ai 会被弹回 #/login，那也满足要求，
+  // 没必要在这里把登录态也管起来（那是 preflight 的事）。
+  if (/#\/flashcards/.test(String(landed))) {
+    throw new Error(`导航未生效，仍停在 ${JSON.stringify(landed)}（闪卡 store 还挂着，清了也会被写回）`)
   }
+  console.log(`  已导航到 ${landed}（已离开闪卡页）`)
+
+  // ② 再清缓存
+  const expr = `(() => { const k=${JSON.stringify(CACHE_KEYS)}; const had=k.map(x=>[x, localStorage.getItem(x)!==null]); k.forEach(x=>localStorage.removeItem(x)); return JSON.stringify(had) })()`
+  // 原来这里是「超时/异常就打印一句『未确认』然后继续跑 PG 删除，最后照样 ✅」。
+  // 那是把「零状态前置没生效」印成了成功：缓存没清 ⇒ 列表回显上一轮的卡组
+  // ⇒ 这轮测的是 deck-toggle 分支而不是零卡组分支，而且**不会红**。
+  // 现在改成硬失败——判据分不清就不许当它绿。
+  const res = await cdp.ev(expr)
+  if (typeof res !== 'string' || !res.startsWith('[[')) {
+    throw new Error(`CDP 返回了非预期形状：${JSON.stringify(res)?.slice(0, 200)}`)
+  }
+  const had = JSON.parse(res)
+  console.log(`  localStorage 清理：${JSON.stringify(had)}`)
+  if (!had.some(([, v]) => v)) console.log('  (本来就没有缓存键)')
+  // ⚠️ 关键：DOM Storage 是**异步**提交到 leveldb 的。removeItem 之后必须给提交留时间，
+  //    否则紧接着的 force-stop 会把这次写直接丢掉（见文件末尾的实测说明）。
+  await sleep(2000)
 } catch (e) {
   cacheErr = String(e?.message || e).slice(0, 300)
 } finally {
@@ -92,6 +159,32 @@ try {
 if (cacheErr) {
   console.log(`❌ localStorage 清理失败：${cacheErr}`)
   console.log('   前置没生效就不能声称「已清零」——否则这轮会静默地测错分支。')
+  process.exit(1)
+}
+
+// ⚠️ 2026-10-04 第二次修：清完 localStorage 立刻 force-stop（保留），
+//    但**真正的修法是上面那一步「先离开闪卡路由」**。
+//
+// 走过的四条弯路（都留档，避免再走）：
+//   ① 先 force-stop 再 CDP 清 → App 不在运行，devtools socket 连不上，清不掉。
+//   ② 先 CDP removeItem 再 force-stop → **两步之间 App 还活着**，store 已挂载、
+//      内存里仍持有卡组，会在这个窗口里把缓存写回。01:13 那轮就是这么漏的。
+//   ③ 删掉整个 app_webview/Default/Local Storage 目录 → 竞态是没了，
+//      但把**主密码设置也一起清掉**了（leveldb 按 key 没法精确删）。
+//      后果实测：下一次登录后 App 弹「创建主密码」对话框盖住路由，
+//      maestro-run.mjs 等 hash 离开 #/login 超时 → **误报登录失败**
+//      （后端 /api/auth/login 实测 200、token 291 字符都在）。
+//      为了跑一条闪卡 flow 毁掉整个 App 登录态，不划算。
+//   ④ 靠 `cdp` 连「随便哪个活着的 socket」→ 那是另一个包（…sttdev）的 WebView，
+//      清的是它的存储。见 scripts/lib/adb-cdp.mjs 2026-10-04 的 pid 严格匹配。
+//
+// ⇒ 现在的顺序：**导航离开闪卡路由 → removeItem → force-stop → 删 PG → 重启回读自证**。
+try {
+  sh(`am force-stop ${PKG}`)
+  console.log(`  已 force-stop ${PKG}`)
+} catch (e) {
+  console.log(`  ❌ force-stop 失败：${String(e?.message || e).split('\n')[0]}`)
+  console.log('   App 仍在运行 → 它可能把闪卡缓存写回，这轮会静默测错分支。')
   process.exit(1)
 }
 
@@ -107,4 +200,72 @@ if (left.some((n) => n !== 0)) {
   console.log('⚠️ 仍有残留，flow 断言可能假绿，先别跑。')
   process.exit(1)
 }
-console.log('✅ 已清零，可以跑 flashcards-write.yaml（零卡组分支）')
+
+// ---------------------------------------------------------------------------
+// 自证 + 重试：清场必须在**App 重启之后**成立才算数，而且不成立就**重来**。
+//
+// 为什么必须多这一步：上面所有「成功」的证据都来自 App **还在跑**的时候——
+// removeItem 返回 true、PG 查到 0。而 01:13 那轮恰恰是：这些全都「成功」，
+// App 一重启卡组就回来了，flow 挂在「暂无卡组不可见」，看起来像产品坏了。
+// ⇒ 判据要钉在 flow 真正会看到的那个状态上（重启后的磁盘内容），
+//    而不是钉在我自己刚刚做过的那个动作上。
+//
+// 为什么是「重试」而不是「小心一点」（2026-10-04 实测定死）：
+//   removeItem 之后立刻 force-stop，**写不一定落盘**。
+//   实测（diag-flashcard-persist-window.mjs）：重启后第一次读（App 还没做任何事）
+//   就已经是 decks=1 ⇒ 卡组在磁盘上，从来没被删掉过。
+//   Android WebView 的 DOM Storage 是**异步**提交到 leveldb 的，
+//   `am force-stop` 立刻杀进程会丢掉未提交的写。
+//   之前那次「删成功了」是巧合：removeItem 之后多开了一次 CDP 连接去回读，
+//   那一次往返刚好给了提交时间。
+//   ⇒ 写操作在这里**本质上不可靠**，所以只能「做完重启验、不行就重来」，
+//      不能靠「这次应该来得及」。
+// ---------------------------------------------------------------------------
+const readCachedDecks = async () => {
+  const c = await openCdp({ pkg: PKG })
+  try {
+    const raw = await c.ev(`localStorage.getItem(${JSON.stringify(CACHE_KEYS[0])})`)
+    return raw == null ? 0 : (JSON.parse(raw).deckConfigs || []).length
+  } finally { await c.close() }
+}
+
+const clearCacheOnce = async () => {
+  const c = await openCdp({ pkg: PKG })
+  try {
+    await c.ev(`location.hash = '#/ai'`)
+    await sleep(1500)
+    await c.ev(`(() => { ${JSON.stringify(CACHE_KEYS)}.forEach(k => localStorage.removeItem(k)); return 1 })()`)
+    // 给 DOM Storage 的异步提交留时间。缺了它，下一次 force-stop 会把这次写丢掉。
+    await sleep(2000)
+  } finally { await c.close() }
+}
+
+const MAX_ATTEMPTS = 4
+let decks = -1
+for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+  if (!(await launchApp())) {
+    console.log('❌ 自证失败：App 拉不起来，读不到重启后的真实状态。没自证就不许说「已清零」。')
+    process.exit(1)
+  }
+  try {
+    decks = await readCachedDecks()
+  } catch (e) {
+    console.log(`❌ 自证失败：读不了重启后的 localStorage：${String(e?.message || e).split('\n')[0]}`)
+    process.exit(1)
+  }
+  console.log(`自证 第 ${attempt}/${MAX_ATTEMPTS} 次（重启后）：decks=${decks}`)
+  if (decks === 0) break
+  console.log('   卡组还在（写没落盘 / 被写回）→ 重来一次，这次清完多等 2s 再停')
+  await clearCacheOnce()
+  await sleep(2000)
+  sh(`am force-stop ${PKG}`)
+  await sleep(1200)
+}
+
+if (decks !== 0) {
+  console.log(`❌ 重试 ${MAX_ATTEMPTS} 次后重启后仍有 ${decks} 张卡组 —— 清场没生效，这轮 flow 会测成 deck-toggle 分支。`)
+  console.log('   不要去改 flow 的断言来「适配」这个状态，前置没生效就是没生效。')
+  process.exit(1)
+}
+
+console.log(`✅ 已清零并自证（PG=0 且重启后 ${CACHE_KEYS[0]} 无卡组），可以跑 flashcards-write.yaml（零卡组分支）`)

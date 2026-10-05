@@ -119,7 +119,7 @@ func (s *Store) Create(ctx context.Context, a *Agent) error {
 	return err
 }
 
-// Get 根据 id 查询单个角色。内置角色（workspace_id=”）全局可见；自定义角色需 workspace 匹配。
+// Get 根据 id 查询单个角色。内置角色（workspace_id 为空串）全局可见；自定义角色需 workspace 匹配。
 func (s *Store) Get(ctx context.Context, workspaceID, id string) (*Agent, error) {
 	if s.pool == nil {
 		return nil, fmt.Errorf("store not configured")
