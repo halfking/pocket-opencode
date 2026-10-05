@@ -1,8 +1,16 @@
-# round47 —— 本地 PG 其实活着；17 条流跑完，8 条失败的唯一根因是**装机 APK 陈旧**
+# round47 —— 本地 PG 其实活着；8 条「红」的唯一根因是**装机 APK 陈旧**，重建后 6 条转绿
 
-日期：2026-10-05 13:xx → 15:5x（本机时区 +08:00）
+日期：2026-10-05 13:11 → 20:0x（本机时区 +08:00）
 范围：真机（实为 AVD）部署 + 全量 Maestro 回归 + 邮箱/网关/STT 配置落库
-基线：`d0e55d15`（本地 main == origin/main，工作区干净）
+基线：`b3527850`（开工时）→ `d0e55d15` → 收尾 `9b415108` + 本文补记
+设备：AVD `pocket-test`（Android 14，emulator-5554）——**本机无 USB 真机**
+
+## 一句话结论
+
+17 条主包流从「8 条红」变成「6 条绿 + 1 条需单独开关 + 1 条待验」；
+过程中修掉 **2 个 harness 真缺陷**（含一段**从未被执行过的死代码**）
+和 **1 条恒假断言**。所有配置（邮箱 / 网关 / STT）均落库并**独立读回自证**。
+**未完成的 1 条与 AVD 反复消失的原因，如实记在 §5.1 / §5.1b。**
 
 ---
 
@@ -225,8 +233,6 @@ preferred      = glm-5.3, minimax-m3, kimi-k3, claude-sonnet-5, gpt-5.6-terra,
 
 ---
 
-## 五、遗留与下一轮提示
-
 ### 2.3 修完第一版**并没有解决问题**（这一条要留在最前面，别只记"已修"）
 
 第一次修的只是**那个 TypeError 本身**，症状是消失了，但根因还在：
@@ -368,7 +374,7 @@ Assert that "密码登录" is not visible... COMPLETED
 Take screenshot ... COMPLETED
 ```
 
-### 5.4 首次安装新设备时，必须预授这些权限（否则首登必卡）
+### 2.10 首次安装新设备时，必须预授这些权限（否则首登必卡）
 
 模拟器/新机上装完包，**在跑任何 flow 之前**执行：
 
@@ -439,13 +445,57 @@ NotesHubView.vue:81:   …(实测误点进了会议详情并触发了录音)。 
 而是「**这条判据在本设备上有没有可能为真**」。
 `grep` 一下断言文本在源码里出不出现，是成本最低的判别力自检。
 
-### 5.1 本轮未完成（正在收尾）
+## 五、遗留与下一轮提示
 
-1. **重建 APK 并重装**：`gradlew assembleDebug` 已启动，装完要**重跑那 8 条流**，
-   验证失败消除。**如果还有失败，那才是真缺陷**，按新 UI 真实 DOM 逐条修真因。
-2. **2 条 sttdev 流**（`notes-stt-error-visibility` / `_connectivity-sttdev`）
-   必须单独跑：`POCKET_APP_ID=com.kaixuan.opencode.pocket.sttdev`。
-   harness 会正确拦下混包（exit 2）——这是它设计好的保护，别去改。
+### 5.1 本轮终态：已跑通 6/8，剩 2 条的处置
+
+**已完成（都有对照证据）**：
+
+| 流 | 结果 |
+|---|---|
+| `notes-crud` | 29 断言全绿 |
+| `tasks-crud` | 27 全绿 |
+| `flashcards-write` | 31 全绿 |
+| `messages-hub` | 19 全绿 |
+| `more-entries-open` | 18 全绿 |
+| `_goto-pkm` | 13 全绿 |
+| `login-gesture` | 带 `POCKET_SKIP_CDP_LOGIN=1` 单独跑 **exit 0** |
+
+⚠️ 统计方法：`Get-Content` + 正则会把中文洗成乱码，导致 COMPLETED/FAILED
+计数**完全相同**（我第一版统计脚本就是这么错的，看起来像 8 条全红）。
+**统计必须用 `[IO.File]::ReadAllLines($p,[Text.Encoding]::UTF8)`。**
+
+**仍未验证的 1 条**：`meetings-entry.yaml` 的选择器修复（§2.9）**没有拿到绿灯**。
+- 静态侧：`check-maestro-flows.mjs` exit 0（24/24 覆盖），三处判据都从源码核实过。
+- 设备侧：**没跑成**。AVD 本轮反复中途消失（4 次启动、3 次在 flow 执行途中
+  `device not found`）。
+- ⇒ **不写成「已修好」**。选择器改动的正确性目前只有静态依据。
+
+**`login-gesture` 那次红不是缺陷**：它必须带 `POCKET_SKIP_CDP_LOGIN=1` 跑
+（要测登录屏本身），我把它和已登录的流混在一批 ⇒ 报「输入用户名」找不到。
+补上开关后 exit 0。**批处理时必须按 flow 声明的前置条件分组，不能一把梭。**
+
+### 5.1b AVD 反复中途消失：已排除 OOM，**未指认外力**
+
+```
+emulator 日志：INFO | Boot completed in 47000 ms      ← 启动是成功的
+随后：adb: device 'emulator-5554' not found
+宿主：freePhysicalMemory 3783MB / total 15182MB
+     commit limit 50471MB；pagefile allocated 35288MB / used 1817MB
+```
+
+内存与提交额度都宽裕 ⇒ **排除 OOM**。后端（pocketd）与 PostgreSQL
+在同一段时间始终健在（healthz 200、11 个进程），**只有模拟器消失**
+⇒ 不是本轮改动引起，也不是后端把它带崩的。
+
+`MsMpEng`（Defender）在扫，与 round46 记的「杀软干扰 backend 子进程」同族，
+但**我没有证据指认它就是杀这个模拟器的**，所以**不下结论**。
+下一轮若要定论，需要在 `Boot completed` 之后抓到进程退出码或系统事件日志。
+
+### 5.1c 2 条 sttdev 流：本轮未跑
+
+必须单独跑：`POCKET_APP_ID=com.kaixuan.opencode.pocket.sttdev`。
+harness 会正确拦下混包（exit 2）——这是它设计好的保护，**别去改**。
 
 ### 5.2 环境事实（跨轮复用）
 
@@ -473,6 +523,42 @@ NotesHubView.vue:81:   …(实测误点进了会议详情并触发了录音)。 
 
 | 时间 | 事件 |
 |---|---|
-| 开工 | `git fetch`；`origin/main` 领先 2 个门禁提交，**快进合并无冲突** |
+| 开工 | `git fetch`；`origin/main` 领先 2 个门禁提交（`dfbf2473`/`b3527850`），**快进合并无冲突**，HEAD=`b3527850` |
 | 期间 | 临时 PG 探针（`backend/cmd/pgprobe`）已走回收站移除，`git status` 复核为空 |
-| 收尾 | 见下方（重建 APK / 重跑 / 推送） |
+| 配置落库 | 5 个邮箱账户 + LLM 网关 key/`glm-5.3` 经 HTTP API 落库并**独立读回自证**（§三） |
+| 提交 1 | `23a1a600` fix(maestro): 主密码弹窗两处真缺陷 + meetings 流改走新 IA 的笔记入口 |
+| 提交 2 | `9b415108` fix(maestro): meetings 流三处选择器换成真正可见的判据 |
+| 推送 | 两次 push 均 exit 0，且**各自用 `git ls-remote` 独立验证**远端 ref 与本地 HEAD 一致（不凭退出码下结论） |
+
+两次 push 前都重新 `git fetch` 核过 `git rev-list --left-right --count
+origin/main...HEAD` 为 `0 1`（纯快进、无并发冲突）。推送用
+`GIT_SSH_COMMAND='ssh -o ServerAliveInterval=15 -o ServerAliveCountMax=20
+-o TCPKeepAlive=yes'`——本仓走 SSH over 代理，大提交易断连。
+
+提交 2 里那份 handoff **随后又改过**（重排 §2.x 层级、补 §5.1 终态、填本节），
+所以合并进提交 3。
+
+### 6.1 本轮我推翻过的自己的结论（留给下一轮当反面清单）
+
+按「差点浪费多少时间」排序：
+
+1. **「必须等远程 PG 口令才能动」**——本地 PG 一直活着。只读了 round45
+   没读 round46，就把**继承来的环境结论**当事实用。
+2. **「修掉 TypeError 就算修好了」**——它只让报错消失，行为一字未变
+   （`[8,0,0]` 原封不动）。
+3. **「模态弹窗导致 input text 失真」**——真因是系统权限弹窗抢了窗口焦点。
+4. **「`[8,0,0]` 是三个待填框、漏填一个」**——第一个是**登录框、本就该有 8 位**，
+   harness 读数一直是对的，错的是我的解读。
+5. **「用 `data-testid` 更稳，因为它是契约」**——Maestro 走无障碍树，
+   `data-testid` 根本不在其中。
+6. **「用 Maestro 选择器能绕过 input text 失灵」**——写探针前若先
+   `uiautomator dump` 就会发现那些框**根本不在无障碍树里**，探针注定无效。
+7. **`Get-Content` + 正则统计 maestro 结果**——中文被洗成乱码，
+   COMPLETED/FAILED 计数**完全相同**，看起来像 8 条全红。必须用
+   `[IO.File]::ReadAllLines(..., UTF8)`。
+
+**共同形状**：以上每一条都是**「在没验证判据本身之前就开始解释现象」**。
+成本最低的自检永远是：**这条判据在本设备上有没有可能为真？**
+（`grep` 断言文本在源码里出不出现；`dumpsys` 看焦点到底在谁身上；
+`Get-Content` 换成 UTF-8 再数一遍。）
+
