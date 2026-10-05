@@ -766,8 +766,9 @@ func TestUpsertTask_CrossWorkspaceConflict(t *testing.T) {
 		t.Errorf("CreatedAt = %s, want first-insert %s (replay must not reset CreatedAt)",
 			got2.CreatedAt.UTC(), first.CreatedAt.UTC())
 
-		}
 	}
+}
+
 // ---- Pocket↔ACC canonical ID binding ----
 
 // TestACCBinding_PersistAndRoundTrip 绑定经 SetACCBinding 写入后，所有读
@@ -975,5 +976,6 @@ func TestACCBinding_DefaultEmptyAndCreateInsert(t *testing.T) {
 		t.Fatalf("GetTaskScoped: %v", err)
 	}
 	if got2.ACCDispatchID != "disp-born" || got2.ACCSourceRef != "ref-born" || got2.ACCCorrelationID != "corr-born" {
-		t.Fatalf("create-time binding lost: %+v", got2)	}
+		t.Fatalf("create-time binding lost: %+v", got2)
+	}
 }

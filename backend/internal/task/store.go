@@ -229,6 +229,7 @@ func normalizeWorkspace(wsID string) string {
 // round-trips its tenant instead of dropping it. The work-item columns
 // (type/owner/due/...) are appended last so the scan order below stays stable.
 const taskColumns = `id, workspace_id, title, description, status, priority, COALESCE(workstream_id, ''), source, created_at, updated_at, pending_approvals, session_count, accepted_at, accepted_by, evidence_bundle, type, owner_id, assignees, due_at, remind_at, parent_id, origin_kind, origin_ref, tags, visibility, acc_task_id, acc_run_id, acc_dispatch_id, acc_source_ref, acc_correlation_id, acc_holder_id`
+
 // scanTask reads one row in taskColumns order.
 func scanTask(row interface {
 	Scan(dest ...any) error
@@ -249,7 +250,8 @@ func scanTask(row interface {
 		&acceptedAt, &acceptedBy, &evidenceBundleRaw,
 		&t.Type, &t.OwnerID, &assigneesRaw, &t.DueAt, &t.RemindAt, &t.ParentID,
 		&t.OriginKind, &t.OriginRef, &tagsRaw, &t.Visibility,
-		&accTaskID, &accRunID, &accDispatchID, &accSourceRef, &accCorrelationID, &accHolderID); err != nil {		return nil, err
+		&accTaskID, &accRunID, &accDispatchID, &accSourceRef, &accCorrelationID, &accHolderID); err != nil {
+		return nil, err
 	}
 	if description != nil {
 		t.Description = *description
