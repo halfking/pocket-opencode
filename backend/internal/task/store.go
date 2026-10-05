@@ -125,6 +125,17 @@ func (s *Store) migrate() error {
 	ALTER TABLE tasks ADD COLUMN IF NOT EXISTS evidence_bundle JSONB;
 	CREATE INDEX IF NOT EXISTS idx_tasks_accepted_status ON tasks(workspace_id, status) WHERE status = 'accepted';
 
+	-- Pocket↔ACC canonical ID binding (idempotent on existing DBs). All five
+	-- columns are nullable; the only writer is SetACCBinding (authoritative
+	-- local state — remote task sync must never clobber it).
+	ALTER TABLE tasks ADD COLUMN IF NOT EXISTS acc_task_id TEXT;
+	ALTER TABLE tasks ADD COLUMN IF NOT EXISTS acc_run_id TEXT;
+	ALTER TABLE tasks ADD COLUMN IF NOT EXISTS acc_dispatch_id TEXT;
+	ALTER TABLE tasks ADD COLUMN IF NOT EXISTS acc_source_ref TEXT;
+	ALTER TABLE tasks ADD COLUMN IF NOT EXISTS acc_correlation_id TEXT;
+	ALTER TABLE tasks ADD COLUMN IF NOT EXISTS acc_holder_id TEXT;
+	CREATE INDEX IF NOT EXISTS idx_tasks_acc_dispatch ON tasks(acc_dispatch_id) WHERE acc_dispatch_id IS NOT NULL;
+
 	CREATE TABLE IF NOT EXISTS approval_observations (
 		workspace_id TEXT NOT NULL,
 		instance_id TEXT NOT NULL,
@@ -217,8 +228,7 @@ func normalizeWorkspace(wsID string) string {
 // taskColumns is the shared SELECT list; workspace_id is included so the model
 // round-trips its tenant instead of dropping it. The work-item columns
 // (type/owner/due/...) are appended last so the scan order below stays stable.
-const taskColumns = `id, workspace_id, title, description, status, priority, COALESCE(workstream_id, ''), source, created_at, updated_at, pending_approvals, session_count, accepted_at, accepted_by, evidence_bundle, type, owner_id, assignees, due_at, remind_at, parent_id, origin_kind, origin_ref, tags, visibility`
-
+const taskColumns = `id, workspace_id, title, description, status, priority, COALESCE(workstream_id, ''), source, created_at, updated_at, pending_approvals, session_count, accepted_at, accepted_by, evidence_bundle, type, owner_id, assignees, due_at, remind_at, parent_id, origin_kind, origin_ref, tags, visibility, acc_task_id, acc_run_id, acc_dispatch_id, acc_source_ref, acc_correlation_id, acc_holder_id`
 // scanTask reads one row in taskColumns order.
 func scanTask(row interface {
 	Scan(dest ...any) error
@@ -231,13 +241,15 @@ func scanTask(row interface {
 	// NULLIF 语义会写 NULL），必须用指针接，否则 NULL 行读取直接报错。
 	var description, workstreamID *string
 	var evidenceBundleRaw []byte
+	// acc_* 绑定列全部可空（SetACCBinding 之外的写入路径不会填它们）。
+	var accTaskID, accRunID, accDispatchID, accSourceRef, accCorrelationID, accHolderID *string
 	var assigneesRaw, tagsRaw []byte
 	if err := row.Scan(&t.ID, &t.WorkspaceID, &t.Title, &description, &t.Status, &t.Priority,
 		&workstreamID, &t.Source, &createdAt, &updatedAt, &t.PendingApprovals, &t.SessionCount,
 		&acceptedAt, &acceptedBy, &evidenceBundleRaw,
 		&t.Type, &t.OwnerID, &assigneesRaw, &t.DueAt, &t.RemindAt, &t.ParentID,
-		&t.OriginKind, &t.OriginRef, &tagsRaw, &t.Visibility); err != nil {
-		return nil, err
+		&t.OriginKind, &t.OriginRef, &tagsRaw, &t.Visibility,
+		&accTaskID, &accRunID, &accDispatchID, &accSourceRef, &accCorrelationID, &accHolderID); err != nil {		return nil, err
 	}
 	if description != nil {
 		t.Description = *description
@@ -261,6 +273,24 @@ func scanTask(row interface {
 			return nil, fmt.Errorf("decode evidence_bundle: %w", err)
 		}
 		t.EvidenceBundle = &bundle
+	}
+	if accTaskID != nil {
+		t.ACCTaskID = *accTaskID
+	}
+	if accRunID != nil {
+		t.ACCRunID = *accRunID
+	}
+	if accDispatchID != nil {
+		t.ACCDispatchID = *accDispatchID
+	}
+	if accSourceRef != nil {
+		t.ACCSourceRef = *accSourceRef
+	}
+	if accCorrelationID != nil {
+		t.ACCCorrelationID = *accCorrelationID
+	}
+	if accHolderID != nil {
+		t.ACCHolderID = *accHolderID
 	}
 	return t, nil
 }
@@ -301,16 +331,19 @@ func decodeStringList(raw []byte) []string {
 // (see workitem_pg_test.go and docs/学习muse/如何验证真实数据库.md).
 const taskInsertColumns = `id, workspace_id, title, description, status, priority, workstream_id, source,
 	created_at, updated_at, pending_approvals, session_count,
-	type, owner_id, assignees, due_at, remind_at, parent_id, origin_kind, origin_ref, tags, visibility`
+	type, owner_id, assignees, due_at, remind_at, parent_id, origin_kind, origin_ref, tags, visibility,
+  	acc_task_id, acc_run_id, acc_dispatch_id, acc_source_ref, acc_correlation_id, acc_holder_id`
 
 const taskInsertValues = `VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-	$13, $14, $15, $16, $17, $18, $19, $20, $21, $22)`
+	$13, $14, $15, $16, $17, $18, $19, $20, $21, $22),
+  	NULLIF($23, ''), NULLIF($24, ''), NULLIF($25, ''), NULLIF($26, ''), NULLIF($27, ''), NULLIF($28, ''))`
 
 // taskUpsertValues is the same arity but wraps the nullable text columns in
 // NULLIF, so an empty string becomes SQL NULL on upsert. That is why it cannot
 // simply reuse taskInsertValues.
 const taskUpsertValues = `VALUES ($1, $2, $3, NULLIF($4, ''), $5, $6, NULLIF($7, ''), $8, $9, $10, $11, $12,
-	$13, $14, $15, $16, $17, $18, $19, $20, $21, $22)`
+	$13, $14, $15, $16, $17, $18, $19, $20, $21, $22),
+  	NULLIF($23, ''), NULLIF($24, ''), NULLIF($25, ''), NULLIF($26, ''), NULLIF($27, ''), NULLIF($28, ''))`
 
 func (s *Store) CreateTask(ctx context.Context, task *Task) error {
 	now := time.Now().Unix()
@@ -330,8 +363,8 @@ func (s *Store) CreateTask(ctx context.Context, task *Task) error {
 		`+taskInsertValues+`
 	`, task.ID, task.WorkspaceID, task.Title, task.Description, task.Status, task.Priority, task.WorkstreamID, task.Source, now, now, task.PendingApprovals, task.SessionCount,
 		task.Type, task.OwnerID, encodeStringList(task.Assignees), task.DueAt, task.RemindAt, task.ParentID,
-		task.OriginKind, task.OriginRef, encodeStringList(task.Tags), task.Visibility)
-
+		task.OriginKind, task.OriginRef, encodeStringList(task.Tags), task.Visibility,
+		task.ACCTaskID, task.ACCRunID, task.ACCDispatchID, task.ACCSourceRef, task.ACCCorrelationID, task.ACCHolderID)
 	return err
 }
 
@@ -418,7 +451,8 @@ func (s *Store) UpsertTask(ctx context.Context, task *Task) error {
 			updated_at    = EXCLUDED.updated_at
 	`, task.ID, task.WorkspaceID, task.Title, task.Description, task.Status, task.Priority, task.WorkstreamID, task.Source, now, now, task.PendingApprovals, task.SessionCount,
 		task.Type, task.OwnerID, encodeStringList(task.Assignees), task.DueAt, task.RemindAt, task.ParentID,
-		task.OriginKind, task.OriginRef, encodeStringList(task.Tags), task.Visibility)
+		task.OriginKind, task.OriginRef, encodeStringList(task.Tags), task.Visibility,
+		task.ACCTaskID, task.ACCRunID, task.ACCDispatchID, task.ACCSourceRef, task.ACCCorrelationID, task.ACCHolderID)
 	if err != nil {
 		return err
 	}
@@ -1223,6 +1257,59 @@ func joinStrings(ss []string, sep string) string {
 		result += s
 	}
 	return result
+}
+
+// SetACCBinding writes the authoritative Pocket↔ACC canonical ID binding for
+// one task inside a workspace. This is the only writer of the acc_* columns
+// besides CreateTask: remote task sync (UpsertTask) deliberately never
+// touches them, so a remote replay cannot sever a live binding. Pass a zero
+// Binding to clear all five fields.
+func (s *Store) SetACCBinding(ctx context.Context, workspaceID, taskID string, binding Binding) error {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE tasks SET
+			acc_task_id        = NULLIF($3, ''),
+			acc_run_id         = NULLIF($4, ''),
+			acc_dispatch_id    = NULLIF($5, ''),
+			acc_source_ref     = NULLIF($6, ''),
+			acc_correlation_id = NULLIF($7, ''),
+			acc_holder_id      = NULLIF($8, ''),
+			updated_at         = $9
+		WHERE id = $1 AND workspace_id = $2`,
+		taskID, normalizeWorkspace(workspaceID),
+		binding.TaskID, binding.RunID, binding.DispatchID, binding.SourceRef, binding.CorrelationID, binding.HolderID,
+		time.Now().Unix())
+	if err != nil {
+		return fmt.Errorf("set acc binding: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("task not found: %s", taskID)
+	}
+	return nil
+}
+
+// FindTaskBySessionScoped resolves the most recently attached task for an
+// (instance, session) pair inside one workspace — the trusted join used by
+// the approval path to decide whether a reply must be gated by ACC. A
+// missing link returns (nil, nil); only genuine store failures return an
+// error so callers can distinguish "unbound" from "cannot know".
+func (s *Store) FindTaskBySessionScoped(ctx context.Context, wsID, instanceID, sessionID string) (*Task, error) {
+	wsID = normalizeWorkspace(wsID)
+	var taskID string
+	err := s.pool.QueryRow(ctx, `
+		SELECT l.task_id
+		FROM task_session_links l
+		JOIN tasks t ON t.id = l.task_id
+		WHERE l.workspace_id = $1 AND l.instance_id = $2 AND l.session_id = $3
+		  AND t.workspace_id = $1
+		ORDER BY l.attached_at DESC
+		LIMIT 1`, wsID, instanceID, sessionID).Scan(&taskID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("find task by session: %w", err)
+	}
+	return s.GetTaskScoped(ctx, taskID, wsID)
 }
 
 func (s *Store) Close() error {

@@ -1,11 +1,16 @@
 package server
 
 import (
+	"errors"
+	"fmt"
+	"log"
 	"net/http"
 	"strings"
 
+	"github.com/halfking/pocket-opencode/backend/internal/accruntime"
 	"github.com/halfking/pocket-opencode/backend/internal/adapter"
 	"github.com/halfking/pocket-opencode/backend/internal/auth"
+	"github.com/halfking/pocket-opencode/backend/internal/task"
 )
 
 // handleMobileApprovalRouter is the production HTTP approval surface. It is
@@ -68,13 +73,25 @@ func (s *Server) listMobileApprovals(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// mobilePermissionReplyBody is the decoded POST body of a permission reply.
+// The acc_* fields are an optional client echo of the task binding for
+// audit reconciliation only — the authoritative binding always comes from
+// the task store (SetACCBinding is the sole writer). All five echo fields
+// are accepted because mobile bodies decode with DisallowUnknownFields.
+type mobilePermissionReplyBody struct {
+	InstanceID       string `json:"instance_id"`
+	SessionID        string `json:"session_id"`
+	Decision         string `json:"decision"`
+	Message          string `json:"message"`
+	ACCTaskID        string `json:"acc_task_id,omitempty"`
+	ACCRunID         string `json:"acc_run_id,omitempty"`
+	ACCDispatchID    string `json:"acc_dispatch_id,omitempty"`
+	ACCSourceRef     string `json:"acc_source_ref,omitempty"`
+	ACCCorrelationID string `json:"acc_correlation_id,omitempty"`
+}
+
 func (s *Server) replyMobilePermission(w http.ResponseWriter, r *http.Request, requestID string) {
-	var body struct {
-		InstanceID string `json:"instance_id"`
-		SessionID  string `json:"session_id"`
-		Decision   string `json:"decision"`
-		Message    string `json:"message"`
-	}
+	var body mobilePermissionReplyBody
 	if !s.decodeJSONBody(w, r, &body) {
 		return
 	}
@@ -89,6 +106,27 @@ func (s *Server) replyMobilePermission(w http.ResponseWriter, r *http.Request, r
 	}
 
 	workspaceID, _ := s.requireMobileWorkspace(w, r)
+
+	// Pocket↔ACC 审批互锁（fail-closed）。accRuntime 未配置 → gate 不生效，
+	// 行为与历史版本完全一致。gate 生效时：
+	//   - 绑定查询失败（含 taskStore 缺失）→ fail-closed；
+	//   - task_session_links → task 命中 ACC dispatch 绑定（acc_dispatch_id
+	//     非空）→ 先 AnswerPermission；ACC 失败（含 ErrGateUnavailable）→
+	//     fail-closed；
+	//   - 未绑定 → 原行为不变。
+	if s.accRuntime != nil {
+		bound, gateErr := s.enforceACCPermissionGate(r, workspaceID, requestID, decision, body)
+		if gateErr != nil {
+			s.failClosedPermissionReply(w, r, workspaceID, body, requestID, bound, gateErr)
+			return
+		}
+		if bound != nil {
+			s.Write(r, "mobile.approval.acc_gate_answered",
+				"instance:"+body.InstanceID+"/session:"+body.SessionID+"/request:"+requestID,
+				AuditFields{Detail: "dispatch:" + bound.ACCDispatchID + "/decision:" + body.Decision, Success: true})
+		}
+	}
+
 	reply := adapter.PermissionReply(decision)
 	if err := s.permMgr.ReplyForWorkspace(r.Context(), workspaceID, body.InstanceID, body.SessionID, requestID, reply, body.Message); err != nil {
 		s.writeApprovalManagerError(w, r, err)
@@ -96,6 +134,105 @@ func (s *Server) replyMobilePermission(w http.ResponseWriter, r *http.Request, r
 	}
 	s.recordMobileApprovalAudit(r, "permission_"+body.Decision, body.InstanceID, body.SessionID, requestID)
 	s.writeApprovalConfirmed(w, r, requestID, body.Decision)
+}
+
+// accGateFailure classifies why the ACC approval interlock forced a deny.
+// The class (never the raw upstream body) is what lands in the audit trail
+// and the 502 envelope.
+type accGateFailure struct {
+	cause error
+	class string // binding_lookup_failed | gate_unavailable | acc_error
+}
+
+func (e *accGateFailure) Error() string {
+	return "acc gate failure (" + e.class + "): " + e.cause.Error()
+}
+func (e *accGateFailure) Unwrap() error { return e.cause }
+
+// enforceACCPermissionGate applies the Pocket↔ACC interlock for one
+// permission reply. Returns:
+//
+//	(bound=nil, err=nil)  → gate not applicable (unbound); original behavior
+//	(bound,     err=nil)  → ACC answered; continue the local forward
+//	(bound-or-nil, err)   → fail closed: deny locally + 502 acc_gate_unavailable
+//
+// bound is non-nil on gate failures caused by the ACC call so the response
+// can carry the binding audit fields; lookup failures leave it nil because
+// the binding could not be established.
+func (s *Server) enforceACCPermissionGate(r *http.Request, workspaceID, requestID string, decision auth.Decision, body mobilePermissionReplyBody) (*task.Task, error) {
+	// accRuntime 非 nil 而 taskStore 为 nil 是装配错误：无法判定绑定状态
+	// 就无法判定 gate 是否适用，必须 fail-closed。
+	if s.taskStore == nil {
+		return nil, &accGateFailure{cause: errors.New("task store unavailable"), class: "binding_lookup_failed"}
+	}
+	bound, err := s.taskStore.FindTaskBySessionScoped(r.Context(), workspaceID, body.InstanceID, body.SessionID)
+	if err != nil {
+		return nil, &accGateFailure{cause: err, class: "binding_lookup_failed"}
+	}
+	// 无链接或未绑定 ACC dispatch → gate 不适用，保持原行为。
+	if bound == nil || bound.ACCDispatchID == "" {
+		return nil, nil
+	}
+	// OptionID 透传原始 decision 字符串（once/always/reject）；reject 映射
+	// 为 allow=false。缺 source_ref/correlation_id 时 AnswerPermission 在
+	// 客户端侧校验失败 → 同样落入 fail-closed 分支。
+	if err := s.accRuntime.AnswerPermission(r.Context(), accruntime.PermissionDecision{
+		DispatchID:    bound.ACCDispatchID,
+		ToolCallID:    requestID,
+		SourceRef:     bound.ACCSourceRef,
+		CorrelationID: bound.ACCCorrelationID,
+		OptionID:      string(decision),
+		Allow:         decision != auth.DecisionReject,
+		Reason:        body.Message,
+	}); err != nil {
+		class := "acc_error"
+		if errors.Is(err, accruntime.ErrGateUnavailable) {
+			class = "gate_unavailable"
+		}
+		return bound, &accGateFailure{cause: err, class: class}
+	}
+	return bound, nil
+}
+
+// failClosedPermissionReply is the deny side of the interlock: best-effort
+// reject on the local OpenCode so the tool call cannot hang, an audit
+// entry, and a 502 acc_gate_unavailable envelope with binding audit fields.
+func (s *Server) failClosedPermissionReply(w http.ResponseWriter, r *http.Request, workspaceID string, body mobilePermissionReplyBody, requestID string, bound *task.Task, gateErr error) {
+	if s.permMgr != nil {
+		if err := s.permMgr.ReplyForWorkspace(r.Context(), workspaceID, body.InstanceID, body.SessionID, requestID,
+			adapter.PermissionReply(auth.DecisionReject), "acc gate unavailable: denied fail-closed"); err != nil {
+			log.Printf("[mobile-approval] fail-closed local reject failed: instance=%s session=%s request=%s err=%v",
+				body.InstanceID, body.SessionID, requestID, err)
+		}
+	}
+
+	class := "acc_error"
+	var gateFailure *accGateFailure
+	if errors.As(gateErr, &gateFailure) {
+		class = gateFailure.class
+	}
+	s.Write(r, "mobile.approval.acc_gate_unavailable",
+		"instance:"+body.InstanceID+"/session:"+body.SessionID+"/request:"+requestID,
+		AuditFields{Detail: fmt.Sprintf("class=%s acc_echo_task_id=%s acc_echo_dispatch_id=%s",
+			class, body.ACCTaskID, body.ACCDispatchID), Success: false})
+
+	// 结构化错误信封：与 writeStructuredError 同形，附带绑定审计字段。
+	// 出于脱敏考虑只带错误类别，不透传 ACC 响应体原文。
+	envelope := map[string]any{
+		"error":      "acc permission gate unavailable; permission denied fail-closed",
+		"code":       "acc_gate_unavailable",
+		"retryable":  true,
+		"gate_class": class,
+	}
+	if r != nil {
+		envelope["request_id"] = s.requestIDFromContext(r)
+	}
+	if bound != nil {
+		envelope["task_id"] = bound.ID
+		envelope["acc_task_id"] = bound.ACCTaskID
+		envelope["acc_dispatch_id"] = bound.ACCDispatchID
+	}
+	writeJSON(w, http.StatusBadGateway, envelope)
 }
 
 func (s *Server) replyMobileQuestion(w http.ResponseWriter, r *http.Request, requestID string) {

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/halfking/pocket-opencode/backend/internal/accruntime"
 	"github.com/halfking/pocket-opencode/backend/internal/adapter"
 	"github.com/halfking/pocket-opencode/backend/internal/agent"
 	"github.com/halfking/pocket-opencode/backend/internal/agentbridge"
@@ -130,6 +131,12 @@ type Server struct {
 	eventMgr *opencode.EventStreamManager
 	permMgr  *opencode.PermissionManager
 	quesMgr  *opencode.QuestionManager
+
+	// Pocket↔ACC canonical ID：ACC Runtime Control 类型化客户端。
+	// nil = ACC 集成未配置；审批回复不经过 ACC permission gate（原行为）。
+	// 非 nil 时，绑定到 ACC dispatch 的任务其移动端权限回复必须先取得 ACC
+	// 裁决，失败一律 fail-closed deny（见 mobile_approval_handler.go）。
+	accRuntime *accruntime.Client
 
 	// Auth
 	userStore        *auth.UserStore
@@ -364,6 +371,13 @@ func (s *Server) SetOpenCodeManagers(ocMgr *opencode.Manager, eventMgr *opencode
 	s.eventMgr = eventMgr
 	s.permMgr = permMgr
 	s.quesMgr = quesMgr
+}
+
+// SetACCRuntime 注入 ACC Runtime Control 客户端。nil（默认）= 未配置 ACC
+// 集成，移动端审批回复维持原有本地转发行为；非 nil 时绑定到 ACC dispatch
+// 的任务必须先通过 ACC permission gate（fail-closed）。
+func (s *Server) SetACCRuntime(c *accruntime.Client) {
+	s.accRuntime = c
 }
 
 // SetLLMGatewayStore 注入 LLM 网关配置持久化 store（PG 或 SQLite fallback）。
@@ -1816,6 +1830,10 @@ func (s *Server) handleTaskOperations(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+		if r.Method == http.MethodPost && len(parts) == 2 && parts[1] == "cancel" {
+			s.handleCancelTask(w, r, parts[0])
+			return
+		}
 		if r.Method == http.MethodPost && len(parts) == 2 && parts[1] == "accept" {
 			s.handleAcceptTask(w, r, parts[0])
 			return
@@ -2075,7 +2093,7 @@ func (s *Server) pendingApprovalsForTask(ctx context.Context, taskID, workspaceI
 
 func isValidTaskStatus(status string) bool {
 	switch status {
-	case "active", "blocked", "completed":
+	case "active", "blocked", "completed", "cancelled":
 		return true
 	default:
 		return false

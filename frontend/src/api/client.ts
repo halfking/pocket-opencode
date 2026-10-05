@@ -153,6 +153,14 @@ export interface Task {
   sessionCount?: number
   /** UI-only: 实例显示名（TasksView 本地 enrich） */
   instanceName?: string
+  /** Pocket↔ACC canonical ID 绑定（服务端权威，task store acc_* 列只读镜像；
+   * 审批/取消调用经 accBindingPassthrough 原样透传回服务端用于审计对账）。 */
+  accTaskId?: string
+  accRunId?: string
+  accDispatchId?: string
+  accSourceRef?: string
+  accCorrelationId?: string
+  accHolderId?: string
 }
 
 export interface Instance {

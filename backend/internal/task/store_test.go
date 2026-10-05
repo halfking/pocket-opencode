@@ -765,5 +765,215 @@ func TestUpsertTask_CrossWorkspaceConflict(t *testing.T) {
 	if !got2.CreatedAt.Equal(first.CreatedAt) {
 		t.Errorf("CreatedAt = %s, want first-insert %s (replay must not reset CreatedAt)",
 			got2.CreatedAt.UTC(), first.CreatedAt.UTC())
+
+		}
 	}
+// ---- Pocket↔ACC canonical ID binding ----
+
+// TestACCBinding_PersistAndRoundTrip 绑定经 SetACCBinding 写入后，所有读
+// 路径（GetTaskScoped / ListTasksScoped / 游标分页）都必须带回全列。
+func TestACCBinding_PersistAndRoundTrip(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+	mustCreate(t, s, "acc-bind-1", "ws-a", "bound task")
+
+	binding := Binding{
+		TaskID:        "acc-task-9",
+		RunID:         "run-3",
+		DispatchID:    "disp-42",
+		SourceRef:     "pocket://ws-a/acc-bind-1",
+		CorrelationID: "corr-77",
+	}
+	if err := s.SetACCBinding(ctx, "ws-a", "acc-bind-1", binding); err != nil {
+		t.Fatalf("SetACCBinding: %v", err)
+	}
+
+	got, err := s.GetTaskScoped(ctx, "acc-bind-1", "ws-a")
+	if err != nil {
+		t.Fatalf("GetTaskScoped: %v", err)
+	}
+	if got.ACCTaskID != binding.TaskID || got.ACCRunID != binding.RunID ||
+		got.ACCDispatchID != binding.DispatchID || got.ACCSourceRef != binding.SourceRef ||
+		got.ACCCorrelationID != binding.CorrelationID {
+		t.Fatalf("binding round-trip mismatch: %+v", got)
+	}
+	if ab := ACCBinding(got); ab != binding {
+		t.Fatalf("ACCBinding accessor = %+v, want %+v", ab, binding)
+	}
+	if !got.HasACCBinding() || !ACCBinding(got).Bound() {
+		t.Fatalf("task must report bound: %+v", got)
+	}
+
+	// 列表读路径同样全列覆盖。
+	list, err := s.ListTasksScoped(ctx, "ws-a")
+	if err != nil {
+		t.Fatalf("ListTasksScoped: %v", err)
+	}
+	if len(list) != 1 || list[0].ACCDispatchID != binding.DispatchID {
+		t.Fatalf("list read lost binding: %+v", list)
+	}
+	cursor, _, err := s.ListTasksCursorScoped(ctx, "ws-a", 10, 0, "")
+	if err != nil {
+		t.Fatalf("ListTasksCursorScoped: %v", err)
+	}
+	if len(cursor) != 1 || cursor[0].ACCCorrelationID != binding.CorrelationID {
+		t.Fatalf("cursor read lost binding: %+v", cursor)
+	}
+}
+
+// TestACCBinding_UpsertMustNotClobber 远端任务同步（UpsertTask）绝不允许
+// 抹掉或改写本地权威绑定。
+func TestACCBinding_UpsertMustNotClobber(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+	mustCreate(t, s, "acc-bind-2", "ws-a", "sync target")
+
+	if err := s.SetACCBinding(ctx, "ws-a", "acc-bind-2", Binding{
+		TaskID: "acc-task-1", DispatchID: "disp-1", SourceRef: "ref-1", CorrelationID: "corr-1",
+	}); err != nil {
+		t.Fatalf("SetACCBinding: %v", err)
+	}
+
+	if err := s.UpsertTask(ctx, &Task{ID: "acc-bind-2", Title: "remote replay", Status: "work", Source: "acc"}); err != nil {
+		t.Fatalf("UpsertTask: %v", err)
+	}
+	got, err := s.GetTaskScoped(ctx, "acc-bind-2", "ws-a")
+	if err != nil {
+		t.Fatalf("GetTaskScoped: %v", err)
+	}
+	if got.ACCDispatchID != "disp-1" || got.ACCSourceRef != "ref-1" || got.ACCCorrelationID != "corr-1" || got.ACCTaskID != "acc-task-1" {
+		t.Fatalf("UpsertTask clobbered binding: %+v", got)
+	}
+}
+
+// TestACCBinding_ClearWithZeroBinding 空 Binding 即清空全部五列；
+// 清空后仅剩 Source=="acc" 时 HasACCBinding 仍为 true（源即绑定）。
+func TestACCBinding_ClearWithZeroBinding(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+	mustCreate(t, s, "acc-bind-3", "ws-a", "clearable")
+	if err := s.SetACCBinding(ctx, "ws-a", "acc-bind-3", Binding{DispatchID: "disp-x", SourceRef: "r", CorrelationID: "c"}); err != nil {
+		t.Fatalf("SetACCBinding: %v", err)
+	}
+
+	if err := s.SetACCBinding(ctx, "ws-a", "acc-bind-3", Binding{}); err != nil {
+		t.Fatalf("clear SetACCBinding: %v", err)
+	}
+	got, err := s.GetTaskScoped(ctx, "acc-bind-3", "ws-a")
+	if err != nil {
+		t.Fatalf("GetTaskScoped: %v", err)
+	}
+	if ACCBinding(got).Bound() {
+		t.Fatalf("binding should be empty: %+v", got)
+	}
+	if got.HasACCBinding() {
+		t.Fatalf("local source task should be unbound: %+v", got)
+	}
+
+	// Source=="acc" 的任务即使绑定列为空也算绑定。
+	accTask := &Task{ID: "acc-bind-4", WorkspaceID: "ws-a", Title: "acc owned", Status: "open", Source: "acc"}
+	if err := s.CreateTask(ctx, accTask); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	got2, err := s.GetTaskScoped(ctx, "acc-bind-4", "ws-a")
+	if err != nil {
+		t.Fatalf("GetTaskScoped: %v", err)
+	}
+	if !got2.HasACCBinding() {
+		t.Fatalf("source=acc must count as bound: %+v", got2)
+	}
+}
+
+// TestACCBinding_CrossWorkspaceRejected 跨租户写绑定必须以 not found 拒绝。
+func TestACCBinding_CrossWorkspaceRejected(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+	mustCreate(t, s, "acc-bind-5", "ws-a", "owner only")
+
+	if err := s.SetACCBinding(ctx, "ws-b", "acc-bind-5", Binding{DispatchID: "evil"}); err == nil {
+		t.Fatal("cross-workspace SetACCBinding must fail")
+	}
+	got, err := s.GetTaskScoped(ctx, "acc-bind-5", "ws-a")
+	if err != nil {
+		t.Fatalf("GetTaskScoped: %v", err)
+	}
+	if got.HasACCBinding() && got.Source != "acc" && ACCBinding(got).Bound() {
+		t.Fatalf("binding must not have been written: %+v", got)
+	}
+}
+
+// TestFindTaskBySessionScoped 审批链路使用的 (workspace, instance, session)
+// → task 受信任 join：最新 attach 胜出、跨租户不可见、无链接返回 (nil, nil)。
+func TestFindTaskBySessionScoped(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+	mustCreate(t, s, "acc-sess-1", "ws-a", "first")
+	mustCreate(t, s, "acc-sess-2", "ws-a", "latest")
+	if err := s.AttachSessionScoped(ctx, SessionLink{
+		TaskID: "acc-sess-1", InstanceID: "inst-1", SessionID: "sess-77", Role: "primary",
+	}, "ws-a"); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(2 * time.Millisecond)
+	if err := s.AttachSessionScoped(ctx, SessionLink{
+		TaskID: "acc-sess-2", InstanceID: "inst-1", SessionID: "sess-77", Role: "primary",
+	}, "ws-a"); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.FindTaskBySessionScoped(ctx, "ws-a", "inst-1", "sess-77")
+	if err != nil {
+		t.Fatalf("FindTaskBySessionScoped: %v", err)
+	}
+	if got == nil || got.ID != "acc-sess-2" {
+		t.Fatalf("latest link must win, got %+v", got)
+	}
+
+	// 另一租户的 (instance, session) 不可见。
+	cross, err := s.FindTaskBySessionScoped(ctx, "ws-b", "inst-1", "sess-77")
+	if err != nil || cross != nil {
+		t.Fatalf("cross-tenant lookup must be (nil,nil), got (%+v,%v)", cross, err)
+	}
+	// 无链接同样是 (nil, nil)。
+	missing, err := s.FindTaskBySessionScoped(ctx, "ws-a", "inst-9", "sess-404")
+	if err != nil || missing != nil {
+		t.Fatalf("missing link must be (nil,nil), got (%+v,%v)", missing, err)
+	}
+}
+
+// TestACCBinding_DefaultEmptyAndCreateInsert 老任务（迁移后新增列）与不带
+// 绑定的 CreateTask 读回应为空串，不出现 NULL 解码错误。
+func TestACCBinding_DefaultEmptyAndCreateInsert(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+	mustCreate(t, s, "acc-bind-6", "ws-a", "plain")
+
+	got, err := s.GetTaskScoped(ctx, "acc-bind-6", "ws-a")
+	if err != nil {
+		t.Fatalf("GetTaskScoped: %v", err)
+	}
+	if ACCBinding(got) != (Binding{}) {
+		t.Fatalf("plain task must have empty binding: %+v", got)
+	}
+
+	// CreateTask 直接携带绑定也应全列写入。
+	withBinding := &Task{
+		ID: "acc-bind-7", WorkspaceID: "ws-a", Title: "born bound", Status: "open",
+		Source: "acc", ACCDispatchID: "disp-born", ACCSourceRef: "ref-born", ACCCorrelationID: "corr-born",
+	}
+	if err := s.CreateTask(ctx, withBinding); err != nil {
+		t.Fatalf("CreateTask with binding: %v", err)
+	}
+	got2, err := s.GetTaskScoped(ctx, "acc-bind-7", "ws-a")
+	if err != nil {
+		t.Fatalf("GetTaskScoped: %v", err)
+	}
+	if got2.ACCDispatchID != "disp-born" || got2.ACCSourceRef != "ref-born" || got2.ACCCorrelationID != "corr-born" {
+		t.Fatalf("create-time binding lost: %+v", got2)	}
 }

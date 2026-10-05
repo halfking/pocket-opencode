@@ -48,6 +48,65 @@ type Task struct {
 	AcceptedAt     *int64          `json:"acceptedAt,omitempty"`
 	AcceptedBy     *string         `json:"acceptedBy,omitempty"`
 	EvidenceBundle *EvidenceBundle `json:"evidenceBundle,omitempty"`
+
+	// Pocket↔ACC canonical ID binding. These columns are authoritative local
+	// state (never overwritten by remote task sync): they stitch this task row
+	// to the ACC orchestration plane so approval replies can be gated through
+	// ACC's permission endpoint and cancels can target the right dispatch.
+	// Written only via Store.SetACCBinding; a task counts as bound when
+	// Source == "acc" or any field is non-empty (see ACCBinding + Binding.Bound).
+	ACCTaskID        string `json:"accTaskId,omitempty"`
+	ACCRunID         string `json:"accRunId,omitempty"`
+	ACCDispatchID    string `json:"accDispatchId,omitempty"`
+	ACCSourceRef     string `json:"accSourceRef,omitempty"`
+	ACCCorrelationID string `json:"accCorrelationId,omitempty"`
+	// ACCHolderID is the runtime-control lease holder (companion runtime id)
+	// recorded at binding time. ACC's cancel endpoint is holder-fenced and
+	// rejects holder-less cancels with 400, so cancel stays fail-closed
+	// without it.
+	ACCHolderID string `json:"accHolderId,omitempty"`
+}
+
+// Binding is the authoritative ACC canonical ID set for one task.
+type Binding struct {
+	TaskID        string `json:"accTaskId,omitempty"`        // ACC task id
+	RunID         string `json:"accRunId,omitempty"`         // ACC orchestration run id
+	DispatchID    string `json:"accDispatchId,omitempty"`    // ACC command/dispatch id
+	SourceRef     string `json:"accSourceRef,omitempty"`     // data-loop source_ref
+	CorrelationID string `json:"accCorrelationId,omitempty"` // data-loop correlation_id
+	HolderID      string `json:"accHolderId,omitempty"`      // runtime-control lease holder
+}
+
+// Bound reports whether the binding carries any canonical ID. Callers gate
+// approval/cancel on DispatchID specifically, but Source=="acc" alone also
+// marks the task as ACC-owned even before a dispatch is assigned.
+func (b Binding) Bound() bool {
+	return b.TaskID != "" || b.RunID != "" || b.DispatchID != "" ||
+		b.SourceRef != "" || b.CorrelationID != "" || b.HolderID != ""
+}
+
+// ACCBinding returns the task's ACC canonical ID binding.
+func ACCBinding(t *Task) Binding {
+	if t == nil {
+		return Binding{}
+	}
+	return Binding{
+		TaskID:        t.ACCTaskID,
+		RunID:         t.ACCRunID,
+		DispatchID:    t.ACCDispatchID,
+		SourceRef:     t.ACCSourceRef,
+		CorrelationID: t.ACCCorrelationID,
+		HolderID:      t.ACCHolderID,
+	}
+}
+
+// HasACCBinding reports whether the task is ACC-owned or carries any ACC
+// canonical ID. Source=="acc" counts as bound even with an empty binding.
+func (t *Task) HasACCBinding() bool {
+	if t == nil {
+		return false
+	}
+	return t.Source == "acc" || ACCBinding(t).Bound()
 }
 
 // EvidenceBundle is the structured payload accepted via POST /api/tasks/{id}/accept.
