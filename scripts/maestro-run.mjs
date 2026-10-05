@@ -1260,11 +1260,32 @@ if (process.env.POCKET_SKIP_CDP_LOGIN !== '1') {
       break
     }
     // 逐个框：CDP focus 选框（确定）→ adb input text 敲键盘（v-model 才收得到）
+    //
+    // ⚠️ 2026-10-05 修的真 bug：这里原来写的是
+    //     return ${JSON.stringify(which)}.test(x.placeholder||'')
+    //   `JSON.stringify('至少')` 产出的是**字符串字面量** `"至少"`，而字符串
+    //   没有 .test 方法 ⇒ 抛 `TypeError: "至少".test is not a function`。
+    //
+    //   为什么之前一直没暴露：这段只在**设备上还没有主密码**时才会走到
+    //   （首登、或 App 数据被清过——本轮卸载重装正好制造了这个状态）。
+    //   之前所有轮次设备上都已设过主密码，`need` 直接返回 'no'，这段是死代码。
+    //   典型的「长期不可达分支里藏着类型错误」：它安静地坏着，直到环境一变
+    //   才第一次被真正执行。
+    //
+    //   后果形态极具误导性：`need` 的**检测**那一侧（1250/1251 行）写的是
+    //   正则字面量 `/至少/.test`，所以它能正确判定「弹窗在、两个框都在」并
+    //   继续往下走；只有**填值**这一侧炸掉。于是循环每次在第一个框上失败就
+    //   `break`，第二个框永远没被填，值停在 `长度=[8,0,0]`，最后报成
+    //   「登录后仍停在登录页（30s）」——**离真因隔了三跳**，看起来像登录坏了。
+    //
+    //   修法用 new RegExp 而不是把斜杠拼进字符串：既保持 JSON.stringify 的
+    //   转义/防注入意图，类型又是对的。
     for (const which of ['至少', '再次']) {
       const f = await cdpEval(`(function(){
         try {
           var ins = Array.from(document.querySelectorAll('input'))
-          var el = ins.filter(function(x){ return ${JSON.stringify(which)}.test(x.placeholder||'') })[0]
+          var re = new RegExp(${JSON.stringify(which)})
+          var el = ins.filter(function(x){ return re.test(x.placeholder||'') })[0]
           if (!el) return 'no-el'
           el.focus()
           return document.activeElement === el ? 'focused' : 'focus-failed'
@@ -1287,6 +1308,24 @@ if (process.env.POCKET_SKIP_CDP_LOGIN !== '1') {
         .filter(function(i){ return (i.type||'')==='password' })
         .map(function(e){ return e.value.length }))`)
     console.log(`[preflight] 主密码弹窗：两框已输入，长度=${lens}`)
+
+    // ⚠️⚠️ 2026-10-05 修的真缺陷（本文件此前**从未点过确认按钮**）：
+    //   下面 `if (masterDialogHandled)` 那段里有现成的 `b.click()`，
+    //   但 `masterDialogHandled` **只在 `need === 'no'`（弹窗已经不在）时**才为 true。
+    //   而弹窗**在场**的那条路径（need==='present' → 填两框）走完上面的循环后，
+    //   标志仍是 false ⇒ 整段点击确认被跳过 ⇒ 弹窗永远开着 ⇒
+    //   后面「等 hash 离开 #/login」30s 超时 ⇒ 报成「登录后仍停在登录页」。
+    //
+    //   现场（emulator-5554，Android 14）：
+    //     填值前 [8,0,0] → 修好填值通路后 [8,8,8]，两个主密码框都拿到了值，
+    //     截图里「确认」按钮是**激活态**（深蓝实心，不是 disabled）——
+    //     也就是说**只差最后一下点击**，而这一步从来没被执行过。
+    //     上一轮轮次日志里那行 `主密码弹窗确认：no-confirm` 是从**另一条路径**
+    //     （need==='no'，即设备上已设过主密码）打出来的，
+    //     **不能**当成「点击逻辑已验证可用」的证据。
+    //
+    //   ⇒ 判据从「弹窗是否还在」改成「本轮是否处理过弹窗」。
+    masterDialogHandled = true
   }
   if (masterDialogHandled) {
     try { ash('input keyevent 111') } catch { /* 收键盘失败不致命 */ }

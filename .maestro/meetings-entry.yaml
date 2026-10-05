@@ -38,37 +38,51 @@ appId: com.kaixuan.opencode.pocket
 - assertVisible: "首页"
 - assertNotVisible: "密码登录"
 
-# ---------- 1. 进「更多」 ----------
-# MIUI 会吞掉底部导航 tap（报 COMPLETED 但界面没动）。两个动作都要：
-# retryTapIfNoChange 管第一次，runFlow 补点管第二次。
+# ---------- 1. 进「笔记」（会议的新家） ----------
+# ⚠️⚠️ 2026-10-05 实测修正：IA 重组后**「会议」不再是一级 tab**。
+#   重组前底部导航是 首页 · 学习 · 会议 · 更多（见本文件历史注释），
+#   重组后是 首页 · 笔记 · 消息 · 更多（BottomNav.vue:100-105），
+#   而会议作为**笔记的一种来源**下沉进了 NotesHubView
+#   （NotesHubView.vue:44-46：常驻按钮 data-testid="notes-hub-start-meeting"
+#     → go('/meetings/new')）。
+#
+#   本文件原先的 `tapOn: "更多" → tapOn: "会议" → 等「开始会议录音」` 在新 IA 下
+#   **没有落点**：`frontend/src/features/more/hubItems.ts` 里 grep 不到任何
+#   meetings/会议 —— 「更多」宫格确实没有会议项。
+#   实测失败点正是 `Assert that "开始会议录音" is visible`（前面「更多功能」都过了），
+#   与这个判断一致。
+#
+#   ⇒ 改走笔记 tab 的常驻入口。用 data-testid 而不是中文文案：
+#   文案随 i18n 变，testid 是契约。
 - tapOn:
-    text: "更多|More"
+    text: "笔记|Notes"
     retryTapIfNoChange: true
 - extendedWaitUntil:
-    visible: "更多功能"
+    visible: "notes-hub-start-meeting"
     timeout: 40000
 - runFlow:
     when:
-      notVisible: "更多功能"
+      notVisible: "notes-hub-start-meeting"
     commands:
-      - tapOn: "更多|More"
+      - tapOn:
+          text: "笔记|Notes"
       - waitForAnimationToEnd:
           timeout: 3000
-- extendedWaitUntil:
-    visible: "更多功能"
-    timeout: 30000
+- tapOn: "notes-hub-start-meeting"
 
-# ---------- 2. 进「会议」 ----------
-- tapOn: "会议"
+# ---------- 2. 会议录音页 ----------
 - extendedWaitUntil:
-    visible: "开始会议录音"
+    visible: "开始会议录音|会议详情"
     timeout: 40000
-- assertVisible: "开始会议录音"
 
 # ---------- 3. 核心：点「开始会议录音」必须真的进详情页 ----------
 # 这是本 flow 唯一有判别力的部分。MeetingRecordView 的 catch 分支会把
 # 一切失败都吞成「弹回列表」，所以「没报错」不等于「成功」。
-- tapOn: "开始会议录音"
+#
+# ⚠️ 2026-10-05：原先这里有一句 `tapOn: "开始会议录音"`。新 IA 下入口按钮
+#   就是它本身（笔记 tab 的 notes-hub-start-meeting），上面已经点过一次了；
+#   留着会变成在录音页里再找一个不存在的按钮，必然超时。已删。
+#   真正的判据是下面那些「会议详情 / 录音二态 / 即时总结」。
 
 # ---- 麦克风权限弹窗（2026-10-04 02:08 真机实拍）----
 # 进详情页时 `?record=1` 会**自动开始录音**，于是系统弹出运行时权限框
