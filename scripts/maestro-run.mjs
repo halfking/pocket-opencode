@@ -152,6 +152,23 @@ if (!flows.length) {
 const adb = (args, t = 60000) =>
   execFileSync(ADB, ['-s', DEVICE, ...args], { encoding: 'utf8', timeout: t, maxBuffer: 33554432 })
 
+/**
+ * 「查不到」是**有效答案**的那些命令必须走这个（真机 4c308e2e / MIUI 实测）。
+ *
+ * 为什么：execFileSync 在退出码非 0 时**抛异常**。而 `pidof <不存在的包>` 退 1、
+ * `cat /proc/net/unix | grep -o 'webview_devtools_remote_[0-9]*'` 在无命中时也退 1 ——
+ * 两者都是**正常**的「没找到」。用 adb() 读它们，代码永远走不到
+ * `if (!pid) throw new Error('APP_NOT_RUNNING')` 那一支，
+ * 而是直接以未捕获异常把整个跑批打死，崩点与真实原因隔了好几跳。
+ */
+const adbSoft = (args, t = 60000) => {
+  try {
+    return execFileSync(ADB, ['-s', DEVICE, ...args], { encoding: 'utf8', timeout: t, maxBuffer: 33554432 })
+  } catch (e) {
+    return (e && e.stdout) || ''   // 「查不到」时 stdout 通常为空，退化成空串
+  }
+}
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 /** 一次性 CDP 求值：连上当前 App 的 WebView，评估一个表达式，拿回值后断开。 */
@@ -191,12 +208,12 @@ function bindCdpForward(sock) {
 }
 
 async function cdpEval(expr, ms = 8000) {
-  const pid = adb(['shell', 'pidof', PKG], 15000).trim().split(/\s+/)[0]
+  const pid = adbSoft(['shell', 'pidof', PKG], 15000).trim().split(/\s+/)[0]
   if (!pid) throw new Error('APP_NOT_RUNNING')
   // socket 是 App 起来**之后**才注册的，pidof 返回得比它早。
   // 所以这里等它出现（有界），而不是「等不到就退而求其次连别的」——
   // 后者正是连错 App 的根源，而连错之后**没有任何报错**。
-  const listSocks = () => adb(['shell', `cat /proc/net/unix | grep -o 'webview_devtools_remote_[0-9]*'`], 15000)
+  const listSocks = () => adbSoft(['shell', `cat /proc/net/unix | grep -o 'webview_devtools_remote_[0-9]*'`], 15000)
     .split(/\r?\n/).map((l) => l.trim().replace('@', '')).filter(Boolean)
   let socks = []
   for (let i = 0; i < 15; i++) {
@@ -271,12 +288,21 @@ async function cdpEval(expr, ms = 8000) {
  *  其它调用方仍用精确匹配——那里「必须停在这个路由」就是真实要求。 */
 async function setRoute(hash, readyExpr, timeoutMs = 30000, opts = {}) {
   const settle = opts.settle === true
-  const pid = adb(['shell', 'pidof', PKG], 15000).trim().split(/\s+/)[0]
+  const pid = adbSoft(['shell', 'pidof', PKG], 15000).trim().split(/\s+/)[0]
   if (!pid) return false
-  const socks = adb(['shell', `cat /proc/net/unix | grep -o 'webview_devtools_remote_[0-9]*'`], 15000)
+  const socks = adbSoft(['shell', `cat /proc/net/unix | grep -o 'webview_devtools_remote_[0-9]*'`], 15000)
     .split(/\r?\n/).map((l) => l.trim().replace('@', '')).filter(Boolean)
-  const sock = socks.find((s) => s.endsWith(`_${pid}`)) || socks[socks.length - 1]
-  if (!sock) return false
+  // ★ 2026-10-06 修：setRoute 里原来是 `find(…) || socks[socks.length - 1]`。
+  //   cdpEval 侧在 2026-10-04 已经把这个兜底删掉并写了理由，**这里漏了**。
+  //   本机同时装着 com.kaixuan.opencode.pocket 与 …pocket.sttdev，两个
+  //   webview_devtools_remote_<pid> 都是活的，「取最后一个」会连到**另一个 App**，
+  //   而 /json/list 与 Runtime.evaluate 一切正常、**不报任何错** ——
+  //   结果是断言在另一个 App 上匹配。真机 4c308e2e 上两个包并存，已实测会踩中。
+  const sock = socks.find((s) => s.endsWith(`_${pid}`))
+  if (!sock) {
+    console.log(`[cdp] pid=${pid} 的 socket 没出现（现有：${[...new Set(socks)].join(', ') || '无'}）`)
+    return false
+  }
   let port
   try {
     port = bindCdpForward(sock)      // 端口被占用会重试
@@ -879,14 +905,21 @@ async function preflight() {
   const deadline = Date.now() + 60000
   while (Date.now() < deadline) {
     await sleep(1500)
-    const pid = adb(['shell', 'pidof', PKG]).trim()
+    const pid = adbSoft(['shell', 'pidof', PKG]).trim()
     if (!pid) continue
     const resumed = adb(['shell', 'dumpsys', 'activity', 'activities'], 30000)
     // 注意别写成 topResumedActivity=\S*\s*<包名>：实际输出是
     //   topResumedActivity=ActivityRecord{6194969 u0 com.kaixuan.opencode.pocket/.MainActivity
     // 中间夹着 `u0`，\S* 跨不过空格，会**永远不匹配**——
     // 于是把「App 明明在前台」误报成「60s 未进前台」。踩过，别改回去。
-    if (/topResumedActivity.*opencode\.pocket/.test(resumed)) {
+    // ★ 2026-10-06 修：原判据 `/topResumedActivity.*opencode\.pocket/` 会把
+    //   …opencode.pocket.**sttdev** 也判成「在前台」——两包并存时前台是 sttdev
+    //   它照样通过，等于没有判据。
+    //   ⚠️ 这里**不能用 \b**：sttdev 的包名在 `pocket` 之后紧跟一个 `.`，
+    //   而 `.` 是非词字符，`\b` 正好在那里成立 ⇒ 判据仍然恒真（我第一版就这么写，
+    //   自测当场抓到：sttdev 在前台仍返回 true）。必须要求包名后接 `/`（类名分隔）
+    //   或行尾/空白，不能只要求「不是词字符」。
+    if (new RegExp(`topResumedActivity.*\\b${PKG.replace(/\./g, '\\.')}(?:/|\\s|$)`).test(resumed)) {
       console.log(`[preflight] App 已在前台 pid=${pid.trim()}`)
       await assertFetchIntact()
       if (!(await assertAppUsesReverseBase())) return false
@@ -1235,11 +1268,23 @@ if (process.env.POCKET_SKIP_CDP_LOGIN !== '1') {
   // 原理：CDP 直接设 value 绕过了 Vue 的事件链；而 `input text` 走系统输入
   // 通路，v-model 一定收得到。用 focus 选框则避开了坐标换算在滚动页面上的错位。
   const master = process.env.POCKET_MASTER
-  const adbBin = 'C:/Users/86133/AppData/Local/Android/platform-tools/adb.exe'
-  const serial = process.env.POCKET_SERIAL || '192.168.31.19:5555'
+  // ★ 2026-10-06 修：这里原来把 adb 路径**硬编码**成另一台 Windows 开发机的
+  //   C:/Users/86133/…，绕过了顶部 whichFirst 那套解析（本机是 /opt/homebrew/bin/adb）。
+  //   后果形态极具误导性：每次填框都报 spawnSync …adb.exe ENOENT，
+  //   而日志打的是「主密码弹窗：两框已输入，长度=[14,0,0]」——
+  //   看着像**第二框不接受这么长的口令**，实际是**那条命令压根没跑起来**。
+  //   serial 同理，不再另开一份默认值（ DEVICE 已由 POCKET_SERIAL 解析）。
+  const adbBin = ADB
+  const serial = DEVICE
   const ash = (cmd) => execFileSync(adbBin, ['-s', serial, 'shell', cmd], {
     encoding: 'utf8', timeout: 30000, maxBuffer: 33554432,
   })
+  // ★ 2026-10-06 修：`input text ${master}` 不加引号，口令里的 shell 元字符会被
+  //   **设备侧 shell** 解释掉。实测一个 14 位口令（13 字母数字 + 1 元字符）
+  //   只填进去 9 位，报出来的还是「两框已输入，长度=[14,9,0]」。
+  //   修法：单引号包住，并转义内部的单引号。
+  const shQuote = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`
+  const inputText = (s) => ash(`input text ${shQuote(s)}`)
   let masterDialogHandled = false
   for (let i = 0; i < 4; i++) {
     await sleep(800)
@@ -1297,7 +1342,7 @@ if (process.env.POCKET_SKIP_CDP_LOGIN !== '1') {
         ash('input keyevent 123')
         for (let k = 0; k < 40; k++) ash('input keyevent 67')
         await sleep(250)
-        ash(`input text ${master || ''}`)
+        inputText(master || '')
       } catch (e) {
         console.log(`[preflight] ⚠️ 系统级输入失败：${String(e?.message || e).split('\n')[0]}`)
         break
