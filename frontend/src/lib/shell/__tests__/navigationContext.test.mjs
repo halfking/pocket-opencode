@@ -247,3 +247,57 @@ test('version 随变更自增，且能被 Vue computed 追踪（否则接线层�
   assert.equal(r2, '其他', 'computed 必须因 version 变化而重算')
   assert.ok(reads >= 2, `computed 应至少求值两次，实得 ${reads}`)
 })
+
+// ── popTo：浏览器后退落定（2026-10-06 回归护栏）──────────────────────
+//
+// 缺陷：runtime.ts 的 afterEach 把任何「路径变了」的导航都记成 push，
+// 而浏览器后退是 history 前进、路径逐级回退。于是每次返回都多一条：
+// 前进 3 步按 2 次返回，entries 从 3 涨到 5、cursor 从 2 涨到 4。
+// 连带 backDispatcher 的 ctx.cursor > 0 恒真 ⇒ 永远到不了 §5/§6。
+test('popTo 把 cursor 落到既有前驱并截断前进分支（后退不是 push）', () => {
+  const s = newStore()
+  s.open({ fullPath: '/home', presentation: 'page', openedBy: 'push', scope })
+  s.open({ fullPath: '/detail', presentation: 'page', openedBy: 'push', scope })
+  s.open({ fullPath: '/note', presentation: 'page', openedBy: 'push', scope })
+
+  // 浏览器后退第一步：回到 /detail
+  const hit = s.popTo('/detail')
+  assert.ok(hit, '应命中既有前驱条目')
+  assert.equal(s.snapshot().entries.length, 2, '后退后栈必须变短，不能单调增长')
+  assert.equal(s.snapshot().cursor, 1)
+  assert.equal(s.canForward(), false, '回到过去后未来不可达')
+  assert.deepEqual(s.snapshot().entries.map((e) => e.fullPath), ['/home', '/detail'])
+})
+
+test('popTo 对 query 变化按 base 匹配（同页换筛选仍算落到同一条）', () => {
+  const s = newStore()
+  s.open({ fullPath: '/list?month=1', presentation: 'page', openedBy: 'push', scope })
+  s.open({ fullPath: '/other', presentation: 'page', openedBy: 'push', scope })
+  assert.ok(s.popTo('/list?month=3'), '同 base 不同 query 应命中同一条')
+  assert.equal(s.snapshot().cursor, 0)
+})
+
+test('popTo 命中不到前驱时返回 undefined（深链冷启动不是后退）', () => {
+  const s = newStore()
+  s.open({ fullPath: '/home', presentation: 'page', openedBy: 'push', scope })
+  assert.equal(s.popTo('/never-seen'), undefined, '栈里没有的路径不得被当成后退')
+  assert.equal(s.snapshot().entries.length, 1, '未命中时不得改动上下文')
+  assert.equal(s.snapshot().cursor, 0)
+})
+
+test('popTo 只认 cursor 之前的页面条目，不会把自己当成前驱', () => {
+  const s = newStore()
+  s.open({ fullPath: '/home', presentation: 'page', openedBy: 'push', scope })
+  s.open({ fullPath: '/detail', presentation: 'page', openedBy: 'push', scope })
+  assert.equal(s.popTo('/detail'), undefined, '当前条目不是「前驱」')
+})
+
+test('popTo 关闭目标之上的覆盖层', () => {
+  const s = newStore()
+  s.open({ fullPath: '/home', presentation: 'page', openedBy: 'push', scope })
+  s.open({ fullPath: '/detail', presentation: 'page', openedBy: 'push', scope })
+  s.openOverlay({ fullPath: '/detail/edit', presentation: 'modal', scope })
+  assert.equal(s.hasOverlay(), true)
+  s.popTo('/home')
+  assert.equal(s.hasOverlay(), false, '后退到更早页面必须把其上的弹层一起关掉')
+})

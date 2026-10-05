@@ -276,6 +276,48 @@ export class NavigationContextStore {
     return entry
   }
 
+  /**
+   * 后退落定：把 cursor 移到**已存在的较早条目**，并截断其后的前进分支。
+   *
+   * 为什么需要它（不能只靠 `pop()`）：浏览器的后退是 history 前进，
+   * 路径**逐级回退**，而 NavigationContextStore 只在 `pop()` 里减 cursor。
+   * 若把每次后退都记成一次 push（见 runtime.ts 的 afterEach），
+   * entries 会单调增长：前进 3 步按 2 次返回，栈从 3 条涨到 5 条、
+   * cursor 从 2 涨到 4。于是 `backDispatcher` 的 `ctx.cursor > 0`
+   * 恒真，永远判「有页面前驱」，永远到不了 §5 安全 fallback 与
+   * §6 交还系统。返回因此表现为「按了没反应」。
+   *
+   * 判据是「命中 cursor 之前的既有页面条目」，而不是猜方向——
+   * vue-router v4 的 `afterEach(to, from, failure)` 不提供导航方向。
+   *
+   * @returns 命中的条目；`undefined` 表示这**不是**一次后退
+   *          （例如深链冷启动，或返回到栈里不存在的路径）。
+   */
+  popTo(fullPath: string): NavigationEntry | undefined {
+    const base = fullPath.split('?')[0]
+    let target = -1
+    for (let i = this.ctx.cursor - 1; i >= 0; i -= 1) {
+      const e = this.ctx.entries[i]
+      if (e?.presentation === 'page' && e.fullPath.split('?')[0] === base) {
+        target = i
+        break
+      }
+    }
+    if (target < 0) return undefined
+
+    // 后退会关闭目标之上的所有覆盖层（含目标位置上的）。
+    this.ctx.overlayIds = this.ctx.overlayIds.filter((id) => {
+      const idx = this.ctx.entries.findIndex((e) => e.id === id)
+      return idx >= 0 && idx < target
+    })
+    // 截断前进分支：回到过去之后，未来不可达。
+    this.ctx.entries.length = target + 1
+    this.ctx.cursor = target
+    const entry = this.current()
+    this.record(entry?.id ?? '-', 'pop', 'committed')
+    return entry
+  }
+
   /** 前进：仅在无覆盖层且确有页面目的地时。 */
   forward(): NavigationEntry | undefined {
     if (this.hasOverlay()) return undefined

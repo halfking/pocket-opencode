@@ -54,15 +54,34 @@ function metaTitle(to: { meta?: Record<string, unknown> } | null | undefined): s
 /**
  * 适配 vue-router：pop 失败（被守卫阻止）时返回 false，
  * 让 BackDispatcher 记 blocked 而不是假装成功。
+ *
+ * ⚠️ 这里**不能**用「等一个宏任务再看 currentRoute 变没变」判定成功
+ * （原实现是 `await setTimeout(r, 0)`）。本仓 72 个路由**全部**是
+ * `import()` 懒加载（见 app/router-mobile.ts），vue-router 导航必须
+ * await 组件 chunk 加载与守卫链，必然跨多个宏任务。只等一个宏任务，
+ * 路径一定还没变 ⇒ pop() 恒返回 false ⇒ 每次返回都被记成
+ * `blocked: router-guard` ⇒ **用户按返回键完全没反应**。
+ * 实测：导航耗时 2/4/8 个宏任务时全部误报 blocked（耗时 1 个才"正常"，
+ * 而真实的懒加载路由不可能 1 个宏任务就绪）。
+ *
+ * 正确判据是**等 vue-router 自己的导航结果 Promise**：
+ * `router.back()` 之后，`router.afterEach` 一定会被调用一次
+ * （成功时 failure 为空，被阻止/取消时 failure 非空），据此判定。
  */
-function toRouterAdapter(router: RouterLike): RouterAdapter {
+function toRouterAdapter(
+  router: RouterLike,
+  settle: (timeoutMs: number) => Promise<{ failure: unknown } | null>,
+): RouterAdapter {
   return {
     async pop() {
       const before = router.currentRoute.value.fullPath
+      const waited = settle(NAV_SETTLE_TIMEOUT_MS)
       router.back()
-      // 导航是异步的；这里不假装成功——交由调用方在失败时看到 blocked。
-      // 判定方式：当前路径是否真的变了。守卫阻止时保持不变。
-      await new Promise((r) => setTimeout(r, 0))
+      const result = await waited
+      // 没等到导航落定（超时）也算没移动 —— 宁可报 blocked，
+      // 也不能假装成功：BackDispatcher 靠这个返回值决定是否记 page-popped。
+      if (!result) return false
+      if (result.failure) return false
       return router.currentRoute.value.fullPath !== before
     },
     async replace(fallbackPath: string) {
@@ -77,6 +96,15 @@ function toRouterAdapter(router: RouterLike): RouterAdapter {
 }
 
 /**
+ * 导航落定的等待上限。
+ *
+ * 真机冷启动后首次进入一个未缓存的懒加载路由要拉 chunk，弱网下可能到秒级。
+ * 1.5s 是「宁可等久一点也不要误判」的折中：超时后按 blocked 处理，
+ * 用户再按一次返回即可，绝不假装成功。
+ */
+const NAV_SETTLE_TIMEOUT_MS = 1500
+
+/**
  * 创建运行时（不自动装成单例，便于单测造多个）。
  */
 export function createShellRuntime(router: RouterLike, opts: { scope?: NavigationScope } = {}): ShellRuntime {
@@ -84,7 +112,40 @@ export function createShellRuntime(router: RouterLike, opts: { scope?: Navigatio
   const store = new NavigationContextStore()
   const titles = new TitleResolver({ appName: 'OpenCode Pocket' })
   const back = new BackDispatcher()
-  back.setRouter(toRouterAdapter(router))
+
+  /**
+   * 导航落定通知器：pop() 调用它来等「这一次 back() 的导航结果」。
+   *
+   * 为什么不用 setTimeout：见 toRouterAdapter 上方的注释——72 个懒加载
+   * 路由的导航必然跨多个宏任务。这里改成「afterEach 兑现一次」，
+   * 于是判定依据是 vue-router 自己的结论，而不是我们猜的时长。
+   */
+  let pendingSettle: ((r: { failure: unknown } | null) => void) | null = null
+  let settleTimer: ReturnType<typeof setTimeout> | null = null
+
+  const settle = (timeoutMs: number): Promise<{ failure: unknown } | null> =>
+    new Promise((resolve) => {
+      // 只保留一个在途等待者：pop() 是单飞的（BackDispatcher 保证），
+      // 但仍要防御性地清掉旧的，避免旧 timer 让新 Promise 提前兑现。
+      if (settleTimer) clearTimeout(settleTimer)
+      pendingSettle = resolve
+      settleTimer = setTimeout(() => {
+        settleTimer = null
+        pendingSettle = null
+        resolve(null) // 超时 = 没等到落定
+      }, timeoutMs)
+    })
+
+  const notifySettle = (failure: unknown) => {
+    if (!pendingSettle) return
+    if (settleTimer) clearTimeout(settleTimer)
+    settleTimer = null
+    const resolve = pendingSettle
+    pendingSettle = null
+    resolve({ failure })
+  }
+
+  back.setRouter(toRouterAdapter(router, settle))
 
   let scope: NavigationScope = opts.scope ?? UNSET_SCOPE
 
@@ -112,6 +173,11 @@ export function createShellRuntime(router: RouterLike, opts: { scope?: Navigatio
       removeAfterEach?.()
       removeBeforeEach?.()
       back.reset()
+      // 清掉在途的落定等待：afterEach 已注销，不会再有人兑现它，
+      // 留着就是个悬空 timer（最长 1.5s）。
+      if (settleTimer) clearTimeout(settleTimer)
+      settleTimer = null
+      pendingSettle = null
     },
   }
 
@@ -122,6 +188,10 @@ export function createShellRuntime(router: RouterLike, opts: { scope?: Navigatio
     // Vue Router 是路由真源：导航成功后原子更新上下文。
     // 失败（守卫阻止/抛错）不提交条目，cursor 不动。
     removeAfterEach = router.afterEach((to, _from, failure) => {
+      // 任何一次导航落定都要兑现在途的 pop() 等待——成功与被阻止都要，
+      // 否则 pop() 只能等到超时（1.5s）才返回，用户会感到「返回卡了一下」。
+      notifySettle(failure)
+
       if (failure) {
         const cur = store.current()
         if (cur) store.recordFailed(cur.id, 'route', String((failure as { message?: string })?.message ?? failure))
@@ -129,6 +199,22 @@ export function createShellRuntime(router: RouterLike, opts: { scope?: Navigatio
       }
       const route = to as { fullPath: string; name?: string | symbol; meta?: Record<string, unknown> }
       const cur = store.current()
+
+      // 后退落定：命中 cursor 之前的既有页面条目 ⇒ 这次是「返回」而不是
+      // 「前进」。vue-router v4 的 afterEach 不给方向，只能这样判。
+      //
+      // 不做这一步的后果（实测）：每次返回都被记成 push，entries 单调增长
+      // ——前进 3 步按 2 次返回，栈从 3 条涨到 5 条、cursor 从 2 涨到 4。
+      // 于是 backDispatcher 的 `ctx.cursor > 0` 恒真，永远判「有页面前驱」，
+      // 永远到不了 §5 安全 fallback 与 §6 交还系统 ⇒ 返回表现为没反应。
+      const popped = cur ? store.popTo(route.fullPath) : undefined
+      if (popped) {
+        titles.beginRender(popped.id)
+        const meta = metaTitle(route)
+        if (meta) titles.register(popped.id, meta)
+        return
+      }
+
       // 同一个页面内的 query 变化按 replace 处理，不产生可回退的新条目。
       const sameEntry = cur && cur.fullPath.split('?')[0] === route.fullPath.split('?')[0]
       const entry = store.open({

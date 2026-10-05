@@ -71,7 +71,7 @@ router（`src/app/router-mobile.ts`，历史命名），全部视图走 `feature
 | 标题真源 | `titleResolver.ts` | ✅ `AppLayout` 顶栏 |
 | 返回仲裁 4 来源 | `backDispatcher.ts` | ✅ 返回钮 / Android backButton / Esc / 左滑 |
 | 账号域隔离 | `runtime.setScope()` | ✅ watch `auth.userId/workspaceId` |
-| 连续加载 | `continuousList.ts` + `useContinuousList` | ✅ `MeetingListView`、`NoteListView`（2/3 页） |
+| 连续加载 | `continuousList.ts` + `useContinuousList` | ✅ `MeetingListView`、`NoteListView`、`EmailInboxView`（3/3 页；2026-10-06 逐个复核三处均有 `useContinuousList` 调用） |
 | 吸顶坐标 | `dockCoordinator.ts` | ❌ 未接 —— **本仓无表格**，无对象（见 07 §3.1） |
 | 专注工作区 | `focusWorkspace.ts` | ❌ 未接 —— 同上，缺可接的表格区域 |
 | 能力协商 | `lib/shell/capabilities.ts` | ⚠️ 已实现 + 7 条单测 + 真探测 `Capacitor.isPluginAvailable()`，但**无 UI 消费者 ⇒ 不进 bundle**。另存在既有的 `src/native/capabilities.ts`（管 biometric/keystore/push，**同样无消费者**）；两者边界见 [08](./08-Hyper框架与能力协商.md) §3.2 |

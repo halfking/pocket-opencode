@@ -199,3 +199,140 @@ test('路由 meta 标题被登记为 title 并推进 render epoch', () => {
   // epoch 已推进：此后带旧 epoch 的异步结果会被拒
   assert.equal(rt.titles.acceptAsync(entry.id, 0, '过期'), false)
 })
+
+// ── 异步导航落定（2026-10-06 回归护栏）───────────────────────────────
+//
+// 缺陷：toRouterAdapter.pop() 用 `await setTimeout(r, 0)` 判定导航是否成功。
+// 本仓 72 个路由全是 import() 懒加载，导航必然跨多个宏任务 ⇒ 路径还没变
+// ⇒ pop() 恒 false ⇒ 每次返回都记 blocked ⇒ **按返回键完全没反应**。
+//
+// 下面的 makeAsyncRouter 忠实复刻 vue-router 的两个关键行为：
+//   1. 导航是异步的，要 await 懒加载 chunk（用 asyncTicks 控制耗时）；
+//   2. 落定时触发 afterEach；被守卫阻止时 failure 非空且**路径不变**。
+// ⚠️ 判据挂在这个钩子上，所以假 router 必须触发它——不触发的假 router
+// 会让「对照组也红」，那是无效对照，不是产品缺陷。
+function makeAsyncRouter({ asyncTicks = 4, guardBlock = false } = {}) {
+  const hooks = { after: [], before: [] }
+  const route = { fullPath: '/home', name: 'home', meta: {} }
+  const stack = ['/home']
+  const settleNav = (target, failure) => {
+    if (!failure) route.fullPath = target
+    for (const h of hooks.after) h(route, null, failure)
+  }
+  return {
+    route,
+    stack,
+    currentRoute: { value: route },
+    async push(to) {
+      const p = String(to)
+      stack.push(p)
+      route.fullPath = p
+    },
+    async replace(to) {
+      const p = String(to)
+      stack[stack.length - 1] = p
+      route.fullPath = p
+    },
+    back() {
+      if (guardBlock) {
+        setTimeout(() => settleNav(route.fullPath, new Error('blocked by guard')), asyncTicks)
+        return
+      }
+      stack.pop()
+      const target = stack[stack.length - 1]
+      let n = 0
+      const tick = () => {
+        n += 1
+        if (n < asyncTicks) {
+          setTimeout(tick, 0)
+          return
+        }
+        settleNav(target, null)
+      }
+      setTimeout(tick, 0)
+    },
+    afterEach(h) {
+      hooks.after.push(h)
+      return () => {}
+    },
+    beforeEach(h) {
+      hooks.before.push(h)
+      return () => {}
+    },
+    navigate(fullPath, name) {
+      if (fullPath !== route.fullPath) stack.push(fullPath)
+      route.fullPath = fullPath
+      route.name = name
+      route.meta = { title: fullPath }
+      for (const h of hooks.after) h(route, null, null)
+    },
+  }
+}
+
+test('返回在懒加载导航下判 page-popped（不再误报 blocked）', async () => {
+  const r = makeAsyncRouter({ asyncTicks: 4 })
+  const rt = createShellRuntime(r, { scope: { serverId: 's1', accountId: 'a1' } })
+  r.navigate('/home', 'home')
+  r.navigate('/detail', 'detail')
+  r.navigate('/note', 'note')
+
+  const outcome = await dispatchBack(rt)
+  assert.equal(outcome.kind, 'page-popped', '真实导航成功就不该记 blocked')
+  assert.equal(r.currentRoute.value.fullPath, '/detail', '路径必须真的回退')
+})
+
+test('返回时长导航同样成立（慢网冷 chunk 不能被当成守卫阻止）', async () => {
+  const r = makeAsyncRouter({ asyncTicks: 24 })
+  const rt = createShellRuntime(r, { scope: { serverId: 's1', accountId: 'a1' } })
+  r.navigate('/home', 'home')
+  r.navigate('/detail', 'detail')
+  r.navigate('/note', 'note')
+
+  const outcome = await dispatchBack(rt)
+  assert.equal(outcome.kind, 'page-popped')
+  assert.equal(r.currentRoute.value.fullPath, '/detail')
+})
+
+test('守卫真的拦下返回时仍记 blocked，且上下文不动（no-op 不冒充 success）', async () => {
+  const r = makeAsyncRouter({ asyncTicks: 4, guardBlock: true })
+  const rt = createShellRuntime(r, { scope: { serverId: 's1', accountId: 'a1' } })
+  r.navigate('/home', 'home')
+  r.navigate('/detail', 'detail')
+  r.navigate('/note', 'note')
+  const before = rt.store.snapshot()
+
+  const outcome = await dispatchBack(rt)
+  assert.equal(outcome.kind, 'blocked', '被守卫拦下必须报 blocked')
+  assert.equal(r.currentRoute.value.fullPath, '/note', '路径必须没变')
+  assert.equal(rt.store.snapshot().entries.length, before.entries.length, '被拦下时不得提交条目')
+})
+
+test('返回在导航上下文里记成 pop：entries 变短而不是单调增长', async () => {
+  const r = makeAsyncRouter({ asyncTicks: 4 })
+  const rt = createShellRuntime(r, { scope: { serverId: 's1', accountId: 'a1' } })
+  r.navigate('/home', 'home')
+  r.navigate('/detail', 'detail')
+  r.navigate('/note', 'note')
+  assert.equal(rt.store.snapshot().entries.length, 3)
+
+  await dispatchBack(rt)
+  const s = rt.store.snapshot()
+  assert.equal(s.entries.length, 2, '后退后栈必须变短')
+  assert.equal(s.cursor, 1)
+  assert.equal(rt.store.canForward(), false, '回到过去后未来不可达')
+  assert.equal(s.operations.at(-1).type, 'pop', '最后一次操作必须记 pop 而不是 push')
+})
+
+test('连续两次返回逐级回退，最终 cursor 归零（不再恒 > 0）', async () => {
+  const r = makeAsyncRouter({ asyncTicks: 4 })
+  const rt = createShellRuntime(r, { scope: { serverId: 's1', accountId: 'a1' } })
+  r.navigate('/home', 'home')
+  r.navigate('/detail', 'detail')
+  r.navigate('/note', 'note')
+
+  assert.equal((await dispatchBack(rt)).kind, 'page-popped')
+  assert.equal((await dispatchBack(rt)).kind, 'page-popped')
+  const s = rt.store.snapshot()
+  assert.equal(s.cursor, 0, '回到根后 cursor 必须归零')
+  assert.equal(s.entries.length, 1, '栈应收缩回起点')
+})
