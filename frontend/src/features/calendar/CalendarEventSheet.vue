@@ -168,7 +168,14 @@ function close(): void {
   display: flex;
   align-items: flex-end;
   justify-content: center;
-  z-index: 40;
+  /* 用阶梯 token，不写裸数字。
+     早先这里是 `z-index: 40`，而 --z-sticky 是 50、--z-bottom-nav 是 70 ——
+     40 低于两者，意味着这个「新建日程」面板会**沉到壳层标题栏和底部导航之下**：
+     遮罩盖不住导航栏、面板底部的「保存」被底栏压住。
+     2026-10-06 合入 origin/main 时被新加的 z-index 阶梯门禁抓到
+     （styles/__tests__/z-index-ladder.test.mjs 第③条）才暴露出来。
+     仓内 6 处 sheet 浮层统一用 var(--z-sheet)=1300，这里对齐。 */
+  z-index: var(--z-sheet);
 }
 
 .sheet {
