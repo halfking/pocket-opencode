@@ -82,7 +82,7 @@ func TestFeedEntryJSONOptionalKeys(t *testing.T) {
 // Event ↔ types.ts 的 CalendarEvent。
 //
 // description / location / remindAt 带 omitempty，零值时不出键 —— 这与前端
-// `description?: string`（可选）一致，事件面板用 `?? ”` 兜底。
+// `description?: string`（可选）一致，事件面板用 `?? ""` 兜底。
 func TestEventJSONContract(t *testing.T) {
 	assertKeys(t, jsonKeys(t, Event{}), []string{
 		"id", "workspaceId", "ownerUserId", "title",

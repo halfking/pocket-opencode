@@ -92,13 +92,13 @@ func (a *accGateAdapter) RejectQuestion(context.Context, string, string, string)
 // newACCGateTaskStore 建一个隔离 schema 的任务 store（无 DSN 跳过）。
 func newACCGateTaskStore(t *testing.T) (*task.Store, func()) {
 	t.Helper()
-	dsn := ""
-	for _, key := range []string{"POCKET_TEST_POSTGRES_DSN", "POCKET_POSTGRES_DSN"} {
-		if v := os.Getenv(key); v != "" {
-			dsn = v
-			break
-		}
-	}
+	// 只认测试专用 DSN。**不要**加「为空时回退读 POCKET_POSTGRES_DSN」——
+	// 那是服务自己的生产连接串，而本文件建随机 schema 并 CREATE TABLE，
+	// 回退之后会在**生产库**上建表。本文件第 15 行的注释与下面这行 Skip 文案
+	// 一直写的是「只认 POCKET_TEST_POSTGRES_DSN」，是那个循环与它们自相矛盾。
+	// 同一处毛病 2026-10-06 在 internal/flashcards/seed_pg_test.go 犯过一次，
+	// 被 TestPGTestsNeverTargetTheProductionSchema 规则 1 判红（该规则无豁免出口）。
+	dsn := os.Getenv("POCKET_TEST_POSTGRES_DSN")
 	if dsn == "" {
 		t.Skip("POCKET_TEST_POSTGRES_DSN not set; skipping mobile approval ACC gate PG integration test")
 	}

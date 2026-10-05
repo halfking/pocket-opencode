@@ -837,7 +837,15 @@ func TestACCBinding_UpsertMustNotClobber(t *testing.T) {
 		t.Fatalf("SetACCBinding: %v", err)
 	}
 
-	if err := s.UpsertTask(ctx, &Task{ID: "acc-bind-2", Title: "remote replay", Status: "work", Source: "acc"}); err != nil {
+	// WorkspaceID 必须显式给 "ws-a"：上面 mustCreate 建在 ws-a，而
+	// UpsertTask 会把空的 workspace 归一成 default，于是
+	// **workspace 隔离守卫正确地**拒收（existing=ws-a incoming=default）。
+	//
+	// 这条夹具原来漏了这个字段，2026-10-06 修好 taskUpsertValues 的语法错之后
+	// 才浮出来（此前它在更早的 NULLIF 语法错上就红了，掩盖了这一层）。
+	// 守卫的行为**一个字没动**——跨 workspace upsert 就该被拒，
+	// 放宽它等于把隔离关掉。要改的是夹具的意图表达，不是守卫。
+	if err := s.UpsertTask(ctx, &Task{ID: "acc-bind-2", WorkspaceID: "ws-a", Title: "remote replay", Status: "work", Source: "acc"}); err != nil {
 		t.Fatalf("UpsertTask: %v", err)
 	}
 	got, err := s.GetTaskScoped(ctx, "acc-bind-2", "ws-a")

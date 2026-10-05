@@ -71,6 +71,57 @@ func TestComposeHarvestRetryMessage_PreservesHumanMark(t *testing.T) {
 			t.Errorf("两轮失败后标记前缀出现 %d 次（应为 1）：%q", n, got)
 		}
 	})
+
+	// 这条是 2026-10-06 真机跑出来后补的：上面那条只盯【人工标注】前缀，
+	// 漏掉了**机器原因会逐轮堆积**。实测工行那行 attempts 3→4 时
+	// last_error 从 353 长到 596（多了一整段同样的失败原因），
+	// 而 round46 把 last_error 渲染进汇总单「备注」列 ⇒ 交付物里
+	// 同一段原因并排出现两次，且会累加到 MaxInvoiceAttempts=8 段。
+	t.Run("连续失败只保留最近一轮的机器原因（不堆积）", func(t *testing.T) {
+		got := composeHarvestRetryMessage(mark, "第一次失败")
+		got = composeHarvestRetryMessage(got, "第二次失败")
+		got = composeHarvestRetryMessage(got, "第三次失败")
+		if n := strings.Count(got, harvestRetrySegmentSep); n != 1 {
+			t.Errorf("三轮失败后分隔符出现 %d 次（应为 1，说明机器原因在堆积）：%q", n, got)
+		}
+		if strings.Contains(got, "第一次失败") || strings.Contains(got, "第二次失败") {
+			t.Errorf("旧的本轮原因没有被替换掉，仍留在结果里：%q", got)
+		}
+		if !strings.Contains(got, "第三次失败") {
+			t.Errorf("本轮原因没写进去：%q", got)
+		}
+		if !strings.Contains(got, "非发票（信用卡对账单）") {
+			t.Errorf("人工标注被丢掉了：%q", got)
+		}
+	})
+
+	// 长度必须**有界**：这是「堆积」这个缺陷的可量化版本。
+	// 判据钉住「8 轮重试后长度 ≈ 1 轮」，而不是某个具体字节数。
+	t.Run("重试轮数增加不会让 last_error 线性变长", func(t *testing.T) {
+		one := composeHarvestRetryMessage(mark, "取不到 PDF")
+		got := one
+		for i := 0; i < MaxInvoiceAttempts; i++ {
+			got = composeHarvestRetryMessage(got, "取不到 PDF")
+		}
+		if len(got) > len(one)+len(harvestRetrySegmentSep) {
+			t.Errorf("跑满 MaxInvoiceAttempts=%d 轮后长度 %d，一轮时只有 %d —— 仍在按轮次增长\n%q",
+				MaxInvoiceAttempts, len(got), len(one), got)
+		}
+	})
+
+	// 真实数据回归：把 2026-10-06 真机跑出来的那个**已经堆积过**的
+	// last_error 喂进去，要求收敛成一段。这是最贴近生产的一格。
+	t.Run("修复前已堆积的值会被收敛（真实数据形状）", func(t *testing.T) {
+		seg := harvestRetrySegmentSep
+		realPrior := mark + seg + "发票链接未能取到 PDF 文件：a" + seg + "发票链接未能取到 PDF 文件：a"
+		got := composeHarvestRetryMessage(realPrior, "发票链接未能取到 PDF 文件：b")
+		if n := strings.Count(got, seg); n != 1 {
+			t.Errorf("喂入两段旧原因后仍剩 %d 段（应为 1）：%q", n, got)
+		}
+		if strings.Contains(got, "：a") {
+			t.Errorf("旧原因没被清掉：%q", got)
+		}
+	})
 }
 
 // TestMarkRetry_CallsComposeBeforeAssign 是接线层判据：

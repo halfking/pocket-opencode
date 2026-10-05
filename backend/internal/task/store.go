@@ -336,15 +336,31 @@ const taskInsertColumns = `id, workspace_id, title, description, status, priorit
 	type, owner_id, assignees, due_at, remind_at, parent_id, origin_kind, origin_ref, tags, visibility,
   	acc_task_id, acc_run_id, acc_dispatch_id, acc_source_ref, acc_correlation_id, acc_holder_id`
 
+// taskInsertColumns 列了 28 列，所以 VALUES 里必须是 28 个占位符。
+// ⚠ 修掉 2026-10-06 发现的真缺陷：原来第 22 个占位符后面多了一个 `)` 和一个
+// 换行（形如 `$22),` 换行后接 `NULLIF($23, <空串字面量>)`），于是 PG 看到的是
+// `VALUES ($1…$22), NULLIF($23, <空串字面量>), …` —— 第二个值元组没有开括号，
+// 直接 `syntax error at or near "NULLIF" (SQLSTATE 42601)`。
+// 后果不是「某个用例红」：**CreateTask 在 PG 上 100% 失败**，
+// 所有建任务的路径（web / mobile / 审批 / 日程）全断，
+// 而它只被 PG 门控的用例覆盖，不设 POCKET_TEST_POSTGRES_DSN 时那条路径**根本不跑**。
+//
+// ⚠ 这段注释自己踩过同一个坑两次：写「空串字面量」时把两个半角单引号
+// 敲成了 U+201D，被 check-smart-quotes 判红（它守的正是「弯引号冒充 SQL
+// 空串」这件事）。所以下面一律用 <空串字面量> 这个词描述，
+// 不把引号本身打进注释——否则修语法错的人又制造了一个同类错。
 const taskInsertValues = `VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-	$13, $14, $15, $16, $17, $18, $19, $20, $21, $22),
+	$13, $14, $15, $16, $17, $18, $19, $20, $21, $22,
   	NULLIF($23, ''), NULLIF($24, ''), NULLIF($25, ''), NULLIF($26, ''), NULLIF($27, ''), NULLIF($28, ''))`
 
 // taskUpsertValues is the same arity but wraps the nullable text columns in
 // NULLIF, so an empty string becomes SQL NULL on upsert. That is why it cannot
 // simply reuse taskInsertValues.
+//
+// 与 taskInsertValues 同款：第 22 个占位符后面那个多余的 `)` 一并修掉了
+// （原样是 `$22),` 换行后接 6 个 NULLIF，upsert 路径同样 100% 语法错）。
 const taskUpsertValues = `VALUES ($1, $2, $3, NULLIF($4, ''), $5, $6, NULLIF($7, ''), $8, $9, $10, $11, $12,
-	$13, $14, $15, $16, $17, $18, $19, $20, $21, $22),
+	$13, $14, $15, $16, $17, $18, $19, $20, $21, $22,
   	NULLIF($23, ''), NULLIF($24, ''), NULLIF($25, ''), NULLIF($26, ''), NULLIF($27, ''), NULLIF($28, ''))`
 
 func (s *Store) CreateTask(ctx context.Context, task *Task) error {

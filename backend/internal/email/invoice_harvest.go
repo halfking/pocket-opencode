@@ -476,12 +476,34 @@ func (h *InvoiceHarvester) harvestOne(ctx context.Context, inv *Invoice) string 
 // **人工判断被机器的例行失败覆盖掉，比不标还糟**。
 //
 // 约定：人工标注一律以本前缀开头。采集侧看到带前缀的旧值就不再覆盖它，
-// 而是把本轮原因**追加**在后面（`标注 | 本轮采集：…`），两边信息都留得住。
+// 而是保留标注、把本轮原因**替换**在后面（`标注 | 本轮采集：…`），两边信息都留得住。
+//
+// 「替换」不是「追加」——这是 2026-10-06 真机跑出来的修正（round46 验证时发现）：
+// 工行那行是 pending、每轮都被重试（MaxInvoiceAttempts=8），第一版**追加**的实现
+// 让它的 last_error 每轮多长一整段同样的失败原因：
+//
+//	attempts=3 → len 353 → attempts=4 → len 596（+243）
+//
+// 而 round46 把 last_error 直接渲染进汇总单的「备注」列，于是导出的交付物里
+// **同一段失败原因并排出现两次**，且会一直累加到 8 段。
+// ⇒ 机器原因只保留**最近一轮**那一份：它是「上一轮发生了什么」，
+// 堆叠多份既没有信息量，又把交付物撑到不可读。
 //
 // 不改 status：台账的 status 约束是 ('new','pending','downloaded','failed','filed')，
 // 加 'void' 会牵动所有读 status 的地方（导出、统计、A4 排版），
 // 而 row43/44 的授权是「保留并标注」——保留就意味着不动 status。
 const invoiceHumanMarkPrefix = "【人工标注】"
+
+// harvestRetrySegmentSep 是「人工标注」与「机器的本轮采集原因」之间的分隔符。
+//
+// 拼接处与剥旧值处**必须**用同一个字面量，少一处就意味着分割点漂移。
+//
+// ⚠ 如实记：导出侧 `ledger.go` 的 InvoiceHumanMarkClass **没有**用这个常量，
+// 它按更泛的 `" | "` 截断（`ledger.go:158`）。两者对当前数据等价
+// （人工标注正文里不含 `" | "`），本轮**刻意不去改它**——那是 round46 的代码，
+// 且泛化截断是它的安全侧。改它属于顺手重构，不在本次修正范围内。
+// ⇒ 但不要把「导出侧按本常量截断」当成事实转述出去。
+const harvestRetrySegmentSep = " | 本轮采集："
 
 // composeHarvestRetryMessage 决定新一轮采集失败后 last_error 该写成什么。
 //
@@ -491,16 +513,21 @@ const invoiceHumanMarkPrefix = "【人工标注】"
 // 注释也记着「判据匹配注释里的字面文本，等于给退化开了后门」）。
 // 提成纯函数后，「人工标注不被覆盖」这条断言打的是**生产代码本身**。
 func composeHarvestRetryMessage(prior, msg string) string {
-	if strings.HasPrefix(prior, invoiceHumanMarkPrefix) {
-		return prior + " | 本轮采集：" + msg
+	if !strings.HasPrefix(prior, invoiceHumanMarkPrefix) {
+		return msg
 	}
-	return msg
+	// 丢掉上一轮（及更早）的机器原因，只留人工标注那一段。
+	head := prior
+	if i := strings.Index(prior, harvestRetrySegmentSep); i >= 0 {
+		head = prior[:i]
+	}
+	return head + harvestRetrySegmentSep + msg
 }
 
 // markRetry 下载未成功：pending 等下一轮；重试超限转 failed。
 //
-// 人工标注优先：旧 last_error 带 invoiceHumanMarkPrefix 时，本轮原因追加其后，
-// 绝不覆盖（见常量注释里的实测理由）。
+// 人工标注优先：旧 last_error 带 invoiceHumanMarkPrefix 时，人工判断原样保留，
+// 本轮原因替换掉上一轮那一份（见常量注释里的实测理由）。
 func (h *InvoiceHarvester) markRetry(ctx context.Context, inv *Invoice, msg string) string {
 	msg = composeHarvestRetryMessage(inv.LastError, msg)
 	if inv.Attempts >= MaxInvoiceAttempts {
