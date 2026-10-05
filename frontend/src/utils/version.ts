@@ -6,6 +6,7 @@ import { App } from '@capacitor/app'
 import { runtimePlatform } from '../native/runtime-platform.ts'
 import { assertNotHTML } from '../api/jsonGuard.ts'
 import { resolveApiBase } from '../config/api-base.ts'
+import { normalizeComparableVersion } from './update-state.ts'
 
 // 应用版本配置
 // 这是**兜底常量**，不是设备身份的唯一真相来源。真实身份请用 resolveAppVersion()。
@@ -150,15 +151,34 @@ export class VersionConfigUnavailableError extends Error {
 }
 
 // 检查更新
-export async function checkUpdate(): Promise<CheckUpdateResponse> {
+//
+// ⚠️ 上报的身份必须是**设备上真装的那个**，不是 APP_VERSION 常量。
+//
+// 常量与 gradle 会漂移：gradle 写的是 versionCode 3 / versionName "1.2.0-openpocket"，
+// 而 APP_VERSION 停在 1.2.0 / build 2。旧实现上报常量，于是：
+//   · 设备实际在 build 3，却告诉服务端「我在 build 2」；
+//   · 服务端一旦把 version.json 升到 build 3，**每一台已是最新版的设备
+//     都会被告知「发现新版本」**，而 UpdateChecker 在 onMounted 就弹模态框
+//     ⇒ 每天冷启动都被同一个假更新拦住。这正是「无感更新」的反面。
+//
+// 但也不能直接把原生 versionName 原样发出去：服务端 splitVersion
+// （backend/internal/server/app_version_compare.go:111）把 `-xxx` 当**预发布**，
+// 于是 `1.2.0-openpocket` 会被判成**比 `1.2.0` 旧** ⇒ 同样误报。
+//
+// 正确解法是**先归一再上报**：剥掉构建变体后缀，让两边看到同一个版本串，
+// 而 buildNumber 用原生的真实值。`normalizeComparableVersion` 的规则与服务端
+// splitVersion 对齐。此前 app-version-identity.test.mjs 里「比较层必须留在常量上」
+// 那条约束由此得到满足——不再依赖会漂移的常量。
+export async function checkUpdate(opts: { identity?: ResolvedAppVersion } = {}): Promise<CheckUpdateResponse> {
+  const me = opts.identity ?? (await resolveAppVersion())
   const response = await fetch(`${resolveApiBase()}/api/app/check-update`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json'
     },
     body: JSON.stringify({
-      currentVersion: APP_VERSION.version,
-      currentBuild: APP_VERSION.buildNumber,
+      currentVersion: normalizeComparableVersion(me.version),
+      currentBuild: me.buildNumber,
       platform: runtimePlatform(),
       deviceModel: navigator.userAgent
     })
@@ -208,6 +228,91 @@ export function downloadAPK(url: string): boolean {
   if (!canDownloadApk()) return false
   window.open(url, '_blank')
   return true
+}
+
+/** 预下载结果。`ok:false` 时 `error` 一定非空 —— no-op 不得冒充 success。 */
+export interface PrefetchResult {
+  ok: boolean
+  path?: string
+  bytes?: number
+  error?: string
+}
+
+/**
+ * 预下载上限。超过就不预下载，改为提示用户点「立即更新」走浏览器下载。
+ *
+ * 理由：Capacitor Filesystem 的 writeFile 收的是**整段 base64 字符串**，
+ * 4MB 的 APK 会变成约 5.6MB 的 JS 字符串，低端机上这是实打实的内存尖峰。
+ * 设上限是让它在变大之前就退化，而不是等 OOM。
+ */
+export const MAX_PREFETCH_BYTES = 64 * 1024 * 1024
+
+/**
+ * 后台预下载 APK 到本地，装的时候直接用本地文件。
+ *
+ * 校验两件事，缺一件就不算成功：
+ *   1. **字节数**必须与服务端 version.json 的 `fileSize` 一致
+ *      （不一致说明下到了半个包或被中间层截断，装上去会是坏包）；
+ *   2. 落盘成功后必须能拿回 URI，否则「下载好了」但装不了。
+ *
+ * 任何一步失败都返回 `ok:false` 并附原因，由调用方决定是否退化到
+ * 「点按钮时再下载」。**不做静默重试**：离线时反复重试只是耗电。
+ */
+export async function prefetchApk(
+  url: string,
+  expectedBytes: number | undefined,
+  opts: { filename?: string; fetchImpl?: typeof fetch } = {},
+): Promise<PrefetchResult> {
+  if (!canDownloadApk()) return { ok: false, error: '当前平台没有 APK 分发通道' }
+  if (!url) return { ok: false, error: '下载地址为空' }
+  if (expectedBytes !== undefined && expectedBytes > MAX_PREFETCH_BYTES) {
+    return { ok: false, error: `安装包超过预下载上限（${expectedBytes} 字节）` }
+  }
+
+  const doFetch = opts.fetchImpl ?? fetch
+  let blob: Blob
+  try {
+    const res = await doFetch(url)
+    if (!res.ok) return { ok: false, error: `下载失败 HTTP ${res.status}` }
+    blob = await res.blob()
+  } catch (e) {
+    return { ok: false, error: `下载异常：${(e as Error).message}` }
+  }
+
+  const bytes = blob.size
+  if (bytes <= 0) return { ok: false, error: '下载到空文件' }
+  if (expectedBytes !== undefined && bytes !== expectedBytes) {
+    return { ok: false, error: `字节数不符：期望 ${expectedBytes}，实得 ${bytes}` }
+  }
+
+  try {
+    const { getPocketNative } = await import('../native/pocket-native.ts')
+    const fs = getPocketNative().filesystem
+    if (!fs) return { ok: false, error: '当前宿主没有文件系统能力' }
+
+    const base64 = await blobToBase64(blob)
+    const path = opts.filename ?? `update-${bytes}.apk`
+    await fs.writeFile(path, base64, 'data')
+    const uri = await fs.getUri(path, 'data')
+    if (!uri?.uri) return { ok: false, error: '落盘后拿不到可安装 URI' }
+    return { ok: true, path, bytes }
+  } catch (e) {
+    return { ok: false, error: `落盘失败：${(e as Error).message}` }
+  }
+}
+
+/** Blob → base64（无 data: 前缀）。分块喂给 FileReader，避免一次性拼超长字符串。 */
+function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onerror = () => reject(new Error('读取下载内容失败'))
+    reader.onload = () => {
+      const result = String(reader.result ?? '')
+      const comma = result.indexOf(',')
+      resolve(comma >= 0 ? result.slice(comma + 1) : result)
+    }
+    reader.readAsDataURL(blob)
+  })
 }
 
 // 格式化文件大小

@@ -32,7 +32,8 @@
     "check:env-example",
     "check:hide-app-header",
     "check:fixed-cdp-ports",
-    "check:dev-pass-sourcing"
+    "check:dev-pass-sourcing",
+    "check:back-navigation"
   ],
   "ciRuns": [
     "check:pg-schema-scope",
@@ -53,7 +54,8 @@
     "check:env-example",
     "check:hide-app-header",
     "check:fixed-cdp-ports",
-    "check:dev-pass-sourcing"
+    "check:dev-pass-sourcing",
+    "check:back-navigation"
   ],
   "ciCoveredElsewhere": {
     "typecheck": "frontend.yml 的 frontend-lint job 已手列 `npm run typecheck`",

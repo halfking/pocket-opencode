@@ -39,6 +39,7 @@ import {
   buildTimestamp,
   displayBuildDate,
   __setNativeInfoProviderForTest,
+  checkUpdate,
 } from '../version.ts'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))   // frontend/src/utils/__tests__
@@ -120,30 +121,56 @@ test('SettingsView 的版本行必须读 appVersion（解析值），不能直�
   )
 })
 
-test('checkUpdate 上报的仍然是常量版本，不是原生 versionName', () => {
-  // 这条是**故意钉住现状**，不是赞美它。
-  // 原生 versionName 带 "-openpocket" 后缀；server.go 的版本比较会把预发布后缀
-  // 判成比正式版旧，于是设备明明已是最新版，却每次启动都被告知「发现新版本」。
-  // 统一版本语义需要产品拍板（version.ts 与 build.gradle 哪套为准），在那之前
-  // 比较层必须留在常量上。一旦产品决定落地并改了这里，请连同本用例一起改掉。
-  const src = readAbs('frontend/src/utils/version.ts')
-  const start = src.indexOf('export async function checkUpdate(')
-  assert.notEqual(start, -1, '找不到 checkUpdate —— 判据不能靠「没找到就当没违规」过关')
-  // 结尾取**独占一行的** `}`（顶层闭合），不能用第一个 `\n}`：
-  // 函数体里嵌套的 if/catch 的闭合也长那样，会把范围切在半截。
-  const m = /\n\}\r?\n/.exec(src.slice(start))
-  assert.ok(m, 'checkUpdate 的结尾没找到独占一行的 } —— 判据范围切片失效了')
-  const body = src.slice(start, start + m.index)
+test('checkUpdate 上报的是「归一后的原生身份」，既不是常量也不是带后缀的原始 versionName', async () => {
+  // 这条判据 2026-10-06 改写过一次。改写前它钉的是「必须用常量」，
+  // 理由是原生 versionName 带 "-openpocket"，而服务端 splitVersion
+  // （backend/internal/server/app_version_compare.go:111）把 `-xxx` 当**预发布**，
+  // 于是原样上报会被判成比 "1.2.0" 更旧 → 误报「发现新版本」。
+  //
+  // 旧钉法的代价是**永久欠报**：客户端上报常量 buildNumber=2，而 gradle 里
+  // 真实 versionCode 已经是 3。于是服务端一旦把 version.json 升到 build 3，
+  // 每一台已是最新版的设备都会被告知「有更新」，而 UpdateChecker 在
+  // onMounted 就弹模态框 ⇒ 每天冷启动被同一个假更新拦住。这与「无感更新」相反。
+  //
+  // 现在改成钉**行为**（抓真实请求体），且三个值域刻意互不相同：
+  //   常量          = '1.2.0' / 2
+  //   原生原始串    = '2.0.0-openpocket' / 7
+  //   期望上报      = '2.0.0'      / 7      ← 归一后 + 真实 build
+  // 「恒返回常量」与「原样上报原生」两种实现都过不了这一条。
+  __setNativeInfoProviderForTest(async () => ({ version: '2.0.0-openpocket', build: '7' }))
 
-  assert.ok(
-    /currentVersion:\s*APP_VERSION\.version/.test(body),
-    'checkUpdate 不再上报 APP_VERSION.version —— 如果这是有意的（已统一版本语义），' +
-      '请把本用例改成断言新的上报来源，别让它悄悄红着。',
+  const realFetch = globalThis.fetch
+  let body = null
+  globalThis.fetch = async (_url, init) => {
+    body = JSON.parse(init.body)
+    return {
+      ok: true,
+      // assertNotHTML 会读 headers.get('content-type')，缺了会抛
+      // "Cannot read properties of undefined (reading 'get')"，
+      // 那是在测假对象而不是测产品。
+      headers: { get: () => 'application/json' },
+      clone() { return this },
+      async json() { return { hasUpdate: false, forceUpdate: false, message: '' } },
+    }
+  }
+  try {
+    await checkUpdate()
+  } finally {
+    globalThis.fetch = realFetch
+  }
+
+  assert.ok(body, 'checkUpdate 没有发出请求 —— 判据不能靠「没调用就当没违规」过关')
+  assert.equal(
+    body.currentVersion, '2.0.0',
+    '必须剥掉构建变体后缀再上报：服务端把 `-xxx` 当预发布，带后缀会被判成更旧',
   )
-  assert.ok(
-    /currentBuild:\s*APP_VERSION\.buildNumber/.test(body),
-    'checkUpdate 不再上报 APP_VERSION.buildNumber —— 同上，有意变更请同步改本用例。',
+  assert.equal(
+    body.currentBuild, 7,
+    '必须上报原生的真实 buildNumber（7），不是 APP_VERSION 常量里的 2 —— ' +
+      '欠报会让已是最新版的设备被反复提示更新',
   )
+  assert.notEqual(body.currentVersion, APP_VERSION.version, '不能回落成常量版本')
+  assert.notEqual(body.currentVersion, '2.0.0-openpocket', '不能原样上报带后缀的 versionName')
 })
 
 test('更新弹窗的「当前版本」也必须读解析值（同一个病灶的第二个显示点）', () => {

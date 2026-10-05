@@ -49,6 +49,33 @@ export function fnBody(src, decl) {
   return null
 }
 
+/**
+ * 取 `function <name>( ...形参... ) { … }` 的函数体（先跳过形参再配平大括号）。
+ *
+ * 为什么不能直接用 fnBody：**带类型注解的形参里也有大括号**
+ * （`opts: { identity?: ResolvedAppVersion } = {}`）。fnBody 会把那个 `{`
+ * 当成函数体起点，范围切在类型注解里 ⇒ 判据报「找不到 checkUpdate」，
+ * 而不是它真正要守的「error 码分流没了」。锚点错位的判据比没有更糟：
+ * 它会让人以为「分流逻辑被删了」，实际只是签名多了个参数。
+ */
+export function fnBodyOf(src, declPrefix) {
+  const start = src.indexOf(declPrefix)
+  if (start < 0) return null
+  const close = src.indexOf(')', start)
+  if (close < 0) return null
+  const open = src.indexOf('{', close)
+  if (open < 0) return null
+  let depth = 0
+  for (let i = open; i < src.length; i++) {
+    if (src[i] === '{') depth++
+    else if (src[i] === '}') {
+      depth--
+      if (depth === 0) return src.slice(open, i + 1)
+    }
+  }
+  return null
+}
+
 export const ERROR_CODE = 'version_config_not_found'
 
 describe('服务端：缺配置必须冒泡成 503 + 可识别的 error 码', () => {
@@ -89,7 +116,7 @@ describe('服务端：缺配置必须冒泡成 503 + 可识别的 error 码', ()
 
 describe('App 端：认出这个码，并说一条指向真正原因的话', () => {
   it('checkUpdate 把该码转成专用错误类，而不是通用失败', () => {
-    const body = fnBody(versionTs, 'export async function checkUpdate()')
+    const body = fnBodyOf(versionTs, 'export async function checkUpdate')
     assert.ok(body, '判据锚点失效：找不到 checkUpdate')
     assert.match(
       body,
@@ -166,7 +193,7 @@ describe('判据自检：负控必须转红', () => {
     const mutated = versionTs.replace(/if \(code === VERSION_CONFIG_UNAVAILABLE\) \{/, 'if (false) {')
     assert.notEqual(mutated, versionTs, '前提不成立：负控锚点没命中')
 
-    const body = fnBody(mutated, 'export async function checkUpdate()')
+    const body = fnBodyOf(mutated, 'export async function checkUpdate')
     assert.doesNotMatch(
       body,
       /code === VERSION_CONFIG_UNAVAILABLE/,
