@@ -338,7 +338,7 @@ func ProbeModel(ctx context.Context, client *http.Client, baseURL, apiKey, model
 	}
 
 	// 形态 2：chat/completions + input_audio
-	status2, text2, usage, err2 := tryChatAudio(ctx, client, baseURL, apiKey, model, audio)
+	status2, text2, usage, err2 := tryChatAudio(ctx, client, baseURL, apiKey, model, "wav", audio)
 	if err2 != nil || status2 != http.StatusOK {
 		if isNoProvider(status2, err2) {
 			out.Status, out.Detail = ProbeNoProvider, providerDetail(status2, err2)
@@ -433,16 +433,27 @@ func tryTranscriptions(ctx context.Context, client *http.Client, baseURL, apiKey
 	return resp.StatusCode, parsed.Text, TransportTranscriptions, nil
 }
 
-func tryChatAudio(ctx context.Context, client *http.Client, baseURL, apiKey, model string, audio []byte) (int, string, ChatUsage, error) {
+// tryChatAudio 用 chat/completions + input_audio 的形态打一次转写。
+//
+// 2026-10-05 网关实测修正：payload **不得携带 text part**。小米 MiMo ASR
+// 对带 text part 的请求回 400 "ASR request must not include text parts;
+// text prompt is injected by the gateway"；经网关转发时这个 400 会被候选
+// 重试归并成 503 transient，表象是「没有上游」，实际是请求形态被拒。
+// 对 gpt-4o-audio 系模型，无指令时转写本来就是默认行为，去掉 text part
+// 普适无损。format 按上传文件扩展名推断（此前硬编码 "wav"，mp3 数据
+// 会被错标）。
+func tryChatAudio(ctx context.Context, client *http.Client, baseURL, apiKey, model, format string, audio []byte) (int, string, ChatUsage, error) {
 	var usage ChatUsage
+	if format == "" {
+		format = "wav"
+	}
 	payload := map[string]any{
 		"model": model,
 		"messages": []map[string]any{{
 			"role": "user",
 			"content": []map[string]any{
-				{"type": "text", "text": "Transcribe the audio verbatim. Output only the transcript."},
 				{"type": "input_audio", "input_audio": map[string]string{
-					"data": base64.StdEncoding.EncodeToString(audio), "format": "wav",
+					"data": base64.StdEncoding.EncodeToString(audio), "format": format,
 				}},
 			},
 		}},
@@ -586,8 +597,15 @@ func isNoProvider(status int, err error) bool {
 	// no_candidate 会把它误判成 ProbeFailed，用户在设置页看到的就变成
 	// 不可解释的「探测失败」，而不是可行动的「网关无上游 provider」。
 	// requested_model + alternatives 一起出现才判，避免误伤别的 503。
+	// 2026-10-05 网关音频端点轮补充：网关 /v1/audio/transcriptions 的 503
+	// body 是 {"error":{"code":"no_provider","message":"No audio provider
+	// available for model",...}}——既不含 no_candidate 也不含
+	// "no available provider"（措辞是 "No audio provider available"），
+	// 旧判据全部落空，设置页会把「网关无上游」显示成不可解释的
+	// 「探测失败(http 503: …)」。按 error.code=no_provider 直判。
 	return strings.Contains(msg, "no_candidate") ||
 		strings.Contains(msg, "no available provider") ||
+		strings.Contains(msg, `"no_provider"`) ||
 		(strings.Contains(msg, `"requested_model"`) && strings.Contains(msg, `"alternatives"`))
 }
 

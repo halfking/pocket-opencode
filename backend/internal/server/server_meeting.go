@@ -123,7 +123,11 @@ func (s *Server) handleTranscribeMeeting(w http.ResponseWriter, r *http.Request,
 	scope := stt.Scope{UserID: uid, WorkspaceID: workspaceID}
 	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
 	defer cancel()
-	result, err := s.transcriber.TranscribeFor(ctx, scope, audioData, "meeting.wav")
+	// 2026-10-05：filename 此前硬编码 "meeting.wav"，而前端 MediaRecorder
+	// 的真实产物是 webm/opus——webm 字节顶着 .wav 名字上传，网关按 wav
+	// 推断格式、小米按 wav 解码直接 400（实测）。先按容器魔数嗅探真实
+	// 格式；嗅探不出再回退默认名。
+	result, err := s.transcriber.TranscribeFor(ctx, scope, audioData, stt.FilenameForAudio(audioData, "meeting.wav"))
 	if err != nil {
 		m.Status = "failed"
 		_ = s.meetingStore.UpdateScoped(m, uid, workspaceID)

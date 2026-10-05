@@ -72,8 +72,10 @@ func (s *Server) handleSttTranscribeFull(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	filename := req.Filename
-	if filename == "" {
-		filename = "meeting.wav"
+	if filename == "" || filename == "meeting.wav" {
+		// 默认名不盲信（2026-10-05）：调用方没给文件名时按容器魔数嗅探，
+		// 避免 webm 数据顶 wav 名字被上游按错误格式解码。
+		filename = stt.FilenameForAudio(audio, "meeting.wav")
 	}
 
 	engine := stt.NewResolver(func(context.Context, stt.Scope) (*stt.Target, error) { return target, nil })

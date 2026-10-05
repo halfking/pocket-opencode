@@ -25,6 +25,7 @@ import {
   requireCloudAudioBlob,
   type SttOptions,
 } from './stt-cloud.ts'
+import { ensureGatewayCompatible } from '../utils/wav-encode'
 
 export interface SttResult {
   text: string
@@ -63,7 +64,7 @@ export const sttApi = {
       }
     }
 
-    const audioBlob = requireCloudAudioBlob(opts)
+    const audioBlob = await ensureGatewayCompatible(requireCloudAudioBlob(opts))
     const base64 = await blobToBase64(audioBlob)
     const body = JSON.stringify({
       audioBase64: base64,
