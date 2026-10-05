@@ -69,21 +69,35 @@ func TestBuildInvoiceSummaryDocs_MDHasNoBOM(t *testing.T) {
 //
 // 这是对「真实产物」的形状断言，不是对纯函数的断言——CSV 的列序是给用户
 // 看的契约（下游有人按下标取第 8 列的金额，见 pipeline.go 合计行那段注释）。
+//
+// ## 为什么不走 newWorkspaceTestStore（2026-10-05 改）
+//
+// 这条用例原来经 `newWorkspaceTestStore` 拿 Store，于是被 `POCKET_TEST_POSTGRES_DSN`
+// 门禁罩住：**连不上库时它整条 SKIP，而它恰好是唯一能发现「表头列数与代码不一致」
+// 的用例**。实测代价：2026-10-05 加「备注」列那轮（cd1feae2）同时改了三个别的
+// 测试文件（md_columns / ledger / total_parity，都已按 11 列更新），唯独漏了这里；
+// 因为那几轮连不上库，这条从未被执行，于是「main 全绿」与「email 包在真库下 FAIL」
+// 同时成立。绿是门禁给的，不是行为给的。
+//
+// 表头契约只由 `WriteInvoiceSummaryDocs` 决定，而这个函数吃的是切片、不碰库。
+// 改成直接调它 ⇒ 这条护栏在**任何环境**（含无库的 CI）都执行。
 func TestBuildInvoiceSummaryDocs_CSVCarriesRequiredColumns(t *testing.T) {
-	store, cleanup := newWorkspaceTestStore(t)
-	defer cleanup()
-	p := &Pipeline{Store: store, DataDir: t.TempDir()}
-
-	csvPath, _, err := p.BuildInvoiceSummaryDocs(t.Context(), "u", "ws-cols")
+	csvPath, _, err := WriteInvoiceSummaryDocs(t.TempDir(), "ws-cols", []Invoice{{
+		Category: "其他", Seller: "某公司", Amount: 1, Currency: "CNY",
+		Status: "downloaded", FilePath: "a.pdf", FileName: "a.pdf",
+	}})
 	if err != nil {
-		t.Fatalf("BuildInvoiceSummaryDocs: %v", err)
+		t.Fatalf("WriteInvoiceSummaryDocs: %v", err)
 	}
 	raw, err := os.ReadFile(csvPath)
 	if err != nil {
 		t.Fatalf("read csv: %v", err)
 	}
 	header := firstLine(string(raw[3:]))
-	want := []string{"费用类型", "对方单位", "金额", "币种", "发票号", "日期", "状态", "核验", "文件名", "来源邮件"}
+	// 11 列，末列「备注」是 2026-10-05 加的（人工标注理由原文）。必须与
+	// ledger.go 的飞书表头、invoice_summary_md_columns_test.go 的
+	// wantSharedWidth=11 一致——三处任一漂移，用户手里的两份额外清单就对不上。
+	want := []string{"费用类型", "对方单位", "金额", "币种", "发票号", "日期", "状态", "核验", "文件名", "来源邮件", "备注"}
 	got := strings.Split(header, ",")
 	if len(got) != len(want) {
 		t.Fatalf("表头列数 = %d，want %d：%q", len(got), len(want), header)
@@ -91,6 +105,17 @@ func TestBuildInvoiceSummaryDocs_CSVCarriesRequiredColumns(t *testing.T) {
 	for i := range want {
 		if got[i] != want[i] {
 			t.Errorf("第 %d 列 = %q, want %q（列序是给用户的契约，不能随意改）", i+1, got[i], want[i])
+		}
+	}
+
+	// 表头变宽而写入范围没跟上时，多出来的那列会**静默丢掉**
+	// （纯文本输出没有任何症状；飞书侧同类缺陷见
+	// TestInvoiceTotalParity_ColumnCountMatchesHeader）。这里对 CSV 做同形检查：
+	// 每行列数都必须等于**实际读到的表头**列数。
+	lines := strings.Split(strings.TrimRight(string(raw[3:]), "\r\n"), "\n")
+	for i, ln := range lines {
+		if n := len(strings.Split(strings.TrimSuffix(ln, "\r"), ",")); n != len(got) {
+			t.Errorf("第 %d 行列数 = %d，表头 %d 列：%q", i+1, n, len(got), ln)
 		}
 	}
 }
