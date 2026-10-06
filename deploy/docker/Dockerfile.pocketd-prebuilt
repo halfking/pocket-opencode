@@ -23,6 +23,18 @@ RUN apk --no-cache add ca-certificates wget && \
 
 WORKDIR /app
 COPY pocketd /app/pocketd
+
+# 版本配置必须打进镜像，否则 /api/app/check-update 恒 503。
+#
+# 服务端契约（backend/internal/server/server.go 的 loadVersionConfig）是
+# 「拿不到配置就返回 ErrVersionConfigNotFound」，由 handleCheckUpdate 翻成 503
+# ——按设计行事，不要在这里改回落默认值：假版本号比报错更糟。
+#
+# 缺这一行时，这个镜像里根本没有 config/ 目录，而两条解析路径
+# （WORKDIR 相对 config/version.json、回退到 <exedir>/config/version.json）
+# 都指向 /app/config/version.json ⇒ 必然双双落空。
+COPY config/version.json /app/config/version.json
+
 RUN chmod +x /app/pocketd && mkdir -p /app/data && chown -R pocket:pocket /app
 
 USER pocket

@@ -86,6 +86,12 @@ for arch in "${ARCH_LIST[@]}"; do
   (cd "${REPO_ROOT}/backend" && \
     CGO_ENABLED=0 GOOS=linux GOARCH="${arch}" \
     go build -trimpath -ldflags='-s -w' -o "${WORK}/be-${arch}/pocketd" ./cmd/pocketd)
+
+  # version.json 进构建上下文：Dockerfile.pocketd-prebuilt 会 COPY 它，
+  # 缺了会让 /api/app/check-update 在容器里恒 503（服务端是按设计报错的）。
+  mkdir -p "${WORK}/be-${arch}/config"
+  cp "${REPO_ROOT}/backend/config/version.json" "${WORK}/be-${arch}/config/version.json"
+
   docker build --platform "linux/${arch}" "${OCI_LABELS[@]}" \
     -f "${SCRIPT_DIR}/../docker/Dockerfile.pocketd-prebuilt" \
     -t "opencode-pocket:${OPP_IMAGE_TAG}" "${WORK}/be-${arch}"
