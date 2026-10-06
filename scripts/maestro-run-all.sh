@@ -94,6 +94,13 @@ PKG="${POCKET_APP_ID:-com.kaixuan.opencode.pocket}"
 LOGDIR="${POCKET_LOGDIR:-/tmp/opp-maestro}"
 mkdir -p "$LOGDIR"
 
+# ★ 2026-10-07 修一处既有隐患：`$PKG（`（全角括号紧跟）会被 bash 并进变量名，
+#   在 UTF-8 locale 下找的是 `PKG（` 这个不存在的变量 ⇒ set -u 直接致命，
+#   脚本在**批次中途**死掉：不打印汇总、后续 flow 全部静默丢失。
+#   只在「设备不可用」这条 SKIP_ENV 路径上触发，所以平时看不出来。
+#   复现：POCKET_SERIAL=<不存在的设备> bash scripts/maestro-run-all.sh <flow>
+#         （LC_ALL=C 下不触发 ⇒ 是 locale 依赖，别当成偶发）
+#   ⇒ 这类「$VAR + 全角标点」一律写成 ${VAR}。
 focus_owner() { adb -s "$SERIAL" shell dumpsys window 2>/dev/null | grep mCurrentFocus | head -1; }
 
 # 强制前台归位；成功返回 0
@@ -137,7 +144,7 @@ for f in "${FLOWS[@]}"; do
   name=$(basename "$f" .yaml)
   printf '\n======== %s ========\n' "$name"
   if ! ensure_foreground; then
-    echo "[run] ❌ $name 跳过：前台拿不到 $PKG（最后焦点：$(focus_owner)）"
+    echo "[run] ❌ $name 跳过：前台拿不到 ${PKG}（最后焦点：$(focus_owner)）"
     printf 'SKIP_ENV  %s\n' "$name" >> "$RESULTS"; SKIP=$((SKIP+1)); continue
   fi
   # ★ 每条都走**完整前置**（真实登录 + 起点归位），不用 POCKET_SKIP_CDP_LOGIN 省钱。
