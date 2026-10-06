@@ -190,6 +190,7 @@ console.log('refine/analyze LLM =', LLM_MODEL)
 console.log('')
 
 let coreOk = 0
+let chainFail = false
 const coreNeed = 3 // ≥1 ASR 模型 + refine + analyze —— refine/analyze 是硬判据；流式/MCP 呈报不设门
 
 // [1] 样本合成
@@ -212,6 +213,7 @@ const MODELS = [
 ]
 console.log('[2] 多模型 ASR 矩阵（zh 字级 / en 词级 LCS 相似度）')
 const rows = []
+let rawASRText = ""
 for (const m of MODELS) {
   const row = { model: m.id, zh: '-', en: '-', zhMs: '-', enMs: '-', status: '' }
   const zr = await asrOnce(m.id, zhFile)
@@ -219,6 +221,7 @@ for (const m of MODELS) {
     row.zh = (lcsSim(ZH_TEXT, zr.text) * 100).toFixed(1) + '%'
     row.zhMs = zr.ms
     row.status = '200'
+    if (!rawASRText) rawASRText = zr.text
   } else if (m.expect === '429-balance-blocked' && zr.status === 429) {
     row.status = '429（预期：凭据余额）'
   } else {
@@ -322,10 +325,44 @@ if (tl.status === 200) {
 if (mcpOk) coreOk++
 console.log('')
 
+// [7] 真实链路：ASR 原始输出（含识别噪声）→ refine → analyze。
+// 与 [4]/[5] 的手写输入互补：验证的是产品实际形态——会议转写的原文
+// 带同音替代/无标点，refine 是否照实清理，分析是否吃得下精修后的文本。
+console.log('[7] 端到端链路：ASR 原始输出 → refine → analyze（真实噪声文本）')
+if (rawASRText) {
+  await sleep(RPM_GAP_MS)
+  const rf2 = await callWithRpmRetry('/audio/refine', json({
+    model: LLM_MODEL, text: rawASRText, language: 'zh',
+    hotwords: ['实时转写'], context: '方案评审会', include_corrections: false,
+  }))
+  if (rf2.status === 200) {
+    const refinedText = JSON.parse(rf2.body).refined
+    console.log(`    ASR原文(${rawASRText.length}字) -> refine(${rf2.ms}ms): "${refinedText.slice(0, 60)}…"`)
+    const az = await callWithRpmRetry('/audio/analyze', json({
+      model: LLM_MODEL, transcript: refinedText, style: 'meeting', language: 'zh',
+    }))
+    if (az.status === 200) {
+      const a = JSON.parse(az.body)
+      const chainOk = (a.summary || '').length > 6
+      console.log(`    -> analyze(${az.ms}ms): summary="${(a.summary || '').slice(0, 60)}…" hints=${(a.hints || []).length} 条`)
+      console.log(`    链路判据：analyze 吃下精修文本并产出摘要=${chainOk}`)
+      if (!chainOk) chainFail = true
+    } else {
+      console.log(`    analyze ${az.status} ${az.body.slice(0, 140)}`)
+      chainFail = true
+    }
+  } else {
+    console.log(`    refine ${rf2.status} ${rf2.body.slice(0, 140)}（链路段跳过，不影响核心判据）`)
+  }
+} else {
+  console.log('    （[2] 无 200 模型，链路段跳过）')
+}
+console.log('')
+
 console.log('判读：')
 console.log('  ASR 429 (glm-asr)   -> 数据面已接通，上游凭据余额不足（1113）；充值后零代码可用')
 console.log('  ASR 503 no_provider -> 目录/绑定缺失（本轮 ensure 种子未部署到该环境）')
 console.log('  refine 502          -> LLM 步骤失败；先换 GW_LLM_MODEL（glm-4.7 系在本地被 creative 任务路由排除）')
 console.log('')
 console.log(`核心判据：${coreOk}/${coreNeed}（≥1 个 ASR 模型 200 + refine 判据 + analyze 判据）`)
-process.exit(coreOk >= coreNeed ? 0 : 1)
+process.exit(coreOk >= coreNeed && !chainFail ? 0 : 1)
