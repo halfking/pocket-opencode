@@ -51,8 +51,47 @@ repositories {
     }
 }
 
+// cap-sherpa（本地 ASR，Phase 4）：sherpa-onnx 官方 Android AAR（全 ABI，
+// 含 com.k2fsa.sherpa.onnx JNI 绑定）。AAR 不进 git（android/.gitignore 的
+// *.aar 是仓库既有约定），构建前自动就位——已存在则跳过，离线增量构建
+// 不受影响。升级版本 = 改下面 URL 与依赖行里的版本号。
+def sherpaAar = file('libs/sherpa-onnx-1.13.8.aar')
+tasks.register('downloadSherpaAar') {
+    onlyIf { !sherpaAar.exists() }
+    doLast {
+        sherpaAar.parentFile.mkdirs()
+        def tmp = new File(sherpaAar.path + '.part')
+        def conn = new URL('https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-1.13.8.aar').openConnection()
+        conn.setRequestProperty('User-Agent', 'openpocket-gradle/1.0')
+        conn.setConnectTimeout(30000)
+        conn.setReadTimeout(120000)
+        conn.setInstanceFollowRedirects(true)
+        if (conn.getResponseCode() < 200 || conn.getResponseCode() >= 300) {
+            throw new GradleException("sherpa AAR download HTTP ${conn.getResponseCode()}")
+        }
+        byte[] buf = new byte[1 << 16]
+        InputStream ins = conn.getInputStream()
+        FileOutputStream outs = new FileOutputStream(tmp)
+        try {
+            int n
+            while ((n = ins.read(buf)) > 0) outs.write(buf, 0, n)
+        } finally {
+            ins.close()
+            outs.close()
+            conn.disconnect()
+        }
+        if (!tmp.renameTo(sherpaAar)) throw new GradleException('cannot finalize sherpa AAR download')
+        println "sherpa-onnx AAR downloaded: ${sherpaAar.length()} bytes"
+    }
+}
+tasks.named('preBuild') { dependsOn 'downloadSherpaAar' }
+
 dependencies {
     implementation fileTree(include: ['*.jar'], dir: 'libs')
+    implementation files('libs/sherpa-onnx-1.13.8.aar')
+    // 模型分发包是 tar.bz2：tar + bzip2 解包（SherpaPlugin.extractTarBz2）。
+    // commons-io/commons-lang3 由 commons-compress 1.26 传递引入。
+    implementation 'org.apache.commons:commons-compress:1.26.2'
     implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
     // 指纹/人脸登录绑定（BiometricAuthPlugin：BiometricPrompt + CryptoObject）
     implementation "androidx.biometric:biometric:1.1.0"

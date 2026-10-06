@@ -1,9 +1,10 @@
 /**
  * cap-sherpa plugin — local speech recognition via sherpa-onnx.
  *
- * Wraps the native Android plugin that bundles sherpa-onnx Paraformer /
- * SenseVoice models for on-device Chinese/English ASR. See
- * docs/2026-07-02-android-stt-evaluation.md for the model selection.
+ * Phase 4 落地（2026-10-06）：Android 原生插件已实现双引擎——
+ * zipformer（流式实时出字）与 SenseVoice（整段本地高精档）；模型首次
+ * 使用时由原生层运行时下载（downloadProgress 事件播报进度），不进 APK。
+ * 选型与精度实测记录见 docs/2026-10-06-local-asr-sherpa-integration.md。
  *
  * Falls back to unsupported on web; callers should use stt.ts which
  * transparently falls back to cloud (Groq Whisper) when local is absent.
@@ -29,20 +30,29 @@ export interface SherpaPartialResult {
   endMs: number
 }
 
+export interface SherpaStatus {
+  zipformerReady: boolean
+  sensevoiceReady: boolean
+  listening: boolean
+  modelsDir: string
+}
+
 export interface CapSherpaPlugin {
-  /** Preload a model so first recognition is fast. */
-  preload(model: 'paraformer' | 'sensevoice' | 'whisper-base'): Promise<void>
+  /** Preload a model so first recognition is fast (downloads on first use). */
+  preload(model: 'zipformer' | 'sensevoice'): Promise<void>
   /** Transcribe a local audio file path (WAV/PCM 16kHz mono). */
   transcribe(audioPath: string): Promise<SherpaResult>
-  /** Extract speaker embedding (ECAPA-TDNN). */
+  /** Extract speaker embedding (ECAPA-TDNN, Phase 5; rejects for now). */
   extractEmbedding(audioPath: string): Promise<SherpaEmbeddingResult>
   /** Start VAD-gated streaming recognition; emits partial results via events. */
   startListening(): Promise<void>
   stopListening(): Promise<{ final: SherpaResult }>
-  /** Register listener for partial transcription (native only). */
+  /** Model readiness / models dir (route local vs cloud decisions). */
+  status(): Promise<SherpaStatus>
+  /** Register listener for partial transcription / download progress (native only). */
   addListener(
-    event: 'partialResult',
-    handler: (result: SherpaPartialResult) => void,
+    event: 'partialResult' | 'downloadProgress',
+    handler: (result: any) => void,
   ): Promise<{ remove: () => void }>
 }
 
@@ -52,5 +62,6 @@ export const sherpa = registerPluginSafely<CapSherpaPlugin>('Sherpa', {
   extractEmbedding: () => Promise.reject(new Error('cap-sherpa not available')),
   startListening: () => Promise.reject(new Error('cap-sherpa not available')),
   stopListening: () => Promise.reject(new Error('cap-sherpa not available')),
+  status: () => Promise.reject(new Error('cap-sherpa not available')),
   addListener: () => Promise.reject(new Error('cap-sherpa not available')),
 })
