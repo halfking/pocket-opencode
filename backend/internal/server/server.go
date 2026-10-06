@@ -2523,6 +2523,24 @@ func (s *Server) handleCheckUpdate(w http.ResponseWriter, r *http.Request) {
 		if req.CurrentVersion == "" {
 			req.CurrentVersion = "1.0.0"
 		}
+		// build 也要读。不读的后果不是「少一次推送」，而是 hasUpdate **恒真**：
+		// CurrentBuild 停在 0，而 latestBuildNumber 来自 version.json（当前是 2），
+		// 于是 hasUpdateAvailable 的 `currentBuild < latestBuild` 一项永远成立，
+		// 客户端连自己已经是最新版（version 与 build 都相同）都会被告知「发现新版本」。
+		//
+		// 2026-10-07 实测（重建后的容器，latest=1.2.0/2）：
+		//   version=1.0.0/1.2.0/1.3.0/2.0.0/99.0.0 全部 hasUpdate=true
+		// 补上读取后，version=1.2.0&build=2 正确地变成 false。
+		//
+		// 解析失败一律当 0：宁可退回「可能漏一次推送」，也不要把脏参数
+		// 当成一个巨大的 build 号让全员强制更新。
+		if b := r.URL.Query().Get("build"); b != "" {
+			if n, err := strconv.Atoi(b); err == nil && n >= 0 {
+				req.CurrentBuild = n
+			} else {
+				log.Printf("check-update: 忽略无法解析的 build=%q", b)
+			}
+		}
 	}
 
 	// 从配置文件加载最新版本信息

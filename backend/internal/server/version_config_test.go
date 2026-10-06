@@ -166,3 +166,98 @@ func TestHandleCheckUpdate_ValidConfigStillReturns200(t *testing.T) {
 		t.Fatalf("必须按真实配置判定更新，实际 %s", rr.Body.String())
 	}
 }
+
+// 客户端**已经是**最新版时，GET 分支必须回 false。
+//
+// 这条钉的是一个已实测的缺陷，且它解释了为什么上面那些用例抓不到：
+// handleCheckUpdate 的 GET 分支只从 query 读 version，**从不读 build**，
+// CurrentBuild 因此停在 0；而 hasUpdateAvailable 里有
+// `currentBuild < latestBuild` 这一项，latestBuild 来自 version.json。
+// 于是只要 latestBuild > 0，这一项恒成立，hasUpdate 变成**恒真**。
+//
+// 症状不是「少推一次」而是**多推一次**：已经是最新的客户端被告知「发现新版本」。
+// 上一条用例（客户端 1.2.0/2 对服务端 1.5.0/9）无论 GET 分支怎么坏都会绿，
+// 因为那个样本里 version 与 build 两个方向都指向「有更新」——
+// 换句话说，它测不出「两个实现分叉」的地方。
+//
+// 样本取自实测读数（latest=1.2.0/build=2）：
+//
+//	version=1.0.0 / 1.2.0 / 1.3.0 / 2.0.0 / 99.0.0  全部 hasUpdate=true
+//
+// 99.0.0 尤其重要：它比服务端**更新**，正确结果仍是 false（不许通知降级）。
+func TestHandleCheckUpdate_GetPath_SameVersionNoUpdate(t *testing.T) {
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "version.json")
+	if err := os.WriteFile(cfg, []byte(`{"version":"1.2.0","buildNumber":2}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("POCKET_VERSION_CONFIG_PATH", cfg)
+
+	cases := []struct {
+		name    string
+		query   string
+		want    bool
+		comment string
+	}{
+		{"完全相同", "?version=1.2.0&build=2", false, "客户端与服务端同版本同 build ⇒ 无更新"},
+		{"客户端更新", "?version=2.0.0&build=2", false, "比服务端新 ⇒ 不得通知降级"},
+		{"远新于服务端", "?version=99.0.0&build=2", false, "同上，且差距悬殊"},
+		{"build 缺失", "?version=1.2.0", true, "不传 build 时按 0 算，而 latest build=2 ⇒ 判有更新。保守方向：宁可多提示一次，不漏"},
+		{"确实较旧", "?version=1.0.0&build=1", true, "真的旧 ⇒ 必须推"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rr := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, "/api/app/check-update"+tc.query, nil)
+			(&Server{}).handleCheckUpdate(rr, req)
+
+			if rr.Code != http.StatusOK {
+				t.Fatalf("必须 200，实际 %d body=%s", rr.Code, rr.Body.String())
+			}
+			var body struct {
+				HasUpdate bool   `json:"hasUpdate"`
+				Message   string `json:"message"`
+			}
+			if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+				t.Fatal(err)
+			}
+			if body.HasUpdate != tc.want {
+				t.Fatalf("GET %s：hasUpdate 期望 %v，实际 %v（%s）。%s",
+					tc.query, tc.want, body.HasUpdate, body.Message, tc.comment)
+			}
+		})
+	}
+}
+
+// 缺 build 参数时行为必须明确且**可预期**：按 0 处理 ⇒ 当成「拿不到自己的
+// build 号」，于是 build 这一路判不出更新，但 version 那一路仍要能判。
+// 用 version 明显较旧的样本钉住：即便 build 缺失，也不能因此漏判。
+//
+// 这一条同时是上面那条的**反向对照**：如果实现把 build 缺失当成「最新」
+// （例如直接返回 false），「确实较旧」用例会红——两条一起才抓得住「恒真」与
+// 「恒假」这两个相反方向的坑。
+func TestHandleCheckUpdate_GetPath_BuildMissingStillComparesVersion(t *testing.T) {
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "version.json")
+	if err := os.WriteFile(cfg, []byte(`{"version":"1.10.0","buildNumber":5}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("POCKET_VERSION_CONFIG_PATH", cfg)
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/app/check-update?version=1.9.0", nil)
+	(&Server{}).handleCheckUpdate(rr, req)
+
+	var body struct {
+		HasUpdate bool `json:"hasUpdate"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	// 1.9.0 → 1.10.0 正是字典序会判错的那个样本（"1.9" > "1.10"）。
+	// 这里它必须仍然判出更新，否则字典序回归无人发现。
+	if !body.HasUpdate {
+		t.Fatalf("1.9.0 对 1.10.0 必须判有更新（字典序陷阱），实际 %s", rr.Body.String())
+	}
+}
