@@ -20,7 +20,8 @@ import (
 
 // handleMeetingRouter dispatches /api/meetings/{id}/{action} and per-meeting
 // GET/DELETE. Action set: summary, recommend, refine (kxmemory-backed),
-// transcribe (STT) and summarize (rule-based). Bare {id} supports GET/DELETE.
+// transcribe (STT), summarize (rule-based) and analyze (live LLM rolling
+// summary + hints, read-only). Bare {id} supports GET/DELETE.
 func (s *Server) handleMeetingRouter(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/api/meetings/")
 	parts := strings.SplitN(path, "/", 2)
@@ -75,6 +76,10 @@ func (s *Server) handleMeetingRouter(w http.ResponseWriter, r *http.Request) {
 		s.handleTranscribeMeeting(w, r, meetingID)
 	case "summarize":
 		s.handleSummarizeMeeting(w, r, meetingID)
+	case "analyze":
+		// 2026-10-07 轮：录制中的实时 LLM 分析（滚动摘要 + hints），只读
+		// 不落库；正式纪要仍走 summarize。见 server_meeting_analyze.go。
+		s.handleMeetingLiveAnalyze(w, r, meetingID)
 	default:
 		writeError(w, http.StatusNotFound, "unknown meeting action: "+action)
 	}
