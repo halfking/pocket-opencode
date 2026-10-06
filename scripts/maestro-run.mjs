@@ -171,6 +171,60 @@ const adbSoft = (args, t = 60000) => {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
+/**
+ * 取「打开菜单」按钮在**当前设备 locale** 下的 aria-label，取不到返回 null。
+ *
+ * 为什么需要它：App 的 a11y 标签走 i18n（zh-CN「打开菜单」/ en-US「Open menu」），
+ * 而 harness 原先在选择器里写死中文。en-US 设备上判据恒 false，
+ * 报错却是「复位失败；App 当前实际停在 #/ai」——hash 其实完全正确，
+ * **报错方向与真因相反**，会把人引去查路由守卫。
+ *
+ * 取值顺序：设备实际 locale → POCKET_LOCALE 环境变量 → 默认 zh-CN。
+ * locale 字符串按 BCP47 取前两段（en-US / en_US / zh-Hans-CN 都能落到 en / zh）。
+ * 两边都取不到时返回 null，调用方改用「App 外壳容器存在」这条弱判据，
+ * 而不是继续拿一种语言去撞另一种语言的设备。
+ */
+function resolveOpenMenuLabel() {
+  const LOCALES = `${ROOT}/frontend/src/locales`
+  const wanted = []
+  const explicit = process.env.POCKET_LOCALE
+  if (explicit) wanted.push(explicit)
+  // ⚠️ 2026-10-07 实测踩到：原先只读 `persist.sys.locale`，而**这台设备上它是空的**
+  // （两路 adb 都返回 "\n"）。真正的值在 `ro.product.locale`（en-US）。
+  // 于是 wanted 退化成只有 ['zh-CN'] 默认值 ⇒ 又拿中文去撞英文设备，
+  // 判据恒 false —— 和没修之前**完全一样**，而日志里看不出差别。
+  //
+  // 所以这里逐个试已知的 locale 属性，取第一个非空的；
+  // 顺序按「越稳定越靠前」，persist.* 可写但可能没写过，ro.* 一定有。
+  for (const prop of ['persist.sys.locale', 'ro.product.locale', 'ro.sys.locale']) {
+    const v = adbSoft(['shell', 'getprop', prop], 8000).trim()
+    if (v) wanted.push(v)
+  }
+  wanted.push('zh-CN')
+  for (const raw of wanted) {
+    // 文件名是**完整 BCP47**（en-US.json / zh-CN.json / de-DE.json…），
+    // ⚠️ 我第一版按语言码拼 `${lang}.json` → en.json，磁盘上根本没有这个文件，
+    // 于是取值恒 null、判据退化成弱判据，而日志里看不出来。
+    // 所以先试完整 tag，再退回语言码（cover 「设备只报了 en」这类情况）。
+    const tag = String(raw).trim()
+    const lang = tag.split(/[-_]/)[0].toLowerCase()
+    for (const cand of [tag, lang]) {
+      const file = `${LOCALES}/${cand}.json`
+      if (!existsSync(file)) continue
+      try {
+        const doc = JSON.parse(readFileSync(file, 'utf8'))
+        // 键路径以仓库真实结构为准：layout.openMenu
+        // （zh-CN.json:31 "layout": { … "openMenu": "打开菜单" }）。
+        // ⚠️ 我第一版写的是 `nav.openMenu` —— 那是我按目录名想当然编的，
+        // 实测 node -e require(...) 打出 undefined。锚点必须从真实文件抄。
+        const label = doc?.layout?.openMenu
+        if (typeof label === 'string' && label) return label
+      } catch { /* 坏 JSON 就换下一种写法 */ }
+    }
+  }
+  return null
+}
+
 /** 一次性 CDP 求值：连上当前 App 的 WebView，评估一个表达式，拿回值后断开。 */
 /**
  * 绑定一个 CDP 转发端口，返回 adb 实际分配到的端口号。
@@ -208,7 +262,28 @@ function bindCdpForward(sock) {
 }
 
 async function cdpEval(expr, ms = 8000) {
-  const pid = adbSoft(['shell', 'pidof', PKG], 15000).trim().split(/\s+/)[0]
+  // pidof 可能返回**空**，而且不止一种原因：
+  //   ① App 刚被 force-stop / reload 换进程，此刻窗口期里 pidof 是空的；
+  //   ② App 真的没起来。
+  // 两种都用同一个 APP_NOT_RUNNING 报出去，调用方无从区分——
+  // 而①是可自愈的（本文件下方「等 pid」那段正是为此），②重试多少次都没用。
+  //
+  // 2026-10-07 实测：assertAppUsesReverseBase 里 `location.reload()` 之后
+  // 紧接着的一次 cdpEval 稳定命中①，抛 APP_NOT_RUNNING，
+  // 整个 preflight 崩掉，退出码 3。实测同一时刻 App 就在前台、
+  // webview_devtools_remote_<pid> socket 也在，等一秒就好。
+  //
+  // 所以这里**有界重试 pidof**：最多 10 次、每次 500ms，总计 5s。
+  // 5s 是有界而不是无限：App 真的没起来时，多等也等不来，
+  // 而让整个 preflight 白等 5s 只为换一个同样的 APP_NOT_RUNNING 不划算。
+  let pid = adbSoft(['shell', 'pidof', PKG], 15000).trim().split(/\s+/)[0]
+  if (!pid) {
+    for (let i = 0; i < 10; i++) {
+      await sleep(500)
+      pid = adbSoft(['shell', 'pidof', PKG], 15000).trim().split(/\s+/)[0]
+      if (pid) break
+    }
+  }
   if (!pid) throw new Error('APP_NOT_RUNNING')
   // socket 是 App 起来**之后**才注册的，pidof 返回得比它早。
   // 所以这里等它出现（有界），而不是「等不到就退而求其次连别的」——
@@ -978,7 +1053,30 @@ if (!(await preflight())) process.exit(3)
   const route = process.env.POCKET_START_ROUTE || '#/ai'
   // 顺带等 App 外壳真的渲染出来：只等 hash 匹配时，flow 第一条断言（打开菜单）
   // 仍可能失败——hash 变了但 DOM 还没画完。ready 判据用 aria-label，结构性、稳定。
-  const ok = await setRoute(route, `!!document.querySelector('[aria-label="打开菜单"]')`)
+  //
+  // ★ 2026-10-07 修一处 locale 依赖：这个选择器原先**写死中文**「打开菜单」。
+  // 设备 locale 是 en-US 时 App 渲染出的是 `aria-label="Open menu"`
+  // （i18n 两侧都有：zh-CN.json「打开菜单」/ en-US.json「Open menu」），
+  // 于是判据恒 false →「复位失败；App 当前实际停在 #/ai」——
+  // **hash 其实完全正确**，报错却指向「起点不确定」，方向完全反了。
+  //
+  // 现在从 i18n 文件按设备的实际 locale 取值；取不到就退回「只要 App 外壳容器
+  // 渲染出来就算 ready」，而不是继续拿中文去撞英文设备。
+  const menuLabel = resolveOpenMenuLabel()
+  const readyExpr = menuLabel
+    ? `!!document.querySelector('[aria-label=${JSON.stringify(menuLabel)}]')`
+    : `!!document.querySelector('#app, #root, .ai-view')`
+  const ok = await setRoute(route, readyExpr)
+  if (!ok && process.env.POCKET_DEBUG_SETROUTE === '1') {
+    // 诊断用（默认不输出）：把 readyExpr 与设备 locale 一起打出来。
+    // 没有这一行时，「判据为 false」和「取值函数返回了 null」两种形态
+    // 在日志里**长得一模一样**——都只是「复位失败」，
+    // 而两者的修法完全不同（一个改选择器，一个改 locale 解析）。
+    const dbgLocale = ['persist.sys.locale', 'ro.product.locale', 'ro.sys.locale']
+      .map((p) => `${p}=${JSON.stringify(adbSoft(['shell', 'getprop', p], 8000).trim())}`).join(' ')
+    console.error(`[debug] menuLabel=${JSON.stringify(menuLabel)} ${dbgLocale}`)
+    console.error(`[debug] readyExpr=${readyExpr}`)
+  }
   if (ok) {
     console.log(`[preflight] 已复位到 ${route} 且 App 外壳已渲染`)
   } else {
