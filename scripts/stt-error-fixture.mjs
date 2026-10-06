@@ -39,8 +39,25 @@
 // 配过真实模型，绝不会被这个夹具误删。
 
 import { execFileSync } from 'node:child_process'
+import { existsSync } from 'node:fs'
+import { join } from 'node:path'
 
-const PSQL = 'C:/workspace/openpocket/logs/pg/dist2/pgsql/bin/psql.exe'
+// ★ 2026-10-07 跨平台化：原来无条件写死某台 Windows 机器上的 psql.exe
+// （`C:/workspace/openpocket/logs/pg/dist2/pgsql/bin/psql.exe`），
+// macOS / Linux 上必然找不到。
+//
+// 现在按 ① POCKET_PSQL ② 本机常见位置 ③ PATH 上的 psql 依次找；
+// 都找不到就**响亮退出并说明怎么配** —— 静默走到 execFileSync 才会
+// 抛一个看不出「是路径没配」的 ENOENT。
+const PSQL = (process.env.POCKET_PSQL
+  || [
+      '/opt/homebrew/opt/libpq/bin/psql',
+      '/usr/local/opt/libpq/bin/psql',
+      '/usr/bin/psql',
+      '/opt/homebrew/bin/psql',
+      join(process.env.LOCALAPPDATA || '', 'Programs/PostgreSQL/*/bin/psql.exe'),
+    ].find((p) => p && !p.includes('*') && existsSync(p))
+  || 'psql')
 const SENTINEL = 'zz-no-such-model-for-test'
 const USER = 'user-admin'
 const WS = 'ws_user-admin'

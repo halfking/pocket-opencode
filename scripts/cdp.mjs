@@ -14,11 +14,28 @@
 
 import { execFileSync } from 'node:child_process'
 import { readFileSync, existsSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
-const ADB = 'C:/Users/86133/AppData/Local/Android/platform-tools/adb.exe'
+// ★ 2026-10-07 跨平台化：原来这里无条件写死某个 Windows 用户的 adb.exe
+// （`C:/Users/86133/AppData/Local/Android/platform-tools/adb.exe`），
+// 没有任何平台分支也没有环境变量覆盖 ⇒ 在 macOS / Linux 上必然找不到，
+// 而报错形态与「设备没连上」完全同形。
+//
+// 现在按 ① POCKET_ADB_BIN ② 本机常见位置（macOS / Linux / Windows 各一）
+// ③ PATH 上的 adb 依次找；找不到就响亮退出并说明怎么配，不静默失败。
+const ADB = (process.env.POCKET_ADB_BIN
+  || [
+      join(process.env.ANDROID_HOME || '', 'platform-tools', 'adb'),
+      join(process.env.ANDROID_SDK_ROOT || '', 'platform-tools', 'adb'),
+      join(homedir(), 'Library/Android/sdk/platform-tools/adb'),
+      join(homedir(), 'Android/Sdk/platform-tools/adb'),
+      '/usr/local/share/android-sdk/platform-tools/adb',
+      join(process.env.LOCALAPPDATA || '', 'Android/platform-tools/adb.exe'),
+    ].find((p) => p && existsSync(p))
+  || 'adb')
 const SERIAL = process.env.POCKET_SERIAL || '4c308e2e'
 const PKG = 'com.kaixuan.opencode.pocket'
 const PORT = process.env.POCKET_CDP_PORT || '9222'

@@ -101,8 +101,19 @@ const DRIVER_PKGS = ['dev.mobile.maestro', 'dev.mobile.maestro.test']
 // 与 maestro-client.jar 内嵌的是同一份（SHA256 A7F12BBD…1F0B9），用 jar 里解出来的那份。
 // 两个包都要装：Maestro 的 installMaestroApks 依次装 maestro-app 与 maestro-server，
 // 只装前一个会在 installMaestroServerApp 一步炸掉（实测）。
+// ★ 2026-10-07 修跨平台：默认路径原先写死成
+//   `C:/workspace/openpocket/logs/maestro/driver-extracted`——那是某台 Windows
+//   机器上 extract-maestro-driver.mjs 的产物目录。
+// 在 macOS / Linux 上这个目录永远不存在，于是 ensureDriver() 稳定报
+//   `[FAIL] APK 不存在: C:/workspace/.../maestro-app.apk`
+// 而这行日志与「MIUI 拦截安装」在**同一步、同样的非 0 退出**，
+// 于是真因（路径不存在）被读成设备策略问题——实测为此白绕了好几轮。
+//
+// 现在默认指向 extract-maestro-driver.mjs 的输出（仓库内 logs/），
+// 且那个脚本已跨平台化：它会自己在 ~/.maestro/lib 下找到 maestro-client.jar。
+// 需要手工指定时仍然可以用 POCKET_MAESTRO_DRIVER_DIR 覆盖。
 const DRIVER_APKS = (process.env.POCKET_MAESTRO_DRIVER_DIR
-  || 'C:/workspace/openpocket/logs/maestro/driver-extracted')
+  || `${ROOT}/logs/maestro/driver-extracted`)
 const DEVICE = process.env.POCKET_SERIAL || '192.168.31.19:5555'
 
 const flows = process.argv.slice(2)
