@@ -45,8 +45,23 @@ appId: com.kaixuan.opencode.pocket
 #    都不成立（模态框挡着、且 D 态本来就没登录），于是这里**只等三个旧判据会
 #    直接超时 60s**，flow 第一条就 FAILED，看起来像 App 坏了。
 #    ⇒ 判据集合必须包含「创建主密码」，并且后面的 D 分支要能收拾它。
+#
+# ★ 2026-10-07 修 locale 依赖：这条判据原先**只有中文**。
+# 实测设备 ro.product.locale=en-US，App 的 a11y 标签走 i18n：
+#   zh-CN「打开菜单 / 主导航」 → en-US「Open menu / Main navigation」
+# 于是 extendedWaitUntil 在英文设备上**必然超时 60s**，第一条断言就红，
+# 形态与「App 启动失败」无法区分。实测首次真跑：
+#   Assert that "打开菜单|主导航|…" is visible... FAILED（exit=1）
+#
+# ⚠️ 试过改成 CSS 选择器（.menu-btn / nav.bottom-nav）—— **也不行**。
+# 实测 Maestro 抓到的无障碍树（~/.maestro/tests/<ts>/…/screen-hierarchy/*.json）：
+#   "Open menu"      ✅ 出现
+#   "menu-btn"       ❌ 不出现
+#   "bottom-nav"     ❌ 不出现
+# ⇒ **CSS 类不暴露在 Android 无障碍树里**，只有 aria-label / text 能被 Maestro 匹配。
+# 所以正确做法是**中英并列的正则**，而不是换选择器。
 - extendedWaitUntil:
-    visible: "打开菜单|主导航|解锁本地数据|输入用户名|创建主密码"
+    visible: "打开菜单|Open menu|主导航|Main navigation|解锁本地数据|输入用户名|创建主密码"
     timeout: 60000
 
 # ⚠️ 必须**先把锁定守卫逼出来**，否则 B 分支永远轮不到执行。
@@ -67,7 +82,7 @@ appId: com.kaixuan.opencode.pocket
 # D 态主密码弹窗 / 还在切换中。不能只等外壳 —— 被守卫弹到解锁页时外壳的
 # 「打开菜单」本来就不在。
 - extendedWaitUntil:
-    visible: "打开菜单|主导航|解锁本地数据|输入用户名|创建主密码"
+    visible: "打开菜单|Open menu|主导航|Main navigation|解锁本地数据|输入用户名|创建主密码"
     timeout: 20000
 
 # ---- B. 已登录但本地库锁定：只输主密码 ----
@@ -158,17 +173,21 @@ appId: com.kaixuan.opencode.pocket
       - runFlow: _set-master-password.yaml
 
 # ---- 兜底：四种都没命中说明没落在 App 里，直接报出来 ----
-- assertVisible: "打开菜单"
+# ★ 中英并列：aria-label 走 i18n，en-US 设备上是 "Open menu"。
+# ⚠️ 不要换成 CSS 类（.menu-btn）：实测无障碍树里没有它，Maestro 匹配不到。
+- assertVisible: "打开菜单|Open menu"
 
 # ⚠️ 这里等的是 **「主导航」**（底部导航容器的 aria-label），不是「+ 新任务」。
 #    「+ 新任务」「运行中 6」这些是**数据依赖**的元素：列表重渲染时抓到的快照里
 #    可能正好没有它们（实测过一次，页面数据都到了、按钮却不在快照里），
 #    用它们当判据就是拿运行时状态当确定性信号。
 #    「主导航」是结构性的，永远在。
+# ★ 中英并列（aria-label 走 i18n，en-US 上是 "Main navigation"）。
+#   同样不能用 CSS 类 nav.bottom-nav —— 实测无障碍树里没有它。
 - extendedWaitUntil:
-    visible: "主导航"
+    visible: "主导航|Main navigation"
     timeout: 30000
-- assertVisible: "主导航"
+- assertVisible: "主导航|Main navigation"
 
 # ⚠️⚠️ 收尾的**硬判据**：解锁页、登录页、主密码弹窗必须都不在了。
 #
