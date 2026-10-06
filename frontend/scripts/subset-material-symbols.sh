@@ -13,7 +13,7 @@ cd "$(dirname "$0")/.."
 
 FONT_SRC="node_modules/material-symbols/material-symbols-outlined.woff2"
 OUT="src/assets/fonts/material-symbols-outlined.woff2"
-[ -f "$FONT_SRC" ] || { echo "缺少 $FONT_SRC（npm install 后重试）"; exit 1; }
+[ -f "$FONT_SRC" ] || { echo "缺少 ${FONT_SRC}（npm install 后重试）"; exit 1; }
 mkdir -p src/assets/fonts
 
 # 图标清单 = 源码里实际使用的图标名（模板静态文本 + 动态绑定字面量）
