@@ -22,6 +22,15 @@ allprojects {
         google()
         mavenCentral()
     }
+    // cap-sherpa：sherpa-onnx AAR 内嵌 kotlin-stdlib 1.8.x（jdk7/jdk8 拆分包的
+    // 类在 1.8 已合并进主包），而 androidx.test 链仍引 1.6.21 拆分版——
+    // androidTest 变体的重复类检查（checkDebugAndroidTestDuplicateClasses）
+    // 会因此炸掉。统一收编到 1.8.22（1.8 起拆分包为空壳，force 无副作用）。
+    configurations.all {
+        resolutionStrategy.force 'org.jetbrains.kotlin:kotlin-stdlib:1.8.22'
+        resolutionStrategy.force 'org.jetbrains.kotlin:kotlin-stdlib-jdk7:1.8.22'
+        resolutionStrategy.force 'org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.8.22'
+    }
 }
 
 task clean(type: Delete) {

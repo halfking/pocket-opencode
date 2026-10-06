@@ -107,6 +107,21 @@ tar.bz2 解包带 zip-slip 防护。下载体积是已知代价（Wi-Fi 首次�
 |---|---|
 | JVM 同源冒烟（osx-aarch64 jar + 同一组 onnx） | 双引擎 200：zipformer 流式出中文、端点触发；SenseVoice 中文+标点正确 |
 | 48s 三档精度对照 | §4 表 |
-| Android `assembleDebug` | 本轮验证（见提交信息）；AAR 类签名 javap 逐参核对 |
-| TS 门禁 | `typecheck`/`test:stt` 等按 gates.json 跑（提交前） |
-| 真机/模拟器端到端（模型下载→实时出字） | 后续候选：需模拟器 x86_64 走模型下载或注入模型目录 |
+| Android `assembleDebug` | 全绿；APK 含全 ABI libsherpa-onnx-jni.so（163MB） |
+| **端上 instrumented 测试（arm64 模拟器，Android 16，2026-10-07）** | **4/4 通过**：zipformer 流式逐字节复现桌面结果（RTF 0.12）、SenseVoice「开饭时间早上9点至下午5点。」1.3-1.5s、WAV 格式闸拒绝非法输入、zip-slip 攻击样例被拒 |
+| TS 门禁 | `npm run gates` 31 项全过 |
+
+**端上验证抓到的真缺陷**（编译期与桌面 JVM 都查不出，靠 AAR 的 Kotlin
+运行时空值校验才现形——若不补端上一轮，真机首次用本地 ASR 必崩）：
+
+- `QnnConfig` 三个字段、`OnlineModelConfig` 四个子配置、
+  `createStream(hotwords)` 在 AAR v1.13.8 里全部**运行时非空**，
+  空串/空对象才是「不用」的正确表达——插件与测试同步修正；
+- kotlin-stdlib 重复类：AAR 内嵌 1.8.x 合并版 vs androidx.test 引
+  1.6.21 拆分版 → 根 build.gradle 统一 force 到 1.8.22；
+- 端上 fixture 复制进 `getExternalFilesDir` 同时验证了 `modelPresent`
+  的文件布局假设（模型文件就位后插件 `preload` 即就绪）。
+
+端上运行时模型的两种就位方式均已覆盖：测试 = adb 预置（跳过下载），
+生产 = 运行时下载（downloadProgress 事件）。纯 UI 链路（录音按钮→
+麦克风实时出字）仍属后续真机验证项。

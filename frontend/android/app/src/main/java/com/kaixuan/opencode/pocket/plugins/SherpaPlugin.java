@@ -30,7 +30,12 @@ import com.k2fsa.sherpa.onnx.OnlineRecognizer;
 import com.k2fsa.sherpa.onnx.OnlineRecognizerConfig;
 import com.k2fsa.sherpa.onnx.OnlineRecognizerResult;
 import com.k2fsa.sherpa.onnx.OnlineStream;
+import com.k2fsa.sherpa.onnx.OnlineParaformerModelConfig;
+import com.k2fsa.sherpa.onnx.OnlineZipformer2CtcModelConfig;
+import com.k2fsa.sherpa.onnx.OnlineNeMoCtcModelConfig;
+import com.k2fsa.sherpa.onnx.OnlineToneCtcModelConfig;
 import com.k2fsa.sherpa.onnx.OnlineTransducerModelConfig;
+import com.k2fsa.sherpa.onnx.QnnConfig;
 
 import org.apache.commons.compress.archivers.tar.TarArchiveEntry;
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream;
@@ -267,7 +272,7 @@ public class SherpaPlugin extends Plugin {
             new File(dir, SENSEVOICE_MODEL).getAbsolutePath(),
             "",     // language 空 = 自动
             true,   // 逆文本归一（自动标点）
-            null));
+            new QnnConfig("", "", "")));
         mc.setTokens(new File(dir, "tokens.txt").getAbsolutePath());
         mc.setNumThreads(2);
         mc.setDebug(false);
@@ -284,11 +289,17 @@ public class SherpaPlugin extends Plugin {
             new File(dir, ZIPFORMER_ENCODER).getAbsolutePath(),
             new File(dir, ZIPFORMER_DECODER).getAbsolutePath(),
             new File(dir, ZIPFORMER_JOINER).getAbsolutePath(),
-            null);
+            new QnnConfig("", "", ""));
+                // AAR v1.13.8 的 Kotlin 数据类对所有子配置与非 Qnn 字段做运行时非空
+        // 校验（编译期查不出）：不用到的模型形态必须给空配置对象而非 null。
         OnlineModelConfig mc = new OnlineModelConfig(
-            transducer, null, null, null, null,
+            transducer,
+            new OnlineParaformerModelConfig("", ""),
+            new OnlineZipformer2CtcModelConfig(""),
+            new OnlineNeMoCtcModelConfig(""),
+            new OnlineToneCtcModelConfig(""),
             new File(dir, "tokens.txt").getAbsolutePath(),
-            2, false, "cpu", "zipformer", null, null);
+            2, false, "cpu", "zipformer", "", "");
         EndpointConfig endpoint = new EndpointConfig(
             new EndpointRule(true, 2.4f, 0.0f),
             new EndpointRule(true, 1.2f, 0.0f),
@@ -312,7 +323,7 @@ public class SherpaPlugin extends Plugin {
   /** 整段音频过流式模型（文件转写的 zipformer 通道）。 */
   private String recognizeWithOnline(float[] samples) {
     synchronized (recognizerLock) {
-      OnlineStream stream = onlineRecognizer.createStream(null);
+      OnlineStream stream = onlineRecognizer.createStream("");
       StringBuilder out = new StringBuilder();
       double probSum = 0;
       int probN = 0;
@@ -372,7 +383,7 @@ public class SherpaPlugin extends Plugin {
     }
     sessionFinals.setLength(0);
     synchronized (recognizerLock) {
-      captureStream = onlineRecognizer.createStream(null);
+      captureStream = onlineRecognizer.createStream("");
     }
     listening.set(true);
     audioRecord.startRecording();
@@ -556,8 +567,9 @@ public class SherpaPlugin extends Plugin {
     notifyListeners("downloadProgress", data);
   }
 
-  /** 解 tar.bz2：拒绝一切归一化后落在模型目录之外的条目（zip-slip 防护）。 */
-  private void extractTarBz2(File tar, File destRoot, String topDir) throws IOException {
+  /** 解 tar.bz2：拒绝一切归一化后落在模型目录之外的条目（zip-slip 防护）。
+   *  static 包级可见——instrumented test 直接驱动真实实现（含攻击样例）。 */
+  static void extractTarBz2(File tar, File destRoot, String topDir) throws IOException {
     File allowedParent = destRoot.getCanonicalFile();
     try (TarArchiveInputStream tin = new TarArchiveInputStream(
         new BZip2CompressorInputStream(new BufferedInputStream(new FileInputStream(tar))))) {
