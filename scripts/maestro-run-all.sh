@@ -94,6 +94,40 @@ PKG="${POCKET_APP_ID:-com.kaixuan.opencode.pocket}"
 LOGDIR="${POCKET_LOGDIR:-/tmp/opp-maestro}"
 mkdir -p "$LOGDIR"
 
+# ── ANDROID_HOME 缺失 ⇒ Maestro 看不见任何 Android 设备 ──────────────────
+# 2026-10-07 实测：ANDROID_HOME 未设时
+#   `maestro --udid emulator-5554 test x.yaml` 直接报
+#   「Device emulator-5554 was requested, but it is not connected.」，
+# 而同一时刻 `adb devices` 明明显示它是 `device` 状态、shell 也通。
+# ⇒ 症状与「设备没连上」**完全同构**，真因却在调用方环境。
+#
+# 为什么必须在这里兜住：这个错误形态会被 rig 的 driver-hung 判定吞成
+# SKIP_ENV（deviceInfo 拿不到 ⇒ 记「环境不行」而非 FAIL），
+# 于是整批 flow 被当成环境问题跳过——一轮验收什么都没验到，
+# 却看不出是环境配置漏了。放在跑批入口修一次，比逐条 flow 排查便宜得多。
+#
+# 尊重已有设置：变量已指到**真实存在**的 SDK 就不动（用户可能指向别的 SDK）。
+# 注意判据是「目录真的存在」而不是「变量非空」——ANDROID_HOME 指向一个
+# 不存在的路径时，Maestro 一样看不见设备，症状与没设时完全相同。
+# 只判非空会把这种坏配置放过去（实测：设成 /nonexistent-xxx 时整批 flow
+# 全被记成 exit=2，仍然看不出是环境问题）。
+if [ ! -d "${ANDROID_HOME:-}/platform-tools" ]; then
+  for _sdk in "${ANDROID_HOME:-}" "$HOME/Library/Android/sdk" "$HOME/Android/Sdk" "/usr/local/share/android-sdk"; do
+    if [ -n "$_sdk" ] && [ -d "$_sdk/platform-tools" ]; then
+      export ANDROID_HOME="$_sdk"
+      export ANDROID_SDK_ROOT="$_sdk"
+      break
+    fi
+  done
+  unset _sdk
+fi
+if [ ! -d "${ANDROID_HOME:-}/platform-tools" ]; then
+  echo "[run] 找不到可用的 Android SDK（ANDROID_HOME=${ANDROID_HOME:-<未设>}，其下没有 platform-tools）" >&2
+  echo "       Maestro 会把设备误判成「未连接」，这批 flow 会全被记成 exit=2。" >&2
+  echo "       请 export ANDROID_HOME=<你的 SDK 路径> 后重试。" >&2
+  exit 2
+fi
+
 # ★ 2026-10-07 修一处既有隐患：`$PKG（`（全角括号紧跟）会被 bash 并进变量名，
 #   在 UTF-8 locale 下找的是 `PKG（` 这个不存在的变量 ⇒ set -u 直接致命，
 #   脚本在**批次中途**死掉：不打印汇总、后续 flow 全部静默丢失。
