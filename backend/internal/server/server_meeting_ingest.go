@@ -84,8 +84,21 @@ func (s *Server) handleCreateMeeting(w http.ResponseWriter, r *http.Request) {
 	uid := s.userIDFromRequest(r)
 	workspaceID := s.workspaceIDFromRequest(r)
 	var req meeting.CreateMeetingRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+	// ★ 2026-10-07 开启 DisallowUnknownFields。
+	//
+	// 为什么现在才加：之前这个 handler 用的是 `json.NewDecoder(r.Body).Decode(&req)`，
+	// 而 req 当时**只有 Title 一个字段**。前端 syncMeetingMetadata 发的是 10 个字段
+	// （id/location/participants/startedAt/durationMs/summary/refinedTranscript/noteId/status），
+	// Go 的 Decode 默认**静默忽略**未知字段 ⇒ 9/10 的同步数据被丢弃，
+	// 客户端重试一次就多一行会议（id 也被丢，服务端无条件新生成）。
+	//
+	// 本仓已有这个更严的写法（server_calendar.go:41、scheduled_task_handler.go:244、
+	// mobile_endpoint_scope.go:206），此处补齐是为了让**下一次契约再错配时立刻 400**，
+	// 而不是继续静默吞数据。CreateMeetingRequest 现已覆盖客户端全部 10 个字段。
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}
 	if strings.TrimSpace(req.Title) == "" {

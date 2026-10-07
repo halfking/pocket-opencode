@@ -77,7 +77,18 @@ CREATE TABLE IF NOT EXISTS meeting_tombstones (
 CREATE INDEX IF NOT EXISTS idx_meeting_tombstones_owner_ws
   ON meeting_tombstones(owner_id, workspace_id, deleted_at DESC);
 	`
-	_, err := s.pool.Exec(ctx, schema)
+	if _, err := s.pool.Exec(ctx, schema); err != nil {
+		return err
+	}
+	// ★ 2026-10-07：CREATE TABLE IF NOT EXISTS **不会**给已存在的表补列，
+	// 所以这三列必须单独 ALTER。加 IF NOT EXISTS 让它对新建/旧库都幂等。
+	// participants 用 JSONB，与 key_decisions/action_items/tags 一致。
+	const extraCols = `
+ALTER TABLE meetings ADD COLUMN IF NOT EXISTS location     TEXT NOT NULL DEFAULT '';
+ALTER TABLE meetings ADD COLUMN IF NOT EXISTS participants JSONB NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE meetings ADD COLUMN IF NOT EXISTS note_id      TEXT NOT NULL DEFAULT '';
+`
+	_, err := s.pool.Exec(ctx, extraCols)
 	return err
 }
 
@@ -94,7 +105,9 @@ func nextMeetingID() string {
 const meetingSelectCols = `id, owner_id, workspace_id, title, duration,
 	recording_url, transcript, summary,
 	COALESCE(key_decisions, '[]'::jsonb), COALESCE(action_items, '[]'::jsonb), COALESCE(tags, '[]'::jsonb),
-	project_id, status, created_at, updated_at`
+	project_id, status,
+	location, COALESCE(participants, '[]'::jsonb), note_id,
+	created_at, updated_at`
 
 func scanMeeting(row pgx.Row) (*Meeting, error) {
 	var (
@@ -102,14 +115,22 @@ func scanMeeting(row pgx.Row) (*Meeting, error) {
 		rawDecision []byte
 		rawActions  []byte
 		rawTags     []byte
+		rawParts    []byte
 	)
 	if err := row.Scan(
 		&m.ID, &m.OwnerID, &m.WorkspaceID, &m.Title, &m.Duration,
 		&m.RecordingURL, &m.Transcript, &m.Summary,
 		&rawDecision, &rawActions, &rawTags,
-		&m.ProjectID, &m.Status, &m.CreatedAt, &m.UpdatedAt,
+		&m.ProjectID, &m.Status,
+		&m.Location, &rawParts, &m.NoteID,
+		&m.CreatedAt, &m.UpdatedAt,
 	); err != nil {
 		return nil, err
+	}
+	if len(rawParts) > 0 {
+		if err := json.Unmarshal(rawParts, &m.Participants); err != nil {
+			return nil, fmt.Errorf("decode participants: %w", err)
+		}
 	}
 	// 三个 JSONB 列的 COALESCE 已保证非 NULL，但历史行或手工插入仍可能是
 	// SQL NULL；空字节切片会让 json.Unmarshal 直接报错，所以先挡一层。
@@ -178,28 +199,76 @@ func (s *PGStore) CreateScoped(req CreateMeetingRequest, ownerID, workspaceID st
 		return nil, err
 	}
 
+	participants, err := json.Marshal(req.Participants)
+	if err != nil {
+		return nil, err
+	}
+	if req.Participants == nil {
+		participants = []byte("[]")
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	// ★ 2026-10-07：客户端带的 id 现在被尊重，且**重复 POST 变成幂等更新**。
+	// 改这一条的同时解决了「同一个会议重复建行」：旧实现无条件 nextMeetingID()，
+	// 客户端重试一次就多一行，而 Maestro 判 visible 只看节点在不在树里 ⇒ 重复行
+	// 会让列表断言假通过。ON CONFLICT (id) DO UPDATE 让重试收敛到同一行。
+	//
+	// created_at 用客户端的 startedAt（Unix 毫秒），没有就用 now；
+	// duration 由毫秒换算成秒；refinedTranscript 落到 transcript 列。
+	createdAt := time.Now()
+	if req.StartedAt > 0 {
+		createdAt = time.UnixMilli(req.StartedAt)
+	}
+	durationSec := int(req.DurationMs / 1000)
+	transcript := req.RefinedTranscript
+	status := req.Status
+	if status == "" {
+		status = "recording"
+	}
+
 	const q = `INSERT INTO meetings
 		(id, owner_id, workspace_id, title, duration, recording_url, transcript, summary,
-		 key_decisions, action_items, tags, project_id, status, created_at, updated_at)
-		VALUES ($1,$2,$3,$4,0,'','','',$5,$6,$7,'','recording',$8,$8)
+		 key_decisions, action_items, tags, project_id, status,
+		 location, participants, note_id, created_at, updated_at)
+		VALUES ($1,$2,$3,$4,$5,'',$6,$7,$8,$9,$10,'',$11,$12,$13,$14,$15,$16)
+		ON CONFLICT (id) DO UPDATE SET
+			title=EXCLUDED.title, duration=EXCLUDED.duration,
+			transcript=CASE WHEN EXCLUDED.transcript<>'' THEN EXCLUDED.transcript ELSE meetings.transcript END,
+			summary=CASE WHEN EXCLUDED.summary<>'' THEN EXCLUDED.summary ELSE meetings.summary END,
+			status=EXCLUDED.status, location=EXCLUDED.location,
+			participants=EXCLUDED.participants, note_id=EXCLUDED.note_id,
+			updated_at=EXCLUDED.updated_at
 		RETURNING ` + meetingSelectCols
 
-	// 唯一冲突只可能来自 ID 撞号，重试即换一个新 ID。
+	// 唯一冲突只可能来自 ID 撞号（客户端没带 id 时走 nextMeetingID），重试即换一个新 ID。
 	var lastErr error
 	for attempt := 0; attempt < 5; attempt++ {
 		now := time.Now()
+		// 客户端带了 id 就用它（并由 ON CONFLICT 保证重复 POST 收敛到同一行）；
+		// 没带才走服务端生成。撞号重试时必须换新 id，否则重试没有意义。
+		id := strings.TrimSpace(req.ID)
+		if id == "" {
+			id = nextMeetingID()
+		}
 		row := s.pool.QueryRow(ctx, q,
-			nextMeetingID(), ownerID, workspaceID, req.Title,
-			decisions, actions, tags, now)
+			id, ownerID, workspaceID, req.Title,
+			durationSec, transcript, req.Summary,
+			decisions, actions, tags, status,
+			req.Location, participants, req.NoteID,
+			createdAt, now)
 		m, err := scanMeeting(row)
 		if err == nil {
 			return m, nil
 		}
 		if !isUniqueViolation(err) {
 			return nil, err
+		}
+		// 客户端 id 撞上已有行时 ON CONFLICT 已处理，走到这里说明是真的主键冲突，
+		// 而客户端 id 不该被改 ⇒ 直接返回错误，别偷偷换成别人的行。
+		if strings.TrimSpace(req.ID) != "" {
+			return nil, fmt.Errorf("create meeting: client id %q conflicts with an existing meeting: %w", req.ID, err)
 		}
 		lastErr = err
 	}
