@@ -1022,7 +1022,54 @@ async function preflight() {
   console.log('[preflight] 强停并重新启动 App（绕开 MIUI 吞掉 force-stop 后启动意图的问题）')
   try { adb(['shell', 'am', 'force-stop', PKG]) } catch { /* 本来就没跑 */ }
   await sleep(1500)
-  adb(['shell', 'monkey', '-p', PKG, '-c', 'android.intent.category.LAUNCHER', '1'], 30000)
+  // ★ 2026-10-07 补一层兜底：monkey 起不来时改用显式组件 am start。
+  //
+  // 上面那段 pm enable 的补救只覆盖**一种**成因（enabled=2/3/4 被系统清理）。
+  // 实测还有**另一种**成因会让 monkey 报同一句「No activities found to run,
+  // monkey aborted」，而包并没有被禁用、pm list packages -d 里也没有它：
+  //   宿主长时间高负载（load 100~250）把模拟器的 SystemUI 压到 ANR，
+  //   uiautomator dump 当时直接吐「System UI isn't responding」。
+  //   此时 PackageManager 的隐式意图解析失效——`cmd package resolve-activity
+  //   -c android.intent.category.LAUNCHER <pkg>` 回「No activity found」，
+  //   而**同一时刻** `dumpsys package` 里 MainActivity 的 LAUNCHER filter
+  //   还在、且 `am start -n <pkg>/.MainActivity` 一次就成、topResumedActivity
+  //   立刻变成该包。
+  // ⇒ 两个权威源自相矛盾时，别急着报「App 装不上」；显式组件不依赖隐式解析。
+  // 旧行为是直接抛错，现象被误读成装不上，真因（SystemUI 退化）完全不可见。
+  try {
+    adb(['shell', 'monkey', '-p', PKG, '-c', 'android.intent.category.LAUNCHER', '1'], 30000)
+  } catch (e) {
+    const why = String(e.message || e).replace(/\s+/g, ' ').slice(0, 160)
+    console.log(`[preflight] monkey 启动失败（${why}）→ 退回显式组件 am start`)
+    // 先试最常见的 MainActivity；不成再从 dumpsys 里找带 LAUNCHER 的那个
+    const tried = []
+    const cands = ['.MainActivity']
+    try {
+      const dump = adb(['shell', 'dumpsys', 'package', PKG], 30000)
+      for (const m of dump.matchAll(/([A-Za-z0-9_.$]+)\s+filter[^\n]*\n(?:[^\n]*\n)?[^\n]*android\.intent\.category\.LAUNCHER/g)) {
+        if (m[1] && !cands.includes(`.${m[1].split('.').pop()}`)) cands.push(`.${m[1].split('.').pop()}`)
+      }
+    } catch { /* dumpsys 都失败就只剩 MainActivity 可试 */ }
+    let started = false
+    for (const act of cands) {
+      try {
+        adb(['shell', 'am', 'start', '-n', `${PKG}/${act}`], 30000)
+        console.log(`[preflight] am start 成功：${PKG}/${act}`)
+        started = true
+        break
+      } catch (e2) {
+        tried.push(`${act}: ${String(e2.message || e2).replace(/\s+/g, ' ').slice(0, 60)}`)
+      }
+    }
+    if (!started) {
+      // 两条路都不通才抛，且把 monkey 的原始失败一并带上，别让「装不上」掩盖真因
+      const err = new Error(
+        `启动失败：monkey 与 am start 均不可用。monkey=${why}；am start 尝试=${tried.join(' | ') || '(无候选)'}`
+      )
+      err.code = e?.code
+      throw err
+    }
+  }
   // 等 WebView 真正起来，而不是盲等固定秒数
   const deadline = Date.now() + 60000
   while (Date.now() < deadline) {
