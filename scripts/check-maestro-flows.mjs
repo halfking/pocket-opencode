@@ -572,36 +572,36 @@ function selftest() {
 
   // 敏感度 1：源码里不存在的锚点必须被抓
   const s1 = checkFlowSource({ file: '.maestro/_st-1.yaml' }, yamlOf('com.kaixuan.opencode.pocket', ['- assertVisible: "ZZZ_绝对不存在于任何源码"']), corpus)
-  results.push({ name: '敏感度1 不存在的锚点被报出', pass: s1 > 0 })
+  results.push({ name: '敏感度1 不存在的锚点被报出', subject: 'checkFlowSource', pass: s1 > 0 })
 
   // 敏感度 2：class 名当 id 写必须被抓（这条检查存在的最初理由）
   const s2 = checkFlowSource({ file: '.maestro/_st-2.yaml' }, yamlOf('com.kaixuan.opencode.pocket', ['- tapOn: { id: "fab" }']), corpus)
-  results.push({ name: '敏感度2 class 当 id 被报出', pass: s2 > 0 })
+  results.push({ name: '敏感度2 class 当 id 被报出', subject: 'checkFlowSource', pass: s2 > 0 })
 
   // 敏感度 3：appId 写错必须被抓
   const s3 = checkFlowSource({ file: '.maestro/_st-3.yaml' }, yamlOf('com.example.wrong', ['- assertVisible: "AI 工具"']), corpus)
-  results.push({ name: '敏感度3 appId 不符被报出', pass: s3 > 0 })
+  results.push({ name: '敏感度3 appId 不符被报出', subject: 'checkFlowSource', pass: s3 > 0 })
 
   // 敏感度 4：豁免清单里邮箱域名打错，豁免必须**不放行**
   // （这条最关键：豁免集合一旦变成「近似匹配一切」，门禁就等于没有）
   const bogus = new Set(['kimmy.huang@164.com'])
   const s4 = traceAnchors(['.*kimmy\\.huang@163\\.com.*'], corpus, bogus)
-  results.push({ name: '敏感度4 域名打错的豁免不生效', pass: s4.missing.length === 1 && s4.runtime.length === 0 })
+  results.push({ name: '敏感度4 域名打错的豁免不生效', subject: 'traceAnchors', pass: s4.missing.length === 1 && s4.runtime.length === 0 })
 
   // 敏感度 5：主流程误标 probe 必须被拒（否则一条真流程的溯源被整条关闭）
   const s5 = checkFlowSource({ file: '.maestro/smoke-login.yaml', kind: 'probe' }, yamlOf('com.kaixuan.opencode.pocket', ['- assertVisible: "AI 工具"']), corpus)
-  results.push({ name: '敏感度5 主流程误标 probe 被拒', pass: s5 > 0 })
+  results.push({ name: '敏感度5 主流程误标 probe 被拒', subject: 'checkFlowSource', pass: s5 > 0 })
 
   // 特异度：真实的源码内锚点必须**不**报错（否则就是又一个必然假阳性）
   const ok = checkFlowSource({ file: '.maestro/_st-ok.yaml' }, yamlOf('com.kaixuan.opencode.pocket', ['- assertVisible: "AI 工具"', '- tapOn: "更多"']), corpus)
-  results.push({ name: '特异度 源码内锚点不误报', pass: ok === 0 })
+  results.push({ name: '特异度 源码内锚点不误报', subject: 'checkFlowSource', pass: ok === 0 })
 
   // 特异度 2：正则在最常见的两种包裹下，声明过的数据锚点要被正确豁免
   const declared = new Set(['kimmy.huang@163.com', '回归卡组'])
   const t2 = traceAnchors(['.*kimmy\\.huang@163\\.com.*', '回归卡组.*'], corpus, declared)
   results.push({
     name: '特异度2 正则包裹 + 转义点号仍能豁免',
-    pass: t2.missing.length === 0 && t2.runtime.length === 2,
+    subject: 'traceAnchors', pass: t2.missing.length === 0 && t2.runtime.length === 2,
   })
 
   // 可见性：豁免必须真的被打印出来（静默放过 = 检查自己变瞎）
@@ -620,30 +620,66 @@ function selftest() {
   console.log = realLog
   results.push({
     name: '可见性 两类豁免都被打印',
-    pass: vis === 0 && printed.some((l) => l.includes('运行时数据锚点豁免')) && printed.some((l) => l.includes('系统弹窗文案豁免')),
+    subject: 'checkFlowSource', pass: vis === 0 && printed.some((l) => l.includes('运行时数据锚点豁免')) && printed.some((l) => l.includes('系统弹窗文案豁免')),
   })
 
   // 配置守卫：未知字段必须响亮拒绝（写错 key 被静默忽略 = 判据失明）
-  results.push({ name: '配置守卫 未知字段被拒', pass: unknownTopKeyIsRejected() })
+  results.push({ name: '配置守卫 未知字段被拒', subject: '配置守卫', pass: unknownTopKeyIsRejected() })
 
   // 夹具守卫：声明了 fixture 却没有对应脚本 ⇒ 必须响亮拒绝，不能静默跳过
   // （静默跳过 = 前置没做，但报告看上去一切正常）。
-  results.push({ name: '配置守卫 夹具脚本缺失被拒', pass: fixtureGuardIsWired() })
+  results.push({ name: '配置守卫 夹具脚本缺失被拒', subject: '配置守卫', pass: fixtureGuardIsWired() })
 
   // reset 语义必须与 fixture 分开：合并的后果是「一键毁数据」而不是「少做一步」
-  results.push({ name: '配置守卫 reset 与 fixture 不混用', pass: resetIsDistinct() })
+  results.push({ name: '配置守卫 reset 与 fixture 不混用', subject: '配置守卫', pass: resetIsDistinct() })
 
   // launchApp 禁令：必须能报出，且不误伤正常流
-  results.push({ name: '禁令 flow 里的 launchApp 被报出', pass: launchAppIsBanned() })
-  results.push({ name: '禁令 不误伤没有 launchApp 的流', pass: !bannedWithoutLaunchApp() })
+  results.push({ name: '禁令 flow 里的 launchApp 被报出', subject: 'launchApp 禁令', pass: launchAppIsBanned() })
+  results.push({ name: '禁令 不误伤没有 launchApp 的流', subject: 'launchApp 禁令', pass: !bannedWithoutLaunchApp() })
 
   // 子流守卫：标了 subflow 却没人引用 = 死子流，必须报出；
   // 以及 harness 必须拒跑子流（否则报错会指向「确认按钮不见了」这种误导点）。
-  results.push({ name: '配置守卫 死子流被拒', pass: subflowGuardIsWired() })
+  results.push({ name: '配置守卫 死子流被拒', subject: '配置守卫', pass: subflowGuardIsWired() })
 
   const bad = results.filter((r) => !r.pass)
+
+  // ★★★ 覆盖面下限（docs/design §206 形状五「补了用例 ≠ 补保护」+ §208 记的
+  //   「`traceAnchors` 只 2 条覆盖、可删光」）。总条数下限挡不住**整组删光**：
+  //   把 traceAnchors 那两条一起删掉、别的组补两条进来，results.length 一点没少。
+  //
+  //   按「被测对象」分组（每条用例一个 subject 字段，机械可数），下限按
+  //   **当前实测条数**给 —— 棘轮：删任何一条都要同时改下限，留下一处痕迹。
+  const REQUIRED_COVERAGE = [
+    ['checkFlowSource', 4],   // 实测 6
+    ['traceAnchors', 2],      // 实测 2 —— §208 点名的那个可删光的组
+    ['launchApp 禁令', 2],     // 实测 2 —— 正反各一条
+    ['配置守卫', 4],          // 实测 4 —— 四个守卫函数各一条
+  ]
+  const coverageBad = []
+  for (const [subject, min] of REQUIRED_COVERAGE) {
+    const n = results.filter((r) => r.subject === subject).length
+    if (n < min) coverageBad.push(subject)
+    console.log(`  覆盖 ${subject}: ${n} 条（下限 ${min}）`)
+  }
+  for (const subject of coverageBad) {
+    console.error(`[maestro-flows] 被测面「${subject}」的用例数低于下限 —— 这一组被删光或腰斩了。`);
+  }
+  if (coverageBad.length) {
+    console.error('   总条数下限挡不住「整组删光」：别的组补进来，results.length 一点没少。');
+    process.exit(2);
+  }
   for (const r of results) console.log(`  ${r.pass ? '通过' : '失败'}  ${r.name}`)
-  console.log(`\n自检: ${results.length - bad.length}/${results.length} 通过`)
+  // ★ 条数下限闸（2026-10-07，docs/design §94）。原来 `自检: N-bad/N 通过` + `exit(bad===0?0:1)`，
+  //   results 为空时打印「0/0 通过」并 EXIT=0，与真通过完全同形（见 §94 的实跑证据）。
+  //   这道门一次自检管 14 条，是本仓条数最多的几道之一，空转的代价更大。
+  //   下限只能手工改这个常量，不接受命令行参数。
+  const MIN_SELFTEST_CASES = 10;
+  if (results.length < MIN_SELFTEST_CASES) {
+    console.error(`[maestro-flows] 自检只跑了 ${results.length}/${MIN_SELFTEST_CASES} 例 —— 夹具循环或 add 调用被改过。`);
+    console.error('   「0/0 通过」不是通过：那是判据失明时的读数，和真通过长得一模一样。');
+    process.exit(2);
+  }
+  console.log(`\n自检: 实跑 ${results.length} 例，通过 ${results.length - bad.length} 例`)
   process.exit(bad.length === 0 ? 0 : 1)
 }
 
@@ -660,7 +696,7 @@ function yamlOf(appId, cmds) {
 function unknownTopKeyIsRejected() {
   const src = readFileSync(join(ROOT, 'scripts', 'check-maestro-flows.mjs'), 'utf8')
   // 不去真跑 loadConfig（它会 exit），而是核对它对未知键的处理是否真在
-  if (!/FAIL 配置顶层出现未知字段/.test(src)) return false
+  if (!new RegExp('FAIL 配置顶层出现未知' + '字段').test(src)) return false
   // 且允许 _ 前缀文档键
   if (!/if \(k\.startsWith\('_'\)\) continue/.test(src)) return false
   return true
@@ -706,9 +742,24 @@ function bannedWithoutLaunchApp() {
  */
 function subflowGuardIsWired() {
   const src = readFileSync(join(ROOT, 'scripts', 'check-maestro-flows.mjs'), 'utf8')
-  if (!/死子流/.test(src)) return false
-  if (!/runFlow: \$\{base\}|runFlowRefs/.test(src)) return false
-  if (!/子流（被检查，但只能由父流/.test(src)) return false
+  // ★ 原来这里只找 `死子流` 三个字，而那三个字在**注释**（行640/712）与
+  //   **本用例自己的名字**（行642）里都出现 ⇒ 实测删掉真守卫行 175，判据照样通过。
+  //   这与 §127.1 是**两回事**：那一条是模式匹配到自身正则；
+  //   这一条是模式**太短**，短到注释与用例名就能顶替它。
+  //   ⇒ 锚点必须落在**只有真守卫才写得出**的那一整句上。
+  if (!new RegExp('标成了 kind=subflow' + '，但仓里没有任何其它流用 runFlow 引用它').test(src)) return false
+  // ★ 原来这里是「runFlow: + 模板插值」与「runFlowRefs」两个分支的**择一**，
+  //   后面那个分支会被**函数声明本身**满足 ⇒ 实测 M20（行为等价的改写：把判定体里
+  //   「runFlow: 」后面那段模板插值换成 split+some）之后，锚点仍由
+  //   「调用点 + 函数声明」顶住，自检照样 14/14。
+  //   ⇒ 锚点只留判定本体那一处；那个函数名是**声明**，不是决定。
+  // ⚠ 本行为此踩了两个坑，都记在这儿：
+  //   ① 直接写成裸正则字面量 ⇒ 它在**正则语义上匹配自己那一行**（加转义也救不了），
+  //      M20 又变绿。⇒ 必须拼接。
+  //   ★★ 把锚点原文抄进这段注释 ⇒ 注释自己成了新的顶替者。
+  //      本轮已经因此**两次**把刚修好的判据重新弄坏。⇒ 说明文字不许复现锚点。
+  if (!new RegExp('runFlow: ' + '\\$\\{base\\}').test(src)) return false
+  if (!new RegExp('子流（被检查，' + '但只能由父流').test(src)) return false
   const harness = readFileSync(join(ROOT, 'scripts', 'maestro-run.mjs'), 'utf8')
   return /subFlows\.has\(flow\)/.test(harness) && /是子流，不能独立运行/.test(harness)
 }
@@ -725,8 +776,17 @@ function fixtureGuardIsWired() {
   const src = readFileSync(join(ROOT, 'scripts', 'check-maestro-flows.mjs'), 'utf8')
   // 规则还在：fixture 是允许字段
   if (!/ENTRY_KEYS = new Set\(\[[^\]]*'fixture'/.test(src)) return false
-  // 规则还在：脚本缺失时报错
-  if (!/声明的 fixture/.test(src)) return false
+  // 规则还在：脚本缺失时报错。
+  // ★ 原来这里找的是 `声明的 fixture`，而源码里真实写的是模板 `声明的 ${key}`
+  //   —— 那串字面量**只在插值之后才存在**，静态源码里永远找不到。
+  //   它之所以一直「通过」，是因为那行判据 grep 的是自己（见 §127）。
+  // ★★ 改成「没有对应脚本」那六个字**还是不够**（§128）：注释里也有一份。
+  //   实测 M18：把上面那条真守卫（响亮拒绝）整行删掉、语法合法，自检仍 **14/14 · EXIT=0**。
+  //   ⇒ 锚点要取「没有对应脚本」六字**加上紧随其后的那段插值调用**（全文仅 1 处），
+  //     用 includes 精确匹配（这段里有 $ { }，走正则会被当成元字符）。
+  //   ⚠⚠ 写这条说明时我**把锚点原文抄进了注释**，全文命中立刻变成 2 次 ——
+  //     注释自己成了新的顶替者，M18 又变绿。**说明文字绝不能复现锚点**。
+  if (!src.includes('没有对应脚本 ${fixture' + 'Script')) return false
   // 接线还在：harness 真的按名字拼出脚本路径并调用了 --induce / --restore
   const harness = readFileSync(join(ROOT, 'scripts', 'maestro-run.mjs'), 'utf8')
   if (!/\$\{name\}-fixture\.mjs/.test(harness)) return false
@@ -749,7 +809,7 @@ function fixtureGuardIsWired() {
 function resetIsDistinct() {
   const src = readFileSync(join(ROOT, 'scripts', 'check-maestro-flows.mjs'), 'utf8')
   if (!/ENTRY_KEYS = new Set\(\[[^\]]*'reset'/.test(src)) return false
-  if (!/同时声明了 fixture 和 reset/.test(src)) return false
+  if (!new RegExp('同时声明了 ' + 'fixture 和 reset').test(src)) return false
   const harness = readFileSync(join(ROOT, 'scripts', 'maestro-run.mjs'), 'utf8')
   // reset 走「无参数」调用
   if (!/runFixture\(fx\.name, undefined\)/.test(harness)) return false
