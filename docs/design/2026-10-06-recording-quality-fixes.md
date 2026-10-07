@@ -32444,7 +32444,7 @@ if (!existsSync(envFile) && mode !== "production") { console.error(`missing env 
 ⇒ 与 §235 那条同源：判据要区分「没测到」与「测到了不行」，
 而这一道没有区分，判词也没说。
 
-#### 237.4.3 逐项读数：31 项里 **25 过 / 6 红**
+#### 237.4.3 逐项读数：31 项里 **25 过 / 6 红**（〔2026-10-08 已过期，见 §238：其中一条由本会话修掉，现为 26 过 / 5 红〕）
 
 因为 `run-gates --ci` 失败即停，完整读数**只能靠逐项驱动拿到**
 （驱动脚本放 `/tmp/run-ci-gates.mjs`，不入库）：
@@ -32486,3 +32486,162 @@ if (!existsSync(envFile) && mode !== "production") { console.error(`missing env 
   入库一份 `.env.android-dev.example`），**取舍要属主定**。
 - 没有跑 `android-assemble`（需 JDK + Android SDK）与
   `go test -race`（需 Postgres service）—— 这两段 CI 面本节没量。
+
+---
+
+## 238. 「接线的对象没入库」的第三例：一道门 shell 出去的 helper，能力只在工作树里
+
+### 238.0 本节一句话
+
+§237 给出 CI 红灯清单时，有一条我判成「存量、与我无关」。
+**判错了。** 逐条追下去发现那是 §236 那一族的**第三例**，
+而第一例和第二例都是我自己的提交造成的。
+
+现值更正：§237.4.3 的「31 项 25 过 / 6 红」**已过期**，
+本节修完其中一条后是 **26 过 / 5 红**。
+
+### 238.1 我先把它归成了「别人的债」
+
+§237.4.3 列的 6 条红里有一条 `check:ci-trigger`，判词是：
+
+```
+❌ 新增：exemption :: test:styles —— 这条 ciCoveredElsewhere 豁免没有任何兑现路径
+  既没在 workflow 里手列，也不是 test:all 枚举的子集 ⇒ CI 上不执行。
+```
+
+`ciCoveredElsewhere` 那 6 条是 `2ad8320d` 加的，作者是 `halfking`（Oct 3），
+不是我的提交，所以我按 §237.4.3 的口径把它归成存量。
+
+**下一步我做了一件本该更早做的事：直接去量那 6 条豁免的兑现路径。**
+
+```
+工作树：node scripts/check-ci-trigger-surface.mjs --explain
+  ✅ test:native            臂B test:all 子集（锚点 test:all 在手列处）
+  ✅ test:auth              臂B test:all 子集（锚点 test:all 在手列处）
+  ✅ test:styles            臂B test:all 子集（锚点 test:all 在手列处）
+  ✅ test:stt               臂B test:all 子集（锚点 test:all 在手列处）
+  ✅ test:email-heal        臂B test:all 子集（锚点 test:all 在手列处）
+  ✅ test:stores            臂B test:all 子集（锚点 test:all 在手列处）
+  ...（11 条全 ✅）
+```
+
+⇒ **在工作树里，11 条豁免全部成立，门也是绿的（rc=0）。**
+⇒ 于是「6 条没有兑现路径」是**只在干净检出里出现的读数**。
+
+### 238.2 根因：`--print-files` 这个开关从未入库
+
+`check-ci-trigger-surface.mjs:319` 的臂 B 靠这个调用取枚举：
+
+```js
+const res = spawnSync(process.execPath, [join(here, 'run-mjs-tests.mjs'), '--print-files'], …)
+if (res.status !== 0) return null
+```
+
+而 `--print-files` 的实现在 `run-mjs-tests.mjs` 里，**只存在于工作树**：
+
+```
+$ git status --porcelain -- frontend/scripts/run-mjs-tests.mjs
+ M frontend/scripts/run-mjs-tests.mjs          ← 未提交
+$ git show HEAD:frontend/scripts/run-mjs-tests.mjs | grep -c "print-files"
+0                                             ← HEAD 里根本没有
+```
+
+⇒ 而 `check-ci-trigger-surface.mjs` 是**已提交**的（`2ea2f140`，我的提交）。
+**一道已入库的门，依赖一个未入库的 helper 能力。**
+
+### 238.3 失败形态为什么特别有欺骗性
+
+`run-mjs-tests.mjs` **不校验未知参数**：
+
+```
+$ git show HEAD:frontend/scripts/run-mjs-tests.mjs | grep -n "argv"
+48:  if (process.argv.includes('--print-coverage')) {
+56:  const override = process.argv.indexOf('--coverage-glob')
+```
+
+⇒ `--print-files` 被**静默忽略**，脚本转而**跑完整测试套件**，并把全部
+stdout 打出来。实测两处 `--print-files` 的 stdout：
+
+| 环境 | stdout 行数 | 内容 |
+|---|---|---|
+| 工作树 | 306 | 干净的 `src/...` 文件名 |
+| 干净检出 | **3113** | 文件名 **+ 测试执行输出**（`✔ …` / 栈回溯 / 豁免理由） |
+
+调用方只按 `startsWith('src/')` 过滤，于是从这堆噪音里得到一个
+**被污染的集合**。⇒ 6 条豁免的判定全部基于垃圾数据。
+
+★★★ **最阴的一层**：脚本退出码是 **0**，所以它自己那条兜底也不触发 ——
+`if (res.status !== 0) return null` 不成立，`filesTestAllRuns()` 返回一个
+非空集合，于是「取不到枚举 ⇒ 拒绝给结论 ⇒ exit 3」那条路**根本没被走到**。
+
+⇒ ★★★ **通式：被 shell 出去的 helper 若不校验未知参数，
+调用方拼错参数时不会报错，而是安静地去做另一件事。
+而「返回了非空 + 退出码 0」比报错更危险 ——
+它正好通过了调用方为「拿不到」准备的全部兜底检查。**
+
+⇒ ★ 判别动作：看到「某个 helper 明明该输出结构化数据，却输出了别的东西」，
+第一问不是「它是不是坏了」而是「**它认不认我传的参数**」。
+配套修法有两条，本节只做了后一条：
+① helper 对未知参数**硬失败**（治本）；
+② 调用方校验返回值**形态**而不只是「非空 + 退出码 0」。
+
+### 238.4 修法与读数
+
+只补**一个文件**（`run-mjs-tests.mjs`，+24/−2）。它还带一处同源修复：
+`SUFFIXES` 原是与 `COVERAGE_GLOBS` 各写一份的字面量，改 `SUFFIXES` 加一类
+`.test.js` 时本 runner 会真的枚举并执行它们，而孤儿卡口的
+`ENFORCED_SUFFIXES` 不知道这一类 ⇒ **那一类的孤儿永远不会被报出来** ——
+正是那道门存在的目的被绕过。现在 `SUFFIXES` 由 `COVERAGE_GLOBS` 推导。
+
+真克隆 + `npm ci`，补这一个文件前后：
+
+| | `check:ci-trigger` | `check:test-coverage` |
+|---|---|---|
+| HEAD（缺这个文件） | **rc=1**（6 条 exemption 报错） | rc=0 |
+| 补上这一个文件 | **rc=0**（棘轮通过，基线 0 条） | rc=0 |
+
+⇒ ★ **验「真绿」而不是「绿」**：补完之后那 6 条豁免的兑现路径必须真的成立。
+逐条点过 25 个文件（5+1+1+10+6+2）**全部在 `test:all` 的枚举内**。
+
+★ 顺带一个反直觉的读数：工作树里 `test:all` 是 **305** 个测试文件，
+干净检出里 `run-mjs-tests.mjs --print-files` 给 **252** 个 ——
+差的 54 个测试文件**根本不在仓里**。
+⇒ 这不是本节的缺陷，但它意味着**有 54 个测试文件从未被 CI 执行过**
+（`test:all` 在 `frontend.yml` 里是手列的，CI 跑的是仓里那份）。
+⇒ 已登记为待拍板项（见 §238.6）。
+
+### 238.5 「接线的对象没入库」三例对照
+
+这是本会话连续三次撞上同一族，值得单独列出来：
+
+| # | 谁接线 | 依赖谁 | 那次的表现 |
+|---|---|---|---|
+| §236 | `ciRuns` 里的两道门 | 它们判定的**产品代码修复** | 裸克隆上两盏必红 |
+| §237 | `meeting-ingest.ts` | 它 import 的**三个模块** | 提交后 `typecheck` rc=2 |
+| §238 | `check-ci-trigger-surface.mjs` | 它 shell 出去的 `run-mjs-tests.mjs --print-files` | 干净检出上判 6 条豁免「无兑现路径」 |
+
+⇒ ★★★ 通式：**把 A 接进某个清单，不等于 A 依赖的东西也在仓里。**
+每一层接线都要问一句「**它调用的那个东西，是 HEAD 里就有的吗**」。
+
+⇒ ★★★ 而这一族的**默认失败方向不固定**：前两例是红（好在能看见），
+这一例也是红 —— 但它的红**指错了对象**（报的是 6 条豁免有问题，
+而不是「我依赖的开关不存在」），所以顺着判词查下去会查到别人的提交上去。
+⇒ **归因时先问「这个红的成因是它自己吗」，再问「是谁引入的」。**
+
+### 238.6 更正后的 CI 读数与待拍板项
+
+真克隆 + `npm ci`，HEAD = `fd1bad35`，逐项驱动 `ciRuns` 的 31 条：
+
+**26 过 / 5 红**（§237 记的 6 红里，`check:ci-trigger` 已由本节修掉）。
+
+剩下 5 条**全部在 `d2260bb3` 就已红**（§237.4.3 实测过），
+且每一条都要产品或基线口径才能处置，本节不代拍：
+
+1. `check:build-mobile-selftest` — 干净检出无 `.env.android-dev`，守卫压根没被检验
+2. `check:dead-features` — 3 个新增未接线导出
+3. `check:gofmt` — `server_note_action_items_test.go`（工作树已修未提交）
+4. `check:dev-pass-sourcing` — `device-matrix.mjs:46` 硬编码口令
+5. `check:marketplace-fix` — `/marketplace/agents` 声明 `hideAppHeader` 但视图无自带头部
+
+★ 本节新增一条待拍板项：**54 个测试文件不在仓里 ⇒ 从未被 CI 执行过**
+（「仓里 252 / 工作树 306」这条读数会随并行会话入库而变，取数时必须重测）。
