@@ -32069,3 +32069,227 @@ git clone --depth 1 file://<本地仓> /tmp/x/repo     # = CI 看到的 main
 ⇒ ★ 本节的价值是把那个决定**变得可判定**：
 「提这 4 个文件，CI 那一格绿灯立刻从无意义变成有意义」——
 **这是一句话能验证的命题**，不是又一条待办。
+## 235. 同一语义、两种错误体：anthropic 路径的「无 provider」不会被识别为「模型不可用」
+
+### 235.1 起因：§233 顺手查的一件事
+
+§233.5 量到 `minimax-m3` 在现役名单里、且实测反复 503。
+本轮去确认「503 之后会不会自动换一个模型重试」——
+整个优雅降级叙事压在 `isModelUnavailableError` 一个函数上。
+一问才发现：**它对 chat 形状成立，对 anthropic 形状不成立。**
+
+### 235.2 两种错误体（**实测原文**，逐字照抄）
+
+同一句话「No available provider for model 'X'」，两个端点给出两种 JSON：
+
+```
+chat 路径（§233 样本 1）：
+{"error":{"code":"model_not_found",
+          "gateway_debug":{"attempts":null,"kind":"transient","retryable":true,...},
+          "kind":"transient",
+          "message":"No available provider for model 'glm-5.3'. All 1 candidates failed.",
+          "request_id":"...","type":"server_error"}}
+
+anthropic 路径（§233 样本 5/6/7 —— minimax-m3 走的就是这条）：
+{"error":{"message":"No available provider for model 'minimax-m3'",
+          "type":"overloaded_error"},"type":"error"}
+```
+
+⚠⚠ 后者**没有 `code`、没有 `kind`**，信息全放在 `message` 与 `type` 上。
+
+### 235.3 缺口在**结构层**，不是「忘了写判断」
+
+```go
+type llmGatewayNoCandidateBody struct {
+    Error struct {
+        Code string `json:"code"`
+        Kind string `json:"kind"`
+    } `json:"error"`
+}
+```
+
+⇒ 反序列化目标**只有这两个字段**。
+⇒ `isModelUnavailableError` 判的三个字面量
+（`invalid_model` / `model_not_found` / `no_candidates`）**全部落空** ⇒ 返回 false。
+
+★★ 关键推论：**光改 `isModelUnavailableError` 去匹配 `message` 是够不到的** ——
+不往结构体里加 `Message` 字段，那个值在解码时就被丢掉了。
+这与 §229 那道「枚举 == 分支」同步门抓到的是同一类问题：
+**类型/结构只声明了一半，实际数据落在没声明的那一半。**
+
+⇒ ⇒ 后果链：`isModelUnavailableError=false`
+⇒ `streamAttemptFallbackEligible=false`
+⇒ **回退链不启动**，用户拿硬失败，而不是「换一个模型再试一次」。
+
+### 235.4 这不是新问题，是同一类问题的**另一个形状漏了**
+
+同一段注释（`llmbff_provider_adapters.go:71-74`）记着：
+
+> 2026-09-05 下午网关侧改版后再添两个同义形状…`code=="model_not_found"`
+> 与 `kind=="no_candidates"`（复数）—— 网关对无 provider 模型的 code 已从
+> `no_candidate` 改为 `model_not_found`，kind 用复数 `no_candidates`。
+
+⇒ 也就是说：**这类「同一个语义换了个形状」的漏补，本仓已经犯过一次并修过一次。**
+本轮是同一个 bug 的**第三个形状**（anthropic Messages API 的错误体）。
+既有门 `llmbff_provider_adapters_test.go:638` 也只测了 chat 形状。
+
+### 235.5 特征化判据（**不是目标判据**）
+
+新文件 `backend/internal/server/llmbff_anthropic_unavailable_shape_test.go`，
+4 组断言，全部通过：
+
+| 组 | 断言 | 作用 |
+|---|---|---|
+| 缺口复现 ×2 | anthropic 形状 ⇒ `isModelUnavailableError=false`、`streamAttemptFallbackEligible` 两个 `answered` 取值都 false | 把缺口钉成可复现读数 |
+| ★ **量具自证** | chat 形状 ⇒ 两条都 true | **若这组红了，「缺口」就分不清是真缺口还是量具坏了** |
+| 负控 ×3 | 无 JSON / `invalid_api_key` / `internal` / `nil` ⇒ 仍 false | 证明判据**不是恒 false** |
+| 结构层 | `llmGatewayNoCandidateBody` 解 anthropic 形状 ⇒ `Code`/`Kind` 均为空 | 把「缺口在结构」与「缺口在判断」分开 |
+
+⚠ 为什么是**特征化**而不是目标判据：它断言的是**当前的缺陷行为**，
+**修复之后必然转红**（那是修复生效的信号，届时把两条 `缺口复现` 改成断言 true）。
+这样全量 `go test` 不会因为我的发现而变红，同时缺口不会因为「没人看」而消失。
+
+### 235.6 **未改**，以及为什么
+
+修复点在 `llmbff_provider_adapters.go` —— 该文件 `git status` 是 **`M`**，
+属**并行会话的在途制品**，按纪律不擅自改别人的在途文件。
+⇒ 下面只给**建议修法**，是否由属主/该会话落地由他们决定：
+
+```go
+type llmGatewayNoCandidateBody struct {
+    Error struct {
+        Code    string `json:"code"`
+        Kind    string `json:"kind"`
+        Message string `json:"message"` // ← 新增：anthropic 形状把信息放这里
+        Type    string `json:"type"`
+    } `json:"error"`
+}
+```
+
+并在 `isModelUnavailableError` 末尾加一段**只认 message 形状**的分支
+（必须带 `type == "overloaded_error"` 或 code/kind 全空这类限定，
+否则负控组「上游 500 / message=boom」会被误判成模型不可用而平白多烧一次回退）。
+
+### 235.7 这条的通用教训
+
+⇒ ★★★ **「识别某类错误」这类判据，必须按**真实形状**枚举，而不是按「语义」枚举。**
+代码里那句注释写的是「no_candidate 的同义形状」——
+语义没错，但**形状**在网关改版时会变，而代码是按形状写的。
+⇒ ⇒ 每次网关改版，都应该**重新抓一次错误原文**再改判断；
+只按上一版的形状补，第三次就会以本节的形式再漏一次。
+
+★ 判别动作：写「某类错误」的识别时问一句
+「**这几种形状我都实测到了吗，还是只有我记得的那几种**」——
+本轮若只回放 2026-09-05 抓的那几种，这个洞根本不会浮现。
+
+---
+
+## 236. ⭐⭐⭐ 收口前的真克隆自检抓到**两盏我自己点亮的红灯** —— 都是「门接进去了，它量的那个修复没提交」
+
+**性质**：§227 说「`git clone --depth 1` 是量『别人拿到 main 会看到什么』最便宜的手段」。
+本节用它给自己做了收口自检，**抓到两处由我自己的提交造成的 CI 红灯**。
+⇒ ★★★ 这是本会话**最贵的一条**：不是发现别人的问题，是发现**我刚做完的提交在 CI 上是红的**。
+
+### 236.1 量法：克隆 + **逐个跑纯 node 的门**（不是跑 `npm run gates`）
+
+第一版我直接 `npm run gates`，得到 `vue-tsc: command not found`（rc=127）——
+因为**裸克隆没有 `node_modules`**。**CI 会跑 install，所以那里不是问题。**
+
+⇒ ⇒ ★★★ **「克隆里红」要先问「是代码问题还是环境问题」**：
+`maestro-flows` 的 `MODULE_NOT_FOUND`（`requireStack: frontend/package.json`）、
+`build-mobile` 两条 🔴「子进程 exit=1 但缺少守卫自己的报错文案」，
+**都是缺 `node_modules` 导致的克隆假象** —— 我差点把它们当成三个新缺陷报出来。
+⇒ ★ 判别动作：克隆里报错时，**先看错误是不是 `MODULE_NOT_FOUND` / `command not found`**，
+是 ⇒ 那是环境，**不是代码**。
+
+于是改成**逐个直跑纯 node 门**（不依赖 `node_modules`），那才是可比读数。
+
+### 236.2 红灯一：`check:pg-schema-hardcoded`（**我批 1 造成的**）
+
+克隆里的输出：
+
+```
+backend/cmd/gwdbg/main.go:28  FROM opencode_pocket.llm_gateway_configs
+backend/cmd/gwdbg/main.go:55  FROM opencode_pocket.user_settings
+✗ 2 处把 PG schema 写死了              rc=1
+```
+
+工作树同一命令是 `OK：探针脚本里没有写死的 PG schema` rc=0。
+
+**根因**：`backend/cmd/gwdbg/main.go` 的修复**没提交**。
+
+| | HEAD | 工作树 |
+|---|---|---|
+| `FROM opencode_pocket.…` 出现 | **2 处**（:28 / :55） | **0 处** |
+| 改成 | —— | `schema := os.Getenv("POCKET_PG_SCHEMA")`（+16/−6，带 4 行说明注释） |
+
+⇒ ⇒ ★★★ **而 `backend/cmd` 恰恰是我在批 1（`875dfde9`）亲手加进这道门的
+`SCAN_ROOTS` 的** —— 我把扫描面扩到一个**修复尚未入库**的目录。
+⇒ 这与 §227.7 写下的纪律**正面冲突**，而且是我自己刚写完就犯的：
+**扫描根的扩大必须与「那个根下的修复已入库」同批**，否则就是自己给自己点红灯。
+
+### 236.3 红灯二：`check:local-todo-dedupe`（**我批 2 造成的**）
+
+克隆里 `✗ 3 处问题：… 有 INSERT INTO local_todos 但没有查重` rc=1；
+工作树 `✓ 每一处 INSERT 都有查重（3/3）` rc=0。
+
+**根因**：三处查重修复**没提交**（而 `check:local-todo-dedupe` 是**我**在批 2
+（`89e2e08a`）接进 `ciRuns` 的）：
+
+| 文件 | 查重关键词出现（HEAD → 工作树） |
+|---|---|
+| `frontend/src/features/meetings/meeting-ingest.ts` | 2 → **10**（+183/−10） |
+| `frontend/src/features/meetings/meeting-todo-persist.ts` | 1 → **6**（+51/−3） |
+| `frontend/src/features/notes/note-todo-persist.ts` | **0** → **3**（+53/−2） |
+
+⇒ ★★ 与红灯一同型：**门接进去了，它量的那个修复没入库。**
+
+### 236.4 ⭐ 通式：**接线一条门之前，先问「它量的东西在仓里吗」**
+
+§224 立的是「清单必须排在实现之后」。本节把它推到**接线**这一层：
+
+| 接线的东西 | 它度量的对象 | 必须同批吗 |
+|---|---|---|
+| `gates.json` 里的门名 | `package.json` 的 script 条目 | ✅ 是（§209.1 已实测） |
+| `package.json` 的 script | script 文件本身 | ✅ 是（§224.4 实测） |
+| **`ciRuns` 里的门** | **它判定的那份产品代码的修复** | ✅ **是（本节实测，此前没人提过这一层）** |
+
+⇒ ⇒ ★★★ **前两层我都有门/实测盯着，第三层完全没人管** ——
+「门在 `ciRuns` 里，而它要抓的那个缺陷还没修完/没提交」，
+在本地工作树里**永远是绿的**（因为修复就在工作树里），
+只有 CI 才红 ⇒ **本地全绿 + CI 红**，而且两边都「看起来正常」。
+
+⇒ ★ 判别动作：往 `ciRuns` 加一道门时，
+**把它在** `HEAD`（不是工作树）上跑一遍**；红 ⇒ 要么先提修复，要么先别接线。
+⇒ ★ 这是 §227 那条「版本对照读数」在**接线决策**上的应用：
+`HEAD` 与工作树跑出不同结论时，**先问「CI 会看到哪一个」**。
+
+### 236.5 修法同样是**可判定的包**（与 §234 同手法）
+
+克隆里只补这 4 个文件、**不动任何门**：
+
+```
+补前：check:pg-schema-hardcoded        rc=1（2 处写死 schema）
+      check:local-todo-dedupe          rc=1（3 处没有查重）
+补后：check:pg-schema-hardcoded        rc=0
+      check:local-todo-dedupe          rc=0（3/3 全有查重）
+```
+
+| # | 文件 | 改动 | 修哪盏红灯 |
+|---|---|---|---|
+| 1 | `backend/cmd/gwdbg/main.go` | +16/−6 | `check:pg-schema-hardcoded` |
+| 2 | `frontend/src/features/meetings/meeting-ingest.ts` | +183/−10 | `check:local-todo-dedupe` |
+| 3 | `frontend/src/features/meetings/meeting-todo-persist.ts` | +51/−3 | 同上 |
+| 4 | `frontend/src/features/notes/note-todo-persist.ts` | +53/−2 | 同上 |
+
+⇒ **这 4 个文件都不是我的改动**（`_local_todo_dedupe_why` 记着修复是 2026-10-07 那次做的，
+`gwdbg` 那份也没归属标记）⇒ 本节**不提交**它们，只把命题变成一句话可验证的东西。
+
+### 236.6 本节**没有**做的事，以及它验不到的地方
+
+- **没有提交这 4 个文件**（归属判不了 + 入库时机待拍板）。
+- ⚠ **只验了纯 node 的门**。`typecheck` / `build:gate` / `test:all` / `test:st:*`
+  依赖 `node_modules`，**裸克隆里跑不了** ⇒
+  **「CI 除了这两盏之外还有没有别的红灯」这个问题，本节没有回答。**
+  ⇒ ★ 要回答它，得在克隆里 `npm ci` 之后跑全套（成本约一轮完整门禁）。
+- ⇒ ★ 这条限制本身要写清：**「我量了 8 道纯 node 的门」不等于「我量了 CI」。**
