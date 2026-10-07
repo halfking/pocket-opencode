@@ -40,10 +40,13 @@ const ADB = process.env.POCKET_ADB || 'adb'
 const only = (process.argv[2] || '').toLowerCase()
 // 求值超时：模拟器在宿主高压（load 30+）时 Runtime.evaluate 会超过默认 20s
 const EVM = Number(process.env.MATRIX_EV_MS || 60000)
-// 本地加密库的主口令。默认沿用 e2e 的固定值（e2e/web/helpers/auth.ts）：
-// 受测包若是**全新 applicationId**（如 .matrix），本地库未初始化，
-// 用它即可完成首次创建。复用已有数据的包则需要真实口令，从环境传入。
-const MASTER_PW = process.env.MATRIX_MASTER_PASSWORD || 'e2e-master-pass-123'
+// 本地加密库的主口令。**这里只取值，不做校验** ——
+// 「缺口令就 exit 2」必须放在 `--selftest` early-exit **之后**：
+// 自检不碰设备也不解密（见下方 runSelectorSelftest 的 process.exit(0)），
+// 在本行就拦会让 check:device-matrix-selftest 这道门永远红，
+// 而它要验的是量具本身，与口令无关。
+// 校验点见下方「碰设备之前」那一段。
+const MASTER_PW = process.env.MATRIX_MASTER_PASSWORD || process.env.POCKET_PROBE_PASS || process.env.POCKET_MASTER
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const flat = (s) => String(s ?? '').replace(/\s+/g, ' ').trim()
 
@@ -599,6 +602,31 @@ async function runSelectorSelftest() {
   process.exit(0)
 }
 if ((process.argv[2] || '').toLowerCase() === '--selftest') await runSelectorSelftest()
+
+// 碰设备之前的口令校验（2026-10-06）。
+//
+// 此前是 `process.env.MATRIX_MASTER_PASSWORD || 'e2e-master-pass-123'` ——
+// 硬编码兜底，被新合并进来的门禁 check:dev-pass-sourcing 判红
+// （hardcoded-fallback 一类）。
+//
+// 位置为什么在自检 early-exit **之后**：自检不碰设备也不解密，
+// 放前面会让 check:device-matrix-selftest 永远红。
+//
+// 为什么必须**缺就退出**而不是给默认值：拿着空口令继续跑，
+// 设备端解密失败会被印成「受保护路由 401 / 路由有问题」，
+// 于是每一行受保护路由假红，真因（环境没配）不指向任何症状。
+// exit 2 = 环境/前置没配，exit 1 = 真跑起来并判红，两者不能同形。
+if (!MASTER_PW) {
+  console.error(
+    'device-matrix: 缺少本地加密库主口令。\n' +
+    '  用法：MATRIX_MASTER_PASSWORD=<口令> node scripts/device-matrix.mjs [only]\n' +
+    '  （也接受 POCKET_PROBE_PASS / POCKET_MASTER）\n' +
+    '  刻意不给默认值：空口令会让设备端解密失败，被印成「路由 401」，\n' +
+    '  每一行受保护路由都会假红。\n' +
+    '  （--selftest 不需要口令：它只验量具本身，不碰设备。）',
+  )
+  process.exit(2)
+}
 
 
 // ---------------------------------------------------------------------------
