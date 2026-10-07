@@ -849,15 +849,44 @@ async function assertAppUsesReverseBase() {
   console.log(`[preflight] App 构建期基址（.env.android-dev）= ${buildDefault}`)
   console.log(`[preflight] 本轮要 App 改走 ${want} → adb reverse → 宿主 ${hostBase}`)
 
-  const setRes = await cdpEval(`(function(){
-    try {
-      var before = localStorage.getItem('pocket_api_base');
-      localStorage.setItem('pocket_api_base', ${JSON.stringify(want)});
-      return JSON.stringify({ before: before, after: localStorage.getItem('pocket_api_base') });
-    } catch (e) { return JSON.stringify({ err: String(e && e.message || e) }); }
-  })()`)
-  let setInfo
-  try { setInfo = JSON.parse(String(setRes)) } catch { setInfo = { err: '写入返回的不是 JSON: ' + setRes } }
+  // ★ 2026-10-07：CDP 求值超时会**静默返回 undefined**（cdpEval 内部 `r(null)`
+  //   → `v?.result?.value`），原先的报错把它写成「写入返回的不是 JSON: undefined」
+  //   ——真因（WebView 刚起还没就绪）被完全盖住，看起来像 localStorage 坏了。
+  //   实测这一轮：preflight 自己 force-stop 后重启 App，紧接着就写，
+  //   而同一时刻 guest 的 PSI cpu some avg10=93（SystemUI/phone 都在 ANR），
+  //   15s 的 socket 等待不够 ⇒ 第一次几乎必然超时。
+  //   修法：有界重试 + 把「超时」和「真的返回了非 JSON」区分开说。
+  // 重试预算：实测 WebView 的 CDP 求值是**间歇性**的——同一台设备同一页面，
+  // 连着两次超时之后，第三次又能秒回（2026-10-07 22:4x 实测：
+  // A/B 两组都成功，说明「必须先 Runtime.enable」不成立，是抖动不是缺前置）。
+  // 原先 4 次 × 3s 只有约 12s，扛不住。改成 10 次、递增退避，总预算约 50s。
+  let setInfo = null
+  for (let attempt = 1; attempt <= 10; attempt++) {
+    if (attempt > 1) await sleep(Math.min(2000 * attempt, 8000))
+    const lastRaw = await cdpEval(`(function(){
+      try {
+        var before = localStorage.getItem('pocket_api_base');
+        localStorage.setItem('pocket_api_base', ${JSON.stringify(want)});
+        return JSON.stringify({ before: before, after: localStorage.getItem('pocket_api_base') });
+      } catch (e) { return JSON.stringify({ err: String(e && e.message || e) }); }
+    })()`)
+    if (lastRaw === undefined || lastRaw === null) {
+      console.log(`[preflight] CDP 求值第 ${attempt}/10 次无返回（间歇性超时），退避后重试…`)
+      continue
+    }
+    try { setInfo = JSON.parse(String(lastRaw)) } catch { setInfo = { err: `CDP 返回的不是 JSON：${String(lastRaw).slice(0, 120)}` } }
+    break
+  }
+  if (!setInfo) {
+    console.error(
+      `[preflight] ❌ 写 pocket_api_base 失败：CDP 求值连续 10 次无返回（约 50s 预算）。\n` +
+      '[preflight]    这不是 localStorage 的问题：实测同一页面连超时两次后又能秒回，\n' +
+      '[preflight]    所以是 CDP 通道的间歇性抖动 + 设备侧压力，不是 App 没起或存储坏了。\n' +
+      '[preflight]    排查方向：adb 是否走对了 server（ADB_SERVER_SOCKET）、/json/list 是否有 page、\n' +
+      '[preflight]    宿主负载与 guest 的 /proc/pressure。'
+    )
+    return false
+  }
   if (setInfo.err) {
     console.error(`[preflight] ❌ 写 pocket_api_base 失败：${setInfo.err}`)
     return false

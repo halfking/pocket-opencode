@@ -1,3 +1,7 @@
+# 2026-10-07 实测定性：模拟器 en-US，下列宫格项在失败瞬间的 a11y 树里
+# **只有英文**（字面量取自实测树，非推测）⇒ 判据缺英文分支，不是 App 缺陷。
+# 2026-10-07 实测定性：模拟器是 en-US，这条纯中文断言在失败瞬间的 a11y 树里
+# 找不到中文、只有英文对应物 ⇒ 判据缺英文分支，不是 App 缺陷。
 # Maestro 真机功能流 · 「更多」宫格入口全量可达性
 #
 # 为什么要这条：入口存在性与「入口能不能用」是两类缺陷，而后者更隐蔽。
@@ -41,29 +45,36 @@ appId: com.kaixuan.opencode.pocket
 - tapOn:
     text: "更多|More"
     retryTapIfNoChange: true
+# 2026-10-07 实测：这条 tap 会被吞（报 COMPLETED 但界面没动），
+# 且**同一个 flow 上一轮过、这一轮红**（22:5x vs 23:2x），属抖动不是回归。
+# 原有三层防御里，`runFlow when: notVisible` 只在上一条**成功**时才执行；
+# extendedWaitUntil 失败会直接终止 flow，兜底根本不跑 ⇒ 真正起作用的是 tap 本身。
+# 这里在 tap 后先等动画收敛再进断言，给被吞的 tap 留出落地窗口。
+- waitForAnimationToEnd:
+    timeout: 5000
 - extendedWaitUntil:
-    visible: "更多功能"
+    visible: "更多功能|MORE FEATURES"
     timeout: 40000
 - runFlow:
     when:
-      notVisible: "更多功能"
+      notVisible: "更多功能|MORE FEATURES"
     commands:
       - tapOn: "更多|More"
       - waitForAnimationToEnd:
           timeout: 3000
 - extendedWaitUntil:
-    visible: "更多功能"
+    visible: "更多功能|MORE FEATURES"
     timeout: 30000
 
 # ---------- 2. 主功能宫格：10 项全在 ----------
-- assertVisible: "学习"
-- assertVisible: "对话"
-- assertVisible: "会议"
-- assertVisible: "邮箱"
-- assertVisible: "定时自动化"
-- assertVisible: "技能市场"
-- assertVisible: "智能体市场"
-- assertVisible: "本地智能体"
+- assertVisible: "学习|Study"
+- assertVisible: "对话|Chat"
+- assertVisible: "会议|Meetings"
+- assertVisible: "邮箱|Email"
+- assertVisible: "定时自动化|Scheduled Automation"
+- assertVisible: "技能市场|Skill Market"
+- assertVisible: "智能体市场|Agent Market"
+- assertVisible: "本地智能体|Local Agent"
 - assertVisible: "工作搭子"
 - assertVisible: "闪卡"
 
