@@ -421,8 +421,18 @@ async function setRoute(hash, readyExpr, timeoutMs = 30000, opts = {}) {
       const gotHash = (await ev('location.hash'))?.result?.value
       const gotReady = readyExpr ? (await ev(readyExpr))?.result?.value === true : true
       if (settle) {
-        // 「连续两次采样不变」= 导航已经落定，无论它落在哪个路由。
-        if (gotHash && gotHash === lastHash) {
+        // ★ 2026-10-07 修：「连续两次采样不变」单独用会把
+        //   **「守卫还没重算」误判成「已落定」**。
+        //   采样间隔 800ms ⇒ 原判据在 ~1.6s 就可能返回 true；
+        //   而调用方要的语义是「守卫已经算过一次并把路由改掉了」
+        //   （清 token 后把 #/ai?__recheck=… 重定向到 #/login?returnTo=…）。
+        //   刚装完的包要重新水合，守卫慢一点，原判据就提前放行
+        //   ⇒ 调用方紧接着读 hash 拿到的仍是 #/ai?__recheck=…
+        //   ⇒ 报「已清登录态但 App 停在 #/ai」（2026-10-07 在 sttdev 包上实测）。
+        //
+        // 补上真正缺的那一条：**必须离开我请求的路由**，
+        // 且离开之后连续两次采样不变，才算落定。
+        if (gotHash && gotHash !== hash && gotHash === lastHash) {
           stable++
           if (stable >= 1 && gotReady) { ws.close(); return true }
         } else {
