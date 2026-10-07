@@ -30,13 +30,39 @@
  *   node scripts/check-pg-schema-hardcoded.mjs --list     # 只列出，不改退出码
  *   node scripts/check-pg-schema-hardcoded.mjs --selftest # 敏感度/特异度/变盲三项自证
  */
-import { readFileSync, readdirSync, statSync } from 'node:fs'
+import { readFileSync, readdirSync, statSync, existsSync as existsSyncSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const SELF = path.resolve(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(path.dirname(SELF), '..')
-const SCRIPTS = path.join(ROOT, 'scripts')
+
+// 扫描根：目录 + 扩展名 + 可选的排除谓词。
+//
+// ★ 2026-10-07 扩到 `backend/cmd`。原因：原范围只有 `scripts/**.mjs`，
+//   而 `backend/cmd/gwdbg` 正是本文件头注释描述的那一类探针 ——
+//   「直查 PG，验证 POST 是否真的落库」。它从 `POCKET_POSTGRES_DSN` 取 DSN
+//   （**可以**指向隔离后端），但 SQL 里写死了 schema 名，
+//   ⇒ 一旦指向隔离后端，写入落隔离 schema、查询读共享库
+//   ⇒ **静悄悄地给出「没落库」的错结论** —— 就是头注释点名的「更糟」那一档。
+//   实测扩之前**全仓没有任何门看得见它**：
+//   这道门只扫 `scripts/**.mjs`；Go 侧那道 `pg_test_isolation_guard_test.go`
+//   在 `filepath.Walk` 里显式 `if !strings.HasSuffix(path, "_test.go") { return nil }`
+//   ⇒ **只管测试文件**。两边各扫一半，夹在中间的 `cmd/` 没人看。
+//
+// ★ `_test.go` 由那道 Go 守卫管（它带探针白名单与逐条理由，比这里完整），
+//   这里**故意不扫**，免得两道门对同一批文件各报一半、谁也说不清全貌。
+const SCAN_ROOTS = [
+  { dir: path.join(ROOT, 'scripts'), ext: '.mjs' },
+  { dir: path.join(ROOT, 'backend', 'cmd'), ext: '.go', skip: (e) => e.endsWith('_test.go') },
+]
+// 声明的扫描根必须真的存在。少了这一条，路径写错时这道门会「扫了 0 个还报绿」。
+for (const r of SCAN_ROOTS) {
+  if (!existsSyncSync(r.dir)) {
+    console.error(`❌ 声明的扫描根不存在：${r.dir}`)
+    process.exit(2)
+  }
+}
 
 // 只认「schema 名 + 点」。`'opencode_pocket'`（无点）是默认值字面量，不算。
 const HARDCODED = /\bopencode_pocket\s*\./i
@@ -54,22 +80,24 @@ export function lineIsHardcoded(line) {
   return HARDCODED.test(line)
 }
 
-function walk(dir, acc = []) {
+function walk(dir, ext, skip, acc = []) {
   for (const e of readdirSync(dir)) {
     const p = path.join(dir, e)
     const st = statSync(p)
-    if (st.isDirectory()) { if (e !== 'node_modules' && e !== '.git') walk(p, acc) }
-    else if (e.endsWith('.mjs')) acc.push(p)
+    if (st.isDirectory()) { if (e !== 'node_modules' && e !== '.git') walk(p, ext, skip, acc) }
+    else if (e.endsWith(ext) && !(skip && skip(e))) acc.push(p)
   }
   return acc
 }
 
 function scan() {
   const hits = []
-  for (const f of walk(SCRIPTS)) {
-    if (path.resolve(f) === SELF) continue          // 自指豁免：两边都用 resolve，比字符串更稳
-    const lines = readFileSync(f, 'utf8').split(/\r?\n/)
-    lines.forEach((l, i) => { if (lineIsHardcoded(l)) hits.push({ file: path.relative(ROOT, f), line: i + 1, text: l.trim() }) })
+  for (const r of SCAN_ROOTS) {
+    for (const f of walk(r.dir, r.ext, r.skip)) {
+      if (path.resolve(f) === SELF) continue          // 自指豁免：两边都用 resolve，比字符串更稳
+      const lines = readFileSync(f, 'utf8').split(/\r?\n/)
+      lines.forEach((l, i) => { if (lineIsHardcoded(l)) hits.push({ file: path.relative(ROOT, f), line: i + 1, text: l.trim() }) })
+    }
   }
   return hits
 }
@@ -92,6 +120,17 @@ if (process.argv.includes('--selftest')) {
     // 自指豁免必须真的生效
     ['自指·门禁不扫自己', () => { const hits = scan(); return hits.every((h) => path.resolve(ROOT, h.file) !== SELF) }],
   ]
+  // ★ 下限闸：`cases` 是一个**字面量数组**，删掉几条与删掉全部一样不会报错。
+  //   实测（本轮 2026-10-08）：把数组清空 ⇒ 打印「selftest: 0/0 通过」且 EXIT=0。
+  //   **「0/0 通过」不是通过**：那是判据失明时的读数，和真通过长得一模一样。
+  //   与 check-exit-reflects-verdict.mjs 的 MIN_SELFTEST_CASES、build-mobile.mjs 的同名常量同一形状。
+  //   需要放宽只能手工改这个常量，不接受命令行参数。
+  const MIN_SELFTEST_CASES = 6;
+  if (cases.length < MIN_SELFTEST_CASES) {
+    console.error(`selftest: 只跑了 ${cases.length}/${MIN_SELFTEST_CASES} 例 —— 字面量数组被删过。`);
+    console.error('「0/0 通过」不是通过：那是判据失明时的读数。');
+    process.exit(2);
+  }
   let bad = 0
   for (const [name, fn] of cases) {
     let pass = false

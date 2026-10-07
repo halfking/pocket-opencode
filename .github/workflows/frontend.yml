@@ -16,6 +16,12 @@ on:
   pull_request:
     paths:
       - "frontend/**"
+      # 跨切面的 check 脚本放在仓库根 scripts/（与 check-pg-schema-scope 同住），
+      # 而本 workflow 原来只按 frontend/** 触发 ⇒ **改这些脚本的 PR 上，
+      # 门禁实现变了而门禁不跑**（check-ci-trigger 报「CI 装了门禁但 PR 上不会启动」）。
+      # 根 scripts/ 里就是 37 道 check:* 的实现，属于「门禁的代码」，
+      # 所以它的改动必须能唤醒跑门禁的那个 job。
+      - "scripts/**"
       - ".github/workflows/frontend.yml"
       - "test-evidence/PR11/**"
 

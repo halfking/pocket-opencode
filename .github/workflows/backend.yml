@@ -6,6 +6,17 @@ on:
   pull_request:
     paths:
       - "backend/**"
+      # 本 job 也用 node 跑 scripts/check-smart-quotes.mjs。改它自己却不触发本
+      # workflow ⇒ 那道门在这样的 PR 上一次都不跑，而 gates.json 里没有它、
+      # frontend.yml 的 gates 也不含它 ⇒ 两头都不接管（设计文档 §149.3 / §172）。
+      #
+      # ★ 只列这一个文件，**不是** "scripts/**"：scripts/ 下有 493 个文件，而本
+      #   workflow 的两个 job timeout 合计 25 分钟（go build + go test -race 带
+      #   postgres），frontend.yml 已覆盖 scripts/** ⇒ 用通配会给 493 个文件各加
+      #   一次完整后端流水线，而它真正执行的 scripts 文件只有这一个。
+      #   ⇒ 本 workflow 的 paths 应当镜像「它真正执行的东西」。
+      # ★ 往本 workflow 加新 node 门时，同步在这里加它的路径 —— 这就是漏的那一步。
+      - "scripts/check-smart-quotes.mjs"
       - ".github/workflows/backend.yml"
 
 permissions:
