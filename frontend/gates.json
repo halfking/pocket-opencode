@@ -18,7 +18,8 @@
     "test:stt",
     "test:email-heal",
     "check:pg-schema-scope",
-    "check:dueclock",
+    "check:pg-schema-hardcoded",
+    "check:dueclock", "check:local-todo-dedupe",
     "check:callback-routes",
     "check:edge-route-reach",
     "check:runtime-data",
@@ -27,7 +28,10 @@
     "check:i18n",
     "check:i18n-translated",
     "check:dead-api",
+    "check:dead-features",
+    "check:ci-trigger",
     "check:raw-error",
+    "check:exit-reflects-verdict",
     "check:crlf-needles",
     "check:icons",
     "check:test-coverage",
@@ -40,13 +44,16 @@
     "check:dev-pass-sourcing",
     "check:back-navigation",
     "check:marketplace-fix",
-    "check:router-parity"
+    "check:card-deck-labels",
+    "check:router-parity",
+    "check:doc-encoding"
   ],
   "ciRuns": [
     "check:build-mobile-selftest",
     "check:device-matrix-selftest",
     "check:pg-schema-scope",
-    "check:dueclock",
+    "check:pg-schema-hardcoded",
+    "check:dueclock", "check:local-todo-dedupe",
     "check:callback-routes",
     "check:edge-route-reach",
     "check:runtime-data",
@@ -55,7 +62,10 @@
     "check:i18n",
     "check:i18n-translated",
     "check:dead-api",
+    "check:dead-features",
+    "check:ci-trigger",
     "check:raw-error",
+    "check:exit-reflects-verdict",
     "check:icons",
     "check:gofmt",
     "check:blankline-bloat",
@@ -66,7 +76,9 @@
     "check:dev-pass-sourcing",
     "check:back-navigation",
     "check:marketplace-fix",
-    "check:router-parity"
+    "check:card-deck-labels",
+    "check:router-parity",
+    "check:doc-encoding"
   ],
   "ciCoveredElsewhere": {
     "typecheck": "frontend.yml 的 frontend-lint job 已手列 `npm run typecheck`",
@@ -84,5 +96,8 @@
   "notGates": {
     "check:icons:visual": "node scripts/build-icon-harness.mjs —— 生成供人眼打开的图标验证页（frontend/.icon-harness/index.html），是构建器不是判定器：它没有「通过/不通过」的退出码语义。把它接进 gates 只会让每跑一次门禁就重建一次静态页，而它的产物本来就是按需手工打开的。",
     "check:e2e-responsive": "npx playwright test responsive-shell（e2e/web 独立包，dev server 在 127.0.0.1:4174）。不接进默认 gates 的理由：它需要一个**先跑起来**的 vite dev server，而 gates 是无服务的前置检查链；把它接进去会让 `npm run gates` 在 CI 上必然失败。跑法见 docs/UI规范/10-门禁与真机验收.md §6。"
-  }
-}
+  },
+  "_dead_features_why": "check:dead-features 与 check:dead-api 的口径**故意不同**，别当成同一件事：check-dead-api 分 wired/testOnly/moduleInternal/dead 四类且棘轮只管 dead；本门把「只有测试引用」也算进存量，因为要回答的问题是「这个能力**接进 App** 了吗」——只被测试引用的能力运行时没有任何路径能到达，和彻底死代码对用户是同一件事，补一条测试不该让它从门禁视野里消失。范围刻意只圈 features/meetings/，存量 12 条钉在 dead-features-baseline.json（棘轮只许减不许增）。⚠ 它的输入是 audit-dead-features.mjs 的 --json 输出，不是给人看的报表；审计跑不起来或 JSON 不合法一律退出码 3（拒绝给结论），不得当成通过。",
+  "_doc_encoding_why": "check:doc-encoding = `node ../scripts/audit-doc-encoding.mjs --meta && …`，两段不是冗余：前一段是**量具自证**（往临时目录里注入 3 类缺陷，判据抓不住就退出码非 0，不许开始判定），后一段才是真正的扫描。**为什么它必须进门禁而不是当手工体检**：这道闸 2026-10-07 之前长期恒红（23 处 EXIT=1），恒红的门等于没有门——新缺陷混在里面没人看得见（设计文档 §184）。**判据不是「U+FFFD 数量=0」而是「未登记的 U+FFFD 数量=0」**：仓里 23 个 U+FFFD 分属 11 条登记豁免（引用的原文本身就是损坏的、自指的、6 篇 handoff 文档），把有意引用的证据当新损坏会把门重新推红。⚠ 豁免按**锚点文本**登记、不按行号（行号是坐标不是身份，会随并行写入漂移）；锚点写错时报 WAIVER_ANCHOR_DRIFT 并明确提示**不要删登记**（缺陷还在，删掉会把同一处重新报红）。⚠ 接进 CI 依赖 pull_request 触发面里的 `- \"scripts/**\"`：本门实现在仓库根 scripts/，没有这条路径，改本门的 PR 不会唤醒跑门禁的那个 job（check:ci-trigger 守的正是这一条）。实测成本：扫描 516 个 .md 约 0.17s、--meta 约 0.03s（全套 gates 约 96s）。⚠️ **接线当天就抓到它一个手工跑永远看不见的缺陷**：ROOT 曾取 process.cwd()，而 npm script 的 cwd 是 frontend/ ⇒ 扫到的 .md 从 516 静默缩成 2 个、输出却照旧一行行打 PASS（当时靠 9 条 WAIVER_FILE_MISSING 才**侥幸**报红；豁免登记表若为空，同一缺陷就会绿着通过）。已改为从脚本自身位置推导 + 加**扫描范围自证**：repo 模式查 docs/design·docs/handoff·docs/audits 三个目录各自非空、加下限哨兵 50，塌缩即**退出码 2（量具坏了）而不是 1（文档坏了）**；输出恒打「扫描根 + 模式」，不许假装自己扫全了。变异 11/11，其中 M8 是**原版对照**（同一调用下修前那份红、扫描=2）、M9 专钉退出码类别。⚠️ CI 侧**不需要**改 workflow：frontend.yml 的 `node scripts/run-gates.mjs --ci` 本来就按 ciRuns 数据驱动执行（run-gates.mjs:145 原文：「要 CI 跑就加进 ciRuns（CI 侧无需改 workflow）」）。⚠️ **本门只扫 `.md`**：`backend/` 里另有 **23 个 `.go` / 49 个 U+FFFD**（**20 个是 `_test.go` 故意夹具**，截断类用例必须含该字符，删掉就把测试语义删了；真正待查的是 3 个非测试文件共 6 个）⇒ **闸绿 ≠ 本仓无编码损坏**。扩闸会立刻红在那 20 个夹具上，所以缺口只登记在此、不硬接（设计文档 §195.3；注意 §162.4 记的是「14 **行**」，此处数的是「**字符**」，不是同一把尺）。",
+  "_local_todo_dedupe_why": "本门（check:local-todo-dedupe）在 ciRuns 里 ⇒ CI 由 `node scripts/run-gates.mjs --ci` 按名单数据驱动执行，**workflow 侧不需要手列任何名字**（run-gates.mjs:145 原文）。2026-10-08 复核时 frontend.yml 曾手列过它，与 --ci 构成同一次 PR 上的**双跑**，已删除。⚠ 判据只比 ciRuns 与 ciCoveredElsewhere **两个登记表**（147-151 行），**从不读 workflow 正文** ⇒ 「既在 ciRuns 又被手列进 workflow」这一类在它眼里不存在，既不报重复也不报悬空（设计文档 §190.3）。⚠ **为什么这道门必须存在**（读数不是不变量）：2026-10-07 顺着「重复总结会造出两遍待办与两遍日程」那条线修了三处写入点，之后按 `INSERT INTO local_todos` 普查才发现**三处都有这个缺陷**，而此前两次「修好了」都只是手查链。修完的当轮读数是「三处都有查重」，但没有任何东西阻止**第四处**裸 INSERT 混进来 —— 本门把它变成不变量。**完整判据与逐条踩坑见 `scripts/check-local-todo-dedupe.mjs` 头注释**（三条：集合对账 / 剥注释后的属性检查 / MIN_SITES 覆盖下限）与设计文档 §153、§154.1；此处只留指针，不复制第三份全文。",
+  "_unwired_gates_why": "2026-10-08 把 §137.3 登记的「UNWIRED」里**能接的三道接了**（逐条实跑为绿）：`check:pg-schema-hardcoded` / `check:exit-reflects-verdict` / `check:card-deck-labels`。⚠ **`probe-email-sync-honesty` 刻意不接**：实跑 **EXIT=2**，它自己写明「不要再从源码里刮口令：那个 devPass 常量已被 b6187bc1 删除，刮取**必然**得到空串，实测 32 个脚本都栽在这里」⇒ **接线一道拒绝给结论的门 = 把一个已知的量具失效搬进 CI**，它会立刻把整条链变红。它要接的前提是改掉口令来源（改指 `check-dev-pass-sourcing.mjs` 的总量口径）。⇒ **判据：先实跑再接线，EXIT=2 的那类不接。**"}
