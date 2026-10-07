@@ -61,7 +61,7 @@ appId: com.kaixuan.opencode.pocket
 # ⇒ **CSS 类不暴露在 Android 无障碍树里**，只有 aria-label / text 能被 Maestro 匹配。
 # 所以正确做法是**中英并列的正则**，而不是换选择器。
 - extendedWaitUntil:
-    visible: "打开菜单|Open menu|主导航|Main navigation|解锁本地数据|输入用户名|创建主密码"
+    visible: "打开菜单|Open menu|解锁本地数据|密码登录|创建主密码"
     timeout: 60000
 
 # ⚠️ 必须**先把锁定守卫逼出来**，否则 B 分支永远轮不到执行。
@@ -87,7 +87,7 @@ appId: com.kaixuan.opencode.pocket
 # D 态主密码弹窗 / 还在切换中。不能只等外壳 —— 被守卫弹到解锁页时外壳的
 # 「打开菜单」本来就不在。
 - extendedWaitUntil:
-    visible: "打开菜单|Open menu|主导航|Main navigation|解锁本地数据|输入用户名|创建主密码"
+    visible: "打开菜单|Open menu|解锁本地数据|密码登录|创建主密码"
     timeout: 20000
 
 # ---- B. 已登录但本地库锁定：只输主密码 ----
@@ -115,10 +115,10 @@ appId: com.kaixuan.opencode.pocket
           notVisible: "解锁本地数据"
           timeout: 60000
       - assertNotVisible: "解锁本地数据"
-      - assertNotVisible: "输入用户名"
+      - assertNotVisible: "^密码登录$"
       # ★ 这条原先只写中文「打开菜单」，在 en-US 设备上必然红。
       #   只有它是**走 i18n** 的（locales/zh-CN.json → "openMenu": "打开菜单"，
-      #   en-US 对应 Open menu）；同一分支里的「解锁本地数据」「输入用户名」
+      #   en-US 对应 Open menu）；同一分支里的「解锁本地数据」
       #   都是 LoginView.vue 里**硬编码的中文**，与 locale 无关，保持单语即可。
       #   ⚠️ 本分支此前从未被执行过（上面那句 tapOn 匹配不到任何东西，
       #   守卫从没被逼出来），所以这条裸中文断言一直藏着。
@@ -142,9 +142,9 @@ appId: com.kaixuan.opencode.pocket
 #    无障碍树里照旧可见，断言必假失败。
 - runFlow:
     when:
-      visible: "输入用户名"
+      visible: "^用户名$"
     commands:
-      - tapOn: "输入用户名"
+      - tapOn: "^用户名$"
       - eraseText
       - inputText: "admin"
       # ⚠️ 必须断言输入框的**实际值**。2026-10-01 13:00 实测：不加这条时，
@@ -155,7 +155,7 @@ appId: com.kaixuan.opencode.pocket
       #    （无障碍树里 input[type=text] 和 input[type=password] 都暴露了值，
       #      所以这条断言成立。若哪天 WebView 不再暴露，改用坐标 + 重试。）
       - assertVisible: { text: "^admin$" }
-      - tapOn: "输入密码"
+      - tapOn: "^密码$"
       - inputText: ${POCKET_DEV_PASS}
       # ⚠️ 这里**不能**写 `assertVisible: { text: "^${POCKET_DEV_PASS}$" }`。
       #    实测两次：Maestro 在**选择器**里不展开 ${POCKET_DEV_PASS}，
@@ -216,7 +216,7 @@ appId: com.kaixuan.opencode.pocket
 # 「创建主密码」是 2026-10-01 12:10 补的第**四**条：上轮 run 死在弹窗上、
 # 弹窗残留，下游 flow 会在登录页上全部失败，而只判前两条时它不会被发现。
 - assertNotVisible: "解锁本地数据"
-- assertNotVisible: "输入用户名"
+- assertNotVisible: "^密码登录$"
 - assertNotVisible: "创建主密码"
 
 # ★ 收尾把终态**还原成改之前的那个**：停在 AI 首页。
