@@ -96,6 +96,13 @@ function tcpReachable(host, port, timeoutMs = 1500) {
 if (process.argv.includes('--selftest')) {
   const { spawnSync } = await import('node:child_process')
   const cases = []
+  /** 「这次没得出结论」的判别：探针**超时**或子进程**压根没起来**。
+   *  这两种与「判据判定为假」是两件事 —— 混在一起报，会让下一次重跑去改一个没坏的东西。
+   *  退出码沿用本函数内已有的 2（见下面 MIN_SELFTEST_CASES 那道），
+   *  与 audit-doc-encoding.mjs 的「2=量具坏 / 1=文档坏」同约定。
+   *  ⚠ 声明必须在**首次使用之前**——放在 GUARD_TIMEOUT_MS 旁边会踩 const 的 TDZ
+   *  （node --check 是语法检查，查不出这种运行时错误）。 */
+  const NO_VERDICT = (why) => /timed out/i.test(String(why || ''))
   // 1) 活端口：自己 listen 一个，抓到端口号再探 —— 必须通
   const srv = net.createServer((s) => s.end())
   await new Promise((res) => srv.listen(0, '127.0.0.1', res))
@@ -107,9 +114,88 @@ if (process.argv.includes('--selftest')) {
   await new Promise((res) => dead.close(res))
 
   const r1 = await tcpReachable('127.0.0.1', livePort, 2000)
-  cases.push({ name: '活端口必须可达', got: r1.ok, want: true, why: r1.why })
+  cases.push({ subject: 'TCP 可达性', name: '活端口必须可达', got: r1.ok, want: true, why: r1.why, inconclusive: NO_VERDICT(r1.why) })
   const r2 = await tcpReachable('127.0.0.1', deadPort, 2000)
-  cases.push({ name: '死端口必须不可达', got: r2.ok, want: false, why: r2.why })
+  cases.push({ subject: 'TCP 可达性', name: '死端口必须不可达', got: r2.ok, want: false, why: r2.why, inconclusive: NO_VERDICT(r2.why) })
+
+  // 3) ★ 事故守卫本身（2026-10-07 新增，见本文件 §116 的实测）。
+  //    上面两条只测**辅助函数** tcpReachable。而 2026-09-05 那次真机事故
+  //    （空 API base ⇒ 每个 /api 请求拿到 index.html）是由**守卫的决定**挡住的，
+  //    那个决定**一条用例都没有**：
+  //      实测把整个 `if (!effectiveAPIBase && …)` 换成 `if (false)` ⇒
+  //      `npm run gates` **37/37 全绿**，包括本自检本身。
+  //    ⇒ 守卫可以在完全无声的情况下被摘掉，而事故防护归零。
+  //
+  //    为什么能用子进程测：这些守卫在任何构建动作**之前**就 exit 1（实测各 <0.1s），
+  //    所以这些用例不碰 vite、不碰 gradle、不需要设备。
+  //    ⚠ 判据必须同时要求 **退出码是 1** 且 **输出里有该守卫自己的那句话**：
+  //      只看「非 0」的话，参数写错等别的 exit 1 也能把它顶成绿；
+  //      而守卫被摘掉时子进程会一路走去跑 vite build ⇒ 必须给 timeout，
+  //      超时返回 status===null，同样判红（否则「跑太久」会被误当成「守卫拦住了」）。
+  const GUARD_TIMEOUT_MS = 15000
+  /** 跑一次真脚本，问「这道守卫拦住没有」。saw 是守卫自己的报错文案片段。 */
+  const runGuard = (label, args, envPatch, saw) => {
+    const t0 = Date.now()
+    const r = spawnSync(process.execPath, [fileURLToPath(import.meta.url), ...args], {
+      // 逃生舱一律置空：本机若恰好开着它，用例就会测成假的。
+      // 置空而不是 delete —— 空串足以让 `!== "1"` 为真，且不依赖外层环境。
+      env: { ...process.env, MOBILE_ALLOW_EMPTY_API_BASE: '', MOBILE_SKIP_REACHABILITY: '', ...envPatch },
+      encoding: 'utf8',
+      timeout: GUARD_TIMEOUT_MS,
+    })
+    const elapsedMs = Date.now() - t0
+    const said = `${r.stderr || ''}${r.stdout || ''}`.includes(saw)
+    // ⚠ **超时 ≠ 守卫失效**。原来这两件事被并成同一句话：
+    //   超时只说明这台机器那一刻慢，守卫完全可能是好的（实测子进程正常只要 0.1–0.4s，
+    //   而这个上限是 15s ⇒ 裕度 38–118×）；ENOENT 则是**子进程压根没起来**，守卫根本没被检验。
+    //   `got` **一个字不改** ⇒ 通过/不通过的口径零变化；这里只把失败消息修成
+    //   「这次失败真正测到的那件事」（对照 audit-doc-encoding.mjs 的 2=量具坏 / 1=文档坏）。
+    const timedOut = !!(r.error && (r.error.code === 'ETIMEDOUT' || r.signal === 'SIGTERM'))
+    const spawnFail = !!r.error && !timedOut
+    cases.push({
+      subject: 'runGuard 守卫',
+      name: label,
+      got: r.status === 1 && said,
+      want: true,
+      inconclusive: timedOut || spawnFail,
+      why: timedOut
+        ? `子进程在 ${GUARD_TIMEOUT_MS / 1000}s 内没结束（${r.error.code || r.signal}）`
+          + ` · **本例实测 ${elapsedMs}ms vs 上限 ${GUARD_TIMEOUT_MS}ms**`
+          + ` ⇒ 机器慢/环境问题，**不是守卫失效**；本例未得出结论`
+        : spawnFail
+          ? `子进程没能启动（${r.error.code || r.error.message}）`
+            + ` ⇒ 守卫**根本没被检验**；本例未得出结论`
+          : `exit=${r.status}${said ? '' : ` · 缺少守卫自己的报错文案「${saw}」`}`,
+    })
+  }
+
+  // 3) 空 API base —— 2026-09-05 真机事故本体。
+  //    显式置空：?? 只对 null/undefined 回退，空串正好钉住「空值」这条路径。
+  runGuard('空 VITE_API_BASE 必须拒绝构建', ['android', 'dev'], { VITE_API_BASE: '' }, 'VITE_API_BASE is empty')
+
+  // 4) 同一族的三个兄弟守卫。它们防的是**同一个失效模式**：
+  //    打出一个 /api 拿不到 JSON 的包（2026-09-05 事故的形态），
+  //    只是入口不同——空值 / 非绝对 URL / prod 指向 LAN。
+  //    实测摘掉其中任何一道，gates 都不会红（与 §116 的 M9 同一形状）。
+  //    ★ prod 那两条尤其硬：它们拦住的是**发给真实用户**的包指向 192.168.x.x。
+  runGuard(
+    '任意构建 + 非绝对 URL 必须拒绝',
+    ['android', 'dev'],
+    { VITE_API_BASE: 'not-a-url' },
+    'VITE_API_BASE is not an absolute URL',
+  )
+  runGuard(
+    'prod + 非绝对 URL 必须拒绝',
+    ['android', 'prod'],
+    { VITE_API_BASE: 'not-a-url' },
+    'refusing production build: VITE_API_BASE is not an absolute URL',
+  )
+  runGuard(
+    'prod + LAN/loopback 主机必须拒绝',
+    ['android', 'prod'],
+    { VITE_API_BASE: 'http://192.168.31.37:8090' },
+    'is loopback/LAN/placeholder',
+  )
   // ⚠️ 第 3 条**刻意不写成断言**。2026-10-04 在本机实测：
   //   192.0.2.1:9（RFC 5737 黑洞地址）      → connected
   //   no-such-host.invalid:80（永不可解析） → connected
@@ -126,13 +212,66 @@ if (process.argv.includes('--selftest')) {
       : '　⇒ 本环境无拦截，负向用例可证'))
 
   srv.close()
+
+  // ★ 下限闸：`cases` 只由**真实调用之后**的 push 填充，所以把两条 push 删掉，
+  //   `cases.length` 就是 0、`bad` 也是 0 ⇒ 打印「自检 0/0 通过」并 exit 0。
+  //   实测（2026-10-07）：删掉两条 push ⇒ `自检 0/0 通过`、EXIT=0，全绿。
+  //   这与 docs/design §91.7、§92 是**同一个形状**（本仓第三次出现）：
+  //   自检的成功判据由「声明量」而不是「实际执行量」驱动。
+  //   下面是第三道（§87 修过 §92 那道，§91.7 修过 vm-gaps 那道）。
+  //   需要放宽只能手工改这个常量，不接受命令行参数。
+  //   ⚠ 2026-10-08 提高 2 -> 6（docs/design §204.5 / §230）：原来 6 例配下限 2，
+  //     而**下限恰好等于两条不承重夹具的条数** ⇒ 删掉全部 4 条 runGuard 用例后
+  //     cases.length 仍是 2、仍然 ≥ 2、门照样全绿。
+  const MIN_SELFTEST_CASES = 6;
+  if (cases.length < MIN_SELFTEST_CASES) {
+    console.error(
+      `[build-mobile] 自检只跑了 ${cases.length}/${MIN_SELFTEST_CASES} 例 —— 夹具循环或 push 被改过。`,
+    );
+    console.error('   「0/0 通过」不是通过：那是判据失明时的读数，和真通过长得一模一样。');
+    process.exit(2);
+  }
+
+  // ★★★ 分组下限（§206 待拍板第 4 条）。总条数下限按上面那条已经提到 6，
+  //   但「总数够」与「每一类都还在」不是同一件事 —— 这是 §230 那道算术题在
+  //   本文件的形状：删掉一整组、别的组不动，总数照样够。
+  //
+  //   runGuard 这一组尤其要单列：它防的是 2026-09-05 真机事故本体
+  //   （空/非绝对/LAN API base ⇒ 每个 /api 请求拿到 index.html），
+  //   而实测**摘掉其中任何一道，gates 都不会红**（§116 的 M9 同一形状）。
+  const REQUIRED_COVERAGE = [
+    ['TCP 可达性', 2],    // 实测 2 —— 只测辅助函数 tcpReachable
+    ['runGuard 守卫', 4],  // 实测 4 —— 空 base / 非绝对 URL / prod 非绝对 / prod LAN
+  ]
+  for (const [subject, min] of REQUIRED_COVERAGE) {
+    const n = cases.filter((c) => c.subject === subject).length
+    if (n < min) {
+      console.error(`[build-mobile] 被测面「${subject}」只剩 ${n} 条用例（下限 ${min}）—— 这一组被删光或腰斩了。`)
+      process.exit(2);
+    }
+    console.log(`  覆盖 ${subject}: ${n} 条（下限 ${min}）`)
+  }
+
   let bad = 0
+  let noVerdict = 0
   for (const c of cases) {
     const ok = c.got === c.want
+    // ⚠ 优先于 🔴：没得出结论时，`got` 的真假不可信，不能当成「判定为假」记进 bad
+    if (c.inconclusive) { noVerdict++; console.log(`  ⚠️  ${c.name}：**未得出结论**${c.why ? '（' + c.why + '）' : ''}`); continue }
     if (!ok) bad++
     console.log(`  ${ok ? '🟢' : '🔴'} ${c.name}：got=${c.got} want=${c.want}${c.why ? '（' + c.why + '）' : ''}`)
   }
-  console.log(`\n[build-mobile] 自检 ${cases.length - bad}/${cases.length} 通过`)
+  const judged = cases.length - noVerdict
+  console.log(
+    `\n[build-mobile] 自检 实跑 ${cases.length} 例，通过 ${judged - bad} 例` +
+    (noVerdict ? `，另有 ${noVerdict} 例**未得出结论**` : ''),
+  )
+  if (noVerdict) {
+    console.error('[build-mobile] ⚠️ 上面这些例子**没得出结论**（探针超时或子进程没起来），不是判据判定为假。')
+    console.error('   量具侧的问题（机器慢 / 环境 / 起不来），请重跑；判据本身是否有牙要等它们真出结论才算数。')
+    console.error('   退出码 2 = 量具失效（与下面 MIN_SELFTEST_CASES、audit-doc-encoding.mjs 同一约定），不是断言失败。')
+    process.exit(2)
+  }
   process.exit(bad ? 1 : 0)
 }
 
