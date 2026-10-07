@@ -125,11 +125,33 @@ if (process.argv.includes('--selftest')) {
   //   **「0/0 通过」不是通过**：那是判据失明时的读数，和真通过长得一模一样。
   //   与 check-exit-reflects-verdict.mjs 的 MIN_SELFTEST_CASES、build-mobile.mjs 的同名常量同一形状。
   //   需要放宽只能手工改这个常量，不接受命令行参数。
-  const MIN_SELFTEST_CASES = 6;
+  //   ⚠ 2026-10-08 提高 6 -> 11：§203 实测「删敏感度组 + 判据恒假」时
+  //     floor 6/8/9 全过（当时 9 例，删完 9 例仍 ≥ 9）⇒ **单靠总数下限抓不住**。
+  //     现在实测 11 例，抬到 11 之后任何删除都会红；下面再补一道分组下限兜底。
+  const MIN_SELFTEST_CASES = 11;
   if (cases.length < MIN_SELFTEST_CASES) {
     console.error(`selftest: 只跑了 ${cases.length}/${MIN_SELFTEST_CASES} 例 —— 字面量数组被删过。`);
     console.error('「0/0 通过」不是通过：那是判据失明时的读数。');
     process.exit(2);
+  }
+
+  // ★★★ 分组下限（docs/design §206 待拍板第 5 条「或改成带组名的结构（后者取代前者）」）。
+  //   §203 那条变异的关键是：**删掉一整组、判据改成恒假，计数几乎不变**
+  //   ⇒ 总数下限对它无感。分组下限按用例名的 `·` 前缀机械分组（不靠人肉数归属）。
+  const groupOf = (name) => name.split('·')[0]
+  const REQUIRED_COVERAGE = [
+    ['敏感度', 2],  // 实测 2 —— 该报的必须报
+    ['特异度', 6],  // 实测 6 —— 不该报的一律不报
+    ['变盲', 2],    // 实测 2 —— 空输入 / 无关文本不能被判成有问题
+    ['自指', 1],    // 实测 1 —— §208 状态①：豁免是活的且承重（SCAN_ROOTS 含 .mjs）
+  ]
+  for (const [group, min] of REQUIRED_COVERAGE) {
+    const n = cases.filter(([name]) => groupOf(name) === group).length
+    if (n < min) {
+      console.error(`selftest: 被测面「${group}」只剩 ${n} 条用例（下限 ${min}）—— 这一组被删光或腰斩了。`)
+      process.exit(2);
+    }
+    console.log(`  覆盖 ${group}: ${n} 条（下限 ${min}）`)
   }
   let bad = 0
   for (const [name, fn] of cases) {
