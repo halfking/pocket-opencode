@@ -302,12 +302,6 @@ function modeFor(platform, env) {
 
 const mode = modeFor(platform, env);
 const envFile = path.join(frontendRoot, `.env.${mode}`);
-if (!existsSync(envFile) && mode !== "production") {
-  console.error(`[build-mobile] missing env file: ${envFile}`);
-  console.error(`[build-mobile] expected ${mode} profile for ${platform}/${env}`);
-  process.exit(1);
-}
-
 // ---- API base guard (fail fast, before spending a vite build) ----
 // Resolve the effective VITE_API_BASE with Vite's precedence: shell env wins,
 // then .env.<mode>.local > .env.<mode> > .env.local > .env.
@@ -378,6 +372,27 @@ if (mode === "production" && effectiveAPIBase) {
   }
 }
 
+// ---- absolute-URL guard（非 production 模式；prod 由上面那道更严的守）----
+// 2026-10-08 抽出：这个检查原先**寄居在下面的可达性守卫里**
+// （`if (target.parseError) { … exit 1 }`）⇒ 它是 `MOBILE_SKIP_REACHABILITY=1`
+// 的**条件分支内部**，于是那个逃生舱会把它一起关掉 —— 实测设了逃生舱就能用
+// 相对 URL（`not-a-url`）出包。
+// 而它判的是「值合不合法」，可达性判的是「机器还在不在」，**两件事必须分开**：
+// 逃生舱的用途是「那台机器暂时不在，但值是对的」，它不该顺带把合法性校验也免掉。
+//
+// 放在 production host guard **之后**：prod 有自己更严的一套（含 LAN/环回/占位符），
+// 报错文案也不同，不能被这条抢走。
+if (effectiveAPIBase) {
+  try {
+    new URL(effectiveAPIBase);
+  } catch {
+    console.error(
+      `[build-mobile] refusing to build ${platform}/${env}: VITE_API_BASE is not an absolute URL: ${effectiveAPIBase}`,
+    );
+    process.exit(1);
+  }
+}
+
 // ---- reachability guard（字符串对了 ≠ 那台机器还在） ----
 // 2026-10-04 实吃：`.env.android-dev` 写死 `VITE_API_BASE=http://192.168.31.37:8090`，
 // 而本机 LAN IP 早已变成 .34，.37 那台也不再监听（curl 全 000）。但下面那段
@@ -405,6 +420,9 @@ if (effectiveAPIBase && process.env.MOBILE_SKIP_REACHABILITY !== "1") {
     target = { parseError: true };
   }
 
+  // 兜底：URL 合法性已由上面的 absolute-URL guard 判过，正常走不到这里。
+  // 保留是为了**失败方向安全** —— 若将来有人把它挪到那道守卫之前（例如挪进
+  // 某个更早的分支），这里仍会拒绝而不是静默跳过可达性检查。
   if (target.parseError) {
     console.error(`[build-mobile] refusing to build ${platform}/${env}: VITE_API_BASE is not an absolute URL: ${effectiveAPIBase}`);
     process.exit(1);
@@ -434,6 +452,38 @@ if (effectiveAPIBase && process.env.MOBILE_SKIP_REACHABILITY !== "1") {
 } else if (effectiveAPIBase) {
   console.warn("[build-mobile] WARNING: MOBILE_SKIP_REACHABILITY=1 —— 跳过后端可达性检查，产物可能指向一台不存在的机器");
 }
+
+// ⚠ env 文件存在性检查的位置（2026-10-08 调整）：它**故意排在 API base 守卫之后**。
+// 此前排在守卫之前 ⇒ 干净检出里（.env.android-dev 被 .gitignore 的 .env.* 排除、
+// 从未入库）`build-mobile.mjs android dev` 一进来就以「missing env file」退出，
+// **API base 守卫压根没被执行到** ⇒ check:build-mobile-selftest 的两条 android/dev
+// 用例在 CI 上恒红；又因 run-gates --ci 失败即停 ⇒ 后 30 条门禁在 CI 上一次都没跑过。
+//
+// 守卫的判定不受该文件影响：自检显式传的 VITE_API_BASE 空串经 Vite 优先级遮蔽了
+// 文件里的值（见上方 effectiveAPIBase 的 `??` 链），文件在不在都不改变结论。
+// 唯一的行为变化：两个条件同时成立时**先报哪一句**——先报更可操作的 base 问题，
+// 紧接着仍会报 missing env file，两句都在。
+
+if (!existsSync(envFile) && mode !== "production") {
+  console.error(`[build-mobile] missing env file: ${envFile}`);
+  console.error(`[build-mobile] expected ${mode} profile for ${platform}/${env}`);
+  process.exit(1);
+}
+
+// ⚠ env 文件存在性检查的位置（2026-10-08 调整）：它排在**全部前置守卫之后**。
+//
+// 此前它排在守卫之前 ⇒ 干净检出里（.env.android-dev 被 .gitignore 的 .env.* 排除、
+// 从未入库）`build-mobile.mjs android dev` 一进来就以「missing env file」退出，
+// **API base 的三道守卫一道都没被执行到** ⇒ check:build-mobile-selftest 的两条
+// android/dev 用例在 CI 上恒红；又因 run-gates --ci 失败即停
+// ⇒ 后 30 条门禁在 CI 上一次都没跑过。
+//
+// 为什么放在守卫之后是对的：守卫判的是「这个包安不安全」（base 空/非法/主机不可达），
+// 而本段判的是「配置齐不齐」。**安全判断不该被配置完整性挡在前面** ——
+// 挡在前面的后果不是「早失败」，是「该跑的守卫没跑」。
+//
+// 行为变化只有一处：配置缺失**且** base 也不安全时，先报更可操作的安全问题，
+// 紧接着仍会报 missing env file，两句都在。
 
 const fast = process.env.MOBILE_FAST === "1";
 const envVars = { ...process.env, FORCE_COLOR: "1" };
