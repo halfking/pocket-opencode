@@ -37,7 +37,7 @@
     "check:vacuous-guard": "node scripts/check-vacuous-optional-guard.mjs",
     "test:native:all": "node --test src/native/__tests__/*.test.mjs src/native/__tests__/*.test.ts",
     "audit:vm-gaps": "node scripts/audit-viewmodel-gaps.mjs",
-    "audit:i18n-keys": "node scripts/audit-i18n-keys.mjs",
+    "audit:i18n-keys": "node ../scripts/audit-i18n-keys.mjs",
     "audit:dead-features": "node scripts/audit-dead-features.mjs",
     "check:dead-api": "node scripts/check-dead-api.mjs",
     "check:dead-features": "node scripts/check-dead-features.mjs",
