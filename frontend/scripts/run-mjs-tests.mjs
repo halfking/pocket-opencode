@@ -32,9 +32,23 @@ const here = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(here, '..')
 const SRC = join(ROOT, 'src')
 
-/** 覆盖范围在这里定义一次；静态卡口通过 --print-coverage 读同一份，避免两处漂移。 */
+/**
+ * 覆盖范围在这里定义；静态卡口通过 --print-coverage / --print-files 读**同一份**枚举结果。
+ *
+ * ★ 2026-10-07 修：原来注释写「定义一次」，而文件里其实有**两份**：
+ *   `COVERAGE_GLOBS`（对外声明的 glob）与 `SUFFIXES`（真正用来遍历文件系统的）。
+ *   两者没有交叉校验。实测只改 `SUFFIXES` 加一类 `.test.js`：
+ *   本 runner 会**真的枚举并执行**它们，而孤儿卡口的 `ENFORCED_SUFFIXES` 不知道这一类
+ *   ⇒ **这一类的孤儿永远不会被报出来** —— 正是这道门存在的目的被绕过。
+ *   而 `COVERAGE_GLOBS` 加一项时，孤儿卡口会因为「新 glob 匹配 0 个文件」而 exit 1，
+ *   报出来的却是**错误理由**（让人去查路径拼写，而不是查后缀清单不一致）。
+ *   ⇒ 现在 `SUFFIXES` 由 `COVERAGE_GLOBS` **推导**，不再各写一份；
+ *     并且新增 `--print-files`：把**真正枚举到的文件**吐出来给孤儿卡口对账。
+ */
 export const COVERAGE_GLOBS = ['src/**/*.test.mjs', 'src/**/*.test.ts']
-const SUFFIXES = ['.test.mjs', '.test.ts']
+// 从 glob 推后缀，避免两份清单漂移。
+// ⚠ 注释里**不要**写出形如 `src/**/*.test.x` 的样例：其中的 `*` + `/` 会提前闭合块注释。
+export const SUFFIXES = COVERAGE_GLOBS.map((g) => g.slice(g.lastIndexOf('/') + 1).replace(/^\*+/, ''))
 
 /**
  * 豁免清单与 check-test-coverage.mjs 共用同一份 JSON。
@@ -73,6 +87,14 @@ const allFiles = SUFFIXES.flatMap((s) => walk(SRC, s)).sort()
 if (!allFiles.length) {
   console.error(`❌ ${relative(ROOT, SRC)} 下没找到任何测试文件 —— 路径写错了，别空转绿灯。`)
   process.exit(1)
+}
+
+// --print-files：把**真正枚举到的文件**吐给孤儿卡口对账（2026-10-07 新增）。
+// 孤儿卡口的覆盖判定是「glob 展开 ∩ 自己的清单」；如果 runner 的枚举清单与
+// 它的清单不一致（多一类/少一类），那一类的孤儿就永远没人管。这个出口让对账成为可能。
+if (process.argv.includes('--print-files')) {
+  process.stdout.write(allFiles.join('\n') + '\n')
+  process.exit(0)
 }
 const discovered = allFiles.filter((f) => !UNRUNNABLE[f])
 const skipped = allFiles.filter((f) => UNRUNNABLE[f])
