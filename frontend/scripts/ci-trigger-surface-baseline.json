@@ -1,0 +1,4 @@
+{
+  "note": "每条 ciRuns 门禁的实现文件未被任何 workflow 的 pull_request paths 覆盖的现状；只许减少不许增加。",
+  "pr": []
+}

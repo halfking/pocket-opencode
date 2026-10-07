@@ -1,0 +1,19 @@
+{
+  "note": "src/features/meetings/ 下「未被 App 引用」的导出符号；只许减少不许增加。含「仅测试引用」。\nwaived = **有意不接**（不是缺口；接上去反而有害）。值是理由，不许留空。",
+  "dead": [
+    "src/features/meetings/audio-parts.ts:listAudioParts",
+    "src/features/meetings/gateway-kind.ts:gatewayWorkType",
+    "src/features/meetings/meeting-dedup.ts:dedupeTranscriptParagraphs",
+    "src/features/meetings/meeting-list.ts:filterMeetings",
+    "src/features/meetings/meeting-skills.ts:DEFAULT_MEETING_SKILL",
+    "src/features/meetings/meeting-todo-persist.ts:listMeetingTodos",
+    "src/features/meetings/meetings-store.ts:updateSummary",
+    "src/features/meetings/recorderTiming.ts:classifyRecovery",
+    "src/features/meetings/recorderTiming.ts:createElapsedTracker",
+    "src/features/meetings/recorderTiming.ts:partsToBlob",
+    "src/features/meetings/voiceprints-store.ts:enrollFromAudio"
+  ],
+  "waived": {
+    "src/features/meetings/voiceprints-store.ts:enrollFromAudio": "声纹的**录入**路径是 recordingRuntime.labelSpeaker → upsertVoiceprintLabel（开会时给某一位说话人起名，空状态文案也是这么教用户的）。本函数内部调 saveVoiceprint，而 recordingRuntime.ts:608 明写「⚠ 用 upsertVoiceprintLabel 而不是 saveVoiceprint」——接上它会重新引入「改一次名就多记一个样本」那个已被刻意拆开的耦合。⇒ 它是**被更好的形态取代**，不是「还没接线」。"
+  }
+}

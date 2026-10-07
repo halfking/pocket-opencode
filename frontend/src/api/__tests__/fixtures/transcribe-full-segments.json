@@ -1,0 +1,26 @@
+{
+  "text": "这个季度的续费方案基本上已经定了［第 2 段转写失败：upstream 503］没签的那两个走线下",
+  "segments": [
+    {
+      "index": 0,
+      "startSec": 0,
+      "endSec": 11.5,
+      "text": "这个季度的续费方案基本上已经定了"
+    },
+    {
+      "index": 1,
+      "startSec": 11.5,
+      "endSec": 22,
+      "error": "upstream 503"
+    },
+    {
+      "index": 2,
+      "startSec": 22,
+      "endSec": 28,
+      "text": "没签的那两个走线下"
+    }
+  ],
+  "durationMs": 28000,
+  "failed": 1,
+  "succeeded": 2
+}
