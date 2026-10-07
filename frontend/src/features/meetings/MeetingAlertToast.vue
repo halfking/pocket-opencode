@@ -33,7 +33,13 @@ function icon(type: string): string {
 <style scoped>
 .alert-stack {
   position: fixed;
-  top: calc(var(--topbar-height, 48px) + var(--space-2));
+  /* `fixed` 相对**视口**，而顶栏的底边在 `--app-safe-top + --topbar-height`
+     （安全区由 body 的 padding-top 顶下来，styles.css:88）。只写
+     `--topbar-height + 8px` 会在有状态栏的设备上与顶栏重叠
+     （模拟器实测安全区 24px ⇒ 重叠 16px，且 --z-fab 60 > --z-sticky 50，
+     是浮层画在顶栏**上面**，不是被盖住）。
+     门禁：src/styles/__tests__/topbar-chrome-gate.test.mjs。 */
+  top: calc(var(--topbar-height, 48px) + var(--app-safe-top) + var(--space-2));
   left: var(--space-3);
   right: var(--space-3);
   z-index: var(--z-fab);

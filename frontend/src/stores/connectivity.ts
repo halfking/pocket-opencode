@@ -9,9 +9,10 @@
  * 监听，触发结果通过事件回写本 store，全局状态条（GlobalStatusBar）只读这里。
  */
 import { defineStore } from 'pinia'
+import { watch } from 'vue'
 import { useAuthStore } from './auth'
 import { resolveApiBase } from '../config/api-base'
-import { isLobsterReady } from '../native/lobster-init'
+import { isLobsterReady, lobsterReady } from '../native/lobster-init'
 import { localDB, localDbAsSql } from '../native/local-db'
 import { MobileSyncRuntime, type RuntimeEvent } from '../native/mobileSyncRuntime'
 import { startEmailFetchHost } from '../features/email/email-fetch-host'
@@ -68,7 +69,30 @@ export const useConnectivityStore = defineStore('connectivity', {
         onEvent: (event) => this.applyRuntimeEvent(event),
       })
       this.runtime.start()
-      startEmailFetchHost()
+      // 2026-10-06 加门：邮件拉取要读写本地库，而本函数可能在 initLobster 完成**之前**
+      // 就被调用（`email-fetch-host.ts` 的注释自己说明了：冷启动时 visibilitychange /
+      // appStateChange 都不触发，所以它专门加了一个启动即 kick）。
+      // 真机实测那次冷启动就因此打出
+      //   [email] sync from server: LocalDB 未初始化，请先调用 init(dbSecret)
+      // ——而这条错误的上一任（4 条 duplicate column name）刚被我清掉。
+      // 本文件上面 `isReady` / `db` 两处本来就用 isLobsterReady() 门控，只有这一行是裸的。
+      //
+      // ⚠️ 这里用 **watch(lobsterReady)** 而不是「不 ready 就 await 一次」。
+      // 我第一版写的是：
+      //   if (isLobsterReady()) startEmailFetchHost()
+      //   else void whenLobsterReady().then(...).catch(() => {})
+      // 那一版**表面修好了**（console 一行错都没有），但真机启动窗口取证显示
+      // **一个 email 请求都没发** ⇒ 它把「响亮地失败」换成了「安静地不跑」：
+      // 若此时既没 ready、也没有进行中的 init，whenLobsterReady() 会 reject，
+      // 被 catch 吞掉 ⇒ 邮件拉取**再也不会启动**。
+      // 照搬 `config-sync/runtime.ts` 的响应式写法：ready 一翻 true 就启动，不会自我放弃。
+      watch(
+        lobsterReady,
+        (v) => {
+          if (v) startEmailFetchHost()
+        },
+        { immediate: true },
+      )
     },
     applyRuntimeEvent(event: RuntimeEvent) {
       switch (event.type) {

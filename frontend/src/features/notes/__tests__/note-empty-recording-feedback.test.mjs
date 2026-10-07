@@ -74,8 +74,26 @@ describe('接线：runtime 必须真的用上这个判据（结构断言）', ()
     assert.ok(i > 0, 'runtime 里没有 emptyRecordingNotice 的调用')
     const call = runtime.slice(i)
     // 实参必须来自真正的运行数据，不能是两个字面量（那等于判据从未被求值）。
-    assert.match(call, /transcript\.value\.trim\(\)\s*!==\s*''/, '第一实参必须是「有没有文字」的实时判断')
+    //
+    // 2026-10-06：第一实参从 `this.transcript.value.trim() !== ''` 改写成
+    // `finalText !== ''`（finalText 就是同一表达式提成局部变量，因为要在它之后
+    // 复用给回填与 pendingResult）。**只放宽这里的正则是不够的** —— 那样这道门
+    // 会变成「finalText 是任何东西都行」。所以下面紧跟一条：锁住 finalText 的定义。
+    assert.match(
+      call,
+      /transcript\.value\.trim\(\)\s*!==\s*''|finalText\s*!==\s*''/,
+      '第一实参必须是「有没有文字」的实时判断',
+    )
     assert.match(call, /audioBlob\.size/, '第二实参必须是实际的音频字节数')
+  })
+
+  it('第一实参用的 finalText 确实来自转写结果（防止上一条被放宽成空壳）', () => {
+    // 上一条允许了 finalText 这个间接层，这里负责证明它不是随手编的变量。
+    assert.match(
+      runtime,
+      /const\s+finalText\s*=\s*this\.transcript\.value\.trim\(\)/,
+      'finalText 必须就是转写结果的去空白；否则「有没有文字」退化成未经求值的判断',
+    )
   })
 
   it('非空提示必须写进 error（否则界面那条错误行永远没内容）', () => {

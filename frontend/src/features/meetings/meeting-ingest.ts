@@ -8,6 +8,7 @@ import {
   updateMeeting, type ActionItem, type LocalMeeting,
 } from './meetings-store'
 import type { RefineResult } from '../../api/meetings'
+import { ensureTodoReminder, resolveTodoDue } from './meeting-due-reminder'
 
 export interface IngestResult {
   noteId: string | null
@@ -41,7 +42,7 @@ export async function ingestMeetingArtifacts(
     ...refine.todos,
     ...(meeting.liveSummary?.actionItems ?? []),
   ]
-  todosCreated = await createLocalTodos(todos, noteId, meeting.id)
+  todosCreated = await createLocalTodos(todos, noteId, meeting.id, meeting.title ?? '')
 
   await updateMeeting(meeting.id, {
     refinedTranscript: refine.refinedTranscript,
@@ -72,23 +73,41 @@ export async function ingestMeetingArtifacts(
   return { noteId, todosCreated, cloudSynced }
 }
 
-async function createLocalTodos(items: ActionItem[], noteId: string | null, meetingId?: string): Promise<number> {
+async function createLocalTodos(
+  items: ActionItem[],
+  noteId: string | null,
+  meetingId?: string,
+  meetingTitle = '',
+): Promise<number> {
   const unique = dedupeTodos(items)
   let count = 0
   const now = Date.now()
   for (const item of unique) {
     if (!item.text.trim()) continue
     const id = `todo-${now}-${Math.random().toString(36).slice(2, 6)}`
+    // 与会中总结路径同一套期限解析口径（ISO 优先、中文兜底）。
+    const dueAt = resolveTodoDue(item.due, now)
     await localDB.run(
       `INSERT INTO local_todos
        (id, note_id, title, description, status, priority, due_at, extracted_from_voice, meeting_id, created_at, updated_at)
        VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
       [
         id, noteId, item.text, item.assignee ? `负责人：${item.assignee}` : null,
-        'pending', mapPriority(item), parseDue(item.due), 1, meetingId ?? null, now, now,
+        'pending', mapPriority(item), dueAt ? dueAt.at : null, 1, meetingId ?? null, now, now,
       ],
     )
     count++
+    // 录后精校同样要把时间点送进计划日程（需求原文：自动加入计划日程）。
+    if (dueAt) {
+      await ensureTodoReminder({
+        text: item.text,
+        dueText: item.due,
+        assignee: item.assignee,
+        meetingTitle,
+        at: dueAt.at,
+        source: 'meeting-ingest',
+      })
+    }
   }
   return count
 }
@@ -108,12 +127,6 @@ function mapPriority(item: ActionItem): string {
   if (p === 'urgent' || p === 'high') return 'high'
   if (p === 'low') return 'low'
   return 'medium'
-}
-
-function parseDue(due?: string): number | null {
-  if (!due) return null
-  const t = Date.parse(due)
-  return isNaN(t) ? null : t
 }
 
 /** 录音结束后同步元数据到云端（不含音频/转写全文） */

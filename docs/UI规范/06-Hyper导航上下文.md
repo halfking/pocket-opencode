@@ -112,6 +112,28 @@ runtime 额外管标题登记与返回注册表。
 **不冒充 success**：`dispatchBack()` 永不返回 `undefined`。异常时返回
 `{kind:'blocked', reason:'exception'}` 并记诊断，调用方据此决定是否退出应用。
 
+### 5.1 仲裁器**之前**的两道守卫（它们优先级高于全部 6 条）
+
+⚠️ 这两条**不在** `BackDispatcher` 里，写在 `AppLayout.vue:208-225` 的
+`CapApp.addListener('backButton', …)` 回调开头。**只对 Android 硬件返回生效**，
+左上角返回钮与 Esc 不受它们约束。
+
+| 守卫 | 出处 | 行为 |
+| --- | --- | --- |
+| 抽屉优先 | `AppLayout.vue:209-212` | `menuOpen` 为真时只关抽屉并 `return`，**不导航** |
+| 解锁态拒绝 | `AppLayout.vue:216-220` | `route.query.unlock === '1'` 时**空 `return`**，吞掉这一次返回 |
+
+第二条是 BUG-B 修复（2026-09-22）的产物：解锁未完成时按返回原本会跳过主密码
+验证直接回到受保护路由。它同时**连退出应用也不给**（栈空也不 exit）。
+
+★ **这两条必须写进规范，而不是只留在代码注释里** —— 2026-10-06 的真机矩阵就在
+这里误判过一次：把「解锁屏上返回键不导航」读成「按键未送达 WebView（环境事实）」，
+并据此把一条**产品设计**记成了待查缺陷。判别方法见 10 文档 §4.0f。
+⇒ **在解锁屏上测返回键行为没有意义**：那一屏的**预期行为就是不导航**。
+任何「返回键没反应」的结论都必须先排除这一屏（读 `.login-view .unlock-hint`，
+它**只在** `LoginView.vue` 的 `needUnlock` 分支渲染）。
+
+
 ## 6. 降级纪律
 
 `createShellRuntime()` 的任何安装步骤抛错都**不阻断启动**，只写进
@@ -124,7 +146,7 @@ runtime 额外管标题登记与返回注册表。
 | --- | --- |
 | 浏览器 Back 与覆盖层的**原子协调**（同 URL 临时 history 标记 + 拒绝后补偿） | **spec-only**。当前只覆盖 Vue 路由，不劫持浏览器 Back |
 | Android **预测性返回**（开始/进度/取消/提交四阶段） | **未实现**。`@capacitor/app` 已装，但未接四阶段 |
-| iOS 可取消边缘返回 | **未实现**（本轮范围是 Android） |
+| iOS 可取消边缘返回 | **未实现**（本轮范围是 Android）。⚠️ 别读成「iOS 没搭」—— `frontend/ios/` **是存在的**（`App` / `capacitor-cordova-ios-plugins` / `debug.xcconfig`），只是本轮没动 |
 | 前进按钮的真实启用条件复核（目的地权限） | **未实现**，见 `forward()` 注释 |
 
 ## 8. 接入方式

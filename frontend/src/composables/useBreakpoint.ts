@@ -90,7 +90,13 @@ export function useBreakpoint() {
   const isMobile = computed(() => mode.value === 'compact' || mode.value === 'medium')
   const isTablet = computed(() => mode.value === 'expanded')
   const isDesktop = computed(() => mode.value === 'wide')
-  /** 超窄屏（compact 内的具名子档）。 */
+  /** 超窄屏（compact 内的具名子档）。闭区间 ⇒ 380 属于 narrow。
+   *  ⚠️ 2026-10-06 曾经短暂改成开区间，**又改回来了**，两次都是被真机数据纠正的：
+   *  第一次以为 CSS 的 `@media (max-width: 380px)` 在真机上等于「< 380」，
+   *  于是把两侧统一成开区间并把 CSS 减 1；**重建 APK 实测才发现减 1 只是把边界
+   *  整体下移一格**（命中集合从 {≤379} 变成 {≤378}），并没有对齐。
+   *  ⇒ 真正的修法是让 CSS 改用等价的 min-width 写法，而不是动 JS 的边界语义。
+   *  ⇒ 本设备的 `@media (max-width: N)` 系统性等价于 `< N`，`min-width` 则闭区间且正确。 */
   const isNarrow = computed(() => mode.value === 'compact' && width.value <= NARROW_MAX_PX)
   const isCompact = computed(() => mode.value === 'compact')
   const isMedium = computed(() => mode.value === 'medium')

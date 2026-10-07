@@ -15,6 +15,7 @@
  *     `handed-to-system` / `blocked`，调用方据此决定是否退出应用。
  */
 
+import type { InjectionKey } from 'vue'
 import { NavigationContextStore } from './navigationContext.ts'
 import { TitleResolver } from './titleResolver.ts'
 import { BackDispatcher, type RouterAdapter } from './backDispatcher.ts'
@@ -255,6 +256,42 @@ export function createShellRuntime(router: RouterLike, opts: { scope?: Navigatio
 export function getShellRuntime(router: RouterLike, opts: { scope?: NavigationScope } = {}): ShellRuntime {
   if (!singleton) singleton = createShellRuntime(router, opts)
   return singleton
+}
+
+/**
+ * 运行时注入键：供**已在 AppLayout 里建立好的那个实例**向下传递。
+ *
+ * ⚠️ 为什么必须是 provide/inject，不能让弹窗自己 `getShellRuntime(router)`：
+ *   `getShellRuntime` 是**进程内单例**且**必须传 router**（router 守卫靠它安装）。
+ *   弹窗若自己调 `getShellRuntime()`，要么造出**第二个没有 router 的实例**
+ *   （守卫全失效），要么依赖调用顺序 —— 两种都是「看着能跑、实际不仲裁」。
+ *
+ * 2026-10-06 实吃：这层桥**原本整个不存在**，于是 `BackDispatcher.registerOverlay`
+ * 全仓零调用（连测试都没有），「覆盖层优先」这条已写明并已单测的契约
+ * **从未在产品里生效** —— `Dialog` / `BottomSheet` 都 `<Teleport to="body">`，
+ * 硬件返回键会导航路由，而弹窗因为挂在 body 上**留在屏幕上**。
+ */
+export const SHELL_RUNTIME_KEY: InjectionKey<ShellRuntime> = Symbol('openpocket.shellRuntime')
+
+/**
+ * **只读**地取已存在的单例；没有就返回 `null`。**永不创建。**
+ *
+ * ⚠️ 为什么需要它（2026-10-06 实吃，设备复验直接把它打出来了）：
+ *   运行时实例是在 `AppLayout` 里用 router 建的，而**全局弹窗挂在 `App.vue`**：
+ *     ```html
+ *     <AppLayout> … </AppLayout>   <!-- 运行时在这里 provide -->
+ *     <ConfirmDialog />            <!-- ← 兄弟节点，在 provide 作用域之外 -->
+ *     ```
+ *   ⇒ `ConfirmDialog` 里的 `Dialog` 注入不到，overlay 永远不登记，
+ *     硬件返回键照旧导航路由、弹窗留在屏幕上。
+ *   而 `getShellRuntime(router)` 不能拿来兜底：它**必须传 router**，
+ *   弹窗自己调会造出**第二个没有路由守卫的实例**。
+ *
+ * ⇒ 所以分成两个入口：**建**（`getShellRuntime`，只有 AppLayout 调）
+ * 与**取**（`peekShellRuntime`，谁都能调、拿不到就是 null）。
+ */
+export function peekShellRuntime(): ShellRuntime | null {
+  return singleton ?? null
 }
 
 /** 仅供测试：清掉单例。 */

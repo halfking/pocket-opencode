@@ -116,7 +116,7 @@ import { useDevicePosture } from '../composables/useDevicePosture'
 import { createScrollHideChrome, bindScrollHideChrome } from '../composables/useScrollHideChrome'
 import { SCROLL_CHROME_KEY, isChromeToggleTap } from '../composables/scroll-chrome'
 import { headerTitleOverride } from '../composables/useAppHeaderTitle'
-import { getShellRuntime, dispatchBack } from '../lib/shell'
+import { getShellRuntime, dispatchBack, SHELL_RUNTIME_KEY } from '../lib/shell'
 import { useAuthStore } from '../stores/auth'
 
 const { t } = useI18n()
@@ -384,6 +384,13 @@ const chromeVars = computed(() => ({
   '--bottom-chrome-inset': `${bottomInsetHeight.value}px`,
 }))
 
+// 把**已经建好的**运行时实例传下去。
+// 弹窗不能自己 getShellRuntime(router)：那是进程内单例且必须传 router，
+// 自己调会造出第二个没有守卫的实例（返回仲裁形同虚设）。
+// ⚠️ 2026-10-06：这层桥此前整个不存在 ⇒ BackDispatcher.registerOverlay
+// 全仓零调用，「覆盖层优先」契约从未在产品里生效。
+provide(SHELL_RUNTIME_KEY, shellRuntime)
+
 provide(SCROLL_CHROME_KEY, {
   ...chrome,
   chromeTotalHeight: computed(() => bottomNavHeight.value + bottomInsetHeight.value),
@@ -544,6 +551,17 @@ function focusMain() {
 
 .top-bar {
   height: var(--topbar-height);
+  /* ⚠️ 这一行**不是冗余**，删掉会被静默压扁 3px（2026-10-06 真机实测）。
+   * 父容器 .app-layout 是 `display:flex; flex-direction:column`，本元素是它的
+   * flex item；`height` 只声明**基准尺寸**，不阻止压缩（CSS Flexbox §9.7：
+   * 「flex item 的用尺寸可能偏离其指定尺寸」），而 flex-shrink 默认就是 1。
+   * ⇒ 矮视口下 .content 撑不下时，压缩是按基准尺寸**按比例分摊**的，
+   *   顶栏也跟着缩：横屏（高 411px）与分屏（高 500px）实测 h=45px，
+   *   竖屏（高 914px）h=48px。
+   * 真正的让位者只有 .content —— 它显式写了 `flex: 1 1 auto; min-height: 0`，
+   * 且 overflow-y: auto，本来就该由它吸收压缩。
+   * 判据：scripts/device-matrix.mjs 的 UI-06d（token 值 vs 实测高度）。 */
+  flex-shrink: 0;
   display: flex;
   align-items: center;
   gap: var(--space-2-5);

@@ -102,6 +102,7 @@ import { captureDeviceLocation, formatCapturedTitle } from './meeting-meta'
 import { mergeRecommendations, relatedQueryFromTranscript } from './meeting-related'
 import { searchRelatedContext } from './meeting-related-search'
 import { createMeetingTodos, handoffTodoToAcc, shareTodoWithPerson } from './meeting-todo-persist'
+import { dedupeSegments } from './meeting-dedup.ts'
 import AddToLearningButton from '../study/AddToLearningButton.vue'
 import type { MeetingTodoDraft } from './meeting-todos'
 import type { MeetingStudioAction } from './meeting-page-actions'
@@ -146,7 +147,12 @@ const { liveSummary, recommendations, isUpdating, refresh } = useLiveSummary(mee
 })
 
 const micOn = computed(() => wantMic.value || isRecording.value)
-const displaySegments = computed(() => (segments.value.length ? segments.value : storedSegments.value))
+// ★ 在源头去重（2026-10-06）：整页所有消费者（渲染、重新总结、待办转交）
+//   都从这里取数据，重复文本会顺着流进 LLM 摘要与待办。在 computed 里
+//   做一次即可，computed 本身带缓存，不会每帧重算。
+const displaySegments = computed(() => dedupeSegments(
+  segments.value.length ? segments.value : storedSegments.value,
+))
 const mergedRecs = computed(() => mergeRecommendations(recommendations.value, noteRecs.value))
 const statusLine = computed(() => {
   if (micOn.value) return `录音中 ${formatElapsed()}`
@@ -212,7 +218,9 @@ async function onSummarize() {
     })
     await updateMeeting(meetingId.value, { summary })
     const items = liveSummary.value?.actionItems ?? []
-    if (items.length) await createMeetingTodos(meetingId.value, items, meeting.value.noteId)
+    if (items.length) {
+      await createMeetingTodos(meetingId.value, items, meeting.value.noteId, meeting.value.title ?? '')
+    }
     markListDirty('meetings')
     await load()
     toast.success('已生成当前总结')

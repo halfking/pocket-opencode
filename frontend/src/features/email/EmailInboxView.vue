@@ -99,7 +99,7 @@
     <p v-if="syncHint" class="sync-hint">{{ syncHint }}</p>
     <div v-if="loading" class="state-wrap"><Skeleton :count="5" /></div>
     <EmptyState
-      v-else-if="loadError"
+      v-else-if="loadError && shownEmails.length === 0"
       icon="⚠️"
       :title="loadError"
       action-label="重试"
@@ -118,6 +118,18 @@
     <!-- TransitionGroup：增量同步落库后的新增/更新/删除以动画呈现（无刷新更新可感知）。
          "more" 哨兵不带 key，放在 TransitionGroup 外避免 move 类误伤。 -->
     <template v-else>
+      <!--
+        有旧邮件时的失败：**不打断**已加载内容（2026-10-05 修，与 SessionListView 同源）。
+        ⚠️ `load()` 是**初次加载与下拉刷新共用**的入口，任何抛出都会设 `loadError`；
+        而错误态原本是无条件 `v-else-if="loadError"` 排在列表之前 ⇒ 一次刷新失败
+        就把整份收件箱换成整页错误态，已加载的邮件**从屏幕上消失**。
+        本仓同类缺陷已在 SessionListView 上由实机读数抓到并修（UI-07e：
+        失败前 4 行 → 失败后 0 行，而同一时刻后端数据仍在）—— 这里是同一形状的第二处。
+      -->
+      <div v-if="loadError" class="list-error-banner" role="alert">
+        <span>{{ loadError }}</span>
+        <button type="button" class="banner-retry" @click="load">重试</button>
+      </div>
       <!-- role/aria/tabindex（2026-10-03 22:5x 真机实测后补）：
            卡片原本是纯 <div class="email-card">，**没有任何可访问语义** ——
            没有 role、没有 aria-label、没有 tabindex。DOM 里 30 张卡片齐活、
@@ -682,6 +694,31 @@ onUnmounted(() => setHeaderTitle(null))
 .chip.active { background: var(--brand-primary); color: var(--text-inverse); border-color: var(--brand-primary); }
 .inbox-scroll { flex: 1; min-height: 0; }
 .state-wrap { padding: var(--space-2) 0; }
+/* 有旧邮件时的失败提示：不替换列表，只在列表上方挂一条（2026-10-05）。
+   与 SessionListView 的同名类**逐字一致** —— 同一形状的缺陷、同一种修法，
+   门禁 list-error-failpath 逐个视图检查这个约定。 */
+.list-error-banner {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  background: var(--danger-bg);
+  color: var(--danger);
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-sm);
+  border-top: 1px solid rgba(239, 68, 68, 0.2);
+}
+.banner-retry {
+  flex: 0 0 auto;
+  background: transparent;
+  color: inherit;
+  border: 1px solid currentColor;
+  border-radius: var(--radius-sm);
+  padding: 2px var(--space-2);
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
 .email-list { display: flex; flex-direction: column; gap: var(--spacing-list-gap); position: relative; }
 /* 增量同步动画：新邮件自上滑入、删除滑出并让位、其余项平滑上移补位 */
 .elist-enter-active { transition: opacity 0.35s ease, transform 0.35s ease; }

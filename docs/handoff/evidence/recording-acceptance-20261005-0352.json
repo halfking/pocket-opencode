@@ -1,0 +1,247 @@
+{
+  "stamp": "20261005-0352",
+  "groundTruth": "今天下午三点，会议室开产品评审会，请提前十分钟到场。",
+  "app": "com.kaixuan.opencode.pocket.sttdev",
+  "sttConfig": {
+    "status": 200,
+    "apiBase": "http://127.0.0.1:18099",
+    "channel": "gateway",
+    "model": "mimo-v2.5-asr",
+    "hasKey": true
+  },
+  "uiSamples": [
+    {
+      "at": "start+3s",
+      "text": "跳到主要内容 arrow_back 录音 00:02 search 搜索笔记 add 新建笔记 即时转写 ⏹ 停止录音",
+      "started": true
+    },
+    {
+      "at": "+5s",
+      "clock": "00:07",
+      "live": "转写失败，将在下一段重试 ⏹ 停止录音"
+    },
+    {
+      "at": "+10s",
+      "clock": "00:12",
+      "live": "转写失败，将在下一段重试 ⏹ 停止录音"
+    },
+    {
+      "at": "+15s",
+      "clock": "00:17",
+      "live": "转写失败，将在下一段重试 ⏹ 停止录音"
+    },
+    {
+      "at": "+20s",
+      "clock": "00:22",
+      "live": "⏹ 停止录音"
+    },
+    {
+      "at": "+25s",
+      "clock": "00:27",
+      "live": "转写失败，将在下一段重试 ⏹ 停止录音"
+    },
+    {
+      "at": "+30s",
+      "clock": "00:32",
+      "live": "转写失败，将在下一段重试 ⏹ 停止录音"
+    },
+    {
+      "at": "+35s",
+      "clock": "00:37",
+      "live": "转写失败，将在下一段重试 ⏹ 停止录音"
+    },
+    {
+      "at": "+40s",
+      "clock": "00:42",
+      "live": "转写失败，将在下一段重试 ⏹ 停止录音"
+    },
+    {
+      "at": "+45s",
+      "clock": "00:47",
+      "live": "转写失败，将在下一段重试 ⏹ 停止录音"
+    },
+    {
+      "at": "after-stop",
+      "text": "跳到主要内容 arrow_back 手记 search 搜索笔记 add 新建笔记 🗂 全部 💼 工作 📚 学习 🌱 生活 💡 想法 📝 还没有笔记 点右下角麦克风开始语音录入 🎤 开始录音"
+    }
+  ],
+  "sttResponses": [
+    {
+      "url": "/api/stt/transcribe-incremental",
+      "status": 200,
+      "ok": true,
+      "text": "",
+      "error": "stt mimo-v2.5-asr: upstream returned empty transcript",
+      "startSec": 0.1786249999999998,
+      "endSec": 3,
+      "isFinal": false
+    },
+    {
+      "url": "/api/stt/transcribe-incremental",
+      "status": 200,
+      "ok": true,
+      "text": "",
+      "error": "stt mimo-v2.5-asr: upstream returned empty transcript",
+      "startSec": 2.9996250000000004,
+      "endSec": 6.001,
+      "isFinal": false
+    },
+    {
+      "url": "/api/stt/transcribe-incremental",
+      "status": 200,
+      "ok": true,
+      "text": "",
+      "error": "stt mimo-v2.5-asr: upstream returned empty transcript",
+      "startSec": 5.938625,
+      "endSec": 9,
+      "isFinal": false
+    },
+    {
+      "url": "/api/stt/transcribe-incremental",
+      "status": 200,
+      "ok": true,
+      "text": "",
+      "error": "stt mimo-v2.5-asr: upstream returned empty transcript",
+      "startSec": 8.998625,
+      "endSec": 12,
+      "isFinal": false
+    },
+    {
+      "url": "/api/stt/transcribe-incremental",
+      "status": 200,
+      "ok": true,
+      "text": "",
+      "error": "stt mimo-v2.5-asr: upstream returned empty transcript",
+      "startSec": 11.939625,
+      "endSec": 15.001,
+      "isFinal": false
+    },
+    {
+      "url": "/api/stt/transcribe-incremental",
+      "status": 200,
+      "ok": true,
+      "text": "",
+      "error": "stt mimo-v2.5-asr: upstream returned empty transcript",
+      "startSec": 14.939625000000001,
+      "endSec": 18.001,
+      "isFinal": false
+    },
+    {
+      "url": "/api/stt/transcribe-incremental",
+      "status": 200,
+      "ok": true,
+      "text": "嗯。",
+      "error": "",
+      "startSec": 18.1886875,
+      "endSec": 21.25,
+      "isFinal": false
+    },
+    {
+      "url": "/api/stt/transcribe-incremental",
+      "status": 200,
+      "ok": true,
+      "text": "嗯。",
+      "error": "stt mimo-v2.5-asr: upstream returned empty transcript",
+      "startSec": 21.249625,
+      "endSec": 24.251,
+      "isFinal": false
+    },
+    {
+      "url": "/api/stt/transcribe-incremental",
+      "status": 200,
+      "ok": true,
+      "text": "嗯。",
+      "error": "stt mimo-v2.5-asr: upstream returned empty transcript",
+      "startSec": 24.188625000000002,
+      "endSec": 27.25,
+      "isFinal": false
+    },
+    {
+      "url": "/api/stt/transcribe-incremental",
+      "status": 200,
+      "ok": true,
+      "text": "嗯。",
+      "error": "stt mimo-v2.5-asr: upstream returned empty transcript",
+      "startSec": 27.188625000000002,
+      "endSec": 30.25,
+      "isFinal": false
+    },
+    {
+      "url": "/api/stt/transcribe-incremental",
+      "status": 200,
+      "ok": true,
+      "text": "嗯。",
+      "error": "stt mimo-v2.5-asr: upstream returned empty transcript",
+      "startSec": 30.188625000000002,
+      "endSec": 33.25,
+      "isFinal": false
+    },
+    {
+      "url": "/api/stt/transcribe-incremental",
+      "status": 200,
+      "ok": true,
+      "text": "嗯。",
+      "error": "stt mimo-v2.5-asr: upstream returned empty transcript",
+      "startSec": 33.249624999999995,
+      "endSec": 36.251,
+      "isFinal": false
+    },
+    {
+      "url": "/api/stt/transcribe-incremental",
+      "status": 200,
+      "ok": true,
+      "text": "嗯。",
+      "error": "stt mimo-v2.5-asr: upstream returned empty transcript",
+      "startSec": 36.499624999999995,
+      "endSec": 39.501,
+      "isFinal": false
+    },
+    {
+      "url": "/api/stt/transcribe-incremental",
+      "status": 200,
+      "ok": true,
+      "text": "嗯。",
+      "error": "stt mimo-v2.5-asr: upstream returned empty transcript",
+      "startSec": 39.4396875,
+      "endSec": 42.501,
+      "isFinal": false
+    },
+    {
+      "url": "/api/stt/transcribe-incremental",
+      "status": 200,
+      "ok": true,
+      "text": "嗯。",
+      "error": "stt mimo-v2.5-asr: upstream returned empty transcript",
+      "startSec": 42.499624999999995,
+      "endSec": 45.501,
+      "isFinal": false
+    },
+    {
+      "url": "/api/stt/transcribe-incremental",
+      "status": 200,
+      "ok": true,
+      "text": "嗯。",
+      "error": "",
+      "startSec": 45.408625,
+      "endSec": 47.75,
+      "isFinal": true
+    }
+  ],
+  "summary": {
+    "totalSttCalls": 16,
+    "incrementalCalls": 16,
+    "incrementalWithText": 10,
+    "incrementalWithError": 14,
+    "distinctErrors": [
+      "stt mimo-v2.5-asr: upstream returned empty transcript"
+    ],
+    "finalTranscript": "嗯。",
+    "groundTruth": "今天下午三点，会议室开产品评审会，请提前十分钟到场。",
+    "charOverlap": "0.0%",
+    "matchedChars": "",
+    "missingChars": "今天下午三点会议室开产品评审请提前十分钟到场",
+    "uiShowsFailure": false,
+    "verdict": "PARTIAL"
+  },
+  "note": "本轮 App 录音 16 片全部 empty transcript —— 提取 App 真实录到的 103.5s webm 转 WAV 后，1656000 个样本**全为 0**（peak=0/rms=0）。同一时刻原生 MediaRecorder 录到 peak=0.10。⇒ 失败在拾音，不在转码。"
+}

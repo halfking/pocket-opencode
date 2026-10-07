@@ -2,6 +2,9 @@
   "_comment": "npm run gates 的权威名单。执行者见 scripts/run-gates.mjs。顺序即执行顺序，失败即停。改这里，不要改 package.json 里的 gates（那一条在各分支上恒为 `node scripts/run-gates.mjs`，正是为了让它永远不冲突）。",
   "_why": "2026-10-03 实测：gates 过去是 package.json 里一条 1000+ 字符的单行长字符串。两个分支各自往同一行末尾追加一个门禁（round29 加 check:callback-routes/check:edge-route-reach，round28 加 check:runtime-data），必然在同一行冲突，冲突上下文长到无法人工阅读。改成数组后，追加门禁只是多一行 JSON，git 能正常合并。",
   "_notGates_why": "notGates 是「刻意不接进 gates 的 check:* 脚本」及其理由。run-gates.mjs 会核对 package.json 里每一个 check:* 都出现在 gates 或 notGates 里，否则退出码非 0 —— 防止新加了门禁却忘了接线（run-mjs-tests.mjs 头注释里记的就是同一类事故：146 个测试文件只有 32 个被某个 npm script 引用，114 个是孤儿，而 gates 全绿）。",
+  "_e2e_auth_stack_why": "走 ./e2e/web/e2e-auth-stack.sh 的另外 3 个 spec（authenticated-shell 3 条 / email-continuous-list 3 条 / modal-scroll-lock 4 条，共 10 条）**刻意不登记进 notGates**：notGates 的契约是「package.json 里刻意不接的 check:* 脚本」（见上方 _notGates_why），而它们不是 npm script，登记会让 `gates --list` 的「刻意不接的 check:* N 个」计数失真。四者合计 26 条，跑法与逐条职责见 docs/UI规范/10-门禁与真机验收.md §1.4–§1.5。",
+  "_device_matrix_why": "check:device-matrix-selftest 验的是**量具自己**，不碰设备：① UI-12 每个被测元素的类名都要在 frontend/src 静态 class=\"…\" 里指出「文件:行号」；② 阴性对照（注入虚构类名必须判无出处）；③ 精度对照（`mic` 必须找到而 `mic-dock` 必须**找不到**——子串匹配正是当初让 3 个虚构类名混进表里的那种错）；④ 受测路由的 `bottomNav` meta 必须能从 router-mobile.ts 读出，且不存在的路由必须判 unknown。**为什么必须进门禁**：这批判据的失败形态是「安静地变成无结论」而不是报错——量一个源码里不存在的类名不会让任何测试变红，只会让 UI-12 永远报「无结论」。接进门禁后，一次改名/重构就会把出处丢掉、CI 当场变红。逐条踩坑记录见 docs/UI规范/10-门禁与真机验收.md §4.0c。",
+  "_router_parity_why": "check:router-parity 存在的理由是**给文本判据上一道运行期对照**。check:hide-app-header 用固定 500 字符窗口从每条 `path:` 往后取 `meta`，只要有人把 >500 字符的注释写在 path 与 meta 之间，该路由的 `hideAppHeader: true` 会被**静默漏掉** ⇒ 门禁不报错、照报「全部合规」——**判据失明与通过在输出上完全同形**。本门禁把 router 真正编译执行一次（esbuild + .vue 打桩），读 vue-router 实际持有的 routes[]，与文本口径逐条比对，分叉即红。**它不判断「该不该声明」，只保证「数出来的那几条 = 实际持有的那几条」**。同一份源码曾被 4 种文本口径数出 3 个不同的数（grep=16 / path 分段=16 / 500 窗口+meta 捕获=15），根因统一是「按行/按段找字面量会把注释里的字面量算成声明」；权威读数是运行期的 15。变异在**同目录临时副本**上做（相对 import 解析一致），真实 router-mobile.ts 一次都不被碰。",
   "gates": [
     "typecheck",
     "build:gate",
@@ -10,6 +13,8 @@
     "test:stores",
     "test:auth",
     "test:styles",
+    "check:build-mobile-selftest",
+    "check:device-matrix-selftest",
     "test:stt",
     "test:email-heal",
     "check:pg-schema-scope",
@@ -33,9 +38,13 @@
     "check:hide-app-header",
     "check:fixed-cdp-ports",
     "check:dev-pass-sourcing",
-    "check:back-navigation"
+    "check:back-navigation",
+    "check:marketplace-fix",
+    "check:router-parity"
   ],
   "ciRuns": [
+    "check:build-mobile-selftest",
+    "check:device-matrix-selftest",
     "check:pg-schema-scope",
     "check:dueclock",
     "check:callback-routes",
@@ -55,7 +64,9 @@
     "check:hide-app-header",
     "check:fixed-cdp-ports",
     "check:dev-pass-sourcing",
-    "check:back-navigation"
+    "check:back-navigation",
+    "check:marketplace-fix",
+    "check:router-parity"
   ],
   "ciCoveredElsewhere": {
     "typecheck": "frontend.yml 的 frontend-lint job 已手列 `npm run typecheck`",

@@ -5,7 +5,7 @@ import { encryptString } from '../../native/crypto'
 import { useCryptoConfig } from '../../stores/crypto-config'
 import { assetStore } from '../../native/asset-store'
 import { decideNoteStorage } from './note-storage-policy'
-import { deleteNoteFiles, persistNotePayload, readNoteBody } from './note-files'
+import { deleteNoteBodyFile, deleteNoteFiles, persistNotePayload, readNoteBody } from './note-files'
 import { assetToNote, rowToNote, mergeImportedNotes } from './notes-row'
 import type { CreateNoteInput, LocalNote, NoteMediaInput, NoteRow } from './notes-types'
 
@@ -42,19 +42,6 @@ export async function createNote(input: CreateNoteInput): Promise<LocalNote> {
   let mediaJson: string | null = null
   let audioPath = input.audioPath ?? null
 
-  if (decided.persistBodyFile || media.length > 0) {
-    const written = await persistNotePayload({
-      noteId: id,
-      createdAt: now,
-      body: input.content,
-      persistBodyFile: decided.persistBodyFile,
-      media,
-    })
-    bodyPath = written.bodyPath
-    mediaJson = written.files.length ? JSON.stringify(written.files) : null
-    if (written.audioPath) audioPath = written.audioPath
-  }
-
   const note: LocalNote = {
     id,
     workspaceId,
@@ -80,6 +67,16 @@ export async function createNote(input: CreateNoteInput): Promise<LocalNote> {
 
   const shouldEncrypt = useCryptoConfig().shouldEncryptField()
   const storedContent = shouldEncrypt ? await encryptString(note.content) : note.content
+
+  // 写入顺序是外键决定的，不是风格问题：schema.ts 里
+  // `local_note_files.note_id REFERENCES local_notes(id)`，而
+  // persistNotePayload() 会先往 local_note_files 插子行。父行不存在就插子行，
+  // SQLite 报 787 FOREIGN KEY constraint failed（2026-10-05 真机复现：
+  // 语音笔记一条都存不进去，createNote 抛错被 Vue 吞进 console.error）。
+  //
+  // 所以先插父行（body_path/media_json 留空），附件写完再 UPDATE 回填。
+  // 附件写失败时父行仍在，loadFullContent() 会退回 note.content，
+  // 用户至少拿得到文字——比整条丢失、且报错被吞要好。
   await localDB.run(
     `INSERT INTO local_notes
        (id, workspace_id, title, content, content_type, domain, category, tags,
@@ -94,6 +91,28 @@ export async function createNote(input: CreateNoteInput): Promise<LocalNote> {
       note.status, note.storageTier, note.summary, note.searchText, note.bodyPath, note.mediaJson,
     ],
   )
+
+  if (decided.persistBodyFile || media.length > 0) {
+    const written = await persistNotePayload({
+      noteId: id,
+      createdAt: now,
+      body: input.content,
+      persistBodyFile: decided.persistBodyFile,
+      media,
+    })
+    bodyPath = written.bodyPath
+    mediaJson = written.files.length ? JSON.stringify(written.files) : null
+    if (written.audioPath) audioPath = written.audioPath
+    note.bodyPath = bodyPath
+    note.mediaJson = mediaJson
+    note.audioPath = audioPath
+    await localDB.run(
+      `UPDATE local_notes
+         SET body_path = ?, media_json = ?, audio_path = ?, audio_duration_ms = ?
+       WHERE id = ?`,
+      [bodyPath, mediaJson, audioPath, note.audioDurationMs, id],
+    )
+  }
 
   embedAndStore(note.id, decided.searchText || note.content).catch((e) => {
     console.warn('[lobster] 嵌入失败，笔记已存但暂无向量:', e)
@@ -156,26 +175,67 @@ export async function updateNote(
   let bodyPath = existing.bodyPath ?? null
   let mediaJson = existing.mediaJson ?? null
   let audioPath = existing.audioPath
-  if (patch.content !== undefined || media.length > 0) {
-    if (existing.bodyPath || existing.mediaJson) {
-      await deleteNoteFiles(id, existing.createdAt)
+  // 旧 mediaJson 里的非 body 条目要留到最后合并回去：persistNotePayload 的 files
+  // 里只有本次写的正文与新媒体，旧的媒体条目会被这次覆盖抹掉。
+  //
+  // ★ 2026-10-06 真机复现（换媒体路径，本分支此前从未在真库上跑过）：
+  //   原来 `const replacingMedia = media.length > 0`，命中时先 deleteNoteFiles
+  //   （对整目录 rmdir -r）再 persistNotePayload。一旦后者抛错，
+  //   结尾的 UPDATE local_notes 永不执行 ⇒ **文件与子行都没了、库行却保持旧值**，
+  //   audio_path 变成指向不存在文件的悬空指针，local_note_files 里的 audio 行消失，
+  //   而用户只在页面上看到「保存失败，请稍后重试」。录音不可恢复地没了，无回滚。
+  //
+  //   与 FK 写入顺序是同一条原则：**破坏性操作必须排在成功写之后**。
+  //
+  // ★ 语义同时改了（2026-10-06，产品决策）：**加附件是「追加」不是「替换」**。
+  //   原来 media.length>0 意味着整条录音被替换掉 —— 用户给语音笔记补一张图片，
+  //   录音就没了。新规则：
+  //     · 跨类型共存：加 video/image 不动已有 audio（文件名本来就按类型分目录，
+  //       audio/01.webm 与 video/01.mp4 不冲突）。
+  //     · 同类型替换：新的 audio 会顶掉旧 audio（一条笔记只该有一条音轨）；
+  //       连续加两个 video 则后者顶掉前者（persistNotePayload 的计数器从 1 起，
+  //       会写到同一个 video/01.* 并 REPLACE 同一行 id）。
+  const carriedMedia = (() => {
+    if (!existing.mediaJson) return []
+    try {
+      const old = JSON.parse(existing.mediaJson)
+      return Array.isArray(old) ? old.filter((f) => f && f.kind !== 'body') : []
+    } catch {
+      return []
     }
-    if (decided.persistBodyFile || media.length > 0) {
+  })()
+
+  if (patch.content !== undefined || media.length > 0) {
+    // 正文还要不要单独落文件。正文变短到可以内联时为 false。
+    const bodyFileNeeded = Boolean(decided.persistBodyFile && nextContent)
+    if (bodyFileNeeded || media.length > 0) {
       const written = await persistNotePayload({
         noteId: id,
         createdAt: existing.createdAt,
         body: nextContent,
-        persistBodyFile: decided.persistBodyFile,
+        persistBodyFile: bodyFileNeeded,
         media,
       })
       bodyPath = written.bodyPath
-      mediaJson = written.files.length ? JSON.stringify(written.files) : null
-      // 旧媒体目录已整体删除：本次未重写出的引用（如旧音频）不能再保留
-      audioPath = written.audioPath
+      // 同类型的以本次写的为准，跨类型的从旧 mediaJson 合回来。
+      const writtenKinds = new Set(written.files.map((f) => f.kind))
+      const kept = [...written.files, ...carriedMedia.filter((f) => !writtenKinds.has(f.kind))]
+      mediaJson = kept.length ? JSON.stringify(kept) : null
+      // 只有本次真的提交了 audio 才换引用；否则原样保留。
+      // （原来这里是 `replacingMedia ? written.audioPath : existing.audioPath`，
+      //   在「只改正文」之外的加附件路径上会把 audio_path 置空。）
+      audioPath = written.audioPath ?? existing.audioPath
     } else {
       bodyPath = null
-      mediaJson = null
-      audioPath = null
+      // 正文不再落文件 ≠ 媒体也没了：audio_path 必须留着。
+      audioPath = existing.audioPath
+      const oldNonBody = carriedMedia
+      mediaJson = oldNonBody.length ? JSON.stringify(oldNonBody) : null
+    }
+    // ★ 清理排在**写成功之后**：只有确认正文文件不再需要时才删旧 body 文件。
+    //   删除永远不能排在写之前 —— 写失败就没有回滚了。
+    if (!bodyFileNeeded && existing.bodyPath) {
+      await deleteNoteBodyFile(id, existing.createdAt)
     }
   }
 

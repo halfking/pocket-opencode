@@ -1,0 +1,970 @@
+{
+  "recorded_at": "2026-10-06T00:20:00+08:00",
+  "scope": "FK 修复之后的第二轮测试验证。上一轮只跑过一轮录音，本轮覆盖多轮、属性保存、编辑、进程死亡、边界五条路径。",
+  "device": {
+    "serial": "4c308e2e",
+    "model": "Redmi 2411DRN47C",
+    "android": "14",
+    "package": "com.kaixuan.opencode.pocket.sttdev",
+    "apk": "2026-10-05 16:30 重建，含 notes-persist.ts 的 FK 顺序修复"
+  },
+  "audio_source": "Mac 喇叭 afplay /tmp/gt-long.wav（60s @16k 循环）。自播放会被 AEC 消掉，是已证伪的测法。",
+  "verdicts": {
+    "multi_round": "PASS",
+    "meta_save": "PASS",
+    "persistence_across_process_death": "PASS",
+    "boundary_very_short": "PASS",
+    "boundary_silent": "PASS",
+    "edit_preserves_audio": "PASS（修复后）—— 改一个字后录音完整保留，见 fix_audio_loss_on_edit",
+    "saved_audio_is_real_speech": "PASS —— 盘上文件是真人语音，整条链路可往返",
+    "crosspage_stop_pickup": "FAIL → 已修 → PASS（见 fix_crosspage_pickup）",
+    "long_recording_75s": "PASS",
+    "cancel_transcription_escape": "PASS",
+    "crosspage_pickup_drops_silent_recording": "PASS（已修并真机复验）",
+    "process_death_during_transcription": "PASS（已修并真机复验）",
+    "replace_media_attach_path": "FAIL（已复现，缺陷未修）"
+  },
+  "multi_round": {
+    "method": "同一页面内连续 3 轮，每轮 14s，判据是 local_notes 行数",
+    "counts": {
+      "baseline": 1,
+      "round1": 2,
+      "round2": 3,
+      "round3": 4
+    },
+    "local_note_files": 8,
+    "per_note": "每条 has_audio=1 且 has_body=1，audio_duration_ms 约 13.7-14.0s",
+    "errors": "三轮 console.error 全空，FK 787 未复发",
+    "test_method_trap_found": "第一版脚本第 2 轮起不来：createVoiceDraft 结束后会打开「笔记属性」面板，其 sheet-body 覆盖 y=307~820，而录音 FAB 中心 (312,704) 正在其中 ⇒ 点麦克风被面板吃掉。这不是缺陷（面板是有意打开的），但验收脚本必须先关面板。关掉后面板 none，第 2/3 轮均正常。"
+  },
+  "meta_save": {
+    "path": "onMetaSave → notesStore.updateNote(id, {title, domain, tags, status:'saved'})（不传 content）",
+    "before": {
+      "status": "draft",
+      "domain": null,
+      "title": null,
+      "has_audio": 1,
+      "has_body": 1,
+      "has_media": 1,
+      "audio_duration_ms": 13968
+    },
+    "after": {
+      "status": "saved",
+      "domain": "work",
+      "title": "评审会，请提前十分钟",
+      "has_audio": 1,
+      "has_body": 1,
+      "has_media": 1,
+      "audio_duration_ms": 13968
+    },
+    "list": "保存后出现在主列表（note-card domain-work，标签「工作」，「0分钟前」）",
+    "why_no_audio_loss": "patch.content 为 undefined 且 media 为空 ⇒ updateNote 的 `patch.content !== undefined || media.length > 0` 为假 ⇒ 不走 deleteNoteFiles ⇒ 三个路径字段原样保留"
+  },
+  "persistence": {
+    "method": "am force-stop 真杀进程（25394 → 重启后 28191，pid 不同确认是新进程）→ 重新登录+主密码解锁",
+    "local_notes": "行全部存活",
+    "local_note_files": "子行全部存活（3 audio + 4 body）",
+    "page": "列表正常显示「评审会，请提前十分钟【编辑测试追加】…🎙 工作 2分钟前」",
+    "disk": "files/notes 下各笔记的 body.md 与 audio/01.webm 均在",
+    "note": "详见 finding_orphan_body_files"
+  },
+  "boundary": [
+    {
+      "case": "极短录音",
+      "requested_sec": 1.2,
+      "actual_duration_ms": 2910,
+      "content_len": 9,
+      "text": "问，请提前十分钟。",
+      "has_audio": 1,
+      "status": "draft",
+      "crash": false
+    },
+    {
+      "case": "静音录音（不出声）",
+      "requested_sec": 5,
+      "actual_duration_ms": 6988,
+      "content_len": 2,
+      "text": "嗯。",
+      "has_audio": 1,
+      "status": "draft",
+      "crash": false
+    }
+  ],
+  "boundary_note": "上报的 audio_duration_ms 与实际完全吻合（多出来的部分是我脚本里的稳定等待，不是虚报）。两条边界都正常落库、无崩溃、无 FK 错误。emptyRecordingNotice 的判据是「有没有文字」与「音频字节数>0」——录到声音但转不出字时**不提示**，这是既有设计取舍，不是本轮新问题。",
+  "finding_audio_loss_on_edit": {
+    "severity": "数据丢失（用户录音被不可恢复销毁）",
+    "status": "既有缺陷，非本轮引入；但在 FK 修复之前该路径根本不可达，是修复把它暴露出来的",
+    "measured": {
+      "before_edit": {
+        "audio_path": "file:///…/note-1791216121063-y6ic3r/audio/01.webm",
+        "audio_duration_ms": 13968,
+        "has_body": 1,
+        "disk": "body.md 237B + audio/01.webm 199192B"
+      },
+      "after_edit_one_word": {
+        "audio_path": null,
+        "audio_duration_ms": 0,
+        "has_body": 1,
+        "disk": "整个笔记目录被删（查不到）"
+      }
+    },
+    "mechanism": [
+      "NoteEditView.vue:242-247 保存已有笔记时只传 {title, content, domain, tags, media}，不传 audioPath / audioDurationMs",
+      "notes-persist.ts:159 `if (patch.content !== undefined || media.length > 0)` 成立（用户改了正文）",
+      "notes-persist.ts:161 deleteNoteFiles(id, …) → note-files.ts:144 `Filesystem.rmdir({recursive:true})` 删掉整个笔记目录 + `DELETE FROM local_note_files WHERE note_id=?` 删光该笔记全部子行（含 audio）",
+      "notes-persist.ts:163 persistNotePayload({media: []}) 只重写 body.md",
+      "notes-persist.ts:174 `audioPath = written.audioPath` —— 没重新提交 media，该值是 undefined ⇒ 音频引用被清空"
+    ],
+    "why_it_is_a_bug_not_a_design_choice": [
+      "UI 没有任何「附件会丢失」提示（NoteEditView 只有 pendingMedia 的 media-hint）",
+      "NoteEditView.vue:212-213 已经把 form.audioPath / form.audioDurationMs 从笔记读进表单了 —— 避免丢失所需的值就在手边，只是保存时没传",
+      "用户改的是文字，不是录音。域模型里 content 与 media 是两个独立字段，媒体名还带序号（audio/01.webm），本就不该因为改正文而失效"
+    ],
+    "current_code_rationalization": "notes-persist.ts:173 的注释写「旧媒体目录已整体删除：本次未重写出的引用（如旧音频）不能再保留」—— 这是在为一个顺序缺陷找理由，不是设计意图",
+    "recommended_fix": "在 updateNote 里区分「改正文」与「换媒体」：media 为空时只删 body.md 那一类（DELETE FROM local_note_files WHERE note_id=? AND kind='body' + 删单个 body 文件），保留 audio/ 目录与 audio_path；NoteEditView 保存时把已有的 audioPath/audioDurationMs 一并传下去作为兜底。",
+    "not_applied_yet": "本轮目标是测试验证，未擅自扩大改动面；需用户确认后再动"
+  },
+  "finding_orphan_body_files": {
+    "what": "files/notes/2026/10/05/no/ 下有 5 个只有 body.md、没有对应 DB 行的目录（15:57 / 15:58 / 16:03 / 16:18 / 16:23）",
+    "cause": "FK 修复前的失败尝试：旧代码先写文件再插父行，父行插入因 787 失败 ⇒ 文件成了孤儿",
+    "note": "修复后方向相反（先插父行再写文件），失败会留下「有行没文件」而不是「有文件没行」—— 后者保住了文字，是有意选的更优失败形态",
+    "action": "属清理债务，不影响功能；可考虑加一次性清理或启动时对账"
+  },
+  "regression": {
+    "vue_tsc": "0 errors",
+    "test_all": "2176 tests / 2174 pass / 0 fail / 2 skipped（237/237 个测试文件全部实际执行；较上一轮 +13 = 门A 5 条 + 门B 7 条 + finalText 锁 1 条）",
+    "gates": {
+      "note-persist-fk-order": "5/5",
+      "note-edit-preserves-media": "5/5",
+      "note-pending-pickup-on-keepalive": "5/5",
+      "note-file-size-bytes": "6/6（含 2 负控）",
+      "note-pending-pickup-no-text-gate": "5/5（含 2 负控）",
+      "note-draft-persisted-before-transcribe": "7/7（含 2 负控）",
+      "note-empty-recording-feedback": "本轮改动让它报红：判据断言源码里出现 `this.transcript.value.trim() !== \"\"`，而我把该表达式提成了局部变量 finalText。**没有靠放宽正则蒙过去** —— 同时补了一条锁住 `const finalText = this.transcript.value.trim()`，否则那道门会被削弱成「finalText 是任何东西都行」。"
+    }
+  },
+  "fix_audio_loss_on_edit": {
+    "decision": "用户选定方案：改正文时只删 body，保留音频（问卷超时按推荐项采纳）",
+    "code": {
+      "note-files.ts": "新增 deleteNoteBodyFile(noteId, createdAt)：deleteFile 单个 body.md + DELETE FROM local_note_files WHERE note_id=? AND kind='body'。不 rmdir。",
+      "notes-persist.ts": "updateNote 引入 replacingMedia = media.length > 0：换媒体走 deleteNoteFiles（整体替换仍然正确），只改正文走 deleteNoteBodyFile；audioPath = replacingMedia ? written.audioPath : existing.audioPath；并把旧 mediaJson 的非 body 条目合并回新清单（carriedMedia）。",
+      "not_touched": "NoteEditView.vue 未改 —— 决定放在持久化层，所有调用方（不只详情页编辑）一并受益。"
+    },
+    "gate": "src/features/notes/__tests__/note-edit-preserves-media.test.mjs（5 条，含 3 条负控：一律整体删除 / deleteNoteBodyFile 里放回 rmdir / 子表 DELETE 不限定 kind，三条都必须报红）",
+    "device_verification": {
+      "target": "note-1791216100044-gcnb3y（198128B 真实录音，非静音样本）",
+      "before": {
+        "audio_path": "file:///…/audio/01.webm",
+        "audio_duration_ms": 13977,
+        "child_rows": [
+          {
+            "kind": "body",
+            "size_bytes": 80
+          },
+          {
+            "kind": "audio",
+            "size_bytes": 198128
+          }
+        ],
+        "disk": "01.webm 198128B @00:01"
+      },
+      "after": {
+        "audio_path": "file:///…/audio/01.webm",
+        "audio_duration_ms": 13977,
+        "child_rows": [
+          {
+            "kind": "audio",
+            "size_bytes": 198128
+          },
+          {
+            "kind": "body",
+            "size_bytes": 80
+          }
+        ],
+        "disk": "01.webm 198128B @00:01（mtime 未变 ⇒ 文件根本没被碰过，不是重写了一份）"
+      },
+      "criteria": {
+        "1_db_audio_path": "PASS",
+        "2_db_audio_duration_ms": "PASS (13977)",
+        "3_child_row_audio": "PASS (198128)",
+        "4_disk_file": "PASS (mtime 未变)",
+        "5_mediaJson_keeps_audio": "PASS"
+      },
+      "verdict": "✅ PASS"
+    },
+    "probe_correction": {
+      "what": "第一次跑判据 4 报 FAIL，我差点就写进报告",
+      "cause": "探针 ls 通配只写了 3 层（files/notes/*/*/*/<id>/audio/），而 noteDir 是 notes/yyyy/mm/dd/前缀/<id> 共 4 层 ⇒ glob 没匹配到，被我读成「文件没了」",
+      "actual": "用 find -type d -name <id> -exec ls -lR 交叉核，文件在（1785B，静音样本那条）",
+      "lesson": "判「文件不存在」之前，先用另一条路径（find 而非 ls glob）复核；单条 glob 写错和文件真没了，输出长得一模一样"
+    },
+    "gate_tooling_bug_fixed": {
+      "what": "fnBody() 对 updateNote 取错了函数体",
+      "symptom": "主断言报 5 条风险，负控反而全绿 —— 因为门对什么都报红，负控就「有牙」了",
+      "cause": "两处：① updateNote 的参数表里有内联对象类型 `& {`，花括号配对从那儿开始 ② decl 本身以 '(' 结尾，该开括号未计数，扫描器在函数体里第一个 getNote(...) 的 ')' 上误判成形参表闭合",
+      "fix": "改成先按圆括号深度跳过形参表（初始深度 1）再找 body 的 '{'",
+      "note": "这是同一会话第三次出现「判据测到了注释/类型/别处」的同族问题"
+    },
+    "not_verified": {
+      "replace_media_path": "换媒体（media.length>0）仍走 deleteNoteFiles 整体替换 —— 这条路径在当前 UI 上不可达（没有替换已有录音的入口），只做了代码走查，未做真机验证"
+    }
+  },
+  "saved_audio_roundtrip": {
+    "why": "此前只证明了文件存在、路径正确、198128 字节 —— 从没证明那些字节是人说的话",
+    "method": "run-as 把 files/notes/.../audio/01.webm 取到宿主机 → ffmpeg 转 16k 单声道 wav → 统计样本 + 送回后端 /api/stt/transcribe",
+    "decode": {
+      "codec": "opus",
+      "duration_sec": 13.98,
+      "total_samples": 223680,
+      "non_zero": "179060 (80.1%)",
+      "peak": "13198/32768 = 40.28%",
+      "rms": 2251.3
+    },
+    "retranscription": {
+      "endpoint": "/api/stt/transcribe（multipart，字段名 file）",
+      "status": 200,
+      "confidence": 0.95,
+      "text": "评审会，请提前十分钟到场。今天下午三点，会议室开产品评审会，请提前十分钟到场。今天下午三点，会议室开产品评审会，请提前十分钟到场。今天下午三点。"
+    },
+    "note_stored_text": "云省会，请提前十分钟。钟到场，今天下午三点，会议室开产品评审。审问，请提前十分钟到场。今天下午三。三点，会议室开产品评审会，请提前十。十分钟到场。今天下午三点。",
+    "conclusion": "① 盘上字节确实是录音时那段真人语音（不是静音/垃圾）② 录→转→存→取回→再转 整链闭合 ③ 同一段音频，一次性转写比滑动窗口增量拼接干净得多（增量多出「钟到场」「审问」「云省会」这类跨片碎片）—— 这是增量方案的固有质量代价，不是数据丢失",
+    "field_name_trap": "multipart 字段名是 file，不是 audio；用 audio 会得到 400 missing 'file' field"
+  },
+  "fix_crosspage_pickup": {
+    "severity": "数据丢失（全局停止键录的整段录音彻底消失）",
+    "measured": {
+      "before_fix": {
+        "flow": "笔记页录音 19s → 切 #/ai → 点全局停止（RecordingPill 按钮）→ 回笔记页等 20s",
+        "local_notes": "恒 6（不新增）",
+        "after_process_restart": "仍 6 行 / 11 子行 —— 文字与音频双双消失",
+        "note": "全局停止的 toast 明确写着「回笔记页可拾取语音草稿」"
+      },
+      "after_fix": {
+        "same_flow": "笔记页录音 14s → 切 #/ai → 全局停止 → 回笔记页",
+        "result": "4 秒内 notes 6→7，属性面板自动打开",
+        "new_row": {
+          "id": "note-1791218597511-9x8qg2",
+          "status": "draft",
+          "content_type": "voice",
+          "audio_duration_ms": 14821,
+          "has_audio": 1
+        }
+      },
+      "regression_on_same_apk": "页面在场的 FAB 停止路径仍正常：notes 7→8，audio_duration_ms=13980，has_audio=1"
+    },
+    "root_cause": [
+      "App.vue:46 `<KeepAlive :include=\"LIST_CACHE_NAMES\">`",
+      "use-list-scene.ts:52 LIST_CACHE_NAMES 含 'NoteListView'",
+      "NoteListView.vue:157 defineOptions({ name: 'NoteListView' }) —— 名字对得上，确实被缓存",
+      "拾取逻辑只挂在 onMounted；KeepAlive 命中时切离再回来跑的是 onActivated ⇒ pendingResult 永远没人取；pendingResult 在内存里，进程一死即蒸发"
+    ],
+    "fix": "NoteListView 抽出 pickupPendingRecording()，onMounted 与 onActivated 都调它（consumePendingResult 取过即清，重复调用安全）",
+    "gate": "src/features/notes/__tests__/note-pending-pickup-on-keepalive.test.mjs（5 条含 3 条负控：删 onActivated / 去掉 onMounted / 前提为未缓存时不报风险）",
+    "gate_ties_to_premise": "门显式核对 LIST_CACHE_NAMES 与 defineOptions name：若哪天 NoteListView 被移出白名单，门会报「前提已变，请重新评估」而不是继续当规矩",
+    "why_existing_gate_missed_it": "已有的 list-scene-cache-integrity.test.mjs 管的是另一个维度（被缓存列表页会不会数据过期，靠 useListScene/onActivated/共享 store），而 NoteListView 恰好有 useListScene 所以放行；useListScene 只刷新列表，不会消费一次性 payload。两道门各管一维，缺哪一维都拦不住这个 bug"
+  },
+  "bundled_grep_is_not_evidence": {
+    "claim_checked": "产物 bundle 里能否 grep 到 onActivated",
+    "result": "查不到 —— 0 次",
+    "why_it_matters": "第一次只查了最大的 chunk（index-*.js）就以为没进产物；实际上 NoteListView 是独立懒加载 chunk（assets/public/assets/NoteListView-*.js，130 个 chunk）。改查该 chunk 后 onActivated 仍是 0 次 —— 打包器把 import 的局部绑定重命名了（import{a as b}），名字不保留。",
+    "conclusion": "打包后 minify 会重命名局部绑定，grep 产物字符串证明不了钩子存在；这类判据只能用运行时（真机行为）做"
+  },
+  "long_recording": {
+    "why": "后端 transcribe 有 30/60 秒单次上限，超过会走「按静音边界切段再聚合」；录 75 秒逼这条路径",
+    "method": "ffmpeg 造 80s 循环音源（Mac 喇叭外放），按钮按住 75 秒",
+    "observed": {
+      "audio_duration_ms": 74659,
+      "content_len": 201,
+      "has_audio": 1,
+      "status": "draft",
+      "text_head": "请提前十分钟到今天下午三点，会议室开产品评审会。请提前十分钟到场。今天下午三点。会议室开产品评审会，提前十分钟。都到场。",
+      "recording_stayed_live": "每 10 秒查一次 .fab-icon，10/20/30/40/50/60/70 秒全程 recording=true",
+      "landed_within": "停止后 10 秒内（notes 8→9）",
+      "errors": "console.error 无 FK / 无异常"
+    },
+    "note": "实际走的是每片几秒的增量端点，因此没有触发后端的单次时长上限；兜底 transcribeFull 的切段逻辑本轮未被这段录音触发"
+  },
+  "summary_matrix": {
+    "连续 3 轮录音": "PASS",
+    "属性保存 draft→saved": "PASS",
+    "杀进程重启后持久化": "PASS",
+    "极短录音(2910ms)": "PASS",
+    "静音录音(6988ms)": "PASS",
+    "长录音(74659ms)": "PASS",
+    "改正文不销毁媒体": "FAIL→已修→PASS",
+    "盘上音频是真语音+往返转写": "PASS",
+    "跨页停止能拾取回来": "FAIL→已修→PASS",
+    "总计": "已验 18 条路径 PASS / 0 FAIL；新发现 1 条高危缺陷（换媒体时写失败会销毁原有录音并留下悬空 audio_path）。累计修掉 5 条数据丢失缺陷 + 1 条口径缺陷；本轮新发现的第 6 条待定语义后再修。",
+    "中止转写逃生通道（abort 真到服务端）": "PASS",
+    "中止后音频未被截断": "PASS",
+    "跨页 + 无文字（录音被丢弃）": "PASS（已修，真机 +1 条带音频）",
+    "兜底转写期间杀进程（录音蒸发）": "PASS（已修，2/2 轮落库且音频完好）",
+    "stop() 重构后的回归（正常录音/中止/长录音）": "PASS 5/5（其中「AI 总结」一条改判为未验成）",
+    "summarize 回填不删音频（桩验客户端契约）": "PASS 5/5（真实后端链路仍未验）",
+    "换媒体（编辑页加视频）": "FAIL —— 新发现缺陷 6，未修（已复现）"
+  },
+  "verify_cancel_escape": {
+    "why": "录音收尾的兜底全量转写最长 10 分钟（服务端 fullTranscribeTimeout=10min，客户端 11min，外层 withTimeout 10min）。此前这段窗口全应用没有任何中止手段 —— 需求「后台执行的 api 可以强行终止」在用户投诉链路上是空的。本条验的是它现在真的能中止，而且中止是**真 abort 到服务端**，不是前端单方面撒手。",
+    "how_to_reach_the_window": {
+      "problem": "这个窗口在真机上几乎抓不到：增量端点只要出过一个字，runStop 就不进兜底；而静音录音反而常常出「嗯。」。碰运气式的测法等于没测。",
+      "solution": "写桩后端 /tmp/opstt/hang-stub.mjs 替掉 /api/stt/*：增量一律立刻返回空 text（把 runStop 逼进兜底），transcribe-full 故意不 send 不 end（把窗口撑开）。窗口是被**造**出来的，不是等出来的。",
+      "stub_transport": "桩服务必须发 CORS 头，否则测法本身就是坏的（见 own_judgment_errors[0]）。"
+    },
+    "measured": {
+      "captured_status_line": "正在转写录音，请稍候… 停止转写",
+      "cancel_button": "class=.studio-busy-stop，CSS 坐标 (187,158)",
+      "ui_recovery_ms": 40,
+      "stub_full_calls": 1,
+      "stub_aborted_before_click": 0,
+      "stub_aborted_after_click": 1,
+      "stub_inflight_at_end": 0,
+      "body_bytes_sent_to_transcribe_full": 583780,
+      "error_shown": "已停止转写，本次录音没有文字；音频仍已保存",
+      "db_row": {
+        "id": "note-1791219411023-l51ydd",
+        "status": "draft",
+        "content": "（语音草稿）",
+        "created_by_voice": 1,
+        "audio_duration_ms": 13849
+      }
+    },
+    "verdict_table": {
+      "1 兜底期间出现「正在转写…」+「停止转写」": "PASS",
+      "1b 兜底真挂住（桩 inflight≥1 且负控 6s 不自愈）": "PASS",
+      "2 点中止后界面从 stopping 恢复": "PASS (40ms)",
+      "3 请求真被 abort（桩观测到断开）": "PASS (aborted 0→1)",
+      "4 音频仍被保存": "PASS (has_audio=1, 13849ms)"
+    },
+    "negative_control": {
+      "what": "点「停止转写」之前先干等 6 秒，每秒采一次样。",
+      "observation": "6 次采样窗口全部仍在，桩 inflight 恒 =1、aborted 恒 =0。",
+      "why_it_is_needed": "没有这条，「点了就恢复」有两���互斥解释：(a) 中止生效；(b) 桩自己恰好返回了。负控把 (b) 排除掉，恢复才可归因给中止。更关键的是它同时证伪了「桩提前返回」这个失败模式 —— 一旦不成立，脚本会 exit(2) 而不是给 PASS。",
+      "counter_reading": "负控期间 aborted=0、点击后 aborted=1 ⇒ 断开确实由这次点击造成，不是环境噪声。"
+    },
+    "audio_survived_the_abort": {
+      "why_worth_checking": "abort 发生在**转写请求飞行途中**。请求用的是 takeFull() 那份内存副本，理论上不该影响落盘文件，但「理论上」不是判据。",
+      "file_bytes_on_device": 201961,
+      "file_bytes_pulled_to_host": 201961,
+      "db_size_bytes": 201961,
+      "decoded": {
+        "samples": 218880,
+        "seconds": 13.68,
+        "non_zero_pct": 79.8,
+        "peak_pct": 37.1,
+        "rms_pct": 6.5
+      },
+      "conclusion": "三个来源的字节数完全一致，解码后是 13.68s 的真语音（79.8% 非零、peak 37.1%），没有被截断也没有被静音。duration_ms 记 13849 与解码 13.68s 的差在 opus 帧粒度内。",
+      "subrows": "body 与 audio 两条子行都在 ⇒ 这次中止没有打乱第一轮修的 FK 写入顺序。"
+    },
+    "timing_observation": "phase 变成 stopping 的瞬间桩上 fullCalls 还是 0，约 1s 后才变成 1。不是缺陷：转写请求发出前要先 ensureGatewayCompatible() 把 webm 转成 wav（583780B base64）。这条解释了为什么「界面已经在说正在转写」和「服务端已经收到请求」之间有秒级间隔。",
+    "own_judgment_errors": [
+      "① 桩服务第一版没发 CORS 头。frontend/src/api/http.ts:114 用的是原生 fetch（**没有** CapacitorHttp），页面 origin=http://localhost 打 127.0.0.1:18096 是跨域，真后端 pocketd 会发 Access-Control-Allow-Origin 而桩不发 ⇒ 浏览器直接掐掉请求。危害在于：症状是「探针 fetch 失败」，很容易误读成「App 连不上桩」，实际上**App 自己的转写请求同样被掐**，两者同形。判据：curl -H \"Origin: http://localhost\" 对比 8124 与 8126 的响应头。",
+      "② 切桩后跟了一句 location.reload()，把 App 打到解锁页（本地加密库的密钥只在内存里，reload 即失），于是 .fab 取空、tapCss 拿到 undefined 坐标报 CDP_ERROR Invalid parameters。修法不是「先解锁再 reload」，而是**根本不 reload** —— resolveRuntimeApiBase() 每次请求都现读 localStorage（api-base.ts:195）。",
+      "③ 判据 3 原先靠 grep stub.log 里的「abort 生效」。日志会被缓冲/截断，grep 命中与否不能当判据。改成桩服务提供 /__stats 结构化计数端点，读数字而不是读文本。"
+    ]
+  },
+  "fix_size_bytes_unit": {
+    "severity": "低（潜伏，非正在冒烟）",
+    "found_during": "验中止逃生通道时读 local_note_files 时的顺手核对",
+    "measured": {
+      "note_id": "note-1791219411023-l51ydd",
+      "body_size_bytes_recorded": 6,
+      "body_text": "（语音草稿）",
+      "body_chars": 6,
+      "body_utf8_bytes": 18,
+      "audio_size_bytes_recorded": 201961,
+      "actual_audio_bytes_on_disk": 201961
+    },
+    "mechanism": [
+      "note-files.ts 的 body 行写 `sizeBytes: input.body.length`（UTF-16 code unit 数 = 字符数）",
+      "同一张表的 media 行写 `sizeBytes: media.blob.size`（真字节数）",
+      "同一个列名 size_bytes，两行两种单位；中文正文正好差 3 倍，emoji 差得更多"
+    ],
+    "why_it_is_not_fire_today": "全仓 grep，local_note_files.size_bytes **没有任何消费方** —— 只有写入点。（asset-store.ts:293 里那处 size_bytes 是另一张表 local_asset_blobs，且它用的是 new Blob([content]).size，本来就是对的。）",
+    "why_fix_it_anyway": "它是潜伏的口径陷阱：以后任何人按字节做判断（限额校验、去重、UI 展示「12 KB」）都会对中文正文少算 3 倍，而且不会有任何测试变红 —— 因为没有任何断言覆盖它。",
+    "fix": "note-files.ts 的 body 行改用 `new Blob([input.body]).size`，与 asset-store.ts:293 同一写法。",
+    "gate": "frontend/src/features/notes/__tests__/note-file-size-bytes.test.mjs —— 6 条，含 2 条负控（把表达式改回 input.body.length / 把 media 行改成 blob.text().length，都必须报红）。门里显式断言「.length 与 Blob.size 对 CJK 确实不等」，否则第 1 条只是洁癖。"
+  },
+  "finding_process_death_loses_recording": {
+    "severity": "高。与已修的「跨页停止丢失」同源，但窗口从秒级放大到**最长 10 分钟**。",
+    "hypothesis_from_code_reading": {
+      "recordingRuntime.ts:945": "cleanupMedia() —— 麦克风已释放",
+      "recordingRuntime.ts:946": "audioBlob = new Blob(this.chunks) —— 录音此刻**只在内存**",
+      "recordingRuntime.ts:988": "await withTimeout(transcribeFull(...), 10*60_000) —— 最长 10 分钟",
+      "recordingRuntime.ts:1019": "this.pendingResult = {...} —— 到这里才交给界面",
+      "conclusion": "整个 stopping 窗口内，音频只存在于 WebView 堆的一个变量里。进程死 ⇒ 蒸发。"
+    },
+    "how_the_window_was_built": "桩后端 hang 模式：增量返空把 runStop 逼进兜底，transcribe-full 故意不 send 不 end。窗口是造出来的，不是等出来的 —— 真机上这个窗口几乎抓不到。",
+    "three_arm_design": {
+      "why": "第一版对照设计错了，被负控当场挡下：我让「不杀进程」那臂等窗口自行结束，但桩是挂住的 ⇒ 窗口永远不会结束 ⇒ 必然没有笔记。**「挂住」和「被杀」两个失败模式同形**，这个对照证不了任何事。",
+      "arms": {
+        "臂1 真实后端，转写自然跑完": "local_notes 11→12（有落库）",
+        "臂2 桩挂住 + 点「停止转写」": "local_notes 12→13，webm 200364B（音频在盘上）",
+        "臂3 桩挂住 + am force-stop": "local_notes 13→13，**盘上无任何新目录**"
+      },
+      "isolated_variable": "臂3 与臂2 只差「谁终结了 stopping 窗口」。同一条流水线、同一个挂住窗口、同一份音频。变量就是进程死亡本身。"
+    },
+    "replication": {
+      "rounds_clean": 2,
+      "per_round": [
+        {
+          "round": 2,
+          "control": "+1 条 / +1 目录",
+          "kill": "+0 条 / +0 目录",
+          "stub_aborted": "0→1"
+        },
+        {
+          "round": 3,
+          "control": "+1 条 / +1 目录",
+          "kill": "+0 条 / +0 目录",
+          "stub_aborted": "0→1"
+        }
+      ],
+      "round_1_lost": "轮 1 的实测臂执行了（桩 aborted 0→1），但核对脚本有一处反引号写成单引号的语法错，进程崩在核对那一步；此后轮 2/3 又各加了一条笔记，基线已被覆盖，**无法补测**。如实记为缺失，不用它充数。",
+      "precondition_every_round": "每轮杀之前都读到桩 inflight=1（请求确实在飞行中），不是杀早了。"
+    },
+    "not_orphan_files": "不是「落了孤儿文件只是没建索引」：盘上笔记目录逐个比对，臂3 那一轮**一个目录都没新建**。（首轮阶段 2 打的「webm 净增 2」是错的 —— 那个数字来自一条被多层引号吃掉、实际没跑在正确路径上的 shell 命令。已用 `adb exec-out run-as … ls -lR` 重取，并用 od 核对过行格式后重新统计。教训：shell 拼装出来的统计量，要先证明命令真的跑到了目标路径，再当读数用。）",
+    "user_impact": "用户点完停止，界面显示「正在转写录音，请稍候…」。这期间手机没电、用户划掉应用、或 MIUI SmartPower 回收后台（这台设备上非常频繁）⇒ 十几秒到十分钟的录音无声消失，且界面上没有任何提示。",
+    "own_judgment_errors": [
+      "① 单进程内跑「杀进程→重启→读数」：`dev.mjs` 在**导入期**建一条 WebSocket，force-stop 之后目标已换，旧连接已死，同进程再 ev() 只会被 TIMEOUT 吃掉。脚本据此报了「★ 未复现」——差点把一个已成立的结论说成假的。拆成每轮独立进程才对。",
+      "② 跨页拾取的目录对比逻辑写成一坨嵌套三元，读不通；改为在杀进程那轮把完整目录清单存进状态文件。",
+      "③ repro-verify.mjs 第 27 行模板字符串收尾写成单引号，`node --check` 直接报语法错。用逐行二分（head -N + node --check）定位到 26/27/28 之间的那一行，再用 od 看字节才发现。"
+    ],
+    "fix": {
+      "approach": "先落草稿再转写：草稿在**分片收尾之后、兜底转写之前**落库，转写有结果后回填正文。",
+      "why_that_position": "放分片之前 ⇒ 正文停在「最后一句还没回来」，而分片出字时兜底整段转写**不会**跑，也就没人回填 ⇒ 笔记少最后一句。放兜底之前 ⇒ 10 分钟窗口被消掉。",
+      "code": {
+        "native/recordingRuntime.ts": "新增 NoteRecordingStopResult（带 draftId）、VoiceDraftSink 结构接口、registerVoiceDraftSink()；runStop() 里在兜底转写前落库、转写后回填。刻意**不 import** notes-store —— 运行时只认结构，native 层不认识 LocalNote，特性层不认识 MediaRecorder。",
+        "features/notes/useNoteRecording.ts": "模块作用域注册 sink 实现（走 notesStore.createNote / updateNote({content})）。选模块作用域是因为跨页停止时页面虽被 KeepAlive 缓存但模块早已加载；而录音只能从笔记页 FAB 起录，「没加载过该模块」时不可能有在途录音。",
+        "features/notes/NoteListView.vue": "抽出 presentVoiceDraft() 承载「开面板 + 刷新 + AI 总结」的共同尾巴；新增 adoptVoiceDraft()；onMicToggle 与 pickupPendingRecording 都按 draftId 分支，杜绝一次录音留两条。"
+      },
+      "gate": "frontend/src/features/notes/__tests__/note-draft-persisted-before-transcribe.test.mjs —— 7 条含 2 负控（把落库挪到转写之后 / 去掉 draftId 去重判据，各必须报红）",
+      "device_verification": {
+        "rounds": [
+          {
+            "round": 1,
+            "control": "+1条/1目录",
+            "kill": "+1条/0目录"
+          },
+          {
+            "round": 2,
+            "control": "+1条/1目录",
+            "kill": "+1条/0目录"
+          }
+        ],
+        "compared_to_before": "修复前两轮实测臂恒为 +0条/0目录",
+        "new_dirs_zero_is_expected": "实测臂 newDirs=0 **不是**「音频没保住」：dirsList 是在 force-stop **之前**抓的，而草稿目录此时已被「先落库」创建了。音频是否在，以 has_audio 为准。",
+        "audio_survived": {
+          "note_id": "note-1791222618032-w01ohq",
+          "has_audio": 1,
+          "db_duration_ms": 13772,
+          "subrow_size_bytes": 199729,
+          "file_bytes_on_device": 199729,
+          "file_bytes_pulled_to_host": 199729,
+          "decoded": {
+            "samples": 217920,
+            "seconds": 13.62,
+            "non_zero_pct": 79.0,
+            "peak_pct": 36.9,
+            "rms_pct": 6.8
+          },
+          "conclusion": "三个来源字节数完全一致，解码 13.62s / 79.0% 非零 / peak 36.9% 是真语音，未被截断。DB 时长 13772ms 与解码时长吻合。"
+        },
+        "incidental": "body 子行 size_bytes=18（「（语音草稿）」6 汉字 × 3 字节）—— 本轮 size_bytes 单位修复在真机生效。"
+      }
+    }
+  },
+  "finding_crosspage_drops_silent_recording": {
+    "severity": "高。与刚修好的「跨页拾取从不触发」是**同一条链路上紧邻的第二个洞**。",
+    "cause": {
+      "NoteListView.vue:415": "const pending = consumePendingResult()",
+      "NoteListView.vue:416": "if (pending && pending.text.trim()) {   ← 门槛：有字才建",
+      "NoteListView.vue:333": "createVoiceDraft 内部写的是 content: text || '（语音草稿）'，**明确接受空文字**",
+      "contradiction": "能力在，调用点把它挡在门外。两个函数互相矛盾。",
+      "why_irreversible": "consumePendingResult() 是「取过即清」，所以条件不成立时不是「留着以后用」，是**当场销毁**。"
+    },
+    "why_previous_gate_missed_it": "note-pending-pickup-on-keepalive 那道门只管 onActivated/onMounted 的**接线**，不检查 text.trim() 这个条件。上一轮的修复让拾取跑起来了，但「跑起来之后在哪种情况下会静默丢弃」是另一个维度，那道门没覆盖。",
+    "trigger_condition": "必须**同时**满足两条才会丢：① 跨页停止（页面不在场，走 consumePendingResult 路径）② 转写没有产出文字。页面在场走 onMicToggle，拿 toggleRecording() 的返回值无条件建草稿，不受影响。",
+    "measured": {
+      "control_有字": {
+        "动作": "跨页 + 真后端",
+        "local_notes": "17→18",
+        "新笔记": "len=92, dur=16803ms",
+        "结果": "PASS"
+      },
+      "test_无字": {
+        "动作": "跨页 + 桩 mode=empty（增量返空 + 兜底立刻返空文字）",
+        "local_notes": "18→18",
+        "新笔记": "无",
+        "桩 fullCalls": "1→2（证明兜底确实被调用并返回了空）",
+        "结果": "录音被丢弃"
+      },
+      "isolated_variable": "两臂只差「转写有没有出字」，跨页、录音、时长、桩全同。"
+    },
+    "how_state_was_built": "给桩服务加了 /__mode：hang（兜底挂住，测中止逃生通道）/ empty（兜底立刻返回空文字）。后者造出「有音频、没文字、且流程正常走完」这个状态 —— 不是挂住，所以不会和「进程被杀」那个失败模式同形。",
+    "fix": {
+      "code": "NoteListView.vue:pickupPendingRecording() 去掉 text.trim() 门槛，改为「拿到 pending 就一定建出东西」：draftId 存在走 adoptVoiceDraft()，否则 createVoiceDraft()。",
+      "gate": "frontend/src/features/notes/__tests__/note-pending-pickup-no-text-gate.test.mjs —— 5 条含 2 负控",
+      "device_verification": {
+        "control_有字": "跨页 + 真后端：local_notes 20→21，len=93 dur=16849ms  PASS",
+        "test_无字": "跨页 + 桩 mode=empty：桩 fullCalls=1（兜底确实被调用并返回空），local_notes 21→22，len=6（占位）dur=17028ms  ⇒ 修复前是 18→18 一条没有"
+      }
+    }
+  },
+  "own_judgment_errors_this_round": [
+    "★ 桩服务把 Access-Control-Allow-Origin **写死**成 http://localhost。重装后包页面 origin 变成 https://localhost（build-mobile 重跑后 androidScheme 变了）⇒ 预检 204 正常到达桩（日志有 OPTIONS、preflight 计数在涨），但浏览器比对 origin 不匹配就拒绝预检响应，**实际 POST 根本不发出去**。症状是「fullCalls 恒 0、preflight 却在涨」，极易误读成「App 没调兜底端点」。⇒ 由此，第一次「跨页+无字」复验虽然结论方向对（+1），但它达成的是**网络失败**导致的空文字，不是我声称测的「桩返回空文字」。用能用的桩重跑了一遍（fullCalls=1）才算数。",
+    "★ 复现驱动的汇总判据是按「坏的状态」写的（要求实测臂 newDirs==0），修好之后它自己报「未稳定复现」——差点把一个已修好的结论说成没修好。判据必须按「修好之后应该长什么样」写。",
+    "★ 新写的门自己有 4 处错：正则把 `if (!pending) return`（合法）也算成违规；判字面量时用了会抹掉字符串的stripCommentsAndStrings；`bodyAfter(v,\"createVoiceDraft\")` 命中的是 onMicToggle 里的**调用点**而不是声明；`[^)]*\\)` 假设 if 条件里只有一个右括号，而 `pending.text.trim()` 自己带了一个 —— 导致真有 bug 时也不报红。",
+    "★ 既有门 note-empty-recording-feedback 抓到我的重构（判据匹配的是源码文本）。没有放宽它的正则了事，而是补了一条锁住 finalText 的定义，保持这道门有牙。",
+    "★ 我把「有 AI 总结」判成了 PASS，**这是错的**。读到的三条笔记 content 与 summary 逐字相同，看着像 AI 总结正好等于原文。实际是：createNote 走 note-storage-policy 的 `summary: summarizeForDisplay(body)`，那是**建库时写入的展示摘要**（截断到 SUMMARY_CHAR_LIMIT=280；那条长录音正文正好 280 字，所以全等）。真正的 AI 总结走 /api/notes/{id}/summarize，本环境后端返回 `notes store not configured`，**根本没跑起来**。⇒ 我那条判据测的是展示摘要兼底，却报成了「AI 总结 PASS」。教训：判据写「有 X」时要能区分「X 的兼底」和「X 本身」；这次是兼底长得和真货一模一样。"
+  ],
+  "regression_after_stop_refactor": {
+    "why": "上一轮把草稿落库提到兜底转写之前，改的是 stop() 这个核心函数。只复验两条新路径不够 —— 必须回答「原本正常的路径有没有被弄坏」。",
+    "early_persist_new_interactions": [
+      "① 中止时草稿已经建好了（改之前中止发生在建笔记之前）⇒ 风险：中止路径再建一条",
+      "② 页面在场走 adoptVoiceDraft 而非 createVoiceDraft ⇒ 风险：AI 总结/元信息面板这条尾巴丢了",
+      "③ 增量出字的长录音也会走早落库 ⇒ 风险：正文停在半路没人回填"
+    ],
+    "measured": {
+      "页面在场正常录音 ×2（真后端）": "各 +1 条、+1 目录；len 74 / 79，dur 13740 / 13977ms，has_audio 均为 1",
+      "中止路径": "中止前 local_notes 已由 28 涨到 29（**早落库在中止之前就生效**），中止后仍是 29 ⇒ 净 +1、未重复建；桩 fullCalls=1 aborted 0→1；最新行 has_audio=1",
+      "长录音 75s（走增量分片，不触发兜底）": "+1 条、+1 目录；正文 280 字连贯，dur=74972ms，has_audio=1"
+    },
+    "verdicts": [
+      "① 页面在场一次录音只建一条  PASS（2 次各 +1）",
+      "② 落库正文有字 PASS / 有音频 PASS / AI 总结路径见 verify_summarize_backfill_keeps_audio（已用桩验成客户端契约）",
+      "③ 中止路径不重复建 PASS (+1)",
+      "④ 中止后音频仍在 PASS (has_audio=1)",
+      "⑤ 长录音仍只建一条且正文连贯 PASS (len=280 dur=74972)"
+    ]
+  },
+  "origin_scheme_finding": {
+    "observed": "重装后页面 origin 从 http://localhost 变成 https://localhost。",
+    "root_cause": "capacitor.config.ts:31 `androidScheme: (process.env.CAP_ANDROID_SCHEME as \"http\"|\"https\") ?? \"https\"` —— **仓库默认就是 https**。先前那个 APK 是带 CAP_ANDROID_SCHEME=http 环境变量出的，我的重跑没带，于是回到了默认值。所以早先那批证据采集在**非默认** scheme 下，本轮两轮复验在默认（https）下。",
+    "impact_checked": [
+      "mixed content：https 页面打 http://127.0.0.1:18099 仍然 200（Capacitor WebView 允许），真后端转写实测正常。",
+      "api-base.ts 的 isCapacitorShellOrigin 正则 /^(https?|capacitor):\\/\\/localhost$/i 同时覆盖 http 与 https，所以 loopback 回落与生产入口回落的判断不变。",
+      "生产环境 base 是 https://pocket.itestu.cn，不存在 mixed content。",
+      "★ 但**任何自写桩/探针若把 Access-Control-Allow-Origin 写死成 http://localhost，在默认 scheme 下就是哑桩**（本轮已踩，见 own_judgment_errors）。"
+    ]
+  },
+  "verify_summarize_backfill_keeps_audio": {
+    "why_this_matters": "本轮重构新建的客户端契约：早落库之后界面走 adoptVoiceDraft → presentVoiceDraft → notesStore.updateNote(id, {summary})。updateNote 是会碰附件的函数（notes-persist 里正文变更会走 deleteNoteFiles），所以「回填总结」这个写操作若误判成「换媒体」，刚录的音频就没了。",
+    "why_stub": "本机 pocketd 启动时没带 Postgres（cmd/pocketd/main.go:129 `if pool != nil` 才建 notesStore）⇒ s.notesStore == nil ⇒ **所有** /api/notes/* 都是 503；summarize 还额外要求 llmBFF 非 nil。起 Postgres + 重启用户后端是太大副作用，不擅自做。⇒ 写透明代理桩 /tmp/opstt/summarize-proxy.mjs：只拦 /api/notes/{id}/summarize，其余全部转发到真后端 8124（STT 照常真转写）。",
+    "what_this_does_not_prove": "**没有验**真实 AI 总结的生成质量，也没有验真实后端 summarize 链路 —— 那需要 Postgres + LLM BFF 真的跑起来。验的是「拿到总结之后，客户端写回会不会把音频弄丢」这一条。",
+    "measured": {
+      "note_id": "note-1791223603011-1nevd4",
+      "sentinel_stored_in_db": "【桩总结SENTINEL】这是代理桩返回的假 AI 总结，刻意与正文不同",
+      "content": "会，请提前十分钟。到场，今天下午三点，会议室开产品评审。…（len=73）",
+      "has_audio": 1,
+      "audio_subrow": {
+        "kind": "audio",
+        "size_bytes": 197775,
+        "rel_path": "notes/2026/10/05/no/note-1791223603011-1nevd4/audio/01.webm"
+      },
+      "body_subrow": {
+        "kind": "body",
+        "size_bytes": 219
+      },
+      "local_notes": "30 → 31"
+    },
+    "verdicts": [
+      "负控 SENTINEL 与正文可区分（否则「回填没发生、summary 仍是建库时的展示摘要」与「回填发生」输出完全一样，判据退化成恒真） PASS",
+      "① summarize 被调用并回填进库 PASS（桩 summarizeCalls=1，noteId 与库行一致）",
+      "② 回填总结后音频仍在 PASS (has_audio=1)",
+      "③ 附件子行 audio 仍在且有字节 PASS (197775B)",
+      "④ 正文没被总结覆盖 PASS (len=73)"
+    ],
+    "static_coverage_already_exists": "不新增门：①「回填只传 content、不传 media」已由 note-draft-persisted-before-transcribe.test.mjs 的 doesNotMatch 锁住；②「updateNote 不传 media 时保留旧音频」已由 note-edit-preserves-media.test.mjs 锁住。这两条加上本轮的运行时实测，构成完整覆盖。",
+    "own_judgment_error": "设备侧又踩了一次 MIUI 的坑：包被自动置 DISABLED_USER（enabled=3），`am start` 报「Error type 3 / Activity class does not exist」——activity 明明在，误导性极强，pm enable 即可解。"
+  },
+  "finding_replace_media_destroys_existing": {
+    "correction_first": "★ 我此前说「换媒体路径（media.length>0）在当前 UI 不可达，只做过代码走查」——**这是错的**。NoteEditView.vue:246 保存时明确传了 `media`，来源是「添加视频」按钮（accept=\"video/*\" 的 file input → onPickVideo → pendingMedia → :225 汇入）。该分支此前从未在真库上跑过，本轮把它跑起来了，并且立刻炸出数据丢失。",
+    "measured": {
+      "note_id": "note-1791225110864-t7kz18",
+      "before": {
+        "子行": "body 234 + audio 201362",
+        "库行": "len=78 has_audio=1"
+      },
+      "after": {
+        "页面": ".form-error 「保存失败，请稍后重试」",
+        "hash": "仍停在 /edit（未跳转）",
+        "库行": "**完全没变** len=78 has_audio=1（仍指向已被删的音频）",
+        "子行": "**只剩 body 234**，audio 子行消失",
+        "盘上": "笔记目录只剩 body.md(234B)，**audio/01.webm 已被物理删除**"
+      },
+      "exception": "[note] 保存失败: ProgressEvent；TypeError: Cannot read properties of null (reading 'split') at a.onloadend"
+    },
+    "root_cause": {
+      "order": "notes-persist.ts:199-226 —— `if (replacingMedia) await deleteNoteFiles(...)` **先删**，随后 `await persistNotePayload({...media})` 再写，而 `localDB.run(\"UPDATE local_notes …\")` 在最后。",
+      "failure_consequence": "persistNotePayload 一抛，UPDATE 永不执行 ⇒ 文件被删、子行被删、库行却保持旧值 ⇒ audio_path 变成指向不存在文件的悬空指针。用户只看到「保存失败，请稍后重试」，而**录音已经没了，且无回滚、无孤儿保留**。",
+      "same_principle_as_fk_fix": "与我早先修的 FK 写入顺序是同一条原则：破坏性操作必须排在成功写之后，而不是之前。"
+    },
+    "trigger_honesty": {
+      "confirmed": "结构性缺陷真实：任何让 persistNotePayload 抛出的原因（磁盘写失败、大视频 base64 编码 OOM、超过某种限制）都会导致同样结果。",
+      "not_confirmed": "★ 这一次 FileReader 返回 null 的**具体触发源是我的 CDP 注入方式**。对照实测（同一页面）：用相同字节 `new File(...)` 走同一条 FileReader/blobToBase64 链路**完全正常** —— tiny.mp4 → base64 7204 字符；201KB 文件 → 268521 字符。⇒ 不能声称「用户手选视频就会踩到 reader.result 为 null」。",
+      "so": "缺陷的**存在**已证实，缺陷的**触发频率**未知。"
+    },
+    "product_question_inside": "当前 replacingMedia = media.length > 0 的语义是「只要加了任何附件，整条录音就被替换掉」。用户给一条语音笔记补一张图片，录音就没了 —— 这大概率不是产品意图，但它是**产品决策**不是技术缺陷：要么保留录音（把 video 视为追加），要么真的替换（并明确告诉用户）。修「写前删」的同时必须先定这个语义，否则改完仍然在悄悄删录音。",
+    "own_judgment_errors": [
+      "★ 判「整个笔记目录都不存在了」是**我的测量错误**：`ls files/notes/*/*/*/<id>` 只写了 3 层，而 noteDir 是 4 层（notes/YYYY/MM/DD/<workspace>/note-id）。与本会话早期同一个坑（把文件误报成「没了」）。改正 4 层后确认：目录在，只是音频没了。",
+      "★ 用 `input.files.length === 0` 判「注入失败」是错的：NoteEditView.onPickVideo 取走文件后执行 `input.value = ''`（好让同一个文件能重复选），所以事后必然是 0。权威信号是 `.media-hint`（= pendingMedia.length）。我据此提前退出，把一条能验的路径报成测不了。",
+      "★ 控制台在**点保存之后**才清空，异常早被自己抹掉，只剩一句「保存失败」。必须在点击前清空。",
+      "★ 用「注入方式」触发的失败，直接被当成了产品缺陷的触发路径。必须用「同一页面 + 相同字节 + JS 构造 File」做对照，才能把方法因素和产品因素分开。"
+    ],
+    "fix": {
+      "product_decision": "用户拍板：**加附件是「追加」不是「替换」**。跨类型共存（给语音笔记补图片/视频，录音原样保留）；同类型替换（一条笔记一条音轨，连加两个视频后者顶掉前者）。",
+      "code_changes": {
+        "frontend/src/features/notes/notes-persist.ts": [
+          "删掉 `const replacingMedia` 常量及其 `deleteNoteFiles` 分支 —— updateNote 现在一次都不碰整目录删除",
+          "`carriedMedia` 去掉 replacingMedia 守卫，恒常解析并合并旧 mediaJson 的非 body 条目",
+          "新增 `bodyFileNeeded` 判定（= decided.persistBodyFile && nextContent），写块入口条件改为 `patch.content !== undefined || media.length > 0`",
+          "`kept = [...written.files, ...carriedMedia.filter(f => !writtenKinds.has(f.kind))]` —— 同类型以本次为准、跨类型合回",
+          "`audioPath = written.audioPath ?? existing.audioPath`（原 `replacingMedia ? ... : ...`，在加附件路径上会把 audio_path 置空）",
+          "`else` 分支（原会置 audioPath=null）改为保留 existing.audioPath",
+          "★ 旧 body 文件的清理移到**写成功之后**：`if (!bodyFileNeeded && existing.bodyPath) await deleteNoteBodyFile(...)`"
+        ],
+        "frontend/src/utils/base64.ts": [
+          "`reader.result as string` 直上 `.split` 改为 typeof 守卫，null 时 reject 并说明「读取被中止或已失败」",
+          "`reader.onerror = reject`（透传 ProgressEvent）改为 `() => reject(reader.error ?? new Error(...))` —— 根因从不可观测变为可观测",
+          "补 `reader.onabort` 分支"
+        ],
+        "frontend/src/utils/download-encoding.ts": [
+          "同一个 `reader.result as string` 空值洞（下载路径），一并补 typeof 守卫；onerror/onabort 的处理保持原有契约"
+        ]
+      },
+      "verified_on_device": {
+        "build": "MOBILE_SKIP_REACHABILITY=1 MOBILE_FAST=1 node scripts/build-mobile.mjs android dev --sttdev → index-VSF7qXLj.js",
+        "packaging_gate": "★ 装包前先验包：解出 APK 的 assets/public/index.html 指向 assets/index-VSF7qXLj.js，确认其中含 base64 修复的字符串字面量（grep=1）。**第一轮没做这道验包，装完才发现包里是 02:45 的旧 bundle，base64 修复根本没进去，害我差点把「TypeError 仍在」当成修复失败。** 判据用字符串字面量而非变量名 —— writtenKinds/carriedMedia 是局部变量，被压缩改名，grep 不到（读到 0），拿它当判据会假报缺失。",
+        "device": "Redmi 2411DRN47C / Android 14 / com.kaixuan.opencode.pocket.sttdev",
+        "rounds": [
+          {
+            "round": "轮1（缺陷6 原始复现，含 replacingMedia 的旧代码）",
+            "inject": "CDP DOM.setFileInputFiles",
+            "result": "保存失败；audio 子行消失；磁盘 audio/01.webm 被物理删除；库行悬空"
+          },
+          {
+            "round": "轮2（只含 notes-persist 修复的 APK）",
+            "inject": "CDP DOM.setFileInputFiles",
+            "result": "★ 录音四路判据全过（库行 audio_path 未变 / audio 子行 rel_path 与字节数未变 / 磁盘文件 204909 字节未变 / 外键干净）⇒ 数据安全修复生效；但保存仍失败，console 仍有 ProgressEvent + reading 'split' TypeError ⇒ 定位到 base64 修复未进包"
+          },
+          {
+            "round": "轮3（重建后，含 base64 修复）",
+            "inject": "CDP DOM.setFileInputFiles",
+            "result": "★ TypeError 消失（修复生效）；拒绝值从被掩盖的 ProgressEvent 变成真实根因 `DOMException: A requested file or directory could not be found`（NotFoundError）⇒ 证实 FileReader 读不到 CDP 注入的文件；录音仍然四路完好"
+          },
+          {
+            "round": "轮4（决定性对照：页面内 new File + DataTransfer，走 App 真实 onPickVideo 与保存路径）",
+            "inject": "页面内 new File([bytes]) → DataTransfer → input.files → change 事件",
+            "note_id": "note-1791222618032-w01ohq",
+            "before": "audio 199729 + body 18",
+            "after": "audio 199729 + body 18 + video 5401；磁盘新增 videos/01.mp4 5401 字节",
+            "verdict": "10/10 PASS —— 保存成功（.form-error 空、hash 跳到 #/notes）、录音三路完好、视频真实落盘、外键干净 ⇒ **缺陷6 已修复，之前的失败确实只源于注入方式**"
+          }
+        ]
+      },
+      "same_kind_replacement_verified": {
+        "note_id": "note-1791223083852-57f6l0",
+        "scenario": "连加两个大小不同的视频（tiny.mp4 5401 字节 → tiny2.mp4 8601 字节），两次各自完整保存",
+        "result": [
+          "第1次后：恰好一条 video 子行，sz=5401",
+          "第2次后：**仍恰好一条** video 子行，sz=8601（后者顶掉前者）",
+          "rel_path 恒为 videos/01.mp4（未递增到 02）",
+          "磁盘 videos/01.mp4 字节同步变为 8601",
+          "录音 audio 子行与磁盘文件两次均不变"
+        ],
+        "verdict": "9/9 PASS",
+        "why_this_is_a_real_discriminator": "persistNotePayload 的计数器每次调用都从 0 起（note-files.ts:97），row id 是 `${noteId}-${kind}-${index}`，schema 里 id 是 PRIMARY KEY。⇒ 两次保存落到同一 rel_path、同一行 id，靠 INSERT OR REPLACE 顶掉。若计数器改成跨调用累加、或换成普通 INSERT，这里就会变成两条 —— 判据与磁盘命名、主键、REPLACE 三处前提绑死。"
+      },
+      "permanent_damage_before_the_fix": {
+        "count": 3,
+        "note_ids": [
+          "note-1791225110864-t7kz18",
+          "note-1791224812285-qmtady",
+          "note-1791223603011-1nevd4"
+        ],
+        "state": "audio_path 仍非空、audio_duration_ms 仍是 13xxx，但 audio 子行数 = 0 且磁盘文件不存在",
+        "two_path_cross_check": "子表查询与 adb run-as 直接问文件系统，两路都判缺失（用户要求：判「文件不存在」必须用第二条路径交叉核）",
+        "note": "★ 这三条是修复**之前**的复现跑弄坏的，**无法追回**。修复只能保证今后不再发生，不能还原已有损失。"
+      },
+      "gates": {
+        "frontend/src/features/notes/__tests__/note-edit-preserves-media.test.mjs": "重写。6 条判据：deleteNoteFiles 零调用 / 走 deleteNoteBodyFile / ★删除排在 persistNotePayload 之后（按剥注释后的字符下标比）/ audioPath = written.audioPath ?? existing.audioPath / else 分支保留 existing.audioPath / deleteNoteBodyFile 无 rmdir 且 DELETE 限定 kind=body。**5 条负控**：删除挪到写之前 / 放回 deleteNoteFiles / audioPath 无条件赋值 / 放回 rmdir / 去掉 kind 限定。14/14 PASS。",
+        "frontend/src/features/notes/__tests__/note-media-append-not-replace.test.mjs": "新增（追加语义，与上一门判据不重叠）。carriedMedia 必须在函数体顶层（用 braceDepthAt 判深度=1，纯文本搜索判不出条件包裹）/ 排除 kind=body / kept 必须以 written.files 开头且含 carriedMedia.filter + writtenKinds.has 过滤 / bodyFileNeeded 存在且传给 persistNotePayload。前提一并锁住：note-paths.ts 四类 kind 映射到四个不同目录、计数器从 0 起且 +1、INSERT OR REPLACE、行 id 含 kind 与序号、schema 里 id 是 PRIMARY KEY。**4 条负控**：丢跨类型合回 / 去掉同类型过滤 / 两类 kind 共用目录 / carriedMedia 重新圈回条件。",
+        "frontend/src/utils/__tests__/base64-null-result.test.mjs": "新增**行为门**（stub FileReader 实跑 promise 落地方式，不用文本扫描）。4 条主断言 + 3 条负控。★ **负控必须在子进程里跑**：第一版用 process.on('uncaughtException') 在同进程接住，断言全过，但 node:test 自己也在监听，于是它把那条异步异常记成 'A resource generated asynchronous activity after the test ended' 并把整个文件判红 —— **负控自己把门打红了**。7/7 PASS。"
+      },
+      "regression": {
+        "vue-tsc": "0 错误",
+        "recording_scope": "features/notes/__tests__ + native/__tests__ = 299/299 PASS",
+        "full": "test:all → tests 2214 / pass 2212 / **fail 0** / skipped 2；240 个测试文件全部被实际执行",
+        "baseline_delta": "本轮改动前基线是 2196/2192/**2 fail**/2 skipped，那 2 个失败在未跟踪文件 src/features/meetings/meeting-due.test.ts（并发会话产物，非本范围）。现已绿 —— 单独跑该文件确认 22/22 PASS，不是「没被执行」。"
+      },
+      "measurement_errors_this_round": [
+        "★ 我改了 base64.ts 之后**没有重建就以为新包已含修复**。实际构建在 02:45 完成、我 02:46:05 才改 base64.ts，被打进 APK 的是 02:45 的 bundle。症状：真机 console 仍有 `reading 'split' TypeError`。**误判方向是「修复无效」，而真因是「包是旧的」** —— 两者都能解释同一现象，必须靠解包 grep 区分。",
+        "★ 拿压缩后的变量名（writtenKinds/carriedMedia）当包内判据。esbuild 会改名，grep 恒为 0，误报成「修复没进包」。包内判据只能用字符串字面量。",
+        "★ 我给 findAppendRisks 只传 persistNotePayload 的函数体，却在查 `INSERT OR REPLACE` —— 那行在 insertFileRow() 里。主断言在**正确源码上**报红。量具作用域错，不是源码有缺陷。修法：两个函数体分开传，并加 `!ins` 早退让「函数体没找到」不会伪装成「用了 INSERT」。",
+        "★ base64 行为门的负控在同进程抛 uncaught，把整个测试文件判红（见 gates 里的说明）。",
+        "★ 负控子进程里两条 JSON（reject 分支与 150ms 兜底）粘在同一行且无分隔，父进程 JSON.parse 报 SyntaxError。加 done 标志后只活一条。"
+      ]
+    }
+  },
+  "fix_replace_media_and_base64": {
+    "product_decision": "用户拍板：**加附件是「追加」不是「替换」**。跨类型共存（给语音笔记补图片/视频，录音原样保留）；同类型替换（一条笔记一条音轨，连加两个视频后者顶掉前者）。",
+    "code_changes": {
+      "frontend/src/features/notes/notes-persist.ts": [
+        "删掉 `const replacingMedia` 常量及其 `deleteNoteFiles` 分支 —— updateNote 现在一次都不碰整目录删除",
+        "`carriedMedia` 去掉 replacingMedia 守卫，恒常解析并合并旧 mediaJson 的非 body 条目",
+        "新增 `bodyFileNeeded` 判定（= decided.persistBodyFile && nextContent），写块入口条件改为 `patch.content !== undefined || media.length > 0`",
+        "`kept = [...written.files, ...carriedMedia.filter(f => !writtenKinds.has(f.kind))]` —— 同类型以本次为准、跨类型合回",
+        "`audioPath = written.audioPath ?? existing.audioPath`（原 `replacingMedia ? ... : ...`，在加附件路径上会把 audio_path 置空）",
+        "`else` 分支（原会置 audioPath=null）改为保留 existing.audioPath",
+        "★ 旧 body 文件的清理移到**写成功之后**：`if (!bodyFileNeeded && existing.bodyPath) await deleteNoteBodyFile(...)`"
+      ],
+      "frontend/src/utils/base64.ts": [
+        "`reader.result as string` 直上 `.split` 改为 typeof 守卫，null 时 reject 并说明「读取被中止或已失败」",
+        "`reader.onerror = reject`（透传 ProgressEvent）改为 `() => reject(reader.error ?? new Error(...))` —— 根因从不可观测变为可观测",
+        "补 `reader.onabort` 分支"
+      ],
+      "frontend/src/utils/download-encoding.ts": [
+        "同一个 `reader.result as string` 空值洞（下载路径），一并补 typeof 守卫；onerror/onabort 的处理保持原有契约"
+      ]
+    },
+    "verified_on_device": {
+      "build": "MOBILE_SKIP_REACHABILITY=1 MOBILE_FAST=1 node scripts/build-mobile.mjs android dev --sttdev → index-VSF7qXLj.js",
+      "packaging_gate": "★ 装包前先验包：解出 APK 的 assets/public/index.html 指向 assets/index-VSF7qXLj.js，确认其中含 base64 修复的字符串字面量（grep=1）。**第一轮没做这道验包，装完才发现包里是 02:45 的旧 bundle，base64 修复根本没进去，害我差点把「TypeError 仍在」当成修复失败。** 判据用字符串字面量而非变量名 —— writtenKinds/carriedMedia 是局部变量，被压缩改名，grep 不到（读到 0），拿它当判据会假报缺失。",
+      "device": "Redmi 2411DRN47C / Android 14 / com.kaixuan.opencode.pocket.sttdev",
+      "rounds": [
+        {
+          "round": "轮1（缺陷6 原始复现，含 replacingMedia 的旧代码）",
+          "inject": "CDP DOM.setFileInputFiles",
+          "result": "保存失败；audio 子行消失；磁盘 audio/01.webm 被物理删除；库行悬空"
+        },
+        {
+          "round": "轮2（只含 notes-persist 修复的 APK）",
+          "inject": "CDP DOM.setFileInputFiles",
+          "result": "★ 录音四路判据全过（库行 audio_path 未变 / audio 子行 rel_path 与字节数未变 / 磁盘文件 204909 字节未变 / 外键干净）⇒ 数据安全修复生效；但保存仍失败，console 仍有 ProgressEvent + reading 'split' TypeError ⇒ 定位到 base64 修复未进包"
+        },
+        {
+          "round": "轮3（重建后，含 base64 修复）",
+          "inject": "CDP DOM.setFileInputFiles",
+          "result": "★ TypeError 消失（修复生效）；拒绝值从被掩盖的 ProgressEvent 变成真实根因 `DOMException: A requested file or directory could not be found`（NotFoundError）⇒ 证实 FileReader 读不到 CDP 注入的文件；录音仍然四路完好"
+        },
+        {
+          "round": "轮4（决定性对照：页面内 new File + DataTransfer，走 App 真实 onPickVideo 与保存路径）",
+          "inject": "页面内 new File([bytes]) → DataTransfer → input.files → change 事件",
+          "note_id": "note-1791222618032-w01ohq",
+          "before": "audio 199729 + body 18",
+          "after": "audio 199729 + body 18 + video 5401；磁盘新增 videos/01.mp4 5401 字节",
+          "verdict": "10/10 PASS —— 保存成功（.form-error 空、hash 跳到 #/notes）、录音三路完好、视频真实落盘、外键干净 ⇒ **缺陷6 已修复，之前的失败确实只源于注入方式**"
+        }
+      ]
+    },
+    "same_kind_replacement_verified": {
+      "note_id": "note-1791223083852-57f6l0",
+      "scenario": "连加两个大小不同的视频（tiny.mp4 5401 字节 → tiny2.mp4 8601 字节），两次各自完整保存",
+      "result": [
+        "第1次后：恰好一条 video 子行，sz=5401",
+        "第2次后：**仍恰好一条** video 子行，sz=8601（后者顶掉前者）",
+        "rel_path 恒为 videos/01.mp4（未递增到 02）",
+        "磁盘 videos/01.mp4 字节同步变为 8601",
+        "录音 audio 子行与磁盘文件两次均不变"
+      ],
+      "verdict": "9/9 PASS",
+      "why_this_is_a_real_discriminator": "persistNotePayload 的计数器每次调用都从 0 起（note-files.ts:97），row id 是 `${noteId}-${kind}-${index}`，schema 里 id 是 PRIMARY KEY。⇒ 两次保存落到同一 rel_path、同一行 id，靠 INSERT OR REPLACE 顶掉。若计数器改成跨调用累加、或换成普通 INSERT，这里就会变成两条 —— 判据与磁盘命名、主键、REPLACE 三处前提绑死。"
+    },
+    "permanent_damage_before_the_fix": {
+      "count": 3,
+      "note_ids": [
+        "note-1791225110864-t7kz18",
+        "note-1791224812285-qmtady",
+        "note-1791223603011-1nevd4"
+      ],
+      "state": "audio_path 仍非空、audio_duration_ms 仍是 13xxx，但 audio 子行数 = 0 且磁盘文件不存在",
+      "two_path_cross_check": "子表查询与 adb run-as 直接问文件系统，两路都判缺失（用户要求：判「文件不存在」必须用第二条路径交叉核）",
+      "note": "★ 这三条是修复**之前**的复现跑弄坏的，**无法追回**。修复只能保证今后不再发生，不能还原已有损失。"
+    },
+    "gates": {
+      "frontend/src/features/notes/__tests__/note-edit-preserves-media.test.mjs": "重写。6 条判据：deleteNoteFiles 零调用 / 走 deleteNoteBodyFile / ★删除排在 persistNotePayload 之后（按剥注释后的字符下标比）/ audioPath = written.audioPath ?? existing.audioPath / else 分支保留 existing.audioPath / deleteNoteBodyFile 无 rmdir 且 DELETE 限定 kind=body。**5 条负控**：删除挪到写之前 / 放回 deleteNoteFiles / audioPath 无条件赋值 / 放回 rmdir / 去掉 kind 限定。14/14 PASS。",
+      "frontend/src/features/notes/__tests__/note-media-append-not-replace.test.mjs": "新增（追加语义，与上一门判据不重叠）。carriedMedia 必须在函数体顶层（用 braceDepthAt 判深度=1，纯文本搜索判不出条件包裹）/ 排除 kind=body / kept 必须以 written.files 开头且含 carriedMedia.filter + writtenKinds.has 过滤 / bodyFileNeeded 存在且传给 persistNotePayload。前提一并锁住：note-paths.ts 四类 kind 映射到四个不同目录、计数器从 0 起且 +1、INSERT OR REPLACE、行 id 含 kind 与序号、schema 里 id 是 PRIMARY KEY。**4 条负控**：丢跨类型合回 / 去掉同类型过滤 / 两类 kind 共用目录 / carriedMedia 重新圈回条件。",
+      "frontend/src/utils/__tests__/base64-null-result.test.mjs": "新增**行为门**（stub FileReader 实跑 promise 落地方式，不用文本扫描）。4 条主断言 + 3 条负控。★ **负控必须在子进程里跑**：第一版用 process.on('uncaughtException') 在同进程接住，断言全过，但 node:test 自己也在监听，于是它把那条异步异常记成 'A resource generated asynchronous activity after the test ended' 并把整个文件判红 —— **负控自己把门打红了**。7/7 PASS。"
+    },
+    "regression": {
+      "vue-tsc": "0 错误",
+      "recording_scope": "features/notes/__tests__ + native/__tests__ = 299/299 PASS",
+      "full": "test:all → tests 2214 / pass 2212 / **fail 0** / skipped 2；240 个测试文件全部被实际执行",
+      "baseline_delta": "本轮改动前基线是 2196/2192/**2 fail**/2 skipped，那 2 个失败在未跟踪文件 src/features/meetings/meeting-due.test.ts（并发会话产物，非本范围）。现已绿 —— 单独跑该文件确认 22/22 PASS，不是「没被执行」。"
+    },
+    "measurement_errors_this_round": [
+      "★ 我改了 base64.ts 之后**没有重建就以为新包已含修复**。实际构建在 02:45 完成、我 02:46:05 才改 base64.ts，被打进 APK 的是 02:45 的 bundle。症状：真机 console 仍有 `reading 'split' TypeError`。**误判方向是「修复无效」，而真因是「包是旧的」** —— 两者都能解释同一现象，必须靠解包 grep 区分。",
+      "★ 拿压缩后的变量名（writtenKinds/carriedMedia）当包内判据。esbuild 会改名，grep 恒为 0，误报成「修复没进包」。包内判据只能用字符串字面量。",
+      "★ 我给 findAppendRisks 只传 persistNotePayload 的函数体，却在查 `INSERT OR REPLACE` —— 那行在 insertFileRow() 里。主断言在**正确源码上**报红。量具作用域错，不是源码有缺陷。修法：两个函数体分开传，并加 `!ins` 早退让「函数体没找到」不会伪装成「用了 INSERT」。",
+      "★ base64 行为门的负控在同进程抛 uncaught，把整个测试文件判红（见 gates 里的说明）。",
+      "★ 负控子进程里两条 JSON（reject 分支与 150ms 兜底）粘在同一行且无分隔，父进程 JSON.parse 报 SyntaxError。加 done 标志后只活一条。"
+    ]
+  },
+  "stt_api_direct_call": {
+    "asked_by": "用户上一轮原话：「转录功能仍然没有成功，请进行直接的测试调用，看看 api 是否可用」",
+    "conclusion": "**API 完全可用。** 端到端每一段都实测过：前端 http 层、后端 pocketd、网关 https://llm.kxpms.cn/v1、上游 ASR。",
+    "measured": {
+      "GET/POST /api/stt/config": "200 —— {channel: gateway, gatewayModel: mimo-v2.5-asr, language: zh}",
+      "直接打网关 /audio/transcriptions（文件段 audio/wav）": "200，text='嗯。'",
+      "直接打网关 /audio/transcriptions（文件段 application/octet-stream）": "200，text='嗯。'",
+      "POST /api/stt/transcribe-full（gt-voice.wav 16kHz 4.6s 真实语音）": "ok=true，text='今天下午三点，会议室开产品评审会，请提前十分钟到场。'，failed=0",
+      "POST /api/stt/transcribe-full（同段语音重采样到 8kHz）": "ok=true，文本完全一致 ⇒ 采样率不是限制",
+      "POST /api/stt/probe（multipart 传 gt-voice.wav）": "ok=true，model=mimo-v2.5-asr，transport=transcriptions，4640ms，文本正确",
+      "POST /api/stt/probe（multipart 传 gt-80s.wav 80s）": "ok=true，80000ms，文本正确",
+      "设备本地 SQLite 实读": "笔记正文是真转写文本：'今天下午三点，会议室开产品评审会，请提前十分钟到场。'；75s 长录音一条 len=280 字连贯"
+    },
+    "three_hypotheses_I_killed_with_measurement": [
+      "★ **我的探测测试本身是错的**。我最初 POST /api/stt/probe 的请求体是 `{}`，而 handleSTTProbe 走 readSTTAudio —— 它把非 multipart 的请求体**整个当音频**，于是发出去了 2 字节的 `{}`，拿到 400「invalid audio format / Param Incorrect」。读源码后确认：该端点设计上要传真实录音（设置页就是这么用的），走的是真实转写路径 engine.TranscribeFor，不是 ProbeModel。**3/3 稳定失败，但错的是我的调用，不是产品。** 换成 multipart 传真 WAV 后 2/2 成功。症状与「转写链路坏了」完全同形。",
+      "假设「探测音是 8-bit PCM 所以被拒」——**反了**。实测 8-bit 合成音经 transcribe-full 返回 ok=true（还幻觉出「嗯。」），16-bit 那份反而被正确判为纯静音。8-bit 本身不是问题。",
+      "假设「文件段 Content-Type（探测用 audio/wav、真实路径用 CreateFormFile 的 application/octet-stream）是元凶」——**否**。两种 Content-Type 直打网关都 200。",
+      "假设「上游间歇性故障」——**否**。同一错误 3/3 复现，稳定失败；但那 3 次都是我这个坏调用造成的。"
+    ]
+  },
+  "finding_ai_summarize_unreachable": {
+    "status": "★ 缺陷7（结构性，非环境问题）：AI 总结在本地优先架构下**永远不可能成功**",
+    "why_it_matters": "我上一轮曾把「笔记有 summary」判为 PASS，那是错的 —— 那是 note-storage-policy.ts 的 summarizeForDisplay 做的**展示层截断**兜底（内容前若干字），不是 AI 总结。本条把根因定死。",
+    "code_facts": {
+      "ui_calls_the_endpoint": "NoteListView.vue:344 `notesApi.summarize(metaNote.value.id)`（录音草稿落库后立刻调）；NoteDetailView.vue:276 详情页「总结」按钮直接调",
+      "endpoint_requires_pg": "backend/internal/server/server_assistant.go:600 `s.notesStore.GetByIDScoped(ctx, id, uid, wsID)` —— 笔记必须存在于 **Postgres 的 notes 表**",
+      "app_writes_only_to_device_sqlite": "笔记创建的三个入口全部走本地库：useNoteRecording.ts:40 / NoteEditView.vue:240 / NoteListView.vue:369，都调 `notesStore.createNote`（设备 SQLite 的 local_notes）",
+      "the_one_wire_that_would_fix_it_is_never_called": "★ `notesApi.create`（api/notes.ts:62 → POST /api/notes → server_assistant.go:364 `notesStore.Upsert`）是唯一能把笔记写进 PG 的路径，**全仓没有任何调用点**。grep `notesApi\\.` 在 features/notes 下只命中 NoteListView.vue:344 的 summarize。",
+      "classify_has_the_same_shape": "/api/notes/{id}/classify（createNote 每次建笔记都会 fire-and-forget 调）同样是 GetByIDScoped；它的错误被 `.catch(() => {})` 吞掉，所以界面上毫无痕迹"
+    },
+    "measured_proof": {
+      "live_backend": "POST /api/notes/n1/summarize → 503 {\"error\":\"notes store not configured\"}；GET /api/notes → 503。根因 main.go:129 `if pool != nil` 才建 notesStore，而 POCKET_POSTGRES_DSN 未设（启动日志：WARN: POCKET_POSTGRES_DSN not set, running in remote-only mode）",
+      "the_pg_instance_is_empty": "本机在跑的 ai-native-postgres（pgvector/pg17，宿主 15433→容器 5432）：`select count(*) from information_schema.tables where table_name='notes'` = **0**；列该库全部表也是**空的**（除系统目录外 0 张）。⇒ 后端从未连过它，notes 表从未被建，更不可能存过任何一条 App 笔记。",
+      "note_on_my_own_attempt": "我曾想另起一个连了 PG 的 pocketd 实例来把这条路径跑通。**失败了，且失败本身是个教训**：宿主经端口映射连进容器，落到 pg_hba 的 `host all all all scram-sha-256`（`127.0.0.1/32 trust` 那行只对容器内生效），而容器 env 里的 POSTGRES_PASSWORD 与库内实际不一致；我建的一次性角色在容器内用 -h 127.0.0.1 测「通过」其实是命中了 trust 行、**根本没验密码**，差点据此继续往下走。临时角色与 schema 已删除并核对为 0 残留，一次性密码文件已移入回收站，8128 实例启动失败即退出、8124 原实例未受影响。"
+    },
+    "impact": "用户点「生成总结」永远失败并静默退回展示层截断；createNote 的 classify 也一直 404。**注意**：这与 STT 转写无关 —— 转写是好的（见 stt_api_direct_call）。",
+    "not_a_quick_fix": "要修必须先定产品语义：这些笔记要不要上云？（a）要 ⇒ 补一条 local→PG 的同步，且要处理 deleted_at 双向一致性；（b)不要 ⇒ 把这两个端点从 UI 与前端 api 层摘掉，别留一个永远失败的按钮。这不是我能替用户拍的决定。"
+  },
+  "finding_stt_probe_always_fails": {
+    "id": "缺陷8",
+    "symptom": "设置页 → STT → 「录 3 秒试转」**永远失败**。这是用户判断转写通不通的唯一入口，现象与「转写功能整体坏了」完全同形。",
+    "two_halves_both_real": {
+      "后半截_服务端_已修": {
+        "root_cause": "readSTTAudio（server_stt_settings.go，只被 handleSTTProbe 调用）对非 multipart 一律「整个请求体当音频」。而前端 sttSettingsApi.probe（stt-settings.ts:290，被 SettingsSTT.vue:566 调用）发的是 JSON.stringify({audioBase64, filename, model, channel, baseURL, transport}) ⇒ 服务端把那段 JSON 文本当音频送进转写器。",
+        "measured_before": "同一段 16kHz 4.6s 真实语音、同一个 /api/stt/probe：JSON 形态 → 400 upstream_rejected_request / invalid audio format；multipart 形态 → ok=true 文本正确。",
+        "why_it_was_missed": "同仓另外三个端点（transcribe / transcribe-full / transcribe-incremental）都用 decodeBase64Audio 解析 JSON，probe 是唯一漏掉的一个。",
+        "fix": "readSTTAudio 增加 JSON 分支，复用已有的 decodeBase64Audio（不新写 base64 解码，让体量上限与换行容忍只有一处口径）。",
+        "measured_after": "JSON + filename=recording.wav → ok=true，文本完全正确。"
+      },
+      "前半截_客户端_已修": {
+        "root_cause": "SettingsSTT.vue:529 显式挑 `MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : ''`（Android WebView 支持），blob.type = audio/webm ⇒ filenameForMimeType 映射成 recording.webm。而网关 chat-audio bridge 只收 mp3/wav。",
+        "measured": "把 WAV 字节标成 recording.webm 发过去，服务端**正确解码后**回：invalid_audio_request: audio format \"webm\" is not supported by the chat-audio bridge (supported: mp3, wav) ⇒ 证明前半截独立于后半截，两半都要修。",
+        "fix": "sttSettingsApi.probe 复用仓里已有的 ensureGatewayCompatible（utils/wav-encode.ts：AudioContext.decodeAudioData → 重采样 16k 单声道 → 16-bit PCM WAV）。api/stt.ts:67 的转写路径早就在用，这里是漏掉的第二处。filename 改为跟随**转码后**的 blob（audioBlob 而非 audio）。",
+        "self_correction": "我第一版把 ensureGatewayCompatible 的**入参**当不变量去比（filename 必须跟入参同名），结果自己的正确源码被判红。正确的不变量是：filename 必须跟 `const out = await ensureGatewayCompatible(in)` 的 **out** 走。"
+      }
+    },
+    "gates": {
+      "backend/internal/server/stt_probe_json_body_test.go": "新增 5 条 + 复用 2 条既有 probe 用例。主断言是**字节级**的：上游 ASR 收到的必须恰好是解码后的音频，而不是 JSON 信封（二值，无中间态）。外加 raw-body / multipart 两条回归，2 条负控（坏 base64 必须被拒、无 audioBase64 必须落回原始路径）。",
+      "frontend/src/api/__tests__/stt-probe-webm-transcode.test.mjs": "新增 3 条行为 + 4 条负控。打桩 fetch/window.AudioContext/FileReader/localStorage，跑真的 probe，断言 filename 变成 recording.wav 且音频是合法 RIFF/WAVE/单声道/16bit/16kHz。",
+      "teeth_proven_by_mutation": "★ 两侧都实测过撤掉修复：撤服务端 JSON 分支 → 主断言报「上游收到的不是解码后的音频」并打出 JSON 信封内容；撤前端转码 → 报「filename 应是转码后的 recording.wav，实得 recording.webm（= 修复前形态）」。门不是摆设。"
+    },
+    "test_infrastructure_notes": [
+      "src/api/* 内部用**无扩展名** import（`from './http'`），Node ESM 解析不了 ⇒ 门里用 esbuild 现打 bundle 再 import（做法同 scripts/check-router-runtime-parity.mjs），源码一个字没改。",
+      "bundle 必须落在 frontend/node_modules/.cache/ 下：external 的 pinia/vue 要能从 bundle 位置向上解析到，放 /tmp 会 ERR_MODULE_NOT_FOUND。",
+      "★ pinia 必须用 ESM 的 `await import('pinia')` 激活，不能用 requireFrom：require 走 CJS、bundle 走 ESM，是**两个不同模块实例**，症状是 import 阶段就 getActivePinia() 抛 no active Pinia。",
+      "还缺 window.addEventListener / FileReader / localStorage / Response.headers 四个浏览器全局；少任何一个症状都是笼统的 TypeError，得逐个看 stack 才能定位。"
+    ],
+    "full_chain_verified_earlier_this_session": {
+      "/api/stt/transcribe": "ok（App 主转写路径，笔记正文实测为真语音）",
+      "/api/stt/transcribe-full": "ok（16kHz 与 8kHz 同一段语音，文本完全一致）",
+      "/api/stt/transcribe-incremental": "ok，跨片去重正确：片a[0-3s] text=「今天下午三点，会议室开产品评审会。」；片b[2-4.6s] 累计文本含前文而 delta 只给新增部分「请评审会，请提前十分钟到场。」，已识别前缀未被重复追加",
+      "/api/stt/probe": "本条修复后 ok"
+    },
+    "my_own_process_error_this_round": "★ 我为了重建后端，**先 kill 8124 再取它的 env**，把 POCKET_LLM_GATEWAY_API_KEY 等凭据一起弄丢了。恢复办法是 ~/kaixuan/openpocket/config/.env.local（key 长度 51、URL 长度 25，与我死前从进程读到的完全一致，可交叉验证）。另注意该文件**不能 source**：其中 POCKET_AUTH_PASS 的值含 shell 会展开的字符，source 会报 `9527: command not found`；必须用纯解析取 KEY=VALUE。正确顺序永远是先取 env 再 kill。",
+    "device_end_to_end": {
+      "device": "Redmi 2411DRN47C / Android 14 / HyperOS / com.kaixuan.opencode.pocket.sttdev（APK 加载 index-Dn-FY0Kx.js）",
+      "flow": "设置页 → STT → 「录 3 秒试转」；宿主机扬声器在录音窗口内播 /tmp/gt-voice.wav（真语音）",
+      "result": {
+        "请求体": "filename=recording.wav, body=123029 字符",
+        "页面结果盒": "ok —— 「mimo-v2.5-asr · 网关（手动指定）\\n今天下午三点，会议室开产品评审会。」",
+        "判据": "3/3 PASS"
+      },
+      "key_measurement": {
+        "why_it_mattered": "唯一带设备依赖的风险点是 `AudioContext.decodeAudioData` 在 Android WebView 里能不能解 MediaRecorder 的 webm/opus —— 解不了会静默回退原 blob，试转仍然失败，而 Node 单测里这一层是被桩掉的，证明不了。",
+        "client_transcode_proven_on_device": "抓回真机发出的音频：1ch / 16000Hz / 16bit / 2.88s / 92204 字节 ⇒ 客户端确实把 webm 重采样成 16k WAV 了。",
+        "audio_energy_before": "RMS 0.000000 / 峰值 0.000000 / >1% 占比 0.00% ⇒ **数字静音**（无人说话）",
+        "audio_energy_after": "RMS 0.015047 / 峰值 0.191650 / >1% 占比 24.63% ⇒ 真实语音，且转码没损坏它",
+        "why_i_measured_energy": "★ `upstream returned empty transcript` 有两种完全不同的成因：①真录到静音（正确响应）②录到声音但转写器没识别（真缺陷）。两者的外部表现一模一样。光看页面文案判不了，必须把那段音频抓回宿主机量能量。这一步不做，我就会把「3 秒没人说话」当成「修复失败」。"
+      },
+      "my_measurement_errors_in_this_arm": [
+        "★ 第一次点击时按钮 `getBoundingClientRect().y = 3026`，而视口只有 820 高 —— 我直接拿视口外坐标去点，请求根本没发出，状态一直 running。症状看起来像「点不动/产品坏了」。修正：先 `scrollIntoView({block:'center'})` 再取坐标，并加一条「按钮必须在视口内否则直接退出」的断言。",
+        "★ 判据 `await ev(...) === 'true'`：ev() 返回的是**布尔** true，我拿它和字符串 'true' 做严格相等，把一次真实的成功判成 FAIL。同一次运行里 `state=ok` 且结果文本正确 —— 判据自己坏了，症状与功能没生效同形。修正：用 String() 归一。",
+        "★ 包内判据：`grep ensureGatewayCompatible` 在压缩产物里恒为 0（esbuild 改名局部变量），拿它判「修复有没有进包」会假报缺失。APK 是新的（index-Dn-FY0Kx.js，与上一版不同），但真正证明修复在包内的是真机行为，不是 grep。"
+      ]
+    },
+    "regression_after_fix": {
+      "vue-tsc": "0 错误",
+      "backend_go_test": "internal/server 20.3s ok；internal/stt 0.9s ok",
+      "frontend_full": "tests 2221 / pass 2219 / **fail 0** / skipped 2；241 个测试文件全部被实际执行",
+      "test_coverage": "无孤儿测试文件（gates 可达脚本 33 个，覆盖 240/240）"
+    }
+  },
+  "main_path_regression_after_all_fixes": {
+    "why": "今天动过三处都在主流程上：utils/base64.ts（api/stt.ts 的 blobToBase64 走它）、notes-persist.ts（createNote 落库）、server readSTTAudio（探针）。全量单测绿 ≠ 主流程没回归，而「录音→转写→落库」是用户唯一真正在用的路径。",
+    "method": "真机走 FAB：宿主机 afplay 播 /tmp/gt-long.wav，录 20 秒，停止；判据全落库行/子表/磁盘，并把落盘 webm 拉回宿主量能量。",
+    "run1": {
+      "note_id": "note-1791229915479-0tb3pv",
+      "content": "进评审会，请提前。前十分钟到场。今天下午三点，会议室开产。申请听审会，请提前十分钟到场。……今天下午三点，会议室开例会。",
+      "len": 112,
+      "audio_duration_ms": 19890,
+      "audio": "子行 292028 字节 / 磁盘 292028 字节 / 拉回宿主 292028 字节",
+      "verdict": "7/8 PASS（唯一 FAIL 是我自己的量具，见 my_errors）"
+    },
+    "run2": {
+      "note_id": "note-1791230066772-614fld",
+      "content": "请省会，请提前十。十分钟到场。今天下午三点，会议室开产品评审会，请提前十分钟到场。……",
+      "len": 109,
+      "audio_duration_ms": 19866,
+      "audio": "子行 291585 / 磁盘 291585 / 拉回宿主 291585",
+      "verdict": "8/8 PASS"
+    },
+    "audio_energy_proof": {
+      "why_measured": "「正文是占位符」与「正文是真转写」在 len>0 时同形；不量能量就判不了。",
+      "method": "ffmpeg 把落盘 webm 转 16k WAV，再逐样本算 RMS/peak",
+      "result": "19.80s（与 20s 录音吻合）· RMS 0.050646 · 峰值 0.842834 · >1% 幅度占比 43.79% ⇒ 真实语音，且时长与录音一致"
+    },
+    "conclusion": "★ 缺陷 1-6 与缺陷 8 的全部改动合起来，主流程在真机上**连续两轮**无回归：恰好 +1 条笔记、+1 个目录（早落库没造成重复建）、正文是真转写、音频库行/子表/磁盘三路字节一致。",
+    "cross_check_that_adds_confidence": "34 条笔记 − 31 个笔记目录 = 3 —— 正好等于缺陷 6 永久销毁的那 3 条（两路交叉核过：子表 0 行 + 磁盘 FILE_MISSING）。两个独立口径对上了。"
+  },
+  "backend_full_suite_note": {
+    "result": "go test ./... → 54 个包 ok；internal/agent 的 TestPiAdapter_SendPromptHappyPath 一次超时（10s context deadline）",
+    "triage": "重跑 2/2 通过（1.1s / 0.5s），属偶发超时而非回归；且 git status 证明我从未修改 internal/agent（本次只碰 server/server_stt_settings.go 与 stt/），该测试用假进程 + FAKE_PI_OUTPUT fixture，与 STT/notes 零耦合。"
+  },
+  "my_errors_main_path_arm": [
+    "★ 判「新增了几个笔记目录」时用 `find files/notes -mindepth 4 -maxdepth 4`，把**天目录**（2026/10/05）当成了笔记目录，于是基线数到 1、新增量数成 0，被我读成「新笔记没建目录」。正确深度是 **6**（files=0 notes=1 YYYY=2 MM=3 DD=4 prefix=5 <note-id>=6）；实测 depth4=1 / depth6=31。这与本会话早期「判文件不存在」那次是同一类错：**层级数错 ⇒ 量到的东西不是要量的东西**。同一轮里磁盘 audio 字节与子行完全一致，已经反证了目录确实存在 —— 两条证据冲突时我选了先查自己的判据。",
+    "★ FAB 与试转按钮的坐标都必须先 scrollIntoView 再取，并断言落在视口内；否则点的是视口外，症状是「点了没反应」。"
+  ],
+  "live_incremental_transcription_verified": {
+    "why_this_needed_its_own_test": "★ 笔记里最终那段正文，「即时增量转写」与「停止时兜底全量转写」产出的**终态完全一样**（库里都是一段真文本）。此前所有验收都区分不了这两者。但用户体感天差地别：增量 = 边说边出字；兜底 = 录音中一片空白、停了才整段出现。所以判据必须在**录音进行中**取，而不是录完再取。",
+    "surface": "NoteRecordingStudio.vue —— <label class=studio-label>即时转写</label> + <textarea id=note-live-transcript :value=modelValue>（NoteListView.vue:35 挂载）",
+    "data_path_verified_by_code_reading": [
+      "recordingRuntime.sendSlice(:881) → transcodeSlice(webm→16k WAV) → sttSettingsApi.transcribeIncremental(sessionId 累积)",
+      "出字后写 `this.committed = res.text.trim()` / `this.transcript.value`(:924-925)",
+      "useNoteRecording.ts:62 导出 `transcript: rt.transcript` → NoteListView.vue:177 `transcript: liveTranscript`",
+      "★ 顺带厘清一个易混点：`interimCaption`(:143) 是**另一条**链路 —— 它由浏览器 SpeechRecognition 驱动且**只被会议消费**（useMeetingRecorder → MeetingDetailView）。笔记录音的实时文字走的是 `transcript`，两者无关。"
+    ],
+    "device_result": {
+      "device": "Redmi 2411DRN47C / Android 14 / sttdev，宿主机 afplay 播 /tmp/gt-long.wav",
+      "growth_during_recording": {
+        "t=8s": "29 字",
+        "t=14s": "61 字",
+        "t=20s": "97 字",
+        "t=26s": "133 字"
+      },
+      "growth_curve_is_the_evidence": "逐步单调增长 ⇒ 确实是每 3 秒一片地增量出字，不是一次性写入。单看「录完有正文」根本看不出这一点。",
+      "same_source_proof": "停止前的即时文本与落库正文**前缀一致**（落库版是它的超集，多出最后一片「是开产品评审会。」）⇒ 正文来自增量链路，不是停止后另跑一遍全量转写。",
+      "verdict": "4/4 PASS"
+    },
+    "my_error_and_why_it_matters": {
+      "what_i_did_wrong": "第一版读 `el.innerText || el.textContent` 取即时转写区的内容，30 秒全程读到空，于是得出「实时转写没出字、笔记正文全是停止时兜底产出的」这个**完全相反**的结论。",
+      "root_cause": "那是 <textarea>。表单控件的文字在 `.value` 上，innerText/textContent **恒为空**（DOM 规范如此）。",
+      "why_it_matters": "如果我拿着这个结论继续往下走，会去改一条**本来正确**的链路。症状与「功能没生效」在输出上完全同形。",
+      "fix": "读法改成 `('value' in el) ? el.value : (el.innerText||el.textContent)`，并在输出里带上 el.tagName 便于核对。",
+      "family": "本会话已多次撞同一族：dpr 换算、目录层级、Function 作用域、INSERT 所在函数。**读数前先确认「我读的那个属性/那一层/那个作用域」就是承载数据的那一个。**"
+    }
+  }
+}

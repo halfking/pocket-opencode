@@ -65,6 +65,7 @@
 import { ref, computed, watch, nextTick, onBeforeUnmount } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useBodyScrollLock } from '../../composables/useBodyScrollLock'
+import { useOverlayBack } from '../../composables/useOverlayBack'
 
 const { t } = useI18n()
 
@@ -143,6 +144,16 @@ const handleClose = () => {
   emit('update:modelValue', false)
   emit('close')
 }
+
+// 硬件返回键 / 左上角返回钮要能**先关这个抽屉**，而不是导航路由。
+// 2026-10-06 接线，理由与 registerOverlay 全仓零调用有关；
+// 详见 composables/useOverlayBack.ts 头注释。
+useOverlayBack({
+  visible,
+  presentation: 'sheet',
+  close: handleClose,
+  id: 'bottom-sheet',
+})
 
 const handleOverlayClick = () => {
   if (props.closeOnOverlay) handleClose()

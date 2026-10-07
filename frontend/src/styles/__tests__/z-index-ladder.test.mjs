@@ -48,7 +48,7 @@
  */
 import { strict as assert } from 'node:assert'
 import { test } from 'node:test'
-import { readFileSync, readdirSync } from 'node:fs'
+import { readFileSync, readdirSync, writeFileSync, mkdirSync, rmSync, rmdirSync } from 'node:fs'
 import { join, dirname, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -77,14 +77,14 @@ for (const m of tokensCss.matchAll(/(--z-[a-z-]+):\s*(\d+);/g)) {
  */
 const ALLOWLIST = {
   'components/interactive/SwipeableListItem.vue:191': '卡片内删除按钮在内容之上的兄弟排序（组件自有 stacking context）',
-  'components/interactive/SwipeableListItem.vue:203': '同上，内容与按钮的局部前后关系',
-  'components/interactive/PullToRefresh.vue:305': '下拉指示器在容器内的局部层级',
+  'components/interactive/SwipeableListItem.vue:203': '同上，absolute；内容与按钮的局部前后关系',
+  'components/interactive/PullToRefresh.vue:319': '下拉指示器 absolute，在容器内的局部层级（行号随文件改动漂移，2026-10-06 因补手势绑定的注释 +14 行）',
   'components/interactive/VoiceCommandAssistant.vue:325': '面板内子项的局部排序',
   'components/interactive/DualScreenLayout.vue:343': '.resize-handle 在面板内的局部排序（absolute，非 fixed）',
-  'features/email/EmailInboxView.vue:664': '`.more-menu` 顶栏「更多」下拉菜单：absolute，需盖住同层的顶栏按钮（position: static，无层级）',
-  'features/email/EmailInboxView.vue:727': '`.to-top` 回顶按钮：absolute 悬浮，需盖住列表内容（静态流，无层级）',
+  'features/email/EmailInboxView.vue:676': '`.more-menu` 顶栏「更多」下拉菜单：absolute，需盖住同层的顶栏按钮（position: static，无层级）',
+  'features/email/EmailInboxView.vue:764': '`.to-top` 回顶按钮：absolute 悬浮，需盖住列表内容（静态流，无层级）',
   'features/email/EmailSettingsView.vue:526': '设置行内部控件的兄弟排序',
-  'features/settings/SettingsSTT.vue:604': 'STT 面板内局部排序',
+  'features/settings/SettingsSTT.vue:604': '⚠️ 页内**自备的吸附顶栏**（该路由 meta.hideAppHeader:true，壳层顶栏被隐藏），position:sticky + z-index:10，**低于** --z-sticky(50) 与 --z-bottom-nav(70) ⇒ 不会压住全局 chrome。⚠️ 2026-10-06 更正：原理由写「STT 面板内局部排序」，但它不是面板内兄弟排序，而是要跟全局 chrome 争层的页内顶栏 —— 两类风险，理由不能混',
   'styles.css:272': '路由过渡 enter 态的局部前后关系',
   'styles.css:279': '同上',
   'styles.css:286': '同上',
@@ -211,4 +211,116 @@ test('【变异自测】注入一个未登记 z-index，本门禁必须转红', 
   const injected = [...USES, { where: 'injected/probe.vue:1', value: '4242' }]
   const bad = injected.map((u) => u.where).filter((w) => !ALLOWLIST[w])
   assert.ok(bad.includes('injected/probe.vue:1'), '注入的未登记值必须被抓到，否则本自测恒真')
+})
+
+// ===========================================================================
+// ALLOWLIST 的**理由**必须与元素相符（2026-10-06 新增）
+//
+// ## 为什么
+//
+// 本文件头已经写着一条「同源的第二类腐烂」：
+//   **ALLOWLIST 的理由会与代码脱节 —— 行号对了不代表理由还对得上那个元素。**
+//   而上面那条「不得有陈旧条目」只查 **key 是否存在**，**查不出理由是否还对得上**。
+//
+// ## 本轮抓到的实例
+//
+//   `features/settings/SettingsSTT.vue:604` 的理由写「STT 面板内局部排序」，
+//   而那个规则的 `position` 是 **sticky** —— 它是**页内自备的吸附顶栏**
+//   （该路由 `meta.hideAppHeader: true`），要跟全局 chrome 争层，
+//   与「组件自有 stacking context 内的兄弟排序」是**两类风险**。
+//   门禁头里那句「现在的每一条都是局部兄弟排序」对它就是假的。
+//
+// ## 口径
+//
+// 只要求「**非 static/relative** 的定位要在理由里点名」，
+// 不要求理由必须写选择器 —— 后者是文风，不是正确性。
+// `relative` 不要求：`position: relative` 不创建层叠上下文（除 z-index 非 auto 时），
+// 本仓这些条目都是无 z-index 的普通流内元素。
+// ===========================================================================
+
+/** 取该行所在 CSS 规则块里的 `position`（找不到就是 null）。 */
+function positionAt(where) {
+  const [rel, line] = where.split(':')
+  const p = join(SRC, rel)
+  let text
+  try { text = readFileSync(p, 'utf8') } catch { return null }
+  const lines = text.split('\n')
+  const li = Number(line)
+  let up = li
+  while (up > 0 && !lines[up - 1].includes('{')) up -= 1
+  // ⚠️ 必须**按规则块收尾**，不能「从 '{' 往后扫 N 行」——
+  //   那样会把**后面别的规则**的 position 错安到这一条上。
+  //   实测踩到：`styles.css:272` 的 `.nav-push-enter-active` **根本没有 position**，
+  //   而它后面 40 行里有 sticky 的规则 ⇒ 扫窗法会给出一个纯属捏造的定位。
+  let depth = 0
+  let started = false
+  for (let i = up - 1; i < lines.length; i += 1) {
+    const L = lines[i]
+    depth += (L.match(/\{/g) || []).length
+    depth -= (L.match(/\}/g) || []).length
+    if (depth > 0) started = true
+    if (started && depth <= 0) break
+    if (i - (up - 1) > 60) break           // 兜底：不让一个坏文件把自检卡死
+    const m = /position\s*:\s*(sticky|fixed|absolute|relative)/.exec(L)
+    if (m) return m[1]
+  }
+  return null
+}
+
+test('ALLOWLIST 的理由必须与元素的 position 相符（行号对了不代表理由还对）', () => {
+  const bad = []
+  for (const [where, why] of Object.entries(ALLOWLIST)) {
+    const pos = positionAt(where)
+    if (!pos || pos === 'relative') continue
+    // ⚠️ 必须**先剥掉 --z-* 的 token 名**再查。
+    //   实测踩到：把 SettingsSTT 的理由改成「…position: fixed，**低于** --z-sticky(50)…」，
+    //   明明把 sticky 删了，判据却因为理由里还留着 **--z-sticky** 这个 token 名而放行 ——
+    //   也就是说它接受的是一个**与本元素无关的 token 名**，不是真的声明了定位。
+    const said = why.replace(/--z-[a-z0-9-]+/g, '')
+    if (!said.includes(pos)) bad.push(`${where}（position:${pos}）理由没提定位：「${why}」`)
+  }
+  assert.deepEqual(bad, [],
+    '这些条目的理由与元素的实际定位不符。sticky / fixed / absolute 的层级风险与' +
+    '「组件自有 stacking context 内的兄弟排序」**不是同一类**，写错会让后来人' +
+    '按错误的理由去改或去继承。')
+})
+
+test('【量具自证】positionAt 必须按**规则块**收尾（不能扫到下一条规则去）', () => {
+  // ⚠️ 第一版自证拿**真实文件**当探针：把 `styles.css:272` 期望成 'absolute'。
+  //   但那个规则块**根本没有 position 声明**，真实答案是 null —— 我的期望值是拍的。
+  //   更糟：后来拿「去掉收尾」当变异，发现**它也不红** ——
+  //   因为那处后面 60 行里本来就没有别的 position，**变异选错了探针位置**。
+  // ⇒ 换成**合成夹具**：同一个文件里，前一条无 position、后一条 sticky。
+  //   只有「按块收尾」的实现才会对第一条返回 null。
+  const dir = join(SRC, '__probe_fixture__')
+  const file = join(dir, 'ladder-probe.css')
+  mkdirSync(dir, { recursive: true })
+  try {
+    writeFileSync(file, [
+      '.probe-a {',
+      '  z-index: 3;',        // ← 行 2：自身**没有** position
+      '}',
+      '.probe-b {',
+      '  position: sticky;', // ← 紧邻的下一条才有 sticky
+      '  z-index: 4;',
+      '}',
+    ].join('\n'), 'utf8')
+    assert.equal(positionAt('__probe_fixture__/ladder-probe.css:2'), null,
+      '`.probe-a` 自身没有 position 声明，positionAt 必须返回 null。' +
+      '返回 ' + JSON.stringify(positionAt('__probe_fixture__/ladder-probe.css:2')) +
+      ' ⇒ 它把**下一条规则**的定位错安过来了（按块收尾失效）')
+    assert.equal(positionAt('__probe_fixture__/ladder-probe.css:6'), 'sticky',
+      '正向：`.probe-b` 自己就是 sticky，必须读得出来（否则上面那条是恒真的）')
+  } finally {
+    try { rmSync(file, { force: true }); rmdirSync(dir) } catch { /* 清理失败不影响判据结论 */ }
+  }
+
+  // 真实文件上的阴性对照：那个规则块**确实**没有 position
+  assert.equal(positionAt('styles.css:272'), null,
+    '`.nav-push-enter-active` 没有 position 声明，必须返回 null')
+  // 真实文件上的阳性对照
+  assert.equal(positionAt('features/settings/SettingsSTT.vue:604'), 'sticky',
+    '没读出 SettingsSTT 顶栏的 position: sticky')
+  assert.equal(positionAt('features/email/does-not-exist.vue:1'), null,
+    '文件不存在时必须返回 null 而不是抛错')
 })

@@ -32,6 +32,26 @@ android {
                 applicationIdSuffix ".sttdev"
                 versionNameSuffix "-sttdev"
             }
+            // 设备验收旁挂包（2026-10-04 新增）：`-PappIdSuffix=.matrix` 换一个
+            // applicationId，与设备上已有的**正式包**和 **.sttdev 旁挂包**
+            // 三者并存、互不干扰。
+            //
+            // 为什么需要「第三个」而不是复用 .sttdev（2026-10-04 实测）：
+            // 设备上已有的 .sttdev 是**另一台机器**的 debug keystore 签的
+            // （证书 9a06f76f… vs 本机 eac58170…），`adb install -r` 会报
+            // INSTALL_FAILED_UPDATE_INCOMPATIBLE。旧解法只有**卸载**——
+            // 那会清掉该包的登录态与本地库，属于要用户点头的代价。
+            // 换 applicationId 就不必卸载任何东西，**零数据损失**。
+            //
+            // 不传该属性时行为与之前完全一致（见下方 else 的自证）。
+            if (project.hasProperty('appIdSuffix')) {
+                applicationIdSuffix project.property('appIdSuffix')
+                versionNameSuffix project.property('appIdSuffix')
+            } else {
+                // 自证：默认路径必须仍是「正式包」或「.sttdev」，
+                // 不能因为加了新分支而把两者之一悄悄改掉。
+                logger.lifecycle("[build-android] appIdSuffix 未设置：applicationIdSuffix=${applicationIdSuffix ?: '(无，即正式包)'}")
+            }
         }
         release {
             minifyEnabled false

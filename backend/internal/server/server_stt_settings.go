@@ -620,5 +620,37 @@ func readSTTAudio(w http.ResponseWriter, r *http.Request) ([]byte, string, error
 	if len(data) == 0 {
 		return nil, "", fmt.Errorf("empty audio data")
 	}
+	// ★ JSON 形态 {audioBase64, filename}（2026-10-06 真机复现，本分支此前只处理前两种）
+	//
+	//   缺陷8：前端 sttSettingsApi.probe（api/stt-settings.ts:290，被
+	//   SettingsSTT.vue:566 的「试转」按钮调用）发的是
+	//     JSON.stringify({ audioBase64, filename, model, channel, baseURL, transport })
+	//   而本函数对非 multipart 一律「整个请求体当音频」⇒ 服务端把那段 JSON 文本
+	//   当成 WAV 送进转写器，上游回 400「Param Incorrect / invalid audio format」。
+	//   ⇒ 设置页的「试转」按钮 100% 失败，而这恰恰是用户判断转写好不通的唯一入口
+	//   —— 用户看到的现象与「转写功能整体坏了」完全一样。
+	//
+	//   同仓另外三个端点（/api/stt/transcribe、/transcribe-full、/transcribe-incremental）
+	//   都用 decodeBase64Audio 解析 JSON，这里是唯一漏掉的一个；复用同一个函数而不是
+	//   再写一份 base64 解码，是为了让「体量上限」「换行容忍」这些口径只有一处。
+	//
+	//   实测（同一段 16kHz 4.6s 真实语音，同一个 /api/stt/probe）：
+	//     JSON {audioBase64} 形态 → 400 invalid audio format
+	//     multipart 形态         → ok=true，文本完全正确
+	var payload struct {
+		AudioBase64 string `json:"audioBase64"`
+		Filename    string `json:"filename"`
+	}
+	if err := json.Unmarshal(data, &payload); err == nil && strings.TrimSpace(payload.AudioBase64) != "" {
+		audio, derr := decodeBase64Audio(payload.AudioBase64)
+		if derr != nil {
+			return nil, "", derr
+		}
+		filename := strings.TrimSpace(payload.Filename)
+		if filename == "" {
+			filename = "probe.wav"
+		}
+		return audio, filename, nil
+	}
 	return data, audioFilenameForContentType(ct), nil
 }

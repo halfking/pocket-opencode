@@ -71,12 +71,48 @@ export function importAliases(src) {
 /**
  * 视图是否自带头部。
  * 两种形态都算：<template #outer> 外壳，或模板里直接有 <header>。
+ *
+ * ⚠️ 2026-10-06 收紧：**页级 `<header>` 不得位于任何 `v-for` 内部。**
+ * 起因是真实假阴性：`features/marketplace/` 三个视图把 `<header>` 写在
+ * `<article v-for="pkg in filtered">` 里面 —— 那是**卡片头**，不是页头。
+ * 判据原来只问「模板里有没有 <header」，于是通过了；而真机上列表为空时
+ * （`v-else` 不成立）整页一个 `<header>` 都没有，配合这三条路由的
+ * `hideAppHeader: true` + `canGoBack: true` ⇒ **用户无处可退**，
+ * 而门禁实跑是绿的。
+ *
+ * 为什么不能简单改成「必须能返回」：有些视图自带头部但没有返回控件
+ * （闪卡根页就是），那是另一类更小的问题，混进来会造成假阳性
+ * ——**宁可漏报也不误报**。
  */
 export function viewHasOwnHeader(src) {
   if (/<template\s+#outer/.test(src)) return true
   // 只看 <template> 区块内的 <header，避免把脚本注释里的字样算进来
   const tpl = src.slice(0, src.indexOf('</template>') >= 0 ? src.indexOf('</template>') : src.length)
-  return /<header[\s>]/.test(tpl)
+  return pageLevelHeader(tpl)
+}
+
+/**
+ * 模板里是否存在**不在 v-for 内**的 `<header>`。
+ * 用标签栈判定，不用「向上回看 N 行」——回看会被兄弟节点的 v-for 骗过。
+ */
+function pageLevelHeader(tpl) {
+  const VOID = new Set(['img', 'br', 'hr', 'input', 'meta', 'link'])
+  const stack = []
+  const re = /<(\/?)([a-zA-Z][\w-]*)((?:"[^"]*"|'[^']*'|[^>"'])*?)(\/?)>/g
+  for (let m = re.exec(tpl); m; m = re.exec(tpl)) {
+    const [, closing, tag, attrs, selfClose] = m
+    const name = tag.toLowerCase()
+    if (closing) {
+      // 容错：只在栈顶同名时出栈，避免模板里写错标签把栈搞歪
+      if (stack.length && stack[stack.length - 1].name === name) stack.pop()
+      continue
+    }
+    if (name === 'header') {
+      if (!stack.some((n) => n.vFor)) return true
+    }
+    if (!selfClose && !VOID.has(name)) stack.push({ name, vFor: /(^|\s)v-for\s*=/.test(attrs) })
+  }
+  return false
 }
 
 /**
@@ -148,12 +184,40 @@ function selftest() {
   // 口径：#outer 与 <header> 只在模板内才算，脚本注释里的字样不算
   add('口径·脚本注释里的 <header 不算', violations(R(true), view('<template><div/></template>\n<script setup>\n// 以前这里有过 <header class="head">\n</script>')).bad.length === 1)
 
+  // ★ 2026-10-06 新规则：页级 <header> 不得位于 v-for 内
+  //   （起因：marketplace 三视图把 <header> 写在 <article v-for> 里 = 卡片头）
+  add('新规则·header 只在 v-for 内 ⇒ 判违规（卡片头不是页头）',
+    violations(R(true), view('<template><main v-else><article v-for="p in xs"><header><h2>{{p}}</h2></header></article></main></template>')).bad.length === 1)
+
+  add('新规则·页级 header + 卡片 header 共存 ⇒ 不判违规',
+    violations(R(true), view('<template><header class="page-head"><h1>标题</h1></header><main><article v-for="p in xs"><header>卡</header></article></main></template>')).bad.length === 0)
+
+  add('新规则·#outer 外壳不受 v-for 规则影响',
+    violations(R(true), view('<template #outer><header class="head"><h1>标题</h1></header></template>')).bad.length === 0)
+
+  add('新规则·v-for 在 header **之后**闭合才算数（标签栈不是向上回看）',
+    violations(R(true), view('<template><main><article v-for="p in xs"><p>{{p}}</p></article><header><h1>标题</h1></header></main></template>')).bad.length === 0)
+
+  add('新规则·嵌套里有一层 v-for 包着 header 也要判违规',
+    violations(R(true), view('<template><div v-for="g in groups"><section><header><h2>{{g}}</h2></header></section></div></template>')).bad.length === 1)
+
   const bad = results.filter((r) => !r.pass)
   for (const r of results) console.log(`  ${r.pass ? '通过' : '失败'}  ${r.name}`)
   console.log(`\n自检: ${results.length - bad.length}/${results.length} 通过`)
   process.exit(bad.length === 0 ? 0 : 1)
 }
 
+/**
+ * 是否作为命令行入口被直接执行。
+ * 2026-10-06 新增：verify-marketplace-fix.mjs 需要**直接调用本文件的 routesOf/violations**
+ * 来避免「自己另写一套解析口径」（那正是本项返工三次的根因）。
+ * 没有这道闸时，import 本文件会连带执行下面的 main 并 process.exit，把导入方一起带走。
+ */
+function isEntry() {
+  return !!process.argv[1] && resolve(process.argv[1]) === SELF
+}
+
+function main() {
 if (process.argv.includes('--selftest')) {
   console.log('[check-hide-app-header] 自检：验证本检查仍能报错')
   selftest()
@@ -195,3 +259,6 @@ if (bad.length) {
   process.exit(1)
 }
 console.log('\n✓ 声明 hideAppHeader 的视图都自备了头部')
+}
+
+if (isEntry()) main()

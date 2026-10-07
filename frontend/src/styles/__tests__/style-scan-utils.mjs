@@ -75,3 +75,146 @@ export function walkStyleFiles(dir, acc = []) {
   }
   return acc
 }
+
+/**
+ * 只取出 .vue 里的 `<style>` 块（.css 返回整份），并保留**起始行号偏移**。
+ *
+ * ⚠️ 为什么必须有这个函数（2026-10-06 实吃）。
+ * 「按 `}` 平衡切规则块」的扫描器直接吃**整个 .vue 文件**时，`<script>` 里的
+ * TypeScript 花括号会把它彻底带跑偏：实测 `AppLayout.vue` 本该解析出 30+ 条
+ * 样式规则，结果头几条的选择器是
+ *     "shellRuntime.setScope(" 、";(window as unknown as" 、"nextTick(() =>"
+ * —— 那是 **JS 代码被当成了 CSS 选择器**。
+ *
+ * 失败方向是 **fail-open**：真实的 `.top-bar { … }` 一条都没进规则表，
+ * 于是「顶栏必须声明 flex-shrink:0」这类判据会**永远绿**（扫不到东西 ⇒
+ * 零违规），而看上去一切正常。
+ * ⚠️ 同一族的更隐蔽后果：`bottom-chrome-gate.test.mjs` 用的就是这个扫描器，
+ * 它的命中集合里混着从 `<script>` 里捞出来的**伪规则**。凡是用「ALLOWLIST 里
+ * 的行号」当 key 的判据，都必须先过这个函数，否则 key 指向的可能根本不是 CSS。
+ *
+ * @returns {{text:string, lineOffset:number}[]} `lineOffset` 是该块首行在原文件
+ *   中的行号（1-based）；判据要按行号登记 ALLOWLIST，丢了偏移就全盘失效。
+ */
+export function extractStyleBlocks(src, file) {
+  if (!/\.(vue|html)$/i.test(file)) return [{ text: src, lineOffset: 0 }]
+  const lines = src.split('\n')
+  const blocks = []
+  let open = -1
+  let body = []
+  let openLine = 0
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i]
+    if (open < 0) {
+      // ⚠️ 必须认属性：`<style scoped>` / `<style lang="scss">` 都算开始。
+      if (/^\s*<style(\s[^>]*)?>\s*$/.test(line)) {
+        open = 1
+        openLine = i + 2 // 块内首行在原文件中的行号
+        body = []
+      }
+      continue
+    }
+    if (/^\s*<\/style>\s*$/.test(line)) {
+      blocks.push({ text: body.join('\n'), lineOffset: openLine })
+      open = -1
+      body = []
+      continue
+    }
+    body.push(line)
+  }
+  // 未闭合的 <style>（文件被截断 / 语法坏）也照样交出去 —— 判据扫不到东西时
+  // 必须由「采集结果非空」那条自证去红，而不是在这里静默返回空数组。
+  if (open >= 0 && body.length) blocks.push({ text: body.join('\n'), lineOffset: openLine })
+  return blocks
+}
+
+/** 声明的正则：属性名必须由 [\s;{] 起头，避免 border-top / border-bottom 命中。 */
+const DECL_RE = /(?:^|[\s;{])([a-z-]+)\s*:\s*([^;{}]+)/g
+const countBraces = (s) => (s.match(/\{/g) || []).length - (s.match(/\}/g) || []).length
+
+/**
+ * 把一份 .vue / .css 解析成 `{ file, selector, decls }[]`（含 `line`）。
+ *
+ * 与既有 `bottom-chrome-gate.test.mjs` 内嵌那份扫描器的实测差异：
+ * 它吃**整个 .vue 文件**（不切 `<style>` 块），本函数只吃 `<style>`。
+ * 实测 `position:fixed + bottom` 的命中集合：它 13 条 / 本函数 15 条，
+ * 漏掉的是 `MeetingDetailView.vue:316 .speakers-btn` 与
+ * `VaultEntryView.vue:587 .toast`（两条恰好都合规，所以**结论未变**，
+ * 但覆盖面确实缺了 2 条）。
+ *
+ * ⚠️ 这里记一条我自己踩过的坑，免得下次再犯：**不要凭「复刻版扫描器跑出来的
+ * 结果」去指控既有门禁。** 我一度照抄那份代码时漏掉了它的一个分支
+ * （`depth===0 && !line.includes('{')` 与 `depth===0` 是两个独立分支，
+ * 后者**不清 buf**，正是它让 `{` 留在 buf 里、规则才没被
+ * `open !== -1` 守卫丢掉），于是在自己的复刻版里看到「顶层规则全丢、
+ * 0 条命中」，差点把它当成既有门禁的 fail-open 报上去。
+ * ⇒ 拿既有门禁的真实代码跑，别拿复刻版。
+ *
+ * 三个必须做对的点（各自都单独把结果带偏过）：
+ *  ① **只吃 `<style>` 块**（extractStyleBlocks）。否则 `<script>` 里的
+ *     TypeScript 会进规则表，产生 "shellRuntime.setScope(" 这种伪选择器。
+ *  ② **先涂注释再切块**。`countBraces` 按行数 `{`/`}`；注释里一个不成对的
+ *     花括号就会让深度卡在 >0 直到文件末尾，该文件只解析出最后几块。
+ *  ③ **选择器行必须留在 buf 里**。`{` 就在那一行；丢了它
+ *     `body.indexOf('{')` 恒为 -1，`open !== -1` 守卫会把整条规则丢掉。
+ *     跨行选择器用 pending 续上，否则 `.a,\n.b {` 会被解析成 `.b`。
+ *
+ * `line` 是**选择器首行**的 1-based 文件行号 —— ALLOWLIST 之类按行号登记的
+ * 判据依赖它（已用 `components/BottomNav.vue:125` 与既有 ALLOWLIST 的 key
+ * 独立对上：两边算出同一个 125）。
+ */
+export function parseStyleRules(raw, file) {
+  const rules = []
+  for (const block of extractStyleBlocks(raw, file)) {
+    // blankComments 保持长度不变，因此行号与偏移都还对得上。
+    const lines = blankComments(block.text).split('\n')
+    let depth = 0
+    let buf = []
+    let pending = []
+    let start = 0
+    for (let i = 0; i < lines.length; i += 1) {
+      const line = lines[i]
+      if (depth === 0) {
+        if (line.includes('{')) {
+          // ⚠️ 这一行必须**进 buf**：`{` 就在它身上，丢了它整条规则会被
+          //    下面的 `open !== -1` 守卫丢掉（见文件头注释）。
+          buf = pending.concat(line)
+          // lineOffset 是 lines[0] 的 1-based 文件行号，故 lines[k] 的行号
+          // 就是 lineOffset + k；选择器首行是 lines[i - pending.length]。
+          start = block.lineOffset + i - pending.length
+          pending = []
+          depth += countBraces(line)
+        } else if (line.trim()) {
+          pending.push(line)
+        }
+        continue
+      }
+      buf.push(line)
+      depth += countBraces(line)
+      if (depth > 0) continue
+      const body = buf.join('\n')
+      const open = body.indexOf('{')
+      const close = body.lastIndexOf('}')
+      if (open !== -1 && close > open) {
+        const decls = {}
+        for (const m of body.slice(open + 1, close).matchAll(DECL_RE)) {
+          if (!(m[1] in decls)) decls[m[1]] = m[2].trim()
+        }
+        rules.push({ file, line: start, selector: body.slice(0, open).trim(), decls })
+      }
+      depth = 0
+      buf = []
+    }
+  }
+  return rules
+}
+
+/** 递归扫全仓样式文件并解析成规则表。file 用相对 SRC 的正斜杠路径。 */
+export function collectStyleRules(srcDir) {
+  const acc = []
+  for (const f of walkStyleFiles(srcDir)) {
+    const rel = f.slice(srcDir.length + 1).split(path.sep).join('/')
+    acc.push(...parseStyleRules(fs.readFileSync(f, 'utf8'), rel))
+  }
+  return acc
+}

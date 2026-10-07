@@ -5,11 +5,10 @@ import { detectLang } from '../../native/detect-lang'
 import { saveAudioPart } from './audio-parts'
 import { liveTranslate } from './live-translate'
 import { updateSegmentTranslation } from './meetings-live'
-import {
-  saveSegment, updateTranscript,
-  type MeetingSegment,
-} from './meetings-store'
+import { saveSegment, updateTranscript } from './meetings-store'
 import type { SpeakerDiarizer } from '../../native/speaker-diarization'
+import { renderTranscript } from './meeting-dedup.ts'
+import type { MeetingSegment } from './meetings-store.ts'
 
 export async function ingestSpeechBlob(opts: {
   meetingId: MaybeRef<string>
@@ -59,7 +58,12 @@ export async function ingestSpeechBlob(opts: {
   let at = opts.segments.length
   while (at > 0 && opts.segments[at - 1].startMs > saved.startMs) at--
   opts.segments.splice(at, 0, saved)
-  await updateTranscript(meetingId, opts.segments.map((s) => `[${s.speakerLabel}] ${s.text}`).join('\n'))
+  // ★ 相邻段去重（2026-10-06）。VadSegmenter 的取片窗口带 sliceMs 余量以
+  //   补偿 MediaRecorder 缓冲延迟，RAF 节流又会让语音起点判定回退，
+  //   相邻两段因此可能取到重叠音频并被转写两次 ⇒ 文本重复。
+  //   整条前端链路此前**完全没有**去重（后端 mergeIncremental 属于
+  //   IncrementalTranscriber，前端从不调用它），所以必须在这一层消解。
+  await updateTranscript(meetingId, renderTranscript(opts.segments))
 
   void liveTranslate(saved.text, lang)
     .then((translation) => {

@@ -77,7 +77,12 @@ export async function persistNotePayload(input: PersistNotePayloadInput): Promis
       kind: 'body',
       relPath: rel,
       mime: 'text/markdown',
-      sizeBytes: input.body.length,
+      // 字节数，不是字符数。`input.body.length` 是 UTF-16 code unit 数，
+      // 对中文正好差 3 倍（实测「（语音草稿）」6 字符 → 记成 6，实际 18 字节），
+      // 与下面 media 行的 `media.blob.size`（真字节）**单位不一致**。
+      // 该列当前没有消费方，所以这不会立刻显形；但任何按字节做的判断
+      // （限额、去重、UI 展示大小）都会对正文少算。写法对齐 asset-store.ts:293。
+      sizeBytes: new Blob([input.body]).size,
       durationMs: 0,
     }
     files.push(row)
@@ -144,4 +149,25 @@ export async function deleteNoteFiles(noteId: string, createdAt: number): Promis
     await Filesystem.rmdir({ path: dir, directory: Directory.Data, recursive: true }).catch(() => {})
   }
   await localDB.run('DELETE FROM local_note_files WHERE note_id = ?', [noteId])
+}
+
+/**
+ * 只删正文文件，**保留** audio/ images/ videos/ files/ 下的媒体。
+ *
+ * 2026-10-06 真机复现：用户在笔记详情页改一个字并保存，这条笔记的录音被
+ * 彻底销毁（audio_path 变 NULL、audio_duration_ms 归零、audio/01.webm 连同
+ * 整个笔记目录一起没了），UI 零提示。成因是 updateNote 在「正文变了」时
+ * 调的是 deleteNoteFiles —— 它对整个笔记目录做 rmdir recursive。
+ *
+ * 用户改的是文字，不是录音；content 与 media 在域模型里是两个独立字段，
+ * 媒体文件名还带序号（audio/01.webm），本就不该因为改正文而失效。
+ * 换成媒体时才该整体替换，那种情况走 deleteNoteFiles 仍然正确。
+ */
+export async function deleteNoteBodyFile(noteId: string, createdAt: number): Promise<void> {
+  const rel = noteFileRelPath(noteDir(noteId, createdAt), 'body')
+  if (Capacitor.isNativePlatform()) {
+    await Filesystem.deleteFile({ path: rel, directory: Directory.Data }).catch(() => {})
+  }
+  // 只清 body 那一类子行；audio 等媒体行留着，播放与回填都依赖它们
+  await localDB.run('DELETE FROM local_note_files WHERE note_id = ? AND kind = ?', [noteId, 'body'])
 }

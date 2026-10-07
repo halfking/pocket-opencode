@@ -8,6 +8,8 @@
     "build": "vue-tsc --noEmit && vite build",
     "build:fast": "node scripts/assert-no-plaintext-backend.mjs && vite build",
     "assert:no-plaintext": "node scripts/assert-no-plaintext-backend.mjs",
+    "check:build-mobile-selftest": "node scripts/build-mobile.mjs --selftest",
+    "check:device-matrix-selftest": "node ../scripts/device-matrix.mjs --selftest",
     "build:gate": "node scripts/build-gate.mjs",
     "build:harmony": "node scripts/build-harmony.mjs prod",
     "typecheck": "vue-tsc --noEmit",
@@ -50,7 +52,9 @@
     "check:icons:visual": "node scripts/build-icon-harness.mjs",
     "check:e2e-responsive": "cd ../e2e/web && npx playwright test responsive-shell --reporter=list",
     "build:icons": "node scripts/build-material-symbols-subset.mjs",
-    "verify:android": "npm run gates && powershell -ExecutionPolicy Bypass -File ../scripts/android-apk-fingerprint.ps1 && powershell -ExecutionPolicy Bypass -File ../scripts/android-apk-classes-fast.ps1 && powershell -ExecutionPolicy Bypass -File ../scripts/android-apk-static-verify.ps1 && powershell -ExecutionPolicy Bypass -File ../scripts/android-apk-so-audit.ps1"
+    "verify:android": "npm run gates && powershell -ExecutionPolicy Bypass -File ../scripts/android-apk-fingerprint.ps1 && powershell -ExecutionPolicy Bypass -File ../scripts/android-apk-classes-fast.ps1 && powershell -ExecutionPolicy Bypass -File ../scripts/android-apk-static-verify.ps1 && powershell -ExecutionPolicy Bypass -File ../scripts/android-apk-so-audit.ps1",
+    "check:marketplace-fix": "node ../scripts/verify-marketplace-fix.mjs",
+    "check:router-parity": "node ../scripts/check-router-runtime-parity.mjs --selftest && node ../scripts/check-router-runtime-parity.mjs"
   },
   "dependencies": {
     "@capacitor-community/sqlite": "^8.1.0",

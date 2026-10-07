@@ -45,6 +45,19 @@ appId: com.kaixuan.opencode.pocket
 #     · runFlow when notVisible 补点 —— 覆盖「重试也仍然没动」的情况。
 #   只写 retryTapIfNoChange 时，第二次被吞掉就没人管了；而只写断言不补点，
 #   就会像这次一样把一次抖动报成「设置页不可达」。
+#
+# ⚠️⚠️ 2026-10-05 vivo V2436A（OriginOS / Android 16）**另一种**失败，别和上面混：
+#   `assertVisible: "更多|More"` **通过**（元素确实在树上，文本是 `apps更多`
+#   —— 底栏图标名被拼进了可访问性文本），但紧接着的 `tapOn` 抛
+#     DEADLINE_EXCEEDED: deadline exceeded after 120s
+#   [closed=[], open=[[remote_addr=localhost/127.0.0.1:7001]]]
+#   ⇒ **不是「元素找不到」**，也不是产品缺陷。同一次会话里用 CDP 点同一元素
+#   （元素中心 316,800）**立刻**导航到 #/more，证明按钮完全可用；
+#   坏掉的是 Maestro driver 在这台设备上的 tap 注入。
+#   判别方法（别去改产品代码）：
+#     node -e "…CDP evaluate 'e.click(); 读 location.hash'…"
+#   变了 ⇒ 产品没问题，是 harness/驱动在这台机型上不可用。
+#   本 flow 后续仍按原样保留：换回 MIUI/桌面模拟器即可正常执行。
 - extendedWaitUntil:
     visible: "更多|More"
     timeout: 45000

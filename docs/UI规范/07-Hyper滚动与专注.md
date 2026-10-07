@@ -71,6 +71,26 @@
 手势物理复用既有 `composables/pull-gesture.ts`（纯函数，已被
 `pull-gesture.test.mjs` 覆盖），本模块只管状态。
 
+#### 2.4.1 谁负责把手势绑到元素上（2026-10-06 补，这一节原本是空的）
+
+⚠️ 上面那 4 条契约写的是**状态机**行为，但它们**不会自己发生** ——
+必须有人把组件里的处理器绑到模板元素上。`components/interactive/PullToRefresh.vue`
+就是那个人，而**它曾经一个人都没绑**：
+
+- `handleTouchStart` / `handleTouchMove` / `handleTouchEnd` **定义完整、逻辑全对**，
+  `onMounted` 只绑了 `scroll` 容器 ⇒ 整套下拉刷新**从未生效过**，
+  而编译、类型、单测、`npm run gates` 全绿。
+- 2026-10-06 设备实跑 UI-07 才暴露；已补上 4 个绑定
+  （`@touchstart` / `@touchmove` / `@touchend` / `@touchcancel="resetGesture"`）。
+
+⇒ **规范必须点明「绑定」这一步存在**，否则读者会以为写完状态机就完事了。
+这就是 `components/__tests__/handler-wiring.test.mjs` 的由来
+（查「事件处理器定义了却没绑到模板」，剥注释，只收 `handle*` / `on*` 前缀）。
+
+⚠️ 判据的设计代价也要记住：前缀规则**会漏报** ——
+前缀不匹配的处理器（如上表的 `resetGesture`）不被这条门禁覆盖，
+仍需人工 review。所以本节把四个名字**逐个列出来**，而不是只写「绑了 touch 事件」。
+
 ### 2.5 `EmailInboxView` 为什么**不能**直接迁（2026-10-06 结论）
 
 先前的留白写的是「需先解耦 offset 游标与分类副作用」。读完两套代码后，
@@ -379,7 +399,7 @@ token（修 ②，视觉不变）；修正阶梯注释里「fab 在 bottomnav �
 （前三者是居中确认框、`RssItemDetail` 是居中 `modal-mask`，与 `Dialog.vue` 同形）。
 ALLOWLIST 里因此**不再有任何「待目视核对」条目**。
 
-`styles/__tests__/z-index-ladder.test.mjs`（7 条）守：阶梯声明顺序严格递增；
+`styles/__tests__/z-index-ladder.test.mjs`（9 条）守：阶梯声明顺序严格递增；
 `var(--z-*)` 必须是已定义 token；保留的 fallback 必须等于 token 取值；
 裸数字必须在 ALLOWLIST 且带理由；ALLOWLIST 不得有陈旧条目或与 token 重复登记。
 
@@ -479,6 +499,34 @@ ALLOWLIST 不得有陈旧条目、每条必须有理由。
 任一步清理抛错，状态仍归位（单测：`任一步清理抛错，仍把状态归位`）——
 半解锁比不解锁更糟。
 
+### 4.1 `useBodyScrollLock` 已加固（2026-10-06），但**定性是契约加固，不是缺陷修复**
+
+规则 1 此前只有「文档写了、代码没做」。现已落地：除 `body` 外，扫 `#app` 子树
+里所有 `scrollHeight > clientHeight + 20 && overflowY ∈ {auto,scroll}` 的容器，
+逐项快照 `overflow`/`overflowY` 后置 `hidden`，关闭时**逐项精确恢复**。
+只扫 `#app` 是因为三个消费方（`BottomSheet` / `Dialog` / `UnifiedComposer`
+全屏态）都用 `<Teleport to="body">`，落在 `#app` 之外——既不漏背景容器，
+也不会把弹层自身的长列表锁死。
+
+⚠️ **但它没有修掉任何用户可见缺陷。** 真实滚轮的前后对照（`/email` +
+BottomSheet，390×844）：
+
+| 观测量 | 只锁 body（旧） | 锁宿主（现） | 差异 |
+| --- | --- | --- | --- |
+| 宿主 computed `overflowY` | `auto` | `hidden` | ✅ 契约被兑现 |
+| **真实滚轮**能否推动背景 | 否 | 否 | ❌ **无差异** |
+| **程序化** `scrollTop` | 可写 | 可写 | ❌ 无差异 |
+
+原因：三个浮层都是 `position: fixed; inset: 0` 的**全屏遮罩**，手势落在遮罩上，
+滚动链沿 DOM 祖先走（body/html），**永远到不了 `.content`**——它与遮罩是兄弟
+子树，不在同一条滚动链上。旧实现是**碰巧**正确。
+
+所以这次改动的价值是：让 composable **兑现自己的名字**，而不是继续依赖
+「遮罩恰好全屏」这个巧合。若将来引入**非全屏**浮层（只占底部的面板、
+不 Teleport 的内联层），现在的锁立刻开始起作用。
+
+判据：`e2e/web/specs/modal-scroll-lock.spec.ts`（4 条，变异验证见 §7）。
+
 ## 5. 禁止事项
 
 1. 只换分页 UI 而仍用「下一页覆盖上一页数据」。
@@ -487,6 +535,12 @@ ALLOWLIST 不得有陈旧条目、每条必须有理由。
 4. 拿 `stopPropagation` 当作「已屏蔽背景」。
 5. 复制一份表格渲染到专注层（应 Teleport **同一实例** + 原位占位）。
 6. 把 `pages.reset()` 放在请求**发出**而不是**成功**之后。
+7. **拿程序化 `scrollTop` 当作滚动锁的判据**（2026-10-06 实吃）。
+   `overflow: hidden` 按 CSS 规范只禁止*用户*滚动，**不阻止脚本写 scrollTop**，
+   所以「弹层打开时 `scrollTop = 700` 仍生效」在改前改后**都是 700**——
+   对该修复是**不变量**，推不出任何缺陷。量「锁」必须用：
+   - **契约**：`getComputedStyle(宿主).overflowY`；或
+   - **真实输入**：`page.mouse.wheel()` / 触摸拖拽（程序化赋值不行）。
 
 ## 6. 自检
 
@@ -508,3 +562,31 @@ node --test src/lib/shell/__tests__/continuousList.test.mjs \
 所以恒绿。修正方式是把断言改成「订阅每次 emit，一旦非空就不得再变空」，
 并且必须让过期响应落在**已经有数据之后**（按代次控制时序）——
 顺序写反的话清空发生时列表本来就是空的，判据同样恒绿。
+
+## 8. 变异自测记录（2026-10-06，`modal-scroll-lock.spec.ts`）
+
+基线 4/4 绿。两个变异**分别单独**回退，结果与「哪条守什么」完全对得上：
+
+| 注入变异 | ① 负对照 | ② 契约 | ③ 精确恢复 | ④ 现状刻画 |
+| --- | --- | --- | --- | --- |
+| 基线 | 🟢 | 🟢 | 🟢 | 🟢 |
+| M1：`useBodyScrollLock` 回退成**只锁 body** | 🟢 | 🔴 | 🔴 | 🟢 |
+| M2：`release` 改成**写 `''`** | 🟢 | 🟢 | 🔴 | 🟢 |
+
+两条值得记：
+
+1. **④ 对本次修复无牙，且已如实标注。** 它在 M1 下依然绿——因为全屏遮罩
+   本来就挡住了真实手势（见 §4.1 的对照表）。它守的是**另一条**不变量：
+   「三个浮层必须保持 `position:fixed; inset:0` 全屏」。将来若引入非全屏
+   浮层，④ 转红而 ② 才开始起作用。判据名里直接写了「对本次修复无牙」，
+   免得下一个接手的人重跑变异后以为它坏了。
+2. **③ 初版是恒真的，被 M2 逮到。** `/email` 的 `.refresh-content`
+   **本来就没有 inline overflow**（值来自 CSS class），before/after 都是
+   `''`，比对自然成立——两边恒等于同一个常量。修法是先写入一个只有本用例
+   设过的非空 inline 哨兵值（`'auto'`），并加一条**前提自证**（断言锁确实
+   把它覆盖成 `'hidden'`），否则「恢复」无得可失、断言无从谈起。
+
+⚠️ 还有一条被本轮推翻的旧结论，已在 §4.1 留档：曾用「弹层打开时程序化
+`scrollTop` 仍可写」当作 `useBodyScrollLock` 的缺陷证据。该量具对修复是
+不变量（`overflow:hidden` 不阻止脚本写 scrollTop），**证据不成立**，
+据此报出的「用户可见缺陷」实际不存在。

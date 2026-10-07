@@ -64,6 +64,7 @@ import { ref, computed, watch, onBeforeUnmount } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Button from './Button.vue'
 import { useBodyScrollLock } from '../../composables/useBodyScrollLock'
+import { useOverlayBack } from '../../composables/useOverlayBack'
 
 const { t } = useI18n()
 
@@ -130,6 +131,17 @@ const handleOverlayClick = () => {
     handleClose()
   }
 }
+
+// 硬件返回键 / 左上角返回钮要能**先关这个弹窗**，而不是导航路由。
+// 2026-10-06 接线：此前 BackDispatcher.registerOverlay 全仓零调用，
+// 而本组件是 <Teleport to="body"> ⇒ 返回键会换页、弹窗留在屏幕上。
+// 详见 composables/useOverlayBack.ts 头注释。
+useOverlayBack({
+  visible,
+  presentation: 'modal',
+  close: handleClose,
+  id: 'dialog',
+})
 
 const handleConfirm = async () => {
   emit('confirm')

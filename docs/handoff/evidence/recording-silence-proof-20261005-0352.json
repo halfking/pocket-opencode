@@ -1,0 +1,13 @@
+{
+  "source": "App 自己的 recordingRuntime 录到的 35 个 webm 分片拼接后解码（103.5s）",
+  "device": "Redmi 2411DRN47C / 4c308e2e",
+  "sampleRate": 16000,
+  "channels": 1,
+  "seconds": 103.5,
+  "totalSamples": 1656000,
+  "nonZeroSamples": 0,
+  "peak": 0,
+  "min": 0,
+  "asrResult": "{\"duration\":104,\"model\":\"mimo-v2.5-asr\",\"text\":\"\"} (HTTP 200)",
+  "conclusion": "App 录到的是**纯数字静音**（1656000 个样本全 0），不是 AEC 削弱的信号——AEC 会留底噪，数字静音说明麦克风数据根本没进来。"
+}

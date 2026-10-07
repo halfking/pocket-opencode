@@ -58,7 +58,20 @@
 .bp-hide-on-narrow { display: initial; }
 .bp-show-on-narrow { display: none; }
 
-@media (max-width: 380px) {
-  .bp-hide-on-narrow { display: none; }
-  .bp-show-on-narrow { display: initial; }
+/* narrow —— compact 内的具名子档。
+   ⚠️ 2026-10-06 真机实测（模拟器 emulator-5554，CDP 逐像素扫 376–384，
+      dpr 1/2/3 三档）：**这台设备上 `@media (max-width: Npx)` 的实际语义是「< N」**，
+      不是标准 CSS 的「≤ N」——`max-width: 380px` 时 379 命中、380 不命中。
+   ⚠️ 而且这是**系统性**的：把字面量从 380 改成 379 之后，命中集合从 {≤379} 变成
+      {≤378}，**整体下移一格**，并没有把边界对齐 —— 我第一版修法就是这么错的。
+   ⇒ 修法不是「减 1」，而是**别用 max-width**：改成等价的 `min-width: 381px`。
+      本设备的 min-width 是闭区间且行为正确（560 那条已证实），
+      于是 narrow = {< 381} = {≤ 380}，与 `--bp-narrow-max: 380px`
+      和 TS 的 `width <= NARROW_MAX_PX` 三者落在同一像素上。 */
+.bp-hide-on-narrow { display: none; }
+.bp-show-on-narrow { display: initial; }
+
+@media (min-width: 381px) {
+  .bp-hide-on-narrow { display: initial; }
+  .bp-show-on-narrow { display: none; }
 }

@@ -49,9 +49,9 @@
         <Skeleton :count="4" :rows="2" />
       </div>
 
-      <!-- 错误提示 -->
+      <!-- 错误提示：只在**确实无行可显**时才接管整页（2026-10-05 修，UI-07e 实机读数） -->
       <EmptyState
-        v-else-if="error"
+        v-else-if="error && filteredSessions.length === 0"
         icon="⚠️"
         :title="error"
         hint="请检查网络连接后重试"
@@ -62,6 +62,21 @@
 
       <!-- 会话列表 -->
       <template v-else>
+        <!--
+          有旧行时的失败：**不打断**已加载内容（对齐 SessionConversationView 的
+          `.error-banner` 写法与它「拉取失败可重试，不打断会话」的注释）。
+          ⚠️ 修之前的模板是 `loading / error / 列表` 三选一 ⇒ 一次下拉刷新失败
+          就把整份列表换成整页错误态，用户手上的行**从屏幕上消失**。
+          实机读数（emulator-5554，`matrix ui-07`）：失败前 4 行 → 失败后 0 行，
+          而同一时刻后端仍返回那 2 个会话 ⇒ 数据没丢，是**渲染层**把它藏了。
+          连带一处：loadSessions 的快照兜底条件是 `sessions.value.length === 0`
+          ⇒ 恰恰在「有行可保留」时不读快照（那条兜底只在空列表时有用）。
+        -->
+        <div v-if="error" class="list-error-banner" role="alert">
+          <span>{{ error }}</span>
+          <button type="button" class="banner-retry" @click="loadSessions">重试</button>
+        </div>
+
         <EmptyState
           v-if="filteredSessions.length === 0"
           icon="💬"
@@ -538,6 +553,32 @@ useListScene('sessions', () => {
 
 .state-wrap {
   padding: var(--space-2) 0;
+}
+
+/* 有旧行时的失败提示：不替换列表，只在列表上方挂一条（2026-10-05，UI-07e）。
+   配色与 SessionConversationView 的 .error-banner 保持一致，两处同源可对照。 */
+.list-error-banner {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  background: var(--danger-bg);
+  color: var(--danger);
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-sm);
+  border-top: 1px solid rgba(239, 68, 68, 0.2);
+}
+
+.banner-retry {
+  flex: 0 0 auto;
+  background: transparent;
+  color: inherit;
+  border: 1px solid currentColor;
+  border-radius: var(--radius-sm);
+  padding: 2px var(--space-2);
+  font-size: var(--text-sm);
+  cursor: pointer;
 }
 
 .session-list {

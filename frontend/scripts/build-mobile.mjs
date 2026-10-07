@@ -53,6 +53,7 @@
 
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
+import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -66,6 +67,73 @@ function usage(exitCode = 1) {
   console.error("Usage: node scripts/build-mobile.mjs <ios|android> <dev|staging|prod>");
   console.error("Override API base: VITE_API_BASE=http://host:port node scripts/build-mobile.mjs ...");
   process.exit(exitCode);
+}
+
+function tcpReachable(host, port, timeoutMs = 1500) {
+  return new Promise((resolve) => {
+    const socket = new net.Socket();
+    let settled = false;
+    const done = (ok, why) => {
+      if (settled) return;
+      settled = true;
+      try { socket.destroy(); } catch { /* 已关闭 */ }
+      resolve({ ok, why });
+    };
+    socket.setTimeout(timeoutMs);
+    socket.once("connect", () => done(true, "connected"));
+    socket.once("timeout", () => done(false, `connect timed out after ${timeoutMs}ms`));
+    // ECONNREFUSED / EHOSTUNREACH / ENOTFOUND 都落到这里
+    socket.once("error", (e) => done(false, `${e.code || e.message}`));
+    try { socket.connect(port, host); } catch (e) { done(false, e.code || e.message); }
+  });
+}
+
+// ---- 自检（不构建任何东西） --------------------------------------------
+// 守卫自己静默失效就是负债：可达性探针一旦被改坏，它会安静地放行所有死地址，
+// 而症状要等到真机上「连不上后端」才暴露。`--selftest` 在本地造出**结论相反**
+// 的两种输入（自己开的活端口 / 确定没人听的死端口），不碰 vite、不碰 gradle、
+// 不需要设备。
+if (process.argv.includes('--selftest')) {
+  const { spawnSync } = await import('node:child_process')
+  const cases = []
+  // 1) 活端口：自己 listen 一个，抓到端口号再探 —— 必须通
+  const srv = net.createServer((s) => s.end())
+  await new Promise((res) => srv.listen(0, '127.0.0.1', res))
+  const livePort = srv.address().port
+  // 2) 死端口：先 listen 拿到端口号，随即 close —— 此刻确定没人听
+  const dead = net.createServer((s) => s.end())
+  await new Promise((res) => dead.listen(0, '127.0.0.1', res))
+  const deadPort = dead.address().port
+  await new Promise((res) => dead.close(res))
+
+  const r1 = await tcpReachable('127.0.0.1', livePort, 2000)
+  cases.push({ name: '活端口必须可达', got: r1.ok, want: true, why: r1.why })
+  const r2 = await tcpReachable('127.0.0.1', deadPort, 2000)
+  cases.push({ name: '死端口必须不可达', got: r2.ok, want: false, why: r2.why })
+  // ⚠️ 第 3 条**刻意不写成断言**。2026-10-04 在本机实测：
+  //   192.0.2.1:9（RFC 5737 黑洞地址）      → connected
+  //   no-such-host.invalid:80（永不可解析） → connected
+  //   192.168.31.37:8090（LAN 上没人听）    → ECONNREFUSED ✅
+  // ⇒ 本机存在拦截**非 LAN** 出站 TCP 的透明代理/端口转发。
+  // 也就是说：探针对它设计针对的场景（LAN 机器下线）有效，但在有代理的环境里
+  // **负向用例根本证不出来**。把它写成断言会得到一条「永远红」的用例，
+  // 那不是判据，是噪音。所以这里只**如实报告**，不断言。
+  const r3 = await tcpReachable('no-such-host.invalid', 80, 2000)
+  const intercepts = r3.ok === true
+  console.log(`  ${intercepts ? '⚠️' : '  '} 观测（不断言）：不可解析主机名 → ${r3.ok ? 'connected' : r3.why}` +
+    (intercepts
+      ? '　⇒ 本环境有透明代理/端口转发，**负向用例在此环境不可证**；守卫只对 LAN 侧有效'
+      : '　⇒ 本环境无拦截，负向用例可证'))
+
+  srv.close()
+  let bad = 0
+  for (const c of cases) {
+    const ok = c.got === c.want
+    if (!ok) bad++
+    console.log(`  ${ok ? '🟢' : '🔴'} ${c.name}：got=${c.got} want=${c.want}${c.why ? '（' + c.why + '）' : ''}`)
+  }
+  console.log(`\n[build-mobile] 自检 ${cases.length - bad}/${cases.length} 通过`)
+  process.exit(bad ? 1 : 0)
 }
 
 const [, , platform, env, ...rest] = process.argv;
@@ -169,6 +237,63 @@ if (mode === "production" && effectiveAPIBase) {
     console.error("[build-mobile] dev/emulator targets belong to 'dev' builds (.env.android-dev), not 'prod'.");
     process.exit(1);
   }
+}
+
+// ---- reachability guard（字符串对了 ≠ 那台机器还在） ----
+// 2026-10-04 实吃：`.env.android-dev` 写死 `VITE_API_BASE=http://192.168.31.37:8090`，
+// 而本机 LAN IP 早已变成 .34，.37 那台也不再监听（curl 全 000）。但下面那段
+// 「sanity check」只验**字符串在 bundle 里**，于是这个死地址一路绿灯打进 APK——
+// 它自己的注释写着「fail loudly instead of silently shipping a build pointing at
+// the wrong server」，而它能防的只有「值写错」，防不住「值没变、机器没了」。
+// 真机上这类包的表现是 UI 报 JSON 解析错，追起来要多绕三个仓。
+//
+// 放在 vite build **之前**：死地址不该先花掉一次完整构建再报。
+// 默认对 dev 与 production 都判红（两者的后果都是「打出去的包连不上任何后端」），
+// 确需离线出包时用 MOBILE_SKIP_REACHABILITY=1 显式放行——与既有的
+// MOBILE_ALLOW_EMPTY_API_BASE 同一套「逃生舱要显式、要留痕」的约定。
+
+if (effectiveAPIBase && process.env.MOBILE_SKIP_REACHABILITY !== "1") {
+  let target;
+  try {
+    const u = new URL(effectiveAPIBase);
+    const scheme = u.protocol.replace(":", "");
+    if (!["http", "https", "ws", "wss"].includes(scheme)) {
+      target = { unsupportedScheme: scheme };
+    } else {
+      target = { host: u.hostname, port: Number(u.port) || (scheme === "https" || scheme === "wss" ? 443 : 80) };
+    }
+  } catch {
+    target = { parseError: true };
+  }
+
+  if (target.parseError) {
+    console.error(`[build-mobile] refusing to build ${platform}/${env}: VITE_API_BASE is not an absolute URL: ${effectiveAPIBase}`);
+    process.exit(1);
+  }
+  if (target.unsupportedScheme) {
+    console.warn(`[build-mobile] WARNING: VITE_API_BASE scheme '${target.unsupportedScheme}://' is not tcp-probeable — skipping reachability check`);
+  } else {
+    const probe = await tcpReachable(target.host, target.port);
+    if (!probe.ok) {
+      console.error(`[build-mobile] refusing to build ${platform}/${env}: API base is UNREACHABLE`);
+      console.error(`[build-mobile]   VITE_API_BASE = ${effectiveAPIBase}`);
+      console.error(`[build-mobile]   tcp ${target.host}:${target.port} → ${probe.why}`);
+      console.error("[build-mobile] 字符串正确不等于那台机器还在——.env.<mode> 里写死的 LAN 地址会随网络变化而失效。");
+      console.error("[build-mobile] 修法：先起后端，或用 VITE_API_BASE=http://<当前可达的 host:port> 覆盖；");
+      console.error("[build-mobile] 确需离线出包：MOBILE_SKIP_REACHABILITY=1（会在构建日志留痕）。");
+      process.exit(1);
+    }
+    console.log(`[build-mobile] reachability OK: ${target.host}:${target.port} 可连接（${effectiveAPIBase}）`);
+    // ⚠️ 诚实标注这条守卫**防得住什么、防不住什么**：
+    //   防得住 —— 最常见的一类：LAN IP 变了、写死的机器下线了、端口没人听。
+    //   防不住 —— 「连得上但那不是我们的服务」。TCP 连通 ≠ 服务可用：本机实测
+    //   192.0.2.1:9（RFC 5737 黑洞地址）都返回 connected，说明存在透明代理或
+    //   端口转发在应答。所以它**不是**健康检查，只是「这台机器上这个口有没有人听」。
+    console.log("[build-mobile] 注意：这只证明「有人监听该端口」，不证明「那是 pocketd」。");  
+    console.log("[build-mobile] 透明代理/端口转发会造成假绿；真机联调前请另跑 curl -sS " + effectiveAPIBase + "/healthz。");
+  }
+} else if (effectiveAPIBase) {
+  console.warn("[build-mobile] WARNING: MOBILE_SKIP_REACHABILITY=1 —— 跳过后端可达性检查，产物可能指向一台不存在的机器");
 }
 
 const fast = process.env.MOBILE_FAST === "1";
@@ -298,6 +423,12 @@ if (sync.status !== 0) {
 // `adb install -r` would happily push over the user's real app. Nothing in the
 // gradle output distinguishes the two, and the damage only shows up later, on
 // the user's data. So we read what was actually produced.
+// 期望的 applicationId 后缀。默认 `.sttdev`（行为与之前完全一致）；
+// 设 MOBILE_APP_ID_SUFFIX=.matrix 可出**第三个**并存包（设备上已有的 .sttdev
+// 由别的机器签名时，install -r 会 INSTALL_FAILED_UPDATE_INCOMPATIBLE，
+// 换 applicationId 就不必卸载任何东西）。见 04 §4.1d。
+const APP_ID_SUFFIX = process.env.MOBILE_APP_ID_SUFFIX || ".sttdev";
+
 function verifySttdevArtifact() {
   const meta = path.join(
     frontendRoot, "android", "app", "build", "outputs", "apk", "debug", "output-metadata.json"
@@ -320,10 +451,12 @@ function verifySttdevArtifact() {
     process.exit(1);
   }
   const appId = parsed?.applicationId;
-  if (typeof appId !== "string" || !appId.endsWith(".sttdev")) {
-    console.error(`[build-mobile] sttdev verification failed: applicationId=${JSON.stringify(appId)}`);
-    console.error("[build-mobile] expected it to end with '.sttdev'. The APK that was built is the MAIN package —");
-    console.error("[build-mobile] installing it would overwrite the user's real app. Do not install it.");
+  // ⚠️ 这里必须拿 **实际请求的后缀** 比，而不是写死 '.sttdev'。写死的话，
+  // 请求 .matrix 却产出 .sttdev（或反过来）都会「验证通过」——断言在说谎。
+  if (typeof appId !== "string" || !appId.endsWith(APP_ID_SUFFIX)) {
+    console.error(`[build-mobile] applicationId verification failed: applicationId=${JSON.stringify(appId)}`);
+    console.error(`[build-mobile] expected it to end with '${APP_ID_SUFFIX}'（MOBILE_APP_ID_SUFFIX=${process.env.MOBILE_APP_ID_SUFFIX || "(未设)"}）`);
+    console.error("[build-mobile] 若产出的是 MAIN package，安装会覆盖用户手机上的正式包。不要安装它。");
     process.exit(1);
   }
   const attrs = parsed?.elements?.[0]?.attributes;
@@ -337,8 +470,12 @@ function verifySttdevArtifact() {
 if (sttdev) {
   const androidDir = path.join(frontendRoot, "android");
   const gradlew = process.platform === "win32" ? "gradlew.bat" : "./gradlew";
-  console.log("[build-mobile] gradle assembleDebug -PsttDevApp (coexisting package)");
-  const g = spawnSync(gradlew, ["--no-daemon", "assembleDebug", "-PsttDevApp"], {
+  // 默认仍传 -PsttDevApp：保持既有 gradle 分支不变（只换后缀会走另一条分支，
+  // 那属于没必要的变量）。非默认后缀才用 -PappIdSuffix。
+  const isDefaultSuffix = APP_ID_SUFFIX === ".sttdev";
+  const idFlag = isDefaultSuffix ? "-PsttDevApp" : `-PappIdSuffix=${APP_ID_SUFFIX}`;
+  console.log(`[build-mobile] gradle assembleDebug ${idFlag} (coexisting package)`);
+  const g = spawnSync(gradlew, ["--no-daemon", "assembleDebug", idFlag], {
     cwd: androidDir,
     env: envVars,
     stdio: "inherit",

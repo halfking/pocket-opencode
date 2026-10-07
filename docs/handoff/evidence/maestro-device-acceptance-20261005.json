@@ -1,0 +1,99 @@
+{
+  "记录时间": "2026-10-05 13:30~14:20 CST",
+  "设备": {
+    "序列号": "10AF6H1MLM003HF",
+    "机型": "vivo V2436A",
+    "系统": "OriginOS / Android 16 (SDK 36)",
+    "分辨率": "1172x2748 @ 520dpi（逻辑宽 360dp ⇒ compact 档）",
+    "WebView": "153.0.8010.36"
+  },
+  "工具链": {
+    "maestro_cli": "2.1.0",
+    "maestro_java": "21.0.6",
+    "adb": "/opt/homebrew/bin/adb",
+    "被测包": "com.kaixuan.opencode.pocket (DEBUGGABLE, versionName=1.2.0-openpocket, versionCode=3)"
+  },
+  "本轮打通的关键四步（前两步是跨机移植缺口，后两步是 vivo 专属）": [
+    {
+      "步骤": "driver 预热",
+      "问题": "harness force-stop driver 后，CLI --no-reinstall-driver 不会重装；而 CLI 自带 adb install 在 vivo 被「安全守护」页拦下",
+      "报错形态": "DEADLINE_EXCEEDED after 120s, waiting_for_connection（与 driver 版本不匹配形似，判据不同）",
+      "修法": "preflight 里手动 am instrument 拉起 driver，并回读 netstat 确认 7001 LISTEN",
+      "落点": "scripts/maestro-run.mjs 非 MIUI 分支"
+    },
+    {
+      "步骤": "adb forward tcp:7001",
+      "问题": "CLI 连本机 localhost:7001，driver 监听在设备上；vivo 上 driver 只监听 tcp6，本机解析 localhost 优先拿 ::1",
+      "报错形态": "Connection refused: localhost/[0:0:0:0:0:0:0:1]:7001（看着像 driver 没起，实际是回环族不匹配）",
+      "修法": "显式 adb forward tcp:7001 tcp:7001"
+    },
+    {
+      "步骤": "vivo 安装拦截",
+      "问题": "sideload 包弹「安全守护」页，必须先勾复选框，「继续安装」才激活；且该页会触发息屏",
+      "修法": "uiautomator dump 取 CheckBox 的真实 bounds（不要用截图换算坐标，我按截图算连点空 3 次）→ 点中心 → 再点「继续安装」",
+      "副作用": "未唤醒时 dumpsys window 的 mCurrentFocus 恒为 null，会误判成「没有对话框」"
+    },
+    {
+      "步骤": "CDP socket 消失",
+      "问题": "cat /proc/net/unix 抛错，栈指向 harness 某行",
+      "真因": "grep 无命中时 exit 1，execFileSync 把它变成未捕获异常；深层原因是 App 撞上 debug-wait 标记（Waiting For Debugger），WebView 从未初始化，socket 根本不注册",
+      "判别": "直接 cat 一次看行数：2000+ 行 ⇒ 不是权限问题；am clear-debug-app + 重启后 socket 从 0 变 1"
+    }
+  ],
+  "三项配置核实（真机界面 + 后端真实数据双口径）": {
+    "1_AI网关": {
+      "状态": "PASS",
+      "真机界面证据": "#/settings 渲染：AI 网关 | 已配置 | 网关地址 | https://llm.kxpms.cn/v1 | API 密钥 | ✓ 已设置 | 可用模型 | glm-5.3 | minimax-m3 | kimi-k3 | +6",
+      "后端证据": "GET :8124/api/llm-gateway/config ⇒ baseURL=https://llm.kxpms.cn/v1, apiKeySet=true, models 9 个与目标逐字一致",
+      "与目标一致": "baseurl 完全一致；9 个模型 glm-5.3/minimax-m3/kimi-k3/claude-sonnet-5/gpt-5.6-terra/claude-opus-5/claude-fable-5/gpt-5.6-sol/gemini-3.5-flash 全中"
+    },
+    "2_邮件账户": {
+      "状态": "PASS（生产实例 8090）",
+      "后端证据": "GET :8090/api/email/accounts ⇒ 6 户，其中目标 5 户全部落库：huangxutao@kxpms.cn(imap.exmail.qq.com:993/smtp.exmail.qq.com:465)、56551681@qq.com(imap.qq.com:993)、feikemanager@163.com、feikemanager1@163.com、kimmy.huang@163.com(均 imap.163.com:993/smtp.163.com:465)",
+      "凭据有效性": "lastSyncedUid=10 / lastSyncedAt 已更新 ⇒ 授权码有效（API 不回传授权码，pwSet 字段查不到不等于未配置）",
+      "真机证据": "#/email 页面已渲染真实邮件（GitHub 通知，2天前）",
+      "注意": "8124（sqlite 开发实例）返回 email store not configured，前端显示「该功能尚未完成配置」——这是 loadError 的正确渲染，不是缺陷；该实例本身没接 PG"
+    },
+    "3_回调地址": {
+      "状态": "代码 PASS / 部署部分 FAIL",
+      "代码证据": "server.go:682 /callback/feishu、server.go:689 /callback/weixin 均无条件注册；新构建 :8124 上 feishu URL 验证正确回显 {\"challenge\":\"XYZ\"}，weixin GET 验证正确返回 success（微信要求格式）",
+      "部署缺陷": "生产容器 opencode-pocket-pocketd-local-openpocket 的镜像构建于 2026-09-15 01:11（35.5MB），本地新构建为 10-04 15:32（50.3MB）。容器内 /app/pocketd 字符串命中：callback/feishu=3（存在）、callback/weixin=0（缺失）、api/flashcards=0（缺失）；对照本地新二进制 callback/weixin=1、api/flashcards=2。实测 :8090 上 /callback/weixin 返 404、/api/flashcards/* 返 404 page not found，而 /api/scheduled-tasks 返 200 有数据。",
+      "订正_先前误判": "我先前推断「飞书回调能通是巧合（老版本泛化路由）」——**这个推断是错的，已推翻**。/callback/xxx 返 404 而 /callback/feishu 正常回显 challenge，说明飞书路由确实存在于容器内；二进制字符串命中 3 次是独立佐证。",
+      "实际缺失清单（字符串级，权威）": ["callback/weixin（微信回调）", "api/flashcards（闪卡全套：decks/cards/notes/starter）"],
+      "部署编排位置": "official-deploy/services/opencode-pocket/deploy/bin/docker-compose.opp.yml + kaixuan/openpocket/bin/pocket-opp-p6e288b3-20260914092129/ 快照（跨仓，未获授权不动）"
+    },
+    "4_功能入口遍历（绕开 Maestro tap，用 CDP 逐个点开「更多」宫格）": {
+      "结果": "18/18 入口全部可导航，无死链",
+      "报错页归因_全部同源": {
+        "根因": "遍历时 App 连的是 :8124 —— **sqlite 开发实例，未接 PostgreSQL**。凡依赖 PG 的 store 一律 503 xxx store not configured。与前端无关。",
+        "各入口实测": [
+          { "入口": "定时自动化", "8124": "503 scheduled task store not configured", "8090": "200 有数据（tasks 数组）", "判定": "环境，非缺陷" },
+          { "入口": "技能市场", "8124": "503 marketplace store not configured（抓包证实请求为 /api/marketplace/packages?kind=skill）", "8090": "200 {\"packages\":[]}", "判定": "环境，非缺陷" },
+          { "入口": "智能体市场 / 工作搭子", "8124": "同 marketplace store", "8090": "200 空列表", "判定": "环境，非缺陷" },
+          { "入口": "闪卡", "8124": "503 flashcards store not configured", "8090": "404 page not found（容器二进制 api/flashcards 命中 0）", "判定": "环境 + 部署滞后" },
+          { "入口": "成本", "8124": "usage failed: 503", "判定": "环境，非缺陷" }
+        ],
+        "登录态已排除": "遍历时 token 存在（eyJhbGci 开头），不是未登录导致的 401/空列表",
+        "市场页报错的真实来源": "三个市场页共用 useConfigList.ts → api.getInstances()（/api/instances，实测 200 有数据），但**页面上显示的 503 实际来自 /api/marketplace/packages**，两者不是同一条请求；「加载设置失败」是通用文案 errors.loadSettingsFailed，不代表请求的接口名"
+      }
+    }
+  },
+  "真机 flow 跑批结果": {
+    "已通过": [
+      { "flow": "smoke-login", "exit": 0, "断言": "5 条全 COMPLETED（AI 工具 / 快速提问 / 密码登录 not visible）" }
+    ],
+    "受阻": [
+      {
+        "flow": "settings-llm-gateway、email-accounts",
+        "失败点": "均在 tapOn: \"更多|More\" 处 DEADLINE_EXCEEDED(120s)",
+        "已证伪产品缺陷": "同一次会话用 CDP 点同一元素（中心 316,800）立刻导航到 #/more；断言「更多|More is visible」本身就是通过的（可访问性文本实为 apps更多）",
+        "结论": "Maestro driver 在这台 vivo 上的 tap 注入不可用；不是元素找不到，也不是产品问题。判别方法已写进 .maestro/settings-llm-gateway.yaml 注释"
+      }
+    ]
+  },
+  "未做（诚实标注）": [
+    "Maestro 全量 24 条 flow 未跑完：受上述 driver tap 失效限制，凡需要点击进入的 flow 都会在同一处超时",
+    "回调未做带签名的真实事件投递（缺飞书/企微测试密钥与公网回调可达性）",
+    "生产容器未重建（未获授权改既有部署）"
+  ]
+}

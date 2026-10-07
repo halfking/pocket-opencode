@@ -40,9 +40,17 @@ const EXPANDED_MIN = 840
 const WIDE_MIN = 1280
 const NARROW_MAX = 380
 
-/** 媒体查询里允许出现的全部 px 值（含 -1 的上界形式）。 */
+/**
+ * 媒体查询里允许出现的全部 px 值（含 -1 的上界形式）。
+ * ⚠️ NARROW_MAX - 1 是 2026-10-06 补的：narrow 那条唯一的 max-width 断点
+ *   改成了 N-1（真机上闭区间 max-width: N 不命中，见下方约定测试）。
+ *   漏了它，「无第三套阶梯」会把正确写法判成「第三套阶梯」。
+ */
 const ALLOWED = new Set(
-  [MEDIUM_MIN, EXPANDED_MIN, WIDE_MIN, NARROW_MAX, MEDIUM_MIN - 1, EXPANDED_MIN - 1, WIDE_MIN - 1].map(String),
+  [
+    MEDIUM_MIN, EXPANDED_MIN, WIDE_MIN, NARROW_MAX,
+    MEDIUM_MIN - 1, EXPANDED_MIN - 1, WIDE_MIN - 1, NARROW_MAX + 1,
+  ].map(String),
 )
 
 /** 从 CSS 里抓 `--bp-xxx: Npx` 形式的变量。 */
@@ -51,10 +59,28 @@ function cssVar(name) {
   return m ? Number(m[1]) : null
 }
 
-/** 从 CSS 里抓所有媒体查询中的 px 数值。 */
+/**
+ * 从 CSS 里抓所有媒体查询中的 px 数值。
+ *
+ * ⚠️ 2026-10-06 修的一处真实缺陷：**原来不剥注释**。
+ *   正则 `/@media[^{]*\{/g` 从注释里那句 `@media (max-width: 380px)` 起就一路
+ *   吃到真正那条媒体查询的 `{`，于是**注释里举例用的数字被当成代码扫进来**。
+ *   表现形式：给 narrow 断点写一段解释「真机上 380 不命中」的注释，
+ *   「无第三套阶梯」立刻把 379 报成「未登记断点」——
+ *   **判据的输入集合比它声称的大，而它声称的是「CSS 里出现的媒体查询」。**
+ *   ⇒ 剥掉块注释之后再扫。注释是文档，不是代码。
+ * ⚠️ 同源的两个坑（本轮都踩了）：① 块注释里写 `正则/媒体查询` 的字面量，
+ *   其中一旦出现块注释的**结束符**就会把注释提前闭合、剩下的变成代码 ⇒ SyntaxError，
+ *   而报错指向的是不相干的一行。② 反引号在模板字符串里会截断字符串。
+ *   ⇒ 注释里描述这类字面量时，一律改用文字描述，不要直接抄符号。
+ */
+function stripCssComments(source) {
+  return source.replace(/\/\*[\s\S]*?\*\//g, '')
+}
+
 function mediaWidths(source) {
   const out = []
-  for (const m of source.matchAll(/@media[^{]*\{/g)) {
+  for (const m of stripCssComments(source).matchAll(/@media[^{]*\{/g)) {
     for (const p of m[0].matchAll(/(\d+)px/g)) out.push(p[1])
   }
   return out
@@ -120,8 +146,84 @@ test('档位边界无缝隙、无重叠', () => {
 
 test('narrow 子档落在 compact 内部（不是第三套阶梯）', () => {
   assert.ok(NARROW_MAX < MEDIUM_MIN, `narrow(${NARROW_MAX}) 必须落在 compact(<${MEDIUM_MIN}) 内部`)
-  assert.match(css, /@media \(max-width: 380px\)/, 'breakpoints.css 必须提供 narrow 子档规则')
   assert.match(ts, /const isNarrow = computed/, 'JS 侧必须提供 isNarrow 开关')
+})
+
+/**
+ * narrow 边界的**约定**（2026-10-06）。
+ *
+ * ⚠️ 本门禁原来写的是 `assert.match(css, /@media \(max-width: 380px\)/)` ——
+ *   **它正在把一个 bug 钉死**。真 Android WebView 实测（emulator-5554，CDP 逐像素
+ *   扫 376–384，dpr 1/2/3 三档）：**本设备上 `@media (max-width: Npx)` 系统性等价于
+ *   「< N」**，而不是标准 CSS 的「≤ N」。
+ *
+ * ★ 我第一版修法是错的，值得记下来：把字面量 380 改成 379，重建 APK 实测
+ *   **命中集合从「≤379」变成「≤378」—— 整体下移一格，并没有对齐**。
+ *   ⇒ 「改了以后没变差」不等于「改对了」；边界类修改必须**重建后在设备上复量**。
+ *   ⇒ 正确修法不是动数字，是**别用 max-width**：改用等价的 `min-width: N+1`。
+ *     本设备的 min-width 是闭区间且行为正确（560/840/1280 三条已实测正确）。
+ *
+ * ⇒ 门禁钉的是**约定**：
+ *     ① narrow 那条媒体查询**必须**是 min-width，且字面量 === NARROW_MAX + 1；
+ *     ② **禁止** narrow 用 max-width（它是本设备上语义错位的那一种）；
+ *     ③ TS 的 isNarrow 必须用闭区间（≤），才能与 min-width: N+1 落在同一像素上。
+ *   改 SSOT 数字时三处自动跟着走；谁把约定改回去，本门禁立刻变红。
+ */
+test('narrow 边界：CSS 用 min-width(N+1) 且禁用 max-width，TS 用闭区间', () => {
+  // ⚠️ 必须在**剥掉注释**之后的源码上匹配。
+  const code = stripCssComments(css)
+  assert.ok(
+    !/@media\s*\(max-width:\s*\d+px\)/.test(code),
+    'breakpoints.css 不许对 narrow 使用 max-width：本设备上 max-width:N 等价于 <N（真机实测 dpr 1/2/3 复现），' +
+      '而 min-width 是闭区间且正确。请改成等价的 min-width: N+1 写法',
+  )
+  const m = /@media\s*\(min-width:\s*(\d+)px\)\s*\{\s*\.bp-hide-on-narrow/.exec(code)
+  assert.ok(m, 'breakpoints.css 必须提供 narrow 子档的 min-width 媒体查询')
+  assert.equal(
+    Number(m[1]),
+    NARROW_MAX + 1,
+    `narrow 的 min-width 字面量必须等于 ${NARROW_MAX + 1}（= NARROW_MAX+1），` +
+      `这样 narrow 的集合才是「< ${NARROW_MAX + 1}」即「≤ ${NARROW_MAX}」，与 token 名义一致。实测值=${m[1]}`,
+  )
+  const NARROW_CODE = String.raw`const isNarrow = computed\(\(\) => mode\.value === 'compact' && width\.value <= NARROW_MAX_PX\)`
+  const NARROW_CODE_LT = String.raw`const isNarrow = computed\(\(\) => mode\.value === 'compact' && width\.value < NARROW_MAX_PX\)`
+  assert.match(ts, new RegExp(NARROW_CODE),
+    `TS 侧 isNarrow 必须用闭区间 width <= NARROW_MAX_PX，才能与 CSS 的 min-width: ${NARROW_MAX + 1} 落在同一像素上`)
+  assert.ok(!new RegExp(NARROW_CODE_LT).test(ts),
+    'isNarrow 不得用开区间：那会让 JS 认为 380 不属于 narrow，而 CSS 的 min-width: 381 认为它属于')
+})
+
+/**
+ * 变异自测：上面那条约定必须真的会红，否则它又是一条恒真断言。
+ * ⚠️ 断言方向是「变异体必须**违反**约定」。
+ * ⚠️⚠️ 本轮在这里踩到一个**恒真断言**，值得单独记：
+ *   我最初写 `/(const isNarrow = computed\([^)]*?< NARROW_MAX_PX)/`，
+ *   而 `[^)]*?` **跨不过 `computed(()` 里那个右括号** ⇒ 正则永远匹配不上
+ *   ⇒ 「不得用开区间」那条否定断言**恒为真、永远通过**。
+ *   否定断言比肯定断言更危险：它看起来在守一条规则，实际什么都没守。
+ *   ⇒ 凡是「不跨越定界符」这类写法，必须先确认被匹配段里**真的没有定界符**，
+ *     否则一律改用精确字面量。
+ */
+test('【变异自测】narrow 边界回退成 max-width / 开区间，本门禁必须转红', () => {
+  const code = stripCssComments(css)
+  // 变异 A：把 min-width 换回 max-width（附带字面量回到 N）
+  const brokenA = code.replace(
+    /@media\s*\(min-width:\s*\d+px\)\s*\{\s*\.bp-hide-on-narrow/,
+    `@media (max-width: ${NARROW_MAX}px) { .bp-hide-on-narrow`,
+  )
+  assert.notEqual(brokenA, code, 'CSS 变异没生效')
+  assert.ok(
+    /@media\s*\(max-width:\s*\d+px\)/.test(brokenA),
+    '变异 A 必须引入 max-width（违反约定），否则第①条断言对它没有牙',
+  )
+  // 变异 B：把 TS 的闭区间改成开区间
+  const brokenB = ts.replace(
+    /(const isNarrow = computed\(\(\) => mode\.value === 'compact' && width\.value\s*)<=(\s*NARROW_MAX_PX)/,
+    '$1<$2',
+  )
+  assert.notEqual(brokenB, ts, 'TS 变异没生效：找不到 isNarrow 的闭区间比较')
+  assert.match(brokenB, /width\.value < NARROW_MAX_PX/,
+    '变异 B 必须把闭区间改成开区间（违反约定），否则第③条断言对它没有牙')
 })
 
 test('禁止范围语法媒体查询（必须是传统 min/max-width）', () => {

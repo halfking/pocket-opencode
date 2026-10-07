@@ -1,0 +1,58 @@
+{
+  "capturedAt": "2026-10-05 15:16:41",
+  "device": "Redmi 2411DRN47C / Android 14 / 4c308e2e",
+  "cleanSession": "riid:3639（强停 App 释放残留 riid:3383 后的新会话）",
+  "systemAudioEvents": [
+    "10-05 15:14:46:642 rec update riid:3639 uid:10338 session:7641 src:VOICE_COMMUNICATION not silenced pack:com.kaixuan.opencode.pocket.sttdev",
+    "10-05 15:16:27:065 rec update riid:3639 uid:10338 session:7641 src:VOICE_COMMUNICATION silenced pack:com.kaixuan.opencode.pocket.sttdev"
+  ],
+  "stage1_api": {
+    "gatewayDirect": "POST /v1/audio/transcriptions (wav) -> 200 / 0.89s / 文本与原文逐字一致",
+    "backend_transcribe_multipart": "200 confidence=0.95",
+    "backend_transcribe_base64json": "200 文本逐字一致",
+    "backend_transcribe_incremental": "200 ok=true error=''",
+    "backend_transcribe_full": "200 succeeded=1",
+    "verdict": "PASS"
+  },
+  "stage2_batched": {
+    "method": "8.17s 中文语音按 3s 切 3 片",
+    "gatewayPerSlice": [
+      "今天我们开会讨论录音转写方案。",
+      "重点是本地快速转写和云。",
+      "云端高精度全量转写。"
+    ],
+    "backendSessionDedup": "同一 sessionId 三次送入，text 逐片累积，边界重复的「云」被正确合并",
+    "verdict": "PASS"
+  },
+  "stage3_recording": {
+    "appRecordedSamples": 159360,
+    "appRecordedNonZero": 0,
+    "appPeak": 0,
+    "nativeMediaRecorderPeak_sameDeviceSameMoment": 0.53142,
+    "trackEnabledOver30s": "全程 true（chunks 0→9 正常增长）",
+    "micPermission": "RECORD_AUDIO: granted=true",
+    "verdict": "FAIL — App 录到纯数字静音",
+    "appRecordedWebmBytes": 2485,
+    "appRecordedSeconds": 9.96,
+    "appNonZeroRatio": "0.0%",
+    "ttsCompetition": "announceSilenced 的 TTS 播报（piid:3687/3695, USAGE_VOICE_COMMUNICATION, uid 10338=App自己）与录音同源，MIUI 在播报期把录音流标记 silenced"
+  },
+  "excluded": {
+    "emulator-5554": "以 -no-audio 启动，音频输入禁用，录不到任何声音",
+    "AEC": "AEC 会留底噪；实测 0 非零样本说明数据根本没进来",
+    "转码逻辑": "已被 stage1/stage2 证明无误",
+    "后端去重": "已被 stage2 证明正常"
+  },
+  "silencedCausality": {
+    "finding": "系统把 App 的 VOICE_COMMUNICATION 录音流标记 silenced，导致该时段录到全零",
+    "session3719_timeLine": [
+      "10-05 15:20:28:748 rec update riid:3719 uid:10338 session:7849 src:VOICE_COMMUNICATION not silenced pack:com.kaixuan.opencode.pocket.sttdev",
+      "10-05 15:21:42:233 rec update riid:3719 uid:10338 session:7849 src:VOICE_COMMUNICATION silenced pack:com.kaixuan.opencode.pocket.sttdev",
+      "10-05 15:21:49:834 rec release riid:3719 uid:10338 session:7849 src:VOICE_COMMUNICATION silenced pack:com.kaixuan.opencode.pocket.sttdev"
+    ],
+    "session3719_transcriptSequence": "空 → 空 → 「嗯。」→ 全程「嗯。」（14 次采样，70 秒）",
+    "session3719_duringRecording": "15:20:28 → 15:21:42 全程 not silenced（74 秒）",
+    "session3719_silencedAt": "15:21:42 —— 发生在录音已 stop 之后",
+    "conclusion": "silenced 与「录不到声音」强相关：上一轮 silenced 期间 transcript 为空，恢复后 2 秒内出字；但本轮全程 not silenced 仍只得到「嗯。」，说明 silenced 不是唯一原因"
+  }
+}

@@ -483,23 +483,32 @@ const router = createRouter({
       meta: { requiresAuth: true, title: '权限与隐私', bottomNav: false, canGoBack: true }
     },
     // ---- Phase 4: 移动分布式 AI 工作平台 · 市场三大入口 ----
+    //
+    // ⚠️ 2026-10-06 本组三处**删掉了** `hideAppHeader: true`（18 → 15 条）。
+    //   原因：三视图的 <header> 写在 <article v-for> 里，那是**卡片头**不是页头，
+    //   列表为空时整页无头部，配合 canGoBack: true 就是**无处可退**。
+    //   ⇒ 交给壳层顶栏（48px、token 绑定、受 topbar-chrome 门禁守）提供标题与返回。
+    //   三个视图文件**刻意零改动**（卡片头属于卡片，留在 v-for 里是对的）。
+    //   复现全链：`node scripts/verify-marketplace-fix.mjs`（已进 gates.json 的 ciRuns）。
     {
       path: '/marketplace/skills',
       name: 'marketplace-skills',
       component: SkillMarketView,
-      meta: { requiresAuth: true, title: '技能市场', bottomNav: false, canGoBack: true, hideAppHeader: true },
+      meta: { requiresAuth: true, title: '技能市场', bottomNav: false, canGoBack: true },
     },
     {
       path: '/marketplace/agents',
       name: 'marketplace-agents',
       component: AgentMarketView,
-      meta: { requiresAuth: true, title: '智能体市场', bottomNav: false, canGoBack: true, hideAppHeader: true },
+      // 同上：见本组开头的说明。
+      meta: { requiresAuth: true, title: '智能体市场', bottomNav: false, canGoBack: true },
     },
     {
       path: '/marketplace/workbuddies',
       name: 'marketplace-workbuddies',
       component: WorkbuddyView,
-      meta: { requiresAuth: true, title: '工作搭子', bottomNav: false, canGoBack: true, hideAppHeader: true },
+      // 同上：见本组开头的说明。
+      meta: { requiresAuth: true, title: '工作搭子', bottomNav: false, canGoBack: true },
     },
     // ⚠️ 2026-10-04 去掉本组 4 条路由的 hideAppHeader（含 /settings/permissions 共 5 条）。
     //

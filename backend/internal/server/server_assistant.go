@@ -626,8 +626,21 @@ func (s *Server) handleNoteSummarize(w http.ResponseWriter, r *http.Request, id 
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
 
+	// 2026-10-06：提示词从「纯文本总结」改成「JSON（summary + action_items）」。
+	//
+	// 为什么：需求里「录音时总结 + 把时间点自动加进日程」这条在随手记侧
+	// 此前**没有任何落点** —— 会议侧有 action_items（/api/meetings/{id}/summary
+	// 返回 action_items），笔记侧只回一个 summary 字符串，前端拿不到任何
+	// 期限信息，于是「明天下午三点」这类时间点在语音笔记里彻底消失。
+	//
+	// 为什么可以安全改格式：解析失败时回落到「把模型原文当 summary」，
+	// 也就是本函数改动前的行为。summarize 的下游只有 notesStore.updateNote
+	// 的 summary 字段与自动记账，二者都不要求 JSON，所以退化路径不产生
+	// 新的失败形态。
 	prompt := fmt.Sprintf(
-		"请为以下笔记内容生成一段简洁的总结（3-5句话）：\n\n%s",
+		"请为以下笔记内容生成一段简洁的总结（3-5句话），并从中提取可执行的行动项。\n"+
+			"严格返回 JSON（不要 markdown）：{\"summary\":\"3-5句话总结\",\"action_items\":[{\"text\":\"事项\",\"assignee\":\"负责人（未知则空字符串）\",\"due\":\"期限（未知则空字符串）\"}]}\n"+
+			"要求：action_items 只放转写里真实提到、且需要有人去做的事；期限保留用户原话（如「明天下午三点」），不要自己换算成日期；没有就返回空数组。\n\n%s",
 		found.Snippet,
 	)
 	req := llmbff.ChatRequest{
@@ -661,7 +674,11 @@ func (s *Server) handleNoteSummarize(w http.ResponseWriter, r *http.Request, id 
 		return
 	}
 
-	summary := resp.Content
+	// 拆出 summary 与 action_items。
+	//
+	// 解析失败时 summary 回落成模型原文（即本函数改动前的行为）、
+	// action_items 为空 —— 一个字段的失败不许让另一个字段一起丢。
+	summary, actionItems := parseNoteSummaryPayload(resp.Content)
 
 	// 自动记账：笔记内容命中金额/收支/类目关键词时自动入账（source=auto）。
 	// 幂等：以 note:<id> 为 note_ref 幂等键，重复总结返回既有记录，不再重复入账。
@@ -710,12 +727,48 @@ func (s *Server) handleNoteSummarize(w http.ResponseWriter, r *http.Request, id 
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"summary":              summary,
+		"action_items":         actionItems,
 		"model":                resp.Model,
 		"usage":                resp.Usage,
 		"transactions":         autoTx,
 		"bookkeeping":          bookkeeping,
 		"bookkeeping_mismatch": bookkeepingMismatch,
 	})
+}
+
+// noteActionItem 是笔记总结里抽出的一条行动项。
+//
+// 字段与会议侧的 ActionItem 对齐（text/assignee/due），前端才能用同一套
+// resolveTodoDue 解析期限。due 保留用户原话（中文），**不在后端换算**——
+// 换算要依赖「现在几点」，而后端与用户设备可能不在同一时区。
+type noteActionItem struct {
+	Text     string `json:"text"`
+	Assignee string `json:"assignee,omitempty"`
+	Due      string `json:"due,omitempty"`
+}
+
+// parseNoteSummaryPayload 把笔记总结的模型输出拆成 (summary, action_items)。
+//
+// 容错取向：解析不出 JSON 时，summary 直接用模型原文。这不是「凑合」，
+// 而是**改动前的行为本身**——旧提示词就是要纯文本。若这里返回空 summary，
+// 一次格式抖动就会让用户已经写好的语音笔记「总结消失」，比多一个行动项
+// 严重得多。
+func parseNoteSummaryPayload(content string) (string, []noteActionItem) {
+	var parsed struct {
+		Summary     string           `json:"summary"`
+		ActionItems []noteActionItem `json:"action_items"`
+	}
+	if err := json.Unmarshal([]byte(extractJSON(content)), &parsed); err != nil {
+		return content, []noteActionItem{}
+	}
+	items := make([]noteActionItem, 0, len(parsed.ActionItems))
+	for _, it := range parsed.ActionItems {
+		if strings.TrimSpace(it.Text) == "" {
+			continue
+		}
+		items = append(items, it)
+	}
+	return parsed.Summary, items
 }
 
 // noteBookkeepingMismatch — 重新总结解析出的记账与该笔记已入账记录是否不一致

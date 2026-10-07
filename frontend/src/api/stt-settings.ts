@@ -13,6 +13,7 @@
  */
 import { http, LONG_REQUEST_TIMEOUT_MS } from './http'
 import { blobToBase64 } from '../utils/base64'
+import { ensureGatewayCompatible } from '../utils/wav-encode'
 
 /**
  * 全量转写的客户端超时。
@@ -234,7 +235,16 @@ export const sttSettingsApi = {
    *「今天今天下午三点」）。一场录音用同一个 id，最后一片传 isFinal。
    */
   async transcribeIncremental(body: {
-    audioBlob: Blob
+    /** 原始音频（会被转 base64）。与 `audioBase64` 二选一。 */
+    audioBlob?: Blob
+    /**
+     * 已转好的 base64。与 `audioBlob` 二选一。
+     *
+     * 录音分片在真机上是 webm，网关只收 mp3/wav，必须由调用方先转成 16k WAV
+     * （见 native/recording-audio-transcode.ts）。这种路径下 base64 已在手上，
+     * 再走一次 blobToBase64 是纯浪费——12 秒 PCM 实测能撞爆调用栈。
+     */
+    audioBase64?: string
     sessionId: string
     filename?: string
     startSec?: number
@@ -243,7 +253,12 @@ export const sttSettingsApi = {
     isFinal?: boolean
     reset?: boolean
   }): Promise<SttIncrementalResult> {
-    const audioBase64 = await blobToBase64(body.audioBlob)
+    // 两者都缺就是调用方写错了，静默传空 base64 会换来一个 502 empty transcript，
+    // 报错形态与「音频是静音」完全一样 —— 必须在边界上炸掉。
+    if (!body.audioBlob && !body.audioBase64) {
+      throw new Error('transcribeIncremental 需要 audioBlob 或 audioBase64 之一')
+    }
+    const audioBase64 = body.audioBase64 ?? await blobToBase64(body.audioBlob!)
     return http<SttIncrementalResult>('/api/stt/transcribe-incremental', {
       method: 'POST',
       body: JSON.stringify({
@@ -272,12 +287,25 @@ export const sttSettingsApi = {
     opts: { model?: string; channel?: SttChannel; baseURL?: string; transport?: SttTransport } = {},
     signal?: AbortSignal,
   ): Promise<SttProbeResult> {
-    const base64 = await blobToBase64(audio)
+    // ★ webm/ogg 必须先转成 16k WAV 再试转（缺陷8 后半截，2026-10-06 实测）。
+    //   设置页的试转录音走 MediaRecorder，SettingsSTT.vue:529 显式挑 `audio/webm`
+    //   （Android WebView 支持），于是 blob.type 是 audio/webm、
+    //   filenameForMimeType 给出 `recording.webm`。而网关的 chat-audio bridge
+    //   只收 mp3/wav，实测原样发过去会拿到：
+    //     invalid_audio_request: audio format "webm" is not supported
+    //       by the chat-audio bridge (supported: mp3, wav)
+    //   ⇒ 不转码的话，「试转」按钮在真机上永远失败，而这正是用户判断转写
+    //   通不通的唯一入口。
+    //   api/stt.ts 的转写路径早就 ensureGatewayCompatible 过一处，这里是漏的第二个。
+    const audioBlob = await ensureGatewayCompatible(audio)
+    const base64 = await blobToBase64(audioBlob)
     return http<SttProbeResult>('/api/stt/probe', {
       method: 'POST',
       body: JSON.stringify({
         audioBase64: base64,
-        filename: filenameForMimeType(audio.type),
+        // 文件名跟着**转码后**的 blob 走：转码成功时是 recording.wav，
+        // 用原来的 webm 名会让服务端挑错 bridge。
+        filename: filenameForMimeType(audioBlob.type),
         ...opts,
       }),
       timeoutMs: STT_PROBE_TIMEOUT_MS,

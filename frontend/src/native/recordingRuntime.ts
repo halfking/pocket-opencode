@@ -20,6 +20,7 @@
 import { ref } from 'vue'
 import { Capacitor } from '@capacitor/core'
 import { pickSupportedRecorderMime } from './recorderMime'
+import { RollingWebmDecoder, arrayBufferToBase64 } from './recording-audio-transcode'
 import { sttFailureText } from '../api/stt-error'
 import { saveMeetingAudio } from './meeting-audio'
 import { VadSegmenter } from './vad-segmenter'
@@ -31,6 +32,7 @@ import {
 } from '../features/meetings/meetings-store'
 import { syncMeetingMetadata } from '../features/meetings/meeting-ingest'
 import { ingestSpeechBlob } from '../features/meetings/ingest-speech'
+import { renderTranscript } from '../features/meetings/meeting-dedup.ts'
 import {
   applyCaptionResult, createLiveCaption, pickSpeechRecognition, type SpeechRecLike,
 } from '../features/meetings/meeting-live-caption'
@@ -420,7 +422,9 @@ export class MeetingRecorderRuntime {
     const id = await saveSegment(draft)
     const saved: MeetingSegment = { id, ...draft }
     this.segments.value.push(saved)
-    await updateTranscript(meetingId, this.segments.value.map((s) => `[${s.speakerLabel}] ${s.text}`).join('\n'))
+    // 去重渲染：与 ingest-speech.ts 同一口径（相邻段重叠消解）。
+    // 本地 sherpa 实时字幕路径是**另一条**录音入口，此前也在原样拼接。
+    await updateTranscript(meetingId, renderTranscript(this.segments.value))
     return saved
   }
 
@@ -583,6 +587,36 @@ function detectRecorderMime(): string {
  */
 
 /**
+ * 笔记录音 stop() 的产物。
+ *
+ * `draftId` 非空 = 草稿**已经落库**了（见 NoteRecorderRuntime.stop 的「先落草稿
+ * 再转写」）。界面据此**不得**再建一次笔记，只能接管这条已存在的草稿。
+ * 2026-10-06 新增：早落库是为了让录音在兜底转写这段窗口里扛得住进程死亡，
+ * 代价就是「谁建草稿」这件事有两个候选点，必须用返回值明确只有一个生效。
+ */
+export interface NoteRecordingStopResult {
+  text: string
+  audioBlob: Blob
+  durationMs: number
+  /** 早落库拿到的笔记 id；null = 没有 sink 或落库失败，走旧的「界面再建」路径。 */
+  draftId: string | null
+}
+
+/**
+ * 笔记录音的落库出口。
+ *
+ * 刻意**不 import** notes-store：录音运行时不该绑到 features/notes 上。
+ * 这里只声明结构（鸭子类型），实现由笔记特性在 useNoteRecording.ts 注册。
+ * 这样 native 层不认识 LocalNote，特性层不认识 MediaRecorder。
+ */
+export interface VoiceDraftSink {
+  /** 在任何长 await 之前把音频落成一条草稿，返回笔记 id。 */
+  create(input: { text: string; audioBlob: Blob; durationMs: number }): Promise<string | null>
+  /** 转写有结果后回填正文。实现必须保证**不动音频附件**。 */
+  update(id: string, text: string): Promise<void>
+}
+
+/**
  * 笔记录音(3s 分片 + sherpa 流式 + 云端兜底)。跨页面存续:NoteListView 被
  * KeepAlive 驱逐或应用级导航离开时录音不断;stop() 的结果同时暂存在
  * pendingResult,NoteListView 重进后可消费(draftBanner 流程)。
@@ -596,11 +630,24 @@ export class NoteRecorderRuntime {
 
   /** stop() 的产物(text/audioBlob/duration);页面不在场时暂存,NoteListView
    * 重进后 consumePendingResult() 取走创建语音草稿笔记。 */
-  pendingResult: { text: string; audioBlob: Blob; durationMs: number } | null = null
+  pendingResult: NoteRecordingStopResult | null = null
 
   private mediaRecorder: MediaRecorder | null = null
   private mediaStream: MediaStream | null = null
   private chunks: Blob[] = []
+  /**
+   * 滚动 webm 解码器（前端转码，见 recording-audio-transcode.ts）。
+   *
+   * 存在的理由是真机录不出网关能吃的容器：MediaRecorder 在这台 Redmi 上
+   * isTypeSupported('audio/wav') 为 false，只能产出 audio/webm;codecs=opus，
+   * 而网关对 webm 是硬拒（400，supported: mp3, wav）——实测同一段音频
+   * webm 400 / wav 200 且转写正确。
+   *
+   * 为什么不逐片独立转码：webm 是流式容器，初始化段只在第一片出现，
+   * 实测第 2 片起 decodeAudioData 一律抛 UnsupportedError。所以保留全部
+   * 分片、按时间窗切出**新增**部分再打成 WAV 上传。
+   */
+  private audioDecoder: RollingWebmDecoder | null = null
   private startedAt = 0
   private tick: ReturnType<typeof setInterval> | null = null
   private committed = ''
@@ -629,10 +676,32 @@ export class NoteRecorderRuntime {
    */
   private releaseOnNextSlice = false
   /** 正在执行的 stop() 收尾;重入直接复用同一个 promise,不重复拆麦克风。 */
-  private stopInFlight: Promise<{ text: string; audioBlob: Blob; durationMs: number } | null> | null = null
+  private stopInFlight: Promise<NoteRecordingStopResult | null> | null = null
 
   /** 兜底全量转写的在途请求;非 null = 用户可以中止它。 */
   private transcribeAbort: AbortController | null = null
+
+  /**
+   * 落库出口。由笔记特性注册（见 useNoteRecording.ts），process 级单例。
+   *
+   * 为什么需要它：stop() 里兜底转写是**最长 10 分钟的 await**，而在这段窗口里
+   * 音频只存在于 `this.chunks` 拼出来的内存 Blob。2026-10-06 真机实测三臂对照：
+   * 同一段挂住的兜底窗口，点「停止转写」音频在盘上（200364B），`am force-stop`
+   * 则**一个笔记目录都没新建**。用户在这 10 分钟里没电 / 划掉应用 /
+   * 被 MIUI SmartPower 回收（这台设备上非常频繁）⇒ 录音无声消失。
+   * 所以草稿必须在长 await **之前**就落库。
+   */
+  private voiceDraftSink: VoiceDraftSink | null = null
+
+  /**
+   * 注册落库出口，返回注销函数。
+   *
+   * 进程级单例上只保留最后一次注册：笔记特性是唯一使用方，重复注册只会让
+   * 「界面上看到的是哪条草稿」变模糊。
+   */
+  registerVoiceDraftSink(sink: VoiceDraftSink | null): void {
+    this.voiceDraftSink = sink
+  }
 
   /**
    * 强行终止兜底转写（需求「后台执行的 api 可以强行终止」）。
@@ -699,6 +768,12 @@ export class NoteRecorderRuntime {
         audio: { channelCount: 1, sampleRate: 16000 },
       })
       this.chunks = []
+      // 旧解码器在上一场 stop() 的兜底全量转写里还会用到，所以**不能**在
+      // cleanupMedia() 里 dispose（实测调用顺序：cleanupMedia 先于兜底转写）。
+      // 改为在这里释放上一场的实例：start() 是唯一会重新分配它的入口，
+      // 上一场此时一定已经收尾完毕。
+      this.audioDecoder?.dispose()
+      this.audioDecoder = new RollingWebmDecoder()
       this.committed = ''
       this.transcript.value = ''
       // 每场录音一个新会话：跨片去重的累积文本不能跨会话沿用，否则第二场
@@ -711,7 +786,12 @@ export class NoteRecorderRuntime {
         ? new MediaRecorder(this.mediaStream, { mimeType })
         : new MediaRecorder(this.mediaStream)
       this.mediaRecorder.ondataavailable = (e) => {
-        if (e.data.size > 0) this.chunks.push(e.data)
+        if (e.data.size > 0) {
+          this.chunks.push(e.data)
+          // 原始分片同时喂给解码器：webm 的初始化段只在第一片，
+          // 只保留 blob 顺序不动内容，takeNewWindow 才能解出累计音频。
+          this.audioDecoder?.push(e.data)
+        }
         if (this.nativeListening || e.data.size === 0) return
         // 录音中：每 3 秒一片送即时转写。
         if (this.phase.value === 'recording') {
@@ -779,32 +859,80 @@ export class NoteRecorderRuntime {
     await this.sliceChain
   }
 
+  /**
+   * 把累计 webm 的**新增**时间窗转成 16k 单声道 WAV。
+   *
+   * 失败时降级返回 null：转码失败不该让整场录音崩掉，上层会跳过这一片，
+   * 下一片再试（累计音频还在，解码器游标也没推进，不会丢内容）。
+   */
+  private async transcodeSlice(blob: Blob, isFinal: boolean): Promise<ArrayBuffer | null> {
+    if (!this.audioDecoder) {
+      // 没有解码器（例如原生 sherpa 路径接管了录音）⇒ 退回原始 blob。
+      // 这种情况网关会拒，但那是既有行为，不比转码路径更差。
+      return blob.arrayBuffer().catch(() => null)
+    }
+    try {
+      return await this.audioDecoder.takeNewWindow()
+    } catch {
+      // 解码失败不致命：跳过这片，等下一片重新解码累计音频。
+      // isFinal 时也返回 null —— 此时游标未推进，最后一段会留给
+      // stop() 里的兜底全量转写（那条路走 takeFull，拿的是完整音频）。
+      return null
+    }
+  }
+
   private async sendSlice(blob: Blob, isFinal: boolean) {
     if (!this.sttSessionId) return
-    const startSec = this.elapsedMs.value / 1000 - NOTE_CHUNK_MS / 1000
+    // 网关只收 mp3/wav，而真机录出来的是 webm（recording-audio-transcode.ts
+    // 头注释有完整实测）。这里把**新增**的时间窗转成 16k WAV 再发。
+    //
+    // 注意是「新增窗口」而不是整段：服务端会话按到达顺序累积文本，
+    // 重发旧音频会得到「今天今天下午三点」这种重复。
+    const wav = await this.transcodeSlice(blob, isFinal)
+    if (!wav) {
+      // 还没攒够新内容（刚 stop 时最后一片可能只有几十毫秒）。
+      // 这种情况**不发**空请求：0 长度音频会让上游回 502 empty transcript，
+      // 界面上凭空多出一条错误提示。
+      if (isFinal) this.sttSessionId = ''
+      return
+    }
+    const windowSec = wav.byteLength / 2 / 16000
+    const endSec = this.elapsedMs.value / 1000
+    const startSec = Math.max(0, endSec - windowSec)
     try {
       const res = await sttSettingsApi.transcribeIncremental({
-        audioBlob: blob,
+        audioBase64: arrayBufferToBase64(wav),
         sessionId: this.sttSessionId,
-        filename: `chunk${filenameForMimeType(blob.type || 'audio/webm', '')}`,
-        startSec: Math.max(0, startSec),
-        endSec: this.elapsedMs.value / 1000,
+        filename: 'chunk.wav',
+        startSec,
+        endSec,
         // 3 秒定长切片是**硬切**（不在停顿处），所以不能告诉服务端「这段
         // 尾部有静音」——那会让它按静音边界做去重，反而吃掉真实的相邻文字。
         silenceCut: false,
         isFinal,
       })
       if (isFinal) this.sttSessionId = ''
-      if (res.error) {
-        // 单片失败**不清空**已有文本：服务端在这种情况下也会回填累计文本。
-        this.error.value = sttFailureText(res.error, '转写失败，将在下一段重试')
-        return
-      }
-      // 服务端返回的是**累计文本**（已跨片去重），所以这里必须整体替换，
-      // 不能像原来那样本地拼接——本地拼接会把边界重复字叠加上去。
+      // 清 error 的判据是「**这一片有没有出字**」，不是「这一片有没有报错」。
+      //
+      // 2026-10-05 真机实测（证据落盘在 docs/handoff/evidence/）：服务端
+      // `internal/stt/incremental.go` 在**某片失败**时会返回
+      // `{text: <已累积文本>, error: <本片错误>}` —— 两者同时存在是**常态**，
+      // 16 片里实测有 8 片如此。而失败片多数是纯静音（`empty transcript`）。
+      //
+      // 我第一版把清理写在 `if (res.error) return` 之后，**等于永远走不到**：
+      // 那些片确实带 error。⇒ 界面全程挂着「转写失败」，而 text 同时在增长。
+      // 正确判据：只要这一片**产出了文字**（或后端说这段没失败），就清掉
+      // 陈旧错误——因为 error 描述的是「上一段没转出来」，不是「现在坏了」。
       if (res.text.trim()) {
         this.committed = res.text.trim()
         this.transcript.value = this.committed
+        // 出字了 ⇒ 之前的失败已经过去，错误提示应当消失。
+        this.error.value = ''
+        return
+      }
+      if (res.error) {
+        // 单片失败**不清空**已有文本：服务端在这种情况下也会回填累计文本。
+        this.error.value = sttFailureText(res.error, '转写失败，将在下一段重试')
       }
     } catch (e) {
       if (isFinal) this.sttSessionId = ''
@@ -812,7 +940,7 @@ export class NoteRecorderRuntime {
     }
   }
 
-  async stop(): Promise<{ text: string; audioBlob: Blob; durationMs: number } | null> {
+  async stop(): Promise<NoteRecordingStopResult | null> {
     if (this.stopInFlight) return this.stopInFlight
     this.stopInFlight = this.runStop()
     try {
@@ -828,7 +956,7 @@ export class NoteRecorderRuntime {
    * 直接返回 null —— 录音 FAB 就永久失灵（"点了停止没反应"）。真机上
    * 下面的转写兜底走 /api/stt/transcribe,该请求若迟迟不回就会稳定复现。
    */
-  private async runStop(): Promise<{ text: string; audioBlob: Blob; durationMs: number } | null> {
+  private async runStop(): Promise<NoteRecordingStopResult | null> {
     if (this.phase.value !== 'recording' || !this.mediaRecorder) return null
     const recorder = this.mediaRecorder
     // mimeType 必须在 cleanupMedia() 之前取：cleanupMedia 会把
@@ -882,6 +1010,26 @@ export class NoteRecorderRuntime {
           new Promise((resolve) => setTimeout(resolve, 10_000)),
         ])
       }
+      // ── 先落草稿，再转写 ──────────────────────────────────────────────
+      // 位置是刻意选的：**分片收尾之后、兜底转写之前**。
+      //   · 放分片之前 ⇒ 草稿正文会停在「最后一句还没回来」的状态，而分片出字
+      //     时兜底整段转写**不会**跑，也就没人回填 ⇒ 笔记少了最后一句。
+      //   · 放兜底之前 ⇒ 这段（最长 10 分钟）就是唯一的暴露窗口，已被消掉。
+      // 落库失败不阻断后续：草稿只是「保命用」，转写与 pendingResult 照常。
+      const settledText = this.transcript.value.trim()
+      let draftId: string | null = null
+      if (this.voiceDraftSink && audioBlob.size > 0) {
+        try {
+          draftId = await this.voiceDraftSink.create({
+            text: settledText,
+            audioBlob,
+            durationMs,
+          })
+        } catch {
+          // 落库异常不该让用户丢掉转写：退回旧的「界面再建」路径。
+          draftId = null
+        }
+      }
       // 分片转写一条都没回来时,用整段音频兜底转写。
       //
       // 2026-10-01：这里从 sttApi.transcribe 换成 transcribeFull，因为任何 ASR
@@ -900,10 +1048,22 @@ export class NoteRecorderRuntime {
         const controller = new AbortController()
         this.transcribeAbort = controller
         try {
+          // 兜底这条路同样要转码：真机录的是 webm，网关只收 mp3/wav。
+          // 转码失败就退回原始 blob——服务端的 webm 拒收是既有行为，
+          // 不比「因为转码挂了所以什么都不发」更差，且保留了错误可见性。
+          let payload: ArrayBuffer | null = null
+          try {
+            payload = await this.audioDecoder?.takeFull() ?? null
+          } catch {
+            payload = null
+          }
+          const uploadBlob = payload
+            ? new Blob([payload], { type: 'audio/wav' })
+            : audioBlob
           const result = await withTimeout(
             sttSettingsApi.transcribeFull(
-              audioBlob,
-              `note${filenameForMimeType(blobType)}`,
+              uploadBlob,
+              payload ? 'note.wav' : `note${filenameForMimeType(blobType)}`,
               controller.signal,
             ),
             10 * 60_000,
@@ -931,12 +1091,24 @@ export class NoteRecorderRuntime {
           this.transcribeAbort = null
         }
       }
-      this.pendingResult = { text: this.transcript.value.trim(), audioBlob, durationMs }
+      // 转写有结果后回填正文。**只改文字**：sink.update 的实现必须保留音频附件
+      // （notes-persist 的 updateNote 在不传 media 时会合并回旧媒体，见
+      // note-edit-preserves-media 那道门）。进程在窗口期死掉也不会走到这里，
+      // 但草稿带着「（语音草稿）」+ 完整音频已经是用户能拿回的东西。
+      const finalText = this.transcript.value.trim()
+      if (draftId && finalText && finalText !== settledText) {
+        try {
+          await this.voiceDraftSink!.update(draftId, finalText)
+        } catch {
+          // 回填失败不该吞掉录音：草稿已经落库了，音频在，只是文字没跟上。
+        }
+      }
+      this.pendingResult = { text: finalText, audioBlob, durationMs, draftId }
       // 一个音都没录到时必须说话，否则整段收尾是静默的。
       // 判据与理由见 note-recording.ts emptyRecordingNotice 的注释。
-      const emptyNotice = emptyRecordingNotice(this.transcript.value.trim() !== '', audioBlob.size)
+      const emptyNotice = emptyRecordingNotice(finalText !== '', audioBlob.size)
       if (emptyNotice) this.error.value = EMPTY_RECORDING_NOTICE
-      return { text: this.transcript.value.trim(), audioBlob, durationMs }
+      return { text: finalText, audioBlob, durationMs, draftId }
     } finally {
       this.phase.value = nextRecordingState('stopping', 'drafted')
       setHeaderTitle(null)
@@ -952,7 +1124,7 @@ export class NoteRecorderRuntime {
     return this.mediaStream?.getAudioTracks?.()[0] ?? null
   }
 
-  async toggle(): Promise<{ text: string; audioBlob: Blob; durationMs: number } | null> {
+  async toggle(): Promise<NoteRecordingStopResult | null> {
     if (this.phase.value === 'idle') {
       await this.start()
       return null
@@ -965,7 +1137,7 @@ export class NoteRecorderRuntime {
   }
 
   /** 页面消费 pendingResult 后清空,防止重复弹草稿。 */
-  consumePendingResult(): { text: string; audioBlob: Blob; durationMs: number } | null {
+  consumePendingResult(): NoteRecordingStopResult | null {
     const r = this.pendingResult
     this.pendingResult = null
     return r

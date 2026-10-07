@@ -44,9 +44,10 @@
  */
 import { strict as assert } from 'node:assert'
 import { test } from 'node:test'
-import { readFileSync, readdirSync } from 'node:fs'
-import { join, dirname, sep } from 'node:path'
+import { readFileSync } from 'node:fs'
+import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { collectStyleRules } from './style-scan-utils.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
 const SRC = join(ROOT, 'src')
@@ -91,93 +92,25 @@ const ALLOWLIST = {
   },
 }
 
-/** 收集 .vue / .css 里的所有 CSS 规则块。 */
-function collectFiles() {
-  const files = []
-  const walk = (dir) => {
-    let entries
-    try {
-      entries = readdirSync(dir, { withFileTypes: true })
-    } catch {
-      return
-    }
-    for (const e of entries) {
-      if (['__tests__', 'node_modules', 'android', 'ios', 'dist'].includes(e.name)) continue
-      const full = join(dir, e.name)
-      if (e.isDirectory()) walk(full)
-      else if (/\.(vue|css)$/.test(e.name)) files.push(full)
-    }
-  }
-  walk(SRC)
-  return files
-}
-
-/** 声明的正则：属性名必须由 [\s;{] 起头，避免 border-bottom 命中 bottom。 */
-const DECL = /(?:^|[\s;{])([a-z-]+)\s*:\s*([^;{}]+)/g
-
 /**
- * 按 `}` 平衡切出规则块，返回 { file, line, selector, decls }。
- * 嵌套（@media）天然被内层规则的 `}` 分开。
+ * 收集所有 `position:fixed` 且带 `bottom` 偏移的规则。
+ *
+ * ⚠️ 2026-10-06 换用共享扫描器 `collectStyleRules`，补上了 **2 条漏采**：
+ * 原内嵌扫描器吃整个 .vue 文件（含 `<script>`），实测命中 13 条，
+ * 换成只吃 `<style>` 块的实现后是 15 条，多出来的是
+ *   MeetingDetailView.vue:316 .speakers-btn
+ *   VaultEntryView.vue:587 .toast
+ * 两条**恰好都合规**，所以本门禁的**结论没变**；但覆盖面缺了 2 条这件事
+ * 本身是要记的 —— 「结论对」不能替代「方法对」。
+ * 换扫描器后 `ALLOWLIST` 的行号 key 一个都没动：
+ * `components/BottomNav.vue:125` 两边算出同一个 125（独立对上，不是照抄）。
  */
-function parseRules(text, file) {
-  const lines = text.split('\n')
-  const rules = []
-  let depth = 0
-  let buf = []
-  let start = 0
-  for (let i = 0; i < lines.length; i += 1) {
-    const line = lines[i]
-    if (depth === 0 && !line.includes('{')) {
-      // 顶层选择器行 / 注释
-      buf = [line]
-      if (line.includes('{')) {
-        start = i + 1
-        depth += countBraces(line)
-        buf = []
-      }
-      continue
-    }
-    if (depth === 0) {
-      buf = [line]
-      start = i + 1
-      if (line.includes('{')) depth += countBraces(line)
-      continue
-    }
-    buf.push(line)
-    depth += countBraces(line)
-    if (depth <= 0) {
-      const body = buf.join('\n')
-      const open = body.indexOf('{')
-      const close = body.lastIndexOf('}')
-      if (open !== -1 && close > open) {
-        const selector = body.slice(0, open).trim().replace(/\/\*[\s\S]*?\*\//g, '').trim()
-        const decls = {}
-        for (const m of body.slice(open + 1, close).matchAll(DECL)) {
-          if (!(m[1] in decls)) decls[m[1]] = m[2].trim()
-        }
-        rules.push({ file, line: start, selector, decls })
-      }
-      depth = 0
-      buf = []
-    }
-  }
-  return rules
-}
-
-const countBraces = (s) => (s.match(/\{/g) || []).length - (s.match(/\}/g) || []).length
-
-/** 所有 position:fixed 且带 bottom 偏移的规则。 */
 function collectFixedBottom() {
   const out = []
-  for (const f of collectFiles()) {
-    // 同 z-index-ladder.test.mjs：join() 在 Windows 上给的是反斜杠，
-    // ALLOWLIST 的 key 是正斜杠，不归一化就会把「存在」判成「陈旧」。
-    const rel = f.slice(SRC.length + 1).split(sep).join('/')
-    for (const r of parseRules(readFileSync(f, 'utf8'), rel)) {
-      if (r.decls.position !== 'fixed') continue
-      if (!('bottom' in r.decls)) continue
-      out.push({ where: `${rel}:${r.line}`, selector: r.selector, bottom: r.decls.bottom })
-    }
+  for (const r of collectStyleRules(SRC)) {
+    if (r.decls.position !== 'fixed') continue
+    if (!('bottom' in r.decls)) continue
+    out.push({ where: `${r.file}:${r.line}`, selector: r.selector, bottom: r.decls.bottom })
   }
   return out
 }

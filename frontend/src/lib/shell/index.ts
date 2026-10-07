@@ -43,7 +43,7 @@ export { FocusWorkspace, shouldBlockBackgroundEvent } from './focusWorkspace.ts'
 export type { FocusDomAdapter, FocusSnapshot, FocusStatus } from './focusWorkspace.ts'
 export { detectCapabilities, defaultProbes, requireCapability } from './capabilities.ts'
 export type { CapabilityProbes, CapabilityResult } from './capabilities.ts'
-export { createShellRuntime, getShellRuntime, dispatchBack, __resetShellRuntimeForTest } from './runtime.ts'
+export { createShellRuntime, getShellRuntime, dispatchBack, __resetShellRuntimeForTest, SHELL_RUNTIME_KEY, peekShellRuntime } from './runtime.ts'
 export type { RouterLike, ShellRuntime } from './runtime.ts'
 
 /** Hyper 运行时协议版本。与 capabilities().protocolVersion 保持一致。 */

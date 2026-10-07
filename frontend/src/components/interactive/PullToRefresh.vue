@@ -45,6 +45,16 @@
       内容层：跟手期间**不加 transition**（跟手必须 1:1，加了过渡就变滞后），
       松手回弹时才挂上弹簧曲线。这是手感的核心区别。
 
+      ⚠️ 下面这四个 **@touch\* 绑定不是冗余，删掉整套下拉刷新就彻底失效**
+      （2026-10-06 设备实跑发现）。本组件的 `handleTouchStart` / `handleTouchMove` /
+      `handleTouchEnd` **定义了却从未绑到任何元素**——`onMounted` 只绑了 `scroll`。
+      后果：橡皮筋、阈值、甩动判定、触觉、指示器三态全是死代码，
+      「正在同步邮件… / 松开立即同步」永远不会出现，用户永远拉不动。
+      而 27 条 `continuousList` 单测 + `pull-gesture` 数学单测**全绿**：
+      它们测的是函数算得对不对，没人测「函数有没有被接上」。
+      ⇒ 设备判据：scripts/device-matrix.mjs 的 UI-07b（先自证手势真的送达了组件，
+        再谈后面两条），静态门禁：src/components/__tests__/handler-wiring.test.mjs。
+
       注意：滚动监听只在这里用 addEventListener 挂一次。旧实现同时写了
       `@scroll="onContentScroll"` 和 addEventListener，等于每帧回调两次——
       滚动跟手的 delta 被重复上报，chrome 位移翻倍、掉帧。已去掉模板绑定。
@@ -53,6 +63,10 @@
       class="refresh-content"
       :class="{ 'refresh-content--settling': settling }"
       ref="contentRef"
+      @touchstart="handleTouchStart"
+      @touchmove="handleTouchMove"
+      @touchend="handleTouchEnd"
+      @touchcancel="resetGesture"
       :style="{
         transform: `translate3d(0, ${pullDistance}px, 0)`,
         transition: settling ? `transform ${SETTLE_MS}ms var(--ease-spring, cubic-bezier(0.22, 1, 0.36, 1))` : 'none',

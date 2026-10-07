@@ -19,6 +19,19 @@ export const NOTE_SUMMARIZE_TIMEOUT_MS = 90_000
 export type NoteDomain = 'work' | 'study' | 'life' | 'idea'
 export type NoteContentType = 'voice' | 'text' | 'mixed'
 
+/**
+ * 笔记总结里抽出的一条行动项。
+ *
+ * 字段名与会议侧 meetings-store.ActionItem 一致（text/assignee/due），
+ * 便于两侧复用同一套期限解析（features/meetings/meeting-due-plan.ts）。
+ * due 是**用户原话**（如「明天下午三点」），不在这里换算成时间戳。
+ */
+export interface NoteActionItem {
+  text: string
+  assignee?: string
+  due?: string
+}
+
 export interface Note {
   id: string
   userId: string
@@ -87,8 +100,17 @@ export const notesApi = {
    * （server_assistant.go:610）。**客户端比服务端先放弃**，所以推理一慢就变成
    * 「服务端算完了、前端报失败」——这正是用户报的「没有即时总结」里最难查的
    * 那一类：后端日志写着 200，界面却拿不到 summary。
+   *
+   * 2026-10-06：新增 action_items。需求「录音时总结并把时间点自动加进日程」
+   * 在随手记侧此前没有落点 —— 服务端只回一个 summary 字符串，前端拿不到
+   * 任何期限，「明天下午三点」这类时间点在语音笔记里直接消失。字段与会议侧
+   * 的 ActionItem 同名同义，due 保留用户原话（中文），换算在前端做
+   * （后端与设备可能不在同一时区）。
    */
-  summarize(id: string, signal?: AbortSignal): Promise<{ summary: string; model?: string }> {
+  summarize(
+    id: string,
+    signal?: AbortSignal,
+  ): Promise<{ summary: string; model?: string; action_items?: NoteActionItem[] }> {
     return http(`/api/notes/${id}/summarize`, {
       method: 'POST',
       timeoutMs: NOTE_SUMMARIZE_TIMEOUT_MS,

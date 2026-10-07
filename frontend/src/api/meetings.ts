@@ -1,6 +1,7 @@
 /**
  * meetings API — 会议摘要/推荐/精翻，代理 pocketd → kxmemory / LLM
  */
+import { renderTranscript } from '../features/meetings/meeting-dedup.ts'
 import { http, isAbortError } from './http'
 import type { ActionItem, LiveSummary, MeetingSegment, RecommendItem } from '../features/meetings/meetings-store'
 
@@ -183,7 +184,8 @@ function normalizeSummary(raw: Record<string, unknown>): SummaryResult {
 
 function normalizeRefine(raw: Record<string, unknown>, segments: MeetingSegment[]): RefineResult {
   const sm = (raw.structured_minutes ?? raw.structuredMinutes ?? {}) as Record<string, unknown>
-  const fallback = segments.map((s) => `[${s.speakerLabel}] ${s.text}`).join('\n')
+  // 去重（2026-10-06）：切片重叠产生的重复会顺着降级路径进 prompt。
+  const fallback = renderTranscript(segments)
   return {
     refinedTranscript: String(raw.refined_transcript ?? raw.refinedTranscript ?? fallback),
     translations: (raw.translations ?? {}) as Record<string, string>,
@@ -212,9 +214,7 @@ async function fallbackSummarize(
   prevSummary?: string,
   signal?: AbortSignal,
 ): Promise<SummaryResult> {
-  const transcript = segments.map((s) =>
-    `[${s.speakerLabel ?? '说话人'}] ${s.text}`,
-  ).join('\n')
+  const transcript = renderTranscript(segments)
 
   const prompt = prevSummary
     ? `你是会议记录助手。只根据转写更新摘要，禁止编造。结合已有摘要与新增转写，返回 JSON：{"tldr":"","topics":[],"summary":"","key_points":[],"action_items":[{"text":"","assignee":"","due":""}],"decisions":[],"open_questions":[]}\n\n已有摘要：\n${prevSummary}\n\n新增转写：\n${transcript}`
@@ -246,9 +246,7 @@ async function fallbackSummarize(
 }
 
 async function fallbackRefine(segments: MeetingSegment[], signal?: AbortSignal): Promise<RefineResult> {
-  const transcript = segments.map((s) =>
-    `[${s.speakerLabel ?? '说话人'}] ${s.text}`,
-  ).join('\n')
+  const transcript = renderTranscript(segments)
 
   try {
     const res = await http<{ content: string }>('/api/llm/chat', {

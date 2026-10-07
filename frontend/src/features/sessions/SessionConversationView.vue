@@ -317,31 +317,23 @@ const barLastEventAt = computed(() => {
 })
 
 /**
- * P1.5 头部副标题（信号文本 = 一句话 + 时长，设计 v2 §4.1）：
- * 与 SessionStatusBar 图标共用纯派生；nowTick 由 useElapsedNow 自适应节拍
- * 驱动（ISSUES #20：时长文本只有前 60s 是秒级，之后分钟粒度；空闲会话
- * 完全不启定时器，消灭"每秒重绘头部"的周期性重渲染源）。
+ * ⚠️ 2026-10-06 实测抓到并修复：**下面这三块必须声明在 `useElapsedNow` 之前**。
+ *
+ *   症状：每次进入会话详情页都抛
+ *   `ReferenceError: Cannot access 'pe' before initialization`
+ *   （设备实测捕获，stack 指向 `SessionConversationView-*.js`，`pe` 是 minify 后的
+ *   `pendingApprovalCount`）。
+ *
+ *   机制：`useElapsedNow` 内部是 `watch(basesAt, () => schedule())`，
+ *   **没有 `immediate: true`，但 Vue 3 的 `watch` 建立时会先求值一次 source
+ *   来收集依赖** ⇒ `useElapsedNow(...)` 在**调用点**就执行了 `basesAt()`，
+ *   于是读到尚未初始化的 `pendingApprovalCount` ⇒ 命中 const 的 TDZ。
+ *   后果不止是报错：`schedule()` 从未跑成，`nowTick` 恒为初值
+ *   ⇒ 头部时长副标题不随时间更新，且基准变化后不再重调节拍。
+ *
+ *   ⇒ 这是一处**纯声明顺序**问题，与产品语义无关；移动即可。
+ *   判据：`styles/__tests__/tdz-declaration-order.test.mjs`（用本条真实事故驱动）。
  */
-const nowTick = useElapsedNow(() => [
-  pendingApprovalCount.value > 0 ? approvalFirstSeenAt.value : null,
-  barLastEventAt.value,
-])
-
-const statusSubtitle = computed(() => {
-  const base = sessionStatusLabel({
-    phase: barPhase.value,
-    active: store.isStreaming,
-    pendingCount: pendingApprovalCount.value,
-  })
-  const since =
-    pendingApprovalCount.value > 0 && approvalFirstSeenAt.value !== null
-      ? approvalFirstSeenAt.value
-      : barLastEventAt.value
-  const elapsed = formatStatusElapsed(since === null ? null : nowTick.value - since)
-  return elapsed ? `${base} · ${elapsed}` : base
-})
-
-/** 审批待办（状态条 🔴 态）：ApprovalPanel 的数据源（权限 + 问答）。 */
 const pendingApprovalCount = computed(
   () => approvalStore.permissions.length + approvalStore.questions.length,
 )
@@ -374,6 +366,31 @@ watch(
 const approvalFirstSeenAt = computed(() => {
   if (pendingApprovalCount.value === 0 || approvalFirstSeen.value.size === 0) return null
   return Math.min(...approvalFirstSeen.value.values())
+})
+
+/**
+ * P1.5 头部副标题（信号文本 = 一句话 + 时长，设计 v2 §4.1）：
+ * 与 SessionStatusBar 图标共用纯派生；nowTick 由 useElapsedNow 自适应节拍
+ * 驱动（ISSUES #20：时长文本只有前 60s 是秒级，之后分钟粒度；空闲会话
+ * 完全不启定时器，消灭"每秒重绘头部"的周期性重渲染源）。
+ */
+const nowTick = useElapsedNow(() => [
+  pendingApprovalCount.value > 0 ? approvalFirstSeenAt.value : null,
+  barLastEventAt.value,
+])
+
+const statusSubtitle = computed(() => {
+  const base = sessionStatusLabel({
+    phase: barPhase.value,
+    active: store.isStreaming,
+    pendingCount: pendingApprovalCount.value,
+  })
+  const since =
+    pendingApprovalCount.value > 0 && approvalFirstSeenAt.value !== null
+      ? approvalFirstSeenAt.value
+      : barLastEventAt.value
+  const elapsed = formatStatusElapsed(since === null ? null : nowTick.value - since)
+  return elapsed ? `${base} · ${elapsed}` : base
 })
 
 /** 状态条 [查看]：重置已忽略记录让 Bottom Sheet 弹起；无 Sheet 时聚焦内联面板。 */

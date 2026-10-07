@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	neturl "net/url"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -295,8 +296,121 @@ func (s *Server) handleMeetingRecommend(w http.ResponseWriter, r *http.Request, 
 		log.Printf("[meeting] kxmemory recommend fallback for %s: %v", meetingID, err)
 	}
 
-	// No kxmemory: return empty (memory search requires kxmemory)
-	writeJSON(w, http.StatusOK, map[string]any{"items": []any{}})
+	// LLM 兜底（2026-10-06）。
+	//
+	// 此前这里是硬编码 `writeJSON(..., {"items": []any{}})`，注释写「memory
+	// search requires kxmemory」。但 kxmemory 是**可选**依赖：
+	// config.go 的默认值是 `getEnv("POCKET_KXMEMORY_BASE_URL", "")`，
+	// 而 cmd/pocketd/main.go 只在 `cfg.KxMemoryBaseURL != ""` 时才构造 client
+	// ⇒ 没配这个环境变量时 s.kxmemory == nil，/recommend **恒返回空**。
+	//
+	// 后果不是「少一个锦上添花的推荐」：用户需求里「在总结同时给出参考资料
+	// 与建议」这条，在最常见的部署形态下**整条静默失效**，而且返回 200 +
+	// 空数组，前端 `res.items ?? []` 同样不报错 —— 从 UI 到日志都看不出
+	// 「这里本该有东西」。同一条链上的 summary / refine 都有 LLM 兜底，
+	// 只有 recommend 没有，三条降级链不齐。
+	//
+	// 兜底产出的是「话题 + 建议」而不是伪造的记忆条目：没有 kxmemory 就
+	// 检索不到用户自己的笔记/邮件，硬造 note/email 类型只会点开是死链。
+	if s.llmBFF == nil && s.llm == nil {
+		writeError(w, http.StatusServiceUnavailable, "llm not configured")
+		return
+	}
+	items, err := s.llmMeetingRecommend(ctx, r, body.Segments, body.Summary)
+	if err != nil {
+		log.Printf("[meeting] llm recommend failed for %s: %v", meetingID, err)
+		writeJSON(w, http.StatusOK, map[string]any{"items": []any{}})
+		return
+	}
+	s.wsHub.Broadcast("meeting.recommend_updated", map[string]any{
+		"meetingId": meetingID,
+		"items":     items,
+	})
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+// llmMeetingRecommend 在没有 kxmemory 时用 LLM 产出「参考资料与建议」。
+//
+// 为什么产出 type="web"：没有 kxmemory 就没有检索源，能给的只有**话题线索**
+// 与**行动建议**，而不是用户库里真实存在的笔记/邮件。前端 onOpenRelated 对
+// web 类型走 item.url 打开外链，对 note/meeting 走站内路由 —— 所以这里必须
+// 配一个真实可打开的 URL（搜索结果页），否则会点进一个不存在的站内页面。
+//
+// 为什么不自己联网搜：server 侧出网要过 SSRF 校验，且「实时搜索」会把一条
+// 会议推荐变成一个外部依赖 + 一份需要缓存/超时/去重的子系统。把「去哪儿找」
+// 做成一个用户点得动的搜索链接，是这个阶段更诚实的形态 —— 建议是 LLM 的，
+// 事实核验交给用户点开的那一页。
+func (s *Server) llmMeetingRecommend(ctx context.Context, r *http.Request, segs []meetingSegmentIn, summary string) ([]map[string]any, error) {
+	transcript := segmentsToText(segs)
+	if len(segs) == 0 {
+		return nil, fmt.Errorf("segments required")
+	}
+	// 转写可能很长，而这条链路是每 30 秒跑一次的滚动推荐：把预算花在
+	// 最新的若干段上就够了，summary 已经承载了全局信息。
+	//
+	// 按 rune 截而不是按字节：中文一字 3 字节，按字节切会落在字的中间，
+	// 产出非法 UTF-8 送进 prompt。同文件的 truncateStr 记的是同一个坑
+	// 在**写库**方向的后果（PG 直接报 SQLSTATE 22021）。
+	const maxRunes = 2000
+	if runes := []rune(transcript); len(runes) > maxRunes {
+		transcript = string(runes[len(runes)-maxRunes:])
+	}
+	prompt := fmt.Sprintf(
+		"根据下面这场会议的转写与已有摘要，给出最多 3 条「值得进一步了解的方向」或「可以立刻采取的建议」。\n"+
+			"严格返回 JSON（不要 markdown）：{\"items\":[{\"title\":\"简短标题\",\"snippet\":\"一句话说明为什么相关或该怎么做\",\"query\":\"用于搜索的关键词\"}]}\n"+
+			"要求：title 不超过 20 字；query 用中文关键词，不要包含会议原文的整句；没有值得建议的就返回空数组。\n\n"+
+			"已有摘要：\n%s\n\n转写（末尾片段）：\n%s",
+		summary, transcript,
+	)
+	content, _, err := s.llmChatOnce(ctx, r, s.cfg.LLMModel, []aigate.ChatMessage{{Role: "user", Content: prompt}})
+	if err != nil {
+		return nil, err
+	}
+	return parseRecommendJSON(content), nil
+}
+
+// parseRecommendJSON 解析 LLM 返回的推荐条目。
+//
+// 容错取向与同文件的 parseSummaryJSON 一致：**模型不听话不能让整条功能挂掉**。
+// 解析失败返回空数组（前端据此不渲染这一块），而不是把整段原文当标题塞给用户。
+// 单条缺字段只丢那一条 —— 模型少给一个 query 不该让另外两条一起消失。
+func parseRecommendJSON(content string) []map[string]any {
+	var parsed struct {
+		Items []struct {
+			Title   string `json:"title"`
+			Snippet string `json:"snippet"`
+			Query   string `json:"query"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal([]byte(extractJSON(content)), &parsed); err != nil {
+		return []map[string]any{}
+	}
+	out := make([]map[string]any, 0, len(parsed.Items))
+	for i, it := range parsed.Items {
+		title := strings.TrimSpace(it.Title)
+		if title == "" {
+			continue
+		}
+		snippet := strings.TrimSpace(it.Snippet)
+		query := strings.TrimSpace(it.Query)
+		if query == "" {
+			query = title
+		}
+		out = append(out, map[string]any{
+			"type":    "web",
+			"id":      fmt.Sprintf("llm-rec-%d-%s", i, title),
+			"title":   title,
+			"snippet": snippet,
+			"score":   0.5,
+			// 前端 onOpenRelated 见到 url 就新开窗口；没有 url 的 web 条目
+			// 会掉进下面的 type 分支而哪个都不匹配 ⇒ 点击静默无反应。
+			"url": "https://www.bing.com/search?q=" + neturl.QueryEscape(query),
+		})
+		if len(out) == 3 {
+			break
+		}
+	}
+	return out
 }
 
 func (s *Server) handleMeetingRefine(w http.ResponseWriter, r *http.Request, meetingID string) {

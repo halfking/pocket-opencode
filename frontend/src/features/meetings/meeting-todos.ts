@@ -1,4 +1,5 @@
 import type { ActionItem } from './meetings-store'
+import { dueAtToScheduleExpr, parseDueAt } from './meeting-due.ts'
 
 export interface MeetingTodoDraft {
   text: string
@@ -37,13 +38,25 @@ export function accHandoffInput(draft: MeetingTodoDraft, meetingTitle: string) {
     draft.assignee ? `建议负责人：${draft.assignee}` : '',
     draft.due ? `建议期限：${draft.due}` : '',
   ].filter(Boolean).join('\n')
+  // 有真实期限就按期限触发；解不出（无 due / 明确指向过去）才退回
+  // 「1 分钟后」，让「转交」这个动作本身至少能立刻执行一次。
+  // ⚠️ 此前这里恒为 now+60s，等于把用户说的「周五」完全无视。
+  let scheduleExpr = new Date(Date.now() + 60_000).toISOString()
+  if (draft.due) {
+    try {
+      const parsed = parseDueAt(draft.due)
+      if (parsed) scheduleExpr = dueAtToScheduleExpr(parsed.at)
+    } catch {
+      // 坏期限不该让「转交」失败，退回 1 分钟后。
+    }
+  }
   return {
     name: title,
     description: draft.text,
     kind: 'redclaw_chat' as const,
     scheduleKind: 'at' as const,
-    scheduleExpr: new Date(Date.now() + 60_000).toISOString(),
-    timezone: 'UTC',
+    scheduleExpr,
+    timezone: 'Asia/Shanghai',
     payload: { prompt, source: 'meeting-todo' },
     maxRuns: 1,
     enabled: true,

@@ -24,6 +24,13 @@ export interface InitStatus {
 const _ready = ref(false)
 // 初始化进行中标志，防止并发调用 initLobster 导致重复初始化
 let _initializing = false
+// 2026-10-06 新增：进行中的 init promise。
+// 为什么需要它：原来第二次并发调用只 console.warn 后**立刻 return**，
+// 对「防止重复初始化」是对的，但**对调用方**，「被忽略」等于
+// 「我以为 init 完了，可以继续读库了」⇒ 于是撞上 requireReady() 抛错。
+// 现在并发调用 await 同一个 promise：**仍然只初始化一次（幂等性不变）**，
+// 但调用方拿到的是「真的就绪了」这个事实。
+let _initPromise: Promise<void> | null = null
 
 /**
  * 解锁状态（响应式）。computed/watch 等响应式上下文必须读它，
@@ -49,13 +56,27 @@ export function isLobsterReady(): boolean {
  */
 export async function initLobster(masterPassword: string): Promise<void> {
   if (_ready.value) return
-  if (_initializing) {
-    console.warn('[lobster] 初始化进行中，忽略重复调用')
-    return
+  if (_initPromise) {
+    // 并发调用：await 同一 in-flight，而不是「忽略」。
+    // 仍然只初始化一次（下面那段不会被第二次进入）。
+    return _initPromise
   }
 
   _initializing = true
-  try {
+  const p = (async () => {
+    // 0. 2026-10-06 安全修复：**先校验主密码，再碰任何加密状态**。
+    //    原顺序是 initAppCrypto → localDB.init，而 initAppCrypto 只做 PBKDF2 派生、
+    //    对任何字符串都成功 ⇒ 错口令会先用错口令把 AES key 写进模块级 cryptoKey，
+    //    才在后面抛错。放到最前面，错口令就完全碰不到 crypto 层。
+    //    真机实证（emulator-5554，A/B/C 三轮对照）：
+    //      正确口令 → 离开解锁页；错误口令 → **同样**离开解锁页；
+    //      空口令 → 被 unlockSubmitMode 挡住（证明判据非恒真）。
+    //    根因三处：crypto.ts:53 只派生不比对、local-db.ts 用「setEncryptionSecret
+    //    抛不抛」推断口令一致、插件 Database.java:245 的 open() 取的是**已存的旧 secret**。
+    if (!(await localDB.verifyMasterPassword(masterPassword))) {
+      throw new Error('主密码不正确')
+    }
+
     // 1. 初始化共享加密 key
     await initAppCrypto(masterPassword)
 
@@ -70,8 +91,13 @@ export async function initLobster(masterPassword: string): Promise<void> {
     }
 
     _ready.value = true
+  })()
+  _initPromise = p
+  try {
+    await p
   } finally {
     _initializing = false
+    _initPromise = null
   }
 }
 

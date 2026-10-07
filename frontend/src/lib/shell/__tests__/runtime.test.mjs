@@ -9,7 +9,12 @@
  */
 import { strict as assert } from 'node:assert'
 import { test } from 'node:test'
+import { readFileSync } from 'node:fs'
+import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { createShellRuntime, dispatchBack } from '../runtime.ts'
+
+const RUNTIME_PATH = join(dirname(fileURLToPath(import.meta.url)), '..', 'runtime.ts')
 
 /** 最小假 router：可控 afterEach / beforeEach / back。 */
 function makeRouter() {
@@ -200,6 +205,7 @@ test('路由 meta 标题被登记为 title 并推进 render epoch', () => {
   assert.equal(rt.titles.acceptAsync(entry.id, 0, '过期'), false)
 })
 
+
 // ── 异步导航落定（2026-10-06 回归护栏）───────────────────────────────
 //
 // 缺陷：toRouterAdapter.pop() 用 `await setTimeout(r, 0)` 判定导航是否成功。
@@ -335,4 +341,129 @@ test('连续两次返回逐级回退，最终 cursor 归零（不再恒 > 0）',
   const s = rt.store.snapshot()
   assert.equal(s.cursor, 0, '回到根后 cursor 必须归零')
   assert.equal(s.entries.length, 1, '栈应收缩回起点')
+})
+
+// ===========================================================================
+// 单例契约（2026-10-06 新增）
+//
+// ## 为什么单独立一组
+//
+// 2026-10-06 设备实跑 UI-13 时查到：`registerOverlay()` 全仓零调用，
+// 修法拆成「建」（`getShellRuntime`，只有 AppLayout 调）与
+// 「取」（`peekShellRuntime`，只读、永不创建）。
+// ⇒ 这两个函数是**本轮修复的承重墙**，而它们此前**一条单测都没有** ——
+//   本文件 11 条用例全都直接调工厂 `createShellRuntime`，
+//   **从不经过单例入口**。也就是说「单例语义」整个是未验证的：
+//   单例没成立、peek 偷偷建了实例、dispose 没摘守卫，都不会被任何用例发现。
+//
+// 而 `__resetShellRuntimeForTest` 这个导出当时**连测试都没调用**（全仓零引用），
+// 说明它就是为这组用例准备、却一直没写。⇒ 写完它就不再是死导出。
+// ===========================================================================
+
+import { getShellRuntime, peekShellRuntime, __resetShellRuntimeForTest } from '../runtime.ts'
+
+/** 每条用例自带 setup/finally，保证不受执行顺序影响（node --test 顺序不保证）。 */
+function withCleanSingleton(fn) {
+  __resetShellRuntimeForTest()
+  try {
+    return fn()
+  } finally {
+    __resetShellRuntimeForTest()
+  }
+}
+
+test('单例：getShellRuntime 连续两次返回**同一个**实例', () => {
+  withCleanSingleton(() => {
+    const a = makeRouter()
+    const b = makeRouter()
+    const first = getShellRuntime(a)
+    const second = getShellRuntime(b)
+    assert.equal(first, second,
+      '第二次调用必须复用第一次的实例。' +
+      '若它新建了，则守卫会装在**两个** router 上，返回仲裁形同虚设')
+    // 反向证据：新 router 上**不该**再被装一遍守卫
+    assert.equal(b.hooks.after.length, 0,
+      '第二次传入的 router 仍被装了 afterEach ⇒ 说明实例被重建了')
+  })
+})
+
+test('建：getShellRuntime 真的把守卫装到了传入的 router 上', () => {
+  withCleanSingleton(() => {
+    const r = makeRouter()
+    getShellRuntime(r)
+    assert.ok(r.hooks.after.length >= 1, 'afterEach 没装上 ⇒ 导航上下文永远不会被路由喂到')
+    assert.ok(r.hooks.before.length >= 1, 'beforeEach 没装上 ⇒ 取消的导航不会被记账')
+  })
+})
+
+test('取：peekShellRuntime 在没有单例时返回 null，且**永不创建**', () => {
+  withCleanSingleton(() => {
+    assert.equal(peekShellRuntime(), null, '还没建过就不该拿到实例')
+    // ⚠️ 关键：**再 peek 一次**。若实现里偷偷建了实例，这里会拿到非 null，
+    //   而更糟的是那个实例带着一个假 router —— 后面 getShellRuntime 就会
+    //   把它当成已存在的单例返回，守卫全装在假 router 上。
+    assert.equal(peekShellRuntime(), null, 'peek 有副作用地创建了实例')
+    const r = makeRouter()
+    const rt = getShellRuntime(r)
+    assert.ok(r.hooks.after.length >= 1,
+      'getShellRuntime 返回的不是「用这个 router 建的」实例 ⇒ peek 之前偷偷建过一个')
+    assert.equal(peekShellRuntime(), rt, 'peek 必须能取回刚建好的那个实例')
+  })
+})
+
+test('取：peekShellRuntime 忽略一切参数（它是零参的只读入口）', () => {
+  withCleanSingleton(() => {
+    const r = makeRouter()
+    getShellRuntime(r)
+    const rt = peekShellRuntime()
+    // 即便有人误传参数，也必须**不建**新实例
+    const again = peekShellRuntime(routerIgnored)
+    assert.equal(again, rt, 'peek 传参后返回了另一个实例 ⇒ 它不再是只读入口')
+  })
+  function routerIgnored() { /* 只是被误传的对象 */ }
+})
+
+test('重置：__resetShellRuntimeForTest 之后 peek 回到 null，且旧实例的守卫被摘掉', () => {
+  const r = makeRouter()
+  const rt = getShellRuntime(r)
+  assert.ok(r.hooks.after.length >= 1, '前提不成立：守卫没装上')
+  __resetShellRuntimeForTest()
+  assert.equal(peekShellRuntime(), null, '重置后 peek 仍拿到实例 ⇒ 单例没清干净，会串到下一条用例')
+  assert.equal(r.hooks.after.length, 0,
+    'dispose 没有摘掉 afterEach ⇒ 旧实例的守卫会继续把导航喂给一个已废弃的运行时')
+  assert.equal(r.hooks.before.length, 0, 'dispose 没有摘掉 beforeEach')
+  void rt
+})
+
+test('【量具自证】本组用的 makeRouter 能真的记录守卫注册（否则上面几条会空过）', () => {
+  const r = makeRouter()
+  assert.deepEqual(r.hooks, { after: [], before: [] })
+  const off = r.afterEach(() => {})
+  assert.equal(r.hooks.after.length, 1, 'afterEach 没记录 ⇒ 「守卫装上了」这个读数是假的')
+  off()
+  assert.equal(r.hooks.after.length, 0, 'afterEach 返回的退订函数没生效 ⇒ dispose 相关的读数不可信')
+})
+
+test('【变异 · 必须转红】peekShellRuntime 的函数体里不得出现「创建」调用', () => {
+  // ⚠️ 第一版这条写成了「把源码替换成会偷偷创建的版本，再检查替换后的文本」——
+  //   那只证明**我的替换串**里含有那个词，**没有跑过变异后的代码**，
+  //   属于「探针是从我自己的读法抄出来的」。已删。
+  // ⇒ 改成钉**源码属性**：peek 的函数体里一旦出现创建调用（无论写成什么样），
+  //   「只读、永不创建」这条契约就已经破了。这条判据对具体写法免疫。
+  //
+  // 之所以必须钉这一条：上面那些行为用例只在**当前**实现下为绿。
+  // 一旦有人把 `return singleton ?? null` 改成「没有就建一个」，
+  // 单测会从「行为断言失败」退化成「测试文件整体报错」——
+  // 而 run-mjs-tests 的覆盖普查只看文件有没有产出，**照样是绿的**。
+  const src = readFileSync(RUNTIME_PATH, 'utf8')
+  const m = /export function peekShellRuntime\([^)]*\)[^{]*\{([\s\S]*?)\n\}/.exec(src)
+  assert.ok(m, 'runtime.ts 里找不到 peekShellRuntime 的函数体 —— 判据需要随实现改动而更新')
+  const body = m[1]
+  for (const forbidden of ['createShellRuntime', 'getShellRuntime', '= singleton']) {
+    assert.ok(!body.includes(forbidden),
+      `peekShellRuntime 的函数体里出现了 ${forbidden}。` +
+      '它必须是**纯只读**：拿不到就返回 null，绝不能顺手建一个。' +
+      '（建只能发生在 AppLayout 的 getShellRuntime 里）')
+  }
+  assert.match(body, /singleton/, '前提没了：函数体里连 singleton 都没提 —— 判据可能已脱离实现')
 })

@@ -686,6 +686,18 @@ func main() {
 	if financeStore != nil {
 		srv.SetFinanceStore(financeStore)
 	}
+	// agent-companion：本机智能体/会话/运行态的**权威来源**。
+	//
+	// 之前 CompanionURL/CompanionSecret 只进了 config，从未被用来构造
+	// 客户端 —— s.companion 恒为 nil，于是 transcript 那条链路整体是死
+	// 代码：配置里填了 URL 也不报错，只是安静地什么都不返回。这里把
+	// 接线补上，URL 为空时 NewCompanionClient 返回 nil，退回原有行为。
+	if c := server.NewCompanionClient(cfg.CompanionURL, cfg.CompanionSecret); c != nil {
+		srv.SetCompanionClient(c)
+		log.Printf("Companion client: %s (agent-companion read face)", cfg.CompanionURL)
+	} else {
+		log.Println("Companion client: not configured (set POCKET_COMPANION_URL to enable)")
+	}
 	// 必须在下面 sources.New(..., srv.MeetingStore()) 之前注入，
 	// 否则 learning resolver 会拿到已被替换掉的那份内存 store。
 	if meetingStore != nil {

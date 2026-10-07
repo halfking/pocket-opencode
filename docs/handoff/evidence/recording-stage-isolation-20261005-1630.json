@@ -1,0 +1,228 @@
+{
+  "recorded_at": "2026-10-05T16:30:00+08:00",
+  "device": {
+    "serial": "4c308e2e",
+    "model": "Redmi 2411DRN47C",
+    "android": "14",
+    "miui": "HyperOS-class",
+    "package": "com.kaixuan.opencode.pocket.sttdev",
+    "webview": "Chrome/126.0.6478.71"
+  },
+  "segmented_conclusion": {
+    "stage1_api_transcribe": "PASS",
+    "stage2_batched_transcribe": "PASS",
+    "stage3_recording": "PASS",
+    "stage3_caveat": "PASS 只在「音源不是手机自身喇叭」时成立；用手机自播放做验收必然测到数字静音，那是测法问题不是产品缺陷。"
+  },
+  "stage1_evidence": {
+    "gateway_base": "https://llm.kxpms.cn/v1",
+    "models_endpoint": "GET /v1/models -> 200, 607 models, includes mimo-v2.5-asr",
+    "wav_gt_voice": {
+      "path": "/tmp/gt-voice.wav",
+      "duration_sec": 4.64,
+      "sample_rate": 16000,
+      "ground_truth": "今天下午三点，会议室开产品评审会，请提前十分钟到场。",
+      "transcript": "今天下午三点，会议室开产品评审会，请提前十分钟到场。",
+      "verdict": "逐字一致"
+    },
+    "backend_endpoints": {
+      "GET /api/stt/config": "channel=gateway model=mimo-v2.5-asr hasKey=true",
+      "POST /api/stt/transcribe (multipart)": "200 confidence=0.95",
+      "POST /api/stt/transcribe (base64 JSON)": "200",
+      "POST /api/stt/transcribe-incremental": "ok=true error=''",
+      "POST /api/stt/transcribe-full": "succeeded=1",
+      "POST /api/stt/probe (multipart)": "200",
+      "POST /api/stt/probe (raw binary)": "200"
+    },
+    "negative_control": {
+      "request": "webm 直传网关",
+      "result": "400 audio format \"webm\" is not supported ... (supported: mp3, wav)"
+    }
+  },
+  "stage2_evidence": {
+    "source": "/tmp/test-zh.wav (8.17s 中文语音)",
+    "slices": [
+      {
+        "file": "/tmp/slice0.wav",
+        "text": "今天我们开会讨论录音转写方案。"
+      },
+      {
+        "file": "/tmp/slice1.wav",
+        "text": "重点是本地快速转写和云。"
+      },
+      {
+        "file": "/tmp/slice2.wav",
+        "text": "云端高精度全量转写。"
+      }
+    ],
+    "incremental_same_session": "text 逐片累积，边界重复的「云」被正确合并，无「今天今天」类重复"
+  },
+  "stage3_evidence": {
+    "external_source_test": {
+      "why": "唯一能区分「测法坏」和「产品坏」的单变量实验：自播放会被 AEC 消掉，外部音源不会",
+      "cases": [
+        {
+          "source": "手机自播放（WebView Audio 元素，volume=1.0，循环）",
+          "constraints": "{audio:true}",
+          "non_zero_samples": 2068,
+          "total_samples": 328320,
+          "peak": 0.009888,
+          "rms": 0.00014,
+          "blob_bytes": 6366
+        },
+        {
+          "source": "外部音源（Mac 喇叭 afplay /tmp/gt-long.wav 60s @16k）",
+          "constraints": "{audio:true}",
+          "non_zero_samples": 274561,
+          "total_samples": 328320,
+          "peak": 0.382294,
+          "rms": 0.067497,
+          "blob_bytes": 105849
+        }
+      ],
+      "conclusion": "WebView 的 getUserMedia + MediaRecorder 链路本身完好，84% 采样非零、peak -8.3 dB。"
+    },
+    "app_end_to_end": {
+      "ui": "笔记页 FAB (CSS 312,704)，判据用 .fab-icon 图标（⏹=录音中，🎤=空闲）—— aria-label 不随状态更新，用它判会误判",
+      "recording_sec": 14,
+      "source": "Mac afplay 外部音源",
+      "stt_requests": [
+        {
+          "start": 0.06,
+          "end": 3.0,
+          "text": "",
+          "error": "stt mimo-v2.5-asr: upstream returned empty transcript"
+        },
+        {
+          "start": 2.94,
+          "end": 6.0,
+          "text": "",
+          "error": "stt mimo-v2.5-asr: upstream returned empty transcript"
+        },
+        {
+          "start": 6.0,
+          "end": 9.0,
+          "text": "",
+          "error": "stt mimo-v2.5-asr: upstream returned empty transcript"
+        },
+        {
+          "start": 9.0,
+          "end": 12.0,
+          "text": "请提前。",
+          "error": "",
+          "channel": "gateway",
+          "model": "mimo-v2.5-asr"
+        },
+        {
+          "start": 11.98,
+          "end": 14.5,
+          "isFinal": true,
+          "error": "",
+          "channel": "gateway",
+          "model": "mimo-v2.5-asr",
+          "delta": "提前十分钟到场。今天下午三点，会议。",
+          "text": "请提前。提前十分钟到场。今天下午三点，会议。"
+        }
+      ],
+      "ground_truth": "今天下午三点，会议室开产品评审会，请提前十分钟到场。",
+      "verdict": "转写成功，词句对应同一句话；分片顺序与原文不同属滑动窗口 ASR 常态"
+    },
+    "note_persistence_after_fix": {
+      "bug": "createNote() 先调 persistNotePayload()（note-files.ts:50 INSERT INTO local_note_files），父行 local_notes 要到 notes-persist.ts:83 才插入；schema.ts:80 定义 local_note_files.note_id REFERENCES local_notes(id) ⇒ SQLite 787 FOREIGN KEY constraint failed。触发条件 persistBodyFile || media.length>0 = 所有语音笔记。",
+      "fix": "notes-persist.ts createNote() 改为：先 INSERT 父行（body_path/media_json 留空）→ persistNotePayload → UPDATE 回填 body_path/media_json/audio_path。附件写失败时父行仍在，loadFullContent() 退回 note.content，文字不丢。",
+      "gate": "src/features/notes/__tests__/note-persist-fk-order.test.mjs（5 条，含 2 条负控：把顺序改回 bug 版 / 删掉回填 UPDATE，门都必须报红）",
+      "regression": "vue-tsc 0 错误；npm run test:all = 2145 pass / 0 fail / 2 skipped（豁免名单 2 个文件），上轮 2110 pass",
+      "device_result": {
+        "before": "local_notes = 0 行，页面「还没有笔记」，console.error 含 'Run: FOREIGN KEY constraint failed (code 787)'",
+        "after": "local_notes = 1 行",
+        "row": {
+          "id": "note-1791189180763-z1eac4",
+          "content_type": "voice",
+          "status": "draft",
+          "created_by_voice": 1,
+          "storage_tier": "file",
+          "audio_path": "file:///data/user/0/com.kaixuan.opencode.pocket.sttdev/files/notes/2026/10/05/no/note-1791189180763-z1eac4/audio/01.webm",
+          "audio_duration_ms": 14747,
+          "body_path": "notes/2026/10/05/no/note-1791189180763-z1eac4/body.md",
+          "media_json": "非空（body + audio 两条记录）"
+        },
+        "child_rows": "local_note_files 2 行：audio 214352B (audio/webm;codecs=opus) + body 80B (text/markdown)，note_id 均等于父行 id",
+        "files_on_disk": "files/notes/2026/10/05/no/note-1791189180763-z1eac4/{body.md 240B, audio/01.webm 214352B}",
+        "page": "草稿横幅「未完成草稿：会，请提前十分钟。到场，今天下午三点，会议室开产」",
+        "console_error_after": "仅剩 'sherpa-onnx AAR not integrated (Phase 4)'（无关占位）；FK 787 已消失",
+        "remaining_noise": "console.warn '[lobster] 嵌入失败…' —— 后端 /api/embed 无可用 provider，非阻塞，笔记正文已存"
+      }
+    }
+  },
+  "falsified_hypotheses": [
+    {
+      "hypothesis": "getUserMedia 里的 sampleRate:16000 硬约束导致全零",
+      "first_evidence": "d-webview-gum.mjs：{audio:true} 有 19951 非零 / peak 0.00116，而 sampleRate:16000 三组全为 0",
+      "falsified_by": "d-isolate.mjs 同轮 8 组对照：{audio:true} 这一组也是 0/282240",
+      "lesson": "缺少 {audio:true} 同时刻对照时，跨轮比较会把「状态变了」误读成「某个参数是根因」"
+    },
+    {
+      "hypothesis": "App 走 WebView onPermissionRequest 链路导致全零",
+      "falsified_by": "页面内直接 getUserMedia（不经 App 代码）同样拿到 274561 非零样本",
+      "lesson": "先前所谓「原生 MediaRecorder 对照」（stage3.mjs / native-compare.mjs）其实也是 WebView getUserMedia，注释写的「完全不经 App 代码」成立但「绕开 WebView」不成立"
+    },
+    {
+      "hypothesis": "App 自带的 announceSilenced TTS 触发 MIUI silenced 导致全零",
+      "falsified_by": "完全不跑 App 录音流程、只在页面里放音+录音，dumpsys audio 仍记录 src:CAMCORDER silenced；但 silenced 本身不是全零的原因（外部音源下同样 silenced 却拿到 peak 0.38）"
+    }
+  ],
+  "environment_traps": [
+    {
+      "trap": "pm grant 不会清掉 appop 覆盖",
+      "evidence": "dumpsys package 显示 RECORD_AUDIO: granted=true，但 appops get 显示 RECORD_AUDIO: ignore（rejectTime 33 分钟前），App 侧 checkPermission 返回 status=prompt、页面显示「麦克风权限被拒绝」",
+      "fix": "adb shell appops set <pkg> RECORD_AUDIO allow  &&  adb shell pm grant <pkg> android.permission.RECORD_AUDIO",
+      "note": "只 pm grant 时 appop 会停在 foreground，且 MIUI 拒绝后 dumpsys package 的 granted 会翻回 false"
+    },
+    {
+      "trap": "MIUI USB 安装确认框会自毁",
+      "evidence": "INSTALL_FAILED_USER_RESTRICTED；logcat 显示 com.miui.permcenter.install.AdbInstallActivity 被拉起后立刻销毁 → INSTALL_CANCELED_BY_USER",
+      "detail": "窗口其实是可见的：dumpsys window 显示 frame=[22,1069][698,1588] 底部弹窗，screencap 能拍到「继续安装 / 拒绝(9)」；但 uiautomator dump 在这台机器 rc=137 被杀，读不到节点",
+      "fix": "adb install 起在后台，3 秒后 adb shell input tap 207 1498（物理像素，屏幕 720x1640）"
+    },
+    {
+      "trap": "App 切后台时 WebView DevTools socket 停止响应",
+      "evidence": "forward 存在但 /json/list 无响应；SmartPower 日志 died->visible",
+      "fix": "任何 CDP 操作前先把 App 拉回前台再重建 forward（见 /tmp/opstt/bringup.sh）"
+    },
+    {
+      "trap": "MIUI 会把 sttdev 包自动置为 DISABLED_USER",
+      "evidence": "dumpsys package 显示 enabled=3；此后 monkey 报 'No activities found to run'、am start 报 Error type 3，尽管 manifest 里 MAIN/LAUNCHER 过滤器和 Activity 都还在",
+      "why_misleading": "两个错误信息（No activities found / Activity class does not exist）都指向「组件不存在」，而真实原因是包被禁用 —— 读起来非常像装错包或构建产物不对",
+      "fix": "adb shell pm enable <pkg> 后再 monkey 启动"
+    },
+    {
+      "trap": "登录只写 pocket_token 不够",
+      "evidence": "stores/auth.ts isAuthenticated = Boolean(token) && Boolean(user)；只写 token 时整页 reload 后 router 仍弹回 #/login",
+      "fix": "同时写 pocket_token / pocket_user / pocket_workspace_id，再整页 reload"
+    },
+    {
+      "trap": "录音状态不能用 .fab 的 aria-label 判",
+      "evidence": "aria-label 恒为「开始录音」，不随状态更新；真实状态在 .fab-icon 的图标文本（⏹=录音中，🎤=空闲）",
+      "cost": "曾据此误判「点击没触发录音」，实际当时正在录"
+    }
+  ],
+  "status": {
+    "recording_transcription": "PASS —— 录音 → 转写 → 落库 → 附件落盘 → 页面展示 全链路闭环（真机实测）",
+    "note_persistence": "FIXED —— FK 787 已修并真机复验",
+    "code_changes_this_round": [
+      "frontend/src/features/notes/notes-persist.ts（createNote 写入顺序）",
+      "frontend/src/features/notes/__tests__/note-persist-fk-order.test.mjs（新增，5 条含 2 条负控）"
+    ],
+    "code_changes_prior_rounds_uncommitted": [
+      "frontend/src/native/recording-audio-transcode.ts（新增，241 行）",
+      "frontend/src/native/recordingRuntime.ts（+115/-17）",
+      "frontend/src/api/stt-settings.ts（+18）",
+      "frontend/src/native/__tests__/recording-audio-transcode.test.mjs（新增，23 条）"
+    ],
+    "known_unrelated_noise": [
+      "sherpa-onnx AAR not integrated (Phase 4) —— 既有占位",
+      "[lobster] 嵌入失败 —— 后端 /api/embed 无可用 provider，非阻塞",
+      "后端 GET /api/notes 返回 503 notes store not configured —— 笔记走本地 SQLCipher，不走该端点"
+    ]
+  }
+}

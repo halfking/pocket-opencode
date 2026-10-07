@@ -36,7 +36,7 @@ detectCapabilities(probes, { continuousScroll })
 //   protocolVersion: 2,
 //   platform: 'web' | 'ios' | 'android',
 //   navigation: true,          // Web 侧运行时，不依赖原生
-//   focusWorkspace: true,      // 同上
+//   focusWorkspace: true,      // 同上  ← ⚠️ 这个值当前没有任何消费方，见 §3.2
 //   continuousScroll: true,
 //   tasks: { durableLocal: false, cloudDetached: true, continuation: 'foregroundOnly' },
 //   recording: { available: false, background: false },
@@ -63,6 +63,43 @@ detectCapabilities(probes, { continuousScroll })
 > ⚠️ `TaskLedger` 与 `LocalAgent` 是**规划中的**插件名，本仓没有实现。
 > 单测 `⚠️ TaskLedger / LocalAgent 在本仓并不存在` 专门守这一点：有人把清单
 > 改成假想名字并让探测报 true，界面就会渲染出一个必然 reject 的入口。
+
+### 3.2 `focusWorkspace: true` 目前**没有任何消费方**（2026-10-06 查实）
+
+上面示例里 `focusWorkspace: true` 看着像「已支持的能力」，实测是**惰性的**：
+
+```
+全仓提到 focusWorkspace 的位置（排除 focusWorkspace.ts 自身）
+  lib/shell/capabilities.ts:129   focusWorkspace: true     ← 声明处
+  lib/shell/types.ts:130          focusWorkspace: boolean  ← 类型字段
+  lib/shell/index.ts:42-43        导出实现与类型
+  composables/useBodyScrollLock.ts:13,24  两处**注释**里提到它
+```
+
+⇒ **没有任何组件或模板读它**（没有 `v-if="caps.focusWorkspace"`、也没有
+`requireCapability(caps,'focusWorkspace')`）。`focusWorkspace.ts` 的实现本身完整
+（10 条单测），只是**没有落点**——`05-落地清单与禁止事项.md:108` 记的
+「尚未接入任何真实页面」与这次实测一致。
+
+⚠️ **先纠正两个容易读错的地方**（本节第一版把这两点都写反了）：
+
+1. **这个 `true` 不是随手填的乐观默认值。** `capabilities.ts:128` 的注释写着
+   「导航/专注是 **Web 侧运行时，不依赖原生**」
+   ⇒ 它是一个**有意的设计声明**：专注工作区被判定为纯前端能力，所以不看原生探测。
+2. **改这个值不牵动任何单测。** 我一度以为要同步改
+   `capabilities-detect.test.mjs` 的 7 条用例，实测**该文件对 `focusWorkspace` 零断言**
+   （0 命中）⇒ 改值是零测试成本的。⚠️ 这是「引用一个数字前先查它挂在哪」的反例：
+   「7 条」是那个文件的**总条数**，不是「与本字段相关的条数」。
+
+**真正的问题不是这个值对不对，而是「声明了却还没有实现的东西要不要先声明」**：
+按本文件 §3.1 第 2 条自己定的原则（「声称有而实际 `start()` 会 reject，
+比声称没有难排查得多」），**先声明后接线**属于同一类风险。
+但**当前它不造成任何用户可见缺陷**——因为**根本没有那个入口**。
+所以风险是潜在的：它对**下一个读它的人**说谎。
+
+⇒ 决策项「`focusWorkspace` 要不要接线 + 这个 `true` 要不要改诚实值」的前置顺序由此确定：
+**接线是产品决定（影响用户看到什么）；是否在接线前先降级声明，是工程自律决定（零测试成本）。
+两者不要混成一次改动。**
 
 ## 4. 能力门
 
@@ -109,6 +146,8 @@ session 建立后，才允许退后台继续。不得在失焦、定时器、云
 | 能力→插件映射 | 集中在 `CAPABILITY_PLUGINS` 常量里，不散落字符串 |
 | **UI 消费者** | ❌ **没有。** 2026-10-04 实测：全仓无任何代码调用 `detectCapabilities`/`requireCapability`，产物内容指纹查 `continuation`/`CAPABILITY_PLUGINS` 均 0 命中 ⇒ **本模块不进 bundle**。实现与测试都到位，但**未上线** |
 | 多层后台任务 DAG / 任务账本 | **spec-only**。`TaskLedger` 插件**在本仓并不存在**，所以 `durableLocal` 恒为 `false`、`continuation` 恒为 `foregroundOnly`——这是如实报告，不是缺陷 |
+| 本地 OCR / ASR 模型包管理 | **spec-only**（`Sherpa` 插件已存在，但未接能力协商） |
+| Agent / 技能包 | **spec-only** |
 
 ### 3.2 本仓存在**两个**能力模块（2026-10-04 记，勿合并）
 
@@ -126,5 +165,59 @@ session 建立后，才允许退后台继续。不得在失焦、定时器、云
 > 自己的代码**，我的模块其实被 tree-shaking 掉了。**对照组的对照也可能不是对照**——
 > 指纹必须用只有本仓才有的字符串（如 `continuation`、`CAPABILITY_PLUGINS`），
 > 框架里已有的 API 名一律不能当证据。
-| 本地 OCR / ASR 模型包管理 | **spec-only**（`Sherpa` 插件已存在，但未接能力协商） |
-| Agent / 技能包 | **spec-only** |
+
+### 3.3 实例能力值是**从未验证过的乐观默认值**（2026-10-05 实测发现，未修）
+
+⚠️ 这里的「能力协商」指 **OpenCode 实例**的能力（与 §3.2 的两个前端模块是不同东西），
+它有一条独立的链，且**当前会撒谎**。
+
+**观测到的读数**（`GET /api/instances`，本机实测）：
+
+```
+total = 14
+  discovered-localhost-3000      health=unhealthy  capabilities=[session, summary, pty]
+  discovered-192.168.31.34-8080  health=unhealthy  capabilities=[session, summary, pty]
+  …（14 个全部 health=unhealthy，且 capabilities 一模一样）
+```
+
+**机制**（`backend/internal/registry/registry.go`）：
+
+| 位置 | 行为 |
+| --- | --- |
+| `:368 defaultCapabilities` / `:546` | 注册/发现时若未提供能力，**先填乐观默认值** `["session","summary","pty"]` |
+| `:237 checkInstanceHealth` | 探针打 `GET {apiBase}/global/health`；**任何**失败分支都返回**裸** `healthProbe{Health:"unhealthy"}`，`Capabilities` 为 nil |
+| `:210` 写回 | `if len(probe.Capabilities) > 0 { instance.Capabilities = probe.Capabilities }` |
+
+⇒ **探针失败时能力值不会被清空**，注册时那个默认值就**永久留存**。
+根因是 `healthProbe` **没有记录「探针到底成没成功」**：失败与「成功但返回空列表」
+在代码里长得一模一样（都是 nil），`:210` 那个 `> 0` 守卫无法区分二者。
+
+`defaultCapabilities` 自己的注释写着「真实能力应由 capabilities 探测覆盖」——
+**意图是明确的**，现状与意图不符。
+
+**为什么这次探针全灭**：14 个「实例」是注册表按端口扫出来的**候选**，
+其中本机真在听的两条都不是 OpenCode：
+`192.168.31.34:3000` 是另一个 Express 应用（`/global/health` → **302** 跳到
+`/app/global/health`，跟过去是 **HTML** ⇒ JSON 解码失败 ⇒ unhealthy），
+`192.168.31.34:8080` 是 `llm-gateway-go`（`{"service":"llm-gateway-go",…}`）。
+**环境里当前没有可用的 OpenCode 实例。**
+
+**危害等级：展示层不诚实，不是功能损坏。** 证据与边界：
+
+- **可见**：`InstanceListView.vue:42` 渲染 `{{ instance.capabilities?.length || 0 }} 功能`
+  ⇒ 用户看到「3 功能」；
+- **更糟的是**：该视图**全文没有任何 `health` 引用**（既不显示健康状态，也不按它过滤）
+  ⇒ 用户没有任何线索知道这 14 个实例全都连不上；
+- **不构成功能损坏**：`requireCapability` 在 app 侧 **0 消费者**，
+  `selected-instance.ts:58` 只是把值带过去存着 ⇒ 今天没有代码据此 gating。
+
+**两条修法，需属主选**（未擅自改后端行为）：
+
+| 方案 | 做法 | 代价 / 风险 |
+| --- | --- | --- |
+| **A 探针失败即清空** | `healthProbe` 增加 `Probed bool`（或用 `Status` 区分），`:210` 改成「探针成功才覆盖，失败则清空」 | 治本。要确认没有 UI 依赖「unhealthy 也显示 N 功能」 |
+| **B 列表显式呈现未知态** | 不动后端；`InstanceListView` 在 `health !== 'healthy'` 时显示「能力未知」而非数字，并把 health 显示出来 | 治标但**零后端风险**，且顺手补上「列表没有健康指示」这个更根本的缺口 |
+
+⚠️ 选 A 之前必须确认一件事：14 个候选里**没有任何一个曾经探针成功过**，
+所以「清空」会让这个列表**整列变成 0** —— 那正是诚实值，但也意味着
+用户会看到一个「0 功能 / 14 个实例」的列表。**这属于产品可见的变化，不该由我替你定。**

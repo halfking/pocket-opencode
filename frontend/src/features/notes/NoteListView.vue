@@ -116,6 +116,13 @@
       </template>
 
       <VoiceRecorderWidget :recording="isRecording" :busy="recorderUi.busy" @toggle="onMicToggle" />
+      <!--
+        待办落库提示。位置在录音控件**下方**而不是塞进 NoteMetaSheet：
+        行动项是录音停止那一刻就落库的（不等用户打开元信息面板），
+        提示要跟录音控件在同一个视觉区里，否则用户点开面板才看到，
+        会以为这是面板自己生成的。
+      -->
+      <p v-if="todoNotice" class="todo-notice" role="status">✅ {{ todoNotice }}</p>
       <NoteMetaSheet
         :open="metaOpen"
         :title="metaNote?.title"
@@ -134,7 +141,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onActivated, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue'
 import { Skeleton, EmptyState, DbLockedState, WaveformVisualizer } from '../../components'
@@ -143,6 +150,7 @@ import NoteRecordingStudio from './NoteRecordingStudio.vue'
 import NoteMetaSheet from './NoteMetaSheet.vue'
 import NoteSearchBrief from './NoteSearchBrief.vue'
 import { notesApi } from '../../api/notes'
+import { createNoteTodos } from './note-todo-persist'
 import { useNoteRecording } from './useNoteRecording'
 import { noteRecorderUiState } from './note-recording'
 import { searchNotesWithIntent, type NoteSearchBriefing } from './note-search'
@@ -171,6 +179,15 @@ const metaOpen = ref(false)
 const metaNote = ref<LocalNote | null>(null)
 const summarizing = ref(false)
 const summarizeError = ref('')
+/**
+ * 待办落库结果提示。
+ *
+ * 为什么必须如实说「已加入 N 条」而不是静默建完：待办和日程提醒是**用户能
+ * 看见后果**的动作（待办列表里会多出条目，到点会有提醒）。静默创建等于让
+ * 用户在别处凭空多出东西；反过来，期限没解出来时也要说，否则用户会以为
+ * 「说了明天下午三点就一定会有提醒」。
+ */
+const todoNotice = ref('')
 const {
   phase: recordPhase,
   recording: isRecording,
@@ -320,7 +337,9 @@ async function onSearch() {
 async function onMicToggle() {
   const stopped = await toggleRecording()
   if (!stopped) return
-  await createVoiceDraft(stopped.text, stopped.audioBlob, stopped.durationMs)
+  // draftId 非空 = 运行时已经落过库了，再建一次就会留下两条笔记。
+  if (stopped.draftId) await adoptVoiceDraft(stopped.draftId, stopped.text)
+  else await createVoiceDraft(stopped.text, stopped.audioBlob, stopped.durationMs)
 }
 
 /** 录音停止 → 语音草稿笔记 + 打开元信息编辑。页面在场与跨页停止(全局
@@ -328,26 +347,30 @@ async function onMicToggle() {
  * 即时总结:草稿落库后立即调 /api/notes/{id}/summarize,LLM 总结返回后
  * 写到 metaNote.summary,元信息编辑面板与列表预览同步生效。失败非阻塞,
  * 用户仍可正常进入元信息页(空 summary),只是顶部多出一行错误提示。 */
-async function createVoiceDraft(text: string, audioBlob: Blob, durationMs: number) {
-  metaNote.value = await notesStore.createNote({
-    content: text || '（语音草稿）',
-    contentType: 'voice',
-    status: 'draft',
-    createdByVoice: true,
-    audioBlob,
-    audioDurationMs: durationMs,
-    workspaceId: currentWorkspaceId(),
-  })
+/** 草稿就绪之后的共同尾巴：打开元信息面板 + 刷新列表 + 触发 AI 总结。
+ * 「自己建的」和「运行时提前落库的」两条路径都必须走它，否则总结、元信息面板
+ * 这套后续动作会在早落库那条路径上整个消失。 */
+async function presentVoiceDraft(note: LocalNote, text: string) {
+  metaNote.value = note
   metaOpen.value = true
   await load()
   if (!text || !text.trim()) return
   summarizing.value = true
   summarizeError.value = ''
+  // 上一条录音的待办提示必须清掉：否则第二次录音（没有行动项）时，
+  // 屏幕上还挂着上一条的「已加入 3 条待办」，读起来像是这一次的。
+  todoNotice.value = ''
   try {
-    const { summary } = await notesApi.summarize(metaNote.value.id)
+    // 先把 id / 标题取出来：summarize 是一段最长 90 秒的 await，期间用户
+    // 可能关掉元信息面板（onMetaClose 置空 metaNote），届时再读
+    // metaNote.value.id 就会在 null 上取字段而抛 TypeError —— 被下面的
+    // catch 归类成「总结失败」，实际总结已经拿到了。
+    const noteId = metaNote.value.id
+    const noteTitle = metaNote.value.title || ''
+    const { summary, action_items: actionItems } = await notesApi.summarize(noteId)
     if (summary && metaNote.value) {
       metaNote.value = { ...metaNote.value, summary }
-      await notesStore.updateNote(metaNote.value.id, { summary }, currentWorkspaceId())
+      await notesStore.updateNote(noteId, { summary }, currentWorkspaceId())
       await load()
     } else {
       // 第二种静默失败：api/notes.ts 的 summarize 注释写明「失败时返回空
@@ -356,11 +379,64 @@ async function createVoiceDraft(text: string, audioBlob: Blob, durationMs: numbe
       // 「没有总结、也没有任何提示」。这里补上兜底文案。
       summarizeError.value = '未能生成 AI 总结（模型未返回内容），可稍后在笔记详情页重试'
     }
+    // 需求「把一些时间点自动加入计划日程」在随手记侧的落点。
+    //
+    // 刻意放在 if/else **之外**：行动项与摘要是同一次响应里的两个独立字段，
+    // 模型可能给出行动项却没给出 summary（那正是 else 分支的场景）。
+    // 塞进 if 里有两层代价：① 那种情况下的行动项会被一起丢掉；② 它把
+    // 现有门禁 note-recording-error-visibility 的判据窗口撑爆 —— 那道门
+    // 锚在「if 分支到 else 之间」，而它的注释里已经记过一次「被自己那段
+    // 中文注释撑爆而误报」的教训。
+    //
+    // createNoteTodos 自身永不抛异常，所以这里不需要额外 try。
+    const { created, unresolved } = await createNoteTodos(
+      noteId,
+      actionItems,
+      noteTitle,
+    )
+    if (created > 0) {
+      todoNotice.value = unresolved > 0
+        ? `已加入 ${created} 条待办（${unresolved} 条期限没听清，未建提醒）`
+        : `已加入 ${created} 条待办与日程提醒`
+    }
   } catch (e: unknown) {
     summarizeError.value = apiError(e, '总结失败，可稍后在笔记详情页重试')
   } finally {
     summarizing.value = false
   }
+}
+
+/**
+ * 自己建草稿：只在**运行时没有提前落库**（draftId 为空）时走。
+ * 形态与 useNoteRecording.ts 里注册的 sink.create 完全一致，所以两条路径产出的
+ * 草稿长得一样（正文占位、createdByVoice、附件）。
+ */
+async function createVoiceDraft(text: string, audioBlob: Blob, durationMs: number) {
+  const note = await notesStore.createNote({
+    content: text || '（语音草稿）',
+    contentType: 'voice',
+    status: 'draft',
+    createdByVoice: true,
+    audioBlob,
+    audioDurationMs: durationMs,
+    workspaceId: currentWorkspaceId(),
+  })
+  await presentVoiceDraft(note, text)
+}
+
+/**
+ * 接管「运行时已提前落库」的草稿。
+ *
+ * 2026-10-06 起 stop() 会在兜底转写（最长 10 分钟）**之前**先把音频落库，
+ * 好让录音扛得住进程死亡。代价是「建草稿」这件事有两个候选点 ——
+ * 若这里再建一次，一次录音就会留下两条笔记。
+ * 所以判据只有一条：**draftId 非空 ⇒ 草稿已经存在，只接管，不重建。**
+ */
+async function adoptVoiceDraft(draftId: string, text: string) {
+  const note = await notesStore.getNote(draftId, false, currentWorkspaceId())
+  // 落库之后又被删掉（用户手动删 / 工作区切换）⇒ 不重建、不抛错，走完即止。
+  if (!note) return
+  await presentVoiceDraft(note, text)
 }
 
 function resumeDraft() {
@@ -394,20 +470,52 @@ function onMetaClose() {
 }
 
 watch(domain, () => { void load() })
+
+/**
+ * 拾取「页面不在场时停止」的录音产物。
+ *
+ * 2026-10-06 第一次修（onMounted → onActivated）：这段逻辑原先**只**挂在
+ * onMounted 上，但 NoteListView 在 LIST_CACHE_NAMES（use-list-scene.ts:52）
+ * 里、defineOptions name 也对得上，所以被 `<KeepAlive :include>` 缓存 ——
+ * 从笔记页切走再回来跑的是 onActivated，onMounted 不会重跑。后果：全局停止键
+ * 结束后，转写文本与音频都进了 pendingResult，却永远不会被建出来。
+ *
+ * 2026-10-06 第二次修（去掉 text.trim() 门槛）：上一版把条件写成
+ * `if (pending && pending.text.trim())`，而 consumePendingResult() 是
+ * **取过即清** —— 条件不成立时不是「留着以后用」，是当场销毁。
+ * 跨页停止 + 转写无字（用户中止、网络失败、静音录音）这两个条件同时成立，
+ * 录音就被静默丢弃。实测：跨页 + 真后端 17→18 有笔记；跨页 + 兜底返空 18→18，
+ * 一条都没有。createVoiceDraft 内部本来就写 `text || '（语音草稿）'`，
+ * 能力是有的，门槛把它挡在门外了。
+ */
+async function pickupPendingRecording(): Promise<void> {
+  const pending = consumePendingResult()
+  if (!pending) return
+  if (pending.draftId) await adoptVoiceDraft(pending.draftId, pending.text)
+  else await createVoiceDraft(pending.text, pending.audioBlob, pending.durationMs)
+}
+
 onMounted(async () => {
   await load()
-  // 录音跨页存续(P0):录音在本页不在场时被停止(全局指示条),产物由
-  // runtime 暂存;重进笔记页补建语音草稿,文本/音频不丢。
-  const pending = consumePendingResult()
-  if (pending && pending.text.trim()) {
-    await createVoiceDraft(pending.text, pending.audioBlob, pending.durationMs)
-  }
+  await pickupPendingRecording()
+})
+// KeepAlive 命中：切离再回来走的是这条，不是上面的 onMounted
+onActivated(async () => {
+  await pickupPendingRecording()
 })
 /* KeepAlive 现场保持：domain 筛选/搜索词保留；仅当笔记数据被详情页修改过才刷新 */
 useListScene('notes', load)
 </script>
 
 <style scoped>
+/* 行动项落库提示。语义是「已办成的事」而不是错误，所以用 success 色；
+   role="status" 让读屏器在它出现时播报（待办是用户看不见但确实发生的副作用）。 */
+.todo-notice {
+  margin: var(--space-2) 0 0;
+  color: var(--success, var(--text-secondary));
+  font-size: var(--text-smd);
+}
+
 /* 录音停止后的转写失败提示。NoteRecordingStudio 里同名类是它 scoped 的，
    不会作用到本页，所以这里自带一份（保持视觉一致：danger 色 + 13px）。 */
 .studio-error {
