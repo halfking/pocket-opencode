@@ -29347,6 +29347,9 @@ normalizeAnchor('.*') === ''        // 长度 0 ⇒ isRuntimeAnchor 里 rn.lengt
 
 **待拍板（本节不擅自做）**：
 1. `check-runtime-data-tracked.mjs` 那条 `backend/data/email_master.key` ⇒ 建议换成非密钥名的 `backend/data/foo.sqlite`。
+> 📌 **已做（2026-10-08，见 §228）**：改成不含密钥名的路径，并同时补上本节第 2 条里
+> 「`runtime-data-tracked` ×2」那处**承重保护**（把规则拿掉看翻转数）。
+> 决定性的变异 M4 ——「把用例改回过定写法」—— 只有新加的承重检查能抓住。
 2. 三处「2 条承重组」的**不许被删**保护（`runtime-data-tracked` ×2 · `maestro-flows` ×2）——
    形状五的教训是**补用例 ≠ 补保护**。
 3. `check-smart-quotes.mjs` 的恒真「自指」用例 ⇒ 建议删掉，或改成断言前提
@@ -31297,3 +31300,103 @@ console.log('✅ 命中 N = 阈值（通过）'); process.exit(0)
 「脚本路径写成 `scripts/x.mjs` ⇒ 就是仓库根的 `scripts/`」。
 ⇒ ★ 通式：**凡是要判断「某个路径指哪里」，先问它由谁解析**（npm 的 cwd？
 `import.meta.url`？仓库根？CWD？），再下结论。
+
+---
+
+## 228. §206 形状四 + 形状五收口（`runtime-data-tracked` 那一格）：去掉过定用例，并用「拿掉规则看翻转数」替代人肉数
+
+### 228.1 两种形状在这里是**同一个缺陷的两半**
+
+§206 把它们列成两行：
+
+| | 形状 | 后果 |
+|---|---|---|
+| 四 | 一条用例被两条独立规则同时满足 | 它对哪条规则都没约束力 |
+| 五 | 承重组只有 2 条、且**补了用例没补保护** | 把用例删光，门仍然全绿 |
+
+⇒ ⇒ ★★★ 这两半其实是**一件事**：形状四让用例失去约束力，
+形状五让**没有人再去查它有没有约束力**。
+⇒ ★ 修法也要一起给：**把用例改对** + **加一条机械的承重检查**，
+只做前者就停在形状五。
+
+### 228.2 形状四那一条：两条用例同时被两条规则判绿
+
+```js
+['data/email_master.key', true],          // ← 改前
+['backend/data/email_master.key', true],  // ← 改前
+```
+
+判据有两条独立规则：`DATA_PREFIXES = ['data/','backend/data/']`
+与 `SECRET_BASENAMES = new Set(['email_master.key'])`。
+这两条路径**同时**满足前缀与文件名 ⇒ 删掉任一条规则它们都还是绿的。
+
+改成不含密钥名的路径：
+
+```js
+['data/voiceprint.db', true],
+['backend/data/meeting.sqlite', true],
+```
+
+⇒ 前缀规则拿到**专属**用例，文件名规则拿到**专属**用例
+（`deploy/email_master.key` · `config/secrets/email_master.key`，本来就是 M21 之后加的）。
+
+### 228.3 ⭐ 形状五那一条：**机械量**「这条规则有多少专属用例」
+
+不靠人肉数「哪几条属于哪条规则」（**§206 那个错就是人肉数出来的**），
+改成**把那条规则拿掉，看有哪几条用例会翻**：
+
+```js
+function isRuntimeDataWith(p, prefixes, secrets) { … }   // 参数化，可替换规则
+const LOAD_BEARING = [
+  ['SECRET_BASENAMES',              (p) => isRuntimeDataWith(p, DATA_PREFIXES, new Set()), 2],
+  ["DATA_PREFIXES 'data/'",         (p) => isRuntimeDataWith(p, ['backend/data/'], SECRET_BASENAMES), 2],
+  ["DATA_PREFIXES 'backend/data/'", (p) => isRuntimeDataWith(p, ['data/'], SECRET_BASENAMES), 1],
+]
+// flipped = cases 中 judge(p) !== want 的条数；< min ⇒ 报「被别的规则顶替了」
+```
+
+实测（三条规则都拿到了专属读数）：
+
+| 规则 | 下限 | 实测承重 |
+|---|---|---|
+| `SECRET_BASENAMES` | 2 | 2 |
+| `DATA_PREFIXES 'data/'` | 2 | **5** |
+| `DATA_PREFIXES 'backend/data/'` | 1 | 1 |
+
+⇒ ★★ **`'data/'` 是 5 不是 4** —— 我预判时漏算了
+`data/anything-not-yet-invented/deep/nested.bin` 那条。
+⇒ ★ 通式：**量出来的和预判的不一致时，以读数为准，并把差的那一条找出来**。
+「我以为有 4 条」这句话本身就是要核的对象。
+
+### 228.4 ⭐ M4 是决定性的那一组变异：它证明这道保护**不是装饰**
+
+| 变异 | 抓它的是谁 | 读数 |
+|---|---|---|
+| 阳性对照 | — | 14/14 · rc=0 |
+| M1 删 `'backend/data/'` | 普通断言**已能**抓 | 13/14 · rc=1 |
+| M2 清空 `SECRET_BASENAMES` | 普通断言**已能**抓 | 12/14 · rc=1 |
+| M3 删 `'data/'` | 普通断言**已能**抓 | 9/14 · rc=1 |
+| **M4 把两条用例改回过定写法** | **只有新的承重检查抓** | 13/14 · rc=1 |
+
+M4 的关键读数：
+
+```
+✗ 规则 DATA_PREFIXES 'backend/data/' 只有 0 条用例因它而翻（下限 1）
+   —— 这些用例被别的规则顶替了。
+```
+
+⇒ ⇒ ★★★ **这条读数在修复前根本不存在。**
+M1–M3 都由「用例的期望值」直接抓到，它们证明的是**用例写对了**；
+只有 M4 证明**「用例写对了」这件事本身有人在看**。
+⇒ ★ 通式：**验「修复有效」与验「修复被守住」要两组不同的变异** ——
+前一组的变异都落在**被改的那行**上，后一组的变异要落回**修复前的写法**。
+
+### 228.5 就地更正 §206 的待拍板第 1、2 条
+
+- 第 1 条（`backend/data/email_master.key` 换成非密钥名路径）：**已做**（§228.2）。
+  注：建议里写的是 `backend/data/foo.sqlite`，我用了 `backend/data/meeting.sqlite` ——
+  同形不同名，**关键是 basename 不在 `SECRET_BASENAMES` 里**。
+- 第 2 条（三处「2 条承重组」的保护）：**`runtime-data-tracked` 这一处已做**（§228.3），
+  `maestro-flows` ×2 **仍未做**。
+- 第 3–6 条（`smart-quotes` 恒真用例 · `build-mobile` 两级下限 · `pg-schema` floor ·
+  `check-maestro-flows` 另两处）**原样保留待拍板**。
