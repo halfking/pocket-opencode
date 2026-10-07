@@ -32293,3 +32293,196 @@ backend/cmd/gwdbg/main.go:55  FROM opencode_pocket.user_settings
   **「CI 除了这两盏之外还有没有别的红灯」这个问题，本节没有回答。**
   ⇒ ★ 要回答它，得在克隆里 `npm ci` 之后跑全套（成本约一轮完整门禁）。
 - ⇒ ★ 这条限制本身要写清：**「我量了 8 道纯 node 的门」不等于「我量了 CI」。**
+
+> **〔2026-10-08 更正，见 §237〕**
+> ① 上一条限制**已被补上**：§237 在装了 `node_modules` 的真克隆里跑完了全套，
+>    CI 红灯清单见 §237.4 —— 共 6 项，且这 6 项在本节落笔时就已全红。
+> ② 本节 236.5 那张表的第 2 行**记错了一格**：`meeting-ingest.ts` 不是
+>    `createMeetingTodos` 的调用方，真实调用方是 `MeetingDetailView.vue`。
+>    按本表原样提交会把一个混着 195 行在途特性的文件带进仓，
+>    当场造成 `typecheck` rc=2（见 §237.1–§237.3）。
+
+
+---
+
+## 237. 真克隆自检的第二个回合：先抓到我自己的红灯，再给出 CI 的完整清单
+
+### 237.0 本节一句话
+
+§236 留了两个待办：把它的 4 个文件与 §234 的 5 个文件入库。
+本节把它们入库了 —— **然后立刻用真克隆抓到我这次入库自己造出来的 typecheck 红灯**，
+修掉，再把「CI 除了这两盏还有没有别的红灯」这个悬了两轮的问题一次答完。
+
+三条提交：`ed123c68`（§236 的修正版，4 文件）· `ef973cee`（§234，5 文件）·
+`372fa33b`（backend.yml 的 working-directory 修复）。
+
+### 237.1 🔴 我自己制造、并当场修掉的红灯
+
+第一次提交（`321665fd`）把 `meeting-ingest.ts` 的**工作树整份**带进了仓。
+那份文件正在别人的在途特性里：它 import 了三个**未入库**的模块
+（`sessions/refine-outcome-notice`、`meetings/meeting-next-event`、
+`meetings/refined-ingest-writeback`），并用了一个不存在的
+`RefineResult.rejected` 字段。⇒ 提交后 `npm run typecheck` rc=2，4 个 TS 错误。
+
+| 判据 | 工作树 | 真克隆（d2260bb3 + 该文件） |
+|---|---|---|
+| `npm run typecheck` | rc=0（无输出） | **rc=2**，4 个 TS2307/TS2339 |
+
+**它为什么在工作树里是绿的**：那三个模块在本地存在，只是没被 git 跟踪。
+`vue-tsc` 看的是磁盘，不是 git。
+
+**判定归属**：把克隆 checkout 回 `d2260bb3` 跑 `typecheck` ⇒ **rc=0**。
+⇒ 损坏是我这次提交引入的，不是继承的。
+
+⇒ ★★ **通式：「工作树绿」不等于「提交后绿」。**
+提交做的动作是「把文件从工作树搬进仓」，而**它依赖的其它文件可能根本没入库**。
+`typecheck` / `build:gate` / `test:all` 这类**需要整棵树才成立**的判据，
+在工作树里恒绿 —— 工作树里有全部 147 个未跟踪文件，仓里没有。
+⇒ 与 §236 的「接线前先在 HEAD 上跑一遍」是同一条纪律的另一半：
+**光在 HEAD 上跑不够，还要在「HEAD + 你打算提交的那几个文件」上跑。**
+
+### 237.2 §236 的文件清单记错了一格
+
+§236.5 那张表把 `meeting-ingest.ts` 列成「`createMeetingTodos` 的调用方」。
+**那是错的**。真实调用方是 `MeetingDetailView.vue`：
+
+```
+$ grep -rn "createMeetingTodos" frontend/src --include=*.ts --include=*.vue | grep -v persist
+frontend/src/features/notes/reminder-outcome-honesty.test.ts:426:
+  const { reminders, reminderPlanned, unresolved } = await createMeetingTodos   ← 断言点在 .vue 上
+frontend/src/features/meetings/meeting-reminder-note.ts:4:
+```
+
+而 `meeting-ingest.ts` 里的 `createLocalTodos` 是**另一个**函数。
+⇒ §236 那张表把两个函数混成了一个。
+
+**这个错误没有造成损害**，原因值得记下来：
+
+### 237.3 决定性实验：最小自洽包
+
+`MeetingDetailView.vue` 的工作树版本是 196 行混合在途（§107 精校展示、声纹、分段编辑），
+不能整份提。那到底提哪几个文件？逐包在克隆里实测：
+
+| 提交内容 | `typecheck` | `check:pg-schema-hardcoded` | `check:local-todo-dedupe` |
+|---|---|---|---|
+| 3 文件（漏 `meeting-ingest.ts`） | rc=0 ✅ | rc=0 ✅ | **rc=1** ❌ |
+| 4 文件（补上，**最小补丁版**） | rc=0 ✅ | rc=0 ✅ | rc=0 ✅（3/3） |
+| 4 文件（**工作树整份**，即首次提交） | **rc=2** ❌ | rc=0 ✅ | rc=0 ✅ |
+
+⇒ **「补上第三处查重」是必需的，而「整份提交」是多余的且有害的** ——
+两者都叫「4 个文件」，读数完全相反。
+
+★ 为什么 3 文件时 typecheck 反而过：调用方在 `d2260bb3` 写的是
+`await createMeetingTodos(...)` —— **丢弃返回值**。TypeScript 不管你把
+`Promise<number>` 改成 `Promise<{…}>`，只要没人拿它参与运算。
+⇒ 「返回值形状变了」**不强制**调用方跟着改 ⇒ 最小自洽包可以不含调用方。
+（这条也是为什么 §66.7 那个改动本身没有连带崩掉别处。）
+
+修法（不破坏工作树）：`git reset --soft d2260bb3` → 把工作树的 WIP 存到
+`/tmp` → 在**已提交版本**上只补第三处查重（连 `alreadyIngestedTodo`
+helper 一起，逐字取自 WIP 那份以免同一缺陷出现两个写法）→ 提交 → WIP 原样放回。
+
+### 237.4 「CI 还有没有别的红灯」——答完了
+
+#### 237.4.1 backend workflow：整个 workflow 是红的，而且那道门从来没跑过
+
+`.github/workflows/backend.yml` 的 `build-gate` job 有
+`defaults.run.working-directory: backend`，而「Smart-quote gate」那一步跑的是
+`node scripts/check-smart-quotes.mjs` —— **该脚本在仓库根的 `scripts/` 下**
+（`backend/scripts/` 在 git 里只有一个 `test-redclaw-integration.sh`）：
+
+```
+$ cd backend && node scripts/check-smart-quotes.mjs --selftest ; echo rc=$?
+Error: Cannot find module '<ws>/backend/scripts/check-smart-quotes.mjs'
+rc=1
+$ cd .. && node scripts/check-smart-quotes.mjs --selftest ; echo rc=$?
+selftest: 实跑 20 例 / 声明 20 例，通过
+rc=0
+```
+
+后果两层：
+1. `build-gate` job 必红，而 `test` job `needs: build-gate`
+   ⇒ **整个 backend workflow 全红**，`go build ./...` 与 `go test -race ./...`
+   根本轮不到跑；
+2. 即使忽略退出码，**smart-quote 这道门在 CI 上从来没真跑过** ——
+   它防的是 SQL 空串字面量 `''` 被写成 `”`（U+201D）。
+
+★ **为什么一直没被发现**：报错形态是 `MODULE_NOT_FOUND`，
+读起来像「环境坏了 / 依赖没装」，不像「门禁判红」；
+而且它藏在 `run: |` 的两行里，与同一个 step 的 Go 命令共用一个
+working-directory，看着像是故意从 backend 目录跑的。
+
+⇒ 已修（`372fa33b`）：给该 step 加 `working-directory: .` 覆盖回仓库根。
+
+#### 237.4.2 frontend 的 gates-parity job：31 项里后 30 项**从未在 CI 上执行过**
+
+`gates-parity` 跑 `node scripts/run-gates.mjs --ci`，而 `run-gates` **失败即停**。
+克隆里它的第 1 项就红：
+
+```
+[gates] ── [1/31] check:build-mobile-selftest ──
+🔴 空 VITE_API_BASE 必须拒绝构建：got=false want=true（exit=1 · 缺少守卫自己的报错文案「VITE_API_BASE is empty」）
+[gates] ❌ 第 1 项 check:build-mobile-selftest 失败，退出码 1；已通过 0/31 项
+```
+
+⇒ 后 30 项在 CI 上的真实状态不是「绿」，是**「没跑过」**。
+
+根因（实测，不是推断）：`frontend/.env.android-dev` 被 `.gitignore` 的 `.env.*`
+排除、从未入库，而 `build-mobile.mjs` 在**到达守卫之前**就要求它存在：
+
+```
+$ cat build-mobile.mjs:305
+if (!existsSync(envFile) && mode !== "production") { console.error(`missing env file: ${envFile}`); process.exit(1) }
+```
+
+`runGuard` 用 `spawnSync` 起真脚本，而两条 `android/dev` 用例一进去
+就撞上这个 exit 1 ⇒ **守卫压根没被检验**，判据报的是「守卫没报出自己的文案」。
+（`android/prod` 那两条不需要 env 文件，所以它们通过。）
+
+⚠ 讽刺的是：**「守卫没被检验」这个失败形态，与「守卫真的被摘掉了」的失败形态
+在这道判据里长得几乎一样** —— 都是 `got=false want=true` + 「缺少守卫自己的报错文案」。
+⇒ 与 §235 那条同源：判据要区分「没测到」与「测到了不行」，
+而这一道没有区分，判词也没说。
+
+#### 237.4.3 逐项读数：31 项里 **25 过 / 6 红**
+
+因为 `run-gates --ci` 失败即停，完整读数**只能靠逐项驱动拿到**
+（驱动脚本放 `/tmp/run-ci-gates.mjs`，不入库）：
+
+| # | 门 | 真实原因 |
+|---|---|---|
+| 1 | `check:build-mobile-selftest` | 干净检出无 `frontend/.env.android-dev`（`.gitignore` 排除），子进程在守卫前退出 |
+| 2 | `check:ci-trigger` | 6 条 `ciCoveredElsewhere` 豁免无兑现路径：`test:auth` / `test:email-heal` / `test:native` / `test:stores` / `test:stt` / `test:styles` —— 既不在 workflow 手列，也不是 `test:all` 子集 |
+| 3 | `check:gofmt` | `backend/internal/server/server_note_action_items_test.go`（工作树里已被 gofmt 过但**未提交**） |
+| 4 | `check:dead-features` | 3 个新增未接线导出：`meeting-ingest.ts:ingestMeetingArtifacts`、`voiceprints-store.ts:deleteVoiceprint`、`voiceprints-store.ts:listVoiceprints` |
+| 5 | `check:dev-pass-sourcing` | `scripts/device-matrix.mjs:46` 硬编码 `MATRIX_MASTER_PASSWORD \|\| 'e2e-master-pass-123'` |
+| 6 | `check:marketplace-fix` | `/marketplace/agents` 声明 `hideAppHeader: true` 但视图无自备头部 |
+
+**归因（实测，不是推理）**：把这 6 项在 `d2260bb3`（本轮三条提交之前）跑一遍
+⇒ **6 项全红**。
+
+⇒ ⇒ ★ **本轮三条提交没有引入任何新红灯，反倒把 2 项从红转绿**
+（`check:pg-schema-hardcoded`、`check:local-todo-dedupe`），
+第 6 项在工作树里红、在克隆里**绿**（`check:hide-app-header` rc=0），
+说明那是并行会话的在途改动，不在仓里。
+
+### 237.5 「失败即停」不是缺陷，但它的后果必须单独记一笔
+
+`run-gates --ci` 失败即停是对的（早停省时间）。但它的后果是：
+
+> **一个「环境类」的红，会把另外 30 项在 CI 上的真实状态
+> 从「红」改写成「没跑过」，而这两种状态在 CI 的输出里长得一样。**
+
+⇒ ★ 因此「CI 的门禁有多红」这个问题，**CI 自己的输出答不了**，
+必须另写一个逐项驱动在**装了依赖的干净检出**上跑。
+⇒ 且这个驱动**不能**放在工作树跑（§237.1），**也不能**放在裸克隆跑（缺 `node_modules`）。
+
+### 237.6 本节没有做的事
+
+- 没有修那 6 道红的门 —— 每一道都要产品或基线口径拍板
+  （接上去 / 删导出 / `--write-baseline` 并写明理由），不是本节能代拍的。
+- 没有让 `check:build-mobile-selftest` 在干净检出里可用。
+  修法至少有三条（自检里造临时 env 文件 / 门接受 env 文件路径参数 /
+  入库一份 `.env.android-dev.example`），**取舍要属主定**。
+- 没有跑 `android-assemble`（需 JDK + Android SDK）与
+  `go test -race`（需 Postgres service）—— 这两段 CI 面本节没量。
