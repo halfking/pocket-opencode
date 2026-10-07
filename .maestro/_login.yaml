@@ -75,8 +75,13 @@ appId: com.kaixuan.opencode.pocket
 #
 # 办法：先点一次底部导航的「会议」（受保护路由），把守卫和解锁页逼出来。
 # 已解锁时这一步只是普通导航，无副作用；optional 保证点不到时不失败。
+# ⚠️ 中英并列：真实标签来自 i18n `nav.meetings`
+#   （locales/zh-CN.json → "会议"；locales/en-US.json → "Meetings"）。
+#   原先只写「会议」，在 en-US 设备上**匹配不到任何节点**，
+#   而它带 optional:true ⇒ 这一步长期是**静默空操作**，
+#   注释里说的「把解锁守卫逼出来」其实从未生效。
 - tapOn:
-    text: "会议"
+    text: "会议|Meetings"
     optional: true
 # 探完受保护路由后可能落在四种状态之一：已解锁的 App 外壳 / 解锁页 / 登录页 /
 # D 态主密码弹窗 / 还在切换中。不能只等外壳 —— 被守卫弹到解锁页时外壳的
@@ -111,7 +116,13 @@ appId: com.kaixuan.opencode.pocket
           timeout: 60000
       - assertNotVisible: "解锁本地数据"
       - assertNotVisible: "输入用户名"
-      - assertVisible: "打开菜单"
+      # ★ 这条原先只写中文「打开菜单」，在 en-US 设备上必然红。
+      #   只有它是**走 i18n** 的（locales/zh-CN.json → "openMenu": "打开菜单"，
+      #   en-US 对应 Open menu）；同一分支里的「解锁本地数据」「输入用户名」
+      #   都是 LoginView.vue 里**硬编码的中文**，与 locale 无关，保持单语即可。
+      #   ⚠️ 本分支此前从未被执行过（上面那句 tapOn 匹配不到任何东西，
+      #   守卫从没被逼出来），所以这条裸中文断言一直藏着。
+      - assertVisible: "打开菜单|Open menu"
 
 # ---- D-1. 上一轮 run 死在主密码弹窗上，弹窗还留在屏幕上 ----
 # 必须排在 C 之前：模态框挡着时「输入用户名」在无障碍树里**仍然可见**
@@ -177,17 +188,19 @@ appId: com.kaixuan.opencode.pocket
 # ⚠️ 不要换成 CSS 类（.menu-btn）：实测无障碍树里没有它，Maestro 匹配不到。
 - assertVisible: "打开菜单|Open menu"
 
-# ⚠️ 这里等的是 **「主导航」**（底部导航容器的 aria-label），不是「+ 新任务」。
-#    「+ 新任务」「运行中 6」这些是**数据依赖**的元素：列表重渲染时抓到的快照里
-#    可能正好没有它们（实测过一次，页面数据都到了、按钮却不在快照里），
-#    用它们当判据就是拿运行时状态当确定性信号。
-#    「主导航」是结构性的，永远在。
-# ★ 中英并列（aria-label 走 i18n，en-US 上是 "Main navigation"）。
-#   同样不能用 CSS 类 nav.bottom-nav —— 实测无障碍树里没有它。
+# ⚠️ 这里等的是**底部导航本身在屏幕上**。不能等 nav 容器的 aria-label：
+#    容器确实有 `:aria-label="t('nav.mainNavigation')"`（BottomNav.vue:33），
+#    文案 zh-CN「主导航」/ en-US「Main navigation」也都没写错，
+#    但实测抓到的 Android 无障碍树里**没有任何节点携带它**
+#    （75 个节点逐个看过，content-desc 全为空）⇒ 这条判据恒红。
+#    可匹配的是**导航项本身**：5 个 tab 以 TextView 暴露，标签走 i18n `nav.*`。
+#    用两项断言，避免「只命中一个同名内容元素」时假绿。
+# ★ 中英并列，取材自 locales/*.json 的 nav 段实际取值。
 - extendedWaitUntil:
-    visible: "主导航|Main navigation"
+    visible: "对话|Chat"
     timeout: 30000
-- assertVisible: "主导航|Main navigation"
+- assertVisible: "对话|Chat"
+- assertVisible: "会议|Meetings"
 
 # ⚠️⚠️ 收尾的**硬判据**：解锁页、登录页、主密码弹窗必须都不在了。
 #
@@ -205,3 +218,25 @@ appId: com.kaixuan.opencode.pocket
 - assertNotVisible: "解锁本地数据"
 - assertNotVisible: "输入用户名"
 - assertNotVisible: "创建主密码"
+
+# ★ 收尾把终态**还原成改之前的那个**：停在 AI 首页。
+#
+# 为什么必须显式导航回来：上面那句 tapOn「会议」改完之后**真的会导航**
+# （改前它写成裸中文「会议」，在 en-US 设备上匹配不到任何节点，
+#   而它带 optional:true ⇒ 长期是静默空操作，注释说的「把解锁守卫逼出来」
+#   其实从未生效）。它一旦生效，会话就停在 Meetings 页。
+# 下游 flow 一直默认「跑完 _login 就在首页」——
+# .maestro/_probe-tasks-create.yaml:16-19 早就把这个坑逐条记下来了，
+# 但那是**逐条补救**，而 _connectivity.yaml 是直接 assertVisible "AI 工具"，
+# 2026-10-07 实测因此转红（失败现场树里页面标题是「会议」，不是「AI 工具」）。
+# 与其给每条下游各补一次导航，不如在这里把终态还原 —— 下游 6 条 flow 一次全好。
+#
+# ★ nav.ai 在 zh-CN 与 en-US **两侧都是 "AI"**（locales/*.json 的 nav 段实测），
+#   这是少数与 locale 无关的标签，所以这里**不需要**中英并列。
+# ★ 用 ^AI$ 锚定：页内 h1「AI 工具」含 "AI" 子串但不可点，不锚定会误命中它。
+- tapOn:
+    text: "^AI$"
+- extendedWaitUntil:
+    visible: "AI 工具"
+    timeout: 30000
+- assertVisible: "AI 工具"
