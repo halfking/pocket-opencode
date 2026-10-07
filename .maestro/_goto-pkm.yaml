@@ -1,3 +1,5 @@
+# 2026-10-07 实测定性：模拟器是 en-US，这条纯中文断言在失败瞬间的 a11y 树里
+# 找不到中文、只有英文对应物 ⇒ 判据缺英文分支，不是 App 缺陷。
 # 进入 PKM 笔记页（笔记相关 flow 用 runFlow 引用）
 #
 # 为什么单独抽一个：本项目的本地 SQLCipher 库是**按需解锁**的——
@@ -41,10 +43,10 @@ appId: com.kaixuan.opencode.pocket
 #   · PKM 工作台改由一级 tab「笔记」(/notes) 页里的「打开 PKM」按钮进入
 # 旧流程的实测症状：在 `visible: "PKM笔记"` 上 20s 超时，整条 flow 中止。
 - extendedWaitUntil:
-    visible: "笔记"
+    visible: "笔记|Notes"
     timeout: 20000
 
-- tapOn: "笔记"
+- tapOn: "笔记|Notes"
 - waitForAnimationToEnd:
     timeout: 3000
 
@@ -56,7 +58,7 @@ appId: com.kaixuan.opencode.pocket
     when:
       notVisible: "打开 PKM"
     commands:
-      - tapOn: "笔记"
+      - tapOn: "笔记|Notes"
       - waitForAnimationToEnd:
           timeout: 3000
 
@@ -74,11 +76,11 @@ appId: com.kaixuan.opencode.pocket
 # 列表滚完之后坐标已经漂了，而 bottom-list 元素天然容易被点错。
 # 入口在手边的另一个好处：这条 flow 也不再依赖「滚到底部」。
 - extendedWaitUntil:
-    visible: "打开 PKM"
+    visible: "打开 PKM|Open PKM"
     timeout: 20000
-- assertVisible: "打开 PKM"
+- assertVisible: "打开 PKM|Open PKM"
 
-- tapOn: "打开 PKM"
+- tapOn: "打开 PKM|Open PKM"
 - waitForAnimationToEnd:
     timeout: 3000
 

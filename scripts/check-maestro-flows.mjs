@@ -331,6 +331,7 @@ function traceAnchors(anchors, corpus, runtimeAnchors) {
   const unchecked = []
   const exempted = []
   const runtime = []
+  const transformed = []
   for (const a of anchors) {
     const at = a.trim()
     if (SYSTEM_DIALOG_TEXTS.has(at)) { exempted.push(a); continue }
@@ -348,10 +349,26 @@ function traceAnchors(anchors, corpus, runtimeAnchors) {
     }
     const lits = literalOf(a)
     if (lits.length === 0) { unchecked.push(a); continue }
-    const notFound = lits.filter((l) => !corpus.includes(l))
+    // ★ 2026-10-07：区分「真找不到」与「只差大小写」。
+    //   a11y 树取的是**渲染后**的文本，而 CSS 的 `text-transform: uppercase`
+    //   会把 `More features` 渲染成 `MORE FEATURES` —— 实测 2026-10-07 22:5x，
+    //   more-grid-reach 失败瞬间的活树里就是 `MORE FEATURES`，
+    //   而 en-US.json 的真值是 `nav.moreFeatures = 'More features'`。
+    //   flow 必须锚在渲染值上才匹配得到，但那样源码溯源就断了。
+    //   这不是豁免（豁免是「压根不可能在源码里」），而是**溯源成立、只是大小写不同**，
+    //   所以走单独一栏并**打印出来** —— 沿用上面 SYSTEM_DIALOG_TEXTS 的同一纪律：
+    //   静默放过会让这条检查自己变瞎，那比误报更糟。
+    const notFound = []
+    const cased = []
+    for (const l of lits) {
+      if (corpus.includes(l)) continue
+      if (corpus.toLowerCase().includes(l.toLowerCase())) cased.push(l)
+      else notFound.push(l)
+    }
+    if (cased.length) transformed.push(`${a}  （仅大小写不同，源码中为: ${cased.join(' / ')}）`)
     if (notFound.length) missing.push(`${a}  （源码中找不到: ${notFound.join(' / ')}）`)
   }
-  return { missing, unchecked, exempted, runtime }
+  return { missing, unchecked, exempted, runtime, transformed }
 }
 
 /** 收集命令名，顺带展开 runFlow 的内嵌 commands。 */
@@ -501,7 +518,7 @@ function checkFlowSource(entry, src, corpus) {
     console.log(`  选择器溯源：跳过（kind=probe 探针流，${anchors.length} 条锚点按设计匹配不到）`)
   } else {
     const runtimeAnchors = new Set([...CFG.runtimeAnchors, ...(entry.runtimeAnchors ?? [])])
-    const { missing, unchecked, exempted, runtime } = traceAnchors(anchors, corpus, runtimeAnchors)
+    const { missing, unchecked, exempted, runtime, transformed } = traceAnchors(anchors, corpus, runtimeAnchors)
     if (missing.length) {
       console.log('  FAIL 以下选择器在源码里找不到出处（真机上大概率匹配不到）:')
       missing.forEach((a) => console.log(`    - ${a}`))
@@ -519,6 +536,9 @@ function checkFlowSource(entry, src, corpus) {
     }
     if (unchecked.length) {
       console.log(`  note ${unchecked.length} 条锚点剥不出可查字面量，未做溯源: ${unchecked.join(' / ')}`)
+    }
+    if (transformed.length) {
+      console.log(`  note ${transformed.length} 条锚点仅大小写不同（CSS text-transform 渲染值），溯源成立: ${transformed.join(' / ')}`)
     }
   }
   return problems

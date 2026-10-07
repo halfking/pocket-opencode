@@ -1,3 +1,5 @@
+# 2026-10-07 实测定性：模拟器 en-US，下列宫格项在失败瞬间的 a11y 树里
+# **只有英文**（字面量取自实测树，非推测）⇒ 判据缺英文分支，不是 App 缺陷。
 # Maestro 真机流 · 「更多」宫格入口**真的进得去**（不止看得见）
 #
 # 为什么需要这条流：more-grid-reach 已经断言了宫格里 17 个入口**可见**，
@@ -52,7 +54,7 @@ appId: com.kaixuan.opencode.pocket
 # ---------- 2. 定时自动化：点进去 ----------
 # 「定时自动化」在主功能区第一屏（more-grid-reach 实测无需滚动即可见），
 # 所以这里不必 scrollUntilVisible —— 少了它就少一个会自己漂移的旋钮。
-- assertVisible: "定时自动化"
+- assertVisible: "定时自动化|Scheduled Automation"
 # ⚠️ 这里必须带 retryTapIfNoChange（2026-10-04 真机实测）：
 #   裸 `tapOn: 定时自动化` 会报 COMPLETED 但**路由没跳**，目标页 30s 不出现。
 #   诊断证据（三步，都是对照不是推测）：
@@ -67,7 +69,7 @@ appId: com.kaixuan.opencode.pocket
 #     合成 tap 有时打不进去）。retryTapIfNoChange 是官方针对
 #     「点下去 UI 没变化」的手段，先用它验证这个归因。
 - tapOn:
-    text: "定时自动化"
+    text: "定时自动化|Scheduled Automation"
     retryTapIfNoChange: true
 # 到达判据用「刷新」：它与「仅显示启用」在**同一条 toolbar**
 # （ScheduledTaskListView.vue:10-11），只在列表页渲染，宫格上不可能出现。

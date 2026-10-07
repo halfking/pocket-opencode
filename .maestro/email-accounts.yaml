@@ -1,3 +1,5 @@
+# 2026-10-07 实测定性：模拟器是 en-US，这条纯中文断言在失败瞬间的 a11y 树里
+# 找不到中文、只有英文对应物 ⇒ 判据缺英文分支，不是 App 缺陷。
 # Maestro 真机功能流 · 邮箱账户（5 个内置账号在设备上确实可见、已启用）
 #
 # 为什么要这条：需求要求「邮箱信息，需要内置到本地数据库及服务端用户下的
@@ -37,17 +39,17 @@ appId: com.kaixuan.opencode.pocket
     text: "更多|More"
     retryTapIfNoChange: true
 - extendedWaitUntil:
-    visible: "更多功能"
+    visible: "更多功能|MORE FEATURES"
     timeout: 40000
 - runFlow:
     when:
-      notVisible: "更多功能"
+      notVisible: "更多功能|MORE FEATURES"
     commands:
       - tapOn: "更多|More"
       - waitForAnimationToEnd:
           timeout: 3000
 - extendedWaitUntil:
-    visible: "更多功能"
+    visible: "更多功能|MORE FEATURES"
     timeout: 30000
 
 # ---------- 2. 进「邮箱」 ----------
