@@ -79,7 +79,11 @@ const ADB = process.env.POCKET_ADB
   || 'adb'
 const SERIAL = process.env.POCKET_SERIAL || '192.168.31.19:5555'
 
-const adb = (args, t = 30000) =>
+// ★ 2026-10-07 改为导出：flashcards-test-fixture.mjs 原先在本地又抄了一份
+//   写死的 Windows adb 路径（与本文件上方 PSQL 那处同型缺陷）。
+//   它已经 import 了本文件的 openCdp，却没复用这里的 ADB/SERIAL ⇒ 让它直接用 adb()，
+//   **别再写第三份解析**。纯加 export，对既有的十来个 openCdp 调用方零行为变化。
+export const adb = (args, t = 30000) =>
   execFileSync(ADB, ['-s', SERIAL, ...args], { encoding: 'utf8', timeout: t, maxBuffer: 33554432 })
 const adbSoft = (args, t = 8000) => { try { return adb(args, t) } catch { return '' } }
 

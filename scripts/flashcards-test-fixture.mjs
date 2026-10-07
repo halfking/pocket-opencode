@@ -19,7 +19,7 @@
 import { execFileSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { openCdp } from './lib/adb-cdp.mjs'
+import { openCdp, adb } from './lib/adb-cdp.mjs'
 
 // ⚠️ 2026-10-07 修：原来写死 'C:/workspace/openpocket/logs/pg/dist2/pgsql/bin/psql.exe'，
 // 表面是「一个本机有效的路径」，实际是**一份对所有机器都失效的跨平台状态**。
@@ -110,11 +110,19 @@ if (DRY) {
 
 // adb 小工具：清缓存要在「App 活着」时做，自证要「重启后再读」，
 // 两头都要驱动 App，所以 sh() 必须在 CDP 块之前就绪。
-const adbBin = 'C:/Users/86133/AppData/Local/Android/platform-tools/adb.exe'
-const serial = process.env.POCKET_SERIAL || '192.168.31.19:5555'
-const sh = (cmd) => execFileSync(adbBin, ['-s', serial, 'shell', cmd], {
-  encoding: 'utf8', timeout: 30000, maxBuffer: 33554432,
-})
+//
+// ⚠️ 2026-10-07 修第三处：原来这里是
+//   `const adbBin = 'C:/Users/86133/AppData/Local/Android/platform-tools/adb.exe'`
+// ——与本文件上方 PSQL 那条**完全同型**的缺陷，上一轮只修了 psql、没修 adb。
+// 后果实测：在 macOS 上首个 sh() 就是 ENOENT（`ENOENT spawnSync C:/Users/86133/...adb.exe`），
+// 而本文件头注描述的失败形态是「打断整批 flow、报的不是数据错」——
+// runner 会**跳过** flashcards-write，现象是「这条没跑」而不是「夹具坏了」。
+//
+// 修法不是再抄第三份候选表：本文件**已经 import 了 ./lib/adb-cdp.mjs**，
+// 而那份 lib（:70-83）本来就是全仓 adb/serial 的单一来源
+// （POCKET_ADB / POCKET_ADB_BIN / POCKET_SERIAL + 平台守卫候选 + PATH 兜底），
+// 跑绿的全部 flow 都走它 ⇒ 直接复用，别在夹具里本地重写。
+const sh = (cmd) => adb(['shell', cmd], 30000)
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const launchApp = async () => {
   sh(`monkey -p ${PKG} -c android.intent.category.LAUNCHER 1`)
