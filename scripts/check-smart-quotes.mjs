@@ -153,8 +153,42 @@ if (process.argv.includes('--selftest')) {
       const good = lineHasUnpairedSmartQuote('// “x” y')
       return bad === true && good === false
     }],
-    ['变盲·门禁扫得到自己建的样本目录之外', () => { scan(); return true }],
-    ['自指·门禁不扫自己', () => { const hits = scan(); return hits.every((h) => path.resolve(ROOT, h.file) !== SELF) }],
+    // ★ 这条原本是恒真：`() => { scan(); return true }` —— 调一次 scan 就无条件通过，
+    //   把 walk 的错误处理整个打坏它照样 PASS（已用变异实测，见设计文档 §149.5）。
+    //   真断言问的是「walk 真的走进仓库了吗」，所以直接问 walk 看见了多少**文件**，
+    //   而不问 scan() 命中了几**处** —— 后者取决于工作树状态（本机当前树有命中、
+    //   HEAD 上是 0 处），拿它当判据会造出一条「换个 checkout 就红」的脆弱用例。
+    //   两半都要：正向（每个 root 真的非空）+ 负控（不存在的目录必须返回 0，
+    //   否则上面那个 >0 本身就是恒真，与被替换掉的那条没有区别）。
+    ['变盲·门禁扫得到自己建的样本目录之外', () => {
+      const seen = ROOTS.map((r) => walk(path.join(ROOT, r)).length)
+      const allReal = ROOTS.every((r, i) => {
+        try {
+          return statSync(path.join(ROOT, r)).isDirectory() && seen[i] > 0
+        } catch {
+          return false
+        }
+      })
+      const negative = walk(path.join(ROOT, '__no_such_dir__')).length === 0
+      return allReal && negative
+    }],
+    // ⚠ 原来这条是**结构上不可能失败**的（docs/design §204.2）：EXTS = {.go,.sql}
+    //   而 SELF 是 .mjs ⇒ 这个门自己的文件根本进不了自己的扫描面，:116 的自指豁免
+    //   是**死代码**，于是 `hits.every(h => resolve(ROOT,h.file) !== SELF)`
+    //   在任何输入下都成立 —— 它报的是一个恒真的绿灯。
+    //   照抄「自指」两个字而不查前提，就会把状态②换成另一种形状。
+    //
+    //   改成断言**前提本身**：这个门**刻意**只扫 Go/SQL 里的智能引号，不扫 .mjs，
+    //   所以自指豁免当前是死的。哪天有人把 '.mjs' 加进 EXTS，这条立刻转红 ——
+    //   那正是该提醒他的时刻：:116 会从死代码变成活代码，需要另配一条真能测到自指的用例。
+    ['自指·前提：SELF 的扩展名不在 EXTS 里 ⇒ :116 自指豁免当前是死代码', () =>
+      !EXTS.has(path.extname(SELF))],
+    // 正控：上面那条会不会也是恒真？只有 EXTS 非空、且 walk 真看得见文件时，
+    //   「SELF 不在 EXTS 里」才是一条**有信息**的前提而不是废话。
+    ['自指·正控：EXTS 非空且 walk 对每个 ROOT 都真的看见文件', () =>
+      EXTS.size > 0 && ROOTS.every((r) => {
+        try { return statSync(path.join(ROOT, r)).isDirectory() && walk(path.join(ROOT, r)).length > 0 } catch { return false }
+      })],
   ]
   let bad = 0
   for (const [name, fn] of cases) {
@@ -163,7 +197,20 @@ if (process.argv.includes('--selftest')) {
     if (!pass) bad++
     console.log(`  ${pass ? 'PASS' : 'FAIL'}  ${name}`)
   }
-  console.log(`\nselftest: ${cases.length - bad}/${cases.length} 通过`)
+  // ★ 条数下限闸（2026-10-07，docs/design §103.1）。本文件的夹具是**数组字面量**，
+  //   不是 add()/push() —— 一条按调用形态做的普查会漏掉它（§103.2 的扫描器就漏了）。
+  //   修前实测：把 19 个数组元素全删 ⇒ `selftest: 0/0 通过` + EXIT=0（假绿）。
+  //   下限只能手工改这个常量，不接受命令行参数。
+  //   ⚠ 2026-10-08 提高 15 -> 20：把恒真的「自指·门禁不扫自己」换成
+  //     「前提 + 正控」两条（§204.2）。原来 19 条配下限 15 ⇒ 删掉任意 4 条仍全绿，
+  //     而「删掉这两条自指用例」正好落在 15 与 19 之间 ⇒ 下限压根拦不住。
+  const MIN_SELFTEST_CASES = 20;
+  if (cases.length < MIN_SELFTEST_CASES) {
+    console.error(`[smart-quotes] 自检只跑了 ${cases.length}/${MIN_SELFTEST_CASES} 例 —— cases 数组被改过。`);
+    console.error('   「0/0 通过」不是通过：守卫空转时的读数和它要抓的病一模一样。');
+    process.exit(2);
+  }
+  console.log(`\nselftest: 实跑 ${cases.length - bad} 例 / 声明 ${cases.length} 例，通过`)
   process.exit(bad ? 1 : 0)
 }
 
