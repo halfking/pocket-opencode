@@ -66,6 +66,50 @@ export function diffRatchet(hits, baseline, keyFn = defaultKeyFn) {
   return { newHits, removed, unchanged }
 }
 
+/**
+ * 扫描器**零命中**时的拒绝闸。
+ *
+ * ★ 为什么必须有（2026-10-07 实测，不是推断）：
+ *   本模块的 `writeBaseline` 已经拦住了「把空基线写出去」（那是本轮真踩过的坑），
+ *   但**读路径当时没有任何保护**。实测把 `check-fixed-cdp-ports` 的扫描目录
+ *   从 `scripts` 改成 `docs`（一个非常现实的路径笔误）⇒
+ *     基线棘轮：存量 148 处 → 本次实测 **0** 处，新增 0 处，**已消失 148 处**
+ *     ✅ 无新增违规。另外有 148 处存量已消失（棘轮可以收紧了）：
+ *     ✅ 无新增违规（**存量 0 处不判红，这是棘轮的约定**）。  EXIT=0
+ *   ⇒ 扫描器被打死，门禁报绿、把整份基线说成「债还了」，
+ *     而且**最后一句还主动替这个 0 找了个理由**（「这是棘轮的约定」）。
+ *     读起来就是「正确，债务已清」——这是本仓见过最恶劣的一次绿灯。
+ *
+ *   棘轮语义上「存量可以少」是对的，但**一次扫描从 148 直接掉到 0** 不可能是
+ *   「还债」，只能是**扫描器瞎了**。这两件事必须分开判。
+ *
+ * 不满足条件时**什么都不做**（让调用方照常按 new/removed 判定）。
+ * 抛 Error 而不是 exit，是为了让调用方自己决定怎么报；
+ * 两个调用方目前都用 exit 3（沿用仓库既有的「拒绝给结论」口径）。
+ *
+ * ⚠️ 本函数的适用前提：**基线里那条「存量从不为 0」**。
+ *   2026-10-08 曾把它接到 check-raw-error 上（那道门基线非空+零命中会误报
+ *   「扫描器失灵」——因为那条违规是真的被还掉了），已撤回。
+ *   那道门改用**活体正控**：往临时目录真放一个已知违规文件、走同一条扫描函数、
+ *   要求必须被抓到。正控给出的是「扫描器确实活着」的**正面证据**，
+ *   而本函数给出的是从基线推出的**推断**，两者不能互换。
+ *   代价：本函数只适合「存量很大、一次性掉到 0 不可能是还债」的门。
+ */
+export function assertScannerNotBlind(hits, baseline, label) {
+  const nBaseline = Object.keys(baseline || {}).length
+  if (nBaseline > 0 && (!Array.isArray(hits) || hits.length === 0)) {
+    throw new Error(
+      `${label}：基线里有 ${nBaseline} 条存量，本次扫描却**一条都没命中**。\n` +
+        '  这不可能是「还债」，只能是扫描器失灵（路径写错 / 规则表被清空 / 过滤条件过严）。\n' +
+        '  先修扫描器。\n' +
+        '  若你确认这笔债**确实全部还清**了（不是扫描器的问题），那就用\n' +
+        '    --write-baseline --record-full-repayment "<理由>"\n' +
+        '  显式记录——**只跑 --write-baseline 会被拒绝**，那是故意的：\n' +
+        '  它正是这个「拒绝写空基线」闸与本守卫互相把对方指给对方的地方。',
+    )
+  }
+}
+
 export function loadBaseline(baselinePath) {
   if (!fs.existsSync(baselinePath)) return null
   const doc = JSON.parse(fs.readFileSync(baselinePath, 'utf8'))
@@ -74,18 +118,49 @@ export function loadBaseline(baselinePath) {
   return doc.counts
 }
 
-export function writeBaseline(baselinePath, countMap, comment) {
+/**
+ * 写基线。默认**拒绝写空基线** —— 空基线 = 全部存量都算新增 = 门禁一接就红。
+ *
+ * ★ 为什么需要 `--record-full-repayment` 这条显式逃生口（2026-10-08 实测）：
+ *   本函数的「拒绝空基线」与 `assertScannerNotBlind` 的「基线非空+零命中 ⇒ 失灵」
+ *   **合起来是一个死锁**，而且它们的报错文案互相指向对方：
+ *     · 跑门  →「真还了债就跑 --write-baseline」
+ *     · 跑它  →「扫描到 0 处命中，拒绝写入空基线」
+ *   ⇒ 「债真的全部还清」这件事，在这两道门里**无法被记录**。
+ *   这是同一个缺陷在 §78（check-raw-error）与 §77（另外两道门）两处独立出现，
+ *   说明它是**这一族守卫的结构性问题**，不是某一道门的笔误。
+ *
+ *   逃生口的设计取舍：不能用「扫描器自证活着」来放行（那对合成样本成立，
+ *   对「扫描根写错」同样成立，§78 已实测）；也不能静默放行（空基线后患极大）。
+ *   所以要求**人显式声明**「这笔债确实全部还清了」，并把这个声明**写进基线文件**，
+ *   让下一个读基线的人看得见。声明必须是一个不好敲的独立开关，不是顺手能带上的参数。
+ *
+ * @param {object} [opts]
+ * @param {string} [opts.recordFullRepayment] 非空则允许写空基线；该串会被写进文件作为声明
+ */
+export function writeBaseline(baselinePath, countMap, comment, opts = {}) {
   // ⚠️ 入参通常是 Map。直接 Object.keys(map) 会静默得到 []，于是写出「0 个 key」
   // 的空基线而不报任何错 —— 空基线 = 全部存量都算新增 = 门禁一接就红。
   // 本轮真踩过一次，所以这里显式转换并对空基线直接抛错。
   const src = countMap instanceof Map ? Object.fromEntries(countMap) : countMap || {}
-  if (Object.keys(src).length === 0)
-    throw new Error('扫描到 0 处命中，拒绝写入空基线（空基线会把全部存量判成新增）')
+  const declared = typeof opts.recordFullRepayment === 'string' ? opts.recordFullRepayment.trim() : ''
+  if (Object.keys(src).length === 0 && !declared)
+    throw new Error(
+      '扫描到 0 处命中，拒绝写入空基线（空基线会把全部存量判成新增）。\n' +
+        '  若这笔债**确实全部还清**了，用 --record-full-repayment "<理由>" 显式声明：\n' +
+        '  那会把这份声明连同时间戳一起写进基线文件，下一个读它的人看得见。\n' +
+        '  不带那个声明就写空基线，通常意味着扫描器瞎了。',
+    )
   const sorted = {}
   for (const k of Object.keys(src).sort()) sorted[k] = src[k]
+  const paidOff =
+    Object.keys(src).length === 0
+      ? `  "_fullRepayment": {\n    "declared": ${JSON.stringify(declared)},\n    "at": ${JSON.stringify(new Date().toISOString())}\n  },\n`
+      : ''
   const body =
     '{\n' +
     `  "_comment": ${JSON.stringify(comment)},\n` +
+    paidOff +
     '  "counts": ' +
     JSON.stringify(sorted, null, 2).split('\n').join('\n  ') +
     '\n}\n'
