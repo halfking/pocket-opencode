@@ -63,7 +63,14 @@ jobs:
       # 放在 build-gate 而不是 test job：它只需要 node、不需要 Go toolchain
       # 与 postgres service，失败得越早越好。
       # 自证用 --selftest（敏感度/特异度/变盲 19 条），不另开一条流水线。
+      # ⚠ working-directory 必须覆盖回仓库根（2026-10-08 修）：本 job 的
+      # defaults.run.working-directory 是 backend，而脚本在**仓库根** scripts/ 下
+      # （backend/scripts/ 里只有一个 .sh）⇒ 覆盖前这一步恒为
+      #   Cannot find module '<ws>/backend/scripts/check-smart-quotes.mjs'，rc=1
+      # ⇒ build-gate job 在 CI 上必红，而**这道门从来没真跑过**。
+      # 报错读起来像环境坏了，不像门禁判红 —— 这正是它一直没被发现的原因。
       - name: Smart-quote gate
+        working-directory: .
         run: |
           node scripts/check-smart-quotes.mjs --selftest
           node scripts/check-smart-quotes.mjs
