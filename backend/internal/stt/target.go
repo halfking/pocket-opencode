@@ -156,13 +156,20 @@ type ModelOption struct {
 	MaxSeconds int `json:"maxSeconds,omitempty"`
 }
 
-// RecommendedGatewayModels 网关侧预置：网关模型目录里唯一与语音转写相关的三个。
-// 顺序即设置页展示顺序（按「便宜/够用」到「最通用」）。
+// RecommendedGatewayModels 网关侧预置：网关模型目录里与语音转写相关的模型。
+// 顺序即设置页展示顺序。
+//
+// ⚠ 2026-10-06/07 ASR 多供应商轮实测重写（scripts/verify-gateway-audio-multi.mjs，
+// 网关 build 2484，TTS 合成已知真值回环）：mimo-v2.5-asr 与 minimax-asr-1.0
+// zh/en 全对（en 词级 98.7-100%），glm-asr 数据面已接通但在库智谱凭据余额
+// 不足（429/1113，充值后零改动可用）。gpt-audio 系仍是「列了但没有上游」。
 func RecommendedGatewayModels() []ModelOption {
 	return []ModelOption{
-		{Model: "gpt-audio-mini", Group: "gateway", Note: "网关 modality=audio，mini 档最省"},
-		{Model: "mimo-v2.5-asr", Group: "gateway", Note: "网关 ASR 模型（目录里被标成 text）"},
-		{Model: "gpt-audio", Group: "gateway", Note: "网关 modality=audio，通用档"},
+		{Model: "mimo-v2.5-asr", Group: "gateway", Note: "实测可用（2026-10-06 zh/en 全对）· 网关 /models 未标 audio，勿按目录过滤掉它"},
+		{Model: "minimax-asr-1.0", Group: "gateway", Note: "实测可用（2026-10-06 zh/en 全对）· 网关 speech-to-text 传输，SSE 流式，500s 限长", Streaming: true, MaxSeconds: 500, USDPerHour: 0.38},
+		{Model: "glm-asr", Group: "gateway", Note: "数据面已接通但智谱凭据余额不足（2026-10-06 429/1113）· 充值后可用；30s 限长 + 热词", Streaming: true, MaxSeconds: 30, USDPerHour: 0.50},
+		{Model: "gpt-audio-mini", Group: "gateway", Note: "网关列了但实测 503 no_provider（2026-10-06）"},
+		{Model: "gpt-audio", Group: "gateway", Note: "网关列了但实测 503 no_provider（2026-10-06）"},
 	}
 }
 
