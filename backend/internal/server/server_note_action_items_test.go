@@ -46,7 +46,7 @@ func TestParseNoteSummaryPayload_FallsBackToRawText(t *testing.T) {
 	for _, raw := range []string{
 		"这是一段普通的中文总结。",
 		"",
-		"```json\n{\"summary\":",  // 截断的 JSON
+		"```json\n{\"summary\":", // 截断的 JSON
 	} {
 		summary, items := parseNoteSummaryPayload(raw)
 		if summary != raw {
