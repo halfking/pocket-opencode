@@ -21,7 +21,17 @@ import { readFileSync } from 'node:fs';
 import { requireDevPass } from './lib/dev-pass.mjs'
 const HOST = process.env.POCKET_API_HOST || '127.0.0.1';
 const PORT = Number(process.env.POCKET_API_PORT || 8088);
-const devPass = requireDevPass()
+// ★ 口令门**延后**到判据自检之后（2026-10-07，docs/design §103.2）。
+//   原来 `const devPass = requireDevPass()` 在**模块顶层、且在 --selftest 块之前**，
+//   于是没人设 POCKET_AUTH_PASS/POCKET_DEV_PASS/POCKET_MASTER 时，
+//   requireDevPass() 直接 process.exit(2) ⇒ `--selftest` 分支**永远走不到**。
+//   实测（§103.2）：删光 10 个夹具后跑 `--selftest`，拿到的是口令门的说明文字 + EXIT=2，
+//   压根不是自检读数 —— 这 10 条判据自检**一次都没有真正执行过**。
+//   危害比 §102 的假绿更大：假绿是「测了说通过」，这里是「压根没测、却看着像有自检」。
+//   判据自检全是纯函数，**不需要**任何凭据 ⇒ 先跑它，只有真去探测时才要口令。
+//   requireDevPass 的「缺口令就停下」语义**一个字没改**（那是仓库的既定答案）。
+const IS_SELFTEST = process.argv.includes('--selftest');
+const devPass = IS_SELFTEST ? '' : requireDevPass()
 
 function api(path, { token, method = 'GET', body } = {}) {
   return new Promise((res) => {
@@ -73,8 +83,19 @@ if (process.argv.includes('--selftest')) {
     if (!pass) bad++
     console.log(`  ${pass ? 'PASS' : 'FAIL'}  ${name}`)
   }
-  console.log(`\nselftest: ${cases.length - bad}/${cases.length} 通过`)
-  process.exitCode = bad ? 1 : 0
+  // ★ 条数下限闸（2026-10-07，docs/design §103.2）。夹具是**数组字面量**形态。
+  //   修前读数是 `selftest: N-bad/N 通过` + `process.exit(bad?1:0)`：
+  //   夹具被抽空时打出 `0/0 通过` 且 EXIT=0，与真通过完全同形。
+  //   另注：上面第 87 行的 `process.exitCode = bad ? 1 : 0` 是**死代码** ——
+  //   紧接着的 process.exit() 立刻覆盖它。留着无害，但别把它当「退出码有两处设置」。
+  //   下限只能手工改这个常量，不接受命令行参数。
+  const MIN_SELFTEST_CASES = 8;
+  if (cases.length < MIN_SELFTEST_CASES) {
+    console.error(`[email-sync-honesty] 自检只跑了 ${cases.length}/${MIN_SELFTEST_CASES} 例 —— cases 数组被改过。`);
+    console.error('   「0/0 通过」不是通过：守卫空转时的读数和它要抓的病一模一样。');
+    process.exit(2);
+  }
+  console.log(`\nselftest: 实跑 ${cases.length - bad} 例 / 声明 ${cases.length} 例，通过`)
   // selftest 之后就结束，不去碰后端
   process.exit(bad ? 1 : 0)
 }
