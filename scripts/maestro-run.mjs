@@ -153,6 +153,51 @@ if (!flows.length) {
   }
 }
 
+// ---- flow 引用的 ${POCKET_*} 必须在进程环境里真的存在 ----
+//
+// 2026-10-07 实测（不是推断）：`2026-10-02-real-login.yaml:51` 写着
+//   - inputText: ${POCKET_DEV_PASS}
+// 而 `config/.env.local` 里**根本没有 POCKET_DEV_PASS 这一行**
+// （POCKET_MASTER 同样没有；只有 POCKET_AUTH_PASS，且它的值含未加引号的 `&`）。
+// Maestro 对未定义的 ${VAR} 不会报错，它展开成**字面量字符串 "undefined"**，
+// 于是这一行把字符串 `undefined` 敲进了密码框：
+//   失败瞬间的 a11y 树里，密码框（android.widget.EditText）的 text 就是 "undefined"，
+//   同一棵树里还有「登录失败：用户名或密码错误」。
+// 整条 flow 于是在第 20 步左右红，报错形态是「登录失败」——
+// **与真实的产品缺陷完全无法区分**，而真因（变量压根没定义）没有任何地方露出来。
+//
+// 这是「静默失败」而不是「测试没过」：变量缺失是配置问题，不是被测物的问题。
+// 所以在碰设备之前就查，缺了就响亮退出并点名是哪几个变量、从哪配。
+{
+  const missing = new Map()          // 变量 -> 用到它的 flow
+  for (const f of flows) {
+    const p = resolve(ROOT, f)
+    if (!existsSync(p)) continue
+    const src = readFileSync(p, 'utf8')
+    for (const m of src.matchAll(/\$\{(POCKET_[A-Z0-9_]+)\}/g)) {
+      const name = m[1]
+      // 空串同样算缺：Maestro 会展开成空 → 点登录必然失败，且不报错
+      const val = process.env[name]
+      if (val === undefined || val === '') {
+        if (!missing.has(name)) missing.set(name, [])
+        missing.get(name).push(f)
+      }
+    }
+  }
+  if (missing.size) {
+    console.error('[config] 以下 ${POCKET_*} 变量被 flow 引用，但在本进程环境里不存在或为空：')
+    for (const [name, fs] of missing) {
+      console.error(`[config]   ${name}  ← ${[...new Set(fs)].join(', ')}`)
+    }
+    console.error(
+      '[config] 后果：Maestro 会把它们展开成字面量 "undefined" 并原样敲进输入框，\n' +
+      '[config]       flow 会在登录处红成「登录失败」，与真实产品缺陷无法区分。\n' +
+      '[config] 请在启动器的 env 文件里补齐这些变量后再跑（值不要提交进仓库）。'
+    )
+    process.exit(2)
+  }
+}
+
 // ---- 确定性前置 ----
 // 为什么必须自己做：Maestro 的 launchApp 默认先 am force-stop，而在 MIUI 真机上
 // 实测 force-stop 成功（ActivityManager 打了 Killing）但之后**没有任何 Start proc**，
