@@ -77,9 +77,37 @@ for (const route of ['/marketplace/skills', '/marketplace/agents', '/marketplace
 }
 // 声明总数：与门禁**同一函数**，不另写解析
 const declared = routes.filter((r) => r.hideAppHeader)
-all = say(declared.length === 15,
-  '全仓 hideAppHeader 声明数 = 15（修复前 18，本项去掉 3 条）',
+// 2026-10-06：期望值原先硬编码 15，合并 origin/main 后转红（实测 16）。
+//
+// 根因不是「多了一条不该有的声明」：合并带进来的 /calendar **确实**该声明
+// —— 它带 `hideAppHeader: true` 且 CalendarView.vue 自备页级 <header>
+// （class="cal-toolbar"，且不在 v-for 内，符合契约）。所以 16 是对的，
+// 15 是过期数字。
+//
+// 为什么改成推导而不是把 15 改成 16：把数字换成 16 只是把同一个坑推迟到
+// 下一条新路由。真因是**「总数」这个判据与「本项修复」无关**——
+// 别人加一条合法的 hideAppHeader 路由就会把它打红，而这道门只该盯
+// marketplace 那三条。
+//
+// 仍然保留的：**差值**必须恰好是 3（本项去掉的那三条），这是本门真正要
+// 守的不变量。差值从「修复前」的基线数推出来。
+// 基线 = 合并 origin/main 之后、本项修复之前的全仓声明数。
+// 19 是实测值（git show origin/main:frontend/src/app/router-mobile.ts | grep -c）。
+// 换成推导式（比对某次提交）会更耐改，但门禁要在**任意工作区**都能跑，
+// 不能假设 git 历史可用 —— 固定一个实测基线 + 上面那条逐条判据兜底。
+const BASELINE_BEFORE_FIX = 19
+const EXPECTED = BASELINE_BEFORE_FIX - 3
+all = say(declared.length === EXPECTED,
+  `全仓 hideAppHeader 声明数 = ${EXPECTED}（基线 ${BASELINE_BEFORE_FIX} 去掉本项 3 条）`,
   `实测 ${declared.length} 条（口径 = check-hide-app-header.mjs 的 routesOf）`) && all
+// 只数「本项应当去掉的那三条」—— 总数会被别人的合法改动带着动，这三条不会。
+// （路径表与上面 for 循环里那份保持一致；改成抽常量是可选的整洁化，
+//   这里不扩大改动面。）
+const MARKETPLACE_ROUTES = ['/marketplace/skills', '/marketplace/agents', '/marketplace/workbuddies']
+const leaked = MARKETPLACE_ROUTES.filter((p) => routes.find((r) => r.path === p)?.hideAppHeader)
+all = say(leaked.length === 0,
+  'marketplace 三条路由一条都不再声明 hideAppHeader（逐条判据，与总数无关）',
+  leaked.length ? `★ 仍在声明：${leaked.join(', ')}` : '三条全部干净') && all
 
 // ---- 运行期独立证词：文本解析可以争口径，vue-router 实际持有的 meta 不能 ----
 // 做法：用 esbuild 把 router-mobile.ts 真正编译并执行（.vue 全部打桩），
