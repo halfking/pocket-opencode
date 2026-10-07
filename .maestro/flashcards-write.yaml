@@ -97,7 +97,7 @@ appId: com.kaixuan.opencode.pocket
 # 修前这里是死胡同：零卡组只能点「新建卡片」进编辑页，而那页保存恒 disabled
 # （selectedDeckId 为空 → isValid 恒 false），用户点进去才发现要先建组。
 - extendedWaitUntil:
-    visible: { text: "暂无卡组.*" }
+    visible: { text: "暂无卡组.*|No decks yet.*" }
     timeout: 25000
 
 # 按钮初始必须 enabled=false —— 这正是 BUG-K 的判据之一（没填名字不许提交）
@@ -129,9 +129,9 @@ appId: com.kaixuan.opencode.pocket
 #   2026-10-01 就因为这个假通过了一次：input 的值把断言喂饱了，卡组其实压根没建出来
 #   （PG 0 行、后端日志里连请求都没有）。零状态空态在建成功后必然消失，用它当判据。
 - extendedWaitUntil:
-    notVisible: { text: "暂无卡组.*" }
+    notVisible: { text: "暂无卡组.*|No decks yet.*" }
     timeout: 25000
-- assertVisible: { text: ".*今日待复习.*" }
+- assertVisible: { text: ".*今日待复习.*|.*due today.*" }
 
 # ---------- 4. 进卡组 → 建卡片 ----------
 - tapOn: { text: "回归卡组.*" }
@@ -213,10 +213,10 @@ appId: com.kaixuan.opencode.pocket
 # 所以这里的判据必须是「不重新挂载也能变对」。timeout 给到 90s：
 # 到期数靠 30s tick 推进，30s 超时恰好等于一个 tick、没有余量，必然随机红。
 - extendedWaitUntil:
-    visible: { text: ".*今日待复习 1 张.*" }
+    visible: { text: ".*今日待复习 1 张.*|.*1 due today.*" }
     timeout: 90000
-- assertVisible: { text: ".*今日待复习 1 张.*" }
+- assertVisible: { text: ".*今日待复习 1 张.*|.*1 due today.*" }
 # 后置断言：数字变了，但页面没被重新挂载、卡片没消失。
 # 少了这两条，「退出页面再进来也能显示 1」这种非响应式修法同样能蒙混过关 —— 而那正是修复前的行为。
 - assertVisible: { text: ".*回归正面.*" }
-- assertVisible: { text: ".*开始复习.*", enabled: true }
+- assertVisible: { text: ".*开始复习.*|.*Review.*", enabled: true }
