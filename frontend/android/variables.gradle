@@ -1,5 +1,16 @@
 ext {
     minSdkVersion = 24
+    // ★ 2026-10-07 新增：Kotlin **编译器**版本收编到单一来源。
+    //
+    // 为什么必须收编：@capacitor/* 插件模块各自带一份 buildscript，取值是
+    //   ext.kotlin_version = project.hasProperty("kotlin_version") ? rootProject.ext.kotlin_version : '2.2.20'
+    // 也就是说「根工程有没有声明 kotlin_version」直接决定**每个插件用哪个编译器**。
+    // 而运行时 kotlin-stdlib 此前被 build.gradle 里三行 resolutionStrategy.force
+    // 单独钉在 1.8.22 —— 编译器与运行时**各走各的**，编译期一声不响，运行时才炸：
+    //   NoClassDefFoundError: Lkotlin/coroutines/jvm/internal/SpillingKt;
+    //   （SpillingKt 是 Kotlin 2.x 编译器生成的辅助类，1.8.22 的 stdlib 里没有）
+    // ⇒ 声明在根 ext，插件与 stdlib force 共用同一个变量，两者不可能再分叉。
+    kotlin_version = '2.2.20'
     // @capacitor/camera@8.2.3 拉入 androidx.core:1.17.0，AAR 元数据要求 compile against API 36+
     compileSdkVersion = 36
     targetSdkVersion = 35

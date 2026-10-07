@@ -22,14 +22,25 @@ allprojects {
         google()
         mavenCentral()
     }
-    // cap-sherpa：sherpa-onnx AAR 内嵌 kotlin-stdlib 1.8.x（jdk7/jdk8 拆分包的
-    // 类在 1.8 已合并进主包），而 androidx.test 链仍引 1.6.21 拆分版——
-    // androidTest 变体的重复类检查（checkDebugAndroidTestDuplicateClasses）
-    // 会因此炸掉。统一收编到 1.8.22（1.8 起拆分包为空壳，force 无副作用）。
+    // ★ 2026-10-07 这三行曾把 stdlib 钉死在 **1.8.22**，而 Kotlin 编译器是 **2.2.20**
+    // （@capacitor/filesystem 等插件模块的默认 ext.kotlin_version）。
+    // 两者不一致在编译期**完全看不出来**，只在运行时炸：
+    //   java.lang.NoClassDefFoundError: Failed resolution of:
+    //       Lkotlin/coroutines/jvm/internal/SpillingKt;
+    //     at com.capacitorjs.plugins.filesystem.FilesystemPlugin$runWithPermission
+    //     → FATAL EXCEPTION: main → 整个 App 退出到桌面
+    // 实测（本机逐版本核对 kotlin-stdlib 的 jar 内容）：
+    //   1.8.22 → 无该类；2.2.20 → 有该类
+    // ⇒ SpillingKt 是 Kotlin 2.x 编译器**生成**的辅助类，运行时必须有同代 stdlib。
+    // 触发路径就是会议录音：写文件 → Capacitor Filesystem → 主线程崩。
+    //
+    // 原注释说的 cap-sherpa / androidx.test 重复类问题仍然成立（sherpa-onnx AAR
+    // 内嵌 stdlib 1.8.x），但解法不是**把全局 stdlib 降级**——那等于让整个 App
+    // 用一个比编译器老四代的运行时。改为跟随编译器版本。
     configurations.all {
-        resolutionStrategy.force 'org.jetbrains.kotlin:kotlin-stdlib:1.8.22'
-        resolutionStrategy.force 'org.jetbrains.kotlin:kotlin-stdlib-jdk7:1.8.22'
-        resolutionStrategy.force 'org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.8.22'
+        resolutionStrategy.force "org.jetbrains.kotlin:kotlin-stdlib:$rootProject.ext.kotlin_version"
+        resolutionStrategy.force "org.jetbrains.kotlin:kotlin-stdlib-jdk7:$rootProject.ext.kotlin_version"
+        resolutionStrategy.force "org.jetbrains.kotlin:kotlin-stdlib-jdk8:$rootProject.ext.kotlin_version"
     }
 }
 

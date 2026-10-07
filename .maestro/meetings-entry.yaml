@@ -98,7 +98,7 @@ appId: com.kaixuan.opencode.pocket
 #   真正可见的是 dock 的 aria-label 二态（MeetingMicDock.vue:6）：
 #     :aria-label="recording ? '停止录音' : '开始录音'"
 - extendedWaitUntil:
-    visible: "开始录音|停止录音"
+    visible: "会议详情"
     timeout: 40000
 
 # ---------- 3. 核心：点「开始会议录音」必须真的进详情页 ----------
@@ -145,7 +145,7 @@ appId: com.kaixuan.opencode.pocket
     optional: true
 
 - extendedWaitUntil:
-    visible: "开始录音|停止录音"
+    visible: "会议详情"
     timeout: 40000
 
 # ⚠️ 2026-10-03 15:45 实测修正：等「开始录音」红了 68s。
@@ -157,7 +157,26 @@ appId: com.kaixuan.opencode.pocket
 #   「会议详情」只出现在 router-mobile.ts:323 的 `meta.title`，
 #   页面模板从不渲染它 ⇒ 这条断言与设备/产品状态**完全无关**，只是永远不成立。
 #   本轮把它换成 dock 的二态 —— 那是真正能证明「进了详情页并且在录音」的可见元素。
-- assertVisible: "(开始录音|停止录音)"
+#
+# ⚠️ 2026-10-07 再改一次：上面换成的 dock 二态（`recording ? '停止录音' : '开始录音'`，
+#   MeetingMicDock.vue:6）**仍然是 aria-label**，而本设备上 aria-label 一律匹配不到 ——
+#   Android 无障碍树 75 个节点 content-desc 全空（_goto-pkm.yaml 的「主导航」已踩实）。
+#   2026-10-07 实跑卡在这三处，而失败现场的树里**产品其实完全正常**：
+#     会议详情 / 录音中 00:41 / 说话人 1、2 / 即时总结 / 停止
+#   也就是真在录音、真在转写。判据在看一个 Maestro 看不见的属性。
+#
+# ⚠️⚠️ 2026-10-07 第三次改，仍踩在 a11y 树上，最后落到**静态标题**：
+#   中间试过等「录音中 00:41」（MeetingDetailView.vue:152，确实是渲染成 text 的），
+#   实跑仍然判 false —— 而 Maestro **自己抓的失败现场树里就写着「录音中 00:41」**，
+#   节点 bounds=[28,238][1050,333] 在屏内、enabled=true。
+#   决定性线索：**计时器跨两轮相隔约 2 分钟的跑批都是「00:41」**，活计时器不可能不变
+#   ⇒ Android 无障碍树对 WebView 节点做了缓存，Maestro 读到的是**冻结快照**。
+#   ⇒ 判据必须挑**不会随时间变化**的文本，否则缓存一来就飘。
+#   「会议详情」满足：它是详情页的静态标题（locales/zh-CN.json:94 meetings.meetingDetail），
+#   实测是 android.widget.TextView / bounds=[170,112][493,178] / enabled=true，稳定在屏内。
+#   ⚠️ 本文件早先的注释说「会议详情 恒假、只在 router-mobile.ts 的 meta.title 里」——
+#   **那条结论已被实测推翻**：它是真渲染出来的页面标题。
+- assertVisible: "会议详情"
 
 # 录音界面独有的元素：即时总结面板（MeetingInsightPanel.vue:2 的 aria-label）
 - assertVisible: "即时总结|会议纪要"

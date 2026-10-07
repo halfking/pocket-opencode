@@ -69,10 +69,20 @@ appId: com.kaixuan.opencode.pocket
 - tapOn:
     text: "定时自动化"
     retryTapIfNoChange: true
-# 到达判据用「仅显示启用」：它只存在于 ScheduledTaskListView，
-# 宫格上不可能出现。用它才能区分「真的跳走了」和「宫格项点了个寂寞」。
+# 到达判据用「刷新」：它与「仅显示启用」在**同一条 toolbar**
+# （ScheduledTaskListView.vue:10-11），只在列表页渲染，宫格上不可能出现。
+# 用它才能区分「真的跳走了」和「宫格项点了个寂寞」。
+#
+# ⚠️ 2026-10-07 实测改判据：原先等的是同一行的「仅显示启用」，本设备上**恒红**。
+#   源码是 `<label class="filter"><input type="checkbox" .../> 仅显示启用</label>`
+#   —— 一个只包了 checkbox、没有独立可点击文本节点的 label。
+#   2026-10-07 失败现场把**整棵树**导出来核对：13 个带 text 的节点里
+#   **没有任何一个含「仅显示启用」，连 checkbox 节点都不存在**；
+#   而同一 toolbar 里的 `<button>刷新</button>` 在树上是 android.widget.Button。
+#   ⇒ Chromium 没把这个 label 发布进 Android 无障碍树。
+#   与「主导航」「停止录音」同源：判据挂在 a11y 树上看不见的元素上。
 - extendedWaitUntil:
-    visible: "仅显示启用"
+    visible: "刷新"
     timeout: 30000
 # ⚠️ 刻意**不**断言「创建自动化」——2026-10-04 真机实测踩到了：
 #   它在这个页面上**两个来源都不可靠**。
@@ -128,8 +138,13 @@ appId: com.kaixuan.opencode.pocket
 - assertVisible: "成本与配额"
 - tapOn: "成本与配额"
 - extendedWaitUntil:
-    visible: "时间范围"
+    visible: "用量汇总"
     timeout: 30000
+# ⚠️ 2026-10-07 实测改判据：原先等的是「时间范围」，它是
+#   `CostQuotaView.vue:14` 上那个 `<select>` 的 **aria-label** —— 本设备上
+#   aria-label 一律不在 Android 无障碍树里（同「主导航」「停止录音」「仅显示启用」）。
+#   失败现场树：页面内容其实全在（成本与配额 / 7 天 / 用量汇总 / 317 / 198.0K …），
+#   唯独没有「时间范围」。改等下面这条「用量汇总」。
 # 「用量汇总」在 loading 结束后才渲染（CostQuotaView.vue:33 的 v-else 分支），
 # 所以上面那条 extendedWaitUntil 同时也是「加载完成」的判据。
 - assertVisible: "用量汇总"
