@@ -139,7 +139,7 @@ appId: com.kaixuan.opencode.pocket
     visible: ".*添加卡片.*|.*Add card.*"
     timeout: 20000
 # BUG-O 判据（修前恒 disabled，因为卡组里 0 张卡）
-- assertVisible: { text: ".*开始复习.*|.*Review.*", enabled: false }
+- assertVisible: { text: "^开始复习$|^Review$", enabled: false }
 - tapOn: ".*添加卡片.*|.*Add card.*"
 
 # ---------- 5. 填正反面 ----------
@@ -219,4 +219,17 @@ appId: com.kaixuan.opencode.pocket
 # 后置断言：数字变了，但页面没被重新挂载、卡片没消失。
 # 少了这两条，「退出页面再进来也能显示 1」这种非响应式修法同样能蒙混过关 —— 而那正是修复前的行为。
 - assertVisible: { text: ".*回归正面.*" }
-- assertVisible: { text: ".*开始复习.*|.*Review.*", enabled: true }
+# ⚠️ 这里必须锚定成 `^…$`，不能写 `.*Review.*`（2026-10-07 22:4x 实测坐实）：
+#   整条 flow 首次端到端跑通后，uiautomator 的活树显示卡组页上有**两个**能匹配
+#   `.*Review.*` 的节点：
+#     index=1  text="1Deck11 due today0Review"  class=android.view.View
+#              enabled="true"   ← WebView 把整行指标**合并成单个 View**
+#     index=2  text="Review"                     class=android.widget.Button
+#              clickable="true" enabled="true"   ← 真正要断言的那个按钮
+#   两者的 enabled 都是 true ⇒ `enabled: true` **并不能**把它们分开，
+#   断言可能被那个指标节点满足，而它的「Review」只是一段计数标签的尾巴。
+#   中文侧 `.*开始复习.*` 反而没这个问题（开始复习 只出现在按钮上），
+#   ⇒ 收紧后两侧强度才真正对称。
+#   阳性对照：同一棵树上按钮节点的 text 恰好等于 "Review"，
+#             指标节点是 "1Deck11 due today0Review"（不等于）⇒ 锚定后只命中按钮。
+- assertVisible: { text: "^开始复习$|^Review$", enabled: true }
