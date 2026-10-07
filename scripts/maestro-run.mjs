@@ -858,6 +858,32 @@ async function assertAppUsesReverseBase() {
   })()`, 20000)
   let po
   try { po = JSON.parse(String(probe)) } catch { po = { err: '页内 fetch 返回的不是 JSON: ' + probe } }
+  // ★ 2026-10-07 加重试：刚 reload 完就探**一次**，执行上下文可能还在销毁/重建，
+  //   cdpEval 于是返回 undefined ⇒ 报「返回的不是 JSON: undefined」，
+  //   而通道其实完全正常（实测当次宿主 reverse/healthz/容器全绿、
+  //   稍后手动 CDP 读同一页面 healthz 直接返回 "ok"、readyState=complete）。
+  //   ⇒ 这种形态一律先按「读得太早」处理，再谈别的。
+  if (po.err || po.status !== 200 || po.body !== 'ok') {
+    for (let attempt = 1; attempt <= 4 && !(po.body === 'ok'); attempt++) {
+      await sleep(1500)
+      const retry = await cdpEval(`(function(){
+        var race = function (p, ms, tag) {
+          return Promise.race([p, new Promise(function (r) { setTimeout(function () { r({ err: tag }); }, ms); })]);
+        };
+        var base = localStorage.getItem('pocket_api_base') || '';
+        return race(fetch(base + '/healthz', { cache: 'no-store' })
+          .then(function (r) { return r.text().then(function (t) {
+            return JSON.stringify({ base: base, status: r.status, body: t.trim().slice(0, 60) });
+          }); })
+          .catch(function (e) { return JSON.stringify({ base: base, err: String(e && e.message || e) }); }),
+          10000, 'timeout');
+      })()`, 20000)
+      try { po = JSON.parse(String(retry)) } catch { po = { err: '页内 fetch 返回的不是 JSON: ' + retry } }
+      if (attempt > 1 || po.body === 'ok') {
+        console.log(`[preflight] 页内 fetch 自证第 ${attempt} 次尝试：${JSON.stringify(po)}`)
+      }
+    }
+  }
   if (po.err || po.status !== 200 || po.body !== 'ok') {
     console.error(`[preflight] ❌ App 内 fetch ${want}/healthz 失败：${JSON.stringify(po)}`)
     console.error('           这一步失败 ⇒ App 到本 worktree 的通道没通，后面全是不可解读的结果。')
