@@ -73,6 +73,24 @@ export async function ingestMeetingArtifacts(
   return { noteId, todosCreated, cloudSynced }
 }
 
+/**
+ * 这条行动项是否已经作为「本场会议的语音待办」落过库。
+ *
+ * 逐字对应随手记侧的 `alreadyExists`（`features/notes/note-todo-persist.ts`）
+ * —— 两侧同形，改一处必须改另一处。
+ *
+ * 用 `IS ?` 而不是 `= ?`：`meeting_id` 在随手记那条链上是 NULL，
+ * 而 SQLite 的 `=` 对 NULL 恒不成立 ⇒ 用 `=` 会让「没有会议 id」的那批永远查不到重复。
+ */
+async function alreadyIngestedTodo(meetingId: string | null, title: string): Promise<boolean> {
+  const hit = await localDB.queryOne(
+    `SELECT id FROM local_todos
+     WHERE meeting_id IS ? AND title = ? AND extracted_from_voice = 1`,
+    [meetingId, title],
+  )
+  return hit !== null && hit !== undefined
+}
+
 async function createLocalTodos(
   items: ActionItem[],
   noteId: string | null,
@@ -84,6 +102,14 @@ async function createLocalTodos(
   const now = Date.now()
   for (const item of unique) {
     if (!item.text.trim()) continue
+    // 幂等：这个收尾编排可以被重复触发（旧实现每次新 id + 裸 INSERT
+    // ⇒ 同一条行动项与同一个时间点会被建两遍）。
+    // 查重失败照常写入：查重是防重复，不是准入门槛（随手记侧同款处置）。
+    try {
+      if (await alreadyIngestedTodo(meetingId ?? null, item.text)) continue
+    } catch {
+      // 把它当门槛 ⇒ 一次 DB 抖动就让「时间点自动进日程」静默失效。
+    }
     const id = `todo-${now}-${Math.random().toString(36).slice(2, 6)}`
     // 与会中总结路径同一套期限解析口径（ISO 优先、中文兜底）。
     const dueAt = resolveTodoDue(item.due, now)

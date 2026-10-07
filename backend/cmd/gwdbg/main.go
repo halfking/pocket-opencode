@@ -15,6 +15,16 @@ func main() {
 	if dsn == "" {
 		dsn = "postgres://postgres@127.0.0.1:5432/postgres?sslmode=disable"
 	}
+	// schema 必须跟随后端配置，不能写死。
+	// 这个探针的用途是「验证 POST 是否真的落库」—— 一旦它被指向隔离后端
+	// （POCKET_PG_SCHEMA=opencode_pocket_verify），写入落在隔离 schema，
+	// 而写死的查询去读共享库 ⇒ **静悄悄地给出「没落库」的错结论**，
+	// 比报错更难发现。与 backend/internal/config/config.go 里
+	// getEnv("POCKET_PG_SCHEMA", …) 取同一个来源。
+	schema := os.Getenv("POCKET_PG_SCHEMA")
+	if schema == "" {
+		schema = "opencode_pocket"
+	}
 	ctx := context.Background()
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
@@ -22,11 +32,11 @@ func main() {
 	}
 	defer pool.Close()
 
-	rows, err := pool.Query(ctx, `
+	rows, err := pool.Query(ctx, fmt.Sprintf(`
 		SELECT workspace_id, base_url, models::text, format, is_active, created_at, updated_at,
 		       left(coalesce(api_key_encrypted,''), 12) AS key_prefix
-		FROM opencode_pocket.llm_gateway_configs
-		ORDER BY workspace_id, created_at DESC`)
+		FROM %s.llm_gateway_configs
+		ORDER BY workspace_id, created_at DESC`, schema))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -50,11 +60,11 @@ func main() {
 	// user settings：effectiveGatewayState 会用它覆盖工作区快照，
 	// 之前的 /api/user-settings?namespace=... 明显忽略了过滤条件，必须直查表。
 	fmt.Println("\n=== user_settings（llm_gateway）===")
-	urows, err := pool.Query(ctx, `
+	urows, err := pool.Query(ctx, fmt.Sprintf(`
 		SELECT user_id, workspace_id, namespace, id, payload::text, updated_at
-		FROM opencode_pocket.user_settings
+		FROM %s.user_settings
 		WHERE namespace = 'llm_gateway'
-		ORDER BY updated_at DESC`)
+		ORDER BY updated_at DESC`, schema))
 	if err != nil {
 		fmt.Println("查询失败: " + err.Error())
 		return
