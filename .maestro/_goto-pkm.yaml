@@ -22,8 +22,17 @@ appId: com.kaixuan.opencode.pocket
 # 底部导航是 position:fixed 一直在屏幕上，但页面还在做数据加载时点它，
 # 实测有两种失败形态：① 元素还没进视图树，tapOn 直接 FAILED；
 #   ② 元素在、报 COMPLETED，但路由没变。所以这里既等页面内容，也等目标本身。
+# ⚠️ 2026-10-07 换判据：这里原先等的是 nav 容器的 aria-label「主导航」。
+#
+#   它在 **DOM 里确实存在**（CDP 直读：`[aria-label="主导航"]` 命中），
+#   但 **Android 无障碍树里 75 个节点的 content-desc 全为空** ——
+#   Maestro 读的就是那棵树 ⇒ 这条判据**恒红**，2026-10-07 实测
+#   notes-crud.yaml 在这里 FAILED（`Assertion is false: "主导航" is visible`）。
+#
+#   能被 Maestro 看见的是**导航项本身**（TextView，text 走 i18n nav.*）。
+#   换成一个真实存在的导航项，并保留中英并列（设备可能是任一 locale）。
 - extendedWaitUntil:
-    visible: "主导航"
+    visible: "笔记|Notes"
     timeout: 30000
 # ⚠️ 2026-10-03 真机实测：目标从「更多」改成了「笔记」。
 # 旧写法点底部「更多」、再点宫格里的「PKM笔记」——那是 IA 重组**之前**的入口。

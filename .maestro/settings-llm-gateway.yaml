@@ -28,9 +28,9 @@ appId: com.kaixuan.opencode.pocket
 ---
 # ---------- 0. harness preflight 已真实登录，起点是 #/ai ----------
 - extendedWaitUntil:
-    visible: "首页"
+    visible: "AI 工具"
     timeout: 45000
-- assertVisible: "首页"
+- assertVisible: "AI 工具"
 - assertNotVisible: "密码登录"
 
 # ---------- 1. 进「更多」 ----------

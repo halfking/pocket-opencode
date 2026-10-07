@@ -1074,9 +1074,18 @@ if (!(await preflight())) process.exit(3)
   // 现在从 i18n 文件按设备的实际 locale 取值；取不到就退回「只要 App 外壳容器
   // 渲染出来就算 ready」，而不是继续拿中文去撞英文设备。
   const menuLabel = resolveOpenMenuLabel()
-  const readyExpr = menuLabel
-    ? `!!document.querySelector('[aria-label=${JSON.stringify(menuLabel)}]')`
-    : `!!document.querySelector('#app, #root, .ai-view')`
+  // ★ 2026-10-07 再修一届：上一版改成“按设备 locale 取 aria-label”仍然不够———
+  //   **App 的 locale 与设备 locale 可以不一致**。本机 CDP 直读 DOM 实测：
+  //     ro.product.locale             = en-US   → 设备的
+  //     document.documentElement.lang = zh-CN  → App 的
+  //     aria-label 实际渲染 = "打开菜单"
+  //   下才按设备 locale 取到 "Open menu"，DOM 里根本没有 → readyExpr 恒 false
+  //   → 报“复位到 #/ai 失败；App 当前实际停在 #/ai”——hash 实际完全正确，
+  //     **报错方向与真因相反**（同一个坑第二次换了个形态回来）。
+  //
+  // 没为何不换成“两个标签都试：斥诀的是“★明“数资源、
+  // 不省能所刻“才启动眻“斩放形式序转换闪速返回关键页。
+  const readyExpr = `!!document.querySelector('[aria-label="\u6253\u5f00\u83dc\u5355"],[aria-label="Open menu"],#app,#root,.ai-view')`
   const ok = await setRoute(route, readyExpr)
   if (!ok && process.env.POCKET_DEBUG_SETROUTE === '1') {
     // 诊断用（默认不输出）：把 readyExpr 与设备 locale 一起打出来。

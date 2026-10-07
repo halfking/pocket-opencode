@@ -32,21 +32,21 @@ appId: com.kaixuan.opencode.pocket
 #   失败现场是**邮件详情页**（可见「返回 / 邮件详情 / 回复 / 更多操作」）。
 #   原因是 harness preflight 说它已「复位到 #/ai」，但 App 实际停在上一轮
 #   遗留的深链页；而 `/email/:id` 的 meta 是 **bottomNav: false**，
-#   那页的树里根本没有 首页/笔记/消息 ⇒ 这条断言在该状态下**永远不可能通过**。
+#   那页的树里根本没有 /ai 的 meta.title「AI 工具」⇒ 这条断言在该状态下**永远不可能通过**。
 #
 #   ⇒ 不能假设起点是 #/ai。要先把底部导航变出来。
 #   「返回」是 canGoBack 页的通用出口（EmailDetailView 的返回按钮 aria-label=返回）。
 - runFlow:
     when:
-      notVisible: "首页"
+      notVisible: "AI 工具"
     commands:
       - tapOn: "返回"
       - waitForAnimationToEnd:
           timeout: 3000
 - extendedWaitUntil:
-    visible: "首页"
+    visible: "AI 工具"
     timeout: 30000
-- assertVisible: "首页"
+- assertVisible: "AI 工具"
 - assertNotVisible: "密码登录"
 
 # ---------- 1. 底部导航切到「消息」 ----------

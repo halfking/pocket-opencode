@@ -17,9 +17,32 @@
 //
 // 用法：node scripts/flashcards-test-fixture.mjs [--dry]
 import { execFileSync } from 'node:child_process'
+import { existsSync } from 'node:fs'
+import { join } from 'node:path'
 import { openCdp } from './lib/adb-cdp.mjs'
 
-const PSQL = 'C:/workspace/openpocket/logs/pg/dist2/pgsql/bin/psql.exe'
+// ⚠️ 2026-10-07 修：原来写死 'C:/workspace/openpocket/logs/pg/dist2/pgsql/bin/psql.exe'，
+// 表面是「一个本机有效的路径」，实际是**一份对所有机器都失效的跨平台状态**。
+// 实测：2026-10-07 全量扫账扫到第 11 条 flow 的时候，它打断整批 flow（flashcards-write）——
+// 报的是 **ENOENT: psql.exe**，不是「数据错了」：没打开的行上，flow 测成另一条分支。
+//
+// 为什么门禁放过它：check-no-hardcoded-abs-paths 的扫描名单是
+// **LIVE_SCRIPTS + package.json 里点名的脚本**，而本文件是手工
+// `node scripts/flashcards-test-fixture.mjs` 唤起来的，两者都不含它
+// ⇒ **问题永远逃过门禁**。
+// 调数据到 2026-10-07：scripts/ 下 407 个 .mjs，本门禁只扫了 40 个（9%），
+// 名单外还有 173 个含硬编码 Windows 路径的文件。
+//
+// 改法搭现成「跑平台上水合」，所以照抄同一条项目现成做法（同目录 stt-error-fixture.mjs）。
+const PSQL = (process.env.POCKET_PSQL
+  || [
+      '/opt/homebrew/opt/libpq/bin/psql',
+      '/usr/local/opt/libpq/bin/psql',
+      '/usr/bin/psql',
+      '/opt/homebrew/bin/psql',
+      join(process.env.LOCALAPPDATA || '', 'Programs/PostgreSQL/*/bin/psql.exe'),
+    ].find((p) => p && !p.includes('*') && existsSync(p))
+  || 'psql')
 const DRY = process.argv.includes('--dry')
 // ⚠️ 2026-10-03 改名的坑：原来这里读的是 `process.env.POCKET_PG_USER`。
 // 而 **POCKET_PG_USER 在后端 config.go 里是 PostgreSQL 的登录角色**
@@ -36,8 +59,34 @@ const CACHE_KEYS = ['flashcards:v1', 'flashcards:v1:outbox']
 
 // 全部 ASCII，避免 PowerShell/psql 兜底串编码问题
 const TABLES = ['flashcard_deck_config', 'flashcard_notes', 'flashcard_cards', 'flashcard_revlog']
+// ⚠️ 2026-10-07 修第二处：原先固定用 `-h 127.0.0.1 -U postgres`，**不带密码**。
+// 本机 PG 开了 scram，psql 直接报 `fe_sendauth: no password supplied` ⇒ 又是 ENOENT 之外的另一种死法。
+//
+// 走 DSN 的坑：**不能写成 `DSN=x psql ...`**（那是给 psql 自己设环境变量，psql 根本不读它），
+// 也不会走 `-d`；它会把 DSN 当**位置参数**（第一个非选项参数）——
+//   POCKET_POSTGRES_DSN 必须放在 argv 的**位置参数位**，不是 -d 后面。
+// ⚠️ DSN 里的 host 是 **host.docker.internal** —— 那是**容器内部**用的主机名。
+// 从宿主 macOS 上跑时它根本解析不了：`could not translate host name "host.docker.internal"`。
+// 而 PG 那边 Docker 已把 5432 映射到宿主 127.0.0.1（实测 lsof 有 com.docke LISTEN）。
+// ⇒ 从宿主跑就把主机名换成 127.0.0.1，**凭据/库名原样保留**（口令在 DSN 里，不重写）。
+function hostRunnableDsn(dsn) {
+  if (!dsn) return ''
+  try {
+    const u = new URL(dsn)
+    if (u.hostname === 'host.docker.internal') u.hostname = '127.0.0.1'
+    return u.toString()
+  } catch {
+    return dsn   // 不是 URL 形态就原样用，交给 psql 自己报错
+  }
+}
+
+const DSN = hostRunnableDsn(process.env.POCKET_POSTGRES_DSN || '')
+const connArgs = DSN
+  ? [DSN]
+  : ['-h', '127.0.0.1', '-p', '5432', '-U', 'postgres', '-d', 'postgres']
+
 const q = (sql) => {
-  const out = execFileSync(PSQL, ['-h', '127.0.0.1', '-p', '5432', '-U', 'postgres', '-d', 'postgres', '-t', '-A', '-c', sql], {
+  const out = execFileSync(PSQL, [...connArgs, '-t', '-A', '-c', sql], {
     encoding: 'utf8', timeout: 60000, maxBuffer: 33554432,
   })
   return String(out).trim()

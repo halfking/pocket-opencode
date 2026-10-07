@@ -58,14 +58,23 @@ appId: com.kaixuan.opencode.pocket
 #    如实记录覆盖变窄：软键盘那套手势（tap 输入框起键盘 → inputText →
 #    hideKeyboard → tap 提交）本流程不再走。走的是同一个表单、同一个
 #    POST /api/auth/login、同一个 401/200 判定。键盘路径单列为遗留项。
-# ⚠️ 2026-10-03 真机实测：锚点文本随 IA 重组变了。原来等的是「AI 工具」——
-# 重组**前**首页 tab 的标签；现在一级 tab 是 首页 / 笔记 / 消息 / 更多
-# （BottomNav.vue items，locales zh-CN nav.home = 首页）。不改这里的话本 flow
-# 会在第一条断言就中止：`Assertion is false: "AI 工具" is visible`。
+# ★ 锚点是「AI 工具」，不是任何 tab 标签 —— 2026-10-07 更正一个误诊。
+#   2026-10-03 有一版把它改成了「首页」，理由写的是
+#   「AI 工具 是重组**前**首页 tab 的标签」。那个诊断是错的：
+#   「AI 工具」从来不是 tab 标签，它是 /ai 路由的 **meta.title**
+#     frontend/src/app/router-mobile.ts:84
+#     meta: { requiresAuth: true, title: 'AI 工具', bottomNav: true, ... }
+#   硬编码中文、不过 i18n ⇒ 与设备 locale 无关。
+#   而 tab 标签走 t('nav.*')，IA 重组时改过（源码 BottomNav.vue:101 是
+#   t('nav.home') = 首页；设备上那个构建是 AI/Chat/Notes/Meetings/Email）。
+#   ⇒ 拿 tab 标签当锚点 = 拿一个**已知的易变值**当判据。
+#   2026-10-07 实测：设备 AI 页完整无障碍树里 `AI 工具` 在，
+#   `首页` 与 `Home` **整棵树里都不在**。所以这里改回 `AI 工具`。
+#   ⚠️ 别再改成 tab 标签。
 - extendedWaitUntil:
-    visible: "首页"
+    visible: "AI 工具"
     timeout: 45000
-- assertVisible: "首页"
+- assertVisible: "AI 工具"
 - assertNotVisible: "密码登录"
 
 # ---------- 1. 进闪卡（不在底部主导航里，在「更多」九宫格内）----------

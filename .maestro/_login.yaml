@@ -81,7 +81,7 @@ appId: com.kaixuan.opencode.pocket
 #   而它带 optional:true ⇒ 这一步长期是**静默空操作**，
 #   注释里说的「把解锁守卫逼出来」其实从未生效。
 - tapOn:
-    text: "会议|Meetings"
+    text: "笔记|Notes"
     optional: true
 # 探完受保护路由后可能落在四种状态之一：已解锁的 App 外壳 / 解锁页 / 登录页 /
 # D 态主密码弹窗 / 还在切换中。不能只等外壳 —— 被守卫弹到解锁页时外壳的
@@ -197,10 +197,10 @@ appId: com.kaixuan.opencode.pocket
 #    用两项断言，避免「只命中一个同名内容元素」时假绿。
 # ★ 中英并列，取材自 locales/*.json 的 nav 段实际取值。
 - extendedWaitUntil:
-    visible: "对话|Chat"
+    visible: "笔记|Notes"
     timeout: 30000
-- assertVisible: "对话|Chat"
-- assertVisible: "会议|Meetings"
+- assertVisible: "笔记|Notes"
+- assertVisible: "更多|More"
 
 # ⚠️⚠️ 收尾的**硬判据**：解锁页、登录页、主密码弹窗必须都不在了。
 #
@@ -235,7 +235,7 @@ appId: com.kaixuan.opencode.pocket
 #   这是少数与 locale 无关的标签，所以这里**不需要**中英并列。
 # ★ 用 ^AI$ 锚定：页内 h1「AI 工具」含 "AI" 子串但不可点，不锚定会误命中它。
 - tapOn:
-    text: "^AI$"
+    text: "^首页$|^AI$"
 - extendedWaitUntil:
     visible: "AI 工具"
     timeout: 30000

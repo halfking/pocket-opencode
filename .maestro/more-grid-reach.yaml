@@ -18,19 +18,21 @@ appId: com.kaixuan.opencode.pocket
 ---
 # ---------- 0. 先保证站在有底部导航的页面上 ----------
 # preflight 自称已复位到 #/ai，但 App 可能停在上一轮遗留的深链页；
-# 而 /email/:id 的 meta 是 bottomNav:false，那页树里没有首页/笔记/消息
-# ⇒ 照惯例先 assertVisible 首页会永远不可能通过（2026-10-03 15:33 实测）。
+# 而 /email/:id 的 meta 是 bottomNav:false，那页树里没有 /ai 的 meta.title
+# 「AI 工具」⇒ 照惯例先等它会永远不可能通过（2026-10-03 15:33 实测）。
+# ⚠️ 下面这个 notVisible 此前是**恒真**的（写的是设备上不存在的「首页」）
+#    ⇒ 每次都去点「返回」，而 AI 首页上没有返回按钮 ⇒ 反而打断 flow。
 - runFlow:
     when:
-      notVisible: "首页"
+      notVisible: "AI 工具"
     commands:
       - tapOn: "返回"
       - waitForAnimationToEnd:
           timeout: 3000
 - extendedWaitUntil:
-    visible: "首页"
+    visible: "AI 工具"
     timeout: 30000
-- assertVisible: "首页"
+- assertVisible: "AI 工具"
 - assertNotVisible: "密码登录"
 
 # ---------- 1. 进「更多」 ----------
