@@ -32632,7 +32632,7 @@ stdout 打出来。实测两处 `--print-files` 的 stdout：
 
 真克隆 + `npm ci`，HEAD = `fd1bad35`，逐项驱动 `ciRuns` 的 31 条：
 
-**26 过 / 5 红**（§237 记的 6 红里，`check:ci-trigger` 已由本节修掉）。
+**26 过 / 5 红**（〔2026-10-08 已过期，见 §239：本节又摘掉 2 条，现为 28 过 / 3 红〕）
 
 剩下 5 条**全部在 `d2260bb3` 就已红**（§237.4.3 实测过），
 且每一条都要产品或基线口径才能处置，本节不代拍：
@@ -32645,3 +32645,114 @@ stdout 打出来。实测两处 `--print-files` 的 stdout：
 
 ★ 本节新增一条待拍板项：**54 个测试文件不在仓里 ⇒ 从未被 CI 执行过**
 （「仓里 252 / 工作树 306」这条读数会随并行会话入库而变，取数时必须重测）。
+
+---
+
+## 239. 再摘两盏：都是「工作树里早就修好了、只是没入库」
+
+### 239.0 本节一句话
+
+§238 修完一条之后剩 5 条红。本节又摘掉 2 条 ⇒ **31 项 28 过 / 3 红**。
+两条的成因与 §238 同族：**修法早就在工作树里，只是没入库。**
+
+### 239.1 `check:gofmt`：一行空格
+
+`check:gofmt` 在干净检出里红的唯一文件是
+`backend/internal/server/server_note_action_items_test.go`。工作树里它**早已被
+gofmt 过但没提交**，改动就是一行：
+
+```
+-		"```json\n{\"summary\":",  // 截断的 JSON
++		"```json\n{\"summary\":", // 截断的 JSON
+```
+
+这不是新代码的 bug，是 `51970b25` 提交时带进去的格式债。
+真克隆验证（这道门只依赖 `gofmt`，**不需要 `npm ci`**）：
+
+| | `check:gofmt` |
+|---|---|
+| HEAD | rc=1（✗ 1 个文件在忽略行尾后仍不符合 gofmt） |
+| 补这一个文件 | rc=0（✓ 全部 .go 文件均符合 gofmt） |
+
+### 239.2 `check:dev-pass-sourcing`：硬编码口令的真正危害不是「不优雅」
+
+判词点名 `scripts/device-matrix.mjs:46` 的 `hardcoded-fallback`：
+
+```
+const MASTER_PW = process.env.MATRIX_MASTER_PASSWORD || 'e2e-master-pass-123'
+```
+
+这一行真正的后果要写清楚，否则它会被当成洁癖问题：
+
+> **把「环境没配」印成「设备端故障」。**
+> 空口令解密失败会被报成「受保护路由 401 / 路由有问题」，
+> 于是**每一行受保护路由假红**，而真因指向不了任何症状。
+
+改法正是那道门自己写明的处方：取值改纯环境
+（`MATRIX_MASTER_PASSWORD` / `POCKET_PROBE_PASS` / `POCKET_MASTER`），
+并在**碰设备之前** `exit 2`。
+`exit 2 = 环境/前置没配`，`exit 1 = 真跑起来并判红` —— **两者不能同形**。
+
+⚠ **校验点的位置是个坑**：放在 `--selftest` early-exit 之前会让
+`check:device-matrix-selftest` 永远红 —— 自检不碰设备也不解密，
+它要验的是量具本身，与口令无关。已在代码注释里写明。
+
+真克隆验证：
+
+| | 读数 |
+|---|---|
+| `check:dev-pass-sourcing` | rc=1 → **rc=0** |
+| `check:device-matrix-selftest` | rc=0 → rc=0（自检 28/28 通过） |
+| 不带口令运行 `device-matrix.mjs` | **rc=2**，且在任何设备动作之前退出 |
+| 带口令运行 | 越过口令检查继续往下（随后因无设备停在 adb） |
+
+★ ⇒ 顺带记一条判别动作：**验「修好」要同时验「没弄坏隔壁那道门」**。
+这一处若把校验点放错位置，会把一道原本绿的门弄红，而只跑单看会以为修好了。
+
+### 239.3 `check:dead-features`：同一族的**第四种形态**
+
+它在**工作树里是绿的**（rc=0），在干净检出里红。追下去：
+
+```
+$ grep -rln "deleteVoiceprint|listVoiceprints" frontend/src --include=*.vue
+frontend/src/features/meetings/VoiceprintSheet.vue     ← 调用方在这里
+$ git status --porcelain -- frontend/src/features/meetings/VoiceprintSheet.vue
+?? frontend/src/features/meetings/VoiceprintSheet.vue  ← 未入库
+```
+
+⇒ 声纹功能的**界面入口没入库**，于是仓里看起来「store 有导出但没人用」。
+
+⇒ ★ 这与 §238 不是同一个形态，但同一条病：
+**让仓看起来坏掉的原因，是另一样东西不在仓里。**
+前三例是「门依赖的 / 文件依赖的东西没入库」，
+这一例是「让门变红的那次接线没入库」。
+
+⚠ 它**不是缺陷**，是并行会话的在途特性（`voiceprints-store.ts` 同时还有
+70 行未提交的重构，SQL 被抽进 `voiceprint-writes`）。
+本节不代它提交，也不代它写基线。
+
+### 239.4 现值读数
+
+真克隆 + `npm ci`，HEAD = `2b6dd8bb`，逐项驱动 `ciRuns` 的 31 条：
+
+**28 过 / 3 红。** 三条红各自的归属：
+
+| 门 | 归属 | 谁能解 |
+|---|---|---|
+| `check:build-mobile-selftest` | 干净检出无 `.env.android-dev` | **属主拍板**（见 §237.6 的修法取舍） |
+| `check:dead-features` | 并行会话的 `VoiceprintSheet.vue` 未入库 | 并行会话入库即可 |
+| `check:marketplace-fix` | `/marketplace/agents` 声明 `hideAppHeader` 但视图无自带头部 | 属主或并行会话 |
+
+⇒ ★ 但**第 1 条是 `ciRuns` 的头一项**，而 `run-gates --ci` 失败即停
+⇒ 只要它还红，**CI 上后面 30 项就一次都没跑过**。
+⇒ 它是这三条里**杠杆最大**的一条，尽管它本身只值 2 个用例。
+
+### 239.5 本节没有做的事
+
+- 没有改 `build-mobile.mjs` 的控制流。§237.6 列的三条修法各有利弊，
+  其中「把 API base 守卫提到 env 文件存在性检查之前」经实测**不改变守卫的判定**
+  （显式空值靠 Vite 优先级遮蔽 env 文件），只改变「两个条件同时成立时先报哪句」，
+  但它仍然是**产品行为变更**，不代拍。
+- 没有代并行会话提交声纹那条链。
+- 没有更新 §237.6 / §238.6 里那两份红灯清单的**数字**以外的内容 ——
+  三份清单里的**门名**逐条复核过，仍然一致。
