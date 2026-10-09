@@ -51,11 +51,11 @@ _env_ensure_key() {
 _ensure_db() {
   local name="$1" detect_func="$2" host_var="$3" port_var="$4" \
         deploy_flag="$5" data_dir="$6" image="$7" default_port="$8"
-  local mode
+  local mode name_upper
   case "$name" in
-    postgres) mode=OPP_PG_MODE ;;
-    redis) mode=OPP_REDIS_MODE ;;
-    mysql) mode=OPP_MYSQL_MODE ;;
+    postgres) mode=OPP_PG_MODE; name_upper=POSTGRES ;;
+    redis)    mode=OPP_REDIS_MODE; name_upper=REDIS ;;
+    mysql)    mode=OPP_MYSQL_MODE; name_upper=MYSQL ;;
   esac
 
   local deploy_value="${!deploy_flag:-false}"
@@ -113,7 +113,9 @@ _ensure_db() {
 
   # false / 未设置：不创建
   export "${mode}=remote-required"
-  echo "  ⚠️  ${name}: 未发现外部实例且 OPP_DEPLOY_${name^^}=false；"
+  # 用显式大写表而不是 ${name^^}：后者要 bash 4+，macOS 自带 bash 3.2 会直接
+  # 报 bad substitution，把「没探测到实例」这条警告变成整个部署的硬失败。
+  echo "  ⚠️  ${name}: 未发现外部实例且 OPP_DEPLOY_${name_upper}=false；"
   echo "      期望 DSN 由 .env 或上游 deploy 脚本注入远端（如 252）"
   return 0
 }

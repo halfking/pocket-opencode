@@ -28,6 +28,16 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_DIR="${ROOT_DIR}"
 export DEPLOY_ENV="${DEPLOY_ENV:-local}"
 
+# macOS 的 Docker Desktop 默认只在 ~/.docker/bin 放软链、不改 PATH。
+# 必须在任何 `docker image inspect` 之前补上，否则后面的镜像存在性判断会
+# 因为「命令不存在」而全部判成缺失，白白重跑一遍构建。
+if ! command -v docker >/dev/null 2>&1; then
+  for d in "${HOME}/.docker/bin" "/Applications/Docker.app/Contents/Resources/bin" \
+           "/usr/local/bin" "/opt/homebrew/bin"; do
+    [ -x "${d}/docker" ] && { export PATH="${d}:${PATH}"; echo "ℹ️  docker 不在 PATH，已自动补入: ${d}"; break; }
+  done
+fi
+
 # Scoped lifecycle entry: never use compose down to stop only the UI.
 if [[ "${1:-}" == "--stop-frontend" ]]; then
   [[ $# -eq 1 ]] || { echo "--stop-frontend 不接受其他参数" >&2; exit 2; }
@@ -107,6 +117,54 @@ if [[ " $* " == *" --dry-run "* ]]; then
   fi
   echo "  flags: $*"
   exit 0
+fi
+
+# ── 0) 离线镜像就位 + 缺失时现场构建 ────────────────────────────────
+# 本机要求「基础镜像只从本地镜像库取，不联网下载」。仓库默认的
+# Dockerfile.kx-base / Dockerfile.frontend 需要联网才有的镜像（node:22-bookworm-slim、
+# alpine:latest、nginx:1.24-alpine）且其构建器 Go 版本低于 go.mod，所以
+# 走 deploy/bin/{prepare-offline-images,build-offline-images}.sh 这条离线链路。
+#
+# 幂等：镜像齐了什么都不做；--build 强制重建；OPP_SKIP_OFFLINE_BUILD=1 完全跳过。
+if [[ "${OPP_SKIP_OFFLINE_BUILD:-0}" != "1" ]]; then
+  if [[ "$(uname -m)" == "arm64" || "$(uname -m)" == "aarch64" ]]; then
+    need_backend=true; need_frontend=true
+    [[ " $* " == *" --frontend-only "* ]] && need_backend=false
+    [[ " $* " == *" --backend-only "* ]] && need_frontend=false
+    backend_ready=false; frontend_ready=false
+    docker image inspect "opencode-pocket:${OPP_IMAGE_TAG}" >/dev/null 2>&1 && backend_ready=true
+    docker image inspect "opencode-pocket-frontend:${OPP_IMAGE_TAG}" >/dev/null 2>&1 && frontend_ready=true
+
+    build_backend=false; build_frontend=false
+    if [[ " $* " == *" --build "* ]]; then
+      build_backend="${need_backend}"; build_frontend="${need_frontend}"
+    else
+      [[ "${need_backend}" == true && "${backend_ready}" != true ]] && build_backend=true
+      [[ "${need_frontend}" == true && "${frontend_ready}" != true ]] && build_frontend=true
+    fi
+
+    if [[ "${build_backend}" == true || "${build_frontend}" == true ]]; then
+      echo "━━━ 离线镜像 ━━━"
+      "${SCRIPT_DIR}/deploy/bin/prepare-offline-images.sh"
+      echo
+      build_args=()
+      [[ "${build_backend}" == true ]] || build_args+=(--frontend-only)
+      [[ "${build_frontend}" == true ]] || build_args+=(--backend-only)
+      # macOS 自带 bash 3.2：set -u 下展开空数组会报 unbound variable，
+      # 所以先判长度再传参。
+      if [[ ${#build_args[@]} -gt 0 ]]; then
+        "${SCRIPT_DIR}/deploy/bin/build-offline-images.sh" "${build_args[@]}"
+      else
+        "${SCRIPT_DIR}/deploy/bin/build-offline-images.sh"
+      fi
+      echo
+    else
+      echo "━━━ 离线镜像 ━━━"
+      echo "  ✅ opencode-pocket:${OPP_IMAGE_TAG} 与 opencode-pocket-frontend:${OPP_IMAGE_TAG} 均已就位（跳过构建）"
+    fi
+  else
+    echo "  ⚠️  非 arm64 宿主：跳过离线构建链（请用 build-images.sh + save/load-images.sh 流程）"
+  fi
 fi
 
 # ── 1) 建目录 ──────────────────────────────────────────────────────

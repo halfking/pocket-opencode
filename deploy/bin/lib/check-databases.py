@@ -39,6 +39,80 @@ def client(name):
     return found
 
 
+DB_ENGINE_SIGNATURE = {"postgres": r"postgres|pgvector|citus",
+                       "redis": r"redis|valkey|keydb",
+                       "mysql": r"mysql|mariadb|percona"}
+DB_INTERNAL_PORT = {"postgres": 5432, "redis": 6379, "mysql": 3306}
+
+
+def engine_container(kind, port):
+    """Name of a running container that both runs `kind` and publishes `port`.
+
+    Only a container that actually publishes the configured host port may stand
+    in for the target instance. A merely similar container could answer on a
+    different endpoint and make reuse look verified when nothing was verified.
+    """
+    if not shutil.which("docker"):
+        return None
+    try:
+        ids = run([client("docker"), "ps", "-q"]).split()
+        if not ids:
+            return None
+        items = json.loads(run([client("docker"), "inspect", *ids]))
+    except (CheckError, OSError, ValueError):
+        return None
+    signature = re.compile(DB_ENGINE_SIGNATURE[kind], re.I)
+    for item in items:
+        bindings = item.get("NetworkSettings", {}).get("Ports") or {}
+        published = any(any(str(b.get("HostPort")) == str(port) for b in (v or []) if b)
+                        for v in bindings.values())
+        if not published:
+            continue
+        name = (item.get("Name") or "").lstrip("/")
+        image = item.get("Config", {}).get("Image", "")
+        if signature.search(f"{image} {name}"):
+            return name
+    return None
+
+
+def db_client(kind, binary, host, port, forward_env=()):
+    """Command prefix for a database client, pointed at the right endpoint.
+
+    Prefers a host binary and talks to `host:port` directly. On Docker-only dev
+    hosts — no libpq, no redis-cli, no mysqladmin — borrow the client from the
+    container that publishes `port`, and talk to that container's own loopback
+    port instead of the host's published one.
+
+    Secret environment variables are forwarded as bare `-e NAME`, which Docker
+    reads from this process without ever placing the value in argv. That keeps
+    the "credentials must not appear in the process table" property intact.
+    """
+    # Host and port are not secret, so they travel as plain flags either way.
+    port_flag = "-P" if binary.startswith("mysql") else "-p"
+    found = client_or_none(binary)
+    if found:
+        return [found, "-h", host, port_flag, str(port)]
+    container = engine_container(kind, port)
+    if not container:
+        raise CheckError(f"{binary} client unavailable and no {kind} container publishes {port}")
+    prefix = ["docker", "exec", "-i"]
+    for name in forward_env:
+        prefix += ["-e", name]
+    internal = DB_INTERNAL_PORT[kind]
+    return prefix + [container, binary, "-h", "127.0.0.1", port_flag, str(internal)]
+
+
+def client_or_none(name):
+    """Host path for a client binary, or None when this host has none."""
+    found = shutil.which(name)
+    if not found and name == "psql":
+        # Homebrew libpq is intentionally keg-only.
+        found = next((str(p) for p in [Path("/opt/homebrew/opt/libpq/bin/psql"),
+                                      Path("/usr/local/opt/libpq/bin/psql")]
+                      if p.is_file()), None)
+    return found
+
+
 def read_env(path):
     values = {}
     for line in Path(path).read_text().splitlines():
@@ -107,8 +181,10 @@ def check_pg(values):
             env["PGOPTIONS"] += " " + value
         elif key != "search_path":
             raise CheckError("unsupported PostgreSQL URL option; preflight refused")
-    args = [client("psql"), "-X", "-w", "-tA", "-v", "ON_ERROR_STOP=1",
-            "-v", f"schema={schema}"]
+    args = db_client("postgres", "psql", host, port,
+                     forward_env=("PGUSER", "PGPASSWORD", "PGDATABASE",
+                                  "PGCONNECT_TIMEOUT", "PGOPTIONS")) \
+        + ["-X", "-w", "-tA", "-v", "ON_ERROR_STOP=1", "-v", f"schema={schema}"]
     reply = run(args, env=env, input="""
 SELECT has_database_privilege(current_database(), 'CONNECT'),
        EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = :'schema'),
@@ -145,7 +221,7 @@ def check_redis(values):
     parsed, host, port = endpoint(values["POCKET_REDIS_URL"], ("redis", "rediss"), 6379)
     env = os.environ.copy()
     env["REDISCLI_AUTH"] = unquote(parsed.password or "")
-    args = [client("redis-cli"), "-h", host, "-p", str(port), "--no-auth-warning"]
+    args = db_client("redis", "redis-cli", host, port, forward_env=("REDISCLI_AUTH",))
     if parsed.username:
         args += ["--user", unquote(parsed.username)]
     if parsed.scheme == "rediss":
