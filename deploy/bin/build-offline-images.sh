@@ -27,14 +27,6 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/env.sh"
 
-# macOS Docker Desktop 默认不把 docker 放进 PATH，补上（与 prepare 脚本一致）
-if ! command -v docker >/dev/null 2>&1; then
-  for d in "${HOME}/.docker/bin" "/Applications/Docker.app/Contents/Resources/bin" \
-           "/usr/local/bin" "/opt/homebrew/bin"; do
-    [ -x "${d}/docker" ] && { export PATH="${d}:${PATH}"; break; }
-  done
-fi
-
 GO_BUILDER="${OPP_GO_BUILDER_TAG:-kx-base/golang:1.27-alpine-arm64}"
 RUNTIME_BASE="${OPP_RUNTIME_BASE_TAG:-alpine:opp-runtime-arm64}"
 FRONTEND_BASE="${OPP_FRONTEND_BASE_TAG:-nginx:alpine}"

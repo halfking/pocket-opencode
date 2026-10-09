@@ -40,6 +40,24 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 export REPO_ROOT LIB_DIR
 unset _env_self
 
+# ── 0.2 docker CLI 兜底（macOS）──────────────────────────────────
+# Docker Desktop 默认只在 ~/.docker/bin 放一个软链、并不改 PATH。从非 GUI
+# shell（SSH、编辑器任务、计划任务）跑 deploy/bin/*.sh 时就会
+# "docker: command not found"——而 status.sh / logs.sh / stop.sh 的第一件事
+# 就是调用 docker。放在这里统一兜底，比每个脚本各写一份更不容易漏。
+if ! command -v docker >/dev/null 2>&1; then
+  for _docker_bin_dir in \
+      "${HOME}/.docker/bin" \
+      "/Applications/Docker.app/Contents/Resources/bin" \
+      "/usr/local/bin" "/opt/homebrew/bin"; do
+    if [ -x "${_docker_bin_dir}/docker" ]; then
+      export PATH="${_docker_bin_dir}:${PATH}"
+      break
+    fi
+  done
+  unset _docker_bin_dir
+fi
+
 # ── 0. OS 检测（先 source 库，让后续路径解析用得上） ──────────────
 # shellcheck source=lib/os-detect.sh
 source "${LIB_DIR}/os-detect.sh"

@@ -28,16 +28,6 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_DIR="${ROOT_DIR}"
 export DEPLOY_ENV="${DEPLOY_ENV:-local}"
 
-# macOS 的 Docker Desktop 默认只在 ~/.docker/bin 放软链、不改 PATH。
-# 必须在任何 `docker image inspect` 之前补上，否则后面的镜像存在性判断会
-# 因为「命令不存在」而全部判成缺失，白白重跑一遍构建。
-if ! command -v docker >/dev/null 2>&1; then
-  for d in "${HOME}/.docker/bin" "/Applications/Docker.app/Contents/Resources/bin" \
-           "/usr/local/bin" "/opt/homebrew/bin"; do
-    [ -x "${d}/docker" ] && { export PATH="${d}:${PATH}"; echo "ℹ️  docker 不在 PATH，已自动补入: ${d}"; break; }
-  done
-fi
-
 # Scoped lifecycle entry: never use compose down to stop only the UI.
 if [[ "${1:-}" == "--stop-frontend" ]]; then
   [[ $# -eq 1 ]] || { echo "--stop-frontend 不接受其他参数" >&2; exit 2; }

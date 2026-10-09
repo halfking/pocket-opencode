@@ -38,14 +38,6 @@ source "${LIB_DIR}/database-detect.sh"
 [[ -z "${CALLER_PG_PORT}" ]] && OPP_PG_PORT=5432
 [[ -z "${CALLER_PG_HOST}" ]] && OPP_PG_HOST=host.docker.internal
 
-# macOS Docker Desktop 默认不把 docker 放进 PATH
-if ! command -v docker >/dev/null 2>&1; then
-  for d in "${HOME}/.docker/bin" "/Applications/Docker.app/Contents/Resources/bin" \
-           "/usr/local/bin" "/opt/homebrew/bin"; do
-    [ -x "${d}/docker" ] && { export PATH="${d}:${PATH}"; break; }
-  done
-fi
-
 : "${OPP_PG_HOST:=host.docker.internal}"
 : "${OPP_PG_PORT:=5432}"
 : "${OPP_PG_DB:=pocket}"
