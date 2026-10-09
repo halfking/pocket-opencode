@@ -425,15 +425,38 @@ func TestAnchorCoverageGateRejectsLooseMatch(t *testing.T) {
 		wantNoOverlap   bool
 	}{
 		{
-			// 实测覆盖率 0.58 < 0.6：前半段沾边、后半段完全不同。
-			"半程相似不算重叠",
+			// ⚠ 2026-10-06：这两组**既有的**负控其实暴露了真缺口（设计文档 §19）——
+			// 它们的重叠区就落在接缝上：
+			//
+			//	committed 结尾 = 预算排期和人员
+			//	next    开头 = 预算排期和人员，
+			//	               ↑ 真实重叠 7 字
+			//
+			// 但单一窗口（limit 被 len(cs) 撑到 12）算出的覆盖率是
+			// 7/12 ≈ 0.58 < 0.6 ⇒ 真重叠被判为无重叠 ⇒ 合并结果里
+			//「预算排期和人员」出现两次 —— 正是用户报的「片段重复」。
+			//
+			// 本轮**尝试**改成逐档扫描（能修好这两条），但它同时吃掉了
+			// 另一组真实内容（见 TestWindowScanWouldOverDedup 的记录），
+			// 已撤回。故此处保持原期望 true —— 它现在是这条缺口的**证人**。
+			// 要修它，需要能区分「重说一遍」与「换句式但用词相同」的信号，
+			// 已知可行方向是切片重叠秒数（chunk.StartSec/EndMs），见 §19.6。
+			"半程相似不算重叠（同时是 §19 缺口的证人）",
 			"今天要讨论三件事预算排期和人员", "预算排期和人员，以及风险",
 			true,
 		},
 		{
-			// 实测覆盖率 0.54 < 0.6。
-			"错位相似的两段",
+			"错位相似的两段（同上，§19 缺口的证人）",
 			"上午讨论三个方面预算排期人员", "面预算排期人员安排下午继续",
+			true,
+		},
+		{
+			// ★ 这才是货真价实的负控：**共有的短语不在接缝上**。
+			// 「预算排期」两段都有，但它出现在 next 的**开头**之外，
+			// 而 committed 的结尾是「和人员」—— 两者对不上 ⇒ 不得去重。
+			// 若误判为重叠，会把 next 开头的真实内容「风险以及」裁掉。
+			"共有短语不在接缝上不算重叠",
+			"今天要讨论三件事预算排期和人员", "风险以及预算排期要盯紧",
 			true,
 		},
 		{
@@ -456,5 +479,202 @@ func TestAnchorCoverageGateRejectsLooseMatch(t *testing.T) {
 					ok, !tc.wantNoOverlap, tc.committed, tc.next)
 			}
 		})
+	}
+}
+
+// lcsAlignLegacy 是 2026-10-07 之前的实现（硬编码两侧等长），
+// 搬到这里当**参照侧**做 A/B 对拍。
+//
+// ⚠ 参照侧必须先证明「自己本身有值」：如果它对任何输入都返回同一个值，
+// 那么「新实现 == 参照侧」这条判据就是恒真的，等于没写。
+// 下面 TestLCSAlign_ReferenceIsNotDegenerate 专门钉这一点。
+func lcsAlignLegacy(tail, head []rune) ([][]int, []bool) {
+	n := len(tail)
+	dp := make([][]int, n+1)
+	for i := range dp {
+		dp[i] = make([]int, n+1)
+	}
+	for i := 1; i <= n; i++ {
+		for j := 1; j <= n; j++ {
+			if tail[i-1] == head[j-1] {
+				dp[i][j] = dp[i-1][j-1] + 1
+			} else if dp[i-1][j] >= dp[i][j-1] {
+				dp[i][j] = dp[i-1][j]
+			} else {
+				dp[i][j] = dp[i][j-1]
+			}
+		}
+	}
+	matched := make([]bool, n+1)
+	i, j := n, n
+	for i > 0 && j > 0 {
+		if tail[i-1] == head[j-1] {
+			matched[j] = true
+			i--
+			j--
+		} else if dp[i-1][j] >= dp[i][j-1] {
+			i--
+		} else {
+			j--
+		}
+	}
+	return dp, matched
+}
+
+func TestLCSAlign_ReferenceIsNotDegenerate(t *testing.T) {
+	// 参照侧必须对不同输入给出不同输出，否则 A/B 对拍没有意义。
+	//
+	// ⚠ 用例必须**等长**：参照侧硬编码两侧等长，不等长它自己就 panic。
+	//   第一次写这三条时用了 12 字 vs 9 字，参照侧当场 index out of range ——
+	//   这反倒是它那个洞的又一次确认，但判据本身是坏的。
+	a := []rune("今天下午三点开产品评审会")
+	c := []rune("甲乙丙丁戊己庚辛壬癸子丑")
+	if len(a) != len(c) {
+		t.Fatalf("参照侧用例必须等长：%d vs %d", len(a), len(c))
+	}
+	_, ma := lcsAlignLegacy(a, a)
+	_, mc := lcsAlignLegacy(a, c)
+	sum := func(m []bool) int {
+		n := 0
+		for _, v := range m {
+			if v {
+				n++
+			}
+		}
+		return n
+	}
+	if sum(ma) == sum(mc) {
+		t.Fatalf("参照侧退化：完全重叠(%d) 与完全无关(%d) 的 matched 数量相同", sum(ma), sum(mc))
+	}
+	if sum(ma) != len(a) {
+		t.Fatalf("完全重叠时参照侧应选中全部 %d 个字符，实得 %d", len(a), sum(ma))
+	}
+	if sum(mc) != 0 {
+		t.Fatalf("完全无关时参照侧不该选中任何字符，实得 %d", sum(mc))
+	}
+}
+
+func TestLCSAlign_EqualLengthUnchanged(t *testing.T) {
+	// 等长输入下，新实现必须与旧实现**逐位**一致（DP 表 + matched 全比）。
+	//
+	// ⚠ 用例必须真等长。第一版直接搬 §19/§22 的真实用例，实测没有一个等长
+	//   （16/15、17/14、17/19…），判据第一条就 fatal；第二版手写又错了两处。
+	//   ⇒ 这批是用脚本逐条量过长度才填进来的，那批真实用例搬去了下面的
+	//     不等长测试（它们量的正是别的东西）。
+	cases := [][2]string{
+		{"排期和预算都要在周五之前定下来", "预算和排期都要在周五之前定下来"}, // 词序颠倒：字符集相同、顺序不同
+		{"预算和排期", "预算和排期"},       // 完全相同
+		{"排期还", "期还有"},           // 错位一位：§19 误去重那一档的形状
+		{"今天下午开会", "今天下午开会"},     // 完全相同·短
+		{"预算算完了", "预算算完了"},       // 含重复字符
+		{"会议室开产品评审", "会议室开产品评审"}, // 完全相同·长
+		{"甲乙丙丁戊己", "乙丙丁戊己庚"},     // 平移一位
+		{"下午三点开会", "三点开会吧了"},     // 部分重叠 + 尾字不同
+	}
+	for _, tc := range cases {
+		tail := []rune(tc[0])
+		head := []rune(tc[1])
+		if len(tail) != len(head) {
+			t.Fatalf("用例 %q/%q 不是等长（%d vs %d），测的不是「不变」", tc[0], tc[1], len(tail), len(head))
+		}
+		gotDP, gotM := lcsAlign(tail, head)
+		wantDP, wantM := lcsAlignLegacy(tail, head)
+		n := len(tail)
+		for i := 0; i <= n; i++ {
+			for j := 0; j <= n; j++ {
+				if gotDP[i][j] != wantDP[i][j] {
+					t.Fatalf("DP[%d][%d] 不一致：%d vs %d（%q / %q）", i, j, gotDP[i][j], wantDP[i][j], tc[0], tc[1])
+				}
+			}
+		}
+		for j := 0; j <= n; j++ {
+			if gotM[j] != wantM[j] {
+				t.Fatalf("matched[%d] 不一致：%v vs %v（%q / %q）", j, gotM[j], wantM[j], tc[0], tc[1])
+			}
+		}
+	}
+}
+
+func TestLCSAlign_UnequalLengthNoPanic(t *testing.T) {
+	// 回归 2026-10-07 那个 panic：head 比 tail 长。
+	// 旧实现在这里会 index out of range，而它在**用户录音路径**上。
+	//
+	// 用例就是 §19/§22 里那几条真实用例 —— 它们**本来就不等长**，
+	// 之前没人传过，所以那个洞一直没被碰到。
+	realCases := [][2]string{
+		{"今天下午三点，会议室开产品评审会。", "会议室开产品评审会，请提前十分钟到场。"},
+		{"这个方案的三个风险点已经确认过了", "三个风险点已经确认过了下周上线"},
+		{"我们今天讨论了预算和排期，还有人", "排期还有人员安排要尽快定下来"},
+	}
+	for _, tc := range realCases {
+		tail := []rune(tc[0])
+		head := []rune(tc[1])
+		assertUnequalShapeOK(t, tail, head)
+		// 换向也测：短的在前同样不能炸。
+		assertUnequalShapeOK(t, head, tail)
+	}
+	// 极端比例
+	assertUnequalShapeOK(t, []rune("预算"), []rune("预算和排期都还没定下来，要尽快"))
+	assertUnequalShapeOK(t, []rune("预算和排期都还没定下来"), []rune("预算"))
+}
+
+func assertUnequalShapeOK(t *testing.T, tail, head []rune) {
+	t.Helper()
+	if len(tail) == len(head) {
+		t.Fatalf("本测试只管不等长，用例却等长了：%q / %q", string(tail), string(head))
+	}
+	dp, m := lcsAlign(tail, head) // 旧实现在这里 panic
+	if len(dp) != len(tail)+1 {
+		t.Fatalf("DP 行数 %d ≠ len(tail)+1=%d（%q / %q）", len(dp), len(tail)+1, string(tail), string(head))
+	}
+	if len(dp[0]) != len(head)+1 {
+		t.Fatalf("DP 列数 %d ≠ len(head)+1=%d（%q / %q）", len(dp[0]), len(head)+1, string(tail), string(head))
+	}
+	if len(m) != len(head)+1 {
+		t.Fatalf("matched 长度 %d ≠ len(head)+1=%d（%q / %q）", len(m), len(head)+1, string(tail), string(head))
+	}
+	// LCS 长度仍须自洽：不超过任一侧，且不少于两侧的公共字符数下界。
+	got := dp[len(tail)][len(head)]
+	if got > len(tail) || got > len(head) {
+		t.Fatalf("LCS=%d 超过任一侧长度（%d / %d）", got, len(tail), len(head))
+	}
+	// ★ 强不变量：matched 里为 true 的个数**必须等于 LCS 长度**。
+	//   只查 DP 维度与 LCS 数值的话，回溯循环写错（比如不等长时仍从
+	//   min(nt,nh) 起跳）能混过去 —— 那会漏掉 head 尾部的标记，
+	//   而漏标记的**后果正是净增里混进重复内容**（用户看到片段重复）。
+	if marked := countTrue(m); marked != got {
+		t.Fatalf("matched 真值数 %d ≠ LCS 长度 %d（%q / %q）：回溯漏标记了 head 的一部分", marked, got, string(tail), string(head))
+	}
+	// 短串是长串前缀时，matched 应恰好覆盖短串的全部字符。
+	short, long := tail, head
+	if len(short) > len(long) {
+		short, long = long, short
+	}
+	if string(long[:len(short)]) == string(short) {
+		if got != len(short) {
+			t.Fatalf("短串是长串前缀时 LCS 应为 %d，实得 %d（%q ⊂ %q）", len(short), got, string(short), string(long))
+		}
+	}
+}
+
+func countTrue(m []bool) int {
+	n := 0
+	for _, v := range m {
+		if v {
+			n++
+		}
+	}
+	return n
+}
+
+func TestLCSAlign_EmptyInput(t *testing.T) {
+	for _, tc := range [][2]string{{"", "abc"}, {"abc", ""}, {"", ""}} {
+		dp, m := lcsAlign([]rune(tc[0]), []rune(tc[1]))
+		if dp[len([]rune(tc[0]))][len([]rune(tc[1]))] != 0 {
+			t.Fatalf("空输入的 LCS 必须为 0（%q / %q）", tc[0], tc[1])
+		}
+		if len(m) != len([]rune(tc[1]))+1 {
+			t.Fatalf("空输入下 matched 长度仍须跟 head 走（%q / %q）", tc[0], tc[1])
+		}
 	}
 }

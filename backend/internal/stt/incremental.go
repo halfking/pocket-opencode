@@ -19,6 +19,27 @@
 // 关键设计：短段必须**在静音处切**且带**重叠**，否则句首字词会丢：
 // 硬切在词中间，两侧各丢一半信息。所以每段尾部留 overlapSec 秒与下一段重叠，
 // 聚合时对重叠区做去重（见 mergeIncremental）。
+//
+// ⚠⚠ 2026-10-07 查实：上面这句设计**只实现了一半**。
+//
+//	· 「在静音处切」—— 由调用方的 VAD 负责（前端 VadSegmenter，silenceMs 1500）；
+//	  连续讲话时退化到 NOTE_CHUNK_MS=3000 的定长硬切。
+//	· 「带重叠」—— **从未接线**。IncrementalOverlapSec 至今零使用点，
+//	  前端 recordingRuntime.ts:901 送的是纯新增窗口
+//	  （startSec = endSec - windowSec），**相邻两片在时间上不重叠**。
+//
+//	实测后果（20 档 / 40 次真实 mimo-v2.5-asr 调用，
+//	见 live_overlap_timing_probe_test.go）：
+//	· 生产形状下重复量只有 1–2 字，现有去重算法 **0/8 误判** —— 保守但正确；
+//	· 兜底硬切上**词被劈开**（实测 A 尾「…开产品产。」/ B 首「品评审会…」），
+//	  且没有重叠可依。全量路径（full.go）早就用 VAD 修好了，实测 CER 8.9% → 5.5%，
+//	  **即时转写路径是唯一还在硬切的那条**。
+//	· 若将来真的接上重叠，§24 实测给出两个数：重叠应 **>= 1.6s**（1.2s 档
+//	  覆盖率 0.46 仍未过闸），且 1.0s（当前常量的值）恰好落在判据失效区。
+//
+//	★ 也就是说：用户报的「片段重复」在**生产的切片形状下没有复现**，
+//	  真正在发生的是「兜底路径切碎词」。这两件事的修法完全不同，
+//	  别再拿去重算法去修切碎问题。
 package stt
 
 import (
@@ -138,7 +159,7 @@ func (i *IncrementalTranscriber) TranscribeChunk(
 	}
 
 	// 短切片直接走单次转写：再套一层切分只会得到 1 段，白走逻辑。
-	res, err := i.tr.TranscribeFor(ctx, scope, chunk.Audio, "chunk.wav")
+	res, err := i.tr.transcribeFor(ctx, scope, chunk.Audio, "chunk.wav", true /* forcePlain: §120 本路径不读 Segments */)
 	if err != nil {
 		// 段失败**不**上抛为整会话失败：调用方要的是「继续出字」，
 		// 一段失败只意味着这一段没文字。错误带在结果里。
@@ -257,6 +278,17 @@ const minFuzzyAnchor = 4
 // anchorCoverage 是「LCS 必须覆盖对齐窗口多大比例」的下限 —— 这才是
 // 真正的相似度闸。
 //
+// ★ 本常量与前端 frontend/src/features/meetings/meeting-dedup.ts 的
+//
+//	ANCHOR_COVERAGE **必须相等**，maxOverlap（下方）与该文件的 MAX_OVERLAP
+//	同理。两侧是同一套算法的手抄两份，跨语言无法直接复用，只能靠约定。
+//
+//	「靠约定」在 2026-10-06 之前是**没有强制力**的：本文件从头到尾没提过
+//	前端那份实现，改了一边忘了另一边不会有人发现——两边各自测试全绿，
+//	只是对「这是不是重叠」开始给出不同判断。现在由
+//	dedup_threshold_sync_test.go 把这条约定变成红灯。
+//	（那份测试第一次跑时正是红的：TS 侧写了交叉引用、本侧没写。）
+//
 // 宁高不低：漏判的代价是多几个重复字（用户一眼能看出来），误判的代价是
 // **丢掉整句真实内容**（用户永远发现不了，直到某天需要那句话时）。
 //
@@ -321,6 +353,56 @@ func fuzzyOverlapTail(cs, ns []rune, maxOverlap int) ([]rune, bool) {
 	//   正确做法：**先用最大窗口求 LCS 长度 L**（L 就是重叠的估计长度），
 	//   **再用 L 作分母**判相似度 = L/L 附近是否成立，并用
 	//   「净增占 next 的比例」做第二道闸。这样长文本不稀释、短锚点不劫持。
+	//
+	// ⚠ 2026-10-06 真 ASR 实测发现的第三种错法（本轮试过并**撤回**了改法）：
+	// 改成「逐档扫描窗口、每档用自己的分母、取最大的通过档」，确实把真网关
+	// 上的去重命中率从 1/5 提到 4/5，但它同时**吃掉了真实内容** ——
+	// 「我们今天讨论了预算和排期，还有人」+「排期还有人员安排要尽快定下来」
+	// 里的「排期还」被当重叠裁掉。
+	//
+	// 原因是真重叠与「换句式但用词相同」在**结构上不可区分**：
+	//	真重叠  tail 议室开产品评审会。 ↔ head 会议室开产品评审会（7/9 = 0.78）
+	//	误判    tail 期，还有人        ↔ head 排期还有        （4/5 = 0.80）
+	// 覆盖率、匹配位置、长度三项都对不上任何可靠的判别式。
+	// 靠调阈值把单测调绿就是过拟合，且方向恰好押在「宁可丢内容」那一侧。
+	//
+	// 真正能分开它们的信号不在文本里，而在**时间**：切片有已知的重叠秒数
+	// （chunk.StartSec / EndSec），把「语速 × 重叠秒数」当作 limit 的上界。
+	//
+	// ⚠⚠ 2026-10-07 上真实端点量过了（live_overlap_timing_probe_test.go，
+	// 10 档 / 20 次真实 mimo-v2.5-asr 调用）。**结论与这段注释 10-06 写的
+	// 预期不同，两条都要记下来**：
+	//
+	// ① 正控档（真重叠）实测「字/秒」：
+	//      0.2s→15.0  0.4s→5.0  0.6s→3.3  0.8s→2.5
+	//      1.2s→5.0  1.6s→5.6  2.0s→6.0
+	//    1.2s 及以上**近似线性**（斜率约 7.5 字/秒），时间上界在那一段成立；
+	//    但 0.2s 档是 15 字/秒的**离群点**（短于 ASR 能稳定识别的长度，
+	//    边界文本本身就不一致）⇒ **不存在一个对所有重叠长度都成立的语速上界**。
+	//    本注释原先写的「1 秒重叠 ≈ 4–5 字」**偏低**，且没提它只在 1.2s+ 成立。
+	//
+	// ② 把时间上界代进 limit 后重算全部 10 档：
+	//      语速取 10 或 15 字/秒 ⇒ **10 档判定与现状逐档完全相同**，
+	//        时间上界一处都不生效；
+	//      语速取 8 字/秒（最紧）⇒ 只有 1.2s 档改判为重叠，而它的覆盖率
+	//        恰好是 0.60、正卡在 anchorCoverage 边界上 —— 典型的
+	//        **过拟合到阈值边界**。
+	//
+	// ⇒ **它不改善漏判。** 用户报的「片段重复」不会因为它好转。
+	//    它的唯一价值是**可证明的安全**：不相交 ⇒ 上界 0 ⇒ 窗口为 0 <
+	//      minFuzzyAnchor ⇒ 必然跳过对齐。纯文本算法没有这条保证
+	//      （§19.3 那对合成输入正是靠文本特征撞上的）。
+	//    把「靠概率」换成「靠保证」值得做，但那是**安全性的改善、
+	//    不是用户可感知的修复**，而改动面是 Go/TS 两份手抄实现。
+	//
+	// ⇒ **所以现在不动它。** 理由不是「无法验证」（现在能验了，数据就在上面），
+	//   而是：① 样本只有 1 条 4.6s 音频，而 0.2s 档已证明语速上界并不稳定；
+	//   ② 它不解决用户报的那个问题，改它动的是安全边际而非功能；
+	//   ③ 要真正改善漏判得解 §19.2 的分母问题（用 L 作分母），
+	//      而那条已被证明会让闸恒真，需要的是「匹配是否锚定在 head 开头」
+	//      这类更严的判据 —— 那是另一个设计，不该和这条混着改。
+	//
+	//   真机长录音到手后，用同一个探针扩样本即可，不必重新设计一遍。
 	limit := len(cs)
 	if limit > maxOverlap {
 		limit = maxOverlap
@@ -338,15 +420,6 @@ func fuzzyOverlapTail(cs, ns []rune, maxOverlap int) ([]rune, bool) {
 	lcsLen := dp[limit][limit]
 
 	// 唯一一道闸：LCS 必须覆盖对齐窗口的 anchorCoverage 比例。
-	// （容忍少量增删——ASR 在重叠区多一个字/少一个字是常态——
-	//   但不允许「只碰巧撞上几个字」。）
-	//
-	// ★ 这里曾有一道「净增占比 ≤ 0.8」的冗余闸，2026-10-06 实测证明它是
-	//   **数学上不可能生效**的：净增 = 窗口内未匹配数 + 窗口外剩余，
-	//   而 coverage ≥ 0.6 意味着窗口内至少 60% 已匹配，净增比例结构上
-	//   不会超过 0.8。实测三组用例（cov 过闸时 netRatio 分别是
-	//   0.47/0.61/0.69）无一能触发它，变异测试也证明它不影响任何用例。
-	//   留着只会让人误以为「有两道闸在防误删」。已删除。
 	if float64(lcsLen)/float64(limit) < anchorCoverage {
 		return nil, false
 	}
@@ -366,16 +439,45 @@ func fuzzyOverlapTail(cs, ns []rune, maxOverlap int) ([]rune, bool) {
 	return out, true
 }
 
-// lcsAlign 在两个等长 rune 串上做 LCS，返回 DP 表与「head 中被选中为重复」
+// lcsAlign 在两个 rune 串上做 LCS，返回 DP 表与「head 中被选中为重复」
 // 的下标标记。
+//
+// DP 表维度是 [len(tail)+1][len(head)+1]，`matched` 的长度是 len(head)+1。
+//
+// ⚠ 2026-10-07 之前这里**硬编码成两个串等长**（`n := len(tail)` 同时索引
+// 两侧），前提只写在注释里、没有任何断言保护。之所以一直没事：唯一调用点
+// fuzzyOverlapTail 恰好总传等长的 tail/head（都截断到 limit）。
+// 写 §19.4 那个「用时间上界」的新探针时按完整文本传进来，当场 panic：
+//
+//	panic: runtime error: index out of range [13] with length 13
+//	  stt.lcsAlign(0x…, 0x…)  incremental.go:397
+//	  stt.rawLCSLen(0x…, 0x…)  live_overlap_timing_probe_test.go:179
+//
+// ⇒ 那是**用户录音路径上的 panic**，不是测试里的：任何第二个不等长的调用点
+//
+//	（而「接时间信号」正是要加第二个调用点）都会打穿它。
+//	靠「调用点恰好都等长」活着的就是这种。
+//
+// 等长输入下与旧实现**逐位等价**（回归由 TestLCSAlign_EqualLengthUnchanged
+// 钉住），差别只在不等长时不再越界。
 func lcsAlign(tail, head []rune) ([][]int, []bool) {
-	n := len(tail)
-	dp := make([][]int, n+1)
-	for i := range dp {
-		dp[i] = make([]int, n+1)
+	nt, nh := len(tail), len(head)
+	if nt == 0 || nh == 0 {
+		// ⚠ 这里第一版写成 `make([][]int, nt+1)` —— 分配了行、没分配列，
+		// 每一行都是 nil，于是 dp[0] 是 nil，调用方一读 dp[0][j] 就 panic。
+		// 被 TestLCSAlign_EmptyInput 当场抓住。行和列必须都按各自长度铺满。
+		dp := make([][]int, nt+1)
+		for i := range dp {
+			dp[i] = make([]int, nh+1)
+		}
+		return dp, make([]bool, nh+1)
 	}
-	for i := 1; i <= n; i++ {
-		for j := 1; j <= n; j++ {
+	dp := make([][]int, nt+1)
+	for i := range dp {
+		dp[i] = make([]int, nh+1)
+	}
+	for i := 1; i <= nt; i++ {
+		for j := 1; j <= nh; j++ {
 			if tail[i-1] == head[j-1] {
 				dp[i][j] = dp[i-1][j-1] + 1
 			} else if dp[i-1][j] >= dp[i][j-1] {
@@ -385,8 +487,8 @@ func lcsAlign(tail, head []rune) ([][]int, []bool) {
 			}
 		}
 	}
-	matched := make([]bool, n+1)
-	i, j := n, n
+	matched := make([]bool, nh+1)
+	i, j := nt, nh
 	for i > 0 && j > 0 {
 		if tail[i-1] == head[j-1] {
 			matched[j] = true

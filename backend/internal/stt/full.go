@@ -348,7 +348,38 @@ func parsePCMWAV(data []byte) (payload []byte, sampleRate, bits, channels, dataL
 // **两个长度字段都必须原位改写**，少任何一个都会产出「声明长度 ≠ 实际长度」
 // 的坏 WAV（症状是解析器读出一截垃圾采样，或直接判定文件损坏）：
 //  1. 偏移 4：RIFF 块总长度 = 文件总长 - 8
-//  2. dataLenFieldAt：data 段载荷长度
+//
+// effectiveSegmentSec 算这次全量重转的实际切段长度。
+//
+// ★ 抽成纯函数不是为了整洁，是为了**让「有效值被钳制」这件事可测**：
+//
+//	能力表里登记的 MaxSeconds（30 / 60 / 500 / 600）与真正生效的段长
+//	是**两件事**——最后一律被 maxSegmentSec 压回 25 秒。
+//	只看登记表会以为「MiniMax 能一次吃 500 秒」，而实际是 25。
+//
+// ⚠ §121：25 的来源是**智谱一家 30 秒限制**（defaultSegmentSec 的注释自己
+//
+//	写了「覆盖智谱 30 秒这个最紧的约束」），却成了所有人的约束。
+//	后果有两个：说话人分离在结构上拿不到跨块一致的身份；
+//	60 分钟会议的请求数被放大 2.4~24 倍（25 秒/块 = 144 次 vs 600 秒/块 = 6 次）。
+//
+//	**本轮刻意不改**：调大段长的反向代价是「一次上游失败丢一大段文字」，
+//	而短块的优点正是单次失败只丢几秒 ⇒ 这是真正的取舍，标成待拍板（§121.3）。
+//	测试文件里有一条**只读现状登记**（full_segment_clamp_status_test.go），
+//	它不是承重门：改段长时请连同 §121 的决策一起改，不要单点改。
+func effectiveSegmentSec(model string) float64 {
+	// 先按目标的单次上限决定切分长度；目标没登记上限时用全局默认 25 秒。
+	segmentSec := float64(defaultSegmentSec)
+	if limit := KnownMaxSeconds(model); limit > 0 && float64(limit) < segmentSec {
+		segmentSec = float64(limit)
+	}
+	if segmentSec > maxSegmentSec {
+		segmentSec = maxSegmentSec
+	}
+	return segmentSec
+}
+
+// 2. dataLenFieldAt：data 段载荷长度
 func buildWAV(original []byte, dataLenFieldAt int, payload []byte) []byte {
 	out := make([]byte, 0, dataLenFieldAt+4+len(payload))
 	out = append(out, original[:dataLenFieldAt+4]...)
@@ -390,21 +421,13 @@ func (t *Transcriber) TranscribeFull(ctx context.Context, scope Scope, audio []b
 		return nil, fmt.Errorf("stt not configured: no transcription target resolved")
 	}
 
-	// 先按目标的单次上限决定切分长度；目标没登记上限时用全局默认 25 秒
-	// （覆盖智谱 30 秒这个最紧的约束）。
-	segmentSec := float64(defaultSegmentSec)
-	if limit := KnownMaxSeconds(target.Model); limit > 0 && float64(limit) < segmentSec {
-		segmentSec = float64(limit)
-	}
-	if segmentSec > maxSegmentSec {
-		segmentSec = maxSegmentSec
-	}
+	segmentSec := effectiveSegmentSec(target.Model)
 
 	segments, splittable := SplitWAV(audio, segmentSec)
 	if !splittable {
 		// 不可切（webm/mp4/mp3 或非 16-bit PCM）→ 整段走原有单次转写。
 		// 这是既有能力，不算降级。
-		res, err := t.TranscribeFor(ctx, scope, audio, filename)
+		res, err := t.transcribeFor(ctx, scope, audio, filename, true /* forcePlain: §120 本路径不读 Segments */)
 		if err != nil {
 			return nil, err
 		}
@@ -431,7 +454,7 @@ func (t *Transcriber) TranscribeFull(ctx context.Context, scope Scope, audio []b
 		}
 		// 逐段独立超时：不能让一段挂死把整个全量转写拖到客户端超时。
 		segCtx, cancel := context.WithTimeout(ctx, segmentTimeout)
-		res, err := t.TranscribeFor(segCtx, scope, seg.Audio, filename)
+		res, err := t.transcribeFor(segCtx, scope, seg.Audio, filename, true /* forcePlain: §120 本路径不读 Segments */)
 		cancel()
 
 		item := SegmentResult{
@@ -522,4 +545,56 @@ func SupportsStreaming(model string) bool {
 		}
 	}
 	return false
+}
+
+// SupportsDiarization 报告预置模型是否支持服务端说话人分离。
+func SupportsDiarization(model string) bool {
+	for _, o := range RecommendedModels() {
+		if strings.EqualFold(o.Model, model) {
+			return o.Diarization
+		}
+	}
+	return false
+}
+
+// KnownDiarizationMaxSeconds 返回「开启分离后的」时长上限（秒）。
+// 未公布返回 0（= 按不限制处理，与 MaxSeconds 的口径一致）。
+func KnownDiarizationMaxSeconds(model string) int {
+	for _, o := range RecommendedModels() {
+		if strings.EqualFold(o.Model, model) {
+			return o.DiarizationMaxSeconds
+		}
+	}
+	return 0
+}
+
+// ShouldRequestDiarization 决定这一次转写要不要请求说话人分离。
+//
+// ★ 为什么这个判定必须存在，而不是「模型支持就一律开」——
+//
+// 微软官方文档明写 MAI-Transcribe 的分离只支持较短录音：约 15 分钟及以上
+// 会返回 408/500/503（diarization_unavailable），而同一段音频**关掉分离
+// 就能转成功**。也就是说，对长录音硬开分离不是「少拿一个字段」，
+// 是**把整段转写变成失败**。
+//
+// 而本项目的主场景就是会议——超过 15 分钟的会议是常态。
+// 若无脑开，用户会得到「短会议正常、长会议整段失败」这种极难自查的现象。
+//
+// 判定用「音频时长」而不是「请求条数」：上游限制的是**单次请求的音频长度**，
+// 而 TranscribeFull 会把长录音切成若干段分别送（每段都远小于上限），
+// 此时每段请求都「够短」，判定自然放行——这正是我们想要的行为。
+//
+// durationSec <= 0 表示**时长未知**（非 WAV、无法解析头）。此时保守起见
+// 不开分离：宁可少拿说话人标签，也不要用一个未知长度的请求去赌上游会不会 503。
+func ShouldRequestDiarization(model string, durationSec float64) bool {
+	if !SupportsDiarization(model) {
+		return false
+	}
+	if durationSec <= 0 {
+		return false
+	}
+	if max := KnownDiarizationMaxSeconds(model); max > 0 && durationSec > float64(max) {
+		return false
+	}
+	return true
 }

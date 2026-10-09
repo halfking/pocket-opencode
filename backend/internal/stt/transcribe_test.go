@@ -353,3 +353,30 @@ func TestNewTranscriberKeepsStaticContract(t *testing.T) {
 		t.Fatal("无上游可达时也该报错（说明它确实尝试了，而不是静默成功）")
 	}
 }
+
+// TestGatewayAutoTransportPrefersTranscriptions 钉住接入标准：
+// channel=gateway 且 transport=auto 时走 /v1/audio/transcriptions，
+// 不再默认落到 chat-audio（2026-10-08 多媒体统一出口）。
+func TestGatewayAutoTransportPrefersTranscriptions(t *testing.T) {
+	up := &transcribeUpstream{status: 200, body: `{"text":"网关统一入口"}`}
+	srv := httptest.NewServer(up.handler(t))
+	defer srv.Close()
+
+	e := engineFor(t, srv, &Target{
+		BaseURL: srv.URL + "/v1", APIKey: "k", Model: "minimax-asr-1.0",
+		Transport: TransportAuto, Channel: ChannelGateway,
+	})
+	res, err := e.TranscribeFor(context.Background(), Scope{}, ToneWAV(8000, 100), "a.wav")
+	if err != nil {
+		t.Fatalf("TranscribeFor: %v", err)
+	}
+	if res.Transport != TransportTranscriptions {
+		t.Fatalf("transport=%q want %q", res.Transport, TransportTranscriptions)
+	}
+	if res.Text != "网关统一入口" {
+		t.Fatalf("text=%q", res.Text)
+	}
+	if up.lastMdl != "minimax-asr-1.0" {
+		t.Fatalf("model=%q — 应打到 /audio/transcriptions", up.lastMdl)
+	}
+}

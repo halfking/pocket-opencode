@@ -365,7 +365,7 @@ func TestTranscribeFullAggregatesSegmentsInOrder(t *testing.T) {
 }
 
 func TestTranscribeFullKeepsOtherSegmentsWhenOneFails(t *testing.T) {
-	// 核心契约：一段失败不能��让整场会议的内容消失。
+	// 核心契约：一段失败不能让整场会议的内容消失。
 	stub := &stubASR{failIndexes: map[int]bool{1: true}}
 	srv := httptest.NewServer(stub)
 	defer srv.Close()
@@ -465,9 +465,14 @@ func TestRecommendedExternalModelsAreSortedByCost(t *testing.T) {
 	for _, o := range opts {
 		have[o.BaseURL] = true
 	}
+	// ⚠ 2026-10-08：MiniMax 那条从 api.minimaxi.com/v1（国际站）改成
+	// api.minimax.cn（国内站）。实测踩到的坑是国内 key 打国际站会 401，
+	// 而错误文案是「login fail: Please carry the API secret key…」，
+	// 指向「key 没带」而不是「打错了站」—— 用户会去反复检查 key。
+	// 与 provider_test.go 的 TestMiniMaxDefaultBaseURLIsDomesticStation 同源。
 	for _, want := range []string{
 		"https://openrouter.ai/api/v1",
-		"https://api.minimaxi.com/v1",
+		"https://api.minimax.cn",
 		"https://open.bigmodel.cn/api/paas/v4",
 	} {
 		if !have[want] {

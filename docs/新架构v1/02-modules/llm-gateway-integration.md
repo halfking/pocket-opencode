@@ -390,3 +390,20 @@ pocketd `internal/aigate/` 已经有 LLM 代理模块（含 DeepSeek Provider �
 ## 12. 一句话总结
 
 **LLM 路由 = llm-gateway-go。pocketd / acc-go / Memora / 算力舱 / Mobile 都不直接连任何 Provider；都通过 llm-gateway-go。DeepSeek 作为第一个一等公民 Provider。**
+
+---
+
+## 附录 A：多媒体（ASR）经网关统一入口（2026-10-08）
+
+STT「仅网关 / auto」必须走：
+
+```
+POST {gatewayBaseURL}/audio/transcriptions
+```
+
+例如 `https://llm.kxpms.cn/v1/audio/transcriptions`。模型可用 `mimo-v2.5-asr`、`glm-asr`、`minimax-asr-1.0` 等目录名。
+
+**禁止**：因模型名含 `asr-1.0` 就改打 MiniMax `/v1/speech_to_text`（那是厂商方言，由网关适配）。MiniMax 原生路径仅 `channel=minimax` 且 base 为官方域名时使用。
+
+`transport=auto` 默认 `transcriptions`；`chat-audio` 仅探测回退或显式选择。完整标准见 llm-gateway-go `docs/client-formats/multimedia.md`。
+
