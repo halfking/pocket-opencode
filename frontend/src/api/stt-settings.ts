@@ -14,6 +14,7 @@
 import { http, LONG_REQUEST_TIMEOUT_MS } from './http'
 import { blobToBase64 } from '../utils/base64'
 import { ensureGatewayCompatible } from '../utils/wav-encode'
+import { filenameForMimeType } from './stt-filename'
 
 /**
  * 全量转写的客户端超时。
@@ -36,10 +37,10 @@ const FULL_TRANSCRIBE_TIMEOUT_MS = 11 * 60_000
 export const STT_PROBE_TIMEOUT_MS = 3 * 60_000
 
 /** 转写通道。 */
-export type SttChannel = 'auto' | 'gateway' | 'external'
+export type SttChannel = 'auto' | 'gateway' | 'external' | 'minimax'
 
 /** 传输形态。 */
-export type SttTransport = 'auto' | 'transcriptions' | 'chat-audio'
+export type SttTransport = 'auto' | 'transcriptions' | 'chat-audio' | 'sse'
 
 /** 网关候选模型的探测结论（与后端 stt.Probe* 一一对应）。 */
 export type SttProbeStatus =
@@ -103,12 +104,30 @@ export interface SttSettings {
   externalBaseURL: string
   externalModel: string
   externalTransport: SttTransport
+  /** 转写模板 id（后端 stt.ProviderIDs() 之一）。空 = 按地址/模型推断。 */
+  provider?: string
+  minimaxBaseURL?: string
+  minimaxModel?: string
+  minimaxStream?: boolean
+  minimaxDiarization?: boolean
   language: string
   hasExternalKey: boolean
+  hasMiniMaxKey?: boolean
   updatedAt?: number
   /** 后端算出的当前生效模型（只读）。 */
   effectiveModel?: string
   effectiveNote?: string
+}
+
+/** 一个可选的转写模板（能力由后端给出，前端不猜）。 */
+export interface SttTemplate {
+  id: string
+  label: string
+  supportsStream: boolean
+  supportsDiarization: boolean
+  /** true = 流式与说话人分离**不能同时开**，UI 必须做成二选一。 */
+  streamAndDiarizationExclusive: boolean
+  maxSeconds: number
 }
 
 export interface SttConfigResponse {
@@ -117,7 +136,8 @@ export interface SttConfigResponse {
   gateway?: SttDiscoveryResult
   gatewayBaseURL: string
   gatewayHasKey: boolean
-  channelHints: Record<SttChannel, string>
+  channelHints: Record<string, string>
+  templates: SttTemplate[]
 }
 
 export interface SttProbeResult {
@@ -126,9 +146,14 @@ export interface SttProbeResult {
   model?: string
   channel?: SttChannel
   transport?: SttTransport
+  /** 实际使用的转写模板 id。 */
+  provider?: string
   label?: string
   durationMs?: number
   costCents?: number
+  /** 上游是否真的给了说话人标签。 */
+  diarized?: boolean
+  segments?: Array<{ speaker: string; text: string; startMs: number; endMs: number }>
   error?: string
 }
 
@@ -185,9 +210,24 @@ export const sttSettingsApi = {
     externalBaseURL: string
     externalModel: string
     externalTransport: SttTransport
+    /** 转写模板 id。留空 = 后端按地址/模型推断。 */
+    provider?: string
+    minimaxBaseURL?: string
+    minimaxModel?: string
+    minimaxStream?: boolean
+    minimaxDiarization?: boolean
     language?: string
     /** 留空 = 保留已存的 key；传 '__clear__' 主动清空。 */
     externalApiKey?: string
+    /**
+     * MiniMax 的 key，与 externalApiKey **分开传**。
+     *
+     * 留空（undefined）= 本次不改动 MiniMax 凭据。
+     * ⚠ 不能沿用 externalApiKey 那套「空串 = 清空」：保存设置时会带上
+     * 一堆用户没改的字段，若把「没提交」当成「清空」，用户只改一下语种就会
+     * 连带清掉两把 key。所以这里用「不传 = 不动」。
+     */
+    minimaxApiKey?: string
   }): Promise<SttSettings> {
     return http<SttSettings>('/api/stt/config', {
       method: 'PUT',
@@ -219,10 +259,26 @@ export const sttSettingsApi = {
    * 转写期间，用户只能干等。
    */
   async transcribeFull(audioBlob: Blob, filename = 'meeting.wav', signal?: AbortSignal): Promise<SttFullResult> {
-    const base64 = await blobToBase64(audioBlob)
+    // ★ 与 `sttApi.transcribe` 对齐：容器适配放在**本方法内**，不指望调用方记得做。
+    //
+    //   §50 实测：录音产物是 webm/opus，而网关的 chat-audio bridge 只收 mp3/wav
+    //   （实测 400 `audio format "webm" is not supported`）。
+    //   此前只有 `transcribe`（录音中每块）内部调了 `ensureGatewayCompatible`，
+    //   而 `transcribeFull`（录完整段）**没有** ⇒ 安全网只盖了一半，
+    //   §50 的 bug 正是从这半边漏出去的。
+    //
+    //   调用方（`refetchFullTranscript`）已经先转过一次并把 filename 选成
+    //   `meeting.wav`；这里再跑一次是**零成本**的：`needsWavTranscode('audio/wav')`
+    //   为 false ⇒ 原样返回，不会二次转码。
+    const blob = await ensureGatewayCompatible(audioBlob)
+    const base64 = await blobToBase64(blob)
+    // ★ filename 跟着**实际容器**走，不跟调用方给的字符串走。
+    //   发 webm 字节却报 .wav，会让后端「按扩展名判容器」的分支与实际不符。
+    //   调用方的 filename 只在 blob 没有 type 时兜底（那才是它唯一有信息的时候）。
+    const name = blob.type ? filenameForMimeType(blob.type, 'meeting') : filename
     return http<SttFullResult>('/api/stt/transcribe-full', {
       method: 'POST',
-      body: JSON.stringify({ audioBase64: base64, filename }),
+      body: JSON.stringify({ audioBase64: base64, filename: name }),
       signal,
       timeoutMs: FULL_TRANSCRIBE_TIMEOUT_MS,
     })
@@ -284,7 +340,14 @@ export const sttSettingsApi = {
    */
   async probe(
     audio: Blob,
-    opts: { model?: string; channel?: SttChannel; baseURL?: string; transport?: SttTransport } = {},
+    opts: {
+      model?: string
+      channel?: SttChannel
+      baseURL?: string
+      transport?: SttTransport
+      /** 转写模板 id（如 minimax-speech-to-text）。 */
+      provider?: string
+    } = {},
     signal?: AbortSignal,
   ): Promise<SttProbeResult> {
     // ★ webm/ogg 必须先转成 16k WAV 再试转（缺陷8 后半截，2026-10-06 实测）。
@@ -312,18 +375,6 @@ export const sttSettingsApi = {
       signal,
     })
   },
-}
-
-function filenameForMimeType(mimeType: string): string {
-  const normalized = (mimeType || '').toLowerCase().split(';', 1)[0]
-  const ext = {
-    'audio/mp4': 'm4a',
-    'audio/mpeg': 'mp3',
-    'audio/ogg': 'ogg',
-    'audio/wav': 'wav',
-    'audio/webm': 'webm',
-  }[normalized]
-  return `recording.${ext || 'webm'}`
 }
 
 /** 探测结论的中文说明。设置页直接展示，避免用户看到裸枚举值。 */

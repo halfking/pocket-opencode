@@ -174,15 +174,121 @@
         />
       </section>
 
+      <!-- 3. MiniMax 直调：走 /v1/speech_to_text，SSE 流式 + 说话人分离 -->
+      <section v-if="form.channel === 'minimax'" class="form-section">
+        <label class="form-label" for="stt-mm-base">MiniMax 接口地址</label>
+        <input
+          id="stt-mm-base"
+          v-model.trim="form.minimaxBaseURL"
+          class="form-input"
+          type="text"
+          placeholder="https://api.minimax.cn"
+          autocapitalize="off"
+          autocorrect="off"
+          spellcheck="false"
+          data-testid="stt-mm-base"
+        />
+        <div class="form-hint">
+          国内站 api.minimax.cn；国际站 api.minimaxi.com。<br />
+          ⚠ 打错站点会返回 401，且错误文案写的是「请携带 API Key」，容易误判成 key 的问题。
+        </div>
+
+        <label class="form-label sub" for="stt-mm-key">MiniMax API Key</label>
+        <div class="key-row">
+          <input
+            id="stt-mm-key"
+            v-model="form.minimaxApiKey"
+            class="form-input"
+            :type="showKey ? 'text' : 'password'"
+            :placeholder="form.hasMiniMaxKey ? '已设置（留空保留）' : 'sk-api-...'"
+            autocapitalize="off"
+            autocorrect="off"
+            spellcheck="false"
+            data-testid="stt-mm-key"
+          />
+          <button class="key-toggle" type="button" :aria-label="showKey ? '隐藏' : '显示'" @click="showKey = !showKey">
+            <span aria-hidden="true">{{ showKey ? '🙈' : '👁' }}</span>
+          </button>
+        </div>
+        <div v-if="form.hasMiniMaxKey" class="form-hint">Key 已保存在服务端（不回显）。留空 = 保留。</div>
+
+        <label class="form-label sub" for="stt-mm-model">转写模型</label>
+        <input
+          id="stt-mm-model"
+          v-model.trim="form.minimaxModel"
+          class="form-input"
+          type="text"
+          placeholder="asr-1.0"
+          autocapitalize="off"
+          autocorrect="off"
+          spellcheck="false"
+          data-testid="stt-mm-model"
+        />
+
+        <!--
+          ★ 下面两个开关是**二选一**，不是两个独立复选框。
+
+          实测依据：上游对 stream=true + response_format=verbose_json 直接返回
+          400「response_format "verbose_json" cannot be used with stream=true (2013)」。
+          所以做成两个可以同时勾的框，等于给用户一个必然失败的组合。
+        -->
+        <label class="form-label sub">输出方式（二选一）</label>
+        <div class="radio-group" data-testid="stt-mm-mode">
+          <label class="radio-row">
+            <input
+              type="radio"
+              value="plain"
+              :checked="!form.minimaxStream"
+              data-testid="stt-mm-mode-plain"
+              @change="onMiniMaxMode('plain')"
+            />
+            <span>
+              一次性转写
+              <span class="form-hint">整段返回，可带说话人标签；长会议不即时出字。</span>
+            </span>
+          </label>
+          <label class="radio-row">
+            <input
+              type="radio"
+              value="stream"
+              :checked="form.minimaxStream"
+              data-testid="stt-mm-mode-stream"
+              @change="onMiniMaxMode('stream')"
+            />
+            <span>
+              SSE 流式
+              <span class="form-hint">边收边出字；此时拿不到说话人标签（上游不允许同时开）。</span>
+            </span>
+          </label>
+        </div>
+        <div v-if="form.minimaxStream" class="form-hint" data-testid="stt-mm-exclusive-hint">
+          流式与说话人分离互斥（上游 400 明确拒绝），当前选择流式 ⇒ 不请求说话人分离。
+        </div>
+      </section>
+
       <!-- 录音语音提示的可用性：播报失败是静默的，必须让用户看得见 -->
       <section class="form-section">
         <label class="form-label">录音语音提示</label>
         <div class="form-hint">
           录音开始/结束时用扬声器播报一句语音（不是警告声）。播报期间会静音麦克风，
-          提示语不会被录进录音内容。
+          提示语不会被录进录音内容。<strong>默认关闭</strong>。
         </div>
-        <p class="voice-prompt-state" :class="{ 'is-bad': !voicePrompt.supported }">
-          {{ voicePrompt.reason }}
+        <div class="voice-toggle" role="group" aria-label="录音语音提示开关">
+          <button
+            type="button"
+            :class="{ active: !voicePromptOn }"
+            :aria-pressed="!voicePromptOn"
+            @click="onVoicePrompt(false)"
+          >关闭</button>
+          <button
+            type="button"
+            :class="{ active: voicePromptOn }"
+            :aria-pressed="voicePromptOn"
+            @click="onVoicePrompt(true)"
+          >开启</button>
+        </div>
+        <p class="voice-prompt-state" :class="{ 'is-bad': voicePromptOn && !voicePrompt.supported }">
+          {{ voicePromptOn ? voicePrompt.reason : '当前不播报；触觉反馈仍然保留。' }}
         </p>
       </section>
 
@@ -284,6 +390,7 @@ import {
 } from '../../api/stt-settings'
 import { formatCost, maxSecondsHint, streamingHint } from '../../api/stt-presentation'
 import { probeVoicePromptSupport } from '../../native/recording-voice-prompt'
+import { isVoicePromptEnabled, setVoicePromptEnabled } from '../../native/recordingRuntime'
 import { useApiError } from '../../composables/useApiError'
 
 const router = useRouter()
@@ -298,6 +405,21 @@ const apiError = useApiError()
  */
 const voicePrompt = probeVoicePromptSupport()
 
+/**
+ * 录音语音提示开关（**默认关**）。
+ *
+ * ⚠ 为什么默认关：2026-10-07 用户明确要求「开启与关闭录音不要有语音提示」。
+ * 在此之前这个播报是无条件接上的（2026-10-01 的需求原文），设置页只展示
+ * 「TTS 是否可用」而**没有任何开关**，`RecordingVoicePrompt.setMuted`
+ * 全仓零调用 —— 用户没有任何办法把它关掉。
+ */
+const voicePromptOn = ref(isVoicePromptEnabled())
+
+function onVoicePrompt(on: boolean) {
+  voicePromptOn.value = on
+  setVoicePromptEnabled(on)
+}
+
 const form = reactive({
   channel: 'auto' as SttChannel,
   gatewayModel: '',
@@ -305,6 +427,18 @@ const form = reactive({
   externalModel: '',
   externalApiKey: '',
   hasExternalKey: false,
+  minimaxBaseURL: '',
+  minimaxModel: '',
+  minimaxApiKey: '',
+  hasMiniMaxKey: false,
+  /**
+   * ★ stream 与 diarization 互斥（上游 400 (2013)），所以这里只留**一个**状态。
+   *
+   * 之前的设计是「两个独立布尔」，那必然允许一个必然失败的组合。
+   * 用单值（'plain' | 'stream'）让非法组合在类型层面就表达不出来。
+   */
+  minimaxStream: false,
+  minimaxDiarization: true,
 })
 
 const recommended = ref<SttRecommendedModel[]>([])
@@ -337,14 +471,27 @@ function setStatus(kind: StatusKind, text: string, ttl = 6000) {
 }
 
 const channelOptions = computed(() => [
-  { value: 'auto' as SttChannel, label: '自动（优先网关，回退外部）' },
+  { value: 'auto' as SttChannel, label: '自动（优先网关 → MiniMax → 外部）' },
   { value: 'gateway' as SttChannel, label: '仅网关' },
-  { value: 'external' as SttChannel, label: '仅外部服务' },
+  { value: 'minimax' as SttChannel, label: '仅 MiniMax 直调（SSE + 说话人分离）' },
+  { value: 'external' as SttChannel, label: '仅外部服务（OpenAI 兼容）' },
 ])
 
 const channelHint = computed(
-  () => channelHints.value[form.channel] || '优先用网关里探测通过的 ASR 模型，没有再退到外部服务',
+  () => channelHints.value[form.channel] || '优先用网关里探测通过的 ASR 模型，没有再退到 MiniMax / 外部服务',
 )
+
+/**
+ * MiniMax「真的能用」缺哪一项。空串 = 齐了。
+ *
+ * 与 externalMissing 同构：不看 key 是不是空串，而是看**有没有已存的 key**
+ * 或**用户这次输入的 key**——否则用户明明填了，点保存前却看到
+ * 「未配置 API Key」，会去反复检查一个已经配好的东西。
+ */
+const miniMaxMissing = computed(() => {
+  if (!form.hasMiniMaxKey && !form.minimaxApiKey) return 'MiniMax 未配置 API Key'
+  return ''
+})
 
 // 外部服务「真的能用」缺哪一项。空串 = 齐了。
 //
@@ -368,13 +515,27 @@ const effectiveText = computed(() => {
     // 仅网关：外部配得再好也用不上，所以不能说「回退到外部」。
     return '尚未确定（网关暂无可用模型，可点「重新扫描网关」）'
   }
+  if (form.channel === 'minimax') {
+    return miniMaxMissing.value || form.minimaxModel || 'asr-1.0'
+  }
   if (form.channel === 'external') {
     return externalMissing.value || form.externalModel
   }
-  // auto：网关没有可用模型时会**回退到外部服务**（后端 resolveSTTTarget 就是
-  // 这个顺序），所以这里必须说清会落到哪个模型，而不是笼统一句「尚未确定」。
+  // auto：后端 resolveSTTTarget 的顺序是 **网关 → MiniMax → 外部**，
+  // 所以这里必须说清会落到哪一个，而不是笼统一句「尚未确定」。
+  //
+  // ⚠ 顺序不能只凭印象写：2026-10-08 后端把 MiniMax 插到了外部之前
+  // （成本 $0.38/h 但 500 秒整段 + SSE + 分离齐全，而外部默认档不支持流式）。
+  // 若这里仍写「回退到外部」，用户看到的提示与实际行为相反。
   if (!externalMissing.value) {
+    const mmNote = miniMaxMissing.value
+      ? '' // 没配 MiniMax key ⇒ 不会走到那一级，不该在提示里制造一个不存在的候选
+      : `${form.minimaxModel || 'asr-1.0'}（网关暂无可用模型，将优先回退到 MiniMax 直调）`
+    if (mmNote) return mmNote
     return `${form.externalModel}（网关暂无可用模型，将回退到外部服务）`
+  }
+  if (!miniMaxMissing.value) {
+    return `${form.minimaxModel || 'asr-1.0'}（网关暂无可用模型，将回退到 MiniMax 直调）`
   }
   return `尚未确定（网关暂无可用模型，且${externalMissing.value}）`
 })
@@ -447,6 +608,14 @@ function applyConfig(cfg: SttConfigResponse) {
   form.externalModel = cfg.settings.externalModel || ''
   form.hasExternalKey = !!cfg.settings.hasExternalKey
   form.externalApiKey = ''
+  form.minimaxBaseURL = cfg.settings.minimaxBaseURL || ''
+  form.minimaxModel = cfg.settings.minimaxModel || ''
+  form.hasMiniMaxKey = !!cfg.settings.hasMiniMaxKey
+  form.minimaxApiKey = ''
+  form.minimaxStream = !!cfg.settings.minimaxStream
+  // 分离与流式互斥：加载时若两者都开着（老数据或手工改过），
+  // 以**流式**为准并把分离关掉 —— 保留一个必然 400 的组合没有意义。
+  form.minimaxDiarization = !!cfg.settings.minimaxDiarization && !form.minimaxStream
   recommended.value = cfg.recommended ?? []
   discovery.value = cfg.gateway ?? null
   gatewayBaseURL.value = cfg.gatewayBaseURL || ''
@@ -484,6 +653,18 @@ async function onDiscover() {
   }
 }
 
+/**
+ * MiniMax 输出方式切换。
+ *
+ * ★ 互斥在这里落成**一次赋值两个字段**，而不是靠两个 checkbox 的 disabled：
+ * disabled 的 checkbox 在用户点过之后仍会保留已勾状态，保存下去就是一个
+ * 必然 400 的组合。改单值则不存在「两个同时为真」这个状态。
+ */
+function onMiniMaxMode(mode: 'plain' | 'stream') {
+  form.minimaxStream = mode === 'stream'
+  form.minimaxDiarization = !form.minimaxStream
+}
+
 async function onSave() {
   saving.value = true
   try {
@@ -494,9 +675,18 @@ async function onSave() {
       externalModel: form.externalModel,
       externalTransport: 'auto',
       externalApiKey: form.externalApiKey || undefined,
+      minimaxBaseURL: form.minimaxBaseURL,
+      minimaxModel: form.minimaxModel,
+      minimaxStream: form.minimaxStream,
+      minimaxDiarization: form.minimaxDiarization,
+      // ⚠ 不传 = 本次不改动 MiniMax 凭据（与 externalApiKey 的空串语义相反）。
+      // 见 stt-settings.ts 里 saveConfig 的注释。
+      minimaxApiKey: form.minimaxApiKey || undefined,
     })
     form.hasExternalKey = !!saved.hasExternalKey
     form.externalApiKey = ''
+    form.hasMiniMaxKey = !!saved.hasMiniMaxKey
+    form.minimaxApiKey = ''
     setStatus('success', '已保存', 3000)
   } catch (err) {
     setStatus('error', `保存失败：${apiError(err, 'errors.saveFailed')}`, 0)
@@ -567,7 +757,16 @@ async function runProbe(blob: Blob) {
       channel: form.channel,
       ...(form.channel === 'external'
         ? { baseURL: form.externalBaseURL, model: form.externalModel }
-        : { model: form.gatewayModel }),
+        : form.channel === 'minimax'
+          ? {
+              baseURL: form.minimaxBaseURL,
+              // 模型留空时后端会落到 asr-1.0，所以这里只在用户填了才传。
+              ...(form.minimaxModel ? { model: form.minimaxModel } : {}),
+              provider: 'minimax-speech-to-text',
+              // 流式与分离互斥（上游 400 (2013)）：这里传当前二选一的结果。
+              transport: form.minimaxStream ? 'sse' : 'transcriptions',
+            }
+          : { model: form.gatewayModel }),
     })
     if (res.ok) {
       probeState.value = 'ok'
@@ -652,6 +851,26 @@ function goBack() {
   margin-top: 16px;
   font-weight: 500;
 }
+
+/* 单选组：用于「互斥能力二选一」（如流式 vs 说话人分离）。
+   之所以用 radio 而不是两个 checkbox：两个 checkbox 可以同时被勾上，
+   而这个组合在 MiniMax 上是上游 400 明确拒绝的（实测 (2013)）——
+   radio 让非法组合在控件层面就表达不出来。 */
+.radio-group {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.radio-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: var(--text-base);
+  cursor: pointer;
+}
+.radio-row input {
+  margin-top: 3px;
+}
 .form-input {
   width: 100%;
   box-sizing: border-box;
@@ -672,6 +891,29 @@ function goBack() {
   line-height: 1.5;
 }
 /* 语音提示可用性：不可用时用警示色，让「听不到声音」有据可查。 */
+.voice-toggle {
+  display: flex;
+  gap: 6px;
+  margin: 8px 0;
+}
+
+.voice-toggle button {
+  flex: 1;
+  padding: 8px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-subtle);
+  color: var(--text-primary);
+  font-size: var(--text-base);
+  cursor: pointer;
+}
+
+.voice-toggle button.active {
+  background: var(--brand-primary);
+  border-color: var(--brand-primary);
+  color: var(--text-inverse);
+}
+
 .voice-prompt-state {
   margin: 6px 0 0;
   font-size: var(--text-sm);

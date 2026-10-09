@@ -26,7 +26,13 @@ const sttSettingsID = "default"
 
 // sttSettingsPayload 是设置页保存的载荷。
 type sttSettingsPayload struct {
-	// Channel: auto | gateway | external
+	// Channel: auto | gateway | external | minimax
+	//
+	// ⚠ 2026-10-08 新增 minimax：它是**第四个通道**，不是 external 的一个模型。
+	// 原因是 MiniMax 原生 API 与 OpenAI 兼容层有三处硬差异
+	//（路径 /v1/speech_to_text、language 走 HTTP 头、粒度参数叫 timestamp_level），
+	// 塞进 external 只能靠 if 分支区分，久了就长成「按厂商 if」。
+	// 详见 backend/internal/stt/provider.go 的文件头注释。
 	Channel string `json:"channel"`
 	// GatewayModel 为空表示「用探测到的第一个可用模型」。
 	GatewayModel string `json:"gatewayModel"`
@@ -34,6 +40,20 @@ type sttSettingsPayload struct {
 	ExternalBaseURL   string `json:"externalBaseURL"`
 	ExternalModel     string `json:"externalModel"`
 	ExternalTransport string `json:"externalTransport"`
+	// Provider 选「转写模板」（stt.ProviderIDs() 里的一个）。
+	// 空 = 按 baseURL/模型推断（ProviderForTarget）。仅在 external/minimax 通道有意义。
+	Provider string `json:"provider"`
+	// MiniMaxBaseURL 默认 https://api.minimax.cn（国内站）；国际站填 api.minimaxi.com。
+	MiniMaxBaseURL string `json:"minimaxBaseURL"`
+	// MiniMaxModel 默认 asr-1.0。
+	MiniMaxModel string `json:"minimaxModel"`
+	// MiniMaxStream 走 SSE 流式（实测可用）。
+	//
+	// ⚠ 与说话人分离**互斥**（上游 400 明确拒绝：verbose_json cannot be used
+	// with stream=true）。设置页据此把两者做成二选一，而不是两个独立开关。
+	MiniMaxStream bool `json:"minimaxStream"`
+	// MiniMaxDiarization 走 verbose_json 拿说话人标签。
+	MiniMaxDiarization bool `json:"minimaxDiarization"`
 	// Language 可选提示词，默认 zh。
 	Language string `json:"language"`
 }
@@ -41,6 +61,7 @@ type sttSettingsPayload struct {
 type sttSettingsView struct {
 	sttSettingsPayload
 	HasExternalKey bool   `json:"hasExternalKey"`
+	HasMiniMaxKey  bool   `json:"hasMiniMaxKey"`
 	UpdatedAt      int64  `json:"updatedAt,omitempty"`
 	Effective      string `json:"effectiveModel,omitempty"`
 	EffectiveNote  string `json:"effectiveNote,omitempty"`
@@ -54,6 +75,28 @@ type sttConfigResponse struct {
 	GatewayBase   string               `json:"gatewayBaseURL"`
 	GatewayHasKey bool                 `json:"gatewayHasKey"`
 	ChannelHints  map[string]string    `json:"channelHints"`
+	// Templates 是可选的转写模板清单（id + 展示名 + 能力）。
+	//
+	// 为什么由后端给而不是前端写死：模板集合会随部署变化（自建网关、代理层、
+	// 未来新增厂商），写死在前端就等于「后端加一个模板，前端不知道」。
+	// 判据在 stt.ProviderIDs()，前端只渲染。
+	Templates []sttTemplateView `json:"templates"`
+}
+
+// sttTemplateView 是设置页渲染一个模板所需的最小信息。
+type sttTemplateView struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
+	// SupportsStream / SupportsDiarization 是**服务能力**，不是本仓开关。
+	// 设置页据此把「边出字」和「说话人分离」在互斥的模板上做成二选一，
+	// 而不是给用户两个都会失败的开关。
+	SupportsStream      bool `json:"supportsStream"`
+	SupportsDiarization bool `json:"supportsDiarization"`
+	// StreamAndDiarizationExclusive 标记这两项**不能同时开**。
+	// MiniMax 为 true（上游 400 明确拒绝，实测 (2013)）；OpenAI 兼容层为 false。
+	StreamAndDiarizationExclusive bool `json:"streamAndDiarizationExclusive"`
+	// MaxSeconds 是该模板单次请求的时长上限（0 = 未知）。
+	MaxSeconds int `json:"maxSeconds"`
 }
 
 // sttFallbackSettings 是「没有 PG 时的进程内兜底存储」。
@@ -110,10 +153,89 @@ func (s *Server) loadSTTSettings(userID, workspaceID string) (sttSettingsPayload
 
 // sttExternalKey 取该用户保存的外部 ASR key（密文不外泄）。
 func (s *Server) sttExternalKey(userID, workspaceID string) string {
+	return s.sttSecretFor(userID, workspaceID, sttSettingsID)
+}
+
+// sttMiniMaxKey 取该用户保存的 MiniMax key。
+//
+// 为什么与外部 key **分两个命名空间**存，而不是复用一条：
+// 两者是不同的凭据，用户很可能只配了其中一个（网关通了就不想花钱直调、
+// 或反过来）。共用一条会让「清掉外部 key」连带清掉 MiniMax 的，
+// 而用户根本没意识到那是两个服务。
+//
+// 载荷仍然存在同一条 stt/default 记录里（设置是一组选择），
+// 只有 Secret 字段分开 —— 因为 usersetting.Record 的 Secret 是单值。
+func (s *Server) sttMiniMaxKey(userID, workspaceID string) string {
+	return s.sttSecretFor(userID, workspaceID, sttSettingsMiniMaxID)
+}
+
+// sttSettingsMiniMaxID 是 MiniMax 凭据的记录 id（与 stt/default 载荷共享设置）。
+const sttSettingsMiniMaxID = "minimax"
+
+// sttClearSentinel 是「主动清空凭据」的哨兵值。
+//
+// 为什么不接受空串：前端保存设置时会提交一整套字段，其中没改过的 key 输入框
+// 是空的。若把「空串」解释成「清空」，用户只改一下语种就会连带清掉两把 key。
+// 所以清空必须是一个**显式**的、不会与「未提交」混淆的值。
+const sttClearSentinel = "__clear__"
+
+// normalizeMinimaxKeyInput 把请求里的 minimaxApiKey 归一化。
+//
+// 三种输入 → 三种结果：
+//
+//	nil（字段没提交）        → nil（本次不改动）
+//	"__clear__"              → &""（显式清空）
+//	" sk-api-xxx "           → &"sk-api-xxx"（去空白）
+//
+// ★ 为什么必须在这里归一化、而不是存完再补一次清理（见 PUT 分支的注释）：
+//
+//	「先存再清」会先把哨兵字面量写进存储，之后每次请求都重复这个错误。
+//	入口归一化让清空与普通保存走同一条路径，没有中间态。
+//
+// ★ 另一条收益：哨兵字面量**永远不会落进存储**。
+//
+//	否则用户若把真 key 误填成 "__clear__"，它就成了一把"能用"的凭据，
+//	而排查时看到的是「key 已设置」——比直接报错难查得多。
+func normalizeMinimaxKeyInput(v *string) *string {
+	if v == nil {
+		return nil
+	}
+	s := strings.TrimSpace(*v)
+	if s == sttClearSentinel {
+		empty := ""
+		return &empty
+	}
+	return &s
+}
+
+// normalizeExternalKeyInput 与 normalizeMinimaxKeyInput 同构，区别只在
+// **缺省值**：外部 key 是老契约（零值 = 清空），MiniMax 是新契约（零值 = 不改动）。
+//
+// 为何外部不是「nil = 不改动」：既有调用点与测试都依赖「空串 = 清空」那个语义
+// （例如前端只改语种的场景历史上就会清掉外部 key，行为虽不理想但已成契约）。
+// 改它的语义会连带改变既有用户的实际行为，风险大于收益；
+// 因此这里只做**最小修复** —— 把哨兵在入口归一化，消除「先存后清」的中间态。
+func normalizeExternalKeyInput(v string) string {
+	s := strings.TrimSpace(v)
+	if s == sttClearSentinel {
+		return ""
+	}
+	return s
+}
+
+// rejectSentinelKey 防呆：任何路径都不该把哨兵字面量当成真凭据存进去。
+func rejectSentinelKey(field, v string) error {
+	if strings.TrimSpace(v) == sttClearSentinel {
+		return fmt.Errorf("%s 不能是保留值 %q（那是「清空凭据」的信号）", field, sttClearSentinel)
+	}
+	return nil
+}
+
+func (s *Server) sttSecretFor(userID, workspaceID, id string) string {
 	if s == nil {
 		return ""
 	}
-	rec, err := s.sttSettingsRepo().Get(userID, workspaceID, sttSettingsNamespace, sttSettingsID)
+	rec, err := s.sttSettingsRepo().Get(userID, workspaceID, sttSettingsNamespace, id)
 	if err != nil || rec == nil {
 		return ""
 	}
@@ -121,6 +243,19 @@ func (s *Server) sttExternalKey(userID, workspaceID string) string {
 }
 
 func (s *Server) saveSTTSettings(userID, workspaceID string, p sttSettingsPayload, externalKey string) error {
+	return s.saveSTTSettingsWithKeys(userID, workspaceID, p, externalKey, nil)
+}
+
+// saveSTTSettingsWithKeys 保存设置与两把 key。
+//
+// minimaxKey 传 nil 表示「本次不改动 MiniMax 凭据」。
+//
+// 为什么用「nil = 不改」而不是「空串 = 清空」：前端 PUT 通常只提交它改过的
+// 字段。若把「没提交」解释成「清空」，那么用户只改一下语种就会连带清掉
+// 两把 key —— 而「清空」是必须**显式**表达的动作（下面用 "__clear__"）。
+// externalKey 保留旧的 string 签名（空串 = 清空），因为既有调用点与
+// 测试依赖那个语义；MiniMax 走新的 nil 语义。
+func (s *Server) saveSTTSettingsWithKeys(userID, workspaceID string, p sttSettingsPayload, externalKey string, minimaxKey *string) error {
 	if s == nil {
 		return fmt.Errorf("stt settings: nil server")
 	}
@@ -131,11 +266,25 @@ func (s *Server) saveSTTSettings(userID, workspaceID string, p sttSettingsPayloa
 	p.ExternalTransport = stt.NormalizeTransport(p.ExternalTransport)
 	p.GatewayModel = strings.TrimSpace(p.GatewayModel)
 	p.ExternalModel = strings.TrimSpace(p.ExternalModel)
+	p.Provider = strings.TrimSpace(p.Provider)
+	p.MiniMaxBaseURL = strings.TrimRight(strings.TrimSpace(p.MiniMaxBaseURL), "/")
+	p.MiniMaxModel = strings.TrimSpace(p.MiniMaxModel)
 	if p.Language == "" {
 		p.Language = "zh"
 	}
+	// 未知模板 id 直接拒存，而不是存下去等转写时报错。
+	// 理由：转写报错发生在**用户已经开始录音之后**，那时才知道配置错了
+	// 是最坏的时机。保存时拒掉能让错误当场暴露。
+	if p.Provider != "" && stt.LookupProvider(p.Provider) == nil {
+		return fmt.Errorf("未知的转写模板 %q（可选：%s）", p.Provider, strings.Join(stt.ProviderIDs(), "、"))
+	}
 	if p.ExternalBaseURL != "" {
 		if err := validateSTTOutboundURL(p.ExternalBaseURL); err != nil {
+			return err
+		}
+	}
+	if p.MiniMaxBaseURL != "" {
+		if err := validateSTTOutboundURL(p.MiniMaxBaseURL); err != nil {
 			return err
 		}
 	}
@@ -143,13 +292,49 @@ func (s *Server) saveSTTSettings(userID, workspaceID string, p sttSettingsPayloa
 	if err != nil {
 		return err
 	}
-	_, err = repo.Put(usersetting.Record{
+	extRec := usersetting.Record{
 		UserID: userID, WorkspaceID: workspaceID,
 		Namespace: sttSettingsNamespace, ID: sttSettingsID,
 		Payload: payload, Secret: strings.TrimSpace(externalKey),
 		UpdatedAt: time.Now().Unix(),
-	})
-	return err
+	}
+	// ★ 同上：外部 key 的「清空」也必须走 ClearSecret。
+	//   这一处的语义是**既有契约**（空串 = 清空），但那个契约在存储层
+	//   一直是失效的 —— 空串被当成「不改动」。真机验证实测：
+	//   连发两次 `externalApiKey: "__clear__"`，凭据纹丝不动。
+	//   现在把它从「靠巧合工作」变成「显式表达」。
+	if strings.TrimSpace(externalKey) == "" {
+		extRec.ClearSecret = true
+	}
+	if _, err := repo.Put(extRec); err != nil {
+		return err
+	}
+	if minimaxKey != nil {
+		if err := rejectSentinelKey("minimaxApiKey", *minimaxKey); err != nil {
+			return err
+		}
+		v := strings.TrimSpace(*minimaxKey)
+		// ★ 清空必须用 ClearSecret，不能靠 Secret=""。
+		//   存储层把 `Secret == ""` 解释为「本次不改动密文」
+		//   （MemStore.Put / PG Put 都如此，见 usersetting/types.go 的注释），
+		//   所以传空串会**永远清不掉** —— 那正是 2026-10-08 真机验证抓到的
+		//   缺陷：用户点「清除」，hasMiniMaxKey 一直 true，转写恒 401。
+		//   这个分支是 nil（不改动）与非 nil（显式设置/清空）的分界点，
+		//   两个子语义都必须在这里正确落到 ClearSecret 上。
+		rec := usersetting.Record{
+			UserID: userID, WorkspaceID: workspaceID,
+			Namespace: sttSettingsNamespace, ID: sttSettingsMiniMaxID,
+			Payload: payload, Secret: v,
+			UpdatedAt: time.Now().Unix(),
+		}
+		if v == "" {
+			rec.ClearSecret = true
+		}
+		if _, err := repo.Put(rec); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // resolveSTTTarget 解析该用户本次转写的目标。通道语义：
@@ -228,11 +413,51 @@ func (s *Server) resolveSTTTarget(ctx context.Context, scope stt.Scope) (*stt.Ta
 		}, nil
 	}
 
+	// MiniMax 直调目标。
+	//
+	// ★ 这里显式指定 Provider 而不是让 ProviderForTarget 推断：
+	// 推断规则里「baseURL 含 minimax 域名」是一条**启发式**，
+	// 而这里是用户的明确选择。用显式指定可以保证「用户选了 MiniMax 就一定
+	// 按 MiniMax 协议发」，不会因为某个 baseURL 写法差异走到 OpenAI 分支。
+	minimaxTarget := func() (*stt.Target, error) {
+		key := s.sttMiniMaxKey(scope.UserID, scope.WorkspaceID)
+		if key == "" {
+			return nil, fmt.Errorf("stt_unavailable: MiniMax 转写未配置 API Key（设置 → 语音转写 → MiniMax）")
+		}
+		base := p.MiniMaxBaseURL
+		if base == "" {
+			base = stt.MiniMaxDefaultBaseURL
+		}
+		model := p.MiniMaxModel
+		if model == "" {
+			model = "asr-1.0"
+		}
+		// ★ 互斥在这里落成**模板选择**而不是两个独立开关：
+		// 流式与说话人分离不能同时要（上游 400 明确拒绝，实测 (2013)）。
+		// 这里给「流式 + 分离」一个明确解 —— 关掉分离，保住流式 ——
+		// 而不是把两个都发出去换一个 400。
+		// 为什么不反过来保分离？因为开了流式就意味着用户在等「边说边出字」，
+		// 拿不到说话人只是少了标签；反之则会让用户以为在流式却拿到一次性结果。
+		transport := stt.TransportTranscriptions
+		if p.MiniMaxStream {
+			transport = stt.TransportSSE
+		}
+		return &stt.Target{
+			BaseURL: base, APIKey: key, Model: model,
+			Provider:  stt.ProviderMiniMax,
+			Transport: transport, Channel: stt.ChannelMiniMax,
+			Language: p.Language,
+			Label:    "MiniMax 直调", CostUSDPerHour: stt.KnownUSDPerHour(model),
+		}, nil
+	}
+
 	switch channel {
 	case stt.ChannelGateway:
 		return gatewayTarget()
 	case stt.ChannelExternal:
 		return externalTarget()
+	case stt.ChannelMiniMax:
+		return minimaxTarget()
 	}
 
 	// auto：先网关后外部；两边的错误都要留住，好给用户一个能行动的原因。
@@ -240,17 +465,29 @@ func (s *Server) resolveSTTTarget(ctx context.Context, scope stt.Scope) (*stt.Ta
 	if gwErr == nil {
 		return gwTarget, nil
 	}
+	// ★ auto 里 MiniMax 排在外部**之前**。
+	//
+	// 理由是成本与能力：MiniMax $0.38/h、500 秒整段、SSE + 说话人分离齐全；
+	// 外部默认档 gpt-4o-mini-transcribe $0.18/h 更便宜但**不支持流式**且无分离。
+	// 本项目主场景是会议 —— 长录音 + 要说话人标签 + 想要即时出字，
+	// 这三件事只有 MiniMax 这一档同时满足。所以当用户已经配了 MiniMax key 时，
+	// 那是明确的意图信号（他专门去申请了一把），不该被一个更便宜但能力更弱的
+	// 默认档抢走。
+	//
+	// ⚠ 代价要说清：auto 走 MiniMax 会**花钱**。所以只有「已配置 MiniMax key」
+	// 才进这条路，没配时完全不影响原有行为（→ 外部/网关）。
+	if mm, mmErr := minimaxTarget(); mmErr == nil {
+		return mm, nil
+	}
 	extTarget, extErr := externalTarget()
 	if extErr == nil {
 		return extTarget, nil
 	}
-	// 两条通道都没通：优先报网关侧（更可能是用户想修的那条），并附上外部侧原因。
+	// 三条通道都没通：优先报网关侧（更可能是用户想修的那条），并附上其它原因。
 	//
-	// 两段各自都带 `stt_unavailable:` 前缀，直接拼会在用户可见的中文句子中间
-	// 露出第二个裸错误码（真机 2026-10-01 实测：
-	// 「网关暂无可用的语音转写模型（…）；stt_unavailable: 外部…未配置 API Key」）。
-	// 前端 sttFailureText 只剥**首位**前缀，中间那个会原样显示给用户，所以在这里
-	// 去掉第二段的前缀。整体前缀保留，调用方的 HasPrefix 判断与前端窄口径都不受影响。
+	// 多段拼接时每段都带 `stt_unavailable:` 前缀，直接拼会在用户可见的中文句子中间
+	// 露出第二个裸错误码（真机 2026-10-01 实测）。前端只剥**首位**前缀，
+	// 所以中间那些要去掉前缀。整体前缀保留，HasPrefix 判断与前端窄口径不受影响。
 	return nil, fmt.Errorf("%s；%s", gwErr.Error(), stripSTTErrorCode(extErr.Error()))
 }
 
@@ -358,6 +595,38 @@ func (s *Server) SetSTTHTTPClient(c *http.Client) { s.sttHTTPClient = c }
 
 // ---------------------------------------------------------------- handlers
 
+// sttTemplateViews 把注册表转成设置页要的形状。
+//
+// 能力标注的依据：
+//   - MiniMax：SSE 与 verbose_json 分离**互斥**（实测 400 (2013)），
+//     单次上限 500 秒（官方文档，与 ModelOption.MaxSeconds 一致）。
+//   - OpenAI 兼容层：不支持 SSE（/audio/transcriptions 无流式），分离由上游
+//     决定，所以 exclusive=false。
+//   - 智谱：SSE 事件名与前两者都不同，且**本仓尚未实机验证**（见 provider_zhipu.go），
+//     所以这里如实标 false，不给用户一个会失败的开关。
+func sttTemplateViews() []sttTemplateView {
+	ids := stt.ProviderIDs()
+	out := make([]sttTemplateView, 0, len(ids))
+	for _, id := range ids {
+		p := stt.LookupProvider(id)
+		if p == nil {
+			continue
+		}
+		v := sttTemplateView{ID: id, Label: p.Label()}
+		switch id {
+		case stt.ProviderMiniMax:
+			v.SupportsStream = true
+			v.SupportsDiarization = true
+			v.StreamAndDiarizationExclusive = true
+			v.MaxSeconds = 500
+		case stt.ProviderOpenAI:
+			v.SupportsDiarization = true
+		}
+		out = append(out, v)
+	}
+	return out
+}
+
 func (s *Server) handleSTTConfig(w http.ResponseWriter, r *http.Request) {
 	userID := s.userIDFromRequest(r)
 	wsID := s.workspaceIDFromRequest(r)
@@ -367,6 +636,7 @@ func (s *Server) handleSTTConfig(w http.ResponseWriter, r *http.Request) {
 		view := sttSettingsView{
 			sttSettingsPayload: p,
 			HasExternalKey:     s.sttExternalKey(userID, wsID) != "",
+			HasMiniMaxKey:      s.sttMiniMaxKey(userID, wsID) != "",
 		}
 		gw := s.ResolveGatewayForUser(userID, wsID)
 		resp := sttConfigResponse{
@@ -374,10 +644,12 @@ func (s *Server) handleSTTConfig(w http.ResponseWriter, r *http.Request) {
 			Recommended:   stt.RecommendedModels(),
 			GatewayBase:   gw.BaseURL,
 			GatewayHasKey: strings.TrimSpace(gw.APIKey) != "",
+			Templates:     sttTemplateViews(),
 			ChannelHints: map[string]string{
-				stt.ChannelAuto:     "优先用网关里探测通过的 ASR 模型，没有再退到外部服务",
+				stt.ChannelAuto:     "优先用网关里探测通过的 ASR 模型，没有再退到 MiniMax/外部服务",
 				stt.ChannelGateway:  "只用网关，网关不可用时直接报错（不静默降级）",
 				stt.ChannelExternal: "只用外部 OpenAI 兼容转写服务",
+				stt.ChannelMiniMax:  "只用 MiniMax 原生 API（/v1/speech_to_text）：SSE 流式 + 说话人分离 + 整段 500 秒",
 			},
 		}
 		// 网关侧结论：只查缓存，不在 GET 里触发真实探测（否则打开设置页就打网关）。
@@ -415,24 +687,42 @@ func (s *Server) handleSTTConfig(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			sttSettingsPayload
 			ExternalAPIKey string `json:"externalApiKey"`
+			// MiniMaxAPIKey 独立于 externalApiKey：两把 key 是两个服务的凭据。
+			// nil = 本次不改动（前端只提交它改过的字段）。
+			MiniMaxAPIKey *string `json:"minimaxApiKey"`
 		}
 		if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&body); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid JSON body")
 			return
 		}
-		key := strings.TrimSpace(body.ExternalAPIKey)
-		if err := s.saveSTTSettings(userID, wsID, body.sttSettingsPayload, key); err != nil {
+		key := normalizeExternalKeyInput(body.ExternalAPIKey)
+		mmKey := normalizeMinimaxKeyInput(body.MiniMaxAPIKey)
+		if err := s.saveSTTSettingsWithKeys(userID, wsID, body.sttSettingsPayload, key, mmKey); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		// 显式置空 key：允许用户主动清掉外部服务凭据。
-		if body.ExternalAPIKey == "__clear__" {
-			_ = s.saveSTTSettings(userID, wsID, body.sttSettingsPayload, "")
-		}
+		//
+		// ★ 2026-10-08 真机验证抓到的缺陷（MiniMax 侧新增、外部侧继承）：
+		//   这一段清理逻辑**写在保存之后**，而保存那一步会把字面量
+		//   `"__clear__"` 当成真凭据写进存储。于是：
+		//     第一次发 __clear__ → 先存进 "__clear__"，再走清理分支
+		//                          （保存时读到的已是空串，所以第一次「碰巧」对）
+		//     之后任何请求     → body.MiniMaxAPIKey 非 nil（字符串 "__clear__"），
+		//                          清理分支仍会执行，但**保存那一步又先写回了
+		//                          "__clear__"** ⇒ 永远清不掉。
+		//   症状：用户点「清除 MiniMax Key」，界面上 hasMiniMaxKey 一直为 true，
+		//   转写继续用那个字符串当凭据 ⇒ 401，且用户怎么点都没用。
+		//
+		//   修法：把哨兵**在入口就归一化成空串**（normalizeMinimaxKeyInput），
+		//   于是「清空」与「普通保存」走的是同一条路径，不需要事后再补一次保存。
+		//   外部 key 同理归一化 —— 它原先是靠 `key == "__clear__"` 的**后置**
+		//   二次保存兜住的，属于同类脆弱写法，一并收敛。
 		saved, _ := s.loadSTTSettings(userID, wsID)
 		writeJSON(w, http.StatusOK, sttSettingsView{
 			sttSettingsPayload: saved,
 			HasExternalKey:     s.sttExternalKey(userID, wsID) != "",
+			HasMiniMaxKey:      s.sttMiniMaxKey(userID, wsID) != "",
 			UpdatedAt:          time.Now().Unix(),
 		})
 	default:
@@ -491,18 +781,20 @@ func (s *Server) handleSTTProbe(w http.ResponseWriter, r *http.Request) {
 	wsID := s.workspaceIDFromRequest(r)
 
 	// 允许请求体里临时覆盖模型，方便用户在设置页逐个试而不必先保存。
-	var override struct {
-		Model     string `json:"model"`
-		Channel   string `json:"channel"`
-		BaseURL   string `json:"baseURL"`
-		Transport string `json:"transport"`
-	}
-	audio, filename, err := readSTTAudio(w, r)
+	var override probeOverride
+	audio, filename, err := readSTTAudio(w, r, &override)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	// multipart 里可能同时带一个 model 字段。
+	//
+	// ⚠ 条件要写成「multipart 且该字段非空」：JSON 形态下 ParseMultipartForm
+	// 会报错（Content-Type 不是 multipart），但如果忽略错误继续跑，
+	// r.FormValue 会去解析**已被读完的** body，拿到空值；
+	// 而上面 readSTTAudio 已经把 JSON 里的覆盖项填进 override 了。
+	// 所以这里只在成功时覆盖，且逐字段判空，不整体替换 ——
+	// 否则 JSON 形态里没带的字段会被 FormValue 的空值抹掉。
 	if err := r.ParseMultipartForm(25 << 20); err == nil {
 		if v := strings.TrimSpace(r.FormValue("model")); v != "" {
 			override.Model = v
@@ -515,6 +807,9 @@ func (s *Server) handleSTTProbe(w http.ResponseWriter, r *http.Request) {
 		}
 		if v := strings.TrimSpace(r.FormValue("transport")); v != "" {
 			override.Transport = v
+		}
+		if v := strings.TrimSpace(r.FormValue("provider")); v != "" {
+			override.Provider = v
 		}
 	}
 
@@ -532,27 +827,65 @@ func (s *Server) handleSTTProbe(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok": false, "error": err.Error(),
 			"model": target.Model, "channel": target.Channel, "transport": target.Transport,
+			"provider": target.Provider,
 		})
 		return
 	}
+	// provider 一起回传：试转页要告诉用户「你刚才试的是哪条协议」，
+	// 否则 MiniMax 与 OpenAI 兼容层返回一模一样的结果，无从分辨。
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok": true, "text": res.Text, "model": res.Model, "channel": res.Channel,
-		"transport": res.Transport, "label": res.Label,
+		"transport": res.Transport, "label": res.Label, "provider": res.Provider,
 		"durationMs": res.DurationMS, "costCents": res.CostCents,
+		"diarized": res.Diarized, "segments": res.Segments,
 	})
 }
 
-// probeTarget 用请求里的覆盖项构造试转目标；没覆盖就用已保存的设置解析。
-func (s *Server) probeTarget(r *http.Request, userID, wsID string, override struct {
+// probeOverride 是试转端点允许的临时覆盖项。
+//
+// 抽成命名类型而不是内联匿名 struct：probeTarget 的签名里已经有一个匿名
+// struct，handleSTTProbe 又要构造同样一份。复制两遍的类型一旦字段不同步，
+// 症状是「设置页传了 provider 但服务端静默忽略」—— 一个不报错的失效。
+type probeOverride struct {
 	Model     string `json:"model"`
 	Channel   string `json:"channel"`
 	BaseURL   string `json:"baseURL"`
 	Transport string `json:"transport"`
-}) (*stt.Target, error) {
-	if override.Model == "" {
+	// Provider 覆盖转写模板（设置页选「用哪个模板试转」）。
+	Provider string `json:"provider"`
+}
+
+// probeTarget 用请求里的覆盖项构造试转目标；没覆盖就用已保存的设置解析。
+func (s *Server) probeTarget(r *http.Request, userID, wsID string, override probeOverride) (*stt.Target, error) {
+	if override.Model == "" && override.Provider == "" {
 		return s.resolveSTTTarget(r.Context(), stt.Scope{UserID: userID, WorkspaceID: wsID})
 	}
 	channel := stt.NormalizeChannel(override.Channel)
+	if channel == stt.ChannelMiniMax || stt.ProviderMiniMax == override.Provider {
+		key := s.sttMiniMaxKey(userID, wsID)
+		if key == "" {
+			return nil, fmt.Errorf("MiniMax 转写未配置 API Key（设置 → 语音转写 → MiniMax）")
+		}
+		base := strings.TrimRight(strings.TrimSpace(override.BaseURL), "/")
+		if base == "" {
+			p, _ := s.loadSTTSettings(userID, wsID)
+			base = p.MiniMaxBaseURL
+		}
+		if base == "" {
+			base = stt.MiniMaxDefaultBaseURL
+		}
+		model := override.Model
+		if model == "" {
+			model = "asr-1.0"
+		}
+		if err := validateSTTOutboundURL(base); err != nil {
+			return nil, err
+		}
+		return &stt.Target{BaseURL: base, APIKey: key, Model: model,
+			Provider:  stt.ProviderMiniMax,
+			Transport: stt.NormalizeTransport(override.Transport), Channel: stt.ChannelMiniMax,
+			Label: "试转（MiniMax）", CostUSDPerHour: stt.KnownUSDPerHour(model)}, nil
+	}
 	if channel == stt.ChannelExternal {
 		key := s.sttExternalKey(userID, wsID)
 		base := strings.TrimRight(strings.TrimSpace(override.BaseURL), "/")
@@ -570,8 +903,14 @@ func (s *Server) probeTarget(r *http.Request, userID, wsID string, override stru
 			return nil, err
 		}
 		return &stt.Target{BaseURL: base, APIKey: key, Model: override.Model,
+			Provider:  override.Provider,
 			Transport: stt.NormalizeTransport(override.Transport), Channel: stt.ChannelExternal,
 			Label: "试转", CostUSDPerHour: stt.KnownUSDPerHour(override.Model)}, nil
+	}
+	if override.Model == "" {
+		// 只给了 provider、没给模型：网关/外部都要靠模型名定位，
+		// 这里明确报错而不是随便挑一个 —— 试转的价值就在于「转的是我选的那个」。
+		return nil, fmt.Errorf("试转需要同时指定模型（当前只给了转写模板 %q）", override.Provider)
 	}
 	gw := s.ResolveGatewayForUser(userID, wsID)
 	if strings.TrimSpace(gw.APIKey) == "" {
@@ -593,7 +932,11 @@ func (s *Server) probeTarget(r *http.Request, userID, wsID string, override stru
 }
 
 // readSTTAudio 从请求里取出音频（multipart / 原始 audio/* / JSON base64 三种形态）。
-func readSTTAudio(w http.ResponseWriter, r *http.Request) ([]byte, string, error) {
+//
+// overrideFromJSON 是**出参**：JSON 形态里携带的试转覆盖项（模型/通道/模板）
+// 只有这个函数看得到 JSON 体，而它同时又是唯一读 JSON 的地方，
+// 所以顺带取出来交给调用方。传 nil 表示不需要。
+func readSTTAudio(w http.ResponseWriter, r *http.Request, overrideFromJSON *probeOverride) ([]byte, string, error) {
 	ct := r.Header.Get("Content-Type")
 	if strings.HasPrefix(ct, "multipart/form-data") {
 		if err := r.ParseMultipartForm(25 << 20); err != nil {
@@ -640,6 +983,11 @@ func readSTTAudio(w http.ResponseWriter, r *http.Request) ([]byte, string, error
 	var payload struct {
 		AudioBase64 string `json:"audioBase64"`
 		Filename    string `json:"filename"`
+		Model       string `json:"model"`
+		Channel     string `json:"channel"`
+		BaseURL     string `json:"baseURL"`
+		Transport   string `json:"transport"`
+		Provider    string `json:"provider"`
 	}
 	if err := json.Unmarshal(data, &payload); err == nil && strings.TrimSpace(payload.AudioBase64) != "" {
 		audio, derr := decodeBase64Audio(payload.AudioBase64)
@@ -649,6 +997,17 @@ func readSTTAudio(w http.ResponseWriter, r *http.Request) ([]byte, string, error
 		filename := strings.TrimSpace(payload.Filename)
 		if filename == "" {
 			filename = "probe.wav"
+		}
+		// 覆盖项从 JSON 形态里取出来。必须取：前端 sttSettingsApi.probe 发的是
+		// JSON（不是 multipart），所以上面那个 r.ParseMultipartForm 分支**不会执行**，
+		// 不取的话用户在设置页选的模板/模型会被静默忽略，
+		// 症状是「试转永远转的是我保存的那个模型」——一个不报错的失效。
+		overrideFromJSON = &probeOverride{
+			Model:     strings.TrimSpace(payload.Model),
+			Channel:   strings.TrimSpace(payload.Channel),
+			BaseURL:   strings.TrimSpace(payload.BaseURL),
+			Transport: strings.TrimSpace(payload.Transport),
+			Provider:  strings.TrimSpace(payload.Provider),
 		}
 		return audio, filename, nil
 	}
