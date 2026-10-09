@@ -1,0 +1,48 @@
+# ── pocketd 运行时镜像（离线版）─────────────────────────────────────
+#
+# 与 Dockerfile.kx-base 的关系：
+#   Dockerfile.kx-base      多阶段，builder = kx-base:go-vue-optimized（Go 1.24.13
+#                           < go.mod 要求的 1.27.1，且只能联网装 apk 依赖）
+#   本文件                   runtime-only，二进制由 deploy/bin/build-offline-images.sh
+#                           在 kx-base/golang:1.27-alpine-arm64 容器里编译好，
+#                           基底是本机合成的 alpine:opp-runtime-arm64（最小 arm64 alpine）。
+#
+# 为什么 runtime 阶段不跑 apk：
+#   合成基底 alpine:opp-runtime-arm64 出厂就带 ca-certificates + wget
+#   （prepare-offline-images.sh 有 7 项能力自检兜底），所以这里不需要联网
+#   装包，也就真正做到「构建全程不触网」。
+#
+# Build args:
+#   RUNTIME_BASE_IMAGE  默认 alpine:opp-runtime-arm64（由 prepare-offline-images.sh 合成）
+#
+# 用法（由 build-offline-images.sh 调用）：
+#   docker build -f deploy/docker/Dockerfile.pocketd-offline \
+#     -t opencode-pocket:<tag> <ctx 目录，内含 pocketd 与 config/version.json>
+
+ARG RUNTIME_BASE_IMAGE=alpine:opp-runtime-arm64
+
+FROM ${RUNTIME_BASE_IMAGE}
+
+# 非 root 运行：busybox 的 addgroup/adduser 来自基底，不需要 apk
+RUN addgroup -S pocket && adduser -S -G pocket pocket
+
+WORKDIR /app
+COPY pocketd /app/pocketd
+
+# 版本配置必须打进镜像，否则 /api/app/check-update 恒 503。
+# 服务端契约（backend/internal/server/server.go 的 loadVersionConfig）是
+# 「拿不到配置就返回 ErrVersionConfigNotFound」，由 handleCheckUpdate 翻成 503
+# ——按设计行事，不在这里改成静默回落默认值。
+COPY config/version.json /app/config/version.json
+
+RUN chmod +x /app/pocketd && mkdir -p /app/data && chown -R pocket:pocket /app
+
+USER pocket
+EXPOSE 8088
+
+# 与 Dockerfile.kx-base / Dockerfile.pocketd-prebuilt 保持一致：
+# compose 固定覆盖容器内监听端口为 8088，这里探的也是 8088。
+HEALTHCHECK --interval=10s --timeout=5s --start-period=20s --retries=12 \
+    CMD wget -q -O- http://127.0.0.1:8088/healthz >/dev/null || exit 1
+
+ENTRYPOINT ["/app/pocketd"]

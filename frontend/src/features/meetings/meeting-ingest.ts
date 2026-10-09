@@ -4,6 +4,7 @@
 import { createNote } from '../notes/notes-store'
 import { localDB } from '../../native/local-db'
 import { meetingsApi } from '../../api/meetings'
+import { useAuthStore } from '../../stores/auth'
 import {
   updateMeeting, type ActionItem, type LocalMeeting,
 } from './meetings-store'
@@ -33,6 +34,11 @@ export async function ingestMeetingArtifacts(
       tags: ['meeting'],
       audioPath: meeting.audioPath ?? undefined,
       audioDurationMs: meeting.durationMs,
+      // 本地库按 workspace_id 分区。漏传会静默落进 notes-persist 的字面量
+      // 默认值 'default'，而用户自己的笔记在 auth.workspaceId（真机实测
+      // ws_user-admin）——两边不 intersect，会议自动生成的手记在笔记列表里
+      // 永远看不见，且不报任何错。
+      workspaceId: useAuthStore().workspaceId || 'default',
     })
     noteId = note.id
   }

@@ -61,6 +61,43 @@ try:
 except (OSError,subprocess.TimeoutExpired):sys.exit(1)' "$@"
 }
 
+# 找一个「把 <port> 发布到宿主」的引擎容器，作为宿主缺客户端时的探测载体。
+#
+# 为什么必须有这条兜底：macOS 开发机常常没装 libpq / redis-cli / mysqladmin
+# （没 homebrew），但公用服务全跑在 docker 里。没有兜底时探测会因为
+# 「psql 不存在」恒失败，把一台明明在跑 PG17 的机器误判成「没有 PG」，
+# 转而去另起一个实例撞端口 —— 正是「复用已有公用服务」这条要求要防的事。
+#
+# 只认「确实发布了该宿主端口」的容器：端口对不上就不能拿它冒充目标实例。
+_db_engine_container() {
+  local kind="$1" port="$2" sig name image ports
+  command -v docker >/dev/null 2>&1 || return 1
+  docker ps >/dev/null 2>&1 || return 1
+  case "$kind" in
+    postgres) sig='postgres|pgvector|citus' ;;
+    redis)    sig='redis|valkey|keydb' ;;
+    mysql)    sig='mysql|mariadb|percona' ;;
+    *) return 1 ;;
+  esac
+  while IFS=$'\t' read -r name image ports; do
+    [[ -n "${name}" ]] || continue
+    [[ "${ports}" == *":${port}->"* ]] || continue
+    if printf '%s %s' "${name}" "${image}" | tr '[:upper:]' '[:lower:]' | grep -Eq "${sig}"; then
+      printf '%s' "${name}"
+      return 0
+    fi
+  done < <(docker ps --format '{{.Names}}\t{{.Image}}\t{{.Ports}}' 2>/dev/null)
+  return 1
+}
+
+# 在上面找到的容器里跑该引擎的客户端。容器内一律连 127.0.0.1 的引擎标准端口
+# （5432/6379/3306）——那是容器自己的内部端口，与宿主发布端口未必相同。
+_db_client_in_container() {
+  local kind="$1" binary="$2" container="$3" internal_port="$4"
+  shift 4
+  _db_probe docker exec -i "${container}" "${binary}" -h 127.0.0.1 -p "${internal_port}" "$@" 2>/dev/null
+}
+
 # Only the configured endpoint is a reuse candidate. A similarly named Docker
 # container or an open TCP port cannot prove that this DSN reaches that service.
 _db_protocol_ready() {
@@ -82,26 +119,39 @@ _db_protocol_ready() {
           -U "${OPP_PG_USER:-postgres}" -d "${OPP_PG_DB:-postgres}" \
           -tAc 'SELECT 1' >/dev/null 2>&1
       else
-        return 1
+        container="$(_db_engine_container postgres "${port}")" || return 1
+        PGPASSWORD="${OPP_PG_PASSWORD:-}" PGCONNECT_TIMEOUT=3 \
+          _db_client_in_container postgres psql "${container}" 5432 \
+            -U "${OPP_PG_USER:-postgres}" -d "${OPP_PG_DB:-postgres}" -tAc 'SELECT 1' >/dev/null 2>&1
       fi
       ;;
     redis)
-      command -v redis-cli >/dev/null 2>&1 || return 1
-      reply=$(REDISCLI_AUTH="${OPP_REDIS_PASSWORD:-${REUSE_REDIS_PASSWORD:-}}" \
-        _db_probe redis-cli -h "$host" -p "$port" --no-auth-warning PING 2>/dev/null || true)
+      if command -v redis-cli >/dev/null 2>&1; then
+        reply=$(REDISCLI_AUTH="${OPP_REDIS_PASSWORD:-${REUSE_REDIS_PASSWORD:-}}" \
+          _db_probe redis-cli -h "$host" -p "$port" --no-auth-warning PING 2>/dev/null || true)
+      else
+        container="$(_db_engine_container redis "${port}")" || return 1
+        reply=$(REDISCLI_AUTH="${OPP_REDIS_PASSWORD:-${REUSE_REDIS_PASSWORD:-}}" \
+          _db_client_in_container redis redis-cli "${container}" 6379 --no-auth-warning PING 2>/dev/null || true)
+      fi
       [[ "$reply" == PONG ]]
       ;;
     mysql)
       if command -v mysqladmin >/dev/null 2>&1; then
         reply=$(MYSQL_PWD="${OPP_MYSQL_PASSWORD:-}" _db_probe mysqladmin --connect-timeout=3 \
           -h "$host" -P "$port" -u "${OPP_MYSQL_USER:-root}" ping 2>/dev/null || true)
-        [[ "$reply" == "mysqld is alive" ]]
+        [[ "$reply" == "mysqld is alive" ]] && return 0
       elif command -v mysql >/dev/null 2>&1; then
-        MYSQL_PWD="${OPP_MYSQL_PASSWORD:-}" _db_probe mysql --connect-timeout=3 -h "$host" -P "$port" -u "${OPP_MYSQL_USER:-root}" \
-          -e 'SELECT 1' >/dev/null 2>&1
+        reply=$(MYSQL_PWD="${OPP_MYSQL_PASSWORD:-}" _db_probe mysql --connect-timeout=3 -h "$host" -P "$port" \
+          -u "${OPP_MYSQL_USER:-root}" -e 'SELECT 1' 2>/dev/null || true)
+        [[ "${reply}" == *1* ]] && return 0
       else
-        return 1
+        container="$(_db_engine_container mysql "${port}")" || return 1
+        reply=$(MYSQL_PWD="${OPP_MYSQL_PASSWORD:-}" \
+          _db_client_in_container mysql mysql "${container}" 3306 --connect-timeout=3 \
+            -u "${OPP_MYSQL_USER:-root}" -e 'SELECT 1' 2>/dev/null || true)
       fi
+      [[ "$reply" == "mysqld is alive" ]]
       ;;
     *) return 1 ;;
   esac

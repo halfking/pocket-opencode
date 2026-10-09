@@ -209,12 +209,29 @@ import { ICON, type IconName } from '../../constants/icons'
 import { listNotes } from '../notes/notes-store'
 import { listMeetings } from '../meetings/meetings-store'
 import { listNotes as listPkmNotes } from '../pkm/pkm-store'
+import { useAuthStore } from '../../stores/auth'
 import { formatRelative, toEpochSeconds } from '../../utils/relative-time'
 
 defineOptions({ name: 'NotesHubView' })
 
 const { t } = useI18n()
 const router = useRouter()
+const auth = useAuthStore()
+
+/**
+ * 本地库按 workspace_id 分区，写入方（NoteEditView）与读取方（本视图）必须用
+ * 同一个 workspace，否则表现是「保存成功但列表永远是空的」——INSERT 落在
+ * ws_user-admin，SELECT 查 default，两边永远不 intersect。
+ *
+ * 真机实测（vivo V2436A）：本视图此前完全不传 workspaceId，listNotes /
+ * listPkmNotes 于是回退到字面量 'default'，而 NoteEditView 写的是
+ * auth.workspaceId（真机实测 ws_user-admin）。fcbd82e4 修好了 NoteListView
+ * 的 8 个调用点却漏了这里——因为 /notes 这个底部主 tab 挂的是本视图，
+ * NoteListView 只在 /notes/voice 下。用户从笔记 tab 新建的笔记 100% 消失。
+ */
+function currentWorkspaceId(): string {
+  return auth.workspaceId || 'default'
+}
 
 /**
  * 统一行的形状。
@@ -405,9 +422,9 @@ async function load() {
   loading.value = true
   dbNotReady.value = false
   const settled = await Promise.allSettled([
-    listNotes({ limit: PAGE }),
+    listNotes({ workspaceId: currentWorkspaceId(), limit: PAGE }),
     listMeetings(PAGE),
-    listPkmNotes({ limit: PAGE }),
+    listPkmNotes({ workspaceId: currentWorkspaceId(), limit: PAGE }),
   ])
 
   const [n, m, p] = settled
