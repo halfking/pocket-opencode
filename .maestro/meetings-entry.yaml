@@ -28,11 +28,19 @@ appId: com.kaixuan.opencode.pocket
 # ⚠️ 下面这个 notVisible 此前是**恒真**的：它写的是「首页」，而设备上
 #    `首页`/`Home` 根本不存在 ⇒ 条件永远为真 ⇒ 每次都去点「返回」，
 #    而 AI 首页上没有返回按钮 ⇒ 这一步反而会把 flow 打断。改成真判据。
+#
+# ⚠️ 2026-10-12 补记：改成「AI 工具」只把**恒真**变成**偶发为真**——
+#    POCKET_REINSTALL_DRIVER 会 force-stop driver 连带打断 App，
+#    step 0 取树时多半是空的，条件照样成立，实测首跑红在
+#    `Tap on "返回"... FAILED`。条件修不掉（输入是竞态），
+#    于是让这条恢复动作不致命，真正的门交给紧随其后的 extendedWaitUntil(30s)。
 - runFlow:
     when:
       notVisible: "AI 工具"
     commands:
-      - tapOn: "返回"
+      - tapOn:
+          text: "返回"
+          optional: true
       - waitForAnimationToEnd:
           timeout: 3000
 - extendedWaitUntil:
