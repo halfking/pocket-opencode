@@ -317,7 +317,13 @@ function bindCdpForward(sock) {
   return port
 }
 
-async function cdpEval(expr, ms = 8000) {
+/** CDP 通用调用：开一条到当前 App WebView 的连接，发**任意** method，返回原始 result。
+ *  超时/连不上返回 null（与「返回了但值是 null」可区分——调用方要自己判）。
+ *
+ *  为什么抽出来：2026-10-11 要加 Input.insertText（填主密码），它和
+ *  Runtime.evaluate 共用同一整段 pid→socket→forward→WebSocket 的样板，
+ *  复制一份就多 50 行、且两处漂移。 */
+async function cdpCall(method, params, ms = 8000) {
   // pidof 可能返回**空**，而且不止一种原因：
   //   ① App 刚被 force-stop / reload 换进程，此刻窗口期里 pidof 是空的；
   //   ② App 真的没起来。
@@ -393,13 +399,41 @@ async function cdpEval(expr, ms = 8000) {
       const i = ++id
       const t = setTimeout(() => { pending.delete(i); r(null) }, ms)
       pending.set(i, (x) => { clearTimeout(t); r(x) })
-      ws.send(JSON.stringify({ id: i, method: 'Runtime.evaluate', params: { expression: expr, returnByValue: true, awaitPromise: true } }))
+      ws.send(JSON.stringify({ id: i, method, params }))
     })
     ws.close()
-    return v?.result?.value
+    return v
   } finally {
     try { adb(['forward', '--remove', `tcp:${port}`], 15000) } catch { /* 已经没了 */ }
   }
+}
+
+/** 求值一个表达式并取回标量值（失败/超时返回 undefined，与旧行为一致）。 */
+async function cdpEval(expr, ms = 8000) {
+  const v = await cdpCall('Runtime.evaluate', { expression: expr, returnByValue: true, awaitPromise: true }, ms)
+  return v?.result?.value
+}
+
+/**
+ * 往当前 activeElement 插入文本，走 CDP 的 `Input.insertText`。
+ *
+ * ★ 为什么不能用 `adb shell input text`（2026-10-11 实测，emulator-5554）：
+ *   那条通路走 **Android 系统 IME**，而程序化的 `el.focus()` **不会把原生输入焦点拉过去**，
+ *   键盘因此从未激活 ⇒ `input text` 与 CDP `Input.dispatchKeyEvent`(Backspace) **都完全不生效**
+ *   （框值纹丝不动，不是「进错框」）。曾经连续多轮 `长度=[14,0,0]` 就是这么来的，
+ *   而当时的日志形态与「第二框不接受这么长的口令」一模一样，极具误导性。
+ *   顺带**推翻了当时的归因**：那批失败在 load 33/36 的窗口里同样复现，
+ *   所以「高负载是诱因」不成立（load 高只是让它更频繁）。
+ *
+ *   `Input.insertText` 走 WebView **内部**的文本桥接，不经系统 IME ⇒ 一次就成。
+ *   实测：填完两框 [14,0,0] → [14,14,0] → 点确认 → 弹窗关闭、hash 从
+ *   `#/login…` 跳到 `#/ai…`，v-model 也确实同步了（否则前端会报「主密码至少需要 8 位」）。
+ *
+ * 返回 true/false，**不让失败静默变成 undefined** —— 那正是本条注释要防的复发。
+ */
+async function cdpInsertText(text, ms = 8000) {
+  const v = await cdpCall('Input.insertText', { text: String(text) }, ms)
+  return v !== null && v !== undefined
 }
 
 /** 用 CDP 把 App 复位到指定路由，并等 App 外壳真的渲染出来。
@@ -1554,12 +1588,14 @@ if (process.env.POCKET_SKIP_CDP_LOGIN !== '1') {
   const ash = (cmd) => execFileSync(adbBin, ['-s', serial, 'shell', cmd], {
     encoding: 'utf8', timeout: 30000, maxBuffer: 33554432,
   })
-  // ★ 2026-10-06 修：`input text ${master}` 不加引号，口令里的 shell 元字符会被
-  //   **设备侧 shell** 解释掉。实测一个 14 位口令（13 字母数字 + 1 元字符）
-  //   只填进去 9 位，报出来的还是「两框已输入，长度=[14,9,0]」。
-  //   修法：单引号包住，并转义内部的单引号。
-  const shQuote = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`
-  const inputText = (s) => ash(`input text ${shQuote(s)}`)
+  // ★ 2026-10-11 删掉了本文件此前在这儿的 `inputText`（= `ash('input text …')`）与
+  //   它配套的 `shQuote`。两条理由，都实测过：
+  //   ① 那条 2026-10-06 的引号修复是对的，但它要修的那条通路**在模拟器上根本不生效**
+  //      —— 程序化 focus 不激活系统 IME，input text 被设备忽略（框值纹丝不动）。
+  //      留着它只会让人以为「只要引号对了就能填进去」。填值已改走 cdpInsertText。
+  //   ② 留着两个没有调用点的局部 const 会让 eslint 的 no-unused-vars 直接红，
+  //      把一个**真实的功能修复**卡在门禁外。
+  //   `ash` 本身还在用（下面收起键盘那次 keyevent 111）。
   let masterDialogHandled = false
   for (let i = 0; i < 4; i++) {
     await sleep(800)
@@ -1607,22 +1643,24 @@ if (process.env.POCKET_SKIP_CDP_LOGIN !== '1') {
           var re = new RegExp(${JSON.stringify(which)})
           var el = ins.filter(function(x){ return re.test(x.placeholder||'') })[0]
           if (!el) return 'no-el'
+          el.value = ''
           el.focus()
           return document.activeElement === el ? 'focused' : 'focus-failed'
         } catch (e) { return 'err:' + String(e).slice(0,80) }
       })()`)
       if (f !== 'focused') { console.log(`[preflight] ⚠️ focus 失败(/${which}/)：${f}`); break }
-      await sleep(400)
-      try {
-        ash('input keyevent 123')
-        for (let k = 0; k < 40; k++) ash('input keyevent 67')
-        await sleep(250)
-        inputText(master || '')
-      } catch (e) {
-        console.log(`[preflight] ⚠️ 系统级输入失败：${String(e?.message || e).split('\n')[0]}`)
+      await sleep(300)
+      // ★ 2026-10-11：填值通路从 `adb input text` 换成 CDP `Input.insertText`。
+      //   原因见 cdpInsertText 的注释：模拟器上程序化 focus **不会**激活系统 IME，
+      //   那条通路实测**完全不生效**（`input keyevent 67` 与 input text 都被忽略）。
+      //   所以「清空」也不能再用 keyevent 67 —— 改成在 DOM 层直接置空，
+      //   再由 insertText 触发 input 事件，让 Vue 的 v-model 读到干净的新值。
+      const put = await cdpInsertText(master || '')
+      if (!put) {
+        console.log(`[preflight] ⚠️ Input.insertText 失败(/${which}/)：CDP 没有回 result`)
         break
       }
-      await sleep(700)
+      await sleep(500)
     }
     const lens = await cdpEval(`JSON.stringify(Array.from(document.querySelectorAll('input'))
         .filter(function(i){ return (i.type||'')==='password' })
