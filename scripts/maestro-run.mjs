@@ -403,6 +403,23 @@ async function cdpCall(method, params, ms = 8000) {
     })
     ws.close()
     return v
+  } catch (e) {
+    // ★ 2026-10-12 修：这里原来只有 try/finally 没有 catch（这段样板是从 setRoute
+    //   抽出来共用的，catch 没跟着搬过来）。后果不是「这一步失败」，
+    //   而是**整个 node 进程带着未捕获异常死掉**：2026-10-12 实测一次
+    //   `TypeError: fetch failed / UND_ERR_SOCKET: other side closed`
+    //   就让一次 9 条 flow 的批次**一条都没跑**，而报告里只有一条栈。
+    //   触发时机很普通：App 在 WebView 重建的瞬间，devtools socket 被关掉，
+    //   正在发的 /json/list 拿到的就是「对端已关闭」。
+    //
+    //   降级成 null，与 cdpEval / cdpInsertText 既有的失败语义一致
+    //   （前者返回 undefined、后者返回 false），由调用方按失败处理。
+    //
+    //   注意：上面那三个哨兵错误（APP_NOT_RUNNING / NO_DEVTOOLS_SOCKET /
+    //   CDP_SOCKET_PID_MISMATCH）都抛在这个 try **之前**，诊断信息一字未损。
+    const code = e?.cause?.code || e?.message || String(e)
+    console.log(`[cdp] ${method} 调用失败，降级为 null：${code}`)
+    return null
   } finally {
     try { adb(['forward', '--remove', `tcp:${port}`], 15000) } catch { /* 已经没了 */ }
   }

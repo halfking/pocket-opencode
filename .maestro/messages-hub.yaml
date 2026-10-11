@@ -40,7 +40,12 @@ appId: com.kaixuan.opencode.pocket
     when:
       notVisible: "AI 工具"
     commands:
-      - tapOn: "返回"
+      # ⚠️ 2026-10-12：optional:true —— 这条恢复 tap 的输入是竞态（driver 重装会打断
+      #    App，step 0 取 a11y 树时多半是空的），条件修不掉，只能让它不致命。
+      #    真正的门是紧随其后的 extendedWaitUntil(30s)。同 more-grid-reach.yaml。
+      - tapOn:
+          text: "返回"
+          optional: true
       - waitForAnimationToEnd:
           timeout: 3000
 - extendedWaitUntil:

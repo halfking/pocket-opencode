@@ -40,11 +40,19 @@ appId: com.kaixuan.opencode.pocket
 # ---------- 0. 先保证自己站在一个**有底部导航**的页面上 ----------
 # 借 messages-hub.yaml 的同一条纪律：不能假设起点是 #/ai。
 # 邮件详情页的 meta 是 bottomNav:false，那页的树里没有 /ai 的 meta.title「AI 工具」。
+#
+# ⚠️ 2026-10-12 改法（与 more-grid-reach.yaml 同因）：这条恢复 tap 的输入是**竞态** ——
+#    POCKET_REINSTALL_DRIVER 会 force-stop driver、连带打断 App，step 0 取 a11y 树
+#    时多半是空的 ⇒ notVisible 成立 ⇒ 去点一个此刻还不存在的元素，整条流红在 step 0。
+#    实测首跑：`Tap on "返回"... FAILED`。所以不再修条件，改为让这条**恢复动作不致命**
+#    （optional: true）；真正的门是紧随其后的 extendedWaitUntil(30s)。
 - runFlow:
     when:
       notVisible: "AI 工具"
     commands:
-      - tapOn: "返回"
+      - tapOn:
+          text: "返回"
+          optional: true
       - waitForAnimationToEnd:
           timeout: 3000
 - extendedWaitUntil:

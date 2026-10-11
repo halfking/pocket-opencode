@@ -42,9 +42,15 @@ appId: com.kaixuan.opencode.pocket
     when:
       notVisible: "更多功能"
     commands:
+      # ⚠️ 2026-10-12：optional:true —— 与 more-grid-reach.yaml 同因。
+      #    driver 重装会 force-stop driver 连带打断 App，step 0 取树时多半是空的，
+      #    notVisible 恒成立 ⇒ 去点此刻不存在的「更多」⇒ 实测首跑红在
+      #    `Tap on "更多|More"... FAILED`。条件修不掉，让恢复动作不致命，
+      #    真正的门是紧随其后的 extendedWaitUntil。
       - tapOn:
           text: "更多|More"
           retryTapIfNoChange: true
+          optional: true
       - waitForAnimationToEnd:
           timeout: 3000
 - extendedWaitUntil:
