@@ -453,20 +453,43 @@ async function cdpInsertText(text, ms = 8000) {
  *  其它调用方仍用精确匹配——那里「必须停在这个路由」就是真实要求。 */
 async function setRoute(hash, readyExpr, timeoutMs = 30000, opts = {}) {
   const settle = opts.settle === true
-  const pid = adbSoft(['shell', 'pidof', PKG], 15000).trim().split(/\s+/)[0]
-  if (!pid) return false
-  const socks = adbSoft(['shell', `cat /proc/net/unix | grep -o 'webview_devtools_remote_[0-9]*'`], 15000)
-    .split(/\r?\n/).map((l) => l.trim().replace('@', '')).filter(Boolean)
-  // ★ 2026-10-06 修：setRoute 里原来是 `find(…) || socks[socks.length - 1]`。
-  //   cdpEval 侧在 2026-10-04 已经把这个兜底删掉并写了理由，**这里漏了**。
-  //   本机同时装着 com.kaixuan.opencode.pocket 与 …pocket.sttdev，两个
-  //   webview_devtools_remote_<pid> 都是活的，「取最后一个」会连到**另一个 App**，
-  //   而 /json/list 与 Runtime.evaluate 一切正常、**不报任何错** ——
-  //   结果是断言在另一个 App 上匹配。真机 4c308e2e 上两个包并存，已实测会踩中。
-  const sock = socks.find((s) => s.endsWith(`_${pid}`))
-  if (!sock) {
-    console.log(`[cdp] pid=${pid} 的 socket 没出现（现有：${[...new Set(socks)].join(', ') || '无'}）`)
-    return false
+  // ★ 2026-10-12 修：原来这里把 pid 与 socket **只采样一次**，socket 还没建出来
+  //   就直接 return false。实测在「App 刚重载」这一步稳定踩到，preflight 打出
+  //   自相矛盾的一行：「❌ 复位到 #/ai 失败；App 当前实际停在 #/ai」——
+  //   App 状态明明是对的，坏的是 CDP 的 webview_devtools_remote_<pid> 尚未出现。
+  //   同一份代码在紧邻的上一轮却通过了 ⇒ 竞态，不是 App 缺陷，更不是路由问题。
+  //   （同一现象也是 messages-hub 那条 rc=3「复位到 #/ai 失败」的成因。）
+  //
+  //   修法：socket 的出现是「会来的」，所以轮询到**调用方自己的超时预算**用完为止。
+  //   上限取 min(timeoutMs, 20000)：绝不把调用方的耐心加长 ——
+  //   8000 的三个调用点依旧只等 8s。
+  const sockDeadline = Date.now() + Math.min(timeoutMs, 20000)
+  let pid = null
+  let sock = null
+  let waitingLogged = false
+  for (;;) {
+    pid = adbSoft(['shell', 'pidof', PKG], 15000).trim().split(/\s+/)[0]
+    if (pid) {
+      const socks = adbSoft(['shell', `cat /proc/net/unix | grep -o 'webview_devtools_remote_[0-9]*'`], 15000)
+        .split(/\r?\n/).map((l) => l.trim().replace('@', '')).filter(Boolean)
+      // ★ 2026-10-06 修（保留原判据）：setRoute 里原来是 `find(…) || socks[socks.length - 1]`。
+      //   cdpEval 侧在 2026-10-04 已经把这个兜底删掉并写了理由，**这里漏了**。
+      //   本机同时装着 com.kaixuan.opencode.pocket 与 …pocket.sttdev，两个
+      //   webview_devtools_remote_<pid> 都是活的，「取最后一个」会连到**另一个 App**，
+      //   而 /json/list 与 Runtime.evaluate 一切正常、**不报任何错** ——
+      //   结果是断言在另一个 App 上匹配。真机 4c308e2e 上两个包并存，已实测会踩中。
+      sock = socks.find((s) => s.endsWith(`_${pid}`))
+      if (sock) break
+      if (!waitingLogged) {
+        console.log(`[cdp] pid=${pid} 的 socket 还没出现（现有：${[...new Set(socks)].join(', ') || '无'}），等待中…`)
+        waitingLogged = true
+      }
+    }
+    if (Date.now() >= sockDeadline) {
+      console.log(`[cdp] 等到超时仍无可用 socket（pid=${pid || '无'}）`)
+      return false
+    }
+    await sleep(500)
   }
   let port
   try {
