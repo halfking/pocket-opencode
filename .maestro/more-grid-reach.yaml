@@ -26,11 +26,27 @@ appId: com.kaixuan.opencode.pocket
 # 「AI 工具」⇒ 照惯例先等它会永远不可能通过（2026-10-03 15:33 实测）。
 # ⚠️ 下面这个 notVisible 此前是**恒真**的（写的是设备上不存在的「首页」）
 #    ⇒ 每次都去点「返回」，而 AI 首页上没有返回按钮 ⇒ 反而打断 flow。
+#
+# ⚠️ 2026-10-12 实测（本条在此重犯，故改法与上一处不同）：把文案从「首页」改成
+#    「AI 工具」只能让**恒真**变成**偶发为真**，因为求值时机本身不可靠 ——
+#    POCKET_REINSTALL_DRIVER=1 时 maestro 每轮开跑前重装 driver，会 force-stop
+#    dev.mobile.maestro，App 随之被打断，step 0 取 a11y 树时多半是空的
+#    ⇒ 「AI 工具」notVisible 成立 ⇒ 去点一个此刻还不存在的元素。
+#    同一轮的截图证明失败瞬间页面其实早已渲染出「AI 工具」标题，
+#    即条件为真与失败现场并不同时。
+#
+#    因此**不再试图修好这个条件**（它的输入是竞态，修不掉），而是承认它只能
+#    触发一次「尽力而为」的恢复动作：optional:true 让点不到时不致命。
+#    这不会让判据失明 —— 真正的门是紧随其后的 extendedWaitUntil(30s)：
+#    App 真的回不来时它照样红，只是报错点从「点不到返回」换成「等不到 AI 工具」，
+#    后者才是有诊断力的那句。
 - runFlow:
     when:
       notVisible: "AI 工具"
     commands:
-      - tapOn: "返回"
+      - tapOn:
+          text: "返回"
+          optional: true
       - waitForAnimationToEnd:
           timeout: 3000
 - extendedWaitUntil:
