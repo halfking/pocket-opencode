@@ -581,20 +581,64 @@ async function ensureDriver() {
   //     但下一次重试同样的命令就直接 Success 了（确认框没出现，tap 次数 = 0）。
   //     所以这里用「重试 + 必要时自动点确认框」，但**不能声称点框是必需的**——
   //     至少有一次成功路径上确认框压根没出现。
-  const have = (p) => adb(['shell', 'pm', 'list', 'packages', p], 30000).includes(`package:${p}`)
+  // ★ 2026-10-12 修：have / enabled 原先走 adb()（execFileSync，异常与超时会抛）。
+  //   实测在宿主负载 80~300 时，一条 `adb shell pm list packages` 就 ETIMEDOUT，
+  //   异常冒泡出 have → ensureDriver → preflight ⇒ **node 进程直接死**，
+  //   一次 flow 都没跑，报告里只剩一条栈。这是同一族缺陷的第三处
+  //   （前两处：setRoute、cdpCall），根子都是「基础设施助手把瞬时故障
+  //   升级成进程死亡」。
+  //
+  //   它们是**查询**，本文件早就立了规矩（见 adbSoft 的注释）：
+  //   「查不到」是有效答案的命令必须走非抛出版本。原先漏了。
+  //
+  //   关键设计：返回三态而不是布尔 ——
+  //     true  = 查到了，且在/已启用
+  //     false = 查到了，且确实不在（或未启用）    ← 只有这种情况才该触发重装
+  //     undefined = **查不动**（超时/异常）        ← 绝不能当成「没装」
+  //   把「查不动」误判成「没装」会走一次没必要的重装，而重装在 MIUI 上
+  //   正好是那条要过安装确认框的路径 ⇒ 判据一失手就把事情弄得更糟。
+  const query = (args) => {
+    try { return adb(args, 30000) }
+    catch {
+      // 负载尖峰通常是瞬时的，给一次机会再判定
+      try { return adb(args, 30000) }
+      catch (e) {
+        console.error(`[driver] adb 查询失败（已重试一次）：${String(e.message || e).split('\n')[0]}`)
+        return null
+      }
+    }
+  }
+  const have = (p) => {
+    const out = query(['shell', 'pm', 'list', 'packages', p])
+    return out === null ? undefined : out.includes(`package:${p}`)
+  }
   const enabled = (p) => {
-    const info = adb(['shell', 'dumpsys', 'package', p], 30000)
+    const info = query(['shell', 'dumpsys', 'package', p])
+    if (info === null) return undefined
     const line = info.split(/\r?\n/).find((l) => l.trim().startsWith('User 0:')) ?? ''
     return /enabled=1/.test(line)
   }
 
   for (const pkg of DRIVER_PKGS) {
-    if (have(pkg) && enabled(pkg)) { console.log(`[driver] ${pkg} 已就位`); continue }
-    if (have(pkg)) {
+    const installed = have(pkg)
+    if (installed === undefined) {
+      console.error(`[driver] 读不到设备状态，无法判断 ${pkg} 是否就位。`)
+      console.error('           不重装：把「查不动」当成「没装」会走安装确认框那条路径，反而更糟。')
+      return false
+    }
+    if (installed && enabled(pkg)) { console.log(`[driver] ${pkg} 已就位`); continue }
+    if (installed) {
       // pm enable 在包其实已经不在时会抛 Unknown package（上一轮 Maestro 刚把它卸了），
       // 这里不能让它中断整个自愈流程，回落到安装即可。
       try { adb(['shell', 'pm', 'enable', pkg], 30000) } catch { /* 包已消失，走安装 */ }
-      if (have(pkg) && enabled(pkg)) {
+      const afterEnable = have(pkg)
+      if (afterEnable === undefined) {
+        // 刚 enable 完却读不到状态 ⇒ 是「查不动」，不是「没 enable 上」。
+        // 判成后者会白跑一轮预装式安装，正是那条要走 MIUI 确认框的路径。
+        console.error(`[driver] ${pkg} enable 后仍读不到状态，停止（不重装）`)
+        return false
+      }
+      if (afterEnable && enabled(pkg)) {
         console.log(`[driver] ${pkg} 此前被 MIUI 禁用，已 pm enable`)
         continue
       }
@@ -612,7 +656,10 @@ async function ensureDriver() {
         { cwd: ROOT, encoding: 'utf8', timeout: 180000 })
       if (r.stdout) process.stdout.write(r.stdout)
       if (r.stderr) process.stderr.write(r.stderr)
-      if (have(pkg)) { ok = true; adb(['shell', 'pm', 'enable', pkg], 30000); break }
+      const after = have(pkg)
+      // 同样三态：装完还「查不动」时不能判成「没装上」而空转第二轮安装
+      if (after === undefined) { console.error(`[driver] 装完仍读不到状态，停止重试`); return false }
+      if (after) { ok = true; adb(['shell', 'pm', 'enable', pkg], 30000); break }
       console.log(`[driver] ${pkg} 第 ${attempt} 次安装未成功`)
     }
     if (!ok) { console.error(`[driver] ${pkg} 装不上，MIUI 仍在拦截`); return false }
