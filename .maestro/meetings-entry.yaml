@@ -187,7 +187,26 @@ appId: com.kaixuan.opencode.pocket
 - assertVisible: "会议详情"
 
 # 录音界面独有的元素：即时总结面板（MeetingInsightPanel.vue:2 的 aria-label）
-- assertVisible: "即时总结|会议纪要"
+#
+# ⚠️ 2026-10-12 实测修：原先写 `即时总结|会议纪要`，实测红在
+#   `Assertion '"即时总结|会议纪要" is visible' failed`。
+#   但失败现场的 a11y 树里**面板是在的**，节点文本是「即时总结更新中…」。
+#
+#   真因是**兄弟文本节点被合并**，不是 App 少渲染了：
+#     MeetingInsightPanel.vue:4  <span>{{ isRecording ? '即时总结' : '会议纪要' }}</span>
+#     MeetingInsightPanel.vue:5  <span v-if="isUpdating" class="muted">更新中…</span>
+#   两个 span 同在 <header> 内且都没有 content-desc，Android 无障碍树把它们
+#   合并成一个节点，文本取拼接 ⇒ 「即时总结」+「更新中…」。
+#   （同轮树里还有「转写失败，将在下一段重试」：模拟器无真实音频，
+#     总结一直在更新中，所以这个状态是稳定复现的，不是抖动。）
+#
+#   为什么原写法必然失败：Maestro 的 visible 匹配是**全匹配**（这点由本次实测
+#   反证 —— 若是非锚定的子串匹配，`即时总结` 本该命中 `即时总结更新中…`，
+#   断言就不会红）。⇒ 两个分支都要带 `.*` 才能容下拼接后缀。
+#
+#   判别力没有被削弱：本条的意图是「详情页的总结面板在场」，
+#   合并后的节点同样证明面板在场；而 `会议详情` 那条仍是独立的静态标题断言。
+- assertVisible: "即时总结.*|会议纪要.*"
 
 # ---------- 4. 负向锚点 ----------
 # 「还没有会议记录」是**列表页**的空态文案。它若出现，说明 createMeeting
