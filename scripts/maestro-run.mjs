@@ -984,13 +984,32 @@ async function assertAppUsesReverseBase() {
   let setInfo = null
   for (let attempt = 1; attempt <= 10; attempt++) {
     if (attempt > 1) await sleep(Math.min(2000 * attempt, 8000))
-    const lastRaw = await cdpEval(`(function(){
-      try {
-        var before = localStorage.getItem('pocket_api_base');
-        localStorage.setItem('pocket_api_base', ${JSON.stringify(want)});
-        return JSON.stringify({ before: before, after: localStorage.getItem('pocket_api_base') });
-      } catch (e) { return JSON.stringify({ err: String(e && e.message || e) }); }
-    })()`)
+    // ★ 2026-10-12 修：这个循环原先只处理「cdpEval **返回** undefined/null」，
+    //   完全没处理它**抛**。而 APP_NOT_RUNNING 是 cdpCall 的哨兵抛错（pidof 读空），
+    //   异常会直接冒泡出 preflight ⇒ node 带着栈死掉 ⇒ 一次 flow 都没跑。
+    //   2026-10-12 实测复现：宿主负载 183 时，本轮就是死在
+    //   `Error: APP_NOT_RUNNING at cdpCall → assertAppUsesReverseBase`。
+    //
+    //   它与「CDP 求值超时」是**同一类**：App 刚 reload / 刚起，pidof 处在空窗期，
+    //   等一秒就好 —— 本文件 2026-10-07 的注释也是这么写的（只是当时把它记成
+    //   「preflight 崩掉、退出码 3」，没意识到还会顺手带走后面所有 flow）。
+    //   ⇒ 纳入同一个有界重试预算，而不是让一个已知瞬时态终止整轮。
+    let lastRaw
+    try {
+      lastRaw = await cdpEval(`(function(){
+        try {
+          var before = localStorage.getItem('pocket_api_base');
+          localStorage.setItem('pocket_api_base', ${JSON.stringify(want)});
+          return JSON.stringify({ before: before, after: localStorage.getItem('pocket_api_base') });
+        } catch (e) { return JSON.stringify({ err: String(e && e.message || e) }); }
+      })()`)
+    } catch (e) {
+      if (String(e?.message) === 'APP_NOT_RUNNING') {
+        console.log(`[preflight] 第 ${attempt}/10 次 pidof 读不到（App 刚重载的空窗期），退避后重试…`)
+        continue
+      }
+      throw e
+    }
     if (lastRaw === undefined || lastRaw === null) {
       console.log(`[preflight] CDP 求值第 ${attempt}/10 次无返回（间歇性超时），退避后重试…`)
       continue
@@ -1332,7 +1351,34 @@ if (!DEV_PASS) {
   process.exit(2)
 }
 
-if (!(await preflight())) process.exit(3)
+// ★ 2026-10-12 修：preflight 现在被 try 包住。
+// 它内部会走 CDP（cdpCall 的哨兵 APP_NOT_RUNNING / NO_DEVTOOLS_SOCKET 都是
+// **抛**出来的），而这里原先是裸调用 `if (!(await preflight())) process.exit(3)`
+// ⇒ 任何一次瞬时态都会让异常冒泡到顶层，node 带着裸栈死掉。
+// 后果与 ensureAppAlive 的注释里写的一模一样：整批 flow 一条都没跑、
+// 末尾那段「App 被强杀 / MIUI wakepath」归因逻辑执行不到、退出码看不出成因。
+// 2026-10-12 实测复现：宿主负载 183 时死在
+// `Error: APP_NOT_RUNNING at cdpCall → assertAppUsesReverseBase`。
+//
+// 关键：**沉默崩掉比红更有害**——它让「没跑」看起来像「跑过了」。
+// 所以这里把哨兵异常翻译成可读归因 + 明确的退出码，而不是裸栈。
+if (!(await (async () => {
+  try { return await preflight() }
+  catch (e) {
+    const msg = String(e?.message || e)
+    console.error(`\n[preflight] ❌ preflight 抛出异常：${msg.split('\n')[0]}`)
+    if (msg === 'APP_NOT_RUNNING' || msg === 'NO_DEVTOOLS_SOCKET') {
+      console.error('        这是 CDP 通道的哨兵错误：**App 进程没起来，或它的 WebView devtools')
+      console.error('        socket 还没注册**。两者都是 App 刚重启/刚 reload 的空窗期，等一下就好。')
+      console.error('        宿主负载高时必现（本轮实测负载 183 时 60s 都不够）。')
+      console.error('        ⚠️ 本次**一条 flow 都没跑**，别把空结果当成全绿。')
+    } else {
+      console.error('        不是已知的 CDP 哨兵，请按上面的栈定位。')
+      console.error('        ⚠️ 本次**一条 flow 都没跑**。')
+    }
+    return false
+  }
+})())) process.exit(3)
 
 // 复位到 #/ai。App 会记住 pocket:lastRoute 并在重启后恢复过去，
 // 实测撞到过恢复到「邮件详情」和「笔记页」——起始状态不确定，
