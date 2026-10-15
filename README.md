@@ -213,7 +213,7 @@ adb shell am start -n com.kaixuan.opencode.pocket/.MainActivity
 ### 主要文档
 
 - [**文档索引**](docs/README.md) - docs 目录总入口
-- [**功能特性大盘（As-built）**](docs/2026-09-08-feature-inventory.md) - 前端 30 域 + 后端 48 模块 + 原生 35+ 能力位（2026-09-08 基线盘点 25 域 + 47 模块，其后新增 flashcards / study / more 等域）
+- [**功能特性大盘（As-built）**](docs/2026-09-08-feature-inventory.md) - 前端 32 域 + 后端 55 模块 + 原生 35+ 能力位（2026-09-08 基线盘点 25 域 + 47 模块，其后新增 flashcards / study / more / calendar / messages 等域与 accruntime / learning / repohygiene / livetest / meetingagent 等模块，2026-10-15 复核）
 - [**需求与设计（As-built）**](docs/2026-09-08-requirements-design.md) - 反向整理的需求清单与现行架构设计
 - [**原生化与跨平台路线图**](docs/2026-09-08-native-and-cross-platform.md) - iOS / Android / HarmonyOS 平台补齐方案
 - [**运维指南**](docs/guides/OPERATIONS_GUIDE.md) - 完整的部署和运维文档
@@ -365,7 +365,7 @@ DSN 时则明确跳过。
 
 - **Backend**: 需要补充
 - **Frontend**: 需要补充
-- **E2E**: 27个测试用例，100%通过
+- **E2E**: 26个测试用例（2026-10-15 实测），100%通过
 
 ---
 
