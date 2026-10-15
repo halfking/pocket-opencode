@@ -11,11 +11,13 @@
 // 而 `useSessionLiveRecord.stop()` 把这两条串在**同一次停止**里：
 // `await recorder.stop()`（内含 ①，fire-and-forget）之后再 `await finalizeRecording(...)`（②）。
 //
-// 服务端 `handleCreateMeeting` 每次都走 `CreateScoped`（**INSERT，从不 upsert**），
-// 且**忽略请求里的 `id`**（§96）⇒ 两次各造一个服务端 ID ⇒ **两行**。
+// 服务端 `handleCreateMeeting` 走 `CreateScoped`（**按 client id upsert**，§105 方案 A）。
 //
-// HTTP 层实测（§104.1）：`GET /api/meetings` ⇒ `total=2`，
-// 两行同名同状态，连第二次的 `status:"refined"` 都被 `CreateScoped` 覆写回 `"recording"`。
+// ⏱ **历史（§719 订正）**：本文件原注释写着「**忽略请求里的 `id`** ⇒ 两次各造一个服务端 ID
+// ⇒ **两行**」，以及「连第二次的 `status:"refined"` 都被 `CreateScoped` 覆写回 `"recording"`」；
+// 这两句在 §96/§105 修复后**都已不成立**：
+// `meeting/store.go:111-114` 现在是 `status := req.Status; if status == "" { status = "recording" }`
+// ⇒ **请求值优先**，`recording` 只是**空值兜底**。
 //
 // ── 为什么写成现状登记而不是承重门 ──────────────────────────────────
 //
@@ -107,18 +109,22 @@ func TestMeetingSyncCallSitesShareTheSameID(t *testing.T) {
 	}
 }
 
-// TestMeetingSyncStatusIsNotAdoptedStatus 现状登记：**只**登记 status 那件事。
+// TestMeetingSyncStatusFollowsRequestValue 现状登记：**只**登记 status 那件事。
 //
 // ★ §105 已把「一场录音 ⇒ 两行」修掉并升级为承重门
 //
 //	（meeting_sync_id_upsert_test.go:TestRepeatedSyncOfSameClientIDCreatesOneRow），
-//	所以本函数里与行数有关的部分已删除。剩下的这一半仍然是**未拍板**的：
-//	前端发了 status="refined"，store 硬写常量 "recording"，于是列表徽章
-//	永远显示「录音中」，哪怕精校早就完成了。
+//	所以本函数里与行数有关的部分已删除。
 //
-//	不判定成败 —— 补哪些列进 meetings 表是产品决定（要写迁移），
-//	本仓无权代拍。拍板后请删掉本函数，改写成承重断言。
-func TestMeetingSyncStatusIsNotAdoptedStatus(t *testing.T) {
+// ⏱ **函数名已改名（§719）**：原名 `TestMeetingSyncStatusIsNotAdoptedStatus`
+//	断言「请求里的 status 没被采纳」—— 而该断言**已随 §96 修复被推翻**
+//	（`meeting/store.go:111-114`：`status := req.Status`，`recording` 只是空值兜底）。
+//	保留旧名会让 `-run TestMeetingSyncStatusIsNotAdoptedStatus` 匹配到一个
+//	**名字与行为相反**的测试。
+//
+//	剩下的问题仍是**未拍板**的：补哪些列进 meetings 表是产品决定（要写迁移），
+//	本仓无权代拍。拍板后请把本函数改写成承重断言。
+func TestMeetingSyncStatusFollowsRequestValue(t *testing.T) {
 	srv, tokens := newWorkspaceIsolationServer(t)
 	tok := tokens["ws-a"]
 
@@ -141,10 +147,28 @@ func TestMeetingSyncStatusIsNotAdoptedStatus(t *testing.T) {
 		return m.ID + " / status=" + m.Status
 	}
 
-	t.Logf("① 录音停止那次同步 → %s", post(bodyAtStop))
-	t.Logf("② 精校后那次同步 → %s（请求里的 status 是 \"refined\"）", post(bodyAfterRefine))
-	t.Logf("★ 现状：两次都是 status=recording —— 请求里的 status 始终没被采纳，" +
-		"列表徽章显示「录音中」；补 status 列是待拍板项（§96.2）")
+	stop := post(bodyAtStop)
+	refined := post(bodyAfterRefine)
+	t.Logf("① 录音停止那次同步 → %s", stop)
+	t.Logf("② 精校后那次同步 → %s（请求里的 status 是 \"refined\"）", refined)
+	// ⚠ §719：这段结论原先**写死**为「两次都是 status=recording —— 请求里的
+	//   status 始终没被采纳」，而实测读数是 completed / completed ⇒ **它与上面两行矛盾**。
+	//   根因：那段文案停在 §96 修复前。`meeting/store.go` 现在的逻辑是
+	//   `status := req.Status; if status == "" { status = "recording" }`
+	//   ⇒ **请求值优先**，`recording` 只是**空值兜底**。
+	// ⇒ 现在**按实测值说话**，不再断言一个与本文件读数矛盾的结论。
+	t.Logf("★ 现状（按上面两行的实测值，不写死）：两次的 status 分别是 %q 与 %q；"+
+		"「recording」在 store 里只是 req.Status 为空时的兜底（meeting/store.go:111-114），"+
+		"不再是「盖掉请求值」的常量。", statusOf(stop), statusOf(refined))
+}
+
+// statusOf 从 post() 返回的 `"<id> / status=<值>"` 里取出 status 段。
+func statusOf(s string) string {
+	const marker = " / status="
+	if i := strings.Index(s, marker); i >= 0 {
+		return s[i+len(marker):]
+	}
+	return "(解析不出)"
 }
 
 // TestMeetingSyncIDExtractor_HasTeeth 负控：把精校链的**第二处** id 改成别的字段，

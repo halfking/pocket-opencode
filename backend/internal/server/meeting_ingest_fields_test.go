@@ -6,13 +6,15 @@
 //	（summary_request_wire_test.go：TestMeetingRequestTopLevelFieldsMatchTheFrontend，
 //	逐条对账前端 JSON.stringify 的键与 Go 的 json tag，任一侧改名/增删即红），
 //	**唯独 ingest 端点没有**。
-//	结果是：前端 meetings.ts:178 发 10 个字段，Go 的 CreateMeetingRequest
-//	只有 `id` / `title` 两个 tag，其余 7 个被 encoding/json **静默丢弃**
-//	（实测见 meeting_sync_identity_test.go 的 TestMeetingSyncIdentityStatus：
-//	location/participants/startedAt/durationMs/summary/refinedTranscript/noteId
-//	全部 present=false）。
 //
-// ⚠ 这道门**不主张「这 7 个字段该落云端」** ——
+// ⏱ **这段历史已被修复**（§712 归因）：门建成时前端 meetings.ts 发 10 个字段，
+//	而 Go 的 CreateMeetingRequest 只有 `id` / `title` 两个 tag，其余 7 个被
+//	encoding/json **静默丢弃**（实测见 meeting_sync_identity_test.go 的
+//	TestMeetingSyncIdentityStatus）。此后 Go 侧补齐了全部 10 个 tag
+//	⇒ **本门的差集现在是空的**（`knownDroppedTags` 已收窄为空）。
+//	⚠ 保留下面的产品取舍说明：**差集为空不等于「云端该收到哪些字段」已被拍板**。
+//
+// ⚠ 这道门**不主张「这些字段该落云端」** ——
 //
 //	那已经被查清是产品取舍：
 //	  ① frontend/src/features/meetings/meetings-store.ts 的 updateMeeting()
@@ -35,7 +37,9 @@
 //
 // 为什么不能写成 requireSameKeys：
 //
-//	那等于现在就宣布「这 7 个字段不该发」，那正是那条未决决定。
+//	那等于现在就宣布「前端该发哪些、云端该收哪些」——那正是那条未决决定。
+//	（差集曾有 7 条、现已补齐成 0 条，但**「0」也不等于「已拍板该是 0」**：
+//	它只是「目前没有键在被丢弃」。）
 //	本门只保证「差集没有悄悄变化」。
 package server
 
@@ -46,35 +50,27 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/meeting"
 )
 
-// knownDroppedTags 是**已查清、并登记过**的「前端发了但 Go 没有 json tag」的键。
+// knownDroppedTags 是「前端发了、Go 没 json tag、store 也不写」的**已确认豁免**键。
 //
-// ⚠ 这是**现状快照**，不是「正确清单」——改成它就等于替用户做了那条产品决定。
+// ⏱ 历史（§712 归因）：2026-10-15 之前这里有 7 条（location / participants /
+// startedAt / durationMs / summary / refinedTranscript / noteId），来源是
+// `meeting_sync_identity_test.go` 的 `TestMeetingSyncIdentityStatus` 实测读数
+// （present=false）+ 当时 `jsonTags(CreateMeetingRequest{})` **只有 [id title]**。
 //
-// 来源：meeting_sync_identity_test.go 的 TestMeetingSyncIdentityStatus 实测读数
+//   此后 `CreateMeetingRequest` **补齐了这 7 个（乃至全部 10 个）的 json tag**
+//   ⇒ 差集消失 ⇒ 本门按设计报红并提示「可以收窄了」⇒ **收窄成空**。
 //
-//	（present=false 的 7 个）+ jsonTags(CreateMeetingRequest{}) 只有 [id title]。
-//
-// ⚠⚠ `status` **不在这里**，它属第三类（meeting_sync_identity_test.go 的注释已指出）：
-//
-//	前端发了 `status`，Go 的 CreateMeetingRequest 没有这个 tag，
-//	但 store 会把它**覆写成常量**再写进响应 ⇒ 它在返回体里 present=true。
-//	所以按「json tag 差集」算它是丢弃，按「返回体」算它是入库 —— 两个口径的差集不同。
-//	列进 knownDroppedTags 会与实测读数矛盾（实测说 present=true），
-//	所以单列成 knownOverwrittenFields。
-var knownDroppedTags = []string{
-	"location",
-	"participants",
-	"startedAt",
-	"durationMs",
-	"summary",
-	"refinedTranscript",
-	"noteId",
-}
+// ⚠ **不要把这条历史当成「曾经放过 7 个静默丢弃」**：那 7 个键现在**真的有 tag**，
+//    由 `TestMeetingIngestRequestFieldsDrift` 本体持续对账。
+// ⚠ 也不要相信本注释里旧版本的「jsonTags 只有 [id title]」——那是**修复前**的读数。
+var knownDroppedTags = []string{}
 
 // knownOverwrittenFields 是「前端发了、Go 没 json tag、但 store 用**自己算的值**写回」，
 // 也就是请求里的值**根本没被采纳**的那一类。
-// 实测（TestMeetingSyncIdentityStatus）：`status` 被覆写成常量。
-var knownOverwrittenFields = []string{"status"}
+// ⏱ 历史（§712 归因）：原先登记 `status`（实测被覆写成常量 `"recording"`）。
+//   现已修：`CreateMeetingRequest.Status` 有了 json tag，
+//   且 `chat_summary.CreateScoped` 不再硬写 `"recording"`（见设计文档 §707 / §708）。
+var knownOverwrittenFields = []string{}
 
 // TestMeetingIngestRequestFieldsDrift 把 ingest 端点的「前端发的键」与
 // 「Go 的 json tag」逐条对账，但**只对账差集有没有变**，不断言差集该是空。
@@ -163,6 +159,13 @@ func TestMeetingIngestRequestFieldsDrift(t *testing.T) {
 func TestMeetingIngestDriftGuardHasTeeth(t *testing.T) {
 	base := append([]string(nil), knownDroppedTags...)
 
+	// ⚠ §712：knownDroppedTags 收窄成空之后，「少一个键」臂会 panic
+	//   （s[:len(s)-1] 在 len=0 时是 s[:-1]）。**空 base 必须显式跳过该臂**，
+	//   否则门本身会崩 ⇒ 用 t.Skip 如实说明，而不是让它炸。
+	if len(base) == 0 {
+		t.Log("knownDroppedTags 为空 ⇒ 跳过「少一个键」臂（空集无键可少）")
+	}
+
 	for _, c := range []struct {
 		name        string
 		mutate      func([]string) []string
@@ -170,9 +173,17 @@ func TestMeetingIngestDriftGuardHasTeeth(t *testing.T) {
 		wantRemoved int
 	}{
 		{"多一个键", func(s []string) []string { return append(s, "__probeNewField") }, 1, 0},
-		{"少一个键", func(s []string) []string { return s[:len(s)-1] }, 0, 1},
+		{"少一个键", func(s []string) []string {
+			if len(s) == 0 {
+				return nil
+			}
+			return s[:len(s)-1]
+		}, 0, 1},
 	} {
 		t.Run(c.name, func(t *testing.T) {
+			if len(base) == 0 && c.wantRemoved > 0 {
+				t.Skip("knownDroppedTags 为空，无键可少 ⇒ 本臂不适用（base 为空时 mutate 会 panic）")
+			}
 			got := c.mutate(base)
 			added, removed := diffStrings(base, got)
 			if len(added) != c.wantAdded {

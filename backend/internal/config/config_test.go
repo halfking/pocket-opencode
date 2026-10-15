@@ -162,19 +162,32 @@ func TestValidateProductionLLMDirectAccessRejected(t *testing.T) {
 		RSS:                      RSSConfig{HTTPTimeout: 15 * time.Second, MaxConcurrency: 4},
 	}
 
+	// ⚠ §693：这张表的 base 是齐的（RedClaw + RSS 都设了），所以它**不是**恒真的
+	// （两条正向子用例能过就是证明）。但负向子用例只断言「出错了」，
+	// 钉不住错误来自哪条 ⇒ 这里统一按契约断言。
+	const wantDirectLLMErr = "POCKET_LLM_BASE_URL/POCKET_LLM_API_KEY"
+
 	t.Run("production with direct LLM endpoint rejected", func(t *testing.T) {
 		cfg := base
 		cfg.LLMBaseURL = "https://api.groq.com/openai/v1"
-		if err := cfg.Validate(); err == nil {
+		err := cfg.Validate()
+		if err == nil {
 			t.Fatal("expected production config with direct LLM base URL to be rejected")
+		}
+		if !strings.Contains(err.Error(), wantDirectLLMErr) {
+			t.Fatalf("失败的不是直连 LLM 那条校验：got %q", err.Error())
 		}
 	})
 
 	t.Run("production with direct LLM key rejected", func(t *testing.T) {
 		cfg := base
 		cfg.LLMAPIKey = "gsk_direct_key"
-		if err := cfg.Validate(); err == nil {
+		err := cfg.Validate()
+		if err == nil {
 			t.Fatal("expected production config with direct LLM API key to be rejected")
+		}
+		if !strings.Contains(err.Error(), wantDirectLLMErr) {
+			t.Fatalf("失败的不是直连 LLM 那条校验：got %q", err.Error())
 		}
 	})
 
@@ -192,8 +205,12 @@ func TestValidateProductionLLMDirectAccessRejected(t *testing.T) {
 		cfg.LLMGatewayURL = "https://llm-gateway.internal"
 		cfg.LLMGatewayAPIKey = "tenant-key"
 		cfg.LLMBaseURL = "https://api.groq.com/openai/v1"
-		if err := cfg.Validate(); err == nil {
+		err := cfg.Validate()
+		if err == nil {
 			t.Fatal("expected production config with any direct LLM setting to be rejected even when gateway is configured")
+		}
+		if !strings.Contains(err.Error(), wantDirectLLMErr) {
+			t.Fatalf("失败的不是直连 LLM 那条校验：got %q", err.Error())
 		}
 	})
 
@@ -342,6 +359,12 @@ func TestValidateTimeout(t *testing.T) {
 }
 
 func TestProductionValidationEnhanced(t *testing.T) {
+	// ⚠ §693：这张 13 格表此前也是**恒真的**，机制与 §692.6 那张完全一样：
+	// base 缺 `RedClawAdminURL`/`RedClawAdminSecret`（且 `AuthLegacyOnly` 为零值 false）
+	// 与整个 `RSS` ⇒ **base 自己就过不了校验**，而 RedClaw 检查排在端口/超时/
+	// 时区/RSS 这些被测检查**之前** ⇒ 实测 **13/13 格报的是同一个错误**：
+	//   `POCKET_REDCLAW_ADMIN_URL must be configured in production`
+	// 也就是说这 13 格从未验证过「端口非法」「超时非正」「时区越界」中的任何一条。
 	base := Config{
 		Environment:              "production",
 		JWTSecret:                "01234567890123456789012345678901",
@@ -353,37 +376,62 @@ func TestProductionValidationEnhanced(t *testing.T) {
 		ReminderCheckIntervalSec: "60",
 		TimezoneOffsetSec:        28800,
 		RedClawTimeoutSec:        30,
+		RedClawAdminURL:          "http://redclaw-admin.internal:28081",
+		RedClawAdminSecret:       "0123456789abcdef0123456789abcdef-redclaw",
 		EmailFetchEnabled:        false,
+		RSS:                      RSSConfig{HTTPTimeout: 15 * time.Second, MaxConcurrency: 4, DigestHour: 9, DigestMinute: 0},
+	}
+	if err := base.Validate(); err != nil {
+		t.Fatalf("前提失效：base 必须是合法生产配置，否则 13 格都无法归因（%v）", err)
 	}
 
 	cases := []struct {
-		name   string
-		mutate func(*Config)
+		name            string
+		wantErrContains string
+		mutate          func(*Config)
 	}{
-		{name: "invalid http port - zero", mutate: func(c *Config) { c.HTTPPort = "0" }},
-		{name: "invalid http port - negative", mutate: func(c *Config) { c.HTTPPort = "-1" }},
-		{name: "invalid http port - too large", mutate: func(c *Config) { c.HTTPPort = "65536" }},
-		{name: "invalid http port - non-numeric", mutate: func(c *Config) { c.HTTPPort = "abc" }},
-		{name: "invalid timeout - zero", mutate: func(c *Config) { c.OpenCodeTimeoutMS = "0" }},
-		{name: "invalid timeout - negative", mutate: func(c *Config) { c.OpenCodeTimeoutMS = "-1" }},
-		{name: "invalid ws heartbeat", mutate: func(c *Config) { c.WSHeartbeatMS = "0" }},
-		{name: "invalid reminder interval", mutate: func(c *Config) { c.ReminderCheckIntervalSec = "-1" }},
-		{name: "timezone too low", mutate: func(c *Config) { c.TimezoneOffsetSec = -50000 }},
-		{name: "timezone too high", mutate: func(c *Config) { c.TimezoneOffsetSec = 60000 }},
-		{name: "redclaw timeout zero", mutate: func(c *Config) { c.RedClawTimeoutSec = 0 }},
-		{name: "redclaw timeout negative", mutate: func(c *Config) { c.RedClawTimeoutSec = -1 }},
-		{name: "email enabled without master key", mutate: func(c *Config) {
-			c.EmailFetchEnabled = true
-			c.EmailMasterKey = ""
-		}},
+		{name: "invalid http port - zero", wantErrContains: "invalid POCKET_HTTP_PORT",
+			mutate: func(c *Config) { c.HTTPPort = "0" }},
+		{name: "invalid http port - negative", wantErrContains: "invalid POCKET_HTTP_PORT",
+			mutate: func(c *Config) { c.HTTPPort = "-1" }},
+		{name: "invalid http port - too large", wantErrContains: "invalid POCKET_HTTP_PORT",
+			mutate: func(c *Config) { c.HTTPPort = "65536" }},
+		{name: "invalid http port - non-numeric", wantErrContains: "invalid POCKET_HTTP_PORT",
+			mutate: func(c *Config) { c.HTTPPort = "abc" }},
+		{name: "invalid timeout - zero", wantErrContains: "POCKET_OPENCODE_TIMEOUT_MS",
+			mutate: func(c *Config) { c.OpenCodeTimeoutMS = "0" }},
+		{name: "invalid timeout - negative", wantErrContains: "POCKET_OPENCODE_TIMEOUT_MS",
+			mutate: func(c *Config) { c.OpenCodeTimeoutMS = "-1" }},
+		{name: "invalid ws heartbeat", wantErrContains: "POCKET_WS_HEARTBEAT_MS",
+			mutate: func(c *Config) { c.WSHeartbeatMS = "0" }},
+		{name: "invalid reminder interval", wantErrContains: "POCKET_REMINDER_CHECK_INTERVAL_SEC",
+			mutate: func(c *Config) { c.ReminderCheckIntervalSec = "-1" }},
+		{name: "timezone too low", wantErrContains: "POCKET_TIMEZONE_OFFSET_SEC",
+			mutate: func(c *Config) { c.TimezoneOffsetSec = -50000 }},
+		{name: "timezone too high", wantErrContains: "POCKET_TIMEZONE_OFFSET_SEC",
+			mutate: func(c *Config) { c.TimezoneOffsetSec = 60000 }},
+		{name: "redclaw timeout zero", wantErrContains: "POCKET_REDCLAW_TIMEOUT_SEC",
+			mutate: func(c *Config) { c.RedClawTimeoutSec = 0 }},
+		{name: "redclaw timeout negative", wantErrContains: "POCKET_REDCLAW_TIMEOUT_SEC",
+			mutate: func(c *Config) { c.RedClawTimeoutSec = -1 }},
+		{name: "email enabled without master key", wantErrContains: "POCKET_EMAIL_MASTER_KEY",
+			mutate: func(c *Config) {
+				c.EmailFetchEnabled = true
+				c.EmailMasterKey = ""
+			}},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := base
 			tc.mutate(&cfg)
-			if err := cfg.Validate(); err == nil {
+			err := cfg.Validate()
+			if err == nil {
 				t.Fatal("expected production config validation to fail")
+			}
+			if !strings.Contains(err.Error(), tc.wantErrContains) {
+				t.Fatalf("失败的不是本用例想验证的那条校验：got %q，want 包含 %q",
+					err.Error(), tc.wantErrContains)
 			}
 		})
 	}

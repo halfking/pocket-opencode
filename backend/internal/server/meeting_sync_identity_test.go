@@ -4,26 +4,23 @@
 // **请求体字段**。本文件守的是另一个交接点，而且是**两个**：
 //
 //	① 请求体字段：前端 syncMeeting() 发 10 个 camelCase 键，
-//	   meeting.CreateMeetingRequest 只有 `title` 一个 json tag。
-//	② **身份**：store 自己生成 `mtg_<nano>_<seq>`，完全忽略请求里的 `id`。
+//	   meeting.CreateMeetingRequest **现在 10 个全带 json tag**（§708 实测）。
+//	② **身份**：store 现在**接受客户端提供的 id**（§708 实测）；
+//	   `nextMeetingID` 降级为「客户端没带 id 时」的兜底。
 //
-// 两者都不是「命名风格不一致」，而是同一句话的两种后果：
-// **客户端发出去的东西，服务端只收到了标题。**
+// ⚠⏱ **下面这段实测读数是 §96.2 当时的（修复前）**，已全部过时：
 //
-// ── 实测读数（§96.2，HTTP 层，非推理）────────────────────────────────
+//	POST /api/meetings            → 当时 id=mtg_...（请求里的 id 被忽略）
+//	                                且 10 个键只有 title/status 出现，
+//	                                status 被 store 覆写成常量 "recording"
+//	POST /api/meetings/<前端ID>/refine  → 当时 404（LLM 调用数 = 0）
 //
-//	POST /api/meetings            → 201  id=mtg_1791309724502601000_1
-//	                                （请求里的 id=meeting-1791309378069-a7f3az 被忽略）
-//	                                返回体里前端 10 个键只有 title/status 出现，
-//	                                且 status 是 store 覆写的常量 "recording"
-//	POST /api/meetings/<前端ID>/refine  → 404，且 **LLM 调用数 = 0**
-//	POST /api/meetings/<前端ID>/summary → 200，LLM 调用数 = 1
-//	POST /api/meetings/<服务端ID>/refine→ 200
-//
-// ⇒ 摘要链能活，是因为 `handleMeetingSummary` **没有**那道 store 守卫；
-//
-//	精校链在生产里**必然** 404（前端从不对 /api/meetings 发 GET，
-//	拿不到服务端分配的 ID；syncMeeting 的返回值是 Promise<void>，201 的响应体被丢弃）。
+// ⭐ **现在的实测读数见本文件末尾那行 `t.Logf("① …")`** —— 它是运行时打出来的，
+//	不随代码过时。**§718 修完分类逻辑后实测：① 10 个键 → 原样入库 6 + 覆写 0 + 丢弃 4**，
+//	tag 实为全部 10 个；其中 `status` 的值 `refined` **等于请求发的值**
+//	⇒ **请求值已被采纳**，`overwritten` 那一类已随 §708 的修复失效（恒 0 的分类槽）。
+//	⏱ 此前此处写的是「入库 5 + 覆写 1」——那是**旧判法**（按键名硬编码 `k == "status"`）
+//	的读数，§718 已改为**按值比较**，故计数由 5/1 变成 6/0。
 //
 // ★ §105 已落地「ID 怎么对账」：**方案 A**（按 client id upsert，同作用域；
 //
@@ -39,6 +36,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -236,13 +234,20 @@ func TestMeetingSyncIdentityStatus(t *testing.T) {
 	for _, k := range []string{"id", "title", "location", "participants", "startedAt",
 		"durationMs", "summary", "refinedTranscript", "noteId", "status"} {
 		v, present := created[k]
+		// ⚠ §717：分类**必须按「读回的值是否等于请求发的值」**，不能按键名硬编码。
+		//   旧版写死 `case present && k == "status"` ⇒ 一律判成「被 store 覆写」，
+		//   但实测读回 value=refined **等于夹具请求的 "status":"refined"**
+		//   ⇒ 请求值**已被采纳**（§708 的修复）⇒ 旧判法会**报出与代码相反的事实**。
+		reqVal, reqSent := sent[k]
 		switch {
-		case present && k == "status":
+		case present && reqSent && fmt.Sprintf("%v", v) != fmt.Sprintf("%v", reqVal):
 			overwritten++
-			t.Logf("   %-18s present=true  value=%v  ← store 覆写成常量，请求里的 status 没被采纳", k, v)
+			t.Logf("   %-18s present=true  value=%v  ≠ 请求发的 %v ⇒ store 用自己的值写回，请求值没被采纳",
+				k, v, reqVal)
 		case present:
 			kept++
-			t.Logf("   %-18s present=true  value=%v", k, v)
+			t.Logf("   %-18s present=true  value=%v%s", k, v,
+				map[bool]string{true: "（= 请求发的值）", false: ""}[reqSent && fmt.Sprintf("%v", v) == fmt.Sprintf("%v", reqVal)])
 		default:
 			dropped++
 			t.Logf("   %-18s present=false ← 被 encoding/json 静默丢弃（CreateMeetingRequest 没有这个 tag）", k)

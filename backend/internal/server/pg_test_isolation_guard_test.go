@@ -215,6 +215,14 @@ var pgProductionDSNWriteOnly = map[string]string{
 	// t.Setenv 写入假 DSN "postgres://user:pass@localhost/pocket" 验证 prod 别名。
 	// 这个文件不打开任何 PG 连接（无 pgxpool.New / pg.Conn / sql.Open）。
 	"internal/config/config_test.go": "只用 t.Setenv 写空值/假值来验证配置默认值与别名，不读也不连库",
+
+	// §697：cmd/gwdbg 的 `resolvePGTarget`（§692.4 落地的那个）验的是
+	// **config.PGTargetFromEnv 的优先级**——`POCKET_POSTGRES_DSN` 优先于
+	// `DATABASE_URL`——所以这个测试**必须提到生产名**，否则测的正是「生产名被忽略」
+	// 那个反向形状。全文只有 `t.Setenv` 写假 DSN（"postgres://u@h:5432/app" 之类），
+	// 无 `pgxpool.New` / `pg.Connect` / `sql.Open`，不打开任何连接；
+	// 被测函数只做 env 读取与「空则报错」，从不连接。
+	"cmd/gwdbg/main_test.go": "验的是 POCKET_POSTGRES_DSN 与 DATABASE_URL 的优先级，只用 t.Setenv 写假 DSN；无任何 PG 连接调用",
 }
 
 // stripGoComments 在匹配前剥掉注释。

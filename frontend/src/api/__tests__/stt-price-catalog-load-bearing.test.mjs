@@ -203,8 +203,14 @@ describe('§580 · ASR 价表（§579 的承重结构）', () => {
   //     ③ 变异**落在正确的档上**。（= 仓里既有的第三种负控形态「先证前提」。）
 
   it('★★ 负控①：只把价格改小但不破坏升序（M28 的形态）⇒ 判据① 必须红', () => {
-    assert.equal(countOccurrences(src, 'USDPerHour: 0.50'), 1,
-      '负控前提失败：`USDPerHour: 0.50` 这个值在表里出现多处，replace 只会改第一处 ⇒ 本负控已漂移')
+    // ⚠ 2026-10-15（§738.3）：守卫的探针**必须与 replace 的锚点是同一个串**。
+    //   原先这里数的是更宽的 `USDPerHour: 0.50`（无逗号），而替换的是
+    //   `USDPerHour: 0.50,`（带逗号）。价表新增 gateway 组 `glm-asr` 之后，
+    //   前者 2 处、后者仍只有 1 处 ⇒ **守卫报了漂移，而这条负控其实没漂移**
+    //   （那一条以 `},` 结尾，replace 仍只命中 `glm-asr-2512`）。
+    //   ⇒ 那是一条**假红**。数「比替换锚点更宽的子串」会把不相关的同值条目算进来。
+    assert.equal(countOccurrences(src, 'USDPerHour: 0.50,'), 1,
+      '负控前提失败：`USDPerHour: 0.50,`（替换锚点本身）在表里出现多处，replace 只会改第一处 ⇒ 本负控已漂移')
     const mutated = src.replace('USDPerHour: 0.50,', 'USDPerHour: 0.45,')
     assert.ok(mutated.includes('USDPerHour: 0.45,'), '变异没按预期插进去')
     assert.equal(priceMap(mutated).get('glm-asr-2512'), 0.45,
@@ -239,10 +245,15 @@ describe('§580 · ASR 价表（§579 的承重结构）', () => {
   it('★★ 负控④：新加一档没写进 GOLDEN ⇒ 判据③ 必须红（「多」那一半）', () => {
     // ⚠ 负控③④ 是**同一条判据的两个方向**（§572 的教训：两个性质必须各配一条，
     //   只配一条的话另一半就是装饰）。负控③ 只验「少」，这条验「多」。
-    const anchor = '{Model: "gpt-audio-mini", Group: "gateway", Note: "网关列了但可能 503 no_provider"},'
-    assert.equal(countOccurrences(src, anchor), 1,
+    // ⚠ 2026-10-15（§738.3）：锚点原先是**整行含 Note 全文**的字面量，
+    //   上游把 Note 从「网关列了但可能 503 no_provider」改成
+    //   「网关列了但实测 503 no_provider（2026-10-06）」⇒ 锚点 0 命中、负控瘫着。
+    //   改为**按行取**那一行：Note 怎么改写都不影响它，而「唯一性」仍单独断言。
+    const anchorLine = src.split('\n').find((l) => l.includes('Model: "gpt-audio-mini"'))
+    assert.ok(anchorLine, '负控前提失败：价表里找不到 gpt-audio-mini 那一行 ⇒ 本负控已漂移')
+    assert.equal(countOccurrences(src, anchorLine), 1,
       '负控前提失败：插入锚点在表里出现多处 ⇒ 本负控已漂移')
-    const mutated = src.replace(anchor, anchor + '\n\t\t{Model: "brand-new-asr", Group: "external", USDPerHour: 0.01},')
+    const mutated = src.replace(anchorLine, anchorLine + '\n\t\t{Model: "brand-new-asr", Group: "external", USDPerHour: 0.01},')
     const m = priceMap(mutated)
     assert.equal(m.get('brand-new-asr'), 0.01,
       '负控前提失败：新档没落进解析结果（或落在了别的档上）')

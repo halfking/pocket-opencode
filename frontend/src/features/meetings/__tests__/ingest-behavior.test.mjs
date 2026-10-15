@@ -82,6 +82,17 @@ const STUB_SOURCES = {
     export async function updateMeeting(id, patch) {
       globalThis.__ingestSeen.update = { id, patch }
     }`,
+  // ⚠ 2026-10-15（§738.4）：这条桩是**补回来的**，不是可有可无的装饰。
+  //   `meeting-ingest.ts` 会 import `useAuthStore`（建笔记时取 workspaceId），
+  //   而 `src/stores/auth.ts:13` 直接 `import { defineStore } from 'pinia'`。
+  //   桩表里没有它 ⇒ esbuild 把**真 pinia** 打进包 ⇒ 在 `platform: 'neutral'` 下
+  //   `@vue/devtools-api` 只有 `main` 字段、被 neutral 忽略 ⇒ **构建直接失败**：
+  //   `Could not resolve "@vue/devtools-api"` ⇒ 12 个子用例**全部 cancelledByParent**，
+  //   §86/§150 这道承重行为门**整体瘫掉且不报任何有用信息**。
+  //   ⚠ 不要改成 `external: ['pinia','vue']`（`_wire-helpers.mjs` 的做法）：
+  //   那会把真 auth store 与它的网络依赖一起请进来，桩的隔离就没了。
+  '../../stores/auth': `
+    export function useAuthStore() { return { workspaceId: 'ws_ingest_test' } }`,
   // resolveTodoDue 是**真逻辑**，不能一起替掉 —— 它正是期限能不能落地的关键。
   './meeting-due-reminder': `
     import { resolveTodoDue as real } from '${DUE_PLAN_REAL}'
