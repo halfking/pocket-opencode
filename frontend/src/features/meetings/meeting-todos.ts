@@ -31,7 +31,7 @@ export function personShareText(draft: MeetingTodoDraft, meetingTitle: string): 
   return bits.join('\n')
 }
 
-export function accHandoffInput(draft: MeetingTodoDraft, meetingTitle: string) {
+export function accHandoffInput(draft: MeetingTodoDraft, meetingTitle: string, now: number = Date.now()) {
   const title = `跟进：${draft.text.slice(0, 32)}`
   const prompt = [
     `请跟进会议「${meetingTitle || '未命名会议'}」的待办：${draft.text}`,
@@ -41,10 +41,22 @@ export function accHandoffInput(draft: MeetingTodoDraft, meetingTitle: string) {
   // 有真实期限就按期限触发；解不出（无 due / 明确指向过去）才退回
   // 「1 分钟后」，让「转交」这个动作本身至少能立刻执行一次。
   // ⚠️ 此前这里恒为 now+60s，等于把用户说的「周五」完全无视。
-  let scheduleExpr = new Date(Date.now() + 60_000).toISOString()
+  //
+  // ★§394：加 `now` 参数不是为了改行为（默认值仍是 Date.now()，逐字节不变），
+  //   而是因为这一族里**只有本函数**没有可注入时钟 ——
+  //   `parseDueAt` / `resolveTodoDue` / `classifyNextMeeting` / `buildNextMeetingEvent`
+  //   全都带 `now: number = Date.now()`。没有它，「相对期限用的是哪个基准」
+  //   这件事**根本没法测**，于是它连同它的后果一直无人发现。
+  //
+  // ⚠⚠ **基准本身尚未拍板**（docs §394.4）：这里用的是**调用时刻**（= 用户点
+  //   「ACC」的那一刻），而同一句 `draft.due` 在写入路径
+  //   `createMeetingTodos` 里是以**总结时刻**为基准的。实测两者会漂：
+  //   会议当天点一致，隔一天点晚一天，隔两天点晚两天。
+  //   哪个对是产品口径决策 ⇒ 本参数默认值在拍板前**保持现状**。
+  let scheduleExpr = new Date(now + 60_000).toISOString()
   if (draft.due) {
     try {
-      const parsed = parseDueAt(draft.due)
+      const parsed = parseDueAt(draft.due, now)
       if (parsed) scheduleExpr = dueAtToScheduleExpr(parsed.at)
     } catch {
       // 坏期限不该让「转交」失败，退回 1 分钟后。

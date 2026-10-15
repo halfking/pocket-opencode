@@ -22,12 +22,22 @@
  * 全部偏低（Playwright 最小复现：z=40 时 `elementFromPoint` 返回 `header.top-bar`，
  * z=60 时返回 `div.bind-overlay`）。ALLOWLIST 里因此不再有任何「待目视核对」。
  *
- * ⚠️ ALLOWLIST 的 key 是**声明所在行**。往文件上方加一行注释就会让 key 漂移，
- *   于是「改了一处无关代码」会把本门禁变成红的。2026-10-06 实测：给
- *   `EmailInboxView.showLocal` 加一段 10 行注释，两个 key 从 667/730 漂到 684/747；
- *   同一文件迁移到内核（删掉近 100 行）后又漂到 664/727 —— **一次会话内咬了三次**。
- *   这**是门禁在工作**（不是误报），但也说明「声明行」不如「规则块起始行」稳——
- *   `bottom-chrome-gate.test.mjs` 用的就是后者，故它不受加注释影响。
+ * ⚠️ ALLOWLIST 的 key 曾长期钉在**声明所在行**，往文件上方加一行注释就会让 key 漂移，
+ *   于是「改了一处无关代码」会把本门禁变成红的。历史咬人记录：
+ *     ① 2026-10-06 给 `EmailInboxView.showLocal` 加 10 行注释，667/730 → 684/747；
+ *     ② 同文件迁移到内核（删近 100 行）后 → 664/727 —— 一次会话内三次；
+ *     ③ 2026-10-07 给 `SettingsSTT` 加「录音语音提示开关」，604 → 634；
+ *     ④ 2026-10-08 给 `SettingsSTT` 加 MiniMax 区块与 radio 样式，634 → 801。
+ *   前三次都只是把行号手改回去 —— **治标**。第四次改成**规则块起始行**，
+ *   与 `bottom-chrome-gate.test.mjs` 早已在用的约定一致（那里 `where` 就是
+ *   块起始行）。块起始行仍会漂，但只在**规则块本身增删**时漂，
+ *   而不再是「上方加一行注释就漂」。
+ *
+ * ★ 残留的脆弱性（如实记账，不要假装已解决）：
+ *   块起始行仍不是稳定标识。若给 `.top-bar` **上方**插入一个新的规则块，
+ *   它的块起始行依然会变。真正的稳定锚点是**选择器**；
+ *   `collect()` 现在也产出 `selector` 字段，供后续把 key 换成 `文件#选择器`
+ *   —— 那一步需要同时处理多行选择器与嵌套写法，本次没有一并做。
  *
  * ★ 同源的第二类腐烂：**ALLOWLIST 的理由会与代码脱节**。行号对了不代表
  *   理由还对——本会话里 `EmailInboxView` 两条的理由是从迁移前的旧代码抄的，
@@ -76,21 +86,21 @@ for (const m of tokensCss.matchAll(/(--z-[a-z-]+):\s*(\d+);/g)) {
  * 不与全局 chrome 比较的合法局部值。
  */
 const ALLOWLIST = {
-  'components/interactive/SwipeableListItem.vue:191': '卡片内删除按钮在内容之上的兄弟排序（组件自有 stacking context）',
-  'components/interactive/SwipeableListItem.vue:203': '同上，absolute；内容与按钮的局部前后关系',
-  'components/interactive/PullToRefresh.vue:319': '下拉指示器 absolute，在容器内的局部层级（行号随文件改动漂移，2026-10-06 因补手势绑定的注释 +14 行）',
-  'components/interactive/VoiceCommandAssistant.vue:325': '面板内子项的局部排序',
-  'components/interactive/DualScreenLayout.vue:343': '.resize-handle 在面板内的局部排序（absolute，非 fixed）',
+  'components/interactive/SwipeableListItem.vue:189': '卡片内删除按钮在内容之上的兄弟排序（组件自有 stacking context）',
+  'components/interactive/SwipeableListItem.vue:197': '同上，absolute；内容与按钮的局部前后关系',
+  'components/interactive/PullToRefresh.vue:308': '下拉指示器 absolute，在容器内的局部层级（key 已从「声明行」改为「规则块起始行」，不再随上方注释/样式增减漂移）',
+  'components/interactive/VoiceCommandAssistant.vue:323': '面板内子项的局部排序',
+  'components/interactive/DualScreenLayout.vue:340': '.resize-handle 在面板内的局部排序（absolute，非 fixed）',
   'features/email/EmailInboxView.vue:676': '`.more-menu` 顶栏「更多」下拉菜单：absolute，需盖住同层的顶栏按钮（position: static，无层级）',
-  'features/email/EmailInboxView.vue:764': '`.to-top` 回顶按钮：absolute 悬浮，需盖住列表内容（静态流，无层级）',
-  'features/email/EmailSettingsView.vue:526': '设置行内部控件的兄弟排序',
-  'features/settings/SettingsSTT.vue:604': '⚠️ 页内**自备的吸附顶栏**（该路由 meta.hideAppHeader:true，壳层顶栏被隐藏），position:sticky + z-index:10，**低于** --z-sticky(50) 与 --z-bottom-nav(70) ⇒ 不会压住全局 chrome。⚠️ 2026-10-06 更正：原理由写「STT 面板内局部排序」，但它不是面板内兄弟排序，而是要跟全局 chrome 争层的页内顶栏 —— 两类风险，理由不能混',
-  'styles.css:272': '路由过渡 enter 态的局部前后关系',
-  'styles.css:279': '同上',
-  'styles.css:286': '同上',
-  'styles.css:292': '同上',
-  'features/email/EmailSpamCleanupView.vue:233': '页内 sticky 小节标题，低于全局吸顶栏',
-  'features/email/EmailAccountAddView.vue:264': '页内 sticky 小节标题，低于全局吸顶栏',
+  'features/email/EmailInboxView.vue:763': '`.to-top` 回顶按钮：absolute 悬浮，需盖住列表内容（静态流，无层级）',
+  'features/email/EmailSettingsView.vue:524': '设置行内部控件的兄弟排序',
+  'features/settings/SettingsSTT.vue:800': '⚠️ 页内**自备的吸附顶栏**（该路由 meta.hideAppHeader:true，壳层顶栏被隐藏），position:sticky + z-index:10，**低于** --z-sticky(50) 与 --z-bottom-nav(70) ⇒ 不会压住全局 chrome。⚠️ 2026-10-06 更正：原理由写「STT 面板内局部排序」，但它不是面板内兄弟排序，而是要跟全局 chrome 争层的页内顶栏 —— 两类风险，理由不能混。⚠️ 2026-10-08：本 key 从 634 改为 800（规则块起始行）。此前因「声明行」锚定，加 MiniMax 区块与 radio 样式后漂到 801，门禁变红 —— 这是同一个 key 第四次咬人，故改为块起始行。',
+  'styles.css:271': '路由过渡 enter 态的局部前后关系',
+  'styles.css:278': '同上',
+  'styles.css:285': '同上',
+  'styles.css:291': '同上',
+  'features/email/EmailSpamCleanupView.vue:232': '页内 sticky 小节标题，低于全局吸顶栏',
+  'features/email/EmailAccountAddView.vue:263': '页内 sticky 小节标题，低于全局吸顶栏',
 }
 
 /**
@@ -130,13 +140,47 @@ function collect() {
     //   待在该行上，一个都没漂。
     //   这类 bug 只在 Windows 上复现，Linux CI 上是绿的。
     const rel = full.slice(SRC.length + 1).split(sep).join('/')
-    readFileSync(full, 'utf8')
-      .split('\n')
-      .forEach((line, i) => {
-        const m = /z-index:\s*([^;]+)/.exec(line)
-        if (!m) return
-        out.push({ where: `${rel}:${i + 1}`, value: m[1].trim() })
+    const srcLines = readFileSync(full, 'utf8').split('\n')
+    // ★ `where` 改成**规则块起始行**，不再用「声明所在行」（2026-10-08）。
+    //
+    //   为什么：往文件上方加一行注释/一段样式就会让「声明行」漂移，
+    //   于是「改了一处无关代码」把门禁变红。文件头记着这个 key
+    //   **一次会话内咬过三次**（604 → 634），本轮咬了第四次
+    //   （给 SettingsSTT 加 MiniMax 区块 + radio 样式后 634 → 801）。
+    //
+    //   「块起始行」比「声明行」稳，但仍会漂 —— 所以只把它当**量具坐标**，
+    //   真正稳定的锚点是**选择器**。本门禁同时产出 selector，供
+    //   TestAllowlistKeysResolveToLiveSelectors 那条判据守住：
+    //   「key 指向的选择器必须还在，且该选择器块里真的有 z-index」。
+    //
+    //   ⚠ 提取选择器不能只取 `{` 的上一行 —— 实测踩过：`.chat-icon-btn:active`
+    //   前面是 `{`、再前面是**注释行**；嵌套写法下上一行是 `}`。
+    //   所以向上找第一个**既不是 `{` 也不是注释/空行**的行。
+    srcLines.forEach((line, i) => {
+      const m = /z-index:\s*([^;]+)/.exec(line)
+      if (!m) return
+      // 向上找最近的 `{`，那一行是规则块起始行。
+      let up = i
+      while (up > 0 && !srcLines[up].includes('{')) up -= 1
+      const blockLine = up // 0-based
+      // 从块起始行继续往上找选择器：跳过 `{`、注释、空行、`@media` 的括号行。
+      let selIdx = blockLine - 1
+      while (selIdx >= 0) {
+        const t = srcLines[selIdx].trim()
+        if (t && !t.includes('{') && !t.startsWith('//') && !t.startsWith('*') &&
+            !t.startsWith('/*') && !t.startsWith('}') && !t.startsWith('@')) break
+        selIdx -= 1
+      }
+      const selector = selIdx >= 0 ? srcLines[selIdx].trim().replace(/\s*\{.*$/, '').trim() : ''
+      out.push({
+        // key 用块起始行：比声明行稳，且与 bottom-chrome-gate 的约定一致。
+        where: `${rel}:${blockLine + 1}`,
+        declLine: i + 1,
+        blockLine: blockLine + 1,
+        selector,
+        value: m[1].trim(),
       })
+    })
   }
   return out
 }
@@ -224,7 +268,7 @@ test('【变异自测】注入一个未登记 z-index，本门禁必须转红', 
 //
 // ## 本轮抓到的实例
 //
-//   `features/settings/SettingsSTT.vue:604` 的理由写「STT 面板内局部排序」，
+//   `features/settings/SettingsSTT.vue:634`（初记为 604）的理由写「STT 面板内局部排序」，
 //   而那个规则的 `position` 是 **sticky** —— 它是**页内自备的吸附顶栏**
 //   （该路由 `meta.hideAppHeader: true`），要跟全局 chrome 争层，
 //   与「组件自有 stacking context 内的兄弟排序」是**两类风险**。
@@ -316,10 +360,13 @@ test('【量具自证】positionAt 必须按**规则块**收尾（不能扫到�
   }
 
   // 真实文件上的阴性对照：那个规则块**确实**没有 position
-  assert.equal(positionAt('styles.css:272'), null,
+  assert.equal(positionAt('styles.css:271'), null,
     '`.nav-push-enter-active` 没有 position 声明，必须返回 null')
   // 真实文件上的阳性对照
-  assert.equal(positionAt('features/settings/SettingsSTT.vue:604'), 'sticky',
+  // ⚠ 2026-10-08：这一行原本写死 634（SettingsSTT 顶栏），因给该文件加
+  // MiniMax 区块 + radio 样式而漂到 800，门禁变红。同一个坐标第四次咬人，
+  // 故与 ALLOWLIST 同步改成**规则块起始行**。
+  assert.equal(positionAt('features/settings/SettingsSTT.vue:800'), 'sticky',
     '没读出 SettingsSTT 顶栏的 position: sticky')
   assert.equal(positionAt('features/email/does-not-exist.vue:1'), null,
     '文件不存在时必须返回 null 而不是抛错')

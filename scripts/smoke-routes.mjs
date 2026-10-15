@@ -91,4 +91,11 @@ for (const r of rows) {
 }
 console.log(`\n=== 冒烟汇总 ===\n${rows.length - bad}/${rows.length} 通过`)
 ws.close()
-process.exit(0)
+// ⚠ 原来这里是**无条件** `process.exit(0)`：脚本逐条打了 FAIL、汇总也打了 `N-bad/N`，
+//   退出码却恒为 0 —— 正是 `check-exit-reflects-verdict.mjs` 要抓的 BUG-V15/V19 形态。
+//   调用方（CI / 批量 runner / `&&` 链）分不出「跑过了」与「全绿」。
+//   改法按那道门**自己给的建议**：用 `process.exitCode` 而不是 `process.exit`，
+//   后者会直接掐掉 socket 的 close 收尾。
+// ⚠ 端到端未验证：本脚本硬编码 Windows 的 adb 路径（`C:/Users/86133/...`），
+//   在本机跑不起来，也没有调用方。改动只在「退出码反映判定」这一层，逻辑未动。
+process.exitCode = bad ? 1 : 0

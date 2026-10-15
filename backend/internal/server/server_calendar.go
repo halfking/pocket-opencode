@@ -79,15 +79,22 @@ func (s *Server) handleCalendarEvents(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// entries 非空 + err 非空 = 部分来源降级（见 calendar.BuildFeed）：
-		// 200 返回已取到的数据，把原因留在服务端日志里，不让用户看到一个
-		// 「明明有任务却空空如也」的日历而不自知。
+		// 200 返回已取到的数据，原因**同时**放进响应体的 partial 键。
+		//
+		// ⚠ §118：此前这里只有 log.Printf，而 feed.go 的注释写着
+		// 「The client degrades, but the operator sees why」——
+		// **那句话是假的**：客户端拿到的是 200 + 少了几条，零信号。
+		// 用户看到的日历就是「少了任务截止和定时任务」，而界面与真空日历
+		// 一模一样。这不是理论风险：feed.go 的同一段注释记着
+		// 「tasks has no timezone column 这个坏列名就是这么上线过一次」。
+		// ⇒ 降级信号必须活到用户眼前，否则那句注释只是在安慰写代码的人。
 		if err != nil {
 			log.Printf("[calendar] feed 部分来源失败（ws=%s user=%s）: %v", wsID, userID, err)
 		}
-		// envelope 的键名由前端 calendarApi.unwrapEntries 认（认 entries，其余忽略）。
+		// envelope 的键名由前端 calendarApi.unwrapFeed 认。
 		// 抽成函数是为了让契约测试能对着**真正被返回的那个 map** 断言，
 		// 而不是对着测试里自己抄的副本断言 —— 后者与字面量比字面量，永远绿。
-		writeJSON(w, http.StatusOK, calendarFeedEnvelope(entries, from, to))
+		writeJSON(w, http.StatusOK, calendarFeedEnvelope(entries, from, to, err != nil))
 	case http.MethodPost:
 		var in calendar.EventInput
 		if err := decodeCalendarJSON(r, &in); err != nil {
@@ -109,11 +116,20 @@ func (s *Server) handleCalendarEvents(w http.ResponseWriter, r *http.Request) {
 // calendarFeedEnvelope 构造 feed 响应体。
 //
 // 单独抽出来是为了让测试能对着**真正被返回的那个 map** 断言键名。
-// 前端 features/calendar/api.ts 的 unwrapEntries 认 `entries`；改了键名而
-// 忘了改前端时，接口照常 200、日历却静默变成空的。
-func calendarFeedEnvelope(entries []calendar.FeedEntry, from, to int64) map[string]interface{} {
+// 前端 features/calendar/api.ts 的 unwrapFeed 认 `entries` 与 `partial`；
+// 改了键名而忘了改前端时，接口照常 200、日历却静默变成空的。
+//
+// ★ partial 恒存在（不为 true 时就是 false），不是「降级时才加键」。
+//
+//	两种设计的差别在**门能不能证明信号没丢**：按需加键时，
+//	「正常响应里没有 partial」与「降级响应漏了 partial」在文本上长得一样，
+//	只有跑一次降级分支才验得到；而降级分支要构造一个坏掉的数据源。
+//	恒存在则正反两个方向都能在同一条普通用例里断言。
+//	（与 §109 的 agent 键相反：那把的缺省是 undefined，因为那里存在
+//	  「老数据没有这个键，语义是不知道」的真实状态，这里没有。）
+func calendarFeedEnvelope(entries []calendar.FeedEntry, from, to int64, partial bool) map[string]interface{} {
 	if entries == nil {
-		// nil 切片序列化成 null，而前端 unwrapEntries 的 Array.isArray(null)
+		// nil 切片序列化成 null，而前端 unwrapFeed 的 Array.isArray(null)
 		// 是 false —— 它会安全地退回空数组（今天不会白屏），但那让「entries
 		// 永远是数组」这条契约变成**碰巧**成立。显式归一化，让它无条件为真。
 		entries = []calendar.FeedEntry{}
@@ -123,6 +139,7 @@ func calendarFeedEnvelope(entries []calendar.FeedEntry, from, to int64) map[stri
 		"from":         from,
 		"to":           to,
 		"serverTimeMs": time.Now().UnixMilli(),
+		"partial":      partial,
 	}
 }
 

@@ -50,13 +50,13 @@ jobs:
           fi
 
       - name: Build Docker images
-        working-directory: ./services/opencode-pocket
+        working-directory: .
         run: |
           cd deploy/acc-integration
           docker compose -f docker-compose.yml build --pull=never
 
       - name: Start services
-        working-directory: ./services/opencode-pocket/deploy/acc-integration
+        working-directory: ./deploy/acc-integration
         run: |
           # Create test .env from example
           cp .env.example .env
@@ -99,7 +99,7 @@ jobs:
           docker exec test-pg psql -U llm_gateway -d kaixuan -c "GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO llm_gateway;"
 
       - name: Run local-up.sh
-        working-directory: ./services/opencode-pocket/deploy/acc-integration
+        working-directory: ./deploy/acc-integration
         env:
           POCKET_POSTGRES_DSN: postgresql://llm_gateway:test_pass@host.docker.internal:5432/kaixuan?sslmode=disable
           POCKET_JWT_SECRET: local-test-jwt-secret-012345678901234567890
@@ -117,7 +117,7 @@ jobs:
           ./local-up.sh
 
       - name: Run smoke tests
-        working-directory: ./services/opencode-pocket/deploy/acc-integration
+        working-directory: ./deploy/acc-integration
         env:
           POCKET_HOST_PORT: 8088
           POCKET_FRONTEND_HOST_PORT: 4175
@@ -157,6 +157,6 @@ jobs:
       - name: Cleanup
         if: always()
         run: |
-          cd ./services/opencode-pocket/deploy/acc-integration
+          cd ./deploy/acc-integration
           docker compose down -v || true
           docker rm -f test-pg || true

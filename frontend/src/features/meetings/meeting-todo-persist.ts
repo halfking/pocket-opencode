@@ -4,6 +4,7 @@ import type { ActionItem } from './meetings-store'
 import { meetingAccDispatchInput } from './meeting-page-actions'
 import { accHandoffInput, draftsFromActionItems, personShareText, type MeetingTodoDraft } from './meeting-todos'
 import { ensureTodoReminder, resolveTodoDue } from './meeting-due-reminder'
+import { dayKey, deviceTimeZone } from '../calendar/calendar-math.ts'
 
 /**
  * 写入会议行动项。
@@ -103,7 +104,21 @@ export async function listMeetingTodos(meetingId: string): Promise<MeetingTodoDr
   return rows.map((r) => ({
     text: r.title,
     assignee: r.description?.replace(/^负责人：/, '') || undefined,
-    due: r.due_at ? new Date(r.due_at).toISOString().slice(0, 10) : undefined,
+    // ★§393：读回 due_at 的「哪一天」必须走 calendar-math 的 dayKey。
+    //
+    //   旧写法 `new Date(r.due_at).toISOString().slice(0, 10)` 取的是 **UTC** 那天，
+    //   而写进去的 `due_at` 是**设备本地墙钟**（`meeting-due.ts:70` 的
+    //   `new Date(y, m-1, d, h, min)`）。两者在「当地时刻早于 UTC 偏移」时不是同一天：
+    //   东八区实测「明天凌晨三点发布」写在 10-08 03:00，读回来却是 **10-07**（早一天）。
+    //   §392 那条修复（`parseDueAt` 不再静默丢弃日期碎片）保证的是**写进去的值**，
+    //   而这里坏掉的是**读出来的那一天** —— 两者是不同层的两道变换。
+    //
+    //   为什么用 `deviceTimeZone()` 而不是 `DEFAULT_TZ`：
+    //   `dayKey` 取的是「在指定时区里是哪一天」。写的时候用设备本地时区造出墙钟，
+    //   读的时候就必须用**同一个**时区问，否则跨时区设备上会读成另一天 ——
+    //   实测 TZ=America/New_York 时，一条当地 15:00 的期限用 DEFAULT_TZ 读回
+    //   会得到 **10-09**（+1 天）。UTC 会错、DEFAULT_TZ 也会错，只有设备时区对。
+    due: r.due_at ? dayKey(Math.floor(r.due_at / 1000), deviceTimeZone()) : undefined,
   }))
 }
 

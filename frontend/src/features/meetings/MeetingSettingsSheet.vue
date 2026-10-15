@@ -25,6 +25,34 @@
         <span>参与人</span>
         <input v-model="form.participants" placeholder="逗号分隔，如：张三, 李四" />
       </label>
+      <!--
+        §119：告诉用户上面这几个字段**真的**被用上了。
+        用户原始诉求是「录音转写的不太准确」，而准确率能由他自己改一把 ——
+        但此前界面上**一个字都没提**，他既不知道填了有用，也不知道不填会怎样。
+
+        ⚠ 这段话**只能写 metaTermHint 真正读到的字段**（§30 的不对称原则：
+           说错比不说更糟）。门 `meeting-meta-glossary.test.ts` 会把这条
+           对齐关系钉住，双向都钉：真读到的必须提，后端没声明的必须不提。
+
+        ⚠ 2026-10-07（§159）**改口**：本段此前写的是「它读 Title /
+           Participants / Location，**不读 Topic** ⇒ 这里提「主题」就是撒谎」，
+           并据此把 Topic 列进测试的 `UI_ONLY_LABEL`。
+           **那条结论已过期**：`meetingMetaIn.Topic` 早已接入（§138.3/§143），
+           Go 侧契约夹具现在是 `used=[location participants title topic]`、
+           `unused=[]` ⇒ metaTermHint **确实读** Topic。
+           ⇒ 方向反转：主题从「不许提」变成「**必须提**」。
+        ⚠ 参与人那一句是**有实测依据**的，不是客套：
+           §64.6 配对实验量到过模型把转写里正确的人名「对齐」进名单，
+           把对的改成错的；提示词第二道禁令已堵，但界面也该把话说在前头。
+        ⚠ 「写进标题或主题都能生效」这句的实测依据：§146 的 A/B
+           （3 臂 × 3 次交错，真网关）读数 TITLE 3/3、TOPIC 3/3 ——
+           两条路一样好，所以**不能**说主题更好，只能说都行。
+      -->
+      <p class="glossary-note">
+        标题、主题、地点、参与人会作为术语表参与录音后的精校：转写里与它们明显对应的错词会被纠正。
+        产品名、项目名写进标题或主题都能生效。
+        参与人只用于纠正对应的人名，不在转写里的人不会被加进去。
+      </p>
       <label class="field">
         <span>标签</span>
         <div class="row">
@@ -153,6 +181,8 @@ function onSave() {
 }
 .chip.active { background: var(--brand-bg); color: var(--brand-primary); border-color: var(--brand-primary); }
 .hint { margin: 0; font-size: var(--text-sm); color: var(--text-muted); }
+/* §119：术语表说明。放在「参与人」与「标签」之间，对应上面那三个字段。 */
+.glossary-note { margin: -2px 0 12px; font-size: var(--text-xs); line-height: 1.6; color: var(--text-muted); }
 .save {
   width: 100%; padding: 12px; border: none; border-radius: var(--radius-md);
   background: var(--brand-primary); color: var(--text-inverse); font-weight: 600;

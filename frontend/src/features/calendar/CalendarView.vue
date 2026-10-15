@@ -54,6 +54,16 @@
       <button type="button" @click="reload">{{ t('common.retry') }}</button>
     </p>
 
+    <!-- §118：部分来源降级。服务端返回 200 是对的（一个坏查询不该让整个
+         日历白屏），但少了任务截止和定时任务这件事必须让用户知道 ——
+         否则它和「我确实没任务」在界面上完全一样。
+         ⚠ 措辞只能说「部分数据」：服务端把两路错误 errors.Join 成一个整体，
+           前端不知道是哪一路失败，指名道姓就是编造。
+         用 muted 不用警示色：这不是失败，是「这次没全取到」。 -->
+    <p v-if="!store.error && store.partial" class="partial-note" role="status">
+      部分数据暂未取到（任务截止或定时任务），日历可能不完整。
+    </p>
+
     <!-- 星期表头 -->
     <div class="cal-weekdays" aria-hidden="true">
       <span v-for="label in weekdayLabels" :key="label">{{ label }}</span>
@@ -586,5 +596,7 @@ onMounted(() => {
 
 .state, .error { color: var(--text-secondary); font-size: 0.85rem; margin: 0; }
 .error { color: var(--error); }
+/* §118：部分降级提示。用 muted 不用警示色 —— 它不是失败，是「这次没全取到」。 */
+.partial-note { color: var(--text-muted); font-size: 0.85rem; margin: 6px 0 0; }
 .error button { margin-inline-start: 8px; }
 </style>

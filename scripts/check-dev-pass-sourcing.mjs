@@ -55,6 +55,7 @@ import { readFileSync, readdirSync, writeFileSync, unlinkSync } from 'node:fs'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
+  assertScannerNotBlind,
   countKeysBy,
   diffRatchet,
   loadBaseline,
@@ -73,6 +74,12 @@ const ROOT = resolve(HERE, '..')
 const SELFTEST = process.argv.includes('--selftest')
 const LIST = process.argv.includes('--list')
 const WRITE_BASELINE = process.argv.includes('--write-baseline')
+// --record-full-repayment "<理由>"：显式声明「基线里那 N 条存量确实**全部**还清了」。
+// 它存在的唯一理由是解开一个死锁——见 lib/baseline-ratchet.mjs 里 writeBaseline 的注释。
+const REPAYMENT_DECL = (() => {
+  const i = process.argv.indexOf('--record-full-repayment')
+  return i >= 0 ? String(process.argv[i + 1] || '').trim() : ''
+})()
 const BASELINE_PATH = join(ROOT, 'scripts', 'baselines', 'dev-pass-sourcing.json')
 const BASELINE_COMMENT =
   'check-dev-pass-sourcing.mjs 的基线棘轮存量清单。key 形如 file|rule|text，' +
@@ -253,15 +260,49 @@ const hits = scan(files)
 // --write-baseline：重录基线。这等于宣布「这些存量暂时不判红」，
 // 必须显眼，不能和普通判定混在一条命令里，否则「顺手跑一下」就会把门禁洗绿。
 if (WRITE_BASELINE) {
-  const counts = writeBaseline(BASELINE_PATH, countKeysBy(hits, keyOf), BASELINE_COMMENT)
+  // writeBaseline 在「拒绝写空基线」时是 **throw**。不接住的话 Node 会把它
+  // 打成一段堆栈，读起来像「这个工具崩了」，而它的真实语义只是
+  // 「你还差一个开关」—— §74 记过「探针自身故障长得与产品缺陷一模一样」，
+  // 同一个坑不该在这道门的正常操作路径上再踩一次。
+  let counts
+  try {
+    counts = writeBaseline(BASELINE_PATH, countKeysBy(hits, keyOf), BASELINE_COMMENT, {
+      recordFullRepayment: REPAYMENT_DECL,
+    })
+  } catch (e) {
+    console.error(`\n❌ ${e.message}`)
+    process.exit(3)
+  }
   console.log(
     `已写入基线：${BASELINE_PATH}\n  key ${Object.keys(counts).length} 个 / 命中 ${hits.length} 处`,
   )
+  if (hits.length === 0)
+    console.log(
+      '⚠️ 写入的是**空基线**。你的「这笔债已全部还清」声明已连同时间戳写进该文件（_fullRepayment 段）。',
+    )
   console.log('⚠️ 这一步等于宣布「这些存量暂时不判红」。请在提交信息里写清为什么。')
   process.exit(0)
 }
 
 if (hits.length === 0) {
+  // ⚠ 2026-10-07（§77）：这一分支原来**无条件 exit 0**，而且发生在**读基线之前**。
+  //   后果：扫描器一失灵（路径写错之类），本门直接宣布「干净」并退出 0，
+  //   连基线里的 26 条存量都被整个跳过。
+  //   ⇒ 零命中必须先问一句「基线里本来有东西吗」：有 ⇒ 不是还清了，是扫描器瞎了。
+  let peek = null
+  try { peek = loadBaseline(BASELINE_PATH) } catch { peek = null }
+  if (peek && Object.keys(peek).length > 0) {
+    console.error(
+      `扫描 ${files.length} 个 .mjs 命中 **0** 处，但基线里有 ${Object.keys(peek).length} 条存量。\n` +
+        '  这不可能是「还清了」，只能是扫描器失灵（路径写错 / 规则表被清空 / 过滤条件过严）。',
+    )
+    console.error('  先修扫描器。')
+    console.error('  若确认这笔债**确实全部还清**了（不是扫描器的问题），用：')
+    console.error('    --write-baseline --record-full-repayment "<理由>"')
+    console.error('  **只跑 --write-baseline 会被拒绝**——那句「别去收紧基线」在本门是死胡同，')
+    console.error('  因为「拒绝写空基线」与本检查正是互相把对方指给对方。详见 lib/baseline-ratchet.mjs。')
+    process.exit(3)
+  }
   console.log(`扫描 ${files.length} 个 .mjs：没有从源码刮口令 / 没有硬编码口令兜底`)
   process.exit(0)
 }
@@ -287,6 +328,12 @@ if (!baseline) {
   process.exit(2)
 }
 
+try {
+  assertScannerNotBlind(hits, baseline, '[check-dev-pass-sourcing]')
+} catch (e) {
+  console.error('✗ 拒绝给出「通过」结论：' + e.message)
+  process.exit(3)
+}
 const { newHits, removed } = diffRatchet(hits, baseline, keyOf)
 const baselineCount = Object.values(baseline).reduce((a, b) => a + b, 0)
 console.log(`扫描 ${files.length} 个 .mjs，命中 ${hits.length} 处`)

@@ -77,7 +77,12 @@ func TestLiveGatewayASRCandidateSupply(t *testing.T) {
 	}
 
 	scope := Scope{UserID: "probe", WorkspaceID: "ws_probe"}
-	usable, nosupply := 0, 0
+	// ⚠⚠ §493：原先只有 usable / nosupply 两个桶，而「返回空文本」那一支
+	// **两个都不进** ⇒ `usable + nosupply < len(cands)`，
+	// 而末尾汇总只打这两个数 ⇒ 差异**无人解释**。
+	// ⇒ 这正是 §481 在 ASR 层发现的「200 + 空文本」（#31）在本探针里的落点：
+	//　 它既不是「可用」，也不是「无供给」，是第三种状态。
+	usable, nosupply, empty := 0, 0, 0
 	for _, m := range cands {
 		func() {
 			cctx, ccancel := context.WithTimeout(context.Background(), 90*time.Second)
@@ -100,7 +105,10 @@ func TestLiveGatewayASRCandidateSupply(t *testing.T) {
 				}
 				t.Logf("  ✗ %-34s %-14s %v", m.ID, kind, truncateASR(msg, 120))
 			case strings.TrimSpace(res.Text) == "":
-				t.Logf("  ✗ %-34s %-14s 返回空文本", m.ID, "空结果")
+				// ⚠ 计入独立第三桶：空文本**不是**无供给（HTTP 200 + 有上游），
+				// 也不是可用（用户拿到的是空）⇒ 混进任一个都会让那个数失去含义。
+				empty++
+				t.Logf("  ✗ %-34s %-14s 返回空文本（#31：200 + 空串）", m.ID, "空结果")
 			default:
 				usable++
 				t.Logf("  ✓ %-34s %-14s %v  %q", m.ID, "可用", cost, truncateASR(res.Text, 60))
@@ -109,7 +117,14 @@ func TestLiveGatewayASRCandidateSupply(t *testing.T) {
 	}
 
 	t.Log("")
-	t.Logf("═ 此刻网关 ASR 供给：可用 %d / 无供给 %d（候选共 %d）", usable, nosupply, len(cands))
+	// ⚠⚠ §493：汇总必须**三桶齐全且与候选数对账**，
+	// 否则「可用 N 个」的分母是无声的（少算的那几个没人知道去哪了）。
+	t.Logf("═ 此刻网关 ASR 供给：可用 %d / 无供给 %d / 空文本 %d（候选共 %d）",
+		usable, nosupply, empty, len(cands))
+	if got, want := usable+nosupply+empty, len(cands); got != want {
+		t.Errorf("三桶合计 %d ≠ 候选数 %d ⇒ 有候选没落进任何桶，"+
+			"「可用 %d」这个数的分母是错的", got, want, usable)
+	}
 	t.Log("⚠ 这个数**只对本次扫描时刻成立** —— 网关供给会变。")
 	t.Log("  引用它时必须带上扫描时间，不要写成「网关只有 N 个 ASR」。")
 }

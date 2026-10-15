@@ -269,6 +269,36 @@ func RecommendedGatewayModels() []ModelOption {
 //
 //	复核后未改动的原 7 条：价格与能力描述与信源一致。
 //
+// ★★ 2026-10-11 复核（§414）：补上清单此前**整体缺失的一个维度** —— 中文精度。
+//
+//	  本仓的主场景是「**中文会议录音**」，而这份清单此前**一条 CER 都没有**，
+//	  全部维度是价格、语言数、是否流式、是否含 diarization。
+//	  ⚠ 后果实测：排在最前的 `openai/whisper-large-v3-turbo` 的 Note 是
+//	    「最低价档，99+ 语言」—— 用户按这份清单选，恰好选中文最差的一档。
+//
+//	  二手汇编（掘金《中文语音识别选型 2026》，转述各模型官方公布数字，
+//	  测试集 AISHELL-1/2 + WenetSpeech Network/Meeting 平均）实测：
+//
+//		    模型                        参数量   平均 CER
+//		    FireRedASR-LLM（小红书）    8.3B     3.05%
+//		    FireRedASR-AED（小红书）    1.1B     3.18%   ⚠ 单条音频限 60 秒
+//		    Seed-ASR（字节）            12B+     3.33%   ⚠ 闭源，仅火山引擎 API
+//		    SenseVoice-Large（阿里）    1.6B     4.47%   ⚠ FunASR 家族，CPU 可跑
+//		    Paraformer-Large（阿里）    0.2B     4.56%   ⚠ 最轻量，带字级时间戳
+//		    Whisper-large-v3（OpenAI）  1.6B     9.86%   ⚠ **会议场景 18.87%**
+//
+//	  ⇒ **通用多语种模型与中文专用模型差 5–6 个点，会议这种难场景差得更多**。
+//	    已知取舍与「为什么这些模型一条都没进清单」见 docs §414.2。
+//
+//	  ⚠ 另一条与本项目强相关的口径（同一来源，2026 价格表）：
+//	    **Groq 托管 whisper 是最便宜的托管档（约 $0.02–0.04/hr），
+//	    但它「任何价格都不含 diarization」** —— 而会议场景要说话人分离，
+//	    ⇒ 按价格排第一的那一档恰好**付钱也拿不到**我们要的那件事。
+//
+//	  ⚠ 本轮**没有**新增任何候选模型：FunASR 生态虽有 OpenAI 兼容 API，
+//	    但本仓拿不到真实会议音频做 CER 实测（见 blockers），
+//	    把未实测的模型塞进推荐位 = 用一份二手数字替用户拍板。⇒ 登记为待拍板 #14。
+//
 // 计费口径的重要提醒（调研原话，别在实现里换算错）：
 //   - OpenRouter 的 pricing.prompt 字段**单位未公开**。只有 Whisper 三兄弟可交叉
 //     验证为「美元/秒」（whisper-1 = 0.0001 = OpenAI 官方 $0.006/分钟）。其余模型的
@@ -293,7 +323,19 @@ func RecommendedExternalModels() []ModelOption {
 			Note:       "最低价档，99+ 语言，可取 word 级时间戳",
 			USDPerHour: 0.012,
 			MaxSeconds: 60,
-			Accuracy:   "pricing.prompt 0.00000333（该字段单位已由 whisper-1 交叉验证为美元/秒）；不支持流式",
+			// ⚠ §414（2026-10-11 复核）：本条此前**只标价格与语言数、不标精度**，
+			//   而本项目的主场景是**中文会议录音** —— 恰恰是 whisper 系最吃亏的那一档。
+			//   二手汇编（掘金《中文语音识别选型 2026》，转述各模型官方数字，
+			//   测试集 AISHELL-1/2 + WenetSpeech Network/Meeting 平均）实测：
+			//   Whisper-large-v3 中文平均 CER **9.86%**，而 **WenetSpeech 会议场景 18.87%**；
+			//   同期中文专用模型 3.05%–4.56%（FireRedASR / SenseVoice / Paraformer）。
+			//   ⇒ 「最低价」在本仓主场景下同时是「**最不准**」，两个维度指向相反，
+			//     清单必须把这件事说出来，否则用户只会按价格选。
+			//   ⚠ 数字是**二手转述**，非本仓实测；本仓拿不到真实会议音频做 CER 对比。
+			Accuracy: "pricing.prompt 0.00000333（该字段单位已由 whisper-1 交叉验证为美元/秒）；不支持流式；" +
+				"⚠ 中文精度：Whisper-large-v3 中文平均 CER 9.86%、**WenetSpeech 会议场景 18.87%**（2026-10-11 复核，" +
+				"掘金《中文语音识别选型 2026》转述各模型官方数字，测试集 AISHELL-1/2 + WenetSpeech Network/Meeting 平均），" +
+				"同期中文专用模型 3.05%–4.56% ⇒ **本项目主场景下价格最低、精度最差**，选它等于用准确度换 0.012 美元/小时",
 		},
 		{
 			Model: "nvidia/nemotron-3.5-asr-streaming-multilingual-0.6b", Group: "external",

@@ -20,12 +20,34 @@ function unwrapEntries(body: unknown): CalendarEntry[] {
   return []
 }
 
+/**
+ * 解包 feed 响应体，**把降级信号一起带出来**（§118）。
+ *
+ * ⚠ 抽成纯函数且导出，不是为了整洁，是为了**可测**：
+ *   `feed()` 自带 I/O，而「partial 有没有活过解包」是纯数据变换 ——
+ *   源码扫描式判据量不到它（把 `=== true` 改成别的写法照样绿）。
+ *   与 api/meetings.ts 的 normalizeSummary 同一理由。
+ *
+ * ⚠ 裸数组（`Array.isArray(body)`）那条分支**没有 partial 可言**，
+ *   返回 false 而不是 undefined：那是「服务端根本没走信封」，
+ *   不是「服务端说它没降级」。旧服务端没这个键时同理按 false 处理，
+ *   因为旧服务端根本不会部分降级。
+ */
+export function unwrapFeed(body: unknown): { entries: CalendarEntry[]; partial: boolean } {
+  return { entries: unwrapEntries(body), partial: (body as { partial?: unknown })?.partial === true }
+}
+
 export const calendarApi = {
-  /** 取 [from, to) 的统一 feed（日程 + 任务截止 + 定时任务）。 */
-  async feed(from: number, to: number): Promise<CalendarEntry[]> {
+  /**
+   * 取 [from, to) 的统一 feed（日程 + 任务截止 + 定时任务）。
+   *
+   * 返回形状在 §118 变了：以前是裸数组，现在是 `{entries, partial}`。
+   * 全仓只有一个调用方（store.ts 的 load），已同步。
+   */
+  async feed(from: number, to: number): Promise<{ entries: CalendarEntry[]; partial: boolean }> {
     const params = new URLSearchParams({ from: String(from), to: String(to) })
     const body = await http<unknown>(`${base}?${params.toString()}`)
-    return unwrapEntries(body)
+    return unwrapFeed(body)
   },
 
   async create(input: CalendarEventInput): Promise<CalendarEvent> {

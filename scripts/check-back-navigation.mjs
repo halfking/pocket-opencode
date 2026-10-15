@@ -203,6 +203,22 @@ export async function scenarios(rt) {
     add('连续两次返回后栈收缩到起点', s.entries.length === 1, `实得 ${s.entries.length}`)
   }
 
+  // ★ 条数下限闸（2026-10-07，docs/design §94.1）。这一层的下限**不能**由外面代替：
+  //   scenarios() 的 10 条行为夹具在 selftest() 里被塌缩成一条元用例
+  //   `真代码 ${n-bad}/${n} 全绿`，所以外面那个 `MIN_SELFTEST_CASES = 6` 守的是
+  //   8 条**元**用例，一条行为夹具都看不见。
+  //   实测（§94.1）：把这里 10 条 add( 全删掉 ⇒ 打印「真代码 0/0 全绿」且该条判**通过**。
+  //   当时整体 EXIT=1，但抓住它的是盲版对照 `buggyBad.length >= 4`（它跑同一个
+  //   scenarios()，所以两臂一起空），不是这道下限 —— 属于「红但理由错」。
+  //   更要紧的是那行日志本身：`0/0 全绿` 是一条绿色 PASS 行，谁扫日志谁被骗。
+  //   下限只能手工改这个常量，不接受命令行参数。
+  const MIN_SCENARIOS = 8;
+  if (out.length < MIN_SCENARIOS) {
+    console.error(`[back-navigation] 行为夹具只跑了 ${out.length}/${MIN_SCENARIOS} 例 —— scenarios() 里的 add 调用被改过。`);
+    console.error('   「真代码 0/0 全绿」不是全绿：0 条夹具时那个比值恒等于 0，和真通过同形。');
+    return [{ name: `行为夹具下限 ${out.length}/${MIN_SCENARIOS}`, pass: false, detail: 'scenarios() 夹具被抽空' }]
+  }
+
   return out
 }
 
@@ -218,11 +234,16 @@ async function selftest() {
   const results = []
   const add = (n, p) => results.push({ name: n, pass: p })
 
-  // 特异度：真代码必须全绿
+  // 特异度：真代码必须全绿。
+  // ⚠️ 文案按结果取，不要把「全绿」两个字印在一条可能失败的行上（docs/design §94.1）：
+  //   原来恒印「真代码 N-bad/N 全绿」，夹具被抽空时会打出一条
+  //   「失败  真代码 0/1 全绿」—— 自相矛盾的一行，扫日志的人第一眼会读成「真代码没问题」。
   const real = await loadRealRuntime()
   const realResults = await scenarios(real)
   const realBad = realResults.filter((r) => !r.pass)
-  add(`真代码 ${realResults.length - realBad.length}/${realResults.length} 全绿`, realBad.length === 0)
+  add(`真代码 ${realResults.length - realBad.length}/${realResults.length}` +
+      (realBad.length === 0 ? ' 全绿' : ` 有 ${realBad.length} 条红：${realBad.map((r) => r.name).join('、')}`),
+    realBad.length === 0)
 
   // 变盲对照：造一个「旧实现」替身（setTimeout(0) 判定 + 只记 push），
   // 判据必须转红 —— 否则这道门是哑的。
@@ -252,7 +273,16 @@ async function selftest() {
 
   for (const r of results) console.log(`  ${r.pass ? '通过' : '失败'}  ${r.name}`)
   const bad = results.filter((r) => !r.pass)
-  console.log(`\n自检: ${results.length - bad.length}/${results.length} 通过`)
+  // ★ 条数下限闸（2026-10-07，docs/design §94）。原来 `自检: N-bad/N 通过` + `exit(bad===0?0:1)`，
+  //   results 为空时打印「0/0 通过」并 EXIT=0，与真通过完全同形（见 §94 的实跑证据）。
+  //   下限只能手工改这个常量，不接受命令行参数。
+  const MIN_SELFTEST_CASES = 6;
+  if (results.length < MIN_SELFTEST_CASES) {
+    console.error(`[back-navigation] 自检只跑了 ${results.length}/${MIN_SELFTEST_CASES} 例 —— 夹具循环或 add 调用被改过。`);
+    console.error('   「0/0 通过」不是通过：那是判据失明时的读数，和真通过长得一模一样。');
+    process.exit(2);
+  }
+  console.log(`\n自检: 实跑 ${results.length} 例，通过 ${results.length - bad.length} 例`)
   process.exit(bad.length === 0 ? 0 : 1)
 }
 

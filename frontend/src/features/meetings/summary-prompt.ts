@@ -1,0 +1,85 @@
+/**
+ * 会议摘要（滚动即时总结）提示词 —— 回落路径。
+ *
+ * ── 为什么摘要链要单独一个模块 ──
+ *
+ * 摘要同样有两条实现：
+ *   ① 服务端 `POST /api/meetings/{id}/summary` → Go `buildSummaryPrompt`
+ *   ② 前端 `fallbackSummarize()` → `/api/llm/chat` → 本文件
+ *
+ * 而 ② 此前是 `meetings.ts` 里一段**内联模板字符串**。与 §54 的
+ * `refine-prompt.ts` 同族：**同一份契约写两遍，漂移只是时间问题**。
+ * 跨语言防漂靠 `summary-prompt-parity.test.mjs`：契约清单只放一处，
+ * 由 TS 行为断言与 Go 源码断言**共用**。
+ *
+ * ② 不是边角情况：后端摘要预算 45s < 网关 `ResponseHeaderTimeout` 85s（§59），
+ * 长输入下**后端先放弃** ⇒ 前端必走 ②。
+ *
+ * ── ⚠ 2026-10-07（§66.10）：`SUMMARY_FIELD_RULES` 撤过一次、又被加回来。
+ * 两次都是**指标选错**造成的，不是改法有问题。
+ *
+ * 第一次（§66.3）：用「due 字符串**数量**」当指标，量到 haiku 的 due 从 6~7 掉到 2，
+ * 判成「规则有害」并撤回。
+ *
+ * 真相是 `待定` / `未指定` 是**非空字符串** ⇒ 被数量指标**计成成功**，
+ * 而它们在 `resolveTodoDue` 全部返回 null ⇒ 一条都进不了日程。
+ * 真网关实抓（BEFORE 臂，29 条非空 due 逐条喂产品侧解析器本人）：
+ *
+ *     claude-haiku-4-5   19 条 →  6 条能解析 =  32%（13 条是占位符）
+ *     glm-5.2             10 条 →  9 条能解析 =  90%
+ *
+ * 用**解析率**重算同一组 A/B：
+ *
+ *     臂                       haiku        glm        延迟代价
+ *     BEFORE  569（无规则）    6/19 = 32%   9/10 = 90%   基线
+ *     COMPACT 684（本常量）    6/6  = 100%  7/7  = 100%  与基线持平
+ *     610 字符大版（已删）     7/7  = 100%  4/4  = 100%  ⚠ glm 撞 85s 超时
+ *
+ * ⇒ 规则块把「能进日程的 due」从 32% 拉到 **100%**；
+ *   那些「消失的 due」不是被压掉了，是**占位符消失了**。
+ *
+ * ★ 量「产出」必须量**产出能不能用**：计数会把占位符算成成功，
+ *   把质量提升读成质量下降 —— 方向正好是反的。
+ */
+
+/** 与服务端 `summaryJSONSchema` 逐字一致（跨语言门会比这一行）。 */
+const SUMMARY_JSON_SCHEMA =
+  '{"summary":"","key_points":[],"action_items":[{"text":"","assignee":"","due":""}],"decisions":[],"open_questions":[]}'
+
+/**
+ * 与服务端 `summaryFieldRules` **逐字同源**（跨语言门会比这一段）。
+ *
+ * ⚠ 115 字符的紧凑版，不是 610 字符的大版：大版实测会让 `glm-5.2`
+ *   从「能完成」变成「85s 上限超时」，本版延迟与无规则版持平。
+ *
+ * 「due 不要用指代词」这一条同时覆盖 §65 抓到的真 bug
+ * （`glm-5.2` 填 `"那之前"` ⇒ `resolveTodoDue` 解析失败 ⇒ 永远进不了日程）。
+ */
+const SUMMARY_FIELD_RULES =
+  '\n\n要求：action_items 只放转写里真实提到、且需要有人去做的事，不要放纯讨论与闲聊；due 保留用户原话里的时间表述（如「下周三下午三点」「十一月底之前」），不要自己换算成日期，也不要用「那之前」「到时候」这类指代词。'
+
+/**
+ * 拼回落路径的会议摘要提示词。
+ *
+ * ⚠ 两条分支都必须带 schema：
+ *   2026-10-06 真网关实测，滚动分支曾退化成
+ *   「请更新摘要，严格返回**相同** JSON 格式」—— 而「相同」指向的格式
+ *   在那一条消息里**从没出现过** ⇒ 第 2 轮起 key_points/action_items 双双归零，
+ *   第 3 轮 summary 为空，且**不报任何错**。
+ *   （这是**格式丢失**，不是「要求不够」；两者别混。）
+ */
+export function buildFallbackSummaryPrompt(transcript: string, prevSummary?: string): string {
+  if (prevSummary && prevSummary.trim() !== '') {
+    return `你是会议记录助手。只根据转写更新摘要，禁止编造。结合已有摘要与新增转写，返回 JSON：${SUMMARY_JSON_SCHEMA}${SUMMARY_FIELD_RULES}
+
+已有摘要：
+${prevSummary}
+
+新增转写：
+${transcript}`
+  }
+  return `你是会议记录助手。只根据转写生成摘要，禁止编造。返回 JSON：${SUMMARY_JSON_SCHEMA}${SUMMARY_FIELD_RULES}
+
+转写：
+${transcript}`
+}

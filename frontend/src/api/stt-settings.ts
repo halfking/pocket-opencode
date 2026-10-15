@@ -287,8 +287,16 @@ export const sttSettingsApi = {
   /**
    * **即时**转写：录音进行中送一片，返回累计文本 + 增量。
    *
-   * sessionId 必填——服务端靠它维持跨片去重状态（切片有重叠，不去重会出现
-   *「今天今天下午三点」）。一场录音用同一个 id，最后一片传 isFinal。
+   * sessionId 必填——服务端靠它维持跨片累积状态。一场录音用同一个 id，最后一片传 isFinal。
+   *
+   * ⚠⚠ 去重的前提（§25 / §507 + TestProductionShapeSlicesDoNotOverlap）：
+   *   服务端 `mergeIncremental` 是为**重叠切片**设计的，但**当前唯一调用方**
+   *   （`recordingRuntime.sendSlice`）经 `takeNewWindow()` 送的是
+   *   `[已发送秒数, 当前总秒数)` —— 纯新增窗口，**彼此不重叠**。
+   *   ⇒ 段边界的词不会被重复识别，去重在这条链路上是**兜底**而非必需。
+   *     调阈值前请先读 §25，原始误述与实测读数见 §507。
+   *   ⚠ 会议链（`features/meetings/meeting-dedup.ts`）的取片窗口**确实**带
+   *     sliceMs 重叠，那边去重是必需的 —— **别把两处的结论互相套用**。
    */
   async transcribeIncremental(body: {
     /** 原始音频（会被转 base64）。与 `audioBase64` 二选一。 */
@@ -314,12 +322,25 @@ export const sttSettingsApi = {
     if (!body.audioBlob && !body.audioBase64) {
       throw new Error('transcribeIncremental 需要 audioBlob 或 audioBase64 之一')
     }
-    const audioBase64 = body.audioBase64 ?? await blobToBase64(body.audioBlob!)
+    // ★ 与 transcribeFull / probe 同一条纪律：容器适配放在**本方法内**，
+    //   不指望调用方记得做（§50 的 webm 400 就是从「安全网只盖了一半」漏出去的）。
+    //
+    //   本条此前**既不转码、也不看实际容器**：`audioBlob` 分支直接 blobToBase64，
+    //   而 filename 默认硬编码 'chunk.wav' ⇒ 调用方传一个 webm blob 而忘了带
+    //   filename 时，发出的是 **webm 字节标着 .wav**，与 §50 那个 bug 同形。
+    //   当时唯一调用方（recordingRuntime.sendSlice）传的是预转好的 base64，
+    //   所以这条分支在真机上从未被走到 ⇒ 属**潜伏**而非现网缺陷。
+    const blob = body.audioBlob ? await ensureGatewayCompatible(body.audioBlob) : null
+    const audioBase64 = body.audioBase64 ?? await blobToBase64(blob!)
+    // filename 跟着**实际发出去的容器**走：blob 存在说明本方法刚转过码，
+    // 调用方给的 filename 是转码**前**的容器，已经是过期的（与 transcribeFull
+    // 同一条纪律）。blob 为 null = 调用方自带 base64，容器由它自己声明。
+    const name = blob?.type ? filenameForMimeType(blob.type, 'chunk') : (body.filename ?? 'chunk.wav')
     return http<SttIncrementalResult>('/api/stt/transcribe-incremental', {
       method: 'POST',
       body: JSON.stringify({
         audioBase64,
-        filename: body.filename ?? 'chunk.wav',
+        filename: name,
         sessionId: body.sessionId,
         startSec: body.startSec ?? 0,
         endSec: body.endSec ?? 0,

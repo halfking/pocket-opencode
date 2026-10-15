@@ -23,10 +23,10 @@
 // 代价就是必须在文本侧消解。
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { dirname, join } from 'node:path'
-import { dedupeSegmentText, dedupeSegments, dedupeTranscriptParagraphs, renderTranscript } from './meeting-dedup.ts'
+import { dirname, join, relative } from 'node:path'
+import { dedupeSegmentText, dedupeSegments, dedupeTranscriptParagraphs, likelyAudioOverlap, renderTranscript } from './meeting-dedup.ts'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const read = (f: string) => readFileSync(join(HERE, f), 'utf8')
@@ -192,6 +192,21 @@ describe('D · 接线层：所有出口都必须去重（防回退）', () => {
     assert.match(read('ingest-speech.ts'), /renderTranscript\(/)
   })
 
+  // ⚠⚠ 这道门**当前没有牙**（2026-10-11 §438 实测，别把它当成保护）。
+  //
+  // 它断言的是「appendText 调了 renderTranscript」——这个断言成立。
+  // 但被它保护的那批段**压根不参与去重**：
+  //   实时字幕（Web Speech `isFinal`）→ recordingRuntime.ts:459 → appendText
+  //   → buildUtteranceSegment（meeting-utterance.ts:41）→ origin: 'manual'
+  //   → dedupeStep 第 222 行 `if (manual) return …` **整段提前返回**
+  // ⇒ renderTranscript 在这条路上执行的是原样拼接，去重是**恒等操作**。
+  //
+  // 实测（§438）：相邻两段有真实重叠时 origin:'asr' 渲染出「预算超了」，
+  // 而 origin:'manual'（= 这条路的真实产物）渲染出整段重复；
+  // 且累积体被污染后会**逐段放大**。
+  //
+  // 「字幕段该是 asr 还是 manual」是产品口径，已登记 **#20**，不由本门替人决定。
+  // 本门要真正有牙，得先有那个答案。
   it('★ recordingRuntime.appendText 也要去重（本地 sherpa 实时字幕是另一条录音入口）', () => {
     const s = read('../../native/recordingRuntime.ts')
     assert.match(
@@ -251,5 +266,554 @@ describe('E · dedupeSegments 的行为', () => {
   it('无重叠时原样返回等价内容', () => {
     const input = [{ text: '今天下午三点开会' }, { text: '明天上午九点复盘' }]
     assert.deepEqual(dedupeSegments(input).map(s => s.text), input.map(s => s.text))
+  })
+})
+
+describe('G · 时间轴判据：区分「切片重叠」与「用户真的重复说」', () => {
+  // ★ 这组解决一个原先记为「不修」的固有局限：
+  //   dedupe('今天我们讨论了预算和排期', '预算和排期都要再确认一次')
+  //   纯文本形态上和切片重叠**完全一样**（新段以旧段结尾开头），无从区分。
+  //   时间戳能区分：正常切分两段之间有 silenceMs(1500ms) 静音间隙，
+  //   而 RAF 节流导致 speechStartMs 回退时，下一段起点会落到上一段结尾**之前**。
+
+  it('likelyAudioOverlap：起点落在上一段结尾之前 ⇒ 重叠', () => {
+    assert.equal(likelyAudioOverlap({ prevEndMs: 8000, nextStartMs: 7800 }), true)
+    assert.equal(likelyAudioOverlap({ prevEndMs: 8000, nextStartMs: 3000 }), true)
+  })
+
+  it('likelyAudioOverlap：有正常静音间隙 ⇒ 不是重叠', () => {
+    assert.equal(likelyAudioOverlap({ prevEndMs: 8000, nextStartMs: 9500 }), false)
+  })
+
+  // §613 新增：**边界那一档**。上面两条测的是「明显在前」与「明显在后」，
+  // 唯独漏了「正好等于」——
+  // §613 变异实测：把实现里的 `<` 改成 `<=`，整份 meeting-dedup.test.ts
+  // （连同 asr / two-stage 两份）**一条不红** ⇒ 该边界零判据。
+  //
+  // 语义取自实现自己的注释：「下一段起点落在上一段结尾**之前**」为重叠。
+  // 「正好等于」= 两段首尾相接、没有交叠 ⇒ 必须判**不重叠**；
+  // 判成重叠会让「用户真的连着说了两段」被当成切片重叠而裁掉。
+  it('likelyAudioOverlap：起点正好等于上一段结尾 ⇒ 首尾相接，不算重叠', () => {
+    assert.equal(likelyAudioOverlap({ prevEndMs: 8000, nextStartMs: 8000 }), false,
+      '首尾相接（既不在前也不在后）必须判不重叠；判成重叠会把用户连着说的两段当成切片重叠')
+    // 相邻的两档一并钉住，避免这条被改成 `>=` 之类仍能通过
+    assert.equal(likelyAudioOverlap({ prevEndMs: 8000, nextStartMs: 7999 }), true)
+    assert.equal(likelyAudioOverlap({ prevEndMs: 8000, nextStartMs: 8001 }), false)
+  })
+
+  it('likelyAudioOverlap：时间戳非法 ⇒ 不下结论（回退纯文本判据）', () => {
+    assert.equal(likelyAudioOverlap({ prevEndMs: NaN, nextStartMs: 100 }), false)
+    assert.equal(likelyAudioOverlap({ prevEndMs: 100, nextStartMs: Number.NaN }), false)
+  })
+
+  it('★ 时间轴重叠（gap 0ms）⇒ 必须去重', () => {
+    const out = renderTranscript([
+      seg('A', '今天下午三点开项目评审会'),
+      { ...seg('A', '今天下午三点开项目评审，请准备材料'), startMs: 7800, endMs: 16000 },
+    ] as never)
+    assert.ok(!/今天今天/.test(out), `重叠未消解：${out}`)
+    assert.ok(/，请准备材料/.test(out), `净增应保留：${out}`)
+  })
+
+  it('★ 有正常间隙 ⇒ 用户真重复说，两段都要保留', () => {
+    // 这是本组的核心：纯文本形态与切片重叠一模一样，只有时间轴能区分。
+    const out = renderTranscript([
+      { speakerLabel: 'A', text: '今天我们讨论了预算和排期', startMs: 0, endMs: 8000 },
+      { speakerLabel: 'A', text: '预算和排期都要再确认一次谢谢', startMs: 9500, endMs: 17000 },
+    ])
+    assert.ok(
+      out.includes('今天我们讨论了预算和排期') && out.includes('预算和排期都要再确认一次谢谢'),
+      `用户真的重复说的话被吃掉了：${out}`,
+    )
+    assert.equal(out.split('\n').length, 2, '两段都应保留')
+  })
+
+  // ★ 这条是时间轴判据的**专属靶子**，缺了它 N2/N3 变异能蒙混过关
+  //   （实测：把 overlapping 恒设为 false，用例仍全绿 —— 因为那批用例的
+  //   LCS 覆盖率都在 0.9 以上，soft 路径自己也能命中，时间轴判据没被区分开）。
+  //
+  // 构造要求：**精确匹配能命中、但 LCS 覆盖率 < 0.6**。
+  // 这样只有「走精确匹配路径」才能消解重叠；恒 false 时会落到 soft 路径
+  // 被覆盖率闸拦下 ⇒ 重复留在界面上 ⇒ 判红。
+  it('★ 专属靶子：cov<0.6 但精确匹配命中时，仍须靠时间轴判据决定去不去重', () => {
+    // 实测 cov=0.57 / exact=4（'这个需求的优先级我建议调整到' / '下个迭代，优先级建议调整一下'）
+    const overlapping = renderTranscript([
+      { speakerLabel: 'A', text: '这个需求的优先级我建议调整到下个迭代', startMs: 0, endMs: 9000 },
+      { speakerLabel: 'A', text: '下个迭代，优先级建议调整一下', startMs: 8900, endMs: 17000 },
+    ])
+    const gapOk = renderTranscript([
+      { speakerLabel: 'A', text: '这个需求的优先级我建议调整到下个迭代', startMs: 0, endMs: 9000 },
+      { speakerLabel: 'A', text: '下个迭代，优先级建议调整一下', startMs: 10500, endMs: 19000 },
+    ])
+    // 有间隙 ⇒ 保留两段（cov<0.6 时 soft 闸本来也拦得住，但精确匹配会吃）
+    assert.ok(
+      gapOk.includes('下个迭代，优先级建议调整一下'),
+      `有间隙时不该动用户的话：${gapOk}`,
+    )
+    // 无间隙 ⇒ 走精确匹配消解掉「下个迭代」这段重叠。
+    //
+    // ★ 必须断言**第二段的确切内容**，不能断言「拼接后不含某个串」——
+    //   renderTranscript 每段是独立一行（`[A] ...`），跨行的重复串
+    //   永远匹配不上，断言会恒真（2026-10-06 实测踩到）。
+    const lines = overlapping.split('\n')
+    assert.equal(lines.length, 2)
+    assert.equal(lines[0], '[A] 这个需求的优先级我建议调整到下个迭代', '首段必须原样')
+    assert.equal(
+      lines[1], '[A] ，优先级建议调整一下',
+      `时间轴重叠时第二段应只留净增，实际 ${JSON.stringify(lines[1])}`,
+    )
+  })
+
+  // ★ N3 变异的专属靶子：无时间戳的那条分支（: true）必须钉住。
+  //   它对应 appendText 造出的草稿段（startMs 取上一段 endMs）与任何
+  //   时间戳缺失的形态 —— 重复最严重的那条路径。把它改成 false 的话，
+  //   这些段会全走 soft，被覆盖率闸拦下 ⇒ 重复原样显示。
+  it('★ 专属靶子：无时间戳时仍须走精确匹配（拿不到判据不等于可以不去重）', () => {
+    // 必须用 cov<0.6 的样本：cov 高的输入 soft 路径自己也能命中，
+    // 那时「: true 改 : false」是等价变异 ⇒ 用例恒绿（2026-10-06 实测）。
+    // 实测 cov=0.571 / exact=4。
+    const out = renderTranscript([
+      seg('A', '这个需求的优先级我建议调整到下个迭代'),
+      seg('A', '下个迭代，优先级建议调整一下'),
+    ] as never)
+    const lines = out.split('\n')
+    assert.equal(lines.length, 2)
+    assert.equal(lines[0], '[A] 这个需求的优先级我建议调整到下个迭代', '首段必须原样')
+    assert.equal(
+      lines[1], '[A] ，优先级建议调整一下',
+      `无时间戳时也该走精确匹配去重，实际 ${JSON.stringify(lines[1])}`,
+    )
+  })
+
+  it('负控：去掉时间轴判据（永远按「有重叠」处理）必须让上一条判红', () => {
+    // 不看时间轴时，纯文本会把「预算和排期」当重叠吃掉 —— 这正是修复前的行为
+    const noTiming = renderTranscript([
+      { speakerLabel: 'A', text: '今天我们讨论了预算和排期' },
+      { speakerLabel: 'A', text: '预算和排期都要再确认一次谢谢' },
+    ] as never)
+    assert.ok(
+      !/今天我们讨论了预算和排期.*预算和排期/.test(noTiming.split('\n')[1] ?? ''),
+      '无时间戳时也应保守（走 LCS 闸）而不是吃精确匹配',
+    )
+  })
+})
+
+/**
+ * H · ★ MIN_ANCHOR 那道闸**不是冗余的**（2026-10-11 实测证伪）
+ *
+ * 本块守的是一个**曾经被删掉过**的闸。删它的理由写在旧注释里：
+ * 「变异测试证明它冗余 —— 只把 MIN_ANCHOR 放宽到 1 而 coverage 保持 0.6 时，
+ * 15 条用例全绿」。**那个结论是错的。**
+ *
+ * 证伪方法：按**参数结构**构造语料（匹配字取自集合 M、未匹配字取互斥集合 U，
+ * 于是 LCS 长度精确等于 m），枚举 limit∈[2,12] × m∈[0,limit] × 三种摆放，
+ * 178 条同时喂给**真函数**——后端 `mergeIncremental` 与本实现。分叉 5 条，
+ * 全部落在 limit∈{3,4} 且 lcsLen∈{2,3} 这一格：coverage（lcsLen/limit≥0.6）
+ * 放行，而 MIN_ANCHOR（lcsLen≥4）会拦。**两道闸只在这一格不等价。**
+ *
+ * 后果不是多几个重复字，而是**删掉用户没说过的话**。
+ */
+describe('H · MIN_ANCHOR 闸：短 LCS 必须判成「不重叠」（防删真实内容）', () => {
+  // 下面 5 条即修复前分叉的 5 条。断言取自**真 Go mergeIncremental** 的实测输出，
+  // 不是我手算的 —— 手算过的东西不该当基准。
+  const DIVERGENT = [
+    { committed: '甲云山', next: '云甲山后续内容', want: '甲云山云甲山后续内容', shape: 'B散落' },
+    { committed: '甲乙云', next: '云甲乙后续内容', want: '甲乙云云甲乙后续内容', shape: 'C末尾' },
+    { committed: '甲云山石', next: '云甲山石后续内容', want: '甲云山石云甲山石后续内容', shape: 'B散落' },
+    { committed: '甲乙云山', next: '云甲乙山后续内容', want: '甲乙云山云甲乙山后续内容', shape: 'B散落' },
+    { committed: '甲乙丙云', next: '云甲乙丙后续内容', want: '甲乙丙云云甲乙丙后续内容', shape: 'C末尾' },
+  ]
+
+  for (const c of DIVERGENT) {
+    it(`短锚点（limit≤4）⇒ 判不重叠，一个字都不删（${c.shape}）`, () => {
+      assert.equal(
+        dedupeSegmentText(c.committed, c.next),
+        c.want,
+        `短锚点被当成了真重叠 ⇒ 重叠区里没出现过的字被删掉了。` +
+          `后端基准保留全部内容，界面却比后端少字。`,
+      )
+    })
+  }
+
+  it('正控：锚点够长（lcsLen≥4）时去重**仍然必须发生**', () => {
+    // MIN_ANCHOR=4 的正侧：lcsLen=4 时两道闸都放行 ⇒ 必须照常去重。
+    // 少了这一条，上面那组可能靠「一律不去重」而全绿。
+    assert.equal(dedupeSegmentText('今天讨论预算排期', '预算排期要再确认'), '今天讨论预算排期要再确认')
+  })
+
+  it('★ 真负控：修复前的实测输出与修复后**逐条不同**（证明判据有牙）', () => {
+    // 修复前 TS 的 5 条真实输出（本次修复前的实测值，非手算）：
+    const before = [
+      '甲云山云后续内容',
+      '甲乙云云后续内容',
+      '甲云山石云后续内容',
+      '甲乙云山云后续内容',
+      '甲乙丙云云后续内容',
+    ]
+    const after = DIVERGENT.map((c) => dedupeSegmentText(c.committed, c.next))
+    for (let i = 0; i < DIVERGENT.length; i++) {
+      assert.notEqual(
+        after[i],
+        before[i],
+        `第 ${i + 1} 条：修复前后输出相同 ⇒ 这条判据对该闸没有区分力（恒真）`,
+      )
+      assert.equal(after[i], DIVERGENT[i].want)
+    }
+  })
+})
+
+/**
+ * I · ★ 端到端：**送进 LLM 的那份文字**里，一个字都不能少
+ *
+ * 前面两组门各覆盖一半，但中间缺一环：
+ *   · C/D 两组断言的是**源码里有没有调 renderTranscript**（正则，防回退）
+ *   · H 组断言的是 `dedupeSegmentText` **函数级**的行为
+ *   · 本组才是**行为级**的：拿生产形状的段（带 speakerLabel / startMs / endMs /
+ *     origin:'asr'）喂真实的 `renderTranscript`，断言它的输出。
+ *
+ * 为什么必须是这一层：§427 记着 `renderTranscript` 有 5 个出口，其中
+ * ③ `api/meetings.ts` 的 fallbackSummarize / fallbackRecommend 与
+ * ④⑤ fallbackRefine 提示词（§54 说它是**高频**路径）——
+ * ⇒ 用户看到的那份文字，和喂给模型的那份文字，**是同一个函数的同一个返回值**。
+ * §437 端到端实测过「李娜说『没问题』→ 界面渲染成『没』且送进 LLM」，
+ * 但那是一次**手工探针**，没有变成常驻门。
+ *
+ * ★ 断言值绑定**后端基准**而不是手算：
+ *   本组的期望值就是 §455 那轮用真 `mergeIncremental` 量出来的输出。
+ *   前端生产渲染与后端基准逐字相等 —— 这比「两边的正则看起来像」强得多。
+ */
+describe('I · 端到端：renderTranscript 的输出与后端基准逐字相等', () => {
+  /** 造一个生产形状的 ASR 段（与 processSegment 的产物同形）。 */
+  function asrSeg(text: string, startMs: number, endMs: number) {
+    return { speakerLabel: '李娜', lang: 'zh', confidence: 0.86, startMs, endMs, text, origin: 'asr' as const }
+  }
+
+  /** 去掉 `[说话人] ` 前缀，只留正文字 —— 即送进 LLM 的那串字符。 */
+  function bodyOf(rendered: string): string {
+    return rendered.split('\n').map((l) => l.replace(/^\[[^\]]*\]\s*/, '')).join('')
+  }
+
+  // 两条即 §455 那 178 条语料里分叉的样本，取自真 mergeIncremental 的实测输出。
+  const CASES = [
+    {
+      name: 'limit=3 散落重叠',
+      segs: [asrSeg('甲云山', 0, 3000), asrSeg('云甲山后续内容', 2500, 6000)],
+      // Go 基准：重叠区不足 4 字 ⇒ 判不重叠 ⇒ 全部保留
+      goBaseline: '甲云山云甲山后续内容',
+      // 修复前 TS 的真实输出（删掉了用户没说过、又没重复出现的「甲」「山」）
+      beforeFix: '甲云山云后续内容',
+    },
+    {
+      name: 'limit=4 末尾重叠',
+      segs: [asrSeg('甲乙丙云', 0, 4000), asrSeg('云甲乙丙后续内容', 3000, 7000)],
+      goBaseline: '甲乙丙云云甲乙丙后续内容',
+      beforeFix: '甲乙丙云云后续内容',
+    },
+  ]
+
+  for (const c of CASES) {
+    it(`不丢字：${c.name}`, () => {
+      const rendered = renderTranscript(c.segs)
+      assert.equal(
+        bodyOf(rendered),
+        c.goBaseline,
+        `端到端产出与后端基准不等 ⇒ 生产链上仍在丢字。用户看到与喂给 LLM 的都是这一份。`,
+      )
+      assert.notEqual(
+        bodyOf(rendered),
+        c.beforeFix,
+        '输出与修复前相同 ⇒ 这条判据对 MIN_ANCHOR 那道闸没有区分力（恒真）',
+      )
+    })
+  }
+
+  it('★ 真负控：锚点够长时**仍然必须真的去重**（否则上面两条可能被「一律不去重」骗过）', () => {
+    const rendered = renderTranscript([
+      asrSeg('今天我们讨论了预算和排期', 0, 5000),
+      asrSeg('预算和排期都要再确认一次', 4000, 9000),
+    ])
+    assert.equal(
+      bodyOf(rendered),
+      '今天我们讨论了预算和排期都要再确认一次',
+      '长锚点的真实重叠必须被裁掉 —— 去重整体失效比丢字更难发现',
+    )
+  })
+
+  it('无时间戳时同样保守（拿不到判据 ≠ 可以乱裁）', () => {
+    const rendered = renderTranscript([
+      { ...asrSeg('甲云山', 0, 3000), startMs: undefined, endMs: undefined },
+      { ...asrSeg('云甲山后续内容', 2500, 6000), startMs: undefined, endMs: undefined },
+    ])
+    assert.equal(bodyOf(rendered), '甲云山云甲山后续内容', '无时间戳也应判不重叠，而不是靠猜')
+  })
+})
+
+/**
+ * J · ★ **`updateTranscript` 的每一个写入点都必须走去重**（动态枚举，不靠手写点名）
+ *
+ * ── 这道门补的是什么洞 ──
+ *
+ * C/D/E/H/I 各组加起来已经覆盖了：接线（C/D 的源码断言）、函数行为（A/H）、
+ * 端到端产出（I）。⚠ 但 D 组是**逐个文件写死的正则**——
+ * 它检查 `ingest-speech.ts`、`recordingRuntime.ts`、`api/meetings.ts`、
+ * `MeetingDetailView.vue` 这几个**已知的**文件。
+ *
+ * ⇒ 新增第 6 个 `updateTranscript(...)` 写入点时，**没有任何门会响**，
+ * 而那一处若直接传原始拼接文本，重复就**永久落库 + 默认展示 + 流进 LLM**。
+ * ⇒ 这与 §439 记下的「手写点名的判据覆盖面没有门在守」同型：
+ *   **点名的清单只覆盖名字已经写下来的人。**
+ *
+ * 本组改为**扫全 `src/`**：枚举每一处调用，逐处断言第二个实参是 `renderTranscript(...)`。
+ * ⇒ 新增写入点自动进入覆盖范围，**不需要改这道门**。
+ */
+describe('J · updateTranscript 的每个写入点都必须走去重', () => {
+  const SRC_ROOT = join(HERE, '..', '..')
+
+  /** 递归扫 .ts/.vue（跳过测试与 node_modules）。 */
+  function walk(dir: string, out: string[] = []): string[] {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      if (e.name === 'node_modules' || e.name === '.git') continue
+      const p = join(dir, e.name)
+      if (e.isDirectory()) walk(p, out)
+      else if (/\.(ts|vue)$/.test(e.name) && !/\.test\.ts$/.test(e.name)) out.push(p)
+    }
+    return out
+  }
+
+  /** 找出所有 `updateTranscript(` 调用点，跳过函数**定义**那一处。 */
+  function callSites(): { file: string; line: number; text: string }[] {
+    const out: { file: string; line: number; text: string }[] = []
+    for (const f of walk(SRC_ROOT)) {
+      readFileSync(f, 'utf8')
+        .split('\n')
+        .forEach((line, i) => {
+          if (!line.includes('updateTranscript(')) return
+          // 定义行：`export async function updateTranscript(id: string, ...`
+          if (/function\s+updateTranscript\s*\(/.test(line)) return
+          out.push({ file: relative(SRC_ROOT, f), line: i + 1, text: line.trim() })
+        })
+    }
+    return out
+  }
+
+  it('抽取器有效（量具先自证，防止「扫到 0 个 ⇒ 恒绿」）', () => {
+    const sites = callSites()
+    assert.ok(
+      sites.length >= 5,
+      `只扫到 ${sites.length} 处 updateTranscript 调用（预期 ≥5）—— ` +
+        `抽取器可能坏了：路径、扩展名白名单或「跳过定义行」的规则有一处不对。`,
+    )
+    // 独立锚点：这 5 处是 §442 登记过的写入点，逐个点名对表。
+    const files = new Set(sites.map((s) => s.file))
+    for (const expect of [
+      'features/meetings/ingest-speech.ts',
+      'native/recordingRuntime.ts',
+      'features/meetings/MeetingDetailView.vue',
+    ]) {
+      assert.ok(files.has(expect), `抽取器没抓到 ${expect} —— 它在这条链上是写入点`)
+    }
+  })
+
+  it('★ 每一处调用都必须把 renderTranscript 的结果写进去', () => {
+    const bad = callSites().filter((s) => !/updateTranscript\([^,]*,\s*renderTranscript\(/.test(s.text))
+    assert.deepEqual(
+      bad.map((b) => `${b.file}:${b.line}  ${b.text}`),
+      [],
+      '这些写入点没有走去重渲染 ⇒ 重复会原样落库、默认展示、并流进 LLM 提示词。\n' +
+        '修法：第二个实参传 renderTranscript(...) 的返回值。',
+    )
+  })
+
+  it('负控：直接传原始拼接的写入点必须被上面那条判红', () => {
+    // 真实存在过的坏写法（§438 之前的 appendText 形态）。
+    const legacy = 'await updateTranscript(meetingId, this.segments.value.map((s) => `[${s.speakerLabel}] ${s.text}`).join("\\n"))'
+    assert.ok(
+      !/updateTranscript\([^,]*,\s*renderTranscript\(/.test(legacy),
+      '负控样本必须通不过上面那条判据，否则那道判据恒绿',
+    )
+  })
+})
+
+/**
+ * K · ★ 连**底层写入原语**也不许绕过 `updateTranscript`
+ *
+ * ── 为什么 J 组还不够 ──
+ *
+ * `updateTranscript`（`meetings-store.ts:238`）本身只是
+ * `updateMeeting(id, { transcript })` 的一层包装。
+ * ⇒ **J 组枚举的是包装层**：谁直接调 `updateTranscript(` 都被它看见；
+ *   但谁直接调 `updateMeeting(id, { transcript: … })` 就**完全绕过** J 组，
+ *   而那正是重复文本落库的那一列。
+ *
+ * ── 实测结论（2026-10-11）──
+ *
+ * 全 `src/` 18 个 `updateMeeting` 调用点（其中 6 个跨行），
+ * patch 里带**裸** `transcript` 键的**只有 1 个**：`meetings-store.ts:239`
+ * —— 正是 `updateTranscript` 自己的函数体。
+ * ⇒ **今天没有人绕过它。** 本组把这句「今天」钉住。
+ *
+ * ── ⚠⚠ 本组的第一条判据是**抽取器自证**，而它有来由 ──
+ *
+ * 第一版抽取器写成「先剥掉含 transcript 的长键，再找裸键」，
+ * 但剥的���则要求键后面跟 `:` —— 而 `{ transcript }` 是**简写形式、没有冒号**，
+ * 于是它没被剥掉、判据又找不到它 ⇒ **报出「0 处违规」**。
+ * ⛔ 那是个**假阴性**：读数「0」看起来是最干净的结论，实际是量具坏了。
+ * ⇒ 所以现在把**已知真相**（唯一那处就是 `updateTranscript` 本体）写死成断言：
+ * 抽取器一坏（扫不到 / 扫出多余的），本条立刻红，而不会静默说「都挺好」。
+ */
+describe('K · updateMeeting 这一层也不许直接写 transcript', () => {
+  const SRC_ROOT = join(HERE, '..', '..')
+
+  function walk(dir: string, out: string[] = []): string[] {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      if (e.name === 'node_modules' || e.name === '.git') continue
+      const p = join(dir, e.name)
+      if (e.isDirectory()) walk(p, out)
+      else if (/\.(ts|vue)$/.test(e.name) && !/\.test\.ts$/.test(e.name)) out.push(p)
+    }
+    return out
+  }
+
+  /**
+   * 枚举所有 `updateMeeting(...)` 调用，**括号配平**取完整表达式（跨行安全）。
+   * 返回其中 patch 带**裸** `transcript` 键的位置。
+   *
+   * ⚠ 两个必须同时处理的形态（少一个都会漏）：
+   *   ① `transcript: x`（带冒号）
+   *   ② `{ transcript }`（**简写、没有冒号**）—— 第一版就是漏在这里
+   * 另外要先删掉 refinedTranscript / liveTranscript 这类**长键**，
+   * 否则它们会把裸键的匹配带偏。
+   */
+  function bareTranscriptWriters(): string[] {
+    const out: string[] = []
+    for (const f of walk(SRC_ROOT)) {
+      const src = readFileSync(f, 'utf8')
+      for (let i = 0; i < src.length; i++) {
+        const at = src.indexOf('updateMeeting(', i)
+        if (at < 0) break
+        i = at
+        if (/function\s+updateMeeting\s*$/.test(src.slice(Math.max(0, at - 60), at))) continue
+        let depth = 0
+        let j = at + 'updateMeeting('.length - 1
+        for (; j < src.length; j++) {
+          if (src[j] === '(') depth++
+          else if (src[j] === ')') { depth--; if (depth === 0) break }
+        }
+        const expr = src.slice(at, j + 1)
+        const stripped = expr.replace(
+          /\b(refinedTranscript|liveTranscript|transcriptFallback|summaryFallback)\b/g, '',
+        )
+        // 简写与带冒号两种形态都要认
+        if (/(^|[^\w])transcript(\s*:|(?=\s*[,}\s]))/.test(stripped)) {
+          out.push(`${relative(SRC_ROOT, f)}:${src.slice(0, at).split('\n').length}`)
+        }
+        i = j
+      }
+    }
+    return out
+  }
+
+  it('抽取器自证：必须恰好找到 updateTranscript 本体那一处', () => {
+    const hits = bareTranscriptWriters()
+    assert.deepEqual(
+      hits,
+      ['features/meetings/meetings-store.ts:239'],
+      `带裸 transcript 键的写入点清单变了：\n${hits.join('\n') || '（空）'}\n` +
+        '· 空 ⇒ 抽取器坏了（第一版就因为漏了 `{ transcript }` 简写而报假阴性）\n' +
+        '· 多出来 ⇒ 有人绕过 updateTranscript 直接写 transcript 了',
+    )
+  })
+
+  it('★ 除 updateTranscript 本体外，任何地方都不得直接写 transcript 列', () => {
+    const bad = bareTranscriptWriters().filter((h) => !h.startsWith('features/meetings/meetings-store.ts:'))
+    assert.deepEqual(bad, [], `这些调用点直接把 transcript 写进 local_meetings，绕过了去重渲染。\n${bad.join('\n')}`)
+  })
+
+  it('负控：简写形态 `{ transcript }` 也必须被判出来（第一版就漏在这里）', () => {
+    const shorthand = 'updateMeeting(id, { transcript })'
+    const stripped = shorthand.replace(
+      /\b(refinedTranscript|liveTranscript|transcriptFallback|summaryFallback)\b/g, '',
+    )
+    assert.ok(
+      /(^|[^\w])transcript(\s*:|(?=\s*[,}\s]))/.test(stripped),
+      '抽取器认不出**没有冒号**的简写键 —— 它会静默报「0 处违规」',
+    )
+    // 反向：长键不得被误判成裸键
+    const longKey = 'updateMeeting(id, { refinedTranscript: x })'
+    assert.ok(
+      !/(^|[^\w])transcript(\s*:|(?=\s*[,}\s]))/.test(
+        longKey.replace(/\b(refinedTranscript|liveTranscript|transcriptFallback|summaryFallback)\b/g, ''),
+      ),
+      'refinedTranscript 被误判成裸 transcript —— 那是另一列，不该被这道门拦',
+    )
+  })
+})
+
+/**
+ * §608 新增：**已登记的 Go↔TS 行为差异**，不是缺陷修复，是把差异钉成事实。
+ *
+ * ── 差异是什么 ──
+ *
+ * 当相邻两段**完全相同**且长度**超过 MAX_OVERLAP(40)** 时：
+ *
+ *   Go  stt/incremental.go mergeIncremental :288 有专门一条
+ *       「整段重复 ⇒ 判为真实重复说话，**保留两份**」，并由
+ *       TestMergeIncrementalDoesNotDropRealContent 显式钉住（60 rune → 120）。
+ *   TS  dedupeSegmentText                   : **没有**这一条 ⇒ 走 LCS 那条路，
+ *       把其中 40 字当成切片重叠裁掉。
+ *
+ * ── 真函数双跑的实测读数（2026-10-14，两侧各跑自己那一份实现）──
+ *
+ *   语料（committed 与 next **完全相同**）      Go 输出   TS 输出
+ *     「甲」× 60                                120        80      ⛔ 分叉
+ *     45 字真实句子重复一遍                       90        80      ⛔ 分叉
+ *     「甲」× 40（正好等于阈值）                  40        40      ✅ 一致
+ *     35 字真实句子重复一遍                       35        35      ✅ 一致
+ *
+ * ⚠ TS 那一侧的后果是**删掉用户真的说了两遍的内容** ——
+ * 而本文件头部与 Go 侧注释都写着「误去重的代价是丢掉真实内容，用户永远发现不了」。
+ *
+ * ── 为什么这里只钉现状、不改成一致 ──
+ *
+ * 后端同步门（dedup_threshold_sync_test.go 文件头）明写它的原则：
+ * 「把一个行为差异偷偷改成一致，比留着它更危险」「差异一旦变化就报红，
+ * 逼人来更新这里的登记，而不是让变化悄悄发生」。
+ *
+ * ⇒ 两侧到底**该**保留一份还是两份，是**产品口径**（用户在界面上看到一次还是两次），
+ *   本轮**不代拍**，已登记为决策简报 #58。
+ * ⇒ 本条的作用是：① 钉住 TS 现状，让它出现在回归里；② 谁改动它时会被迫看到这段说明。
+ *
+ * ── §609 补：这条差异是不是唯一的？──
+ *
+ * 造 **485 条**语料做全量差分（A 类 264 条参数化合成：limit∈[2,12] × 匹配字个数 × 3 种摆放，
+ * 匹配字与干扰字取自互斥字符集；B 类 221 条真实中文句变体 + 整段重复）：
+ *
+ *   分叉 **11 条（2.3%）**，且 **100%** 满足「committed === next 且长度 > 40」、
+ *   **100%** 是 Go 输出更长；**A 类 264 条零分叉**
+ *   ⇒ 两份实现的精确重叠与 LCS 路径在结构化语料上**逐字节一致**，
+ *     本条是该语料内**唯一**的行为差异。
+ */
+describe('§608 · 已登记的 Go↔TS 行为差异：整段重复超阈值时 TS 会裁掉 40 字', () => {
+  const MAX_OVERLAP = 40
+  it('现状读数：60 rune 完全重复 ⇒ TS 只剩 80 字（Go 侧是 120）', () => {
+    const s = '甲'.repeat(60)
+    const out = dedupeSegmentText(s, s)
+    assert.equal(Array.from(out).length, 80,
+      `TS 现状读数已变（得到 ${Array.from(out).length}）—— ` +
+      '若这是修好了/改坏了，请先读本段说明与决策简报 #58，再决定是否要同步改 Go 侧')
+  })
+  it('现状读数：正好等于 MAX_OVERLAP(40) 时两侧一致，都裁成一份', () => {
+    const s = '甲'.repeat(MAX_OVERLAP)
+    assert.equal(dedupeSegmentText(s, s), s,
+      '等于阈值时应当与 Go 侧一致（都视为切片重叠）；这里变了说明阈值语义被改动')
+  })
+  it('现状读数：短于阈值时两侧一致，都裁成一份', () => {
+    const s = '甲'.repeat(MAX_OVERLAP - 5)
+    assert.equal(dedupeSegmentText(s, s), s)
+  })
+  it('★ 正向要求：本段说明不得被静默删掉', () => {
+    const src = read('meeting-dedup.test.ts')
+    assert.ok(src.includes('#58'),
+      '本文件的差异说明引用了决策简报 #58；若要删这段说明，请先改简报条目')
   })
 })

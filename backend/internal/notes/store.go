@@ -97,11 +97,17 @@ var allowedDomains = map[string]bool{"work": true, "study": true, "life": true, 
 var ErrStoreUnavailableNotes = errors.New("notes: store not configured")
 
 func (s *Store) Upsert(ctx context.Context, n *Note) error {
-	// Code-side Note has Snippet only; actual table has a separate
-	// NOT NULL `content` column. Fall back to Snippet for content so
-	// the row never violates the NOT NULL constraint. Full content
-	// lives in kxmemory; this local cache only mirrors metadata.
-	content := n.Snippet
+	// `content` 列是 TEXT NOT NULL，没有长度限制。2026-10-06 起真正写正文
+	// （此前这里只写 n.Snippet，等于把整篇正文截成 200 字存进 content 列）。
+	//
+	// 回落到 Snippet 的两个原因：
+	//   1. 旧调用方（会议 ingest 等）只填 Snippet，content 必须有值，
+	//      否则撞 NOT NULL 约束；
+	//   2. 存量行里 content 可能就是 snippet 拷过去的。
+	content := n.Content
+	if strings.TrimSpace(content) == "" {
+		content = n.Snippet
+	}
 
 	// Convert epoch-second timestamps (Note.CreatedAt / UpdatedAt are int64
 	// seconds) to time.Time for PG `timestamp` columns. CreatedAt == 0
@@ -250,7 +256,7 @@ func scanNoteRows(rows pgx.Rows) ([]Note, error) {
 			n.Title = title.String
 		}
 		if content.Valid {
-			n.Snippet = content.String // Content字段已移除，用Snippet代替
+			n.Content = content.String // 正文与 snippet 是两列（2026-10-06）
 		}
 		if snippet.Valid {
 			n.Snippet = snippet.String
@@ -327,7 +333,7 @@ func (s *Store) GetByID(ctx context.Context, id string) (*Note, error) {
 		n.Title = title.String
 	}
 	if content.Valid {
-		n.Snippet = content.String // Content字段已移除，用Snippet代替
+		n.Content = content.String // 正文与 snippet 是两列（2026-10-06）
 	}
 	if snippet.Valid {
 		n.Snippet = snippet.String
@@ -390,8 +396,11 @@ func (s *Store) GetByIDScoped(ctx context.Context, id, userID, workspaceID strin
 	if title.Valid {
 		n.Title = title.String
 	}
+	// content 与 snippet 是**两列**，不是同一份数据的两个读法（2026-10-06）：
+	// 此前两行都往 n.Snippet 写，content 被 snippet 覆盖掉，于是全仓
+	// 拿不到超过 200 字的正文。现在 content 进它自己的字段。
 	if content.Valid {
-		n.Snippet = content.String
+		n.Content = content.String
 	}
 	if snippet.Valid {
 		n.Snippet = snippet.String

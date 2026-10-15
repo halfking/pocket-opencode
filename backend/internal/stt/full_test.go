@@ -519,3 +519,163 @@ func TestTranscribeFullSendsLanguageOnEverySegment(t *testing.T) {
 		t.Errorf("全量转写没有聚合出文本：%+v", res)
 	}
 }
+
+// TestTranscribeFullSkipsTooShortSegments 是 minUsefulSegmentSec 的判据。
+//
+// §604 变异实测（锚点命中 1 次、跑的是整个 internal/stt 包）：
+//
+//	minUsefulSegmentSec: 1.0 → 0    全包 EXIT=0、0 条打红   ⇒ 该阈值**零判据**
+//	minUsefulSegmentSec: 1.0 → 5.0  全包 EXIT=1、1 条打红   ⇒ 只有「滤得更狠」那侧有判据
+//
+// 即**方向不对称**：把碎片段照送上游（白花一次计费调用、并在聚合结果里留空段，
+// 正是本函数上方注释自己写下的代价）这一侧，**没有任何测试会红**。
+//
+// 本条用**行为**而不是常量相等来钉它：断言「短于阈值的段一次都不打上游」，
+// 并带一条阳性对照（略长于阈值的段**必须**被打上游），免得这条测试
+// 因为「什么都没发」而恒绿。
+func TestTranscribeFullSkipsTooShortSegments(t *testing.T) {
+	build := func(sec float64) []byte {
+		var pcm bytes.Buffer
+		n := int(math.Round(float64(16000) * sec))
+		for i := 0; i < n; i++ {
+			writeSample(&pcm, 0.3)
+		}
+		return wrapWAV(16000, pcm.Bytes())
+	}
+
+	cases := []struct {
+		name      string
+		sec       float64
+		wantCalls bool
+	}{
+		{"0.5 秒纯语音：不许打上游", 0.5, false},
+		{"1.5 秒纯语音：必须打上游", 1.5, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			stub := &stubASR{failIndexes: map[int]bool{}}
+			srv := httptest.NewServer(stub)
+			defer srv.Close()
+
+			tr := newStubTranscriber(srv.URL)
+			res, err := tr.TranscribeFull(context.Background(), Scope{}, build(tc.sec), "a.wav")
+
+			if tc.wantCalls {
+				if err != nil {
+					t.Fatalf("%.2fs 已在阈值之上，转写却失败: %v", tc.sec, err)
+				}
+				if len(stub.seen) == 0 {
+					// ⚠ 必须显式转 float64：minUsefulSegmentSec 是**无类型常量**，
+					// 写成 `%.1f` 时只在它是 `1.0` 这种浮点写法时才能编过；
+					// 变异把它改成整数 `0` 之后 go vet 会直接判
+					//「format %.1f has arg of wrong type int」而**编译失败** ——
+					// 那样看到的是「变异打红了」，其实是我的判据自己先坏了。
+					threshold := float64(minUsefulSegmentSec)
+					t.Errorf("%.2fs 已高于 minUsefulSegmentSec（%.1f）却一次上游都没打："+
+						"过滤过头，长段也被吞了", tc.sec, threshold)
+				}
+				return
+			}
+
+			// 短段：一次都不许打上游。
+			// 全被跳过时 TranscribeFull 会返回错误（"全部段被判定为纯静音而跳过"），
+			// 这本身就是要断言的行为，不算失败。
+			if len(stub.seen) != 0 {
+				t.Fatalf("%.2fs 的短段被切成了 %d 段并打到了上游（各 %.3fs）："+
+					"minUsefulSegmentSec 的过滤没生效，等于白花计费调用并留空段",
+					tc.sec, len(stub.seen), stub.seen[0])
+			}
+			if res != nil && res.Succeeded != 0 {
+				t.Errorf("短段不应计成功，实际 Succeeded=%d", res.Succeeded)
+			}
+		})
+	}
+}
+
+// TestSplitWAVKeepsSentencesWholeWithoutSegmentExplosion 是 minSilenceCutSec 的判据。
+//
+// §610 变异实测（锚点命中 1，每档跑**整个包**）：
+//
+//	minSilenceCutSec: 5 -> 1   全包 EXIT=0、0 条打红   ⇒ 下界（段数）方向零判据
+//	minSilenceCutSec: 5 -> 30  全包 EXIT=0、0 条打红   ⇒ 上界（句子完整）方向零判据
+//
+// 也就是说 full.go:133-144 那段注释里的承诺
+// 「修复后 9 句话**每一句都完整落在单个返回段里**」「取 5 秒是权衡：再小会让段数暴涨」
+// **一个字都没有测试在断** —— 而它是本文件里承诺最硬的一段注释。
+//
+// 本条用**行为**把它钉住，两个方向各一条：
+//
+//	① 完整闸（钉上界）：8 秒语音句 + 1 秒间隙 ×4。切点必须落在**间隙里**
+//	  （SilenceCut=true），且每个句子必须完整落在**某一个**段内。
+//	  minSilenceCutSec 调到 30 时 minCutFrames 变成 18.75s，静音切点来不及生效，
+//	  退化成 25 秒硬切 ⇒ 第 3 句（18.0–26.0s）被劈成两半 ⇒ 红。
+//
+//	② 成本闸（钉下界）：3 秒语音句 + 1 秒间隙 ×6（共 24 秒语音）。
+//	  每段都要付一次上游调用与计费；阈值调小到 1s 会把每句话各切一段，
+//	  段数从 4 涨到 7 ⇒ 红。
+func TestSplitWAVKeepsSentencesWholeWithoutSegmentExplosion(t *testing.T) {
+	t.Run("完整闸：句子不得被 25 秒硬切劈开", func(t *testing.T) {
+		const speech, gap, cycles = 8, 1, 4
+		period := float64(speech + gap)
+		segs, ok := SplitWAV(pcmWAV(16000, speech, gap, cycles), 0)
+		if !ok || len(segs) == 0 {
+			t.Fatal("切分失败")
+		}
+		// 第 k 句占 [k*period, k*period+speech]，必须被某一个段完整包含。
+		for k := 0; k < cycles; k++ {
+			sStart := float64(k) * period
+			sEnd := sStart + speech
+			contained := false
+			for _, sg := range segs {
+				if sg.StartSec <= sStart+1e-6 && sg.EndSec >= sEnd-1e-6 {
+					contained = true
+					break
+				}
+			}
+			if !contained {
+				segDesc := make([]string, 0, len(segs))
+				for _, sg := range segs {
+					segDesc = append(segDesc, formatRange(sg.StartSec, sg.EndSec, sg.SilenceCut))
+				}
+				t.Errorf("第 %d 句（%.1f–%.1fs）被切开了 —— 它没有完整落在任何一个段内。"+
+					"这正是 minSilenceCutSec 注释里承诺「每一句都完整落在单个返回段里」要防的事。"+
+					"实测段形: %v", k+1, sStart, sEnd, segDesc)
+			}
+		}
+		// 正向要求：切点必须真的落在静音里（硬切不算数）。
+		silenceCuts := 0
+		for _, sg := range segs {
+			if sg.SilenceCut {
+				silenceCuts++
+			}
+		}
+		if silenceCuts == 0 {
+			t.Error("一个静音切点都没有 ⇒ 静音感知分支已退化成纯 25 秒硬切")
+		}
+	})
+
+	t.Run("成本闸：短句不得被逐句切成段", func(t *testing.T) {
+		const speech, gap, cycles = 3, 1, 6
+		segs, ok := SplitWAV(pcmWAV(16000, speech, gap, cycles), 0)
+		if !ok {
+			t.Fatal("切分失败")
+		}
+		// 24 秒语音在任何合理阈值下都不该超过 5 段（现状 4 段）。
+		// 阈值降到 1s 时实测切出 7 段，每段都要付一次上游调用与计费。
+		if len(segs) > 5 {
+			dur := 0
+			for _, sg := range segs {
+				if sg.IsUsefulSegment() {
+					dur++
+				}
+			}
+			t.Errorf("24 秒语音被切成了 %d 段（其中 %d 段会真的打上游）—— "+
+				"minSilenceCutSec 太小会把每句话各切一段，成本与延迟都上升",
+				len(segs), dur)
+		}
+	})
+}
+
+func formatRange(a, b float64, silenceCut bool) string {
+	return fmt.Sprintf("%.2f–%.2fs(silenceCut=%v)", a, b, silenceCut)
+}

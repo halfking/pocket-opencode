@@ -142,12 +142,26 @@ func (p *fallbackBFFProvider) Chat(ctx context.Context, req llmbff.ChatRequest) 
 }
 
 func (p *fallbackBFFProvider) Stream(ctx context.Context, req llmbff.ChatRequest, fn func(llmbff.Delta) bool) (*llmbff.Usage, error) {
-	usage, err := p.primary.Stream(ctx, req, fn)
+	// ★ 2026-10-07 补：回退前必须确认主通道**一个字都还没吐**。
+	//
+	// 原注释写的是「主通道首帧前失败才回退」，但实现只判了 isContextErr ——
+	// 注释承诺的保证代码里并不存在。主通道吐到一半断线时仍会走备用通道，
+	// 于是消费者拿到「前半段 + 备用通道的完整答案」拼接成的**重复正文**。
+	// /api/llm/stream 会把它原样转发给客户端；llmChatOnce（2026-10-07 起
+	// 摘要/推荐/精校都走它）会把它攒成一个字符串交给解析器 —— 两种都是错的。
+	answered := false
+	wrapped := func(d llmbff.Delta) bool {
+		if d.Content != "" || len(d.ToolCalls) > 0 {
+			answered = true
+		}
+		return fn(d)
+	}
+	usage, err := p.primary.Stream(ctx, req, wrapped)
 	if err == nil {
 		return usage, nil
 	}
-	if isContextErr(err) {
-		return nil, err
+	if isContextErr(err) || answered {
+		return usage, err
 	}
 	// 主通道首帧前失败：把回退进度告知前端（retry 帧语义），再走备用通道。
 	fn(llmbff.Delta{Retry: "redclaw"})

@@ -352,6 +352,20 @@ func (t *Transcriber) finish(ctx context.Context, target *Target, text, usedTran
 	}
 	res := &Result{
 		Text: text, Confidence: 0.95,
+		// ⚠⚠ §372：`Confidence` **不是测量值**，是常量。
+		//
+		// 上游 ASR 端点（transcriptions 与 chat-audio 两条链路）**都不返回**逐字/逐句置信度，
+		// 所以这里没有任何可回填的真值，只能给一个看起来像样的数。
+		//
+		// ⚠ 危险不在今天，而在明天：
+		//   前端 `stt.ts` 的 `SttResult.confidence` 在**本地 sherpa 路径上是真测量值**，
+		//   在**云端路径上是这个常量** ⇒ **同一个字段名，两条路径语义不同**。
+		//   一旦有人写「confidence >= 0.9 就直接入库 / 不提示校对」，
+		//   云端结果会**恒定通过**，闸门形同虚设且没有任何报错。
+		//
+		// ⇒ 动它之前先答：字段该删，还是该让「未知」可表示（而不是塌缩成一个好看的数）？
+		//   当前实测：本仓**没有任何消费方**读这个值做判断（见 §372.3），
+		//   所以它今天是惰性的——但也正因如此，它在等着第一个消费方。
 		Model: target.Model, Transport: usedTransport,
 		Channel: target.Channel, Label: target.Label,
 		Provider: ProviderForTarget(target),

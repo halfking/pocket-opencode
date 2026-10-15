@@ -48,6 +48,8 @@ export function useMeetingRecorder(meetingId: MaybeRef<string>) {
     switchDevice: (deviceId: string) => rt.switchDevice(unref(meetingId), deviceId),
     seedSegments: (stored: MeetingSegment[]) => rt.seedSegments(unref(meetingId), stored),
     appendText: (text: string) => rt.appendText(text),
+    /** §131：同步内存副本 + 派生列；返回 false 表示本页该改 storedSegments。 */
+    editSegmentInMemory: (segmentId: string, text: string) => rt.editSegmentInMemory(segmentId, text),
     formatElapsed: () => rt.formatElapsed(),
     labelSpeaker: (profileId: string, label: string) => rt.labelSpeaker(profileId, label),
     langLabels: LANG_LABELS,

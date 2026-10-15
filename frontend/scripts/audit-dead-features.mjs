@@ -113,26 +113,46 @@ function walkAll(dir, out = []) {
 }
 
 function deadExports(candidateFiles, allFiles, testFiles = []) {
+  // ⚠⚠ 2026-10-11（§471）：这里原先是
+  //   `.filter((l) => !/^\s*export\s/.test(l))` —— **剥掉所有以 export 开头的整行**。
+  //   那会把「同一条 export 行上顺带引用的**别的**导出符号」一起剥掉。
+  //   最常见的形态就是**默认参数值**：
+  //     export const SUMMARY_CHAR_LIMIT = 280
+  //     export function summarizeForDisplay(body: string, maxChars = SUMMARY_CHAR_LIMIT) {
+  //   ⇒ 第二行整行被剥 ⇒ `SUMMARY_CHAR_LIMIT` 的唯一引用消失 ⇒ hits = 0
+  //   ⇒ **活着的符号被判成死的**。
+  //   ⚠ 当场实测（features/notes）：原文出现 2 次，剥完 **0 次**。
+  //
+  // ⚠ 假阳性方向看着「安全」，其实不然：棘轮会把活符号**写进基线**，
+  //   而基线正是用来判「有没有新增」的 ⇒ 给未来的误报开了门，
+  //   而且没人会去核对一条「刚好是新加的」基线条目。
+  //
+  //   ⇒ 改成：**只抹掉该符号自己的声明处**，其余行原样保留。
+  //   方向上只可能让命中变多 ⇒ 死清单只减不增（不会把基线撑大）。
+  const esc = (n) => n.replace(/\$/g, '\\$')
+  const dropOwnDecl = (text, name) => text
+    .replace(new RegExp(`export\\s+(?:const|function|async\\s+function|class)\\s+${esc(name)}(?![\\w$])`, 'g'), ' ')
+    .replace(new RegExp(`export\\s*\\{[^}]*\\b${esc(name)}\\b[^}]*\\}`, 'g'), ' ')
+
   const allBody = new Map(
-    allFiles.map((f) => [f, stripComments(readFileSync(f, 'utf8')).split('\n')
-      .filter((l) => !/^\s*export\s/.test(l)).join('\n')]),
+    allFiles.map((f) => [f, stripComments(readFileSync(f, 'utf8'))]),
   )
   const testBody = new Map(testFiles.map((f) => [f, stripComments(readFileSync(f, 'utf8'))]))
   const out = []
   for (const { file, name } of collect(candidateFiles)) {
-    const re = new RegExp(`\\b${name.replace(/\$/g, '\\$')}\\b`, 'g')
+    const re = new RegExp(`\\b${esc(name)}\\b`, 'g')
     let hits = 0
     for (const [f, t] of allBody) {
-      if (f === file) continue
-      hits += (t.match(re) || []).length
+      // ★ 同文件：只抹掉**它自己那处声明**，同文件调用照常计入。
+      const body = f === file ? dropOwnDecl(t, name) : t
+      hits += (body.match(re) || []).length
     }
-    hits += (allBody.get(file).match(re) || []).length // ★ 同文件自调用
     if (hits === 0) {
       // 没人从 App 调它。再看测试里有没有：区分「彻底死」与「只被测过、没接进 App」。
       // 两者都要棘轮管住（能力写好了却没人能用），但报出来给人看的含义不同。
       let testOnly = false
       for (const [, t] of testBody) {
-        if (new RegExp(`\\b${name.replace(/\$/g, '\\$')}\\b`).test(t)) { testOnly = true; break }
+        if (new RegExp(`\\b${esc(name)}\\b`).test(t)) { testOnly = true; break }
       }
       out.push({ file, name, testOnly })
     }
@@ -144,7 +164,7 @@ function deadExports(candidateFiles, allFiles, testFiles = []) {
 if (process.argv.includes('--selftest')) {
   const dir = mkdtempSync(join(tmpdir(), 'deadfeat-'))
   try {
-    writeFileSync(join(dir, 'caller.ts'), 'import { used } from "./lib"\nfunction go(){ return used() }\ngo()\n')
+    writeFileSync(join(dir, 'caller.ts'), 'import { used, usesDefault } from "./lib"\nfunction go(){ return used() + usesDefault() }\ngo()\n')
     // ★ 只有**注释**里提到 lib2 —— 注释不是使用，它必须仍被判成死的。
     writeFileSync(join(dir, 'commentonly.ts'), '// 历史原因：以前这里调过 mentionedOnly()\nconst K = 1\nvoid K\n')
     // ★ 只有**测试文件**里提到 lib3 —— 测试引用不等于接进 App，必须仍判成死的。
@@ -156,19 +176,27 @@ if (process.argv.includes('--selftest')) {
       'export function orphan(){ return 3 }',       // 真没人用 → 该报
       'export function declaredOnly(){ return 4 }', // 只有声明、无调用 → 该报
       'export function mentionedOnly(){ return 5 }',// 只被注释提到 → 该报
+      // ★★ §471：默认参数值是**活符号**最容易被误判成死的形态 ——
+      //   它的唯一引用就在**另一条 export 行**上（`takesDefault` 那一行）。
+      //   旧实现剥掉所有 export 行 ⇒ `DEFCONST` 命中 0 ⇒ 误报。
+      'export const DEFCONST = 9',
+      'export function takesDefault(x = DEFCONST){ return x }',
+      'export function usesDefault(){ return takesDefault() }', // 同文件调用 → 两条都不该报
       '',
     ].join('\n'))
     writeFileSync(join(dir, 'lib3.ts'), 'export function testedOnly(){ return 6 }\n')
     const files = walk(dir)
     const names = deadExports(files, files).map((d) => d.name).sort()
     const expect = ['declaredOnly', 'mentionedOnly', 'orphan', 'testedOnly']
-    const mustPass = ['used', 'inner']
-    // ★ 方向别写反：`wronglyReported` = 本该放行却出现在死代码清单里的。
+    // ⚠ 方向别写反：`wronglyReported` = 本该放行却出现在死代码清单里的。
+    //   `DEFCONST` 是 §471 那个假阳性的最小复现，必须留在这里当长期负控 ——
+    //   探测器回归的形态往往恰好是「让本门变绿」，而这类回归只有自检能发现。
+    const mustPass = ['used', 'inner', 'DEFCONST', 'takesDefault', 'usesDefault']
     const wronglyReported = mustPass.filter((n) => names.includes(n))
     const ok = JSON.stringify(names) === JSON.stringify(expect) && wronglyReported.length === 0
     console.log(`  期望只报 ${JSON.stringify(expect)}（真死：没人用 / 只有声明 / 只有注释提到 / 只有测试提到）`)
-    console.log(`  期望放行 ${JSON.stringify(mustPass)}（跨文件调用 / 同文件自调用）`)
-    console.log(ok ? `自检 4/4 通过 —— 实得 ${JSON.stringify(names)}`
+    console.log(`  期望放行 ${JSON.stringify(mustPass)}（跨文件调用 / 同文件自调用 / ★默认参数引用）`)
+    console.log(ok ? `自检通过 —— 真死 ${expect.length} 个与放行 ${mustPass.length} 个都与期望一致（实得 ${JSON.stringify(names)}）`
                    : `自检失败：期望 ${JSON.stringify(expect)}，实得 ${JSON.stringify(names)}；被误报=${JSON.stringify(wronglyReported)}`)
     process.exit(ok ? 0 : 1)
   } finally {

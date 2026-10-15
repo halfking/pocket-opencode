@@ -34,6 +34,27 @@
         </div>
       </div>
 
+      <!--
+        §223：这一块此前在 `recommendations.length === 0` 时**整块静默消失**，
+        而空数组同时表示「模型认为没有值得建议的建议」与「这条链路压根没拿到」。
+        ⇒ 只在后者（recommendFallback）且真的为空时说一句话。
+        ⚠ 说在**块之外**、且用弱化样式：它是补充说明，不是错误（§30）。
+
+        ⛔ §563 勘误：这一条只在**两格**上成立，而**默认部署形态落不到这两格**。
+          `recommendFallback` 来自 `/recommend` 的 `fallback` 键，而那个键只表示
+          「**模型有没有好好说话**」（server_meeting.go:669 的 fellBack 来自
+          parseRecommendJSONWithFallback，解析成功一律 false），
+          **不表示「有没有走主源」**。
+          ⭐ kxmemory 未配时（POCKET_KXMEMORY_BASE_URL 为空，默认形态）
+          LLM 正常作答 ⇒ fallback=false 且 items 非空 ⇒ **本段一句都不会说**。
+          ⇒ 「参考资料与建议正在被无声地替换成模型现编的」这一形态，
+            当前提示语在结构上无法表达。修法要一个路径信号（source）+ 产品文案口径，
+            ⛔ 登记不代拍。
+      -->
+      <p v-if="recommendFallback && !recommendations.length" class="muted-note">
+        本轮没有拿到参考资料与建议（可以稍后再试一次）。
+      </p>
+
       <div v-if="recommendations.length" class="recommendations">
         <div class="section-label">💡 相关推荐</div>
         <div
@@ -56,9 +77,12 @@ import type { LiveSummary, RecommendItem } from './meetings-store'
 withDefaults(defineProps<{
   summary: LiveSummary | null
   recommendations?: RecommendItem[]
+  /** §223：true = 最近一轮没拿到推荐（不是「没有建议」）。 */
+  recommendFallback?: boolean
   isUpdating?: boolean
 }>(), {
   recommendations: () => [],
+  recommendFallback: false,
   isUpdating: false,
 })
 

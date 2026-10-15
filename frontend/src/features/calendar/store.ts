@@ -30,6 +30,15 @@ export const useCalendarStore = defineStore('calendar', () => {
   const windowFrom = ref(0)
   const windowTo = ref(0)
 
+  /**
+   * 上一次取数是**部分降级**（§118）：任务截止 / 定时任务有一路没取到。
+   *
+   * 这不是错误 —— 服务端返回 200 是对的，一个坏查询不该让整个日历白屏。
+   * 但它也不能只活在服务端日志里：否则用户看到的日历就是少了任务，
+   * 与「我确实没任务」在界面上完全一样。
+   */
+  const partial = ref(false)
+
   /** 隐藏的来源。空数组 = 全部显示。 */
   const hiddenSources = ref<CalendarSource[]>([])
 
@@ -70,12 +79,18 @@ export const useCalendarStore = defineStore('calendar', () => {
     loading.value = true
     error.value = null
     try {
-      const rows = await calendarApi.feed(from, to)
-      entries.value = rows
+      const feed = await calendarApi.feed(from, to)
+      entries.value = feed.entries
+      // ⚠ §118：降级信号必须在这一跳就落地。写成 `entries.value = feed`
+      // 之前那个形状，partial 会在 store 里被丢掉 —— 那是本次修复的
+      // 全部内容（服务端已经发了信号，丢在客户端等于没修）。
+      partial.value = feed.partial
       windowFrom.value = from
       windowTo.value = to
     } catch (e) {
       error.value = e
+      // 取数彻底失败时旧数据也不可信 —— 别让 partial 停在上一轮的 true/false 上。
+      partial.value = false
     } finally {
       loading.value = false
     }
@@ -139,6 +154,7 @@ export const useCalendarStore = defineStore('calendar', () => {
     error,
     windowFrom,
     windowTo,
+    partial,
     hiddenSources,
     timeZone,
     visibleEntries,

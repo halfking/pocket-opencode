@@ -31,9 +31,19 @@
  *
  * 后端 stt/incremental.go 的 mergeIncremental 与本文件是同一套算法
  * （LCS 对齐 + anchorCoverage 闸），但 Go 与 TS 两地维护同一套阈值
- * 容易漂移。之所以仍写一份而不是共用：跨语言无法直接复用，且后端那份
- * 目前的调用方是 IncrementalTranscriber（保留给将来的真流式通道）。
+ * 容易漂移。之所以仍写一份而不是共用：跨语言无法直接复用。
  * 两边的阈值常量在注释里互相标注，改一处必须同步另一处。
+ *
+ * ⚠⚠ 2026-10-13（§523）更正本段原文的一句错述：原文写「后端那份目前的调用方是
+ * IncrementalTranscriber（**保留给将来的真流式通道**）」——「保留给将来」是错的。
+ * IncrementalTranscriber 在**随手记链**上**每 3 秒就被调一次**
+ * （recordingRuntime.sendSlice → /stt/transcribe-incremental），
+ * 那条路的切片窗口**不重叠**（takeNewWindow 送纯新增窗口）。
+ * ⇒ 「会议链走本文件、随手记链走后端那份」这个分工成立，
+ *   但**不能说后端那份是死代码**，也不能把会议链的读数套到它身上：
+ *   实测两边的去重在各自**真实形状**上都是**裁 0 字**
+ *   （随手记链 23/23 边界落兜底；会议链 25/25 落兜底），
+ *   重叠 ≥1.6s 时闸门才会触发。读数与分工见设计文档 §523。
  */
 
 /**
@@ -44,8 +54,22 @@
  *   - 调高（0.7）会让真实的切片重叠因一两个字的差异漏判，重复照旧。
  * 中文短段的重叠区通常十几个字，容忍 1-2 个字增删对应 0.85+ 的覆盖率，
  * 留 0.6 是给 ASR 幻听留余量。
+ *
+ * ⚠ 曾降到 0.40 又撤回：那次是在**诱导数据**上测的（我在生成 TTS 时就写了
+ *   两段不同文本，再称之为「ASR 的同音错误」）。真实切分数据重测后
+ *   覆盖率本就落在 0.6471 / 0.9167，0.6 本来就够用，降到 0.40 没有收益只有代价。
+ *   教训：**先证明「差异来自被测系统」，再把它算成被测系统的缺陷。**
  */
 const ANCHOR_COVERAGE = 0.6
+
+/**
+ * LCS 自身的最小长度。与后端 `incremental.go` 的 `minFuzzyAnchor` 同值。
+ *
+ * ⚠ 它与 ANCHOR_COVERAGE **不是**一道闸的两面：coverage 量的是「LCS 占对齐窗口
+ * 多大比例」，本常量量的是「LCS 本身够不够长」。窗口很小时两者会给出相反答案
+ * （limit=4、lcsLen=3 时 coverage 过、本闸拦），那一格正是用户话被删掉的地方。
+ */
+const MIN_ANCHOR = 4
 
 const MAX_OVERLAP = 40
 
@@ -56,8 +80,14 @@ const MAX_OVERLAP = 40
  *   - 误去重的代价是**丢掉真实内容**（用户永远发现不了）；
  *   - 漏去重的代价是多几个重复字（用户一眼看见）。
  *   所以所有阈值偏保守，宁可少裁。
+ *
+ * ⚠ 注意「相邻且只差一个字 ⇒ 判成切片重叠」是**已知且被接受的**行为：
+ *   ASR 对同一段音频两次转写给出同音错字（「张伟 / 张薇」）时，
+ *   这里会把后一段裁成「薇」。§132 查清了这个残片的根因是
+ *   **人工段与 ASR 段同形、无法分辨**，并用 `origin` 字段解决；
+ *   两段都是 ASR 时的这个残片是**有意保留**的取舍，不是待修缺陷。
  */
-export function dedupeSegmentText(committed: string, next: string): string {
+export function dedupeSegmentText(committed: string, next: string, minCoverage = ANCHOR_COVERAGE): string {
   const n = next.trim()
   if (!committed) return n
   if (!n) return committed
@@ -73,10 +103,26 @@ export function dedupeSegmentText(committed: string, next: string): string {
   }
 
   // 2) LCS 对齐消解（重叠区内部有标点/增删时必需）
-  const netNew = lcsNetNew(cs, ns)
+  const netNew = lcsNetNew(cs, ns, minCoverage)
   if (netNew !== null) return cs.join('') + netNew
 
   // 3) 判为不重叠，原样拼接 —— 宁可多几个字，也不要丢真实内容
+  return committed + n
+}
+
+/**
+ * **保守版**：跳过精确匹配那条更激进的路径，只走 LCS 覆盖率闸。
+ *
+ * 用途：时间轴已经表明两段之间**有正常静音间隙**时，纯文本形态与切片重叠
+ * 完全一样（新段以旧段结尾开头），此时若还让精确匹配命中，就会把
+ * 「用户真的重复说了一遍的话」吃掉（§41 记录的固有局限）。
+ */
+function dedupeSegmentTextSoft(committed: string, next: string, minCoverage = ANCHOR_COVERAGE): string {
+  const n = next.trim()
+  if (!committed) return n
+  if (!n) return committed
+  const netNew = lcsNetNew(Array.from(committed), Array.from(n), minCoverage)
+  if (netNew !== null) return committed + netNew
   return committed + n
 }
 
@@ -87,7 +133,7 @@ export function dedupeSegmentText(committed: string, next: string): string {
  * 切片重叠必然出现在边界，在文中任意位置找重叠反而会误删
  * 「用户真的重复说的话」。
  */
-function lcsNetNew(cs: string[], ns: string[]): string | null {
+function lcsNetNew(cs: string[], ns: string[], minCoverage = ANCHOR_COVERAGE): string | null {
   const limit = Math.min(MAX_OVERLAP, cs.length, ns.length)
   if (limit < 2) return null // 比 2 还短的对齐窗口无意义（单个字不能算重叠）
   const tail = cs.slice(cs.length - limit)
@@ -101,15 +147,26 @@ function lcsNetNew(cs: string[], ns: string[]): string | null {
       else dp[i][j] = Math.max(dp[i - 1][j], dp[i][j - 1])
     }
   }
-  // 唯一的闸：覆盖率。它同时承担了「LCS 太短」和「只是碰巧撞上几个字」
-  // 两种拒绝——L=2 时覆盖率最多 2/n，远低于阈值，不必再单独判长度。
-  //
-  // ★ 此前还有一道 MIN_ANCHOR=4 的闸，2026-10-06 变异测试证明它是
-  //   **冗余的**：只把 MIN_ANCHOR 放宽到 1 而 coverage 保持 0.6 时，
-  //   15 条用例全绿（coverage 闸先拦住了）；只有两道同时放宽才会红。
-  //   它只是 coverage 的一次快速短路，没有独立作用，已删除。
   const lcsLen = dp[n][n]
-  if (lcsLen / n < ANCHOR_COVERAGE) return null
+  if (lcsLen / n < minCoverage) return null
+
+  // ★ 第二道闸：LCS 自身必须够长（与后端 minFuzzyAnchor 同值 4）。
+  //
+  // ⚠⚠ 本行此前被**删掉过**，理由写在旧注释里：「变异测试证明它冗余 ——
+  //   只把 MIN_ANCHOR 放宽到 1 而 coverage 保持 0.6 时，15 条用例全绿」。
+  // **那个结论是错的**，2026-10-11 用真函数双跑证伪（178 条按参数构造的语料）：
+  // Go 基准 mergeIncremental 与本实现分叉 5 条，**全部**落在
+  //   limit ∈ {3,4} 且 lcsLen ∈ {2,3} 这一格 ——
+  //   即 coverage（lcsLen/limit ≥ 0.6）放行、而本闸会拦下的那一格。
+  //   两道闸只在这一格不等价；15 条用例没覆盖到它，所以「全绿」只证明
+  //   语料有洞，不证明闸冗余。
+  //
+  // 后果不是多几个重复字，而是**删掉用户没说过的话**：
+  //   committed='甲云山' next='云甲山后续内容'
+  //     Go 基准 → '甲云山云甲山后续内容'（判重叠不足，保留重复）
+  //     本实现 → '甲云山云后续内容'（把重叠区里的「甲」「山」删了）
+  // ⇒ 这与本文件头部「误去重的代价是丢掉真实内容，用户永远发现不了」直接冲突。
+  if (lcsLen < MIN_ANCHOR) return null
 
   // 回溯标记 head 中被 LCS 选为重复的下标，其余是净增。
   // 单次回溯到底，保证 matched 集合自洽（LCS 可能有多种最优解）。
@@ -132,6 +189,96 @@ function lcsNetNew(cs: string[], ns: string[]): string | null {
   // 窗口外的 next 尾部一定是新内容。
   if (ns.length > limit) out.push(...ns.slice(limit))
   return out.join('')
+}
+
+/** 相邻两段的时间轴判据入参（毫秒）。缺失/非法都按「拿不到」处理。 */
+export interface AdjacencyTiming {
+  prevEndMs?: number
+  nextStartMs?: number
+}
+
+/**
+ * 两段在**时间轴上**是否重叠：下一段起点落在上一段结尾之前。
+ *
+ * ★ 为什么需要它：`dedupe('今天我们讨论了预算和排期', '预算和排期都要再确认一次')`
+ *   在纯文本形态上和切片重叠**完全一样**（新段以旧段结尾开头），无从区分。
+ *   时间戳能区分：正常切分两段之间有 silenceMs(1500ms) 静音间隙，
+ *   而 RAF 节流导致 speechStartMs 回退时，下一段起点会落到上一段结尾**之前**。
+ *
+ * ⚠ 拿不到时间戳（NaN / undefined）时返回 **false**，即「不下结论」：
+ *   调用方据此退回纯文本判据，而不是假装两段不重叠。
+ */
+export function likelyAudioOverlap(t: AdjacencyTiming): boolean {
+  const { prevEndMs, nextStartMs } = t
+  if (!Number.isFinite(prevEndMs) || !Number.isFinite(nextStartMs)) return false
+  return (nextStartMs as number) < (prevEndMs as number)
+}
+
+/** 一步去重的结果。`dedupeSegments` 与 `renderTranscript` 共用它（§3）。 */
+export interface DedupeStep {
+  /** 本段去重后是否还剩可呈现的内容。 */
+  added: boolean
+  /** 本段应当呈现的正文（净增；零净增且确认重叠时为空串）。 */
+  text: string
+  /** 去重后的累积正文，供下一段对齐。 */
+  body: string
+}
+
+/**
+ * 走一步「本段相对上一段的去重」，**只算不渲染**。
+ *
+ * ⚠ 两个出口（`dedupeSegments` 给 LLM、`renderTranscript` 给界面）曾把这段
+ *   「净增」逻辑各抄一遍，于是同一个缺陷能同时存在于两个出口。
+ *   现在合并成这一个函数，meeting-dedup-asr.test.ts 钉住两者一致。
+ *
+ * ★ 「零净增段要不要丢」只在**时间轴确认重叠**时才丢：
+ *   缺时间戳时若无条件丢，「李四单独说『可行』」这种真实短句会被整段吃掉
+ *   —— 那是丢内容，不是去重。
+ */
+export function dedupeStep(input: {
+  /** 已输出的累积正文。 */
+  prev: string
+  /** 本段 ASR 原文。 */
+  raw: string
+  prevEndMs?: number
+  startMs?: number
+  /** 人工段不参与裁剪（§132），但仍是后续重叠的基准。 */
+  manual?: boolean
+}): DedupeStep {
+  const { prev, raw, prevEndMs, startMs, manual = false } = input
+  const n = raw.trim()
+  if (!prev) return { added: !!n, text: n, body: n }
+  if (!n) return { added: false, text: '', body: prev }
+  if (manual) return { added: true, text: n, body: prev + n }
+
+  const hasTiming = Number.isFinite(prevEndMs) && Number.isFinite(startMs)
+  const overlapByTiming = hasTiming && likelyAudioOverlap({ prevEndMs, nextStartMs: startMs })
+  // 拿不到时间戳时按「有重叠」处理：不去重的代价（重复照旧显示）远小于
+  // 漏去重时用户看到的东西消失。★ 这条 `: true` 分支有专属靶子钉住。
+  //
+  // ⚠ §683 实测（2026-10-15，逐一核了三个生产调用点的段来源）：**这条分支在生产里走不到。**
+  //   `hasTiming` 需要「前一段的 endMs 或本段的 startMs 缺失」，而实测每个生产者都带齐了：
+  //   vad-segmenter.ts:246 / ingest-speech.ts:57 / meeting-utterance.ts:36（自己算出 endMs）
+  //   / meeting-final-transcript.ts:403 / meetings-store.ts:321（DB 列 `end_ms INTEGER NOT NULL`
+  //   见 native/schema.ts:333）。
+  //   ⇒ 叠加 §634（会议链相邻段时间轴不重叠 ⇒ overlapByTiming 恒 false），
+  //   **`dedupeSegmentText`（精确档）在生产里不可达，`dedupeSegmentTextSoft` 是唯一活路径。**
+  //
+  // ⇒ 所以本分支是**防御性代码，不是活路径**：留着是对的（将来若有链路漏了 endMs，
+  // 应当按「保守=去重」而不是按「放行」），但**它的靶子钉的是一个生产上不存在的状态**。
+  // ⇒ ⚠ 「所有生产者都带齐时间戳」这个不变量**当前没有任何判据钉住** —— 哪天新增一条链路
+  //   漏了 endMs，这里会**静默**切到精确档，而不会有任何测试在生产形状上发现。登记为 #61。
+  const useExact = hasTiming ? overlapByTiming : true
+  const body = useExact ? dedupeSegmentText(prev, n) : dedupeSegmentTextSoft(prev, n)
+  const delta = body.length > prev.length ? body.slice(prev.length) : ''
+  const added = delta ? true : !overlapByTiming
+  return {
+    added,
+    // ★ 保留却没有净增时（缺时间轴 ⇒ 不下结论 ⇒ 不丢段），正文必须回退到**原文**。
+    //   否则会渲染出空的 `[李四] ` —— 那既丢了内容，又让人以为该段是空的。
+    text: added ? delta || n : '',
+    body,
+  }
 }
 
 /**
@@ -165,25 +312,32 @@ export function dedupeTranscriptParagraphs(texts: string[]): string {
  * 返回**新对象**而不是原地改：segments 是 ref 里的响应式数组，
  * 原地改会触发无谓的 watch / 重新渲染。
  *
- * 只消解**相邻**两段：更远的相似段落是用户真的重复说了。
  * `startMs` 保持不变——时间戳是真实采集的，不该被去重逻辑篡改。
+ *
+ * ⚠ `origin` 缺省按 **asr** 处理（享受去重）。反过来把未知当 manual
+ *   会让去重**静默失效**，那比多裁一次危险得多。
  */
-export function dedupeSegments<T extends { text: string }>(segments: T[]): T[] {
+export function dedupeSegments<T extends {
+  text: string
+  startMs?: number
+  endMs?: number
+  origin?: 'asr' | 'manual'
+}>(segments: T[]): T[] {
   if (segments.length <= 1) return segments.slice()
   const out: T[] = []
   let prevBody = ''
+  let prevEndMs: number | undefined
   for (const s of segments) {
-    const raw = s.text ?? ''
-    if (!prevBody || !raw) {
-      out.push(raw === prevBody ? s : { ...s, text: raw })
-      if (raw) prevBody = raw
-      continue
-    }
-    const body = dedupeSegmentText(prevBody, raw)
-    // 净增 = 本段在去重后新增的内容。
-    const delta = body.length > prevBody.length ? body.slice(prevBody.length) : raw
-    out.push(delta === raw ? s : { ...s, text: delta })
-    prevBody = body
+    const step = dedupeStep({
+      prev: prevBody,
+      raw: s.text ?? '',
+      prevEndMs,
+      startMs: s.startMs,
+      manual: s.origin === 'manual',
+    })
+    if (step.added) out.push({ ...s, text: step.text })
+    prevBody = step.body
+    prevEndMs = Number.isFinite(s.endMs) ? s.endMs : undefined
   }
   return out
 }
@@ -198,18 +352,74 @@ export function dedupeSegments<T extends { text: string }>(segments: T[]): T[] {
  *
  * 只与**累积正文**比较是安全的：dedupeSegmentText 只看尾/头窗口，
  * 不会回头改写已输出的内容。
+ *
+ * ⚠ 零净增段不渲染成空行 —— 否则界面上会出现一条只有 `[A]` 的空条。
+ *
+ * ── §401：这里曾经**没有** `origin`，人工段因此被当成 ASR 重转写裁掉 ──
+ *
+ * 缺陷形态：`MeetingSegment.origin` 是**必填**字段，而 `dedupeSegments`
+ * 认它、`renderTranscript` 的入参类型里**结构性没有它** ⇒ 豁免只在
+ * 一部分出口生效。实测（§401.3）：
+ *
+ *   dedupeSegments   → ['张伟', '张伟下周三交对比表']      ← 完整
+ *   renderTranscript → '[李四] 张伟\n[我] 下周三交对比表'    ← 裁掉了「张伟」
+ *
+ * ⭐ 要命的不对称：`MeetingDetailView.displaySegments`（界面分段列表）
+ * 走的是 `dedupeSegments`，所以**界面上是完整的**；而被裁的是
+ * `local_meetings.transcript` 派生列与 `api/meetings.ts` 的 `fallbackRefine`
+ * prompt。⇒ 用户看得见的没问题，**喂给 LLM 的少了一截**，且那条
+ * `fallbackRefine` 的注释自己写着「这条路径的产出质量直接决定用户看到什么」。
+ *
+ * 现在与 `dedupeSegments` **同一口径**（`origin` 缺省按 asr，见其注释）。
+ * 判据见 `__tests__/render-transcript-manual-origin.test.mjs`。
  */
-export function renderTranscript(segments: Array<{ speakerLabel: string | null; text: string }>): string {
+export function renderTranscript(
+  segments: Array<{
+    speakerLabel: string | null
+    text: string
+    startMs?: number
+    endMs?: number
+    /** §132：人工段享受豁免（§401 补齐——此前本函数完全不认这个字段）。 */
+    origin?: 'asr' | 'manual'
+  }>,
+): string {
   const lines: string[] = []
   let prevBody = ''
+  let prevEndMs: number | undefined
   for (const s of segments) {
-    const raw = s.text ?? ''
-    // 首段无前文可对齐；其余与累积正文去重。
-    const body = prevBody ? dedupeSegmentText(prevBody, raw) : raw
-    // 净增部分 = 本段在去重后新增的内容。
-    const delta = body.length > prevBody.length ? body.slice(prevBody.length) : raw
-    lines.push(`[${s.speakerLabel}] ${delta}`)
-    prevBody = body
+    const step = dedupeStep({
+      prev: prevBody,
+      raw: s.text ?? '',
+      prevEndMs,
+      startMs: s.startMs,
+      // ★ §401：与 dedupeSegments 同一豁免。缺省按 asr（去重）处理——
+      //   反过来把未知当 manual 会让去重静默失效，那比多裁一次危险得多。
+      manual: s.origin === 'manual',
+    })
+    if (step.added) {
+      // ⚠ §427：说话人**必须有兜底**，否则 null/undefined 会原样拼进
+      //   `[null] …` / `[undefined] …`，而这条函数有 5 个出口：
+      //   ① `local_meetings.transcript` 派生列（**用户可见**）
+      //   ② ③ api/meetings.ts 的 fallbackSummarize / fallbackRecommend 提示词
+      //   ④ ⑤ fallbackRefine 提示词（§54 说它是**高频**路径）
+      //
+      //   null 是**真会出现的**：`buildRefineBaseSegments` 的第三条路径
+      //   （采纳整段重转但说话人挂不回去）显式造 `speakerLabel: null`。
+      //
+      //   兜底词沿用本仓**另外两处**已经在用的那个，不新造：
+      //   · Go `segmentsToText`：`if speaker == "" { speaker = "说话人" }`
+      //   · `MeetingDetailView.onSummarize`（§427 已改成直接复用本函数）
+      //   ⇒ 三个出口此前两个有、一个没有，这正是它开始漂的原因。
+      // ⚠ 只对「空」兜底，**不顺手 trim 真名**：非空说话人必须原样输出。
+      //   第一版写成 `String(...).trim() || '说话人'` ⇒ 把 ` 王总 ` 变成 `王总`，
+      //   那是**超出缺陷范围**的行为改变（判据 §427 #3 把它抓了出来）。
+      //   trim 只用来**判空**。
+      const rawSpeaker = String(s.speakerLabel ?? '')
+      const speaker = rawSpeaker.trim() ? rawSpeaker : '说话人'
+      lines.push(`[${speaker}] ${step.text}`)
+    }
+    prevBody = step.body
+    prevEndMs = Number.isFinite(s.endMs) ? s.endMs : undefined
   }
   return lines.join('\n')
 }

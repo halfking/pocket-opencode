@@ -331,9 +331,9 @@ func (s *GatewayNodeStore) Delete(ctx context.Context, workspaceID string, id in
 // RecordHealth 写回探测结果。status 为 gatewayHealthOK / gatewayHealthError。
 func (s *GatewayNodeStore) RecordHealth(ctx context.Context, workspaceID string, id int64, status, role, errMsg string) error {
 	// 上游错误信息可能很长（含 HTML 错误页），截断避免把整页塞进表里。
-	if len(errMsg) > 500 {
-		errMsg = errMsg[:500]
-	}
+	// 走 truncateStr 而不是 errMsg[:500]：last_health_error 是**落库**字段，
+	// 按字节硬切会产出非法 UTF-8，PostgreSQL 拒绝整条 UPDATE（SQLSTATE 22021）。
+	errMsg = truncateStr(errMsg, 500)
 	_, err := s.pool.Exec(ctx, `
 		UPDATE llm_gateway_nodes
 		SET last_health_status = $3, last_health_role = $4,

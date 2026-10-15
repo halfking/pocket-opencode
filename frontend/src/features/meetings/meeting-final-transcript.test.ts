@@ -24,6 +24,25 @@ import { resolveUploadTarget, shouldAdoptFullTranscript } from './meeting-final-
 const HERE = dirname(fileURLToPath(import.meta.url))
 const read = (f: string) => readFileSync(join(HERE, f), 'utf8')
 
+/**
+ * ★ 剥注释但**保持长度**，这样 indexOf 量到的仍是同一篇源码的相对位置。
+ *
+ * 为什么必须剥（§49 的又一次现实验证）：共享收尾模块
+ * `meeting-recording-finalize.ts` 的**头注释里**为了说明两条录音路径，
+ * 写了 `` `useSessionLiveRecord.stop()` → `meetingsApi.refine(...)` ``。
+ * 于是 `src.indexOf('meetingsApi.refine(')` 命中的是**注释里那句说明**
+ * （下标 170），而不是真调用点（下标 ~5000）⇒「重转必须先于精校」这条判据
+ * **误报红**，报的是「顺序反了」。
+ *
+ * ★ 教训复述：源码扫描的判据若不剥注释，会把**说明文字**当成**代码**。
+ *   注释里提到一个调用点，就足以让顺序类判据彻底失灵，而且失败形态
+ *   与「产品真的写反了」一模一样。
+ */
+const blank = (m: string) => m.replace(/[^\n]/g, ' ')
+const stripComments = (t: string) => t
+  .replace(/\/\*[\s\S]*?\*\//g, blank)
+  .split('\n').map((l) => { const i = l.indexOf('//'); return i < 0 ? l : l.slice(0, i) }).join('\n')
+
 const seg = (text: string) => [{ text }] as Array<{ text: string }>
 
 describe('A · 采纳判定：重转更差时必须拒绝', () => {
@@ -59,7 +78,7 @@ describe('A · 采纳判定：重转更差时必须拒绝', () => {
 })
 
 describe('B · 接线层：stop() 必须先重转再精校（防回退）', () => {
-  const src = () => read('../sessions/useSessionLiveRecord.ts')
+  const src = () => stripComments(read('./meeting-recording-finalize.ts'))
 
   it('stop() 必须调用 refetchFullTranscript', () => {
     assert.match(src(), /refetchFullTranscript\(/, 'stop() 未做全量重转 —— 识别错误率不会有任何改善')
@@ -106,8 +125,9 @@ describe('B · 接线层：stop() 必须先重转再精校（防回退）', () =
   })
 
   it('★ 必须经过 shouldAdoptFullTranscript 判定才采用（不得无脑替换）', () => {
+    // ⚠ §52：采纳判定已移进纯决策层 meeting-refine-plan.ts（收尾层只做 I/O）
     assert.match(
-      src(),
+      read('./meeting-refine-plan.ts'),
       /shouldAdoptFullTranscript\(/,
       '未做采纳判定 —— 上游截断时用户会看到内容变少',
     )
@@ -135,7 +155,7 @@ describe('C · 降级路径：重转失败绝不能清空结果', () => {
   })
 
   it('降级时用回分段文本（不丢内容）', () => {
-    const s = read('../sessions/useSessionLiveRecord.ts')
+    const s = read('./meeting-recording-finalize.ts')
     // adopt 为假时 baseSegments 必须回落到 segs。
     assert.match(s, /: segs\b/, '降级路径必须回落到原始 segments')
   })

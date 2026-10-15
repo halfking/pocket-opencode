@@ -563,13 +563,11 @@ func main() {
 
 	// 网关 base：显式配置优先，否则回退到默认网关（https://llm.kxpms.cn/v1）。
 	// 注意 NewClient 会自动剥离结尾的 /v1，因此无论写不带还是带 /v1 都能正确拼接。
-	// key 同理：env 优先，未注入时用内置的自家网关默认 key——否则未配 env 的
-	// 实例会因为 key 为空掉进直连分支，/api/embed、/api/llm/chat 直接 503。
-	gwBase := cfg.LLMGatewayURL
-	if gwBase == "" {
-		gwBase = opencode.DefaultLLMGatewayBaseURL
-	}
-	gwKey := cfg.LLMGatewayAPIKey
+	// key 同理：只有 env 有值才算配置，**不回落到任何内置密钥**。
+	// 曾经这里注释写的是「env 优先，未注入时用内置的自家网关默认 key」，
+	// 与下面三行注释和实际代码相反——那句是在「悄悄用仓库里一把能计费的 key」
+	// 被移除后没跟上，§692 一并订正。
+	gwBase, gwKey := resolveGatewayBootstrap(cfg.LLMGatewayURL)
 	// 没有 env 就没有 key：不回落到任何内置密钥。运营方未配置的实例应当是
 	// 「网关未配置」（embed/chat 503），而不是悄悄用仓库里一把能计费的 key。
 	if gwBase != "" && gwKey != "" {
@@ -937,7 +935,16 @@ func main() {
 					log.Printf("Imported legacy LLM gateway config as node (workspace=%s); admin credentials still required", ws)
 				}
 			}
-			log.Printf("Gateway node registry enabled (PG, allow_private_hosts=%v)", os.Getenv("POCKET_LLM_GATEWAY_ALLOW_PRIVATE") != "")
+			// ⚠ §691：这里必须复用 server 包里那条规则的**唯一实现**。
+			// 此前写的是 `os.Getenv(...) != ""`，而闸门本身只认 `1/true/yes`，
+			// 且 `.env.example:298` 恰恰把它设成字符串 "false"（非空）
+			// ⇒ 照示例部署的实例会打出 allow_private_hosts=true 而实际是关的。
+			// ⚠ §691：这里必须复用 server 包里那条规则的**唯一实现**。
+			// 此前写的是 `os.Getenv(...) != ""`，而闸门本身只认 `1/true/yes`，
+			// 且 `.env.example:298` 恰恰把它设成字符串 "false"（非空）
+			// ⇒ 照示例部署的实例会打出 allow_private_hosts=true 而实际是关的。
+			log.Printf("Gateway node registry enabled (PG, allow_private_hosts=%v)",
+				server.LLMGatewayAllowPrivate())
 		}
 	}
 
@@ -1410,6 +1417,39 @@ func main() {
 	if err := server.ListenAndServe(); err != nil {
 		log.Fatal(err)
 	}
+}
+
+// resolveGatewayBootstrap 返回 Phase C（`/api/embed`、`/api/llm/chat`）实际使用的
+// 网关地址与凭据：两者都非空才走企业网关，否则走直连分支。
+//
+// ⚠ §692：这段判定此前内联在 `main()` 里，读的是 `config.Load()` 的字段，而
+// `config.getEnv`（`internal/config/config.go:597`）**不做 TrimSpace** ⇒
+// **同一个 env 被读出两个值**，实测读数（端到端探针，4 档）：
+//
+//	env                    cfg.LLMGatewayURL / APIKey    网关代理路径（server）
+//	"  "（纯空白）          "  " / "  "  ⇒ 误判「已配置」    默认网关 / ""  ⇒ 判「未配置」
+//	" https://gw/v1 "      带空格原样                       同一 env 的 trim 后值
+//	未设 / 干净值          一致                             一致
+//
+// 后果有两层：
+//
+//	① 纯空白档：`gwBase != "" && gwKey != ""` 成立 ⇒ `/api/embed`、`/api/llm/chat`
+//	   被路由到企业网关，而地址与凭据都是空白；同一时刻设置页报「网关未配置」。
+//	② 带空格档：两侧指向**不同地址**、用**不同凭据**（`llmgateway.NewClient` 拿到带空格的那个）。
+//
+// 修法：地址按空白归一（空则回落默认，与 `canonicalGatewayURL` 的空白口径一致），
+// 凭据直接复用 `internal/server` 的唯一实现，不在本文件写第二遍。
+//
+// ⚠ #64（未拍板）：地址是否也整体改调 `defaultLLMGatewayState().BaseURL`？
+// 那样会把 `canonicalGatewayURL` 里的 **obsolete(127.0.0.1:8782) 强制改写**一并
+// 带进 embed/chat 分支 —— 那是「embed/chat 要不要跟随 obsolete 改写」的产品口径，
+// 不在 §692 的技术修复范围内，故此处只对齐空白口径、保留 cfg 作为地址来源。
+func resolveGatewayBootstrap(cfgURL string) (gwBase, gwKey string) {
+	gwBase = strings.TrimSpace(cfgURL)
+	if gwBase == "" {
+		gwBase = opencode.DefaultLLMGatewayBaseURL
+	}
+	return gwBase, server.LLMGatewayEnvAPIKey()
 }
 
 func isProductionConfig(cfg config.Config) bool {

@@ -45,6 +45,9 @@ const MEETINGS_STUDIO_V1_COLUMNS = [
   { table: 'local_meetings', column: 'topic', sql: 'ALTER TABLE local_meetings ADD COLUMN topic TEXT' },
   { table: 'local_meetings', column: 'summary_skill', sql: "ALTER TABLE local_meetings ADD COLUMN summary_skill TEXT DEFAULT 'meeting-minutes'" },
   { table: 'local_todos', column: 'meeting_id', sql: 'ALTER TABLE local_todos ADD COLUMN meeting_id TEXT' },
+  // §132：段来源标记。存量行一律回填 'asr'（与 DEFAULT 同值），
+  // 即升级后去重行为与升级前**逐字相同**，只有新写入的人工段才被豁免。
+  { table: 'local_meeting_segments', column: 'origin', sql: "ALTER TABLE local_meeting_segments ADD COLUMN origin TEXT DEFAULT 'asr'" },
 ]
 
 const NOTES_CAPTURE_V1_COLUMNS = [

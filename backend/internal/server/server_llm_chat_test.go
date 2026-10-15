@@ -20,11 +20,18 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/llmbff"
 )
 
-// stubChatProvider 只实现 Chat，记录收到的 model 供断言；Stream/Embed 不会被
-// 本文件触达。
+// stubChatProvider 记录收到的 model 供断言，并把同一段 content 以流式形态回吐。
+//
+// ⚠ 2026-10-07：Stream **不再**返回 ErrNotConfigured。
+// llmChatOnce（摘要/推荐/精校三条线的统一入口）已从非流式改成消费流式，
+// 双桩若还把 Stream 留成「不可用」，测到的就不是产品现在真正走的那条路 ——
+// 那正是 TestMeetingSummaryViaBFFWorksWithoutStaticLLM 报 502 的原因。
+// 桩必须跟着产品走，否则这道测试守的是一个已经不存在的实现。
 type stubChatProvider struct {
 	gotModel string
 	content  string
+	// finishReason 非空时终帧带它（测 finish_reason=length 的降级路径）。
+	finishReason string
 }
 
 func (p *stubChatProvider) Chat(_ context.Context, req llmbff.ChatRequest) (*llmbff.ChatResponse, error) {
@@ -32,8 +39,14 @@ func (p *stubChatProvider) Chat(_ context.Context, req llmbff.ChatRequest) (*llm
 	return &llmbff.ChatResponse{Content: p.content, Model: req.Model}, nil
 }
 
-func (p *stubChatProvider) Stream(context.Context, llmbff.ChatRequest, func(llmbff.Delta) bool) (*llmbff.Usage, error) {
-	return nil, llmbff.ErrNotConfigured
+func (p *stubChatProvider) Stream(_ context.Context, req llmbff.ChatRequest, fn func(llmbff.Delta) bool) (*llmbff.Usage, error) {
+	p.gotModel = req.Model
+	// 真实网关在正文前会先发一帧只有 model 的进度帧；桩照做，
+	// 让 llmChatOnce「model 要每帧取、不能只看最后一帧」那条逻辑真的被走到。
+	fn(llmbff.Delta{Model: req.Model})
+	fn(llmbff.Delta{Content: p.content})
+	fn(llmbff.Delta{Done: true, FinishReason: p.finishReason})
+	return &llmbff.Usage{TotalTokens: 1}, nil
 }
 
 func (p *stubChatProvider) Embed(context.Context, llmbff.EmbedRequest) (*llmbff.EmbedResponse, error) {

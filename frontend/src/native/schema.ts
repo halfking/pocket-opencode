@@ -333,6 +333,10 @@ CREATE TABLE IF NOT EXISTS local_meeting_segments (
     end_ms INTEGER NOT NULL,
     text TEXT NOT NULL,
     translation TEXT,                -- 听见式句级译文
+    -- §132：段的来源。'asr'=机器转写，'manual'=用户手工补/改的一行。
+    -- 默认 'asr' 是**保守**取值：历史行与未标注的行都按 ASR 处理，
+    -- 即去重照常生效 —— 只有明确标成 'manual' 的行才豁免（见 meeting-dedup.ts）。
+    origin TEXT DEFAULT 'asr',
     FOREIGN KEY (meeting_id) REFERENCES local_meetings(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_segments_meeting ON local_meeting_segments(meeting_id, start_ms);

@@ -81,9 +81,31 @@ var discoveredFormats sync.Map // baseURL(normalized) -> string
 // 挂死），换取推理模型那 30~60s 真的可用。**上游真挂死时用户要多等，最坏
 // 60s 而不是 30s** —— 这是本次拍板接受的代价。
 //
-// 改动落地时 client_test.go 的 TestNewClient_TransportTimeouts 同步改成 60s；
-// 那条测试锁的是**数字**，并且额外锁住「ResponseHeaderTimeout 必须小于整体
-// Timeout」这条不变量（60 < 90 成立）。
+// ⚠⚠ **2026-10-07 人工拍板：60s → 85s。** 理由是**同一个形状在更大尺度上复发**：
+//
+//	上面那段推理只针对 `handleNoteSummarize`（60s 预算）。而**非流式**调用
+//	（ResponseHeaderTimeout 约束的正是那种情形：响应头要等上游**生成全部完成**
+//	才到）里，它压掉的是**每一个**非流式调用，包括会议精校：
+//	  · 裸 HTTP 直连实测：32 分钟会议的精校回答 **84.4s** 能出结果；
+//	  · 产品路径实测：**60.581s** 撞 `http2: timeout awaiting response headers`
+//	    失败（`http.Client` 报的正是这一条）。
+//	⇒ 配置写着 `Timeout: 90s`，**实际可用预算是 60s，30s 是死的** ——
+//	  而这份注释早在 2026-10-02 就把这种形状写明白了，只是当时发生在更小的尺度上。
+//
+//	取 85s 而不是 90s：`Timeout: 90s` 是**整体**上限，响应头若拖到 90s，
+//	body 就没有任何时间可读了。85s 让 84.4s 那次能过，并留 5s 余量。
+//
+//	代价与 2026-10-02 那次**同款、也同款被接受**：上游真挂死时用户从最多等 60s
+//	变成最多等 85s（整体 Timeout 仍是 90s，不会无界挂死）。
+//
+//	⚠ **这不是在长会上「修好精校」**：它只让原本能在 90s 内跑完的请求有机会跑完。
+//	§48 实测同一条长会提示词跑一次要 84.4s，而同一份提示词另一次只要 28.8s
+//	（reasoning_tokens 676→4642）—— **预算落在方差中间，调数字治不了方差**。
+//	真要稳，需要消费流式；而流式在本网关上频繁返回 200 + 零帧（§48.4/§48.10）。
+//
+//	改动落地时 client_test.go 的 TestNewClient_TransportTimeouts 同步改成 85s；
+//	那条测试锁的是**数字**，并且额外锁住「ResponseHeaderTimeout 必须小于整体
+//	Timeout」这条不变量（85 < 90 成立）。
 func NewClient(baseURL, apiKey string) *Client {
 	return &Client{
 		BaseURL: normalizeBaseURL(baseURL),
@@ -91,7 +113,7 @@ func NewClient(baseURL, apiKey string) *Client {
 		Client: &http.Client{
 			Timeout: 90 * time.Second,
 			Transport: &http.Transport{
-				ResponseHeaderTimeout: 60 * time.Second,
+				ResponseHeaderTimeout: 85 * time.Second,
 			},
 		},
 	}

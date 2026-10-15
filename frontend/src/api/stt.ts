@@ -1,12 +1,35 @@
 /**
  * Speech-to-text scheduler.
  *
- * Implements the "local-first + cloud-fallback" strategy:
- *   1. Try on-device sherpa-onnx (Paraformer for Chinese) — native only.
- *   2. If unavailable or low-confidence, fall back to Groq Whisper Large v3
- *      Turbo via the backend (POST /api/stt/transcribe).
+ * ⚠⚠ §415（2026-10-11 更正）：本文件头此前描述的两件事**都与事实不符**，
+ * 而它们是「意图」不是「描述」—— 按 `TestGatewayModelNotesAreNotStale`
+ * 的立论（**注释一旦过期就会变成「不用再修了」的伪证据**），这是缺陷。
  *
- * On web (no native plugin), skips local and goes straight to cloud.
+ * **① 「local-first」那条本地路径目前 100% 不可用。**
+ *   原文件头声称会先试设备端 sherpa-onnx（中文用 Paraformer），且仅 native 可用。
+ *   而 `lib/shell/capabilities.ts` 已把 `Sherpa` 登记进 `NOT_IMPLEMENTED_PLUGINS`：
+ *   Android 侧 6 个 `@PluginMethod` 里 5 个只 `call.reject`（`addListener` 是
+ *   接口对齐用的 no-op）、iOS 侧无任何 Swift 实现、assets 里无 `.onnx` 模型。
+ *   ⇒ `transcribe()` 里那个 local 分支**每次都走完就 reject**，
+ *     `nativeListening` 恒为 false（`recordingRuntime.startLiveStt` 的 catch），
+ *     **实际 100% 走云端**。
+ *   ⚠ 本段**刻意不复述**原句：一段复述旧结论的注释会让「仍写着旧结论」这道
+ *     判据被它自己满足（判据 `stt-local-first-claim-gate`）。要引用请去 git log。
+ *   ⇒ 骨架真正接上时，`capabilities-stub-gate.test.mjs` 的指纹
+ *     （`sherpa-onnx AAR not integrated`）会消失并主动转红。
+ *
+ * **② 云端模型不是写死的某一个。**
+ *   原文件头把云端那一档写成了某一个托管 Whisper 型号。
+ *   而 §406 起，网关候选已由「按用户 STT 设置 + 网关实时探测」解析
+ *   （后端 `transcribe.go`：「Which cloud model answers is *not* hardcoded any more」），
+ *   网关侧又补了 glm-asr / minimax-asr-1.0。
+ *   ⇒ 在这里写死某个模型名，会让人以为换模型要改这个文件。
+ *
+ * **当前真实形态**：单段转写 = 一律云端；中文质量完全由 `stt/target.go`
+ * 那份候选清单决定（⚠ 见 §414：那份清单此前**全文没有中文精度维度**）。
+ * 本地 sherpa 分支与 `startStreaming`/`stopStreaming` **保留**——
+ * 调用点（`recordingRuntime`）已经做了能力缺失兜底（try/catch + 5s 超时），
+ * 骨架接上后无需再改调用方；云端 3s 分片是它的兜底替代。
  */
 import { sherpa } from '../native/sherpa'
 import { http } from './http'

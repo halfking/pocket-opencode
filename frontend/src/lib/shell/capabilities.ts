@@ -39,7 +39,8 @@ export interface CapabilityProbes {
 export const CAPABILITY_PLUGINS = {
   /** 后台录音（Android microphone 前台服务）。 */
   recording: ['BackgroundMic'],
-  /** 本地识别（sherpa ASR / PDF 文本）。 */
+  /** 本地识别（sherpa ASR / PDF 文本）。⚠️ `Sherpa` 是**骨架插件**，
+   *  已注册但每个方法都 reject ⇒ 判定时被 `NOT_IMPLEMENTED_PLUGINS` 挡掉。 */
   recognition: ['Sherpa'],
   /** 本地持久任务账本。⚠️ **当前仓内没有这个插件**，所以它恒为 false。 */
   taskLedger: ['TaskLedger'],
@@ -50,16 +51,50 @@ export const CAPABILITY_PLUGINS = {
 } as const
 
 /**
+ * **已注册但未实现**的插件：原生侧 `registerPlugin(...)` 过，所以
+ * `Capacitor.isPluginAvailable()` 返回 true；但它的每个 `@PluginMethod`
+ * 都是 `call.reject(...)`，调用即失败。
+ *
+ * ⚠️ 为什么必须单列一栏（§179 实测）：`isPluginAvailable` 查的是
+ * **运行时插件注册表**，**不查方法有没有实现**。实测（`@capacitor/core` 8.5.0）：
+ * ```
+ *   registerPlugin('Sherpa')（无 jsImpl）      → isPluginAvailable = false
+ *   注入 PluginHeaders 模拟原生已注册        → isPluginAvailable = true
+ * ```
+ * 而 Android 的 `MainActivity.onCreate` 里**确实**有
+ * `registerPlugin(SherpaPlugin.class)`，而 `SherpaPlugin.java` 每个方法都
+ * `call.reject("sherpa-onnx AAR not integrated (Phase 4)")`。
+ * ⇒ 不加这一栏，能力快照会报 `recognition.asr = 'model'`（本地 ASR 可用），
+ * 而真实调用 100% reject —— **能力探测绿灯、功能全无**。
+ *
+ * ★ 这一栏由 `capabilities-stub-gate.test.mjs` 对着 Java 源码交叉校验：
+ * 「全 reject 的插件」与「本表登记的插件」必须**完全一致**，否则门转红。
+ * ⇒ AAR 真的接进来那天（方法不再全是 reject），门会主动提醒把名字移出去。
+ *
+ * key = Capacitor 插件名，value = 未实现的直接证据（供排查用）。
+ */
+export const NOT_IMPLEMENTED_PLUGINS: Readonly<Record<string, { why: string; fingerprint: string }>> = {
+  Sherpa: {
+    why: 'Android 侧 SherpaPlugin 的 6 个 @PluginMethod 里，5 个只 call.reject（addListener 是接口对齐用的 no-op）；iOS 侧无任何 Swift 实现；assets 无 .onnx 模型（§176.2.1）',
+    // ★ 这不是注释，是**门要校验的指纹**：capabilities-stub-gate.test.mjs
+    // 会去 Java 源码里找这串字。骨架被真正实现时这串字会消失 ⇒ 门主动转红
+    // ⇒ 提醒把 Sherpa 从本表移出去，而不是让它继续骗人。
+    fingerprint: 'sherpa-onnx AAR not integrated',
+  },
+}
+
+/**
  * 默认探针。全部基于运行时事实，不基于构建期常量。
  *
  * `pluginAvailable` 用 `Capacitor.isPluginAvailable()` —— 它查的是**运行时
- * 插件注册表**，即真正在 JS 侧注册过、且原生侧有实现的插件。
- * 这比「import 存在」严格：Capacitor 包装了不等于插件实现了
- * （本仓就有 8 个自研插件，其中 `TaskLedger`/`LocalAgent` **根本不存在**）。
+ * 插件注册表**，即「这个插件名在原生侧被注册过」。
+ * 这比「import 存在」严格：`TaskLedger`/`LocalAgent` 根本没注册，必然 false。
  *
- * ⚠️ 探不到就是 false。`isPluginAvailable` 不会因为「原生实现类存在但没注册」
- * 而返回 true——那正是我们要保守的原因：声称有而实际 start() 会 reject，
- * 比声称没有更难排查。
+ * ⚠️⚠️ **但它比「实现了」宽松得多**（§179 实测更正，详见下面的 `NOT_IMPLEMENTED_PLUGINS`）：
+ * 一个**只有骨架、每个方法都 `call.reject`** 的插件，只要在 `MainActivity`
+ * 里 `registerPlugin(...)` 过，探测就会返回 true。
+ * ⇒ 「声称有而实际 start() 会 reject，比声称没有更难排查」这个理由**依然成立**，
+ * 但它防不住这一类 —— 所以判定必须再过一道 `NOT_IMPLEMENTED_PLUGINS`。
  */
 export function defaultProbes(): CapabilityProbes {
   const cap = (globalThis as {
@@ -98,9 +133,15 @@ export function defaultProbes(): CapabilityProbes {
   }
 }
 
-/** 能力清单里任意一个插件可用即为真。 */
+/**
+ * 能力清单里任意一个插件可用即为真。
+ *
+ * ⚠️ 命中 `NOT_IMPLEMENTED_PLUGINS` 的名字**一律算不可用**（§179）。
+ * 它虽然注册了（`isPluginAvailable` 报 true），但每个方法都 `call.reject`；
+ * 报 true 的唯一效果是把「调用必然失败」藏起来，而那正是本模块要防的事。
+ */
 function anyPlugin(probes: CapabilityProbes, names: readonly string[]): boolean {
-  return names.some((n) => probes.pluginAvailable(n))
+  return names.some((n) => !(n in NOT_IMPLEMENTED_PLUGINS) && probes.pluginAvailable(n))
 }
 
 /**

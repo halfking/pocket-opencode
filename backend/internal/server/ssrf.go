@@ -23,6 +23,21 @@ const maxLLMGatewayResponseBytes = 1 << 20
 // 即使开关打开，云元数据端点依然被拦截 —— 那是纯粹的凭据泄露面，没有任何
 // 合理的网关会部署在那里。
 func gatewayAllowPrivate() bool {
+	return LLMGatewayAllowPrivate()
+}
+
+// LLMGatewayAllowPrivate 是上面这条规则的**唯一实现**，对外暴露给
+// `cmd/pocketd` 的启动日志使用。
+//
+// ⚠ §691：此前启动日志（`cmd/pocketd/main.go`）自己写了一遍判定
+// `os.Getenv("POCKET_LLM_GATEWAY_ALLOW_PRIVATE") != ""`，
+// 与这里的 `TrimSpace` + 只认 `1/true/yes` **不是同一条规则**。
+// 而 `backend/.env.example:298` 明确写着 `POCKET_LLM_GATEWAY_ALLOW_PRIVATE=false`
+// —— **非空字符串** ⇒ 照示例文件部署的每个实例，启动日志都会打
+// `allow_private_hosts=true`，而实际闸门是**关**的。
+// 该开关在 `docs/archive/2026-08/优化v4/02-安全审计与整改清单.md`（SEC-08）里
+// 被明确记为「高影响放宽开关」，所以它的状态被报错是实质问题。
+func LLMGatewayAllowPrivate() bool {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("POCKET_LLM_GATEWAY_ALLOW_PRIVATE"))) {
 	case "1", "true", "yes":
 		return true

@@ -17,6 +17,7 @@ package server
 import (
 	"net/http"
 	"os"
+	"strings"
 )
 
 // integrationStatusResponse 是 /api/integration/status 的响应结构。
@@ -101,8 +102,18 @@ func (s *Server) handleIntegrationStatus(w http.ResponseWriter, r *http.Request)
 	//   env / persisted = 显式配置；builtin-default = 用内置默认。
 	workspaceID := s.workspaceIDFromRequest(r)
 	gwSource := ""
+	// ⚠ §690：这里必须 TrimSpace，否则与下面 gwConfigured 用的
+	// effectiveGatewayState 口径不一致——那一条走 defaultLLMGatewayState 的
+	// `strings.TrimSpace(os.Getenv(...))`，而这里原写作裸 `!= ""`。
+	// 实测（§690 的临时探针，端到端打这个 handler）：
+	//   env="  "（纯空白）⇒ 本页报 Enabled/Configured=true、source=env，
+	//                       而 defaultLLMGatewayState().APIKey == ""
+	// ⇒ **诊断页说它配了，实际没有**，正是本函数上一段注释怕的那种。
+	// 同族依据：`datadir_test.go` 的 TestResolveDataDir_TrimsWhitespace 已把
+	// 「env 很容易带上首尾空格」定为真实现象，gateway 这边当时没跟上。
 	switch {
-	case os.Getenv("POCKET_LLM_GATEWAY_URL") != "" || os.Getenv("POCKET_LLM_GATEWAY_API_KEY") != "":
+	case strings.TrimSpace(os.Getenv("POCKET_LLM_GATEWAY_URL")) != "" ||
+		strings.TrimSpace(os.Getenv("POCKET_LLM_GATEWAY_API_KEY")) != "":
 		gwSource = "env"
 	case s.llmGWCache != nil && s.llmGWCache.has(workspaceID):
 		gwSource = "persisted"

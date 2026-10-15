@@ -98,6 +98,31 @@ export interface NativePart {
   endMs: number
 }
 
+/**
+ * 订阅原生分片（`partReady`）。
+ *
+ * ⚠⚠ **这个 API 看着是跨平台的，但两端今天都不是「同一条路」（§446，2026-10-11 实读 + 修正 §444）**：
+ *
+ * | 平台 | 原生侧实况 | 本函数会不会触发 |
+ * |---|---|---|
+ * | Android | `BackgroundMicPlugin.java`（+ `MeetingRecordService.java`），`@CapacitorPlugin` 正常注册 | ✅ 会 emit `partReady` |
+ * | **iOS** | `BackgroundMicPlugin.swift` **存在但未注册** —— Capacitor 8 的 `CapacitorBridge.swift:6` 写死 `typealias CapacitorPlugin = CAPPlugin & CAPBridgedPlugin`，而本仓三个 Swift 插件**只继承 `CAPPlugin`、没有 `CAPBridgedPlugin`**，`ios/App` 下也没有任何 `.m`/`CAP_PLUGIN` 宏 | ⛔ 永不触发（`start()` 先 reject） |
+ *
+ * ⇒ **iOS 上 `startBackgroundMic()` 返回 `{ok:false}` ⇒ `nativeMode = false` ⇒ Web VAD 那条分支会接管**
+ * （所以「iOS 一个 asr 段都没有」是**错的**，VAD 会建段 —— 那是 §444 的误判，已在 §446 收回）。
+ *
+ * ⚠⚠ **真正的 iOS 后果是双写**：VAD 建 `origin:'asr'` 段的同时，
+ * `startLiveCaption()`（本文件无关的另一路，`recordingRuntime.ts:372`）仍在无条件建
+ * `origin:'manual'` 段 ⇒ **同一段音频被两个引擎各转写一遍**（已登记 **#21**）。
+ * 两个引擎的产出本就不同 ⇒ 覆盖率达不到 0.6 ⇒ **去重消解不了**，两遍都进段表、都送 LLM。
+ *
+ * ⚠ `background-mic-contract.test.mjs` 的 18 条用例**全部是 Android 的**
+ * （`NATIVE_DIR` 只指 `android/...`，全文 0 次 ios/swift）
+ * ⇒ 「iOS 插件未注册」这件事至今没有任何门守着。
+ *
+ * 已登记 **#22**（iOS 原生录音插件未注册 ⇒ 后台录音能力在 iOS 上缺失）。
+ * 本函数**暂不改**：修法属产品决定。
+ */
 export async function listenBackgroundMicParts(
   onPart: (part: NativePart) => void,
   onError?: (msg: string) => void,

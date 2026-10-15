@@ -187,14 +187,68 @@ describe('parseDueAt · 时段修饰词折算', () => {
   })
 
   it('只有钟点：未来则今天，已过则明天', () => {
-    // now=15:04。「下午三点」已过 → 明天 15:00
-    const past = parseDueAt('下午三点继续', wedAfternoon())!
+    // ⚠⚠ #34：这条用例**钉的就是 #34 争议的那个口径** ——
+    //   「已过则明天」：用户 15:04 说「下午三点」，答**明天 15:00**。
+    //   若 #34 拍板「裸钟点归 null」，**这条会红，而那是预期的**。
+    //   （同文件 `:217` 那条一直带着这句指针，本条原来没有 ⇒ 已对齐，§586。）
+    //
+    // ⚠ 下面两处 `!` 已换成显式前提检查（§586）。原来它们让**前提不成立**
+    //   时报 `Cannot read properties of null (reading 'at')` ——
+    //   那是一条**会误导**的消息：它看起来像「代码崩了」，
+    //   而真实原因可能是「口径变了（预期）」或「`at` 的基准日不再是今天」。
+    const past = parseDueAt('下午三点继续', wedAfternoon())
+    assert.ok(past !== null,
+      '前提不成立：已过的裸钟点「下午三点」返回了 null。' +
+      '两种可能要分开看：① **#34 若刚拍板「裸钟点归 null」，这是预期**；' +
+      '② 否则说明 `meeting-due.ts:553` 那个 `localTime(y, mo, d, …)` 的 `d` ' +
+      '不再是「今天」⇒ `:573` 的「过去保护」不再是死分支 ⇒ 同步核 §566 与 §585.2。')
     assert.equal(new Date(past.at).getDate(), 8)
     assert.equal(new Date(past.at).getHours(), 15)
     // 「晚上八点」未到 → 今天 20:00
-    const soon = parseDueAt('晚上八点继续', wedAfternoon())!
+    const soon = parseDueAt('晚上八点继续', wedAfternoon())
+    assert.ok(soon !== null,
+      '前提不成立：**未到**的裸钟点「晚上八点」也返回了 null —— ' +
+      '⚠ 这与上面那条**性质不同**：#34 只涉及「已过」的裸钟点（归 null 是它的全部意图），' +
+      '「未到」的也被拒 ⇒ 是回归，不是口径变更。')
     assert.equal(new Date(soon.at).getDate(), 7)
     assert.equal(new Date(soon.at).getHours(), 20)
+  })
+
+  /**
+   * §566：把「裸钟点**永不**返回 null」钉成有名字的事实。
+   *
+   * ⚠ 它断言的是**当前实现**，不是理想行为。#34 若拍板「裸钟点归 null」，
+   *   这条会红 —— 那是**预期的**，届时请连同下面两段注释一起更新。
+   *
+   * ⭐ 为什么必须有这条：上面那条只钉了**两个现场时刻**，
+   * 而「裸钟点会返回 null」这件事在当前实现里**结构上不可能发生** ——
+   * `meeting-due.ts:546` 的 `if (at < now - DAY_MS) return null` 是那道保护，
+   * 但 `at` 由 `localTime(y, mo, d, …)` 构造（`:545`），
+   * 而 `y/mo/d` 来自 `new Date(now)`（`:256-259`）⇒ **`at` 恒为「今天」**，
+   * `now` 也是今天 ⇒ `at − now ∈ (−24h, +24h)` ⇒ `at < now − DAY_MS` **恒假**。
+   *
+   * ⇒ 实测（§566.3）：158 万次穷举下 `:546` 的分支体 **count = 0**。
+   * ⇒ 后果（与 §565 同一根）：`下午三点` 在 15:04 说出来 ⇒ **明天 15:00**，
+   *   而它不是 null ⇒ 调用方的 `unresolved` 计数**恒为 0** ⇒ 一句话都不会说。
+   */
+  it('裸钟点在一个整天里**任何时刻都不会返回 null**（§566：过去保护分支不可达）', () => {
+    const CLOCKS = ['0点', '3点', '6点', '8点半', '9点', '11点', '12点', '13点',
+      '下午两点', '下午三点', '下午5点45', '晚上8点', '晚上11点半', '凌晨3点',
+      '15:30', '8:05', '23点59分']
+    let nulls = 0
+    let total = 0
+    // 一整天里每 11 分钟扫一个基准时刻（1440/11 ≈ 131 个）
+    for (let min = 0; min < 1440; min += 11) {
+      const now = new Date(2025, 0, 7, 0, 0, 0).getTime() + min * 60_000
+      for (const c of CLOCKS) {
+        total++
+        if (parseDueAt(c, now) === null) nulls++
+      }
+    }
+    assert.equal(nulls, 0,
+      `裸钟点出现了 ${nulls}/${total} 次 null ⇒ 「过去保护」不再是死分支，` +
+      `§566.2 的结构性证明与 :546 的注释都要重写；且 #34 可能已被实现`)
+    assert.ok(total >= 2000, `扫的样本太少（${total}），结论会不稳`)
   })
 })
 

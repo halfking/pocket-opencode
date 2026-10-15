@@ -28,7 +28,7 @@ LLM 摘要返回的 `action_items.due` 是自然语言（「明天下午三点�
 |---|---|---|
 | 切段转写要放在一起校对合并 | **已有** | `backend/internal/stt/incremental.go` 的 `mergeIncremental`（rune 级跨段重叠去重，40 rune 上限 / 2 rune 下限 / 整段重复保留判断）+ 前端 `RollingWebmDecoder` 转码 |
 | 录音完成后一次精校 | **已有** | `useSessionLiveRecord.stop()` 自动调 `meetingsApi.refine`，后端 `/refine`（kxmemory → LLM fallback），状态置 `refined` |
-| 录音时即时总结 + 参考资料与建议 | **已有** | `useLiveSummary`（30s 节流 + topicShift + 3 段阈值）→ `/summary` → `/recommend`（note/email/meeting/contact/web）；`MEETING_SKILLS` 4 种技能（滚动纪要 / 决议清单 / 待办提取 / 缺席速览） |
+| 录音时即时总结 + 参考资料与建议 | **已有** | `useLiveSummary`（滚动闸：主题切换 **或** 新增 3 段 **或** 距上次 30s，⚠ **不是**「每 30 秒一次」；每轮固定跟一次 `/recommend` 的 LLM 调用）→ `/summary` → `/recommend`（note/email/meeting/contact/web）；`MEETING_SKILLS` 4 种技能（滚动纪要 / 决议清单 / 待办提取 / 缺席速览，⚠ 只作用于录完后的手动总结，见 §416.1） |
 | **时间点自动加入计划日程** | **缺失** | 本文档主题 |
 
 前三项都不是本轮工作，且不应改动：它们有独立的设计文档

@@ -1,0 +1,34 @@
+{
+  "recommendItem": [
+    "id",
+    "score",
+    "snippet",
+    "title",
+    "type",
+    "url"
+  ],
+  "refine": [
+    "note_id",
+    "refine_fallback",
+    "refine_input_runes",
+    "refine_rejected",
+    "refined_transcript",
+    "structured_minutes",
+    "tasks_created",
+    "todos",
+    "translations"
+  ],
+  "summary": [
+    "action_items",
+    "agent",
+    "agent_tools",
+    "agent_turns",
+    "decisions",
+    "key_points",
+    "open_questions",
+    "references",
+    "summary",
+    "summary_fallback",
+    "summary_input_runes"
+  ]
+}

@@ -73,6 +73,52 @@ export function goFuncBody(src, name) {
   return null
 }
 
+const TIME_UNITS = { Second: 1000, Minute: 60_000, Hour: 3_600_000 }
+
+/**
+ * 收集**函数体内**声明的时长常量/变量：名字 → 毫秒。
+ *
+ * 为什么需要它（2026-10-07 实测打出来的）
+ * --------------------------------------
+ * 这张表建起来时，判据只认内联字面量
+ * `context.WithTimeout(r.Context(), 45 * time.Second)`。于是 2026-10-06 修
+ * 「agent 回落从未跑成」时把预算提名为局部常量：
+ *
+ *     const summaryBudget = 45 * time.Second
+ *     ctx, cancel := context.WithTimeout(r.Context(), summaryBudget)
+ *
+ * —— 这是**更地道的 Go 写法**（尤其是同一函数里有两个预算要区分时），
+ *   但让本表两行直接反推失败。危险的走向不是「红」，而是有人把
+ *   `assert.notEqual(s.ms, null)` 放宽成 warning：**整张表就此静默失去守护**，
+ *   而表里的 5 行一条都不报错。
+ *
+ * ⚠ 只在**该 handler 函数体内**找常量，不做全文件/跨函数查找。
+ *   找不到就近捡一个同名或别的预算，正是「判据放错层」——
+ *   算出来的数看着合理，但量的不是这个请求的预算。
+ *
+ * ⚠ 输入是**已剥注释**的函数体（goFuncBody 内部就剥了），
+ *   所以注释里的 `// const x = 45 * time.Second` 满足不了判据。
+ *
+ * ⚠ 认三种声明形态：`const x = …`、`var x = …`、`x := …`。
+ *   少认一种的后果不是「报红」而是同一行静默失去守护——
+ *   2026-10-07 变异验证时实测：`:=` 起初没被认，而它恰恰是 Go 局部
+ *   最常见、也最容易被下一个人写出来的形态。
+ *
+ * ⚠ **不认裸赋值** `x = 45 * time.Second`：那是给别处声明的变量赋值，
+ *   不能当作「本函数体内的预算声明」。
+ */
+export function localDurationConsts(body) {
+  const out = new Map()
+  const re =
+    /\b(?:(?:const|var)\s+([A-Za-z_]\w*)\s*(?::[^=]+)?=|([A-Za-z_]\w*)\s*:=)\s*([0-9]+)\s*\*\s*time\.(Second|Minute|Hour)\b/g
+  let m
+  while ((m = re.exec(body)) !== null) {
+    const name = m[1] ?? m[2]
+    out.set(name, Number(m[3]) * TIME_UNITS[m[4]])
+  }
+  return out
+}
+
 /**
  * 取某 handler 的**请求派生**预算。
  *
@@ -81,18 +127,35 @@ export function goFuncBody(src, name) {
  * goroutine 的预算，与本请求无关（server_email_invoice.go:109 就有一处，
  * 早先的判据把它算进来过，是假信号）。
  *
+ * 第二个参数可以是**内联字面量**，也可以是**本函数体内声明的时长常量**
+ * （见 localDurationConsts）。两者都解析不出 → 返回 null，
+ * **绝不**从别处捡一个数来填。
+ *
  * 接受**源码文本**而不是只能读文件：负控要把后端源码改掉再复算，
  * 让它去写临时 .go 文件既脏又容易在 Windows 上失败。
  */
 export function budgetInSource(goSrc, handler) {
   const body = goFuncBody(goSrc, handler)
   if (body === null) return { ms: null, reason: `找不到 handler ${handler}` }
-  const m = /context\.WithTimeout\(r\.Context\(\),\s*([0-9]+)\s*\*\s*time\.(Second|Minute|Hour)\s*\)/.exec(body)
+  const m = /context\.WithTimeout\(r\.Context\(\),\s*(?:([0-9]+)\s*\*\s*time\.(Second|Minute|Hour)|([A-Za-z_]\w*))\s*\)/.exec(body)
   if (!m) return { ms: null, reason: `${handler} 里没有派生自 r.Context() 的 WithTimeout` }
-  return {
-    ms: Number(m[1]) * { Second: 1000, Minute: 60_000, Hour: 3_600_000 }[m[2]],
-    reason: `${handler}: ${m[1]}${m[2][0]} on r.Context()`,
+  if (m[1] != null) {
+    return {
+      ms: Number(m[1]) * TIME_UNITS[m[2]],
+      reason: `${handler}: ${m[1]}${m[2][0]} on r.Context()`,
+    }
   }
+  const name = m[3]
+  const consts = localDurationConsts(body)
+  if (!consts.has(name)) {
+    return {
+      ms: null,
+      reason: `${handler} 的预算用标识符 ${name} 传入，但函数体内没有它的时长常量声明` +
+        `（本判据只认本函数体内的声明，不跨函数捡数）`,
+    }
+  }
+  const ms = consts.get(name)
+  return { ms, reason: `${handler}: ${name}=${ms}ms on r.Context()` }
 }
 
 export function requestBudgetMs(goFile, handler) {
@@ -129,6 +192,19 @@ function evalArith(node) {
     }
   }
   return null
+}
+
+/** 造一个 handler：预算经标识符 `summaryBudget` 传入，decl 是它上方的声明行。 */
+function sampleWithDecl(decl) {
+  return [
+    'package server',
+    'func (s *Server) handleMeetingSummary(w http.ResponseWriter, r *http.Request) {',
+    decl,
+    '    ctx, cancel := context.WithTimeout(r.Context(), summaryBudget)',
+    '    _ = ctx',
+    '    cancel()',
+    '}',
+  ].join('\n')
 }
 
 /**
@@ -209,15 +285,16 @@ describe('判据自检：负控必须转红', () => {
   })
 
   it('后端把某个预算调大 → 表里的反推跟着变（证明不是写死的）', () => {
-    const row = TABLE[1] // handleMeetingSummary 45s
+    const row = TABLE[1] // handleMeetingSummary 45s（2026-10-06 起是局部常量 summaryBudget）
     const src = fs.readFileSync(path.join(SERVER, row.server.goFile), 'utf8')
     const before = budgetInSource(src, row.server.handler).ms
     assert.equal(before, 45_000, '判据在真实代码上就没算对（预算写法可能变了）')
     // 把 45 改成 450：反推必须跟着变成 450_000。
     // 写死 45_000 的判据在这里会纹丝不动——那才是假护栏。
+    // 锚点带常量名，避免误伤同文件里别处的 45 * time.Second。
     const patched = src.replace(
-      /context\.WithTimeout\(r\.Context\(\),\s*45\s*\*\s*time\.Second\s*\)/,
-      'context.WithTimeout(r.Context(), 450*time.Second)',
+      /const\s+summaryBudget\s*=\s*45\s*\*\s*time\.Second/,
+      'const summaryBudget = 450*time.Second',
     )
     assert.notEqual(patched, src, '负控样本没有真的改到预算（替换没命中）')
     assert.equal(
@@ -231,6 +308,58 @@ describe('判据自检：负控必须转红', () => {
       client <= 450_000,
       '后端预算涨到 450s 之后客户端仍被判为足够——余量逻辑坏了',
     )
+  })
+
+  it('预算是局部常量（不是内联字面量）→ 也能反推出同一个数', () => {
+    // 本表覆盖的 5 行里有两行是字面量、一行是常量。两种形态都得算得对，
+    // 否则「有人把字面量提名为常量」就会让这行静默失去守护。
+    const row = TABLE[1]
+    const src = fs.readFileSync(path.join(SERVER, row.server.goFile), 'utf8')
+    const viaConst = budgetInSource(src, row.server.handler)
+    const viaLiteral = budgetInSource(
+      src.replace('const summaryBudget = 45 * time.Second', 'const summaryBudget = 45*time.Second'),
+      row.server.handler,
+    )
+    assert.equal(viaConst.ms, 45_000, `常量形态反推失败：${viaConst.reason}`)
+    assert.equal(viaLiteral.ms, 45_000, `字面量形态反推失败：${viaLiteral.reason}`)
+  })
+
+  // 2026-10-07 变异验证实测：`:=` 起初没被认，而它是 Go 局部最常见的写法。
+  // 「反推失败」表现为整行红，看起来像产品坏了，其实只是解析器少认一种形态。
+  for (const decl of ['const summaryBudget = 45 * time.Second', 'var summaryBudget = 45 * time.Second', 'summaryBudget := 45 * time.Second']) {
+    it(`预算是 ${decl.split(' ')[0].replace(/summaryBudget$/, ':=').trim() || ':='} 声明 → 反推出 45000`, () => {
+      const r = budgetInSource(sampleWithDecl(decl), 'handleMeetingSummary')
+      assert.equal(r.ms, 45_000, `声明形态未被识别：${r.reason}`)
+    })
+  }
+
+  it('裸赋值 `x = 45 * time.Second` 不得被当作声明（那不是本函数体的预算来源）', () => {
+    const r = budgetInSource(sampleWithDecl('summaryBudget = 45 * time.Second'), 'handleMeetingSummary')
+    assert.equal(r.ms, null, `裸赋值被当成了声明：${r.reason}`)
+  })
+
+  it('注释里的时长常量不得满足判据（判据必须剥注释）', () => {
+    // 回归钉子：本会话已在别处踩过六次「源码扫描先剥注释」。
+    // 这里造一个「注释里有 const、代码里没有」的样本——
+    // 不剥注释的解析器会拿注释里的数把这一行判绿。
+    const r = budgetInSource(sampleWithDecl('// const summaryBudget = 45 * time.Second'), 'handleMeetingSummary')
+    assert.equal(r.ms, null, `注释里的常量被当成了真预算：${r.reason}`)
+  })
+
+  it('常量在别的函数里 → 返回 null，不跨函数捡数（判据不能放错层）', () => {
+    // 如果解析退化成「全文件找同名常量」，这个样本会算出 45_000，
+    // 而量到的其实不是这个 handler 的预算——数字看着合理，是最危险的一类假信号。
+    const src = [
+      'package server',
+      'func (s *Server) otherHandler(w http.ResponseWriter, r *http.Request) {',
+      '    const summaryBudget = 45 * time.Second',
+      '    _ = summaryBudget',
+      '}',
+      ...sampleWithDecl('').split('\n'),
+    ].join('\n')
+    const r = budgetInSource(src, 'handleMeetingSummary')
+    assert.equal(r.ms, null, `跨函数捡到了预算：${r.reason}`)
+    assert.match(r.reason, /不跨函数捡数/)
   })
 
   it('派生自 context.Background() 的预算不算数（那是后台 goroutine 的）', () => {

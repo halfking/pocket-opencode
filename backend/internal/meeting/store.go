@@ -96,6 +96,15 @@ func (s *Store) CreateScoped(req CreateMeetingRequest, ownerID, workspaceID stri
 	now := time.Now()
 	// ★ 2026-10-07：与 PGStore 对齐——客户端带的 id 现在被尊重，
 	// 且**重复 POST 变成幂等更新**（旧实现无条件新生成 ⇒ 重试即重复行）。
+
+	// 客户端给了 ID 就用它（§105）：客户端拿着同一个 ID 调 refine，
+	// 服务端另发号会让那条链必然 404。
+	//
+	// ⚠ 但**只在没人占着它的时候**用：`s.meetings` 是按 ID 索引的单表，
+	//   盲写会把别的 owner/workspace 的同名行直接顶掉。PG 版靠唯一约束
+	//   + 重试换号挡住了这件事（pg_store.go 的 isUniqueViolation 分支），
+	//   内存版没有那层护栏 ⇒ **两个 store 会不同形**，而门禁跑在内存版上。
+	//   这里显式对齐 PG 语义：异作用域撞号 ⇒ 退回服务端发号，绝不覆盖。
 	if req.StartedAt > 0 {
 		now = time.UnixMilli(req.StartedAt)
 	}
@@ -103,8 +112,18 @@ func (s *Store) CreateScoped(req CreateMeetingRequest, ownerID, workspaceID stri
 	if status == "" {
 		status = "recording"
 	}
+	id := strings.TrimSpace(req.ID)
+	if id != "" {
+		if existing, ok := s.meetings[id]; ok &&
+			(existing.OwnerID != ownerID || existing.WorkspaceID != workspaceID) {
+			id = ""
+		}
+	}
+	if id == "" {
+		id = fmt.Sprintf("mtg_%d_%d", now.UnixNano(), meetingIDSeq.Add(1))
+	}
 	m := &Meeting{
-		ID:           strings.TrimSpace(req.ID),
+		ID:           id,
 		OwnerID:      ownerID,
 		WorkspaceID:  workspaceID,
 		Title:        req.Title,
@@ -118,10 +137,8 @@ func (s *Store) CreateScoped(req CreateMeetingRequest, ownerID, workspaceID stri
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}
-	if m.ID == "" {
-		m.ID = fmt.Sprintf("mtg_%d_%d", now.UnixNano(), meetingIDSeq.Add(1))
-	} else if old, ok := s.meetings[m.ID]; ok {
-		// 同一 id 再 POST：保留服务端补出来的空值列，别用零值覆盖已有内容。
+	if old, ok := s.meetings[m.ID]; ok {
+		// 同一 id 再 POST（同作用域）：保留服务端补出来的空值列，别用零值覆盖已有内容。
 		if m.Transcript == "" {
 			m.Transcript = old.Transcript
 		}

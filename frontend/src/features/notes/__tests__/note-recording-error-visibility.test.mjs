@@ -102,7 +102,15 @@ describe('note 即时总结状态必须被渲染', () => {
   })
 
   it('NoteMetaSheet 声明了这两个 prop', () => {
-    const props = sheet.slice(sheet.indexOf('defineProps'), sheet.indexOf('defineEmits'))
+    // ⚠ §511：这里的结束锚是**裸标识符**，而 `sheet` 是**未剥注释**的 .vue 原文
+    //   ⇒ 任何人在 defineProps 之前写一句提到 defineEmits 的注释，
+    //     这条 slice 就会变成空串、断言报 actual: ''（本仓已踩过一次）。
+    const propsEnd = sheet.indexOf('defineEmits')
+    const propsStart = sheet.indexOf('defineProps')
+    assert.ok(propsEnd > propsStart && propsStart >= 0,
+      `defineProps/defineEmits 的区间坏了（start=${propsStart}, end=${propsEnd}）——`
+      + '多半是有注释提到了 defineEmits')
+    const props = sheet.slice(propsStart, propsEnd)
     assert.match(props, /summaryError\?\s*:\s*string/, '缺少 summaryError prop')
     assert.match(props, /summaryLoading\?\s*:\s*boolean/, '缺少 summaryLoading prop')
   })
@@ -132,5 +140,44 @@ describe('note 即时总结状态必须被渲染', () => {
       /if \(summary && metaNote\.value\)\s*\{[\s\S]{0,600}?\}\s*else\s*\{\s*(?:\/\/[^\n]*\n\s*)*summarizeError\.value\s*=/,
       '200 + 空 summary 的分支必须设置提示文案，否则用户仍看不到任何反馈',
     )
+  })
+
+  // ── §222：非空但**不是**摘要的那种失败 ──────────────────────────
+  //
+  // 上一条只钉住「空 summary 要有提示」。但服务端还有一种更隐蔽的形态：
+  // summary **非空**、读起来像一段话，内容却是**模型原文**
+  // （解析失败 / summary 为空 ⇒ 回落成 content）。
+  // ⇒ 非空 ⇒ 上面那条 if 分支成立 ⇒ 照常 updateNote **落库并持久化**。
+  //
+  // 为什么要加判据而不是靠后端改：后端回落的**内容**必须保留
+  // （模型没听 JSON 指令而给出通顺的纯文本总结，那是正当产出），
+  // 所以唯一能做的是**让调用方知道**，并据此决定不落库。
+  it('模型原文形态（summary_fallback）必须被识别且不落库', () => {
+    assert.match(
+      listView,
+      /summary_fallback:\s*summaryFellBack/,
+      '列表页没从响应里取出 summary_fallback：非空但不是摘要的形态完全不可见',
+    )
+    assert.match(
+      listView,
+      /if \(!summaryFellBack\)[\s\S]{0,200}?updateNote\(/,
+      '模型原文仍被写进笔记：会长期占着「AI 总结」字段，而它可能只是「抱歉，无法生成」',
+    )
+    // ⚠ 外层 if 的字面量必须**逐字保留** —— 上面那条用例的正则锚在它上面。
+    //   把它改成 `&& !summaryFellBack` 会让那条用例静默失效（它不报错，
+    //   只是永远不匹配 ⇒ 恒红/恒绿取决于实现细节）。
+    assert.match(
+      listView,
+      /if \(summary && metaNote\.value\)\s*\{/,
+      '外层 if 的字面量被改了：note-recording-error-visibility 的判据锚在它上面',
+    )
+  })
+
+  it('详情页也要区分「原文」与「没返回内容」', () => {
+    const detail = read('../NoteDetailView.vue')
+    assert.match(detail, /summary_fallback\?:\s*boolean/,
+      '详情页没声明 summary_fallback：它走裸 http，不走 notesApi.summarize，两份声明互不为超集')
+    assert.match(detail, /res\.summary_fallback[\s\S]{0,300}?summaryError\.value\s*=/,
+      '详情页收到模型原文时不给提示：用户会把「抱歉，无法生成」当成自己笔记的总结读下去')
   })
 })

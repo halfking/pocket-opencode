@@ -23,9 +23,33 @@
 // 不变式。断的是「跨实现一致性」，不是「代码里有没有某个字面量」。
 //
 // ★ 本门**只**钉共有的阈值，不替两边的差异做判断。
-// 已知的既有差异（Go 的 minFuzzyAnchor 与窗口下限，见下方 TestDedupThresholdsMatchAcrossGoAndTS
-// 的说明）由人决策，不由本门静默抹平——把一个行为差异偷偷改成一致，
-// 比留着它更危险。
+// 已知的闸门结构差异（Go 与 TS 各自有没有 minFuzzyAnchor）由**人**决策，
+// 不由本门静默抹平——把一个行为差异偷偷改成一致，比留着它更危险。
+// 本门的作用是：**差异一旦变化就报红**，逼人来更新这里的登记，
+// 而不是让变化悄悄发生。
+// ── 2026-10-11：那条差异已由人决策消除（TS 补回 MIN_ANCHOR），
+//    登记状态由「Go 有 / TS 无」改为「两侧都有」；详见 §455。
+//
+// ── ⚠⚠ 跑本门必须带 `-count=1`，否则你可能读到的是缓存里的旧绿（§430 实测）──
+//
+//	本门在**运行时**去读 `frontend/src`，而 `frontend/` 在 Go 模块（`backend/`）
+//	**之外**。只改前端、不动 Go 包时，Go 的测试缓存不会失效：
+//
+//	$ # 把 recordingRuntime.ts 的 `endSec - windowSec` 改成 `windowSec * 0.9`
+//	$ go test ./internal/stt -run TestProductionShapeSlicesDoNotOverlap
+//	ok  …/internal/stt  (cached)          ← ⛔ 门没跑，却报了绿
+//	$ go test … -count=1
+//	--- FAIL: startSec 不再是 endSec - windowSec
+//
+//	⇒ **结论只认 `-count=1` 的读数。** CI 已经是 `go test -race ./... -count=1`
+//	（`.github/workflows/backend.yml:118`），受影响的是本地重复跑。
+//	⚠ `t.Setenv` 不能让本门免于缓存（实测）。
+//
+// ⚠ 2026-10-11 更新：#18 已由人决策落地，TS 侧补回了 `MIN_ANCHOR`，
+//	两侧闸门结构现已一致（按 178 条参数化语料双跑，分叉 5 → 0）。
+//	支撑「TS 那道闸冗余」的旧论证**已被证伪**，证伪过程见 §455。
+//	⇒ 上面那道 TestKnownDedupDivergencesAreStillTheKnownOnes 的
+//	  「已知差异」登记已同步更新为「两侧都有」，判据改成**对称**的。
 
 package stt
 
@@ -42,9 +66,20 @@ import (
 // tsDedupPath 是前端去重实现相对本文件的位置。
 const tsDedupPath = "../../../frontend/src/features/meetings/meeting-dedup.ts"
 
+// tsDedupTestPath 是前端那份去重门禁的位置。
+//
+// §608 起：它同时承担「已登记的 Go↔TS **行为**差异」的登记处。
+const tsDedupTestPath = "../../../frontend/src/features/meetings/meeting-dedup.test.ts"
+
 // recordingRuntimePath 是**即时转写切分**的前端实现。
 // 它决定切片形状（见 TestProductionShapeSlicesDoNotOverlap）。
 const recordingRuntimePath = "../../../frontend/src/native/recordingRuntime.ts"
+
+// sttSettingsPath 是**即时转写 API 客户端**。
+// ⚠ §507：它与 recordingRuntime.ts、incremental.go 三处的注释都曾断言「切片有重叠」，
+//
+//	而 §25 已查清随手记链**不重叠**。前两条判据只钉代码形状，扫不到注释。
+const sttSettingsPath = "../../../frontend/src/api/stt-settings.ts"
 
 // readTSDedup 读前端去重实现；读不到就**跳过**而不是失败。
 //
@@ -144,6 +179,33 @@ func TestDedupThresholdsMatchAcrossGoAndTS(t *testing.T) {
 	if int(tsOverlap) != int(goOverlap) {
 		t.Errorf("对齐窗口上限漂移了：Go maxOverlap=%v，TS MAX_OVERLAP=%v", goOverlap, tsOverlap)
 	}
+
+	// ★ §607 补：第三对共有量 —— 「LCS 自身至少多长」的闸门下限。
+	//
+	// ⚠⚠ 这对**以前根本不在本门的比对范围内**：
+	// TestKnownDedupDivergencesAreStillTheKnownOnes 只比「两侧有没有这个闸」，
+	// 不比**值**。实测（锚点命中 1 次 / 只改 Go 一侧）：
+	//
+	//	minFuzzyAnchor: 4 -> 2，TS 的 MIN_ANCHOR 保持 4
+	//	  TestDedupThresholdsMatchAcrossGoAndTS   PASS（没报）
+	//	  TestKnownDedupDivergencesAreStillTheKnownOnes PASS（没报）
+	//
+	//	而真函数双跑**证明行为确实分叉**（甲乙丙丁戊 / 甲乙丙己庚）：
+	//	  TS  MIN_ANCHOR=4   -> "甲乙丙丁戊甲乙丙己庚"（保留）
+	//	  Go  minFuzzyAnchor=2 -> "甲乙丙丁戊己庚"（**删掉了用户说过的「甲乙丙」**）
+	//
+	// ⇒ 这正是本门文件头自己写的那句话：「漂了之后症状极其难认……
+	// 而**没有任何一边报错**」。上面的判据形状也正是它承诺要避免的
+	// 「只比存在性、不比值」。
+	tsAnchor := parseConstFloat(t, ts, "MIN_ANCHOR")
+	goAnchor := parseGoConstFloat(t, goSrc, "minFuzzyAnchor")
+	if int(tsAnchor) != int(goAnchor) {
+		t.Errorf("LCS 锚点下限漂移了：Go minFuzzyAnchor=%v，TS MIN_ANCHOR=%v —— "+
+			"两道闸只在 lcsLen∈[2,MIN_ANCHOR) 那一格不等价，"+
+			"而那一格的后果是**删掉用户没说过的话**（§455/§607 实测）。"+
+			"请先读 dedup_threshold_sync_test.go 顶部与设计文档 §455、§607，再决定对齐哪一侧。",
+			goAnchor, tsAnchor)
+	}
 }
 
 // TestDedupCrossReferencesStillPointAtEachOther —— 两边必须继续互相标注。
@@ -182,15 +244,31 @@ func TestDedupCrossReferencesStillPointAtEachOther(t *testing.T) {
 
 // TestKnownDedupDivergencesAreStillTheKnownOnes —— 把「已知差异」钉成一张清单。
 //
-// 这道门的作用是**让差异可见但不掩盖**：两份实现在闸门设计上本来就不完全
-// 一样（Go 保留了 minFuzzyAnchor，TS 删掉了它），那是 §2 变异测试之后留下的
-// 真实差异。本门不假装它不存在，而是要求「差异恰好是已记录的那几个」：
+// 这道门的作用是**让差异可见但不掩盖**。
 //
-//   - 将来谁把 Go 的 minFuzzyAnchor 也删了（或反过来把它加回 TS），
-//     本门会绿——**那是好事**，说明两边终于一致了，该更新本注释；
-//   - 谁新增了第四道闸，本门会红，因为清单里没有它。
+// ── 2026-10-11：差异已消除，清单更新为「无差异」──
+//
+// 曾经的状态是「Go 有 minFuzzyAnchor、TS 没有」，本门把那条差异钉成清单而不抹平。
+// ⚠ 支撑「TS 那道闸是冗余的」的理由是**错的**（写在 TS 的注释里，本轮被证伪）：
+// 变异测试说「放宽 MIN_ANCHOR 而保持 coverage 时 15 条用例全绿」——
+// 那只证明**语料打不到分歧格**，不证明闸冗余。
+//
+// 证伪（按参数结构造语料：匹配字取自互斥集合 M/U，枚举 limit∈[2,12]×m∈[0,limit]×3 摆放，
+// **178 条**同时喂给**真函数** `mergeIncremental` 与真 TS `dedupeSegmentText`）：
+// 分叉 5 条，**全部**落在 `limit∈{3,4}` 且 `lcsLen∈{2,3}` —— 即
+// coverage（lcsLen/limit≥0.6）放行、而 `lcsLen<4` 会拦的那一格。
+// 该格的后果不是多几个重复字，而是**删掉用户没说过的话**。
+//
+// ⇒ TS 侧已补回 `MIN_ANCHOR = 4`，**分叉 5 → 0**。
+// ⇒ 本门的判据随之从「Go 有 / TS 无」改为**对称**：
+//
+//	两侧都有 或 两侧都没有 ⇒ 通过（闸门结构一致）
+//	只有一侧有           ⇒ 红（出现新的、未登记的漂移）
 //
 // 换句话说：它不是「禁止漂移」，而是「禁止漂移得没人知道」。
+// ⚠ 本门注释此前写「（或反过来把它加回 TS）本门会**绿**——那是好事」，
+//
+//	而实现用的是 `t.Error`（**红**）。注释与实现相反，已一并改正。
 func TestKnownDedupDivergencesAreStillTheKnownOnes(t *testing.T) {
 	ts := readTSDedup(t)
 	goSrc := readGoSource(t, "incremental.go")
@@ -198,13 +276,37 @@ func TestKnownDedupDivergencesAreStillTheKnownOnes(t *testing.T) {
 	tsHasMinAnchor := regexp.MustCompile(`MIN_ANCHOR`).MatchString(stripLineComments(ts))
 	goHasMinAnchor := regexp.MustCompile(`minFuzzyAnchor`).MatchString(stripLineComments(goSrc))
 
-	// 已记录的状态：Go 有、TS 无。
-	if goHasMinAnchor && tsHasMinAnchor {
-		t.Error("TS 侧又出现了 MIN_ANCHOR —— 两侧的闸门结构变了，请更新本注释里的「已知差异」")
+	// 已登记的状态（2026-10-11 起）：两侧**都有** ⇒ 无差异。
+	if goHasMinAnchor != tsHasMinAnchor {
+		t.Errorf("两份实现的 MIN_ANCHOR 状态不再一致（Go=%v / TS=%v）—— "+
+			"闸门结构出现了未登记的漂移。两道闸只在 limit≤4 且 lcsLen∈[2,3] 那一格不等价，"+
+			"那一格的后果是**删掉用户没说过的话**（§455 实测）。"+
+			"请先读 dedup_threshold_sync_test.go 顶部与设计文档 §455，再决定对齐哪一侧。",
+			goHasMinAnchor, tsHasMinAnchor)
+		return
 	}
-	if !goHasMinAnchor {
-		t.Log("提示：Go 侧的 minFuzzyAnchor 已被移除，两份实现的闸门结构现已一致；" +
-			"请把本文件顶部的「已知差异」注释更新为「无差异」")
+	t.Logf("两侧 MIN_ANCHOR 状态一致（Go=%v / TS=%v）—— 无未登记的闸门结构漂移",
+		goHasMinAnchor, tsHasMinAnchor)
+
+	// ★ §608：结构性一致之后，还有一类差异是**行为**差异 —— 参数全相等，
+	// 两边对同一输入仍然给出不同输出。真函数双跑实测（2026-10-14）：
+	//
+	//	语料（committed 与 next 完全相同）        Go    TS
+	//	  「甲」× 60                              120    80   ⛔ 分叉
+	//	  45 字真实句子重复一遍                     90    80   ⛔ 分叉
+	//	  「甲」× 40（正好等于阈值）                 40    40   ✅
+	//	  35 字真实句子重复一遍                     35    35   ✅
+	//
+	// 根因：mergeIncremental:288 有「整段重复且超窗口 ⇒ 保留两份」那条分支，
+	// dedupeSegmentText **没有** ⇒ TS 会把用户真的说了两遍的内容裁掉一份。
+	//
+	// 本门**不判**该对齐哪一侧（那是产品口径，简报 #58），
+	// 只保证「这条差异仍然有登记」—— 登记被删掉时本门报红。
+	tsTest := readGoSource(t, tsDedupTestPath)
+	if !strings.Contains(tsTest, "#58") || !strings.Contains(tsTest, "§608") {
+		t.Error("前端去重门禁（meeting-dedup.test.ts）里已找不到 §608 那条行为差异的登记 —— " +
+			"两侧在「整段重复超阈值」上仍会分叉（实测 Go 120 / TS 80），" +
+			"而这条差异现在没人登记了。请先读设计文档 §608 与简报 #58。")
 	}
 }
 
@@ -318,6 +420,32 @@ func TestProductionShapeSlicesDoNotOverlap(t *testing.T) {
 	// windowSec 必须来自**新增音频的字节数**，而不是含重叠的累计长度。
 	if !strings.Contains(code, "const windowSec = wav.byteLength / 2 / 16000") {
 		t.Error("windowSec 不再来自新增音频字节数 —— 切片形状可能变了，同上")
+	}
+
+	// 3) §507：**注释里也不许再断言重叠存在**。
+	//    前两条判据只看代码形状（剥掉注释后找 startSec/windowSec），
+	//    ⇒ 它们**结构上看不见注释**。而本函数自己的文档明写：
+	//    「任何人读代码都会以为重叠存在、进而以为整句重复是活的缺陷」。
+	//    实测三处注释直到 §507 都还在这么说，而护栏一直是绿的。
+	//    ⇒ 补这一条，让「结论已传播」变成可数的事实。
+	for _, c := range []struct {
+		name, path, banned string
+	}{
+		{"recordingRuntime.ts", recordingRuntimePath, "同一个词会被各识别一次"},
+		{"api/stt-settings.ts", sttSettingsPath, "（切片有重叠"},
+		{"internal/stt/incremental.go", "incremental.go", "切片有 1 秒重叠"},
+	} {
+		src := readGoSource(t, c.path)
+		if strings.Contains(src, c.banned) {
+			t.Errorf("%s 又出现了旧断言「%s」—— 随手记链的切片**不重叠**（§25）。"+
+				"这条误述会让人以为「整句重复」是活缺陷而去调 anchorCoverage。",
+				c.name, c.banned)
+		}
+		// 正向要求：每处都必须带上可查的指针，否则「删掉旧断言」也能骗过上一条。
+		if !strings.Contains(src, "TestProductionShapeSlicesDoNotOverlap") {
+			t.Errorf("%s 没有指向本门（TestProductionShapeSlicesDoNotOverlap）—— "+
+				"读到它的人无从知道随手记链的切片形状已被本门钉住", c.name)
+		}
 	}
 }
 

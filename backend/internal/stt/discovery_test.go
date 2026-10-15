@@ -375,7 +375,18 @@ func TestRecommendedModelsCoverBothGroups(t *testing.T) {
 	// 会随调研持续增补（2026-10-01 从 3 个扩到 7 个；2026-10-06 网关侧新增
 	// minimax-asr-1.0 / glm-asr 到 5 个），写死上限会让正常的新增候选变成
 	// 测试失败，从而诱导后来者不去补候选。
-	// 上限仍然要设——防止有人把整张模型表灌进来。
+	// 上限仍然要设——防止有人把整张 OpenRouter 模型表灌进来。
+	//
+	// ⚠ §406（2026-10-11）：gateway 这一项此前写的是 `gw != 3`（精确相等），
+	//   **违反的正是上面这段注释自己主张的原则**。后果已经发生：
+	//   网关候选从 3 个补到 5 个（glm-asr / minimax-asr-1.0，target.go:233-237）
+	//   —— 那正是本该被鼓励的「补候选」行为 —— 测试却红了。
+	//
+	//   而这条红之所以能长期无人察觉，是因为**另一条独立的链**：
+	//   CI 的 build-gate job 因 `working-directory` 找不到
+	//   `backend/scripts/check-smart-quotes.mjs` 而恒失败 ⇒ `test` job 恒被
+	//   `needs: build-gate` 跳过 ⇒ **Go 测试在 origin/main 上从未执行过**。
+	//   本地已修好那个工作目录（commit 372fa33b），但**该 commit 尚未 push**。
 	if gw < 3 || gw > 10 || ext < 7 || ext > 20 {
 		t.Fatalf("预置应为网关 3..10 + 外部 7..20，实际 gateway=%d external=%d", gw, ext)
 	}

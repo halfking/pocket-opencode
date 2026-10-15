@@ -11,6 +11,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/halfking/pocket-opencode/backend/internal/notifycenter"
 )
@@ -439,6 +440,13 @@ func (s *Scheduler) audit(t *Task, status RunStatus, runID, detail string) {
 	})
 }
 
+// truncateError 截断错误信息。
+//
+// ⚠ §253：原写法 `msg[:max] + "..."` 在中文下产出**非法 UTF-8**
+//
+//	（实测纯中文语料约 2/3 的切点会切在汉字中间，含 U+FFFD）。
+//	这里的产物 `errMsg` 会**落库**（定时任务执行记录），
+//	且会在移动端界面上展示 ⇒ 补字符边界回退。
 func truncateError(err error) string {
 	if err == nil {
 		return ""
@@ -446,7 +454,11 @@ func truncateError(err error) string {
 	const max = 4000
 	msg := err.Error()
 	if len(msg) > max {
-		return msg[:max] + "..."
+		cut := msg[:max]
+		for len(cut) > 0 && !utf8.ValidString(cut) {
+			cut = cut[:len(cut)-1]
+		}
+		return cut + "..."
 	}
 	return msg
 }

@@ -438,11 +438,29 @@ func parseAnthropicSSE(r io.Reader, fn func(StreamDelta) bool) (*StreamDelta, er
 				if args == "" {
 					args = "{}"
 				}
-				final.ToolCalls = append(final.ToolCalls, ToolCall{
+				tc := ToolCall{
+					// Index 用 content_block 的下标：Anthropic 同样允许一轮里
+					// 并发多个 tool_use 块，下游要靠它分组（对齐 OpenAI 的 index）。
+					Index:    payload.Index,
 					ID:       acc.id,
 					Type:     "function",
 					Function: ToolCallFunc{Name: acc.name, Arguments: args},
-				})
+				}
+				final.ToolCalls = append(final.ToolCalls, tc)
+				// ⚠ 2026-10-06 真网关复测补的一行，此前**整条 Anthropic 路径
+				// 拿不到任何工具调用**：这里只把 ToolCall 追加进 final，
+				// 从不 emit 给消费方。而唯一的消费入口就是 fn ——
+				// 于是上层（llmbff 的 Stream 回调）全程收到 0 帧。
+				//
+				// 症状不是报错而是**静默失效**：
+				//   - meetingagent：`answered` 恒为 false ⇒ 报 "empty stream"
+				//     ⇒ agent 整条 tool-calling 能力在 anthropic 形态下不存在；
+				//   - 任何依赖 usage 记账的路径：终态帧同样没发，token 用量归零。
+				//
+				// 为什么单测没抓到：llmgateway 的用例断言的是 parseAnthropicSSE
+				// **返回值**里的 ToolCalls，而返回值一直是正确的 ——
+				// 错的是「没有推给消费者」。判据量错了对象。
+				emit(StreamDelta{ToolCalls: []ToolCall{tc}})
 				delete(toolAcc, payload.Index)
 			}
 		case "message_delta":
@@ -467,6 +485,35 @@ func parseAnthropicSSE(r io.Reader, fn func(StreamDelta) bool) (*StreamDelta, er
 		final.PromptTokens = promptTokens
 		final.CompletionTokens = outputTokens
 		final.TotalTokens = promptTokens + outputTokens
+		// ⚠ 终态帧同样必须 emit。消费方的回调契约是「增量帧 + 一帧终态」：
+		// meetingagent 靠 `d.Done && d.Usage != nil` 收口计费，
+		// llmbff adapter 靠 `d.TotalTokens > 0` 记 usage。
+		// 不发这一帧 ⇒ token 用量在 anthropic 形态下恒为 0。
+		//
+		// 终态帧**不重复携带 ToolCalls**：工具调用已在 content_block_stop
+		// 逐个下发过，再带一遍会让下游按 index 累加时把参数追加两次。
+		if final.FinishReason != "" {
+			emit(StreamDelta{
+				// 终态帧带上 Done，与「返回值里 final.Done=true」保持一致。
+				//
+				// ⚠ 2026-10-06 自查更正：最初给这里加 `Done: true` 时，
+				// 我在注释里写的是「消费方靠 d.Done 判终态，缺了会让 agent 的
+				// Usage 恒为 0」—— **那条因果是错的**，A/B 实测加与不加
+				// 行为完全相同。真实契约在 llmbff 适配器：
+				// `Done: d.FinishReason != "" || d.TotalTokens > 0`，
+				// 消费方读的是**这个算出来的** llmbff.Delta.Done，
+				// 而上面那个 emit 本来就带 FinishReason 与 TotalTokens。
+				//
+				// ⇒ 所以这一行**不是修 bug，是补一致性**：
+				// 终态帧就该自报是终态。留着是为了不给下一个读
+				// StreamDelta.Done 的人留坑，**不要**把它当成计费修复。
+				Done:             true,
+				FinishReason:     final.FinishReason,
+				PromptTokens:     final.PromptTokens,
+				CompletionTokens: final.CompletionTokens,
+				TotalTokens:      final.TotalTokens,
+			})
+		}
 	}
 	return final, nil
 }

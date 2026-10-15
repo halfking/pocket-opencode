@@ -189,6 +189,33 @@ test('RollingWebmDecoder：解码抛错时向上抛（由调用方降级）', as
   d.dispose()
 })
 
+/**
+ * §571：上面那条只钉了「解码抛错会向上抛」，
+ * **没钉 `recordingRuntime.ts:1052` 那句承诺的后一半** ——
+ *   「下一片再试（累计音频还在，**解码器游标也没推进，不会丢内容**）」。
+ *
+ * ⚠ 这是**跨两个模块**的承诺：游标在 `recording-audio-transcode.ts`，
+ *   降级与「跳过这片」在 `recordingRuntime.transcodeSlice`。
+ *   ⇒ 静态断言抓不住，只能**用行为钉**：解码失败之后，decode 恢复正常时，
+ *   下一次调用必须**拿得回同一段**。若游标在失败时被推进过，那段就永久丢了。
+ */
+test('★ §571：解码失败后游标未推进 ⇒ 下一次能拿回同一段（兑现「不会丢内容」）', async () => {
+  let failNext = true
+  const d = new RollingWebmDecoder(async () => {
+    if (failNext) { failNext = false; throw new Error('UnsupportedError') }
+    return fake(3)
+  })
+  d.push(new Blob([new Uint8Array(10)]))
+
+  await assert.rejects(() => d.takeNewWindow(), '前提不成立：第一次调用应当抛错')
+  const again = await d.takeNewWindow()
+
+  assert.ok(again, '★ 游标在解码失败时被推进了 ⇒ 那一段音频永久丢失，' +
+    '而 `recordingRuntime.ts:1052` 的「不会丢内容」是假的')
+  assert.ok(again.byteLength > 0, '拿回的是空 WAV ⇒ 同样等于丢内容')
+  d.dispose()
+})
+
 test('RollingWebmDecoder：dispose 后不再接受分片', async () => {
   const d = new RollingWebmDecoder(async () => fake(3))
   d.dispose()
@@ -223,7 +250,15 @@ test('契约：解码器是「滚动累计」而非逐片独立解码', () => {
   // 变异后仍全绿（详见本文件头）。改成「恰好 3 处全量拼接」后才真咬住。
   assert.match(src.slice(src.indexOf('async takeNewWindow'), src.indexOf('async takeFull')),
     /new Blob\(this\.parts/, 'takeNewWindow 必须拼接全部分片')
-  assert.match(src.slice(src.indexOf('async takeFull'), src.indexOf('dispose()')),
+  // ⚠⚠ §510：结束锚必须是**方法声明**，不能用 src.indexOf('dispose()')。
+  //   那取的是**首次出现**——头注释里一句「只在 dispose() 清空」就会把锚点
+  //   挪到 takeFull **之前**，slice(start, end) 直接返回空串，
+  //   断言报 `actual: ''`（2026-10-12 现场复现）。
+  //   ⇒ 锚到**声明行**上：只有真方法才带这个缩进 + 签名。
+  const takeFullEnd = src.indexOf('\n  dispose(): void {')
+  assert.ok(takeFullEnd > src.indexOf('async takeFull'),
+    `takeFull 的结束锚应在它之后（takeFullEnd=${takeFullEnd}）—— 锚点定义本身坏了`)
+  assert.match(src.slice(src.indexOf('async takeFull'), takeFullEnd),
     /new Blob\(this\.parts/, 'takeFull 也必须拼接全部分片')
   assert.equal((src.match(/new Blob\(this\.parts/g) || []).length, 3,
     '应恰好 3 处累计拼接（takeNewWindow / takeFull / fullBlob）')
@@ -310,4 +345,48 @@ test('契约：解码器不释放太早（cleanupMedia 早于兜底转写）', (
   assert.doesNotMatch(body, /audioDecoder[\s\S]{0,80}dispose/, 'cleanupMedia 里不能 dispose decoder')
   assert.match(runtime, /this\.audioDecoder\?\.dispose\(\)\s*\n\s*this\.audioDecoder = new RollingWebmDecoder\(\)/,
     '必须在 start() 里释放上一场实例')
+})
+
+/**
+ * §569：上面那条门**只验了会议侧那一个 `cleanupMedia`**。
+ *
+ * ⚠ 根因是 `indexOf('private cleanupMedia()')` —— 它匹配的是
+ *   `recordingRuntime.ts:1350` 的**会议**侧定义；
+ *   而**随手记侧**那个签名不同（`:215` 是 `private async cleanupMedia()`），
+ *   `indexOf` **匹配不到** ⇒ 那一份完全没被验。
+ *
+ * ⭐ 而那句承诺恰恰写在**随手记侧**（`recordingRuntime.ts:957-958`：
+ *   「旧解码器在上一场 stop() 的兜底全量转写里还会用到，所以不能在 cleanupMedia() 里 dispose」）。
+ *
+ * ⛔ 变异 M24 实测：往**随手记侧**的 `cleanupMedia` 里加一行
+ *   `this.audioDecoder?.dispose()` ⇒ **这条门纹丝不动，全量 test:all 也全绿**。
+ *
+ * ⚠ 破坏后的后果是**静默**的：`RollingWebmDecoder.takeFull()`
+ *   在 disposed 时 `return null`（不抛错），而随手记 `runStop` 写的是
+ *   `payload = await this.audioDecoder?.takeFull() ?? null`
+ *   ⇒ payload 为 null ⇒ **分片一条都没回来时，本该兜底的全量转写拿不到音频**
+ *   ⇒ 而 `?? null` 让流程继续、不报错 ⇒ **最后一段录音静默丢失**。
+ *
+ * ⇒ 这正是这条注释要防的那件事。所以门必须**两份同形实现都验**。
+ */
+test('契约（§569）：**每一个** cleanupMedia 都不得 dispose 解码器（含随手记侧）', () => {
+  // 两种签名都算：private cleanupMedia() / private async cleanupMedia()
+  const defs = [...runtime.matchAll(/private (?:async )?cleanupMedia\(\)\s*\{/g)]
+  assert.ok(defs.length >= 2,
+    `只找到 ${defs.length} 个 cleanupMedia 定义（预期 ≥2）⇒ 改签名会让这条门退化成空跑`)
+
+  const risky = /audioDecoder[\s\S]{0,120}?dispose|dispose[\s\S]{0,120}?audioDecoder/
+  for (const d of defs) {
+    // 从 `{` 起做花括号配平，避免固定窗口不够长而漏读
+    let depth = 0, end = -1
+    for (let i = d.index + d[0].length - 1; i < runtime.length; i++) {
+      if (runtime[i] === '{') depth++
+      else if (runtime[i] === '}') { depth--; if (depth === 0) { end = i; break } }
+    }
+    assert.ok(end > 0, 'cleanupMedia 的花括号配平失败，判据读数不可信')
+    const body = runtime.slice(d.index, end + 1)
+    assert.ok(!risky.test(body),
+      '★ 门有洞：某一个 cleanupMedia 里 dispose 了 audioDecoder ⇒ ' +
+      'cleanupMedia 早于兜底转写，会让「分片全丢时的兜底全量转写」静默拿不到音频')
+  }
 })

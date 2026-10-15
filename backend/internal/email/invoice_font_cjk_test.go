@@ -87,9 +87,9 @@ func TestPickCJKFont_NeverReturnsNonCJKFont(t *testing.T) {
 // 这一条是负控的载体：把 fontHasCJK 的检查去掉，它必然转红。
 func TestPickCJKFont_SkipsLatinOnlyEntry(t *testing.T) {
 	latin, latinOK := firstExisting(knownNonCJKFonts)
-	cjk, cjkOK := firstExisting([]string{"simhei.ttf", "Deng.ttf", "uming.ttf"})
+	cjk, cjkOK := firstExisting(cjkFontNames())
 	if !latinOK || !cjkOK {
-		t.Skipf("需要一台同时有 %v 与 %v 的机器才能判定", knownNonCJKFonts, "simhei/Deng/uming")
+		t.Skipf("需要一台同时有 %v 与 %v 的机器才能判定", knownNonCJKFonts, cjkFontNames())
 	}
 	got := pickCJKFont([]string{latin, cjk})
 	if !fontHasCJK(got) {
@@ -117,9 +117,9 @@ func TestFindChineseFont_RejectsExplicitNonCJKFont(t *testing.T) {
 
 // 真有中文字体时必须被接受（否则就是矫枉过正：把所有 XML 发票都打成 failed）。
 func TestFindChineseFont_AcceptsRealCJKFont(t *testing.T) {
-	cjk, ok := firstExisting([]string{"simhei.ttf", "Deng.ttf", "uming.ttf"})
+	cjk, ok := firstExisting(cjkFontNames())
 	if !ok {
-		t.Skip("本机没有中文字体，跳过")
+		t.Skipf("本机找不到任一中文字体夹具（试过 %v），跳过", cjkFontNames())
 	}
 	t.Setenv("POCKET_EMAIL_PDF_FONT_PATH", cjk)
 	got := FindChineseFont("")
@@ -141,6 +141,102 @@ func TestFindChineseFont_AcceptsRealCJKFont(t *testing.T) {
 	}
 }
 
+// ---- <dataDir>/fonts 这一级：目录里有多款字体时必须挑到有中文的那款 ----
+//
+// 这一级此前没有任何测试跑过。已用 grep 核对（2026-10-15）：全仓 8 处
+// `FindChineseFont(...)` 调用点里，5 处传 `t.TempDir()`——那是**空目录**，
+// glob 返回 0 条；剩下 3 处传 ""，dataDir 分支根本不进；唯一传真实
+// dataDir 的 diag_xml_render_test.go 被 `POCKET_DIAG_XML_RENDER=1` 门控
+// 且要求 `POCKET_REAL_DATA_DIR`。⇒ `invoice_pdf.go:46` 那行只试
+// `matches[0]` 的代码，在测试里从未被执行过一次。
+//
+// 而 RenderInvoiceXMLPDF 的报错文案（invoice_pdf.go:171）恰恰把这一级
+// 当成给操作员的正式补救手段：「请设置 POCKET_EMAIL_PDF_FONT_PATH 或
+// 放置字体到 <dataDir>/fonts/>」。
+
+// 在 dataDir/fonts 下造出多款字体，返回该 dataDir。
+// latinName 必须排在 cjkName 之前（filepath.Glob 按字典序返回），
+// 这样「只试 matches[0]」与「逐个试」两条路就会给出不同答案。
+func dataDirWithFonts(t *testing.T, latinName, cjkName string) string {
+	t.Helper()
+	latin, ok := firstExisting(knownNonCJKFonts)
+	if !ok {
+		t.Skipf("本机找不到无中文字体夹具（试过 %v），跳过", knownNonCJKFonts)
+	}
+	cjk, ok := firstExisting(cjkFontNames())
+	if !ok {
+		t.Skipf("本机找不到中文字体夹具（试过 %v），跳过", cjkFontNames())
+	}
+	dir := filepath.Join(t.TempDir(), "fonts")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("造 fonts 目录失败: %v", err)
+	}
+	for _, c := range []struct{ src, name string }{{latin, latinName}, {cjk, cjkName}} {
+		raw, err := os.ReadFile(c.src)
+		if err != nil {
+			t.Fatalf("读夹具 %s 失败: %v", c.src, err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, c.name), raw, 0o644); err != nil {
+			t.Fatalf("写夹具 %s 失败: %v", c.name, err)
+		}
+	}
+	return filepath.Dir(dir)
+}
+
+// 目录里同时有无中文与有中文两款字体、且无中文那款字典序在前时，
+// 必须选中后者。这正是 glob 只试 matches[0] 会漏掉的一格。
+func TestFindChineseFont_DataDirPicksCJKNotFirstMatch(t *testing.T) {
+	t.Setenv("POCKET_EMAIL_PDF_FONT_PATH", "") // 只测 dataDir 这一级
+	dataDir := dataDirWithFonts(t, "Arial.ttf", "SourceHanSansSC.ttf")
+
+	// 前置断言：确认本用例真的造出了「matches[0] 是无中文那款」的目录。
+	// 没有它，若将来 glob 排序变了，这个用例会静默退化成测另一件事。
+	matches, err := filepath.Glob(filepath.Join(dataDir, "fonts", "*.ttf"))
+	if err != nil || len(matches) != 2 {
+		t.Fatalf("前置失败：glob 应返回 2 条，实际 %d 条（err=%v）", len(matches), err)
+	}
+	if !strings.EqualFold(filepath.Base(matches[0]), "Arial.ttf") {
+		t.Fatalf("前置失败：matches[0] 应是无中文的 Arial.ttf，实际 %s —— "+
+			"本用例依赖字典序，换名字就会测不到目标分支", filepath.Base(matches[0]))
+	}
+	if fontHasCJK(matches[0]) {
+		t.Fatalf("前置失败：夹具 Arial.ttf 竟被判定为含中文字形")
+	}
+
+	got := FindChineseFont(dataDir)
+	if got == "" {
+		t.Fatalf("dataDir/fonts 里明明有含中文字形的 %s，FindChineseFont 却返回空 "+
+			"⇒ XML 发票在本机恒记 failed", filepath.Join(dataDir, "fonts", "SourceHanSansSC.ttf"))
+	}
+	if !strings.EqualFold(filepath.Base(got), "SourceHanSansSC.ttf") {
+		t.Fatalf("应选中部署方放在 dataDir/fonts 里的 SourceHanSansSC.ttf，实际选中 %q "+
+			"⇒ 只试了 matches[0]（%s 无中文字形），把部署方放的字体当不存在，"+
+			"静默改用系统字体", got, filepath.Base(matches[0]))
+	}
+}
+
+// 负控：dataDir/fonts 里只有一款无中文字体时，绝不能把它选中。
+// 它防的是「修过头」——把 matches[0] 无条件返回、或把 fontHasCJK
+// 从这一级摘掉，两种改法都会让本条转红，而上面那条仍可能绿。
+func TestFindChineseFont_DataDirRejectsLatinOnlyDir(t *testing.T) {
+	t.Setenv("POCKET_EMAIL_PDF_FONT_PATH", "")
+	dataDir := dataDirWithFonts(t, "Arial.ttf", "SourceHanSansSC.ttf")
+	// 只留无中文那款
+	dir := filepath.Join(dataDir, "fonts")
+	if err := os.Remove(filepath.Join(dir, "SourceHanSansSC.ttf")); err != nil {
+		t.Fatalf("移除 CJK 夹具失败: %v", err)
+	}
+	got := FindChineseFont(dataDir)
+	if got != "" && !fontHasCJK(got) {
+		t.Fatalf("dataDir/fonts 只有无中文字形时选中了 %q —— "+
+			"fpdf 对缺字形不报错，会静默产出全空白的中文发票", got)
+	}
+	// 允许的两种结局：回退到系统里的中文字体，或如实返回空。
+	if got != "" {
+		t.Logf("回退到系统字体 %s（本机有中文字体，预期行为）", got)
+	}
+}
+
 // ---- 夹具辅助 ----
 
 // firstExisting 在系统字体目录里找第一个存在的给定文件名。
@@ -154,6 +250,30 @@ func firstExisting(names []string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// cjkFontNames 是「本机可用的中文字体」夹具名清单。
+//
+// 2026-10-15 补 macOS 两条，依据是实测读数而不是推测：本机
+// `TestPickCJKFont_NeverReturnsNonCJKFont` 打出「候选 205 个 .ttf，
+// 其中 4 个含中文，选中 /System/Library/Fonts/Supplemental/AppleGothic.ttf」
+// —— 也就是说这台 mac 明确有含中文字形的字体，而原清单
+// （simhei / Deng / uming，全是 Windows 与 Linux 的名字）在这台机器上
+// 一个都找不到，于是下面两条测试**恒 skip**：
+//
+//	--- SKIP: TestPickCJKFont_SkipsLatinOnlyEntry  「需要一台同时有 … 的机器才能判定」
+//	--- SKIP: TestFindChineseFont_AcceptsRealCJKFont「本机没有中文字体，跳过」
+//
+// 第二条那句 skip 理由本身就是假的（本机有 4 款）。更要紧的是
+// TestPickCJKFont_SkipsLatinOnlyEntry 的注释写着「这一条是负控的载体：
+// 把 fontHasCJK 的检查去掉，它必然转红」——而它在 macOS 上从未运行过，
+// 负控在开发机上一直是哑的。
+func cjkFontNames() []string {
+	return []string{
+		"simhei.ttf", "Deng.ttf", "uming.ttf", // Windows / Linux
+		"Arial Unicode.ttf", // /Library/Fonts，macOS
+		"AppleGothic.ttf",   // /System/Library/Fonts/Supplemental，macOS
+	}
 }
 
 // fontSearchDirs 覆盖本仓库部署到过的平台。macOS/Linux 的字体在 Windows 上

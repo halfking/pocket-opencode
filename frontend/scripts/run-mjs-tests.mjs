@@ -74,11 +74,26 @@ if (override >= 0 && !globs[0]) {
   process.exit(2)
 }
 
+/**
+ * 递归枚举 src 下的测试文件。
+ *
+ * ⚠ 2026-10-14（§638）：这里原先也是裸 `statSync(p)`。后果比测试文件里的扫描方更重 ——
+ * 本函数跑在**模块顶层**，所以 `frontend/src` 下只要出现一个「stat 不到的东西」
+ * （并发跑测试时 `z-index-ladder` 的临时目录 `__probe_fixture__`，或一个悬空软链），
+ * 整个 runner 就在**枚举阶段**崩掉：**一条测试都还没跑，census 也没落盘**。
+ * 实测读数最坏的一种形态是「没有任何红门信息、只有一个栈」。
+ *
+ * 与 §632 那 5 处、§638 那 3 处同源，只吞 ENOENT；其余异常照抛。
+ */
 function walk(dir, suffix, out = []) {
   for (const name of readdirSync(dir)) {
     const p = join(dir, name)
-    if (statSync(p).isDirectory()) walk(p, suffix, out)
-    else if (name.endsWith(suffix)) out.push(relative(ROOT, p).split(sep).join('/'))
+    try {
+      if (statSync(p).isDirectory()) walk(p, suffix, out)
+      else if (name.endsWith(suffix)) out.push(relative(ROOT, p).split(sep).join('/'))
+    } catch (err) {
+      if (err?.code !== 'ENOENT') throw err
+    }
   }
   return out
 }
@@ -148,18 +163,18 @@ if (existsSync(censusPath)) {
 
 // 事件里的 file 是绝对路径；统一成相对 ROOT 的 posix 路径再比对
 const executed = new Map()
-for (const [abs, n] of Object.entries(census)) {
-  executed.set(relative(ROOT, abs).split(sep).join('/'), n)
+for (const [abs, rec] of Object.entries(census)) {
+  executed.set(relative(ROOT, abs).split(sep).join('/'), rec)
 }
 
 const missing = discovered.filter((f) => !executed.has(f))
-const empty = discovered.filter((f) => executed.get(f) === 0 && !ZERO_CASE[f])
-const waived = [...skipped, ...Object.keys(ZERO_CASE).filter((f) => discovered.includes(f) && executed.get(f) === 0)]
+const empty = discovered.filter((f) => executed.get(f).cases === 0 && !ZERO_CASE[f])
+const waived = [...skipped, ...Object.keys(ZERO_CASE).filter((f) => discovered.includes(f) && executed.get(f).cases === 0)]
 
 console.log(
   `\n【测试覆盖】枚举 ${discovered.length} 个测试文件（.mjs ${discovered.filter((f) => f.endsWith('.test.mjs')).length}` +
     ` / .ts ${discovered.filter((f) => f.endsWith('.test.ts')).length}）· 实际执行 ${executed.size} 个文件 · ` +
-    `执行事件 ${[...executed.values()].reduce((a, b) => a + b, 0)}（含子测试/套件，不等于用例数）`,
+    `执行事件 ${[...executed.values()].reduce((a, b) => a + b.cases, 0)}（含子测试/套件，不等于用例数）`,
 )
 if (waived.length) {
   console.log(`ℹ️  ${waived.length} 个文件在豁免名单里（见 test-coverage-waivers.json）：`)
@@ -174,6 +189,21 @@ if (missing.length || empty.length) {
   for (const f of missing) console.error(`❌ 从未被执行：${f} —— ${globs.join(' / ')} 没匹配到它。`)
   for (const f of empty) console.error(`❌ 跑到了但一个用例都没产出：${f} —— 等于没测。`)
   console.error('\n这类文件是「孤儿测试」：护栏写在纸上、gates 却从不执行，回归可以静默通过。')
+  process.exit(1)
+}
+
+// §633：这条判红**不能只靠退出码**。node v22 在 `describe` 体（套件收集阶段）抛错时
+// 只打印一行 `not ok`，**退出码仍是 0**，`# fail` 摘要也写 0（最小复现 + 本仓 runner 级实测）。
+// 因此这里额外按 reporter 记下的 test:fail 事件逐文件核对一遍：
+// 只要任何文件真的发生过失败事件，就判红，并说明「退出码说 0 是不可信的」。
+const failedFiles = [...executed.entries()].filter(([, rec]) => rec.failures > 0)
+if (failedFiles.length) {
+  console.error()
+  for (const [f, rec] of failedFiles) {
+    console.error(`❌ 出现失败事件：${f}（${rec.failures} 个 test:fail）—— 即使 node 退出码为 0 也不能放行。`)
+  }
+  const byExit = res.status === 0 ? '（本次 node 退出码为 0 —— 这正是静默绿灯的形态）' : ''
+  console.error(`\n测试确实失败了${byExit}。别只看退出码：node 对「describe 体抛错」不返回非零码。`)
   process.exit(1)
 }
 

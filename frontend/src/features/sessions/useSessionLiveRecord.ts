@@ -3,12 +3,10 @@ import { useMeetingRecorder } from '../../composables/useMeetingRecorder'
 import { useLiveSummary } from '../../composables/useLiveSummary'
 import { useConfirm } from '../../composables/useConfirm'
 import { useToast } from '../../composables/useToast'
-import { createMeeting, updateMeeting } from '../meetings/meetings-store'
+import { createMeeting, getMeetingWithSegments, updateMeeting } from '../meetings/meetings-store'
 import { getRecordingBySession } from '../meetings/meetings-live'
-import { meetingsApi } from '../../api/meetings'
-import { isAbortError } from '../../api/http'
-import { sttSettingsApi } from '../../api/stt-settings'
-import { refetchFullTranscript, shouldAdoptFullTranscript } from '../meetings/meeting-final-transcript'
+import { finalizeRecording } from '../meetings/meeting-recording-finalize'
+import { resolveRecordingTitle } from './recording-title.ts'
 
 export function useSessionLiveRecord(sessionId: () => string, sessionTitle: () => string) {
   const meetingId = ref('')
@@ -33,7 +31,7 @@ export function useSessionLiveRecord(sessionId: () => string, sessionTitle: () =
 
   async function start() {
     const m = await createMeeting({
-      title: sessionTitle() || '会话录音',
+      title: resolveRecordingTitle(sessionId(), sessionTitle()),
       sessionId: sessionId(),
     })
     meetingId.value = m.id
@@ -50,55 +48,36 @@ export function useSessionLiveRecord(sessionId: () => string, sessionTitle: () =
   }
 
   async function stop() {
-    await recorder.stop()
+    // ★ stop() 的返回值要接住：`durationMs` 只有它给得出（§49）。
+    const stopped = await recorder.stop()
     active.value = false
     if (!meetingId.value) return
     const id = meetingId.value
-    // 收尾顺序有讲究：**先全量重转拿高精度文本，再交给 LLM 精校**。
+    // ★★ 分段与时长都必须来自**持久层 / stop() 返回值**，不能读 recorder
+    //   （recordingRuntime.stop() 在 return 前把 activeMeetingId 置空，
+    //    而 useMeetingRecorder 的 segments/elapsedMs 都按它圈定 ⇒ stop 之后
+    //    读到的恒为 [] 和 0，会让说话人归因整体失效 —— §49）。
     //
-    // 2026-10-06 修 bug 的关键：此前精校是把**分段累积的错文本**直接丢给
-    // LLM 润色。LLM 只能看到已经错了的字符，它并不知道音频里原本说的是
-    // 什么，所以「润色」修不了同音字/专有名词/数字这类识别错误。
-    // 必须先回到音频整段重转（整段上下文 = 最高准确率），再让 LLM 做
-    // 它真正擅长的事：分段、去口水词、补标点。
-    const segs = recorder.segments.value
-    const finalText = await refetchFullTranscript(id, (blob, filename) =>
-      sttSettingsApi.transcribeFull(blob, filename).then((r) => ({ text: r.text, failed: r.failed })),
+    //   读持久层而不是 `recorder.runtime.segments`：stop() 会 await 在途分段
+    //   （上限 10s），那几段是 stop 期间才落库的，只有持久层拿得到。
+    const stored = await getMeetingWithSegments(id)
+    // 收尾的全部编排（全量重转 → 说话人归因 → 人名同音纠正 → 精校 → 入库）
+    // 在共享模块里，**因为产品有两条录音路径**：
+    //   ① 这里（随手记会话内录音）
+    //   ② MeetingDetailView.onMicToggle（会议列表「开始录音」的主入口）
+    // ② 这条以前完全没有精校，§49 抽出单一实现就是防它再漏一次。
+    await finalizeRecording(
+      id,
+      stored?.segments ?? [],
+      stopped?.durationMs ?? stored?.meeting.durationMs ?? 0,
+      {
+        notify: (kind, text) => {
+          if (kind === 'success') toast.success(text)
+          else if (kind === 'warning') toast.warning(text)
+          else toast.info(text)
+        },
+      },
     )
-    // ★ 采纳判定不能省：全量重转**不保证**更好（用户中途换了更差的模型、
-    //   或长音频被上游截断）。变短一半以上就沿用分段文本——让用户看到
-    //   内容变少比看到几个错字更糟。
-    const adopt = finalText.applied && finalText.text
-      ? shouldAdoptFullTranscript(finalText.text, segs).adopt
-      : false
-    const baseSegments = adopt && finalText.text
-      ? [{ id: `${id}-full`, meetingId: id, speakerLabel: null, lang: segs[0]?.lang ?? 'zh', confidence: 1, startMs: 0, endMs: recorder.elapsedMs.value, text: finalText.text }]
-      : segs
-    try {
-      const result = await meetingsApi.refine(id, baseSegments)
-      await updateMeeting(id, {
-        refinedTranscript: result.refinedTranscript,
-        status: 'refined',
-      })
-      if (adopt && finalText.applied) {
-        const lost = finalText.failedSegments
-        toast.success(
-          lost
-            ? `录音已结束，已整段重转并精翻（有 ${lost} 段未转出）`
-            : '录音已结束，已整段重转并精翻',
-        )
-      } else {
-        toast.success('录音已结束，精翻完成')
-      }
-    } catch (e) {
-      // 「已取消」和「失败」对用户是两件不同的事：前者不该被提示成
-      // 「稍后重试」，否则会让人以为录音或会议出了什么问题。
-      if (isAbortError(e)) {
-        toast.info('已停止精翻')
-        return
-      }
-      toast.warning('录音已结束，精翻稍后可在会议详情重试')
-    }
   }
 
   async function toggle() {

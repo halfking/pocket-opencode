@@ -74,6 +74,21 @@ func defaultLLMGatewayState() llmGatewayState {
 	}
 }
 
+// LLMGatewayEnvAPIKey 返回 env 口径下的网关凭据：已 TrimSpace，且**没有内置默认**。
+//
+// ⚠ §692：`cmd/pocketd` 启动期构造 `llmgateway.NewClient` 时，此前读的是
+// `config.Load().LLMGatewayAPIKey`，而 `config.getEnv` 不做 TrimSpace
+// （`internal/config/config.go:597`）⇒ **同一个 env 被读出两个值**。
+// 实测（`POCKET_LLM_GATEWAY_API_KEY="  "`，§692 端到端探针）：
+//
+//	cfg.LLMGatewayAPIKey   = "  "     ⇒ 启动期判 `!= ""` 成立，误进企业网关分支
+//	defaultLLMGatewayState = ""       ⇒ 网关代理路径 / 设置页判「未配置」
+//
+// 后果是 `/api/embed`、`/api/llm/chat` 被路由到企业网关（凭据与地址都是空白），
+// 而设置页同一时刻报「网关未配置」。这里导出唯一实现，让启动期复用本口径，
+// 不再写第二遍（做法同 §691 的 `LLMGatewayAllowPrivate`）。
+func LLMGatewayEnvAPIKey() string { return defaultLLMGatewayState().APIKey }
+
 // obsoleteLocalGatewayURL 只认本机 docker 旧默认（8782）。
 //
 // 2026-09-30 回退：此前这里还把 https://llm.kxpms.cn 当成 obsolete 强制改写到

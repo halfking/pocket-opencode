@@ -104,6 +104,33 @@ func (s *Server) handleCreateMeeting(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(req.Title) == "" {
 		req.Title = "未命名会议"
 	}
+
+	// ★ §105 幂等：同一个客户端 ID 再同步一次，**更新同一行**而不是插第二行。
+	//
+	// 为什么会来第二次：一次「停止录音」里会串两条 POST
+	// （`useSessionLiveRecord.stop()`：fire-and-forget 的 syncMeetingMetadata，
+	// 然后 await finalizeRecording → ingestMeetingArtifacts → syncMeeting）。
+	// 本端点此前是纯 INSERT ⇒ 一次录音在云端列表里留两行同名会议。
+	//
+	// ⚠ 作用域检查是**同作用域**的（GetScoped 带 owner+workspace）而不是
+	//   「ID 存在就更新」：那是跨用户覆盖。异作用域的同号由 store 的唯一冲突
+	//   重试退回服务端发号，绝不写别人的行。
+	//
+	// ⚠ 这不是「覆盖写」，是**同步同一份事实**：两次 POST 的 title 同源
+	//   （都是 meeting.title），所以这里只改 title，不碰任何另一路才写的字段。
+	if id := strings.TrimSpace(req.ID); id != "" {
+		if existing, err := s.meetingStore.GetScoped(id, uid, workspaceID); err == nil {
+			existing.Title = req.Title
+			if err := s.meetingStore.UpdateScoped(existing, uid, workspaceID); err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to update meeting: "+err.Error())
+				return
+			}
+			writeJSON(w, http.StatusCreated, existing)
+			s.wsHub.Broadcast("meeting.synced", map[string]string{"meetingId": existing.ID, "userId": uid})
+			return
+		}
+	}
+
 	m, err := s.meetingStore.CreateScoped(req, uid, workspaceID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create meeting: "+err.Error())
@@ -163,7 +190,19 @@ func (s *Server) finalizeMeetingRefine(
 			if meta.Title != "" {
 				existing.Title = meta.Title
 			}
+			// ⚠ 2026-10-07：降级或被拦下时**不能**标 refined。
+			//
+			//   前端列表徽章把 refined 渲染成「已精翻」。而这里原先是无条件赋值，
+			//   于是 refine_fallback（§17 解析失败）与 refine_rejected（§35 名单污染
+			//   被 guardRefineResult 拦下）两种降级都会留下「已精翻」。
+			//   用户点进去看到的是刚说过的原话。
+			//
+			//   注意：这条不能只改前端 —— meetingStore 里缓存的 status
+			//   会覆盖前端本地的判断，列表读的是它。
 			existing.Status = "refined"
+			if refineDegraded(result) {
+				existing.Status = "refine-failed"
+			}
 			if err := s.meetingStore.UpdateScoped(existing, uidForStore, workspaceIDForStore); err != nil {
 				log.Printf("[meeting] update after refine %s: %v", meetingID, err)
 			}
@@ -332,4 +371,14 @@ func (s *Server) finalizeKxRefine(
 		result["note_id"] = resp.NoteID
 	}
 	return s.finalizeMeetingRefine(ctx, uid, workspaceID, meetingID, result, meta)
+}
+
+// refineDegraded 判断这次精校是不是「看起来成功、其实没有」。
+//
+// 两种降级都会带 refine_fallback=true，但**原因不同**，对外状态只需要知道
+// 「没精成」——具体原因由 refine_rejected 单独透传给前端说清楚（§36.1）。
+func refineDegraded(result map[string]any) bool {
+	fb, _ := result["refine_fallback"].(bool)
+	rj, _ := result["refine_rejected"].(bool)
+	return fb || rj
 }

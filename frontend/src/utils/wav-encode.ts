@@ -96,3 +96,19 @@ export async function ensureGatewayCompatible(blob: Blob): Promise<Blob> {
     return blob
   }
 }
+
+/**
+ * `refetchFullTranscript` 的 `toWav` 契约形态（§50）。
+ *
+ * 为什么放在这里而不是藏在收尾模块里：这是**网关音频适配**的一部分，
+ * 收尾模块只是它的一个调用方。放这里意味着
+ * ① 随手记语音路径与会议录音路径共用同一个判据（`needsWavTranscode`），
+ * ② 它是导出函数、可被单测直接验，而不是只能靠源码扫描看它「在不在」。
+ *
+ * 返回 null 表示「这个容器本来就合规，不要转」——调用方据此保留原 blob。
+ */
+export async function toGatewayWavBytes(blob: Blob): Promise<ArrayBuffer | null> {
+  if (!needsWavTranscode(blob.type)) return null
+  const wav = await encodeWav16kMono(blob)
+  return await wav.arrayBuffer()
+}

@@ -294,8 +294,13 @@ func TestSttConfigListsBothRecommendedGroups(t *testing.T) {
 	}
 	// 只守下限不写死上限：用户要求「尽可能费用少」，外部候选会随调研增补
 	// （2026-10-01 从 3 个扩到 7 个）。写死上限会诱导后来者不去补候选。
-	if gw != 3 || ext < 7 {
-		t.Fatalf("推荐模型应为网关 3 + 外部 ≥7，实际 gateway=%d external=%d", gw, ext)
+	//
+	// ⚠ §406（2026-10-11）：gateway 这一项此前写的是 `gw != 3`（精确相等），
+	//   **违反的正是上面这句注释自己主张的原则**——已导致网关候选补到 5 个时本测试变红。
+	//   与 `internal/stt/discovery_test.go` 是**同一族**的两处断言，两处必须一起改；
+	//   本轮第一次只改了 stt 那处，跑全量才发现这一处仍在红 ⇒ 「普查」不是形式。
+	if gw < 3 || gw > 10 || ext < 7 {
+		t.Fatalf("推荐模型应为网关 3..10 + 外部 ≥7，实际 gateway=%d external=%d", gw, ext)
 	}
 	// 每个外部候选都必须带地址：用户只填一把 key，地址得由推荐给出。
 	for _, m := range resp.Recommended {

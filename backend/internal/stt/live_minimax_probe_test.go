@@ -125,7 +125,7 @@ func TestLiveMiniMaxBadKey(t *testing.T) {
 	tr := &Transcriber{
 		resolve: func(context.Context, Scope) (*Target, error) {
 			return &Target{
-				BaseURL: MiniMaxDefaultBaseURL, APIKey: "sk-api-definitely-invalid-key",
+				BaseURL: MiniMaxDefaultBaseURL, APIKey: "sk-api-definitely-invalid-key", // secret-scan-ok: 合成串，字面自述 invalid；见下
 				Model: "asr-1.0", Provider: ProviderMiniMax,
 				Transport: TransportTranscriptions, Language: "zh",
 			}, nil

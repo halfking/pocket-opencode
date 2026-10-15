@@ -103,8 +103,19 @@ describe('上行 payload 与下行覆盖字段集对称', () => {
     // __tests__ -> email -> features -> src -> frontend -> worktree 根，共 5 层。
     // backend 是 worktree 根下的兄弟目录。
     const go = readSource('../../../../../backend/internal/server/server_assistant.go')
-    const body = go.slice(go.indexOf('func (s *Server) updateEmailAccount'))
+    const fnAt = go.indexOf('func (s *Server) updateEmailAccount')
+    assert.ok(fnAt >= 0, 'server_assistant.go 里找不到 updateEmailAccount —— 本条的区间起点已失效')
+    // ⚠ §513：先把区间**限定在本函数内**，再在函数体里找结束锚。
+    //   只加 `end > 0` 是不够的（第一版就是这么写的，实测被变异 B 打穿）：
+    //   那个名字在全文出现 12 次，锚被搬走后 `indexOf` 会命中**后面另一个函数**
+    //   （实测目标 :42670 → 漂到 :50595，而本函数边界在 :47877），
+    //   `end > 0` 照样成立、判据照样全绿，只是区间从 989 字符涨到 8914。
+    //   ⇒ 结束锚必须**落在目标区间内**，「在文件里存在」是不够的。
+    const fnEnd = go.indexOf('\nfunc ', fnAt)
+    assert.ok(fnEnd > fnAt, `updateEmailAccount 的函数边界没找到（fnAt=${fnAt}, fnEnd=${fnEnd}）`)
+    const body = go.slice(fnAt, fnEnd)
     const end = body.indexOf('json.NewDecoder')
+    assert.ok(end > 0, `updateEmailAccount 内的解码锚没找到（end=${end}）—— 本条的区间已越出本函数`)
     const decl = body.slice(0, end)
     for (const f of ['IMAPHost', 'IMAPPort', 'AuthType']) {
       assert.ok(decl.includes(f), `服务端 updateEmailAccount 的 body 里没有 ${f}`)

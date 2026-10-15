@@ -200,6 +200,12 @@ func parseGatewaySummary(raw string) string {
 	if text == "" {
 		return ""
 	}
+	// ⚠ 2026-10-09（§338.2）：think 剥离必须排在**围栏剥离之前**。
+	// 下面的围栏处理只在 `HasPrefix(text, "```")` 时生效，而实测的失败形状是
+	// `<think>…```json…</think>\n```json…` ⇒ 开头不是围栏 ⇒ 那段处理整段不触发。
+	// 而后面「第一个 { 到最后一个 }」的取法会把 think 里的预告 JSON
+	// 与真 JSON 拼在一起 ⇒ 邮件摘要直接回落到空串。
+	text = stripThinkBlocks(text)
 	// 去掉 ```json ... ``` 围栏
 	if strings.HasPrefix(text, "```") {
 		if i := strings.Index(text, "\n"); i >= 0 {

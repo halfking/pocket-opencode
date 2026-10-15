@@ -226,6 +226,11 @@ type incrementalRequest struct {
 	StartSec    float64 `json:"startSec"`
 	EndSec      float64 `json:"endSec"`
 	SilenceCut  bool    `json:"silenceCut"`
+	// ⚠ SilenceCut **当前不改变服务端任何行为**：它被搬进
+	// stt.IncrementalChunk 之后就没人读了（2026-10-13 变异实测，§545）。
+	// 客户端把它设成 true 不会得到「更聪明的去重」。
+	// 字段保留是因为它属于对外契约，且 #35 若采纳静音感知切分，它本就该有语义。
+	// 详见 stt/incremental.go 里 IncrementalChunk.SilenceCut 的注释。
 	// Reset 为真表示开始新会话（丢弃此前的累积文本）。
 	Reset bool `json:"reset"`
 	// IsFinal 为真表示这是最后一片。

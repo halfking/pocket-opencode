@@ -21,8 +21,19 @@ import (
 // 后 30s 是死预算」。
 //
 // 代价是**明确接受的**：上游真挂死时用户从等 30s 变成最多等 60s（整体 Timeout
-// 仍是 90s，不会无界挂死）。本测试锁的就是这个拍板结果与「必须小于整体
-// Timeout」这条不变量（60 < 90 成立）——若将来要收回，调实现的同时必须改这里。
+// 仍是 90s，不会无界挂死）。
+//
+// **2026-10-07 人工拍板再次改为 85s**：上面那个推理只覆盖了
+// `handleNoteSummarize` 那种「handler 预算 60s」的形状。**非流式**调用里
+// ResponseHeaderTimeout 压掉的是每一个调用——响应头要等上游生成全部完成才到。
+// 实测：32 分钟会议的精校回答裸 HTTP 直连 84.4s 能出结果，而产品路径
+// 60.581s 就撞 `http2: timeout awaiting response headers` 失败
+// ⇒ 配置写着 90s，实际可用预算只有 60s。
+// 取 85s：90s 是整体上限，响应头拖到 90s 则 body 没时间读；85s 让 84.4s 那次
+// 能过并留 5s 余量。代价同款：上游真挂死时最多等 85s。
+//
+// ⚠ 本测试锁的是**数字**，且额外锁住「ResponseHeaderTimeout 必须小于整体
+// Timeout」这条不变量（85 < 90 成立）——若将来要收回，调实现的同时必须改这里。
 func TestNewClient_TransportTimeouts(t *testing.T) {
 	c := NewClient("https://example.com/v1", "sk-test")
 	if c.Client.Timeout != 90*time.Second {
@@ -32,8 +43,9 @@ func TestNewClient_TransportTimeouts(t *testing.T) {
 	if !ok {
 		t.Fatalf("Transport 类型 = %T, 期望 *http.Transport", c.Client.Transport)
 	}
-	if tr.ResponseHeaderTimeout != 60*time.Second {
-		t.Errorf("ResponseHeaderTimeout = %v, want 60s（2026-10-02 人工拍板：30s 会把推理模型那 30~60s 变成死预算）", tr.ResponseHeaderTimeout)
+	if tr.ResponseHeaderTimeout != 85*time.Second {
+		t.Errorf("ResponseHeaderTimeout = %v, want 85s（2026-10-07 人工拍板：非流式调用下 60s 让 60~85s 变成死预算，"+
+			"实测长会精校 84.4s 能出结果却在 60.581s 被砍）", tr.ResponseHeaderTimeout)
 	}
 	if tr.ResponseHeaderTimeout >= c.Client.Timeout {
 		t.Errorf("ResponseHeaderTimeout(%v) 必须小于整体 Timeout(%v)，否则握手阶段永远不会先触发",

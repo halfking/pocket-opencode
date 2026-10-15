@@ -14,6 +14,7 @@ import { strict as assert } from 'node:assert'
 import { test } from 'node:test'
 import {
   CAPABILITY_PLUGINS,
+  NOT_IMPLEMENTED_PLUGINS,
   defaultProbes,
   detectCapabilities,
   requireCapability,
@@ -45,11 +46,60 @@ test('注册了真实存在的插件时能力升为 true（证明探测器不是
   })
   assert.equal(caps.recording.available, true, 'BackgroundMic 在册 → 可录音')
   assert.equal(caps.recording.background, true)
-  assert.equal(caps.recognition.asr, 'model', 'Sherpa 在册 → 本地 ASR 可用')
   assert.equal(caps.tasks.durableLocal, false, 'TaskLedger 不在册 → 不得声称有持久任务')
   assert.equal(caps.agent.available, false, 'LocalAgent 不在册 → 不得声称有 Agent')
   assert.equal(requireCapability(caps, 'recording').ok, true)
   assert.equal(requireCapability(caps, 'agent').ok, false)
+})
+
+// §179：这条是本文件最重要的一条。Sherpa 在 MainActivity 里 registerPlugin 过，
+// 所以真机上 isPluginAvailable('Sherpa') 确实返回 true；而 SherpaPlugin.java
+// 的每个 @PluginMethod 都是 call.reject。⇒ 只按「注册了没」判定会报
+// recognition.asr='model'（本地 ASR 可用），而调用 100% 失败。
+test('★ §179 已注册但未实现的插件不得让能力升为 true（Sherpa 是骨架）', () => {
+  const caps = detectCapabilities({
+    inShell: () => true,
+    platform: () => 'android',
+    // 探针说 Sherpa 可用 —— 这正是真机的读数
+    pluginAvailable: (n) => n === 'Sherpa' || n === 'BackgroundMic',
+  })
+  assert.equal(
+    caps.recognition.asr,
+    'none',
+    'Sherpa 虽已注册，但每个方法都 reject ⇒ 不得报"本地 ASR 可用"',
+  )
+  assert.equal(caps.recognition.ocr, 'none', '同一道判定，ocr 也不该跟着升')
+
+  // ★ 负控：把 Sherpa 从「未实现」表里去掉，上面这条断言必须转红。
+  // 证明它真的在咬，而不是恒真。
+  const saved = { ...NOT_IMPLEMENTED_PLUGINS }
+  delete NOT_IMPLEMENTED_PLUGINS['Sherpa']
+  try {
+    const leaked = detectCapabilities({
+      inShell: () => true,
+      platform: () => 'android',
+      pluginAvailable: (n) => n === 'Sherpa',
+    })
+    assert.equal(
+      leaked.recognition.asr,
+      'model',
+      '负控：移除登记后 asr 变 model ⇒ 说明上面那条断言确实由本表把守',
+    )
+  } finally {
+    for (const k of Object.keys(NOT_IMPLEMENTED_PLUGINS)) delete NOT_IMPLEMENTED_PLUGINS[k]
+    Object.assign(NOT_IMPLEMENTED_PLUGINS, saved)
+  }
+})
+
+test('★ 负控：不在「未实现」表里的插件仍然能正常把能力升为 true', () => {
+  // 若 anyPlugin 被改成「一律 false」，本条必须转红 —— 保证那道筛子是有缺口的，
+  // 不是把所有插件都杀掉。
+  const caps = detectCapabilities({
+    inShell: () => true,
+    platform: () => 'android',
+    pluginAvailable: (n) => n === 'BackgroundMic',
+  })
+  assert.equal(caps.recording.available, true, 'BackgroundMic 不是骨架，必须能升为 true')
 })
 
 test('⚠️ TaskLedger / LocalAgent 在本仓并不存在 —— 能力清单必须如实登记', () => {
@@ -58,9 +108,21 @@ test('⚠️ TaskLedger / LocalAgent 在本仓并不存在 —— 能力清单�
   // 界面就会渲染出一个必然 reject 的入口。
   assert.deepEqual([...CAPABILITY_PLUGINS.taskLedger], ['TaskLedger'])
   assert.deepEqual([...CAPABILITY_PLUGINS.agent], ['LocalAgent'])
-  // 真实存在的自研插件名
-  assert.ok(CAPABILITY_PLUGINS.recording.includes('BackgroundMic'))
+  // 真实存在的自研插件名。
+  assert.ok(CAPABILITY_PLUGINS.recording.includes('BackgroundMic'), 'BackgroundMic 必须在录音能力清单里')
+  // ⚠️ 注意：Sherpa **确实**是真实注册的插件，但它同时是**骨架**（方法全 reject），
+  // 所以「在能力清单里」≠「会被算作可用」—— 筛子在 NOT_IMPLEMENTED_PLUGINS。
   assert.ok(CAPABILITY_PLUGINS.recognition.includes('Sherpa'))
+  assert.ok('Sherpa' in NOT_IMPLEMENTED_PLUGINS, 'Sherpa 必须同时登记为「已注册但未实现」')
+  // 登记表的每一条都要给出可排查的理由 + 一段可校验的指纹
+  for (const [name, entry] of Object.entries(NOT_IMPLEMENTED_PLUGINS)) {
+    assert.ok(entry && typeof entry === 'object', `${name} 的登记项必须是对象`)
+    assert.ok(entry.why && entry.why.length > 10, `${name} 的未实现理由为空或过短`)
+    assert.ok(
+      entry.fingerprint && entry.fingerprint.length > 8,
+      `${name} 缺少可校验指纹（门靠它判断骨架是否还在）`,
+    )
+  }
 })
 
 test('【变异自测】探测器恒返回 false 时，本文件的正向断言会转红', () => {

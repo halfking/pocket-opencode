@@ -19,11 +19,14 @@ package stt
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/halfking/pocket-opencode/backend/internal/livetest"
 )
 
 func TestLiveGatewayASR(t *testing.T) {
@@ -196,23 +199,35 @@ func TestLiveGatewayASRMergeOverlappingChunks(t *testing.T) {
 	defer cancel()
 
 	// 扫不同切点：每次都是「前段到 a，后段从 b 开始」，b < a 形成重叠。
-	cuts := [][2]float64{{0, 3.2}, {2.6, 4.6}, {0, 2.4}, {1.8, 3.6}, {1.0, 2.8}}
-	_ = cuts
+	//
+	// ⚠⚠ §493：`cuts` 原先是这里的一个字面量表，紧接着 `_ = cuts` 把它丢掉 ——
+	// 同一份数据在下一行又以 `boundaries` 重写了一遍。
+	// ⇒ 它是**可证明的死代码**（声明后从未被读），已删。
+	//　 留着它会让下一个人以为有两套切点方案。
 	type pair struct{ a, b float64 }
 	boundaries := []pair{{3.2, 2.6}, {2.4, 1.8}, {2.8, 1.0}, {3.6, 2.4}, {4.0, 3.2}}
 
+	// ⭐ §493：5 个切点 + 两次 continue（段A/段B 失败）+ 末尾一条
+	// 「汇总：去重生效 N 次 / 未生效 M 次」——
+	// 少跑 3 个切点时，那条汇总**照旧打印**，而分母小了一圈却没人说得清。
+	// total 用 `len(boundaries)`：它是字面量表，加切点时自动跟着涨。
+	ledger := livetest.New("重叠去重探针", len(boundaries))
+
 	deduped, notDeduped := 0, 0
+	var skipped []string
 	for _, bd := range boundaries {
 		chunkA := sliceWav(t, raw, 0, bd.a)
 		chunkB := sliceWav(t, raw, bd.b, 4.6)
 		ra, err := tr.TranscribeFor(ctx, scope, chunkA, "a.wav")
 		if err != nil {
 			t.Logf("边界 %.1f/%.1f：段A 转写失败 %v（跳过该切点）", bd.a, bd.b, err)
+			skipped = append(skipped, fmt.Sprintf("%.1f/%.1f(段A)", bd.a, bd.b))
 			continue
 		}
 		rb, err := tr.TranscribeFor(ctx, scope, chunkB, "b.wav")
 		if err != nil {
 			t.Logf("边界 %.1f/%.1f：段B 转写失败 %v（跳过该切点）", bd.a, bd.b, err)
+			skipped = append(skipped, fmt.Sprintf("%.1f/%.1f(段B)", bd.a, bd.b))
 			continue
 		}
 		naive := ra.Text + rb.Text
@@ -230,8 +245,23 @@ func TestLiveGatewayASRMergeOverlappingChunks(t *testing.T) {
 		t.Logf("   段B=%q", rb.Text)
 		t.Logf("   字符级公共重叠=%d  去重%s", ov, map[bool]string{true: "已生效", false: "未生效"}[changed])
 		t.Logf("   合并=%q", merged)
+		ledger.Complete(fmt.Sprintf("%.1f/%.1f", bd.a, bd.b))
 	}
-	t.Logf("汇总：去重生效 %d 次 / 未生效 %d 次", deduped, notDeduped)
+	// ⚠⚠ §493：逐切点读数在循环**内**打印，而账本只有循环结束后才知道跑没跑完
+	// ⇒ 本行的 Report() 晚于那些读数（与 §491/§492 同一条纪律）。
+	//   这里**没有**像 FullVsChunked 那样改成「攒起来再打」，
+	//   而是因为本探针的读数是**诊断性**的、逐切点各占一段，没有可整体搬走的汇总表 ——
+	//   所以改为在**末尾**显式点名「分母是账本认的 N 个切点」，让后读的人知道前面那些行的分母。
+	if msg := ledger.Report(); msg != "" {
+		t.Error(msg)
+	}
+	t.Logf("【分母自证】账本 %d/%d 切点（跳过 %d 个：%v）",
+		ledger.Done(), ledger.Total(), len(skipped), skipped)
+	t.Logf("汇总：去重生效 %d 次 / 未生效 %d 次 —— **分母是账本认的 %d 个切点**",
+		deduped, notDeduped, ledger.Done())
+	if len(skipped) > 0 {
+		t.Log("  ⇒ 上面两个计数混着「切点被跳过」，不能当「去重对该切点无效」读。")
+	}
 }
 
 // commonSuffixPrefixLen 量「前段结尾」与「后段开头」的最长公共片段长度。

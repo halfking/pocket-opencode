@@ -31,6 +31,7 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
+import { truncateCodeUnits } from '../../utils/text'
 import Card from '../base/Card.vue'
 
 export interface Note {
@@ -64,8 +65,11 @@ const domainLabel = computed(() => {
 const truncatedContent = computed(() => {
   if (!props.note.content) return ''
   const maxLength = 120
+  // 走 truncateCodeUnits 而不是 substring(0, maxLength)：随手记正文里常有 emoji，
+  // 它占 2 个码元，切在中间会留下落单代理对，卡片上直接显示成豆腐块。
+  // §258 修的是 Go 侧同类问题；随手记这条是**用户可见**的一处。
   return props.note.content.length > maxLength
-    ? props.note.content.substring(0, maxLength) + '...'
+    ? truncateCodeUnits(props.note.content, maxLength) + '...'
     : props.note.content
 })
 

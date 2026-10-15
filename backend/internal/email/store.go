@@ -417,10 +417,16 @@ func (s *Store) ListEmails(ctx context.Context, filter ListFilter) ([]Email, err
 		var e Email
 		// Several columns are nullable in the actual schema (from_name,
 		// subject, snippet, category, importance, ai_summary,
-		// suggested_action). Use sql.NullString to scan them and copy
-		// into the in-Go struct when present.
-		var fromName, subject, snippet, category, importance, aiSummary, suggestedAction sql.NullString
-		if err := rows.Scan(&e.ID, &e.AccountID, &e.FromAddress, &fromName, &subject, &snippet, &e.Date, &e.IsRead, &e.IsStarred, &category, &importance, &aiSummary, &suggestedAction, &e.HasAttachments); err != nil {
+		// suggested_action, folder_name). Use sql.NullString to scan them and
+		// copy into the in-Go struct when present.
+		//
+		// 2026-10-11（§423）：folder_name 曾**只加在 SELECT 上、没加进 Scan**，
+		// 于是这个函数一旦被调用就在第一行抛 expected 15 destination arguments
+		// in Scan, not 14。它至今零调用点，所以没人撞上——但这正是本函数上方
+		// 「加列时两边必须同步改」那条注释所描述的失败，已经就地发生过一次。
+		// 列序的全局不变式由 store_select_scan_parity_test.go 把守。
+		var fromName, subject, snippet, category, importance, aiSummary, suggestedAction, folderName sql.NullString
+		if err := rows.Scan(&e.ID, &e.AccountID, &e.FromAddress, &fromName, &subject, &snippet, &e.Date, &e.IsRead, &e.IsStarred, &category, &importance, &aiSummary, &suggestedAction, &e.HasAttachments, &folderName); err != nil {
 			return nil, err
 		}
 		if fromName.Valid {
@@ -443,6 +449,9 @@ func (s *Store) ListEmails(ctx context.Context, filter ListFilter) ([]Email, err
 		}
 		if suggestedAction.Valid {
 			e.SuggestedAction = suggestedAction.String
+		}
+		if folderName.Valid {
+			e.FolderName = folderName.String
 		}
 		out = append(out, e)
 	}
@@ -1454,9 +1463,11 @@ func (s *Store) MarkVacationDeliverySent(ctx context.Context, vacationID, emailI
 
 // MarkVacationDeliveryFailed 记录脱敏后的发送失败，供退避后重试。
 func (s *Store) MarkVacationDeliveryFailed(ctx context.Context, vacationID, emailID, message string, failedAt int64) error {
-	if len(message) > 500 {
-		message = message[:500]
-	}
+	// 必须走 truncateStr 而不是 message[:500]：error 是**落库**字段，按字节硬切
+	// 会产出非法 UTF-8，PostgreSQL 拒绝整条 UPDATE（SQLSTATE 22021）——
+	// 后果是这条失败记录根本写不进去，不是存成乱码。
+	// truncateStr 语义不变：字节上限、回退到字符边界、不加省略号。
+	message = truncateStr(message, 500)
 	res, err := s.pool.Exec(ctx, `
 		UPDATE email_vacation_deliveries
 		SET status = 'failed', error = $3, updated_at = $4
@@ -2204,9 +2215,8 @@ func (s *Store) UpdateActionIntentStatus(ctx context.Context, intentID, userID, 
 	if status == "" {
 		return fmt.Errorf("status required")
 	}
-	if len(errMsg) > 500 {
-		errMsg = errMsg[:500]
-	}
+	// 同 MarkVacationDeliveryFailed：error 落库，按字节硬切会让整条 UPDATE 被拒。
+	errMsg = truncateStr(errMsg, 500)
 	res, err := s.pool.Exec(ctx, `
 		UPDATE email_action_intents
 		SET status = $4, error = $5, updated_at = $6, applied_at = $6
@@ -2311,8 +2321,28 @@ func scanEmail(row interface{ Scan(...any) error }) (*Email, error) {
 	var fromName, subject, snippet, category, importance, aiSummary, suggestedAction, actionReason, folderName sql.NullString
 	// action_reason 的位置在 suggested_action 之后、has_attachments 之前，与
 	// ListEmailsScoped 的 SELECT 列序一一对应。**加列时两边必须同步改** ——
-	// Scan 的位置错位不会编译报错，只会让每封邮件的字段整体串位（这里会让
-	// HasAttachments 拿到 action_reason 的值），且不产生任何错误信号。
+	// Scan 的位置错位不会编译报错，只会让每封邮件的字段整体串位。
+	//
+	// 2026-10-11（§423）修正本段的两处不准确表述：
+	//
+	//  1. 原先写「HasAttachments 拿到 action_reason 的值……且不产生任何错误信号」。
+	//     方向说反了。查 pgx v5.10.0 源码（不是凭记忆）：
+	//       - **文本列 → `*bool`**：`TextCodec.PlanScan` 只认 `*string`/`*[]byte`/
+	//         `BytesScanner`/`TextScanner`，`*bool` 一路落到 `scanPlanFail`
+	//         ⇒ **必然报错**（`cannot scan text into *bool`）。
+	//       - **bool 列 → `*string` / `*sql.NullString`**：`scanPlanString.Scan`
+	//         就是 `*p = string(src)`，`NullString.Scan` 走 `convertAssign`
+	//         ⇒ 该字段拿到字符串 `"t"` / `"f"`，**完全静默**。
+	//       - **同类型文本列互换**：静默（本函数有九个连续文本列）。
+	//     ⇒ 错位是**单向危险**的：bool 站到文本位最安全，文本站到 bool 位才炸。
+	//       本段原先举的例子恰好是安全的那一侧，还断言它不报错。
+	//
+	//  2. 「不产生任何错误信号」这句本身没错，但它被挂在了一个会报错的例子上，
+	//     于是读的人以为**所有**列序错位都无声。准确说法是：
+	//       **列数不等会报错；列序错位（尤其 bool 落到文本位、或同类型文本列互换）无信号。**
+	//
+	// 列序的全局不变式现在由 store_select_scan_parity_test.go 把守（覆盖 email
+	// 包里七条产出 Email 行的读路径）。本注释**不再**是唯一的保障。
 	//
 	// 为什么补这一列（q2）：action_reason 早就写进库了（SetClassificationWithReasonScoped
 	// / applyInlineRules），但**读路径从来没读过它**——于是「为什么这封被判为重要」

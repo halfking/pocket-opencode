@@ -43,6 +43,35 @@ import { loadMeetingAudio } from '../../native/meeting-audio.ts'
 import { filenameForMimeType } from '../../api/stt-filename.ts'
 import type { MeetingSegment } from './meetings-store'
 
+/**
+ * 全量重转的单段回执，**只声明本模块真正用到的字段**。
+ *
+ * ⚠ 刻意不 import `SttFullSegment`（api/stt-settings）：那份类型所在的模块
+ * 会拖进 http → auth store，node 环境解析不了。本文件既有的约定就是
+ * 「I/O 一律外置、纯函数必须能脱离浏览器单测」，这里遵守同一条。
+ *
+ * ★ 它同时是一个**证据**：后端 `TranscribeFull` 早就逐段返回了
+ * `[{index,startSec,endSec,text,error}]`（server_stt_stream.go:98），前端
+ * 类型 `SttFullResult.segments` 也早就声明了 —— 但下面 `transcribeFull` 的
+ * 注入签名把它结构化地抹成了 `{text, failed}`，于是字段在**接缝处**消失，
+ * 上层拿不到、也没人发现。见 `attributeFullTranscript` 的头注释。
+ */
+export interface FullSegmentReceipt {
+  index: number
+  startSec: number
+  endSec: number
+  text?: string
+  error?: string
+}
+
+/** transcribeFull 的注入契约。返回 segments 才能保住说话人归属。 */
+export interface FullTranscribeOutcome {
+  text: string
+  failed: number
+  /** 逐段回执；老调用方/老后端可能没有，那时走单段降级。 */
+  segments?: FullSegmentReceipt[] | null
+}
+
 export interface FinalTranscribeResult {
   /** 高精度整段文本；失败时为 null。 */
   text: string | null
@@ -52,6 +81,8 @@ export interface FinalTranscribeResult {
   reason?: string
   /** 有多少段没转出来（transcribeFull 的 failed 计数）。 */
   failedSegments?: number
+  /** ★ 逐段回执：带时间范围，是**唯一**能把高精度文本重新挂回说话人的依据。 */
+  segments?: FullSegmentReceipt[]
   /** 由调用方注入：把 webm blob 转成 16k WAV。
    *  录音 runtime 手上有 RollingWebmDecoder（它已经把整段解码过一次），
    *  复用它比这里再解一次省一大截 CPU；拿不到时传 null 退回原 blob。 */
@@ -69,24 +100,39 @@ export interface FinalTranscribeResult {
  */
 export async function refetchFullTranscript(
   meetingId: string,
-  transcribeFull: (blob: Blob, filename: string) => Promise<{ text: string; failed: number }>,
-  opts?: { toWav?: (blob: Blob) => Promise<ArrayBuffer | null> },
+  transcribeFull: (blob: Blob, filename: string) => Promise<FullTranscribeOutcome>,
+  opts?: {
+    toWav?: (blob: Blob) => Promise<ArrayBuffer | null>
+    /**
+     * 测试注入：直接给出音频 blob，绕过 `loadMeetingAudio`（IndexedDB +
+     * objectURL 在 node 里都没有）。
+     *
+     * ★ 为什么值得开这个口子（§50）：此前这条接缝在单测里**永远**只能验到
+     *   「降级不抛」那一步 —— 于是「传没传 toWav」「转码有没有真的发生」
+     *   两件决定真机成败的事，只能靠人读源码发现。
+     *   §50 的 webm 400 就是这么漏了四轮。给了这个口子之后，
+     *   「webm 进、wav 出」是**可执行**的断言，不再是阅读理解题。
+     */
+    loadAudio?: (meetingId: string) => Promise<Blob | null>
+  },
 ): Promise<FinalTranscribeResult> {
   if (!meetingId) return { text: null, applied: false, reason: 'no-meeting-id' }
 
   let audioUrl: string | null = null
+  let injected: Blob | null = null
   try {
-    audioUrl = await loadMeetingAudio(meetingId)
+    if (opts?.loadAudio) injected = await opts.loadAudio(meetingId)
+    else audioUrl = await loadMeetingAudio(meetingId)
   } catch (e) {
     return { text: null, applied: false, reason: `audio-load-failed: ${msg(e)}` }
   }
-  if (!audioUrl) {
+  if (!audioUrl && !injected) {
     // 录音没落盘（老版本录音、存储配额、用户提前杀进程）⇒ 沿用分段文本。
     return { text: null, applied: false, reason: 'audio-not-found' }
   }
 
   try {
-    const blob = await (await fetch(audioUrl)).blob()
+    const blob = injected ?? (await (await fetch(audioUrl!)).blob())
     if (!blob.size) return { text: null, applied: false, reason: 'audio-empty' }
 
     // 网关只收 mp3/wav，真机录的是 webm —— 必须转码。
@@ -110,6 +156,9 @@ export async function refetchFullTranscript(
       applied: true,
       // 有段失败必须透出，否则用户以为记录是完整的。
       ...(res.failed > 0 ? { failedSegments: res.failed } : {}),
+      // ★ 逐段回执必须一起带上来。它是后面 `attributeFullTranscript` 唯一
+      //   能把高精度文本挂回说话人的依据；在这里丢掉，后面就再也拿不回来。
+      ...(res.segments?.length ? { segments: res.segments } : {}),
     }
   } catch (e) {
     return { text: null, applied: false, reason: `transcribe-failed: ${msg(e)}` }
@@ -177,4 +226,184 @@ export function shouldAdoptFullTranscript(
     return { adopt: false, reason: `full-too-short(${fullClean.length}<${Math.floor(segText.length * 0.5)})` }
   }
   return { adopt: true, reason: 'ok' }
+}
+
+/** attributeFullTranscript 用得到的最小分段视图。 */
+type AttributableSegment = Readonly<
+  Pick<MeetingSegment, 'id' | 'meetingId' | 'speakerLabel' | 'lang' | 'confidence' | 'startMs' | 'endMs' | 'text' | 'origin'>
+>
+
+/** 两个闭区间 [aStart,aEnd] 与 [bStart,bEnd] 的重叠长度（不相交为 0）。 */
+function overlapMs(aStart: number, aEnd: number, bStart: number, bEnd: number): number {
+  return Math.min(aEnd, bEnd) - Math.max(aStart, bStart)
+}
+
+/** 两个区间之间的「距离」：相交为 0，否则是最近端点之差。 */
+function gapMs(aStart: number, aEnd: number, bStart: number, bEnd: number): number {
+  if (aEnd < bStart) return bStart - aEnd
+  if (bEnd < aStart) return aStart - bEnd
+  return 0
+}
+
+/**
+ * ★ 把整段高精度文本按**时间范围**挂回原有的说话人标签。
+ *
+ * ── 这个函数存在的原因：一次此前无人发现的静默信息丢失 ──
+ *   收尾全量重转返回的不只是一整段文本，还有**逐段回执**
+ *   （`[{index,startSec,endSec,text,error}]`，后端 stt/full.go 的
+ *   `FullResult.Segments`，经 `/api/stt/transcribe-full` 原样透出）。
+ *   但调用方此前把整段文本**压成一条 `speakerLabel: null` 的分段**再交给精校，
+ *   于是：
+ *     - 录音期间逐段积累、且用户**亲手改过名**的说话人标签，在停止那一刻全部消失；
+ *     - 服务端精校提示词第 6 条写着「保留每行开头的 [说话人] 标记」，
+ *       而它的输入整场会议只有**一个** `[说话人]` —— 这条要求恒真地满足，
+ *       属于「判据/契约与输入同形」的空洞；
+ *     - 产出的精校文本进笔记，用户读到的是一段无归属的长文。
+ *
+ * ── 为什么按时间挂，而不是让模型自己判断谁在说话 ──
+ *   两个转写版本的**文字不一致**（全量版才是纠过错的），所以按文本对齐
+ *   会漂；而时间范围是两版**共有**的量。逐段回执带 startSec/endSec，
+ *   实时分段带 startMs/endMs —— 只用时间做归属，不猜、不编。
+ *
+ * ── 守不住的场合返回 null，由调用方退回「压成一条」的旧行为 ──
+ *   调用方**必须**把 null 当成「照旧」，不能当成失败：
+ *     1. 有正文的回执少于 2 条 —— 一条回执表达不了轮次归属（webm 不可切分
+ *        时后端正是只回一条整段）。硬分派会把整场文本塞进某一段，
+ *        其余段保留旧文本 ⇒ **同一段内容出现两次**，比丢标签更糟。
+ *     2. 原分段里一个说话人标签都没有 —— 那就没有可挂的东西。
+ *
+ * ── 分到某段却没分到正文时，保留该段**自己的**原文本 ──
+ *   与本文件既有立场一致（`shouldAdoptFullTranscript`：宁可保持原样，
+ *   也不要让用户看到内容变少）。丢内容用户一眼看得出，边界处一小段
+ *   归属不准看不出来。
+ */
+export function attributeFullTranscript(
+  original: AttributableSegment[],
+  full: ReadonlyArray<FullSegmentReceipt> | null | undefined,
+): MeetingSegment[] | null {
+  if (!full?.length) return null
+  if (!original.some((s) => (s.speakerLabel ?? '').trim())) return null
+
+  // 有正文的回执（含失败占位），按 index 排序保证落回原顺序。
+  const bodies = full
+    .map((r) => {
+      const raw = (r.text ?? '').trim()
+      // 失败段在聚合文本里是占位符（stt/full.go 同格式）。逐段重建时若把它
+      // 丢掉，那一段就**静默消失**了 —— 与本文件一贯的「不静默丢内容」冲突。
+      const body = raw || (r.error ? `［第 ${r.index + 1} 段转写失败：${r.error}］` : '')
+      return body ? { body, start: toMs(r.startSec), end: toMs(r.endSec) } : null
+    })
+    .filter((x): x is { body: string; start: number; end: number } => x !== null)
+    .sort((a, b) => a.start - b.start)
+
+  if (bodies.length < 2) return null
+
+  const buckets: string[][] = original.map(() => [])
+  for (const b of bodies) {
+    // 两轮挑选：先在得分并列的候选里挑**还没拿到正文**的那一段，
+    // 全部都被占用时才回到纯得分。
+    //
+    // ⚠ 为什么要这两轮（2026-10-07）：两段的时间范围完全相同时
+    //   （`refine-plan.test.ts` 的 LABELED 就是 [0,1000] × 2），
+    //   严格的 `>` 比较会让**第一条**通吃所有正文，第二条变成它的尾巴重复。
+    //   后果不是「多几个重复字」——下游 `dedupeSegments` 识别出这段正文已
+    //   被前一段完全包含，会**整段丢弃**，于是第二位说话人的归属消失。
+    //   那正是 §40 花了很大力气才修回来的东西。
+    //
+    // ★ 但**只在回执带有位置信息时**才这么做：`b.start === b.end` 说明这条
+    //   回执的时间范围是退化的（wire 键被改名 ⇒ `toMs(undefined) = 0` ⇒
+    //   全部塌成 [0,0]）。那种情况下回执根本没有位置信息，把它们按顺序
+    //   分给不同分段会**让退化变得不可见** ——
+    //   `transcribe-full-wire-contract.test.ts` 守的正是这一点：
+    //   退化形态必须表现为「第 0 段吞掉全场」，否则输出看起来完全正常，
+    //   后端改了字段名都没人发现。
+    let best = b.start === b.end
+      ? pickBucket(original, buckets, b, false)
+      : pickBucket(original, buckets, b, true)
+    if (best < 0) best = pickBucket(original, buckets, b, false)
+    if (best >= 0) buckets[best].push(b.body)
+  }
+
+  return original.map((o, i) => ({
+    ...o,
+    text: buckets[i].join('\n') || o.text,
+  }))
+}
+
+/**
+ * 给一条回执挑归属分段。重叠优先；完全不相交时退化成「最近的那一段」。
+ *
+ * @param preferEmpty true 时只考虑**尚未分到正文**的分段。
+ * @returns 下标；没有可用候选时返回 -1。
+ */
+function pickBucket(
+  original: AttributableSegment[],
+  buckets: string[][],
+  b: { body: string; start: number; end: number },
+  preferEmpty: boolean,
+): number {
+  let best = -1
+  let bestScore = -Infinity
+  for (let i = 0; i < original.length; i++) {
+    if (preferEmpty && buckets[i].length > 0) continue
+    const o = original[i]
+    const ov = overlapMs(o.startMs, o.endMs, b.start, b.end)
+    const score = ov > 0 ? ov : -gapMs(o.startMs, o.endMs, b.start, b.end)
+    if (score > bestScore) {
+      bestScore = score
+      best = i
+    }
+  }
+  return best
+}
+
+/** 秒（浮点，可能来自 JSON）→ 毫秒。非有限值归零，不让 NaN 污染整条链。 */
+function toMs(sec: number): number {
+  return Number.isFinite(sec) ? Math.round(sec * 1000) : 0
+}
+
+/** buildRefineBaseSegments 的入参。 */
+export interface RefineBaseInput {
+  meetingId: string
+  /** 实时分段：带说话人标签与毫秒时间范围。 */
+  original: AttributableSegment[]
+  /** 整段重转的聚合文本。 */
+  fullText: string
+  /** 整段重转的逐段回执（可能缺失）。 */
+  fullSegments?: ReadonlyArray<FullSegmentReceipt> | null
+  /** 录音总时长（毫秒），用于压成一条时的兜底区间。 */
+  elapsedMs: number
+}
+
+/**
+ * ★ 决定「交给精校的 baseSegments 到底是什么」——**纯函数，可直接单测**。
+ *
+ * 抽出来的理由与本文件 `resolveUploadTarget` 同一条：这段决策原先埋在
+ * Vue composable 里（要 meetingId / recorder / toWav 才能跑），于是判据只能
+ * 去扫源码形状 —— 而「扫到 `??` 就算过」这种判据，把 `attributed` 换成永不为
+ * null 的表达式照样全绿。**判据必须能执行到那条分支。**
+ *
+ * 三条路径：
+ *   1. 不采纳重转 ⇒ 原样用分段（既有行为）；
+ *   2. 采纳且能可靠挂回说话人 ⇒ 用挂了归属的高精度分段；
+ *   3. 采纳但挂不回去 ⇒ 压成一条（旧行为，保留为安全网而不是主路径）。
+ */
+export function buildRefineBaseSegments(input: RefineBaseInput): MeetingSegment[] {
+  const { meetingId, original, fullText, fullSegments, elapsedMs } = input
+  const attributed = attributeFullTranscript(original, fullSegments)
+  if (attributed) return attributed
+  const first = original[0]
+  return [{
+    id: `${meetingId}-full`,
+    meetingId,
+    speakerLabel: null,
+    lang: first?.lang ?? 'zh',
+    confidence: 1,
+    startMs: 0,
+    endMs: elapsedMs,
+    text: fullText,
+    // §132：这条是**整段高精度重转**的产物（ASR），不是人写的 ——
+    // 因此它**要**享受相邻去重，不能因为「看起来像一条大段」就豁免。
+    origin: 'asr',
+  }]
 }

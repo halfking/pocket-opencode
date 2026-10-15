@@ -31,6 +31,12 @@ const SKIP_DIRS = new Set(['node_modules', 'dist', 'build', 'coverage', '.vite',
 // （曾经以为 .ts "跑不了"——那是 4cd6e7e 的结论。2026-10-02 实测：55 个 .test.ts 里
 //   54 个共 333 个用例在 node 22 下全部通过，只有 flashcardIo.test.ts 因源码无扩展名
 //   import 跑不起来。333 个从不执行的测试比 91 个 .mjs 更值得接进 gates。）
+//
+// ★ 这份清单必须与 runner 的 `SUFFIXES` 一致，而**一致性是验出来的、不是注释保证的**
+//   （2026-10-07 修，见下面的 `--print-files` 对账）。原来两边各写一份、无人核对：
+//   实测只给 runner 的枚举加一类 `.test.js` ⇒ runner 真的去跑它们，
+//   而本门压根不知道这一类存在 ⇒ **这一类的孤儿永远不会被报出来**，
+//   也就是这道门存在的目的被绕过，而且读数是全绿。
 const ENFORCED_SUFFIXES = ['.test.mjs', '.test.ts']
 
 function walk(dir, suffix, out = []) {
@@ -160,11 +166,106 @@ for (const name of reachable) {
 const WAIVERS = JSON.parse(readFileSync(join(here, 'test-coverage-waivers.json'), 'utf8'))
 const waived = { ...(WAIVERS.unrunnable ?? {}), ...(WAIVERS.zeroCase ?? {}) }
 
+/**
+ * **冻结的豁免名册**：只允许下面这 2 个 key。
+ *
+ * ★ 为什么必须冻结（2026-10-07 实测，不是推断）：
+ *   `staleWaivers` 那一段只挡住「豁免指向的文件被删了」，
+ *   **完全挡不住「新增一条豁免」**。
+ *   实测：造一个孤儿测试文件 ⇒ 本门 `EXIT=1`（正确）；
+ *   往 `test-coverage-waivers.json` 里加一条 ⇒ 本门 **`EXIT=0`**，
+ *   新条目与两条合法条目**并排打印**，读起来像完全正常。
+ *   而那份 JSON 的 `note` 自己写着「只登记存量，**不许新增**」
+ *   ⇒ **注释声称的契约当时并没有被实现。**
+ *
+ * 修法与 `z-index-ladder` 的 ALLOWLIST 同形：把「允许存在的豁免」钉在**代码里**。
+ * 代价是加一条合法豁免要连这里一起改 —— 这正是想要的阻力：
+ * 它让「多一条豁免」变成一次**在代码 diff 里看得见**的动作，
+ * 而不是往 JSON 里塞一行就完事。
+ */
+const ALLOWED_WAIVERS = new Set([
+  // 无扩展名 import，node --test 直接 ERR_MODULE_NOT_FOUND
+  'src/features/flashcards/utils/__tests__/flashcardIo.test.ts',
+  // 全文 3 行注释的空占位（理由见 waivers JSON）
+  'src/native/__tests__/recordingRuntimeMimeFallback.test.mjs',
+])
+const unapprovedWaivers = Object.keys(waived).filter((f) => !ALLOWED_WAIVERS.has(f))
+
+/**
+ * 测试文件数下限。**只能手工改常量**，不给命令行开关。
+ *
+ * ★ 为什么需要（2026-10-07 实测）：下面那条 `!found.length` 只挡「**全空**」。
+ *   而枚举退化往往是**部分**的 —— walk 里某层 statSync 抛错被 catch 吞掉、
+ *   SKIP 集合被谁加了一个目录名、某个 __tests__ 被重命名 ——
+ *   结果是「从 287 个悄悄变成 30 个」，orphans 照样是空，
+ *   「无孤儿 ✅」照打。**覆盖率掉了，而门说全覆盖。**
+ *
+ *   取 200：本仓当前 287（并行会话仍在加测试）。正常增删不会误报，
+ *   而**大比例**的枚举退化会撞上。抓不住「只掉两三个」—— 那是它的边界，不假装能抓。
+ */
+const MIN_TEST_FILES = 200
+
 const found = ENFORCED_SUFFIXES.flatMap((s) => walk(ROOT, s)).sort()
 if (!found.length) {
   console.error(`❌ 整个 frontend/ 下没找到任何测试文件（${ENFORCED_SUFFIXES.join(' / ')}）—— 判据本身失效了，别空转绿灯。`)
   process.exit(2)
 }
+if (found.length < MIN_TEST_FILES) {
+  console.error(`❌ 只枚举到 ${found.length} 个测试文件 < 下限 ${MIN_TEST_FILES} —— 枚举漏了东西，拒绝按「通过」处理。`)
+  console.error('   上一条只挡「全空」；**部分**退化（某层 statSync 失败被吞、SKIP 被加了目录名、')
+  console.error('   某个 __tests__ 被改名）会让「覆盖率掉了」而门照样打「无孤儿 ✅」。')
+  console.error('   下限只能手工改上面的 MIN_TEST_FILES 常量，本门不给命令行开关。')
+  process.exit(2)
+}
+// ── 2c. 与 runner 的**实际枚举结果**对账（2026-10-07 新增）──
+//
+// 覆盖判定是「glob 展开 ∩ 本门自己的清单」。而 runner 真正遍历的是它自己那份 SUFFIXES。
+// 两份清单只要不一致，**不一致的那一类**就成了孤儿卡的盲区：
+// 本门不认为它是测试 ⇒ 不会报它；runner 却会真的去跑它。
+//
+// 实测（2026-10-07）：只给 runner 的枚举加一类 `.test.js` ⇒ runner 运行时那行
+// 「枚举 287 个测试文件 · 实际执行 287 个」照常打，而本门 EXIT=0 且从不提这一类
+// ⇒ **这一类的孤儿永远不会被报出来**，也就是这道门存在的目的被绕过。
+//
+// 只改 `COVERAGE_GLOBS` 也一样坏，只是坏得「好看」：本门会收到一个新 glob，
+// 展开后匹配 0 个文件 ⇒ `deadGlobs` 报红，可它让人去查路径拼写，
+// 而真实原因是**后缀清单不一致**。两种坏法都指向同一个缺失：对账。
+//
+// 修法：runner 加 `--print-files` 把真正枚举到的文件吐出来，这里逐条比。
+const runnerFiles = new Set()
+for (const runner of enumerators) {
+  const res = spawnSync(process.execPath, [runner, '--print-files'], { cwd: ROOT, encoding: 'utf8' })
+  if (res.status !== 0) {
+    console.error(`❌ ${relative(ROOT, runner)} --print-files 失败：${(res.stderr || '').trim()}`)
+    process.exit(2)
+  }
+  for (const line of res.stdout.trim().split(/\r?\n/).filter(Boolean)) runnerFiles.add(line)
+}
+if (runnerFiles.size === 0) {
+  console.error('❌ runner 一个测试文件都没枚举到 —— 对账无从做起，拒绝按「通过」处理。')
+  process.exit(2)
+}
+const runnerOnly = [...runnerFiles].filter((f) => !found.includes(f)).sort()
+const gateOnly = found.filter((f) => !runnerFiles.has(f)).sort()
+if (runnerOnly.length || gateOnly.length) {
+  console.error('❌ 本门与 runner 的测试文件清单对不上 —— 有一类测试正在被绕过：')
+  if (runnerOnly.length) {
+    console.error(`   runner 认、本门不认（${runnerOnly.length} 个）—— **这些文件的孤儿永远不会被报出来**：` 
+      )
+    for (const f of runnerOnly.slice(0, 20)) console.error(`     ${f}`)
+    if (runnerOnly.length > 20) console.error(`     …还有 ${runnerOnly.length - 20} 个`)
+  }
+  if (gateOnly.length) {
+    console.error(`   本门认、runner 不认（${gateOnly.length} 个）—— 本门在守一批 runner 根本不跑的文件：`)
+    for (const f of gateOnly.slice(0, 20)) console.error(`     ${f}`)
+    if (gateOnly.length > 20) console.error(`     …还有 ${gateOnly.length - 20} 个`)
+  }
+  console.error('   修法：让两边的后缀清单一致（本门 ENFORCED_SUFFIXES 与 run-mjs-tests.mjs 的 COVERAGE_GLOBS），然后重跑。')
+  console.error('        注意这不是路径拼写问题。')
+  process.exit(2)
+}
+console.log(`  与 runner 实际枚举结果对账：${runnerFiles.size} 个文件逐条一致`)
+
 const staleWaivers = Object.keys(waived).filter((f) => !found.includes(f))
 const enforced = found.filter((f) => !waived[f])
 
@@ -186,8 +287,29 @@ for (const p of patterns) {
 }
 const explicit = patterns.filter((p) => !p.glob.includes('*'))
 const explicitMiss = explicit.filter((p) => p.matched.length === 0)
-console.log(`    另有 ${explicit.length} 条显式文件路径（test:native / test:stt 等分组脚本），全部命中`)
+// ★ 「全部命中」必须**按读数说**，不能无条件印（2026-10-07 实测，与 §102.4 同款）。
+//   原来这行是常量字符串。实测把 test:native 的一个路径改成不存在的文件：
+//   本门**正确地** EXIT=1 并点名那条路径，可**同一份输出里**前面一行还印着
+//   「另有 15 条显式文件路径…**全部命中**」——而且「15」正是它自己在数的那批。
+//   退出码没错，但人读输出会拿到一条**指向刚失败的那组脚本**的假肯定。
+//   ⇒ 失败时印实际数与缺口数，让人一眼看出是哪几条没命中。
+console.log(
+  `    另有 ${explicit.length} 条显式文件路径（test:native / test:stt 等分组脚本），` +
+    (explicitMiss.length
+      ? `**${explicit.length - explicitMiss.length} 条命中 · ${explicitMiss.length} 条没命中**`
+      : '全部命中'),
+)
 console.log(`    被覆盖 ${covered.size} / ${enforced.length}${orphans.length ? ` · **孤儿 ${orphans.length}**` : ''}\n`)
+
+if (unapprovedWaivers.length) {
+  console.error('❌ 豁免名单里有**名册之外**的条目——「只登记存量，不许新增」是可以绕过的：')
+  for (const f of unapprovedWaivers) console.error(`   ${f}`)
+  console.error('   （实测：加一条豁免就能让一个孤儿测试文件静默免检，而旧版本对此 EXIT=0）\n')
+  console.error('   要新增合法豁免，必须同时在两处登记，让它在代码 diff 里看得见：')
+  console.error('     ① 本文件 scripts/check-test-coverage.mjs 的 ALLOWED_WAIVERS')
+  console.error('     ② scripts/test-coverage-waivers.json（附理由）\n')
+  process.exit(1)
+}
 
 if (staleWaivers.length) {
   console.error('❌ 豁免名单里有文件已经不存在了——这会让"删掉测试"变成永久免检，请清理：')
@@ -198,8 +320,26 @@ if (staleWaivers.length) {
 
 if (deadGlobs.length || explicitMiss.length) {
   console.error('❌ 以下 gates 脚本里的测试 glob / 路径一个文件都没匹配到（静默失配，node 不会报错）：')
-  for (const p of [...deadGlobs, ...explicitMiss]) console.error(`   ${p.glob}  ← ${p.from}`)
+  // 一条路径可能同时落进 deadGlobs 与 explicitMiss（它既是「像 glob」又是「零匹配」
+  // 时两个集合都会收它）⇒ 直接拼起来会把**同一条**印两遍。
+  // 失败清单里出现重复项，会让人以为是两个不同的缺陷而多花一轮排查。
+  const seenMiss = new Set()
+  for (const p of [...deadGlobs, ...explicitMiss]) {
+    const k = `${p.glob} :: ${p.from}`
+    if (seenMiss.has(k)) continue
+    seenMiss.add(k)
+    console.error(`   ${p.glob}  ← ${p.from}`)
+  }
   console.error('   路径/前缀写错时 node --test 会安静地什么都不跑，退出码仍是 0。\n')
+  // ★ 这里原来只打印、不退出（2026-10-07 修）。实测那个后果是**整组门被废掉而全绿**：
+  //   把 `test:styles` 的 glob 改成 `src/styles/__tests2/*.test.mjs`（目录不存在）⇒
+  //     ① `npm run test:styles` 实测 `# pass 0 / # fail 0`、**EXIT=0**（node 不报错）
+  //     ② 本卡口**算出了**「覆盖 0 ❗零匹配」并打印 ❌，却仍 **EXIT=0** 并打出绿色 ✅
+  //     ③ `run-gates` 报 36/36 全通过
+  //   ⇒ 一整组门彻底空跑，而整条门禁链没有任何一处会红。
+  //   覆盖没掉是因为 `src/**` 枚举仍然覆盖着这些文件 —— **「无孤儿」与「这一组真的在跑」是两件事。**
+  console.error('   要新增/改名测试文件后，请同步更新 gates 可达脚本里的路径或 glob。\n')
+  process.exit(1)
 }
 
 if (orphans.length) {

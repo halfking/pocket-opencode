@@ -286,6 +286,8 @@ func Load() Config {
 		environment = "production"
 	}
 
+	pgDSN, pgSchema := PGTargetFromEnv()
+
 	return Config{
 		Environment:              environment,
 		HTTPPort:                 getEnv("POCKET_HTTP_PORT", "8088"),
@@ -310,8 +312,8 @@ func Load() Config {
 		WeComEncodingAESKey:      getEnv("POCKET_WECOM_ENCODING_AES_KEY", ""),
 		WeComCorpID:              getEnv("POCKET_WECOM_CORP_ID", ""),
 		// Phase 0 个人助理模块
-		PostgresDSN:                 getFirstEnv([]string{"POCKET_POSTGRES_DSN", "DATABASE_URL"}, ""),
-		PostgresSchema:              getEnv("POCKET_PG_SCHEMA", "opencode_pocket"),
+		PostgresDSN:                 pgDSN,
+		PostgresSchema:              pgSchema,
 		GroqAPIKey:                  getEnv("POCKET_GROQ_API_KEY", ""),
 		KxMemoryBaseURL:             getEnv("POCKET_KXMEMORY_BASE_URL", ""),
 		KxMemoryNoteClassifyPath:    getEnv("POCKET_KXMEMORY_NOTE_CLASSIFY_PATH", "/v1/notes/classify"),
@@ -444,9 +446,16 @@ func (c Config) Validate() error {
 
 	// Security: JWT secret must be strong and not use development default
 	// （同时拒绝历史 26 字节死默认值，防止旧配置文件残留）
-	if len([]byte(c.JWTSecret)) < 32 ||
-		c.JWTSecret == DevDefaultJWTSecret ||
-		c.JWTSecret == "pocket-dev-insecure-secret" {
+	//
+	// ⚠ §692：长度必须按 **TrimSpace 后**的有效字符算。此前直接量 `c.JWTSecret`
+	// 的字节数，于是 `POCKET_JWT_SECRET="                    "`（32 个空格）
+	// 恰好 32 字节、不等于任何 dev 默认值 ⇒ **生产环境被放行**，
+	// 用一把纯空白密钥签发 JWT。这与 §690（诊断页对 `POCKET_LLM_GATEWAY_API_KEY`
+	// 说谎）、§691（SSRF 开关日志说谎）同族：空白值在不同口径下被当成「有值」。
+	jwtSecret := strings.TrimSpace(c.JWTSecret)
+	if len([]byte(jwtSecret)) < 32 ||
+		jwtSecret == DevDefaultJWTSecret ||
+		jwtSecret == "pocket-dev-insecure-secret" {
 		return fmt.Errorf("POCKET_JWT_SECRET must be at least 32 bytes and must not use the development default")
 	}
 
@@ -642,6 +651,22 @@ func getFirstEnv(keys []string, fallback string) string {
 		}
 	}
 	return fallback
+}
+
+// PGTargetFromEnv 返回进程启动期实际会用的 PG 连接目标：DSN（含 DATABASE_URL 回退）
+// 与 schema。这是这两个值的**唯一实现**，`Load()` 与诊断命令 `cmd/gwdbg` 都走它。
+//
+// ⚠ §692：`cmd/gwdbg` 此前自己写了一遍，而且**多了一个后端从不使用的默认 DSN**
+// （写死的 `postgres://postgres@127.0.0.1:5432/postgres`），同时只认
+// `POCKET_POSTGRES_DSN`、不认后端明确支持的 `DATABASE_URL`
+// （`getFirstEnv([]string{"POCKET_POSTGRES_DSN", "DATABASE_URL"}, "")`）。
+// ⇒ 在用 `DATABASE_URL` 部署的实例上跑 gwdbg，它会去连**另一个库**，
+// 于是对「POST 到底落没落库」给出**假阴性**——而这正是该探针存在的目的，
+// 也是它自己注释里为 schema 写过的那条警告（"静悄悄地给出『没落库』的错结论"）。
+// 导出本函数是为了让探针复用口径，而不是各自再读一遍 env。
+func PGTargetFromEnv() (dsn, schema string) {
+	return getFirstEnv([]string{"POCKET_POSTGRES_DSN", "DATABASE_URL"}, ""),
+		getEnv("POCKET_PG_SCHEMA", "opencode_pocket")
 }
 
 // parseIntList parses a comma-separated list of positive integers (e.g., "14096,14097,8080").

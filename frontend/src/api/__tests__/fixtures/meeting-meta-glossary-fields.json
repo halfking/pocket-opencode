@@ -1,0 +1,15 @@
+{
+  "declared": [
+    "location",
+    "participants",
+    "title",
+    "topic"
+  ],
+  "unused": [],
+  "used": [
+    "location",
+    "participants",
+    "title",
+    "topic"
+  ]
+}

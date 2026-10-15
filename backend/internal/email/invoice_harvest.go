@@ -984,9 +984,10 @@ func sanitizeFileName(s, fallback string) string {
 	if s == "" || s == "." || s == ".." {
 		return fallback
 	}
-	if len(s) > 60 {
-		s = s[:60]
-	}
+	// 走 truncateStr 而不是 s[:60]：调用方传进来的是 inv.Category / inv.Seller /
+	// inv.InvoiceNo，销售方与分类都是中文且**落库**，按字节硬切会产出非法 UTF-8，
+	// PostgreSQL 拒绝整条写入（SQLSTATE 22021）。语义不变：仍是 60 字节上限。
+	s = truncateStr(s, 60)
 	return s
 }
 

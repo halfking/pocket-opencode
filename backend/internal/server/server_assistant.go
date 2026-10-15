@@ -576,6 +576,33 @@ func (s *Server) handleNoteClassify(w http.ResponseWriter, r *http.Request, id s
 //
 // 对笔记内容调用 LLM 生成总结。适用于长语音笔记转写后的精炼摘要。
 // 返回 { summary: string }。需要 llmBFF 已配置。
+// buildNoteSummaryPrompt 组装笔记总结的提示词。
+//
+// 2026-10-06 从「纯文本总结」改成「JSON（summary + action_items）」。
+//
+// 为什么：需求里「录音时总结 + 把时间点自动加进日程」这条在随手记侧
+// 此前**没有任何落点** —— 会议侧有 action_items（/api/meetings/{id}/summary
+// 返回 action_items），笔记侧只回一个 summary 字符串，前端拿不到任何
+// 期限信息，于是「明天下午三点」这类时间点在语音笔记里彻底消失。
+//
+// 为什么可以安全改格式：解析失败时回落到「把模型原文当 summary」，
+// 也就是本函数改动前的行为。summarize 的下游只有 notesStore.updateNote
+// 的 summary 字段与自动记账，二者都不要求 JSON，所以退化路径不产生
+// 新的失败形态。
+//
+// 抽成函数而不是留在 handler 内：真网关探针（live_gateway_probe_test.go）
+// 要用**同一份**提示词去验「真网关是否遵守 JSON 契约」。探针里手抄一份
+// 的话，两边一漂移探针就在自测自己，验出来的东西没有意义。
+//
+// body 传的是 BodyForLLM（完整正文）而不是 Snippet：此前喂的是开头
+// 200 字 ⇒ 长语音笔记后半段说的行动项根本抽不到。6000 字上限按**字符**
+// 算（见 Note.BodyForLLM 的注释）。
+func buildNoteSummaryPrompt(body string) string {
+	return "请为以下笔记内容生成一段简洁的总结（3-5句话），并从中提取可执行的行动项。\n" +
+		"严格返回 JSON（不要 markdown）：{\"summary\":\"3-5句话总结\",\"action_items\":[{\"text\":\"事项\",\"assignee\":\"负责人（未知则空字符串）\",\"due\":\"期限（未知则空字符串）\"}]}\n" +
+		"要求：action_items 只放转写里真实提到、且需要有人去做的事；期限保留用户原话（如「明天下午三点」），不要自己换算成日期；没有就返回空数组。\n\n" + body
+}
+
 func (s *Server) handleNoteSummarize(w http.ResponseWriter, r *http.Request, id string) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "POST only")
@@ -637,17 +664,11 @@ func (s *Server) handleNoteSummarize(w http.ResponseWriter, r *http.Request, id 
 	// 也就是本函数改动前的行为。summarize 的下游只有 notesStore.updateNote
 	// 的 summary 字段与自动记账，二者都不要求 JSON，所以退化路径不产生
 	// 新的失败形态。
-	prompt := fmt.Sprintf(
-		"请为以下笔记内容生成一段简洁的总结（3-5句话），并从中提取可执行的行动项。\n"+
-			"严格返回 JSON（不要 markdown）：{\"summary\":\"3-5句话总结\",\"action_items\":[{\"text\":\"事项\",\"assignee\":\"负责人（未知则空字符串）\",\"due\":\"期限（未知则空字符串）\"}]}\n"+
-			"要求：action_items 只放转写里真实提到、且需要有人去做的事；期限保留用户原话（如「明天下午三点」），不要自己换算成日期；没有就返回空数组。\n\n%s",
-		found.Snippet,
-	)
 	req := llmbff.ChatRequest{
 		WorkspaceID: wsID,
 		Model:       "auto", // 智能路由
 		Messages: []llmbff.Message{
-			{Role: "user", Content: prompt},
+			{Role: "user", Content: buildNoteSummaryPrompt(found.BodyForLLM(6000))},
 		},
 		Temperature: 0.3,
 		// 300 → 2048。
@@ -678,7 +699,7 @@ func (s *Server) handleNoteSummarize(w http.ResponseWriter, r *http.Request, id 
 	//
 	// 解析失败时 summary 回落成模型原文（即本函数改动前的行为）、
 	// action_items 为空 —— 一个字段的失败不许让另一个字段一起丢。
-	summary, actionItems := parseNoteSummaryPayload(resp.Content)
+	summary, actionItems, summaryFellBack := parseNoteSummaryPayloadWithFallback(resp.Content)
 
 	// 自动记账：笔记内容命中金额/收支/类目关键词时自动入账（source=auto）。
 	// 幂等：以 note:<id> 为 note_ref 幂等键，重复总结返回既有记录，不再重复入账。
@@ -726,7 +747,15 @@ func (s *Server) handleNoteSummarize(w http.ResponseWriter, r *http.Request, id 
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"summary":              summary,
+		"summary": summary,
+		// ⚠ §222：summary 是**模型原文**时必须说清楚。
+		//   它非空、读起来像一段话，与真摘要形态上分不出来 ⇒ 调用方此前
+		//   把它当真摘要 `updateNote({summary})` **写进库并持久化**，
+		//   于是「抱歉，无法生成摘要」这类散文会长期占着笔记的 AI 总结字段。
+		//   ⚠ 不是所有回落都是坏事：模型没听 JSON 指令而直接给了通顺的
+		//   纯文本总结，那正是本提示词改格式**之前**的行为，丢掉它才是浪费。
+		//   ⇒ 这里只声明「这是原文」，**由调用方决定要不要存**。
+		"summary_fallback":     summaryFellBack,
 		"action_items":         actionItems,
 		"model":                resp.Model,
 		"usage":                resp.Usage,
@@ -754,12 +783,48 @@ type noteActionItem struct {
 // 一次格式抖动就会让用户已经写好的语音笔记「总结消失」，比多一个行动项
 // 严重得多。
 func parseNoteSummaryPayload(content string) (string, []noteActionItem) {
+	summary, items, _ := parseNoteSummaryPayloadWithFallback(content)
+	return summary, items
+}
+
+// parseNoteSummaryPayloadWithFallback 是带**回落标志**的版本。
+//
+// 为什么要多这个出口：回落时返回的 summary 是**模型原文**，
+// 形态上与真摘要**没有任何区别**（非空、看起来像一段话），
+// 调用方据此把它当成真摘要写进笔记并**持久化**。
+// ⇒ 唯一能加的东西是信号：让调用方知道「这段不是摘要」。
+//
+// ⚠ 为什么这里**不能**照抄会议侧（那边回落是原始转写、这边是模型原文）：
+//
+//	随手记这条路径的回落内容可能是**有用的**——模型没听 JSON 指令、
+//	直接给了一段通顺的纯文本总结（那正是 2026-10-06 改格式**之前**的行为）。
+//	把 content 换成空串会丢掉这个正当形态；所以处置是**标记**，不是清空。
+//
+// ⚠ 老的两值签名保留：它有 11 个调用点（多数是判据），
+//
+//	其「回落时给内容而不是报错」的语义是被钉住的。
+//	它的第二个返回值语义不变，只有 handler 需要第三个。
+func parseNoteSummaryPayloadWithFallback(content string) (string, []noteActionItem, bool) {
 	var parsed struct {
 		Summary     string           `json:"summary"`
 		ActionItems []noteActionItem `json:"action_items"`
 	}
 	if err := json.Unmarshal([]byte(extractJSON(content)), &parsed); err != nil {
-		return content, []noteActionItem{}
+		return content, []noteActionItem{}, true
+	}
+	// ⚠ 2026-10-06 补的空值闸（与 parseSummaryJSON / parseRefineJSON 同一类）。
+	//
+	// 解析成功但 summary 是空串时，直接返回空摘要 ⇒ 随手记的 AI 总结
+	// 面板一片空白。回落成模型原文（与「解析失败」同一条路）至少还有内容。
+	//
+	// ⚠ 2026-10-08（§222）更正上面那句注释的前提：
+	// 「若这里返回空 summary，一次格式抖动就会让用户已经写好的语音笔记总结消失」
+	// ——这个代价**后来已经被前端消掉了**：`presentVoiceDraft` 的 else 分支
+	// 现在会设 `summarizeError` 明确提示（不是静默消失）。
+	// ⇒ 所以「宁可给原文也别给空」这条规矩的前提已变，
+	//   真正的问题不再是「消失」，而是**原文被当成摘要持久化**。
+	if strings.TrimSpace(parsed.Summary) == "" {
+		return content, []noteActionItem{}, true
 	}
 	items := make([]noteActionItem, 0, len(parsed.ActionItems))
 	for _, it := range parsed.ActionItems {
@@ -768,7 +833,7 @@ func parseNoteSummaryPayload(content string) (string, []noteActionItem) {
 		}
 		items = append(items, it)
 	}
-	return parsed.Summary, items
+	return parsed.Summary, items, false
 }
 
 // noteBookkeepingMismatch — 重新总结解析出的记账与该笔记已入账记录是否不一致
@@ -2717,6 +2782,17 @@ func (s *Server) handleSttTranscribe(w http.ResponseWriter, r *http.Request) {
 	// frontend/src/api/stt.ts 的 cloudTranscribe() 已经在读 res.costCents，
 	// 这里不返回就等于成本统计永远是 undefined，而且没有任何报错——
 	// 这种"契约写了一半"的缺口最难查。
+	// ⚠ §457（2026-10-11 登记，**未修**）：本调用方走 `TranscribeFor`
+	// （最后一个参数 false ⇒ 要 verbose_json + 词级时间戳 + 分离），
+	// 而下面这个 writeJSON **一个增强字段都没吐** ⇒ 拿回来直接丢掉。
+	//
+	// ⚠ 这条路径是**会议与随手记两条链的逐段入口**（§448：随手记走
+	// `useVoiceRecording.ts` → `sttApi.transcribe`），即每段都在付这份钱。
+	// 代价不只是浪费：分离会多带一整面 `408/500/503 diarization_unavailable`
+	// 的失败面（§120 注释原话），而它会让**整段转写失败** ⇒ 那一段文字就没了
+	// ⇒ 直接打在「录音转写的不太准确」上。
+	//
+	// 同 §120 的原则，但 §120 只覆盖切块链路，没覆盖这里 ⇒ 登记为 #24 待拍。
 	writeJSON(w, http.StatusOK, map[string]any{
 		"text":       result.Text,
 		"confidence": result.Confidence,
@@ -2963,10 +3039,69 @@ func (s *Server) llmChatViaBFF(w http.ResponseWriter, r *http.Request, msgs []ai
 	writeJSON(w, http.StatusOK, map[string]string{"content": resp.Content, "model": resp.Model})
 }
 
+// ErrOutputTruncated —— 上游**成功返回了**，但正文被输出预算截断
+// （finish_reason=length）。
+//
+// ⚠ 它和「调用失败」是**两件不同的事**，必须分开，否则界面会报没发生的事：
+//
+//	调用失败 = 没拿到东西（网络 / 超时 / 未配置）
+//	           ⇒ 走调用方的「失败」路径是对的（502、前端弹错）。
+//	截断     = 拿到了东西但**不能用**（多半是半截 JSON）
+//	           ⇒ 应当走调用方早就写好的「模型不听话」路径：
+//	             回落原始转写 / 空结果。
+//
+// 混为一谈的后果：精校被截断时返回 502「精翻失败」，而实际上转写已经安全落库，
+// 模型只是**没把话说完**。用户看到的是一次失败，真实发生的是一次降级。
+var ErrOutputTruncated = errors.New("llm 输出被 finish_reason=length 截断")
+
+func isTruncatedOutput(err error) bool { return errors.Is(err, ErrOutputTruncated) }
+
 // llmChatOnce — meeting 摘要/润色等后端内部一次性 chat 的统一入口：
 // llmBFF 已装配时走动态网关（与 /api/llm/chat 同源：按 workspace 实时解析
 // /api/llm-gateway/config，空 model 用 preferred 首选，no_candidate 自动回退），
 // 否则回退静态 s.llm。返回 (content, provider 实际使用的 model, err)。
+//
+// ★ 2026-10-07：底层从**非流式**改成**消费流式**。
+//
+// 为什么改（§45 的真网关读数，不是推理）：
+//
+//	非流式下响应头要等**生成全部完成**才到，于是 `ResponseHeaderTimeout: 60s`
+//	实际变成了「整段生成必须在 60s 内跑完」。同一份 32 分钟会议的提示词实测过
+//	28.8s 与 84.4s 两次 —— 预算正好落在方差中间，调数字治不了它。
+//	流式下首字节 ~2.2s（网关 keep-alive），之后每个 delta 都在续命，
+//	84.4s 那次不再被响应头超时砍掉；总耗时不变（仍受 `Timeout: 90s` 约束）。
+//
+//	仍然是「攒齐再返回」：本函数对调用方的契约没变（一次性拿到完整正文），
+//	变的只是**什么时候开始收**。
+//
+// 三条降级语义（对所有调用方统一）：
+//  1. **半截正文绝不返回。** 上层解析失败时，把已攒到的半截 JSON 当成功返回
+//     等于交付一个**从未存在过**的字符串。§46 用真实抓包穷举 3867 个截断点
+//     验过：JSON 正文内部的截断点一个都过不了解析 —— 所以真正的危害不在这，
+//     而在下面第 2 条那个**能解析成功**的形态。
+//  2. **finish_reason=length 走单独的错误值**（ErrOutputTruncated），
+//     让调用方能把它和自己的「失败」路径分开 —— 见上面的注释。
+//     ⚠ 这个判据取自**非流式**响应的 `choices[0].finish_reason`
+//     （`llmgateway.ChatResponse` 一直在解码它，只是过去没人往上带）。
+//  3. **不在失败后再补一次第二种形态的重试**：`llmgateway.Client.Chat` 内部
+//     已有 openai → anthropic 形态回退；上面再叠一层只会把失败面翻倍。
+//
+// ⚠⚠ 2026-10-07：**这里曾改成消费流式，已回退**，理由是实测，不是推测 ——
+//
+//	同一条提示词、同一个真网关、短会议（2 段）：
+//	  非流式  total=22.1s  err=<nil>  model=glm-5.1  正文 282 字符
+//	  流式    total=90.0s  err=context deadline exceeded  **正文 0 帧**
+//	长会议（120 段）流式同样 90s 零帧。零 delta 会让
+//	`dynamicGatewayBFFProvider.Stream` 的 auto 回退链把它当候选失败，
+//	一路烧完 90s 整链预算后失败 —— 即**每次必超时、每次必失败**。
+//
+//	所以 §45 那个「流式首字节 2.2s」的读数**不足以支撑这次改动**：
+//	它量的是直连网关的裸请求，而产品这条路径会额外带上 `work_type` /
+//	`X-Gw-Work-Type` 与 `stream_options`，两者是否可组合**没有验过**。
+//	零帧的具体成因未定位（待查：work_type 与 stream_options 的组合、
+//	或网关 SSE 对该请求形态的响应），但**在定位之前不能把流式挂在主链路上**。
+//
+//	回退的是**传输层**，第 1/2 条语义全部保留 —— 它们不依赖流式。
 func (s *Server) llmChatOnce(ctx context.Context, r *http.Request, model string, msgs []aigate.ChatMessage) (string, string, error) {
 	if s.llmBFF != nil {
 		bffMsgs := make([]llmbff.Message, len(msgs))
@@ -2981,6 +3116,12 @@ func (s *Server) llmChatOnce(ctx context.Context, r *http.Request, model string,
 		}, "meeting")
 		if err != nil {
 			return "", "", err
+		}
+		if resp.FinishReason == "length" {
+			// ★ 拿到的是**完整 JSON 但上游声明输出被预算截断**。
+			//   这正是 §46 那 4 个「能解析成功的尾部点」对应的形态：
+			//   解析会成功 ⇒ 没有这道闸就会照实弹「精翻完成」。
+			return "", "", ErrOutputTruncated
 		}
 		return resp.Content, resp.Model, nil
 	}
@@ -3004,7 +3145,10 @@ func (s *Server) classifyNoteAsync(note notes.Note) {
 	defer cancel()
 
 	resp, err := s.kxmemory.ClassifyNote(ctx, kxmemory.ClassifyNoteRequest{
-		Content:     note.Snippet, // Note 只有 Snippet，完整内容在客户端
+		// 完整正文（2026-10-06）。此前这里送的是 200 字摘要，理由是
+		// 「Go 侧的结构体没有正文字段」——那在加 Content 字段之前成立，
+		// 之后就是过期事实。长语音笔记的分类/SSOT 现在能拿到后半段。
+		Content:     note.BodyForLLM(4000),
 		Title:       note.Title,
 		ContentType: note.ContentType,
 		Domain:      note.Domain,

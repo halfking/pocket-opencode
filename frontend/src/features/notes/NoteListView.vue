@@ -151,6 +151,8 @@ import NoteMetaSheet from './NoteMetaSheet.vue'
 import NoteSearchBrief from './NoteSearchBrief.vue'
 import { notesApi } from '../../api/notes'
 import { createNoteTodos } from './note-todo-persist'
+import { buildNoteTodoNotice } from './note-todo-notice.ts'
+import { awaitNoteMirror } from './notes-persist'
 import { useNoteRecording } from './useNoteRecording'
 import { noteRecorderUiState } from './note-recording'
 import { searchNotesWithIntent, type NoteSearchBriefing } from './note-search'
@@ -367,10 +369,26 @@ async function presentVoiceDraft(note: LocalNote, text: string) {
     // catch 归类成「总结失败」，实际总结已经拿到了。
     const noteId = metaNote.value.id
     const noteTitle = metaNote.value.title || ''
-    const { summary, action_items: actionItems } = await notesApi.summarize(noteId)
+    // 必须先等笔记在后端落行，否则 /summarize 拿到的是 404 ——
+    // 这是「录音后即时总结从来没成功过」的直接成因（见 notes-persist 的
+    // mirrorNoteToBackend 注释）。createNote 刻意不等云端，所以等在这里。
+    await awaitNoteMirror(noteId)
+    const { summary, action_items: actionItems, transactions, bookkeeping, bookkeeping_mismatch: bkMismatch, summary_fallback: summaryFellBack } =
+      await notesApi.summarize(noteId)
     if (summary && metaNote.value) {
       metaNote.value = { ...metaNote.value, summary }
-      await notesStore.updateNote(noteId, { summary }, currentWorkspaceId())
+      // ⚠ §222：summaryFellBack 时这段是**模型原文**，不是解析出来的摘要。
+      //   形态上分不出来（非空、读起来像一段话），此前照常 updateNote 落库
+      //   ⇒ 「抱歉，无法生成摘要」这类散文会长期占着笔记的 AI 总结字段。
+      //   ⇒ 显示但不落库，并把「这不是摘要」说出来。
+      //   ⚠ 外层 if 条件刻意保持 `if (summary && metaNote.value)` 逐字不变：
+      //   判据 note-recording-error-visibility 锚在这行字面量上（它自己注释里
+      //   记过一次「判据窗口被中文注释撑爆」的教训），改它会红。
+      if (!summaryFellBack) {
+        await notesStore.updateNote(noteId, { summary }, currentWorkspaceId())
+      } else {
+        summarizeError.value = '模型没有按约定返回结构化摘要，上面显示的是它的原文（未保存），可在笔记详情页重试'
+      }
       await load()
     } else {
       // 第二种静默失败：api/notes.ts 的 summarize 注释写明「失败时返回空
@@ -389,16 +407,25 @@ async function presentVoiceDraft(note: LocalNote, text: string) {
     // 中文注释撑爆而误报」的教训。
     //
     // createNoteTodos 自身永不抛异常，所以这里不需要额外 try。
-    const { created, unresolved } = await createNoteTodos(
+    const { created, reminders, reminderPlanned, unresolved } = await createNoteTodos(
       noteId,
       actionItems,
       noteTitle,
     )
-    if (created > 0) {
-      todoNotice.value = unresolved > 0
-        ? `已加入 ${created} 条待办（${unresolved} 条期限没听清，未建提醒）`
-        : `已加入 ${created} 条待办与日程提醒`
-    }
+    // 文案本身在纯模块里（note-todo-notice.ts）：这道门要能直接断言
+    // 「用户实际看到的那句话」，写在组件里就只能源码扫描，而源码扫描
+    // 分不清代码和注释里引述的同一句话（本会话已被骗三次）。
+    //
+    // ★ §127：记账三键也必须传进去。服务端**每次** summarize 都会自动记账
+    //   （server_assistant.go:704-747，没有调用方开关），而纯记账笔记
+    //   一条行动项都没有 ⇒ `created === 0` ⇒ 旧的首行早退直接 return ''，
+    //   用户账上凭空多一笔、屏幕上一个字都不说。
+    //   ⚠ 提示在 `if (summary)` 之外是必须的：模型可能给出记账却没给出
+    //   summary，那正是详情页记账卡片（挂在 v-if="summary" 里）整块消失的场景。
+    // ⚠ 这一行**必须保持单行**：既有门 reminder-outcome-honesty.test.ts 的
+    //   `matchOutsideComment` 是**逐行**匹配的，调用一拆成多行那条「值流」判据
+    //   永远看不到实参（同 §127.4 的教训：判据的匹配边界必须与真实写法对齐）。
+    todoNotice.value = buildNoteTodoNotice({ created, reminders, reminderPlanned, unresolved }, { transactions, bookkeeping, bookkeepingMismatch: bkMismatch })
   } catch (e: unknown) {
     summarizeError.value = apiError(e, '总结失败，可稍后在笔记详情页重试')
   } finally {

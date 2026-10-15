@@ -85,6 +85,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/halfking/pocket-opencode/backend/internal/livetest"
 )
 
 // isOverlappingGroup 报某一组档位在设计上是否要求两片在音频上重叠。
@@ -234,9 +236,17 @@ func TestLiveGatewayOverlapTimingVsText(t *testing.T) {
 	defer cancel()
 
 	var rows []overlapProbe
+	// ⚠⚠ §495 接账本。分母 = 全部档位数：跳过**也要计入**，
+	// 否则那两条「输入不足」的预期跳过会让这条探针永远报「不是完整结果」
+	// ⇒ 对账天天喊就会被无视（§488 建包的前提就是跑满时必须安静）。
+	ledger := livetest.New("重叠计时探针", len(cuts))
 	for _, c := range cuts {
 		if c.endA > dur || c.startB >= dur || c.endA <= c.startA {
 			t.Logf("跳过 %s：超出音频时长 %.2fs", c.label, dur)
+			// ★ 先验理由：还没跑就知道这一档在**本段音频**上不成立。
+			//   「输入不足」这个标记是给门读的（§495.6：账本管不了 label
+			//   是不是先验的，所以这条约定必须由门逐处机检）。
+			ledger.Skip(c.label + "（输入不足）")
 			continue
 		}
 		// 档位自身合法性 —— 配错档位不会让程序报错，只会安静地量错东西。
@@ -261,6 +271,7 @@ func TestLiveGatewayOverlapTimingVsText(t *testing.T) {
 		// 那正是本组档位存在的理由。
 		if endB-c.startB < 0.15 {
 			t.Logf("跳过 %s：B 片只有 %.2fs，装不下（素材仅 %.2fs）", c.label, endB-c.startB, dur)
+			ledger.Skip(c.label + "（输入不足）")
 			continue
 		}
 		audioA := sliceWav(t, audio, c.startA, c.endA)
@@ -269,11 +280,16 @@ func TestLiveGatewayOverlapTimingVsText(t *testing.T) {
 		ra, err := tr.TranscribeFor(ctx, Scope{UserID: "probe", WorkspaceID: "ws_probe"}, audioA, "a.wav")
 		if err != nil {
 			t.Logf("档位 %s：片A 转写失败 %v", c.label, err)
+			// ⛔ 这里**故意不记** Skip：转写失败是「这件事存在但没做成」，
+			//   不是「按设计不成立」。记成 Skip 会把失败洗成设计
+			//   （§495：Skip 的 label 必须是「输入不足」那一类先验理由）。
+			//   ⇒ 不记 = 账本把它算进「没做完」，Report() 会出声。
 			continue
 		}
 		rb, err := tr.TranscribeFor(ctx, Scope{UserID: "probe", WorkspaceID: "ws_probe"}, audioB, "b.wav")
 		if err != nil {
 			t.Logf("档位 %s：片B 转写失败 %v", c.label, err)
+			// ⛔ 同上：真失败不豁免。
 			continue
 		}
 
@@ -292,11 +308,21 @@ func TestLiveGatewayOverlapTimingVsText(t *testing.T) {
 		})
 		t.Logf("[%s] 重叠 %.2fs | A(%d字,%v) B(%d字,%v) | 文本LCS=%d | 现有算法去重=%v",
 			c.label, overlapSec, len([]rune(textA)), textA, len([]rune(textB)), textB, lcsLen, hit)
+		ledger.Complete(c.label)
 	}
 
 	if len(rows) == 0 {
 		t.Fatal("没有一档转写成功 —— 不能拿空分布下结论")
 	}
+
+	// ⚠⚠ 对账必须打在**汇总之前**（§491/§492 两次都栽在这）：
+	//   否则下面那张分组表是在一个「少跑了几档」的分母上打印的，
+	//   而它自己不会说这件事。
+	if rep := ledger.Report(); rep != "" {
+		t.Log(rep)
+	}
+	t.Logf("档位三桶：跑成 %d / 按设计跳过 %d / 共 %d（跳过的都是「输入不足」那类先验理由）",
+		ledger.Done(), ledger.Skipped(), ledger.Total())
 
 	t.Log("")
 	t.Log("┌─ 汇总：时间上界靠不靠得住 ──────────────────────────────────────────")

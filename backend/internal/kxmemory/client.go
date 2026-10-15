@@ -18,6 +18,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/golang-jwt/jwt/v5"
 )
@@ -442,11 +443,20 @@ func sleepWithContext(ctx context.Context, d time.Duration) error {
 }
 
 // truncate 把字符串截断到 maxLen 以内（用于错误日志脱敏）。
+//
+// ⚠ §253：原写法 `s[:maxLen-3] + "..."` 在中文下产出**非法 UTF-8**
+//
+//	（实测纯中文语料约 2/3 的切点会切在汉字中间，含 U+FFFD）。
+//	补字符边界回退，最多丢 3 字节。
 func truncate(s string, maxLen int) string {
 	if len(s) <= maxLen {
 		return s
 	}
-	return s[:maxLen-3] + "..."
+	cut := s[:maxLen-3]
+	for len(cut) > 0 && !utf8.ValidString(cut) {
+		cut = cut[:len(cut)-1]
+	}
+	return cut + "..."
 }
 
 // getOrSignToken 返回一个有效的 JWT（未过期）；过期前 30 秒会续签。

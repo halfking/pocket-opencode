@@ -15,7 +15,7 @@ func TestDecidePut(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := DecidePut(tc.client, tc.server)
+			got := DecidePut(Record{UpdatedAt: tc.client}, tc.server)
 			if got != tc.want {
 				t.Fatalf("DecidePut(%d,%d)=%v want %v", tc.client, tc.server, got, tc.want)
 			}

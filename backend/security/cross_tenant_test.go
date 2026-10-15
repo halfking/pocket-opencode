@@ -5,8 +5,25 @@
 // "security" build tag and run only when the operator explicitly opts
 // in:
 //
-//	go test -tags=security ./backend/security/...
+//	cd backend && go test -tags=security ./security/...
 //
+// ⚠ 路径里**没有** `backend/` 这一段（§659.1 实测）。
+// 本文件早先写的是 `go test -tags=security ./backend/security/...`，
+// 而 Go 模块根就是 `backend/`（module .../backend），照抄那条会得到：
+//
+//	lstat ./backend/security/: no such file or directory
+//	FAIL	./backend/security/... [setup failed]
+//
+// 而失败信息长得像「这个包不存在」⇒ 下一个人会合理地推断
+// 「这 13 条测试是死的/被删了」。它们**没有**被删：
+// `grep -c '^func Test' security/cross_tenant_test.go` = 13，
+// 且 `cd backend && go vet -tags=security ./security/...` 当场 exit 0。
+//
+// ⚠ CI 仍然不编译它们：`.github/workflows/backend.yml` 跑的是
+// `go test -race ./... -count=1`，**不带 `-tags`**，
+// 而被 `//go:build security` 排除的包**不在 `./...` 里**。
+// ⇒ 「能编译」与「被执行过」是两件事，后者至今为否（§659.1，只登记不代拍）。
+
 // The suite is intentionally self-contained: it depends only on the
 // production packages that already live under backend/internal/...
 // (auth, websocket, server, redclaw, zagclient, etc.) and on stdlib.
@@ -279,16 +296,32 @@ func TestCrossTenantWSSubscribeReturnsForbidden(t *testing.T) {
 	defer srv.Close()
 
 	tokenA, err := signer.SignWithWorkspace("user-A", "user", "ws-tenantA")
-	require.NoError(t, err)
-
-	_ = tokenA
+	if err != nil {
+		t.Fatalf("sign token for tenant A: %v", err)
+	}
 
 	// Drive a real WebSocket dial against the test server. Because the
 	// server rejects the cross-tenant request before upgrading, the
 	// dial returns an HTTP-level error rather than a successful
 	// handshake.
+	//
+	// 两处必须同时对上，否则这个断言测不到任何东西（2026-10-11 实测）：
+	//
+	//  1. URL 必须是 ws://。httptest.NewServer 给的是 http://，而
+	//     gorilla 的 Dialer.Dial 只接受 ws/wss —— 传 http:// 会在**客户端**
+	//     直接报 "malformed ws or wss URL"，请求根本不离开进程。
+	//     旧代码用 srv.URL 原样拨号，于是 err != nil 成立、resp == nil，
+	//     恰好撞上下面两条断言的「失败」形态，测试看上去在干活，
+	//     实际一次都没触及过服务端。
+	//  2. 必须带 Authorization 头。旧代码给 Dial 的 header 传的是 nil，
+	//     于是请求在 auth.Middleware 就被 401 挡掉（压根到不了本 handler
+	//     的跨租户判断），断言要的是 403，拿到的会是 401。
+	//     tokenA 曾被 `_ = tokenA` 丢弃，正是这个漏的痕迹。
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+	hdr := http.Header{}
+	hdr.Set("Authorization", "Bearer "+tokenA)
 	dialer := websocket.Dialer{}
-	conn, resp, err := dialer.Dial(srv.URL+"/ws?stream=ws-tenantB/x", nil)
+	conn, resp, err := dialer.Dial(wsURL+"/ws?stream=ws-tenantB/x", hdr)
 	if err == nil {
 		_ = conn.Close()
 		t.Fatalf("expected dial to fail for cross-tenant WS, but it succeeded")

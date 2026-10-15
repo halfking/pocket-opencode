@@ -61,15 +61,21 @@ func (m *MemStore) Put(rec Record) (*PutResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	existing, ok := m.rows[key]
-	if ok && DecidePut(rec.UpdatedAt, existing.UpdatedAt) == DecisionKeep {
+	if ok && DecidePut(rec, existing.UpdatedAt) == DecisionKeep {
 		return &PutResult{
 			Applied:  false,
 			Conflict: rec.UpdatedAt < existing.UpdatedAt,
 			Record:   publicCopy(existing),
 		}, nil
 	}
-	if ok && rec.Secret == "" {
+	// 显式清空优先于「空 = 不改动」：否则上层无法表达「删掉这把密文」
+	// （见 types.go 里 ClearSecret 的注释，含真机验证的缺陷现场）。
+	if rec.ClearSecret {
+		rec.Secret = ""
+		rec.HasSecret = false
+	} else if ok && rec.Secret == "" {
 		rec.Secret = existing.Secret
+		rec.HasSecret = existing.HasSecret
 	}
 	m.rows[key] = rec
 	return &PutResult{Applied: true, Record: publicCopy(rec)}, nil

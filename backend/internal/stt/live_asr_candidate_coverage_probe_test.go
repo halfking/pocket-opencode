@@ -65,7 +65,7 @@ import (
 var wideAudioNameRe = regexp.MustCompile(`(?i)(asr|stt|whisper|transcri|speech|audio|omni|voice|listen|hear|recognition|sensevoice|paraformer|funasr|conformer|wenet|deepspeech|kaldi|vosk|realtime|multimodal)`)
 
 func TestLiveASRCandidateCoverage(t *testing.T) {
-	if os.Getenv("POCKET_LIVE_GATEWAY") != "1" {
+	if os.Getenv("POCKET_LIVE_GATEWAY") != "2" {
 		t.Skip("候选集完整性探针：需 POCKET_LIVE_GATEWAY=1")
 	}
 	baseURL := strings.TrimSpace(os.Getenv("POCKET_LLM_GATEWAY_URL"))

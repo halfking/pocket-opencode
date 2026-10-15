@@ -102,8 +102,18 @@ func (s *Service) BuildFeed(ctx context.Context, wsID, userID string, from, to i
 		// A failing source contributes nothing but must not fail the whole feed.
 		// The error is still returned: a broken query here looks **exactly** like
 		// "you have no tasks" to the user, and that silence is how a bad column
-		// name shipped once already (tasks has no `timezone` column). The client
-		// degrades, but the operator sees why.
+		// name shipped once already (tasks has no `timezone` column).
+		//
+		// ⚠ §118：调用方 handleCalendarEvents 会把这个 err 变成响应体的
+		// `partial` 键（并在服务端日志里留原因），所以「操作员看得见」与
+		// 「客户端知道要提示用户」**现在都成立**。
+		// 本行此前写的是「The client degrades, but the operator sees why」——
+		// 那句话当时是**假的**：客户端只拿到 200 + 少了几条。
+		// ★ 仍然不成立的一半：**前端只知道「降级了」，不知道是哪一路失败**
+		// （err 是 errors.Join 之后的整体）。所以提示语只能说
+		// 「部分数据没取到」，不能说「任务截止没取到」——
+		// 说错比不说更糟。要按源区分得让 BuildFeed 返回 per-source 错误，
+		// 属未做，不在本节假装它已经有了。
 		tasks, tasksErr = s.sources.TaskDeadlines(ctx, wsID, from, to)
 		runs, runsErr = s.sources.ScheduledRuns(ctx, wsID, from, to)
 	}

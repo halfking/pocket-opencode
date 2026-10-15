@@ -42,8 +42,16 @@ func FindChineseFont(dataDir string) string {
 		return ""
 	}
 	if dataDir != "" {
+		// 逐个试，而不是只试 matches[0]。filepath.Glob 按字典序返回，
+		// 而部署方往 fonts/ 里放多款字体时，字典序第一的那款很可能
+		// 没有中文字形（实测：目录里 Arial.ttf + SourceHanSansSC.ttf，
+		// 原实现跳过后者、直接改用系统字体）。fonts/ 这一级不是显式
+		// 指定，「全落空后回退系统字体」可以接受；但「部署方放的那款
+		// 中文字体被当不存在」不行——那正是上面 env 分支拒绝的同一种
+		// 「配了不生效」，且 RenderInvoiceXMLPDF 的报错文案（:171）
+		// 把放置字体到 <dataDir>/fonts/ 当成给操作员的正式补救手段。
 		if matches, _ := filepath.Glob(filepath.Join(dataDir, "fonts", "*.ttf")); len(matches) > 0 {
-			if resolved, ok := resolveFontFile(matches[0]); ok && fontHasCJK(resolved) {
+			if resolved := pickCJKFont(matches); resolved != "" {
 				return resolved
 			}
 		}

@@ -213,3 +213,83 @@ describe('B · 接线层：后端返回 action_items，前端真的建待办（�
     assert.ok(!/await createNoteTodos\(/.test(withoutCall), '负控：未接线的样本不该匹配')
   })
 })
+
+/**
+ * ★§88：上面那条接线门只证明「`action_items: actionItems` 这个解构存在」
+ *   与「`await createNoteTodos(` 出现过」。
+ *   它**不**证明传给函数的三个实参就是那几个变量。
+ *
+ * 注入实测（§88.1）：把实参分别换成 `null` / `""`，**三发全部 0 报红**。
+ * 这是 §82 的「控制流门覆盖不了数据流缺陷」在随手记链上的复现。
+ */
+describe('§88 · 接线**值**：三个实参必须就是那三个变量', () => {
+  /** 剥注释：源码里的说明文字会满足「实参」判据。 */
+  const vueCode = read('NoteListView.vue')
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .split('\n').map((l) => { const i = l.indexOf('//'); return i < 0 ? l : l.slice(0, i) }).join('\n')
+
+  /** 按括号配平切出 `createNoteTodos(` 的全部顶层实参（正则会被多行实参骗过）。 */
+  function callArgs(src: string): string[] | null {
+    const call = 'createNoteTodos('
+    const i = src.indexOf(call)
+    if (i < 0) return null
+    const from = i + call.length
+    const args: string[] = []
+    // ⚠ 尾逗号：`f(a, b, c,)` 会切出第 4 个**空**实参。
+    //   丢掉 trim 后为空的项 —— 中间出现空实参在 JS 里本就是语法错误，
+    //   所以这里丢掉的只可能是尾逗号，不是在掩盖问题。
+    //   ⚠ 两个出口都要过滤：提前 return 的那条曾经绕过它（§88.3）。
+    const done = () => args.filter((a) => a.trim() !== '')
+    let depth = 0
+    let start = from
+    for (let j = from; j < src.length; j++) {
+      const ch = src[j]
+      if (ch === '(' || ch === '[' || ch === '{') depth++
+      else if (ch === ')' || ch === ']' || ch === '}') {
+        if (depth === 0) { args.push(src.slice(start, j)); return done() }
+        depth--
+      } else if (ch === ',' && depth === 0) { args.push(src.slice(start, j)); start = j + 1 }
+    }
+    return done()
+  }
+
+  function assertArgs(src: string, expected: string[]) {
+    const args = callArgs(src)
+    assert.ok(args !== null, '解析不出 createNoteTodos 的实参 —— 判据失效，先修判据')
+    assert.equal(args.length, expected.length,
+      `实参个数是 ${args.length}，期望 ${expected.length}（${JSON.stringify(args)}）`)
+    expected.forEach((want, idx) => {
+      assert.equal((args[idx] ?? '').trim(), want,
+        `第 ${idx + 1} 个实参是「${(args[idx] ?? '').trim()}」而不是 ${want}`)
+    })
+  }
+
+  it('★ 三个实参必须是 noteId / actionItems / noteTitle', () => {
+    assertArgs(vueCode, ['noteId', 'actionItems', 'noteTitle'])
+  })
+
+  it('★ actionItems 必须来自 summarize 响应的 action_items', () => {
+    assert.match(vueCode, /const\s*\{[^}]*\baction_items\s*:\s*actionItems[^}]*\}\s*=\s*await\s+notesApi\.summarize\(/,
+      'actionItems 不是从 notesApi.summarize 的 action_items 解构来的 ⇒ 实参名对了但值是错的')
+  })
+
+  it('负控：任一实参被换成字面量，上面两条必须报红（防止判据恒真）', () => {
+    const cases: [string, string][] = [
+      ['      noteId,\n      actionItems,\n      noteTitle,',
+        '      noteId,\n      null,\n      noteTitle,'],
+      ['      noteId,\n      actionItems,\n      noteTitle,',
+        '      noteId,\n      actionItems,\n      "",'],
+      ['      noteId,\n      actionItems,\n      noteTitle,',
+        '      "",\n      actionItems,\n      noteTitle,'],
+    ]
+    for (const [from, to] of cases) {
+      const mutated = vueCode.replace(from, to)
+      assert.notEqual(mutated, vueCode, `样本构造失败：锚点没命中\n${from}`)
+      assert.throws(
+        () => assertArgs(mutated, ['noteId', 'actionItems', 'noteTitle']),
+        (e: unknown) => e instanceof assert.AssertionError,
+        '判据没咬住：实参已被换成字面量却仍判定通过',
+      )
+    }
+  })
+})

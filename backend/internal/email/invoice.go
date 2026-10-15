@@ -973,10 +973,11 @@ func ExtractInvoiceLoose(e Email, bodyText string, hasInvoiceAttachment bool) (*
 	snippet := e.Snippet
 	joined := subject + "\n" + snippet
 	if bodyText != "" {
-		// 正文只取前 4KB 参与匹配，避免大正文拖慢正则
-		if len(bodyText) > 4096 {
-			bodyText = bodyText[:4096]
-		}
+		// 正文只取前 4KB 参与匹配，避免大正文拖慢正则。
+		// 走 truncateStr：切点落在多字节字符中间时，joined 里会出现半个字符，
+		// invoiceKeywordHit / admitDebtNotice 这两个关键词匹配会漏判。
+		// 语义不变：仍是 4096 字节上限。
+		bodyText = truncateStr(bodyText, 4096)
 		joined = subject + "\n" + snippet + "\n" + bodyText
 	}
 	if !invoiceKeywordHit(joined) {

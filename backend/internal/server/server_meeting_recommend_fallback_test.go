@@ -242,3 +242,64 @@ func isValidUTF8(s string) bool {
 	}
 	return true
 }
+
+// TestMeetingRecommend_FallbackFlagIsNotAPathSignal 是 §563 的**特征化用例**。
+//
+// ⚠ 它断言的是**当前实现的事实**，不是理想行为。改它之前先读 §563。
+//
+// 「fallback」这个键有两处互相冲突的定义：
+//
+//	· server_meeting.go:610-613 的注释要求它是**路径信号**——
+//	  「键在这里必须出现，否则前端分不出『主源说没有』与『压根没走到主源』」；
+//	· 而 server_meeting_recommend_flag_test.go 把它钉成**解析信号**——
+//	  「空但答了 ⇒ 回落标志必须是 false」。
+//
+// 实测第三格：「kxmemory 没配 + LLM 正常作答」⇒ fallback=**false**、items 非空。
+// ⇒ 它与「kxmemory 配了、主源检索完说库里没有」在响应里**完全同形**。
+//
+// ⭐ 为什么这格要紧：deploy/bin/deploy-local.sh:92 是 `POCKET_KXMEMORY_BASE_URL=`
+//
+//	（空），main.go:411 只在非空时构造 client ⇒ **默认部署形态恒走 LLM 兜底**。
+//	而前端两处诚实提示语（MeetingInsightPanel.vue:114、LiveSummaryPanel.vue:43）
+//	都以这个 flag 为前提 ⇒ **默认部署形态下它们一句都不会说**。
+//
+// ⇒ §223 修的是「解析失败」这根轴（罕见且无害），缺的是「有没有走主源」那根轴
+//
+//	（默认形态且每个用户每次都中招）。
+func TestMeetingRecommend_FallbackFlagIsNotAPathSignal(t *testing.T) {
+	llm := &recommendLLM{content: `{"items":[{"title":"回滚脚本最佳实践","snippet":"上线前必须有可回滚路径","query":"数据库上线 回滚脚本 最佳实践"}]}`}
+	srv, tokens := recommendServer(t, llm)
+
+	out := postRecommend(t, srv, tokens["ws-a"], recommendBody)
+
+	// ⭐ 用例前提：确实没走主源（recommendServer 已断言 kxmemory == nil）。
+	if srv.kxmemory != nil {
+		t.Fatal("用例前提失效：期望未配置 kxmemory")
+	}
+	// 特征 1：LLM 答了 ⇒ fallback 为 false，与「主源说没有」同形。
+	if fb, _ := out["fallback"].(bool); fb {
+		t.Fatalf("期望 fallback=false（模型答了），实际 true；改动前请先读 §563")
+	}
+	// 特征 2：但 items 确实来自模型，不是检索结果。
+	items, _ := out["items"].([]any)
+	if len(items) == 1 {
+		if got, _ := items[0].(map[string]any); got["type"] != "web" {
+			t.Fatalf("type=%v，期望 web（这一格是「模型现编的」而非检索来的）", got["type"])
+		}
+	} else {
+		t.Fatalf("期望 1 条，实际 %d 条", len(items))
+	}
+	// 特征 3：顶层**没有任何**路径信号能让前端把这两种状态分开。
+	want := map[string]bool{"items": true, "fallback": true}
+	for k := range out {
+		if !want[k] {
+			t.Fatalf("响应多出顶层键 %q：它可能已经能区分主源/兜底，"+
+				"那么 §563 记的缺口已修，请更新 §563 与前端两处提示语的条件", k)
+		}
+	}
+	for k := range want {
+		if _, ok := out[k]; !ok {
+			t.Fatalf("响应缺顶层键 %q", k)
+		}
+	}
+}

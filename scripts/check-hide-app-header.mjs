@@ -203,6 +203,19 @@ function selftest() {
 
   const bad = results.filter((r) => !r.pass)
   for (const r of results) console.log(`  ${r.pass ? '通过' : '失败'}  ${r.name}`)
+  // ★ 条数下限闸（形状照抄 check-smart-quotes.mjs / check-pg-schema-scope.mjs，
+  //   那两道门是 §103 记录过同一个假绿之后补的）。
+  //   修前实测：把全部 11 条 add(...) 删掉 ⇒ `自检: 0/0 通过` + **EXIT=0**，
+  //   与真通过**完全同形** —— 分子分母是同一个数，它压根不是比值。
+  //   阈值取当前 11 条的约八成（与 smart-quotes 15/19、pg-schema-scope 6/7 同口径）；
+  //   **它只抓「用例被成批删空」，不抓「少了一条」** —— 后者要靠人看 diff。
+  //   下限只能手工改这个常量，不接受命令行参数。
+  const MIN_SELFTEST_CASES = 9
+  if (results.length < MIN_SELFTEST_CASES) {
+    console.error(`[hide-app-header] 自检只跑了 ${results.length}/${MIN_SELFTEST_CASES} 例 —— add 调用被改过。`)
+    console.error('   「0/0 通过」不是通过：守卫空转时的读数和它要抓的病一模一样。')
+    process.exit(2)
+  }
   console.log(`\n自检: ${results.length - bad.length}/${results.length} 通过`)
   process.exit(bad.length === 0 ? 0 : 1)
 }

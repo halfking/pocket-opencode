@@ -31,6 +31,7 @@
     <LiveSummaryPanel
       :summary="summary.liveSummary.value"
       :recommendations="summary.recommendations.value"
+      :recommend-fallback="summary.recommendFallback.value"
       :is-updating="summary.isUpdating.value"
     />
   </div>

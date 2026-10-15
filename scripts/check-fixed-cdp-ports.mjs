@@ -45,6 +45,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
+  assertScannerNotBlind,
   countKeysBy,
   defaultKeyFn,
   diffRatchet,
@@ -130,7 +131,10 @@ const keyOf = defaultKeyFn
 const countKeys = (hits) => countKeysBy(hits)
 const diffAgainstBaseline = (hits, baseline) => diffRatchet(hits, baseline)
 const loadBaseline = () => loadBaselineFile(BASELINE_PATH)
-const writeBaseline = (counts) => writeBaselineFile(BASELINE_PATH, counts, BASELINE_COMMENT)
+const writeBaseline = (counts) =>
+  writeBaselineFile(BASELINE_PATH, counts, BASELINE_COMMENT, {
+    recordFullRepayment: REPAYMENT_DECL,
+  })
 
 
 function selftest() {
@@ -243,14 +247,36 @@ function scanRepo() {
 
 const argv = process.argv.slice(2)
 
+// --record-full-repayment "<理由>"：显式声明「基线里那 N 条存量确实**全部**还清了」。
+// 它存在的唯一理由是解开一个死锁——见 scripts/lib/baseline-ratchet.mjs 里
+// writeBaseline 的注释：默认的「拒绝写空基线」与 assertScannerNotBlind 的
+// 「基线非空 + 零命中 ⇒ 扫描器失灵」互相把对方指给对方，合起来让「还清」无法被记录。
+// 声明会被写进基线文件（_fullRepayment 段），让下一个读基线的人看得见。
+const REPAYMENT_DECL = (() => {
+  const i = argv.indexOf('--record-full-repayment')
+  return i >= 0 ? String(argv[i + 1] || '').trim() : ''
+})()
+
 // --write-baseline：重录基线。这是**有意扩大存量**的动作，必须显眼，
 // 不能和普通判定混在一条命令里，否则「顺手跑一下」就会把门禁洗绿。
 if (argv.includes('--write-baseline')) {
   const { all } = scanRepo()
-  const counts = writeBaseline(countKeys(all))
+  // 同上：不接住 writeBaseline 的 throw 的话，Node 会打一段堆栈，
+  // 读起来像「工具崩了」，而真实语义只是「你还差一个开关」。
+  let counts
+  try {
+    counts = writeBaseline(countKeys(all))
+  } catch (e) {
+    console.error(`\n❌ ${e.message}`)
+    process.exit(3)
+  }
   console.log(
     `已写入基线：${BASELINE_PATH}\n  key ${Object.keys(counts).length} 个 / 命中 ${all.length} 处`,
   )
+  if (all.length === 0)
+    console.log(
+      '⚠️ 写入的是**空基线**。你的「这笔债已全部还清」声明已连同时间戳写进该文件（_fullRepayment 段）。',
+    )
   console.log('⚠️ 这一步等于宣布「这些存量暂时不判红」。请在提交信息里写清为什么。')
   process.exit(0)
 }
@@ -294,6 +320,12 @@ if (!baseline) {
   process.exit(2)
 }
 
+try {
+  assertScannerNotBlind(all, baseline, '[check-fixed-cdp-ports]')
+} catch (e) {
+  console.error('✗ 拒绝给出「通过」结论：' + e.message)
+  process.exit(3)
+}
 const { newHits, removed } = diffAgainstBaseline(all, baseline)
 const baselineCount = Object.values(baseline).reduce((a, b) => a + b, 0)
 console.log(

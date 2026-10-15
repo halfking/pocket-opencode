@@ -59,6 +59,13 @@
             </button>
           </div>
           <p v-if="summaryError" class="form-error" role="alert">{{ summaryError }}</p>
+          <!--
+            §125：与列表页 NoteListView 同名的待办落库提示。
+            位置在错误提示**之后**、总结卡片**之前** —— 行动项与摘要是同一次
+            响应里的两个独立字段，模型可能给出行动项却没给出 summary，
+            所以提示不能塞进 v-if="summary" 的卡片里，否则那一次会被整块挡掉。
+          -->
+          <p v-if="todoNotice" class="todo-notice" role="status">✅ {{ todoNotice }}</p>
           <div v-if="summary" class="summary-card">
             <p class="summary-text">{{ summary }}</p>
             <div v-if="summaryTxs.length > 0" class="summary-txs">
@@ -129,6 +136,10 @@ import { useAuthStore } from '../../stores/auth'
 import { useConfirm } from '../../composables/useConfirm'
 import { markListDirty } from '../../composables/list-scene-store'
 import { useApiError } from '../../composables/useApiError'
+import { createNoteTodos } from './note-todo-persist'
+import { buildNoteTodoNotice } from './note-todo-notice.ts'
+import { awaitNoteMirror } from './notes-persist'
+import type { NoteActionItem } from '../../api/notes'
 
 const apiError = useApiError()
 const route = useRoute()
@@ -260,25 +271,86 @@ const bookkeeping = ref<'' | 'created' | 'existing'>('')
 // existing 且本次解析的金额/方向与已入账记录不一致（笔记内容改过）时提示核对
 const bookkeepingMismatch = ref(false)
 const summaryError = ref('')
+// 行动项落库提示。与列表页 NoteListView 的同名 ref 同义。
+const todoNotice = ref('')
 
 interface NoteSummarizeResp {
   summary?: string
   transactions?: Array<{ id: string; type: string; amount: number; category: string }>
   bookkeeping?: 'created' | 'existing'
   bookkeeping_mismatch?: boolean
+  /**
+   * §125：本页此前**只声明了上面四个记账键**，于是服务端回的 action_items
+   * 在这一侧被直接丢弃 —— 从详情页点「生成总结」，行动项一条都不会变成待办、
+   * 也不会进日程，而界面不报错、不提示，少了东西这件事完全不可见。
+   *
+   * ⚠ 与列表页的分叉（§117.9）：`api/notes.ts` 只声明 summary/model/action_items，
+   * 本地这份只声明记账四键，**互不为超集**。本页走的是裸 `http`，不走
+   * notesApi.summarize，所以两份声明必须各自补齐自己用到的键。
+   */
+  action_items?: NoteActionItem[]
+  /**
+   * §222：true = 服务端给的 `summary` 是**模型原文**，不是它解析出来的摘要。
+   *
+   * ⚠ 与上面那份分叉同一类问题（两份声明互不为超集）：本键此前**两份都没有**，
+   *   于是回落形态（模型没按 JSON 契约返回）在两侧都不可见。
+   *   本页不落库，但会把原文当摘要**显示**在总结区，同样是说错话。
+   */
+  summary_fallback?: boolean
 }
 
 async function summarize() {
   if (!note.value || summarizing.value) return
   summarizing.value = true
   summaryError.value = ''
+  // 上一次的提示必须清掉：否则第二次总结（没有行动项）时，屏幕上还挂着
+  // 上一条的「已加入 3 条待办」，读起来像是这一次的。
+  todoNotice.value = ''
   try {
-    const res = await http<NoteSummarizeResp>(`/api/notes/${note.value.id}/summarize`, { method: 'POST' })
+    // 先把 id / 标题取出来：summarize 是一段最长 90 秒的 await，期间用户
+    // 可能关掉/切走这条笔记（note.value 置 null），届时再读 note.value.id
+    // 就会在 null 上取字段而抛 TypeError —— 被下面的 catch 归类成
+    // 「总结失败」，实际总结已经拿到了。
+    const noteId = note.value.id
+    const noteTitle = note.value.title || ''
+    // §125.8：必须先等笔记在后端落行，否则 summarize 拿到的是 404。
+    // createNote 刻意不等云端（notes-persist.ts:122 只把镜像 promise 登记进
+    // noteMirrorReady），而本页 load() 读的是**本地** store，所以刚录完的笔记
+    // 在镜像落地前就能被打开 —— 这段时间里按「生成总结」必然 404。
+    // 列表页那边早有同样的 await（见 NoteListView 的 presentVoiceDraft），
+    // 本页此前漏了。awaitNoteMirror 永不抛异常，且没有在途镜像时立即返回，
+    // 所以这条对「从云端进来的老笔记」零成本、行为不变。
+    await awaitNoteMirror(noteId)
+    const res = await http<NoteSummarizeResp>(`/api/notes/${noteId}/summarize`, { method: 'POST' })
     summary.value = res.summary || ''
     summaryTxs.value = res.transactions ?? []
     bookkeeping.value = res.bookkeeping ?? ''
     bookkeepingMismatch.value = res.bookkeeping_mismatch ?? false
-    if (!summary.value) summaryError.value = '模型未返回内容，请稍后重试'
+    if (res.summary_fallback) {
+      // ⚠ §222：这段是**模型原文**，不是解析出来的摘要。必须说出来，
+      //   否则用户会把「抱歉，无法生成」当成自己笔记的总结读下去。
+      summaryError.value = '模型没有按约定返回结构化摘要，下面显示的是它的原文'
+    } else if (!summary.value) {
+      summaryError.value = '模型未返回内容，请稍后重试'
+    }
+    // §125：需求「把一些时间点自动加入计划日程」在详情页的落点。
+    // 刻意放在 if 之外 —— 行动项与摘要是同一次响应里的两个独立字段，
+    // 模型可能给出行动项却没给出 summary（那正是上面设错误提示的场景），
+    // 塞进 if 里会把那时的行动项一起丢掉。
+    // createNoteTodos 自身永不抛异常，所以这里不需要额外 try。
+    const { created, reminders, reminderPlanned, unresolved } = await createNoteTodos(
+      noteId,
+      res.action_items,
+      noteTitle,
+    )
+    // §127：记账三键也传进去。`created === 0` 时早退只看「什么都没做」，
+    // 而本页的记账卡片挂在 `v-if="summary"` **里面** —— 模型给出记账却没给出
+    // summary 时那张卡片整块不显示，两者叠加就是纯记账场景全静默。
+    // 提示在卡片之外，才不依赖 summary 是否存在。
+    todoNotice.value = buildNoteTodoNotice(
+      { created, reminders, reminderPlanned, unresolved },
+      { transactions: summaryTxs.value, bookkeeping: bookkeeping.value, bookkeepingMismatch: bookkeepingMismatch.value },
+    )
   } catch (e: any) {
     summaryError.value = apiError(e, 'errors.summaryFailed')
   } finally {
@@ -491,4 +563,13 @@ function formatTime(ms: number) {
 .tx-amt.expense { color: var(--danger); font-weight: 600; }
 .txs-link { display: inline-block; margin-top: 8px; font-size: var(--text-sm); color: var(--brand-primary); text-decoration: none; }
 .summary-hint { margin: 0; font-size: var(--text-sm); color: var(--text-muted); line-height: 1.6; }
+
+/* §125 行动项落库提示。与 NoteListView 的同名类保持同一视觉语言：
+   success 色 + --text-smd，语义是「已办成的事」而不是错误；
+   role="status" 让读屏器在它出现时播报（待办是用户看不见但确实发生的副作用）。 */
+.todo-notice {
+  margin: 0;
+  color: var(--success, var(--text-secondary));
+  font-size: var(--text-smd);
+}
 </style>

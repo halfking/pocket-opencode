@@ -45,8 +45,15 @@ function collectVue(dir, out = []) {
   for (const name of readdirSync(dir)) {
     if (SKIP_DIRS.has(name)) continue
     const full = join(dir, name)
-    if (statSync(full).isDirectory()) collectVue(full, out)
-    else if (extname(name) === '.vue') out.push(full)
+    try {
+      if (statSync(full).isDirectory()) collectVue(full, out)
+      else if (extname(name) === '.vue') out.push(full)
+    } catch (err) {
+      // §632：并发下别的用例会往 `frontend/src/` 下**临时建目录再删掉**
+      // （z-index-ladder 的 `__probe_fixture__`）。递归撞上那个窗口会抛
+      // ENOENT ⇒ **整条门假红**。只吞 ENOENT，其余照抛。
+      if (err?.code !== 'ENOENT') throw err
+    }
   }
   return out
 }

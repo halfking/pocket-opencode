@@ -1,6 +1,7 @@
 package config
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -63,33 +64,80 @@ func TestLoadProductionAlias(t *testing.T) {
 }
 
 func TestProductionConfigValidation(t *testing.T) {
+	// ⚠ §692：这张表此前是**恒真的**。base 没有设 AuthLegacyOnly，
+	// 于是 base 自己就过不了 RedClaw 校验（`POCKET_REDCLAW_ADMIN_URL must be
+	// configured in production`）—— 而 RedClaw 排在所有被测检查**之后**。
+	// 结果：8 个用例全部因为**同一条无关检查**而失败，每一格都是绿的，
+	// 表格看上去在验证「默认密钥 / 短密钥 / DevAuth / TLS / PG / origins 都会被拒」，
+	// 实际上它一次都没证明过是**哪条**校验拒的。
+	// ⇒ 现在 base 补上 AuthLegacyOnly，并逐格断言错误来自**预期的那条**校验。
 	base := Config{
 		Environment:    "production",
 		JWTSecret:      "01234567890123456789012345678901",
 		PostgresDSN:    "postgres://user:pass@localhost/pocket",
 		AllowedOrigins: "https://app.example.com",
+		AuthLegacyOnly: true,
+
+		// 下面几项与 `Load()` 的默认值一致：Validate() 会解析它们，
+		// 留空会先在解析处报错，把后面所有用例的失败原因都盖掉
+		// —— 这正是本节要根治的「归因被前置失败吃掉」。
+		HTTPPort:                 "8088",
+		OpenCodeTimeoutMS:        "5000",
+		WSHeartbeatMS:            "15000",
+		ReminderCheckIntervalSec: "60",
+		RedClawAdminTimeoutSec:   10,
+		RedClawTimeoutSec:        30,
+		RSS: RSSConfig{
+			HTTPTimeout:    15 * time.Second,
+			MaxConcurrency: 4,
+			DigestHour:     9,
+			DigestMinute:   0,
+		},
+	}
+	if err := base.Validate(); err != nil {
+		t.Fatalf("前提失效：base 必须是合法生产配置，否则下面的用例无法归因（%v）", err)
 	}
 
 	cases := []struct {
-		name   string
-		mutate func(*Config)
+		name string
+		// wantErrContains：失败必须来自**这一格想验证的那条**校验。
+		wantErrContains string
+		mutate          func(*Config)
 	}{
-		{name: "default secret", mutate: func(c *Config) { c.JWTSecret = DevDefaultJWTSecret }},
-		{name: "legacy dead default secret", mutate: func(c *Config) { c.JWTSecret = "pocket-dev-insecure-secret" }},
-		{name: "short secret", mutate: func(c *Config) { c.JWTSecret = "too-short" }},
-		{name: "dev auth", mutate: func(c *Config) { c.DevAuth = true }},
-		{name: "insecure MCP TLS", mutate: func(c *Config) { c.MCPInsecureTLS = true }},
-		{name: "missing postgres", mutate: func(c *Config) { c.PostgresDSN = "" }},
-		{name: "missing origins", mutate: func(c *Config) { c.AllowedOrigins = "" }},
-		{name: "invalid origin", mutate: func(c *Config) { c.AllowedOrigins = "https://app.example.com/path" }},
+		{name: "default secret", wantErrContains: "POCKET_JWT_SECRET",
+			mutate: func(c *Config) { c.JWTSecret = DevDefaultJWTSecret }},
+		{name: "legacy dead default secret", wantErrContains: "POCKET_JWT_SECRET",
+			mutate: func(c *Config) { c.JWTSecret = "pocket-dev-insecure-secret" }},
+		{name: "short secret", wantErrContains: "POCKET_JWT_SECRET",
+			mutate: func(c *Config) { c.JWTSecret = "too-short" }},
+		// §692：32 个空格是 32 **字节**，`len([]byte(secret)) < 32` 不成立，
+		// 且不等于任何 dev 默认值 ⇒ 修复前这一格会被放行，即生产用一把
+		// 纯空白的密钥签发 JWT。长度校验必须按 trim 后的有效字符算。
+		{name: "whitespace-only secret", wantErrContains: "POCKET_JWT_SECRET",
+			mutate: func(c *Config) { c.JWTSecret = strings.Repeat(" ", 32) }},
+		{name: "dev auth", wantErrContains: "POCKET_DEV_AUTH",
+			mutate: func(c *Config) { c.DevAuth = true }},
+		{name: "insecure MCP TLS", wantErrContains: "POCKET_MCP_INSECURE_TLS",
+			mutate: func(c *Config) { c.MCPInsecureTLS = true }},
+		{name: "missing postgres", wantErrContains: "POCKET_POSTGRES_DSN",
+			mutate: func(c *Config) { c.PostgresDSN = "" }},
+		{name: "missing origins", wantErrContains: "POCKET_ALLOWED_ORIGINS must be configured",
+			mutate: func(c *Config) { c.AllowedOrigins = "" }},
+		{name: "invalid origin", wantErrContains: "invalid POCKET_ALLOWED_ORIGINS",
+			mutate: func(c *Config) { c.AllowedOrigins = "https://app.example.com/path" }},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := base
 			tc.mutate(&cfg)
-			if err := cfg.Validate(); err == nil {
+			err := cfg.Validate()
+			if err == nil {
 				t.Fatal("expected production config validation to fail")
+			}
+			if !strings.Contains(err.Error(), tc.wantErrContains) {
+				t.Fatalf("失败的不是本用例想验证的那条校验：got %q，want 包含 %q",
+					err.Error(), tc.wantErrContains)
 			}
 		})
 	}

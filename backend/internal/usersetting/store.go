@@ -104,11 +104,17 @@ func (s *Store) Put(rec Record) (*PutResult, error) {
 	serverUpdated := int64(0)
 	if existing != nil {
 		serverUpdated = existing.UpdatedAt
-		if rec.Secret == "" {
-			rec.Secret = existing.Secret
-		}
 	}
-	if existing != nil && DecidePut(rec.UpdatedAt, serverUpdated) == DecisionKeep {
+	// ★ ClearSecret 优先于「空 Secret = 不改动」（见 types.go 的注释）。
+	//   两个实现（MemStore / PG）必须同义，否则会出现「本地能清、线上不能清」——
+	//   那是最难发现的一种分叉：无 PG 的开发环境一切正常，
+	//   一旦接上 PG，用户的「清除凭据」按钮就静默失效。
+	if rec.ClearSecret {
+		rec.Secret = ""
+	} else if existing != nil && rec.Secret == "" {
+		rec.Secret = existing.Secret
+	}
+	if existing != nil && DecidePut(rec, serverUpdated) == DecisionKeep {
 		return &PutResult{Applied: false, Conflict: rec.UpdatedAt < serverUpdated, Record: *existing}, nil
 	}
 

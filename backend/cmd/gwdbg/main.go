@@ -5,25 +5,37 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"os"
+	"strings"
 
+	"github.com/halfking/pocket-opencode/backend/internal/config"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-func main() {
-	dsn := os.Getenv("POCKET_POSTGRES_DSN")
-	if dsn == "" {
-		dsn = "postgres://postgres@127.0.0.1:5432/postgres?sslmode=disable"
+// resolvePGTarget 返回要查询的 PG 目标，口径**完全复用 config**（§692）。
+//
+// ⚠ 此前本文件自己写了一遍，且与后端有两处不一致：
+//
+//	① 写死了 `postgres://postgres@127.0.0.1:5432/postgres` 作为兜底 DSN——
+//	   后端从不用它（`Config.PostgresDSN` 默认空；生产环境 `Validate()` 直接
+//	   拒绝空 DSN，开发环境则根本不连 PG）。
+//	② 只认 `POCKET_POSTGRES_DSN`，不认后端明确支持的 `DATABASE_URL`。
+//
+// 两者合起来的后果：在用 `DATABASE_URL` 部署的实例上，本探针会连到**另一个库**，
+// 然后对「POST 到底落没落库」报出**假阴性**——而这正是这个探针存在的目的。
+// 现在缺配置就报错退出（与兄弟探针 invoiceprobe / spamdryprobe 同一形状），
+// 不再自己发明一个「看起来能连」的默认值。
+func resolvePGTarget() (dsn, schema string, err error) {
+	dsn, schema = config.PGTargetFromEnv()
+	if strings.TrimSpace(dsn) == "" {
+		return "", "", fmt.Errorf("未配置 PG 连接：请设置 POCKET_POSTGRES_DSN 或 DATABASE_URL（与后端同一个来源）")
 	}
-	// schema 必须跟随后端配置，不能写死。
-	// 这个探针的用途是「验证 POST 是否真的落库」—— 一旦它被指向隔离后端
-	// （POCKET_PG_SCHEMA=opencode_pocket_verify），写入落在隔离 schema，
-	// 而写死的查询去读共享库 ⇒ **静悄悄地给出「没落库」的错结论**，
-	// 比报错更难发现。与 backend/internal/config/config.go 里
-	// getEnv("POCKET_PG_SCHEMA", …) 取同一个来源。
-	schema := os.Getenv("POCKET_PG_SCHEMA")
-	if schema == "" {
-		schema = "opencode_pocket"
+	return dsn, schema, nil
+}
+
+func main() {
+	dsn, schema, err := resolvePGTarget()
+	if err != nil {
+		log.Fatal(err)
 	}
 	ctx := context.Background()
 	pool, err := pgxpool.New(ctx, dsn)

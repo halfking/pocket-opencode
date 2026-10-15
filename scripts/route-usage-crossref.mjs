@@ -1056,7 +1056,17 @@ if (AS_JSON) {
 } else {
   console.log(`后端注册路由 ${routes.length} 条（来自 ${GO_FILES.map((g) => g.split('\\').pop()).join(', ')}）`)
   console.log(`前端扫描 ${files.length} 个文件，常量 ${constCount} 个（同名冲突 ${conflict.size} 个已排除），路径表达式 ${pats.length} 条，其中位于调用实参位置 ${callPats.length} 条`)
-  console.log(`判据自检 ${self.length}/${self.length} 通过：`)
+  // ★ 条数下限闸（2026-10-07，docs/design §94）。原来 `判据自检 N/N 通过` + 后面按 bad 退出，
+//   self 为空时打印「判据自检 0/0 通过」并 EXIT=0，与真通过完全同形。
+//   注意这个脚本**不在 gates.json 里**（是手工跑的交叉引用工具），所以它空转不会让 CI 变绿——
+//   但它空转会让人以为「19 条判据都验过了」。下限只能手工改常量。
+const MIN_SELFTEST_CASES = 15;
+  if (self.length < MIN_SELFTEST_CASES) {
+    console.error(`[route-usage-crossref] 判据自检只跑了 ${self.length}/${MIN_SELFTEST_CASES} 例 —— 自检循环或 push 被改过。`);
+    console.error('   「0/0 通过」不是通过：那是判据失明时的读数，和真通过长得一模一样。');
+    process.exit(2);
+  }
+  console.log(`判据自检 实跑 ${self.length} 例，全通过：`)
   for (const s of self) console.log(`  PASS  ${s.name} — ${s.detail}`)
   console.log('')
   for (const v of VERDICTS) {

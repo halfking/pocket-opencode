@@ -78,13 +78,30 @@ function stripLine(line, state) {
       out += ' '; i++; continue
     }
     if (state.tmpl) {
-      if (c === '\\') { out += '  '; i += 2; continue }
-      if (c === '$' && n === '{') { out += '  '; state.tmpl = false; state.expr = 0; i += 2; continue }
-      if (c === '`') { out += ' '; state.tmpl = false; i++; continue }
+      // ★ 在 `${...}` 内部（docs/design §163）：跳字符串、计花括号。
+      //   **tmpl 保持 true** —— 原实现的 bug 是进了 `${` 就把 tmpl 打成 false 再也不回来，
+      //   而括号计数那段又挂在 `if (state.tmpl)` 里面 ⇒ 永远不可达；
+      //   闭合反引号被当成「开模板」⇒ 该文件往后全文被抹。
       if (state.expr > 0) {
-        if (c === '{') state.expr++
-        else if (c === '}') { state.expr--; if (state.expr === 0) state.tmpl = true }
+        if (c === '\\') { out += '  '; i += 2; continue }
+        if (c === "'" || c === '"' || c === '`') {
+          const q = c
+          out += ' '
+          i++
+          while (i < line.length && line[i] !== q) { if (line[i] === '\\') { i += 2; continue } i++ }
+          out += ' '
+          i++
+          continue
+        }
+        if (c === '{') { state.expr++; out += ' '; i++; continue }
+        if (c === '}') { state.expr--; out += ' '; i++; continue }
+        out += ' '
+        i++
+        continue
       }
+      if (c === '\\') { out += '  '; i += 2; continue }
+      if (c === '$' && n === '{') { out += '  '; state.expr = 1; i += 2; continue }
+      if (c === '`') { out += ' '; state.tmpl = false; i++; continue }
       out += ' '
       i++
       continue
@@ -108,6 +125,40 @@ function stripLine(line, state) {
 }
 
 /**
+ * ★ 只抹「注释」与「普通字符串」，但**保留模板正文**（docs/design §163）。
+ *   引用检测要问的是「这个 `${SCHEMA}` 在不在注释/字符串里」，
+ *   而旧写法问的是「剥离后还在不在」—— 后者只有在 stripLine 漏出表达式文本时才成立，
+ *   也就是说**旧写法是建立在这个 bug 上的**。换掉代理条件，bug 才能真正修好。
+ */
+function stripCommentsAndStrings(line, state) {
+  let out = ''
+  let i = 0
+  while (i < line.length) {
+    const c = line[i]
+    const n = line[i + 1]
+    if (state.b2) {
+      if (c === '*' && n === '/') { state.b2 = false; out += '  '; i += 2; continue }
+      out += ' '; i++; continue
+    }
+    if (c === '/' && n === '/') { out += ' '.repeat(line.length - i); break }
+    if (c === '/' && n === '*') { state.b2 = true; out += '  '; i += 2; continue }
+    if (c === "'" || c === '"') {
+      const q = c
+      out += ' '
+      i++
+      while (i < line.length && line[i] !== q) { if (line[i] === '\\') { i += 2; continue } i++ }
+      out += ' '
+      i++
+      continue
+    }
+    if (c === '`') { out += c; i++; continue }        // ★ 模板：正文原样保留
+    out += c
+    i++
+  }
+  return out
+}
+
+/**
  * 纯函数：给一份源码，返回作用域问题列表。抽出来是为了让 --selftest 能直接驱动它，
  * 而不必去改磁盘上的真文件（负控要证明的是**判据**会响，不是某个文件坏没坏）。
  */
@@ -115,6 +166,9 @@ export function findScopeDefects(source) {
   const raw = source.split(/\r?\n/)
   const state = { block: false, tmpl: false, expr: 0 }
   const code = raw.map((l) => stripLine(l, state))
+  // 引用检测专用：抹注释 + 抹普通字符串，**保留模板正文**（见 stripCommentsAndStrings）
+  const st2 = { b2: false }
+  const code2 = raw.map((l) => stripCommentsAndStrings(l, st2))
 
   // depthAt[i] = 第 i 行**行尾**处的花括号嵌套深度
   const depthAt = []
@@ -136,7 +190,7 @@ export function findScopeDefects(source) {
     // 于是对**剥离后**的行跑 /\${SCHEMA}/ 永远匹配不到 —— 第一版就这么写的，
     // 结果是 selftest 第 7 条（顶层引用无顶层声明）恒不报错：
     // 判据自己失明了，却因为「别处能报」而看不出来。
-    if (REF_RE.test(raw[i]) && /\bSCHEMA\b/.test(l)) refs.push(i)
+    if (REF_RE.test(raw[i]) && /\bSCHEMA\b/.test(code2[i])) refs.push(i)
   })
   const defects = []
   for (const i of decls) {
@@ -189,6 +243,14 @@ function selftest() {
   add('字符串数组里的声明文本不报', `const INS = [\n  "const SCHEMA = process.env.POCKET_PG_SCHEMA || 'x';",\n]\nconst a = s.replace(/x/g, '\${SCHEMA}.')\n`, false)
   // 判据 2：顶层引用但没有顶层声明（声明被整段删掉）
   add('顶层引用无顶层声明', `console.log(\`from \${SCHEMA}.t\`)\n`, true)
+  // ★ 回归守卫（2026-10-10，docs/design §163）：**顶层模板串在前 + 声明嵌在函数体**。
+  //   这条在旧码上**必红** —— stripLine 遇 `${` 把 tmpl 打成 false 再也不回来，
+  //   闭合反引号被当成「开模板」⇒ 从这行往后全文被抹 ⇒ decls=[]、defects=[]。
+  //   已实测：旧码 `decls=[] defects=[]`（完全失明），修后 `nested-decl` + `ref-without-top-decl`。
+  //   之前 7 条里没有一条能抓住它（第 7 条反而依赖那个 bug），所以必须补。
+  add('顶层模板在前 + 函数体内声明必须报',
+    `const q = () => \`from \${OTHER}.tasks\`\nfunction r() {\nconst SCHEMA = process.env.POCKET_PG_SCHEMA || 'x';\n}\nconsole.log(\`from \${SCHEMA}.t\`)\n`,
+    true)
 
   let bad = 0
   for (const c of cases) {
@@ -201,7 +263,22 @@ function selftest() {
     console.error(`\n❌ 判据自测 ${bad} 条不符 —— 门禁本身不可信，拒绝给结论。`)
     process.exit(3)
   }
-  console.log(`✅ 判据自测 ${cases.length}/${cases.length} 通过（含 3 条负控 + 2 条假阳性防护）`)
+  // ★ 条数下限闸（2026-10-07，docs/design §103）。这一处的假绿比同族的其他实例更隐蔽：
+  //   原来收尾行是 `判据自测 ${cases.length}/${cases.length} 通过`——**分子分母印的是同一个数**，
+  //   所以「7/7」这个读数**永远**与自己相等，它压根不是「通过数 / 声明数」的比值。
+  //   于是 cases 被抽空时打出 `✅ 判据自测 0/0 通过` 且下面 process.exit(0)，
+  //   与真通过**完全同形**（§102 同一个形状的加强版：连「不匹配数」都没参与）。
+  //   实证（§103.0）：删掉全部 7 条 add(...) ⇒ `✅ 判据自测 0/0 通过` + EXIT=0。
+  //   下限只能手工改这个常量，不接受命令行参数。
+  const MIN_SELFTEST_CASES = 6;
+  if (cases.length < MIN_SELFTEST_CASES) {
+    console.error(`[pg-schema-scope] 判据自测只跑了 ${cases.length}/${MIN_SELFTEST_CASES} 例 —— add 调用被改过。`);
+    console.error('   「0/0 通过」不是通过：守卫空转时的读数和它要抓的病一模一样。');
+    process.exit(2);
+  }
+  const ran = cases.length - bad
+  console.log(`✅ 判据自测 实跑 ${ran} 例 / 声明 ${cases.length} 例` +
+    (bad === 0 ? ` 全通过（3 条负控 + 2 条假阳性防护）` : ''))
 }
 
 if (process.argv.includes('--selftest')) {

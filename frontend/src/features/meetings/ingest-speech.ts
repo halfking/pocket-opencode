@@ -1,6 +1,6 @@
 import { unref, type MaybeRef } from 'vue'
 import { sttApi } from '../../api/stt'
-import { extractEmbedding } from '../../native/speaker-embedding'
+import { extractEmbeddingResult } from '../../native/speaker-embedding'
 import { detectLang } from '../../native/detect-lang'
 import { saveAudioPart } from './audio-parts'
 import { liveTranslate } from './live-translate'
@@ -31,15 +31,22 @@ export async function ingestSpeechBlob(opts: {
   // 中止不在这里吞：Promise.all 会把 AbortError 原样抛给调用方，由
   // processSegment 判断「是取消」还是「真失败」——真失败要给用户可行动的原因，
   // 取消则一个字都不该显示。
-  const [sttResult, embedding] = await Promise.all([
+  const [sttResult, embeddingResult] = await Promise.all([
     sttApi.transcribe({ audioBlob: opts.blob }, opts.signal),
-    extractEmbedding(opts.blob).catch(() => new Float32Array()),
+    // ⚠ 旧写法 `.catch(() => new Float32Array())` 把「提取失败」伪装成
+    //   一个合法的空向量；而余弦相似度对零向量恒为 0 < 阈值
+    //   ⇒ **每一次提取失败都被算成一个新说话人**，用户看到的是
+    //   「说话人 1…30」而其实只有他一个人在说话。
+    //   现在失败是显式的 null，由 SpeakerDiarizer 走整场共用的兜底标签。
+    extractEmbeddingResult(opts.blob),
   ])
   if (!sttResult.text.trim()) return null
 
   void saveAudioPart(meetingId, opts.seq, opts.blob).catch(() => {})
 
-  const { profileId, label } = opts.diarizer.identify(embedding)
+  const { profileId, label } = opts.diarizer.identify(
+    embeddingResult.ok ? embeddingResult.embedding : null,
+  )
   const lang = detectLang(sttResult.text)
   const seg: Omit<MeetingSegment, 'id'> = {
     meetingId,
@@ -49,6 +56,9 @@ export async function ingestSpeechBlob(opts: {
     startMs: opts.startMs,
     endMs: opts.endMs,
     text: sttResult.text.trim(),
+    // §132：这是 ASR 的产物，因此**享受**相邻去重（切片重叠是它的老毛病）。
+    // 显式写出来而不是留空 —— `origin` 是必填字段，缺了编译器会指到这里。
+    origin: 'asr',
   }
   const id = await saveSegment(seg)
   opts.segmentProfiles.set(id, profileId)

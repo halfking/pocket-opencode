@@ -243,6 +243,13 @@ func (s *PGStore) CreateScoped(req CreateMeetingRequest, ownerID, workspaceID st
 		RETURNING ` + meetingSelectCols
 
 	// 唯一冲突只可能来自 ID 撞号（客户端没带 id 时走 nextMeetingID），重试即换一个新 ID。
+	//
+	// §105：**第一次**尝试用客户端给的 ID（`req.ID`），之后才退回服务端发号。
+	//   客户端没带 id ⇒ nextMeetingID() 每次循环都 new（内部自增），重试换号有意义；
+	//   客户端带了 id ⇒ 同 id 重试由 ON CONFLICT DO UPDATE 收敛到同一行；如果撞号
+	//   走到 isUniqueViolation 分支说明是另一个 owner/workspace 占用了该 ID——
+	//   这种情况必须直接报错（见下方 `req.ID != ""` 拦截），**绝不允许退回 nextMeetingID
+	//   静默换号**：换号 = 偷换别人的行 = 数据越权。
 	var lastErr error
 	for attempt := 0; attempt < 5; attempt++ {
 		now := time.Now()

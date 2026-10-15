@@ -455,6 +455,11 @@ func (p *llmGatewayBFFProvider) Chat(ctx context.Context, req llmbff.ChatRequest
 	out := &llmbff.ChatResponse{Model: resp.Model}
 	if len(resp.Choices) > 0 {
 		out.Content = resp.Choices[0].Message.Content
+		// ⚠ 这个字段下游一直在解码，过去**没人往上带** ⇒
+		// 「输出被预算截断」在上层完全不可见。§47 实测形态：
+		// finish_reason=length 时正文**仍可能是完整可解析的 JSON**，
+		// 所以解析成功不能当作「输出完整」的证据。
+		out.FinishReason = resp.Choices[0].FinishReason
 	}
 	out.Usage = quota.ApplyCost(resp.Model, llmbff.Usage{
 		PromptTokens:     resp.Usage.PromptTokens,
@@ -521,8 +526,12 @@ func (p *llmGatewayBFFProvider) Stream(ctx context.Context, req llmbff.ChatReque
 			delta.ToolCalls = make([]llmbff.ToolCall, len(d.ToolCalls))
 			for i, tc := range d.ToolCalls {
 				delta.ToolCalls[i] = llmbff.ToolCall{
-					ID:   tc.ID,
-					Type: tc.Type,
+					// Index 必须透传：它是协议自带的并发分组键。
+					// 丢了它，下游无法区分「同一个调用的增量分片」与
+					// 「模型并发吐出的另一个调用」（2026-10-06 真网关复测）。
+					Index: tc.Index,
+					ID:    tc.ID,
+					Type:  tc.Type,
 					Function: llmbff.ToolCallFunc{
 						Name:      tc.Function.Name,
 						Arguments: tc.Function.Arguments,

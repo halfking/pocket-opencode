@@ -9,8 +9,43 @@
         <span class="speaker">{{ seg.speakerLabel ?? '说话人' }}</span>
         <span class="lang-tag">{{ langLabel(seg.lang) }}</span>
         <span class="time">{{ formatMs(seg.startMs) }}</span>
+        <!--
+          §132/§131：来源徽章。它不是装饰 —— origin='manual' 决定这一段
+          **不再被相邻去重裁碎**（用户校对过的正文享受豁免），
+          所以「哪些行是我改过的」必须可见，否则用户会误以为去重在吃他的修改。
+        -->
+        <span v-if="seg.origin === 'manual'" class="origin-tag">已校对</span>
+        <button
+          v-if="editable && editingId !== seg.id"
+          type="button"
+          class="seg-edit-btn"
+          :aria-label="`更正第 ${formatMs(seg.startMs)} 句`"
+          @click="onStartEdit(seg)"
+        >更正</button>
       </div>
-      <p class="segment-text">{{ seg.text }}</p>
+      <!--
+        ★ §131：这一行此前是**只读**的 `<p class="segment-text">{{ seg.text }}</p>`，
+        仓里唯一的写入入口是底部 composer，而它 emit 的是 `append`（追加新段）。
+        追加不是更正：原错句不动，改正句还会被 §132 的相邻去重裁碎。
+        ⇒ 用户听错的人名/数字在 App 内没有任何更正办法。
+        editable 默认 false：共用本页的会话录音面板没有落库/回写链路，
+        打开一个没有出口的编辑框比不给更坏。
+      -->
+      <div v-if="editingId === seg.id" class="seg-editor">
+        <textarea
+          v-model="editingText"
+          rows="3"
+          aria-label="更正转写正文"
+          @keydown.esc="onCancelEdit"
+          @keydown.meta.enter="onCommitEdit"
+          @keydown.ctrl.enter="onCommitEdit"
+        />
+        <div class="seg-editor-actions">
+          <button type="button" class="seg-save" @click="onCommitEdit">保存</button>
+          <button type="button" class="seg-cancel" @click="onCancelEdit">取消</button>
+        </div>
+      </div>
+      <p v-else class="segment-text">{{ seg.text }}</p>
       <p v-if="seg.translation" class="segment-tr">{{ seg.translation }}</p>
     </div>
 
@@ -36,11 +71,41 @@ const props = withDefaults(defineProps<{
   segments: MeetingSegment[]
   isRecording?: boolean
   interimText?: string
+  /**
+   * §131：是否开放逐段更正。默认 **false** ——
+   * 共用本页的 `SessionLiveRecordPanel` 没有落库/回写链路，
+   * 给它开一个没有出口的编辑框，比不给更坏。
+   */
+  editable?: boolean
 }>(), { interimText: '' })
 
-const emit = defineEmits<{ append: [text: string] }>()
+const emit = defineEmits<{
+  append: [text: string]
+  edit: [payload: { id: string; text: string }]
+}>()
 const draft = ref('')
 const composerHint = '补一句转写，回车写入左栏并刷新右侧总结'
+const editingId = ref<string | null>(null)
+const editingText = ref('')
+
+function onStartEdit(seg: MeetingSegment) {
+  editingId.value = seg.id
+  editingText.value = seg.text
+}
+
+function onCancelEdit() {
+  editingId.value = null
+  editingText.value = ''
+}
+
+function onCommitEdit() {
+  const id = editingId.value
+  if (id === null) return
+  // 原样把空白交出去，判空/判未变在 `applySegmentTextEdit`（纯函数、可单测）；
+  // 组件这层不做第二套判定 —— 两套规则迟早会分叉。
+  emit('edit', { id, text: editingText.value })
+  onCancelEdit()
+}
 
 function onAppend() {
   const text = draft.value.trim()
@@ -117,6 +182,50 @@ watch(() => props.segments.length, async () => {
   font-size: var(--text-2xs);
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
+}
+
+/* §131：来源徽章 + 逐段更正入口 */
+.origin-tag {
+  font-size: var(--text-2xs);
+  padding: 1px 6px;
+  border-radius: var(--radius-full);
+  color: var(--success, var(--brand-primary));
+  border: 1px solid var(--border);
+}
+.seg-edit-btn {
+  margin-left: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: var(--text-2xs);
+  padding: 1px 8px;
+}
+.seg-editor { display: flex; flex-direction: column; gap: 6px; }
+.seg-editor textarea {
+  width: 100%;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-card);
+  color: var(--text-primary);
+  font: inherit;
+  line-height: 1.6;
+  resize: vertical;
+}
+.seg-editor-actions { display: flex; gap: 8px; }
+.seg-editor-actions button {
+  padding: 4px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-card);
+  color: var(--text-primary);
+  font-size: var(--text-smd);
+}
+.seg-editor-actions .seg-save {
+  background: var(--brand-primary);
+  border-color: var(--brand-primary);
+  color: var(--text-inverse);
 }
 
 .segment-text {

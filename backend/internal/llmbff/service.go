@@ -81,6 +81,16 @@ type ChatResponse struct {
 	Content string `json:"content"`
 	Model   string `json:"model"`
 	Usage   Usage  `json:"usage"`
+	// FinishReason 是上游对本次生成的终止声明（OpenAI 形态的
+	// choices[0].finish_reason）。
+	//
+	// ⚠ 2026-10-07 补：它一直**在下游被解码**、却从未往上传 ——
+	// 于是「输出被预算截断」这个信号在上层完全不可见，
+	// 调用方只能靠「解析成功 / 失败」间接猜。
+	// 值 "length" 表示正文被 max_tokens / 输出预算截断：
+	// 此时**内容可能仍是完整可解析的 JSON**（§47.6 实测形态），
+	// 所以解析成功**不能**当作「这次输出是完整的」证据。
+	FinishReason string `json:"finish_reason,omitempty"`
 }
 
 // Usage is the token accounting for one call. Cost is computed by the Recorder
@@ -259,6 +269,16 @@ type ToolFunction struct {
 
 // ToolCall 对应 assistant 消息携带的工具调用。
 type ToolCall struct {
+	// Index 是 OpenAI 流式协议**自带的**分组键：一轮里模型可以并发吐多个
+	// 工具调用，每个 tool_call delta 带自己的 index，只有同一个 index 的
+	// 分片才是同一次调用。
+	//
+	// ⚠ 2026-10-06 补的字段。此前这一层没有 Index，下游只能从 id 字符串
+	// 里猜（"call_0_abc" 取中间那段），而真实网关给的 id 是 `call_<hex>`
+	// —— 没有数字段，所有并发调用都被猜成 index 0，于是第二次调用被当成
+	// 第一次的「增量分片」：工具名拼成 "search_notessearch_notes"、
+	// 参数拼成两个 JSON 对象。生产上 agent 每轮都这么坏，只是静默回落。
+	Index    int          `json:"index,omitempty"`
 	ID       string       `json:"id"`
 	Type     string       `json:"type"` // "function"
 	Function ToolCallFunc `json:"function"`

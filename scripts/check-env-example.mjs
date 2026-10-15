@@ -105,7 +105,19 @@ function selftest() {
 
   const bad = results.filter((r) => !r.pass)
   for (const r of results) console.log(`  ${r.pass ? '通过' : '失败'}  ${r.name}`)
-  console.log(`\n自检: ${results.length - bad.length}/${results.length} 通过`)
+  // ★ 条数下限闸（2026-10-07，docs/design §94）。
+  //   原来这行是 `自检: ${results.length - bad.length}/${results.length} 通过` +
+  //   `exit(bad.length === 0 ? 0 : 1)`：results 为空时打印「0/0 通过」并 EXIT=0，
+  //   与真通过**完全同形**。实测把 7 条 `add(...)` 删掉即复现（实测 0/0 + EXIT=0）。
+  //   这是本仓同形状的第 4 处（前 3 处：§92 crlf 门、§91.7 vm-gaps、§94 build-mobile）。
+  //   下限只能手工改这个常量，不接受命令行参数。
+  const MIN_SELFTEST_CASES = 5;
+  if (results.length < MIN_SELFTEST_CASES) {
+    console.error(`[env-example] 自检只跑了 ${results.length}/${MIN_SELFTEST_CASES} 例 —— 夹具循环或 add 调用被改过。`);
+    console.error('   「0/0 通过」不是通过：那是判据失明时的读数，和真通过长得一模一样。');
+    process.exit(2);
+  }
+  console.log(`\n自检: 实跑 ${results.length} 例，通过 ${results.length - bad.length} 例`)
   process.exit(bad.length === 0 ? 0 : 1)
 }
 

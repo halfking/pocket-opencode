@@ -42,6 +42,29 @@ export function promptTextFor(event: RecordingEvent): string {
   return PROMPTS[event] ?? ''
 }
 
+/**
+ * 「录音语音播报是否开启」的**默认判定**。
+ *
+ * ⚠ 抽成纯函数是为了它能被真的测到：持久化读写的真身在 recordingRuntime.ts，
+ * 那个文件一 import Capacitor 在 Node 里就跑不起来，于是默认值只能在源码层
+ * 断言 —— 那测的是「有没有写出某个字符串」，不是「默认到底开还是关」。
+ *
+ * **判据是「有没有显式开启过」，不是「存的值是不是 false」**：
+ * 只有字面量 `'1'` 算开启，其余（`null` / `''` / `'0'` / `'true'` / 读不到）
+ * 一律关闭。
+ *
+ * ★ 默认值选错的方向必须是**安静**，不是吵 —— 没人期待一台录音 App
+ * 突然对着耳朵念「开始录音」，但用户会立刻发现它不播报。
+ *
+ * 依据：2026-10-07 用户明确要求「开启与关闭录音不要有语音提示」。
+ * 在此之前播报是无条件接上的（2026-10-01 的需求原文），
+ * 且设置页只有「TTS 是否可用」的展示、**没有任何开关**，
+ * `setMuted` 全仓零调用 —— 用户没有任何办法把它关掉。
+ */
+export function voicePromptEnabledByDefault(stored: string | null | undefined): boolean {
+  return stored === '1'
+}
+
 /** TTS 引擎可用性探测结果。 */
 export interface VoicePromptSupport {
   /** 是否有任一 TTS 引擎可用 */

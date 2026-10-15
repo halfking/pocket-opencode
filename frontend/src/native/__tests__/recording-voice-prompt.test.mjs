@@ -6,12 +6,19 @@
  *  1. 播报走 TTS 语音，不退化成 beep/蜂鸣（源码里不得出现合成音调用）；
  *  2. 播报**不阻塞**录音启动（announce 同步返回 void）；
  *  3. 播报时**麦克风被静音**，否则「开始录音」四个字会被录进会议记录。
+ *
+ * ⚠⚠ **需求已被 2026-10-07 的用户指示取代**：「开启与关闭录音不要有语音提示」。
+ *   播报因此**默认关闭**（此前是无条件接上的，且设置页没有任何开关，
+ *   `setMuted` 全仓零调用）。**本文件测的是「开启时它怎么工作」**——
+ *   即默认关闭之后，用户仍可在设置页把它打开，这套行为必须继续正确。
+ *   默认值本身的契约见 `recording-voice-prompt-default.test.mjs`。
  */
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, it } from 'node:test'
+import { balancedSpan } from '../../__tests__/source-scan.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const read = (rel) => readFileSync(join(HERE, rel), 'utf8')
@@ -341,7 +348,11 @@ describe('BUG-AU · 系统 TTS 抢前台的自愈降级（2026-10-01 真机确�
     const runtime = read('../recordingRuntime.ts')
     const i = runtime.indexOf('private startLiveCaption')
     assert.ok(i > 0, '未找到 startLiveCaption')
-    const body = runtime.slice(i, i + 900)
+    // ⚠ §428：按花括号配平取**整个** startLiveCaption，而不是「取够 900 个字符」
+    //   —— 那个数字曾让覆盖率取决于排版（详见 source-scan.mjs 的 balancedSpan 说明）。
+    const _span = balancedSpan(runtime, 'private startLiveCaption', '{')
+    assert.ok(_span, '取不到 startLiveCaption 的函数体')
+    const body = _span.span
     const guard = 'if (voicePrompt().hasForegroundHijack()) return'
     assert.ok(
       body.includes(guard),

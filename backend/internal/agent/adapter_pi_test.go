@@ -204,16 +204,34 @@ func TestPiAdapter_SendPromptResume(t *testing.T) {
 	})
 
 	a := NewPiAdapter(fake, "")
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
 	ref := AgentRef{Type: "pi", Target: fake}
 
+	// ⚠ 2026-10-07（§102.2）：**两次调用各拿各的预算**。
+	//
+	// 原来它们共用一个 10s ctx。两次 `SendPrompt` 各自要 fork 一个假子进程
+	// （`writeFakePi`）并读 fixture，单独跑只要 0.6~0.8s；
+	// 而全量回归里 57 个包并行，这个用例撞满了 10s 死线：
+	// `SendPrompt(new): agent request timed out: context deadline exceeded`（10.02s）。
+	// 单独连跑 3 次全绿、第二次全量 57/57 通过 ⇒ 预存在的负载敏感 flake，与当轮改动无关。
+	//
+	// 为什么是「各拿各的」而不是把 10s 调大：
+	// 调大是止血（阈值调到不再报错为止），而**两次调用是两个独立操作**，
+	// 共用一个预算等于让第二次的可用时间取决于第一次多快 ——
+	// 那个依赖关系本身就是这条用例不需要的东西。
+	// 每调用一个 10s，含义不变（单次调用挂死仍会被打断），只是不再互相挤占。
+
 	// 新会话：不注入 --session。
-	if _, err := a.SendPrompt(ctx, ref, "", &SendPromptRequest{Text: "hi"}); err != nil {
+	ctxNew, cancelNew := context.WithTimeout(context.Background(), 10*time.Second)
+	_, err := a.SendPrompt(ctxNew, ref, "", &SendPromptRequest{Text: "hi"})
+	cancelNew()
+	if err != nil {
 		t.Fatalf("SendPrompt(new): %v", err)
 	}
 	// resume：注入 --session。
-	if _, err := a.SendPrompt(ctx, ref, "old-sess-uuid", &SendPromptRequest{Text: "again"}); err != nil {
+	ctxResume, cancelResume := context.WithTimeout(context.Background(), 10*time.Second)
+	_, err = a.SendPrompt(ctxResume, ref, "old-sess-uuid", &SendPromptRequest{Text: "again"})
+	cancelResume()
+	if err != nil {
 		t.Fatalf("SendPrompt(resume): %v", err)
 	}
 

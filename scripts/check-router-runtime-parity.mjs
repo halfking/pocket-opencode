@@ -97,6 +97,34 @@ export function diff(textRoutes, rt) {
   return { missingFromText, onlyInText, routesLostByText, routesInventedByText }
 }
 
+const isClean = (d) =>
+  !d.missingFromText.length && !d.onlyInText.length && !d.routesLostByText.length && !d.routesInventedByText.length
+
+// ⚠️ 契约下限（§152.2）。**不要**只守 `textRoutes.length === 0`。
+//   那个守卫问的是「解析器还活着吗」；本门要证明的是「两个口径说的是同一件事」，
+//   而两侧读的是**同一个 meta key** ⇒ 契约整体消失时两侧**同时**归零，
+//   diff 的四个数组全空 ⇒ 与「完全一致」那条判定分支**同形** ⇒ 门禁发绿。
+//   触发条件不是假想：router-mobile.ts:487/513 的注释记着 `hideAppHeader: true`
+//   **已被删过 7 条**（2026-10-04 去 5、2026-10-06 去 3），删到 0 也会同样安静。
+//   而 4 个产品消费点（AppLayout.vue:325/455、ScrollChromePortal.vue:30、
+//   HeaderActionsPortal.vue:49）**没有任何门在守** —— 门只读路由表。
+//
+// 阈值沿用**仓里已有的约定**，不是本轮新定的：check-pg-schema-scope 的
+// `MIN_DECLARING_FILES = 12` 配的注释是「当前约 20 个，留出余量但仍高到
+// 少扫一半就一定会喊」⇒ 这里当前 16 条，取 **8**（一半）。
+const MIN_HIDDEN_DECLARATIONS = 8
+
+/**
+ * 这道门的**唯一判定点**。抽成纯函数是为了让 --selftest 能直接驱动**判决**，
+ * 而不是去改磁盘上的真文件（自检要证明的是「判据会响」，不是「某个文件坏没坏」）。
+ * @returns {'contract-vanished'|'diverged'|'ok'}
+ */
+export function verdict(textHidden, rtHidden, d) {
+  if (Math.min(textHidden, rtHidden) < MIN_HIDDEN_DECLARATIONS) return 'contract-vanished'
+  if (!isClean(d)) return 'diverged'
+  return 'ok'
+}
+
 /**
  * 在 **router 同目录** 放一个临时副本跑变异，而不是改真实文件。
  * 同目录 ⇒ `../features/x.vue` 这类相对 import 解析结果完全一致。
@@ -159,9 +187,13 @@ async function selftest() {
   // ---- ① 基线：不动任何东西 ⇒ 必须绿 ----
   {
     const src = readFileSync(ROUTER, 'utf8')
-    const d = diff(routesOf(src), await runtimeRoutes(ROUTER))
-    const clean = !d.missingFromText.length && !d.onlyInText.length && !d.routesLostByText.length && !d.routesInventedByText.length
-    add('① 基线·两种口径一致', clean, clean ? `声明数两法同为 ${routesOf(src).filter((r) => r.hideAppHeader).length} 条` : `分叉：${JSON.stringify(d)}`)
+    const textRoutes = routesOf(src)
+    const rt = await runtimeRoutes(ROUTER)
+    const d = diff(textRoutes, rt)
+    const textHidden = textRoutes.filter((r) => r.hideAppHeader).length
+    const v = verdict(textHidden, rt.hidden.length, d)
+    add('① 基线·两种口径一致且契约未归零', v === 'ok',
+      v === 'ok' ? `声明数两法同为 ${textHidden} 条（下限 ${MIN_HIDDEN_DECLARATIONS}）` : `判决=${v}：${JSON.stringify(d)}`)
   }
 
   // ---- ② 真变异：在**声明了**的路由的 path 与 meta 之间塞 >500 字符注释 ----
@@ -190,17 +222,60 @@ async function selftest() {
     try {
       const r = await withMutatedRouter(pushMetaOutOfWindowOnUndeclared(700), async (probe) => {
         const t = routesOf(readFileSync(probe, 'utf8'))
-        return diff(t, await runtimeRoutes(probe))
+        const rt = await runtimeRoutes(probe)
+        const d = diff(t, rt)
+        return { v: verdict(t.filter((x) => x.hideAppHeader).length, rt.hidden.length, d), d }
       })
-      const clean = !r.missingFromText.length && !r.onlyInText.length && !r.routesLostByText.length && !r.routesInventedByText.length
       add('③ 阴性对照·长注释落在**未声明**路由上 ⇒ 不得误报',
-        clean, clean ? '两法口径均未受影响、仍一致 ⇒ ② 的红确实来自「声明被漏掉」而非「有注释就红」' : `★ 误报：${JSON.stringify(r)}`)
+        r.v === 'ok', r.v === 'ok' ? '两法口径均未受影响、仍一致 ⇒ ② 的红确实来自「声明被漏掉」而非「有注释就红」' : `★ 判决=${r.v}：${JSON.stringify(r.d)}`)
     } catch (e) {
       add('③ 阴性对照·长注释落在**未声明**路由上 ⇒ 不得误报', false, `★ 变异执行失败：${e.message}`)
     }
   }
 
+  // ---- ④ ★ 契约归零控（§152.2）：把**全部** `hideAppHeader: true` 删掉 ⇒ 必须报红 ----
+  // 这是本轮补的那一格，**在加下限之前它会失败**（判决会是 'ok'）——
+  // 因为两侧同时归零时 diff 四个数组全空，与「一致」完全同形。
+  // ⇒ 判据落在**判决**上（verdict），且变异跑在真 router 的临时副本上，
+  //    走的是与 main() 完全同形的那条路径，不是另写一套。
+  {
+    try {
+      const r = await withMutatedRouter(
+        // 逗号可有可无：`hideAppHeader: true, …` 与 `hideAppHeader: true }` 两种形态都存在。
+        // ⚠️ 第一版只写了 `true,`（必须带逗号）⇒ 只删掉 7 条、**还剩 9 条** ⇒ 判决停在 'ok'，
+        //    差点被我读成「下限守卫无效」。**是变异没打全，不是判据没反应。**
+        (src) => src.replace(/hideAppHeader:\s*true\s*,?\s*/g, ''),
+        async (probe) => {
+          const t = routesOf(readFileSync(probe, 'utf8'))
+          const rt = await runtimeRoutes(probe)
+          const d = diff(t, rt)
+          return {
+            v: verdict(t.filter((x) => x.hideAppHeader).length, rt.hidden.length, d),
+            textHidden: t.filter((x) => x.hideAppHeader).length,
+            rtHidden: rt.hidden.length,
+            diffEmpty: isClean(d),
+          }
+        },
+      )
+      add('④ 契约归零控·删光全部 hideAppHeader 声明 ⇒ 必须判「契约归零」而不是「一致」',
+        r.v === 'contract-vanished' && r.textHidden === 0 && r.rtHidden === 0 && r.diffEmpty,
+        `文本口径声明 ${r.textHidden} 条 / 运行期 ${r.rtHidden} 条；diff 四项${r.diffEmpty ? '**全空（= 旧实现会判「一致」并 exit 0）**' : '非空'}；` +
+        `判决=${r.v}（期望 contract-vanished）`)
+    } catch (e) {
+      add('④ 契约归零控·删光全部 hideAppHeader 声明 ⇒ 必须判「契约归零」而不是「一致」', false, `★ 变异执行失败：${e.message}`)
+    }
+  }
+
   const bad = results.filter((r) => !r.pass)
+  // ★ 条数下限闸（形状照抄 check-smart-quotes.mjs / check-pg-schema-scope.mjs，
+  //   §103 记录过同一个假绿）。没有它：把全部 add(...) 删掉 ⇒ `自检: 0/0 通过` + EXIT=0。
+  //   阈值 3 = 当前 4 条的约八成；**只抓成批删空，不抓「少了一条」**。
+  const MIN_SELFTEST_CASES = 3
+  if (results.length < MIN_SELFTEST_CASES) {
+    console.error(`[router-runtime-parity] 自检只跑了 ${results.length}/${MIN_SELFTEST_CASES} 例 —— add 调用被改过。`)
+    console.error('   「0/0 通过」不是通过：守卫空转时的读数和它要抓的病一模一样。')
+    process.exit(2)
+  }
   console.log(`\n自检: ${results.length - bad.length}/${results.length} 通过`)
   console.log(`（真实 router-mobile.ts 未被触碰：本门禁在**同目录临时副本**上做变异，跑完即删）`)
   process.exit(bad.length === 0 ? 0 : 1)
@@ -227,7 +302,23 @@ async function main() {
   const textHidden = textRoutes.filter((r) => r.hideAppHeader).length
   console.log(`路由总数：文本口径 ${textRoutes.length} / 运行期 ${rt.total}`)
   console.log(`声明 hideAppHeader: true：文本口径 ${textHidden} / 运行期 ${rt.hidden.length}`)
-  if (!d.missingFromText.length && !d.onlyInText.length && !d.routesLostByText.length && !d.routesInventedByText.length) {
+
+  // ⚠️ 契约归零必须**先于**「口径一致」判定。顺序反了的话，这一段永远走不到 ——
+  //   而它走不到的时候，输出是「✓ 两种口径逐条一致」，与通过完全同形。
+  if (Math.min(textHidden, rt.hidden.length) < MIN_HIDDEN_DECLARATIONS) {
+    console.error(
+      `\n✗ 契约对象几乎归零：声明 hideAppHeader 的路由文本口径 ${textHidden} 条 / 运行期 ${rt.hidden.length} 条，` +
+        `低于下限 ${MIN_HIDDEN_DECLARATIONS}。\n` +
+        '  这**不是**「两种口径一致」——两侧读的是同一个 meta key，契约整体消失时它们会同时归零，\n' +
+        '  而四个分叉数组此时全空，与「一致」在判定上完全同形。\n' +
+        '  下限沿用 check-pg-schema-scope 的约定（当前值的一半，留余量但高到少一半必喊）。\n' +
+        '  如果这些声明确实该被删光，请把 MIN_HIDDEN_DECLARATIONS 显式改小并写明理由；\n' +
+        '  别让它安静地绿过去。',
+    )
+    process.exit(2)
+  }
+
+  if (isClean(d)) {
     console.log('\n✓ 两种口径逐条一致 —— 文本解析没有失明')
     return
   }

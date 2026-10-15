@@ -1,4 +1,27 @@
 {
   "note": "把后端/JS 原始 message 直接上屏的存量；只许减少不许增加。",
-  "sites": []
+  "sites": [],
+  "scope": [
+    "__tests__",
+    "api",
+    "app",
+    "components",
+    "composables",
+    "config",
+    "constants",
+    "env.d.ts",
+    "features",
+    "i18n",
+    "lib",
+    "localagent",
+    "locales",
+    "main.ts",
+    "native",
+    "pages",
+    "services",
+    "stores",
+    "styles",
+    "types",
+    "utils"
+  ]
 }

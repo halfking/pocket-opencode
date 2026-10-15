@@ -58,8 +58,18 @@ function templateOf(source) {
 function walk(dir, out = []) {
   for (const e of readdirSync(dir, { withFileTypes: true })) {
     const p = join(dir, e.name)
-    if (e.isDirectory()) walk(p, out)
-    else if (e.name.endsWith('.vue')) out.push(p)
+    // §631：并发下别的用例会在 `frontend/src/` 下**临时建目录再删掉**
+    // （z-index-ladder.test.mjs 的 `__probe_fixture__`）。本 walker 递归时
+    // 若正好撞上那个窗口，`readdirSync` 会抛 ENOENT 并让**整条门**红。
+    // ⇒ 这里逐项容错：目录在遍历中消失就跳过，不让它变成门的假红。
+    // ⚠ 这不是放宽判据：本门扫的是**已存在的 .vue**；扫描期间被删掉的文件
+    //   不在本门职责范围内，而「误报整条门红」是实打实的损失。
+    try {
+      if (e.isDirectory()) walk(p, out)
+      else if (e.name.endsWith('.vue')) out.push(p)
+    } catch (err) {
+      if (err?.code !== 'ENOENT') throw err
+    }
   }
   return out
 }

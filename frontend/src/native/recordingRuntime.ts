@@ -25,7 +25,7 @@ import { sttFailureText } from '../api/stt-error'
 import { saveMeetingAudio } from './meeting-audio'
 import { VadSegmenter } from './vad-segmenter'
 import { SpeakerDiarizer } from './speaker-diarization'
-import { loadSpeakerProfiles, saveVoiceprint } from '../features/meetings/voiceprints-store'
+import { loadSpeakerProfiles, upsertVoiceprintLabel } from '../features/meetings/voiceprints-store'
 import {
   updateMeeting, updateSegmentSpeaker, getMeeting, saveSegment, updateTranscript,
   type MeetingSegment,
@@ -49,7 +49,8 @@ import { sttSettingsApi } from '../api/stt-settings'
 import { filenameForMimeType } from '../api/stt-filename'
 import { sherpa } from './sherpa'
 import {
-  RecordingVoicePrompt, makeWebSpeaker, type MicTrackLike, type VoicePromptDeps,
+  RecordingVoicePrompt, makeWebSpeaker, voicePromptEnabledByDefault,
+  type MicTrackLike, type VoicePromptDeps,
 } from './recording-voice-prompt'
 import { setHeaderTitle } from '../composables/useAppHeaderTitle'
 import {
@@ -57,6 +58,8 @@ import {
   nextRecordingState, type RecordingPhase,
 } from '../features/notes/note-recording'
 import { decideMeetingStart, decideNoteStart } from './recordingPolicy'
+import { planSpeakerRelabel } from './speaker-relabel'
+import { isPlaceholderSpeaker } from '../features/meetings/meeting-roster-homophone'
 
 // ---------------------------------------------------------------------------
 // 录音语音播报（进程级单例）
@@ -69,8 +72,40 @@ const VOICE_PROMPT_KEY = '__openpocket_recordingVoicePrompt__'
  * 也不该再被同一个弹窗打断。
  */
 const VOICE_PROMPT_HIJACK_KEY = 'openpocket.voicePrompt.hijacked'
+/**
+ * 用户开关的持久化键。
+ *
+ * ⚠ **默认是关的**（2026-10-07 用户明确要求：「开启与关闭录音不要有语音提示」）。
+ * 此前这个播报是无条件接上的（2026-10-01 需求「在录音时用扬声器播放一段语音」），
+ * 设置页只展示「TTS 是否可用」而**没有任何开关**，`setMuted` 全仓零调用 ——
+ * 静音这条路是写了没接的死代码。
+ *
+ * 判据用「有没有显式写成 1」，而不是「值是不是 false」：
+ * 读不到 localStorage（无痕模式）时返回**关闭**，不是「读不到就当开着」。
+ * 默认值选错的方向必须是安静，不是吵。
+ */
+const VOICE_PROMPT_ENABLED_KEY = 'openpocket.voicePrompt.enabled'
+
 type GlobalWithVoicePrompt = typeof globalThis & {
   [VOICE_PROMPT_KEY]?: RecordingVoicePrompt
+}
+
+/** 录音语音播报是否开启（默认关）。设置页的开关直接读写这里。 */
+export function isVoicePromptEnabled(): boolean {
+  try {
+    return voicePromptEnabledByDefault(localStorage.getItem(VOICE_PROMPT_ENABLED_KEY))
+  } catch {
+    return false
+  }
+}
+
+/** 改开关。立即作用于已经存在的播报单例，不必等下次启动。 */
+export function setVoicePromptEnabled(on: boolean): void {
+  try {
+    if (on) localStorage.setItem(VOICE_PROMPT_ENABLED_KEY, '1')
+    else localStorage.removeItem(VOICE_PROMPT_ENABLED_KEY)
+  } catch { /* 无痕模式：下面的内存置位仍然生效 */ }
+  voicePrompt().setMuted(!on)
 }
 
 /**
@@ -113,14 +148,20 @@ async function speakNativeText(_engine: 'native' | 'web', text: string): Promise
  */
 function voicePrompt(): RecordingVoicePrompt {
   const g = globalThis as GlobalWithVoicePrompt
-  g[VOICE_PROMPT_KEY] ??= new RecordingVoicePrompt(detectVoicePromptDeps(), (engine, text) => {
-    if (engine === 'native') return speakNativeText(engine, text)
-    if (typeof window === 'undefined') return Promise.resolve()
-    return makeWebSpeaker(window as unknown as {
-      speechSynthesis: { speak: (u: SpeechSynthesisUtterance) => void }
-      SpeechSynthesisUtterance: new (t: string) => SpeechSynthesisUtterance
-    })(engine, text)
-  })
+  if (!g[VOICE_PROMPT_KEY]) {
+    g[VOICE_PROMPT_KEY] = new RecordingVoicePrompt(detectVoicePromptDeps(), (engine, text) => {
+      if (engine === 'native') return speakNativeText(engine, text)
+      if (typeof window === 'undefined') return Promise.resolve()
+      return makeWebSpeaker(window as unknown as {
+        speechSynthesis: { speak: (u: SpeechSynthesisUtterance) => void }
+        SpeechSynthesisUtterance: new (t: string) => SpeechSynthesisUtterance
+      })(engine, text)
+    })
+    // ⚠ 只在**首次创建**时套用设置。每次 announce 都重设会在 setMuted(true) 分支里
+    // 反复 clear()，而 clear() 会丢弃排队中的播报 —— 那样「设置生效」与
+    // 「队列被莫名清空」就分不开了。
+    g[VOICE_PROMPT_KEY].setMuted(!isVoicePromptEnabled())
+  }
   // 恢复上次的降级结论：本机已被证明会被系统 TTS 抢前台，就别再试了。
   try {
     if (localStorage.getItem(VOICE_PROMPT_HIJACK_KEY) === '1') {
@@ -274,10 +315,20 @@ export class MeetingRecorderRuntime {
     if (this.segmentAbort) this.segmentAbort.abort()
     this.segmentAbort = new AbortController()
     if (freshSession || !this.diarizer) {
-      this.diarizer = new SpeakerDiarizer(0.72)
+      // 阈值不再硬编码 0.72：那个数是配旧的「时域包络」特征定的，
+      // 而新特征（log-mel）下任意两段语音都 > 0.97 ⇒ 沿用它会把
+      // 整场会议合并成一个人。默认值在 speaker-diarization.ts，
+      // 与 SAME_SPEAKER_MIN 同源，改一处即可。
+      this.diarizer = new SpeakerDiarizer()
       try {
         const profiles = await loadSpeakerProfiles()
-        this.diarizer.loadProfiles(profiles)
+        // ★ 带上历史库里**已经有人名**的 profile：用户改过的名字是合并锚点，
+        //   自动聚类不能把他并掉（见 SpeakerProfile.pinned）。
+        //   判据放在这里而不是 speaker-diarization.ts，是为了保住那个文件
+        //   「零 import」的性质（它一 import 就无法在 node 里跑门禁）。
+        this.diarizer.loadProfiles(
+          profiles.map((p) => ({ ...p, pinned: !isPlaceholderSpeaker(p.label) })),
+        )
       } catch { /* 空库 */ }
     }
 
@@ -314,6 +365,14 @@ export class MeetingRecorderRuntime {
           silenceMs: 1500,
           minSpeechMs: 400,
           energyThreshold: 0.012,
+          // ⚠ §536：这组参数的真实行为已实测（设计文档 §536.2–§536.5）。
+          //   energyThreshold 0.012 的有效值是 0.0118（−38.6 dBFS），
+          //   跨过它段数会**阶跃**塌陷成 1 段；单段一旦超过 60s，
+          //   sliceBuffer 保留窗口会让段**静默丢掉前面的音频**。
+          //   底噪是否真的高于该值仍⛔未测（需真人录音），但丢失机制与触发无关。
+          // maxSpeechMs 是为此加的封顶（§536.8 甲）：显式写出来而不吃默认值，
+          // 是为了让「20s < 上游最紧上限 30s」这个约束在代码里可见。
+          maxSpeechMs: 20_000,
           onSegment: (seg) => { void this.processSegment(seg.blob, seg.startMs, seg.endMs) },
         })
         await this.vadSegmenter.start(this.mediaStream)
@@ -428,6 +487,34 @@ export class MeetingRecorderRuntime {
     return saved
   }
 
+  /**
+   * §131：把 runtime 内存里的某一段改成用户校对过的正文。
+   *
+   * ⚠ 落库由调用方（`meetings-store.updateSegmentText`）负责，本方法**只**同步
+   *   内存副本 + 派生列。两个理由：
+   *   ① 不在录时（`activeMeetingId` 已被 stop() 置空）runtime 压根没有这一段，
+   *      编辑的主路径必须能在**录完之后**用 —— 所以落库不能挂在这个方法后面；
+   *   ② 录音中时 `displaySegments` 优先读 `this.segments`
+   *      （`segments.value.length ? … : storedSegments`），不同步的话
+   *      刚写进 DB 的正文会被内存里的旧文本立刻盖回去，用户看到「没改成」。
+   *
+   * 派生列 `transcript` 在这里重渲染，口径与另两处写入点
+   * （appendText / mergeOverSplitSpeakers）完全一致：`renderTranscript(原始段)`。
+   *
+   * @returns 该段此刻是否在 runtime 里（false = 页面该走 storedSegments 分支）。
+   */
+  async editSegmentInMemory(segmentId: string, text: string): Promise<boolean> {
+    const meetingId = this.activeMeetingId.value
+    const seg = this.segments.value.find((s) => s.id === segmentId)
+    if (!meetingId || !seg) return false
+    seg.text = text
+    // §132：用户校对过的正文享受人工段豁免，否则下一段落库时
+    // 它会被当成重转写裁碎。
+    seg.origin = 'manual'
+    await updateTranscript(meetingId, renderTranscript(this.segments.value))
+    return true
+  }
+
   private async processSegment(blob: Blob, startMs: number, endMs: number) {
     if (!this.diarizer) return
     this.processingCount.value++
@@ -463,6 +550,74 @@ export class MeetingRecorderRuntime {
     }
   }
 
+  /**
+   * 收尾：把被过度拆开的说话人合并，并把新标签回贴到分段与转写正文。
+   *
+   * ── 为什么需要这一步（2026-10-07 实测）──
+   * 录音期间每段发言单独判一次说话人，而 VAD 按 1500ms 静音切段
+   * ⇒ 每次只看 1.5~4 秒。该区间的同人/异人余弦分布**重叠 0.0460**，
+   *   任何单阈值都判不准，于是「宁可错拆不可错并」的设计落成
+   *   一场两人会议被标成 5 个「说话人 N」（整体标签膨胀 2.31×）。
+   * 单次发言的信息量不够，但整场累积够 —— 收尾时用聚类级长窗口统计
+   * 把碎片并回去（`speaker-relabel.ts`），实测膨胀 2.31×→0.92×。
+   *
+   * ★ **必须排在所有分段落库之后**（`stop()` 里等 `inFlightSegments` 清空
+   *   之后）。提前调用会漏掉最后几段，而那几段往往正是让某个聚类
+   *   变得可判定的关键。
+   *
+   * ★ **只回贴仍是占位标签的段**：用户中途改过名的段，
+   *   它的标签是他自己的输入，自动聚类无权覆盖（§40 刚修回来的东西）。
+   */
+  private async mergeOverSplitSpeakers(meetingId: string) {
+    if (!this.diarizer) return
+    let canonical: Map<string, string>
+    try {
+      canonical = this.diarizer.relabel()
+    } catch (e) {
+      // 合并是**增强**不是必需：失败就保持录音期间的原样，
+      // 绝不能让它把已经落库的分段转写搞丢。
+      console.warn('[meeting-recorder] speaker relabel failed:', e)
+      return
+    }
+    if (canonical.size === 0) return
+
+    // 决策在纯函数里（planSpeakerRelabel）——「只回贴仍是占位标签的段」
+    // 这条决定在 runtime 里一行都测不到，留在外面等于没有门禁。
+    const byId = new Map(this.segments.value.map((s) => [s.id, s]))
+    const plan = planSpeakerRelabel({
+      segmentProfiles: this.segmentProfiles,
+      canonicalOf: canonical,
+      labelOf: (pid) => this.diarizer?.getProfile(pid)?.label,
+      currentLabelOf: (segId) => byId.get(segId)?.speakerLabel ?? null,
+    })
+    for (const [segId, next] of plan.remap) this.segmentProfiles.set(segId, next)
+    if (plan.updates.length === 0) return
+
+    // ⚠§400：内存与落库**必须用同一个集合**。
+    //   `segmentProfiles` 是进程级 Map，只在 `freshSession`（start-fresh /
+    //   replace-other）时 clear；`resume-self` 不清。而 `byId` 来自
+    //   `this.segments`，那才是**当前会议**的分段（seedSegments 灌进来的 + 新录的）。
+    //   ⇒ 续录另一场「已有分录」的会议时，Map 里可能残留**上一场会议**的 segId，
+    //   而 `currentLabelOf` 对查不到的段返回 `null`，`isPlaceholderSpeaker(null)`
+    //   判成 **true** ⇒ 那些外来 segId 全部混进 `plan.updates`。
+    //   真模块实测：收尾会议 B 时 plan.updates 里坐着会议 A 的段。
+    //
+    //   ⇒ 上面那段循环用 `byId.get(...)` 做了内存侧的保护，落库侧却**没有**，
+    //   于是「内存里没改、库里改了」——最坏的一种不一致。
+    //   修法：落库也只写 `byId` 里的段。
+    //   ⚠ 这是判据层面的修复，与「续录要不要保留历史段」那条产品口径无关：
+    //     往**不是当前会议**的分段上写说话人标签，任何口径下都是错的。
+    const ownUpdates = plan.updates.filter((u) => byId.has(u.segId))
+    for (const u of ownUpdates) {
+      const seg = byId.get(u.segId)
+      if (seg) seg.speakerLabel = u.label
+    }
+    await Promise.all(ownUpdates.map((u) => updateSegmentSpeaker(u.segId, u.label)))
+    // 转写正文里也带着说话人前缀，不重渲染的话用户看到的是「标签改了、正文没改」。
+    await updateTranscript(meetingId, renderTranscript(this.segments.value))
+    this.syncSpeakers()
+  }
+
   private syncSpeakers() {
     if (!this.diarizer) return
     this.speakers.value = this.diarizer.getProfiles().map((p) => ({ profileId: p.id, label: p.label }))
@@ -473,7 +628,11 @@ export class MeetingRecorderRuntime {
     this.diarizer.labelProfile(profileId, displayName)
     this.syncSpeakers()
     const profile = this.diarizer.getProfile(profileId)
-    if (profile) await saveVoiceprint({ id: profileId, displayName, embedding: profile.embedding })
+    // ⚠ 用 upsertVoiceprintLabel 而不是 saveVoiceprint：
+    // 后者对已存在的行会 sample_count + 1，而这里是「改一次名」，
+    // 不是「又多了一个音频样本」—— 改一次名多记一个样本，会把两个
+    // 无关的量绑在一起（详见 voiceprints-store.ts 的注释）。
+    if (profile) await upsertVoiceprintLabel({ id: profileId, displayName, embedding: profile.embedding })
     for (const [segId, pid] of this.segmentProfiles) {
       if (pid !== profileId) continue
       await updateSegmentSpeaker(segId, displayName)
@@ -513,6 +672,27 @@ export class MeetingRecorderRuntime {
         ])
       }
       if (meetingId) {
+        // ★ 收尾合并被过度拆开的说话人（2026-10-07）。
+        //   必须在所有分段落库之后做 —— 见下面 mergeOverSplitSpeakers 的注释。
+        //
+        // ⚠⚠ §567：**这一行原先是裸 await，而它后面紧跟着 `updateMeeting(status:'completed')`**
+        //   ⇒ 合并一抛错，**completed 状态永不写入**，会议会**永远卡在「录音中」**，
+        //   而用户已经听到「录音结束」播报（那个 `finally` 只重置 stopping + 播报，不捕获）。
+        //
+        //   而 `mergeOverSplitSpeakers` 自己那句承诺是：
+        //   「合并是**增强**不是必需：失败就保持录音期间的原样，绝不能把已落库的转写搞丢」
+        //   —— 它的 try/catch **只包住了 `relabel()` 那一行**，
+        //   后面的内存回贴 / `updateSegmentSpeaker` 落库 / **`updateTranscript` 整篇重写正文**
+        //   都在保护之外。
+        //
+        //   ⇒ 实测（变异 M21）：把那个 catch 整段删掉，**全量 45 项门禁依然全绿**
+        //   ⇒ 这条承诺**零强制**。这里补上调用点的兜，让代码与注释声明的契约一致。
+        //   ⚠ 只吞「合并」这一件事：它失败**绝不能**阻断收尾的后半段。
+        try {
+          await this.mergeOverSplitSpeakers(meetingId)
+        } catch (e) {
+          console.warn('[meeting-recorder] speaker merge failed, 收尾继续:', e)
+        }
         await updateMeeting(meetingId, {
           audioPath: audioPath || null,
           durationMs,
@@ -656,9 +836,15 @@ export class NoteRecorderRuntime {
   /**
    * 本场录音的即时转写会话 id（每场新生成）。
    *
-   * 服务端靠它维持**跨片去重**状态：3 秒定长切片必然切在词中间，两片交界处
-   * 同一个词会被各识别一次，本地拼接会得到「今天今天下午三点」。没有会话 id
-   * 就只能各片独立转写，去重无从谈起。
+   * 服务端靠它维持**跨片累积**状态：没有会话 id 就只能各片独立转写，
+   * 界面上的即时文本会变成互不相干的若干句。
+   *
+   * ⚠⚠ 原始注释曾断言「3 秒定长切片会切在词中间、边界上的词被重复识别」，
+   *   **那是错的**（§25 / §507 + TestProductionShapeSlicesDoNotOverlap）：
+   *   `takeNewWindow()` 切的是 `[已发送秒数, 当前总秒数)`，各片**不重叠**，
+   *   每个采样点只被转写一次。原文与实测读数见 §507。
+   *   ⇒ 那段误述会让下一个人以为「整句重复」是活缺陷而去调 anchorCoverage，
+   *     而护栏门的文档明写要防的正是这件事。
    *
    * 空 = 本场没开即时转写（原生 sherpa 流式可用时走那条路，无需云端会话）。
    */
@@ -965,24 +1151,24 @@ export class NoteRecorderRuntime {
     // 不符 → stt.filenameForMimeType() 发错扩展名 → 后端转写直接拒收,
     // 表现为"录音有内容但转不出文字"。
     const blobType = recorder.mimeType || detectRecorderMime() || 'audio/webm'
-    this.phase.value = nextRecordingState('recording', 'toggle')
-    this.recording.value = false
-    this.stopTick()
-    const durationMs = Date.now() - this.startedAt
-    // 让 recorder.stop() 派发的最后一片带上 isFinal（见 ondataavailable）。
-    // 不置位的话这最后 3 秒不会送去转写，而它通常正是用户最后说的那句。
-    this.releaseOnNextSlice = this.sttSessionId !== ''
-    // 兜底：部分 Android WebView 在 timeslice MediaRecorder 上,即便我们调 stop()
-    // 也不会派 onstop(dataavailable 已停在 INACTIVE,但 recorder 没把队列里的
-    // onstop 事件 flush)。三秒兜底后强制 resolve 并继续清理,避免 UI 卡死。
-    let stopResolved = false
-    await new Promise<void>((resolve) => {
-      const onStopped = () => { if (stopResolved) return; stopResolved = true; resolve() }
-      recorder.onstop = onStopped
-      try { recorder.stop() } catch { onStopped() }
-      setTimeout(() => { if (!stopResolved) { stopResolved = true; resolve() } }, 3000)
-    })
     try {
+      this.phase.value = nextRecordingState('recording', 'toggle')
+      this.recording.value = false
+      this.stopTick()
+      const durationMs = Date.now() - this.startedAt
+      // 让 recorder.stop() 派发的最后一片带上 isFinal（见 ondataavailable）。
+      // 不置位的话这最后 3 秒不会送去转写，而它通常正是用户最后说的那句。
+      this.releaseOnNextSlice = this.sttSessionId !== ''
+      // 兜底：部分 Android WebView 在 timeslice MediaRecorder 上,即便我们调 stop()
+      // 也不会派 onstop(dataavailable 已停在 INACTIVE,但 recorder 没把队列里的
+      // onstop 事件 flush)。三秒兜底后强制 resolve 并继续清理,避免 UI 卡死。
+      let stopResolved = false
+      await new Promise<void>((resolve) => {
+        const onStopped = () => { if (stopResolved) return; stopResolved = true; resolve() }
+        recorder.onstop = onStopped
+        try { recorder.stop() } catch { onStopped() }
+        setTimeout(() => { if (!stopResolved) { stopResolved = true; resolve() } }, 3000)
+      })
       if (this.nativeListening) {
         // stopStreaming 同样没有内建超时,给 5s 上限;超时只是丢掉这一句
         // 尾部文本,不能把整个 stop() 拖死。
@@ -1040,6 +1226,24 @@ export class NoteRecorderRuntime {
       // 超时上限同步放大：服务端串行跑 N 段，用 20 秒会让长录音必然超时。
       // 但**必须有上限**——否则后端不响应时 phase 永远停在 'stopping'，
       // 录音按钮彻底锁死（这正是 withTimeout 存在的理由）。
+      //
+      // ── §463：这个条件是随手记**唯一的「整段校对」机会**，而它几乎永远为假 ──
+      //
+      // ⚠ 别把它读成「兜底」就以为切片质量另有保障。实测形态是：
+      //   · 正常路径 = **3 秒定长硬切**（NOTE_CHUNK_MS=3000）逐片送
+      //     transcribeIncremental，服务端按到达顺序累积（mergeIncremental 去重）。
+      //   · 本分支**只在「一个字都没出」时**才跑；而 sendSlice 里只要**任意一片**
+      //     出过字，this.transcript.value 就非空 ⇒ 此后本条件恒为假。
+      //   · 「出过一次字」≠「出全了」：:1069-1079 记着真机 16 片里 8 片带 error
+      //     但同时带 text。那 8 片照样把 transcript 置为非空。
+      // ⇒ 落库正文因此**从不被整段音频校对过**。这是形态问题，不是质量调参问题。
+      //
+      // 对照：会议那条链有 finalizeRecording 的全量重转 + LLM 精校，随手记两者都没有。
+      // 要不要把本条件放宽（即每条随手记付 2x ASR）是**产品口径**，
+      // 已登记为决策简报 #15 的 B 格，不在本文件代拍。
+      //
+      // ⛔ 决策简报曾把随手记写成「整段一次性转写 ⇒ 结构上不存在切片问题」——
+      //    那是错的（见设计文档 §463）。本注释是那处错误的就地更正。
       if (!this.transcript.value.trim() && audioBlob.size > 0) {
         // 这段兜底转写最长 10 分钟，是整条录音链路上唯一一段**用户既看不见
         // 进度、又完全没有中止手段**的等待（需求「后台执行的 api 可以强行

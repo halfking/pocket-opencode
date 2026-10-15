@@ -28,6 +28,7 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 
 import { emptyRecordingNotice } from '../note-recording.ts'
+import { balancedSpan, spanToEnclosingBlock } from '../../../__tests__/source-scan.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 
@@ -99,7 +100,11 @@ describe('接线：runtime 必须真的用上这个判据（结构断言）', ()
   it('非空提示必须写进 error（否则界面那条错误行永远没内容）', () => {
     const i = runtime.indexOf('const emptyNotice = emptyRecordingNotice(')
     assert.ok(i > 0, '没找到 emptyNotice 赋值')
-    const after = runtime.slice(i, i + 400)
+    // ⚠ §428：断言的目标在**下一句**（`if (emptyNotice) this.error.value = …`），
+    //   所以配平实参会把它缩到括号外、看不见目标；正确单元是这条语句所在的块。
+    const _blk = spanToEnclosingBlock(runtime, 'const emptyNotice = emptyRecordingNotice(')
+    assert.ok(_blk, '取不到 emptyNotice 赋值所在的块')
+    const after = _blk.span
     assert.match(
       after,
       /if \(emptyNotice\)\s*this\.error\.value\s*=\s*EMPTY_RECORDING_NOTICE/,
@@ -113,7 +118,9 @@ describe('接线：runtime 必须真的用上这个判据（结构断言）', ()
     // 那个不变量是对的：它的存在意义是「渲染层可以直接渲染 error」。
     // 所以这里按常量写入，并由那条护栏连同「常量必须是字面量」的校验一起守住。
     const i = runtime.indexOf('const emptyNotice = emptyRecordingNotice(')
-    const after = runtime.slice(i, i + 400)
+    const _blk = spanToEnclosingBlock(runtime, 'const emptyNotice = emptyRecordingNotice(')
+    assert.ok(_blk, '取不到 emptyNotice 赋值所在的块')
+    const after = _blk.span
     assert.ok(
       !/this\.error\.value\s*=\s*emptyNotice\b/.test(after),
       '直接写判据返回值会绕过 error 文案不变量',

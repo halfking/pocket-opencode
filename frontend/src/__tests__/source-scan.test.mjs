@@ -16,7 +16,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, it } from 'node:test'
 
-import { stripVueComments, vueFilesUnder, readVueCode, relPosix, findVersionLiterals, computedArgs } from './source-scan.mjs'
+import { stripVueComments, vueFilesUnder, readVueCode, relPosix, findVersionLiterals, computedArgs, balancedSpan, spanToEnclosingBlock } from './source-scan.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const SRC = join(here, '..')
@@ -113,6 +113,106 @@ describe('source-scan: 剥注释底座', () => {
   it('⑥ computedArgs 抓得住「常量接进 computed」这个真实形态', () => {
     const args = computedArgs('const version = computed(() => APP_VERSION.version)')
     assert.ok(args.some((a) => a.includes('APP_VERSION')), '没抓到常量接进 computed')
+  })
+
+  it('⑦ balancedSpan 配平取到**完整**实参区，不受任何字符上限影响', () => {
+    // 这条判据钉的正是 §428 的形状：「取够 N 个字符」让覆盖率取决于排版。
+    // 下面的 PAD 刻意超过 600 —— 旧的 slice(at, at + 600) 会把它切掉。
+    const PAD = 'x'.repeat(900)
+    const code = [
+      `await finalizeRecording(id, ${PAD}, { toWav: w })`,
+      'await somethingElse(bad)',
+    ].join('\n')
+    const span = balancedSpan(code, 'finalizeRecording(')
+    assert.ok(span, '锚点存在却返回 null')
+    assert.ok(span.span.includes('toWav'), '超长实参区被截断了 ⇒ 覆盖取决于排版')
+    assert.ok(!span.span.includes('somethingElse'), '越界吃到了下一句 —— 覆盖不是由配平定的')
+    assert.ok(span.inner.includes(PAD) && span.inner.trimEnd().endsWith('}'), 'inner 应只含括号内部')
+  })
+
+  it('⑦ balancedSpan 花括号模式取整个函数体（锚点以 ( 结尾）', () => {
+    const code = [
+      'async function onSummarize() {',
+      '  const a = 1',
+      '  return a',
+      '}',
+      'function unrelated() { return 2 }',
+    ].join('\n')
+    const span = balancedSpan(code, 'async function onSummarize(', '{')
+    assert.ok(span && span.span.endsWith('}'), '函数体没配平到收尾')
+    assert.ok(span.span.includes('return a'), '函数体内容缺失')
+    assert.ok(!span.span.includes('unrelated'), '越界吃到了下一个函数')
+  })
+
+  it('⑦ balancedSpan 锚点缺失必须返回 null，不得返回空串', () => {
+    // 返回空串会把调用方自己的「找不到调用点」提示吃掉，
+    // 让缺陷表现成「判据静默通过」而不是「判据报红」。
+    assert.equal(balancedSpan('const a = 1', 'finalizeRecording('), null)
+  })
+
+  it('⑦ balancedSpan 跳过字符串里的括号', () => {
+    const code = `call(a, ')))', b)\nnext()`
+    const span = balancedSpan(code, 'call(')
+    assert.ok(span && !span.span.includes('next'), '字符串里的括号把配平带偏了')
+  })
+
+  it('⑧ spanToEnclosingBlock 取到锚点所在块的开头（断言目标常在**下一句**）', () => {
+    // 这一族的锚点是「一条语句」，断言的目标在紧随其后 ⇒
+    // 配平实参会缩到括号内部、看不见目标，正确单元是**所在的块**。
+    const code = [
+      'function f() {',
+      '  try {',
+      '    const notice = pick()',
+      '    if (notice) this.err = NOTICE',
+      '    return notice',
+      '  } finally {',
+      '    cleanup()',
+      '  }',
+      '}',
+      'function g() { after() }',
+    ].join('\n')
+    const r = spanToEnclosingBlock(code, 'const notice = pick()')
+    assert.ok(r, '锚点存在却返回 null')
+    assert.ok(r.span.includes('if (notice) this.err = NOTICE'), '块尾没覆盖到断言目标')
+    assert.ok(r.span.includes('return notice'), '块尾应包含紧随的 return')
+    assert.ok(!r.span.includes('cleanup'), '越界吃进了 finally 块')
+    assert.ok(!r.span.includes('after'), '越界吃到了下一个函数')
+  })
+
+  it('⑧ spanToEnclosingBlock 锚点缺失返回 null，且不被字符串里的花括号带偏', () => {
+    assert.equal(spanToEnclosingBlock('const a = 1', 'nothing here'), null)
+    const code = [
+      'function f() {',
+      "  const s = '{'",
+      '  const notice = pick()',
+      '  after(notice)',
+      '}',
+    ].join('\n')
+    const r = spanToEnclosingBlock(code, 'const notice = pick()')
+    assert.ok(r, '锚点存在却返回 null')
+    assert.ok(r.span.includes('after(notice)'), '字符串里的 { 把块边界算错了')
+  })
+
+  // ★ 这条是 §428.7 真实踩到的那颗雷（api/meetings.ts 的 fallbackRefine 签名）：
+  //   参数表里有**类型注解的花括号**，直接 indexOf('{') 会命中它，
+  //   配平于是从对象类型开始收尾 —— 整个函数体落在窗口外，判据静默变瞎。
+  it('⑧ balancedSpan 找函数体时先配平参数表，不被类型注解的 { 带偏', () => {
+    const code = [
+      'async function fallbackRefine(',
+      '  segments: MeetingSegment[],',
+      '  signal?: AbortSignal,',
+      '  meta?: { title?: string; participants?: string[] },',
+      '): Promise<RefineResult> {',
+      '  try { await go() }',
+      '  catch (e) { if (isAbortError(e)) throw e }',
+      '  return { ok: true }',
+      '}',
+      'async function nextOne() { unrelated() }',
+    ].join('\n')
+    const r = balancedSpan(code, 'async function fallbackRefine(', '{')
+    assert.ok(r, '取不到函数体')
+    assert.ok(r.span.includes('isAbortError(e)'), '配平被类型注解的花括号带偏 ⇒ 函数体落在窗口外')
+    assert.ok(!r.span.includes('nextOne'), '越界吃到了下一个函数')
   })
 
   it('⑤ findVersionLiterals 能抓到模板里的裸字面量，并报对行号', () => {

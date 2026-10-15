@@ -1,0 +1,247 @@
+/**
+ * meeting-recording-finalize.ts — **录音收尾的单一实现**（两条录音路径共用）。
+ *
+ * ── 为什么要抽出来（§49）──
+ * 产品里有**两条**录音路径，它们的收尾本该是同一件事：
+ *   ① 随手记会话内录音  `useSessionLiveRecord.stop()` → `meetingsApi.refine(...)`
+ *   ② 会议详情页录音    `MeetingDetailView.onMicToggle()` → `useMeetingRecorder.stop()`
+ * 而 ② 这条是**主入口**：会议列表的「开始录音」push 到
+ *   `{name:'meeting-detail', query:{record:'1'}}`，详情页 onMounted 自动开录。
+ *
+ * 实测（§48.8/§49）：② 路径**全程没有任何 refine 调用点** ⇒ 录完只有原始分段转写，
+ * 没有精校、没有行动项、没有日程提醒。两条路径的产出质量差一个量级。
+ * ⇒ 收尾编排必须只有一份，否则「修好了一条、另一条照旧」会不停发生
+ * （§48 的 A/B/C 三条全是这个形状）。
+ *
+ * ── 调用方必须保证的两件事 ──
+ * 1. **segments 必须来自持久层**（`getMeetingWithSegments`），不能来自
+ *    `useMeetingRecorder` 的 `segments` computed —— 它按 `activeMeetingId` 圈定，
+ *    而 `rt.stop()` 在 return 前把该 id 置空 ⇒ stop 之后读到的恒为 `[]`。
+ *    后果不是少几段，而是整段归因失效（见 §49 与下面的 buildRefineBaseSegments）。
+ * 2. **elapsedMs 必须来自 `rt.stop()` 的返回值**，同理不能用 recorder.elapsedMs（恒 0）。
+ *
+ * 这两条都由调用方保证，本模块只做纯编排 + 三处外部调用，便于单测。
+ */
+import { sttSettingsApi } from '../../api/stt-settings'
+import { isAbortError } from '../../api/http'
+import { meetingsApi } from '../../api/meetings'
+import { planRefine } from './meeting-refine-plan'
+import {
+  buildRefineBaseSegments,
+  refetchFullTranscript,
+  shouldAdoptFullTranscript,
+  type FullSegmentReceipt,
+  type FullTranscribeOutcome,
+} from './meeting-final-transcript'
+import { deriveRoster, repairRosterHomophones } from './meeting-roster-homophone'
+import { PINYIN_COMMON } from './pinyin-common'
+import { toGatewayWavBytes } from '../../utils/wav-encode'
+import { getMeeting, updateMeeting, type MeetingSegment } from './meetings-store'
+import { ingestMeetingArtifacts } from './meeting-ingest'
+import { buildIngestNotice } from './meeting-ingest-notice'
+import { buildRefineNotice, refineStatusFor } from '../sessions/refine-outcome-notice'
+
+export interface FinalizeDeps {
+  /** 一次全量重转。注入而非直接调 API，便于单测与换实现。 */
+  transcribeFull?: (blob: Blob, filename: string) => Promise<FullTranscribeOutcome>
+  /**
+   * 落盘音频 → 可切分的 WAV。注入便于单测。
+   *
+   * ⚠ 不提供它，整条「整段重转」链路在真机上是**死的**（§50）：
+   *   录音产物是 webm/opus（`VadSegmenter.stop()` 产 `audio/webm`），
+   *   而小米 MiMo ASR 桥接只收 wav/mp3（上游实测 400
+   *   `input_audio.format must be one of: wav, mp3`）⇒ 整段重转直接失败。
+   *   就算网关收下，`stt.SplitWAV` 对非 PCM-WAV **不可切**
+   *   （实测 webm → `splittable=false`，0 段）⇒ 只回 1 条回执 ⇒
+   *   `attributeFullTranscript` 返回 null ⇒ §40 的说话人归因整块不生效。
+   *   ★ 随手记语音那条路径早就接了（`recordingRuntime` 用
+   *     `audioDecoder.takeFull()`），**只有会议录音这条路没接**。
+   */
+  toWav?: (blob: Blob) => Promise<ArrayBuffer | null>
+  /** 提示出口。注入以便单测断言「说了什么话」。 */
+  notify: (kind: 'info' | 'success' | 'warning', text: string) => void
+}
+
+export interface FinalizeOutcome {
+  /** 精校请求是否走完（不含入库；入库失败仍算走完） */
+  refined: boolean
+  /** 用户主动取消 */
+  aborted: boolean
+  /** 是否采纳了全量重转文本 */
+  adopted: boolean
+  /** 实际建出的待办数 */
+  todosCreated: number
+  /** §66.7：尝试建提醒的条数 / 真正建成的条数 / 期限没听清的条数。 */
+  reminderPlanned: number
+  reminders: number
+  dueUnresolved: number
+  /** §56：由 `next_meeting` 建出来的日程条数（0/1）。 */
+  eventsCreated: number
+  /**
+   * §229.1：`next_meeting` 非空但解不出时刻（0/1）——
+   * 用户说了下次会议的时间点，我们没听懂，日程没建。
+   * 与上面的 `eventsCreated` **不是一回事**：它为 0 时至少有五种原因。
+   */
+  eventUnresolved: number
+  /** §229.1：日程建失败（feed/create 抛异常）—— 我们没建成，不等于「没有下次会议」。 */
+  eventFailed: boolean
+  /** 入库（笔记/待办/提醒）是否失败 */
+  ingestFailed: boolean
+}
+
+const defaultTranscribeFull = (blob: Blob, filename: string) =>
+  // ★ segments 必须一起带回来：它是把高精度文本挂回说话人的唯一依据。
+  //   只回 {text, failed} 就等于在接缝处把它扔了
+  //   （见 meeting-final-transcript.ts 的 FullSegmentReceipt 头注释）。
+  sttSettingsApi.transcribeFull(blob, filename).then((r) => ({
+    text: r.text, failed: r.failed, segments: r.segments,
+  }))
+
+/**
+ * 落盘录音 → 16kHz 单声道 WAV。
+ *
+ * 与随手记语音路径（`recordingRuntime` 用 `audioDecoder.takeFull()`）**同义**，
+ * 但不依赖 runtime 单例的生命周期：两条录音路径都能在 stop 之后任意时刻调用。
+ * 解码失败由 `refetchFullTranscript` 兜住（它 try/catch 后退回原 blob），
+ * 所以这里直接抛，不吞异常 —— 吞掉会让人以为转码成功了。
+ */
+const defaultToWav = (blob: Blob): Promise<ArrayBuffer | null> => toGatewayWavBytes(blob)
+
+/**
+ * 收尾：全量重转 → 说话人归因 → 人名同音纠正 → LLM 精校 → 入库（笔记/待办/提醒）。
+ *
+ * 顺序每一环都不能换：
+ *  · 全量重转**必须在**精校之前 —— LLM 只能看到已经错了的字符，它并不知道音频里
+ *    原本说的是什么，所以「润色」修不了同音字/专名/数字（2026-10-06 的关键修复）。
+ *  · 说话人归因必须在精校之前 —— 服务端提示词第 6 条要求「保留每行开头的 [说话人] 标记」。
+ *  · 人名同音纠正必须在精校之前 —— 摘要/行动项/纪要都从正确的人名派生，
+ *    放之后只能修「已经污染过的产物」。
+ *  · 精校必须在入库之前 —— 入库要消费 refine.todos（带 due 的行动项）。
+ */
+export async function finalizeRecording(
+  meetingId: string,
+  segments: MeetingSegment[],
+  elapsedMs: number,
+  deps: FinalizeDeps,
+): Promise<FinalizeOutcome> {
+  const outcome: FinalizeOutcome = {
+    refined: false, aborted: false, adopted: false,
+    todosCreated: 0, reminderPlanned: 0, reminders: 0, dueUnresolved: 0,
+    eventsCreated: 0, eventUnresolved: 0, eventFailed: false, ingestFailed: false,
+  }
+  const notify = deps.notify
+  if (!meetingId) return outcome
+
+  const segs = segments ?? []
+  const finalText = await refetchFullTranscript(
+    meetingId,
+    deps.transcribeFull ?? defaultTranscribeFull,
+    // ★★★ 不传这一项，整段重转在真机上是死的（§50）。
+    //   录音产物是 webm/opus，网关只收 wav/mp3 ⇒ 重转直接失败；
+    //   且 `stt.SplitWAV` 对 webm 不可切（实测 splittable=false）
+    //   ⇒ 就算发得出去也只回 1 条回执 ⇒ 说话人归因整块不生效。
+    { toWav: deps.toWav ?? defaultToWav },
+  )
+  // ★ 决策全部在纯函数里（§52）：采纳什么、用哪些分段、名单是谁、改哪几个同音字。
+  //   这一段此前散在本函数体内，而本函数在 node 里跑不到 ⇒ 那些决策
+  //   **一行行为门都没有**（§45/§48/§49/§50 四轮 bug 全在这里面）。
+  const meeting = await getMeeting(meetingId)
+  const plan = planRefine({
+    meetingId,
+    segments: segs,
+    full: { text: finalText.text, applied: finalText.applied, segments: finalText.segments },
+    participants: meeting?.participants,
+    elapsedMs,
+  })
+  outcome.adopted = plan.adopted
+  const { roster, refineSegments } = plan
+
+  try {
+    // ★ meta.participants 必须传：不传的话服务端 `participantLeak` 的名单是空的
+    //   ⇒ 恒返回 "" ⇒ `guardRefineResult` 永不触发 ⇒ `refine_rejected` 永不产生
+    //   ⇒ 前端的 'refine-failed' 状态与对应文案**在生产里永远不会出现**（§48）。
+    //   说话人来源的名字按构造就带在 transcript 的 [名字] 前缀里，
+    //   `participantLeak` 的 `!Contains(transcript, w)` 会正确放行。
+    const result = await meetingsApi.refine(meetingId, refineSegments, ['en'], {
+      title: meeting?.title ?? undefined,
+      participants: roster,
+      location: meeting?.location ?? undefined,
+      // ★ §138.3：主题就在这个作用域里（上面已读 title/location/participants），
+      //   此前**只差这一个字段**就没人传。主题里装的是专有名词，
+      //   而专有名词正是 ASR 错得最多、也最该被精校纠正的那一类
+      //   （实测：mimo 对 / minimax 把「悬界芯片」写成「玄介芯片」）。
+      topic: meeting?.topic ?? undefined,
+    })
+    outcome.refined = true
+    // 先落精校结果与状态：**无论后面的入库成不成，用户至少拿得到精校文本**。
+    await updateMeeting(meetingId, {
+      refinedTranscript: result.refinedTranscript,
+      // ⚠ 与 meeting-ingest 同一判定，单一来源在 refine-outcome-notice。
+      status: refineStatusFor({ fromFallback: result.fromFallback, rejected: result.rejected }),
+    })
+    // ★ 这一步之前**根本不存在**，于是用户需求「时间点自动加进计划日程」
+    //   在随手记录音上从未生效（§48）。事实链：服务端 `finalizeKxRefine` 返回
+    //   `"todos": resp.Todos`（server_meeting_ingest.go:328）→ 前端 normalizeRefine
+    //   解析进 result.todos → 而调用点只读了 3 个字段，**带 due 的行动项被丢弃**。
+    //   失败必须单独兜：入库抛错不能让已经成功的精校被说成「未生效」。
+    try {
+      const fresh = await getMeeting(meetingId)
+      if (fresh) {
+        const ingested = await ingestMeetingArtifacts(fresh, result)
+        outcome.todosCreated = ingested.todosCreated
+        outcome.reminderPlanned = ingested.reminderPlanned
+        outcome.reminders = ingested.reminders
+        outcome.dueUnresolved = ingested.dueUnresolved
+        outcome.eventsCreated = ingested.eventsCreated
+        // ⚠§229.1：这三格不补，`buildIngestNotice` 收到的永远是初值 0/false
+        //   ⇒ 「没听懂」「没建成」会被说成「什么也没发生」。
+        outcome.eventUnresolved = ingested.eventUnresolved
+        outcome.eventFailed = ingested.eventFailed
+      }
+    } catch {
+      outcome.ingestFailed = true
+    }
+    // ⚠ 降级或被拦下时**不能**再报「精翻完成」。服务端有两条不同的回落路径，
+    //   都带 refine_fallback：parseRefineJSON 失败 / guardRefineResult 拦下。
+    //   降级本身是对的（宁可给原文也别给空），但必须说实话，且要说**对**原因。
+    const notice = buildRefineNotice({
+      fromFallback: result.fromFallback,
+      rejected: result.rejected,
+      adopted: outcome.adopted && finalText.applied,
+      failedSegments: finalText.failedSegments,
+    })
+    // 入库结果如实说：建了待办就报数，没建出来也要说，
+    // 别让用户以为「时间点已经进日程了」。
+    // ⚠ 级别仍由 notice.kind 决定，**不因 tail 改判**：精校确实成功了，
+    //   就不该因为附带一句「行动项未能入库」把成功降级成中性提示。
+    // §66.7：文案搬进纯模块（meeting-ingest-notice.ts）——
+    //   旧写法「N 项行动已加入待办**与提醒**」正是随手记侧门禁的**负控样本**
+    //   （0 条提醒时也在暗示「时间点进了日程」），而它内联在组件里、无法被行为断言。
+    const tail = buildIngestNotice({
+      todosCreated: outcome.todosCreated,
+      reminderPlanned: outcome.reminderPlanned,
+      reminders: outcome.reminders,
+      dueUnresolved: outcome.dueUnresolved,
+      eventsCreated: outcome.eventsCreated,
+      eventUnresolved: outcome.eventUnresolved,
+      eventFailed: outcome.eventFailed,
+      ingestFailed: outcome.ingestFailed,
+    })
+    notify(notice.kind, notice.text + tail)
+  } catch (e) {
+    // 「已取消」和「失败」对用户是两件不同的事：前者不该被提示成「稍后重试」，
+    // 否则会让人以为录音或会议出了什么问题。
+    if (isAbortError(e)) {
+      outcome.aborted = true
+      notify('info', '已停止精翻')
+      return outcome
+    }
+    // ⚠ 2026-10-06：原文写的是「精翻稍后可在会议详情重试」——
+    // 而**会议详情里没有那个入口**。那句话让用户去一个不存在的地方，
+    // 是「告诉用户去做产品做不到的事」，比不说更糟。
+    // 失败时用户**确实**有东西可用：录音期间逐段落库的转写仍在
+    // （每段带说话人标签，§40 修的就是它在收尾时不丢），状态停在 completed。
+    notify('warning', '录音已结束，精翻未生效（分段转写已保存）')
+  }
+  return outcome
+}

@@ -24,6 +24,8 @@ export function statusText(status: MeetingStatus): string {
     completed: '已完成',
     processing: '处理中',
     refined: '已精翻',
+    // ⚠ 别写成「已完成」：那会把失败藏进成功桶里。
+    'refine-failed': '精翻未生效',
   }
   return map[status] ?? status
 }

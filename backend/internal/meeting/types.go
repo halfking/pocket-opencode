@@ -48,6 +48,18 @@ type ActionItem struct {
 //
 // 两者由 handler 做换算，这里保持"客户端口径"以免换算散落多处。
 type CreateMeetingRequest struct {
+	// ID 是**客户端提供的**会议 ID（可选）。
+	//
+	// 为什么要它：前端在 `local_meetings` 里已经有一个稳定 ID（`meeting-<ts>-<rand>`），
+	// 并且用它去调 `/api/meetings/:id/refine`。而服务端此前**永远**自己发号
+	// （`mtg_<nano>_<seq>`）并忽略请求里的 `id` ⇒ 客户端手里的 ID 在库里不存在，
+	// 精校链在生产必然 404（`server_meeting_ingest.go` 的 fail-closed 守卫是对的，
+	// 它只是让这个缺口以「诚实的方式」暴露出来）。
+	//
+	// 空值 ⇒ 保持旧行为（服务端发号）。
+	//
+	// ⚠ 它**不是**跨用户可写的句柄：撞到别的 owner/workspace 已占用的 ID 时，
+	//   服务端必须退回自己发号，绝不覆盖（见 `PGStore.CreateScoped` 的唯一冲突重试）。
 	ID                string   `json:"id,omitempty"`
 	Title             string   `json:"title"`
 	Location          string   `json:"location,omitempty"`

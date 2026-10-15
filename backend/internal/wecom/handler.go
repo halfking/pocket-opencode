@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/halfking/pocket-opencode/backend/internal/config"
 )
@@ -202,9 +203,27 @@ func writeSuccess(w http.ResponseWriter, code int) {
 	_, _ = w.Write([]byte("success"))
 }
 
+// truncate 按字节截断并补省略号，但**回退到完整字符边界**。
+//
+// ⚠ §253 实测（中文语料 558 字节、上限 200）：原写法 `s[:n] + "..."`
+//
+//	产出的是**非法 UTF-8**（实测 `utf8.ValidString` = false、含 U+FFFD）——
+//	纯中文下约 2/3 的切点会切在汉字中间。
+//	而它截的是企业微信回调的 XML 原文（中文为主），
+//	切坏后 `%q` 会把那串乱码打进日志。
+//	回退最多丢 3 字节，代价可忽略。
+//
+// ⚠ 与 `internal/server/server_meeting.go` 的 `truncateStr`、
+//
+//	`internal/rss/parser.go` 的截断同形 —— 全仓已有三处这样的回退，
+//	此处此前是第四处漏网的。
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
-	return s[:n] + "..."
+	cut := s[:n]
+	for len(cut) > 0 && !utf8.ValidString(cut) {
+		cut = cut[:len(cut)-1]
+	}
+	return cut + "..."
 }

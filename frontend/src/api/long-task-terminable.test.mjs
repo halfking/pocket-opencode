@@ -36,6 +36,7 @@ import { fileURLToPath } from 'node:url'
 import { describe, it } from 'node:test'
 
 import { isAbortError } from './abort.ts'
+import { balancedSpan } from '../__tests__/source-scan.mjs'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const SRC = path.resolve(HERE, '..')
@@ -382,7 +383,10 @@ describe('中止不得被降级链吞成「假成功」', () => {
     it(`${decl} 自己也会被中止（降级途中取消也不能产出内容）`, () => {
       const at = meetings.indexOf(decl)
       assert.notEqual(at, -1, `meetings.ts 里找不到 ${decl}`)
-      const body = meetings.slice(at, at + 2500)
+      // ⚠ §428：按花括号配平取**整个**函数体，而不是「取够 2500 个字符」。
+      const _span = balancedSpan(meetings, decl, '{')
+      assert.ok(_span, `${decl} 取不到函数体`)
+      const body = _span.span
       assert.match(body, /if \(isAbortError\(e\)\) throw e/, `${decl} 会把中止吞掉并返回拼装内容`)
       assert.match(body, /\bsignal\b/, `${decl} 的兜底请求没有接 signal，中止传不进去`)
     })
@@ -391,8 +395,15 @@ describe('中止不得被降级链吞成「假成功」', () => {
   it('调用方把中止与失败分开说（取消不是「稍后重试」）', () => {
     const live = readSrc('composables/useLiveSummary.ts')
     assert.match(live, /if \(isAbortError\(e\)\) return/, 'useLiveSummary 会把中止记成 update failed')
-    const session = readSrc('features/sessions/useSessionLiveRecord.ts')
-    assert.match(session, /if \(isAbortError\(e\)\)[\s\S]*已停止精翻/, 'useSessionLiveRecord.stop 会把取消提示成「稍后重试」')
+    // §49：中止处理随收尾编排一起搬进了共享模块
+    // （两条录音路径共用，useSessionLiveRecord.stop 现在只调用它）。
+    // 这里同时钉住「模块处理中止」+「调用方没有把它吞掉」两件事。
+    const finalize = readSrc('features/meetings/meeting-recording-finalize.ts')
+    assert.match(finalize, /if \(isAbortError\(e\)\)[\s\S]*已停止精翻/, '收尾编排会把取消提示成「稍后重试」')
+    for (const site of ['features/sessions/useSessionLiveRecord.ts', 'features/meetings/MeetingDetailView.vue']) {
+      const src = readSrc(site)
+      assert.match(src, /await finalizeRecording\(/, `${site} 没有 await 收尾编排 —— 中止结果到不了用户`)
+    }
   })
 })
 

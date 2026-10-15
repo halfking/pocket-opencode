@@ -9,9 +9,19 @@
 //   **只翻 zh-CN 看不出来**，必须逐语言 + 逐视图比对。
 //
 // 判据由两部分组成，缺一不可：
-//   A. 逐语言：两个 key 都存在且取值不同（用户能分辨两个动作）
-//   B. 逐视图：标着 deck.create 的控件必须处在建组上下文里，标着 list.create 的
-//      控件必须处在跳卡片页的上下文里
+//   A. 逐语言：两个 key 都存在且取值不同（用户能分辨两个动作）—— **强制**
+//   B. 逐视图，只强制**否定的那一半**：
+//        · 标着 deck.create 的控件**不得**跳到卡片页（这正是 BUG-K/BUG-U 的复发形态）
+//        · 标着 list.create 的控件**必须**跳到卡片页
+//
+// ⚠ 「deck.create 的控件**必须处在建组上下文里**」这一半**没有强制**，也不该假装有。
+//   2026-10-07 实测（§138）：仓里 10 个带 deck.create 的控件里，
+//   **9 个既不跳卡片页、也不提交建组** —— 它们是标签、占位、展开面板里的文案。
+//   若把这一半补成硬判据，当天就会把门打红 9 处。
+//   ⇒ `DECK_SUBMIT_RE` 原本是给这一半用的，现已**连同它的调用一并删除**：
+//     留着一个「算了却不看」的变量，会让下一个读代码的人以为这里有检查
+//     （与 §135 那条「判据里声明了却从未被调用的能力」同族，只是方向相反：
+//      那条是没被调用，这条是**被调用了但结果被丢弃**）。
 //
 // 判据有效性由 --selftest 自证：对一份**合成坏样本**跑同一套规则必须转红。
 // 光在好样本上跑绿说明不了任何事。
@@ -33,7 +43,6 @@ const LOCALES_DIR = path.join(FRONTEND_SRC, 'locales')
 
 // ── 判定规则（好样本与合成坏样本共用同一套，判据才有意义）──────────────
 const CARD_ROUTE_RE = /\/flashcards\/new\b|goCreate|router\.push\(\s*['"`]\/flashcards\/(new|cards)/
-const DECK_SUBMIT_RE = /store\.createDeck|createDeck\(/
 
 /**
  * 检查一段模板片段里出现的入口标签用得对不对。
@@ -43,12 +52,14 @@ const DECK_SUBMIT_RE = /store\.createDeck|createDeck\(/
  */
 function checkBlock(label, block) {
   const isCard = CARD_ROUTE_RE.test(block)
-  const isDeck = DECK_SUBMIT_RE.test(block)
   if (label === 'list') {
     // 「新建卡片」必须真的去建卡片
     return isCard ? null : '标着 list.create 的控件没有跳卡片页'
   }
-  // 「新建卡组」绝不能跳卡片页；只展开表单的 toggle 允许两者都不满足
+  // 「新建卡组」绝不能跳卡片页。
+  // 注意这里**只**判否定的那一半：既不跳卡片页、也不提交建组的一律放过
+  // （实测 10 个里 9 个如此，见文件头注释）。不要在这里补「必须提交建组」——
+  // 那不是漏网，是判据与真实界面结构不符。
   if (isCard) return '标着 deck.create 的控件却跳到了卡片页'
   return null
 }
@@ -110,14 +121,21 @@ const BROKEN_LOCALE = { flashcards: { list: { create: '新建卡组' }, deck: { 
 
 function selftest() {
   console.log('── 判据自测（合成坏样本）──')
-  const b1 = checkBlock('deck', /<form[\s\S]*<\/form>/.exec(BROKEN_FIXTURE) ? /<form[\s\S]*<\/form>/.exec(BROKEN_FIXTURE)[0] : '')
-  const b2 = checkBlock('list', /<button[\s\S]*?<\/button>/.exec(BROKEN_FIXTURE)[0])
+  // ★ 这里的抽取正则必须与 extractBlocks 里**逐字同形**（非贪婪 + \b）。
+  //   原来自检用的是贪婪的 `<form[\s\S]*<\/form>`，与被测路径不同形 ——
+  //   本例夹具只有一个 form 所以结果相同，属于潜伏的分叉，改掉。
+  const b1 = checkBlock('deck', (/<form\b[\s\S]*?<\/form>/.exec(BROKEN_FIXTURE) || [''])[0])
+  const b2 = checkBlock('list', (/<button\b[\s\S]*?<\/button>/.exec(BROKEN_FIXTURE) || [''])[0])
   const l1 = BROKEN_LOCALE.flashcards.list.create === BROKEN_LOCALE.flashcards.deck.create
-  const ok1 = b1 === null // 坏样本里 deck.create 在一个真的 submit 建组的 form 里 → 这条不该报
+  // ⚠ 原来这条注释写的是「在一个**真的 submit 建组**的 form 里」——
+  //   而夹具是 `@submit.prevent="submitCreateDeck"`，`createDeck(` 要求带左括号，
+  //   **压根不匹配**。那个前提是假的，判据之所以不报是因为「不跳卡片页」，
+  //   与「提交建组」无关。注释改成实情。
+  const ok1 = b1 === null // deck.create 所在块不跳卡片页 ⇒ 按当前契约（只禁跳卡片页那侧）不该报
   const ok2 = b2 === null // list.create 绑 goCreate → 这条不该报
   const ok3 = l1 === true  // 两个 key 同值 → 语言判据必须报
   console.log(`  语言判据（两 key 同值）      ${ok3 ? '✅ 转红' : '❌ 没转红 —— 判据失灵'}`)
-  console.log(`  视图判据（deck.create 在 form）${ok1 ? '✅ 未误报' : `❌ 误报：${b1}`}`)
+  console.log(`  视图判据（deck.create 不跳卡片页）${ok1 ? '✅ 未误报' : `❌ 误报：${b1}`}`)
   console.log(`  视图判据（list.create 绑 goCreate）${ok2 ? '✅ 未误报' : `❌ 误报：${b2}`}`)
 
   // 再验一条真正该红的：把 list.create 挂到一个建组 form 上

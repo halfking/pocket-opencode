@@ -27,9 +27,17 @@ function collectFiles(dir, out = []) {
   for (const name of readdirSync(dir)) {
     if (SKIP_DIRS.has(name)) continue
     const full = join(dir, name)
-    const st = statSync(full)
-    if (st.isDirectory()) collectFiles(full, out)
-    else if (['.vue', '.css', '.ts'].includes(extname(name))) out.push(full)
+    try {
+      const st = statSync(full)
+      if (st.isDirectory()) collectFiles(full, out)
+      else if (['.vue', '.css', '.ts'].includes(extname(name))) out.push(full)
+    } catch (err) {
+      // §638：并发跑全套测试时，`frontend/src` 下会有**临时建目录再删掉**的东西
+      // （z-index-ladder 的 `__probe_fixture__`）。递归撞上那个窗口 ⇒ ENOENT
+      // ⇒ 本文件在 import 期就炸 ⇒ 一个用例都没注册 ⇒ 门禁报「孤儿测试」。
+      // 只吞 ENOENT，其余异常照抛：护栏只挡并发窗口，不掩盖真实读取失败。
+      if (err?.code !== 'ENOENT') throw err
+    }
   }
   return out
 }

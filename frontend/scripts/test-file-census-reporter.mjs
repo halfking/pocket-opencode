@@ -17,7 +17,7 @@ import { Transform } from 'node:stream'
 const inner = spec()
 inner.on('data', (chunk) => process.stdout.write(chunk))
 
-/** @type {Record<string, number>} 绝对路径 → 该文件产出的**真实用例**数 */
+/** @type {Record<string, {cases: number, failures: number}>} 绝对路径 → 该文件的产出与失败数 */
 const census = {}
 
 /**
@@ -38,10 +38,21 @@ const reporter = new Transform({
   objectMode: true,
   transform(event, _enc, cb) {
     const data = event.data
-    if (isFileLevel(data) && (event.type === 'test:pass' || event.type === 'test:fail')) {
-      census[data.file] ??= 0
-    } else if (isRealCase(data) && (event.type === 'test:pass' || event.type === 'test:fail')) {
-      census[data.file] = (census[data.file] ?? 0) + 1
+    const failed = event.type === 'test:fail'
+    if (isFileLevel(data) && (event.type === 'test:pass' || failed)) {
+      census[data.file] ??= { cases: 0, failures: 0 }
+    } else if (isRealCase(data) && (event.type === 'test:pass' || failed)) {
+      census[data.file] ??= { cases: 0, failures: 0 }
+      census[data.file].cases += 1
+    }
+    // §633：失败数**独立**记，不从 cases 里扣。
+    // 起因：node v22 的 `--test` 在 **`describe` 体（套件收集阶段）抛错**时
+    // 会打印 `not ok`，但**进程退出码仍是 0**，`# fail` 摘要也照样写 0。
+    // 仓库 runner 原本只看退出码 ⇒ 这种失败是**静默绿灯**（实测见设计文档 §633）。
+    // 退出码这条通道不可信，所以这里把 test:fail 事件本身落盘，让 runner 另开一条判红通道。
+    if (failed && data && data.file) {
+      census[data.file] ??= { cases: 0, failures: 0 }
+      census[data.file].failures += 1
     }
     // 明细照旧交给 spec，测试失败时的输出与不加本 reporter 时完全一致
     if (!inner.write(event)) inner.once('drain', cb)
