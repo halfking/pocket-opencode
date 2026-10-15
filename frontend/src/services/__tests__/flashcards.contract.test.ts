@@ -1,5 +1,5 @@
 /**
- * flashcards.contract.test.ts — HTTP API 契约锁定（OpenPocket v1 contract §2）。
+ * flashcards.contract.test.ts — HTTP API 契约锁定（AI Work Mess v1 contract §2）。
  *
  * 运行：cd frontend && node --experimental-strip-types --test \
  *        src/services/__tests__/flashcards.contract.test.ts

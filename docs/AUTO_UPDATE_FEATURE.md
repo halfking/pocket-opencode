@@ -1,4 +1,4 @@
-# 📱 OpenCode Pocket 自动更新功能文档
+# 📱 AI Work Mess 自动更新功能文档
 
 **版本:** v1.2.0 Build 2  
 **完成时间:** 2026-06-29 11:38  
@@ -8,7 +8,7 @@
 
 ## 🎉 功能概述
 
-OpenCode Pocket 现已支持**自动检查更新和一键升级**功能，用户可以随时获取最新版本。
+AI Work Mess 现已支持**自动检查更新和一键升级**功能，用户可以随时获取最新版本。
 
 ### 核心特性
 - ✅ 启动时自动检查更新
@@ -28,7 +28,7 @@ OpenCode Pocket 现已支持**自动检查更新和一键升级**功能，用户
 版本号: v1.2.0
 构建号: Build 2
 构建日期: 2026-06-29
-应用名称: OpenCode Pocket Mobile
+应用名称: AI Work Mess Mobile
 ```
 
 ### 查看位置
@@ -166,7 +166,7 @@ export const APP_VERSION = {
   version: '1.2.0',
   buildNumber: 2,
   buildDate: '2026-06-29',
-  name: 'OpenCode Pocket Mobile'
+  name: 'AI Work Mess Mobile'
 }
 ```
 
@@ -235,7 +235,7 @@ export const APP_VERSION = {
   version: '1.3.0',      // 更新版本号
   buildNumber: 3,        // 递增构建号
   buildDate: '2026-07-01', // 更新日期
-  name: 'OpenCode Pocket Mobile'
+  name: 'AI Work Mess Mobile'
 }
 ```
 
@@ -404,7 +404,7 @@ latestVersion := &VersionInfo{
 
 ## ✅ 总结
 
-OpenCode Pocket 的自动更新功能已完整实现：
+AI Work Mess 的自动更新功能已完整实现：
 
 ### 已实现
 - ✅ 版本号和构建号标识

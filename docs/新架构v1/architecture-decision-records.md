@@ -4,7 +4,7 @@
 > **核心变化（v1 → v2 → v3）**：
 > - v1 计划自建所有组件；
 > - v2 决定复用 acc-go / Memora / llm-gateway-go；
-> - **v3 进一步考虑 RedClaw（PC 桌面企业平台 + OpenClaw + 本地 IDE 控制）后，新增独立的 ZAgentGateway 作为 RedClaw 与 OpenPocket / acc-go 的中介**。
+> - **v3 进一步考虑 RedClaw（PC 桌面企业平台 + OpenClaw + 本地 IDE 控制）后，新增独立的 ZAgentGateway 作为 RedClaw 与 AI Work Mess / acc-go 的中介**。
 
 ---
 
@@ -16,7 +16,7 @@
 - v2 假设 PC 端算力舱 = "acc-go Worker"（自建 Harness）；
 - 实际 monorepo 里 RedClaw 已经是 **PC 桌面 OpenClaw 的企业级包装**，自带 platform-go 后端、agentcontainer、connectors、control signals (Ed25519 双签)；
 - 用户的 PC 上还有 IDE（ZCode / VS Code / Cursor / OpenCode），这些需要被监测和控制；
-- OpenPocket 的应用后端已经在用 RedClaw 的能力（虽然目前通过 echo stub）；
+- AI Work Mess 的应用后端已经在用 RedClaw 的能力（虽然目前通过 echo stub）；
 - 因此：**算力舱不是 acc-go Worker，而是 ZAgentGateway → RedClaw platform-go → OpenClaw CLI / 本地 IDE 插件**。
 
 **v1 决策**：自建 Chief + Executor Bridge + Harness。
@@ -27,27 +27,27 @@
 1. **新增独立服务 `ZAgentGateway`**（端口 `:9100`）；
 2. ZAG 注册为 acc-go 的 worker；
 3. ZAG 接收 acc-go 派发的任务，**转发到 RedClaw platform-go**；
-4. ZAG 暴露 REST + MCP + WebSocket API 给 OpenPocket / 第三方 MCP 客户端；
+4. ZAG 暴露 REST + MCP + WebSocket API 给 AI Work Mess / 第三方 MCP 客户端；
 5. ZAG 聚合 RedClaw device / agent / session / IDE 状态。
 
 **理由**：
 
 | 反对意见 | 回复 |
 |---|---|
-| "为什么不让 OpenPocket 直接连 RedClaw？" | RedClaw 是企业平台（含 Plan E / Ed25519 / SSO），不能直接暴露给 mobile |
+| "为什么不让 AI Work Mess 直接连 RedClaw？" | RedClaw 是企业平台（含 Plan E / Ed25519 / SSO），不能直接暴露给 mobile |
 | "为什么不让 acc-go 直接调 RedClaw？" | acc-go 应该只看到"worker 在跑任务"，不该知道 RedClaw 存在 |
 | "为什么不让 pocketd 自己做？" | pocketd 是 mobile BFF，职责过多会变臃肿 |
 | "为什么不在 RedClaw 内加 mobile API？" | RedClaw 是企业平台，加 mobile 接口会污染 |
 | "为什么不直接复用 acc-go device？" | acc-go device 是通用 worker；ZAG 是专用 worker，需要额外能力（事件转发 / MCP / IDE 聚合 / 鉴权边界）|
 
-**净增量**：~8k 行 Go (ZAG) + ~500 行 Go (pocketd zag client) + ~500 行 Go (acc-go 集成) + ~3k 行 Vue (OpenPocket Mobile 新增)。
+**净增量**：~8k 行 Go (ZAG) + ~500 行 Go (pocketd zag client) + ~500 行 Go (acc-go 集成) + ~3k 行 Vue (AI Work Mess Mobile 新增)。
 
 **影响**：
 
 - 仓库结构新增：`services/zagent-gateway/`（或独立仓库）；
 - pocketd `internal/zag/` 子包；
 - acc-go 增量：worker 注册逻辑；
-- OpenPocket Mobile `/fleet/*` 路由 + Live View + IDE 控制面板。
+- AI Work Mess Mobile `/fleet/*` 路由 + Live View + IDE 控制面板。
 
 ---
 
@@ -259,7 +259,7 @@ zag_control_ide
 - **ZAG 集成测试**：起 mock RedClaw platform-go + mock acc-go；
 - **pocketd 单元测试**：mock ZAG client；
 - **E2E**：起完整 docker-compose（含 RedClaw platform-go mock）；
-- **真机 E2E**：真实 RedClaw platform-go + 真实 OpenClaw CLI + 真实 OpenPocket mobile；
+- **真机 E2E**：真实 RedClaw platform-go + 真实 OpenClaw CLI + 真实 AI Work Mess mobile；
 - **故障注入**：RedClaw / acc-go / Memora / llm-gateway-go / ZAG 任一挂；
 - **注入测试**：恶意 intent / 越权 / Ed25519 错误签名。
 
@@ -321,7 +321,7 @@ zag_control_ide
 |---|---|
 | ZAG 不可用 | 只读/入队降级；不得绕过授权直接调 RedClaw/CLI |
 | acc-go 不可用 | 只读/入队降级；不得跳过授权和审计执行高危任务 |
-| RedClaw platform-go 不可用 | ZAG 任务暂时不可用；OpenPocket 显示降级提示 |
+| RedClaw platform-go 不可用 | ZAG 任务暂时不可用；AI Work Mess 显示降级提示 |
 | RedClaw Gateway (LLM) 不可达 | ZAG 自动 fallback 到 llm-gateway-go |
 | Memora 不可用 | 有界缓存；durable audit outbox 仍必须可写；高危操作等待 |
 | llm-gateway-go 不可用 | ZAG 返回错误给用户 |
@@ -376,7 +376,7 @@ zag_control_ide
 - 只有在独立兼容项目完成固定版本真实合同测试后，才考虑 OpenCode-compatible facade；
 - RedClaw `/api/v1/tasks`、`/api/v1/sessions`、façade `/api/v2/tasks` 不能直接冒充 OpenCode `/session`。
 
-**理由**：当前源码显示两者 API、认证、状态模型、运行时和事件协议均不兼容。直接替换会破坏现有 OpenPocket Go adapter、OpenCode IDE extension、PTY、permission/question 和 session parts。
+**理由**：当前源码显示两者 API、认证、状态模型、运行时和事件协议均不兼容。直接替换会破坏现有 AI Work Mess Go adapter、OpenCode IDE extension、PTY、permission/question 和 session parts。
 
 ---
 

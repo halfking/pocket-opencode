@@ -1,4 +1,4 @@
-# OpenCode Pocket Plugin
+# AI Work Mess Plugin
 
 OpenCode plugin for integrating with Pocket Backend, enabling real-time synchronization and remote control.
 
@@ -114,7 +114,7 @@ await plugin.activate()
 ```
 OpenCode Instance
     ↓
-OpenCode Pocket Plugin (this package)
+AI Work Mess Plugin (this package)
     ↓ WebSocket
 Pocket Backend
     ↓ WebSocket

@@ -33,7 +33,7 @@ export function shareDigestText(digest: RSSDigest, maxItems = 12): string {
     }
     lines.push('')
   }
-  if (digest.itemCount > n) lines.push(`…另有 ${digest.itemCount - n} 条，打开 OpenPocket 看完整日报`)
+  if (digest.itemCount > n) lines.push(`…另有 ${digest.itemCount - n} 条，打开 AI Work Mess 看完整日报`)
   return lines.join('\n').trim()
 }
 
@@ -170,7 +170,7 @@ export function drawDigestCard(
   // 底部
   ctx.fillStyle = theme.muted
   ctx.font = '30px system-ui, -apple-system, "Noto Sans CJK SC", sans-serif'
-  ctx.fillText(`共 ${digest.itemCount} 条 · ${digest.sourceCount} 个来源 · OpenPocket 每日摘要`, 64, DIGEST_CARD_H - 110)
+  ctx.fillText(`共 ${digest.itemCount} 条 · ${digest.sourceCount} 个来源 · AI Work Mess 每日摘要`, 64, DIGEST_CARD_H - 110)
 }
 
 /** 生成卡片 PNG 的 dataURL。 */

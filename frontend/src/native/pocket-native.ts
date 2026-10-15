@@ -407,7 +407,7 @@ function createWebFallback(): PocketNative {
     notify: {
       show: async () => {
         if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
-          new Notification('OpenPocket')
+          new Notification('AI Work Mess')
         }
       },
       cancel: async () => {},

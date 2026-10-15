@@ -1,4 +1,4 @@
-# OpenCode Pocket 部署指南
+# AI Work Mess 部署指南
 
 **版本**: Phase 6 (commit 7223368)  
 **日期**: 2026-07-05  
@@ -6,7 +6,7 @@
 
 ## 部署概览
 
-本指南用于将 OpenCode Pocket 部署到生产服务器。系统包含：
+本指南用于将 AI Work Mess 部署到生产服务器。系统包含：
 - **Backend**: Go 服务器 (端口 8088)
 - **Database**: PostgreSQL 14+
 - **Frontend**: Vue 3 SPA (构建到 backend 静态资源)
@@ -194,7 +194,7 @@ sudo nano /etc/systemd/system/pocketd.service
 
 # 添加以下内容:
 [Unit]
-Description=OpenCode Pocket Backend API
+Description=AI Work Mess Backend API
 After=network.target postgresql.service
 Wants=postgresql.service
 

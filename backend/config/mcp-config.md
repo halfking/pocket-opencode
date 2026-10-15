@@ -1,4 +1,4 @@
-# MCP Configuration for OpenCode Pocket
+# MCP Configuration for AI Work Mess
 
 ## ACC MCP Server
 - **Public URL**: https://mcp.kxpms.cn/acc/mcp
@@ -18,7 +18,7 @@
 >
 > 换新 key 后请通过环境变量注入，**不要**再写回任何受跟踪文件：
 > `POCKET_MCP_API_KEY=<新 key>`（生产 184 的注入位置见部署脚本）。
-**Description**: OpenCode Pocket MCP client access
+**Description**: AI Work Mess MCP client access
 
 ## Environment Variables
 

@@ -1,4 +1,4 @@
-# OpenCode Pocket 多端覆盖研究（Android / iOS / HarmonyOS NEXT）
+# AI Work Mess 多端覆盖研究（Android / iOS / HarmonyOS NEXT）
 
 > 研究日期：2026-09-01  
 > 研究范围：在保留现有 Vue 3 + Capacitor + Go 后端架构的前提下，评估将项目扩展到 HarmonyOS NEXT（纯血鸿蒙）的可行方案  

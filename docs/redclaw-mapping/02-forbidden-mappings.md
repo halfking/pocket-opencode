@@ -40,7 +40,7 @@ no safe structural mapping between them.
 
 **Additional failure.** Streaming semantics differ. OpenCode `/session/:id/message` (`groups/session.ts:316-328`) streams incremental updates; OpenClaw returns one final blob. Treating the OpenClaw blob as a single OpenCode "text" part drops tool/patch/sub-task kinds entirely.
 
-**Result.** Any code that "translates OpenClaw stdout into OpenCode message parts" will produce a session that looks like it ran but contains no tool calls, no diffs, and no sub-tasks. The OpenPocket mobile UI will show only a single text block and the audit log will record zero tool invocations.
+**Result.** Any code that "translates OpenClaw stdout into OpenCode message parts" will produce a session that looks like it ran but contains no tool calls, no diffs, and no sub-tasks. The AI Work Mess mobile UI will show only a single text block and the audit log will record zero tool invocations.
 
 ## ❌ 4. Echo / mock response ⇔ real LLM success
 

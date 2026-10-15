@@ -1,9 +1,9 @@
 #!/bin/bash
-# OpenCode Pocket quick verification script
+# AI Work Mess quick verification script
 
 set -e
 
-echo "OpenCode Pocket verification"
+echo "AI Work Mess verification"
 echo "================================"
 echo ""
 

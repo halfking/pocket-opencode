@@ -1,4 +1,4 @@
-# OpenCode Pocket UI 规范
+# AI Work Mess UI 规范
 
 > 专题目录：`docs/UI规范/`
 > 版本：1.0（2026-10-04）

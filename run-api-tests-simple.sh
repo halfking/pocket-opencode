@@ -1,10 +1,10 @@
 #!/bin/bash
-# OpenCode Pocket API 测试脚本（简化版）
+# AI Work Mess API 测试脚本（简化版）
 
 set -e
 
 echo "=========================================="
-echo "OpenCode Pocket API 测试"
+echo "AI Work Mess API 测试"
 echo "=========================================="
 echo "测试时间: $(date '+%Y-%m-%d %H:%M:%S')"
 echo ""
@@ -177,7 +177,7 @@ echo ""
 
 # 生成简单报告
 cat > "$RESULT_DIR/summary.txt" << EOF
-OpenCode Pocket API 测试总结
+AI Work Mess API 测试总结
 测试时间: $(date '+%Y-%m-%d %H:%M:%S')
 
 通过: $PASS_COUNT

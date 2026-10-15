@@ -214,7 +214,7 @@ func RenderInvoiceXMLPDF(fontPath string, inv *Invoice, xmlRaw []byte) ([]byte, 
 
 	pdf.Ln(6)
 	pdf.SetFont("cjk", "", 9)
-	pdf.CellFormat(0, 6, fmt.Sprintf("生成时间 %s · OpenPocket 邮件发票整理",
+	pdf.CellFormat(0, 6, fmt.Sprintf("生成时间 %s · AI Work Mess 邮件发票整理",
 		time.Now().Format("2006-01-02 15:04")), "", 1, "L", false, 0, "")
 
 	var buf bytes.Buffer

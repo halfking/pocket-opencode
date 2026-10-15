@@ -82,7 +82,7 @@ ZAG maps its own state into the façade's `task_contract` (`RedClaw/services/pla
 
 ### 3.1 SSOT
 
-- **Canonical state of `session_id`**: OpenCode runtime. Neither ZAG nor façade may persist OpenCode session state authoritatively; they may cache it (see OpenPocket's `backend/internal/opencode/store.go` for the cache schema) but the live SSOT is OpenCode.
+- **Canonical state of `session_id`**: OpenCode runtime. Neither ZAG nor façade may persist OpenCode session state authoritatively; they may cache it (see AI Work Mess's `backend/internal/opencode/store.go` for the cache schema) but the live SSOT is OpenCode.
 
 ### 3.2 State mapping
 
@@ -187,7 +187,7 @@ ZAG receives it via SSE `GET /api/v2/runs/run-2001/events` (`RedClaw/services/pl
 
 - ACC WebSocket as `{type: "task.progress", taskId: "acc-task-1001", percent: 40, sequence: 3}`.
 - ZAG audit outbox with `event_id = evt-000003` and `correlation_id` preserved.
-- OpenPocket mobile WS with the same payload shape, preserving `operation_id` from the original ZAG state.
+- AI Work Mess mobile WS with the same payload shape, preserving `operation_id` from the original ZAG state.
 
 ZAG MUST NOT synthesize the event; it is a pure re-emit with `operation_id` enrichment. ZAG MUST persist `last_event_id = evt-000003` so reconnects can resume via `Last-Event-ID` header (see `handlers_events.go:32-35`).
 
@@ -243,8 +243,8 @@ ZAG MUST NOT synthesize the event; it is a pure re-emit with `operation_id` enri
 
 1. OpenCode emits `permission.asked` via `/global/event` (`groups/global.ts:87-95`).
 2. ZAG maps `permission.asked` → internal `pending-approval {kind: "permission", session_id, request_id, risk_level}`.
-3. ZAG publishes to ACC as `awaiting_approval`; ACC surfaces in OpenPocket mobile.
-4. User approves in OpenPocket → ACC calls ZAG → ZAG calls `POST /permission/:requestID/reply` with `reply: "allow"`.
+3. ZAG publishes to ACC as `awaiting_approval`; ACC surfaces in AI Work Mess mobile.
+4. User approves in AI Work Mess → ACC calls ZAG → ZAG calls `POST /permission/:requestID/reply` with `reply: "allow"`.
 5. OpenCode emits `permission.replied`; ZAG clears `pending-approval`.
 
 ### 6.4 Risk classification
@@ -259,7 +259,7 @@ ZAG must classify every permission prompt as `low | medium | high` based on the 
 
 - Façade returns `503 Service Unavailable` with code `projection_unavailable` when the real ACC backend is not configured (`handlers_events.go:23-29`, `handlers_notifications.go:42-48`, `handlers_notifications.go:82-89`).
 - ZAG surfaces this as an **error class** `ProjectionUnavailable` (carries the original 503 status and a `retry_after_ms` hint derived from the response headers; default 1000 ms when not present).
-- ZAG MUST NOT retry inline. The error is returned to the caller (ACC + OpenPocket) which decides whether to retry or surface the degraded state to the user.
+- ZAG MUST NOT retry inline. The error is returned to the caller (ACC + AI Work Mess) which decides whether to retry or surface the degraded state to the user.
 - ZAG's reconcile worker keeps polling `GET /api/v2/runs/:run_id/events` until projection recovers, at which point it resumes event streaming.
 
 ## 8. Failure reconciliation summary

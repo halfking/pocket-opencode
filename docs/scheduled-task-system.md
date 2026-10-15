@@ -1,6 +1,6 @@
 # Scheduled Task Automation
 
-OpenCode Pocket provides tenant-scoped scheduled automations under **Settings → 定时自动化** and the `/api/scheduled-tasks` API.
+AI Work Mess provides tenant-scoped scheduled automations under **Settings → 定时自动化** and the `/api/scheduled-tasks` API.
 
 ## Supported executors
 

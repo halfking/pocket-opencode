@@ -1,8 +1,8 @@
-# OpenCode Pocket Design
+# AI Work Mess Design
 
 ## Goal
 
-OpenCode Pocket is a mobile-first control surface for coordinating multiple OpenCode instances from a single interface.
+AI Work Mess is a mobile-first control surface for coordinating multiple OpenCode instances from a single interface.
 
 The design goals are:
 - keep instance access simple for operators on mobile devices

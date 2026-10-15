@@ -1,5 +1,5 @@
 // This file (t06_contract_test.go) locks the external wire contract between
-// OpenPocket and its agent adapters. The tests do not exercise the production
+// AI Work Mess and its agent adapters. The tests do not exercise the production
 // transport (stdio/HTTP/WS) end-to-end; instead they inject a minimal
 // in-memory Transport mock and assert:
 //

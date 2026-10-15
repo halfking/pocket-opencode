@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =====================================================================
-# os-detect.sh — OpenPocket 部署的操作系统检测库
+# os-detect.sh — AI Work Mess 部署的操作系统检测库
 #
 # 提供：
 #   os_kind                       darwin | linux | windows-msys | unknown

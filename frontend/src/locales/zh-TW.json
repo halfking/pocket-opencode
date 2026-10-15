@@ -22,7 +22,7 @@
     "retry": "重試"
   },
   "app": {
-    "title": "Redclaw",
+    "title": "AI Work Mess",
     "welcome": "歡迎使用"
   },
   "layout": {
@@ -36,7 +36,7 @@
     "viewAccount": "查看帳戶與設定",
     "groupSettings": "設定",
     "groupOps": "維運與進階",
-    "versionFootnote": "Redclaw · v{version}"
+    "versionFootnote": "AI Work Mess · v{version}"
   },
   "nav": {
     "mainNavigation": "主導航",
@@ -240,11 +240,11 @@
       "imagePickFailed": "Failed to pick image"
     },
     "permission": {
-      "vivoTitle": "允許 OpenPocket 每日提醒你",
+      "vivoTitle": "允許 AI Work Mess 每日提醒你",
       "vivoBody": "OriginOS 會限制背景應用。請開啟「不受限背景耗電」與「自動啟動」，以確保每日提醒準時送達。",
       "vivoStep1": "設定 → 電池 → 背景高耗電",
-      "vivoStep2": "找到 OpenPocket，設定為「不受限」",
-      "vivoStep3": "設定 → 自動啟動 → 啟用 OpenPocket",
+      "vivoStep2": "找到 AI Work Mess，設定為「不受限」",
+      "vivoStep3": "設定 → 自動啟動 → 啟用 AI Work Mess",
       "vivoDone": "已完成"
     },
     "error": {

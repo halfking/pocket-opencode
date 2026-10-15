@@ -4,7 +4,7 @@
 
 set -e
 
-echo "=== Building OpenCode Pocket for iOS ==="
+echo "=== Building AI Work Mess for iOS ==="
 
 # 1. 构建前端
 echo "[1/3] Building frontend..."

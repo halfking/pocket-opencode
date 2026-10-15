@@ -22,7 +22,7 @@
     "retry": "Réessayer"
   },
   "app": {
-    "title": "Redclaw",
+    "title": "AI Work Mess",
     "welcome": "Bienvenue"
   },
   "layout": {
@@ -36,7 +36,7 @@
     "viewAccount": "Voir compte et réglages",
     "groupSettings": "Réglages",
     "groupOps": "Opérations & avancé",
-    "versionFootnote": "Redclaw · v{version}"
+    "versionFootnote": "AI Work Mess · v{version}"
   },
   "nav": {
     "mainNavigation": "Navigation principale",
@@ -240,11 +240,11 @@
       "imagePickFailed": "Failed to pick image"
     },
     "permission": {
-      "vivoTitle": "Autoriser OpenPocket à vous rappeler chaque jour",
+      "vivoTitle": "Autoriser AI Work Mess à vous rappeler chaque jour",
       "vivoBody": "OriginOS limite les applications en arrière-plan. Activez « Consommation arrière-plan illimitée » et « Démarrage automatique » pour que les rappels quotidiens se déclenchent à l'heure.",
       "vivoStep1": "Paramètres → Batterie → Consommation arrière-plan",
-      "vivoStep2": "Trouver OpenPocket et le régler sur « Illimité »",
-      "vivoStep3": "Paramètres → Démarrage auto → activer OpenPocket",
+      "vivoStep2": "Trouver AI Work Mess et le régler sur « Illimité »",
+      "vivoStep3": "Paramètres → Démarrage auto → activer AI Work Mess",
       "vivoDone": "C'est fait"
     },
     "error": {

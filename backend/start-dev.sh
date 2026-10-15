@@ -7,7 +7,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 echo "=========================================="
-echo "启动 OpenCode Pocket Backend (开发模式)"
+echo "启动 AI Work Mess Backend (开发模式)"
 echo "=========================================="
 
 # 设置环境变量

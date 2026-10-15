@@ -10,7 +10,7 @@
 
 | 域 | 角色 | 关键资产 |
 |---|---|---|
-| 不可信客户端域 | OpenPocket Mobile、IDE、MCP 客户端 | 用户凭证、intent、参数 |
+| 不可信客户端域 | AI Work Mess Mobile、IDE、MCP 客户端 | 用户凭证、intent、参数 |
 | Pocket 控制域 | pocketd | JWT 签发、对象授权、WS/SSE 出口、通知 |
 | ZAgentGateway 控制适配域 | ZAG | delegated token、operation mapping、策略投影、审计 outbox |
 | RedClaw 控制域 | platform-go | tenant/policy/approval/audit |
@@ -200,7 +200,7 @@
 - **关联 ADR/合约**：`docs/新架构v1/01-architecture/安全模型.md` §4.2、`backend/internal/server/ssrf.go`。
 
 #### T-I-02：跨租户读取 SSE 流
-- **资产**：OpenPocket WS Hub、ZAG SSE `/api/v1/tasks/:id/events`。
+- **资产**：AI Work Mess WS Hub、ZAG SSE `/api/v1/tasks/:id/events`。
 - **攻击路径**：订阅其他 tenant 的 task event（通过修改 path 中的 task_id，或在 subscribe 时改 client scope）。
 - **前置条件**：subscribe handler 不重做对象授权。
 - **影响**：看到其他用户的 prompt、diff、审批结论。

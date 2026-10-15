@@ -1,4 +1,4 @@
-# OpenCode Pocket — Capacitor 原生壳
+# AI Work Mess — Capacitor 原生壳
 
 > **本目录不存放原生工程。** 原生工程由 Capacitor CLI 生成在
 > **`../frontend/android/`**，即 `appId = com.kaixuan.opencode.pocket`。

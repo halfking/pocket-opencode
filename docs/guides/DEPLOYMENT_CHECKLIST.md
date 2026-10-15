@@ -157,7 +157,7 @@ sudo nano /etc/systemd/system/pocketd.service
 
 # 添加内容:
 [Unit]
-Description=OpenCode Pocket Backend
+Description=AI Work Mess Backend
 After=network.target postgresql.service
 
 [Service]

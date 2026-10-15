@@ -1,4 +1,4 @@
-// Package facade implements the OpenPocket client for the RedClaw platform
+// Package facade implements the AI Work Mess client for the RedClaw platform
 // façade API (`/api/v2/*`, contract: RedClaw docs/全面优化v1/openapi-facade-v1.yaml).
 //
 // Conventions enforced by this client:

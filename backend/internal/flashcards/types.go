@@ -1,5 +1,5 @@
 // Package flashcards implements the v1 spaced-repetition flashcard module
-// for OpenPocket. It mirrors the storage shape from the Anki rslib scheduler
+// for AI Work Mess. It mirrors the storage shape from the Anki rslib scheduler
 // but runs entirely on PostgreSQL with usn-based last-writer-wins sync
 // semantics. Per the frozen contract (docs/flashcards-contract.md §1):
 //

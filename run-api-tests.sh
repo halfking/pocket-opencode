@@ -1,11 +1,11 @@
 #!/bin/bash
-# OpenCode Pocket 模拟器完整测试执行脚本
+# AI Work Mess 模拟器完整测试执行脚本
 # 测试重点：登录流程、OpenCode 实例获取、会话详情
 
 set -e
 
 echo "=========================================="
-echo "OpenCode Pocket 模拟器完整测试"
+echo "AI Work Mess 模拟器完整测试"
 echo "=========================================="
 echo "测试日期: $(date '+%Y-%m-%d %H:%M:%S')"
 echo ""
@@ -285,7 +285,7 @@ fi
 
 # 生成测试报告
 cat > "$RESULT_DIR/TEST_REPORT.md" << EOF
-# OpenCode Pocket API 测试报告
+# AI Work Mess API 测试报告
 
 **测试时间**: $(date '+%Y-%m-%d %H:%M:%S')  
 **测试环境**: Backend (localhost:8088)  

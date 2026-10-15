@@ -1,6 +1,6 @@
-# OpenPocket 部署体系（2026-09-03 重构版）
+# AI Work Mess 部署体系（2026-09-03 重构版）
 
-OpenPocket 的 docker 化部署；镜像、数据、日志、配置、blue-green 版本目录**全部落在 docker 外的指定根目录**，由环境变量驱动；可在 macOS / Linux / Windows 上跑通。
+AI Work Mess 的 docker 化部署；镜像、数据、日志、配置、blue-green 版本目录**全部落在 docker 外的指定根目录**，由环境变量驱动；可在 macOS / Linux / Windows 上跑通。
 
 ## 目录结构（按 OS 自动派生）
 

@@ -1,5 +1,5 @@
 /**
- * Type definitions for OpenCode Pocket Plugin
+ * Type definitions for AI Work Mess Plugin
  */
 
 export interface PocketPluginConfig {

@@ -1,5 +1,5 @@
 /**
- * useFsrs.scheduling.test.ts — FSRS 调度契约锁定（OpenPocket v1 contract §4）。
+ * useFsrs.scheduling.test.ts — FSRS 调度契约锁定（AI Work Mess v1 contract §4）。
  *
  * 运行：cd frontend && node --experimental-strip-types --test \
  *        src/composables/__tests__/useFsrs.scheduling.test.ts

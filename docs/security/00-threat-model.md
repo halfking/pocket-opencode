@@ -1,7 +1,7 @@
-# Threat Model — OpenPocket + ZAG Stack (STRIDE per element)
+# Threat Model — AI Work Mess + ZAG Stack (STRIDE per element)
 
 > **Scope**: This document covers the security threats across all trust
-> boundaries in the OpenPocket + ZAgentGateway (ZAG) stack. It is the
+> boundaries in the AI Work Mess + ZAgentGateway (ZAG) stack. It is the
 > authoritative reference for the threat-facing surface that the automated
 > test suite in `backend/security/` and the release gates in
 > `docs/security/02-release-gates.md`（未创建） are designed to enforce.

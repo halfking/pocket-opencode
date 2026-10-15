@@ -1,6 +1,6 @@
 # Pocket Adapter 边界矩阵（Boundary Matrix）
 
-> 目的：在不破坏现有 `/api/agent/*`、`/api/opencode/*` 行为的前提下，明确 OpenPocket 当前所有"出 pocketd 边界"的适配器对协议、鉴权、隔离、幂等、超时、重试、outbox 的实现差异，并锁定未来 ZAG（ZAgentGateway）适配器必须满足的边界条件。
+> 目的：在不破坏现有 `/api/agent/*`、`/api/opencode/*` 行为的前提下，明确 AI Work Mess 当前所有"出 pocketd 边界"的适配器对协议、鉴权、隔离、幂等、超时、重试、outbox 的实现差异，并锁定未来 ZAG（ZAgentGateway）适配器必须满足的边界条件。
 >
 > 标记说明：
 > - `implemented` —— 当前代码已实现并被调用方依赖，行为固定，禁止静默修改。
