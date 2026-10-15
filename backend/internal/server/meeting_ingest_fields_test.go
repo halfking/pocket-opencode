@@ -8,6 +8,7 @@
 //	**唯独 ingest 端点没有**。
 //
 // ⏱ **这段历史已被修复**（§712 归因）：门建成时前端 meetings.ts 发 10 个字段，
+//
 //	而 Go 的 CreateMeetingRequest 只有 `id` / `title` 两个 tag，其余 7 个被
 //	encoding/json **静默丢弃**（实测见 meeting_sync_identity_test.go 的
 //	TestMeetingSyncIdentityStatus）。此后 Go 侧补齐了全部 10 个 tag
@@ -57,19 +58,22 @@ import (
 // `meeting_sync_identity_test.go` 的 `TestMeetingSyncIdentityStatus` 实测读数
 // （present=false）+ 当时 `jsonTags(CreateMeetingRequest{})` **只有 [id title]**。
 //
-//   此后 `CreateMeetingRequest` **补齐了这 7 个（乃至全部 10 个）的 json tag**
-//   ⇒ 差集消失 ⇒ 本门按设计报红并提示「可以收窄了」⇒ **收窄成空**。
+//	此后 `CreateMeetingRequest` **补齐了这 7 个（乃至全部 10 个）的 json tag**
+//	⇒ 差集消失 ⇒ 本门按设计报红并提示「可以收窄了」⇒ **收窄成空**。
 //
 // ⚠ **不要把这条历史当成「曾经放过 7 个静默丢弃」**：那 7 个键现在**真的有 tag**，
-//    由 `TestMeetingIngestRequestFieldsDrift` 本体持续对账。
+//
+//	由 `TestMeetingIngestRequestFieldsDrift` 本体持续对账。
+//
 // ⚠ 也不要相信本注释里旧版本的「jsonTags 只有 [id title]」——那是**修复前**的读数。
 var knownDroppedTags = []string{}
 
 // knownOverwrittenFields 是「前端发了、Go 没 json tag、但 store 用**自己算的值**写回」，
 // 也就是请求里的值**根本没被采纳**的那一类。
 // ⏱ 历史（§712 归因）：原先登记 `status`（实测被覆写成常量 `"recording"`）。
-//   现已修：`CreateMeetingRequest.Status` 有了 json tag，
-//   且 `chat_summary.CreateScoped` 不再硬写 `"recording"`（见设计文档 §707 / §708）。
+//
+//	现已修：`CreateMeetingRequest.Status` 有了 json tag，
+//	且 `chat_summary.CreateScoped` 不再硬写 `"recording"`（见设计文档 §707 / §708）。
 var knownOverwrittenFields = []string{}
 
 // TestMeetingIngestRequestFieldsDrift 把 ingest 端点的「前端发的键」与

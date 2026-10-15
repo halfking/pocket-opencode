@@ -117,6 +117,7 @@ func TestMeetingSyncCallSitesShareTheSameID(t *testing.T) {
 //	所以本函数里与行数有关的部分已删除。
 //
 // ⏱ **函数名已改名（§719）**：原名 `TestMeetingSyncStatusIsNotAdoptedStatus`
+//
 //	断言「请求里的 status 没被采纳」—— 而该断言**已随 §96 修复被推翻**
 //	（`meeting/store.go:111-114`：`status := req.Status`，`recording` 只是空值兜底）。
 //	保留旧名会让 `-run TestMeetingSyncStatusIsNotAdoptedStatus` 匹配到一个

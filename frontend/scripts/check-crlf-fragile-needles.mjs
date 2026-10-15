@@ -149,14 +149,19 @@ function readTargets(testFile, src) {
   while ((m = callRe.exec(src)) !== null) {
     const resolved = evalCall(m[1])
     if (!resolved) continue
-    if (fs.existsSync(resolved) && fs.statSync(resolved).isFile() && /\.(ts|vue|css|go|mjs|html)$/.test(resolved)) {
+    // ★ §771：白名单补 `md`。此前 `.md` 目标**一律解析不出来**
+    //   ⇒ 只要某个测试同时满足「有跨行 needle」+「目标只在 .md 里」，
+    //   它就会落进 unresolved，而门报的是「读不到该判的样本」而不是违规
+    //   ⇒ 这是**量具失明**，不是被测对象的性质（`pending-brief-index-coverage.test.mjs`
+    //   是第一个同时满足这两个条件的文件：它的 TABLE_END 是我 §753 加的跨行正则）。
+    if (fs.existsSync(resolved) && fs.statSync(resolved).isFile() && /\.(ts|vue|css|go|mjs|html|md)$/.test(resolved)) {
       out.push(resolved)
     }
   }
 
   const lits = [...src.matchAll(/'([^'\n]+)'/g)].map((x) => x[1])
   for (const s of lits) {
-    if (!/\.(ts|vue|css|go|mjs|html)$/.test(s) || s.includes(' ')) continue
+    if (!/\.(ts|vue|css|go|mjs|html|md)$/.test(s) || s.includes(' ')) continue
     for (const base of [path.dirname(testFile), FRONTEND, path.join(FRONTEND, 'src')]) {
       const p = path.resolve(base, s)
       try {

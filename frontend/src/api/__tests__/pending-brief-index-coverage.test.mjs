@@ -86,14 +86,36 @@ for (const row of listRows) {
  */
 const TABLE_ROW = /^\| (?!\s*--)(?!\s*#\s*\|)/gm
 
-function groupTables(src) {
+/**
+ * 「分组表到此为止」的边界 —— 必须认**任何层级**的标题。
+ *
+ * ⚠⚠ 2026-10-16（§753.1）实测：这里原来写的是 `/^### |^---$/m`，
+ * **只认三级标题**。本文件的组织惯例是
+ * 「组标题 → 表格 → 大段散文 → `#### ` 小节」，
+ * 而 §743 往 **D 组之后**追加了一张调参扫描表（挂在 `#### §743 / §744` 小节下，
+ * 结构本身完全合法），它与 D 组表之间既没有 `--- ` 也没有 `### `。
+ * ⇒ 那张表的 4 行被并进 D 组，D 组实测 **41**、表头声明 **37** ⇒ 判据③ 真红。
+ *
+ * ⛔ 责任方是**量具，不是文档**：判据③ 断的是「**该表**声明件数 == **该表**实际行数」，
+ *   而旧边界数的是「到下一个 `### `/`--- ` 之间的**所有**表格行」——
+ *   测的根本不是它声称测的东西（新负控③′ 就是钉这一点的，见文件末尾）。
+ * ⇒ 改成认 `#{2,6}`（任何层级标题都算组结束），保留 `--- ` 分隔线的既有行为。
+ *
+ * ⚠ 同时否掉过一个更「根本」的候选：**按 Markdown 连续表格块切分**（更符合渲染语义）——
+ *   实测会让 **B 组变 0 行**：B 组标题（`:338`）后面先是大段散文，表格在散文之后，
+ *   「第一段连续 `^|`」根本不在标题紧后面。
+ *   ⇒ 顺带暴露旧边界对 B 组能对上**有运气成分**（散文区里恰好只有 5 个表格行）。
+ */
+const TABLE_END = /^#{2,6} |^---$/m
+
+function groupTables(src, endRe = TABLE_END) {
   const out = []
   const re = /^### ([A-D])\. .*?（(\d+) 件）\s*$/gm
   let m
   while ((m = re.exec(src)) !== null) {
     const start = m.index + m[0].length
     const rest = src.slice(start)
-    const stop = rest.search(/^### |^---$/m)
+    const stop = rest.search(endRe)
     const body = stop < 0 ? rest : rest.slice(0, stop)
     out.push({ id: m[1], declared: Number(m[2]), rows: (body.match(TABLE_ROW) || []).length })
   }
@@ -194,5 +216,68 @@ describe('§574 · 决策简报的一页清单必须自己站得住', () => {
     assert.ok(after, `负控失效：改完抓不到 ${target.id} 组`)
     assert.notEqual(after.rows, after.declared,
       '负控失效：表头件数改了仍判绿 ⇒ 判据③ 根本没在比这两者')
+  })
+
+  // ── §753.1 新增负控：钉「表边界」这个修复本身 ──────────────────────────
+  //
+  // 上面三条判据与三条负控全绿时，还剩一个洞：**判据③ 到底在数「哪张表」**。
+  // §753.1 的真红就是从这里来的（D 组实测 41 / 声明 37）。
+  // 这条负控按 §743 的**真实形状**复现那次污染：在组表末尾追加一张
+  // **既无标题、也无 `--- ` 隔断**的独立表格。
+  //
+  // ⚠ 它必须**两个方向都断言**，否则只是一条装饰：
+  //   新边界下判据③ 必须**仍绿**（外部表格不算进本组），
+  //   旧边界（只认 `### `/`--- `）下必须**判红** —— 后者证明这条负控真的有牙。
+  it('★★ 负控③′：组表之后追加「散文 + #### 小节 + 表」（§743 真实形状）⇒ 判据③ 必须仍绿，而旧边界必须红', () => {
+    const target = tables.find((t) => t.id === 'D') ?? tables[0]
+    assert.ok(target, `没抓到任何分组表`)
+
+    // 落在组表**最后一行**之后：§743 那张表与 D 组表之间隔着 80 行散文，
+    // 但两者同处一个边界区间内 —— 这正是旧边界数错的原因。
+    // 「该组表的最后一行」按定义取：该组边界区间内**最后一个**编号数据行。
+    const from = listRegion.indexOf(`### ${target.id}. `)
+    assert.ok(from >= 0, `负控前提失败：抓不到 ${target.id} 组标题`)
+    const titleEnd = listRegion.indexOf('\n', from) + 1
+    const slice = listRegion.slice(titleEnd)
+    const stopAt = slice.search(TABLE_END)
+    const groupSlice = stopAt < 0 ? slice : slice.slice(0, stopAt)
+    // 前提断言必须与判据③ **同款口径**（无 `g` 标志，避免 `test()` 的 lastIndex 状态）：
+    // D 组里有一行交叉引用 `| **#30 词源** / **#31** / … |`，只数 `| **#N** |` 会少算它。
+    const tableRows = groupSlice.split('\n').filter((l) => /^\| (?!\s*--)(?!\s*#\s*\|)/.test(l))
+    assert.equal(tableRows.length, target.declared,
+      `负控前提失败：${target.id} 组边界内按判据③ 同款口径抓到 ${tableRows.length} 行，与声明 ${target.declared} 不符`)
+    const lastRow = tableRows[tableRows.length - 1]
+    const cut = listRegion.indexOf(lastRow) + lastRow.length
+    assert.ok(cut > 0, '负控前提失败：定位不到组表末行在 listRegion 里的位置')
+
+    // ⚠⚠ 样本形状必须是 **§743 的真实形状**（2026-10-16 实测踩过）：
+    //   「组表 → 散文 → `#### ` 小节 → 小节里的表」。
+    //   我第一版把样本写成「组表后面紧跟另一张表、中间只有空行」——
+    //   那个更苛刻的形状**新边界也挡不住**（实测 37 → 40 行），
+    //   而它**在本文件里并不存在** ⇒ 用它当负控等于给自己造一个假敌人。
+    const extra = [
+      '',
+      '（几行散文，说明这张表在讲什么。）',
+      '',
+      '#### ⚙ §753（2026-10-16）：调参扫描',
+      '',
+      '| 尝试 | 读数 | 判定 |',
+      '| --- | --- | --- |',
+      '| **调大 `MAX_OVERLAP`** | 残片 7 → 13 | ⛔ 变坏 |',
+      '| **调小 `MAX_OVERLAP`（→16）** | 归零 | ⛔ 等于关掉去重 |',
+      '',
+    ].join('\n')
+    const mutated = listRegion.slice(0, cut) + extra + listRegion.slice(cut)
+
+    const after = groupTables(mutated).find((t) => t.id === target.id)
+    assert.ok(after, `负控失效：改完抓不到 ${target.id} 组`)
+    assert.equal(after.rows, after.declared,
+      `负控失效：新边界下 ${target.id} 组被外部表格污染（${after.rows} 行 ≠ 声明 ${after.declared} 行）`)
+
+    // 同一份变异，旧边界必须判红 —— 否则这条负控证明不了修复打在了点上
+    const legacy = groupTables(mutated, /^### |^---$/m).find((t) => t.id === target.id)
+    assert.ok(legacy, `负控失效：旧边界下抓不到 ${target.id} 组`)
+    assert.notEqual(legacy.rows, legacy.declared,
+      '负控失效：旧边界下也没被污染 ⇒ 这条负控对 §753.1 那个洞没有牙')
   })
 })

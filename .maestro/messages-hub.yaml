@@ -54,20 +54,20 @@ appId: com.kaixuan.opencode.pocket
 #   （2026-10-03 15:06 在 settings-llm-gateway 上实测，失败现场仍停在首页）。
 #   retryTapIfNoChange 管第一次，runFlow 补点管第二次，两个都要。
 - tapOn:
-    text: "消息"
+    text: "消息|Messages"
     retryTapIfNoChange: true
 - extendedWaitUntil:
-    visible: "全部.*"
+    visible: "全部.*|All.*"
     timeout: 40000
 - runFlow:
     when:
-      notVisible: "邮件.*"
+      notVisible: "邮件.*|Email.*"
     commands:
-      - tapOn: "消息"
+      - tapOn: "消息|Messages"
       - waitForAnimationToEnd:
           timeout: 3000
 - extendedWaitUntil:
-    visible: "邮件.*"
+    visible: "邮件.*|Email.*"
     timeout: 30000
 
 # ---------- 2. 核心断言：chips 齐全 ----------
@@ -77,10 +77,10 @@ appId: com.kaixuan.opencode.pocket
 #   ⇒ 一律写成 `锚点.*` 容忍后缀计数。
 #   注意「订阅」实测**没有**计数（该来源暂无未读），所以它不能用 `订阅.*` 之外
 #   的任何假设；「全部.*」在计数为 0 时会退化成「全部」，那也仍然匹配。
-- assertVisible: "全部.*"
-- assertVisible: "邮件.*"
-- assertVisible: "订阅"
-- assertVisible: "任务.*"
+- assertVisible: "全部.*|All.*"
+- assertVisible: "邮件.*|Email.*"
+- assertVisible: "订阅|Feeds"
+- assertVisible: "任务.*|Tasks.*"
 
 # ---------- 3. 列表与空态必须二选一（两者皆无 = 白屏）----------
 # 用 runFlow 把「有行」的情形记下来，再断言「没有行」时不成立。
@@ -89,9 +89,9 @@ appId: com.kaixuan.opencode.pocket
 #   · 两段式判断留给下面的 conditional
 - runFlow:
     when:
-      visible: "没有新消息"
+      visible: "没有新消息|No new messages"
     commands:
-      - assertVisible: "重要邮件、订阅新闻和任务消息会汇总到这里"
+      - assertVisible: "重要邮件、订阅新闻和任务消息会汇总到这里|Important mail|new feeds and task messages will be summarized here"
       - takeScreenshot: "logs/maestro/messages-hub-empty"
 
 # ---------- 3.5 两条 UI 层不变量（2026-10-03 真机实测后追加）----------
@@ -186,11 +186,11 @@ appId: com.kaixuan.opencode.pocket
 
 # ---------- 4. 切到「邮件」来源，验证 chips 真的在切数据 ----------
 # chip 带未读计数（实测「邮件 30」），所以点击目标与断言都要容忍计数。
-- tapOn: "邮件.*"
+- tapOn: "邮件.*|Email.*"
 - extendedWaitUntil:
-    visible: "全部.*"
+    visible: "全部.*|All.*"
     timeout: 25000
-- assertVisible: "邮件.*"
+- assertVisible: "邮件.*|Email.*"
 - takeScreenshot: "logs/maestro/messages-hub-email"
 
 # ---------- 5. 负向锚点 ----------
@@ -205,12 +205,12 @@ appId: com.kaixuan.opencode.pocket
 # 免得把「没数据」报成「出口坏了」。
 - runFlow:
     when:
-      visible: ".*打开邮箱.*"
+      visible: ".*打开邮箱.*|.*Open mail.*"
     commands:
       - tapOn:
-          text: ".*打开邮箱.*"
+          text: ".*打开邮箱.*|.*Open mail.*"
           retryTapIfNoChange: true
       - extendedWaitUntil:
-          visible: "邮箱"
+          visible: "邮箱|Email"
           timeout: 30000
-      - assertVisible: "邮箱"
+      - assertVisible: "邮箱|Email"

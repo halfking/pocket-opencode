@@ -65,17 +65,17 @@ appId: com.kaixuan.opencode.pocket
     text: "更多|More"
     retryTapIfNoChange: true
 - extendedWaitUntil:
-    visible: "更多功能"
+    visible: "更多功能|MORE FEATURES"
     timeout: 40000
 - runFlow:
     when:
-      notVisible: "更多功能"
+      notVisible: "更多功能|MORE FEATURES"
     commands:
       - tapOn: "更多|More"
       - waitForAnimationToEnd:
           timeout: 3000
 - extendedWaitUntil:
-    visible: "更多功能"
+    visible: "更多功能|MORE FEATURES"
     timeout: 30000
 
 # ---------- 2. 进「设置」 ----------
@@ -89,22 +89,22 @@ appId: com.kaixuan.opencode.pocket
     visibilityPercentage: 100
 - tapOn: "设置|Settings"
 - extendedWaitUntil:
-    visible: "AI 网关"
+    visible: "AI 网关|AI Gateway"
     timeout: 30000
 
 # ---------- 3. 核心断言：网关真的配置好了，不是「未配置」兜底 ----------
 # 这是本 flow 唯一有判别力的部分。前面两条只是「页面到了」。
-- assertVisible: "AI 网关"
+- assertVisible: "AI 网关|AI Gateway"
 # 网关地址里必须出现目标域名。未配置时这一格显示的是「未配置」。
 - assertVisible: ".*llm\\.kxpms\\.cn.*"
-- assertVisible: "网关地址"
-- assertVisible: "API 密钥"
-- assertVisible: "可用模型"
+- assertVisible: "网关地址|Gateway Address"
+- assertVisible: "API 密钥|API Key"
+- assertVisible: "可用模型|Available Models"
 
 # 状态徽标：已配置 ⇔ apiKeySet=true。两条互斥，必须用 assertVisible 正向确认
 # 「已配置」出现，而不是「不出现未配置」—— 后者在前一步已经渲染出真实
 # 地址时仍可能成立（没判别力）。
-- assertVisible: "已配置"
+- assertVisible: "已配置|Configured"
 
 # ---------- 4. 负向锚点：不该出现的东西 ----------
 # · 「未配置 — AI 聊天需要密钥」是 apiKeySet=false 时的文案；

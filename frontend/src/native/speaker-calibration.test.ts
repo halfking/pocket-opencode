@@ -477,4 +477,48 @@ describe('§595 · 整场收尾 relabel：增量阶段测不到的那一半', ()
     assert.equal(dropped.size, 0, '吸收方仍在 canonicalOf 里缺席 —— 映射方向反了？')
     console.log(`      重定向 ${r.redirected.length} 条，簇数 ${r.incremental} → ${r.clusterCount}（单调不增）`)
   })
+
+  // ═══ §768 新增：把「簇」层面的判据补到「**标签**」层面 ═══════════════════
+  //
+  // 上面那条「混人簇 = 1」是在**簇**上断言的，而 `closedLoop` 把每个段的
+  // truth 数组**展平**进它所属的簇 ⇒ `v0` 那个混人簇的 truth 是 `{0,1,2}`，
+  // 于是 speaker_1 在**簇**这一层「出现了」。
+  //
+  // ⚠⚠ 但生产真正消费的是**标签**：一个段只能挂一个 `speakerLabel`
+  //   （`MeetingSegment.speakerLabel` 是单值）。所以「出现在某个混人簇里」
+  //   **不等于**「有自己的标签」。
+  // ⇒ §766/§767 实测：VAD 路径 6 段 → **5 个标签**，而真值 4 人，
+  //   `speaker_1` 的 5.91s（全场 10.4%）全部在 `v0` 内 ⇒ **他拿不到任何标签**
+  //   ⇒ 真 `planRefine` 的 `roster` 里没有他 ⇒ 精校提示词 / 同音纠正 /
+  //   `participantLeak` 三处都看不到他（详见设计文档 §766）。
+  //
+  // ⚠⚠⚠ 而本文件原有的 22 条断言**全部放行**这个状态：
+  //   ① 「混人簇 = 1」在**簇**层面成立；② tripwire 只断言 `clusterCount > truth`，
+  //      而 VAD 路径实测 `clusterCount = 5`、真值 4 ⇒ **恰好不触发**；
+  //   ③ 更根本的是：**簇数 5 ≈ 真值 4 是三个缺陷互相抵消**（−1 人 + 1 幽灵 + 同一人被拆）
+  //      ⇒ **任何只比聚合计数与真实人数的自检，都会被这个巧合放过。**
+  // ⇒ 所以这条断言问的不是「簇数对不对」，而是「**每一位真实在场者是否都拿到了只属于他的标签**」。
+  it('★ 缺陷仍在（tripwire）：有一位真实说话人**拿不到任何属于他自己的标签**（§766/§767）', () => {
+    const r = closedLoop(VAD_FIX.segments, (k) => VAD_FIX.meta.find((m) => m.id === k)!.truth)
+    const truth = new Set(VAD_FIX.meta.flatMap((m) => m.truth))
+    // ⭐ 只有**纯簇**（truth.size === 1）才算「这个人拿到了只属于他的标签」；
+    //   混人簇里的成员在标签层面会被压成同一个值 ⇒ 不能算。
+    const owned = new Map<number, string[]>()
+    for (const c of r.clusters) {
+      if (c.truth.size !== 1) continue
+      const spk = [...c.truth][0]
+      owned.set(spk, [...(owned.get(spk) ?? []), ...c.members])
+    }
+    const missing = [...truth].filter((s) => !owned.has(s))
+    assert.ok(
+      missing.length > 0,
+      `每一位真实说话人都拿到了自己的标签（${truth.size} 人 / ${r.clusterCount} 簇）—— ` +
+      '「混人段里的人拿不到标签」这个缺陷**已修好**！请同步设计文档 §766/§767、' +
+      '决策简报 A.11，并复核上面那条「错并 1 个」的断言是否也该改。',
+    )
+    console.log(
+      `      真实 ${truth.size} 人，其中 ${missing.length} 人没有专属标签：speaker_${missing.join(' / speaker_')}；` +
+      `簇数 ${r.clusterCount} ≈ 真值 ${truth.size} 属**巧合**（少 1 人 + 1 个混人幽灵 + 有人被拆）`,
+    )
+  })
 })
