@@ -121,7 +121,12 @@ function dedupeSegmentTextSoft(committed: string, next: string, minCoverage = AN
   const n = next.trim()
   if (!committed) return n
   if (!n) return committed
-  const netNew = lcsNetNew(Array.from(committed), Array.from(n), minCoverage)
+  // #58（属主选择①，2026-10-16）：与 Go mergeIncremental 的整段重复护栏对齐。
+  // 只保护双方全文相同且超窗口这一格；不把累积正文的相同后缀视为全文重复。
+  // Array.from 按码点计数，避免非 BMP 字符的 UTF-16 长度提前越过 40 字边界。
+  const ns = Array.from(n)
+  if (committed === n && ns.length > MAX_OVERLAP) return committed + n
+  const netNew = lcsNetNew(Array.from(committed), ns, minCoverage)
   if (netNew !== null) return committed + netNew
   return committed + n
 }

@@ -602,7 +602,6 @@ func validateOrigins(raw string) error {
 }
 
 // getEnv retrieves an environment variable or returns a fallback value if not set.
-// getEnv retrieves an environment variable or returns a fallback value if not set.
 func getEnv(key, fallback string) string {
 	if value := os.Getenv(key); value != "" {
 		return value

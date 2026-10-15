@@ -509,3 +509,124 @@ func TestGetFirstEnv(t *testing.T) {
 		})
 	}
 }
+
+// ── §774 补齐三兄弟的覆盖（getEnv / getEnvInt / getEnvDuration）──
+//
+// 为什么要补（全部可核对）：
+//
+//	① `6ec9dda3b`（2026-07-26，message 声称 "fix missing godoc ... and test coverage"）
+//	   补了 `TestGetFirstEnv`，**却没补 `getEnv` / `getEnvInt`**；
+//	② 而 `getEnv` 是这三个里调用最多的（`config.go` 内 98 处），
+//	   `getEnvInt` 15 处 —— 两个都**零直接测试**；
+//	③ 同一批改动还在 `getEnv` 上留下**两行逐字重复的 godoc**
+//	   （本轮已删；`gofmt`/`go vet` 都不管这个，所以活了约 50 天）。
+//
+// ⚠⚠⚠ **下面这三条是「固化当前行为」，不是「断言它对」**：
+//
+//	其中标 ⭐ 的那几条是**缺陷**，不是期望行为。
+//	它们在这里的作用是：**把缺陷变成可核对的读数**，
+//	而不是让它继续躲在「没测试所以没人知道」里。
+//
+// ⛔ **若属主在 #63 上拍板「全仓 trim」，上面标 ⭐ 的用例会转红** ——
+//
+//	**那是预期的**：行为变更必须由人显式看见，不能悄悄改掉。
+//	同族：§771 的「门红不是自行消红的理由（顺序不能反）」。
+func TestGetEnvCurrentBehavior(t *testing.T) {
+	cases := []struct{ name, set, fallback, want string }{
+		{"未设置（空串）⇒ 走 fallback", "", "default", "default"},
+		{"正常值原样返回", "https://llmgo.example/v1", "default", "https://llmgo.example/v1"},
+		{"⭐ 纯空白被当成「已设置」原样返回（#63：getEnv 不 trim）", "   ", "default", "   "},
+		{"⭐ 单个空格同理（⇒ 上层拿到的是不可用但非空的 key）", " ", "default", " "},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("TEST_GETENV_KEY", tc.set)
+			if got := getEnv("TEST_GETENV_KEY", tc.fallback); got != tc.want {
+				t.Fatalf("getEnv(set=%q) = %q, want %q", tc.set, got, tc.want)
+			}
+		})
+	}
+}
+
+// ⭐⭐ TestGetEnvIntCurrentBehavior 里的两条 ⭐ 是**静默行为错误**，不是「容错」：
+//
+//	`POCKET_SMTP_PORT=" 587"`（复制粘贴带空格）⇒ 解析失败 ⇒ **静默变 0**
+//	`POCKET_TIMEZONE_OFFSET_SEC=" 28800"` ⇒ 静默变 0 ⇒ 时区整个错掉
+//
+// 而调用方**拿不到任何提示**（没有 error、没有日志、没有 panic）。
+// ⛔ 是否要 log / 报错 / 宽容解析，属**工程口径**，本轮只把它测出来，**不代拍**。
+func TestGetEnvIntCurrentBehavior(t *testing.T) {
+	cases := []struct {
+		name     string
+		set      string
+		fallback int
+		want     int
+	}{
+		{"未设置（空串）⇒ 走 fallback", "", 42, 42},
+		{"正常整数字符串", "7", 42, 7},
+		{"负数", "-3", 42, -3},
+		{"零", "0", 42, 0},
+		{"⭐ 非数字 ⇒ 静默回落，无任何提示", "abc", 42, 42},
+		{"⭐⭐ 前后空格 ⇒ Atoi 失败 ⇒ 静默回落（getEnvDuration 有 TrimSpace，它没有）", " 7 ", 42, 42},
+		{"⭐⭐ 小数 ⇒ 静默回落（int 型配置给小数同样无声吞掉）", "7.5", 42, 42},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("TEST_GETENVINT_KEY", tc.set)
+			if got := getEnvInt("TEST_GETENVINT_KEY", tc.fallback); got != tc.want {
+				t.Fatalf("getEnvInt(set=%q, fb=%d) = %d, want %d", tc.set, tc.fallback, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestGetEnvDurationCurrentBehavior —— 与上一条**故意对照**：
+// 同样的空白值，这里因为有 `strings.TrimSpace` 而**能正常解析**。
+func TestGetEnvDurationCurrentBehavior(t *testing.T) {
+	cases := []struct {
+		name     string
+		set      string
+		fallback time.Duration
+		want     time.Duration
+	}{
+		{"未设置（空串）⇒ 走 fallback", "", 5 * time.Second, 5 * time.Second},
+		{"标准 duration 语法", "1m30s", time.Second, 90 * time.Second},
+		{"裸整数按秒解释", "42", time.Second, 42 * time.Second},
+		{"⭐ 前后空格 ⇒ 有 TrimSpace ⇒ 正常解析（与 getEnvInt 相反）", " 5s ", time.Second, 5 * time.Second},
+		{"解析失败 ⇒ 静默回落（与 getEnvInt 同样无声）", "abc", 5 * time.Second, 5 * time.Second},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("TEST_GETENVDURATION_KEY", tc.set)
+			if got := getEnvDuration("TEST_GETENVDURATION_KEY", tc.fallback); got != tc.want {
+				t.Fatalf("getEnvDuration(set=%q) = %v, want %v", tc.set, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestEnvTrimInconsistencyAcrossSiblings 把上面那条**不一致**单独钉住并命名：
+//
+//	同一个带空格的输入，`getEnvDuration` 解析成功、`getEnvInt` 静默回落。
+//
+// ⇒ 它不是「三兄弟风格不统一」这种审美问题，而是
+//
+//	**同一个运维动作（env 里多打一个空格）在两个函数上得到相反结果**，
+//	且其中一边**完全无声**。
+//
+// ⚠ 这条测试现在是**绿的** —— 因为缺陷还在。
+// ⛔ **它绿不代表缺陷已修**，只代表「缺陷一旦被修就会红」。
+func TestEnvTrimInconsistencyAcrossSiblings(t *testing.T) {
+	t.Setenv("TEST_TRIM_DURATION_KEY", " 5s ")
+	t.Setenv("TEST_TRIM_INT_KEY", " 7 ")
+
+	if got := getEnvDuration("TEST_TRIM_DURATION_KEY", time.Second); got != 5*time.Second {
+		t.Fatalf("getEnvDuration(\" 5s \") = %v, want 5s（它有 TrimSpace，应当正常解析）", got)
+	}
+	// ⚠ 这里断言的是**当前的缺陷行为**：静默回落，而不是 7。
+	// 若将来给 getEnvInt 补上 TrimSpace，这一条会红 —— 那是修复生效的信号。
+	if got := getEnvInt("TEST_TRIM_INT_KEY", 42); got != 42 {
+		t.Fatalf("getEnvInt(\" 7 \") = %d, want 42（静默回落 = 缺陷仍在）；"+
+			"若本条转红，说明 getEnvInt 已补 TrimSpace ⇒ 请同步更新上面两条 ⭐ 用例", got)
+	}
+}

@@ -22,7 +22,38 @@
 // 教训见 `meeting-dedup.ts` 的 ANCHOR_COVERAGE 注释。
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { dedupeSegments, renderTranscript } from './meeting-dedup.ts'
+import { dedupeSegments, dedupeStep, renderTranscript } from './meeting-dedup.ts'
+
+// #58: user approved Go-compatible full-repeat guard on the production soft path.
+// Synthetic Unicode fixtures, not measured ASR incidence.
+describe('#58 · soft 路整段重复超窗口保留完整两份', () => {
+  for (const length of [41, 45, 50, 56, 60]) {
+    it(`${length} 码点（含非 BMP）重复长段保留两份`, () => {
+      const text = Array.from({ length }, (_, i) => String.fromCodePoint(0x20000 + i)).join('')
+      const input = [
+        { text, speakerLabel: 'A', startMs: 0, endMs: 3000 },
+        { text, speakerLabel: 'B', startMs: 4500, endMs: 7500 },
+      ]
+      const step = dedupeStep({ prev: text, raw: text, prevEndMs: 3000, startMs: 4500 })
+      assert.deepEqual(step, { added: true, text, body: text + text })
+      assert.deepEqual(dedupeSegments(input).map(s => s.text), [text, text])
+      assert.equal(renderTranscript(input), `[A] ${text}\n[B] ${text}`)
+    })
+  }
+
+  it('40 码点边界仍走 LCS，不按 UTF-16 长度误触发长段护栏', () => {
+    const text = Array.from({ length: 40 }, (_, i) => String.fromCodePoint(0x20000 + i)).join('')
+    const step = dedupeStep({ prev: text, raw: text, prevEndMs: 3000, startMs: 4500 })
+    assert.equal(step.body, text)
+  })
+
+  it('不相同的长段仍正常消解真实边界重叠', () => {
+    const prefix = '甲'.repeat(41)
+    const step = dedupeStep({ prev: prefix + '季度预算方案评审', raw: '季度预算方案评审后天举行', prevEndMs: 3000, startMs: 4500 })
+    assert.equal(step.body, prefix + '季度预算方案评审后天举行')
+    assert.equal(step.text, '后天举行')
+  })
+})
 
 const PRE = '这个季度的续费方案，基本'
 const WIN_A = '这个季度的续费方案基本上已经定了。'
