@@ -39,8 +39,25 @@
 // 配过真实模型，绝不会被这个夹具误删。
 
 import { execFileSync } from 'node:child_process'
+import { existsSync } from 'node:fs'
+import { join } from 'node:path'
 
-const PSQL = 'C:/workspace/openpocket/logs/pg/dist2/pgsql/bin/psql.exe'
+// ★ 2026-10-07 跨平台化：原来无条件写死某台 Windows 机器上的 psql.exe
+// （`C:/workspace/openpocket/logs/pg/dist2/pgsql/bin/psql.exe`），
+// macOS / Linux 上必然找不到。
+//
+// 现在按 ① POCKET_PSQL ② 本机常见位置 ③ PATH 上的 psql 依次找；
+// 都找不到就**响亮退出并说明怎么配** —— 静默走到 execFileSync 才会
+// 抛一个看不出「是路径没配」的 ENOENT。
+const PSQL = (process.env.POCKET_PSQL
+  || [
+      '/opt/homebrew/opt/libpq/bin/psql',
+      '/usr/local/opt/libpq/bin/psql',
+      '/usr/bin/psql',
+      '/opt/homebrew/bin/psql',
+      join(process.env.LOCALAPPDATA || '', 'Programs/PostgreSQL/*/bin/psql.exe'),
+    ].find((p) => p && !p.includes('*') && existsSync(p))
+  || 'psql')
 const SENTINEL = 'zz-no-such-model-for-test'
 const USER = 'user-admin'
 const WS = 'ws_user-admin'
@@ -56,8 +73,35 @@ const PAYLOAD = JSON.stringify({
   externalBaseURL: '', externalModel: '', externalTransport: '', language: 'zh',
 })
 
+// ⚠️ 2026-10-07 修：原先固定用 `-h 127.0.0.1 -U postgres` 且**不带口令**，
+// 本机 PG 开 scram ⇒ psql 报 `fe_sendauth: no password supplied`，
+// fixture 一失败 runner 就跳过 notes-stt-error-visibility.yaml（整批第 14 条）。
+// 与 flashcards-test-fixture.mjs 是**同一个缺陷的两处副本**，一起修。
+//
+// 两个坑：
+// ① DSN 必须放**位置参数位**，不能 `DSN=x psql`（psql 不读那个环境变量）也不能 `-d`。
+// ② DSN 里的 host 是 **host.docker.internal** —— 那是**容器内部**用的主机名，
+//    从宿主 macOS 上根本解析不了（`could not translate host name`）；
+//    PG 那边 Docker 已把 5432 映射到宿主 127.0.0.1 ⇒ 跑在宿主上就换主机名，
+//    **凭据/库名原样保留**。
+function hostRunnableDsn(dsn) {
+  if (!dsn) return ''
+  try {
+    const u = new URL(dsn)
+    if (u.hostname === 'host.docker.internal') u.hostname = '127.0.0.1'
+    return u.toString()
+  } catch {
+    return dsn
+  }
+}
+
+const DSN = hostRunnableDsn(process.env.POCKET_POSTGRES_DSN || '')
+const connArgs = DSN
+  ? [DSN]
+  : ['-h', '127.0.0.1', '-p', '5432', '-U', 'postgres', '-d', 'postgres']
+
 const q = (sql) => String(execFileSync(
-  PSQL, ['-h', '127.0.0.1', '-p', '5432', '-U', 'postgres', '-d', 'postgres', '-t', '-A', '-c', sql],
+  PSQL, [...connArgs, '-t', '-A', '-c', sql],
   { encoding: 'utf8', timeout: 60000, maxBuffer: 33554432 },
 )).trim()
 

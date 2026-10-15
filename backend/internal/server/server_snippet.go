@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 
 	"github.com/halfking/pocket-opencode/backend/internal/snippet"
 )
@@ -96,8 +97,16 @@ func (s *Server) handleCreateSnippet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Title == "" || req.Code == "" {
+	// 这一段必须与 snippet.CreateScoped 的必填集完全一致（Title / Language /
+	// Code，且都用 TrimSpace）。少校验任何一项，那个校验错误就会落到下面
+	// CreateScoped 的 err 分支，被当成存储故障回 500 —— 而它其实是客户端缺字段。
+	// 用 == "" 而不是 TrimSpace 时，纯空格的 title/code 同样会漏过去。
+	if strings.TrimSpace(req.Title) == "" || strings.TrimSpace(req.Code) == "" {
 		http.Error(w, `{"error":"title and code are required"}`, http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(req.Language) == "" {
+		http.Error(w, `{"error":"language is required"}`, http.StatusBadRequest)
 		return
 	}
 

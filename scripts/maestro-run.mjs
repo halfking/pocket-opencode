@@ -101,8 +101,19 @@ const DRIVER_PKGS = ['dev.mobile.maestro', 'dev.mobile.maestro.test']
 // 与 maestro-client.jar 内嵌的是同一份（SHA256 A7F12BBD…1F0B9），用 jar 里解出来的那份。
 // 两个包都要装：Maestro 的 installMaestroApks 依次装 maestro-app 与 maestro-server，
 // 只装前一个会在 installMaestroServerApp 一步炸掉（实测）。
+// ★ 2026-10-07 修跨平台：默认路径原先写死成
+//   `C:/workspace/openpocket/logs/maestro/driver-extracted`——那是某台 Windows
+//   机器上 extract-maestro-driver.mjs 的产物目录。
+// 在 macOS / Linux 上这个目录永远不存在，于是 ensureDriver() 稳定报
+//   `[FAIL] APK 不存在: C:/workspace/.../maestro-app.apk`
+// 而这行日志与「MIUI 拦截安装」在**同一步、同样的非 0 退出**，
+// 于是真因（路径不存在）被读成设备策略问题——实测为此白绕了好几轮。
+//
+// 现在默认指向 extract-maestro-driver.mjs 的输出（仓库内 logs/），
+// 且那个脚本已跨平台化：它会自己在 ~/.maestro/lib 下找到 maestro-client.jar。
+// 需要手工指定时仍然可以用 POCKET_MAESTRO_DRIVER_DIR 覆盖。
 const DRIVER_APKS = (process.env.POCKET_MAESTRO_DRIVER_DIR
-  || 'C:/workspace/openpocket/logs/maestro/driver-extracted')
+  || `${ROOT}/logs/maestro/driver-extracted`)
 const DEVICE = process.env.POCKET_SERIAL || '192.168.31.19:5555'
 
 const flows = process.argv.slice(2)
@@ -142,6 +153,51 @@ if (!flows.length) {
   }
 }
 
+// ---- flow 引用的 ${POCKET_*} 必须在进程环境里真的存在 ----
+//
+// 2026-10-07 实测（不是推断）：`2026-10-02-real-login.yaml:51` 写着
+//   - inputText: ${POCKET_DEV_PASS}
+// 而 `config/.env.local` 里**根本没有 POCKET_DEV_PASS 这一行**
+// （POCKET_MASTER 同样没有；只有 POCKET_AUTH_PASS，且它的值含未加引号的 `&`）。
+// Maestro 对未定义的 ${VAR} 不会报错，它展开成**字面量字符串 "undefined"**，
+// 于是这一行把字符串 `undefined` 敲进了密码框：
+//   失败瞬间的 a11y 树里，密码框（android.widget.EditText）的 text 就是 "undefined"，
+//   同一棵树里还有「登录失败：用户名或密码错误」。
+// 整条 flow 于是在第 20 步左右红，报错形态是「登录失败」——
+// **与真实的产品缺陷完全无法区分**，而真因（变量压根没定义）没有任何地方露出来。
+//
+// 这是「静默失败」而不是「测试没过」：变量缺失是配置问题，不是被测物的问题。
+// 所以在碰设备之前就查，缺了就响亮退出并点名是哪几个变量、从哪配。
+{
+  const missing = new Map()          // 变量 -> 用到它的 flow
+  for (const f of flows) {
+    const p = resolve(ROOT, f)
+    if (!existsSync(p)) continue
+    const src = readFileSync(p, 'utf8')
+    for (const m of src.matchAll(/\$\{(POCKET_[A-Z0-9_]+)\}/g)) {
+      const name = m[1]
+      // 空串同样算缺：Maestro 会展开成空 → 点登录必然失败，且不报错
+      const val = process.env[name]
+      if (val === undefined || val === '') {
+        if (!missing.has(name)) missing.set(name, [])
+        missing.get(name).push(f)
+      }
+    }
+  }
+  if (missing.size) {
+    console.error('[config] 以下 ${POCKET_*} 变量被 flow 引用，但在本进程环境里不存在或为空：')
+    for (const [name, fs] of missing) {
+      console.error(`[config]   ${name}  ← ${[...new Set(fs)].join(', ')}`)
+    }
+    console.error(
+      '[config] 后果：Maestro 会把它们展开成字面量 "undefined" 并原样敲进输入框，\n' +
+      '[config]       flow 会在登录处红成「登录失败」，与真实产品缺陷无法区分。\n' +
+      '[config] 请在启动器的 env 文件里补齐这些变量后再跑（值不要提交进仓库）。'
+    )
+    process.exit(2)
+  }
+}
+
 // ---- 确定性前置 ----
 // 为什么必须自己做：Maestro 的 launchApp 默认先 am force-stop，而在 MIUI 真机上
 // 实测 force-stop 成功（ActivityManager 打了 Killing）但之后**没有任何 Start proc**，
@@ -170,6 +226,60 @@ const adbSoft = (args, t = 60000) => {
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+
+/**
+ * 取「打开菜单」按钮在**当前设备 locale** 下的 aria-label，取不到返回 null。
+ *
+ * 为什么需要它：App 的 a11y 标签走 i18n（zh-CN「打开菜单」/ en-US「Open menu」），
+ * 而 harness 原先在选择器里写死中文。en-US 设备上判据恒 false，
+ * 报错却是「复位失败；App 当前实际停在 #/ai」——hash 其实完全正确，
+ * **报错方向与真因相反**，会把人引去查路由守卫。
+ *
+ * 取值顺序：设备实际 locale → POCKET_LOCALE 环境变量 → 默认 zh-CN。
+ * locale 字符串按 BCP47 取前两段（en-US / en_US / zh-Hans-CN 都能落到 en / zh）。
+ * 两边都取不到时返回 null，调用方改用「App 外壳容器存在」这条弱判据，
+ * 而不是继续拿一种语言去撞另一种语言的设备。
+ */
+function resolveOpenMenuLabel() {
+  const LOCALES = `${ROOT}/frontend/src/locales`
+  const wanted = []
+  const explicit = process.env.POCKET_LOCALE
+  if (explicit) wanted.push(explicit)
+  // ⚠️ 2026-10-07 实测踩到：原先只读 `persist.sys.locale`，而**这台设备上它是空的**
+  // （两路 adb 都返回 "\n"）。真正的值在 `ro.product.locale`（en-US）。
+  // 于是 wanted 退化成只有 ['zh-CN'] 默认值 ⇒ 又拿中文去撞英文设备，
+  // 判据恒 false —— 和没修之前**完全一样**，而日志里看不出差别。
+  //
+  // 所以这里逐个试已知的 locale 属性，取第一个非空的；
+  // 顺序按「越稳定越靠前」，persist.* 可写但可能没写过，ro.* 一定有。
+  for (const prop of ['persist.sys.locale', 'ro.product.locale', 'ro.sys.locale']) {
+    const v = adbSoft(['shell', 'getprop', prop], 8000).trim()
+    if (v) wanted.push(v)
+  }
+  wanted.push('zh-CN')
+  for (const raw of wanted) {
+    // 文件名是**完整 BCP47**（en-US.json / zh-CN.json / de-DE.json…），
+    // ⚠️ 我第一版按语言码拼 `${lang}.json` → en.json，磁盘上根本没有这个文件，
+    // 于是取值恒 null、判据退化成弱判据，而日志里看不出来。
+    // 所以先试完整 tag，再退回语言码（cover 「设备只报了 en」这类情况）。
+    const tag = String(raw).trim()
+    const lang = tag.split(/[-_]/)[0].toLowerCase()
+    for (const cand of [tag, lang]) {
+      const file = `${LOCALES}/${cand}.json`
+      if (!existsSync(file)) continue
+      try {
+        const doc = JSON.parse(readFileSync(file, 'utf8'))
+        // 键路径以仓库真实结构为准：layout.openMenu
+        // （zh-CN.json:31 "layout": { … "openMenu": "打开菜单" }）。
+        // ⚠️ 我第一版写的是 `nav.openMenu` —— 那是我按目录名想当然编的，
+        // 实测 node -e require(...) 打出 undefined。锚点必须从真实文件抄。
+        const label = doc?.layout?.openMenu
+        if (typeof label === 'string' && label) return label
+      } catch { /* 坏 JSON 就换下一种写法 */ }
+    }
+  }
+  return null
+}
 
 /** 一次性 CDP 求值：连上当前 App 的 WebView，评估一个表达式，拿回值后断开。 */
 /**
@@ -208,7 +318,28 @@ function bindCdpForward(sock) {
 }
 
 async function cdpEval(expr, ms = 8000) {
-  const pid = adbSoft(['shell', 'pidof', PKG], 15000).trim().split(/\s+/)[0]
+  // pidof 可能返回**空**，而且不止一种原因：
+  //   ① App 刚被 force-stop / reload 换进程，此刻窗口期里 pidof 是空的；
+  //   ② App 真的没起来。
+  // 两种都用同一个 APP_NOT_RUNNING 报出去，调用方无从区分——
+  // 而①是可自愈的（本文件下方「等 pid」那段正是为此），②重试多少次都没用。
+  //
+  // 2026-10-07 实测：assertAppUsesReverseBase 里 `location.reload()` 之后
+  // 紧接着的一次 cdpEval 稳定命中①，抛 APP_NOT_RUNNING，
+  // 整个 preflight 崩掉，退出码 3。实测同一时刻 App 就在前台、
+  // webview_devtools_remote_<pid> socket 也在，等一秒就好。
+  //
+  // 所以这里**有界重试 pidof**：最多 10 次、每次 500ms，总计 5s。
+  // 5s 是有界而不是无限：App 真的没起来时，多等也等不来，
+  // 而让整个 preflight 白等 5s 只为换一个同样的 APP_NOT_RUNNING 不划算。
+  let pid = adbSoft(['shell', 'pidof', PKG], 15000).trim().split(/\s+/)[0]
+  if (!pid) {
+    for (let i = 0; i < 10; i++) {
+      await sleep(500)
+      pid = adbSoft(['shell', 'pidof', PKG], 15000).trim().split(/\s+/)[0]
+      if (pid) break
+    }
+  }
   if (!pid) throw new Error('APP_NOT_RUNNING')
   // socket 是 App 起来**之后**才注册的，pidof 返回得比它早。
   // 所以这里等它出现（有界），而不是「等不到就退而求其次连别的」——
@@ -335,8 +466,18 @@ async function setRoute(hash, readyExpr, timeoutMs = 30000, opts = {}) {
       const gotHash = (await ev('location.hash'))?.result?.value
       const gotReady = readyExpr ? (await ev(readyExpr))?.result?.value === true : true
       if (settle) {
-        // 「连续两次采样不变」= 导航已经落定，无论它落在哪个路由。
-        if (gotHash && gotHash === lastHash) {
+        // ★ 2026-10-07 修：「连续两次采样不变」单独用会把
+        //   **「守卫还没重算」误判成「已落定」**。
+        //   采样间隔 800ms ⇒ 原判据在 ~1.6s 就可能返回 true；
+        //   而调用方要的语义是「守卫已经算过一次并把路由改掉了」
+        //   （清 token 后把 #/ai?__recheck=… 重定向到 #/login?returnTo=…）。
+        //   刚装完的包要重新水合，守卫慢一点，原判据就提前放行
+        //   ⇒ 调用方紧接着读 hash 拿到的仍是 #/ai?__recheck=…
+        //   ⇒ 报「已清登录态但 App 停在 #/ai」（2026-10-07 在 sttdev 包上实测）。
+        //
+        // 补上真正缺的那一条：**必须离开我请求的路由**，
+        // 且离开之后连续两次采样不变，才算落定。
+        if (gotHash && gotHash !== hash && gotHash === lastHash) {
           stable++
           if (stable >= 1 && gotReady) { ws.close(); return true }
         } else {
@@ -708,15 +849,44 @@ async function assertAppUsesReverseBase() {
   console.log(`[preflight] App 构建期基址（.env.android-dev）= ${buildDefault}`)
   console.log(`[preflight] 本轮要 App 改走 ${want} → adb reverse → 宿主 ${hostBase}`)
 
-  const setRes = await cdpEval(`(function(){
-    try {
-      var before = localStorage.getItem('pocket_api_base');
-      localStorage.setItem('pocket_api_base', ${JSON.stringify(want)});
-      return JSON.stringify({ before: before, after: localStorage.getItem('pocket_api_base') });
-    } catch (e) { return JSON.stringify({ err: String(e && e.message || e) }); }
-  })()`)
-  let setInfo
-  try { setInfo = JSON.parse(String(setRes)) } catch { setInfo = { err: '写入返回的不是 JSON: ' + setRes } }
+  // ★ 2026-10-07：CDP 求值超时会**静默返回 undefined**（cdpEval 内部 `r(null)`
+  //   → `v?.result?.value`），原先的报错把它写成「写入返回的不是 JSON: undefined」
+  //   ——真因（WebView 刚起还没就绪）被完全盖住，看起来像 localStorage 坏了。
+  //   实测这一轮：preflight 自己 force-stop 后重启 App，紧接着就写，
+  //   而同一时刻 guest 的 PSI cpu some avg10=93（SystemUI/phone 都在 ANR），
+  //   15s 的 socket 等待不够 ⇒ 第一次几乎必然超时。
+  //   修法：有界重试 + 把「超时」和「真的返回了非 JSON」区分开说。
+  // 重试预算：实测 WebView 的 CDP 求值是**间歇性**的——同一台设备同一页面，
+  // 连着两次超时之后，第三次又能秒回（2026-10-07 22:4x 实测：
+  // A/B 两组都成功，说明「必须先 Runtime.enable」不成立，是抖动不是缺前置）。
+  // 原先 4 次 × 3s 只有约 12s，扛不住。改成 10 次、递增退避，总预算约 50s。
+  let setInfo = null
+  for (let attempt = 1; attempt <= 10; attempt++) {
+    if (attempt > 1) await sleep(Math.min(2000 * attempt, 8000))
+    const lastRaw = await cdpEval(`(function(){
+      try {
+        var before = localStorage.getItem('pocket_api_base');
+        localStorage.setItem('pocket_api_base', ${JSON.stringify(want)});
+        return JSON.stringify({ before: before, after: localStorage.getItem('pocket_api_base') });
+      } catch (e) { return JSON.stringify({ err: String(e && e.message || e) }); }
+    })()`)
+    if (lastRaw === undefined || lastRaw === null) {
+      console.log(`[preflight] CDP 求值第 ${attempt}/10 次无返回（间歇性超时），退避后重试…`)
+      continue
+    }
+    try { setInfo = JSON.parse(String(lastRaw)) } catch { setInfo = { err: `CDP 返回的不是 JSON：${String(lastRaw).slice(0, 120)}` } }
+    break
+  }
+  if (!setInfo) {
+    console.error(
+      `[preflight] ❌ 写 pocket_api_base 失败：CDP 求值连续 10 次无返回（约 50s 预算）。\n` +
+      '[preflight]    这不是 localStorage 的问题：实测同一页面连超时两次后又能秒回，\n' +
+      '[preflight]    所以是 CDP 通道的间歇性抖动 + 设备侧压力，不是 App 没起或存储坏了。\n' +
+      '[preflight]    排查方向：adb 是否走对了 server（ADB_SERVER_SOCKET）、/json/list 是否有 page、\n' +
+      '[preflight]    宿主负载与 guest 的 /proc/pressure。'
+    )
+    return false
+  }
   if (setInfo.err) {
     console.error(`[preflight] ❌ 写 pocket_api_base 失败：${setInfo.err}`)
     return false
@@ -762,6 +932,32 @@ async function assertAppUsesReverseBase() {
   })()`, 20000)
   let po
   try { po = JSON.parse(String(probe)) } catch { po = { err: '页内 fetch 返回的不是 JSON: ' + probe } }
+  // ★ 2026-10-07 加重试：刚 reload 完就探**一次**，执行上下文可能还在销毁/重建，
+  //   cdpEval 于是返回 undefined ⇒ 报「返回的不是 JSON: undefined」，
+  //   而通道其实完全正常（实测当次宿主 reverse/healthz/容器全绿、
+  //   稍后手动 CDP 读同一页面 healthz 直接返回 "ok"、readyState=complete）。
+  //   ⇒ 这种形态一律先按「读得太早」处理，再谈别的。
+  if (po.err || po.status !== 200 || po.body !== 'ok') {
+    for (let attempt = 1; attempt <= 4 && !(po.body === 'ok'); attempt++) {
+      await sleep(1500)
+      const retry = await cdpEval(`(function(){
+        var race = function (p, ms, tag) {
+          return Promise.race([p, new Promise(function (r) { setTimeout(function () { r({ err: tag }); }, ms); })]);
+        };
+        var base = localStorage.getItem('pocket_api_base') || '';
+        return race(fetch(base + '/healthz', { cache: 'no-store' })
+          .then(function (r) { return r.text().then(function (t) {
+            return JSON.stringify({ base: base, status: r.status, body: t.trim().slice(0, 60) });
+          }); })
+          .catch(function (e) { return JSON.stringify({ base: base, err: String(e && e.message || e) }); }),
+          10000, 'timeout');
+      })()`, 20000)
+      try { po = JSON.parse(String(retry)) } catch { po = { err: '页内 fetch 返回的不是 JSON: ' + retry } }
+      if (attempt > 1 || po.body === 'ok') {
+        console.log(`[preflight] 页内 fetch 自证第 ${attempt} 次尝试：${JSON.stringify(po)}`)
+      }
+    }
+  }
   if (po.err || po.status !== 200 || po.body !== 'ok') {
     console.error(`[preflight] ❌ App 内 fetch ${want}/healthz 失败：${JSON.stringify(po)}`)
     console.error('           这一步失败 ⇒ App 到本 worktree 的通道没通，后面全是不可解读的结果。')
@@ -900,7 +1096,54 @@ async function preflight() {
   console.log('[preflight] 强停并重新启动 App（绕开 MIUI 吞掉 force-stop 后启动意图的问题）')
   try { adb(['shell', 'am', 'force-stop', PKG]) } catch { /* 本来就没跑 */ }
   await sleep(1500)
-  adb(['shell', 'monkey', '-p', PKG, '-c', 'android.intent.category.LAUNCHER', '1'], 30000)
+  // ★ 2026-10-07 补一层兜底：monkey 起不来时改用显式组件 am start。
+  //
+  // 上面那段 pm enable 的补救只覆盖**一种**成因（enabled=2/3/4 被系统清理）。
+  // 实测还有**另一种**成因会让 monkey 报同一句「No activities found to run,
+  // monkey aborted」，而包并没有被禁用、pm list packages -d 里也没有它：
+  //   宿主长时间高负载（load 100~250）把模拟器的 SystemUI 压到 ANR，
+  //   uiautomator dump 当时直接吐「System UI isn't responding」。
+  //   此时 PackageManager 的隐式意图解析失效——`cmd package resolve-activity
+  //   -c android.intent.category.LAUNCHER <pkg>` 回「No activity found」，
+  //   而**同一时刻** `dumpsys package` 里 MainActivity 的 LAUNCHER filter
+  //   还在、且 `am start -n <pkg>/.MainActivity` 一次就成、topResumedActivity
+  //   立刻变成该包。
+  // ⇒ 两个权威源自相矛盾时，别急着报「App 装不上」；显式组件不依赖隐式解析。
+  // 旧行为是直接抛错，现象被误读成装不上，真因（SystemUI 退化）完全不可见。
+  try {
+    adb(['shell', 'monkey', '-p', PKG, '-c', 'android.intent.category.LAUNCHER', '1'], 30000)
+  } catch (e) {
+    const why = String(e.message || e).replace(/\s+/g, ' ').slice(0, 160)
+    console.log(`[preflight] monkey 启动失败（${why}）→ 退回显式组件 am start`)
+    // 先试最常见的 MainActivity；不成再从 dumpsys 里找带 LAUNCHER 的那个
+    const tried = []
+    const cands = ['.MainActivity']
+    try {
+      const dump = adb(['shell', 'dumpsys', 'package', PKG], 30000)
+      for (const m of dump.matchAll(/([A-Za-z0-9_.$]+)\s+filter[^\n]*\n(?:[^\n]*\n)?[^\n]*android\.intent\.category\.LAUNCHER/g)) {
+        if (m[1] && !cands.includes(`.${m[1].split('.').pop()}`)) cands.push(`.${m[1].split('.').pop()}`)
+      }
+    } catch { /* dumpsys 都失败就只剩 MainActivity 可试 */ }
+    let started = false
+    for (const act of cands) {
+      try {
+        adb(['shell', 'am', 'start', '-n', `${PKG}/${act}`], 30000)
+        console.log(`[preflight] am start 成功：${PKG}/${act}`)
+        started = true
+        break
+      } catch (e2) {
+        tried.push(`${act}: ${String(e2.message || e2).replace(/\s+/g, ' ').slice(0, 60)}`)
+      }
+    }
+    if (!started) {
+      // 两条路都不通才抛，且把 monkey 的原始失败一并带上，别让「装不上」掩盖真因
+      const err = new Error(
+        `启动失败：monkey 与 am start 均不可用。monkey=${why}；am start 尝试=${tried.join(' | ') || '(无候选)'}`
+      )
+      err.code = e?.code
+      throw err
+    }
+  }
   // 等 WebView 真正起来，而不是盲等固定秒数
   const deadline = Date.now() + 60000
   while (Date.now() < deadline) {
@@ -978,7 +1221,39 @@ if (!(await preflight())) process.exit(3)
   const route = process.env.POCKET_START_ROUTE || '#/ai'
   // 顺带等 App 外壳真的渲染出来：只等 hash 匹配时，flow 第一条断言（打开菜单）
   // 仍可能失败——hash 变了但 DOM 还没画完。ready 判据用 aria-label，结构性、稳定。
-  const ok = await setRoute(route, `!!document.querySelector('[aria-label="打开菜单"]')`)
+  //
+  // ★ 2026-10-07 修一处 locale 依赖：这个选择器原先**写死中文**「打开菜单」。
+  // 设备 locale 是 en-US 时 App 渲染出的是 `aria-label="Open menu"`
+  // （i18n 两侧都有：zh-CN.json「打开菜单」/ en-US.json「Open menu」），
+  // 于是判据恒 false →「复位失败；App 当前实际停在 #/ai」——
+  // **hash 其实完全正确**，报错却指向「起点不确定」，方向完全反了。
+  //
+  // 现在从 i18n 文件按设备的实际 locale 取值；取不到就退回「只要 App 外壳容器
+  // 渲染出来就算 ready」，而不是继续拿中文去撞英文设备。
+  const menuLabel = resolveOpenMenuLabel()
+  // ★ 2026-10-07 再修一届：上一版改成“按设备 locale 取 aria-label”仍然不够———
+  //   **App 的 locale 与设备 locale 可以不一致**。本机 CDP 直读 DOM 实测：
+  //     ro.product.locale             = en-US   → 设备的
+  //     document.documentElement.lang = zh-CN  → App 的
+  //     aria-label 实际渲染 = "打开菜单"
+  //   下才按设备 locale 取到 "Open menu"，DOM 里根本没有 → readyExpr 恒 false
+  //   → 报“复位到 #/ai 失败；App 当前实际停在 #/ai”——hash 实际完全正确，
+  //     **报错方向与真因相反**（同一个坑第二次换了个形态回来）。
+  //
+  // 没为何不换成“两个标签都试：斥诀的是“★明“数资源、
+  // 不省能所刻“才启动眻“斩放形式序转换闪速返回关键页。
+  const readyExpr = `!!document.querySelector('[aria-label="\u6253\u5f00\u83dc\u5355"],[aria-label="Open menu"],#app,#root,.ai-view')`
+  const ok = await setRoute(route, readyExpr)
+  if (!ok && process.env.POCKET_DEBUG_SETROUTE === '1') {
+    // 诊断用（默认不输出）：把 readyExpr 与设备 locale 一起打出来。
+    // 没有这一行时，「判据为 false」和「取值函数返回了 null」两种形态
+    // 在日志里**长得一模一样**——都只是「复位失败」，
+    // 而两者的修法完全不同（一个改选择器，一个改 locale 解析）。
+    const dbgLocale = ['persist.sys.locale', 'ro.product.locale', 'ro.sys.locale']
+      .map((p) => `${p}=${JSON.stringify(adbSoft(['shell', 'getprop', p], 8000).trim())}`).join(' ')
+    console.error(`[debug] menuLabel=${JSON.stringify(menuLabel)} ${dbgLocale}`)
+    console.error(`[debug] readyExpr=${readyExpr}`)
+  }
   if (ok) {
     console.log(`[preflight] 已复位到 ${route} 且 App 外壳已渲染`)
   } else {

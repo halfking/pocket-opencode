@@ -47,6 +47,19 @@ RUN apk --no-cache add ca-certificates wget && \
 
 WORKDIR /app
 COPY --from=builder /out/pocketd /app/pocketd
+
+# 版本配置必须打进镜像，否则 /api/app/check-update 恒 503。
+# 服务端契约（loadVersionConfig）是拿不到配置就返回 ErrVersionConfigNotFound，
+# 由 handleCheckUpdate 翻成 503 —— 按设计行事，不要改成静默回落默认值。
+#
+# 这一行是实际生效的那一处：本地/服务器部署都走 deploy/bin/docker-compose.opp.yml
+# 的 build 段（dockerfile: Dockerfile.kx-base，context 是仓库根），
+# 而**不是** build-images.sh 那条交叉编译路径。修 Dockerfile.pocketd-prebuilt
+# 不改这里，重建出来的镜像依然没有 config/ —— 踩过一次，别再漏。
+#
+# 构建上下文是仓库根，源文件就在 backend/config/version.json，无需额外配置。
+COPY backend/config/version.json /app/config/version.json
+
 RUN mkdir -p /app/data && chown -R pocket:pocket /app
 
 USER pocket

@@ -1,0 +1,20 @@
+# _probe-tap2.yaml —— 用**真的会改变界面**的元素复测 tapOn
+#
+# _probe-tap.yaml 点的是 <h1>AI 工具</h1>：不可交互，点下去什么都不变。
+# 而 Maestro 的 tapOn 默认带 retryTapIfNoChange —— 界面没变化就重试，
+# 每次重试都要问一次 isWindowUpdating。也就是说那个探针测的可能是
+# 「对一个死元素反复重试」这条路径，而不是「正常点击」。
+#
+# 真实 flow 里的 tap 目标是 + 新任务 / 首页 / 更多，都是点了会变的。
+# 这个探针只点一次「+ 新任务」（必定弹出「创建任务」弹窗），随后全是 assert，
+# 用来回答：**一次有效点击 + 后续查询，能不能稳定跑完。**
+appId: com.kaixuan.opencode.pocket
+---
+- assertVisible: "\\+ 新任务"
+- tapOn: "\\+ 新任务"
+- assertVisible: "创建任务"
+- assertVisible: "创建任务"
+- assertVisible: "创建任务"
+- assertVisible: "创建任务"
+- assertVisible: "创建任务"
+- assertVisible: "创建任务"

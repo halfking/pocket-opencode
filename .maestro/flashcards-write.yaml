@@ -58,14 +58,23 @@ appId: com.kaixuan.opencode.pocket
 #    如实记录覆盖变窄：软键盘那套手势（tap 输入框起键盘 → inputText →
 #    hideKeyboard → tap 提交）本流程不再走。走的是同一个表单、同一个
 #    POST /api/auth/login、同一个 401/200 判定。键盘路径单列为遗留项。
-# ⚠️ 2026-10-03 真机实测：锚点文本随 IA 重组变了。原来等的是「AI 工具」——
-# 重组**前**首页 tab 的标签；现在一级 tab 是 首页 / 笔记 / 消息 / 更多
-# （BottomNav.vue items，locales zh-CN nav.home = 首页）。不改这里的话本 flow
-# 会在第一条断言就中止：`Assertion is false: "AI 工具" is visible`。
+# ★ 锚点是「AI 工具」，不是任何 tab 标签 —— 2026-10-07 更正一个误诊。
+#   2026-10-03 有一版把它改成了「首页」，理由写的是
+#   「AI 工具 是重组**前**首页 tab 的标签」。那个诊断是错的：
+#   「AI 工具」从来不是 tab 标签，它是 /ai 路由的 **meta.title**
+#     frontend/src/app/router-mobile.ts:84
+#     meta: { requiresAuth: true, title: 'AI 工具', bottomNav: true, ... }
+#   硬编码中文、不过 i18n ⇒ 与设备 locale 无关。
+#   而 tab 标签走 t('nav.*')，IA 重组时改过（源码 BottomNav.vue:101 是
+#   t('nav.home') = 首页；设备上那个构建是 AI/Chat/Notes/Meetings/Email）。
+#   ⇒ 拿 tab 标签当锚点 = 拿一个**已知的易变值**当判据。
+#   2026-10-07 实测：设备 AI 页完整无障碍树里 `AI 工具` 在，
+#   `首页` 与 `Home` **整棵树里都不在**。所以这里改回 `AI 工具`。
+#   ⚠️ 别再改成 tab 标签。
 - extendedWaitUntil:
-    visible: "首页"
+    visible: "AI 工具"
     timeout: 45000
-- assertVisible: "首页"
+- assertVisible: "AI 工具"
 - assertNotVisible: "密码登录"
 
 # ---------- 1. 进闪卡（不在底部主导航里，在「更多」九宫格内）----------
@@ -88,7 +97,7 @@ appId: com.kaixuan.opencode.pocket
 # 修前这里是死胡同：零卡组只能点「新建卡片」进编辑页，而那页保存恒 disabled
 # （selectedDeckId 为空 → isValid 恒 false），用户点进去才发现要先建组。
 - extendedWaitUntil:
-    visible: { text: "暂无卡组.*" }
+    visible: { text: "暂无卡组.*|No decks yet.*" }
     timeout: 25000
 
 # 按钮初始必须 enabled=false —— 这正是 BUG-K 的判据之一（没填名字不许提交）
@@ -120,9 +129,9 @@ appId: com.kaixuan.opencode.pocket
 #   2026-10-01 就因为这个假通过了一次：input 的值把断言喂饱了，卡组其实压根没建出来
 #   （PG 0 行、后端日志里连请求都没有）。零状态空态在建成功后必然消失，用它当判据。
 - extendedWaitUntil:
-    notVisible: { text: "暂无卡组.*" }
+    notVisible: { text: "暂无卡组.*|No decks yet.*" }
     timeout: 25000
-- assertVisible: { text: ".*今日待复习.*" }
+- assertVisible: { text: ".*今日待复习.*|.*due today.*" }
 
 # ---------- 4. 进卡组 → 建卡片 ----------
 - tapOn: { text: "回归卡组.*" }
@@ -130,7 +139,7 @@ appId: com.kaixuan.opencode.pocket
     visible: ".*添加卡片.*|.*Add card.*"
     timeout: 20000
 # BUG-O 判据（修前恒 disabled，因为卡组里 0 张卡）
-- assertVisible: { text: ".*开始复习.*|.*Review.*", enabled: false }
+- assertVisible: { text: "^开始复习$|^Review$", enabled: false }
 - tapOn: ".*添加卡片.*|.*Add card.*"
 
 # ---------- 5. 填正反面 ----------
@@ -204,10 +213,23 @@ appId: com.kaixuan.opencode.pocket
 # 所以这里的判据必须是「不重新挂载也能变对」。timeout 给到 90s：
 # 到期数靠 30s tick 推进，30s 超时恰好等于一个 tick、没有余量，必然随机红。
 - extendedWaitUntil:
-    visible: { text: ".*今日待复习 1 张.*" }
+    visible: { text: ".*今日待复习 1 张.*|.*1 due today.*" }
     timeout: 90000
-- assertVisible: { text: ".*今日待复习 1 张.*" }
+- assertVisible: { text: ".*今日待复习 1 张.*|.*1 due today.*" }
 # 后置断言：数字变了，但页面没被重新挂载、卡片没消失。
 # 少了这两条，「退出页面再进来也能显示 1」这种非响应式修法同样能蒙混过关 —— 而那正是修复前的行为。
 - assertVisible: { text: ".*回归正面.*" }
-- assertVisible: { text: ".*开始复习.*", enabled: true }
+# ⚠️ 这里必须锚定成 `^…$`，不能写 `.*Review.*`（2026-10-07 22:4x 实测坐实）：
+#   整条 flow 首次端到端跑通后，uiautomator 的活树显示卡组页上有**两个**能匹配
+#   `.*Review.*` 的节点：
+#     index=1  text="1Deck11 due today0Review"  class=android.view.View
+#              enabled="true"   ← WebView 把整行指标**合并成单个 View**
+#     index=2  text="Review"                     class=android.widget.Button
+#              clickable="true" enabled="true"   ← 真正要断言的那个按钮
+#   两者的 enabled 都是 true ⇒ `enabled: true` **并不能**把它们分开，
+#   断言可能被那个指标节点满足，而它的「Review」只是一段计数标签的尾巴。
+#   中文侧 `.*开始复习.*` 反而没这个问题（开始复习 只出现在按钮上），
+#   ⇒ 收紧后两侧强度才真正对称。
+#   阳性对照：同一棵树上按钮节点的 text 恰好等于 "Review"，
+#             指标节点是 "1Deck11 due today0Review"（不等于）⇒ 锚定后只命中按钮。
+- assertVisible: { text: "^开始复习$|^Review$", enabled: true }

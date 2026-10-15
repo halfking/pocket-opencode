@@ -372,11 +372,12 @@ func TestRecommendedModelsCoverBothGroups(t *testing.T) {
 		}
 	}
 	// 数量断言只守下限，不写死具体个数：用户要求「尽可能费用少」，候选表
-	// 会随调研持续增补（2026-10-01 从 3 个扩到 7 个），写死上限会让正常的
-	// 新增候选变成测试失败，从而诱导后来者不去补候选。
-	// 上限仍然要设——防止有人把整张 OpenRouter 模型表灌进来。
-	if gw != 3 || ext < 7 || ext > 20 {
-		t.Fatalf("预置应为网关 3 + 外部 7..20，实际 gateway=%d external=%d", gw, ext)
+	// 会随调研持续增补（2026-10-01 从 3 个扩到 7 个；2026-10-06 网关侧新增
+	// minimax-asr-1.0 / glm-asr 到 5 个），写死上限会让正常的新增候选变成
+	// 测试失败，从而诱导后来者不去补候选。
+	// 上限仍然要设——防止有人把整张模型表灌进来。
+	if gw < 3 || gw > 10 || ext < 7 || ext > 20 {
+		t.Fatalf("预置应为网关 3..10 + 外部 7..20，实际 gateway=%d external=%d", gw, ext)
 	}
 	for _, o := range all {
 		if o.Model == "" || o.Note == "" {

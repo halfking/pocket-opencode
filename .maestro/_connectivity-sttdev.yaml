@@ -35,5 +35,5 @@ appId: com.kaixuan.opencode.pocket.sttdev
     visible: ".*AI 工具.*"
     timeout: 45000
 - assertVisible: "AI 工具"
-- assertNotVisible: "输入用户名"
+- assertNotVisible: "^密码登录$"
 - assertNotVisible: "解锁本地数据"

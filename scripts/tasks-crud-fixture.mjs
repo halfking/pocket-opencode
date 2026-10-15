@@ -15,8 +15,49 @@
 //
 // 用法：node scripts/tasks-crud-fixture.mjs [--dry]
 import { execFileSync } from 'node:child_process'
+import { existsSync } from 'node:fs'
+import { join } from 'node:path'
 
-const PSQL = 'C:/workspace/openpocket/logs/pg/dist2/pgsql/bin/psql.exe'
+// ⚠️ 2026-10-07 修两处，与 flashcards-test-fixture.mjs 对齐：
+//
+// ① 原来写死 'C:/workspace/openpocket/logs/pg/dist2/pgsql/bin/psql.exe'。
+//    本机 PG 开了 scram，在 macOS 上这个路径**必然 ENOENT**。
+//    ⇒ 手工跑本夹具在 macOS/Linux 上从来就没成功过，而 tasks-crud.yaml
+//      第 5 步 `assertVisible: "Maestro任务.*"` 的全部防假通过价值
+//      恰恰依赖这个夹具先删干净——护栏一直在，**从没人能把它跑起来**。
+//
+// ② 连库参数原来固定 `-U postgres` 且**不带口令** ⇒ `fe_sendauth: no password supplied`。
+//    这是 stt-error-fixture.mjs 在 e791a971 修过的同一条。
+//
+// DSN 的坑（一并照抄同目录现成做法）：
+//   - POCKET_POSTGRES_DSN 必须放**位置参数位**，不能写成 `DSN=x psql …` 或跟在 -d 后面；
+//   - DSN 里的 host 是 `host.docker.internal`，那是**容器内**主机名，
+//     从宿主 macOS 跑解析不了 ⇒ 换成 127.0.0.1，凭据/库名原样保留。
+const PSQL = (process.env.POCKET_PSQL
+  || [
+      '/opt/homebrew/opt/libpq/bin/psql',
+      '/usr/local/opt/libpq/bin/psql',
+      '/usr/bin/psql',
+      '/opt/homebrew/bin/psql',
+      join(process.env.LOCALAPPDATA || '', 'Programs/PostgreSQL/*/bin/psql.exe'),
+    ].find((p) => p && !p.includes('*') && existsSync(p))
+  || 'psql')
+
+function hostRunnableDsn(dsn) {
+  if (!dsn) return ''
+  try {
+    const u = new URL(dsn)
+    if (u.hostname === 'host.docker.internal') u.hostname = '127.0.0.1'
+    return u.toString()
+  } catch {
+    return dsn   // 不是 URL 形态就原样用，交给 psql 自己报错
+  }
+}
+
+const DSN = hostRunnableDsn(process.env.POCKET_POSTGRES_DSN || '')
+const connArgs = DSN
+  ? [DSN]
+  : ['-h', '127.0.0.1', '-p', '5432', '-U', 'postgres', '-d', 'postgres']
 const DRY = process.argv.includes('--dry')
 
 // PG schema：跟随后端配置（backend/internal/config/config.go 的 POCKET_PG_SCHEMA，默认值相同）。
@@ -32,7 +73,7 @@ const SCHEMA = process.env.POCKET_PG_SCHEMA || 'opencode_pocket'
 if (SCHEMA !== 'opencode_pocket') console.log(`PG schema = ${SCHEMA}（非共享库）`)
 
 const q = (sql) => {
-  const out = execFileSync(PSQL, ['-h', '127.0.0.1', '-p', '5432', '-U', 'postgres', '-d', 'postgres', '-t', '-A', '-c', sql], {
+  const out = execFileSync(PSQL, [...connArgs, '-t', '-A', '-c', sql], {
     encoding: 'utf8', timeout: 60000, maxBuffer: 33554432,
   })
   return String(out).trim()

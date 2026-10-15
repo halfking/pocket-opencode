@@ -22,11 +22,32 @@ appId: com.kaixuan.opencode.pocket
 # ---------- 登录段：只有在真的停在登录页时才走 ----------
 # 「后端服务器」这行只在登录页出现，且顺带把「App 到底连的哪个后端」
 # 这条最常出错的判据一起钉住——所以用它当条件，而不是当断言。
+# ⚠️ 2026-10-07 实测：`runFlow when` 是**瞬时判定、不等待**的一步。
+#   原来拿「后端服务器」当条件，而那行是异步渲染的：flow 启动那一刻它还没进树
+#   ⇒ 分支被 **SKIPPED**（登录压根没执行），下一条断言「密码登录」却又成立
+#   ⇒ 报错是「登录页还在」，看起来像登录失败，真因是**条件判定得太早**。
+#
+#   修法两处：① 前面先显式等页面落到「登录页或已登录首页」二者之一；
+#            ② 条件改用**登录页最先渲染、最稳定的** tab 标签 ^密码登录$，
+#               「后端服务器」那一行改放到登录成功后的断言里（它本来就是钉后端地址的）。
+- extendedWaitUntil:
+    visible: "^密码登录$|AI 工具"
+    timeout: 45000
 - runFlow:
     when:
-      visible: "后端服务器"
+      visible: "^密码登录$"
     commands:
-      - tapOn: "输入密码"
+      # ⚠️ 2026-10-07 实测：密码框**没有可按文本选中的节点**。
+      #   失败现场整棵树里只有两个 EditText：
+      #     EditText text='admin'  bounds=[105,1218][973,1336]  ← 用户名，有值
+      #     EditText text=None     bounds=[105,1430][973,1551]  ← 密码，**无文本**
+      #   而标签「用户名」「密码」都是 android.view.View、clickable=false，不是输入框；
+      #   旧写法用的「输入密码」是 placeholder，同样不在树里。
+      #   ⇒ 只能按坐标，取它 bounds 的中心（屏 1080x2400）：
+      #       x=(105+973)/2=539 → 50%；y=(1430+1551)/2≈1490 → 62%
+      #   同一个改法已在 login-gesture.yaml 上真跑验证过（16 步全绿）。
+      - tapOn:
+          point: "50%,62%"
       - inputText: ${POCKET_DEV_PASS}
       - hideKeyboard
       # 登录按钮在两个字段都非空时才 enabled（LoginView 的 disabled 绑定），
@@ -40,9 +61,19 @@ appId: com.kaixuan.opencode.pocket
 # 三种合法落点：进 App（底部导航已渲染）/ 创建主密码（D 态弹窗）/ 解锁本地数据（B 态）。
 # 「主导航」是 BottomNav 的 aria-label（zh-CN nav.mainNavigation）。
 - extendedWaitUntil:
-    visible: "创建主密码|解锁本地数据|主导航"
+    # ⚠️ 2026-10-07 实测：三选一里的「主导航」是 BottomNav 的 aria-label，
+    #   本设备 a11y 树里 content-desc 全空 ⇒ 永远匹配不到（_goto-pkm 已踩实）。
+    #   换成一个**真的在登录页渲染成 text** 的：密码登录 / 验证码登录 两个 tab 之一。
+    visible: "创建主密码|解锁本地数据|密码登录"
     timeout: 60000
 - takeScreenshot: "logs/maestro/2026-10-02-real-login"
 
 # 硬判据：登录成功后不该还停在登录页。
-- assertNotVisible: "输入用户名"
+# ⚠️ 2026-10-07 实测：点完「登录」后**必须先等往返**。
+#   原写法点完立刻断言，那一刻请求还在飞，登录页当然还在 ⇒ 报「登录失败」。
+#   先等它消失，超时时长与下面的硬断言区分开：等的是**状态**，
+#   断言是**结论**——两者不再共用同一条语句，所以失败时能看出是没等到还是等到了没成。
+- extendedWaitUntil:
+    notVisible: "^密码登录$"
+    timeout: 45000
+- assertNotVisible: "^密码登录$"

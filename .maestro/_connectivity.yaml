@@ -31,5 +31,5 @@ appId: com.kaixuan.opencode.pocket
 
 # 显式排除「其实停在登录/解锁页」——这两种页面都**不含**「+ 新任务」，
 # 上面两条断言其实已经隐含排除了，这里再写一遍是为了失败时信息更直白
-- assertNotVisible: "输入用户名"
+- assertNotVisible: "^密码登录$"
 - assertNotVisible: "解锁本地数据"

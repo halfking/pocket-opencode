@@ -34,13 +34,13 @@ appId: com.kaixuan.opencode.pocket
 ---
 # ---- 1. 起点必须是登录页 ----
 - extendedWaitUntil:
-    visible: "输入用户名"
+    visible: "用户名"
     timeout: 45000
-- assertVisible: "输入密码"
+- assertVisible: "^密码$"
 - assertNotVisible: "AI 工具"
 
 # ---- 2. 用户名：tap 起键盘 → inputText ----
-- tapOn: "输入用户名"
+- tapOn: "用户名"
 - inputText: "admin"
 
 # ⚠️ 这里的中间 hideKeyboard 是**防御性**的，不是被证明必要的。
@@ -58,7 +58,18 @@ appId: com.kaixuan.opencode.pocket
 - hideKeyboard
 
 # ---- 3. 密码：同样 tap → inputText，用**故意错误**的口令 ----
-- tapOn: "输入密码"
+# ⚠️ 2026-10-07 实测：这里**不能**按文本 tap。
+#   把失败现场整棵树导出来核对，登录页一共只有两个 EditText：
+#     EditText text='admin'  bounds=[105,1218][973,1336]   ← 用户名，有值
+#     EditText text=None     bounds=[105,1430][973,1551]   ← 密码，**没有文本**
+#   而标签「用户名」「密码」都是 android.view.View、clickable=false —— 不是输入框。
+#   （旧写法 `tapOn "输入密码"` 那个 placeholder 同样不在树里，见本文件其它地方的注释。）
+#   ⇒ 密码框**没有可按文本选中的节点**，只能按坐标。取它 bounds 的中心：
+#       x=(105+973)/2=539 → 50%（屏宽 1080）
+#       y=(1430+1551)/2≈1490 → 62%（屏高 2400）
+#     百分比写法与分辨率无关，本轮实测屏 1080x2400。
+- tapOn:
+    point: "50%,62%"
 - inputText: "gesture-probe-wrong-pw"
 - hideKeyboard
 

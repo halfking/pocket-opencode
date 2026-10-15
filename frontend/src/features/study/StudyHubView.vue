@@ -271,12 +271,20 @@ import {
 import { listNotes } from '../notes/notes-store'
 import { normalizeStreakView } from './learning-streak-view'
 import { useApiError } from '../../composables/useApiError'
+import { useAuthStore } from '../../stores/auth'
 
 defineOptions({ name: 'StudyHubView' })
 
 const { t } = useI18n()
 const router = useRouter()
 const store = useFlashcardsStore()
+const auth = useAuthStore()
+
+/** 本地库按 workspace_id 分区。漏传会静默回退 'default'，查不到当前登录
+ *  workspace 下的笔记（学习 tab 的「有无关联笔记」判据因此恒为无）。 */
+function currentWorkspaceId(): string {
+  return auth.workspaceId || 'default'
+}
 
 const decks = computed(() => store.deckSummaries)
 const localDue = computed(() =>
@@ -352,7 +360,7 @@ onMounted(async () => {
     /* cache 损坏不致命：syncFromServer 会兜底 */
   }
   void store.syncFromServer().catch(() => {})
-  void listNotes({ limit: 1 }).catch(() => {})
+  void listNotes({ workspaceId: currentWorkspaceId(), limit: 1 }).catch(() => {})
   await loadLearning()
 })
 

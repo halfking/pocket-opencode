@@ -94,14 +94,52 @@ func (s *Store) CreateScoped(req CreateMeetingRequest, ownerID, workspaceID stri
 	defer s.mu.Unlock()
 
 	now := time.Now()
+	// ★ 2026-10-07：与 PGStore 对齐——客户端带的 id 现在被尊重，
+	// 且**重复 POST 变成幂等更新**（旧实现无条件新生成 ⇒ 重试即重复行）。
+	if req.StartedAt > 0 {
+		now = time.UnixMilli(req.StartedAt)
+	}
+	status := req.Status
+	if status == "" {
+		status = "recording"
+	}
 	m := &Meeting{
-		ID:          fmt.Sprintf("mtg_%d_%d", now.UnixNano(), meetingIDSeq.Add(1)),
-		OwnerID:     ownerID,
-		WorkspaceID: workspaceID,
-		Title:       req.Title,
-		Status:      "recording",
-		CreatedAt:   now,
-		UpdatedAt:   now,
+		ID:           strings.TrimSpace(req.ID),
+		OwnerID:      ownerID,
+		WorkspaceID:  workspaceID,
+		Title:        req.Title,
+		Duration:     int(req.DurationMs / 1000),
+		Transcript:   req.RefinedTranscript,
+		Summary:      req.Summary,
+		Participants: req.Participants,
+		Location:     req.Location,
+		NoteID:       req.NoteID,
+		Status:       status,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	if m.ID == "" {
+		m.ID = fmt.Sprintf("mtg_%d_%d", now.UnixNano(), meetingIDSeq.Add(1))
+	} else if old, ok := s.meetings[m.ID]; ok {
+		// 同一 id 再 POST：保留服务端补出来的空值列，别用零值覆盖已有内容。
+		if m.Transcript == "" {
+			m.Transcript = old.Transcript
+		}
+		if m.Summary == "" {
+			m.Summary = old.Summary
+		}
+		if len(m.Participants) == 0 {
+			m.Participants = old.Participants
+		}
+		if m.Location == "" {
+			m.Location = old.Location
+		}
+		if m.NoteID == "" {
+			m.NoteID = old.NoteID
+		}
+		if !now.After(old.CreatedAt) {
+			m.CreatedAt = old.CreatedAt
+		}
 	}
 
 	s.meetings[m.ID] = m

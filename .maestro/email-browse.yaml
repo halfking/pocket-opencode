@@ -39,16 +39,16 @@ appId: com.kaixuan.opencode.pocket
 ---
 # ---------- 0. 先保证自己站在一个**有底部导航**的页面上 ----------
 # 借 messages-hub.yaml 的同一条纪律：不能假设起点是 #/ai。
-# 邮件详情页的 meta 是 bottomNav:false，那页的树里没有「首页」。
+# 邮件详情页的 meta 是 bottomNav:false，那页的树里没有 /ai 的 meta.title「AI 工具」。
 - runFlow:
     when:
-      notVisible: "首页"
+      notVisible: "AI 工具"
     commands:
       - tapOn: "返回"
       - waitForAnimationToEnd:
           timeout: 3000
 - extendedWaitUntil:
-    visible: "首页"
+    visible: "AI 工具"
     timeout: 30000
 - assertNotVisible: "密码登录"
 

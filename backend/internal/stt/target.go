@@ -227,14 +227,18 @@ type ModelOption struct {
 //
 // 顺序即设置页展示顺序。2026-10-08 起网关种子了 glm-asr / minimax-asr-1.0；
 // 客户端仍打 OpenAI 路径，由网关适配上游方言（勿直连 /v1/speech_to_text）。
-// mimo-v2.5-asr 仍是 2026-10-06 实测可用项，排第一；gpt-audio* 可能 503。
+//
+// ⚠ 2026-10-06/07 ASR 多供应商轮实测重写（scripts/verify-gateway-audio-multi.mjs，
+// 网关 build 2484，TTS 合成已知真值回环）：mimo-v2.5-asr 与 minimax-asr-1.0
+// zh/en 全对（en 词级 98.7-100%），glm-asr 数据面已接通但在库智谱凭据余额
+// 不足（429/1113，充值后零改动可用）。gpt-audio 系仍是「列了但没有上游」。
 func RecommendedGatewayModels() []ModelOption {
 	return []ModelOption{
-		{Model: "mimo-v2.5-asr", Group: "gateway", Note: "实测可用（2026-10-06 200）· 统一 /v1/audio/transcriptions"},
-		{Model: "glm-asr", Group: "gateway", Note: "智谱 ASR · 经网关 multipart 透传（2026-10-08 目录种子）"},
-		{Model: "minimax-asr-1.0", Group: "gateway", Note: "MiniMax ASR · 客户端勿改打 speech_to_text，网关内部适配"},
-		{Model: "gpt-audio-mini", Group: "gateway", Note: "网关列了但可能 503 no_provider"},
-		{Model: "gpt-audio", Group: "gateway", Note: "网关列了但可能 503 no_provider"},
+		{Model: "mimo-v2.5-asr", Group: "gateway", Note: "实测可用（2026-10-06 zh/en 全对）· 网关 /models 未标 audio，勿按目录过滤掉它"},
+		{Model: "minimax-asr-1.0", Group: "gateway", Note: "实测可用（2026-10-06 zh/en 全对）· 客户端勿改打 speech_to_text，网关内部适配 · SSE 流式 · 500s 限长", Streaming: true, MaxSeconds: 500, USDPerHour: 0.38},
+		{Model: "glm-asr", Group: "gateway", Note: "智谱 ASR · 数据面已接通（2026-10-08 网关 multipart 透传目录种子）· 智谱凭据余额不足 429/1113，充值后零改动可用 · SSE 流式 · 30s 限长 + 热词", Streaming: true, MaxSeconds: 30, USDPerHour: 0.50},
+		{Model: "gpt-audio-mini", Group: "gateway", Note: "网关列了但实测 503 no_provider（2026-10-06）"},
+		{Model: "gpt-audio", Group: "gateway", Note: "网关列了但实测 503 no_provider（2026-10-06）"},
 	}
 }
 
