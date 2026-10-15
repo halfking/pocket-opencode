@@ -82893,3 +82893,285 @@ if home == "" { home, _ = os.UserHomeDir() }
   **不是**「本仓只有这 2 个缺陷」。
 
 ---
+
+## §692 续核 §690 v2 候选（10/21）：又两个真缺陷 + 一条方法论级读数
+
+### §692.0 起点与本节口径
+
+§690 把「同一规则字面量散在 ≥2 个函数里」做成量具（`dup_literal2.py`，21 候选 / 970 文件 / 168 行）。
+§691 核了 4 个（2 真缺陷 · 2 正确重复）。本节核**余下 10 个**，
+其中**又抓到 2 个真缺陷**，并且撞出**一条比两个缺陷都值钱的方法论读数**（§692.6）。
+
+- 量具重跑确认候选集未漂移：**文件 970 · 带规则字面量的行 168 · 字面量 150 · ≥2 个函数的 21**。
+- 本节新增代码事实中，最关键的一条**不在量具输出里**（§692.2）。
+
+### §692.1 量具自身的一个已知边界（本轮第一次撞上）
+
+重跑后 `POCKET_LLM_GATEWAY_ALLOW_PRIVATE` 现在报「2 处」：
+`ssrf.go:33 gatewayAllowPrivate` 与 `ssrf.go:41 LLMGatewayAllowPrivate`。
+
+这**不是新缺陷**，而是**我 §691 的修法自己长出来的**——我把未导出函数改成委托给新导出版本，
+于是在量具眼里，「唯一实现 + 一层委托包装」与「两处独立实现」长得一模一样。
+
+⇒ 量具的新已知边界（与 §690 记的 ①②③ 并列）：
+**④ 它无法区分「委托」与「重复实现」**，因此 §691 这类修法会让候选数**不减反增**。
+⇒ 这不影响结论（读到就分类掉），但**不能拿候选数当缺陷数的度量**。
+
+### §692.2 ⭐ 量具的召回缺口第一次在候选**内部**显形，且漏掉的正是关键读点
+
+`POCKET_LLM_GATEWAY_URL` 量具报 3 处：
+
+| # | 位置 | 形态 |
+|---|---|---|
+| 1 | `internal/config/config.go:362` | `getEnv("POCKET_LLM_GATEWAY_URL", "")` |
+| 2 | `internal/server/integration_status.go:114` | `strings.TrimSpace(os.Getenv(...)) != ""` |
+| 3 | `internal/server/llm_gateway_handler.go:69` | `envOr(...)` → `canonicalGatewayURL(...)` |
+
+**实际上有第 4 个读点，量具抓不到**：
+
+```go
+// cmd/pocketd/main.go:568（修复前）
+gwBase := cfg.LLMGatewayURL        // ← 读的是 cfg 字段，字面量不再出现
+if gwBase == "" { gwBase = opencode.DefaultLLMGatewayBaseURL }
+gwKey := cfg.LLMGatewayAPIKey
+if gwBase != "" && gwKey != "" { /* 企业网关分支 */ }
+```
+
+它不出现 `POCKET_` 字面量，所以量具数不到。
+
+⇒ 与 §687.2（「正则型普查会漏掉展开式构造」）**同族，但更值得记**：
+那次漏的是**构造方式**（展开式 `{...s, x}`），这次漏的是**读法的转换**
+（env → `Load()` 的 cfg 字段 → 消费方）。后者在真实代码里**更常见**：
+任何「启动时把 env 灌进 Config、之后全仓只读 Config」的架构，
+都会让量具在**读 cfg 字段的那一侧**整体失明。
+
+⇒ ★ **通用式**：审计「同一 env 的多处实现」时，
+**凡是有 `Load()`/`Config`/`settings` 这类中间载体的，必须单独手工核一遍消费方**——
+量具只能覆盖「直接读 env」的那一侧。
+
+### §692.3 缺陷一（真 · 行为级）：启动期与网关代理路径对**同一个 env** 得出相反结论
+
+三个代码事实先钉死：
+
+- `canonicalGatewayURL`（`internal/server/llm_gateway_resolve.go:16-18`）**有** `TrimSpace`，
+  空则回落 `opencode.DefaultLLMGatewayBaseURL` ⇒ **网关代理路径对空白是安全的**。
+- `config.getEnv`（`internal/config/config.go:597`）**不 trim** ⇒ `cfg.LLMGatewayURL` /
+  `cfg.LLMGatewayAPIKey` 是**空白不安全**的。
+- `cmd/pocketd/main.go:568-575`（修复前）读的就是这两个 cfg 字段，判定只有 `!= ""`，
+  **没有任何规范化**。
+
+**实测读数**（临时探针打进 `internal/server` 包，`config.Load()` 与 `defaultLLMGatewayState()`
+同进程读取，4 档；探针已回收）：
+
+```
+[unset]
+  cfg.LLMGatewayURL="";  main.go gwBase="https://llm.kxpms.cn/v1"; st.BaseURL="https://llm.kxpms.cn/v1"
+  cfg.LLMGatewayAPIKey=""; st.APIKey=""
+  ⇒ 企业网关分支=false ; 两侧一致
+
+[whitespace-only]  URL="  "  KEY="  "
+  cfg.LLMGatewayURL="  " ; main.go gwBase="  "      ← 没有回落默认！
+  st.BaseURL="https://llm.kxpms.cn/v1"
+  cfg.LLMGatewayAPIKey="  " ; st.APIKey=""
+  ⇒ 企业网关分支=true ; 两侧 base 不一致、key 不一致
+
+[padded-real]  URL=" https://gw.example.com/v1 "  KEY=" sk-abc "
+  main.go gwBase=" https://gw.example.com/v1 "   st.BaseURL="https://gw.example.com/v1"
+  main.go gwKey =" sk-abc "                      st.APIKey ="sk-abc"
+  ⇒ 企业网关分支=true ; 两侧 base 不一致、key 不一致
+
+[clean-real]  ⇒ 两侧一致
+```
+
+**后果有两层**：
+
+1. **纯空白档**：`gwBase != "" && gwKey != ""` 成立 ⇒ `/api/embed`、`/api/llm/chat`
+   被路由到**企业网关**，而地址与凭据都是空白；**同一时刻设置页报「网关未配置」**
+   （§690 修好后的 `integration_status.go` 会把它判为未配置）。
+   ⇒ 两个子系统对同一份 env 给出**互相矛盾**的结论，且矛盾的一方**会真的发请求**。
+2. **带空格档**（比纯空白更常见：`.env` 手写、K8s ConfigMap、`echo $SECRET` 之外的赋值方式）：
+   embed/chat 与 `/api/v1/llm/*` 走的**不是同一个地址**、用的**不是同一把凭据**。
+
+**修法**（`§691` 同款思路：不重写第二遍规则，让消费方复用唯一实现）：
+
+- `internal/server/llm_gateway_handler.go` 新增导出 `LLMGatewayEnvAPIKey()`，
+  实现只有一行 `return defaultLLMGatewayState().APIKey`。
+- `cmd/pocketd/main.go` 把那段内联判定抽成 `resolveGatewayBootstrap(cfgURL string) (gwBase, gwKey string)`：
+  地址 `strings.TrimSpace` 后空则回落默认；**凭据直接取 `server.LLMGatewayEnvAPIKey()`**。
+- 顺带订正同处一段**自相矛盾的旧注释**：原写「key 同理：env 优先，未注入时用内置的自家网关默认 key」，
+  而紧随其后的代码与注释明确写着**不回落任何内置密钥**（内置计费 key 被移除后注释没跟上）。
+
+**判据**（新增未跟踪文件 `backend/cmd/pocketd/gateway_bootstrap_env_test.go`，4 条 / 9 格）：
+
+- 3 档真值表：纯空白 ⇒ 按未配置处理（base 回落默认、key 为空、**不进企业网关分支**）；
+  带空格 ⇒ 裁到同一真实值；未设 ⇒ 回落默认且**不因默认地址就自动启用**。
+  另断言「进入企业网关分支的值不得含空白」。
+- 5 格同源断言：返回的 key 必须与 `server.LLMGatewayEnvAPIKey()` **逐字相同**
+  （`""` / `"  "` / `"\tsk-abc\n"` / `" sk-abc "` / `"sk-abc"`）。
+- ★ **前提哨兵**：每档先断言 `cfg.LLMGatewayURL == 原始 env` 且 `cfg.LLMGatewayAPIKey == 原始 env`，
+  否则 `t.Fatalf`「前提失效：config 已不再原样透传 env……请改写本用例」。
+  **理由**：本组用例的全部意义来自「`getEnv` 不 trim」；一旦 #63 落地，
+  这批用例会**静默退化成测另一个东西且照样绿**（§687.2 的教训）。
+
+**M1**（退回修复前实现：不 trim + 自己 `os.Getenv`）：
+**3 档红 + 同源那条红**，且错误信息直接把读数念出来
+（`base = "  "，期望 "https://llm.kxpms.cn/v1"` / `企业网关分支 = true，期望 false`）。
+
+**⚠ 未拍板（登记 #64）**：地址是否也整体改调 `defaultLLMGatewayState().BaseURL`？
+那样会把 `canonicalGatewayURL` 里的 **obsolete（`127.0.0.1:8782`）强制改写**一并带进 embed/chat 分支
+—— 那是「embed/chat 要不要跟随 obsolete 改写」的**产品口径**，不在技术修复范围内，故本节只对齐**空白口径**。
+
+### §692.4 缺陷二（真 · 诊断级）：`cmd/gwdbg` 会去查**另一个库**
+
+候选：`POCKET_POSTGRES_DSN` / `POCKET_PG_SCHEMA`（`gwdbg` vs `config.go:313-314`）。
+§691 记的「倾向阴性、尚未正式下结论」，本节正式核完 ⇒ **结论翻转，是真缺陷**。
+
+代码事实：
+
+- `config.go:313` 是 `getFirstEnv([]string{"POCKET_POSTGRES_DSN", "DATABASE_URL"}, "")`
+  ⇒ 后端**明确支持 `DATABASE_URL`**。
+- `cmd/gwdbg/main.go`（修复前）只读 `POCKET_POSTGRES_DSN`，且**多了一个后端从不使用的兜底**：
+  `postgres://postgres@127.0.0.1:5432/postgres?sslmode=disable`。
+- `config.Validate()` 的空 DSN 拒绝**只对生产生效**（`Validate()` 开头 `if !c.IsProduction() { return nil }`）；
+  开发环境 `main.go:86` 是 `if cfg.PostgresDSN != ""` ⇒ **不配就根本不连 PG**。
+  ⇒ 所以「本机默认」不是后端的兜底口径，**是探针自己发明的**。
+
+**假阴性路径**（不需要任何异常操作，只需一种受支持的部署方式）：
+运营方用 `DATABASE_URL` 部署后端，跑 gwdbg 时不额外导出 `POCKET_POSTGRES_DSN`
+⇒ gwdbg 连本机默认库 ⇒ 对「POST 到底落没落库」报「没落库」。
+**这正是该探针存在的目的**，也是它自己为 schema 写过的那条警告
+（"静悄悄地给出『没落库』的错结论，比报错更难发现"）——
+schema 那条**当初被修好了，DSN 这条没跟上**。
+
+**修法**（同「复用唯一实现」）：
+
+- `internal/config` 新增导出 `PGTargetFromEnv() (dsn, schema string)`，
+  即原 `:313-314` 那两行的唯一实现；**`Load()` 也改为调它**（两侧同源）。
+- `cmd/gwdbg` 新增 `resolvePGTarget()`，走 `config.PGTargetFromEnv()`；
+  **缺配置就返回错误退出**（与兄弟探针 `invoiceprobe` / `spamdryprobe` 的 `log.Fatal` 同一形状），
+  删掉写死的本机默认。
+
+**判据**（新增未跟踪文件 `backend/cmd/gwdbg/main_test.go`，5 格）：
+
+| 档 | 期望 |
+|---|---|
+| 两者都未设置 | **报错**，且 `dsn`/`schema` 都返回零值（契约：没有目标就没有 schema 一说） |
+| 只给 `DATABASE_URL` | 必须认 |
+| 两者都给 | `POCKET_POSTGRES_DSN` 优先（与 `getFirstEnv` 同序） |
+| 给 `POCKET_PG_SCHEMA` | schema 跟随（隔离后端场景） |
+| 纯空白 DSN | 等同未设置 |
+| 负控 | `dsn` 不得包含 `127.0.0.1:5432` |
+
+**M1**（退回修复前：写死默认 + 只认 `POCKET_POSTGRES_DSN`）：
+**3 格红**，报错信息含
+`期望报错却拿到了 dsn="postgres://postgres@127.0.0.1:5432/postgres?sslmode=disable" —— 探针又在自己发明默认目标`。
+
+★ **本轮第二次踩到同一个坑并当场记下**：第一次 M1 改完后 **build failed**
+（`strings` 变成未用导入）⇒ **编译错不是判红**，不能当证据。
+重做 M1 让它能编译（`_ = strings.TrimSpace` 保留导入）后才拿到真读数。
+
+### §692.5 阴性结论（本节核掉的其余 7 个，逐个有读数）
+
+| 候选 | 读数 | 判定 |
+|---|---|---|
+| `POCKET_PROBE_POSTGRES_DSN` / `POCKET_TEST_POSTGRES_DSN` / `POCKET_PROBE_PG_SCHEMA` | `invoiceprobe/main.go:113-121` 与 `spamdryprobe/main.go:69-79` 的三级回退链（DSN → TEST → `log.Fatal`；schema → `"opencode_pocket"`）**逐字相同** | 阴性：正确的重复 |
+| `POCKET_WECOM_TOKEN` / `_ENCODING_AES_KEY` / `_CORP_ID` | `cmd/_wecomprobe/main.go:27` 的 `env()` 是 **`os.ReadFile(".env")` 手写解析**（找不到文件直接 `panic`），不是 `os.Getenv` | 阴性：这是「手读 .env 模拟后端视角」的**复用假面**，不是第二处生产实现 |
+| `POCKET_LLM_GATEWAY_ALLOW_PRIVATE` | 见 §692.1 | 阴性（量具边界，非缺陷） |
+| `POCKET_JWT_SECRET` | `cmd/gen-jwt/main.go:30` 是 `os.Getenv` + `if secret == ""`；`config.go:326` 走 `getEnv`（同样不 trim）⇒ **两侧都不 trim，口径一致** | 阴性 |
+| `/tmp/agent_echo` | 两个手动 ACP 测试命令（`cmd/test_acp_stdio`、`cmd/test_acp_stdio_real`）指向同一个**外部测试二进制**路径 | 阴性：fixture 路径，不是规则实现 |
+| `POCKET_KXMEMORY_BASE_URL` | `server_meeting.go:639` 的命中是**注释** | 阴性（量具误报） |
+| `POCKET_DATA_DIR` / `POCKET_DB_PATH` | `config.go` 的 `Load()` / `ResolveDataDir` / `loadCompanionOverlay` 三处 | **已登记 #60**，非本节新增 |
+
+⇒ ★ 与 §691 同一条纪律再次生效：**候选集里同时装着真缺陷与正确重复**，
+不能因为「有两处」就判成缺陷。**GW_DB URL / gwdbg / JWT 三条都必须读到实现体才能定。**
+
+### §692.6 ⭐⭐⭐ 本轮最有价值的一条：`TestProductionConfigValidation` 一直是**恒真的门**
+
+顺着 `POCKET_JWT_SECRET` 那条阴性，我怀疑生产口令校验有洞：
+`len([]byte(c.JWTSecret)) < 32` —— **32 个空格恰好 32 字节**，且不等于任何 dev 默认值。
+
+按纪律先实测再下结论，于是往那张表里加了一格 `whitespace-only secret`。
+
+**它绿了。** ⇒ 我的假设看起来是错的。
+
+**但探针打出来的读数说明「绿」本身就是假的**：
+
+```
+secret="<32 个空格>"       len=32 trimmedLen=0  => Validate err=POCKET_REDCLAW_ADMIN_URL must be configured in production
+secret="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"  len=32 trimmedLen=32  => Validate err=POCKET_REDCLAW_ADMIN_URL must be configured in production
+secret=" aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"   len=32 trimmedLen=31  => Validate err=POCKET_REDCLAW_ADMIN_URL must be configured in production
+```
+
+**三条密钥（含完全合法的 32 个 `a`）返回的是同一个错误** ⇒
+
+1. **JWT 那条校验确实放行了 32 个空格**（错误来自排在它**后面**的 RedClaw 校验）；
+2. `TestProductionConfigValidation` 的 **base 自己就过不了校验**，
+   而 8 个用例**全部因为这同一条无关检查而失败** ⇒
+   **这张表每一格都是绿的，但它从来没有证明过是「哪条」校验拒的**。
+   表格看上去在验证「默认密钥 / 短密钥 / DevAuth / TLS / PG / origins 都会被拒」，实际一次都没验证过。
+
+**两层修复**：
+
+- **修被测代码**：`Validate()` 的长度与 dev 默认值比较改用 `strings.TrimSpace(c.JWTSecret)`
+  ⇒ 纯空白密钥被拒。
+- **修判据本身**：base 补 `AuthLegacyOnly: true`、`HTTPPort`、`OpenCodeTimeoutMS`、
+  `WSHeartbeatMS`、`ReminderCheckIntervalSec`、`RedClawAdminTimeoutSec`、`RedClawTimeoutSec`、
+  `RSSConfig{HTTPTimeout, MaxConcurrency, DigestHour, DigestMinute}`（取值与 `Load()` 默认一致）；
+  并在跑用例**之前**断言 `base.Validate()` 必须为 nil（**前提哨兵**），
+  再给每格加 `wantErrContains`，断言失败**来自这一格想验证的那条**校验。
+
+  ⇒ 补齐这 8 项的过程本身就是证据：**每补一项，下一层「恒真」就露出来**
+  （RedClaw → HTTP_PORT → TIMEOUT_MS → REDCLAW_TIMEOUT_SEC → RSS_HTTP_TIMEOUT），
+  **共 5 层**。任何一版旧表里，8 个用例都在报**第一层**那个错误。
+
+**M1**（把 `TrimSpace` 退回成 `c.JWTSecret`）：**只有 `whitespace-only secret` 一格红**，
+其余 **8 格保持绿**。这同时证明两件事：修复是专一的；**新表确实在区分**，
+而旧表在同样这个变异下会 **9/9 全绿**（因为它本来就没在校验任何东西）。
+
+⇒ ★★★ **本节的方法论价值远大于两个缺陷本身**：
+
+1. ⭐ **「判据绿」有两种，其中一种比红更危险**：一种是「测的东西通过」，
+   一种是「失败被更早的一条无关检查吃掉」。
+   **区分它们只有一个办法：问「这个错误来自我要验证的那条吗」**——
+   而这要求判据**按契约断言（错误消息），而不是只断言「出错了」**。
+2. ⭐ **恒真不是数据问题，是 base 问题**：base 不合法时，表里每一格都绿。
+   ⇒ **表驱动判据的第一条不是「每格要断言什么」，而是「base 必须先被断言为合法」**。
+3. ⭐ 同 [[两条读数互相矛盾时先怀疑量具]]：我以为「假设被推翻」，
+   实际是**探针读数与用例读数矛盾** ⇒ 先信读数（探针把三条密钥的错误都打出来了）。
+
+★ 同族：[[恒真的门是装饰]] · [[恒真判据]] · [[变异没让判据失效]] · [[判据红了先怀疑判据的理由]] ·
+[[阈值要用真实分布定]] · [[0 命中的第一嫌疑永远是量具坏了]]。
+
+### §692.7 顺带撞到的一个结构脆弱性：行号钉死的豁免表
+
+本轮在 `internal/server/llm_gateway_handler.go` 加了 15 行注释（导出 `LLMGatewayEnvAPIKey`），
+`repohygiene` 的 `TestNoByteSliceOnStringParam` **转红**：
+
+```
+发现 2 条字符串上的字节切片：
+  internal/server/llm_gateway_handler.go:663  maskKey() 里 s[:3] —— …
+以下豁免条目已失效（代码已改或行号已移），请删掉：
+  internal/server/llm_gateway_handler.go:648
+```
+
+⇒ **不是新缺陷**：`maskKey()` 的切片行从 `:648` 被我的注释推到 `:663`，
+而豁免表 `byteSliceAllowlist` 的 key 形如 `"file.go:1191"`（**行号**）⇒ 条目失效。
+
+- 已把豁免行号更新为 `:663`。
+- ★ 这个门**做对了它该做的事**（把漂移抓出来，而不是默默放过），
+  但也说明：**行号钉死的豁免表会被任何无关的注释/空行改动打红**。
+  改成按内容匹配（例如匹配函数名 + 切片表达式）是更稳的做法，
+  但那是 `repohygiene` 的机制改造，**不在本轮范围，未做**（如实留白）。
+
+### §692.8 本节的探测面（如实）
+
+- 候选覆盖：**21 个里累计复核 14 个**（§690 的 1 + §691 的 3 + 本节 10）。
+  其中 **真缺陷 4 个**（诊断页 trim · SSRF 日志 · 启动期 base/key · gwdbg 目标），
+  **正确重复 5 个**（OPENCODE_CONFIG_TOKEN · JWT_SECRET · 两个探针链 · agent_echo），
+  **量具误报/边界 3 个**（KXMEMORY 注释 · ALLOW_PRIVATE 委托包装 · DATA_DIR 已登记 #60）。
+- **仍未复核 7 个**：`/tmp/agent_echo` 已核；余下的是
+  `POCKET_OPENCODE_TIMEOUT_MS` / `POCKET_WS_HEARTBEAT_MS` / `POCKET_REMINDER_CHECK_INTERVAL_SEC`
+  （`Load()` + `Validate()` 成对，**已读代码确认 `Validate` 校验的是 cfg 字段而非重读 env ⇒ 不构成两处实现**）
+  与 `/tmp/agent_echo` 同批探针类。
+- ⇒ 阴性表述只能是：**「已复核的 14 个里，4 个真缺陷、5 个正确重复、3 个量具误报/边界」**，
+  **不是**「本仓只有这 4 个缺陷」。`#63`（`getEnv` 要不要全仓 trim）**已有 4 个具体后果**。
