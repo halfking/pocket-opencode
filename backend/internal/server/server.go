@@ -2361,6 +2361,15 @@ func defaultInstances() []model.PocketInstance {
 // buildOriginChecker creates a WebSocket origin check function.
 // If allowedOrigins is set, only those origins are allowed.
 // In dev mode (devAuth=true), localhost and 127.0.0.1 are allowed.
+//
+// Capacitor 应用源（http(s)://localhost）**无条件放行**（2026-10-16）：
+// 移动端 APK 的 WebView 固定跑在 http://localhost（CAP_ANDROID_SCHEME=http）
+// 或 https://localhost（默认 scheme）下，而测试/生产后端 devAuth=false ⇒
+// 此前 localhost 源拿不到 ACAO，APK 对任何生产后端的所有 fetch 都被浏览器
+// 拦截（真机 2411DRN47C 对 pocket.itestu.cn 实测：curl 200、WebView 全挂，
+// 登录永远停在登录页）。放行它是安全的：API 走 Authorization Bearer 头，
+// 没有随环境自动携带的 cookie 凭据，跨源浏览器拿不到 token 就读不到任何
+// 受保护响应；Origin: localhost 只能来自用户本机的页面。
 func buildOriginChecker(allowedOrigins string, devAuth bool) func(r *http.Request) bool {
 	originSet := make(map[string]bool)
 	if allowedOrigins != "" {
@@ -2380,6 +2389,15 @@ func buildOriginChecker(allowedOrigins string, devAuth bool) func(r *http.Reques
 
 		if originSet[origin] {
 			return true
+		}
+
+		// Capacitor WebView 固定源：http://localhost / https://localhost。
+		// devAuth 无关 —— 生产后端也必须给 APK 发 ACAO，否则移动端整体不可用。
+		if origin == "http://localhost" || origin == "https://localhost" {
+			u, err := url.Parse(origin)
+			if err == nil && u.Path == "" && u.RawQuery == "" && u.Fragment == "" {
+				return true
+			}
 		}
 
 		if devAuth {

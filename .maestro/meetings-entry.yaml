@@ -97,9 +97,12 @@ appId: com.kaixuan.opencode.pocket
 #    真正渲染的是 MeetingDetailView。）
 #   真正可见的是 dock 的 aria-label 二态（MeetingMicDock.vue:6）：
 #     :aria-label="recording ? '停止录音' : '开始录音'"
-- extendedWaitUntil:
-    visible: "会议详情"
-    timeout: 40000
+#
+# ⚠️ 不要在这里立刻等「会议详情」：进入 `?record=1` 时，Android 麦克风权限框
+# 和 Xiaomi 的“温馨提示”都可能盖住 WebView 的无障碍树。2026-10-16 的
+# 2411DRN47C 现场已证实：底层页面实际是「会议详情 / 录音中 / 正在聆听…」，
+# 但树只暴露“我知道了”弹窗；早等会把已成功的跳转误报为失败。先处理下方
+# 的系统层浮窗，再在后面做详情页断言。
 
 # ---------- 3. 核心：点「开始会议录音」必须真的进详情页 ----------
 # 这是本 flow 唯一有判别力的部分。MeetingRecordView 的 catch 分支会把

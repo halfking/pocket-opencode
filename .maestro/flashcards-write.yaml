@@ -100,10 +100,7 @@ appId: com.kaixuan.opencode.pocket
     visible: { text: "暂无卡组.*|No decks yet.*" }
     timeout: 25000
 
-# 按钮初始必须 enabled=false —— 这正是 BUG-K 的判据之一（没填名字不许提交）
-- assertVisible: { text: "新建卡组|New deck", enabled: false }
-
-# ---------- 3. 填卡组名 → 按钮解禁 → 建组 ----------
+# ---------- 3. 先清草稿 → 验空值禁用 → 填卡组名 → 解禁 → 建组 ----------
 # ⚠️ 这个 input 在可访问性树里是 `[android.widget.EditText] t="" cd=""`——
 #   placeholder（卡组名称）和 aria-label（新建卡组）**都没有暴露**给 Android，
 #   所以既不能 tapOn 文本也不能 assertVisible 它，只能按坐标点。
@@ -111,6 +108,15 @@ appId: com.kaixuan.opencode.pocket
 #   → 中心 (260,429) → 36%,26%。
 #   **百分比不能跨页面/跨状态复用**，改了布局必须重新量。
 #   好在点歪了不会静默通过：点不到输入框 → 按钮不会解禁 → 下面那条断言必红。
+#
+# Android WebView 会恢复上一轮尚未提交的表单草稿。例如真机 2411DRN47C 上，
+# 服务端 cards/decks 均为 0、`flashcards:v1` 已清后，输入框仍被浏览器恢复成
+# 「回归卡组」；此时按钮应当（且确实）可用。不能把“初始 DOM 恰好为空”当产品契约。
+# 先显式清空再断言 disabled，测的才是 `!newDeckName.trim()` 这条真正的禁用逻辑。
+- tapOn: { point: "36%,26%" }
+- eraseText
+- hideKeyboard
+- assertVisible: { text: "新建卡组|New deck", enabled: false }
 - tapOn: { point: "36%,26%" }
 - inputText: "回归卡组"
 - extendedWaitUntil:
