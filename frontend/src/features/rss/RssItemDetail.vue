@@ -15,6 +15,12 @@ const shareOpen = ref(false)
 const shareCaption = ref('')
 const shareResult = ref<{ copyText?: string; deepLink?: string; hint?: string } | null>(null)
 const shareBusy = ref(false)
+/**
+ * §849：分享弹窗内部的提示位。
+ * ⚠ 刻意**不**复用页面级的 `errorMsg`：那一条挂在 `v-else-if="errorMsg"` 上，
+ *   与 `<article>` 互斥 ⇒ 用它报「复制失败」会让正文整块消失。
+ */
+const shareNotice = ref('')
 const { t } = useI18n()
 
 async function load() {
@@ -41,6 +47,7 @@ function openShare() {
   if (!item.value) return
   shareCaption.value = item.value.summary?.slice(0, 120) || item.value.title
   shareResult.value = null
+  shareNotice.value = ''
   shareOpen.value = true
 }
 
@@ -48,13 +55,21 @@ async function doShare(dest: 'wechat' | 'weibo' | 'clipboard' | 'download') {
   if (!item.value) return
   shareBusy.value = true
   shareResult.value = null
+  shareNotice.value = ''
   try {
     const r = await rssApi.share(item.value.id, dest, shareCaption.value)
     shareResult.value = r
     if (dest === 'clipboard' && r.copyText) {
       try {
         await navigator.clipboard.writeText(r.copyText)
-      } catch { /* 浏览器/Capacitor 不支持时静默 */ }
+      } catch {
+        // §849：服务端那步已经成功、**成功态也已经设上了**，而写剪贴板可能失败
+        // （WebView 无剪贴板权限，或 navigator.clipboard 根本不存在）。
+        // 原来这里是静默 catch ⇒ 用户看到复制内容、以为复制好了，
+        // 粘贴出来却是空的上一次内容。
+        // ⇒ 失败要在这个弹窗里说出来，并说清「内容已生成、没进剪贴板」。
+        shareNotice.value = '未能写入剪贴板，内容已显示在下方，请长按手动复制'
+      }
     }
     if (dest === 'weibo' && r.deepLink) {
       window.open(r.deepLink, '_blank')
@@ -139,6 +154,7 @@ function back() {
             <button class="btn" :disabled="shareBusy" @click="doShare('download')">下载卡片图</button>
           </div>
         </div>
+        <div v-if="shareNotice" class="notice" role="alert">{{ shareNotice }}</div>
         <div v-if="shareResult" class="result">
           <div v-if="shareResult.deepLink">
             <strong>微博深链接：</strong>
@@ -160,6 +176,13 @@ function back() {
 .bar { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
 .title-clamp { flex: 1; font-size: var(--text-xl); margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .empty { padding: 32px; text-align: center; color: var(--text-muted); }
+.notice {
+  margin: 8px 0;
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: var(--warn-bg, #4a3a00);
+  color: var(--warn-fg, #ffb300);
+}
 .error { padding: 8px 12px; background: var(--err-bg); color: var(--err-fg); border-radius: 6px; margin-bottom: 8px; }
 .article { padding: 12px 0; }
 .meta-row { font-size: var(--text-sm); color: var(--text-muted); display: flex; gap: 12px; margin-bottom: 12px; }
