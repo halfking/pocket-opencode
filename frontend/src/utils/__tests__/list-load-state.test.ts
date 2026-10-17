@@ -38,6 +38,8 @@ const FOLDERS = read('../../features/email/EmailFolderListView.vue')
 const TASKS = read('../../features/tasks/TasksView.vue')
 const OC_STORE = read('../../stores/opencode.ts')
 const OC_LIST = read('../../features/opencode/SessionListView.vue')
+const CFG_LIST = read('../../features/config/ConfigList.vue')
+const CFG_LOAD = read('../../features/config/useConfigList.ts')
 
 /**
  * ★★ loader 的 catch 里**不得把已加载的行清空**。
@@ -90,10 +92,20 @@ const codeOnly = (text: string): string =>
     return !(t.startsWith('//') || t.startsWith('*') || t.startsWith('/*'))
   }).join('\n')
 
-/** 模板区：取 <script 之前的部分。 */
+/**
+ * 模板区。
+ *
+ * ⚠ 大多数视图是「模板在前」，但**不是全部**：`ConfigList.vue` 是 `<script setup>`
+ *   在第 1 行、`<template>` 在第 22 行（§845 第一次跑时这条判据假红的原因）。
+ *   ⇒ 脚本区里没有 `<template` 时，改从第一个 `<template` 取到最后一个 `</template>`。
+ */
 const templateOf = (src: string): string => {
-  const i = src.search(/<script\b/)
-  return i === -1 ? src : src.slice(0, i)
+  const scriptAt = src.search(/<script\b/)
+  const head = scriptAt === -1 ? src : src.slice(0, scriptAt)
+  if (/<template[\s>]/.test(head)) return head
+  const t0 = src.indexOf('<template')
+  const t1 = src.lastIndexOf('</template>')
+  return t0 >= 0 && t1 > t0 ? src.slice(t0, t1 + '</template>'.length) : head
 }
 
 /**
@@ -139,6 +151,12 @@ const blockFrom = (code: string, anchor: string, max = 4000): string => {
   }
   skipWs()
   if (code.startsWith('=>', i)) { i += 2; skipWs() }
+  if (code[i] === ':') {                          // TS 返回类型注解，如 `load(): Promise<void> {`
+    const b = code.indexOf('{', i)
+    assert.ok(b > i && b - i < 80,
+      `★ 阳性对照失败：锚点 ${anchor} 之后找不到函数体的 '{'`)
+    i = b
+  }
   assert.ok(code[i] === '{',
     `★ 阳性对照失败：锚点 ${anchor} 之后的函数体不是 '{'（拿到 ${JSON.stringify(code.slice(i, i + 12))}）`)
   const open = i
@@ -453,6 +471,63 @@ describe('§843 · 任务与会话（TasksView）', () => {
     assert.notEqual(mutated, tplCode(TASKS), '★ 变异没生效')
     assert.equal(/v-else-if="tasksError && visibleActiveTasks\.length === 0"/.test(mutated), false,
       '拿掉守卫后尺子居然还通过')
+  })
+})
+
+describe('§845 · 实例配置列表（ConfigList）', () => {
+  it('★★★ 不得出现 `void <错误标志>`（那是「注释说暴露给模板、代码明确丢弃」）', () => {
+    assert.equal(/\bvoid\s+error\b/.test(codeOnly(CFG_LIST)), false,
+      'ConfigList 里仍有 `void error` ⇒ 视图从不读 composable 的 error ⇒ 读失败对用户不可见')
+  })
+
+  it('★★★ composable 的 catch 不得清空 instances（成功路径整体赋值，失败路径不该碰数据）', () => {
+    const body = codeOnly(blockFrom(codeOnly(CFG_LOAD), 'async function load()'))
+    assert.match(body, /catch\s*\(e\)/, 'load() 没有 catch ⇒ 量具自证失败')
+    assert.equal(/\binstances\.value\s*=\s*\[\]/.test(body), false,
+      'load() 的 catch 仍在清空 instances ⇒ 有行时点重试失败会抹掉列表')
+  })
+
+  it('★★★ composable 的 catch 必须设 error（否则视图无从判断失败）', () => {
+    const body = codeOnly(blockFrom(codeOnly(CFG_LOAD), 'async function load()'))
+    assert.match(body, /error\.value = /, 'load() 的 catch 没有设 error')
+  })
+
+  it('★★★ 模板必须有带「无行」守卫的失败分支，且真空态要排除失败态', () => {
+    const tpl = tplCode(CFG_LIST)
+    // ⚠ 接受 v-if / v-else-if 两种形状：能不能用 v-else-if 取决于**相邻兄弟**，
+    //   而这里的 v-for 会隔断链（§845 第一次写成 v-else-if 被 vue-template-compile 抓红）。
+    assert.match(tpl, /v-(?:else-)?if="readError && instances\.length === 0"/, '缺少带守卫的失败分支')
+    assert.match(tpl, /instances\.length === 0 && !loading && !readError/,
+      '真空态没有排除失败态 ⇒ 失败时仍会显示「没有可用的实例」并引导去配置实例')
+  })
+
+  it('★★ 有行时也要有非破坏性提示', () => {
+    assert.match(tplCode(CFG_LIST), /v-if="readError && instances\.length > 0"/,
+      '有行时没有任何提示 ⇒ 刷新失败后用户以为看到的是最新的')
+  })
+
+  it('★ 变异负控：把 `void error` 放回去 ⇒ 尺子必须转红（还原真缺陷）', () => {
+    const mutated = CFG_LIST.replace('const readError = computed', 'void error\nconst readError = computed')
+    assert.notEqual(mutated, CFG_LIST, '★ 变异没生效')
+    assert.equal(/\bvoid\s+error\b/.test(codeOnly(mutated)), true, '尺子没咬住')
+  })
+
+  it('★ 变异负控：把清空放回 composable ⇒ 尺子必须转红', () => {
+    const before = codeOnly(blockFrom(codeOnly(CFG_LOAD), 'async function load()'))
+    const mutated = before.replace(
+      "console.error('[config-list] 读取实例失败：', e)",
+      "console.error('[config-list] 读取实例失败：', e)\n      instances.value = []",
+    )
+    assert.notEqual(mutated, before, '★ 变异没生效：没匹配到 console.error 那一行')
+    assert.equal(/\binstances\.value\s*=\s*\[\]/.test(mutated), true, '尺子没咬住清空')
+  })
+
+  it('★ 变异负控：把真空态的 `!readError` 去掉 ⇒ 尺子必须转红', () => {
+    const tpl = tplCode(CFG_LIST)
+    const mutated = tpl.replace('instances.length === 0 && !loading && !readError', 'instances.length === 0 && !loading')
+    assert.notEqual(mutated, tpl, '★ 变异没生效')
+    assert.equal(/instances\.length === 0 && !loading && !readError/.test(mutated), false,
+      '真空态没排除失败态却判成合法 ⇒ 无牙')
   })
 })
 

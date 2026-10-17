@@ -96270,3 +96270,140 @@ if (this.sessionsOwnerId !== instanceId) this.sessions = []
    要不要改名 —— 本节排查时已经踩过一次混淆风险。
 4. `catch 不得把列表置空` 要不要升格成**仓级门禁**（§843 待办第 33 条）——
    本节的扫面器已经证明它能一次性捞出 7 处候选，是一道**划算**的门。
+
+---
+
+## §845 收掉 §844 自己登记的缺口：配置列表把 composable 的 `error` **明确丢弃**（`void error`）
+
+**一句话**：`ConfigList.vue` 解构出 `error` 后紧跟一句 `void error` 把它丢掉，
+而它的上一行注释写着「error 暴露给模板」—— **注释说的与紧邻的代码正好相反**。
+读失败时用户看到「没有可用的实例」+「请先配置 OpenCode 实例」，
+并被引导去做一整套实例配置，而真实原因只是一次读取失败，页面上**没有任何重试入口**。
+
+### 1. 三处候选的取证结论（本节先把上节的登记收掉）
+
+§844 扫面表里 3 处「未处理」，逐个查完：
+
+| 候选 | 结论 | 依据 |
+|---|---|---|
+| `EmailSummaryView.vue` | ✅ **假阳性，已修过** | `:12` `v-else-if="loadError"` 排在空态 `:17` **之前**，且 `:104-110` 有注释明写「原先两个 catch 都是把数据置空…现已改成 loadError」⇒ 它是本仓**最正确**的一处 |
+| `InstanceListView.vue` | ⚠ **有出口，但仍有「刷新丢行」** | `:19-25` 有 `v-else-if="error"` + 重试；`:115` 仍 `instances.value = []`；而 `:9` 有**刷新按钮** ⇒ 用户点刷新失败会丢行（但**会**看到错误，不是谎报） |
+| `ConfigList.vue` | ⛔ **本节处理** | 见下 |
+
+⚠ 上表三行都是**读码结论**；`InstanceListView` 的刷新按钮路径**未在设备上跑过**。
+
+### 2. 缺陷证据
+
+#### D1 · 注释与代码直接矛盾
+
+```ts
+// ConfigList.vue:15-19（改前）
+const { instances, loading, error, load } = useConfigList()
+onMounted(load)
+
+// error 暴露给模板（兜底文案已与 useConfigList 保持一致）
+void error          // ← 这就是「明确丢弃」
+```
+
+⇒ **本会话第 4 次撞上「注释声称的机制要单独验一次」**（§837 `MeetingListView` 的
+「dbNotReady 仍由 fetchPage 内捕获」、§840、§841 `EmailInboxView` 的「任何抛出都会设
+loadError」各一次）。⚠ 前三次是**注释孤儿**（描述一个不存在的机制），
+这次更特别：**注释描述的机制就写在紧邻的下一行，而那行是它的反面**。
+
+#### D2 · composable 设了 error、清了数据，视图两样都不显示
+
+```ts
+// useConfigList.ts:28-40（改前）
+async function load(): Promise<void> {
+  loading.value = true; error.value = ''
+  try { instances.value = await api.getInstances() }
+  catch (e) {
+    error.value = apiError(e, 'errors.loadSettingsFailed')
+    instances.value = []          // ← 清空
+  } finally { loading.value = false }
+}
+```
+
+模板（`ConfigList.vue:32-65`，改前）：`v-if="loading"` → `v-else` → `v-for instances`
+→ `v-if="instances.length === 0 && !loading"` ⇒ **「没有可用的实例」+「请先配置 OpenCode 实例」**。
+
+**实测读数**（`.artifacts/s845-probe/probe.mjs`）：
+
+| 场景 | error | instances | 模板落点 | 错误出口 |
+|---|---|---|---|---|
+| A 读取失败（502） | 非空 ⛔ | 0 行 ⛔ | 「没有可用的实例」+「请先配置 OpenCode 实例」 | **零** ⛔ |
+| B 读取成功（对照） | 空 | 1 行 | 列表 | — |
+
+⇒ 状态是对的（error 有值），只是**没有任何人渲染它**。
+
+#### D3 · 那次清空本来无害，是**我加的重试让它变有害**
+
+⚠ 这一点必须写清楚，否则会误判为「原来就有 bug」：
+本页的调用点只有 `onMounted`（`:16`）⇒ 首次加载时 `instances` 本来就是 `[]`
+⇒ **原来的清空是无害的**。是 §845 新加的重试入口引入了
+「有行时点重试失败 → 抹掉正在看的列表」这个场景。
+⇒ 与 §843/§844 同一处置：失败路径**不碰数据**，只挂提示。
+
+### 3. 落地
+
+| 位置 | 改动 |
+|---|---|
+| `features/config/ConfigList.vue` | 删 `void error` 与那句相反的注释；新增 `readError` / 永远非空的 `readErrorNotice`；模板加「带 `.length === 0` 守卫的失败分支 + 可点重试」与「有行时的非破坏性横幅」；**真空态加 `!readError`**（否则失败态与真空态仍会同时成立） |
+| `features/config/useConfigList.ts` | catch 里的 `instances.value = []` 移除，改 `console.error` + 不动数据 |
+
+⚠ **两处形状坑**（都是实际撞到的）：
+1. 失败分支**必须用 `v-if` 而不是 `v-else-if`** —— 它前面隔着 `v-for` 的实例卡片，
+   没有相邻的 `v-if` 兄弟 ⇒ Vue 编译直接拒绝。
+   ⚠⚠ **这是 §842 同一个坑的第二次**：我在 §842 的文档里已经把它记成教训，
+   却在 §845 又踩了一次；而抓到它的是**仓库的 `vue-template-compile` 门禁**，**不是我自己的判据**。
+   ⇒ 教训本身还不够，**必须变成一条能自动跑的门**（已登记为待拍板）。
+2. `ConfigList.vue` 是**脚本在前、模板在后**（多数视图相反）⇒ 量具 `templateOf`
+   的「取 `<script>` 之前」假设对它不成立，第一次跑时 6 条判据一起假红。
+
+### 4. 判据与变异
+
+判据扩到 **94 例全通过**（新增 §845 一组 8 例）。
+
+核心不变量之一是**可机械检查的**：`/\bvoid\s+error\b/` 不得出现 ——
+`void x` 是「我明确不用它」的写法，把它钉住就等于把「注释声称 vs 代码事实」
+这一族从人工核对变成自动判据。
+
+**对真实文件的四路端到端变异**：
+
+| 变异 | §840-845 判据 |
+|---|---|
+| M1 把 `void error` 放回去（**还原真缺陷**） | 🔴 1 |
+| M2 composable 改回清空 `instances` | 🔴 1 |
+| M3 真空态不再排除失败态 | 🔴 1 |
+| M4 拿掉失败分支的「无行」守卫 | 🔴 1 |
+| 复原后基线 | 0 |
+
+⚠ 这四处**都不在** `list-error-failpath` 的管辖内（`ConfigList.vue` 既没用下拉刷新容器，
+也没有 `EmptyState`）⇒ 与 §843/§844 连续三节同一结论：
+**这类缺陷系统性落在那道门的覆盖范围之外**，它只管「用了下拉刷新 + 挂了空态组件」的视图。
+
+### 5. 量具自证（本节三处）
+
+1. `templateOf` 假设「模板在 `<script>` 之前」⇒ 对 `ConfigList.vue` 返回的只是头部注释
+   ⇒ 6 条模板判据一起假红。已改为「脚本区无 `<template` 时，从第一个 `<template` 取到最后一个 `</template>`」。
+2. `blockFrom` 不认 TS 返回类型注解：`async function load(): Promise<void> {`
+   在锚点之后是 `:` 而不是 `{` ⇒ 阳性对照直接失败。已加「`: … {` 跳到 `{`」。
+3. 修完 1、2 后**重跑了 §840–§844 的全部历史用例**，确认没有一直在假绿的（94/94 通过）。
+
+### 6. 口径与未实测
+
+- ⛔ **未实测（需真机）**：本配置页读取失败的真实发生率；`apiError` 文案在该页的可读性。
+- ⛔ `InstanceListView` 的「刷新按钮 + 清空」路径**只做了读码确认**，未在设备上跑过，
+  也**未修**（它有错误出口，属较低优先级，已登记）。
+- ⚠ 本节仍**不是**「全仓读失败路径已覆盖」的声明：
+  §845 的判据查的是 `void error` + composable 的清空 + 本页模板三处形状，
+  不覆盖其它 composable / 其它视图的同族问题。
+
+### 7. 待拍板
+
+1. **`v-else-if` 相邻性要不要变成一条可自动跑的门** —— §842 与 §845 **连踩两次**，
+   都是仓库的 `vue-template-compile` 抓到而我的判据没抓到；
+   更值得做的是让**我自己那套判据**也覆盖模板可编译性（否则新写的分支会反复踩）。
+2. `InstanceListView` 的「刷新按钮 + 清空 instances」要不要修（§845.6 第 2 条）。
+3. `ConfigList.vue` 有没有别的调用 `load()` 的入口（我查到只有 `onMounted` 与我新加的重试），
+   若将来加「切实例」，`instances` 的归属问题会像 §844 的 store 那样出现。
