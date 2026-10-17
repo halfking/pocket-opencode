@@ -23,7 +23,7 @@
 //
 // ── 三条判据 ────────────────────────────────────────────────────────
 //
-//   ① **golden snapshot**：在册 9 条 external 价逐一钉住。
+//   ① **golden snapshot**：在册 11 条（含 2 条 gateway 档）价逐一钉住。
 //      ⭐ 这是**有意**把外部事实双写一遍 —— 代价是改价要多改一行，
 //      收益是**改价的人一定会撞到这条消息**，而消息里写着谁依赖它。
 //   ② **换算自洽**：注释里写了「X 元/分钟」的条目，其 `USDPerHour` 必须落在
@@ -43,8 +43,18 @@ const ROOT = path.resolve(HERE, '..', '..', '..', '..')
 const TARGET_GO = path.join(ROOT, 'backend', 'internal', 'stt', 'target.go')
 const src = fs.readFileSync(TARGET_GO, 'utf8')
 
-/** §579 依赖的那几格（其余 gateway 条目不在 §579 的论证链上，故意不钉）。 */
+/**
+ * §579 依赖的那几格 + 两条 gateway 档。
+ *
+ * ⚠ 2026-10-17 属主拍板「补价表」：`minimax-asr-1.0` / `glm-asr` 这两条
+ * gateway 档此前在册外（`checkRoster` 一直报红），现登记进册。
+ * 它们与 external 组的 `asr-1.0` / `glm-asr-2512` **是两档不同的东西**：
+ * 前者走网关目录（`target.go:238/239`），后者是外部直连档。
+ * 其余 gateway 条目仍不在 §579 的论证链上，故意不钉。
+ */
 const GOLDEN = {
+  'minimax-asr-1.0': 0.38,
+  'glm-asr': 0.50,
   'qwen/qwen3-asr-0.6b': 0.012,
   'openai/whisper-large-v3-turbo': 0.012,
   'nvidia/nemotron-3.5-asr-streaming-multilingual-0.6b': 0.012,

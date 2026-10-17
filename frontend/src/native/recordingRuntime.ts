@@ -37,6 +37,7 @@ import {
   applyCaptionResult, createLiveCaption, pickSpeechRecognition, type SpeechRecLike,
 } from '../features/meetings/meeting-live-caption'
 import { buildUtteranceSegment } from '../features/meetings/meeting-utterance'
+import { runBestEffort } from './best-effort'
 import { useMicPermission } from '../composables/useMicPermission'
 import { useToast } from '../composables/useToast'
 import { openPreferredMicStream, listAudioInputs, type AudioInput } from './audio-inputs'
@@ -698,7 +699,11 @@ export class MeetingRecorderRuntime {
           durationMs,
           status: 'completed',
         })
-        void getMeeting(meetingId).then((m) => { if (m) syncMeetingMetadata(m) })
+        // 收尾后的元数据同步是 best-effort：失败不得冒泡成未处理拒绝（见 best-effort.ts）。
+        void runBestEffort('meeting-recorder/metadata-sync', async () => {
+          const m = await getMeeting(meetingId)
+          if (m) await syncMeetingMetadata(m)
+        })
       }
       this.activeMeetingId.value = ''
       return { audioPath, durationMs }
