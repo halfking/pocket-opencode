@@ -1,4 +1,4 @@
-# OpenCode Pocket 运维指南
+# AI Work Mess 运维指南
 
 **文档版本**: v1.0  
 **更新日期**: 2026-07-07  
@@ -104,7 +104,7 @@ EOF
 # 2. 创建systemd服务
 cat > /etc/systemd/system/opencode-pocket.service << EOF
 [Unit]
-Description=OpenCode Pocket Backend
+Description=AI Work Mess Backend
 After=network.target postgresql.service
 
 [Service]

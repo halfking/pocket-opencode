@@ -14,7 +14,7 @@ if (!p) { console.error('用法: node scripts/decode-hier.mjs <file> [gbk|utf8]'
 const buf = readFileSync(p)
 const text = new TextDecoder(enc).decode(buf)
 // 自证：文件里应能认出这些已知文案，否则说明编码猜错了。
-const probes = ['登录', '用户名', 'OpenCode Pocket', 'WebView']
+const probes = ['登录', '用户名', 'AI Work Mess', 'WebView']
 const hit = probes.filter((s) => text.includes(s))
 writeFileSync(p.replace(/\.json$/, '.decoded.json'), text, 'utf8')
 console.error(`[${enc}] 识别到 ${hit.length}/${probes.length} 个探针: ${hit.join(' / ') || '<无>'}`)

@@ -1,5 +1,5 @@
 #!/bin/bash
-# OpenCode Pocket 开发环境快速启动脚本
+# AI Work Mess 开发环境快速启动脚本
 # 用途: 一键启动完整开发环境
 
 set -e
@@ -8,7 +8,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 echo "=========================================="
-echo "OpenCode Pocket 开发环境启动"
+echo "AI Work Mess 开发环境启动"
 echo "=========================================="
 echo ""
 

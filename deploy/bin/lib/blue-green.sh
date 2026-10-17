@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =====================================================================
-# blue-green.sh — OpenPocket 部署的版本目录管理（blue-green 切换）
+# blue-green.sh — AI Work Mess 部署的版本目录管理（blue-green 切换）
 #
 # 设计目标（用户需求）：
 #   - bin/{version}.{build}/  每个发布版本独立目录
@@ -124,7 +124,7 @@ EOF
 
   # 写一份 pocketd-compose-snippet.yml：用于 docker compose -f ... -f snippet.yml 拼接
   cat > "${target}/pocketd-compose-snippet.yml" <<EOF
-# OpenPocket release ${id} — 由 deploy/bin/lib/blue-green.sh 生成
+# AI Work Mess release ${id} — 由 deploy/bin/lib/blue-green.sh 生成
 # 用法：docker compose -f docker-compose.opp.yml -f bin/current/pocketd-compose-snippet.yml up
 # 当前内容是占位（snippet 仅在需要时启用额外服务）
 version: "3.9"

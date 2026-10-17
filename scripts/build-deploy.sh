@@ -1,5 +1,5 @@
 #!/bin/bash
-# OpenCode Pocket 完整构建和部署脚本
+# AI Work Mess 完整构建和部署脚本
 # 用途: 构建前端、Android APK并部署到模拟器
 
 set -e
@@ -8,7 +8,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 echo "=========================================="
-echo "OpenCode Pocket 完整构建部署"
+echo "AI Work Mess 完整构建部署"
 echo "=========================================="
 echo ""
 

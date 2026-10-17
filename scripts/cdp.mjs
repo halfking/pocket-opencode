@@ -93,7 +93,7 @@ async function targets() {
 function pickPage(list) {
   const pages = list.filter((t) => t.type === 'page' && t.webSocketDebuggerUrl)
   if (!pages.length) throw new Error('no debuggable page target')
-  // 优先挑 OpenPocket 自己的页面
+  // 优先挑 AI Work Mess 自己的页面
   return pages.find((t) => /localhost|openpocket|pocket/i.test(t.url)) || pages[0]
 }
 

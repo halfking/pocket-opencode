@@ -1,5 +1,5 @@
 /**
- * OpenCode Pocket Plugin - Main Entry Point
+ * AI Work Mess Plugin - Main Entry Point
  * 
  * This plugin integrates OpenCode with Pocket Backend, enabling:
  * - Automatic instance registration
@@ -36,7 +36,7 @@ export class OpenCodePocketPlugin extends EventEmitter {
    * Activate the plugin
    */
   async activate(): Promise<void> {
-    console.log('[OpenCode Pocket] Plugin activating...')
+    console.log('[AI Work Mess] Plugin activating...')
     
     // 1. Connect to Pocket Backend
     await this.connectToBackend()
@@ -50,14 +50,14 @@ export class OpenCodePocketPlugin extends EventEmitter {
     // 4. Start heartbeat
     this.startHeartbeat()
     
-    console.log('[OpenCode Pocket] Plugin activated successfully')
+    console.log('[AI Work Mess] Plugin activated successfully')
   }
 
   /**
    * Deactivate the plugin
    */
   async deactivate(): Promise<void> {
-    console.log('[OpenCode Pocket] Plugin deactivating...')
+    console.log('[AI Work Mess] Plugin deactivating...')
 
     // Stop session polling
     if (this.sessionPollTimer) {
@@ -86,7 +86,7 @@ export class OpenCodePocketPlugin extends EventEmitter {
       this.ws = null
     }
 
-    console.log('[OpenCode Pocket] Plugin deactivated')
+    console.log('[AI Work Mess] Plugin deactivated')
   }
 
   /**
@@ -96,7 +96,7 @@ export class OpenCodePocketPlugin extends EventEmitter {
     return new Promise((resolve, reject) => {
       const wsUrl = `${this.config.backendURL}/plugin/ws?type=plugin&id=${this.config.instanceID}`
       
-      console.log(`[OpenCode Pocket] Connecting to ${wsUrl}`)
+      console.log(`[AI Work Mess] Connecting to ${wsUrl}`)
       
       this.ws = new WebSocket(wsUrl, {
         headers: {
@@ -105,17 +105,17 @@ export class OpenCodePocketPlugin extends EventEmitter {
       })
 
       this.ws.on('open', () => {
-        console.log('[OpenCode Pocket] WebSocket connected')
+        console.log('[AI Work Mess] WebSocket connected')
         resolve()
       })
 
       this.ws.on('error', (error) => {
-        console.error('[OpenCode Pocket] WebSocket error:', error)
+        console.error('[AI Work Mess] WebSocket error:', error)
         reject(error)
       })
 
       this.ws.on('close', () => {
-        console.log('[OpenCode Pocket] WebSocket closed')
+        console.log('[AI Work Mess] WebSocket closed')
         this.scheduleReconnect()
       })
 
@@ -150,7 +150,7 @@ export class OpenCodePocketPlugin extends EventEmitter {
       data: info
     })
 
-    console.log('[OpenCode Pocket] Instance registered:', info.id)
+    console.log('[AI Work Mess] Instance registered:', info.id)
   }
 
   /**
@@ -171,17 +171,17 @@ export class OpenCodePocketPlugin extends EventEmitter {
    * 这与 discovery.go 的探测协议保持一致（都走 HTTP API），保证跨 OpenCode 版本兼容。
    */
   private startSessionMonitoring(): void {
-    console.log('[OpenCode Pocket] Starting session monitoring (poll /session)')
+    console.log('[AI Work Mess] Starting session monitoring (poll /session)')
 
     // 立即拉一次作为基线
     this.pollSessions().catch((err) => {
-      console.warn('[OpenCode Pocket] initial session poll failed:', err?.message || err)
+      console.warn('[AI Work Mess] initial session poll failed:', err?.message || err)
     })
 
     // 每 15s 轮询一次（与心跳解耦，避免 health 检查阻塞事件上报）
     this.sessionPollTimer = setInterval(() => {
       this.pollSessions().catch((err) => {
-        console.warn('[OpenCode Pocket] session poll failed:', err?.message || err)
+        console.warn('[AI Work Mess] session poll failed:', err?.message || err)
       })
     }, 15_000)
   }
@@ -268,7 +268,7 @@ export class OpenCodePocketPlugin extends EventEmitter {
    * Handle session created event
    */
   private onSessionCreated(session: any): void {
-    console.log('[OpenCode Pocket] Session created:', session.id)
+    console.log('[AI Work Mess] Session created:', session.id)
     
     this.sendMessage({
       type: 'session.created',
@@ -283,7 +283,7 @@ export class OpenCodePocketPlugin extends EventEmitter {
    * Handle session updated event
    */
   private onSessionUpdated(session: any, changes: any): void {
-    console.log('[OpenCode Pocket] Session updated:', session.id)
+    console.log('[AI Work Mess] Session updated:', session.id)
     
     this.sendMessage({
       type: 'session.updated',
@@ -299,7 +299,7 @@ export class OpenCodePocketPlugin extends EventEmitter {
    * Handle session completed event
    */
   private onSessionCompleted(session: any): void {
-    console.log('[OpenCode Pocket] Session completed:', session.id)
+    console.log('[AI Work Mess] Session completed:', session.id)
     
     this.sendMessage({
       type: 'session.completed',
@@ -325,10 +325,10 @@ export class OpenCodePocketPlugin extends EventEmitter {
           this.sendMessage({ type: 'pong' })
           break
         default:
-          console.warn('[OpenCode Pocket] Unknown message type:', message.type)
+          console.warn('[AI Work Mess] Unknown message type:', message.type)
       }
     } catch (error) {
-      console.error('[OpenCode Pocket] Failed to parse message:', error)
+      console.error('[AI Work Mess] Failed to parse message:', error)
     }
   }
 
@@ -336,7 +336,7 @@ export class OpenCodePocketPlugin extends EventEmitter {
    * Handle remote control command
    */
   private async handleRemoteCommand(command: RemoteCommand): Promise<void> {
-    console.log('[OpenCode Pocket] Received command:', command.type)
+    console.log('[AI Work Mess] Received command:', command.type)
     
     try {
       let result: any
@@ -370,7 +370,7 @@ export class OpenCodePocketPlugin extends EventEmitter {
         }
       })
     } catch (error: any) {
-      console.error('[OpenCode Pocket] Command failed:', error)
+      console.error('[AI Work Mess] Command failed:', error)
       
       this.sendMessage({
         type: 'command.result',
@@ -397,7 +397,7 @@ export class OpenCodePocketPlugin extends EventEmitter {
    * cross-instance migration tracking but strip it from the wire body.
    */
   private async createSession(data: any): Promise<any> {
-    console.log('[OpenCode Pocket] Creating session:', data)
+    console.log('[AI Work Mess] Creating session:', data)
     const base = this.config.opencodeBaseURL.replace(/\/$/, '')
     const payload: any = {
       parentID: data?.parentID,
@@ -438,7 +438,7 @@ export class OpenCodePocketPlugin extends EventEmitter {
    * The legacy `{ prompt: { text }, delivery }` shape is NOT accepted by upstream.
    */
   private async sendPrompt(sessionID: string, prompt: string): Promise<any> {
-    console.log('[OpenCode Pocket] Sending prompt to session:', sessionID)
+    console.log('[AI Work Mess] Sending prompt to session:', sessionID)
     const base = this.config.opencodeBaseURL.replace(/\/$/, '')
     const payload = {
       parts: [{ type: 'text', text: prompt }],
@@ -469,7 +469,7 @@ export class OpenCodePocketPlugin extends EventEmitter {
    * The legacy /interrupt path is removed in pinned upstream.
    */
   private async stopSession(sessionID: string): Promise<any> {
-    console.log('[OpenCode Pocket] Stopping session:', sessionID)
+    console.log('[AI Work Mess] Stopping session:', sessionID)
     const base = this.config.opencodeBaseURL.replace(/\/$/, '')
     const resp = await fetch(`${base}/session/${encodeURIComponent(sessionID)}/abort`, {
       method: 'POST',
@@ -493,7 +493,7 @@ export class OpenCodePocketPlugin extends EventEmitter {
    * 这是跨主机迁移在本机的"执行端"，与 Pocket 迁移服务编排配合。
    */
   private async migrateTo(input: MigrateToInput): Promise<any> {
-    console.log('[OpenCode Pocket] migrate_to from', input.packURL)
+    console.log('[AI Work Mess] migrate_to from', input.packURL)
 
     // 1. 拉迁移包
     const headers: Record<string, string> = { 'Content-Type': 'application/json' }
@@ -581,12 +581,12 @@ export class OpenCodePocketPlugin extends EventEmitter {
   private scheduleReconnect(): void {
     if (this.reconnectTimer) return
     
-    console.log('[OpenCode Pocket] Scheduling reconnect in 5s')
+    console.log('[AI Work Mess] Scheduling reconnect in 5s')
     
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null
       this.connectToBackend().catch((error) => {
-        console.error('[OpenCode Pocket] Reconnect failed:', error)
+        console.error('[AI Work Mess] Reconnect failed:', error)
         this.scheduleReconnect()
       })
     }, 5000)
@@ -597,7 +597,7 @@ export class OpenCodePocketPlugin extends EventEmitter {
    */
   private sendMessage(message: any): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      console.warn('[OpenCode Pocket] WebSocket not ready, message queued')
+      console.warn('[AI Work Mess] WebSocket not ready, message queued')
       return
     }
     

@@ -175,7 +175,7 @@ if (readFileSync(RAW).length === 0) {
 const buf = readFileSync(RAW)
 // 编码自证：认不出「登录」这类已知中文就说明猜错了编码，别把乱码当「页面上没有」。
 const text = new TextDecoder('gbk').decode(buf)
-const probes = ['登录', 'OpenCode Pocket', 'WebView']
+const probes = ['登录', 'AI Work Mess', 'WebView']
 const hit = probes.filter((s) => text.includes(s))
 console.error(`[hier] GBK 解码探针命中 ${hit.length}/${probes.length}: ${hit.join(' / ') || '<无，可能不是登录页或编码不对>'}`)
 const jsonPath = RAW.replace(/\.json$/, '.utf8.json')

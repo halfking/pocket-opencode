@@ -1,5 +1,5 @@
 /**
- * flashcards.ts — Pinia store for OpenPocket v1 flashcards (契约 §2 + §4).
+ * flashcards.ts — Pinia store for AI Work Mess v1 flashcards (契约 §2 + §4).
  *
  * Local-first：
  *   - 状态（notes / cards / deckConfigs）缓存到 localStorage `flashcards:v1`。

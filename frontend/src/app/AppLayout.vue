@@ -198,7 +198,7 @@ const title = computed(() => {
   return (
     headerTitleOverride.value ||
     shellRuntime.titles.resolve(shellRuntime.store.snapshot(), shellRuntime.store).title ||
-    'Redclaw'
+    'AI Work Mess'
   )
 })
 

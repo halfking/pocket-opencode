@@ -9,7 +9,7 @@
 
 ## Context
 
-ZAG sits between a mobile app (`OpenPocket`), an enterprise control surface (`RedClaw`), and a task orchestrator (`acc-go`). The ZAG security model (`docs/新架构v1/02-modules/zagent-gateway.md:594-595` and `:819-829`) calls out three independent layers:
+ZAG sits between a mobile app (`AI Work Mess`), an enterprise control surface (`RedClaw`), and a task orchestrator (`acc-go`). The ZAG security model (`docs/新架构v1/02-modules/zagent-gateway.md:594-595` and `:819-829`) calls out three independent layers:
 
 1. mTLS — transport identity and channel confidentiality,
 2. delegated token — caller identity, tenant, scope,

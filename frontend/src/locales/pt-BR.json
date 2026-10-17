@@ -22,7 +22,7 @@
     "retry": "Tentar novamente"
   },
   "app": {
-    "title": "Redclaw",
+    "title": "AI Work Mess",
     "welcome": "Bem-vindo"
   },
   "layout": {
@@ -36,7 +36,7 @@
     "viewAccount": "Ver conta e configurações",
     "groupSettings": "Configurações",
     "groupOps": "Operações e avançado",
-    "versionFootnote": "Redclaw · v{version}"
+    "versionFootnote": "AI Work Mess · v{version}"
   },
   "nav": {
     "mainNavigation": "Navegação principal",
@@ -240,11 +240,11 @@
       "imagePickFailed": "Failed to pick image"
     },
     "permission": {
-      "vivoTitle": "Permita que o OpenPocket te avise todos os dias",
+      "vivoTitle": "Permita que o AI Work Mess te avise todos os dias",
       "vivoBody": "O OriginOS restringe apps em segundo plano. Ative \"Consumo em segundo plano irrestrito\" e \"Início automático\" para que os lembretes diários disparem na hora.",
       "vivoStep1": "Configurações → Bateria → Consumo em segundo plano",
-      "vivoStep2": "Encontre o OpenPocket e defina como \"Sem restrições\"",
-      "vivoStep3": "Configurações → Início automático → ativar OpenPocket",
+      "vivoStep2": "Encontre o AI Work Mess e defina como \"Sem restrições\"",
+      "vivoStep3": "Configurações → Início automático → ativar AI Work Mess",
       "vivoDone": "Feito"
     },
     "error": {

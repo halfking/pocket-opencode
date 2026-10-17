@@ -1,5 +1,5 @@
 #!/bin/bash
-# OpenCode Pocket 快速测试验证脚本
+# AI Work Mess 快速测试验证脚本
 # 用于验证部署后的系统功能
 
 set -e
@@ -16,7 +16,7 @@ TEST_USER="${TEST_USER:-admin}"
 TEST_PASS="${TEST_PASS:-admin}"
 
 echo "========================================"
-echo "OpenCode Pocket 快速测试验证"
+echo "AI Work Mess 快速测试验证"
 echo "========================================"
 echo "API Base: $API_BASE"
 echo "Test User: $TEST_USER"

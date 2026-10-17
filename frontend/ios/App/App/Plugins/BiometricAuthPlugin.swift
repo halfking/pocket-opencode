@@ -52,7 +52,7 @@ public class BiometricAuthPlugin: CAPPlugin {
             call.reject("reason is required")
             return
         }
-        let title = call.getString("title") ?? "OpenPocket"
+        let title = call.getString("title") ?? "AI Work Mess"
         let context = LAContext()
         context.localizedReason = reason
         context.localizedFallbackTitle = title

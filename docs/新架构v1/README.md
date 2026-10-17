@@ -1,11 +1,11 @@
-# 新架构 v3 — ZAgentGateway + 双端协同（OpenPocket + RedClaw）
+# 新架构 v3 — ZAgentGateway + 双端协同（AI Work Mess + RedClaw）
 
 > **代号**: PocketFleet v3
 > **版本**: v3.0
 > **日期**: 2026-08-23
 > **状态**: 审计后设计阶段（未实现）
 > **重要边界**: 本目录是目标架构，不代表当前运行能力。当前仓库没有 ZAgentGateway、`/api/fleet/*`、IDE 控制面板或 RedClaw/OpenCode 端到端实现；所有相关功能必须以 `implemented / contract-tested / source-inspected / mock-only / planned` 标注证据等级。
-> **核心改动**: 引入 **ZAgentGateway** —— 一个全新的独立 Go 服务，作为 RedClaw（PC 桌面）与 OpenPocket（移动端）+ acc-go（任务编排）三者之间的智能体监测与控制中介。
+> **核心改动**: 引入 **ZAgentGateway** —— 一个全新的独立 Go 服务，作为 RedClaw（PC 桌面）与 AI Work Mess（移动端）+ acc-go（任务编排）三者之间的智能体监测与控制中介。
 > **审计结论**: RedClaw 当前不能直接作为 OpenCode 的 drop-in backend。推荐保留 OpenCode coding runtime，将 RedClaw 用作企业控制面；如需无感兼容 OpenCode，必须另行实现完整 OpenCode-compatible facade。
 
 ---
@@ -15,8 +15,8 @@
 | 版本 | 思路 | 关键问题 |
 |---|---|---|
 | **v1** | 在 pocketd 内自建 Chief / Executor Bridge / Harness 协议 | 重复造轮子；与 monorepo 已有能力冲突 |
-| **v2** | 复用 acc-go / Memora / llm-gateway-go 作为 Chief / Memory / LLM；算力舱 = acc-go Worker | **忽略了 RedClaw 是 PC 桌面端，已经有 OpenClaw Runtime + 本地 IDE 控制**；OpenPocket 的应用后端已经在用 RedClaw 的能力 |
-| **v3** | **新增 `ZAgentGateway`**：独立服务，把 RedClaw 的 PC Agent Runtime + 本地 IDE 控制能力，统一暴露为 REST/MCP API；同时接入 acc-go 作为任务编排；供 OpenPocket 移动端调用 | 完整的"PC 端执行 + 移动端监控 + 任务编排"三角闭环 |
+| **v2** | 复用 acc-go / Memora / llm-gateway-go 作为 Chief / Memory / LLM；算力舱 = acc-go Worker | **忽略了 RedClaw 是 PC 桌面端，已经有 OpenClaw Runtime + 本地 IDE 控制**；AI Work Mess 的应用后端已经在用 RedClaw 的能力 |
+| **v3** | **新增 `ZAgentGateway`**：独立服务，把 RedClaw 的 PC Agent Runtime + 本地 IDE 控制能力，统一暴露为 REST/MCP API；同时接入 acc-go 作为任务编排；供 AI Work Mess 移动端调用 | 完整的"PC 端执行 + 移动端监控 + 任务编排"三角闭环 |
 
 ---
 
@@ -24,7 +24,7 @@
 
 1. **不动 RedClaw 的现有架构** —— RedClaw 仍然是 PC 桌面 OpenClaw 的企业包装；OpenClaw Runtime + 本地 IDE 控制由 RedClaw 自己管理。
 2. **新建独立的 `ZAgentGateway` 服务** —— 单一职责：**对外**暴露 PC Agent 的监测与控制 API（REST + MCP + WebSocket），**对内**对接 RedClaw platform-go + acc-go + llm-gateway-go + Memora。
-3. **OpenPocket 不直接连 RedClaw 控制面** —— 正常路径上 OpenPocket 只连 **ZAgentGateway**。RedClaw 是 PC 端企业控制/执行层，ZAgentGateway 是受控适配层，OpenPocket 是移动控制台。任何降级路径也不得绕过租户校验、授权、审批和审计。
+3. **AI Work Mess 不直接连 RedClaw 控制面** —— 正常路径上 AI Work Mess 只连 **ZAgentGateway**。RedClaw 是 PC 端企业控制/执行层，ZAgentGateway 是受控适配层，AI Work Mess 是移动控制台。任何降级路径也不得绕过租户校验、授权、审批和审计。
 
 ---
 
@@ -32,7 +32,7 @@
 
 ```
                        ┌──────────────────────────────┐
-                       │  移动端 OpenPocket            │
+                       │  移动端 AI Work Mess            │
                        │  (Vue 3 + Capacitor + PWA)   │
                        │  - Live Activity             │
                        │  - Permission Modal          │
@@ -43,7 +43,7 @@
                                       │ JWT (POCKET_JWT_SECRET)
                                       ▼
               ┌─────────────────────────────────────────────────┐
-              │      OpenPocket Backend (pocketd, :8088)         │
+              │      AI Work Mess Backend (pocketd, :8088)         │
               │      ┌──────────────────────────────────────┐   │
               │      │  internal/fleetbridge/               │   │
               │      │  - intent.go (POST /api/fleet/intent)│   │
@@ -149,7 +149,7 @@
 
 | 角色 | 服务 | 端口 | 职责 |
 |---|---|---|---|
-| **移动控制台** | OpenPocket (pocketd) | 8088 | 移动 UI + 鉴权 + WebSocket Hub + 已有功能（email/notes/vault/meeting 等）|
+| **移动控制台** | AI Work Mess (pocketd) | 8088 | 移动 UI + 鉴权 + WebSocket Hub + 已有功能（email/notes/vault/meeting 等）|
 | **独立中介（NEW）** | **ZAgentGateway** | **9100** | **统一 PC Agent 监测与控制 API；MCP server；对接 RedClaw + acc-go + llm-gateway-go + Memora** |
 | **任务编排** | acc-go | 4101 | Chief 拆分 + orchestrator + MCP 41 tools + A2A |
 | **PC 桌面控制/执行（目标集成）** | RedClaw platform-go | 由 RedClaw 部署配置决定；不要假设 8090-8093 可公网暴露 | 已确认：task/session/control/agentcontainer/OpenClaw 基础；OpenCode-compatible API、IDE connector 和真实 event projection 尚未验证 |
@@ -163,13 +163,13 @@
 
 ## 五、ZAgentGateway 的核心定位
 
-> **ZAgentGateway = RedClaw 与 OpenPocket / acc-go 之间的"智能体监测与控制中介"**
+> **ZAgentGateway = RedClaw 与 AI Work Mess / acc-go 之间的"智能体监测与控制中介"**
 
 它存在的根本原因是：
 
 1. **RedClaw 不适合被移动端直接调用** —— RedClaw platform-go 是企业平台（含 SSO、Plan E 审批、Ed25519 双签名等），直接暴露给移动端不安全、且 API 不友好。
 2. **acc-go 不应该直接连 RedClaw** —— acc-go 是任务编排器，不应该知道 RedClaw 的存在；它只该知道"我的 worker 在跑任务"。
-3. **OpenPocket 已经有后端 API 用 RedClaw 的能力** —— 但目前是 pocketd 直接调 RedClaw Gateway（`:8092`，echo stub），需要把这条路径规范化。
+3. **AI Work Mess 已经有后端 API 用 RedClaw 的能力** —— 但目前是 pocketd 直接调 RedClaw Gateway（`:8092`，echo stub），需要把这条路径规范化。
 4. **未来要支持"PC Agent 控制 + 多 IDE 插件"** —— ZCode / VS Code / Cursor / OpenCode 等需要被统一监测和控制。
 
 ### 5.1 ZAgentGateway 的六大能力
@@ -223,7 +223,7 @@ WebSocket:
 
 | 上游 / 下游 | 关系 | 协议 |
 |---|---|---|
-| **OpenPocket (pocketd)** → ZAgentGateway | pocketd 调 ZAgentGateway 拿 PC Agent 信息、提交任务、订阅事件 | HTTPS REST + WSS |
+| **AI Work Mess (pocketd)** → ZAgentGateway | pocketd 调 ZAgentGateway 拿 PC Agent 信息、提交任务、订阅事件 | HTTPS REST + WSS |
 | **ZAgentGateway → acc-go** | ZAgentGateway 注册为 acc-go 的 device / worker，承接 acc-go 派发的任务 | REST + SSE |
 | **ZAgentGateway → RedClaw platform-go** | ZAgentGateway 调 RedClaw 的 orchestrator / agentcontainer / connectors；用 Ed25519 双签控制信号 | REST + Ed25519 |
 | **ZAgentGateway → RedClaw Gateway (`:8092`)** | ZAgentGateway 调 RedClaw Gateway 走 LLM / knowledge 检索；逐步接管其 echo stub | REST |
@@ -238,7 +238,7 @@ WebSocket:
 ### 6.1 用户故事：手机发起"修复 typo"
 
 ```
-1. 用户在 OpenPocket mobile 输入 "修复 README typo"
+1. 用户在 AI Work Mess mobile 输入 "修复 README typo"
 2. pocketd POST /api/fleet/intent
 3. pocketd fleetbridge.intent.go 转发到 acc-go:
    POST /api/v2/canonical/tasks
@@ -257,14 +257,14 @@ WebSocket:
 10. RedClaw SSE 流回到 ZAgentGateway
 11. ZAgentGateway SSE 流回到 acc-go
 12. acc-go SSE 流被 pocketd ws_bridge.go 订阅 → 转 WS Hub
-13. OpenPocket mobile Live UI 显示实时进度
+13. AI Work Mess mobile Live UI 显示实时进度
 14. 完成 → 触发 PR → 用户在手机上看到链接
 ```
 
 ### 6.2 用户故事：手机查看 PC Agent 状态
 
 ```
-1. 用户在 OpenPocket mobile 进入 "Pods" 页面
+1. 用户在 AI Work Mess mobile 进入 "Pods" 页面
 2. pocketd GET /api/fleet/pods
 3. pocketd fleetbridge.pod.go 转发到 ZAgentGateway:
    GET /api/v1/pods
@@ -285,8 +285,8 @@ WebSocket:
 2. ZAgentGateway 转发:
    - 落 Memora (审计)
    - 推 SSE 给 acc-go
-   - 推 WebSocket 给 OpenPocket (通过 pocketd fleetbridge.ws_bridge.go)
-3. OpenPocket mobile 显示 Modal
+   - 推 WebSocket 给 AI Work Mess (通过 pocketd fleetbridge.ws_bridge.go)
+3. AI Work Mess mobile 显示 Modal
 4. 用户点击 "Allow"
 5. POST pocketd /api/fleet/builds/:id/permissions/:pid/reply
 6. pocketd fleetbridge.permission.go 转发到 ZAgentGateway:
@@ -295,7 +295,7 @@ WebSocket:
    POST /api/v1/control/:command_id/signature
    POST /api/v1/control/:command_id/execute
 8. RedClaw 执行 git push
-9. 事件回流到 OpenPocket
+9. 事件回流到 AI Work Mess
 ```
 
 ---
@@ -304,7 +304,7 @@ WebSocket:
 
 | 反对意见 | 回复 |
 |---|---|
-| "为什么不让 OpenPocket 直接连 RedClaw？" | RedClaw 是企业平台，包含 Plan E 审批、Ed25519 双签、SSO 等；直接暴露给移动端不安全。ZAgentGateway 做边界。 |
+| "为什么不让 AI Work Mess 直接连 RedClaw？" | RedClaw 是企业平台，包含 Plan E 审批、Ed25519 双签、SSO 等；直接暴露给移动端不安全。ZAgentGateway 做边界。 |
 | "为什么不让 acc-go 直接调 RedClaw？" | acc-go 应该只关心"worker 在跑任务"，不应该知道 RedClaw 的存在；让 ZAgentGateway 做 acc-go 的 worker 适配器。 |
 | "为什么不让 pocketd 直接做这件事？" | pocketd 是移动端后端；它的职责是 mobile 适配、鉴权、WebSocket Hub；不应该承担"PC Agent 控制中心"的角色。把这个角色独立出来更清晰。 |
 | "为什么不直接复用 acc-go 的 device？" | acc-go 的 device 是通用 worker；ZAgentGateway 是专用 worker，额外能力：① 转发 RedClaw 事件；② 暴露 MCP；③ IDE 状态聚合；④ 鉴权边界 |
@@ -418,9 +418,9 @@ RedClaw **不变**。它继续作为：
 
 ZAgentGateway 是**新增的中间层**，把 RedClaw 的能力规范化后暴露给其他服务。
 
-### 9.3 与 OpenPocket 的关系
+### 9.3 与 AI Work Mess 的关系
 
-OpenPocket 不变（除了新增 `internal/fleetbridge/` 模块）。pocketd fleetbridge 把 mobile intent 转换为对 ZAgentGateway + acc-go 的调用。
+AI Work Mess 不变（除了新增 `internal/fleetbridge/` 模块）。pocketd fleetbridge 把 mobile intent 转换为对 ZAgentGateway + acc-go 的调用。
 
 ---
 
@@ -478,13 +478,13 @@ pocketd 调 ZAgentGateway 的客户端封装。
 - **Week 3**：实现 `/api/v1/pods`、`/api/v1/agents` 列表（从 RedClaw platform-go 拉取 + 规范化）。
 - **Week 4**：实现 `/api/v1/tasks` 提交 + 状态查询（调 RedClaw orchestrator + agentcontainer）；SSE 流转发。
 - **Week 5**：实现 MCP server，暴露 `zag_*` tools；acc-go MCP client 调用。
-- **Week 6**：pocketd `internal/fleetbridge/` + `internal/zag/` 联调；OpenPocket mobile Live View 跑通。
+- **Week 6**：pocketd `internal/fleetbridge/` + `internal/zag/` 联调；AI Work Mess mobile Live View 跑通。
 
 **M0 交付物**：
 
-1. 手机 OpenPocket 发起"修复 typo"指令 → acc-go 派给 ZAgentGateway → ZAgentGateway 转发给 RedClaw platform-go → OpenClaw CLI 跑任务 → 事件流回到手机 Live View。
-2. 手机 OpenPocket "Pods" 页面显示 RedClaw device 列表。
-3. 手机 OpenPocket 审批 OpenClaw 的 git push 权限。
+1. 手机 AI Work Mess 发起"修复 typo"指令 → acc-go 派给 ZAgentGateway → ZAgentGateway 转发给 RedClaw platform-go → OpenClaw CLI 跑任务 → 事件流回到手机 Live View。
+2. 手机 AI Work Mess "Pods" 页面显示 RedClaw device 列表。
+3. 手机 AI Work Mess 审批 OpenClaw 的 git push 权限。
 
 ---
 

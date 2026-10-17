@@ -86,7 +86,7 @@
   │    - 调 opencode session.send
   │ 5. permission_request (shell_run / git_push) → taskgate
   ▼
-[RedClaw SSE → ZAG → acc-go SSE → pocketd WS Hub → OpenPocket Mobile]
+[RedClaw SSE → ZAG → acc-go SSE → pocketd WS Hub → AI Work Mess Mobile]
 ```
 
 ### 2.2 事件回流链
@@ -105,9 +105,9 @@
   │ 订阅 SSE → 翻译为 zag event
   │ 落 Memora (audit)
   │ 推 acc-go SSE (NDJSON)
-  │ 推 OpenPocket WS Hub
+  │ 推 AI Work Mess WS Hub
   ▼
-[OpenPocket Mobile Live View]
+[AI Work Mess Mobile Live View]
 ```
 
 ---
@@ -333,7 +333,7 @@ func (z *ZAgent) waitForAdminApproval(ctx context.Context, cmd *redclaw.Command,
 
 ## 6. Permission 流程
 
-### 6.1 OpenClaw 想 git push → 用户在 OpenPocket 审批
+### 6.1 OpenClaw 想 git push → 用户在 AI Work Mess 审批
 
 ```
 [OpenClaw CLI]
@@ -349,9 +349,9 @@ func (z *ZAgent) waitForAdminApproval(ctx context.Context, cmd *redclaw.Command,
   │ 1. 翻译事件 → permission.request
   │ 2. 落 Memora (audit)
   │ 3. 推 SSE 给 acc-go (NDJSON)
-  │ 4. 推 WS 给 OpenPocket
+  │ 4. 推 WS 给 AI Work Mess
   ▼
-[OpenPocket Modal: "Allow git push?"]
+[AI Work Mess Modal: "Allow git push?"]
   │ 用户点击 Allow
   ▼
 [POST pocketd /api/fleet/builds/:id/permissions/:pid/reply]
@@ -368,7 +368,7 @@ func (z *ZAgent) waitForAdminApproval(ctx context.Context, cmd *redclaw.Command,
   ▼
 [OpenClaw CLI]  ← git push 完成
   ▼
-[事件回流 OpenPocket → 显示 "PR #145 opened"]
+[事件回流 AI Work Mess → 显示 "PR #145 opened"]
 ```
 
 ---
@@ -395,7 +395,7 @@ func (z *ZAgent) waitForAdminApproval(ctx context.Context, cmd *redclaw.Command,
 
 ### 8.1 M0（最小化）
 
-- ZAG 接收任务 → RedClaw mock 转发 → 事件回流 → OpenPocket Live View
+- ZAG 接收任务 → RedClaw mock 转发 → 事件回流 → AI Work Mess Live View
 
 ### 8.2 M1
 

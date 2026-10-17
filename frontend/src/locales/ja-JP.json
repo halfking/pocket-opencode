@@ -22,7 +22,7 @@
     "retry": "再試行"
   },
   "app": {
-    "title": "Redclaw",
+    "title": "AI Work Mess",
     "welcome": "ようこそ"
   },
   "layout": {
@@ -36,7 +36,7 @@
     "viewAccount": "アカウントと設定を表示",
     "groupSettings": "設定",
     "groupOps": "運用・詳細",
-    "versionFootnote": "Redclaw · v{version}"
+    "versionFootnote": "AI Work Mess · v{version}"
   },
   "nav": {
     "mainNavigation": "メインナビゲーション",
@@ -240,11 +240,11 @@
       "imagePickFailed": "Failed to pick image"
     },
     "permission": {
-      "vivoTitle": "OpenPocket の毎日の通知を許可する",
+      "vivoTitle": "AI Work Mess の毎日の通知を許可する",
       "vivoBody": "OriginOS はバックグラウンドアプリを制限します。毎日の通知を正確に届けるために、「バックグラウンド高電費」と「自動起動」を有効にしてください。",
       "vivoStep1": "設定 → バッテリー → バックグラウンド高電費",
-      "vivoStep2": "OpenPocket を見つけて「無制限」に設定",
-      "vivoStep3": "設定 → 自動起動 → OpenPocket を有効化",
+      "vivoStep2": "AI Work Mess を見つけて「無制限」に設定",
+      "vivoStep3": "設定 → 自動起動 → AI Work Mess を有効化",
       "vivoDone": "完了しました"
     },
     "error": {

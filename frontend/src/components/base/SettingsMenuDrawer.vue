@@ -94,7 +94,7 @@ const { t } = useI18n()
 const router = useRouter()
 const auth = useAuthStore()
 const userName = computed(() => auth.user)
-// 抽屉底部的「Redclaw · v{version}」同样必须显示设备上真装的那个构建。
+// 抽屉底部的「AI Work Mess · v{version}」同样必须显示设备上真装的那个构建。
 // 它过去读的是 TS 常量，于是无论装哪个 APK 都写同一个版本号 ——
 // 而这一行正是用户判断「我是不是最新版」时最先看的字。
 const version = ref('')

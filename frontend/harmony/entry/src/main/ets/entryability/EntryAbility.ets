@@ -10,7 +10,7 @@ export default class EntryAbility extends UIAbility {
   onWindowStageCreate(windowStage: window.WindowStage): void {
     windowStage.loadContent('pages/Index', (err) => {
       if (err.code) {
-        console.error(`Failed to load OpenCode Pocket: ${JSON.stringify(err)}`)
+        console.error(`Failed to load AI Work Mess: ${JSON.stringify(err)}`)
       }
     })
   }

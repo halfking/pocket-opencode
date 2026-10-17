@@ -13,7 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// Package marketplace 实现 OpenPocket 技能市场（Skill Marketplace）。
+// Package marketplace 实现 AI Work Mess 技能市场（Skill Marketplace）。
 //
 // 设计参考 RedClaw marketplace 模式：Package/Manifest/Version 三层抽象，
 // submit → review → publish → install 完整生命周期，支持依赖、权限声明与签名验证。

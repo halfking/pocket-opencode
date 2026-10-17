@@ -2,7 +2,7 @@
 
 > 审计日期：2026-08-23
 > 审计范围：
-> - OpenPocket：`/Users/xutaohuang/workspace/official-deploy/services/opencode-pocket`
+> - AI Work Mess：`/Users/xutaohuang/workspace/official-deploy/services/opencode-pocket`
 > - RedClaw：`/Users/xutaohuang/workspace/ai-native-tools/RedClaw`
 > - OpenCode：`/Users/xutaohuang/workspace/ai/opencode`
 > - 现有 v3 设计：`docs/新架构v1/`
@@ -31,7 +31,7 @@
 | 认证 | Basic Auth 或 `auth_token` | Bearer JWT / service auth / 内部 token |
 | IDE 集成 | OpenCode IDE extension / ACP | RedClaw generic connectors，尚未实现 OpenCode/IDE connector |
 
-因此，直接替换会导致现有 OpenCode client、OpenPocket adapter、IDE extension、PTY、permission/question 和事件订阅无法工作。
+因此，直接替换会导致现有 OpenCode client、AI Work Mess adapter、IDE extension、PTY、permission/question 和事件订阅无法工作。
 
 ### 1.2 可行的定位
 
@@ -52,9 +52,9 @@ ZAgentGateway = 受控协议适配与 PC Agent 控制面
   - RedClaw task/run ↔ OpenCode session 映射
   - RedClaw policy/approval ↔ OpenCode permission/question 映射
   - 统一 PC Agent、IDE、OpenClaw、OpenCode 监测接口
-  - 为 OpenPocket 和 MCP 客户端提供安全 API
+  - 为 AI Work Mess 和 MCP 客户端提供安全 API
 
-OpenPocket = 移动端 BFF 与控制台
+AI Work Mess = 移动端 BFF 与控制台
   - JWT、移动 UI、WebSocket、通知、离线同步
 ```
 
@@ -160,7 +160,7 @@ RedClaw agentcontainer 的 `/invoke` 会：
 
 当前内存实现仍含 stub receipt，未证明存在可用的 ZCode、VS Code、Cursor、OpenCode connector。因此 v3 的 IDE 控制必须标记为 planned，不得标成已接通。
 
-### 2.6 OpenPocket 当前 OpenCode 适配
+### 2.6 AI Work Mess 当前 OpenCode 适配
 
 Pocket 的正式 Go adapter 已实现主要 OpenCode HTTP/SSE 能力：
 
@@ -196,7 +196,7 @@ Pocket 的正式 Go adapter 已实现主要 OpenCode HTTP/SSE 能力：
 - “ZAG 已注册为 acc-go worker”；
 - “M0/M1 功能已完成”；
 - “所有现有服务均已生产就绪”；
-- “OpenPocket 可以在 ZAG 不可用时绕过安全控制直接访问 RedClaw/CLI”。
+- “AI Work Mess 可以在 ZAG 不可用时绕过安全控制直接访问 RedClaw/CLI”。
 
 ### 3.2 必须新增的边界
 
@@ -313,9 +313,9 @@ M0/M1 就必须具备最小 RBAC/ABAC：
 ### M1：控制面集成，保留 OpenCode runtime
 
 - task/run/session 映射：`acc_task → zag_task → redclaw_run → opencode_session`；
-- OpenCode `/event` → ZAG event envelope → OpenPocket WS；
+- OpenCode `/event` → ZAG event envelope → AI Work Mess WS；
 - RedClaw approval → OpenCode permission/question；
-- OpenPocket 移动审批；
+- AI Work Mess 移动审批；
 - 只开放低风险只读 IDE command；
 - 真实 OpenCode 集成测试通过后再扩大权限。
 
@@ -350,7 +350,7 @@ M0/M1 就必须具备最小 RBAC/ABAC：
 正确架构是：
 
 ```text
-OpenPocket
+AI Work Mess
    ↓ mobile BFF
 ZAgentGateway
    ↓ task/policy/approval adapter

@@ -1,5 +1,5 @@
 #!/bin/bash
-# OpenCode Pocket 测试脚本
+# AI Work Mess 测试脚本
 # 用途: 执行完整的API和功能测试
 
 set -e
@@ -8,7 +8,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 echo "=========================================="
-echo "OpenCode Pocket API 测试"
+echo "AI Work Mess API 测试"
 echo "=========================================="
 echo ""
 

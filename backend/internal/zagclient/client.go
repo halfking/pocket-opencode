@@ -1,5 +1,5 @@
 // Package zagclient defines the interface contract for a future ZAgentGateway
-// (ZAG) client that OpenPocket will use to talk to the ZAG control-plane adapter.
+// (ZAG) client that AI Work Mess will use to talk to the ZAG control-plane adapter.
 //
 // IMPORTANT (子任务 D):
 //   - This file only declares the interface and shared request/response types.

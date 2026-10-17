@@ -14,7 +14,7 @@ PocketFleet 的"用户故事"中，很多场景需要：
 - 让 OpenClaw 知道当前 IDE 在做什么；
 - 在 IDE 中打开特定文件 / 应用 diff；
 - 让多个 IDE 协同（比如 OpenClaw 在 Cursor 修改代码，VS Code 调试）；
-- 通过 OpenPocket 远程触发 IDE 操作。
+- 通过 AI Work Mess 远程触发 IDE 操作。
 
 **这些都通过 RedClaw Connectors 实现** —— IDE 都注册为 Connector。
 
@@ -290,7 +290,7 @@ func (s *Service) ListAll(ctx context.Context) ([]IDEStatus, error) {
 
 ### 6.1 Pod 页面显示 IDE
 
-OpenPocket 的 Pod 页面增加一栏 "IDE 状态"：
+AI Work Mess 的 Pod 页面增加一栏 "IDE 状态"：
 
 ```
 ┌──────────────────────────────────────────┐
@@ -310,7 +310,7 @@ OpenPocket 的 Pod 页面增加一栏 "IDE 状态"：
 └──────────────────────────────────────────┘
 ```
 
-### 6.2 OpenPocket 调用 IDE API
+### 6.2 AI Work Mess 调用 IDE API
 
 ```go
 // pocketd fleetbridge.ide.go
@@ -363,9 +363,9 @@ ZAG 转发 IDE 命令到 RedClaw 时，按 Plan 决定是否需要审批：
 
 ### 7.3 与 OpenClaw Permission 协同
 
-OpenClaw 想调 IDE 时，permission request 走 OpenClaw → RedClaw → ZAG → OpenPocket。
+OpenClaw 想调 IDE 时，permission request 走 OpenClaw → RedClaw → ZAG → AI Work Mess。
 
-用户在 OpenPocket Modal 中看到 "OpenClaw 想用 Cursor apply_diff，是否允许？"。
+用户在 AI Work Mess Modal 中看到 "OpenClaw 想用 Cursor apply_diff，是否允许？"。
 
 ---
 
@@ -375,13 +375,13 @@ OpenClaw 想调 IDE 时，permission request 走 OpenClaw → RedClaw → ZAG �
 
 - ZAG 启动时注册 4 个 IDE Connector（如果 PC 上有）；
 - ZAG 暴露 `/api/v1/ide` list + status；
-- OpenPocket Pod 页面显示 IDE 列表；
+- AI Work Mess Pod 页面显示 IDE 列表；
 - 不实现 IDE 命令执行（M1+）。
 
 ### 8.2 M1（基本功能）
 
 - ZAG 暴露 `/api/v1/ide/:name/command`（转发到 RedClaw Connector Execute）；
-- OpenPocket IDE 控制面板（按钮 + 命令）；
+- AI Work Mess IDE 控制面板（按钮 + 命令）；
 - ZCode 适配完整（项目自有，优先）；
 - OpenCode 适配（目标；必须固定版本并验证 `/session`、parts、`/event`、permission/question、PTY/ACP）。
 

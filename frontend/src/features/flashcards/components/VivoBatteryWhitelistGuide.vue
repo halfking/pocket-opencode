@@ -13,14 +13,14 @@
         <span class="num">1</span>
         <div class="body">
           <p class="title">设置 → 电池 → 后台高耗电</p>
-          <p class="desc">找到「OpenPocket」并设为「<b>无限制</b>」（较旧 OriginOS 显示为「高后台耗电」）。</p>
+          <p class="desc">找到「AI Work Mess」并设为「<b>无限制</b>」（较旧 OriginOS 显示为「高后台耗电」）。</p>
         </div>
       </li>
       <li>
         <span class="num">2</span>
         <div class="body">
           <p class="title">返回设置 → 自启动</p>
-          <p class="desc">允许「OpenPocket」自启动，确保锁屏或长时间不打开应用时仍能拉起定时提醒。</p>
+          <p class="desc">允许「AI Work Mess」自启动，确保锁屏或长时间不打开应用时仍能拉起定时提醒。</p>
         </div>
       </li>
       <li>

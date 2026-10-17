@@ -3,7 +3,7 @@
 > 本文件追踪新架构 v1 中所有"合同草案 → 实现"的状态。
 > 每条目包含：合同位置、当前状态（`draft` / `reserved` / `implemented` / `contract-tested` / `source-inspected` / `mock-only` / `planned` / `blocked`）、责任人、阻塞项、最近一次变更。
 >
-> 本节是子任务 D（OpenPocket Adapter 边界矩阵）和子任务 C（RedClaw ↔ OpenCode 映射矩阵）的状态快照。
+> 本节是子任务 D（AI Work Mess Adapter 边界矩阵）和子任务 C（RedClaw ↔ OpenCode 映射矩阵）的状态快照。
 
 ---
 

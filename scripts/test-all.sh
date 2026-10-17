@@ -1,11 +1,11 @@
 #!/bin/bash
 # scripts/test-all.sh
-# OpenCode Pocket 全量测试脚本
+# AI Work Mess 全量测试脚本
 
 set -e
 
 echo "================================================"
-echo "  OpenCode Pocket - Full Test Suite"
+echo "  AI Work Mess - Full Test Suite"
 echo "================================================"
 echo ""
 

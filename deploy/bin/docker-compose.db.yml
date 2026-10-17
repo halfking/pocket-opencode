@@ -1,5 +1,5 @@
 # =============================================================================
-# docker-compose.db.yml — OpenPocket 容器化 DB 部署片段
+# docker-compose.db.yml — AI Work Mess 容器化 DB 部署片段
 #
 # 仅当 OPP_DEPLOY_<PG|REDIS|MYSQL>=true 且 detect 未命中外部实例时启动。
 # 数据持久化到 ${DEPLOY_BASE_DIR}/<db>/（通过 DOCKER_DB_DATA_DIR 注入）。
