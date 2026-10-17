@@ -131,10 +131,44 @@ function parseDocTable(doc) {
 
 // ---------------------------------------------------------------- 审计
 
+// 证据缺失时的统一出口。
+// ⚠️ 2026-10-17：本门此前在收据文件缺失时直接 `readFileSync` 崩掉，
+//   抛一个裸 Node 栈（ENOENT + 整条调用栈），既不给人话结论，
+//   也不符合本仓 check:exit-reflects-verdict 的纪律：
+//   **「无法判定」必须与「通过」严格区分，且要说清缺的是什么、怎么补。**
+//
+//   现状：docs/design/2026-10-06-recording-quality-fixes.md 第 71383 行已白纸黑字
+//   记着「⛔ 仓里现无可用语料，已核到底」，而 §384.2 仍声称「25 格，24 ✅」。
+//   ⇒ 24 格「已核验」的结论目前**无法佐证**。这不是文档写错，
+//      是证据没了而结论还留着；本门要如实说出来，而不是崩给调用方看。
+//
+// 退出码约定（与 meta() 一致）：2 = 拒绝给结论，≠ 通过。
+function bailMissingEvidence(kind, file) {
+  console.error(`\n❌ 无法判定（不是「通过」）：缺少证据文件 ${kind}`);
+  console.error(`   位置：${file}`);
+  console.error(`   影响：§384.2 的逐格对账**无法核验**，其中的 ✅ 结论当前没有凭据支撑。`);
+  console.error(`   补法：把逐次收据放回该路径，或把该结论改写为「未测」并登记进 WAIVERS。`);
+  console.error('   （设计文档 §71383 已记录该语料「仓里现无可用语料，已核到底」——');
+  console.error('     若确实永久无法恢复，对应格应改为未测并登记豁免，而不是继续留着 ✅。）');
+  process.exit(2);
+}
+
 function audit(root = SCAN_ROOT, quiet = false) {
   const { receipts: RECEIPTS, doc: DOC } = paths(root);
+
+  // 缺文件 → 明确结论，而不是 ENOENT 裸栈
+  if (!fs.existsSync(RECEIPTS)) bailMissingEvidence('逐次收据', RECEIPTS);
+  if (!fs.existsSync(DOC)) bailMissingEvidence('设计文档', DOC);
+
   const findings = [];
-  const receipts = JSON.parse(fs.readFileSync(RECEIPTS, 'utf8'));
+  let receipts;
+  try {
+    receipts = JSON.parse(fs.readFileSync(RECEIPTS, 'utf8'));
+  } catch (e) {
+    console.error(`\n❌ 无法判定（不是「通过」）：收据不是合法 JSON —— ${e.message}`);
+    console.error(`   位置：${RECEIPTS}`);
+    process.exit(2);
+  }
   const doc = fs.readFileSync(DOC, 'utf8');
 
   // 先过豁免：锚点必须在，且必须真的命中源码/文档（空头支票检查）
@@ -276,6 +310,9 @@ function meta() {
   const dst = paths(tmp);
   fs.mkdirSync(path.dirname(dst.receipts), { recursive: true });
   fs.mkdirSync(path.dirname(dst.doc), { recursive: true });
+  // 收据缺失时同样要给结论，不是 copyfile ENOENT 裸栈。
+  // 自证需要收据才能注入变异；没有它就明说「自证无法进行」。
+  if (!fs.existsSync(src.receipts)) bailMissingEvidence('逐次收据（--meta 自证需要它才能注入变异）', src.receipts);
   fs.copyFileSync(src.receipts, dst.receipts);
   fs.copyFileSync(src.doc, dst.doc);
   const pristineReceipts = fs.readFileSync(dst.receipts, 'utf8');
