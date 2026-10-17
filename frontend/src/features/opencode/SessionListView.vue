@@ -24,8 +24,26 @@
       <p>加载会话...</p>
     </div>
 
+    <!--
+      §844：store 的 `loadSessions()` 会设 `this.error`，而本页此前**一次都没引用过它**
+      ⇒ 读失败时（尤其刷新失败）用户看到的是下面那个 `v-else` 的「暂无会话」，
+      外加一句「在 OpenCode 中开始一个新对话」—— 而会话一直都在。
+      ⚠ 条件自带 `.length === 0` 守卫，且必须排在真空态之前（v-else-if 链只认第一个为真的）。
+    -->
+    <div v-else-if="readError && sessions.length === 0" class="error-state">
+      <div class="error-icon">⚠️</div>
+      <p>{{ readErrorNotice.title }}</p>
+      <p class="empty-hint">{{ readErrorNotice.hint }}</p>
+      <button type="button" class="refresh-btn" @click="refreshSessions">{{ readErrorNotice.action }}</button>
+    </div>
+
     <!-- 会话列表（按状态分组） -->
     <div v-else-if="sessions.length > 0" class="sessions-container">
+      <!-- §844：有行时的失败不打断已加载内容，只挂一条非破坏性提示。 -->
+      <div v-if="readError" class="list-error-banner" role="alert">
+        <span>{{ readErrorNotice.hint }}</span>
+        <button type="button" class="banner-retry" @click="refreshSessions">{{ readErrorNotice.action }}</button>
+      </div>
       <!-- 活跃会话 -->
       <div v-if="activeSessions.length > 0" class="session-group">
         <div class="group-header">
@@ -114,6 +132,10 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useOpenCodeStore } from '../../stores/opencode'
+import {
+  listReadFailureNotice,
+  type ListReadFailureNotice,
+} from '../../utils/list-load-state'
 import type { OpenCodeSession } from '../../stores/opencode'
 
 const router = useRouter()
@@ -125,6 +147,27 @@ const selectedInstance = computed(() => openCodeStore.selectedInstance)
 const sessions = computed(() => openCodeStore.sessions)
 const activeSessions = computed(() => openCodeStore.activeSessions)
 const idleSessions = computed(() => openCodeStore.idleSessions)
+/**
+ * §844：把 store 的 `error` 翻成用户看得懂的 notice。
+ *
+ * ⚠ 刻意叫 `readError`：本页**没有用**下拉刷新容器（顶部只有一个刷新按钮），
+ *   所以它不在 `list-error-failpath` 的登记表里。但 §840/§842/§843 各踩过一次的
+ *   教训一致 —— **错误标志的名字里必须有 `Error`**，因为各类判据都靠 `/error/i`
+ *   认出「错误分支」。
+ * ⚠ 另注：本注释刻意**不**写出下拉刷新容器的标签名 —— 那道门是靠
+ *   `text.includes('<标签名>')` 判视图类型的，注释里写出来会让本视图被误认
+ *   （§842 在另一个视图上踩过同一个坑，这里是第三次）。
+ */
+const readError = computed<ListReadFailureNotice | null>(() => {
+  const msg = openCodeStore.error
+  if (!msg) return null
+  // ⚠ 不把 store 的技术串（可能含 URL / 状态码）直接甩给用户。
+  return listReadFailureNotice('会话', { hasRows: sessions.value.length > 0 })
+})
+/** 模板绑定用：永远非空（vue-tsc 不用模板条件收窄后续属性）。 */
+const readErrorNotice = computed<ListReadFailureNotice>(
+  () => readError.value ?? listReadFailureNotice('会话'),
+)
 
 onMounted(async () => {
   const instanceId = route.query.instance_id as string
@@ -437,5 +480,44 @@ function formatLastUpdate(timestamp?: string): string {
 .empty-hint {
   font-size: var(--text-base);
   color: var(--text-muted);
+}
+
+/* §844：读失败的两档提示。样式与 SessionListView（sessions）/ EmailInboxView /
+   EmailFolderListView / TasksView 的 .list-error-banner 同源，五处可对照。
+   本文件是 scoped 样式，不复制一份就没有任何视觉。 */
+.error-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-6) var(--space-4);
+  text-align: center;
+  color: var(--danger);
+}
+.error-icon {
+  font-size: 32px;
+  line-height: 1;
+}
+.list-error-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  background: var(--danger-bg, rgba(239, 68, 68, 0.08));
+  color: var(--danger);
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-sm);
+  border-radius: var(--radius-sm);
+  margin-bottom: var(--space-2);
+}
+.banner-retry {
+  flex: 0 0 auto;
+  background: transparent;
+  color: inherit;
+  border: 1px solid currentColor;
+  border-radius: var(--radius-sm);
+  padding: 2px var(--space-2);
+  font-size: var(--text-sm);
+  cursor: pointer;
 }
 </style>

@@ -96126,3 +96126,147 @@ UI-07e 是「错误态遮蔽行」，于是门去查错误态；
 2. 「失败保留旧行」的**陈旧度**怎么表达：要不要显示「上次更新时间」（需要给数据打时间戳）。
 3. 连续失败要不要自动重试/退避（当前只有用户手动点重试）。
 4. 该门的扫描范围仍只是「用了 `<PullToRefresh>`」，非下拉刷新页面的同类缺陷仍未覆盖。
+
+---
+
+## §844 全仓扫面：store 层清空列表 + 视图从不渲染 store 的 `error`
+
+§843 落地后把它的尺子做成扫面器跑全仓（652 个文件），「catch 块里把某个列表置空」**候选 7 处**，
+逐个读上下文判定后，只有一处值得动；而这一处的定性比前几节都微妙。
+
+### 0. 扫面读数（先给结论，避免只讲动过的那一处）
+
+`.artifacts/s844-sweep/sweep.mjs`，652 个文件、catch 块内含「X = []」的候选 **7 处**：
+
+| 文件 | 函数 | 目标 | 定性 |
+|---|---|---|---|
+| `stores/opencode.ts` | `loadSessions` | `this.sessions` | ⛔ **本节处理**（见 D1/D2） |
+| `features/tasks/TasksView.vue` | `loadTasks` / `loadSessions` | `tasks` / `sessions` | ✅ §843 已修 |
+| `features/config/useConfigList.ts` | `load` | `instances.value` | 有 `error` 标志（未取证渲染，**未处理**） |
+| `features/instances/InstanceListView.vue` | `loadInstances` | `instances.value` | 有 `error` 标志（未取证渲染，**未处理**） |
+| `features/email/EmailSummaryView.vue` | `loadList` | `summaries.value` | 两条分支都清 + 有错误提示（**未处理**） |
+| `features/scheduled-tasks/ScheduledTaskEditView.vue` | （匿名） | `previewTimes.value` | 清的是**预览**，且有 `previewError` ⇒ 合法 |
+| `stores/opencode.ts` | `loadInstances` | `this.instances` | 消费方 `OpenCodeHub.vue` **确实渲染** `error` ⇒ 不是谎报，本节未改（已登记） |
+
+⚠ 表里三处「未处理」是**据实登记**，不是我判定它们无害 —— 它们的消费方是否渲染 `error`
+我只查了 `opencode` 那一组，另外两处**未取证**。
+
+### 1. 缺陷证据
+
+#### D1 · store 侧无条件清空，而这里的清空其实**挡住了一个更糟的缺陷**
+
+```ts
+async selectInstance(instanceId: string) {
+  const instance = this.instances.find(i => i.id === instanceId)
+  if (!instance) { this.error = '实例不存在'; return }
+  this.selectedInstance = instance     // ← 先换标题
+  await this.loadSessions(instanceId)  // ← 再读数据
+}
+
+async loadSessions(instanceId: string) {
+  …
+  } catch (err) {
+    this.error = err.message || '加载会话失败'
+    this.sessions = []                 // ← 无条件清空
+  }
+}
+```
+
+⇒ 原来那句 `this.sessions = []` **不是疏忽，它在挡一件事**：
+`selectInstance` 先把 `selectedInstance` 换成新实例才读数据 ⇒ 若读失败又不清，
+就会在**新实例的标题下显示旧实例的会话** —— 那比清空更糟。
+
+⚠ 但它同样挡住了另一件事：`refresh()`（`opencode.ts:328-329`）与 WS 推送后的重载
+（`:297-298`）调的是**同一个** `selectedInstance.id` ⇒ 一次网络抖动就把用户正在看的
+会话列表整个抹掉。
+
+⇒ **同一个赋值，两种调用路径需要相反的行为** ⇒ 不能「一律保留」也不能「一律清空」。
+本节引入 `sessionsOwnerId`（当前 `sessions` 属于哪个实例）把这件事变成可判定的：
+
+```ts
+// 成功路径
+this.sessionsOwnerId = instanceId
+// 失败路径
+if (this.sessionsOwnerId !== instanceId) this.sessions = []
+```
+
+#### D2 · 视图从不读 `store.error` ⇒ 前述所有失败对用户**完全不可见**
+
+`features/opencode/SessionListView.vue`（注意是 `features/opencode/` 下的那个，
+不是 §842 取证为阴性的 `features/sessions/SessionListView.vue` —— **两个文件同名**，
+排查时极易混淆）：
+
+- 模板链：`v-if="loading"` → `v-else-if="sessions.length > 0"` → `v-else` ⇒
+  **「暂无会话」+「在 OpenCode 中开始一个新对话」**；
+- 全文件 `error` 出现 **0 次** ⇒ `this.error` 被 store 設了，但没有任何消费者。
+
+⇒ 失败时用户看到的是「暂无会话」，并被**引导去开一个不必要的新会话**，
+而他的会话一直都在 OpenCode 侧。
+更矛盾的是：页面顶部那条实例横幅仍然显示「N 活跃 • M 空闲」——
+它由同一份被清空的数据算出，于是横幅和正文**互相打脸**。
+
+⚠ 对照：`OpenCodeHub.vue`（消费同一个 store 的 `instances`）**确实**渲染了
+`v-else-if="error"` ⇒ 所以 `loadInstances` 那处清空**不是**谎报，本节未改它。
+
+### 2. 落地
+
+| 位置 | 改动 |
+|---|---|
+| `stores/opencode.ts` | 新增 `sessionsOwnerId` 状态 + 成功路径记录归属 + 失败路径按归属决定清空（**不是**一律 fail-open，也不是一律清空）；`this.error` 保留 |
+| `features/opencode/SessionListView.vue` | `readError` computed 把 `store.error` 翻成共享 notice（**不把技术串甩给用户**）+ 永远非空的 `readErrorNotice`；模板加带 `.length === 0` 守卫的失败分支（可点重试）+ 有行时的非破坏性横幅；补 `.error-state` / `.error-icon` / `.list-error-banner` / `.banner-retry` 的 scoped 样式 |
+
+⚠ 该视图**不在** `list-error-failpath` 的登记表里（它没有下拉刷新容器，顶部只有刷新按钮），
+所以这两条分支由本节自己的判据看守。⚠ 而这带来本节第三次同族自伤：
+**我第一版注释里写出了那个容器的标签名** ⇒ 那道门是靠 `text.includes('<标签名>')`
+判视图类型的 ⇒ 该视图被误认成下拉刷新视图 ⇒ 门禁立刻报「未登记」。
+已改写措辞（并在注释里写明「刻意不写出标签名」）。
+
+### 3. 判据与变异
+
+判据扩到 **86 例全通过**（新增 §844 一组 8 例）。
+
+**对真实 `stores/opencode.ts` 与视图的五路端到端变异**：
+
+| 变异 | §840-844 判据 | 仓库门禁 |
+|---|---|---|
+| M1 store 改回无条件清空（**还原真缺陷**） | 🔴 1 | 0 |
+| M2 成功路径不记录归属 | 🔴 1 | 0 |
+| M3 视图不再读 `store.error`（**还原真缺陷**） | 🔴 1 | 0 |
+| M4 拿掉视图的「无行」守卫 | 🔴 1 | 0 |
+| M5 把技术串（`msg`）直接当标题 | 🔴 1（**修判据后**） | 0 |
+| 复原后基线 | 0 | 0 |
+
+⚠ **M5 第一版是 0 红 —— 那是判据无牙，不是没有缺陷。**
+我的判据查的是字面量（模板里有没有把 `error` 直接绑出去），
+而 M5 是「在 computed 里手搓 `{ title: msg }`」—— 语义上完全一样，形状上查不到。
+⇒ 已改为查**结构**：notice 必须来自 `listReadFailureNotice(...)`，
+且 `msg` 不得出现在任何用户可见字段里。⇒ 修完复跑 M5，红 1。
+
+**本节 5 路变异的门禁那一列全是 0**，与 §843 同一个结论的加强版：
+这类缺陷（store 层清空 / 视图不读 error）**完全落在那道门的覆盖范围之外**。
+
+### 4. 口径与未实测
+
+- ⛔ **未实测（需真机）**：`loadSessions` 失败的真实发生率；切实例时读失败的概率。
+- ⛔ **未验证归属规则的真机行为**：`sessionsOwnerId` 的语义我是从调用链推出来的
+  （`selectInstance` 先换标题 → 读失败必须清；`refresh` 同一个 id → 保留），
+  **没有在设备上跑过切实例失败的场景**。
+- ⚠ 本节的扫面**不是**全仓所有失败路径的清单：
+  - 判据口径是「catch 块体内出现 `X = []`」，**不覆盖**「catch 里做了别的破坏」
+    （例如 `tasks.value.splice(0)`、`list.value = undefined`、直接清 IndexedDB）；
+  - 也**不覆盖**「loader 有 catch 但没设错误标志」以外的形态（如静默重试三次后放弃）；
+  - 7 处候选里 3 处「未处理」**未取证**（见 §0 表）。
+- 阴性结论的口径：`OpenCodeHub.vue` 渲染 `store.error` 是**读码确认**的，
+  因此我没有说「store 的两个清空都有出口」——只说了 `loadInstances` 那处有。
+
+### 5. 待拍板
+
+1. `loadInstances` 的 `this.instances = []` 要不要也按归属/有行处理
+   （`OpenCodeHub` 会显示错误，但实例选择器仍会被清空，`selectInstance` 的
+   `instances.find(...)` 随后会走到「实例不存在」分支）。
+2. 扫面表里三处「未处理」（`useConfigList` / `InstanceListView` / `EmailSummaryView`）
+   要不要排下一轮取证 —— 本轮只做了读码定位，**未核实它们的消费方是否渲染错误**。
+3. 两个同名 `SessionListView.vue`（`features/sessions/` 与 `features/opencode/`）
+   要不要改名 —— 本节排查时已经踩过一次混淆风险。
+4. `catch 不得把列表置空` 要不要升格成**仓级门禁**（§843 待办第 33 条）——
+   本节的扫面器已经证明它能一次性捞出 7 处候选，是一道**划算**的门。

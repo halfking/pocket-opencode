@@ -36,6 +36,8 @@ const NOTES = read('../../features/notes/NoteListView.vue')
 const INBOX = read('../../features/email/EmailInboxView.vue')
 const FOLDERS = read('../../features/email/EmailFolderListView.vue')
 const TASKS = read('../../features/tasks/TasksView.vue')
+const OC_STORE = read('../../stores/opencode.ts')
+const OC_LIST = read('../../features/opencode/SessionListView.vue')
 
 /**
  * ★★ loader 的 catch 里**不得把已加载的行清空**。
@@ -451,6 +453,73 @@ describe('§843 · 任务与会话（TasksView）', () => {
     assert.notEqual(mutated, tplCode(TASKS), '★ 变异没生效')
     assert.equal(/v-else-if="tasksError && visibleActiveTasks\.length === 0"/.test(mutated), false,
       '拿掉守卫后尺子居然还通过')
+  })
+})
+
+describe('§844 · OpenCode 会话（store 层清空 + 视图从不渲染 error）', () => {
+  it('★★★ store 的 catch 不得无条件清空 sessions（刷新失败会抹掉正在看的列表）', () => {
+    const body = codeOnly(blockFrom(codeOnly(OC_STORE), 'async loadSessions(instanceId: string)'))
+    assert.equal(/\n\s*this\.sessions\s*=\s*\[\]/.test(body), false,
+      'store 里仍有无条件的 `this.sessions = []` ⇒ 刷新同一个实例时一次抖动就抹掉列表')
+  })
+
+  it('★★★ 清空必须按**归属**判断（切实例失败时行属于旧实例，必须清）', () => {
+    const body = codeOnly(blockFrom(codeOnly(OC_STORE), 'async loadSessions(instanceId: string)'))
+    assert.match(body, /if\s*\(this\.sessionsOwnerId !== instanceId\)\s*this\.sessions = \[\]/,
+      '清空条件不是按 sessionsOwnerId 判断 ⇒ 切实例失败时会在新实例标题下显示旧实例的会话')
+    assert.match(codeOnly(OC_STORE), /this\.sessionsOwnerId = instanceId/,
+      '成功路径没有记录 sessionsOwnerId ⇒ 归属永远判不出来')
+  })
+
+  it('★★★ 视图必须把 store 的 error 翻成用户可见的说明（此前一次都没引用过）', () => {
+    assert.match(codeOnly(OC_LIST), /openCodeStore\.error/,
+      'features/opencode/SessionListView.vue 仍然从不读 store.error ⇒ 读失败对用户完全不可见')
+  })
+
+  it('★★ 视图不得把 store 里的技术串直接甩给用户', () => {
+    const m = /const readError = computed[\s\S]*?\n\}\)/.exec(codeOnly(OC_LIST))
+    assert.ok(m, '量具自证失败：找不到 readError 的定义')
+    const block = m[0]
+    // ⚠ 第一版判据查的是字面量（`:title="…error…"` / `readError.title =`），
+    //   端到端变异 M5「把 title 换成 msg」时它**0 红** —— 判据无牙。
+    // ⇒ 改成查**结构**：notice 必须来自共享文案函数，且 msg 不得进用户可见字段。
+    assert.match(block, /return listReadFailureNotice\(/,
+      'readError 没有走共享文案函数 ⇒ 可能在手搓对象时把技术串带出去')
+    assert.ok(!/\btitle\s*:\s*[^,\n]*\bmsg\b/.test(block),
+      '把 store.error 的原始字符串（msg）当标题了 ⇒ 可能含 URL / 状态码')
+    assert.ok(!/\$\{[^}]*\bmsg\b[^}]*\}/.test(block), '把 msg 插值进了用户可见文案')
+  })
+
+  it('★★★ 视图的失败分支必须带「无行」守卫且排在真空态之前', () => {
+    const tpl = tplCode(OC_LIST)
+    assert.match(tpl, /v-else-if="readError && sessions\.length === 0"/, '缺少带守卫的失败分支')
+    const atError = tpl.indexOf('v-else-if="readError &&')
+    const atEmpty = tpl.indexOf('class="empty-state"')
+    assert.ok(atError > 0 && atEmpty > atError, '真空态排在失败分支之前 ⇒ 后者永远轮不到')
+  })
+
+  it('★★ 有行时必须挂非破坏性提示，且给可点的重试', () => {
+    const tpl = tplCode(OC_LIST)
+    assert.match(tpl, /v-if="readError"[\s\S]{0,80}class="list-error-banner"/, '有行时没有提示')
+    assert.match(tpl, /class="banner-retry"[\s\S]{0,80}@click="refreshSessions"/, '横幅没有重试按钮')
+  })
+
+  it('★ 变异负控：把归属判断改回无条件清空 ⇒ 尺子必须转红', () => {
+    const before = codeOnly(blockFrom(codeOnly(OC_STORE), 'async loadSessions(instanceId: string)'))
+    const mutated = before.replace(
+      'if (this.sessionsOwnerId !== instanceId) this.sessions = []',
+      'this.sessions = []',
+    )
+    assert.notEqual(mutated, before, '★ 变异没生效：没匹配到归属判断')
+    assert.equal(/\n\s*this\.sessions\s*=\s*\[\]/.test(mutated), true,
+      '改回无条件清空后尺子居然还通过 ⇒ 无牙')
+  })
+
+  it('★ 变异负控：视图不再读 store.error ⇒ 尺子必须转红（还原真缺陷）', () => {
+    const mutated = codeOnly(OC_LIST).replace(/const msg = openCodeStore\.error/, 'const msg = null')
+    assert.notEqual(mutated, codeOnly(OC_LIST), '★ 变异没生效')
+    assert.equal(/openCodeStore\.error/.test(mutated), false,
+      '不再读 error 后尺子居然还通过 ⇒ 无牙')
   })
 })
 
