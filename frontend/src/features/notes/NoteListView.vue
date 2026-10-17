@@ -171,6 +171,11 @@ import type { LocalNote } from './notes-store'
 import { useListScene } from '../../composables/use-list-scene'
 import { useAuthStore } from '../../stores/auth'
 import { useApiError } from '../../composables/useApiError'
+import { useToast } from '../../composables/useToast'
+import {
+  describeRecordActionFailure,
+  RECORD_ACTION_FAIL_TAG,
+} from '../../utils/action-failure-notice'
 
 defineOptions({ name: 'NoteListView' })
 
@@ -198,6 +203,8 @@ const summarizeError = ref('')
  * 「说了明天下午三点就一定会有提醒」。
  */
 const todoNotice = ref('')
+// §838：对已有记录的动作失败需要一句人话。
+const toast = useToast()
 /** §832：建草稿失败的用户可见出口（此前完全没有）。 */
 const draftSaveError = ref('')
 const {
@@ -492,9 +499,17 @@ function resumeDraft() {
   metaOpen.value = true
 }
 
+// ⚠⚠ §838：这两处此前没有 try/catch。面板关闭排在 await **之后**（这是对的，
+//   不能假装保存成功），但写失败时**零反馈** —— 面板还开着，用户不知道该重试。
 async function onMetaSave(data: { title: string; domain: string; tags: string[] }) {
   if (!metaNote.value) return
-  await notesStore.updateNote(metaNote.value.id, { ...data, status: 'saved' }, currentWorkspaceId())
+  try {
+    await notesStore.updateNote(metaNote.value.id, { ...data, status: 'saved' }, currentWorkspaceId())
+  } catch (e) {
+    console.error(RECORD_ACTION_FAIL_TAG, 'meta-save', e)
+    toast.error(describeRecordActionFailure('meta-save', { error: e }))
+    return
+  }
   metaOpen.value = false
   metaNote.value = null
   await load()
@@ -502,7 +517,13 @@ async function onMetaSave(data: { title: string; domain: string; tags: string[] 
 
 async function onMetaDelete() {
   if (!metaNote.value) return
-  await notesStore.deleteNote(metaNote.value.id, currentWorkspaceId())
+  try {
+    await notesStore.deleteNote(metaNote.value.id, currentWorkspaceId())
+  } catch (e) {
+    console.error(RECORD_ACTION_FAIL_TAG, 'meta-delete', e)
+    toast.error(describeRecordActionFailure('meta-delete', { error: e }))
+    return
+  }
   metaOpen.value = false
   metaNote.value = null
   await load()

@@ -101,12 +101,20 @@ import {
   MEETING_LIST_FILTERS, type MeetingListFilter,
 } from './meeting-list'
 import { captureDeviceLocation, formatCapturedTitle } from './meeting-meta'
+import { useToast } from '../../composables/useToast'
+import {
+  describeRecordActionFailure,
+  RECORD_ACTION_FAIL_TAG,
+  RECORD_MEDIA_CLEANUP_FAIL_TAG,
+} from '../../utils/action-failure-notice'
 import { useListScene } from '../../composables/use-list-scene'
 
 defineOptions({ name: 'MeetingListView' })
 
 const router = useRouter()
 const dbNotReady = ref(false)
+// §838：列表侧的用户动作（归档/恢复/删除）此前无任何失败反馈。
+const toast = useToast()
 const starting = ref(false)
 const filter = ref<MeetingListFilter>('active')
 const filters = MEETING_LIST_FILTERS
@@ -197,21 +205,55 @@ function openMeeting(m: LocalMeeting) {
   router.push({ name: 'meeting-detail', params: { id: m.id } })
 }
 
+// ⚠⚠ §838：这五个处理器此前都没有 try/catch。列表变更刻意排在 await **之后**
+//   （不能假装成功，这点是对的），但**零反馈** —— 用户点了归档，列表没变，
+//   界面上一个字都没有。
 async function onArchive(id: string) {
-  await archiveMeeting(id)
+  try {
+    await archiveMeeting(id)
+  } catch (e) {
+    console.error(RECORD_ACTION_FAIL_TAG, 'archive', e)
+    toast.error(describeRecordActionFailure('archive', { error: e }))
+    return
+  }
   meetings.value = meetings.value.filter((m) => m.id !== id)
 }
 
 async function onRestore(id: string) {
-  await unarchiveMeeting(id)
+  try {
+    await unarchiveMeeting(id)
+  } catch (e) {
+    console.error(RECORD_ACTION_FAIL_TAG, 'restore', e)
+    toast.error(describeRecordActionFailure('restore', { error: e }))
+    return
+  }
   meetings.value = meetings.value.filter((m) => m.id !== id)
 }
 
 async function onDelete(id: string) {
-  await deleteMeeting(id)
-  try { await deleteMeetingAudio(id) } catch { /* ok */ }
+  // ⚠ 音频清理此前是 `catch { /* ok */ }` —— 而 deleteMeetingAudio 写的是
+  //   IndexedDB（openDB + 事务），失败时音频 blob **永久残留**且零痕迹
+  //   ⇒ 那是静默的存储泄漏，注释里的「ok」与事实不符（§838）。
+  //   ⇒ 现在失败要说出来：主体已删除不必重试，但残留会占空间。
+  let mediaCleaned = true
+  try {
+    await deleteMeeting(id)
+  } catch (e) {
+    console.error(RECORD_ACTION_FAIL_TAG, 'delete', e)
+    toast.error(describeRecordActionFailure('delete', { error: e }))
+    return
+  }
+  try {
+    await deleteMeetingAudio(id)
+  } catch (e) {
+    mediaCleaned = false
+    console.error(RECORD_MEDIA_CLEANUP_FAIL_TAG, e)
+    toast.error(describeRecordActionFailure('delete', { error: e, mediaCleaned: false }))
+  }
   meetings.value = meetings.value.filter((m) => m.id !== id)
 }
+
+
 
 onMounted(load)
 /* KeepAlive 现场保持：active/archived 筛选保留；详情页改动过会议才刷新 */

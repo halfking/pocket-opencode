@@ -6,6 +6,7 @@ import { useCryptoConfig } from '../../stores/crypto-config'
 import { assetStore } from '../../native/asset-store'
 import { decideNoteStorage } from './note-storage-policy'
 import { deleteNoteBodyFile, deleteNoteFiles, persistNotePayload, readNoteBody } from './note-files'
+import { RECORD_MEDIA_CLEANUP_FAIL_TAG } from '../../utils/action-failure-notice'
 import { assetToNote, rowToNote, mergeImportedNotes } from './notes-row'
 import type { CreateNoteInput, LocalNote, NoteMediaInput, NoteRow } from './notes-types'
 
@@ -267,17 +268,53 @@ export async function updateNote(
   }
 }
 
-export async function deleteNote(id: string, workspaceId = 'default'): Promise<void> {
+/**
+ * 删除一条笔记（软删 + 清理附属文件）。
+ *
+ * ⚠⚠ §838/D3：**软删必须排在文件清理之前**。原顺序是
+ *   「deleteNoteFiles → 标记 deleted_at → vectorIndex.remove」，
+ *   ⇒ 文件删不掉时**连软删都没发生** ⇒ 用户点删除，笔记原封不动，且零提示
+ *   （调用方此前也没有 try/catch）。
+ *   ⚠ 本文件自己在媒体替换那处（updateNote 里 deleteNoteBodyFile 上方）
+ *     写下了同一条原则：「删除永远不能排在写之前 —— 写失败就没有回滚了」。
+ *     ⇒ 同一个文件里两条删除路径遵守了相反的顺序，这一条是遗漏。
+ *
+ * ⇒ 现在的顺序与代价：
+ *   ① 先标记 deleted_at（用户意图达成，笔记从列表消失）；
+ *   ② 文件与向量索引清理各自**独立兜住**：
+ *      · 文件删不掉 ⇒ **孤儿文件**残留占空间（与会议侧音频清理同款，见 §838/D1），
+ *        但**不再**让「删除没生效」这种更糟的结果发生；
+ *      · 向量索引删不掉 ⇒ 检索可能仍命中这条已删笔记（同样只记诊断，不阻断）。
+ *
+ * @returns `mediaCleaned=false` 表示主体已删、但附属文件没清干净。
+ */
+export async function deleteNote(
+  id: string,
+  workspaceId = 'default',
+): Promise<{ mediaCleaned: boolean }> {
   const existing = await getNote(id, true, workspaceId)
   if (existing?.storage === 'asset') {
     await assetStore.softDeleteForWorkspace(id, workspaceId)
-    return
+    return { mediaCleaned: true }
   }
-  if (existing && (existing.bodyPath || existing.mediaJson)) {
-    await deleteNoteFiles(id, existing.createdAt)
-  }
+  // ① 软删先行：这一步失败 ⇒ 笔记仍在，调用方如实报「删除失败」（不假装）。
   await localDB.run('UPDATE local_notes SET deleted_at = ? WHERE id = ? AND workspace_id = ?', [Date.now(), id, workspaceId])
-  await vectorIndex.remove(id)
+  // ② 附属清理：各自兜住，绝不因为它失败而让「删除没生效」。
+  let mediaCleaned = true
+  if (existing && (existing.bodyPath || existing.mediaJson)) {
+    try {
+      await deleteNoteFiles(id, existing.createdAt)
+    } catch (e) {
+      mediaCleaned = false
+      console.error(RECORD_MEDIA_CLEANUP_FAIL_TAG, '笔记正文/媒体文件', id, e)
+    }
+  }
+  try {
+    await vectorIndex.remove(id)
+  } catch (e) {
+    console.warn('[notes-persist] 向量索引清理失败（笔记已软删，检索可能仍命中）：', id, e)
+  }
+  return { mediaCleaned }
 }
 
 export async function getNote(id: string, includeDeleted = false, workspaceId = 'default'): Promise<LocalNote | null> {
