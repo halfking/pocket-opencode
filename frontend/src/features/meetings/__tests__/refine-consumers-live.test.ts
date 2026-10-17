@@ -390,7 +390,12 @@ describe('E：整段重转必须先把 webm 转成 wav', () => {
     // ⚠ §428：按圆括号配平取**完整**实参区（同本文件 F 组那条否定断言的理由）。
     const call = balancedSpan(impl, 'refetchFullTranscript(')
     assert.ok(call, '找不到 refetchFullTranscript 调用')
-    assert.ok(/toWav\s*:/.test(call.span),
+    // ⚠ 这里必须同时接受 `{ toWav: … }` 与 `{ toWav }` 两种写法：
+    //   §805 把转码实参提成了 `createMeasuringToWav(...)` 包出来的局部 const，
+    //   调用点因此用了花括号简写。两者语义完全相同，而只认 `toWav:`
+    //   会把「等价简写」判成「没传」—— 那是**判据贴在语法形状上**，不是行为。
+    //   `}` 分支要求 `toWav` 是实参对象的**最后一个键**，简写才合法，因此不会放宽。
+    assert.ok(/toWav\s*[:,}]/.test(call.span),
       '整段重转没有传 toWav ⇒ 真机上传的是 webm ⇒ 网关 400 / 后端不可切 ⇒ '
       + '整段重转与说话人归因全部失效（§50 实测）')
   })

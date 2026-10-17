@@ -40,6 +40,7 @@ import { getMeeting, updateMeeting, type MeetingSegment } from './meetings-store
 import { ingestMeetingArtifacts } from './meeting-ingest'
 import { buildIngestNotice } from './meeting-ingest-notice'
 import { buildRefineNotice, refineStatusFor } from '../sessions/refine-outcome-notice'
+import { assessDurationDrift, createMeasuringToWav } from './recording-duration-consistency'
 
 export interface FinalizeDeps {
   /** 一次全量重转。注入而非直接调 API，便于单测与换实现。 */
@@ -133,6 +134,19 @@ export async function finalizeRecording(
   if (!meetingId) return outcome
 
   const segs = segments ?? []
+
+  // ★ §803/§804：把「墙钟说有 62 秒」和「音频真的有 62 秒」放在同一处比一次。
+  //   此前**没有任何一处**做这件事 —— 整条链路每个时长数字都是 `Date.now()` 的差，
+  //   产物真实长度从未被测量 ⇒ §785 那 4.64 秒缺口运行时无从察觉。
+  //   这里能比，是因为全量重转**本来就要**把 webm 解成 WAV（`toWav` 那一次 decode
+  //   是无条件发生的），而 WAV 的字节数自带动长 ⇒ **零额外解码成本**。
+  //   ⚠ 刻意不拿分段 `endMs` 对照 `elapsedMs`：两者同出墙钟，是恒等式（§803.2）。
+  let measuredAudioSec: number | null = null
+  const toWav: NonNullable<FinalizeDeps['toWav']> = createMeasuringToWav(
+    deps.toWav ?? defaultToWav,
+    (sec) => { measuredAudioSec = sec },
+  )
+
   const finalText = await refetchFullTranscript(
     meetingId,
     deps.transcribeFull ?? defaultTranscribeFull,
@@ -140,8 +154,19 @@ export async function finalizeRecording(
     //   录音产物是 webm/opus，网关只收 wav/mp3 ⇒ 重转直接失败；
     //   且 `stt.SplitWAV` 对 webm 不可切（实测 splittable=false）
     //   ⇒ 就算发得出去也只回 1 条回执 ⇒ 说话人归因整块不生效。
-    { toWav: deps.toWav ?? defaultToWav },
+    { toWav },
   )
+
+  // 只 warn、不改状态：阈值与是否升级为阻断属产品口径（§805.3）。
+  // `no-ground-truth` 不算异常 —— 转码失败那条路由 `refetchFullTranscript` 自己兜。
+  const drift = assessDurationDrift(elapsedMs, measuredAudioSec)
+  if (!drift.ok) {
+    console.warn(
+      `[meeting-finalize] 录音时长与落盘音频不符：墙钟 ${elapsedMs}ms vs 音频 `
+      + `${measuredAudioSec === null ? '未知' : Math.round(measuredAudioSec * 1000) + 'ms'}`
+      + `（差 ${drift.driftMs}ms > 容差 ${Math.round(drift.toleranceMs)}ms，${drift.reason}）`,
+    )
+  }
   // ★ 决策全部在纯函数里（§52）：采纳什么、用哪些分段、名单是谁、改哪几个同音字。
   //   这一段此前散在本函数体内，而本函数在 node 里跑不到 ⇒ 那些决策
   //   **一行行为门都没有**（§45/§48/§49/§50 四轮 bug 全在这里面）。
