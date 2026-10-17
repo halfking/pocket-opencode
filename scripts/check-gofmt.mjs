@@ -33,19 +33,39 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
+import { whichFirst, gofmtCandidates } from './lib/which-first.mjs'
 
 const REPO = path.resolve(import.meta.dirname, '..')
 const GO_DIR = path.join(REPO, 'backend')
-const GO_BIN = process.platform === 'win32' ? 'gofmt.exe' : 'gofmt'
+// ⚠️ 2026-10-17：原先这里只有 `'gofmt'`，纯靠 PATH。
+//   在 Go 装在 `~/sdk/go/bin` 的机器（本仓开发机的实际装法）上，
+//   `npm run gates` 会停在第 31 项 `spawnSync gofmt ENOENT`。
+//   本门禁「拒绝把 ENOENT 当通过」是对的（见下方 gofmtList），
+//   但那只是**如实报告**，不等于可用 —— 它让整条门槛在半数机器上永远跑不完。
+//   ⇒ 按 2026-10-07 的先例（a8cfb14b「收编到 lib 的单一来源」），
+//     改用 lib/which-first.mjs 的「env → PATH → 常见位置」解析。
+//     注意那个文件里还有 adb 用的同一套解析，两边不再各抄一份。
+const RESOLVED_GOFMT = whichFirst(gofmtCandidates())
+const GO_BIN = RESOLVED_GOFMT
+  // 全部候选都没命中时**不回落到裸命令名**：那会把「工具没找到」
+  // 重新塞回 spawn ENOENT，正是本模块要消灭的错误形态。
+  // 交由 gofmtList() 打印人话并 exit 1。
+  || null
 // Windows 命令行长度上限约 8191 字符（.cmd 包装走 cmd.exe，不是 PowerShell 的 32767）。
 // 每批 30 个绝对路径 ≈ 1.4 KB，留足余量。
 const BATCH = 30
 
 /** gofmt -l <dir> → 报出的文件绝对路径数组。 */
 function gofmtList(dir) {
+  if (!GO_BIN) {
+    console.error('✗ 找不到 gofmt：PATH 上没有，常见安装位置也没命中。')
+    console.error('  装 Go 即可，或用 GOFMT=/path/to/gofmt（或 POCKET_GOFMT=…）显式指定。')
+    console.error('  这是「无法判定」，**不是「通过」**。')
+    process.exit(1)
+  }
   const r = spawnSync(GO_BIN, ['-l', dir], { encoding: 'utf8' })
   if (r.error) {
-    console.error(`✗ 调不动 gofmt：${r.error.message}`)
+    console.error(`✗ 调不动 gofmt（${GO_BIN}）：${r.error.message}`)
     console.error('  gofmt 随 Go 工具链分发，不在 PATH 时本门禁无法判定（不是「通过」）。')
     process.exit(1)
   }
