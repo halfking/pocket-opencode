@@ -648,7 +648,7 @@ func splitTopLevelCommas(s string) []string {
 }
 
 // normalizeColumnRef 把一个投影表达式归一成列名：
-// `COALESCE(e.action_reason, ”)` → action_reason；`e.id` → id；`e.id AS foo` → id。
+// `COALESCE(e.action_reason, '')` → action_reason；`e.id` → id；`e.id AS foo` → id。
 func normalizeColumnRef(expr string) string {
 	s := strings.TrimSpace(expr)
 	if s == "" {
