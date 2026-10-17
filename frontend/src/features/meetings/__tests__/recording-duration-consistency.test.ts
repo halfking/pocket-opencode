@@ -18,14 +18,74 @@ import {
   wavDurationSec,
 } from '../recording-duration-consistency.ts'
 
-/** 按生产形状造一段 16k WAV：44 字节头 + n 帧 × 2 字节。 */
-const wavOf = (seconds: number): ArrayBuffer => new ArrayBuffer(44 + Math.round(seconds * 16000) * 2)
+/**
+ * 按**生产形状**造一段 WAV。
+ *
+ * ⚠ 第一版的夹具是 `new ArrayBuffer(44 + n*2)` —— 那**根本不是 WAV**，
+ * 只是恰好让「减 44」那条朴素公式成立。真实产物上就露馅了（§806）：
+ * `acoustic-speaker-mic.wav` 的 chunk 布局是 `fmt `(16) → `LIST`(26) → `data`，
+ * `data` 偏移 78。⇒ 夹具必须自己拼真 RIFF，否则测试在保护一个错误的假设。
+ */
+function wavOf(seconds: number, opts: { extraChunk?: string; sampleRate?: number } = {}): ArrayBuffer {
+  const sr = opts.sampleRate ?? 16000
+  const frames = Math.round(seconds * sr)
+  const dataBytes = frames * 2
+  const extra = opts.extraChunk
+    ? 8 + Buffer.byteLength(opts.extraChunk, 'utf8') + ((Buffer.byteLength(opts.extraChunk, 'utf8')) & 1)
+    : 0
+  const buf = Buffer.alloc(12 + 24 + extra + 8 + dataBytes) // RIFF+fmt( +LIST) +data
+  let o = 0
+  buf.write('RIFF', o, 'ascii'); o += 4
+  buf.writeUInt32LE(buf.length - 8, o); o += 4
+  buf.write('WAVE', o, 'ascii'); o += 4
+  buf.write('fmt ', o, 'ascii'); o += 4
+  buf.writeUInt32LE(16, o); o += 4
+  buf.writeUInt16LE(1, o); o += 2      // PCM
+  buf.writeUInt16LE(1, o); o += 2      // mono
+  buf.writeUInt32LE(sr, o); o += 4
+  buf.writeUInt32LE(sr * 2, o); o += 4 // byteRate
+  buf.writeUInt16LE(2, o); o += 2      // blockAlign
+  buf.writeUInt16LE(16, o); o += 2     // bitsPerSample
+  if (extra) {
+    const body = opts.extraChunk!
+    const n = Buffer.byteLength(body, 'utf8')
+    buf.write('LIST', o, 'ascii'); o += 4
+    buf.writeUInt32LE(n, o); o += 4
+    buf.write(body, o, 'utf8'); o += n + (n & 1)
+  }
+  buf.write('data', o, 'ascii'); o += 4
+  buf.writeUInt32LE(dataBytes, o); o += 4
+  return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.length)
+}
 
 describe('wavDurationSec —— 从字节算真实时长（不依赖浏览器）', () => {
-  it('§785 的真实形态：62s 墙钟 / 57.36s 音频 ⇒ 读出 57.36s', () => {
-    // 917760 帧 @16k = 57.36s，正是 §785 记下的帧数
-    const wav = new ArrayBuffer(44 + 917760 * 2)
+  it('⭐ §806：带 LIST chunk 的真实布局（data 偏移 78）也能读对', () => {
+    // acoustic-speaker-mic.wav 的真实 chunk 布局：fmt (16) → LIST(26) → data
+    const wav = wavOf(57.36, { extraChunk: 'INFOhello world.....' }) // 26 字节 LIST 体
     assert.equal(wavDurationSec(wav), 57.36)
+    // ⚠ 朴素公式（减 44）在这个布局上读成 57.36106 —— 差 1.06ms（=26B/2/16000）
+  })
+
+  it('无 LIST 的紧排布局（data 偏移 44）同样读对', () => {
+    assert.equal(wavDurationSec(wavOf(57.36)), 57.36)
+  })
+
+  it('真实素材的两条读数：57.36s 与 752.292s', () => {
+    assert.equal(wavDurationSec(wavOf(57.36, { extraChunk: 'INFO1234567890ab' })), 57.36)
+    assert.equal(wavDurationSec(wavOf(752.292)), 752.292)
+  })
+
+  it('⚠ 变异的产物：奇数长度的 chunk 必须按补齐字节跳过', () => {
+    // 本条的由来：变异「不按奇数补齐字节推进 chunk」最初**没被抓住**，
+    // 因为夹具里的 LIST 长度全是偶数。⇒ 补一条奇数长度的。
+    // 'INFOabc' = 7 字节（奇数）⇒ 下一个 chunk 从 body+7+1 开始。
+    const odd = wavOf(3, { extraChunk: 'INFOabc' })
+    assert.equal(wavDurationSec(odd), 3)
+  })
+
+  it('⛔ 不再对非 WAV 字节返回「假时长」', () => {
+    // 第一版的夹具正是这种形状：不是 WAV，却能读出时长。现在必须 null。
+    assert.equal(wavDurationSec(new ArrayBuffer(44 + 16000 * 2)), null)
   })
 
   it('整秒往返：1s / 12.5s / 752.292s 都读得回来', () => {
@@ -43,18 +103,49 @@ describe('wavDurationSec —— 从字节算真实时长（不依赖浏览器）
 
   // ⚠ 量不到必须返回 null，**不能返回 0**。返回 0 会被读成「录了 0 秒」，
   // 那正是 §803.1 同型的假读数：没有那个量，不是那个量为 0。
-  it('量不到时返回 null 而不是 0（空/过短/字节数不对齐）', () => {
+  it('量不到时返回 null 而不是 0（空/太短/非 RIFF/无 data chunk）', () => {
     assert.equal(wavDurationSec(new ArrayBuffer(0)), null)
-    assert.equal(wavDurationSec(new ArrayBuffer(44)), null, '只有头没有数据 ⇒ 量不到')
     assert.equal(wavDurationSec(new ArrayBuffer(40)), null, '连头都不完整 ⇒ 量不到')
-    assert.equal(wavDurationSec(new ArrayBuffer(44 + 3)), null, '数据字节数不对齐 2 的倍数')
+    const notRiff = new ArrayBuffer(44 + 32000)
+    assert.equal(wavDurationSec(notRiff), null, '不是 RIFF ⇒ 量不到')
+    // 只有 fmt 没有 data
+    const head = wavOf(1).slice(0, 36)
+    assert.equal(wavDurationSec(head), null, '没有 data chunk ⇒ 量不到')
+    // ⚠ 这条的由来：变异「解析失败时返回 0」最初**没被抓住** —— 因为上面每个
+    // 「量不到」用例都在早期 guard（长度 <44 / 非 RIFF）就返回了，**从没走到**
+    // 末尾那个组合判断（fmt 有但 data 没有）。⇒ 必须有一条能真正走到它的用例。
+    const riffNoData = new Uint8Array(48)
+    const dv = new DataView(riffNoData.buffer)
+    const ascii = new TextEncoder()
+    riffNoData.set(ascii.encode('RIFF'), 0)
+    dv.setUint32(4, 40, true)
+    riffNoData.set(ascii.encode('WAVE'), 8)
+    riffNoData.set(ascii.encode('fmt '), 12)
+    dv.setUint32(16, 16, true)
+    dv.setUint16(20, 1, true)   // PCM
+    dv.setUint16(22, 1, true)   // mono
+    dv.setUint32(24, 16000, true)
+    dv.setUint32(28, 32000, true)
+    dv.setUint16(32, 2, true)
+    dv.setUint16(34, 16, true)
+    assert.equal(wavDurationSec(riffNoData), null, '有 fmt 无 data ⇒ 必须 null 而非 0')
   })
 
   it('⛔ 不许把「量不到」折成 0 秒', () => {
-    // 显式钉住这条：它是本模块唯一容易写错、且错了最难发现的地方
-    for (const bad of [new ArrayBuffer(0), new ArrayBuffer(44), new ArrayBuffer(44 + 3)]) {
+    for (const bad of [new ArrayBuffer(0), new ArrayBuffer(40), new ArrayBuffer(44 + 32000)]) {
       assert.notEqual(wavDurationSec(bad), 0)
     }
+  })
+
+  it('data 声明长度超出实际字节时按实际算（流式封装常见）', () => {
+    const wav = wavOf(10)
+    const b = new Uint8Array(wav)
+    // 把 data 的声明长度改成很大
+    const dv = new DataView(wav)
+    const dataAt = new TextDecoder().decode(b.subarray(0, 44)).indexOf('data')
+    dv.setUint32(dataAt + 4, 0x7fffffff, true)
+    const got = wavDurationSec(wav)
+    assert.ok(got !== null && Math.abs(got - 10) < 0.001, `应为 ~10s，实际 ${got}`)
   })
 })
 

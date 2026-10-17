@@ -23,26 +23,64 @@
  * 不改写任何状态；调用方（`meeting-recording-finalize.ts`）只 `console.warn`。
  */
 
-const WAV_HEADER_BYTES = 44
+const WAV_HEADER_MIN_BYTES = 44
 const WAV_BYTES_PER_SAMPLE = 2
 /** `wav-encode.ts` 的 TARGET_SAMPLE_RATE，产出恒为 16kHz。 */
 const WAV_SAMPLE_RATE = 16000
 
+function readTag(b: Uint8Array, at: number): string {
+  if (at + 4 > b.byteLength) return ''
+  return String.fromCharCode(b[at], b[at + 1], b[at + 2], b[at + 3])
+}
+
 /**
- * 从 16kHz/16-bit/单声道 WAV 的**字节**算真实音频时长（秒）。
+ * 从 PCM WAV 的**字节**算真实音频时长（秒）。
+ *
+ * ⚠⚠ **不能假设头长是 44 字节。** 第一版写成 `(byteLength - 44) / 2 / 16000`，
+ * 而本仓真实产物上就是错的：`acoustic-speaker-mic.wav` 的 chunk 布局是
+ * `fmt `(16) → **`LIST`(26)** → `data`，`data` 偏移 **78** 而非 44 ⇒ 朴素公式
+ * 读出 57.36106s，真值 57.36000s（`LIST` 的 26 字节被当成了音频数据）。
+ * 那个偏差只有 ~1ms，被容差吃掉了，但**它是错的**，且换个来源（metadata 更大的
+ * LIST/更多 chunk）会成比例放大。⇒ 逐 chunk 走并读 `fmt ` 的真实参数。
+ *
+ * 返回 `null` 表示「这批字节不是可解析的 PCM WAV」，而不是返回 0：
+ * 0 会被读成「录了 0 秒」，那是**假读数**（§803.1 同型：没有那个量，不是那个量为 0）。
  *
  * 走字节而不是 `AudioBuffer.duration`，是因为本函数要在 node 测试里跑，
  * 也不需要浏览器环境 —— 那正是 §803 说「真值从来没被量过」时缺的东西。
- *
- * 返回 `null` 表示「这批字节不是可读的 16k PCM WAV」，而不是返回 0：
- * 0 会被读成「录了 0 秒」，那是**假读数**（§803.1 同型：没有那个量，不是那个量为 0）。
  */
 export function wavDurationSec(wav: ArrayBuffer | Uint8Array): number | null {
-  const bytes = wav instanceof Uint8Array ? wav : new Uint8Array(wav)
-  if (bytes.byteLength <= WAV_HEADER_BYTES) return null
-  const dataBytes = bytes.byteLength - WAV_HEADER_BYTES
-  if (dataBytes % WAV_BYTES_PER_SAMPLE !== 0) return null
-  return dataBytes / WAV_BYTES_PER_SAMPLE / WAV_SAMPLE_RATE
+  const b = wav instanceof Uint8Array ? wav : new Uint8Array(wav)
+  if (b.byteLength < WAV_HEADER_MIN_BYTES) return null
+  if (readTag(b, 0) !== 'RIFF' || readTag(b, 8) !== 'WAVE') return null
+
+  let sampleRate = 0
+  let channels = 0
+  let bitsPerSample = 0
+  let dataBytes: number | null = null
+
+  // chunk 布局：4 字节 id + 4 字节小端长度 + 载荷，长度为奇数时还有一个补齐字节。
+  let off = 12
+  while (off + 8 <= b.byteLength) {
+    const id = readTag(b, off)
+    const size = b[off + 4] | (b[off + 5] << 8) | (b[off + 6] << 16) | (b[off + 7] << 24)
+    const body = off + 8
+    if (id === 'fmt ' && body + 16 <= b.byteLength) {
+      channels = b[body + 2] | (b[body + 3] << 8)
+      sampleRate = b[body + 4] | (b[body + 5] << 8) | (b[body + 6] << 16) | (b[body + 7] << 24)
+      bitsPerSample = b[body + 14] | (b[body + 15] << 8)
+    } else if (id === 'data') {
+      // 声明长度可能超出实际字节（流式封装常见），取实际可用的那段。
+      dataBytes = Math.max(0, Math.min(size, b.byteLength - body))
+      break
+    }
+    off = body + size + (size & 1)
+  }
+
+  if (dataBytes == null || sampleRate <= 0 || channels <= 0 || bitsPerSample <= 0) return null
+  const bytesPerFrame = (bitsPerSample / 8) * channels
+  if (bytesPerFrame <= 0 || dataBytes === 0) return null
+  return dataBytes / bytesPerFrame / sampleRate
 }
 
 /**
