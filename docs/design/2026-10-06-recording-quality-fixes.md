@@ -93341,3 +93341,133 @@ toWav 抛错（wav-encode.ts:112 不 catch）
 ### §819.6 校验
 
 `typecheck` **EXIT=0**；`npm run gates` **45/45 通过（80.6s）**；`git diff --check` 退出 0。
+
+## §820 ⛔ 最严重的一处：**录音落盘失败被吞掉，还写了一个刷新后必然失效的 `audioPath`**
+
+§818/§819 是「转码失败看不见」。本节是同一次排查里挖到的**数据丢失级**缺陷，比那两节都严重。
+
+### §820.1 怎么找到的：不是逐个读，是先收窄
+
+§819.5 自己登记了一条缺口（「`stt-settings.ts:333/384` 的上层错误处理本轮未逐个核对」）。
+顺手做了一次同类缺陷的系统排查：录音/转写链上**丢弃异常**的 `catch` 共 **138 处**
+（`frontend/src/{native,api,features/meetings,composables,utils}`），逐个读不现实。
+⇒ 收窄判据：**在录音→转写路径上，且被丢弃的异常没有别的出口**。
+138 → 4 个候选（`recordingRuntime.ts:689` 落盘 / `useVoiceInput.ts:154` 孤儿转写 /
+`audio-parts.ts:53` 文件写入 / `meeting-recording-finalize.ts:242` 入库）。
+
+### §820.2 缺陷事实链（可逐条核对）
+
+修之前的 `recordingRuntime.stop()`：
+
+```ts
+let audioPath = ''
+if (fullBlob && fullBlob.size > 0) {
+  audioPath = URL.createObjectURL(fullBlob)
+  if (meetingId) {
+    try { await saveMeetingAudio(meetingId, fullBlob) } catch { /* ok */ }   // ← 吞掉
+  }
+}
+…
+await updateMeeting(meetingId, {
+  audioPath: audioPath || null,     // ← 保存失败也照样写这个非空值
+  durationMs,
+  status: 'completed',              // ← 还标记成「已完成」
+})
+```
+
+⇒ 落盘失败时的完整后果：
+
+| # | 事实 | 证据 |
+|---|---|---|
+| 1 | `saveMeetingAudio` 失败会被 `tx.onerror` reject | `meeting-audio.ts:33` |
+| 2 | 该异常被空 catch 吞掉 | `recordingRuntime.ts` 的 catch |
+| 3 | **`audioPath` 仍被写进会议记录** | `updateMeeting({ audioPath: audioPath \|\| null })` |
+| 4 | 会议被标记 `completed` | 同上 |
+| 5 | blob URL **只活在当前文档内存里** | `meeting-audio.ts` 头注释第一句就在说这件事 |
+| 6 | ⇒ 刷新 / 重启后音频**彻底消失**，但记录里那个路径已失效 | 5 的直接后果 |
+| 7 | `loadMeetingAudio` 随后返回 null ⇒ `reason: 'audio-not-found'` | `meeting-final-transcript.ts:131` |
+| 8 | ⇒ **整段高精度重转永久不可用**，只剩分段文本 | `refetchFullTranscript` 的降级分支 |
+
+⭐ 最关键的是 **3 + 4 组合起来是「谎报」**：库里存着一个此刻能播、刷新后必死的地址，
+会议状态是「已完成」，用户**没有任何途径**知道音频其实没存下来。
+
+⚠ **成因不是理论上的**：Android WebView / iOS WKWebView 的 IndexedDB 配额很小，
+一场 60 分钟会议的 webm 很容易触顶（`QuotaExceededError`）。这正是最需要它的场合。
+
+### §820.3 ⭐ 与 §818/§819 的严重性对比
+
+| | §818 / §819（转码失败） | **§820（落盘失败）** |
+|---|---|---|
+| 数据是否丢 | 否（转写降级为分段文本） | ⛔ **是，完整音频永久丢失** |
+| 用户能否察觉 | ⚠ 症状可见 / 根因不可见 | ⛔ **完全不可见，且被谎报为「完好」** |
+| 可否事后补救 | 可重录 | ⛔ 不可 —— 音频不存在了 |
+
+⇒ 这是本轮唯一一个**「用户以为没事、实际已经永久丢数据」**的缺陷。
+
+### §820.4 修复：只保证「不再写假的 audioPath」，不干预主流程
+
+* `meeting-audio.ts` 新增纯函数 `resolvePersistedAudio({objectUrl, persisted, error})`：
+  * 落盘成功 ⇒ `audioPath` 原样保留、`warning = null`（不制造噪声）；
+  * 落盘失败 ⇒ **`audioPath = null`** + 一条说清后果与成因的 `warning`。
+* `recordingRuntime.stop()` 改为**先问这个决策**，再用决策结果写库。
+
+⚠ **刻意不做的事**（属产品口径，不代拍）：
+
+* **不阻断收尾、不改 `status`** —— 录音此刻还在内存里，本次会话内仍可回放；
+  让落盘失败把整个收尾炸掉，比现在更糟。
+* **返回值 `audioPath` 保持非空** —— 它此刻是真的（当前文档内存里的 objectURL）。
+  只有**写进库的那一份**必须是 `null`，因为库要跨会话存活。
+* **不升为用户可见** —— 目前只到开发者 console。这条与 §818/§819 的三处 warn
+  **性质不同**（那三处是质量信号，这里是数据丢失），建议单独拍板。
+
+### §820.5 ⭐ 变异验证：三个全中
+
+| 变异 | 做法 | 结果 |
+|---|---|---|
+| 1 | 把失败分支的 `audioPath: null` 改回 `objectUrl`（**把 bug 改回去**） | ✅ **6 红** |
+| 2 | 失败分支提前 return 让告警恒为 null（信号变死代码） | ✅ **2 红** |
+| 3 | 接线绕开决策、自己写 `audioPath: audioPath \|\| null` | ✅ **1 红** |
+
+⇒ 三个变异**全被抓住**；源文件已与备份**逐字节一致**（`diff -q` 两处均通过）。
+
+⚠ 一个过程记录：我第一次做变异 2 时写出了**语法错误**（`warning: null && (`），
+node 直接加载失败、报「1 个文件失败」——**那不是有效变异**，等于用「文件跑不起来」冒充
+「判据抓到了」。重做成合法语法后才算数。⇒ 通用式：**变异必须先确认它本身能被加载**，
+否则你测的是加载失败，不是判据的牙。
+
+### §820.5bis ⚠ 同类陷阱的**第二次**出现：源码扫描门会命中我注释里的代码字面量
+
+第一次跑 `npm run gates` 时 `src/native/speaker-relabel.test.ts` 打红 3 条
+（「合并必须排在…之前」等）。量了三个锚点在 `stop()` 体里的位置才发现：
+**`status: 'completed'` 的首次命中落在我的注释里（idx 1362），而不是真代码（2576 之后）**
+⇒ 那道门用 `indexOf` 定位锚点，而**注释也在被扫的文本里**。
+
+⚠ 这与 §818.6bis / §819.4bis 是**同一个陷阱的第二次出现**，只是这次的门不同
+（`silent-catch-*` 命中 `catch {}`，`speaker-relabel` 命中 `status: 'completed'`）。
+
+⇒ **可复用的规律**：本仓多处门禁是**源码文本扫描**，所以 ——
+
+* ⭐⭐⭐⭐⭐ **在自己写的注释里引用代码字面量（函数名、状态值、容器字面量），
+  可能被某道门当成真代码命中**，报错信息还会把你指向注释所在行，看起来像
+  「你写错了逻辑」。⇒ 注释里描述代码时，**避免逐字引用会被检索的字面量**，
+  或改用不含该字面量的等义说法。
+* ⇒ 两次的处置都一样：**只改自己的措辞，不动门禁语义**（理由见 §818.6bis）。
+
+### §820.6 ⚠ 口径与仍未实测的部分
+
+* 静态代码分析 + node 行为测试；**未连 PG、未发 HTTP、未运行真实录音会话**。
+* ⚠ **「落盘失败在真机上到底多常发生」未实测** —— 需要一次真机长录音并观察
+  IndexedDB 配额。本节只证明「失败发生时产品会谎报且无提示」，**不证明**它多常发生。
+* ⚠ 另外 3 个候选（`useVoiceInput.ts:154` 孤儿转写 / `audio-parts.ts:53` 文件写入 /
+  `meeting-recording-finalize.ts:242` 入库）本轮**只做了初判，未修**：
+  * `useVoiceInput.ts:154` 的 catch 上原话写着「孤儿转写失败无从提示,静默」——
+    **它自己登记了这个洞**；页面已离开、确实无 UI 可提示，但 `console.warn` 仍有价值。**登记待修。**
+  * `audio-parts.ts:53` 写文件失败时 `filePath = null` 但 DB 行仍插入（base64 兜住了）⇒
+    **属可接受的优雅降级**，不必改。
+  * `meeting-recording-finalize.ts:242` 入库失败已有独立 try/catch 且单独设 `ingestFailed` ⇒
+    **信号有效**，不属于本类。
+* ⇒ 所以本类缺陷在这条链上**已关完**（4 个候选里 1 个是缺陷、1 个可接受、2 个另判）。
+
+### §820.7 校验
+
+`typecheck` **EXIT=0**；`npm run gates` **45/45 通过（57.7s）**；`git diff --check` 退出 0。

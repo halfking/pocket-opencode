@@ -22,7 +22,7 @@ import { Capacitor } from '@capacitor/core'
 import { pickSupportedRecorderMime } from './recorderMime'
 import { RollingWebmDecoder, arrayBufferToBase64 } from './recording-audio-transcode'
 import { sttFailureText } from '../api/stt-error'
-import { saveMeetingAudio } from './meeting-audio'
+import { saveMeetingAudio, resolvePersistedAudio } from './meeting-audio'
 import { VadSegmenter } from './vad-segmenter'
 import { SpeakerDiarizer } from './speaker-diarization'
 import { loadSpeakerProfiles, upsertVoiceprintLabel } from '../features/meetings/voiceprints-store'
@@ -683,12 +683,30 @@ export class MeetingRecorderRuntime {
       const durationMs = resolveWallClockDurationMs(
         Date.now(), this.startTime, this.elapsedMs.value, this.isPaused.value)
       let audioPath = ''
+      // ★§820：落盘成败必须分清。此前 catch 里一句「ok」就吞掉异常，而下面
+      //   后面那句「把 audioPath 与完成状态一起写库」的 updateMeeting **照样**写入
+      //   objectURL ⇒ 落盘失败时用户看到一个「完好」的会议、能播的音频，
+      //   刷新后音频彻底消失，且 `loadMeetingAudio` 返回 null ⇒ 整段重转永久不可用。
+      //   决策在跑得到的纯函数 `resolvePersistedAudio` 里（§52：类方法在 node 里测不到）。
+      let audioPersisted = false
+      let audioSaveError: unknown = null
       if (fullBlob && fullBlob.size > 0) {
         audioPath = URL.createObjectURL(fullBlob)
         if (meetingId) {
-          try { await saveMeetingAudio(meetingId, fullBlob) } catch { /* ok */ }
+          try {
+            await saveMeetingAudio(meetingId, fullBlob)
+            audioPersisted = true
+          } catch (e) {
+            audioSaveError = e
+          }
         }
       }
+      const audioDecision = resolvePersistedAudio({
+        objectUrl: audioPath,
+        persisted: audioPersisted,
+        error: audioSaveError,
+      })
+      if (audioDecision.warning) console.warn(`[meeting-recorder] ${audioDecision.warning}`)
       // 等在途分段转写落库再置 completed；上限 10s，防止个别请求挂死卡住停止流程。
       if (this.inFlightSegments.size) {
         await Promise.race([
@@ -719,7 +737,10 @@ export class MeetingRecorderRuntime {
           console.warn('[meeting-recorder] speaker merge failed, 收尾继续:', e)
         }
         await updateMeeting(meetingId, {
-          audioPath: audioPath || null,
+          // ⚠§820：落盘失败时写 null，**不写那个刷新后必然失效的 objectURL**。
+          //   本次会话内的回放仍走返回值 `audioPath`（它此刻是真的），
+          //   但库里必须是 null —— 否则等于对用户谎报「录音还在」。
+          audioPath: audioDecision.audioPath,
           durationMs,
           status: 'completed',
         })
