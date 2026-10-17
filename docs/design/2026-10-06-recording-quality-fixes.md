@@ -95034,3 +95034,106 @@ AI 总结漏了最后几句、界面上零提示。
 2. 说话人改名**续录历史段**（§276.6）要不要在本轮一并补数据结构
    —— 补法是给分段加 `profileId`，属于存储形态变更，单独拍。
 3. `MeetingMetaSheet.vue` 这个零引用组件：删除，还是接线保留（见 §835.5 末行）。
+
+## §836 追加一句话与实时字幕入库：**静默消失**与 `void` 吞掉的 rejection
+
+> 承接 §835。§835 修的是「更正一段」这条链；本节是**同一次改动留下的另一半**。
+
+### §836.1 ⛔ D1：§131 一次加了**两条**写入路径，只保护了一条
+
+| # | 事实 | 证据 |
+|---|---|---|
+| 1 | §131 一次加了「**更正**一段已有转写」（`onEditSegment`）与「**追加**一句新的话」（`onAppendUtterance`） | 设计文档 §131 |
+| 2 | ① 当时就有 `try/catch` + `toast.error`；② **完全没有** | `MeetingDetailView.vue` |
+| 3 | ② 上有**三次串行写库**：`rt.appendText`（= `saveSegment` + `updateTranscript`）／补落库分支的 `saveSegment` + `updateTranscript` + `refreshRelated` | 同上 |
+
+⇒ 静默失败时，用户面对的是三种**完全不同**的处境：
+
+| 处境 | 触发点 | 用户看到的 |
+|---|---|---|
+| **A 什么都没存** | `saveSegment` 抛错 | 他打的那句话**凭空消失** |
+| **B 只存了一半** | `saveSegment` 成功、`updateTranscript` 抛错 | 分段表里有这一句，会议的 `transcript` 列**没有** ⇒ 界面看得见、AI 总结 / 相关推荐 / 精校**读不到** ⇒ **两处真相不一致** |
+| **C 全存下了，只是收尾没做完** | `refreshRelated` 抛错 | 用户以为失败 ⇒ **重复操作** ⇒ 得到重复分段 |
+
+⚠ 若给三者同一句「保存失败，请重试」，A 会被正确对待，B 和 C 都会被**教错动作**：
+B 的用户重说一句 ⇒ 多一条重复分段；C 的用户重说一句 ⇒ 同上。
+
+### §836.2 ⛔ D2：实时字幕的 commit 用 `void` 吞掉 rejection
+
+`MeetingRecorderRuntime.startLiveCaption()` 里此前是：
+
+```ts
+          commit: (text) => { void this.appendText(text) },
+```
+
+⚠ `void` 不处理 rejection ⇒ `appendText` 抛错时**什么都不发生**：
+没有 console、没有提示、没有分段。
+⇒ 而这条路径是**系统语音识别**（Web Speech API / `webkitSpeechRecognition`）
+在录的**每一句话** ⇒ 整场会议可能**一句都没存进去**，
+而用户看到的实时字幕**一直正常滚动**。
+
+⇒ 这是「谎报存在」的第四个实例：**屏幕上正在滚的那份内容根本没进库**。
+
+### §836.3 落地
+
+| # | 位置 | 改动 |
+|---|---|---|
+| 1 | 新增 `features/meetings/meeting-append-notice.ts` | `describeAppendFailure(stage)`（四个阶段各一句）+ `LIVE_CAPTION_PERSIST_FAIL` + 两个诊断前缀 |
+| 2 | `MeetingDetailView.onAppendUtterance` | 整段流程进 `try/catch`；**每个写库点之前先记 `appendStage`**；失败按 stage 出文案 |
+| 3 | `recordingRuntime.startLiveCaption` 的 `commit` | `void …` → `void …catch(…)`：`console.warn` + 写 `sttError` |
+| 4 | 同上 | ⚠ 刻意用 `sttError` 而不是 `toast`：字幕是**连续**的，toast 会连续弹；`sttError` 是页面上一条稳定错误行，录音中就能看到 |
+
+⚠ **`appendStage` 的标记位置是有语义的**：`'segment'` 必须标在 `await saveSegment()` **之前**。
+若标在之后 ⇒ `saveSegment` 抛错时用户会收到「已存一半」那句 ⇒ 他不会重说 ⇒ 那句话真的丢了。
+（这条有独立变异 F 钉住，见下。）
+
+⚠ ⚠ **`onAppendUtterance` 整段流程保持在同一个函数体里，不拆 helper**：
+§836 第一版把流程拆成 `appendUtteranceInner`，结果既有门
+`segment-edit-proofread`（用 `fnBody(…, 'onAppendUtterance')` 断言
+「`if (!saved)` 落库分支仍在这个函数里」）**当场失明**。
+⇒ 已改回内联，并把这条约束钉成用例 + 结构变异 O。
+
+### §836.4 判据（14 例全绿）+ 变异（16 个全中）
+
+`frontend/src/features/meetings/__tests__/meeting-append-notice.test.ts`
+
+* **文案（行为）**：「什么都没存」与「只存了一半」必须是两句不同的话（核心）/
+  半存必须说清「已加进分段」并指向受影响的消费者（总结·精校）/
+  没存必须给出「再说一次」/ 收尾失败不得说成失败 / 未知 stage 仍给一句人话 /
+  负控（4 阶段 × 5 异常形态）/ 两个诊断前缀可区分 /
+  字幕文案必须说清「字幕还在显示、没存进去」且**不得**谎报录音坏了。
+* **接线（扫描，⚠ 零牙已标注）**：整条追加流程在 try 里 + 失败出声 /
+  **三个写库点各自记 stage** / **stage 标记的顺序**（segment → saveSegment →
+  transcript）/ 既有门依赖的 `if (!saved)` + `saveSegment` 都仍在同一函数体内 /
+  字幕 commit 不得回到 `void` 且必须写可见错误行。
+
+| # | 变异 | 结果 |
+|---|---|---|
+| A / A2 / B | 去掉 try / 去掉日志 / 不用纯函数 | ✅ 各 1 红 |
+| C / D / E | 三个写库点分别不记 stage | ✅ 各 1 红 |
+| F | 把 `'segment'` 标记挪到 `saveSegment` **之后** | ✅ 1 红 |
+| G / H / I / J | 文案：两处境同句 / 不说已存 / 不给动作 / 收尾失败说成失败 | ✅ 各 1 红 |
+| K | 未知 stage 返回空串 | ✅ 1 红 |
+| L | 字幕文案谎报「录音已中断」 | ✅ 1 红 |
+| M / N | 字幕入库失败不写 `sttError` / commit 改回 `void` | ✅ 各 1 红 |
+| O | **把落库分支整块搬进新函数**（模拟我第一版的真实改动） | ✅ 1 红 |
+
+⚠ 本节只有 **1 个**变异首版 0 红，但它值得单记：
+「只钉 `if (!saved)` 这一行存在」在**整个分支被搬走、原处只留同名空壳**时仍然全绿
+⇒ 已加硬为「`if (!saved)` **与** `await saveSegment(` 都要在体内」，
+并用一次**结构变异**（真的把块搬走）验证它有牙。
+
+### §836.5 ⛔ 口径与未实测
+
+* 判据 14 例 + 变异 16 个；`typecheck` EXIT=0；**`npm run gates` 45/45 通过**（53.3s）。
+* ⛔ **未实测**：真机上 `saveSegment` / `updateTranscript` / `refreshRelated` 写失败的
+  真实发生率（本节结论是**构造性**的）。⛔ 字幕入库失败的频率完全未测 ——
+  它取决于系统语音识别可用率，而那条在 §823.5bis 已登记为待真机。
+* ⚠ 登记未做：`transcript` 列与分段表「两处真相不一致」的**修复入口**
+  （例如「重建全文」按钮）本轮未做 —— 属产品口径。
+
+### §836.6 待属主拍板
+
+1. 「只存了一半」之后要不要给一个**「重建会议全文」的一键修复**（数据都在，只是一次列没同步）。
+2. 实时字幕入库失败是否要从 `sttError` 升为 toast（当前选择不升，理由见 §836.3 第 4 行）。
+3. §836.5 末行：`transcript` 与分段表的一致性要不要做常态守卫（而不是只在失败时提示）。

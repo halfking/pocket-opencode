@@ -44,6 +44,10 @@ import {
   type SpeakerLabelOutcome,
 } from '../features/meetings/meeting-edit-failure-notice'
 import {
+  LIVE_CAPTION_PERSIST_FAIL,
+  LIVE_CAPTION_PERSIST_FAIL_TAG,
+} from '../features/meetings/meeting-append-notice'
+import {
   describeMeetingFinalizePersistFailure,
   MEETING_FINALIZE_PERSIST_FAIL_TAG,
 } from '../features/meetings/meeting-finalize-persist-notice'
@@ -543,7 +547,19 @@ export class MeetingRecorderRuntime {
       onResult: (result) => {
         applyCaptionResult(result, {
           setInterim: (text) => { this.interimCaption.value = text },
-          commit: (text) => { void this.appendText(text) },
+          commit: (text) => {
+            // ⚠⚠ §836/D2：这里此前是 `void this.appendText(text)` ⇒ 抛错时
+            //   **什么都不发生**（void 不处理 rejection）：没有 console、没有提示、
+            //   没有分段。而这条路径是系统语音识别的**每一句话** ⇒ 整场会议可能
+            //   一句都没存进去，用户看到的实时字幕却**一直正常滚动**。
+            //   ⇒ 与手工追加（§836/D1）一样，失败必须出声。
+            void this.appendText(text).catch((e) => {
+              console.warn(LIVE_CAPTION_PERSIST_FAIL_TAG, e)
+              // 写 sttError 而不是 toast：字幕是**连续**的，toast 会连续弹；
+              // sttError 是页面上一条稳定的错误行，且录音中就能看到。
+              this.sttError.value = LIVE_CAPTION_PERSIST_FAIL
+            })
+          },
         })
       },
     })

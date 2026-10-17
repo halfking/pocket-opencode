@@ -153,6 +153,11 @@ import { dedupeSegments, renderTranscript } from './meeting-dedup.ts'
 import { resolveRefinedView, type RefinedViewMode } from './refined-transcript-view.ts'
 import { LEFTOVER_RECORDING_HINT } from './meeting-finalize-persist-notice'
 import {
+  describeAppendFailure,
+  MEETING_APPEND_FAIL_TAG,
+  type AppendStage,
+} from './meeting-append-notice'
+import {
   describeMeetingMetaSaveFailure,
   describeSpeakerRenameFailure,
   MEETING_META_SAVE_FAIL_TAG,
@@ -186,6 +191,8 @@ const showSettings = ref(false)
 const showSpeakers = ref(false)
 const showVoiceprints = ref(false)
 const summarizing = ref(false)
+/** §836/D1：追加失败的**位置**，决定文案（什么都没存 vs 只存了一半）。 */
+const appendStage = ref<AppendStage>('runtime')
 const micBusy = ref(false)
 const wantMic = ref(false)
 const noteRecs = ref<RecommendItem[]>([])
@@ -404,34 +411,53 @@ async function onSummarize() {
 }
 
 async function onAppendUtterance(text: string) {
-  const saved = await appendText(text)
-  if (!saved) {
-    // ⚠ §131.2（顺带修的既有缺陷）：`rt.appendText` 第一行就是
-    //   `if (!meetingId) return null`，而 `activeMeetingId` 在 `stop()` 里被置空
-    //   （recordingRuntime.ts:634）⇒ **录完之后**再点这个按钮是静默无反应，
-    //   可输入框上写的提示是无条件可用。这一支以前是直接 `if (!saved) return`。
-    //   补上落库分支：与「更正」共用 store 这条 SSOT 路径。
-    const last = storedSegments.value[storedSegments.value.length - 1]
-    const draft = buildUtteranceSegment({
-      meetingId: meetingId.value,
-      text,
-      startMs: last?.endMs ?? meeting.value?.durationMs ?? 0,
-    })
-    if (!draft) return
-    const id = await saveSegment(draft)
-    storedSegments.value = [...storedSegments.value, { id, ...draft }]
-    await updateTranscript(meetingId.value, renderTranscript(storedSegments.value))
-    await refreshRelated()
-    return
-  }
+  // ⚠⚠ §836/D1：§131 一次加了「更正」与「追加」两条写入路径，前者当时就有
+  //   try/catch，后者一直没有 ⇒ 用户打的一句话会**静默消失**，或
+  //   **只存了一半**（分段进了、会议全文列没进 ⇒ 总结/推荐/精校读不到）。
+  // ⚠ 整段流程在**同一个函数体**里，不拆 helper：既有门
+  //   `segment-edit-proofread` 用 `fnBody(…, 'onAppendUtterance')` 断言
+  //   「`if (!saved)` 落库分支仍在这个函数里」—— 拆出去会让它失明。
+  appendStage.value = 'runtime'
+  try {
+    const saved = await appendText(text)
+    if (!saved) {
+      // ⚠ §131.2（顺带修的既有缺陷）：`rt.appendText` 第一行就是
+      //   `if (!meetingId) return null`，而 `activeMeetingId` 在 `stop()` 里被置空
+      //   （recordingRuntime.ts:634）⇒ **录完之后**再点这个按钮是静默无反应，
+      //   可输入框上写的提示是无条件可用。这一支以前是直接 `if (!saved) return`。
+      //   补上落库分支：与「更正」共用 store 这条 SSOT 路径。
+      const last = storedSegments.value[storedSegments.value.length - 1]
+      const draft = buildUtteranceSegment({
+        meetingId: meetingId.value,
+        text,
+        startMs: last?.endMs ?? meeting.value?.durationMs ?? 0,
+      })
+      if (!draft) return
+      appendStage.value = 'segment'
+      const id = await saveSegment(draft)
+      storedSegments.value = [...storedSegments.value, { id, ...draft }]
+      // ⚠ 走到这里时**分段已经存进库了** ⇒ 后面任何失败都不是「什么都没存」，
+      //   文案必须换一副说法（否则用户会重说一遍，得到两条重复分段）。
+      appendStage.value = 'transcript'
+      await updateTranscript(meetingId.value, renderTranscript(storedSegments.value))
+      appendStage.value = 'related'
+      await refreshRelated()
+      return
+    }
   // ★ 这里原来写的是 `storedSegments.value = [...displaySegments.value]`。
   //   `displaySegments` 是**去重后**的（`dedupeSegments` 会整段丢弃零净增的行 ——
   //   `if (step.added) out.push(...)`），把去重结果写回 storedSegments 等于
   //   把「原始段」这一份真相换成了「展示用子集」：下一次 `seedSegments`
   //   （续录恢复）就会拿这份子集当完整历史，丢掉的段在续录后的 transcript 里
   //   永远回不来。落库已由 appendText 做过，这里只同步内存里的**原始**列表。
-  storedSegments.value = [...segments.value]
-  await refreshRelated()
+    storedSegments.value = [...segments.value]
+    await refreshRelated()
+  } catch (e) {
+    // ⚠ 三种失败处境在 appendStage 里，文案必须说对：
+    //   「什么都没存」⇒ 请再说一次；「只存了一半」⇒ 重说会得到重复分段。
+    console.error(MEETING_APPEND_FAIL_TAG, appendStage.value, e)
+    toast.error(describeAppendFailure(appendStage.value, { error: e }))
+  }
 }
 
 /**
