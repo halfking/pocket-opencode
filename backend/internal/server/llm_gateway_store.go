@@ -233,7 +233,10 @@ func (s *LLMGatewayStore) encryptAPIKey(plain string) (string, error) {
 
 // decryptAPIKey：与 encrypt 对称。空字符串按未配置处理直接返回。历史明文行
 // 不会被静默接受，避免把未保护的秘密继续传播到内存或 OpenCode。
-func (s *LLMGatewayStore) decryptAPIKey(enc string) (string, error) {
+// cipher 为 nil（master key 不可用）或解密失败时返回 error，由调用方
+// （LoadConfig → EnsureLLMGatewayDefaults / LoadLLMGatewayFromDB）按「未配置」
+// 降级并打 WARN，保留磁盘行等 key 修复后重读。
+func (s *LLMGatewayStore) decryptAPIKey(enc string) (key string, err error) {
 	if enc == "" {
 		return "", nil
 	}
@@ -241,9 +244,12 @@ func (s *LLMGatewayStore) decryptAPIKey(enc string) (string, error) {
 		return "", fmt.Errorf("api key decryption is not configured")
 	}
 	// 防御：避免 cipher 内部字段为 nil 时 panic（之前跑出过 SIGSEGV）。
+	// recover 后必须把 err 置非 nil：Go 的默认返回值是 ("", nil)，会把一次
+	// 崩溃伪装成「解密成功但 key 为空」，正好制造全仓都在防的空 key 配置。
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("[llm_gateway] decryptAPIKey panic recovered: %v", r)
+			key, err = "", fmt.Errorf("api key decryption panicked: %v", r)
 		}
 	}()
 	return s.cipher.DecryptString(enc)
