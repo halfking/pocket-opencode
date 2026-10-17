@@ -93731,6 +93731,39 @@ this.recorder.start(this.opts.sliceMs)                    // :122  ← **采集�
   但本节只量了首次 `start()`，**换设备续接的那次偏移未实测**。
 * 探针 `.artifacts/s808-probe/startskew.mjs`（已 gitignore）。未连 PG、未发 HTTP、未运行真实录音会话。
 
+### §823.5bis 补齐第一项未实测：`startLiveCaption()` 的同步开销 ≈18.5ms（仅首次）
+
+`startLiveCaption()` 卡在 `vadSegmenter.start()` 之后、`startTime` 之前 ⇒ **只会加**偏移。
+它内部第一行是 `if (voicePrompt().hasForegroundHijack()) return`，而该标志由播报那条路
+（`announceSilenced`）置位 —— ⚠ **`announceSilenced` 在 `startTime` 之后才调用**，
+所以**首次录音时标志尚未置上，实时字幕一定会启动**。
+
+实测（6 轮，本机 headless chromium-1243）：
+
+| 量 | 首次 | 其余中位 |
+|---|---|---|
+| `new webkitSpeechRecognition()` | **3.3ms** | **0.0ms** |
+| `rec.start()` 同步耗时 | **15.2ms** | **0.1ms** |
+
+⇒ 与 `AudioContext` 一样是**首次专属**：首次 ≈18.5ms，之后 ≈0.1ms。
+⇒ §823.2 给的偏移**下界**据此更新为：
+
+| | AudioContext | startLiveCaption | 合计偏移 | 护栏漂移 | 余量 |
+|---|---|---|---|---|---|
+| 本页首次录音 | ≈190ms | ≈18.5ms | **≈208ms** | ≈ **−187ms** | 500/187 ≈ **2.7×** |
+| 之后每次 | ≈0.1ms | ≈0.1ms | ≈0.2ms | ≈ 21ms | 7.5× |
+
+⇒ 「不会误报」的结论**仍不变**（187 < 500）；7.5× 这个数**仍是热态数**。
+
+⚠ 三条限制，写清免得被当成真机值：
+
+* **headless 下 `onerror: not-allowed`**（无麦克风授权 / 无 Google 语音服务）⇒ 这里量的
+  只是**同步阻塞部分**（真正干活的是异步识别，不占 `start()` 的墙钟）。
+* ⛔ **Android 上的 `webkitSpeechRecognition` 代理到系统引擎**，而按 BUG-AU 的隔离实测，
+  `start()` 会**拉起授权页抢前台** ⇒ 那一步的同步耗时**未实测**，可能远大于 15.2ms。
+* ⛔ **「首次专属」这个前提在桌面未必成立**：桌面上系统语音引擎抢前台的探测可能**永远不置位**
+  ⇒ `startLiveCaption()` 桌面可能是**每次都启动**（那 ≈0.1ms，仍然可忽略）。
+
 ### §823.6 ⇒ 对既有结论的影响
 
 | 结论 | 状态 |
