@@ -20,7 +20,7 @@
 | 项 | 状态 |
 |---|---|
 | `recordingRuntime.ts:701` 收尾同步补 best-effort 护栏 | 抽 `runBestEffort` + 7 用例行为测试；变异①撤护栏 **2 红**、变异②改回裸 `.then(` **1 红**；`test:native` 54/54、`typecheck` EXIT=0。**在 `origin/main` 之上重跑仍绿**（远端 21 个 commit 未碰这三个文件） |
-| §781 两条红 | ⛔ **已由并发会话在主文档 §787 处置完毕**（价表判据改为按 `Group` 分组 + 「不得击穿基线最低价 $0.012/h」不变量；`capabilities-stub-gate` 登记表移除 Sherpa）。**我在 `origin/main` 上独立复跑** `stt-price-catalog-load-bearing.test.mjs` + `capabilities-stub-gate.test.mjs` = **14 PASS / 0 FAIL**（旧读数 13 = 11P/2F；分母 13→14 是并发会话新增用例所致，非口径变动）。⚠ 主文档 §787.2 自报的「`npm run gates` 45/45 全绿」**我没有整套复跑**，只独立核了这两道曾红的门 |
+| §781 两条红 | ⛔ **已由并发会话在主文档 §787 处置完毕**（价表判据改为按 `Group` 分组 + 「不得击穿基线最低价 $0.012/h」不变量；`capabilities-stub-gate` 登记表移除 Sherpa）。**我在 `origin/main` 上独立复跑** `stt-price-catalog-load-bearing.test.mjs` + `capabilities-stub-gate.test.mjs` = **14 PASS / 0 FAIL**（旧读数 13 = 11P/2F；分母 13→14 是并发会话新增用例所致，非口径变动）。✅ **后续已整套复跑**：`npm run gates` 在合并后的 main 上实跑 **45/45 通过**（50.9s，与 §787.2 自报一致）——见主文档 §802.1。本机 `gofmt` 在 PATH 上（homebrew），§787.1① 那个「恒停在第 31 项」的坑在此机不复发，被它挡住的 14 项确实执行了 |
 | 本会话改动整体回归（在本地 `main` 上量） | 会议链 **771/771**；全量 `test:all` 339 文件 / 4101 事件，当时**唯一失败 = Sherpa 那条**（现已被远端处置） |
 
 ### 🔴 我主动作废的一个方案（别再照着它做）
