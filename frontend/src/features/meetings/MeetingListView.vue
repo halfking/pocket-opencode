@@ -21,6 +21,25 @@
 
       <PullToRefresh :on-refresh="load" class="list-scroll">
         <div v-if="loading" class="state"><Skeleton :count="4" /></div>
+        <!--
+          §840：首屏读取失败**不得**落进下面的真空态。
+          `status==='failed'` 时 `loading` 为 false、行数 0 ⇒ 旧模板正好落进
+          「还没有会议记录 + 点击右下角麦克风开始第一次会议」，而那颗重试按钮
+          在 `行数 > 0` 的分支里永不渲染 ⇒ 用户被引导去新建会议，原记录完好却看不见。
+          ⚠ `v-else-if` 必须落在空态组件**自己**身上，且条件自带 `.length` 守卫：
+             门禁 list-error-failpath 从空态标签那一行**向下**找条件，
+             写在父元素上它读到的是下一个分支 ⇒ 整条判据形同虚设。
+        -->
+        <EmptyState
+          v-else-if="readError && meetings.length === 0"
+          icon="⚠️"
+          :title="readFailure.title"
+          :hint="readFailure.hint"
+          :action-label="readFailure.action"
+          size="sm"
+          variant="inline"
+          @action="retry"
+        />
         <EmptyState
           v-else-if="meetings.length === 0"
           icon="🎙️"
@@ -108,6 +127,12 @@ import {
   RECORD_MEDIA_CLEANUP_FAIL_TAG,
 } from '../../utils/action-failure-notice'
 import { useListScene } from '../../composables/use-list-scene'
+import {
+  isListReadError,
+  isListSkeleton,
+  listReadFailureNotice,
+  LIST_READ_FAIL_TAG,
+} from '@/utils/list-load-state'
 
 defineOptions({ name: 'MeetingListView' })
 
@@ -130,8 +155,11 @@ const filters = MEETING_LIST_FILTERS
  *  - **KeepAlive**：停用时 pause（断开 observer），回页时 resume 并重测 sentinel。
  *  - **去重**：按稳定 `m.id` 去重并同页原位替换。
  *
- * 保留的行为：首屏仍由 `load()` 语义承担（immediate），`dbNotReady` 仍由
- * fetchPage 内捕获 —— LocalDB 未初始化是这个页面特有的错误，不是通用失败。
+ * 保留的行为：首屏仍由 `load()` 语义承担（immediate）。
+ * ⚠ §840 更正：`dbNotReady` **不再**由这里捕获 —— `resetQuery()` 返回 `void` 并不抛，
+ *   控制器链上自带 `.catch` 吞掉 fetch 错误 ⇒ 那个 catch 对读库失败是死代码。
+ *   现在改在下面 `fetchPage` 的内部捕获（唯一看得见 `e.message` 的地方），
+ *   这也让本段注释「dbNotReady 仍由 fetchPage 内捕获」第一次与事实相符。
  */
 const {
   rows: meetings,
@@ -145,21 +173,37 @@ const {
 } = useContinuousList<LocalMeeting>({
   pageSize: DEFAULT_LIST_PAGE_SIZE,
   fetchPage: async ({ page }) => {
-    const res = await listMeetings(DEFAULT_LIST_PAGE_SIZE, {
-      archived: filter.value === 'archived',
-      // 后端是 offset 型，控制器是 page 型（从 1 起）。
-      offset: (page - 1) * DEFAULT_LIST_PAGE_SIZE,
-    })
-    return {
-      rows: res,
-      // 本地库不提供 total，用「本页是否满」推导，与原 pageHasMore 语义一致。
-      total: Number.MAX_SAFE_INTEGER,
-      hasMore: pageHasMore(res.length),
+    try {
+      const res = await listMeetings(DEFAULT_LIST_PAGE_SIZE, {
+        archived: filter.value === 'archived',
+        // 后端是 offset 型，控制器是 page 型（从 1 起）。
+        offset: (page - 1) * DEFAULT_LIST_PAGE_SIZE,
+      })
+      return {
+        rows: res,
+        // 本地库不提供 total，用「本页是否满」推导，与原 pageHasMore 语义一致。
+        total: Number.MAX_SAFE_INTEGER,
+        hasMore: pageHasMore(res.length),
+      }
+    } catch (e: unknown) {
+      // §840：这是**唯一看得见 e.message 的地方**。
+      // 控制器 `loadPage` 的 promise 链自带 `.catch(() => setStatus('failed'))`，
+      // 而 `resetQuery()` 返回 void 并不抛 ⇒ 写在 `load()` 的 try/catch 里永远收不到。
+      // 不在此吞掉：读库失败必须由控制器标记成 'failed'，视图据此渲染失败态。
+      const msg = e instanceof Error ? e.message : String(e)
+      if (msg.includes('LocalDB 未初始化')) dbNotReady.value = true
+      else console.error(LIST_READ_FAIL_TAG, '会议列表', msg)
+      // ⚠ 必须 rethrow：返回空结果会被控制器当成**成功**（commitPage → 'exhausted'），
+      //   那样 `readError` 恒为 false，这个分支就成了永远不渲染的死代码。
+      throw e
     }
   },
 })
 
-const loading = computed(() => listStatus.value === 'idle' && meetings.value.length === 0 && !dbNotReady.value)
+const readFailure = listReadFailureNotice('会议记录')
+/** 无行 + 读取失败 ⇒ 整页失败态（`.length` 守卫在模板里，门禁读的是那一行）。 */
+const readError = computed(() => isListReadError(listStatus.value, meetings.value.length))
+const loading = computed(() => isListSkeleton(listStatus.value, meetings.value.length, dbNotReady.value))
 const loadingMore = computed(() => listStatus.value === 'loadingNext' || listStatus.value === 'refreshing')
 
 async function load() {
@@ -167,6 +211,7 @@ async function load() {
   try {
     resetQuery()
   } catch (e: unknown) {
+    // 只兜 resetQuery 自身的同步抛出；**读库失败不在这里**（见 fetchPage 的注释）。
     const msg = e instanceof Error ? e.message : String(e)
     if (msg.includes('LocalDB 未初始化')) dbNotReady.value = true
   }

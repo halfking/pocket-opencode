@@ -147,8 +147,17 @@ const FAILPATH_VIEWS = [
   },
   {
     file: 'features/meetings/MeetingListView.vue',
-    state: 'n/a',
-    why: '模板里没有任何 error 参与的条件（空态只由 meetings.length === 0 决定）',
+    // §840：原为 `n/a`，理由写的是「模板里没有任何 error 参与的条件」——
+    // 而**那正是缺陷本身**：首屏读失败时 `status==='failed'`、`loading` 为 false、
+    // 行数 0 ⇒ 正好落进 `v-else-if="meetings.length === 0"` 的真空态
+    // （「还没有会议记录」+「点击右下角麦克风开始第一次会议」），
+    // 而那颗重试按钮在 `行数 > 0` 分支里永不渲染。
+    // 已补 `readError && meetings.length === 0` 分支 ⇒ 从此属于 enforced。
+    // ⚠ 能被本门禁认出来，全靠条件里的 `Error` 一词（枚举器用 `/error/i` 筛选）；
+    //   若当年把它命名成 `readFailed`，这条分支会被整体跳过、守卫无人看守。
+    state: 'enforced',
+    why: '§840：首屏读失败曾被显示成「还没有会议记录」并引导用户新建会议；' +
+      '现有 readError && meetings.length === 0 分支，按 enforced 管辖',
   },
   // ↓ demo/首页类：用了下拉刷新，但**整页没有 EmptyState**，也就没有「错误态接管整页」这回事
   { file: 'pages/Home.vue', state: 'n/a', why: '首页外壳，模板里 0 个 EmptyState' },
@@ -210,8 +219,12 @@ test('【量具自证】枚举器确实采到了全部下拉刷新视图与两�
   assert.ok(files.length >= 5,
     `只采到 ${files.length} 个下拉刷新视图（期望 ≥5）⇒ 棘轮覆盖不全，扫不到新增的视图`)
   const enforced = FAILPATH_VIEWS.filter((v) => v.state === 'enforced')
-  assert.equal(enforced.length, 2,
-    `enforced 应为 2 处（SessionListView / EmailInboxView），实际 ${enforced.length} ⇒ 登记表与现实脱节`)
+  assert.equal(enforced.length, 3,
+    `enforced 应为 3 处（SessionListView / EmailInboxView / MeetingListView），实际 ${enforced.length} ⇒ 登记表与现实脱节`)
+  // ★ 棘轮必须盯住「新登记的那一处」本身：只数条目数的话，把 MeetingListView
+  //   改回 n/a 再加一条别的 enforced，数目照样是 3，门禁察觉不到倒退。
+  assert.ok(enforced.some((v) => v.file === 'features/meetings/MeetingListView.vue'),
+    '§840 登记的 MeetingListView 不在 enforced 里 ⇒ 有人把它退回 n/a 了（它的空态分支是 §840 修出来的，n/a 会让它重新变成无人看守）')
   // 采到的空态分支必须真的能被枚举到，否则「零违规」是恒真
   const all = unguardedErrorEmptyStates(pullViews())
   assert.equal(all.length, 0, '未改动时就不该有违规分支，否则下面变异的红来自「本来就红」')
@@ -251,6 +264,23 @@ test('【变异 M3 · 必须转红】往一个登记为 n/a 的视图里注入�
   }))
   assert.ok(unguardedErrorEmptyStates(views).some((b) => b.file === target),
     '注入到未改过的视图却没判红 ⇒ 规则被写成了「只查那两个文件」')
+})
+
+test('【变异 M5 · 必须转红】把 §840 给会议列表加的「无行」守卫拿掉（首屏失败又变真空态）', () => {
+  const views = pullViews().map((v) => (v.file !== 'features/meetings/MeetingListView.vue' ? v : {
+    ...v,
+    text: v.text.replace('v-else-if="readError && meetings.length === 0"', 'v-else-if="readError"'),
+  }))
+  assert.ok(unguardedErrorEmptyStates(views).some((b) => b.file === 'features/meetings/MeetingListView.vue'),
+    '§840 那条新分支没被判红 ⇒ 判据仍不认它（多半是条件里没有 `Error` 一词，被 /error/i 提前 continue 掉了）')
+})
+
+test('【变异 M6 · 必须转红】把新登记的视图退回 n/a（证明登记表条目被真正看守）', () => {
+  const shrunk = FAILPATH_VIEWS.map((v) => (v.file === 'features/meetings/MeetingListView.vue' ? { ...v, state: 'n/a' } : v))
+  const enforced = shrunk.filter((v) => v.state === 'enforced')
+  assert.notEqual(enforced.length, 3, '退回 n/a 后条目数没变 ⇒ 棘轮只数个数，看不住倒退')
+  assert.ok(!enforced.some((v) => v.file === 'features/meetings/MeetingListView.vue'),
+    'MeetingListView 已不在 enforced 里，钉它的断言没响')
 })
 
 test('【变异 M4 · 必须保持绿】行内（非 EmptyState）错误提示不受管辖（避免过度管辖）', () => {

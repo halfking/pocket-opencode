@@ -37,11 +37,20 @@
  *   ⇒ 必须有自己的错误分支，且它的位置必须在 `!meeting` **之前**。
  */
 
-/** 与 `MeetingListView.dbNotReady` 同一判据（同一句错误文本）。 */
-export function isLocalDbUnavailable(error: unknown): boolean {
-  const msg = error instanceof Error ? error.message : String(error ?? '')
-  return msg.includes('LocalDB 未初始化')
-}
+/**
+ * 与 `MeetingListView.dbNotReady` 同一判据（同一句错误文本）。
+ *
+ * ⚠ §840：实现已上移到 `src/utils/list-load-state.ts`（跨特性，两个列表页都要用；
+ *   留在 features/meetings 下会让 utils 反向依赖 features）。这里只做再导出，
+ *   **保持只有一份实现** —— 两份同义判据必然漂移，而漂移的后果是
+ *   「列表能进、详情进不去」这类只在真机上才看得见的分叉。
+ */
+// ⚠ 用相对路径而不是 `@/utils/...`：本模块被 §837/§840 的判据直接以
+//   `node --test --experimental-strip-types` 加载，而那条路径**不解析 `@` 别名**
+//   （gates 里也是裸 node）。写成别名会让判据在第一步就 ERR_MODULE_NOT_FOUND。
+import { isLocalDbUnavailable } from '../../utils/list-load-state.ts'
+
+export { isLocalDbUnavailable }
 
 export interface MeetingLoadFailureInput {
   error?: unknown

@@ -95491,3 +95491,170 @@ async function load() {
 2. ③ 的「停下」要不要给一个「稍后自动补做收尾」的队列（当前是彻底不做）。
 3. `toggle()` 本身仍没有 try/catch（本轮三处都在 `start`/`stop` 内部兜住）——
    要不要把「事件处理器边界必须自己说真话」这条也落到 `toggle` 上。
+
+---
+
+## §840 列表页「首屏读取失败」被显示成「还没有记录」，并把用户引导去新建
+
+**一句话**：会议列表与笔记列表在首屏读取失败时，显示的是「还没有会议记录 / 点击右下角麦克风开始第一次会议」，
+而那颗「加载失败，点击重试」按钮在结构上永不渲染；更深一层，那层专门为「本地库未就绪 ⇒ 重新登录」
+准备的界面**根本不可达**，因为它依赖的错误信息被控制器吞掉了。
+
+### 1. 缺陷证据
+
+#### D1 · 首屏读失败 ⇒ 真空态 + 无处重试
+
+两处视图的模板分支（会议为例，`MeetingListView.vue:22-70`）：
+
+```
+<div v-if="loading" class="state"><Skeleton :count="4" /></div>
+<EmptyState v-else-if="meetings.length === 0" icon="🎙️"
+            title="还没有会议记录" hint="点击右下角麦克风开始第一次会议" />
+<div v-else class="meeting-list">
+  …卡片…
+  <div v-if="meetings.length > 0" ref="sentinelRef" class="more">
+    <span v-if="loadingMore">加载中…</span>
+    <button v-else-if="listStatus === 'failed'" …>加载失败，点击重试</button>
+```
+
+而 `loading = listStatus==='idle' && meetings.length===0 && !dbNotReady`。
+
+首屏读取失败时 `listStatus` 变成 `'failed'`（`continuousList.ts:311-315` 的 `.catch`）⇒
+`loading` 为 **false**、行数 **0** ⇒ **正好落进真空态那一支**。后果：
+
+- 显示「还没有会议记录」+「点击右下角麦克风开始第一次会议」——用户已有会议时这是一句**谎报**；
+- 而且这句话**主动引导用户去新建会议**（右下角那个 FAB 就是新建入口），原记录完好却看不见；
+- 那颗「加载失败，点击重试」在 `行数 > 0` 的分支里 ⇒ **首屏失败时永不渲染**
+  （顺带一提：那个内层 `v-if="meetings.length > 0"` 在 `v-else` 分支里恒为真，是死代码）。
+
+笔记列表 `NoteListView.vue:88-121` **完全同形**，且更甚一层：它的空态条件是
+`filteredNotes.length === 0`（筛选后的量），搜索无命中与读取失败无法区分。
+
+#### D2 · `dbNotReady → DbLockedState` 那一层不可达（本节最深的一条）
+
+`local-db.ts:859/881` 明确在两种常见情形抛 `LocalDB 未初始化：连接不存在` /
+`LocalDB 未初始化，请先调用 init(dbSecret)`——锁屏后回来、应用启动早于 `init(dbSecret)`、
+切换工作区导致密钥不可用。**这不是罕见分支**（§837 已就同一批抛错取证）。
+
+两处视图都为此写了出口：
+
+```js
+async function load() {
+  dbNotReady.value = false
+  try { resetQuery() }
+  catch (e) { if (msg.includes('LocalDB 未初始化')) dbNotReady.value = true }
+}
+```
+
+**但这个 catch 收不到任何东西**：
+
+- `resetQuery()` 返回 `void`，内部是 `void loadPage(1,'refresh')`（`continuousList.ts:389-401`）；
+- `loadPage` 的 promise 链自带 `.catch(() => { failedKind = kind; setStatus('failed') })`（`:311-315`），
+  **错误被吃掉，且没有日志、没有重抛**。
+
+⇒ `dbNotReady` 恒为 false ⇒ 「本地库未就绪，请重新登录」与「磁盘忙，重试」在界面上**完全同形**。
+
+**实测读数**（`.artifacts/s840-probe/probe.mjs`，两个场景各跑一次）：
+
+| 场景 | `resetQuery()` 返回 | 视图层 catch | `dbNotReady` | status 序列 | status/行数 |
+|---|---|---|---|---|---|
+| A `LocalDB 未初始化：连接不存在` | `undefined` | **未触发** | `false` ⛔ | `["refreshing","failed"]` | `failed` / `0` |
+| B `SQLITE_BUSY` | `undefined` | **未触发** | `false` ⛔ | `["refreshing","failed"]` | `failed` / `0` |
+
+两项结论：视图层 `loading` 计算结果 `false` ⇒ 落进 `EmptyState` 分支 = `true`（两个场景都是）；
+两种失败三项读数**全同**。
+
+#### D3 · 骨架屏会在请求发出前塌成真空态（闪一下）
+
+首屏 `load()` 一执行，`resetQuery()` 同步把 status 从 `idle` 翻成 `refreshing`
+⇒ 旧 `loading`（只认 `idle`）立刻为 false、行数仍 0 ⇒ **「还没有会议记录」在请求还在路上时就闪出来**，
+拿到数据再变回列表。「正在读」与「读完了但是空的」被混成一个状态。
+
+#### D4 · 同仓已有正确做法，本节沿用
+
+`EmailInboxView.load()` 直接 `await showLocal(true)` ⇒ 它的 catch **可达**，
+`dbNotReady` 与 `loadError` 都真的生效。
+⇒ **三个列表页里，唯一走控制器的两处（会议、笔记）是坏的。**
+
+#### D5 · 注释声称的事与代码不符
+
+`MeetingListView.vue:133-134` 原文写着「`dbNotReady` 仍由 **fetchPage 内捕获**」——
+而当时的 `fetchPage` **一个 catch 都没有**。这不是取舍，是迁移到 `useContinuousList`
+时留下的注释孤儿（§838 在会议删除处查到过同类：注释声称没关系，实际是静默存储泄漏）。
+
+### 2. 落地
+
+| 位置 | 改动 |
+|---|---|
+| `src/utils/list-load-state.ts`（新） | `isLocalDbUnavailable`（SSOT）/ `isListReadError` / `isListSkeleton` / `listReadFailureNotice` / `LIST_READ_FAIL_TAG` |
+| `features/meetings/meeting-load-notice.ts` | §837 的 `isLocalDbUnavailable` 改为**从新 SSOT 再导出**（只有一份实现；相对路径 + `.ts` 后缀，因为判据以裸 `node --test` 加载，不解析 `@` 别名） |
+| `features/meetings/MeetingListView.vue` | `fetchPage` 加 try/catch（判本地库未就绪 → `dbNotReady`；否则 `console.error` 带 tag；**必须 rethrow**）；模板加带「无行」守卫的失败分支 + 重试入口；`loading` 改走共享判定；`load()` 的注释改为「只兜同步抛出」 |
+| `features/notes/NoteListView.vue` | 同上；`readError` 额外排除**搜索态**（搜索 0 命中是合法结论，不能被一次无关的历史失败改写成「读取失败」） |
+| `styles/__tests__/list-error-failpath.test.mjs` | 登记表 `MeetingListView` 由 `n/a` 改 `enforced`；量具自证的 `enforced` 计数 2→3 **并加一条钉住该条目本身的断言**；新增变异 M5（拿守卫）/ M6（退回 n/a） |
+
+⚠ **一处刻意的踩雷式命名**：视图标志叫 `readError` 而不是 `readFailed`。
+`list-error-failpath` 的枚举器用 `/error/i` 认出「错误分支」再检查它的行数守卫
+⇒ 条件里没有 `error` 一词就会在 `continue` 那一步被**整体跳过**，守卫被拿掉也没人喊。
+**判据的识别词是契约的一部分**（同名先例：仓库既有的 `loadError`）。
+
+### 3. 判据与变异
+
+`src/utils/__tests__/list-load-state.test.ts`：**37 例全通过**（判定 10 + 文案 4 + SSOT 3 + 接线 13 + 变异负控 12）。
+
+- 关键设计：**断言与变异共用同一把尺子**。判据抽成
+  `hasGuardedBranch / orderOk / hasRetryEntry / seesErrorObject / rethrows / usesSharedPredicate`，
+  变异去测的是这些函数本身，而不是「另一份写法的正则」——
+  否则 0 红无法区分「判据有洞」与「变异无效」。
+- `orderOk` 是新增的不变量：`v-else-if` 链**只认第一个为真的**，失败分支一旦排到真空态之后就永远轮不到，
+  而这在肉眼 review 里几乎看不出来。
+
+**对真实文件的端到端变异**（改 `.vue` → 跑判据 + 仓库门禁 → 复原）：
+
+| 变异 | §840 判据 | 仓库门禁 `list-error-failpath` |
+|---|---|---|
+| M1 拿掉 `meetings.length === 0` 守卫 | 🔴 2 | 🔴 3 |
+| M2 `fetchPage` 的 catch 不 rethrow（改返回空结果） | 🔴 2 | 0（不归它管） |
+| M3 失败分支挪到真空态之后 | 🔴 2 | 🔴 1 |
+| 复原后基线 | 0 | 0 |
+
+M1 的门禁读数为 3，是本节**最值得记的一条**：它证明仓库那道门现在**真的覆盖了新分支**，
+而不只是「我在自己的判据里覆盖了」。
+
+### 4. 量具自证（本节自己翻车两次，记下来）
+
+`blockFrom`（取 `fetchPage` 函数体）连着错两版，两版都是**边界没由语法界定**：
+
+1. 用 `/^\s*\}\)/m` 找块尾 ⇒ 先撞上 `listMeetings(size, { … })` 的收尾 `})`
+   ⇒ 取到的块在 `catch` 之前就断了 ⇒ **后面 8 条判据一起假红**；
+2. 改成括号配平后，锚点后**第一个** `{` 是参数解构 `({ page })` 的括号 ⇒ 配平立刻归零
+   ⇒ 只取到 26 个字符。
+
+⇒ **锚点之后的第一个括号不一定是函数体的括号**；要先越过 `=>` 再取 `{`。
+（同族教训已是第 N 次：「这一行存在」≠「它在正确的范围内」。）
+
+### 5. 口径与未实测
+
+- ⛔ **未实测（需真机）**：首屏读失败的真实发生率；`LocalDB 未初始化` 在这两页的命中频率；
+  D3 骨架屏塌陷的**可见程度**（首屏很快，可能只是 1 帧，属推测）。
+- ⛔ 未验证修好之后真机上的观感（无设备）。判据覆盖的是「分支存在、位置正确、错误不被吞」，
+  **不是**「文案读起来对」——后者需要属主或真机确认。
+- 阴性声明的口径：本次**没有**声称「其它列表页（收件箱、文件夹、任务、会话）同类问题已排除」。
+  只对 `EmailInboxView` 做了 `await` 可达性的读码确认（`EmailInboxView.vue:509-520`），
+  其余未逐一取证。
+- 判据的口径：结构判据**不含**运行时渲染断言（仓库无组件测试基座），
+  「失败分支真的会显示出来」这一点由「分支位置 + 守卫 + rethrow」三条静态不变量近似，
+  而非端到端渲染验证。
+
+### 6. 待拍板
+
+1. 失败文案要不要更激进一点——比如直接写「可能有 N 场会议没显示出来」（需要先能读出计数，
+   而失败时恰恰读不到 ⇒ 现在做不到，属技术性不可行，不是没做）。
+2. 「重试」要不要顺带自动重登检测（现在 `dbNotReady` 那一层已恢复可达，
+   `DbLockedState` 会真的显示了 ⇒ 是否要给它加「刚刚失败过一次」的上下文文案）。
+3. 控制器层要不要开一条错误通道（`onError` 回调 + `lastError`），
+   让所有走 `useContinuousList` 的视图都不必各自在 `fetchPage` 里写 try/catch。
+   **本节是逐页补的，不是从根上收的**；`EmailInboxView` 之外的收件箱/文件夹/任务/会话
+   是否还有「错误信息到不了视图」的位置，需要一次专门扫面（未做）。
+4. `NoteListView` 未用 `<PullToRefresh>` ⇒ 它**不在** `list-error-failpath` 的扫描范围内；
+   本节靠自己的判据看守它。是否要把那道门的扫描范围从「用了下拉刷新」放宽到
+   「用了 `useContinuousList`」（更贴合缺陷的实际发生条件）。

@@ -85,6 +85,25 @@
         </div>
         <NoteSearchBrief v-if="briefing" :summary="briefing.summary" :offline="briefing.offline" />
         <div v-if="loading" class="state"><Skeleton :count="3" /></div>
+        <!--
+          §840：与 MeetingListView 同形同源。首屏读失败时 `loading` 为 false、
+          `filteredNotes` 为 0 ⇒ 正好落进下面的「还没有笔记」，而那颗
+          「加载失败，点击重试」在 `notes.length > 0` 分支里永不渲染。
+          ⚠ 搜索态**不进**这个分支（`readError` 里已排除）：搜索 0 结果是
+            合法结论，不能被一次无关的历史失败改写成「读取失败」。
+          ⚠ `v-else-if` 落在空态组件自己身上 + 自带 `.length` 守卫，
+            理由同会议侧（门禁从空态标签那一行向下读条件）。
+        -->
+        <EmptyState
+          v-else-if="readError && filteredNotes.length === 0"
+          icon="⚠️"
+          :title="readFailure.title"
+          :hint="readFailure.hint"
+          :action-label="readFailure.action"
+          size="sm"
+          variant="inline"
+          @action="retry"
+        />
         <EmptyState
           v-else-if="filteredNotes.length === 0"
           icon="📝"
@@ -165,6 +184,12 @@ import { useNoteRecording } from './useNoteRecording'
 import { noteRecorderUiState } from './note-recording'
 import { searchNotesWithIntent, type NoteSearchBriefing } from './note-search'
 import { useContinuousList } from '../../composables/useContinuousList'
+import {
+  isListReadError,
+  isListSkeleton,
+  listReadFailureNotice,
+  LIST_READ_FAIL_TAG,
+} from '@/utils/list-load-state'
 import { DEFAULT_LIST_PAGE_SIZE, pageHasMore } from '../../native/list-sync/page'
 import * as notesStore from './notes-store'
 import type { LocalNote } from './notes-store'
@@ -298,17 +323,27 @@ const {
 } = useContinuousList<LocalNote>({
   pageSize: DEFAULT_LIST_PAGE_SIZE,
   fetchPage: async ({ page }) => {
-    const res = await notesStore.listNotes({
-      limit: DEFAULT_LIST_PAGE_SIZE,
-      // 后端是 offset 型，控制器是 page 型（从 1 起）
-      offset: (page - 1) * DEFAULT_LIST_PAGE_SIZE,
-      domain: domain.value === 'all' ? undefined : domain.value,
-      workspaceId: currentWorkspaceId(),
-    })
-    return {
-      rows: res,
-      total: Number.MAX_SAFE_INTEGER,
-      hasMore: pageHasMore(res.length),
+    try {
+      const res = await notesStore.listNotes({
+        limit: DEFAULT_LIST_PAGE_SIZE,
+        // 后端是 offset 型，控制器是 page 型（从 1 起）
+        offset: (page - 1) * DEFAULT_LIST_PAGE_SIZE,
+        domain: domain.value === 'all' ? undefined : domain.value,
+        workspaceId: currentWorkspaceId(),
+      })
+      return {
+        rows: res,
+        total: Number.MAX_SAFE_INTEGER,
+        hasMore: pageHasMore(res.length),
+      }
+    } catch (e: unknown) {
+      // §840：控制器链自带 `.catch` 吞掉 fetch 错误、`resetQuery()` 也不抛，
+      // 所以**只有这里**看得见 e.message（能区分「本地库未就绪 → 重新登录」）。
+      const msg = e instanceof Error ? e.message : String(e)
+      if (msg.includes('LocalDB 未初始化')) dbNotReady.value = true
+      else console.error(LIST_READ_FAIL_TAG, '笔记列表', msg)
+      // ⚠ 必须 rethrow，否则控制器当成成功（'exhausted'）⇒ 失败态永不显示。
+      throw e
     }
   },
 })
@@ -319,8 +354,16 @@ const searchResults = ref<LocalNote[] | null>(null)
 /** 模板统一读它：搜索态优先，否则读分页数据。 */
 const notes = computed<LocalNote[]>(() => searchResults.value ?? pagedNotes.value)
 
+const readFailure = listReadFailureNotice('笔记')
+/**
+ * §840：无行 + 读失败 ⇒ 整页失败态。
+ * 搜索态排除在外：那时空列表是「没匹配到」，不是读取失败。
+ */
+const readError = computed(
+  () => searchResults.value === null && isListReadError(listStatus.value, notes.value.length),
+)
 const loading = computed(
-  () => listStatus.value === 'idle' && notes.value.length === 0 && !dbNotReady.value,
+  () => isListSkeleton(listStatus.value, notes.value.length, dbNotReady.value),
 )
 const loadingMore = computed(() => listStatus.value === 'loadingNext' || listStatus.value === 'refreshing')
 
@@ -331,7 +374,9 @@ async function load() {
   try {
     resetQuery()
   } catch (e: unknown) {
-    if (e instanceof Error && e.message.includes('LocalDB 未初始化')) dbNotReady.value = true
+    // §840：只兜 resetQuery 自身的同步抛出；读库失败在 fetchPage 内捕获。
+    const msg = e instanceof Error ? e.message : String(e)
+    if (msg.includes('LocalDB 未初始化')) dbNotReady.value = true
   }
   // 草稿横幅与分页无关，单独取
   try {
