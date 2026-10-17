@@ -1,7 +1,7 @@
 # RSS 内置目录扩展：AI / 新产品 / 好价促销（2026-10-17）
 
 **状态**: 现行（增量落地）
-**前置**: [2026-10-03-rss-digest-and-starter-library.md](../handoff/2026-10-03-rss-digest-and-starter-library.md)（内置目录 it/finance/news 三类 + 每日摘要 + 一键分享；2026-10-03 当时 34 条，后续增至 37）
+**前置**: [2026-10-03-rss-digest-and-starter-library.md](../handoff/2026-10-03-rss-digest-and-starter-library.md)（内置目录 it/finance/news 三类 + 每日摘要 + 一键分享；2026-10-03 当时 34 条，后增至 38）
 **证据**: [rss-feed-probe/round4.json](../handoff/evidence/rss-feed-probe/round4.json)
 
 ## 1. 需求原文与完善
@@ -14,7 +14,7 @@
 
 | # | 子需求 | 现状（2026-10-17 前） | 本次动作 |
 |---|--------|----------------------|----------|
-| C1 | 搜集 IT/AI/财经/新产品/硬件促销 热门 RSS | 目录 34 条，仅 it/finance/news；**AI、新产品、促销完全缺失**（OpenAI 混在 IT 里） | round4 探测 28 个候选，收录 15 条，目录扩到 52 条六类 |
+| C1 | 搜集 IT/AI/财经/新产品/硬件促销 热门 RSS | 目录 34 条，仅 it/finance/news；**AI、新产品、促销完全缺失**（OpenAI 混在 IT 里） | round4 探测 30 个候选（含基线复测），新增 14 条 + OpenAI 自 it 迁 ai，目录 38 → 52 条六类 |
 | C2 | 内置到应用（初始化数据） | 目录编译进二进制（catalog.go），导入幂等 | 沿用；无需新表 |
 | C3 | 用户点击选择要看的 RSS | 添加页只挂 5 条旧 seeds，未接分类目录 | RssAddSource 重写为分类目录页（chips + 分组 + 一键按类导入） |
 | C4 | 后台自动拉取最新信息 | 已修（scheduler 按 ListActiveScops 扫真实用户作用域） | 沿用 |
@@ -27,9 +27,9 @@
 ## 2. Round4 探测（2026-10-17，本机真实 HTTP）
 
 方法与前三轮一致：`GET` + `User-Agent: OpenPocket-RSS/1.0`，20s 超时，判定 200 +
-XML/Atom content-type + 能数出 `<item>/<entry>`。28 个候选收录 15：
+XML/Atom content-type + 能数出 `<item>/<entry>`。30 个候选（含 1 条既有条目基线复测）中新增收录 14 条：
 
-### 收录（15）
+### 收录（14 新增 + OpenAI 迁类）
 
 | 分类 | 源 | 条目 | 备注 |
 |---|---|---|---|
@@ -63,7 +63,7 @@ XML/Atom content-type + 能数出 `<item>/<entry>`。28 个候选收录 15：
 - `catalog.go`：新增 `CategoryAI/CategoryProduct/CategoryDeals` 常量；`StarterCategories()`
   扩为六类有序 `[it, ai, finance, product, deals, news]`；`StarterCategoryLabel` 增补
   「AI 动态 / 新产品 / 好价·促销」；OpenAI Blog 自 it 迁 ai（URL 不变，老用户导入幂等）；
-  新增 15 条 round4 验证源。**目录总数 37 → 52**（round1-3 实收 37：it 19 + finance 11 + news 7）。
+  新增 14 条 round4 验证源（另有 OpenAI 迁类）。**目录总数 38 → 52**（基线 it 20 + finance 11 + news 7；OpenAI 迁出后 it 19，新增 ai 7 中的 6 条 + product 5 + deals 3 = 14 行）。
 - `catalog_test.go`：分类覆盖断言从三类扩到六类（任一类清空即红）；锁
   `StarterCategories()` 长度；OpenAI 迁类唯一性专测。
 
@@ -101,6 +101,7 @@ XML/Atom content-type + 能数出 `<item>/<entry>`。28 个候选收录 15：
 | # | 步骤 | 结果 |
 |---|---|---|
 | 1 | `go build ./cmd/pocketd`（darwin + linux/arm64） | ✅ |
+| 1b | `go test ./internal/server/ -run TestRSSStarter` | 首轮 ✗（旧三类 default 断言把新分类判为回归）→ 已升级六类断言，复审 ✅ |
 | 2 | `go test ./internal/rss/`（六类覆盖 / OpenAI 迁类唯一 / 幂等键 / SSRF 开关专测） | ✅ 全过 |
 | 3 | PG 集成测试打真库（导入幂等 / 分类过滤+上限 / 非法 scope） | ✅ 3/3 |
 | 4 | `POST /api/auth/login`（dev 旁路） | ✅ JWT 291B |
@@ -115,8 +116,8 @@ XML/Atom content-type + 能数出 `<item>/<entry>`。28 个候选收录 15：
 域名（含 `dig @223.5.5.5`）解析进 RFC2544 基准段 `198.18.0.0/15`，rss 包的
 SSRF 防护按设计拒连。生产 DNS 正常不受影响；为让透明代理环境可开发/可验证，
 加了默认关闭的 `POCKET_RSS_ALLOW_BENCHMARK_IPS` 逃生阀（见 §4），并顺手补齐
-v6 基准段漏拦。量子位 feed 在该代理链路下偶发 EOF（python 探测与生产路径均
-正常），属于本机代理抖动，不影响目录收录判定。
+v6 基准段漏拦。量子位 feed 在该代理链路下偶发 EOF（python 直连探测 200/10 条正常），
+属于本机代理抖动；入目录判定以 python 直连探测为准，Go 链路在生产 DNS 环境不受此影响。
 
 ## 6. 维护规则（沿袭 round1-3）
 

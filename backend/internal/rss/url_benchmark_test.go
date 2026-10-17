@@ -1,5 +1,8 @@
 package rss
 
+// 注意：以下两个用例切换包级全局 SetAllowBenchmarkIPs，勿加 t.Parallel()；
+// 每个用例都自行显式设置初态，-shuffle 下也能自愈。
+
 import (
 	"net"
 	"testing"

@@ -278,5 +278,25 @@
         "items": 0,
         "ms": 3008,
         "err": "SSL: UNEXPECTED_EOF_WHILE_READING"
+    },
+    {
+        "url": "https://www.chiphell.com/rss.php",
+        "title": "Chiphell（候选，未收录）",
+        "category": "product",
+        "status": 200,
+        "ctype": "text/html; charset=UTF-8",
+        "items": 0,
+        "ms": 181,
+        "err": "返回 HTML 而非 feed"
+    },
+    {
+        "url": "https://www.ithome.com/rss/",
+        "title": "IT之家（基线复测：既有目录条目，round1 起已收录）",
+        "category": "it",
+        "status": 200,
+        "ctype": "text/xml; charset=utf-8",
+        "items": 60,
+        "ms": 158,
+        "err": ""
     }
 ]

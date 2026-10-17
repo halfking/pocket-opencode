@@ -554,6 +554,11 @@ func (c Config) Validate() error {
 	if c.RSS.MaxConcurrency < 1 {
 		return fmt.Errorf("POCKET_RSS_MAX_CONCURRENCY must be >= 1")
 	}
+	// 逃生阀只服务开发机的透明代理（fake-ip）环境。生产 DNS 正常，
+	// 打开它只会无谓削弱 SSRF 防护——fail-closed，直接拒绝启动。
+	if c.RSS.AllowBenchmarkIPs {
+		return fmt.Errorf("POCKET_RSS_ALLOW_BENCHMARK_IPS must not be enabled in production (dev/fake-ip networks only)")
+	}
 	// 日报时刻越界会让 nextRun 算出一个"永远到不了"的时间点，日报就静默不发了。
 	if c.RSS.DigestHour < 0 || c.RSS.DigestHour > 23 {
 		return fmt.Errorf("POCKET_RSS_DIGEST_HOUR must be 0-23")
