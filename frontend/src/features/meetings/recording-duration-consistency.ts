@@ -233,3 +233,46 @@ export function carriedStartTime(now: number, keptElapsedMs: number): number {
   const elapsed = Number.isFinite(keptElapsedMs) && keptElapsedMs > 0 ? keptElapsedMs : 0
   return now - elapsed
 }
+
+/** `refetchFullTranscript` 返回值的**最小**形状（本模块只读这三个字段）。 */
+export interface RefetchOutcomeLike {
+  applied: boolean
+  reason?: string
+  transcodeFailed?: boolean
+  transcodeError?: string
+}
+
+/**
+ * §818：把「转码失败 / 整段重转失败」翻译成一条**诊断文案**，null = 一切正常。
+ *
+ * ⚠⚠ **为什么必须是纯函数而不是写在 `finalizeRecording` 里**：那个函数依赖
+ * localDB + HTTP，**在 node 里跑不到**（§52 的老问题：决策埋在跑不到的函数体里，
+ * 一行行为门都没有）。第一版修复就把它写在调用点 ⇒ 源码扫描判据对着 `console.warn`
+ * 匹配，**把 warn 改成 `void 0 && console.warn` 照样全绿** ——
+ * 判据贴在语法形状上，对「warn 变死代码」这个最可能的变异零牙。
+ *
+ * ⇒ 决策搬到这里，就能用真行为用例盯住；调用点只剩「拿到文案就 warn」这一行。
+ *
+ * 两条信号刻意**分开**表述：转码失败是**根因**，`reason` 是它的**下游症状**
+ * （退回原容器 → 网关拒收 → `empty-transcript` / `transcribe-failed`）。
+ * 只报症状的话，排查的人会去查网关，而真问题在转码。
+ */
+export function finalizeFailureNotice(outcome: RefetchOutcomeLike): string | null {
+  const notes: string[] = []
+  if (outcome.transcodeFailed) {
+    notes.push(
+      '转码失败：录音未能转成 WAV，已退回原容器上传'
+      + `（${outcome.transcodeError || '无异常信息'}）。`
+      + '网关只收 wav/mp3 ⇒ 整段重转很可能随之失败。',
+    )
+  }
+  // ⚠ 判据刻意是 `!applied` **而不是** `!applied && reason`：
+  //   `refetchFullTranscript` 当前每条失败路径都带 `reason`，但那不是类型强制
+  //   （`reason?: string`）⇒ 将来谁加一条不带 reason 的失败路径，文案就会整个消失。
+  //   失败本身必须出声，reason 只是让它更好定位。
+  if (!outcome.applied) {
+    notes.push(`整段重转未生效，已降级为分段文本：${outcome.reason || '未给出原因'}`)
+  }
+  if (notes.length === 0) return null
+  return notes.join(' ')
+}

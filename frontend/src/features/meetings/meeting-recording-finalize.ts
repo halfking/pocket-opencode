@@ -40,7 +40,7 @@ import { getMeeting, updateMeeting, type MeetingSegment } from './meetings-store
 import { ingestMeetingArtifacts } from './meeting-ingest'
 import { buildIngestNotice } from './meeting-ingest-notice'
 import { buildRefineNotice, refineStatusFor } from '../sessions/refine-outcome-notice'
-import { assessDurationDrift, createMeasuringToWav } from './recording-duration-consistency'
+import { assessDurationDrift, createMeasuringToWav, finalizeFailureNotice } from './recording-duration-consistency'
 
 export interface FinalizeDeps {
   /** 一次全量重转。注入而非直接调 API，便于单测与换实现。 */
@@ -167,6 +167,22 @@ export async function finalizeRecording(
       + `（差 ${drift.driftMs}ms > 容差 ${Math.round(drift.toleranceMs)}ms，${drift.reason}）`,
     )
   }
+  // ★§818：让「转码失败」本身可见。
+  //
+  // ⚠ 此前这条链**从头到尾静默**：转码失败被空 catch 块吞掉 ⇒ 退回原 webm 上传
+  // ⇒ 网关拒收 ⇒ `reason = 'empty-transcript'` ⇒ 而**唯一生产调用方（本函数）
+  // 一个 `reason` 字段都不读** ⇒ 用户只看到「只有分段文本，没有全文精校」，真因从未出现。
+  // 时长护栏在这条路上也判 `ok`（`no-ground-truth`）——
+  // `assessDurationDrift` 的注释本来就写着「真正的处理是让转码失败本身可见」。
+  //
+  // ⚠⚠ **决策在纯函数 `finalizeFailureNotice` 里**，不在这里：本函数跑不到（§52），
+  //   把判断写在调用点的话，判据只能对着 `console.warn` 做源码匹配 ——
+  //   实测把 warn 改成 `void 0 && console.warn` 照样全绿（零牙）。
+  //
+  // ⚠ 触达面与上面那条一致：**只到开发者 console**（§813）。要不要升到用户可见
+  //   （`notify('warning')`）属产品口径，**待属主拍板，本轮不代拍**。
+  const notice = finalizeFailureNotice(finalText)
+  if (notice) console.warn(`[meeting-finalize] ${notice}`)
   // ★ 决策全部在纯函数里（§52）：采纳什么、用哪些分段、名单是谁、改哪几个同音字。
   //   这一段此前散在本函数体内，而本函数在 node 里跑不到 ⇒ 那些决策
   //   **一行行为门都没有**（§45/§48/§49/§50 四轮 bug 全在这里面）。

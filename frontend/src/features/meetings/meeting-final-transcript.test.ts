@@ -19,7 +19,7 @@ import { describe, it } from 'node:test'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
-import { resolveUploadTarget, shouldAdoptFullTranscript } from './meeting-final-transcript.ts'
+import { resolveUploadTarget, shouldAdoptFullTranscript, refetchFullTranscript } from './meeting-final-transcript.ts'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const read = (f: string) => readFileSync(join(HERE, f), 'utf8')
@@ -194,5 +194,84 @@ describe('F · 行为层：转码决策（真断言，不是「文件里有这�
   it('负控：m4a 录音退回时扩展名是 .m4a（不能一律 webm）', () => {
     const m4a = new Blob([new Uint8Array([0, 0, 0, 0x20])], { type: 'audio/mp4' })
     assert.equal(resolveUploadTarget(m4a, null).filename, 'meeting.m4a')
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────
+// §818 · 转码失败必须**留痕**：此前它是空 catch 块，后果在 `reason` 里只剩
+//        `empty-transcript`，根因丢失；而唯一生产调用方不读 `reason`
+//        ⇒ 整条失败链在生产里没有任何出口。
+//
+// 这组是**行为**断言（不是「文件里有这个词」）：`refetchFullTranscript` 有
+// `loadAudio` 注入口，node 里能真跑起来，所以「抛错的 toWav 会不会被记下来」
+// 是可执行的断言。
+describe('G · §818 转码失败必须留痕（行为层）', () => {
+  const webm = () => new Blob([new Uint8Array([0x1a, 0x45, 0xdf, 0xa3])], { type: 'audio/webm' })
+  const loadAudio = async () => webm()
+
+  it('toWav 抛错 ⇒ 必须带 transcodeFailed:true 与原始异常信息', async () => {
+    const r = await refetchFullTranscript('m1', async () => ({ text: 'x', failed: 0 }), {
+      loadAudio,
+      toWav: async () => { throw new Error('ENCODING_FAILED') },
+    })
+    assert.equal(r.transcodeFailed, true, '转码失败没有被记下来 —— §818 的洞没修')
+    assert.match(String(r.transcodeError), /ENCODING_FAILED/, '原始异常信息丢了，无法定位是解码失败还是缺 AudioContext')
+  })
+
+  it('★ 降级行为不变：转码失败仍退回原 blob 上传，且不抛错', async () => {
+    let seenType = ''
+    let seenName = ''
+    const r = await refetchFullTranscript('m1', async (b, f) => {
+      seenType = b.type; seenName = f
+      return { text: 'x', failed: 0 }
+    }, { loadAudio, toWav: async () => { throw new Error('ENCODING_FAILED') } })
+    // 这条不能被「让失败可见」改掉：降级是刻意的（§50/§51 的既有行为）
+    assert.equal(seenType, 'audio/webm', '转码失败后必须仍退回原容器（不比现状差）')
+    assert.equal(seenName, 'meeting.webm')
+    assert.equal(r.applied, true)
+  })
+
+  it('★ 转码失败 + 网关拒收（退回 webm 后返回空文本）⇒ 根因仍在', async () => {
+    const r = await refetchFullTranscript('m1', async () => ({ text: '', failed: 0 }), {
+      loadAudio,
+      toWav: async () => { throw new Error('ENCODING_FAILED') },
+    })
+    assert.equal(r.reason, 'empty-transcript')
+    assert.equal(r.applied, false)
+    assert.equal(r.transcodeFailed, true,
+      '此时 reason 只是下游症状（网关拒收），根因「转码失败」必须单独可读，否则无法定位')
+  })
+
+  it('★ 转码失败后连上传都抛了 ⇒ transcodeFailed 不能被 transcribe-failed 盖掉', async () => {
+    const r = await refetchFullTranscript('m1', async () => { throw new Error('400 input_audio.format') }, {
+      loadAudio,
+      toWav: async () => { throw new Error('ENCODING_FAILED') },
+    })
+    assert.match(String(r.reason), /^transcribe-failed/)
+    assert.equal(r.transcodeFailed, true, '更早的根因被下游症状覆盖了')
+    assert.match(String(r.transcodeError), /ENCODING_FAILED/)
+  })
+
+  it('转码失败但侥幸被接受（applied:true）⇒ 仍要透出这次失败', async () => {
+    const r = await refetchFullTranscript('m1', async () => ({ text: '侥幸成功', failed: 0 }), {
+      loadAudio,
+      toWav: async () => { throw new Error('ENCODING_FAILED') },
+    })
+    assert.equal(r.applied, true)
+    assert.equal(r.transcodeFailed, true, '成功掩盖了这次转码失败 —— 下次同样输入会静默劣化')
+  })
+
+  it('负控：转码成功时不得凭空出现 transcodeFailed（形状不能变）', async () => {
+    const r = await refetchFullTranscript('m1', async () => ({ text: '正常', failed: 0 }), {
+      loadAudio,
+      toWav: async () => new ArrayBuffer(64),
+    })
+    assert.equal('transcodeFailed' in r, false, '成功路径被塞了多余字段')
+    assert.equal('transcodeError' in r, false)
+  })
+
+  it('负控：压根没传 toWav（未启用转码）≠ 转码失败', async () => {
+    const r = await refetchFullTranscript('m1', async () => ({ text: 'x', failed: 0 }), { loadAudio })
+    assert.equal('transcodeFailed' in r, false, '「没传 toWav」是正常配置，不该被报成失败')
   })
 })

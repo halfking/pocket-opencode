@@ -15,6 +15,7 @@ import { describe, it } from 'node:test'
 import {
   assessDurationDrift,
   createMeasuringToWav,
+  finalizeFailureNotice,
   carriedStartTime,
   resolveWallClockDurationMs,
   wavDurationSec,
@@ -397,5 +398,50 @@ describe('§814 换设备后计时起点要前移，否则累计时长丢失', (
 
     const start2 = carriedStartTime(170_000, secondKept) // 第二次换设备
     assert.equal(resolveWallClockDurationMs(175_000, start2, 0, false), 75_000)
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────
+// §818 · `finalizeFailureNotice` —— 「转码失败必须可见」的**决策**在这里，
+//   放这里是因为 `finalizeRecording` 在 node 里跑不到（§52）。
+//   第一版把判断写在调用点、判据对着 console.warn 匹配 ⇒ 变异 B 全绿、零牙。
+describe('finalizeFailureNotice —— §818 的决策点（真行为断言）', () => {
+  it('一切正常时必须返回 null（否则每次录音都刷噪声）', () => {
+    assert.equal(finalizeFailureNotice({ applied: true }), null)
+  })
+
+  it('★ 转码失败 ⇒ 必须出现根因文案', () => {
+    const n = finalizeFailureNotice({ applied: false, reason: 'empty-transcript', transcodeFailed: true, transcodeError: 'decodeAudioData failed' })
+    assert.ok(n, '转码失败却没有文案 —— §818 的洞没修')
+    assert.match(String(n), /转码失败/, '缺根因表述')
+    assert.match(String(n), /decodeAudioData failed/, '原始异常信息丢了，无法定位')
+    // 根因与症状都要在：只报症状的话，排查的人会去查网关，而真问题在转码。
+    assert.match(String(n), /empty-transcript/, '下游症状也该一并透出')
+  })
+
+  it('★ 转码失败但侥幸 applied:true ⇒ 仍要出声（成功会掩盖下次静默劣化）', () => {
+    const n = finalizeFailureNotice({ applied: true, transcodeFailed: true, transcodeError: 'X' })
+    assert.match(String(n), /转码失败/, 'applied:true 被当成了「一切正常」')
+  })
+
+  it('未传 toWav 导致 applied:false（正常降级）⇒ 仍要出声，但不是「转码失败」', () => {
+    const n = finalizeFailureNotice({ applied: false, reason: 'audio-not-found' })
+    assert.ok(n)
+    assert.doesNotMatch(String(n), /转码失败/, '「没传 toWav」被误报成转码失败')
+  })
+
+  it('★ applied:false 且没有 reason 时仍要有文案（不能因为缺字段就沉默）', () => {
+    const n = finalizeFailureNotice({ applied: false })
+    assert.ok(n, 'applied:false 却没有 reason ⇒ 判据把失败又藏回去了')
+  })
+
+  it('负控：有 reason 但 applied:true ⇒ 不该报「整段重转未生效」', () => {
+    const n = finalizeFailureNotice({ applied: true, reason: 'empty-transcript' })
+    assert.doesNotMatch(String(n), /整段重转未生效/, 'applied:true 却报了未生效')
+  })
+
+  it('★ 变异防线：撤掉「转码失败」分支必须被抓（不是只测有文案）', () => {
+    const n = finalizeFailureNotice({ applied: false, reason: 'empty-transcript', transcodeFailed: true })
+    assert.match(String(n), /转码失败/, '去掉 transcodeFailed 分支后仍报 ⇒ 判据没咬到那个分支')
   })
 })

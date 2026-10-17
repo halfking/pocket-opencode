@@ -93151,3 +93151,117 @@ h + t = (MARK − p) + (p + TAIL − D) = RUN − D = 漂移
 ### §817.6 校验
 
 **本节不改任何生产代码与阈值。** `typecheck` EXIT=0；`npm run gates` 结果见本节提交记录。
+
+## §818 转码失败在生产里**全程静默**：根因被空 `catch {}` 吞掉，且唯一调用方不读 `reason`
+
+§805 的护栏查清了时长侧；但待拍板简报里一直挂着一条没查过的残洞：
+
+> ⚠ 残留的真洞：转码**静默失败**时（`wav-encode.ts:94-97`）真实时长同样丢失且无提示。
+
+本节把它查到底 —— 结论比那句话更糟一层：**失败不止是「时长丢失」，而是整条失败链在生产里没有任何出口。**
+
+### §818.1 事实链（四条，全部可核对）
+
+| # | 事实 | 证据 |
+|---|---|---|
+| 1 | `refetchFullTranscript` 计算了 6 种 `reason` | `meeting-final-transcript.ts` 的 `no-meeting-id` / `audio-load-failed` / `audio-not-found` / `audio-empty` / `empty-transcript` / `transcribe-failed` |
+| 2 | **唯一生产调用方 `finalizeRecording` 一个 `reason` 字段都不读** | `meeting-recording-finalize.ts` 只读 `.text` / `.applied` / `.segments` / `.failedSegments` |
+| 3 | ⇒ `reason` 在生产里是**死输出** | 全仓没有第二处生产调用点（`refetchFullTranscript` 的其余引用全在测试里） |
+| 4 | 时长护栏在这条路上也判 `ok` | `assessDurationDrift` 在 `actualSec == null` 时返回 `reason: 'no-ground-truth'` 且 `ok: true` |
+
+完整因果链：
+
+```
+toWav 抛错（wav-encode.ts:112 不 catch）
+  → meeting-final-transcript.ts 的空 catch {}      ← 根因在这里被吞掉
+  → wav = null → resolveUploadTarget 退回原 webm
+  → 网关只收 wav/mp3 ⇒ 拒收（真网关 400 invalid_audio_request）
+  → reason = 'empty-transcript'（只剩下游症状）
+  → finalizeRecording 不读 reason                 ← 没有出口
+  → 用户只看到「只有分段文本，没有全文精校」
+```
+
+⚠ **用户体验的伪装**：转码失败时 `applied: false` ⇒ `planRefine` 回落到分段文本 —— 这**看起来像正常降级**，用户无从判断真因。而 `assessDurationDrift` 的注释其实早就写着答案：「**真正的处理是让转码失败本身可见**，不是让每一次失败都喊一次时长不符」—— 缺的正是这一步。
+
+### §818.2 ⭐ 修复第一版：让失败留痕
+
+1. **`meeting-final-transcript.ts`**：`FinalTranscribeResult` 新增 `transcodeFailed?: boolean` 与 `transcodeError?: string`；把空 `catch {}` 换成记痕。
+   * ⚠ 两者刻意**与 `reason` 分开**：转码失败是**根因**，`reason` 是它的**下游症状**。只报症状的话，排查的人会去查网关，而真问题在转码。
+   * ⚠ 转码痕迹在**外层 catch 也要透出** —— 转码失败后可能一路走到 `transcribe-failed`（连上传都抛了），那里若不带痕，「上传失败」会把更早的根因盖掉。
+   * ⚠ 转码失败**但侥幸成功**（退回 webm 后恰好被接受）也透出：那种情况下下次同样输入会静默劣化。
+2. **`meeting-recording-finalize.ts`**：`finalizeRecording` 读这两个字段并 `console.warn`。
+
+**降级行为完全不变**（仍退回原 blob、仍不抛错），只增加可见性 —— 这正是原注释「不比现状差」的意图。
+
+### §818.3 ⛔⭐ 第一次修复的判据**零牙**，以及为什么
+
+第一版把判断直接写在 `finalizeRecording` 里，判据用源码扫描匹配 `console.warn`。跑变异：
+
+| 变异 | 做法 | 结果 |
+|---|---|---|
+| A | 撤掉 `transcodeFailed = true` 留痕 | ✅ **5 处红** |
+| B | 把 warn 改成 `void 0 && console.warn` | ❌ **8/8 全绿** |
+
+⇒ 变异 B 就是「warn 变死代码」，而**源码扫描对语法形状的匹配对它零信息量**。
+
+⭐ **根因**：`finalizeRecording` 依赖 localDB + HTTP，**在 node 里跑不到**（§52 当初就是为了「决策埋在跑不到的函数体里、一行行为门都没有」才把 `planRefine` 提成纯函数）。同一个坑。
+
+⇒ **处置**：把决策**搬进跑得到的纯函数** `finalizeFailureNotice(outcome): string | null`（放进本就为此存在的 `recording-duration-consistency.ts`），调用点只剩「拿到文案就 warn」一行。判据随之拆成两层：**行为用例盯纯函数**（真牙齿）+ **接线扫描盯调用点**（只保证没把决策搬回不可达处）。
+
+### §818.4 ⭐ 重跑变异验证：四个全中
+
+| 变异 | 做法 | 结果 |
+|---|---|---|
+| A | 撤掉 `transcodeFailed = true` 留痕 | ✅ **5 红** |
+| B | 调用点 `if (notice) void 0 && console.warn(...)`（warn 成死代码） | ✅ **1 红** |
+| C | 删掉纯函数里的「转码失败」分支 | ✅ **3 红** |
+| D | 调用点不再走纯函数（改成手写字符串） | ✅ **1 红** |
+
+⇒ 四个变异**全被抓住**，且源文件已与备份**逐字节一致**（`diff -q` 三处均通过），无变异残留。
+
+### §818.5 ⭐ 行为用例还抓到了**我自己实现里的洞**
+
+用例「`applied:false` 且没有 `reason` 时仍要有文案」首轮是**红的**：我的实现判据写成 `!applied && reason`，而 `reason` 在类型上是可选的（`reason?: string`）⇒ 将来谁加一条不带 reason 的失败路径，文案会整个消失，信号又静默。
+
+⇒ **改的是实现，不是测试**（把判据放宽到 `!applied`，reason 降级成可选修饰）。这条判据本身的来由值得记：**失败本身必须出声，`reason` 只是让它更好定位** —— 让「更好定位的东西」变成「出声的前提」是本末倒置。
+
+### §818.6 触达面与待拍板
+
+⚠ 本节**只到开发者 console**（`console.warn`），与 §813 查到的现状一致：Android WebView 可从 logcat 看到，**iOS WKWebView 只有连 Safari Web Inspector 的人才看得到**。
+
+⇒ **要不要升到用户可见（`notify('warning')`）属产品口径，待属主拍板，本轮不代拍。**（与待拍板清单第 ① 项同属「触达面」这一栏，可合并决定。）
+
+⚠ 也**没有**改任何阻断行为：转码失败仍然只是降级为分段文本，不阻断落盘、不阻断入库 —— 与既有 `resolveUploadTarget` 的设计一致。
+
+### §818.6bis ⚠ 顺带查出 `silent-catch-must-explain-itself` 的一道**误报陷阱**（本节自己踩了一次）
+
+本节的注释里原本写了「被空 `catch {}` 吞掉」这类**引用旧代码的说明**，结果
+`npm run gates` 第 3 项 `test:all` 打红 —— `src/__tests__/silent-catch-must-explain-itself.test.mjs`
+报了 4 处「无理由的静默 catch」，**全部落在我写的注释里**。
+
+⭐ 查清了原因，是检测器自身的一个盲区：
+
+* 它的意图（文件头注释写明）是「**剥掉注释后**为空的 catch 块才算静默」；
+* `stripComments` 确实存在，但只用在**判定块体是否为空**那一步；
+* 而扫描用的是 `silentCatches(readFileSync(f, 'utf8'))` —— **喂进去的是未剥注释的原文**
+  ⇒ 正则 `/catch\s*(?:\([^)]*\))?\s*\{([^{}]*)\}/g` 会命中**注释里出现的字面量**
+  `catch {}`，并因块体里没有 `//` / `/*` 而判成「无理由」。
+
+⇒ ⚠ **对下一个人的实际影响**：任何注释只要引用了字面量 `catch {}`（哪怕在解释一段历史代码），
+这道门就会报红，而报错信息会把你指向**注释所在行**，看上去像「你写了个没解释的空 catch」。
+
+⇒ **本轮怎么处置的**：**不改这道门**，只改我自己的措辞（把字面量换成「空 catch 块」）。
+理由：改检测器语义让自己的提交变绿，冲突利益最大；而且我自己的纪律写着
+「**放宽判据去凑那条红，比假绿更坏**」—— 实测放宽后基线里同款写法会被整片放过。
+⇒ 这里只做**登记**：这道门的扫描范围问题（应扫剥注释后的文本）留给属主决定，
+不在本轮顺手改掉。
+
+### §818.7 ⚠ 口径
+
+* 静态代码分析 + node 行为测试 + 真网关行为复刻（`audio-wire-contract.test.ts` 的 `fakeGateway` 复刻的是 2026-10-07 对真网关的实测响应）。
+* **未连 PG、未发 HTTP、未运行真实录音会话**；`finalizeRecording` 本身**在 node 里跑不到**（§52），它的那条接线只有源码扫描判据（见 §818.3 的边界说明）。
+* 未复测 §795 的网关 leg（仍缺有效凭据），本节不构成任何「网关链路已验证」的结论。
+
+### §818.8 校验
+
+`typecheck` **EXIT=0**；`npm run gates` **45/45 通过（62.4s）**；`git diff --check` 退出 0。
