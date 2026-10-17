@@ -95137,3 +95137,129 @@ B 的用户重说一句 ⇒ 多一条重复分段；C 的用户重说一句 ⇒ 
 1. 「只存了一半」之后要不要给一个**「重建会议全文」的一键修复**（数据都在，只是一次列没同步）。
 2. 实时字幕入库失败是否要从 `sttError` 升为 toast（当前选择不升，理由见 §836.3 第 4 行）。
 3. §836.5 末行：`transcript` 与分段表的一致性要不要做常态守卫（而不是只在失败时提示）。
+
+## §837 会议详情页读取失败 = **永久骨架屏**；标题富化失败会**挡住自动开录**
+
+> 承接 §836。仍是「用户做了一件事 / 页面要走一步，失败没有任何信号」这一族，
+> 但这次的症状形态是**页面挂住**，不是「东西没存下来」。
+
+### §837.1 ⛔ D1：`load()` 一抛错，`loading` 永远回不到 false
+
+```ts
+async function load() {
+  loading.value = true
+  const data = await getMeetingWithSegments(meetingId.value)   // ← 抛错
+  meeting.value = data?.meeting ?? null
+  storedSegments.value = data?.segments ?? []
+  loading.value = false                                        // ← 永远到不了
+  …
+}
+```
+
+| # | 后果 | 证据 |
+|---|---|---|
+| 1 | `loading` 永久为 true ⇒ 模板第一层 `<div v-if="loading"><Skeleton/></div>` **永久骨架屏**，整页无内容 | `MeetingDetailView.vue` 模板第 3 行 |
+| 2 | 一个未处理的 rejection | 同上 |
+| 3 | **零反馈**：没有错误行、没有重试入口，用户只看到「一直在加载」 | 模板里只有 `sttError` 一处 `class="err"` |
+| 4 | `load()` 同时是**首屏加载**与**每次动作后的刷新**（`onMetaSave`、停止录音、`useMeetingStudio(meeting, load)`…）⇒ 首屏那次失败就是致命的 | 各调用点 |
+
+⚠ **这不是罕见分支**：`local-db.ts` 明确会在两种常见情形抛
+`LocalDB 未初始化：连接不存在` / `LocalDB 未初始化，请先调用 init(dbSecret)`
+—— 锁屏后回来、应用启动早于 `init(dbSecret)`、切换工作区/账号导致密钥不可用。
+**这是有明确预期的状态，不是「数据库坏了」。**
+
+⇒ ⭐ **同一个仓库里两套契约**：同一次失败，`MeetingListView` 判为
+`dbNotReady = true` ⇒ 渲染 `DbLockedState`（带「重新登录」动作），
+而详情页把它当**永久加载中**。本节把详情页对齐到列表页那套语义。
+
+⚠ ⚠ **刻意不做的那件事**：「catch 里写 `loading.value = false`」是最容易想到的改法，
+而它是**错的** —— `meeting` 仍是 null ⇒ 模板第二层
+`<EmptyState v-else-if="!meeting">` 会显示**「会议不存在」**
+⇒ 把一次**读取失败**谎报成**会议没了**（从「永久骨架屏」换成「谎报」）。
+
+### §837.2 ⛔ D2：标题/地点富化失败 ⇒ **麦克风根本不会打开**
+
+`onMounted` 的顺序是：
+
+```ts
+  await load()
+  const m = meeting.value
+  if (!m) return
+  await captureContext(m)                     // ← 抛错 ⇒ 下面全部不执行
+  const auto = route.query.record === '1'     // （§834/D2 之后只认这一条）
+  if (auto) await onMicToggle()               // ⇒ 用户点「开始录音」后麦克风不开
+```
+
+⇒ `captureContext` 里 `await updateMeeting(m.id, { location: loc, title })` 抛错
+⇒ **用户从会议列表点「开始录音」跳过来，麦克风一个都不会打开**，且零反馈。
+⚠ 触发面不小：新建会议的 `title` 是空的 ⇒ 每次都会走到这次写入。
+⚠ 已核实前提：`captureDeviceLocation` **永不抛错**（失败一律 `resolve(null)`，
+见 `meeting-meta.ts`）⇒ 这条路上唯一的抛错源就是 `updateMeeting`。
+
+### §837.3 落地
+
+| # | 位置 | 改动 |
+|---|---|---|
+| 1 | 新增 `features/meetings/meeting-load-notice.ts` | `isLocalDbUnavailable()`（与列表页同一判据）+ `describeMeetingLoadFailure()`（两种失败两句文案）+ 诊断前缀 |
+| 2 | `MeetingDetailView.load()` | `try/catch/finally`；`loading = false` **移进 finally**；失败时**不清空**已显示的会议；成功后清 `loadError` |
+| 3 | 模板 | 新增 `v-else-if="loadError && !meeting"` 整页错误态（带「重试」），位置**排在 `!meeting` 之前** |
+| 4 | 模板 | 新增行内横幅 `<p v-if="loadError" class="err" role="alert">` |
+| 5 | `captureContext` | 整体 try/catch + `console.warn`；**刻意不提示用户**（会议照样能开、能录、能精校，丢的只是自动标题/地点） |
+
+⚠ **两档错误契约**沿用仓库既有那道 `list-error-failpath` 门（它管的是下拉刷新视图，
+本视图不用下拉刷新故不在其登记表内，但契约同源）：
+**无行可显才接管整页（EmptyState），已有内容时降级为非破坏性横幅。**
+⇒ 所以整页分支的条件带 `&& !meeting`，行内横幅则管「已有会议时刷新失败」。
+
+### §837.4 判据（17 例全绿）+ 变异（13 个全中）
+
+`frontend/src/features/meetings/__tests__/meeting-load-notice.test.ts`
+
+* **判定（行为）**：认得出本地库未就绪 / 其它失败不得误判（否则用户被白送去重登）/
+  负控：`null`·`undefined`·非 Error 都返回布尔值 /
+  **前提登记：与列表页保持同一判据**（两处分叉会出现「列表能进、详情进不去」）。
+* **文案（行为）**：两种失败必须是两句不同的话（重登 vs 重试）/
+  本地库不可用必须说清「数据没丢」（否则用户以为要重录）/
+  **不得谎报「会议不存在」** / 负控 / 诊断前缀与写入类区分。
+* **接线（扫描，⚠ 零牙已标注）**：`loading` 归零必须在 finally /
+  失败不得清空已显示会议 / 错误分支必须排在「会议不存在」之前 /
+  整页接管必须带「无行」守卫 + 必须有行内横幅 / 成功后清错误 /
+  D2：`captureContext` 必须有兜住 + onMounted 顺序前提登记 +
+  **前提登记：`captureDeviceLocation` 永不抛错**（否则 D2 的前提失效）。
+
+| # | 变异 | 结果 |
+|---|---|---|
+| A | `loading` 归零挪回 `await` 之后（原形态） | ✅ 1 红 |
+| B | finally 里不再归零 | ✅ 1 红 |
+| C | 错误分支排到「会议不存在」之后 | ✅ 1 红 |
+| D / D2 | catch 里清空 meeting / 整页接管无「无行」守卫 | ✅ 各 1 红 |
+| E | 删掉行内横幅 | ✅ 1 红 |
+| F | 成功后不清错误 | ✅ 1 红 |
+| G / H / H2 | 文案：谎报会议不存在 / 不让重登 / 两种失败同句 | ✅ 各 1 红 |
+| I / J | 本地库判据失效 / 对 `null` 抛错 | ✅ 各 1 红 |
+| K / L | `captureContext` 不兜住 / 地理定位改成会 reject | ✅ 各 1 红 |
+
+⚠ 本节 1 个变异首版 0 红，是**正向对照自身写错**：
+`finally 里没有 loading = false` 那条断言取的是「`finally {` 起 200 字符」，
+而这 200 字符**越过了块尾**，吃到函数后面那一行 `loading.value = false`
+⇒ 变异「删掉 finally 里那行」照样全绿。
+⇒ 已改成以 `finally` 块的**闭合**为界。
+⇒ ⭐ 这是本会话**第 4 次**「扫描窗口必须以语法边界为界」（§835 相邻函数、
+§836 块被搬走、§837 块尾越界）—— 三次形态不同，根因同一：
+**锚点没有覆盖住真正要比较的那个集合。**
+
+### §837.5 ⛔ 口径与未实测
+
+* 判据 17 例 + 变异 13 个；`typecheck` EXIT=0；**`npm run gates` 45/45 通过**（55.2s）。
+* ⛔ **未实测**：真机上 `getMeetingWithSegments` 抛错的真实发生率。
+  ⚠ 但 D1 的**前提侧**已实测：`local-db.ts` 的两处 `LocalDB 未初始化` 抛错是
+  源码事实（`local-db.ts:859/881`），而锁屏 / 启动顺序属平台既有行为。
+* ⛔ **未实测**：本地库未就绪时，用户走「重新登录」这条路是否真的能回来
+  （列表页那条路已存在，但本节把它复用到详情页的路径**未经真机走通**）。
+
+### §837.6 待属主拍板
+
+1. 「本地库未就绪」在详情页要不要直接复用 `DbLockedState` 组件（列表页用的那个，
+   带重新登录动作），而不是本页自绘的 `EmptyState` —— 复用会更一致，但会让本页多一个依赖。
+2. `captureContext` 富化失败**刻意不提示用户**（本轮选择）。要不要在标题为空时
+   给一条极轻的提示（当前是「标题留空，用户自己填」）。

@@ -1,6 +1,22 @@
 <template>
   <div class="studio">
     <div v-if="loading" class="state"><Skeleton :count="3" /></div>
+    <!--
+      ⚠⚠ §837/D1：读取失败必须有自己的分支，且**排在 `!meeting` 之前**。
+        此前 `load()` 一抛错 `loading` 永久为 true ⇒ 整页永久骨架屏、零反馈。
+        而只写 `loading.value = false` 是**错的**：那会落到下面那句
+        「会议不存在」⇒ 把一次读取失败**谎报成会议没了**。
+      ⚠ 条件带 `&& !meeting`：已有会议时（停止录音后那些重新 load）失败
+        **不得**接管整页 —— 沿用 list-error-failpath 那道门确立的两档契约：
+        无行可显才接管整页，有内容时降级为非破坏性横幅。
+    -->
+    <EmptyState
+      v-else-if="loadError && !meeting"
+      icon="⚠️"
+      :title="loadError"
+      action-label="重试"
+      @action="load()"
+    />
     <EmptyState
       v-else-if="!meeting"
       icon="⚠️"
@@ -29,6 +45,8 @@
 
       <p v-if="statusLine" class="status" role="status">{{ statusLine }}</p>
       <p v-if="sttError" class="err" role="alert">{{ sttError }}</p>
+      <!-- §837：已有会议时刷新失败，只降级为横幅，正文与分段留在屏幕上。 -->
+      <p v-if="loadError" class="err" role="alert">{{ loadError }}</p>
 
       <div class="split">
         <section class="transcript">
@@ -153,6 +171,10 @@ import { dedupeSegments, renderTranscript } from './meeting-dedup.ts'
 import { resolveRefinedView, type RefinedViewMode } from './refined-transcript-view.ts'
 import { LEFTOVER_RECORDING_HINT } from './meeting-finalize-persist-notice'
 import {
+  describeMeetingLoadFailure,
+  MEETING_LOAD_FAIL_TAG,
+} from './meeting-load-notice'
+import {
   describeAppendFailure,
   MEETING_APPEND_FAIL_TAG,
   type AppendStage,
@@ -185,6 +207,8 @@ const toast = useToast()
 const auth = useAuthStore()
 const meetingId = computed(() => String(route.params.id || ''))
 const loading = ref(true)
+/** §837/D1：读取失败的对外信号。空串 = 没有失败。 */
+const loadError = ref('')
 const meeting = ref<LocalMeeting | null>(null)
 const storedSegments = ref<MeetingSegment[]>([])
 const showSettings = ref(false)
@@ -264,7 +288,21 @@ const statusLine = computed(() => {
 
 async function load() {
   loading.value = true
-  const data = await getMeetingWithSegments(meetingId.value)
+  let data: Awaited<ReturnType<typeof getMeetingWithSegments>> = null
+  try {
+    data = await getMeetingWithSegments(meetingId.value)
+  } catch (e) {
+    // ⚠⚠ §837/D1：抛错时**不清空**已显示的 meeting/storedSegments ——
+    //   一次刷新失败不该把用户正在看的正文清掉（list-error-failpath 的两档契约）。
+    loadError.value = describeMeetingLoadFailure({ error: e })
+    console.error(MEETING_LOAD_FAIL_TAG, e)
+    return
+  } finally {
+    // ⚠ 放在 finally：这一行此前排在 await 之后，抛错时**永远到不了**
+    //   ⇒ 那正是「永久骨架屏」的直接成因。
+    loading.value = false
+  }
+  loadError.value = ''
   meeting.value = data?.meeting ?? null
   storedSegments.value = data?.segments ?? []
   loading.value = false
@@ -285,14 +323,31 @@ async function onMenuAction(id: MeetingStudioAction) {
   if (await onStudioAction(id) === 'classify') showSettings.value = true
 }
 
+/**
+ * 补齐地点与标题（best-effort 的**富化**，不是必需步骤）。
+ *
+ * ⚠⚠ §837/D2：它此前是裸的 `await`，而它在 onMounted 里排在
+ *   `await load()` 与 `const auto = …; if (auto) await onMicToggle()` **之间**
+ *   ⇒ 那次 `updateMeeting` 抛错（写库失败）⇒ onMounted 中断
+ *   ⇒ **用户点「开始录音」跳过来后麦克风根本不会打开**，且零反馈。
+ *   ⚠ 触发面不小：新建会议的 `title` 是空的 ⇒ 每次都会走到这次写入。
+ *   ⚠ `captureDeviceLocation` 自身**不会**抛错（失败一律 resolve(null)），
+ *     所以这条路上唯一的抛错源就是 `updateMeeting`。
+ *   ⇒ 富化失败不该挡住录音：记日志、继续。
+ */
 async function captureContext(m: LocalMeeting) {
-  const loc = m.location || await captureDeviceLocation()
-  const title = m.title || formatCapturedTitle({
-    startedAt: m.startedAt, location: loc, topic: m.topic,
-  })
-  if (loc !== m.location || title !== m.title) {
-    await updateMeeting(m.id, { location: loc, title })
-    meeting.value = { ...m, location: loc, title }
+  try {
+    const loc = m.location || await captureDeviceLocation()
+    const title = m.title || formatCapturedTitle({
+      startedAt: m.startedAt, location: loc, topic: m.topic,
+    })
+    if (loc !== m.location || title !== m.title) {
+      await updateMeeting(m.id, { location: loc, title })
+      meeting.value = { ...m, location: loc, title }
+    }
+  } catch (e) {
+    // 刻意**不提示用户**：这场会议照样能打开、能录音、能精校，丢的只是自动标题/地点。
+    console.warn('[meeting-detail] 标题/地点富化失败（不影响打开与录音）：', e)
   }
 }
 
