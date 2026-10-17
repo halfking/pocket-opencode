@@ -181,6 +181,13 @@ test-evidence/
 # One-off local APK evidence snapshots (too large for git; keep on disk only)
 docs/artifacts/
 
+# Local untracked .artifacts/ cache at repo root (2026-10-17: 436MB
+# ASR/SplitWAV/真机验证 探针产物；当前仓库累计由 .scratch-/、.scratch-*/、
+# backend/test-evidence/ 等多条规则分散治理，但根级 .artifacts/ 是新近
+# 出现的临时目录，git add -A 会一次性扫进暂存区并把仓体积撑爆，故单列。
+# 注意：docs/artifacts/ 上一条**只匹配** docs/ 下的子目录；本条匹配根级。
+.artifacts/
+
 # Scratchpad for ad-hoc agent session notes (not source-of-truth docs)
 tmp/
 
