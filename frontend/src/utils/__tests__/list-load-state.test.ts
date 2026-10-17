@@ -20,6 +20,7 @@ import { describe, it } from 'node:test'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
+import { parse as parseSFC, compileTemplate } from '@vue/compiler-sfc'
 import {
   isListReadError,
   isListSkeleton,
@@ -787,5 +788,119 @@ describe('§840 · 变异负控（每条都必须让上面那把尺子转红）'
     assert.notEqual(mutated, codeOnly(INBOX), '★ 变异没生效：没匹配到 readError 的定义')
     assert.equal(errorFlagNotOnlyFromLoadError(mutated), false,
       '退回「只认 loadError」竟然判成合法 ⇒ 这条判据没有牙')
+  })
+})
+
+// ── §846：模板**结构**合法性也要在我自己这把尺子里 ─────────────────────────
+describe('§846 · 模板可编译性（分支相邻性）', () => {
+  /**
+   * 用 `@vue/compiler-sfc` 真编译一遍 —— 与仓库既有门 `vue-template-compile`
+   * **共用同一把尺子**（同一对 `parseSFC` / `compileTemplate`、同样把 parse
+   * 阶段的错算作失败、同样跳过无模板组件）。
+   *
+   * ★ 为什么必须在这份判据里再写一遍：仓库那道门已经在 `npm run gates` 里覆盖
+   *   全仓 `.vue`，**跑 CI 时不会漏**。真正的缺口是**我单独跑自己这份判据时**：
+   *   它全是源码文本扫描，对「`v-else-if` 前面的兄弟是不是 `v-if`」完全无感 ——
+   *   §842 与 §845 连踩两次同一个坑（`v-else-if` 前面隔着 `v-for`），
+   *   **两次都是仓库那道门抓到的，我自己的 94 条判据一条都没响**。
+   *   ⇒ 「写进文档/注释的教训不会自动生效，只有门禁会」：教训必须长在我天天
+   *     跑的那把尺子里，否则它只对我自己生效，对下一次改动无效。
+   */
+  const templateCompileErrors = (src: string, label: string): string[] => {
+    const { descriptor, errors } = parseSFC(src, { filename: label })
+    const parseErrs = errors.map((e) => e.message)
+    if (parseErrs.length > 0) return parseErrs
+    if (!descriptor.template) return []           // 无模板的纯 ts 组件：跳过，同仓库门
+    const res = compileTemplate({
+      source: descriptor.template.content,
+      filename: label,
+      id: 'list-load-state',
+    })
+    return res.errors.map((e) => (typeof e === 'string' ? e : e.message))
+  }
+
+  /** 本会话（§840–§845）经手并改动过模板的全部视图。 */
+  const HANDLED = [
+    { name: 'MeetingListView', src: MEETINGS },
+    { name: 'NoteListView', src: NOTES },
+    { name: 'EmailInboxView', src: INBOX },
+    { name: 'EmailFolderListView', src: FOLDERS },
+    { name: 'TasksView', src: TASKS },
+    { name: 'opencode/SessionListView', src: OC_LIST },
+    { name: 'config/ConfigList', src: CFG_LIST },
+  ] as const
+
+  for (const v of HANDLED) {
+    it(`★★ ${v.name}：SFC 解析 + 模板编译零错误`, () => {
+      assert.deepEqual(
+        templateCompileErrors(v.src, `${v.name}.vue`),
+        [],
+        `${v.name} 模板编译不过 —— 这类错误会让 vite build 整体挂掉`,
+      )
+    })
+  }
+
+  it('★ 尺子非空转：登记的视图数必须与实际枚举到的一致', () => {
+    assert.equal(HANDLED.length, 7,
+      '登记表与实际枚举不一致 ⇒ 新视图被漏掉时不会有任何人知道')
+    for (const v of HANDLED) {
+      assert.ok(v.src.length > 500, `${v.name} 读到的是空壳/异常短内容`)
+    }
+  })
+
+  it('★★★ 负控：把 ConfigList 的失败分支 `v-if` 改成 `v-else-if` ⇒ 尺子必须转红', () => {
+    // 这就是 §845 那个 bug 的**精确形状**：它的前一个兄弟是 `v-for` 的实例卡片，
+    // 没有相邻的 `v-if` ⇒ `@vue/compiler-sfc` 直接拒绝编译。
+    const before = CFG_LIST
+    const mutated = before.replace(
+      'v-if="readError && instances.length === 0"',
+      'v-else-if="readError && instances.length === 0"',
+    )
+    assert.notEqual(mutated, before,
+      '★ 变异没生效：没匹配到 ConfigList 的失败分支（请核对源码是否已改形状）')
+
+    const errs = templateCompileErrors(mutated, 'ConfigList.vue')
+    assert.ok(errs.length > 0, '改成 v-else-if 后居然编译通过 ⇒ 这条尺子无牙')
+    assert.match(errs.join('\n'), /no adjacent v-if or v-else-if/,
+      `报的不是分支相邻性错误，说明命中了别的失败：${errs.join(' | ')}`)
+  })
+
+  it('★★★ 负控：同一次变异下，上面那些文本判据**全部无感**（这正是本节存在的理由）', () => {
+    // 只查「有没有这条分支」的文本判据，在变异前后都成立 ⇒ 它们看不见兄弟结构。
+    const mutated = CFG_LIST.replace(
+      'v-if="readError && instances.length === 0"',
+      'v-else-if="readError && instances.length === 0"',
+    )
+    const seesBranch = (s: string) => /readError && instances\.length === 0/.test(tplCode(s))
+    assert.equal(seesBranch(CFG_LIST), true, '基线就得看得见这条分支')
+    assert.equal(seesBranch(mutated), true,
+      '文本判据在变异后不再成立 —— 若成立说明这条反证写错了对象')
+    assert.ok(templateCompileErrors(mutated, 'ConfigList.vue').length > 0,
+      '而编译尺子报错了 ⇒ 文本判据对「分支结构」是瞎的，这就是 §846 要补的洞')
+  })
+
+  it('★ 负控：孤立的 `v-else`（前面没有任何 v-if）同样必须被抓住', () => {
+    const broken = `<template>
+  <div v-for="x in xs" :key="x.id" />
+  <div v-else>孤儿</div>
+</template>
+<script setup lang="ts">const xs: Array<{ id: number }> = []</script>`
+    assert.match(templateCompileErrors(broken, 'broken.vue').join('\n'),
+      /no adjacent v-if or v-else-if/)
+  })
+
+  it('★ 负控：SFC 解析阶段出错（未闭合标签）也算失败，不得只看模板编译', () => {
+    const broken = `<template><div></template>
+<script setup lang="ts">const a = 1</script>`
+    assert.ok(templateCompileErrors(broken, 'unclosed.vue').length > 0,
+      '未闭合标签没被抓到 ⇒ 只跑 compileTemplate 那一半')
+  })
+
+  it('★ 正控：无模板的纯 ts 组件跳过而不是假红', () => {
+    assert.deepEqual(
+      templateCompileErrors('<script setup lang="ts">const a = 1</script>', 'plain.ts.vue'),
+      [],
+      '无模板组件被误判成编译失败',
+    )
   })
 })
