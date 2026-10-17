@@ -37,6 +37,17 @@ type LLMGatewayConfigStore interface {
 	LoadConfig(ctx context.Context, workspaceID string) (*llmGatewayState, error)
 }
 
+// typedNilCipher 判定 cipher 接口里是否装着 nil 指针（typed-nil）。
+// `cipher == nil` 的接口判空挡不住它——调用方传的是 *email.Crypto /
+// *gatewayKeyCipher 这类**具体指针类型**，其为 nil 时装进接口后接口变量并不
+// 为 nil。PG（NewLLMGatewayStore）与 SQLite（NewLLMGatewaySQLiteConfigStore）
+// 两个 store 的构造器与加解密入口都必须经过这道判定，否则构造"成功"、
+// 第一次加解密才在 nil receiver 上 panic。
+func typedNilCipher(c any) bool {
+	v := reflect.ValueOf(c)
+	return v.Kind() == reflect.Ptr && v.IsNil()
+}
+
 // NewLLMGatewayStore creates the store and runs idempotent migrations. A
 // non-nil cipher is required because api_key_encrypted must never silently
 // degrade to plaintext storage when the email master key is unavailable.
@@ -44,18 +55,15 @@ func NewLLMGatewayStore(pool *pgxpool.Pool, cipher apiKeyCipher) (*LLMGatewaySto
 	if cipher == nil {
 		return nil, fmt.Errorf("LLM gateway API-key encryption is not configured")
 	}
-	// 挡住 typed-nil。调用方传进来的是 *email.Crypto 这类**具体指针类型**；当它
-	// 自身为 nil 时，装进接口之后 interface 变量并不为 nil，上面那句
-	// `cipher == nil` 会直接放行。于是构造"成功"，直到第一次 encryptAPIKey
-	// 才在 nil receiver 上解引用 gcm 而 panic。
+	// 挡住 typed-nil（判定见 typedNilCipher）。
 	//
 	// 2026-10-01 实测：POCKET_EMAIL_MASTER_KEY 长度不是 32 时，EnsureMasterKey
 	// 报错、main.go 只打一条 WARN 就继续，于是 NewLLMGatewayStore 拿到 typed-nil，
 	// 紧接着 EnsureLLMGatewayDefaults 的 SaveConfig 触发
 	// email.(*Crypto).EncryptString(0x0, ...) —— 进程启动即 panic，而不是给出
 	// 「master key 配错了」这条能照着修的报错。
-	if v := reflect.ValueOf(cipher); v.Kind() == reflect.Ptr && v.IsNil() {
-		return nil, fmt.Errorf("LLM gateway API-key encryption is not configured (nil %s)", v.Type())
+	if typedNilCipher(cipher) {
+		return nil, fmt.Errorf("LLM gateway API-key encryption is not configured (nil %s)", reflect.TypeOf(cipher))
 	}
 	s := &LLMGatewayStore{pool: pool, cipher: cipher}
 	if err := s.migrate(); err != nil {
