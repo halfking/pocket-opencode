@@ -92516,7 +92516,9 @@ meeting-16k.wav       （24073422 B）：同构
 
 **本节口径**：纯静态 + 合成容器读数；未运行真机录音、未解码真实音频（只读文件字节）、未连 PG、未发 HTTP。
 
-## §808 疑似缺陷：`VadSegmenter.stop()` 可能漏掉最后一枚切片（⛔ 规范推导，**未在运行时实测**）
+## §808 疑似缺陷：`VadSegmenter.stop()` 可能漏掉最后一枚切片
+
+> ⚠⚠ **后续更正（务必先读）：本节已由 §809 实测确诊并修复** —— 实测丢失 **162–164ms（6/6 轮，σ≈0.8，系统性）**，不是本节估的「≤250ms」。§809 给出实测手段（**Web Audio 合成音源即可，不需要麦克风**）、修复与读数。
 
 本节是给 §807 护栏配的读数解释，也是记一个**尚未证实的**缺陷。按本仓纪律，未实测的一律写成未实测。
 
@@ -92562,3 +92564,67 @@ return new Blob(this.fullChunks, { type: 'audio/webm' })   // ← 立刻建 blob
 ⚠ 量级上它远小于容差（§805.3 的 `max(500ms, 2%)`），**不会**触发护栏报警——这正是「护栏不响」与「没有问题」不是一回事的又一个实例。
 
 **本节口径**：纯静态代码只读；⛔ 未运行真机录音、未解码音频、未连 PG、未发 HTTP。
+
+## §809 §808 从「未实测的假设」变成**已确诊并已修**：每次录音系统性丢 163ms
+
+§808 当时按纪律登记为「规范推导、⛔ 未实测、不改代码」。**本节把它实测了，并修了。**
+
+### §809.1 ⭐ 实测手段：**不需要麦克风**（Web Audio 合成 `MediaStreamTrack`）
+
+上一轮说「本机跑不了真机录音验证」——**那个判断是错的**：Chrome 支持 `AudioContext.createMediaStreamDestination()` 造一路合成 `MediaStream`，`MediaRecorder` 对它的行为与真实麦克风一致。⇒ 用 Playwright + 本机 `chromium-1243` 即可驱动**生产类本体**（esbuild 打包 `vad-segmenter.ts`；该文件**零 import**，可直接跑），只替身音频来源。
+
+### §809.2 确诊读数（生产 `VadSegmenter` 本体，`sliceMs=250`）
+
+| | 墙钟 | `stop()` 返回的 blob 解码时长 | **丢失** |
+|---|---|---|---|
+| **修复前** 6/6 轮 | 4003–4004ms | 3840ms | **163, 164, 163, 163, 163, 162 ms（σ≈0.8ms）** |
+| **修复后** 6/6 轮 | 4001–4005ms | 3960ms | **43, 42, 41, 44, 41, 45 ms** |
+
+⇒ ⭐ 修复前是**系统性**偏置（6/6 全中、σ 0.8ms），不是偶发抖动 ⇒ **每一次录音都被截掉同一截尾巴，且无任何提示**。
+
+⚠ **残差不是零，我不这么说。** 变长度复测（4s / 10s / 20s）后残差为 **~25–47ms，且不随录音长度增长**（20s 那轮还有一个 85ms 离群值）⇒ 判定为**编解码/容器粒度与抖动**，而非按比例丢失。⇒ 结论写成「**消除了 163ms 的系统性截断**」，不是「修好了」。
+
+### §809.3 修复：先挂等待、再 `stop()`
+
+```
+private awaitFinalChunk(recorder): Promise<void> {
+  if (!recorder || recorder.state === 'inactive') return Promise.resolve()
+  return new Promise((resolve) => {
+    const timer = setTimeout(done, FINAL_FLUSH_TIMEOUT_MS)   // 1000ms 硬上限
+    this.finalFlush = done
+  })
+}
+async stop(): Promise<Blob | null> {
+  …
+  const flushed = this.awaitFinalChunk(recorder)   // ⚠ 必须先挂
+  recorder?.stop()                                   // 之后才停机
+  …
+  await flushed                                       // 再建 blob
+}
+```
+
+`ondataavailable` 里兑现 `this.finalFlush?.()`。**超时是硬上限**：`stop()` 在录音收尾链路上，绝不能因为它挂死。
+
+⚠ **契约变更**：`stop()` 由 `Blob | null` 变成 `Promise<Blob | null>`。两个生产调用点都在 async 函数里（`recordingRuntime.ts:439` 的 `switchDevice`、`:658` 的 `stop`）⇒ 无涟漪；`vad-segmenter.test.ts` 的 drive helper 改 `await`。
+
+⚠ **旧写法会静默存错东西**：`:658` 原句 `this.vadSegmenter?.stop() ?? null` 改后拿到的是 **Promise**，会被当成 Blob 存进库。已改成 `(await this.vadSegmenter?.stop()) ?? null`。
+
+### §809.4 变异双向验证（三个全中；其中两个是**先没抓住、补夹具后才抓住**）
+
+| 变异 | 读数 |
+|---|---|
+| 基线 | **13 PASS / 0 FAIL** |
+| A 退回同步建 blob（不等尾片） | **3 红** |
+| B 尾片钩子 `finalFlush?.()` 不兑现 | **1 红**（首轮 **0 红** ⇒ 补用例后才抓住） |
+| C 超时上限 1000 → 5000ms | **1 红** |
+| 还原 | **13 PASS / 0 FAIL** |
+
+⚠ **变异 B 首轮全绿，值得单记**：把兑现钩子删掉后 blob **内容照样正确**——因为超时最终仍会放行 ⇒ **那个钩子的价值是「延迟」不是「正确性」**，而当时 12 条用例**一条都没测延迟**。⇒ 补了「尾片及时到达时必须 <500ms 返回」才抓住。
+
+⇒ 这是 §806.2 同型问题的第三次出现：**测试全绿 ≠ 覆盖到了**。
+
+### §809.5 与 §785 的关系（⚠ 量级仍不符，不许合并）
+
+§785 那次缺口是 **4.64s**；本条是 **163ms**（修复前）⇒ 相差 **28 倍**。⇒ **本条不解释 §785**，§785 的 4.64s 位置仍未定位。两件事分开记，别拿本条当 §785 的答案。
+
+**本节口径**：Playwright + 本机 chromium-1243，**合成音源（非麦克风）**、无权限授予；未连 PG、未发 HTTP、未跑真机麦克风录音。探针在 `.artifacts/s808-probe/`（已 gitignore）。

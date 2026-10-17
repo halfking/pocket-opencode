@@ -436,7 +436,8 @@ export class MeetingRecorderRuntime {
     if (!this.isRecording.value) return this.start(meetingId, { deviceId })
     if (this.elapsedTimer) { clearInterval(this.elapsedTimer); this.elapsedTimer = null }
     const keptElapsed = this.elapsedMs.value
-    this.vadSegmenter?.stop()
+    // §808：`stop()` 现在要等最后一枚切片落地，返回 Promise —— 必须 await
+    await this.vadSegmenter?.stop()
     await this.cleanupMedia()
     this.isRecording.value = false
     const ok = await this.start(meetingId, { deviceId, resume: true })
@@ -655,7 +656,9 @@ export class MeetingRecorderRuntime {
       if (this.elapsedTimer) { clearInterval(this.elapsedTimer); this.elapsedTimer = null }
       navigator.mediaDevices?.removeEventListener?.('devicechange', this.onDeviceChange)
 
-      const fullBlob = this.vadSegmenter?.stop() ?? null
+      // ⚠ §808：`stop()` 已改成 async（等最后一枚 dataavailable）—— 旧写法
+      //   `?.stop() ?? null` 拿到的是 **Promise**，会被当成 Blob 存进库。
+      const fullBlob = (await this.vadSegmenter?.stop()) ?? null
       await this.cleanupMedia()
       const durationMs = this.elapsedMs.value
       let audioPath = ''
