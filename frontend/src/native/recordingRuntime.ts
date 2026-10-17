@@ -39,6 +39,11 @@ import {
 import { buildUtteranceSegment } from '../features/meetings/meeting-utterance'
 import { describeUnsettledSegments } from '../features/meetings/unsettled-segments-notice'
 import {
+  applySpeakerLabelToSegments,
+  SPEAKER_RENAME_FAIL_TAG,
+  type SpeakerLabelOutcome,
+} from '../features/meetings/meeting-edit-failure-notice'
+import {
   describeMeetingFinalizePersistFailure,
   MEETING_FINALIZE_PERSIST_FAIL_TAG,
 } from '../features/meetings/meeting-finalize-persist-notice'
@@ -697,8 +702,17 @@ export class MeetingRecorderRuntime {
     this.speakers.value = this.diarizer.getProfiles().map((p) => ({ profileId: p.id, label: p.label }))
   }
 
-  async labelSpeaker(profileId: string, displayName: string) {
-    if (!this.diarizer) return
+  /**
+   * 改一个说话人的名字。⚠§835：此前这里是「一段写失败就跳出循环」的写法 ⇒
+   * **半改半不改且完全无声**（`onSpeakerLabel` 也没有 try/catch）。
+   * 现在：一段失败只跳过那一段，其余继续；统计结果交回调用方，由它决定说什么。
+   *
+   * @returns 落点统计。`profileFailed` 表示声纹标签那一行没写成功
+   *   （此前它写失败会**直接跳过整个分段循环**，等于一段都没改）。
+   */
+  async labelSpeaker(profileId: string, displayName: string): Promise<SpeakerLabelOutcome> {
+    const outcome: SpeakerLabelOutcome = { renamed: 0, failed: 0, profileFailed: false }
+    if (!this.diarizer) return outcome
     this.diarizer.labelProfile(profileId, displayName)
     this.syncSpeakers()
     const profile = this.diarizer.getProfile(profileId)
@@ -706,13 +720,35 @@ export class MeetingRecorderRuntime {
     // 后者对已存在的行会 sample_count + 1，而这里是「改一次名」，
     // 不是「又多了一个音频样本」—— 改一次名多记一个样本，会把两个
     // 无关的量绑在一起（详见 voiceprints-store.ts 的注释）。
-    if (profile) await upsertVoiceprintLabel({ id: profileId, displayName, embedding: profile.embedding })
+    // ⚠§835：失败只记账，不再往上抛 —— 它曾把整个分段循环一起带走。
+    if (profile) {
+      try {
+        await upsertVoiceprintLabel({ id: profileId, displayName, embedding: profile.embedding })
+      } catch {
+        outcome.profileFailed = true
+      }
+    }
+    const applied = await applySpeakerLabelToSegments(
+      [...this.segmentProfiles.entries()],
+      profileId,
+      displayName,
+      updateSegmentSpeaker,
+    )
+    outcome.renamed = applied.renamed
+    outcome.failed = applied.failed
+    if (applied.failed > 0) {
+      console.warn(
+        `${SPEAKER_RENAME_FAIL_TAG}${applied.failed} 段未写回（${applied.failedIds.join(',')}）`,
+      )
+    }
+    // 内存副本同步：写库成功的那几段要把运行时里的标签一起改掉，
+    // 否则正文重渲染时又退回旧名（这一段与落库成败无关，内存总是要改）。
     for (const [segId, pid] of this.segmentProfiles) {
       if (pid !== profileId) continue
-      await updateSegmentSpeaker(segId, displayName)
       const seg = this.segments.value.find((s) => s.id === segId)
       if (seg) seg.speakerLabel = displayName
     }
+    return outcome
   }
 
   /**

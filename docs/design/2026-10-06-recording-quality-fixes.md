@@ -94898,3 +94898,139 @@ AI 总结漏了最后几句、界面上零提示。
    而麦克风点一下会 `seedSegments` 续录 —— 语义上等价，但用户看不出「续录」这两个字）。
 2. 写库失败要不要**自动重试一次**（本节未做：盲重试可能掩盖真实故障；
    代价是「重试也失败」时用户仍只能手动处理）。
+
+## §835 会议详情页两次主动编辑：**面板先关**与**半改半不改**，都完全无声
+
+> 承接 §832/§833/§834。同族第四轮，但这次抓到的不是「一件事失败了」，
+> 而是「**失败与成功在界面上不可区分**」与「**只成功了一半**」。
+
+### §835.1 ⛔ D1：元信息保存 —— 面板先关，写库后才知道成没成
+
+`MeetingSettingsSheet.onSave()` 此前是：
+
+```ts
+  emit('save', { title: …, topic: …, location: …, participants: …, tags: …, summarySkill: … })
+  emit('close')
+```
+
+| # | 事实 | 证据 |
+|---|---|---|
+| 1 | Vue 的 `emit` 是**同步**的；父组件的 `onMetaSave` 是 `async` 且**没有任何人 await 它** | `MeetingSettingsSheet.vue` / `MeetingDetailView.vue` |
+| 2 | ⇒ 面板在写库结果出来**之前**就关了，`form` 随之销毁 | 同上 |
+| 3 | 父侧 `await updateMeeting(meetingId.value, data)` **没有 try/catch** | `MeetingDetailView.vue` `onMetaSave` |
+| 4 | 失败时 `markListDirty` 与 `load()` 一并被跳过 | 同上 |
+
+⇒ 写失败 ⇒ 一个未处理的 rejection + **零反馈** + **用户刚填的标题/主题/地点/
+参与人/标签已经从屏幕上消失**。
+⇒ ⚠ **失败与成功在界面上完全不可区分**：面板关了 = 看起来存好了。
+这比 §834 更主动 —— §820「谎报存在」只是话没说清，这里**连「保存」这个动作都替你做了**。
+
+⚠ 与笔记侧的对照：`NoteListView.onMetaSave` 是「写库 → 再 `metaOpen = false`」，
+**先写后关** ⇒ 这条链本来就是对的，是会议侧单方面偏离。
+
+### §835.2 ⛔ D2：说话人改名 —— 半改半不改，且完全无声
+
+`MeetingRecorderRuntime.labelSpeaker()` 此前是：
+
+```ts
+    if (profile) await upsertVoiceprintLabel({ … })          // ← 失败 ⇒ 直接跳过整个 for
+    for (const [segId, pid] of this.segmentProfiles) {
+      if (pid !== profileId) continue
+      await updateSegmentSpeaker(segId, displayName)          // ← 失败 ⇒ 跳出循环
+      …
+    }
+```
+
+| # | 事实 | 证据 |
+|---|---|---|
+| 1 | 任一段写失败 ⇒ **后面几段一个都没改**，而**前面几段已经改了**（无事务，也不会回滚） | 上面的 for |
+| 2 | 声纹标签那一处写失败 ⇒ **整段循环被跳过** ⇒ 一段都没改 | 同上 |
+| 3 | `onSpeakerLabel` 只有一行 `await labelSpeaker(...)`，**没有 try/catch** | `MeetingDetailView.vue` |
+| 4 | 改名入口被 `speaker-rename-recording-gate` 限定在**录音中**（`micOn` 内）⇒ 这段循环是高频路径 | 既有门 |
+
+⇒ 用户把「说话人 3」改成「张伟」，正文里**同一个人一会儿新名一会儿旧名**，
+且界面上一个字都不说。
+⚠ 这比 §832 的「什么都没发生」更难被发现：用户看到「有东西变了」，
+只会以为改完了。
+
+### §835.3 落地
+
+| # | 位置 | 改动 |
+|---|---|---|
+| 1 | 新增 `features/meetings/meeting-edit-failure-notice.ts` | `applySpeakerLabelToSegments()`（注入写入，可测）+ `describeSpeakerRenameFailure()` + `describeMeetingMetaSaveFailure()` + 两个诊断前缀 |
+| 2 | `MeetingSettingsSheet.onSave()` | **删掉 `emit('close')`** ⇒ 关闭权交给父组件 |
+| 3 | `MeetingDetailView.onMetaSave` | `try/catch`；成功才 `showSettings = false`；失败 `toast.error` 且**保持面板打开**（输入还在，可直接重试） |
+| 4 | 同上 `onSpeakerLabel` | `try/catch` + 依 `describeSpeakerRenameFailure(outcome)` 决定提示 |
+| 5 | `recordingRuntime.labelSpeaker` | 改走 `applySpeakerLabelToSegments`；声纹标签单独兜住；**返回落点统计**（`renamed`/`failed`/`profileFailed`），不再向上抛 |
+
+⚠ **「跳过失败继续」而不是「遇错即抛」是有代价的，代价据实写进了注释**：
+抛错并不会带来一致性（已写成功的那几段不会回滚），只会丢掉「哪几段没改成」这个信息
+⇒ 与其假装原子，不如把真实结果统计出来交给用户。
+⚠ `labelSpeaker` 的**返回值类型变了**（`void` → `SpeakerLabelOutcome`）。
+全仓唯一调用点是 `useMeetingRecorder` 的透传 + `MeetingDetailView`，后者此前忽略返回值
+⇒ 无人受影响；既有门 `speaker-rename-recording-gate` 钉的是「入口唯一」，不受影响。
+
+### §835.4 判据（20 例全绿）+ 变异（15 个全中）
+
+`frontend/src/features/meetings/__tests__/meeting-edit-failure-notice.test.ts`
+
+* **逐段回填（行为，注入写入）**：只处理 profileId 匹配的段 /
+  **中间一段失败其余必须继续**（本次缺陷的核心）/ 全失败不得说成成功 /
+  负控：写入函数**同步**抛错也只影响那一段 / 空落点集是合法输入。
+* **文案（行为）**：全成功**不提示** / 部分失败必须带**具体数量**并说清刷新后仍是旧名 /
+  全失败与部分失败必须是两句不同的话 / 声纹失败要点明「下次不会被记住」 /
+  必须说清「录音仍在继续」/ 负控（9 种计数组合不得产出 `undefined`·`NaN`）/
+  D1 必须说清面板还开着且输入还在。
+* **接线（扫描，⚠ 零牙已标注）**：sheet 不许自己关面板 / 父侧必须有 try 且**成功才关** /
+  改名入口必须有 try + 纯函数 + 告警挂在守卫上 / runtime 必须走可测纯函数且声纹单独兜 /
+  前提登记（改名入口仍唯一）。
+
+| # | 变异 | 结果 |
+|---|---|---|
+| A2 / A3 / A4 | 纯模块：跳出循环 / 不过滤 profileId / 不记 failedIds | ✅ 各 1 红 |
+| B | 声纹写入不再单独兜住 | ✅ 1 红 |
+| C | runtime 自己写循环（不走可测纯函数） | ✅ 1 红 |
+| D | sheet 又自己 `emit('close')` | ✅ 1 红 |
+| E / E2 | 去掉 try/catch / 失败时不 return | ✅ 各 1 红 |
+| F / G | 改名入口去掉 try / 告警没有守卫 | ✅ 各 1 红 |
+| H / I / J / K / L | 文案：两种形态同句 / 不说旧名 / 不说录音继续 / 不说不会被记住 / 成功也提示 | ✅ 各 1 红 |
+| M | D1 文案不说面板还开着 | ✅ 1 红 |
+
+⚠ **本节 15 个变异里有 5 个首版 0 红，全部是判据自身的错**，据实记：
+
+1. ⭐⭐⭐⭐ **固定宽度窗口会串到相邻函数**。变异 E/F 把 `try {` 换成 `if (1) {`，
+   本该打红，却因为窗口尾部的**下一个函数**（`onShareTodo`）自带 `try {` 而全绿
+   ⇒ 已改成 `fnBody()`：**以下一个函数声明为界**，不再靠固定字符数。
+   （同族：§830「前提登记类断言指错位置」。）
+2. ⭐⭐⭐⭐ **「这一行存在」不等于「它被守卫着」**。只写
+   `assert.match(/toast\.warning\(text\)/)` 会被 `if (false) toast.warning(text)`
+   这种死写法骗过 ⇒ 断言改成要求**守卫本身**（`if (text) { toast.warning(text)`）。
+   （同族：§834「『无条件』不等于『这一行不存在』」，两次都是同一根因。）
+3. ⭐⭐⭐ **并集式正则里有一条太松会废掉整条断言**。`/保持打开|还在/` 在删掉前半句后，
+   被后半句「你刚填的内容**还在**输入框里」命中 ⇒ 0 红 ⇒ 只认「面板」这个词。
+4. ⭐⭐ **变异本身没造出目标形态**：A2 把 `if (failed > 0) return` 放在
+   `renamed += 1` 之后 ⇒ 抛错路径根本走不到 ⇒ 语义等价 ⇒ 必须把提前 return
+   放在**循环体开头**才造得出「后面几段被跳过」。
+5. ⭐⭐ 两处变异锚点缩进写错（锚点未命中）⇒ 记一笔：**锚点必须与真实写法逐字对齐**
+   （本会话已第 5 次）。
+
+### §835.5 ⛔ 口径与未实测
+
+* 判据 20 例 + 变异 15 个；`typecheck` EXIT=0；**`npm run gates` 45/45 通过**（53.0s）。
+* ⛔ **未实测**：真机上 `updateSegmentSpeaker` / `updateMeeting` 写失败的真实发生率
+  （本节结论是**构造性**的：写失败一次现象即成立）。
+* ⛔ **未实测**：改名「半成功」在真机上的可观测频率。⚠ 既有门
+  `speaker-rename-recording-gate` 已登记一个**相关但不同**的缺口：
+  改名只改 `this.segmentProfiles` 里的段 ⇒ **续录恢复的历史段改不了**
+  （§276.6，本轮未做，属数据结构缺口）。
+* ✅ 顺带登记（**未改**）：`MeetingMetaSheet.vue` 全仓**零引用** ——
+  唯一提到它的只有 `BottomSheet.vue` 的一句文档注释 ⇒ 与简报里
+  「26 个活着但零测试引用的导出」是同一类登记项。
+
+### §835.6 待属主拍板
+
+1. 元信息面板在**失败保持打开**之后，要不要给一个「复制我填的内容」兜底
+   （仍可能遇到用户此时切走页面、KeepAlive 把 form 丢掉的情形）。
+2. 说话人改名**续录历史段**（§276.6）要不要在本轮一并补数据结构
+   —— 补法是给分段加 `profileId`，属于存储形态变更，单独拍。
+3. `MeetingMetaSheet.vue` 这个零引用组件：删除，还是接线保留（见 §835.5 末行）。

@@ -152,6 +152,12 @@ import { buildMeetingReminderNote, buildNoActionItemsNote } from './meeting-remi
 import { dedupeSegments, renderTranscript } from './meeting-dedup.ts'
 import { resolveRefinedView, type RefinedViewMode } from './refined-transcript-view.ts'
 import { LEFTOVER_RECORDING_HINT } from './meeting-finalize-persist-notice'
+import {
+  describeMeetingMetaSaveFailure,
+  describeSpeakerRenameFailure,
+  MEETING_META_SAVE_FAIL_TAG,
+  SPEAKER_RENAME_FAIL_TAG,
+} from './meeting-edit-failure-notice'
 import AddToLearningButton from '../study/AddToLearningButton.vue'
 import type { MeetingTodoDraft } from './meeting-todos'
 import type { MeetingStudioAction } from './meeting-page-actions'
@@ -462,13 +468,37 @@ async function onEditSegment(payload: { id: string; text: string }) {
 }
 
 async function onSpeakerLabel(profileId: string, displayName: string) {
-  await labelSpeaker(profileId, displayName)
+  // ⚠ §835/D2：此前这里没有 try/catch，而 runtime 那侧的逐段写库此前是
+  //   「一段失败就跳出循环」⇒ **半改半不改**（同一个人在正文里一会儿新名一会儿
+  //   旧名）且**完全无声**。现在 runtime 返回落点统计，由这里决定说什么。
+  try {
+    const outcome = await labelSpeaker(profileId, displayName)
+    const text = describeSpeakerRenameFailure(outcome)
+    if (text) {
+      toast.warning(text)
+      console.warn(SPEAKER_RENAME_FAIL_TAG, outcome)
+    }
+  } catch (e) {
+    console.error(SPEAKER_RENAME_FAIL_TAG, e)
+    toast.error('说话人改名失败，录音仍在继续，可稍后再改一次')
+  }
 }
 
 async function onMetaSave(data: {
   title: string; topic: string; location: string; participants: string[]; tags: string[]; summarySkill: string
 }) {
-  await updateMeeting(meetingId.value, data)
+  // ⚠ §835/D1：面板此前由 sheet 自己 emit('close') 先关掉了，而这一行没有
+  //   try/catch ⇒ 写库失败 = 一个未处理的 rejection + **零反馈** + 用户刚填的
+  //   内容已经从屏幕上消失 ⇒ 失败与成功在界面上不可区分。
+  //   ⇒ 现在关闭权在这里：成功才关；失败时面板保持打开（输入还在），只说一句话。
+  try {
+    await updateMeeting(meetingId.value, data)
+  } catch (e) {
+    console.error(MEETING_META_SAVE_FAIL_TAG, e)
+    toast.error(describeMeetingMetaSaveFailure({ error: e }))
+    return
+  }
+  showSettings.value = false
   markListDirty('meetings')
   await load()
 }
