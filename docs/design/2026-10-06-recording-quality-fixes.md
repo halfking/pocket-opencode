@@ -94534,3 +94534,93 @@ const id = await saveSegment(seg)                // ← 建行在更后面
 1. 比例阈值是否沿用 `0.5`（本轮按 §783 既有口径直接采用，**未代拍新值**）；
    若要更保守可调 `REFINE_RETENTION_RATIO` 一个常量。
 2. 绝对下限 200 字是否合适（短会议多的产品可能要调低）。
+
+## §832 随手记的**建草稿失败**完全不可见：录音白录，界面上什么都没有
+
+先把 §826 的范围钉死（这是本节的前提），再查笔记侧的对应物。
+
+### §832.1 ✅ 阴性结论：§826 **不**命中随手记（省下重复劳动）
+
+| 事实 | 证据 |
+|---|---|
+| `startBackgroundMic()` **全仓只有一处调用**，在**会议**的 `start()` 里 | `recordingRuntime.ts:372` |
+| 笔记录音（`NoteRecorderRuntime`）走 `getUserMedia` + `MediaRecorder`（timeslice） | 同文件 `start()` 内的 MediaRecorder 分支 |
+| ⇒ 笔记路径**从不产原生分片**，完整音频由 `RollingWebmDecoder.takeFull()` 提供 | 同上 |
+
+⇒ §826 的结论（Android 上没有整段音频）**只对会议路径成立**，随手记不受影响。
+⚠ 顺带一条**机制差异**（值得记，因为它解释了为什么笔记侧更抗后台）：
+会议路径靠 rAF 驱动 VAD 切片（rAF 停摆 ⇒ 切片停），笔记路径靠 MediaRecorder 的
+timeslice 事件（由媒体管线驱动，不受 rAF 影响）。
+
+### §832.2 ⛔ 缺陷：两条建草稿路径**都没有 try/catch**
+
+| # | 事实 | 证据 |
+|---|---|---|
+| 1 | `onMicToggle()`（页面在场点停止）直接 `await createVoiceDraft(...)`，**无 try/catch** | `NoteListView.vue:339-345` |
+| 2 | `pickupPendingRecording()`（跨页停止后回列表页补建，跑在 `onMounted` 里）同样**无 try/catch** | 同文件 `:518-523` |
+| 3 | 建草稿要写存储：原生 `Filesystem.writeFile` / Web `localDB.run`（base64） | `note-files.ts:persistNotePayload` |
+| 4 | 前端**没有** `unhandledrejection` 兜底 | 全仓检索 0 命中 |
+
+⇒ 写失败 ⇒ 异常一路抛出事件处理器 ⇒ 用户看到的是
+**「录音正常结束、界面恢复原样、什么都没有」**：没有笔记、没有报错、没有提示。
+⇒ **整段录音白录，而用户完全不知道它存在过。**
+
+⚠ 与 §820 同族但**形态更重**：§820 至少留下一条「谎报完好」的会议记录；
+这里**连记录都不存在** ⇒ 用户甚至没有可以回头复查的对象。
+
+⚠ 现实触发率不是零：§820.2 已记录 IndexedDB 配额在 Android WebView / iOS WKWebView 上
+「一场 60 分钟会议的 webm 很容易触顶」，而录音笔记正是长音频场景。
+
+### §832.3 落地
+
+| # | 位置 | 改动 |
+|---|---|---|
+| 1 | `NoteListView.vue` `onMicToggle` | `try/catch` + 失败时置 `draftSaveError` + `console.error` |
+| 2 | 同上 `pickupPendingRecording` | 同上（文案点明「补建」上下文） |
+| 3 | 新增 `draftSaveError` ref + **独立**错误行（`v-if`，不挂 `v-else-if` 链） | 见下 |
+| 4 | `voice-draft-save-notice.ts`（新纯模块） | 文案决策 |
+
+⚠ **错误行刻意用 `v-if` 而不是 `v-else-if`**：失败发生时录音**已经停止**，
+`recError` 为空、`recorderUi.statusText` 可能非空 ⇒ 挂在那条链上会被顶掉
+（那正是本文件 `recError` 那行注释里记过的同类坑）。
+⚠ 再次录音前清空 `draftSaveError`，否则旧错误会一直挂着。
+
+### §832.4 判据（8 例全绿）+ 变异（8 个全中）
+
+`frontend/src/features/notes/__tests__/voice-draft-save-notice.test.ts`
+
+* **行为层（纯函数）**：说清是「草稿保存失败」而非转写失败 / 说清**不会自动恢复**
+  并给出唯一可行动作（先抄文字、再重录）/ 两条路径文案不同（否则分不清哪条路坏）/
+  负控：非 Error 异常不得产出 `undefined`、`[object Object]`、`NaN`。
+* **接线层（源码扫描，⚠ 零牙已标注）**：两条路径都必须被 `try` 包住且用纯函数决策 +
+  错误行必须渲染且**不得**是 `v-else-if` / 新录音前要清空 /
+  前提登记（两条路径仍是「adopt 优先、不重复建」）。
+
+| # | 变异 | 结果 |
+|---|---|---|
+| A / B | 两条路径分别去掉 catch 保护 | ✅ 各 1 红 |
+| C | 错误行挂到 `v-else-if` 链上 | ✅ 1 红 |
+| D | 设了 ref 但模板里不渲染 | ✅ 1 红 |
+| E | 忘记清上一次的失败 | ✅ 1 红 |
+| F | 不再优先 `adoptVoiceDraft`（一次录音两条笔记） | ✅ 1 红 |
+| G | 文案不再给用户可做的动作 | ✅ 1 红 |
+| H′ | 异常取原因产出 `[object Object]` | ✅ 1 红 |
+
+⚠ **变异 H 第一版是无效变异**：我写 `return String(e)`，而该分支里 `e` 已经是
+trim 过的字符串 ⇒ 语义完全等价 ⇒ 0 红。换成真会改行为的 H′（`Object.prototype.toString.call(e)`）
+才打红 ⇒ 再次确认 **「0 红」必须先区分「判据有洞」与「变异没改到行为」**。
+
+### §832.5 ⛔ 口径与未实测
+
+* 行为判据 8 例 + 变异 8 个；`typecheck` EXIT=0；相关 20 例全绿；
+  **`npm run gates` 45/45 通过**（57.2s）。
+* ⛔ **未实测**：真机上建草稿失败的真实发生率（属存储行为，本节结论是**构造性**的：
+  只要写失败一次，现象就成立）。
+* ⛔ 未实测原生 `Filesystem.writeFile` 与 Web `localDB` 各自的失败文案形态
+  ⇒ 用户看到的具体措辞可能比文案模板更啰嗦，但**不会更不 actionable**。
+
+### §832.6 待属主拍板
+
+1. 失败后是否提供**「保存为纯文字」的补救按钮**（当前文案只让用户手动复制，
+   而录音刚转出的文字此刻就在界面上 —— 一次点击能救回整段内容）。
+   ⚠ 本轮**未做**：它会改动录音结束后的 UI 布局，属产品口径。

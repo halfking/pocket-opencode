@@ -31,6 +31,13 @@
         未完成草稿：{{ draftBanner.title || draftBanner.content.slice(0, 24) }}
       </button>
 
+      <!--
+        ⚠§832：建草稿失败必须有自己的错误行，且**不能**挂在下面那条 v-else-if 链上 ——
+        失败发生时录音已经停止、recError 为空，挂在链上会被下一条分支顶掉。
+        （下面 recError 那行正是这个坑：它只覆盖「转写错误」，不覆盖「存不下来」。）
+      -->
+      <p v-if="draftSaveError" class="studio-error" role="alert">{{ draftSaveError }}</p>
+
       <template v-if="isRecording">
         <NoteRecordingStudio v-model="liveTranscript" :error="recError" />
       </template>
@@ -152,6 +159,7 @@ import NoteSearchBrief from './NoteSearchBrief.vue'
 import { notesApi } from '../../api/notes'
 import { createNoteTodos } from './note-todo-persist'
 import { buildNoteTodoNotice } from './note-todo-notice.ts'
+import { describeVoiceDraftSaveFailure } from './voice-draft-save-notice.ts'
 import { awaitNoteMirror } from './notes-persist'
 import { useNoteRecording } from './useNoteRecording'
 import { noteRecorderUiState } from './note-recording'
@@ -190,6 +198,8 @@ const summarizeError = ref('')
  * 「说了明天下午三点就一定会有提醒」。
  */
 const todoNotice = ref('')
+/** §832：建草稿失败的用户可见出口（此前完全没有）。 */
+const draftSaveError = ref('')
 const {
   phase: recordPhase,
   recording: isRecording,
@@ -339,9 +349,19 @@ async function onSearch() {
 async function onMicToggle() {
   const stopped = await toggleRecording()
   if (!stopped) return
-  // draftId 非空 = 运行时已经落过库了，再建一次就会留下两条笔记。
-  if (stopped.draftId) await adoptVoiceDraft(stopped.draftId, stopped.text)
-  else await createVoiceDraft(stopped.text, stopped.audioBlob, stopped.durationMs)
+  // ⚠⚠ §832：此前这里**没有** try/catch，而前端也没有 unhandledrejection 兜底
+  //   ⇒ 存储写失败时整条链一路抛出去，用户只看到「点完没反应」，
+  //   整段录音白录却**完全不知道**。失败必须变成一句人话。
+  //   ⚠ 存下来的失败**不阻断**后续动作（这是一次收尾，不是一次交互）。
+  draftSaveError.value = ''
+  try {
+    // draftId 非空 = 运行时已经落过库了，再建一次就会留下两条笔记。
+    if (stopped.draftId) await adoptVoiceDraft(stopped.draftId, stopped.text)
+    else await createVoiceDraft(stopped.text, stopped.audioBlob, stopped.durationMs)
+  } catch (e) {
+    draftSaveError.value = describeVoiceDraftSaveFailure({ error: e, via: 'stop-button' })
+    console.error('[notes] 语音草稿保存失败：', e)
+  }
 }
 
 /** 录音停止 → 语音草稿笔记 + 打开元信息编辑。页面在场与跨页停止(全局
@@ -518,8 +538,15 @@ watch(domain, () => { void load() })
 async function pickupPendingRecording(): Promise<void> {
   const pending = consumePendingResult()
   if (!pending) return
-  if (pending.draftId) await adoptVoiceDraft(pending.draftId, pending.text)
-  else await createVoiceDraft(pending.text, pending.audioBlob, pending.durationMs)
+  // ⚠ §832：跨页补建是**第二条**建草稿路径，同样必须有 try/catch ——
+  //   它跑在 `onMounted` 里，抛错连界面提示都没有，只剩一个未处理的 rejection。
+  try {
+    if (pending.draftId) await adoptVoiceDraft(pending.draftId, pending.text)
+    else await createVoiceDraft(pending.text, pending.audioBlob, pending.durationMs)
+  } catch (e) {
+    draftSaveError.value = describeVoiceDraftSaveFailure({ error: e, via: 'pending-pickup' })
+    console.error('[notes] 跨页补建语音草稿失败：', e)
+  }
 }
 
 onMounted(async () => {
