@@ -6937,3 +6937,25 @@ pluginAvailable∈{Sherpa,BackgroundMic}`，**真源码零改动**）跑出来�
   **只扫测试函数体会低估 4 倍**（166 vs 635），因为多数 store 类测试的 skip 写在
   **28 个 helper** 里（`newTestStore` / `newTestPGStore` / `newWorkspaceTestStore` / `newIsolatedPGPool` …）。
   ⇒ 扩到全仓前必须先解决「怎么在静态层面追到 helper 里的 skip」，否则会建出一张漏掉 2/3 目标的门。
+
+---
+
+## 2026-10-18 round48：`-race` 拿到第一份权威读数（全 60 包绿），PG 路径仍缺
+
+- ⭐ **`go test -race -count=1 ./...` = EXIT 0 / ok 60 / FAIL 0 / DATA RACE 0**
+  （`internal/server` `ok 47.894s`、`internal/wecom` `ok 8.472s`）。
+  环境 go1.27.2 darwin/arm64 + `CGO_ENABLED=1` + `/usr/bin/gcc`；
+  round17 那次「`-race` 跑不了」的障碍已不存在。
+  并按 round17 纪律放必然触发 race 的探针 → `WARNING: DATA RACE` + EXIT 1
+  ⇒ **detector 确实武装**，这份绿是 race 模式下的真绿。
+- ⚠ **`internal/server` 的 PG 集成测试仍是自跳过**（`audit_pg_test.go:23` 读
+  `POCKET_TEST_POSTGRES_DSN`，未设即 `t.Skip`；本机未设）。
+  ⇒ 「server 包绿」**不等于**「PG 路径被跑过」。§777.4 的三条安全前置与属主授权仍未解除。
+- ✅ `npm run gates` **46/46 全过**（59.7s），含新增的 `check:doc-empty-string-literal`
+  （selftest 24/24、全仓 0 命中）。
+- ⚠ **负控必须注在真正的 doc comment 上**：`store_select_scan_parity_test.go`
+  顶部 L3–L59 那段超长注释**不是 doc comment**（下面是空行 + `import (`），
+  在那里注入 `''` 门禁**正确地不报**，gofmt 也**正确地不改**。
+  区分配方：`gofmt <file> | grep -n '<注入的那行>'` —— `''` 变 `”` 才是 doc comment。
+  已写进脚本头注释，避免下一个人误判「门禁坏了」而去放宽判据。
+- 详见 `docs/handoff/2026-10-18-round48-race-green-and-doc-comment-negctl-trap.md`。

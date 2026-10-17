@@ -51,6 +51,20 @@
  * （判据退化成恒真/恒假）、「自指」（门自身不被自己扫到）四组，并设**条数下限**，
  * 防止 cases 数组被改小后「0/0 通过」假绿。
  *
+ * ## 负控怎么做 —— 以及一个真会把人带沟里的坑（2026-10-18 实测）
+ *
+ * 负控必须在**真正的 doc comment** 上注入，判据是在「顶层声明的正上方」。
+ * 踩过的坑：`backend/internal/email/store_select_scan_parity_test.go` 顶部
+ * L3–L59 那段超长注释**不是 doc comment** —— 它上面是 `package email`、
+ * 下面是**空行 + `import (`**，两端都不贴任何顶层声明（Go 里 import 前也不能有
+ * doc comment）。在那里注入 `''`，本门**正确地不报**，gofmt 也**正确地不改**
+ * （实测 `gofmt <file> | sed -n '4p'` 逐字节未变）—— 即门没坏，注入点选错了。
+ * ★ 所以「负控不红」的第一嫌疑是**注入点**，不是判据；真要区分就拿 gofmt
+ * 当量具：`gofmt <file> | grep -n '<你注入的那一行文字>'`，改了说明是 doc，
+ * 没改说明压根不是 doc comment，门不报是对的。
+ * 该文件里真正可用的负控锚点是 `paritySite` 那个 type 的 doc
+ * （紧贴 `type paritySite struct {`），在它上面注入即报红并点名到行号。
+ *
  * 用法：
  *   node scripts/check-doc-empty-string-literal.mjs              # 门禁模式，有命中 exit 1
  *   node scripts/check-doc-empty-string-literal.mjs --list       # 只列出命中（exit 0）
