@@ -96987,3 +96987,113 @@ M7：在 `TasksView.vue` 里真加一个「本文件定义、函数体内无 cat
    与 §832/§833（随手记草稿回填/建草稿失败）同族，但这是**会话草稿**这一侧。
 2. **跨文件导入的 callee（`void store.refresh()` 那 112 条里的一大部分）要不要也纳管** ——
    现状它们靠 §847 的 `error-outlet-audit` 间接覆盖，没有「调用点接不接住」这一维。
+
+---
+
+## §851 `v-html` 绑定审计：10 处里 **9 处已有净化，1 处是存储型 XSS**
+
+### 1. 扫面
+
+枚举全仓 `.vue` 的 `v-html="…"` ⇒ **10 处**。逐处追「这个表达式喂进去的 HTML 从哪来、
+有没有经过净化」：
+
+| 位置 | 表达式 | 净化链路 | 结论 |
+|---|---|---|---|
+| `AIChatView:114 / :129` | `rendered(a)` / `rendered(turn.answers[0])` | `renderMarkdown` → `sanitizeHtml`（error 分支还显式 `escapeHtml`） | 阴性 |
+| `EmailDetailView:77 / :94 / :97` | `htmlBody` / `quotedHtml` / `signatureHtml` | `sanitizeEmailHtml`（DOMPurify） | 阴性（但见 §851.5） |
+| `EmailSummaryView:65` | `renderedMarkdown` | `renderMarkdown` | 阴性 |
+| `NoteDetailView:51` | `renderedMarkdown` | `renderMarkdown` | 阴性 |
+| `AgentDetailView:92` | `promptPreview` | `renderMarkdown` | 阴性 |
+| `RoundTimeline:254` | `renderedHtml(msg)` | `renderMarkdown` | 阴性 |
+| **`RssItemDetail:124`** | **`item.content`** | **无** | ⛔ **真缺陷** |
+
+### 2. ⛔ D6：RSS 正文存储型 XSS（三段取证）
+
+```html
+<div v-if="item.content" class="content" v-html="item.content"></div>
+```
+
+1. **内容完全由订阅源作者控制** —— 任何人都能发布一条 RSS；
+2. **服务端原样入库**：`backend/internal/rss/store_entities.go` 把 `r.Content`
+   直接进 SQL 参数，`backend/internal/rss/` 全包 grep 不到任何 sanitize；
+3. **前端零净化**：`features/rss/` 全目录 grep `sanitiz|DOMPurify` **0 命中**。
+
+⚠ 而 `frontend/index.html` **没有 CSP**（实测 grep `http-equiv` 无命中）
+⇒ 没有任何东西拦 `onerror=` 这类内联事件。
+⇒ 一条订阅里的 `<img src=x onerror="…">` 会在**设备 WebView** 里执行，
+而这个 WebView 带着 Capacitor bridge（读得到 `localStorage` 里的登录态）。
+
+⭐ **最强证据是一致性对照**：同一仓库的 `utils/markdown.ts::sanitizeHtml`
+**已经存在**，配置里明写 `FORBID_TAGS: ['style','script']`、`ALLOWED_ATTR` 不含 `style`，
+头注释还专门说「assistant output … without XSS risk」。
+聊天 / 笔记 / 会议摘要 / Agent 提示词预览 **全都走它** ——
+**RSS 是 10 处 `v-html` 里唯一没走的那个。**
+
+落地：`safeContent = computed(() => sanitizeHtml(item.value?.content ?? ''))`，
+模板改 `v-html="safeContent"`。**没有新写净化器**，直接复用仓库既有的那一个。
+
+### 3. 判据
+
+新文件 `frontend/src/__tests__/v-html-outlet-audit.test.ts`，**6 例**：
+
+| 断言 | 作用 |
+|---|---|
+| 尺子非空转（>100 个 `.vue`） | 防路径写错 |
+| 扫到 10 处（**只钉上界**） | 新增 `v-html` 会红 |
+| RSS 正文必须走 `sanitizeHtml` | 直接对应 D6 |
+| **每处 `v-html` 的表达式**都必须落在「已净化」清单里 | 见下面第 4 条 |
+| 共享净化器真的禁掉 `style`/`script` | 否则 RSS 净化等于半截 |
+| 阴性读数抽查 3 条净化链路 | 防回归 |
+
+⚠ **第一版按「文件」放行，判据太粗**：把表达式从 `safeContent` 改回 `item.content` 时
+它一声不响 —— 文件还在清单里，判据已经不成立了。
+⇒ 清单改成钉**表达式形状**（`/^safeContent$/`、`/^rendered\(/` …），
+这与 §840/§842/§843/§847 的「判据的识别词是契约的一部分」是同一条。
+
+### 4. 变异双向验证（**真实文件**）
+
+M8：把 `safeContent` 改回直接透传 `item.content`（真缺陷原形态）。
+
+| 读数 | 值 |
+|---|---|
+| 基线 | **6 pass / 0 fail** |
+| M8 后 | **4 pass / 2 fail** —— 红的正是「RSS 必须走 sanitizeHtml」与「表达式清单」 |
+| 复原后 | **6 pass / 0 fail** |
+
+`typecheck` EXIT=0，`npm run gates` **45/45 通过**（53.0s）。
+
+### 5. ⚠ 顺带登记：第二套净化器与共享配置**口径相反**（未改）
+
+`features/email/email-detail-format.ts::sanitizeEmailHtml` 允许
+`'style'` **标签**与 `style` **属性**（`ALLOWED_TAGS`/`ALLOWED_ATTR` 里都有），
+而共享的 `PURIFY_CONFIG` 明确 `FORBID_TAGS: ['style','script']` 且不含 style。
+两套配置**各写一份、没有任何测试让它们对齐**。
+
+⚠ 这是**真的安全面**：`ALLOWED_URI_REGEXP` 只作用于 URI 属性（`href`/`src`），
+**不作用于 CSS** ⇒ 邮件里的 `@import url(https://attacker/…)` 或
+`background-image:url(...)` 不会被打到，而邮件正文来自**任何发信人**。
+后果面：阅读回执（打开即上报）、CSS 属性选择器外泄、点击劫持式浮层。
+
+**本节未改** —— 邮件正文大量依赖内联样式，「整体禁掉 `style`」是产品口径，
+而「禁掉 `@import` / CSS 里的 `url(`」是纯技术加固，可独立做。已登记为待拍板第 1 条。
+
+### 6. 口径与未实测
+
+- ⚠ 本节只覆盖 **`v-html`**。`:style` 绑定里的 CSS 注入、`<iframe srcdoc>`、
+  以及服务端下发到原生侧（Android WebView / 通知 / 分享卡）的 HTML **不在范围内**。
+- ⚠ 判据查的是**表达式形状**，不是运行时净化；它也无法证明 `sanitizeHtml`
+  在某个 DOMPurify 版本下没有已知绕过 ⇒ 那属于依赖版本审计。
+- ⛔ **未实测**：没有构造真实的恶意订阅做端到端验证（本节全部结论来自读码 + grep 读数）；
+  目标机型 WebView 上 `innerHTML` 注入的 `<img onerror>` 是否确实执行，也**未在真机验证**
+  （WebView 版本相关）⇒ 但**缺 CSP 这一点是确定的**，且它单独就足以让净化成为必须。
+
+### 7. 待拍板
+
+1. **`sanitizeEmailHtml` 允许 `style` 标签这件事要不要收紧** —— 选项：① 禁掉 `<style>`
+   标签但保留 `style` 属性（多数邮件仍可读）；② 保留但剥掉 CSS 里的 `@import` / `url()`
+   （去掉外泄面，保留排版）；③ 两套净化器合并成一份带参数的共享实现（工作量最大）。
+   本节建议先做 ②，因为它是纯技术加固、不改变产品观感。
+2. **邮件正文要不要改成 `iframe` + `sandbox` 预览** —— 邮件客户端的通例，
+   能同时解决 CSS 注入与远程图片回执；这是产品口径（会改变现有排版与交互）。
+3. **`index.html` 要不要加一条 CSP** —— 本节实测**没有任何 CSP**；
+   加 CSP 会同时影响其它渲染路径，属独立的一件事。

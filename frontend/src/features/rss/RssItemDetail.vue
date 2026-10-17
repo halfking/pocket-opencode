@@ -5,10 +5,24 @@ import { rssApi, type RSSItem } from '../../api/rss'
 import { useI18n } from 'vue-i18n'
 import { toUserMessage } from '../../api/error-message'
 import AddToLearningButton from '../study/AddToLearningButton.vue'
+import { sanitizeHtml } from '../../utils/markdown'
 
 const route = useRoute()
 const router = useRouter()
 const item = ref<RSSItem | null>(null)
+
+/**
+ * §851：RSS 正文是**订阅源作者完全可控**的 HTML，而这里原来直接 `v-html` 渲染。
+ * ⛔ 取证：服务端 `backend/internal/rss/store_entities.go` 把 `content` **原样**入库
+ *   （无任何净化），`index.html` **也没有 CSP** ⇒ 一条订阅里的
+ *   `<img src=x onerror="...">` 会在这台设备的 WebView 里执行，
+ *   而这个 WebView 带着 Capacitor bridge（能读 localStorage 里的登录态）。
+ *
+ * ⇒ 复用仓库里**已有的**共享净化器 `utils/markdown.ts::sanitizeHtml`
+ *   （配置里明写 FORBID_TAGS: ['style','script']，且不含 style 属性）。
+ *   同一仓库对聊天/笔记/会议摘要都走它，RSS 是唯一漏掉的一个。
+ */
+const safeContent = computed(() => sanitizeHtml(item.value?.content ?? ''))
 const loading = ref(true)
 const errorMsg = ref('')
 const shareOpen = ref(false)
@@ -121,7 +135,7 @@ function back() {
         <AddToLearningButton source-kind="rss" :source-id="item.id" />
         <AddToLearningButton source-kind="rss" :source-id="item.id" as-task task-type="research" />
       </div>
-      <div v-if="item.content" class="content" v-html="item.content"></div>
+      <div v-if="safeContent" class="content" v-html="safeContent"></div>
     </article>
 
     <footer v-if="item" class="actions-bar">
