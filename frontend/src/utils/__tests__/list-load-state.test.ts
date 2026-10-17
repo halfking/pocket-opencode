@@ -35,6 +35,27 @@ const MEETINGS = read('../../features/meetings/MeetingListView.vue')
 const NOTES = read('../../features/notes/NoteListView.vue')
 const INBOX = read('../../features/email/EmailInboxView.vue')
 const FOLDERS = read('../../features/email/EmailFolderListView.vue')
+const TASKS = read('../../features/tasks/TasksView.vue')
+
+/**
+ * ★★ loader 的 catch 里**不得把已加载的行清空**。
+ *
+ * §843 的核心：`loadTasks()` / `loadSessions()` 原本各有一句
+ *   `tasks.value = []` / `sessions.value = []`
+ * ⇒ 一次失败整屏行消失，并显示「暂无运行中的任务」+ 引导新建。
+ * 那正是 `list-error-failpath` 为 UI-07e 建立时要防的形态，而它**看不见**这处 ——
+ * 因为没有「错误分支」可查，只有一次主动清空。
+ *
+ * ⚠ 口径：这里查的是「catch 块体内是否出现把某个列表 ref 赋成空数组」，
+ *   它同样会命中「确实想清空」的合法写法（目前本仓没有这种写法）。
+ *   若将来有，必须在这里显式登记例外，而不是把判据放宽。
+ */
+const catchClearsRows = (src: string, fn: string): boolean => {
+  const body = codeOnly(blockFrom(codeOnly(src), fn))
+  const c = /catch\s*\([^)]*\)\s*\{[\s\S]*?\n {2}\}/.exec(body)
+  if (!c) return false
+  return /\w+(?:\.value)?\s*=\s*\[\]/.test(c[0])
+}
 
 /**
  * 三个走 `useContinuousList` 的视图（仓库里**全部**三个，`use-list-sentinel` 已无生产消费方）。
@@ -74,6 +95,16 @@ const templateOf = (src: string): string => {
 }
 
 /**
+ * 模板区，**剥掉 HTML 注释**。
+ *
+ * ⚠ 为什么需要：`indexOf('暂无运行中的任务')` 会先命中我自己写在注释里的那句
+ *   「并显示「暂无运行中的任务」+…」（§843 第一次跑就假红了）。
+ *   ⇒ 凡是用「界面上的某段文案」当锚点的判据，必须先剥注释，
+ *     否则锚点会被注释抢走，而**注释恰好是为了解释这段代码才写的**。
+ */
+const tplCode = (src: string): string => templateOf(src).replace(/<!--[\s\S]*?-->/g, '')
+
+/**
  * 从锚点起取到**括号配平**为止的整块。
  *
  * ⚠ 第一版用 `/^\s*\}\)/m` 找边界，结果它先撞上 `listMeetings(size, { … })` 的收尾
@@ -83,23 +114,38 @@ const templateOf = (src: string): string => {
  * ⚠ 第二版仍错：锚点后**第一个** `{` 是参数解构 `({ page })` 的括号，
  *   配平立刻归零 ⇒ 只取到 26 个字符。
  *   ⇒ 必须先越过 `=>` 再取函数体的 `{`。
- * ⚠ 第三版：阳性对照写成 `at > 0`，而**锚点恰好在位置 0** 时 `indexOf` 返回 0
- *   ⇒ 被误报成「找不到锚点」。凡是「用 indexOf 定位」的断言，阳性对照都该是 `!== -1`
- *   而不是 `> 0`（`> 0` 把「正好在开头」和「真没找到」混为一谈）。
+ * ⚠ 第三版：阳性对照写成 `at > 0`，而**锚点恰好在位置 0** 时 `indexOf` 返回 `0`
+ *   ⇒ 被误报成「找不到锚点」。凡是「用 indexOf 定位」的断言，阳性对照都该是 `!== -1`。
+ * ⚠⚠ 第四版最隐蔽：它**只会**处理箭头函数。遇到 `async function loadTasks() {`
+ *   这种普通函数声明时找不到 `=>`，就一路找到**后面某个** `=>` 再取它的 `{`
+ *   ⇒ 返回一段完全无关的切片，判据在那段垃圾上跑。
+ *   ⚠ 更糟的是它可能**碰巧**包含 try/catch 而给出假绿（§843 第一次跑就撞上）。
+ *   ⇒ 必须同时支持两种形状：锚点自带形参的普通函数，以及 `xxx: (…) => {` 箭头函数。
  */
 const blockFrom = (code: string, anchor: string, max = 4000): string => {
   const at = code.indexOf(anchor)
   assert.ok(at !== -1, `★ 阳性对照失败：找不到锚点 ${anchor}`)
-  const arrow = code.indexOf('=>', at + anchor.length)
-  assert.ok(arrow > 0, `★ 阳性对照失败：锚点 ${anchor} 之后没有 '=>'`)
-  const open = code.indexOf('{', arrow)
-  assert.ok(open > 0, `★ 阳性对照失败：锚点 ${anchor} 的箭头函数没有函数体`)
+  let i = at + anchor.length
+  const skipWs = () => { while (i < code.length && /\s/.test(code[i])) i += 1 }
+  skipWs()
+  if (code[i] === '(') {                        // 跳过形参列表（按括号配平）
+    let depth = 0
+    for (; i < code.length; i += 1) {
+      if (code[i] === '(') depth += 1
+      else if (code[i] === ')') { depth -= 1; if (depth === 0) { i += 1; break } }
+    }
+  }
+  skipWs()
+  if (code.startsWith('=>', i)) { i += 2; skipWs() }
+  assert.ok(code[i] === '{',
+    `★ 阳性对照失败：锚点 ${anchor} 之后的函数体不是 '{'（拿到 ${JSON.stringify(code.slice(i, i + 12))}）`)
+  const open = i
   let depth = 0
-  for (let i = open; i < code.length && i < open + max; i += 1) {
-    if (code[i] === '{') depth += 1
-    else if (code[i] === '}') {
+  for (let k = open; k < code.length && k < open + max; k += 1) {
+    if (code[k] === '{') depth += 1
+    else if (code[k] === '}') {
       depth -= 1
-      if (depth === 0) return code.slice(at, i + 1)
+      if (depth === 0) return code.slice(at, k + 1)
     }
   }
   return code.slice(at, at + max)
@@ -325,7 +371,8 @@ const hasEmptySwallow = (src: string): boolean => {
  */
 const FOLDER_ERROR_BRANCH = /v-(?:else-)?if="readError && folders\.length === 0"/
 
-const branchTagOf = (tpl: string): string => {
+const branchTagOf = (tplRaw: string): string => {
+  const tpl = tplCode(tplRaw)
   const m = FOLDER_ERROR_BRANCH.exec(tpl)
   assert.ok(m, '★ 量具自证失败：模板里找不到「readError && folders.length === 0」这条分支')
   const at = m.index
@@ -333,6 +380,79 @@ const branchTagOf = (tpl: string): string => {
   assert.ok(close > at, '★ 量具自证失败：失败分支的开标签没有闭合')
   return tpl.slice(at, close)
 }
+
+describe('§843 · 任务与会话（TasksView）', () => {
+  for (const [fn, name, notice] of [
+    ['async function loadTasks()', 'loadTasks', 'tasksError'],
+    ['async function loadSessions()', 'loadSessions', 'sessionsError'],
+  ] as const) {
+    it(`★★★ ${name}() 的 catch 不得清空已加载的行（§843 的真缺陷）`, () => {
+      assert.equal(catchClearsRows(TASKS, fn), false,
+        `${name} 的 catch 里有「某 ref = []」⇒ 一次失败整屏行消失（UI-07e 的同一形态），`
+        + '而仓库门禁看不见它（没有错误分支可查，只有一次主动清空）')
+    })
+
+    it(`★★ ${name}() 的 catch 必须挂一条用户可见的失败说明`, () => {
+      const body = codeOnly(blockFrom(codeOnly(TASKS), fn))
+      assert.match(body, new RegExp(`${notice}\\.value = listReadFailureNotice\\(`),
+        `${name} 的 catch 没有写 ${notice} ⇒ 失败路径上零用户可见说明`)
+    })
+
+    it(`★ ${name}() 成功路径必须清掉上一次的失败说明`, () => {
+      const body = codeOnly(blockFrom(codeOnly(TASKS), fn))
+      assert.match(body, new RegExp(`${notice}\\.value = null`),
+        `${name} 没有重置 ${notice} ⇒ 读成功后失败提示还挂着`)
+    })
+  }
+
+  it('★★★ 两个失败分支都必须带「无行」守卫且排在真空态之前', () => {
+    const tpl = tplCode(TASKS)
+    for (const [flag, rows, emptyBind] of [
+      ['tasksError', 'visibleActiveTasks', ':title="activeTasks.length > 0'],
+      ['sessionsError', 'visibleSessions', 'icon="💬"'],
+    ] as const) {
+      const re = new RegExp(`v-(?:else-)?if="${flag} && ${rows}\\.length === 0"`)
+      assert.match(tpl, re, `没有「${flag} && ${rows}.length === 0」分支`)
+      const at = tpl.search(re)
+      assert.ok(at > 0, `量具自证失败：找不到 ${flag} 分支`)
+      // ⚠ 锚点用空态分支自己的 title **绑定表达式**，不用文案字面量 ——
+      //   文案会出现在我自己写的注释里（§843 踩过）。
+      const atEmpty = tpl.indexOf(emptyBind)
+      assert.ok(atEmpty > at, `${flag} 分支排在真空态分支之后 ⇒ 永远轮不到（v-else-if 链只认第一个为真的）`)
+    }
+  })
+
+  it('★★ 两个失败分支都要带可点的重试入口', () => {
+    const tpl = tplCode(TASKS)
+    assert.match(tpl, /@action="loadTasks"/, '任务区失败分支没有 @action="loadTasks"')
+    assert.match(tpl, /@action="loadSessions"/, '会话区失败分支没有 @action="loadSessions"')
+  })
+
+  it('★★ 有行时也必须挂非破坏性横幅（两档契约的后一档）', () => {
+    const tpl = tplCode(TASKS)
+    for (const flag of ['tasksError', 'sessionsError']) {
+      // ⚠ 属性顺序是 `v-if` 在前、`class` 在后（照抄本仓既有横幅写法）
+      assert.match(tpl, new RegExp(`v-if="${flag}"[\\s\\S]{0,80}class="list-error-banner"`),
+        `有行时 ${flag} 没有任何提示 ⇒ 刷新失败后用户以为看到的是最新的`)
+    }
+  })
+
+  it('★ 变异负控：把清空那一行放回去 ⇒ 尺子必须转红', () => {
+    const before = codeOnly(blockFrom(codeOnly(TASKS), 'async function loadTasks()'))
+    const mutated = before.replace('console.error(\'Failed to load tasks:\', e)',
+      "console.error('Failed to load tasks:', e)\n    tasks.value = []")
+    assert.notEqual(mutated, before, '★ 变异没生效：没匹配到 console.error 那一行')
+    assert.equal(catchClearsRows(mutated, 'async function loadTasks()'), true, '尺子没咬住清空')
+  })
+
+  it('★ 变异负控：把失败分支的守卫拿掉 ⇒ 尺子与仓库门禁都必须转红', () => {
+    const mutated = tplCode(TASKS)
+      .replace(/v-else-if="tasksError && visibleActiveTasks\.length === 0"/, 'v-else-if="tasksError"')
+    assert.notEqual(mutated, tplCode(TASKS), '★ 变异没生效')
+    assert.equal(/v-else-if="tasksError && visibleActiveTasks\.length === 0"/.test(mutated), false,
+      '拿掉守卫后尺子居然还通过')
+  })
+})
 
 describe('§842 · 邮件目录（EmailFolderListView）', () => {
   it('★★★ reload() 必须自己兜住（否则调用方会给出与真实结果相反的提示）', () => {

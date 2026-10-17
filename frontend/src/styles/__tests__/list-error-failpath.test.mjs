@@ -149,8 +149,17 @@ const FAILPATH_VIEWS = [
   },
   {
     file: 'features/tasks/TasksView.vue',
-    state: 'n/a',
-    why: 'accStore.error 渲染在弹窗内的 .acc-error，是行内提示，不接管整页',
+    // §843：原为 `n/a`，理由写的是「accStore.error 渲染在弹窗内的 .acc-error，
+    // 是行内提示，不接管整页」—— 那句话**只说了委托弹窗那一处**，
+    // 而视图里真正的列表读取失败原本长这样：
+    //     } catch (e) { console.error(...); tasks.value = [] }    // ← 主动清空
+    //     } catch (e) { console.error(...); sessions.value = [] } // ← 同样
+    // ⇒ 一次失败整屏任务/会话从视野消失（UI-07e 的同一形态），并显示
+    //   「暂无运行中的任务」+「点击「+ 新任务」创建」，**引导用户建重复任务**。
+    // 已改为 fail-open（保留已加载行）+ 两档失败提示 ⇒ 从此属于 enforced。
+    state: 'enforced',
+    why: '§843：两个 loader 的 catch 都在主动清空列表（tasks.value = [] / sessions.value = []）'
+      + '⇒ 失败即清屏并谎报为空；现有 tasksError / sessionsError 且带 .length 守卫的分支，按 enforced 管辖',
   },
   {
     file: 'features/meetings/MeetingListView.vue',
@@ -243,12 +252,13 @@ test('【量具自证】枚举器确实采到了全部下拉刷新视图与两�
   assert.ok(files.length >= 5,
     `只采到 ${files.length} 个下拉刷新视图（期望 ≥5）⇒ 棘轮覆盖不全，扫不到新增的视图`)
   const enforced = FAILPATH_VIEWS.filter((v) => v.state === 'enforced')
-  assert.equal(enforced.length, 4,
-    `enforced 应为 4 处（SessionListView / EmailInboxView / MeetingListView / EmailFolderListView），`
-    + `实际 ${enforced.length} ⇒ 登记表与现实脱节`)
+  assert.equal(enforced.length, 5,
+    `enforced 应为 5 处（SessionListView / EmailInboxView / MeetingListView /`
+    + ` EmailFolderListView / TasksView），实际 ${enforced.length} ⇒ 登记表与现实脱节`)
   // ★ 棘轮必须盯住「新登记的那几处」本身：只数条目数的话，把其中一处改回 n/a
   //   再加一条别的 enforced，数目照样对，门禁察觉不到倒退。
-  for (const f of ['features/meetings/MeetingListView.vue', 'features/email/EmailFolderListView.vue']) {
+  for (const f of ['features/meetings/MeetingListView.vue', 'features/email/EmailFolderListView.vue',
+    'features/tasks/TasksView.vue']) {
     assert.ok(enforced.some((v) => v.file === f),
       `${f} 不在 enforced 里 ⇒ 有人把它退回 n/a 了（它们的空态分支分别是 §840/§842 修出来的，`
       + 'n/a 会让它们重新变成无人看守）')
@@ -292,7 +302,9 @@ test('【变异 M2 · 必须转红】把 EmailInboxView 的守卫拿掉（同一
 })
 
 test('【变异 M3 · 必须转红】往一个登记为 n/a 的视图里注入无守卫错误空态（证明规则不只认我改过的文件）', () => {
-  const target = 'features/tasks/TasksView.vue'
+  // ⚠ 原先这个样本是 TasksView；§843 把它转成 enforced 了 ⇒ 再拿它当「n/a 的视图」
+  //   就名不副实（断言仍会过，但它证明的东西变了）。改指一个**仍然**是 n/a 的 demo 页。
+  const target = 'pages/OptimizedDemo.vue'
   const views = pullViews().map((v) => (v.file !== target ? v : {
     ...v,
     text: v.text.replace('<script', `<template><EmptyState v-else-if="loadError" icon="⚠️" :title="loadError" /></template>\n<script`),
@@ -317,7 +329,7 @@ test('【变异 M5 · 必须转红】把 §840 给会议列表加的「无行」
 test('【变异 M6 · 必须转红】把 §840 登记的视图退回 n/a（证明登记表条目被真正看守）', () => {
   const shrunk = FAILPATH_VIEWS.map((v) => (v.file === 'features/meetings/MeetingListView.vue' ? { ...v, state: 'n/a' } : v))
   const enforced = shrunk.filter((v) => v.state === 'enforced')
-  assert.notEqual(enforced.length, 4, '退回 n/a 后条目数没变 ⇒ 棘轮只数个数，看不住倒退')
+  assert.notEqual(enforced.length, 5, '退回 n/a 后条目数没变 ⇒ 棘轮只数个数，看不住倒退')
   assert.ok(!enforced.some((v) => v.file === 'features/meetings/MeetingListView.vue'),
     'MeetingListView 已不在 enforced 里，钉它的断言没响')
 })
@@ -336,13 +348,13 @@ test('【变异 M7 · 必须转红】把 §842 给邮件目录加的「无行」
 test('【变异 M8 · 必须转红】把新登记的视图退回 n/a（登记表倒退）', () => {
   const shrunk = FAILPATH_VIEWS.map((v) => (v.file === 'features/email/EmailFolderListView.vue' ? { ...v, state: 'n/a' } : v))
   const enforced = shrunk.filter((v) => v.state === 'enforced')
-  assert.notEqual(enforced.length, 4, '退回 n/a 后条目数没变 ⇒ 棘轮只数个数，看不住倒退')
+  assert.notEqual(enforced.length, 5, '退回 n/a 后条目数没变 ⇒ 棘轮只数个数，看不住倒退')
   assert.ok(!enforced.some((v) => v.file === 'features/email/EmailFolderListView.vue'),
     'EmailFolderListView 已不在 enforced 里，钉它的断言没响')
 })
 
 test('【变异 M4 · 必须保持绿】行内（非 EmptyState）错误提示不受管辖（避免过度管辖）', () => {
-  const views = pullViews().map((v) => (v.file !== 'features/tasks/TasksView.vue' ? v : {
+  const views = pullViews().map((v) => (v.file !== 'pages/OptimizedDemo.vue' ? v : {
     ...v,
     text: v.text.replace('<script', `<template><p v-if="loadError" class="err">{{ loadError }}</p></template>\n<script`),
   }))
