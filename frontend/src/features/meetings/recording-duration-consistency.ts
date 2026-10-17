@@ -19,6 +19,9 @@
  * 且那个 WAV 是 44 字节头 + `samples.length * 2`，**字节数自带动长** ⇒
  * `真实时长秒 = (byteLength - 44) / 2 / 16000`，**不需要任何额外解码**。
  *
+ *
+ * ⚠ 护栏量的是「墙钟 vs 音频」，而**墙钟本身也可能是陈旧的** —— 见 §812 与本文件末尾的
+ * `resolveWallClockDurationMs`。
  * 判定阈值与「报警但不阻断」是**产品口径**：本模块只给读数与判定，不抛错、
  * 不改写任何状态；调用方（`meeting-recording-finalize.ts`）只 `console.warn`。
  */
@@ -185,4 +188,31 @@ export function assessDurationDrift(
     toleranceMs,
     reason: driftMs > 0 ? 'audio-shorter' : 'audio-longer',
   }
+}
+
+/**
+ * 取「该写进 DB 的墙钟时长」。**在写入时刻重算，不读 interval 的缓存值。**
+ *
+ * ⚠⚠ §812 的由来：`recordingRuntime` 的 `elapsedMs` 只由 `setInterval(200ms)` 更新，
+ * 而页面隐藏时浏览器会**节流定时器**；与此同时 `onHidden` **只弹 toast、并不停止录音**
+ * （只有 nativeMode 才早退）⇒ 后台录音继续、缓存值却可能过期数秒到数分钟。
+ * 旧代码 `const durationMs = this.elapsedMs.value` 把这个**陈旧缓存**写进了库。
+ *
+ * ⚠ 这还会连带影响本模块的护栏：它比的就是这个数 ⇒ 墙钟本身不准，护栏就跟着不准。
+ * （本仓另一条路径 `recordingRuntime.ts:1166` 本来就直接重算，两处口径此前不一致。）
+ *
+ * @param now        写入时刻的 `Date.now()`
+ * @param startTime  本次录音的起点（`Date.now()` 口径）
+ * @param fallbackMs 缓存值，仅在「无法重算」时使用
+ * @param isPaused   暂停态下墙钟本就不该继续走 ⇒ 只能退回缓存值
+ */
+export function resolveWallClockDurationMs(
+  now: number,
+  startTime: number,
+  fallbackMs: number,
+  isPaused: boolean,
+): number {
+  if (isPaused) return fallbackMs
+  if (!(startTime > 0) || !Number.isFinite(now)) return fallbackMs
+  return Math.max(0, now - startTime)
 }

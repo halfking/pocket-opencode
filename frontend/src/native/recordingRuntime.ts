@@ -61,6 +61,7 @@ import {
 import { decideMeetingStart, decideNoteStart } from './recordingPolicy'
 import { planSpeakerRelabel } from './speaker-relabel'
 import { isPlaceholderSpeaker } from '../features/meetings/meeting-roster-homophone'
+import { resolveWallClockDurationMs } from '../features/meetings/recording-duration-consistency'
 
 // ---------------------------------------------------------------------------
 // 录音语音播报（进程级单例）
@@ -660,7 +661,17 @@ export class MeetingRecorderRuntime {
       //   `?.stop() ?? null` 拿到的是 **Promise**，会被当成 Blob 存进库。
       const fullBlob = (await this.vadSegmenter?.stop()) ?? null
       await this.cleanupMedia()
-      const durationMs = this.elapsedMs.value
+      // ⚠⚠ §812：**不读 interval 的缓存值**，而在此刻重算。
+      //   `elapsedMs` 只由 `setInterval(200ms)` 更新（第 387 行），而页面隐藏时
+      //   浏览器会**节流定时器**，与此同时 `onHidden`（第 232 行）**只弹 toast、
+      //   并不停止录音**（只有 nativeMode 才早退）⇒ 后台录音继续，缓存值却可能
+      //   过期数秒到数分钟，写进 DB 的 `durationMs` 就是个陈旧值。
+      //   ⚠ 这还会连带影响 §805 的时长一致性护栏：它比的就是这个数。
+      //   本文件另一条路径（第 1166 行）本来就直接重算，这里与之对齐。
+      //   `isPaused` 目前**全仓从未被赋值**（暂停未接线），恒为 false，
+      //   所以重算与 interval 口径等价 —— 保留 paused 分支是为了将来接线时不回归。
+      const durationMs = resolveWallClockDurationMs(
+        Date.now(), this.startTime, this.elapsedMs.value, this.isPaused.value)
       let audioPath = ''
       if (fullBlob && fullBlob.size > 0) {
         audioPath = URL.createObjectURL(fullBlob)

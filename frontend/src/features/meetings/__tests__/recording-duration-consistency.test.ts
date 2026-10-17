@@ -15,6 +15,7 @@ import { describe, it } from 'node:test'
 import {
   assessDurationDrift,
   createMeasuringToWav,
+  resolveWallClockDurationMs,
   wavDurationSec,
 } from '../recording-duration-consistency.ts'
 
@@ -330,5 +331,36 @@ describe('⛔ 只认「帧数线性于 dataSize」的编码，否则返回 null�
     for (const af of [0x704f, 2, 7, 0x55]) {
       assert.notEqual(wavDurationSec(wavWithFormat(af)), 10)
     }
+  })
+})
+
+describe('§812 墙钟必须在写入时刻重算，不读 interval 的陈旧缓存', () => {
+  it('正常：在写入时刻重算 now - startTime', () => {
+    assert.equal(resolveWallClockDurationMs(62_000, 2_000, 999, false), 60_000)
+  })
+
+  // ⭐ 这条是整组的由来：后台节流会让缓存值过期，而录音**继续**（onHidden 只弹 toast）。
+  //   旧代码 `const durationMs = this.elapsedMs.value` 会把 200 写进库。
+  it('⭐ 缓存过期时必须用重算值，而不是缓存值', () => {
+    const now = 62_000, startTime = 2_000, staleCache = 200   // 缓存停在 200ms 那一刻
+    assert.equal(resolveWallClockDurationMs(now, startTime, staleCache, false), 60_000)
+    assert.notEqual(resolveWallClockDurationMs(now, startTime, staleCache, false), staleCache)
+  })
+
+  it('没开始录（startTime=0）⇒ 退回缓存，不算出负数或垃圾值', () => {
+    assert.equal(resolveWallClockDurationMs(62_000, 0, 200, false), 200)
+  })
+
+  it('暂停态 ⇒ 退回缓存（墙钟本就不该继续走）', () => {
+    assert.equal(resolveWallClockDurationMs(62_000, 2_000, 30_000, true), 30_000)
+  })
+
+  it('now 非法（NaN/Infinity）⇒ 退回缓存', () => {
+    assert.equal(resolveWallClockDurationMs(Number.NaN, 2_000, 200, false), 200)
+    assert.equal(resolveWallClockDurationMs(Number.POSITIVE_INFINITY, 2_000, 200, false), 200)
+  })
+
+  it('结果不为负', () => {
+    assert.equal(resolveWallClockDurationMs(1_000, 5_000, 200, false), 0)
   })
 })
