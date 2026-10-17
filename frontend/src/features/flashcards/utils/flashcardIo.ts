@@ -69,7 +69,7 @@ export async function exportJson(opts: {
       const { uri: fileUri } = await native.filesystem.getUri(filename, 'documents')
       try {
         await native.share.share({
-          title: 'OpenPocket Flashcards Export',
+          title: 'AI Work Mess Flashcards Export',
           text: `${opts.bundle.notes.length} notes · ${opts.bundle.cards.length} cards`,
           url: fileUri,
           dialogTitle: '导出卡片到',

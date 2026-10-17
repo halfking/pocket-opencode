@@ -1,4 +1,4 @@
-# OpenCode Pocket 部署指南
+# AI Work Mess 部署指南
 
 **版本**: Phase 6 (commit 7223368)  
 **日期**: 2026-07-05  
@@ -6,7 +6,7 @@
 
 ## 部署概览
 
-本指南用于将 OpenCode Pocket 部署到生产服务器。系统包含：
+本指南用于将 AI Work Mess 部署到生产服务器。系统包含：
 - **Backend**: Go 服务器 (端口 8088)
 - **Database**: PostgreSQL 14+
 - **Frontend**: Vue 3 SPA (构建到 backend 静态资源)
@@ -194,7 +194,7 @@ sudo nano /etc/systemd/system/pocketd.service
 
 # 添加以下内容:
 [Unit]
-Description=OpenCode Pocket Backend API
+Description=AI Work Mess Backend API
 After=network.target postgresql.service
 Wants=postgresql.service
 
@@ -529,8 +529,29 @@ CREATE INDEX idx_tasks_created_at ON tasks(created_at DESC);
 ANALYZE tasks;
 
 -- 查看慢查询
-SELECT * FROM pg_stat_statements ORDER BY mean_exec_time DESC LIMIT 10;
+-- ⚠️ 2026-10-17：下面这条**曾经是查不通的**。默认部署里
+--    log_min_duration_statement = -1（不落慢 SQL 日志）且 pg_stat_statements
+--    没安装 ⇒ 这条语句必然报 relation "pg_stat_statements" does not exist。
+--    docker-compose.db.yml 现已默认开启两者（阈值 OPP_PG_SLOW_QUERY_MS，默认 500ms）。
+--
+--    优先用随初始化建好的视图（按**总**耗时排序 —— 跑得多的才是真正吃时间的）：
+SELECT * FROM pocket_slow_statements LIMIT 20;
+
+--    需要更细的口径时再直接查扩展表（calls 用于区分「跑得多」与「单次慢」）：
+SELECT calls, round(total_exec_time::numeric, 1) AS total_ms,
+       round(mean_exec_time::numeric, 2)  AS mean_ms, left(query, 160)
+FROM pg_stat_statements
+ORDER BY total_exec_time DESC LIMIT 20;
+
+-- 实时看慢 SQL 日志（compose 已开 logging_collector，落在数据目录的 log/ 下）
+--   docker exec opp-db-postgres sh -c 'tail -f /var/lib/postgresql/data/log/postgresql-$(date +%F).log'
 ```
+
+> ⚠️ 已经跑过初始化的实例**不会**重跑初始化脚本，`pg_stat_statements` 需手工补一次：
+> ```sql
+> CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
+> ```
+> `shared_preload_libraries` 同理只能走启动参数，改完需重启容器。
 
 ### Backend 优化
 

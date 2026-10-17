@@ -368,7 +368,7 @@ already implements this).
 | `SendPrompt` | `POST /session/:sessionID/message` | **implemented** | |
 | `SubscribeEvents` | `GET /event` | **implemented** | |
 
-### 6.2 OpenCode Pocket Plugin (`opencode-plugin/src/index.ts`)
+### 6.2 AI Work Mess Plugin (`opencode-plugin/src/index.ts`)
 
 | Command | Pinned route | Status |
 |---------|--------------|--------|

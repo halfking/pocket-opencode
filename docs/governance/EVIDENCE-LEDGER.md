@@ -1,7 +1,7 @@
 # Evidence Ledger — External Dependencies
 
 > **Last updated**: 2026-08-27（P1 移动端轮）
-> **Purpose**: Record, for every external capability that OpenPocket depends on, the precise pin (commit SHA, branch, endpoint, test log) we relied on. This is the single place reviewers go to verify a "yes, we depend on X and X was at version Y at time T" claim.
+> **Purpose**: Record, for every external capability that AI Work Mess depends on, the precise pin (commit SHA, branch, endpoint, test log) we relied on. This is the single place reviewers go to verify a "yes, we depend on X and X was at version Y at time T" claim.
 >
 > **Rule**: a `STATUS-MATRIX.md` row that says `contract-tested` / `integration-tested` / `production-verified` **must** have a row here that names the artifact, its SHA, and the test log that produced the evidence. No exception.
 

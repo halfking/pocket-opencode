@@ -2,7 +2,7 @@
 
 > **代号**: ZAgentGateway (ZAG)
 > **状态**: `planned`；当前仓库不存在该实现。
-> **定位**: RedClaw（PC 桌面企业控制面）与 OpenPocket（移动）+ acc-go（任务编排）三者之间的**智能体监测与控制适配器**。
+> **定位**: RedClaw（PC 桌面企业控制面）与 AI Work Mess（移动）+ acc-go（任务编排）三者之间的**智能体监测与控制适配器**。
 > **关键边界**: ZAG 不把 RedClaw task/session API 冒充为 OpenCode runtime API。默认保留 OpenCode coding runtime；OpenCode-compatible facade 是独立的后续项目。
 > **证据等级**: 本文接口和代码均为目标设计；RedClaw generic connectors、真实 event projection、IDE adapter 和 ACC worker 注册尚未在当前仓库验证。
 
@@ -16,7 +16,7 @@
 |---|---|---|
 | **acc-go** | 任务编排 / Chief / MCP / A2A | 不应该知道 RedClaw 存在；不直接控制 PC Agent |
 | **RedClaw platform-go** | 已确认：企业 task/session/control、agentcontainer、OpenClaw subprocess、策略/鉴权基础 | 当前未验证 OpenCode-compatible API；generic connectors 不是已实现的 IDE/ACP connector；不适合直接被移动端调用 |
-| **pocketd (OpenPocket)** | 移动 UI；鉴权；WebSocket Hub；已有功能 | 不应该承担"PC Agent 控制中心"角色 |
+| **pocketd (AI Work Mess)** | 移动 UI；鉴权；WebSocket Hub；已有功能 | 不应该承担"PC Agent 控制中心"角色 |
 | **llm-gateway-go** | LLM Provider 路由 | 与 PC Agent 控制无关 |
 | **Memora** | 记忆 / Charter / Skill | 与 PC Agent 控制无关 |
 
@@ -26,8 +26,8 @@
 
 | 反模式 | 为什么不行 |
 |---|---|
-| OpenPocket 直接调 RedClaw | RedClaw 含 Plan E 审批 / Ed25519 双签 / SSO；直接暴露给移动端不安全 |
-| OpenPocket 直接调 RedClaw Gateway (`:8092`) | 当前是 echo stub；且 Gateway 是 LLM 代理，不是 Agent 控制 |
+| AI Work Mess 直接调 RedClaw | RedClaw 含 Plan E 审批 / Ed25519 双签 / SSO；直接暴露给移动端不安全 |
+| AI Work Mess 直接调 RedClaw Gateway (`:8092`) | 当前是 echo stub；且 Gateway 是 LLM 代理，不是 Agent 控制 |
 | acc-go 直接调 RedClaw | 违反 acc-go 抽象；acc-go 应该只看到"worker 在跑任务" |
 | pocketd 自己做这件事 | pocketd 是 mobile BFF；职责过多会导致耦合 |
 | 在 RedClaw platform-go 内加 mobile API | RedClaw 是 PC 平台，加 mobile 接口会污染企业平台 |
@@ -503,13 +503,13 @@ func (z *ZAgent) bridgeEvents(ctx context.Context, rcTaskID, accTaskID string) {
         accEvent := z.translateEvent(event, accTaskID)
         z.acc.PublishTaskEvent(ctx, accTaskID, accEvent)
         
-        // 也推 WebSocket 给 OpenPocket
+        // 也推 WebSocket 给 AI Work Mess
         z.wsHub.BroadcastToFleet(fleetID, accEvent.Type, accEvent.Payload)
     }
 }
 ```
 
-### 7.3 OpenPocket 通过 ZAG 查询 PC Agent 状态
+### 7.3 AI Work Mess 通过 ZAG 查询 PC Agent 状态
 
 ```go
 // pocketd fleetbridge.pod.go
@@ -549,7 +549,7 @@ func (z *ZAgent) ListPods(ctx context.Context, req ListPodsRequest) ([]Pod, erro
 // RedClaw platform-go 推 permission request 给 ZAG（sse）
 // ZAG 收到后:
 // 1. 落 Memora (audit)
-// 2. 推 WebSocket 给 OpenPocket
+// 2. 推 WebSocket 给 AI Work Mess
 // 3. 推 SSE 给 acc-go（如果有 task 上下文）
 
 func (z *ZAgent) onPermissionRequest(ev PermissionEvent) {
@@ -560,7 +560,7 @@ func (z *ZAgent) onPermissionRequest(ev PermissionEvent) {
         Content:   jsonStringify(ev),
     })
     
-    // 推 WS 给 OpenPocket
+    // 推 WS 给 AI Work Mess
     z.wsHub.BroadcastToFleet(ev.FleetID, "permission.request", ev)
     
     // 推 SSE 给 acc-go
@@ -570,7 +570,7 @@ func (z *ZAgent) onPermissionRequest(ev PermissionEvent) {
     })
 }
 
-// OpenPocket 用户点击 Allow
+// AI Work Mess 用户点击 Allow
 // POST pocketd /api/fleet/builds/:id/permissions/:pid/reply
 //   ↓
 // ZAG POST /api/v1/permissions/:id/reply
@@ -581,7 +581,7 @@ func (z *ZAgent) onPermissionRequest(ev PermissionEvent) {
 //   ↓
 // RedClaw 执行 git push
 //   ↓
-// 事件回流到 OpenPocket
+// 事件回流到 AI Work Mess
 ```
 
 ---
@@ -604,11 +604,11 @@ RedClaw platform-go 的事件流是 SSE，ZAG 需要把它转换为：
 - ZAG 内部事件（落到 ws.Hub）；
 - Memora 事件日志；
 - acc-go 兼容事件（如果 acc-go 上有任务上下文）；
-- OpenPocket WebSocket 事件。
+- AI Work Mess WebSocket 事件。
 
 事件映射表：
 
-| RedClaw Event | ZAG Event | Memora | acc-go | OpenPocket WS |
+| RedClaw Event | ZAG Event | Memora | acc-go | AI Work Mess WS |
 |---|---|---|---|---|
 | `task.submitted` | `task.update` (status=queued) | planned | planned | planned |
 | `task.running` | `task.update` (status=running) | planned | planned | planned |
@@ -926,4 +926,4 @@ services:
 
 ## 17. 一句话总结
 
-**ZAgentGateway = PC 桌面（RedClaw / OpenClaw / 本地 IDE）能力的统一 API 出口；OpenPocket / acc-go / 第三方 MCP 客户端都通过它访问 PC Agent；既不污染 RedClaw 企业平台，也不让 pocketd 变臃肿。**
+**ZAgentGateway = PC 桌面（RedClaw / OpenClaw / 本地 IDE）能力的统一 API 出口；AI Work Mess / acc-go / 第三方 MCP 客户端都通过它访问 PC Agent；既不污染 RedClaw 企业平台，也不让 pocketd 变臃肿。**

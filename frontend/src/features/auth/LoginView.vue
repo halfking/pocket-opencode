@@ -4,7 +4,7 @@
       <!-- Logo 和标题 -->
       <div class="logo-section">
         <div class="logo">🦞</div>
-        <h1 class="app-title">OpenCode Pocket</h1>
+        <h1 class="app-title">AI Work Mess</h1>
         <p class="app-subtitle">{{ needUnlock ? '解锁本地数据' : '移动端多实例管理平台' }}</p>
       </div>
 
@@ -480,7 +480,7 @@ async function biometricLogin() {
   error.value = ''
   let cred: { username: string; password: string }
   try {
-    cred = await getBiometricCredential('使用指纹登录 OpenCode Pocket')
+    cred = await getBiometricCredential('使用指纹登录 AI Work Mess')
   } catch (e: any) {
     loading.value = false
     const message = e?.message || ''

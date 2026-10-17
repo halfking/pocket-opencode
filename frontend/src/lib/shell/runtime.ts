@@ -111,7 +111,7 @@ const NAV_SETTLE_TIMEOUT_MS = 1500
 export function createShellRuntime(router: RouterLike, opts: { scope?: NavigationScope } = {}): ShellRuntime {
   const diagnostics: string[] = []
   const store = new NavigationContextStore()
-  const titles = new TitleResolver({ appName: 'OpenCode Pocket' })
+  const titles = new TitleResolver({ appName: 'AI Work Mess' })
   const back = new BackDispatcher()
 
   /**

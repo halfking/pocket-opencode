@@ -1,4 +1,4 @@
-# OpenPocket 闪卡模块 v1 契约（Frozen Contract for Parallel Implementation）
+# AI Work Mess 闪卡模块 v1 契约（Frozen Contract for Parallel Implementation）
 
 > 状态：**已冻结**（freeze date 2026-09-18）。所有 v1 子代理必须遵守此契约的字段名、路由路径与 JSON 形状。
 > 决策锚点：见 `/Users/xutaohuang/workspace/ai/anki` Anki 仓库的 `rslib/src/scheduler/fsrs/`（集成层）、`proto/anki/notes.proto`、`rslib/sync/main.rs`。

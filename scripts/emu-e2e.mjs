@@ -1,4 +1,4 @@
-// Maestro-style driver for the OpenCode Pocket Android E2E runs.
+// Maestro-style driver for the AI Work Mess Android E2E runs.
 //
 // Target selection (env var SER, default emulator-5554):
 //   PowerShell:  $env:SER="4c308e2e"; node scripts/emu-e2e.mjs shot tag

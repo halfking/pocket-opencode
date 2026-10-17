@@ -39,8 +39,13 @@ export interface CapabilityProbes {
 export const CAPABILITY_PLUGINS = {
   /** 后台录音（Android microphone 前台服务）。 */
   recording: ['BackgroundMic'],
-  /** 本地识别（sherpa ASR / PDF 文本）。⚠️ `Sherpa` 是**骨架插件**，
-   *  已注册但每个方法都 reject ⇒ 判定时被 `NOT_IMPLEMENTED_PLUGINS` 挡掉。 */
+  /** 本地识别（sherpa ASR / PDF 文本）。
+   *  ⚠️ 2026-10-17：`Sherpa` 已从 `NOT_IMPLEMENTED_PLUGINS` 移出 —— Phase 4 落地后
+   *  它的 6 个 `@PluginMethod` 里 5 个是真实实现（`preload`/`transcribe`/
+   *  `startListening`/`stopListening`/`status`），继续挂着会让 `recognition`
+   *  恒为 false ⇒ **本地 ASR 明明可用却被判不可用，白白路由到云端**。
+   *  唯一仍 reject 的是 `extractEmbedding`（Phase 5 声纹，`sherpa.ts` 有 web 兜底，
+   *  `speaker-embedding.ts` 捕获后降级），它不参与本能力判定。 */
   recognition: ['Sherpa'],
   /** 本地持久任务账本。⚠️ **当前仓内没有这个插件**，所以它恒为 false。 */
   taskLedger: ['TaskLedger'],
@@ -62,26 +67,26 @@ export const CAPABILITY_PLUGINS = {
  *   注入 PluginHeaders 模拟原生已注册        → isPluginAvailable = true
  * ```
  * 而 Android 的 `MainActivity.onCreate` 里**确实**有
- * `registerPlugin(SherpaPlugin.class)`，而 `SherpaPlugin.java` 每个方法都
- * `call.reject("sherpa-onnx AAR not integrated (Phase 4)")`。
- * ⇒ 不加这一栏，能力快照会报 `recognition.asr = 'model'`（本地 ASR 可用），
- * 而真实调用 100% reject —— **能力探测绿灯、功能全无**。
+ * `registerPlugin(SherpaPlugin.class)`。
+ * ⇒ 不加这一栏，能力快照会报「可用」，而真实调用 100% reject ——
+ *   **能力探测绿灯、功能全无**。
  *
  * ★ 这一栏由 `capabilities-stub-gate.test.mjs` 对着 Java 源码交叉校验：
- * 「全 reject 的插件」与「本表登记的插件」必须**完全一致**，否则门转红。
- * ⇒ AAR 真的接进来那天（方法不再全是 reject），门会主动提醒把名字移出去。
+ * 「类注释自陈占位」的插件与「本表登记的插件」必须**完全一致**，否则门转红。
+ * ⇒ 骨架真被实现那天（占位自陈消失），门会主动提醒把名字移出去。
  *
  * key = Capacitor 插件名，value = 未实现的直接证据（供排查用）。
+ *
+ * ⚠️ 2026-10-17：本表现在是**空的**，而且这是一件正确的事，不是疏漏。
+ * 它原本唯一的登记项 `Sherpa` 已随 Phase 4 落地失效（5/6 个 `@PluginMethod`
+ * 是真实实现）。留着它比删掉它更糟：`anyPlugin` 会让 `recognition` 恒为
+ * false ⇒ 本地 ASR 明明可用却被判不可用 ⇒ 流量白白流向云端。
+ *
+ * ⇒ **下一个骨架插件出现时，照旧登记在这里**，门禁仍然是张着的：
+ * `capabilities-stub-gate.test.mjs` 已改成用合成夹具证明判据在咬，
+ * 不再依赖「仓里恰好有个骨架」这个会随实现推进而消失的前提。
  */
-export const NOT_IMPLEMENTED_PLUGINS: Readonly<Record<string, { why: string; fingerprint: string }>> = {
-  Sherpa: {
-    why: 'Android 侧 SherpaPlugin 的 6 个 @PluginMethod 里，5 个只 call.reject（addListener 是接口对齐用的 no-op）；iOS 侧无任何 Swift 实现；assets 无 .onnx 模型（§176.2.1）',
-    // ★ 这不是注释，是**门要校验的指纹**：capabilities-stub-gate.test.mjs
-    // 会去 Java 源码里找这串字。骨架被真正实现时这串字会消失 ⇒ 门主动转红
-    // ⇒ 提醒把 Sherpa 从本表移出去，而不是让它继续骗人。
-    fingerprint: 'sherpa-onnx AAR not integrated',
-  },
-}
+export const NOT_IMPLEMENTED_PLUGINS: Readonly<Record<string, { why: string; fingerprint: string }>> = {}
 
 /**
  * 默认探针。全部基于运行时事实，不基于构建期常量。

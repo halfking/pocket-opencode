@@ -9,7 +9,7 @@
 
 ## Context
 
-ZAgentGateway (ZAG) is the new PC-agent control plane sitting between RedClaw (the enterprise control surface), OpenPocket (mobile), and `acc-go` (the task orchestrator). See `docs/新架构v1/02-modules/zagent-gateway.md:1-156` for the module layout, and `docs/新架构v1/02-modules/zagent-gateway.md:817-829` for the security model this ADR is part of.
+ZAgentGateway (ZAG) is the new PC-agent control plane sitting between RedClaw (the enterprise control surface), AI Work Mess (mobile), and `acc-go` (the task orchestrator). See `docs/新架构v1/02-modules/zagent-gateway.md:1-156` for the module layout, and `docs/新架构v1/02-modules/zagent-gateway.md:817-829` for the security model this ADR is part of.
 
 Every inbound REST, MCP, and WebSocket request to ZAG must carry a **short-lived delegated token**. Bare `X-Tenant-ID`, `X-User-ID`, or `fleetId` fields on the wire do **not** constitute authorization (see `docs/新架构v1/02-modules/zagent-gateway.md:594-598` and `:818`). The token carries the subject identity, the originating tenant, the audience, and the scope; ZAG verifies the token cryptographically, not by header trust.
 

@@ -232,7 +232,7 @@ public class BiometricAuthPlugin extends Plugin {
                         }
                     });
             BiometricPrompt.PromptInfo info = new BiometricPrompt.PromptInfo.Builder()
-                    .setTitle("OpenCode Pocket")
+                    .setTitle("AI Work Mess")
                     .setSubtitle(call.getString("reason", "验证身份"))
                     .setNegativeButtonText("取消")
                     .setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_WEAK)

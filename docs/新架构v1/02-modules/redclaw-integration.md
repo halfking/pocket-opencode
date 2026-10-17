@@ -126,7 +126,7 @@ func (z *ZAgent) SubmitTask(ctx context.Context, req SubmitRequest) (*Task, erro
     return z.redclaw.Orchestrator.SubmitTask(ctx, rcReq)
 }
 
-// ZAG API 暴露给 OpenPocket
+// ZAG API 暴露给 AI Work Mess
 // POST /api/v1/tasks
 {
   "sessionId": "s_001",
@@ -492,7 +492,7 @@ func (z *ZAgent) ControlPod(ctx context.Context, podID string, req ControlReques
     // 3. 若是双签需求（Rollback/Upgrade/Terminate），需要第二个签名
     if redclaw.RequiresDoubleSignature(cmd.Kind) {
         // 这里有几种选择：
-        // a) 同步等用户审批 → 通过 OpenPocket Mobile
+        // a) 同步等用户审批 → 通过 AI Work Mess Mobile
         // b) 异步让 admin 审批 → 后台 cron 检查
         
         // 简化版：同步等 ZAG 管理员审批（通过 ZAG 自己的 admin endpoint）
@@ -525,7 +525,7 @@ func (z *ZAgent) waitForSecondSignature(ctx context.Context, cmd *redclaw.Comman
 ### 7.3 Rollback 双签流程（完整）
 
 ```
-1. OpenPocket 用户在手机点击 "Rollback Pod"
+1. AI Work Mess 用户在手机点击 "Rollback Pod"
 2. POST pocketd /api/fleet/pods/:podId/control { kind: "rollback" }
 3. pocketd fleetbridge → ZAG POST /api/v1/pods/:podId/control
 4. ZAG:
@@ -537,14 +537,14 @@ func (z *ZAgent) waitForSecondSignature(ctx context.Context, cmd *redclaw.Comman
 6. ZAG 用 admin 私钥签第二个
 7. ZAG 调 RedClaw platform-go: POST /api/v1/control/:command_id/execute
 8. RedClaw platform-go 验证双签 → 执行 rollback
-9. 事件回流到 OpenPocket
+9. 事件回流到 AI Work Mess
 ```
 
 ---
 
 ## 8. RedClaw AuthAgent（SSO + 审批）
 
-### 8.1 SSO 登录（OpenPocket 用户用）
+### 8.1 SSO 登录（AI Work Mess 用户用）
 
 ```go
 // POST /api/v1/auth/login (RedClaw platform-go)
@@ -600,12 +600,12 @@ func (l *LLMClient) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, e
 
 ---
 
-## 10. 数据流：目标路径（OpenPocket → RedClaw 控制面 → 已验证 runtime）
+## 10. 数据流：目标路径（AI Work Mess → RedClaw 控制面 → 已验证 runtime）
 
 > 以下是目标设计，不是当前已跑通的端到端证据。默认 runtime 可以是 OpenCode；OpenClaw 仅在其独立合同和安全策略通过后启用。
 
 ```
-[OpenPocket Mobile]
+[AI Work Mess Mobile]
   │ POST /api/fleet/intent { text: "修复 OAuth bug" }
   ▼
 [pocketd :8088]
@@ -639,9 +639,9 @@ func (l *LLMClient) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, e
   │ 翻译为 zag event
   │ 落 Memora
   │ 推 SSE 给 acc-go
-  │ 推 WS 给 OpenPocket
+  │ 推 WS 给 AI Work Mess
   ▼
-[OpenPocket Mobile Modal: "Allow git push?"]
+[AI Work Mess Mobile Modal: "Allow git push?"]
   │ 用户点击 Allow
   ▼
 [POST pocketd /api/fleet/builds/:id/permissions/:pid/reply]
@@ -652,7 +652,7 @@ func (l *LLMClient) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, e
   ▼
 [RedClaw 执行 git push]
   ▼
-[事件回流 OpenPocket → "PR #145 opened"]
+[事件回流 AI Work Mess → "PR #145 opened"]
 ```
 
 ---
@@ -685,10 +685,10 @@ func (l *LLMClient) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, e
 ### 12.3 E2E
 
 - 真实 RedClaw platform-go + 真实 OpenClaw CLI（容器化）；
-- 真实 OpenPocket mobile。
+- 真实 AI Work Mess mobile。
 
 ---
 
 ## 13. 一句话总结
 
-**ZAG 的目标是通过受管 mTLS、delegated token、对象授权和独立审批签名，对接 RedClaw 控制面，并把已验证的 OpenCode/OpenClaw runtime 事件安全地投影给 OpenPocket；当前 RedClaw 不能直接替代 OpenCode，generic connectors 也不能视为已实现 IDE 控制。**
+**ZAG 的目标是通过受管 mTLS、delegated token、对象授权和独立审批签名，对接 RedClaw 控制面，并把已验证的 OpenCode/OpenClaw runtime 事件安全地投影给 AI Work Mess；当前 RedClaw 不能直接替代 OpenCode，generic connectors 也不能视为已实现 IDE 控制。**

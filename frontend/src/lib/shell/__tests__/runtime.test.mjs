@@ -173,7 +173,7 @@ test('登出（scope 变回空）必须清空导航与标题——这是隐私�
   assert.equal(rt.store.snapshot().entries.length, 0, '登出必须清空导航条目')
   assert.equal(
     rt.titles.resolve({ version: 2, entries: [], cursor: -1, overlayIds: [], operations: [] }, rt.store).title,
-    'OpenCode Pocket',
+    'AI Work Mess',
     '登出后不得还能解析出上一位用户的标题',
   )
 })

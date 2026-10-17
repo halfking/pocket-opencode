@@ -1046,7 +1046,7 @@ function routeBottomNav(path) {
  * ⚠️ 2026-10-06 实吃，这是「量在被测对象就位之前」的最后一处：
  *   `goto` 原来固定 `sleep(2200)`。实测 `/email` 是 `requiresLobster` 路由，
  *   要先解锁本地库再列邮件，2.2s 时它只渲染出回退外壳（`Skip to main content
- *   🦞 OpenCode Pocket`）、`nav=ABSENT` ⇒ UI-05a/05b 报红。
+ *   🦞 AI Work Mess`）、`nav=ABSENT` ⇒ UI-05a/05b 报红。
  *   但**多等几秒再量，同一条路由完全正常**：`nav=true`、`.inbox-page` 已挂载、
  *   205 字真实内容。⇒ 那两条红是**量具量早了**，不是产品缺陷。
  *
@@ -1607,7 +1607,7 @@ try {
         if (m.textLen < 5) { blankRoutes.push(r); console.log(`      ⚠️ 文本仅 ${m.textLen} 字 —— 未渲染，这条测量不成立`); }
         // ⚠️ 2026-10-06 实吃，**上一版的自证不够**：`textLen >= 5` 挡不住
         //   「回退外壳」。实测 /email /meetings /notes /rss 四条全部返回
-        //   **一模一样的** 40 字（`Skip to main content 🦞 OpenCode Pocket`）且
+        //   **一模一样的** 40 字（`Skip to main content 🦞 AI Work Mess`）且
         //   `nav=ABSENT` —— 它们停在解锁/未初始化态，**没在渲染自己的内容**。
         //   但壳层有文字、且宽度天然等于视口，所以「溢出 0」照样成立 ⇒
         //   上一版把 4 条没渲染的路由算进了「6/6 全绿」。

@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// Package localagent 实现 OpenPocket 本地轻量级智能体运行时。
+// Package localagent 实现 AI Work Mess 本地轻量级智能体运行时。
 //
 // 设计目标：
 //   - 在移动端/桌面端 pocketd 进程内嵌入一个轻量级 agent 循环，能够执行

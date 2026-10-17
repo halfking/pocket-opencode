@@ -1,4 +1,4 @@
-# OpenCode Pocket
+# AI Work Mess
 
 **移动端AI编程助手** - 随时随地进行AI辅助编程
 
@@ -12,7 +12,7 @@
 
 ## 📱 项目简介
 
-OpenCode Pocket 是一款强大的移动端AI编程助手应用，让开发者能够在Android设备上随时随地访问和管理OpenCode AI编程会话。
+AI Work Mess 是一款强大的移动端AI编程助手应用，让开发者能够在Android设备上随时随地访问和管理OpenCode AI编程会话。
 
 ### ✨ 核心特性
 
@@ -79,7 +79,7 @@ OpenCode Pocket 是一款强大的移动端AI编程助手应用，让开发者�
 
 ### 部署模式
 
-OpenCode Pocket 提供两种部署模式，根据你的使用场景选择：
+AI Work Mess 提供两种部署模式，根据你的使用场景选择：
 
 #### 1️⃣ 本地方案（推荐新手）
 
@@ -531,6 +531,6 @@ MIT License - 详见 [LICENSE](LICENSE) 文件
 
 ---
 
-**Built with ❤️ by the OpenCode Pocket Team**
+**Built with ❤️ by the AI Work Mess Team**
 
 *Last Updated: 2026-09-07*

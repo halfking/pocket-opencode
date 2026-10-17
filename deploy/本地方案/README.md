@@ -1,6 +1,6 @@
-# OpenCode Pocket 本地统一方案
+# AI Work Mess 本地统一方案
 
-本目录是 OpenCode Pocket 本地部署、数据库复用和整体测试的唯一操作入口。
+本目录是 AI Work Mess 本地部署、数据库复用和整体测试的唯一操作入口。
 
 ## ⚠️ 本地 PG 共享策略（强约束）
 

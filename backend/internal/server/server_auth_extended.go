@@ -738,16 +738,16 @@ func codeEmailContent(code string, ttlSec int, purpose auth.CodePurpose) (subjec
 	if ttlMin < 1 {
 		ttlMin = 1
 	}
-	subject = "【Redclaw】您的验证码"
+	subject = "【AI Work Mess】您的验证码"
 	switch purpose {
 	case auth.PurposeRegister:
-		body = "欢迎注册 Redclaw！您的注册验证码是：" + code + "，" +
+		body = "欢迎注册 AI Work Mess！您的注册验证码是：" + code + "，" +
 			"有效期 " + intStr(ttlMin) + " 分钟。如非本人操作，请忽略此邮件。"
 	case auth.PurposeReset:
-		body = "您正在重置 Redclaw 账户密码，验证码是：" + code + "，" +
+		body = "您正在重置 AI Work Mess 账户密码，验证码是：" + code + "，" +
 			"有效期 " + intStr(ttlMin) + " 分钟。如非本人操作，请忽略并尽快修改密码。"
 	case auth.PurposeLogin:
-		body = "您正在使用邮箱验证码登录 Redclaw，验证码是：" + code + "，" +
+		body = "您正在使用邮箱验证码登录 AI Work Mess，验证码是：" + code + "，" +
 			"有效期 " + intStr(ttlMin) + " 分钟。"
 	default:
 		body = "您的验证码是：" + code + "，有效期 " + intStr(ttlMin) + " 分钟。"

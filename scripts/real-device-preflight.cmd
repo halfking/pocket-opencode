@@ -41,7 +41,7 @@ timeout /t 2 /nobreak >nul
 echo.
 echo [4/5] open battery optimization whitelist page...
 adb shell am start -a android.settings.IGNORE_BATTERY_OPTIMIZATION_SETTINGS
-echo (please tap "Allow" for OpenCode Pocket in the dialog)
+echo (please tap "Allow" for AI Work Mess in the dialog)
 
 echo.
 echo [5/5] clear logcat and listen to ai-stream keepalive (Ctrl+C to stop)...

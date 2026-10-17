@@ -1,7 +1,7 @@
 //go:build security
 
 // Package security contains cross-cutting security tests for the
-// OpenPocket + ZAgentGateway (ZAG) stack. All tests are gated by the
+// AI Work Mess + ZAgentGateway (ZAG) stack. All tests are gated by the
 // "security" build tag and run only when the operator explicitly opts
 // in:
 //

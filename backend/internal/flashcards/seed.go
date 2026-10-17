@@ -30,7 +30,7 @@ const SeedDeckDefaultName = "Default"
 
 // SeedDeckWelcomeName is the starter-deck display name (zh-CN first, matching
 // the app's default locale).
-const SeedDeckWelcomeName = "欢迎使用 OpenPocket 闪卡"
+const SeedDeckWelcomeName = "欢迎使用 AI Work Mess 闪卡"
 
 // DefaultDeckConfig returns a DeckConfig with the Anki-aligned §1.4 defaults
 // (same zero-fill values as UpsertDeckConfig: 20 new/day, 200 reviews/day,
@@ -61,7 +61,7 @@ type seedNoteSpec struct {
 func WelcomeNotes() []seedNoteSpec {
 	return []seedNoteSpec{
 		{
-			Front: "OpenPocket 闪卡是什么？",
+			Front: "AI Work Mess 闪卡是什么？",
 			Back:  "一个内置的间隔重复（spaced repetition）记忆工具：卡片按遗忘曲线安排复习，到期卡片会出现在牌组的待复习队列里。",
 			Tags:  []string{"welcome", "说明"},
 		},

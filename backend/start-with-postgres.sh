@@ -4,7 +4,7 @@
 set -e
 
 echo "=========================================="
-echo "启动 OpenCode Pocket Backend"
+echo "启动 AI Work Mess Backend"
 echo "=========================================="
 
 # 停止现有进程

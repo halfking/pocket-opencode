@@ -81,7 +81,7 @@ useSwipeBack({ edgeWidth: 24, thresholdRatio: 0.3, velocityThreshold: 0.4 })
 const statusBar = useStatusBar()
 onMounted(() => {
   statusBar.start()
-  console.log('Redclaw Mobile Started')
+  console.log('AI Work Mess Mobile Started')
 })
 onBeforeUnmount(() => {
   statusBar.stop()

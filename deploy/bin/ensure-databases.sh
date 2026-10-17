@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =====================================================================
-# ensure-databases.sh — OpenPocket 部署：DB 复用 vs 容器化决策
+# ensure-databases.sh — AI Work Mess 部署：DB 复用 vs 容器化决策
 #
 # 输入：
 #   OPP_DEPLOY_PG / OPP_DEPLOY_REDIS / OPP_DEPLOY_MYSQL  (true/false/external)

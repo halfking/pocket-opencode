@@ -1,5 +1,5 @@
 /**
- * useFsrs.test.ts — FSRS-5 调度行为锁定（OpenPocket v1 contract §4）。
+ * useFsrs.test.ts — FSRS-5 调度行为锁定（AI Work Mess v1 contract §4）。
  *
  * 运行：cd frontend && node --experimental-strip-types --test \
  *        src/composables/useFsrs.test.ts

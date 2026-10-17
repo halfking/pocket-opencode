@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =====================================================================
-# database-detect.sh — OpenPocket 部署的数据库复用检测库
+# database-detect.sh — AI Work Mess 部署的数据库复用检测库
 #
 # 设计目标（用户需求）：
 #   - 如果系统已有 PG/Redis/MySQL（无论在 docker 还是 systemd / 自建），

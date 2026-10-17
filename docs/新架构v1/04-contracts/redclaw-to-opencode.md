@@ -224,14 +224,14 @@ InstanceDisposed: { id, type: "server.instance.disposed", properties: { director
 ## 3. 映射矩阵
 
 > **缩写说明**：以下表格中：
-> - **ZAG API** 指的是 v3 设计中由 ZAgentGateway（`:9100`）暴露给 OpenPocket 的统一 API。
+> - **ZAG API** 指的是 v3 设计中由 ZAgentGateway（`:9100`）暴露给 AI Work Mess 的统一 API。
 > - **ZAG → RedClaw** 指的是 ZAG 内部对 RedClaw platform-go 的真实调用。
 > - **ZAG → OpenCode** 指的是 ZAG 内部对 OpenCode runtime（默认 `:4096`）的真实调用。
 > - 状态分布：`source-inspected` / `mock-only` / `planned` / `blocked`。
 
 ### 3.1 任务与会话：`redclaw_task/run ↔ opencode_session`
 
-| ZAG API（OpenPocket 视角） | ZAG → RedClaw（路径 + handler） | ZAG → OpenCode（路径 + handler） | 状态 | 备注 |
+| ZAG API（AI Work Mess 视角） | ZAG → RedClaw（路径 + handler） | ZAG → OpenCode（路径 + handler） | 状态 | 备注 |
 |---|---|---|---|---|
 | `POST /api/v1/tasks` | `POST http://redclaw:8090/api/v1/tasks` → `handlers.go:68 SubmitTask` | `POST http://opencode:4096/session/:sessionID/message` → `session.ts:316 prompt` | source-inspected（路径）/ mock-only（real 模式默认 mock） | RedClaw 收到 task 后通过 WS hub 发布 `task.submitted`；OpenCode 真实 prompt 由 ZAG 内部转换 |
 | `GET /api/v1/tasks/:id` | `GET http://redclaw:8090/api/v1/tasks/:task_id` → `handlers.go:102 GetTask` | （内部查询：`GET /session/:sessionID` → `session.ts:132 get`） | source-inspected | RedClaw 返回 `task.Task`；OpenCode 返回 `Session.Info` |
@@ -251,7 +251,7 @@ InstanceDisposed: { id, type: "server.instance.disposed", properties: { director
 | `TaskID` | `Session.Info.id` | `redclaw_task_id = "rc_" + opencode_session_id`（ZAG 命名） | source-inspected |
 | `TenantID` | （无，OpenCode 不感知 tenant） | ZAG 维护 `tenant_id ↔ session_id` 映射；OpenCode 通过 `WorkspaceRoutingMiddleware` 用 `directory` 隔离 | source-inspected |
 | `AgentID` | （OpenCode 不暴露 `agent_id` 字段） | ZAG 内部映射；OpenCode 用 `modelID + providerID`（`InitPayload`，`session.ts:64`） | source-inspected |
-| `Goal` | 无 | 直接来自 OpenPocket intent；不在协议层转换 | source-inspected |
+| `Goal` | 无 | 直接来自 AI Work Mess intent；不在协议层转换 | source-inspected |
 | `Status` ∈ {pending, running, completed, failed, cancelled} | `SessionStatus.Info.status` ∈ {idle, busy, ...} | ZAG 内部枚举映射：`running ↔ busy`、`completed ↔ idle + result` | source-inspected |
 | `Priority` ∈ {low, normal, high} | （OpenCode 无优先级） | 仅 RedClaw 字段；ZAG 写回 RedClaw 即可 | source-inspected |
 | `StartedAt` / `FinishedAt` | `Session.Info.time.created` / `time.completed`（部分字段依赖 schema 版本） | 时间戳 ISO8601 | source-inspected |
@@ -269,7 +269,7 @@ InstanceDisposed: { id, type: "server.instance.disposed", properties: { director
 | `agent.message` | `message.part.delta` / `message.part.completed` | `part.text → payload.text` | source-inspected |
 | `agent.tool_call` | `tool.call.starting` / `tool.call.running` | `tool.name → payload.tool`，`args → payload.input` | source-inspected |
 | `agent.tool_result` | `tool.call.completed` | `output → payload.output` | source-inspected |
-| `device.status` | 无对应（OpenCode 无 device 概念） | ZAG 必须保留字段供 OpenPocket 消费 | source-inspected |
+| `device.status` | 无对应（OpenCode 无 device 概念） | ZAG 必须保留字段供 AI Work Mess 消费 | source-inspected |
 | `ide.status` | 无对应（OpenCode 不是 IDE） | ZAG 必须降级为 unavailable（见 §4） | blocked（无法映射） |
 | `usage.tick` | 无对应 | 改由 RedClaw LLM gateway `/api/gateway/usage` 提供 | source-inspected（改路由） |
 | `permission.request` | `permission.asked` | `permissionID → payload.permission_id`、`metadata → payload.metadata` | source-inspected |
@@ -330,16 +330,16 @@ InstanceDisposed: { id, type: "server.instance.disposed", properties: { director
 
 ### 4.1 RedClaw 真实不可用（即便真实部署也不存在对应路径）
 
-| 端点需求 | 原因 | 降级响应模板（ZAG → OpenPocket） |
+| 端点需求 | 原因 | 降级响应模板（ZAG → AI Work Mess） |
 |---|---|---|
 | `POST /api/v1/tasks/:id/cancel` | RedClaw 没有 cancel path；只允许 `CreateControl(Kind: "terminate")` 走控制信号，且要求 Ed25519 双签 | `503 unavailable` + `code=feature_blocked` + `detail: "redclaw_cancel_unavailable, use control/terminate with double signature"` |
 | `POST /api/v1/sessions/:id/messages` | RedClaw session 模型不接收消息流 | `503 unavailable` + `code=feature_blocked` + `detail: "redclaw_session_messages_unavailable, use opencode prompt directly"` |
 | `POST /api/v1/sessions/:id/share` | RedClaw 没有 share API | `503 unavailable` + `code=feature_blocked` + `detail: "redclaw_share_unavailable, use opencode session.share"` |
 | `POST /api/v1/sessions/:id/abort` | 同 cancel | 同上 |
 | `/api/v1/pty/*` 全套 | RedClaw 无 PTY | `503 unavailable` + `code=feature_blocked` + `detail: "redclaw_pty_unavailable, route to opencode pty"` |
-| `/api/v2/runs/:run_id/events`（real 模式） | real 模式 `handlers_events.go:22-28` 始终返回 `503 projection_unavailable` | 直接转发 `503 projection_unavailable` 给 OpenPocket，ZAG 不尝试重试 |
+| `/api/v2/runs/:run_id/events`（real 模式） | real 模式 `handlers_events.go:22-28` 始终返回 `503 projection_unavailable` | 直接转发 `503 projection_unavailable` 给 AI Work Mess，ZAG 不尝试重试 |
 | `/api/v2/notifications` + `/api/v2/notifications/:id/ack`（real 模式） | real 模式 `handlers_notifications.go:42-46` + `82-88` 始终返回 `503 projection_unavailable` | 同上 |
-| `ide.status` event | OpenCode 不是 IDE，没有 IDE status | `event.type = "ide.status"` 时直接 drop，发送 `unavailable` placeholder 给 OpenPocket |
+| `ide.status` event | OpenCode 不是 IDE，没有 IDE status | `event.type = "ide.status"` 时直接 drop，发送 `unavailable` placeholder 给 AI Work Mess |
 | `/api/v1/devices`、`/api/v1/pods`、`/api/v1/agents` | RedClaw platform-go 当前**没有**这些端点——只有 orchestrator 的 `/api/v1/sessions` 和 `/api/v1/tasks`，不含 device/pod/agent 维度 | 全部按 blocked 返回 503 + `code=feature_blocked`；v3 文档中规划的 `/api/v1/devices` 仅是 design |
 
 ### 4.2 mock-only 端点（真实部署会改为 real，但当前默认 mock）
@@ -424,7 +424,7 @@ ZAG `redclaw-integration.md §6.1` 中描述的"ZCode/VS Code/Cursor/OpenCode �
 | 用例 | 误用示例 | 正确做法 |
 |---|---|---|
 | 把 OpenCode 当成 "connector.execute 操作目标" | `connector.execute(operation="session.create", payload={title})` | IDE adapter 直连 `/session`，不走 connector |
-| 把 IDE selection 当成 "connector.ingest 事件" | `connector.ingest(type="ide.selection", payload=...)` | IDE adapter WebSocket → ZAG WS hub → OpenPocket |
+| 把 IDE selection 当成 "connector.ingest 事件" | `connector.ingest(type="ide.selection", payload=...)` | IDE adapter WebSocket → ZAG WS hub → AI Work Mess |
 | 把 PTY 当成 "connector webhook" | `cursorType="webhook", payload={cmd, output}` | IDE adapter WebSocket 直连 OpenCode `/pty/:id/connect` |
 | 把 IDE 文件修改当成 "connector API 调用" | `connector.execute(operation="file.write", payload={path, content})` | IDE adapter RPC/ZCode socket |
 
@@ -479,7 +479,7 @@ pty.created                         # PTY 创建
 pty.updated                         # PTY 更新
 pty.exited                          # PTY 退出
 
-lsp.client.diagnostics              # LSP 诊断（**IDE-only**，不进 OpenPocket）
+lsp.client.diagnostics              # LSP 诊断（**IDE-only**，不进 AI Work Mess）
 lsp.updated                         # LSP 更新
 
 vcs.branch.updated                  # git 分支更新
@@ -493,11 +493,11 @@ vcs.branch.updated                  # git 分支更新
 
 1. 把 RedClaw URL 直接配为 OpenCode server URL——`/session` / `/event` 协议不兼容（[审计报告 §1.1](../00-research/RedClaw作为OpenCode后端审计.md)）。
 2. 把 `connectors.execute(operation="session.create")` 当作 OpenCode 兼容层使用——`connectors.go` 没有 IDE 操作定义。
-3. 把 `redclaw_task.events` 中的 `ide.status` 投影给 OpenPocket——OpenCode 不输出 IDE 状态。
+3. 把 `redclaw_task.events` 中的 `ide.status` 投影给 AI Work Mess——OpenCode 不输出 IDE 状态。
 4. 用 `X-API-Key` 作为对 RedClaw orchestrator 的生产鉴权——`auth.go:106` 的 `X-API-Key` 仅给 AgentContainer 回调用，且依赖 Postgres 表（`orchestrator.api_keys`）。
 5. 把 RedClaw `/api/v1/sessions` 与 OpenCode `/session` 视为同一个 ID 空间——必须用 ZAG `session_map` 表显式维护映射。
 6. 把 `/api/v2/runs/:run_id/events` 在 real 模式下视为可用的 SSE 通道——`handlers_events.go:22-28` 总是 503。
-7. 让 OpenPocket 在 ZAG 不可用时绕过安全门禁直连 RedClaw——违反 v3 §1.2 和本文 §4。
+7. 让 AI Work Mess 在 ZAG 不可用时绕过安全门禁直连 RedClaw——违反 v3 §1.2 和本文 §4。
 
 ---
 
@@ -506,7 +506,7 @@ vcs.branch.updated                  # git 分支更新
 | 文档 | 用途 |
 |---|---|
 | [`_status.md`](./_status.md) | 每个映射项的 source-inspected / mock-only / planned / blocked 标签 |
-| [`pocket-adapter-matrix.md`](./pocket-adapter-matrix.md) | OpenPocket 5 个 adapter 的边界矩阵 |
+| [`pocket-adapter-matrix.md`](./pocket-adapter-matrix.md) | AI Work Mess 5 个 adapter 的边界矩阵 |
 | [`pocket-zag-incremental.md`](./pocket-zag-incremental.md) | ZAG client 增量接口设计 |
 | [`../00-research/RedClaw作为OpenCode后端审计.md`](../00-research/RedClaw作为OpenCode后端审计.md) | RedClaw 不能直接替代 OpenCode 的根因审计 |
 | [`../02-modules/redclaw-integration.md`](../02-modules/redclaw-integration.md) | ZAG ↔ RedClaw 集成设计 |

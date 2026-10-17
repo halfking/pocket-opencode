@@ -1,6 +1,6 @@
 # ACC Integration 部署方案
 
-本部署方案用于将 OpenCode Pocket 集成到 ACC（AI Coding Center）本地开发环境中，与其他服务共享基础设施。
+本部署方案用于将 AI Work Mess 集成到 ACC（AI Coding Center）本地开发环境中，与其他服务共享基础设施。
 
 ## ⚠️ 本地 PG 共享策略（强约束）
 
@@ -290,7 +290,7 @@ cd ../本地方案
 
 ## 📝 相关文档
 
-- [OpenCode Pocket 主文档](../../README.md)
+- [AI Work Mess 主文档](../../README.md)
 - [运维指南](../../docs/guides/OPERATIONS_GUIDE.md)
 - [API 文档](../../docs/API.md)
 - [本地方案文档](../本地方案/README.md)

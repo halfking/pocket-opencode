@@ -2,7 +2,7 @@ import type { CapacitorConfig } from '@capacitor/cli';
 
 const config: CapacitorConfig = {
   appId: 'com.kaixuan.opencode.pocket',
-  appName: 'OpenCode Pocket',
+  appName: 'AI Work Mess',
   webDir: 'dist',
   server: {
     // 不要设置 server.url：那会让 WebView 加载远程站点而非本地打包资源，

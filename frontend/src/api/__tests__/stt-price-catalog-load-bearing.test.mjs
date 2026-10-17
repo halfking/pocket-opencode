@@ -43,7 +43,15 @@ const ROOT = path.resolve(HERE, '..', '..', '..', '..')
 const TARGET_GO = path.join(ROOT, 'backend', 'internal', 'stt', 'target.go')
 const src = fs.readFileSync(TARGET_GO, 'utf8')
 
-/** §579 依赖的那几格（其余 gateway 条目不在 §579 的论证链上，故意不钉）。 */
+/**
+ * §579 依赖的那几格 —— 即**全部 `external` 组**的档（实测 9 条，一一对应）。
+ *
+ * ⚠️ 2026-10-17：这张表与「gateway 条目故意不钉」的旧注释原本互相矛盾
+ * （详见 `checkRoster` 的改写说明）。现状是对齐后的：
+ * `external` 组全在册；`gateway` 组（`glm-asr` / `minimax-asr-1.0` 等，
+ * 由网关目录种子、随上游变动）**刻意不钉**，改由「不得击穿基线最低价」
+ * 这条不变量兜底 —— 后者才是 §579 真正在乎的东西。
+ */
 const GOLDEN = {
   'qwen/qwen3-asr-0.6b': 0.012,
   'openai/whisper-large-v3-turbo': 0.012,
@@ -72,13 +80,16 @@ function parseCatalog(text) {
   let m
   while ((m = re.exec(text)) !== null) {
     const price = /USDPerHour:\s*([0-9.]+)/.exec(m[2])
-    out.push({ model: m[1], usd: price ? Number(price[1]) : null, block: m[2] })
+    const group = /Group:\s*"([^"]+)"/.exec(m[2])
+    out.push({ model: m[1], usd: price ? Number(price[1]) : null, group: group ? group[1] : '', block: m[2] })
   }
   return out
 }
 
 const catalog = parseCatalog(src)
 const priced = new Map(catalog.filter((e) => e.usd !== null).map((e) => [e.model, e.usd]))
+/** 有价条目（判据③ 的输入）。 */
+const pricedEntries = catalog.filter((e) => e.usd !== null)
 
 /** 源码文本 → 有价 map（负控复用同一条路径）。 */
 function priceMap(text) {
@@ -140,8 +151,37 @@ function checkFxSelfConsistent(entries) {
   return checked
 }
 
-/** 判据③：增删任何一档都必须被看见。抛 ⇒ 红。 */
-function checkRoster(priceMapOf) {
+/**
+ * 判据③：增删任何一档都必须被看见。抛 ⇒ 红。
+ *
+ * ⚠️ 2026-10-17 改写：**按 Group 分组判「多」，并加一条「不得击穿基线最低价」。**
+ *
+ * 改的原因是这道门原本与自己的设计说明**互相矛盾**：
+ *   · GOLDEN 的注释写「其余 gateway 条目不在 §579 的论证链上，故意不钉」；
+ *   · 而 `checkRoster` 原本要求**一条不多不少**（`unknown.length === 0`）。
+ * 两者不可能同时为真。实测 2026-10-08 网关种子了 `glm-asr` / `minimax-asr-1.0`
+ * 之后，main 上这条判据**一直是红的**（2 个 unknown），没人修 ——
+ * 因为它每次红的修复动作都是「把新网关档抄进 GOLDEN」，纯记账、不含信息量。
+ * ⇒ 一道每次产品正常生长就变红、且修复手段是机械抄写的门，最终只会被关掉。
+ *
+ * 现在按实测事实对齐（14 条有价档里：9 条 external 全在 GOLDEN，5 条 gateway 全不在）：
+ *   1. 「少」：GOLDEN 里任何一档消失 → 红（external 是 §579 的承重链，必须钉住）
+ *   2. 「多」：**external** 组新增一档 → 红（它进了论证链，必须复核 §579 结论）
+ *      gateway 组新增**不红**（它不在论证链上，这正是原注释声明的设计）
+ *   3. **新增不变量**：任何一档（含 gateway）比 GOLDEN 基线最低价更便宜 → 红。
+ *      这条才是「可达集里最便宜的是谁」真正在乎的东西：它与该档属不属于
+ *      论证链**无关**，而且不会因为网关加档而产生记账式红灯。
+ *
+ * @param {{model: string, usd: number, group: string}[]} entries 有价条目
+ */
+function checkRoster(rawEntries) {
+  // ⚠️ 只认**有价**条目。`parseCatalog` 会连 `USDPerHour` 缺失的档一起吐出来
+  // （网关目录里 `mimo-v2.5-asr` / `gpt-audio*` 就是这样），
+  // 而 JS 里 `null < 0.012` 求值为 **true** ⇒ 不过滤的话，
+  // 「击穿基线」会把每一个未标价的档都算成「击穿」，恒红。
+  const entries = rawEntries.filter((e) => typeof e.usd === 'number')
+  const priceMapOf = new Map(entries.map((e) => [e.model, e.usd]))
+
   const registered = Object.keys(GOLDEN).filter((k) => priceMapOf.has(k))
   assert.equal(registered.length, Object.keys(GOLDEN).length,
     `在册条目 ${registered.length} ≠ golden ${Object.keys(GOLDEN).length}：` +
@@ -150,11 +190,23 @@ function checkRoster(priceMapOf) {
   // ⛔⚠ 第一版这里写的是 `... || priced.size > GOLDEN.length` ——
   //   那个逃生舱让整条 assert **恒真**（此刻 priced.size 恰等于 9，
   //   将来加到 10 条它照样放行）⇒ 等于没门。判据必须比承诺更强那一档。
-  const unknown = [...priceMapOf.keys()].filter((k) => !(k in GOLDEN))
-  assert.equal(unknown.length, 0,
-    `多出了不在册的档：${unknown.join(' / ')}` +
-    `（${unknown.map((k) => `$${priceMapOf.get(k)}/h`).join(' / ')}）` +
-    ' ⇒ §579 的「可达集里最便宜的是谁」需要重算，并把它的价补进 GOLDEN')
+  //   现在「多」只对 external 组开口 —— 见函数头的改写说明。
+  const unknownExternal = entries
+    .filter((e) => e.group !== 'gateway' && !(e.model in GOLDEN))
+    .map((e) => e.model)
+  assert.equal(unknownExternal.length, 0,
+    `external 组多出了不在册的档：${unknownExternal.join(' / ')}` +
+    `（${unknownExternal.map((k) => `$${priceMapOf.get(k)}/h`).join(' / ')}）` +
+    ' ⇒ 它进了 §579 的论证链，需要复核「最便宜的是谁」并把它的价补进 GOLDEN')
+
+  // 不变量：任何一档都不得比基线最低价更便宜，否则 §579 的结论整个要重算。
+  const baseline = Math.min(...Object.values(GOLDEN))
+  const undercut = entries
+    .filter((e) => e.usd < baseline)
+    .map((e) => `${e.model}（$${e.usd}/h，group=${e.group || '?'}）`)
+  assert.equal(undercut.length, 0,
+    `这些档比 GOLDEN 基线最低价 $${baseline}/h 还便宜：${undercut.join(' / ')}` +
+    ' ⇒ §579「可达集里最便宜的是谁」的结论已经变了，必须连同结论一起复核')
 }
 
 // 元/分钟 → USDPerHour 的自洽带（刻意用带而不是点，见文件头判据②）
@@ -188,7 +240,7 @@ describe('§580 · ASR 价表（§579 的承重结构）', () => {
   })
 
   it('★ 判据③：增删任何一档都必须被看见', () => {
-    checkRoster(priced)
+    checkRoster(pricedEntries)
   })
 
   // ── 负控：三条判据必须真的会红（否则上面是装饰）────────────────────────
@@ -238,7 +290,7 @@ describe('§580 · ASR 价表（§579 的承重结构）', () => {
     const mutated = src.slice(0, start) + src.slice(end)
     const m = priceMap(mutated)
     assert.equal(m.has('asr-1.0'), false, '负控前提失败：asr-1.0 没能删掉')
-    assert.throws(() => checkRoster(m), /被删的是 asr-1\.0/,
+    assert.throws(() => checkRoster(parseCatalog(mutated)), /被删的是 asr-1\.0/,
       '负控失效：删掉一档后判据③ 仍不抛 ⇒ 判据③ 的「少」那一半是装饰')
   })
 
@@ -257,7 +309,38 @@ describe('§580 · ASR 价表（§579 的承重结构）', () => {
     const m = priceMap(mutated)
     assert.equal(m.get('brand-new-asr'), 0.01,
       '负控前提失败：新档没落进解析结果（或落在了别的档上）')
-    assert.throws(() => checkRoster(m), /brand-new-asr/,
+    assert.throws(() => checkRoster(parseCatalog(mutated)), /brand-new-asr/,
       '负控失效：新增一档后判据③ 仍不抛 ⇒ 判据③ 的「多」那一半是装饰')
+  })
+
+  it('★★ 负控⑤：gateway 组新加一档**不该**红，但击穿基线最低价的必须红（§579 的真正承重点）', () => {
+    const anchorLine = src.split('\n').find((l) => l.includes('Model: "gpt-audio-mini"'))
+    assert.ok(anchorLine, '负控前提失败：价表里找不到 gpt-audio-mini 那一行 ⇒ 本负控已漂移')
+    assert.equal(countOccurrences(src, anchorLine), 1,
+      '负控前提失败：插入锚点在表里出现多处 ⇒ 本负控已漂移')
+
+    // ① gateway 组、且不比基线便宜 ⇒ **放行**（这正是 2026-10-08 之后一直红的那一类）
+    const benign = src.replace(
+      anchorLine,
+      anchorLine + '\n\t\t{Model: "brand-new-gateway", Group: "gateway", USDPerHour: 0.90},',
+    )
+    assert.equal(priceMap(benign).get('brand-new-gateway'), 0.90, '负控前提失败：gateway 档没插进去')
+    assert.doesNotThrow(
+      () => checkRoster(parseCatalog(benign)),
+      '负控失效：普通 gateway 加档被判红 ⇒ 「多」那一侧被收得过紧，' +
+        '下次网关加档又会变成一次纯记账的假红（2026-10-08 至今 main 上一直红的就是这个）',
+    )
+
+    // ② gateway 组、但比基线便宜 ⇒ **必须红**（放行它，§579 的结论就悄悄变了）
+    const undercut = src.replace(
+      anchorLine,
+      anchorLine + '\n\t\t{Model: "cheap-gateway", Group: "gateway", USDPerHour: 0.001},',
+    )
+    assert.equal(priceMap(undercut).get('cheap-gateway'), 0.001, '负控前提失败：击穿档没插进去')
+    assert.throws(
+      () => checkRoster(parseCatalog(undercut)),
+      /比 GOLDEN 基线最低价/,
+      '负控失效：击穿基线最低价的档没被抓到 ⇒ 「不得击穿」这条不变量是装饰',
+    )
   })
 })

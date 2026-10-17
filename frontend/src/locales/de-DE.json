@@ -22,7 +22,7 @@
     "retry": "Erneut versuchen"
   },
   "app": {
-    "title": "Redclaw",
+    "title": "AI Work Mess",
     "welcome": "Willkommen"
   },
   "layout": {
@@ -36,7 +36,7 @@
     "viewAccount": "Konto & Einstellungen ansehen",
     "groupSettings": "Einstellungen",
     "groupOps": "Betrieb & Erweitert",
-    "versionFootnote": "Redclaw · v{version}"
+    "versionFootnote": "AI Work Mess · v{version}"
   },
   "nav": {
     "mainNavigation": "Hauptnavigation",
@@ -240,11 +240,11 @@
       "imagePickFailed": "Failed to pick image"
     },
     "permission": {
-      "vivoTitle": "Erlaube OpenPocket, dich täglich zu erinnern",
+      "vivoTitle": "Erlaube AI Work Mess, dich täglich zu erinnern",
       "vivoBody": "OriginOS schränkt Hintergrund-Apps ein. Aktiviere \"Unbeschränkter Hintergrundverbrauch\" und \"Autostart\", damit tägliche Erinnerungen pünktlich ausgelöst werden.",
       "vivoStep1": "Einstellungen → Akku → Hintergrundverbrauch",
-      "vivoStep2": "OpenPocket finden und auf \"Unbeschränkt\" setzen",
-      "vivoStep3": "Einstellungen → Autostart → OpenPocket aktivieren",
+      "vivoStep2": "AI Work Mess finden und auf \"Unbeschränkt\" setzen",
+      "vivoStep3": "Einstellungen → Autostart → AI Work Mess aktivieren",
       "vivoDone": "Erledigt"
     },
     "error": {

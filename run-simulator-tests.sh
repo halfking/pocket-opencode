@@ -1,10 +1,10 @@
 #!/bin/bash
-# OpenCode Pocket 模拟器测试执行脚本
+# AI Work Mess 模拟器测试执行脚本
 
 set -e
 
 echo "=========================================="
-echo "OpenCode Pocket 模拟器测试执行"
+echo "AI Work Mess 模拟器测试执行"
 echo "=========================================="
 
 # 设置 adb 路径

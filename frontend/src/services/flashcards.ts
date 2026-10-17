@@ -1,5 +1,5 @@
 /**
- * flashcards.ts — OpenPocket v1 flashcards HTTP service layer.
+ * flashcards.ts — AI Work Mess v1 flashcards HTTP service layer.
  *
  * 锁定 src/services/__tests__/flashcards.contract.test.ts：所有方法签名、
  * 请求 method/url/body 形状必须与契约一致。客户端绝对不能带上服务端
