@@ -28,6 +28,9 @@ type RSSConfig struct {
 	MaxConcurrency        int
 	RetentionDays         int
 	DiscoverySearchURL    string
+	// AllowBenchmarkIPs 放开 RFC2544/5180 基准段的 SSRF 拦截（默认 false，
+	// fail-closed）。仅用于开发机透明代理（fake-ip）环境；生产勿开。
+	AllowBenchmarkIPs     bool
 	DiscoverySearchAPIKey string
 	PublishMode           string // share_only | weibo
 	WeiboClientID         string
@@ -395,6 +398,7 @@ func Load() Config {
 			MaxConcurrency:        getEnvInt("POCKET_RSS_MAX_CONCURRENCY", 4),
 			RetentionDays:         getEnvInt("POCKET_RSS_RETENTION_DAYS", 30),
 			DiscoverySearchURL:    getEnv("POCKET_RSS_DISCOVERY_SEARCH_URL", ""),
+			AllowBenchmarkIPs:     getEnv("POCKET_RSS_ALLOW_BENCHMARK_IPS", "") == "true",
 			DiscoverySearchAPIKey: getEnv("POCKET_RSS_DISCOVERY_SEARCH_API_KEY", ""),
 			PublishMode:           getEnv("POCKET_RSS_PUBLISH_MODE", "share_only"),
 			WeiboClientID:         getEnv("POCKET_RSS_WEIBO_CLIENT_ID", ""),

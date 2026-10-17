@@ -1,9 +1,11 @@
 // Package rss — catalog.go
 //
-// 内置推荐订阅源目录（IT / 财经 / 实事）。这份目录里的每一条 feed 都在
-// 2026-10-03 用真实 HTTP 请求验证过：200 + XML content-type + 能解析出
-// item/entry 条目。三轮共探测 103 个候选，原始结果（status / content-type /
-// 条目数 / 耗时）见 docs/handoff/evidence/rss-feed-probe/round{1,2,3}.json。
+// 内置推荐订阅源目录（IT / AI / 财经 / 新产品 / 好价促销 / 时事）。目录里
+// 每一条 feed 都用真实 HTTP 请求验证过：200 + XML content-type + 能解析出
+// item/entry 条目。2026-10-03 三轮共探测 103 个候选；2026-10-17 第四轮补测
+// AI / 新产品 / 好价促销 三类 28 个候选（机器之心返回 HTML、VentureBeat 429、
+// feedburner 404 等均弃用）。原始结果（status / content-type / 条目数 / 耗时）
+// 见 docs/handoff/evidence/rss-feed-probe/round{1,2,3,4}.json。
 //
 // 为什么要有 catalog：/sources/seeds 原来只有 5 条、全部是科技/设计，
 // 用户看不到财经与实事；而且只能一条条点，没有"加入初始订阅列表"的入口。
@@ -19,7 +21,10 @@ import (
 // 内置分类。空字符串的源在日报里归到 CategoryOther。
 const (
 	CategoryIT      = "it"
+	CategoryAI      = "ai"
 	CategoryFinance = "finance"
+	CategoryProduct = "product"
+	CategoryDeals   = "deals"
 	CategoryNews    = "news"
 	CategoryOther   = "other"
 )
@@ -37,7 +42,7 @@ type StarterFeed struct {
 
 // StarterCategories 是目录的分类顺序（导入默认顺序、前端分组顺序）。
 func StarterCategories() []string {
-	return []string{CategoryIT, CategoryFinance, CategoryNews}
+	return []string{CategoryIT, CategoryAI, CategoryFinance, CategoryProduct, CategoryDeals, CategoryNews}
 }
 
 // StarterCategoryLabel 返回分类的中文标签，日报与前端共用。
@@ -45,8 +50,14 @@ func StarterCategoryLabel(category string) string {
 	switch strings.ToLower(strings.TrimSpace(category)) {
 	case CategoryIT:
 		return "IT 科技"
+	case CategoryAI:
+		return "AI 动态"
 	case CategoryFinance:
 		return "财经"
+	case CategoryProduct:
+		return "新产品"
+	case CategoryDeals:
+		return "好价·促销"
 	case CategoryNews:
 		return "时事"
 	default:
@@ -79,9 +90,17 @@ var StarterFeeds = []StarterFeed{
 	{URL: "https://techcrunch.com/feed/", Title: "TechCrunch", SiteURL: "https://techcrunch.com/", Language: "en", Category: CategoryIT, FetchInterval: starterMinutes(30), Note: "科技创业与融资"},
 	{URL: "https://www.wired.com/feed/rss", Title: "WIRED", SiteURL: "https://www.wired.com/", Language: "en", Category: CategoryIT, FetchInterval: starterMinutes(60)},
 	{URL: "https://www.lwn.net/headlines/rss", Title: "LWN", SiteURL: "https://www.lwn.net/", Language: "en", Category: CategoryIT, FetchInterval: starterMinutes(60), Note: "Linux 与开源内核"},
-	{URL: "https://openai.com/blog/rss.xml", Title: "OpenAI Blog", SiteURL: "https://openai.com/blog/", Language: "en", Category: CategoryIT, FetchInterval: starterMinutes(180), Note: "大模型进展一手信源"},
 	{URL: "https://www.daringfireball.net/feeds/main", Title: "Daring Fireball", SiteURL: "https://www.daringfireball.net/", Language: "en", Category: CategoryIT, FetchInterval: starterMinutes(120)},
 	{URL: "https://www.smashingmagazine.com/feed/", Title: "Smashing Magazine", SiteURL: "https://www.smashingmagazine.com/", Language: "en", Category: CategoryIT, FetchInterval: starterMinutes(180), Note: "前端与设计"},
+
+	// ===== AI 动态（2026-10-17 round4 验证；OpenAI 自 it 迁入） =====
+	{URL: "https://openai.com/blog/rss.xml", Title: "OpenAI Blog", SiteURL: "https://openai.com/blog/", Language: "en", Category: CategoryAI, FetchInterval: starterMinutes(180), Note: "大模型进展一手信源；保留旧 URL 保证导入幂等（现 301 到 /news/）"},
+	{URL: "https://www.qbitai.com/feed", Title: "量子位", SiteURL: "https://www.qbitai.com/", Language: "zh", Category: CategoryAI, FetchInterval: starterMinutes(60), Note: "中文 AI 资讯"},
+	{URL: "https://huggingface.co/blog/feed.xml", Title: "Hugging Face Blog", SiteURL: "https://huggingface.co/blog", Language: "en", Category: CategoryAI, FetchInterval: starterMinutes(120), Note: "开源模型与生态动态"},
+	{URL: "https://blog.google/technology/ai/rss/", Title: "Google AI Blog", SiteURL: "https://blog.google/technology/ai/", Language: "en", Category: CategoryAI, FetchInterval: starterMinutes(60), Note: "Google DeepMind 研究与应用"},
+	{URL: "https://www.marktechpost.com/feed/", Title: "MarkTechPost", SiteURL: "https://www.marktechpost.com/", Language: "en", Category: CategoryAI, FetchInterval: starterMinutes(30), Note: "AI 论文与产业快讯，更新勤"},
+	{URL: "https://www.technologyreview.com/topic/artificial-intelligence/feed", Title: "MIT Tech Review AI", SiteURL: "https://www.technologyreview.com/topic/artificial-intelligence/", Language: "en", Category: CategoryAI, FetchInterval: starterMinutes(60), Note: "AI 深度报道"},
+	{URL: "https://arstechnica.com/ai/feed/", Title: "Ars Technica AI", SiteURL: "https://arstechnica.com/ai/", Language: "en", Category: CategoryAI, FetchInterval: starterMinutes(30), Note: "AI 政策与产品新闻"},
 
 	// ===== 财经 =====
 	{URL: "https://www.chinanews.com.cn/rss/finance.xml", Title: "中新网财经", SiteURL: "https://www.chinanews.com.cn/cj/", Language: "zh", Category: CategoryFinance, FetchInterval: starterMinutes(20), Note: "中文财经要闻，更新稳定"},
@@ -95,6 +114,18 @@ var StarterFeeds = []StarterFeed{
 	{URL: "https://www.nasdaq.com/feed/rssoutbound?category=Markets", Title: "Nasdaq Markets", SiteURL: "https://www.nasdaq.com/market-activity", Language: "en", Category: CategoryFinance, FetchInterval: starterMinutes(30)},
 	{URL: "https://fortune.com/feed/fortune-feeds/?id=3230629", Title: "Fortune", SiteURL: "https://fortune.com/", Language: "en", Category: CategoryFinance, FetchInterval: starterMinutes(60)},
 	{URL: "https://seekingalpha.com/market_currents.xml", Title: "Seeking Alpha 市场快讯", SiteURL: "https://seekingalpha.com/", Language: "en", Category: CategoryFinance, FetchInterval: starterMinutes(30), Note: "盘面异动解释"},
+
+	// ===== 新产品（2026-10-17 round4 验证） =====
+	{URL: "https://www.producthunt.com/feed", Title: "Product Hunt", SiteURL: "https://www.producthunt.com/", Language: "en", Category: CategoryProduct, FetchInterval: starterMinutes(30), Note: "全球新产品发布榜"},
+	{URL: "https://www.ifanr.com/feed", Title: "爱范儿", SiteURL: "https://www.ifanr.com/", Language: "zh", Category: CategoryProduct, FetchInterval: starterMinutes(30), Note: "中文新品与消费科技"},
+	{URL: "https://www.engadget.com/rss.xml", Title: "Engadget", SiteURL: "https://www.engadget.com/", Language: "en", Category: CategoryProduct, FetchInterval: starterMinutes(30), Note: "消费电子与新品评测"},
+	{URL: "https://www.tomshardware.com/feeds/all", Title: "Tom's Hardware", SiteURL: "https://www.tomshardware.com/", Language: "en", Category: CategoryProduct, FetchInterval: starterMinutes(30), Note: "硬件新品与评测"},
+	{URL: "https://www.servethehome.com/feed/", Title: "ServeTheHome", SiteURL: "https://www.servethehome.com/", Language: "en", Category: CategoryProduct, FetchInterval: starterMinutes(120), Note: "服务器与存储硬件"},
+
+	// ===== 好价·促销（2026-10-17 round4 验证） =====
+	{URL: "http://feed.smzdm.com", Title: "什么值得买·好价", SiteURL: "https://www.smzdm.com/", Language: "zh", Category: CategoryDeals, FetchInterval: starterMinutes(15), Note: "全品类优惠爆料；仅 http 可用（https 403），时效短故拉取最勤"},
+	{URL: "https://slickdeals.net/newsearch.php?src=SearchV2&searcharea=deals&searchin=first&q=gpu&rss=1", Title: "Slickdeals GPU 促销", SiteURL: "https://slickdeals.net/", Language: "en", Category: CategoryDeals, FetchInterval: starterMinutes(30), Note: "显卡好价"},
+	{URL: "https://slickdeals.net/newsearch.php?src=SearchV2&searcharea=deals&searchin=first&q=ssd&rss=1", Title: "Slickdeals SSD 促销", SiteURL: "https://slickdeals.net/", Language: "en", Category: CategoryDeals, FetchInterval: starterMinutes(30), Note: "固态硬盘好价"},
 
 	// ===== 时事 =====
 	{URL: "https://www.chinanews.com.cn/rss/importnews.xml", Title: "中新网要闻", SiteURL: "https://www.chinanews.com.cn/", Language: "zh", Category: CategoryNews, FetchInterval: starterMinutes(20), Note: "国内时事要闻"},
