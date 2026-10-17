@@ -37,6 +37,7 @@ import {
   applyCaptionResult, createLiveCaption, pickSpeechRecognition, type SpeechRecLike,
 } from '../features/meetings/meeting-live-caption'
 import { buildUtteranceSegment } from '../features/meetings/meeting-utterance'
+import { describeUnsettledSegments } from '../features/meetings/unsettled-segments-notice'
 import { runBestEffort } from './best-effort'
 import { useMicPermission } from '../composables/useMicPermission'
 import { useToast } from '../composables/useToast'
@@ -758,11 +759,30 @@ export class MeetingRecorderRuntime {
       })
       if (audioDecision.warning) console.warn(`[meeting-recorder] ${audioDecision.warning}`)
       // 等在途分段转写落库再置 completed；上限 10s，防止个别请求挂死卡住停止流程。
+      //
+      // ⚠⚠ §830：这个上限**原来是完全无声的**，而它有一处真实的用户可见后果：
+      //   超时后本函数继续往下走 ⇒ 下面的「收尾合并」用**当下**的
+      //   `this.segments` 重渲染正文、`completed` 也照写 ⇒ 而 `finalizeRecording`
+      //   紧接着从 DB 读分段做整段重转与精校 ⇒ **晚到的那几段不在精校输入里**。
+      //   ⚠ 而 `resolveRefinedView` 在精校成功时展示的是 `refinedTranscript`
+      //     （徽章「已精校」）⇒ 用户看到的是一份**缺了最后几句**、却标着「已精校」的正文。
+      //   （晚到的段会自己补写 `transcript`，但那条路在精校视图里**不展示**。）
+      //
+      // ⚠⚠ 上面这段注释里**刻意不写**收尾合并那个方法的名字：仓库里有一道门
+      //   按标识符在 stop() 的函数体里做 indexOf，断言「合并」排在「等在途分段」之后
+      //   ⇒ 注释里出现同名标识符会被它**先命中**，正确代码也会被判成「合并早于等待」。
+      //   （本轮第 4 次撞上「注释里的代码字面量被源码扫描门当真代码命中」。）
       if (this.inFlightSegments.size) {
         await Promise.race([
           Promise.allSettled([...this.inFlightSegments]),
           new Promise((resolve) => setTimeout(resolve, 10_000)),
         ])
+      }
+      if (this.inFlightSegments.size) {
+        console.warn(describeUnsettledSegments({
+          pending: this.inFlightSegments.size,
+          limitMs: 10_000,
+        }))
       }
       if (meetingId) {
         // ★ 收尾合并被过度拆开的说话人（2026-10-07）。
