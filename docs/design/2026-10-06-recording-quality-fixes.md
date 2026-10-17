@@ -92880,3 +92880,57 @@ this.startTime = carriedStartTime(Date.now(), keptElapsed)
 ⚠ **口径**：⛔ 未在真机上执行设备切换（需真机 + 外部麦克风）。本节证明的是「**代码路径上累计时长会被丢弃**」这一结构事实——它是纯算术可判的（旧写法下一次 tick 必然覆盖），**不需要真机也能确定**。但「真机上设备切换这个功能被用得多不多」属产品事实，本轮未测。
 
 **本节口径**：静态代码分析 + 纯函数行为测试；未连 PG、未发 HTTP、未运行真机录音。
+
+## §815 同一病根的**最后一处**数据关键读点：随手记增量转写的时间窗
+
+§812 修完 `stop()`、§814 修完 `switchDevice` 之后，把 `elapsedMs.value` 的全部读点逐个分类，确认还剩哪一处是**数据关键**（其余显示类读缓存是对的）。
+
+### §815.1 全量分类后的剩余读点
+
+| 位置 | 用途 | 处置 |
+|---|---|---|
+| `:746` `formatElapsed` / `:941` `syncTitle` / `useMeetingRecorder:32` / `RecordingPill:72/77-78` | **显示**（滴答钟） | ✅ 读缓存是对的，不动 |
+| `:311` / `:947` 重置、`:389`/`:949` interval 本身 | 写入 | ✅ 原样 |
+| `:448` 换设备后恢复 | 写入 | ✅ §814 已修（配合挪起点） |
+| `:491` `appendText` 的 `lastEnd ?? elapsedMs.value` | 手工补录分段的起点兜底 | ⛔ 剩余未修，见 §815.4 |
+| **`:1123` `sendSlice` 的 `endSec`** | **增量转写送上服务端的时间窗** | ✅ **本节修** |
+
+### §815.2 ⭐ 缺陷：随手记路的增量时间窗读的是可能过期的缓存
+
+```
+const windowSec = wav.byteLength / 2 / 16000
+const endSec = this.elapsedMs.value / 1000     // ← 只由 setInterval(250) 更新
+const startSec = Math.max(0, endSec - windowSec)
+```
+
+⇒ 与 §812/§814 **同一个病根**：`elapsedMs` 由定时器维护，页面隐藏时被浏览器节流。
+
+⚠ **顺带核实了一件结构事实**：`recordingRuntime.ts` 里有**两套独立计时器**却**共用同一个 `elapsedMs`** —— 会议路 `startTime`（`:385`，200ms tick，第 180 行的 `MeetingRecorderRuntime`）与随手记路 `startedAt`（`:946`，250ms tick，第 833 行的 `NoteRecorderRuntime`）。它们靠 `decideMeetingStart` 的 `reject-note-busy` 互斥，本轮未发现被同时激活的路径。
+
+### §815.3 修复前先量了影响面（这一步决定它值不值得改）
+
+| 问 | 答案 | 依据 |
+|---|---|---|
+| 前端会不会**读回** `res.startSec/endSec`？ | **不会** | `sendSlice` 内 `grep startSec\|endSec\|.delta` 除发送处外**零命中** |
+| 按长度判定的逻辑会不会受影响？ | **不会** | 服务端按 `startSec = endSec - windowSec` 使用 ⇒ 起止**同步偏移**，差值恒为 `windowSec`；`full.go:163` 的 `EndSec-StartSec >= minUsefulSegmentSec` 不受影响 |
+| 残留影响是什么？ | 服务端记录的增量分段时间戳在后台节流时可能偏移 | ⇒ **有界、且不牵连前端** |
+
+⇒ 值得修：与前两处同模式、零风险、一行。
+
+### §815.4 ⚠ 一处**故意没修**：`appendText:491`
+
+```
+const lastEnd = last?.endMs ?? this.elapsedMs.value
+```
+
+它在**还没有任何分段**时给手工补录的语音段算起点。⚠ 它同样是缓存读点，但：① 只在「分段为空」这一边界触发；② 一旦有第一段就走 `last.endMs`，而那来自 VAD 的真实时间戳。⇒ 影响极小，**本轮登记不改**，避免为边界情形再动一次 `recordingRuntime`。
+
+### §815.5 校验
+
+`typecheck` **EXIT=0**（中途一次 `TS2339: Property 'isPaused' does not exist on type 'NoteRecorderRuntime'` —— 那条 ref 只在 `MeetingRecorderRuntime` 上，随手记路没有暂停概念，**再次印证 §812.2「暂停全仓从未接线」**；已改为显式传 `false` 并注明原因）。
+
+`npm run gates` **45/45 通过**（75.6s）。
+
+⚠ 本节是**接线改动**，`resolveWallClockDurationMs` 本身的行为由 §812 的 6 条用例覆盖（本节未新增用例，因为这段接线在 `NoteRecorderRuntime` 内、node 里跑不到 —— 这是本仓一贯的取舍，见 §52）。⇒ **故此处只做了门禁验证，没有做变异验证**；如实标注，不假装有。
+
+**本节口径**：静态代码分析 + 依赖核对；未连 PG、未发 HTTP、未运行录音。

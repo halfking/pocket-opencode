@@ -1112,7 +1112,17 @@ export class NoteRecorderRuntime {
       return
     }
     const windowSec = wav.byteLength / 2 / 16000
-    const endSec = this.elapsedMs.value / 1000
+    // ⚠⚠ §815：`elapsedMs` 只由 `setInterval(250)` 更新（第 938-941 行），页面隐藏时
+    //   会被浏览器节流 ⇒ 这里若读缓存，送上服务端的时间窗就是**过期**的。
+    //   ⇒ 与 §812/§814 同一个病根，最后一处数据关键读点，改为当场重算。
+    //   ⚠ 影响面（已核）：前端**从不读回** `res.startSec/endSec`，服务端按下式
+    //   `startSec = endSec - windowSec` 使用 ⇒ 起止**同步偏移**，按长度判定的逻辑
+    //   （`full.go:163` 的 `EndSec-StartSec >= minUsefulSegmentSec`）**不受影响**；
+    //   残留影响限于服务端记录的增量分段时间戳在后台节流时可能偏移。
+    //   ⚠ `isPaused` 传 `false`：那条 ref 只存在于 `MeetingRecorderRuntime`（§812.2），
+    //   随手记这条路**没有暂停概念**，也印证了那个状态全仓从未被赋值。
+    const endSec = resolveWallClockDurationMs(
+      Date.now(), this.startedAt, this.elapsedMs.value, false) / 1000
     const startSec = Math.max(0, endSec - windowSec)
     try {
       const res = await sttSettingsApi.transcribeIncremental({
