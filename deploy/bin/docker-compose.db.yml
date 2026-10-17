@@ -26,17 +26,56 @@ services:
     ports:
       - "127.0.0.1:${DOCKER_DB_PORT:?DOCKER_DB_PORT must be set}:5432"
     <<: *db-common
+    # ── 慢查询观测（2026-10-17 审计新增）──────────────────────────────────
+    # 此前这三项全是 PostgreSQL 的**默认关闭**：`log_min_duration_statement = -1`
+    # ⇒ 一条慢 SQL 都不落日志；`pg_stat_statements` 也没安装 ⇒ 累计统计无从查询。
+    # 而 DEPLOYMENT_GUIDE.md 却让人直接查 pg_stat_statements —— 那条语句在默认
+    # 配置下必然报「relation does not exist」。即：文档承诺的排障手段并不存在。
+    # `shared_preload_libraries` 必须在**启动参数**里给，事后 ALTER SYSTEM 补不回来
+    # （要重启才生效），所以写在这里而不是 SQL 初始化脚本里。
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=pg_stat_statements
+      - -c
+      - pg_stat_statements.track=all
+      - -c
+      - log_min_duration_statement=${OPP_PG_SLOW_QUERY_MS:-500}
+      - -c
+      - logging_collector=on
+      - -c
+      - log_directory=log
+      - -c
+      - log_filename=postgresql-%Y-%m-%d.log
     environment:
       POSTGRES_USER: ${OPP_PG_USER:-llm_gateway}
       POSTGRES_PASSWORD: ${OPP_PG_PASSWORD:-}
       POSTGRES_DB: ${OPP_PG_DB:-pocket}
     volumes:
       - ${DOCKER_DB_DATA_DIR:?DOCKER_DB_DATA_DIR must be set}:/var/lib/postgresql/data
+      # 首次初始化时装上 pg_stat_statements 并建好慢查询视图。
+      - ./pg-init-slow-query.sql:/docker-entrypoint-initdb.d/10-slow-query.sql:ro
+    # ⚠️ 这里**不能**再用 `pg_isready`：实测它对**完全不存在的角色和库**也返回
+    #   「accepting connections」且退出码 0（pg_isready 只探服务端是否应答，
+    #   不校验凭据、不校验库是否存在）。
+    #   而 2026-10-17 实测过一个真实故障：宿主数据目录属主与容器内 postgres(uid 70)
+    #   不一致 ⇒ initdb 的 pg_ctl 以 postgres 身份起不来 ⇒ 镜像入口放弃重试并
+    #   「目录已有数据库，跳过初始化」⇒ **POSTGRES_DB 根本没被创建**，
+    #   而 healthcheck 照样报 healthy。⇒ 那道绿是假的。
+    # 现在改成真的把连接建起来：库不存在 / 角色不存在 / 密码不对，一律转红。
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U ${OPP_PG_USER:-llm_gateway} -d ${OPP_PG_DB:-pocket}"]
+      test:
+        - CMD-SHELL
+        - >-
+          psql -U "$$POSTGRES_USER" -d "$$POSTGRES_DB" -tAc 'SELECT 1' >/dev/null 2>&1
+          || (echo "healthcheck failed: database/role '$$POSTGRES_DB'/'$$POSTGRES_USER' unusable;"
+              echo "see 'docker logs opp-db-postgres' — a first-boot initdb failure makes the"
+              echo "image entrypoint skip creation of POSTGRES_DB entirely; check the data"
+              echo "directory ownership (container postgres is uid 70)."; exit 1)
       interval: 10s
       timeout: 5s
       retries: 12
+      start_period: 30s
 
   redis:
     image: ${DOCKER_DB_IMAGE:-redis:7}
