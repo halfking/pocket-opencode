@@ -209,6 +209,24 @@ export class MeetingRecorderRuntime {
   private backgroundMicReason = ref('')
   private stopCaption: (() => void) | null = null
   private stopping = false
+  /**
+   * ★§825：本次保存的音频**从会议的哪一刻开始**（毫秒；0 = 从头覆盖）。
+   *
+   * 它要回答的是一个坐标系问题：服务端逐段回执里的 `startSec/endSec` 是
+   * **上传那段音频自己的局部坐标**（从 0 起），而 `original` 分段用的是
+   * **会议绝对时间**（0→total）。两者只有在「音频从会议开头就开始」时才同基。
+   *
+   * 一旦中途切过设备且切换前确实录到了音频，`start()` 会 `new VadSegmenter`
+   * （`fullChunks` 从空开始）⇒ 保存的音频只覆盖切换之后 ⇒ 回执的局部 0
+   * 对应的是会议的 `keptElapsed` 毫秒 ⇒ **整条归属按时间重叠分桶，全部错位**：
+   * 后半场的话会被挂到前半场的说话人名下，而前半场自己的实时原文被顶掉
+   * （实测见 §825，`.artifacts/s824-probe/attrib2.mjs`）。
+   *
+   * ⚠ 只作**标志**用，不作偏移量用：切换瞬间有一小段设备打开/清理的空隙，
+   *   `keptElapsed` 只是它的近似 ⇒ 拿它去平移回执等于拿未实测的数当精度。
+   *   真正的解（拼接各段 + 精确偏移）属存储形态口径，待属主拍板（§824）。
+   */
+  private audioStartsAtMs = 0
   // 在途分段转写 promise:stop() 必须等它们落库,否则 refine 拿到的
   // transcript 缺尾巴,晚到的 updateTranscript 还会与 completed 状态竞争。
   private inFlightSegments = new Set<Promise<void>>()
@@ -311,6 +329,9 @@ export class MeetingRecorderRuntime {
       this.elapsedMs.value = 0
       this.processingCount.value = 0
       this.partSeq = 0
+      // §825：新一场录音的音频一定从会议开头开始 ⇒ 上一场遗留的偏移必须清掉。
+      // 放在 freshSession 里而不是 start() 开头：resume（切设备）要留着它。
+      this.audioStartsAtMs = 0
     }
     // 换场录音先中止上一场还在跑的分片转写：那些语音块属于已经结束的会议，
     // 留着只会白烧上游 ASR 配额，并且它们的分段会被写进新会议里。
@@ -449,6 +470,9 @@ export class MeetingRecorderRuntime {
     //   且完全静默。⚠ 拼接各段 WebM 需重新编码（容器不可直接相连），
     //   属存储形态口径 ⇒ 拼接方案待属主拍板，本轮只保证**不再无声**。
     if (preSwitchBlob && preSwitchBlob.size > 0 && keptElapsed > 0) {
+      // ★§825：记下「保存的音频不再从会议开头开始」。收尾链据此拒绝把整段
+      //   重转按绝对时间挂回说话人（见 planRefine 的 audio-time-base-offset）。
+      this.audioStartsAtMs = keptElapsed
       console.warn(
         `[meeting-recorder] 切换设备：${preSwitchBlob.size} 字节切换前音频`
         + `（对应约 ${Math.round(keptElapsed / 1000)}s）不会进入本次保存的完整录音`
@@ -672,7 +696,7 @@ export class MeetingRecorderRuntime {
    * 正式收尾录音(用户显式停止 / 新录音顶替 / 全局指示条停止)。
    * 落盘音频 + 等在途分段 + meeting 置 completed。
    */
-  async stop(): Promise<{ audioPath: string; durationMs: number } | null> {
+  async stop(): Promise<{ audioPath: string; durationMs: number; audioStartsAtMs: number } | null> {
     if (!this.isRecording.value || this.stopping) return null
     this.stopping = true
     const meetingId = this.activeMeetingId.value
@@ -765,7 +789,9 @@ export class MeetingRecorderRuntime {
         })
       }
       this.activeMeetingId.value = ''
-      return { audioPath, durationMs }
+      // §825：把偏移随返回值一起交出去 —— 收尾链（finalizeRecording）需要它，
+      // 而它只存在于 runtime（唯一知道切过设备的地方）。
+      return { audioPath, durationMs, audioStartsAtMs: this.audioStartsAtMs }
     } finally {
       this.stopping = false
       // 播报「录音结束」。放在 finally：无论收尾成功还是抛错，用户都会听到

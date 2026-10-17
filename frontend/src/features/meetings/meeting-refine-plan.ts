@@ -54,6 +54,18 @@ export interface RefinePlanInput {
   participants?: string[] | null
   /** 录音总时长 ms（来自 `rt.stop()` 的返回值，不是 `recorder.elapsedMs`）。 */
   elapsedMs: number
+  /**
+   * §825：本次保存的音频从会议哪一刻开始（ms，0 = 从头）。
+   *
+   * 非 0 意味着中途切过设备且切换前确实录到了音频 ⇒ 上传的那段只覆盖切换
+   * **之后**，而服务端逐段回执的 `startSec/endSec` 是那段音频的**局部坐标**。
+   * 与分段所用的会议绝对时间不同基 ⇒ 按时间重叠分桶会把后半场的话挂到
+   * 前半场的说话人名下（实测：`.artifacts/s824-probe/attrib2.mjs`）。
+   *
+   * ⚠ 它只当**标志**用（0 / 非 0），不当偏移量用 —— 切换瞬间有设备打开的
+   *   空隙，偏移本身是近似值，拿它平移回执等于拿未实测的数当精度。
+   */
+  audioStartsAtMs?: number
 }
 
 export interface RefinePlan {
@@ -74,6 +86,8 @@ export interface RefinePlan {
 /**
  * 收尾的**纯决策**：采纳什么、用哪些分段、名单是谁、要改哪几个同音字。
  *
+ * 0. ★§825 音频时间基检查 —— 若保存的音频不是从会议开头就开始，
+ *    后面第 2 步的按时间归属**整体失效**，于是连采纳都不做
  * 三步的顺序不能换（各自的理由见调用点注释）：
  *   1. 采纳判定 —— 整段重转不保证更好，变短一半以上就沿用分段文本
  *   2. 说话人归因 —— 把高精度文本按时间挂回原有标签
@@ -81,9 +95,23 @@ export interface RefinePlan {
  */
 export function planRefine(input: RefinePlanInput): RefinePlan {
   const { segments, full, elapsedMs, meetingId } = input
-  const adopt = full.applied && full.text
-    ? shouldAdoptFullTranscript(full.text, segments)
-    : { adopt: false, reason: full.applied ? 'full-empty' : 'not-applied' }
+  // ★§825：先判「音频是不是从会议开头就开始」。
+  //
+  //   长度守卫（`shouldAdoptFullTranscript`）是按**字数**比，而错位是按
+  //   **时间**发生的 —— 两者不是同一个量：切设备发生在会议后半程、后半场
+  //   话说得又比较密时，重转文本可以轻松过半，守卫放行，然后**每一段**回执
+  //   都被挂到错的人名下（实测读数见 §825）。
+  //
+  //   ⇒ 这里必须有一道与「有没有丢过音频」直接同源的判据。它只能来自 runtime
+  //   （唯一知道切过设备的地方），**不能**用 elapsedMs 与回执 max(endSec) 的差
+  //   去猜：那两个数都来自墙钟，真机上本就可能差几秒（§811 未实测），
+  //   拿它当阈值会在正常录音上误判。
+  const audioStartsAtMs = Number.isFinite(input.audioStartsAtMs) ? Math.max(0, input.audioStartsAtMs as number) : 0
+  const adopt = audioStartsAtMs > 0
+    ? { adopt: false, reason: `audio-time-base-offset(${audioStartsAtMs}ms)` }
+    : full.applied && full.text
+      ? shouldAdoptFullTranscript(full.text, segments)
+      : { adopt: false, reason: full.applied ? 'full-empty' : 'not-applied' }
   // ★ 两条出口都要去重（2026-10-06）。
   //
   //   切片重叠会让相邻分段产生重复文本（「今天今天下午三点」）。它已经在

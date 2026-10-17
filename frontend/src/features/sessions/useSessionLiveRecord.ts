@@ -77,6 +77,9 @@ export function useSessionLiveRecord(sessionId: () => string, sessionTitle: () =
           else toast.info(text)
         },
       },
+      // ★§825：与 durationMs 同源，都只能来自 stop() 的返回值。
+      // 中途切过设备时这里非 0 ⇒ 收尾不再把整段重转按绝对时间挂回说话人。
+      { audioStartsAtMs: stopped?.audioStartsAtMs ?? 0 },
     )
   }
 

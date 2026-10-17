@@ -124,6 +124,13 @@ export async function finalizeRecording(
   segments: MeetingSegment[],
   elapsedMs: number,
   deps: FinalizeDeps,
+  /**
+   * ★§825：同一场录音的采集侧事实，来自 `rt.stop()` 的返回值。
+   *
+   * ⚠ 必须由调用方从 stop() 的返回值取（与 durationMs 同一条纪律，§49）：
+   *   录音态的读数在 stop 之后不可信。
+   */
+  recording?: { audioStartsAtMs?: number },
 ): Promise<FinalizeOutcome> {
   const outcome: FinalizeOutcome = {
     refined: false, aborted: false, adopted: false,
@@ -193,6 +200,8 @@ export async function finalizeRecording(
     full: { text: finalText.text, applied: finalText.applied, segments: finalText.segments },
     participants: meeting?.participants,
     elapsedMs,
+    // §825：音频时间基错位时，整段重转文本**不进**精校（理由见 planRefine）。
+    audioStartsAtMs: recording?.audioStartsAtMs ?? 0,
   })
   outcome.adopted = plan.adopted
   const { roster, refineSegments } = plan
