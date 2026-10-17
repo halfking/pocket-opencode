@@ -216,3 +216,20 @@ export function resolveWallClockDurationMs(
   if (!(startTime > 0) || !Number.isFinite(now)) return fallbackMs
   return Math.max(0, now - startTime)
 }
+
+/**
+ * 换设备后续接录音时，**把计时起点往前挪**，让累计时长接着走。
+ *
+ * ⚠⚠ §814 的由来：`recordingRuntime.start()` 里 `this.startTime = Date.now()` 是
+ * **无条件**执行的（只有 `elapsedMs = 0` 受 `freshSession` 保护）。于是 `switchDevice`
+ * 里旧写法 `elapsedMs.value = keptElapsed` 只能维持 **≤200ms** ——
+ * 下一个 interval tick 就按新起点把它覆盖成「切换之后」的时长，**累计时长就此丢失**。
+ * ⇒ 连 §812 的 `durationMs` 也会跟着少算切换前的那一截。
+ *
+ * 挪起点等于让 interval（`Date.now() - startTime`）与写入时刻的重算**都**从
+ * `keptElapsed` 自然续上 ⇒ 一行修好两个消费者。
+ */
+export function carriedStartTime(now: number, keptElapsedMs: number): number {
+  const elapsed = Number.isFinite(keptElapsedMs) && keptElapsedMs > 0 ? keptElapsedMs : 0
+  return now - elapsed
+}

@@ -15,6 +15,7 @@ import { describe, it } from 'node:test'
 import {
   assessDurationDrift,
   createMeasuringToWav,
+  carriedStartTime,
   resolveWallClockDurationMs,
   wavDurationSec,
 } from '../recording-duration-consistency.ts'
@@ -362,5 +363,39 @@ describe('§812 墙钟必须在写入时刻重算，不读 interval 的陈旧缓
 
   it('结果不为负', () => {
     assert.equal(resolveWallClockDurationMs(1_000, 5_000, 200, false), 0)
+  })
+})
+
+describe('§814 换设备后计时起点要前移，否则累计时长丢失', () => {
+  // ⭐ 旧代码只补 `elapsedMs.value = keptElapsed`，而下一次 interval tick
+  //   （`Date.now() - startTime`，startTime 已被 start() 重设为 now）会立刻覆盖它。
+  it('⭐ 挪起点后，重算值从 keptElapsed 自然续上', () => {
+    const now = 100_000, kept = 45_000
+    const start = carriedStartTime(now, kept)
+    // 下一 tick（+200ms）算出来的值应当是 kept + 200，而不是 ~200
+    assert.equal(resolveWallClockDurationMs(now + 200, start, 0, false), kept + 200)
+  })
+
+  it('挪起点后不会因为时间倒流而算出负数', () => {
+    assert.ok(carriedStartTime(100_000, 45_000) > 0)
+  })
+
+  it('keptElapsed 非法/0 ⇒ 起点就是 now（等价于「从头开始」）', () => {
+    assert.equal(carriedStartTime(100_000, 0), 100_000)
+    assert.equal(carriedStartTime(100_000, -5), 100_000)
+    assert.equal(carriedStartTime(100_000, Number.NaN), 100_000)
+  })
+
+  it('连续两次换设备不会丢时长（累加而非覆盖）', () => {
+    const t0 = 100_000                                   // 开始录音
+    const firstKept = resolveWallClockDurationMs(150_000, t0, 0, false)   // 录了 50s
+    assert.equal(firstKept, 50_000)
+
+    const start1 = carriedStartTime(150_000, firstKept)   // 第一次换设备，续上 50s
+    const secondKept = resolveWallClockDurationMs(170_000, start1, 0, false)
+    assert.equal(secondKept, 70_000, '第二次换设备前应累计到 70s，而不是回到 20s')
+
+    const start2 = carriedStartTime(170_000, secondKept) // 第二次换设备
+    assert.equal(resolveWallClockDurationMs(175_000, start2, 0, false), 75_000)
   })
 })

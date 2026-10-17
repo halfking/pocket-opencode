@@ -61,7 +61,7 @@ import {
 import { decideMeetingStart, decideNoteStart } from './recordingPolicy'
 import { planSpeakerRelabel } from './speaker-relabel'
 import { isPlaceholderSpeaker } from '../features/meetings/meeting-roster-homophone'
-import { resolveWallClockDurationMs } from '../features/meetings/recording-duration-consistency'
+import { carriedStartTime, resolveWallClockDurationMs } from '../features/meetings/recording-duration-consistency'
 
 // ---------------------------------------------------------------------------
 // 录音语音播报（进程级单例）
@@ -436,13 +436,23 @@ export class MeetingRecorderRuntime {
   async switchDevice(meetingId: string, deviceId: string): Promise<boolean> {
     if (!this.isRecording.value) return this.start(meetingId, { deviceId })
     if (this.elapsedTimer) { clearInterval(this.elapsedTimer); this.elapsedTimer = null }
-    const keptElapsed = this.elapsedMs.value
+    // ⚠⚠ §814：这里读缓存会拿到**过期**值（后台节流），故当场重算（§812）
+    const keptElapsed = resolveWallClockDurationMs(
+      Date.now(), this.startTime, this.elapsedMs.value, this.isPaused.value)
     // §808：`stop()` 现在要等最后一枚切片落地，返回 Promise —— 必须 await
     await this.vadSegmenter?.stop()
     await this.cleanupMedia()
     this.isRecording.value = false
     const ok = await this.start(meetingId, { deviceId, resume: true })
-    if (ok) this.elapsedMs.value = keptElapsed
+    if (ok) {
+      this.elapsedMs.value = keptElapsed
+      // ⚠⚠ §814 的关键一行：`start()` 里 `this.startTime = Date.now()` 是**无条件**执行的
+      //   ⇒ 旧代码只补 `elapsedMs.value = keptElapsed`，**下一个 interval tick（≤200ms）
+      //   就把它覆盖成「切换之后」的时长**，累计时长就此丢失。
+      //   把起点往前挪，等于让 interval（`Date.now() - startTime`）与 §812 的重算
+      //   **都**从 keptElapsed 自然续上 —— 一行同时修好两个消费者。
+      this.startTime = carriedStartTime(Date.now(), keptElapsed)
+    }
     return ok
   }
 

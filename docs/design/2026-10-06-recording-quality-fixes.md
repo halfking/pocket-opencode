@@ -92827,3 +92827,56 @@ notify: (kind: 'info' | 'success' | 'warning', text: string) => void
 ⚠ **不代拍**。但把话说清：**「要不要升级」不是一个「要不要加检测」的问题**（检测已经有了），而是「**这条已经算对的读数要给谁看**」。⇒ 属主决定的是**触达面**，不是**正确性**。
 
 **本节口径**：纯静态只读 + 依赖清单核对；未连 PG、未发 HTTP、未在真机上验证 logcat / Web Inspector 的实际可见性（那需要一台真机 + 一次连接）。
+
+## §814 换设备后计时器从 0 重来：累计时长在 ≤200ms 内丢失（§812 的连带受害者）
+
+§812 修完 `stop()` 后自查「我只改了一个点，其余读同一份缓存的地方呢」，逐个分类 `elapsedMs.value` 的 12 处引用，找到了这条。
+
+### §814.1 引用分类（改完之后）
+
+| 类别 | 位置 | 处置 |
+|---|---|---|
+| 显示（本就该读缓存的滴答钟） | `useMeetingRecorder.ts:32`、`RecordingPill.vue:72/77-78`、`formatElapsed():736`、`syncTitle():931` | **不动**，读缓存是对的 |
+| 写入/重置 | `:311`（重置 0）、`:389`/`:939`（interval 本身）、`:445`（切换后恢复） | 见 §814.2 |
+| **数据关键** | `switchDevice:439` | ✅ 已修 |
+
+⇒ 「显示读缓存」是对的，只有**跨时间点的取值**才会拿到陈旧值。
+
+### §814.2 ⭐ 缺陷：`start()` 无条件重设 `startTime`，`switchDevice` 的恢复只能维持 ≤200ms
+
+```
+switchDevice():
+  const keptElapsed = this.elapsedMs.value      // 记下已录时长
+  …
+  await this.start(meetingId, { deviceId, resume: true })
+  if (ok) this.elapsedMs.value = keptElapsed    // ← 只补了缓存值
+```
+
+而 `start()` 第 385 行是 **无条件**的 `this.startTime = Date.now()`（只有 `elapsedMs = 0` 受 `freshSession` 保护）⇒ 新 interval 算的是 `Date.now() - 新起点` ≈ 0。
+
+⇒ **`keptElapsed` 只能维持到下一个 tick（≤200ms）就被覆盖成「切换之后」的时长，累计时长就此丢失。**
+
+⚠ 连带后果：`durationMs` 少算切换前那一截 ⇒ §805 的护栏也会跟着少算。⚠ 我核过 §812 的修复**没有**把它变差（修前读缓存、也在被覆盖），但两条必须一起修才对。
+
+### §814.3 修复：挪起点，而不是补缓存
+
+```
+this.startTime = carriedStartTime(Date.now(), keptElapsed)
+```
+
+挪起点等于让 **interval（`Date.now() - startTime`）与写入时刻的重算**都从 `keptElapsed` 自然续上 ⇒ **一行修好两个消费者**。提成纯函数 `carriedStartTime(now, keptElapsedMs)`，配 4 条行为测试（含「连续两次换设备不会丢时长」）。
+
+### §814.4 变异双向验证
+
+| 变异 | 读数 |
+|---|---|
+| 基线 | **40 PASS / 0 FAIL** |
+| D `carriedStartTime` 退回 `now`（= 旧行为） | **2 红** |
+| E `keptElapsed` 非法时硬算（起点跑到未来） | **1 红** |
+| 还原 | **40 PASS / 0 FAIL** |
+
+（§812 的三个变异 A/B/C 已在上节记录，合计本组 5 个变异全部被抓住。）
+
+⚠ **口径**：⛔ 未在真机上执行设备切换（需真机 + 外部麦克风）。本节证明的是「**代码路径上累计时长会被丢弃**」这一结构事实——它是纯算术可判的（旧写法下一次 tick 必然覆盖），**不需要真机也能确定**。但「真机上设备切换这个功能被用得多不多」属产品事实，本轮未测。
+
+**本节口径**：静态代码分析 + 纯函数行为测试；未连 PG、未发 HTTP、未运行真机录音。
