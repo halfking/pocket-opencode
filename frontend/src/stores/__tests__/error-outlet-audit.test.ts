@@ -316,6 +316,49 @@ describe('§847 · rethrow 的加载函数：每个调用点都必须接住', ()
   })
 })
 
+describe('§848 · 刻意 rethrow「由调用方提示」的函数：调用点必须接住', () => {
+  /**
+   * ⚠ 这一类与上面 `RETHROWERS` 的查法**不一样**，不要试图统一：
+   *   `loadAgents` 是 store 方法，全部调用点形态一致（`agentStore.loadAgents()`）
+   *   ⇒ 可以机械断言「每个调用点都有 `.catch(`」。
+   *   `pickImage` 的调用点有**两种**形态：直接 `await`（必须接住），
+   *   以及**同名本地包装**（`FlashcardEditView` 自己定义了一个 `pickImage`，
+   *   内部已 try/catch 并给出 `flashcards.edit.imagePickFailed`）
+   *   ⇒ 「每个调用点都有 catch」这条机械判据会把它判红 ⇒ 属**假阳**，不采用。
+   *   改为：断言直接调用点接住 + 对「谁消费了这个 composable」做反向对账。
+   */
+  const CAMERA_CONSUMER_RE = /useCameraCapture/
+
+  it('★★ UnifiedComposer::onCamera 必须整段包在 try 里', () => {
+    const src = read('components/business/UnifiedComposer.vue')
+    const re = /async function onCamera\(\)[\s\S]{0,400}?\btry\s*\{[\s\S]{0,500}?\}\s*catch\s*\(/
+    assert.match(src, re,
+      'onCamera 没有 try/catch ⇒ pickImage 的真实错误（相机权限被拒 / 插件不可用）' +
+      '会变成未处理 rejection，用户点了拍照按钮没有任何反馈')
+  })
+
+  it('★ 反向对账：useCameraCapture 的消费方必须逐个点名', () => {
+    const consumers = VUE_FILES
+      .filter((f) => CAMERA_CONSUMER_RE.test(readFileSync(f, 'utf8')))
+      .map(relOf)
+      .filter((f) => !f.endsWith('useCameraCapture.ts'))
+    assert.deepEqual(consumers, ['components/business/UnifiedComposer.vue'],
+      `useCameraCapture 的消费方变了：${consumers.join(', ')}\n` +
+      '⇒ 新增消费方必须在这里点名，并确认它是否接住了 pickImage 抛出的错误')
+  })
+
+  it('★★ 提示位必须存在：cameraError 要与 sttError/optimizeError 并排渲染', () => {
+    const tpl = tplCode(read('components/business/UnifiedComposer.vue'))
+    const atCam = tpl.indexOf('cameraError')
+    assert.ok(atCam > 0, '模板里没有渲染 cameraError ⇒ 错误被设上也没人看')
+    // 与另外两个错误提示并排：同一处样式、同一批位置，改一个不能漏另两个
+    assert.ok(tpl.indexOf('optimizeError') < atCam,
+      'cameraError 的提示位排在 optimizeError 之后，与既有位置不一致')
+    assert.ok((tpl.match(/v-if="cameraError"/g) || []).length >= 2,
+      'cameraError 只渲染了一处；工具行有普通/全屏两套，只改一处会漏')
+  })
+})
+
 describe('§847 · 失败分支必须排在真空态之前', () => {
   /**
    * ⚠ `errFlag` 必须**跟着视图里的实际标识符走**，不能写死。
@@ -393,6 +436,15 @@ describe('§847 · 变异负控（每条都必须让上面那把尺子转红）'
       outletSitesWith('optimizeError', { 'components/business/UnifiedComposer.vue': mutated }),
       [],
       '变异后仍有出口 ⇒ 判据无牙（记得把变异通过 overrides 送进判据的输入）')
+  })
+
+  it('★ 变异 G：拿掉 onCamera 的 try/catch ⇒ §848 判据转红', () => {
+    const mutated = read('components/business/UnifiedComposer.vue')
+      .replace(/\n\s*try \{\n([\s\S]*?)\n\s*\} catch \(e\) \{[\s\S]*?\n\s*\}\n/, '\n$1\n')
+    assert.notEqual(mutated, read('components/business/UnifiedComposer.vue'),
+      '★ 变异没生效：没匹配到 onCamera 的 try/catch')
+    const re = /async function onCamera\(\)[\s\S]{0,400}?\btry\s*\{[\s\S]{0,500}?\}\s*catch\s*\(/
+    assert.equal(re.test(mutated), false, '拿掉 try/catch 后尺子居然还通过 ⇒ 判据无牙')
   })
 
   it('★ 变异 F：把登记表里一条改成不存在的文件 ⇒ 反向对账要报「登记表已失效」', () => {
