@@ -93265,3 +93265,79 @@ toWav 抛错（wav-encode.ts:112 不 catch）
 ### §818.8 校验
 
 `typecheck` **EXIT=0**；`npm run gates` **45/45 通过（62.4s）**；`git diff --check` 退出 0。
+
+## §819 同一个静默 catch 的**另外 4 条路**：`ensureGatewayCompatible` 同样吞掉转码失败
+
+§818 修的是会议**整段重转**那条路（`toGatewayWavBytes` → `finalizeRecording`）。本节是同一类缺陷在另外 4 条路上的延伸 —— 它们走的是 `ensureGatewayCompatible`。
+
+### §819.1 范围与量级差别（先说清，别把两件事当一样重）
+
+| | §818 已修（会议整段重转） | 本节（增量 / 随手记 / 语音输入） |
+|---|---|---|
+| 入口 | `toGatewayWavBytes` | `ensureGatewayCompatible` |
+| 调用点 | `finalizeRecording`（1 处） | `api/stt.ts:90`、`stt-settings.ts:273/333/384`（4 处） |
+| 吞掉的地方 | `meeting-final-transcript.ts` 的空 catch | `wav-encode.ts:94-97` 的空 catch |
+| 后果 | 退回 webm → 网关拒收 | 同左 |
+| **症状可见性** | ⛔ **症状也不可见**（`reason` 是死输出） | ⚠ **症状可见**（`http` 抛错，`useVoiceInput` / `useVoiceRecording` 都 catch 并提示「语音识别失败」） |
+| **根因可见性** | ⛔ 不可见 | ⛔ 不可见 |
+
+⇒ **严重性不同，本节只补根因，不改症状**：用户能知道「转写失败了」，但看不到「为什么」——
+排查的人会去查网关与网络，而真问题在**转码这一步**。
+
+### §819.2 先量了两件事，才决定这么做
+
+1. **会不会刷屏？** 4 个调用点的调用频率**不是逐片**：`useVoiceInput.ts:115` 与
+   `useVoiceRecording.ts:50` 都在 `onstop` 里对**整段**转一次 ⇒ 每次失败一条 warn，不冲垮设备 console。
+   ⇒ 不需要「每场只报一次」那类去重状态。
+2. **能不能在 node 里真断言？** ✅ 能，而且很干净：`encodeWav16kMono` 依赖
+   `window.AudioContext`，node 里 `window` 不存在 ⇒ `ensureGatewayCompatible` 对需要转码的容器
+   **必然走 catch 分支**。⇒ 「失败有没有被说出来」是**可执行断言**，不需要 stub 浏览器环境。
+
+⭐ 这一点与 §818 形成对照，值得记住：**信号所在的函数跑得到 ⇒ 判据能用行为断言，
+对「信号变死代码」这个变异天然有牙**；跑不到才被迫退化成接线扫描。
+
+### §819.3 修复：降级行为一行不改，只让失败出声
+
+`wav-encode.ts`：
+
+* `ensureGatewayCompatible(blob, onTranscodeFailure?)` 新增可选通报器，**默认为 `console.warn`**。
+  ⇒ 一处改动覆盖全部 4 个调用点，**调用方不必各自记得接**。
+* 通报内容带 `mimeType` / `bytes` / **原始异常** ⇒ 能分辨「解码失败」与「环境没有 AudioContext」两种成因。
+* catch 里包了一层 try：`try { onTranscodeFailure(...) } catch { /* 通报本身失败不得反过来影响降级 */ }`
+  —— 观测代码永远不该把主流程带崩。
+
+⚠ **仍然只到开发者 console**（§813 的现状）。要不要升到用户可见属产品口径，**待属主拍板，不代拍**。
+⇒ 与 §818 那条 warn 现在**可以合并成同一个决定**。
+
+### §819.4 ⭐ 变异验证：三个全中
+
+| 变异 | 做法 | 结果 |
+|---|---|---|
+| 1 | 把通报调用改成 `void 0 && onTranscodeFailure(...)`（信号变死代码） | ✅ **3 红** |
+| 2 | 把默认通报器里的 `console.warn` 改成 `void 0 && …` | ✅ **2 红** |
+| 3 | 破坏退回原 blob 的降级（改成 `throw`） | ✅ **5 红** |
+
+⇒ 变异 1 正是 §818 第一版修复**没抓住**的那个变异；这里因为宿主函数跑得到，**一次就抓到了**。
+⇒ 源文件已与备份**逐字节一致**（`diff -q` 通过），无变异残留。
+
+### §819.4bis ⚠ §818.6bis 那条登记**当场又被用到一次**
+
+写完本节的实现后第一次跑 `npm run gates`，`silent-catch-must-explain-itself` 又红了
+（1 处，`wav-encode.ts:93`）—— 原因与 §818.6bis **完全相同**：本节的 JSDoc 里写了
+「此前这里是空 `catch {}`」这句引用旧代码的话，再次命中那道门扫描未剥注释原文的盲区。
+
+⇒ 这是那道登记**当场兑现价值**的一次：第二次撞上时，定位只花了一轮 grep。
+处置照旧 —— **只改自己的措辞，不动门禁语义**。
+
+### §819.5 ⚠ 口径
+
+* node 行为测试 + 静态核对；**未连 PG、未发 HTTP、未运行真实录音会话**。
+* ⚠ node 里走 catch 分支靠的是「没有 `window.AudioContext`」，**不是**真的解码失败 ——
+  本节验的是「失败会不会被说出来」，**不是**「真机上转码会不会失败」。
+  真机上转码失败的频率与成因**仍未实测**（需要真机录音 + 一个已知解不了的容器）。
+* 4 个调用点里 `stt-settings.ts:333/384`（随手记语音路径）的上层错误处理**本轮未逐个核对**，
+  本节只保证「失败会说出去」，不保证「每一路的用户提示措辞正确」。
+
+### §819.6 校验
+
+`typecheck` **EXIT=0**；`npm run gates` **45/45 通过（80.6s）**；`git diff --check` 退出 0。

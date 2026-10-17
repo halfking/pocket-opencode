@@ -86,13 +86,57 @@ export function needsWavTranscode(mimeType: string): boolean {
   return t === 'audio/webm' || t === 'video/webm' || t === 'audio/ogg' || t === '' || t === 'application/octet-stream'
 }
 
+/**
+ * §819：转码失败**必须留痕**。
+ *
+ * 降级行为一行不改（仍是「退回原 blob 上传」，见下），只是把失败本身说出来：
+ * 此前这里是空 catch 块，失败被整个吞掉 ⇒ 后果只呈现为「网关拒收 webm」
+ * ⇒ 排查的人会去查网关，而真问题在**转码这一步**（§818 在会议整段重转那条路上
+ * 查到的同一个洞；那条路已修，这 4 个 `ensureGatewayCompatible` 调用点是同一类）。
+ *
+ * ⚠ 触达面与 §813 查到的现状一致：**只到开发者 console**。
+ *   要不要升到用户可见属产品口径，待属主拍板，本处不代拍。
+ *
+ * ⚠ 不会刷屏：本函数的调用方都是「一段录音结束时调一次」
+ *   （`useVoiceInput` / `useVoiceRecording` 都在 `onstop` 里转整段），
+ *   **不是逐片调用** ⇒ 每次失败一条，不会把设备 console 冲垮。
+ */
+export interface TranscodeFailureInfo {
+  /** 原容器的 MIME（退回上传的就是它）。 */
+  mimeType: string
+  /** 原容器字节数。 */
+  bytes: number
+  /** 原始异常，便于区分「解码失败」与「环境没有 AudioContext」。 */
+  error: unknown
+}
+
+/** 转码失败时的通报回调；不传则走默认的 `console.warn`。 */
+export type TranscodeFailureReporter = (info: TranscodeFailureInfo) => void
+
+const defaultTranscodeFailureReporter: TranscodeFailureReporter = (info) => {
+  const why = info.error instanceof Error ? info.error.message : String(info.error)
+  console.warn(
+    `[wav-encode] 转码失败：${info.bytes} 字节 ${info.mimeType || '(无 MIME)'} 未能转成 WAV`
+    + `（${why}）。已退回原容器上传 —— 网关只收 wav/mp3，本次转写很可能随之失败。`,
+  )
+}
+
 /** 组合入口：需要转码且成功 → wav Blob；否则原样返回（含转码失败的回退）。 */
-export async function ensureGatewayCompatible(blob: Blob): Promise<Blob> {
+export async function ensureGatewayCompatible(
+  blob: Blob,
+  onTranscodeFailure: TranscodeFailureReporter = defaultTranscodeFailureReporter,
+): Promise<Blob> {
   if (!needsWavTranscode(blob.type)) return blob
   try {
     return await encodeWav16kMono(blob)
-  } catch {
+  } catch (e) {
     // 解码不了就原样上传（external OpenAI 通道仍支持 webm），不比现状差。
+    // ★§819 失败要出声：行为不变，可见性变。
+    try {
+      onTranscodeFailure({ mimeType: blob.type, bytes: blob.size, error: e })
+    } catch {
+      /* 通报本身失败不得反过来影响降级 */
+    }
     return blob
   }
 }
