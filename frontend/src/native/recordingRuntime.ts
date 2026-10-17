@@ -38,6 +38,11 @@ import {
 } from '../features/meetings/meeting-live-caption'
 import { buildUtteranceSegment } from '../features/meetings/meeting-utterance'
 import { describeUnsettledSegments } from '../features/meetings/unsettled-segments-notice'
+import {
+  describeVoiceDraftUpdateFailure,
+  shouldBackfillVoiceDraft,
+  VOICE_DRAFT_UPDATE_FAIL_TAG,
+} from '../features/notes/voice-draft-update-notice'
 import { runBestEffort } from './best-effort'
 import { useMicPermission } from '../composables/useMicPermission'
 import { useToast } from '../composables/useToast'
@@ -1343,8 +1348,13 @@ export class NoteRecorderRuntime {
             audioBlob,
             durationMs,
           })
-        } catch {
+        } catch (e) {
           // 落库异常不该让用户丢掉转写：退回旧的「界面再建」路径。
+          // ⚠ §833：这一处的用户可见出口是**下游**那一条 —— draftId 为空时
+          //   pendingResult 会把 NoteListView 引到 createVoiceDraft，而那条路径
+          //   自 §832 起有 try/catch + draftSaveError ⇒ 建草稿再失败也会出声。
+          //   本 catch 因此只补诊断，不改行为、不改控制流（避免两条错误行互相顶）。
+          console.error('[note-recorder] 语音草稿预落库失败，将退回界面侧建草稿：', e)
           draftId = null
         }
       }
@@ -1432,11 +1442,25 @@ export class NoteRecorderRuntime {
       // note-edit-preserves-media 那道门）。进程在窗口期死掉也不会走到这里，
       // 但草稿带着「（语音草稿）」+ 完整音频已经是用户能拿回的东西。
       const finalText = this.transcript.value.trim()
-      if (draftId && finalText && finalText !== settledText) {
+      if (shouldBackfillVoiceDraft({ draftId, settledText, finalText })) {
         try {
-          await this.voiceDraftSink!.update(draftId, finalText)
-        } catch {
+          await this.voiceDraftSink!.update(draftId!, finalText)
+        } catch (e) {
           // 回填失败不该吞掉录音：草稿已经落库了，音频在，只是文字没跟上。
+          //
+          // ⚠⚠ §833：此前这里是**完全空的 catch**，什么都不说。而后果不是
+          //   「录音丢了」，是三条**看起来都正常**的东西：
+          //   ① 草稿正文永久停在 settledText（停止瞬间那版）；
+          //   ② 紧接着的 /summarize 读的是**库里那份正文**（NoteListView 的
+          //      presentVoiceDraft 只拿 text 做空值门槛，从不把它写回笔记）
+          //      ⇒ 即时摘要是按不完整的正文生成的；
+          //   ③ 那份摘要读起来完全正常 ⇒ 用户无从分辨。
+          //   ⇒ 失败必须变成一句人话：写 this.error（NoteListView 停止后
+          //     仍用 v-else-if="recError" 单独渲染它，见 recordErrorText）。
+          //   ⚠ 与 EMPTY_RECORDING_NOTICE 互斥：回填只在 finalText 非空时发生，
+          //     而那条只在「无字」时触发，两者不会互相覆盖（判据已钉住）。
+          console.error(VOICE_DRAFT_UPDATE_FAIL_TAG, e)
+          this.error.value = describeVoiceDraftUpdateFailure({ error: e })
         }
       }
       this.pendingResult = { text: finalText, audioBlob, durationMs, draftId }

@@ -94624,3 +94624,148 @@ trim 过的字符串 ⇒ 语义完全等价 ⇒ 0 红。换成真会改行为的
 1. 失败后是否提供**「保存为纯文字」的补救按钮**（当前文案只让用户手动复制，
    而录音刚转出的文字此刻就在界面上 —— 一次点击能救回整段内容）。
    ⚠ 本轮**未做**：它会改动录音结束后的 UI 布局，属产品口径。
+
+## §833 随手记草稿正文**回填失败**完全无声：草稿看起来完整，AI 总结基于残缺正文
+
+> 承接 §832。§832 修的是「建草稿失败 ⇒ 什么都没留下」；本节是它的**下游姊妹形态**：
+> 草稿**留下了**，正文**看起来也完整**，只有那份「读起来完全正常」的摘要在替
+> 一份残缺正文背书。
+
+### §833.1 ⛔ 缺陷：回填失败的 catch 是**完全空的**
+
+`NoteRecorderRuntime.runStop()` 在兜底转写之后回填正文（`recordingRuntime.ts`）：
+
+```ts
+      const finalText = this.transcript.value.trim()
+      if (draftId && finalText && finalText !== settledText) {
+        try {
+          await this.voiceDraftSink!.update(draftId, finalText)
+        } catch {
+          // 回填失败不该吞掉录音：草稿已经落库了，音频在，只是文字没跟上。
+        }
+      }
+```
+
+| # | 事实 | 证据 |
+|---|---|---|
+| 1 | catch **完全空**：不 console、不写 `this.error`、不产出任何信号 | 上述代码块 |
+| 2 | 回填是「正文被补全」的**唯一**一次机会；不成功就没有第二次 | 调用点唯一 |
+| 3 | `presentVoiceDraft(note, text)` 收到的 `text` **从不写回笔记** —— 全函数只用它做 `if (!text || !text.trim()) return` 这道门槛，正文一律以 `note.content`（库里那份）为准 | `NoteListView.vue:375-471` |
+| 4 | 即时摘要是 `/summarize(noteId)`，读的是**后端那份正文** | 同上 `await notesApi.summarize(noteId)` |
+| 5 | ⇒ 摘要**按 `settledText` 生成**，且它**读起来完全正常** | 由 3+4 推出 |
+
+⇒ 三条**看起来都正常**的东西同时成立：草稿正文停在停止瞬间那版、
+AI 总结漏了最后几句、界面上零提示。
+⇒ ⚠ 这比 §832 **更隐蔽**：§832 是「什么都没留下」（用户知道出事了），
+这里是「留下了一条看起来完整的草稿 + 一份看起来正常的摘要」（用户**无从分辨**）。
+
+⚠ 与诚实性缺陷三形态的对应：§820 是「谎报存在」，§833 是**第三形态的极端版** ——
+「存在但不完整，且完整性被一份正常模样的派生产物（摘要）背书」。
+
+⚠ 触发条件（构造性）：`settledText` 为空（分片一条都没回来）→ 兜底整段转写成功出字
+→ `finalText !== settledText` ⇒ 回填发生 ⇒ `notesStore.updateNote` 写失败
+（磁盘满 / 加密库句柄失效 / 存储权限变更）。
+⚠ 与 §463 注释配套：那条件「几乎永远为假」的判断**对回填不成立** ——
+「一次都没出字」正是兜底转写唯一会跑的场景，而那正是回填唯一会发生的场景
+⇒ **回填路径的失败率 ≈ 兜底转写的成功率**（不是罕见分支）。
+
+### §833.2 落地
+
+| # | 位置 | 改动 |
+|---|---|---|
+| 1 | 新增 `features/notes/voice-draft-update-notice.ts`（纯模块） | `shouldBackfillVoiceDraft()` 判据 + `describeVoiceDraftUpdateFailure()` 文案 + 诊断前缀 |
+| 2 | `recordingRuntime.ts` 回填处 | 判据换成纯函数；catch 补 `console.error` + `this.error.value = describeVoiceDraftUpdateFailure(...)` |
+| 3 | 同上 `voiceDraftSink.create` 的 catch | 补 `console.error`（**不改行为**：该处退回界面路径，用户可见那一段由 §832 的 `draftSaveError` 负责） |
+| 4 | `api/__tests__/stt-error-render-chain.test.mjs` | 白名单加**一个具名纯文案函数** + 按本文件既有先例补**钉死用例**（见 §833.4） |
+
+⚠ 为什么走 `this.error` 而不是 §832 那条独立错误行：`this.error` 在**录音停止后**
+仍由 `NoteListView` 的 `v-else-if="recError"` 单独渲染（`recordErrorText` 直出，
+不过 `apiError`），而失败**发生在 runtime 内部** ⇒ 用 runtime 自己的通道最省事，
+且两条错误行不会互相顶。
+
+⚠ 文案刻意**不说「录音丢了」**：音频确实在草稿里。误报会让用户白白重录一遍
+⇒ 行为判据里专门有一条 `doesNotMatch(/录音.*(丢|没了|不见)/)` 钉死这一点。
+
+### §833.3 判据（16 例全绿）+ 变异（13 个全中）
+
+`frontend/src/features/notes/__tests__/voice-draft-update-notice.test.ts`
+
+* **判据层（行为，纯函数）**：需要回填的三条件 / 无草稿不回填（那是 §832 的面）/
+  **空正文绝不能回填**（会把正文擦成空白，比不回填更坏）/ 两边一样不回填
+  （否则一次无谓写库失败会**假造**一条告警）/ 负控：`undefined`·`null` 不得被当成「有正文」。
+* **文案层（行为，纯函数）**：必须说清是「正文没跟上」且**不得**说成录音丢失 /
+  必须点明那份 AI 总结是按不完整正文生成的 / 必须给出可执行动作 /
+  负控（`undefined`·`[object Object]`·`NaN`）/ 诊断前缀与 §832 可区分。
+* **接线层（源码扫描，⚠ 零牙已标注）**：回填失败必须同时诊断 + 对用户说话 /
+  判据必须走纯函数（不能内联回调用点）/ 与 `EMPTY_RECORDING_NOTICE` 的顺序 /
+  预落库 catch 必须有诊断 / `this.error` 停止后仍被渲染且不过 `apiError` /
+  前提登记（`this.error` 在下次 `start()` 时清空）。
+
+| # | 变异 | 结果 |
+|---|---|---|
+| A | 回填改回**空 catch**（本次缺陷原样） | ✅ 1 红 |
+| A2 | 保留 `(e)` 但掏空 catch 体 | ✅ 1 红 |
+| B / C | 分别删掉 `this.error` 赋值 / `console.error` | ✅ 各 1 红 |
+| D / E / F | 判据分别丢掉「正文为空」/「无草稿」守卫、恒真 | ✅ 各 1 红 |
+| G | 判据去掉归一化（对 `undefined` 抛 TypeError） | ✅ 1 红 |
+| H | 调用点改回内联 `if` | ✅ 1 红 |
+| I | 预落库 catch 去掉诊断 | ✅ 1 红 |
+| J | 文案谎报「录音丢了」 | ✅ 1 红 |
+| K | 文案不提那份 AI 总结 | ✅ 1 红 |
+| L | **从别处提前赋值** `this.error.value = EMPTY_RECORDING_NOTICE` | ✅ 1 红 |
+| M | 停止后不再单独渲染 `recError` | ✅ 1 红 |
+
+⚠ **负控当场抓到一个真问题**（本轮新增经验）：判据第一版是
+`if (!finalText.trim()) return false`，负控用例传 `undefined` 直接
+`TypeError: Cannot read properties of undefined`。判据函数必须是**全函数**
+（对任何输入返回布尔值）⇒ 已加归一化，并留 G 变异钉住。
+
+⚠ **顺序断言指错位置**（§830 同款，本轮第二次）：L 变异第一版是
+`assert.ok(atEmpty > backfillAt)` 而 `atEmpty` 取自字面量 `if (emptyNotice) …`。
+于是「从别处提前赋值 `EMPTY_RECORDING_NOTICE`」这个**真正要拦的形态照样全绿**
+⇒ 已改成**枚举该常量的所有赋值点**逐个比位置。
+⇒ ★ 通用式：**顺序类判据不能锚在「某一处写法的字面量」上**，要锚在「被比较的那个量的全部出现」。
+
+⚠ `assert.doesNotMatch(w, /catch \{/)` 那条**据实标注为冗余**：任何掏空 catch 体的写法
+都必然同时丢掉 `console.error` 与 `this.error` 赋值 ⇒ 前两条断言先拦下
+（变异 A2 实测由「回填失败没有进日志」打红）。它只把「本次修的正是空 catch」
+钉成字面量，**不计入独立守卫**。
+
+### §833.4 ⚠ 撞门禁：`stt-error-render-chain` 的「error 写入点不变量」
+
+我的改动让那道门打红：它要求 `this.error.value = ` 的每一处赋值
+**要么是字面量、要么过 `sttFailureText`**，否则「渲染层就不敢直接渲染」。
+本节写的是 `= describeVoiceDraftUpdateFailure(...)` ⇒ 被判违规。
+
+| 处置 | 理由 |
+|---|---|
+| ✅ 按**该门自己留的先例**扩展 | 它已有具名白名单（`EMPTY_RECORDING_NOTICE`）+ 一条「放行名字必须钉死定义」的配套用例 —— 扩展路径是它自己设计的 |
+| ✅ 只加**一个名字**，不放宽正则 | 其余写入点仍须自证是字面量或过 `sttFailureText` |
+| ✅ 补两条钉死用例 | ① 该函数对 5 种异常形态返回**同一句**成品中文、不夹带技术串；② 该名字在 runtime 里**真的被用上**（悬空放行会红） |
+| ⛔ **没有**做的事 | 没有改那道门的判定语义、没有删它的任何断言、没有为了让自己变绿而放宽匹配 |
+
+变异验证（门侧）：把该函数改成 `String(error?.message)` ⇒ **1 红**；
+抽掉 runtime 里的赋值（白名单悬空）⇒ **1 红**。
+
+⚠ 顺带一处**自己的门先翻车**：`await import()` 写在非 async 的 `it()` 回调里
+⇒ `SyntaxError: Unexpected reserved word`（顶层 import 才合法，与文件顶部既有写法一致）。
+另一处：数引用次数时写成 `/describeVoiceDraftUpdateFailure\(/g`，而 import 是
+多行花括号形式、名字后**不带 `(`** ⇒ 恒得 1 处 ⇒ 只能数**裸名**。
+⇒ ★ 锚点必须与**真实写法**对齐（§127.4 同款，本会话已第 4 次）。
+
+### §833.5 ⛔ 口径与未实测
+
+* 行为判据 16 例 + 门侧 14 例全绿；`typecheck` EXIT=0；
+  **`npm run gates` 45/45 通过**（53.5s）。
+* ⛔ **未实测**：真机上 `notesStore.updateNote` 回填失败的真实发生率
+  （本节结论是**构造性**的：写失败一次现象即成立）。
+* ⛔ **未实测**：用户实际会不会去「打开草稿手动补字」—— 文案里的补救动作
+  目前只依赖用户自己走到草稿详情，没有一键按钮（同 §832.6 第 1 条）。
+
+### §833.6 待属主拍板
+
+1. 是否给回填失败一个**「把当前正文补进草稿」的一键按钮**（此刻完整正文就在
+   `pendingResult.text` 里，一次点击即可补齐；与 §832.6 第 1 条是同一类补救入口）。
+2. `this.error` 这条通道现在的语义已经从「转写错误」扩到「转写 / 落库收尾错误」。
+   要不要在 §832 的 `draftSaveError` 之上做统一（当前是两处各管一段，
+   好处是上下文不同、文案不同；坏处是两套 ref）。

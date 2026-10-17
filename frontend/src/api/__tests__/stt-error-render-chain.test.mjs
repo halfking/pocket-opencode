@@ -36,6 +36,12 @@ const read = (rel) => readFileSync(join(HERE, rel), 'utf8')
 
 // 两个都是无运行时依赖的纯模块，node --test 可直接加载
 const { sttFailureText } = await import('../stt-error.ts')
+// §833：草稿正文回填失败的成品文案（与下面的白名单放行配套，见「白名单里的
+// describeVoiceDraftUpdateFailure 必须真的是成品文案」那条）。顶层 import：
+// it() 回调不是 async，里面写 await 是语法错误（本轮实测报 SyntaxError）。
+const { describeVoiceDraftUpdateFailure } = await import(
+  '../../features/notes/voice-draft-update-notice.ts'
+)
 const { toUserMessage } = await import('../error-message.ts')
 
 const BACKEND =
@@ -235,7 +241,13 @@ describe('runtime 的 error 写入点不变量', () => {
         /sttFailureText\(/.test(rhs)
           || /['"`]/.test(rhs)               // 至少含一个字面文案（含字面量三元）
           || /mic\.deniedLabel\.value/.test(rhs)
-          || /EMPTY_RECORDING_NOTICE/.test(rhs),
+          || /EMPTY_RECORDING_NOTICE/.test(rhs)
+          // §833：草稿正文回填失败的文案来自纯模块 describeVoiceDraftUpdateFailure。
+          // 按本文件 EMPTY_RECORDING_NOTICE 那条先例放行「具名纯文案函数」，
+          // 并在**下一条**里钉死它的定义（放行名字不许成为绕过不变量的后门）。
+          // ⚠ 这里只加这一个名字，不放宽正则：其余任何 this.error 写入点仍须
+          //   自证是字面量或过 sttFailureText。
+          || /describeVoiceDraftUpdateFailure\(/.test(rhs),
         `recordingRuntime.ts:${i + 1} 的 error 写入既无字面文案也未过 sttFailureText：${line.trim()}`,
       )
     })
@@ -258,6 +270,46 @@ describe('runtime 的 error 写入点不变量', () => {
     assert.ok(
       !/\b(?:err|e|ex|exc|error)\b\s*\??\s*\.\s*(?:message|body|response)\b/.test(rhs),
       'EMPTY_RECORDING_NOTICE 指向了原始异常的可行动信息会在这里被二次压掉',
+    )
+  })
+
+  it('§833 白名单里的 describeVoiceDraftUpdateFailure 必须真的是成品文案', () => {
+    // 与上面 EMPTY_RECORDING_NOTICE 同一条规矩：放行一个名字，就必须在这里
+    // 把它钉死，否则「放行名字」就成了绕过不变量的后门 —— 任何人让它指向
+    // 原始异常的可行动信息（message/body/response）都能过。
+    // ① 对任意异常形态都返回同一句面向用户的中文文案：不得夹带技术串。
+    const samples = [
+      new Error('stt_unavailable: 网关暂无可用的语音转写模型；外部服务未配置 API Key'),
+      { message: 'ECONNREFUSED 127.0.0.1:8782', body: { error: 'boom' } },
+      null,
+      undefined,
+      42,
+    ]
+    const texts = samples.map((e) => describeVoiceDraftUpdateFailure({ error: e }))
+    for (const t of texts) {
+      assert.ok(
+        /回填|写回|正文/.test(t) && /草稿/.test(t),
+        `白名单函数没有产出面向用户的成品文案：${String(t).slice(0, 80)}`,
+      )
+      assert.doesNotMatch(
+        t,
+        /undefined|\[object Object\]|NaN|ECONNREFUSED|stt_unavailable|\$\{/,
+        `白名单函数把技术串/未替换的模板漏给了用户：${String(t).slice(0, 80)}`,
+      )
+    }
+    assert.equal(new Set(texts).size, 1, '同一失败给了多句文案 ⇒ 排查时分不清是哪种形态')
+  })
+
+  it('§833 放行的那个名字必须真的在 runtime 里被用上（否则白名单是空放行）', () => {
+    // ⚠ 只能数**裸名**：import 是多行花括号形式，名字后面并不带 `(`。
+    //   （本轮第一版写的是 /describeVoiceDraftUpdateFailure\(/g，恒得 1 处，
+    //   于是这条自己先翻车 —— 锚点必须与真实写法对齐，§127.4 同款教训。）
+    const hits = (runtime.match(/describeVoiceDraftUpdateFailure/g) ?? []).length
+    assert.ok(hits >= 2, `recordingRuntime.ts 里只有 ${hits} 处裸名引用，放行项已悬空`)
+    assert.match(
+      runtime,
+      /this\.error\.value = describeVoiceDraftUpdateFailure\(/,
+      '回填失败没有写进 this.error ⇒ 用户看不到（§833 的修复被回退了）',
     )
   })
 
