@@ -137,8 +137,15 @@ const FAILPATH_VIEWS = [
   },
   {
     file: 'features/email/EmailFolderListView.vue',
-    state: 'n/a',
-    why: '唯一的 error 条件是 BottomSheet 内的 createError（表单字段级提示），不接管整页',
+    // §842：原为 `n/a`，理由写的是「唯一的 error 条件是 BottomSheet 内的 createError
+    // （表单字段级提示），不接管整页」—— 而那**正是缺陷的一部分**：
+    // `reload()` 原本**只有 finally 没有 catch**，本地库读取抛错时 folders 停在 []
+    // ⇒ 显示「还没有自定义目录」并引导用户去新建；而 createError 恰恰是
+    // 「创建失败」的**误报**载体（reload 抛错写进已关闭的面板）。
+    // 已补 readFailure && folders.length === 0 分支 ⇒ 从此属于 enforced。
+    state: 'enforced',
+    why: '§842：reload() 缺 catch ⇒ 读失败被显示成「还没有自定义目录」；' +
+      '现有 readFailure && folders.length === 0 分支，按 enforced 管辖',
   },
   {
     file: 'features/tasks/TasksView.vue',
@@ -175,9 +182,12 @@ const FAILPATH_VIEWS = [
  *   ⇒ 变异**静默变成空操作**，M2 于是报「第二处没被判红 ⇒ 判据只认得我登记的那一处」，
  *   报的还是**错误理由**（让人去查枚举器，而真正原因是变异没生效）。
  *   ⇒ 同 `run-mjs-tests.mjs` 那条教训：变异的「没生效」必须单独报，不能混进判据的红。
+ * ⚠ 前缀同时接受 `v-if` 与 `v-else-if`：§842 的邮件目录分支用 `v-if` 开头
+ *   （它前面是 `v-for` 按钮，`v-else-if` 没有相邻的 `v-if` 兄弟会被 Vue 编译拒绝）。
+ *   只写 `v-else-if` 时那条变异会**静默失效**。
  */
 function stripLengthGuard(text) {
-  return text.replace(/v-else-if="([^"]*)&&\s*[^"]*\.length === 0"/, 'v-else-if="$1"')
+  return text.replace(/v-(?:else-)?if="([^"]*)&&\s*[^"]*\.length === 0"/, 'v-if="$1"')
 }
 
 // ---------------------------------------------------------------------------
@@ -233,12 +243,16 @@ test('【量具自证】枚举器确实采到了全部下拉刷新视图与两�
   assert.ok(files.length >= 5,
     `只采到 ${files.length} 个下拉刷新视图（期望 ≥5）⇒ 棘轮覆盖不全，扫不到新增的视图`)
   const enforced = FAILPATH_VIEWS.filter((v) => v.state === 'enforced')
-  assert.equal(enforced.length, 3,
-    `enforced 应为 3 处（SessionListView / EmailInboxView / MeetingListView），实际 ${enforced.length} ⇒ 登记表与现实脱节`)
-  // ★ 棘轮必须盯住「新登记的那一处」本身：只数条目数的话，把 MeetingListView
-  //   改回 n/a 再加一条别的 enforced，数目照样是 3，门禁察觉不到倒退。
-  assert.ok(enforced.some((v) => v.file === 'features/meetings/MeetingListView.vue'),
-    '§840 登记的 MeetingListView 不在 enforced 里 ⇒ 有人把它退回 n/a 了（它的空态分支是 §840 修出来的，n/a 会让它重新变成无人看守）')
+  assert.equal(enforced.length, 4,
+    `enforced 应为 4 处（SessionListView / EmailInboxView / MeetingListView / EmailFolderListView），`
+    + `实际 ${enforced.length} ⇒ 登记表与现实脱节`)
+  // ★ 棘轮必须盯住「新登记的那几处」本身：只数条目数的话，把其中一处改回 n/a
+  //   再加一条别的 enforced，数目照样对，门禁察觉不到倒退。
+  for (const f of ['features/meetings/MeetingListView.vue', 'features/email/EmailFolderListView.vue']) {
+    assert.ok(enforced.some((v) => v.file === f),
+      `${f} 不在 enforced 里 ⇒ 有人把它退回 n/a 了（它们的空态分支分别是 §840/§842 修出来的，`
+      + 'n/a 会让它们重新变成无人看守）')
+  }
   // 采到的空态分支必须真的能被枚举到，否则「零违规」是恒真
   const all = unguardedErrorEmptyStates(pullViews())
   assert.equal(all.length, 0, '未改动时就不该有违规分支，否则下面变异的红来自「本来就红」')
@@ -300,12 +314,31 @@ test('【变异 M5 · 必须转红】把 §840 给会议列表加的「无行」
     '§840 那条新分支没被判红 ⇒ 判据仍不认它（多半是条件里没有 `Error` 一词，被 /error/i 提前 continue 掉了）')
 })
 
-test('【变异 M6 · 必须转红】把新登记的视图退回 n/a（证明登记表条目被真正看守）', () => {
+test('【变异 M6 · 必须转红】把 §840 登记的视图退回 n/a（证明登记表条目被真正看守）', () => {
   const shrunk = FAILPATH_VIEWS.map((v) => (v.file === 'features/meetings/MeetingListView.vue' ? { ...v, state: 'n/a' } : v))
   const enforced = shrunk.filter((v) => v.state === 'enforced')
-  assert.notEqual(enforced.length, 3, '退回 n/a 后条目数没变 ⇒ 棘轮只数个数，看不住倒退')
+  assert.notEqual(enforced.length, 4, '退回 n/a 后条目数没变 ⇒ 棘轮只数个数，看不住倒退')
   assert.ok(!enforced.some((v) => v.file === 'features/meetings/MeetingListView.vue'),
     'MeetingListView 已不在 enforced 里，钉它的断言没响')
+})
+
+test('【变异 M7 · 必须转红】把 §842 给邮件目录加的「无行」守卫拿掉', () => {
+  const before = pullViews()
+  const target = 'features/email/EmailFolderListView.vue'
+  const views = before.map((v) => (v.file !== target ? v : { ...v, text: stripLengthGuard(v.text) }))
+  assert.notEqual(views.find((v) => v.file === target).text,
+    before.find((v) => v.file === target).text,
+    '★ 变异没生效：stripLengthGuard 没匹配到任何分支 ⇒ 下面的红没有意义')
+  assert.ok(unguardedErrorEmptyStates(views).some((b) => b.file === target),
+    '§842 那条新分支没被判红 ⇒ 判据仍不认它')
+})
+
+test('【变异 M8 · 必须转红】把新登记的视图退回 n/a（登记表倒退）', () => {
+  const shrunk = FAILPATH_VIEWS.map((v) => (v.file === 'features/email/EmailFolderListView.vue' ? { ...v, state: 'n/a' } : v))
+  const enforced = shrunk.filter((v) => v.state === 'enforced')
+  assert.notEqual(enforced.length, 4, '退回 n/a 后条目数没变 ⇒ 棘轮只数个数，看不住倒退')
+  assert.ok(!enforced.some((v) => v.file === 'features/email/EmailFolderListView.vue'),
+    'EmailFolderListView 已不在 enforced 里，钉它的断言没响')
 })
 
 test('【变异 M4 · 必须保持绿】行内（非 EmptyState）错误提示不受管辖（避免过度管辖）', () => {

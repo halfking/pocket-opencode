@@ -34,6 +34,7 @@ const read = (rel: string) => readFileSync(join(HERE, rel), 'utf8')
 const MEETINGS = read('../../features/meetings/MeetingListView.vue')
 const NOTES = read('../../features/notes/NoteListView.vue')
 const INBOX = read('../../features/email/EmailInboxView.vue')
+const FOLDERS = read('../../features/email/EmailFolderListView.vue')
 
 /**
  * 三个走 `useContinuousList` 的视图（仓库里**全部**三个，`use-list-sentinel` 已无生产消费方）。
@@ -82,10 +83,13 @@ const templateOf = (src: string): string => {
  * ⚠ 第二版仍错：锚点后**第一个** `{` 是参数解构 `({ page })` 的括号，
  *   配平立刻归零 ⇒ 只取到 26 个字符。
  *   ⇒ 必须先越过 `=>` 再取函数体的 `{`。
+ * ⚠ 第三版：阳性对照写成 `at > 0`，而**锚点恰好在位置 0** 时 `indexOf` 返回 0
+ *   ⇒ 被误报成「找不到锚点」。凡是「用 indexOf 定位」的断言，阳性对照都该是 `!== -1`
+ *   而不是 `> 0`（`> 0` 把「正好在开头」和「真没找到」混为一谈）。
  */
 const blockFrom = (code: string, anchor: string, max = 4000): string => {
   const at = code.indexOf(anchor)
-  assert.ok(at > 0, `★ 阳性对照失败：找不到锚点 ${anchor}`)
+  assert.ok(at !== -1, `★ 阳性对照失败：找不到锚点 ${anchor}`)
   const arrow = code.indexOf('=>', at + anchor.length)
   assert.ok(arrow > 0, `★ 阳性对照失败：锚点 ${anchor} 之后没有 '=>'`)
   const open = code.indexOf('{', arrow)
@@ -267,6 +271,137 @@ describe('§840 · 「本地库未就绪」只有一份实现', () => {
 
   it('★ 诊断 tag 稳定（两处视图靠它 grep 自己的失败日志）', () => {
     assert.equal(LIST_READ_FAIL_TAG, '[list] 读取失败：')
+  })
+})
+
+/**
+ * ★ `reload()` 必须**自己兜住**，不得向外抛。
+ *
+ * §842 的关键因果链就在这里：`onMounted` 是 `void reload()`（未处理 rejection），
+ * 而新建/删除两条路径 `await reload()` ⇒ reload 一抛，
+ * ① 新建：错误写进**已关闭**的面板，用户看不到；
+ * ② 删除：先弹 `toast.success('已删除')` 再弹 `toast.error('删除失败')`，同一次点击两条矛盾的话。
+ * ⇒ 让 reload 不抛，这两条**自动**消失（而不是给每个调用方各打一个补丁）。
+ *
+ * ⚠ 这里必须先剥整行注释再做括号配平：注释里出现过成对的 `{}`（举例说明那个空回调），
+ *   而 `blockFrom` 不认识注释 ⇒ 会把注释里的括号算进深度、提前截断。
+ */
+const reloadSwallows = (src: string): boolean => noUnguardedTry(src, 'async function reload()')
+
+/**
+ * 函数体里 `catch` 的个数不得少于 `try` 的个数 —— 即「没有不设防的 try」。
+ *
+ * ⚠ 前两版都太松/太脆：
+ *   ① 「有没有 catch」太松：reload 有两层 try，删掉**外层** catch 后内层的还在；
+ *   ② 按 try/catch/finally 配平维护栈太脆：catch 之后无法在不数括号的前提下弹栈
+ *      （而括号在字符串与注释里都有）。
+ * ⚠ 而 `finally` **不会吞异常**（它只是必跑）⇒ 判据不能是「有 finally 就行」。
+ *   缺陷的准确形状是「try 后面直接跟 finally，异常逃出去」。
+ *
+ * 口径：这是**近似**判据（catch 数 ≥ try 数），不是逐个 try 配平。
+ * 它能咬住本节那个真缺陷与本节用的两个变异；理论上「3 try / 3 catch 但有一个没兜」
+ * 这种错配它抓不到 —— 那需要在 JS 里真正解析，这里如实标注而不是假装精确。
+ */
+const noUnguardedTry = (src: string, fn: string): boolean => {
+  const body = codeOnly(blockFrom(codeOnly(src), fn))
+  const tries = (body.match(/\btry\s*\{/g) || []).length
+  const catches = (body.match(/\bcatch\s*\(/g) || []).length
+  return tries > 0 && catches >= tries
+}
+
+/** 不得有「完全空且无说明」的 catch（§838 禁的形状）。 */
+const hasEmptySwallow = (src: string): boolean => {
+  const code = codeOnly(src)
+  return /\.catch\(\s*\(\s*\)\s*=>\s*\{\s*\}\s*\)/.test(code)
+}
+
+/**
+ * 失败分支（**空态那条**）的开标签属性区间。
+ *
+ * ⚠ 不能用「第一个出现 readError」：横幅 `v-if="readError && folders.length > 0"`
+ *   排在它上面，取到的会是横幅那个 div —— 它的开标签在同一行就闭合了，
+ *   后面的 `@action` 全被切掉 ⇒ 一条**永远红的假阴性**（这个坑踩了两次）。
+ *   ⇒ 条件正则必须精确到 `folders.length === 0`。
+ */
+const FOLDER_ERROR_BRANCH = /v-(?:else-)?if="readError && folders\.length === 0"/
+
+const branchTagOf = (tpl: string): string => {
+  const m = FOLDER_ERROR_BRANCH.exec(tpl)
+  assert.ok(m, '★ 量具自证失败：模板里找不到「readError && folders.length === 0」这条分支')
+  const at = m.index
+  const close = tpl.indexOf('>', at)
+  assert.ok(close > at, '★ 量具自证失败：失败分支的开标签没有闭合')
+  return tpl.slice(at, close)
+}
+
+describe('§842 · 邮件目录（EmailFolderListView）', () => {
+  it('★★★ reload() 必须自己兜住（否则调用方会给出与真实结果相反的提示）', () => {
+    assert.equal(reloadSwallows(FOLDERS), true,
+      'reload() 没有 catch ⇒ void reload() 是未处理 rejection，且新建/删除两条路径会误报')
+  })
+
+  it('★★ reload() 里不得有「完全空且无说明」的 catch（§838 禁的形状）', () => {
+    assert.equal(hasEmptySwallow(FOLDERS), false,
+      'EmailFolderListView 里仍有完全空的 catch ⇒ 失败零痕迹')
+  })
+
+  it('★★★ 失败必须落日志（本地库未就绪是预期状态，但不能无声）', () => {
+    const body = blockFrom(codeOnly(FOLDERS), 'async function reload()')
+    assert.match(body, /console\.error\(/, 'reload() 的 catch 没有 console.error ⇒ 失败无痕迹')
+    assert.match(body, /console\.warn\(/, '服务器同步失败那一路没有 console.warn ⇒ 失败零痕迹')
+  })
+
+  it('★★★ 模板必须有带「无行」守卫的读失败分支，且带重试入口', () => {
+    assert.match(templateOf(FOLDERS), FOLDER_ERROR_BRANCH,
+      '没有「readError && folders.length === 0」分支 ⇒ 读失败仍会显示「还没有自定义目录」')
+    const branch = branchTagOf(templateOf(FOLDERS))
+    assert.match(branch, /@action="reload"/, '失败分支没有可点的重试入口')
+    // ⚠ 这里认 `readError.action` **或** `readErrorNotice.action`：vue-tsc 不用
+    //   `v-else-if="readError && …"` 收窄后续属性 ⇒ 必须绑一个永远非空的来源，
+    //   所以真实代码走的是后者（§842 落地时由 vue-tsc TS18047 逼出来的）。
+    assert.match(branch, /:action-label="readError(?:Notice)?\.action"/,
+      '失败分支没有绑定动作文案')
+    assert.match(branch, /:title="readError(?:Notice)?\.title"/, '失败分支没有绑定标题')
+  })
+
+  it('★★ 失败分支必须排在真空态分支之前', () => {
+    const tpl = templateOf(FOLDERS)
+    const atError = FOLDER_ERROR_BRANCH.exec(tpl)?.index ?? -1
+    const atEmpty = tpl.indexOf('v-else-if="folders.length === 0 && !loading"')
+    assert.ok(atError > 0 && atEmpty > atError, '真空态分支排在失败分支前面 ⇒ 后者永远轮不到')
+  })
+
+  it('★★ 有行时也要有非破坏性提示（不把已加载的目录换成整页错误态）', () => {
+    assert.match(templateOf(FOLDERS), /v-if="readError && folders\.length > 0"/,
+      '有行时没有任何失败提示 ⇒ 刷新失败后用户以为目录是最新的')
+  })
+
+  it('★★ 标志名里必须含 Error（门禁靠 /error/i 认它，否则分支被整体跳过）', () => {
+    // §840/§842 各踩过一次：叫 readFailure 时门禁的枚举器在 /error/i 那一步 continue 掉了。
+    assert.match(codeOnly(FOLDERS), /const readError = ref</, '标志不是 readError')
+    assert.equal(/\breadFailure\b/.test(codeOnly(FOLDERS)), false,
+      '还有 readFailure 残留 ⇒ 门禁认不出这条分支')
+  })
+
+  it('★ 变异负控：把 reload 的 catch 删掉 ⇒ 尺子必须转红', () => {
+    const before = blockFrom(codeOnly(FOLDERS), 'async function reload()')
+    // ⚠ 源码是 `} catch (e: unknown) { … } finally {` —— `}` 与 `finally` **同一行**。
+    //   第一版正则写成 `\n  }\n  finally`，一个都没匹配上（变异没生效却报了别的错）。
+    const mutated = before.replace(
+      /\}\s*catch\s*\(e:\s*unknown\)\s*\{[\s\S]*?\}\s*finally\s*\{/,
+      '}\n  finally {',
+    )
+    assert.notEqual(mutated, before, '★ 变异没生效：没匹配到 reload 的 catch')
+    assert.equal(reloadSwallows(mutated), false,
+      '删掉 catch 后尺子居然还通过 ⇒ 无牙')
+  })
+
+  it('★ 变异负控：还原成空回调 ⇒ 尺子必须转红（且自己的注释不算命中）', () => {
+    assert.equal(hasEmptySwallow('await x.catch(() => {})'), true)
+    assert.equal(hasEmptySwallow(FOLDERS), false)
+    // 负控的反面：注释里写同一段字面量**不得**被判成命中
+    assert.equal(hasEmptySwallow('// 原来是一句空回调：.catch(() => {})\nconst a = 1\n'), false,
+      '注释里的字面量被判成真代码 ⇒ 以后没法在注释里引用坏写法')
   })
 })
 

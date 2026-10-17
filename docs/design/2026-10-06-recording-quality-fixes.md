@@ -95846,3 +95846,142 @@ M2 于是报「第二处没被判红 ⇒ 判据只认得我登记的那一处」
 3. `EmailFolderListView` / `TasksView` / `SessionListView` 要不要做一次同样的扫面
    （本节只覆盖了 `useContinuousList` 的三个消费方）。
 4. 收件箱「有行时刷新失败」用非破坏性横幅（现状）还是 toast。
+
+---
+
+## §842 邮件目录的 `reload()` 只有 `finally` 没有 `catch` ⇒ 谎报「还没有自定义目录」，并让新建/删除给出与真实结果相反的提示
+
+**一句话**：`EmailFolderListView.reload()` 缺一个 catch，于是本地库读取失败时
+用户看到的是「还没有自定义目录」并被引导去新建；而**真正被写坏的不是列表，是提示** ——
+新建成功后错误落进**已关闭**的面板，删除成功后连弹「已删除」+「删除失败」两条矛盾的话。
+
+### 1. 缺陷证据
+
+#### D1 · `reload()` 只有 finally（`EmailFolderListView.vue:127-137`）
+
+```js
+async function reload() {
+  loading.value = true
+  try {
+    await syncFoldersFromServer().catch(() => {})   // ← D3
+    folders.value     = await listLocalFolders()     // ← localDB.query，可能抛
+    ops.value         = await listOpsEntries()
+    pendingCount.value = await countPendingOps()
+  } finally { loading.value = false }                // ← 没有 catch
+}
+```
+
+`listLocalFolders()` 走 `localDB.query()`（`email-folders-store.ts:31`），
+而 `local-db.ts:859` 在**锁屏后回来 / 启动早于 `init(dbSecret)` / 切换工作区**时抛
+`LocalDB 未初始化：连接不存在` —— 与 §837/§840 同一批抛错，是**有明确预期的状态**。
+
+**实测读数**（`.artifacts/s842-probe/probe.mjs`，照抄源码形状）：
+
+| 场景 | 异常是否逃出 `reload()` | `folders.length` | `loading` | `folders===0 && !loading` |
+|---|---|---|---|---|
+| A `LocalDB 未初始化` | **是** | 0 | false | **true ⇒ 落进空态** |
+| B 正常 | 否 | 1 | false | false |
+
+#### D2 · 未处理 rejection
+
+`onMounted` 是 `void reload()`（`:238`）⇒ 异常**逃出去且没人接**。
+`gates` 里那条「即使 node 退出码为 0 也不能放行」的检查抓的是测试失败事件，
+不是这个 —— 应用运行时的未处理 rejection 不在这道门的覆盖范围内。
+
+#### D3 · 空回调吞掉服务器同步失败（§838 明令禁止的形状）
+
+`syncFoldersFromServer().catch(() => {})` ⇒ 网络失败零痕迹，
+而同步卡片仍显示「本地操作均已同步」⇒ 用户以为目录是最新的。
+⇒ 已改为显式 catch + `console.warn` + `syncStale` 提示（见 §2）。
+
+#### D4 · 新建/删除两条路径的提示与真实结果相反（本节最阴的一条）
+
+`reload()` 一抛，两个调用方的 `catch` 就会执行，而它们**并不区分是哪一步失败**：
+
+| 路径 | 真实结果 | 用户看到的 |
+|---|---|---|
+| 新建 | `createFolder()` **成功**，`toast.success('已创建')` 已弹，面板已 `createOpen=false` 关掉 | 随后 `reload()` 抛 ⇒ `createError` 被写进**已关闭**的面板 ⇒ **完全看不到**；只剩那条成功 toast |
+| 删除 | `removeFolder()` **成功**，`toast.success('已删除')` 已弹 | `reload()` 抛 ⇒ catch 再弹 `toast.error('删除失败')` ⇒ **同一次点击两条互相矛盾的话** |
+
+**探针读数**：删除路径 toast 序列 = `[["success","目录已删除"],["error","LocalDB 未初始化：连接不存在"]]`。
+
+⚠ 关键认知：这一条**不是**额外打的补丁，而是 D1 的**下游后果** ——
+`reload()` 自己兜住之后不再向外抛，这两个 `catch` 根本不会再被触发。
+⇒ 本节没有去改 `onCreate` / `onDeleteFolder` 的 catch，那两处代码保持原样。
+
+#### D5 · 门禁登记的理由描述的正是缺陷
+
+`list-error-failpath` 把本视图登记为 `n/a`，理由「唯一的 error 条件是 BottomSheet 内的
+`createError`（表单字段级提示），不接管整页」—— 而那个 `createError` 恰恰是
+**「创建失败」的误报载体**（见 D4）。**登记理由在写下的那天就是错的。**
+
+### 2. 落地
+
+| 位置 | 改动 |
+|---|---|
+| `src/utils/list-load-state.ts` | `listReadFailureNotice(subject, { dbUnavailable })` 新增**本地库未就绪**那一支（与「其它失败」分两句：前者重试没用、要重新登录） |
+| `features/email/EmailFolderListView.vue` | `reload()` 加 catch（**不再向外抛**）→ D1/D2/D4 一并消失；`syncFoldersFromServer` 的空回调改显式 catch + `console.warn` + `syncStale` 提示 → D3；新增 `readError`（整份 notice 一个来源）+ `readErrorNotice`（模板绑定用，永远非空）；模板加带「无行」守卫的失败分支（可点重试）+ 有行时的非破坏性横幅；补 `.list-error-banner` / `.banner-retry` 的 scoped 样式（本文件原本没有 ⇒ 不加就是一个无样式的 div） |
+| `styles/__tests__/list-error-failpath.test.mjs` | 登记表 `EmailFolderListView` 由 `n/a` 改 `enforced`（`n/a` 理由即缺陷）；`enforced` 计数 3→4，且棘轮改为**逐个钉住**新登记的两处；新增变异 M7（拿守卫）/ M8（退回 n/a）；`stripLengthGuard` 前缀放宽到同时接受 `v-if` 与 `v-else-if` |
+
+⚠ **两处形状上的坑**（都是本节实际撞到的，不是预防性提醒）：
+1. **失败分支用 `v-if` 开头，不能用 `v-else-if`** —— 它前面是 `v-for` 的文件夹按钮，
+   `v-else-if` 没有相邻的 `v-if` 兄弟 ⇒ **Vue 编译直接拒绝**（`build:gate` 红了）。
+   两个空态组件相邻成链（`v-if` + `v-else-if`）才合法。
+2. **`vue-tsc` 不用 `v-else-if`/`v-if` 的条件收窄后续属性** ⇒ 模板里直接绑
+   `readError.title` 会报 `TS18047: 'readError' is possibly 'null'`。
+   ⇒ 单独给一个永远非空的 `readErrorNotice` 供绑定，条件仍用 `readError`（门禁靠它）。
+
+### 3. 判据与变异
+
+`src/utils/__tests__/list-load-state.test.ts` 扩到 **67 例全通过**（新增 §842 一组 9 例）。
+
+**对真实 `EmailFolderListView.vue` 的四路端到端变异**：
+
+| 变异 | §840-842 判据 | 仓库门禁 `list-error-failpath` |
+|---|---|---|
+| M1 拿掉 `folders.length === 0` 守卫 | 🔴 1 | 🔴 4 |
+| M2 把 `reload()` 的 catch 整个删掉（**还原真缺陷**） | 🔴 1 | 0 |
+| M3 还原成吞掉同步失败的空回调（D3） | 🔴 1 | 0 |
+| M4 标志改回 `readFailure` | 🔴 1 | 🔴 1 |
+| M5 失败分支挪到真空态之后 | 🔴 1 | 0 |
+| 复原后基线 | 0 | 0 |
+
+⚠ M4 那一行值得单独记：标志名里有 `Error` 一个词，仓库门禁就能认出这条分支并看守它的守卫；
+改成 `readFailure` 它立刻变瞎（1 条红来自「登记表说 enforced 但视图里没有可识别的错误分支」）。
+**同一个语义，两种命名，一道门一个认一个不认。**
+
+### 4. 量具自证（本节连踩五次，逐条记）
+
+1. `blockFrom` 的阳性对照写成 `at > 0` —— 锚点**恰好在位置 0** 时 `indexOf` 返回 `0`
+   ⇒ 被误报成「找不到锚点」。⇒ 用 `indexOf` 定位的断言，阳性对照应是 `!== -1`。
+2. `noUnguardedTry` 前两版：①「有没有 catch」太松（删掉**外层** catch 后内层的还在）；
+   ② 按 try/catch/finally 配平维护栈太脆（catch 之后无法在不数括号的前提下弹栈）。
+   ⇒ 退到「catch 数 ≥ try 数」的近似，并**如实标注它抓不到错配**，不假装精确。
+3. `branchTagOf` 取「第一个出现 readError」⇒ 抢在**横幅**那条 `readError && folders.length > 0`
+   ⇒ 开标签在同一行闭合 ⇒ 后面的 `@action` 全被切掉 ⇒ **一条永远红的假阴性**（这个坑踩了两次）。
+4. 自己注释里写 `.catch(() => {})` 举例 ⇒ 被 `hasEmptySwallow` 当成真代码命中
+   ⇒ 注释改说「一句吞掉服务器同步失败的空回调」。判据侧加了一条**反向负控**：
+   注释里的字面量不得被判成命中。
+5. `stripLengthGuard` 只写 `v-else-if` 前缀 ⇒ §842 那条 `v-if` 分支的变异**静默失效**，
+   门禁报「变异没生效」（好的一面：`assert.notEqual` 让它**响**了，而不是默默放过）。
+
+### 5. 口径与未实测
+
+- ⛔ **未实测（需真机）**：邮件目录读取失败的真实发生率；`LocalDB 未初始化` 在本页的命中频率；
+  D4 两条矛盾提示在真机上是否真的连弹（读码成立，探针照抄形状成立，**未在设备上见过**）。
+- ⛔ 未验证修好后的真机观感与新样式（`.list-error-banner` 是新抄进来的 scoped 样式）。
+- 阴性声明的口径：本节**只**覆盖了 §841 待办第 28 条里点名的三个视图中的一个。
+  - `SessionListView`：**已取证为阴性** —— `loadSessions()` 直接 `await api.getAllSessions(...)`，
+    catch 可达、`error` 设得上，登记 `enforced` 属实（带读数，见下）。
+  - `TasksView`：**未取证**。
+- 「三个下拉刷新视图」的枚举基于 `list-error-failpath` 自己的 `pullViews()`，
+  本节未扩大它的扫描范围（仍是「用了 `<PullToRefresh>`」）。
+
+### 6. 待拍板
+
+1. `TasksView` 要不要做同样的取证（§841 待办第 28 条的剩余部分）。
+2. `EmailFolderListView` 要不要也用 `DbLockedState`（像 §837 给详情页做的那样），
+   还是保持「一句话 + 重试」；本轮刻意**没有**引入新组件。
+3. 邮件目录页的失败提示要不要给「重新登录」按钮（现在文案提到重新登录但没有入口）。
+4. 「禁止吞掉失败的 catch」升格成仓级规则（§838 待办第 20 条）—— 本节又新增一处实例，
+   现在仓内已确认的空回调/空 catch 至少有 4 处。

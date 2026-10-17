@@ -50,6 +50,18 @@
 
       <section class="folder-section">
         <h2 class="section-title">目录</h2>
+        <!--
+          §842：有行时的失败不打断已加载内容（沿用 §840/§841 确立的两档契约：
+          无行时接管整页、有行时降级为非破坏性提示）。
+        -->
+        <div v-if="readError && folders.length > 0" class="list-error-banner" role="alert">
+          <span>{{ readErrorNotice.hint }}</span>
+          <button type="button" class="banner-retry" @click="reload">{{ readErrorNotice.action }}</button>
+        </div>
+        <!-- §842：服务器同步目录失败但本地列表可用 ⇒ 目录可能是旧的，必须说清。 -->
+        <p v-if="syncStale" class="muted sync-stale-note">
+          服务器同步没成功，下面是上次同步到的目录。
+        </p>
         <button v-for="f in folders" :key="f.id" type="button" class="folder-row" @click="enterFolder(f)">
           <span class="material-symbols-outlined folder-icon" aria-hidden="true">{{ folderIcon(f) }}</span>
           <span class="folder-name">{{ f.displayName }}</span>
@@ -62,8 +74,29 @@
             @click.stop="onDeleteFolder(f)"
           >delete</span>
         </button>
+        <!--
+          §842：读失败**不得**落进下面的真空态。
+          `reload()` 原本没有 catch ⇒ `folders` 停在 `[]` ⇒ 显示「还没有自定义目录」
+          并提示「右上角新建目录」—— 而原记录完好，用户会被引导去做一件没用的事。
+          ⚠ 两条形状要求，缺一不可：
+             ① 本分支用 `v-if` 开头（下面是 `v-else-if`）—— 它前面是 `v-for` 按钮，
+                `v-else-if` 没有相邻的 `v-if` 兄弟会被 Vue 编译拒绝；
+             ② 条件自带 `.length === 0` 守卫 —— 门禁 `list-error-failpath` 从空态标签
+                那一行**向下**读条件，且用 `/error/i` 认出「错误分支」，
+                所以标志名里的 `Error` 与这条守卫都不能省（§840 已踩过一次）。
+        -->
         <EmptyState
-          v-if="folders.length === 0 && !loading"
+          v-if="readError && folders.length === 0"
+          icon="⚠️"
+          :title="readErrorNotice.title"
+          :hint="readErrorNotice.hint"
+          :action-label="readErrorNotice.action"
+          size="sm"
+          variant="inline"
+          @action="reload"
+        />
+        <EmptyState
+          v-else-if="folders.length === 0 && !loading"
           icon="📁"
           title="还没有自定义目录"
           hint="右上角新建目录，或用收件箱「智能整理」自动归集系统通知。"
@@ -100,6 +133,15 @@ import {
   type LocalFolder, type LocalOpsEntry,
 } from './email-folders-store'
 import { setHeaderTitle } from '../../composables/useAppHeaderTitle'
+import {
+  isLocalDbUnavailable,
+  listReadFailureNotice,
+  type ListReadFailureNotice,
+} from '../../utils/list-load-state'
+
+/** 诊断前缀（§842）。 */
+const FOLDER_LOAD_FAIL_TAG = '[email-folders] 读取目录失败：'
+const FOLDER_LOAD_WARN_TAG = '[email-folders] 服务器同步目录失败：'
 
 defineOptions({ name: 'EmailFolderListView' })
 
@@ -118,19 +160,70 @@ const createOpen = ref(false)
 const creating = ref(false)
 const newName = ref('')
 const createError = ref('')
+/**
+ * §842：reload 的失败说明，**整份 notice 存一个来源**。
+ * ⚠ 刻意叫 `readError` 而不是 `readFailure`：门禁 `list-error-failpath` 用
+ *   `/error/i` 认出「错误分支」再查它的行数守卫 ⇒ 名字里没有 `error` 一词的话，
+ *   这条分支会被判据**整体跳过**，守卫被拿掉也没人喊（§840 已在会议侧踩过一次）。
+ * title / hint / action 由 `listReadFailureNotice` 统一产出，模板不再自己拼 ——
+ * 否则「无行」和「有行」两处一旦各拼一次就会漂移（§835 的教训）。
+ */
+const readError = ref<ListReadFailureNotice | null>(null)
+/**
+ * 模板绑定用：永远非空。
+ *
+ * ⚠ `vue-tsc` **不会**用 `v-else-if="readError && …"` 收窄后续属性里的 `readError`
+ *   ⇒ 直接绑 `readError.title` 会报 TS18047（possibly null）。
+ *   失败分支渲染时它必然非 null；没有失败时这份占位根本不会被渲染。
+ */
+const readErrorNotice = computed<ListReadFailureNotice>(
+  () => readError.value ?? listReadFailureNotice('邮件目录'),
+)
+/** §842：服务器同步目录失败但本地列表可用 —— 目录可能是旧的。 */
+const syncStale = ref(false)
 const pickerAccountId = ref('')
 
 const selectableIds = computed(() =>
   ops.value.filter((o) => o.status === 'pending' || o.status === 'failed').map((o) => o.id),
 )
 
+/**
+ * §842：原来这个函数**只有 `finally` 没有 `catch`**，而 `listLocalFolders()`
+ * 走 `localDB.query()`（`email-folders-store.ts:31`）⇒ `LocalDB 未初始化` 时
+ * 异常直接逃出去：
+ *   ① `onMounted` 的 `void reload()` ⇒ **未处理 rejection**；
+ *   ② `folders` 停在 `[]`、`loading` 归 false ⇒ 模板 `folders.length === 0 && !loading`
+ *      为真 ⇒ 显示「还没有自定义目录」并**引导用户去新建目录**（原记录完好）；
+ *   ③ 三个调用方里，新建/删除两条路径会因此给出**与真实结果相反的提示** ——
+ *      新建：`toast.success(已创建)` 之后抛 ⇒ 写进**已关闭**的面板，用户看不到；
+ *      删除：先 `toast.success(已删除)` 再抛 ⇒ catch 再弹一条 `toast.error(删除失败)`
+ *      ⇒ 同一次点击弹出两条互相矛盾的话。
+ *
+ * ⇒ 自己兜住，`reload()` **不再向外抛** ⇒ ①②③ 一并消失（③ 是自动解掉的，
+ *    不是额外打的补丁：调用方的 catch 根本不会再被触发）。
+ */
 async function reload() {
   loading.value = true
+  readError.value = null
   try {
-    await syncFoldersFromServer().catch(() => {})
+    try {
+      await syncFoldersFromServer()
+      syncStale.value = false
+    } catch (e) {
+      // ⚠ 原来这里是一句「吞掉服务器同步失败」的空回调（§838 明令禁止的形状）。
+      //   失败零痕迹 ⇒ 用户以为目录是最新的。
+      syncStale.value = true
+      console.warn(FOLDER_LOAD_WARN_TAG, '服务器同步目录失败，下面是上次同步到的', e)
+    }
     folders.value = await listLocalFolders()
     ops.value = await listOpsEntries()
     pendingCount.value = await countPendingOps()
+  } catch (e: unknown) {
+    readError.value = listReadFailureNotice(
+      '邮件目录',
+      isLocalDbUnavailable(e) ? { dbUnavailable: true } : {},
+    )
+    console.error(FOLDER_LOAD_FAIL_TAG, '邮件目录读取失败', e)
   } finally {
     loading.value = false
   }
@@ -248,6 +341,25 @@ onMounted(() => {
 .sync-info { display: flex; align-items: center; gap: 8px; font-size: var(--text-base); }
 .badge { font-size: var(--text-2xs); padding: 1px 8px; border-radius: var(--radius-full); background: var(--warning); color: #fff; }
 .muted { font-size: var(--text-sm); color: var(--text-muted); }
+/* §842：与 SessionListView / EmailInboxView 的 .list-error-banner 同源，
+   三处可对照。本文件是 scoped 样式，不复制一份就没有任何视觉。 */
+.sync-stale-note { margin: 0 0 var(--space-2); }
+.list-error-banner {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: var(--space-2);
+  background: var(--danger-bg); color: var(--danger);
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-sm);
+  border-radius: var(--radius-sm);
+  margin-bottom: var(--space-2);
+}
+.banner-retry {
+  flex: 0 0 auto;
+  background: transparent; color: inherit;
+  border: 1px solid currentColor; border-radius: var(--radius-sm);
+  padding: 2px var(--space-2);
+  font-size: var(--text-sm); cursor: pointer;
+}
 .sync-btn { min-height: 34px; padding: 0 14px; border: none; border-radius: var(--radius-sm); background: var(--brand-primary); color: var(--text-inverse); }
 .sync-btn:disabled { opacity: .5; }
 .ops-head { display: flex; justify-content: space-between; align-items: center; margin-top: var(--space-3); font-size: var(--text-sm); color: var(--text-muted); }

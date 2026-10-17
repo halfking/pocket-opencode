@@ -90,12 +90,14 @@ export interface ListReadFailureNotice {
 /**
  * 读取失败的文案。
  *
- * 两条硬规则（来自 §838 的教训）：
+ * 三条硬规则（来自 §838 的教训）：
  *  ① **不得断言数据状态** —— 读失败时我们并不知道记录还在不在，
  *     所以不能说「记录没有丢」；也不能说「没有记录」——那正是被修掉的那个谎报。
  *  ② 必须给可执行动作，且**不把技术串漏给用户**。
+ *  ③ **失败与失败之间也要分句**（§842）：本地库未就绪 ⇒ 重试没用，要重新登录；
+ *     其它失败 ⇒ 重试可能有用。混成一句会把用户送去做无用功。
  *
- * `subject` 是页面自己的名词（'会议记录' / '笔记' / '邮件'），不是技术串。
+ * `subject` 是页面自己的名词（'会议记录' / '笔记' / '邮件' / '邮件目录'），不是技术串。
  *
  * ⚠ `hasRows` 必须分两句（§841）：**有行时**用户看到的列表还在屏幕上，
  *   真正要说的是「这些可能是旧的」；**无行时**用户什么也没看到，
@@ -103,12 +105,19 @@ export interface ListReadFailureNotice {
  */
 export function listReadFailureNotice(
   subject: string,
-  opts: { hasRows?: boolean } = {},
+  opts: { hasRows?: boolean; dbUnavailable?: boolean } = {},
 ): ListReadFailureNotice {
   if (opts.hasRows === true) {
     return {
       title: `${subject}没有刷新出来`,
       hint: `没能读到最新的${subject}，下面这些是上次读到的，可能不是最新的。点重试再试一次。`,
+      action: '重试',
+    }
+  }
+  if (opts.dbUnavailable === true) {
+    return {
+      title: `${subject}读取失败`,
+      hint: `本地数据还没就绪（或已被锁），读不到${subject}。请点重试；若反复出现，请重新登录。`,
       action: '重试',
     }
   }
