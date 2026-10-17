@@ -15,6 +15,8 @@
 
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { dirname, join } from 'node:path'
 import { describe, it } from 'node:test'
 import {
   nextSampleCount, planVoiceprintWrite,
@@ -109,5 +111,54 @@ describe('声纹写入接缝（labelSpeaker 走哪条路径）', () => {
     const mutant = 'async labelSpeaker(id, name) { await saveVoiceprint({ id, displayName: name, embedding }) }'
     assert.deepEqual(callsWritePath(mutant), ['saveVoiceprint'])
     assert.notDeepEqual(callsWritePath(mutant), ['upsertVoiceprintLabel'])
+  })
+})
+// ─────────────────────────────────────────────────────────────────────────
+// §822：读取失败**必须显示错误，不能显示「还没有声纹」**。
+//
+// `VoiceprintSheet.vue` 的 `load()` 此前在 catch 里 `items.value = []`
+// ⇒ 用户被告知自己有 0 条声纹，而真相是「没读出来」—— 两者对用户含义完全相反，
+// 后者会让人以为录过的人全都白录了。同 §820 属「谎报」家族。
+//
+// ⚠ 判据只能是源码扫描：Vue SFC 的 `load()` 在 node 里跑不到（无组件实例），
+//   且把决策提成纯函数也救不了 —— 剩下的动作只有「设不设这个 ref」，判据仍看不到执行。
+//   ⇒ 这里只钉住**具体缺陷不再回来**，并对模板优先级给出真正有牙的顺序断言。
+describe('§822 声纹库读取失败不得伪装成空列表', () => {
+  const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'VoiceprintSheet.vue'), 'utf8')
+  const load = src.slice(src.indexOf('async function load('), src.indexOf('watch('))
+
+  it('★ catch 里不得把 items 置空（那是在编造一个「你没有声纹」的事实）', () => {
+    const catchBody = load.slice(load.indexOf('catch'))
+    assert.ok(
+      !/items\.value\s*=\s*\[\s*\]/.test(catchBody),
+      '读取失败又把 items 清空 ⇒ 用户看到「还没有声纹」，而实际是没读出来',
+    )
+  })
+
+  it('★ catch 里必须登记 loadError（否则模板无从判断该不该显示错误）', () => {
+    const catchBody = load.slice(load.indexOf('catch'))
+    assert.match(catchBody, /loadError\.value\s*=/, '失败没有登记原因')
+  })
+
+  it('★ 模板必须先判 loadError 再判空列表（顺序反了等于没改）', () => {
+    const iErr = src.indexOf('v-else-if="loadError"')
+    const iEmpty = src.indexOf('v-else-if="items.length === 0"')
+    assert.ok(iErr > 0 && iEmpty > 0, '模板里找不到这两个分支')
+    assert.ok(iErr < iEmpty, '空态排在错误态之前 ⇒ 失败时仍然显示「还没有声纹」')
+  })
+
+  it('★ 「清空全部」按钮在加载失败时必须隐藏（items 是过期内容，不能参与计数）', () => {
+    assert.match(
+      src,
+      /v-if="items\.length > 0 && !loadError"/,
+      '错误态下仍让过期 items 驱动「清空全部」入口 ⇒ 用户可能对着过期数字做破坏性操作',
+    )
+  })
+
+  it('负控：正常加载成功时按钮仍要在（别把入口一起关掉）', () => {
+    assert.match(src, /items\.length > 0 && !loadError/, '条件必须同时包含长度与错误态两项')
+    const cond = src.match(/v-if="(items\.length > 0[^"]*)"/)
+    assert.match(String(cond && cond[1]), /!loadError/)
+    assert.match(String(cond && cond[1]), /items\.length > 0/)
   })
 })
