@@ -134,7 +134,7 @@ export const rssApi = {
     return res.seeds ?? res.feeds ?? []
   },
 
-  /** 内置推荐源目录（it / finance / news 三类，可按分类过滤）。 */
+  /** 内置推荐源目录（it / ai / finance / product / deals / news 六类，可按分类过滤）。 */
   async listStarter(category?: string): Promise<{ feeds: RSSStarterFeed[]; categories: string[] }> {
     const qs = new URLSearchParams()
     if (category) qs.set('category', category)

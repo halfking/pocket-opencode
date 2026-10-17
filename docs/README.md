@@ -17,6 +17,7 @@
 | [2026-08-27-mobile-ux-design-v2.md](2026-08-27-mobile-ux-design-v2.md) | 移动端 UX / IA v2.0（design-accepted） |
 | [2026-09-08-meetings-studio.md](2026-09-08-meetings-studio.md) | 会议工作台现行产品面（列表 / 详情 / ACC） |
 | [2026-09-08-rss.md](design/2026-09-08-rss.md) | RSS 订阅 & 一键分享（订阅源管理、自动发现、过滤、微博/朋友圈深链分享） |
+| [2026-10-17-rss-catalog-ai-product-deals.md](design/2026-10-17-rss-catalog-ai-product-deals.md) | RSS 内置目录扩展：AI / 新产品 / 好价促销 三类 15 源（round4 探测证据 + 分类目录页） |
 | [2026-09-09-ai-async-background-survival.md](design/2026-09-09-ai-async-background-survival.md) | AI 操作全异步 + 切窗口/标签不中断（AiStreamRuntime + iOS/Android 后台保活，Draft） |
 | [2026-09-09-fonts-subset.md](design/2026-09-09-fonts-subset.md) | 字体子集 + 去 Google Fonts + CJK fallback 决策（`aae01a7`） |
 | [2026-09-10-android-ai-stream-fgs.md](design/2026-09-10-android-ai-stream-fgs.md) | Android AiStreamService（dataSync FGS）落地与 AVD 验证（含 thenable 陷阱修复） |

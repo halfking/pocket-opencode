@@ -119,6 +119,8 @@ func TestProductionConfigValidation(t *testing.T) {
 			mutate: func(c *Config) { c.DevAuth = true }},
 		{name: "insecure MCP TLS", wantErrContains: "POCKET_MCP_INSECURE_TLS",
 			mutate: func(c *Config) { c.MCPInsecureTLS = true }},
+		{name: "rss benchmark-ip escape hatch in production", wantErrContains: "POCKET_RSS_ALLOW_BENCHMARK_IPS",
+			mutate: func(c *Config) { c.RSS.AllowBenchmarkIPs = true }},
 		{name: "missing postgres", wantErrContains: "POCKET_POSTGRES_DSN",
 			mutate: func(c *Config) { c.PostgresDSN = "" }},
 		{name: "missing origins", wantErrContains: "POCKET_ALLOWED_ORIGINS must be configured",

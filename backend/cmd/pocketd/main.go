@@ -712,6 +712,13 @@ func main() {
 	// 关闭条件：RSS 开关显式为 false 或 store 构造失败；默认 POCKET_RSS_ENABLED=true 时启用。
 	if rssStore != nil && cfg.RSS.Enabled {
 		srv.SetRSSStore(rssStore)
+		// 开发机透明代理（fake-ip）环境下 DNS 全落 RFC2544 基准段，默认防护会
+		// 拦下一切外联。POCKET_RSS_ALLOW_BENCHMARK_IPS=true 仅放开这两个基准段
+		//（loopback/内网/CGNAT 等其余防护不动）；生产保持默认 false。
+		if cfg.RSS.AllowBenchmarkIPs {
+			rss.SetAllowBenchmarkIPs(true)
+			log.Println("RSS: benchmark-range IPs allowed (POCKET_RSS_ALLOW_BENCHMARK_IPS=true; dev/fake-ip networks only)")
+		}
 		fetcher := rss.NewFetcher(rssStore, nil)
 		// Scheduler 作用域：使用 default workspace + 全局兜底 user（"local"）。
 		// 因为 RSS 项属于单租户场景；多租户上下文已在 store.Scope 上强制注入。

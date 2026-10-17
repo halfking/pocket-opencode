@@ -5,10 +5,11 @@ import (
 	"testing"
 )
 
-// TestStarterCatalogCoversThreeCategories 锁住"IT / 财经 / 实事"三类都必须有内容。
-// 用户要的就是这三类；任何一类被清空都属于需求回退，必须在这里就红。
-func TestStarterCatalogCoversThreeCategories(t *testing.T) {
-	for _, cat := range []string{CategoryIT, CategoryFinance, CategoryNews} {
+// TestStarterCatalogCoversAllCategories 锁住六个内置分类都必须有内容：
+// IT / AI / 财经 / 新产品 / 好价·促销 / 时事。任何一类被清空都属于需求
+// 回退，必须在这里就红。
+func TestStarterCatalogCoversAllCategories(t *testing.T) {
+	for _, cat := range []string{CategoryIT, CategoryAI, CategoryFinance, CategoryProduct, CategoryDeals, CategoryNews} {
 		feeds := StarterFeedsByCategory(cat)
 		if len(feeds) < 3 {
 			t.Errorf("category %q has only %d feeds, want >= 3", cat, len(feeds))
@@ -18,6 +19,10 @@ func TestStarterCatalogCoversThreeCategories(t *testing.T) {
 				t.Errorf("StarterFeedsByCategory(%q) returned a feed with category %q (%s)", cat, f.Category, f.URL)
 			}
 		}
+	}
+	// StarterCategories 的顺序就是前端分组顺序；六个分类一个不能少。
+	if got := StarterCategories(); len(got) != 6 {
+		t.Errorf("StarterCategories() = %v, want 6 categories", got)
 	}
 }
 
@@ -58,7 +63,10 @@ func TestStarterFeedsByCategoryUnknownCategoryIsEmpty(t *testing.T) {
 func TestStarterCategoryLabel(t *testing.T) {
 	cases := map[string]string{
 		CategoryIT:      "IT 科技",
+		CategoryAI:      "AI 动态",
 		CategoryFinance: "财经",
+		CategoryProduct: "新产品",
+		CategoryDeals:   "好价·促销",
 		CategoryNews:    "时事",
 		"":              "其它",
 		"whatever":      "其它",
@@ -67,6 +75,23 @@ func TestStarterCategoryLabel(t *testing.T) {
 		if got := StarterCategoryLabel(in); got != want {
 			t.Errorf("StarterCategoryLabel(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// TestStarterFeedsNoCrossCategoryDuplicates 确认 OpenAI 迁类后没有在两个分类
+// 里重复出现（URL 归一化后全局唯一由 WellFormed 测试保证，这里只点明场景）。
+func TestStarterFeedsNoCrossCategoryDuplicates(t *testing.T) {
+	openaiCount := 0
+	for _, f := range StarterFeeds {
+		if strings.Contains(f.URL, "openai.com") {
+			openaiCount++
+			if f.Category != CategoryAI {
+				t.Errorf("openai feed %s should be in %q, got %q", f.URL, CategoryAI, f.Category)
+			}
+		}
+	}
+	if openaiCount != 1 {
+		t.Errorf("expected exactly 1 openai feed, got %d", openaiCount)
 	}
 }
 
