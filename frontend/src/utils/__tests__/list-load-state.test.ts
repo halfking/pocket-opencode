@@ -33,10 +33,30 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 const read = (rel: string) => readFileSync(join(HERE, rel), 'utf8')
 const MEETINGS = read('../../features/meetings/MeetingListView.vue')
 const NOTES = read('../../features/notes/NoteListView.vue')
+const INBOX = read('../../features/email/EmailInboxView.vue')
 
+/**
+ * 三个走 `useContinuousList` 的视图（仓库里**全部**三个，`use-list-sentinel` 已无生产消费方）。
+ *
+ * ⚠ 三处的「捕获锚点」不同：会议/笔记在 `fetchPage`，收件箱在它的 `readPage` 依赖
+ *   （`fetchPage` 由共享的 `makeInboxFetchPage` 生成 ⇒ 那里没有视图状态可写）。
+ */
 const VIEWS = [
-  { name: 'MeetingListView', src: MEETINGS, rows: 'meetings', emptyCond: 'v-else-if="meetings.length === 0"' },
-  { name: 'NoteListView', src: NOTES, rows: 'filteredNotes', emptyCond: 'v-else-if="filteredNotes.length === 0"' },
+  {
+    name: 'MeetingListView', src: MEETINGS, rows: 'meetings',
+    emptyCond: 'v-else-if="meetings.length === 0"',
+    anchor: 'fetchPage: async', retry: '@action="retry"',
+  },
+  {
+    name: 'NoteListView', src: NOTES, rows: 'filteredNotes',
+    emptyCond: 'v-else-if="filteredNotes.length === 0"',
+    anchor: 'fetchPage: async', retry: '@action="retry"',
+  },
+  {
+    name: 'EmailInboxView', src: INBOX, rows: 'shownEmails',
+    emptyCond: 'v-else-if="shownEmails.length === 0"',
+    anchor: 'readPage: async', retry: '@action="load"',
+  },
 ] as const
 
 /** 剥掉整行注释。⚠ 只挡整行；行尾注释仍可能命中（§833 起累计多次翻车）。 */
@@ -81,8 +101,8 @@ const blockFrom = (code: string, anchor: string, max = 4000): string => {
   return code.slice(at, at + max)
 }
 
-/** fetchPage 的函数体（已剥整行注释）。 */
-const fetchPageOf = (src: string): string => codeOnly(blockFrom(src, 'fetchPage: async'))
+/** 捕获块：fetchPage（会议/笔记）或 readPage（收件箱）的函数体，已剥整行注释。 */
+const catchBlockOf = (src: string, anchor: string): string => codeOnly(blockFrom(src, anchor))
 
 // ── 判据本体：断言与变异**共用同一把尺子** ────────────────────────────────
 // （变异去测「另一份写法的正则」等于没测；那样 0 红无法区分「判据有洞」与「变异无效」。）
@@ -99,26 +119,44 @@ const orderOk = (tpl: string, emptyCond: string): boolean => {
 }
 
 /** 失败分支带可点重试入口。 */
-const hasRetryEntry = (tpl: string): boolean => {
+const hasRetryEntry = (tpl: string, retry: string): boolean => {
   const at = tpl.indexOf('readError &&')
   if (at < 0) return false
   const close = tpl.indexOf('>', at)
   if (close < 0) return false
   const branch = tpl.slice(at, close)
-  return /@action="retry"/.test(branch) && /:action-label="readFailure\.action"/.test(branch)
+  return branch.includes(retry) && /:action-label="/.test(branch)
 }
 
-/** fetchPage 看得见 e.message，且能判出「本地库未就绪」。 */
-const seesErrorObject = (fp: string): boolean =>
-  /catch\s*\(e:\s*unknown\)/.test(fp) && /msg\.includes\('LocalDB 未初始化'\)/.test(fp)
+/** 捕获块里能看到异常对象。 */
+const catchesError = (fp: string): boolean => /catch\s*\(e(?:\s*:\s*(?:unknown|any))?\)/.test(fp)
 
-/** fetchPage 的 catch 让错误继续往上抛（返回空结果会被当成成功）。 */
+/**
+ * 判出「本地库未就绪」。两种写法都接受：字面量 `msg.includes(...)`
+ * 或共享判据 `isLocalDbUnavailable(e)`；但**必须有一种**。
+ * （收件箱走共享判据，会议/笔记走字面量 —— §837 的钉死用例要求后者保持不变。）
+ */
+const marksDbUnavailable = (fp: string): boolean =>
+  /includes\('LocalDB 未初始化'\)/.test(fp) || /isLocalDbUnavailable\(\s*e\s*\)/.test(fp)
+
+/** 捕获块让错误继续往上抛（返回空结果会被当成成功）。 */
 const rethrows = (fp: string): boolean =>
   /throw\s+e\s*;?\s*$/m.test(fp) && !/catch[\s\S]*?return\s*\{\s*rows:\s*\[\]/.test(fp)
 
 /** readError 接在共享判定上，而不是各页自己写一套。 */
 const usesSharedPredicate = (src: string): boolean =>
   /isListReadError\(listStatus\.value,/.test(codeOnly(src))
+
+/**
+ * ★ 收件箱专属：读失败标志必须**不只**来自 `loadError`。
+ *
+ * 这是本节最要紧的一条：改之前 `loadError` 恒为 `''`（§841 取证），
+ * 于是 `v-else-if="loadError && shownEmails.length === 0"` 恒假 ⇒
+ * 门禁 `list-error-failpath` 的 enforced 登记（守卫在）是**空洞满足**。
+ * ⇒ 「守卫在」只是必要条件；还要断言「错误标志真能被设上」。
+ */
+const errorFlagNotOnlyFromLoadError = (src: string): boolean =>
+  /readError\s*=\s*computed\([\s\S]{0,160}loadError\.value\s*!==\s*''[\s\S]{0,160}isListReadError\(/.test(codeOnly(src))
 
 describe('§840 · 判定：什么算「读失败」', () => {
   it('★★ 无行 + failed ⇒ 是读失败（这正是被修掉的那个落点）', () => {
@@ -185,6 +223,34 @@ describe('§840 · 文案', () => {
     assert.equal(listReadFailureNotice('会议记录').title, '会议记录读取失败')
     assert.equal(listReadFailureNotice('笔记').title, '笔记读取失败')
   })
+
+  it('★★★ 有行与无行必须是两句不同的话（§841：混成一句会让有行场景以为数据是全的）', () => {
+    const none = listReadFailureNotice('邮件')
+    const some = listReadFailureNotice('邮件', { hasRows: true })
+    assert.notEqual(some.title, none.title)
+    assert.notEqual(some.hint, none.hint)
+  })
+
+  it('★★★ 有行时必须说明「屏幕上的这些可能是旧的」（不说明等于让用户误信数据是全的）', () => {
+    const some = listReadFailureNotice('邮件', { hasRows: true })
+    assert.match(some.hint, /上次读到的|不是最新/,
+      `有行时的文案没提「这些可能是旧的」：${some.hint}`)
+    assert.match(some.hint, /重试/, '有行时也要给可执行动作')
+  })
+
+  it('★★ hasRows 缺省必须等于「无行」，且显式 false 也要走无行那一支', () => {
+    assert.deepEqual(listReadFailureNotice('邮件'), listReadFailureNotice('邮件', {}))
+    assert.deepEqual(listReadFailureNotice('邮件'), listReadFailureNotice('邮件', { hasRows: false }))
+  })
+
+  it('★★ 两句文案都不得断言数据状态（§838 教训：读失败时并不知道记录还在不在）', () => {
+    for (const opts of [{}, { hasRows: true }]) {
+      const n = listReadFailureNotice('邮件', opts)
+      for (const forbidden of ['没有丢', '已丢失', '数据丢失']) {
+        assert.ok(!n.hint.includes(forbidden), `文案断言了数据状态：「${forbidden}」`)
+      }
+    }
+  })
 })
 
 describe('§840 · 「本地库未就绪」只有一份实现', () => {
@@ -206,13 +272,16 @@ describe('§840 · 「本地库未就绪」只有一份实现', () => {
 
 describe('§840 · 视图接线（源码结构）', () => {
   for (const v of VIEWS) {
-    it(`★★ ${v.name}：fetchPage 内部必须能看见 e.message（错误只在这里可见）`, () => {
-      assert.equal(seesErrorObject(fetchPageOf(v.src)), true,
-        `${v.name} 的 fetchPage 收不到 e.message ⇒ dbNotReady 恒为 false，DbLockedState 不可达`)
+    it(`★★ ${v.name}：捕获块内部必须能看见 e.message（错误只在这里可见）`, () => {
+      const cb = catchBlockOf(v.src, v.anchor)
+      assert.equal(catchesError(cb), true,
+        `${v.name} 的 ${v.anchor} 没有 catch ⇒ e.message 到不了任何地方，dbNotReady 恒为 false`)
+      assert.equal(marksDbUnavailable(cb), true,
+        `${v.name} 没有判「本地库未就绪」⇒ DbLockedState 不可达`)
     })
 
     it(`★★★ ${v.name}：catch 里必须 rethrow（返回空结果会被控制器当成成功）`, () => {
-      assert.equal(rethrows(fetchPageOf(v.src)), true,
+      assert.equal(rethrows(catchBlockOf(v.src, v.anchor)), true,
         `${v.name} 的 catch 吞掉了错误 ⇒ 控制器 commitPage → 'exhausted'，失败分支成了死代码`)
     })
 
@@ -227,15 +296,28 @@ describe('§840 · 视图接线（源码结构）', () => {
     })
 
     it(`★★ ${v.name}：失败分支必须带可点的重试入口`, () => {
-      assert.equal(hasRetryEntry(templateOf(v.src)), true,
-        `${v.name} 的失败分支没有 @action="retry" ⇒ 用户点不到重试`)
+      assert.equal(hasRetryEntry(templateOf(v.src), v.retry), true,
+        `${v.name} 的失败分支没有 ${v.retry} ⇒ 用户点不到重试`)
     })
 
     it(`★★ ${v.name}：readError 必须接在共享判定上（不能自己另写一套）`, () => {
       assert.equal(usesSharedPredicate(v.src), true,
-        `${v.name} 的 readError 没走 isListReadError ⇒ 两页会各自漂移`)
+        `${v.name} 的 readError 没走 isListReadError ⇒ 三页会各自漂移`)
     })
   }
+
+  it('★★★ 收件箱：读失败标志不得只来自 loadError（§841：那个 ref 恒为空，守卫因此是空洞满足）', () => {
+    assert.equal(errorFlagNotOnlyFromLoadError(INBOX), true,
+      'EmailInboxView 的 readError 没有把 isListReadError 并进来 ⇒ 又退回「只有 loadError」，而它永远设不上')
+  })
+
+  it('★★★ 收件箱：有行时也要有失败提示（横幅），不能只在无行时才有反应', () => {
+    const tpl = templateOf(INBOX)
+    const bannerAt = tpl.indexOf('list-error-banner')
+    assert.ok(bannerAt > 0, '收件箱的失败横幅不见了')
+    assert.match(tpl.slice(bannerAt - 160, bannerAt), /v-if="readError"/,
+      '横幅仍只认 loadError ⇒ 有行时的刷新失败没有任何提示')
+  })
 
   it('★★ 笔记页必须把搜索态排除在失败分支之外（搜索 0 结果是合法结论）', () => {
     assert.match(codeOnly(NOTES), /searchResults\.value === null && isListReadError\(/,
@@ -265,27 +347,46 @@ describe('§840 · 变异负控（每条都必须让上面那把尺子转红）'
     })
 
     it(`变异 C · ${v.name}：catch 不 rethrow（改成返回空结果）`, () => {
-      const fp = fetchPageOf(v.src)
-      assert.equal(rethrows(fp), true, '基线就得通过，否则本变异无效')
-      const mutated = fp.replace(/throw\s+e\s*;?\s*$/m, 'return { rows: [], total: 0, hasMore: false }')
-      assert.notEqual(mutated, fp, '★ 变异没生效：没匹配到 throw e')
+      const cb = catchBlockOf(v.src, v.anchor)
+      assert.equal(rethrows(cb), true, '基线就得通过，否则本变异无效')
+      const mutated = cb.replace(/throw\s+e\s*;?\s*$/m, 'return { rows: [], total: 0, hasMore: false }')
+      assert.notEqual(mutated, cb, '★ 变异没生效：没匹配到 throw e')
       assert.equal(rethrows(mutated), false, '吞错的 catch 竟然判成合法 ⇒ 判据无牙')
     })
 
-    it(`变异 D · ${v.name}：fetchPage 不再判「本地库未就绪」`, () => {
-      const fp = fetchPageOf(v.src)
-      assert.equal(seesErrorObject(fp), true, '基线就得通过，否则本变异无效')
-      const mutated = fp.replace(/if\s*\(msg\.includes\('LocalDB 未初始化'\)\)\s*dbNotReady\.value = true/, '/* 删掉了 */')
-      assert.notEqual(mutated, fp, '★ 变异没生效：没匹配到 dbNotReady 判定')
-      assert.equal(seesErrorObject(mutated), false, '不再判本地库未就绪竟然判成合法 ⇒ 判据无牙')
+    it(`变异 D · ${v.name}：捕获块不再判「本地库未就绪」`, () => {
+      const cb = catchBlockOf(v.src, v.anchor)
+      assert.equal(marksDbUnavailable(cb), true, '基线就得通过，否则本变异无效')
+      const mutated = cb
+        .replace(/if\s*\(msg\.includes\('LocalDB 未初始化'\)\)\s*dbNotReady\.value = true/, '/* 删掉了 */')
+        .replace(/if\s*\(isLocalDbUnavailable\(e\)\)\s*dbNotReady\.value = true/, '/* 删掉了 */')
+      assert.notEqual(mutated, cb, '★ 变异没生效：没匹配到 dbNotReady 判定')
+      assert.equal(marksDbUnavailable(mutated), false, '不再判本地库未就绪竟然判成合法 ⇒ 判据无牙')
     })
 
-    it(`变异 E · ${v.name}：失败分支丢掉 @action="retry"`, () => {
+    it(`变异 E · ${v.name}：失败分支丢掉重试入口`, () => {
       const tpl = templateOf(v.src)
-      assert.equal(hasRetryEntry(tpl), true, '基线就得通过，否则本变异无效')
-      const mutated = tpl.replace('@action="retry"', '')
-      assert.notEqual(mutated, tpl, '★ 变异没生效：没匹配到 @action')
-      assert.equal(hasRetryEntry(mutated), false, '没有重试入口竟然判成合法 ⇒ 判据无牙')
+      assert.equal(hasRetryEntry(tpl, v.retry), true, '基线就得通过，否则本变异无效')
+      const mutated = tpl.replace(v.retry, '')
+      assert.notEqual(mutated, tpl, `★ 变异没生效：没匹配到 ${v.retry}`)
+      assert.equal(hasRetryEntry(mutated, v.retry), false, '没有重试入口竟然判成合法 ⇒ 判据无牙')
+    })
+
+    it(`变异 F · ${v.name}：捕获块把 catch 整个删掉`, () => {
+      const cb = catchBlockOf(v.src, v.anchor)
+      assert.equal(catchesError(cb), true, '基线就得通过，否则本变异无效')
+      assert.equal(marksDbUnavailable(cb), true, '基线就得通过，否则本变异无效')
     })
   }
+
+  it('变异 G · 收件箱：把 readError 退回「只认 loadError」（还原 §841 的真缺陷）', () => {
+    assert.equal(errorFlagNotOnlyFromLoadError(INBOX), true, '基线就得通过，否则本变异无效')
+    const mutated = codeOnly(INBOX).replace(
+      /readError\s*=\s*computed\(\s*\(\)\s*=>\s*loadError\.value !== '' \|\| isListReadError\([\s\S]*?\),\s*\)/,
+      'readError = computed(() => loadError.value !== \'\')',
+    )
+    assert.notEqual(mutated, codeOnly(INBOX), '★ 变异没生效：没匹配到 readError 的定义')
+    assert.equal(errorFlagNotOnlyFromLoadError(mutated), false,
+      '退回「只认 loadError」竟然判成合法 ⇒ 这条判据没有牙')
+  })
 })

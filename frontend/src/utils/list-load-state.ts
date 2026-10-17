@@ -88,16 +88,30 @@ export interface ListReadFailureNotice {
 }
 
 /**
- * 首屏读取失败的文案。
+ * 读取失败的文案。
  *
  * 两条硬规则（来自 §838 的教训）：
  *  ① **不得断言数据状态** —— 读失败时我们并不知道记录还在不在，
  *     所以不能说「记录没有丢」；也不能说「没有记录」——那正是被修掉的那个谎报。
  *  ② 必须给可执行动作，且**不把技术串漏给用户**。
  *
- * `subject` 是页面自己的名词（'会议记录' / '笔记'），不是技术串。
+ * `subject` 是页面自己的名词（'会议记录' / '笔记' / '邮件'），不是技术串。
+ *
+ * ⚠ `hasRows` 必须分两句（§841）：**有行时**用户看到的列表还在屏幕上，
+ *   真正要说的是「这些可能是旧的」；**无行时**用户什么也没看到，
+ *   要说的是「没读出来、可以重试」。混成一句会让有行场景的用户以为数据是全的。
  */
-export function listReadFailureNotice(subject: string): ListReadFailureNotice {
+export function listReadFailureNotice(
+  subject: string,
+  opts: { hasRows?: boolean } = {},
+): ListReadFailureNotice {
+  if (opts.hasRows === true) {
+    return {
+      title: `${subject}没有刷新出来`,
+      hint: `没能读到最新的${subject}，下面这些是上次读到的，可能不是最新的。点重试再试一次。`,
+      action: '重试',
+    }
+  }
   return {
     title: `${subject}读取失败`,
     hint: `没能加载出${subject}，可能是本地数据暂时不可用。点下面重试；若一直失败，请重新登录。`,

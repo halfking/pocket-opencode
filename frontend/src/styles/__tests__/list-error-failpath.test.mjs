@@ -166,6 +166,20 @@ const FAILPATH_VIEWS = [
   { file: 'pages/OptimizedDemo.vue', state: 'n/a', why: '同上：0 个 EmptyState' },
 ]
 
+/**
+ * 从某个视图的错误空态分支里去掉「行数」守卫。
+ *
+ * ⚠⚠ 这里**必须按形状匹配，不能锚死某处字面量**。第一版 M2 写的是
+ *   `text.replace('v-else-if="loadError && shownEmails.length === 0"', 'v-else-if="loadError"')`
+ *   —— 而 §841 把那个条件改写成了 `readError && shownEmails.length === 0`
+ *   ⇒ 变异**静默变成空操作**，M2 于是报「第二处没被判红 ⇒ 判据只认得我登记的那一处」，
+ *   报的还是**错误理由**（让人去查枚举器，而真正原因是变异没生效）。
+ *   ⇒ 同 `run-mjs-tests.mjs` 那条教训：变异的「没生效」必须单独报，不能混进判据的红。
+ */
+function stripLengthGuard(text) {
+  return text.replace(/v-else-if="([^"]*)&&\s*[^"]*\.length === 0"/, 'v-else-if="$1"')
+}
+
 // ---------------------------------------------------------------------------
 // 判据本体
 // ---------------------------------------------------------------------------
@@ -240,18 +254,25 @@ test('【量具自证】枚举器确实采到了全部下拉刷新视图与两�
 test('【变异 M1 · 必须转红】把 SessionListView 的「无行」守卫拿掉（复现 UI-07e 那个真缺陷）', () => {
   const views = pullViews().map((v) => (v.file !== 'features/sessions/SessionListView.vue' ? v : {
     ...v,
-    text: v.text.replace('v-else-if="error && filteredSessions.length === 0"', 'v-else-if="error"'),
+    text: stripLengthGuard(v.text),
   }))
+  assert.notEqual(views.find((v) => v.file === 'features/sessions/SessionListView.vue').text,
+    pullViews().find((v) => v.file === 'features/sessions/SessionListView.vue').text,
+    '★ 变异没生效：stripLengthGuard 没匹配到任何分支 ⇒ 下面的红没有意义')
   const bad = unguardedErrorEmptyStates(views)
   assert.ok(bad.some((b) => b.file === 'features/sessions/SessionListView.vue'),
     '拿掉守卫却没判红 ⇒ 本门禁无牙')
 })
 
 test('【变异 M2 · 必须转红】把 EmailInboxView 的守卫拿掉（同一形状的第二处）', () => {
-  const views = pullViews().map((v) => (v.file !== 'features/email/EmailInboxView.vue' ? v : {
+  const before = pullViews()
+  const views = before.map((v) => (v.file !== 'features/email/EmailInboxView.vue' ? v : {
     ...v,
-    text: v.text.replace('v-else-if="loadError && shownEmails.length === 0"', 'v-else-if="loadError"'),
+    text: stripLengthGuard(v.text),
   }))
+  assert.notEqual(views.find((v) => v.file === 'features/email/EmailInboxView.vue').text,
+    before.find((v) => v.file === 'features/email/EmailInboxView.vue').text,
+    '★ 变异没生效：stripLengthGuard 没匹配到任何分支 ⇒ 下面的红没有意义')
   assert.ok(unguardedErrorEmptyStates(views).some((b) => b.file === 'features/email/EmailInboxView.vue'),
     '第二处没被判红 ⇒ 判据只认得我登记的那一处，不是「扫全部视图」')
 })
@@ -267,10 +288,14 @@ test('【变异 M3 · 必须转红】往一个登记为 n/a 的视图里注入�
 })
 
 test('【变异 M5 · 必须转红】把 §840 给会议列表加的「无行」守卫拿掉（首屏失败又变真空态）', () => {
-  const views = pullViews().map((v) => (v.file !== 'features/meetings/MeetingListView.vue' ? v : {
+  const before = pullViews()
+  const views = before.map((v) => (v.file !== 'features/meetings/MeetingListView.vue' ? v : {
     ...v,
-    text: v.text.replace('v-else-if="readError && meetings.length === 0"', 'v-else-if="readError"'),
+    text: stripLengthGuard(v.text),
   }))
+  assert.notEqual(views.find((v) => v.file === 'features/meetings/MeetingListView.vue').text,
+    before.find((v) => v.file === 'features/meetings/MeetingListView.vue').text,
+    '★ 变异没生效：stripLengthGuard 没匹配到任何分支 ⇒ 下面的红没有意义')
   assert.ok(unguardedErrorEmptyStates(views).some((b) => b.file === 'features/meetings/MeetingListView.vue'),
     '§840 那条新分支没被判红 ⇒ 判据仍不认它（多半是条件里没有 `Error` 一词，被 /error/i 提前 continue 掉了）')
 })

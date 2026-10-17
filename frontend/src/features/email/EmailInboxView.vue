@@ -99,10 +99,11 @@
     <p v-if="syncHint" class="sync-hint">{{ syncHint }}</p>
     <div v-if="loading" class="state-wrap"><Skeleton :count="5" /></div>
     <EmptyState
-      v-else-if="loadError && shownEmails.length === 0"
+      v-else-if="readError && shownEmails.length === 0"
       icon="⚠️"
-      :title="loadError"
-      action-label="重试"
+      :title="loadError || readFailure.title"
+      :hint="loadError ? undefined : readFailure.hint"
+      :action-label="loadError || readFailure.action"
       variant="inline"
       @action="load"
     />
@@ -120,15 +121,20 @@
     <template v-else>
       <!--
         有旧邮件时的失败：**不打断**已加载内容（2026-10-05 修，与 SessionListView 同源）。
-        ⚠️ `load()` 是**初次加载与下拉刷新共用**的入口，任何抛出都会设 `loadError`；
-        而错误态原本是无条件 `v-else-if="loadError"` 排在列表之前 ⇒ 一次刷新失败
-        就把整份收件箱换成整页错误态，已加载的邮件**从屏幕上消失**。
-        本仓同类缺陷已在 SessionListView 上由实机读数抓到并修（UI-07e：
-        失败前 4 行 → 失败后 0 行，而同一时刻后端数据仍在）—— 这里是同一形状的第二处。
+        ⚠️ §841 更正下面那句话：`load()` 是初次加载与下拉刷新共用入口，**但它并不会
+        抛** —— 它 `await` 的 `showLocal()` → `refreshList()` → 控制器链自带
+        `.catch(() => setStatus('failed'))` 且不重抛 ⇒ `load()` 的 catch 对读库失败
+        是死代码 ⇒ 改前 `loadError` 恒为 `''`，这条横幅**从未显示过**。
+        `load()` 是初次加载与下拉刷新共用的入口，`loadError` 原本无条件
+        `v-else-if="loadError"` 排在列表之前 ⇒ 一次刷新失败就把整份收件箱换成整页错误态，
+        已加载的邮件**从屏幕上消失**。本仓同类缺陷已在 SessionListView 上由实机读数抓到并修
+        （UI-07e：失败前 4 行 → 失败后 0 行，而同一时刻后端数据仍在）—— 这里是同一形状的第二处。
+        ⚠ 现在条件用 `readError`（含控制器那条 status==='failed' 的路），而不是只认 `loadError`；
+          它排在 `shownEmails.length === 0` 的分支**之后** ⇒ 有行时才轮到这里，行不会被换掉。
       -->
-      <div v-if="loadError" class="list-error-banner" role="alert">
-        <span>{{ loadError }}</span>
-        <button type="button" class="banner-retry" @click="load">重试</button>
+      <div v-if="readError" class="list-error-banner" role="alert">
+        <span>{{ loadError || staleRead.hint }}</span>
+        <button type="button" class="banner-retry" @click="load">{{ loadError || staleRead.action }}</button>
       </div>
       <!-- role/aria/tabindex（2026-10-03 22:5x 真机实测后补）：
            卡片原本是纯 <div class="email-card">，**没有任何可访问语义** ——
@@ -259,6 +265,12 @@ import EmailFolderPickerSheet from './EmailFolderPickerSheet.vue'
 import { INBOX_PAGE_SIZE } from './email-inbox-pagination.ts'
 import { inboxMergeRows, makeInboxFetchPage } from './email-inbox-adapter.ts'
 import { useContinuousList } from '../../composables/useContinuousList'
+import {
+  isListReadError,
+  isLocalDbUnavailable,
+  listReadFailureNotice,
+  LIST_READ_FAIL_TAG,
+} from '@/utils/list-load-state'
 import { runDelegatedEmailFetch } from './email-fetch-run'
 import { sanitizeFetchHint } from './email-fetch-plan'
 import { formatEmailRelTime } from './cleanup-filter'
@@ -333,7 +345,20 @@ const {
 } = useContinuousList<LocalEmail>({
   fetchPage: makeInboxFetchPage(
     {
-      readPage: (c, offset, f) => readInboxPage(c, offset, f),
+      // §841：这是**唯一看得见 e.message 的地方**。
+      // 控制器 `loadPage` 的 promise 链自带 `.catch(() => setStatus('failed'))`，
+      // 且**不重抛** ⇒ `await refreshList()` 正常 resolve ⇒ `load()` 的 catch
+      // 对读库失败是**死代码** ⇒ `loadError` 与 `dbNotReady` 都恒为空/false。
+      // ⚠ 必须 rethrow：返回空结果会被当成成功（commitPage → 'exhausted'）。
+      readPage: async (c, offset, f) => {
+        try {
+          return await readInboxPage(c, offset, f)
+        } catch (e: unknown) {
+          if (isLocalDbUnavailable(e)) dbNotReady.value = true
+          else console.error(LIST_READ_FAIL_TAG, '收件箱', e instanceof Error ? e.message : String(e))
+          throw e
+        }
+      },
       getCategory: () => activeCategory.value,
       getFolder: () => activeFolder.value,
       countAll: () => emailsStore.countLocalEmails(),
@@ -345,10 +370,25 @@ const {
   mergeRows: inboxMergeRows,
 })
 
+const readFailure = listReadFailureNotice('邮件')
+const staleRead = listReadFailureNotice('邮件', { hasRows: true })
+
 /** 「正在翻页」——模板用它显示转圈。内核的状态枚举比旧的布尔组合更直接。 */
 const pageLoading = computed(() => listStatus.value === 'loadingNext')
 
 const shownEmails = computed(() => inbox.visibleEmails(emails.value))
+
+/**
+ * §841：读失败（首屏无行与有行刷新失败两种都算）。
+ *
+ * ⚠ `loadError !== ''` 这一半在改之前**永远为假** —— 门禁 `list-error-failpath`
+ *   把本视图登记为 enforced（错误分支必须带行数守卫），守卫确实在、门禁是绿的，
+ *   但错误标志设不上 ⇒ **契约被空洞地满足**。守卫只是必要条件，不是充分条件。
+ */
+const readError = computed(
+  () => loadError.value !== '' || isListReadError(listStatus.value, shownEmails.value.length),
+)
+
 const moveOpen = ref(false)
 const moveBusy = ref(false)
 const organizing = ref(false)
@@ -514,6 +554,8 @@ async function load() {
     // 首屏整表替换；后续（下拉刷新 / 后台同步）都走合并，保留已翻开的分页。
     await showLocal(true)
   } catch (e: any) {
+    // §841：只兜 showLocal 自身的同步抛出。**读库失败不在这里** ——
+    // 它在 fetchPage 的 readPage 里被捕获（那是唯一看得见 e.message 的地方）。
     if (e?.message?.includes('LocalDB 未初始化')) dbNotReady.value = true
     else loadError.value = sanitizeFetchHint(e?.message || '') || '加载邮件失败'
   }

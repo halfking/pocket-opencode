@@ -95658,3 +95658,191 @@ M1 的门禁读数为 3，是本节**最值得记的一条**：它证明仓库�
 4. `NoteListView` 未用 `<PullToRefresh>` ⇒ 它**不在** `list-error-failpath` 的扫描范围内；
    本节靠自己的判据看守它。是否要把那道门的扫描范围从「用了下拉刷新」放宽到
    「用了 `useContinuousList`」（更贴合缺陷的实际发生条件）。
+
+---
+
+## §841 收件箱的错误态「在门禁里是绿的，在界面上从来没显示过」——并且更正 §840 的一个错误断言
+
+**一句话**：`EmailInboxView` 为读取失败准备了两套界面（整页错误态 + 非破坏性横幅），
+而驱动它们的 `loadError` **恒为 `''`**、`dbNotReady` **恒为 false** ⇒
+首屏读失败时用户看到的是「收件箱是空的」。而 `list-error-failpath` 把它登记为 `enforced`
+且**门禁是绿的** —— 契约被**空洞地**满足。
+
+### 0. ⚠ 本节同时更正 §840 的一个错误断言
+
+§840 我写过一句：
+
+> 「同仓 `EmailInboxView` 直接 `await showLocal(true)` ⇒ 它的 catch **可达**，
+> **三个列表页里唯一走控制器的两处是坏的**。」
+
+**这句是错的。** 我只看了 `load()` 的形状，**没有往下追** `showLocal`：
+
+```
+load() ─await─> showLocal() ─await─> refreshList()
+      ─> controller.refresh() ─> loadPage(1,'refresh')
+      ─> deps.fetchPage(...).then(...).catch(() => setStatus('failed'))
+                                          ↑ 吞掉且不重抛
+```
+
+`useContinuousList.refresh()` 是裸透传（`useContinuousList.ts:226`），`loadPage` 链上的
+`.catch` 让 `await refreshList()` **正常 resolve** ⇒ `load()` 的 catch 一次都不会进。
+⇒ 「三个列表页里唯一走控制器的两处是坏的」应为「**三个都走控制器，三个的 catch 都收不到错误**」。
+
+⇒ 这正是 §840 自己刚写下的那条教训在自己身上复发：**阴性声明必须抽验**。
+我当时写的是一句关于别人代码的**阴性断言**（「它的 catch 可达」），却只用读码的下一步就下了结论，
+没有把链走到底、没有探针读数。⇒ **凡是要说「某处没问题」的阴性断言，都要问「我追到叶子节点了吗」。**
+
+### 1. 缺陷证据
+
+#### D1 · `loadError` 与 `dbNotReady` 双双不可达
+
+```js
+async function load() {
+  loading.value = emails.value.length === 0
+  loadError.value = ''; dbNotReady.value = false
+  try { await showLocal(true) }
+  catch (e) { dbNotReady = …; loadError = sanitizeFetchHint(…) || '加载邮件失败' }
+  loading.value = false
+}
+```
+
+**实测读数**（`.artifacts/s841-probe/probe.mjs`，忠实照抄该视图的调用形状，含那层 `showLocal`）：
+
+| 场景 | `load()` 是否 reject | status | `loadError` | `dbNotReady` | `shownEmails.length` | 落到真空态 |
+|---|---|---|---|---|---|---|
+| A `LocalDB 未初始化：连接不存在` | 否 | `failed` | `""` ⛔ | `false` ⛔ | 0 | **是** |
+| B `SQLITE_BUSY` | 否 | `failed` | `""` ⛔ | `false` ⛔ | 0 | **是** |
+
+⇒ 两种失败三项读数全同；`v-else-if="loadError && shownEmails.length === 0"` **恒假**；
+落到 `v-else-if="shownEmails.length === 0"` ⇒ **谎报「收件箱是空的」**。
+
+#### D2 · 门禁为什么是绿的（本节最要紧的一条）
+
+`list-error-failpath` 登记：
+
+```js
+{ file: 'features/email/EmailInboxView.vue', state: 'enforced',
+  why: '与上条同形状的第二处：load() 为初载与下拉刷新共用入口，loadError 无条件接管整页' }
+```
+
+它的判据是「挂在空态上的错误分支必须带 `.length` 守卫」。这条分支**确实带守卫** ⇒ 绿。
+但**错误标志设不上** ⇒ 那条分支**永远不会被渲染**。
+
+⇒ ⭐⭐⭐⭐⭐ **守卫只是必要条件，不是充分条件。**
+一条「错误分支必须带行数守卫」的契约，前提是**那个错误标志真的会被设上**；
+当产生标志的那条错误通路本身是死代码时，契约被空洞地满足，而门禁毫无察觉。
+⇒ **判据绿 ≠ 缺陷不成立**（与 §837 那条「判据与被测对象不同源时，判据绿不能当作证据」同源，
+但这次更隐蔽：**同一份源码、同一个判据**，只是被测的是「条件表达式」而不是「标志的可达成性」）。
+
+#### D3 · 注释声称的机制与事实不符（第二次撞上）
+
+`EmailInboxView.vue:123` 原文：
+
+> ⚠️ `load()` 是**初次加载与下拉刷新共用**的入口，**任何抛出都会设 `loadError`**；
+
+而**没有任何东西会抛**。同一份文件里 §837/§840 的注释孤儿（`MeetingListView` 的
+「dbNotReady 仍由 fetchPage 内捕获」）是同一族。⇒ **注释里对失败路径的断言要单独验一次。**
+
+#### D4 · 有行时同样零提示
+
+`listStatus` 被解构出来，但**只有 `pageLoading` 读了 `'loadingNext'`** ⇒
+`'failed'` 这个状态在整个模板里**没有任何消费者**。
+有行时刷新失败：既没有 `loadError`（设不上），也没有 `listStatus==='failed'` 的分支
+⇒ `.list-error-banner` 从未显示过。
+
+#### D5 · 顺带撞出：这道门自己的 ALLOWLIST 被我的改动打碎（第五次）
+
+§841 给 `EmailInboxView` 加了分支后，`z-index-ladder` 变红
+（`EmailInboxView.vue:718/805` 两处**未登记的裸数字 z-index**）。
+查明：这两处裸数字 `z-index: 4/5` 在 HEAD 就存在（§840 时行号 676/763），
+**不是本节引入的**，是**行号被推了 42 行**而 ALLOWLIST 按行号登记。
+
+该门自己的注释已经记着这件事发生过四次：
+「⚠️ ALLOWLIST 的 key 曾长期钉在**声明所在行**，往文件上方加一行注释就会让 key 漂移」
+「本 key 从 634 改为 800…这是同一个 key **第四次咬人**，故改为块起始行」。
+
+⇒ 本轮按既有先例**重新编号**（676→718、763→805），并在该处留注说明这是第五次、
+且建议改成 `文件:选择器` 这种对插入免疫的 key（已登记为待拍板）。
+**不改这道门的语义与结构** —— 换 key 方案是它的属主该拍的事，不是本节顺手能带过的。
+
+### 2. 落地
+
+| 位置 | 改动 |
+|---|---|
+| `src/utils/list-load-state.ts` | `listReadFailureNotice(subject, { hasRows })` 新增**有行**那一支（与无行**分两句**） |
+| `features/email/EmailInboxView.vue` | `readPage` 依赖加 try/catch（`isLocalDbUnavailable(e)` → `dbNotReady`，否则 `console.error` 带 tag，**必须 rethrow**）；`readError = loadError !== '' \|\| isListReadError(...)`；整页错误态条件改 `readError && shownEmails.length === 0`、文案在 `loadError` 为空时回落到共享文案；横幅由 `v-if="loadError"` 改 `v-if="readError"`；修掉 D3 那条注释 |
+| `styles/__tests__/list-error-failpath.test.mjs` | 自带变异 M1/M2/M5 的 `stripLengthGuard` 改为**按形状**剥守卫（见 §4）；M1/M2/M5 各加 `assert.notEqual` |
+| `styles/__tests__/z-index-ladder.test.mjs` | 两个 key 重新编号（676→718、763→805）+ 注明第五次咬人与建议 |
+
+⚠ **为什么收件箱的捕获点在 `readPage` 而不是 `fetchPage`**：它的 `fetchPage` 由共享的
+`makeInboxFetchPage`（`email-inbox-adapter.ts:60`）生成，那里没有视图状态可写；
+`readPage` 是本视图自己传进去的依赖 ⇒ **与 §840「唯一看得见 e 的地方是提供数据的那一层」同构**。
+
+⚠ **TDZ**：第一版把 `readError` 放在 `useContinuousList` 之后、`shownEmails` 之前，
+而它引用 `shownEmails` ⇒ 运行时 TDZ 错误。判据是源码结构判据，抓不到这种**顺序**问题
+（它只看表达式内容）⇒ 已挪到 `shownEmails` 之后。
+
+### 3. 判据与变异
+
+`src/utils/__tests__/list-load-state.test.ts` 扩到 **58 例全通过**
+（三个视图统一进同一张表；判据函数 `catchesError` / `marksDbUnavailable` / `rethrows` /
+`hasRetryEntry` / `errorFlagNotOnlyFromLoadError` 断言与变异共用）。
+
+⚠ 收件箱的捕获锚点是 `readPage: async` 而不是 `fetchPage: async`，
+判据表因此多了 `anchor` / `retry` 两列（`@action="load"` vs `@action="retry"`）。
+`marksDbUnavailable` **两种写法都接受**：字面量 `msg.includes('LocalDB 未初始化')`
+（§837 的钉死用例要求会议侧保持不变）或共享判据 `isLocalDbUnavailable(e)`（收件箱用后者）。
+
+**对真实 `EmailInboxView.vue` 的四路端到端变异**：
+
+| 变异 | §840/841 判据 | 仓库门禁 `list-error-failpath` |
+|---|---|---|
+| M1 拿掉 `shownEmails.length === 0` 守卫 | 🔴 2 | 🔴 4 |
+| M2 `readPage` 不 rethrow | 🔴 2 | 0 |
+| M3 **原样还原 §841 真缺陷**（`readError` 只认 `loadError`） | 🔴 2 | **0** |
+| M4 横幅退回 `v-if="loadError"` | 🔴 1 | 0 |
+| 复原后基线 | 0 | 0 |
+
+⚠ **M3 那一列的 0 是本节的结论**：把真缺陷放回去，**仓库门禁依然绿**
+⇒ 再次证明 D2 那句「守卫只是必要条件」。也正因如此才需要新判据 `errorFlagNotOnlyFromLoadError`。
+
+### 4. 量具自证（本节又抓到自己一次）
+
+仓库门禁 `list-error-failpath` 自带的 M2 变异写的是**字面量 replace**：
+
+```js
+text.replace('v-else-if="loadError && shownEmails.length === 0"', 'v-else-if="loadError"')
+```
+
+§841 把那个条件改写成了 `readError && …` ⇒ 变异**静默变成空操作**，
+M2 于是报「第二处没被判红 ⇒ 判据只认得我登记的那一处」—— **报的是错误理由**，
+会让人去查枚举器，而真正原因是变异没生效。
+
+⇒ 已改为 `stripLengthGuard()`（按形状 `/v-else-if="([^"]*)&&\s*[^"]*\.length === 0"/`），
+并给 M1/M2/M5 各加 `assert.notEqual`：⇒ **「变异没生效」要单独报，不能混进判据的红**
+（与 `run-mjs-tests.mjs` 里那条「枚举 ⊆ 实际执行」的教训同族）。
+
+另：本节的 §841 探针第一版把**数字当数组**用（`shown.length` 是 `undefined`），
+导致「是否落进真空态」那一行读数为 `false` —— 一个**假的阴性**。
+⇒ 「0/否」的第一嫌疑永远是量具坏了；修好后重跑才是 `true`。
+
+### 5. 口径与未实测
+
+- ⛔ **未实测（需真机）**：收件箱读失败的真实发生率；`LocalDB 未初始化` 在该页的命中频率；
+  `loadError` 从未显示过这件事**除了读码与探针之外没有任何线上证据**（没有埋点统计）。
+- ⛔ 未验证修好之后的真机观感。判据覆盖的是「错误能被看到、标志可达、重试可点」。
+- 阴性声明的口径：本节**只**证明了「三个 `useContinuousList` 视图的捕获点都可达」。
+  **没有**声称「仓库里所有读失败路径都已覆盖」——`EmailFolderListView`、`TasksView`、
+  `SessionListView` 是否也有同类问题，本次**未取证**。
+- 「三个消费方」这个枚举本身是有读数的：`useContinuousList` 全仓 3 个生产消费方，
+  `useListSentinel` 已无生产消费方（在 `unwired-exports.test.mjs` 的登记表里）。
+
+### 6. 待拍板
+
+1. **`z-index-ladder` 的 ALLOWLIST key 要不要从行号改成 `文件:选择器`** —— 同一个 key
+   已经咬人五次（声明行 → 块起始行 → 这次）。改成选择器后对插入免疫（§841.1 D5）。
+2. **控制器要不要开错误通道**（`onError` + `lastError`）：§840 逐页补了两处、§841 又补了一处，
+   三处都是同一个根因（中间层吞掉错误）。根上收一处，三页不用各写一遍 catch（§840.6 第 3 条，仍未决）。
+3. `EmailFolderListView` / `TasksView` / `SessionListView` 要不要做一次同样的扫面
+   （本节只覆盖了 `useContinuousList` 的三个消费方）。
+4. 收件箱「有行时刷新失败」用非破坏性横幅（现状）还是 toast。
