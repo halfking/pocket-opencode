@@ -93856,6 +93856,34 @@ this.recorder.start(this.opts.sliceMs)                    // :122  ← **采集�
 * ⚠ `onSegment` 逐段落库这一点是「文字不丢」的前提，来自读码；⛔ 未跑真机验证
   「切设备瞬间正在处理的那一段会不会两头都丢」—— 那需要真机。
 
+### §824.6bis 核实两件事，其中一件**推翻了我自己的怀疑**
+
+**① §824 的高危定性成立（接线已验证，不是假设）**
+
+* `switchDevice` 的 UI 入口：`features/sessions/SessionLiveRecordPanel.vue:62`
+  的麦克风选择器 → `useMeetingRecorder.ts:48` 转发 ⇒ **生产可达**。
+* ⇒ 「切换会丢掉切换前音频」这件事**确实会在真实使用中发生**，不是死代码里的理论缺陷。
+
+**② ⛔ 「切换失败会静默杀死录音」—— 核对后**不成立**，在此排除**
+
+我一度怀疑这是一条更严重的静默缺陷，依据是：
+
+* `switchDevice` 的返回 `boolean` 在 `SessionLiveRecordPanel.vue:62` 被 `void …` 丢弃；
+* 而它的顺序是**先停掉当前录音**（`vadSegmenter.stop()` + `cleanupMedia()`、
+  `isRecording = false`）**再去开新设备** ⇒ 若新设备打不开，录音就没了。
+
+核对结果：**失败是可见的** ——
+
+* `start()` 的 catch 里设 `this.sttError.value = mic.deniedLabel.value || '麦克风权限被拒绝'`；
+* `SessionLiveRecordPanel.vue:23` 有 `<p v-if="recorder.sttError.value" class="slr-err">` 直接渲染它。
+
+⇒ ⇒ 这**不是**一条静默缺陷，**登记为「已排除」**，免得后来人重复怀疑一遍。
+
+⚠ 但**「返回的 boolean 被丢弃」这件事本身**仍是可议的：调用方无从区分
+「切换成功」与「切换失败但 UI 的下拉框已经显示新设备」。⚠ 本轮**未改**
+—— 失败文案已由 `sttError` 承担，再加一条 toast 会造成重复提示，
+而「切换失败时把下拉框回滚」属 UI 口径 ⇒ **待属主拍板，不代拍**。
+
 ### §824.7 校验
 
 `typecheck` **EXIT=0**；`npm run gates` **45/45 通过**（用时见本节提交记录）；`git diff --check` 退出 0。
