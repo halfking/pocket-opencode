@@ -85,3 +85,42 @@ describe('resolvePersistedAudio —— 落盘结果怎么反映到会议记录�
       '静默 catch 又回来了')
   })
 })
+
+// ─────────────────────────────────────────────────────────────────────────
+// §824：切换设备会**丢掉切换前的音频**（只丢音频、不丢文字，且完全静默）。
+describe('§824 切换设备不得静默丢掉切换前的音频', () => {
+  const src = readFileSync(join(HERE, '..', 'recordingRuntime.ts'), 'utf8')
+  const sw = src.slice(src.indexOf('async switchDevice('), src.indexOf('private startLiveCaption'))
+
+  it('★ switchDevice 必须接住那次 stop() 的返回值（原来被直接丢弃）', () => {
+    assert.match(
+      sw,
+      /const preSwitchBlob = await this\.vadSegmenter\?\.stop\(\)/,
+      '切换前那次 stop() 的返回值没有被接住 ⇒ 它的音频就此丢失',
+    )
+    assert.ok(
+      !/await this\.vadSegmenter\?\.stop\(\)\s*\n\s*await this\.cleanupMedia/.test(sw),
+      '仍然是「await 后直接丢弃」的旧写法',
+    )
+  })
+
+  it('★ 接住之后必须出声（否则「丢音频」仍然是无声的）', () => {
+    const i = sw.indexOf('preSwitchBlob')
+    const after = sw.slice(i, i + 900)
+    assert.match(after, /console\.warn/, '接住了 blob 却没有任何提示')
+    assert.match(after, /不会进入本次保存的完整录音/, '告警没说清后果')
+    assert.match(after, /分段文本不受影响/, '告警没说清什么没丢，排查时要靠猜')
+  })
+
+  it('★ 告警只在「真的有音频会丢」时触发（空 blob 或零时长不该响）', () => {
+    const after = sw.slice(sw.indexOf('preSwitchBlob'), sw.indexOf('preSwitchBlob') + 900)
+    assert.match(after, /preSwitchBlob\.size > 0 && keptElapsed > 0/,
+      '触发条件缺失 ⇒ 每次切设备都会喊，训练人忽略告警')
+  })
+
+  it('★ 全仓只有一处 saveMeetingAudio，且它在 stop() 里拿当前 segmenter 的 blob', () => {
+    // 这是「为什么丢音频无处可救」的根据：换段器之后没有第二个落盘点。
+    const n = (src.match(/saveMeetingAudio\(/g) || []).length
+    assert.equal(n, 1, `saveMeetingAudio 出现了 ${n} 处 —— 若新增了落盘点，本节的前提要重写`)
+  })
+})

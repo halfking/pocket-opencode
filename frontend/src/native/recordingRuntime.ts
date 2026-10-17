@@ -440,7 +440,21 @@ export class MeetingRecorderRuntime {
     const keptElapsed = resolveWallClockDurationMs(
       Date.now(), this.startTime, this.elapsedMs.value, this.isPaused.value)
     // §808：`stop()` 现在要等最后一枚切片落地，返回 Promise —— 必须 await
-    await this.vadSegmenter?.stop()
+    const preSwitchBlob = await this.vadSegmenter?.stop()
+    // ⚠⚠⚠ §824：上面那次 stop 的返回值**原来被直接丢弃** —— 而 `start()` 会
+    //   `new VadSegmenter(...)`（其 fullChunks 从空开始）⇒ **切换前录下的音频
+    //   永远不会进入最终保存的那份「完整录音」**（saveMeetingAudio 全仓只有
+    //   stop() 里一处调用，拿的是当前那个 segmenter 的 blob）。
+    //   分段文本不受影响（onSegment 逐段实时落库）⇒ 这是**只丢音频、不丢文字**的洞，
+    //   且完全静默。⚠ 拼接各段 WebM 需重新编码（容器不可直接相连），
+    //   属存储形态口径 ⇒ 拼接方案待属主拍板，本轮只保证**不再无声**。
+    if (preSwitchBlob && preSwitchBlob.size > 0 && keptElapsed > 0) {
+      console.warn(
+        `[meeting-recorder] 切换设备：${preSwitchBlob.size} 字节切换前音频`
+        + `（对应约 ${Math.round(keptElapsed / 1000)}s）不会进入本次保存的完整录音`
+        + ' —— 分段文本不受影响，但「整段高精度重转」只能覆盖切换之后的部分。',
+      )
+    }
     await this.cleanupMedia()
     this.isRecording.value = false
     const ok = await this.start(meetingId, { deviceId, resume: true })
