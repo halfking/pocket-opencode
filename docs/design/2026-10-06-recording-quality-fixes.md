@@ -96890,3 +96890,100 @@ M6：把 `doShare` 的剪贴板 catch 还原成 `catch { /* …静默 */ }`（�
    这是 `check:raw-error` 的存量基线条目，**本节未改**（改了会让基线变化，属另一件事）。
 3. **§849.1 的 v2 近似判定要不要收紧**（当前会漏掉经中间函数转调的形态），
    还是接受「它是候选生成器」这个定位。
+
+---
+
+## §850 `void x(...)` fire-and-forget 扫面：**净得 0 处缺陷**，但换来一道防回归的门
+
+### 1. 这是本会话第一次「扫面净得零」的节 —— 为什么仍然值得做
+
+`void someAsync()` 显式声明「我不处理返回值」⇒ 它一旦 reject 就是**未处理 rejection**
+（与 §847-D3 `loadAgents`、§848-D4 `pickImage` 同族）。扫面口径四次收窄：
+
+| 版本 | 口径 | 数量 |
+|---|---|---|
+| v1 | 全仓 `void x(` 且**方法调用也算** | **156** |
+| v2 | 只留「整条语句无 `.catch`/`.then`/`.finally`」 | **127** |
+| v3 | 再留「callee 是**本文件定义的裸名函数**且**体内没有任何 catch**」 | **16** |
+| v4 | 修掉探针自身的括号配平 bug 后 | **15** |
+| v5 | 逐条人工读源码 | **15 条全部安全，净 0 缺陷** |
+
+⚠ 前两层被排除的 112 条绝大多数是**明显不该管的**：
+`void router.push(...)`（同步）、`void nextTick(...)`（不 reject）、
+`void loadMediaDataUrl(x).catch(...)`（作者写了 catch，只是跨行了）、
+以及方法调用 `void store.refresh()`（要跨文件判断，属 §847 的族）。
+
+### 2. 15 条为什么**都安全** —— 安全的原因不在 callee 自己身上
+
+这是本节最重要的结构观察，也是**为什么不能用机械规则**：
+
+| callee | 体内有没有 catch | 真正兜住它的是谁 |
+|---|---|---|
+| `CalendarView.fetchMonth`（×3） | ❌ | 它 await 的 `store.load()` 自己 catch 并设 `error`，视图 `:52` 渲染该 error 且空态带 `!store.error` 守卫（**§840 的正确形态**） |
+| `AppLayout.submitSystemBack` | ❌ | 它 await 的 `dispatchBack()` 自带 try/catch 并返回 `{ kind: 'blocked' }`（`lib/shell/runtime.ts:308`） |
+| `useSessionDrafts.flush` | ❌ | 它 await 的 `persistTo()` 自带 catch（「写失败不阻断输入」） |
+| `MeetingDetailView.refreshRelated` | ❌ | 它 await 的 `searchRelatedContext()` 的**三个子查询各自 catch 后返回 `[]`** |
+| `UpdateChecker.maybePrefetch` | ❌ | 预取是尽力而为；真安装路径 `openLocalApk` 另有完整回退（失败退回远端下载） |
+| 其余 6 条 | ❌ | 调用方/下一跳各自有出口（逐条写在判据的 `why` 里） |
+
+⇒ **「callee 体内必须有 catch」这条机械规则会把这 15 条全部判红**（假阳 100%）。
+⇒ 唯一站得住的形式是**逐条登记 + 与扫面结果双向对账**。
+
+### 3. 判据
+
+新文件 `frontend/src/__tests__/fire-and-forget-audit.test.ts`，**9 例**：
+
+| 断言 | 作用 |
+|---|---|
+| 尺子非空转（>200 文件） | 防路径写错 |
+| **登记表不许漂移** | 扫出来的必须都在登记表里，并**打印未登记的清单** |
+| **登记的条目必须仍然存在** | 改名/删除会逼你重新判断 |
+| 出现次数必须一致 | 同文件同 callee 的第 N 次 |
+| 每条登记都必须写清理由 | 与「随手登记」分不开 |
+| 合计口径固定 15 | 基线（2026-10-18 人工复核结果） |
+| 变异负控 ×3 | 新增未登记条目 / `hasChain` 判据 / 注释不得被当成代码 |
+
+⚠ **登记表刻意不用行号做键** —— §844 的 `z-index-ladder` ALLOWLIST 按行号登记，
+被一次编辑推了 42 行就红（那门注释自己记着这是第五次咬人）。
+⇒ 键 = `相对路径::callee 名`，另加一条「出现次数」对账。
+
+### 4. 量具：探针与判据里同一个 bug，被我修了两次
+
+`bodyOf()` 用 `indexOf('{', 定义处之后)` 找函数体 ⇒ 遇到
+`async function postSystemNotification(descriptor: { localId: number; … })`
+这种**形参带含花括号类型注解**的函数时，会落在**类型字面量**上，配平立刻归零
+⇒ 取到一个没有 catch 的空壳 ⇒ 把「自己接住了错误的函数」误判成「没接住」
+（16 → 修后 15，少的正是它）。
+
+⚠ 这与 §845 的 `blockFrom`（TS 返回类型注解 `load(): Promise<void> {`）
+是**同一族的第 2 次**。⇒ 规则：**形参列表必须按 `(` 配平跳过，再找函数体的 `{`。**
+
+### 5. 变异双向验证（**真实文件**）
+
+M7：在 `TasksView.vue` 里真加一个「本文件定义、函数体内无 catch 的 async 函数」
++ 一处 `void` 调用 —— 形态与 15 条候选完全一致。
+
+| 读数 | 值 |
+|---|---|
+| 基线 | **9 pass / 0 fail** |
+| M7 后 | **7 pass / 2 fail** —— 红的正是「登记表不许漂移」（并点名新条目）与它所属的 suite |
+| 复原后 | **9 pass / 0 fail** |
+
+`typecheck` EXIT=0，`npm run gates` **45/45 通过**（52.6s）。
+
+### 6. 口径与未实测
+
+- ⚠ 本节**不声称**「全仓没有未处理 rejection」—— 跨文件导入的 callee
+  （如 `void store.refresh()`）不在本判据范围内，那属 §847 的族。
+- ⚠ 判据查的是**文本形态**，不是运行时行为；它无法知道 callee 是否真会 reject。
+- ⚠ `useSessionDrafts.persistTo` 的「写失败静默」**本身是一个待拍板的产品口径**
+  （草稿只存在内存里，写失败用户无痕）—— 本节**未改**，已登记（见 §850.7）。
+- ⛔ **未实测（需真机）**：这 15 条各自的真实失败率；WebView 上是否真的出现过未处理 rejection。
+
+### 7. 待拍板
+
+1. **`useSessionDrafts.persistTo` 的「写失败不阻断输入」要不要给出口** ——
+   草稿的价值全在能存下来，写失败静默 ⇒ 用户以为存了、实际进程一杀就没。
+   与 §832/§833（随手记草稿回填/建草稿失败）同族，但这是**会话草稿**这一侧。
+2. **跨文件导入的 callee（`void store.refresh()` 那 112 条里的一大部分）要不要也纳管** ——
+   现状它们靠 §847 的 `error-outlet-audit` 间接覆盖，没有「调用点接不接住」这一维。
