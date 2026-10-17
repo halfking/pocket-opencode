@@ -559,9 +559,10 @@ const currentAgent = computed(() => {
 
 function openAgentSheet() {
   agentSheetOpen.value = true
-  // 确保角色列表已加载
+  // 确保角色列表已加载。§847：store 会 rethrow，接住以免变成未处理 rejection；
+  // 失败已被转成 `agentStore.error`，由角色选择面板与专家库列表渲染同一个 ref。
   if (agentStore.agents.length === 0) {
-    agentStore.loadAgents()
+    agentStore.loadAgents().catch(() => {})
   }
 }
 

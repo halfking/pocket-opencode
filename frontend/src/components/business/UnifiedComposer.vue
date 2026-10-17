@@ -77,6 +77,7 @@
         </button>
         <span v-if="isTranscribing" class="uc-hint">转写中…</span>
           <span v-if="sttError" class="uc-hint uc-hint--err">{{ sttError }}</span>
+          <span v-if="optimizeError" class="uc-hint uc-hint--err">{{ optimizeError }}</span>
           <span v-if="optimizeRetryHint" class="uc-hint">{{ optimizeRetryHint }}</span>
       </div>
 
@@ -180,6 +181,7 @@
           </button>
           <span v-if="isTranscribing" class="uc-hint">转写中…</span>
           <span v-if="sttError" class="uc-hint uc-hint--err">{{ sttError }}</span>
+          <span v-if="optimizeError" class="uc-hint uc-hint--err">{{ optimizeError }}</span>
           <span v-if="optimizeRetryHint" class="uc-hint">{{ optimizeRetryHint }}</span>
         </div>
         <div class="uc-tools-right">
@@ -413,7 +415,12 @@ async function onMic() {
   if (text) insertAtCursor(text)
 }
 const { pickImage } = useCameraCapture()
-const { optimize: runOptimize, isOptimizing, optimizeRetryHint } = usePromptOptimizer()
+const {
+  optimize: runOptimize,
+  isOptimizing,
+  optimizeError,
+  optimizeRetryHint,
+} = usePromptOptimizer()
 
 // ---- 角色 ----
 const agentStore = useChatAgentStore()

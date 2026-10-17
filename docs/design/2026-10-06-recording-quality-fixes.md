@@ -96488,3 +96488,184 @@ CI 那条一直都在，缺的是**我自己那份**。教训写在文档里、�
    §843 的判据登记表 `n/a → enforced` 靠人肉点。
    ⇒ 要不要把「本会话经手视图」这张表**变成可推导的**（例如按 mtime 或按 `readError`
    出现与否自动枚举），属主定。
+
+---
+
+## §847 全仓扫面：错误标志被生产，却**没有任何出口**（12 处候选逐个取证 → 3 处真缺陷）
+
+### 1. 为什么这节能扫出东西：把 §844/§845 的两个单点变成一道审计
+
+§844 找到「store 设了 `error` 而 `features/opencode/SessionListView.vue` 全文件 `error` 出现 **0 次**」，
+§845 取证到 `ConfigList.vue` 的 `// error 暴露给模板` 紧跟一句 **`void error`**。
+两次都靠**人肉点名**，都是单点。本节把「错误标志 ⇒ 必须有出口」变成可自动跑的审计，
+并对 `stores/` + `composables/` 下**每一个**错误标志逐个取证。
+
+### 2. 扫面口径与 13 条登记（含阴性读数）
+
+枚举正则：`(const|let)\s+(\w*[eE]rror\w*|\w*Err\w*|\w*Failure\w*)\s*=\s*(ref|shallowRef|computed)`
+（目录：`stores` / `composables` / `lib` / `utils`，排除 `__tests__`）⇒ **13 条**。
+
+| # | 生产点 | 结论 | 读数 |
+|---|---|---|---|
+| 1 | `stores/approval.ts::error` | ⛔ **真缺陷 D1** | 2 个消费方（`ApprovalPanel` / `SessionConversationView`）渲染它的次数 **0** |
+| 2 | `stores/session.ts::errorMessage` | 阴性 | `SessionConversationView.vue:638` `v-if="store.errorMessage"` |
+| 3 | `stores/chatAgentStore.ts::error` | ⛔ **真缺陷 D3** | 7 个消费方，渲染次数全 **0** |
+| 4 | `stores/chatAgentStore.ts::syncError` | ★ **登记不修** | 赋值 6 处、**零消费**；但 `syncUpload/syncDownload` 的调用点自己 catch 并弹 toast + 横幅（`AgentSyncSheet.vue:135`），`checkSyncAvailable` 虽吞错但失败在**点击时**可见 ⇒ **死状态，不是用户可见缺陷** |
+| 5 | `stores/accTasks.ts::error` | 阴性 | `TasksView.vue:508` |
+| 6 | `stores/flashcards.ts::error` | 阴性 | `FlashcardListView.vue:32`（带重试） |
+| 7 | `composables/usePromptOptimizer.ts::optimizeError` | ⛔ **真缺陷 D2** | 全仓引用仅 4 处，**全在 composable 自身**（声明 / 清空 / 赋值 / return）⇒ 消费方 **0** |
+| 8 | `composables/useBiometricStatus.ts::lastError` | 阴性 | 头注释明写「失败时静默归零，不阻塞渲染」，且 `availability` 会变 `unavailable` 并被 `SettingsPermissionsView` 渲染 |
+| 9 | `composables/usePendingApprovals.ts::loadError` | 阴性 | `SessionConversationView.vue:643`（以 `approvalsError` 渲染） |
+| 10 | `composables/useMeetingRecorder.ts::sttError` | 阴性 | 经 `UnifiedComposer` 渲染（computed 直通） |
+| 11 | `composables/useVoiceInput.ts::sttError` | 阴性 | `UnifiedComposer.vue` 两处 `uc-hint--err` |
+| 12 | `composables/usePdfViewer.ts::error` | 阴性 | `InvoicePreviewSheet.vue:15` |
+| 13 | `composables/usePronounce.ts::errorMsg` | 阴性 | `FlashcardReviewView.vue:89`（**以别名 `pronounceError` 渲染 ⇒ 判据按标识符名找出口，别名也算**） |
+
+### 3. D1 ⛔ 审批拉取失败**完全不可见**（human-in-the-loop 死锁）
+
+`stores/approval.ts::fetchPending()` 失败时只设 `error`、**保留上一次结果**，
+源码注释原话：「拉取失败不阻断聊天；仅记录，保留上一次结果」——
+而「仅记录」的那一格**全仓无人读**。
+
+`ApprovalPanel.vue` 的根节点是 `<section v-if="store.hasPending">`：
+首屏失败时上一次的 `permissions/questions` 是空数组 ⇒ `hasPending=false`
+⇒ **整块面板（含任何放在里面的横幅）都不渲染** ⇒ 用户看到的是「没有待审批」，
+而实际上**智能体正卡在等一个人类批准**。
+
+⚠ **一致性对照（最强的一处证据）**：同一屏（`SessionConversationView.vue:642-646`）
+已经为**另一条**审批拉取路径做好了正确形态 ——
+`<span>审批状态拉取失败</span>` + `<button @click="refreshApprovals">重试</button>`。
+⇒ **同类数据在别处已被处理，这里没有**。
+
+落地：横幅用**独立 `v-if`** 放在 `hasPending` 面板**之外**（不是 `v-else-if`、不是塞进面板里），
+带 `role="alert"` 与重试按钮（走 `store.fetchPending()`，开头自清 `error`）。
+
+### 4. D2 ⛔ AI 优化失败**完全不可见**
+
+`usePromptOptimizer` 在 `onError` 里 `optimizeError.value = storeApiError(err, '提示词优化失败，请稍后重试')`，
+**并把它 return 出去**；而唯一消费方 `UnifiedComposer.vue:416` 只解构了
+`{ optimize, isOptimizing, optimizeRetryHint }`，调用处 `onOptimize()` 连 `onError` 都不传
+⇒ `handlers.onError?.(err)` 是空操作。
+⇒ 用户点「优化」，按钮转圈，然后**停住**：没有文案、没有 toast，草稿也没变。
+看起来像「点了没反应」或「优化没效果」。
+
+落地：解构 `optimizeError`，在**两处** `sttError` / `optimizeRetryHint` 旁边渲染
+（复用既有 `uc-hint--err`，不新增样式）。
+
+### 5. D3 ⛔ `loadAgents()` 失败 = 未处理 rejection + 空列表谎报「暂无角色」
+
+`loadAgents()` 在「无本地缓存」分支 **`throw e`**，而**5 个调用点一个都没有 catch**：
+
+| 调用点 | 形态 | 后果 |
+|---|---|---|
+| `AgentLibraryView.vue:31` | `onMounted` 里裸调 | 未处理 rejection |
+| `AgentSelectorSheet.vue:23` | 同上 | 同上 |
+| `AIChatView.vue:564` | `openAgentSheet()` 里裸调 | 同上 |
+| `AgentDetailView.vue:36` | `onMounted(async)` 里 `await` | rejection ⇒ **整个 onMounted 拒绝** |
+| `AgentEditView.vue:52` | `onMounted(async)` 里 `await` | rejection ⇒ **下面的 `form` 初始化整段不执行** |
+
+`AgentLibraryView.vue:155-161` 正是 §840 的标准形态：
+`loading=false` + `filteredAgents.length===0` ⇒ 落进「暂无角色」+ **「创建第一个自定义角色」**，
+把用户引导去建一个已经存在过的角色。
+
+⚠ **纠正一个我差点写错的结论**：`AgentEditView` 的错写路径**没有**造成数据丢失 ——
+`handleSave()` 有三道非空校验（name / description / system_prompt），表单全空时保存被挡住。
+**真实**后果是：编辑态拿不到角色时，`if (isEditMode && editingAgent)` 为假 ⇒
+落进 `else` 的**创建**分支 ⇒ 用户「编辑」却新建出第二个角色。
+⇒ 落地守卫 `if (isEditMode.value && !editingAgent.value) { toast.error(...); return }`，
+把「静默改语义」变成「显式拒绝」。
+
+落地：5 个调用点全部接住；`AgentLibraryView` / `AgentSelectorSheet` 加
+「失败分支（带行数守卫 + 重试）+ 有行时非破坏性横幅」。
+
+### 6. 撞到一道我不知道的既有门 —— 以及它**是对的**
+
+第一次跑 `npm run gates` 时 `src/api/__tests__/store-error-consumers.test.mjs` 红（3 处）：
+
+```
+- features/ai-chat/AgentSelectorSheet.vue:129  <p>角色列表拉取失败：{{ agentStore.error }}</p>
+- features/ai-chat/AgentSelectorSheet.vue:137  <span>角色列表可能不是最新的：{{ agentStore.error }}</span>
+- features/sessions/ApprovalPanel.vue:175      <span …>审批状态拉取失败：{{ store.error }}</span>
+修法：模板里改 {{ apiError(store.error, 'errors.xxx') }}，并确保该文件已接入 useApiError()。
+```
+
+按「撞门禁只改自己措辞、不动门禁语义」的惯例，先判它是真是假。**它是真的**，而且分两档：
+
+- `approval.ts::error` 存的是**原始 message**（`err?.message || '加载审批失败'`）⇒ 必须归一 ⇒ 已改用 `useApiError()`。
+- `chatAgentStore.error` 存的是**已归一**的 `storeApiError(e, 'errors.loadSettingsFailed')` ⇒
+  再套一层 `apiError()` 会被 `toUserMessage` 判为「无 i18n key」而**退回 fallback，丢掉真实文案** ⇒ 不套。
+  改法是把属性访问收成具名 `const agentErrorText = computed(() => agentStore.error)`，
+  归一责任与展示责任一眼可分。
+
+⇒ **归一发生在哪一层，必须逐个字段判断，不能一刀切。**
+
+⚠ **登记（未修，属门禁语义）**：`store-error-consumers` 的豁免是**文件级**的
+—— `NORMALIZED = /\b(apiError|toUserMessage)\s*\(/` 只要在该 `.vue` 里**任何一处**出现就整文件放行。
+`AgentLibraryView.vue` 正是靠第 99 行一处 `toast.error(apiError(err, '删除失败'))`
+让另外几处原始渲染**顺带过关**。这与 §841「守卫在、却空洞地满足」同形。
+
+### 7. 判据
+
+新文件 `frontend/src/stores/__tests__/error-outlet-audit.test.ts`，**28 例全通过**：
+
+| 组 | 例数 | 内容 |
+|---|---|---|
+| 错误标志必须有出口 | 20 | 尺子非空转（>100 个 `.vue`）；**登记表不许漂移**（枚举 ↔ 登记表双向对账）；每条都真被赋值或 computed 直通；11 条正向出口断言；2 条 `outlet:false` 的登记理由非空；1 条把「反向断言故意不做」显式登记；§847-D1 横幅位置 |
+| rethrow 的加载函数 | 2 | `loadAgents` 每个调用点必须有 `.catch(`；编辑态拿不到角色必须拒绝保存 |
+| 失败分支排在真空态之前 | 2 | 两个角色列表视图 |
+| 变异负控 | 6 | A 横幅改 `v-else`、B 顺序颠倒（合成模板）、C 删掉横幅、D 拿掉 `.catch`、E 拿掉 `optimizeError` 渲染、F 枚举器阳性对照 |
+
+⚠ 三条**量具自伤**（都是本会话同类第 N 次，写在这里是为了别再犯）：
+
+1. **块注释里写了带通配的路径**（`src` 下那种双星号接斜杠的形式）⇒ 提前闭合注释，
+   报 `Expected ';', '}' or <eof>` 而**行号指向十几行之后**。
+2. **判据被自己写的 HTML 注释抢了锚点**：我为了解释「为什么横幅必须在 `hasPending` 之外」
+   在模板里写了含 `v-if="store.hasPending"` 的注释，`indexOf` 先命中注释 ⇒ **假红**。
+   ⇒ 加 `tplCode()` 剥 HTML 注释（§843/§845 同源）。
+3. **变异改的是内存串、判据读的是磁盘文件** ⇒ 变异 E「永远为真」。
+   ⇒ `outletSitesWith(flag, overrides)` 提供注入口，否则测的是另一个世界。
+
+⚠ **判据的识别词是契约的一部分**（§840/§842/§843 各踩过一次，这里第 4 次）：
+为满足 §847.6 那道门把 `agentStore.error` 改名成 `agentErrorText` 之后，
+顺序判据里写死的正则**当场假红**。⇒ 断言改成按视图参数化 `errFlag`。
+
+### 8. 变异双向验证（**真实文件**，`.artifacts/s847-probe/`）
+
+把三处缺陷**原样放回真实文件**（`ApprovalPanel` 横幅改 `v-else`、
+`UnifiedComposer` 删两处 `optimizeError` 渲染、`AgentLibraryView` 删 `.catch`），
+再叠加 M4（把真空态与失败分支两块**对调**）：
+
+| 读数 | 值 |
+|---|---|
+| 修改后（基线） | **28 pass / 0 fail** |
+| 四路真实文件变异后 | **20 pass / 8 fail** |
+| 红的 8 条 | `optimizeError 必须有模板出口`、`§847-D1 横幅位置`、`loadAgents 调用点必须有 .catch`、`AgentLibraryView 失败分支顺序`、变异 A / C / D / E |
+| 复原后 | **28 pass / 0 fail** |
+
+⚠ **探针脚本自己也犯过一次**「变异没生效却报成功」：M4 第一次用
+`empty + '\n' + err` 拼接，而文件里两块之间**没有空行** ⇒ `replace` 空操作，
+脚本照样打印「M4 applied」，判据因此**假绿**。重做时加了 `assert s2 != s`。
+⇒ **探针脚本本身也要有变异自检**，判据文件里的 `assert.notEqual` 保护不到它。
+
+### 9. 口径与未实测
+
+- ⚠ 本节的判据只回答「**有没有出口**」——
+  **有出口是必要条件不是充分条件**（§841 的 `readError` 恒为空就是有出口而设不上）。
+  「这个错误标志在真机上会不会真被设上」不在本节范围。
+- ⚠ `outlet:false` 的**反向断言（必须真的没有出口）故意没做**：
+  `AgentSyncSheet.vue` 有自己的局部 `lastError`，与 `useBiometricStatus.lastError`
+  **同名**，而本审计按标识符名找出口 ⇒ 反向断言必然假阳。已在判据里显式登记这个缺口。
+- ⛔ **未实测（需真机/真网络）**：审批接口失败的真实发生率与「智能体卡住等人批准」的实际频次；
+  `useApiError` 归一后文案在该屏的可读性；`loadAgents` 失败率；`AgentEditView` 编辑态
+  拿不到角色时新守卫的实际文案观感。
+
+### 10. 待拍板
+
+1. **`chatAgentStore.syncError` 这块死状态要不要清掉** —— 赋值 6 处、零消费，
+   且与「视图各自 catch」是两套错误通道；清掉要么删字段，要么让视图改读它（属产品口径）。
+2. **`store-error-consumers` 的文件级豁免要不要收紧到渲染点级** —— §847.6 末尾那条，
+   现状是「一处 `apiError(` 放行整文件」，与 §841「守卫空洞满足」同形（属门禁语义）。
+3. **`AgentDetailView` / `AIChatView` 要不要也给「角色加载失败」一个出口** ——
+   本节只给两个列表页加了；详情页失败时是 `agent` 为空，聊天页是选择器为空。
+4. **§846 第 43 条（判据登记表可否自动推导）在本节再次坐实**：
+   「13 条登记表」也是人肉维护的，靠 §847 那条反向对账才不至于静默漏扫。

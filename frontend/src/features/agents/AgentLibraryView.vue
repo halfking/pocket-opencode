@@ -28,10 +28,17 @@ const hasRemoteAgents = computed(() => {
 })
 
 onMounted(() => {
-  agentStore.loadAgents()
+  // §847：store 会 rethrow，接住它以免变成未处理 rejection。
+  // 这里**不是**吞错 —— 失败已被 store 转成 `error.value`，而下面的模板渲染它；
+  // 换句话说这是一个「异常转状态」的 catch，不是「静默丢弃」。
+  agentStore.loadAgents().catch(() => {})
   // 后台探测同步可用性（PG 未启用时静默失败）
   agentStore.checkSyncAvailable()
 })
+
+function retryLoad() {
+  agentStore.loadAgents().catch(() => {})
+}
 
 // 过滤后的角色列表
 const filteredAgents = computed(() => {
@@ -153,6 +160,21 @@ async function handleDelete(agentId: string, agentName: string, isBuiltin: boole
     <!-- 角色列表 -->
     <main class="agents-list">
       <div v-if="agentStore.loading" class="loading">加载中...</div>
+      <!--
+        §847：`loadAgents()` 失败时 store 会 rethrow（无本地缓存的分支），
+        而调用点**一个都没有 catch** ⇒ 未处理 rejection + 列表停在空态。
+        loading=false 且 filteredAgents.length===0 ⇒ 正好落进下面的真空态，
+        用户看到「暂无角色」+「创建第一个自定义角色」，被引导去建重复角色。
+        ⇒ 失败分支必须排在真空态**之前**；有行时另给一条非破坏性横幅。
+      -->
+      <div
+        v-else-if="agentStore.error && filteredAgents.length === 0"
+        class="load-error"
+        role="alert"
+      >
+        <p>{{ agentStore.error }}</p>
+        <button type="button" class="retry-btn" @click="retryLoad">重试</button>
+      </div>
       <div v-else-if="filteredAgents.length === 0" class="empty">
         <p>{{ searchQuery ? '未找到匹配的角色' : '暂无角色' }}</p>
         <button v-if="!searchQuery" class="create-btn" @click="goToCreate">
@@ -161,6 +183,11 @@ async function handleDelete(agentId: string, agentName: string, isBuiltin: boole
       </div>
 
       <template v-else>
+        <!-- 有行但最近一次加载失败：行是旧的，必须说明（不清空、不谎报最新） -->
+        <div v-if="agentStore.error" class="load-error load-error--inline" role="alert">
+          <span>角色列表可能不是最新的：{{ agentStore.error }}</span>
+          <button type="button" class="retry-btn" @click="retryLoad">重试</button>
+        </div>
         <!-- 搜索/筛选时扁平展示 -->
         <template v-if="searchQuery || selectedDepartment || showOnlyCustom">
           <div
@@ -324,6 +351,35 @@ async function handleDelete(agentId: string, agentName: string, isBuiltin: boole
 }
 
 .loading,
+.load-error {
+  text-align: center;
+  padding: 24px 20px;
+  color: var(--danger);
+  font-size: var(--text-sm);
+}
+.load-error--inline {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  text-align: left;
+  padding: 8px 12px;
+  margin: 0 0 8px;
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-sm);
+  background: var(--danger-bg);
+}
+.retry-btn {
+  margin-top: 12px;
+  padding: 6px 14px;
+  background: transparent;
+  color: var(--danger);
+  border: 1px solid var(--danger);
+  border-radius: 8px;
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+.load-error--inline .retry-btn { margin-top: 0; flex: 0 0 auto; }
+
 .empty {
   text-align: center;
   padding: 40px 20px;

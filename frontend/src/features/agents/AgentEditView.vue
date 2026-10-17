@@ -49,7 +49,11 @@ const saving = ref(false)
 
 onMounted(async () => {
   if (agentStore.agents.length === 0) {
-    await agentStore.loadAgents()
+    // §847：原来是无保护 `await`，store rethrow 时整个 onMounted 拒绝 ⇒ 未处理
+    // rejection **且下面的 form 初始化整段不执行** ⇒ 编辑已有角色时表单全空。
+    // catch 之后本函数继续跑完，失败由 `editingAgent` 为空 + handleSave 的
+    // 「编辑态却没拿到角色」守卫表达（见 handleSave）。
+    await agentStore.loadAgents().catch(() => {})
   }
 
   if (isEditMode.value && editingAgent.value) {
@@ -98,6 +102,13 @@ function insertTemplate() {
 }
 
 async function handleSave() {
+  // §847：编辑态但没拿到角色（列表加载失败）时，原来的
+  // `if (isEditMode && editingAgent)` 判false ⇒ 落进 else 的**创建**分支
+  // ⇒ 用户「编辑」一个角色却新建出第二个。改成显式拒绝，而不是静默改语义。
+  if (isEditMode.value && !editingAgent.value) {
+    toast.error(agentStore.error || '角色尚未加载完成，请返回列表重试后再编辑')
+    return
+  }
   // 验证
   if (!form.value.name.trim()) {
     toast.error('请输入角色名称')

@@ -33,7 +33,10 @@ const shouldShowToggle = computed(() => {
 
 onMounted(async () => {
   if (agentStore.agents.length === 0) {
-    await agentStore.loadAgents()
+    // §847：原来是无保护 `await`，store rethrow 时整个 onMounted 拒绝 ⇒
+    // 未处理 rejection，且后续初始化全部不执行。改成 catch 后本函数继续跑完，
+    // 失败状态由 `agent` 为空这一事实与页面自身的空态表达。
+    await agentStore.loadAgents().catch(() => {})
   }
 })
 

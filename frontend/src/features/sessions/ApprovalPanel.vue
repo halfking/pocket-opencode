@@ -10,6 +10,7 @@
 import { onMounted, onBeforeUnmount, watch, reactive, computed } from 'vue'
 import { useApprovalStore } from '../../stores/approval'
 import { autoGrow } from '../../composables/useAutoGrowTextarea'
+import { useApiError } from '../../composables/useApiError'
 
 const props = defineProps<{
   instanceId: string
@@ -17,6 +18,16 @@ const props = defineProps<{
 }>()
 
 const store = useApprovalStore()
+const apiError = useApiError()
+
+/**
+ * §847：store 里那一格存的是**原始 message**（`err?.message || '加载审批失败'`），
+ * 直接上屏会把后端/JS 的原始串甩给用户 ⇒ 必须经 useApiError 归一。
+ * （对照：`chatAgentStore` 的同一类字段在 store 里已过 `storeApiError`，
+ *   那些视图可以直接渲染 —— 两者的差别就在「归一发生在哪一层」。）
+ */
+const fetchErrorText = computed(() =>
+  store.error ? apiError(store.error, '审批状态拉取失败') : '')
 
 // 每个权限请求的附言（可选）
 const permMessage = reactive<Record<string, string>>({})
@@ -137,6 +148,15 @@ function refreshScope() {
   }
 }
 
+/**
+ * §847：拉取失败后重试。走 `fetchPending()` 而不是 `refreshScope()` ——
+ * 后者会 tearDownBus + 重新订阅，周期内没必要动订阅；`fetchPending()` 开头
+ * 自己把 `error` 清空，失败标志因此能被同一次点击复位。
+ */
+function retryFetch() {
+  store.fetchPending()
+}
+
 onMounted(refreshScope)
 
 // 会话切换（同路由组件复用）时更新作用域 + 重新轮询
@@ -152,6 +172,21 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
+  <!--
+    §847：失败横幅**必须放在 `v-if="store.hasPending"` 之外**。
+      store 的 `fetchPending()` 失败时只设 `error`、保留上一次结果
+      （源码注释原话「拉取失败不阻断聊天；仅记录，保留上一次结果」），
+      而首屏失败时上一次的 permissions/questions 是空数组 ⇒ hasPending=false
+      ⇒ 把横幅塞进那个分支等于什么都没做：失败时整块面板（含横幅）都不渲染。
+      这正是 §840「首屏读失败落进真空态」的同形，只是这里的真空态连根都没有。
+      ⇒ 用独立 `v-if`，不与任何 `v-else` 串成链。
+  -->
+  <div v-if="store.error" class="approval-fetch-error" role="alert">
+    <span class="material-symbols-outlined">error</span>
+    <span class="approval-fetch-error-text">{{ fetchErrorText }}</span>
+    <button type="button" class="approval-fetch-retry" @click="retryFetch">重试</button>
+  </div>
+
   <section v-if="store.hasPending" class="approval-panel">
     <div class="approval-header">
       <span class="approval-title">
@@ -277,6 +312,34 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.approval-fetch-error {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+  font-size: var(--text-sm);
+  color: var(--danger);
+  background: var(--danger-bg);
+  border-bottom: 1px solid var(--border);
+}
+.approval-fetch-error-text {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.approval-fetch-retry {
+  flex: 0 0 auto;
+  padding: 2px 10px;
+  font-size: var(--text-sm);
+  color: var(--danger);
+  background: transparent;
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.approval-fetch-retry:active { transform: scale(0.97); }
+
 .approval-panel {
   flex: 0 0 auto;
   display: flex;

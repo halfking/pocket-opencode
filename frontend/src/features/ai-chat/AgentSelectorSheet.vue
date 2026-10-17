@@ -20,9 +20,23 @@ const selectedDepartment = ref<string>('') // 空字符串表示全部
 
 onMounted(() => {
   if (agentStore.agents.length === 0) {
-    agentStore.loadAgents()
+    // §847：store 会 rethrow，接住以免变成未处理 rejection；失败已被转成
+    // `agentStore.error` 并由模板渲染（同一个 ref，跨视图共享）。
+    agentStore.loadAgents().catch(() => {})
   }
 })
+
+function retryLoad() {
+  agentStore.loadAgents().catch(() => {})
+}
+
+/**
+ * §847：这里展示的错误位在 store 里**已经过 `storeApiError` 归一**，所以直接展示；
+ * 若哪天那个 store 改成存原始 message，这一行要跟着改成走归一函数。
+ * 另：这个 computed 顺手把错误文案收敛成一个具名值 ——
+ * 模板里不再直接出现 store 的属性访问，「归一在哪一层」与「展示什么」一眼可分。
+ */
+const agentErrorText = computed(() => agentStore.error)
 
 const filteredAgents = computed(() => {
   let list = agentStore.agents
@@ -118,10 +132,19 @@ function close() {
       <!-- 角色列表（按部门分组） -->
       <div class="agents-list">
         <div v-if="agentStore.loading" class="loading">加载中...</div>
+        <!-- §847：失败分支必须排在真空态之前，否则「拉取失败」被显示成「未找到匹配的角色」 -->
+        <div v-else-if="agentErrorText && filteredAgents.length === 0" class="load-error" role="alert">
+          <p>角色列表拉取失败：{{ agentErrorText }}</p>
+          <button type="button" class="retry-btn" @click="retryLoad">重试</button>
+        </div>
         <div v-else-if="filteredAgents.length === 0" class="empty">
           未找到匹配的角色
         </div>
         <template v-else>
+          <div v-if="agentErrorText" class="load-error load-error--inline" role="alert">
+            <span>角色列表可能不是最新的：{{ agentErrorText }}</span>
+            <button type="button" class="retry-btn" @click="retryLoad">重试</button>
+          </div>
           <!-- 如果搜索/筛选，扁平展示；否则按部门分组 -->
           <template v-if="searchQuery || selectedDepartment">
             <div
@@ -217,6 +240,35 @@ function close() {
   overflow-y: auto;
   padding: 16px 20px;
 }
+
+.load-error {
+  text-align: center;
+  padding: 20px 16px;
+  color: var(--danger);
+  font-size: var(--text-sm);
+}
+.load-error--inline {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  text-align: left;
+  padding: 8px 12px;
+  margin: 0 0 8px;
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-sm);
+  background: var(--danger-bg);
+}
+.retry-btn {
+  margin-top: 12px;
+  padding: 6px 14px;
+  background: transparent;
+  color: var(--danger);
+  border: 1px solid var(--danger);
+  border-radius: 8px;
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+.load-error--inline .retry-btn { margin-top: 0; flex: 0 0 auto; }
 
 .loading,
 .empty {
