@@ -77,41 +77,74 @@ function pluginFiles() {
 const fileFor = (name) => join(PLUGIN_DIR, `${name}Plugin.java`)
 
 /**
+ * 「作者自陈这是占位」的判据本体。**纯函数**：只吃类注释文本，不碰文件系统。
+ *
+ * ⚠️ 为什么把判据单独抽出来（2026-10-17）：
+ * 原来的 `markedUnregistered(registry)` 直接遍历真实目录，于是「判据在不在咬」
+ * 和「仓里恰好有没有骨架插件」被焊死在一起 —— 量具自证硬要求 `marked >= 1`，
+ * 负控硬编码剥离 `Sherpa`。Sherpa 一旦被真正实现，两条同时塌：
+ * 门不是因为判据失效而转红，而是因为**前提消失**转红，
+ * 那等于门在逼人把一个真实现继续当骨架登记着。
+ * 判据一旦是纯函数，负控就能用合成夹具自证，与仓内状态彻底无关。
+ */
+function markedAsPlaceholder(javadoc) {
+  return PLACEHOLDER_MARKERS.some((k) => javadoc.includes(k))
+}
+
+/**
  * 返回「类注释自陈占位、却没登记」的插件名。
  *
  * ⚠️ 第 ② 条与第 ④ 条（负控）**必须共用这一个函数** ——
  * 负控自己另写一套逻辑的话，它转红也证明不了正例在咬。
+ *
+ * @param {{name: string, javadoc: string}[]} entries 待判定的插件清单
+ * @param {Record<string, unknown>} registry NOT_IMPLEMENTED_PLUGINS
  */
-function markedUnregistered(registry) {
-  const bad = []
-  for (const f of pluginFiles()) {
-    const src = readFileSync(join(PLUGIN_DIR, f), 'utf8')
-    if (!PLACEHOLDER_MARKERS.some((k) => classJavadoc(src).includes(k))) continue
-    const name = f.replace(/Plugin\.java$/, '')
-    if (!(name in registry)) bad.push(name)
-  }
-  return bad
+function missedRegistrations(entries, registry) {
+  return entries
+    .filter((e) => markedAsPlaceholder(e.javadoc) && !(e.name in registry))
+    .map((e) => e.name)
 }
 
-test('量具自证：插件目录可读，且本仓确实存在「骨架」与「已实现」两类插件', () => {
+/** 真实插件清单：目录里的每个 `*Plugin.java` → { name, javadoc }。 */
+function realPluginEntries() {
+  return pluginFiles().map((f) => ({
+    name: f.replace(/Plugin\.java$/, ''),
+    javadoc: classJavadoc(readFileSync(join(PLUGIN_DIR, f), 'utf8')),
+  }))
+}
+
+test('量具自证：插件目录可读，且判据对「占位/非占位」真的能分辨', () => {
+  // 前提①：目录读得到文件。读空了后面每一条都会恒真通过。
   const files = pluginFiles()
   assert.ok(files.length >= 5, `插件目录只读到 ${files.length} 个文件，路径或剥离规则可能坏了`)
 
-  const marked = files.filter((f) =>
-    PLACEHOLDER_MARKERS.some((k) => classJavadoc(readFileSync(join(PLUGIN_DIR, f), 'utf8')).includes(k)),
-  )
-  const clean = files.filter((f) => !marked.includes(f))
-  // 这一条是**前提**：若两类里有一类是空的，判据就分辨不出任何东西。
-  assert.ok(marked.length >= 1, '没有任何插件被标成占位 ⇒ 标记词表已失效')
-  assert.ok(clean.length >= 1, '所有插件都被标成占位 ⇒ 标记词表过宽，形同没有判据')
+  // 前提②：**合成夹具**证明标记词表能分辨，而不是靠仓里恰好有个骨架。
+  const SYNTH = {
+    marked: '/** 占位实现，后面替换。 */',
+    clean: '/** 真的实现了，逐方法有实现。 */',
+  }
+  assert.ok(markedAsPlaceholder(SYNTH.marked), '标记词表连明写的占位自陈都认不出 ⇒ 词表已失效')
+  assert.ok(!markedAsPlaceholder(SYNTH.clean), '标记词表把正常说明误判成占位 ⇒ 词表过宽，形同没有判据')
+
+  // 前提③：**同一个**判据必须能把两者分到不同的登记结论上（端到端地咬）。
+  const ghostMarked = { name: 'Ghost', javadoc: SYNTH.marked }
+  const ghostClean = { name: 'Ghost', javadoc: SYNTH.clean }
+  const ghostRegistry = { Ghost: { why: 'synthetic', fingerprint: 'ghost' } }
+
+  assert.deepEqual(missedRegistrations([ghostMarked], ghostRegistry), [], '已登记的骨架不该被报漏')
+  assert.deepEqual(missedRegistrations([ghostMarked], {}), ['Ghost'], '未登记的骨架必须被报漏 —— 这才是判据在咬')
+  assert.deepEqual(missedRegistrations([ghostClean], {}), [], '非占位即使登记为空也不该被报 ⇒ 证明不是「见啥报啥」')
 })
 
 test('① 每个登记项：Java 文件必须存在，且指纹仍在（骨架尚未被真正实现）', () => {
-  const names = Object.keys(NOT_IMPLEMENTED_PLUGINS)
-  assert.ok(names.length >= 1, '登记表是空的 —— 那就没人守这条了')
-
-  for (const name of names) {
-    const entry = NOT_IMPLEMENTED_PLUGINS[name]
+  // ⚠️ 这里**不再要求登记表非空**。2026-10-17 起登记表合法地为空
+  // （Sherpa 已随 Phase 4 落地实现并被移出），且「空且确实没有骨架」是自洽的正确状态。
+  // 完整性由两条合起来保证：
+  //   本条 —— 登记了就必须还成立（防过期登记项继续骗人）
+  //   第 ② 条 —— 自陈占位的就必须登记（防漏登记）
+  // 少任何一条都会漏掉一种错误；要求非空只会把「实现推进」误判成「门禁损坏」。
+  for (const [name, entry] of Object.entries(NOT_IMPLEMENTED_PLUGINS)) {
     const f = fileFor(name)
     assert.ok(existsSync(f), `${name} 登记为「已注册但未实现」，但找不到 ${f} ⇒ 登记项可能已过期`)
     const src = readFileSync(f, 'utf8')
@@ -124,7 +157,7 @@ test('① 每个登记项：Java 文件必须存在，且指纹仍在（骨架�
 })
 
 test('② ★ 任何类注释自陈「占位/骨架」的插件，都必须登记在册（新骨架会被自动抓住）', () => {
-  const bad = markedUnregistered(NOT_IMPLEMENTED_PLUGINS)
+  const bad = missedRegistrations(realPluginEntries(), NOT_IMPLEMENTED_PLUGINS)
   assert.deepEqual(
     bad,
     [],
@@ -147,21 +180,39 @@ test('③ 指纹不得出现在未登记的插件里（防止把理由安到别�
   }
 })
 
-test('④ 负控：把登记去掉，同一条判据必须抓到 Sherpa（证明它真在咬）', () => {
-  // 正例：现状应当是干净的
-  assert.deepEqual(markedUnregistered(NOT_IMPLEMENTED_PLUGINS), [], '现状不该有漏登记的骨架')
+test('④ 负控：漏登记必须被抓到（证明第 ② 条真在咬，而不是恒真通过）', () => {
+  const realEntries = realPluginEntries()
 
-  // 负控：抽掉 Sherpa 的登记后，同一条判据必须报出且只报出 Sherpa
-  const stripped = {}
-  for (const f of pluginFiles()) {
-    const name = f.replace(/Plugin\.java$/, '')
-    if (name === 'Sherpa') continue
-    stripped[name] = NOT_IMPLEMENTED_PLUGINS[name]
-  }
-  const caught = markedUnregistered(stripped)
+  // 正例：现状应当是干净的
   assert.deepEqual(
-    caught,
-    ['Sherpa'],
-    `抽掉 Sherpa 的登记后判据必须只报出 Sherpa，实际报出 ${JSON.stringify(caught)}`,
+    missedRegistrations(realEntries, NOT_IMPLEMENTED_PLUGINS),
+    [],
+    '现状不该有漏登记的骨架',
   )
+
+  // 负控：**把一个自陈占位的插件混进清单，再从登记表里拿掉**，
+  // 同一条判据必须报出且只报出它。
+  //
+  // ⚠️ 2026-10-17 改写：原版硬编码「抽掉 Sherpa 的登记」。
+  // 那条负控把门禁焊死在一个具体插件上 —— Sherpa 被真正实现之后，
+  // 负控的前提（Sherpa 自陈占位）自己消失了，门禁随即**因为前提消失而转红**，
+  // 而不是因为判据失效。那等于门在逼人把一个真实现继续当骨架登记着。
+  // 改成合成夹具之后，负控与仓内是否恰好有骨架彻底无关，任何时候都在咬。
+  const ghost = 'GhostSkeleton' // 目录里并不存在的插件名
+  const ghostEntry = { name: ghost, javadoc: '/** 占位实现，后面替换。 */' }
+  const withGhost = [...realEntries, ghostEntry]
+  const ghostRegistry = { ...NOT_IMPLEMENTED_PLUGINS, [ghost]: { why: 'synthetic', fingerprint: 'ghost' } }
+
+  assert.deepEqual(
+    missedRegistrations(withGhost, ghostRegistry),
+    [],
+    '幽灵骨架已登记在册 ⇒ 不该被报成漏登记',
+  )
+  assert.deepEqual(
+    missedRegistrations(withGhost, NOT_IMPLEMENTED_PLUGINS),
+    [ghost],
+    `抽掉幽灵骨架的登记后判据必须只报出 ${ghost}，实际报出 ` +
+      `${JSON.stringify(missedRegistrations(withGhost, NOT_IMPLEMENTED_PLUGINS))}`,
+  )
+  assert.ok(realEntries.length >= 5, '真实插件清单不该是空的，否则负控退化成自指')
 })

@@ -52,11 +52,20 @@ test('注册了真实存在的插件时能力升为 true（证明探测器不是
   assert.equal(requireCapability(caps, 'agent').ok, false)
 })
 
-// §179：这条是本文件最重要的一条。Sherpa 在 MainActivity 里 registerPlugin 过，
-// 所以真机上 isPluginAvailable('Sherpa') 确实返回 true；而 SherpaPlugin.java
-// 的每个 @PluginMethod 都是 call.reject。⇒ 只按「注册了没」判定会报
-// recognition.asr='model'（本地 ASR 可用），而调用 100% 失败。
-test('★ §179 已注册但未实现的插件不得让能力升为 true（Sherpa 是骨架）', () => {
+// §179：这条不变量本身一点没变 —— 「已注册但未实现」的插件，
+// 不得让能力升为 true。
+//
+// ⚠️ 2026-10-17：**载体换了**。原来这条拿 Sherpa 当那个「未实现」的插件，
+// 因为它当时确实是个只会 reject 的骨架。Phase 4 落地之后 Sherpa 已经是真实现，
+// 继续拿它当载体就只剩两种结局：要么把真实现继续钉成骨架（把 bug 留着），
+// 要么门禁自己转红（同上）。
+// ⇒ 现在把**事实**与**不变量**分开断言：
+//   甲：现状 —— Sherpa 已实现，不在登记表里 ⇒ 本地 ASR 可如实升为 'model'
+//   乙：不变式 —— 临时登记一条合成的未实现档，同一道筛子必须把它压回 'none'
+// 乙那条就是「筛子还在咬」的证据，且与仓里恰好有没有骨架无关。
+test('★ §179 已注册但未实现的插件不得让能力升为 true（不变量，载体用合成档）', () => {
+  // 甲 · 现状：Sherpa 已真正实现（Phase 4），不该再被压成 'none'。
+  //      反过来若这里报 'none'，就是登记表没清干净 —— 本地 ASR 被白白让给云端。
   const caps = detectCapabilities({
     inShell: () => true,
     platform: () => 'android',
@@ -65,15 +74,16 @@ test('★ §179 已注册但未实现的插件不得让能力升为 true（Sherp
   })
   assert.equal(
     caps.recognition.asr,
-    'none',
-    'Sherpa 虽已注册，但每个方法都 reject ⇒ 不得报"本地 ASR 可用"',
+    'model',
+    'Sherpa 的 6 个 @PluginMethod 里 5 个已是真实现（Phase 4），却仍被压成 none ⇒ ' +
+      '本地 ASR 明明可用却被判不可用，流量白白流向云端',
   )
-  assert.equal(caps.recognition.ocr, 'none', '同一道判定，ocr 也不该跟着升')
 
-  // ★ 负控：把 Sherpa 从「未实现」表里去掉，上面这条断言必须转红。
-  // 证明它真的在咬，而不是恒真。
+  // 乙 · 不变量：把一个「已注册但未实现」的档临时登记进去，同一道筛子必须压回 none。
+  //     指纹取一段仓里不存在的字面量 —— 本条只验筛子的行为，不牵涉真实插件源码。
   const saved = { ...NOT_IMPLEMENTED_PLUGINS }
-  delete NOT_IMPLEMENTED_PLUGINS['Sherpa']
+  const SYNTH = 'synthetic-unimplemented-plugin-fingerprint'
+  NOT_IMPLEMENTED_PLUGINS['Sherpa'] = { why: '合成未实现档，仅用于验证 §179 的筛子仍在生效', fingerprint: SYNTH }
   try {
     const leaked = detectCapabilities({
       inShell: () => true,
@@ -82,9 +92,10 @@ test('★ §179 已注册但未实现的插件不得让能力升为 true（Sherp
     })
     assert.equal(
       leaked.recognition.asr,
-      'model',
-      '负控：移除登记后 asr 变 model ⇒ 说明上面那条断言确实由本表把守',
+      'none',
+      '登记为「已注册但未实现」却仍报可用 ⇒ §179 的筛子被改坏了',
     )
+    assert.equal(leaked.recognition.ocr, 'none', '同一道判定，ocr 也不该跟着升')
   } finally {
     for (const k of Object.keys(NOT_IMPLEMENTED_PLUGINS)) delete NOT_IMPLEMENTED_PLUGINS[k]
     Object.assign(NOT_IMPLEMENTED_PLUGINS, saved)
@@ -110,10 +121,14 @@ test('⚠️ TaskLedger / LocalAgent 在本仓并不存在 —— 能力清单�
   assert.deepEqual([...CAPABILITY_PLUGINS.agent], ['LocalAgent'])
   // 真实存在的自研插件名。
   assert.ok(CAPABILITY_PLUGINS.recording.includes('BackgroundMic'), 'BackgroundMic 必须在录音能力清单里')
-  // ⚠️ 注意：Sherpa **确实**是真实注册的插件，但它同时是**骨架**（方法全 reject），
-  // 所以「在能力清单里」≠「会被算作可用」—— 筛子在 NOT_IMPLEMENTED_PLUGINS。
   assert.ok(CAPABILITY_PLUGINS.recognition.includes('Sherpa'))
-  assert.ok('Sherpa' in NOT_IMPLEMENTED_PLUGINS, 'Sherpa 必须同时登记为「已注册但未实现」')
+  // ⚠️ 2026-10-17 反转了这一条：Sherpa 随 Phase 4 变成真实现后，
+  //   **必须不在**未实现表里。留着它会让本地 ASR 被误判不可用（流量白白走云端），
+  //   而能力清单与登记表的一致性由 capabilities-stub-gate 负责交叉校验。
+  assert.ok(
+    !('Sherpa' in NOT_IMPLEMENTED_PLUGINS),
+    'Sherpa 已是真实现（6 个 @PluginMethod 里 5 个有实际实现），却仍登记为「未实现」',
+  )
   // 登记表的每一条都要给出可排查的理由 + 一段可校验的指纹
   for (const [name, entry] of Object.entries(NOT_IMPLEMENTED_PLUGINS)) {
     assert.ok(entry && typeof entry === 'object', `${name} 的登记项必须是对象`)

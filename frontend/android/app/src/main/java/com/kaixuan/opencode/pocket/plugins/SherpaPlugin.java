@@ -55,7 +55,7 @@ import java.util.Locale;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * cap-sherpa — sherpa-onnx 本地 ASR 插件（Phase 4 落地，替换 7 月骨架）。
+ * cap-sherpa — sherpa-onnx 本地 ASR 插件（Phase 4 落地，替换 7 月那份只会 reject 的空实现）。
  *
  * 双引擎（模型首次使用时从 GitHub Releases 下载到应用私有目录，不进 APK）：
  *   zipformer   流式转写（实时出字）。int8 encoder 组合 ≈50MB，中英双语，
