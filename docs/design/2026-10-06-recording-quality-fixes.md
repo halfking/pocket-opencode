@@ -97097,3 +97097,128 @@ M8：把 `safeContent` 改回直接透传 `item.content`（真缺陷原形态）
    能同时解决 CSS 注入与远程图片回执；这是产品口径（会改变现有排版与交互）。
 3. **`index.html` 要不要加一条 CSP** —— 本节实测**没有任何 CSP**；
    加 CSP 会同时影响其它渲染路径，属独立的一件事。
+
+---
+
+## §852 URL sink 审计：26 处动态 sink 零校验，5 处外部可控的接上协议白名单
+
+### 1. 扫面
+
+§851 抓的是**渲染 sink**（`v-html`），本节抓它的兄弟——**URL sink**：
+枚举 `:href` / `:src` / `window.open` / `location.href` / `location.assign`
+里**表达式为动态**的 ⇒ **26 处**。
+
+⇒ **全仓没有任何一处校验协议。**
+grep `startsWith('http` / `javascript:` 在前端 **0 命中**。
+
+⚠ 但本仓在别处**已经用同一套思路**：
+- `config/api-base.ts` 的 `normalizeApiBase` **拒绝** `javascript:alert(1)`（有测试）；
+- `aiChatStore.ts:501` 把用户消息里的图片过滤成 `https://` 或 `data:image/`。
+
+⇒ **这两处是「已经做对的那一处」**（与 §851 同一种证据形态），
+「RSS 的 URL 没过滤」是**不一致**，不是「缺一个能力」。
+
+### 2. ⛔ D7：RSS 文章 URL（订阅源作者完全可控）直接进 `href` 与 `window.open`
+
+- `RssItemDetail.vue:130` `<a :href="item.url" target="_blank">原文 ↗</a>`
+- `RssItemDetail.vue:89` `window.open(r.deepLink, '_blank')`
+- `RssItemDetail.vue:175` `<a :href="shareResult.deepLink">`
+- `RssDigestView.vue:193` `<a :href="it.url" target="_blank">`
+- `MeetingDetailView.vue:608` `window.open(item.url, …)`（`onOpenRelated`，
+  `item.url` 来自 `local_meetings` 表，而它的源头同样是 RSS 订阅）
+
+服务端侧：`backend/internal/rss/parser.go` / `store_entities.go` **原样存 URL**，
+不校验 scheme ⇒ 恶意订阅可以给任意协议。
+
+⚠ 影响面：
+- `<a href="javascript:…">` 在 WebView 里**同源执行**；
+- `intent:` / `market:` 这类自定义协议在 **Android WebView 里会被交给系统解析**
+  ⇒ 一个恶意订阅不只是能骗用户点链接，还能把手伸到**应用之外**。
+
+⛔ **未实测**：`target="_blank"` 下 `javascript:` 是否仍执行**依 WebView 版本而定**，
+本节**没有在真机上验证**。⇒ 修复按**最坏情况**处理（不放行），而不是按「大概不执行」。
+
+### 3. 落地：共享 `utils/safe-url.ts`
+
+```
+放行：https?:// 、协议相对 //host 、mailto:
+不放行：javascript: / data: / file: / content: / vbscript: /
+        intent: / market: / tel: / sms:          ← 会交给系统处理，不是「打开网页」
+另：含控制符（\u0000-\u0020、\u007f-\u009f）一律拒
+   ⇒ 防 `java\nscript:alert(1)` 这类浏览器会先剥控制符再解析协议的拼法
+```
+
+5 处接线：模板侧改绑过滤后的 `itemUrl` / `shareDeepLink`；
+脚本侧 `onOpenRelated` 先过白名单再决定要不要跳路由
+（**URL 被拒时落到 in-app 路由分支**，比什么都不做合理）。
+
+⚠ 非字符串入参用 `String(raw)` 兜住而不抛 ——
+它在模板里被直接调用，抛错会把整个渲染带崩。
+
+### 4. 判据
+
+新文件 `frontend/src/utils/__tests__/safe-url.test.ts`，**14 例**：
+- **纯函数单测 6 例**：放行 http/https、协议相对、mailto；
+  拒绝 `javascript:`（含大小写、空白、**换行/制表符/零字节拼法**）、
+  拒绝 `intent:`/`market:`/`tel:`/`sms:`/`file:`/`content:`/`data:text/html`/`vbscript:`；
+  畸形入参不抛。
+- **接线 4 例**：3 个必须 import 的文件（各带「为什么它的值外部可控」）+
+  RSS 原文链接必须用过滤后的值。
+- **未接线棘轮（上界 9）**：带完整阴性表（见下）。
+- **变异负控 4 例**。
+
+### 5. ⚠ 未接线的 9 个文件（逐个读过，理由写在判据注释里）
+
+| 文件 | sink | 判断 |
+|---|---|---|
+| `UnifiedComposer` / `FlashcardEditView` / `FlashcardReviewView` | `:src` | 绑的是**本地生成的 data: URL**，不是外部 URL ⇒ 阴性 |
+| `InvoiceCard` / `InvoicePreviewSheet` | `:src` | 服务端渲染出的缩略图；`javascript:` 在 `<img src>` 上不执行 ⇒ 阴性 |
+| `AIChatView` | `:src="img"` | `aiChatStore.ts:501` 已在**写入前**过滤 ⇒ 阴性 |
+| `EmailAccountAddView` | `:href="provider.authCodeUrl"` | 服务端配置下发的 OAuth 地址（可信面）⇒ **未处理，登记待拍板** |
+| `InvoiceListView` | `:href="shareDocUrl"` | 分享接口下发（可信面）⇒ **未处理，登记待拍板** |
+| `VaultEntryView` | `:href="entry.url"` | **用户自己填的**（自伤面）⇒ **未处理，登记待拍板** |
+
+⚠ **棘轮上界第一版我写 5，而实测是 9** ⇒ 提交当天就红，且报的是「新增未接线」，
+会把人引去查一个**并不存在的回归**。**这是 §849 之后第二次犯「上界拍脑袋」**，
+已改为按实测基线定，并在判据注释里写明理由表。
+
+### 6. ⚠ 我自己又一次踩了 §849 刚记下的坑
+
+判据文件放在 `src/utils/__tests__/` 下，`join(HERE, '..')` 只回到 `src/utils`
+⇒ `read()` 去找 `src/utils/features/rss/…` 报 ENOENT，
+**报错落在第一个 suite 上**，看起来像「判据本身有问题」。
+
+⚠ 我在 §849 **刚把这条写进记忆并写了通用式**（「判据文件里算 SRC 时先确认它到 src 是几层」），
+这一节**又踩了一次** ⇒ **教训写进记忆不等于写进代码，它必须写进那个文件本身。**
+已修（回退两层），并把「⚠ 这是我在 §849 刚踩过并写进记忆的那一条」直接写进判据注释。
+
+### 7. 变异双向验证（**真实文件**）
+
+M9：把 `RssItemDetail` 的原文链接绑回 `item.url`。
+
+| 读数 | 值 |
+|---|---|
+| 基线 | **14 pass / 0 fail** |
+| M9 后 | **12 pass / 2 fail** —— 红的正是「原文链接必须用过滤后的值」与其所属 suite |
+| 复原后 | **14 pass / 0 fail** |
+
+`typecheck` EXIT=0，`npm run gates` **45/45 通过**（53.8s）。
+
+### 8. 口径与未实测
+
+- ⚠ 本节只覆盖**前端模板/脚本里的 URL sink**。服务端下发给原生侧的内容、
+  分享卡生成的 HTML、以及邮件里的链接（走 `sanitizeEmailHtml`）不在范围内。
+- ⚠ `target="_blank"` 下 `javascript:` 的真实行为**未在真机验证**（见 §852.2）。
+- ⛔ 未实测：恶意订阅在真机上被打开的实际概率；`intent:` 在目标 Android WebView
+  上是否真的会被交给系统解析。
+
+### 9. 待拍板
+
+1. **§852.5 表里那 3 个「未处理」的要不要也接上** ——
+   `provider.authCodeUrl` / `shareDocUrl` 来自服务端（可信面），
+   `entry.url` 来自用户自填（自伤面）⇒ 三者风险都很低，但接上成本也极低。
+2. **`tel:` / `mailto:` 要不要分开处理** —— 现在 `mailto:` 放行、`tel:` 不放行，
+   是我按「会交给系统处理」这条线划的；如果产品上需要「点击拨号」，口径要改。
+3. **RSS 正文与 RSS 链接要不要在**服务端**入库时就校验** ——
+   前端净化是最后一道，前端改版/新客户端都可能漏；
+   入库时校验（丢弃非法 scheme 或标记）能覆盖所有消费方。属架构口径。

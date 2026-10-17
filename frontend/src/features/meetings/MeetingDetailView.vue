@@ -151,6 +151,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { EmptyState, Skeleton } from '@/components'
 import { useMeetingRecorder } from '../../composables/useMeetingRecorder'
+import { safeExternalUrl } from '../../utils/safe-url'
 import { useLiveSummary } from '../../composables/useLiveSummary'
 import { useToast } from '../../composables/useToast'
 import { finalizeRecording } from './meeting-recording-finalize'
@@ -604,8 +605,11 @@ async function onAccTodo(draft: MeetingTodoDraft) {
 }
 
 function onOpenRelated(item: RecommendItem) {
-  if (item.url) {
-    window.open(item.url, '_blank', 'noopener')
+  // §852：item.url 来自本地会议表，而它的 url 字段源头是 RSS 订阅（服务端原样入库）
+  // ⇒ 同样要过协议白名单，否则恶意订阅能把手伸到应用之外。
+  const safeUrl = safeExternalUrl(item.url)
+  if (safeUrl) {
+    window.open(safeUrl, '_blank', 'noopener')
     return
   }
   if (item.type === 'note') router.push(`/notes/${item.id}`)

@@ -6,6 +6,7 @@ import { useI18n } from 'vue-i18n'
 import { toUserMessage } from '../../api/error-message'
 import AddToLearningButton from '../study/AddToLearningButton.vue'
 import { sanitizeHtml } from '../../utils/markdown'
+import { safeExternalUrl } from '../../utils/safe-url'
 
 const route = useRoute()
 const router = useRouter()
@@ -23,6 +24,14 @@ const item = ref<RSSItem | null>(null)
  *   同一仓库对聊天/笔记/会议摘要都走它，RSS 是唯一漏掉的一个。
  */
 const safeContent = computed(() => sanitizeHtml(item.value?.content ?? ''))
+
+/**
+ * §852：URL sink 也要过协议白名单 —— `item.url` 来自订阅源（服务端原样入库），
+ * `<a href="javascript:…">` 会同源执行，`intent:` / `market:` 还会被 Android
+ * 交给系统去解析。显示用的文本不受影响，只有 href/window.open 走这里。
+ */
+const itemUrl = computed(() => safeExternalUrl(item.value?.url))
+const shareDeepLink = computed(() => safeExternalUrl(shareResult.value?.deepLink))
 const loading = ref(true)
 const errorMsg = ref('')
 const shareOpen = ref(false)
@@ -85,8 +94,8 @@ async function doShare(dest: 'wechat' | 'weibo' | 'clipboard' | 'download') {
         shareNotice.value = '未能写入剪贴板，内容已显示在下方，请长按手动复制'
       }
     }
-    if (dest === 'weibo' && r.deepLink) {
-      window.open(r.deepLink, '_blank')
+    if (dest === 'weibo' && safeExternalUrl(r.deepLink)) {
+      window.open(safeExternalUrl(r.deepLink), '_blank', 'noopener')
     }
   } catch (e: any) {
     errorMsg.value = `分享失败：${e?.message ?? e}`
@@ -127,7 +136,7 @@ function back() {
       <div class="meta-row">
         <span v-if="item.author">{{ item.author }}</span>
         <span v-if="item.publishedAt">{{ new Date(item.publishedAt).toLocaleString() }}</span>
-        <a :href="item.url" target="_blank" rel="noopener">原文 ↗</a>
+        <a v-if="itemUrl" :href="itemUrl" target="_blank" rel="noopener">原文 ↗</a>
       </div>
       <div v-if="item.summary" class="summary">{{ item.summary }}</div>
       <!-- P2：RSS 条目 → 学习条目（读过的订阅会按记忆法则回来找你） -->
@@ -172,7 +181,7 @@ function back() {
         <div v-if="shareResult" class="result">
           <div v-if="shareResult.deepLink">
             <strong>微博深链接：</strong>
-            <a :href="shareResult.deepLink" target="_blank">{{ shareResult.deepLink }}</a>
+            <a v-if="shareDeepLink" :href="shareDeepLink" target="_blank" rel="noopener">{{ shareResult.deepLink }}</a>
           </div>
           <div v-if="shareResult.copyText">
             <strong>复制内容：</strong>
