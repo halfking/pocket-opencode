@@ -707,6 +707,10 @@ export class MeetingRecorderRuntime {
 
       // ⚠ §808：`stop()` 已改成 async（等最后一枚 dataavailable）—— 旧写法
       //   `?.stop() ?? null` 拿到的是 **Promise**，会被当成 Blob 存进库。
+      // ⚠ §826：必须**在 cleanupMedia() 之前**取值 —— 它会把 nativeMode 置回 false，
+      //   而下面的决策发生在它之后 ⇒ 晚一步读到的恒为 false，这条诊断就成了死代码
+      //   （而且不报任何错：它只是永远不触发）。
+      const wasNativeMode = this.nativeMode
       const fullBlob = (await this.vadSegmenter?.stop()) ?? null
       await this.cleanupMedia()
       // ⚠⚠ §812：**不读 interval 的缓存值**，而在此刻重算。
@@ -723,8 +727,13 @@ export class MeetingRecorderRuntime {
       let audioPath = ''
       // ★§820：落盘成败必须分清。此前 catch 里一句「ok」就吞掉异常，而下面
       //   后面那句「把 audioPath 与完成状态一起写库」的 updateMeeting **照样**写入
-      //   objectURL ⇒ 落盘失败时用户看到一个「完好」的会议、能播的音频，
-      //   刷新后音频彻底消失，且 `loadMeetingAudio` 返回 null ⇒ 整段重转永久不可用。
+      //   objectURL ⇒ 落盘失败时用户看到一个「完好」的会议记录，刷新后音频彻底消失，
+      //   且 `loadMeetingAudio` 返回 null ⇒ 整段重转永久不可用。
+      //   ⚠⚠ **后续更正（务必先读，§826.2）**：本段原话写的是「能播的音频」——
+      //   实测前端**没有任何音频播放界面**（全仓无 `<audio>`／`new Audio`／播放器组件），
+      //   `audioPath` 只被 API 序列化、笔记音频徽章、以及 `loadMeetingAudio` 消费
+      //   ⇒ 这次失败对用户的真实表现是「精校质量降级」，不是「放不出声」。
+      //   结论（落盘失败要如实写 null）**不变**，变的是对后果的描述。
       //   决策在跑得到的纯函数 `resolvePersistedAudio` 里（§52：类方法在 node 里测不到）。
       let audioPersisted = false
       let audioSaveError: unknown = null
@@ -743,6 +752,9 @@ export class MeetingRecorderRuntime {
         objectUrl: audioPath,
         persisted: audioPersisted,
         error: audioSaveError,
+        // ★§826：原生后台录音下 `vadSegmenter` 从不创建 ⇒ fullBlob 恒为 null
+        //   ⇒ 不是「存失败」，而是「压根没有整段音频可存」。两者成因不同，必须分开说。
+        nativeMode: wasNativeMode,
       })
       if (audioDecision.warning) console.warn(`[meeting-recorder] ${audioDecision.warning}`)
       // 等在途分段转写落库再置 completed；上限 10s，防止个别请求挂死卡住停止流程。

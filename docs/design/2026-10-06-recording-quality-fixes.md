@@ -93398,6 +93398,15 @@ await updateMeeting(meetingId, {
 ⭐ 最关键的是 **3 + 4 组合起来是「谎报」**：库里存着一个此刻能播、刷新后必死的地址，
 会议状态是「已完成」，用户**没有任何途径**知道音频其实没存下来。
 
+> ⚠⚠ **后续更正（务必先读，§826.2）**：上面「此刻能播」与本节「用户看不到」的表述
+> 都基于一个**当时未核实**的假设 —— 好像前端有音频播放界面。
+> 实测（2026-10-18）：全仓**没有任何** `<audio>` 元素／`new Audio`／播放器组件，
+> `audioPath` 只被三处消费：API 序列化（`note-adapter.ts:24`）、笔记卡片上的音频徽章
+> （`NoteCard.vue:25`）、以及 `loadMeetingAudio`（整段重转的唯一入口）。
+> ⇒ **「用户能听到」不成立**；这次失败对用户的真实表现是
+> **「精校质量降级、笔记没有音频标记」**，而不是「放不出声」。
+> ⇒ **结论（落盘失败必须如实写 `null`）完全不变**，变的只是对后果的描述。
+
 ⚠ **成因不是理论上的**：Android WebView / iOS WKWebView 的 IndexedDB 配额很小，
 一场 60 分钟会议的 webm 很容易触顶（`QuotaExceededError`）。这正是最需要它的场合。
 
@@ -94016,3 +94025,160 @@ this.recorder.start(this.opts.sliceMs)                    // :122  ← **采集�
 * ⛔ §811 那 4.48s 墙钟缺口未实测，因此**刻意没有**采用任何基于时长差的判据。
 * ⚠ 探针用的是**构造形状**（4 段 / 2 条回执），不是真实 ASR 输出 ——
   结论是**构造性**的（坐标系错位必然发生），不依赖真实素材。
+
+## §826 ⛔ **Android（生产主路径）上会议录音从不存在「完整音频」**：整段高精度重转永远不发生
+
+§818–§825 六处缺陷都在「会议路径」上，但它们共享一个从未被审过的前提：
+**存在一份完整的会议录音**。本节把这个前提本身查了 —— 它在 Android 上不成立。
+
+### §826.1 缺陷链（每一步都在生产代码里可核对）
+
+| # | 事实 | 证据 |
+|---|---|---|
+| 1 | `isBackgroundMicSupported()` 在原生端**恒为真**（= `Capacitor.isNativePlatform()`） | `background-mic.ts:42-44` |
+| 2 | `startBackgroundMic()` 成功 ⇒ `this.nativeMode = true` | `recordingRuntime.ts:372` |
+| 3 | `new VadSegmenter(...)` 在 **`if (!this.nativeMode)`** 里 ⇒ **native 模式下段器根本不存在** | `recordingRuntime.ts:382` |
+| 4 | `stop()`：`const fullBlob = (await this.vadSegmenter?.stop()) ?? null` ⇒ 恒为 `null` | `recordingRuntime.ts:711` |
+| 5 | `saveMeetingAudio` **全仓只有这一处调用**（在 4 的 `if` 里）⇒ 完整音频从不落盘 | `recordingRuntime.ts:735` |
+| 6 | 原生侧也补不上这个洞：`MeetingRecordService` 用 `AudioRecord` **直推 PCM**，全文**没有** `FileOutputStream`／`MediaMuxer`／`MediaRecorder` ⇒ 它只发分片，不产文件 | `MeetingRecordService.java:154-180` |
+
+⇒ **`meeting.audioPath` 恒为 null、`loadMeetingAudio` 恒返回 null**
+⇒ **整段高精度重转永远不发生**，精校只能基于录音期间逐段落库的文本。
+
+⚠ 这条事实对本会话此前**所有**关于「整段重转提升质量」的结论都是前提性的：
+§785/§787/§810 那一系列的质量分析，在 Android 生产路径上根本没有发生的机会。
+
+⚠ 而它此前**没有任何门或注释守着**：`background-mic-contract.test.mjs` 的 18 条用例
+全部关于 start 的结论、失败可见性与 Android 14+ 合规，**零条**涉及整段音频。
+
+### §826.2 ⚠ 后更正：§820「用户看到一个能播的会议」不成立
+
+核实 §826 链路的**用户侧出口**时才发现：前端**没有任何音频播放界面**。
+全仓无 `<audio>` 元素、无 `new Audio`、无播放器组件；`WaveformVisualizer` 只画
+录音中的电平。`audioPath` 实际只有三个消费者：
+
+| 消费者 | 位置 | 后果 |
+|---|---|---|
+| API 序列化 | `note-adapter.ts:24`（`audio_path`） | 服务端拿到的是刷新后必死的 blob URL |
+| 笔记卡片音频徽章 | `NoteCard.vue:25`（`v-if="note.audio_path"`） | 没音频 ⇒ 徽章不显示 |
+| 整段重转入口 | `loadMeetingAudio` | 没音频 ⇒ 重转不可用 |
+
+⇒ 已给 **§820 挂「后续更正（务必先读）」指针**（`recordingRuntime.ts` 里那段注释也已同步）。
+⇒ **§820 的结论一字不改**（落盘失败必须写 `null`），改的只是对后果的描述。
+⇒ 同一条纪律也用在本节落地的告警文案上：删掉了原来的「本次会话内仍可回放」。
+
+### §826.3 本轮落地：把「压根没有整段音频」与「存失败」分开说
+
+两者**成因完全不同**（原生侧只发分片 vs IndexedDB 配额），排查的人会去查完全不同的地方
+（§818 的「根因 vs 症状」纪律）。改法：
+
+| # | 位置 | 改动 |
+|---|---|---|
+| 1 | `meeting-audio.ts` `resolvePersistedAudio` | 新增 `nativeMode` 入参；`!error && nativeMode` ⇒ 一条说清「原生只发分片」的诊断；顺序**在**失败分支之前 |
+| 2 | `recordingRuntime.ts` `stop()` | **在 `cleanupMedia()` 之前**捕获 `wasNativeMode`，再传进决策 |
+| 3 | 同上 | 落盘失败的文案删掉「仍可回放」，改为说清真实后果 |
+
+⚠⚠ 第 2 条是本节最容易踩空的地方：`cleanupMedia()` 里有一行
+`this.nativeMode = false`，而它就跑在决策**之前**
+⇒ **晚一步读到的永远是 false，这条诊断会变成永不触发的死代码，而且不报任何错。**
+⇒ 判据专门为它写了一条（断言捕获早于清理），变异 E 把它撤掉后立刻转红。
+
+⚠ **仍然不许写假的 `audioPath`** —— §820 那条不因为「换成因」就退让（变异 D′ 盯着）。
+
+### §826.4 判据（11 例全绿）+ 变异（8 个全中）
+
+`frontend/src/native/__tests__/meeting-audio-native-mode.test.ts`
+
+* **行为层（真牙齿）**：原生分支必须出声且说清成因 / 两种成因必须给不同文案（顺序不能反）/
+  仍不许写假 `audioPath` / web 模式不得被误伤 / 文案不得回退到「仍可回放」。
+* **接线层（源码扫描，⚠ 按 §818 的教训对「信号变死代码」零牙，只保证证据没被搬走）**：
+  捕获早于 `cleanupMedia` / `cleanupMedia` 真的会把 `nativeMode` 清掉 /
+  值真的传进决策 / `VadSegmenter` 仍受 `nativeMode` 约束 / 原生侧不写容器 / 落盘点仍只有一个。
+
+| # | 变异 | 结果 |
+|---|---|---|
+| A | 删掉原生分支 | ✅ 1 红 |
+| B | 条件放宽成「只要没有异常」（web 模式被误伤） | ✅ 2 红 |
+| C | 顺序反过来（有异常时先说「压根没有」） | ✅ 1 红 |
+| D′ | 原生分支退回写一个假 `audioPath` | ✅ 1 红 |
+| E | 不提前捕获（诊断恒为 false 且不报错） | ✅ 1 红 |
+| F | 捕获了却不传进决策 | ✅ 1 红 |
+| G | 文案回退到「仍可回放」 | ✅ 1 红 |
+
+⚠ **第一次的变异 D 是无效变异**：我写的是 `opts.objectUrl || null`，而原生分支里
+`objectUrl` 本来就是 `''` ⇒ `'' || null` 仍是 `null` ⇒ **0 红**。
+换成真会改行为的 D′（`|| 'blob:fake-native'`）才打出红。
+⇒ **「变异 0 红」有两种完全不同的含义**：判据有洞，和变异本身没改到行为。**必须分开确认**。
+
+⚠ 判据自己也翻过两次车（都是量具问题，不是结论问题）：
+① 用全文件 `indexOf` 比较「捕获 vs cleanupMedia」，先命中的是 `switchDevice` 里那次调用
+   ⇒ **正确的代码也会红**；改成「从函数锚点起的有界切片」。
+② 试过用仓里的 `balancedSpan` 取函数体，它在签名含 `Promise<{...}>` 时
+   `indexOf('{')` 命中的是**返回类型里那对花括号**，inner 只有 64 字符
+   ⇒ **判据静默变瞎**。两版各踩一半才对（锚点停在签名末尾 + 显式传 openCh，最终仍用切片）。
+
+### §826.5 ⛔ 口径与未实测
+
+* 行为判据 11 例 + 变异 8 个（含 1 个**自曝无效**的变异 D，已如实登记）。
+* `typecheck` EXIT=0；`npm run gates` 本轮**未跑完 45/45** —— 卡在第 34 项
+  `check:env-example`，**与本节无关**（见 §827.1）；第 1–33 项通过，
+  第 35–45 项逐项单独跑**全绿**。
+* ⛔ **未实测**：真机 Android 上 `nativeMode` 的实际命中率（本节结论是**构造性**的：
+  只要 `nativeMode=true`，链路就必然没有整段音频）；原生分片能否在设备上被拼回整段。
+* ⛔ 分片落盘失败本身也是静默的（`ingest-speech.ts:45` 的 `.catch(() => {})`），
+  本轮**未动**（它影响的是分片级音频备份，不是整段重转）—— 登记备查。
+
+### §826.6 待属主拍板（本轮不代拍）
+
+1. **要不要用已落盘的分片拼出整段音频** —— 与 §824 的 A/B/C 属同一族，但**更容易**：
+   原生分片是**完整 WAV**（`emitPart(seq, wav, …)`），PCM 拼接只涉及去头与重写头，
+   不像 §824 的 WebM 段需要解码重编码。但它会改存储形态 ⇒ 属产品口径。
+2. **「本次没有完整录音」要不要升为用户可见** —— 目前只到开发者 console（与 §813 一致）。
+3. **整段重转在 Android 上等于永不发生，这件事是否改变「录音质量」的整体路线**
+   （当前投入都在精校/同音纠正/归属上，而它们在 Android 上都只能拿到实时分段文本）。
+
+## §827 门禁互斥：`gofmt` 与 `check:smart-quotes` 在同一行上**结构性打架**
+
+不是本会话引入的，但它**挡住了本会话的验证**，且性质是「两个门不可能同时满足」。
+
+### §827.1 取证与实测
+
+* 并发提交 `55a050c0`（"SQL 注释里 2 处弯引号订正"）把两处 doc 注释里的 `''` 改成了 ASCII
+  `''`，让 `check:smart-quotes` 放行；
+* 而 `check:gofmt` 随后判红，**两个文件**：
+  `backend/internal/email/store_select_scan_parity_test.go`、
+  `backend/internal/server/live_note_search_scope_probe_test.go`。
+
+**实测（`/tmp/gofmt-probe`）**：`gofmt` 会把 **doc 注释**里的 `''`（0x27 0x27）
+**改写成 `”`（U+201D）**，连反引号代码段里也一样：
+
+| 输入（doc 注释） | gofmt 输出 | |
+|---|---|---|
+| `COALESCE(e.action_reason, '')` | `COALESCE(e.action_reason, ”)` | ❌ 与 `check:smart-quotes` 直接冲突 |
+| 同上，但写在**函数体内**的注释 | 原样保留 `''` | ✅ |
+| 同上，但用 **tab 缩进代码块** | 原样保留 `''` | ✅ |
+
+⇒ **「doc 注释里逐字记录 SQL 空串字面量」这件事，在本仓当前的门禁组合下无解**：
+写 `''` ⇒ gofmt 红；按 gofmt 写 `”` ⇒ smart-quotes 红。
+⇒ 而 `npm run gates` 在第 31 项就停 ⇒ **整条 45 项门禁无法跑完**。
+
+### §827.2 本轮怎么解决的（不动任何门的语义）
+
+把这两处注释里的 SQL 片段改成 **tab 缩进代码块**，于是 `''` 逐字保留、
+两个门同时放行（`gofmt -l` 空、`check:smart-quotes` OK）。
+⚠ 明确**没有**改两个门中的任何一个 —— 让门禁迁就代码、或让代码迁就错误的门禁语义，
+都是把问题换个地方存起来。
+
+⚠ 明确**没有**把 `''` 写成 `""` —— 那虽然两个门都过，但 **SQL 里 `""` 是标识符不是空串**，
+注释会从「排版走样」变成「内容撒谎」，比原状更坏。
+
+### §827.3 ⛔ 仍未解决 / 待拍板
+
+* **durable 的修法没有代拍**，三条候选：
+  ① 约定「doc 注释里不逐字写 `''`」（靠人记，本轮已示范 tab 代码块的写法）；
+  ② 让 `check:smart-quotes` 豁免「gofmt 规范化后的形态」（会把弯引号放回来）；
+  ③ 让 `check:gofmt` 豁免仅由 doc 注释引号产生的差异（实现最复杂）。
+* ⚠ 本次门禁**未跑完**的另一个原因（同样不是我引入的）：并发提交
+  `dbbf998a` / `c3a188e7`（RSS 目录扩展）新增了 `POCKET_RSS_ALLOW_BENCHMARK_IPS`，
+  `backend/internal/config` 读它而 `.env.example` 没写 ⇒ `check:env-example` 第 34 项失败。
+  ⇒ 该变量属于**并发会话正在做的功能**，本轮**只读不改**，登记在此。

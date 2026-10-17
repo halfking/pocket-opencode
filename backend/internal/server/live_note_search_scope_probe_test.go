@@ -15,7 +15,10 @@
 // 笔记行的 user_id 由鉴权写死：`server_assistant.go:356` 是 `n.UserID = uid`，
 // `server_meeting_ingest.go:223` 是 `UserID: uid` —— 生产里**永远非空**。
 //
-// ⇒ 查询恒为 `user_id = '' AND workspace_id = 'default'` ⇒ **零行**
+// ⇒ 查询恒为下面这个条件 ⇒ **零行**
+//
+//	user_id = '' AND workspace_id = 'default'
+//
 // ⇒ search_notes 恒回「没有找到与「x」相关的笔记。」
 // ⇒ 用户需求里的「给出一些参考的资料」在生产中**永远检索不到任何东西**，
 //

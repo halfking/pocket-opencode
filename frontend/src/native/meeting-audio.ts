@@ -109,15 +109,37 @@ export function resolvePersistedAudio(opts: {
   persisted: boolean
   /** 落盘失败时的原始异常。 */
   error?: unknown
+  /**
+   * §826：本次走的是**原生后台录音**（Android 前台服务）。
+   *
+   * ⚠ 必须在 `cleanupMedia()` **之前**取值 —— 那一步会把 `nativeMode` 置回 false，
+   *   而决策发生在它之后 ⇒ 晚一步读到的永远是 false，诊断就成了死代码（且不报错）。
+   */
+  nativeMode?: boolean
 }): PersistedAudioDecision {
   if (opts.persisted) return { audioPath: opts.objectUrl, warning: null }
+  // ⚠⚠ 顺序不能反：「压根没有整段音频可存」必须**先于**「存失败」判。
+  //   两者的成因不同（原生侧只发分片 vs IndexedDB 写失败），排查的人会去查完全不同的地方。
+  if (!opts.error && opts.nativeMode) {
+    return {
+      audioPath: null,
+      warning:
+        '本次是原生后台录音：原生侧只产出分片、不产整段文件'
+        + '（Android 前台服务用 AudioRecord 直接推 PCM，没有容器封装）'
+        + '⇒ 这场会议没有可保存的完整录音，整段高精度重转不会进行，'
+        + '精校只能基于录音期间逐段落库的文本。',
+    }
+  }
   const why = opts.error instanceof Error ? opts.error.message : String(opts.error ?? '未知原因')
   return {
     audioPath: null,
     warning:
       '会议录音落盘失败：完整音频未能存进 IndexedDB'
-      + `（${why}）。本次会话内仍可回放，但刷新/重启后音频将不存在，`
+      + `（${why}）。刷新/重启后音频将不存在，`
       + '且整段高精度重转将永久不可用（只能沿用分段文本）。'
+      + '⚠ 本前端目前**没有任何音频播放界面**（无 <audio>/播放器组件），'
+      + 'audioPath 只被 API 序列化、笔记音频徽章与整段重转消费 —— '
+      + '所以这次失败对用户的表现是「精校质量降级」，而不是「放不出声」。'
       + '常见成因：IndexedDB 配额不足。',
   }
 }
