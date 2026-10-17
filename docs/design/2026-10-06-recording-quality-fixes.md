@@ -94769,3 +94769,132 @@ AI 总结漏了最后几句、界面上零提示。
 2. `this.error` 这条通道现在的语义已经从「转写错误」扩到「转写 / 落库收尾错误」。
    要不要在 §832 的 `draftSaveError` 之上做统一（当前是两处各管一段，
    好处是上下文不同、文案不同；坏处是两套 ref）。
+
+## §834 会议收尾写库失败完全无声，且「状态卡在 recording」会**自动开麦**重录
+
+> 承接 §832/§833。§834 是**同一条因果链的第三段**，而且这次抓到的不是「一条静默」，
+> 是「**两套相反的契约**同时存在于一个仓库里」。
+
+### §834.1 ⛔ D1：收尾三处落库里，唯一没有保护的那一处
+
+会议收尾（`MeetingRecorderRuntime.stop()`）里有三处落库，前两处都被保护过：
+
+| # | 落库 | 保护 | 证据 |
+|---|---|---|---|
+| ① | `saveMeetingAudio` | `try/catch` + 落盘失败**如实写 null** | `recordingRuntime.ts` 音频决策段（§820） |
+| ② | `syncMeetingMetadata` | `runBestEffort` 包着，注释明写「失败**不得冒泡成未处理拒绝**」 | 同文件 best-effort.ts 调用处 |
+| ③ | **`updateMeeting(id, { status: 'completed', … })`** | **无** | 同文件收尾段 |
+
+⇒ ③ 抛错的连锁后果（逐条实测推出）：
+
+1. 异常冒泡出 `stop()` ⇒ `RecordingPill.onStop` 里
+   `await meetingRecorderRuntime.stop()` 直接中断 ⇒
+   **`toast.success('会议录音已结束并保存')` 根本不执行** ⇒ 用户点完停止，界面上什么都没有；
+2. `this.activeMeetingId.value = ''` 排在它**之后** ⇒ runtime 仍认为这场会议在录；
+3. `status: 'completed'` 是全仓**唯一**写这个状态的地方 ⇒ 这场会议**永久**停在 `recording`
+   ⇒ 会议列表一直显示「录音中」（`statusText('recording') = '录音中'`）。
+
+⚠ 与 §832/§833 的区别：那两处失败后草稿/音频还在；这里失败后「**已完成**」这个事实本身
+没被记下来 ⇒ 它是 D2 的输入。
+
+### §834.2 ⛔ D2：同一个 `recording` 状态，仓库里有两套相反的契约
+
+| 位置 | 契约 |
+|---|---|
+| `meetings-live.ts::getRecordingBySession` 注释 | 「杀进程后**提示恢复，不自动重开采集**」 |
+| `useSessionLiveRecord`（**行为**） | 查到遗留行 ⇒ `toast.warning('上次录音未正常结束…（不会自动重开采集）')` |
+| `MeetingDetailView.onMounted`（**行为**） | `const auto = … \|\| m.status === 'recording'` ⇒ **`await onMicToggle()` 静默开麦** |
+
+⇒ 自动开麦那处是**违背仓库自身两处声明的孤例**，且后果最重：
+麦克风授权弹窗 + **`seedSegments(storedSegments)` + `start({resume:true})`**
+⇒ **把新录音混进同一场会议**（上一场与新一场的转写混在一条会议里），用户完全没打算录。
+
+✅ **删掉这条自动分支不影响任何合法启动**，实测依据：
+三个「开始录音」入口（`MeetingListView:190`、`MeetingRecordView:26`、`router-mobile.ts:320`）
+都在 `createMeeting` 之后立刻带 `?record=1` 跳过来；
+进程内续录走 `micOn = wantMic || isRecording`，麦克风还开着时那条分支本就不触发。
+⇒ 该分支只在**进程被杀 / 收尾写库失败**时才触发 —— 恰好是有害的那两种。
+
+### §834.3 落地
+
+| # | 位置 | 改动 |
+|---|---|---|
+| 1 | 新增 `features/meetings/meeting-finalize-persist-notice.ts`（纯模块） | D1 文案 + 诊断前缀 + D2 的共享提示常量 |
+| 2 | `recordingRuntime.ts` 收尾 | `updateMeeting` 包 `try/catch`：失败 ⇒ `console.error` + `this.toast.error(文案)` + `lastFinalizePersistFailed = true`；**收尾继续做完**（清零 + 返回值不被跳过） |
+| 3 | 同上 | `lastFinalizePersistFailed` 提为**公开字段**，在 `stop()` 开头清零 |
+| 4 | `RecordingPill.vue onStop` | 加 `try/catch`；成功 toast **改为条件式**（收尾写库失败时不再宣告「已保存」） |
+| 5 | `MeetingDetailView.vue` | `auto` 只认 `route.query.record === '1'`；`status === 'recording'` 改为 `toast.warning(共享常量)` |
+| 6 | `useSessionLiveRecord.ts` | 原内联提示语改用**同一个常量** ⇒ 两处承诺不再各自漂移 |
+
+⚠ **通道选择**：失败信息走 `this.toast` 而不是 `this.error` ——
+`MeetingRecorderRuntime` **没有** `error` ref（那是 `NoteRecorderRuntime` 的），
+它对外的用户可见通道一直只有 `toast`（见 `onHidden`）。
+⚠ 也**刻意不**写 `sttError`：那是「分片转写失败」的语义，塞进去会让用户以为录音没转出来。
+⚠ 失败只由 runtime toast 一次，pill 只负责**不再宣告成功**（避免两条 toast 互相盖）。
+
+### §834.4 ⚠ 撞了两道既有门：返回值形状被 §825/§826 **逐字**钉住
+
+第一版把标志放进 `stop()` 的返回值（`finalizePersistFailed`），
+结果 `audio-time-base.test.ts` 与 `meeting-audio-native-mode.test.ts` 同时打红：
+它们把签名 `async stop(): Promise<{ audioPath: string; durationMs: number; audioStartsAtMs: number } | null>`
+与那个**单行**返回对象**逐字**钉住了。
+
+| 处置 | 理由 |
+|---|---|
+| ✅ **改我的设计，不动那两道门** | 门是属主的判据，为自己方便去改它 = 改门禁让自己变绿 |
+| ✅ 结论改走**公开字段** `lastFinalizePersistFailed` | 「只有 stop 自己知道那次 updateMeeting 有没有抛」必须外传，而公开字段是唯一不与既有契约打架的通道 |
+| ✅ 顺手把这条约束钉成用例 | 本节判据里断言了签名那一行 ⇒ 以后谁再往返回值加字段，本门会提醒他先看这两道门 |
+
+⇒ ★ **「返回值对象被两道门逐字钉住」是本仓一个真实约束**，值得记：
+新增 stop() 的返回信息前，先看 `audio-time-base` / `meeting-audio-native-mode` 两道门。
+
+### §834.5 判据（18 例全绿）+ 变异（15 个全中）
+
+`frontend/src/features/meetings/__tests__/meeting-finalize-persist-notice.test.ts`
+
+* **文案层（行为）**：说清失败的是「已结束」状态而非音频/文字（并**禁止**说成录音丢失）/
+  说清内容仍在本地 / 给出可行动动作 / 负控 / 诊断前缀与 §820 区分 /
+  共享提示逐字保住「不会自动重开采集」这句既有承诺。
+* **接线层（扫描，⚠ 零牙已标注）**：写 `completed` 那次必须被 try 包住（以「最后一个
+  `try {`」为界，检查它与该字段之间无 catch）/ 失败必须诊断 + toast /
+  **清零点必须排在该 catch 之后** / 结论必须外传且不得动签名 / 每次 stop 先清零 /
+  pill 不得无条件宣告已保存且必须有 try / 详情页 auto 只能是 `record=1` /
+  遗留状态必须提示且逐字复用共享常量 / 前提登记（三个启动入口都带 `record=1`）。
+
+| # | 变异 | 结果 |
+|---|---|---|
+| A / A2 / A3 | 去掉 try / 去掉 toast / 去掉 console.error | ✅ 各 1 红 |
+| A4 | 把 `activeMeetingId` 清零塞回 try 内部 | ✅ 1 红 |
+| B | stop() 开头不再清零标记 | ✅ 1 红 |
+| C / C2 | 公开字段退回 private / 动 stop() 签名 | ✅ 各 1 红 |
+| D / D2 | pill 恢复无条件成功 toast / 去掉 try | ✅ 各 1 红 |
+| E / E2 | 详情页恢复「状态即自动开麦」/ 遗留状态只开麦不提示 | ✅ 各 1 红 |
+| F | 会话侧把提示语改回内联字面量 | ✅ 1 红 |
+| G / H | 文案谎报「录音丢了」/ 不说内容还在本地 | ✅ 各 1 红 |
+| I | 共享常量丢掉「不会自动重开采集」 | ✅ 1 红 |
+
+⚠ **本节判据自己翻车三次，全部据实记**：
+1. 「成功提示是否无条件」写成「这一行不存在」⇒ **修复本身让判据变红**（那一行只是被挪进
+   `if` 里）⇒ 改成拦「stop() 之后紧接着播成功」那种写法。
+2. 窗口宽度 400 字符没盖住 `await updateMeeting(` —— 中间隔着 §820 那四行中文注释
+   （实测 246 字符）⇒ 改成以「最后一个 `try {`」为界，不靠固定宽度。
+3. ⭐ **在自己的注释上翻车**：判据扫 `catch` 时，命中的是我注释里写的
+   「没有 try/catch」这几个字 ⇒ 与本会话已踩 5 次的坑同源。
+   ⇒ 本文件引入 `codeOnly()`：**先剥整行注释再判**。边界据实标注 —— 它只挡整行注释，
+   行尾注释里的标识符仍可能命中（要彻底覆盖得写词法器，成本与收益不相称）。
+
+### §834.6 ⛔ 口径与未实测
+
+* 判据 18 例 + 变异 15 个；`typecheck` EXIT=0；**`npm run gates` 45/45 通过**（53.6s）。
+* ⛔ **未实测**：真机上 `updateMeeting` 写失败的真实发生率（本节结论是**构造性**的：
+  写失败一次，现象即成立）。与 §832 同源的风险：移动端 WebView 存储配额/句柄失效。
+* ⛔ **未实测**：用户重开一场卡在 `recording` 的会议时，看到新的 warning 提示后的行为。
+  D2 的修复把「静默开麦」变成「提示后由用户自己决定」，符合仓库既有两处声明的契约，
+  但**是否该再加一个显式「继续上次录音」按钮**属产品口径，本节未做。
+
+### §834.7 待属主拍板
+
+1. 遗留录音要不要给一个**显式的「继续上次录音」按钮**（当前是提示 + 让用户自己点麦克风，
+   而麦克风点一下会 `seedSegments` 续录 —— 语义上等价，但用户看不出「续录」这两个字）。
+2. 写库失败要不要**自动重试一次**（本节未做：盲重试可能掩盖真实故障；
+   代价是「重试也失败」时用户仍只能手动处理）。

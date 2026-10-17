@@ -7,6 +7,7 @@ import { createMeeting, getMeetingWithSegments, updateMeeting } from '../meeting
 import { getRecordingBySession } from '../meetings/meetings-live'
 import { finalizeRecording } from '../meetings/meeting-recording-finalize'
 import { resolveRecordingTitle } from './recording-title.ts'
+import { LEFTOVER_RECORDING_HINT } from '../meetings/meeting-finalize-persist-notice'
 
 export function useSessionLiveRecord(sessionId: () => string, sessionTitle: () => string) {
   const meetingId = ref('')
@@ -24,7 +25,10 @@ export function useSessionLiveRecord(sessionId: () => string, sessionTitle: () =
   onMounted(async () => {
     const leftover = await getRecordingBySession(sessionId()).catch(() => null)
     if (leftover) {
-      resumeHint.value = '上次录音未正常结束，点麦克风可开始新的实时记录（不会自动重开采集）'
+      // ⚠ §834/D2：这句话现在是**共享常量** —— 原来只有这里有一份，
+      // 而 MeetingDetailView 对同一状态却是「静默自动开麦」。两处引同一个常量，
+      // 「遗留 recording 不自动重开采集」这条承诺就不会再各自漂移。
+      resumeHint.value = LEFTOVER_RECORDING_HINT
       toast.warning(resumeHint.value)
     }
   })

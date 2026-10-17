@@ -151,6 +151,7 @@ import { createMeetingTodos, handoffTodoToAcc, shareTodoWithPerson } from './mee
 import { buildMeetingReminderNote, buildNoActionItemsNote } from './meeting-reminder-note.ts'
 import { dedupeSegments, renderTranscript } from './meeting-dedup.ts'
 import { resolveRefinedView, type RefinedViewMode } from './refined-transcript-view.ts'
+import { LEFTOVER_RECORDING_HINT } from './meeting-finalize-persist-notice'
 import AddToLearningButton from '../study/AddToLearningButton.vue'
 import type { MeetingTodoDraft } from './meeting-todos'
 import type { MeetingStudioAction } from './meeting-page-actions'
@@ -520,8 +521,26 @@ onMounted(async () => {
   //   （无条件赋值），而中间只隔两行。智能体的持久化推荐已改由 `load()`
   //   写进 `agentRecs` 这个独立槽位，渲染口 `mergedRecs` 三路合并。
   await captureContext(m)
-  const auto = route.query.record === '1' || m.status === 'recording'
+  // ⚠⚠ §834/D2：原来这里写的是
+  //   `const auto = route.query.record === '1' || m.status === 'recording'`
+  //   ⇒ 状态卡在 recording 的会议**一打开就自动开麦**。而同一个仓库里另外两处
+  //   对同一状态给出的是**相反契约**：
+  //     · meetings-live.ts::getRecordingBySession 注释：「杀进程后提示恢复，
+  //       **不自动重开采集**」；
+  //     · useSessionLiveRecord 真这么做：查到遗留行 ⇒ toast.warning 一句提示。
+  //   ⇒ 自动开麦那处是违背仓库自身声明的孤例，且后果最重：麦克风授权弹窗 +
+  //     **把新录音混进同一场会议**（seedSegments + start({resume:true})），
+  //     用户完全没打算录。
+  // ⚠ 删掉它**不影响**任何合法启动：三个「开始录音」入口
+  //   （MeetingListView / MeetingRecordView / router-mobile）都在 createMeeting
+  //   之后立刻带 `?record=1` 跳过来；进程内续录走 micOn（= wantMic || isRecording），
+  //   麦克风还开着时那条分支本就不触发。
+  const auto = route.query.record === '1'
   if (auto) await onMicToggle()
+  else if (m.status === 'recording') {
+    // ⚠ 只提示、不开麦，且**逐字复用**会话侧那句承诺（同一个常量 ⇒ 两处不再各说各话）。
+    toast.warning(LEFTOVER_RECORDING_HINT)
+  }
   await refreshRelated()
 })
 
