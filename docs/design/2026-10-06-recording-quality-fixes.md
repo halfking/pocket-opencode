@@ -97222,3 +97222,105 @@ M9：把 `RssItemDetail` 的原文链接绑回 `item.url`。
 3. **RSS 正文与 RSS 链接要不要在**服务端**入库时就校验** ——
    前端净化是最后一道，前端改版/新客户端都可能漏；
    入库时校验（丢弃非法 scheme 或标记）能覆盖所有消费方。属架构口径。
+
+---
+
+## §853 关掉 §851 自己登记的缺口：CSS 注入面 + 凭据面（**净得 0 处可修缺陷**）
+
+### 1. 为什么是这一节
+
+§851.6 我明确把「`:style` 绑定的 CSS 注入」记在范围之外，
+而 §851.7 又留了「`sanitizeEmailHtml` 允许 `style` 标签」这条口子。
+本节把前者关掉，并把后者需要的**凭据侧证据**一起取齐（`localStorage` 里到底有什么）。
+
+### 2. `:style` 绑定 35 处，逐处看过 ⇒ 净 0
+
+| 判据 | 读数 | 为什么它说明「安全」 |
+|---|---|---|
+| 形态 | 35 处**全部**是对象字面量或**返回对象的 computed**（`chromeVars` / `splitVars` / `panelStyle` / `mainScreenStyle` / `secondaryScreenStyle` / `chromeShellStyle`） | Vue 对**对象式** `:style` 走 CSSOM 的**单属性赋值**（`el.style[prop] = v`）⇒ 解析不出「借 `;` 注入别的属性」 |
+| `cssText` | **0 处** | `cssText` 才会**整体解析声明块**，是真正的 CSS 注入口子 |
+| `setAttribute('style', …)` | **0 处** | 同上 |
+| 值的来源 | 全部是本地计算或应用内配置 | **没有一处**来自 RSS / 邮件 / LLM 输出 |
+
+⚠ 只有**字符串式** `:style` 会被 Vue 的 `parseStringStyle` 按 `;` 拆开 —— 本仓一处都没有。
+
+### 3. 凭据面：localStorage 全量清单
+
+| key | 敏感性 | 来源 |
+|---|---|---|
+| **`pocket_token`** | ⛔ **登录 JWT** | `stores/auth.ts:64` `localStorage.setItem(TOKEN_KEY, token)` |
+| `pocket_user` / `pocket_workspace_id` / `pocket_auth_method` | 身份标识 | 同上 |
+| `pocket_api_base` / `selected_server` / `selected_opencode_instance` | 基础设施地址与选择 | 配置相关 |
+| `pocket_device_tier` / `pocket_stt_pref` / `app_theme` | 偏好 | 无敏感 |
+| `pocket:ai-chat:settings:v2:*` | 聊天设置（模型/温度…） | **不含网关密钥** |
+
+⇒ **敏感项只有 `pocket_token` 一个**，而它在 `localStorage`（同源脚本可读）
+⇒ 这正是 §851 那条 XSS 的**收益**所在（也是我拒绝在 §851 写「建议加 CSP 就够了」的原因）。
+
+⭐ **网关密钥不在前端**（值得钉住的不变量）：`api/client.ts` 的 `ApiConfig` 返回
+`apiKeySet: boolean` + **掩码后**的 `apiKey`（形如 `sk-****5678`），
+真值只在服务端 ⇒ 前端注入脚本也拿不到 LLM 凭据。
+
+⚠ **仓库没有通用的安全存储通道**：`native/keystore.ts` 是**保险箱专用**插件，
+且其头注释写明「目前用一个会抛的 stub，直到原生插件被建出来」
+⇒ 所以「把 token 挪到 Keystore」是**架构口径**，不是缺接线 ⇒ **登记不代拍**。
+
+### 4. token 进 URL：**已记录的过渡态**（阴性）
+
+| 位置 | 形态 | 结论 |
+|---|---|---|
+| `api/sse.ts:83` | `…}&token=${encodeURIComponent(token)}` | 注释原话：「**生产应由 server 端做 JWT cookie 鉴权。当前 dev 模式 token 注入 query**」⇒ **自己写明的过渡态** |
+| `api/websocket-url.ts:40` | `url.searchParams.set('token', token)` | `gateway-live.ts:6` 补充平台约束：「`EventSource` 无法设置 `Authorization` 头」 |
+
+⚠ 两条**理由注释都在** ⇒ 将来有人问「为什么 token 在 URL 里」，答案是现成的。
+⚠ 代价确实存在（查询串会进服务端/代理访问日志），但替换方案需要**服务端配合**
+（改 `requireAuth` 的 WS/SSE 例外分支），属架构口径 ⇒ 登记。
+
+⇒ console 输出侧：**0 处**打印 token（唯一一处 `console.warn('⚠️ 未订阅…缺少认证 token')` 是**没有** token 的提示）。
+
+### 5. 判据
+
+新文件 `frontend/src/__tests__/css-injection-and-credential-surface.test.ts`，**11 例**：
+CSS 面 4（尺子非空转 / 无 `cssText` / `:style` 只能对象式或已登记 computed / 值不得来自外部数据）、
+凭据面 5（网关密钥不得进前端存储 / localStorage key 清单棘轮上界 11 / 两条过渡态注释都在 / token 不进 console）、
+变异负控 3。
+
+⚠ **两处判据自己写错了，读码后才改对**（都写进了判据注释）：
+1. `/\\?token=/` 匹配不到 SSE —— 源码里那个 `?` 藏在三元表达式
+   `` `${url.includes('?') ? '&' : '?'}token=` `` 内，**不存在**字面量 `?token=`
+   ⇒ 第一版判据假红；
+2. WebSocket 那边是 `url.searchParams.set('token', token)`，不是字符串拼接
+   ⇒ 用字符串形态去断言同样假红。
+
+⇒ **正则锚点必须按真实写法选** —— 「看起来应该长什么样」和「源码实际长什么样」要分开。
+
+### 6. 变异双向验证（**真实文件**）
+
+M10：在 `VaultEntryView.vue` 里真加一处 `el.style.cssText = '…'`。
+
+| 读数 | 值 |
+|---|---|
+| 基线 | **11 pass / 0 fail** |
+| M10 后 | **10 pass / 1 fail** —— 红的正是「全仓不得出现 cssText 赋值」，并**点名文件行号** |
+| 复原后 | **11 pass / 0 fail** |
+
+`typecheck` EXIT=0，`npm run gates` **45/45 通过**（52.2s）。
+
+### 7. 口径与未实测
+
+- ⚠ 本节**没有发现可自行修复的缺陷**。两条待办都是**架构口径**：
+  「token 存哪」与「token 是否走 URL」，都要求服务端配合。
+- ⚠ `:style` 那条结论成立的前提是「值不来自外部数据」；
+  邮件正文的内联 `style` 属性**不受本判据约束**（那是 §851.7 第 1 条的另一件事）。
+- ⛔ 未实测：§851 那条 XSS 在真机上被利用的可能性；查询串 token 在真实部署的访问日志里的暴露程度。
+
+### 8. 待拍板
+
+1. **`pocket_token` 要不要挪出 localStorage** —— 三条路：
+   ① 服务端改成 **JWT cookie 鉴权**（`sse.ts` 的注释已经这么写了，需配套改 CORS/同源）；
+   ② 原生侧用 **Keystore / Secure Preferences**（但 `native/keystore.ts` 目前是 stub，等于要先把原生插件建起来）；
+   ③ 维持现状并接受「同源注入 ⇒ 凭据可被读走」这个已量化的风险。
+   **这是本会话至今最需要属主拍板的一条**——它决定了 §851 那条 XSS 的真实损失上限。
+2. **WS/SSE 的 token 查询串要不要去掉** —— 现状是注释写明的 dev 过渡态；
+   生产化要改 `requireAuth` 的例外分支，属服务端改动。
+3. **§851.7 第 1 条（邮件 `style` 标签）仍然待拍板** —— 本节未改变它的状态。
