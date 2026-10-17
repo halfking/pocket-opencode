@@ -151,7 +151,17 @@ export function useVoiceInput() {
           const result = await sttApi.transcribe({ audioBlob: blob })
           await deliverOrphan(result.text)
         }
-      } catch { /* 孤儿转写失败无从提示,静默 */ } finally {
+      } catch (e: unknown) {
+        // ⚠§821：owner 已走 ⇒ `sttError` 无处可显示，**但孤儿交付通道还在** ——
+        //   `deliverOrphan` 用的 `toast` 是全局的，组件卸载后照样会弹，
+        //   成功时正是用它告诉用户「转写完成并已复制到剪贴板」。
+        //   ⇒ 失败一声不吭是**不对称**，不是「无从提示」（此处原有的注释与事实不符）。
+        //
+        //   措辞走与另外两处**完全相同**的窄口径规则 `sttFailureText`
+        //   （`api/stt-error.ts`，已有独立用例覆盖），
+        //   不把原始 e.message 拼进 toast —— 那正是本条链第三处漏网的由来。
+        toast.error(sttFailureText(e, '转写失败'))
+      } finally {
         isTranscribing.value = false
       }
     }

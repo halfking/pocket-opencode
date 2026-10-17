@@ -161,6 +161,43 @@ describe('STT 失败原因在渲染链路上不被二次归一压掉', () => {
       'useVoiceInput 应改用 sttFailureText，与 recordingRuntime 保持同一套展示规则',
     )
   })
+
+  /**
+   * §821：上一条只钉了 `stopRecording`（owner 还在页面）那条路。
+   *
+   * `onBeforeUnmount` 里那条**孤儿**路径此前是静默的 —— 而它原来的注释写着
+   * 「孤儿转写失败无从提示,静默」，**与事实不符**：`deliverOrphan` 用的 `toast`
+   * 是全局的，组件卸载后照样弹，成功时正是用它告知用户「转写完成」。
+   * ⇒ 失败一声不吭是**不对称**，用户的语音就这样没了、连一条痕迹都没有。
+   *
+   * ⚠ 这条只能是源码扫描：`useVoiceInput` 是 composable，`onBeforeUnmount`
+   *   需要活跃组件实例，node 里跑不到（与 §818 同一层边界）。
+   *   措辞本身由 `sttFailureText` 的独立用例覆盖（`api/__tests__/stt-error.test.mjs`）。
+   */
+  it('§821 孤儿转写失败也必须走窄口径并出声（不得静默吞掉用户的话）', () => {
+    const src = read('../../composables/useVoiceInput.ts')
+    // 只看 onBeforeUnmount 那一段，别被 stopRecording 那条路的 sttError 误判为已覆盖
+    const um = src.slice(src.indexOf('onBeforeUnmount('))
+    assert.ok(um.length > 0, 'onBeforeUnmount 段没找到')
+    assert.match(
+      um,
+      /toast\.error\(\s*sttFailureText\(/,
+      '孤儿转写失败没有出声 —— owner 已走时 sttError 无处可显示，只有全局 toast 这条通道',
+    )
+    assert.ok(
+      !/catch\s*\{\s*\/\*[^*]*静默[^*]*\*\/\s*\}/.test(um),
+      '静默 catch 又回来了 —— 用户说的那句话会彻底消失且零痕迹',
+    )
+  })
+
+  it('负控：孤儿路径的 toast 不得拼原始 e.message（与另外两处同一口径）', () => {
+    const src = read('../../composables/useVoiceInput.ts')
+    const um = src.slice(src.indexOf('onBeforeUnmount('))
+    assert.ok(
+      !/toast\.error\(\s*`[^`]*\$\{(msg|e)\}/.test(um),
+      '孤儿路径把原始异常拼进了 toast —— 正是本条链第三处漏网的那个坑',
+    )
+  })
 })
 
 describe('runtime 的 error 写入点不变量', () => {
