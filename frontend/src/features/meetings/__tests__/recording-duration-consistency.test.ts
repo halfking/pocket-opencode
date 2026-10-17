@@ -266,3 +266,69 @@ describe('createMeasuringToWav —— 测量 + 透传（这层胶水本来是测
     )
   })
 })
+
+// ⚠ 本组的由来：§806 只支持 PCM 却**没检查**编码类型，于是 Opus-in-WAV 与 ADPCM
+// 都会被套进 PCM 公式、算出「10s」这种**看起来合理、实则完全错误**的数字。
+// 真实缺陷，且只有造非 PCM 容器才照得出来。
+function wavWithFormat(
+  audioFormat: number,
+  opts: { subFormat?: number; bits?: number; sr?: number; ch?: number; seconds?: number } = {},
+): Uint8Array {
+  const bits = opts.bits ?? 16
+  const sr = opts.sr ?? 16000
+  const ch = opts.ch ?? 1
+  const ext = audioFormat === 0xfffe
+  const fmtSize = ext ? 40 : 16
+  const dataBytes = Math.round((opts.seconds ?? 10) * sr * ch * bits / 8)
+  const b = new Uint8Array(12 + 8 + fmtSize + 8 + dataBytes)
+  const dv = new DataView(b.buffer)
+  const a = new TextEncoder()
+  b.set(a.encode('RIFF'), 0); dv.setUint32(4, b.length - 8, true); b.set(a.encode('WAVE'), 8)
+  b.set(a.encode('fmt '), 12); dv.setUint32(16, fmtSize, true)
+  dv.setUint16(20, audioFormat, true); dv.setUint16(22, ch, true)
+  dv.setUint32(24, sr, true); dv.setUint32(28, sr * ch * bits / 8, true)
+  dv.setUint16(32, ch * bits / 8, true); dv.setUint16(34, bits, true)
+  if (ext) {
+    dv.setUint16(36, 22, true)                                   // cbSize
+    dv.setUint16(38, bits, true)                                  // ValidBitsPerSample
+    dv.setUint32(40, 0x3f, true)                                  // ChannelMask
+    dv.setUint16(44, opts.subFormat ?? 1, true)                   // SubFormat GUID 头两字节
+    dv.setUint16(46, 0, true)
+  }
+  const dataAt = 12 + 8 + fmtSize
+  b.set(a.encode('data'), dataAt); dv.setUint32(dataAt + 4, dataBytes, true)
+  return b
+}
+
+describe('⛔ 只认「帧数线性于 dataSize」的编码，否则返回 null（§807）', () => {
+  it('PCM(1) 与 IEEE float(3)：定长编码，算得出', () => {
+    assert.equal(wavDurationSec(wavWithFormat(1)), 10)
+    assert.equal(wavDurationSec(wavWithFormat(3)), 10)
+  })
+
+  it('⭐ Opus-in-WAV(0x704F) 返回 null —— 它的 bitsPerSample 是占位值 16', () => {
+    assert.equal(wavDurationSec(wavWithFormat(0x704f)), null)
+  })
+
+  it('ADPCM(2) / μ-law(7) / MP3(0x55)：压缩块与采样数无线性关系 ⇒ null', () => {
+    for (const af of [2, 7, 0x55]) {
+      assert.equal(wavDurationSec(wavWithFormat(af)), null, `format ${af} 应返回 null`)
+    }
+  })
+
+  it('EXTENSIBLE(0xFFFE) 要读 SubFormat：包 PCM 算得出，包 Opus 返回 null', () => {
+    assert.equal(wavDurationSec(wavWithFormat(0xfffe, { subFormat: 1 })), 10)
+    assert.equal(wavDurationSec(wavWithFormat(0xfffe, { subFormat: 0x704f })), null)
+  })
+
+  it('EXTENSIBLE 但 fmt 太短读不到 SubFormat ⇒ null（认不出就不是 PCM）', () => {
+    const b = wavWithFormat(0xfffe)
+    assert.equal(wavDurationSec(b.slice(0, 12 + 8 + 16 + 8)), null)
+  })
+
+  it('⛔ 不许对非 PCM 返回「猜出来的秒数」', () => {
+    for (const af of [0x704f, 2, 7, 0x55]) {
+      assert.notEqual(wavDurationSec(wavWithFormat(af)), 10)
+    }
+  })
+})

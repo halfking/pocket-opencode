@@ -23,6 +23,10 @@
  * 不改写任何状态；调用方（`meeting-recording-finalize.ts`）只 `console.warn`。
  */
 
+/** wFormatTag：1 = PCM（定长，帧数线性），3 = IEEE float（定长），0xFFFE = EXTENSIBLE。 */
+const WAVE_FORMAT_PCM = 1
+const WAVE_FORMAT_IEEE_FLOAT = 3
+const WAVE_FORMAT_EXTENSIBLE = 0xfffe
 const WAV_HEADER_MIN_BYTES = 44
 const WAV_BYTES_PER_SAMPLE = 2
 /** `wav-encode.ts` 的 TARGET_SAMPLE_RATE，产出恒为 16kHz。 */
@@ -43,8 +47,14 @@ function readTag(b: Uint8Array, at: number): string {
  * 那个偏差只有 ~1ms，被容差吃掉了，但**它是错的**，且换个来源（metadata 更大的
  * LIST/更多 chunk）会成比例放大。⇒ 逐 chunk 走并读 `fmt ` 的真实参数。
  *
- * 返回 `null` 表示「这批字节不是可解析的 PCM WAV」，而不是返回 0：
- * 0 会被读成「录了 0 秒」，那是**假读数**（§803.1 同型：没有那个量，不是那个量为 0）。
+ * 返回 `null` 表示「这批字节的时长我算不出来」，而不是返回 0、也不是按 PCM 公式硬算：
+ * 0 会被读成「录了 0 秒」，那和「按错误的算法算出一个自信的数字」**都是假读数**
+ * （§803.1 同型：没有那个量，不是那个量为 0）。
+ *
+ * ⚠⚠ **只认「时长可由帧数直接算出」的编码**（PCM / IEEE float，含 EXTENSIBLE 包这两种）。
+ * `dataSize / (bits/8 × ch × sr)` 这个式子**只对定长 PCM 成立**：Opus-in-WAV 的
+ * `bitsPerSample` 是**占位值 16**、ADPCM 的「帧」是压缩块，二者套这个式子会算出
+ * 一个**看起来完全合理、实则完全错误**的秒数（实测两者都返回 10s）。⇒ 认不出就 null。
  *
  * 走字节而不是 `AudioBuffer.duration`，是因为本函数要在 node 测试里跑，
  * 也不需要浏览器环境 —— 那正是 §803 说「真值从来没被量过」时缺的东西。
@@ -54,6 +64,8 @@ export function wavDurationSec(wav: ArrayBuffer | Uint8Array): number | null {
   if (b.byteLength < WAV_HEADER_MIN_BYTES) return null
   if (readTag(b, 0) !== 'RIFF' || readTag(b, 8) !== 'WAVE') return null
 
+  let audioFormat = 0
+  let fmtBodyAt = -1
   let sampleRate = 0
   let channels = 0
   let bitsPerSample = 0
@@ -66,6 +78,12 @@ export function wavDurationSec(wav: ArrayBuffer | Uint8Array): number | null {
     const size = b[off + 4] | (b[off + 5] << 8) | (b[off + 6] << 16) | (b[off + 7] << 24)
     const body = off + 8
     if (id === 'fmt ' && body + 16 <= b.byteLength) {
+      audioFormat = b[body] | (b[body + 1] << 8)
+      // EXTENSIBLE(0xFFFE) 的真实编码藏在 SubFormat GUID 的头两个字节（fmt 体 +24）
+      if (audioFormat === WAVE_FORMAT_EXTENSIBLE && body + 26 <= b.byteLength) {
+        audioFormat = b[body + 24] | (b[body + 25] << 8)
+      }
+      fmtBodyAt = body
       channels = b[body + 2] | (b[body + 3] << 8)
       sampleRate = b[body + 4] | (b[body + 5] << 8) | (b[body + 6] << 16) | (b[body + 7] << 24)
       bitsPerSample = b[body + 14] | (b[body + 15] << 8)
@@ -77,6 +95,10 @@ export function wavDurationSec(wav: ArrayBuffer | Uint8Array): number | null {
     off = body + size + (size & 1)
   }
 
+  // ⚠ 定长编码才谈得上「帧数 × 1/采样率 = 秒数」。其它编码（Opus/ADPCM/…）的
+  // dataSize 与采样数没有这个线性关系，硬算就是**自信地编一个数**。⇒ 认不出就 null。
+  if (audioFormat !== WAVE_FORMAT_PCM && audioFormat !== WAVE_FORMAT_IEEE_FLOAT) return null
+  if (fmtBodyAt < 0) return null
   if (dataBytes == null || sampleRate <= 0 || channels <= 0 || bitsPerSample <= 0) return null
   const bytesPerFrame = (bitsPerSample / 8) * channels
   if (bytesPerFrame <= 0 || dataBytes === 0) return null
