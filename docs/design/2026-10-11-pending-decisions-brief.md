@@ -25,6 +25,7 @@
 | §818 转码失败静默 | 根因（转码失败）与症状（`empty-transcript`）此前分离且**都不出口**：`reason` 是死输出，时长护栏判 ok。已加 `transcodeFailed`/`transcodeError` + 纯函数 `finalizeFailureNotice` + 调用点 warn；**降级行为不变**。变异 A/B/C/D 全中（A 撤留痕 5 红 / B warn 成死代码 1 红 / C 删分支 3 红 / D 断接线 1 红）。第一次修复判据**零牙**（把 warn 改成 `void 0 && console.warn` 仍 8/8 绿）⇒ 决策已从跑不到的 `finalizeRecording` 搬进纯函数 |
 | §819 同一个静默 catch 的另外 4 条路 | `ensureGatewayCompatible`（`api/stt.ts:90`、`stt-settings.ts:273/333/384`）同样空 catch 吞掉转码失败。⚠ **这 4 条路上症状是可见的**（`http` 抛错，上层提示「语音识别失败」），不可见的只是**根因** ⇒ 排查的人会去查网关，而真问题在转码。已加可选通报器（默认 `console.warn`，一处覆盖 4 个调用点），通报带 `mimeType`/`bytes`/原始异常；**降级行为一行未改**。变异三个全中（含 §818 漏掉的「信号变死代码」那个）。动手前量过：调用点都是 `onstop` 整段转一次（不刷屏）、node 里 `window.AudioContext` 不存在 ⇒ catch 必然触发 ⇒ 可真断言 |
 | §820 **录音落盘失败被吞掉（数据丢失级）** | `recordingRuntime.stop()` 里 `saveMeetingAudio` 失败被一句「ok」吞掉，而 `updateMeeting` **照样**把 `URL.createObjectURL(...)` 写进会议记录并置完成 ⇒ blob URL 只活在当前文档内存里 ⇒ **刷新/重启后音频彻底消失**，且库里谎报「完好」；`loadMeetingAudio` 随后返回 null ⇒ 整段重转永久不可用。成因不是理论上的（WebView IndexedDB 配额 / 60 分钟会议 webm）。已修：落盘失败时写 `audioPath: null` + 一条说清后果的 warn；**不阻断收尾、不改 status、返回值仍非空**（本次会话内它是真的）。变异三个全中（含「把 bug 改回去」6 红） |
+| §823 护栏基线的**口径不匹配** | 护栏的墙钟起点 `startTime`（`recordingRuntime.ts:385`）设在采集开始（`vad-segmenter.ts:122` 的 `recorder.start()`）**之后** ⇒ `elapsedMs` 系统性偏短。实测这段偏移：**本页首次录音 ≈190ms**（首个 `AudioContext` 构造），之后每次 **≈0.2ms**。⇒ 「不会误报」的结论**不变**，但 §810.3 的 **7.5× 余量是热态数**；首次录音余量 **≈3.0×**（\|−169\| < 500 仍不报）。⚠ 移动端该开销通常更大、**不可外推**。**不改代码** —— 把 `startTime` 提前会改变写进 DB 的 `durationMs`（产品可见数字）且可能触发此前不触发的告警 ⇒ **属产品口径，不代拍** |
 
 ### 🔴 我主动作废的一个方案（别再照着它做）
 
