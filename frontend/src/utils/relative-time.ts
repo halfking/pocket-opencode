@@ -83,7 +83,18 @@ export function formatRelative(
   return `${d.getMonth() + 1}/${d.getDate()}`
 }
 
-/** 秒 → 「M:SS」/「H:MM:SS」，用于会议时长。0 / 负数 / 非有限值返回空串。 */
+/**
+ * 毫秒 → 「M:SS」/「H:MM:SS」，用于会议时长。0 / 负数 / 非有限值返回空串。
+ *
+ * ⚠⚠ §885：这一行原本写的是「**秒** → 「M:SS」/「H:MM:SS」」，而实现收的是
+ *   **毫秒**（`Math.round(ms / 1000)`，参数名也一直是 `ms`）。
+ *   为什么这不是小错：它出现在**唯一该声明单位**的位置上，而同一文件里
+ *   `formatRelative` 的 `@param ts` 明写「Unix 秒」、`toEpochSeconds` 又把
+ *   「秒」定义为归一后的单位 ⇒ **同一个文件里「秒」有两个互相矛盾的定义**。
+ *   照注释推理的人会把会议时长（毫秒）当秒传进来，得到小 1000 倍的时长，
+ *   而且**不报错**（`NotesHubView.vue:391` 那条注释记着真有人照本文件的
+ *   输出形状做过字符串解析，说明这一段确实被当成契约读过）。
+ */
 export function formatDuration(ms: number): string {
   if (!Number.isFinite(ms) || ms <= 0) return ''
   const total = Math.round(ms / 1000)

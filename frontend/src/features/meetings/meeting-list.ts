@@ -37,7 +37,12 @@ export function formatMeetingWhen(ts: number): string {
 }
 
 export function formatDuration(ms: number): string {
-  if (!ms || ms < 0) return ''
+  // ⚠ §885/D55：原来是 `if (!ms || ms < 0)`。`!ms` 挡得住 0 与 NaN（两者 falsy），
+  //   **但挡不住 Infinity** —— 它是 truthy 且不小于 0 ⇒ 会落进下面，
+  //   `Math.floor(Infinity / 60000)` = Infinity、`(Infinity % 60000)` = NaN
+  //   ⇒ 渲染出「Infinity分NaN秒」。改成显式判有限性，与 utils/relative-time.ts
+  //   和 features/tasks/health.ts 对齐（§880.6 记的：判据先扫出来的就是这个）。
+  if (!Number.isFinite(ms) || ms <= 0) return ''
   const m = Math.floor(ms / 60000)
   const s = Math.floor((ms % 60000) / 1000)
   return m > 0 ? `${m}分${s}秒` : `${s}秒`
