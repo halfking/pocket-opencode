@@ -7,10 +7,11 @@
  *
  * 仅在有待审批项时显示（v-if="store.hasPending"）。
  */
-import { onMounted, onBeforeUnmount, watch, reactive, computed } from 'vue'
+import { onMounted, onBeforeUnmount, watch, reactive, computed, ref } from 'vue'
 import { useApprovalStore } from '../../stores/approval'
 import { autoGrow } from '../../composables/useAutoGrowTextarea'
 import { useApiError } from '../../composables/useApiError'
+import { useToast } from '../../composables/useToast'
 
 const props = defineProps<{
   instanceId: string
@@ -28,6 +29,20 @@ const apiError = useApiError()
  */
 const fetchErrorText = computed(() =>
   store.error ? apiError(store.error, '审批状态拉取失败') : '')
+
+/**
+ * §856/D17：**用户自己这次动作**的失败（批准/拒绝/回答/跳过）。
+ *
+ * 刻意与 `store.error` 分开，两个原因：
+ *   ① `store.error` 只由 `fetchPending()` 写（stores/approval.ts:64/71），
+ *      而 `approvePermission`/`denyPermission`/`answerQuestion`/`skipQuestion`
+ *      都**不设**它 ⇒ 复用它等于「批准失败但横幅写着『审批状态拉取失败』」；
+ *   ② §845 的教训：让失败分支与 `<main v-else-if="hasPending">` 互斥会把整个面板藏掉。
+ * ⇒ 放在面板**之外**的独立区块（与 §847 修的那条拉取失败横幅同层），
+ *   且不参与 `hasPending` 的分支判定 ⇒ 面板空了横幅仍在。
+ */
+const actionError = ref('')
+const toast = useToast()
 
 // 每个权限请求的附言（可选）
 const permMessage = reactive<Record<string, string>>({})
@@ -95,14 +110,46 @@ function buildAnswers(reqId: string, count: number): string[][] {
 const permissionCount = computed(() => store.permissions.length)
 const questionCount = computed(() => store.questions.length)
 
+/**
+ * §856/D16：审批附言的静默截断。
+ *
+ * 原来 `onApprove`/`onDeny` 在提交前对 >500 字的附言做
+ * `permMessage[p.id] = permMessage[p.id].slice(0, 500)`，
+ * 而输入框**没有 maxlength、没有字数提示、也没有任何提示消息**。
+ *
+ * 后果的严重性不在「字少了」：这是 **human-in-the-loop 的最后一道闸门**，
+ * 用户在附言里写的通常是**追加的限制条件**（「可以读，但绝对不要改 package.json」）。
+ * 静默丢掉后半段 ⇒ **Agent 收到的是不完整的指令** ⇒ 可能做出用户明确禁止的事，
+ * 而用户以为自己的限制已经传达了。
+ *
+ * ⛔ 后端**没有**这个限制：`PermissionReplyRequest{Reply, Message string}`
+ *   （backend/internal/adapter/opencode_http.go:722）无任何长度校验，直接透传上游。
+ *   ⇒ 那个 500 是前端凭空加的。**上限该不该有、该多大属产品口径，本轮不代拍**；
+ *   本轮只消除「静默」：不再改动用户输入，超限时明确说出来。
+ */
+const PERM_MESSAGE_MAX = 500
+function noticeIfTruncated(message: string | undefined): void {
+  if (!message) return
+  if (message.length <= PERM_MESSAGE_MAX) return
+  toast.warning(`附言超过 ${PERM_MESSAGE_MAX} 字，已按原样提交（超长部分可能被上游拒绝）`)
+}
+
 async function onApprove(p: { id: string }) {
   if (submitting[p.id]) return
-  if (permMessage[p.id] && permMessage[p.id].length > 500) {
-    permMessage[p.id] = permMessage[p.id].slice(0, 500)
-  }
+  // §856/D17：每次动作开头清掉上一条的失败提示，否则它会一直挂着。
+  actionError.value = ''
+  noticeIfTruncated(permMessage[p.id])
   submitting[p.id] = true
   try {
     await store.approvePermission(p.id, permMessage[p.id]?.trim() || undefined)
+  } catch (e: any) {
+    // §856/D17：原来只有 try/finally —— `finally` 说明作者管了「提交中」状态，
+    // 但**没管失败**：`doReplyPermission` 不设 `store.error`
+    // ⇒ 面板那条绑定 `store.error` 的横幅（文案还写着「审批状态拉取失败」）不会亮，
+    //   rejection 直接逃逸成未处理，用户点了「批准」之后**什么也没发生**。
+    // ⚠ 这一族之所以躲过 §854 的扫面，是因为它的口径是「函数体内无 try」，
+    //   而这里**恰好有 try/finally** ⇒ 有 finally 却没有 catch 的那一类被漏掉了（§856.4）。
+    actionError.value = apiError(e, 'errors.operateFailed')
   } finally {
     submitting[p.id] = false
   }
@@ -110,12 +157,14 @@ async function onApprove(p: { id: string }) {
 
 async function onDeny(p: { id: string }) {
   if (submitting[p.id]) return
-  if (permMessage[p.id] && permMessage[p.id].length > 500) {
-    permMessage[p.id] = permMessage[p.id].slice(0, 500)
-  }
+  // §856/D17：每次动作开头清掉上一条的失败提示，否则它会一直挂着。
+  actionError.value = ''
+  noticeIfTruncated(permMessage[p.id])
   submitting[p.id] = true
   try {
     await store.denyPermission(p.id, permMessage[p.id]?.trim() || undefined)
+  } catch (e: any) {
+    actionError.value = apiError(e, 'errors.operateFailed')
   } finally {
     submitting[p.id] = false
   }
@@ -123,10 +172,14 @@ async function onDeny(p: { id: string }) {
 
 async function onAnswer(q: { id: string; questions: any[] }) {
   if (submitting[q.id]) return
+  // §856/D17：每次动作开头清掉上一条的失败提示，否则它会一直挂着。
+  actionError.value = ''
   ensureQState(q.id, q.questions.length)
   submitting[q.id] = true
   try {
     await store.answerQuestion(q.id, buildAnswers(q.id, q.questions.length))
+  } catch (e: any) {
+    actionError.value = apiError(e, 'errors.operateFailed')
   } finally {
     submitting[q.id] = false
   }
@@ -134,9 +187,13 @@ async function onAnswer(q: { id: string; questions: any[] }) {
 
 async function onSkip(q: { id: string }) {
   if (submitting[q.id]) return
+  // §856/D17：每次动作开头清掉上一条的失败提示，否则它会一直挂着。
+  actionError.value = ''
   submitting[q.id] = true
   try {
     await store.skipQuestion(q.id)
+  } catch (e: any) {
+    actionError.value = apiError(e, 'errors.operateFailed')
   } finally {
     submitting[q.id] = false
   }
@@ -185,6 +242,18 @@ onBeforeUnmount(() => {
     <span class="material-symbols-outlined">error</span>
     <span class="approval-fetch-error-text">{{ fetchErrorText }}</span>
     <button type="button" class="approval-fetch-retry" @click="retryFetch">重试</button>
+  </div>
+
+  <!--
+    §856/D17：用户**自己这次动作**失败（批准/拒绝/回答/跳过）的出口。
+    与上面那条同样放在 `v-if="store.hasPending"` 之外，且**不参与**任何 v-else 链 ——
+    理由同上：批准成功后这一项会从 store 里消失 ⇒ hasPending 转 false ⇒
+    把提示放进那个分支就等于「成功了才显示失败」。
+  -->
+  <div v-if="actionError" class="approval-fetch-error" role="alert">
+    <span class="material-symbols-outlined">error</span>
+    <span class="approval-fetch-error-text">{{ actionError }}</span>
+    <button type="button" class="approval-fetch-retry" @click="actionError = ''">知道了</button>
   </div>
 
   <section v-if="store.hasPending" class="approval-panel">
