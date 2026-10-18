@@ -18,7 +18,7 @@
 //
 // Run: node --test src/native/__tests__/migration-guards.test.mjs
 import { strict as assert } from 'node:assert'
-import { test } from 'node:test'
+import { describe, it, test } from 'node:test' // §894 用了 describe/it
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -427,4 +427,133 @@ test('§881 对照组：两条笔记按各自向量给出不同分数（判据�
   const byId = Object.fromEntries(hits.map((h) => [h.noteId, h.score]))
   assert.ok(Math.abs(byId['note-a'] - 1) < 1e-6, `note-a score=${byId['note-a']}`)
   assert.ok(Math.abs(byId['note-b']) < 1e-6, `note-b score=${byId['note-b']}`)
+})
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * §894 D64：`add()` 每次都重新分配整块索引 ⇒ 保存一条笔记的成本随库里笔记数
+ * 线性增长，且**每次保存**都分配/丢弃一整块（到 50000 条上限时约 293MB）。
+ *
+ * 实测（Node 22，预热后测边际成本，三轮取平均）：
+ *   n= 200 →  0.076ms   修后 0.041ms
+ *   n= 800 →  0.277ms   修后 0.044ms
+ *   n=2000 →  1.368ms   修后 0.046ms
+ *   n=4000 →  2.969ms   修后 0.049ms
+ *   n=8000 →  5.276ms   修后 0.056ms      ⇒ 明确线性于 n
+ *
+ * ⚠⚠ 这里**不用计时做判据**（CI 上必然抖动），改用**不依赖时间的性质**：
+ *   「分配容量 > 实际条数」这一条 slack 就足以区分「精确分配」与「几何增长」。
+ *   ⇒ 反过来说，**只有能被性质断言的改进才配写进门禁**。
+ *
+ * ⚠ `matrix`/`capacity` 是 TS private，但 strip-types **不做**运行时访问控制，
+ *   本文件是 .mjs（不参与 vue-tsc）⇒ 可以直接读。
+ * ═══════════════════════════════════════════════════════════════════════════ */
+describe('§894 · D64：向量索引必须几何增长，不得每次重分配整块', () => {
+  /** ⚠ TS 的 private 只是类型约束，运行时不存在 ⇒ .mjs 里读得到。 */
+  const capOf = (idx) => idx.matrix.length / DIM
+  const capField = (idx) => idx.capacity
+
+  /**
+   * 灌 n 条并返回 { db, index }。
+   * ⚠ 必须把 db 一起返回：load() 的读数来自**它**，用另一个空 db 重建会读到 0 条
+   *   （第一版测试 6 就栽在这里，症状是「从库重建后条数不对：0 !== 300」）。
+   */
+  async function filled(n) {
+    const db = makeVectorDb()
+    const index = new VectorIndex(db)
+    await index.load()
+    for (let i = 0; i < n; i++) {
+      await db.run(
+        'INSERT OR IGNORE INTO local_notes (id, content, created_at, updated_at) VALUES (?, ?, ?, ?)',
+        [`n${i}`, `n${i}`, 0, 0],
+      )
+      await index.add(`n${i}`, vec(1, i === 0 ? 0 : 1), 'm')
+    }
+    return { db, index }
+  }
+  const idxOf = async (n) => (await filled(n)).index
+
+  it('★ 前置闸：夹具真能灌进去（否则下面的断言全是恒真）', async () => {
+    const idx = await idxOf(120)
+    assert.equal(idx.size(), 120, `size()=${idx.size()}，夹具本身坏了`)
+    assert.ok(capOf(idx) > 0, 'matrix 长度为 0 ⇒ 读不到私有字段，本节全部断言会变成恒假')
+  })
+
+  it('★★★ 分配容量必须大于实际条数（几何增长的 slack）', async () => {
+    // 精确分配的形状是 `matrix.length === size() * DIM` ⇒ slack 恒为 0。
+    const idx = await idxOf(120)
+    assert.ok(
+      capOf(idx) > idx.size(),
+      `分配容量 ${capOf(idx)} 没有大于实际条数 ${idx.size()} ⇒ 实现退回了「每次按实际条数精确分配」` +
+        '（那是 §894/D64 的原缺陷形状）',
+    )
+    assert.equal(capField(idx), capOf(idx), 'capacity 字段与 matrix 实际长度不一致 ⇒ 两处已分叉')
+  })
+
+  it('★★★ 容量不得超过实际条数的两倍（不许为提速而无限超额分配）', async () => {
+    const idx = await idxOf(120)
+    assert.ok(
+      capOf(idx) <= idx.size() * 2,
+      `分配 ${capOf(idx)} 条的容量却只装了 ${idx.size()} 条 ⇒ 超额分配无上限，会把峰值内存推高`,
+    )
+  })
+
+  it('★★★ 峰值内存不得比修前更大（容量上限必须钉在 MAX_VECTORS）', async () => {
+    // 50000 × 1536 × 4B ≈ 293MB。倍增若不钉上限，最坏会变成两倍。
+    const MAX_CAP = 50000
+    const src = readFileSync(new URL('../vector-index.ts', import.meta.url), 'utf8')
+    assert.match(src, /Math\.min\(MAX_VECTORS,/, 'grow() 的容量上限必须用 Math.min 钉在 MAX_VECTORS')
+    assert.ok(capOf(await idxOf(120)) <= MAX_CAP, '容量超过了 MAX_VECTORS')
+  })
+
+  it('★★★ 跨容量边界后，每条向量仍能被正确检索（几何增长不得改变语义）', async () => {
+    // 覆盖「扩容那一刻」：旧向量留在各自偏移上，没有被搬错或覆盖。
+    const db = makeVectorDb()
+    const index = new VectorIndex(db)
+    await index.load()
+    const N = 300
+    for (let i = 0; i < N; i++) {
+      await db.run(
+        'INSERT OR IGNORE INTO local_notes (id, content, created_at, updated_at) VALUES (?, ?, ?, ?)',
+        [`k${i}`, `k${i}`, 0, 0],
+      )
+      // 交替朝两个方向，命中时应各自 score≈1
+      await index.add(`k${i}`, vec(1, i % 2 === 0 ? 0 : 1), 'm')
+    }
+    assert.equal(index.size(), N)
+    const hits = index.search(queryVec(1, 0), N)
+    const byId = Object.fromEntries(hits.map((h) => [h.noteId, h.score]))
+    for (let i = 0; i < N; i += 2) {
+      assert.ok(
+        Math.abs(byId[`k${i}`] - 1) < 1e-6,
+        `k${i} 本该朝第一维（score≈1），实得 ${byId[`k${i}`]} ⇒ 扩容时向量被搬错了`,
+      )
+      // ⚠ 期望值必须是 1/√2 ≈ 0.707 而不是 0：夹具给奇数项的是 vec(1,1)，
+      //   归一化后是 (0.707,0.707)，与查询向量 (1,0) 点积就是 0.707。
+      //   （第一版这里写 0，是**我算错了**而不是实现有问题 —— 别把量具的错当成产品缺陷。）
+      assert.ok(
+        Math.abs(byId[`k${i + 1}`] - Math.SQRT1_2) < 1e-6,
+        `k${i + 1} 应为 (1,1) 归一化后的点积 ≈0.707，实得 ${byId[`k${i + 1}`]} ⇒ 扩容时向量被搬错了`,
+      )
+    }
+  })
+
+  it('★★★ load() 之后容量必须与实际条数对齐（capacity 不得残留旧值）', async () => {
+    // load() 是「按库里有多少装多少」的权威点；capacity 若不重置，
+    // 下一次 add 就会跳过必要扩容 ⇒ 写进已被占用的偏移 ⇒ 静默覆盖别的向量。
+    const { db, index: grown } = await filled(300)
+    assert.ok(capOf(grown) > grown.size(), '前置条件不成立：没有触发扩容')
+
+    const fresh = new VectorIndex(db)
+    await fresh.load()
+    assert.equal(fresh.size(), 300, '从库重建后条数不对')
+    assert.equal(capField(fresh), 300, `load() 后 capacity=${capField(fresh)}，应为实际条数 300`)
+  })
+
+  it('★★ 量具自检：判据确实能区分「精确分配」与「几何增长」', async () => {
+    // 复刻修前形状（精确分配），证明 slack 断言对它不成立 ⇒ 判据有牙。
+    const exact = { size: () => 120, matrix: { length: 120 * DIM }, capacity: 120 }
+    assert.equal(capOf(exact), exact.size(), '负控前提失败：复刻的形状不是「精确分配」')
+    const grown = await idxOf(120)
+    assert.ok(capOf(grown) > grown.size(), '正向前提失败：新实现没有 slack ⇒ 本节全部断言都是恒假')
+  })
 })
