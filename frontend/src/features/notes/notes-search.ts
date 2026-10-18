@@ -79,7 +79,13 @@ export async function searchSemantic(queryText: string, topK = 10, workspaceId =
 
   const qVec = await embedViaPocketd(queryText)
   if (!qVec) return assetResults
-  const matches: VectorMatch[] = vectorIndex.search(qVec, topK)
+  // ⚠⚠ §895/D65：必须用 **searchAsync**，不能用同步的 `search()`。
+  //   `search()` 是全量暴力点积，单次耗时线性于索引条数
+  //   （实测 n=20000 → 24.89ms，到 50000 上限外推约 62ms），
+  //   而本函数在 **UI 线程**上被调用 ——
+  //   最硬的一条调用点是 `NoteDetailView.loadRelated`：**每次打开笔记详情**都会跑一次。
+  //   `searchAsync` 结果与之逐字相同，只是每 512 条让出一次事件循环。
+  const matches: VectorMatch[] = await vectorIndex.searchAsync(qVec, topK)
   if (matches.length === 0) return assetResults
 
   const ids = matches.map((m) => m.noteId)

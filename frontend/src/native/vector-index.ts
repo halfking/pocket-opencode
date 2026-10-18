@@ -153,50 +153,99 @@ export class VectorIndex {
   /**
    * 语义搜索：返回与 query 向量最相似的 TopK 笔记 ID + 分数。
    * queryVector 必须已 L2 归一化（normalize 处理）。
+   *
+   * ⚠⚠ §895/D65：这是**同步**的，`searchSemantic` 在 UI 线程上调用它
+   *   （最硬的一条：`NoteDetailView.loadRelated` —— 每次打开笔记详情都会跑一次）。
+   *   实测单次耗时线性于条数（Node 22，预热后五轮取平均）：
+   *     n=500 → 0.66ms   n=2000 → 2.30ms   n=8000 → 9.32ms   n=20000 → 24.89ms
+   *   ⇒ 到 MAX_VECTORS 上限（50000）外推约 62ms 的**主线程冻结**；
+   *     移动端 JS 通常再慢 3–10 倍。
+   *   ⇒ 生产路径请改用 `searchAsync()`（结果逐字相同，只是分片让出事件循环）。
+   *
+   * 本方法保留同步形态：判据与「不引入 async 之前」的调用点仍用它，
+   * 且它是 `searchAsync` 的语义基准。
    */
   search(query: Float32Array, topK = 10): VectorMatch[] {
-    if (!this.loaded || this.ids.length === 0) return []
+    const prep = this.prepare(query, topK)
+    if (!prep) return []
+    const out: VectorMatch[] = []
+    for (let i = 0; i < this.ids.length; i++) {
+      considerInto(out, this.ids[i], this.dotAt(i, prep.q), prep.k)
+    }
+    return out
+  }
 
-    const q = normalize(query)
+  /**
+   * 与 `search()` **结果逐字相同**的异步版本：每扫 `chunkSize` 条让出一次事件循环。
+   *
+   * ⚠ 分片不是为了「跑得更快」（总工作量一样），是为了**不让单次任务占满一帧**：
+   *   20000 条 / chunk 512 ⇒ 39 片 × 约 0.64ms，每片都远低于一帧预算
+   *   ⇒ 界面在检索期间仍可滚动、可响应输入。
+   */
+  async searchAsync(query: Float32Array, topK = 10, chunkSize = SCAN_CHUNK): Promise<VectorMatch[]> {
+    const prep = this.prepare(query, topK)
+    if (!prep) return []
+    const out: VectorMatch[] = []
+    const n = this.ids.length
+    const step = Math.max(1, chunkSize)
+    for (let i = 0; i < n; i++) {
+      considerInto(out, this.ids[i], this.dotAt(i, prep.q), prep.k)
+      if ((i + 1) % step === 0) await yieldToEventLoop()
+    }
+    return out
+  }
+
+  /** 两个 search 共用的前置：未加载 / 空索引 / topK 非正 / 归一化查询向量。 */
+  private prepare(query: Float32Array, topK: number): { q: Float32Array; k: number } | null {
+    if (!this.loaded || this.ids.length === 0) return null
     const n = this.ids.length
     const k = Math.min(topK, n)
-
     // 防御：topK <= 0 时直接返回空数组，避免后续访问
     // topK_results[topK_results.length - 1].score（即 undefined.score）
     // 抛 TypeError。
-    if (k <= 0) return []
+    if (k <= 0) return null
+    return { q: normalize(query), k }
+  }
 
-    // 暴力点积（归一化后 = 余弦相似度）。n 条 × DIM 维。
-    // 使用 top-k 选择避免全量排序：O(n*k) vs O(n*log n)
-    const topK_results: VectorMatch[] = []
-
-    for (let i = 0; i < n; i++) {
-      let dot = 0
-      const base = i * DIM
-      for (let d = 0; d < DIM; d++) {
-        dot += this.matrix[base + d] * q[d]
-      }
-
-      // 插入排序维护 top-k：只在分数足够高时插入
-      if (topK_results.length < k || dot > topK_results[topK_results.length - 1].score) {
-        const match: VectorMatch = { noteId: this.ids[i], score: dot }
-        let insertPos = topK_results.length
-        // 找到插入位置（降序）
-        for (let j = topK_results.length - 1; j >= 0; j--) {
-          if (dot <= topK_results[j].score) break
-          insertPos = j
-        }
-        topK_results.splice(insertPos, 0, match)
-        if (topK_results.length > k) topK_results.pop()
-      }
-    }
-
-    return topK_results
+  /** 第 i 条向量与 q 的点积（调用方保证 0 <= i < ids.length）。 */
+  private dotAt(i: number, q: Float32Array): number {
+    const base = i * DIM
+    let dot = 0
+    for (let d = 0; d < DIM; d++) dot += this.matrix[base + d] * q[d]
+    return dot
   }
 
   /** 当前索引的向量数量。 */
   size(): number {
     return this.ids.length
+  }
+}
+
+/**
+ * §895/D65：`searchAsync` 每扫这么多条让出一次事件循环。
+ *
+ * ⚠ 取值依据（实测）：20000 条全量扫描约 24.9ms；按 512 分片 ⇒ 每片约 0.64ms，
+ *   远低于一帧预算（16.7ms）⇒ 检索期间界面仍可滚动/响应输入。
+ *   取得再小会让 `await` 次数变多、总时长被调度开销反噬。
+ */
+const SCAN_CHUNK = 512
+
+/** 让出一次事件循环（宏任务），使浏览器有机会渲染/处理输入。 */
+const yieldToEventLoop = () => new Promise<void>((resolve) => setTimeout(resolve, 0))
+
+/**
+ * 把一条候选并入 top-k（**同步**，无 await）——`search` 与 `searchAsync` 共用。
+ * 插入排序维护 top-k：只在分数足够高时插入，避免全量排序（O(n·k) vs O(n·log n)）。
+ */
+function considerInto(out: VectorMatch[], noteId: string, dot: number, k: number): void {
+  if (out.length < k || dot > out[out.length - 1].score) {
+    let insertPos = out.length
+    for (let j = out.length - 1; j >= 0; j--) {
+      if (dot <= out[j].score) break
+      insertPos = j
+    }
+    out.splice(insertPos, 0, { noteId, score: dot })
+    if (out.length > k) out.pop()
   }
 }
 

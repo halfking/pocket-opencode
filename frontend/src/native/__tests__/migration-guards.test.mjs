@@ -557,3 +557,190 @@ describe('§894 · D64：向量索引必须几何增长，不得每次重分配�
     assert.ok(capOf(grown) > grown.size(), '正向前提失败：新实现没有 slack ⇒ 本节全部断言都是恒假')
   })
 })
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * §895 D65：`search()` 是**同步**的全量暴力点积，跑在 UI 线程上。
+ *
+ * 实测（Node 22，预热后五轮取平均）：
+ *   n= 500 →  0.66ms    n= 2000 →  2.30ms
+ *   n= 8000 →  9.32ms    n=20000 → 24.89ms        ⇒ 线性于条数
+ *   ⇒ 到 MAX_VECTORS 上限（50000）外推约 62ms 的主线程冻结；移动端再慢 3–10 倍。
+ *
+ * 真实暴露面（不是搜索框）：`NoteDetailView.loadRelated` 在**每次打开笔记详情**时
+ * 调 `searchSemantic`。搜索框走的是 `@keyup.enter`，**不是**每次按键 ⇒ 那里没问题。
+ *
+ * 修法：`searchAsync()` 分片并让出事件循环，**结果与 `search()` 逐字相同**。
+ * ⚠ 判据里必须有一条**同步负控**：同一个「让出探测器」跑 `search()` 必须读到 0 次
+ *   让出 —— 否则「探测器有牙」只是我的假设。
+ * ═══════════════════════════════════════════════════════════════════════════ */
+describe('§895 · D65：语义检索不得整段占满 UI 线程', () => {
+  /** 造一个灌了 n 条、方向交错的索引（与 §894 的 filled 同夹具思路）。 */
+  async function seeded(n) {
+    const db = makeVectorDb()
+    const index = new VectorIndex(db)
+    await index.load()
+    for (let i = 0; i < n; i++) {
+      await db.run(
+        'INSERT OR IGNORE INTO local_notes (id, content, created_at, updated_at) VALUES (?, ?, ?, ?)',
+        [`s${i}`, `s${i}`, 0, 0],
+      )
+      await index.add(`s${i}`, vec(1, i % 3 === 0 ? 0 : 1), 'm')
+    }
+    return index
+  }
+
+  /** 宏任务计数器：让出一次事件循环就会 +1。 */
+  function turnCounter() {
+    let turns = 0
+    const timer = setInterval(() => { turns++ }, 0)
+    return { stop: () => clearInterval(timer), read: () => turns }
+  }
+
+  it('★★★ searchAsync 与 search 的结果必须逐字相同（id 顺序与 score）', async () => {
+    const index = await seeded(120)
+    for (const topK of [1, 3, 10, 50, 120]) {
+      for (const [a, b] of [[1, 0], [0, 1], [1, 1]]) {
+        const q = queryVec(a, b)
+        const sync = index.search(q, topK)
+        const async_ = await index.searchAsync(q, topK, 7)
+        assert.deepEqual(
+          async_.map((m) => m.noteId), sync.map((m) => m.noteId),
+          `topK=${topK} q=(${a},${b}) 时异步版的 id 顺序与同步版不同 ⇒ 分片改变了语义`,
+        )
+        for (let i = 0; i < sync.length; i++) {
+          assert.equal(async_[i].score, sync[i].score,
+            `topK=${topK} q=(${a},${b}) 第 ${i} 条 score 不同（${async_[i].score} vs ${sync[i].score}）`)
+        }
+      }
+    }
+  })
+
+  it('★★★ 返回条数必须是 min(topK, 条数)（绝对性质，不靠与同步版比对）', async () => {
+    // ⚠⚠ 为什么要有这条：上面那条只验「同步版 == 异步版」，
+    //   两版**同时**改错时它照样全绿（M53-M2 实测：`k` 的 off-by-one 逃掉了）。
+    //   ⇒ 凡是「一致性」判据，都必须再配一条**绝对**性质，否则共因失效。
+    const index = await seeded(37)
+    for (const topK of [0, 1, 2, 5, 37, 100]) {
+      const expected = Math.min(Math.max(topK, 0), 37)
+      assert.equal(index.search(queryVec(1, 0), topK).length, expected, `同步版 topK=${topK} 条数不对`)
+      assert.equal((await index.searchAsync(queryVec(1, 0), topK)).length, expected, `异步版 topK=${topK} 条数不对`)
+    }
+  })
+
+  it('★★★ 同分时保留**先加入**的（top-k 取舍是确定的，不依赖插入顺序的偶然）', async () => {
+    // ⚠ 语料必须是**全同分**：§894 那个夹具只有 3 种方向，同分对根本触发不到
+    //   （M53-M4 把 `>` 改成 `>=` 全绿 ⇒ 判据没咬住「取舍」这件事）。
+    //   全部向量相同 ⇒ 全部 score 相同 ⇒ 只有在**同分**下才能区分 `>` 与 `>=`。
+    const db = makeVectorDb()
+    const index = new VectorIndex(db)
+    await index.load()
+    const N = 20
+    for (let i = 0; i < N; i++) {
+      await db.run(
+        'INSERT OR IGNORE INTO local_notes (id, content, created_at, updated_at) VALUES (?, ?, ?, ?)',
+        [`t${i}`, `t${i}`, 0, 0],
+      )
+      await index.add(`t${i}`, vec(1, 0), 'm')   // 全部朝同一方向 ⇒ 全部同分
+    }
+    for (const topK of [1, 5, 10]) {
+      const ids = index.search(queryVec(1, 0), topK).map((m) => m.noteId)
+      assert.deepEqual(ids, Array.from({ length: topK }, (_, i) => `t${i}`),
+        `全同分语料下 topK=${topK} 选出的不是**最先加入**的 ${topK} 条（得到 ${ids.join(',')}）`)
+    }
+    const asyncIds = (await index.searchAsync(queryVec(1, 0), 5, 3)).map((m) => m.noteId)
+    assert.deepEqual(asyncIds, ['t0', 't1', 't2', 't3', 't4'], `异步版在同一语料上与同步版不一致：${asyncIds.join(',')}`)
+
+    // ⚠⚠ 变异台账（M53-V7）：把 `considerInto` 的守卫 `dot > out[out.length-1].score`
+    //   改成 `>=`，**本节全绿**。查证后确认它是**等价变异**，不是判据有洞：
+    //   同分且 `out` 已满时，`>=` 会让候选走完
+    //   「插到队尾（`dot <= out[j].score` 立即断）→ splice → `pop()` 掉自己」
+    //   ⇒ 输出集合与顺序完全不变，只多一次无用 splice。
+    //   ⇒ 真正承载「同分保序」的是**插入定位**那一行，M53-V8（`dot <= out[j].score`
+    //   放宽成 `dot < out[j].score`）会红，就是它。
+    //   ⇒ 登记在此，免得下一个人把 V7 的全绿当成「判据漏了」而去补一条钉不住行为的断言。
+  })
+
+  it('★★★ top-k 的**溢出淘汰**路径必须被触发（否则「插入后淘汰」整条代码无人验证）', async () => {
+    // ⚠⚠⚠ 前面的语料有一个**真空**：向量按「前 10 条最好」排好，
+    //   之后的向量要么同分（进不来）、要么更差（进不来）
+    //   ⇒ `out.length > k ⇒ 淘汰` 这一段**一次都没执行过**，
+    //   把 `out.pop()` 换成 `out.shift()`（丢弃最高分而不是最低分）全仓判据照样全绿（M53-M8 实测）。
+    // ⇒ 这里专门构造「越晚加入的越强」的语料，逼出淘汰路径。
+    const db = makeVectorDb()
+    const index = new VectorIndex(db)
+    await index.load()
+    const N = 30
+    for (let i = 0; i < N; i++) {
+      await db.run(
+        'INSERT OR IGNORE INTO local_notes (id, content, created_at, updated_at) VALUES (?, ?, ?, ?)',
+        [`r${i}`, `r${i}`, 0, 0],
+      )
+      // ⚠⚠ 语料方向（这里我第一次写反了，实测才发现）：
+      //   `add` 会做 L2 归一化，`vec(1, i)` 归一化后是 (1,i)/√(1+i²)，
+      //   与查询 `queryVec(1,0)` 的点积 = 1/√(1+i²) ⇒ **随 i 递减**，
+      //   越晚加入的越**弱** ⇒ 根本顶不掉任何一条 ⇒ 淘汰路径又一次没被执行。
+      //   正确写法：`vec(i, 1)` 归一化后与 (1,0) 的点积 = i/√(i²+1) ⇒ 严格递增
+      //   ⇒ 每条新向量都比当前 top-k 里最弱的那条强 ⇒ 每次插入都触发 `out.pop()`。
+      //   ⇒ 「构造能触发目标分支的语料」和「构造语料」是两件事，必须分开验。
+      await index.add(`r${i}`, vec(i, 1), 'm')
+    }
+    // topK=1：正确答案应当是**最强**的那条 = 最后加入的 r29
+    const best = index.search(queryVec(1, 0), 1).map((m) => m.noteId)
+    assert.deepEqual(best, ['r29'],
+      `top-1 选出的是 ${best.join(',')}，不是最强的 r29 ⇒ 淘汰方向反了（保留了最弱的一条）`)
+
+    // topK=3：应为最强的三条 r29 / r28 / r27
+    const top3 = index.search(queryVec(1, 0), 3).map((m) => m.noteId)
+    assert.deepEqual(top3, ['r29', 'r28', 'r27'],
+      `top-3 选出 ${top3.join(',')}，应为 r29/r28/r27 ⇒ 溢出淘汰有 bug`)
+
+    // 异步版在同一语料上必须一致
+    const async3 = (await index.searchAsync(queryVec(1, 0), 3, 4)).map((m) => m.noteId)
+    assert.deepEqual(async3, top3, `异步版结果 ${async3.join(',')} 与同步版不一致`)
+  })
+
+  it('★★★ searchAsync 期间必须让出事件循环（而同步 search 一次都不让）', async () => {
+    const index = await seeded(120)
+
+    const c1 = turnCounter()
+    await index.searchAsync(queryVec(1, 0), 5, 8)   // chunk=8 ⇒ 15 片
+    c1.stop()
+    assert.ok(c1.read() > 0, `让出次数 ${c1.read()} —— searchAsync 全程没让出事件循环，UI 线程仍被占满`)
+
+    const c2 = turnCounter()
+    index.search(queryVec(1, 0), 5)                 // 同步基准
+    c2.stop()
+    assert.equal(c2.read(), 0,
+      `同步 search() 也让出了 ${c2.read()} 次 ⇒ 探测器没有分辨力，本节断言全是恒真`)
+  })
+
+  it('★★ chunkSize 越大，让出次数越少（分片粒度是可控的，不是写死的）', async () => {
+    const index = await seeded(120)
+    const coarse = turnCounter()
+    await index.searchAsync(queryVec(1, 0), 5, 120)
+    coarse.stop()
+    const fine = turnCounter()
+    await index.searchAsync(queryVec(1, 0), 5, 8)
+    fine.stop()
+    assert.ok(fine.read() > coarse.read(),
+      `细粒度让出 ${fine.read()} 次 ≤ 粗粒度 ${coarse.read()} 次 ⇒ chunkSize 没起作用`)
+  })
+
+  it('★★★ 生产路径必须走异步版（结构门）', () => {
+    const src = readFileSync(new URL('../../features/notes/notes-search.ts', import.meta.url), 'utf8')
+    assert.match(src, /await vectorIndex\.searchAsync\(/,
+      'searchSemantic 又改回同步的 vectorIndex.search(...) ⇒ UI 线程冻结回来了')
+    assert.doesNotMatch(src, /vectorIndex\.search\(/,
+      'notes-search.ts 里仍有同步 search() 调用（searchAsync 名字含 search，判据要排除它）')
+  })
+
+  it('★★ 边界：空索引 / topK<=0 两个版本都必须返回空数组', async () => {
+    const empty = new VectorIndex(makeVectorDb())
+    await empty.load()                                  // loaded=true 但 0 条
+    assert.deepEqual(await empty.searchAsync(queryVec(1, 0), 5), [], '空索引应返回空数组')
+    const index = await seeded(10)
+    assert.deepEqual(await index.searchAsync(queryVec(1, 0), 0), [], 'topK=0 应返回空数组')
+    assert.deepEqual(index.search(queryVec(1, 0), 0), [], '同步版 topK=0 也应返回空数组（两者须一致）')
+    assert.deepEqual(await index.searchAsync(queryVec(1, 0), -3), [], 'topK 为负应返回空数组')
+  })
+})
