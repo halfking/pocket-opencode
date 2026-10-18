@@ -102782,3 +102782,154 @@ content: __degraded                                  // 步骤 2（变量名不�
 ⚠ 已排除的伪担忧：`search_text` 的增长是**有界**的 ——
 `cjkBigramTokens` 最多产出 80 个 gram（`note-fts-query.ts:24`），不会随正文线性膨胀。
 ⛔ **未实测**：真实笔记正文的规模分布；本节**不把它写成缺陷**，登记待拍板（简报 115）。
+
+## §893 D63：复核 §891 那次改动的**真实影响面** —— 比我记的更宽，还顺带关掉了一处更早的静默缺陷
+
+§891 修完 D61 后做了一件事：**回到自己的改动上，把影响面逐个调用点核实一遍**，
+而不是只相信文档里写的那句「打不开笔记」。结论是文档口径**不完整**，另有收获。
+
+### §893.1 复核读数：`updateNote` 在内容没变时也会加载全文
+
+`notes-persist.ts:162`：
+
+```
+const nextContent = patch.content !== undefined ? patch.content : await loadFullContent(existing)
+```
+
+⇒ **`patch` 里没有 `content` 时，它会无条件加载正文文件。**
+全仓 `updateNote` 调用点逐个核对（剥注释、括号配平取表达式）：
+
+| 调用点 | patch 形态 | 是否会加载全文 | 失败时用户看到 |
+|---|---|---|---|
+| `NoteEditView.vue:248` | `{ title, content, domain, tags }` | ❌ 带 content | `errors.saveFailed` |
+| `useNoteRecording.ts:52` | `{ content: text }` | ❌ 带 content | 上层处理 |
+| `NoteListView.vue:552` `onMetaSave` | `{ ...data, status: 'saved' }`（title/domain/tags） | ✅ **会** | `toast.error(...)`，归因正确 |
+| `NoteListView.vue:460` 摘要落库 | `{ summary }` | ✅ **会** | ⚠ 归因**错误**（见 §893.2） |
+
+⚠⚠ ⇒ **§891 的影响面比简报 114 记的更宽**：不只是「打不开笔记」，
+而是**元信息保存（改标题/领域/标签）与 AI 摘要落库也会被挡住**。
+⚠ 两个调用点都在 `try` 内（已核对），所以是「可见的失败」而非静默死路 ——
+这一点是幸运，不是设计：`NoteListView.vue:437` 的 try 从 447 行前就包住了 460 行。
+
+### §893.2 ⭐ 附带发现：一处**更早的静默缺陷**被 §891 顺带关掉了
+
+同一段代码在 §891 之前是这样的（`loadFullContent` 读不到正文时返回 `note.content`，
+而 `tier='file'` 下那是 ≤280 字**摘要**）：
+
+```
+nextContent = 摘要
+decided = decideNoteStorage({ body: 摘要, ... })   // ⇒ searchText = buildSearchText(摘要)
+UPDATE local_notes SET … search_text = ?  …        // 值为按**摘要**重建的检索文本
+```
+
+⚠ `note-files.ts` 的 `updateNote` 在 `patch.content === undefined` 且无媒体时
+**不会重写正文文件**（第 213 行的条件），但**仍会执行这条 UPDATE**
+⇒ **正文不丢，可全文检索无声地退化成摘要检索**，不报错、不提示、无任何痕迹。
+
+§891 把降级收紧成抛错之后，这条路径不再走到 ⇒ **该降级被一并关闭。**
+⇒ 这也是「把静默改掉」偶尔会**顺带**关掉别的东西的实例，值得写进文档：
+一个缺陷的修复可能同时是另一条链的修复，而那条链此前**没有任何测试覆盖**。
+
+### §893.3 ⭐ 根因是一个**设计取舍**，本节**不代拍**
+
+`updateNote` 的核心是：**即使内容没变，也要用全文重建派生状态**
+（`decided.tier` / `decided.summary` / `decided.search_text` / 向量）。
+而派生需要全文，于是「内容没变」也依赖「正文文件可读」。
+
+- **更干净的替代**：内容没变就**完全不重建**派生状态，沿用 `existing` 的那一组。
+  ⚠ 但它不成立：`title` 与 `tags` 可能同时变了，
+  而 `search_text = buildSearchText(新标题, 全文, 新标签)` 需要全文才能重建。
+  ⇒ 要做就得引入「增量更新检索文本」这种更复杂的东西。
+- ⇒ 这正是「产品/架构口径一律登记不代拍」的边界，本节只把**取舍的两端**写清楚（简报 116）。
+
+### §893.4 ⭐ 一条**登记风险**：自定义错误码会被语义兜底规则静默劫持
+
+`api/error-message.ts` 的约定是后端错误形如 `code: 说明`，
+`resolveErrorI18nKey` 先查 `ERROR_CODE_I18N_KEYS`，查不到再按 `SEMANTIC_RULES` **对整条原文**做语义匹配。
+
+实测（用真函数，非推断）：
+
+| 错误消息 | `resolveErrorI18nKey` | 用户看到 |
+|---|---|---|
+| `笔记正文文件读不到：…`（当前形态，中文无码前缀） | `null` | `errors.loadNotesFailed`（「加载笔记失败」） |
+| `note_body_unavailable: 笔记正文文件读不到…` | ⭐ **`errors.notConfigured`** | **「该功能尚未完成配置」** |
+| `note_body_missing: …` | `null` | `errors.loadNotesFailed` |
+| `note_body_corrupt: …` | `null` | `errors.loadNotesFailed` |
+| `note_body_not_found: …` | `null` | `errors.loadNotesFailed` |
+
+⇒ **`..._unavailable` 是这个语义最自然的命名，却会被 `/unavailable/i` 命中**，
+把「文件读不到」说成「功能尚未配置」—— 与真实原因毫无关系，且**没有任何报错**。
+
+⚠ **但当前暴露面为 0**，如实登记：全仓显式 `this.name = '...'` 的错误共 **7** 个
+（`ApiError` / `AssetDeletedError` / `DataUrlFormatError` / `DownloadUnsupportedError` /
+`NoteBodyUnavailableError` / `TimeoutError` / `VersionConfigUnavailableError`），
+**snake_case 型一个都没有** ⇒ 现有错误名都不会被 `extractErrorCode` 误认成错误码。
+⇒ 这是**给下一个人的陷阱登记**，不是活缺陷；§893.5 的门只钉住现状不被悄悄改坏。
+
+### §893.5 判据（并入既有 `note-edit-preserves-media.test.mjs`，8 → 14 例）
+
+| # | 断言 |
+|---|---|
+| 1 | ⭐ 量具自证：函数体抽得到、且确实按「内容没变就沿用」处理 |
+| 2 | ⭐⭐⭐ 内容缺省时会加载全文（D63 根因，也是 §891 抛错面的来源） |
+| 3 | ⭐⭐⭐ 派生链自洽：**UPDATE 参数数组**里 `search_text` 由 `decided` 派生、向量那条也是 |
+| 4 | ⭐⭐⭐ 反向：不得改成「内容没变就用 `existing.content` 当 nextContent」（D61 原形） |
+| 5 | ⭐⭐ 两个真实调用点都必须在 `catch` 里（否则抛错是无提示的死路） |
+| 6 | ⭐⭐ 如实登记：摘要落库那条的错误**归因是错的**（本节只钉住事实，不代拍文案） |
+
+⚠⚠ 第 3 条**两次**才写对：
+· 第一版只断言 `/decided\.searchText/` 出现过 ⇒ M51-M3 把 UPDATE 那一处换成
+  `existing.searchText` 时**照样全绿**（该词在向量实参处还出现一次）——
+  这是 §886「出现过 ≠ 用在这里」的第四类假绿；
+· 第二版改用 `UPDATE … WHERE id = ?` 之间的窗口 ⇒ 又踩坑：**SQL 模板里的 `WHERE`
+  排在参数数组之前**，那个窗口只有列名列表、没有值（实测 `setAt=-1`）；
+· 第三版改为从 `UPDATE` 之后的第一个 `[` 起做**括号配平**（SQL 模板里没有方括号）⇒ 命中。
+
+### §893.6 M51：五次变异
+
+| 变异 | 结果 | 红条目 |
+|---|---|---|
+| M1 还原 D61 原形（拿 `existing.content` 当 nextContent） | 11 / **3** | 判据 1 + 3 + 4 |
+| M2 去掉 `await loadFullContent(existing)` | 12 / **2** | 判据 1 + 2 |
+| M3 UPDATE 里的 `decided.searchText` 换成别的来源（**第一版逃逸** ⇒ 判据改流向） | 13 / **1** | 判据 3 |
+| M4 `onMetaSave` 的 `try` 被去掉 | 13 / **1** | 判据 5 |
+| M5 摘要落库的错误文案不再归因成「总结失败」 | 13 / **1** | 判据 6 |
+
+还原后 14 / 14 绿。
+
+### §893.7 ⭐ 一件必须记下的事：**一个被我丢弃的量具**
+
+我一度想普查「写入前判空」，写了个启发式扫描器，结果是
+**246 条来自 api/store 的赋值里 238 条「相邻两行无判空」** ——
+逐条看下去，里面绝大多数是 `const apiError = useApiError()`、
+`x.value = await api.y()` 这类**根本不需要判空**的语句。
+
+⇒ 该普查器**没有分辨力**（命中率高到等于没筛），按「量具过宽就该丢弃」原则**弃用**，
+**没有**把 238 这个数字写进任何结论。
+⚠ 这一条与「0 命中的第一嫌疑永远是量具坏了」是同一个错误的镜像：
+**「几百条命中」同样可能是量具坏了，而不是「缺陷遍地」。**
+
+### §893.8 顺带取得的全仓读数（供简报 115 第 ① 问决策用）
+
+`features/notes` 之外的全仓普查（`src/` **585** 个生产文件，排除 `__tests__` 与 `*.test.*`）：
+
+| 口径 | 读数 |
+|---|---|
+| 「写入形态 ∧ 引用保真度字段」的同现行 | **11** 行 |
+| 其中能写回全文正文字段的 | **0** 行 |
+
+11 行逐条判定：模板只读 4、纯空值归一 4、只读输入 2（`meeting-ingest` 的
+`refinedTranscript || transcript` 已由 §783/§831 留存闸守住；
+`meeting-page-actions` 的 `description` 是派单输入且完整 prompt 已含纪要）、
+**本仓已有的正确范式 1** —— `EmailDetailView.vue:347`：
+
+```ts
+const text = (res.summary || '').trim()
+if (!text) { toast.error('未能生成总结，请稍后重试'); return }   // ⭐ 空值出声，绝不写空
+summary.value = text
+```
+
+⇒ 「空值不出声」这个教训本仓**已经会了**（邮件侧），只是笔记侧的三个地方
+（§888 / §890 / §891）各自又学了一遍。
+
+⛔ **未实测**：全仓普查只覆盖 `src/`；`scripts/` 与 Go 侧不在其中。
