@@ -6,14 +6,14 @@ import { assetToNote, rowToNote } from './notes-row'
 import type { LocalNote, NoteRow, SearchResult } from './notes-types'
 import { buildFtsQuery, mergeSearchHits, needsCjkLike } from './note-fts-query'
 import { ensureNotesSearchIndex } from './notes-fts-ready'
+import { likePattern } from '../../native/fts-query'
 
 export function sanitizeFtsQuery(q: string): string {
   return buildFtsQuery(q)
 }
 
-function likePattern(q: string): string {
-  return `%${q.replace(/[%_]/g, '')}%`
-}
+// §887：原来这里有一个私有副本，与 `native/fts-query.ts` 的
+// `likePattern` 逐字相同 ⇒ 删掉改 import。行为等价，无可观察变化。
 
 async function searchLike(query: string, limit: number, workspaceId: string): Promise<SearchResult[]> {
   const rows = await localDB.query<NoteRow>(

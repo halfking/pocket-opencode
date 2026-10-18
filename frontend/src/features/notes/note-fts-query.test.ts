@@ -4,8 +4,8 @@
  */
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { readFileSync } from 'node:fs'
-import { dirname, resolve } from 'node:path'
+import { readFileSync, readdirSync } from 'node:fs'
+import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { DatabaseSync } from 'node:sqlite'
 import {
@@ -25,6 +25,34 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 const strip = (t: string): string =>
   t.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
    .replace(/(^|[^:])\/\/[^\n]*/g, '$1')
+
+/**
+ * §886/§887 共用的真 SQLite 夹具。
+ * ⚠ 提到模块级是因为两条 describe 都要用它（§886 验 FTS5 行为、§887 验顺序语义）；
+ *   先前放在 §886 的 describe 内，§887 直接访问不到（作用域错误，判据自己红）。
+ */
+  const db = new DatabaseSync(':memory:')
+  db.exec(`CREATE VIRTUAL TABLE a_fts USING fts5(title, body)`)
+  db.exec(`CREATE TABLE a(id INTEGER PRIMARY KEY, title TEXT, body TEXT)`)
+  const ins = db.prepare(`INSERT INTO a(title, body) VALUES (?, ?)`)
+  for (const r of [
+    ['项目复盘', '今天讨论了数据库索引的优化方案'],
+    ['会议纪要', '季度预算和人员安排需要确认'],
+    ['购物清单', '买牛奶和鸡蛋 138-0013-8000'],
+    ['English note', 'quarterly budget review with team'],
+  ]) ins.run(r[0], r[1])
+  db.exec(`CREATE TRIGGER a_ai AFTER INSERT ON a BEGIN INSERT INTO a_fts(rowid,title,body) VALUES (new.rowid,new.title,new.body); END`)
+  db.exec(`INSERT INTO a_fts(a_fts) VALUES('rebuild')`)
+
+const runFts = (q: string): string[] =>
+  db.prepare(`SELECT title FROM a_fts WHERE a_fts MATCH ? ORDER BY rank`).all(q).map((r: any) => r.title)
+
+/** §886：LIKE 降级的查表。§887 另用 runLikeTable，避免后者变形时污染前者。 */
+const runLike = (q: string): string[] =>
+  db.prepare(`SELECT title FROM a WHERE title LIKE ? OR body LIKE ? ORDER BY id`).all(likePattern(q), likePattern(q)).map((r: any) => r.title)
+
+/** §887：只读查表 helper——别复用 runFts，否则下面的顺序语义会被污染 */
+const runLikeTable = runLike
 
 describe('buildFtsQuery', () => {
   it('quotes latin tokens to avoid FTS operators', () => {
@@ -102,23 +130,8 @@ describe('extractiveBriefing', () => {
  *   同一策略），而那需要真 SQLite 才能验 —— 正是本节用 `node:sqlite` 建的夹具。
  */
 describe('§886 · D56：用户输入进 FTS5 MATCH（真 SQLite 夹具）', () => {
-  const db = new DatabaseSync(':memory:')
-  db.exec(`CREATE VIRTUAL TABLE a_fts USING fts5(title, body)`)
-  db.exec(`CREATE TABLE a(id INTEGER PRIMARY KEY, title TEXT, body TEXT)`)
-  const ins = db.prepare(`INSERT INTO a(title, body) VALUES (?, ?)`)
-  for (const r of [
-    ['项目复盘', '今天讨论了数据库索引的优化方案'],
-    ['会议纪要', '季度预算和人员安排需要确认'],
-    ['购物清单', '买牛奶和鸡蛋 138-0013-8000'],
-    ['English note', 'quarterly budget review with team'],
-  ]) ins.run(r[0], r[1])
-  db.exec(`CREATE TRIGGER a_ai AFTER INSERT ON a BEGIN INSERT INTO a_fts(rowid,title,body) VALUES (new.rowid,new.title,new.body); END`)
-  db.exec(`INSERT INTO a_fts(a_fts) VALUES('rebuild')`)
-
-  const runFts = (q: string): string[] =>
-    db.prepare(`SELECT title FROM a_fts WHERE a_fts MATCH ? ORDER BY rank`).all(q).map((r: any) => r.title)
-  const runLike = (q: string): string[] =>
-    db.prepare(`SELECT title FROM a WHERE title LIKE ? OR body LIKE ? ORDER BY id`).all(likePattern(q), likePattern(q)).map((r: any) => r.title)
+  // ⚠ 上面三个 helper（runFts / runLike / runLikeTable）已提到模块级：
+  // §886 与 §887 两条 describe 都要用，放在其中一条内部另一条拿不到。
 
   // ⚠ 这 11 条是**从真实缺陷读出来的**（每一条都会让原样喂入抛错），
   //   少一条就等于给回归留一个口子。
@@ -217,5 +230,114 @@ describe('§886 · D56：用户输入进 FTS5 MATCH（真 SQLite 夹具）', () 
     assert.match(binds, new RegExp(`\\b${builtVar}\\b`),
       `MATCH 的绑定实参是 ${binds}，而不是构造结果 ${builtVar} ` +
       '⇒ 用户输入仍原样进 MATCH（D56）')
+  })
+})
+
+/**
+ * §887 D57：「把 LIKE 模式里的 `%`/`_` 剥掉」这件事在本仓有 **3 份实现、2 种口径**，
+ * 而 §886 刚把其中一份搬进 `native/fts-query.ts` —— 修完反而暴露了根因：
+ * **收编不彻底**，于是下一个人还会再抄第四份。
+ *
+ * 普查读数（§887 落地前）：
+ *
+ * | 位置                                      | 形态             | 截断   |
+ * |-------------------------------------------|------------------|--------|
+ * | `native/fts-query.ts:71`                  | `function likePattern(q)` | 无 |
+ * | `features/notes/notes-search.ts:14`       | 私有副本，同上   | 无     |
+ * | `features/meetings/meeting-related-search.ts:32` | **内联字面量** | `.slice(0, 40)` |
+ *
+ * ⚠ 第 3 份**多一个 40 字符截断**，且原式的顺序是
+ *   `replace(...).slice(0, 40)` = **先剥通配符再截断**。
+ *   这个顺序有可观测后果（见下面「顺序语义」那条用例）：写成
+ *   `q.slice(0, 40).replace(...)` 的话，输入 `%%%%%%数据库`
+ *   截断后全成 `%`、剥掉就空了 ⇒ **搜不到**。
+ *   ⇒ 公共实现的 `maxLen` 必须也放在 replace 之后。
+ */
+describe('§887 · D57：likePattern 只能有一份实现，且口径不许漂移', () => {
+  const SRC_ROOT = new URL('../../', import.meta.url).pathname
+  const SKIP = (p: string) => p.includes('__tests__') || p.endsWith('.test.ts')
+
+  const walk = (dir: string, out: string[] = []): string[] => {
+    for (const name of readdirSync(dir, { withFileTypes: true })) {
+      const p = join(dir, name.name)
+      if (name.isDirectory()) {
+        if (name.name === 'node_modules') continue
+        walk(p, out)
+      } else if (/\.(ts|vue)$/.test(name.name) && !SKIP(p)) out.push(p)
+    }
+    return out
+  }
+
+  /** 全仓 `likePattern` 的**定义处**（不是调用处）。 */
+  const defs = (): { file: string; params: string }[] =>
+    walk(SRC_ROOT)
+      .map((abs) => ({ file: relative(SRC_ROOT, abs), code: strip(readFileSync(abs, 'utf8')) }))
+      .flatMap(({ file, code }) => {
+        const hits: { file: string; params: string }[] = []
+        const re = /function\s+likePattern\s*\(([^)]*)\)/g
+        let m: RegExpExecArray | null
+        while ((m = re.exec(code))) hits.push({ file, params: m[1] })
+        return hits
+      })
+
+  /** 「剥通配符」这个字面形态出现的处数 —— 用来抓内联副本。 */
+  const inlineCopies = (): string[] =>
+    walk(SRC_ROOT).filter((abs) => /replace\(\/\[%_\]\/g/.test(strip(readFileSync(abs, 'utf8')))).map((abs) => relative(SRC_ROOT, abs))
+
+  /** ⚠ 前置闸：漏扫时下面几条会在子集上**假绿**（§885 实测过这条）。 */
+  const assertScanned = (): void => {
+    assert.ok(walk(SRC_ROOT).length >= 100,
+      `只扫到 ${walk(SRC_ROOT).length} 个源文件 —— 扫描器坏了，下面几条会在子集上假绿`)
+  }
+
+  it('★★★ 阳性对照：扫描器能看到全仓（前置闸，不是同伴用例）', () => {
+    assertScanned()
+  })
+
+  it('★★★ likePattern 的定义全仓只能有一份（反向断言 + 计数）', () => {
+    assertScanned()
+    const d = defs()
+    assert.equal(d.length, 1,
+      `likePattern 有 ${d.length} 份定义：${d.map((x) => x.file).join(', ')}\n` +
+      '复制出去的那份一定会漂移（本节就见过 2 种口径）—— 请改成 import `native/fts-query.ts`。')
+    assert.equal(d[0].file, join('native', 'fts-query.ts'),
+      `唯一定义跑到了 ${d[0].file}，公共实现在 native/fts-query.ts`)
+  })
+
+  it('★★★ 「剥通配符」的字面形态只能出现在公共实现里（抓内联副本）', () => {
+    assertScanned()
+    const copies = inlineCopies()
+    assert.deepEqual(copies, [join('native', 'fts-query.ts')],
+      `这些文件各自内联了一份剥通配符：${copies.join(', ')}\n` +
+      '`replace(/[%_]/g, ...)` 必须只存在于 native/fts-query.ts。')
+  })
+
+  it('★★★ 会议搜索的 40 字符截断不许悄悄消失（口径漂移守卫）', () => {
+    assertScanned()
+    const src = strip(readFileSync(resolve(SRC_ROOT, 'features/meetings/meeting-related-search.ts'), 'utf8'))
+    assert.match(src, /likePattern\(\s*q\s*,\s*40\s*\)/,
+      '会议搜索原本带 40 字符截断（`q.replace(/[%_]/g, "").slice(0, 40)`）—— ' +
+      '现在要么丢了这个上限（长查询不再被截），要么换了个数。截断上限要不要变属产品口径，' +
+      '要变就改判据并在简报登记，不要静默。')
+  })
+
+  it('★★★ ⭐ 顺序语义：截断必须发生在剥通配符**之后**（有真实反例）', () => {
+    // 6 个 % + 「数据库」共 11 字符。
+    //   先 replace 后 slice ⇒ 「数据库」保留 ⇒ 搜得到
+    //   先 slice 后 replace ⇒ 截断成 6 个 % ⇒ 剥掉后为空 ⇒ `%%` 搜不到任何东西
+    // ⚠⚠ 第一版的反例不合格，它自己造成了一次**假绿**（V2）：
+    //   输入只有 11 字符，而 maxLen=40 ⇒ **slice 根本不生效**，
+    //   所以「先剥后截」与「先截后剥」结果完全相同 ⇒ 无论怎么改都绿。
+    //   ⇒ 反例必须让输入**长于 maxLen**，且把 % 挤在前面，这样两种顺序才会分歧：
+    //     先剥后截：6 个 % 消失不占位置 ⇒ 40 个字符全是正文 ⇒ 结果长 42
+    //     先截后剥：6 个 % 占位置 ⇒ 剥掉后只剩 34 个 ⇒ 结果长 36
+    const raw = '%%%%%%数据库' + '长'.repeat(50)
+    const out = likePattern(raw, 40)
+    assert.equal(out.length, 42, `得到 ${out.length} 字符（预期 42）⇒ 顺序反了：先截断后剥会让 % 占位置`)
+    assert.match(out, /^□?□?□?□?□?□?数据库|^%数据库/, '中文应该在结果开头保留完整')
+    // ⚠ 查库那一句用的是**短输入**（不超 maxLen，才落得到库里的正文）：
+    //   第一版替我写的是长输入 + 查表，而 runLikeTable **不应用 maxLen**，
+    //   所以拼出 50 个「长」的模式在库里必然 0 行 ⇒ 那个断言的前提是错的。
+    assert.deepEqual(runLikeTable('%%%%%%数据库'), ['项目复盘'], '只剥通配符时中文仍应可搜')
   })
 })

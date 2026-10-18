@@ -63,11 +63,17 @@ export function needsCjkLike(raw: string): boolean {
  * LIKE 的 `%...%` 模式。
  *
  * ⚠ 这里**删除** `%` / `_` 而不是转义它们 —— 这是 `features/notes/notes-search.ts`
- *   既有做法（`likePattern`），本文件刻意对齐它而不是自作主张改成转义。
+ *   既有做法，本文件刻意对齐它而不是自作主张改成转义。
  *   代价（已实测）：搜 `100%` 实际搜的是 `100`，搜 `a_b` 实际搜的是 `ab`。
  *   改成「转义 + ESCAPE」是**行为变更**，属产品口径（简报第 108 条），
  *   要两侧一起改才有意义，本节不代拍。
+ *
+ * @param maxLen 截断上限。⚠ **截断发生在剥通配符之后** —— 这是
+ *   `meeting-related-search.ts:32` 那份副本的原顺序
+ *   （`q.replace(/[%_]/g, '').slice(0, 40)`），换序会改变结果
+ *   （例如输入 `%%%%%%数据库` 在「先 slice」下会 0 行）。
  */
-export function likePattern(q: string): string {
-  return `%${q.replace(/[%_]/g, '')}%`
+export function likePattern(q: string, maxLen?: number): string {
+  const stripped = q.replace(/[%_]/g, '')
+  return `%${maxLen === undefined ? stripped : stripped.slice(0, maxLen)}%`
 }
