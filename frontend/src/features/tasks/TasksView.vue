@@ -473,7 +473,9 @@
       </div>
       <template #footer>
         <button class="btn cancel" @click="showCreateModal = false">取消</button>
-        <button class="btn primary" :disabled="!newTask.title" @click="handleCreate">创建</button>
+        <button class="btn primary" :disabled="!newTask.title || creating" @click="handleCreate">
+          {{ creating ? '创建中…' : '创建' }}
+        </button>
       </template>
     </BottomSheet>
 
@@ -773,6 +775,8 @@ const sessionsErrorNotice = computed<ListReadFailureNotice>(
   () => sessionsError.value ?? listReadFailureNotice('会话'),
 )
 const showCreateModal = ref(false)
+/** §855/D13：新建任务的「正在提交」守卫（防往返窗口内双击创建两条）。 */
+const creating = ref(false)
 const showCompleted = ref(false)
 const quickPrompt = ref('')
 
@@ -1143,7 +1147,18 @@ function handleSessionAttached(link: any) {
 }
 
 async function handleCreate() {
-  if (!newTask.value.title) return
+  // ⚠§855/D13：原来只有 `if (!newTask.value.title) return`。
+  //   但「清空 newTask.title」与「按钮 `:disabled="!newTask.title"`」都排在
+  //   **await api.createTask 之后** ⇒ 按钮要等一次网络往返才变灰，
+  //   **往返窗口内的双击会真的创建两条任务**（id 是本地 `task-${Date.now()}`）。
+  //   ⛔ 这一点**推不出「点一下就行」**：移动端触摸重复上报与 WebView 的事件合并
+  //   都可能让 handler 在同一个手势里跑两次；守卫必须是函数体里的，不是模板里的。
+  //   一致性对照：同仓 4 处同类动作**都有**重入守卫 ——
+  //   `NoteEditView::onSave`（`saving`）、`NoteDetailView::summarize`（`summarizing`）、
+  //   以及 FlashcardListView / FlashcardEditView / StudyHubView 三个 `submitCreateDeck`
+  //   （`deckCreating`）⇒ 这里缺的是**一致性**，不是能力。
+  if (!newTask.value.title || creating.value) return
+  creating.value = true
   try {
     const dueAt = parseDueDate(newTask.value.dueDate)
     // 提醒时间不能晚于截止时间；选了「提前 N」但没填截止日时按无提醒处理，
@@ -1181,7 +1196,12 @@ async function handleCreate() {
     showCreateModal.value = false
     loadTasks()
   } catch (e) {
+    // ⚠§855/D13：原来只有 `console.error` ⇒ 创建失败时弹窗仍开着、
+    //   表单原样保留，但**零用户可见提示**，用户只会当成没点到。
     console.error('Failed to create task:', e)
+    toast.error(apiError(e, 'errors.operateFailed'))
+  } finally {
+    creating.value = false
   }
 }
 

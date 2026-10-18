@@ -97488,3 +97488,153 @@ M10：在 `VaultEntryView.vue` 里真加一处 `el.style.cssText = '…'`。
    现状是**有意**的取舍（注释已解释「失败不挡跳转」），是否要补一个回滚提示。
 5. **`TasksView::handleRefresh` 用 `Promise.all` 而同家族的 `MessagesHubView`/`NotesHubView`
    用 `allSettled`** —— 同一仓里两种口径。是否统一（改成 `allSettled` 会掩盖部分失败）。
+
+---
+
+## §855 创建类动作的重复提交审计：⭐ 一条机制 + 3 处真缺陷（双击会真的做两次）
+
+§854 扫的是「用户点了、失败了，看得见吗」。本节扫它的邻居：**「用户点了一下，结果做了两次」**。
+
+### §855.0 先说结论：本节的价值主要不在 3 处缺陷，而在**一条机制**
+
+> **「模板 `:disabled` 能不能拦住第二次点击」，取决于它的条件在 handler 的第一个 `await` 之前
+> 是否同步变真。**
+
+**理由**：Vue 的响应式 DOM 更新在 **nextTick（微任务）** 里；而两个独立的 `click` 事件之间，
+微任务队列**必然排空**。⇒ 只要 disabled 的条件在第一个 await 之前已经变真，
+第二击落到按钮上时它已是 disabled，浏览器不派发事件。
+
+⭐ **两个方向都实测过，不是推理**：
+
+| 方向 | 样本 | 判定 |
+|---|---|---|
+| ✅ **拦得住** | `CalendarEventSheet::save` 的 `:disabled="… \|\| store.saving"`，而 `store.createEvent` 的**第一行**就是 `saving.value = true`（await 之前同步） | 阴性 |
+| ✅ **拦得住** | `TasksView::submitAccDelegate` 的 `accStore.submitting`，`accStore.createTask` 首行 `submitting.value = true` | 阴性 |
+| ❌ **拦不住** | `TasksView::handleCreate` 原来 `:disabled="!newTask.title"`，而 `newTask.title` 要 **await `api.createTask` 之后**才被清空 ⇒ **整个网络往返窗口都是可点的** | **真缺陷 D13** |
+| ❌ **拦不住** | `FinanceView::quickConfirm` 的「确认入账」按钮**连 `:disabled` 都没有** | **真缺陷 D14** |
+
+⇒ 所以「模板里写了 disabled」**不等于**有保护 —— 这正是本节两处真缺陷的共同形态，
+也是判据要钉的东西（**钉 `:disabled` 绑的是哪个变量**，不是钉「有没有 disabled」）。
+
+### §855.1 扫面口径与读数
+
+探针 `.artifacts/s855-probe/scan_dblclick.py`，与判据 `frontend/src/__tests__/submit-guard-audit.test.ts` 共用同一把尺子：
+
+> `.vue` 里「注册给了模板 + 函数体含 `await` + 体内有**创建类**动作
+> （`create|add|send|insert|submit|install|upload|publish|start|begin|register`）
+> + 既无 `X.value=true … finally X.value=false` 的结构化守卫、也无 `if (X) return`」。
+
+| 项 | 读数 |
+|---|---|
+| `.vue` 文件 | 186 |
+| 宽口径候选（含 delete/remove/rename/update/save） | **48** |
+| 收窄到**创建类** | **14** |
+| 人工逐条读后 **真缺陷** | **3**（D13 / D14 / D15） |
+| 站得住的阴性 | **11**，全部登记进判据 REGISTRY |
+
+⚠ **收窄的理由要写下来**（否则读数不可复现）：`deleteEvent`/`remove`/`rename` 这类
+**第二次调用通常是 noop**（id 已不存在），后果远轻于「多出两条记录」。
+
+⚠ **探针自身的第一版有个量具 bug**（这是本节最值得记的一条）：
+守卫判定最初用一张**手写名字词表**（`submitting|loading|busy|deckCreating|…`），
+词表里没有 `deckCreating` / `creating` / `confirming` ⇒ **`FlashcardListView` 与
+`FlashcardEditView` 两个明明有守卫的 `submitCreateDeck` 被报成候选（假阴）**。
+⇒ **名字词表是穷举不完的**（每写一个新按钮就可能漏一个）。
+**修法**：「有守卫」按**结构**判定 —— 置 true + `finally` 复位，不看名字。
+
+### §855.2 三处真缺陷
+
+| 编号 | 位置 | 双击的实际后果 | 为什么现有保护拦不住 |
+|---|---|---|---|
+| **D13** | `TasksView::handleCreate` | **创建两条任务**（id 是本地 `task-${Date.now()}`） | `:disabled="!newTask.title"` 的条件要等 await 之后才清空；函数体无重入守卫 |
+| **D14** | `FinanceView::quickConfirm` | **入账两条真实财务流水**（`load()` 之后用户看得见两条） | 确认按钮**无 `:disabled`**；函数体只有 `if (!p) return`（拦「没有预览」，不拦「正在提交」） |
+| **D15** | `FinanceView::remove` | 第一次删成功、第二次对**已删 id** 发请求 ⇒ 404 ⇒ `toast.error('操作失败')`，而**那条流水确实消失了** ⇒ **界面在说谎** | 无任何守卫 |
+
+#### ⭐ 一致性对照（三处全是这个形态，证据极强）
+
+| 缺陷 | 同仓/同文件已经做对的地方 |
+|---|---|
+| D13 | `NoteEditView::onSave`（`saving`）、`NoteDetailView::summarize`（`summarizing`）、`FlashcardListView`/`FlashcardEditView`/`StudyHubView` 三个 `submitCreateDeck`（`deckCreating`）—— **4 处同类都有重入守卫** |
+| D14 | **同一个文件**的 `:43`「记账」按钮有 `quickBusy` 守卫（`quickParse`）⇒ 同文件内两种待遇 |
+| D15 | 同文件 `quickParse` / `quickConfirm` 都有 try/catch + toast，只有 `remove` 的失败被完整保留却因重复调用而说谎 |
+
+### §855.3 落地
+
+| 文件 | 改动 |
+|---|---|
+| `features/tasks/TasksView.vue` | 新增 `creating` ref；`handleCreate` 加 `if (… \|\| creating.value) return` + 置位排在第一个 await 之前 + `finally` 复位；按钮改 `:disabled="!newTask.title \|\| creating"` + 文案「创建中…」；catch 补 `toast.error(apiError(e, 'errors.operateFailed'))`（原来只有 `console.error`） |
+| `features/finance/FinanceView.vue` | 新增 `confirming` / `removingId` 两个 ref；`quickConfirm` 加守卫 + `finally`；「确认入账」与「取消」都绑 `:disabled="confirming"`；`remove` 加 `if (removingId.value === tx.id) return` + `finally` 复位；删除按钮绑 `:disabled="removingId === tx.id"` |
+
+⚠ `removingId` 用 **id** 而不是布尔：财务列表里多行同时可见，布尔会把**整列**的删除按钮一起禁掉。
+
+### §855.4 判据与变异
+
+`frontend/src/__tests__/submit-guard-audit.test.ts`（**18 例**）：
+
+| 组 | 例数 | 内容 |
+|---|---|---|
+| 尺子自证与登记表对账 | 4 | `.vue` 数量、登记表非空 + 键形状、**函数反向对账**、**文件反向对账**（比 §854 多一条：文件被删也要重判） |
+| D13 | 4 | 重入守卫 / `creating` 必须在第一个 await 之前置位 + finally 复位 / **按钮 disabled 必须绑 `creating`** / 失败必须有 toast |
+| D14·D15 | 4 | `quickConfirm` 守卫 + finally / 按钮绑 `confirming` / `remove` 按 id 守卫 / **一致性对照样本**（「记账」按钮的 `quickBusy` 不许消失） |
+| **机制反向对照** | 3 | 「置位在 await 之前」算有保护 / **「disabled 要等 await 之后才变」必须判成缺口** / 「没有 finally 复位」也算缺口 |
+| 变异负控 | 3 | 三段源码级变异各自证明有牙 |
+
+**M12 真实文件端到端变异（5 路）**：
+
+| 变异 | 自己判据 | 仓库既有门 `vue-template-compile` |
+|---|---|---|
+| M12-a 删掉 D13 的 `creating.value` 守卫 | 16 / 2 ❌ | **187 / 0 ✅** |
+| M12-b 把按钮 disabled 改回只绑 `!newTask.title` | 17 / 1 ❌ | **187 / 0 ✅** |
+| M12-c 拿掉「确认入账」的 `:disabled` | 16 / 2 ❌ | **187 / 0 ✅** |
+| M12-d 删掉 `quickConfirm` 的守卫 | 17 / 1 ❌ | **187 / 0 ✅** |
+| M12-e 删掉 `remove` 的按 id 守卫 | 16 / 2 ❌ | **187 / 0 ✅** |
+| 还原核对 | **18 / 0** | **187 / 0** |
+
+⇒ 三处缺陷对 `vue-tsc`、模板编译、既有 45 项门禁**全部隐形**。
+
+### §855.5 本节踩到的坑（写进探针与判据注释）
+
+1. **探针的名字词表假阴**（`deckCreating` 漏了）⇒ 改成结构判定。
+2. **探针的行号定位不可靠**：`fn_spans` 会把 `const summarize = computed(...)` 之类误当函数，
+   打印出来的行号与函数对不上 ⇒ 本节的最终判定**全部靠人工精确 grep 定位**，
+   探针只用来生成候选清单。
+3. ⚠ **探针自伤第 8 次**：`scan_lie.py` 命中的第一条 `RecordingPill.vue:59`
+   是**我自己写的注释**（§834/D1 的说明文字里写了 `toast.success('…已结束并保存')`）
+   ⇒ 文字扫面必须 strip 注释（判据里的 `strip()` 同款）。
+
+### §855.6 换方向的记录（阴性也是有价值的产出）
+
+本节开扫前先试了**三个方向，全部阴性**，读数与口径如下（按「收窄到人工可逐条读」原则，
+低信号就换面，不硬撑）：
+
+| 方向 | 口径 | 读数 | 结论 |
+|---|---|---|---|
+| `JSON.parse` 防护 | 54 处调用点（剔除测试与 `.d.ts`） | 逐条人工读后**全部阴性** | ⭐ 本仓这块是强项：`parseJson`/`parseTags`/`toNote`/`assetToNote` 都带 try + 明确降级；连 LLM 输出解析（`note-search-parse.ts` / `api/meetings.ts`）都做了「合法但空」的额外判定 |
+| 定时器/监听器清理 | `.vue` 里 setInterval/setTimeout/addEventListener 的清理配平 | 12 个候选，**`setInterval` 与 `addEventListener` 清理 0 候选**（只剩 Vue 里无害的一次性 `setTimeout`） | 基本健康 |
+| 成功提示早于写入 | `toast.success` 在同函数内早于 `await` | **2** 处，其中 1 处命中的是我自己写的注释 | 低信号 |
+
+⚠ 三次里探针各坏过一次，全部当场发现：
+`JSON.parse` 那版「全仓 59 处只有 1 处有 try」这个**读数本身不可能**（`tryParseLoose` 这类函数名就自证有保护）⇒ **0/1 命中的第一嫌疑永远是量具坏了**；
+定时器那版把卸载清理写在 composable 里的当成了缺陷；
+「成功早于写入」那版被自己的注释命中。
+
+### §855.7 口径与未实测
+
+- ⛔ **未实测**：三处缺陷在真机上的**实际发生率**（移动端触摸重复上报、WebView 事件合并的真实概率）。
+  ⚠ 本节的结论建立在 §855.0 那条**机制**上（微任务在两次 click 之间排空），该机制可推理，
+  但「真机上会不会真的连发两次 click」**没有实测**。
+- ⛔ **未实测**：`api.createTask` 是否服务端幂等（若按 id upsert，则 D13 的第二次可能被服务端吸收，
+  只剩本地两条显示）。本节按**最坏情况**（会创建两条）处理。
+- 探针**只解析 `.vue`**；composable/store 里的同名动作不在本轮范围。
+- 探针的创建类关键词表**是穷举的**（14 个词），漏掉的动词（如 `schedule`、`book`）不在读数内。
+- 本节不覆盖「非创建类」动作的重复提交（宽口径 48 条里另有 34 条，只逐条读了其中与创建同族的）。
+
+### §855.8 待拍板
+
+1. **宽口径那 34 条非创建类动作要不要逐条取证** —— 主要是 `delete`/`update`/`save` 类。
+   本节已抽样确认 `CalendarView::removeEvent`、三个 `runInstall` 都有等价守卫，
+   但**不声称**其余 34 条都安全。
+2. **要不要把「第一个 await 之前变真」做成仓级门禁** —— 本节判据是登记 + 定点断言，
+   要覆盖全仓需要先把「创建类动词表」补全并解决 composable/store 的解析（§855.7 第 3、4 条）。
+3. **`Marketplace` 三个 `runInstall` 的 `installing` 要不要补 `finally`**（§854.8 第 4 条的延续）：
+   它们靠「末尾把 `installTarget` 置 null」当重入守卫，**没有 finally** ⇒ 中途抛错会卡死。
