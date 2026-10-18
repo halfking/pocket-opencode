@@ -100477,3 +100477,122 @@ localStorage.setItem(key, raw)
       是否要靠 census reporter 保住 —— 那正是它现在已有的机制；
     ④ 附带：`email-body-cache.ts` 这类「import 无扩展名」的模块**依然加载不了**
       （§875.5），要不要统一给相对 import 补 `.ts`？
+### §876.1 口径：§866 引用过 `snapshot-store` 却从没读过它
+
+§873 的取证里出现过一句话：「一旦写超，**snapshot-store 的 `saveNS` 会静默吞掉**
+（catch 里注释写着「快照属尽力而为」）」。
+⇒ 那是 §866 引用的**第二个**文件，而我只读了它引用的那一句。
+
+本节去读 `native/list-sync/snapshot-store.ts` 全文（59 行）。
+
+⚠ 顺带说明本节的**工作约束**：§875 撞出 `npm run test:all` 的 argv 上限，
+所以本节**不能新增判据文件** ⇒ 判据并进同族的
+`local-storage-unbounded-accumulators.test.ts`。
+
+### §876.2 ⭐ D45：`loadNS` 把「数据损坏」谎报成「本来就没有」，且下一次写会毁掉别人
+
+原实现：
+
+```ts
+function loadNS<T>(ns) {
+  const raw = storage()?.getItem(PREFIX + ns)
+  if (!raw) return {}
+  try { … } catch { return {} }      // ⚠ 损坏 → 谎报成「空」
+}
+```
+
+两个后果，第二个比 §858/D21（aiChatStore 那一处）**更重**：
+
+1. **不留证**。本仓已经有 `utils/corrupt-preserve.ts` 这个**唯一**留证落点
+   （§858 建、§859 扩到 crypto），同一族的 `aiChatStore` / `crypto-config`
+   都接上了 —— **只有这里没接**。
+2. ⛔ **下一次 `upsertSnapshots` 会把整包覆写**：
+   `loadNS` 返回 `{}` ⇒ 只写进新 row ⇒ `saveNS` 覆写整包
+   ⇒ **同一命名空间里其它 id 的行一起消失**。
+   本仓的 id 形如 `ws:<workspaceId>:inst:<instanceId>` ⇒
+   **一次损坏 = 所有 workspace × instance 的会话列表缓存全没**。
+
+**修法**（按 §862 的「降级是否破坏性」分两路）：
+
+| 路径 | 处置 | 理由 |
+|---|---|---|
+| `listSnapshots`（读） | 仍返回空数组，**但先留证** | 调用方要能正常渲染「没有缓存」 |
+| `upsertSnapshots`（写） | **在原始数据仍损坏时拒绝写入并抛出** | 覆写是**不可逆销毁**，不能「顺手」做 |
+
+⚠ 抛错安全：唯一调用方 `SessionListView::writeSessionsSnapshot` 已经整个包了
+`try/catch` ⇒ 抛错不会打断界面。
+
+⚠ `saveNS` 的静默**保留**（只加一行 `console.warn`）：按 §866 的族规律，
+它存的是**缓存**（会话列表 / 邮件正文的兼容迁移源），服务端才是权威
+⇒ 不阻断是对的，但「静默」要真的静默到**可诊断**。
+
+### §876.3 ⚠ 顺带查出：调用方那个 `catch` 是**死代码**
+
+`SessionListView::readSessionsSnapshot` 写着
+`try { listSnapshots(…) } catch { return null }`
+—— 但 `listSnapshots` **从不抛错**（损坏时返回 `[]`）⇒ 这个 catch 不可达。
+
+⚠ 本节**没有**删它：`writeSessionsSnapshot` 那个 catch 是**活的**
+（§876.2 之后 `upsertSnapshots` 确实可能抛），而两处形状相同。
+删死代码要在能区分两者的前提下做，否则会顺手删掉活的那个。
+登记在 §876.6。
+
+### §876.4 ⭐⭐ 拿到了 §876 想给的东西：**行为级证据**
+
+按 §875 的先例把 `snapshot-store.ts` 的 import 补上 `.ts` 扩展名
+（`allowImportingTsExtensions` 早已开启、`hub-view.test.ts` 等已有先例）
+⇒ 本模块**能被 node 的 strip-types loader 直接加载**
+⇒ 「损坏不许覆写」拿到了**行为**判据，而不只是形状保证。
+
+判据（并入同族文件，**33 例**）：
+
+| 断言 | 形状判据能不能做 |
+|---|---|
+| 对照：数据完好时 upsert 正常合并、不丢别的 id | ❌ |
+| 数据损坏时 upsert **必须拒绝**，原始字节**保持原样** | ❌ |
+| 数据损坏时 read **必须留证**，且留的是原始字节 | ❌ |
+| read 仍然不抛错（界面照常渲染「没有缓存」） | ❌ |
+| **尺子有牙**：同一段度量，完好数据成功、损坏数据失败 | —— 对照组 |
+
+### §876.5 ⚠⚠ M33 抓到了判据自己的一次「假绿」（本节最值得记的一条）
+
+第一次 M33 我这样变异：把 `throw` 那一行删掉。
+
+**结果判据全绿（33/0）** —— 而代码确实已经不对了。
+
+原因：`assert.rejects` **接受任何 reject**。删掉 `throw` 之后，
+下一行 `const existing = loaded.rows` 拿到 `undefined`
+（因为 `{ok:false}` 没有 `rows`），再 `existing[row.id] = row` 就抛
+**TypeError** ⇒ `assert.rejects` 照样满足 ⇒ **「有意拒绝」与「意外崩溃」
+被混为一谈**。
+
+⇒ 两处修正：
+1. **判据**：断言错误**消息**（`/已损坏/`），把两者区分开；
+2. **变异**：必须复刻**原始缺陷形态**（把损坏当成空、照常合并覆写），
+   而不是「删掉一行」这种似是而非的改动。
+
+⇒ 修好后 M33 = **32 / 1**，红在「原始字节被覆写」这一条上。
+
+⭐ 这与 §866 记的「变异必须做到它声称的动作」同族，
+但这次更隐蔽：**「变异生效了」不等于「变异产生了要测的那条性质」** ——
+它产生的是另一条性质（TypeError），而判据恰好也接受。
+
+### §876.6 待拍板（新增 1 条）
+
+95. **`SessionListView` 那个不可达的 catch 要不要删** ——
+    ① `readSessionsSnapshot` 的 catch 不可达（§876.3）；
+    ② 但 `writeSessionsSnapshot` 的 catch 是**活的**，两处形状相同
+      ⇒ 删之前要先能区分它们，否则会顺手删掉活的那个；
+    ③ 要不要顺手给读侧补一个「这份缓存损坏过」的可见提示？
+      本节按「留证但不打扰用户」处理。
+
+### §876.7 口径与未实测
+
+- ⛔ **未实测**：命名空间损坏在真机上的**发生率**。
+  ⚠ `SessionListView` 把快照当尽力而为的缓存 ⇒ 即使全丢也只是「下次重新拉」，
+  所以**后果等级低于** §858/D21（那份是「对话历史被谎报成没有」）。
+  本节定它为缺陷的理由是**不可逆销毁 + 零证据**，不是用户可见损失。
+- ⚠ 本节**没有**给快照写入加任何用户可见提示（缓存，本不该打扰）。
+- ⚠ §876.4 的行为判据能跑，是因为**只有这一个 import** 被补了 `.ts`；
+  仓里其余无扩展名 import（`email-body-cache.ts` 那一族）**依然加载不了**，
+  仍登记在简报第 94 条。

@@ -187,6 +187,9 @@ const fake = new FakeStorage()
 // ⚠ corrupt-preserve.ts **零 import**，可以直接在 node 里加载。
 const { preserveCorruptRaw, AI_CHAT_CORRUPT_NS } =
   await import('../utils/corrupt-preserve.ts')
+// ⚠§876/D45：snapshot-store 的 import 已补 .ts 扩展名（allowImportingTsExtensions 已开），
+//   所以它**能被加载** ⇒ 「损坏不许覆写」才有行为级判据。
+const snap = await import('../native/list-sync/snapshot-store.ts')
 
 describe('§875 · 尺子自证', () => {
   it('★ 假 Storage 与真模块都加载到了', () => {
@@ -368,5 +371,75 @@ describe('§873 · 变异负控', () => {
     assert.notEqual(defective, body, '变异没生效（锚点与真源码不匹配）')
     assert.doesNotMatch(defective, /removeItem/,
       '尺子坏了：淘汰不再删正文后判据仍判绿')
+  })
+})
+
+/**
+ * §876/D45 行为验证：损坏的命名空间**不许被覆写**。
+ *
+ * 缺陷形态：`loadNS` 的 catch 原来 `return {}` ⇒ 读失败被谎报成「本来就没有
+ * 快照」⇒ **下一次 `upsertSnapshots` 把整包覆盖**，而这一包里还有
+ * `ws:<workspaceId>:inst:<instanceId>` 的**其它行** ⇒ 一次损坏 =
+ * 所有 workspace × instance 的会话列表缓存全没，且不留任何证据。
+ *
+ * ⭐ 这正是 §875 说的那一类：**形状判据看不见「算错」，只有行为判据看得见。**
+ */
+describe('§876 · D45 行为验证：损坏的命名空间不许被覆写', () => {
+  const NS = 'sessions'
+  const raw = (o: unknown) => JSON.stringify(o)
+
+  beforeEach(() => { fake.clear(); fake.quotaBytes = null; fake.failOnRemove = false })
+
+  it('★ 对照：数据完好时 upsert 正常合并，不丢别的 id', async () => {
+    fake.setItem(`pocket:snapshots:${NS}`, raw({ a: { id: 'a', updatedAt: 1, dirty: false, payload: { n: 1 } } }))
+    await snap.upsertSnapshots(NS, [{ id: 'b', updatedAt: 2, dirty: false, payload: { n: 2 } } as never])
+    const stored = JSON.parse(fake.getItem(`pocket:snapshots:${NS}`)!)
+    assert.deepEqual(Object.keys(stored).sort(), ['a', 'b'],
+      '完好数据的合并行为变了 ⇒ 这不是「损坏时特判」，是整体回归')
+  })
+
+  it('★★★ 数据损坏时 upsert 必须拒绝（原始字节保持原样）', async () => {
+    const broken = '{not json at all'
+    fake.setItem(`pocket:snapshots:${NS}`, broken)
+    // ⚠⚠ 必须断言错误**消息**，不能只 assert.rejects —— 它接受任何 reject。
+    //   本轮就踩过：把 `throw` 拿掉之后 `loaded.rows` 变成 undefined，
+    //   下一行 `existing[row.id] = row` 抛 TypeError ⇒ rejects 照样满足 ⇒ 判据全绿。
+    //   ⇒ 「有意拒绝」与「意外崩溃」必须区分开。
+    await assert.rejects(
+      () => snap.upsertSnapshots(NS, [{ id: 'new', updatedAt: 9, dirty: false, payload: {} } as never]),
+      /已损坏/,
+      '拒绝必须是我们**有意**抛的（消息里说清已损坏），而不是别的错误顺手抛的')
+    assert.equal(fake.getItem(`pocket:snapshots:${NS}`), broken,
+      '被拒绝之后原始字节仍然被改了 ⇒ 这不是「拒绝」，只是「写坏了」')
+  })
+
+  it('★★★ 数据损坏时 read 必须留证（原来一条证据都没有）', async () => {
+    const broken = '{"partial": tru'
+    fake.setItem(`pocket:snapshots:${NS}`, broken)
+    await snap.listSnapshots(NS)
+    const evidence = fake.keys().filter((k) => k.includes(':corrupt:'))
+    assert.ok(evidence.length >= 1, '读损坏之后没有留下任何证据 ⇒ 与 §858/D21 同一族的缺陷没修到位')
+    assert.equal(fake.getItem(evidence[0]), broken, '留证的内容不是原始字节')
+  })
+
+  it('★★ read 仍然不抛错（界面照常渲染「没有缓存」）', async () => {
+    fake.setItem(`pocket:snapshots:${NS}`, 'not json')
+    const rows = await snap.listSnapshots(NS)
+    assert.deepEqual(rows, [], '损坏时 read 不该抛错 —— 抛错会打断 §875 那条「读路径可安全降级」的约定')
+  })
+})
+
+describe('§876 · 判据有牙（同一段度量，两种数据两种结果）', () => {
+  const NS = 'sessions'
+  const row = { id: 'x', updatedAt: 1, dirty: false, payload: {} } as never
+  beforeEach(() => { fake.clear(); fake.quotaBytes = null; fake.failOnRemove = false })
+
+  it('★★ 完好数据：写成功；损坏数据：写被拒 —— 同一段度量必须给出不同结果', async () => {
+    fake.setItem(`pocket:snapshots:${NS}`, JSON.stringify({ a: { id: 'a', updatedAt: 1, dirty: false, payload: {} } }))
+    await snap.upsertSnapshots(NS, [row])            // 完好 ⇒ 成功
+    fake.setItem(`pocket:snapshots:${NS}`, '{broken') // 损坏 ⇒ 拒绝
+    await assert.rejects(() => snap.upsertSnapshots(NS, [row]))
+    // ⚠ 如果上面两行都「成功」，那前面那些 rejects 断言可能是因为别的原因
+    //    （比如 storage 不可用）而恒红 ⇒ 这条对照组就是尺子有牙的证据。
   })
 })
