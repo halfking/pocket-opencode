@@ -19,7 +19,7 @@
 //     而且 hasMasterPassword 没落盘 ⇒ 下次启动回到 §862/D26 那个「创建主密码」对话框。
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 
@@ -313,5 +313,77 @@ describe('§866 · 变异负控（负控必须与正例跑同一把尺子，否�
     assert.notEqual(mutated, DIALOG, '变异没生效（锚点与真源码不匹配）')
     assert.equal(dialogTellUserTheTruth(mutated).ok, false,
       '尺子坏了：把缺陷形态喂回去竟然还判绿')
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════
+// §883：「写侧要说实话」这一族的**普查门**（阴性结论 + 常驻门）
+//
+// 枚举结果（2026-10-18）：全仓 `persistFailed` 共 **4 套**机制，逐条查过——
+//   ① aiChatStore.persist()      → AIChatView 顶部 role="alert"        §866/D30
+//   ② cryptoConfig.save()        → MasterPasswordDialog 的 error.value §866/D31
+//   ③ flashcards 两个写函数       → StudyHubView 顶部 role="alert"      §868/D36
+//   ④ useSessionDrafts（§882 新增）→ SessionComposer 顶部 role="alert"
+// 四处**都双向**（成功清 false）、**都在互斥渲染链之外**、**都已被判据钉住**。
+// ⇒ 本轴没有遗留缺陷；价值在于把它钉成门，免得下一次审计重新普查一遍。
+describe('§883 · 写侧要说实话：普查必须仍是 4 套，且每套双向 + 有出口', () => {
+  const DECLARE = /const\s+persistFailed\s*=\s*(ref|computed)\s*\(/
+
+  /** 全仓扫描：声明了 `persistFailed` 的落点（必须先剥注释，否则注释里提到也算数）。 */
+  function census(): string[] {
+    const roots = ['stores', 'features', 'native', 'composables']
+    const out: string[] = []
+    const walk = (dir: string) => {
+      for (const name of readdirSync(dir)) {
+        const full = join(dir, name)
+        const st = statSync(full)
+        if (st.isDirectory()) {
+          if (name === '__tests__') continue
+          walk(full)
+        } else if (/\.(ts|vue)$/.test(name) && !name.includes('.test.')) {
+          if (DECLARE.test(strip(readFileSync(full, 'utf8')))) out.push(full.replace(SRC + '/', ''))
+        }
+      }
+    }
+    for (const r of roots) walk(join(SRC, r))
+    return out.sort()
+  }
+
+  /** 已知的 4 套。⚠ 与 census 做**双向**对账，见下面两条断言。 */
+  const KNOWN = [
+    'features/ai-chat/aiChatStore.ts',
+    'features/sessions/useSessionDrafts.ts',
+    'stores/crypto-config.ts',
+    'stores/flashcards.ts',
+  ]
+
+  it('★ 新增第 5 套「写侧要说实话」必须是一个有意识的决定', () => {
+    const found = census().filter((p) => !KNOWN.includes(p))
+    assert.deepEqual(found, [],
+      `新出现的 persistFailed 机制：\n  - ${found.join('\n  - ')}\n` +
+      '  ⇒ 要么复用已有某一处，要么在 KNOWN 里补一条并说明它与前几套的差别。')
+  })
+
+  it('★ 清单不许有过期条目（反向断言：函数被删/改名会逼你重新判断）', () => {
+    const found = new Set(census())
+    const stale = KNOWN.filter((p) => !found.has(p))
+    assert.deepEqual(stale, [],
+      `KNOWN 里的条目已不存在（机制被删或改了名）⇒ 清单会骗人：\n  - ${stale.join('\n  - ')}`)
+  })
+
+  it('★ 每套都必须双向（成功要能清回 false，否则一次偶发失败就永久显示）', () => {
+    for (const rel of KNOWN) {
+      const code = strip(read(rel))
+      // ⚠ 断言刻意写成**形态无关**（`\w*ersistFailed`），因为 `flashcards` 那套的
+      //   `persistFailed` 是 computed（§868/D36），置位发生在它的两个**源 ref** 上
+      //   （`cachePersistFailed` / `outboxPersistFailed`）——
+      //   第一版写成 `persistFailed\.value` 就把这一套判成了「没有置位」。
+      //   ⇒ 被测的性质是「**喂给视图的那个标志**，写失败为真、写成功为假」，
+      //     不是「某个具体变量名被赋值」。
+      assert.match(code, /\w*ersistFailed\.value\s*=\s*true/,
+        `${rel} 没有在写失败时置 true ⇒ 用户无从区分「保存成功」与「根本没存下」`)
+      assert.match(code, /\w*ersistFailed\.value\s*=\s*false/,
+        `${rel} 没有在写成功时复位 false ⇒ 一次偶发失败会让提示永久显示`)
+    }
   })
 })
