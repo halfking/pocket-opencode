@@ -102370,3 +102370,144 @@ strings.Contains(s, `Note: "网关 ASR 模型（目录里被标成 text）"`)
 - 唯一产品改动是 `3aaa8737`（`target.go` 一行 + 门禁新增一个测试函数）。
 - 工作树另外 7 个文件（email / utils / transcode）属并行会话在制品，**未触碰**。
 - 未改动 `gates.json` / `package.json`。
+
+## §890 D60：「data URL → Blob」在格式坏掉时**静默**产出 0 字节附件；而「让它出声」的天然修法会把保存按钮打死
+
+§888 简报 111 的遗留问项：「`base64ToBlob` / `utf8ToBase64` 一族要不要同样收编」。
+本节按那个口径把普查扩到整个 base64 族的**反方向**，结果比预想的严重：
+既有同型副本，也有一个**真缺陷**，以及一个**「修法自伤」陷阱**。
+
+### §890.1 普查读数：base64 族两个方向
+
+| 方向 | 份数 | 落点 |
+|---|---|---|
+| bytes → base64 | 3（§889 已收编） | — |
+| **base64 → bytes/Blob/File** | **5** | `utils/download.ts:170`（`webDownloadFallback`）、`features/notes/note-edit-helpers.ts:12`、`native/pocket-native.ts:445`、`features/email/email-body-format.ts:464`、`native/crypto.ts:130` |
+| **utf-8 字符串 → base64** | **3** | `utils/download-encoding.ts:18`、`features/notes/note-files.ts:71`、`native/pocket-native.ts:432` |
+| **base64 → utf-8 字符串** | **5** | `native/pocket-native.ts:433`、`features/notes/note-files.ts:129/135/142`，及 `download-encoding.ts` 的对称写法 |
+
+⚠⭐ **这 5 份「base64 → Blob」里，只有 1 份有格式守卫**：
+`native/pocket-native.ts:445` 的 `dataURLToFile` 写着 `if (!m) return null`。
+⇒ **本仓不是不会写，是漏了一处。** 这句话比「新增一道门」更有价值。
+
+### §890.2 D60 本体：`dataUrlToBlob` 把「格式坏掉」报成「附件是空的」
+
+实测（改动前，逐条复刻该函数体执行）：
+
+| 输入 | 结果 |
+|---|---|
+| 正常 `data:image/png;base64,iVBORw0KGgo=` | ok，size=8 |
+| ⚠ `data:image/png;base64`（**没有逗号**） | **ok，size=0**，不抛不告警 |
+| ⚠ `''`（空串） | **ok，size=0** |
+| ⚠ `data:` | **ok，size=0** |
+| ⚠ `https://cdn.example.com/a.png`（外链） | **ok，size=0** |
+| `data:image/svg+xml,%3Csvg%3E`（URL 编码传输） | THROW `DOMException` |
+| `data:image/png;base64,@@@@`（payload 被污染） | THROW `DOMException` |
+
+⚠⚠ **核心不对称**：**非法 base64 字符抛错（大声），payload 缺失返回 0 字节（无声）**。
+原写法 `const [head, body] = dataUrl.split(',')` + `atob(body || '')` 里，
+`body` 缺失时 `atob('')` **不抛**而返回空串 —— 与 §888 的 D58 **完全同型**：
+把「读到了但内容是空的」与「没读到」混为一谈。
+
+**下游链**（已逐段核对）：
+`attachmentsToMedia` → `NoteEditView.onSave` 的 `media` → `persistNotePayload`：
+`media.blob.size === 0` **不超上限、不被跳过** ⇒ 照常 `blobToBase64` + 写文件 +
+`INSERT local_note_files` ⇒ **0 字节图片被当成功落盘**，用户以为图存上了。
+与 §888 里 `audio-parts` 那条「写 0 字节并 `return id` 报成功」是同一条链的镜像。
+
+⚠ 附带缺陷：`attachmentsToMedia` 原来的
+`mime: a.dataUrl.split(';')[0]?.replace('data:','')` 对 `https://` 外链会把
+**整个 URL 当成 mime**，最终写进 `local_note_files.mime`。
+
+⛔ **口径**：`composables/useAttachments.ts:18` 的注释明写 `/** data:image/... 或 https:// 外链 */`，
+但 `addDataUrl` 的**全部 3 个调用点**（FileReader / Camera / 粘贴）都传真 data URL
+⇒ 「外链」这条路径在当前仓内**未被行使**，是**未被兑现的契约**，本节据实记录。
+
+### §890.3 ⚠⚠ 修法自伤：把「静默」改成「抛错」会**卡死保存按钮**
+
+D60 的天然修法是「让它出声」——但直接改会引出**比原缺陷更糟**的东西：
+
+```
+onSave() {
+  if (!canSave.value || saving.value) return
+  saving.value = true
+  saveError.value = ''
+  const media = [...pendingMedia.value, ...collectComposerMedia()]   // ← 在 try 之外！
+  const payload = {...}
+  try { ... await createNote(payload) ... }
+  catch (e) { saving.value = false; saveError.value = apiError(...) }  // ← 复位只在这里
+}
+```
+
+`collectComposerMedia()` 原来在 `try` **之外**（`try` 从下一行才开始），
+而 `saving.value = false` 与 `saveError` **都在 `catch` 里**
+⇒ 一旦 `dataUrlToBlob` 抛错，就**绕过整个 catch** ⇒ `saving` 永久卡在 `true`
+⇒ 首行 `if (saving.value) return` ⇒ **保存按钮再也点不动，且没有任何提示**。
+
+⇒ 所以本节**两处必须同时落地**：`dataUrlToBlob` 抛具名错误 + 媒体收集挪进 `try`。
+这也是判据里必须有「自洽性」那条的原因：它量的是**相对位置**，
+不是「`try` 出现过」「`collectComposerMedia()` 出现过」。
+
+⭐ 这一条同时补上了 §886 那四类假绿之外的**第五类**：
+**「修好了 A，却把 A 的失败路径接到了 B 的死路上」**。
+
+### §890.4 修法
+
+1. `note-edit-helpers.ts` 新增**具名错误** `DataUrlFormatError`，
+   `dataUrlToBlob` 对「无逗号」「payload 为空」「payload 非合法 base64」三种一律抛。
+   错误信息只带 40 字符摘要（data URL 可达数 MB，全量进 message 会撑爆日志）。
+   ⇒ **成功路径零行为变化**（判据里钉了逐字节比对）。
+2. `attachmentsToMedia` 的 `mime` 改从 `blob.type` 取 ⇒ **mime 只有一个推导口径**，
+   「URL 当 mime」那条路随 1 一起消失。
+3. `NoteEditView.onSave` 的媒体收集与 `payload` 一起挪进 `try`
+   ⇒ 失败走**既有 catch**（复位 + `errors.saveFailed` 提示），成功路径零变化。
+4. **不动**他人判据语义：`submit-guard-audit.test.ts:121` 登记表钉的
+   「函数体显式 `if (saving.value) return`」原样保留，并补了一条反向判据守住它。
+
+### §890.5 判据（并入既有 `note-edit-helpers.test.ts`，2 → 15 例）
+
+| # | 断言 |
+|---|---|
+| 1 | ⭐⭐⭐ 四种「缺 payload」输入各自必须抛 `DataUrlFormatError` |
+| 2 | ⭐⭐⭐ 抛的是**具名**错误，且信息带得上原文摘要 |
+| 3 | ⭐⭐ payload 非合法 base64 仍抛（不许退回无声） |
+| 4 | ⭐⭐ 正常 data URL 的 size / mime / **逐字节**与改动前一致 |
+| 5 | ⭐⭐⭐ **负控**：复刻改动前的实现，确认它真的静默返回 size=0 |
+| 6 | ⭐⭐ mime 只有一个推导口径；外链不再走到 mime 那一行 |
+| 7 | ⭐⭐⭐ **自洽性**：`collectComposerMedia()` 的位置晚于 `try {` |
+| 8 | ⭐⭐ `catch` 必须复位 `saving.value` 并给提示（抛错要有出路） |
+| 9 | ⭐ 反向：不得动 `submit-guard-audit` 登记表钉的重入守卫 |
+
+⚠⚠ **本节踩到一条新的量具事故**（已写进判据注释）：
+`resolve(HERE, '../NoteEditView.vue')` 写错成上一级目录 ⇒ 报 `ENOENT`，
+而 node:test 对「**suite 构造期**失败」的计数是 **`# fail 0`**
+⇒ 只看 `# fail 0` 会把一条**根本没跑**的判据当成全绿。
+⇒ 验收判据必须同时看 **`not ok`** 与退出码，不能只看计数。
+
+### §890.6 M48：六次变异
+
+| 变异 | 结果 | 红条目 |
+|---|---|---|
+| V1 还原 `split` 写法（删 comma 守卫）——D60 完全复现 | 9 / **6** | 判据 1/2/3/6 |
+| V2 `collectComposerMedia` 挪回 `try` 之外（**修法自伤**） | 14 / **1** | 判据 7（自洽性） |
+| V3 `catch` 里删掉 `saving.value = false` | 14 / **1** | 判据 8 |
+| V4 删掉重入守卫 | 14 / **1** | 判据 9（反向） |
+| V5 **负控自伤**：把复刻的旧实现改成抛错 | 14 / **1** | 判据 5（证明对照本身有区分力） |
+| V6 把抛错改成 `resolve` 空 Blob（往「静默」方向变异） | 9 / **6** | 判据 1/2/3/6 |
+
+还原后 15 / 15 绿。
+
+### §890.7 口径与未实测
+
+- ✅ `dataUrlToBlob` 三类格式缺失改为抛具名错误；`mime` 单一推导口径；
+  `onSave` 媒体收集挪进 `try`；判据 9 条（15 例）；`typecheck` EXIT=0、`gates` 45/45（52.4s）。
+- ⚠ **行为变化**：格式坏掉的 data URL 从「静默存 0 字节」变成**保存失败并提示**
+  （方向与 §883 / §888 一致：静默改写比报错更糟）。
+- ⚠ 错误信息只带 40 字符摘要，不带完整 data URL。
+- ⛔ **未实测**：`useAttachments.ts:18` 注释宣称的「https 外链」在当前仓内**无调用点**，
+  本节据实登记为**未被兑现的契约**，未在真机核对是否存在仓外的调用来源。
+- ⛔ **未实测**：哪些上游真的会产生「无逗号 / 空 dataUrl」的附件
+  （`addDataUrl` 的 3 个调用点都由 FileReader/Camera 产出规范 data URL）。
+  本节改的是**导出函数本身的契约**，不依赖「上游会不会产生坏数据」这个前提成立。
+- ⛔ 未审：`email-body-format.ts:464` / `crypto.ts:130` 两份 `base64 → bytes`
+  是否也需要格式守卫（它们解的是**已落库**的 base64，与本节的 data URL 入口不同层）。
