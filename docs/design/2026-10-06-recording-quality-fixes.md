@@ -101177,3 +101177,119 @@ web 上永远不在，那是**预期降级**（重试一万次也一样 ⇒ 照�
   ⇒ 如果将来这个模块被接回 App（`saveMessage` 一接进去就是真的半个操作），
   **这条清单必须先改**，否则门会红 —— 那正是它该做的。
 - ⚠ 本节**没有**新增任何用户可见提示、schema 或迁移。
+
+---
+
+## §881 语义检索：编辑一条笔记后，向量索引**永远留着旧向量**（D52）
+
+同一轴（SQLite）再换一个能力：**本地向量索引**。它有两条存储 —— 一条在库里（权威），
+一条在内存里（检索实际用的），本节发现这两条**在「更新」这一条路上会分叉**。
+
+### §881.1 缺陷形态：一行判断同时承担了两个不同的问题
+
+`native/vector.ts::VectorIndex.add` 修之前：
+
+```ts
+const isInMemory = this.ids.indexOf(noteId) < 0 && this.ids.length < MAX_VECTORS
+await localDB.run(`INSERT … ON CONFLICT(note_id) DO UPDATE SET embedding = …`)
+if (!isInMemory) { /* 超上限就 warn */ return }   // ⚠ 这里把「已存在」也一起吞了
+// …只有走到这里才会更新内存矩阵
+```
+
+`isInMemory` 这一行同时在问两件事：**「要不要新加一行」**和**「要不要更新已有那一行」**，
+而答案对这两件事是**相反**的。
+
+⇒ `this.ids.indexOf(noteId) >= 0`（这条笔记**已经在内存索引里**）时
+`isInMemory` 为 false ⇒ 写完库就 return ⇒ **内存矩阵永远留着旧向量**。
+
+### §881.2 消费者：更新路径真的存在
+
+`notes-persist.ts` 里：
+
+- `createNote` → `embedAndStore(note.id, …)`（新建，走的是「新加」分支，没问题）；
+- ⚠ `patch.content !== undefined` 时 → `embedAndStore(id, decided.searchText)` ——
+  **这条正是更新路径**，它调的就是同一个 `add`，而 id 已存在 ⇒ 命中缺陷。
+
+`searchSemantic`（`notes-search.ts:82`）只用**内存矩阵**做检索
+⇒ 编辑一条笔记后，语义检索继续按**改动前的内容**作答；
+库里的新向量要等到下一次 `load()`（App 启动 `lobster-init.ts:88`，或 `remove()`）才生效。
+⇒ 零提示，且**库与内存永久分叉**（直到下次启动）。
+
+修法：已存在 ⇒ **就地覆盖**那一行（`matrix.set(normalized, existing * DIM)`），
+不存在且未超上限 ⇒ 才追加。
+
+### §881.3 顺带记下**没有**修的那一半
+
+`MAX_VECTORS`（50000）达到后，新向量**只写库、永远不进内存索引**
+⇒ `search()` 只在旧的那批里找 ⇒ **沉默的「搜不全」**。
+⚠ 而 `add` 的注释写着「查询时降级为仅 FTS」—— **`search()` 里并没有这个降级**；
+它只是安静地少返回一些结果。
+⚠ 这与 §879 的「搜全 vs 搜到」是同一个家族：**一个不全的答案比一个空答案更危险**。
+⇒ 本节**不改**（改法要动 `search()` 的契约与 UI 口径），登记为简报第 101 条。
+
+### §881.4 可测性重构（与 §879 同一手法，第二次）
+
+`vector.ts` 顶层 import `localDB` 单例 ⇒ 那条链在 node 里加载不了 ⇒ 判不了。
+⇒ 索引本体搬进新文件 `native/vector-index.ts`（**只依赖注入的 db**），
+`vector.ts` 只剩 `export const vectorIndex = new VectorIndex(localDbAsSql(localDB))` 与再导出。
+
+⚠ 顺手发现并绕开的两条 `strip-types` 限制（都写进了注释）：
+1. **`parameter properties`**（`constructor(private readonly db: …)`）
+   不被支持 ⇒ 加载直接报 `ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX` ⇒ 改成显式字段；
+2. 「裸 try 块」（§877.6bis 记过）。
+⇒ 与 §875 的 import 扩展名一族合起来，`--experimental-strip-types` 已经有 **3 条**已知限制。
+
+### §881.5 ⚠⚠ 夹具又栽了三次，但三次都指向「代码坏了」的假结论
+
+全部发生在**真 SQLite** 上，与 §879 同族：
+
+1. **`ArrayBuffer` 绑不上**：`node:sqlite` 直接报
+   「Provided value cannot be bound to SQLite parameter 2」——
+   而 `add` 传的就是 `blob.buffer`，Capacitor 插件接受。
+2. **BLOB 读回的形状不同**：Capacitor 返回 `ArrayBuffer`，
+   `load()` 里 `new Float32Array(r.embedding)` 依赖的正是「ArrayBuffer ⇒ 字节重解释为 float」；
+   `node:sqlite` 返回 `Uint8Array` ⇒ 同样的表达式会变成「按字节填数」，**读数全错**。
+   ⇒ 夹具必须把 BLOB 归一化回 `ArrayBuffer`。
+3. **外键没复刻**：`local_note_vectors.note_id` 有 `FOREIGN KEY REFERENCES local_notes(id)`
+   ⇒ 不先落一条笔记就 `FOREIGN KEY constraint failed`
+   ⇒ **夹具必须把被测表的约束也复刻出来，不能只建被测的那一张表。**
+
+⇒ 还有一条**测试自己**的坑（不是量具）：`search()` 在 `loaded === false` 时**恒返回 `[]`**，
+而 `loaded` 只在 `load()` 里置位 ⇒ 判据必须先 `load()` 再 `add`（生产里 `lobster-init` 就是这么调的）。
+
+### §881.6 M38：变异精确命中 2 条，对照组仍绿
+
+把 `add` 改回 `isInMemory` + 提前 return ⇒ **11 / 2**，红的是
+「更新后必须用新向量」与「内存与库必须一致」，
+正控与对照组（两条笔记给出不同分数）**仍绿**。
+
+### §881.7 判据形态
+
+行为层并入 `src/native/__tests__/migration-guards.test.mjs`（该文件现在同时是
+「SQLite 存储语义行为层」的宿主：§879 FTS / §881 向量索引；argv 已贴脸，不另开文件）：
+
+1. 正控：新增一条笔记后检索按它的向量作答；
+2. ★ 更新已有笔记后检索**立刻**用新向量；
+3. ★ 内存读数与「从库重建」的读数必须一致（钉的是**两条路径等价** ——
+   若实现改成「有更新就整表 `load()`」这条同样绿，那是更慢但正确的做法）；
+4. 对照组：两条笔记给出不同分数（证明判据有牙）。
+
+### §881.8 待拍板（新增 1 条）
+
+101. **达到 `MAX_VECTORS` 之后要不要让 `search()` 显式降级** ——
+    ① 现在是「只写库、不进内存 ⇒ 搜索安静地少返回一些结果」，
+    而注释承诺的「查询时降级为仅 FTS」**并没有实现**；
+    ② 要不要让 `search()` 在「有向量没进内存」时**说出来**
+    （返回标志 / 抛错 / 直接走 FTS），还是维持静默？
+    ③ 顺便：`MAX_VECTORS = 50000` 这个取值要不要重新估？
+    1536 维 × 4B × 50000 ≈ **300MB**，注释自己写着「移动端可接受的上限」，
+    但这句话**没有真机读数支撑**（§881.9）。
+
+### §881.9 口径与未实测
+
+- ⛔ **未实测**：真机上「编辑笔记后语义检索用旧内容」的实际发生率。
+  本节定它为缺陷的依据是**代码路径必然性**（更新路径必然调用同一个 `add`）。
+- ⛔ **未实测**：`MAX_VECTORS` 在真机上的内存占用，以及是否真的到过 50000 条。
+- ⚠ 本节**没有**加任何用户可见提示。
+- ⚠ 本节**没有**动 schema、没有加表、没有迁移；
+  `local_note_vectors` 的约束原样保留（判据里用它当夹具的一部分）。

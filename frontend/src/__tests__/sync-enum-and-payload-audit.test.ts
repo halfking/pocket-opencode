@@ -513,11 +513,17 @@ function skipBalancedParens(src: string, from: number): number {
 
 /** 跳到函数体的 `{`（跳过泛型实参与返回类型），遇到 `;` 说明这不是函数声明。 */
 function findBodyBrace(src: string, from: number): number {
+  // ⚠⚠ 必须设**搜索窗口**。否则「接口里的方法签名」会被当成函数声明：
+  //   `interface VectorDb { run(sql, params): Promise<SqlRow[]>; … }` 里的 `run(` 后面
+  //   **没有** `{`，扫描会一路往后找，直到撞上几百行之后的类体 ⇒ 整个类被算成
+  //   「函数 run 的函数体」⇒ 凭空报出一个不存在的条目。
+  //   一次函数声明的 `{` 距离 `)` 不会超过返回类型的几个词，400 字符足够宽。
+  const LIMIT = 400
   let i = from
   while (i < src.length && /\s/.test(src[i])) i++
   if (src[i] === '<') {
     let depth = 0
-    for (; i < src.length; i++) {
+    for (; i < src.length && i - from < LIMIT; i++) {
       if (src[i] === '<') depth++
       else if (src[i] === '>') { depth--; if (depth === 0) { i++; break } }
     }
@@ -526,14 +532,20 @@ function findBodyBrace(src: string, from: number): number {
   if (afterParen < 0) return -1
   i = afterParen
   while (i < src.length && /\s/.test(src[i])) i++
+  // ⚠⚠ 返回类型**不许跨行**。这不是风格要求，而是「这不是函数声明」的可靠信号：
+  //   TypeScript 的 interface 成员**可以不带分号**（`run(): Promise<number>` 合法），
+  //   所以拿 `;` 当终止符根本挡不住接口方法签名 —— 实测它照样一路找到几百行后的类体。
+  //   真实的函数声明，返回类型与 `{` 永远在同一行。
   if (src[i] === ':') {
-    for (; i < src.length; i++) {
+    const lineEnd = src.indexOf('\n', i)
+    for (; i < src.length && i < lineEnd && i - from < LIMIT; i++) {
       if (src[i] === '{') return i
-      if (src[i] === ';') return -1
     }
     return -1
   }
-  return src[i] === '{' ? i : -1
+  if (src[i] !== '{') return -1
+  if (i - from >= LIMIT) return -1
+  return i
 }
 
 function functionBodies(code: string): { name: string; body: string }[] {
