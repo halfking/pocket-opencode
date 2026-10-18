@@ -98417,3 +98417,115 @@ localStorage.setItem(key, JSON.stringify({ ...current, ...settings }))
 3. **推荐位/能力探测的「失败降级」要不要告知** ——
    `meeting-related-search` 三个（失败降级为「没有推荐」）与
    `isKeystoreAvailable`（文案断言了它并不知道的原因）并入 §857 待拍板第 72/73 条。
+
+## §860 把「跨边界枚举必须校验」推到全仓：净得 **0 处新增缺陷** + 一份正例清单
+
+§859.7 自己留了一笔账：「跨边界枚举未校验这条口径**尚未全仓扫面**」。
+本节去结它，结论是**阴性**，但阴性不是「我扫了没找到」就完事 ——
+它同时产出了一份**可复用的正例清单**。
+
+### §860.1 口径
+
+D22（§859）的机制可以写得很具体：**外部来源的值**被写进 localStorage 或 pinia 状态，
+而下游把它当**领域枚举/领域类型**用，写入侧没有白名单。
+
+⇒ 本节要回答的不是「还有没有 D22」，而是「**本仓真实的跨边界入口有哪些，各自是什么形态**」。
+
+### §860.2 ⭐ 先说探针失败：第一版口径不可用（读数见下）
+
+`.artifacts/s860-probe/scan_cross_boundary_sinks.py` 第一版把
+`load` 也当作「native 桥来源」的名字之一 ⇒ 读数是
+**候选落点 388 处，其中 359 处来自 `load(`** ⇒ 信噪比不可用。
+
+⚠ 这正是老教训的又一次命中：**分类探针比枚举探针更危险** ——
+`load` 是一个通用名字，把它当「边界来源」等于把半个仓都标成候选。
+⇒ 改成**手工枚举边界入口**。本仓真实的跨边界入口只有四个（读源码得出，不是探针得出）：
+
+| 边界 | 入口 | 判定 | 依据 |
+|---|---|---|---|
+| config-sync（远端下发） | `applyRemoteSetting` → `applyAppPrefs` / `applyChatSettings` | ❌ **D22/D24，已修** | §859 |
+| WebSocket 推送 | `services/ws-bus.ts` → `normalizeServerNote` / `normalizeTags` | ✅ **已校验** | 下面 §860.3 |
+| 用户导入文件（ENEX） | `features/imports/import-service.ts` → `evernote-parser.ts` | ✅ **已校验** | 下面 §860.3 |
+| 能力探测（插件可用性） | `native/keystore.ts::isKeystoreAvailable` | ⚠ **已刻意**（「宁可少显示一个入口」），但文案断言了未知原因 | §859.5，已并入待拍板 79 |
+
+### §860.3 三个正确形态的样板（这一节的真正产出）
+
+**样板一：WebSocket 推送必须逐字段归一化**（`services/ws-bus.ts`）
+
+```ts
+function normalizeTags(value, depth = 0): string[] | null {
+  if (depth > 10) return null                       // 防恶意构造的深层嵌套字符串
+  if (Array.isArray(value)) {
+    const tags = value.filter((tag): tag is string => typeof tag === 'string')   // ← 逐项类型过滤
+    return tags.length > 0 ? tags : null
+  }
+  ...
+}
+// normalizeServerNote：p.title ?? null / p.content_type ?? 'text' / p.created_at ?? now
+```
+
+⚠ 特别值得记的一处**同函数内对照**：`tags` 逐项做了 `typeof` 过滤 + 深度上限，
+而 `content_type` 只做了 `?? 'text'` 兜底。之所以**仍然判定为阴性**：
+`LocalNote.contentType` 的类型就是 `string`（`notes-types.ts:10`），**下游没有把它当枚举分支**（全仓无按它 switch 的地方）⇒
+没有「当成领域枚举用」这个危害面。⇒ **判定依据是「类型声明 + 消费端」，不是「有没有校验」**。
+
+**样板二：导入解析把坏输入收敛成合法值**（`features/imports/evernote-parser.ts`）
+
+```ts
+function toArray(value) { return Array.isArray(value) ? value : [value] }        // 形状归一
+function parseDate(value) { … return Number.isNaN(date.getTime()) ? null : date.getTime() }  // 失败收敛成 null
+```
+
+⚠ `parseDate` 这条正是 §858 说的那一族的标准答案：**失败收敛成一个合法的「没有」，
+而不是把 `NaN` 写进库里**（`NaN` 不等于任何合法时刻，会永久留在数据里且永远比不出来）。
+
+**样板三：schema 不符就整个丢弃，不做「尽力修复」**（`lib/shell/navigationContext.ts::restore`）
+
+```ts
+const validated = validateContext(parsed)
+if (!validated) return false          // ← 失败不采用
+// 且失败路径上没有任何 setItem / persist
+```
+
+它的文档注释把这个取舍写成了原则：「**任何 schema 不符都直接丢弃**，
+不做尽力修复 —— 半恢复的导航比不恢复更危险。」
+
+### §860.4 把样板钉成防退化判据（10 例）
+
+`.artifacts/` 里的探针会烂，但**样板会被下一个人「顺手简化」掉** ——
+比如有人为了少写两行，把 `filter(typeof tag === 'string')` 改成 `as string[]`，
+这类改动在 45 项门禁下**完全隐形**。
+
+⇒ `frontend/src/__tests__/cross-boundary-validation.test.ts`（**10 例**）：
+三个样板各钉 2-3 条 + 尺子自证 + 两条变异负控。
+
+**M17 真实文件端到端变异（2 路）**：
+
+| 变异 | 自己判据 | 仓库既有门 `vue-template-compile` |
+|---|---|---|
+| 基线 | 10 / 0 ✅ | 187 / 0 |
+| M17-a `ws-bus` 去掉 `typeof` 过滤（改成 `as string[]`） | **8 / 2** 🔴 | 187 / 0 |
+| M17-b `evernote-parser::parseDate` 返回 `NaN` | **8 / 2** 🔴 | — |
+| 还原核对 | **10 / 0** ✅ | 187 / 0 |
+
+⇒ 两路对既有门完全隐形；还原后 `git diff` 对这两个文件为空（无残留）。
+
+### §860.5 口径与未实测
+
+- 本节的口径是「**外部来源的值被当成领域枚举/领域类型使用**」。
+  ⛔ **没有**覆盖「外部值里的字符串长度/HTML/路径」——那是 §851（`v-html` 净化，
+  9/10 处已有净化）与 §852（URL sink）的范围，本节不重复声明。
+- 边界清单是**手工枚举**出来的（读源码），不是探针穷举 ⇒
+  如果将来新增一类跨端输入（新的 WS 通道、新的 native 桥、新的导入格式），
+  **这份清单不会自动更新**，需要重新枚举。
+- ⛔ **未实测**：真实设备上这三条通道各自的**脏输入发生率**（服务端推送脏 tags、
+  导入畸形 ENEX、跨版本 schema 不匹配的导航上下文）。
+  本节的结论建立在「代码形态正确」上，不声称脏输入不会来。
+
+### §860.6 本节无新增待拍板
+
+阴性结论不产生新的产品口径；§859 登记的 77–80 条仍然有效。
+唯一值得属主知道的是：**这条口径目前不适合做成「全仓门禁」**——
+因为它的收益全在「防退化」而不是「发现新缺陷」（本节净得 0），
+真要做门禁，应该做的是上面那个**正例清单**（10 例），
+而不是再去扫一遍已经扫干净的面。
