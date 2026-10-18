@@ -127,6 +127,7 @@ import { EmptyState, PullToRefresh, BottomSheet } from '../../components'
 import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue'
 import { useToast } from '../../composables/useToast'
 import { useApiError } from '../../composables/useApiError'
+import { useConfirm } from '../../composables/useConfirm'
 import {
   countPendingOps, createFolder, flushEmailOps, listLocalFolders,
   listOpsEntries, removeFolder, syncFoldersFromServer,
@@ -147,6 +148,7 @@ defineOptions({ name: 'EmailFolderListView' })
 
 const router = useRouter()
 const toast = useToast()
+const { confirm } = useConfirm()
 const apiError = useApiError()
 
 const folders = ref<LocalFolder[]>([])
@@ -276,7 +278,16 @@ async function onCreate() {
 }
 
 async function onDeleteFolder(f: LocalFolder) {
-  if (!window.confirm(`删除目录「${f.displayName}」？目录里的邮件会回到收件箱视图，服务器目录本身不受影响。`)) return
+  // §854：原为 window.confirm（同 EmailInboxView 的两处）。项目已确立 ConfirmDialog
+  // 为全局唯一确认弹窗，这处是第三处漏网的；它在 Android WebView 里同步阻塞、
+  // 会卡死渲染进程（BUG-AQ）。注意这函数本身已有 try/catch + toast，
+  // 缺的只有确认弹窗这一步。
+  if (!await confirm({
+    title: '删除目录',
+    message: `删除目录「${f.displayName}」？目录里的邮件会回到收件箱视图，服务器目录本身不受影响。`,
+    confirmText: '删除',
+    danger: true,
+  })) return
   try {
     await removeFolder(f)
     toast.success('目录已删除')

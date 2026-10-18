@@ -97324,3 +97324,167 @@ M10：在 `VaultEntryView.vue` 里真加一处 `el.style.cssText = '…'`。
 2. **WS/SSE 的 token 查询串要不要去掉** —— 现状是注释写明的 dev 过渡态；
    生产化要改 `requireAuth` 的例外分支，属服务端改动。
 3. **§851.7 第 1 条（邮件 `style` 标签）仍然待拍板** —— 本节未改变它的状态。
+
+---
+
+## §854 注册给 Vue 的异步回调审计：42 条候选 → 6 类真缺陷（用户主动动作失败零反馈）
+
+本节的起点是一个很朴素的问法：**用户点了某个按钮，这件事失败了，用户看得见吗？**
+§847 扫的是「错误标志被生产却零出口」，§848 扫的是「会 throw 的函数 × 调用点接不接住」，
+本节扫的是它们之间的那块空白——**既没有错误标志、也没有显式 throw 处理，但 rejection
+从注册给 Vue 的事件处理器里逃了出去**。
+
+### §854.1 扫面口径与读数
+
+探针 `.artifacts/s854-probe/scan_async_cb.py`，与判据 `frontend/src/__tests__/vue-async-callback-audit.test.ts` 共用同一把尺子：
+
+> `.vue` 的 `<script setup>` 里，**async function NAME(...) 的函数体含 `await`、体内无 `try`**，
+> 且 `NAME` **真的被注册给了 Vue**（模板 `@事件` / `:prop` / `onMounted` / `watch`）。
+
+| 项 | 读数 |
+|---|---|
+| 递归扫描的 `.vue` 文件 | 363 个测试文件同批枚举；视图侧全部递归（剔除 `__tests__`） |
+| 候选 | **42 条** |
+| 人工逐条读完后判为**真缺陷** | **6 条**（含 3 条裸 `window.confirm`） |
+| 站得住的**阴性** | **36 条**，全部登记进判据的 REGISTRY |
+
+⚠ 探针自身有已知漏检，**必须如实记账**：形如 `const doSaveVacation = async () => {}` 的
+**箭头函数 const 形式不会被解析**（正则只吃 `async function` 声明）。
+⇒ 缺席**不代表安全**，只代表这把尺子没量到。
+
+⚠ 更重要的是：**自动初判只能当候选生成器**。探针把 `UnifiedComposer::onMic` 判成
+「callee 透传 ⇒ 有风险」，人工读才发现 `startRecording` 自己 try/catch 并设 `sttError`，
+而模板 `UnifiedComposer.vue:79/:184` 渲染了它 ⇒ 阴性。
+**与 §850 同族：安全的原因常常在 callee 的 callee 里。**
+
+### §854.2 六类真缺陷
+
+| 编号 | 位置 | 失败时的实际表现 | 为什么「看起来有出口」其实没有 |
+|---|---|---|---|
+| **D8** | `ScheduledTaskListView::toggle` / `remove` | 点「停用/启用」「删除」（删除**已过确认弹窗**），失败后界面什么都不发生 | store 的 `error` 只由 `load`/`loadOne` 写，`update`/`remove` **都不碰它** ⇒ 连那条横幅都不会亮 |
+| **D8b** | `ScheduledTaskDetailView::toggle` / `remove` | 同上，**同一缺陷的第二个落点** | 该视图**零 toast**；模板 `:7` 的 `errorText` 横幅走 `store.error`，同样不会被这两条路径点亮 |
+| **D9** | `NotificationsView::markAllRead` | 点「全部已读」失败 ⇒ 未读数原封不动 + 零反馈 | `stores/notification.ts` **整个文件 grep `error` 0 命中** —— 连 store 出口都不存在 |
+| **D10** | `EmailInboxView:438` / `:525`、`EmailFolderListView:279` | 点下去**应用彻底假死** | 这三处是裸 `window.confirm`；项目已立 `ConfirmDialog` 为全局唯一确认弹窗（`ConfirmDialog.vue:2` 原文），已改 5 处，这 3 处是漏网的 |
+| **D11** | `BacklinksPanel::reload` | 反向链接面板**永久消失**，且与「加载中」完全不可区分 | `ready` 同时是「加载中」和「要不要渲染」的开关（模板 `v-if="ready"`），而 `getBacklinks` → `localDB.query` 不吞错 ⇒ 一次失败就卡在 false |
+| **D12** | `VaultListView::saveNew` | 密码管理器新增条目零反馈 | `saveEntry` → `encryptData`/`localDB.run` 会抛；清空表单在 `await` **之后** ⇒ 不丢数据，但用户只看到按钮按下去没反应 |
+
+#### 证据：三段取证（D9 最典型）
+
+1. **数据源**：`store.markRead()` 直接 `await notificationsApi.markRead(id)`，无中间层。
+2. **出口**：`stores/notification.ts` grep `error` → **0 命中** ⇒ 没有 store 出口可等。
+3. **视图**：`NotificationsView.vue` grep `store.error` → **0 命中** ⇒ 没有横幅可亮。
+
+三段全空 ⇒ 失败 100% 静默。
+
+#### 一致性对照（最强证据形态）
+
+三处都不是「缺能力」，而是**同一个仓里已经有正确做法，这里没有**：
+
+| 缺陷 | 同仓已做对的地方 |
+|---|---|
+| D8 / D8b | 同文件 `ScheduledTaskDetailView::runNow` **有** catch（`store.error = …`）—— 作者知道要处理，只是漏了这两处 |
+| D10 | `ConfirmDialog` 已是全局唯一确认弹窗，且已在 `ScheduledTaskListView`/`FlashcardEditView`/`EmailSpamCleanupView`/`SettingsPermissionsView`/`RssListView` 五处落地（注释均标 `BUG-AQ`） |
+| D12 | **同一个 vault 目录**下的 `VaultEntryView::onSave` 有完整 try/catch + toast + finally ⇒ 同一件事两条路径两种待遇 |
+
+⇒ 三处的修复动作都是**复用**，不是发明新写法。
+
+### §854.3 落地
+
+| 文件 | 改动 |
+|---|---|
+| `features/scheduled-tasks/ScheduledTaskListView.vue` | 引入 `useToast`；`toggle`/`remove` 从 `.catch(() => {})` 改为 try/catch + `toast.error(apiError(e, 'errors.operateFailed'))` |
+| `features/scheduled-tasks/ScheduledTaskDetailView.vue` | 同上（D8b）；`remove` 失败时 `return`，**不**继续 `markListDirty` + `router.replace` |
+| `features/notifications/NotificationsView.vue` | `markAllRead` 改 try/catch + toast |
+| `features/email/EmailInboxView.vue` | 引入 `useConfirm`；`onPurge`/`onOrganize` 两处 `window.confirm` → `await confirm({...})` |
+| `features/email/EmailFolderListView.vue` | `onDeleteFolder` 同上（该函数本已有 try/catch + toast，只缺确认这一步） |
+| `features/pkm/BacklinksPanel.vue` | `reload` 加 try/catch/finally；新增 `failed` 态 + **可区分**的失败 UI + 重试按钮；`ready` 在 finally 里复位 |
+| `features/vault/VaultListView.vue` | `saveNew` 加 try/catch + toast；**清空表单只在成功后执行**；补 `已保存` toast |
+
+⚠ `errors.operateFailed` / `errors.saveFailed` 两个 key 均已存在于全部 9 个 locale
+（`locales/*.json:431` / `:252`），且 `TasksView.vue:508`、`VaultEntryView::onSave`
+已有同 key 先例 ⇒ 不新增 key，不触发 `check:i18n`。
+
+⚠ 刻意**没有**把 `BacklinksPanel` 的失败复用成 `links.length === 0` 的空态：
+那会让「查询失败」谎报成「没有笔记引用它」—— 与 §843 修的 `TasksView` 主动清空列表
+是同一族错误。判据里有一条专门钉住「失败态必须与空态可区分」。
+
+### §854.4 判据与变异
+
+`frontend/src/__tests__/vue-async-callback-audit.test.ts`（**22 例**）：
+
+| 组 | 例数 | 内容 |
+|---|---|---|
+| 尺子自证 | 3 | `.vue` 数量、登记表非空且键形为 `路径::函数名`、**反向对账**（登记的函数必须仍存在） |
+| D8/D8b | 7 | 列表页 + 详情页各 toggle/remove（4）+ `store.remove` 不得吞错 + **对照组：`load` 的空 catch 是合法的** |
+| D9 | 2 | `markAllRead` 不得空吞 + **对照组：`open()` 里那条 `void markRead().catch()` 是有意的**（乐观更新，注释解释了） |
+| D10 | 2 | 全仓 `.vue` 不得再有裸 `window.confirm`（注释已 strip）+ 三处都必须 `await confirm(` |
+| D11 | 3 | `ready` 必须在 `finally` 里复位 + 失败态与空态可区分 + `v-if="ready"` 这个前提本身要钉住 |
+| D12 | 2 | `saveNew` 不得吞 + **清空表单必须跑在 catch 之后**（否则失败一次就丢刚输入的密码）+ 一致性对照样本形状 |
+| 反向对照 | 1 | 「渲染了 error 的视图 + 空 catch」不该被判红 |
+| 变异负控 | 3 | 三段源码级变异各自证明有牙 |
+
+**M11 真实文件端到端变异（6 路，每路跑自己判据 + 仓库既有门）**：
+
+| 变异 | 自己判据 | 仓库既有门 `vue-template-compile` |
+|---|---|---|
+| M11-a 列表页 toggle 退回 `.catch(() => {})` | 20 / 2 ❌ | **187 / 0 ✅** |
+| M11-b 详情页 remove 去掉 toast | 21 / 1 ❌ | **187 / 0 ✅** |
+| M11-c `markAllRead` 退回空 catch | 21 / 1 ❌ | **187 / 0 ✅** |
+| M11-d `onPurge` 退回 `window.confirm` | 21 / 1 ❌ | **187 / 0 ✅** |
+| M11-e 删掉 `BacklinksPanel` 的 `finally` | 20 / 2 ❌ | **187 / 0 ✅** |
+| M11-f `saveNew` 去掉 catch | 21 / 1 ❌ | **187 / 0 ✅** |
+| 还原核对 | **22 / 0** | **187 / 0** |
+
+⇒ 六类缺陷对 `vue-tsc`、对模板编译、对既有 45 项门禁**全部隐形**。
+`typecheck` 在每一路变异下都是 `EXIT=0`。
+
+### §854.5 本节两次判据自己写错（写进判据文件注释）
+
+1. **`indexOf('{')` 落在注释里的 `{` 上**。`fnBody` 原实现从 `function markAllRead(` 之后
+   `indexOf('{')`，而该函数上方的注释恰好写着「原来是 `.catch(() => {})`」⇒
+   取到的"函数体"从注释那个 `{` 开始，于是 D9 判据在**已修好的源码上转红**。
+   ⇒ 这是「锚点之后第一个 `{` 不一定是函数体」的第 3 次（前两次是 TS 返回类型注解、箭头函数）。
+   **修法**：`fnBody` 内部先 `strip()` 掉注释再找 `{`。
+2. **变异正则的锚点按想象写**。`/\n\s*finally \{…/` 匹配不到真实的 `  } finally {`
+   （`finally` 前面还隔着收尾的 `}`）⇒ M11-e 的负控一开始是「★ 变异没生效」。
+   ⇒ 与 §853 同款教训：**写完断言先看真实源码长什么样**。
+
+### §854.6 顺带撞到：`z-index-ladder` ALLOWLIST 第六次被行号漂移咬到
+
+改 `EmailInboxView`（新增 import + `const confirm` + 三处 confirm 展开，共 17 行）
+把该文件 `<style>` 里两处裸 z-index 从 **718/805 推到 735/822** ⇒ 门禁转红。
+
+- **判别**：先 `git stash` 掉单文件改动再跑 ⇒ 绿 ⇒ 确认是本轮引入，不是既有失败。
+- **按既有先例处理**：只重新编号，**不改门禁语义与结构**。
+- 顺带核对了两条 ALLOWLIST 理由与真实选择器是否还对得上（`.more-menu` / `.to-top`，对得上）。
+
+⚠ 这是同一个 key 的**第六次**咬人（历史 ①–④ 见该文件注释，⑤ 是 §841）。
+⇒ 「规则块起始行」这个第三种锚法，在一个会被反复加注释的 `<style>` 上方**同样会漂**。
+**待属主拍板**：key 是否改成 `文件:选择器`（对插入免疫）。
+
+### §854.7 口径与未实测
+
+- ⛔ **未实测**：六类缺陷在真机上的**实际发生率**（网络失败、DB 失败、权限被拒各自的概率）。
+- ⛔ **未实测**：D10 的假死结论沿用项目既有的 BUG-AQ 真机记录（点下去应用彻底假死、
+  连 CDP 的 `1+1` 都不再返回），本轮**没有重新构造真机复现**。
+- ⛔ **未实测**：`useConfirm` 的兜底路径（`useConfirm.ts:47`）在 `ConfirmDialog` 未挂载时
+  仍会回落到 `window.confirm`。它的可达性未知（属「极端时序」），
+  但一旦可达就等于 D10 未被真正消除 ⇒ 已登记为待拍板，本轮不动。
+- 探针的漏检（箭头函数 const 形式）意味着**扫面结论是下界**，不是全集。
+- 本节只审计 `.vue`。`.ts` 里的 composable/store 回调不在本轮范围内（§850 覆盖了其中一部分）。
+
+### §854.8 待拍板
+
+1. **`z-index-ladder` 的 ALLOWLIST key 要不要改成 `文件:选择器`**（第六次咬人，
+   属门禁结构改动，需属主拍板；本轮只按先例重新编号）。
+2. **`useConfirm` 的兜底 `window.confirm` 要不要在 native 平台禁用** ——
+   保留兜底功能连续性，还是彻底消除同步阻塞的可能。
+3. **marketplace 三个 `runInstall` 的 `installing.value = true` 没有 `finally`** ——
+   现在安全**只因为** `loadVersions`/`loadReleases`/`install` 三个 callee 恰好都吞错。
+   将来任一改成 rethrow，按钮就会永久 disabled。
+   要不要现在就补 `finally`（属防御性加固，本轮未改）。
+4. **`NotificationsView::open()` 的乐观已读要不要给反馈** ——
+   它本地先置 `read_at` 再跳转，服务端失败时刷新会回退 ⇒ 界面短暂说谎。
+   现状是**有意**的取舍（注释已解释「失败不挡跳转」），是否要补一个回滚提示。
+5. **`TasksView::handleRefresh` 用 `Promise.all` 而同家族的 `MessagesHubView`/`NotesHubView`
+   用 `allSettled`** —— 同一仓里两种口径。是否统一（改成 `allSettled` 会掩盖部分失败）。

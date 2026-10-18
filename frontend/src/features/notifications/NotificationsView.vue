@@ -9,9 +9,13 @@ import { computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useNotificationStore } from '../../stores/notification'
 import type { Notification } from '../../api/notifications'
+import { useApiError } from '../../composables/useApiError'
+import { useToast } from '../../composables/useToast'
 
 const router = useRouter()
 const store = useNotificationStore()
+const apiError = useApiError()
+const toast = useToast()
 
 const items = computed(() => store.inbox)
 const loading = computed(() => store.loading)
@@ -51,7 +55,15 @@ async function open(n: Notification) {
 
 async function markAllRead() {
   if (!unreadCount.value) return
-  await store.markRead().catch(() => {})
+  // §854：原来是 `await store.markRead().catch(() => {})`。这条比别处的空 catch 更彻底 ——
+  // `notification` store **整个文件里没有 error 字段**（grep `error` 0 命中），
+  // 所以失败既没有 store 出口可等、视图也没有任何横幅可亮。
+  // ⇒ 点「全部已读」失败时未读数原封不动、界面零反馈，用户只会当成没点到而反复点。
+  try {
+    await store.markRead()
+  } catch (e: any) {
+    toast.error(apiError(e, 'errors.operateFailed'))
+  }
 }
 </script>
 

@@ -42,17 +42,30 @@ import { describeTaskSchedule } from './schedule-plan'
 import { useListScene } from '../../composables/use-list-scene'
 import { useApiError } from '../../composables/useApiError'
 import { useConfirm } from '../../composables/useConfirm'
+import { useToast } from '../../composables/useToast'
 
 defineOptions({ name: 'ScheduledTaskListView' })
 
 const apiError = useApiError()
+const toast = useToast()
 const router = useRouter()
 const store = useScheduledTasksStore()
 const { confirm } = useConfirm()
 const enabledOnly = ref(false)
 
 function load() { return store.load(enabledOnly.value).catch(() => {}) }
-async function toggle(task: ScheduledTask) { await store.update(task.id, { enabled: !task.enabled }).catch(() => {}) }
+/**
+ * §854：原来这里是一行 `.catch(() => {})` —— 用户主动点的「停用/启用」失败时**零反馈**，
+ * 而 store 的 `error` 只由 load/create 设置（`update`/`remove` 都不碰它）
+ * ⇒ 连 `store.error` 渲染出来的那条横幅也不会亮。
+ */
+async function toggle(task: ScheduledTask) {
+  try {
+    await store.update(task.id, { enabled: !task.enabled })
+  } catch (e: any) {
+    toast.error(apiError(e, 'errors.operateFailed'))
+  }
+}
 async function remove(task: ScheduledTask) {
   // BUG-AQ：原来是 window.confirm。它在 Android WebView 里是**同步阻塞**的，
   // 会卡住渲染进程 JS 线程——真机实测点「删除」后应用彻底假死，连 CDP 的
@@ -60,7 +73,13 @@ async function remove(task: ScheduledTask) {
   // 全局唯一确认弹窗，这里是漏网的一处。
   const ok = await confirm({ title: '删除自动化', message: `删除自动化「${task.name}」？`, confirmText: '删除', danger: true })
   if (!ok) return
-  await store.remove(task.id).catch(() => {})
+  // §854：同 toggle —— 用户**已经过了确认弹窗**，失败必须说出来，
+  // 否则表现是「点了删除、弹窗也确认了，然后什么都没发生」。
+  try {
+    await store.remove(task.id)
+  } catch (e: any) {
+    toast.error(apiError(e, 'errors.operateFailed'))
+  }
 }
 function open(id: string) { router.push(`/settings/scheduled-tasks/${id}`) }
 onMounted(load)

@@ -279,8 +279,11 @@ import { formatInboxSearchLabel } from './email-inbox-search'
 import { useEmailInbox } from './use-email-inbox'
 import { setHeaderTitle } from '../../composables/useAppHeaderTitle'
 import { useListScene } from '../../composables/use-list-scene'
+import { useConfirm } from '../../composables/useConfirm'
 
 defineOptions({ name: 'EmailInboxView' })
+
+const { confirm } = useConfirm()
 
 /**
  * emailCardAriaLabel 组装单张邮件卡片的可访问名。
@@ -435,7 +438,17 @@ async function onClassify() {
 
 async function onPurge() {
   if (!inbox.selectedCount.value) return
-  if (!window.confirm(`删除选中的 ${inbox.selectedCount.value} 封邮件？正文将清空，仅保留标题和摘要；同步后服务器侧也会移入垃圾箱。`)) return
+  // §854：原为 `window.confirm(...)`。项目已确立 ConfirmDialog 为**全局唯一**确认弹窗
+  // （components/base/ConfirmDialog.vue:2 原文），并在 5 处改过（ScheduledTaskListView /
+  // FlashcardEditView / EmailSpamCleanupView / SettingsPermissionsView / RssListView），
+  // 这两处是漏网的。window.confirm 在 Android WebView 里是**同步阻塞**的，
+  // 会卡死渲染进程 JS 线程 ⇒ 真机实测点下去应用彻底假死（BUG-AQ）。
+  if (!await confirm({
+    title: '删除选中邮件',
+    message: `删除选中的 ${inbox.selectedCount.value} 封邮件？正文将清空，仅保留标题和摘要；同步后服务器侧也会移入垃圾箱。`,
+    confirmText: '删除',
+    danger: true,
+  })) return
   // 删除前记操作日志（delete op）：本地已删的邮件，服务器侧（IMAP 移入垃圾箱）
   // 由目录页「同步到服务器」按钮执行——离线删除也不丢。
   const ids = [...inbox.selected.value]
@@ -522,7 +535,11 @@ async function onOrganize() {
       return
     }
     const folder = preview.folder || '通知'
-    if (!window.confirm(`识别到 ${count} 封系统通知类邮件，移入目录「${folder}」？`)) return
+    if (!await confirm({
+      title: '智能整理',
+      message: `识别到 ${count} 封系统通知类邮件，移入目录「${folder}」？`,
+      confirmText: '整理',
+    })) return
     const rep = await emailApi.organizeInbox({ folder })
     const moved = rep.moved ?? 0
     syncHint.value = rep.pending && rep.pending > 0
