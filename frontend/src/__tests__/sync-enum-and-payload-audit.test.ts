@@ -213,6 +213,53 @@ describe('§859 · D24 写侧不能静默丢掉远端更新（与 §858 读侧�
   })
 })
 
+describe('§859 · D25 同一个 key 的**第三个**消费者（迁移路径）', () => {
+  // ⭐ 这条断言的由来是本仓**同族第三次漏网**：
+  //   §838/D19（onArchive/onRestore/onDelete 三个处理器都修过、startNewMeeting 漏网）
+  //   §859/D24（同一个 key 的读侧 §858 修过、写侧漏网）
+  //   §859/D25（同一个 key 的读侧 + 写侧都修过、**一次性迁移路径**漏网）
+  // ⇒ 只钉「已知的两个兄弟」必然漏掉第三个 ⇒ 判据必须**枚举全部消费者**再逐个要求。
+
+  it('★★★ 三个消费者一个都不能少（少一个就说明有人加了新消费者而没人点名）', () => {
+    const store = strip(read('features/ai-chat/aiChatStore.ts'))
+    const runtime = strip(read('native/config-sync/runtime.ts'))
+    // ① 读侧
+    assert.match(store, /loadSettings/,
+      'aiChatStore::loadSettings 不见了 —— 若它改名，请同步更新这条枚举而不是删掉它')
+    // ② 写侧
+    assert.ok(APPLY.includes('applyChatSettings'), 'applyChatSettings 不见了')
+    // ③ 迁移侧（第三个消费者）
+    assert.match(runtime, /importLegacyPrefsIfMissing/,
+      '一次性旧偏好迁移函数不见了；若它被删/改名，这条枚举需要重新点名')
+  })
+
+  it('★★★ 解析失败的那个 catch 必须说话（外层那个不管）', () => {
+    const runtime = strip(read('native/config-sync/runtime.ts'))
+    const body = fnBody(runtime, 'importLegacyPrefsIfMissing')
+    assert.ok(body, '找不到 importLegacyPrefsIfMissing')
+    // ⚠ 只钉「紧跟 JSON.parse 的那一个 catch」：
+    //   这个函数**外层**的 `catch { /* ignore */ }` 保护的是 getLocalSetting /
+    //   writeLocalSetting 这类 DB 调用，失败时「跳过这次迁移」本来就是正确行为，
+    //   要求它说话属于越界。第一版断言写成了「函数里不许有静默 catch」⇒ 立刻误报。
+    const parseAt = body.indexOf('JSON.parse')
+    assert.ok(parseAt > 0, '这个函数里已经找不到 JSON.parse ⇒ 若迁移改写了，请重新点名')
+    const rest = body.slice(parseAt)
+    const firstCatch = catchBlocks(rest)[0]
+    assert.ok(firstCatch, 'JSON.parse 之后没有任何 catch ⇒ 解析失败会直接冒出去')
+    assert.match(firstCatch, /preserveCorruptRaw|console\.|throw\s/,
+      '解析失败后的那个 catch 什么都不说 ⇒ 旧 blob 损坏时这次迁移会无声跳过，'
+      + '用户的 AI 聊天设置从此只留在这一台设备上')
+  })
+
+  it('★★ 迁移路径必须复用共用留证落点（不得自己拼键名）', () => {
+    const runtime = strip(read('native/config-sync/runtime.ts'))
+    assert.doesNotMatch(runtime, /corrupt:[^`]*\$\{/,
+      'runtime.ts 自己拼了 corrupt 键名')
+    assert.match(runtime, /from '\.\.\/\.\.\/utils\/corrupt-preserve'/,
+      'runtime.ts 没有复用共用留证落点')
+  })
+})
+
 describe('§859 · 变异负控（这些形态出现时判据必须转红）', () => {
   it('把 deviceTier 改回无校验落盘 ⇒ 会被 D22 那条抓住', () => {
     // ⚠⚠必须 strip 注释再匹配：本文件的说明文字里**故意引用了**缺陷原句
