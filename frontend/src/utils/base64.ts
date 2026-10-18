@@ -48,3 +48,34 @@ export function blobToBase64(blob: Blob): Promise<string> {
     reader.readAsDataURL(blob)
   })
 }
+/**
+ * 字节数组 → base64（无 data: 前缀）。
+ *
+ * §889：收编了三份**同义实现**（三种写法，行为等价）：
+ *   `native/recording-audio-transcode.ts` — `String.fromCharCode.apply(null, 子数组)`
+ *   `utils/download-encoding.ts`      — `String.fromCharCode(...子数组)`
+ *   `features/email/email-image-preload.ts` — `apply(null, Array.from(子数组))`
+ *
+ * ⚠ 三者都**分块**（0x8000 / 32768）才完成的 —— 这是必要的：
+ *   `String.fromCharCode` 与 `Function.prototype.apply` 都有**参数个数上限**，
+ *   整块传会在大文件上直接 RangeError。
+ *   本实现保留分块，不是风格能提齐到写法一致。
+ */
+/** ⚠ 参数放宽为 `ArrayBufferLike`：`Uint8Array.buffer` 的类型是 `ArrayBufferLike`（可能是
+ *  SharedArrayBuffer），只接 `ArrayBuffer` 会让每个调用点都要先转一次。 */
+export function arrayBufferToBase64(buffer: ArrayBufferLike): string {
+  const bytes = new Uint8Array(buffer)
+  const CHUNK = 32768
+  // ⚠ 写成十进制 32768 而不是 0x8000：两者是同一个数，但
+  //   §881 的既有判据（recording-audio-transcode.test.mjs）钉的是**字面**
+  //   `/CHUNK = 32768/` —— 撞门禁时只改自己措辞、不动别人的判据，
+  //   所以公共实现就按它的字面来。
+  let binary = ''
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    // ⚠ 用 `apply` 而不是展开 `...`：§881 的既有判据钉的就是这个形态，
+    //   且那里记着「12 秒 PCM 实测 RangeError」—— 展开与 apply 的参数上限
+    //   并非在同一版本上验证过，这里按已实测的那条走。
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK) as unknown as number[])
+  }
+  return btoa(binary)
+}

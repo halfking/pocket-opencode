@@ -267,9 +267,23 @@ test('契约：解码器是「滚动累计」而非逐片独立解码', () => {
 })
 
 test('契约：base64 分块转换（一次性展开会爆栈，12 秒 PCM 实测 RangeError）', () => {
-  assert.match(src, /CHUNK = 32768/)
-  assert.match(src, /String\.fromCharCode\.apply/, '必须分块 apply')
-  assert.doesNotMatch(src, /String\.fromCharCode\(\.\.\.bytes\)/, '不能一次性展开')
+  // ⚠⚠ §889：这条判据原来读的是 `recording-audio-transcode.ts` —— 那份
+  //   `arrayBufferToBase64` 在 §889 被**收编到 `utils/base64.ts`** 了
+  //   （本仓「bytes → base64」曾有 4 份同名不同名的实现）。
+  //   ⇒ 实现搬走之后，这里读原文件只会读到一行 re-export，**必然假红**。
+  //
+  //   本节只改**判据的指向**，不改它的语义：「分块 + apply + 不一次性展开」
+  //   三条要求原封不动，只是让它们检查实现的新家。
+  //   同时补一条：原文件必须仍以 re-export 暴露它 —— 否则本文件顶部的
+  //   `import { arrayBufferToBase64 } from '../recording-audio-transcode.ts'`
+  //   会加载不到（那是 §881 判据与生产 `recordingRuntime.ts` 的共同入口）。
+  const impl = readFileSync(resolve(HERE, '../../utils/base64.ts'), 'utf8')
+  assert.match(impl, /CHUNK = 32768/,
+    'base64 转换没有分块常量 CHUNK = 32768（0x8000 会被这条既有判据判红，故用十进制）')
+  assert.match(impl, /String\.fromCharCode\.apply/, '必须分块 apply')
+  assert.doesNotMatch(impl, /String\.fromCharCode\(\.\.\.bytes\)/, '不能一次性展开')
+  assert.match(src, /export \{ arrayBufferToBase64 \} from '\.\.\/utils\/base64\.ts'/,
+    'recording-audio-transcode.ts 必须仍以 re-export 暴露 arrayBufferToBase64（带 .ts 扩展名，§875）')
 })
 
 test('契约：模块不含 TS 参数属性（否则单测无法 import 生产代码）', () => {

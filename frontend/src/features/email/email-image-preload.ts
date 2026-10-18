@@ -15,6 +15,10 @@
  * 且 WebView 对 data URI 渲染最快、最省一次往返。
  */
 
+// §889：收编到公共实现（原本自带 `bytesToBase64`，用 apply(null, Array.from(...))，
+//   比公共实现多一次拷贝）。⚠ 本文件原来零 import（只用浏览器 API），这是第一条。
+import { arrayBufferToBase64 } from '../../utils/base64.ts'
+
 /** 单张图上限；超过就不内联（保留原 URL，避免 base64 撑爆 WebView 内存）。 */
 const MAX_IMAGE_BYTES = 2_000_000
 /** 整封邮件内联图总量上限。 */
@@ -136,16 +140,6 @@ function isInlineableType(ct: string): boolean {
   return /^(image\/(png|jpeg|jpg|gif|webp|bmp|svg\+xml|avif))$/i.test(ct.split(';')[0].trim())
 }
 
-function bytesToBase64(buf: ArrayBuffer): string {
-  const bytes = new Uint8Array(buf)
-  let bin = ''
-  const CHUNK = 0x8000
-  for (let i = 0; i < bytes.length; i += CHUNK) {
-    bin += String.fromCharCode.apply(null, Array.from(bytes.subarray(i, i + CHUNK)))
-  }
-  return btoa(bin)
-}
-
 async function fetchOne(
   url: string,
   fetchImpl: typeof fetch,
@@ -167,7 +161,7 @@ async function fetchOne(
     if (!isInlineableType(ct)) return null
     const buf = await res.arrayBuffer()
     if (buf.byteLength === 0 || buf.byteLength > MAX_IMAGE_BYTES) return null
-    return `data:${ct.split(';')[0].trim()};base64,${bytesToBase64(buf)}`
+    return `data:${ct.split(';')[0].trim()};base64,${arrayBufferToBase64(buf)}`
   } catch {
     return null
   } finally {

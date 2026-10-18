@@ -20,14 +20,5 @@ export function utf8ToBase64(s: string): string {
 
 // §888：原来这里另外实现了一份 blobToBase64（公共实现在 base64.ts，
 //   两份都已有 null 处理与 reject，行为等价）⇒ 改为 re-export，公共 API 不变。
-export { blobToBase64 } from './base64.ts'
-
-export function arrayBufferToBase64(buffer: ArrayBuffer): string {
-  const bytes = new Uint8Array(buffer)
-  let binary = ''
-  const chunk = 0x8000 // 分块拼接，避免 String.fromCharCode 超参
-  for (let i = 0; i < bytes.length; i += chunk) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + chunk))
-  }
-  return btoa(binary)
-}
+// §889：收编到公共实现（三份同义实现收为一份）。
+export { blobToBase64, arrayBufferToBase64 } from './base64.ts'
