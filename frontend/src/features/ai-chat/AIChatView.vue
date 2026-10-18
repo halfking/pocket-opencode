@@ -7,6 +7,23 @@
 -->
 <template>
   <div class="ai-chat">
+    <!--
+      §858/D21：本地存储读失败时必须说**实话**。
+      ⚠⚠ 实测（.artifacts/s858-probe/repro-d21-entry.mjs，esbuild 打包后真跑 init()）：
+        种入 2 条历史 → 把它改写成半截内容 → init() 后 conversations = 1（只剩新建的
+        空对话）、`conversationsRecovered = true`、原 KEY 已被 persist 覆盖。
+        而**留证里存的是「已经损坏的那份串」** —— 它不是可解析的历史。
+      ⇒ 所以文案**不能说「可在 corrupt 键下找回」**（那是骗人）；只能说
+        损坏内容已另存供排查，而**历史对话无法自动恢复**。
+      ⚠ 刻意放在**所有空态分支之外**：读失败时 conversations 为空，界面会落进
+        下面 `turns.length === 0` 的「开始你的 AI 对话」—— 那正是本缺陷的原型。
+    -->
+    <div v-if="store.conversationsRecovered || store.settingsRecovered" class="recovered-notice" role="alert">
+      本地对话记录读取失败（存储内容已损坏），应用<strong>无法自动恢复</strong>它。
+      损坏的原始内容已另存到 <code>localStorage</code> 的
+      <code>pocket:ai-chat:corrupt:*</code> 键下供排查 —— 若损坏只发生在末尾，
+      其中可能仍有可手工抢救的片段。新的对话可以正常开始。
+    </div>
     <!-- 顶部"会话/角色/操作"栏：合并到 AppLayout 单层标题栏的右侧 chrome
          (HeaderActionsPortal)，左侧 ≡/返回由壳层提供；消灭原双层顶栏。 -->
     <HeaderActionsPortal>
@@ -899,6 +916,20 @@ function formatTime(ts: number): string {
   flex-direction: column;
   height: 100%;
   background: var(--bg-base);
+}
+
+/* §858/D21：读失败留证的提示。用警示色而不是普通横幅 ——
+   它要说的是「你的数据出了状况」，不是「有一条普通消息」。 */
+.recovered-notice {
+  padding: var(--space-2, 8px) var(--space-3, 12px);
+  font-size: var(--text-sm);
+  color: var(--text-danger, #c0392b);
+  background: var(--bg-warn, #fff8e1);
+  border-bottom: 1px solid var(--border);
+}
+.recovered-notice code {
+  font-size: var(--text-2xs);
+  word-break: break-all;
 }
 
 /* 输入区图标按钮（加图/麦克风）基础形态：原顶栏 .icon-btn 样式随顶栏删除，

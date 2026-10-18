@@ -98005,3 +98005,168 @@ try {
    界面不区分 ⇒ 用户以为用了 AI（§857.3 ②）。
 3. **§857 试过的方向要不要保留为常规扫面** —— 「有 finally 无 catch」已连续两节产出真缺陷
    （§856 四处、§857 三处），建议并入常规轮换；是否要做成门禁仍见 §856.10 第 2、3 条。
+
+---
+
+## §858 「读失败」被谎报成「从来没有过」：1 处数据面缺陷 + ⭐⭐ 一条**实测推翻我判断**的记录
+
+本节的起点是 §857 留下的一个观察：那 9 处候选里 **6 处阴性全部是靠「callee 把失败编码成空值」救的**。
+⇒ 「视图写法」这个视角已被扫干净（§847/§848/§850/§854/§857），
+**换成「callee 返回值」的视角**才是没被扫过的那一面。
+
+探针 `.artifacts/s858-probe/scan_nullish_failure.py`：枚举「`catch` 里 `return null/[]/''/{}`」的生产者
+⇒ **69 处**。
+
+### §858.1 D21：AI 对话历史「损坏」被显示成「从来没有过对话」
+
+```ts
+// aiChatStore.ts，原文
+function loadConversations(): Conversation[] | null {
+  try { … return raw ? migrateConversations(JSON.parse(raw)) : null }
+  catch { return null }                       // ⚠ 读失败 ⇒ 与「没有对话」同一个值
+}
+function init() {
+  const saved = loadConversations()
+  if (saved && saved.length > 0) { … } else { createConversation() }
+}
+// createConversation() 最后调 persist() → setItem(同一个 KEY)
+```
+
+localStorage 里的 JSON 一旦损坏，界面落进 `turns.length === 0` 的「**开始你的 AI 对话**」
++「先从下方输入一个问题吧」⇒ **用户以为从来没有过对话**。
+
+⚠ **触发条件并不罕见**：配额超限后的部分写入、多标签页并发写、跨版本迁移写坏、
+浏览器异常退出留下半截内容。
+
+### §858.2 ⭐⭐ 本节最重要的产出：**我动手前的判断被实测推翻了**
+
+我动手前写下的结论是：
+
+> 「一次读失败 = 该用户的全部 AI 对话历史被**永久覆盖**（不可逆）」。
+
+⭐ **用 esbuild 把 store 打成 bundle 后在 node 里真跑 `init()`**（脚本见下），读数是：
+
+| 读数 | 修复后 | **修复前（负控实测）** |
+|---|---|---|
+| 损坏后 `conversations` 条数 | 1（只剩新建的空对话） | 1（相同） |
+| `conversationsRecovered` | **true** | **false** |
+| 留证键 | **有** `pocket:ai-chat:corrupt:conversations:local:<ts>` | **无** |
+| 原 KEY 是否被覆盖 | 被覆盖 | 被覆盖（**相同**） |
+
+⚠⚠ **最后一列是关键**：「原 KEY 被覆盖」在修复前后**读数相同** ⇒
+**数据不是在 `init()` 那一刻丢的** —— 存储里**本来就已经坏了**（那串内容不可读）。
+`init()` 造成的实际后果只有两条：
+
+1. **谎报**：损坏显示成「从来没有过对话」（用户侧，界面说谎族）；
+2. **销毁证据**：`persist()` 立刻用新建的空对话覆盖掉那串损坏内容 ⇒
+   **唯一的排查线索（乃至可手工抢救的片段）被抹掉**。
+
+⇒ 所以「永久覆盖、不可逆」这个定级是**我判断过头了**，必须更正。
+
+⭐⭐ 而且**修复本身一度引入了新的界面说谎**：我第一版界面文案写的是
+「原始数据已另存（未被覆盖），**可在 `pocket:ai-chat:corrupt:*` 键下找回**」——
+而实测证明**留证里存的就是那串损坏内容**，**找不回**可解析的历史。
+⇒ 文案已改成「应用**无法自动恢复**它 / 损坏内容已另存**供排查** / 若损坏只发生在末尾，
+其中可能仍有可手工抢救的片段」。
+
+⇒ ⇒ **这与 §856 修的是同一族：说谎的往往不是「原来的代码」，而是「修复时顺手写的那句话」。**
+
+### §858.3 落地
+
+| 文件 | 改动 |
+|---|---|
+| `features/ai-chat/aiChatStore.ts` | 新增 `preserveCorrupt(kind, raw)`（把损坏的原始串另存到 `pocket:ai-chat:corrupt:<kind>:<scope>:<ts>`）与 `safeGetItem()`；`loadConversations` / `loadSettings` 的 `catch` 改为**先留证、再置位**、最后才返回原值；新增并导出 `conversationsRecovered` / `settingsRecovered` |
+| `features/ai-chat/AIChatView.vue` | 模板顶部新增 `recovered-notice` 区块（**放在所有空态分支之外**）+ 对应样式 |
+
+⚠ **刻意保留** `init()` 的 `else createConversation()`：改掉它会让整个界面空掉、
+连输入框都没有。真正的修复不是「不新建」，而是「新建之前先留证 + 如实告知」。
+判据里有一条专门钉住这个行为，防止下一个人「顺手优化」掉它。
+
+⚠ `settings` 是同族（读失败退回默认设置 ⇒ `persist()` 把默认设置写回）⇒ 同样处理。
+
+### §858.4 复现脚本（这是本节最硬的证据形态）
+
+`.artifacts/s858-probe/repro-d21-entry.mjs`，运行方式：
+
+```bash
+cd frontend
+node_modules/.bin/esbuild <repo>/.artifacts/s858-probe/repro-d21-entry.mjs \
+  --bundle --format=esm --platform=node --outfile=./d21-bundle.mjs \
+  --external:vue --external:pinia --alias:@=./src \
+  --alias:'@/components/base/Toast.vue=./.d21-vue-stub.mjs'
+node ./d21-bundle.mjs
+```
+
+⭐ **为什么要 bundler**：store 内部的 import 没有显式扩展名
+（`'../../api/llm-bff'`），Node 的 ESM 解析器要求显式扩展名 ⇒ 直接 `import` 会
+`ERR_MODULE_NOT_FOUND`（与 `test-coverage-waivers` 里 `flashcardIo.test.ts` 被豁免同一原因）。
+`Toast.vue` 打桩成空组件（复现路径不渲染它），`document` / `window` 也要打桩。
+
+⚠ **第一版复现脚本的读数全是错的**：它把数据种在 `pocket:ai-chat:v2`，
+而真实的 key 是 `storageKey(prefix) = ${prefix}:${storageScope()}`，
+无 workspace/user 时 `storageScope()` 是 `'local'` ⇒ 真实 key 末尾有 `:local`
+⇒ store 读到 `null` ⇒ **基线读数就不对（2 条历史读成 1 条）**。
+⇒ **教训：复现脚本的 key 必须从源码读，不能照抄注释或记忆里的字面量。**
+这个错误恰好被「基线那一例」抓出来 —— 所以复现脚本必须带一个**合法输入的基线对照**。
+
+### §858.5 判据与变异
+
+`frontend/src/__tests__/local-storage-corruption-audit.test.ts`（**11 例**）：
+
+| 组 | 例数 | 内容 |
+|---|---|---|
+| 尺子自证 | 1 | 两个文件都读到了（路径写错会让后面全是绿灯假象） |
+| D21 | 4 | `loadConversations` 的 catch 不得静默返回 null（须留证 + 置位）/ `loadSettings` 同族 / 两个标志必须导出 / **`init()` 仍会新建对话是刻意保留的** |
+| 界面说实话 | 3 | 提示必须渲染且在空态之外 / **文案不得承诺「可以找回」** / 必须点出留证键名 |
+| 反向对照 | 1 | 「catch 里 throw」是另一种合规修法，本判据会红是**预期的**（届时要重新判断证据是否保得住，而不是放宽断言） |
+| 变异负控 | 2 | 退回 catch / 文案吹牛 |
+
+**M15 真实文件端到端变异（3 路）**：
+
+| 变异 | 自己判据 | 仓库既有门 `vue-template-compile` |
+|---|---|---|
+| M15-a 退回 `catch { return null }` | 9 / 2 ❌ | **187 / 0 ✅** |
+| M15-b 把文案改回「可找回」 | 9 / 2 ❌ | **187 / 0 ✅** |
+| M15-c 把提示藏进 `turns.length > 0` 条件 | 10 / 1 ❌ | **187 / 0 ✅** |
+| 还原核对 | **11 / 0** | **187 / 0** |
+
+⚠ M15-b 那一路值得单独记：**它是针对「修复时自己写的那句话」的变异**，
+而这句话是本节修复的一部分 —— 若没有这条变异，
+「修复引入了新的界面说谎」这件事会一直留在代码里。
+
+### §858.6 换方向的记录（本节开扫前试了 5 个方向，4 个阴性）
+
+| 方向 | 读数 | 结论 |
+|---|---|---|
+| `:key` 用 index | 24 处 | 全阴（§856.5 已记） |
+| `TransitionGroup` 的 key | 3 处 | 全稳定 |
+| `Array.sort` 比较函数 | 43 处 | 全正确 |
+| 时区口径混用 | 2 处 | 全阴，且是本仓最扎实的地方 |
+| **搜索框的空词/失败/无结果** | 14 处搜索框 | 全阴：`SessionListView` 有 `.list-error-banner` + 带 `error && filteredSessions.length === 0` 守卫的 `EmptyState`（§840 的正确形态） |
+| **模板绑定未声明变量** | 探针 436（几乎全假阳） | ⛔ 改用实验证明：`vue-tsc` 精确报红 ⇒ 该族已被 CI 第 1 项堵死 |
+| **「catch 里返回空值」** | **69 处** | ⇒ 收窄到「用户据此判断有没有东西」的落点 ⇒ **D21** |
+
+⭐ 附带一条**被否证的假设**：我一度怀疑「模态内用 `toast` 会因为层级/遮罩而看不见」
+⇒ 查 `tokens.css`：`--z-toast: 9999` 且 `Toast.vue` 用 `Teleport to="body"`
+⇒ **toast 的层级高于所有模态（`--z-sheet: 1300` / `--z-dialog: 1400`）** ⇒ 该假设不成立。
+（这条也解释了 §857 D19 为什么可以用 toast 而 D18 用模态内区块：两者都可见，差别只在风格。）
+
+### §858.7 口径与未实测
+
+- ⛔ **未实测**：真实用户设备上 `pocket:ai-chat:v2` 损坏的**发生率**，
+  以及损坏的**形态分布**（尾部截断 vs 完全不是 JSON vs 字段类型错）。
+  复现脚本覆盖了前两种，第三种（`migrateConversations` 之后的形状问题）未覆盖。
+- 复现脚本跑的是 **Pinia store + polyfill 的 localStorage**，
+  没有真实浏览器的 `storage` 事件与配额行为 ⇒ 「配额超限导致的部分写入」是**推断**，未复现。
+- 本节只扫了「`catch` 里返回空值」这一族；**其它形式的静默折叠**
+  （如 `?? []`、`|| {}`、默认参数）不在读数内。
+- 69 处里其余 66 处**未逐条取证**（本节只收了 AI 对话这一条落点）。
+
+### §858.8 待拍板
+
+1. **AI 对话历史损坏后要不要提供「尝试自动抢救」** ——
+   本节只做了「留证 + 如实告知」。末尾截断的 JSON 在很多情况下是可修补的
+   （补一个 `]` 或 `}` 就能读出大部分历史）。做自动抢救会引入「猜边界」的风险，
+   属产品/技术口径 ⇒ 已登记，不代拍。
+2. **`pocket:ai-chat:corrupt:*` 的留存与清理策略** ——
+   现在只写不清，理论上可以无限增长（每次损坏多一个键）。要不要限量/定期清理？
