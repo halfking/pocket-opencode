@@ -347,3 +347,96 @@ tip `df4116ee` 已是 main 的祖先（`merge-base` == tip），完全合入。
 2. 拍板 macOS 数据目录方案（命名卷 vs 授权 chown），修 §3.4 的根因
 3. 处理两个测试豁免项
 4. 清理 `.maestro` / `scripts` 下 `append-handoff-*.mjs` 这类一次性脚本（约 20 个）
+
+
+---
+
+## 七、§889 审计轮追加（2026-10-18 晚）：判据形态无关化 + 首次把 §8xx 审计线合进主干
+
+### 7.1 结论与根因
+
+§889（`4b939a18`）的**代码改动是对的**：3 份「bytes → base64」收编为 1 份（零行为变化），
+D59 改名 `base64ToBytesSafe → latin1PartToBytes` 也判得准
+（同文件里**确实另有一个**真叫 `base64ToBytes` 的函数，旧名不是啰嗦，是**指向隔壁那个**）。
+
+但独立复核（逐条注入变异）查出**两个真问题**：
+
+1. ⭐ **判据形态依赖 ⇒ 假绿**：§889 的门按 `/function\s+名字/` 判「落点不再自带实现」，
+   而「bytes→base64」这个**概念**的实现可以是任何形态。变异实测：注入
+   `const dupEncode = (buffer) => btoa(String.fromCharCode(...))` ⇒ **19/19 全绿**；
+   连名字都换掉（`const helper = …`）⇒ 同样全绿。**换个写法就绕过。**
+2. ⭐⭐ **唯一改到的数据路径，零行为覆盖**：§889 收编唯一真正改到的是 7bit/8bit 邮件部件的
+   `b64FromBytes`（latin1 取字节 → base64），而**全仓 cid 测试用的全是 base64 编码的部件**
+   ⇒ 那条路径**一条行为断言都没有**。收编做得对不对，**只有文本扫描说了算**。
+
+⇒ ★ **可复用的根因**：「收编类」改动的验收若只做**文本扫描**，它证明的是
+「实现搬走了」，**证明不了「搬走之后行为对」**。收编必须配一条**字节级行为门**。
+⇒ ★ 第二条根因：判据钉「**名字 + 声明形态**」而不是钉「**形状**」，
+⇒ **换个写法就绕过**。形状（`btoa(` 与 `String.fromCharCode` 同时出现）换不掉，
+但形状**不能全仓用**（`crypto.ts` 的内联编码形状相同却不该收编）⇒ **只能逐落点限定**。
+
+### 7.2 改动文件与关键行为
+
+| 文件 | 改动 | 行为变化 |
+|---|---|---|
+| `frontend/src/utils/__tests__/base64-null-result.test.mjs` | §889 门重写：形状判定（形态无关）+ 量具自检 + 已知边界登记 + 分块边界行为门 | **无**（只加判据），19 → 23 例 |
+| `frontend/src/features/email/__tests__/email-cid-images.test.mjs` | 新增 8bit latin1 **字节级**行为门（期望值由 Node Buffer 直接算） | **无**，12 → 13 例 |
+| `frontend/src/utils/base64.ts` | 两段相邻 doc 注释合并（原先只有第二段挂到函数上，§889 的理由在 IDE 提示里看不见） | **无** |
+| `docs/design/2026-10-06-recording-quality-fixes.md` | 新增 `§889.8`（审计轮全记录） | — |
+| `docs/design/2026-10-11-pending-decisions-brief.md` | 112 条补 ⑤：**回答 ③**（门要落，但必须逐落点限定且形态无关） | — |
+| `handoff/2026-10-17-48h-audit-and-fixes.md` | 本节 | — |
+
+**零生产代码行为变化。**
+
+### 7.3 测试、变异矩阵与读数
+
+| # | 注入的缺陷 | §889 落地版 | 审计后 |
+|---|---|---|---|
+| M1 | 落点里加回 `function` 实现 | 🔴 | 🔴 |
+| M2 | 落点里加回 **`const` 箭头**形态 | 🟢 **假绿** | 🔴 |
+| M2b | 落点里加回 **换名**的 `const` 副本 | 🟢 **假绿** | 🔴 |
+| M3 | `email-image-preload` 加回 `bytesToBase64` | 🔴 | 🔴 |
+| M4 | `email-body-format` 体内又出现 `btoa(` | 🔴 | 🔴 |
+| M5 | 新增**第 5 个文件**的副本 | 🟢 | 🟢（**已登记的边界**） |
+| M6 | D59 名字回退 `base64ToBytesSafe` | 🔴 | 🔴 |
+| M7 | 8bit 部件改用 utf8 编码 | （**无此用例**） | 🔴 |
+
+- `typecheck` EXIT=0；`gates` **46/46**（**在合并后的 main 树上**跑，59.3s）；
+  `test:all` **4336 通过 / 0 失败**（375/375 个测试文件都被真实执行）；
+  后端 `go test ./...` **EXIT=0**（合并后树上）。
+- ⚠ M5 那条**如实登记在门里**：这道门**只覆盖那 4 个落点**，**不是全仓唯一性断言**。
+
+### 7.4 合主干
+
+- §869–§889 整条线**首次**进 `main`（此前只存在于 `feat/app-icon-standard`）：
+  `main` 3fc59350 → **d09f05f9**（merge commit），`origin/main` 已同步。
+- 冲突 1 处（简报 EOF 双方各追加）⇒ **手工解**：**编号条目 96–112 在前、round48 日期小节在后**，
+  两边内容都保留（`git merge-tree` 预检发现的，不是事后才发现）。
+- ⚠⚠ **pre-push 钩子没装**（`core.hooksPath` 未设，`.git/hooks/pre-push` 不存在）
+  ⇒ **本次推送未经仓库自带的钩子把关**。兜底是我**手工在合并后的树上**跑的那两次
+  （gates 46/46 + `go test ./...` EXIT=0）——**不能把「push 没报错」当成「钩子跑过了」**。
+
+### 7.5 遗留风险
+
+| 风险 | 影响 | 状态 |
+|---|---|---|
+| **pre-push 钩子未安装** | 推送没有仓库自带的兜底 | 仓库设计是**按 worktree** 装（`docs/gates-local-vs-ci.md`）。**本轮未擅自开启**——并发会话正在同一 worktree 推送，装上会让它的 push 跑全量门禁、可能被既有红挡下。装法：`git config extensions.worktreeConfig true && git config --worktree core.hooksPath .githooks` |
+| §889 门只覆盖 4 个落点 | 新文件里的第 5 份副本抓不到 | **已如实登记**在门内；全仓唯一性靠**普查**，不靠这道门 |
+| `ViewSegmentBar.vue` 仍是未提交 WIP | 与本轮无关，来自另一条任务线（触摸目标 44pt） | **未触碰、未提交**，仍留在工作树 |
+| 并发会话共用同一工作区 | 可能互相覆盖 | 本轮改用「**先在隔离 worktree 验证，最后只 `git add` 自己的文件**」 |
+| §890（D60）已进 `origin/feat` 但**未进 main** | main 停在 §889 | 下一轮合（合并前先 `--ff-only` 到 `origin/main`） |
+
+### 7.6 下一轮提示词
+
+```text
+继续 openpocket 的 §8xx 审计线。先做三件事：
+1) 读 handoff/2026-10-17-48h-audit-and-fixes.md §七 与 docs/design/2026-10-06-recording-quality-fixes.md §889.8，
+   承接 §889.8 留下的一问：简报 112 的 ①（base64 族「函数名必须与实际路径一致」要不要钉成原则）
+   与 ②（b64FromBytes 的 catch → '' 要不要改）仍待属主拍板。
+2) §890（D60，origin/feat 已有）合主干前，先把 main --ff-only 到 origin/main，
+   再合 feat/app-icon-standard；简报是 EOF 双方各追加 ⇒ 又会冲突，手工解，编号条目在前、日期小节在后。
+3) 收编类改动一律配「字节级行为门」：文本扫描只能证明「实现搬走了」，证明不了「搬走之后行为对」。
+   判据钉形状（btoa + String.fromCharCode）而不是钉函数名，且必须逐落点限定，不能全仓。
+另：pre-push 钩子在这个 worktree 没装（core.hooksPath 未设），推送不会被仓库自带的门禁把关；
+   要装就按 docs/gates-local-vs-ci.md 的 per-worktree 方式装。
+```
