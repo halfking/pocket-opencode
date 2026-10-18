@@ -137,9 +137,13 @@ const REGISTRY: Array<{ key: string; count: number; why: string }> = [
   { key: 'features/meetings/MeetingDetailView.vue::refreshRelated', count: 1,
     why: '它 await 的 searchRelatedContext 的三个子查询（notes/meetings/web）各自 catch 后返回 []' },
   { key: 'features/sessions/useSessionDrafts.ts::ensureStore', count: 1,
-    why: '它的调用方各自 try/catch（hydrate / clear / persistTo 三处都有）' },
+    why: '它的调用方各自 try/catch（hydrate / clear / persistTo 三处都有）' +
+      '；⚠§882 起，会话切换那两处 fire-and-forget 的 `.catch(() => undefined)`（真静默）' +
+      '已改成「置 persistFailed + warn」。⚠ 仍登记 1 处，是因为**扫描器按行**判断' +
+      '「整条语句有没有 catch」：那一条被刻意写成单行（拆成多行首行就成了裸 void）' },
   { key: 'features/sessions/useSessionDrafts.ts::flush', count: 1,
-    why: '它 await 的 persistTo() 自带 catch（「写失败不阻断输入」）—— ⚠ 该静默本身已登记为待拍板' },
+    why: '它 await 的 persistTo() 自带 catch —— ⚠§882 起该静默**已修**：' +
+      'catch 里置 persistFailed（写失败出声、不阻断输入），并有 warn' },
   // ⚠ 2026-10-18（§857/D20）：`SettingsPermissionsView::refreshAll` 曾在此登记
   //   （count 1，理由「各子项自带 error 出口」）。
   //   §857 给它补了 `catch` ⇒ `scan()` 的第 4 步「函数体内有 catch 就跳过」不再命中它

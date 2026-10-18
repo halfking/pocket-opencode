@@ -203,3 +203,73 @@ test('resolveDraftStore：Node 无 SQLite 基建时降级内存存储且不抛�
   await store.saveDraft('fallback_key', 'x', 1)
   assert.equal((await sharedMemoryDraftStore().getDraft('fallback_key')).text, 'x')
 })
+
+// ── §882：草稿落盘失败必须出声（草稿是用户还没发出去的字）──
+//
+// 缺陷形态：persistTo / clear / 会话切换那两处 fire-and-forget 全部
+// `catch {}` 或 `.catch(() => undefined)` ⇒ 用户以为存住了，
+// 关掉页面才发现没了，**且没有任何办法提前知道**。
+//
+// ⚠ 与 §866/D30 同一族，但这条的理由更强：草稿不是「缓存」也不是「历史」，
+//   是**用户此刻正在产出的、还没发出去的数据**。
+// ⚠ 而 §866 的另一半纪律仍然成立：**绝不阻断输入** —— 打字不该被存储卡住。
+//   ⇒ 判据同时钉这两条：会出声、但不抛错、不改 text。
+
+/** 写必失败的存储：读正常，写抛错（模拟磁盘满 / 库未解锁）。 */
+function makeFailingWriteStore() {
+  const mem = new MemoryDraftStore()
+  return {
+    mem,
+    getDraft: (k) => mem.getDraft(k),
+    saveDraft: async () => { throw new Error('disk full') },
+    clearDraft: async () => { throw new Error('disk full') },
+  }
+}
+
+test('§882 ★ 写失败必须置位 persistFailed（用户要能知道草稿没存住）', async () => {
+  const store = makeFailingWriteStore()
+  const drafts = useSessionDrafts({ sessionId: () => 's1', store, debounceMs: 1 })
+  assert.equal(drafts.persistFailed.value, false, '一开始不该是失败态')
+  drafts.text.value = '我还没发出去的这段字'
+  await drafts.flush()
+  assert.equal(drafts.persistFailed.value, true,
+    '写失败了但 persistFailed 没置位 ⇒ 用户无从知道草稿没存住')
+})
+
+test('§882 ★ 写失败**不得**阻断输入、也不得改动 text', async () => {
+  const store = makeFailingWriteStore()
+  const drafts = useSessionDrafts({ sessionId: () => 's1', store, debounceMs: 1 })
+  drafts.text.value = '我还没发出去的这段字'
+  // ⚠ flush 必须正常返回 —— 一旦它抛，用户连「先复制走」都做不到。
+  await drafts.flush()
+  assert.equal(drafts.text.value, '我还没发出去的这段字', '存储故障把用户输入弄丢了')
+})
+
+test('§882 ★ 存回去了，提示必须撤掉（不是单向的 true）', async () => {
+  let fail = true
+  const mem = new MemoryDraftStore()
+  const store = {
+    getDraft: (k) => mem.getDraft(k),
+    saveDraft: async (k, t, n) => { if (fail) throw new Error('disk full'); return mem.saveDraft(k, t, n) },
+    clearDraft: async (k) => mem.clearDraft(k),
+  }
+  const drafts = useSessionDrafts({ sessionId: () => 's1', store, debounceMs: 1 })
+  drafts.text.value = '第一段'
+  await drafts.flush()
+  assert.equal(drafts.persistFailed.value, true)
+
+  fail = false // 存储恢复
+  drafts.text.value = '第二段'
+  await drafts.flush()
+  assert.equal(drafts.persistFailed.value, false,
+    '存储恢复了但提示还挂着 ⇒ 用户会以为还在丢')
+})
+
+test('§882 对照组：写正常时 persistFailed 恒为 false（不是恒红）', async () => {
+  const store = new MemoryDraftStore()
+  const drafts = useSessionDrafts({ sessionId: () => 's1', store, debounceMs: 1 })
+  drafts.text.value = '正常输入'
+  await drafts.flush()
+  assert.equal(drafts.persistFailed.value, false)
+  assert.equal((await store.getDraft('s1'))?.text, '正常输入', '对照组顺带确认真的存进去了')
+})
