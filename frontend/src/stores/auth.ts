@@ -51,6 +51,12 @@ export const useAuthStore = defineStore('auth', {
     userId: '',
     /** Phase 1: 登录方式（password / sso / dev-bypass / legacy），仅用于埋点。 */
     authMethod: localStorage.getItem(METHOD_KEY) || '',
+    /**
+     * ⚠§867/D33：会话**没能**写入本地存储。
+     * 为 true 时，内存里是登录态而存储里没有 ⇒ 刷新/重启后会被静默登出。
+     * 只置位 + warn，界面出口属产品口径（简报第 86 条）。
+     */
+    sessionPersistFailed: false,
   }),
   getters: {
     isAuthenticated: (s) => Boolean(s.token) && Boolean(s.user),
@@ -61,9 +67,35 @@ export const useAuthStore = defineStore('auth', {
       this.token = token
       this.user = user
       this.authMethod = method
-      localStorage.setItem(TOKEN_KEY, token)
-      localStorage.setItem(USER_KEY, user)
-      localStorage.setItem(METHOD_KEY, method)
+      this.writeSession([
+        [TOKEN_KEY, token],
+        [USER_KEY, user],
+        [METHOD_KEY, method],
+      ])
+    },
+    /**
+     * ⚠⚠§867/D33：会话落盘原来是一条条裸 `setItem`。配额写不进去时
+     *   **内存已经改完、存储一个字没进**，而 `isAuthenticated` 只看内存
+     *   ⇒ 用户以为自己登录成功，**刷新/重启后被静默登出**（syncFromStorage
+     *   从存储读回空 token）。界面全程零提示。
+     *
+     * 姿态按 §866 的族规律选：丢的是「用户正在持有的会话」⇒ **必须说话**，
+     * 所以除 warn 外还置 `sessionPersistFailed`，让宿主有机会说实话
+     * （界面要不要挂横幅属产品口径，登记在简报第 86 条）。
+     *
+     * ⚠ 撕裂写：第 1 条成功、第 2 条抛错时，存储里会留下「有 token 没 user」。
+     *   这在 `isAuthenticated = Boolean(token) && Boolean(user)` 下**失败关闭**
+     *   （读回来判为未登录），不会造成越权，故不额外回滚——回滚反而可能
+     *   误删上一段本来完好的会话。
+     */
+    writeSession(entries: [string, string][]) {
+      try {
+        for (const [k, v] of entries) localStorage.setItem(k, v)
+        this.sessionPersistFailed = false
+      } catch (err) {
+        this.sessionPersistFailed = true
+        console.warn('[auth] 会话未能写入本地存储，本次登录在刷新后会失效：', err)
+      }
     },
     /**
      * S0-A 扩展：登录后同时记录 workspace_id + user_id。
@@ -79,12 +111,12 @@ export const useAuthStore = defineStore('auth', {
       this.setAuth(token, user, method)
       this.userId = userId
       this.workspaceId = workspaceId
-      localStorage.setItem(WS_KEY, workspaceId)
+      this.writeSession([[WS_KEY, workspaceId]])
     },
     /** Legacy compatibility: a session exists without a real token yet. */
     setLegacyUser(user: string) {
       this.user = user
-      localStorage.setItem(USER_KEY, user)
+      this.writeSession([[USER_KEY, user]])
     },
     /**
      * Phase 7: Sync state from localStorage.

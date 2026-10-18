@@ -39,11 +39,21 @@ const CRYPTO = read('stores/crypto-config.ts')
 const DIALOG = strip(read('features/auth/MasterPasswordDialog.vue'))
 const HUB = strip(read('features/opencode/OpenCodeHub.vue'))
 const SESSIONS = strip(read('features/opencode/SessionListView.vue'))
+const AUTH = strip(read('stores/auth.ts'))
+const DEVICE = strip(read('stores/device.ts'))
+const CRYPTO_SALT = strip(read('native/crypto.ts'))
 
-/** 取函数体：strip 注释后按圆/花括号配平（泛型参数要允许）。 */
+/**
+ * 取函数体：strip 注释后按圆/花括号配平（泛型参数要允许）。
+ * ⚠ 取件器翻车记录：原先只认 `function 名(`，认不出 Pinia actions 里的
+ *   **方法简写** `名(...) {` ⇒ 取不到体、判据恒红，看起来像「代码没写」。
+ *   前置字符限定在 行首/空白/`{`/`,`，以免匹配到 `this.名(` 这种调用点。
+ */
 function fnBody(rawCode: string, name: string): string {
   const code = strip(rawCode)
-  const m = new RegExp(`(?:async\\s+)?function\\s+${name}\\s*(?:<[^>]*>)?\\s*\\(`).exec(code)
+  const m = new RegExp(
+    `(?:^|[\\s{,])(?:async\\s+)?(?:function\\s+)?${name}\\s*(?:<[^>]*>)?\\s*\\(`,
+  ).exec(code)
   if (!m) return ''
   let d = 0
   let after = -1
@@ -188,12 +198,86 @@ function restoreNeverBreaksMount(src: string): { ok: boolean; why?: string } {
   return { ok: true }
 }
 
+/** D33：会话落盘必须成组且失败要置位（否则「刷新后被静默登出」不可见）。 */
+function sessionWriteIsGrouped(src: string): { ok: boolean; why?: string } {
+  const body = fnBody(src, 'writeSession')
+  if (!body) return { ok: false, why: '找不到 auth.writeSession（会话写入未被收拢）' }
+  if (!/try\s*\{/.test(body)) return { ok: false, why: '会话写入没有 try' }
+  if (!/catch/.test(body)) return { ok: false, why: '会话写入没有 catch ⇒ 写失败会冒泡' }
+  if (!/sessionPersistFailed\s*=\s*true/.test(body)) return { ok: false, why: '写失败没有置位 ⇒ 「刷新即掉线」对界面不可见' }
+  if (!/console\.warn/.test(body)) return { ok: false, why: '写失败没有日志' }
+  if (!/sessionPersistFailed\s*=\s*false/.test(body)) return { ok: false, why: '写成功后不复位 ⇒ 一次偶发失败会永久挂着标志' }
+  // setAuth 不得再有裸 setItem（收拢到 writeSession 才是「成组」）
+  const setAuth = fnBody(src, 'setAuth')
+  if (/localStorage\s*\.\s*setItem/.test(setAuth)) return { ok: false, why: 'setAuth 仍有裸 setItem ⇒ 会话是撕裂写的' }
+  if (!/writeSession/.test(setAuth)) return { ok: false, why: 'setAuth 没有走 writeSession' }
+  return { ok: true }
+}
+
+/** D34：内存改了、落盘没改的分歧必须留痕。 */
+function prefWriteDisagreementIsVisible(src: string): { ok: boolean; why?: string } {
+  for (const fn of ['setTier', 'setSttPreference']) {
+    const body = fnBody(src, fn)
+    if (!body) return { ok: false, why: `找不到 device.${fn}` }
+    if (!/try\s*\{/.test(body)) return { ok: false, why: `${fn} 的写入没有 try ⇒ 「内存改了、落盘没改」的分歧零留痕` }
+    if (!/catch/.test(body)) return { ok: false, why: `${fn} 没有 catch` }
+    if (!/console\.warn/.test(body)) return { ok: false, why: `${fn} 没有日志 ⇒ 分歧不可诊断` }
+  }
+  return { ok: true }
+}
+
+/**
+ * D35：salt 落盘失败必须硬失败**且说清楚**。
+ * ⛔ 这里额外钉一条反向要求：**不得**把写入包进「失败也继续」的分支。
+ *   放过一次 = 下次启动换新 salt = 旧密文永久不可读。
+ */
+function saltWriteFailsLoudly(src: string): { ok: boolean; why?: string } {
+  const at = src.indexOf('SALT_STORAGE_KEY,')
+  if (at < 0) return { ok: false, why: '找不到 salt 写入落点' }
+  const head = src.slice(Math.max(0, at - 400), at)
+  const tail = src.slice(at, at + 500)
+  if (!/try\s*\{/.test(head)) return { ok: false, why: 'salt 写入裸奔 ⇒ 抛出的是裸 DOMException，界面会显示「初始化失败」这种不属实的措辞' }
+  if (!/catch/.test(tail)) return { ok: false, why: 'salt 写入没有 catch' }
+  if (!/throw\s+new\s+Error/.test(tail)) return { ok: false, why: 'salt 写入失败没有硬失败 ⇒ 下次启动换新 salt，旧密文永久不可读' }
+  if (!/存储/.test(tail)) return { ok: false, why: '报错没有说清是「存储写不进去」' }
+  // 不得在 catch 里吞掉后继续
+  if (/catch[\s\S]{0,200}?catch\s*\{/.test(tail)) return { ok: false, why: 'salt 写入被双层 catch 吞掉了' }
+  return { ok: true }
+}
+
 describe('§866 · 变异负控（负控必须与正例跑同一把尺子，否则绿得没有意义）', () => {
   it('★ 先证明这把尺子在真源码上是绿的（否则下面的红只是尺子坏了）', () => {
     assert.equal(storeTellsUserTheTruth(STORE).ok, true, storeTellsUserTheTruth(STORE).why)
     assert.equal(dialogTellUserTheTruth(DIALOG).ok, true, dialogTellUserTheTruth(DIALOG).why)
     assert.equal(cacheWriteNeverBlocks(HUB).ok, true, cacheWriteNeverBlocks(HUB).why)
     assert.equal(restoreNeverBreaksMount(SESSIONS).ok, true, restoreNeverBreaksMount(SESSIONS).why)
+    assert.equal(sessionWriteIsGrouped(AUTH).ok, true, sessionWriteIsGrouped(AUTH).why)
+    assert.equal(prefWriteDisagreementIsVisible(DEVICE).ok, true, prefWriteDisagreementIsVisible(DEVICE).why)
+    assert.equal(saltWriteFailsLoudly(CRYPTO_SALT).ok, true, saltWriteFailsLoudly(CRYPTO_SALT).why)
+  })
+
+  it('把会话写入改回裸 setItem ⇒ D33 立刻红', () => {
+    const mutated = AUTH.replace(
+      /writeSession\(entries: \[string, string\]\[\]\) \{[\s\S]*?\n    \}/,
+      'writeSession(entries: [string, string][]) {\n      for (const [k, v] of entries) localStorage.setItem(k, v)\n    }')
+    assert.notEqual(mutated, AUTH, '变异没生效（锚点与真源码不匹配）')
+    assert.equal(sessionWriteIsGrouped(mutated).ok, false, '尺子坏了：把缺陷形态喂回去竟然还判绿')
+  })
+
+  it('把设备偏好写入改回裸奔 ⇒ D34 立刻红', () => {
+    const mutated = DEVICE.replace(
+      /try \{\n        localStorage\.setItem\('pocket_device_tier', t\)\n      \} catch \(err\) \{[\s\S]*?\n      \}/,
+      "localStorage.setItem('pocket_device_tier', t)")
+    assert.notEqual(mutated, DEVICE, '变异没生效（锚点与真源码不匹配）')
+    assert.equal(prefWriteDisagreementIsVisible(mutated).ok, false, '尺子坏了：把缺陷形态喂回去竟然还判绿')
+  })
+
+  it('把 salt 写入改成「失败也继续」⇒ D35 立刻红（旧密文会永久不可读）', () => {
+    const mutated = CRYPTO_SALT.replace(
+      /throw new Error\('无法保存加密盐[^']*'\)/,
+      "console.warn('salt 写入失败，继续用内存里的：', err)")
+    assert.notEqual(mutated, CRYPTO_SALT, '变异没生效（锚点与真源码不匹配）')
+    assert.equal(saltWriteFailsLoudly(mutated).ok, false, '尺子坏了：把缺陷形态喂回去竟然还判绿')
   })
 
   it('把读侧恢复改回裸 JSON.parse ⇒ D32 读侧立刻红', () => {

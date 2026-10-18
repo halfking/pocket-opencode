@@ -64,12 +64,25 @@ export const useDeviceStore = defineStore('device', {
   actions: {
     setTier(t: DeviceTier) {
       this.tier = t
-      localStorage.setItem('pocket_device_tier', t)
+      // ⚠§867/D34：原来这里是一条裸 setItem。写不进去时 `this.tier = t`
+      //   **已经生效**，而存储里还是旧档位 ⇒ 界面显示新档位、STT 选型按新档位走，
+      //   重启后无声回到旧值。属于「内存改了、落盘没改」的分歧，
+      //   比 §866/D30 更隐蔽：没有任何一处会报错，也没有提示会消失。
+      // 姿态：warn 说清「本次会话内有效、重启后回到旧值」，不阻断（档位切换不是关键动作）。
+      try {
+        localStorage.setItem('pocket_device_tier', t)
+      } catch (err) {
+        console.warn('[device] 设备档位未能写入本地存储（本次会话内有效，重启后会回到旧值）：', err)
+      }
       import('../native/config-sync/prefs').then((m) => m.persistAppPrefs()).catch(() => {})
     },
     setSttPreference(p: 'local' | 'cloud' | 'auto') {
       this.sttPreference = p
-      localStorage.setItem('pocket_stt_pref', p)
+      try {
+        localStorage.setItem('pocket_stt_pref', p)
+      } catch (err) {
+        console.warn('[device] 语音识别偏好未能写入本地存储（本次会话内有效，重启后会回到旧值）：', err)
+      }
       import('../native/config-sync/prefs').then((m) => m.persistAppPrefs()).catch(() => {})
     },
   },
