@@ -140,8 +140,15 @@ const REGISTRY: Array<{ key: string; count: number; why: string }> = [
     why: '它的调用方各自 try/catch（hydrate / clear / persistTo 三处都有）' },
   { key: 'features/sessions/useSessionDrafts.ts::flush', count: 1,
     why: '它 await 的 persistTo() 自带 catch（「写失败不阻断输入」）—— ⚠ 该静默本身已登记为待拍板' },
-  { key: 'features/settings/SettingsPermissionsView.vue::refreshAll', count: 1,
-    why: '权限状态聚合刷新，各子项自带 error 出口' },
+  // ⚠ 2026-10-18（§857/D20）：`SettingsPermissionsView::refreshAll` 曾在此登记
+  //   （count 1，理由「各子项自带 error 出口」）。
+  //   §857 给它补了 `catch` ⇒ `scan()` 的第 4 步「函数体内有 catch 就跳过」不再命中它
+  //   ⇒ 它**已经不属于「无 catch 的 void x()」这一族** ⇒ 从本表移除。
+  //   ⭐ 这条正是「登记表反向对账」存在的意义：它把「我改了某个函数」这件事
+  //     变成了一条会红的断言，而不是靠人记得回头改表。
+  //   ⚠ 顺带更正原理由：它当初的阴性依据是「各子项自带 error 出口」，
+  //     而 §857 实测 `appSettings.checkPermission` **并不吞错** ⇒ 那条依据本身
+  //     就是错的（这也是它为什么会在 §857 变成真缺陷）。
 ]
 
 describe('§850 · `void x(...)` fire-and-forget：登记表与扫面双向对账', () => {
@@ -186,9 +193,13 @@ describe('§850 · `void x(...)` fire-and-forget：登记表与扫面双向对�
     }
   })
 
-  it('★ 合计口径固定：15 条（基线 = 2026-10-18 人工复核结果）', () => {
+  it('★ 合计口径固定：14 处（基线 = 2026-10-18 §857 修正后）', () => {
+    // ⚠ 2026-10-18（§857）：基线由 **15** 改为 **14** ——
+    //   `SettingsPermissionsView::refreshAll` 补了 catch 后离开了本族（见 REGISTRY 处的说明）。
+    //   ⭐ 按「棘轮基线必须按实测更新」处理，且**必须写清是哪一条、为什么变** ——
+    //     否则这道断言会在某天被人当成「有人偷偷删了登记」而反向放宽。
     const total = REGISTRY.reduce((n, r) => n + r.count, 0)
-    assert.equal(total, 15, `登记表合计 ${total} 处，与本节记录的基线 15 不符`)
+    assert.equal(total, 14, `登记表合计 ${total} 处，与本节记录的基线 14 不符`)
   })
 })
 

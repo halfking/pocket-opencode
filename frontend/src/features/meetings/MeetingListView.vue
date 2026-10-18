@@ -227,6 +227,15 @@ async function onFilter(next: MeetingListFilter) {
 async function startNewMeeting() {
   if (starting.value) return
   starting.value = true
+  // ⚠⚠ §857/D19：本函数是 **§838 修复的同族漏网**。
+  //   同文件紧接着的 onArchive / onRestore / onDelete 三个都补了
+  //   `catch + console.error(RECORD_ACTION_FAIL_TAG, …) + toast.error(describeRecordActionFailure(…))`，
+  //   而这里只有 `try/finally`（管住了 starting 的复位，**没管失败**）：
+  //   `createMeeting` → `localDB.run(…)` 不吞错 ⇒ reject 直接逃逸
+  //   ⇒ 用户点「新建会议」（**本应用最核心的入口动作**）后不跳转、界面零反馈，
+  //     rejection 还成了未处理 ⇒ 看起来像应用卡死。
+  //   守卫（`if (starting.value) return`）和状态复位（finally）本来就有，
+  //   缺的**只有失败出口** —— 与 §856 ApprovalPanel 是同一个形态。
   try {
     const startedAt = Date.now()
     const m = await createMeeting({
@@ -241,6 +250,9 @@ async function startNewMeeting() {
       })
     })
     await router.push({ name: 'meeting-detail', params: { id: m.id }, query: { record: '1' } })
+  } catch (e) {
+    console.error(RECORD_ACTION_FAIL_TAG, 'start', e)
+    toast.error(describeRecordActionFailure('start', { error: e }))
   } finally {
     starting.value = false
   }

@@ -22,6 +22,10 @@
 
 /** 一次「对已有记录的动作」。 */
 export type RecordAction = 'archive' | 'restore' | 'delete' | 'meta-save' | 'meta-delete'
+  // §857/D19：'start' 是**唯一一个「不针对已有记录」的**动作 ——
+  //   它新建一条记录。归入本工具的理由仍然是它自己写的那条原则：
+  //   文案必须说清「现在东西还在不在」⇒ 新建失败 = **什么都没创建**。
+  | 'start'
 
 export interface RecordActionFailureInput {
   error?: unknown
@@ -37,6 +41,10 @@ export function describeRecordActionFailure(
   input: RecordActionFailureInput = {},
 ): string {
   switch (action) {
+    case 'start':
+      // §857/D19：与其它五个相反 —— 失败时**没有任何会议被创建**，
+      // 所以不能说「会议仍在列表里」（那里根本没有它）。
+      return '新建会议失败，没有创建任何会议记录。请稍后重试。'
     case 'archive':
       return '归档失败，这场会议仍在列表里。请稍后重试。'
     case 'restore':

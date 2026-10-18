@@ -97829,3 +97829,179 @@ try {
    全仓推广需要先解决「哪些 `try/finally` 是合法的纯读取」（§856.4）。
 3. **`§854` 那条「体内无 try」的口径要不要补一条「有 finally 必须有 catch」的附加条件**
    —— 属既有判据语义变更，需属主拍板；本轮只在 §856 的新文件里并行地钉了它。
+
+---
+
+## §857 把 §856 的「有 finally 无 catch」口径**全仓**跑一遍：9 处 → 3 处真缺陷
+
+§856 结尾留下一个明确的后续动作：新口径立在那里，却只对审批链路四个函数断言。
+**扫描取证是技术动作，不该等拍板**（拍板的是「要不要做成门禁」，那是 §856.10 第 2、3 条）。
+本节就是把那条口径全仓跑一遍。
+
+### §857.1 扫面口径与读数
+
+| 项 | 口径 | 读数 |
+|---|---|---|
+| `.vue` 文件 | 递归（剔除 `__tests__`） | 186 |
+| 候选 | 被注册给 Vue（模板 `@事件` / `:prop` / `onMounted` / `watch`）的 async 函数，**含 `finally`、不含 `catch`、含 `await`** | **9 处** |
+| 真缺陷 | | **3 处**（D18 / D19 / D20） |
+| 阴性 | | **6 处**，全部登记进判据 REGISTRY |
+
+⚠ 口径里「不含 `catch`」是**排除条件**而不是搜索条件 —— 即
+`hasFinallyNoCatch(body) = 有 finally && 无 catch`，与 §856 判据里的同名函数一致。
+
+### §857.2 三处真缺陷
+
+#### D19 `MeetingListView::startNewMeeting` —— **§838 的同族漏网，本应用最核心的入口**
+
+```ts
+// 原文
+if (starting.value) return
+starting.value = true
+try {
+  const m = await createMeeting({ … })     // ← localDB.run，不吞错
+  …
+  await router.push(…)
+} finally { starting.value = false }        // ← 只有 finally，没有 catch
+```
+
+⭐⭐ **同族证据强到几乎不需要解释**：
+
+> **同一个文件、紧接着的三个函数**（`onArchive` / `onRestore` / `onDelete`）
+> 都带着 §838 的注释与同一套修法：
+> `catch (e) { console.error(RECORD_ACTION_FAIL_TAG, …); toast.error(describeRecordActionFailure(…)) }`
+>
+> §838 的注释原文：「§838：这五个处理器此前都没有 try/catch」——
+> **五个**里，`startNewMeeting` 不在其中（它本来就有 `finally`，看起来像「已处理」）。
+
+后果：用户点「新建会议」⇒ `createMeeting` 的 `localDB.run` 失败 ⇒ reject 逃逸、
+不跳转、**界面零反馈** ⇒ 看起来像应用卡死。而这是录音 → 会议的**第一入口**。
+
+修复：`catch` + 复用 `describeRecordActionFailure('start', …)`。
+
+⚠ **共享文案工具必须为「新建」写专属措辞**：`RecordAction` 原本只有
+`archive/restore/delete/meta-save/meta-delete`，五条全是「**记录仍在列表里**」的口径。
+新建失败时列表里**根本没有**那条记录，说「仍在」就是撒谎 ⇒ 新增 `case 'start'`：
+「新建会议失败，没有创建任何会议记录。请稍后重试。」判据里有一条专门钉「文案不得出现
+「仍在/还在」」。
+
+#### D18 `VoiceprintSheet::onClearAll` —— **过了「不可撤销」确认弹窗却什么都没发生**
+
+```ts
+const ok = await confirm({ message: `清空全部 …？此操作不可撤销。`, danger: true })
+if (!ok) return
+busy.value = true
+try {
+  await clearVoiceprints()      // ← localDB.run(DELETE_ALL)，不吞错
+  …
+} finally { busy.value = false }
+```
+
+⚠ 这个动作的代价被确认弹窗**放大**了：用户已经过了「此操作不可撤销」，
+结果什么都没发生、列表纹丝不动、零反馈 ⇒ 他会以为删掉了却又不敢重试，或者反复点。
+
+修复：加 `catch`，失败时**保留列表原样**（`editingId/load` 本来就排在 await 之后，
+天然满足），只把错误说出来 —— 与同文件 `load()` 的 §822 修法**同构**。
+提示放在模板互斥链**之外**（`loading / loadError / empty / ul` 四分支之外），
+理由写进注释：塞进 `ul v-else` 的话，下一次加载失败落到 `loadError` 分支时提示会凭空消失。
+
+#### D20 `SettingsPermissionsView::refreshAll`
+
+五个 `recheck()` 都 `await appSettings.checkPermission(...)`，**都不吞错**；
+这里是 `Promise.all` ⇒ 任一 reject 整批逃逸 ⇒ 刷新按钮转一圈结束、
+权限状态停在旧值、零反馈（用户只会以为「没变化」）。修复：加 `catch` + `toast.error(apiError(...))`。
+
+⚠ 顺带发现：**§850 的登记表把 `refreshAll` 登记成阴性，理由是「各子项自带 error 出口」——
+而这条依据本身就是错的**（`checkPermission` 并不吞错）。
+⇒ 它之所以能在 §850 里「安全地」存在，是因为当时**没人验证那条理由**。
+
+### §857.3 六处阴性（逐条登记，全部带理由）
+
+| 位置 | 阴性理由 |
+|---|---|
+| `CostQuotaView::load` | `Promise.allSettled` + 分别设 `usageError` / `quotaError` |
+| `MeetingDetailView::onMicToggle` | `stop()` 内部吞错 + `notify` 回调有 toast + §834 的 `lastStopWriteFailed` 公开字段 |
+| `MeetingSettingsSheet::onCaptureLocation` | `captureDeviceLocation` 失败时 **`resolve(null)` 从不 reject** |
+| `NoteEditView::onExtractTags` | `extractTagsForForm` 内部 `try/catch`（离线降级为本地规则标签） |
+| `SessionConversationView::onComposerSend` | `sendPrompt` **设 `errorMessage`** 且模板 `:638` 渲染横幅 |
+| `SessionConversationView::continueSession` | 同上 |
+
+⚠ **两处「阴性但值得登记」的产品口径**（不是缺陷，但用户会困惑）：
+① 定位被拒与「设备不支持」都被折叠成 `null`，而 `onCaptureLocation` 的 `if (loc)` 直接忽略
+⇒ 用户点「获取当前位置」什么都没发生 ⇒ **要不要说一声属产品口径**；
+② AI 提标签失败时**静默降级为纯本地规则**，界面不区分 ⇒ 用户以为用了 AI。
+
+### §857.4 落地
+
+| 文件 | 改动 |
+|---|---|
+| `features/meetings/MeetingListView.vue` | `startNewMeeting` 加 `catch`，复用 §838 的失败文案形状 |
+| `utils/action-failure-notice.ts` | `RecordAction` 增加 `'start'`，并为它写**专属**措辞（不与「记录仍在」的五个混用） |
+| `features/meetings/VoiceprintSheet.vue` | `onClearAll` 加 `catch` + `actionError`（走 `apiError` 归一，不把 `SQLITE_BUSY` 上屏）；模板新增互斥链之外的提示；动作开头清空 |
+| `features/settings/SettingsPermissionsView.vue` | `refreshAll` 加 `if (refreshing.value) return` 守卫（§855 同构）+ `catch` + `toast.error(apiError(...))`；引入 `useApiError` |
+| `__tests__/fire-and-forget-audit.test.ts` | 按 §850 的**反向对账**意图移除 `refreshAll` 登记条目 + 基线 15 → 14，并写清原因 |
+
+### §857.5 判据与变异
+
+`frontend/src/__tests__/finally-no-catch-audit.test.ts`（**19 例**）：
+
+| 组 | 例数 | 内容 |
+|---|---|---|
+| 尺子自证 + 登记表对账 | 4 | `.vue` 数量、**口径三向合成验证**、登记表非空且键形为 `路径::函数名`、**函数与文件的双向反向对账** |
+| D18 | 4 | 不得「有 finally 无 catch」+ 必须走 `apiError` / 失败时列表保持原样 / **提示必须在互斥链之外** / 前置条件（`clearVoiceprints` 不吞错） |
+| D19 | 4 | 不得「有 finally 无 catch」+ **一致性对照（§838 那三个不得回退）**/ **共享文案必须为「新建」写专属措辞且不得说「仍在」**/ 前置条件 |
+| D20 | 2 | 不得「有 finally 无 catch」且走 `apiError` / 守卫必须在第一个 await 之前 |
+| 反向对照 | 2 | 「catch 里只有 `console.error`」不算出口；callee 自己 `resolve(null)` 不属本口径 |
+| 变异负控 | 3 | 三段源码级变异 |
+
+**M14 真实文件端到端变异（5 路）**：
+
+| 变异 | 自己判据 | 仓库既有门 `vue-template-compile` |
+|---|---|---|
+| M14-a 删掉 `onClearAll` 的 catch | 17 / 2 ❌ | **187 / 0 ✅** |
+| M14-b 把提示的 `v-if` 改成 `v-else` | 17 / 2 ❌ | **186 / 1 ❌** |
+| M14-c 删掉 `startNewMeeting` 的 catch | 17 / 2 ❌ | **187 / 0 ✅** |
+| M14-d 删掉文案工具的 `case 'start'` | 18 / 1 ❌ | **187 / 0 ✅** |
+| M14-e 删掉 `refreshAll` 的 catch | 18 / 1 ❌ | **187 / 0 ✅** |
+| 还原核对 | **19 / 0** | **187 / 0** |
+
+⭐ **M14-b 是本节唯一一路被仓库既有门抓到的**（`186/1`）——
+把失败提示藏进互斥链这类形态，`vue-template-compile` 那道门**有覆盖**。
+其余四路对既有门完全隐形。
+
+### §857.6 本节踩到的三个坑
+
+1. ⭐⭐ **变异脚本必须保持源码语法合法**。判据文件里第一版的 D18 变异把
+   `… } catch (e) { … } finally {` 替换成 `… } } finally {` —— **多出一个右花括号**
+   ⇒ `fnBody` 的括号配平**提前闭合** ⇒ 判据取到残缺体（不含 `finally`）
+   ⇒ 看起来像「判据无牙」，其实**是变异自己把源码写坏了**。
+   ⇒ 正确做法：搜索串含前导 `}`、替换串**不含**它。已写进判据注释。
+2. ⭐ **模板注释里的 `v-if="…"` 字面量会抢 `indexOf` 的锚点**（本会话第 10 次自伤）。
+   面板注释里写着 `v-if="loading"`，判据的「提示必须在互斥链之外」判成红
+   ⇒ 修法是判据侧 `templateOf` **strip HTML 注释**（§841 已为此建过 `tplCode()`），
+   不改我的注释。
+3. ⭐ **`§850` 的反向对账立刻抓到了我的改动** —— 给 `refreshAll` 加 catch 之后，
+   它不再被 `scan()` 命中 ⇒ 登记条目成陈旧 ⇒ 断言转红。
+   ⇒ 这是双向对账**最有价值的一次实证**：它把「我改了某个函数」变成一条会红的断言，
+   而不需要人记得回头改表。
+
+### §857.7 口径与未实测
+
+- ⛔ **未实测**：D18/D19/D20 三处的真实失败率（`localDB.run` 失败的实际概率、
+  `checkPermission` 失败的触发条件）。
+- 探针**只解析 `.vue`**、不解析箭头函数 const 形式 ⇒ 读数是**下界**。
+- 探针**不区分外层 `finally` 与内层 `try/catch`**（§857.1 表内已记）⇒
+  若某处是「外层 `finally` + 内层已有 catch」，会被本节口径误纳（再由人工读排除）。
+- 本节只覆盖 `finally`；**「既无 catch 也无 finally」的纯 `await` 逃逸**属 §854 的口径。
+- 六处阴性的判定**逐条读过**，但其中两处（「定位失败无提示」「AI 降级不告知」）
+  我判为**产品口径而非缺陷** ⇒ 若属主认为它们该说，已单列为待拍板。
+
+### §857.8 待拍板
+
+1. **定位失败要不要说一声** —— `captureDeviceLocation` 把「权限被拒」与「设备不支持」
+   都折叠成 `null`，`onCaptureLocation` 直接忽略 ⇒ 用户点「获取当前位置」什么都没有。
+   要区分这两种 `null` 并提示吗（§857.3 ①）。
+2. **AI 提标签降级要不要告知** —— 离线/失败时静默退化为本地规则标签，
+   界面不区分 ⇒ 用户以为用了 AI（§857.3 ②）。
+3. **§857 试过的方向要不要保留为常规扫面** —— 「有 finally 无 catch」已连续两节产出真缺陷
+   （§856 四处、§857 三处），建议并入常规轮换；是否要做成门禁仍见 §856.10 第 2、3 条。
