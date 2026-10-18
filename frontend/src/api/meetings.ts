@@ -7,6 +7,7 @@ import { buildFallbackSummaryPrompt } from '../features/meetings/summary-prompt.
 import { http, isAbortError } from './http'
 import type { ActionItem, LiveSummary, MeetingSegment, RecommendItem } from '../features/meetings/meetings-store'
 import { truncateCodeUnits } from '../utils/text.ts'
+import { assessRefineRetention } from './refine-retention-guard.ts'
 
 // ⚠ helper 的真身在中立层 `src/utils/text.ts`（§251.2 兄弟链：
 //   它也被 features/meetings/refined-ingest-writeback.ts 使用，
@@ -348,11 +349,25 @@ export function normalizeRefine(raw: Record<string, unknown>, segments: MeetingS
   //   2. 服务端压根没回 refined_transcript ⇒ 这里用本地 fallback 顶替。
   // 两者都返回 200 且结构完整，界面照常渲染 ⇒ 用户以为精校跑过了。
   // 降级本身是对的（宁可给原文也别给空），缺的是让调用方知道。
+  // ⚠⚠ §831：提示词第 3 条写着「**不得删除原文有的内容**」，而此前**零强制** ——
+  //   服务端只防「响应被截断」，客户端只防「空值」⇒ 中间那一档
+  //   「响应完整、但模型把精校做成了摘要」无人看守 ⇒ 用户看到少了很多的正文，
+  //   徽章却写「已精校」。判定放在纯模块里（§52：本文件在 node 里 import 不了）。
+  const retention = assessRefineRetention({ original: fallback, refined: String(serverRefined ?? '') })
+  if (!retention.ok) {
+    console.warn(
+      `[meetings] 精校结果未通过内容留存判定（${retention.reason}）：`
+      + '退回原始转写并标记降级 —— 否则用户会看到一份少了大段内容、却标着「已精校」的正文。',
+    )
+  }
   const fromFallback =
     raw.refine_fallback === true ||
     raw.refineFallback === true ||
     serverRefined === undefined ||
-    serverRefined === null
+    serverRefined === null ||
+    // §831：留存判定不通过**也是降级**，且必须让下游知道
+    // （`refineStatusFor` 据此置 refine-failed，`resolveRefinedView` 据此展示原文 + 徽章）。
+    !retention.ok
   // ⚠ 2026-10-07：与 fromFallback 分开透出，别合并。
   //
   // 服务端「拒绝」的结果同样带 refine_fallback=true（它确实回落到原文了），
@@ -367,7 +382,8 @@ export function normalizeRefine(raw: Record<string, unknown>, segments: MeetingS
   //   ⚠ 目前仍**不**参与分支判断（阈值属待拍板 #17）；只把事实带出来。
   const refineInputRunes = raw.refine_input_runes ?? raw.refineInputRunes
   return {
-    refinedTranscript: String(serverRefined ?? fallback),
+    // §831：留存判定不通过 ⇒ 展示原文，而不是那份被砍掉一半的「精校」
+    refinedTranscript: retention.ok ? String(serverRefined ?? fallback) : fallback,
     translations: (raw.translations ?? {}) as Record<string, string>,
     structuredMinutes: {
       agenda: (sm.agenda ?? []) as string[],
@@ -530,8 +546,13 @@ export function refineFromLlmContent(content: string, transcript: string): Refin
   const sm = (parsed.structured_minutes ?? parsed.structuredMinutes ?? {}) as Record<string, unknown>
   const raw = parsed.refined_transcript
   const hasRefined = typeof raw === 'string' && raw.trim() !== ''
+  // ⚠⚠ §831：**两个**调用点都必须过这道判定。
+  //   这里（浏览器内 LLM 兜底路径）与上面 `normalizeRefine`（服务端路径）是两条独立的
+  //   产出 refined_transcript 的路 ⇒ 只改一处，另一处照样能把摘要当精校展示。
+  //   本函数**恒** `fromFallback: true`，所以文案与状态已经对；此处只管正文用哪一份。
+  const retention = assessRefineRetention({ original: transcript, refined: hasRefined ? (raw as string) : '' })
   return {
-    refinedTranscript: hasRefined ? (raw as string) : transcript,
+    refinedTranscript: hasRefined && retention.ok ? (raw as string) : transcript,
     translations: (parsed.translations ?? {}) as Record<string, string>,
     structuredMinutes: {
       agenda: (sm.agenda ?? []) as string[],

@@ -91,8 +91,16 @@ const ALLOWLIST = {
   'components/interactive/PullToRefresh.vue:308': '下拉指示器 absolute，在容器内的局部层级（key 已从「声明行」改为「规则块起始行」，不再随上方注释/样式增减漂移）',
   'components/interactive/VoiceCommandAssistant.vue:323': '面板内子项的局部排序',
   'components/interactive/DualScreenLayout.vue:340': '.resize-handle 在面板内的局部排序（absolute，非 fixed）',
-  'features/email/EmailInboxView.vue:676': '`.more-menu` 顶栏「更多」下拉菜单：absolute，需盖住同层的顶栏按钮（position: static，无层级）',
-  'features/email/EmailInboxView.vue:763': '`.to-top` 回顶按钮：absolute 悬浮，需盖住列表内容（静态流，无层级）',
+  // ⚠️ 2026-10-18（§854）：这两个 key **第六次**被行号漂移咬到 —— §854 把
+  // EmailInboxView 的两处裸 `window.confirm` 换成 ConfirmDialog（BUG-AQ 同族漏网），
+  // import / const confirm / 三处 confirm 展开共推了 17 行（718/805 → 735/823）。
+  // 同样的形态已发生过五次（见上方注释里的历史咬人记录 ①–④ 与 §841 的 ⑤）。
+  // 结论已经不是「治标」的问题了：**「规则块起始行」这个第三种锚法在
+  // 一个会被反复加注释的 <style> 上方同样会漂**。
+  //   **建议（待属主拍板）**：key 改成 `文件:选择器`（如 `EmailInboxView.vue:.more-menu`），
+  //   对插入免疫；本轮只按既有先例重新编号，不改这道门的语义与结构。
+  'features/email/EmailInboxView.vue:735': '`.more-menu` 顶栏「更多」下拉菜单：absolute，需盖住同层的顶栏按钮（position: static，无层级）',
+  'features/email/EmailInboxView.vue:822': '`.to-top` 回顶按钮：absolute 悬浮，需盖住列表内容（静态流，无层级）',
   'features/email/EmailSettingsView.vue:524': '设置行内部控件的兄弟排序',
   'features/settings/SettingsSTT.vue:800': '⚠️ 页内**自备的吸附顶栏**（该路由 meta.hideAppHeader:true，壳层顶栏被隐藏），position:sticky + z-index:10，**低于** --z-sticky(50) 与 --z-bottom-nav(70) ⇒ 不会压住全局 chrome。⚠️ 2026-10-06 更正：原理由写「STT 面板内局部排序」，但它不是面板内兄弟排序，而是要跟全局 chrome 争层的页内顶栏 —— 两类风险，理由不能混。⚠️ 2026-10-08：本 key 从 634 改为 800（规则块起始行）。此前因「声明行」锚定，加 MiniMax 区块与 radio 样式后漂到 801，门禁变红 —— 这是同一个 key 第四次咬人，故改为块起始行。',
   'styles.css:271': '路由过渡 enter 态的局部前后关系',

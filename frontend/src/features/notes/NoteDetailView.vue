@@ -134,6 +134,11 @@ import { http } from '../../api/http'
 import { ErrorState } from '../../components'
 import { useAuthStore } from '../../stores/auth'
 import { useConfirm } from '../../composables/useConfirm'
+import { useToast } from '../../composables/useToast'
+import {
+  describeRecordActionFailure,
+  RECORD_ACTION_FAIL_TAG,
+} from '../../utils/action-failure-notice'
 import { markListDirty } from '../../composables/list-scene-store'
 import { useApiError } from '../../composables/useApiError'
 import { createNoteTodos } from './note-todo-persist'
@@ -152,6 +157,8 @@ const loading = ref(true)
 const related = ref<LocalNote[]>([])
 const reclassifying = ref(false)
 const reclassifyError = ref('')
+// §838：删除失败需要一句人话（此前删除失败是完全静默的）。
+const toast = useToast()
 const loadError = ref('')
 
 const displayTitle = computed(() => {
@@ -238,7 +245,15 @@ async function onDelete() {
   if (!note.value) return
   const ok = await confirm({ title: '删除笔记', message: '确认删除这条笔记？此操作不可撤销。', confirmText: '删除', danger: true })
   if (!ok) return
-  await notesStore.deleteNote(note.value.id, currentWorkspaceId())
+  // ⚠ §838：此前没有 try/catch ⇒ 删除失败时笔记仍在、界面也不动，用户零感知。
+  //   router.back() 排在 await 之后是对的（不能假装删掉了）。
+  try {
+    await notesStore.deleteNote(note.value.id, currentWorkspaceId())
+  } catch (e) {
+    console.error(RECORD_ACTION_FAIL_TAG, 'meta-delete', e)
+    toast.error(describeRecordActionFailure('meta-delete', { error: e }))
+    return
+  }
   markListDirty('notes')
   router.back()
 }

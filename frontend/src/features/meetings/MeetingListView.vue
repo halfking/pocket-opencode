@@ -21,6 +21,25 @@
 
       <PullToRefresh :on-refresh="load" class="list-scroll">
         <div v-if="loading" class="state"><Skeleton :count="4" /></div>
+        <!--
+          §840：首屏读取失败**不得**落进下面的真空态。
+          `status==='failed'` 时 `loading` 为 false、行数 0 ⇒ 旧模板正好落进
+          「还没有会议记录 + 点击右下角麦克风开始第一次会议」，而那颗重试按钮
+          在 `行数 > 0` 的分支里永不渲染 ⇒ 用户被引导去新建会议，原记录完好却看不见。
+          ⚠ `v-else-if` 必须落在空态组件**自己**身上，且条件自带 `.length` 守卫：
+             门禁 list-error-failpath 从空态标签那一行**向下**找条件，
+             写在父元素上它读到的是下一个分支 ⇒ 整条判据形同虚设。
+        -->
+        <EmptyState
+          v-else-if="readError && meetings.length === 0"
+          icon="⚠️"
+          :title="readFailure.title"
+          :hint="readFailure.hint"
+          :action-label="readFailure.action"
+          size="sm"
+          variant="inline"
+          @action="retry"
+        />
         <EmptyState
           v-else-if="meetings.length === 0"
           icon="🎙️"
@@ -101,12 +120,26 @@ import {
   MEETING_LIST_FILTERS, type MeetingListFilter,
 } from './meeting-list'
 import { captureDeviceLocation, formatCapturedTitle } from './meeting-meta'
+import { useToast } from '../../composables/useToast'
+import {
+  describeRecordActionFailure,
+  RECORD_ACTION_FAIL_TAG,
+  RECORD_MEDIA_CLEANUP_FAIL_TAG,
+} from '../../utils/action-failure-notice'
 import { useListScene } from '../../composables/use-list-scene'
+import {
+  isListReadError,
+  isListSkeleton,
+  listReadFailureNotice,
+  LIST_READ_FAIL_TAG,
+} from '@/utils/list-load-state'
 
 defineOptions({ name: 'MeetingListView' })
 
 const router = useRouter()
 const dbNotReady = ref(false)
+// §838：列表侧的用户动作（归档/恢复/删除）此前无任何失败反馈。
+const toast = useToast()
 const starting = ref(false)
 const filter = ref<MeetingListFilter>('active')
 const filters = MEETING_LIST_FILTERS
@@ -122,8 +155,11 @@ const filters = MEETING_LIST_FILTERS
  *  - **KeepAlive**：停用时 pause（断开 observer），回页时 resume 并重测 sentinel。
  *  - **去重**：按稳定 `m.id` 去重并同页原位替换。
  *
- * 保留的行为：首屏仍由 `load()` 语义承担（immediate），`dbNotReady` 仍由
- * fetchPage 内捕获 —— LocalDB 未初始化是这个页面特有的错误，不是通用失败。
+ * 保留的行为：首屏仍由 `load()` 语义承担（immediate）。
+ * ⚠ §840 更正：`dbNotReady` **不再**由这里捕获 —— `resetQuery()` 返回 `void` 并不抛，
+ *   控制器链上自带 `.catch` 吞掉 fetch 错误 ⇒ 那个 catch 对读库失败是死代码。
+ *   现在改在下面 `fetchPage` 的内部捕获（唯一看得见 `e.message` 的地方），
+ *   这也让本段注释「dbNotReady 仍由 fetchPage 内捕获」第一次与事实相符。
  */
 const {
   rows: meetings,
@@ -137,21 +173,37 @@ const {
 } = useContinuousList<LocalMeeting>({
   pageSize: DEFAULT_LIST_PAGE_SIZE,
   fetchPage: async ({ page }) => {
-    const res = await listMeetings(DEFAULT_LIST_PAGE_SIZE, {
-      archived: filter.value === 'archived',
-      // 后端是 offset 型，控制器是 page 型（从 1 起）。
-      offset: (page - 1) * DEFAULT_LIST_PAGE_SIZE,
-    })
-    return {
-      rows: res,
-      // 本地库不提供 total，用「本页是否满」推导，与原 pageHasMore 语义一致。
-      total: Number.MAX_SAFE_INTEGER,
-      hasMore: pageHasMore(res.length),
+    try {
+      const res = await listMeetings(DEFAULT_LIST_PAGE_SIZE, {
+        archived: filter.value === 'archived',
+        // 后端是 offset 型，控制器是 page 型（从 1 起）。
+        offset: (page - 1) * DEFAULT_LIST_PAGE_SIZE,
+      })
+      return {
+        rows: res,
+        // 本地库不提供 total，用「本页是否满」推导，与原 pageHasMore 语义一致。
+        total: Number.MAX_SAFE_INTEGER,
+        hasMore: pageHasMore(res.length),
+      }
+    } catch (e: unknown) {
+      // §840：这是**唯一看得见 e.message 的地方**。
+      // 控制器 `loadPage` 的 promise 链自带 `.catch(() => setStatus('failed'))`，
+      // 而 `resetQuery()` 返回 void 并不抛 ⇒ 写在 `load()` 的 try/catch 里永远收不到。
+      // 不在此吞掉：读库失败必须由控制器标记成 'failed'，视图据此渲染失败态。
+      const msg = e instanceof Error ? e.message : String(e)
+      if (msg.includes('LocalDB 未初始化')) dbNotReady.value = true
+      else console.error(LIST_READ_FAIL_TAG, '会议列表', msg)
+      // ⚠ 必须 rethrow：返回空结果会被控制器当成**成功**（commitPage → 'exhausted'），
+      //   那样 `readError` 恒为 false，这个分支就成了永远不渲染的死代码。
+      throw e
     }
   },
 })
 
-const loading = computed(() => listStatus.value === 'idle' && meetings.value.length === 0 && !dbNotReady.value)
+const readFailure = listReadFailureNotice('会议记录')
+/** 无行 + 读取失败 ⇒ 整页失败态（`.length` 守卫在模板里，门禁读的是那一行）。 */
+const readError = computed(() => isListReadError(listStatus.value, meetings.value.length))
+const loading = computed(() => isListSkeleton(listStatus.value, meetings.value.length, dbNotReady.value))
 const loadingMore = computed(() => listStatus.value === 'loadingNext' || listStatus.value === 'refreshing')
 
 async function load() {
@@ -159,6 +211,7 @@ async function load() {
   try {
     resetQuery()
   } catch (e: unknown) {
+    // 只兜 resetQuery 自身的同步抛出；**读库失败不在这里**（见 fetchPage 的注释）。
     const msg = e instanceof Error ? e.message : String(e)
     if (msg.includes('LocalDB 未初始化')) dbNotReady.value = true
   }
@@ -174,6 +227,15 @@ async function onFilter(next: MeetingListFilter) {
 async function startNewMeeting() {
   if (starting.value) return
   starting.value = true
+  // ⚠⚠ §857/D19：本函数是 **§838 修复的同族漏网**。
+  //   同文件紧接着的 onArchive / onRestore / onDelete 三个都补了
+  //   `catch + console.error(RECORD_ACTION_FAIL_TAG, …) + toast.error(describeRecordActionFailure(…))`，
+  //   而这里只有 `try/finally`（管住了 starting 的复位，**没管失败**）：
+  //   `createMeeting` → `localDB.run(…)` 不吞错 ⇒ reject 直接逃逸
+  //   ⇒ 用户点「新建会议」（**本应用最核心的入口动作**）后不跳转、界面零反馈，
+  //     rejection 还成了未处理 ⇒ 看起来像应用卡死。
+  //   守卫（`if (starting.value) return`）和状态复位（finally）本来就有，
+  //   缺的**只有失败出口** —— 与 §856 ApprovalPanel 是同一个形态。
   try {
     const startedAt = Date.now()
     const m = await createMeeting({
@@ -188,6 +250,9 @@ async function startNewMeeting() {
       })
     })
     await router.push({ name: 'meeting-detail', params: { id: m.id }, query: { record: '1' } })
+  } catch (e) {
+    console.error(RECORD_ACTION_FAIL_TAG, 'start', e)
+    toast.error(describeRecordActionFailure('start', { error: e }))
   } finally {
     starting.value = false
   }
@@ -197,21 +262,55 @@ function openMeeting(m: LocalMeeting) {
   router.push({ name: 'meeting-detail', params: { id: m.id } })
 }
 
+// ⚠⚠ §838：这五个处理器此前都没有 try/catch。列表变更刻意排在 await **之后**
+//   （不能假装成功，这点是对的），但**零反馈** —— 用户点了归档，列表没变，
+//   界面上一个字都没有。
 async function onArchive(id: string) {
-  await archiveMeeting(id)
+  try {
+    await archiveMeeting(id)
+  } catch (e) {
+    console.error(RECORD_ACTION_FAIL_TAG, 'archive', e)
+    toast.error(describeRecordActionFailure('archive', { error: e }))
+    return
+  }
   meetings.value = meetings.value.filter((m) => m.id !== id)
 }
 
 async function onRestore(id: string) {
-  await unarchiveMeeting(id)
+  try {
+    await unarchiveMeeting(id)
+  } catch (e) {
+    console.error(RECORD_ACTION_FAIL_TAG, 'restore', e)
+    toast.error(describeRecordActionFailure('restore', { error: e }))
+    return
+  }
   meetings.value = meetings.value.filter((m) => m.id !== id)
 }
 
 async function onDelete(id: string) {
-  await deleteMeeting(id)
-  try { await deleteMeetingAudio(id) } catch { /* ok */ }
+  // ⚠ 音频清理此前是 `catch { /* ok */ }` —— 而 deleteMeetingAudio 写的是
+  //   IndexedDB（openDB + 事务），失败时音频 blob **永久残留**且零痕迹
+  //   ⇒ 那是静默的存储泄漏，注释里的「ok」与事实不符（§838）。
+  //   ⇒ 现在失败要说出来：主体已删除不必重试，但残留会占空间。
+  let mediaCleaned = true
+  try {
+    await deleteMeeting(id)
+  } catch (e) {
+    console.error(RECORD_ACTION_FAIL_TAG, 'delete', e)
+    toast.error(describeRecordActionFailure('delete', { error: e }))
+    return
+  }
+  try {
+    await deleteMeetingAudio(id)
+  } catch (e) {
+    mediaCleaned = false
+    console.error(RECORD_MEDIA_CLEANUP_FAIL_TAG, e)
+    toast.error(describeRecordActionFailure('delete', { error: e, mediaCleaned: false }))
+  }
   meetings.value = meetings.value.filter((m) => m.id !== id)
 }
+
+
 
 onMounted(load)
 /* KeepAlive 现场保持：active/archived 筛选保留；详情页改动过会议才刷新 */

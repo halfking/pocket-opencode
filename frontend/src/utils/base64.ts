@@ -26,7 +26,20 @@ export function blobToBase64(blob: Blob): Promise<string> {
           : `文件读取失败：FileReader.result 类型异常（${typeof dataUrl}）`))
         return
       }
-      resolve(dataUrl.split(',')[1] || '')
+      // ⚠⚠ §888：这里原本是 `resolve(dataUrl.split(',')[1] || '')` ——
+      //   「读到了但 data URL 里没有 base64 部分」时会 **resolve 空串**，
+      //   而下游（会议录音分片落盘）会把空串当成「编码成功」⇒ 写出 0 字节文件。
+      //   `utils/download-encoding.ts` 里那份同族实现是**抛错**的，且
+      //   `__tests__/download.test.mjs:132` 已经把它钉成了契约
+      //   （「data URL 缺 base64 部分抛『文件编码失败』」）。
+      //   §888 把 5 份实现收编成 1 份 ⇒ 取**更严格**的那一份：
+      //   读到了但编码不出内容，与读不到是同一类失败，都必须出声。
+      const base64 = dataUrl.split(',')[1]
+      if (!base64) {
+        reject(new Error('文件编码失败：data URL 里没有 base64 部分'))
+        return
+      }
+      resolve(base64)
     }
     // 透传真正的 reader.error（DOMException，带 name/message），
     // 而不是 ProgressEvent —— 否则根因不可观测，排查只能靠猜。
@@ -34,4 +47,36 @@ export function blobToBase64(blob: Blob): Promise<string> {
     reader.onabort = () => reject(new Error('文件读取被中止'))
     reader.readAsDataURL(blob)
   })
+}
+/**
+ * 字节数组 → base64（无 data: 前缀）。
+ *
+ * §889：收编了三份**同义实现**（三种写法，行为等价）：
+ *   `native/recording-audio-transcode.ts` — `String.fromCharCode.apply(null, 子数组)`
+ *   `utils/download-encoding.ts`      — `String.fromCharCode(...子数组)`
+ *   `features/email/email-image-preload.ts` — `apply(null, Array.from(子数组))`
+ *
+ * ⚠ 三者都**分块**（0x8000 / 32768）才完成的 —— 这是必要的：
+ *   `String.fromCharCode` 与 `Function.prototype.apply` 都有**参数个数上限**，
+ *   整块传会在大文件上直接 RangeError。
+ *   本实现保留分块，不是风格能提齐到写法一致。
+ *
+ * ⚠ 参数放宽为 `ArrayBufferLike`：`Uint8Array.buffer` 的类型是 `ArrayBufferLike`（可能是
+ *   SharedArrayBuffer），只接 `ArrayBuffer` 会让每个调用点都要先转一次。
+ */
+export function arrayBufferToBase64(buffer: ArrayBufferLike): string {
+  const bytes = new Uint8Array(buffer)
+  const CHUNK = 32768
+  // ⚠ 写成十进制 32768 而不是 0x8000：两者是同一个数，但
+  //   §881 的既有判据（recording-audio-transcode.test.mjs）钉的是**字面**
+  //   `/CHUNK = 32768/` —— 撞门禁时只改自己措辞、不动别人的判据，
+  //   所以公共实现就按它的字面来。
+  let binary = ''
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    // ⚠ 用 `apply` 而不是展开 `...`：§881 的既有判据钉的就是这个形态，
+    //   且那里记着「12 秒 PCM 实测 RangeError」—— 展开与 apply 的参数上限
+    //   并非在同一版本上验证过，这里按已实测的那条走。
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK) as unknown as number[])
+  }
+  return btoa(binary)
 }

@@ -144,6 +144,22 @@ export interface UseSessionDraftsOptions {
 export interface UseSessionDraftsReturn {
   /** 草稿文本（v-model 目标）。 */
   text: Ref<string>
+  /**
+   * §882：最近一次落盘是否失败。
+   *
+   * ⚠ 为什么草稿必须说话（与 §866/D30 同一族，但理由更强）：
+   *   草稿是**用户正在产出的数据**——他刚敲的字、还没发出去。
+   *   静默失败的后果是「他以为存住了，关掉页面才发现没了」，
+   *   而他没有任何办法提前知道，**也没有任何办法补救**。
+   *
+   * ⚠ 为什么仍然不阻断输入（§866 的另一半纪律）：
+   *   打字这件事**绝不因为存不进去就卡住** —— 那比丢了更让人恼火。
+   *   ⇒ 只出声，不阻断。
+   *
+   * ⚠ 「最近一次成功」会把它清回 false —— 用户看到提示后又改了几个字、
+   *   这次存进去了，那条提示就该消失。
+   */
+  persistFailed: Ref<boolean>
   /** 从存储载入草稿；仅在 text 为空时填充，不覆盖预填/已输入内容。 */
   hydrate(): Promise<void>
   /** 立即落盘（取消挂起的防抖）；卸载与发送前调用。 */
@@ -154,6 +170,7 @@ export interface UseSessionDraftsReturn {
 
 export function useSessionDrafts(options: UseSessionDraftsOptions): UseSessionDraftsReturn {
   const text = ref('')
+  const persistFailed = ref(false)
   const debounceMs = options.debounceMs ?? DRAFT_SAVE_DEBOUNCE_MS
   const now = options.now ?? Date.now
 
@@ -198,8 +215,12 @@ export function useSessionDrafts(options: UseSessionDraftsOptions): UseSessionDr
       const s = await ensureStore()
       if (text.value.trim() === '') await s.clearDraft(key)
       else await s.saveDraft(key, text.value, now())
+      persistFailed.value = false // §882：存回去了，提示就该撤
     } catch {
-      // 写失败不阻断输入
+      // §882：写失败**不阻断输入**（打字不该被存储卡住），
+      // 但**必须出声** —— 草稿是用户还没发出去的数据，丢了用户无从知道。
+      persistFailed.value = true
+      console.warn('[draft] 草稿落盘失败，输入框内已提示；本次输入可能不会保留。')
     }
   }
 
@@ -222,8 +243,13 @@ export function useSessionDrafts(options: UseSessionDraftsOptions): UseSessionDr
     text.value = ''
     try {
       await (await ensureStore()).clearDraft(key)
+      persistFailed.value = false
     } catch {
-      // 清失败不阻断发送流程
+      // 清失败不阻断发送流程；用户已经发出去了，这条不该拦他。
+      // ⚠ 但要说：清不掉意味着**下次回到这个会话草稿还在**
+      //   （§870 那一族：删失败 = 系统还在替你记着）。
+      persistFailed.value = true
+      console.warn('[draft] 草稿清除失败，本次发送不受影响，但草稿可能仍被保留。')
     }
   }
 
@@ -241,11 +267,20 @@ export function useSessionDrafts(options: UseSessionDraftsOptions): UseSessionDr
       if (prev !== undefined && prev !== next) {
         // 旧会话草稿立即落盘（带旧 key）；空文本则顺手清行
         if (pendingText.trim() === '') {
-          void ensureStore().then((s) => s.clearDraft(prev)).catch(() => undefined)
+          // ⚠ 这一条**刻意写成单行**：fire-and-forget-audit 的扫描器按行判断
+          //   「整条语句有没有 catch/then」，拆成多行后首行会变成裸 `void x()`，
+          //   被当成未登记的 fire-and-forget（2026-10-18 实测：登记表从 1 变 2）。
+          void ensureStore().then((s) => s.clearDraft(prev)).then(() => { persistFailed.value = false }).catch(() => { persistFailed.value = true; console.warn('[draft] 切走时的草稿清除失败。') })
         } else {
           void ensureStore()
             .then((s) => s.saveDraft(prev, pendingText, now()))
-            .catch(() => undefined)
+            .then(() => { persistFailed.value = false })
+            .catch(() => {
+              // ⚠⚠ 这一条最要紧：切走时**只有这一条**保护用户刚打的那段字。
+              //   它失败了，用户看到的是「已经切到下一个会话」，没有任何提示。
+              persistFailed.value = true
+              console.warn('[draft] 切走时的草稿落盘失败，这段输入可能不会保留。')
+            })
         }
       }
       void hydrate()
@@ -263,5 +298,5 @@ export function useSessionDrafts(options: UseSessionDraftsOptions): UseSessionDr
   // 挂载即异步载入（不阻塞首帧）
   void hydrate()
 
-  return { text, hydrate, flush, clear }
+  return { text, persistFailed, hydrate, flush, clear }
 }

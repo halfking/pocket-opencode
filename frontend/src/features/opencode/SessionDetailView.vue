@@ -298,7 +298,10 @@ function formatTime(timestamp: string): string {
 }
 
 function formatDuration(seconds?: number): string {
-  if (!seconds) return '0 分钟'
+  // ⚠ §885/D55：原先只有 `if (!seconds)`，而**负数是 truthy** ⇒ 负值会落进
+  //   下面的计算并渲染成「0 分钟」，把损坏数据伪装成「时长为零」。
+  //   与 utils/relative-time.ts 早已成文的「显式判有限性，不赌 truthy」对齐。
+  if (!seconds || !Number.isFinite(seconds) || seconds < 0) return ''
   
   const hours = Math.floor(seconds / 3600)
   const minutes = Math.floor((seconds % 3600) / 60)

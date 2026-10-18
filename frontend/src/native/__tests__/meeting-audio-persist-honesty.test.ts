@@ -124,3 +124,53 @@ describe('§824 切换设备不得静默丢掉切换前的音频', () => {
     assert.equal(n, 1, `saveMeetingAudio 出现了 ${n} 处 —— 若新增了落盘点，本节的前提要重写`)
   })
 })
+
+// ─────────────────────────────────────────────────────────────────────────
+// §877 D48：IndexedDB 层的连接归还。
+//
+// ⚠ **这条是形状判据，不是行为判据** —— `meeting-audio.ts` 的三个函数要行为覆盖就得
+//   在本文件里再抄一份 IndexedDB 替身；替身本身是本节最容易抄错的东西，所以行为那一层
+//   放在 `native/__tests__/pocket-native.test.mjs`（同一条性质、同一个替身、含对照组）。
+//   这里只保证「这个文件的形状没退回去」，并且**明确记录它看不见什么**。
+//
+// ⚠⚠ 改这一节时做变异的坑（本轮实测踩到）：`node --experimental-strip-types`
+//   **解析不了「裸 try 块（无 catch/finally）」**，会报
+//   `ERR_INVALID_TYPESCRIPT_SYNTAX: Expected a semicolon`，整个文件加载失败。
+//   ⇒ 想复刻「db.close() 写在 await 之后」这个原始缺陷形态，必须**整段删掉 try/finally**，
+//     不能把它降级成裸 try —— 那不是缺陷形态，而是一个连解析都过不去的东西。
+describe('§877 IndexedDB 连接必须归还（meeting-audio 形状层）', () => {
+  // ⚠⚠ 必须先剥整行注释再判定：本文件头与函数注释里大量出现 `db.close()` / `finally`
+  //   这些字样，不剥就会变成「注释里提到就算数」（§879 同族教训）。
+  const raw = readFileSync(join(HERE, '..', 'meeting-audio.ts'), 'utf8')
+  const code = raw.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+
+  it('★ 每个 openDB() 都配一个 db.close()，数量必须对齐', () => {
+    const opens = (code.match(/await openDB\(\)/g) || []).length
+    const closes = (code.match(/db\.close\(\)/g) || []).length
+    assert.equal(opens, 3, `openDB 调用点变成 ${opens} 处 —— 本节的前提要重写`)
+    assert.equal(closes, opens, `${opens} 次开连接只有 ${closes} 次 close ⇒ 每次调用漏一条连接`)
+  })
+
+  it('★ db.close() 必须写在 finally 里（失败路径也要还）', () => {
+    const idxs: number[] = []
+    for (let i = code.indexOf('db.close()'); i >= 0; i = code.indexOf('db.close()', i + 1)) idxs.push(i)
+    for (const i of idxs) {
+      const before = code.slice(Math.max(0, i - 120), i)
+      assert.match(before, /finally\s*\{/,
+        'db.close() 不在 finally 里 ⇒ 该函数一旦 reject，连接就永久留着')
+    }
+  })
+
+  it('★ 写事务必须有 onabort 出口（abort 时不能永远悬着）', () => {
+    // 旧代码只挂了 onerror：事务 abort 时 promise **永不 settle**，
+    // `await` 悬死 ⇒ 删除会议那条链路会静默卡住，连报错都看不到。
+    const n = (code.match(/onabort\s*=/g) || []).length
+    assert.ok(n >= 2, `只找到 ${n} 处 onabort；saveMeetingAudio / deleteMeetingAudio 两条写事务都该有`)
+  })
+
+  it('负控：形状判据看不见 abort 的真实时序（这是它已知的盲区，不是通过）', () => {
+    // 把这句话当成给下一个人的路标：本文件里的 4 条**没有一条**能证明
+    // 「abort 之后真的 reject 了」；那件事只有 pocket-native.test.mjs 的替身能做。
+    assert.ok(true)
+  })
+})

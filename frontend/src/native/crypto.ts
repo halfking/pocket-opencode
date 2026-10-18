@@ -40,8 +40,20 @@ function getOrGenerateSalt(): Uint8Array {
   
   // 保存到 localStorage（base64 编码）
   const binaryString = String.fromCharCode(...salt)
-  localStorage.setItem(SALT_STORAGE_KEY, btoa(binaryString))
-  
+  // ⚠⚠§867/D35：这一行原来裸奔。写不进去时抛出的**裸 DOMException**
+  //   一路冒泡到 initLobster 的调用方 ⇒ 界面显示「本地数据初始化失败」
+  //   （§866/D31 同款不属实的措辞：主密码已经验证通过了）。
+  //
+  //   ⛔⚠️⚠️ 这里**绝不能**吞掉异常、也绝不能「先继续用这个内存 salt」：
+  //   只要放过一次，下次启动会**再生成一个全新 salt** ⇒ 本次派生出的 key
+  //   既解不开任何旧密文、也无法在下一次启动被复现 ⇒ 用户数据**永久不可读**。
+  //   所以：必须硬失败，但要把「存储写不进去」这件事说清楚。
+  try {
+    localStorage.setItem(SALT_STORAGE_KEY, btoa(binaryString))
+  } catch (err) {
+    throw new Error('无法保存加密盐：本地存储不可用或空间不足，请清理存储后重试')
+  }
+
   return salt
 }
 

@@ -169,7 +169,7 @@
 
       <MasterPasswordDialog
         :open="showMasterPasswordDialog"
-        mode="create"
+        :mode="cryptoConfig.configRecovered ? 'unlock' : 'create'"
         @close="showMasterPasswordDialog = false"
         @success="onMasterPasswordCreated"
       />

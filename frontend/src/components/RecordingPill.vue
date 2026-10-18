@@ -97,12 +97,30 @@ function goHost() {
 }
 
 async function onStop() {
-  if (meetingActive.value) {
-    await meetingRecorderRuntime.stop()
-    toast.success('会议录音已结束并保存')
-  } else {
-    await noteRecorderRuntime.stop()
-    toast.success('笔记录音已结束，回笔记页可拾取语音草稿')
+  // ⚠⚠ §834/D1：此处此前**没有** try/catch，而 `toast.success('…已结束并保存')`
+  //   是**无条件**的 ⇒ 两类失败都让用户面对「点了完全没反应」：
+  //     ① stop() 抛错（收尾写库失败）⇒ 连成功提示都不会出现；
+  //     ② stop() 正常返回但 finalizePersistFailed 为真 ⇒ **成功提示照弹**，
+  //        而库里那条会议根本没被写成 completed ⇒ 那句话在撒谎。
+  //   ⇒ 失败必须变成一句人话，且**成功提示不得再无条件宣告已保存**。
+  try {
+    if (meetingActive.value) {
+      await meetingRecorderRuntime.stop()
+      // ⚠ §834/D1：写库失败时 runtime **自己**已经 toast 过一次（它是唯一知道
+      //   细节的那一方），这里只负责**不再宣告成功** —— 那句「已结束并保存」
+      //   在库里没写成 completed 时是撒谎。
+      if (!meetingRecorderRuntime.lastFinalizePersistFailed) {
+        toast.success('会议录音已结束并保存')
+      }
+    } else {
+      await noteRecorderRuntime.stop()
+      toast.success('笔记录音已结束，回笔记页可拾取语音草稿')
+    }
+  } catch (e) {
+    // 兜底：笔记侧的 stop() 里已逐处包过（§832/§833），这里仍留着，
+    // 因为「UI 边界必须自己说真话」不能依赖下游永远不抛。
+    console.error('[recording-pill] 停止录音失败：', e)
+    toast.error('停止录音时出错，请检查后重试（已录的内容仍在本地）')
   }
 }
 </script>

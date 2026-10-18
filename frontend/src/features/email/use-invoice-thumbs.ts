@@ -17,6 +17,8 @@
  * 没命中再走原生渲染。这样扫描件发票不受影响，文字型发票被补齐。
  */
 import { ref, type Ref } from 'vue'
+// §888：收编到公共实现（这一份原本会 reject，行为等价）。
+import { blobToBase64 } from '../../utils/base64.ts'
 import { Directory, Filesystem } from '@capacitor/filesystem'
 import { emailApi } from '../../api/email'
 import { documentNative, hasNativeDocumentSupport, renderWidthForViewport } from '../../native/document.ts'
@@ -34,18 +36,6 @@ export interface InvoiceThumbSource {
   fileName?: string
 }
 
-async function blobToBase64(blob: Blob): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onloadend = () => {
-      const base64 = String(reader.result || '').split(',')[1] ?? ''
-      if (!base64) reject(new Error('文件编码失败'))
-      else resolve(base64)
-    }
-    reader.onerror = () => reject(reader.error ?? new Error('文件读取失败'))
-    reader.readAsDataURL(blob)
-  })
-}
 
 /**
  * 取单张发票的缩略图。

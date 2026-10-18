@@ -66,7 +66,10 @@ async function loadOrCreate(id: string) {
     noteId.value = created.id
     currentTitle.value = created.title
   } else {
-    const note = await getNote(id)
+    // ⚠ §884：必须带 workspaceId —— getNote 内部走的是 getForWorkspace
+    //   （同时校验 workspace_id 与 deleted_at）。不传就退回 'default'，
+    //   真机 `ws_user-admin` 分区的笔记会读不到。
+    const note = await getNote(id, currentWorkspaceId())
     if (!note) {
       // 不存在 → 回 Today
       router.replace('/pkm/today')

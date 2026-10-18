@@ -31,6 +31,13 @@
         未完成草稿：{{ draftBanner.title || draftBanner.content.slice(0, 24) }}
       </button>
 
+      <!--
+        ⚠§832：建草稿失败必须有自己的错误行，且**不能**挂在下面那条 v-else-if 链上 ——
+        失败发生时录音已经停止、recError 为空，挂在链上会被下一条分支顶掉。
+        （下面 recError 那行正是这个坑：它只覆盖「转写错误」，不覆盖「存不下来」。）
+      -->
+      <p v-if="draftSaveError" class="studio-error" role="alert">{{ draftSaveError }}</p>
+
       <template v-if="isRecording">
         <NoteRecordingStudio v-model="liveTranscript" :error="recError" />
       </template>
@@ -78,6 +85,25 @@
         </div>
         <NoteSearchBrief v-if="briefing" :summary="briefing.summary" :offline="briefing.offline" />
         <div v-if="loading" class="state"><Skeleton :count="3" /></div>
+        <!--
+          §840：与 MeetingListView 同形同源。首屏读失败时 `loading` 为 false、
+          `filteredNotes` 为 0 ⇒ 正好落进下面的「还没有笔记」，而那颗
+          「加载失败，点击重试」在 `notes.length > 0` 分支里永不渲染。
+          ⚠ 搜索态**不进**这个分支（`readError` 里已排除）：搜索 0 结果是
+            合法结论，不能被一次无关的历史失败改写成「读取失败」。
+          ⚠ `v-else-if` 落在空态组件自己身上 + 自带 `.length` 守卫，
+            理由同会议侧（门禁从空态标签那一行向下读条件）。
+        -->
+        <EmptyState
+          v-else-if="readError && filteredNotes.length === 0"
+          icon="⚠️"
+          :title="readFailure.title"
+          :hint="readFailure.hint"
+          :action-label="readFailure.action"
+          size="sm"
+          variant="inline"
+          @action="retry"
+        />
         <EmptyState
           v-else-if="filteredNotes.length === 0"
           icon="📝"
@@ -152,17 +178,29 @@ import NoteSearchBrief from './NoteSearchBrief.vue'
 import { notesApi } from '../../api/notes'
 import { createNoteTodos } from './note-todo-persist'
 import { buildNoteTodoNotice } from './note-todo-notice.ts'
+import { describeVoiceDraftSaveFailure } from './voice-draft-save-notice.ts'
 import { awaitNoteMirror } from './notes-persist'
 import { useNoteRecording } from './useNoteRecording'
 import { noteRecorderUiState } from './note-recording'
 import { searchNotesWithIntent, type NoteSearchBriefing } from './note-search'
 import { useContinuousList } from '../../composables/useContinuousList'
+import {
+  isListReadError,
+  isListSkeleton,
+  listReadFailureNotice,
+  LIST_READ_FAIL_TAG,
+} from '@/utils/list-load-state'
 import { DEFAULT_LIST_PAGE_SIZE, pageHasMore } from '../../native/list-sync/page'
 import * as notesStore from './notes-store'
 import type { LocalNote } from './notes-store'
 import { useListScene } from '../../composables/use-list-scene'
 import { useAuthStore } from '../../stores/auth'
 import { useApiError } from '../../composables/useApiError'
+import { useToast } from '../../composables/useToast'
+import {
+  describeRecordActionFailure,
+  RECORD_ACTION_FAIL_TAG,
+} from '../../utils/action-failure-notice'
 
 defineOptions({ name: 'NoteListView' })
 
@@ -190,6 +228,10 @@ const summarizeError = ref('')
  * 「说了明天下午三点就一定会有提醒」。
  */
 const todoNotice = ref('')
+// §838：对已有记录的动作失败需要一句人话。
+const toast = useToast()
+/** §832：建草稿失败的用户可见出口（此前完全没有）。 */
+const draftSaveError = ref('')
 const {
   phase: recordPhase,
   recording: isRecording,
@@ -281,17 +323,27 @@ const {
 } = useContinuousList<LocalNote>({
   pageSize: DEFAULT_LIST_PAGE_SIZE,
   fetchPage: async ({ page }) => {
-    const res = await notesStore.listNotes({
-      limit: DEFAULT_LIST_PAGE_SIZE,
-      // 后端是 offset 型，控制器是 page 型（从 1 起）
-      offset: (page - 1) * DEFAULT_LIST_PAGE_SIZE,
-      domain: domain.value === 'all' ? undefined : domain.value,
-      workspaceId: currentWorkspaceId(),
-    })
-    return {
-      rows: res,
-      total: Number.MAX_SAFE_INTEGER,
-      hasMore: pageHasMore(res.length),
+    try {
+      const res = await notesStore.listNotes({
+        limit: DEFAULT_LIST_PAGE_SIZE,
+        // 后端是 offset 型，控制器是 page 型（从 1 起）
+        offset: (page - 1) * DEFAULT_LIST_PAGE_SIZE,
+        domain: domain.value === 'all' ? undefined : domain.value,
+        workspaceId: currentWorkspaceId(),
+      })
+      return {
+        rows: res,
+        total: Number.MAX_SAFE_INTEGER,
+        hasMore: pageHasMore(res.length),
+      }
+    } catch (e: unknown) {
+      // §840：控制器链自带 `.catch` 吞掉 fetch 错误、`resetQuery()` 也不抛，
+      // 所以**只有这里**看得见 e.message（能区分「本地库未就绪 → 重新登录」）。
+      const msg = e instanceof Error ? e.message : String(e)
+      if (msg.includes('LocalDB 未初始化')) dbNotReady.value = true
+      else console.error(LIST_READ_FAIL_TAG, '笔记列表', msg)
+      // ⚠ 必须 rethrow，否则控制器当成成功（'exhausted'）⇒ 失败态永不显示。
+      throw e
     }
   },
 })
@@ -302,8 +354,16 @@ const searchResults = ref<LocalNote[] | null>(null)
 /** 模板统一读它：搜索态优先，否则读分页数据。 */
 const notes = computed<LocalNote[]>(() => searchResults.value ?? pagedNotes.value)
 
+const readFailure = listReadFailureNotice('笔记')
+/**
+ * §840：无行 + 读失败 ⇒ 整页失败态。
+ * 搜索态排除在外：那时空列表是「没匹配到」，不是读取失败。
+ */
+const readError = computed(
+  () => searchResults.value === null && isListReadError(listStatus.value, notes.value.length),
+)
 const loading = computed(
-  () => listStatus.value === 'idle' && notes.value.length === 0 && !dbNotReady.value,
+  () => isListSkeleton(listStatus.value, notes.value.length, dbNotReady.value),
 )
 const loadingMore = computed(() => listStatus.value === 'loadingNext' || listStatus.value === 'refreshing')
 
@@ -314,7 +374,9 @@ async function load() {
   try {
     resetQuery()
   } catch (e: unknown) {
-    if (e instanceof Error && e.message.includes('LocalDB 未初始化')) dbNotReady.value = true
+    // §840：只兜 resetQuery 自身的同步抛出；读库失败在 fetchPage 内捕获。
+    const msg = e instanceof Error ? e.message : String(e)
+    if (msg.includes('LocalDB 未初始化')) dbNotReady.value = true
   }
   // 草稿横幅与分页无关，单独取
   try {
@@ -339,9 +401,19 @@ async function onSearch() {
 async function onMicToggle() {
   const stopped = await toggleRecording()
   if (!stopped) return
-  // draftId 非空 = 运行时已经落过库了，再建一次就会留下两条笔记。
-  if (stopped.draftId) await adoptVoiceDraft(stopped.draftId, stopped.text)
-  else await createVoiceDraft(stopped.text, stopped.audioBlob, stopped.durationMs)
+  // ⚠⚠ §832：此前这里**没有** try/catch，而前端也没有 unhandledrejection 兜底
+  //   ⇒ 存储写失败时整条链一路抛出去，用户只看到「点完没反应」，
+  //   整段录音白录却**完全不知道**。失败必须变成一句人话。
+  //   ⚠ 存下来的失败**不阻断**后续动作（这是一次收尾，不是一次交互）。
+  draftSaveError.value = ''
+  try {
+    // draftId 非空 = 运行时已经落过库了，再建一次就会留下两条笔记。
+    if (stopped.draftId) await adoptVoiceDraft(stopped.draftId, stopped.text)
+    else await createVoiceDraft(stopped.text, stopped.audioBlob, stopped.durationMs)
+  } catch (e) {
+    draftSaveError.value = describeVoiceDraftSaveFailure({ error: e, via: 'stop-button' })
+    console.error('[notes] 语音草稿保存失败：', e)
+  }
 }
 
 /** 录音停止 → 语音草稿笔记 + 打开元信息编辑。页面在场与跨页停止(全局
@@ -472,9 +544,17 @@ function resumeDraft() {
   metaOpen.value = true
 }
 
+// ⚠⚠ §838：这两处此前没有 try/catch。面板关闭排在 await **之后**（这是对的，
+//   不能假装保存成功），但写失败时**零反馈** —— 面板还开着，用户不知道该重试。
 async function onMetaSave(data: { title: string; domain: string; tags: string[] }) {
   if (!metaNote.value) return
-  await notesStore.updateNote(metaNote.value.id, { ...data, status: 'saved' }, currentWorkspaceId())
+  try {
+    await notesStore.updateNote(metaNote.value.id, { ...data, status: 'saved' }, currentWorkspaceId())
+  } catch (e) {
+    console.error(RECORD_ACTION_FAIL_TAG, 'meta-save', e)
+    toast.error(describeRecordActionFailure('meta-save', { error: e }))
+    return
+  }
   metaOpen.value = false
   metaNote.value = null
   await load()
@@ -482,7 +562,13 @@ async function onMetaSave(data: { title: string; domain: string; tags: string[] 
 
 async function onMetaDelete() {
   if (!metaNote.value) return
-  await notesStore.deleteNote(metaNote.value.id, currentWorkspaceId())
+  try {
+    await notesStore.deleteNote(metaNote.value.id, currentWorkspaceId())
+  } catch (e) {
+    console.error(RECORD_ACTION_FAIL_TAG, 'meta-delete', e)
+    toast.error(describeRecordActionFailure('meta-delete', { error: e }))
+    return
+  }
   metaOpen.value = false
   metaNote.value = null
   await load()
@@ -518,8 +604,15 @@ watch(domain, () => { void load() })
 async function pickupPendingRecording(): Promise<void> {
   const pending = consumePendingResult()
   if (!pending) return
-  if (pending.draftId) await adoptVoiceDraft(pending.draftId, pending.text)
-  else await createVoiceDraft(pending.text, pending.audioBlob, pending.durationMs)
+  // ⚠ §832：跨页补建是**第二条**建草稿路径，同样必须有 try/catch ——
+  //   它跑在 `onMounted` 里，抛错连界面提示都没有，只剩一个未处理的 rejection。
+  try {
+    if (pending.draftId) await adoptVoiceDraft(pending.draftId, pending.text)
+    else await createVoiceDraft(pending.text, pending.audioBlob, pending.durationMs)
+  } catch (e) {
+    draftSaveError.value = describeVoiceDraftSaveFailure({ error: e, via: 'pending-pickup' })
+    console.error('[notes] 跨页补建语音草稿失败：', e)
+  }
 }
 
 onMounted(async () => {

@@ -117,8 +117,25 @@ export async function saveNote(input: {
   )
 }
 
-export async function getNote(id: string): Promise<PkmNote | null> {
-  const a = await assetStore.get(id)
+/**
+ * 读单条 PKM 笔记。
+ *
+ * ⚠⚠ §884 D54：这里原本是 `assetStore.get(id)` —— 它**既不过滤 `deleted_at`、
+ * 也不校验 `workspace_id`**（全仓唯一一处这样的读）。
+ *   ⇒ 同一张 `local_assets` 上，一条被 `/notes` 侧删掉的 enex 笔记
+ *      （kind 也是 'note'，见 import-service.ts:38）仍能被 `/pkm/n/:id` 深链
+ *      打开全文并编辑；改完 `upsert` 报「已保存」，而那条内容永远不再出现在
+ *      任何列表或搜索里。详见 asset-store.ts::upsert 里的注释。
+ *
+ * 现在与 notes 侧完全对齐：`notes-persist.getNote` 走 `assetStore.getForWorkspace`
+ * （`AND workspace_id = ? AND deleted_at IS NULL`），PKM 读单条也走它。
+ * ⚠ `workspaceId` 必须是**调用方的 auth.workspaceId**，不是默认的 'default'：
+ *   保存（saveNote）与列表（listNotes）用的都是它，只读走 'default' 会让
+ *   真机上 `ws_user-admin` 分区的笔记全部读不到 —— 那正是 PkmNoteView.vue:46
+ *   注释记的「保存成功但列表看不到」的同族坑。
+ */
+export async function getNote(id: string, workspaceId = 'default'): Promise<PkmNote | null> {
+  const a = await assetStore.getForWorkspace(id, workspaceId)
   if (!a) return null
   return toNote(a.id, a.title, a.bodyText, a.metaJson, a.createdAt, a.updatedAt)
 }

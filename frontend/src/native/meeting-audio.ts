@@ -26,25 +26,36 @@ function openDB(): Promise<IDBDatabase> {
 /** 保存会议完整录音 */
 export async function saveMeetingAudio(meetingId: string, blob: Blob): Promise<void> {
   const db = await openDB()
-  await new Promise<void>((resolve, reject) => {
-    const tx = db.transaction(STORE, 'readwrite')
-    tx.objectStore(STORE).put(blob, meetingId)
-    tx.oncomplete = () => resolve()
-    tx.onerror = () => reject(tx.error)
-  })
-  db.close()
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(STORE, 'readwrite')
+      tx.objectStore(STORE).put(blob, meetingId)
+      // ⚠ 必须等 `tx.oncomplete`：`put` 的 request 成功**不代表已落库**（见 §877 D46）。
+      tx.oncomplete = () => resolve()
+      tx.onerror = () => reject(tx.error)
+      tx.onabort = () => reject(tx.error ?? new Error('IndexedDB 事务被中止：录音未落盘'))
+    })
+  } finally {
+    // §877 D48：失败路径也必须关连接 —— 旧代码 close() 写在 await 之后，
+    // 一旦这里 reject，连接就永久留着。
+    db.close()
+  }
 }
 
 /** 读取录音并返回 blob URL（调用方负责 revokeObjectURL） */
 export async function loadMeetingAudio(meetingId: string): Promise<string | null> {
   const db = await openDB()
-  const blob = await new Promise<Blob | null>((resolve, reject) => {
-    const tx = db.transaction(STORE, 'readonly')
-    const req = tx.objectStore(STORE).get(meetingId)
-    req.onsuccess = () => resolve((req.result as Blob) ?? null)
-    req.onerror = () => reject(req.error)
-  })
-  db.close()
+  let blob: Blob | null
+  try {
+    blob = await new Promise<Blob | null>((resolve, reject) => {
+      const tx = db.transaction(STORE, 'readonly')
+      const req = tx.objectStore(STORE).get(meetingId)
+      req.onsuccess = () => resolve((req.result as Blob) ?? null)
+      req.onerror = () => reject(req.error)
+    })
+  } finally {
+    db.close()
+  }
   if (!blob) return null
   return URL.createObjectURL(blob)
 }
@@ -52,13 +63,17 @@ export async function loadMeetingAudio(meetingId: string): Promise<string | null
 /** 删除会议录音 */
 export async function deleteMeetingAudio(meetingId: string): Promise<void> {
   const db = await openDB()
-  await new Promise<void>((resolve, reject) => {
-    const tx = db.transaction(STORE, 'readwrite')
-    tx.objectStore(STORE).delete(meetingId)
-    tx.oncomplete = () => resolve()
-    tx.onerror = () => reject(tx.error)
-  })
-  db.close()
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(STORE, 'readwrite')
+      tx.objectStore(STORE).delete(meetingId)
+      tx.oncomplete = () => resolve()
+      tx.onerror = () => reject(tx.error)
+      tx.onabort = () => reject(tx.error ?? new Error('IndexedDB 事务被中止：录音未被删除'))
+    })
+  } finally {
+    db.close()
+  }
 }
 
 /** blob URL → base64（供 STT 云端上传） */

@@ -182,7 +182,21 @@ function hasToolValue(value: unknown): boolean {
   return value !== undefined && value !== null
 }
 
+/**
+ * 毫秒 → `123ms` / `1.2s` / `3m 5s`。
+ *
+ * ⚠ §885/D55：本函数原先**只判 `ms < 1000`，负数会落进第一个分支**，
+ *   直接渲染成 `{-5000}ms`。同一个仓里 `utils/relative-time.ts` 早就为这件事
+ *   写下了原则（「显式判有限性，而不是 `if (!ts)`… 不赌 truthy」——
+ *   `-1` 会一路走到 `new Date(-1000)`，让缺失/损坏的值伪装成一条真实记录），
+ *   `features/tasks/health.ts` 也照它做了，**唯独这里漏了**。
+ *   `durationMs` 来自 `useSessionEvents` 归约后的**外部 session.activity 事件**
+ *   （`durationMs?: number`，无校验），负值不该被原样渲染成时长。
+ *
+ * 模板侧还有一层 `v-if="c.durationMs"`，它挡得住 0 / undefined，**挡不住负数**。
+ */
 function formatDuration(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return ''
   if (ms < 1000) return `${ms}ms`
   if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`
   return `${Math.floor(ms / 60000)}m ${Math.floor((ms % 60000) / 1000)}s`

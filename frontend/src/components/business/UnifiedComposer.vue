@@ -77,6 +77,8 @@
         </button>
         <span v-if="isTranscribing" class="uc-hint">转写中…</span>
           <span v-if="sttError" class="uc-hint uc-hint--err">{{ sttError }}</span>
+          <span v-if="optimizeError" class="uc-hint uc-hint--err">{{ optimizeError }}</span>
+          <span v-if="cameraError" class="uc-hint uc-hint--err">{{ cameraError }}</span>
           <span v-if="optimizeRetryHint" class="uc-hint">{{ optimizeRetryHint }}</span>
       </div>
 
@@ -180,6 +182,8 @@
           </button>
           <span v-if="isTranscribing" class="uc-hint">转写中…</span>
           <span v-if="sttError" class="uc-hint uc-hint--err">{{ sttError }}</span>
+          <span v-if="optimizeError" class="uc-hint uc-hint--err">{{ optimizeError }}</span>
+          <span v-if="cameraError" class="uc-hint uc-hint--err">{{ cameraError }}</span>
           <span v-if="optimizeRetryHint" class="uc-hint">{{ optimizeRetryHint }}</span>
         </div>
         <div class="uc-tools-right">
@@ -226,6 +230,7 @@ import { useCameraCapture } from '../../composables/useCameraCapture'
 import { usePromptOptimizer } from '../../composables/usePromptOptimizer'
 import { useChatAgentStore } from '../../stores/chatAgentStore'
 import { useBodyScrollLock } from '../../composables/useBodyScrollLock'
+import { useApiError } from '../../composables/useApiError'
 import AgentSelectorSheet from '../../features/ai-chat/AgentSelectorSheet.vue'
 
 export interface UnifiedComposerEnable {
@@ -413,7 +418,22 @@ async function onMic() {
   if (text) insertAtCursor(text)
 }
 const { pickImage } = useCameraCapture()
-const { optimize: runOptimize, isOptimizing, optimizeRetryHint } = usePromptOptimizer()
+const apiError = useApiError()
+
+/**
+ * §848：拍照失败的提示位。
+ * `useCameraCapture` 对「用户取消」返回 null，对**其它**错误 `throw err`，
+ * 源码注释原话「真实错误上抛由调用方提示」—— 而这里原来既没 catch、
+ * 也没有提示位，于是相机权限被拒 / 插件不可用时：按钮点了没反应，
+ * 只有一个未处理的 rejection。⇒ 那个「由调用方提示」的机制当时并不存在。
+ */
+const cameraError = ref('')
+const {
+  optimize: runOptimize,
+  isOptimizing,
+  optimizeError,
+  optimizeRetryHint,
+} = usePromptOptimizer()
 
 // ---- 角色 ----
 const agentStore = useChatAgentStore()
@@ -468,8 +488,13 @@ function insertAtCursor(text: string) {
 }
 
 async function onCamera() {
-  const shot = await pickImage('camera')
-  if (shot) attachment.addDataUrl(shot.dataUrl, shot.name)
+  cameraError.value = ''
+  try {
+    const shot = await pickImage('camera')
+    if (shot) attachment.addDataUrl(shot.dataUrl, shot.name)
+  } catch (e) {
+    cameraError.value = apiError(e, '拍照失败，请检查相机权限后重试')
+  }
 }
 
 function onPickImages(e: Event) {

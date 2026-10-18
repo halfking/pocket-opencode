@@ -213,17 +213,31 @@ async function generate() {
 
 async function saveNew() {
   if (!newEntry.title) { toast.error('请输入标题'); return }
-  await vaultStore.saveEntry({
-    title: newEntry.title,
-    username: newEntry.username || undefined,
-    url: newEntry.url || undefined,
-    category: newEntry.category,
-    data: { password: newEntry.password, notes: newEntry.notes },
-  })
-  // 清空表单
+  /**
+   * §854：原来没有 try/catch。`saveEntry` → `encryptData` / `localDB.run` 会抛，
+   * 而「清空表单 + 关闭弹窗」在 await **之后** ⇒ 抛了表单还在（不丢数据，这点是好的），
+   * 但用户只看到按钮按下去没反应，密码管理器里新增条目零反馈。
+   * ⚠ 一致性对照：同一个 vault 目录下的 `VaultEntryView::onSave`（编辑/详情页）
+   * **有** try/catch + toast + finally —— 同一件事两条路径两种待遇。
+   * ⇒ 修复动作是**复用** `onSave` 的形状，不是发明新写法。
+   */
+  try {
+    await vaultStore.saveEntry({
+      title: newEntry.title,
+      username: newEntry.username || undefined,
+      url: newEntry.url || undefined,
+      category: newEntry.category,
+      data: { password: newEntry.password, notes: newEntry.notes },
+    })
+  } catch (e: any) {
+    toast.error(apiError(e, 'errors.saveFailed'))
+    return
+  }
+  // 清空表单（只在真正写入成功后清 —— 否则失败一次就丢掉刚输入的密码）
   newEntry.title = ''; newEntry.username = ''; newEntry.url = ''
   newEntry.password = ''; newEntry.notes = ''; newEntry.category = 'login'
   showAdd.value = false
+  toast.success('已保存')
   await load()
 }
 

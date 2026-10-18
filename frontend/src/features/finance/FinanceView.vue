@@ -46,8 +46,10 @@
     </div>
     <div v-if="quickPreview" class="quick-preview">
       <span>{{ quickPreview.type === 'income' ? '收入' : '支出' }} · {{ quickPreview.category }} · ¥{{ fmt(quickPreview.amount) }}</span>
-      <button class="pv-btn confirm" @click="quickConfirm">确认入账</button>
-      <button class="pv-btn" @click="quickPreview = null">取消</button>
+      <button class="pv-btn confirm" :disabled="confirming" @click="quickConfirm">
+        {{ confirming ? '入账中…' : '确认入账' }}
+      </button>
+      <button class="pv-btn" :disabled="confirming" @click="quickPreview = null">取消</button>
     </div>
     <div v-else-if="quickError" class="quick-preview err">{{ quickError }}</div>
 
@@ -85,7 +87,7 @@
           </div>
           <div v-if="tx.note" class="tx-note">{{ tx.note }}</div>
         </div>
-        <button class="tx-del" aria-label="删除" @click="remove(tx)">
+        <button class="tx-del" aria-label="删除" :disabled="removingId === tx.id" @click="remove(tx)">
           <span class="material-symbols-outlined">delete</span>
         </button>
       </article>
@@ -111,6 +113,10 @@ const stats = ref<FinanceStats>({ month: '', total_income: 0, total_expense: 0, 
 
 const quickText = ref('')
 const quickBusy = ref(false)
+/** §855/D14：「确认入账」的重入守卫 —— 与同文件 `quickBusy`（解析阶段）分开，避免两个阶段互相污染。 */
+const confirming = ref(false)
+/** §855/D15：正在删除的那条（按 id 记，不用布尔 —— 列表里多行同时可见）。 */
+const removingId = ref<string | null>(null)
 const quickPreview = ref<FinanceParseResult | null>(null)
 const quickError = ref('')
 
@@ -189,7 +195,13 @@ async function quickParse() {
 
 async function quickConfirm() {
   const p = quickPreview.value
-  if (!p) return
+  // ⚠§855/D14：原来只有 `if (!p) return`。但 `quickPreview.value = null`
+  //   排在 **await financeApi.create 之后**，而「确认入账」按钮**连 :disabled 都没有**
+  //   ⇒ 双击会真的入账两条（两条真实财务流水，且 load() 之后用户看得见两条）。
+  //   一致性对照：**同文件 `:43` 的「记账」按钮就有 `quickBusy` 守卫**（quickParse）
+  //   ⇒ 同文件内两种待遇，缺的是一致性不是能力。
+  if (!p || confirming.value) return
+  confirming.value = true
   try {
     await financeApi.create({
       type: p.type,
@@ -204,16 +216,25 @@ async function quickConfirm() {
     await load()
   } catch (e: any) {
     toast.error(apiError(e, 'errors.operateFailed'))
+  } finally {
+    confirming.value = false
   }
 }
 
 async function remove(tx: FinanceTransaction) {
+  // ⚠§855/D15：原来没有任何守卫 ⇒ 双击时第二次对**已删除的 id** 发请求，
+  //   服务端 404 ⇒ catch 里 `toast.error('操作失败')`，而那条流水**确实消失了**
+  //   ⇒ 界面在说谎（说失败了，其实成功了），用户会去反复点。
+  if (removingId.value === tx.id) return
+  removingId.value = tx.id
   try {
     await financeApi.remove(tx.id)
     txs.value = txs.value.filter((t) => t.id !== tx.id)
     await load()
   } catch (e: any) {
     toast.error(apiError(e, 'errors.operateFailed'))
+  } finally {
+    if (removingId.value === tx.id) removingId.value = null
   }
 }
 

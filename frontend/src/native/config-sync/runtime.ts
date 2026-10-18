@@ -6,6 +6,7 @@ import { useAuthStore } from '../../stores/auth'
 import { applyRemoteSetting } from './apply'
 import { enqueueConfigPush, listQueuedConfigPushes, markConfigPushDone, markConfigPushFailed } from './outbox'
 import { configKey, planConfigSync } from './planner'
+import { preserveCorruptRaw } from '../../utils/corrupt-preserve'
 import { getLocalSetting, listLocalSettings, markSettingClean, writeLocalIfNewer, writeLocalSetting } from './settings-store'
 
 export interface ConfigSyncReport {
@@ -146,7 +147,13 @@ export async function syncUserSettings(): Promise<ConfigSyncReport> {
         namespace: rec.namespace, id: rec.id, payload: rec.payload, updatedAt: rec.updatedAt,
       })
       if (won) {
-        await applyRemoteSetting(rec)
+        const failed = await applyRemoteSetting(rec)
+        // ⚠⚠§869/D37/D38：writeLocalIfNewer 已把这条设置在 **DB** 里标记为
+        // 「已是最新」（dirty = 0），而 localStorage 投影可能刚写失败
+        // ⇒ 两者会永久分叉且**不会重试**。这里至少留一条可检索的日志。
+        if (failed.length > 0) {
+          console.warn(`[config-sync] 远端设置 ${rec.namespace}/${rec.id} 未能完全落地：${failed.join('、')}`)
+        }
         pulled++
       }
     }
@@ -208,7 +215,25 @@ async function importLegacyPrefsIfMissing(): Promise<void> {
     const scope = encodeURIComponent(workspace || user || 'local')
     const raw = localStorage.getItem(`pocket:ai-chat:settings:v2:${scope}`)
     if (raw && !(await getLocalSetting('chat_settings', 'default'))) {
-      await writeLocalSetting({ namespace: 'chat_settings', id: 'default', payload: JSON.parse(raw), dirty: 1 })
+      let payload: unknown
+      try {
+        payload = JSON.parse(raw)
+      } catch {
+        // ⚠⚠§859/D25：这是同一个 key（pocket:ai-chat:settings:v2:<scope>）的
+        // **第三个**消费者，而前两个都被硬化过了：
+        //   ① 读侧 loadSettings（§858/D21）—— 留证 + 置位 + 界面如实告知；
+        //   ② 写侧 applyChatSettings（§859/D24）—— 留证 + 以 {} 为基底继续应用；
+        //   ③ **这里（一次性旧偏好迁移）此前只有一个 `catch { // ignore }`**。
+        // ⇒ 后果：本地 blob 损坏时这次迁移**静默跳过**，
+        //   用户的 AI 聊天设置从此**只留在这一台设备上、永远同步不到别的设备**，
+        //   而界面上零提示（§858 那条提示覆盖不到这条路径）。
+        // ⇒ 与前两处同构：先留证，再跳过；并留一条 warn 以便排查。
+        //   ⚠ 迁移路径没有界面出口，warn 是这里唯一说得出口的地方。
+        preserveCorruptRaw('pocket:ai-chat:corrupt', 'settings', raw)
+        console.warn('[config-sync] 旧 AI 聊天设置损坏，已留证并跳过迁移')
+        return
+      }
+      await writeLocalSetting({ namespace: 'chat_settings', id: 'default', payload, dirty: 1 })
     }
   } catch {
     // ignore

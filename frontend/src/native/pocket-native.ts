@@ -531,6 +531,21 @@ export function webFsKey(directory: string, path: string): string {
   return `pocket:fs:${directory}:${path}`
 }
 
+/**
+ * §877 D47：判断「这个删除异常是不是『文件本来就不存在』」。
+ *
+ * ⚠ IndexedDB 的 `delete()` 对不存在的 key **不会报错**（删 0 条也算成功），
+ *   所以 web 实现实际上永远走不到这里；这个函数存在是为了让 `makeWebFilesystem`
+ *   对**任何** store 实现都守住同一条契约，而不是把「不存在」写成一句注释。
+ */
+function isNotFoundError(e: unknown): boolean {
+  if (typeof DOMException !== 'undefined' && e instanceof DOMException) {
+    return e.name === 'NotFoundError'
+  }
+  const msg = e instanceof Error ? e.message : String(e ?? '')
+  return /not[\s_-]?found|no such file|enoent/i.test(msg)
+}
+
 /** 纯逻辑工厂：拿到任意 WebFilesystemStore 即可构造 PocketFilesystem。 */
 export function makeWebFilesystem(store: WebFilesystemStore): PocketFilesystem {
   return {
@@ -549,8 +564,15 @@ export function makeWebFilesystem(store: WebFilesystemStore): PocketFilesystem {
     async deleteFile(path, directory = 'data') {
       try {
         await store.delete(webFsKey(directory, path))
-      } catch {
-        // 不存在 = 忽略（与 @capacitor/filesystem 行为对齐）
+      } catch (e) {
+        // §877 D47：**只**吞「本来就不存在」；其余（配额 / 事务 abort / I/O / 权限）
+        // 必须原样上抛。旧实现是**空块体 catch** —— 它的注释写着「不存在 = 忽略」，
+        // 实际吞掉一切，等于把「删失败」报成「已删除」
+        //（删除侧比写入侧更重：系统还在替你记着）。
+        // ⚠ 上面刻意不写出那个空 catch 的**字面写法**：`silent-catch-must-explain-itself`
+        //   是在**未剥注释的原文**上扫 `catch` 的，注释里照抄缺陷形态会被当成真命中（§877.6）。
+        if (isNotFoundError(e)) return
+        throw e
       }
     },
     async getUri(path, directory = 'data') {
@@ -561,8 +583,13 @@ export function makeWebFilesystem(store: WebFilesystemStore): PocketFilesystem {
   }
 }
 
-/** 真正的 IndexedDB-backed store（仅浏览器侧有意义）。 */
-function createIndexedDbWebStore(): WebFilesystemStore {
+/**
+ * 真正的 IndexedDB-backed store（仅浏览器侧有意义）。
+ *
+ * §877：导出给 node 端单测（与 `webFsKey` 同一口径）—— 判「写事务是否以提交为准」
+ * 必须在能控制事务结局的替身上跑，真浏览器里 abort 是偶发的、构造不出来。
+ */
+export function createIndexedDbWebStore(): WebFilesystemStore {
   const DB_NAME = 'pocket-fs'
   const DB_VERSION = 1
   const STORE = 'files'
@@ -592,31 +619,60 @@ function createIndexedDbWebStore(): WebFilesystemStore {
     })
   }
 
+  /**
+   * §877 D46/D48：一次读/写事务。
+   *
+   * ⚠⚠ **写事务必须以 `tx.oncomplete` 为准，不能以 `IDBRequest.onsuccess` 为准。**
+   *   规范原话（MDN `IDBTransaction.oncomplete` 示例注释）：
+   *   「report the success of the request (**this does not mean the item has been
+   *   stored successfully in the DB** - for that you need transaction.oncomplete)」。
+   *   `onsuccess` 只说明**请求本身**排进了事务；事务随后仍可能 abort
+   *   （配额超限 / 磁盘 I/O 错误 / 某个 success handler 抛错），此时写入被回滚。
+   *   ⇒ 旧实现在 `onsuccess` 上 resolve，等于把「排队成功」报成「落盘成功」。
+   *
+   * ⚠ D48：**每次调用都要 `openDb()`，所以必须在 `finally` 里 `close()`** ——
+   *   否则每读写一个文件就漏一个 IndexedDB 连接（未 close 的连接会阻塞后续
+   *   `versionchange`，让下一次 `open` 卡在 `onblocked`）。同层的
+   *   `native/meeting-audio.ts` 三个函数都是 `close()` 的，两套实现此前不一致。
+   */
   async function withStore<T>(
     mode: IDBTransactionMode,
     fn: (store: IDBObjectStore) => IDBRequest<T>,
   ): Promise<T> {
     const db = await openDb()
-    return new Promise<T>((resolve, reject) => {
-      const tx = db.transaction(STORE, mode)
-      const store = tx.objectStore(STORE)
-      let settled = false
-      const settleOk = (v: T) => {
-        if (settled) return
-        settled = true
-        resolve(v)
-      }
-      const settleErr = (e: unknown) => {
-        if (settled) return
-        settled = true
-        reject(e instanceof Error ? e : new Error(String(e)))
-      }
-      tx.onerror = () => settleErr(tx.error ?? new Error('indexedDB tx error'))
-      tx.onabort = () => settleErr(tx.error ?? new Error('indexedDB tx aborted'))
-      const ret = fn(store)
-      ret.onsuccess = () => settleOk(ret.result)
-      ret.onerror = () => settleErr(ret.error ?? new Error('indexedDB req error'))
-    })
+    try {
+      return await new Promise<T>((resolve, reject) => {
+        const tx = db.transaction(STORE, mode)
+        const store = tx.objectStore(STORE)
+        let settled = false
+        const settleOk = (v: T) => {
+          if (settled) return
+          settled = true
+          resolve(v)
+        }
+        const settleErr = (e: unknown) => {
+          if (settled) return
+          settled = true
+          reject(e instanceof Error ? e : new Error(String(e)))
+        }
+        tx.onerror = () => settleErr(tx.error ?? new Error('indexedDB tx error'))
+        tx.onabort = () => settleErr(tx.error ?? new Error('indexedDB tx aborted'))
+        // 先挂 oncomplete 再发请求：写事务的成败只有它说了算。
+        if (mode === 'readwrite') {
+          let req: IDBRequest<T>
+          tx.oncomplete = () => settleOk(req.result)
+          req = fn(store)
+          req.onerror = () => settleErr(req.error ?? new Error('indexedDB req error'))
+          return
+        }
+        // 只读事务没有「回滚后数据还在」的问题，按请求成功返回即可。
+        const ret = fn(store)
+        ret.onsuccess = () => settleOk(ret.result)
+        ret.onerror = () => settleErr(ret.error ?? new Error('indexedDB req error'))
+      })
+    } finally {
+      db.close()
+    }
   }
 
   return {

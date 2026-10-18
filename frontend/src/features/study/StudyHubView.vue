@@ -16,6 +16,23 @@
 -->
 <template>
   <div class="study-hub">
+    <!--
+      ⚠⚠§868/D36：本地存储写失败提示。**必须放在所有空态/加载分支之外**
+      （下面 169 行的 `v-if="store.loading"` 与 `v-else-if="decks.length === 0"`
+      是互斥链），否则下一次成功渲染会把它整块吞掉 —— 而它恰恰只应该在
+      「上次写失败、这次还没写成功」时显示，一旦渲染条件被别的分支抢走，
+      用户就再也看不到这条警告了。
+
+      措辞纪律（§866）：只说「没能保存」，**不得**出现「已保存/保存成功」。
+    -->
+    <p
+      v-if="store.persistFailed"
+      class="error"
+      role="alert"
+      data-testid="study-persist-failed"
+    >
+      本地存储空间不足或不可用：刚才的复习记录只留在本次运行里，退出后会丢失。
+    </p>
     <!-- Hero：今日概览。计数优先用服务端 Learning Core，缺省回落到本地闪卡 -->
     <button
       class="hero"

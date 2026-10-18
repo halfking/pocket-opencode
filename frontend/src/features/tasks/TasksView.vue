@@ -171,6 +171,11 @@
       <Skeleton v-if="loading" :count="3" />
 
       <div v-else-if="visibleActiveTasks.length > 0" class="task-scroll">
+        <!-- §843：有行时的失败不打断已加载内容（与 §840/§841/§842 同一套两档契约）。 -->
+        <div v-if="tasksError" class="list-error-banner" role="alert">
+          <span>{{ tasksErrorNotice.hint }}</span>
+          <button type="button" class="banner-retry" @click="loadTasks">{{ tasksErrorNotice.action }}</button>
+        </div>
         <template v-for="group in groupedActiveTasks" :key="group.key">
           <div v-if="group.label" class="group-label" :data-testid="`task-group-label-${group.key}`">
             {{ group.label }}
@@ -204,6 +209,25 @@
           </div>
         </template>
       </div>
+
+      <!--
+        §843：读失败**不得**落进下面的真空态，也**不得**把已加载的任务换掉。
+        原来的 catch 写着 `tasks.value = []` ⇒ 一次失败整屏任务消失，
+        并显示「暂无运行中的任务」+「点击「+ 新任务」创建」（引导建重复任务）。
+        ⚠ 条件自带 `.length === 0` 守卫，且必须排在真空态分支之前（v-else-if 链
+          只认第一个为真的）；标志名里的 `Error` 不能省（门禁靠 /error/i 认它）。
+      -->
+      <EmptyState
+        v-else-if="tasksError && visibleActiveTasks.length === 0"
+        class="empty-inline"
+        icon="⚠️"
+        :title="tasksErrorNotice.title"
+        :hint="tasksErrorNotice.hint"
+        :action-label="tasksErrorNotice.action"
+        size="sm"
+        variant="inline"
+        @action="loadTasks"
+      />
 
       <div v-else class="empty-inline">
         <EmptyState
@@ -258,6 +282,11 @@
       <Skeleton v-if="sessionsLoading" :count="3" />
 
       <div v-else-if="visibleSessions.length > 0" class="session-list">
+        <!-- §843：同上，有行时挂横幅而不是清空。 -->
+        <div v-if="sessionsError" class="list-error-banner" role="alert">
+          <span>{{ sessionsErrorNotice.hint }}</span>
+          <button type="button" class="banner-retry" @click="loadSessions">{{ sessionsErrorNotice.action }}</button>
+        </div>
         <div
           v-for="s in visibleSessions"
           :key="s.id"
@@ -278,6 +307,19 @@
           <span class="chevron">›</span>
         </div>
       </div>
+
+      <!-- §843：读失败分支，与任务区同形（条件自带 `.length === 0` 守卫、排在真空态之前）。 -->
+      <EmptyState
+        v-else-if="sessionsError && visibleSessions.length === 0"
+        class="empty-inline"
+        icon="⚠️"
+        :title="sessionsErrorNotice.title"
+        :hint="sessionsErrorNotice.hint"
+        :action-label="sessionsErrorNotice.action"
+        size="sm"
+        variant="inline"
+        @action="loadSessions"
+      />
 
       <div v-else class="empty-inline" role="button" tabindex="0" @click="onToggleQuickPrompt" @keydown.enter="onToggleQuickPrompt">
         <EmptyState
@@ -431,7 +473,9 @@
       </div>
       <template #footer>
         <button class="btn cancel" @click="showCreateModal = false">取消</button>
-        <button class="btn primary" :disabled="!newTask.title" @click="handleCreate">创建</button>
+        <button class="btn primary" :disabled="!newTask.title || creating" @click="handleCreate">
+          {{ creating ? '创建中…' : '创建' }}
+        </button>
       </template>
     </BottomSheet>
 
@@ -514,6 +558,10 @@ import { readSelectedInstance } from '../../config/selected-instance'
 import wsClient from '../../api/websocket'
 import { useToast } from '../../composables/useToast'
 import { useListScene } from '../../composables/use-list-scene'
+import {
+  listReadFailureNotice,
+  type ListReadFailureNotice,
+} from '../../utils/list-load-state'
 import { useApprovalAlerts } from '../../composables/useApprovalAlerts'
 import { useAccTasksStore } from '../../stores/accTasks'
 import { useAuthStore } from '../../stores/auth'
@@ -709,7 +757,26 @@ const tasks = ref<Task[]>([])
 const sessions = ref<any[]>([])
 const loading = ref(true)
 const sessionsLoading = ref(true)
+/**
+ * §843：读取失败说明（整份 notice 一个来源，模板只读不拼）。
+ *
+ * ⚠ 名字里必须带 `Error`：门禁 `list-error-failpath` 用 `/error/i` 认出
+ *   「错误分支」再查它的行数守卫 ⇒ 叫 `tasksFailed` 的话这条分支会被整体跳过，
+ *   守卫被拿掉也没人喊（§840 已在会议侧踩过一次，§842 又在目录侧踩了一次）。
+ * ⚠ 另配一个**永远非空**的 computed 供模板绑定：`vue-tsc` 不用模板条件
+ *   收窄后续属性，直接绑 `tasksError.title` 会报 TS18047 possibly null。
+ */
+const tasksError = ref<ListReadFailureNotice | null>(null)
+const sessionsError = ref<ListReadFailureNotice | null>(null)
+const tasksErrorNotice = computed<ListReadFailureNotice>(
+  () => tasksError.value ?? listReadFailureNotice('任务'),
+)
+const sessionsErrorNotice = computed<ListReadFailureNotice>(
+  () => sessionsError.value ?? listReadFailureNotice('会话'),
+)
 const showCreateModal = ref(false)
+/** §855/D13：新建任务的「正在提交」守卫（防往返窗口内双击创建两条）。 */
+const creating = ref(false)
 const showCompleted = ref(false)
 const quickPrompt = ref('')
 
@@ -1010,6 +1077,7 @@ async function handleRefresh() {
 
 async function loadTasks() {
   loading.value = true
+  tasksError.value = null
   try {
     // BUG-AL：这里原本传 `{ source: 'opencode' }`，但 handleCreate 建出来的任务
     // 硬编码 `source: 'local'`（同文件 ~1059 行）。两个值永远不相交，于是
@@ -1026,8 +1094,17 @@ async function loadTasks() {
       instanceName: t.instanceName || currentInstance.value?.displayName || currentInstance.value?.name || '',
     }))
   } catch (e) {
+    // ⚠️ 2026-10-18（§843）：原来这里是 `tasks.value = []` —— 不是「忘了显示错误」，
+    // 而是**主动把已加载的行清空**。后果：
+    //   ① 用户已有 N 个任务时，一次刷新失败 ⇒ 整屏任务从视野里消失，
+    //      而后端数据一直都在 —— 这正是 `list-error-failpath` 为 UI-07e
+    //      （实机读数：失败前 4 行 → 失败后 0 行）建立的那道契约要防的形态；
+    //   ② 落进 `v-else` 的「暂无运行中的任务」+「点击「+ 新任务」创建」
+    //      ⇒ 谎报 + **引导用户去建重复任务**。
+    // ⇒ 改为 fail-open：保留已加载行，只挂一条非破坏性提示（仓库既有契约，
+    //   见 `continuousList.ts` refresh 注释与 UI规范 07 §2「失败保留旧内容及筛选」）。
     console.error('Failed to load tasks:', e)
-    tasks.value = []
+    tasksError.value = listReadFailureNotice('任务', { hasRows: tasks.value.length > 0 })
   } finally {
     loading.value = false
   }
@@ -1035,6 +1112,7 @@ async function loadTasks() {
 
 async function loadSessions() {
   sessionsLoading.value = true
+  sessionsError.value = null
   try {
     const data = await api.getAllSessions(undefined, 10, 0)
     sessions.value = (data.sessions || []).map((s: any) => ({
@@ -1047,8 +1125,10 @@ async function loadSessions() {
     }))
     loadArchivedSets()
   } catch (e) {
+    // ⚠️ §843：同 `loadTasks()` —— 原来是 `sessions.value = []`（主动清空）
+    // ⇒ 一次失败就把整屏会话清掉，并显示「暂无会话」+「点这里提问，开始新对话」。
     console.error('Failed to load sessions:', e)
-    sessions.value = []
+    sessionsError.value = listReadFailureNotice('会话', { hasRows: sessions.value.length > 0 })
   } finally {
     sessionsLoading.value = false
   }
@@ -1067,7 +1147,18 @@ function handleSessionAttached(link: any) {
 }
 
 async function handleCreate() {
-  if (!newTask.value.title) return
+  // ⚠§855/D13：原来只有 `if (!newTask.value.title) return`。
+  //   但「清空 newTask.title」与「按钮 `:disabled="!newTask.title"`」都排在
+  //   **await api.createTask 之后** ⇒ 按钮要等一次网络往返才变灰，
+  //   **往返窗口内的双击会真的创建两条任务**（id 是本地 `task-${Date.now()}`）。
+  //   ⛔ 这一点**推不出「点一下就行」**：移动端触摸重复上报与 WebView 的事件合并
+  //   都可能让 handler 在同一个手势里跑两次；守卫必须是函数体里的，不是模板里的。
+  //   一致性对照：同仓 4 处同类动作**都有**重入守卫 ——
+  //   `NoteEditView::onSave`（`saving`）、`NoteDetailView::summarize`（`summarizing`）、
+  //   以及 FlashcardListView / FlashcardEditView / StudyHubView 三个 `submitCreateDeck`
+  //   （`deckCreating`）⇒ 这里缺的是**一致性**，不是能力。
+  if (!newTask.value.title || creating.value) return
+  creating.value = true
   try {
     const dueAt = parseDueDate(newTask.value.dueDate)
     // 提醒时间不能晚于截止时间；选了「提前 N」但没填截止日时按无提醒处理，
@@ -1105,7 +1196,12 @@ async function handleCreate() {
     showCreateModal.value = false
     loadTasks()
   } catch (e) {
+    // ⚠§855/D13：原来只有 `console.error` ⇒ 创建失败时弹窗仍开着、
+    //   表单原样保留，但**零用户可见提示**，用户只会当成没点到。
     console.error('Failed to create task:', e)
+    toast.error(apiError(e, 'errors.operateFailed'))
+  } finally {
+    creating.value = false
   }
 }
 
@@ -1671,6 +1767,31 @@ function timeAgo(dateStr?: string): string {
   padding: 6px 10px;
   border-radius: 6px;
   margin: 4px 0 8px;
+}
+
+/* §843：与 SessionListView / EmailInboxView / EmailFolderListView 的 .list-error-banner
+   同源，四处可对照。本文件是 scoped 样式，不复制一份就没有任何视觉。 */
+.list-error-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  background: var(--danger-bg, rgba(239, 68, 68, 0.08));
+  color: var(--danger);
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-sm);
+  border-radius: var(--radius-sm);
+  margin-bottom: var(--space-2);
+}
+.banner-retry {
+  flex: 0 0 auto;
+  background: transparent;
+  color: inherit;
+  border: 1px solid currentColor;
+  border-radius: var(--radius-sm);
+  padding: 2px var(--space-2);
+  font-size: var(--text-sm);
+  cursor: pointer;
 }
 
 /* ── Task Cards (Codex compact) ── */

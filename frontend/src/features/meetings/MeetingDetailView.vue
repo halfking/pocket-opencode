@@ -1,6 +1,22 @@
 <template>
   <div class="studio">
     <div v-if="loading" class="state"><Skeleton :count="3" /></div>
+    <!--
+      ⚠⚠ §837/D1：读取失败必须有自己的分支，且**排在 `!meeting` 之前**。
+        此前 `load()` 一抛错 `loading` 永久为 true ⇒ 整页永久骨架屏、零反馈。
+        而只写 `loading.value = false` 是**错的**：那会落到下面那句
+        「会议不存在」⇒ 把一次读取失败**谎报成会议没了**。
+      ⚠ 条件带 `&& !meeting`：已有会议时（停止录音后那些重新 load）失败
+        **不得**接管整页 —— 沿用 list-error-failpath 那道门确立的两档契约：
+        无行可显才接管整页，有内容时降级为非破坏性横幅。
+    -->
+    <EmptyState
+      v-else-if="loadError && !meeting"
+      icon="⚠️"
+      :title="loadError"
+      action-label="重试"
+      @action="load()"
+    />
     <EmptyState
       v-else-if="!meeting"
       icon="⚠️"
@@ -29,6 +45,8 @@
 
       <p v-if="statusLine" class="status" role="status">{{ statusLine }}</p>
       <p v-if="sttError" class="err" role="alert">{{ sttError }}</p>
+      <!-- §837：已有会议时刷新失败，只降级为横幅，正文与分段留在屏幕上。 -->
+      <p v-if="loadError" class="err" role="alert">{{ loadError }}</p>
 
       <div class="split">
         <section class="transcript">
@@ -133,6 +151,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { EmptyState, Skeleton } from '@/components'
 import { useMeetingRecorder } from '../../composables/useMeetingRecorder'
+import { safeExternalUrl } from '../../utils/safe-url'
 import { useLiveSummary } from '../../composables/useLiveSummary'
 import { useToast } from '../../composables/useToast'
 import { finalizeRecording } from './meeting-recording-finalize'
@@ -151,6 +170,22 @@ import { createMeetingTodos, handoffTodoToAcc, shareTodoWithPerson } from './mee
 import { buildMeetingReminderNote, buildNoActionItemsNote } from './meeting-reminder-note.ts'
 import { dedupeSegments, renderTranscript } from './meeting-dedup.ts'
 import { resolveRefinedView, type RefinedViewMode } from './refined-transcript-view.ts'
+import { LEFTOVER_RECORDING_HINT } from './meeting-finalize-persist-notice'
+import {
+  describeMeetingLoadFailure,
+  MEETING_LOAD_FAIL_TAG,
+} from './meeting-load-notice'
+import {
+  describeAppendFailure,
+  MEETING_APPEND_FAIL_TAG,
+  type AppendStage,
+} from './meeting-append-notice'
+import {
+  describeMeetingMetaSaveFailure,
+  describeSpeakerRenameFailure,
+  MEETING_META_SAVE_FAIL_TAG,
+  SPEAKER_RENAME_FAIL_TAG,
+} from './meeting-edit-failure-notice'
 import AddToLearningButton from '../study/AddToLearningButton.vue'
 import type { MeetingTodoDraft } from './meeting-todos'
 import type { MeetingStudioAction } from './meeting-page-actions'
@@ -173,12 +208,16 @@ const toast = useToast()
 const auth = useAuthStore()
 const meetingId = computed(() => String(route.params.id || ''))
 const loading = ref(true)
+/** §837/D1：读取失败的对外信号。空串 = 没有失败。 */
+const loadError = ref('')
 const meeting = ref<LocalMeeting | null>(null)
 const storedSegments = ref<MeetingSegment[]>([])
 const showSettings = ref(false)
 const showSpeakers = ref(false)
 const showVoiceprints = ref(false)
 const summarizing = ref(false)
+/** §836/D1：追加失败的**位置**，决定文案（什么都没存 vs 只存了一半）。 */
+const appendStage = ref<AppendStage>('runtime')
 const micBusy = ref(false)
 const wantMic = ref(false)
 const noteRecs = ref<RecommendItem[]>([])
@@ -250,7 +289,21 @@ const statusLine = computed(() => {
 
 async function load() {
   loading.value = true
-  const data = await getMeetingWithSegments(meetingId.value)
+  let data: Awaited<ReturnType<typeof getMeetingWithSegments>> = null
+  try {
+    data = await getMeetingWithSegments(meetingId.value)
+  } catch (e) {
+    // ⚠⚠ §837/D1：抛错时**不清空**已显示的 meeting/storedSegments ——
+    //   一次刷新失败不该把用户正在看的正文清掉（list-error-failpath 的两档契约）。
+    loadError.value = describeMeetingLoadFailure({ error: e })
+    console.error(MEETING_LOAD_FAIL_TAG, e)
+    return
+  } finally {
+    // ⚠ 放在 finally：这一行此前排在 await 之后，抛错时**永远到不了**
+    //   ⇒ 那正是「永久骨架屏」的直接成因。
+    loading.value = false
+  }
+  loadError.value = ''
   meeting.value = data?.meeting ?? null
   storedSegments.value = data?.segments ?? []
   loading.value = false
@@ -271,14 +324,31 @@ async function onMenuAction(id: MeetingStudioAction) {
   if (await onStudioAction(id) === 'classify') showSettings.value = true
 }
 
+/**
+ * 补齐地点与标题（best-effort 的**富化**，不是必需步骤）。
+ *
+ * ⚠⚠ §837/D2：它此前是裸的 `await`，而它在 onMounted 里排在
+ *   `await load()` 与 `const auto = …; if (auto) await onMicToggle()` **之间**
+ *   ⇒ 那次 `updateMeeting` 抛错（写库失败）⇒ onMounted 中断
+ *   ⇒ **用户点「开始录音」跳过来后麦克风根本不会打开**，且零反馈。
+ *   ⚠ 触发面不小：新建会议的 `title` 是空的 ⇒ 每次都会走到这次写入。
+ *   ⚠ `captureDeviceLocation` 自身**不会**抛错（失败一律 resolve(null)），
+ *     所以这条路上唯一的抛错源就是 `updateMeeting`。
+ *   ⇒ 富化失败不该挡住录音：记日志、继续。
+ */
 async function captureContext(m: LocalMeeting) {
-  const loc = m.location || await captureDeviceLocation()
-  const title = m.title || formatCapturedTitle({
-    startedAt: m.startedAt, location: loc, topic: m.topic,
-  })
-  if (loc !== m.location || title !== m.title) {
-    await updateMeeting(m.id, { location: loc, title })
-    meeting.value = { ...m, location: loc, title }
+  try {
+    const loc = m.location || await captureDeviceLocation()
+    const title = m.title || formatCapturedTitle({
+      startedAt: m.startedAt, location: loc, topic: m.topic,
+    })
+    if (loc !== m.location || title !== m.title) {
+      await updateMeeting(m.id, { location: loc, title })
+      meeting.value = { ...m, location: loc, title }
+    }
+  } catch (e) {
+    // 刻意**不提示用户**：这场会议照样能打开、能录音、能精校，丢的只是自动标题/地点。
+    console.warn('[meeting-detail] 标题/地点富化失败（不影响打开与录音）：', e)
   }
 }
 
@@ -397,34 +467,53 @@ async function onSummarize() {
 }
 
 async function onAppendUtterance(text: string) {
-  const saved = await appendText(text)
-  if (!saved) {
-    // ⚠ §131.2（顺带修的既有缺陷）：`rt.appendText` 第一行就是
-    //   `if (!meetingId) return null`，而 `activeMeetingId` 在 `stop()` 里被置空
-    //   （recordingRuntime.ts:634）⇒ **录完之后**再点这个按钮是静默无反应，
-    //   可输入框上写的提示是无条件可用。这一支以前是直接 `if (!saved) return`。
-    //   补上落库分支：与「更正」共用 store 这条 SSOT 路径。
-    const last = storedSegments.value[storedSegments.value.length - 1]
-    const draft = buildUtteranceSegment({
-      meetingId: meetingId.value,
-      text,
-      startMs: last?.endMs ?? meeting.value?.durationMs ?? 0,
-    })
-    if (!draft) return
-    const id = await saveSegment(draft)
-    storedSegments.value = [...storedSegments.value, { id, ...draft }]
-    await updateTranscript(meetingId.value, renderTranscript(storedSegments.value))
-    await refreshRelated()
-    return
-  }
+  // ⚠⚠ §836/D1：§131 一次加了「更正」与「追加」两条写入路径，前者当时就有
+  //   try/catch，后者一直没有 ⇒ 用户打的一句话会**静默消失**，或
+  //   **只存了一半**（分段进了、会议全文列没进 ⇒ 总结/推荐/精校读不到）。
+  // ⚠ 整段流程在**同一个函数体**里，不拆 helper：既有门
+  //   `segment-edit-proofread` 用 `fnBody(…, 'onAppendUtterance')` 断言
+  //   「`if (!saved)` 落库分支仍在这个函数里」—— 拆出去会让它失明。
+  appendStage.value = 'runtime'
+  try {
+    const saved = await appendText(text)
+    if (!saved) {
+      // ⚠ §131.2（顺带修的既有缺陷）：`rt.appendText` 第一行就是
+      //   `if (!meetingId) return null`，而 `activeMeetingId` 在 `stop()` 里被置空
+      //   （recordingRuntime.ts:634）⇒ **录完之后**再点这个按钮是静默无反应，
+      //   可输入框上写的提示是无条件可用。这一支以前是直接 `if (!saved) return`。
+      //   补上落库分支：与「更正」共用 store 这条 SSOT 路径。
+      const last = storedSegments.value[storedSegments.value.length - 1]
+      const draft = buildUtteranceSegment({
+        meetingId: meetingId.value,
+        text,
+        startMs: last?.endMs ?? meeting.value?.durationMs ?? 0,
+      })
+      if (!draft) return
+      appendStage.value = 'segment'
+      const id = await saveSegment(draft)
+      storedSegments.value = [...storedSegments.value, { id, ...draft }]
+      // ⚠ 走到这里时**分段已经存进库了** ⇒ 后面任何失败都不是「什么都没存」，
+      //   文案必须换一副说法（否则用户会重说一遍，得到两条重复分段）。
+      appendStage.value = 'transcript'
+      await updateTranscript(meetingId.value, renderTranscript(storedSegments.value))
+      appendStage.value = 'related'
+      await refreshRelated()
+      return
+    }
   // ★ 这里原来写的是 `storedSegments.value = [...displaySegments.value]`。
   //   `displaySegments` 是**去重后**的（`dedupeSegments` 会整段丢弃零净增的行 ——
   //   `if (step.added) out.push(...)`），把去重结果写回 storedSegments 等于
   //   把「原始段」这一份真相换成了「展示用子集」：下一次 `seedSegments`
   //   （续录恢复）就会拿这份子集当完整历史，丢掉的段在续录后的 transcript 里
   //   永远回不来。落库已由 appendText 做过，这里只同步内存里的**原始**列表。
-  storedSegments.value = [...segments.value]
-  await refreshRelated()
+    storedSegments.value = [...segments.value]
+    await refreshRelated()
+  } catch (e) {
+    // ⚠ 三种失败处境在 appendStage 里，文案必须说对：
+    //   「什么都没存」⇒ 请再说一次；「只存了一半」⇒ 重说会得到重复分段。
+    console.error(MEETING_APPEND_FAIL_TAG, appendStage.value, e)
+    toast.error(describeAppendFailure(appendStage.value, { error: e }))
+  }
 }
 
 /**
@@ -461,13 +550,37 @@ async function onEditSegment(payload: { id: string; text: string }) {
 }
 
 async function onSpeakerLabel(profileId: string, displayName: string) {
-  await labelSpeaker(profileId, displayName)
+  // ⚠ §835/D2：此前这里没有 try/catch，而 runtime 那侧的逐段写库此前是
+  //   「一段失败就跳出循环」⇒ **半改半不改**（同一个人在正文里一会儿新名一会儿
+  //   旧名）且**完全无声**。现在 runtime 返回落点统计，由这里决定说什么。
+  try {
+    const outcome = await labelSpeaker(profileId, displayName)
+    const text = describeSpeakerRenameFailure(outcome)
+    if (text) {
+      toast.warning(text)
+      console.warn(SPEAKER_RENAME_FAIL_TAG, outcome)
+    }
+  } catch (e) {
+    console.error(SPEAKER_RENAME_FAIL_TAG, e)
+    toast.error('说话人改名失败，录音仍在继续，可稍后再改一次')
+  }
 }
 
 async function onMetaSave(data: {
   title: string; topic: string; location: string; participants: string[]; tags: string[]; summarySkill: string
 }) {
-  await updateMeeting(meetingId.value, data)
+  // ⚠ §835/D1：面板此前由 sheet 自己 emit('close') 先关掉了，而这一行没有
+  //   try/catch ⇒ 写库失败 = 一个未处理的 rejection + **零反馈** + 用户刚填的
+  //   内容已经从屏幕上消失 ⇒ 失败与成功在界面上不可区分。
+  //   ⇒ 现在关闭权在这里：成功才关；失败时面板保持打开（输入还在），只说一句话。
+  try {
+    await updateMeeting(meetingId.value, data)
+  } catch (e) {
+    console.error(MEETING_META_SAVE_FAIL_TAG, e)
+    toast.error(describeMeetingMetaSaveFailure({ error: e }))
+    return
+  }
+  showSettings.value = false
   markListDirty('meetings')
   await load()
 }
@@ -492,8 +605,11 @@ async function onAccTodo(draft: MeetingTodoDraft) {
 }
 
 function onOpenRelated(item: RecommendItem) {
-  if (item.url) {
-    window.open(item.url, '_blank', 'noopener')
+  // §852：item.url 来自本地会议表，而它的 url 字段源头是 RSS 订阅（服务端原样入库）
+  // ⇒ 同样要过协议白名单，否则恶意订阅能把手伸到应用之外。
+  const safeUrl = safeExternalUrl(item.url)
+  if (safeUrl) {
+    window.open(safeUrl, '_blank', 'noopener')
     return
   }
   if (item.type === 'note') router.push(`/notes/${item.id}`)
@@ -520,8 +636,26 @@ onMounted(async () => {
   //   （无条件赋值），而中间只隔两行。智能体的持久化推荐已改由 `load()`
   //   写进 `agentRecs` 这个独立槽位，渲染口 `mergedRecs` 三路合并。
   await captureContext(m)
-  const auto = route.query.record === '1' || m.status === 'recording'
+  // ⚠⚠ §834/D2：原来这里写的是
+  //   `const auto = route.query.record === '1' || m.status === 'recording'`
+  //   ⇒ 状态卡在 recording 的会议**一打开就自动开麦**。而同一个仓库里另外两处
+  //   对同一状态给出的是**相反契约**：
+  //     · meetings-live.ts::getRecordingBySession 注释：「杀进程后提示恢复，
+  //       **不自动重开采集**」；
+  //     · useSessionLiveRecord 真这么做：查到遗留行 ⇒ toast.warning 一句提示。
+  //   ⇒ 自动开麦那处是违背仓库自身声明的孤例，且后果最重：麦克风授权弹窗 +
+  //     **把新录音混进同一场会议**（seedSegments + start({resume:true})），
+  //     用户完全没打算录。
+  // ⚠ 删掉它**不影响**任何合法启动：三个「开始录音」入口
+  //   （MeetingListView / MeetingRecordView / router-mobile）都在 createMeeting
+  //   之后立刻带 `?record=1` 跳过来；进程内续录走 micOn（= wantMic || isRecording），
+  //   麦克风还开着时那条分支本就不触发。
+  const auto = route.query.record === '1'
   if (auto) await onMicToggle()
+  else if (m.status === 'recording') {
+    // ⚠ 只提示、不开麦，且**逐字复用**会话侧那句承诺（同一个常量 ⇒ 两处不再各说各话）。
+    toast.warning(LEFTOVER_RECORDING_HINT)
+  }
   await refreshRelated()
 })
 

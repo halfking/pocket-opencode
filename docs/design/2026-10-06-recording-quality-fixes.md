@@ -94172,6 +94172,30 @@ this.recorder.start(this.opts.sliceMs)                    // :122  ← **采集�
 ⚠ 明确**没有**把 `''` 写成 `""` —— 那虽然两个门都过，但 **SQL 里 `""` 是标识符不是空串**，
 注释会从「排版走样」变成「内容撒谎」，比原状更坏。
 
+### §827.2bis ⚠ 过程失误：这份台账**早就存在**，我这一轮没有先搜它
+
+`docs/handoff/2026-10-04-round41-gofmt-is-the-culprit.md` 的标题就是
+「**gofmt 才是弯引号的真凶**」，内容与本节实测**逐条吻合**：
+
+| 本节实测（2026-10-18） | round41 台账（2026-10-04） |
+|---|---|
+| doc comment 内的 `''` → `”` | §3.1「紧邻 `func`/`type` 的 doc comment ❌ 被改成 `”`」 |
+| 函数体内的注释保留 `''` | §3.1「函数体内的注释 ✅ 保留」 |
+| tab 缩进代码块保留 `''` | §3.2「**缩进代码块是唯一既逐字保留、又 gofmt 稳定的写法**」 |
+| `""` 两个门都过但语义错 | §3.2「✅ 保留（但 SQL 里是标识符，语义错，不用）」 |
+
+⚠ 而并发会话提交 `6e36c835` 处理同一个问题时，也是**引着这份台账**做的
+（「按 round41 约定改成缩进代码块」）—— 也就是说，本节是我把台账里已有的结论
+**独立重新推导了一遍**。
+
+⇒ **判别句：动门禁管辖的文件前，先搜仓库 handoff/设计台账里有没有「谁是凶手 / 怎么写」
+的既有结论。** 台账是仓库里最便宜的先验知识，而它就在 `docs/handoff/` 下、
+文件名里直接写着答案。⇒ 这次失误已记进本节，不算进「已解决」的功劳。
+
+⚠ 补充一条本节实测、台账未强调的细节：**代码块末尾那条空 `//` 分隔线，gofmt 会主动删掉**
+（实测：带尾分隔线 ⇒ gofmt 报红并删掉它；删掉后干净）。台账写的是「前后各要一条，缺一条报红」
+—— 对**前面**那条成立；末尾那条以实测为准。
+
 ### §827.3 ⛔ 仍未解决 / 待拍板
 
 * **durable 的修法没有代拍**，三条候选：
@@ -94182,3 +94206,8167 @@ this.recorder.start(this.opts.sliceMs)                    // :122  ← **采集�
   `dbbf998a` / `c3a188e7`（RSS 目录扩展）新增了 `POCKET_RSS_ALLOW_BENCHMARK_IPS`，
   `backend/internal/config` 读它而 `.env.example` 没写 ⇒ `check:env-example` 第 34 项失败。
   ⇒ 该变量属于**并发会话正在做的功能**，本轮**只读不改**，登记在此。
+
+## §828 「转写成功但没出字」的那一段：**文字没建行、音频也没存、且一声不吭**
+
+§826 的直接后果。上一节确立「Android 上没有整段音频兜底」之后，
+再去查「某一段转写没出字会怎样」，答案是：**那段话从产品里彻底消失，且无人知情。**
+
+### §828.1 缺陷链
+
+`ingest-speech.ts` 旧顺序（修复前）：
+
+```
+const [sttResult, embeddingResult] = await Promise.all([...])   // 转写 + 声纹提取
+if (!sttResult.text.trim()) return null          // ← 早退在这里
+void saveAudioPart(meetingId, opts.seq, opts.blob).catch(() => {})   // ← 音频落盘在早退之后
+...
+const id = await saveSegment(seg)                // ← 建行在更后面
+```
+
+⇒ 转写无字的那一段，**三样全没有**：文字没建行、音频分片没落盘、没有任何提示。
+
+⚠ 为什么它比「一段转写失败」更隐蔽：`sttApi.transcribe` **成功返回空文本时并不抛错**
+⇒ `processSegment` 的 catch（唯一会设 `sttError` 的地方）根本不触发
+⇒ 连 §820 那套「失败要说人话」的机制也接不到它。
+
+⚠ 而 `audio-parts.ts` 的头注释写的就是「**崩溃后可凭 local_meeting_audio_parts 恢复转写**」
+—— 分片的用途既然是**事后补救**，那它在补救之前就不能先被跳过。
+⚠ §826 让这件事在 Android 上不可逆：原生模式不产整段音频，
+**分片是那段话的唯一一份拷贝**。
+
+### §828.2 本轮落地（两件，都不动产品口径）
+
+| # | 位置 | 改动 |
+|---|---|---|
+| 1 | `ingest-speech.ts` | **音频分片落盘提到「转写有没有出字」之前**；落盘失败的 catch 不再完全无声 |
+| 2 | `segment-drop-notice.ts`（新纯模块） | 决策与文案搬进纯函数，调用点只剩一条 `console.warn` |
+
+⚠ **为什么不写在调用点**：`ingest-speech.ts` 的顶层 import 会拖进 `api/stt`、
+`speaker-embedding`、`audio-parts`，node 里 import 直接失败（§52 的老问题）；
+而文案若只贴在调用点，判据只能扫 `console.warn` 的语法形状（§52 实测零牙）。
+
+⚠ **代价（如实登记）**：无字段现在也会落一份音频分片（原来是直接跳过），
+存储占用略增。取舍理由：这是**唯一一份拷贝**，而「省一点空间」与「保住那段话」不成比例。
+
+⚠ **本轮只做到开发者 console**（与 §813 一致）。**是否升为用户可见**属产品口径，**待拍板**。
+
+### §828.3 判据（10 例全绿）+ 变异（6 个全中）
+
+`frontend/src/features/meetings/__tests__/segment-drop-notice.test.ts`
+
+* **行为层（纯函数，node 跑得到）**：必须说清「是哪一段」（seq + 时间范围）/
+  「丢的是什么」（文字没进记录、不建空分段是有意为之）/「还能不能找回」（音频已落盘可重转）/
+  排查方向是引擎与音质而不是存储；负控：字段缺失时不得产出 `NaNms`、不得出现「引擎 undefined」。
+* **接线层（源码扫描，⚠ 对「信号变死代码」零牙，已如实标注）**：
+  **落盘必须早于早退** / 早退必须出声且传入 engine / 落盘失败不许被吞 /
+  前提登记（成功路径仍建行、仍按 `startMs` 有序插入，别把本节修成回归）。
+
+| # | 变异 | 结果 |
+|---|---|---|
+| A | 把落盘挪回早退之后 | ✅ 2 红 |
+| B′ | `void 0 && console.warn(...)`（信号变死代码） | ✅ 1 红 |
+| C | 不传 `engine` | ✅ 1 红 |
+| D′ | 分片落盘失败重新被 `.catch(() => {})` 吞掉 | ✅ 1 红 |
+| E | 文案不再承诺可补救 | ✅ 1 红 |
+| F | 文案不再说清丢的是文字 | ✅ 1 红 |
+
+⚠ **判据第一版对 B 是零牙的**：它只断言「窗口里出现过 `console.warn`」，
+于是 §818 那个经典形态 `void 0 && console.warn(...)` **0 红** ——
+而它明明把信号变成了死代码。⇒ 改成钉「**这一条语句的形状**」
+（`/^\s*console\.warn\(describeSegmentDrop\(/m`）之后才打红。
+
+⚠ **我自己的否定断言也翻过一次车**：第一版断言文案「不得提到存储」，
+而正确文案恰恰要写「而不是查存储」⇒ **正确代码也红**。
+⇒ 凡是否定断言，都要挑**不会与正确文本撞车**的那个具体形态（改用 `IndexedDB|配额不足`）。
+
+### §828.4 ⛔ 口径与未实测
+
+* 行为判据 10 例 + 变异 6 个；`typecheck` EXIT=0；相关 44 例全绿；
+  **`npm run gates` 45/45 通过**（54.3s；上一轮挡路的 `check:env-example` 已由并发提交
+  `f56e1822` 修掉，`check:gofmt` 亦已绿 —— §827 的修复现由 `6e36c835` 独立做出，**与本节取同一解法**）。
+* ⛔ **未实测**：真机上「转写成功但返回空文本」的实际发生率（这是网关/引擎行为，
+  本节结论是**构造性**的：只要发生一次，那一段就无声消失）；
+  ⛔ 也未实测这段音频事后重转是否真的能补回（需要有「拿分片重转」的入口 ——
+  检索全仓**未见**消费者，只有写入没有读取，见下条登记）。
+* ⚠ 登记：`listAudioParts` 全仓**只有写入、没有读取方** ⇒
+  「崩溃后恢复转写」这个承诺目前**没有实现**。本轮未动（属功能缺口，非缺陷）。
+
+### §828.5 待属主拍板
+
+1. 「本次有 N 段没有转出文字」要不要**升为用户可见**（目前只到 console）。
+2. 分片恢复转写的入口要不要真的做出来 —— 否则 §828 保留音频的价值只在「不丢字节」，
+   而「补回文字」仍无路径。
+3. 无字段落盘带来的存储增量是否可接受（本人判断：可接受，但属口径）。
+
+## §829 给 §458 补一格：#21 双写在 **web/桌面 Chromium** 上**成立**（本机实测）
+
+§458.3 把 #21 的平台范围判为「**本机判不了**」，并挂了两条互相冲突的外部来源
+（iOS/Safari 到底有没有 `SpeechRecognition`）。它漏掉的一格是 **web 本身** ——
+而 web 恰恰是本机唯一能实测的平台。本节补这一格。
+
+### §829.1 实测读数（Chromium 153，探针 `.artifacts/s824-probe/speechapi.mjs`）
+
+| 读数 | 值 |
+|---|---|
+| `window.SpeechRecognition` | **存在** |
+| `window.webkitSpeechRecognition` | **存在** |
+| 两者是否同一个对象 | **是**（`picked === window.webkitSpeechRecognition`） |
+| 能否实例化并挂 `onresult` | **能**（UA：HeadlessChrome/153.0.0.0） |
+
+⇒ `pickSpeechRecognition` **返回构造器** ⇒ `if (!Rec) return` 这道防线在 web 上**不生效**。
+
+### §829.2 ⭐ 于是 #21 在桌面 web 上每场录音都成立（不只是第一场）
+
+§458.2 记过一个签名：「**第一场整句重复、之后不重复**」，来自 `voicePrompt().hasForegroundHijack()`
+—— 读码确认该标志的置位路径：`localStorage[VOICE_PROMPT_HIJACK_KEY] === '1'`
+⇒ **只有本机被证明会被系统 TTS 抢前台（MIUI）时才会置位**
+⇒ **桌面 Chromium 上这个键永远不存在 ⇒ 标志恒为 false ⇒ `startLiveCaption()` 每次都启动**
+⇒ 与 §458.2 的签名**相反**：桌面 web 上不是「第一场才重复」，是**每场都重复**。
+
+### §829.3 后果比「整句重复」更大一层：重复内容**进精校 prompt**
+
+| 出口 | 是否含 `manual` 段 | 证据 |
+|---|---|---|
+| `renderTranscript`（会议正文） | **是** | `dedupeSegments` 只对 `origin:'asr'` 做相邻去重，`manual` 明确豁免（§132 的存在理由） |
+| `planRefine` → `refineSegments` | **是** | 全函数**没有任何按 `origin` 的过滤**，`baseSegments` 原样进 `repairRosterHomophones` 与 `meetingsApi.refine` |
+
+⇒ 同一句话以两个引擎的两份文本**一起送进 LLM** ⇒ 既烧配额，又让「润色并去重」
+这件事变成让模型自己去猜哪份对（§457 已记：LLM 精校只改字，不会合并内容）。
+
+### §829.4 ⛔ 未实测（本节结论的边界）
+
+* ⛔ **Web Speech 在真实会话里到底会不会回 final**：需要真麦克风 + 联网
+  （Chromium 探针只证明「API 在场且可实例化」，**不证明**它能出结果）。
+  ⇒ 本节结论是**构造性**的：**若**它回 final，重复必然发生。
+* ⛔ Safari / Firefox / 移动端浏览器**均未测**；§458 留下的 iOS 争议**维持原状，本节不翻案**。
+* ⛔ 桌面 web 之外的环境（本项目主要目标是 Android WebView）不在本节读数范围内。
+
+### §829.5 本轮**不改代码**（这是产品口径，不代拍）
+
+#21 在 §443 就被定性为「**这是产品决定，不是技术决定**」，已登记。
+本节只把「web/桌面端也成立、且每场都成立、且重复内容会进 LLM」这三件事**从假设变成读数**。
+
+⇒ 供属主拍板时可直接用的三个选项（**均未实施**）：
+
+1. **字幕只做实时显示，不入段表**（改 `commit` 的出口）—— 最省，
+   但会失去「主 ASR 丢段时字幕兜底」这个**唯一的兜底文本源**（§828 刚证明主 ASR 会静默丢段）。
+2. **按时间窗去重**：提交字幕文本时，若同一时间窗已有 `asr` 段则跳过
+   （需要一个纯函数决策 + 一条行为门；窗口宽度属产品口径）。
+3. **维持现状 + 提示**：保留双写，但在会议里标注「本场含实时字幕文本」，让用户知道为什么有重复。
+
+⚠ 另记一条**已排除**的担心：`startLiveCaption()` 里 `rec.onerror` 只把
+`no-speech`/`aborted` 静默掉、其余错误走 `onError` ⇒ 字幕失败**不是无声的**，不必再查。
+
+## §830 停止时的 10 秒上限**到期不得无声**：最后几段不在精校里，而徽章仍写「已精校」
+
+§828 之后顺着「最后几段去了哪」继续查。找到的这条**不是**丢数据，而是**残缺不可见**。
+
+### §830.1 缺陷链（每步可核对）
+
+| # | 事实 | 证据 |
+|---|---|---|
+| 1 | `stop()` 等在途分段转写有 **10 秒上限**（防挂死，合理） | `recordingRuntime.ts:760-766` |
+| 2 | 超时后**继续往下走，且一声不吭** | 同上 |
+| 3 | 收尾合并用**当下**的 `this.segments` 重渲染正文；`status:'completed'` 照写 | `mergeOverSplitSpeakers` 末尾 |
+| 4 | 调用方紧接着的 `finalizeRecording()` **从 DB 读分段**做整段重转与精校 | `useSessionLiveRecord.ts:63` / `MeetingDetailView.vue:299` |
+| 5 | ⇒ **晚到的那几段不在精校输入里** | 2+4 |
+| 6 | 精校成功时 `resolveRefinedView` 展示的是 `refinedTranscript`，徽章「已精校」 | `refined-transcript-view.ts:66-68` |
+| 7 | ⚠ 晚到的段**会**自己补写 `transcript`（`ingestSpeechBlob` 末尾重渲染），但精校视图**不展示**那条路 | `ingest-speech.ts:76` |
+
+⇒ 用户看到的是一份**缺了最后几句**、却标着「已精校」的正文。
+⇒ 「数据在、但默认视图里看不到」是最难发现的一种残缺 —— 它不会报错、不会变空、
+只是**少几句**，而少的那几句要用户自己发现「我明明说了话怎么没有」。
+
+**触发条件**：任何一段在停止时刻还没转完（网络抖动、网关慢、长段）⇒ 在移动端并不罕见。
+
+### §830.2 本轮落地（只做诊断，不改产品口径）
+
+`stop()` 等待之后补一道 `if (this.inFlightSegments.size)` 判定并 `console.warn`，
+文案搬进纯模块 `unsettled-segments-notice.ts`（§52：类方法在 node 里跑不到）。
+文案刻意点明三件事：**还剩几段** / **它们不会进精校且用户默认看的是精校版** /
+**去哪看补齐的那几段**（`MeetingDetailView.vue:51` 的「看原文」按钮，措辞与之对齐）。
+
+⚠ **根因未修**：真正的解是「精校前确保所有分段都落地」或「超时后补跑一次精校」，
+两者都牵涉等待时长与用户体验 ⇒ **属产品口径，待拍板，本轮不代拍**。
+
+⚠ **代价**：无（只多一条日志，正常路径不触发 —— 判定放在等待**之后**且要求仍在途）。
+
+### §830.3 判据（7 例全绿）+ 变异（7 个全中）
+
+`frontend/src/features/meetings/__tests__/unsettled-segments-notice.test.ts`
+
+* **行为层（纯函数）**：说清剩几段与上限 / 说清不会进精校且默认看精校版 /
+  指出补救入口且与真实 UI 措辞一致 / 负控（非法值不得产出 `NaN`、`-3`）。
+* **接线层（源码扫描，⚠ 零牙已标注）**：等待之后必须有「还在途吗」判定并直接 warn
+  （**钉语句形状**，否则 `void 0 && console.warn` 照样全绿）/ 必须传真实在途数量 /
+  两条前提登记（10s 上限仍在、`看原文` 入口仍在）。
+
+| # | 变异 | 结果 |
+|---|---|---|
+| A | 删掉「还在途吗」的判定与 warn | ✅ 1 红 |
+| B | `void 0 && console.warn(...)`（信号变死代码） | ✅ 1 红 |
+| C | 不传真实在途数量（恒报 0） | ✅ 1 红 |
+| D | 文案不再说「不会进精校」 | ✅ 1 红 |
+| E | 文案指向不存在的入口 | ✅ 1 红 |
+| F′ | 顺手删掉防挂死的 10s 上限 | ✅ 1 红 |
+| G | 前提反转：UI 的「看原文」入口没了 | ✅ 1 红 |
+
+⚠ **变异 F 第一版是 0 红**：我的「前提登记」断言对**全文件**匹配
+`setTimeout(resolve, 10_000)`，而**笔记录音路径**里另有一个 10 秒超时
+⇒ 会议这条被改成 0ms 它照样绿。⇒ **「前提登记」这类断言也会指错位置**，
+必须限定在同一段窗口内（本会话第 4 次「判据指错地方」）。
+
+### §830.4 ⚠ 第 4 次撞上「注释里的代码字面量被源码扫描门当真代码命中」
+
+`test:all` 一度报 `speaker-relabel.test.ts` 失败（`合并早于在途分段落库`）——
+**我的代码顺序是对的，是我的注释写错了**：那道门用
+`stopBody.indexOf(<那个合并方法名>)` 定位调用点并断言顺序，
+而我新写的注释里**恰好提到了那个方法名** ⇒ `indexOf` 先命中注释。
+
+⇒ 处置：**改我的措辞，不动门禁语义**（第 5 条纪律的又一次应用）。
+⚠ 更有意思的是**第二版**：我为解释这个坑又补了一段注释，里面再次写出了那个标识符
+⇒ **注释在自我拆台** ⇒ 最终版连方法名都不提，只描述这条约束的形状。
+⇒ **判别句：注释里提到某个标识符时，先问「有没有门按这个标识符做 indexOf」。**
+
+### §830.5 ⛔ 口径与未实测
+
+* 行为判据 7 例 + 变异 7 个；`typecheck` EXIT=0；相关 63 例全绿；
+  **`npm run gates` 45/45 通过**（73.5s）。
+* ⛔ **未实测**：真机上停止时确有多少段会超过 10s（这是网络与网关行为，
+  本节结论是**构造性**的：只要超时发生，缺口必然存在）。
+* ⛔ 未实测「切到看原文」在这种情况下是否真的能看到那几段（时序上它们可能还没落库）。
+
+### §830.6 待属主拍板
+
+1. 精校前是否要**确保所有分段落地**（延长上限 / 超时后补跑一次精校 / 或按 §830.2 现有诊断提示用户）。
+2. 这条信息要不要**升为用户可见**（目前只到开发者 console）。
+
+## §831 把「**不得删除原文有的内容**」这条写在提示词里却**零强制**的契约，变成一道守卫
+
+沿 §40/§783 的老问题继续查：全量重转有长度守卫（变短一半以上 ⇒ 拒绝采纳），
+**精校的产物有没有同类的护栏**？查下来：**没有**，而且它的契约是明写着的。
+
+### §831.1 事实链
+
+| # | 事实 | 证据 |
+|---|---|---|
+| 1 | 服务端提示词第 3 条明写「**不得删除原文有的内容**」 | `server_meeting.go:buildRefinePrompt` |
+| 2 | 同一函数注释记着：这条链的职责是**纠错而非改写**（第一版用「润色」二字时，真网关把「CI」改成「101」、把本来正确的句子改写掉） | 同上 |
+| 3 | 服务端只防**响应被截断** | `refine_truncation_test.go`（真实抓包扫 3867 个截断点） |
+| 4 | 客户端只防**空值** | `refineFromLlmContent` 的 `hasRefined` 空值闸 |
+| 5 | ⚠ **中间那一档无人看守**：响应**完整**、但模型把「精校」做成了**摘要** | 3+4 |
+| 6 | 用户侧：精校成功时展示 `refinedTranscript`，徽章「已精校」 | `refined-transcript-view.ts:66-68` |
+
+⇒ 「用户看到一份少了大段内容的正文，徽章却写着已精校」。
+⇒ 与 §820/§826/§828/§830 同族：**诚实性缺陷的第三种形态 —— 存在但不完整**。
+
+### §831.2 落地
+
+新增纯模块 `frontend/src/api/refine-retention-guard.ts`，并接到**两个**产出
+`refined_transcript` 的调用点：
+
+| # | 位置 | 改动 |
+|---|---|---|
+| 1 | `api/meetings.ts` `normalizeRefine` | 留存判定不通过 ⇒ **正文退回原文** + `fromFallback` 置真 + `console.warn` |
+| 2 | `api/meetings.ts` `refineFromLlmContent` | 同一判定，**正文按判定二选一** |
+
+阈值**沿用 §783 的 `0.5` 口径**（不是新拍的），另加一道**绝对下限 200 字**：
+原始转写太短时不判比例，否则「10 字变 4 字」会把正常精校判死。
+
+⚠ **两个调用点都必须接**：这条链有两条独立的产出路径（服务端 / 浏览器内兜底），
+只改一处，另一处照样能把摘要当精校展示 —— 判据专门钉了「出现两处」。
+
+⚠ 降级信号复用既有的 `fromFallback` ⇒ `refineStatusFor` 置 `refine-failed`、
+`resolveRefinedView` 展示原文并挂徽章「精校未生效 · 下面显示原文」
+⇒ **不需要新增任何用户可见文案**，行为与既有降级路径完全一致。
+
+⚠ **代价**：若模型确实在做合理的大幅压缩，会被误判为降级。
+⚠ 但按提示词第 3 条与 §783 的既有口径，这属于**契约之外的行为**。真发生时的观感未实测。
+
+### §831.3 判据（9 例全绿）+ 变异（8 个全中）
+
+`frontend/src/api/__tests__/refine-retention-guard.test.ts`
+
+* **行为层（纯函数）**：砍到一半以下必判不通过 / 正常纠错（加 `[发言人]` 前缀、
+  正文变长）必须放行 / 小样本不判比例 / 空结果判不通过 / 非法输入不出 `NaN` /
+  阈值必须是 §783 的既有口径。
+* **接线层（源码扫描，⚠ 零牙已标注）**：判定必须出现在**两个**调用点 /
+  服务端路径必须「退回原文 + 标记降级 + 出声」/ 兜底路径必须按判定二选一。
+
+| # | 变异 | 结果 |
+|---|---|---|
+| A | 守卫恒放行 | ✅ 1 红 |
+| B | 守卫改成「只拦空」 | ✅ 1 红 |
+| C | 服务端路径不改正文（仍展示砍半的精校） | ✅ 1 红 |
+| D″ | `fromFallback` 不再含留存判定 | ✅ 1 红 |
+| E | 兜底路径漏改 | ✅ 1 红 |
+| F′ | 判定不通过但不出声（`void 0 && console.warn`） | ✅ 1 红 |
+| G | 绝对下限被去掉 | ✅ 1 红 |
+
+### §831.4 ⚠⚠ 本节判据自己踩了三个坑，其中一个是**最隐蔽的假绿**
+
+1. **窗口太小 ⇒ 肯定断言变假红**：判定点到「正文二选一」隔着两段（实测 1196 字符），
+   第一版取 900 ⇒ **正确代码被判红**。
+2. **对整个窗口搜 `!retention.ok` ⇒ 匹配到 warn 前的同名守卫**
+   ⇒ 变异 D 把 `fromFallback` 里的判定改掉之后判据**照样绿（0 红）**
+   ⇒ 必须锚在 `const fromFallback = …` 那一段里。
+3. ⭐⭐⭐ **`indexOf` 找不到时返回 `-1`，而 `-1 < 任何正数` 恒为真**
+   ⇒ 我写的那句 `hit < close` 在「判定根本不在」时**反而通过** ⇒ 最隐蔽的假绿。
+   ⇒ **通则：凡是拿 `indexOf` 的返回值做大小比较，必须先判 `-1`。**
+
+⚠ 另记一次**明知故犯**：F′ 那个「`void 0 && console.warn` 零牙」的坑，
+我在 §828 的判据上刚犯过一次、写进了记忆和主文档，**换一份判据又犯了一次**
+⇒ 它不是「记下来就够了」的教训，必须变成**写扫描断言时的默认动作**：
+钉「这条语句的形状」，不钉「某个关键词出现过」。
+
+### §831.5 ⛔ 口径与未实测
+
+* 行为判据 9 例 + 变异 8 个；`typecheck` EXIT=0；相关 30 例全绿；
+  **`npm run gates` 45/45 通过**（65.1s）。
+* ⛔ **未实测**：真模型在多长的会议上会把正文砍掉一半以上（这是模型行为，
+  本节结论是**构造性**的：一旦发生，缺口必然存在且不可见）。
+* ⛔ 未实测「合理大幅压缩」的真实分布 ⇒ 守卫是否过严**未量化**，
+  建议上线后先只看 console 那条 warn 的出现率（它出现即代表被拦下一次）。
+
+### §831.6 待属主拍板
+
+1. 比例阈值是否沿用 `0.5`（本轮按 §783 既有口径直接采用，**未代拍新值**）；
+   若要更保守可调 `REFINE_RETENTION_RATIO` 一个常量。
+2. 绝对下限 200 字是否合适（短会议多的产品可能要调低）。
+
+## §832 随手记的**建草稿失败**完全不可见：录音白录，界面上什么都没有
+
+先把 §826 的范围钉死（这是本节的前提），再查笔记侧的对应物。
+
+### §832.1 ✅ 阴性结论：§826 **不**命中随手记（省下重复劳动）
+
+| 事实 | 证据 |
+|---|---|
+| `startBackgroundMic()` **全仓只有一处调用**，在**会议**的 `start()` 里 | `recordingRuntime.ts:372` |
+| 笔记录音（`NoteRecorderRuntime`）走 `getUserMedia` + `MediaRecorder`（timeslice） | 同文件 `start()` 内的 MediaRecorder 分支 |
+| ⇒ 笔记路径**从不产原生分片**，完整音频由 `RollingWebmDecoder.takeFull()` 提供 | 同上 |
+
+⇒ §826 的结论（Android 上没有整段音频）**只对会议路径成立**，随手记不受影响。
+⚠ 顺带一条**机制差异**（值得记，因为它解释了为什么笔记侧更抗后台）：
+会议路径靠 rAF 驱动 VAD 切片（rAF 停摆 ⇒ 切片停），笔记路径靠 MediaRecorder 的
+timeslice 事件（由媒体管线驱动，不受 rAF 影响）。
+
+### §832.2 ⛔ 缺陷：两条建草稿路径**都没有 try/catch**
+
+| # | 事实 | 证据 |
+|---|---|---|
+| 1 | `onMicToggle()`（页面在场点停止）直接 `await createVoiceDraft(...)`，**无 try/catch** | `NoteListView.vue:339-345` |
+| 2 | `pickupPendingRecording()`（跨页停止后回列表页补建，跑在 `onMounted` 里）同样**无 try/catch** | 同文件 `:518-523` |
+| 3 | 建草稿要写存储：原生 `Filesystem.writeFile` / Web `localDB.run`（base64） | `note-files.ts:persistNotePayload` |
+| 4 | 前端**没有** `unhandledrejection` 兜底 | 全仓检索 0 命中 |
+
+⇒ 写失败 ⇒ 异常一路抛出事件处理器 ⇒ 用户看到的是
+**「录音正常结束、界面恢复原样、什么都没有」**：没有笔记、没有报错、没有提示。
+⇒ **整段录音白录，而用户完全不知道它存在过。**
+
+⚠ 与 §820 同族但**形态更重**：§820 至少留下一条「谎报完好」的会议记录；
+这里**连记录都不存在** ⇒ 用户甚至没有可以回头复查的对象。
+
+⚠ 现实触发率不是零：§820.2 已记录 IndexedDB 配额在 Android WebView / iOS WKWebView 上
+「一场 60 分钟会议的 webm 很容易触顶」，而录音笔记正是长音频场景。
+
+### §832.3 落地
+
+| # | 位置 | 改动 |
+|---|---|---|
+| 1 | `NoteListView.vue` `onMicToggle` | `try/catch` + 失败时置 `draftSaveError` + `console.error` |
+| 2 | 同上 `pickupPendingRecording` | 同上（文案点明「补建」上下文） |
+| 3 | 新增 `draftSaveError` ref + **独立**错误行（`v-if`，不挂 `v-else-if` 链） | 见下 |
+| 4 | `voice-draft-save-notice.ts`（新纯模块） | 文案决策 |
+
+⚠ **错误行刻意用 `v-if` 而不是 `v-else-if`**：失败发生时录音**已经停止**，
+`recError` 为空、`recorderUi.statusText` 可能非空 ⇒ 挂在那条链上会被顶掉
+（那正是本文件 `recError` 那行注释里记过的同类坑）。
+⚠ 再次录音前清空 `draftSaveError`，否则旧错误会一直挂着。
+
+### §832.4 判据（8 例全绿）+ 变异（8 个全中）
+
+`frontend/src/features/notes/__tests__/voice-draft-save-notice.test.ts`
+
+* **行为层（纯函数）**：说清是「草稿保存失败」而非转写失败 / 说清**不会自动恢复**
+  并给出唯一可行动作（先抄文字、再重录）/ 两条路径文案不同（否则分不清哪条路坏）/
+  负控：非 Error 异常不得产出 `undefined`、`[object Object]`、`NaN`。
+* **接线层（源码扫描，⚠ 零牙已标注）**：两条路径都必须被 `try` 包住且用纯函数决策 +
+  错误行必须渲染且**不得**是 `v-else-if` / 新录音前要清空 /
+  前提登记（两条路径仍是「adopt 优先、不重复建」）。
+
+| # | 变异 | 结果 |
+|---|---|---|
+| A / B | 两条路径分别去掉 catch 保护 | ✅ 各 1 红 |
+| C | 错误行挂到 `v-else-if` 链上 | ✅ 1 红 |
+| D | 设了 ref 但模板里不渲染 | ✅ 1 红 |
+| E | 忘记清上一次的失败 | ✅ 1 红 |
+| F | 不再优先 `adoptVoiceDraft`（一次录音两条笔记） | ✅ 1 红 |
+| G | 文案不再给用户可做的动作 | ✅ 1 红 |
+| H′ | 异常取原因产出 `[object Object]` | ✅ 1 红 |
+
+⚠ **变异 H 第一版是无效变异**：我写 `return String(e)`，而该分支里 `e` 已经是
+trim 过的字符串 ⇒ 语义完全等价 ⇒ 0 红。换成真会改行为的 H′（`Object.prototype.toString.call(e)`）
+才打红 ⇒ 再次确认 **「0 红」必须先区分「判据有洞」与「变异没改到行为」**。
+
+### §832.5 ⛔ 口径与未实测
+
+* 行为判据 8 例 + 变异 8 个；`typecheck` EXIT=0；相关 20 例全绿；
+  **`npm run gates` 45/45 通过**（57.2s）。
+* ⛔ **未实测**：真机上建草稿失败的真实发生率（属存储行为，本节结论是**构造性**的：
+  只要写失败一次，现象就成立）。
+* ⛔ 未实测原生 `Filesystem.writeFile` 与 Web `localDB` 各自的失败文案形态
+  ⇒ 用户看到的具体措辞可能比文案模板更啰嗦，但**不会更不 actionable**。
+
+### §832.6 待属主拍板
+
+1. 失败后是否提供**「保存为纯文字」的补救按钮**（当前文案只让用户手动复制，
+   而录音刚转出的文字此刻就在界面上 —— 一次点击能救回整段内容）。
+   ⚠ 本轮**未做**：它会改动录音结束后的 UI 布局，属产品口径。
+
+## §833 随手记草稿正文**回填失败**完全无声：草稿看起来完整，AI 总结基于残缺正文
+
+> 承接 §832。§832 修的是「建草稿失败 ⇒ 什么都没留下」；本节是它的**下游姊妹形态**：
+> 草稿**留下了**，正文**看起来也完整**，只有那份「读起来完全正常」的摘要在替
+> 一份残缺正文背书。
+
+### §833.1 ⛔ 缺陷：回填失败的 catch 是**完全空的**
+
+`NoteRecorderRuntime.runStop()` 在兜底转写之后回填正文（`recordingRuntime.ts`）：
+
+```ts
+      const finalText = this.transcript.value.trim()
+      if (draftId && finalText && finalText !== settledText) {
+        try {
+          await this.voiceDraftSink!.update(draftId, finalText)
+        } catch {
+          // 回填失败不该吞掉录音：草稿已经落库了，音频在，只是文字没跟上。
+        }
+      }
+```
+
+| # | 事实 | 证据 |
+|---|---|---|
+| 1 | catch **完全空**：不 console、不写 `this.error`、不产出任何信号 | 上述代码块 |
+| 2 | 回填是「正文被补全」的**唯一**一次机会；不成功就没有第二次 | 调用点唯一 |
+| 3 | `presentVoiceDraft(note, text)` 收到的 `text` **从不写回笔记** —— 全函数只用它做 `if (!text || !text.trim()) return` 这道门槛，正文一律以 `note.content`（库里那份）为准 | `NoteListView.vue:375-471` |
+| 4 | 即时摘要是 `/summarize(noteId)`，读的是**后端那份正文** | 同上 `await notesApi.summarize(noteId)` |
+| 5 | ⇒ 摘要**按 `settledText` 生成**，且它**读起来完全正常** | 由 3+4 推出 |
+
+⇒ 三条**看起来都正常**的东西同时成立：草稿正文停在停止瞬间那版、
+AI 总结漏了最后几句、界面上零提示。
+⇒ ⚠ 这比 §832 **更隐蔽**：§832 是「什么都没留下」（用户知道出事了），
+这里是「留下了一条看起来完整的草稿 + 一份看起来正常的摘要」（用户**无从分辨**）。
+
+⚠ 与诚实性缺陷三形态的对应：§820 是「谎报存在」，§833 是**第三形态的极端版** ——
+「存在但不完整，且完整性被一份正常模样的派生产物（摘要）背书」。
+
+⚠ 触发条件（构造性）：`settledText` 为空（分片一条都没回来）→ 兜底整段转写成功出字
+→ `finalText !== settledText` ⇒ 回填发生 ⇒ `notesStore.updateNote` 写失败
+（磁盘满 / 加密库句柄失效 / 存储权限变更）。
+⚠ 与 §463 注释配套：那条件「几乎永远为假」的判断**对回填不成立** ——
+「一次都没出字」正是兜底转写唯一会跑的场景，而那正是回填唯一会发生的场景
+⇒ **回填路径的失败率 ≈ 兜底转写的成功率**（不是罕见分支）。
+
+### §833.2 落地
+
+| # | 位置 | 改动 |
+|---|---|---|
+| 1 | 新增 `features/notes/voice-draft-update-notice.ts`（纯模块） | `shouldBackfillVoiceDraft()` 判据 + `describeVoiceDraftUpdateFailure()` 文案 + 诊断前缀 |
+| 2 | `recordingRuntime.ts` 回填处 | 判据换成纯函数；catch 补 `console.error` + `this.error.value = describeVoiceDraftUpdateFailure(...)` |
+| 3 | 同上 `voiceDraftSink.create` 的 catch | 补 `console.error`（**不改行为**：该处退回界面路径，用户可见那一段由 §832 的 `draftSaveError` 负责） |
+| 4 | `api/__tests__/stt-error-render-chain.test.mjs` | 白名单加**一个具名纯文案函数** + 按本文件既有先例补**钉死用例**（见 §833.4） |
+
+⚠ 为什么走 `this.error` 而不是 §832 那条独立错误行：`this.error` 在**录音停止后**
+仍由 `NoteListView` 的 `v-else-if="recError"` 单独渲染（`recordErrorText` 直出，
+不过 `apiError`），而失败**发生在 runtime 内部** ⇒ 用 runtime 自己的通道最省事，
+且两条错误行不会互相顶。
+
+⚠ 文案刻意**不说「录音丢了」**：音频确实在草稿里。误报会让用户白白重录一遍
+⇒ 行为判据里专门有一条 `doesNotMatch(/录音.*(丢|没了|不见)/)` 钉死这一点。
+
+### §833.3 判据（16 例全绿）+ 变异（13 个全中）
+
+`frontend/src/features/notes/__tests__/voice-draft-update-notice.test.ts`
+
+* **判据层（行为，纯函数）**：需要回填的三条件 / 无草稿不回填（那是 §832 的面）/
+  **空正文绝不能回填**（会把正文擦成空白，比不回填更坏）/ 两边一样不回填
+  （否则一次无谓写库失败会**假造**一条告警）/ 负控：`undefined`·`null` 不得被当成「有正文」。
+* **文案层（行为，纯函数）**：必须说清是「正文没跟上」且**不得**说成录音丢失 /
+  必须点明那份 AI 总结是按不完整正文生成的 / 必须给出可执行动作 /
+  负控（`undefined`·`[object Object]`·`NaN`）/ 诊断前缀与 §832 可区分。
+* **接线层（源码扫描，⚠ 零牙已标注）**：回填失败必须同时诊断 + 对用户说话 /
+  判据必须走纯函数（不能内联回调用点）/ 与 `EMPTY_RECORDING_NOTICE` 的顺序 /
+  预落库 catch 必须有诊断 / `this.error` 停止后仍被渲染且不过 `apiError` /
+  前提登记（`this.error` 在下次 `start()` 时清空）。
+
+| # | 变异 | 结果 |
+|---|---|---|
+| A | 回填改回**空 catch**（本次缺陷原样） | ✅ 1 红 |
+| A2 | 保留 `(e)` 但掏空 catch 体 | ✅ 1 红 |
+| B / C | 分别删掉 `this.error` 赋值 / `console.error` | ✅ 各 1 红 |
+| D / E / F | 判据分别丢掉「正文为空」/「无草稿」守卫、恒真 | ✅ 各 1 红 |
+| G | 判据去掉归一化（对 `undefined` 抛 TypeError） | ✅ 1 红 |
+| H | 调用点改回内联 `if` | ✅ 1 红 |
+| I | 预落库 catch 去掉诊断 | ✅ 1 红 |
+| J | 文案谎报「录音丢了」 | ✅ 1 红 |
+| K | 文案不提那份 AI 总结 | ✅ 1 红 |
+| L | **从别处提前赋值** `this.error.value = EMPTY_RECORDING_NOTICE` | ✅ 1 红 |
+| M | 停止后不再单独渲染 `recError` | ✅ 1 红 |
+
+⚠ **负控当场抓到一个真问题**（本轮新增经验）：判据第一版是
+`if (!finalText.trim()) return false`，负控用例传 `undefined` 直接
+`TypeError: Cannot read properties of undefined`。判据函数必须是**全函数**
+（对任何输入返回布尔值）⇒ 已加归一化，并留 G 变异钉住。
+
+⚠ **顺序断言指错位置**（§830 同款，本轮第二次）：L 变异第一版是
+`assert.ok(atEmpty > backfillAt)` 而 `atEmpty` 取自字面量 `if (emptyNotice) …`。
+于是「从别处提前赋值 `EMPTY_RECORDING_NOTICE`」这个**真正要拦的形态照样全绿**
+⇒ 已改成**枚举该常量的所有赋值点**逐个比位置。
+⇒ ★ 通用式：**顺序类判据不能锚在「某一处写法的字面量」上**，要锚在「被比较的那个量的全部出现」。
+
+⚠ `assert.doesNotMatch(w, /catch \{/)` 那条**据实标注为冗余**：任何掏空 catch 体的写法
+都必然同时丢掉 `console.error` 与 `this.error` 赋值 ⇒ 前两条断言先拦下
+（变异 A2 实测由「回填失败没有进日志」打红）。它只把「本次修的正是空 catch」
+钉成字面量，**不计入独立守卫**。
+
+### §833.4 ⚠ 撞门禁：`stt-error-render-chain` 的「error 写入点不变量」
+
+我的改动让那道门打红：它要求 `this.error.value = ` 的每一处赋值
+**要么是字面量、要么过 `sttFailureText`**，否则「渲染层就不敢直接渲染」。
+本节写的是 `= describeVoiceDraftUpdateFailure(...)` ⇒ 被判违规。
+
+| 处置 | 理由 |
+|---|---|
+| ✅ 按**该门自己留的先例**扩展 | 它已有具名白名单（`EMPTY_RECORDING_NOTICE`）+ 一条「放行名字必须钉死定义」的配套用例 —— 扩展路径是它自己设计的 |
+| ✅ 只加**一个名字**，不放宽正则 | 其余写入点仍须自证是字面量或过 `sttFailureText` |
+| ✅ 补两条钉死用例 | ① 该函数对 5 种异常形态返回**同一句**成品中文、不夹带技术串；② 该名字在 runtime 里**真的被用上**（悬空放行会红） |
+| ⛔ **没有**做的事 | 没有改那道门的判定语义、没有删它的任何断言、没有为了让自己变绿而放宽匹配 |
+
+变异验证（门侧）：把该函数改成 `String(error?.message)` ⇒ **1 红**；
+抽掉 runtime 里的赋值（白名单悬空）⇒ **1 红**。
+
+⚠ 顺带一处**自己的门先翻车**：`await import()` 写在非 async 的 `it()` 回调里
+⇒ `SyntaxError: Unexpected reserved word`（顶层 import 才合法，与文件顶部既有写法一致）。
+另一处：数引用次数时写成 `/describeVoiceDraftUpdateFailure\(/g`，而 import 是
+多行花括号形式、名字后**不带 `(`** ⇒ 恒得 1 处 ⇒ 只能数**裸名**。
+⇒ ★ 锚点必须与**真实写法**对齐（§127.4 同款，本会话已第 4 次）。
+
+### §833.5 ⛔ 口径与未实测
+
+* 行为判据 16 例 + 门侧 14 例全绿；`typecheck` EXIT=0；
+  **`npm run gates` 45/45 通过**（53.5s）。
+* ⛔ **未实测**：真机上 `notesStore.updateNote` 回填失败的真实发生率
+  （本节结论是**构造性**的：写失败一次现象即成立）。
+* ⛔ **未实测**：用户实际会不会去「打开草稿手动补字」—— 文案里的补救动作
+  目前只依赖用户自己走到草稿详情，没有一键按钮（同 §832.6 第 1 条）。
+
+### §833.6 待属主拍板
+
+1. 是否给回填失败一个**「把当前正文补进草稿」的一键按钮**（此刻完整正文就在
+   `pendingResult.text` 里，一次点击即可补齐；与 §832.6 第 1 条是同一类补救入口）。
+2. `this.error` 这条通道现在的语义已经从「转写错误」扩到「转写 / 落库收尾错误」。
+   要不要在 §832 的 `draftSaveError` 之上做统一（当前是两处各管一段，
+   好处是上下文不同、文案不同；坏处是两套 ref）。
+
+## §834 会议收尾写库失败完全无声，且「状态卡在 recording」会**自动开麦**重录
+
+> 承接 §832/§833。§834 是**同一条因果链的第三段**，而且这次抓到的不是「一条静默」，
+> 是「**两套相反的契约**同时存在于一个仓库里」。
+
+### §834.1 ⛔ D1：收尾三处落库里，唯一没有保护的那一处
+
+会议收尾（`MeetingRecorderRuntime.stop()`）里有三处落库，前两处都被保护过：
+
+| # | 落库 | 保护 | 证据 |
+|---|---|---|---|
+| ① | `saveMeetingAudio` | `try/catch` + 落盘失败**如实写 null** | `recordingRuntime.ts` 音频决策段（§820） |
+| ② | `syncMeetingMetadata` | `runBestEffort` 包着，注释明写「失败**不得冒泡成未处理拒绝**」 | 同文件 best-effort.ts 调用处 |
+| ③ | **`updateMeeting(id, { status: 'completed', … })`** | **无** | 同文件收尾段 |
+
+⇒ ③ 抛错的连锁后果（逐条实测推出）：
+
+1. 异常冒泡出 `stop()` ⇒ `RecordingPill.onStop` 里
+   `await meetingRecorderRuntime.stop()` 直接中断 ⇒
+   **`toast.success('会议录音已结束并保存')` 根本不执行** ⇒ 用户点完停止，界面上什么都没有；
+2. `this.activeMeetingId.value = ''` 排在它**之后** ⇒ runtime 仍认为这场会议在录；
+3. `status: 'completed'` 是全仓**唯一**写这个状态的地方 ⇒ 这场会议**永久**停在 `recording`
+   ⇒ 会议列表一直显示「录音中」（`statusText('recording') = '录音中'`）。
+
+⚠ 与 §832/§833 的区别：那两处失败后草稿/音频还在；这里失败后「**已完成**」这个事实本身
+没被记下来 ⇒ 它是 D2 的输入。
+
+### §834.2 ⛔ D2：同一个 `recording` 状态，仓库里有两套相反的契约
+
+| 位置 | 契约 |
+|---|---|
+| `meetings-live.ts::getRecordingBySession` 注释 | 「杀进程后**提示恢复，不自动重开采集**」 |
+| `useSessionLiveRecord`（**行为**） | 查到遗留行 ⇒ `toast.warning('上次录音未正常结束…（不会自动重开采集）')` |
+| `MeetingDetailView.onMounted`（**行为**） | `const auto = … \|\| m.status === 'recording'` ⇒ **`await onMicToggle()` 静默开麦** |
+
+⇒ 自动开麦那处是**违背仓库自身两处声明的孤例**，且后果最重：
+麦克风授权弹窗 + **`seedSegments(storedSegments)` + `start({resume:true})`**
+⇒ **把新录音混进同一场会议**（上一场与新一场的转写混在一条会议里），用户完全没打算录。
+
+✅ **删掉这条自动分支不影响任何合法启动**，实测依据：
+三个「开始录音」入口（`MeetingListView:190`、`MeetingRecordView:26`、`router-mobile.ts:320`）
+都在 `createMeeting` 之后立刻带 `?record=1` 跳过来；
+进程内续录走 `micOn = wantMic || isRecording`，麦克风还开着时那条分支本就不触发。
+⇒ 该分支只在**进程被杀 / 收尾写库失败**时才触发 —— 恰好是有害的那两种。
+
+### §834.3 落地
+
+| # | 位置 | 改动 |
+|---|---|---|
+| 1 | 新增 `features/meetings/meeting-finalize-persist-notice.ts`（纯模块） | D1 文案 + 诊断前缀 + D2 的共享提示常量 |
+| 2 | `recordingRuntime.ts` 收尾 | `updateMeeting` 包 `try/catch`：失败 ⇒ `console.error` + `this.toast.error(文案)` + `lastFinalizePersistFailed = true`；**收尾继续做完**（清零 + 返回值不被跳过） |
+| 3 | 同上 | `lastFinalizePersistFailed` 提为**公开字段**，在 `stop()` 开头清零 |
+| 4 | `RecordingPill.vue onStop` | 加 `try/catch`；成功 toast **改为条件式**（收尾写库失败时不再宣告「已保存」） |
+| 5 | `MeetingDetailView.vue` | `auto` 只认 `route.query.record === '1'`；`status === 'recording'` 改为 `toast.warning(共享常量)` |
+| 6 | `useSessionLiveRecord.ts` | 原内联提示语改用**同一个常量** ⇒ 两处承诺不再各自漂移 |
+
+⚠ **通道选择**：失败信息走 `this.toast` 而不是 `this.error` ——
+`MeetingRecorderRuntime` **没有** `error` ref（那是 `NoteRecorderRuntime` 的），
+它对外的用户可见通道一直只有 `toast`（见 `onHidden`）。
+⚠ 也**刻意不**写 `sttError`：那是「分片转写失败」的语义，塞进去会让用户以为录音没转出来。
+⚠ 失败只由 runtime toast 一次，pill 只负责**不再宣告成功**（避免两条 toast 互相盖）。
+
+### §834.4 ⚠ 撞了两道既有门：返回值形状被 §825/§826 **逐字**钉住
+
+第一版把标志放进 `stop()` 的返回值（`finalizePersistFailed`），
+结果 `audio-time-base.test.ts` 与 `meeting-audio-native-mode.test.ts` 同时打红：
+它们把签名 `async stop(): Promise<{ audioPath: string; durationMs: number; audioStartsAtMs: number } | null>`
+与那个**单行**返回对象**逐字**钉住了。
+
+| 处置 | 理由 |
+|---|---|
+| ✅ **改我的设计，不动那两道门** | 门是属主的判据，为自己方便去改它 = 改门禁让自己变绿 |
+| ✅ 结论改走**公开字段** `lastFinalizePersistFailed` | 「只有 stop 自己知道那次 updateMeeting 有没有抛」必须外传，而公开字段是唯一不与既有契约打架的通道 |
+| ✅ 顺手把这条约束钉成用例 | 本节判据里断言了签名那一行 ⇒ 以后谁再往返回值加字段，本门会提醒他先看这两道门 |
+
+⇒ ★ **「返回值对象被两道门逐字钉住」是本仓一个真实约束**，值得记：
+新增 stop() 的返回信息前，先看 `audio-time-base` / `meeting-audio-native-mode` 两道门。
+
+### §834.5 判据（18 例全绿）+ 变异（15 个全中）
+
+`frontend/src/features/meetings/__tests__/meeting-finalize-persist-notice.test.ts`
+
+* **文案层（行为）**：说清失败的是「已结束」状态而非音频/文字（并**禁止**说成录音丢失）/
+  说清内容仍在本地 / 给出可行动动作 / 负控 / 诊断前缀与 §820 区分 /
+  共享提示逐字保住「不会自动重开采集」这句既有承诺。
+* **接线层（扫描，⚠ 零牙已标注）**：写 `completed` 那次必须被 try 包住（以「最后一个
+  `try {`」为界，检查它与该字段之间无 catch）/ 失败必须诊断 + toast /
+  **清零点必须排在该 catch 之后** / 结论必须外传且不得动签名 / 每次 stop 先清零 /
+  pill 不得无条件宣告已保存且必须有 try / 详情页 auto 只能是 `record=1` /
+  遗留状态必须提示且逐字复用共享常量 / 前提登记（三个启动入口都带 `record=1`）。
+
+| # | 变异 | 结果 |
+|---|---|---|
+| A / A2 / A3 | 去掉 try / 去掉 toast / 去掉 console.error | ✅ 各 1 红 |
+| A4 | 把 `activeMeetingId` 清零塞回 try 内部 | ✅ 1 红 |
+| B | stop() 开头不再清零标记 | ✅ 1 红 |
+| C / C2 | 公开字段退回 private / 动 stop() 签名 | ✅ 各 1 红 |
+| D / D2 | pill 恢复无条件成功 toast / 去掉 try | ✅ 各 1 红 |
+| E / E2 | 详情页恢复「状态即自动开麦」/ 遗留状态只开麦不提示 | ✅ 各 1 红 |
+| F | 会话侧把提示语改回内联字面量 | ✅ 1 红 |
+| G / H | 文案谎报「录音丢了」/ 不说内容还在本地 | ✅ 各 1 红 |
+| I | 共享常量丢掉「不会自动重开采集」 | ✅ 1 红 |
+
+⚠ **本节判据自己翻车三次，全部据实记**：
+1. 「成功提示是否无条件」写成「这一行不存在」⇒ **修复本身让判据变红**（那一行只是被挪进
+   `if` 里）⇒ 改成拦「stop() 之后紧接着播成功」那种写法。
+2. 窗口宽度 400 字符没盖住 `await updateMeeting(` —— 中间隔着 §820 那四行中文注释
+   （实测 246 字符）⇒ 改成以「最后一个 `try {`」为界，不靠固定宽度。
+3. ⭐ **在自己的注释上翻车**：判据扫 `catch` 时，命中的是我注释里写的
+   「没有 try/catch」这几个字 ⇒ 与本会话已踩 5 次的坑同源。
+   ⇒ 本文件引入 `codeOnly()`：**先剥整行注释再判**。边界据实标注 —— 它只挡整行注释，
+   行尾注释里的标识符仍可能命中（要彻底覆盖得写词法器，成本与收益不相称）。
+
+### §834.6 ⛔ 口径与未实测
+
+* 判据 18 例 + 变异 15 个；`typecheck` EXIT=0；**`npm run gates` 45/45 通过**（53.6s）。
+* ⛔ **未实测**：真机上 `updateMeeting` 写失败的真实发生率（本节结论是**构造性**的：
+  写失败一次，现象即成立）。与 §832 同源的风险：移动端 WebView 存储配额/句柄失效。
+* ⛔ **未实测**：用户重开一场卡在 `recording` 的会议时，看到新的 warning 提示后的行为。
+  D2 的修复把「静默开麦」变成「提示后由用户自己决定」，符合仓库既有两处声明的契约，
+  但**是否该再加一个显式「继续上次录音」按钮**属产品口径，本节未做。
+
+### §834.7 待属主拍板
+
+1. 遗留录音要不要给一个**显式的「继续上次录音」按钮**（当前是提示 + 让用户自己点麦克风，
+   而麦克风点一下会 `seedSegments` 续录 —— 语义上等价，但用户看不出「续录」这两个字）。
+2. 写库失败要不要**自动重试一次**（本节未做：盲重试可能掩盖真实故障；
+   代价是「重试也失败」时用户仍只能手动处理）。
+
+## §835 会议详情页两次主动编辑：**面板先关**与**半改半不改**，都完全无声
+
+> 承接 §832/§833/§834。同族第四轮，但这次抓到的不是「一件事失败了」，
+> 而是「**失败与成功在界面上不可区分**」与「**只成功了一半**」。
+
+### §835.1 ⛔ D1：元信息保存 —— 面板先关，写库后才知道成没成
+
+`MeetingSettingsSheet.onSave()` 此前是：
+
+```ts
+  emit('save', { title: …, topic: …, location: …, participants: …, tags: …, summarySkill: … })
+  emit('close')
+```
+
+| # | 事实 | 证据 |
+|---|---|---|
+| 1 | Vue 的 `emit` 是**同步**的；父组件的 `onMetaSave` 是 `async` 且**没有任何人 await 它** | `MeetingSettingsSheet.vue` / `MeetingDetailView.vue` |
+| 2 | ⇒ 面板在写库结果出来**之前**就关了，`form` 随之销毁 | 同上 |
+| 3 | 父侧 `await updateMeeting(meetingId.value, data)` **没有 try/catch** | `MeetingDetailView.vue` `onMetaSave` |
+| 4 | 失败时 `markListDirty` 与 `load()` 一并被跳过 | 同上 |
+
+⇒ 写失败 ⇒ 一个未处理的 rejection + **零反馈** + **用户刚填的标题/主题/地点/
+参与人/标签已经从屏幕上消失**。
+⇒ ⚠ **失败与成功在界面上完全不可区分**：面板关了 = 看起来存好了。
+这比 §834 更主动 —— §820「谎报存在」只是话没说清，这里**连「保存」这个动作都替你做了**。
+
+⚠ 与笔记侧的对照：`NoteListView.onMetaSave` 是「写库 → 再 `metaOpen = false`」，
+**先写后关** ⇒ 这条链本来就是对的，是会议侧单方面偏离。
+
+### §835.2 ⛔ D2：说话人改名 —— 半改半不改，且完全无声
+
+`MeetingRecorderRuntime.labelSpeaker()` 此前是：
+
+```ts
+    if (profile) await upsertVoiceprintLabel({ … })          // ← 失败 ⇒ 直接跳过整个 for
+    for (const [segId, pid] of this.segmentProfiles) {
+      if (pid !== profileId) continue
+      await updateSegmentSpeaker(segId, displayName)          // ← 失败 ⇒ 跳出循环
+      …
+    }
+```
+
+| # | 事实 | 证据 |
+|---|---|---|
+| 1 | 任一段写失败 ⇒ **后面几段一个都没改**，而**前面几段已经改了**（无事务，也不会回滚） | 上面的 for |
+| 2 | 声纹标签那一处写失败 ⇒ **整段循环被跳过** ⇒ 一段都没改 | 同上 |
+| 3 | `onSpeakerLabel` 只有一行 `await labelSpeaker(...)`，**没有 try/catch** | `MeetingDetailView.vue` |
+| 4 | 改名入口被 `speaker-rename-recording-gate` 限定在**录音中**（`micOn` 内）⇒ 这段循环是高频路径 | 既有门 |
+
+⇒ 用户把「说话人 3」改成「张伟」，正文里**同一个人一会儿新名一会儿旧名**，
+且界面上一个字都不说。
+⚠ 这比 §832 的「什么都没发生」更难被发现：用户看到「有东西变了」，
+只会以为改完了。
+
+### §835.3 落地
+
+| # | 位置 | 改动 |
+|---|---|---|
+| 1 | 新增 `features/meetings/meeting-edit-failure-notice.ts` | `applySpeakerLabelToSegments()`（注入写入，可测）+ `describeSpeakerRenameFailure()` + `describeMeetingMetaSaveFailure()` + 两个诊断前缀 |
+| 2 | `MeetingSettingsSheet.onSave()` | **删掉 `emit('close')`** ⇒ 关闭权交给父组件 |
+| 3 | `MeetingDetailView.onMetaSave` | `try/catch`；成功才 `showSettings = false`；失败 `toast.error` 且**保持面板打开**（输入还在，可直接重试） |
+| 4 | 同上 `onSpeakerLabel` | `try/catch` + 依 `describeSpeakerRenameFailure(outcome)` 决定提示 |
+| 5 | `recordingRuntime.labelSpeaker` | 改走 `applySpeakerLabelToSegments`；声纹标签单独兜住；**返回落点统计**（`renamed`/`failed`/`profileFailed`），不再向上抛 |
+
+⚠ **「跳过失败继续」而不是「遇错即抛」是有代价的，代价据实写进了注释**：
+抛错并不会带来一致性（已写成功的那几段不会回滚），只会丢掉「哪几段没改成」这个信息
+⇒ 与其假装原子，不如把真实结果统计出来交给用户。
+⚠ `labelSpeaker` 的**返回值类型变了**（`void` → `SpeakerLabelOutcome`）。
+全仓唯一调用点是 `useMeetingRecorder` 的透传 + `MeetingDetailView`，后者此前忽略返回值
+⇒ 无人受影响；既有门 `speaker-rename-recording-gate` 钉的是「入口唯一」，不受影响。
+
+### §835.4 判据（20 例全绿）+ 变异（15 个全中）
+
+`frontend/src/features/meetings/__tests__/meeting-edit-failure-notice.test.ts`
+
+* **逐段回填（行为，注入写入）**：只处理 profileId 匹配的段 /
+  **中间一段失败其余必须继续**（本次缺陷的核心）/ 全失败不得说成成功 /
+  负控：写入函数**同步**抛错也只影响那一段 / 空落点集是合法输入。
+* **文案（行为）**：全成功**不提示** / 部分失败必须带**具体数量**并说清刷新后仍是旧名 /
+  全失败与部分失败必须是两句不同的话 / 声纹失败要点明「下次不会被记住」 /
+  必须说清「录音仍在继续」/ 负控（9 种计数组合不得产出 `undefined`·`NaN`）/
+  D1 必须说清面板还开着且输入还在。
+* **接线（扫描，⚠ 零牙已标注）**：sheet 不许自己关面板 / 父侧必须有 try 且**成功才关** /
+  改名入口必须有 try + 纯函数 + 告警挂在守卫上 / runtime 必须走可测纯函数且声纹单独兜 /
+  前提登记（改名入口仍唯一）。
+
+| # | 变异 | 结果 |
+|---|---|---|
+| A2 / A3 / A4 | 纯模块：跳出循环 / 不过滤 profileId / 不记 failedIds | ✅ 各 1 红 |
+| B | 声纹写入不再单独兜住 | ✅ 1 红 |
+| C | runtime 自己写循环（不走可测纯函数） | ✅ 1 红 |
+| D | sheet 又自己 `emit('close')` | ✅ 1 红 |
+| E / E2 | 去掉 try/catch / 失败时不 return | ✅ 各 1 红 |
+| F / G | 改名入口去掉 try / 告警没有守卫 | ✅ 各 1 红 |
+| H / I / J / K / L | 文案：两种形态同句 / 不说旧名 / 不说录音继续 / 不说不会被记住 / 成功也提示 | ✅ 各 1 红 |
+| M | D1 文案不说面板还开着 | ✅ 1 红 |
+
+⚠ **本节 15 个变异里有 5 个首版 0 红，全部是判据自身的错**，据实记：
+
+1. ⭐⭐⭐⭐ **固定宽度窗口会串到相邻函数**。变异 E/F 把 `try {` 换成 `if (1) {`，
+   本该打红，却因为窗口尾部的**下一个函数**（`onShareTodo`）自带 `try {` 而全绿
+   ⇒ 已改成 `fnBody()`：**以下一个函数声明为界**，不再靠固定字符数。
+   （同族：§830「前提登记类断言指错位置」。）
+2. ⭐⭐⭐⭐ **「这一行存在」不等于「它被守卫着」**。只写
+   `assert.match(/toast\.warning\(text\)/)` 会被 `if (false) toast.warning(text)`
+   这种死写法骗过 ⇒ 断言改成要求**守卫本身**（`if (text) { toast.warning(text)`）。
+   （同族：§834「『无条件』不等于『这一行不存在』」，两次都是同一根因。）
+3. ⭐⭐⭐ **并集式正则里有一条太松会废掉整条断言**。`/保持打开|还在/` 在删掉前半句后，
+   被后半句「你刚填的内容**还在**输入框里」命中 ⇒ 0 红 ⇒ 只认「面板」这个词。
+4. ⭐⭐ **变异本身没造出目标形态**：A2 把 `if (failed > 0) return` 放在
+   `renamed += 1` 之后 ⇒ 抛错路径根本走不到 ⇒ 语义等价 ⇒ 必须把提前 return
+   放在**循环体开头**才造得出「后面几段被跳过」。
+5. ⭐⭐ 两处变异锚点缩进写错（锚点未命中）⇒ 记一笔：**锚点必须与真实写法逐字对齐**
+   （本会话已第 5 次）。
+
+### §835.5 ⛔ 口径与未实测
+
+* 判据 20 例 + 变异 15 个；`typecheck` EXIT=0；**`npm run gates` 45/45 通过**（53.0s）。
+* ⛔ **未实测**：真机上 `updateSegmentSpeaker` / `updateMeeting` 写失败的真实发生率
+  （本节结论是**构造性**的：写失败一次现象即成立）。
+* ⛔ **未实测**：改名「半成功」在真机上的可观测频率。⚠ 既有门
+  `speaker-rename-recording-gate` 已登记一个**相关但不同**的缺口：
+  改名只改 `this.segmentProfiles` 里的段 ⇒ **续录恢复的历史段改不了**
+  （§276.6，本轮未做，属数据结构缺口）。
+* ✅ 顺带登记（**未改**）：`MeetingMetaSheet.vue` 全仓**零引用** ——
+  唯一提到它的只有 `BottomSheet.vue` 的一句文档注释 ⇒ 与简报里
+  「26 个活着但零测试引用的导出」是同一类登记项。
+
+### §835.6 待属主拍板
+
+1. 元信息面板在**失败保持打开**之后，要不要给一个「复制我填的内容」兜底
+   （仍可能遇到用户此时切走页面、KeepAlive 把 form 丢掉的情形）。
+2. 说话人改名**续录历史段**（§276.6）要不要在本轮一并补数据结构
+   —— 补法是给分段加 `profileId`，属于存储形态变更，单独拍。
+3. `MeetingMetaSheet.vue` 这个零引用组件：删除，还是接线保留（见 §835.5 末行）。
+
+## §836 追加一句话与实时字幕入库：**静默消失**与 `void` 吞掉的 rejection
+
+> 承接 §835。§835 修的是「更正一段」这条链；本节是**同一次改动留下的另一半**。
+
+### §836.1 ⛔ D1：§131 一次加了**两条**写入路径，只保护了一条
+
+| # | 事实 | 证据 |
+|---|---|---|
+| 1 | §131 一次加了「**更正**一段已有转写」（`onEditSegment`）与「**追加**一句新的话」（`onAppendUtterance`） | 设计文档 §131 |
+| 2 | ① 当时就有 `try/catch` + `toast.error`；② **完全没有** | `MeetingDetailView.vue` |
+| 3 | ② 上有**三次串行写库**：`rt.appendText`（= `saveSegment` + `updateTranscript`）／补落库分支的 `saveSegment` + `updateTranscript` + `refreshRelated` | 同上 |
+
+⇒ 静默失败时，用户面对的是三种**完全不同**的处境：
+
+| 处境 | 触发点 | 用户看到的 |
+|---|---|---|
+| **A 什么都没存** | `saveSegment` 抛错 | 他打的那句话**凭空消失** |
+| **B 只存了一半** | `saveSegment` 成功、`updateTranscript` 抛错 | 分段表里有这一句，会议的 `transcript` 列**没有** ⇒ 界面看得见、AI 总结 / 相关推荐 / 精校**读不到** ⇒ **两处真相不一致** |
+| **C 全存下了，只是收尾没做完** | `refreshRelated` 抛错 | 用户以为失败 ⇒ **重复操作** ⇒ 得到重复分段 |
+
+⚠ 若给三者同一句「保存失败，请重试」，A 会被正确对待，B 和 C 都会被**教错动作**：
+B 的用户重说一句 ⇒ 多一条重复分段；C 的用户重说一句 ⇒ 同上。
+
+### §836.2 ⛔ D2：实时字幕的 commit 用 `void` 吞掉 rejection
+
+`MeetingRecorderRuntime.startLiveCaption()` 里此前是：
+
+```ts
+          commit: (text) => { void this.appendText(text) },
+```
+
+⚠ `void` 不处理 rejection ⇒ `appendText` 抛错时**什么都不发生**：
+没有 console、没有提示、没有分段。
+⇒ 而这条路径是**系统语音识别**（Web Speech API / `webkitSpeechRecognition`）
+在录的**每一句话** ⇒ 整场会议可能**一句都没存进去**，
+而用户看到的实时字幕**一直正常滚动**。
+
+⇒ 这是「谎报存在」的第四个实例：**屏幕上正在滚的那份内容根本没进库**。
+
+### §836.3 落地
+
+| # | 位置 | 改动 |
+|---|---|---|
+| 1 | 新增 `features/meetings/meeting-append-notice.ts` | `describeAppendFailure(stage)`（四个阶段各一句）+ `LIVE_CAPTION_PERSIST_FAIL` + 两个诊断前缀 |
+| 2 | `MeetingDetailView.onAppendUtterance` | 整段流程进 `try/catch`；**每个写库点之前先记 `appendStage`**；失败按 stage 出文案 |
+| 3 | `recordingRuntime.startLiveCaption` 的 `commit` | `void …` → `void …catch(…)`：`console.warn` + 写 `sttError` |
+| 4 | 同上 | ⚠ 刻意用 `sttError` 而不是 `toast`：字幕是**连续**的，toast 会连续弹；`sttError` 是页面上一条稳定错误行，录音中就能看到 |
+
+⚠ **`appendStage` 的标记位置是有语义的**：`'segment'` 必须标在 `await saveSegment()` **之前**。
+若标在之后 ⇒ `saveSegment` 抛错时用户会收到「已存一半」那句 ⇒ 他不会重说 ⇒ 那句话真的丢了。
+（这条有独立变异 F 钉住，见下。）
+
+⚠ ⚠ **`onAppendUtterance` 整段流程保持在同一个函数体里，不拆 helper**：
+§836 第一版把流程拆成 `appendUtteranceInner`，结果既有门
+`segment-edit-proofread`（用 `fnBody(…, 'onAppendUtterance')` 断言
+「`if (!saved)` 落库分支仍在这个函数里」）**当场失明**。
+⇒ 已改回内联，并把这条约束钉成用例 + 结构变异 O。
+
+### §836.4 判据（14 例全绿）+ 变异（16 个全中）
+
+`frontend/src/features/meetings/__tests__/meeting-append-notice.test.ts`
+
+* **文案（行为）**：「什么都没存」与「只存了一半」必须是两句不同的话（核心）/
+  半存必须说清「已加进分段」并指向受影响的消费者（总结·精校）/
+  没存必须给出「再说一次」/ 收尾失败不得说成失败 / 未知 stage 仍给一句人话 /
+  负控（4 阶段 × 5 异常形态）/ 两个诊断前缀可区分 /
+  字幕文案必须说清「字幕还在显示、没存进去」且**不得**谎报录音坏了。
+* **接线（扫描，⚠ 零牙已标注）**：整条追加流程在 try 里 + 失败出声 /
+  **三个写库点各自记 stage** / **stage 标记的顺序**（segment → saveSegment →
+  transcript）/ 既有门依赖的 `if (!saved)` + `saveSegment` 都仍在同一函数体内 /
+  字幕 commit 不得回到 `void` 且必须写可见错误行。
+
+| # | 变异 | 结果 |
+|---|---|---|
+| A / A2 / B | 去掉 try / 去掉日志 / 不用纯函数 | ✅ 各 1 红 |
+| C / D / E | 三个写库点分别不记 stage | ✅ 各 1 红 |
+| F | 把 `'segment'` 标记挪到 `saveSegment` **之后** | ✅ 1 红 |
+| G / H / I / J | 文案：两处境同句 / 不说已存 / 不给动作 / 收尾失败说成失败 | ✅ 各 1 红 |
+| K | 未知 stage 返回空串 | ✅ 1 红 |
+| L | 字幕文案谎报「录音已中断」 | ✅ 1 红 |
+| M / N | 字幕入库失败不写 `sttError` / commit 改回 `void` | ✅ 各 1 红 |
+| O | **把落库分支整块搬进新函数**（模拟我第一版的真实改动） | ✅ 1 红 |
+
+⚠ 本节只有 **1 个**变异首版 0 红，但它值得单记：
+「只钉 `if (!saved)` 这一行存在」在**整个分支被搬走、原处只留同名空壳**时仍然全绿
+⇒ 已加硬为「`if (!saved)` **与** `await saveSegment(` 都要在体内」，
+并用一次**结构变异**（真的把块搬走）验证它有牙。
+
+### §836.5 ⛔ 口径与未实测
+
+* 判据 14 例 + 变异 16 个；`typecheck` EXIT=0；**`npm run gates` 45/45 通过**（53.3s）。
+* ⛔ **未实测**：真机上 `saveSegment` / `updateTranscript` / `refreshRelated` 写失败的
+  真实发生率（本节结论是**构造性**的）。⛔ 字幕入库失败的频率完全未测 ——
+  它取决于系统语音识别可用率，而那条在 §823.5bis 已登记为待真机。
+* ⚠ 登记未做：`transcript` 列与分段表「两处真相不一致」的**修复入口**
+  （例如「重建全文」按钮）本轮未做 —— 属产品口径。
+
+### §836.6 待属主拍板
+
+1. 「只存了一半」之后要不要给一个**「重建会议全文」的一键修复**（数据都在，只是一次列没同步）。
+2. 实时字幕入库失败是否要从 `sttError` 升为 toast（当前选择不升，理由见 §836.3 第 4 行）。
+3. §836.5 末行：`transcript` 与分段表的一致性要不要做常态守卫（而不是只在失败时提示）。
+
+## §837 会议详情页读取失败 = **永久骨架屏**；标题富化失败会**挡住自动开录**
+
+> 承接 §836。仍是「用户做了一件事 / 页面要走一步，失败没有任何信号」这一族，
+> 但这次的症状形态是**页面挂住**，不是「东西没存下来」。
+
+### §837.1 ⛔ D1：`load()` 一抛错，`loading` 永远回不到 false
+
+```ts
+async function load() {
+  loading.value = true
+  const data = await getMeetingWithSegments(meetingId.value)   // ← 抛错
+  meeting.value = data?.meeting ?? null
+  storedSegments.value = data?.segments ?? []
+  loading.value = false                                        // ← 永远到不了
+  …
+}
+```
+
+| # | 后果 | 证据 |
+|---|---|---|
+| 1 | `loading` 永久为 true ⇒ 模板第一层 `<div v-if="loading"><Skeleton/></div>` **永久骨架屏**，整页无内容 | `MeetingDetailView.vue` 模板第 3 行 |
+| 2 | 一个未处理的 rejection | 同上 |
+| 3 | **零反馈**：没有错误行、没有重试入口，用户只看到「一直在加载」 | 模板里只有 `sttError` 一处 `class="err"` |
+| 4 | `load()` 同时是**首屏加载**与**每次动作后的刷新**（`onMetaSave`、停止录音、`useMeetingStudio(meeting, load)`…）⇒ 首屏那次失败就是致命的 | 各调用点 |
+
+⚠ **这不是罕见分支**：`local-db.ts` 明确会在两种常见情形抛
+`LocalDB 未初始化：连接不存在` / `LocalDB 未初始化，请先调用 init(dbSecret)`
+—— 锁屏后回来、应用启动早于 `init(dbSecret)`、切换工作区/账号导致密钥不可用。
+**这是有明确预期的状态，不是「数据库坏了」。**
+
+⇒ ⭐ **同一个仓库里两套契约**：同一次失败，`MeetingListView` 判为
+`dbNotReady = true` ⇒ 渲染 `DbLockedState`（带「重新登录」动作），
+而详情页把它当**永久加载中**。本节把详情页对齐到列表页那套语义。
+
+⚠ ⚠ **刻意不做的那件事**：「catch 里写 `loading.value = false`」是最容易想到的改法，
+而它是**错的** —— `meeting` 仍是 null ⇒ 模板第二层
+`<EmptyState v-else-if="!meeting">` 会显示**「会议不存在」**
+⇒ 把一次**读取失败**谎报成**会议没了**（从「永久骨架屏」换成「谎报」）。
+
+### §837.2 ⛔ D2：标题/地点富化失败 ⇒ **麦克风根本不会打开**
+
+`onMounted` 的顺序是：
+
+```ts
+  await load()
+  const m = meeting.value
+  if (!m) return
+  await captureContext(m)                     // ← 抛错 ⇒ 下面全部不执行
+  const auto = route.query.record === '1'     // （§834/D2 之后只认这一条）
+  if (auto) await onMicToggle()               // ⇒ 用户点「开始录音」后麦克风不开
+```
+
+⇒ `captureContext` 里 `await updateMeeting(m.id, { location: loc, title })` 抛错
+⇒ **用户从会议列表点「开始录音」跳过来，麦克风一个都不会打开**，且零反馈。
+⚠ 触发面不小：新建会议的 `title` 是空的 ⇒ 每次都会走到这次写入。
+⚠ 已核实前提：`captureDeviceLocation` **永不抛错**（失败一律 `resolve(null)`，
+见 `meeting-meta.ts`）⇒ 这条路上唯一的抛错源就是 `updateMeeting`。
+
+### §837.3 落地
+
+| # | 位置 | 改动 |
+|---|---|---|
+| 1 | 新增 `features/meetings/meeting-load-notice.ts` | `isLocalDbUnavailable()`（与列表页同一判据）+ `describeMeetingLoadFailure()`（两种失败两句文案）+ 诊断前缀 |
+| 2 | `MeetingDetailView.load()` | `try/catch/finally`；`loading = false` **移进 finally**；失败时**不清空**已显示的会议；成功后清 `loadError` |
+| 3 | 模板 | 新增 `v-else-if="loadError && !meeting"` 整页错误态（带「重试」），位置**排在 `!meeting` 之前** |
+| 4 | 模板 | 新增行内横幅 `<p v-if="loadError" class="err" role="alert">` |
+| 5 | `captureContext` | 整体 try/catch + `console.warn`；**刻意不提示用户**（会议照样能开、能录、能精校，丢的只是自动标题/地点） |
+
+⚠ **两档错误契约**沿用仓库既有那道 `list-error-failpath` 门（它管的是下拉刷新视图，
+本视图不用下拉刷新故不在其登记表内，但契约同源）：
+**无行可显才接管整页（EmptyState），已有内容时降级为非破坏性横幅。**
+⇒ 所以整页分支的条件带 `&& !meeting`，行内横幅则管「已有会议时刷新失败」。
+
+### §837.4 判据（17 例全绿）+ 变异（13 个全中）
+
+`frontend/src/features/meetings/__tests__/meeting-load-notice.test.ts`
+
+* **判定（行为）**：认得出本地库未就绪 / 其它失败不得误判（否则用户被白送去重登）/
+  负控：`null`·`undefined`·非 Error 都返回布尔值 /
+  **前提登记：与列表页保持同一判据**（两处分叉会出现「列表能进、详情进不去」）。
+* **文案（行为）**：两种失败必须是两句不同的话（重登 vs 重试）/
+  本地库不可用必须说清「数据没丢」（否则用户以为要重录）/
+  **不得谎报「会议不存在」** / 负控 / 诊断前缀与写入类区分。
+* **接线（扫描，⚠ 零牙已标注）**：`loading` 归零必须在 finally /
+  失败不得清空已显示会议 / 错误分支必须排在「会议不存在」之前 /
+  整页接管必须带「无行」守卫 + 必须有行内横幅 / 成功后清错误 /
+  D2：`captureContext` 必须有兜住 + onMounted 顺序前提登记 +
+  **前提登记：`captureDeviceLocation` 永不抛错**（否则 D2 的前提失效）。
+
+| # | 变异 | 结果 |
+|---|---|---|
+| A | `loading` 归零挪回 `await` 之后（原形态） | ✅ 1 红 |
+| B | finally 里不再归零 | ✅ 1 红 |
+| C | 错误分支排到「会议不存在」之后 | ✅ 1 红 |
+| D / D2 | catch 里清空 meeting / 整页接管无「无行」守卫 | ✅ 各 1 红 |
+| E | 删掉行内横幅 | ✅ 1 红 |
+| F | 成功后不清错误 | ✅ 1 红 |
+| G / H / H2 | 文案：谎报会议不存在 / 不让重登 / 两种失败同句 | ✅ 各 1 红 |
+| I / J | 本地库判据失效 / 对 `null` 抛错 | ✅ 各 1 红 |
+| K / L | `captureContext` 不兜住 / 地理定位改成会 reject | ✅ 各 1 红 |
+
+⚠ 本节 1 个变异首版 0 红，是**正向对照自身写错**：
+`finally 里没有 loading = false` 那条断言取的是「`finally {` 起 200 字符」，
+而这 200 字符**越过了块尾**，吃到函数后面那一行 `loading.value = false`
+⇒ 变异「删掉 finally 里那行」照样全绿。
+⇒ 已改成以 `finally` 块的**闭合**为界。
+⇒ ⭐ 这是本会话**第 4 次**「扫描窗口必须以语法边界为界」（§835 相邻函数、
+§836 块被搬走、§837 块尾越界）—— 三次形态不同，根因同一：
+**锚点没有覆盖住真正要比较的那个集合。**
+
+### §837.5 ⛔ 口径与未实测
+
+* 判据 17 例 + 变异 13 个；`typecheck` EXIT=0；**`npm run gates` 45/45 通过**（55.2s）。
+* ⛔ **未实测**：真机上 `getMeetingWithSegments` 抛错的真实发生率。
+  ⚠ 但 D1 的**前提侧**已实测：`local-db.ts` 的两处 `LocalDB 未初始化` 抛错是
+  源码事实（`local-db.ts:859/881`），而锁屏 / 启动顺序属平台既有行为。
+* ⛔ **未实测**：本地库未就绪时，用户走「重新登录」这条路是否真的能回来
+  （列表页那条路已存在，但本节把它复用到详情页的路径**未经真机走通**）。
+
+### §837.6 待属主拍板
+
+1. 「本地库未就绪」在详情页要不要直接复用 `DbLockedState` 组件（列表页用的那个，
+   带重新登录动作），而不是本页自绘的 `EmptyState` —— 复用会更一致，但会让本页多一个依赖。
+2. `captureContext` 富化失败**刻意不提示用户**（本轮选择）。要不要在标题为空时
+   给一条极轻的提示（当前是「标题留空，用户自己填」）。
+
+## §838 五个「对已有记录的动作」失败零反馈；两处 `catch { /* ok */ }`；笔记删除的顺序
+
+> 承接 §837。本轮把范围从「页面读不到」扩到「用户对已有记录做了动作」。
+
+### §838.1 ⛔ D1：五个处理器都没有 try/catch
+
+| 入口 | 处理器 | 写库 | 失败时的界面 |
+|---|---|---|---|
+| 会议列表（滑动操作） | `onArchive` / `onRestore` / `onDelete` | `archiveMeeting` / `unarchiveMeeting` / `deleteMeeting` | 列表**不变**（变更刻意排在 await 之后，这点是对的）+ **零提示** |
+| 会议详情菜单 | `use-meeting-studio` 的 `archive` / `restore` / `delete` 分支 | 同上 | 裸 await + **无条件**的 `toast.success('已归档')`（它排在 await 之后，所以失败时不出现 ⇒ 用户只看到菜单点了没反应） |
+| 笔记元信息面板 | `onMetaSave` / `onMetaDelete` | `updateNote` / `deleteNote` | 面板**保持打开**（正确）+ **零提示** |
+| 笔记详情页 | `onDelete` | `deleteNote` | 笔记仍在、界面不动 + **零提示** |
+
+⚠ 与 §835/§836/§837 同族，但这一组的共同点是：
+**这些操作都排在 await 之后才改界面（没有撒谎），却没有任何一句说明失败**
+⇒ 用户只能自己猜「是不是我点歪了」。
+
+### §838.2 ⛔ D2：两处 `catch { /* ok */ }` —— 注释与事实不符
+
+会议删除后的音频清理，两处都是：
+
+```ts
+      await deleteMeeting(id)
+      try { await deleteMeetingAudio(m.id) } catch { /* ok */ }
+```
+
+⇒ `deleteMeetingAudio` 写的是 **IndexedDB**（`openDB()` + 事务，`onerror` 会 reject）
+⇒ 失败时音频 blob **永久残留在 IndexedDB 里**，无任何痕迹 ⇒ **静默的存储泄漏**。
+⇒ 而注释写着「ok」——**注释声称没关系，事实是有关系**（§821 记过同款「注释与事实不符」）。
+
+⚠ 残留的后果与 §820/§832 同源：长音频正是最容易触顶的场景，
+⇒ 孤儿音频累积 ⇒ 配额耗尽 ⇒ 影响后续所有录音。**且没有 id 重用风险**（uuid），
+所以它不会造成「错音频」，纯粹是空间泄漏 —— 这一点决定了它不是紧急项，
+但「注释说 ok」使它更难被发现。
+
+### §838.3 ⛔ D3：`deleteNote` 的顺序 —— 文件清理排在软删**之前**
+
+```ts
+  if (existing && (existing.bodyPath || existing.mediaJson)) {
+    await deleteNoteFiles(id, existing.createdAt)      // ← 排在写之前
+  }
+  await localDB.run('UPDATE local_notes SET deleted_at …')
+  await vectorIndex.remove(id)
+```
+
+⇒ 文件删不掉（原生 `rmdir` 失败 / 权限）⇒ **连软删都没发生**
+⇒ 用户点删除，笔记原封不动，且（调用方此前无 catch）**零提示**。
+
+⚠⚠ **同文件已写下相反的原则**：媒体替换那处（`updateNote` 里 `deleteNoteBodyFile` 上方）
+明写「**清理排在写成功之后**……删除永远不能排在写之前 —— 写失败就没有回滚了」。
+⇒ 同一个文件里两条删除路径遵守了**相反**的顺序 ⇒ 这一条是**遗漏，不是取舍**。
+
+### §838.4 落地
+
+| # | 位置 | 改动 |
+|---|---|---|
+| 1 | 新增 `src/utils/action-failure-notice.ts`（跨特性纯模块，`utils/` 里本就是「特性无关的纯函数」） | `describeRecordActionFailure(action, {mediaCleaned})` + 两个诊断前缀 |
+| 2 | 会议列表 / 会议菜单 / 笔记元信息 / 笔记详情 | 五处处理器（或菜单三处分支）各加 `try/catch` + `console.error` + `toast.error`，**失败即 return**（界面不变） |
+| 3 | 同上，两处音频清理 | `catch { /* ok */ }` ⇒ 独立 `catch`，按「主体已删、媒体残留」出文案（并明说**不必重试**） |
+| 4 | `notes-persist.deleteNote` | **软删先行**，文件与向量清理各自兜住；返回 `{ mediaCleaned }` |
+| 5 | `NoteListView` / `NoteDetailView` / `MeetingListView` | 各引入 `useToast`（这三个文件此前都没有 toast） |
+
+⚠ **代价据实写进注释**：改顺序后，「文件删不掉」从「删除没生效」变成「孤儿文件残留」。
+这是**有意的取舍** —— 用户意图优先，且与会议侧、会议菜单侧的顺序一致；
+残留有诊断（`RECORD_MEDIA_CLEANUP_FAIL_TAG`）且被本节文案显式告知。
+⚠ `deleteNote` 返回类型从 `Promise<void>` 变成 `Promise<{ mediaCleaned: boolean }>`
+（向后兼容：既有门 `notes-workspace-partition` 钉的是「调用必须传 workspaceId」，不受影响）。
+
+### §838.5 判据（19 例全绿）+ 变异（18 个全中）
+
+`frontend/src/utils/__tests__/action-failure-notice.test.ts`
+
+* **文案（行为）**：每个动作都必须说清「东西还在不在」/ 都必须给可行动作 /
+  「媒体残留」与「删除失败」必须是两句不同的话且前者明说**不必重试** /
+  元信息失败必须说清面板还开着 / 未知动作仍给一句人话 / 负控（5 动作 × 5 异常形态，
+  含把 `SQLITE_FULL` 这类技术串挡在门外）/ 两个诊断前缀可区分。
+* **接线（扫描，⚠ 零牙已标注）**：五个处理器逐个 try/catch + 日志 + 纯函数文案 /
+  菜单侧归档恢复也兜住 / **不得再有「吞掉失败」的 catch** /
+  音频清理失败必须按「残留」出文案 / `deleteNote` 必须先软删再清理（顺序）/
+  文件与向量清理各自兜住且 catch 体内有诊断 /
+  **前提登记：那句「删除永远不能排在写之前」的注释仍在**（否则请重新判断 D3 的正当性）。
+
+| # | 变异 | 结果 |
+|---|---|---|
+| A / A2 / A3 | 列表归档·恢复·删除分别去掉 catch 或日志 | ✅ 各 1 红 |
+| B / B2 | 菜单侧归档/恢复不再兜住 | ✅ 各 1 红 |
+| C / C2 / D | 笔记元信息保存·删除·详情删除去掉 catch | ✅ 各 1 红 |
+| E / E2 | 音频残留不再按「残留」出文案 / 菜单侧恢复成空 catch | ✅ 各 1 红 |
+| F | `deleteNote` 把文件清理挪回软删之前（原缺陷） | ✅ 1 红 |
+| G / H | 文件 / 向量清理不再兜住 | ✅ 各 1 红 |
+| I / J / K / L / M | 文案漏技术串 / 两种删除同句 / 不说面板开着 / 未知动作空串 / 两个前缀撞车 | ✅ 各 1 红 |
+
+⚠ **本节 3 个变异首版 0 红，且我自己在同一节里重犯了两个已记录的错**，全部据实记：
+
+1. ⭐⭐⭐⭐ **我犯了 §836 刚记过的反模式**：第一版把三个处理器的 try/catch 抽进一个
+   `guard()` 辅助函数 ⇒ **本节自己的判据当场报红**（判据锚在 `onArchive` 体内）。
+   ⇒ 「搬出去换可测性」这个动作，代价是让覆盖归零，**而且当场就有读数**。
+2. ⭐⭐⭐⭐ **「有 catch」≠「catch 里有处理」**：变异把 `catch (e) {` 改成 `catch {` 而
+   诊断行仍在时，`assert.match(…, /catch/)` 照样全绿 ⇒ 改成要求 catch **绑定异常对象**
+   且**体内有该有的诊断**。
+3. ⭐⭐⭐⭐ **「固定窗口」与「最近的 catch」**：D3 组两处清理只隔几行，
+   `slice(atFiles, atFiles+400)` 会把**下一处**的 `catch (e)` 算进来 ⇒ 0 红
+   ⇒ 改成「锚点之后**最近**的 catch」+「用相邻锚点划界」。
+   ⚠ 另有一版用 `indexOf('}')` 划界，撞在 `} catch` 的那个 `}` 上 ⇒ 恒红。
+   ★ 这已经是本会话**第 5–6 次**同族问题，根因仍是「锚点没有由语法或锚点界定」。
+4. ⭐⭐ **「禁止所有裸 catch」是条假规矩**：第一版那么写，结果命中一堆**正当**的既有写法
+   （`catch { draftBanner.value = null }`、`catch { /* empty */ }`…）⇒ 会逼人去改无辜代码。
+   ⇒ 已收窄成「**完全空**且无说明」与「写着 `/* ok */`」两种**吞掉失败**的形状。
+5. ⭐ **前提登记断言读注释时不能用 `codeOnly`**（它按定义剥掉注释行 ⇒ 恒红）。
+
+### §838.6 ⛔ 口径与未实测
+
+* 判据 19 例 + 变异 18 个；`typecheck` EXIT=0；**`npm run gates` 45/45 通过**。
+* ⛔ **未实测**：真机上 IndexedDB 音频清理失败的发生率。
+  ⚠ 已核实机制侧：`deleteMeetingAudio` 确实走 `openDB()` + 事务（`meeting-audio.ts:53-62`），
+  而 `openDB()` 在库未就绪时会抛（与 §837 同一类）。
+* ⛔ **未实测**：孤儿音频的**实际累积速度**（需要长期真机数据才能估）。
+
+### §838.7 待属主拍板
+
+1. 媒体残留这件事要不要给用户一条**「清理残留媒体」的入口**（本轮只报诊断 + 文案告知）。
+2. `deleteNote` 改顺序后，「文件删不掉」从「删除没生效」变成「孤儿文件」——
+   要不要顺带给笔记侧也补一条「已删除但媒体未清理」的文案（当前只有诊断日志）。
+3. §838.5 第 4 条那个收窄后的约定（「禁止吞掉失败的 catch」）要不要升格成**仓级规则**，
+   覆盖全部特性而不只是本轮经手的五个文件。
+
+## §839 会话内实时录音链的三个失败形态：建会议无反馈、**收尾被人主动静默**、读不回分段就「正常结束」
+
+> 承接 §838。§838 是「对已有记录的动作」，本节是「**启动与收尾**」，
+> 且其中一条是**被人主动 `.catch(() => {})` 掉的**。
+
+### §839.1 ⛔ ①：建会议失败 ⇒ 点麦克风毫无反应
+
+`useSessionLiveRecord.start()` 此前是裸的 `await createMeeting(...)`，
+而 `toggle()` 被 `@live-record="liveRecord.toggle"` **直接绑成事件处理器**
+⇒ 写库失败时一个未处理的 rejection 就到此为止：用户点了麦克风，**什么都不会发生**。
+
+### §839.2 ⛔ ②：启动失败后的收尾被 `.catch(() => {})` 主动静默 —— 而它防的正是自己失败时的后果
+
+```ts
+    if (!ok) {
+      // 采集没起来就把会议标记结束，否则遗留的 recording 状态会在每次
+      // 进入会话时触发"上次录音未正常结束"警告。
+      await updateMeeting(m.id, { status: 'completed' }).catch(() => {})
+      meetingId.value = ''
+      toast.error(recorder.sttError.value || '无法开始录音')
+```
+
+⚠⚠ **这行注释与那行 `.catch(() => {})` 合在一起，构成一个自指的洞**：
+注释说「否则遗留的 recording 状态会在每次进入会话时触发『上次录音未正常结束』警告」，
+而**清理写失败时发生的正是这件事**：
+
+* 会议**永久**停在 `recording` ⇒ 列表一直显示「录音中」；
+* **此后每次进入这个会话**都弹「上次录音未正常结束」——
+  而用户根本没录成（他只看到一句「无法开始录音」）⇒ 这是一条**误导性**警告。
+
+⇒ 与 §834/D1 同源（那一次是 **stop** 的收尾，这次是 **start** 的收尾），
+但这里更隐蔽：它是**被人主动静默**的，不是「忘了写」。
+
+### §839.3 ⛔ ③：读不回分段 ⇒ 整段收尾编排不发生，而用户看到「正常结束」
+
+`stop()` 里 `const stored = await getMeetingWithSegments(id)` 是裸的：
+
+⇒ 抛错 ⇒ `finalizeRecording`（整段重转 → 说话人归因 → 精校 → 行动项 → 总结）
+**整段不发生**；而此时录音已停、状态已写 `completed`、录音面板已关闭
+⇒ 用户看到的是**一次正常的结束**。
+
+⚠ 处置**刻意是「停下」而不是「继续跑」**：拿不到分段还去跑收尾编排，
+等于把一份**残缺输入**交给一条**会重写 `transcript`** 的链
+⇒ 宁可不做，也不要在读失败时改写已有正文。
+
+### §839.4 落地
+
+| # | 位置 | 改动 |
+|---|---|---|
+| 1 | 新增 `features/sessions/live-record-failure-notice.ts` | `describeLiveRecordFailure(stage)`（三形态三句话）+ 诊断前缀 |
+| 2 | `start()` | `createMeeting` 进 `try/catch`；失败 ⇒ 日志 + 文案 + `return` |
+| 3 | 同上，`!ok` 分支 | `.catch(() => {})` ⇒ 显式 `try/catch` + `cleanupFailed` 标志；**单一出口**（收尾失败只说收尾那一句，否则说「无法开始录音」）⇒ 不连弹两条 error |
+| 4 | `stop()` | 读分段进 `try/catch`；失败 ⇒ 日志 + 文案 + `return`（不下探 `finalizeRecording`） |
+
+### §839.5 判据（13 例全绿）+ 变异（13 个全中）
+
+`frontend/src/features/sessions/__tests__/live-record-failure-notice.test.ts`
+
+* **文案（行为）**：三形态必须三句不同的话（用户动作完全不同）/
+  「收尾失败」必须说清「一直显示录音中」+ 反复弹那条警告 + 给收拾办法 /
+  「读分段失败」必须说清录音完好、但校对与行动项没生成 /
+  「建会议失败」必须说清**没有留下任何内容**（否则用户会去删不存在的记录）/
+  每形态给可行动作 / 未知阶段仍给一句人话 / 负控（3 阶段 × 5 异常形态）/ 诊断前缀点名会话链。
+* **接线（扫描，⚠ 零牙已标注）**：建会议被 try 包住且失败出声 /
+  **不得再有 `.catch(() => {})`** / 单一出口（不得连弹两条）/
+  读分段被 try 包住且**失败后停下**（不得带着空分段去跑会重写 transcript 的链）/
+  前提登记：`toggle` 确实被直接绑成事件处理器。
+
+| # | 变异 | 结果 |
+|---|---|---|
+| A | 建会议去掉 try/catch（原缺陷①） | ✅ 1 红 |
+| B / B2 | 收尾恢复成 `.catch(() => {})`（原缺陷②）/ 不写日志 | ✅ 各 1 红 |
+| C | 收尾失败与「无法开始录音」不是单一出口 | ✅ 1 红 |
+| D / D2 | 读分段去掉 try / 失败后仍继续跑收尾编排 | ✅ 各 1 红 |
+| E / F / G / H / I / J | 文案：三形态同句 / 不说反复弹 / 不给收拾办法 / 不说录音完好 / 不说没留下 / 未知阶段空串 | ✅ 各 1 红 |
+| K / L | 文案漏技术串 / 诊断前缀不再点名会话链 | ✅ 各 1 红 |
+
+⚠ 本节 2 个变异首版 0 红，**都是「窗口/正则切错位置」**——本会话第 7–8 次同族：
+
+1. ⭐⭐⭐⭐ 判据写的是「`start()` 函数体里有没有 `try`」，而该函数**后面还有收尾那处 try**
+   ⇒ 变异把建会议换成 `if (1) {` 照样全绿 ⇒ 改成「**建会议调用之前**有没有 try」。
+2. ⭐⭐⭐ 修完上一条又把自己写红：把 `catch (e)` 也塞进「调用之前」的窗口，
+   而 catch 处理器当然在调用**之后** ⇒ 已改为「call 在前、catch 在后」的顺序判据。
+3. ⭐⭐⭐ 文案断言 `/没有留下|没有创建|没留下/`：删掉后半句后
+   「会议记录**没有创建**成功」仍在 ⇒ 整条废掉 ⇒ 只认「没有留下/未留下」。
+
+### §839.6 ⛔ 口径与未实测
+
+* 判据 13 例 + 变异 13 个；`typecheck` EXIT=0；**`npm run gates` 45/45 通过**。
+* ⛔ **未实测**：三处各自在真机上的发生率（本节结论是**构造性**的：
+  对应写失败一次，现象即成立）。
+* ⛔ **未实测**：`getMeetingWithSegments` 抛错时，用户是否真能靠文案自己找到会议详情页
+  重新生成总结（那条路本轮**未验证**）。
+
+### §839.7 待属主拍板
+
+1. ② 的残留记录要不要**自动兜底**：例如启动失败后延迟重试一次清理
+   （本轮只报诊断 + 文案让用户手动删）。
+2. ③ 的「停下」要不要给一个「稍后自动补做收尾」的队列（当前是彻底不做）。
+3. `toggle()` 本身仍没有 try/catch（本轮三处都在 `start`/`stop` 内部兜住）——
+   要不要把「事件处理器边界必须自己说真话」这条也落到 `toggle` 上。
+
+---
+
+## §840 列表页「首屏读取失败」被显示成「还没有记录」，并把用户引导去新建
+
+**一句话**：会议列表与笔记列表在首屏读取失败时，显示的是「还没有会议记录 / 点击右下角麦克风开始第一次会议」，
+而那颗「加载失败，点击重试」按钮在结构上永不渲染；更深一层，那层专门为「本地库未就绪 ⇒ 重新登录」
+准备的界面**根本不可达**，因为它依赖的错误信息被控制器吞掉了。
+
+### 1. 缺陷证据
+
+#### D1 · 首屏读失败 ⇒ 真空态 + 无处重试
+
+两处视图的模板分支（会议为例，`MeetingListView.vue:22-70`）：
+
+```
+<div v-if="loading" class="state"><Skeleton :count="4" /></div>
+<EmptyState v-else-if="meetings.length === 0" icon="🎙️"
+            title="还没有会议记录" hint="点击右下角麦克风开始第一次会议" />
+<div v-else class="meeting-list">
+  …卡片…
+  <div v-if="meetings.length > 0" ref="sentinelRef" class="more">
+    <span v-if="loadingMore">加载中…</span>
+    <button v-else-if="listStatus === 'failed'" …>加载失败，点击重试</button>
+```
+
+而 `loading = listStatus==='idle' && meetings.length===0 && !dbNotReady`。
+
+首屏读取失败时 `listStatus` 变成 `'failed'`（`continuousList.ts:311-315` 的 `.catch`）⇒
+`loading` 为 **false**、行数 **0** ⇒ **正好落进真空态那一支**。后果：
+
+- 显示「还没有会议记录」+「点击右下角麦克风开始第一次会议」——用户已有会议时这是一句**谎报**；
+- 而且这句话**主动引导用户去新建会议**（右下角那个 FAB 就是新建入口），原记录完好却看不见；
+- 那颗「加载失败，点击重试」在 `行数 > 0` 的分支里 ⇒ **首屏失败时永不渲染**
+  （顺带一提：那个内层 `v-if="meetings.length > 0"` 在 `v-else` 分支里恒为真，是死代码）。
+
+笔记列表 `NoteListView.vue:88-121` **完全同形**，且更甚一层：它的空态条件是
+`filteredNotes.length === 0`（筛选后的量），搜索无命中与读取失败无法区分。
+
+#### D2 · `dbNotReady → DbLockedState` 那一层不可达（本节最深的一条）
+
+`local-db.ts:859/881` 明确在两种常见情形抛 `LocalDB 未初始化：连接不存在` /
+`LocalDB 未初始化，请先调用 init(dbSecret)`——锁屏后回来、应用启动早于 `init(dbSecret)`、
+切换工作区导致密钥不可用。**这不是罕见分支**（§837 已就同一批抛错取证）。
+
+两处视图都为此写了出口：
+
+```js
+async function load() {
+  dbNotReady.value = false
+  try { resetQuery() }
+  catch (e) { if (msg.includes('LocalDB 未初始化')) dbNotReady.value = true }
+}
+```
+
+**但这个 catch 收不到任何东西**：
+
+- `resetQuery()` 返回 `void`，内部是 `void loadPage(1,'refresh')`（`continuousList.ts:389-401`）；
+- `loadPage` 的 promise 链自带 `.catch(() => { failedKind = kind; setStatus('failed') })`（`:311-315`），
+  **错误被吃掉，且没有日志、没有重抛**。
+
+⇒ `dbNotReady` 恒为 false ⇒ 「本地库未就绪，请重新登录」与「磁盘忙，重试」在界面上**完全同形**。
+
+**实测读数**（`.artifacts/s840-probe/probe.mjs`，两个场景各跑一次）：
+
+| 场景 | `resetQuery()` 返回 | 视图层 catch | `dbNotReady` | status 序列 | status/行数 |
+|---|---|---|---|---|---|
+| A `LocalDB 未初始化：连接不存在` | `undefined` | **未触发** | `false` ⛔ | `["refreshing","failed"]` | `failed` / `0` |
+| B `SQLITE_BUSY` | `undefined` | **未触发** | `false` ⛔ | `["refreshing","failed"]` | `failed` / `0` |
+
+两项结论：视图层 `loading` 计算结果 `false` ⇒ 落进 `EmptyState` 分支 = `true`（两个场景都是）；
+两种失败三项读数**全同**。
+
+#### D3 · 骨架屏会在请求发出前塌成真空态（闪一下）
+
+首屏 `load()` 一执行，`resetQuery()` 同步把 status 从 `idle` 翻成 `refreshing`
+⇒ 旧 `loading`（只认 `idle`）立刻为 false、行数仍 0 ⇒ **「还没有会议记录」在请求还在路上时就闪出来**，
+拿到数据再变回列表。「正在读」与「读完了但是空的」被混成一个状态。
+
+#### D4 · 同仓已有正确做法，本节沿用
+
+`EmailInboxView.load()` 直接 `await showLocal(true)` ⇒ 它的 catch **可达**，
+`dbNotReady` 与 `loadError` 都真的生效。
+⇒ **三个列表页里，唯一走控制器的两处（会议、笔记）是坏的。**
+
+#### D5 · 注释声称的事与代码不符
+
+`MeetingListView.vue:133-134` 原文写着「`dbNotReady` 仍由 **fetchPage 内捕获**」——
+而当时的 `fetchPage` **一个 catch 都没有**。这不是取舍，是迁移到 `useContinuousList`
+时留下的注释孤儿（§838 在会议删除处查到过同类：注释声称没关系，实际是静默存储泄漏）。
+
+### 2. 落地
+
+| 位置 | 改动 |
+|---|---|
+| `src/utils/list-load-state.ts`（新） | `isLocalDbUnavailable`（SSOT）/ `isListReadError` / `isListSkeleton` / `listReadFailureNotice` / `LIST_READ_FAIL_TAG` |
+| `features/meetings/meeting-load-notice.ts` | §837 的 `isLocalDbUnavailable` 改为**从新 SSOT 再导出**（只有一份实现；相对路径 + `.ts` 后缀，因为判据以裸 `node --test` 加载，不解析 `@` 别名） |
+| `features/meetings/MeetingListView.vue` | `fetchPage` 加 try/catch（判本地库未就绪 → `dbNotReady`；否则 `console.error` 带 tag；**必须 rethrow**）；模板加带「无行」守卫的失败分支 + 重试入口；`loading` 改走共享判定；`load()` 的注释改为「只兜同步抛出」 |
+| `features/notes/NoteListView.vue` | 同上；`readError` 额外排除**搜索态**（搜索 0 命中是合法结论，不能被一次无关的历史失败改写成「读取失败」） |
+| `styles/__tests__/list-error-failpath.test.mjs` | 登记表 `MeetingListView` 由 `n/a` 改 `enforced`；量具自证的 `enforced` 计数 2→3 **并加一条钉住该条目本身的断言**；新增变异 M5（拿守卫）/ M6（退回 n/a） |
+
+⚠ **一处刻意的踩雷式命名**：视图标志叫 `readError` 而不是 `readFailed`。
+`list-error-failpath` 的枚举器用 `/error/i` 认出「错误分支」再检查它的行数守卫
+⇒ 条件里没有 `error` 一词就会在 `continue` 那一步被**整体跳过**，守卫被拿掉也没人喊。
+**判据的识别词是契约的一部分**（同名先例：仓库既有的 `loadError`）。
+
+### 3. 判据与变异
+
+`src/utils/__tests__/list-load-state.test.ts`：**37 例全通过**（判定 10 + 文案 4 + SSOT 3 + 接线 13 + 变异负控 12）。
+
+- 关键设计：**断言与变异共用同一把尺子**。判据抽成
+  `hasGuardedBranch / orderOk / hasRetryEntry / seesErrorObject / rethrows / usesSharedPredicate`，
+  变异去测的是这些函数本身，而不是「另一份写法的正则」——
+  否则 0 红无法区分「判据有洞」与「变异无效」。
+- `orderOk` 是新增的不变量：`v-else-if` 链**只认第一个为真的**，失败分支一旦排到真空态之后就永远轮不到，
+  而这在肉眼 review 里几乎看不出来。
+
+**对真实文件的端到端变异**（改 `.vue` → 跑判据 + 仓库门禁 → 复原）：
+
+| 变异 | §840 判据 | 仓库门禁 `list-error-failpath` |
+|---|---|---|
+| M1 拿掉 `meetings.length === 0` 守卫 | 🔴 2 | 🔴 3 |
+| M2 `fetchPage` 的 catch 不 rethrow（改返回空结果） | 🔴 2 | 0（不归它管） |
+| M3 失败分支挪到真空态之后 | 🔴 2 | 🔴 1 |
+| 复原后基线 | 0 | 0 |
+
+M1 的门禁读数为 3，是本节**最值得记的一条**：它证明仓库那道门现在**真的覆盖了新分支**，
+而不只是「我在自己的判据里覆盖了」。
+
+### 4. 量具自证（本节自己翻车两次，记下来）
+
+`blockFrom`（取 `fetchPage` 函数体）连着错两版，两版都是**边界没由语法界定**：
+
+1. 用 `/^\s*\}\)/m` 找块尾 ⇒ 先撞上 `listMeetings(size, { … })` 的收尾 `})`
+   ⇒ 取到的块在 `catch` 之前就断了 ⇒ **后面 8 条判据一起假红**；
+2. 改成括号配平后，锚点后**第一个** `{` 是参数解构 `({ page })` 的括号 ⇒ 配平立刻归零
+   ⇒ 只取到 26 个字符。
+
+⇒ **锚点之后的第一个括号不一定是函数体的括号**；要先越过 `=>` 再取 `{`。
+（同族教训已是第 N 次：「这一行存在」≠「它在正确的范围内」。）
+
+### 5. 口径与未实测
+
+- ⛔ **未实测（需真机）**：首屏读失败的真实发生率；`LocalDB 未初始化` 在这两页的命中频率；
+  D3 骨架屏塌陷的**可见程度**（首屏很快，可能只是 1 帧，属推测）。
+- ⛔ 未验证修好之后真机上的观感（无设备）。判据覆盖的是「分支存在、位置正确、错误不被吞」，
+  **不是**「文案读起来对」——后者需要属主或真机确认。
+- 阴性声明的口径：本次**没有**声称「其它列表页（收件箱、文件夹、任务、会话）同类问题已排除」。
+  只对 `EmailInboxView` 做了 `await` 可达性的读码确认（`EmailInboxView.vue:509-520`），
+  其余未逐一取证。
+- 判据的口径：结构判据**不含**运行时渲染断言（仓库无组件测试基座），
+  「失败分支真的会显示出来」这一点由「分支位置 + 守卫 + rethrow」三条静态不变量近似，
+  而非端到端渲染验证。
+
+### 6. 待拍板
+
+1. 失败文案要不要更激进一点——比如直接写「可能有 N 场会议没显示出来」（需要先能读出计数，
+   而失败时恰恰读不到 ⇒ 现在做不到，属技术性不可行，不是没做）。
+2. 「重试」要不要顺带自动重登检测（现在 `dbNotReady` 那一层已恢复可达，
+   `DbLockedState` 会真的显示了 ⇒ 是否要给它加「刚刚失败过一次」的上下文文案）。
+3. 控制器层要不要开一条错误通道（`onError` 回调 + `lastError`），
+   让所有走 `useContinuousList` 的视图都不必各自在 `fetchPage` 里写 try/catch。
+   **本节是逐页补的，不是从根上收的**；`EmailInboxView` 之外的收件箱/文件夹/任务/会话
+   是否还有「错误信息到不了视图」的位置，需要一次专门扫面（未做）。
+4. `NoteListView` 未用 `<PullToRefresh>` ⇒ 它**不在** `list-error-failpath` 的扫描范围内；
+   本节靠自己的判据看守它。是否要把那道门的扫描范围从「用了下拉刷新」放宽到
+   「用了 `useContinuousList`」（更贴合缺陷的实际发生条件）。
+
+---
+
+## §841 收件箱的错误态「在门禁里是绿的，在界面上从来没显示过」——并且更正 §840 的一个错误断言
+
+**一句话**：`EmailInboxView` 为读取失败准备了两套界面（整页错误态 + 非破坏性横幅），
+而驱动它们的 `loadError` **恒为 `''`**、`dbNotReady` **恒为 false** ⇒
+首屏读失败时用户看到的是「收件箱是空的」。而 `list-error-failpath` 把它登记为 `enforced`
+且**门禁是绿的** —— 契约被**空洞地**满足。
+
+### 0. ⚠ 本节同时更正 §840 的一个错误断言
+
+§840 我写过一句：
+
+> 「同仓 `EmailInboxView` 直接 `await showLocal(true)` ⇒ 它的 catch **可达**，
+> **三个列表页里唯一走控制器的两处是坏的**。」
+
+**这句是错的。** 我只看了 `load()` 的形状，**没有往下追** `showLocal`：
+
+```
+load() ─await─> showLocal() ─await─> refreshList()
+      ─> controller.refresh() ─> loadPage(1,'refresh')
+      ─> deps.fetchPage(...).then(...).catch(() => setStatus('failed'))
+                                          ↑ 吞掉且不重抛
+```
+
+`useContinuousList.refresh()` 是裸透传（`useContinuousList.ts:226`），`loadPage` 链上的
+`.catch` 让 `await refreshList()` **正常 resolve** ⇒ `load()` 的 catch 一次都不会进。
+⇒ 「三个列表页里唯一走控制器的两处是坏的」应为「**三个都走控制器，三个的 catch 都收不到错误**」。
+
+⇒ 这正是 §840 自己刚写下的那条教训在自己身上复发：**阴性声明必须抽验**。
+我当时写的是一句关于别人代码的**阴性断言**（「它的 catch 可达」），却只用读码的下一步就下了结论，
+没有把链走到底、没有探针读数。⇒ **凡是要说「某处没问题」的阴性断言，都要问「我追到叶子节点了吗」。**
+
+### 1. 缺陷证据
+
+#### D1 · `loadError` 与 `dbNotReady` 双双不可达
+
+```js
+async function load() {
+  loading.value = emails.value.length === 0
+  loadError.value = ''; dbNotReady.value = false
+  try { await showLocal(true) }
+  catch (e) { dbNotReady = …; loadError = sanitizeFetchHint(…) || '加载邮件失败' }
+  loading.value = false
+}
+```
+
+**实测读数**（`.artifacts/s841-probe/probe.mjs`，忠实照抄该视图的调用形状，含那层 `showLocal`）：
+
+| 场景 | `load()` 是否 reject | status | `loadError` | `dbNotReady` | `shownEmails.length` | 落到真空态 |
+|---|---|---|---|---|---|---|
+| A `LocalDB 未初始化：连接不存在` | 否 | `failed` | `""` ⛔ | `false` ⛔ | 0 | **是** |
+| B `SQLITE_BUSY` | 否 | `failed` | `""` ⛔ | `false` ⛔ | 0 | **是** |
+
+⇒ 两种失败三项读数全同；`v-else-if="loadError && shownEmails.length === 0"` **恒假**；
+落到 `v-else-if="shownEmails.length === 0"` ⇒ **谎报「收件箱是空的」**。
+
+#### D2 · 门禁为什么是绿的（本节最要紧的一条）
+
+`list-error-failpath` 登记：
+
+```js
+{ file: 'features/email/EmailInboxView.vue', state: 'enforced',
+  why: '与上条同形状的第二处：load() 为初载与下拉刷新共用入口，loadError 无条件接管整页' }
+```
+
+它的判据是「挂在空态上的错误分支必须带 `.length` 守卫」。这条分支**确实带守卫** ⇒ 绿。
+但**错误标志设不上** ⇒ 那条分支**永远不会被渲染**。
+
+⇒ ⭐⭐⭐⭐⭐ **守卫只是必要条件，不是充分条件。**
+一条「错误分支必须带行数守卫」的契约，前提是**那个错误标志真的会被设上**；
+当产生标志的那条错误通路本身是死代码时，契约被空洞地满足，而门禁毫无察觉。
+⇒ **判据绿 ≠ 缺陷不成立**（与 §837 那条「判据与被测对象不同源时，判据绿不能当作证据」同源，
+但这次更隐蔽：**同一份源码、同一个判据**，只是被测的是「条件表达式」而不是「标志的可达成性」）。
+
+#### D3 · 注释声称的机制与事实不符（第二次撞上）
+
+`EmailInboxView.vue:123` 原文：
+
+> ⚠️ `load()` 是**初次加载与下拉刷新共用**的入口，**任何抛出都会设 `loadError`**；
+
+而**没有任何东西会抛**。同一份文件里 §837/§840 的注释孤儿（`MeetingListView` 的
+「dbNotReady 仍由 fetchPage 内捕获」）是同一族。⇒ **注释里对失败路径的断言要单独验一次。**
+
+#### D4 · 有行时同样零提示
+
+`listStatus` 被解构出来，但**只有 `pageLoading` 读了 `'loadingNext'`** ⇒
+`'failed'` 这个状态在整个模板里**没有任何消费者**。
+有行时刷新失败：既没有 `loadError`（设不上），也没有 `listStatus==='failed'` 的分支
+⇒ `.list-error-banner` 从未显示过。
+
+#### D5 · 顺带撞出：这道门自己的 ALLOWLIST 被我的改动打碎（第五次）
+
+§841 给 `EmailInboxView` 加了分支后，`z-index-ladder` 变红
+（`EmailInboxView.vue:718/805` 两处**未登记的裸数字 z-index**）。
+查明：这两处裸数字 `z-index: 4/5` 在 HEAD 就存在（§840 时行号 676/763），
+**不是本节引入的**，是**行号被推了 42 行**而 ALLOWLIST 按行号登记。
+
+该门自己的注释已经记着这件事发生过四次：
+「⚠️ ALLOWLIST 的 key 曾长期钉在**声明所在行**，往文件上方加一行注释就会让 key 漂移」
+「本 key 从 634 改为 800…这是同一个 key **第四次咬人**，故改为块起始行」。
+
+⇒ 本轮按既有先例**重新编号**（676→718、763→805），并在该处留注说明这是第五次、
+且建议改成 `文件:选择器` 这种对插入免疫的 key（已登记为待拍板）。
+**不改这道门的语义与结构** —— 换 key 方案是它的属主该拍的事，不是本节顺手能带过的。
+
+### 2. 落地
+
+| 位置 | 改动 |
+|---|---|
+| `src/utils/list-load-state.ts` | `listReadFailureNotice(subject, { hasRows })` 新增**有行**那一支（与无行**分两句**） |
+| `features/email/EmailInboxView.vue` | `readPage` 依赖加 try/catch（`isLocalDbUnavailable(e)` → `dbNotReady`，否则 `console.error` 带 tag，**必须 rethrow**）；`readError = loadError !== '' \|\| isListReadError(...)`；整页错误态条件改 `readError && shownEmails.length === 0`、文案在 `loadError` 为空时回落到共享文案；横幅由 `v-if="loadError"` 改 `v-if="readError"`；修掉 D3 那条注释 |
+| `styles/__tests__/list-error-failpath.test.mjs` | 自带变异 M1/M2/M5 的 `stripLengthGuard` 改为**按形状**剥守卫（见 §4）；M1/M2/M5 各加 `assert.notEqual` |
+| `styles/__tests__/z-index-ladder.test.mjs` | 两个 key 重新编号（676→718、763→805）+ 注明第五次咬人与建议 |
+
+⚠ **为什么收件箱的捕获点在 `readPage` 而不是 `fetchPage`**：它的 `fetchPage` 由共享的
+`makeInboxFetchPage`（`email-inbox-adapter.ts:60`）生成，那里没有视图状态可写；
+`readPage` 是本视图自己传进去的依赖 ⇒ **与 §840「唯一看得见 e 的地方是提供数据的那一层」同构**。
+
+⚠ **TDZ**：第一版把 `readError` 放在 `useContinuousList` 之后、`shownEmails` 之前，
+而它引用 `shownEmails` ⇒ 运行时 TDZ 错误。判据是源码结构判据，抓不到这种**顺序**问题
+（它只看表达式内容）⇒ 已挪到 `shownEmails` 之后。
+
+### 3. 判据与变异
+
+`src/utils/__tests__/list-load-state.test.ts` 扩到 **58 例全通过**
+（三个视图统一进同一张表；判据函数 `catchesError` / `marksDbUnavailable` / `rethrows` /
+`hasRetryEntry` / `errorFlagNotOnlyFromLoadError` 断言与变异共用）。
+
+⚠ 收件箱的捕获锚点是 `readPage: async` 而不是 `fetchPage: async`，
+判据表因此多了 `anchor` / `retry` 两列（`@action="load"` vs `@action="retry"`）。
+`marksDbUnavailable` **两种写法都接受**：字面量 `msg.includes('LocalDB 未初始化')`
+（§837 的钉死用例要求会议侧保持不变）或共享判据 `isLocalDbUnavailable(e)`（收件箱用后者）。
+
+**对真实 `EmailInboxView.vue` 的四路端到端变异**：
+
+| 变异 | §840/841 判据 | 仓库门禁 `list-error-failpath` |
+|---|---|---|
+| M1 拿掉 `shownEmails.length === 0` 守卫 | 🔴 2 | 🔴 4 |
+| M2 `readPage` 不 rethrow | 🔴 2 | 0 |
+| M3 **原样还原 §841 真缺陷**（`readError` 只认 `loadError`） | 🔴 2 | **0** |
+| M4 横幅退回 `v-if="loadError"` | 🔴 1 | 0 |
+| 复原后基线 | 0 | 0 |
+
+⚠ **M3 那一列的 0 是本节的结论**：把真缺陷放回去，**仓库门禁依然绿**
+⇒ 再次证明 D2 那句「守卫只是必要条件」。也正因如此才需要新判据 `errorFlagNotOnlyFromLoadError`。
+
+### 4. 量具自证（本节又抓到自己一次）
+
+仓库门禁 `list-error-failpath` 自带的 M2 变异写的是**字面量 replace**：
+
+```js
+text.replace('v-else-if="loadError && shownEmails.length === 0"', 'v-else-if="loadError"')
+```
+
+§841 把那个条件改写成了 `readError && …` ⇒ 变异**静默变成空操作**，
+M2 于是报「第二处没被判红 ⇒ 判据只认得我登记的那一处」—— **报的是错误理由**，
+会让人去查枚举器，而真正原因是变异没生效。
+
+⇒ 已改为 `stripLengthGuard()`（按形状 `/v-else-if="([^"]*)&&\s*[^"]*\.length === 0"/`），
+并给 M1/M2/M5 各加 `assert.notEqual`：⇒ **「变异没生效」要单独报，不能混进判据的红**
+（与 `run-mjs-tests.mjs` 里那条「枚举 ⊆ 实际执行」的教训同族）。
+
+另：本节的 §841 探针第一版把**数字当数组**用（`shown.length` 是 `undefined`），
+导致「是否落进真空态」那一行读数为 `false` —— 一个**假的阴性**。
+⇒ 「0/否」的第一嫌疑永远是量具坏了；修好后重跑才是 `true`。
+
+### 5. 口径与未实测
+
+- ⛔ **未实测（需真机）**：收件箱读失败的真实发生率；`LocalDB 未初始化` 在该页的命中频率；
+  `loadError` 从未显示过这件事**除了读码与探针之外没有任何线上证据**（没有埋点统计）。
+- ⛔ 未验证修好之后的真机观感。判据覆盖的是「错误能被看到、标志可达、重试可点」。
+- 阴性声明的口径：本节**只**证明了「三个 `useContinuousList` 视图的捕获点都可达」。
+  **没有**声称「仓库里所有读失败路径都已覆盖」——`EmailFolderListView`、`TasksView`、
+  `SessionListView` 是否也有同类问题，本次**未取证**。
+- 「三个消费方」这个枚举本身是有读数的：`useContinuousList` 全仓 3 个生产消费方，
+  `useListSentinel` 已无生产消费方（在 `unwired-exports.test.mjs` 的登记表里）。
+
+### 6. 待拍板
+
+1. **`z-index-ladder` 的 ALLOWLIST key 要不要从行号改成 `文件:选择器`** —— 同一个 key
+   已经咬人五次（声明行 → 块起始行 → 这次）。改成选择器后对插入免疫（§841.1 D5）。
+2. **控制器要不要开错误通道**（`onError` + `lastError`）：§840 逐页补了两处、§841 又补了一处，
+   三处都是同一个根因（中间层吞掉错误）。根上收一处，三页不用各写一遍 catch（§840.6 第 3 条，仍未决）。
+3. `EmailFolderListView` / `TasksView` / `SessionListView` 要不要做一次同样的扫面
+   （本节只覆盖了 `useContinuousList` 的三个消费方）。
+4. 收件箱「有行时刷新失败」用非破坏性横幅（现状）还是 toast。
+
+---
+
+## §842 邮件目录的 `reload()` 只有 `finally` 没有 `catch` ⇒ 谎报「还没有自定义目录」，并让新建/删除给出与真实结果相反的提示
+
+**一句话**：`EmailFolderListView.reload()` 缺一个 catch，于是本地库读取失败时
+用户看到的是「还没有自定义目录」并被引导去新建；而**真正被写坏的不是列表，是提示** ——
+新建成功后错误落进**已关闭**的面板，删除成功后连弹「已删除」+「删除失败」两条矛盾的话。
+
+### 1. 缺陷证据
+
+#### D1 · `reload()` 只有 finally（`EmailFolderListView.vue:127-137`）
+
+```js
+async function reload() {
+  loading.value = true
+  try {
+    await syncFoldersFromServer().catch(() => {})   // ← D3
+    folders.value     = await listLocalFolders()     // ← localDB.query，可能抛
+    ops.value         = await listOpsEntries()
+    pendingCount.value = await countPendingOps()
+  } finally { loading.value = false }                // ← 没有 catch
+}
+```
+
+`listLocalFolders()` 走 `localDB.query()`（`email-folders-store.ts:31`），
+而 `local-db.ts:859` 在**锁屏后回来 / 启动早于 `init(dbSecret)` / 切换工作区**时抛
+`LocalDB 未初始化：连接不存在` —— 与 §837/§840 同一批抛错，是**有明确预期的状态**。
+
+**实测读数**（`.artifacts/s842-probe/probe.mjs`，照抄源码形状）：
+
+| 场景 | 异常是否逃出 `reload()` | `folders.length` | `loading` | `folders===0 && !loading` |
+|---|---|---|---|---|
+| A `LocalDB 未初始化` | **是** | 0 | false | **true ⇒ 落进空态** |
+| B 正常 | 否 | 1 | false | false |
+
+#### D2 · 未处理 rejection
+
+`onMounted` 是 `void reload()`（`:238`）⇒ 异常**逃出去且没人接**。
+`gates` 里那条「即使 node 退出码为 0 也不能放行」的检查抓的是测试失败事件，
+不是这个 —— 应用运行时的未处理 rejection 不在这道门的覆盖范围内。
+
+#### D3 · 空回调吞掉服务器同步失败（§838 明令禁止的形状）
+
+`syncFoldersFromServer().catch(() => {})` ⇒ 网络失败零痕迹，
+而同步卡片仍显示「本地操作均已同步」⇒ 用户以为目录是最新的。
+⇒ 已改为显式 catch + `console.warn` + `syncStale` 提示（见 §2）。
+
+#### D4 · 新建/删除两条路径的提示与真实结果相反（本节最阴的一条）
+
+`reload()` 一抛，两个调用方的 `catch` 就会执行，而它们**并不区分是哪一步失败**：
+
+| 路径 | 真实结果 | 用户看到的 |
+|---|---|---|
+| 新建 | `createFolder()` **成功**，`toast.success('已创建')` 已弹，面板已 `createOpen=false` 关掉 | 随后 `reload()` 抛 ⇒ `createError` 被写进**已关闭**的面板 ⇒ **完全看不到**；只剩那条成功 toast |
+| 删除 | `removeFolder()` **成功**，`toast.success('已删除')` 已弹 | `reload()` 抛 ⇒ catch 再弹 `toast.error('删除失败')` ⇒ **同一次点击两条互相矛盾的话** |
+
+**探针读数**：删除路径 toast 序列 = `[["success","目录已删除"],["error","LocalDB 未初始化：连接不存在"]]`。
+
+⚠ 关键认知：这一条**不是**额外打的补丁，而是 D1 的**下游后果** ——
+`reload()` 自己兜住之后不再向外抛，这两个 `catch` 根本不会再被触发。
+⇒ 本节没有去改 `onCreate` / `onDeleteFolder` 的 catch，那两处代码保持原样。
+
+#### D5 · 门禁登记的理由描述的正是缺陷
+
+`list-error-failpath` 把本视图登记为 `n/a`，理由「唯一的 error 条件是 BottomSheet 内的
+`createError`（表单字段级提示），不接管整页」—— 而那个 `createError` 恰恰是
+**「创建失败」的误报载体**（见 D4）。**登记理由在写下的那天就是错的。**
+
+### 2. 落地
+
+| 位置 | 改动 |
+|---|---|
+| `src/utils/list-load-state.ts` | `listReadFailureNotice(subject, { dbUnavailable })` 新增**本地库未就绪**那一支（与「其它失败」分两句：前者重试没用、要重新登录） |
+| `features/email/EmailFolderListView.vue` | `reload()` 加 catch（**不再向外抛**）→ D1/D2/D4 一并消失；`syncFoldersFromServer` 的空回调改显式 catch + `console.warn` + `syncStale` 提示 → D3；新增 `readError`（整份 notice 一个来源）+ `readErrorNotice`（模板绑定用，永远非空）；模板加带「无行」守卫的失败分支（可点重试）+ 有行时的非破坏性横幅；补 `.list-error-banner` / `.banner-retry` 的 scoped 样式（本文件原本没有 ⇒ 不加就是一个无样式的 div） |
+| `styles/__tests__/list-error-failpath.test.mjs` | 登记表 `EmailFolderListView` 由 `n/a` 改 `enforced`（`n/a` 理由即缺陷）；`enforced` 计数 3→4，且棘轮改为**逐个钉住**新登记的两处；新增变异 M7（拿守卫）/ M8（退回 n/a）；`stripLengthGuard` 前缀放宽到同时接受 `v-if` 与 `v-else-if` |
+
+⚠ **两处形状上的坑**（都是本节实际撞到的，不是预防性提醒）：
+1. **失败分支用 `v-if` 开头，不能用 `v-else-if`** —— 它前面是 `v-for` 的文件夹按钮，
+   `v-else-if` 没有相邻的 `v-if` 兄弟 ⇒ **Vue 编译直接拒绝**（`build:gate` 红了）。
+   两个空态组件相邻成链（`v-if` + `v-else-if`）才合法。
+2. **`vue-tsc` 不用 `v-else-if`/`v-if` 的条件收窄后续属性** ⇒ 模板里直接绑
+   `readError.title` 会报 `TS18047: 'readError' is possibly 'null'`。
+   ⇒ 单独给一个永远非空的 `readErrorNotice` 供绑定，条件仍用 `readError`（门禁靠它）。
+
+### 3. 判据与变异
+
+`src/utils/__tests__/list-load-state.test.ts` 扩到 **67 例全通过**（新增 §842 一组 9 例）。
+
+**对真实 `EmailFolderListView.vue` 的四路端到端变异**：
+
+| 变异 | §840-842 判据 | 仓库门禁 `list-error-failpath` |
+|---|---|---|
+| M1 拿掉 `folders.length === 0` 守卫 | 🔴 1 | 🔴 4 |
+| M2 把 `reload()` 的 catch 整个删掉（**还原真缺陷**） | 🔴 1 | 0 |
+| M3 还原成吞掉同步失败的空回调（D3） | 🔴 1 | 0 |
+| M4 标志改回 `readFailure` | 🔴 1 | 🔴 1 |
+| M5 失败分支挪到真空态之后 | 🔴 1 | 0 |
+| 复原后基线 | 0 | 0 |
+
+⚠ M4 那一行值得单独记：标志名里有 `Error` 一个词，仓库门禁就能认出这条分支并看守它的守卫；
+改成 `readFailure` 它立刻变瞎（1 条红来自「登记表说 enforced 但视图里没有可识别的错误分支」）。
+**同一个语义，两种命名，一道门一个认一个不认。**
+
+### 4. 量具自证（本节连踩五次，逐条记）
+
+1. `blockFrom` 的阳性对照写成 `at > 0` —— 锚点**恰好在位置 0** 时 `indexOf` 返回 `0`
+   ⇒ 被误报成「找不到锚点」。⇒ 用 `indexOf` 定位的断言，阳性对照应是 `!== -1`。
+2. `noUnguardedTry` 前两版：①「有没有 catch」太松（删掉**外层** catch 后内层的还在）；
+   ② 按 try/catch/finally 配平维护栈太脆（catch 之后无法在不数括号的前提下弹栈）。
+   ⇒ 退到「catch 数 ≥ try 数」的近似，并**如实标注它抓不到错配**，不假装精确。
+3. `branchTagOf` 取「第一个出现 readError」⇒ 抢在**横幅**那条 `readError && folders.length > 0`
+   ⇒ 开标签在同一行闭合 ⇒ 后面的 `@action` 全被切掉 ⇒ **一条永远红的假阴性**（这个坑踩了两次）。
+4. 自己注释里写 `.catch(() => {})` 举例 ⇒ 被 `hasEmptySwallow` 当成真代码命中
+   ⇒ 注释改说「一句吞掉服务器同步失败的空回调」。判据侧加了一条**反向负控**：
+   注释里的字面量不得被判成命中。
+5. `stripLengthGuard` 只写 `v-else-if` 前缀 ⇒ §842 那条 `v-if` 分支的变异**静默失效**，
+   门禁报「变异没生效」（好的一面：`assert.notEqual` 让它**响**了，而不是默默放过）。
+
+### 5. 口径与未实测
+
+- ⛔ **未实测（需真机）**：邮件目录读取失败的真实发生率；`LocalDB 未初始化` 在本页的命中频率；
+  D4 两条矛盾提示在真机上是否真的连弹（读码成立，探针照抄形状成立，**未在设备上见过**）。
+- ⛔ 未验证修好后的真机观感与新样式（`.list-error-banner` 是新抄进来的 scoped 样式）。
+- 阴性声明的口径：本节**只**覆盖了 §841 待办第 28 条里点名的三个视图中的一个。
+  - `SessionListView`：**已取证为阴性** —— `loadSessions()` 直接 `await api.getAllSessions(...)`，
+    catch 可达、`error` 设得上，登记 `enforced` 属实（带读数，见下）。
+  - `TasksView`：**未取证**。
+- 「三个下拉刷新视图」的枚举基于 `list-error-failpath` 自己的 `pullViews()`，
+  本节未扩大它的扫描范围（仍是「用了 `<PullToRefresh>`」）。
+
+### 6. 待拍板
+
+1. `TasksView` 要不要做同样的取证（§841 待办第 28 条的剩余部分）。
+2. `EmailFolderListView` 要不要也用 `DbLockedState`（像 §837 给详情页做的那样），
+   还是保持「一句话 + 重试」；本轮刻意**没有**引入新组件。
+3. 邮件目录页的失败提示要不要给「重新登录」按钮（现在文案提到重新登录但没有入口）。
+4. 「禁止吞掉失败的 catch」升格成仓级规则（§838 待办第 20 条）—— 本节又新增一处实例，
+   现在仓内已确认的空回调/空 catch 至少有 4 处。
+
+---
+
+## §843 任务与会话的 loader 在 catch 里**主动清空**已加载的行 ⇒ 一次失败整屏消失，并引导用户建重复任务
+
+**一句话**：`TasksView.loadTasks()` 与 `loadSessions()` 的 catch 各有一句 `tasks.value = []` /
+`sessions.value = []` —— 这不是「忘了显示错误」，而是**主动把屏幕上的行擦掉**。
+它是 §840/§842 那个谎报家族里最重的一处，也是那道为它而建的防线上唯一的缺口。
+
+### 1. 缺陷证据
+
+#### D1 · 失败即清屏
+
+```js
+async function loadTasks() {                       // TasksView.vue:1011-1034
+  loading.value = true
+  try { … tasks.value = mapped }
+  catch (e) {
+    console.error('Failed to load tasks:', e)
+    tasks.value = []          // ← ⚠ 主动清空
+  } finally { loading.value = false }
+}
+
+async function loadSessions() {                    // :1045-1064
+  … catch (e) { console.error(...); sessions.value = [] }   // ← 同样
+}
+```
+
+模板链（任务区 `:170-240`）：
+
+```
+<Skeleton v-if="loading" />
+<div v-else-if="visibleActiveTasks.length > 0" class="task-scroll"> …卡片… </div>
+<div v-else class="empty-inline"><EmptyState title="暂无运行中的任务"
+    hint="点击「+ 新任务」创建，或长按任务卡片操作" /></div>
+```
+
+⇒ 失败时 `loading=false` + `visibleActiveTasks.length===0` ⇒ 落进 `v-else` ⇒
+「暂无运行中的任务」+ **「点击「+ 新任务」创建」**。
+会话区同理 ⇒「暂无会话」+「点这里提问，开始新对话」。
+
+**实测读数**（`.artifacts/s843-probe/probe.mjs`，照抄源码形状）：
+
+| 场景 | 失败前 tasks | 失败后 tasks | 失败后 sessions | 任务区分支 | 会话区分支 | 用户可见说明 |
+|---|---|---|---|---|---|---|
+| A 读失败（503 / Network Error） | 3 | **0** ⛔ | **0** ⛔ | `empty-state` ⛔ | `empty-state` ⛔ | `""` ⛔ |
+| B 读成功（对照） | 3 | 1 | 1 | `list` | `list` | `""` |
+
+#### D2 · 这一处比 §840/§842 更重，而且**正好落在那道门的盲区里**
+
+`list-error-failpath` 的契约原文：「刷新失败时**必须保留已经显示的行**」。
+它的判据是「挂在 `EmptyState` 上的**错误分支**必须带 `.length` 守卫」。
+
+- §840/§842：失败被**显示成**空 —— 有错误分支、没守卫（那时被它抓到）。
+- **§843：没有错误分支，只有一句主动清空** ⇒ 那道门**无从下手**，
+  因为它查的是「条件表达式」，而这里要查的是「catch 里有没有把数据抹掉」。
+
+⇒ ⭐⭐⭐⭐⭐ **一道门覆盖的是它建模的那个失效形态。**
+UI-07e 是「错误态遮蔽行」，于是门去查错误态；
+后来出现的「代码主动清空」不在那个模型里，**门绿着，缺陷在**。
+
+#### D3 · 登记表理由与事实不符
+
+`TasksView` 登记为 `n/a`，理由「accStore.error 渲染在弹窗内的 `.acc-error`，是行内提示，不接管整页」。
+那句话**只描述了委托弹窗里的那一处**，对 `loadTasks` / `loadSessions` 一个字都没说
+⇒ 而那两个函数才是列表的主数据通路。
+
+### 2. 落地
+
+| 位置 | 改动 |
+|---|---|
+| `features/tasks/TasksView.vue` | 两个 loader 的 catch **不再清空**（fail-open：保留已加载行）改挂 `tasksError` / `sessionsError`；每个 loader 开头清一次上一次的说明；模板两处各加「带 `.length === 0` 守卫的失败分支 + 可点重试」，两处各加「有行时的非破坏性横幅」；补 `.list-error-banner` / `.banner-retry` 的 scoped 样式（本文件原本没有） |
+| `styles/__tests__/list-error-failpath.test.mjs` | 登记表 `TasksView` 由 `n/a` 改 `enforced`；`enforced` 计数 4→5 且棘轮把 `TasksView` 也钉住；**M3/M4 的「n/a 样本视图」从 `TasksView` 改指 `pages/OptimizedDemo.vue`**（它已不是 n/a，再拿它当样本就名不副实——断言仍会过，但它证明的东西变了） |
+
+沿用仓库既有契约（不是本节发明的）：
+`continuousList.ts` 的 refresh 注释与 UI规范 07 §2「失败保留旧内容及筛选，不把旧行瞬间清空后报错」。
+⇒ 本节是把**已经写下的契约**落到一个没遵守它的视图上。
+
+⚠ 命名仍是刻意带 `Error`：`tasksError` / `sessionsError`。
+§840（`readFailed`）与 §842（`readFailure`）各因此让仓库门禁变瞎过一次。
+
+### 3. 判据与变异
+
+判据扩到 **78 例全通过**（新增 §843 一组 12 例）。
+
+核心判据 `catchClearsRows(src, fn)`：**catch 块体内不得出现「某个 ref = []」**。
+⚠ 口径如实标注：它同样会命中「确实想清空」的合法写法（目前本仓没有这种写法）；
+若将来有，必须在这里**显式登记例外**，而不是把判据放宽。
+
+**对真实 `TasksView.vue` 的六路端到端变异**：
+
+| 变异 | §840-843 判据 | 仓库门禁 `list-error-failpath` |
+|---|---|---|
+| M1 把 `tasks.value = []` 原样放回去（**还原真缺陷**） | 🔴 1 | **0** |
+| M2 把 `sessions.value = []` 放回去 | 🔴 1 | **0** |
+| M3 拿掉任务的「无行」守卫 | 🔴 1 | 🔴 3 |
+| M4 拿掉会话的「无行」守卫 | 🔴 1 | 🔴 3 |
+| M5 标志改回 `tasksFailed` | 🔴 1 | 0 |
+| M6 去掉有行时的横幅 | 🔴 1 | 0 |
+| 复原后基线 | 0 | 0 |
+
+⚠ **M1/M2 那一列的 0 是本节的全部结论**：把两个真缺陷放回去，那道门**依然全绿**。
+它能看守「错误分支的守卫」（M3/M4 各 3 条红），却完全看不见「catch 里主动清空」。
+
+### 4. 量具自证（本节又抓到 `blockFrom` 一个更隐蔽的缺陷）
+
+`blockFrom` 只会处理**箭头函数**（为了 §840 的 `fetchPage: async ({page}) => {` 写的）。
+§843 第一次跑，它遇到 `async function loadTasks() {` 这种普通函数声明 ⇒
+找不到 `=>` ⇒ **一路找到后面某个 `=>`** 再取它的 `{` ⇒ 返回一段完全无关的切片。
+
+⚠ 危险之处不在假红，而在**它可能碰巧包含 try/catch 而给出假绿**
+—— §842 的 `noUnguardedTry` 正是在这种垃圾切片上通过的。已重写为
+「跳过形参列表（括号配平）→ 若有 `=>` 则越过 → 断言下一个字符必须是 `{`」，两种形状都支持。
+
+另两处同类：
+- `indexOf('暂无运行中的任务')` **命中了我自己写的注释**（注释里正是在解释这段代码）
+  ⇒ 新增 `tplCode()`（模板区 + 剥 `<!-- -->` 注释）；凡用界面文案当锚点的判据一律走它。
+- §843 顺序判据的锚点从「文案字面量」改成空态分支**自己的 title 绑定表达式**
+  （`:title="activeTasks.length > 0` / `icon="💬"`）—— 注释里不会出现这些。
+
+### 5. 口径与未实测
+
+- ⛔ **未实测（需真机）**：任务/会话读取失败的真实发生率（后端不可达、鉴权过期、网络抖动）。
+- ⛔ **未验证** fail-open 的副作用：连续失败多次后，屏幕上的任务会是**较旧的快照**
+  —— 这一点已由文案（「下面这些是上次读到的，可能不是最新的」）告知，但**没有做重试退避**，
+  也没有实测用户是否会反复看到这条横幅。
+- 阴性声明的口径：§841/§842 待办里点名的三个视图至此**全部取证完毕** ——
+  `EmailInboxView`（§841 已修）、`EmailFolderListView`（§842 已修）、
+  `TasksView`（本节）、`SessionListView`（§842 已取证为阴性）。
+  ⇒ **我没有声称「仓库里所有读失败路径都已覆盖」** ——
+  本节的枚举范围是「`list-error-failpath` 登记表里的下拉刷新视图」，不是全仓所有列表。
+  仍有未纳入该门的数据通路（例如设置页、审批页等非下拉刷新页面）**未取证**。
+
+### 6. 待拍板
+
+1. `list-error-failpath` 的判据要不要**扩一维**：除了「错误分支必须带行数守卫」，
+   再加「**loader 的 catch 不得把列表 ref 置空**」（§843.1 D2）。
+   本轮只在自己判据里实现了它，**没有动那道门的语义**。
+2. 「失败保留旧行」的**陈旧度**怎么表达：要不要显示「上次更新时间」（需要给数据打时间戳）。
+3. 连续失败要不要自动重试/退避（当前只有用户手动点重试）。
+4. 该门的扫描范围仍只是「用了 `<PullToRefresh>`」，非下拉刷新页面的同类缺陷仍未覆盖。
+
+---
+
+## §844 全仓扫面：store 层清空列表 + 视图从不渲染 store 的 `error`
+
+§843 落地后把它的尺子做成扫面器跑全仓（652 个文件），「catch 块里把某个列表置空」**候选 7 处**，
+逐个读上下文判定后，只有一处值得动；而这一处的定性比前几节都微妙。
+
+### 0. 扫面读数（先给结论，避免只讲动过的那一处）
+
+`.artifacts/s844-sweep/sweep.mjs`，652 个文件、catch 块内含「X = []」的候选 **7 处**：
+
+| 文件 | 函数 | 目标 | 定性 |
+|---|---|---|---|
+| `stores/opencode.ts` | `loadSessions` | `this.sessions` | ⛔ **本节处理**（见 D1/D2） |
+| `features/tasks/TasksView.vue` | `loadTasks` / `loadSessions` | `tasks` / `sessions` | ✅ §843 已修 |
+| `features/config/useConfigList.ts` | `load` | `instances.value` | 有 `error` 标志（未取证渲染，**未处理**） |
+| `features/instances/InstanceListView.vue` | `loadInstances` | `instances.value` | 有 `error` 标志（未取证渲染，**未处理**） |
+| `features/email/EmailSummaryView.vue` | `loadList` | `summaries.value` | 两条分支都清 + 有错误提示（**未处理**） |
+| `features/scheduled-tasks/ScheduledTaskEditView.vue` | （匿名） | `previewTimes.value` | 清的是**预览**，且有 `previewError` ⇒ 合法 |
+| `stores/opencode.ts` | `loadInstances` | `this.instances` | 消费方 `OpenCodeHub.vue` **确实渲染** `error` ⇒ 不是谎报，本节未改（已登记） |
+
+⚠ 表里三处「未处理」是**据实登记**，不是我判定它们无害 —— 它们的消费方是否渲染 `error`
+我只查了 `opencode` 那一组，另外两处**未取证**。
+
+### 1. 缺陷证据
+
+#### D1 · store 侧无条件清空，而这里的清空其实**挡住了一个更糟的缺陷**
+
+```ts
+async selectInstance(instanceId: string) {
+  const instance = this.instances.find(i => i.id === instanceId)
+  if (!instance) { this.error = '实例不存在'; return }
+  this.selectedInstance = instance     // ← 先换标题
+  await this.loadSessions(instanceId)  // ← 再读数据
+}
+
+async loadSessions(instanceId: string) {
+  …
+  } catch (err) {
+    this.error = err.message || '加载会话失败'
+    this.sessions = []                 // ← 无条件清空
+  }
+}
+```
+
+⇒ 原来那句 `this.sessions = []` **不是疏忽，它在挡一件事**：
+`selectInstance` 先把 `selectedInstance` 换成新实例才读数据 ⇒ 若读失败又不清，
+就会在**新实例的标题下显示旧实例的会话** —— 那比清空更糟。
+
+⚠ 但它同样挡住了另一件事：`refresh()`（`opencode.ts:328-329`）与 WS 推送后的重载
+（`:297-298`）调的是**同一个** `selectedInstance.id` ⇒ 一次网络抖动就把用户正在看的
+会话列表整个抹掉。
+
+⇒ **同一个赋值，两种调用路径需要相反的行为** ⇒ 不能「一律保留」也不能「一律清空」。
+本节引入 `sessionsOwnerId`（当前 `sessions` 属于哪个实例）把这件事变成可判定的：
+
+```ts
+// 成功路径
+this.sessionsOwnerId = instanceId
+// 失败路径
+if (this.sessionsOwnerId !== instanceId) this.sessions = []
+```
+
+#### D2 · 视图从不读 `store.error` ⇒ 前述所有失败对用户**完全不可见**
+
+`features/opencode/SessionListView.vue`（注意是 `features/opencode/` 下的那个，
+不是 §842 取证为阴性的 `features/sessions/SessionListView.vue` —— **两个文件同名**，
+排查时极易混淆）：
+
+- 模板链：`v-if="loading"` → `v-else-if="sessions.length > 0"` → `v-else` ⇒
+  **「暂无会话」+「在 OpenCode 中开始一个新对话」**；
+- 全文件 `error` 出现 **0 次** ⇒ `this.error` 被 store 設了，但没有任何消费者。
+
+⇒ 失败时用户看到的是「暂无会话」，并被**引导去开一个不必要的新会话**，
+而他的会话一直都在 OpenCode 侧。
+更矛盾的是：页面顶部那条实例横幅仍然显示「N 活跃 • M 空闲」——
+它由同一份被清空的数据算出，于是横幅和正文**互相打脸**。
+
+⚠ 对照：`OpenCodeHub.vue`（消费同一个 store 的 `instances`）**确实**渲染了
+`v-else-if="error"` ⇒ 所以 `loadInstances` 那处清空**不是**谎报，本节未改它。
+
+### 2. 落地
+
+| 位置 | 改动 |
+|---|---|
+| `stores/opencode.ts` | 新增 `sessionsOwnerId` 状态 + 成功路径记录归属 + 失败路径按归属决定清空（**不是**一律 fail-open，也不是一律清空）；`this.error` 保留 |
+| `features/opencode/SessionListView.vue` | `readError` computed 把 `store.error` 翻成共享 notice（**不把技术串甩给用户**）+ 永远非空的 `readErrorNotice`；模板加带 `.length === 0` 守卫的失败分支（可点重试）+ 有行时的非破坏性横幅；补 `.error-state` / `.error-icon` / `.list-error-banner` / `.banner-retry` 的 scoped 样式 |
+
+⚠ 该视图**不在** `list-error-failpath` 的登记表里（它没有下拉刷新容器，顶部只有刷新按钮），
+所以这两条分支由本节自己的判据看守。⚠ 而这带来本节第三次同族自伤：
+**我第一版注释里写出了那个容器的标签名** ⇒ 那道门是靠 `text.includes('<标签名>')`
+判视图类型的 ⇒ 该视图被误认成下拉刷新视图 ⇒ 门禁立刻报「未登记」。
+已改写措辞（并在注释里写明「刻意不写出标签名」）。
+
+### 3. 判据与变异
+
+判据扩到 **86 例全通过**（新增 §844 一组 8 例）。
+
+**对真实 `stores/opencode.ts` 与视图的五路端到端变异**：
+
+| 变异 | §840-844 判据 | 仓库门禁 |
+|---|---|---|
+| M1 store 改回无条件清空（**还原真缺陷**） | 🔴 1 | 0 |
+| M2 成功路径不记录归属 | 🔴 1 | 0 |
+| M3 视图不再读 `store.error`（**还原真缺陷**） | 🔴 1 | 0 |
+| M4 拿掉视图的「无行」守卫 | 🔴 1 | 0 |
+| M5 把技术串（`msg`）直接当标题 | 🔴 1（**修判据后**） | 0 |
+| 复原后基线 | 0 | 0 |
+
+⚠ **M5 第一版是 0 红 —— 那是判据无牙，不是没有缺陷。**
+我的判据查的是字面量（模板里有没有把 `error` 直接绑出去），
+而 M5 是「在 computed 里手搓 `{ title: msg }`」—— 语义上完全一样，形状上查不到。
+⇒ 已改为查**结构**：notice 必须来自 `listReadFailureNotice(...)`，
+且 `msg` 不得出现在任何用户可见字段里。⇒ 修完复跑 M5，红 1。
+
+**本节 5 路变异的门禁那一列全是 0**，与 §843 同一个结论的加强版：
+这类缺陷（store 层清空 / 视图不读 error）**完全落在那道门的覆盖范围之外**。
+
+### 4. 口径与未实测
+
+- ⛔ **未实测（需真机）**：`loadSessions` 失败的真实发生率；切实例时读失败的概率。
+- ⛔ **未验证归属规则的真机行为**：`sessionsOwnerId` 的语义我是从调用链推出来的
+  （`selectInstance` 先换标题 → 读失败必须清；`refresh` 同一个 id → 保留），
+  **没有在设备上跑过切实例失败的场景**。
+- ⚠ 本节的扫面**不是**全仓所有失败路径的清单：
+  - 判据口径是「catch 块体内出现 `X = []`」，**不覆盖**「catch 里做了别的破坏」
+    （例如 `tasks.value.splice(0)`、`list.value = undefined`、直接清 IndexedDB）；
+  - 也**不覆盖**「loader 有 catch 但没设错误标志」以外的形态（如静默重试三次后放弃）；
+  - 7 处候选里 3 处「未处理」**未取证**（见 §0 表）。
+- 阴性结论的口径：`OpenCodeHub.vue` 渲染 `store.error` 是**读码确认**的，
+  因此我没有说「store 的两个清空都有出口」——只说了 `loadInstances` 那处有。
+
+### 5. 待拍板
+
+1. `loadInstances` 的 `this.instances = []` 要不要也按归属/有行处理
+   （`OpenCodeHub` 会显示错误，但实例选择器仍会被清空，`selectInstance` 的
+   `instances.find(...)` 随后会走到「实例不存在」分支）。
+2. 扫面表里三处「未处理」（`useConfigList` / `InstanceListView` / `EmailSummaryView`）
+   要不要排下一轮取证 —— 本轮只做了读码定位，**未核实它们的消费方是否渲染错误**。
+3. 两个同名 `SessionListView.vue`（`features/sessions/` 与 `features/opencode/`）
+   要不要改名 —— 本节排查时已经踩过一次混淆风险。
+4. `catch 不得把列表置空` 要不要升格成**仓级门禁**（§843 待办第 33 条）——
+   本节的扫面器已经证明它能一次性捞出 7 处候选，是一道**划算**的门。
+
+---
+
+## §845 收掉 §844 自己登记的缺口：配置列表把 composable 的 `error` **明确丢弃**（`void error`）
+
+**一句话**：`ConfigList.vue` 解构出 `error` 后紧跟一句 `void error` 把它丢掉，
+而它的上一行注释写着「error 暴露给模板」—— **注释说的与紧邻的代码正好相反**。
+读失败时用户看到「没有可用的实例」+「请先配置 OpenCode 实例」，
+并被引导去做一整套实例配置，而真实原因只是一次读取失败，页面上**没有任何重试入口**。
+
+### 1. 三处候选的取证结论（本节先把上节的登记收掉）
+
+§844 扫面表里 3 处「未处理」，逐个查完：
+
+| 候选 | 结论 | 依据 |
+|---|---|---|
+| `EmailSummaryView.vue` | ✅ **假阳性，已修过** | `:12` `v-else-if="loadError"` 排在空态 `:17` **之前**，且 `:104-110` 有注释明写「原先两个 catch 都是把数据置空…现已改成 loadError」⇒ 它是本仓**最正确**的一处 |
+| `InstanceListView.vue` | ⚠ **有出口，但仍有「刷新丢行」** | `:19-25` 有 `v-else-if="error"` + 重试；`:115` 仍 `instances.value = []`；而 `:9` 有**刷新按钮** ⇒ 用户点刷新失败会丢行（但**会**看到错误，不是谎报） |
+| `ConfigList.vue` | ⛔ **本节处理** | 见下 |
+
+⚠ 上表三行都是**读码结论**；`InstanceListView` 的刷新按钮路径**未在设备上跑过**。
+
+### 2. 缺陷证据
+
+#### D1 · 注释与代码直接矛盾
+
+```ts
+// ConfigList.vue:15-19（改前）
+const { instances, loading, error, load } = useConfigList()
+onMounted(load)
+
+// error 暴露给模板（兜底文案已与 useConfigList 保持一致）
+void error          // ← 这就是「明确丢弃」
+```
+
+⇒ **本会话第 4 次撞上「注释声称的机制要单独验一次」**（§837 `MeetingListView` 的
+「dbNotReady 仍由 fetchPage 内捕获」、§840、§841 `EmailInboxView` 的「任何抛出都会设
+loadError」各一次）。⚠ 前三次是**注释孤儿**（描述一个不存在的机制），
+这次更特别：**注释描述的机制就写在紧邻的下一行，而那行是它的反面**。
+
+#### D2 · composable 设了 error、清了数据，视图两样都不显示
+
+```ts
+// useConfigList.ts:28-40（改前）
+async function load(): Promise<void> {
+  loading.value = true; error.value = ''
+  try { instances.value = await api.getInstances() }
+  catch (e) {
+    error.value = apiError(e, 'errors.loadSettingsFailed')
+    instances.value = []          // ← 清空
+  } finally { loading.value = false }
+}
+```
+
+模板（`ConfigList.vue:32-65`，改前）：`v-if="loading"` → `v-else` → `v-for instances`
+→ `v-if="instances.length === 0 && !loading"` ⇒ **「没有可用的实例」+「请先配置 OpenCode 实例」**。
+
+**实测读数**（`.artifacts/s845-probe/probe.mjs`）：
+
+| 场景 | error | instances | 模板落点 | 错误出口 |
+|---|---|---|---|---|
+| A 读取失败（502） | 非空 ⛔ | 0 行 ⛔ | 「没有可用的实例」+「请先配置 OpenCode 实例」 | **零** ⛔ |
+| B 读取成功（对照） | 空 | 1 行 | 列表 | — |
+
+⇒ 状态是对的（error 有值），只是**没有任何人渲染它**。
+
+#### D3 · 那次清空本来无害，是**我加的重试让它变有害**
+
+⚠ 这一点必须写清楚，否则会误判为「原来就有 bug」：
+本页的调用点只有 `onMounted`（`:16`）⇒ 首次加载时 `instances` 本来就是 `[]`
+⇒ **原来的清空是无害的**。是 §845 新加的重试入口引入了
+「有行时点重试失败 → 抹掉正在看的列表」这个场景。
+⇒ 与 §843/§844 同一处置：失败路径**不碰数据**，只挂提示。
+
+### 3. 落地
+
+| 位置 | 改动 |
+|---|---|
+| `features/config/ConfigList.vue` | 删 `void error` 与那句相反的注释；新增 `readError` / 永远非空的 `readErrorNotice`；模板加「带 `.length === 0` 守卫的失败分支 + 可点重试」与「有行时的非破坏性横幅」；**真空态加 `!readError`**（否则失败态与真空态仍会同时成立） |
+| `features/config/useConfigList.ts` | catch 里的 `instances.value = []` 移除，改 `console.error` + 不动数据 |
+
+⚠ **两处形状坑**（都是实际撞到的）：
+1. 失败分支**必须用 `v-if` 而不是 `v-else-if`** —— 它前面隔着 `v-for` 的实例卡片，
+   没有相邻的 `v-if` 兄弟 ⇒ Vue 编译直接拒绝。
+   ⚠⚠ **这是 §842 同一个坑的第二次**：我在 §842 的文档里已经把它记成教训，
+   却在 §845 又踩了一次；而抓到它的是**仓库的 `vue-template-compile` 门禁**，**不是我自己的判据**。
+   ⇒ 教训本身还不够，**必须变成一条能自动跑的门**（已登记为待拍板）。
+2. `ConfigList.vue` 是**脚本在前、模板在后**（多数视图相反）⇒ 量具 `templateOf`
+   的「取 `<script>` 之前」假设对它不成立，第一次跑时 6 条判据一起假红。
+
+### 4. 判据与变异
+
+判据扩到 **94 例全通过**（新增 §845 一组 8 例）。
+
+核心不变量之一是**可机械检查的**：`/\bvoid\s+error\b/` 不得出现 ——
+`void x` 是「我明确不用它」的写法，把它钉住就等于把「注释声称 vs 代码事实」
+这一族从人工核对变成自动判据。
+
+**对真实文件的四路端到端变异**：
+
+| 变异 | §840-845 判据 |
+|---|---|
+| M1 把 `void error` 放回去（**还原真缺陷**） | 🔴 1 |
+| M2 composable 改回清空 `instances` | 🔴 1 |
+| M3 真空态不再排除失败态 | 🔴 1 |
+| M4 拿掉失败分支的「无行」守卫 | 🔴 1 |
+| 复原后基线 | 0 |
+
+⚠ 这四处**都不在** `list-error-failpath` 的管辖内（`ConfigList.vue` 既没用下拉刷新容器，
+也没有 `EmptyState`）⇒ 与 §843/§844 连续三节同一结论：
+**这类缺陷系统性落在那道门的覆盖范围之外**，它只管「用了下拉刷新 + 挂了空态组件」的视图。
+
+### 5. 量具自证（本节三处）
+
+1. `templateOf` 假设「模板在 `<script>` 之前」⇒ 对 `ConfigList.vue` 返回的只是头部注释
+   ⇒ 6 条模板判据一起假红。已改为「脚本区无 `<template` 时，从第一个 `<template` 取到最后一个 `</template>`」。
+2. `blockFrom` 不认 TS 返回类型注解：`async function load(): Promise<void> {`
+   在锚点之后是 `:` 而不是 `{` ⇒ 阳性对照直接失败。已加「`: … {` 跳到 `{`」。
+3. 修完 1、2 后**重跑了 §840–§844 的全部历史用例**，确认没有一直在假绿的（94/94 通过）。
+
+### 6. 口径与未实测
+
+- ⛔ **未实测（需真机）**：本配置页读取失败的真实发生率；`apiError` 文案在该页的可读性。
+- ⛔ `InstanceListView` 的「刷新按钮 + 清空」路径**只做了读码确认**，未在设备上跑过，
+  也**未修**（它有错误出口，属较低优先级，已登记）。
+- ⚠ 本节仍**不是**「全仓读失败路径已覆盖」的声明：
+  §845 的判据查的是 `void error` + composable 的清空 + 本页模板三处形状，
+  不覆盖其它 composable / 其它视图的同族问题。
+
+### 7. 待拍板
+
+1. **`v-else-if` 相邻性要不要变成一条可自动跑的门** —— §842 与 §845 **连踩两次**，
+   都是仓库的 `vue-template-compile` 抓到而我的判据没抓到；
+   更值得做的是让**我自己那套判据**也覆盖模板可编译性（否则新写的分支会反复踩）。
+2. `InstanceListView` 的「刷新按钮 + 清空 instances」要不要修（§845.6 第 2 条）。
+3. `ConfigList.vue` 有没有别的调用 `load()` 的入口（我查到只有 `onMounted` 与我新加的重试），
+   若将来加「切实例」，`instances` 的归属问题会像 §844 的 store 那样出现。
+
+---
+
+## §846 教训要长在**我天天跑的那把尺子**里：`v-else-if` 相邻性进自己的判据
+
+### 1. 缺陷：不是产品缺陷，是**判据的盲区**（且盲区形态很具体）
+
+§842 与 §845 **连踩两次**同一个坑：`v-else-if` 的前一个兄弟不是 `v-if`
+（中间隔着 `v-for` 或 `v-if`）⇒ `@vue/compiler-sfc` 直接拒绝编译，
+`vite build` 整体挂掉。两次都是**仓库既有门** `src/__tests__/vue-template-compile.test.mjs`
+抓到的，而**我自己那份 `list-load-state.test.ts` 的 94 条判据一条都没响**。
+
+⚠ 关键在于**范围要说准**：CI 从来没漏过 —— `npm run gates` 里有那道门，全仓 `.vue` 全覆盖。
+真正的缺口是**我单独跑自己那份判据的时候**（每次改一个视图、只想快速确认契约还在的那一步）：
+它全是**源码文本扫描**（正则找分支、找标志名、找重试入口），
+而「这个 `v-else-if` 有没有相邻的 `v-if` 兄弟」是一个**结构问题**，
+文本扫描对它**在原理上就无感** —— 而这恰恰是我新写分支时最可能写错的那一处。
+
+⇒ 所以 §842.7 / §845.7 那句「教训要落地成能在 CI 里跑的那一条」**说浅了一层**：
+CI 那条一直都在，缺的是**我自己那份**。教训写在文档里、写在代码注释里、
+甚至写在提交的 message 里，都**不会**自动生效 —— 只有长在**我每次改动都会跑的那个文件里**的断言才算数。
+
+### 2. 落地
+
+判据文件 `frontend/src/utils/__tests__/list-load-state.test.ts` 新增 describe
+「§846 · 模板可编译性（分支相邻性）」，**13 例**（94 → **107 全通过**）：
+
+| # | 断言 | 作用 |
+|---|---|---|
+| 7 | 本会话经手的 **7 个视图**逐个 `parseSFC` + `compileTemplate` 零错误 | 把结构合法性接进自己的尺子 |
+| 1 | 登记视图数 == 7 且每份源码 > 500 字符 | 防止登记表与枚举漂移后**静默少扫** |
+| 1 | 负控：把 `ConfigList` 的 `v-if` 改成 `v-else-if` ⇒ 必须红 | 端到端证明有牙 |
+| 1 | 负控：**同一变异下前面所有文本判据仍然全绿** | 证明「洞」确实存在（见 §846.3） |
+| 1 | 负控：孤立 `v-else` | 覆盖另一种相邻性失效 |
+| 1 | 负控：SFC 解析阶段出错（未闭合标签）也算失败 | 只跑 `compileTemplate` 那一半是不够的 |
+| 1 | 正控：无模板的纯 ts 组件跳过而不是假红 | 防尺子空转 |
+
+覆盖的 7 个视图 = §840–§845 **本会话改过模板的全部**：
+`MeetingListView` / `NoteListView` / `EmailInboxView` / `EmailFolderListView` /
+`TasksView` / `opencode/SessionListView` / `config/ConfigList`。
+
+⚠ **尺子共用**：`templateCompileErrors()` 与仓库那道门用**同一对**
+`parseSFC` / `compileTemplate`、同样把 parse 阶段错算失败、同样跳过无模板组件。
+⚠ 断言 `assert.notEqual(mutated, CFG_LIST)`：变异没生效要**单独报**，
+否则「负控红」可能只是匹配失败造成的假象。
+
+### 3. 变异双向验证（**真实文件**，非测试内构造）
+
+`.artifacts/s846-probe/`（gitignored）：把 `ConfigList.vue` **真的**改成
+`v-else-if="readError && instances.length === 0"`（前一个兄弟是 `v-for` 的实例卡片），
+跑两份门：
+
+| 被跑的判据 | 读数 |
+|---|---|
+| `list-load-state.test.ts`（修改前） | **107 pass / 0 fail** |
+| `list-load-state.test.ts`（变异后） | **105 pass / 2 fail** —— 红的**只有** §846 那一组：<br>★★ `config/ConfigList`：SFC 解析 + 模板编译零错误<br>★★★ 负控：把 ConfigList 的失败分支 `v-if` 改成 `v-else-if` ⇒ 尺子必须转红 |
+| 仓库既有 `vue-template-compile.test.mjs`（变异后） | **186 pass / 1 fail** —— 与新尺子**同时**抓到同一个缺陷 |
+| 两份（复原后） | **107 / 0** 与 **187 / 0** |
+
+⇒ 这组读数就是本节的全部论点：**§840–§845 那 105 条断言（文本扫描那一族）
+对一个会让构建整体挂掉的缺陷完全无感**，只有新加的 2 条红了。
+
+### 4. 口径与未实测
+
+- ⚠ 本节**不新增任何产品缺陷**，「修复」的是**判据的盲区**；代码侧一行未改
+  （`git diff --stat frontend/src/features/config/ConfigList.vue` 复原后为空）。
+- ⚠ 覆盖面是**我经手的那 7 个视图**，不是全仓 —— 全仓由仓库既有那道门负责
+  （本节反而**依赖**它存在：它保证了 `npm run gates` 里不会漏）。
+- ⛔ **未实测**：真机/真机构建下 `vite build` 因模板错误挂掉的具体表现
+  （§846 全部结论都来自编译器读数与测试读数，**没有跑过一次真实构建**）。
+
+### 5. 待拍板
+
+1. 本节**就地关掉了 §845.7 第 1 条**：那一条问「要不要变成一条能自动跑的门」——
+   答案是「仓库那道门本来就在，缺的是自己那份」，已落地（§846.2）。
+2. **新问题（§846 派生）**：这份尺子只覆盖 7 个视图，而它靠的是「**我改过什么就登记什么**」。
+   同族问题（判据覆盖范围靠人工登记）在本会话已出现过两次：
+   §844 的 `z-index-ladder` ALLOWLIST 按行号登记被我的编辑推了 42 行、
+   §843 的判据登记表 `n/a → enforced` 靠人肉点。
+   ⇒ 要不要把「本会话经手视图」这张表**变成可推导的**（例如按 mtime 或按 `readError`
+   出现与否自动枚举），属主定。
+
+---
+
+## §847 全仓扫面：错误标志被生产，却**没有任何出口**（12 处候选逐个取证 → 3 处真缺陷）
+
+### 1. 为什么这节能扫出东西：把 §844/§845 的两个单点变成一道审计
+
+§844 找到「store 设了 `error` 而 `features/opencode/SessionListView.vue` 全文件 `error` 出现 **0 次**」，
+§845 取证到 `ConfigList.vue` 的 `// error 暴露给模板` 紧跟一句 **`void error`**。
+两次都靠**人肉点名**，都是单点。本节把「错误标志 ⇒ 必须有出口」变成可自动跑的审计，
+并对 `stores/` + `composables/` 下**每一个**错误标志逐个取证。
+
+### 2. 扫面口径与 13 条登记（含阴性读数）
+
+枚举正则：`(const|let)\s+(\w*[eE]rror\w*|\w*Err\w*|\w*Failure\w*)\s*=\s*(ref|shallowRef|computed)`
+（目录：`stores` / `composables` / `lib` / `utils`，排除 `__tests__`）⇒ **13 条**。
+
+| # | 生产点 | 结论 | 读数 |
+|---|---|---|---|
+| 1 | `stores/approval.ts::error` | ⛔ **真缺陷 D1** | 2 个消费方（`ApprovalPanel` / `SessionConversationView`）渲染它的次数 **0** |
+| 2 | `stores/session.ts::errorMessage` | 阴性 | `SessionConversationView.vue:638` `v-if="store.errorMessage"` |
+| 3 | `stores/chatAgentStore.ts::error` | ⛔ **真缺陷 D3** | 7 个消费方，渲染次数全 **0** |
+| 4 | `stores/chatAgentStore.ts::syncError` | ★ **登记不修** | 赋值 6 处、**零消费**；但 `syncUpload/syncDownload` 的调用点自己 catch 并弹 toast + 横幅（`AgentSyncSheet.vue:135`），`checkSyncAvailable` 虽吞错但失败在**点击时**可见 ⇒ **死状态，不是用户可见缺陷** |
+| 5 | `stores/accTasks.ts::error` | 阴性 | `TasksView.vue:508` |
+| 6 | `stores/flashcards.ts::error` | 阴性 | `FlashcardListView.vue:32`（带重试） |
+| 7 | `composables/usePromptOptimizer.ts::optimizeError` | ⛔ **真缺陷 D2** | 全仓引用仅 4 处，**全在 composable 自身**（声明 / 清空 / 赋值 / return）⇒ 消费方 **0** |
+| 8 | `composables/useBiometricStatus.ts::lastError` | 阴性 | 头注释明写「失败时静默归零，不阻塞渲染」，且 `availability` 会变 `unavailable` 并被 `SettingsPermissionsView` 渲染 |
+| 9 | `composables/usePendingApprovals.ts::loadError` | 阴性 | `SessionConversationView.vue:643`（以 `approvalsError` 渲染） |
+| 10 | `composables/useMeetingRecorder.ts::sttError` | 阴性 | 经 `UnifiedComposer` 渲染（computed 直通） |
+| 11 | `composables/useVoiceInput.ts::sttError` | 阴性 | `UnifiedComposer.vue` 两处 `uc-hint--err` |
+| 12 | `composables/usePdfViewer.ts::error` | 阴性 | `InvoicePreviewSheet.vue:15` |
+| 13 | `composables/usePronounce.ts::errorMsg` | 阴性 | `FlashcardReviewView.vue:89`（**以别名 `pronounceError` 渲染 ⇒ 判据按标识符名找出口，别名也算**） |
+
+### 3. D1 ⛔ 审批拉取失败**完全不可见**（human-in-the-loop 死锁）
+
+`stores/approval.ts::fetchPending()` 失败时只设 `error`、**保留上一次结果**，
+源码注释原话：「拉取失败不阻断聊天；仅记录，保留上一次结果」——
+而「仅记录」的那一格**全仓无人读**。
+
+`ApprovalPanel.vue` 的根节点是 `<section v-if="store.hasPending">`：
+首屏失败时上一次的 `permissions/questions` 是空数组 ⇒ `hasPending=false`
+⇒ **整块面板（含任何放在里面的横幅）都不渲染** ⇒ 用户看到的是「没有待审批」，
+而实际上**智能体正卡在等一个人类批准**。
+
+⚠ **一致性对照（最强的一处证据）**：同一屏（`SessionConversationView.vue:642-646`）
+已经为**另一条**审批拉取路径做好了正确形态 ——
+`<span>审批状态拉取失败</span>` + `<button @click="refreshApprovals">重试</button>`。
+⇒ **同类数据在别处已被处理，这里没有**。
+
+落地：横幅用**独立 `v-if`** 放在 `hasPending` 面板**之外**（不是 `v-else-if`、不是塞进面板里），
+带 `role="alert"` 与重试按钮（走 `store.fetchPending()`，开头自清 `error`）。
+
+### 4. D2 ⛔ AI 优化失败**完全不可见**
+
+`usePromptOptimizer` 在 `onError` 里 `optimizeError.value = storeApiError(err, '提示词优化失败，请稍后重试')`，
+**并把它 return 出去**；而唯一消费方 `UnifiedComposer.vue:416` 只解构了
+`{ optimize, isOptimizing, optimizeRetryHint }`，调用处 `onOptimize()` 连 `onError` 都不传
+⇒ `handlers.onError?.(err)` 是空操作。
+⇒ 用户点「优化」，按钮转圈，然后**停住**：没有文案、没有 toast，草稿也没变。
+看起来像「点了没反应」或「优化没效果」。
+
+落地：解构 `optimizeError`，在**两处** `sttError` / `optimizeRetryHint` 旁边渲染
+（复用既有 `uc-hint--err`，不新增样式）。
+
+### 5. D3 ⛔ `loadAgents()` 失败 = 未处理 rejection + 空列表谎报「暂无角色」
+
+`loadAgents()` 在「无本地缓存」分支 **`throw e`**，而**5 个调用点一个都没有 catch**：
+
+| 调用点 | 形态 | 后果 |
+|---|---|---|
+| `AgentLibraryView.vue:31` | `onMounted` 里裸调 | 未处理 rejection |
+| `AgentSelectorSheet.vue:23` | 同上 | 同上 |
+| `AIChatView.vue:564` | `openAgentSheet()` 里裸调 | 同上 |
+| `AgentDetailView.vue:36` | `onMounted(async)` 里 `await` | rejection ⇒ **整个 onMounted 拒绝** |
+| `AgentEditView.vue:52` | `onMounted(async)` 里 `await` | rejection ⇒ **下面的 `form` 初始化整段不执行** |
+
+`AgentLibraryView.vue:155-161` 正是 §840 的标准形态：
+`loading=false` + `filteredAgents.length===0` ⇒ 落进「暂无角色」+ **「创建第一个自定义角色」**，
+把用户引导去建一个已经存在过的角色。
+
+⚠ **纠正一个我差点写错的结论**：`AgentEditView` 的错写路径**没有**造成数据丢失 ——
+`handleSave()` 有三道非空校验（name / description / system_prompt），表单全空时保存被挡住。
+**真实**后果是：编辑态拿不到角色时，`if (isEditMode && editingAgent)` 为假 ⇒
+落进 `else` 的**创建**分支 ⇒ 用户「编辑」却新建出第二个角色。
+⇒ 落地守卫 `if (isEditMode.value && !editingAgent.value) { toast.error(...); return }`，
+把「静默改语义」变成「显式拒绝」。
+
+落地：5 个调用点全部接住；`AgentLibraryView` / `AgentSelectorSheet` 加
+「失败分支（带行数守卫 + 重试）+ 有行时非破坏性横幅」。
+
+### 6. 撞到一道我不知道的既有门 —— 以及它**是对的**
+
+第一次跑 `npm run gates` 时 `src/api/__tests__/store-error-consumers.test.mjs` 红（3 处）：
+
+```
+- features/ai-chat/AgentSelectorSheet.vue:129  <p>角色列表拉取失败：{{ agentStore.error }}</p>
+- features/ai-chat/AgentSelectorSheet.vue:137  <span>角色列表可能不是最新的：{{ agentStore.error }}</span>
+- features/sessions/ApprovalPanel.vue:175      <span …>审批状态拉取失败：{{ store.error }}</span>
+修法：模板里改 {{ apiError(store.error, 'errors.xxx') }}，并确保该文件已接入 useApiError()。
+```
+
+按「撞门禁只改自己措辞、不动门禁语义」的惯例，先判它是真是假。**它是真的**，而且分两档：
+
+- `approval.ts::error` 存的是**原始 message**（`err?.message || '加载审批失败'`）⇒ 必须归一 ⇒ 已改用 `useApiError()`。
+- `chatAgentStore.error` 存的是**已归一**的 `storeApiError(e, 'errors.loadSettingsFailed')` ⇒
+  再套一层 `apiError()` 会被 `toUserMessage` 判为「无 i18n key」而**退回 fallback，丢掉真实文案** ⇒ 不套。
+  改法是把属性访问收成具名 `const agentErrorText = computed(() => agentStore.error)`，
+  归一责任与展示责任一眼可分。
+
+⇒ **归一发生在哪一层，必须逐个字段判断，不能一刀切。**
+
+⚠ **登记（未修，属门禁语义）**：`store-error-consumers` 的豁免是**文件级**的
+—— `NORMALIZED = /\b(apiError|toUserMessage)\s*\(/` 只要在该 `.vue` 里**任何一处**出现就整文件放行。
+`AgentLibraryView.vue` 正是靠第 99 行一处 `toast.error(apiError(err, '删除失败'))`
+让另外几处原始渲染**顺带过关**。这与 §841「守卫在、却空洞地满足」同形。
+
+### 7. 判据
+
+新文件 `frontend/src/stores/__tests__/error-outlet-audit.test.ts`，**28 例全通过**：
+
+| 组 | 例数 | 内容 |
+|---|---|---|
+| 错误标志必须有出口 | 20 | 尺子非空转（>100 个 `.vue`）；**登记表不许漂移**（枚举 ↔ 登记表双向对账）；每条都真被赋值或 computed 直通；11 条正向出口断言；2 条 `outlet:false` 的登记理由非空；1 条把「反向断言故意不做」显式登记；§847-D1 横幅位置 |
+| rethrow 的加载函数 | 2 | `loadAgents` 每个调用点必须有 `.catch(`；编辑态拿不到角色必须拒绝保存 |
+| 失败分支排在真空态之前 | 2 | 两个角色列表视图 |
+| 变异负控 | 6 | A 横幅改 `v-else`、B 顺序颠倒（合成模板）、C 删掉横幅、D 拿掉 `.catch`、E 拿掉 `optimizeError` 渲染、F 枚举器阳性对照 |
+
+⚠ 三条**量具自伤**（都是本会话同类第 N 次，写在这里是为了别再犯）：
+
+1. **块注释里写了带通配的路径**（`src` 下那种双星号接斜杠的形式）⇒ 提前闭合注释，
+   报 `Expected ';', '}' or <eof>` 而**行号指向十几行之后**。
+2. **判据被自己写的 HTML 注释抢了锚点**：我为了解释「为什么横幅必须在 `hasPending` 之外」
+   在模板里写了含 `v-if="store.hasPending"` 的注释，`indexOf` 先命中注释 ⇒ **假红**。
+   ⇒ 加 `tplCode()` 剥 HTML 注释（§843/§845 同源）。
+3. **变异改的是内存串、判据读的是磁盘文件** ⇒ 变异 E「永远为真」。
+   ⇒ `outletSitesWith(flag, overrides)` 提供注入口，否则测的是另一个世界。
+
+⚠ **判据的识别词是契约的一部分**（§840/§842/§843 各踩过一次，这里第 4 次）：
+为满足 §847.6 那道门把 `agentStore.error` 改名成 `agentErrorText` 之后，
+顺序判据里写死的正则**当场假红**。⇒ 断言改成按视图参数化 `errFlag`。
+
+### 8. 变异双向验证（**真实文件**，`.artifacts/s847-probe/`）
+
+把三处缺陷**原样放回真实文件**（`ApprovalPanel` 横幅改 `v-else`、
+`UnifiedComposer` 删两处 `optimizeError` 渲染、`AgentLibraryView` 删 `.catch`），
+再叠加 M4（把真空态与失败分支两块**对调**）：
+
+| 读数 | 值 |
+|---|---|
+| 修改后（基线） | **28 pass / 0 fail** |
+| 四路真实文件变异后 | **20 pass / 8 fail** |
+| 红的 8 条 | `optimizeError 必须有模板出口`、`§847-D1 横幅位置`、`loadAgents 调用点必须有 .catch`、`AgentLibraryView 失败分支顺序`、变异 A / C / D / E |
+| 复原后 | **28 pass / 0 fail** |
+
+⚠ **探针脚本自己也犯过一次**「变异没生效却报成功」：M4 第一次用
+`empty + '\n' + err` 拼接，而文件里两块之间**没有空行** ⇒ `replace` 空操作，
+脚本照样打印「M4 applied」，判据因此**假绿**。重做时加了 `assert s2 != s`。
+⇒ **探针脚本本身也要有变异自检**，判据文件里的 `assert.notEqual` 保护不到它。
+
+### 9. 口径与未实测
+
+- ⚠ 本节的判据只回答「**有没有出口**」——
+  **有出口是必要条件不是充分条件**（§841 的 `readError` 恒为空就是有出口而设不上）。
+  「这个错误标志在真机上会不会真被设上」不在本节范围。
+- ⚠ `outlet:false` 的**反向断言（必须真的没有出口）故意没做**：
+  `AgentSyncSheet.vue` 有自己的局部 `lastError`，与 `useBiometricStatus.lastError`
+  **同名**，而本审计按标识符名找出口 ⇒ 反向断言必然假阳。已在判据里显式登记这个缺口。
+- ⛔ **未实测（需真机/真网络）**：审批接口失败的真实发生率与「智能体卡住等人批准」的实际频次；
+  `useApiError` 归一后文案在该屏的可读性；`loadAgents` 失败率；`AgentEditView` 编辑态
+  拿不到角色时新守卫的实际文案观感。
+
+### 10. 待拍板
+
+1. **`chatAgentStore.syncError` 这块死状态要不要清掉** —— 赋值 6 处、零消费，
+   且与「视图各自 catch」是两套错误通道；清掉要么删字段，要么让视图改读它（属产品口径）。
+2. **`store-error-consumers` 的文件级豁免要不要收紧到渲染点级** —— §847.6 末尾那条，
+   现状是「一处 `apiError(` 放行整文件」，与 §841「守卫空洞满足」同形（属门禁语义）。
+3. **`AgentDetailView` / `AIChatView` 要不要也给「角色加载失败」一个出口** ——
+   本节只给两个列表页加了；详情页失败时是 `agent` 为空，聊天页是选择器为空。
+4. **§846 第 43 条（判据登记表可否自动推导）在本节再次坐实**：
+   「13 条登记表」也是人肉维护的，靠 §847 那条反向对账才不至于静默漏扫。
+
+---
+
+## §848 把「会 throw 的函数 × 调用点接不接住」做成扫面（158 → 8 → **1 处真缺陷**）
+
+### 1. 为什么扫这一族
+
+§847 的 D3 揭示的形态是：**一个刻意 rethrow 的函数，被调用时没人接**
+⇒ 未处理 rejection + 界面上零反馈。§847 只把它登记成
+`RETHROWERS = [{ fn: 'loadAgents' }]` 一条 —— 那是**点**，不是**面**。
+本节把它扫成面。
+
+### 2. 扫面口径（三次收窄，读数逐步收敛）
+
+| 版本 | 口径 | 候选数 |
+|---|---|---|
+| v1 全仓 | 所有 `.ts/.vue` 里「函数体含 `throw`」的名字 × 全仓调用点，±15 行窗口判 catch | **158** |
+| v2 收窄 | ① 定义方必须在 `stores/` 或 `composables/`；② 先剥 `//` 与 `/* */` 注释 | **8** |
+| v3 人工复核 | 逐条读源码 | **1 真缺陷 / 4 误报 / 3 定义行** |
+
+⚠ v1 的 158 里有两类噪声，各占大头：
+- **通用函数名撞车**：`read` 50 / `load` 34 / `remove` 10 / `list` 9 / `encryptString` 8
+  —— `read` 这个名字在仓库里有几十个不同定义，函数名根本不能当标识。
+- **注释与文档行**：v1 没剥注释 ⇒ `* ② 前端 fallbackSummarize() → /api/llm/chat`
+  这类文档行被当成调用点。
+
+⇒ **函数名不能当标识，除非它的定义方唯一。** 这是 v1→v2 的关键收敛动作。
+
+### 3. ⛔ D4：拍照失败零反馈（`pickImage` 的注释声称「由调用方提示」，而那个机制不存在）
+
+`composables/useCameraCapture.ts` 的 `pickImage`：
+
+```ts
+} catch (err) {
+  // 用户取消（"cancelled"）静默；真实错误上抛由调用方提示。
+  const msg = err instanceof Error ? err.message : String(err)
+  if (/cancel/i.test(msg)) return null
+  throw err                      // ← 刻意 rethrow，并把责任写给了调用方
+}
+```
+
+而它**唯一的**消费方 `UnifiedComposer.vue:477` 原来是：
+
+```ts
+async function onCamera() {
+  const shot = await pickImage('camera')     // ← 无 try
+  if (shot) attachment.addDataUrl(shot.dataUrl, shot.name)
+}
+```
+
+被 `@click="onCamera"`（`:72` / `:176` 两处工具行）直接调用
+⇒ 相机权限被拒 / 插件不可用 / 设备占用时：按钮点了**没有任何反应**，
+只有一个未处理的 rejection。
+
+⚠ 这是本会话「注释声称的机制要单独验一次」的第 **5** 次
+（§837 / §840 / §841 / §845 各一次），形态是**跨文件**的：
+注释在 composable 里，缺陷在视图里 ⇒ **只读生产点永远看不到**。
+
+落地：`onCamera` 加 try/catch，错误经 `useApiError` 归一后写进
+`cameraError`，在**两处**工具行（普通 + 全屏）紧挨 `sttError` / `optimizeError` 渲染
+—— 位置一致是因为这三者是同一类失败，复用既有的 `uc-hint--err`，不新增样式。
+
+### 4. 阴性结论（带读数，不含糊）
+
+- ⛔ **`FlashcardEditView.vue` 的 4 个 `@click="pickImage(...)"` 是阴性**：
+  它是**同名本地包装**（`:332`），内部 `try/catch` 并给出
+  `flashcards.edit.imagePickFailed`；`:350` 的删除也是 `.catch(() => {})`。
+  ⇒ 它被 v2 扫面报成 4 条候选，**全是假阳**。
+  ⇒ 这也是为什么「每个调用点都要有 catch」这条机械判据**在 pickImage 上不适用**，
+  已写成判据注释而不是硬套。
+- 其余 3 条：`AgentLibraryView.vue:164` 是**我自己 §847 写的 HTML 注释**
+  （v2 的 `strip()` 只剥 `//` 与 `/* */`，不剥 HTML 注释 ⇒ 探针的已知盲区）；
+  `api/chatAgent.ts` 的两条是**函数定义行**本身。
+
+### 5. 判据（`error-outlet-audit.test.ts` 扩到 **32 例**）
+
+新增 describe「§848 · 刻意 rethrow『由调用方提示』的函数：调用点必须接住」：
+
+| 断言 | 作用 |
+|---|---|
+| `UnifiedComposer::onCamera` 必须整段包在 try 里 | 直接对应 D4 |
+| **反向对账**：`useCameraCapture` 的消费方必须逐个点名 | 新增消费方时这里会红，逼我确认它接没接住 |
+| `cameraError` 必须渲染、且**两处工具行都渲染** | 只改一处会漏全屏 |
+
+⚠ 判据注释里明确写了「**这一类与 `RETHROWERS` 的查法不一样，不要试图统一**」
+—— store 方法调用点形态一致可以机械查，composable 的两种调用点形态不能。
+
+### 6. 变异双向验证（**真实文件**）
+
+M5：把 `onCamera` 的 try/catch 拆掉（还原 D4 原形态）。
+
+| 读数 | 值 |
+|---|---|
+| 基线 | **32 pass / 0 fail** |
+| M5 后 | **30 pass / 2 fail** —— 红的正是 `onCamera 必须整段包在 try 里` 与变异 G |
+| 复原后 | **32 pass / 0 fail** |
+
+`npm run gates` **45/45 通过**（53.8s）。
+
+### 7. 口径与未实测
+
+- ⚠ 扫面本身是**候选生成器**，158 → 8 → 1 的收敛靠人工读源码；
+  「接住了」的判定用 ±15 行窗口**近似**，v2 的 8 条里最终有 3 条是这个近似带来的误报。
+- ⚠ 探针**不剥 HTML 注释** ⇒ `.vue` 模板里的说明性注释会被当成代码行（本次报了我自己一条）。
+- ⛔ **未实测（需真机）**：相机权限被拒的真实发生率；`apiError` 对 Capacitor 相机异常的归一效果
+  （它可能落到通用兜底文案，那本身就是可接受但不精确的）；`cameraError` 提示在窄屏工具行的可读性。
+
+### 8. 待拍板
+
+1. **拍照失败要不要给「去设置」入口** —— 现在只有一句提示；
+   与 §842 第 32 条（邮件目录页「重新登录」无入口）是同一族产品口径。
+2. **`useCameraCapture` 是不是该收进 §847 的登记表**（作为「刻意 rethrow 给调用方」的第二个样本），
+   还是保持现在这种「每个 rethrow 函数各写一组判据」的做法 —— 判据体系本身的产品问题。
+3. **§848.2 的结论「函数名不能当标识，除非定义方唯一」要不要推进成一条仓级门禁** ——
+   现状：全仓没有任何门检查「rethrow 函数是否有未接住的调用点」。
+
+---
+
+## §849 空 catch 扫面：真正的问题不是「catch 为空」，而是**失败发生在设成功态之后**
+
+### 1. 扫面口径（两次收窄）
+
+| 版本 | 口径 | 数量 |
+|---|---|---|
+| v1 | 全仓 `.ts/.vue` 的 catch 块，量「块体为空或只含注释」 | 711 个 catch ⇒ **128 个**空 |
+| v2 | 只看 `.vue`，且所在函数**被用户动作直接触发**（模板 `@click/@submit/...` 或事件回调） | **3 个** |
+
+⚠ v1 的 128 个绝大多数是**正当**的：幂等清理（`/* already stopped */`）、尽力预载、
+用户取消、不支持时的降级（`navigator.clipboard` / TTS 引擎 / 相机插件缺失）。
+⇒ **「凡是空 catch 就算缺陷」这条判据第一天就会是错的。**
+
+v2 的 3 个里 **2 个是阴性**且理由站得住：
+- `StudyHubView.advance` —— 注释「失败保持原样：用户可以再点一次，不要在这里弹 toast 打断心流」；
+- `StudyHubView.setDailyDigest` —— 注释「保持原值，界面不会显示一个其实没保存成功的选中态」。
+
+⇒ 净得 1 处。
+
+### 2. ⛔ D5：`RssItemDetail.doShare('clipboard')` —— 界面在**主动说谎**
+
+```ts
+const r = await rssApi.share(item.value.id, dest, shareCaption.value)
+shareResult.value = r                          // ← 成功态已经设上，并且已经渲染
+if (dest === 'clipboard' && r.copyText) {
+  try {
+    await navigator.clipboard.writeText(r.copyText)
+  } catch { /* 浏览器/Capacitor 不支持时静默 */ }   // ← 失败被吞
+}
+```
+
+⇒ 用户点「复制到剪贴板」，界面把复制内容显示出来（看起来成功），
+粘贴出来却是空的上一次内容 —— 而**它没有任何可挽回的迹象**。
+
+⚠ 这一族与「普通静默 catch」的本质差别：**失败发生在「对外宣称成功」之后**。
+普通静默 catch 至少发生在还没说成功的时候；这里成功态已经渲染出去了，
+再吞掉失败 ⇒ 界面在**主动说谎**，比「没提示」严重一个量级。
+
+⚠ **这个失败在本仓是被记录过的**：`composables/useVoiceInput.ts:64` 就写着
+「WebView 可能无剪贴板权限」⇒ 它不是假想分支。
+
+落地：
+1. catch 里写 `shareNotice`，文案说清**两件事**：「没能写入剪贴板」+「内容已显示在下方」；
+2. ⚠ **刻意不复用页面级的 `errorMsg`**：那条挂在 `v-else-if="errorMsg"` 上，
+   与 `<article>` **互斥** ⇒ 用它报「复制失败」会让正文整块消失。
+   ⇒ 判据把这条钉成一条断言（`不得是 errorMsg` + `必须在 modal-mask 之后`）；
+3. 复位点两处：`openShare()` 与 `doShare()` 开头（否则上次失败的提示会挂在这次成功的分享上）。
+
+### 3. 判据
+
+新文件 `frontend/src/features/rss/__tests__/empty-catch-audit.test.ts`，**6 例**：
+
+| 断言 | 作用 |
+|---|---|
+| 尺子非空转（>100 个 `.vue`） | 防路径写错 |
+| `doShare` 的剪贴板 catch 不得为空 | 直接对应 D5 |
+| 失败必须写进**会被渲染**的标志 | 防「设了没人看」（§847 同族） |
+| 提示位必须在弹窗内部、不得是 `errorMsg` | 上面第 2 点的坑 |
+| 每次分享都要复位该提示 | 防上次失败挂到本次成功 |
+| **全仓空 catch 棘轮（上界 21）** | 新增空 catch 会红，并列出新增清单 |
+
+⚠ **棘轮上界必须按真实基线定**：第一版我拍脑袋写 20，而实测基线就是 21
+⇒ 提交当天就红，而且报的是「新增空 catch」，会把人引去查一个**并不存在的回归**。
+已改为 21（`.vue` 口径，2026-10-18 实测），只钉上界不钉下界（与 `check:raw-error` 同一做法）。
+
+⚠ 另有一处量具自伤：判据文件放在 `src/features/rss/__tests__/` 下，
+`join(HERE, '..', '..')` 只回到 `src/features` ⇒ `read()` 去找
+`src/features/features/rss/…` 报 ENOENT。**报错落在第一个 suite 上，看起来像「判据本身有问题」**，
+容易查错方向。已改为回退三层，并在注释里写明。
+
+### 4. 变异双向验证（**真实文件**，`.artifacts/s849-probe/`）
+
+M6：把 `doShare` 的剪贴板 catch 还原成 `catch { /* …静默 */ }`（真缺陷原形态）。
+
+| 读数 | 值 |
+|---|---|
+| 基线 | **6 pass / 0 fail** |
+| M6 后 | **1 pass / 5 fail** —— 4 条针对性断言 + **空 catch 棘轮（21 → 22）** |
+| 复原后 | **6 pass / 0 fail** |
+
+`typecheck` EXIT=0，`npm run gates` **45/45 通过**（52.9s）。
+
+### 5. 口径与未实测
+
+- ⚠ 判据钉的是**这一处**的形状（`doShare` 的剪贴板 catch），不是「全仓所有空 catch」；
+  全仓那一组是**棘轮登记**，不判红（理由见 §849.3 的注释）。
+- ⚠ v2 的「被用户动作触发」判定是**近似**（正则匹配模板里的 `@click=...` 与事件回调名），
+  会漏掉经中间函数间接转调的形态。
+- ⚠ 探针**不剥 HTML 注释**，`.vue` 模板里的说明性注释会被算进 catch 的「有效内容」，
+  可能把一个真的空 catch 判成非空（偏保守方向：会漏报不会误报）。
+- ⛔ **未实测（需真机）**：Android WebView 剪贴板权限被拒的真实发生率；
+  `navigator.clipboard` 在本仓目标机型上是否存在（不存在时是同步 TypeError，同样落进 catch）；
+  新提示文案在分享弹窗里的可读性。
+
+### 6. 待拍板
+
+1. **要不要加 `document.execCommand('copy')` 降级** —— 现在的选择是「失败就说清 + 让人手动复制」；
+   另一条路是无剪贴板权限时自动降级到 execCommand，用户无感（但 execCommand 在新 WebView 上也被弃用）。
+2. **`RssItemDetail.doShare` 的 catch 还在用原始 `e?.message`**（`:63`），
+   而同文件 `toggleStar` 已用 `toUserMessage(e, t, …)` ⇒ 同文件两套口径。
+   这是 `check:raw-error` 的存量基线条目，**本节未改**（改了会让基线变化，属另一件事）。
+3. **§849.1 的 v2 近似判定要不要收紧**（当前会漏掉经中间函数转调的形态），
+   还是接受「它是候选生成器」这个定位。
+
+---
+
+## §850 `void x(...)` fire-and-forget 扫面：**净得 0 处缺陷**，但换来一道防回归的门
+
+### 1. 这是本会话第一次「扫面净得零」的节 —— 为什么仍然值得做
+
+`void someAsync()` 显式声明「我不处理返回值」⇒ 它一旦 reject 就是**未处理 rejection**
+（与 §847-D3 `loadAgents`、§848-D4 `pickImage` 同族）。扫面口径四次收窄：
+
+| 版本 | 口径 | 数量 |
+|---|---|---|
+| v1 | 全仓 `void x(` 且**方法调用也算** | **156** |
+| v2 | 只留「整条语句无 `.catch`/`.then`/`.finally`」 | **127** |
+| v3 | 再留「callee 是**本文件定义的裸名函数**且**体内没有任何 catch**」 | **16** |
+| v4 | 修掉探针自身的括号配平 bug 后 | **15** |
+| v5 | 逐条人工读源码 | **15 条全部安全，净 0 缺陷** |
+
+⚠ 前两层被排除的 112 条绝大多数是**明显不该管的**：
+`void router.push(...)`（同步）、`void nextTick(...)`（不 reject）、
+`void loadMediaDataUrl(x).catch(...)`（作者写了 catch，只是跨行了）、
+以及方法调用 `void store.refresh()`（要跨文件判断，属 §847 的族）。
+
+### 2. 15 条为什么**都安全** —— 安全的原因不在 callee 自己身上
+
+这是本节最重要的结构观察，也是**为什么不能用机械规则**：
+
+| callee | 体内有没有 catch | 真正兜住它的是谁 |
+|---|---|---|
+| `CalendarView.fetchMonth`（×3） | ❌ | 它 await 的 `store.load()` 自己 catch 并设 `error`，视图 `:52` 渲染该 error 且空态带 `!store.error` 守卫（**§840 的正确形态**） |
+| `AppLayout.submitSystemBack` | ❌ | 它 await 的 `dispatchBack()` 自带 try/catch 并返回 `{ kind: 'blocked' }`（`lib/shell/runtime.ts:308`） |
+| `useSessionDrafts.flush` | ❌ | 它 await 的 `persistTo()` 自带 catch（「写失败不阻断输入」） |
+| `MeetingDetailView.refreshRelated` | ❌ | 它 await 的 `searchRelatedContext()` 的**三个子查询各自 catch 后返回 `[]`** |
+| `UpdateChecker.maybePrefetch` | ❌ | 预取是尽力而为；真安装路径 `openLocalApk` 另有完整回退（失败退回远端下载） |
+| 其余 6 条 | ❌ | 调用方/下一跳各自有出口（逐条写在判据的 `why` 里） |
+
+⇒ **「callee 体内必须有 catch」这条机械规则会把这 15 条全部判红**（假阳 100%）。
+⇒ 唯一站得住的形式是**逐条登记 + 与扫面结果双向对账**。
+
+### 3. 判据
+
+新文件 `frontend/src/__tests__/fire-and-forget-audit.test.ts`，**9 例**：
+
+| 断言 | 作用 |
+|---|---|
+| 尺子非空转（>200 文件） | 防路径写错 |
+| **登记表不许漂移** | 扫出来的必须都在登记表里，并**打印未登记的清单** |
+| **登记的条目必须仍然存在** | 改名/删除会逼你重新判断 |
+| 出现次数必须一致 | 同文件同 callee 的第 N 次 |
+| 每条登记都必须写清理由 | 与「随手登记」分不开 |
+| 合计口径固定 15 | 基线（2026-10-18 人工复核结果） |
+| 变异负控 ×3 | 新增未登记条目 / `hasChain` 判据 / 注释不得被当成代码 |
+
+⚠ **登记表刻意不用行号做键** —— §844 的 `z-index-ladder` ALLOWLIST 按行号登记，
+被一次编辑推了 42 行就红（那门注释自己记着这是第五次咬人）。
+⇒ 键 = `相对路径::callee 名`，另加一条「出现次数」对账。
+
+### 4. 量具：探针与判据里同一个 bug，被我修了两次
+
+`bodyOf()` 用 `indexOf('{', 定义处之后)` 找函数体 ⇒ 遇到
+`async function postSystemNotification(descriptor: { localId: number; … })`
+这种**形参带含花括号类型注解**的函数时，会落在**类型字面量**上，配平立刻归零
+⇒ 取到一个没有 catch 的空壳 ⇒ 把「自己接住了错误的函数」误判成「没接住」
+（16 → 修后 15，少的正是它）。
+
+⚠ 这与 §845 的 `blockFrom`（TS 返回类型注解 `load(): Promise<void> {`）
+是**同一族的第 2 次**。⇒ 规则：**形参列表必须按 `(` 配平跳过，再找函数体的 `{`。**
+
+### 5. 变异双向验证（**真实文件**）
+
+M7：在 `TasksView.vue` 里真加一个「本文件定义、函数体内无 catch 的 async 函数」
++ 一处 `void` 调用 —— 形态与 15 条候选完全一致。
+
+| 读数 | 值 |
+|---|---|
+| 基线 | **9 pass / 0 fail** |
+| M7 后 | **7 pass / 2 fail** —— 红的正是「登记表不许漂移」（并点名新条目）与它所属的 suite |
+| 复原后 | **9 pass / 0 fail** |
+
+`typecheck` EXIT=0，`npm run gates` **45/45 通过**（52.6s）。
+
+### 6. 口径与未实测
+
+- ⚠ 本节**不声称**「全仓没有未处理 rejection」—— 跨文件导入的 callee
+  （如 `void store.refresh()`）不在本判据范围内，那属 §847 的族。
+- ⚠ 判据查的是**文本形态**，不是运行时行为；它无法知道 callee 是否真会 reject。
+- ⚠ `useSessionDrafts.persistTo` 的「写失败静默」**本身是一个待拍板的产品口径**
+  （草稿只存在内存里，写失败用户无痕）—— 本节**未改**，已登记（见 §850.7）。
+- ⛔ **未实测（需真机）**：这 15 条各自的真实失败率；WebView 上是否真的出现过未处理 rejection。
+
+### 7. 待拍板
+
+1. **`useSessionDrafts.persistTo` 的「写失败不阻断输入」要不要给出口** ——
+   草稿的价值全在能存下来，写失败静默 ⇒ 用户以为存了、实际进程一杀就没。
+   与 §832/§833（随手记草稿回填/建草稿失败）同族，但这是**会话草稿**这一侧。
+2. **跨文件导入的 callee（`void store.refresh()` 那 112 条里的一大部分）要不要也纳管** ——
+   现状它们靠 §847 的 `error-outlet-audit` 间接覆盖，没有「调用点接不接住」这一维。
+
+---
+
+## §851 `v-html` 绑定审计：10 处里 **9 处已有净化，1 处是存储型 XSS**
+
+### 1. 扫面
+
+枚举全仓 `.vue` 的 `v-html="…"` ⇒ **10 处**。逐处追「这个表达式喂进去的 HTML 从哪来、
+有没有经过净化」：
+
+| 位置 | 表达式 | 净化链路 | 结论 |
+|---|---|---|---|
+| `AIChatView:114 / :129` | `rendered(a)` / `rendered(turn.answers[0])` | `renderMarkdown` → `sanitizeHtml`（error 分支还显式 `escapeHtml`） | 阴性 |
+| `EmailDetailView:77 / :94 / :97` | `htmlBody` / `quotedHtml` / `signatureHtml` | `sanitizeEmailHtml`（DOMPurify） | 阴性（但见 §851.5） |
+| `EmailSummaryView:65` | `renderedMarkdown` | `renderMarkdown` | 阴性 |
+| `NoteDetailView:51` | `renderedMarkdown` | `renderMarkdown` | 阴性 |
+| `AgentDetailView:92` | `promptPreview` | `renderMarkdown` | 阴性 |
+| `RoundTimeline:254` | `renderedHtml(msg)` | `renderMarkdown` | 阴性 |
+| **`RssItemDetail:124`** | **`item.content`** | **无** | ⛔ **真缺陷** |
+
+### 2. ⛔ D6：RSS 正文存储型 XSS（三段取证）
+
+```html
+<div v-if="item.content" class="content" v-html="item.content"></div>
+```
+
+1. **内容完全由订阅源作者控制** —— 任何人都能发布一条 RSS；
+2. **服务端原样入库**：`backend/internal/rss/store_entities.go` 把 `r.Content`
+   直接进 SQL 参数，`backend/internal/rss/` 全包 grep 不到任何 sanitize；
+3. **前端零净化**：`features/rss/` 全目录 grep `sanitiz|DOMPurify` **0 命中**。
+
+⚠ 而 `frontend/index.html` **没有 CSP**（实测 grep `http-equiv` 无命中）
+⇒ 没有任何东西拦 `onerror=` 这类内联事件。
+⇒ 一条订阅里的 `<img src=x onerror="…">` 会在**设备 WebView** 里执行，
+而这个 WebView 带着 Capacitor bridge（读得到 `localStorage` 里的登录态）。
+
+⭐ **最强证据是一致性对照**：同一仓库的 `utils/markdown.ts::sanitizeHtml`
+**已经存在**，配置里明写 `FORBID_TAGS: ['style','script']`、`ALLOWED_ATTR` 不含 `style`，
+头注释还专门说「assistant output … without XSS risk」。
+聊天 / 笔记 / 会议摘要 / Agent 提示词预览 **全都走它** ——
+**RSS 是 10 处 `v-html` 里唯一没走的那个。**
+
+落地：`safeContent = computed(() => sanitizeHtml(item.value?.content ?? ''))`，
+模板改 `v-html="safeContent"`。**没有新写净化器**，直接复用仓库既有的那一个。
+
+### 3. 判据
+
+新文件 `frontend/src/__tests__/v-html-outlet-audit.test.ts`，**6 例**：
+
+| 断言 | 作用 |
+|---|---|
+| 尺子非空转（>100 个 `.vue`） | 防路径写错 |
+| 扫到 10 处（**只钉上界**） | 新增 `v-html` 会红 |
+| RSS 正文必须走 `sanitizeHtml` | 直接对应 D6 |
+| **每处 `v-html` 的表达式**都必须落在「已净化」清单里 | 见下面第 4 条 |
+| 共享净化器真的禁掉 `style`/`script` | 否则 RSS 净化等于半截 |
+| 阴性读数抽查 3 条净化链路 | 防回归 |
+
+⚠ **第一版按「文件」放行，判据太粗**：把表达式从 `safeContent` 改回 `item.content` 时
+它一声不响 —— 文件还在清单里，判据已经不成立了。
+⇒ 清单改成钉**表达式形状**（`/^safeContent$/`、`/^rendered\(/` …），
+这与 §840/§842/§843/§847 的「判据的识别词是契约的一部分」是同一条。
+
+### 4. 变异双向验证（**真实文件**）
+
+M8：把 `safeContent` 改回直接透传 `item.content`（真缺陷原形态）。
+
+| 读数 | 值 |
+|---|---|
+| 基线 | **6 pass / 0 fail** |
+| M8 后 | **4 pass / 2 fail** —— 红的正是「RSS 必须走 sanitizeHtml」与「表达式清单」 |
+| 复原后 | **6 pass / 0 fail** |
+
+`typecheck` EXIT=0，`npm run gates` **45/45 通过**（53.0s）。
+
+### 5. ⚠ 顺带登记：第二套净化器与共享配置**口径相反**（未改）
+
+`features/email/email-detail-format.ts::sanitizeEmailHtml` 允许
+`'style'` **标签**与 `style` **属性**（`ALLOWED_TAGS`/`ALLOWED_ATTR` 里都有），
+而共享的 `PURIFY_CONFIG` 明确 `FORBID_TAGS: ['style','script']` 且不含 style。
+两套配置**各写一份、没有任何测试让它们对齐**。
+
+⚠ 这是**真的安全面**：`ALLOWED_URI_REGEXP` 只作用于 URI 属性（`href`/`src`），
+**不作用于 CSS** ⇒ 邮件里的 `@import url(https://attacker/…)` 或
+`background-image:url(...)` 不会被打到，而邮件正文来自**任何发信人**。
+后果面：阅读回执（打开即上报）、CSS 属性选择器外泄、点击劫持式浮层。
+
+**本节未改** —— 邮件正文大量依赖内联样式，「整体禁掉 `style`」是产品口径，
+而「禁掉 `@import` / CSS 里的 `url(`」是纯技术加固，可独立做。已登记为待拍板第 1 条。
+
+### 6. 口径与未实测
+
+- ⚠ 本节只覆盖 **`v-html`**。`:style` 绑定里的 CSS 注入、`<iframe srcdoc>`、
+  以及服务端下发到原生侧（Android WebView / 通知 / 分享卡）的 HTML **不在范围内**。
+- ⚠ 判据查的是**表达式形状**，不是运行时净化；它也无法证明 `sanitizeHtml`
+  在某个 DOMPurify 版本下没有已知绕过 ⇒ 那属于依赖版本审计。
+- ⛔ **未实测**：没有构造真实的恶意订阅做端到端验证（本节全部结论来自读码 + grep 读数）；
+  目标机型 WebView 上 `innerHTML` 注入的 `<img onerror>` 是否确实执行，也**未在真机验证**
+  （WebView 版本相关）⇒ 但**缺 CSP 这一点是确定的**，且它单独就足以让净化成为必须。
+
+### 7. 待拍板
+
+1. **`sanitizeEmailHtml` 允许 `style` 标签这件事要不要收紧** —— 选项：① 禁掉 `<style>`
+   标签但保留 `style` 属性（多数邮件仍可读）；② 保留但剥掉 CSS 里的 `@import` / `url()`
+   （去掉外泄面，保留排版）；③ 两套净化器合并成一份带参数的共享实现（工作量最大）。
+   本节建议先做 ②，因为它是纯技术加固、不改变产品观感。
+2. **邮件正文要不要改成 `iframe` + `sandbox` 预览** —— 邮件客户端的通例，
+   能同时解决 CSS 注入与远程图片回执；这是产品口径（会改变现有排版与交互）。
+3. **`index.html` 要不要加一条 CSP** —— 本节实测**没有任何 CSP**；
+   加 CSP 会同时影响其它渲染路径，属独立的一件事。
+
+---
+
+## §852 URL sink 审计：26 处动态 sink 零校验，5 处外部可控的接上协议白名单
+
+### 1. 扫面
+
+§851 抓的是**渲染 sink**（`v-html`），本节抓它的兄弟——**URL sink**：
+枚举 `:href` / `:src` / `window.open` / `location.href` / `location.assign`
+里**表达式为动态**的 ⇒ **26 处**。
+
+⇒ **全仓没有任何一处校验协议。**
+grep `startsWith('http` / `javascript:` 在前端 **0 命中**。
+
+⚠ 但本仓在别处**已经用同一套思路**：
+- `config/api-base.ts` 的 `normalizeApiBase` **拒绝** `javascript:alert(1)`（有测试）；
+- `aiChatStore.ts:501` 把用户消息里的图片过滤成 `https://` 或 `data:image/`。
+
+⇒ **这两处是「已经做对的那一处」**（与 §851 同一种证据形态），
+「RSS 的 URL 没过滤」是**不一致**，不是「缺一个能力」。
+
+### 2. ⛔ D7：RSS 文章 URL（订阅源作者完全可控）直接进 `href` 与 `window.open`
+
+- `RssItemDetail.vue:130` `<a :href="item.url" target="_blank">原文 ↗</a>`
+- `RssItemDetail.vue:89` `window.open(r.deepLink, '_blank')`
+- `RssItemDetail.vue:175` `<a :href="shareResult.deepLink">`
+- `RssDigestView.vue:193` `<a :href="it.url" target="_blank">`
+- `MeetingDetailView.vue:608` `window.open(item.url, …)`（`onOpenRelated`，
+  `item.url` 来自 `local_meetings` 表，而它的源头同样是 RSS 订阅）
+
+服务端侧：`backend/internal/rss/parser.go` / `store_entities.go` **原样存 URL**，
+不校验 scheme ⇒ 恶意订阅可以给任意协议。
+
+⚠ 影响面：
+- `<a href="javascript:…">` 在 WebView 里**同源执行**；
+- `intent:` / `market:` 这类自定义协议在 **Android WebView 里会被交给系统解析**
+  ⇒ 一个恶意订阅不只是能骗用户点链接，还能把手伸到**应用之外**。
+
+⛔ **未实测**：`target="_blank"` 下 `javascript:` 是否仍执行**依 WebView 版本而定**，
+本节**没有在真机上验证**。⇒ 修复按**最坏情况**处理（不放行），而不是按「大概不执行」。
+
+### 3. 落地：共享 `utils/safe-url.ts`
+
+```
+放行：https?:// 、协议相对 //host 、mailto:
+不放行：javascript: / data: / file: / content: / vbscript: /
+        intent: / market: / tel: / sms:          ← 会交给系统处理，不是「打开网页」
+另：含控制符（\u0000-\u0020、\u007f-\u009f）一律拒
+   ⇒ 防 `java\nscript:alert(1)` 这类浏览器会先剥控制符再解析协议的拼法
+```
+
+5 处接线：模板侧改绑过滤后的 `itemUrl` / `shareDeepLink`；
+脚本侧 `onOpenRelated` 先过白名单再决定要不要跳路由
+（**URL 被拒时落到 in-app 路由分支**，比什么都不做合理）。
+
+⚠ 非字符串入参用 `String(raw)` 兜住而不抛 ——
+它在模板里被直接调用，抛错会把整个渲染带崩。
+
+### 4. 判据
+
+新文件 `frontend/src/utils/__tests__/safe-url.test.ts`，**14 例**：
+- **纯函数单测 6 例**：放行 http/https、协议相对、mailto；
+  拒绝 `javascript:`（含大小写、空白、**换行/制表符/零字节拼法**）、
+  拒绝 `intent:`/`market:`/`tel:`/`sms:`/`file:`/`content:`/`data:text/html`/`vbscript:`；
+  畸形入参不抛。
+- **接线 4 例**：3 个必须 import 的文件（各带「为什么它的值外部可控」）+
+  RSS 原文链接必须用过滤后的值。
+- **未接线棘轮（上界 9）**：带完整阴性表（见下）。
+- **变异负控 4 例**。
+
+### 5. ⚠ 未接线的 9 个文件（逐个读过，理由写在判据注释里）
+
+| 文件 | sink | 判断 |
+|---|---|---|
+| `UnifiedComposer` / `FlashcardEditView` / `FlashcardReviewView` | `:src` | 绑的是**本地生成的 data: URL**，不是外部 URL ⇒ 阴性 |
+| `InvoiceCard` / `InvoicePreviewSheet` | `:src` | 服务端渲染出的缩略图；`javascript:` 在 `<img src>` 上不执行 ⇒ 阴性 |
+| `AIChatView` | `:src="img"` | `aiChatStore.ts:501` 已在**写入前**过滤 ⇒ 阴性 |
+| `EmailAccountAddView` | `:href="provider.authCodeUrl"` | 服务端配置下发的 OAuth 地址（可信面）⇒ **未处理，登记待拍板** |
+| `InvoiceListView` | `:href="shareDocUrl"` | 分享接口下发（可信面）⇒ **未处理，登记待拍板** |
+| `VaultEntryView` | `:href="entry.url"` | **用户自己填的**（自伤面）⇒ **未处理，登记待拍板** |
+
+⚠ **棘轮上界第一版我写 5，而实测是 9** ⇒ 提交当天就红，且报的是「新增未接线」，
+会把人引去查一个**并不存在的回归**。**这是 §849 之后第二次犯「上界拍脑袋」**，
+已改为按实测基线定，并在判据注释里写明理由表。
+
+### 6. ⚠ 我自己又一次踩了 §849 刚记下的坑
+
+判据文件放在 `src/utils/__tests__/` 下，`join(HERE, '..')` 只回到 `src/utils`
+⇒ `read()` 去找 `src/utils/features/rss/…` 报 ENOENT，
+**报错落在第一个 suite 上**，看起来像「判据本身有问题」。
+
+⚠ 我在 §849 **刚把这条写进记忆并写了通用式**（「判据文件里算 SRC 时先确认它到 src 是几层」），
+这一节**又踩了一次** ⇒ **教训写进记忆不等于写进代码，它必须写进那个文件本身。**
+已修（回退两层），并把「⚠ 这是我在 §849 刚踩过并写进记忆的那一条」直接写进判据注释。
+
+### 7. 变异双向验证（**真实文件**）
+
+M9：把 `RssItemDetail` 的原文链接绑回 `item.url`。
+
+| 读数 | 值 |
+|---|---|
+| 基线 | **14 pass / 0 fail** |
+| M9 后 | **12 pass / 2 fail** —— 红的正是「原文链接必须用过滤后的值」与其所属 suite |
+| 复原后 | **14 pass / 0 fail** |
+
+`typecheck` EXIT=0，`npm run gates` **45/45 通过**（53.8s）。
+
+### 8. 口径与未实测
+
+- ⚠ 本节只覆盖**前端模板/脚本里的 URL sink**。服务端下发给原生侧的内容、
+  分享卡生成的 HTML、以及邮件里的链接（走 `sanitizeEmailHtml`）不在范围内。
+- ⚠ `target="_blank"` 下 `javascript:` 的真实行为**未在真机验证**（见 §852.2）。
+- ⛔ 未实测：恶意订阅在真机上被打开的实际概率；`intent:` 在目标 Android WebView
+  上是否真的会被交给系统解析。
+
+### 9. 待拍板
+
+1. **§852.5 表里那 3 个「未处理」的要不要也接上** ——
+   `provider.authCodeUrl` / `shareDocUrl` 来自服务端（可信面），
+   `entry.url` 来自用户自填（自伤面）⇒ 三者风险都很低，但接上成本也极低。
+2. **`tel:` / `mailto:` 要不要分开处理** —— 现在 `mailto:` 放行、`tel:` 不放行，
+   是我按「会交给系统处理」这条线划的；如果产品上需要「点击拨号」，口径要改。
+3. **RSS 正文与 RSS 链接要不要在**服务端**入库时就校验** ——
+   前端净化是最后一道，前端改版/新客户端都可能漏；
+   入库时校验（丢弃非法 scheme 或标记）能覆盖所有消费方。属架构口径。
+
+---
+
+## §853 关掉 §851 自己登记的缺口：CSS 注入面 + 凭据面（**净得 0 处可修缺陷**）
+
+### 1. 为什么是这一节
+
+§851.6 我明确把「`:style` 绑定的 CSS 注入」记在范围之外，
+而 §851.7 又留了「`sanitizeEmailHtml` 允许 `style` 标签」这条口子。
+本节把前者关掉，并把后者需要的**凭据侧证据**一起取齐（`localStorage` 里到底有什么）。
+
+### 2. `:style` 绑定 35 处，逐处看过 ⇒ 净 0
+
+| 判据 | 读数 | 为什么它说明「安全」 |
+|---|---|---|
+| 形态 | 35 处**全部**是对象字面量或**返回对象的 computed**（`chromeVars` / `splitVars` / `panelStyle` / `mainScreenStyle` / `secondaryScreenStyle` / `chromeShellStyle`） | Vue 对**对象式** `:style` 走 CSSOM 的**单属性赋值**（`el.style[prop] = v`）⇒ 解析不出「借 `;` 注入别的属性」 |
+| `cssText` | **0 处** | `cssText` 才会**整体解析声明块**，是真正的 CSS 注入口子 |
+| `setAttribute('style', …)` | **0 处** | 同上 |
+| 值的来源 | 全部是本地计算或应用内配置 | **没有一处**来自 RSS / 邮件 / LLM 输出 |
+
+⚠ 只有**字符串式** `:style` 会被 Vue 的 `parseStringStyle` 按 `;` 拆开 —— 本仓一处都没有。
+
+### 3. 凭据面：localStorage 全量清单
+
+| key | 敏感性 | 来源 |
+|---|---|---|
+| **`pocket_token`** | ⛔ **登录 JWT** | `stores/auth.ts:64` `localStorage.setItem(TOKEN_KEY, token)` |
+| `pocket_user` / `pocket_workspace_id` / `pocket_auth_method` | 身份标识 | 同上 |
+| `pocket_api_base` / `selected_server` / `selected_opencode_instance` | 基础设施地址与选择 | 配置相关 |
+| `pocket_device_tier` / `pocket_stt_pref` / `app_theme` | 偏好 | 无敏感 |
+| `pocket:ai-chat:settings:v2:*` | 聊天设置（模型/温度…） | **不含网关密钥** |
+
+⇒ **敏感项只有 `pocket_token` 一个**，而它在 `localStorage`（同源脚本可读）
+⇒ 这正是 §851 那条 XSS 的**收益**所在（也是我拒绝在 §851 写「建议加 CSP 就够了」的原因）。
+
+⭐ **网关密钥不在前端**（值得钉住的不变量）：`api/client.ts` 的 `ApiConfig` 返回
+`apiKeySet: boolean` + **掩码后**的 `apiKey`（形如 `sk-****5678`），
+真值只在服务端 ⇒ 前端注入脚本也拿不到 LLM 凭据。
+
+⚠ **仓库没有通用的安全存储通道**：`native/keystore.ts` 是**保险箱专用**插件，
+且其头注释写明「目前用一个会抛的 stub，直到原生插件被建出来」
+⇒ 所以「把 token 挪到 Keystore」是**架构口径**，不是缺接线 ⇒ **登记不代拍**。
+
+### 4. token 进 URL：**已记录的过渡态**（阴性）
+
+| 位置 | 形态 | 结论 |
+|---|---|---|
+| `api/sse.ts:83` | `…}&token=${encodeURIComponent(token)}` | 注释原话：「**生产应由 server 端做 JWT cookie 鉴权。当前 dev 模式 token 注入 query**」⇒ **自己写明的过渡态** |
+| `api/websocket-url.ts:40` | `url.searchParams.set('token', token)` | `gateway-live.ts:6` 补充平台约束：「`EventSource` 无法设置 `Authorization` 头」 |
+
+⚠ 两条**理由注释都在** ⇒ 将来有人问「为什么 token 在 URL 里」，答案是现成的。
+⚠ 代价确实存在（查询串会进服务端/代理访问日志），但替换方案需要**服务端配合**
+（改 `requireAuth` 的 WS/SSE 例外分支），属架构口径 ⇒ 登记。
+
+⇒ console 输出侧：**0 处**打印 token（唯一一处 `console.warn('⚠️ 未订阅…缺少认证 token')` 是**没有** token 的提示）。
+
+### 5. 判据
+
+新文件 `frontend/src/__tests__/css-injection-and-credential-surface.test.ts`，**11 例**：
+CSS 面 4（尺子非空转 / 无 `cssText` / `:style` 只能对象式或已登记 computed / 值不得来自外部数据）、
+凭据面 5（网关密钥不得进前端存储 / localStorage key 清单棘轮上界 11 / 两条过渡态注释都在 / token 不进 console）、
+变异负控 3。
+
+⚠ **两处判据自己写错了，读码后才改对**（都写进了判据注释）：
+1. `/\\?token=/` 匹配不到 SSE —— 源码里那个 `?` 藏在三元表达式
+   `` `${url.includes('?') ? '&' : '?'}token=` `` 内，**不存在**字面量 `?token=`
+   ⇒ 第一版判据假红；
+2. WebSocket 那边是 `url.searchParams.set('token', token)`，不是字符串拼接
+   ⇒ 用字符串形态去断言同样假红。
+
+⇒ **正则锚点必须按真实写法选** —— 「看起来应该长什么样」和「源码实际长什么样」要分开。
+
+### 6. 变异双向验证（**真实文件**）
+
+M10：在 `VaultEntryView.vue` 里真加一处 `el.style.cssText = '…'`。
+
+| 读数 | 值 |
+|---|---|
+| 基线 | **11 pass / 0 fail** |
+| M10 后 | **10 pass / 1 fail** —— 红的正是「全仓不得出现 cssText 赋值」，并**点名文件行号** |
+| 复原后 | **11 pass / 0 fail** |
+
+`typecheck` EXIT=0，`npm run gates` **45/45 通过**（52.2s）。
+
+### 7. 口径与未实测
+
+- ⚠ 本节**没有发现可自行修复的缺陷**。两条待办都是**架构口径**：
+  「token 存哪」与「token 是否走 URL」，都要求服务端配合。
+- ⚠ `:style` 那条结论成立的前提是「值不来自外部数据」；
+  邮件正文的内联 `style` 属性**不受本判据约束**（那是 §851.7 第 1 条的另一件事）。
+- ⛔ 未实测：§851 那条 XSS 在真机上被利用的可能性；查询串 token 在真实部署的访问日志里的暴露程度。
+
+### 8. 待拍板
+
+1. **`pocket_token` 要不要挪出 localStorage** —— 三条路：
+   ① 服务端改成 **JWT cookie 鉴权**（`sse.ts` 的注释已经这么写了，需配套改 CORS/同源）；
+   ② 原生侧用 **Keystore / Secure Preferences**（但 `native/keystore.ts` 目前是 stub，等于要先把原生插件建起来）；
+   ③ 维持现状并接受「同源注入 ⇒ 凭据可被读走」这个已量化的风险。
+   **这是本会话至今最需要属主拍板的一条**——它决定了 §851 那条 XSS 的真实损失上限。
+2. **WS/SSE 的 token 查询串要不要去掉** —— 现状是注释写明的 dev 过渡态；
+   生产化要改 `requireAuth` 的例外分支，属服务端改动。
+3. **§851.7 第 1 条（邮件 `style` 标签）仍然待拍板** —— 本节未改变它的状态。
+
+---
+
+## §854 注册给 Vue 的异步回调审计：42 条候选 → 6 类真缺陷（用户主动动作失败零反馈）
+
+本节的起点是一个很朴素的问法：**用户点了某个按钮，这件事失败了，用户看得见吗？**
+§847 扫的是「错误标志被生产却零出口」，§848 扫的是「会 throw 的函数 × 调用点接不接住」，
+本节扫的是它们之间的那块空白——**既没有错误标志、也没有显式 throw 处理，但 rejection
+从注册给 Vue 的事件处理器里逃了出去**。
+
+### §854.1 扫面口径与读数
+
+探针 `.artifacts/s854-probe/scan_async_cb.py`，与判据 `frontend/src/__tests__/vue-async-callback-audit.test.ts` 共用同一把尺子：
+
+> `.vue` 的 `<script setup>` 里，**async function NAME(...) 的函数体含 `await`、体内无 `try`**，
+> 且 `NAME` **真的被注册给了 Vue**（模板 `@事件` / `:prop` / `onMounted` / `watch`）。
+
+| 项 | 读数 |
+|---|---|
+| 递归扫描的 `.vue` 文件 | 363 个测试文件同批枚举；视图侧全部递归（剔除 `__tests__`） |
+| 候选 | **42 条** |
+| 人工逐条读完后判为**真缺陷** | **6 条**（含 3 条裸 `window.confirm`） |
+| 站得住的**阴性** | **36 条**，全部登记进判据的 REGISTRY |
+
+⚠ 探针自身有已知漏检，**必须如实记账**：形如 `const doSaveVacation = async () => {}` 的
+**箭头函数 const 形式不会被解析**（正则只吃 `async function` 声明）。
+⇒ 缺席**不代表安全**，只代表这把尺子没量到。
+
+⚠ 更重要的是：**自动初判只能当候选生成器**。探针把 `UnifiedComposer::onMic` 判成
+「callee 透传 ⇒ 有风险」，人工读才发现 `startRecording` 自己 try/catch 并设 `sttError`，
+而模板 `UnifiedComposer.vue:79/:184` 渲染了它 ⇒ 阴性。
+**与 §850 同族：安全的原因常常在 callee 的 callee 里。**
+
+### §854.2 六类真缺陷
+
+| 编号 | 位置 | 失败时的实际表现 | 为什么「看起来有出口」其实没有 |
+|---|---|---|---|
+| **D8** | `ScheduledTaskListView::toggle` / `remove` | 点「停用/启用」「删除」（删除**已过确认弹窗**），失败后界面什么都不发生 | store 的 `error` 只由 `load`/`loadOne` 写，`update`/`remove` **都不碰它** ⇒ 连那条横幅都不会亮 |
+| **D8b** | `ScheduledTaskDetailView::toggle` / `remove` | 同上，**同一缺陷的第二个落点** | 该视图**零 toast**；模板 `:7` 的 `errorText` 横幅走 `store.error`，同样不会被这两条路径点亮 |
+| **D9** | `NotificationsView::markAllRead` | 点「全部已读」失败 ⇒ 未读数原封不动 + 零反馈 | `stores/notification.ts` **整个文件 grep `error` 0 命中** —— 连 store 出口都不存在 |
+| **D10** | `EmailInboxView:438` / `:525`、`EmailFolderListView:279` | 点下去**应用彻底假死** | 这三处是裸 `window.confirm`；项目已立 `ConfirmDialog` 为全局唯一确认弹窗（`ConfirmDialog.vue:2` 原文），已改 5 处，这 3 处是漏网的 |
+| **D11** | `BacklinksPanel::reload` | 反向链接面板**永久消失**，且与「加载中」完全不可区分 | `ready` 同时是「加载中」和「要不要渲染」的开关（模板 `v-if="ready"`），而 `getBacklinks` → `localDB.query` 不吞错 ⇒ 一次失败就卡在 false |
+| **D12** | `VaultListView::saveNew` | 密码管理器新增条目零反馈 | `saveEntry` → `encryptData`/`localDB.run` 会抛；清空表单在 `await` **之后** ⇒ 不丢数据，但用户只看到按钮按下去没反应 |
+
+#### 证据：三段取证（D9 最典型）
+
+1. **数据源**：`store.markRead()` 直接 `await notificationsApi.markRead(id)`，无中间层。
+2. **出口**：`stores/notification.ts` grep `error` → **0 命中** ⇒ 没有 store 出口可等。
+3. **视图**：`NotificationsView.vue` grep `store.error` → **0 命中** ⇒ 没有横幅可亮。
+
+三段全空 ⇒ 失败 100% 静默。
+
+#### 一致性对照（最强证据形态）
+
+三处都不是「缺能力」，而是**同一个仓里已经有正确做法，这里没有**：
+
+| 缺陷 | 同仓已做对的地方 |
+|---|---|
+| D8 / D8b | 同文件 `ScheduledTaskDetailView::runNow` **有** catch（`store.error = …`）—— 作者知道要处理，只是漏了这两处 |
+| D10 | `ConfirmDialog` 已是全局唯一确认弹窗，且已在 `ScheduledTaskListView`/`FlashcardEditView`/`EmailSpamCleanupView`/`SettingsPermissionsView`/`RssListView` 五处落地（注释均标 `BUG-AQ`） |
+| D12 | **同一个 vault 目录**下的 `VaultEntryView::onSave` 有完整 try/catch + toast + finally ⇒ 同一件事两条路径两种待遇 |
+
+⇒ 三处的修复动作都是**复用**，不是发明新写法。
+
+### §854.3 落地
+
+| 文件 | 改动 |
+|---|---|
+| `features/scheduled-tasks/ScheduledTaskListView.vue` | 引入 `useToast`；`toggle`/`remove` 从 `.catch(() => {})` 改为 try/catch + `toast.error(apiError(e, 'errors.operateFailed'))` |
+| `features/scheduled-tasks/ScheduledTaskDetailView.vue` | 同上（D8b）；`remove` 失败时 `return`，**不**继续 `markListDirty` + `router.replace` |
+| `features/notifications/NotificationsView.vue` | `markAllRead` 改 try/catch + toast |
+| `features/email/EmailInboxView.vue` | 引入 `useConfirm`；`onPurge`/`onOrganize` 两处 `window.confirm` → `await confirm({...})` |
+| `features/email/EmailFolderListView.vue` | `onDeleteFolder` 同上（该函数本已有 try/catch + toast，只缺确认这一步） |
+| `features/pkm/BacklinksPanel.vue` | `reload` 加 try/catch/finally；新增 `failed` 态 + **可区分**的失败 UI + 重试按钮；`ready` 在 finally 里复位 |
+| `features/vault/VaultListView.vue` | `saveNew` 加 try/catch + toast；**清空表单只在成功后执行**；补 `已保存` toast |
+
+⚠ `errors.operateFailed` / `errors.saveFailed` 两个 key 均已存在于全部 9 个 locale
+（`locales/*.json:431` / `:252`），且 `TasksView.vue:508`、`VaultEntryView::onSave`
+已有同 key 先例 ⇒ 不新增 key，不触发 `check:i18n`。
+
+⚠ 刻意**没有**把 `BacklinksPanel` 的失败复用成 `links.length === 0` 的空态：
+那会让「查询失败」谎报成「没有笔记引用它」—— 与 §843 修的 `TasksView` 主动清空列表
+是同一族错误。判据里有一条专门钉住「失败态必须与空态可区分」。
+
+### §854.4 判据与变异
+
+`frontend/src/__tests__/vue-async-callback-audit.test.ts`（**22 例**）：
+
+| 组 | 例数 | 内容 |
+|---|---|---|
+| 尺子自证 | 3 | `.vue` 数量、登记表非空且键形为 `路径::函数名`、**反向对账**（登记的函数必须仍存在） |
+| D8/D8b | 7 | 列表页 + 详情页各 toggle/remove（4）+ `store.remove` 不得吞错 + **对照组：`load` 的空 catch 是合法的** |
+| D9 | 2 | `markAllRead` 不得空吞 + **对照组：`open()` 里那条 `void markRead().catch()` 是有意的**（乐观更新，注释解释了） |
+| D10 | 2 | 全仓 `.vue` 不得再有裸 `window.confirm`（注释已 strip）+ 三处都必须 `await confirm(` |
+| D11 | 3 | `ready` 必须在 `finally` 里复位 + 失败态与空态可区分 + `v-if="ready"` 这个前提本身要钉住 |
+| D12 | 2 | `saveNew` 不得吞 + **清空表单必须跑在 catch 之后**（否则失败一次就丢刚输入的密码）+ 一致性对照样本形状 |
+| 反向对照 | 1 | 「渲染了 error 的视图 + 空 catch」不该被判红 |
+| 变异负控 | 3 | 三段源码级变异各自证明有牙 |
+
+**M11 真实文件端到端变异（6 路，每路跑自己判据 + 仓库既有门）**：
+
+| 变异 | 自己判据 | 仓库既有门 `vue-template-compile` |
+|---|---|---|
+| M11-a 列表页 toggle 退回 `.catch(() => {})` | 20 / 2 ❌ | **187 / 0 ✅** |
+| M11-b 详情页 remove 去掉 toast | 21 / 1 ❌ | **187 / 0 ✅** |
+| M11-c `markAllRead` 退回空 catch | 21 / 1 ❌ | **187 / 0 ✅** |
+| M11-d `onPurge` 退回 `window.confirm` | 21 / 1 ❌ | **187 / 0 ✅** |
+| M11-e 删掉 `BacklinksPanel` 的 `finally` | 20 / 2 ❌ | **187 / 0 ✅** |
+| M11-f `saveNew` 去掉 catch | 21 / 1 ❌ | **187 / 0 ✅** |
+| 还原核对 | **22 / 0** | **187 / 0** |
+
+⇒ 六类缺陷对 `vue-tsc`、对模板编译、对既有 45 项门禁**全部隐形**。
+`typecheck` 在每一路变异下都是 `EXIT=0`。
+
+### §854.5 本节两次判据自己写错（写进判据文件注释）
+
+1. **`indexOf('{')` 落在注释里的 `{` 上**。`fnBody` 原实现从 `function markAllRead(` 之后
+   `indexOf('{')`，而该函数上方的注释恰好写着「原来是 `.catch(() => {})`」⇒
+   取到的"函数体"从注释那个 `{` 开始，于是 D9 判据在**已修好的源码上转红**。
+   ⇒ 这是「锚点之后第一个 `{` 不一定是函数体」的第 3 次（前两次是 TS 返回类型注解、箭头函数）。
+   **修法**：`fnBody` 内部先 `strip()` 掉注释再找 `{`。
+2. **变异正则的锚点按想象写**。`/\n\s*finally \{…/` 匹配不到真实的 `  } finally {`
+   （`finally` 前面还隔着收尾的 `}`）⇒ M11-e 的负控一开始是「★ 变异没生效」。
+   ⇒ 与 §853 同款教训：**写完断言先看真实源码长什么样**。
+
+### §854.6 顺带撞到：`z-index-ladder` ALLOWLIST 第六次被行号漂移咬到
+
+改 `EmailInboxView`（新增 import + `const confirm` + 三处 confirm 展开，共 17 行）
+把该文件 `<style>` 里两处裸 z-index 从 **718/805 推到 735/822** ⇒ 门禁转红。
+
+- **判别**：先 `git stash` 掉单文件改动再跑 ⇒ 绿 ⇒ 确认是本轮引入，不是既有失败。
+- **按既有先例处理**：只重新编号，**不改门禁语义与结构**。
+- 顺带核对了两条 ALLOWLIST 理由与真实选择器是否还对得上（`.more-menu` / `.to-top`，对得上）。
+
+⚠ 这是同一个 key 的**第六次**咬人（历史 ①–④ 见该文件注释，⑤ 是 §841）。
+⇒ 「规则块起始行」这个第三种锚法，在一个会被反复加注释的 `<style>` 上方**同样会漂**。
+**待属主拍板**：key 是否改成 `文件:选择器`（对插入免疫）。
+
+### §854.7 口径与未实测
+
+- ⛔ **未实测**：六类缺陷在真机上的**实际发生率**（网络失败、DB 失败、权限被拒各自的概率）。
+- ⛔ **未实测**：D10 的假死结论沿用项目既有的 BUG-AQ 真机记录（点下去应用彻底假死、
+  连 CDP 的 `1+1` 都不再返回），本轮**没有重新构造真机复现**。
+- ⛔ **未实测**：`useConfirm` 的兜底路径（`useConfirm.ts:47`）在 `ConfirmDialog` 未挂载时
+  仍会回落到 `window.confirm`。它的可达性未知（属「极端时序」），
+  但一旦可达就等于 D10 未被真正消除 ⇒ 已登记为待拍板，本轮不动。
+- 探针的漏检（箭头函数 const 形式）意味着**扫面结论是下界**，不是全集。
+- 本节只审计 `.vue`。`.ts` 里的 composable/store 回调不在本轮范围内（§850 覆盖了其中一部分）。
+
+### §854.8 待拍板
+
+1. **`z-index-ladder` 的 ALLOWLIST key 要不要改成 `文件:选择器`**（第六次咬人，
+   属门禁结构改动，需属主拍板；本轮只按先例重新编号）。
+2. **`useConfirm` 的兜底 `window.confirm` 要不要在 native 平台禁用** ——
+   保留兜底功能连续性，还是彻底消除同步阻塞的可能。
+3. **marketplace 三个 `runInstall` 的 `installing.value = true` 没有 `finally`** ——
+   现在安全**只因为** `loadVersions`/`loadReleases`/`install` 三个 callee 恰好都吞错。
+   将来任一改成 rethrow，按钮就会永久 disabled。
+   要不要现在就补 `finally`（属防御性加固，本轮未改）。
+4. **`NotificationsView::open()` 的乐观已读要不要给反馈** ——
+   它本地先置 `read_at` 再跳转，服务端失败时刷新会回退 ⇒ 界面短暂说谎。
+   现状是**有意**的取舍（注释已解释「失败不挡跳转」），是否要补一个回滚提示。
+5. **`TasksView::handleRefresh` 用 `Promise.all` 而同家族的 `MessagesHubView`/`NotesHubView`
+   用 `allSettled`** —— 同一仓里两种口径。是否统一（改成 `allSettled` 会掩盖部分失败）。
+
+---
+
+## §855 创建类动作的重复提交审计：⭐ 一条机制 + 3 处真缺陷（双击会真的做两次）
+
+§854 扫的是「用户点了、失败了，看得见吗」。本节扫它的邻居：**「用户点了一下，结果做了两次」**。
+
+### §855.0 先说结论：本节的价值主要不在 3 处缺陷，而在**一条机制**
+
+> **「模板 `:disabled` 能不能拦住第二次点击」，取决于它的条件在 handler 的第一个 `await` 之前
+> 是否同步变真。**
+
+**理由**：Vue 的响应式 DOM 更新在 **nextTick（微任务）** 里；而两个独立的 `click` 事件之间，
+微任务队列**必然排空**。⇒ 只要 disabled 的条件在第一个 await 之前已经变真，
+第二击落到按钮上时它已是 disabled，浏览器不派发事件。
+
+⭐ **两个方向都实测过，不是推理**：
+
+| 方向 | 样本 | 判定 |
+|---|---|---|
+| ✅ **拦得住** | `CalendarEventSheet::save` 的 `:disabled="… \|\| store.saving"`，而 `store.createEvent` 的**第一行**就是 `saving.value = true`（await 之前同步） | 阴性 |
+| ✅ **拦得住** | `TasksView::submitAccDelegate` 的 `accStore.submitting`，`accStore.createTask` 首行 `submitting.value = true` | 阴性 |
+| ❌ **拦不住** | `TasksView::handleCreate` 原来 `:disabled="!newTask.title"`，而 `newTask.title` 要 **await `api.createTask` 之后**才被清空 ⇒ **整个网络往返窗口都是可点的** | **真缺陷 D13** |
+| ❌ **拦不住** | `FinanceView::quickConfirm` 的「确认入账」按钮**连 `:disabled` 都没有** | **真缺陷 D14** |
+
+⇒ 所以「模板里写了 disabled」**不等于**有保护 —— 这正是本节两处真缺陷的共同形态，
+也是判据要钉的东西（**钉 `:disabled` 绑的是哪个变量**，不是钉「有没有 disabled」）。
+
+### §855.1 扫面口径与读数
+
+探针 `.artifacts/s855-probe/scan_dblclick.py`，与判据 `frontend/src/__tests__/submit-guard-audit.test.ts` 共用同一把尺子：
+
+> `.vue` 里「注册给了模板 + 函数体含 `await` + 体内有**创建类**动作
+> （`create|add|send|insert|submit|install|upload|publish|start|begin|register`）
+> + 既无 `X.value=true … finally X.value=false` 的结构化守卫、也无 `if (X) return`」。
+
+| 项 | 读数 |
+|---|---|
+| `.vue` 文件 | 186 |
+| 宽口径候选（含 delete/remove/rename/update/save） | **48** |
+| 收窄到**创建类** | **14** |
+| 人工逐条读后 **真缺陷** | **3**（D13 / D14 / D15） |
+| 站得住的阴性 | **11**，全部登记进判据 REGISTRY |
+
+⚠ **收窄的理由要写下来**（否则读数不可复现）：`deleteEvent`/`remove`/`rename` 这类
+**第二次调用通常是 noop**（id 已不存在），后果远轻于「多出两条记录」。
+
+⚠ **探针自身的第一版有个量具 bug**（这是本节最值得记的一条）：
+守卫判定最初用一张**手写名字词表**（`submitting|loading|busy|deckCreating|…`），
+词表里没有 `deckCreating` / `creating` / `confirming` ⇒ **`FlashcardListView` 与
+`FlashcardEditView` 两个明明有守卫的 `submitCreateDeck` 被报成候选（假阴）**。
+⇒ **名字词表是穷举不完的**（每写一个新按钮就可能漏一个）。
+**修法**：「有守卫」按**结构**判定 —— 置 true + `finally` 复位，不看名字。
+
+### §855.2 三处真缺陷
+
+| 编号 | 位置 | 双击的实际后果 | 为什么现有保护拦不住 |
+|---|---|---|---|
+| **D13** | `TasksView::handleCreate` | **创建两条任务**（id 是本地 `task-${Date.now()}`） | `:disabled="!newTask.title"` 的条件要等 await 之后才清空；函数体无重入守卫 |
+| **D14** | `FinanceView::quickConfirm` | **入账两条真实财务流水**（`load()` 之后用户看得见两条） | 确认按钮**无 `:disabled`**；函数体只有 `if (!p) return`（拦「没有预览」，不拦「正在提交」） |
+| **D15** | `FinanceView::remove` | 第一次删成功、第二次对**已删 id** 发请求 ⇒ 404 ⇒ `toast.error('操作失败')`，而**那条流水确实消失了** ⇒ **界面在说谎** | 无任何守卫 |
+
+#### ⭐ 一致性对照（三处全是这个形态，证据极强）
+
+| 缺陷 | 同仓/同文件已经做对的地方 |
+|---|---|
+| D13 | `NoteEditView::onSave`（`saving`）、`NoteDetailView::summarize`（`summarizing`）、`FlashcardListView`/`FlashcardEditView`/`StudyHubView` 三个 `submitCreateDeck`（`deckCreating`）—— **4 处同类都有重入守卫** |
+| D14 | **同一个文件**的 `:43`「记账」按钮有 `quickBusy` 守卫（`quickParse`）⇒ 同文件内两种待遇 |
+| D15 | 同文件 `quickParse` / `quickConfirm` 都有 try/catch + toast，只有 `remove` 的失败被完整保留却因重复调用而说谎 |
+
+### §855.3 落地
+
+| 文件 | 改动 |
+|---|---|
+| `features/tasks/TasksView.vue` | 新增 `creating` ref；`handleCreate` 加 `if (… \|\| creating.value) return` + 置位排在第一个 await 之前 + `finally` 复位；按钮改 `:disabled="!newTask.title \|\| creating"` + 文案「创建中…」；catch 补 `toast.error(apiError(e, 'errors.operateFailed'))`（原来只有 `console.error`） |
+| `features/finance/FinanceView.vue` | 新增 `confirming` / `removingId` 两个 ref；`quickConfirm` 加守卫 + `finally`；「确认入账」与「取消」都绑 `:disabled="confirming"`；`remove` 加 `if (removingId.value === tx.id) return` + `finally` 复位；删除按钮绑 `:disabled="removingId === tx.id"` |
+
+⚠ `removingId` 用 **id** 而不是布尔：财务列表里多行同时可见，布尔会把**整列**的删除按钮一起禁掉。
+
+### §855.4 判据与变异
+
+`frontend/src/__tests__/submit-guard-audit.test.ts`（**18 例**）：
+
+| 组 | 例数 | 内容 |
+|---|---|---|
+| 尺子自证与登记表对账 | 4 | `.vue` 数量、登记表非空 + 键形状、**函数反向对账**、**文件反向对账**（比 §854 多一条：文件被删也要重判） |
+| D13 | 4 | 重入守卫 / `creating` 必须在第一个 await 之前置位 + finally 复位 / **按钮 disabled 必须绑 `creating`** / 失败必须有 toast |
+| D14·D15 | 4 | `quickConfirm` 守卫 + finally / 按钮绑 `confirming` / `remove` 按 id 守卫 / **一致性对照样本**（「记账」按钮的 `quickBusy` 不许消失） |
+| **机制反向对照** | 3 | 「置位在 await 之前」算有保护 / **「disabled 要等 await 之后才变」必须判成缺口** / 「没有 finally 复位」也算缺口 |
+| 变异负控 | 3 | 三段源码级变异各自证明有牙 |
+
+**M12 真实文件端到端变异（5 路）**：
+
+| 变异 | 自己判据 | 仓库既有门 `vue-template-compile` |
+|---|---|---|
+| M12-a 删掉 D13 的 `creating.value` 守卫 | 16 / 2 ❌ | **187 / 0 ✅** |
+| M12-b 把按钮 disabled 改回只绑 `!newTask.title` | 17 / 1 ❌ | **187 / 0 ✅** |
+| M12-c 拿掉「确认入账」的 `:disabled` | 16 / 2 ❌ | **187 / 0 ✅** |
+| M12-d 删掉 `quickConfirm` 的守卫 | 17 / 1 ❌ | **187 / 0 ✅** |
+| M12-e 删掉 `remove` 的按 id 守卫 | 16 / 2 ❌ | **187 / 0 ✅** |
+| 还原核对 | **18 / 0** | **187 / 0** |
+
+⇒ 三处缺陷对 `vue-tsc`、模板编译、既有 45 项门禁**全部隐形**。
+
+### §855.5 本节踩到的坑（写进探针与判据注释）
+
+1. **探针的名字词表假阴**（`deckCreating` 漏了）⇒ 改成结构判定。
+2. **探针的行号定位不可靠**：`fn_spans` 会把 `const summarize = computed(...)` 之类误当函数，
+   打印出来的行号与函数对不上 ⇒ 本节的最终判定**全部靠人工精确 grep 定位**，
+   探针只用来生成候选清单。
+3. ⚠ **探针自伤第 8 次**：`scan_lie.py` 命中的第一条 `RecordingPill.vue:59`
+   是**我自己写的注释**（§834/D1 的说明文字里写了 `toast.success('…已结束并保存')`）
+   ⇒ 文字扫面必须 strip 注释（判据里的 `strip()` 同款）。
+
+### §855.6 换方向的记录（阴性也是有价值的产出）
+
+本节开扫前先试了**三个方向，全部阴性**，读数与口径如下（按「收窄到人工可逐条读」原则，
+低信号就换面，不硬撑）：
+
+| 方向 | 口径 | 读数 | 结论 |
+|---|---|---|---|
+| `JSON.parse` 防护 | 54 处调用点（剔除测试与 `.d.ts`） | 逐条人工读后**全部阴性** | ⭐ 本仓这块是强项：`parseJson`/`parseTags`/`toNote`/`assetToNote` 都带 try + 明确降级；连 LLM 输出解析（`note-search-parse.ts` / `api/meetings.ts`）都做了「合法但空」的额外判定 |
+| 定时器/监听器清理 | `.vue` 里 setInterval/setTimeout/addEventListener 的清理配平 | 12 个候选，**`setInterval` 与 `addEventListener` 清理 0 候选**（只剩 Vue 里无害的一次性 `setTimeout`） | 基本健康 |
+| 成功提示早于写入 | `toast.success` 在同函数内早于 `await` | **2** 处，其中 1 处命中的是我自己写的注释 | 低信号 |
+
+⚠ 三次里探针各坏过一次，全部当场发现：
+`JSON.parse` 那版「全仓 59 处只有 1 处有 try」这个**读数本身不可能**（`tryParseLoose` 这类函数名就自证有保护）⇒ **0/1 命中的第一嫌疑永远是量具坏了**；
+定时器那版把卸载清理写在 composable 里的当成了缺陷；
+「成功早于写入」那版被自己的注释命中。
+
+### §855.7 口径与未实测
+
+- ⛔ **未实测**：三处缺陷在真机上的**实际发生率**（移动端触摸重复上报、WebView 事件合并的真实概率）。
+  ⚠ 本节的结论建立在 §855.0 那条**机制**上（微任务在两次 click 之间排空），该机制可推理，
+  但「真机上会不会真的连发两次 click」**没有实测**。
+- ⛔ **未实测**：`api.createTask` 是否服务端幂等（若按 id upsert，则 D13 的第二次可能被服务端吸收，
+  只剩本地两条显示）。本节按**最坏情况**（会创建两条）处理。
+- 探针**只解析 `.vue`**；composable/store 里的同名动作不在本轮范围。
+- 探针的创建类关键词表**是穷举的**（14 个词），漏掉的动词（如 `schedule`、`book`）不在读数内。
+- 本节不覆盖「非创建类」动作的重复提交（宽口径 48 条里另有 34 条，只逐条读了其中与创建同族的）。
+
+### §855.8 待拍板
+
+1. **宽口径那 34 条非创建类动作要不要逐条取证** —— 主要是 `delete`/`update`/`save` 类。
+   本节已抽样确认 `CalendarView::removeEvent`、三个 `runInstall` 都有等价守卫，
+   但**不声称**其余 34 条都安全。
+2. **要不要把「第一个 await 之前变真」做成仓级门禁** —— 本节判据是登记 + 定点断言，
+   要覆盖全仓需要先把「创建类动词表」补全并解决 composable/store 的解析（§855.7 第 3、4 条）。
+3. **`Marketplace` 三个 `runInstall` 的 `installing` 要不要补 `finally`**（§854.8 第 4 条的延续）：
+   它们靠「末尾把 `installTarget` 置 null」当重入守卫，**没有 finally** ⇒ 中途抛错会卡死。
+
+---
+
+## §856 审批链路的静默丢弃与失败零反馈：2 处真缺陷 + ⭐ 一条**口径盲区**的发现
+
+本节从**用户输入**这个维度切入：§854 扫「动作失败了看不看得见」、§855 扫「动作会不会做两次」，
+本节扫**「用户写的东西有没有被悄悄改掉」**。
+
+落点很窄但后果最重：`ApprovalPanel` —— **human-in-the-loop 审批面板**。
+
+### §856.1 扫面口径与读数
+
+方向是「提交路径上对**用户输入 ref** 的 `slice` 赋值」：
+
+> 枚举 `slice(0, N)`，排除展示截断（带 `…` 的预览文本）与送 LLM 的输入切片。
+
+| 项 | 读数 |
+|---|---|
+| 全仓 `slice/substring/substr` 命中（过写入/内容关键词后） | 18 处 |
+| 其中**展示截断**（`…` 收尾，如 `PkmTodayView:163`、`BacklinksPanel:73`、`meeting-due-plan:80`） | 阴性 |
+| 其中**送 LLM 的输入切片**（`note-search.ts:48` 的 4000 字、`meetings-ai.ts:27` 的 60000 字） | 有意且不回写用户数据 ⇒ 阴性 |
+| **静默丢弃用户输入** | **2 处**（同一函数的 approve/deny 两条路径）⇒ D16 |
+
+### §856.2 D16：审批附言被静默截断 —— 且那个上限后端根本不存在
+
+```ts
+// ApprovalPanel，原文
+if (permMessage[p.id] && permMessage[p.id].length > 500) {
+  permMessage[p.id] = permMessage[p.id].slice(0, 500)
+}
+```
+
+输入框是：
+
+```html
+<textarea v-model="permMessage[p.id]" rows="1" placeholder="附言（可选）" @input="onPermMsgInput" />
+```
+
+**没有 `maxlength`、没有字数提示、没有任何提示消息。**
+
+#### 三段取证
+
+1. **后端没有这个限制** —— `PermissionReplyRequest{Reply, Message string}`
+   （`backend/internal/adapter/opencode_http.go:722`）**无任何长度校验**，
+   `ReplyPermission` 直接 `json.Marshal(payload)` 透传给上游（`:819`）
+   ⇒ **那个 500 是前端凭空加的。**
+2. **前端也没有告知** —— 无 `maxlength`、无计数、无 toast、无任何视觉提示。
+3. **用户无法察觉** —— 截断发生在**点「批准」的那一刻**，不是输入时。
+
+#### 后果为什么比「字少了」严重
+
+这是 **human-in-the-loop 的最后一道闸门**。用户在附言里写的通常是
+**追加的限制条件**（「可以读，但绝对不要改 `package.json`」）。
+静默丢掉后半段 ⇒ **Agent 收到的是不完整的指令** ⇒ 可能做出用户明确禁止的事，
+而用户以为自己的限制已经传达了。
+
+#### 修复（只消除「静默」，不代拍上限）
+
+- 不再改动用户输入，超限时**明确告知**：「附言超过 500 字，已按原样提交（超长部分可能被上游拒绝）」。
+- **刻意不加 `maxlength`** —— 那等于把「前端凭空加的限制」变成硬限制，
+  与「后端无限制」的事实不符。判据里有一条专门钉住「不得出现 maxlength」，
+  并注明「若属主将来决定要有上限且不可提交，请同步改这一条与待拍板项」。
+
+### §856.3 D17：批准/拒绝/回答/跳过，失败零反馈（四处同族）
+
+```ts
+// 原文（四处同形）
+try {
+  await store.approvePermission(p.id, msg)
+} finally {
+  submitting[p.id] = false
+}
+```
+
+- `store.error` **只由 `fetchPending()` 写**（`stores/approval.ts:64/71`），
+  而 `doReplyPermission` / `answerQuestion` / `skipQuestion` **都不设它**
+  ⇒ 面板那条绑定 `store.error` 的横幅**不会亮**，且它文案写的是「审批状态拉取失败」。
+- rejection 直接逃逸 ⇒ 未处理 rejection。
+- ⇒ 用户点「批准」之后**界面什么都不发生**。
+
+**修复**：新增 `actionError`（刻意**不复用** `store.error`，理由写进注释：
+复用等于「批准失败但横幅写着拉取失败」），四处补 `catch`，
+提示放在 `v-if="store.hasPending"` **之外**的独立区块（批准成功后该项会从 store 消失 ⇒
+`hasPending` 转 false ⇒ 提示放进那个分支就等于「成功了才显示失败」），
+并在每次动作开头清空上一次提示。
+
+### §856.4 ⭐⭐⭐ 本节最重要的发现：**§854 的扫面口径有一个盲区，而这个盲区正好藏着 D17**
+
+§854 的口径是：
+
+> 「async function 体内含 `await`、**体内无 `try`**」
+
+而 `onApprove` 写的是 `try { … } finally { … }` —— **有 `try`、但没有 `catch`**。
+
+⇒ 它被 §854 的口径**完美地排除在外**：有 `try` 就被算作「作者处理了」。
+
+而事实上「**有 finally 却没有 catch**」恰恰是最隐蔽的一类：
+**`finally` 的存在本身证明作者意识到「状态要复位」，只是没意识到「失败要说出来」。**
+这两件事看起来像同一件事，其实不是。
+
+⇒ §856 因此立了一条**新口径**：`finally` 存在但 `catch` 不存在的函数体。
+⚠ 它**不能**做成「全仓零容忍」—— 纯读取函数用 `try/finally` 是合法的
+（§856 判据里用一个合成样本证明这条口径的三个方向都对）。
+
+### §856.5 换方向的记录（本节试了 5 个方向，4 个阴性）
+
+| 方向 | 口径 | 读数 | 结论 |
+|---|---|---|---|
+| `:key` 用 index | 模板里 `:key="i/idx/index"` | **24** 处 | 逐条读后**全部阴性**：全是纯静态展示（`{{ item }}`、`<ol><li>` 说明步骤、附件 `img :src` 是属性绑定 ⇒ Vue 会显式重绑，内容不会串行）。**`:key="i"` 本身不是缺陷** |
+| `TransitionGroup` 的 key | key 是否稳定 | 3 处 | 全部稳定（`m.id` / `task.id` / `session.id`）⇒ 阴性 |
+| `v-for` 子元素是组件 | 组件实例随 key 复用 | 10 处 | 9 处用稳定 key，1 处（`HighlightedText`）是 `<mark>` 不是组件（探针 NATIVE 集合漏了 ⇒ **假阳**）⇒ 阴性 |
+| `Array.sort` 比较函数 | 比较器形态 | 43 处 | 全部是数值减法或 `localeCompare` ⇒ 阴性 |
+| **时区口径混用** | UTC getter 与本地 getter 混用、ISO 日期串 | **2** 处 | **全部阴性**，且是本仓最扎实的地方：`calendar-math.ts:7` 的注释**明写**已警惕 `new Date('2026-10-06')` 按 UTC 解析这个坑，全文用 `Date.UTC` + `getUTC*` 的**一贯 civil date 口径** |
+| **模板绑定未声明变量** | 模板里的标识符在脚本中不存在 | 探针报 436（**几乎全假阳**） | ⛔ **换成了实验证明**：往 `FinanceView.vue` 注入一个不存在的变量名，**`vue-tsc` 精确报红**并给出 `Did you mean 'confirming'?` ⇒ **这一整族已被 CI 第 1 项（typecheck）完全堵死，零可修缺陷** |
+
+⭐ **最后那条是本节最有价值的负控之一**：不是「我扫了没找到」，而是
+「**这一族根本不需要扫**，`typecheck` 已经在管，且它管得住（已实测）」。
+
+⚠ 探针本节坏过 4 次，全部当场发现：`:key` 探针把 `<mark>` 当组件；时区探针的
+「UTC+本地混用」阈值太粗；未声明变量探针把 `$slots`、props 名、对象键、
+模板字符串内容全当标识符（436 处噪声）；`scan_lie` 那版命中的是我自己写的注释。
+
+### §856.6 落地
+
+| 文件 | 改动 |
+|---|---|
+| `features/sessions/ApprovalPanel.vue` | 删除两处静默 `slice(0, 500)`；新增 `PERM_MESSAGE_MAX` + `noticeIfTruncated()`（`toast.warning`）；新增 `actionError` + 四处 `catch`；模板新增独立失败区块（放在 `hasPending` 之外）；四个动作开头清空 `actionError`；引入 `useToast` |
+
+### §856.7 判据与变异
+
+`frontend/src/__tests__/approval-silent-truncation.test.ts`（**14 例**）：
+
+| 组 | 例数 | 内容 |
+|---|---|---|
+| 尺子自证 | 2 | `.vue` 数量 + **「`finally` 无 `catch`」这条新口径的三向合成验证** |
+| D16 | 4 | 两个提交路径不得再有 slice 赋值 / 超限必须有可见告知 / **输入框不得加 `maxlength`**（会引入后端不存在的新限制）/ API 层不得自己截 |
+| D17 | 5 | 四处都不得「有 finally 没 catch」且必须写 `actionError` / 四处开头都要清空且排在 await 之前 / 提示必须渲染且不与 `hasPending` 互斥 / store 的方法不得吞错（否则 catch 永不触发）/ 前提（error 只由 `fetchPending` 写） |
+| 反向对照 | 1 | 「`catch` 里只有 `console.error`」**不算出口**（§847/§854 的反复结论） |
+| 变异负控 | 2 | 两段源码级变异 |
+
+**M13 真实文件端到端变异（4 路）**：
+
+| 变异 | 自己判据 | 仓库既有门 `vue-template-compile` |
+|---|---|---|
+| M13-a 把静默截断放回去 | 13 / 1 ❌ | **187 / 0 ✅** |
+| M13-b 删掉开头的 `actionError` 清空 | 13 / 1 ❌ | **187 / 0 ✅** |
+| M13-c 删掉 `onApprove` 的 catch | 13 / 1 ❌ | **187 / 0 ✅** |
+| M13-d 把失败区块的 `v-if` 改成 `false` | 13 / 1 ❌ | **187 / 0 ✅** |
+| 还原核对 | **14 / 0** | **187 / 0** |
+
+⚠ **M13-a 第一版是 14/0 全绿 —— 判据假阴**。正则写成 `permMessage\[\w+\]`，
+**匹配不到 `permMessage[p.id]`**（`[]` 里带点号）⇒ 缺陷原样放回去判据一声不响。
+⇒ 已改为 `permMessage\[[\w.]+\]`，并在该用例注释里写明这次假阴。
+⭐ **这正是「判据与变异共用同一把尺子」的价值**：只有真把缺陷放回去跑一遍，
+才会发现判据自己防不住。
+
+### §856.8 本节踩到的两个坑（都在判据/探针注释里留了记录）
+
+1. ⭐ **`indexOf('{')` 落在形参的类型注解上** —— `async function onApprove(p: { id: string })`
+   的第一个 `{` 是 `{ id: string }` 里的，配平立刻归零，取到的"函数体"只有 **6 个字符**。
+   这是**同一个坑的第 3 次**（§845 `blockFrom` 的 TS 返回类型注解、§850 `bodyOf`
+   的含花括号类型注解、本节的形参类型注解）⇒ `fnBody` 改为「先 strip 注释，
+   再从 `(` 起做**圆括号配平**找到形参结束，之后才是函数体」。
+2. ⭐ **注释里引用代码字面量会被当真代码命中（本会话第 9 次）** ——
+   我在 D17 的 catch 注释里写了 `v-if="store.error"`，而 §847 既有判据的变异 A 做的是
+   `APPROVAL.replace('v-if="store.error"', 'v-else')` ⇒ **替换命中的是我的注释**，
+   真横幅没被改 ⇒ 既有判据「横幅落进 else 链居然判成合法」转红。
+   ⇒ 按纪律**只改自己措辞**（写成「绑定 `store.error` 的横幅」），不动门禁语义。
+
+### §856.9 口径与未实测
+
+- ⛔ **未实测**：D17 四个动作的真实失败率（网络失败、审批已被别处处理、会话已切换）。
+- ⛔ **未实测**：OpenCode **上游**对审批 message 是否有长度限制。
+  本节只证明了**本仓后端没有**；上游若有，前端那条 toast 会是唯一的告知
+  ⇒ 「上限该不该有、该多大」已登记为待拍板。
+- 扫面只覆盖 `slice/substring/substr` 这一族；**其他形式的静默改写**
+  （trim、replace、字段映射）不在本轮范围。
+- `:key` 方向的结论建立在「Vue 会为属性绑定显式重绑」这一框架行为上
+  （`:src`/`:value`/`:checked` 都是受控）⇒ 对**未受控**的原生控件与**组件内部 state**
+  不适用；本仓这 24 处经逐条读**不含**这两类。
+
+### §856.10 待拍板
+
+1. ⭐⭐ **审批附言的上限该是多少、要不要有上限** —— 本节证明了**本仓后端没有限制**
+   （`opencode_http.go:722`），500 是前端凭空加的。本轮只消除了「静默」，
+   保留了上限但改成明确告知。**若上游（OpenCode）也有限制，该值应由属主给定**；
+   若没有，是否直接删掉上限、允许任意长度的附言，属产品口径。
+2. **`finally` 无 `catch` 这条新口径要不要推广成门禁** —— 本节只对审批链路四个动作断言。
+   全仓推广需要先解决「哪些 `try/finally` 是合法的纯读取」（§856.4）。
+3. **`§854` 那条「体内无 try」的口径要不要补一条「有 finally 必须有 catch」的附加条件**
+   —— 属既有判据语义变更，需属主拍板；本轮只在 §856 的新文件里并行地钉了它。
+
+---
+
+## §857 把 §856 的「有 finally 无 catch」口径**全仓**跑一遍：9 处 → 3 处真缺陷
+
+§856 结尾留下一个明确的后续动作：新口径立在那里，却只对审批链路四个函数断言。
+**扫描取证是技术动作，不该等拍板**（拍板的是「要不要做成门禁」，那是 §856.10 第 2、3 条）。
+本节就是把那条口径全仓跑一遍。
+
+### §857.1 扫面口径与读数
+
+| 项 | 口径 | 读数 |
+|---|---|---|
+| `.vue` 文件 | 递归（剔除 `__tests__`） | 186 |
+| 候选 | 被注册给 Vue（模板 `@事件` / `:prop` / `onMounted` / `watch`）的 async 函数，**含 `finally`、不含 `catch`、含 `await`** | **9 处** |
+| 真缺陷 | | **3 处**（D18 / D19 / D20） |
+| 阴性 | | **6 处**，全部登记进判据 REGISTRY |
+
+⚠ 口径里「不含 `catch`」是**排除条件**而不是搜索条件 —— 即
+`hasFinallyNoCatch(body) = 有 finally && 无 catch`，与 §856 判据里的同名函数一致。
+
+### §857.2 三处真缺陷
+
+#### D19 `MeetingListView::startNewMeeting` —— **§838 的同族漏网，本应用最核心的入口**
+
+```ts
+// 原文
+if (starting.value) return
+starting.value = true
+try {
+  const m = await createMeeting({ … })     // ← localDB.run，不吞错
+  …
+  await router.push(…)
+} finally { starting.value = false }        // ← 只有 finally，没有 catch
+```
+
+⭐⭐ **同族证据强到几乎不需要解释**：
+
+> **同一个文件、紧接着的三个函数**（`onArchive` / `onRestore` / `onDelete`）
+> 都带着 §838 的注释与同一套修法：
+> `catch (e) { console.error(RECORD_ACTION_FAIL_TAG, …); toast.error(describeRecordActionFailure(…)) }`
+>
+> §838 的注释原文：「§838：这五个处理器此前都没有 try/catch」——
+> **五个**里，`startNewMeeting` 不在其中（它本来就有 `finally`，看起来像「已处理」）。
+
+后果：用户点「新建会议」⇒ `createMeeting` 的 `localDB.run` 失败 ⇒ reject 逃逸、
+不跳转、**界面零反馈** ⇒ 看起来像应用卡死。而这是录音 → 会议的**第一入口**。
+
+修复：`catch` + 复用 `describeRecordActionFailure('start', …)`。
+
+⚠ **共享文案工具必须为「新建」写专属措辞**：`RecordAction` 原本只有
+`archive/restore/delete/meta-save/meta-delete`，五条全是「**记录仍在列表里**」的口径。
+新建失败时列表里**根本没有**那条记录，说「仍在」就是撒谎 ⇒ 新增 `case 'start'`：
+「新建会议失败，没有创建任何会议记录。请稍后重试。」判据里有一条专门钉「文案不得出现
+「仍在/还在」」。
+
+#### D18 `VoiceprintSheet::onClearAll` —— **过了「不可撤销」确认弹窗却什么都没发生**
+
+```ts
+const ok = await confirm({ message: `清空全部 …？此操作不可撤销。`, danger: true })
+if (!ok) return
+busy.value = true
+try {
+  await clearVoiceprints()      // ← localDB.run(DELETE_ALL)，不吞错
+  …
+} finally { busy.value = false }
+```
+
+⚠ 这个动作的代价被确认弹窗**放大**了：用户已经过了「此操作不可撤销」，
+结果什么都没发生、列表纹丝不动、零反馈 ⇒ 他会以为删掉了却又不敢重试，或者反复点。
+
+修复：加 `catch`，失败时**保留列表原样**（`editingId/load` 本来就排在 await 之后，
+天然满足），只把错误说出来 —— 与同文件 `load()` 的 §822 修法**同构**。
+提示放在模板互斥链**之外**（`loading / loadError / empty / ul` 四分支之外），
+理由写进注释：塞进 `ul v-else` 的话，下一次加载失败落到 `loadError` 分支时提示会凭空消失。
+
+#### D20 `SettingsPermissionsView::refreshAll`
+
+五个 `recheck()` 都 `await appSettings.checkPermission(...)`，**都不吞错**；
+这里是 `Promise.all` ⇒ 任一 reject 整批逃逸 ⇒ 刷新按钮转一圈结束、
+权限状态停在旧值、零反馈（用户只会以为「没变化」）。修复：加 `catch` + `toast.error(apiError(...))`。
+
+⚠ 顺带发现：**§850 的登记表把 `refreshAll` 登记成阴性，理由是「各子项自带 error 出口」——
+而这条依据本身就是错的**（`checkPermission` 并不吞错）。
+⇒ 它之所以能在 §850 里「安全地」存在，是因为当时**没人验证那条理由**。
+
+### §857.3 六处阴性（逐条登记，全部带理由）
+
+| 位置 | 阴性理由 |
+|---|---|
+| `CostQuotaView::load` | `Promise.allSettled` + 分别设 `usageError` / `quotaError` |
+| `MeetingDetailView::onMicToggle` | `stop()` 内部吞错 + `notify` 回调有 toast + §834 的 `lastStopWriteFailed` 公开字段 |
+| `MeetingSettingsSheet::onCaptureLocation` | `captureDeviceLocation` 失败时 **`resolve(null)` 从不 reject** |
+| `NoteEditView::onExtractTags` | `extractTagsForForm` 内部 `try/catch`（离线降级为本地规则标签） |
+| `SessionConversationView::onComposerSend` | `sendPrompt` **设 `errorMessage`** 且模板 `:638` 渲染横幅 |
+| `SessionConversationView::continueSession` | 同上 |
+
+⚠ **两处「阴性但值得登记」的产品口径**（不是缺陷，但用户会困惑）：
+① 定位被拒与「设备不支持」都被折叠成 `null`，而 `onCaptureLocation` 的 `if (loc)` 直接忽略
+⇒ 用户点「获取当前位置」什么都没发生 ⇒ **要不要说一声属产品口径**；
+② AI 提标签失败时**静默降级为纯本地规则**，界面不区分 ⇒ 用户以为用了 AI。
+
+### §857.4 落地
+
+| 文件 | 改动 |
+|---|---|
+| `features/meetings/MeetingListView.vue` | `startNewMeeting` 加 `catch`，复用 §838 的失败文案形状 |
+| `utils/action-failure-notice.ts` | `RecordAction` 增加 `'start'`，并为它写**专属**措辞（不与「记录仍在」的五个混用） |
+| `features/meetings/VoiceprintSheet.vue` | `onClearAll` 加 `catch` + `actionError`（走 `apiError` 归一，不把 `SQLITE_BUSY` 上屏）；模板新增互斥链之外的提示；动作开头清空 |
+| `features/settings/SettingsPermissionsView.vue` | `refreshAll` 加 `if (refreshing.value) return` 守卫（§855 同构）+ `catch` + `toast.error(apiError(...))`；引入 `useApiError` |
+| `__tests__/fire-and-forget-audit.test.ts` | 按 §850 的**反向对账**意图移除 `refreshAll` 登记条目 + 基线 15 → 14，并写清原因 |
+
+### §857.5 判据与变异
+
+`frontend/src/__tests__/finally-no-catch-audit.test.ts`（**19 例**）：
+
+| 组 | 例数 | 内容 |
+|---|---|---|
+| 尺子自证 + 登记表对账 | 4 | `.vue` 数量、**口径三向合成验证**、登记表非空且键形为 `路径::函数名`、**函数与文件的双向反向对账** |
+| D18 | 4 | 不得「有 finally 无 catch」+ 必须走 `apiError` / 失败时列表保持原样 / **提示必须在互斥链之外** / 前置条件（`clearVoiceprints` 不吞错） |
+| D19 | 4 | 不得「有 finally 无 catch」+ **一致性对照（§838 那三个不得回退）**/ **共享文案必须为「新建」写专属措辞且不得说「仍在」**/ 前置条件 |
+| D20 | 2 | 不得「有 finally 无 catch」且走 `apiError` / 守卫必须在第一个 await 之前 |
+| 反向对照 | 2 | 「catch 里只有 `console.error`」不算出口；callee 自己 `resolve(null)` 不属本口径 |
+| 变异负控 | 3 | 三段源码级变异 |
+
+**M14 真实文件端到端变异（5 路）**：
+
+| 变异 | 自己判据 | 仓库既有门 `vue-template-compile` |
+|---|---|---|
+| M14-a 删掉 `onClearAll` 的 catch | 17 / 2 ❌ | **187 / 0 ✅** |
+| M14-b 把提示的 `v-if` 改成 `v-else` | 17 / 2 ❌ | **186 / 1 ❌** |
+| M14-c 删掉 `startNewMeeting` 的 catch | 17 / 2 ❌ | **187 / 0 ✅** |
+| M14-d 删掉文案工具的 `case 'start'` | 18 / 1 ❌ | **187 / 0 ✅** |
+| M14-e 删掉 `refreshAll` 的 catch | 18 / 1 ❌ | **187 / 0 ✅** |
+| 还原核对 | **19 / 0** | **187 / 0** |
+
+⭐ **M14-b 是本节唯一一路被仓库既有门抓到的**（`186/1`）——
+把失败提示藏进互斥链这类形态，`vue-template-compile` 那道门**有覆盖**。
+其余四路对既有门完全隐形。
+
+### §857.6 本节踩到的三个坑
+
+1. ⭐⭐ **变异脚本必须保持源码语法合法**。判据文件里第一版的 D18 变异把
+   `… } catch (e) { … } finally {` 替换成 `… } } finally {` —— **多出一个右花括号**
+   ⇒ `fnBody` 的括号配平**提前闭合** ⇒ 判据取到残缺体（不含 `finally`）
+   ⇒ 看起来像「判据无牙」，其实**是变异自己把源码写坏了**。
+   ⇒ 正确做法：搜索串含前导 `}`、替换串**不含**它。已写进判据注释。
+2. ⭐ **模板注释里的 `v-if="…"` 字面量会抢 `indexOf` 的锚点**（本会话第 10 次自伤）。
+   面板注释里写着 `v-if="loading"`，判据的「提示必须在互斥链之外」判成红
+   ⇒ 修法是判据侧 `templateOf` **strip HTML 注释**（§841 已为此建过 `tplCode()`），
+   不改我的注释。
+3. ⭐ **`§850` 的反向对账立刻抓到了我的改动** —— 给 `refreshAll` 加 catch 之后，
+   它不再被 `scan()` 命中 ⇒ 登记条目成陈旧 ⇒ 断言转红。
+   ⇒ 这是双向对账**最有价值的一次实证**：它把「我改了某个函数」变成一条会红的断言，
+   而不需要人记得回头改表。
+
+### §857.7 口径与未实测
+
+- ⛔ **未实测**：D18/D19/D20 三处的真实失败率（`localDB.run` 失败的实际概率、
+  `checkPermission` 失败的触发条件）。
+- 探针**只解析 `.vue`**、不解析箭头函数 const 形式 ⇒ 读数是**下界**。
+- 探针**不区分外层 `finally` 与内层 `try/catch`**（§857.1 表内已记）⇒
+  若某处是「外层 `finally` + 内层已有 catch」，会被本节口径误纳（再由人工读排除）。
+- 本节只覆盖 `finally`；**「既无 catch 也无 finally」的纯 `await` 逃逸**属 §854 的口径。
+- 六处阴性的判定**逐条读过**，但其中两处（「定位失败无提示」「AI 降级不告知」）
+  我判为**产品口径而非缺陷** ⇒ 若属主认为它们该说，已单列为待拍板。
+
+### §857.8 待拍板
+
+1. **定位失败要不要说一声** —— `captureDeviceLocation` 把「权限被拒」与「设备不支持」
+   都折叠成 `null`，`onCaptureLocation` 直接忽略 ⇒ 用户点「获取当前位置」什么都没有。
+   要区分这两种 `null` 并提示吗（§857.3 ①）。
+2. **AI 提标签降级要不要告知** —— 离线/失败时静默退化为本地规则标签，
+   界面不区分 ⇒ 用户以为用了 AI（§857.3 ②）。
+3. **§857 试过的方向要不要保留为常规扫面** —— 「有 finally 无 catch」已连续两节产出真缺陷
+   （§856 四处、§857 三处），建议并入常规轮换；是否要做成门禁仍见 §856.10 第 2、3 条。
+
+---
+
+## §858 「读失败」被谎报成「从来没有过」：1 处数据面缺陷 + ⭐⭐ 一条**实测推翻我判断**的记录
+
+本节的起点是 §857 留下的一个观察：那 9 处候选里 **6 处阴性全部是靠「callee 把失败编码成空值」救的**。
+⇒ 「视图写法」这个视角已被扫干净（§847/§848/§850/§854/§857），
+**换成「callee 返回值」的视角**才是没被扫过的那一面。
+
+探针 `.artifacts/s858-probe/scan_nullish_failure.py`：枚举「`catch` 里 `return null/[]/''/{}`」的生产者
+⇒ **69 处**。
+
+### §858.1 D21：AI 对话历史「损坏」被显示成「从来没有过对话」
+
+```ts
+// aiChatStore.ts，原文
+function loadConversations(): Conversation[] | null {
+  try { … return raw ? migrateConversations(JSON.parse(raw)) : null }
+  catch { return null }                       // ⚠ 读失败 ⇒ 与「没有对话」同一个值
+}
+function init() {
+  const saved = loadConversations()
+  if (saved && saved.length > 0) { … } else { createConversation() }
+}
+// createConversation() 最后调 persist() → setItem(同一个 KEY)
+```
+
+localStorage 里的 JSON 一旦损坏，界面落进 `turns.length === 0` 的「**开始你的 AI 对话**」
++「先从下方输入一个问题吧」⇒ **用户以为从来没有过对话**。
+
+⚠ **触发条件并不罕见**：配额超限后的部分写入、多标签页并发写、跨版本迁移写坏、
+浏览器异常退出留下半截内容。
+
+### §858.2 ⭐⭐ 本节最重要的产出：**我动手前的判断被实测推翻了**
+
+我动手前写下的结论是：
+
+> 「一次读失败 = 该用户的全部 AI 对话历史被**永久覆盖**（不可逆）」。
+
+⭐ **用 esbuild 把 store 打成 bundle 后在 node 里真跑 `init()`**（脚本见下），读数是：
+
+| 读数 | 修复后 | **修复前（负控实测）** |
+|---|---|---|
+| 损坏后 `conversations` 条数 | 1（只剩新建的空对话） | 1（相同） |
+| `conversationsRecovered` | **true** | **false** |
+| 留证键 | **有** `pocket:ai-chat:corrupt:conversations:local:<ts>` | **无** |
+| 原 KEY 是否被覆盖 | 被覆盖 | 被覆盖（**相同**） |
+
+⚠⚠ **最后一列是关键**：「原 KEY 被覆盖」在修复前后**读数相同** ⇒
+**数据不是在 `init()` 那一刻丢的** —— 存储里**本来就已经坏了**（那串内容不可读）。
+`init()` 造成的实际后果只有两条：
+
+1. **谎报**：损坏显示成「从来没有过对话」（用户侧，界面说谎族）；
+2. **销毁证据**：`persist()` 立刻用新建的空对话覆盖掉那串损坏内容 ⇒
+   **唯一的排查线索（乃至可手工抢救的片段）被抹掉**。
+
+⇒ 所以「永久覆盖、不可逆」这个定级是**我判断过头了**，必须更正。
+
+⭐⭐ 而且**修复本身一度引入了新的界面说谎**：我第一版界面文案写的是
+「原始数据已另存（未被覆盖），**可在 `pocket:ai-chat:corrupt:*` 键下找回**」——
+而实测证明**留证里存的就是那串损坏内容**，**找不回**可解析的历史。
+⇒ 文案已改成「应用**无法自动恢复**它 / 损坏内容已另存**供排查** / 若损坏只发生在末尾，
+其中可能仍有可手工抢救的片段」。
+
+⇒ ⇒ **这与 §856 修的是同一族：说谎的往往不是「原来的代码」，而是「修复时顺手写的那句话」。**
+
+### §858.3 落地
+
+| 文件 | 改动 |
+|---|---|
+| `features/ai-chat/aiChatStore.ts` | 新增 `preserveCorrupt(kind, raw)`（把损坏的原始串另存到 `pocket:ai-chat:corrupt:<kind>:<scope>:<ts>`）与 `safeGetItem()`；`loadConversations` / `loadSettings` 的 `catch` 改为**先留证、再置位**、最后才返回原值；新增并导出 `conversationsRecovered` / `settingsRecovered` |
+| `features/ai-chat/AIChatView.vue` | 模板顶部新增 `recovered-notice` 区块（**放在所有空态分支之外**）+ 对应样式 |
+
+⚠ **刻意保留** `init()` 的 `else createConversation()`：改掉它会让整个界面空掉、
+连输入框都没有。真正的修复不是「不新建」，而是「新建之前先留证 + 如实告知」。
+判据里有一条专门钉住这个行为，防止下一个人「顺手优化」掉它。
+
+⚠ `settings` 是同族（读失败退回默认设置 ⇒ `persist()` 把默认设置写回）⇒ 同样处理。
+
+### §858.4 复现脚本（这是本节最硬的证据形态）
+
+`.artifacts/s858-probe/repro-d21-entry.mjs`，运行方式：
+
+```bash
+cd frontend
+node_modules/.bin/esbuild <repo>/.artifacts/s858-probe/repro-d21-entry.mjs \
+  --bundle --format=esm --platform=node --outfile=./d21-bundle.mjs \
+  --external:vue --external:pinia --alias:@=./src \
+  --alias:'@/components/base/Toast.vue=./.d21-vue-stub.mjs'
+node ./d21-bundle.mjs
+```
+
+⭐ **为什么要 bundler**：store 内部的 import 没有显式扩展名
+（`'../../api/llm-bff'`），Node 的 ESM 解析器要求显式扩展名 ⇒ 直接 `import` 会
+`ERR_MODULE_NOT_FOUND`（与 `test-coverage-waivers` 里 `flashcardIo.test.ts` 被豁免同一原因）。
+`Toast.vue` 打桩成空组件（复现路径不渲染它），`document` / `window` 也要打桩。
+
+⚠ **第一版复现脚本的读数全是错的**：它把数据种在 `pocket:ai-chat:v2`，
+而真实的 key 是 `storageKey(prefix) = ${prefix}:${storageScope()}`，
+无 workspace/user 时 `storageScope()` 是 `'local'` ⇒ 真实 key 末尾有 `:local`
+⇒ store 读到 `null` ⇒ **基线读数就不对（2 条历史读成 1 条）**。
+⇒ **教训：复现脚本的 key 必须从源码读，不能照抄注释或记忆里的字面量。**
+这个错误恰好被「基线那一例」抓出来 —— 所以复现脚本必须带一个**合法输入的基线对照**。
+
+### §858.5 判据与变异
+
+`frontend/src/__tests__/local-storage-corruption-audit.test.ts`（**11 例**）：
+
+| 组 | 例数 | 内容 |
+|---|---|---|
+| 尺子自证 | 1 | 两个文件都读到了（路径写错会让后面全是绿灯假象） |
+| D21 | 4 | `loadConversations` 的 catch 不得静默返回 null（须留证 + 置位）/ `loadSettings` 同族 / 两个标志必须导出 / **`init()` 仍会新建对话是刻意保留的** |
+| 界面说实话 | 3 | 提示必须渲染且在空态之外 / **文案不得承诺「可以找回」** / 必须点出留证键名 |
+| 反向对照 | 1 | 「catch 里 throw」是另一种合规修法，本判据会红是**预期的**（届时要重新判断证据是否保得住，而不是放宽断言） |
+| 变异负控 | 2 | 退回 catch / 文案吹牛 |
+
+**M15 真实文件端到端变异（3 路）**：
+
+| 变异 | 自己判据 | 仓库既有门 `vue-template-compile` |
+|---|---|---|
+| M15-a 退回 `catch { return null }` | 9 / 2 ❌ | **187 / 0 ✅** |
+| M15-b 把文案改回「可找回」 | 9 / 2 ❌ | **187 / 0 ✅** |
+| M15-c 把提示藏进 `turns.length > 0` 条件 | 10 / 1 ❌ | **187 / 0 ✅** |
+| 还原核对 | **11 / 0** | **187 / 0** |
+
+⚠ M15-b 那一路值得单独记：**它是针对「修复时自己写的那句话」的变异**，
+而这句话是本节修复的一部分 —— 若没有这条变异，
+「修复引入了新的界面说谎」这件事会一直留在代码里。
+
+### §858.6 换方向的记录（本节开扫前试了 5 个方向，4 个阴性）
+
+| 方向 | 读数 | 结论 |
+|---|---|---|
+| `:key` 用 index | 24 处 | 全阴（§856.5 已记） |
+| `TransitionGroup` 的 key | 3 处 | 全稳定 |
+| `Array.sort` 比较函数 | 43 处 | 全正确 |
+| 时区口径混用 | 2 处 | 全阴，且是本仓最扎实的地方 |
+| **搜索框的空词/失败/无结果** | 14 处搜索框 | 全阴：`SessionListView` 有 `.list-error-banner` + 带 `error && filteredSessions.length === 0` 守卫的 `EmptyState`（§840 的正确形态） |
+| **模板绑定未声明变量** | 探针 436（几乎全假阳） | ⛔ 改用实验证明：`vue-tsc` 精确报红 ⇒ 该族已被 CI 第 1 项堵死 |
+| **「catch 里返回空值」** | **69 处** | ⇒ 收窄到「用户据此判断有没有东西」的落点 ⇒ **D21** |
+
+⭐ 附带一条**被否证的假设**：我一度怀疑「模态内用 `toast` 会因为层级/遮罩而看不见」
+⇒ 查 `tokens.css`：`--z-toast: 9999` 且 `Toast.vue` 用 `Teleport to="body"`
+⇒ **toast 的层级高于所有模态（`--z-sheet: 1300` / `--z-dialog: 1400`）** ⇒ 该假设不成立。
+（这条也解释了 §857 D19 为什么可以用 toast 而 D18 用模态内区块：两者都可见，差别只在风格。）
+
+### §858.7 口径与未实测
+
+- ⛔ **未实测**：真实用户设备上 `pocket:ai-chat:v2` 损坏的**发生率**，
+  以及损坏的**形态分布**（尾部截断 vs 完全不是 JSON vs 字段类型错）。
+  复现脚本覆盖了前两种，第三种（`migrateConversations` 之后的形状问题）未覆盖。
+- 复现脚本跑的是 **Pinia store + polyfill 的 localStorage**，
+  没有真实浏览器的 `storage` 事件与配额行为 ⇒ 「配额超限导致的部分写入」是**推断**，未复现。
+- 本节只扫了「`catch` 里返回空值」这一族；**其它形式的静默折叠**
+  （如 `?? []`、`|| {}`、默认参数）不在读数内。
+- 69 处里其余 66 处**未逐条取证**（本节只收了 AI 对话这一条落点）。
+
+### §858.8 待拍板
+
+1. **AI 对话历史损坏后要不要提供「尝试自动抢救」** ——
+   本节只做了「留证 + 如实告知」。末尾截断的 JSON 在很多情况下是可修补的
+   （补一个 `]` 或 `}` 就能读出大部分历史）。做自动抢救会引入「猜边界」的风险，
+   属产品/技术口径 ⇒ 已登记，不代拍。
+2. **`pocket:ai-chat:corrupt:*` 的留存与清理策略** ——
+   现在只写不清，理论上可以无限增长（每次损坏多一个键）。要不要限量/定期清理？
+
+## §859 §858 那 69 处候选的逐条分诊：3 处真缺陷 + ⭐ 一条「同族已修、同族漏网」的定罪证据
+
+§858 结尾留了一笔账：「69 处里其余 66 处**未逐条取证**」。
+本节把那笔账结掉：**3 处真缺陷 + 10 组阴性（每条带读数与理由）+ 1 条量具边界**。
+
+本节的起点仍然是 §858 的视角切换：「视图写法」扫干净了 ⇒ 换「callee 返回值」。
+
+### §859.1 探针 v2：先把量具修对，再谈结论
+
+原探针 `.artifacts/s858-probe/scan_nullish_failure.py` 只能给出行号与函数名，
+不足以支撑「逐条分诊」。新写 `.artifacts/s859-probe/triage_nullish_producers.py`，
+补三件事：**正确的函数名**（花括号配平回溯）、**反查消费点**（定罪口径在消费端）、
+**返回形态分类**。
+
+⚠ **第一版坏了两处，都当场被读数抓住**（再次印证「0/1 或可疑命中时第一嫌疑永远是量具」）：
+
+| 量具缺陷 | 症状 | 根因 |
+|---|---|---|
+| `ret` 分类全是 `?` | 13 处「?」 | `NULLISH` 后面加了 `\b`，而 `''` / `[]` / `{}` 都以**非单词字符**结尾 ⇒ `\b` 不成立 |
+| 函数名全是 `if` / `for` | `JsonBlock.vue` 被标成 `[if]`，消费点报 **4214** 个 | 函数头正则把控制流关键字也当成了函数名 |
+
+修正后的读数（`files 652 · 生产者 70 处`）：
+
+| 返回形态 | 处数 | | 消费点分布 | 处数 |
+|---|---|---|---|---|
+| `null` | 30 | | 2-3 个 | 39 |
+| `false` | 20 | | ≥4 个 | 21 |
+| `[]` | 9 | | 1 个（★ 最可能无人区分） | 7 |
+| `''` | 7 | | 0 个（死代码 / 仅自用） | 3 |
+| `{}` | 2 | | | |
+| `undefined` | 2 | | | |
+
+⚠ 70 比 §858 的 69 多一处：**是本节自己新增的 `utils/corrupt-preserve.ts` 的
+`catch { return null }`** ⇒ 读数与本节改动是自洽的。
+
+### §859.2 D22 跨边界枚举未校验 —— 判它为缺陷，靠的不是「我觉得」，是**同一个函数里的先例**
+
+`native/config-sync/apply.ts::applyAppPrefs` 原写法：
+
+```ts
+if (prefs.theme)      localStorage.setItem('app_theme', prefs.theme)
+if (prefs.deviceTier) localStorage.setItem('pocket_device_tier', prefs.deviceTier)
+if (prefs.sttPref)    localStorage.setItem('pocket_stt_pref', prefs.sttPref)
+```
+
+`prefs` 是**远端下发的 payload**（`applyRemoteSetting` 的入参），三个字段都是枚举，
+却**未校验就落盘**，并且 `theme` 还会被写进 `<html data-theme>`。
+
+⭐⭐ **定罪证据不是我的判断，是同一个文件里的先例**：`applyRemoteLocale` 的注释原文写着
+
+> 「另一处缺陷：未规范化的字符串被直接写进 app_locale 与 `<html lang>`……
+>   现在：**只在能匹配到受支持语言时才落盘并切换，匹配不到则完全忽略**」
+
+⇒ **locale 已经因为完全相同的原因修过**，而同一函数里的
+`theme` / `deviceTier` / `sttPref` 留在坏的那一边。
+「本仓的正确写法就在隔壁，而且就在同一个函数里」——这是最难反驳的一类证据。
+
+读侧的对照同样成立：
+
+| 位置 | 写法 | 判定 |
+|---|---|---|
+| `stores/theme.ts::readPreference` | `saved === 'light' \| 'dark' \| 'system'` | ✅ 白名单 |
+| `stores/locale.ts::readPersisted` | `matchLocale([saved])` | ✅ 白名单 |
+| `stores/device.ts`（原文） | `(localStorage.getItem('pocket_device_tier') as DeviceTier) \|\| 'unknown'` | ❌ 只 `as` 不断言 |
+
+⚠ `as` 只对编译器说话：运行期一个字符串进来就真的成了 `DeviceTier`。
+`DeviceTier` 的两个 getter 恰好都以「不等于 low」为判据
+（`shouldPreferLocal`、`recommendedModel`），所以非法值会**静默退化成 high 档的行为**，
+不报错、不提示。
+
+**修法**（与 `applyRemoteLocale` 同构：不在白名单里就**完全忽略**）：
+`applyAppPrefs` 加 `APP_THEMES` / `APP_DEVICE_TIERS` / `APP_STT_PREFS` 三个白名单，
+落盘与 `setAttribute` 都用校验后的局部值；`stores/device.ts` 改成 `readEnum<T>(key, allowed, fallback)`。
+⚠ **读写两侧都要改**：写侧加了白名单也清不掉**已经躺在用户 localStorage 里的存量脏值**
+（旧版本的下发没有校验），而且 `localStorage` 本身就是跨边界输入。
+
+#### ⭐ 加重情节：`useDeviceStore` 是一整套**零出口状态**
+
+| 核查 | 读数 |
+|---|---|
+| `useDeviceStore` 在自己文件之外的引用 | **0 处**（无 `.vue`、无测试、无门脚本、docs 里只有一份 2026-07 的归档文档提到已删除的 `deviceHub`） |
+| 是否有「遍历所有 store」的机制 | 无（grep `pinia.use(` / `$id ===` 全仓 0 命中） |
+| 界面上的设置入口 | 无（`setTier` / `setSttPreference` 零调用方） |
+| 同步通道 | **仍在搬**：`apply.ts` 下发它、`config-sync/prefs.ts:11` 读它再上报 |
+
+而且这套死状态的取值集合**已经与真正在跑的引擎枚举漂移**：
+`recommendedModel` 返回 `'vosk-small'`，而 `native/sherpa.ts` 的 engine 联合是
+`'paraformer' | 'sensevoice' | 'whisper-base' | 'zipformer'` —— **没有 `vosk-small`**。
+
+⇒ 更根本的问题：**`deviceTier` 是「这台设备的能力」，把它放进 `app_prefs` 跨设备同步本身就是错的**
+（高档设备的偏好同步到低档设备，低档设备就以为自己是高档）。
+**接回 UI 还是摘掉属产品口径** ⇒ 已登记，不代拍。
+
+### §859.3 D23 同一个解析失败，两种待遇
+
+`features/scheduled-tasks/ScheduledTaskEditView.vue::save` 原文：
+
+```ts
+if (showPrompt.value) {
+  payload = applyPrompt(form.kind, parsePayloadText() ?? {}, form.prompt)   // ⚠ 静默丢弃
+} else {
+  payload = parsePayloadText()
+  if (payload === null) { error.value = '任务参数必须是合法 JSON'; return }  // ✅ 报错
+}
+```
+
+同一个 `parsePayloadText()`、同一个失败条件，**一条分支报错、另一条分支 `?? {}` 把用户填的参数吞掉**。
+而放大后果的是模板：
+
+- `showPrompt = promptFieldForKind(form.kind) !== 'none'`
+- JSON 文本框是 `v-if="!showPrompt"`，而且**在 `<details>` 里**
+
+⇒ 触发路径很自然：用户按普通任务填好一整套参数（url / headers 之类）→ 把任务类型改成提示词类
+→ 文本框消失（他甚至不知道刚才填的东西还在表单里）→ 保存**成功** →
+**参数已经没了，要等这个定时任务到点自己跑失败才会被发现**。
+
+**修法**：解析一次、判定一次、两个分支同一套判定（沿用既有的那句错误文案，不新造措辞）。
+
+⚠⚠ **但直接这么改会引入一个新的阻断，必须一起堵掉**：
+`types.ts::formatPayload` 原第一行是 `if (typeof payload === 'string') return payload` ——
+一个**字符串型 payload**（老版本或某些 kind 存的就是裸字符串）回填进文本框后是
+`每日巡检` 这种**无法解析**的内容，而新的校验会一律报错 ⇒
+**「编辑一个本来就存在的任务」会被这条校验卡住**（修复反而制造了阻断）。
+⇒ `formatPayload` 改成**始终产出可解析文本**（一律 `JSON.stringify`）：
+字符串 payload 显示成带引号的合法 JSON，回填 → 解析 → 保存能原样往返。
+
+### §859.4 D24 §858 硬化了**读侧**，同一个 key 的**写侧**还在静默
+
+`apply.ts::applyChatSettings` 原文一行：
+
+```ts
+const current = JSON.parse(localStorage.getItem(key) || '{}') as Record<string, unknown>
+localStorage.setItem(key, JSON.stringify({ ...current, ...settings }))
+} catch {
+  // ignore                     // ⚠ 解析失败 ⇒ 整份远端聊天设置被静默丢弃
+}
+```
+
+`key` 是 `pocket:ai-chat:settings:v2:<scope>` —— **正是 §858/D21 刚硬化过的那个 key 的读侧**。
+读侧现在会留证 + 置位 + 如实告知；写侧却还是 `// ignore`。
+
+用户视角的症状是：他在 A 设备改了聊天设置，同步到 B 设备后 B 设备「怎么改都没反应」，
+而 B 设备上没有任何提示。
+
+**修法**（两条约束一起满足）：
+1. **留证**：`preserveCorruptRaw('settings', raw)` —— 与读侧同一个留证落点；
+2. **不能反过来把远端更新也丢掉**：远端才是这次的数据源，本地这份损坏的只是**合并基底**
+   ⇒ 以 `{}` 为基底继续应用，让远端赢。
+
+#### ⭐ 因此把 §858 的留证落点抽成了共用函数
+
+`§858` 把留证写在 `aiChatStore` 里，`§859` 要在写侧也留证 —— 两处都在
+`pocket:ai-chat:*` **同一个命名空间**里各自拼键名 ⇒ **键名约定一旦有两份实现就会各自漂移**。
+⇒ 抽出 `frontend/src/utils/corrupt-preserve.ts`（无依赖、纯函数），
+`aiChatStore` 与 `apply.ts` 都复用它。**键名与落点不变**：`pocket:ai-chat:corrupt:<kind>:<scope>:<ts>`。
+⚠ 抽完之后 §858 的判据（11 例）必须原样重跑 —— 行为没变，判据也不该变。
+
+### §859.5 阴性（**每条带读数与理由**，否则「忘了查」与「查了没问题」分不开）
+
+| 候选 | 读数 | 为什么是阴性 |
+|---|---|---|
+| `SessionListView::readSessionsSnapshot → null` | 2 个消费点 | `onMounted` 命中失败只是不预渲染，**紧接着的 `loadSessions()` 网络刷新仍是权威**；`loadSessions` 的 catch 里「快照也没有」时会置 `error` ⇒ 就是 §840 的正确形态 |
+| `email-body-cache::readEmailBodyLocal → ''` | 4 个消费点 | 缓存只影响首屏速度；`EmailDetailView::loadBodyInBackground` 的网络失败有 `bodyError` 出口（且此前已修过「预取失败静默」那一路） |
+| `snapshot-store::loadNS → {}` | 8 个消费点 | 现有两个 namespace（`opencode-sessions` / `email_bodies`）写入的**全是 `dirty: false` 的纯缓存**，损坏只损失缓存，不涉及「未回推的脏数据」。⚠ **若将来有 `dirty: true` 的 namespace 走这条路，这条结论立刻失效** |
+| `stores/auth::tokenExpiresAtMs → null` | 2 | `null` 时不主动续期，但请求的 401 路径会 `refreshSession` 兜住；注释也明写「绝不抛异常」 |
+| `navigationContext::restore → false` | 1 | ⭐ **这是本仓这一族的标准样板**：`validateContext(parsed)` 做 schema 校验、失败直接返回 false、**且失败时不写回**。文档里还写着「半恢复的导航比不恢复更危险」 |
+| `JsonBlock` 的 `parsed → null` | 0（模块内） | 同文件另一个 computed 会把**原始串**原样显示出来 ⇒ 解析失败降级为「当纯文本看」 |
+| `restoreTranslations → {}` | 2 | 翻译是缓存，丢了只是多花 token。⚠ 但 `persistTranslation` 会用 `{}` 覆盖同键**其它语言** ⇒ 同 D21 的「覆盖证据」形状，记为**同族低危**，不单独修 |
+| `EmailInboxView::hasUncategorized → false` | 3 | 它只是「要不要触发自动归类」的探针，失败时少做一次自动化，手动入口仍在 |
+| `meeting-related-search` 三个 `→ []` | 2/2/3 | 推荐位降级。⭐ 与 §857 待拍板 72/73 同族（失败要不要说一声）⇒ **不代拍，已并入该条** |
+| `isKeystoreAvailable → false` | 3 | 探针失败一律按不可用是**刻意**的（注释：「宁可少显示一个入口」）。⚠ 但 `VaultListView` 的文案断言了一个它并不知道的原因（「当前平台**未提供**密码箱原生插件」）⇒ 同样并入「要不要说人话」那条 |
+
+#### ⭐ 一条**量具边界**：死代码审计根本看不到 `stores/`
+
+`check:dead-features` 只扫 `features/meetings/`；进一步查 `scripts/audit-dead-features.mjs`
+发现它 `--dir` 参数被**硬编码**拼成 `src/features/<dir>`
+（`--dir stores` 直接 `ENOENT`）⇒ **`stores/` 与 `utils/` 完全在死代码审计的视野之外**。
+这解释了为什么「`useDeviceStore` 零出口」能在全绿的门禁下长期存在。
+⇒ 本节**不代改门禁范围**（属门禁语义变更，已登记）。
+
+### §859.6 判据与变异
+
+`frontend/src/__tests__/sync-enum-and-payload-audit.test.ts`（**14 例**）：
+
+| 组 | 例数 | 内容 |
+|---|---|---|
+| 尺子自证 | 1 | 六个文件都读到了（路径写错会让后面全是绿灯假象） |
+| D22 | 3 | 三个字段都用了白名单 / **落盘的值不是原始 `prefs.*`**（钉的是「写进去的值」，不是「有没有 setItem」）/ `data-theme` 同样用校验值 / device store 必须白名单读 |
+| D23 | 4 | 判定必须早于 `applyPrompt` / 禁用 `?? {}` / 必须有话说 / `formatPayload` 必须始终可解析 |
+| D24 | 4 | 写侧必须留证 / 留证那个 catch 里**不得 return** / 不得再用内联 parse / **留证落点只有一份实现** |
+| 变异负控 | 2 | 两条守卫各自的样本必须能触发它们 |
+
+**M16 真实文件端到端变异（4 路）**，每路同时跑 §858 判据与仓库既有门：
+
+| 变异 | 自己判据 | §858 判据 | 既有门 `vue-template-compile` |
+|---|---|---|---|
+| 基线 | 14 / 0 ✅ | 11 / 0 ✅ | 187 / 0 ✅ |
+| M16-a D22 退回无校验落盘 | **fail 2** 🔴 | 11 / 0 | 187 / 0 |
+| M16-b D23 退回 `?? {}` 兜底 | **fail 2** 🔴 | 11 / 0 | 187 / 0 |
+| M16-c D24 退回内联 parse + 静默丢弃 | **fail 3** 🔴 | 11 / 0 | 187 / 0 |
+| M16-d `formatPayload` 退回裸串返回 | **fail 1** 🔴 | 11 / 0 | 187 / 0 |
+| 还原核对 | **14 / 0** ✅ | 11 / 0 | 187 / 0 |
+
+⇒ **四路对仓库既有门与 §858 判据完全隐形**，只有本节判据能看见。
+
+⚠ **本节踩的三个坑**（都是「判据/脚本自己坏了」这一族）：
+
+1. ⭐⭐ **`fnBody` 取不到泛型函数体** ——
+   `function readEnum<T extends string>(` 的名字后面是 `<` 不是 `(` ⇒ 正则不匹配 ⇒
+   取到空串 ⇒ 断言在**空对象**上跑并报「没有白名单」。
+   第一反应是「守卫没生效」，实际上守卫取到的就是空的。⇒ 名字后必须允许 `<…>`。
+2. ⭐⭐ **内层 `catch` 的块体取不到** ——
+   `/catch\s*\{([^}]*)\}/` 只取到第一层，而「留证的那个 catch 里不许 return」这条断言
+   永远看不到真正的块体 ⇒ 又一次在**空值**上断言。⇒ 改成按花括号配平逐个取 catch 块。
+3. ⭐⭐ **变异脚本的「还原自检」是坏的量具，掩盖了真正的半还原** ——
+   自检写的是 `grep "prefs.deviceTier)"`，而**我自己写在 apply.ts 说明文字里的正是这一句**
+   ⇒ 自检永远报「还原失败」（噪声），而 M16-a 真正删掉的那一行
+   （`const theme = …`）居然**没被还原**、留下了引用未定义变量的半变异状态。
+   ⚠ 是**判据基线**（不是 grep）把它抓出来的：基线直接红 2 条。
+   ⇒ **还原的权威证据是判据基线全绿，不是 grep 看着像还原了**。
+   （这条同时是「探针自伤」的第 11 次：**判据/脚本文本里引用代码字面量，
+   就等于把字面量写进了被扫描的语料**。）
+
+### §859.7 口径与未实测
+
+- ⛔ **未实测**：真机上远端下发非法枚举值的**真实发生率**（需要一台登录过的设备 + 服务端有脏载荷）；
+  定时任务「填了参数 → 改成提示词类 → 保存」的**真实发生率**；
+  同一 key 的**写侧**解析失败发生率。
+- 本节只分诊了「`catch` 里返回空值」这一族（70 处）；
+  **其它形式的静默折叠**（`?? []`、`|| {}`、默认参数、`?? ''`）不在读数内。
+- 「跨边界枚举未校验」这条口径本轮**没有做全仓扫面**（只沿 config-sync 一条链走到落盘）；
+  全仓扫需要先枚举「远端/跨端输入 → 本地存储/状态」的边界清单，属下一节的工作量。
+- ⛔ **未做的事**：没有改 `check:dead-features` 的扫描范围（属门禁语义变更），
+  没有接回 `useDeviceStore` 的 UI，也没有摘掉它的同步字段（三者都属产品/门禁口径）。
+
+### §859.8 待拍板
+
+1. **`useDeviceStore` 接回 UI 还是摘掉** —— 它现在零出口、零入口，却仍在跨设备同步两个字段，
+   且 `recommendedModel` 的 `'vosk-small'` 已经不在 `native/sherpa.ts` 的 engine 联合里。
+   另外 **`deviceTier` 本身该不该跨设备同步**（它是 per-device 的能力，§859.2）。
+2. **提示词类任务报「参数 JSON 非法」时，用户改不了它** ——
+   `showPrompt` 为真时文本框是隐藏的 ⇒ 现在至少会说实话，但用户要先把任务类型改回去才能修。
+   要不要在报错时把文本框也显示出来？
+3. **推荐位/能力探测的「失败降级」要不要告知** ——
+   `meeting-related-search` 三个（失败降级为「没有推荐」）与
+   `isKeystoreAvailable`（文案断言了它并不知道的原因）并入 §857 待拍板第 72/73 条。
+
+## §860 把「跨边界枚举必须校验」推到全仓：净得 **0 处新增缺陷** + 一份正例清单
+
+§859.7 自己留了一笔账：「跨边界枚举未校验这条口径**尚未全仓扫面**」。
+本节去结它，结论是**阴性**，但阴性不是「我扫了没找到」就完事 ——
+它同时产出了一份**可复用的正例清单**。
+
+### §860.1 口径
+
+D22（§859）的机制可以写得很具体：**外部来源的值**被写进 localStorage 或 pinia 状态，
+而下游把它当**领域枚举/领域类型**用，写入侧没有白名单。
+
+⇒ 本节要回答的不是「还有没有 D22」，而是「**本仓真实的跨边界入口有哪些，各自是什么形态**」。
+
+### §860.2 ⭐ 先说探针失败：第一版口径不可用（读数见下）
+
+`.artifacts/s860-probe/scan_cross_boundary_sinks.py` 第一版把
+`load` 也当作「native 桥来源」的名字之一 ⇒ 读数是
+**候选落点 388 处，其中 359 处来自 `load(`** ⇒ 信噪比不可用。
+
+⚠ 这正是老教训的又一次命中：**分类探针比枚举探针更危险** ——
+`load` 是一个通用名字，把它当「边界来源」等于把半个仓都标成候选。
+⇒ 改成**手工枚举边界入口**。本仓真实的跨边界入口只有四个（读源码得出，不是探针得出）：
+
+| 边界 | 入口 | 判定 | 依据 |
+|---|---|---|---|
+| config-sync（远端下发） | `applyRemoteSetting` → `applyAppPrefs` / `applyChatSettings` | ❌ **D22/D24，已修** | §859 |
+| WebSocket 推送 | `services/ws-bus.ts` → `normalizeServerNote` / `normalizeTags` | ✅ **已校验** | 下面 §860.3 |
+| 用户导入文件（ENEX） | `features/imports/import-service.ts` → `evernote-parser.ts` | ✅ **已校验** | 下面 §860.3 |
+| 能力探测（插件可用性） | `native/keystore.ts::isKeystoreAvailable` | ⚠ **已刻意**（「宁可少显示一个入口」），但文案断言了未知原因 | §859.5，已并入待拍板 79 |
+
+### §860.3 三个正确形态的样板（这一节的真正产出）
+
+**样板一：WebSocket 推送必须逐字段归一化**（`services/ws-bus.ts`）
+
+```ts
+function normalizeTags(value, depth = 0): string[] | null {
+  if (depth > 10) return null                       // 防恶意构造的深层嵌套字符串
+  if (Array.isArray(value)) {
+    const tags = value.filter((tag): tag is string => typeof tag === 'string')   // ← 逐项类型过滤
+    return tags.length > 0 ? tags : null
+  }
+  ...
+}
+// normalizeServerNote：p.title ?? null / p.content_type ?? 'text' / p.created_at ?? now
+```
+
+⚠ 特别值得记的一处**同函数内对照**：`tags` 逐项做了 `typeof` 过滤 + 深度上限，
+而 `content_type` 只做了 `?? 'text'` 兜底。之所以**仍然判定为阴性**：
+`LocalNote.contentType` 的类型就是 `string`（`notes-types.ts:10`），**下游没有把它当枚举分支**（全仓无按它 switch 的地方）⇒
+没有「当成领域枚举用」这个危害面。⇒ **判定依据是「类型声明 + 消费端」，不是「有没有校验」**。
+
+**样板二：导入解析把坏输入收敛成合法值**（`features/imports/evernote-parser.ts`）
+
+```ts
+function toArray(value) { return Array.isArray(value) ? value : [value] }        // 形状归一
+function parseDate(value) { … return Number.isNaN(date.getTime()) ? null : date.getTime() }  // 失败收敛成 null
+```
+
+⚠ `parseDate` 这条正是 §858 说的那一族的标准答案：**失败收敛成一个合法的「没有」，
+而不是把 `NaN` 写进库里**（`NaN` 不等于任何合法时刻，会永久留在数据里且永远比不出来）。
+
+**样板三：schema 不符就整个丢弃，不做「尽力修复」**（`lib/shell/navigationContext.ts::restore`）
+
+```ts
+const validated = validateContext(parsed)
+if (!validated) return false          // ← 失败不采用
+// 且失败路径上没有任何 setItem / persist
+```
+
+它的文档注释把这个取舍写成了原则：「**任何 schema 不符都直接丢弃**，
+不做尽力修复 —— 半恢复的导航比不恢复更危险。」
+
+### §860.4 把样板钉成防退化判据（10 例）
+
+`.artifacts/` 里的探针会烂，但**样板会被下一个人「顺手简化」掉** ——
+比如有人为了少写两行，把 `filter(typeof tag === 'string')` 改成 `as string[]`，
+这类改动在 45 项门禁下**完全隐形**。
+
+⇒ `frontend/src/__tests__/cross-boundary-validation.test.ts`（**10 例**）：
+三个样板各钉 2-3 条 + 尺子自证 + 两条变异负控。
+
+**M17 真实文件端到端变异（2 路）**：
+
+| 变异 | 自己判据 | 仓库既有门 `vue-template-compile` |
+|---|---|---|
+| 基线 | 10 / 0 ✅ | 187 / 0 |
+| M17-a `ws-bus` 去掉 `typeof` 过滤（改成 `as string[]`） | **8 / 2** 🔴 | 187 / 0 |
+| M17-b `evernote-parser::parseDate` 返回 `NaN` | **8 / 2** 🔴 | — |
+| 还原核对 | **10 / 0** ✅ | 187 / 0 |
+
+⇒ 两路对既有门完全隐形；还原后 `git diff` 对这两个文件为空（无残留）。
+
+### §860.5 口径与未实测
+
+- 本节的口径是「**外部来源的值被当成领域枚举/领域类型使用**」。
+  ⛔ **没有**覆盖「外部值里的字符串长度/HTML/路径」——那是 §851（`v-html` 净化，
+  9/10 处已有净化）与 §852（URL sink）的范围，本节不重复声明。
+- 边界清单是**手工枚举**出来的（读源码），不是探针穷举 ⇒
+  如果将来新增一类跨端输入（新的 WS 通道、新的 native 桥、新的导入格式），
+  **这份清单不会自动更新**，需要重新枚举。
+- ⛔ **未实测**：真实设备上这三条通道各自的**脏输入发生率**（服务端推送脏 tags、
+  导入畸形 ENEX、跨版本 schema 不匹配的导航上下文）。
+  本节的结论建立在「代码形态正确」上，不声称脏输入不会来。
+
+### §860.6 本节无新增待拍板
+
+阴性结论不产生新的产品口径；§859 登记的 77–80 条仍然有效。
+唯一值得属主知道的是：**这条口径目前不适合做成「全仓门禁」**——
+因为它的收益全在「防退化」而不是「发现新缺陷」（本节净得 0），
+真要做门禁，应该做的是上面那个**正例清单**（10 例），
+而不是再去扫一遍已经扫干净的面。
+
+## §861 「同一个失败条件，同一个函数，两种待遇」：探针口径 + ⭐ 一处**量具验收**方法
+
+§859 的 D23 是这样抓到的：`ScheduledTaskEditView::save` 里同一个 `parsePayloadText()`，
+提示词分支 `?? {}` 静默吞、非提示词分支报错。
+⇒ 这个形态**比「两个文件不一致」好抓得多**，因为作者本意几乎肯定是「失败要说出来」。
+本节把它做成口径，并顺手做了一件本仓还没系统做过的事：**给探针做正例验收**。
+
+### §861.1 口径
+
+在**同一个函数体**内同时出现两类形态时列为候选：
+
+- **A · 对失败的显式处置**：catch 块里设错误出口 / `throw` / `console.error`；
+- **B · 对调用结果的空值兜底**：`call() ?? <空值>` 或 `call() || <空值>`。
+
+「A 存在」说明这个函数的作者**知道**失败要处理；「B 存在」说明有另一处同类失败被静默吞掉。
+探针 `.artifacts/s861-probe/scan_split_treatment.py`。
+
+⚠ **已知假阳**（必须人工排除）：两个 call 根本不是同一类失败；
+B 兜底的空值是**合法语义**（没有这条记录）；上层已统一兜住。
+
+### §861.2 ⭐⭐ 探针的第一版坏在哪儿，以及「量具验收」这件事本身
+
+第一版跑出 **5 个候选**，看起来像个很干净的小结果。我差点就这么读下去。
+**但这台量具连它自己的已知正例都抓不到** —— 我把 `ScheduledTaskEditView.vue`
+退回 §859 修复前的形态再跑一次，它**没有报出 `save`**。
+
+根因：`funcs()` 里 `FUNC_HEAD` 的两个分支，**匹配尾部落在不同字符上** ——
+`const f = (…) => {` 命中第一分支、尾部是 `(`；而 `async function save() {`
+命中第二分支、尾部是 `{`。第一版一律按「尾部是 `(`」去找形参再找 `{`
+⇒ 对 `save` 而言 `find("(", m.end()-1)` 找的是**后面另一个 `if (…)` 的左括号**
+⇒ 取到的是 if 块的体（81 字符，而不是函数的 1170 字符）
+⇒ `catch` 与 `error.value =` 都不在这个「函数体」里 ⇒ 候选消失。
+
+修法：按尾部字符分流（`(` 走形参路径，`{` 直接当函数体）。修完之后：
+
+| 验收步骤 | 读数 |
+|---|---|
+| 把 `ScheduledTaskEditView.vue` 退回修复前形态 | **8 个候选，含 `save`** ✅ 抓到了 |
+| 还原成修复后形态 | **7 个候选，`save` 消失** ✅ 负例也对 |
+
+⚠⚠ 而且候选集**整个变了**：修好之前的 5 条（`usePendingApprovals::refresh`、
+`MasterPasswordDialog::close`、`NoteEditView::currentWorkspaceId`…）**全是坏取件器的产物**，
+修好之后它们消失了，取而代之的是一批此前从未被看见过的候选。
+
+⇒ ⇒ **「探针跑出了一个很干净的小结果」是危险信号，不是好消息**。
+真实发生过的情况是：坏取件器把 652 个文件里的大部分函数取错，于是只剩 5 条看起来无害的残留。
+⇒ **量具验收的唯一可靠办法 = 拿「本仓已确认过的缺陷形态」跑一遍，看它抓不抓得到**，
+再拿修复后的形态跑一遍，看它消不消失。**两道都过，这把尺子才算数**。
+
+### §861.3 7 个候选逐条取证：1 处真缺陷（来自键级对称性复查，不是来自这 7 条）
+
+| 候选 | 判定 | 理由 |
+|---|---|---|
+| `NoteEditView::onSave` 的 `title.trim() \|\| null` | 阴性 | 不是失败兜底，是**领域语义**：更新时「标题留空 = 清空标题」；失败路径只有一条且有 `saveError` 出口 |
+| `MasterPasswordDialog::submit` 的 `hint.trim() \|\| null` | 阴性 | 「没有提示词」是合法空值；同一函数里两个输入校验都报错，失败 catch 也有 `error` 出口 |
+| `recordingRuntime` 两处 `?.stop() ?? null` / `?.takeFull() ?? null` | 阴性 | 可选链兜底（「可能没有这个对象」），不是吞失败；`runStop` 的失败路径有 `phase`/`error` 处置 |
+| `use-invoice-list` 三处 `Number(x) \|\| 0` | 阴性 | 数值默认值；且 `:112` 已经对 `≤ 0` 显式提示「未解析出金额，无法入账」 |
+| **`config-sync/runtime.ts::importLegacyPrefsIfMissing`** | ❌ **D25** | 见下 |
+
+⇒ **这 7 条里 0 个真缺陷**。⚠ 但本节的真缺陷**不是从这 7 条里来的**，
+而是我顺手做的第二件事（键级对称性复查）——这也是本节的方法论重点。
+
+#### ⭐ D25：同一个 key 的**第三个**消费者，§858 钉了第一个、§859 钉了第二个
+
+把「存储值直接进 `JSON.parse`」的全仓落点列出来（**22 处**），
+按 key 归并后发现 `pocket:ai-chat:settings:v2:<scope>` 有**三个**消费者：
+
+| # | 消费者 | 状态 |
+|---|---|---|
+| ① | `aiChatStore::loadSettings`（读侧） | ✅ §858/D21 硬化（留证 + 置位 + 界面告知） |
+| ② | `apply.ts::applyChatSettings`（写侧） | ✅ §859/D24 硬化（留证 + 以 `{}` 为基底继续应用） |
+| ③ | `config-sync/runtime.ts::importLegacyPrefsIfMissing`（**一次性旧偏好迁移**） | ❌ 只有一个 `catch { /* ignore */ }` |
+
+③ 的后果：本地 blob 损坏时这次迁移**静默跳过** ⇒
+**用户的 AI 聊天设置从此只留在这一台设备上、永远同步不到别的设备**，界面上零提示
+（§858 那条提示覆盖不到这条路径）。
+⇒ 修法与前两处同构：**留证 + 一条 `console.warn`**（迁移路径没有界面出口，warn 是唯一说得出口的地方）。
+
+⚠ 顺带记一条**我修的时候自己犯的错**：`console.warn` 里我一度把 `preserveCorruptRaw(...)`
+又调了一次用于打印结果 ⇒ **一次损坏会写出两个留证键**。当场发现并改掉。
+⇒ 这类「顺手再调一次」的错误，判据抓不到，**只能靠写完立刻读一遍**。
+
+### §861.4 ⭐ 判据的形态升级：从「钉两个兄弟」到「枚举全部消费者」
+
+D25 暴露了前面两节判据的结构性弱点：
+
+> §858 的判据钉 `loadConversations` / `loadSettings`；
+> §859 的判据钉 `applyChatSettings`。
+> ⇒ **两个兄弟都被点名了，第三个消费者自然落在判据视野之外** ——
+> 而它恰恰是唯一没修的那个。
+
+⇒ 新增一组断言（`sync-enum-and-payload-audit.test.ts` 14 → **17 例**）：
+
+1. **三个消费者一个都不能少**（`loadSettings` / `applyChatSettings` / `importLegacyPrefsIfMissing`）
+   —— 少一个就说明有人加了或改了消费者而没人点名；
+2. **紧跟 `JSON.parse` 的那个 catch 必须说话**；
+3. **迁移路径必须复用共用留证落点**（不得自己拼键名）。
+
+⚠ 第 2 条第一版写得太宽（「这个函数里不许有静默 catch」）⇒ **立刻误报**：
+外层那个 `catch { /* ignore */ }` 保护的是 `getLocalSetting` / `writeLocalSetting` 这类
+DB 调用，失败时「跳过这次迁移」本来就是正确行为 ⇒ **要求它说话属于越界**。
+⇒ 改成只钉「紧跟 `JSON.parse` 的那一个 catch」。
+
+**M18 真实文件端到端变异（2 路）**：
+
+| 变异 | 自己判据 | 既有门 `vue-template-compile` |
+|---|---|---|
+| 基线 | 17 / 0 ✅ | 187 / 0 |
+| M18-a D25 退回裸 `parse` + 外层静默 | **16 / 1** 🔴 | 187 / 0 |
+| M18-b 迁移函数改名（模拟「消费者变了却没人点名」） | **16 / 1** 🔴 | — |
+| 还原核对 | **17 / 0** ✅ | 187 / 0 |
+
+⇒ M18-b 那一路专门验的是**枚举型断言本身**：它模拟的不是「缺陷变多」，
+而是「有人动了消费者清单」——**这类变化用「点名式断言」是抓不到的**
+（§850 反向对账的价值：把「我改了某个函数」变成会红的断言）。
+
+### §861.5 本仓的「同族漏网」账（这一节最值得留下的一张表）
+
+三次同族漏网，形态各不相同，但**根因是同一个：只点了自己看见的那几个**：
+
+| 节 | 被漏掉的那一个 | 漏掉它的原因 |
+|---|---|---|
+| §838 → §857/D19 | `MeetingListView::startNewMeeting` | 同文件另外三个处理器都带着修法，它「看起来像已处理」（有 `finally`） |
+| §858 → §859/D24 | `applyChatSettings`（写侧） | 注意力全在读侧，同一个 key 的另一个消费者没进视野 |
+| §859 → §861/D25 | `importLegacyPrefsIfMissing`（迁移侧） | 前两个都已被判据点名 ⇒ 更容易以为「这一族覆盖了」 |
+
+⇒ 通用式：**任何「同族」的判据，都必须先枚举这一族的全部成员，再逐个要求**；
+只写「我修过的那几个」等于给漏网留后门。
+
+### §861.6 口径与未实测
+
+- 本节只扫了 `.ts` / `.vue` 里**函数级**的 A+B 共存；
+  **跨函数、跨文件**的同族不对称不在读数内（键级对称性那一条是手工做的，见 §861.3）。
+- 22 个「存储值直接进 `JSON.parse`」的落点里，**只归并检查了 AI 聊天设置这一个 key**；
+  其余 21 处（`contacts-store` / `crypto-config` / `flashcards` / `selected-instance` /
+  `snapshot-store` / `sessionArchive` / `update-state` / `localagent` …）**未逐条取证**。
+- ⛔ **未实测**：真机上这些 key 出现损坏的**发生率**；D25 那条迁移路径在真实设备上
+  被触发的概率（它只在「本地 DB 还没有该 namespace 记录」时才跑）。
+
+### §861.7 待拍板
+
+本节**无新增产品口径**（D25 是技术性修复，已按前两处同构落地）。
+§859 登记的 77–80 条仍然有效。
+另外提醒属主一条方法论结论（不是待拍板项，是**给未来做门禁的人**的）：
+**「跨边界/同族」类口径的收益几乎全在「枚举完整性」，不在「扫得准」**
+⇒ 真做成门禁时，要固化的是那份**消费者清单**，而不是扫描逻辑。
+
+## §862 把 §861.6 的账结掉：21 处「存储值直接进 JSON.parse」逐条取证 → ⭐ **D26 一条高严重度缺陷**
+
+§861.6 留的账：本节只按 key 归并检查了 AI 聊天设置那一个 key，其余 **21 处未逐条取证**。
+本节把它们读完 —— **拿到 1 条比 D21/D24/D25 都严重得多的缺陷**，
+以及 **6 组阴性（含两个「本仓正确形态的样板」）**。
+
+### §862.1 清单（22 处，按文件列全）
+
+`apply.ts`(§859 已修) · `config-sync/runtime.ts`(§861 已修) · `snapshot-store.ts` ·
+`selected-instance.ts` · `SettingsView.vue` · `contacts-store.ts` · `aiChatStore.ts`×2(§858 已修) ·
+`sessionArchive.ts` · `note-search-parse.ts` · `notes-fts-ready.ts` · `note-search.ts` ·
+`meetings-live.ts` · `meetings-store.ts` · `EmailDetailView.vue`(§859 已判阴性) ·
+**`stores/crypto-config.ts`** · `stores/flashcards.ts`×2 · `utils/update-state.ts` ·
+`localagent/tools/index.ts` · `localagent/runtime.ts` · `navigationContext.ts`(§860 已判为样板)
+
+### §862.2 ⭐⭐ D26：加密配置读失败，被谎报成「你从来没有主密码」
+
+```ts
+// stores/crypto-config.ts，原文
+function loadConfig(): CryptoConfig {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY)
+    if (!raw) return { ...DEFAULT_CONFIG }
+    return { ...DEFAULT_CONFIG, ...JSON.parse(raw) }   // ⚠ 字段级也没有校验
+  } catch {
+    return { ...DEFAULT_CONFIG }                       // ⚠⚠ 读失败 = 首次安装
+  }
+}
+```
+
+`hasMasterPassword` 决定三件事：
+
+1. `LoginView.vue:348` / `:538` 与 `RegisterView.vue:234`：
+   `if (!cfg.hasMasterPassword) { showMasterPasswordDialog = true; return }`
+   ⇒ **每次登录都被要求「设置主密码」**；
+2. `MasterPasswordDialog` 的标题：`mode="create"` ⇒ **「创建主密码」**，
+   提示写着「主密码独立于登录密码…**丢失后无法恢复**」；
+3. `shouldEncryptField()`（`notes-persist.ts:69/247`、`notes-store.ts:49`）⇒ 新笔记是否做字段加密。
+
+⚠⚠ **完整的受害链**（每一步都实测过源码）：
+
+```
+pocket_crypto_cfg 损坏
+  → loadConfig 的 catch 返回 DEFAULT_CONFIG（hasMasterPassword: false）
+  → 登录后弹出对话框，标题「创建主密码」
+  → 用户明明有主密码，凭直觉输入 → initLobster 第一步 verifyMasterPassword
+    （lobster-init.ts:76）→ 抛「主密码不正确」
+  → 他只会以为自己从来没设过，于是再点一次「确认」
+  → 同样的循环，且界面上没有任何一处说明真实原因是「配置损坏」
+```
+
+⚠ **数据安全没有被破坏**（这点必须说清楚，否则会夸大定级）：
+`initLobster` 先 `verifyMasterPassword` 才碰加密状态，
+`local-db.ts:128` 的实现里「未存 secret / web fallback」返回 true ⇒
+错密码**不会**被静默接受、**不会**重写数据库密钥。
+⇒ 危害是**用户被一个说谎的对话框困住 + 唯一的排查证据被覆盖**，不是数据丢失。
+
+**修法**（§858/D21 的形态，但**不能照抄** —— 这里的正确姿态是「解锁」而不是「新建」）：
+
+1. **留证**：原始串另存到 `pocket:crypto:corrupt:config:<scope>:<ts>`；
+2. **不谎报**：raw 存在说明这台机器**曾经有过**一份加密配置
+   ⇒ 失败分支置 `hasMasterPassword: true`，按**锁定**处理而不是按「没有」处理。
+   这一步安全，因为真正的判据是 `verifyMasterPassword`，错密码一定被挡住；
+3. **字段级校验**：`fieldEncryption === 'enabled' ? …`、`hasMasterPassword === true`
+   （`{ ...DEFAULT, ...JSON.parse(raw) }` 里的 `as CryptoConfig` 只对编译器说话）;
+4. **界面说实话**：`configRecovered` 导出后，`MasterPasswordDialog` 增加第三种形态
+   **`unlock`**（标题「输入主密码解锁」+ 一行「检测到本机加密配置损坏（内容已另存备查）。
+   如果想不起主密码，本地数据将无法恢复。」），`LoginView`/`RegisterView` 按
+   `cryptoConfig.configRecovered ? 'unlock' : 'create'` 选模式。
+
+#### ⭐ 因此把留证工具升级成「支持多命名空间」
+
+§859 把留证落点抽成了 `utils/corrupt-preserve.ts`，当时只有一个命名空间
+（`pocket:ai-chat:corrupt`）。D26 需要第二个（`pocket:crypto:corrupt`）
+⇒ 签名改为 `preserveCorruptRaw(ns, kind, raw)`，并导出 `AI_CHAT_CORRUPT_NS` 常量。
+⚠ 代价是既有断言要跟着改：§859 的 D24 断言原先钉死第一个实参是 `'settings'`，
+现在必须钉「**留证的是 settings**」这件事而不是实参顺序。
+（这正是「判据钉的是性质、不是写法」的又一次兑现。）
+
+### §862.3 六组阴性（每条带读数与理由）
+
+| 落点 | 判定 | 理由 |
+|---|---|---|
+| `selected-instance.ts` | ✅ **样板** | 坏 JSON **明确降级**到 id-only key（注释写着「坏 JSON 落到 id-only」），且对 `parsed.id` 做了 `typeof === 'string' && 非空` 的**字段级校验** —— 这是 §860 那三个正确形态的第四个实例 |
+| `snapshot-store.ts::loadNS` | 阴性 | §859.5 已判；两个 namespace 都是 `dirty:false` 纯缓存 |
+| `flashcards.ts` ×2 | 阴性 | 缓存 + 待回推队列；`readOutbox` 失败返回 `[]` 的后果（未回推项被覆盖）已在 §859.5 记为「同族低危」，本节不重复计 |
+| `sessionArchive.ts` | 阴性 | `JSON.parse` 失败后走 `parseArchivedIds` 的既有兜底，归档列表本身可重建 |
+| `meetings-live.ts` / `meetings-store.ts` | ✅ **样板** | 同一行里写死了形态：`try { return JSON.parse(raw) } catch { return fallback }` —— **签名上就带着 fallback 参数**，调用方必须显式提供兜底值，不会出现「忘了给默认值」 |
+| `localagent/runtime.ts` / `tools/index.ts` | 阴性 | 有明确的解析失败出口且不写回存储；`localagent` 的存储是工具沙箱的临时态 |
+| `update-state.ts` | 阴性 | 指纹读失败返回 `null` ⇒ 语义就是「没有指纹」，与 §857 D18 的「已过不可撤销确认却零反馈」不同：这里没有不可逆动作 |
+| `contacts-store.ts` / `notes-fts-ready.ts` / `note-search*.ts` / `SettingsView.vue` | 阴性 | 分别是 meta 合并、FTS 标签与搜索片段解析，都是**派生数据**（可重建），失败后下一次正常路径会重新生成 |
+| `EmailDetailView::restoreTranslations` | 阴性 | §859.5 已判（翻译是缓存，丢了只是多花 token） |
+
+⭐ 值得注意的是：**正确形态在本仓是成片的**（`selected-instance` 的字段级校验、
+`meetings-store` 的 fallback 形参、`navigationContext` 的 schema 校验），
+这说明 §858–§862 这几节修的不是「本仓不会写代码」，而是**这几处恰好没人写**。
+
+### §862.4 判据与变异
+
+`sync-enum-and-payload-audit.test.ts`：**17 → 27 例**（新增 D26 五条 + 界面三条 + 负控一条 + 命名一条）。
+
+**M19 真实文件端到端变异（2 路）**：
+
+| 变异 | 自己判据 | 既有门 `vue-template-compile` |
+|---|---|---|
+| 基线 | 27 / 0 ✅ | 187 / 0 |
+| M19-a 失败分支改回 `return { ...DEFAULT_CONFIG }` | **25 / 2** 🔴 | 187 / 0 |
+| M19-b 弹窗 `unlock` 标题改回「创建主密码」 | **26 / 1** 🔴 | — |
+| 还原核对 | **27 / 0** ✅ | 187 / 0 |
+
+⚠ 本节踩的四个坑（全部是「量具/写入自己坏了」这一族）：
+
+1. ⭐⭐ **heredoc 写入时丢了一个右括号**：判据文件末尾出现 `  }` 而不是 `  })`
+   ⇒ `node --experimental-strip-types` 直接 `ERR_INVALID_TYPESCRIPT_SYNTAX`，
+   而 `vue-tsc` **全绿**（测试目录不在它的检查范围里）
+   ⇒ 定位手法：用仓库自带的 `typescript` 做 `createSourceFile().parseDiagnostics`
+   拿到**精确行列**，再用「删掉某个块再解析」二分。
+   ⇒ **判据文件自己语法坏了，`typecheck 不一定会告诉你** —— 判据必须单独跑一遍。
+2. ⭐ **同一文件里两个 `hint` 撞名**：我给弹窗的提示文案加了个 `const hint = computed(...)`，
+   而弹窗里已经有一个 `hint` ref（密码提示输入框）⇒ `vue-tsc` 报重复标识符。
+   ⇒ 判据里钉了一条「`const hint` 只能出现一次」，防下一个人再踩。
+3. ⭐ **负控查了整份文件**：我想验「失败分支不再说没有主密码」，
+   但 `setMasterPassword()` 里本来就有 `cfg.value.hasMasterPassword = true`
+   ⇒ 负控恒红。**这是量具坏了，不是被测代码坏了** ⇒ 收窄到 `loadConfig` 函数体。
+4. ⚠ 判据同步：`preserveCorruptRaw` 加参数后，§859 的 D24 断言钉死实参顺序而恒红
+   ⇒ 改成钉「留证的是 settings 这件事」（见 §862.2 末尾）。
+
+### §862.5 口径与未实测
+
+- 本节只覆盖「存储值直接进 `JSON.parse`」这 22 处；
+  ⛔ **其它形式的存储读**（不经过 `JSON.parse` 的字符串读，例如
+  `pocket_device_tier`、`pocket_stt_pref`、`app_theme`、`selected_instance_id`）
+  **不在读数内** —— 其中 `theme`/`locale` 已在 §859 硬化，`device*` 是零出口死状态（待拍板 77）。
+- ⛔ **未实测**：`pocket_crypto_cfg` 损坏的**真实发生率**（与 §858 的
+  `pocket:ai-chat:v2` 同属「本地存储被写坏」这一族，发生率都未知）；
+  D26 触发后用户在弹窗里的**真实行为**（是否会去找旧密码、是否会放弃）。
+- ⛔ **未做的产品决策**（已登记 81）：`fieldEncryption` 在损坏后该回落成什么 ——
+  现在仍回落 `'disabled'`，后果是「旧行照常解密、新行写成明文」的混合状态。
+
+### §862.6 待拍板（新增 1 条）
+
+81. **`pocket_crypto_cfg` 损坏后，`fieldEncryption` 该回落成什么** ——
+   本节只保证「不谎报有没有主密码」，没有动这个默认值。
+   现在回落 `'disabled'` ⇒ 损坏前是 `enabled` 的话，
+   **旧行照常带着 `encrypted_content=1` 解密，新行写成明文**，
+   库里会出现明文与密文混合的状态。要不要在检测到损坏时直接**禁止写入**
+   （只读不写，等用户处理完），还是维持现状（§862.2 第 4 点、§862.5 第 3 条）
+
+## §863 存在型 ID 的采信：3 个正确形态 + 1 处**跨 ID 空间**的坏比较（D27）
+
+§862.5 留的账：「不经过 `JSON.parse` 的存储读」不在读数内。
+本节从其中最要害的一类切进去：**「有没有这个东西」型的 ID/标志**
+（当前 workspace、当前实例、本机是否已绑定凭据、当前用户是不是 owner）。
+
+这类字段最容易被折叠，而折叠的后果**比「读不到数据」严重**：
+§862/D26 折叠成了「你从来没有主密码」（用户被说谎的对话框困住）；
+本节的 D27 折叠成了「这个 workspace 没有 owner」（一枚哑雷）。
+
+### §863.1 四类逐条取证
+
+| 存在型字段 | 落点 | 判定 | 依据 |
+|---|---|---|---|
+| 当前 workspace | `stores/workspace.ts::activeId` | ✅ **样板** | `loadWorkspaces()` **拿服务端列表对账**（`!workspaces.some(w => w.id === activeId)` ⇒ 改选第一个），`current` getter 找不到时给 `null` 而不是造一个假的 |
+| 当前实例 | `config/selected-instance.ts` | ✅ **样板** | 坏 JSON **明确降级**到 id-only key（注释「坏 JSON 落到 id-only」），且对 `parsed.id` 做字段级校验 |
+| 本机凭据 | `native/biometricAuth.ts` | ✅ **样板** | `withPlugin(fn, fallback)` —— **把兜底做成函数形参** ⇒ 调用方不可能「忘了给默认值」 |
+| **当前用户是不是 owner** | `stores/workspace.ts::isOwner` | ❌ **D27** | 见下 |
+
+#### D27 原文
+
+```ts
+isOwner: (s) => s.members.some((m) => m.user_id === s.activeId && m.role === 'owner'),
+```
+
+`activeId` 是 **`Workspace.id`（workspace id）**，`m.user_id` 是 **`WorkspaceMember.user_id`（user id）**
+⇒ **比较的是两个不同 ID 空间**，结果几乎恒为 false。
+
+⚠ 而且这个 getter **全仓零消费**（无 `.vue`、无测试、无门脚本引用）
+⇒ 它是一枚**哑雷**：下一个人把它接到「仅 owner 可做」的开关上时会静默拿到 false，
+表现为「owner 也看不到该入口」，而且**没有任何编译错误或测试报错**。
+
+**修法**：按 getter 名的最贴切语义实现 —— **当前登录用户是不是当前 workspace 的 owner**：
+
+```ts
+isOwner: (s) => {
+  const userId = useAuthStore().userId
+  if (!userId) return false
+  return s.members.some(
+    (m) => m.user_id === userId && m.workspace_id === s.activeId && m.role === 'owner',
+  )
+}
+```
+
+⚠ **另一种可能意图是「这个 workspace 有没有 owner 成员」**，那应该写
+`m.workspace_id === s.activeId && m.role === 'owner'` —— 两者只差一行。
+属语义口径 ⇒ **已登记（第 82 条），不代拍**；
+但**跨 ID 空间比较在任何一种意图下都是错的**，所以「必须改」这一条是确定的。
+（判据钉的是「不许跨 ID 空间比较」这条**机械规则**，而不是钉某一种写法 ——
+否则就是把产品口径焊进了判据。）
+
+### §863.2 ⭐ 一个观察：正确形态在本仓是**成片**的
+
+本节四个字段里三个已是正确形态，且形态各不相同：
+
+| 字段 | 正确形态 |
+|---|---|
+| `workspace.activeId` | **拿权威列表对账 + 自动改选** |
+| `selected_instance` | **坏值明确降级 + 字段级校验** |
+| `biometricAuth.*` | **兜底做成函数形参** |
+| `local-db.ts::isSecretStoredSafely` | **注释明写「探针失败必须与『没存』区分开」** |
+
+⇒ §858–§863 这六节修的**不是「本仓不会写代码」**，而是「这几处恰好没人写」。
+⚠ 这个观察对本轮的工作方式有直接影响：**扫面的净得 0 不代表没有价值**，
+价值在于把「正确形态」固化成**防退化判据**（§860 已立此例，本节继续）。
+
+### §863.3 判据与变异
+
+`cross-boundary-validation.test.ts`：**10 → 18 例**
+（新增 workspace 对账两例 + `withPlugin` 形参一例 + 跨 ID 空间一例 + 登记提醒一例 + 负控两条）。
+
+**M20 真实文件端到端变异（2 路）**：
+
+| 变异 | 自己判据 | 既有门 `vue-template-compile` |
+|---|---|---|
+| 基线 | 18 / 0 ✅ | 187 / 0 |
+| M20-a `loadWorkspaces` 不再校验 `activeId` | **16 / 2** 🔴 | 187 / 0 |
+| M20-b `isOwner` 改回跨 ID 空间比较 | **17 / 1** 🔴 | — |
+| 还原核对 | **18 / 0** ✅ | 187 / 0 |
+
+⚠ 本节两个坑（都在判据侧）：
+
+1. ⭐ **锚点只取到 `withPlugin(` 是不够的** ——
+   匹配 `export function X(...)[\s\S]*?withPlugin\(` 得到的那一段里**没有兜底实参**
+   （它在匹配之外）⇒ 三条断言恒红。**又是量具坏了**：锚点范围取小了，
+   不是被测代码没写兜底。⇒ 修法是把范围取到函数体结束再查整段。
+2. ⭐ **判据写出来的「跨 ID 空间比较」在改完之前立刻转红** ——
+   这正是它该做的（我先写判据、再改源码，第一轮跑就是红的）；
+   但这也说明**判据可以先于修复写**，顺序是「先立断言 ⇒ 看到它红 ⇒ 再修」，
+   比「修完再补断言」更能证明断言真的有牙。
+
+### §863.4 口径与未实测
+
+- 本节只覆盖「存在型 ID/标志」这一类；⛔ 不覆盖「枚举型偏好」（§859 D22 已覆盖）
+  与「解析型配置」（§858/§859/§862 已覆盖）。
+- ⛔ **未实测**：D27 那个 getter 被接上之后的**真实效果**（本节只证明了它的表达式
+  在语义上恒假，没有任何用户可见路径今天能碰到它）。
+- ⚠ `pocket_active_ws` 在登出时**不会被清**（`clearLocal()` 只清 token/user/workspace/method），
+  但因为下一位用户登录后 `loadWorkspaces()` 会自动改选 ⇒ **已判阴性**（有自愈路径）。
+- ⛔ **未做的产品决策**：`isOwner` 的两种意图（见 §863.1），已登记第 82 条。
+
+### §863.5 待拍板（新增 1 条）
+
+82. **`workspace.isOwner` 到底要表达哪个意思** ——
+   本节按「**当前用户是不是当前 workspace 的 owner**」实现；
+   若你要的是「**这个 workspace 有没有 owner 成员**」，改 getter 内一行即可
+   （判据只钉「不许跨 ID 空间比较」，不会因此变红）（§863.1、§863.4）
+
+## §864 把「哑雷」这条规律系统化：全仓零消费扫面 → ⭐ **同一仓里「诚实的死代码」与「撒谎的死代码」并存**
+
+§863/D27 给了本轮最值钱的一条规律：**哑雷 = 恒假表达式 × 零消费**
+—— 今天不造成损失，却会在被接上的那天静默爆。
+本节把这条规律变成一次可重复的扫面，并拿到一个**新形态**的缺陷：
+
+> **死代码的头注释在撒谎** —— 不是代码错，是**注释错**，
+> 而它专门坑的是下一个来读这段代码的人。
+
+### §864.1 ⭐ 先说清既有门为什么没抓到
+
+| 门 | 扫描范围 |
+|---|---|
+| `check:dead-api` | 只扫 `src/api` |
+| `check:dead-features` | 只扫 `src/features/<dir>`（`audit-dead-features.mjs` 把 `--dir` 硬编码拼成 `src/features/<dir>`，`--dir stores` 直接 `ENOENT`） |
+
+⇒ **`stores/` / `utils/` / `lib/` / `composables/` / `native/` / `localagent/`
+/ `config/` / `services/` 全都在这两道门的视野之外。**
+而 §859 的 `useDeviceStore` 与 §863 的 `isOwner` **都出在这些目录里** ——
+这不是巧合，是扫描范围决定的。
+
+### §864.2 探针与读数
+
+`.artifacts/s864-probe/scan_mines.py`：全仓（652 个非测试文件）取导出 →
+判「零消费」（全仓标识符再数一次）→ 再在函数体里找可疑表达式
+（跨 ID 空间比较 / 与 `true|false` 比较 / 宽松 `==` / 同名自比较 / 恒真 `return true`）。
+
+⚠ **我一度以为探针坏了**：`useDetailFlow` 与 `useWorkspaceStore` 明显在用，却被标成零消费
+⇒ 实测 grep：**引用数分别是 2 和 1，且那两处都在它自己的文件里**（注释 + 声明本身）
+⇒ **探针是对的**。这条记在这里是因为「第一反应怀疑量具」这次对了半程 ——
+**怀疑量具是对的习惯，但必须真的去数一遍，不能停在怀疑。**
+
+**读数：5 个哑雷候选**
+
+| 候选 | 运行时引用 | 测试引用 | 头注释 | 判定 |
+|---|---|---|---|---|
+| **`useWorkspaceStore`** | **0** | **0** | ⭐ **撒谎** | ❌ **D28** |
+| `useDetailFlow` | 0 | 3 | ✅ 诚实 | 阴性 |
+| `matchCleanup`（email 清理过滤） | 0 | 8 | — | 阴性（测试覆盖充分） |
+| `isBodyReady` | 0 | 5 | — | 阴性 |
+| `DEFAULT_MEETING_SKILL` | 0 | 1 | — | 阴性 |
+
+### §864.3 ⭐ D28：文件头注释在撒谎（且它恰好覆盖了 D27 所在的那个文件）
+
+`stores/workspace.ts` 原文件头：
+
+> 「持有当前选中的 workspace_id（**其他 store 通过它来 scope**）」
+> 「**workspace_id 选择影响所有后续 API 调用的隔离边界**」
+
+实测：
+1. `useWorkspaceStore` **全仓零引用**（无 `.vue`、无 composable、**连测试都没有**）
+   ⇒ 这个 store **从来没有被实例化过**；
+2. 真正做隔离边界的是 **auth store 的 `auth.workspaceId`**
+   （`routeGuards.ts:87`、`usePendingApprovals.ts:80` 用的都是它），
+   它由登录/续期响应写入 `pocket_workspace_id`，**与本 store 无关**。
+
+⇒ **两句都不成立。** 而它的危害比「代码错」更隐蔽：
+**下一个读到这里的人会以为多 workspace 切换已经接好**，于是把新功能挂到一个
+实际上从不存在的边界上。
+
+⚠ **最刺眼的一处**：§863 修的 `isOwner` **就在这个零消费的文件里** ——
+我当时在注释里写「另一个可能意图是…已登记第 82 条」，实际上**这个 getter 根本没人调用**，
+那整段讨论的前提都比想象的轻。⇒ **「死代码里的缺陷」在排优先级时必须明说它今天没有用户影响**，
+否则会让属主以为线上正在出问题。
+
+**修法**：把文件头改写成它现在的事实（零引用 + 真正的边界在 auth store + 处理方式已登记）。
+**没有删代码** —— 「接回 UI / 删除 / 保留待用」是产品口径（第 83 条）。
+
+### §864.4 ⭐⭐ 对照组：同一仓里「诚实的死代码」，这是必须保护住的正确形态
+
+`composables/useDetailFlow.ts` **同样零运行时引用**（只有 3 处测试引用），
+但它的头注释原文写着：
+
+```
+- Does NOT modify any existing detail page; this is an opt-in
+  composable for new code or future migrations.
+```
+
+⇒ **它把自己的死状态解释清楚了**：它是「为将来准备的可选抽象」，
+不是「忘了接线」。**这与 `workspace.ts` 的差别不是代码质量，是注释诚实度。**
+
+⭐ 由此得到本节最有用的一条规则：
+
+> **死代码的注释必须描述它现在的事实，而不是它「设计上应该是什么」。**
+> 后者是维护者陷阱，前者至少不会骗人。
+
+⚠ 而且判据必须允许这两种状态都存在（我为此专门写了一条反向对照）：
+如果门禁逼着人「要么接上、要么删掉」，就会有人选择**写一句假注释**来骗过它 ——
+**门禁逼出的假话，比它想防的问题更难发现。**
+
+### §864.5 判据与变异
+
+`cross-boundary-validation.test.ts`：**18 → 23 例**
+（D28 两条 + 零消费事实钉住一条 + 对照组两条 + 负控一条）。
+
+**M21 真实文件端到端变异（2 路）**：
+
+| 变异 | 自己判据 | 既有门 `vue-template-compile` |
+|---|---|---|
+| 基线 | 23 / 0 ✅ | 187 / 0 |
+| M21-a 头注释改回「其他 store 通过它来 scope」 | **22 / 1** 🔴 | 187 / 0 |
+| M21-b `isOwner` 改回跨 ID 空间比较 | **22 / 1** 🔴 | — |
+| 还原核对 | **23 / 0** ✅ | 187 / 0 |
+
+⚠ 本节三个坑（**全部是「判据文本自己被扫描命中」这一族**）：
+
+1. ⭐⭐ **拿 strip 过注释的常量去断言注释内容** ⇒ 三条断言恒红。
+   ⇒ **断言注释，就必须用未 strip 的原文**。（这一条与 §859 的
+   「模板注释里的 `v-if="…"` 字面量抢 `indexOf` 锚点」是同一个根：**被扫描的语料
+   和断言的依据必须是同一份东西**。）
+2. ⭐⭐ **我在更正注释里原样引用了缺陷原句**（`其他 store 通过它来 scope`）⇒
+   `doesNotMatch` 立刻命中我自己写的话（**探针自伤第 12 次**）
+   ⇒ 修法：**改写措辞，不照抄原句**；并在判据里写明「禁止项不得在注释里被原样引用」。
+3. ⭐ 负控第一版我写了个占位（`.replace(/holds/, 'holds')`）⇒ 变异根本没生效
+   ⇒ 判据对负控的要求和正向断言一样：**负控必须真的改变输入**。
+
+#### ⭐⭐⭐ 4. 我这一轮的判据**撞坏了仓库既有的一道门**（探针自伤第 13 次，影响外溢）
+
+提交前跑全量门禁，`test:all` 第 3 项红了：
+
+```
+✖ 【量具自证 · 阴性对照】本轮实测的那几支 composable 必须被判为死
+   AssertionError: composables/useDetailFlow.ts :: useDetailFlow
+   应被判为「全仓无引用」却没判出来 —— 扫描器退化了
+✖ BASELINE 不得有陈旧条目
+```
+
+**根因**：`src/composables/__tests__/unwired-exports.test.mjs` 这道门把
+**测试文件也算进语料**（它要抓「只被测试引用」的违规，所以必须算），
+而**我的判据文件里写了 `read('composables/useDetailFlow.ts')`**
+—— **光是「读文件路径」这件事，就把那个符号名留进了语料**
+⇒ `useDetailFlow` 被算成「有引用」⇒ 基线条目成陈旧 ⇒ 两条断言转红。
+
+⚠⭐ **这不是我的门坏了，是别人的门被我撞坏了** —— 而那道门的**头注释早就写好了这个坑**：
+
+> 「⚠ **必须排除本文件自己**（2026-10-06 实吃）……
+>   任何以「符号名列表」驱动判据的门禁，都得先把自己从语料里剔掉。」
+
+⇒ 它只把自己和姊妹门剔掉了（`SELF = {unwired-exports, handler-wiring}`），
+**没想到 §864 又来了一道会读那些文件的判据**。
+
+**修法**：按它既有的 `SELF` 机制把 `cross-boundary-validation.test.ts` 加进去，
+**不改它的任何语义**（`SELF` 只排除判据文件自己，被检查的源码照旧全量参与扫描）。
+⚠ 我特意**没有**改它的阈值或判定逻辑 —— 按惯例：撞门禁只改自己措辞，不动门禁语义。
+
+⇒ ⇒ **由此补一条硬规则**（比 §859 的「探针自伤」更进一步）：
+
+> **写判据时，只要判据里出现了某个「别的门正在监控的符号名」，
+> 就必须同时把自己登记进那道门的 SELF 名单** ——
+> 否则你的判据会让那道门认为「它已经接线了」，从而**让它失去报警能力**。
+
+⚠ 这与 §859 记录的「注释里引用代码字面量会被文本扫描当真」是**同一个根**，
+但危害更大一档：那次伤的是**我自己的**判据，这次伤的是**别人的**门。
+
+### §864.6 口径与未实测
+
+- 本节只扫了**导出符号**；class 的方法、私有函数、内部常量不在读数内。
+- 「零消费」靠标识符文本匹配判定 ⇒ **动态访问（`obj[name]`）、字符串反射、
+  插件注册表**都可能绕过它 ⇒ **「零消费」是下界**（若动态引用存在，它会显得更死）。
+- ⛔ **未实测**：这 5 个死导出里有没有人**正在别处计划接上**（比如在未合并的分支里）——
+  本节只看了当前工作树。
+
+### §864.7 待拍板（新增 1 条）
+
+83. **`stores/workspace.ts` 这套能力（多 workspace / 成员 / 设备 / 邀请 / 撤销）怎么处理** ——
+   它**全仓零引用**且文件头此前在撒谎（本节已把注释改成事实）。
+   接回 UI / 删除 / 保留待用，三选。⚠ 注意它与待拍板 82（`isOwner` 的语义）
+   是**同一个决定的两面**：如果这套能力不接上，82 就不用回答了。
+
+## §865 权限申请的**第二条路径**：D29 —— 申请完不看结果 ⇒ 审批提醒静默失效且零解释
+
+前面八节（§858–§864）扫的是「失败被折叠」与「哑雷」，本节换到**用户可见**的一面：
+**权限被拒绝之后，用户看得见吗、能修吗。**
+
+### §865.1 口径
+
+枚举本仓全部权限申请点（`requestPermission` / `requestNotifications` /
+`ensurePermission` / `checkPermissions` / `permissions.query`）⇒ 共 11 处，落在四类：
+
+| 类别 | 落点 | 判定 |
+|---|---|---|
+| 通知（共享路径） | `composables/useNotificationPermission.ts` + `features/settings/SettingsPermissionsView.vue` | ✅ **样板**（见 §865.3） |
+| **通知（自带路径）** | `composables/useApprovalAlerts.ts::ensurePermission` | ❌ **D29** |
+| 麦克风 / 相机 / 照片 | `useMicPermission.ts` / `useNativePermission.ts`（经 `useAppSettings`） | ✅ 单一路径、有 `openPermissionSettings` 出口（§848 已记被拒率未实测） |
+| 生物识别 | `native/biometricAuth.ts` | ✅ `withPlugin(fn, fallback)`，且 §863 已钉 |
+
+### §865.2 ⭐ D29：全仓出现**第二套**权限申请实现
+
+```ts
+// composables/useApprovalAlerts.ts，原文
+async function ensurePermission(): Promise<void> {
+  if (!isNative) return
+  try {
+    const status = await LocalNotifications.checkPermissions()
+    if (status.display !== 'granted' && !permissionAsked) {
+      permissionAsked = true
+      await LocalNotifications.requestPermissions()   // ⚠⚠ 不看结果
+    }
+  } catch (err) { console.warn('[approval-alerts] permission check failed:', err) }
+}
+// setup 里：void ensurePermission()   ← 用户一进任务页就弹系统框
+```
+
+三条问题，按后果排序：
+
+1. ⚠⚠⚠ **申请完不检查结果** ⇒ 用户被拒之后，「待审批满 3 分钟提醒」（`ALERT_AFTER_MS`）
+   **静默失效**：他提交了审批请求、等不到通知、界面上**没有任何一处解释**。
+   而设置页其实**有**通知权限的真实状态 —— 只是这条路完全不汇入它。
+2. ⚠ **第二条独立实现** ⇒ 结果不进 `useNotificationPermission` 的共享 state，
+   设置页渲染的那份状态与实际申请结果**可能不一致**；
+   且共享 composable 里那套完整回退（原生 `appSettings` → 旧 `LocalNotifications` → Web `Notification`）
+   在这里被绕开了。
+3. ⚠ **无 rationale 的系统弹窗** —— 触发时机是「用户一进任务页就弹」。
+   共享 composable 本来就有 `prompt-with-rationale` 这一态（正是 Android 上
+   「先解释再申请」的状态机），**这条路径上用不上**。
+
+**修法**（与 §859–§861「同族必须唯一」一致）：**复用共享 composable，删掉本地实现**。
+- `ensurePermission` 改为 `permission.ensure()`；
+- 结果非 `granted` 时留一条**可诊断的 warn**（含具体状态）；
+- 结果同时进入设置页已渲染的那个共享状态；
+- 新增 `permissionState` 暴露给调用方 —— ⭐ **让宿主「有机会说实话」**，
+  但**本节不让它说任何话**（要不要提示、跳不跳转属产品口径，见 §865.6）。
+
+⚠ 这个修法**没有**改变「什么时候问」（仍是进任务页）——
+「先解释再问」属于产品口径，已登记。
+
+### §865.3 ⭐ 同族的第四种形态
+
+| 节 | 同族形态 |
+|---|---|
+| §859/D24 | 同一个 key 的**第 2 个**消费者 |
+| §861/D25 | 同一个 key 的**第 3 个**消费者 |
+| **§865/D29** | **同一个能力的第 2 套实现** |
+
+⇒ 前两次的教训是「**枚举这一族的全部成员**」；
+这一次连「成员」都变了（不是多一处调用，是多一套实现）⇒
+**枚举时要枚举的是「能力」而不是「调用点」**。
+
+### §865.4 判据与变异
+
+`frontend/src/__tests__/permission-denial-outlet.test.ts`（**8 例**）：
+D29 四条（不得自带申请路径 / 必须检查结果 / granted 早退必须在申请之前 /
+共享 composable 是唯一真值）+ 尺子自证 + 两条负控。
+
+**M22 真实文件端到端变异（2 路）**：
+
+| 变异 | 自己判据 | 既有门 |
+|---|---|---|
+| 基线 | 8 / 0 ✅ | — |
+| M22-a 改回直连插件（第二条申请路径） | **4 / 4** 🔴 | — |
+| M22-b 不检查申请结果（`if (false)`） | **7 / 1** 🔴 | — |
+| 还原核对 | **8 / 0** ✅ | 45/45 全绿 |
+
+⚠ M22-a 一次红 4 条，是因为「自带申请路径」这件事同时破坏了
+「必须复用共享 composable」「必须检查结果」「granted 早退位置」三条 ——
+**结构性缺陷往往一次变异压多条断言**，这是好事（说明这几条确实同源）。
+
+### §865.5 口径与未实测
+
+- 本节只覆盖**权限申请/查询点**（11 处）；⛔ 不覆盖
+  「功能在无权限时的降级行为」本身（例如无麦克风时录音按钮如何）。
+- ⛔ **未实测**：Android 上通知权限的**真实被拒率**；
+  「无 rationale 弹窗被拒率更高」这一条是**平台通用经验，不是本项目实测**。
+- ⚠ 本节**没有**改动申请时机，也**没有**让界面说话 ⇒
+  用户当前的可见问题（被拒后零解释）在界面上**仍需等拍板才能根治**，
+  本节只把「事实可见化」铺好（共享状态 + warn + `permissionState`）。
+
+### §865.6 待拍板（新增 1 条）
+
+84. **审批提醒被拒之后要不要提示、要不要给跳转** ——
+   §865/D29 只把事实铺到了「可诊断」（共享状态 + warn + `permissionState` 暴露），
+   **界面仍然不说话**。三个子问题：
+   ① 被拒后要不要在任务页给一次性提示？
+   ② 提示里要不要带「去系统设置」跳转（`useAppSettings().openPermissionSettings` 已有）？
+   ③ 要不要把申请时机从「进任务页就弹」改成「用户首次真正等待审批时 + 带一句说明」？
+   ③ 会改变「什么时候弹窗」这一产品行为，故一并登记（§865.2、§865.5）。
+### §866.1 口径
+
+本节扫**本地存储写侧的零反馈**面 —— 它是 §858/D21（读失败被谎报成「从来没有过」）
+的**镜像**：读侧谎报「没有」，写侧谎报「有」。
+
+扫面口径：`frontend/src` 内全部 `localStorage.setItem` 落点，**34 处**
+（生产 28 + 测试与留证工具 6）。逐条取证的是**用户正在产出的数据**与
+**会把用户已点下的动作整个取消**的那几处；其余落点见 §866.6 的阴性读数
+（**注意其口径的粗粒度限制**）。
+
+### §866.2 ⭐ D30：AI 对话历史写失败 = 谎报「已保存」
+
+`features/ai-chat/aiChatStore.ts::persist()` 原文：
+
+```
+try { … setItem × 2 … } catch { /* 容量超限等忽略 */ }
+```
+
+存储写不进去时，catch **空转** ⇒ 应用继续表现得一切正常，而用户这轮对话
+**根本没有落盘** —— 退出/刷新后凭空消失，界面上零提示。
+
+⚠ 触发条件不是理论。`features/email/email-body-cache.ts` 的文件头明写
+「localStorage 在 Android WebView 里总配额约 5–10MB，一旦写超，
+snapshot-store 的 saveNS 会静默吞掉」；而 AI 对话历史装的是
+**完整对话全文**（`MAX_HISTORY = 40` 轮），是最容易撑爆配额的那类数据。
+
+**修复**：`persistFailed` ref（成功复位 / 失败置位 + `console.warn`）并从
+store 导出；`AIChatView.vue` 在**所有空态分支之外**加写失败提示块，
+文案只说「不会被保存」，**不得出现任何暗示「已保存」的措辞**。
+
+### §866.3 ⭐ D31：加密配置写失败冒泡成「初始化失败」
+
+`stores/crypto-config.ts::save()` 原文**没有 try/catch** ⇒ 配额满时抛错，
+而它唯一的调用者之一是 `MasterPasswordDialog::submit` 的外层 catch
+⇒ 界面显示「本地数据初始化失败」—— **但初始化其实已经成功了**。
+
+更要命的是第二段伤害：`hasMasterPassword` 没落盘 ⇒ **下次启动回到
+§862/D26 那个「创建主密码」对话框**，而用户明明刚设过主密码。
+
+**修复**：`save()` 自己承担写失败（`persistFailed` + warn + 导出，
+不再冒泡）；弹窗在 `setMasterPassword` 之后检查该标志，给一条**独立的**
+错误文案（说明「解锁成功但没存住」），不复用「初始化失败」。
+
+### §866.4 ⭐ D32：缓存写入失败会把用户已点下的动作整个取消
+
+本节扫面时的**追加发现**，形态与 D30/D31 相反：
+
+`features/opencode/OpenCodeHub.vue::selectInstance()` 里
+`localStorage.setItem('selected_opencode_instance', …)` 裸奔，
+而它后面还跟着「选中实例 + 跳转会话列表」两步
+⇒ 一次**缓存写入失败会把用户已经点下的那次选择整个取消**，
+界面上表现为「点了没反应」，零解释。
+
+**为什么它的正确姿态与 D30/D31 相反**：这一条只是「下次不带
+`?instance_id=` 进来时的恢复便利」（读端 `SessionListView.vue:178`），
+丢不丢都**不影响用户手上的动作** ⇒ 正确处置是
+**不阻断 + `console.warn`，不占用 UI 出口**；
+而 D30/D31 存的是用户**正在产出**的数据，丢不得 ⇒ 必须对用户说话。
+
+⇒ **同一族里，写失败是否该占用界面出口，取决于「丢的是什么」，
+不取决于「是不是同一种失败」。** 这是本节最可复用的一条。
+
+顺带修掉同一个 key 的读侧：`SessionListView.vue` 的恢复分支原本是
+**裸 `JSON.parse`** ⇒ 值一旦损坏，抛错会顶掉整个 `onMounted`
+（连 `subscribeToRealTimeUpdates()` 都跑不到），表现为「会话页进不去且无解释」。
+这里可以安全降级（退回「请手动选一次实例」是**非破坏性**的），
+但必须区分「探针坏了」与「没选过」，故保留 `console.warn`。
+
+### §866.5 ⭐ 同族规律：写失败的三种正确姿态
+
+| 落点 | 丢的是什么 | 正确姿态 | 本节实例 |
+|---|---|---|---|
+| 用户正在产出的数据 | 真实资产 | **必须说话**（置位 + 界面出口 + warn） | D30、D31 |
+| 用户已点下的动作 | 动作本身 | **绝不阻断**（try/catch 后继续 + warn） | D32 写侧 |
+| 便利缓存 / 恢复提示 | 下次的便利 | **不阻断、不说话**（warn 即可） | D32 写侧 |
+| 损坏后的恢复读 | 非破坏性降级 | **降级但留痕**（try/catch + warn） | D32 读侧 |
+
+⚠ 第四行有个反直觉点：读失败**通常不能**像 §862/D26 那样按
+「锁定/待验证」处理，而要看降级**是否破坏性** ——
+`selected_opencode_instance` 的兜底是非破坏性的，所以降级是安全的；
+`pocket_crypto_cfg` 的兜底会导致明文/密文混合，所以那里必须硬失败。
+
+### §866.6 阴性读数与其口径限制
+
+生产落点分布（`grep -rn "localStorage\.setItem"`，排除 `__tests__` 与
+`utils/corrupt-preserve.ts`）：
+
+| 文件 | 落点 | 同文件 `catch` 数 |
+|---|---|---|
+| `stores/auth.ts` | 6 | 4 |
+| `features/ai-chat/aiChatStore.ts` | 5 | ✅ 本节 D30 |
+| `native/config-sync/apply.ts` | 4 | 6 |
+| `stores/flashcards.ts` | 2 | 7 |
+| `stores/device.ts` | 2 | 3 |
+| `native/recordingRuntime.ts` | 2 | 33 |
+| `stores/crypto-config.ts` | 1 | ✅ 本节 D31 |
+| `native/crypto.ts` | 1 | 2 |
+| `stores/theme.ts` / `stores/locale.ts` | 各 1 | 各 3 |
+| `app/routeGuards.ts` | 1 | 1 |
+| `features/email/EmailDetailView.vue` | 1 | 15 |
+| `features/opencode/OpenCodeHub.vue` | 1 | **0 ⇒ D32** |
+| `stores/workspace.ts` | 1 | **0** |
+
+⚠⚠ **口径限制（必读）**：上表「同文件 catch 数」是**文件级粗判**，
+它**不能**证明该 `setItem` 本身落在 try 内 —— 同一个文件里
+「一个 catch 管别处、一处写入仍裸奔」是完全可能的（本节 D30/D31
+所在文件恰恰都有很多 catch）。⇒ **本节没有对 28 个生产落点做逐条数据流取证**，
+上表只能用来**缩小下一步的核查面**，不能当作阴性结论。
+
+两个 `catch = 0` 的落点：
+- `features/opencode/OpenCodeHub.vue` ⇒ **D32，本节已修**；
+- `stores/workspace.ts` ⇒ §864/D28 已确认该 store **全仓零消费**（死代码），
+  **本节不修**：死代码的写入失败不会伤害任何真实用户，
+  先改它只会给一段即将删除或待拍板的代码做装修。待拍板见 §866.9 的 85-b。
+
+### §866.7 判据与变异
+
+`frontend/src/__tests__/local-storage-write-failure.test.ts`（**13 例**）：
+尺子自证 + D30 五条（catch 不空转 / 成功复位 / 标志导出 / 模板出口且无「已保存」措辞 /
+提示落在空态互斥链之外）+ D31 两条 + 三把共用尺子（D30/D31/D32 写侧）+ 三条负控。
+
+⚠ 本节判据出过一次**量具事故**，值得记：负控原本用
+`/主密码已通过验证并解锁成功[^\n]*/` 去改文案，而 `[^\n]*` 把**整行**
+连同 `error.value = '` 前缀一起吃掉 ⇒ 变异后的源码里根本没有 `error.value =`，
+断言恒红**却看起来像「抓到了什么」**。修法两条：
+① 变异只改**字符串字面量**（`'…'`），不改行；
+② 正例与负控**必须调用同一个判据函数**，并先有一条
+「这把尺子在真源码上是绿的」自证 —— 否则尺子坏了也照样绿。
+
+**M23 真实文件端到端变异（3 路）**：
+
+| 变异 | 自己判据 |
+|---|---|
+| 基线 | **13 / 0** ✅ |
+| M23-a `persist` 的 catch 改回空转 | **10 / 3** 🔴 |
+| M23-b 弹窗文案改回「初始化失败」 | **10 / 3** 🔴 |
+| M23-c 缓存写入改回裸奔（破坏括号配平） | **11 / 2** 🔴 |
+| 还原核对 | **13 / 0** ✅ |
+
+⚠ M23-c 只红 2 条且**不含**「尺子自证」以外的 D32 正例 —— 因为
+变异体保持括号配平，被抓到的正是「缓存写入没有 catch」与
+「尺子自证转红」两条。⚠ 另有一处陷阱：最初那版变异**没有**保持
+括号配平（直接把 `try {` 删掉），`fnBody` 会在第一个 `}` 就截断 ⇒
+测到的不是「缺陷形态」而是「语法坏掉的文件」——**量具又一次坏了**。
+
+### §866.8 口径与未实测
+
+- ⛔ **未实测**：Android WebView 上 localStorage 配额写满的**真实发生率**；
+  `email-body-cache.ts` 文件头那条「5–10MB」是**该文件作者的经验值，
+  不是本项目实测**。
+- ⛔ 本节**未做**逐落点数据流取证（见 §866.6 的口径限制）。
+- 本节**没有**给 D30 的提示加「清理缓存」自助入口，也没有改
+  `MAX_HISTORY` 或给对话历史做截断 —— 这三件都会改变产品行为，
+  登记在 §866.9 的 85-a。
+- ⛔ 本节**未验证** D31 修复后「下次启动是否还会回到创建主密码对话框」：
+  该路径需要真实的配额写满环境，本轮未构造。
+
+### §866.9 待拍板（新增 1 条）
+
+85. **写失败提示要做多重、要不要给自助出口** —— §866 只把 D30/D31 的事实
+   铺到了「用户看得见」，还有三个子问题：
+   a. D30 的提示要不要带一个**「清理本地缓存」自助入口**
+     （能真正解决配额写满，而不只是告知）？代价是要引入一个破坏性动作按钮。
+   b. 要不要顺手给对话历史做**长度上限 / 截断**以降低写爆配额的概率？
+     这会改变历史记录的产品行为（用户可能丢更早的对话）。
+   c. `stores/workspace.ts` 那套死代码（§864/D28 + §866.6）—— 与 83 是
+     同一决定的延续：**接回 / 删除 / 保留**。本节按「不装修死代码」处理，
+     若决定接回，其写入失败路径要按 D30 的姿态补齐。
+### §867.1 口径：把 §866 自己标出的缺口补掉
+
+§866 的阴性结论留了一个明确的缺口：它只做了「同文件 `catch` 计数」的
+**文件级粗判**，而同一文件里「一个 catch 管别处、一处写入仍裸奔」完全可能 ——
+§866 的 D30/D31 所在文件恰恰 `catch` 很多。⇒ 本节做**逐落点**判定：
+
+**28 个生产 `localStorage.setItem` 落点**，逐个判定「它本身是否被 `try` 包住」。
+
+探针：`.artifacts/s867-probe/scan_setitem_guard.py`（gitignored）。
+做法是把落点所在文件的注释与字符串**替换成等长空格**（保住下标），
+然后从文件头一路维护花括号栈，走到落点时看栈里有没有 `try` 块。
+
+⚠⚠ **探针自己坏过一次，且这次坏得非常有代表性**：
+初版先「找落点所在函数」，函数头正则写成 `function\b\s*\{` ——
+它**不认带参数和返回类型的声明**（`function loadConversations(): Conversation[] | null {`
+匹配不上）⇒ 那里的 `try` 根本没进栈 ⇒ 把**明明在 try 内**的
+`aiChatStore.ts:165/188` 误报成未保护。未保护数从 **18 虚高**收敛到 **9**。
+
+⇒ 这个坑与本会话 §866 记的判据事故**完全同构**：
+「先定位再取件」的定位步骤一旦匹配不全，**后面全错，而且读数看起来仍然像个答案**。
+⇒ 修法是**取消定位**：不找函数边界，直接从文件头维护全量花括号栈
+（顺带也修好了「class 方法不在匹配范围内」的同一个问题）。
+
+**探针双向自证**（读数不一致时先怀疑探针）：
+
+| 核对项 | 人工读数 | 探针读数 |
+|---|---|---|
+| `aiChatStore:165/188`（在 try 内） | 在 try 内 | 修后 ✅ 已保护 |
+| `config-sync/apply.ts:64/66/67/131`（`applyAppPrefs` 的 try 内） | 在 try 内 | ✅ 已保护 |
+| `EmailDetailView:551`（`persistTranslation` 的 try 内） | 在 try 内 | ✅ 已保护 |
+| `recordingRuntime:126`（`setVoicePromptEnabled` 的 try 内） | 在 try 内 | ✅ 已保护 |
+
+### §867.2 判定结果：28 落点，19 已保护，9 未保护
+
+| 文件 | 落点 | 未保护 |
+|---|---|---|
+| `app/routeGuards.ts` / `features/ai-chat/aiChatStore.ts` / `features/email/EmailDetailView.vue` / `features/opencode/OpenCodeHub.vue` / `native/config-sync/apply.ts` / `native/recordingRuntime.ts` / `stores/crypto-config.ts` / `stores/flashcards.ts` / `stores/locale.ts` / `stores/theme.ts` | 18 | **0** |
+| `stores/auth.ts` | 6 | **5** ⇒ D33 |
+| `stores/device.ts` | 2 | **2** ⇒ D34 |
+| `native/crypto.ts` | 1 | **1** ⇒ D35 |
+| `stores/workspace.ts` | 1 | **1**（死代码，见 §867.6） |
+
+⚠ 「已保护」**不等于**「失败时说得对」：`EmailDetailView::persistTranslation` 与
+`recordingRuntime::setVoicePromptEnabled` 的 catch 都是空注释
+（「配额满等场景静默」「无痕模式」）—— 这两处**在 §866 的口径下就是正确形态**
+（丢的是缓存/开关，降级安全、无破坏性），本节不改。
+
+### §867.3 ⭐ D33：会话写入裸奔 ⇒ 登录成功后刷新被静默登出
+
+`stores/auth.ts` 的 `setAuth` / `setAuthWithWorkspace` / `setLegacyUser`
+原来是三条一组的裸 `localStorage.setItem`。
+
+**失败链**：配额写不进去 → `this.token = token` **已经生效**
+（`isAuthenticated` 只看内存）⇒ 用户以为自己登录成功 →
+`syncFromStorage()` 在刷新时从存储读回**空 token** ⇒ **被静默登出**。
+界面全程零提示，且**没有任何一处会报错**。
+
+**修法**：把三处写入收拢成一个 action `writeSession(entries)`，整体 try/catch，
+失败置 `sessionPersistFailed` + `console.warn`，成功复位。
+
+⚠ **撕裂写**：第 1 条成功、第 2 条抛错时，存储里留下「有 token 没 user」。
+  这在 `isAuthenticated = Boolean(token) && Boolean(user)` 下**失败关闭**
+  （读回来判为未登录），不会造成越权 ⇒ **刻意不做回滚**：
+  回滚反而可能误删上一段本来完好的会话。判据里显式钉住「`setAuth` 不得再有裸 `setItem`」。
+
+### §867.4 ⭐ D34：内存改了、落盘没改的分歧零留痕
+
+`stores/device.ts::setTier` / `setSttPreference`：`this.tier = t`
+**先**于裸 `setItem`。
+
+⇒ 写失败时界面显示新档位、STT 选型按新档位走，**重启后无声回到旧值**。
+比 §866/D30 更隐蔽：D30 的提示至少还会消失，这里**没有任何东西会动**。
+
+**修法**：try/catch + warn，说清「本次会话内有效、重启后会回到旧值」；
+**不阻断**（按 §866 的族规律：丢的是偏好不是用户正在产出的数据）。
+
+### §867.5 ⭐⭐ D35：salt 落盘失败 = 一颗已经上膛的哑雷
+
+`native/crypto.ts::getOrGenerateSalt` 的 `setItem(SALT_STORAGE_KEY, …)` 裸奔。
+
+**今天的失败链**（实测读代码得出，未实测运行时）：裸 `DOMException`
+→ `initAppCrypto` → `initLobster` 第 1 步抛 ⇒ 界面显示「本地数据初始化失败」
+（**主密码其实已经验证通过**了 —— 与 §866/D31 同款不属实的措辞）。
+
+**今天为什么还安全**（这点必须写清，否则会被误读成「已经坏了」）：
+`initLobster` 的两个调用点（`LoginView.vue:432`、`MasterPasswordDialog.vue:72`）
+**都有 catch**，所以不会静默继续 ⇒ 失败关闭。
+
+**但它是哑雷，不是无害**：
+一旦有人「顺手」给这里加个 catch 让启动更顺畅 ——
+下次启动会**再生成一个全新 salt** ⇒ 本次派生出的 key 既解不开任何旧密文、
+也无法在下一次启动被复现 ⇒ **用户数据永久不可读**。
+
+**修法**：仍然硬失败（**绝不能**吞），但把错误换成一句说人话的
+「无法保存加密盐：本地存储不可用或空间不足」；并在原地写下
+「⛔ 绝不能吞掉」的告警注释。判据额外钉一条**反向要求**：
+不得存在「失败也继续」的分支。
+
+### §867.6 阴性与其口径
+
+- `stores/workspace.ts:67` 是唯一剩下的未保护落点，但它 §864/D28 已确认
+  **全仓零消费**（死代码）⇒ 本节**仍然不装修死代码**（与 §866 同立场）。
+- ⛔ 本节**未**对 19 个「已保护」落点逐一核对其 catch 分支**说了什么** ——
+  只核对了「有没有 try」。其中 `EmailDetailView` / `recordingRuntime` 两处
+  经人工阅读判定为正确形态，其余 7 个文件本节**未逐条读 catch 内容**。
+- ⛔ 未实测：Android WebView 配额写满的真实发生率；
+  D33 的「刷新后被静默登出」需要在真实配额写满环境下端到端复现，本轮**未构造**。
+
+### §867.7 判据与变异
+
+`frontend/src/__tests__/local-storage-write-failure.test.ts` 扩到 **16 例**
+（§866 的 13 例 + D33/D34/D35 三把共用尺子 + 三条负控 + 尺子自证扩到 8 项）。
+
+⚠ **取件器又栽在同一类坑上**：`fnBody` 只认 `function 名(`，
+认不出 Pinia actions 的**方法简写** `名(...) {`
+⇒ 取不到 `writeSession` 的体、判据恒红，**看起来像「代码没写」**。
+修法：`(?:function\s+)?名(` 且前置字符限定在 行首/空白/`{`/`,`
+（以免匹配到 `this.名(` 这种调用点）。
+⇒ **这是本会话第 3 次**栽在「取件器的定位正则不匹配真实写法」上
+（前两次：§866 的 `[^\n]*` 吃掉前缀、§867 探针的函数头正则）。
+⭐ 规律：**取件器一旦取不到，第一反应必须是「量具坏了」，不是「代码没写」**；
+　　且定位式取件器比「取消定位」更脆 —— 能不用定位就不用。
+
+**M24 真实文件端到端变异（3 路）**：
+
+| 变异 | 自己判据 |
+|---|---|
+| 基线 | **16 / 0** ✅ |
+| M24-a 会话写入改回裸 `setItem` | **15 / 1** 🔴 |
+| M24-b 设备档位写入改回裸奔 | **14 / 2** 🔴 |
+| M24-c salt 失败改成「继续」 | **14 / 2** 🔴 |
+| 还原核对 | **16 / 0** ✅ |
+
+⚠ M24-a 只红 1 条，是因为该组只有「尺子自证」这一条在真文件上守着
+（专属负控是**自包含**的 —— 它拿未变异的 `AUTH` 再变异一次，
+所以不受真文件变异影响）。**这 1 条红恰恰就是「D33 那把尺子有牙」的证据**，
+但读数形态与另两路不同，已如实记在表里，不并表。
+
+### §867.8 待拍板（新增 1 条）
+
+86. **会话写入失败要不要对用户说话** —— §867/D33 只把事实铺到了
+   `sessionPersistFailed` + warn，**界面仍然不说话** ⇒ 用户照样会在
+   毫无预警的情况下被登出。三个子问题：
+   a. 登录成功后要不要挂一条「本次会话未能保存，刷新后会退出」的提示？
+      （此时离写入失败已经过去一段时间，提示的**时机**比文案更难定）
+   b. 要不要在**刷新前**主动拦一道（例如 `beforeunload` 提示）？
+      这会引入新的交互成本，属产品行为。
+   c. D34 的设备档位/语音偏好写失败要不要也提示？本节按「warn 即可」处理，
+      因为丢的是偏好而非会话。
+### §868.1 口径：§867 只判了「有没有 try」，没判「catch 里说了什么」
+
+§867 的阴性自己写着：「**未**对 19 个「已保护」落点逐一核对其 catch 分支
+**说了什么** —— 只核对了「有没有 try`」。⇒ 本节补这个缺口。
+
+探针：`.artifacts/s868-probe/print_catch_bodies.py`（gitignored）。
+做法：对每个落点，从文件头维护花括号栈，定位它**最近一层** `try`，
+再从该 `try` 的闭合点向后找紧随的 `catch`，把 catch 体原文打出来。
+
+**探针自证**：§866/§867 修过的 7 个已知站点全部对上
+（`aiChatStore:267/268`、`crypto-config:97`、`OpenCodeHub:133`、`auth:93`、
+`device:73/82`、`crypto:52` 都能抽到正确的 catch 体；`workspace.ts:67`
+正确报「没有 catch」）。
+
+### §868.2 19 个已保护落点的 catch 全貌
+
+| 落点 | catch 内容 | 分诊 |
+|---|---|---|
+| `aiChatStore:267/268` | `persistFailed = true` + warn | ✅ §866 修的 |
+| `crypto-config:97` | `persistFailed = true` + warn | ✅ §866 修的 |
+| `OpenCodeHub:133` | `console.warn` | ✅ §866 修的 |
+| `auth:93` / `device:73/82` | 置位/复位 + warn | ✅ §867 修的 |
+| `crypto:52` | `throw new Error` | ✅ §867 修的 |
+| `EmailDetailView:551` | 《空》（注释：配额满静默，仅退化为不缓存） | ✅ **正确形态**（丢的是翻译缓存） |
+| `recordingRuntime:126` | 《空》（注释：无痕模式，内存置位仍生效） | ✅ **正确形态**（丢的是开关缓存） |
+| **`flashcards:138`（outbox）** | **`/* ignore */`** | 🔴 **D36** |
+| `flashcards:117`（cache） | 注释「缓存失败不应阻塞视图」 | ⚠ 理由只对 cache 成立，但**盖住了上一行** |
+| `config-sync/apply.ts:64/66/67/131` | 《空》 | ⚠ 见 §868.4 |
+| `recordingRuntime:155` | 《空》 | ⚠ 待核（见 §868.4） |
+| `routeGuards:112` | 《空》 | ⚠ 待核 |
+| `locale:25` | 《空》（**读**侧 `readPersisted`） | ⚠ 待核 |
+| `theme:60` | 《空》 | ⚠ 待核 |
+| `auth:158` | `console.debug` + `return false` | ✅ 正确形态（返回失败标记） |
+
+⇒ **本节发现的核心不是「有 6 处空 catch」，而是：空 catch 的「理由」可以被
+跨落点挪用，而挪用之后就不再成立。** `writeCache` 那句
+「缓存失败不应阻塞视图」对**缓存**完全正确 ——
+但它紧挨着 `writeOutbox`，于是给了读者一个「这一片都属于缓存」的错觉。
+
+### §868.3 ⭐ D36：outbox 的失败被当成缓存的失败处理 ⇒ 离线复习记录永久丢失
+
+`stores/flashcards.ts::writeOutbox` 的 catch 原文是 `/* ignore */`。
+
+**失败链**（逐行取证）：
+```
+enqueue(item)
+  ├─ outbox.value = [...outbox.value, item]   ← 内存里有
+  ├─ persistOutbox()                          ← 写不进去，catch 静默
+  └─ if (online) void flushOutbox()           ← 在线才发；离线时什么都不发生
+```
+⇒ 用户看到「已入队」。**离线时**（正是 outbox 存在的唯一理由）
+它只活在内存 ⇒ 下次 `loadFromCache` 走 `outbox.value = readOutbox()`
+读回**旧队列** ⇒ **这条复习事件永久丢失**，服务端再也不会知道。
+而 `applyReviewLocally` 已经把 FSRS 状态改进内存并 `persistCache()` 了
+⇒ 用户进度与服务器**静默分叉**。
+
+**修法**（按 §866 的族规律：丢的是用户正在产出的数据 ⇒ 必须说话）：
+1. `writeOutbox` / `writeCache` 返回成功标记，失败一律 `console.warn`
+   并在 warn 里说清丢的是什么（两者**分别**措辞，不再互相借用理由）；
+2. store 置 `outboxPersistFailed` / `cachePersistFailed`（成功即复位），
+   导出聚合量 `persistFailed`；
+3. `StudyHubView` 加提示块 —— ⭐ 放在**所有空态/加载互斥链之外**
+   （`v-if="store.loading"` / `v-else-if="decks.length === 0"` 之前），
+   否则下一次成功渲染会把它整块吞掉；
+4. 措辞只说「只留在本次运行里，退出后会丢失」，**不得**出现「已保存」。
+
+⚠ **没有**复用 store 已有的 `error` ref：那个出口在
+`FlashcardListView` 里绑的 i18n key 是 `flashcards.error.loadFailed` ——
+拿它报写失败等于说「加载失败」，**正是本节要消灭的那种撒谎**。
+
+### §868.4 ⭐ 判据的事故率：本节判据自己坏了五次
+
+前两节已经记了「取件器取不到要先怀疑量具」。本节**又记了五次**，且形态各不相同：
+
+| # | 失效 | 症状 | 修法 |
+|---|---|---|---|
+| 1 | `strip` 把 HTML 注释放在**最后**处理 | 文件头注释里的字面路径 `/api/learning/*` 启动了一个 10304 字符的「块注释」，把 `<template>` 一起吃掉 ⇒ 读数变成「模板里没有 persistFailed」，**像代码没写** | HTML 注释**先**处理；并且判据一律**先抽模板、再 strip** |
+| 2 | 断言写成 `/outboxPersistFailed\s*=\s*true/` | 漏了 `ref` 赋值的 `.value` ⇒ 恒红 | 改成 `(?:\.value)?` |
+| 3 | 取件器用 `/return \{[\s\S]*?\n  \}/` | 匹配到**前一个** `return {` ⇒ 导出块取错 | 改用 `lastIndexOf('  return {')` |
+| 4 | 负控的 `replace` **打在 writeCache 上** | 两个函数的 catch 长得一模一样，非全局 replace 命中前一个 ⇒ 被测函数原封不动 ⇒ 尺子判绿 | 先 `fnBody` 取出被测函数的体，**只在它体内**变异 |
+| 5 | 负控「把提示挪进互斥链」写成了**复制**而不是移动 | 原块还在顶部，`indexOf` 先命中它 ⇒ 判绿 | 先摘掉原块再插到锚点后 |
+
+⚠ 第 1 条还牵出一个**回头复核**（阴性结论要当缺陷一样复核）：
+同一个 `strip` 也用在 §866/§867 判据里的 4 个 `.vue` 上。
+逐个量了「首个 `/*` 到首个 `*/` 的跨度」：
+`MasterPasswordDialog` 74、`OpenCodeHub` 115、`AIChatView` 123、
+`SessionListView` 362 —— **全是真实块注释**，只有
+`StudyHubView` 是 10304 且起点落在 `<!--` 内
+⇒ **§866/§867 的判据读数未被污染**（这四处的 strip 走的是「先抽后 strip」或
+源文件无此问题）。
+
+⚠ 第 4/5 条与 §866 记的「变异只改值、不改结构」是同一族的延伸：
+**变异还必须「打在正确的位置」，且必须是它声称的那个动作**（移动 ≠ 复制）。
+
+### §868.5 判据与变异
+
+`frontend/src/__tests__/local-storage-write-truthfulness.test.ts`（**8 例**，
+新建）：尺子自证两条 + D36 四条 + 两条负控。
+
+⭐ 本判据**只钉性质、不钉文案**：「不得把队列的失败归因成缓存的失败」
+比「必须出现某个字符串」更耐改，也更抗「为了过判据而写假注释」。
+
+**M25 真实文件端到端变异（1 路）**：
+
+| 变异 | 自己判据 |
+|---|---|
+| 基线 | **8 / 0** ✅ |
+| M25-a `writeOutbox` 的失败改回 `/* ignore */` | **5 / 3** 🔴 |
+| 还原核对 | **8 / 0** ✅ |
+
+⚠ 三条红的**名字**就是它红在哪个性质上：
+「尺子自证转绿」「失败必须返回失败标记并留日志」「第一条负控」
+—— 其中**没有**任何一条是笼统的 suite 失败（§866 立的规矩）。
+
+### §868.6 口径与未实测
+
+- ⛔ **未实测**：`writeOutbox` 失败的真实发生率；离线 + 配额写满的端到端复现
+  本轮**未构造**。§868.3 的失败链是**逐行代码取证**，不是运行时观测。
+- ⚠ §868.2 表中 5 处标「⚠ 待核」的落点（`config-sync/apply.ts` ×4、
+  `recordingRuntime:155`、`routeGuards:112`、`locale:25`、`theme:60`）
+  **本节只登记了「catch 是空的」这个事实，没有逐条分诊它们的后果**。
+  其中 `config-sync/apply.ts` 尤其值得下一节看：它是**远端配置下发**的写侧，
+  写失败意味着「这台设备的远端设置没生效」而用户可能毫不知情。
+- ⚠ 本节**没有**给「队列写失败」加自动重试或降级到别的存储 ——
+  那会改变产品行为，登记在 §868.7。
+
+### §868.7 待拍板（新增 1 条）
+
+87. **写失败提示的「谁能自救」要不要再进一步** —— §866/§867/§868 三节一共
+   铺了三类失败标志（对话历史 / 会话 / 闪卡队列），三处都**只告知、不自助**：
+   ① 要不要给一个**统一的**「存储空间不足」入口（展示各 key 占用 + 清理缓存）？
+      这会涉及**破坏性动作**，且要决定清谁（缓存可清、outbox 不可清）。
+   ② 闪卡队列写失败后，要不要**阻止继续复习**（避免用户复习了一堆最终全丢）？
+      本节按「照常允许 + 顶部提示」处理。
+   ③ `config-sync/apply.ts` 那 4 处的远端设置写失败（§868.6）要不要按
+      D30/D31 的姿态升级为「对用户说话」？本节**未取证**，故未改。
+### §869.1 口径：§868 登记的 8 处空 catch，本节逐条分诊
+
+§868 的阴性里明确留着「只登记了 catch 是空的这个事实，**没有逐条分诊后果**」，
+并点名 `native/config-sync/apply.ts` 最值得看。⇒ 本节做这件事。
+
+**先建立判断依据（这一步不做，后面的结论都是猜）**：
+`writeLocalIfNewer` 把记录写进 **SQLite**（`local_user_settings`，`dirty = 0`），
+而 `applyRemoteSetting` 把它投影到 **localStorage**。⇒ 这是**两套存储**：
+
+```
+writeLocalIfNewer  → DB 写成功、标记 dirty=0（「已是最新」）
+      ↓
+applyRemoteSetting → localStorage 投影写失败（静默）
+      ↓
+⇒ DB 说干净、投影是旧的 ⇒ 永不重试、永久分叉
+```
+
+### §869.2 ⭐ D37：远端 AI 对话设置被静默丢弃（D24 的写侧另一半）
+
+`apply.ts::applyChatSettings` 的 catch 原文是 `// ignore`
+—— 而它守着的**正是 §859/D24 刚刚修好的那份数据**。
+
+§859 的注释里把失败后的现象写得很清楚：「用户只会在另一台设备改了设置、
+然后发现这边怎么改都没反应」。
+
+⚠ 两头不对称：**读侧**（§858/D21）已能留证，**写侧**却仍在静默丢弃
+⇒ 损坏时留证据，写不进去时连证据都没有。
+且这条 key 是**双写**（`aiChatStore.persist` 也会写它）
+⇒ 静默丢弃之后，本地 store 下一次 `persist` 会用本地值覆盖它，远端值彻底蒸发。
+
+**修法**：catch 里 `console.warn`（说清「该设备将保持旧设置，且不会重试」）+
+返回失败标记。
+
+### §869.3 ⭐ D38：一个字段写失败，连坐整段远端下发
+
+`applyAppPrefs` 原来用**一个大 `try` 包住全部字段**，catch 只有一句
+「localStorage may be unavailable」。两个后果：
+
+1. **连坐**：第 1 行 `app_theme` 一旦抛错，第 2/3 行的写入
+   **以及**真正把皮肤应用到 `<html data-theme>` 的那一段**全部不会执行**
+   —— 一个字段写不进去，整段远端下发静默作废。
+2. **零可见性**：没有日志，用户与事后排查都看不到「远端设置没生效」。
+
+**修法**：逐字段独立处理（一个失败不拖累其余）→ `<html data-theme>` 的更新
+**移出写入路径**（即使落盘失败也要把已经拿到的皮肤应用上去，
+否则会出现「存储与界面各说各话」的半生效）→ 失败的字段名回报给调用方，
+`runtime.ts` 的 pull 路径据此留一条可检索的日志。
+
+### §869.4 ⚠ 一个被**核实推翻**的推断：deviceTier/sttPref 的「本会话不生效」是哑雷
+
+取证时我一度认为这是第三条缺陷：`applyAppPrefs` 只写 localStorage、
+**不更新 `stores/device.ts` 的内存**，而没有 `storage` 事件监听
+⇒ 远端下发的设备档位/语音偏好在本次会话完全不生效，要重启才生效。
+
+**实测推翻**：`shouldPreferLocal` / `recommendedModel` / `setTier` /
+`setSttPreference` 在 `stores/device.ts` 之外**零引用**（全仓 grep，
+只有本节自己写的判据提到后两个）。
+
+⇒ 它是**哑雷不是缺陷**：`stores/device.ts` 的文件头注释「既没有设置界面，
+也不影响任何运行时行为」**说的是事实**，与 §859 第 1 条登记的一致。
+
+⭐ 这条记下来是因为它很容易被写成一条「看起来很有道理」的缺陷 ——
+**写进缺陷清单之前必须先数消费者**。
+
+### §869.5 阴性：另外 4 处空 catch 是**正确形态**，不改
+
+| 落点 | 丢的是什么 | 为何正确 |
+|---|---|---|
+| `recordingRuntime:155` | 「前台被系统 TTS 抢走」的一次性标记 | 诊断标记，丢不丢无后果；注释诚实 |
+| `routeGuards:112` | 最后一次成功导航的路由 | **明确写了「for diagnostics」**；失败也不影响 `next()` |
+| `locale.ts:25` | 语言偏好 | catch 注释「localStorage 不可用时至少让界面语言生效」——**且它确实生效**（内存 + i18n runtime 都写了） |
+| `theme.ts:60` | 皮肤偏好 | 同上，`applyTheme()` 在 try 之外照常执行 |
+
+⇒ 判据不为此新增断言：**门禁不该逼人给正确形态加噪音**。
+§864 已经记过「门禁逼出的假东西比它想防的问题更难发现」，
+这里同理 —— 一味要求「所有 catch 都要 warn」只会催生无意义的 warn。
+
+⚠ 与 §867/D34 的区别要说清：`device.ts` 当初**没有任何理由注释**
+（catch 里什么都没有），而这 4 处**都带了诚实的理由**且降级非破坏性。
+
+### §869.6 判据与变异
+
+`local-storage-write-truthfulness.test.ts` 扩到 **14 例**（§868 的 8 + §869 的 6）。
+
+**M26 真实文件端到端变异（2 路）**：
+
+| 变异 | 自己判据 |
+|---|---|
+| 基线 | **14 / 0** ✅ |
+| M26-a `applyChatSettings` 的写失败改回 `// ignore` | **11 / 3** 🔴 |
+| M26-b runtime 不接返回值、不留痕 | **12 / 2** 🔴 |
+| 还原核对 | **14 / 0** ✅ |
+
+⚠ **本节又撞了一次既有门禁**（§862 的 D22 那条「三个字段都必须有白名单」），
+但这次是**生产代码的重构**导致的：原断言只认 `setItem('key', X)` 的字面形状，
+而本节把写入收拢到 `persist('key', X, 标签)` 以实现「不连坐」。
+
+按惯例**只改自己措辞、不动门禁语义**：把形状放宽为
+`(?:setItem|persist)\('key', X`，**但仍然要求 X 不是原始 payload 字段**
+—— 语义一条没松（§864 立的规矩在本节第 8 次适用）。
+
+⚠ 判据自身的事故（**第 4 次取件器**）：`fnBody` 的前置字符守卫
+（行首/空白/`{`/`,`）**挡不住调用点** —— `return applyChatSettings(...)`
+前面就是一个空格，而**调用点出现在定义之前**（`applyRemoteSetting` 在文件上方）
+⇒ 取到了调用点所在的函数体，判据报「找不到 catch」。
+修法：把匹配**锚到行首**（可带缩进），一次挡掉 `this.名(` / `return 名(` /
+`await 名(` 全部形态。
+
+⚠⚠ 还有一处**冤枉了量具**：D38 的负控我连写错两版 ——
+① 只把两个 `persist` 换成裸 `setItem`，可它们并不在**同一个** try 里
+⇒ 「一个 try 包多个写入」这个性质根本没被触发；
+② 于是我又把性质本身改成「相邻写入之间有没有 try」，而那个读数在重构出
+`persist()` 辅助函数后就失去意义了。
+⇒ 最后直接把函数体换成**真实的缺陷形态**，才拿到有意义的红。
+**「尺子坏了」的报错文案会冤枉量具 —— 报之前必须先确认变异真的做到了它声称的事。**
+
+### §869.7 口径与未实测
+
+- ⛔ **未实测**：localStorage 写失败在真实设备上的发生率；
+  「DB 已标干净 ⇒ 投影永不重试」这一条是**逐行代码取证**
+  （`writeLocalIfNewer` 写 `dirty: 0` + `applyRemoteSetting` 之后无任何重试路径），
+  **不是运行时观测**。
+- ⚠ 本节**没有**让投影写失败触发**重试或重新拉取** ——
+  那会让「已同步」的语义变成「待重试」，属产品/架构口径，登记在 §869.8。
+- ⚠ 本节**没有**给 `applyAppPrefs` 补 `stores/theme.ts` 的内存同步
+  （它已经直接改 `<html data-theme>`，界面即生效；但设置页显示的
+  `preference` 仍可能是旧值）。因 theme 的 `setPreference` 同样零消费者，
+  影响为零，故登记而不改。
+
+### §869.8 待拍板（新增 1 条）
+
+88. **「已同步」这个状态要不要拆成「已同步」与「投影未落地」两态** ——
+   §869 只把分叉**变得可见**（warn + 日志），没有改变状态机本身：
+   DB 记的是 `dirty = 0`，投影失败并不会让它回到待重试。三个子问题：
+   a. `local_user_settings` 要不要再加一列（或复用 `dirty`）表示
+      「投影未落地」，并在下次启动时优先重建 localStorage 投影？
+      —— 这是**唯一能让自愈真正发生**的改法，但要动 schema。
+   b. 投影失败要不要对用户说话（与 §866/§867/§868 的三处提示并列为第四处）？
+      本节按「只留日志」处理，因为 §864 已确认这两个字段没有界面。
+   c. §869.4 那个哑雷（`stores/device.ts` 的 getter 全仓零引用）——
+      与 §859 第 1 条是同一件事：这套「设备档位 / STT 偏好」到底要不要接回 UI？
+      若接回，D38 里「远端下发不更新内存」就会**立刻变成真缺陷**，
+      届时必须补内存同步。
+### §870.1 口径：前五节扫的是 `setItem`，**删除**侧从未扫过
+
+§866–§869 四节加上 §868/§869 的判据，全部围绕
+`localStorage.setItem`（**写入**）。`removeItem` / `clear` 这条
+**删除**侧一次都没进过扫面，而它牵着「退出登录」这个安全动作。
+
+扫面：`removeItem` **9 处**，`clear()` **0 处**。
+
+| 落点 | 分诊 |
+|---|---|
+| `stores/auth.ts:195-198`（`clearLocal`，4 条） | 🔴 **D39** |
+| `features/settings/SettingsView.vue`（`handleLogout`） | 🔴 **D40** |
+| `features/settings/SettingsView.vue`（`selected_server`） | ✅ 随 D40 一并处理 |
+| `features/servers/ServerSelectView.vue:162` | ✅ 在已覆盖的 try 内，且换服务器本就整体重载 |
+| `native/recordingRuntime.ts:127` | ✅ §868 已判定的正确形态（在 §867/D36 之后那段 try 里） |
+
+⭐ 本节的核心口径是把 §866 的族规律**反过来用一次**：
+
+> 写失败 = 用户的会话被弄丢（**丢东西**）；
+> **删失败 = 会话被留在盘上** —— 用户明确点了「退出」，而系统其实还在记着他。
+
+同一个「静默」，两个方向，后果严重度完全不同。
+
+### §870.2 ⭐ D39：`clearLocal()` 四条裸 `removeItem`
+
+失败链（逐行取证）：
+
+```
+clearLocal()
+  ├─ this.token = '' … authMethod = ''      ← 内存态已清（本次会话看着登出成功）
+  └─ localStorage.removeItem(TOKEN_KEY)      ← 裸奔；写不进去就抛错
+        ↓
+state: () => ({ token: localStorage.getItem(TOKEN_KEY) || '', … })
+        ↓
+下次启动把**旧 token 读回来** ⇒ 共享设备上「退出登录」等于没退
+```
+
+且抛错会冒泡出 `clearLocal()` —— `logout()` **没有**包 try/catch。
+
+⚠ **一处必须澄清的对照**：`api/http.ts` 的 401 路径**是**包了
+（`try { auth.clearLocal() } catch { /* 清理失败也要继续跳转 */ }`）
+—— 那里是**正确形态的样板**，本节不改它。只有用户主动点的那条路没兜底。
+
+**修法**：逐键 `try/catch` + `console.warn`（点名哪个键没删掉）+
+`sessionClearFailed` / `sessionClearMissing` 两个 state 字段。
+
+### §870.3 ⭐⭐ D40：设置页的「退出登录」**根本没有退出**
+
+这是本节最重的一条，而且是**读代码时一眼可见、却显然没人验证过**的一条。
+
+`SettingsView.vue::handleLogout` 的原文：
+
+```js
+localStorage.removeItem('pocket_user')
+localStorage.removeItem('selected_server')
+clearSelectedInstance()
+router.push('/login')
+```
+
+⇒ **token 没删、内存没清、也没打后端撤销。**
+
+而路由守卫判的是**内存**里的 `auth.isAuthenticated`
+（`app/routeGuards.ts:69/76/82/87`，全部读 `auth.isAuthenticated`）：
+
+```
+点「退出登录」 → 只删了 pocket_user → router.push('/login')
+              → 内存里 token 与 user 都还在 ⇒ isAuthenticated 仍为 true
+              ⇒ 用户在登录页按一下后退 ⇒ 直接回到应用，仍持有效 token
+```
+
+**「退出登录」在本次会话根本没发生。**
+
+⚠ 为什么重启后看起来登出了？因为 `pocket_user` 恰好被删了，
+而 `isAuthenticated = Boolean(token) && Boolean(user)`。
+⇒ 现状精确地说是：**内存里还登录着，磁盘上只剩一个明文的残留 token**
+（`pocket_token` / `pocket_workspace_id` / `pocket_auth_method` 都在）。
+
+**修法**：走 store 的正规登出 `authStore.logout()`
+（打后端撤销 + 清内存 + 清存储），再补两个与本应用相关的键
+（`clearSelectedInstance()` + `selected_server`）。
+
+⭐ 这条同时补上了一个 §867/D33 遗留的对称缺口：D33 修好了**登录**的写入，
+本节修好了**登出**的删除 —— 一个账户在本地存储上的生命周期两端现在都有判据。
+
+### §870.4 判据与变异
+
+`frontend/src/__tests__/local-storage-remove-failure.test.ts`（**7 例**，新建）：
+尺子自证两条 + D39 两条 + D40 一条 + 两条负控。
+
+⭐ 本判据把 D40 钉成「**必须走 store 的正规登出**」而不是
+「必须删除某个键」—— 因为缺陷的本质是**没走那条完整的路**，
+逐键断言反而会让人以为补几行 `removeItem` 就修好了。
+
+**M27 真实文件端到端变异（2 路）**：
+
+| 变异 | 自己判据 |
+|---|---|
+| 基线 | **7 / 0** ✅ |
+| M27-a `clearLocal` 改回四条裸 `removeItem` | **4 / 3** 🔴 |
+| M27-b 设置页退出改回「只删 pocket_user」 | **4 / 3** 🔴 |
+| 还原核对 | **7 / 0** ✅ |
+
+⚠ 判据本轮**首轮就绿**（前几节每次都要修 3–5 次量具）——
+记一笔，是因为本节把前四节的血泪直接写进了注释
+（`strip` 先处理 HTML 注释、判据先抽 `<script>` 再定位再剥注释、
+`fnBody` 锚到行首），**把量具的事故当文档用，是能省下返工的**。
+
+### §870.5 口径与未实测
+
+- ⛔ **未实测**：真实设备上 `removeItem` 失败的**发生率**；
+  D40 的「后退即可回到应用」是**逐行代码取证**
+  （守卫 4 处判据全部读内存 `isAuthenticated`），**未在真机上点过**。
+- ⚠ 本节**没有**给 D39 加界面出口 —— 「本地未能清除登录状态」要不要对用户说，
+  属产品口径（§870.6 第 89 条）。这与 §865/§867 的做法一致。
+- ⚠ 本节**没有**动 `api/http.ts` 的 401 路径（那里是正确的样板）。
+- ⚠ 顺带发现但**未取证**：`auth.ts` 底部的 `storage` 事件监听只同步
+  `TOKEN_KEY` / `USER_KEY` 两个键，**不同步** `workspaceId` / `userId`
+  ⇒ 跨标签登出后，另一标签的 `workspaceId` 会残留。登记为下一节的候选。
+
+### §870.6 待拍板（新增 1 条）
+
+89. **「本地未能真正清除登录状态」要不要对用户说** —— §870 只把它变成
+   `sessionClearFailed` + `sessionClearMissing` + warn，**界面仍然不说话**：
+   ① 登出后要不要提示「本地未能清除登录状态，请手动清理浏览器数据」？
+      这与 §865/§867/§868 的三处提示是同一族，但性质更重（涉及隐私）。
+   ② 提示里要不要给「跳转清理存储」的入口？（Android WebView 下
+      清 WebView 数据会连带清掉录音缓存，要不要一并警告？）
+   ③ §870.5 那条 `storage` 监听只同步两个键的跨标签差异，要不要本节一并补齐？
+      本节按「未取证、不改」处理。
+### §871.1 口径：§870 登记的那条线索
+
+§870 的 §870.5 留下一条**未取证**的候选：
+
+> `auth.ts` 底部的 `storage` 监听只同步 `TOKEN_KEY` / `USER_KEY` 两个键，
+> **不同步** `workspaceId` / `userId` ⇒ 跨标签登出后另一标签的
+> `workspaceId` 会残留。
+
+本节去查它。结论先给：**属实，且比登记时写的更严重** ——
+因为 `syncFromStorage()` 不只在 `storage` 事件里被调用。
+
+### §871.2 ⭐ D41：「从存储刷新会话」系统性漏掉 3 个键
+
+**关键取证**（这一步决定了严重度）：
+
+```
+app/routeGuards.ts:55-56
+  if (typeof auth.syncFromStorage === 'function') {
+    auth.syncFromStorage()
+```
+
+⇒ 它在**每次导航**都会被调用。所以这不是「跨标签才有的问题」，
+而是「**从存储刷新会话**这条指定路径，整个应用生命周期里都漏掉了
+`workspaceId` / `authMethod`」。
+
+**有消费者的后果**（不是推测）：
+- `composables/usePendingApprovals.ts:80` → `workspaceId: auth.workspaceId || 'default'`
+- `app/routeGuards.ts:87` → `requiresAuth && auth.isAuthenticated && !auth.workspaceId`
+- `app/AppLayout.vue:149-151` → `watch([userId, workspaceId]) → shellRuntime.setScope(...)`
+
+⇒ 跨标签登录到**另一个** workspace 后，本标签仍按**旧 workspace** 取待审批。
+
+**修法**：`syncFromStorage()` 读齐四个落盘键并回写对应 state 字段。
+
+### §871.3 ⚠ 只修 `syncFromStorage` 是**不完整**的 —— 判据抓出来的
+
+我第一次只改了 `syncFromStorage`，判据立刻红：
+
+```
+'触发同步的 storage 监听也必须覆盖全部落盘键（只修 syncFromStorage 是不完整的）'
+  why: storage 监听没认 WS_KEY ⇒ 别的标签改了它，本标签收不到事件、根本不会触发同步
+```
+
+**这个红是对的**：§871.2 的修复在跨标签场景下**根本不会生效** ——
+别的标签改了 `pocket_workspace_id`，本标签连事件都不收，
+同步函数压根不会被调用。
+
+⭐ ⇒ 立一条规律：**改「刷新函数」时必须同时查「谁触发它」** ——
+两者的键集合必须一致，否则修复等于没做。
+
+同时补上了 `event.key === null`：规范里 `localStorage.clear()` 触发的事件
+`key` 为 `null`。全仓 `clear()` 目前 **0 处**，但既然条件表达式本来就要改，
+把这个分支一并处理比留一个已知缺口更省事，且语义正确
+（`null` 时重新读一遍全部键，正是 `clear()` 想要的行为）。
+
+### §871.4 ⚠ 第二个被**实测推翻**的推断：`userId` 从不落盘 = 哑雷
+
+取证时我认定第三条缺陷：`state` 里 `userId: ''` 是写死的，
+全仓**没有** `pocket_user_id` 这个键，`setAuthWithWorkspace` 只把它放在内存
+⇒ 每次刷新后 `userId` 都是空串 ⇒ `AppLayout` 的 `shellRuntime.setScope({ accountId: '' })`。
+
+**实测推翻**（又是先数消费者）：
+`shellRuntime.scope()` 在 `lib/shell/runtime.ts` 之外**零消费者**；
+而 `setScope` 真正的作用只是「值变化时才 `store.reset()`」——
+`workspaceId` 的变化**已经足够**触发那次 reset。
+
+⇒ 它是**哑雷不是缺陷**：`accountId` 从来没人读。
+**登记不修**（与 §869.4 同立场），并明确写清
+「若将来有人读 `scope().accountId`，这条会立刻变成真缺陷」。
+
+### §871.5 判据与变异
+
+`local-storage-remove-failure.test.ts` 扩到 **11 例**（§870 的 7 + §871 的 4）。
+
+⚠ **取件器事故累计第 5 次**：第一版判据拿**字面量** `'pocket_token'`
+去匹配 `syncFromStorage` 的函数体，而源码用的是**常量** `TOKEN_KEY`
+⇒ 恒红，读起来像「修复没生效」，其实是我把判据钉在字面量上。
+修法：锚到**符号名**，并**额外**断言「符号名 → 字面量」这条映射本身没漂
+（`const TOKEN_KEY = 'pocket_token'` 仍在）——两头都不放松。
+
+**M28 真实文件端到端变异（2 路）**：
+
+| 变异 | 自己判据 |
+|---|---|
+| 基线 | **11 / 0** ✅ |
+| M28-a 删掉 `workspaceId` / `authMethod` 的刷新 | **8 / 3** 🔴 |
+| M28-b 把 storage 监听退回只认两个键 | **10 / 1** 🔴 |
+| 还原核对 | **11 / 0** ✅ |
+
+### §871.6 口径与未实测
+
+- ⛔ **未实测**：多标签场景下的实际行为（本节全部是**逐行代码取证**）；
+  共享设备上「另一个标签登录到不同 workspace」的发生率未知。
+- ⚠ 本节**没有**给「跨标签换了 workspace」加提示或告警 ——
+  它是 §866 族里「用户正在使用的状态被悄悄改掉」的一个新形态，
+  但目前只有 `usePendingApprovals` 一个消费者，登记而不代拍。
+- ⚠ `syncFromStorage()` 现在每次导航读 4 个 `getItem`；
+  `state` 初始化已经在读同样的 4 个 —— **未考虑**这次额外开销
+  （⛔ 未测），但相对一次导航的其它开销应属可忽略，暂不改。
+
+### §871.7 待拍板（新增 1 条）
+
+90. **`userId` 到底该不该落盘** —— §871.4 实测它是哑雷（`accountId` 零消费者），
+    所以本节**没有**给它加键。但登记于此，避免它继续悬着：
+    ① 要不要给 `userId` 一个落盘键（与 `workspaceId` 对称）？
+       现在它的处境很奇怪：**内存里有、刷新就没**，任何未来消费者都会踩坑。
+    ② 或者反过来 —— 承认它「仅内存、不跨会话」并在字段注释里写死？
+    ③ §871.6 那条「跨标签换 workspace 后待审批仍按旧 workspace 过滤」
+       要不要对用户说？（本节按「不代拍」处理）
+### §872.1 口径：会话写入的**原子性**
+
+§867/D33 把登录写入收拢进了 `writeSession(entries)`，但**收拢得不彻底**：
+
+```
+setAuth(token, user, method)
+  └─ writeSession([TOKEN_KEY, USER_KEY, METHOD_KEY])      ← 第一次落盘
+setAuthWithWorkspace(token, user, userId, workspaceId, method)
+  ├─ setAuth(...)                                          ← 上面那次
+  └─ writeSession([[WS_KEY, workspaceId]])                 ← ⚠ 第二次落盘
+```
+
+⇒ 两段各自 `try/catch`，**第二次失败就是撕裂态**：
+磁盘上有 token / user / auth_method，**唯独缺 workspace_id**。
+
+### §872.2 ⭐ D42：撕裂态的后果不是「进不去」，而是**审批决策被记到错误的 workspace**
+
+失败链（逐行取证）：
+
+```
+登录 → setAuthWithWorkspace(...)
+  ├─ 第一次落盘成功（token/user/method 已写）
+  └─ 第二次落盘失败（配额满等）
+        ↓
+内存 workspaceId 有值 ⇒ 本次会话一切正常，**界面上完全看不出来**
+        ↓ 刷新 / 重启
+state.workspaceId = localStorage.getItem(WS_KEY) || ''  ⇒ 永久为空
+        ↓ 用户离线回复一条审批
+composables/usePendingApprovals.ts:80（离线分支）
+  → enqueueApprovalReplyLocally({ workspaceId: auth.workspaceId || 'default' })
+        ↓
+审批决策被写进 outbox 并打上 'default' ⇒ flush 之后**再也纠不回来**
+```
+
+⚠⚠ **这条链恰好不会被守卫挡住**：`app/routeGuards.ts:87` 的 Case D
+（`isAuthenticated && !workspaceId`）只做 `console.debug`、**不拦截**
+（注释明说「The /servers picker or workspace chooser will resolve it」）。
+⇒ 缺 workspace_id 时应用照常放行，**不会**有任何「出错了」的信号 ——
+而缺的那个键，恰恰是**审批决策归档所用的那个键**。
+
+**修法**：`setAuth` 增加 `extra` 形参，把 `WS_KEY` 并入**同一次**
+`writeSession` ⇒ 不存在「写了一半」的中间态。
+
+### §872.3 ⭐ 本节的元教训：判据写得太宽会逼人改坏代码
+
+第一版判据写的是「全文件 `writeSession` 调用点唯一」，立刻被
+`setLegacyUser` 判红：
+
+```
+this.writeSession 被调用 2 次 ⇒ 存在第二次落盘
+```
+
+⚠ 但 `setLegacyUser` 是**独立的** legacy 入口（只存 user、不存 token），
+它本来就该自己落盘。**是我的判据错了，不是代码错了。**
+
+⇒ 属性必须收窄到「**登录路径**」：`setAuth` 内部恰好一次落盘 +
+`setAuthWithWorkspace` 把 workspace 键并进去、不自己再落盘。
+
+⭐ 判据把「合法但独立的入口」当成违规时，会逼着实现者去合并它们 ——
+**那是在为门禁改代码，而不是为缺陷改代码**。§864 说过「门禁逼出的假东西
+比它想防的问题更难发现」，本节是它的又一例：**门禁也会逼你把好的设计改坏**。
+
+### §872.4 判据与变异
+
+`local-storage-remove-failure.test.ts` 扩到 **15 例**（§871 的 11 + §872 的 4）。
+
+**M29 真实文件端到端变异（1 路）**：
+
+| 变异 | 自己判据 |
+|---|---|
+| 基线 | **15 / 0** ✅ |
+| M29-a workspace 键退回「第二次写入」 | **11 / 4** 🔴 |
+| 还原核对 | **15 / 0** ✅ |
+
+⚠ 四条红的名字分别指向四个不同性质（尺子自证 / setAuth 一次落盘 /
+`setAuthWithWorkspace` 不自己落盘 / 专属负控），**没有**笼统的 suite 失败。
+
+### §872.5 口径与未实测
+
+- ⛔ **未实测**：配额写满的真实发生率；撕裂态的端到端复现
+  （本节是**逐行代码取证**）。⚠ 也就是说 D42 的**发生概率至今为零观测**，
+  修的是一条**结构上存在**的路径。
+- ⚠ 本节**没有**给「`workspaceId` 为空」加界面提示。
+  ⚠ 而守卫 Case D 的现状（只 `console.debug`、让 `/servers` 或
+  workspace chooser 去补）是否真的兜得住，**本节未取证** ——
+  `usePendingApprovals` 的离线分支却**没有**等它，直接用了 `'default'`。
+  这条不一致登记在 §872.6。
+- ⚠ 本节**没有**改 `setLegacyUser`（它只有 user 一个键，本来就不需要原子性）。
+
+### §872.6 待拍板（新增 1 条）
+
+91. **`workspaceId` 为空时，守卫与业务代码的处理不一致，要不要统一** ——
+    `app/routeGuards.ts:87` 认为「/servers 选择器或 workspace chooser 会补上它，
+    所以不拦截」，而 `usePendingApprovals.ts:80` **不等**，直接 `'default'` 兜底
+    并把审批决策写进去。① 离线审批这条要不要改成「`workspaceId` 为空就**拒绝
+    入队并提示**」？（宁可让用户重试，也不要把决策记到错的 workspace）
+    ② 守卫的 Case D 要不要从 `console.debug` 升级为一次用户可见的提示？
+    ③ 或者反过来 —— 认为 `'default'` 兜底是对的，改守卫的注释别误导后人？
+### §873.1 口径：§866–§872 六节都在防守一个前提，却**没人查过那个前提是谁造成的**
+
+§866 取证时引用过一句话：「localStorage 在 Android WebView 里总配额约 5–10MB，
+一旦写超，snapshot-store 的 saveNS 会静默吞掉」—— 出处是
+`features/email/email-body-cache.ts` 的**文件头**。
+
+此后 §866–§872 六节全都在防守「写满」这个前提（对话历史、会话、闪卡队列、
+加密 salt、远端设置、审批 outbox），**却没有任何一节问过：是谁把它填满的？**
+
+⇒ 本节去问。
+
+### §873.2 ⭐ D43：正文缓存**无上限、无淘汰**，而删除路径只剩一条
+
+扫面读数：
+
+| 事实 | 读数 |
+|---|---|
+| 写入方 | 3 处：`EmailInboxView`（预取）、`EmailDetailView:206`、`:313` |
+| **删除方** | **1 处**：`email-soft-delete.ts`（即只有用户删掉那封邮件时才清） |
+| 单次点击缓存几封 | **3 封** — `prefetchEmailBody(id)` + `prefetchEmailBodySeries(ahead, …, 2)` |
+| 上限 / 淘汰策略 | **0 处**（`MAX_` / `evict` / `prune` / `slice` 全仓 0 命中） |
+
+**算一下**：按该文件自己写的「正文几十到几百 KB」，一次点击约 300KB；
+5–10MB 配额 ⇒ **点过十几到三十几封邮件，localStorage 就满了。**
+⇒ 之后本仓**所有**写入静默失败：登录会话（§867/D33）、AI 对话历史
+（§866/D30）、闪卡队列（§868/D36）、加密 salt（§867/D35）、远端设置
+（§869/D37/D38）——**全中**。
+
+⭐ 所以 §873 是 §866–§872 那一族的**根因**，那六节修的是「受害者」。
+
+### §873.3 ⚠⚠ 那个文件的注释恰恰声称问题已经解决
+
+`email-body-cache.ts` 文件头原文（2026-09-30 真机审计 P1）：
+
+> 改为按 id 分 key 后：读只解析一封，写只覆盖一封，某一封写失败不会牵连
+> 其它邮件，**也不再有「整体超配额」的悬崖**。
+
+**这句话是错的**（2026-10-18 取证推翻）：
+- 分 key 确实消除了「**单次**写入超配额」这个失败模式 —— 这部分对；
+- 但它同时**制造**了「**逐封无限累积**」，而**删除路径只剩用户删邮件一条**。
+
+⚠ 这是 §864/D28「死代码的注释在撒谎」的**另一种形态**：
+那一条是死代码的头注释在吹牛，这一条是**活代码的注释在吹牛** ——
+而且它吹的正是让后人不再去查上限的那句话。
+⇒ 判据因此钉了一条：**那句原话可以保留，但每次出现都必须紧挨着纠正标记**
+（不许简单 grep「不许出现」—— 那会把「诚实地引用并推翻它」也判成违规）。
+
+### §873.4 修法：有序索引 + 条数/字节**双**上限 + 淘汰
+
+```
+pocket:email_body_index   ← 有序 id 列表（写入顺序 = 新旧顺序）
+pocket:email_body:<id>    ← 单封正文（原有，不变）
+```
+
+- **两个上限都留着，因为单独任何一个都不够**：
+  只限条数 → 一封 500KB × 60 封 = 30MB，照样撑爆；
+  只限字节 → 几封超长正文就能把额度吃光，用户后面连会话都存不下。
+  取 `MAX_ENTRIES = 60` + `MAX_TOTAL_CHARS = 1_000_000`
+  （UTF-16 码点数，真身约 ×2 ⇒ 约 2MB，留足余量给 AI 对话历史与会话）。
+- 每次写入后立刻**记账 + 淘汰**，并 `console.warn` 说明淘汰了几封。
+- `clearEmailBodyLocal` 同步把 id 从索引里摘掉 ——
+  否则它占着名额却没有正文，淘汰时会把别的封白挤出去。
+- 索引本身写失败要 warn 说明「此后不再淘汰，正文缓存会无上限增长」。
+
+⚠ 不依赖 `localStorage` 的键遍历顺序（实践中是插入序，但规范不保证），
+改用**显式索引**，多一个键换来确定性。
+
+### §873.5 判据与变异
+
+`frontend/src/__tests__/email-body-cache-budget.test.ts`（**10 例**，新建）：
+尺子自证 1 + D43 七条 + 两条负控。
+
+⚠⚠ **取件器事故累计第 6 次，形态很典型**：
+前几节用 `(?:^|\n)\s*` 锚行首来排除调用点，但本文件的函数行首是
+`export async function writeEmailBodyLocal(…)` ——
+**`\s*` 吃不下 `export `** ⇒ 正则匹配失败 ⇒ 退而匹配到
+**行首缩进的调用点**（`readEmailBodyLocal` 里的 `writeEmailBodyLocal(id, …)` 调用）
+⇒ 判据读到了另一个函数的体，报「写入后没有读索引」。
+
+⇒ 修法：这类文件全是**顶层声明**，所以直接要求 `function` 关键字，
+**从语法上就不可能匹配到调用点**（`fnBody(...)` 替代 `foo(...)` 通吃不了）。
+
+**M30 真实文件端到端变异（2 路）**：
+
+| 变异 | 自己判据 |
+|---|---|
+| 基线 | **10 / 0** ✅ |
+| M30-a 把淘汰调用删掉 | **8 / 2** 🔴 |
+| M30-b 把淘汰改成「只截索引不删正文」 | **8 / 2** 🔴 |
+| 还原核对 | **10 / 0** ✅ |
+
+### §873.6 口径与未实测
+
+- ⛔ **未实测**：单封正文在真机上的**实际字节数**（本节用的是该文件自己写的
+  「几十到几百 KB」）；`MAX_TOTAL_CHARS = 1_000_000` 的取值为**工程估计**，
+  **不是**在目标机型上量出来的。⚠ 这两个数字应该真机调一次。
+- ⛔ **未实测**：「点十几到三十几封就满」是**算术推导**，不是观测。
+- ⚠ 本节**没有**在写入失败时通知用户（正文缓存失效 = 每次进详情页都重新
+  走网络，慢网下正文区会空着 —— 这正是文件头描述的症状）。
+  按 §866 的族规律：丢的是缓存不是用户数据 ⇒ 不阻断、warn 即可，
+  但**要不要对用户说**属产品口径，登记在 §873.7。
+- ⚠ 本节**没有**回溯已写入的历史数据：上线后旧缓存仍然可能占满一次，
+  第一次写入时会触发一次批量淘汰（最坏情况要枚举并读一遍所有正文长度）。
+
+### §873.7 待拍板（新增 1 条）
+
+92. **正文缓存的两个上限取多少、以及满了要不要告诉用户** ——
+    ① `MAX_ENTRIES` / `MAX_TOTAL_CHARS` 的取值需要**真机量一次单封正文**再定，
+      本节的 60 / 1_000_000 是工程估计；
+    ② 淘汰发生时（`console.warn` 已经打了）要不要给用户一点感知？
+      文件头描述的症状是「网络一慢正文区就一直空着」—— 那是**用户看得见**的
+      劣化，但今天没有任何提示；
+    ③ 淘汰策略要不要可配置（设置项），还是就这样定死？
+### §874.1 口径：§873 查了一个，§874 必须查**这一族的全部**
+
+§873 的教训里最该被记住的一条是「枚举这一族的全部成员」。
+但 §873 本身**只查了一个文件**（邮件正文缓存）—— 而教训恰恰是不要这么做。
+
+⇒ 本节做**全仓对账**：把「谁在往 localStorage 里只写不删」逐条列出来。
+
+### §874.2 全仓对账读数
+
+扫面：`localStorage.*` 字面量落点 + **经 storage 访问器的落点**
+（`store.setItem` / `s.setItem` / `storage?.setItem` —— 只扫字面量会漏掉
+`email-body-cache.ts` 整个文件）。
+
+| 键族 | 写入方 | 删除方 | 分诊 |
+|---|---|---|---|
+| `pocket:email_body:*` | 3 处 | 1 处（`email-soft-delete`） | ✅ §873 已修（双上限 + 淘汰） |
+| **`pocket:ai-chat:corrupt:*` / `pocket:crypto:corrupt:*`** | `utils/corrupt-preserve.ts` | **0 处** | 🔴 **D44** |
+| `pocket:snapshots:<ns>` | `native/list-sync/snapshot-store.ts` | 有（按 ns 整体覆盖） | ✅ 单键内按实体，不是「每次一个键」 |
+| `pocket:sessions:*` / localagent 会话 | `localagent/runtime.ts` | — | ✅ `MAX_SESSIONS = 20` 已封顶 |
+| localagent 虚拟 FS（`LS_PREFIX + path`） | `localagent/tools/fs.ts` | 有显式 `remove()` | ⚠ 登记：agent 侧无总量上限，但**不是**「只写不删」 |
+| 其余 20 余处（会话 / 主题 / 语言 / 设备档位 / 闪卡 / 配置…） | 各 1–6 处 | 多数有 | ✅ 单键、非按事件累积 |
+
+⇒ **第二个只写不删的累加器**：`preserveCorruptRaw`。
+
+### §874.3 ⭐ D44：损坏留证键无上限、永不删除，且会**静默覆盖**
+
+`utils/corrupt-preserve.ts` 原文：
+
+```ts
+const key = `${ns}:${kind}:${storageScope()}:${Date.now()}`
+localStorage.setItem(key, raw)
+```
+
+两个后果：
+
+1. **无上限、永不删除**：每一次「读到损坏」就**复制一整份原始数据**永久留下。
+   ⚠ 而 `aiChatStore` 留的 `conversations` 原始串是**最多 40 轮对话全文**
+   —— 一次损坏事件就是一份完整历史的副本。
+   §873/D43 刚证明配额有限且已被邮件正文吃掉大头 ⇒ 这一族打的是**同一个器官**。
+2. **同毫秒碰撞 ⇒ 静默覆盖**：`Date.now()` 是毫秒粒度，
+   同一个 `ns:kind:scope` 在同一毫秒内触发两次 ⇒ **键名相同** ⇒ 后写的覆盖先写的。
+   ⚠ 这不是理论：`loadSettings`（§858 读侧）与 `applyChatSettings`
+   （§859 写侧）留的是**同一个 `kind`**、同一个源 key。
+
+⇒ **修法**：
+- 键名末尾加一个模块级**单调递增序号**（`${Date.now()}-${preserveSeq}`）⇒ 同毫秒不碰撞；
+- 每个 `ns:kind` 只保留最近 `PRESERVE_MAX_PER_KIND = 3` 份，
+  更老的**真的 `removeItem`** + `console.warn`。
+
+⚠ 原文件头写着「⚠ 不要在这里『顺手』做恢复或清洗」。本节做了**按数量淘汰**，
+理由写在该常量旁：那条针对的是**恢复**与**内容改写**；
+**按数量淘汰旧证据不改任何一份证据的内容，也不影响取证价值**。
+⚠ 也不依赖 `localStorage` 的键遍历顺序来决定「哪一份最新」——
+键名里的时间戳是显式的，排序按它算。
+
+### §874.4 ⭐ 判据钉了一条**跨节**断言
+
+§873 的判据只钉了邮件正文缓存。风险很直白：**只盯住其中一个，
+下一个人把另一个加回来就没人拦。**
+
+⇒ 本节判据里有一条：
+「§873 的两个上限仍然在」+「两个累加器的上限都还在（一条判据钉住两处）」，
+并用 **M31-c 真实变异**（把 `MAX_ENTRIES` 改成 `Infinity`）验证它真的能红。
+
+### §874.5 判据与变异
+
+`frontend/src/__tests__/local-storage-unbounded-accumulators.test.ts`
+（**10 例**，新建）。
+
+⚠ 本轮判据**首轮就绿** —— §866–§873 的六次取件器事故都被写进了注释
+（strip 先处理 HTML 注释、要求 `function` 关键字以排除调用点、行首锚点）。
+⭐ **把量具的事故当文档用，确实能省返工**（§870 已记过一次，这是第二次）。
+
+**M31 真实文件端到端变异（2 路，跨文件）**：
+
+| 变异 | 自己判据 |
+|---|---|
+| 基线 | **10 / 0** ✅ |
+| M31-a 删掉留证的预算检查 | **8 / 2** 🔴 |
+| M31-c 把 §873 的 `MAX_ENTRIES` 抹成 `Infinity` | **7 / 3** 🔴 |
+| 还原核对 | **10 / 0** ✅ |
+
+⚠ M31-c 是**跨文件**变异（动的是 §873 的产物），验证的正是那条跨节断言。
+
+### §874.6 口径与未实测
+
+- ⛔ **未实测**：损坏事件在真机上的**真实发生率**（§862/D26 的取证里，
+  `pocket_crypto_cfg` 损坏是**已确认发生过**的；但 AI 对话侧**未实测**）。
+- ⚠ `PRESERVE_MAX_PER_KIND = 3` 是工程取值（对照 §873 的两个上限，
+  同样是估计而非实测）。
+- ⚠ **本节没有**把「留证被淘汰」这件事对用户说 —— 淘汰意味着
+  用户/开发者事后可能拿不到更早的那份证据。按 §858 的立场，
+  留证是为了取证；**留存策略本就是待拍板项**（简报第 76 条），
+  本节只把「无上限」这个确定的问题收住，登记在 §874.7。
+- ⚠ localagent 的虚拟 FS **登记未修**：它有显式 `remove()`，
+  所以不是「只写不删」；但 agent 可以不断写新文件而没有任何总量上限。
+
+### §874.7 待拍板（新增 1 条）
+
+93. **损坏留证的留存策略** —— 本节把「无上限」收成了「每 `ns:kind` 保留 3 份」，
+    但这只是**止血**，真正的口径还没定（与 §858 登记的第 76 条是同一件事）：
+    ① 保留几份、保留多久（份数 vs 时间）？
+    ② 淘汰时要不要留一个「此处曾有 N 份、已淘汰」的墓碑键？
+    ③ 要不要给这些证据一个**导出入口**（设置页里「导出诊断包」）？
+       今天它们只能靠开发者手动翻 localStorage。
+### §875.1 口径：本会话的判据**全是文本扫描**，本节换一种证据形态
+
+§866–§874 我建的判据**无一例外**是「读源码 → 断言代码里有什么」。
+它们钉得住**代码形状**（「必须有上限常量」「必须调用淘汰」「必须 `removeItem`」），
+但**钉不住行为**：
+
+> 一份「有 `MAX_ENTRIES`、调用了 `evictOverBudget`、里面确实 `removeItem`」
+> 的代码，完全可以是**算错的** ——
+> 阈值比较写反、容量当成条数而不是字节、淘汰把新数据当旧数据删掉
+> ……**文本判据一条都发现不了**。
+
+⇒ 本节换证据形态：**真的把模块跑起来**。
+用一个可控的 `localStorage` 实现（`FakeStorage`，能模拟配额写满、`removeItem` 抛错）
+塞进 `globalThis.localStorage`，然后断言**配额真的被守住了**。
+
+⭐ 这也是 §859 以来第一次对这些纯函数做**真调用** —— 此前全是读源码。
+
+### §875.2 行为判据查出的东西（含一条真实的区分度读数）
+
+判据并入 `frontend/src/__tests__/local-storage-unbounded-accumulators.test.ts`
+（**28 例** = §874 形状 10 + §873 形状 7 + **§875 行为 8 + 跨节 3**）：
+
+| 断言 | 文本判据能不能做 |
+|---|---|
+| 连写 10 次留证，磁盘上只剩 3 份 | ❌ 只能看到「有上限常量」 |
+| 留存的必须是**最新** 3 份（不是最旧、不是随机） | ❌ 淘汰方向写反它发现不了 |
+| 淘汰 `settings` 不会误伤 `conversations` | ❌ |
+| 同毫秒两次留证返回**两个不同的键**（§874/D44 第二个后果） | ❌ 只能看到「键名里有 seq」 |
+| 无内容的留证不占位 / 写不下时返回 `null` 不抛错 | ❌ |
+| **对照组**：同样度量用在「没淘汰」的存储上必须数出 10 | —— 这条是**尺子自证** |
+
+⭐⭐ **最关键的一条读数（M32：阈值变异，文本 vs 行为对照）**：
+
+```
+把 PRESERVE_MAX_PER_KIND 从 3 改成 100（真实文件变异）
+  §874 的文本判据 → # pass 10 # fail 0   （✅ 全绿，完全无感）
+  §875 的行为判据 → # pass 6  # fail 2   （🔴 红）
+```
+
+⇒ 这就是两种证据形态的**分界线**：
+「常量还在、淘汰调用还在、`removeItem` 还在，只是阈值被放开」——
+**文本判据天然看不见，行为判据立刻抓住**。
+
+⚠ 所以本节不是「文本判据没用」—— 文本判据便宜、能在不运行代码的情况下
+挡住**整类**形状错误（§866–§874 的十几次变异就是它抓的）。
+它是**兜底**，行为判据才是**验收**。
+
+### §875.3 ⚠ 顺带撞到并修掉一个**工具链**问题（本节计划外的）
+
+行为判据本来是新开一个文件，结果 `npm run gates` 在第 3 项 `test:all` 直接红：
+
+```
+❌ 测试文件列表长度 20002 超过 20000 字符上限（Windows 命令行 32767 的安全余量）。
+   文件数已经到 376。这时最该做的是修掉 unrunnable 清单里的源码 import，
+   让全部测试都能用 glob 跑；请勿在此处加兜底分支。
+```
+
+⇒ 三步（都写在该 runner 的设计意图之内，不是绕过）：
+
+1. **照它说的做**：那条 unrunnable 豁免（`flashcardIo.test.ts`）的理由是
+   「被测源文件 `flashcardIo.ts` 用无扩展名 import」。
+   查 `tsconfig.json`：`allowImportingTsExtensions: true` **早就开着**，
+   且仓里有先例（`features/messages/hub-view.test.ts` 就是 `'./hub-view.ts'`）。
+   ⇒ 改一行 import + 撤销豁免条目 ⇒ 该文件 7 例**现在真的跑了**。
+   ⚠ 但撤销豁免让清单**更长**（文件进了 argv），仍然超限。
+2. **不新增文件**：把 §875 的行为判据**并进** §874 那个同族文件
+   （「累加器的预算」本来就该在一个文件里：形状 + 行为是一件事的两面）。
+3. **再并掉 §873 的形状判据**（同一族）⇒ 文件数 376 → 375，
+   `test:all` 恢复 **375/375 全部被实际执行且都有产出**。
+
+⇒ 净结果：文件数比今天开始**少一个**，而覆盖面**多了一个原本跑不起来的测试文件**。
+
+⚠ 但 runner 自己在报错里指名了正解（「让全部测试都能用 glob 跑」），
+而 `UNRUNNABLE` **现在已经清空** ⇒ 显式列表的设计理由①已不成立。
+换 glob 属**构建口径**的决定 ⇒ 登记在 §875.5，本节不代办；
+今天的做法只是**不把闸门推得更满**。
+
+### §875.4 本节踩到的两个判据事故（顺带记账）
+
+1. **第一版负控是废的**：我写了 `const { PRESERVE_MAX_PER_KIND } = await import(…)`
+   —— 那个常量**根本没有导出**，而且 `await` 写在非 async 回调里直接语法错。
+   ⛔ 量具自己断言等于没断言，还是语法级的。
+   修法：换成**对照组** —— 把同样的度量代码用在一份绕开
+   `preserveCorruptRaw`、直接写入的存储上，必须数出 10 份。
+   （这比「改常量再断言」更好：它证明的是**这把尺子有牙**。）
+2. **合并时把 import 插了两次** ⇒ `Identifier 'preserveCorruptRaw' has already
+   been declared`。合并带 `await import()` 的文件时，
+   **顶层模块副作用**（`globalThis.localStorage = fake`、动态 import）容易重复搬运。
+3. `node --test` 的 strip-types **不允许在非 async 回调里 `await`**，
+   顶层 `await import()` 只能写在模块顶层。
+
+### §875.5 ⛔ 覆盖范围的诚实边界
+
+- ⛔ **行为级验证只覆盖 `utils/corrupt-preserve.ts`**，
+  因为它是**零 import**，能被 node 的 strip-types loader 直接加载。
+- ⛔ `features/email/email-body-cache.ts`（§873/D43 的淘汰逻辑）**加载不了** ——
+  它的 import 链（`../../native/list-sync/snapshot-store`）用**无扩展名说明符**，
+  node 的 ESM 解析器无法定位 `.ts`（实测 `ERR_MODULE_NOT_FOUND`）。
+  ⇒ **那部分的淘汰行为至今只有形状保证，没有行为保证。**
+  按 §875.2 的读数，那正是「悄悄算错也不被发现」的那一类
+  （上限比较写反、字节当成条数、淘汰把新的当旧的删）。
+- ⚠ 判据文件被合并后，**§873 的 8 个文件名不再存在** ——
+  `check:test-coverage` 等按文件登记的门若引用了旧路径需要同步（本轮 gates 已绿，
+  说明没有引用）。文档里所有「§873 判据 10 例」的表述按 §875.5 的合并口径解读。
+
+### §875.6 待拍板（新增 1 条）
+
+94. **测试执行要不要从「显式文件列表」换成「glob」** ——
+    ① `scripts/run-mjs-tests.mjs` 的 20000 字符 argv 上限今天已经贴脸
+      （375 个文件 / 19954 字符）。再新增**任何**一个测试文件都会顶红
+      `npm run test:all` ⇒ **下一次有人加测试就会撞上**；
+    ② 该 runner 的 unrunnable 清单**本节已经清空** ⇒ 它选「显式列表」的
+      理由①（unrunnable 文件必须不被加载）**已不成立**，
+      而它的报错文案自己写着正解是「让全部测试都能用 glob 跑」；
+    ③ 另两条理由（glob 静默失配不报错、枚举 ⊆ 实际执行要可核对）
+      是否要靠 census reporter 保住 —— 那正是它现在已有的机制；
+    ④ 附带：`email-body-cache.ts` 这类「import 无扩展名」的模块**依然加载不了**
+      （§875.5），要不要统一给相对 import 补 `.ts`？
+### §876.1 口径：§866 引用过 `snapshot-store` 却从没读过它
+
+§873 的取证里出现过一句话：「一旦写超，**snapshot-store 的 `saveNS` 会静默吞掉**
+（catch 里注释写着「快照属尽力而为」）」。
+⇒ 那是 §866 引用的**第二个**文件，而我只读了它引用的那一句。
+
+本节去读 `native/list-sync/snapshot-store.ts` 全文（59 行）。
+
+⚠ 顺带说明本节的**工作约束**：§875 撞出 `npm run test:all` 的 argv 上限，
+所以本节**不能新增判据文件** ⇒ 判据并进同族的
+`local-storage-unbounded-accumulators.test.ts`。
+
+### §876.2 ⭐ D45：`loadNS` 把「数据损坏」谎报成「本来就没有」，且下一次写会毁掉别人
+
+原实现：
+
+```ts
+function loadNS<T>(ns) {
+  const raw = storage()?.getItem(PREFIX + ns)
+  if (!raw) return {}
+  try { … } catch { return {} }      // ⚠ 损坏 → 谎报成「空」
+}
+```
+
+两个后果，第二个比 §858/D21（aiChatStore 那一处）**更重**：
+
+1. **不留证**。本仓已经有 `utils/corrupt-preserve.ts` 这个**唯一**留证落点
+   （§858 建、§859 扩到 crypto），同一族的 `aiChatStore` / `crypto-config`
+   都接上了 —— **只有这里没接**。
+2. ⛔ **下一次 `upsertSnapshots` 会把整包覆写**：
+   `loadNS` 返回 `{}` ⇒ 只写进新 row ⇒ `saveNS` 覆写整包
+   ⇒ **同一命名空间里其它 id 的行一起消失**。
+   本仓的 id 形如 `ws:<workspaceId>:inst:<instanceId>` ⇒
+   **一次损坏 = 所有 workspace × instance 的会话列表缓存全没**。
+
+**修法**（按 §862 的「降级是否破坏性」分两路）：
+
+| 路径 | 处置 | 理由 |
+|---|---|---|
+| `listSnapshots`（读） | 仍返回空数组，**但先留证** | 调用方要能正常渲染「没有缓存」 |
+| `upsertSnapshots`（写） | **在原始数据仍损坏时拒绝写入并抛出** | 覆写是**不可逆销毁**，不能「顺手」做 |
+
+⚠ 抛错安全：唯一调用方 `SessionListView::writeSessionsSnapshot` 已经整个包了
+`try/catch` ⇒ 抛错不会打断界面。
+
+⚠ `saveNS` 的静默**保留**（只加一行 `console.warn`）：按 §866 的族规律，
+它存的是**缓存**（会话列表 / 邮件正文的兼容迁移源），服务端才是权威
+⇒ 不阻断是对的，但「静默」要真的静默到**可诊断**。
+
+### §876.3 ⚠ 顺带查出：调用方那个 `catch` 是**死代码**
+
+`SessionListView::readSessionsSnapshot` 写着
+`try { listSnapshots(…) } catch { return null }`
+—— 但 `listSnapshots` **从不抛错**（损坏时返回 `[]`）⇒ 这个 catch 不可达。
+
+⚠ 本节**没有**删它：`writeSessionsSnapshot` 那个 catch 是**活的**
+（§876.2 之后 `upsertSnapshots` 确实可能抛），而两处形状相同。
+删死代码要在能区分两者的前提下做，否则会顺手删掉活的那个。
+登记在 §876.6。
+
+### §876.4 ⭐⭐ 拿到了 §876 想给的东西：**行为级证据**
+
+按 §875 的先例把 `snapshot-store.ts` 的 import 补上 `.ts` 扩展名
+（`allowImportingTsExtensions` 早已开启、`hub-view.test.ts` 等已有先例）
+⇒ 本模块**能被 node 的 strip-types loader 直接加载**
+⇒ 「损坏不许覆写」拿到了**行为**判据，而不只是形状保证。
+
+判据（并入同族文件，**33 例**）：
+
+| 断言 | 形状判据能不能做 |
+|---|---|
+| 对照：数据完好时 upsert 正常合并、不丢别的 id | ❌ |
+| 数据损坏时 upsert **必须拒绝**，原始字节**保持原样** | ❌ |
+| 数据损坏时 read **必须留证**，且留的是原始字节 | ❌ |
+| read 仍然不抛错（界面照常渲染「没有缓存」） | ❌ |
+| **尺子有牙**：同一段度量，完好数据成功、损坏数据失败 | —— 对照组 |
+
+### §876.5 ⚠⚠ M33 抓到了判据自己的一次「假绿」（本节最值得记的一条）
+
+第一次 M33 我这样变异：把 `throw` 那一行删掉。
+
+**结果判据全绿（33/0）** —— 而代码确实已经不对了。
+
+原因：`assert.rejects` **接受任何 reject**。删掉 `throw` 之后，
+下一行 `const existing = loaded.rows` 拿到 `undefined`
+（因为 `{ok:false}` 没有 `rows`），再 `existing[row.id] = row` 就抛
+**TypeError** ⇒ `assert.rejects` 照样满足 ⇒ **「有意拒绝」与「意外崩溃」
+被混为一谈**。
+
+⇒ 两处修正：
+1. **判据**：断言错误**消息**（`/已损坏/`），把两者区分开；
+2. **变异**：必须复刻**原始缺陷形态**（把损坏当成空、照常合并覆写），
+   而不是「删掉一行」这种似是而非的改动。
+
+⇒ 修好后 M33 = **32 / 1**，红在「原始字节被覆写」这一条上。
+
+⭐ 这与 §866 记的「变异必须做到它声称的动作」同族，
+但这次更隐蔽：**「变异生效了」不等于「变异产生了要测的那条性质」** ——
+它产生的是另一条性质（TypeError），而判据恰好也接受。
+
+### §876.6 待拍板（新增 1 条）
+
+95. **`SessionListView` 那个不可达的 catch 要不要删** ——
+    ① `readSessionsSnapshot` 的 catch 不可达（§876.3）；
+    ② 但 `writeSessionsSnapshot` 的 catch 是**活的**，两处形状相同
+      ⇒ 删之前要先能区分它们，否则会顺手删掉活的那个；
+    ③ 要不要顺手给读侧补一个「这份缓存损坏过」的可见提示？
+      本节按「留证但不打扰用户」处理。
+
+### §876.7 口径与未实测
+
+- ⛔ **未实测**：命名空间损坏在真机上的**发生率**。
+  ⚠ `SessionListView` 把快照当尽力而为的缓存 ⇒ 即使全丢也只是「下次重新拉」，
+  所以**后果等级低于** §858/D21（那份是「对话历史被谎报成没有」）。
+  本节定它为缺陷的理由是**不可逆销毁 + 零证据**，不是用户可见损失。
+- ⚠ 本节**没有**给快照写入加任何用户可见提示（缓存，本不该打扰）。
+- ⚠ §876.4 的行为判据能跑，是因为**只有这一个 import** 被补了 `.ts`；
+  仓里其余无扩展名 import（`email-body-cache.ts` 那一族）**依然加载不了**，
+  仍登记在简报第 94 条。
+
+---
+
+## §877 IndexedDB 层：写事务的「成功」发生在数据真正落库之前（D46 / D47 / D48）
+
+§866–§876 十一节都在**键值层**（localStorage、Capacitor 偏好、原生 snapshot-store）。
+本节换轴到 **IndexedDB** —— 全仓只有两处用到，但它是**会议录音与卡片媒体真正落盘**的那一层。
+
+### §877.1 普查：IndexedDB 在本仓的全部落点
+
+按「枚举能力而不是枚举调用点」（本会话已因此翻案 5 次），
+先列**所有直接使用 `indexedDB` 的地方**，而不是先看谁调用了 `writeFile`：
+
+| 文件 | 用途 | 写事务成败判据 | 连接归还 |
+|---|---|---|---|
+| `native/meeting-audio.ts` | 会议完整录音（存 / 取 / 删） | `tx.oncomplete` ✅ | 写在 `await` 之后 ⚠ |
+| `native/pocket-native.ts` | web 端「文件系统」抽象的底层 | `IDBRequest.onsuccess` ❌ | **完全没有** ❌ |
+
+⇒ 同一层、同一份技术、两套实现、**两种语义**，且较差的那一套挂在**业务代码真正走的那条路**上。
+
+### §877.2 D46：写事务在 request 成功时就宣布成功
+
+`pocket-native.ts` 修前的 `withStore`：
+
+```ts
+const ret = fn(store)
+ret.onsuccess = () => settleOk(ret.result)   // ← 这里就 resolve 了
+ret.onerror = () => settleErr(...)
+tx.onerror = () => settleErr(...)
+tx.onabort = () => settleErr(...)            // ← 永远轮不到它
+```
+
+**规范依据**（MDN `IDBTransaction.oncomplete` 示例的注释原文）：
+
+> report the success of the request (**this does not mean the item has been stored
+> successfully in the DB** - for that you need transaction.oncomplete)
+
+`IDBRequest.onsuccess` 只说明**请求本身**排进了事务；事务随后**仍可能 abort**
+（配额超限 / 磁盘 I/O 错误 / 某个 success handler 抛未捕获异常），此时写入被回滚。
+因为 `settled` 标志已经置位，后到的 `tx.onabort` 被 `settleErr` 的 guard 直接吞掉
+⇒ **一次被回滚的写，向调用方报告为成功。**
+
+修法：写事务以 `tx.oncomplete` 为准（只读事务仍按请求成功返回）。
+
+#### D46 的消费者（先数，再判）
+
+`native.filesystem.writeFile` 的全部调用点，以及它们**能不能走到 web 实现**：
+
+| 调用点 | web 可达？ | 失败会不会被看见 |
+|---|---|---|
+| `utils/version.ts:295`（APK 更新包） | ✅ **无平台守卫** | 会被看见，但**以错误的身份** |
+| `features/flashcards/utils/flashcardMedia.ts:134` | ✅ | 不被看见（web 侧从不读回，见下） |
+| `utils/download.ts:114` | ❌ 上游已 `platform==='web'` 早退 | —— |
+| `features/rss/RssDigestView.vue:111` | ❌ 显式守卫 | —— |
+| `features/flashcards/utils/flashcardIo.ts:68` | ❌ 守卫 android/ios | —— |
+
+⇒ 唯一**没有**平台守卫的是**应用更新**那条路。那里 `writeFile` 之后紧跟 `getUri`（读回），
+  所以 abort 造成的「假成功」最终**以 `filesystem.readFile: not found` 的面貌**冒出来
+  ⇒ **写失败被谎报成读失败**，排查的人会去查读的那一端。
+  ⇒ 这是 §866–§876 那一族的第 12 次：**同一件事在两层上说两种话**。
+
+### §877.3 D48：每次读写都开一个连接，从不归还
+
+`withStore` 每次调用都 `await openDb()`，**从头到尾没有 `db.close()`**。
+⇒ 每读写一个文件漏一条 IndexedDB 连接；未关闭的连接会**阻塞后续 `versionchange`**，
+让下一次 `open` 卡在 `onblocked` 上（`meeting-audio.ts` 的 `openDB` 连 `onblocked` 都没处理）。
+
+同层的 `meeting-audio.ts` 三个函数**都调了 `close()`** —— 两套实现的差别不是风格，是漏没漏。
+
+⚠ 它此前的写法是 `db.close()` 放在 `await` **之后**：一旦函数 reject，连接同样永久留着。
+⇒ 本节把它统一改成 `try/finally`，三个函数都改。
+
+**读数（M34）**：10 次读写，变异前 `opens=10 closes=0`。
+
+### §877.4 D47：`deleteFile` 的裸 catch 与它自己的注释、测试文件头都不符
+
+修前的 `makeWebFilesystem.deleteFile`：
+
+```ts
+try { await store.delete(...) }
+catch { /* 不存在 = 忽略（与 @capacitor/filesystem 行为对齐） */ }
+```
+
+注释说的是「不存在」，代码做的是「**一切**」。⚠ 更严重的是
+`native/__tests__/pocket-native.test.mjs` 的文件头第 5 条写着：
+
+> 5. 任何 store 抛错都会向上抛（不静默吞）
+
+而该文件对 `delete` **一条断言都没有** —— 文件头第 5 条此前是**假的**
+（与 §873 的「活代码的注释在吹牛」同族：这里吹牛的甚至是一份**测试**的注释）。
+
+修法：只吞「本来就不存在」（`NotFoundError` / `not found` / `ENOENT`），其余原样上抛。
+
+#### 但它的消费者必须数清楚 —— 数完发现今天**没人**踩到
+
+`native.filesystem.deleteFile` 的调用点只有 `flashcardMedia.deleteMediaFile`，
+而它第一行就是 `if (native.platform === 'web') return`
+⇒ **web 上零消费者**。
+
+⇒ 按 §869.4 的规矩，这一条**不是止血，是接口契约修复**：
+它今天不造成用户可见损失，但它是**一层写着「我不静默吞」的抽象**，
+下一个接 web 删除的人会直接踩进去。本节照样修，但**不把它算成缺陷事件**。
+
+### §877.5 M34：三次变异，各命中 1 条（判据与被测性质一一对应）
+
+| 变异（真实改源码，一次只动一个变量） | 结果 | 红的条目 |
+|---|---|---|
+| 写事务改回 `req.onsuccess` resolve | 16 / **1** | 「abort 时 put 必须 reject」 |
+| `finally { db.close() }` 改空 | 16 / **1** | 「每次读写都要 close」 |
+| `deleteFile` 改回裸 `catch {}` | 16 / **1** | 「delete 失败必须上抛」 |
+| `meeting-audio` 整段删掉 try/finally（复刻原形态） | 13 / **2** | 「close 必须在 finally 里」+「写事务必须有 onabort 出口」 |
+
+⇒ 红条目的名字都指向被测性质，没有一条是「碰巧也红了」。
+⚠ 第四条第一次变异**没配平**（把 `try/finally` 降级成裸 `try`），
+结果撞上一个工具链限制而不是撞上判据，见 §877.6。
+
+### §877.6 判据：替身要造的是**事件顺序**，不是浏览器
+
+`fake-indexeddb` 不在依赖里，本节手写了一个最小替身。**关键不在于它像浏览器**，
+而在于它能造出 IndexedDB 的那条顺序：`request.onsuccess` **先于** `tx.oncomplete` / `tx.onabort`。
+
+⚠⚠ 若 abort 发生在请求成功**之前**，「按请求成功 resolve」与「按事务提交 resolve」
+测出来的读数**完全一样**，判据会假绿 —— 而这正是最容易写出来的替身。
+
+⇒ 因此判据里有三条彼此咬合的用例：
+
+1. **正控**：提交结局 ⇒ `put` 成功且值能读回；
+2. **判据**：abort 结局 ⇒ `put` **必须 reject**，且数据**没进 map**（回滚）；
+3. **对照组**：同一个替身上，内联一份**复刻修复前写法**的 store ⇒ 它**不报错**。
+   —— 没有第 3 条，前两条就只是「我编的顺序」。
+
+⚠ 第 2 条断言的是**错误消息**（`/提交阶段失败/`）而不是「reject 了」：
+`assert.rejects` 接受任何 reject（§876 M33 教训）。
+
+**分层与盲区（如实记录）**：
+
+| 文件 | 判据形态 | 能证明什么 | 看不见什么 |
+|---|---|---|---|
+| `pocket-native.test.mjs` | **行为**（替身 + 对照组） | abort 时真的 reject、连接真的被关 | 真浏览器的 abort 触发条件与概率 |
+| `meeting-audio-persist-honesty.test.ts` | **形状**（剥注释后扫源码） | 形状没退回去 | **abort 的真实时序** |
+
+形状判据那条在文件里写了一句负控条目，内容就是「这条负控**不是通过**，是记录盲区」。
+
+⚠⚠ **本轮踩到的工具链限制**（已写进判据注释）：
+`node --experimental-strip-types` **解析不了「裸 try 块（无 catch/finally）」**，
+报 `ERR_INVALID_TYPESCRIPT_SYNTAX: Expected a semicolon`，整个测试文件加载失败。
+⇒ 复刻「`db.close()` 写在 await 之后」这个缺陷形态，必须**整段删掉 try/finally**；
+把它降级成裸 try 不是缺陷形态，而是一个连解析都过不去的东西。
+⇒ 这是 §875「变异必须复刻原始缺陷形态并保持结构配平」的第三个实例。
+
+### §877.6bis ⚠⚠ 判据事故 7：注释里照抄缺陷的**字面形态**，会被当成真缺陷
+
+第一次跑全量门禁，`[3/45] test:all` 直接红：
+
+```
+发现 1 处「无理由的静默 catch」—— src/native/pocket-native.ts:569
+```
+
+那行**根本不是 catch**，是我在 D47 的注释里写下的那句
+「旧代码是裸 `catch {}`」。`silent-catch-must-explain-itself` 的检测器
+`silentCatches()` 跑在**未剥注释的原文**上（它只在**判定块体是否为空**时才调 `stripComments`）
+⇒ 注释里出现的缺陷字面形态，和真缺陷在它眼里**完全一样**。
+
+⇒ 修法：只改措辞、**不动语义** —— 把注释里的 `catch {}` 写成「空块体 catch」，
+并在注释里写清**为什么不能照抄**（§869 已用过一次「撞门禁只改措辞」的规定，
+这是它第一次以「量具被注释喂到」的形式出现）。
+
+⭐ 这一条与 §879 是**同一个洞的两面**：
+- §879：注释里写了缺陷形态 ⇒ 判据**假绿**（说有的东西算数了）；
+- 本次：注释里写了缺陷形态 ⇒ 判据**假红**（说没有的东西被抓了）。
+⇒ 通用式：**任何在原文上做模式匹配的判据，都会被注释里的示例代码喂偏**；
+  正确做法是判据侧先剥注释（本轮未改，因为该检测器的语义要求就是「看原文」），
+  **写注释的一侧则绝不在注释里照抄被扫描的字面形态**。
+
+### §877.7 附带发现：`onabort` 补上之后，录音收尾不再可能「悬死」
+
+`meeting-audio.ts` 此前只挂了 `tx.onerror`。⚠ 若是**提交阶段**失败（磁盘 / 配额在 commit 时），
+按规范只会触发 `abort` 事件而请求本身并未报错 ⇒ 旧代码下那个 Promise **永不 settle**
+⇒ `recordingRuntime.stop()` 里的 `await saveMeetingAudio(...)` 悬住，
+**整个录音收尾流程卡死**，连 §830 那个 10s 上限都保护不了它（它卡在更早的位置）。
+⛔ 未实测（触发条件是推断，非本机复现）。
+
+两个消费点（`use-meeting-studio.ts:86` / `MeetingListView.vue:304`）此前已经在 §838 里
+改成了「catch 里说出来」⇒ 这次是**把悬死变成一句 toast**，不是新增出口。
+
+### §877.8 待拍板（新增 2 条）
+
+96. **web 端 IndexedDB 写失败要不要对用户说话** ——
+    应用更新那条路现在是「写失败报成 `readFile: not found`」。要不要在
+    `version.ts` 把两类失败分开措辞？（现状：都归到「落盘失败：…」里）
+97. **web 端卡片媒体要不要接通** ——
+    `flashcardMedia` 在 web 上「存了但 `loadMediaDataUrl` 直接 return null」
+    ⇒ 照片进了 IndexedDB 却永远读不回来。要么接通读侧，要么 web 端干脆别存
+    （现在两头的浪费都在）。
+
+### §877.9 口径与未实测
+
+- ⛔ **未实测**：D46 在真浏览器上的触发概率（需真机 + 真实配额压力）。
+  本节定它为缺陷的依据是**规范语义**，不是本机复现 —— 判据里的替身只证明
+  「代码在 abort 时会谎报」，不证明「浏览器会 abort」。
+- ⛔ **未实测**：`onabort` 悬死路径（§877.7）在本机从未复现。
+- ⚠ D47 已按 §869.4 数过消费者：**web 上零消费者**，本节不把它算成缺陷事件。
+- ⚠ 本节**没有**给 web 端 IndexedDB 失败加任何用户可见提示（登记在第 96 条）。
+- ⚠ `meeting-audio.ts` 的形状判据**必须先剥整行注释**再判定 ——
+  本轮我在同一批改动里往函数注释里写了「`db.close()`」和「`finally`」这些字样，
+  不剥就会变成「注释里提到就算数」（§879 同族）。
+
+---
+
+## §878 SQLite 层：一条坏 payload 能永久堵死整个离线队列（D49 / D50）
+
+继续换轴。这是第三条持久化路：`localDB`（Capacitor SQLite + SQLCipher / web 走 sql.js），
+**录音、邮件、会议、待办、离线队列**的本地库。
+
+### §878.1 普查：读「一列 JSON」这件事有**三份实现、三种口径**
+
+扫的是**能力**（`JSON.parse` 落在 DB 行的列上），不是调用点 —— 只查 outbox 会漏掉另外三处：
+
+| 文件 | 表 | 修前口径 | 后果 |
+|---|---|---|---|
+| `native/outboxStore.ts` | `local_outbox` | **裸 `JSON.parse`，直接抛** | 一条坏行 ⇒ **整个 drain 永久堵死** |
+| `native/config-sync/settings-store.ts` | `local_user_settings` | `catch { payload = {} }` | 定时任务列表出现**空条目** |
+| `native/config-sync/outbox.ts` | `local_config_outbox` | `catch { payload = {} }` | 空 payload 被**真的推送出去** |
+| `native/approvalStore.ts` | `local_approvals` | 保留 `{}`（带理由） | ✅ **唯一非破坏**的一处 |
+
+⇒ 同一个动作、四份实现、三种待遇、**零条留证**。
+⇒ 修法不是「统一成第四种」，而是把**解码**收成一个落点（`native/sqlDb.ts::readJsonColumn`），
+把「这一处损坏了怎么办」的**决定**留在每个调用点上 —— 那才是产品口径（§870）。
+
+### §878.2 D49：一条坏 payload 永久堵死整个离线队列（本节最重的一条）
+
+缺陷的形状是三个条件叠出来的，**单独看每一处都没错**：
+
+1. `toRecord` 用裸 `JSON.parse` ⇒ 抛；
+2. `drainOutbox` 第 69 行 `const ready = await storage.listReady(...)` **外面没有 try/catch**；
+3. `listReady` 是 `ORDER BY created_at ASC LIMIT ?` ⇒ 损坏行排在**队首**。
+
+⇒ 三者相乘：**每一次** drain 都整个 reject ⇒
+`session.create` / `session.prompt` / `approval.reply` **全部停摆**；
+坏行排在最前 ⇒ 它**永远第一个被取到** ⇒ 永远第一个抛 ⇒ **永久堵死，零提示**。
+
+⚠ 这比 §876/D45 更重：D45 是**谎报**（把损坏说成没有），这一条是**永久性拒绝服务**
+—— 用户会看到「我离线写的东西怎么一直同步不上去」，而日志里只有一次异常。
+
+修法（三个条件逐个拆）：
+
+- 批量读 ⇒ **逐行解码、单行损坏跳过**（同批的其它记录照常重放），并 `console.warn` 记下表名与行 id；
+- **损坏的行留在表里**（原始字节本身就是证据，§876 的「损坏不许覆写」是同一条原则；
+  也**不**复制到 localStorage —— 那是 §874 刚收干净的第二个累加器）；
+- 点查 `get(id)` ⇒ **必须抛**（带可断言的 `[outbox_corrupt]` 标记），
+  因为把损坏报成「没有这一行」正是 D45 那个形态。**不存在**的 id 仍然返回 null。
+
+⚠ 批量跳过 / 点查抛出，**故意不一致**：批量问的是「有哪些能发的」，
+跳过一条不影响其余；点查问的是「这一条是什么」，答「没有」就是撒谎（§870 的判据）。
+
+### §878.3 D50：`{}` 冒充两份配置镜像
+
+`scheduled-tasks/store.ts` 做的是 `row.payload as ScheduledTask` ⇒
+一份损坏的设置降级成 `{}` 之后，列表里会出现一个**既没有 id 也没有标题的空任务**；
+`stores/chatAgentStore.ts` 同理出现一个空角色。两者都**零提示**。
+
+`config-sync/outbox.ts` 那份更糟：它是**推送队列**，`{}` 会被真的发给服务端，
+然后 `markConfigPushDone` 把本地记成「已推送成功」⇒ **一次内容为空的更新被当成成功**。
+
+⇒ 按 §870「降级是否破坏性」判：这两处 payload 是**主内容**，降级成空**可能破坏**
+（一份设置凭空变空，后续任何「以本地为准」的合并会拿它当事实）⇒ 最诚实的降级是**跳过这一行**。
+
+⚠ **照抄第三处是错的**：`approvalStore` 的降级非破坏，因为审批行的展示与过期只依赖
+`kind` + `state`，两者都在 `r.kind` / `r.state` 上归一、**都不走 payload**；
+跳过整行反而会让用户看不到「有一条待处理但内容坏了」。⇒ 它的理由被写进判据钉住。
+
+### §878.4 ⚠ 两处**故意没改**的，登记为待拍板
+
+1. **`settings-store.getLocalSetting` 点查仍返回 null**（不抛）。
+   ⚠ 这意味着「这一行不存在」与「这一行已损坏」在**接口上无法区分** ——
+   与 `outboxStore.get` 的处理**不一致**。本节**不代拍**：因为这一处的调用方
+   （同步规划器）把 null 当「本地没有这份配置」，后果是**多推一次远端**（幂等、无害），
+   而抛错会把一次可自愈的差异升级成同步异常。
+2. **跳过的损坏行不会被自愈**：`config-sync/runtime.ts` 的规划器看不到被跳过的行 ⇒
+   会认为「本地没有」⇒ 走 pull；但 `writeLocalIfNewer` 在 `updatedAt` 相等时可能不覆盖
+   ⇒ 那条坏行会**永远留在表里**，每次同步都跳过、每次都 warn。
+   ⇒ 要不要在规划器里把「本地有行但读不出来」也算作**存在**（从而强制覆盖自愈）？
+
+### §878.5 M35：三次变异（一次只动一个变量）
+
+| 变异 | 结果 | 红条目 |
+|---|---|---|
+| `toRecord` 改回裸 `JSON.parse` | 8 / **3** | 堵死 / 证据被改写 / 点查谎报 |
+| `get` 的抛错改成 `return null`（D45 的谎报形态） | 10 / **1** | 只红「点查不得谎报」 |
+| `settings-store` 改回 `payload = {}` | 30 / **2** | 「没走共用解码器」+「谎报成空」 |
+
+⇒ 第二次变异证明第 10 条**不是**被前两条顺带覆盖的：三条判据各自咬着一条性质。
+⇒ 第三次变异同时红了两条，是因为「自己解析」与「降级成空」是**同一个缺陷的两面**
+（前者是形状，后者是后果）—— 这是**应该**的，不算量具重复。
+
+### §878.6 判据事故 8：量具自己栽了一次（正则只认 `f(`，不认 `f<T>(`）
+
+第一版形状判据写的是 `/readJsonColumn\(/`，在**真源码**上 **0 命中** ——
+因为调用点全是泛型：`readJsonColumn<unknown>(row, 'payload', …)`。
+⇒ 报出来的是「没走共用解码器」，读上去像代码坏了，实际是尺子坏了。
+⇒ 改成 `/readJsonColumn[<(]/` 后 32/32 绿。
+
+⭐ 与 §877 那条判据事故是同一族：**量具栽了要当场分清是量具还是代码**，
+否则下一步就会去「修」一段根本没坏的代码。
+
+### §878.7 判据形态与盲区
+
+| 文件 | 形态 | 覆盖 |
+|---|---|---|
+| `native/__tests__/outboxDrain.test.mjs` | **行为**（真 `node:sqlite` + 真 drain） | 堵死 / 证据保留 / 点查谎报 / 对照组 |
+| `src/__tests__/sync-enum-and-payload-audit.test.ts` | **形状**（剥注释后扫源码） | 四处口径一致、禁止 `payload = {}` 回归 |
+
+行为层那条的对照组是「数据全好时读数必须不同」：同一条 drain 断言
+`succeeded === 1` **且 `console.warn` 恰好为空** ⇒ 证明告警不是噪声、
+也不是「碰巧每次都绿」。
+
+### §878.8 待拍板（新增 2 条）
+
+98. **`getLocalSetting` 的点查要不要也抛** ——
+    现在「不存在」与「已损坏」在返回值上无法区分（§878.4.1）。
+    ① 要不要改成与 `outboxStore.get` 一致地抛？② 或者反过来，把 `outboxStore.get`
+    改成返回 null + 单独一个「是否损坏」的标志？③ 两处不一致本身要不要消除？
+99. **被跳过的损坏行要不要能被自愈** ——
+    同步规划器看不到它们 ⇒ `writeLocalIfNewer` 在 `updatedAt` 相等时可能不覆盖
+    ⇒ 坏行永久留在表里、每次同步都跳过一次并 warn（§878.4.2）。
+    ① 规划器要不要把「有行但读不出来」视为**存在**（强制覆盖）？
+    ② 或者给这类行单独一个 `state='corrupt'` 让 UI 能提示用户？
+    ③ 还是保持「跳过 + 只在日志里 warn」？
+
+### §878.9 口径与未实测
+
+- ⛔ **未实测**：payload 损坏在真机上的**发生率**（截断写入 / 磁盘故障 / 跨版本 schema 变更）。
+  本节定它为缺陷的依据是**代码路径的必然性**（三个条件相乘即永久堵死），不是本机复现。
+- ⛔ **未实测**：坏行排在队首这个前提在真机上是否高频发生
+  （`created_at` 相同则由 SQLite 决定顺序，未实测）。
+- ⚠ 本节**没有**给损坏加任何用户可见提示 —— 目前只有 `console.warn`
+  （理由同 §866–§877：那不是用户正在产出的数据）。
+- ⚠ 本节**没有**动 `schema.ts`、没有加表、没有迁移 —— 纯读侧口径收敛。
+- ⚠ 三处「降级成 `{}`」的历史行为**已被判据钉住**，若将来产品决定保留其中某一处，
+  必须先改判据再改代码（否则下一次审计会把它当成回归改回来）。
+
+---
+
+## §879 笔记全文索引：迁移版本号与「FTS 重灌到底成没成」完全无关（D51）
+
+同一轴（SQLite）上换一个能力：**FTS5 全文索引的回填迁移**。
+这条的特别之处在于，它是一个**只在失败时才会显形**的缺陷，而且判据自己先抓到了**两层**。
+
+### §879.1 缺陷形态：三个条件相乘
+
+`features/notes/notes-fts-ready.ts::ensureNotesSearchIndex` 修之前：
+
+```ts
+if (changed > 0) {
+  try {
+    await localDB.execute("... VALUES('delete-all')")      // ① 清空
+    await localDB.execute("INSERT ... SELECT ...")          // ② 补回
+  } catch { /* Web 没有 FTS5 */ }                          // ③ 静默
+}
+if (lockedSkipped === 0) {
+  await localDB.run('INSERT OR IGNORE INTO _schema_migrations ...')   // ④ 记成完成
+}
+```
+
+① 失败或 ③ 吞掉 ⇒ 索引被清空且没补回；
+④ 的判据**只看 `lockedSkipped`（主密码有没有解锁）**，
+**与「重灌成功没有」毫无关系** ⇒ `_schema_migrations` 照样记成「已完成」
+⇒ **这次回填再也不会重跑**，笔记全文检索永久残缺，且**零提示**。
+
+⚠ ③ 那句 catch 的注释写着「Web/sql.js 没有 FTS5」——
+但它对 **Android（SQLCipher 带 FTS5）上的真失败**一视同仁地静默。
+**web 降级与真失败被当成同一件事**，这是缺陷的另一半。
+
+### §879.2 ⚠⚠ 判据自己抓到了**第二层**（同一缺陷类换个变量重现）
+
+第一层修掉之后（版本号挂钩重灌成败），我顺手写了「第二轮会重试」的用例，它红了。
+追下去发现：**重建被 `if (changed > 0)` 当闸门挡着**。
+
+⇒ 第一轮改了 `search_text` 却重灌失败 ⇒ 第二轮 `changed === 0`
+⇒ 「没有要改的东西」⇒ **整个重建被跳过** ⇒ 索引仍然是空的
+⇒ 而这一轮**会**把迁移记成「已完成」⇒ 永久残缺。
+
+⭐ 这与第一层是**同一个错误**：**拿一个与被测性质无关的变量去代表「这项工作完成了」**。
+第一层用 `lockedSkipped` 代表「重灌成功了」，第二层用 `changed` 代表「索引是好的」。
+
+⇒ 修法：重建的闸门只能是「这张 FTS 表在不在」——
+web 上永远不在，那是**预期降级**（重试一万次也一样 ⇒ 照样可以记成完成），
+除此之外一律重建。
+
+### §879.3 连带查清的一件事：`unicode61` 把连续汉字当成一词
+
+判据里 `MATCH '内容'` 恒为 0，查下去发现原因：
+生产用 `tokenize='unicode61 remove_diacritics 2'`，
+`正文 alpha 的内容` 被切成词元 `正文` / `alpha` / `的内容`
+⇒ **纯中文子串永远命中不了**。
+这正是 `notes-search.ts:53-57` 要「再并一层 LIKE」的原因
+（`needsCjkLike(query) || localResults.length === 0`）。
+
+⚠ 顺带校正一件事：索引空**不等于**搜不到 —— LIKE 层会兜底。
+所以这条缺陷的真实后果**不是「搜不到」，而是「搜不全」**：
+非中文查询在 FTS 命中过任何一条之后就不再并 LIKE ⇒ 老笔记里那些
+从未被索引的条目**静默缺席**，而用户看到的是一个「看起来正常」的结果集。
+⇒ **一个不全的答案比一个空答案更危险**，因为它不给人任何怀疑的理由。
+
+### §879.4 两条 FTS 语句没有放进同一事务（登记不代办）
+
+`delete-all` 与重灌是两条独立的 `execute`，中间失败 ⇒ 索引停在「已清空」。
+⚠ 本节**不**直接改：能不能合，取决于 `executeSet` / `execute(sql, true)`
+对 **FTS 虚表命令**的行为，而**本仓从未在任何 `execute` 调用上用过 `transaction=true`**
+（`local-db.ts` 内部所有调用都显式传 `false`）⇒ 真机未实测，不拿生产押注。
+⇒ 登记为简报第 100 条。
+
+### §879.5 M36：两次变异，**红的条目不重叠**
+
+| 变异 | 结果 | 红条目 |
+|---|---|---|
+| 版本号闸门改回「只看 `lockedSkipped`」 | 6 / **3** | 6、7、8 |
+| 重建闸门改回 `if (changed > 0)` | 7 / **2** | 7、8（**6 不红**） |
+
+⇒ 第二次变异里第 6 条仍然绿 ⇒ 两层是**各自独立**被钉住的，
+不是一条判据顺带覆盖了两件事。
+
+### §879.6 ⚠⚠⚠ 判据事故 9：**量具连栽两次**，两次都差点变成「假结论」
+
+这一节我写了两条量具错误，**都发生在真 SQLite 上**，而且都指向「代码坏了」的假结论：
+
+1. **夹具没复刻关键那一列**：我把 `local_notes_fts` 建成了普通
+   `fts5(title, content)`，于是 `'delete-all'` 抛
+   「may only be used with a contentless or external content fts5 table」
+   ⇒ 读上去像**生产代码一直在失败**（而且这是个「更严重」的结论）。
+   真相：生产 `schema.ts:49` 是**外部内容表**（`content='local_notes'`），`delete-all` 合法。
+   ⇒ **夹具不复刻关键性质时，它测的是量具，不是代码。**
+2. **量的不是被测的那件事**：修好夹具后 `ftsRowCount` 仍读出 3。
+   真相：外部内容表的 `SELECT COUNT(*) FROM local_notes_fts`
+   数的是**内容表 `local_notes` 的行数**，与索引里有没有词**完全无关**。
+   ⇒ 改用 `MATCH 'alpha OR beta OR gamma'` 才量到真正的索引内容。
+
+⇒ 与 §877.6bis（注释喂偏判据）、§878.6（正则不认泛型）合起来，
+本会话的判据事故累计 **9 次**，其中 **5 次是量具自己栽**。
+⭐ 通用式：**判据红/绿都要先问「量具量的是不是那件事」**，
+尤其是「替身」和「外部内容表」这类**读起来像结论**的地方。
+
+### §879.7 可测性重构（与 §820 同一手法）
+
+`ensureNotesSearchIndex` 顶层 import `localDB` 与 `native/crypto`，
+那条链在 node 里加载不了 ⇒ **回填的成败判定根本没法测**。
+⇒ 可测核心搬进新文件 `features/notes/notes-fts-backfill.ts`
+（只依赖注入的 `db` 与 `decrypt`），`notes-fts-ready.ts` 只剩接线。
+⇒ 顺手给 `notes-fts-ready.ts` 的三条 import 补上 `.ts`（§875 先例），
+但**它本身仍加载不了**（`local-db` → `sqlite-web-init` 那一族还没补），
+所以判据导入的是 backfill 模块。⇒ 简报第 94 条继续有效。
+
+### §879.8 待拍板（新增 1 条）
+
+100. **`delete-all` 与重灌要不要放进同一个事务** ——
+    ① 能不能合取决于 `executeSet` / `execute(sql, true)` 对 **FTS 虚表命令**的行为，
+    本仓从未用过 `transaction=true`，真机未实测（§879.4）；
+    ② 合了的话中间失败会整体回滚 ⇒ 索引保持旧状而不是「被清空」；
+    ③ 不合的话要不要给这两条加一个「重建中」标记，失败时下一轮**强制重建**
+    （现在靠「不写版本号 ⇒ 下次重跑」间接保证）？
+    ④ 重试**没有退避**：一次真实失败会让人此后每次搜索都重跑整轮回填，
+    要不要加退避或「最多重试 N 次后改走 LIKE 并提示」？
+
+### §879.9 口径与未实测
+
+- ⛔ **未实测**：FTS 重灌在真机上的**失败率**（本节按**代码路径必然性**定缺陷，
+  不是本机复现）。⚠ 本节明确**不**主张「生产代码今天一直在失败」——
+  恰恰相反，`schema.ts` 是外部内容表，`delete-all` 在真机上是合法的。
+- ⛔ **未实测**：真机上是否已经出现过「索引空」的安装
+  （需要 `scripts/check-fts-triggers-device.mjs` 那类真机探针）。
+- ⚠ 本节**没有**加任何用户可见提示 —— 目前是 `console.warn` + 「不写版本号 ⇒ 下次重试」。
+- ⚠ 本节**没有**改 `schema.ts`、没有加索引、没有动触发器。
+- ⚠ 本节把「web 无 FTS5 ⇒ 照样记成完成」定为**预期降级**，
+  判据钉住了它（否则 web 上会变成「每次搜索都重跑整轮回填」）。
+
+---
+
+## §880 写原子性普查：一个**阴性**结论，以及把它变成常驻门的四次返工
+
+§878 修完 JSON 列解码，顺手查了相邻的一条轴：**同一个操作被拆成两次写时，第二个失败有没有人负责**。
+本节**没有找到新缺陷**，但产出了一道常驻门 —— 而门本身比结论更值得记。
+
+### §880.1 普查口径与结果
+
+按**函数体**取（不是按文本窗口），凡函数体内有 ≥2 处 `localDB.run(` / `db.run(`
+且没有 `runInTransaction` 的，列进来。全仓 **11 处**：
+
+| 函数 | 执行路径 | 结论 |
+|---|---|---|
+| `outboxStore.put` / `assetStore.upsert` / `approvalStore.upsertSnapshot` / `notes-store.handleServerEvent` / `invoices-store.remapLocalId` / `email-folders.recordOpsEntry` / `voiceprints.saveVoiceprint` | if/else 或先查存在性 ⇒ **互斥** | 一次调用只写一次 |
+| `notes-persist.createNote` | INSERT + 回填 UPDATE | 顺序由外键约束固定（已有 `note-persist-fk-order` 门） |
+| `email-folders.flushEmailOps` | 逐行标 `pushed` | 中途失败 ⇒ 部分行仍 pending ⇒ 下轮重推，但 `pushOps` 带**幂等键**，重复推送会被去重 |
+| `notes-fts-backfill.runNotesIndexBackfill` | UPDATE search_text + INSERT 迁移版本 | FTS 那两条是 `execute`，合事务与否见 §879.4 |
+| **`chat-store.saveMessage`** | **真的连写两次**（INSERT 消息 + UPDATE 会话 `last_message_at`） | ⚠ 所在模块**整模块零引用** |
+
+⇒ 收口：**唯一「一次调用必写两次」的地方落在一个死模块里。**
+`chat-store.ts` 的 4 个导出全部零引用，而且**已经被仓里既有的
+`audit-dead-features` 报出**（`features/chat/` 4 个符号，含 `saveMessage`）。
+
+⇒ 按「哑雷 ≠ 缺陷」「不装修死代码」的既有立场（与 `stores/workspace.ts` 一致），
+**本节不动它**。
+
+### §880.2 ⚠⚠ 负面的一半：我自制的普查器比仓里已有的差
+
+我先写了一个「全仓死模块」扫描器想佐证，结果：
+
+- 第一版把 **270 个**活组件（`MeetingListView.vue` / `SettingsView.vue` / `main.ts`…）
+  判成死代码 —— 漏了 import 说明符的**文件扩展名**；
+- 第二版「修正」后报 51 个 —— 但抽查发现 `flashcardMedia` 明明被
+  `FlashcardEditView.vue` 与 `FlashcardReviewView.vue` import ⇒ **引号配对错位**
+  （文件里有一处引号奇数，把后面的匹配整体移位）。
+
+⇒ 而 `node scripts/audit-dead-features.mjs` **早就报了这些**，
+还带 `--selftest` 负控（区分真死 / 只有声明 / 只有注释 / 只有测试引用）与基线 JSON。
+
+⇒ ⇒ ⭐ **教训：动手写普查器之前，先看仓里是不是已经有。**
+本仓把「静态审计 `audit-*` 负责报、`check-*` 负责卡口」写进了 `gates.json`，
+我绕开它自己造了一个更差的轮子，还差点把 270 这个数字当结论发出去。
+
+### §880.3 ⚠⚠⚠⚠ 解析器返工三代，每一个形状不同
+
+普查门最终是「允许清单 + 读数」的形状，中间把解析器重写了三次：
+
+| 版本 | 写法 | 症状 |
+|---|---|---|
+| v1 | 正则 `[^)]*` 匹配参数表 | **跨行**：某处缩进的 `foo(a)` 一路吃到下面的 `export async function handleServerEvent(`，真函数被整段吞掉。只认出 4 处而不是 11 处，**不报错** |
+| v2 | 收紧成 `[^\n)]*`（只吃单行） | 修好上面那个，却**漏掉多行签名**：`runNotesIndexBackfill(db: NotesIndexDb,\n decrypt: …)` 整条消失 |
+| v3（现在） | 不用正则碰括号，改为**逐字符配平**：定位声明头 → 跳泛型 → 扫配平的 `(`…`)` → 扫返回类型到 `{` → 花括号配平取体 | 11 处全中 |
+
+⚠ 另有第三个独立 bug：**扫描没有递归**，只 `readdirSync` 一层 ⇒
+`features/notes/`、`features/email/` 这些**两级目录**整个没被扫。
+
+⇒ ⇒ ⭐ 三条通用式：
+1. ⭐⭐⭐⭐⭐ **正则一旦需要「跨结构」，就会在某一个真实文件上悄悄漏掉，而且永远不报错。**
+   要跨结构就配平，不要正则。
+2. ⭐⭐⭐⭐⭐ **漏扫只能被「反向断言」抓住**：正向断言（新条目会红）在漏扫时**永远绿**；
+   「允许清单不得有过期条目」那条才是喊出声的那个。
+   ⇒ 凡是有清单的门，**必须配一条「清单不许过期」的反向断言**。
+3. ⭐⭐⭐⭐ 扫描必须递归，且要在**合成输入**上自证分类器认得出目标形状
+   （否则可能一直在「没扫到」上假绿）。
+
+### §880.4 ⚠⚠ M37：第一次变异**没被抓住**，补钉读数后才抓住
+
+变异：在已放行的 `saveVoiceprint` 里**多加一句** `db.run(...)`。
+
+结果：**36/36 全绿** —— 因为第一版门只比**函数名**，函数名没变。
+
+⇒ 而「在已放行的函数里多加一次写」恰恰是**最该抓的改动**：
+它把一个「互斥分支」函数变成了真正的半个操作。
+
+⇒ 补钉：允许清单的值从「理由字符串」改成 `{ 理由, 读数 }`，
+断言**函数名与写次数都要对上** ⇒ 重跑同一变异 ⇒
+
+```
+- features/meetings/voiceprints-store.ts::saveVoiceprint: 期望 2 次，实得 3 次
+```
+
+⇒ 阴性结论 + 阴性变异，两次都靠**读数**才拿到结论；
+「枚举出来有几条」和「每条现在长什么样」都必须钉住，只钉前者等于没钉。
+
+### §880.5 门禁形态
+
+判据并入 `src/__tests__/sync-enum-and-payload-audit.test.ts`（未新增测试文件 —— argv 已贴脸）：
+
+1. 普查结果与允许清单**逐条一致**（新函数会红）；
+2. **写次数**与清单读数一致（已放行处多写一次会红）；
+3. **允许清单不得有过期条目**（反向断言，抓漏扫与过期）；
+4. 每条放行必须有**非空理由 + ≥2 次读数**；
+5. 合成输入自证分类器认得出「一次写两次」（附：分类器是**纯文本**的，
+   **不懂分支** —— 「这两处是否互斥」是人工判定，结论写在理由里；
+   早先一版把分支判定也写进负控，红了，那是把「人的判断」当成了「量具的能力」）。
+
+### §880.8 口径与未实测
+
+- ⚠ 本节是**阴性结论**：截至今天，生产路径上没有「一次操作写两次且第二个失败无人负责」的真实缺陷。
+  「没有」不是「不需要门」，所以才有 §880.5。
+- ⛔ **未实测**：真机上这些 `run()` 失败的实际发生率（本节按**代码路径**判定，不依赖发生率）。
+- ⚠ `chat-store.saveMessage` 那条**故意不改**：模块零引用，且已被既有 audit 报出。
+  ⇒ 如果将来这个模块被接回 App（`saveMessage` 一接进去就是真的半个操作），
+  **这条清单必须先改**，否则门会红 —— 那正是它该做的。
+- ⚠ 本节**没有**新增任何用户可见提示、schema 或迁移。
+
+---
+
+## §881 语义检索：编辑一条笔记后，向量索引**永远留着旧向量**（D52）
+
+同一轴（SQLite）再换一个能力：**本地向量索引**。它有两条存储 —— 一条在库里（权威），
+一条在内存里（检索实际用的），本节发现这两条**在「更新」这一条路上会分叉**。
+
+### §881.1 缺陷形态：一行判断同时承担了两个不同的问题
+
+`native/vector.ts::VectorIndex.add` 修之前：
+
+```ts
+const isInMemory = this.ids.indexOf(noteId) < 0 && this.ids.length < MAX_VECTORS
+await localDB.run(`INSERT … ON CONFLICT(note_id) DO UPDATE SET embedding = …`)
+if (!isInMemory) { /* 超上限就 warn */ return }   // ⚠ 这里把「已存在」也一起吞了
+// …只有走到这里才会更新内存矩阵
+```
+
+`isInMemory` 这一行同时在问两件事：**「要不要新加一行」**和**「要不要更新已有那一行」**，
+而答案对这两件事是**相反**的。
+
+⇒ `this.ids.indexOf(noteId) >= 0`（这条笔记**已经在内存索引里**）时
+`isInMemory` 为 false ⇒ 写完库就 return ⇒ **内存矩阵永远留着旧向量**。
+
+### §881.2 消费者：更新路径真的存在
+
+`notes-persist.ts` 里：
+
+- `createNote` → `embedAndStore(note.id, …)`（新建，走的是「新加」分支，没问题）；
+- ⚠ `patch.content !== undefined` 时 → `embedAndStore(id, decided.searchText)` ——
+  **这条正是更新路径**，它调的就是同一个 `add`，而 id 已存在 ⇒ 命中缺陷。
+
+`searchSemantic`（`notes-search.ts:82`）只用**内存矩阵**做检索
+⇒ 编辑一条笔记后，语义检索继续按**改动前的内容**作答；
+库里的新向量要等到下一次 `load()`（App 启动 `lobster-init.ts:88`，或 `remove()`）才生效。
+⇒ 零提示，且**库与内存永久分叉**（直到下次启动）。
+
+修法：已存在 ⇒ **就地覆盖**那一行（`matrix.set(normalized, existing * DIM)`），
+不存在且未超上限 ⇒ 才追加。
+
+### §881.3 顺带记下**没有**修的那一半
+
+`MAX_VECTORS`（50000）达到后，新向量**只写库、永远不进内存索引**
+⇒ `search()` 只在旧的那批里找 ⇒ **沉默的「搜不全」**。
+⚠ 而 `add` 的注释写着「查询时降级为仅 FTS」—— **`search()` 里并没有这个降级**；
+它只是安静地少返回一些结果。
+⚠ 这与 §879 的「搜全 vs 搜到」是同一个家族：**一个不全的答案比一个空答案更危险**。
+⇒ 本节**不改**（改法要动 `search()` 的契约与 UI 口径），登记为简报第 101 条。
+
+### §881.4 可测性重构（与 §879 同一手法，第二次）
+
+`vector.ts` 顶层 import `localDB` 单例 ⇒ 那条链在 node 里加载不了 ⇒ 判不了。
+⇒ 索引本体搬进新文件 `native/vector-index.ts`（**只依赖注入的 db**），
+`vector.ts` 只剩 `export const vectorIndex = new VectorIndex(localDbAsSql(localDB))` 与再导出。
+
+⚠ 顺手发现并绕开的两条 `strip-types` 限制（都写进了注释）：
+1. **`parameter properties`**（`constructor(private readonly db: …)`）
+   不被支持 ⇒ 加载直接报 `ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX` ⇒ 改成显式字段；
+2. 「裸 try 块」（§877.6bis 记过）。
+⇒ 与 §875 的 import 扩展名一族合起来，`--experimental-strip-types` 已经有 **3 条**已知限制。
+
+### §881.5 ⚠⚠ 夹具又栽了三次，但三次都指向「代码坏了」的假结论
+
+全部发生在**真 SQLite** 上，与 §879 同族：
+
+1. **`ArrayBuffer` 绑不上**：`node:sqlite` 直接报
+   「Provided value cannot be bound to SQLite parameter 2」——
+   而 `add` 传的就是 `blob.buffer`，Capacitor 插件接受。
+2. **BLOB 读回的形状不同**：Capacitor 返回 `ArrayBuffer`，
+   `load()` 里 `new Float32Array(r.embedding)` 依赖的正是「ArrayBuffer ⇒ 字节重解释为 float」；
+   `node:sqlite` 返回 `Uint8Array` ⇒ 同样的表达式会变成「按字节填数」，**读数全错**。
+   ⇒ 夹具必须把 BLOB 归一化回 `ArrayBuffer`。
+3. **外键没复刻**：`local_note_vectors.note_id` 有 `FOREIGN KEY REFERENCES local_notes(id)`
+   ⇒ 不先落一条笔记就 `FOREIGN KEY constraint failed`
+   ⇒ **夹具必须把被测表的约束也复刻出来，不能只建被测的那一张表。**
+
+⇒ 还有一条**测试自己**的坑（不是量具）：`search()` 在 `loaded === false` 时**恒返回 `[]`**，
+而 `loaded` 只在 `load()` 里置位 ⇒ 判据必须先 `load()` 再 `add`（生产里 `lobster-init` 就是这么调的）。
+
+### §881.6 M38：变异精确命中 2 条，对照组仍绿
+
+把 `add` 改回 `isInMemory` + 提前 return ⇒ **11 / 2**，红的是
+「更新后必须用新向量」与「内存与库必须一致」，
+正控与对照组（两条笔记给出不同分数）**仍绿**。
+
+### §881.7 判据形态
+
+行为层并入 `src/native/__tests__/migration-guards.test.mjs`（该文件现在同时是
+「SQLite 存储语义行为层」的宿主：§879 FTS / §881 向量索引；argv 已贴脸，不另开文件）：
+
+1. 正控：新增一条笔记后检索按它的向量作答；
+2. ★ 更新已有笔记后检索**立刻**用新向量；
+3. ★ 内存读数与「从库重建」的读数必须一致（钉的是**两条路径等价** ——
+   若实现改成「有更新就整表 `load()`」这条同样绿，那是更慢但正确的做法）；
+4. 对照组：两条笔记给出不同分数（证明判据有牙）。
+
+### §881.8 待拍板（新增 1 条）
+
+101. **达到 `MAX_VECTORS` 之后要不要让 `search()` 显式降级** ——
+    ① 现在是「只写库、不进内存 ⇒ 搜索安静地少返回一些结果」，
+    而注释承诺的「查询时降级为仅 FTS」**并没有实现**；
+    ② 要不要让 `search()` 在「有向量没进内存」时**说出来**
+    （返回标志 / 抛错 / 直接走 FTS），还是维持静默？
+    ③ 顺便：`MAX_VECTORS = 50000` 这个取值要不要重新估？
+    1536 维 × 4B × 50000 ≈ **300MB**，注释自己写着「移动端可接受的上限」，
+    但这句话**没有真机读数支撑**（§881.9）。
+
+### §881.9 口径与未实测
+
+- ⛔ **未实测**：真机上「编辑笔记后语义检索用旧内容」的实际发生率。
+  本节定它为缺陷的依据是**代码路径必然性**（更新路径必然调用同一个 `add`）。
+- ⛔ **未实测**：`MAX_VECTORS` 在真机上的内存占用，以及是否真的到过 50000 条。
+- ⚠ 本节**没有**加任何用户可见提示。
+- ⚠ 本节**没有**动 schema、没有加表、没有迁移；
+  `local_note_vectors` 的约束原样保留（判据里用它当夹具的一部分）。
+
+---
+
+## §882 会话草稿：写失败对用户**完全隐形**（D53）
+
+回到本仓主线（录音 / 会话输入）。这条不在存储层，而在**消费端**——
+存储层 `native/draftStore.ts` 本身干净，问题全在 composable 的错误处理。
+
+### §882.1 缺陷：四处写失败，全部零信号
+
+`features/sessions/useSessionDrafts.ts` 修之前：
+
+| 位置 | 修前 | 后果 |
+|---|---|---|
+| `persistTo` | `catch { /* 写失败不阻断输入 */ }` | 用户刚打的字**没存住**，界面零变化 |
+| `clear` | `catch { /* 清失败不阻断发送流程 */ }` | 清不掉 ⇒ 下次回来草稿还在 |
+| 切换会话 · 清旧键 | `.catch(() => undefined)` | 真静默 |
+| ⚠ 切换会话 · 存旧键 | `.catch(() => undefined)` | **只有这一条**保护用户刚打的那段字，失败时他已经切到下一个会话 |
+
+### §882.2 为什么草稿比 §866 那几条更该说话
+
+§866/D30 定的是「用户正在产出的数据必须说话」，草稿**完全落在那一类**，
+而且理由更强：
+
+- 它不是缓存，也不是历史 —— 是**此刻还没发出去的那段字**；
+- 静默失败的后果是「他以为存住了，关掉页面才发现没了」；
+- ⚠ 他**没有任何办法提前知道**，也**没有别的办法补救**（没存就是没存）。
+
+⇒ 但 §866 的**另一半**纪律同样成立：**绝不阻断输入** ——
+打字不该因为存不进去就卡住，那比丢了更让人恼火。
+⇒ 所以是「**只出声、不阻断**」。
+
+### §882.3 修法（与 D30/D31/D36 同款）
+
+- composable 暴露 `persistFailed: Ref<boolean>`：
+  写成功清 `false`（**不是单向的 true**——存回去了提示就该撤），
+  写失败置 `true` 并 `console.warn`；
+- `SessionComposer.vue` 在卡片顶部渲染 `role="alert"` 的提示条，
+  文案**不得出现任何暗示「已保存」的措辞**（§866 的口径），
+  并给出可执行的出路：**先复制这段文字**。
+
+⚠ 特别处理「切换会话时存旧键」那一处：它是唯一保护用户刚打的字的路径，
+失败时用户**已经在新会话界面上了**，所以提示必须出现在**输入面板里**（常驻），
+而不是某个转瞬即逝的 toast。
+
+### §882.4 M39：变异精确命中 2 条，而「不阻断输入」那条**仍绿**
+
+删掉 `persistFailed.value = true` ⇒ **18 / 2**，红的是
+「写失败必须置位」与「存回去了提示必须撤掉」。
+⚠ 而「写失败不得阻断输入、也不得改动 text」那条**仍绿**
+⇒ 证明这两条性质是**分开钉**的，不是一条顺带覆盖了另一条。
+
+### §882.5 ⚠⚠ 撞门禁记一笔：`fire-and-forget-audit` 的扫描器**按行**判断
+
+`test:all` 首跑红了：那个门钉的是 `void x()` 的**出现次数**与**合计**，
+而我把「切换会话 · 清旧键」那处从单行拆成了多行 ⇒
+首行变成裸 `void ensureStore()` ⇒ 计数 1 → 2、合计 14 → 15。
+
+⚠ 这不是门的错，也不是代码错 —— 是**排版**改变了语义：
+该扫描器用「**整行**有没有 catch/then」来区分「无主 fire-and-forget」和「自己接住了」。
+
+⇒ 修法：**把那一条刻意收回单行**（并在源码与登记表两处写清为什么），
+而不是去改扫描器或放宽基线。
+⇒ 登记表的 `why` 同步更新，并保留「为什么仍是 1 处」这句说明。
+
+⭐ 这一条与 §880 的 M37 是同一条纪律的另一个面：
+**只钉「有几条」/「在哪一行」的门，会被排版改动顶红**；
+而这类撞门禁的正确应对是「理解它到底在保护什么，然后按那个语义改」，
+**不是**为了让门绿而放宽门。
+
+### §882.6 判据形态
+
+行为层并入既有 `src/features/sessions/__tests__/useSessionDrafts.test.mjs`（未新增文件）：
+
+1. ★ 写失败必须置位 `persistFailed`；
+2. ★ 写失败**不得**阻断输入、不得改动 `text`（`flush()` 必须正常返回 ——
+   一旦它抛，用户连「先复制走」都做不到）；
+3. ★ 存回去了提示必须撤掉（证明它不是单向的 `true`）；
+4. 对照组：写正常时恒为 `false`，且草稿真的存进去了（证明判据有牙）。
+
+### §882.7 口径与未实测
+
+- ⛔ **未实测**：真机上草稿写失败的发生率（本节按**用户可见后果**定缺陷）。
+- ⚠ `resolveDraftStore()` 在 SQLite 不可用时**静默降级到 `MemoryDraftStore`**
+  （web / 未解锁）—— 文件头写着「可接受的降级」，**这是明确的产品决定，本节不动**。
+  但它与本节同源：降级发生时用户同样**不知道草稿只剩内存**。
+  ⇒ 登记为简报第 102 条。
+- ⚠ 本节**没有**改存储层、没有改 schema、没有改防抖窗口。
+
+---
+
+## §883 「写侧要说实话」这一族的普查：一个**完整阴性**结论 + 常驻门
+
+§882 加的草稿提示是这一族的**第 4 套**。既然已经攒到 4 套，就该按
+「枚举能力而不是枚举调用点」的纪律把它们**一次列全、逐条判定**。
+
+### §883.1 普查结果：4 套，逐条查过，没有遗留缺陷
+
+| # | 机制 | 视图出口 | 措辞纪律 |
+|---|---|---|---|
+| ① | `aiChatStore.persist()`（§866/D30） | `AIChatView` 顶部 `role="alert"` | 不得暗示「已保存」 |
+| ② | `cryptoConfig.save()`（§866/D31） | `MasterPasswordDialog` 的 `error.value` | 把「解锁成功但没存住」与「初始化失败」**分开说** |
+| ③ | `flashcards` 两个写函数（§868/D36） | `StudyHubView` 顶部 `role="alert"` | 队列写失败与缓存写失败**分开说** |
+| ④ | `useSessionDrafts`（§882/D53） | `SessionComposer` 顶部 `role="alert"` | 同 ①，并给出「先复制」 |
+
+逐条核过的三条性质：
+
+1. **双向** —— 四套都能在写成功时复位 `false`；
+   ⚠ 这正是 §882 刚立的那条（`persistFailed` 若单向，一次偶发失败就永久显示）；
+2. **位置** —— 三处视图出口都在**互斥渲染链之外**
+   （`StudyHubView.vue` 的注释里明写了这个约束：`v-if="store.loading"` /
+   `v-else-if="decks.length === 0"` 是互斥链，提示必须排在它前面，
+   否则下一次成功渲染会把它整块吞掉）；
+3. **已钉** —— 四套分别被 `local-storage-write-failure`（①②）、
+   `local-storage-write-truthfulness`（③）、`useSessionDrafts.test.mjs`（④）钉住。
+
+⇒ **本轴没有遗留缺陷。**
+
+### §883.2 把「审计过一次」变成常驻门
+
+阴性结论的价值在于**下一次不必重查**，前提是它不会过期 ⇒ 并入
+`src/__tests__/local-storage-write-failure.test.ts`（本族的家）：
+
+1. ★ 新增第 5 套必须是**一个有意识的决定**（不在 `KNOWN` 里就红，并列出新落点）；
+2. ★ **反向断言**：`KNOWN` 里的条目必须仍然存在
+   （机制被删/改名 ⇒ 清单会骗人，§880 的同一条纪律）；
+3. ★ 每套都必须双向。
+
+⚠ 扫描必须**递归**且**先剥注释**（`§880.6` 那两条：只 `readdirSync` 一层会漏掉
+两级目录；不剥注释则「注释里提到 `persistFailed`」也算数）。
+
+### §883.3 M40 / M41：两次变异各命中 1 条
+
+| 变异 | 结果 | 红条目 |
+|---|---|---|
+| 把 `crypto-config` 的 `persistFailed.value = false` 去掉（单向） | 18 / **1** | 「每套都必须双向」 |
+| 在 `stores/device.ts` 里新增第 5 套 `const persistFailed = ref(false)` | 18 / **1** | 「新增第 5 套必须是有意识的决定」，并列出落点 |
+
+### §883.4 ⚠⚠ 第一版断言写窄了：把 `computed` 那一套误判成「没有置位」
+
+「每套都必须双向」的第一版写的是 `/persistFailed\.value\s*=\s*true/`，
+而 `flashcards` 那套的 `persistFailed` 是 **computed**（§868/D36 的两个源 ref 求或），
+置位发生在 `cachePersistFailed` / `outboxPersistFailed` 上 ⇒ **假红**。
+
+⇒ 改成形态无关的 `/\w*ersistFailed\.value\s*=\s*true/`。
+
+⭐ 与 §878 那次同一族：**被测的性质不是「某个具体变量名被赋值」，
+而是「喂给视图的那个标志，写失败为真、写成功为假」**。
+⇒ 断言要钉**性质**，别钉**名字**；聚合出来的标志（computed）与直接赋值在性质上等价。
+
+### §883.5 口径与未实测
+
+- ⚠ 本节**没有改任何生产代码** —— 它是阴性结论 + 一道新门。
+- ⚠ 四套机制**措辞各不相同**（这是刻意的：各自面对的用户语境不同 ——
+  对话轮次 / 主密码设置 / 复习队列 / 输入框），
+  本节**不**提议统一文案（登记在简报第 102 条的第 ③ 小问里）。
+- ⛔ 未实测：四套的**真机触发率**（本节判定的是结构性质，与发生率无关）。
+
+---
+
+## §884 删除侧：本地编辑路径可以**静默改写墓碑行**，而「软删」在本仓是单向不可逆的
+
+§883 收掉了「写侧要说实话」那一族（4 套，全阴性）。本节做它的姊妹轴：**删除侧**。
+问题不是「删不掉」，而是反过来的那句：**「删掉了」之后，那件事其实还能被做**。
+
+### §884.1 先数消费者：三条写墓碑的路径，只有一条可达
+
+`local_assets` 的墓碑（`deleted_at` 非 NULL）全仓只有两处写入点：
+
+| 写入点 | 有无 UI 消费者 | 结论 |
+|---|---|---|
+| `notes-persist.ts:297` `softDeleteForWorkspace` | ✅ `NoteDetailView.vue:251` / `NoteListView.vue:566` | 真实可达 |
+| `pkm-store.ts:133` `softDeleteForWorkspace` | ❌ **无任何调用方**（死导出） | ⛔ 不可达，不写 |
+
+⚠ 这一步是本节的**第一道闸**。若不数，`pkm.deleteNote` 看上去就是一条完整的
+「删除 → 再编辑 → 数据损坏」链；数完才发现 pkm **根本没有删除入口**，
+那条链的前半段压根走不到。（本会话第 N 次「先数消费者」救回一个假缺陷。）
+
+⇒ 但**可达的删除落在同一张表上**，而这张表被另一个模块用**不过滤墓碑**的方式读。
+
+### §884.2 D54 的完整链条（每一步都有代码证据）
+
+1. **enex 导入** ⇒ `local_assets` 一行 `kind='note'`, `source='enex_import'`
+   （`import-service.ts:36-51`）。
+2. **PKM 的 kind 常量同样是 `'note'`**（`pkm-store.ts:56`），且 pkm 的 `listNotes`
+   调 `assetStore.search` 时**不按 `source` 过滤**
+   ⇒ 这条导入的笔记**也会出现在 PKM 列表**里，点进去就是 `/pkm/n/:id`。
+3. **`/notes` 侧能列出它** —— `notes-persist.getNote` 第 328 行那条
+   `source === 'enex_import'` 回退就是为它存在的 ⇒ **可以删**，
+   于是 `softDeleteForWorkspace` 置上 `deleted_at`，界面提示删除成功。
+4. **深链重新打开** —— `NotesHubView.vue:29` 的注释明写「详情仍走独立深链
+   （/notes/:id、/meetings/:id、/pkm/n/:id），**分享与历史不受影响**」
+   ⇒ 深链是**被明确支持**的访问方式，不是臆造的边缘路径。
+   浏览器后退 / 分享链接 ⇒ `PkmEditor.load` → `pkm-store.getNote`
+   → `assetStore.get(id)` —— ⚠ **全仓唯一一处既不过滤 `deleted_at`、
+   也不校验 `workspace_id` 的读** ⇒ 已删除笔记的全文照常显示。
+5. **改一个字** ⇒ 800ms 后 `doSave` ⇒ `lastSaved = true`，界面显示「已保存」
+   ⇒ `assetStore.upsert` 的 UPDATE 分支**既不含 `deleted_at`、也不检查它**
+   ⇒ 墓碑保持；且 `pkm.saveNote` 不传 `source` ⇒ **`source` 被写成 NULL**。
+6. **结果**：
+   - 用户保存成功，那条内容**永远不再出现在 PKM 列表、notes 列表、任何 FTS 搜索里**；
+   - 又因 `source` 变成 NULL，notes 侧那条 `source === 'enex_import'` 回退
+     **也不再成立** ⇒ 它从 notes 侧一并消失；
+   - 而**全仓没有任何一处把 `deleted_at` 清回 NULL**
+     ⇒ **不可恢复**（`schema.ts:9` 写着「保留可恢复」——那个「恢复」从未实现）。
+
+⇒ 一句话：**「保存成功」与「被完成的事」不是同一件**。
+⭐ 与 §879 D51（`lockedSkipped` 代表不了「重灌成功」、`changed` 代表不了「索引是好的」）
+同一族：**同一个错误会在第二个变量上原样重现**，这里它重现在 `deleted_at` 上。
+
+### §884.3 修法：显式拒绝，不是静默复活
+
+**修 1（技术，已落地）** `assetStore.upsert` 的存在性检查带上 `deleted_at`，
+命中墓碑即抛 `AssetDeletedError`。
+放在这一层而不是调用方，是因为它是**唯一能保证任何调用方都不会在不知情时
+改写墓碑**的位置——本节里能走到墓碑的路径有 4 个（pkm / contacts / import / notes），
+逐个加判断必然漏。
+
+**修 2（技术，已落地）** `pkm-store.getNote` 改走 `assetStore.getForWorkspace`
+（`AND workspace_id = ? AND deleted_at IS NULL`），与 notes 侧完全对齐。
+⚠ 它必须同时接收 `workspaceId` 并由调用方传 `currentWorkspaceId()`：
+`getForWorkspace` 会校验 `workspace_id`，若只在 store 里默认 `'default'`，
+真机 `ws_user-admin` 分区的笔记会**全部读不到** —— 那正是
+`PkmNoteView.vue:46` 注释记的「保存成功但列表看不到」的同族坑，
+而 `saveNote` / `listNotes` 两处**早已**用 `currentWorkspaceId()`，只有读取漏了。
+
+**⭐ 修法的形状本身被钉住**（判据第 4 条）：不得用「在 UPDATE 里顺手写
+`deleted_at = NULL`」来修。那会把 D54 从「静默改写」变成**「静默复活」**——
+用户删掉的东西自己回来了，而他从没要求过恢复。
+
+### §884.4 contacts：同型但**不可达**，只登记不改
+
+`contacts-store.getContact` 同样用不过滤墓碑的 `assetStore.get`。
+但 `kind='contact'` **没有任何软删写入点** ⇒ 墓碑永不产生 ⇒ 读出墓碑不可达。
+本节**不改它**：改了也只是纯防御，却要动 `ContactDetailView` 的 workspace 口径
+（contacts 的 `listContacts` 默认就是 `'default'`，与 pkm 不同）⇒ 有引入回归的风险。
+
+⇒ 按 §880/§883 的纪律，把这个**前提**钉成反向断言（判据第 7 条）：
+一旦有人给 contact 接上删除入口，那条会红，提醒必须同时对齐读路径。
+
+### §884.5 判据（并入 `action-failure-notice.test.ts`，7 条）
+
+并入既有文件而非新建：`npm run test:all` 有 **20000 字符 argv 上限**
+（375 个测试文件 / 19954 字符）⇒ 不能再新增测试文件。
+选这个文件是因为它的主题正是「对外声称完成 vs 实际完成」（§838 的 D1–D3）。
+
+| # | 断言 | 钉的性质 |
+|---|---|---|
+| 1 | `upsert` 必须有 `deleted_at` 的**条件判断形态** | 「看到了并拒绝了」，不是「查过了」 |
+| 2 | 存在性检查的 SELECT 必须取 `deleted_at` | 钉**读数**（§880 M37：只钉「出现过」会被「只改了量」顶穿） |
+| 3 | 墓碑判断必须排在 `UPDATE` **之前** | 顺序 |
+| 4 | UPDATE 语句里**不得**出现 `deleted_at =` | 钉**修法的形状**：显式拒绝，不是静默复活 |
+| 5 | `pkm.getNote` 不得再用 `assetStore.get(` | 读路径对称性 |
+| 6 | 两个读取调用点必须传 `currentWorkspaceId()` | 防真机 workspace 回归（配平取实参） |
+| 7 | 反向断言：软删入口数仍为 2 | 钉住 §884.4 那个阴性前提 |
+
+⚠ 这些是**源码结构判据**：`assetStore` 在 node 里跑不起来
+（`local-db` → `sqlite-web-init` 是无扩展名 import，简报第 94 条），
+与 §875 的 ⛔ 同源。
+
+### §884.6 M42：七次变异（含一条负控）
+
+| 变异 | 结果 | 红条目 |
+|---|---|---|
+| V1 把墓碑拒绝改成 `if (false)` | 24 / **2** | 「条件判断形态」+「顺序」 |
+| V2 SELECT 里去掉 `deleted_at`（保留判断） | 25 / **1** | 「存在性检查必须取 deleted_at」 |
+| V3 `pkm.getNote` 改回 `assetStore.get(id)` | 25 / **1** | 「读路径对称性」 |
+| V4 `PkmEditor` 的调用去掉 workspaceId | 25 / **1** | 「必须传 workspaceId」 |
+| V5 **负控**：加一行无关注释 | **26 / 0** | 不被排版顶红 |
+| V6 给 contacts 接上软删入口 | 25 / **1** | 「反向断言」 |
+| V7 改成「静默清墓碑」修法 | 25 / **1** | 「不得用静默复活的方式修」 |
+
+⭐ V1 一处改动红 2 条（判断形态与顺序**不重叠**），与 §879 M36 同一读法。
+
+### §884.7 ⚠⚠ 判据事故 12：`[^)]*` 取调用实参，在嵌套括号上截断
+
+判据第 6 条第一版写 `/getNote\(([^)]*)\)/`，实测红，报错里的 `actual` 是
+`'id, currentWorkspaceId('` —— 正则在 `currentWorkspaceId(` 的那个 `(` 上就停了，
+闭合括号没进来 ⇒ 断言要求 `currentWorkspaceId\(\)` 恒不匹配。
+
+**代码是对的，量具是错的。** 这与 §880「要跨结构就配平，不要正则」
+在**调用实参**上的同形复现（那一节记的是函数体/签名，这是它的孪生场景）。
+
+⇒ 改成逐字符配平取实参（遇 `(` 加一、遇 `)` 减一，归零即取到）。
+⭐ **判据红先问「量具量的是不是那件事」**——本会话 12 次判据事故里的第 12 次。
+
+### §884.8 口径与未实测
+
+- ✅ 本节**改了生产代码**（`asset-store.ts` / `pkm-store.ts` / `PkmNoteView.vue` /
+  `PkmEditor.vue`）与判据；`typecheck` EXIT=0、`gates` 45/45 通过。
+- ⚠ **修 1 之后 `PkmEditor.doSave` 的 catch 只 `console.error`** ⇒ 用户改不动
+  已删除笔记时**界面零反馈**（§882 D53 同族）。本节**不代拍**文案，登记简报 103 ③。
+- ⚠ **修 2 之后打开已删除深链 ⇒ `getNote` 返回 null** ⇒ 走的是既有的
+  「不存在 → 回 Today」分支（`PkmNoteView.vue:70-72`），文案仍写「不存在」，
+  而真实原因是「已删除」。⛔ 未实测该分支在真机上的实际去向，登记简报 103 ①。
+- ⛔ 未实测：enex 笔记**真的同时出现在 PKM 列表**（静态可证：kind 相同且
+  `listNotes` 不按 source 过滤；⛔ 但未在真机点过）。
+- ⛔ 未实测：`/pkm/n/:id` 深链在真机上被「后退 / 分享」打开的发生率。
+- ⛔ 未实测：PKM 里用 TipTap 编辑一条 **markdown** 正文（enex 存的是
+  `note.contentMarkdown`，编辑器按 HTML 解析）是否造成额外的格式破坏。
+
+---
+
+## §885 D55：「时长格式化」是一个有 **6 个同名实现、2 种单位、5 种输出格式**的概念
+
+§884 收掉删除侧之后，本节回到「单位」这条轴——它是本仓**故意不统一**的地方
+（`relative-time.ts` 的文件头自己列了 5 个来源：笔记/会议/PKM/邮件是**毫秒**、
+通知/RSS 是**秒**），并定下规则：**归一必须发生在行构造处**。
+
+⭐ 本节先**核对了这条规则是否落实**：全仓 `formatRelative(` 只有 **2 个生产调用点**
+（`NotesHubView` / `MessagesHubView`），两处的每个来源都过了归一
+（`toEpochSeconds(...)` 或 `rssTime(...)`；通知的 `n.created_at` 直接取用，
+已核到后端 `notifycenter/service.go:152/440` 两处写入都是 `time.Now().Unix()` ⇒ 秒）。
+⇒ **「秒」这条路径当前是正确的**，这是一条阴性结论。
+
+⚠ 但顺着同一个文件查 `formatDuration` 时，两个问题浮出来。
+
+### §885.1 D55 两条
+
+**① 单位契约在注释层面就是错的。**
+
+`utils/relative-time.ts::formatDuration` 的 JSDoc 原文写「**秒** → 「M:SS」/「H:MM:SS」」，
+而实现收的是**毫秒**（`Math.round(ms / 1000)`，参数名也一直是 `ms`）。
+
+⚠ 它错在**唯一该声明单位**的位置上：同一文件里 `formatRelative` 的 `@param ts`
+明写「Unix 秒」、`toEpochSeconds` 又把「秒」定义为**归一后的单位**
+⇒ **同一个文件里「秒」有两个互相矛盾的定义**。
+而 `NotesHubView.vue:391` 的注释记着真有人照本文件的输出形状做过字符串解析
+⇒ 这段确实被当成契约读过。照注释推理的人会把会议时长当秒传进来，
+得到小 1000 倍的时长，**且不报错**。
+
+**② 6 处同名实现里，有 4 处缺负数/非有限防护。**
+
+| 位置 | 参数单位 | 输出形态 | 负数 | 非有限 |
+|---|---|---|---|---|
+| `utils/relative-time.ts:87` | 毫秒 | `M:SS` / `H:MM:SS` | ✅ | ✅ |
+| `features/tasks/health.ts:63` | 毫秒 | 刚刚/N秒/N分/N时 | ✅ | ✅ |
+| `features/meetings/meeting-list.ts:39` | 毫秒 | `N分S秒` | ✅ | ⚠ **无** |
+| `features/sessions/RoundTimeline.vue:185` | 毫秒 | `123ms`/`1.2s`/`3m 5s` | ❌ | ❌ |
+| `features/opencode/SessionDetailView.vue:300` | **秒** | `N 小时 M 分钟` | ❌ | ❌ |
+| `features/opencode/SessionListView.vue:211` | **秒** | `N 小时 M 分钟` | ❌ | ❌ |
+
+`relative-time.ts:69-73` 早就为这件事写下了原则（「显式判有限性，而不是 `if (!ts)`…
+**不赌 truthy**」——`-1` 会一路走到 `new Date(-1000)`，让缺失/损坏的时间戳
+伪装成一条真实记录），`health.ts` 照做了，**另外 4 处漏了**。
+
+⚠ 两处值得单独说：
+- `meeting-list.ts` 的 `if (!ms || ms < 0)` **挡得住 NaN**（NaN falsy）
+  但**挡不住 Infinity**（truthy 且不小于 0）⇒ 渲染成「Infinity分NaN秒」。
+  这是**判据先扫出来的**，不是推测。
+- `RoundTimeline` 的 `c.durationMs` 来自 `useSessionEvents` 归约后的
+  **外部 session.activity 事件**（`durationMs?: number`，无校验），
+  而模板的 `v-if="c.durationMs"` 挡得住 0/undefined、**挡不住负数**
+  ⇒ `-5000` 会渲染成 `{-5000}ms`。⛔ 未实测负值是否真发生过。
+
+### §885.2 阴性结论（别重复查）
+
+- ⛔ **opencode 那两个当前不会出错**：它们的参数名已经是 `seconds`，
+  与另 4 处的 `ms` **区分开了** ⇒ 看代码的人不会搞混。
+  且 ⛔ 其数据来源的单位在本仓**无法验证**（`stores/opencode.ts:24` 只有
+  `duration?: number`，来源是外部 opencode 协议）
+  ⇒ **本节不改名**（改名要断言单位，无据不改；改名虽零行为风险，
+  但会把一个「未验证的断言」写进代码里）。
+- ⛔ **「6 合 1」没有做**：5 种输出形态各自对应不同产品语境
+  （会议列表要「1分30秒」还是「1:30」是**产品口径**，本节不代拍，见简报 106）。
+- ⚠ `relative-time.ts` 抽公共实现的初衷（消灭 4 份硬编码中文「X 分钟前」）
+  **没有覆盖 `formatDuration`** ⇒ opencode 视图里又长出 2 个同名本地实现。
+  这不是本轮造成的，但它解释了 6 这个数字为什么会涨。
+
+### §885.3 修法（只补防护，不动正常路径）
+
+四处补上「显式判有限性与负数」，返回空串（与另两处的既有行为一致）：
+`meeting-list.ts` / `RoundTimeline.vue` / opencode 两个。
+⚠ `meeting-list.ts` 的 `ms <= 0` 保留了原 `!ms` 的 0 值语义
+（`meeting-list.test.ts:43` 钉着 `formatDuration(0) === ''`）。
+
+### §885.4 判据（并入 `relative-time.test.ts`，4 条）
+
+| # | 断言 | 钉的性质 |
+|---|---|---|
+| 1 | 阳性对照：扫描到 **≥6 处** | 「扫够了没有」 |
+| 2 | 每个 `formatDuration` 都必须显式判**非有限**与**负数/零** | 钉性质，不钉写法（`!x` 不算） |
+| 3 | `formatDuration` 的 JSDoc 不得再声明「秒」；必须写「毫秒」 | 钉住「单位声明位」 |
+| 4 | 反向断言：实现总数仍为 **6** | 钉**定义总数**（§880 M37） |
+
+⚠ 第 1 条是**每条断言的前置**（`assertScanned()`），不是同伴用例——理由见下。
+
+### §885.5 ⚠⚠⚠ 量具自己栽了两次，两次都是「假绿」
+
+**第一次**：扫描根写成 `new URL('../', import.meta.url)`。从 `src/utils/__tests__/`
+只上跳一级 ⇒ 落在 `src/utils/` ⇒ 实测**只扫到 1 处**，
+而「每个都要有防护」「注释不许说秒」这两条**照样绿**。
+
+⇒ 这不是小失误：**假绿比假红贵**，它会让你以为全仓都查过了。
+⇒ 修法不是「把这条断言修对」，而是把「扫够了没有」从**同伴用例**改成
+**每条断言的前置闸**（`assertScanned()`）——
+**漏扫必须让每一条依赖全量扫描的断言都红**。
+变异 V5 实测：扫描根退回一级 ⇒ **3 条同时红**（16/3）。
+
+**第二次**：反向断言第一版数的是**去重后的文件数**。
+变异 V4 在 `health.ts` 里再写一个**局部** `function formatDuration` 时
+文件数仍是 6 ⇒ **照样绿** ⇒ 改数**定义总数**（新文件、新增局部定义都顶红）。
+
+⭐ 与 §883.4 同一条纪律的第三次出现：**正向断言证明不了「没漏扫」，
+只有「读数」与「前置」会喊**。而「读数」也要钉对**数的是什么**
+（文件数 ≠ 定义数）。
+
+### §885.6 M43：五次变异
+
+| 变异 | 结果 | 红条目 |
+|---|---|---|
+| V1 `RoundTimeline` 去掉防护（缺陷复现） | 18 / **1** | 「负数与非有限」 |
+| V2 注释改回「秒 →」（缺陷复现） | 18 / **1** | 「JSDoc 不得声明成秒」 |
+| V3 `meeting-list` 退回 `!ms`（缺陷复现） | 18 / **1** | 「负数与非有限」 |
+| V4 新增第 7 处定义 | 18 / **1** | 「反向断言」 |
+| V5 **量具自伤**：扫描根退一级 | 16 / **3** | 1、2、4 同时红 |
+
+### §885.7 口径与未实测
+
+- ✅ 改了 4 个实现（补防护）+ 1 处注释（改正单位声明）+ 判据 4 条；
+  `typecheck` EXIT=0、`gates` 45/45 通过（52.5s）。
+- ⚠ 本节**没有**统一 5 种输出格式，**没有**给 opencode 的函数改名 —— 都是产品口径（简报 106）。
+- ⛔ 未实测：`durationMs` 为负的真实发生率；
+  ⛔ 未实测 opencode `session.duration` 的单位（故不改名）。
+
+---
+
+## §886 D56：用户搜索输入被**原样**喂给 FTS5 的 `MATCH`，而同一仓的构造器就在隔壁
+
+§885 收掉单位轴之后，本节查「用户输入进 SQL」这条轴——它是 §859（跨边界枚举未校验）
+的正亲。选题理由很朴素：**全仓只有两处 `MATCH`**，其中一处已经把防护做对了。
+
+### §886.1 普查与实测：两处 MATCH，一处有防护一处没有
+
+| 位置 | 谁在用 | 输入是否加工 |
+|---|---|---|
+| `features/notes/notes-search.ts:39` | 笔记搜索 | ✅ `buildFtsQuery` + try/catch 降级 + CJK 并 LIKE |
+| **`native/asset-store.ts:246`** | **4 条路径** | ❌ **`q.fts` 原样** |
+
+⭐ 能拿到**用户自由输入**的 4 条路径：
+1. `PkmTodayView.vue:132` → `pkm-store.searchNotes(query.value)` → `fts: query`（搜索框直连）
+2. `notes-search.ts:58`（`searchFullText` 里的 enex 那一路）
+3. `notes-search.ts:76`（`searchSemantic` 里的 enex 那一路）
+4. 任何将来的调用方
+
+⚠ 按 §884 确立的纪律「修法落在能走到坏状态的路径数那一层」⇒ 防护必须落在
+`asset-store.search`，而它的构造器必须在 `native/` 可达（`native → features` 是错分层）。
+
+### §886.2 实测读数（真 SQLite + fts5，16 个探针，每条跑出来的）
+
+| 输入 | 原样喂入 | 过 `buildFtsQuery` |
+|---|---|---|
+| 手机号 `138-0013-8000` | ❌ `no such column: 0013` | `"138" "0013" "8000"` ✅ |
+| `database AND` | ❌ `syntax error near ""` | `"database"` ✅ |
+| `AND` / `OR` / `NOT` | ❌ `syntax error` | 空串 ⇒ 走 LIKE ✅ |
+| `-quarterly` | ❌ `no such column: quarterly` | `"quarterly"` ✅ |
+| `"database`（引号未闭合） | ❌ `unterminated string` | `"database"` ✅ |
+| `(a` / `*` / `---` | ❌ `syntax error` / `unknown special query` | `"a"` / 空 / `"---"` ✅ |
+| 中文「数据库」「数据」「索引」 | **0 行**（不报错） | **仍然 0 行** ⛔ |
+
+⇒ **16 个里 11 个抛错、5 个静默返回空**。
+
+⚠ 手机号这条最刺眼：`-` 在 FTS5 里是 **NOT 前缀**，所以 `138-0013-8000`
+被解析成「在 138 和 8000 里排除 0013」⇒ 抛错。**搜手机号必然失败**，
+而手机号恰恰是这个 App 里极常见的搜索目标（联系人 / 会议纪要里全是）。
+
+⚠ 关于「抛错是不是隐形失败」：`PkmTodayView.onSearch` **有** try/catch
+（`loadError.value = apiError(...)`）⇒ 界面会显示错误，**不是 §882 那种零反馈**。
+但「搜一个手机号就报错」本身就是可用性缺陷。
+
+### §886.3 ⭐ 最要紧的一条：**构造器解决不了中文**
+
+`local_assets_fts` 索引的是**原文** `body_text`（`schema.ts:541` 只有 `title, body` 两列，
+触发器写 `new.body_text`）；而 `local_notes` 那一侧有一个专门的 `search_text` 列
+（`schema.ts:38`，触发器写 `COALESCE(NULLIF(new.search_text,''), new.content)`）
+存 CJK bigram ⇒ `note-fts-query.ts:3` 那句注释（「unicode61 把连续汉字当成一个 token，
+必须把双字词写进 search_text 才能 MATCH」）说的就是这件事。
+
+⇒ **`local_assets` 没有这一列** ⇒ 中文查询在它上面**必然 0 行，且不报错**。
+实测三条中文全部 0 行；而 LIKE 兜底全部命中（实测 `数据库`→`项目复盘`、
+`138-0013-8000`→`购物清单`、`quarterly`→`English note`）。
+
+⚠ 影响面比 PKM 搜索框更大：`notes-search.ts:58/76` 查 enex 笔记也走 `assetStore.search`
+⇒ **enex 笔记的中文搜索同样是 0 行**。
+
+⇒ 所以修法是**两件都要做**，且都要与 notes 侧同策略：
+- 构造查询（`buildFtsQuery`）⇒ 消除 11/16 的抛错；
+- CJK 或 FTS 无果时**并一层 LIKE** ⇒ 与
+  `notes-search.ts:54` 的 `needsCjkLike(query) || localResults.length === 0` 完全一致。
+
+### §886.4 修法（不发明新写法，只搬隔壁的）
+
+1. **新建 `native/fts-query.ts`**（纯函数、零依赖）：`buildFtsQuery` / `needsCjkLike`
+   从 `features/notes/note-fts-query.ts` **搬**过来，`likePattern` 从
+   `notes-search.ts` 的同名私有函数**提**上来。
+2. **`note-fts-query.ts` 改为 re-export**（不是复制）⇒ 既有的
+   `notes-search.ts` 与 `note-fts-query.test.ts` 改动面为零，
+   且判据仍在测**同一份实现**，不是两份会漂移的拷贝。
+3. **`asset-store.search`**：构造 → `try/catch` 降级 → CJK/无果时并 LIKE（按 id 去重）。
+
+⚠ **搬迁时我自己栽了一次**：把 `\u3400-\u9fff` 手抄成了字面 CJK 范围字符，
+两次才改回转义。教训：**改含转义序列的代码要按 ASCII 模式处理，不要手抄 read 的输出**。
+
+### §886.5 判据（并入 `note-fts-query.test.ts`，7 条 → 14 例）
+
+| # | 断言 | 类型 |
+|---|---|---|
+| 1 | **阳性对照**：那 11 条原样喂入**真的会抛错** | 防 FTS 版本漂移后整张读数表失效 |
+| 2 | 过构造器后这 11 条**一条都不抛错** | 行为（真 FTS5） |
+| 3 | 中文在 assets FTS 上**必然 0 行**，LIKE 必须命中 | 行为，**证伪「构造器就够了」** |
+| 4 | `likePattern` 让中文/手机号/英文都命中 | 行为 |
+| 5 | `likePattern` 是**删除** `%/_` 而非转义（边界登记） | 钉住取舍 |
+| 6 | `asset-store.search` 必须有构造器 / catch / CJK 判断 / LIKE 模式 | 结构 |
+| 7 | **MATCH 的绑定实参必须是构造结果** | 结构（自洽性） |
+
+### §886.6 ⚠⚠ 判据自己假绿了一次，而这次抓到的缺口很典型
+
+第一次跑 V1（把 `[ftsQuery, ...]` 改回 `[raw, ...]`，**即 D56 完全复现**）⇒
+**13/13 全绿**。
+
+根因：第 6 条只验「代码里**出现过** `buildFtsQuery(`」，**不验构造结果流向了哪里**
+⇒ 把用在哪一行改掉，它照样绿。
+
+⇒ 改成**自洽性**断言（第 7 条）：先找 `const X = buildFtsQuery(`，
+再断言 `MATCH` 的绑定参数列表里用的**就是 X**。
+- 这**抗改名**：两处一致改名仍绿（V4 负控实测 14/0）；
+- 但换成原始输入就**立刻红**（V1 重跑 13/1）。
+
+⭐ 与 §885 的「假绿」同族，但成因不同：§885 是**漏扫**，这次是
+**「出现过」≠「用在这里」**。⇒ 同一条纪律的第四种形态：
+**断言要钉「数据流到哪」，不是「代码里有没有这个符号」**。
+
+### §886.7 M44：六次变异（含一条负控）
+
+| 变异 | 结果 | 红条目 |
+|---|---|---|
+| V1 MATCH 实参改回原始输入（**首轮假绿**） | 13/0 ⇒ 补强后 **13/1** | 「MATCH 实参必须是构造结果」 |
+| V2 去掉 `catch` 降级 | 12/**1** | 「必须有 catch 降级」 |
+| V3 去掉 CJK→LIKE 判断 | 12/**1** | 「必须有 CJK 判断」 |
+| V4 **负控**：变量一致改名 | **14/0** | 不被改名顶红（抗改名） |
+| V5 构造器不再跳过 `AND`/`OR` | 13/**1** | 既有 `quotes latin tokens` 用例 |
+| V6 `likePattern` 改成转义 | 13/**1** | 「边界登记」 |
+
+### §886.8 口径与未实测
+
+- ✅ 新增 `native/fts-query.ts`、改 `note-fts-query.ts`（re-export）、
+  改 `asset-store.search`、判据 7 条；`typecheck` EXIT=0、`gates` 45/45（53.0s）。
+- ⚠ **没有**改 `likePattern` 的「删除 `%/_`」取舍（对齐 notes 侧既有做法）；
+  改成「转义 + `ESCAPE`」是**行为变更**，登记简报 108。
+- ⚠ **没有**给 `local_assets` 加 `search_text` 列做真正的 bigram 索引 ——
+  那是 schema 迁移 + 回填（§879 刚踩过 FTS 回填的坑），本节只做 LIKE 兜底。
+  登记简报 109。
+- ⛔ 未实测：真机上 PKM 搜索框的中文搜索是否确实 0 行（静态 + 本地 SQLite 夹具可证，
+  但真机 SQLite 的 FTS5 编译选项未核）。
+- ⛔ 未实测：LIKE 兜底在 `local_assets` 规模上的耗时（它是无索引全表扫描）。
+
+---
+
+## §887 D57：「剥掉 LIKE 里的 `%`/`_`」有 **3 份实现、2 种口径**，而 §886 刚新增了第 4 处
+
+§886 把 `buildFtsQuery` 搬进 `native/fts-query.ts` 并让 `asset-store.search` 用上它。
+收工后顺手复查了一遍「LIKE 模式」这件事本身，结果发现**上一节修的正是症状**。
+
+### §887.1 普查读数（§887 落地前）
+
+| 位置 | 形态 | 截断 |
+|---|---|---|
+| `native/fts-query.ts:71`（§886 新建） | `function likePattern(q)` | 无 |
+| `features/notes/notes-search.ts:14` | **私有副本**，逐字相同 | 无 |
+| `features/meetings/meeting-related-search.ts:32` | **内联字面量**，连函数都没有 | `.slice(0, 40)` |
+
+⇒ **3 份实现、2 种口径**，而且 §886 新加的门只钉住了 `asset-store` 那一处
+⇒ 剩下两份**继续在原地**，下一个人还会再抄第四份。
+
+⚠ 这正是「收编不彻底」的典型形态：抽出公共实现 ≠ 旧副本会消失。
+本节若只做「新建门」，就会把 3 份副本永久留在仓里当噪声。
+
+### §887.2 口径差异是有可观测后果的
+
+第 3 份多一个 40 字符截断，且原式是 `q.replace(/[%_]/g, '').slice(0, 40)`
+= **先剥通配符再截断**。这个顺序有真实后果：
+
+```
+输入： '%%%%%%数据库' + '长'×50        （共 53 字符，maxLen = 40）
+
+先剥后截：6 个 % 消失、不占位置 ⇒ 40 个字符全是正文 ⇒ 模式长 42
+先截后剥：6 个 % 占位置        ⇒ 剥掉后只剩 34 个     ⇒ 模式长 36
+```
+⇒ 换成「先截后剥」不只是快慢问题，**结果集就变了**。
+
+⚠ 而 §886 留下的 `likePattern(q)`（无 `maxLen`）压根**没法表达**这份口径
+⇒ 公共实现必须带这个能力，否则收编就只能靠「复制 + 手工保留差异」。
+
+### §887.3 修法（行为等价，不顺手改语义）
+
+1. `native/fts-query.ts::likePattern(q, maxLen?)`：加可选截断，
+   **且截断放在 replace 之后**（与原式同序）。
+2. `notes-search.ts`：删掉私有副本，改 import 公共实现 ⇒ 逐字相同，**零行为变化**。
+3. `meeting-related-search.ts`：内联字面量 → `likePattern(q, 40)`
+   ⇒ 与原式等价（先剥后截），**零行为变化**，但差异从「隐式」变成「显式参数」。
+
+⇒ 三处口径仍然不完全一致（一个截断、两个不截），**这是产品口径，不在本节代拍**；
+但从「三份会各自漂移的拷贝」变成「一处实现 + 一个显式参数」。
+
+### §887.4 判据（并入 `note-fts-query.test.ts`，5 条 → 19 例）
+
+| # | 断言 | 类型 |
+|---|---|---|
+| 1 | 阳性对照：扫描到全仓（**前置闸**） | 防漏扫假绿 |
+| 2 | `likePattern` 的**定义数**全仓为 1，且在 `native/fts-query.ts` | 反向断言 + 计数 |
+| 3 | 「剥通配符」的字面形态**只能**出现在公共实现里 | 抓内联副本 |
+| 4 | 会议搜索必须仍带 `40` 截断（不许悄悄消失或换数） | 口径漂移守卫 |
+| 5 | ⭐ **顺序语义**：截断必须在 replace 之后 | 行为，有真实反例 |
+
+⚠ 第 1 条是前置闸而非同伴用例：§885 实测过「漏扫时下面几条在子集上照样绿」。
+
+### §887.5 ⚠⚠ 判据自己栽了两次，两次都是**假绿**
+
+**第一次（V2）：顺序语义那条用例的输入不合格。**
+我构造的反例是 `'%%%%%%数据库'`，共 11 字符，而 `maxLen = 40`
+⇒ **`slice` 根本不生效** ⇒ 「先剥后截」与「先截后剥」结果完全相同
+⇒ 把 `maxLen` 的位置换掉，**19/19 全绿**。
+
+⇒ **反例必须让输入长于 `maxLen`，且把 `%` 挤在前面**，两种顺序才会分歧。
+⚠ 这与 §886 的教训同形：**能造出「看起来对」的用例，不等于造出了能区分的用例**。
+
+**第二次（该用例的查库断言前提写错）：**
+修好输入后又红了一次，原因是我在同一条用例里加了
+`assert.deepEqual(runLikeTable(raw), [...])` —— 而 `runLikeTable` **不应用 `maxLen`**
+⇒ 拼出含 50 个「长」的模式，在库里必然 0 行。
+**那个断言的前提就是错的**，不是实现错了。
+
+⇒ **顺序的判据是「构造出的模式」，不是「查库的结果」**——后者依赖数据内容，
+在超长输入下根本不成立。
+
+⚠ 另有一次量具过宽：`replace(/\/[^)]*\]\/g/)` 匹配了**所有** `replace(/[...]/g` 形态，
+误报 `usePdfViewer.ts` / `invoice-thumb-plan.ts` / `note-paths.ts` 三个假阳性
+⇒ 收窄成只认 `replace(/[%_]/g`。⭐ **形状相似 ≠ 同一件事**（§880 的老纪律又一次）。
+
+### §887.6 M45：四次变异
+
+| 变异 | 结果 | 红条目 |
+|---|---|---|
+| V1 会议搜索悄悄丢掉 40 截断 | 18 / **1** | 「40 字符截断不许消失」 |
+| V2 `maxLen` 换序（**首轮假绿**） | 19/0 ⇒ 修反例后 **18/1** | 「顺序语义」 |
+| V3 又内联一份（新增副本） | 17 / **2** | 「定义数」+「字面形态」 |
+| 负控：查表断言换成短输入 | 19 / **0** | 不被正确改动顶红 |
+
+### §887.7 口径与未实测
+
+- ✅ 收编 3 份副本为 1 份实现 + 1 个显式 `maxLen`；判据 5 条；
+  `typecheck` EXIT=0、`gates` 45/45（52.4s）。
+- ⚠ **零行为变化**：三处都保持原语义（第 4 条明确如此）。
+- ⚠ 「一个截断、两个不截」是否合理**未代拍**（登记简报 110）。
+- ⚠ `meeting-related-search.ts` 里三处 `catch { return [] }`（笔记/会议/网页推荐
+  搜索失败一律静默空态）**本节未动**：那是「推荐」而非「检索」，
+  空态危害与口径都要属主定（简报 110 第 ② 小问）。
+- ⛔ 未实测：LIKE 40 字符截断对会议搜索结果集的实际影响（静态可证口径，未跑真实数据）。
+
+---
+
+## §888 D58：`blobToBase64` 有 **5 份实现**，其中一份让**录音分片的丢失变成静默**
+
+本节回到本项目主线（录音转写质量）。选题来自一个普查：全仓 2688 个具名函数定义里，
+**161 个名字出现 > 1 次**。大多是视图内的小函数（`load` 38 处、`goBack` 23 处）——
+正常。真正扎眼的是**工具函数**：公共实现已经在 `utils/` 了，仍然有 4 份副本。
+
+⭐ 这是 §887「收编不彻底」的**升级版**：§887 是 3 份里搬了 1 份（还剩 2 份），
+本节是 **5 份**（**一份都没搬**，公共实现一直就在那儿）。
+
+### §888.1 普查读数
+
+| 位置 | 形态 | `result = null` 时 | 危害 |
+|---|---|---|---|
+| `utils/base64.ts:5` | **公共实现** | reject（带可读原因） | — |
+| `utils/download-encoding.ts:21` | 第二份公共实现 | reject | 纯重复 |
+| `utils/version.ts:305` | 私有副本 | reject | 纯重复 |
+| `features/email/use-invoice-thumbs.ts:37` | 私有副本 | reject | 纯重复 |
+| `composables/usePdfViewer.ts:35` | 私有副本 | **Promise 永久挂起** | ❌ 真缺陷 |
+| `features/meetings/audio-parts.ts:19` | 私有副本 | **resolve(空串)** | ❌❌ 最严重 |
+
+### §888.2 ⭐⭐ D58：`audio-parts.ts` —— 那一段录音永久丢失，且连诊断都没有
+
+`audio-parts.ts` 是**会议录音分片落盘**，本仓录音主链路。那份实现的失败路径是：
+
+```ts
+reader.onload = () => {
+  const s = String(reader.result || '')   // null → ''
+  const i = s.indexOf(',')               // -1
+  resolve(i >= 0 ? s.slice(i + 1) : s)   // ⇒ resolve('') 而不是 reject
+}
+```
+
+⇒ `saveAudioPart` 拿到**空串**后照常往下走：
+
+1. 原生平台 `Filesystem.writeFile({ data: '' })` ⇒ 写出**一个 0 字节的 webm 文件**（不抛错）；
+2. 落库 `filePath ? '' : dataBase64` ⇒ `data_base64` **存空串**；
+3. `return id` ⇒ **报成功**。
+
+⚠ **最狠的一点**：`ingest-speech.ts:52` 那个
+`void saveAudioPart(...).catch((e) => console.warn(...))` —— 它是这条链上
+**唯一存在的诊断线索**，而失败压根没走失败分支 ⇒ **catch 永不触发**。
+
+⚠ 该处注释还写着：「§826 让这件事在 Android 上变得不可逆：原生模式压根不产整段音频，
+**分片是那段话的唯一一份拷贝**」。
+
+⇒ 与 §876/D46（「排队成功」被报成「落盘成功」）同族，但**更狠**：
+那里至少还走过成功分支，这里**连失败分支都没进**，所以连诊断都没有。
+
+### §888.3 `usePdfViewer.ts` —— Promise 永久挂起，try/catch 兜不住
+
+那份是 `reader.result as string` 直接 `.split(',')`。`result` 为 null 时 TypeError
+**发生在事件处理器里**，不会转成 promise 的 reject ⇒ `await` 永久挂起
+⇒ 外面那层 `try/catch`（第 115 行有 `catch` 设 `error.value = 'PDF 打开失败'`）**根本兜不住**
+⇒ 页面永久 loading。
+
+⚠ `utils/base64.ts:10-22` 的注释**早就把这条写清楚了**，还带着 2026-10-06 红米真机复现
+——也就是说这个坑**被诊断过、修过一次**，而 §885 的普查把它漏掉了（§885 只数了
+`formatDuration`）。**它一直躺在另一个文件里。**
+
+### §888.4 修法（收编 + 取更严格的那一份）
+
+5 处全部改用 `utils/base64.ts`（`download-encoding.ts` 改为 re-export，公共 API 不变）。
+
+⚠⚠ 合并时撞出一条**既有测试守住的真实差异**：`download.test.mjs:132` 要求
+「data URL 缺 base64 部分**抛**『文件编码失败』」——那是 `download-encoding` 那份的契约；
+而 `base64.ts` 原来 `resolve(split(',')[1] || '')` 在同样情况下 **resolve 空串**。
+⇒ 合并必须取**更严格**的一份：`base64.ts` 现在对「读到了但没有 base64 部分」也 reject。
+
+⭐ 这正是「读到了但内容是空的」与「没读到」属于**同一类失败**，都必须出声。
+
+⚠⚠ **撞了 §875 那条已知限制**：`node --experimental-strip-types` **不接受无扩展名 import**
+⇒ 我收编时写的 `from './base64'` 让两个**本来能跑**的既有测试（`download.test.mjs` /
+`app-version-identity.test.mjs`）直接加载失败。⇒ 补 `.ts` 扩展名（本仓可测文件的既有做法）。
+
+⚠ §888 自己的判据也因这次补扩展名而**假红**（写死了 `from '.../base64'`）
+⇒ 按 §869/§882 的做法**只改判据措辞**（改成 `from '[^']*utils/base64`，抗有无扩展名），不动语义。
+
+### §888.5 判据（并入 `base64-null-result.test.mjs`，6 条 → 13 例）
+
+| # | 断言 |
+|---|---|
+| 1 | 阳性对照：扫描器能看到全仓（**前置闸**） |
+| 2 | `blobToBase64` 的**定义数**全仓为 1，且必须是 `utils/base64.ts` |
+| 3 | `audio-parts.ts` 不许再自带实现（唯一一份「失败报成成功」的） |
+| 4 | `usePdfViewer.ts` 必须用公共实现（永久挂起那一份） |
+| 5 | ⭐ **负控**：复刻 `audio-parts` 那份，确认它真的 resolve 空串 |
+| 6 | ⭐ 新实现对同一场景 reject（对照的另一半：不是对照自己太弱） |
+
+⭐ 第 5/6 条沿用本文件既有的**子进程负控**手法（该文件已记录过：
+同进程跑负控会因 node:test 也在监听 `uncaughtException` 而把整份文件判红）。
+
+### §888.6 M46：三次变异
+
+| 变异 | 结果 | 红条目 |
+|---|---|---|
+| V1 `audio-parts` 复活自带副本（D58 完全复现） | 11 / **2** | 「定义数」+「不许自带实现」 |
+| V2 `invoice-thumbs` 新增副本（另一处） | 12 / **1** | 「定义数」 |
+| V3 **负控自伤**：把复刻的旧实现改成 reject | 12 / **1** | 「负控」——证明对照本身有效 |
+
+### §888.7 口径与未实测
+
+- ✅ 收编 5 份为 1 份；`base64.ts` 对「缺 base64 部分」改抛错；
+  判据 6 条；`typecheck` EXIT=0、`gates` 45/45（52.2s）。
+- ⚠ **行为变化**（都是「静默」变「出声」，方向与 §883 一致）：
+  · `audio-parts` 编码失败 ⇒ reject ⇒ `ingest-speech` 的 warn **终于会触发**；
+  · `usePdfViewer` 读取失败 ⇒ 从永久 loading 变成显示「PDF 打开失败」；
+  · `version.ts` / `invoice-thumbs` 的调用点本来就已 reject ⇒ 行为等价。
+- ⚠ 收编后的 import 一律带 `.ts`（§875），这是**为了让既有测试还能在 node 里加载**。
+- ⛔ 未实测：真机上 FileReader 返回 null 的发生率（§888 的两条缺陷都需要它触发）；
+  ⛔ 未实测原生平台 `writeFile({data:''})` 是否真会写出 0 字节文件而不报错
+  （这是「静默丢失」链条的最后一环，本节按 API 语义推断，**未在真机核对**）。
+- ⛔ 未审：`base64ToBlob` / `arrayBufferToBase64` 一族是否也有同型副本（普查只做了 `blobToBase64`）。
+
+## §889 D59：「字节数组 → base64」这个**概念**有 3 份实现，且其中一个函数**名字与语义相反**
+
+§888 的简报 111 第 ① 问把范围从「`blobToBase64` 这一个名字」扩到整个 base64 族。
+本节按那个口径做普查与收编，结果**不是**「又一份同型缺陷」，而是两个不同类型的坏味道。
+
+### §889.1 普查读数：「bytes → base64」一个概念，3 份实现、3 种写法
+
+| 落点 | 写法 | 归属 |
+|---|---|---|
+| `native/recording-audio-transcode.ts` | `String.fromCharCode.apply(null, subarray)`，`CHUNK = 32768` | 录音转写上传链路 |
+| `utils/download-encoding.ts` | `String.fromCharCode(...subarray)`（**展开**），`chunk = 0x8000` | 公共下载编码 |
+| `features/email/email-image-preload.ts` | `apply(null, Array.from(subarray))`（**多一次拷贝**），`CHUNK = 0x8000` | 邮件内联图预加载 |
+
+三者**行为等价**：分块常量都等于 32768、都调 `btoa`。差别只有写法与拷贝次数。
+
+⚠ 三份都**分块**，这一点不是冗余、**不能提齐掉**：`String.fromCharCode` 与
+`Function.prototype.apply` 都有参数个数上限，整块传会在大文件上直接 RangeError。
+
+### §889.2 D59 本体：`base64ToBytesSafe` 的**名字与语义相反**
+
+`email-body-format.ts` 里那个私有函数原名 `base64ToBytesSafe`：
+
+- 读起来像「`base64ToBytes` 的**安全版本**」；
+- 实际是「**跳过 base64 解码**、直接按 latin1 取原始字节」——它不是加固版，是**另一条路径**。
+
+⚠ 这个错名的危险不在于当前唯一调用点（那处传的就是 part 原文，用法正确），
+而在于**未来**：若被当成加固版在别处子调用，传给 `decodePartBytes(…, charset)` 的
+就是**未经校验的 latin1 字节**而不是字符 ⇒ **邮件正文乱码**，而且不报错。
+
+⇒ 改名为 `latin1PartToBytes`。私有 + 单一调用点 ⇒ **零行为变化、零风险**。
+
+### §889.3 ⭐ 本节的方法论增量：**形状不是判据，行为分叉才是**
+
+普查时 `utils/crypto.ts` 里也有 `btoa(String.fromCharCode(...salt))`——
+**形状与上面三份同族**。若沿用 §888「全仓形状唯一」的门，它会被判红。
+
+但它**不该**收编：它是一行内联编码（对随机 salt 做字节映射），不是可复用工具函数，
+参数不是「任意字节数组」而是特定的定长输入，也没有分块问题。
+
+⇒ 这直接限制了 §888 简报 111 第 ② 问里「只针对导出工具函数的重名门」的写法：
+**不能写成形状唯一**，必须逐落点列白名单（KNOWN 清单式）。
+本节的判据第 6 条就是把它**登记为边界**，而不是假装它不存在。
+
+### §889.4 撞门禁：既有判据在实现搬走后**必然假红**
+
+`native/__tests__/recording-audio-transcode.test.mjs:269` 那条 §881 的契约判据
+（分块 + `apply` + 不许一次性展开）**读的是 `recording-audio-transcode.ts` 源码文本**。
+实现收编后那个文件只剩一行 re-export ⇒ 这条判据必然转红。
+
+按 §869/§882/§881 的一贯做法：**只改判据的指向，不改它的语义**。
+三条语义断言原封不动，只是让它读实现的新家 `utils/base64.ts`；
+同时**补一条**反向断言：原文件必须仍以 re-export 暴露该函数（带 `.ts` 扩展名），
+否则本文件顶部的 `import` 与生产 `recordingRuntime.ts` 的共同入口会加载不到。
+
+⚠ 公共实现因此被两处**既有判据的字面**绑住：`CHUNK = 32768`（十进制，不是等值的 `0x8000`）、
+`String.fromCharCode.apply`（不是等价的展开）。这是「撞门禁只改自己措辞」的代价，
+写在这里是为了下一个想统一写法的人知道**改字面会红，且必须回去改判据**。
+
+### §889.5 判据（并入 `base64-null-result.test.mjs`，6 条 → 19 例）
+
+| # | 断言 |
+|---|---|
+| 1 | ⭐⭐⭐ **前置闸**：扫描器能看到全仓（§885 踩过的假绿） |
+| 2 | ⭐⭐⭐ 四个收编落点都不许再自带 bytes→base64 实现 |
+| 3 | ⭐⭐⭐ 公共实现必须保留分块（整块传会 RangeError） |
+| 4 | ⭐⭐⭐ 录音链路那份必须 re-export 且带 `.ts`（§881 判据在 node 里 import 它） |
+| 5 | ⭐⭐ D59：那个错名函数不许再叫 `base64ToBytesSafe`，且调用点必须跟着改 |
+| 6 | ⭐⭐ **边界登记**：`crypto.ts` 的内联编码不在收编范围（形状同、性质异） |
+
+⚠ 第 2 条用**逐落点**而非「全仓形状唯一」——理由见 §889.3。
+⚠ `email-body-format.ts` 的 `b64FromBytes` 是**有意保留**的薄包装：
+它外面套着 `catch → ''`（既有行为，本节不代拍，见简报 112），
+所以不能直接换成裸调用，判据里显式登记了这个例外。
+
+### §889.6 M47：四次变异（含一次「命名回退」）
+
+| 变异 | 结果 | 红条目 |
+|---|---|---|
+| V1 公共实现去掉分块（一次性 `apply` 整块） | 18 / **1** | 「必须保留分块」 |
+| V2 `b64FromBytes` 又自己拼一遍（绕过公共实现） | 18 / **1** | 「收编落点不许自带实现」 |
+| V3 re-export 去掉 `.ts` 扩展名 | 18 / **1** | 「必须 re-export 且带 .ts」 |
+| V4 名字回退为 `base64ToBytesSafe` | 18 / **1** | D59 那条 |
+
+还原后 19 / 19 绿。
+
+### §889.7 口径与未实测
+
+- ✅ 收编 3 份为 1 份；`base64ToBytesSafe` → `latin1PartToBytes`；
+  判据 6 条；`typecheck` EXIT=0、`gates` 45/45（53.1s）。
+- ⚠ **零行为变化**：三份实现行为等价，收编只改写法与拷贝次数。
+  `b64FromBytes` 的 `catch → ''` **保留不动**（改它属行为变更 ⇒ 简报 112）。
+- ⚠ 公共实现的参数放宽为 `ArrayBufferLike`（`Uint8Array.buffer` 的类型就是它，
+  只接 `ArrayBuffer` 会让每个调用点都先转一次）；`b64FromBytes` 侧用
+  `buffer.slice(byteOffset, byteOffset + byteLength)` 取出精确区间
+  （⚠ 直接传 `bytes.buffer` 会带上同 buffer 里别的视图）。
+- ⛔ 未实测：邮件内联图 `b64FromBytes` 的 `catch → ''` 实际触发率
+  （本节改为公共实现后，触发条件仍是 `btoa` 抛错，与收编前一致）。
+- ⛔ 未审：`base64ToBlob` / `utf8ToBase64` 两族是否也有同型副本（本节只做了 bytes→base64）。
+### §889.8 审计轮（并发会话复核 §889）：判据形态无关化 + 补上唯一缺行为覆盖的那条数据路径
+
+本小节是**对 §889 的独立复核**（不是 §889 的续写）：把 §889 的 6 条判据与实现
+逐条注入变异，看它们**抓不抓得住缺陷复发**。结论是：§889 的**代码改动是对的**，
+但它的**判据有一处形态依赖的假绿**，而它**唯一真正改到的数据路径零行为覆盖**。
+
+#### §889.8.1 ⭐ 发现 1：判据钉的是「函数名 + 声明形态」⇒ 换个形态就全绿逃掉
+
+§889.5 的判据是「四个收编落点里不许再有 `function arrayBufferToBase64` / `function bytesToBase64`」
+—— 也就是 `/function\s+名字/`。**实测（§889.8.5 变异矩阵 M2 / M2b）**：
+
+| 注入的副本 | §889 落地版判据 | 审计后判据 |
+|---|---|---|
+| `export function arrayBufferToBase64(...)` | 🔴 红 | 🔴 红 |
+| `const dupEncode = (buffer) => btoa(String.fromCharCode(...))` | 🟢 **全绿逃掉** | 🔴 红 |
+| `const helper = (buffer) => {…}`（**连名字都换了**） | 🟢 **全绿逃掉** | 🔴 红 |
+
+⇒ 根因：判据钉的是**名字 + 声明形态**，而「bytes → base64」这个**概念**的实现
+可以是任何形态（`function` / `const` 箭头 / 换名 / 换写法）。**换个写法就绕过**。
+
+**修法：判「形状」而不是判「名字」。** 同一文件里 `btoa(` 与 `String.fromCharCode`
+**同时出现** = 那里有 bytes→base64 实现。依据：字节变 base64 只能靠
+「把字节摊成 binary string」+「btoa」这两步，**写法换不掉这两步**。
+
+⚠⚠ 但形状**不能拿来做全仓唯一性**判定 —— §889.3 已经踩过这个坑
+（`crypto.ts` 的 `btoa(String.fromCharCode(...salt))` 形状相同却不该收编）。
+⇒ **形状只在这 4 个「收编落点」上判**（它们本来就该只剩公共实现）。
+这条恰好回答了简报 112 第 ③ 问：「要不要按这个形状落一条常驻门？」—— **要，
+但必须逐落点限定，不能全仓**。
+
+#### §889.8.2 发现 2：判据没有「体检」—— 规则退化成「什么都不匹配」也会全绿
+
+判据若写成一条宽泛的正则，它**匹配不到任何东西**时同样全绿。
+⇒ 补 2 条**量具自检**（不是同伴用例，是量具自己的体检）：
+① 规则必须抓住**合成的 const 形态副本**；② 规则**不得**把 `utf8ToBase64`
+（字符串→base64，另一个概念）误判。
+
+#### §889.8.3 ⭐⭐ 发现 3：§889 唯一真正改到的**数据路径**，零行为覆盖
+
+§889 收编了 3 份实现，但其中**只有一条**是真正的数据路径：
+`email-body-format.ts::b64FromBytes`（7bit/8bit 邮件部件 ⇒ latin1 取字节 ⇒ base64）。
+
+⚠ 而**全仓的 cid 内联图测试，用的全是 base64 编码的部件** ——
+`email-cid-images.test.mjs` 13 个用例、`email-body-header-anchoring.test.mjs`、
+`email-cid-image-forms.test.mjs` 全部只走 `encoding: 'base64'` 分支。
+⇒ **7bit/8bit 那条路径在 §889 之前、之后都没有任何行为覆盖。**
+
+⇒ 这正是「收编做得对不对，只有文本扫描说了算」的典型：
+§889.5 的 6 条判据**全是文本扫描**，它能证明「实现搬走了」，**证明不了「搬走之后行为对」**。
+
+**补的行为门**（字节级）：期望值由 Node 的 `Buffer` 直接算出（latin1 语义），
+**不是抄一份实现再比一遍**（那是「用同一个错误证明自己」）。
+**区分力验证**：把「按 latin1 取字节」改成「按 utf8 编码」⇒ 变异后该用例**变红**（12/1），
+还原 ⇒ 13/13 绿。
+
+#### §889.8.4 发现 4：分块边界那一档没被钉住
+
+§881 的行为用例测了 `0` 与 `200000`，**缺 32767 / 32768 / 32769** ——
+「恰好等于分块大小」那一档（`i + CHUNK` 越界一格就会多编一个空块）。
+⇒ 审计轮补齐：`0 / 1 / 32767 / 32768 / 32769 / 65536 / 200000` 逐字节对齐 Node Buffer。
+
+#### §889.8.5 发现 5：代码卫生 + 如实登记已知边界
+
+- `utils/base64.ts` 里**两段相邻的 doc 注释** ⇒ 实际只有第二段挂到了函数上，
+  §889 写的那段理由（为什么必须分块、收编了哪三份）**在 IDE 提示里根本看不见**
+  ⇒ 合并为一段。
+- ⚠⚠ **已知边界（如实登记，不假装覆盖范围更大）**：这道门**只覆盖那 4 个落点**，
+  **不是全仓唯一性断言**。变异实测：新增第 5 个文件 `src/utils/rogue-base64.ts`
+  ⇒ 仍然全绿。
+  ⇒ 门的职责是「**已经收编过的地方别退回去**」；**全仓唯一性靠普查**（§888 那类
+  「同名函数 > 1 次」清单），不靠这道门。这条已写成门内的一条显式登记。
+
+#### §889.8.6 变异矩阵（审计轮读数）
+
+| # | 注入的缺陷 | §889 落地版 | 审计后 |
+|---|---|---|---|
+| M1 | 落点里加回 `function` 实现 | 🔴 | 🔴 |
+| M2 | 落点里加回 **`const` 箭头**形态 | 🟢 **假绿** | 🔴 |
+| M2b | 落点里加回 **换名**的 `const` 副本 | 🟢 **假绿** | 🔴 |
+| M3 | `email-image-preload` 加回 `bytesToBase64` | 🔴 | 🔴 |
+| M4 | `email-body-format` 体内又出现 `btoa(` | 🔴 | 🔴 |
+| M5 | 新增**第 5 个文件**的副本 | 🟢 | 🟢（**已登记的边界**） |
+| M6 | D59 名字回退 `base64ToBytesSafe` | 🔴 | 🔴 |
+| M7 | 8bit 部件改用 utf8 编码 | —（无此用例） | 🔴 |
+
+#### §889.8.7 读数
+
+- `typecheck` EXIT=0；`gates` **45/45**（53.9s）；
+  `test:all` **4336 通过 / 0 失败**（375/375 个测试文件都被真实执行）。
+- ⚠ 本小节只**加判据与补测试**，**零生产代码行为变化**；
+  `base64.ts` 唯一的改动是**合并两段 doc 注释**。
+
+## §890 同仓另一条会话转来两条报告：**一条成立并已修、一条逐条不成立**，以及一件量具事故
+
+### 890.0 结论先行
+
+- **成立的那条已修并提交**（`3aaa8737`）：`stt` 的一道门禁把「过期结论」钉成
+  **一句过去的措辞**，同一句假话换个说法就绕过。变异实测：旧门放过 3/3，新门抓到 3/3。
+- **不成立的那条全部撤回**：「干净克隆 HEAD 编不过」「会被密钥门拦下」等 6 条逐条证伪，
+  根因是那份报告的读数时刻是 **2026-10-08**，而落笔时是 **2026-10-18**。
+- **当前 CI 面 34 项 34 过 / 0 红** ⇒ 此前挂着的唯一那盏 `check:dead-features`
+  已由并行会话成组提交后转绿，**「242 件自洽包」那个待拍板项作废**。
+- ⚠ **本节还记一次我自己的量具事故**：取节号的正则漏掉了半数的顶级标题形态，
+  **max 少算了 497**（真值 §889，我读到 §392）。
+
+### 890.1 成立的那条：门禁钉的是措辞，不是性质
+
+`backend/internal/stt/gateway_model_notes_gate_test.go` 的两条负控都是字面量：
+
+```go
+strings.Contains(s, "这三个是网关侧唯一值得预置的候选，当前都返回 503")
+strings.Contains(s, `Note: "网关 ASR 模型（目录里被标成 text）"`)
+```
+
+而同一时刻 `target.go:237` 写的是
+`"实测可用（2026-10-06 zh/en 全对）· 网关 /models 未标 audio，勿按目录过滤掉它"`
+⇒ 两者不相等，而 `TestGatewayModelNotesAreNotStale` **PASS**（本轮实跑复核）。
+
+⚠ 那半句「网关 /models 未标 audio」**会腐烂**：2026-10-08 起目录已给该模型标 `audio`，
+写下这句话时还没有。
+★ 与 §13「注释一旦过期就变成不用再修的伪证据」同族，只是载体换成了**门禁**：
+门在，但它量的是「那句话还在不在」，**不是那句话成不成立** ⇒ **过期即静默**。
+
+### 890.2 修法：删掉会腐烂的那半句 + 把门禁从钉措辞改成钉一族
+
+**1) `target.go:237`** 删掉目录快照，只留**操作建议**：
+`· 网关 /models 未标 audio，勿按目录过滤掉它` ⇒ `· 勿按目录的 modality 过滤掉它`。
+
+★ 比「把 `未标` 改成 `已标`」更根本：**写死「目录现在是什么」必然再次腐烂**，
+写「别按 modality 过滤」则今天成立、明天也成立。
+⇒ 凡是事实性说明，先问一句：**这句话的失效期由谁决定？**
+由外部系统决定的，就不该以断言形式写进源码。
+
+**2) 新增 `TestNoCatalogModalityClaimInNotes`**，禁掉这一族，数据面覆盖
+`Recommended{Gateway,External,Models}` 三个清单。
+
+| 臂 | Note 改成 | 旧门（钉措辞） | 新门（钉族） |
+|---|---|---|---|
+| M1 | 网关 /models 未标 audio | 放过 | **抓到** |
+| M2 | 网关目录没标 audio | 放过 | **抓到** |
+| M3 | 该模型不是 audio | 放过 | **抓到** |
+| M0 | 正控（现在的措辞） | 放过 | 放过（不误伤） |
+
+门内另带**负控 6 例**（同一族六种措辞必须被抓到）与**正控 4 例**（正当措辞不许误伤）。
+★ 少了负控，这道新门会退化成它要替换掉的那个形态——**换了个文件的钉措辞**。
+
+实测：`go test ./internal/stt/` ok、`go build ./...` rc=0、`gofmt -l internal/` 空。
+
+### 890.3 不成立的那条：逐条证伪
+
+| 它的读数 | 本轮实测 | 判定 |
+|---|---|---|
+| `internal/stt/provider.go` 等 3 件未跟踪 | `git ls-tree -r HEAD` **在 HEAD 里** | ❌ |
+| `internal/meetingagent/{agent.go,tools.go}` 未跟踪 | **在 HEAD 里** | ❌ |
+| 「干净克隆 HEAD 本身就是编不过的」 | `go build ./...` **rc=0** | ❌ |
+| `live_minimax_probe_test.go`「`git log --all` 为空 ⇒ 从未进过任何分支」 | **有 2 条提交** | ❌ |
+| 「照这 52 个提交会被 `TestNoCommittedSecrets` 拦下」 | 实跑该门 **rc=0** | ❌ |
+| `frontend/src/utils/text.ts` 等前端清单 | 抽样 7 条**全在 HEAD** | ❌ |
+
+⚠ 最后两条**方向相反且都危险**：「会被门拦下」会让人**放弃正确的那次提交**；
+「HEAD 编不过」会让人去**修一个不存在的缺陷**。
+
+### 890.4 根因：它问的是一个**已经不存在**的问题
+
+它问「谁引用了未跟踪文件」。**答案在它写下时是对的**；到我读到时前提已不成立——
+并行会话已把约 180 条提交（含全部闭包）并进 `main`，工作树从 242 处降到 7 处。
+
+⇒ ★★★ 通用式：**共享工作树上，转述来的审计结论必须带「读数时刻」一起复核。**
+没有时刻的审计结论，其有效性随对方的提交线性衰减，而它**不会自己作废**——
+它会以「已核实」的语气继续被引用。
+
+### 890.5 ⚠ 我自己的量具事故：取节号的正则漏掉了半数标题形态
+
+我用来取 max 节号、决定新节写哪一号的一直是 `^## (\d+)\.`。
+但本文件同时存在两种顶级节形态：
+
+- `## 392. 标题`（带点、无 §）
+- `## §393 标题`（带 §、**无点**）
+
+⇒ 旧正则只认得前者，**max 少算 497**（我读到 §392，真值 **§889**）。
+
+★ 这与 §247 记的那条**是同一件事的两面**，且都发生在今天：
+
+1. §247 的写后断言用了子串 `s2.count('## 247.')`，
+   而 `### 247.0` 含子串 `## 247.` ⇒ 断言在**正确**的文档上报红；
+2. 本节的取号正则则在**长期**里少算 497。
+
+⇒ ★★★ 通用式：**锚点与编号的判据必须行首锚定**（`^##\s*(?:§+\s*)?(\d+)`），
+子串匹配在有子节的文档里既会**误报**（§247 那次），也会**漏报**（本节这次）。
+⇒ 附带一条自我安慰：**今天写的 §236–§247 逐个查过，无一撞号**（重复顶级节号表里没有它们），
+但那是**运气**，不是方法——方法当时就是错的。
+
+### 890.6 当前 CI 面（本轮实测，逐项驱动，非「失败即停」读数）
+
+**34 项 34 过 / 0 红**（HEAD = `7b51245d`；工作树 7 处改动属并行会话在制品）。
+
+⚠ 口径：`ciRuns` 已从 31 涨到 **34** 条、`gates` 从 42 涨到 **45**。
+⇒ **任何「几过几红」必须连同当时的 `ciRuns` 长度一起记**；
+上一轮记的「6 → 1」是 31 条口径，与本轮**不同口径，不可直接比较**。
+
+### 890.7 本节状态
+
+- 唯一产品改动是 `3aaa8737`（`target.go` 一行 + 门禁新增一个测试函数）。
+- 工作树另外 7 个文件（email / utils / transcode）属并行会话在制品，**未触碰**。
+- 未改动 `gates.json` / `package.json`。

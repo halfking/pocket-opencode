@@ -4,6 +4,11 @@ import { useConfirm } from '../../composables/useConfirm'
 import { useToast } from '../../composables/useToast'
 import { useApiError } from '../../composables/useApiError'
 import { deleteMeetingAudio } from '../../native/meeting-audio'
+import {
+  describeRecordActionFailure,
+  RECORD_ACTION_FAIL_TAG,
+  RECORD_MEDIA_CLEANUP_FAIL_TAG,
+} from '../../utils/action-failure-notice'
 import { canDispatchMeeting, type MeetingStudioAction } from './meeting-page-actions'
 import { archiveMeeting, deleteMeeting, unarchiveMeeting, type LocalMeeting } from './meetings-store'
 import { handoffMeetingToAcc } from './meeting-todo-persist'
@@ -22,16 +27,28 @@ export function useMeetingStudio(
     const m = meeting.value
     if (!m) return
     if (id === 'classify') return 'classify'
+    // ⚠⚠ §838：这三处此前是裸 await + **无条件**的成功 toast。写失败时 toast
+    //   不出现（它排在 await 之后）⇒ 用户只看到菜单点了没反应，零说明。
     if (id === 'archive') {
-      await archiveMeeting(m.id)
-      await load()
-      toast.success('已归档')
+      try {
+        await archiveMeeting(m.id)
+        await load()
+        toast.success('已归档')
+      } catch (e) {
+        console.error(RECORD_ACTION_FAIL_TAG, 'archive', e)
+        toast.error(describeRecordActionFailure('archive', { error: e }))
+      }
       return
     }
     if (id === 'restore') {
-      await unarchiveMeeting(m.id)
-      await load()
-      toast.success('已恢复')
+      try {
+        await unarchiveMeeting(m.id)
+        await load()
+        toast.success('已恢复')
+      } catch (e) {
+        console.error(RECORD_ACTION_FAIL_TAG, 'restore', e)
+        toast.error(describeRecordActionFailure('restore', { error: e }))
+      }
       return
     }
     if (id === 'dispatch-acc') {
@@ -56,8 +73,21 @@ export function useMeetingStudio(
         danger: true,
       })
       if (!ok) return
-      await deleteMeeting(m.id)
-      try { await deleteMeetingAudio(m.id) } catch { /* ok */ }
+      // ⚠ §838：音频清理失败此前是 `catch { /* ok */ }` ⇒ blob 永久残留、零痕迹。
+      //   主体已删除不必重试，但残留占空间，必须说出来。
+      try {
+        await deleteMeeting(m.id)
+      } catch (e) {
+        console.error(RECORD_ACTION_FAIL_TAG, 'delete', e)
+        toast.error(describeRecordActionFailure('delete', { error: e }))
+        return
+      }
+      try {
+        await deleteMeetingAudio(m.id)
+      } catch (e) {
+        console.error(RECORD_MEDIA_CLEANUP_FAIL_TAG, e)
+        toast.error(describeRecordActionFailure('delete', { error: e, mediaCleaned: false }))
+      }
       toast.success('已删除')
       await router.replace('/meetings')
     }
