@@ -122,7 +122,12 @@ export async function createNote(input: CreateNoteInput): Promise<LocalNote> {
     )
   }
 
-  embedAndStore(note.id, decided.searchText || note.content).catch((e) => {
+  // ⚠⚠ §896/D66：喂给 embedding 的是 `embedText`（纯内容）**不是** `searchText`
+  //   ——后者带着给 FTS 用的合成 bigram 尾巴（短笔记里能占一半以上）。
+  //   这两个失败都是 fire-and-forget（正文已落 SQLite，不该让主链路等云端），
+  //   所以**两条路径的失败必须同样出声**：此前一条 warn、一条完全吞掉，
+  //   于是「保存一条长会议笔记」既没有向量、也没有任何痕迹。
+  embedAndStore(note.id, decided.embedText || note.content).catch((e) => {
     console.warn('[lobster] 嵌入失败，笔记已存但暂无向量:', e)
   })
   // 记下这次镜像的 promise，让依赖后端行存在的调用方（录音后的 AI 总结）
@@ -271,7 +276,11 @@ export async function updateNote(
     ],
   )
   if (patch.content !== undefined) {
-    embedAndStore(id, decided.searchText).catch(() => {})
+    // ⚠ §896/D66：此前是 `.catch(() => {})` —— 整条编辑保存路径的嵌入失败**零痕迹**，
+    //   而它是长笔记**唯一**的重试机会（创建时已经失败过一次）。改为与创建路径对称。
+    embedAndStore(id, decided.embedText).catch((e) => {
+      console.warn('[notes] 正文已更新但向量写入失败，语义检索暂时搜不到这条:', e)
+    })
   }
 }
 
@@ -441,10 +450,31 @@ export async function awaitNoteMirror(noteId: string): Promise<void> {
   }
 }
 
+/**
+ * `/api/embed` 服务端的字符硬上限。
+ *
+ * ⚠ 出处：`backend/internal/server/server_assistant.go:2853`
+ *   `if len(body.Text) > 16000 { 400 "text too long (max 16000 chars)" }`
+ *   —— 这是**服务端**的数，前端此前**完全不知道**，超了就是一次必然失败的请求。
+ *   两处硬编码要不要收敛成一处契约，见简报 119（属主口径，本节未代拍）。
+ */
+const EMBED_TEXT_CHAR_LIMIT = 16000
+
 async function embedAndStore(noteId: string, content: string): Promise<void> {
+  // ⚠⚠ §896/D66：必须在这里**主动**截到上限以下。
+  //   此前发的是不截断的整份文本 ⇒ 正文超过约 15753 字（≈63 分钟连续发言）
+  //   的笔记，/api/embed **必然 400**；两个调用点一个只 `console.warn`、
+  //   一个 `.catch(() => {})` 完全静默，而全仓**没有 embedding 回填**
+  //   ⇒ 这条笔记**永远不会有向量**，语义检索永远搜不到它，用户零提示。
+  //   截断取**头部**：会议转写的主题句在开头（`cjkBigramTokens` 同样只取头部）。
+  //   ⛔ 「取头部」是本节的技术默认值；「分段嵌入再合并 / 先摘要再嵌入」属产品口径，
+  //   已登记在简报 119，未代拍。
+  const text = content.length > EMBED_TEXT_CHAR_LIMIT
+    ? content.slice(0, EMBED_TEXT_CHAR_LIMIT)
+    : content
   const res = await http<{ embedding: number[]; model: string }>('/api/embed', {
     method: 'POST',
-    body: JSON.stringify({ text: content }),
+    body: JSON.stringify({ text }),
   })
   await vectorIndex.add(noteId, Float32Array.from(res.embedding), res.model)
 }

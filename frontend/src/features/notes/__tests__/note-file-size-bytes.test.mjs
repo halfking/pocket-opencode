@@ -301,7 +301,7 @@ const DEGRADE_REGISTRY = {
   'features/notes/note-search.ts::content::18e0a71a': '只读输入：喂给检索助手的候选目录',
   'features/notes/note-search.ts::summary::db6b8647': '同字段：助手摘要列写助手摘要',
   'features/notes/notes-fts-backfill.ts::content::39abfcd6': '只读输入：FTS 回填读行内容',
-  'features/notes/notes-persist.ts::content::0906239f': '只读输入：向量化正文兜底',
+  'features/notes/notes-persist.ts::content::794e4d8b': '只读输入：送 /api/embed 前按服务端 16000 字符上限截断（§896/D66）。截断结果只进 HTTP 请求体，不落库也不落文件 ⇒ 无持久化副作用；⚠ 取头部是技术默认值，「分段嵌入/先摘要」属产品口径（简报 119）',
   'features/notes/notes-persist.ts::content::554774cc': '写入**条件**里的 ||，不是取值降级',
   'features/notes/notes-persist.ts::summary::19169f5a': '同字段：摘要列写摘要',
   'features/notes/notes-persist.ts::content::48f6f842': '★ §891 保留的安全降级：body_path 未回填时 content 仍是全文',
@@ -392,7 +392,9 @@ describe('§892 · D62：降级取值的可逆性普查（跨切面不变量）'
     const mustNotCatch = [
       '<div class="note-snippet">{{ n.summary || n.content }}</div>',
       'nextSummary ?? decided.summary',
-      'embedAndStore(note.id, decided.searchText || note.content)',
+      // §896/D66：向量那条已从 decided.searchText 改成 decided.embedText（去掉 FTS bigram），
+      // 但它在本门里的性质不变 —— 只是「只读消费」，不是把降级值写回正文。
+      'embedAndStore(note.id, decided.embedText || note.content)',
       'content: note.content || existing.content',
     ]
     for (const line of mustNotCatch) {

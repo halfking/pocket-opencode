@@ -315,9 +315,14 @@ describe('§893 · D63：updateNote 的派生状态来源（内容没变时也�
     assert.match(updateParams, /decided\.searchText/,
       'search_text 不再由 decided 派生（改成了别的来源）⇒ 派生链已变，请重核本节结论')
     assert.match(updateParams, /decided\.tier/, 'storage_tier 同样应由 decided 派生')
-    // 向量那条也必须用重建后的检索文本，否则索引与 FTS 会分叉。
-    assert.match(u, /embedAndStore\(id, decided\.searchText\)/,
-      '向量写入不再用 decided.searchText ⇒ 请重核派生链')
+    // 向量那条必须同样来自**本次重建**的 decided（§896/D66 改用 decided.embedText，
+    // 它是同一份 decided 里的「纯内容」投影，与 searchText 同源不同形）。
+    // ⚠ 不变量没变：向量不得改用 existing.* / 旧值 / 别处重建的文本 ——
+    //   旧值在 tier='file' 时是 ≤280 字摘要（§891/D61 同族，会让向量与索引分叉）。
+    assert.match(u, /embedAndStore\(id, decided\.embedText\)/,
+      '向量写入不再用本次重建的 decided.embedText ⇒ 请重核派生链')
+    assert.doesNotMatch(u, /embedAndStore\([^)]*existing\./,
+      '向量改用了 existing.*（tier=file 时那是 ≤280 字摘要）⇒ 向量会与 FTS 索引分叉')
   })
 
   it('★★★ 反向：不得改成「内容没变就用 existing.content 当 nextContent」', () => {
@@ -349,5 +354,81 @@ describe('§893 · D63：updateNote 的派生状态来源（内容没变时也�
     const list = read(path.join(SRC, 'features', 'notes', 'NoteListView.vue'))
     assert.match(list, /summarizeError\.value = apiError\(e, '总结失败/,
       '摘要落库那条的错误文案已改（不再归因成「总结失败」）⇒ 简报 116 第 ① 条可以撤了')
+  })
+})
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * §896 · D66：送去做向量的那份文本有两个缺陷
+ * ═══════════════════════════════════════════════════════════════════════════
+ * ① **喂给 embedding 模型的是 FTS 检索文本**，而那份文本的尾巴是
+ *    `cjkBigramTokens` 合成出来的机器 bigram（最多 80 个 gram ≈ 239 字符）
+ *    —— 它是给 FTS5 做 CJK 子串匹配用的，对 embedding 是纯噪声。
+ *    实测：正文 200 字的随手记，实收文本里 **53.2%** 是合成 gram。
+ * ② **`/api/embed` 服务端有 16000 字符硬上限**
+ *    （`backend/internal/server/server_assistant.go:2853`），
+ *    前端此前**不知道**，发的是不截断的整份文本
+ *    ⇒ 正文超过约 15753 字（≈63 分钟连续发言）必然 400；
+ *    而创建路径只 `console.warn`、编辑保存路径 `.catch(() => {})` **完全静默**，
+ *    全仓又没有 embedding 回填 ⇒ **这条笔记永远不会有向量**，语义检索永远搜不到它。
+ *
+ * 本组判据盯三件事：**去噪**、**长度预算**、**失败不再静默**。
+ * 最后一组带负控：把两个 `.catch` 换回原来的形状，门必须报红。
+ */
+describe('§896 · D66：向量化用的文本不该是 FTS 文本，也不该无上限', () => {
+  it('★★★ 向量必须用 decided.embedText（纯内容），不得用 decided.searchText', () => {
+    const u = read(path.join(SRC, 'features', 'notes', 'notes-persist.ts'))
+    assert.match(u, /embedAndStore\(id, decided\.embedText\)/,
+      '编辑保存路径的向量又改回 decided.searchText ⇒ 合成 gram 回到 embedding 输入里')
+    assert.match(u, /embedAndStore\(note\.id, decided\.embedText \|\| note\.content\)/,
+      '创建路径的向量没有走 decided.embedText')
+    // 反向：searchText 只该出现在 UPDATE 的派生列里，不该再被送去做向量。
+    // ⚠ 量具事故（已写进注释）：第一版正则要求实参是 `note.id`，
+    //   而编辑保存那条传的是裸 `id` ⇒ 只数到 1 处 ⇒ 判据自己红了。
+    //   「数量判据」必须允许两种入参写法，否则它会替漏网背书。
+    const embedCalls = [...u.matchAll(/embedAndStore\(\s*[\w.]+\s*,\s*([^)]*)\)/g)].map((m) => m[1].trim())
+    assert.ok(embedCalls.length >= 2, `只找到 ${embedCalls.length} 处 embedAndStore 调用（判据该按数量而不是按字面量钉）`)
+    for (const arg of embedCalls) {
+      assert.doesNotMatch(arg, /searchText/,
+        `embedAndStore 的实参是 ${JSON.stringify(arg)} —— 那是 FTS 文本（含合成 bigram），不是 embedding 输入`)
+    }
+  })
+
+  it('★★★ decideNoteStorage 必须同时给出两个投影，且 embedText 不含 gram', () => {
+    const pol = read(path.join(SRC, 'features', 'notes', 'note-storage-policy.ts'))
+    assert.match(pol, /export function buildEmbedText\(/, 'note-storage-policy 少了 buildEmbedText')
+    assert.match(pol, /embedText,\n?\s*persistBodyFile: false,/, 'inline 分支没有产出 embedText')
+    assert.match(pol, /embedText,\n?\s*persistBodyFile: true,/, 'file 分支没有产出 embedText')
+    // buildEmbedText 自身不得引用 gram 构造器 —— 这就是「去噪」这件事本身。
+    const body = pol.slice(pol.indexOf('export function buildEmbedText'), pol.indexOf('export function buildSearchText'))
+    assert.doesNotMatch(body, /cjkBigramTokens/,
+      'buildEmbedText 里又出现了 cjkBigramTokens ⇒ 去噪被撤销')
+    // 反向负控：buildSearchText 必须仍然带 gram（FTS 侧一个字都不能变）
+    assert.match(pol.slice(pol.indexOf('export function buildSearchText')), /cjkBigramTokens/,
+      'buildSearchText 不再带 gram ⇒ FTS 的 CJK 子串匹配塌了（§886 的修法被误伤）')
+  })
+
+  it('★★★ 必须按服务端上限截断，且上限值与后端硬编码一致', () => {
+    const u = read(path.join(SRC, 'features', 'notes', 'notes-persist.ts'))
+    assert.match(u, /const EMBED_TEXT_CHAR_LIMIT = 16000/,
+      'EMBED_TEXT_CHAR_LIMIT 不存在或不是 16000 ⇒ /api/embed 会拿到必然被拒的请求体')
+    assert.match(u, /content\.length > EMBED_TEXT_CHAR_LIMIT\s*\n?\s*\?\s*content\.slice\(0, EMBED_TEXT_CHAR_LIMIT\)\s*\n?\s*:\s*content/,
+      'embedAndStore 没有在发请求前截断 ⇒ 超长笔记必然 400 且永远拿不到向量')
+    // 请求体必须用的是截断后的值，不是原 content
+    assert.match(u, /JSON\.stringify\(\{ text \}\)/, '/api/embed 请求体没有用截断后的 text（仍在发原 content）')
+  })
+
+  it('★★★ 两条嵌入路径的失败必须同样出声（编辑保存那条曾是完全静默的）', () => {
+    const u = read(path.join(SRC, 'features', 'notes', 'notes-persist.ts'))
+    const catches = [...u.matchAll(/embedAndStore\([^)]*\)\.catch\(\(([^)]*)\)\s*=>\s*\{([^}]*)\}/g)]
+    assert.equal(catches.length, 2,
+      `找到 ${catches.length} 处 embedAndStore().catch()（期望 2：创建 + 编辑保存）`)
+    for (const [, param, body] of catches) {
+      assert.match(param, /e|err|error/, `有一处 catch 没接住错误参数：${param}`)
+      assert.match(body, /console\.(warn|error)/,
+        `有一处 embedAndStore().catch() 是空的 ⇒ 嵌入失败零痕迹（${body.trim()}）`)
+    }
+    // 反向负控：不得出现「参数接了但什么也不做」
+    assert.doesNotMatch(u, /embedAndStore\([^)]*\)\.catch\(\(\)\s*=>\s*\{\s*\}\)/,
+      '又有 embedAndStore().catch(() => {}) 空吞了 —— 这正是 §896 修掉的那一行')
   })
 })
