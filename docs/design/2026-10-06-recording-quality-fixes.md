@@ -99934,3 +99934,112 @@ router.push('/login')
       清 WebView 数据会连带清掉录音缓存，要不要一并警告？）
    ③ §870.5 那条 `storage` 监听只同步两个键的跨标签差异，要不要本节一并补齐？
       本节按「未取证、不改」处理。
+### §871.1 口径：§870 登记的那条线索
+
+§870 的 §870.5 留下一条**未取证**的候选：
+
+> `auth.ts` 底部的 `storage` 监听只同步 `TOKEN_KEY` / `USER_KEY` 两个键，
+> **不同步** `workspaceId` / `userId` ⇒ 跨标签登出后另一标签的
+> `workspaceId` 会残留。
+
+本节去查它。结论先给：**属实，且比登记时写的更严重** ——
+因为 `syncFromStorage()` 不只在 `storage` 事件里被调用。
+
+### §871.2 ⭐ D41：「从存储刷新会话」系统性漏掉 3 个键
+
+**关键取证**（这一步决定了严重度）：
+
+```
+app/routeGuards.ts:55-56
+  if (typeof auth.syncFromStorage === 'function') {
+    auth.syncFromStorage()
+```
+
+⇒ 它在**每次导航**都会被调用。所以这不是「跨标签才有的问题」，
+而是「**从存储刷新会话**这条指定路径，整个应用生命周期里都漏掉了
+`workspaceId` / `authMethod`」。
+
+**有消费者的后果**（不是推测）：
+- `composables/usePendingApprovals.ts:80` → `workspaceId: auth.workspaceId || 'default'`
+- `app/routeGuards.ts:87` → `requiresAuth && auth.isAuthenticated && !auth.workspaceId`
+- `app/AppLayout.vue:149-151` → `watch([userId, workspaceId]) → shellRuntime.setScope(...)`
+
+⇒ 跨标签登录到**另一个** workspace 后，本标签仍按**旧 workspace** 取待审批。
+
+**修法**：`syncFromStorage()` 读齐四个落盘键并回写对应 state 字段。
+
+### §871.3 ⚠ 只修 `syncFromStorage` 是**不完整**的 —— 判据抓出来的
+
+我第一次只改了 `syncFromStorage`，判据立刻红：
+
+```
+'触发同步的 storage 监听也必须覆盖全部落盘键（只修 syncFromStorage 是不完整的）'
+  why: storage 监听没认 WS_KEY ⇒ 别的标签改了它，本标签收不到事件、根本不会触发同步
+```
+
+**这个红是对的**：§871.2 的修复在跨标签场景下**根本不会生效** ——
+别的标签改了 `pocket_workspace_id`，本标签连事件都不收，
+同步函数压根不会被调用。
+
+⭐ ⇒ 立一条规律：**改「刷新函数」时必须同时查「谁触发它」** ——
+两者的键集合必须一致，否则修复等于没做。
+
+同时补上了 `event.key === null`：规范里 `localStorage.clear()` 触发的事件
+`key` 为 `null`。全仓 `clear()` 目前 **0 处**，但既然条件表达式本来就要改，
+把这个分支一并处理比留一个已知缺口更省事，且语义正确
+（`null` 时重新读一遍全部键，正是 `clear()` 想要的行为）。
+
+### §871.4 ⚠ 第二个被**实测推翻**的推断：`userId` 从不落盘 = 哑雷
+
+取证时我认定第三条缺陷：`state` 里 `userId: ''` 是写死的，
+全仓**没有** `pocket_user_id` 这个键，`setAuthWithWorkspace` 只把它放在内存
+⇒ 每次刷新后 `userId` 都是空串 ⇒ `AppLayout` 的 `shellRuntime.setScope({ accountId: '' })`。
+
+**实测推翻**（又是先数消费者）：
+`shellRuntime.scope()` 在 `lib/shell/runtime.ts` 之外**零消费者**；
+而 `setScope` 真正的作用只是「值变化时才 `store.reset()`」——
+`workspaceId` 的变化**已经足够**触发那次 reset。
+
+⇒ 它是**哑雷不是缺陷**：`accountId` 从来没人读。
+**登记不修**（与 §869.4 同立场），并明确写清
+「若将来有人读 `scope().accountId`，这条会立刻变成真缺陷」。
+
+### §871.5 判据与变异
+
+`local-storage-remove-failure.test.ts` 扩到 **11 例**（§870 的 7 + §871 的 4）。
+
+⚠ **取件器事故累计第 5 次**：第一版判据拿**字面量** `'pocket_token'`
+去匹配 `syncFromStorage` 的函数体，而源码用的是**常量** `TOKEN_KEY`
+⇒ 恒红，读起来像「修复没生效」，其实是我把判据钉在字面量上。
+修法：锚到**符号名**，并**额外**断言「符号名 → 字面量」这条映射本身没漂
+（`const TOKEN_KEY = 'pocket_token'` 仍在）——两头都不放松。
+
+**M28 真实文件端到端变异（2 路）**：
+
+| 变异 | 自己判据 |
+|---|---|
+| 基线 | **11 / 0** ✅ |
+| M28-a 删掉 `workspaceId` / `authMethod` 的刷新 | **8 / 3** 🔴 |
+| M28-b 把 storage 监听退回只认两个键 | **10 / 1** 🔴 |
+| 还原核对 | **11 / 0** ✅ |
+
+### §871.6 口径与未实测
+
+- ⛔ **未实测**：多标签场景下的实际行为（本节全部是**逐行代码取证**）；
+  共享设备上「另一个标签登录到不同 workspace」的发生率未知。
+- ⚠ 本节**没有**给「跨标签换了 workspace」加提示或告警 ——
+  它是 §866 族里「用户正在使用的状态被悄悄改掉」的一个新形态，
+  但目前只有 `usePendingApprovals` 一个消费者，登记而不代拍。
+- ⚠ `syncFromStorage()` 现在每次导航读 4 个 `getItem`；
+  `state` 初始化已经在读同样的 4 个 —— **未考虑**这次额外开销
+  （⛔ 未测），但相对一次导航的其它开销应属可忽略，暂不改。
+
+### §871.7 待拍板（新增 1 条）
+
+90. **`userId` 到底该不该落盘** —— §871.4 实测它是哑雷（`accountId` 零消费者），
+    所以本节**没有**给它加键。但登记于此，避免它继续悬着：
+    ① 要不要给 `userId` 一个落盘键（与 `workspaceId` 对称）？
+       现在它的处境很奇怪：**内存里有、刷新就没**，任何未来消费者都会踩坑。
+    ② 或者反过来 —— 承认它「仅内存、不跨会话」并在字段注释里写死？
+    ③ §871.6 那条「跨标签换 workspace 后待审批仍按旧 workspace 过滤」
+       要不要对用户说？（本节按「不代拍」处理）

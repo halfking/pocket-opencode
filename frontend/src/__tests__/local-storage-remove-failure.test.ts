@@ -103,6 +103,57 @@ const ruler = () => ({
   logout: settingsLogoutReallyLogsOut(SETTINGS_SCRIPT),
 })
 
+/**
+ * D41：syncFromStorage 必须读到每一个「落盘了的」会话键。
+ *
+ * ⚠⚠ 取件器事故（本会话累计第 5 次）：第一版拿**字面量** `'pocket_token'`
+ *   去匹配函数体，而源码用的是**常量** `TOKEN_KEY` ⇒ 恒红，读起来像
+ *   「修复没生效」，其实是我把判据钉在字面量上。⇒ 锚到符号名，
+ *   并单独断言「符号名 → 字面量」的映射仍然正确，两头都不放松。
+ */
+const KEY_CONSTS = {
+  'pocket_token': 'TOKEN_KEY',
+  'pocket_user': 'USER_KEY',
+  'pocket_workspace_id': 'WS_KEY',
+  'pocket_auth_method': 'METHOD_KEY',
+} as const
+
+function syncCoversAllPersistedKeys(src: string, keys: readonly string[]) {
+  const body = fnBody(src, 'syncFromStorage')
+  if (!body) return { ok: false, why: '找不到 syncFromStorage' }
+  // 先确认「符号名 → 字面量」这条映射本身没漂
+  for (const [literal, konst] of Object.entries(KEY_CONSTS)) {
+    const decl = new RegExp(`const\\s+${konst}\\s*=\\s*'${literal}'`).exec(src)
+    if (!decl) return { ok: false, why: `常量 ${konst} 不再等于 '${literal}' ⇒ 键名漂了，判据要跟着改` }
+  }
+  for (const literal of keys) {
+    const konst = KEY_CONSTS[literal as keyof typeof KEY_CONSTS]
+    if (!body.includes(konst)) {
+      return { ok: false, why: `syncFromStorage 没有读 ${konst}('${literal}') ⇒ 该键在任何「从存储刷新」路径上都不会更新` }
+    }
+  }
+  // 读到了还不够：必须真的赋值给对应的 state 字段
+  for (const field of ['token', 'user', 'workspaceId', 'authMethod']) {
+    if (!new RegExp(`this\\.${field}\\s*=\\s*stored`).test(body)) {
+      return { ok: false, why: `syncFromStorage 读了却没有回写 this.${field}` }
+    }
+  }
+  return { ok: true }
+}
+
+/** D41 的另一半：触发同步的那个 storage 监听也必须覆盖全部落盘键。 */
+function storageListenerCoversAllKeys(src: string) {
+  const m = /addEventListener\(\s*'storage'[\s\S]*?\n\s*\}\)/.exec(src)
+  if (!m) return { ok: false, why: '找不到 storage 监听' }
+  const body = m[0]
+  for (const konst of Object.values(KEY_CONSTS)) {
+    if (!body.includes(konst)) {
+      return { ok: false, why: `storage 监听没认 ${konst} ⇒ 别的标签改了它，本标签收不到事件、根本不会触发同步` }
+    }
+  }
+  return { ok: true }
+}
+
 describe('§870 · 尺子自证', () => {
   it('★★ 两个文件都读到了', () => {
     assert.ok(AUTH.includes('clearLocal'), '没读到 auth.clearLocal')
@@ -164,6 +215,52 @@ describe('§870 · 变异负控', () => {
     )
     assert.notEqual(defective, body, '变异没生效（锚点与真源码不匹配）')
     assert.equal(settingsLogoutReallyLogsOut(SETTINGS_SCRIPT.replace(body, defective)).ok, false,
+      '尺子坏了：把缺陷形态喂回去竟然还判绿')
+  })
+})
+
+/**
+ * §871：「从存储刷新会话」这条路径必须覆盖**全部落盘的键**。
+ *
+ * ⚠ 它不是只在 storage 事件里被调用 —— `app/routeGuards.ts:55-56` 在
+ * **每次导航**都调它。所以它漏掉的键，在整个应用生命周期里都不会被刷新。
+ *
+ * 有消费者的后果：
+ *   composables/usePendingApprovals.ts:80 → workspaceId: auth.workspaceId || 'default'
+ *   app/routeGuards.ts:87 → 缺 workspaceId 时要求补齐
+ * ⇒ 跨标签登录到另一个 workspace 后，本标签仍按**旧 workspace** 取待审批。
+ *
+ * ⚠ `userId` **刻意不在**这个列表里：它从来就不落盘（state 里写死 `''`，
+ *   全仓没有 `pocket_user_id` 键）—— 实测它是哑雷（`scope()` 零外部消费者，
+ *   而 reset 只依赖「值变化与否」，workspaceId 变化已足够触发），只登记不修。
+ */
+const PERSISTED_KEYS = ['pocket_token', 'pocket_user', 'pocket_workspace_id', 'pocket_auth_method'] as const
+
+describe('§871 · D41 syncFromStorage 必须覆盖全部落盘的会话键', () => {
+  it('★★ 先证明这把尺子在真源码上是绿的', () => {
+    const v = syncCoversAllPersistedKeys(AUTH, PERSISTED_KEYS)
+    assert.ok(v.ok, v.why)
+  })
+
+  it('★★★ 四个落盘键都必须在 syncFromStorage 里被读到', () => {
+    const v = syncCoversAllPersistedKeys(AUTH, PERSISTED_KEYS)
+    assert.ok(v.ok, v.why)
+  })
+
+  it('★★ 触发同步的 storage 监听也必须覆盖全部落盘键（只修 syncFromStorage 是**不完整**的）', () => {
+    const v = storageListenerCoversAllKeys(AUTH)
+    assert.ok(v.ok, v.why)
+  })
+
+  it('把 workspaceId / authMethod 的刷新删掉 ⇒ D41 立刻红', () => {
+    const body = fnBody(AUTH, 'syncFromStorage')
+    assert.ok(body, '取不到 syncFromStorage 的函数体')
+    const defective = body.replace(
+      /if \(this\.workspaceId !== storedWorkspace\) \{[\s\S]*?\n      \}\n      if \(this\.authMethod !== storedMethod\) \{[\s\S]*?\n      \}\n/,
+      '',
+    )
+    assert.notEqual(defective, body, '变异没生效（锚点与真源码不匹配）')
+    assert.equal(syncCoversAllPersistedKeys(AUTH.replace(body, defective), PERSISTED_KEYS).ok, false,
       '尺子坏了：把缺陷形态喂回去竟然还判绿')
   })
 })
