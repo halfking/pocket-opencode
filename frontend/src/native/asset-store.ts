@@ -17,6 +17,7 @@
  */
 import { localDB } from './local-db'
 import { encryptString, decryptString } from './crypto'
+import { buildFtsQuery, likePattern, needsCjkLike } from './fts-query'
 
 /** Asset 的业务类型。开放枚举——调用方可自由扩展。 */
 export type AssetKind =
@@ -239,22 +240,49 @@ class AssetStore {
 
     // FTS 路径
     if (q.fts && q.fts.trim()) {
-      const ftsRows = await localDB.query<RawAssetRow & { rank: number }>(
-        `SELECT a.*, rank
-         FROM local_assets_fts f
-         JOIN local_assets a ON a.rowid = f.rowid
-         WHERE local_assets_fts MATCH ?
-           AND a.workspace_id = ?
-           ${q.includeDeleted ? '' : 'AND a.deleted_at IS NULL'}
-           ${kind.sql}
-           ${source.sql}
-         ORDER BY rank
-         LIMIT ?`,
-        [q.fts, wsId, ...kind.args, ...source.args, limit],
-      )
-      const out: Asset[] = []
-      for (const r of ftsRows) out.push(await this.fromRow(r))
-      return out
+      const raw = q.fts
+      // ⚠⚠ §886/D56：这里原本把 `q.fts` **原样**传给 `MATCH ?`。
+      //   实测（真 SQLite + fts5，16 个探针）原样喂入的后果：
+      //     手机号 `138-0013-8000` → `no such column: 0013`（`-` 是 NOT 前缀）
+      //     `-quarterly`           → `no such column: quarterly`
+      //     `database AND`         → `fts5: syntax error near ""`
+      //     `"database`            → `unterminated string`
+      //     `(a` / `*` / `---`     → syntax error
+      //     中文「数据库」          → **0 行**（不报错）
+      //   ⇒ 「语法安全」与「中文能搜到」是**两件不同的事**，两件都要处理。
+      const ftsQuery = buildFtsQuery(raw)
+      let ftsHits: Asset[] = []
+      try {
+        const ftsRows = await localDB.query<RawAssetRow & { rank: number }>(
+          `SELECT a.*, rank
+           FROM local_assets_fts f
+           JOIN local_assets a ON a.rowid = f.rowid
+           WHERE local_assets_fts MATCH ?
+             AND a.workspace_id = ?
+             ${q.includeDeleted ? '' : 'AND a.deleted_at IS NULL'}
+             ${kind.sql}
+             ${source.sql}
+           ORDER BY rank
+           LIMIT ?`,
+          [ftsQuery, wsId, ...kind.args, ...source.args, limit],
+        )
+        for (const r of ftsRows) ftsHits.push(await this.fromRow(r))
+      } catch {
+        // ⚠ 构造器对纯符号输入可能产出空串（`MATCH ''` 必抛），Web 端也可能
+        //   压根没有 FTS5 ⇒ 两种都落到降级，而不是把错误抛给用户。
+        //   与 features/notes/notes-search.ts::searchFullText 的 try/catch 同一做法。
+        ftsHits = []
+      }
+      // ⚠ 中文（或 FTS 一无所获）时并一层 LIKE：`local_assets_fts` 索引的是
+      //   **原文** body_text，没有 local_notes 那张表的 `search_text`
+      //   （§885.1 已核实：schema.ts:541 只有 title/body 两列，
+      //   触发器写 `new.body_text`），而 unicode61 把连续汉字当成一个 token
+      //   ⇒ 中文查询在 FTS 上**必然 0 行**且不报错。
+      //   这不是推测：实测「数据库」「数据」「索引」全部 0 行。
+      if (ftsHits.length > 0 && !needsCjkLike(raw)) return ftsHits
+      const likeHits = await this.searchLike(raw, wsId, limit, q, kind, source)
+      const seen = new Set(ftsHits.map((a) => a.id))
+      return [...ftsHits, ...likeHits.filter((a) => !seen.has(a.id))].slice(0, limit)
     }
 
     // 非 FTS 路径
@@ -269,6 +297,40 @@ class AssetStore {
        ORDER BY a.updated_at DESC
        LIMIT ?`,
       [wsId, ...kind.args, ...source.args, limit],
+    )
+    const out: Asset[] = []
+    for (const r of rows) out.push(await this.fromRow(r))
+    return out
+  }
+
+  /**
+   * §886：LIKE 降级（中文在 FTS5 unicode61 下不可靠时的兜底）。
+   *
+   * 与 `features/notes/notes-search.ts::searchLike` 同一套参数口径
+   * （`likePattern` 会**删除** `%` / `_`，不是转义 —— 那个取舍见
+   * native/fts-query.ts 的注释与简报第 108 条）。
+   */
+  private async searchLike(
+    raw: string,
+    wsId: string,
+    limit: number,
+    q: AssetSearchQuery,
+    kind: { sql: string; args: unknown[] },
+    source: { sql: string; args: unknown[] },
+  ): Promise<Asset[]> {
+    const pat = likePattern(raw)
+    const rows = await localDB.query<RawAssetRow>(
+      `SELECT a.id, a.workspace_id, a.kind, a.title, a.body_text, a.body_encrypted, a.meta_json, a.source,
+              a.sync_mode, a.client_rev, a.server_rev, a.dirty, a.created_at, a.updated_at, a.deleted_at
+       FROM local_assets a
+       WHERE a.workspace_id = ?
+         AND (a.title LIKE ? OR a.body_text LIKE ?)
+         ${q.includeDeleted ? '' : 'AND a.deleted_at IS NULL'}
+         ${kind.sql}
+         ${source.sql}
+       ORDER BY a.updated_at DESC
+       LIMIT ?`,
+      [wsId, pat, pat, ...kind.args, ...source.args, limit],
     )
     const out: Asset[] = []
     for (const r of rows) out.push(await this.fromRow(r))

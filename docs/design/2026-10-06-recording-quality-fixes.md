@@ -101717,3 +101717,134 @@ if (!isInMemory) { /* 超上限就 warn */ return }   // ⚠ 这里把「已存�
 - ⚠ 本节**没有**统一 5 种输出格式，**没有**给 opencode 的函数改名 —— 都是产品口径（简报 106）。
 - ⛔ 未实测：`durationMs` 为负的真实发生率；
   ⛔ 未实测 opencode `session.duration` 的单位（故不改名）。
+
+---
+
+## §886 D56：用户搜索输入被**原样**喂给 FTS5 的 `MATCH`，而同一仓的构造器就在隔壁
+
+§885 收掉单位轴之后，本节查「用户输入进 SQL」这条轴——它是 §859（跨边界枚举未校验）
+的正亲。选题理由很朴素：**全仓只有两处 `MATCH`**，其中一处已经把防护做对了。
+
+### §886.1 普查与实测：两处 MATCH，一处有防护一处没有
+
+| 位置 | 谁在用 | 输入是否加工 |
+|---|---|---|
+| `features/notes/notes-search.ts:39` | 笔记搜索 | ✅ `buildFtsQuery` + try/catch 降级 + CJK 并 LIKE |
+| **`native/asset-store.ts:246`** | **4 条路径** | ❌ **`q.fts` 原样** |
+
+⭐ 能拿到**用户自由输入**的 4 条路径：
+1. `PkmTodayView.vue:132` → `pkm-store.searchNotes(query.value)` → `fts: query`（搜索框直连）
+2. `notes-search.ts:58`（`searchFullText` 里的 enex 那一路）
+3. `notes-search.ts:76`（`searchSemantic` 里的 enex 那一路）
+4. 任何将来的调用方
+
+⚠ 按 §884 确立的纪律「修法落在能走到坏状态的路径数那一层」⇒ 防护必须落在
+`asset-store.search`，而它的构造器必须在 `native/` 可达（`native → features` 是错分层）。
+
+### §886.2 实测读数（真 SQLite + fts5，16 个探针，每条跑出来的）
+
+| 输入 | 原样喂入 | 过 `buildFtsQuery` |
+|---|---|---|
+| 手机号 `138-0013-8000` | ❌ `no such column: 0013` | `"138" "0013" "8000"` ✅ |
+| `database AND` | ❌ `syntax error near ""` | `"database"` ✅ |
+| `AND` / `OR` / `NOT` | ❌ `syntax error` | 空串 ⇒ 走 LIKE ✅ |
+| `-quarterly` | ❌ `no such column: quarterly` | `"quarterly"` ✅ |
+| `"database`（引号未闭合） | ❌ `unterminated string` | `"database"` ✅ |
+| `(a` / `*` / `---` | ❌ `syntax error` / `unknown special query` | `"a"` / 空 / `"---"` ✅ |
+| 中文「数据库」「数据」「索引」 | **0 行**（不报错） | **仍然 0 行** ⛔ |
+
+⇒ **16 个里 11 个抛错、5 个静默返回空**。
+
+⚠ 手机号这条最刺眼：`-` 在 FTS5 里是 **NOT 前缀**，所以 `138-0013-8000`
+被解析成「在 138 和 8000 里排除 0013」⇒ 抛错。**搜手机号必然失败**，
+而手机号恰恰是这个 App 里极常见的搜索目标（联系人 / 会议纪要里全是）。
+
+⚠ 关于「抛错是不是隐形失败」：`PkmTodayView.onSearch` **有** try/catch
+（`loadError.value = apiError(...)`）⇒ 界面会显示错误，**不是 §882 那种零反馈**。
+但「搜一个手机号就报错」本身就是可用性缺陷。
+
+### §886.3 ⭐ 最要紧的一条：**构造器解决不了中文**
+
+`local_assets_fts` 索引的是**原文** `body_text`（`schema.ts:541` 只有 `title, body` 两列，
+触发器写 `new.body_text`）；而 `local_notes` 那一侧有一个专门的 `search_text` 列
+（`schema.ts:38`，触发器写 `COALESCE(NULLIF(new.search_text,''), new.content)`）
+存 CJK bigram ⇒ `note-fts-query.ts:3` 那句注释（「unicode61 把连续汉字当成一个 token，
+必须把双字词写进 search_text 才能 MATCH」）说的就是这件事。
+
+⇒ **`local_assets` 没有这一列** ⇒ 中文查询在它上面**必然 0 行，且不报错**。
+实测三条中文全部 0 行；而 LIKE 兜底全部命中（实测 `数据库`→`项目复盘`、
+`138-0013-8000`→`购物清单`、`quarterly`→`English note`）。
+
+⚠ 影响面比 PKM 搜索框更大：`notes-search.ts:58/76` 查 enex 笔记也走 `assetStore.search`
+⇒ **enex 笔记的中文搜索同样是 0 行**。
+
+⇒ 所以修法是**两件都要做**，且都要与 notes 侧同策略：
+- 构造查询（`buildFtsQuery`）⇒ 消除 11/16 的抛错；
+- CJK 或 FTS 无果时**并一层 LIKE** ⇒ 与
+  `notes-search.ts:54` 的 `needsCjkLike(query) || localResults.length === 0` 完全一致。
+
+### §886.4 修法（不发明新写法，只搬隔壁的）
+
+1. **新建 `native/fts-query.ts`**（纯函数、零依赖）：`buildFtsQuery` / `needsCjkLike`
+   从 `features/notes/note-fts-query.ts` **搬**过来，`likePattern` 从
+   `notes-search.ts` 的同名私有函数**提**上来。
+2. **`note-fts-query.ts` 改为 re-export**（不是复制）⇒ 既有的
+   `notes-search.ts` 与 `note-fts-query.test.ts` 改动面为零，
+   且判据仍在测**同一份实现**，不是两份会漂移的拷贝。
+3. **`asset-store.search`**：构造 → `try/catch` 降级 → CJK/无果时并 LIKE（按 id 去重）。
+
+⚠ **搬迁时我自己栽了一次**：把 `\u3400-\u9fff` 手抄成了字面 CJK 范围字符，
+两次才改回转义。教训：**改含转义序列的代码要按 ASCII 模式处理，不要手抄 read 的输出**。
+
+### §886.5 判据（并入 `note-fts-query.test.ts`，7 条 → 14 例）
+
+| # | 断言 | 类型 |
+|---|---|---|
+| 1 | **阳性对照**：那 11 条原样喂入**真的会抛错** | 防 FTS 版本漂移后整张读数表失效 |
+| 2 | 过构造器后这 11 条**一条都不抛错** | 行为（真 FTS5） |
+| 3 | 中文在 assets FTS 上**必然 0 行**，LIKE 必须命中 | 行为，**证伪「构造器就够了」** |
+| 4 | `likePattern` 让中文/手机号/英文都命中 | 行为 |
+| 5 | `likePattern` 是**删除** `%/_` 而非转义（边界登记） | 钉住取舍 |
+| 6 | `asset-store.search` 必须有构造器 / catch / CJK 判断 / LIKE 模式 | 结构 |
+| 7 | **MATCH 的绑定实参必须是构造结果** | 结构（自洽性） |
+
+### §886.6 ⚠⚠ 判据自己假绿了一次，而这次抓到的缺口很典型
+
+第一次跑 V1（把 `[ftsQuery, ...]` 改回 `[raw, ...]`，**即 D56 完全复现**）⇒
+**13/13 全绿**。
+
+根因：第 6 条只验「代码里**出现过** `buildFtsQuery(`」，**不验构造结果流向了哪里**
+⇒ 把用在哪一行改掉，它照样绿。
+
+⇒ 改成**自洽性**断言（第 7 条）：先找 `const X = buildFtsQuery(`，
+再断言 `MATCH` 的绑定参数列表里用的**就是 X**。
+- 这**抗改名**：两处一致改名仍绿（V4 负控实测 14/0）；
+- 但换成原始输入就**立刻红**（V1 重跑 13/1）。
+
+⭐ 与 §885 的「假绿」同族，但成因不同：§885 是**漏扫**，这次是
+**「出现过」≠「用在这里」**。⇒ 同一条纪律的第四种形态：
+**断言要钉「数据流到哪」，不是「代码里有没有这个符号」**。
+
+### §886.7 M44：六次变异（含一条负控）
+
+| 变异 | 结果 | 红条目 |
+|---|---|---|
+| V1 MATCH 实参改回原始输入（**首轮假绿**） | 13/0 ⇒ 补强后 **13/1** | 「MATCH 实参必须是构造结果」 |
+| V2 去掉 `catch` 降级 | 12/**1** | 「必须有 catch 降级」 |
+| V3 去掉 CJK→LIKE 判断 | 12/**1** | 「必须有 CJK 判断」 |
+| V4 **负控**：变量一致改名 | **14/0** | 不被改名顶红（抗改名） |
+| V5 构造器不再跳过 `AND`/`OR` | 13/**1** | 既有 `quotes latin tokens` 用例 |
+| V6 `likePattern` 改成转义 | 13/**1** | 「边界登记」 |
+
+### §886.8 口径与未实测
+
+- ✅ 新增 `native/fts-query.ts`、改 `note-fts-query.ts`（re-export）、
+  改 `asset-store.search`、判据 7 条；`typecheck` EXIT=0、`gates` 45/45（53.0s）。
+- ⚠ **没有**改 `likePattern` 的「删除 `%/_`」取舍（对齐 notes 侧既有做法）；
+  改成「转义 + `ESCAPE`」是**行为变更**，登记简报 108。
+- ⚠ **没有**给 `local_assets` 加 `search_text` 列做真正的 bigram 索引 ——
+  那是 schema 迁移 + 回填（§879 刚踩过 FTS 回填的坑），本节只做 LIKE 兜底。
+  登记简报 109。
+- ⛔ 未实测：真机上 PKM 搜索框的中文搜索是否确实 0 行（静态 + 本地 SQLite 夹具可证，
+  但真机 SQLite 的 FTS5 编译选项未核）。
+- ⛔ 未实测：LIKE 兜底在 `local_assets` 规模上的耗时（它是无索引全表扫描）。
