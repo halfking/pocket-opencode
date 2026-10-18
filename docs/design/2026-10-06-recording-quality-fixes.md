@@ -98170,3 +98170,250 @@ node ./d21-bundle.mjs
    属产品/技术口径 ⇒ 已登记，不代拍。
 2. **`pocket:ai-chat:corrupt:*` 的留存与清理策略** ——
    现在只写不清，理论上可以无限增长（每次损坏多一个键）。要不要限量/定期清理？
+
+## §859 §858 那 69 处候选的逐条分诊：3 处真缺陷 + ⭐ 一条「同族已修、同族漏网」的定罪证据
+
+§858 结尾留了一笔账：「69 处里其余 66 处**未逐条取证**」。
+本节把那笔账结掉：**3 处真缺陷 + 10 组阴性（每条带读数与理由）+ 1 条量具边界**。
+
+本节的起点仍然是 §858 的视角切换：「视图写法」扫干净了 ⇒ 换「callee 返回值」。
+
+### §859.1 探针 v2：先把量具修对，再谈结论
+
+原探针 `.artifacts/s858-probe/scan_nullish_failure.py` 只能给出行号与函数名，
+不足以支撑「逐条分诊」。新写 `.artifacts/s859-probe/triage_nullish_producers.py`，
+补三件事：**正确的函数名**（花括号配平回溯）、**反查消费点**（定罪口径在消费端）、
+**返回形态分类**。
+
+⚠ **第一版坏了两处，都当场被读数抓住**（再次印证「0/1 或可疑命中时第一嫌疑永远是量具」）：
+
+| 量具缺陷 | 症状 | 根因 |
+|---|---|---|
+| `ret` 分类全是 `?` | 13 处「?」 | `NULLISH` 后面加了 `\b`，而 `''` / `[]` / `{}` 都以**非单词字符**结尾 ⇒ `\b` 不成立 |
+| 函数名全是 `if` / `for` | `JsonBlock.vue` 被标成 `[if]`，消费点报 **4214** 个 | 函数头正则把控制流关键字也当成了函数名 |
+
+修正后的读数（`files 652 · 生产者 70 处`）：
+
+| 返回形态 | 处数 | | 消费点分布 | 处数 |
+|---|---|---|---|---|
+| `null` | 30 | | 2-3 个 | 39 |
+| `false` | 20 | | ≥4 个 | 21 |
+| `[]` | 9 | | 1 个（★ 最可能无人区分） | 7 |
+| `''` | 7 | | 0 个（死代码 / 仅自用） | 3 |
+| `{}` | 2 | | | |
+| `undefined` | 2 | | | |
+
+⚠ 70 比 §858 的 69 多一处：**是本节自己新增的 `utils/corrupt-preserve.ts` 的
+`catch { return null }`** ⇒ 读数与本节改动是自洽的。
+
+### §859.2 D22 跨边界枚举未校验 —— 判它为缺陷，靠的不是「我觉得」，是**同一个函数里的先例**
+
+`native/config-sync/apply.ts::applyAppPrefs` 原写法：
+
+```ts
+if (prefs.theme)      localStorage.setItem('app_theme', prefs.theme)
+if (prefs.deviceTier) localStorage.setItem('pocket_device_tier', prefs.deviceTier)
+if (prefs.sttPref)    localStorage.setItem('pocket_stt_pref', prefs.sttPref)
+```
+
+`prefs` 是**远端下发的 payload**（`applyRemoteSetting` 的入参），三个字段都是枚举，
+却**未校验就落盘**，并且 `theme` 还会被写进 `<html data-theme>`。
+
+⭐⭐ **定罪证据不是我的判断，是同一个文件里的先例**：`applyRemoteLocale` 的注释原文写着
+
+> 「另一处缺陷：未规范化的字符串被直接写进 app_locale 与 `<html lang>`……
+>   现在：**只在能匹配到受支持语言时才落盘并切换，匹配不到则完全忽略**」
+
+⇒ **locale 已经因为完全相同的原因修过**，而同一函数里的
+`theme` / `deviceTier` / `sttPref` 留在坏的那一边。
+「本仓的正确写法就在隔壁，而且就在同一个函数里」——这是最难反驳的一类证据。
+
+读侧的对照同样成立：
+
+| 位置 | 写法 | 判定 |
+|---|---|---|
+| `stores/theme.ts::readPreference` | `saved === 'light' \| 'dark' \| 'system'` | ✅ 白名单 |
+| `stores/locale.ts::readPersisted` | `matchLocale([saved])` | ✅ 白名单 |
+| `stores/device.ts`（原文） | `(localStorage.getItem('pocket_device_tier') as DeviceTier) \|\| 'unknown'` | ❌ 只 `as` 不断言 |
+
+⚠ `as` 只对编译器说话：运行期一个字符串进来就真的成了 `DeviceTier`。
+`DeviceTier` 的两个 getter 恰好都以「不等于 low」为判据
+（`shouldPreferLocal`、`recommendedModel`），所以非法值会**静默退化成 high 档的行为**，
+不报错、不提示。
+
+**修法**（与 `applyRemoteLocale` 同构：不在白名单里就**完全忽略**）：
+`applyAppPrefs` 加 `APP_THEMES` / `APP_DEVICE_TIERS` / `APP_STT_PREFS` 三个白名单，
+落盘与 `setAttribute` 都用校验后的局部值；`stores/device.ts` 改成 `readEnum<T>(key, allowed, fallback)`。
+⚠ **读写两侧都要改**：写侧加了白名单也清不掉**已经躺在用户 localStorage 里的存量脏值**
+（旧版本的下发没有校验），而且 `localStorage` 本身就是跨边界输入。
+
+#### ⭐ 加重情节：`useDeviceStore` 是一整套**零出口状态**
+
+| 核查 | 读数 |
+|---|---|
+| `useDeviceStore` 在自己文件之外的引用 | **0 处**（无 `.vue`、无测试、无门脚本、docs 里只有一份 2026-07 的归档文档提到已删除的 `deviceHub`） |
+| 是否有「遍历所有 store」的机制 | 无（grep `pinia.use(` / `$id ===` 全仓 0 命中） |
+| 界面上的设置入口 | 无（`setTier` / `setSttPreference` 零调用方） |
+| 同步通道 | **仍在搬**：`apply.ts` 下发它、`config-sync/prefs.ts:11` 读它再上报 |
+
+而且这套死状态的取值集合**已经与真正在跑的引擎枚举漂移**：
+`recommendedModel` 返回 `'vosk-small'`，而 `native/sherpa.ts` 的 engine 联合是
+`'paraformer' | 'sensevoice' | 'whisper-base' | 'zipformer'` —— **没有 `vosk-small`**。
+
+⇒ 更根本的问题：**`deviceTier` 是「这台设备的能力」，把它放进 `app_prefs` 跨设备同步本身就是错的**
+（高档设备的偏好同步到低档设备，低档设备就以为自己是高档）。
+**接回 UI 还是摘掉属产品口径** ⇒ 已登记，不代拍。
+
+### §859.3 D23 同一个解析失败，两种待遇
+
+`features/scheduled-tasks/ScheduledTaskEditView.vue::save` 原文：
+
+```ts
+if (showPrompt.value) {
+  payload = applyPrompt(form.kind, parsePayloadText() ?? {}, form.prompt)   // ⚠ 静默丢弃
+} else {
+  payload = parsePayloadText()
+  if (payload === null) { error.value = '任务参数必须是合法 JSON'; return }  // ✅ 报错
+}
+```
+
+同一个 `parsePayloadText()`、同一个失败条件，**一条分支报错、另一条分支 `?? {}` 把用户填的参数吞掉**。
+而放大后果的是模板：
+
+- `showPrompt = promptFieldForKind(form.kind) !== 'none'`
+- JSON 文本框是 `v-if="!showPrompt"`，而且**在 `<details>` 里**
+
+⇒ 触发路径很自然：用户按普通任务填好一整套参数（url / headers 之类）→ 把任务类型改成提示词类
+→ 文本框消失（他甚至不知道刚才填的东西还在表单里）→ 保存**成功** →
+**参数已经没了，要等这个定时任务到点自己跑失败才会被发现**。
+
+**修法**：解析一次、判定一次、两个分支同一套判定（沿用既有的那句错误文案，不新造措辞）。
+
+⚠⚠ **但直接这么改会引入一个新的阻断，必须一起堵掉**：
+`types.ts::formatPayload` 原第一行是 `if (typeof payload === 'string') return payload` ——
+一个**字符串型 payload**（老版本或某些 kind 存的就是裸字符串）回填进文本框后是
+`每日巡检` 这种**无法解析**的内容，而新的校验会一律报错 ⇒
+**「编辑一个本来就存在的任务」会被这条校验卡住**（修复反而制造了阻断）。
+⇒ `formatPayload` 改成**始终产出可解析文本**（一律 `JSON.stringify`）：
+字符串 payload 显示成带引号的合法 JSON，回填 → 解析 → 保存能原样往返。
+
+### §859.4 D24 §858 硬化了**读侧**，同一个 key 的**写侧**还在静默
+
+`apply.ts::applyChatSettings` 原文一行：
+
+```ts
+const current = JSON.parse(localStorage.getItem(key) || '{}') as Record<string, unknown>
+localStorage.setItem(key, JSON.stringify({ ...current, ...settings }))
+} catch {
+  // ignore                     // ⚠ 解析失败 ⇒ 整份远端聊天设置被静默丢弃
+}
+```
+
+`key` 是 `pocket:ai-chat:settings:v2:<scope>` —— **正是 §858/D21 刚硬化过的那个 key 的读侧**。
+读侧现在会留证 + 置位 + 如实告知；写侧却还是 `// ignore`。
+
+用户视角的症状是：他在 A 设备改了聊天设置，同步到 B 设备后 B 设备「怎么改都没反应」，
+而 B 设备上没有任何提示。
+
+**修法**（两条约束一起满足）：
+1. **留证**：`preserveCorruptRaw('settings', raw)` —— 与读侧同一个留证落点；
+2. **不能反过来把远端更新也丢掉**：远端才是这次的数据源，本地这份损坏的只是**合并基底**
+   ⇒ 以 `{}` 为基底继续应用，让远端赢。
+
+#### ⭐ 因此把 §858 的留证落点抽成了共用函数
+
+`§858` 把留证写在 `aiChatStore` 里，`§859` 要在写侧也留证 —— 两处都在
+`pocket:ai-chat:*` **同一个命名空间**里各自拼键名 ⇒ **键名约定一旦有两份实现就会各自漂移**。
+⇒ 抽出 `frontend/src/utils/corrupt-preserve.ts`（无依赖、纯函数），
+`aiChatStore` 与 `apply.ts` 都复用它。**键名与落点不变**：`pocket:ai-chat:corrupt:<kind>:<scope>:<ts>`。
+⚠ 抽完之后 §858 的判据（11 例）必须原样重跑 —— 行为没变，判据也不该变。
+
+### §859.5 阴性（**每条带读数与理由**，否则「忘了查」与「查了没问题」分不开）
+
+| 候选 | 读数 | 为什么是阴性 |
+|---|---|---|
+| `SessionListView::readSessionsSnapshot → null` | 2 个消费点 | `onMounted` 命中失败只是不预渲染，**紧接着的 `loadSessions()` 网络刷新仍是权威**；`loadSessions` 的 catch 里「快照也没有」时会置 `error` ⇒ 就是 §840 的正确形态 |
+| `email-body-cache::readEmailBodyLocal → ''` | 4 个消费点 | 缓存只影响首屏速度；`EmailDetailView::loadBodyInBackground` 的网络失败有 `bodyError` 出口（且此前已修过「预取失败静默」那一路） |
+| `snapshot-store::loadNS → {}` | 8 个消费点 | 现有两个 namespace（`opencode-sessions` / `email_bodies`）写入的**全是 `dirty: false` 的纯缓存**，损坏只损失缓存，不涉及「未回推的脏数据」。⚠ **若将来有 `dirty: true` 的 namespace 走这条路，这条结论立刻失效** |
+| `stores/auth::tokenExpiresAtMs → null` | 2 | `null` 时不主动续期，但请求的 401 路径会 `refreshSession` 兜住；注释也明写「绝不抛异常」 |
+| `navigationContext::restore → false` | 1 | ⭐ **这是本仓这一族的标准样板**：`validateContext(parsed)` 做 schema 校验、失败直接返回 false、**且失败时不写回**。文档里还写着「半恢复的导航比不恢复更危险」 |
+| `JsonBlock` 的 `parsed → null` | 0（模块内） | 同文件另一个 computed 会把**原始串**原样显示出来 ⇒ 解析失败降级为「当纯文本看」 |
+| `restoreTranslations → {}` | 2 | 翻译是缓存，丢了只是多花 token。⚠ 但 `persistTranslation` 会用 `{}` 覆盖同键**其它语言** ⇒ 同 D21 的「覆盖证据」形状，记为**同族低危**，不单独修 |
+| `EmailInboxView::hasUncategorized → false` | 3 | 它只是「要不要触发自动归类」的探针，失败时少做一次自动化，手动入口仍在 |
+| `meeting-related-search` 三个 `→ []` | 2/2/3 | 推荐位降级。⭐ 与 §857 待拍板 72/73 同族（失败要不要说一声）⇒ **不代拍，已并入该条** |
+| `isKeystoreAvailable → false` | 3 | 探针失败一律按不可用是**刻意**的（注释：「宁可少显示一个入口」）。⚠ 但 `VaultListView` 的文案断言了一个它并不知道的原因（「当前平台**未提供**密码箱原生插件」）⇒ 同样并入「要不要说人话」那条 |
+
+#### ⭐ 一条**量具边界**：死代码审计根本看不到 `stores/`
+
+`check:dead-features` 只扫 `features/meetings/`；进一步查 `scripts/audit-dead-features.mjs`
+发现它 `--dir` 参数被**硬编码**拼成 `src/features/<dir>`
+（`--dir stores` 直接 `ENOENT`）⇒ **`stores/` 与 `utils/` 完全在死代码审计的视野之外**。
+这解释了为什么「`useDeviceStore` 零出口」能在全绿的门禁下长期存在。
+⇒ 本节**不代改门禁范围**（属门禁语义变更，已登记）。
+
+### §859.6 判据与变异
+
+`frontend/src/__tests__/sync-enum-and-payload-audit.test.ts`（**14 例**）：
+
+| 组 | 例数 | 内容 |
+|---|---|---|
+| 尺子自证 | 1 | 六个文件都读到了（路径写错会让后面全是绿灯假象） |
+| D22 | 3 | 三个字段都用了白名单 / **落盘的值不是原始 `prefs.*`**（钉的是「写进去的值」，不是「有没有 setItem」）/ `data-theme` 同样用校验值 / device store 必须白名单读 |
+| D23 | 4 | 判定必须早于 `applyPrompt` / 禁用 `?? {}` / 必须有话说 / `formatPayload` 必须始终可解析 |
+| D24 | 4 | 写侧必须留证 / 留证那个 catch 里**不得 return** / 不得再用内联 parse / **留证落点只有一份实现** |
+| 变异负控 | 2 | 两条守卫各自的样本必须能触发它们 |
+
+**M16 真实文件端到端变异（4 路）**，每路同时跑 §858 判据与仓库既有门：
+
+| 变异 | 自己判据 | §858 判据 | 既有门 `vue-template-compile` |
+|---|---|---|---|
+| 基线 | 14 / 0 ✅ | 11 / 0 ✅ | 187 / 0 ✅ |
+| M16-a D22 退回无校验落盘 | **fail 2** 🔴 | 11 / 0 | 187 / 0 |
+| M16-b D23 退回 `?? {}` 兜底 | **fail 2** 🔴 | 11 / 0 | 187 / 0 |
+| M16-c D24 退回内联 parse + 静默丢弃 | **fail 3** 🔴 | 11 / 0 | 187 / 0 |
+| M16-d `formatPayload` 退回裸串返回 | **fail 1** 🔴 | 11 / 0 | 187 / 0 |
+| 还原核对 | **14 / 0** ✅ | 11 / 0 | 187 / 0 |
+
+⇒ **四路对仓库既有门与 §858 判据完全隐形**，只有本节判据能看见。
+
+⚠ **本节踩的三个坑**（都是「判据/脚本自己坏了」这一族）：
+
+1. ⭐⭐ **`fnBody` 取不到泛型函数体** ——
+   `function readEnum<T extends string>(` 的名字后面是 `<` 不是 `(` ⇒ 正则不匹配 ⇒
+   取到空串 ⇒ 断言在**空对象**上跑并报「没有白名单」。
+   第一反应是「守卫没生效」，实际上守卫取到的就是空的。⇒ 名字后必须允许 `<…>`。
+2. ⭐⭐ **内层 `catch` 的块体取不到** ——
+   `/catch\s*\{([^}]*)\}/` 只取到第一层，而「留证的那个 catch 里不许 return」这条断言
+   永远看不到真正的块体 ⇒ 又一次在**空值**上断言。⇒ 改成按花括号配平逐个取 catch 块。
+3. ⭐⭐ **变异脚本的「还原自检」是坏的量具，掩盖了真正的半还原** ——
+   自检写的是 `grep "prefs.deviceTier)"`，而**我自己写在 apply.ts 说明文字里的正是这一句**
+   ⇒ 自检永远报「还原失败」（噪声），而 M16-a 真正删掉的那一行
+   （`const theme = …`）居然**没被还原**、留下了引用未定义变量的半变异状态。
+   ⚠ 是**判据基线**（不是 grep）把它抓出来的：基线直接红 2 条。
+   ⇒ **还原的权威证据是判据基线全绿，不是 grep 看着像还原了**。
+   （这条同时是「探针自伤」的第 11 次：**判据/脚本文本里引用代码字面量，
+   就等于把字面量写进了被扫描的语料**。）
+
+### §859.7 口径与未实测
+
+- ⛔ **未实测**：真机上远端下发非法枚举值的**真实发生率**（需要一台登录过的设备 + 服务端有脏载荷）；
+  定时任务「填了参数 → 改成提示词类 → 保存」的**真实发生率**；
+  同一 key 的**写侧**解析失败发生率。
+- 本节只分诊了「`catch` 里返回空值」这一族（70 处）；
+  **其它形式的静默折叠**（`?? []`、`|| {}`、默认参数、`?? ''`）不在读数内。
+- 「跨边界枚举未校验」这条口径本轮**没有做全仓扫面**（只沿 config-sync 一条链走到落盘）；
+  全仓扫需要先枚举「远端/跨端输入 → 本地存储/状态」的边界清单，属下一节的工作量。
+- ⛔ **未做的事**：没有改 `check:dead-features` 的扫描范围（属门禁语义变更），
+  没有接回 `useDeviceStore` 的 UI，也没有摘掉它的同步字段（三者都属产品/门禁口径）。
+
+### §859.8 待拍板
+
+1. **`useDeviceStore` 接回 UI 还是摘掉** —— 它现在零出口、零入口，却仍在跨设备同步两个字段，
+   且 `recommendedModel` 的 `'vosk-small'` 已经不在 `native/sherpa.ts` 的 engine 联合里。
+   另外 **`deviceTier` 本身该不该跨设备同步**（它是 per-device 的能力，§859.2）。
+2. **提示词类任务报「参数 JSON 非法」时，用户改不了它** ——
+   `showPrompt` 为真时文本框是隐藏的 ⇒ 现在至少会说实话，但用户要先把任务类型改回去才能修。
+   要不要在报错时把文本框也显示出来？
+3. **推荐位/能力探测的「失败降级」要不要告知** ——
+   `meeting-related-search` 三个（失败降级为「没有推荐」）与
+   `isKeystoreAvailable`（文案断言了它并不知道的原因）并入 §857 待拍板第 72/73 条。

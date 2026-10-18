@@ -9,11 +9,49 @@ import { defineStore } from 'pinia'
 
 export type DeviceTier = 'high' | 'mid' | 'low' | 'unknown'
 
+/**
+ * ⚠⚠§859/D22：读盘**必须白名单校验**，不能只靠 `as` 断言。
+ *
+ * 同一个仓里另外两个 store 早就这么做了：
+ *   · stores/theme.ts::readPreference —— `saved === 'light' | 'dark' | 'system'`
+ *   · stores/locale.ts::readPersisted —— `matchLocale([saved])`
+ * 而这里原来是 `(localStorage.getItem('pocket_device_tier') as DeviceTier) || 'unknown'`
+ * ⇒ `as` 只对编译器说话，运行期一个字符串进来就真的成了 DeviceTier。
+ *
+ * 为什么仍值得改（哪怕写侧 §859/D22 已经加了白名单）：
+ *   ① **存量的脏值已经躺在用户的 localStorage 里**（旧版本的下发没有校验），
+ *      只补写侧清不掉它们；
+ *   ② `localStorage` 是**跨边界输入**——同账号的其它设备 / config-sync 下发
+ *      / 旧版本残留，任何一处出错都会落在这里。
+ *
+ * ⚠ 顺带记录一个**尚未拍板**的事实（属主决定接回 UI 还是摘掉，本节不代拍）：
+ *   本 store 目前**全仓零消费**——`useDeviceStore` 在自己的定义文件之外
+ *   没有任何引用（无 .vue、无测试、无门脚本），也就是说
+ *   「设备档位 / STT 偏好」既没有设置界面，也不影响任何运行时行为，
+ *   只有 apply.ts ↔ prefs.ts 在跨设备同步这两个字段。
+ *   且 `recommendedModel` 返回的 'vosk-small' **不在** native/sherpa.ts 的
+ *   engine 联合（'paraformer' | 'sensevoice' | 'whisper-base' | 'zipformer'）里
+ *   ⇒ 这套死状态的取值集合已经与真正在跑的引擎枚举漂移。
+ *   登记见 docs/design/2026-10-11-pending-decisions-brief.md（§859.6 第 1 条）。
+ */
+const TIERS = new Set<DeviceTier>(['high', 'mid', 'low', 'unknown'])
+const STT_PREFS = new Set<'local' | 'cloud' | 'auto'>(['local', 'cloud', 'auto'])
+
+function readEnum<T extends string>(key: string, allowed: Set<T>, fallback: T): T {
+  try {
+    const saved = localStorage.getItem(key)
+    if (saved && allowed.has(saved as T)) return saved as T
+  } catch {
+    // 隐私模式等 localStorage 不可用 ⇒ 回落默认值
+  }
+  return fallback
+}
+
 export const useDeviceStore = defineStore('device', {
   state: () => ({
-    tier: (localStorage.getItem('pocket_device_tier') as DeviceTier) || 'unknown',
+    tier: readEnum<DeviceTier>('pocket_device_tier', TIERS, 'unknown'),
     /** User override: 'local' = always try on-device first; 'cloud' = prefer cloud. */
-    sttPreference: (localStorage.getItem('pocket_stt_pref') as 'local' | 'cloud' | 'auto') || 'auto',
+    sttPreference: readEnum<'local' | 'cloud' | 'auto'>('pocket_stt_pref', STT_PREFS, 'auto'),
   }),
   getters: {
     shouldPreferLocal: (s) =>

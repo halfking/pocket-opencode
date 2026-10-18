@@ -120,12 +120,18 @@ function parsePayloadText(): unknown {
 async function save() {
   error.value = ''
   const encoded = encodeSchedule(plan)
-  let payload: unknown
+  // ⚠⚠§859/D23：此前两个分支对**同一个** parsePayloadText() 的失败处理不一致 ——
+  //   提示词类任务走 `parsePayloadText() ?? {}`，JSON 非法时**静默丢弃用户写的参数**；
+  //   非提示词类任务走另一条分支，会报错。
+  // 后果：用户填了一堆参数（url / headers 之类）后把任务类型改成提示词类，
+  // JSON 文本框随之被 `v-if="!showPrompt"` 隐藏（还在 `<details>` 里），
+  // 参数被丢得一干二净却照样「保存成功」，**要等任务到点自己跑失败才会被发现**。
+  // ⇒ 收窄成「解析一次、判定一次、两个分支同一套判定」。
+  const parsed = parsePayloadText()
+  if (parsed === null) { error.value = '任务参数必须是合法 JSON'; return }
+  let payload: unknown = parsed
   if (showPrompt.value) {
-    payload = applyPrompt(form.kind, parsePayloadText() ?? {}, form.prompt)
-  } else {
-    payload = parsePayloadText()
-    if (payload === null) { error.value = '任务参数必须是合法 JSON'; return }
+    payload = applyPrompt(form.kind, parsed, form.prompt)
   }
   if (showPrompt.value && !form.prompt.trim()) {
     error.value = '请填写任务提示词'

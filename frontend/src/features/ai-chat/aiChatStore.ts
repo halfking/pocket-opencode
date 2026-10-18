@@ -19,6 +19,7 @@ import { listNodes, getAvailableModels, getFeaturedModels } from '../../api/gate
 import { useToast } from '../../composables/useToast'
 import { storeApiError } from '../../api/store-error'
 import { useChatAgentStore } from '../../stores/chatAgentStore'
+import { preserveCorruptRaw } from '../../utils/corrupt-preserve'
 
 export type ChatRole = 'system' | 'user' | 'assistant'
 
@@ -134,8 +135,10 @@ export function inferModality(id: string): ModalityKey {
  *
  *   ⇒ 修法：**读失败时先把原始串另存一份**，再让流程继续（用户仍要能用）。
  *     这样「数据不见了」变成「数据换了个地方，且界面会告诉你」。
+ *
+ * ⚠§859/D24：留证键前缀与写入落点已移到 `utils/corrupt-preserve.ts`
+ *   （同一个 key 的**写侧**也要留证，键名约定只能有一份）。
  */
-const CONVERSATIONS_RECOVERY_PREFIX = 'pocket:ai-chat:corrupt'
 
 /** §858/D21：读失败时置位，供视图如实告知（不参与任何空态分支判定）。 */
 const conversationsRecovered = ref(false)
@@ -147,15 +150,10 @@ function safeGetItem(key: string): string | null {
 }
 
 function preserveCorrupt(kind: 'conversations' | 'settings', raw: string | null): void {
-  if (!raw) return
-  try {
-    localStorage.setItem(
-      `${storageKey(`${CONVERSATIONS_RECOVERY_PREFIX}:${kind}`)}:${Date.now()}`,
-      raw,
-    )
-  } catch {
-    /* 容量满时连备份都写不下 —— 此时必须在界面上说明，别静默 */
-  }
+  // §859/D24：留证落点抽到 utils/corrupt-preserve.ts，让本 key 的**写侧**
+  // （native/config-sync/apply.ts 的 applyChatSettings）复用同一份键名约定。
+  // 键名与落点都不变：pocket:ai-chat:corrupt:<kind>:<scope>:<ts>。
+  preserveCorruptRaw(kind, raw)
 }
 
 function loadConversations(): Conversation[] | null {
