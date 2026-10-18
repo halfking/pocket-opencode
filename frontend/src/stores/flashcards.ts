@@ -111,12 +111,17 @@ function emptyCache(): CachedState {
   return { notes: [], cards: [], deckConfigs: [], reviewLogs: [], lastSyncedAt: 0 }
 }
 
-function writeCache(state: CachedState) {
+function writeCache(state: CachedState): boolean {
   try {
-    if (typeof localStorage === 'undefined') return
+    if (typeof localStorage === 'undefined') return true
     localStorage.setItem(CACHE_KEY, JSON.stringify(state))
-  } catch {
-    // 隐私模式 / 配额耗尽：缓存失败不应阻塞视图
+    return true
+  } catch (err) {
+    // ⚠⚠§868/D36：原来这里只有一句「缓存失败不应阻塞视图」的注释。
+    // 对**缓存**本身这句话成立（服务端才是权威），但它把同一函数
+    // `writeOutbox`（见下）的失败也一起盖住了 —— 而那不是缓存。
+    console.warn('[flashcards] 本地缓存未能写入（服务端仍为权威，但离线期间的新改动只活在内存里）：', err)
+    return false
   }
 }
 
@@ -132,12 +137,25 @@ function readOutbox(): OutboxItem[] {
   }
 }
 
-function writeOutbox(items: OutboxItem[]) {
+function writeOutbox(items: OutboxItem[]): boolean {
   try {
-    if (typeof localStorage === 'undefined') return
+    if (typeof localStorage === 'undefined') return true
     localStorage.setItem(OUTBOX_KEY, JSON.stringify(items))
-  } catch {
-    /* ignore */
+    return true
+  } catch (err) {
+    // ⚠⚠⚠§868/D36：这一处原来写着 `/* ignore */`，是本节定性最重的一条。
+    //
+    // 失败链：enqueue() 先把事件塞进**内存** outbox，再 persistOutbox()。
+    // 写不进去时内存里那条还在、`if (online) flushOutbox()` 也不会报错
+    // ⇒ 用户看到「已入队」。**但离线时**（正是 outbox 存在的唯一理由）
+    // 它只活在内存 ⇒ 下次 `loadFromCache` 读回的是**旧队列**
+    // ⇒ 这条复习事件**永久丢失**，服务端再也不会知道，用户的复习进度
+    // 与服务器静默分叉。而 `applyReviewLocally` 已经把 FSRS 状态改进内存/缓存了。
+    //
+    // 按 §866 的族规律：丢的是**用户正在产出的数据** ⇒ 必须说话，
+    // 不能与「缓存写不进去」共用一句「不应阻塞视图」的理由。
+    console.warn('[flashcards] outbox 未能写入本地存储（离线时排队的复习事件会在退出后丢失）：', err)
+    return false
   }
 }
 
@@ -277,18 +295,26 @@ export const useFlashcardsStore = defineStore('flashcards', () => {
     outbox.value = readOutbox()
   }
 
+  /** ⚠§868/D36：写入失败必须可诊断（见 writeOutbox 的失败链分析）。 */
+  const cachePersistFailed = ref(false)
+  const outboxPersistFailed = ref(false)
+  /** 任一落盘失败都为真 ⇒ 视图据此说人话（写在所有空态分支之外）。 */
+  const persistFailed = computed(() => cachePersistFailed.value || outboxPersistFailed.value)
+
   function persistCache() {
-    writeCache({
+    if (writeCache({
       notes: notes.value,
       cards: cards.value,
       deckConfigs: deckConfigs.value,
       reviewLogs: reviewLogs.value,
       lastSyncedAt: lastSyncedAt.value,
-    })
+    })) cachePersistFailed.value = false
+    else cachePersistFailed.value = true
   }
 
   function persistOutbox() {
-    writeOutbox(outbox.value)
+    if (writeOutbox(outbox.value)) outboxPersistFailed.value = false
+    else outboxPersistFailed.value = true
   }
 
   async function syncFromServer(): Promise<void> {
@@ -566,6 +592,7 @@ export const useFlashcardsStore = defineStore('flashcards', () => {
     loading,
     flushing,
     error,
+    persistFailed,
     online,
     dueByDeck,
     deckSummaries,
