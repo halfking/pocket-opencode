@@ -70,7 +70,7 @@ export const useAuthStore = defineStore('auth', {
   },
   actions: {
     /** Store token after a successful login API call. */
-    setAuth(token: string, user: string, method = 'password') {
+    setAuth(token: string, user: string, method = 'password', extra: [string, string][] = []) {
       this.token = token
       this.user = user
       this.authMethod = method
@@ -78,6 +78,7 @@ export const useAuthStore = defineStore('auth', {
         [TOKEN_KEY, token],
         [USER_KEY, user],
         [METHOD_KEY, method],
+        ...extra,
       ])
     },
     /**
@@ -105,8 +106,22 @@ export const useAuthStore = defineStore('auth', {
       }
     },
     /**
-     * S0-A 扩展：登录后同时记录 workspace_id + user_id。
-     * 后端 /api/auth/login 现在返回 { token, user, user_id, workspace_id }。
+     * ⚠⚠§872/D42：`workspaceId` 原先是**另一次** `writeSession` 调用
+     *   （setAuth 写 3 个键 → setAuthWithWorkspace 再写第 4 个）
+     *   ⇒ 两段各自 try/catch，第二次失败就是**撕裂态**：
+     *   磁盘上有 token/user/method、唯独缺 workspace_id。
+     *   内存里 workspaceId 有值 ⇒ 本次会话一切正常；
+     *   刷新后 `state.workspaceId = getItem(WS_KEY) || ''` ⇒ **永久为空**。
+     *
+     * 有消费者的后果（不是推测）：
+     *   `composables/usePendingApprovals.ts:80` 的**离线**分支 →
+     *     `enqueueApprovalReplyLocally({ workspaceId: auth.workspaceId || 'default' })`
+     *   ⇒ 用户离线回复的**审批决策**会被写进 outbox 并打上 `'default'` 这个
+     *     workspace ⇒ 决策被记到错误的 workspace 里，flush 之后再也纠不回来。
+     *   （路由守卫 `app/routeGuards.ts:87` 只 `console.debug` 不拦截，
+     *     所以这条链**不会**被守卫挡住 —— 恰好是最容易漏掉的那种。）
+     *
+     * 修法：一次 `writeSession` 写齐 5 个键 ⇒ 不存在「写了一半」的中间态。
      */
     setAuthWithWorkspace(
       token: string,
@@ -115,10 +130,9 @@ export const useAuthStore = defineStore('auth', {
       workspaceId: string,
       method = 'password',
     ) {
-      this.setAuth(token, user, method)
+      this.setAuth(token, user, method, [[WS_KEY, workspaceId]])
       this.userId = userId
       this.workspaceId = workspaceId
-      this.writeSession([[WS_KEY, workspaceId]])
     },
     /** Legacy compatibility: a session exists without a real token yet. */
     setLegacyUser(user: string) {

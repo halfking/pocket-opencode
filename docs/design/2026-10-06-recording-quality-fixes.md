@@ -100043,3 +100043,101 @@ app/routeGuards.ts:55-56
     ② 或者反过来 —— 承认它「仅内存、不跨会话」并在字段注释里写死？
     ③ §871.6 那条「跨标签换 workspace 后待审批仍按旧 workspace 过滤」
        要不要对用户说？（本节按「不代拍」处理）
+### §872.1 口径：会话写入的**原子性**
+
+§867/D33 把登录写入收拢进了 `writeSession(entries)`，但**收拢得不彻底**：
+
+```
+setAuth(token, user, method)
+  └─ writeSession([TOKEN_KEY, USER_KEY, METHOD_KEY])      ← 第一次落盘
+setAuthWithWorkspace(token, user, userId, workspaceId, method)
+  ├─ setAuth(...)                                          ← 上面那次
+  └─ writeSession([[WS_KEY, workspaceId]])                 ← ⚠ 第二次落盘
+```
+
+⇒ 两段各自 `try/catch`，**第二次失败就是撕裂态**：
+磁盘上有 token / user / auth_method，**唯独缺 workspace_id**。
+
+### §872.2 ⭐ D42：撕裂态的后果不是「进不去」，而是**审批决策被记到错误的 workspace**
+
+失败链（逐行取证）：
+
+```
+登录 → setAuthWithWorkspace(...)
+  ├─ 第一次落盘成功（token/user/method 已写）
+  └─ 第二次落盘失败（配额满等）
+        ↓
+内存 workspaceId 有值 ⇒ 本次会话一切正常，**界面上完全看不出来**
+        ↓ 刷新 / 重启
+state.workspaceId = localStorage.getItem(WS_KEY) || ''  ⇒ 永久为空
+        ↓ 用户离线回复一条审批
+composables/usePendingApprovals.ts:80（离线分支）
+  → enqueueApprovalReplyLocally({ workspaceId: auth.workspaceId || 'default' })
+        ↓
+审批决策被写进 outbox 并打上 'default' ⇒ flush 之后**再也纠不回来**
+```
+
+⚠⚠ **这条链恰好不会被守卫挡住**：`app/routeGuards.ts:87` 的 Case D
+（`isAuthenticated && !workspaceId`）只做 `console.debug`、**不拦截**
+（注释明说「The /servers picker or workspace chooser will resolve it」）。
+⇒ 缺 workspace_id 时应用照常放行，**不会**有任何「出错了」的信号 ——
+而缺的那个键，恰恰是**审批决策归档所用的那个键**。
+
+**修法**：`setAuth` 增加 `extra` 形参，把 `WS_KEY` 并入**同一次**
+`writeSession` ⇒ 不存在「写了一半」的中间态。
+
+### §872.3 ⭐ 本节的元教训：判据写得太宽会逼人改坏代码
+
+第一版判据写的是「全文件 `writeSession` 调用点唯一」，立刻被
+`setLegacyUser` 判红：
+
+```
+this.writeSession 被调用 2 次 ⇒ 存在第二次落盘
+```
+
+⚠ 但 `setLegacyUser` 是**独立的** legacy 入口（只存 user、不存 token），
+它本来就该自己落盘。**是我的判据错了，不是代码错了。**
+
+⇒ 属性必须收窄到「**登录路径**」：`setAuth` 内部恰好一次落盘 +
+`setAuthWithWorkspace` 把 workspace 键并进去、不自己再落盘。
+
+⭐ 判据把「合法但独立的入口」当成违规时，会逼着实现者去合并它们 ——
+**那是在为门禁改代码，而不是为缺陷改代码**。§864 说过「门禁逼出的假东西
+比它想防的问题更难发现」，本节是它的又一例：**门禁也会逼你把好的设计改坏**。
+
+### §872.4 判据与变异
+
+`local-storage-remove-failure.test.ts` 扩到 **15 例**（§871 的 11 + §872 的 4）。
+
+**M29 真实文件端到端变异（1 路）**：
+
+| 变异 | 自己判据 |
+|---|---|
+| 基线 | **15 / 0** ✅ |
+| M29-a workspace 键退回「第二次写入」 | **11 / 4** 🔴 |
+| 还原核对 | **15 / 0** ✅ |
+
+⚠ 四条红的名字分别指向四个不同性质（尺子自证 / setAuth 一次落盘 /
+`setAuthWithWorkspace` 不自己落盘 / 专属负控），**没有**笼统的 suite 失败。
+
+### §872.5 口径与未实测
+
+- ⛔ **未实测**：配额写满的真实发生率；撕裂态的端到端复现
+  （本节是**逐行代码取证**）。⚠ 也就是说 D42 的**发生概率至今为零观测**，
+  修的是一条**结构上存在**的路径。
+- ⚠ 本节**没有**给「`workspaceId` 为空」加界面提示。
+  ⚠ 而守卫 Case D 的现状（只 `console.debug`、让 `/servers` 或
+  workspace chooser 去补）是否真的兜得住，**本节未取证** ——
+  `usePendingApprovals` 的离线分支却**没有**等它，直接用了 `'default'`。
+  这条不一致登记在 §872.6。
+- ⚠ 本节**没有**改 `setLegacyUser`（它只有 user 一个键，本来就不需要原子性）。
+
+### §872.6 待拍板（新增 1 条）
+
+91. **`workspaceId` 为空时，守卫与业务代码的处理不一致，要不要统一** ——
+    `app/routeGuards.ts:87` 认为「/servers 选择器或 workspace chooser 会补上它，
+    所以不拦截」，而 `usePendingApprovals.ts:80` **不等**，直接 `'default'` 兜底
+    并把审批决策写进去。① 离线审批这条要不要改成「`workspaceId` 为空就**拒绝
+    入队并提示**」？（宁可让用户重试，也不要把决策记到错的 workspace）
+    ② 守卫的 Case D 要不要从 `console.debug` 升级为一次用户可见的提示？
+    ③ 或者反过来 —— 认为 `'default'` 兜底是对的，改守卫的注释别误导后人？

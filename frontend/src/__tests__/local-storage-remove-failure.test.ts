@@ -264,3 +264,74 @@ describe('§871 · D41 syncFromStorage 必须覆盖全部落盘的会话键', ()
       '尺子坏了：把缺陷形态喂回去竟然还判绿')
   })
 })
+
+/**
+ * §872/D42：会话写入必须**原子** —— 5 个落盘键同进同出。
+ *
+ * 缺陷形态：原来 `setAuth` 写 3 个键、`setAuthWithWorkspace` **另一次**调用
+ * 再写第 4 个 ⇒ 两段各自 try/catch ⇒ 撕裂态（磁盘有 token/user/method、
+ * 唯独缺 workspace_id）。刷新后 workspaceId 永久为空。
+ *
+ * 有消费者的后果：`composables/usePendingApprovals.ts:80` 的离线分支
+ *   → `enqueueApprovalReplyLocally({ workspaceId: auth.workspaceId || 'default' })`
+ * ⇒ 离线回复的**审批决策**被打上 `'default'`，记进错误的 workspace。
+ * 路由守卫 `app/routeGuards.ts:87` 只 console.debug 不拦截 ⇒ 这条链
+ * **不会**被守卫挡住。
+ *
+ * ⭐ 判据钉「写入只有**一个入口**」这个机械性质，而不是钉某个函数签名 ——
+ *   任何「第二次 writeSession」都会重新引入撕裂态。
+ */
+/** D42：登录路径上的 5 个落盘键必须同进同出。 */
+function sessionWriteIsAtomic(src: string) {
+  // ⚠ 第一版判据写的是「全文件 writeSession 调用点唯一」，被 `setLegacyUser`
+  //   判红 —— 但那是**独立**的 legacy 入口（只存 user、不存 token），
+  //   本来就该自己落盘。⇒ 属性必须收窄到「登录路径」，
+  //   否则门禁会逼人把合法的独立入口合并掉。
+  const setAuth = fnBody(src, 'setAuth')
+  if (!setAuth) return { ok: false, why: '找不到 setAuth' }
+  const n = (setAuth.match(/this\.writeSession\(/g) ?? []).length
+  if (n !== 1) return { ok: false, why: `setAuth 里有 ${n} 次落盘 ⇒ 登录路径被拆成多段（§872/D42）` }
+  if (!/\.\.\.extra/.test(setAuth)) return { ok: false, why: 'setAuth 没有把额外键并入同一次写入' }
+  const body = fnBody(src, 'setAuthWithWorkspace')
+  if (!body) return { ok: false, why: '找不到 setAuthWithWorkspace' }
+  if (/this\.writeSession\(/.test(body)) {
+    return { ok: false, why: 'setAuthWithWorkspace 单独落盘 ⇒ workspace_id 与 token 分两次写入' }
+  }
+  if (!/this\.setAuth\(token, user, method, \[\[WS_KEY, workspaceId\]\]/.test(body)) {
+    return { ok: false, why: 'setAuthWithWorkspace 没有把 workspace 键并入同一次写入' }
+  }
+  return { ok: true }
+}
+
+describe('§872 · D42 会话写入必须原子（不得有第二次落盘）', () => {
+  it('★★ 先证明这把尺子在真源码上是绿的', () => {
+    const v = sessionWriteIsAtomic(AUTH)
+    assert.ok(v.ok, v.why)
+  })
+
+  it('★★★ setAuth 内部只有一次落盘（登录路径不得被拆成多段）', () => {
+    const v = sessionWriteIsAtomic(AUTH)
+    assert.ok(v.ok, v.why)
+  })
+
+  it('★★★ setAuthWithWorkspace 不得自己再落盘一次', () => {
+    const body = fnBody(AUTH, 'setAuthWithWorkspace')
+    assert.ok(body, '找不到 setAuthWithWorkspace')
+    assert.doesNotMatch(body, /this\.writeSession\(/,
+      'setAuthWithWorkspace 仍在单独落盘 ⇒ workspace_id 可能与 token 分两次写入')
+    assert.match(body, /this\.setAuth\(/,
+      'setAuthWithWorkspace 没有把 workspace 键并入同一次写入')
+  })
+
+  it('★★★ 把 workspace 键退回「第二次写入」⇒ D42 立刻红', () => {
+    const body = fnBody(AUTH, 'setAuthWithWorkspace')
+    assert.ok(body, '取不到 setAuthWithWorkspace 的函数体')
+    const defective = body.replace(
+      /this\.setAuth\(token, user, method, \[\[WS_KEY, workspaceId\]\]\)/,
+      "this.setAuth(token, user, method)\n      this.writeSession([[WS_KEY, workspaceId]])",
+    )
+    assert.notEqual(defective, body, '变异没生效（锚点与真源码不匹配）')
+    const v = sessionWriteIsAtomic(AUTH.replace(body, defective))
+    assert.equal(v.ok, false, '尺子坏了：把缺陷形态喂回去竟然还判绿')
+  })
+})
