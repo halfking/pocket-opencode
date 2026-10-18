@@ -112,3 +112,100 @@ describe('§860 · 变异负控（样板被简化时本文件必须转红）', (
     assert.doesNotMatch(mutated, /Number\.isNaN\(date\.getTime\(\)\)\s*\?\s*null/)
   })
 })
+
+// ============================================================================
+// §863：存在型 ID 的采信 —— 三个正确形态 + 一处**跨 ID 空间**的坏比较
+//
+// 「有没有这个东西」这类字段（当前 workspace / 本机是否已绑定凭据 / 当前用户
+// 是不是 owner）最容易被折叠：把「存下来的值」直接当真相，于是
+//   · §862/D26 折叠成了「你从来没有主密码」；
+//   · 本节那处坏比较折叠成了「这个 workspace 没有 owner」。
+//
+// 正确形态在本仓是成片的（§862.3 已观察到），本节把其中三个钉成防退化判据：
+//   ① workspace.loadWorkspaces —— 拿服务端列表校验存下来的 activeId，并自动改选；
+//   ② biometricAuth.withPlugin(fn, fallback) —— 把兜底做成**函数形参**；
+//   ③ 存在型读取不得跨 ID 空间比较（user_id vs workspace id）。
+// ============================================================================
+
+const WORKSPACE = strip(read('stores/workspace.ts'))
+const BIOMETRIC = strip(read('native/biometricAuth.ts'))
+
+describe('§863 · 尺子自证', () => {
+  it('★ 两个文件都读到了', () => {
+    assert.ok(WORKSPACE.includes('loadWorkspaces'), '没读到 workspace store 的 loadWorkspaces')
+    assert.ok(BIOMETRIC.includes('withPlugin'), '没读到 biometricAuth 的 withPlugin')
+  })
+})
+
+describe('§863 · 存在型 ID 必须拿权威列表校验（样板：workspace.activeId）', () => {
+  it('★★★ loadWorkspaces 必须把存下来的 activeId 与服务端列表对账', () => {
+    const body = /async\s+loadWorkspaces\s*\(\)\s*\{[\s\S]*?\n    \}/.exec(WORKSPACE)?.[0] ?? ''
+    assert.ok(body, '找不到 loadWorkspaces')
+    assert.match(body, /workspaces\.some\(\s*\(w\)\s*=>\s*w\.id\s*===\s*this\.activeId\s*\)/,
+      'loadWorkspaces 不再拿服务端列表校验 activeId ⇒ 存下来的 id 可以指向一个已不存在的 workspace')
+    assert.match(body, /setActiveWorkspace\(\s*first\.id\s*\)/,
+      '校验失败时没有自动改选 ⇒ activeId 会一直指向一个不存在的 workspace')
+  })
+
+  it('★★ current getter 找不到时必须给 null（而不是造一个假的）', () => {
+    assert.match(WORKSPACE, /find\(\s*\(w\)\s*=>\s*w\.id\s*===\s*s\.activeId\s*\)\s*\|\|\s*null/,
+      'current 不再在找不到时返回 null')
+  })
+})
+
+describe('§863 · 存在型查询的兜底必须做成形参（样板：withPlugin）', () => {
+  it('★★ withPlugin 必须是 (fn, fallback) 形参，调用方必须显式给兜底值', () => {
+    assert.match(BIOMETRIC, /function\s+withPlugin<T>\(\s*fn:\s*\([^)]*\)\s*=>\s*Promise<T>\s*,\s*fallback:\s*T\s*\)/,
+      'withPlugin 不再是 (fn, fallback) 形参 ⇒ 调用方可以「忘了给兜底值」')
+    // 三个存在型查询都必须经由它，且都显式给出兜底
+    for (const fn of ['isBiometricAvailable', 'hasBiometricCredential', 'hasMasterSecret']) {
+      // ⚠ 锚点只取到 `withPlugin(` 是不够的：第一版用
+      //   `export function X(...)[\\s\\S]*?withPlugin\\(` 匹配后只看那一段，
+      //   而**兜底实参在匹配之外** ⇒ 三条断言恒红（量具坏了，不是被测代码坏了）。
+      //   现在把范围取到该函数体结束，再查整段里有没有「显式兜底」。
+      const body = new RegExp(
+        `export (?:async )?function ${fn}\\([^)]*\\)[\\s\\S]*?\\n\\}`,
+      ).exec(BIOMETRIC)
+      assert.ok(body, `找不到 ${fn}`)
+      assert.match(body![0], /withPlugin\(/, `${fn} 不再经由 withPlugin`)
+      assert.match(body![0], /withPlugin\([\s\S]*?,\s*(?:false|true|\d+|'[^']*')\s*\)/,
+        `${fn} 没有显式给出兜底值`)
+    }
+  })
+})
+
+describe('§863 · 不得跨 ID 空间比较（D27）', () => {
+  it('★★★ isOwner 不得拿 member.user_id 去比 workspace 的 activeId', () => {
+    // WorkspaceMember = { workspace_id, user_id, role }；activeId 是 **workspace** id。
+    // 原写法 `m.user_id === s.activeId` 比较的是两个不同 ID 空间，
+    // 而且该 getter 全仓零消费 ⇒ 是一枚**哑雷**：下一个人把它接到「仅 owner 可做」
+    // 的开关上时会静默拿到 false。
+    assert.doesNotMatch(WORKSPACE, /m\.user_id\s*===\s*s\.activeId/,
+      'isOwner 又回到跨 ID 空间的比较（user_id vs workspace id）')
+    assert.doesNotMatch(WORKSPACE, /m\.user_id\s*===\s*this\.activeId/,
+      'isOwner 又回到跨 ID 空间的比较（user_id vs workspace id）')
+  })
+
+  it('★ 登记仍在简报里（不要以为修完代码就可以忘了口径）', () => {
+    // 判据钉「不许跨 ID 空间比」，但**该比较的正确形态有两种**
+    // （「我是不是 owner」要拿 auth.userId；「这个 workspace 有没有 owner」
+    //   要比 m.workspace_id）⇒ 属产品/语义口径，已登记，不代拍。
+    assert.match(WORKSPACE, /isOwner/,
+      'isOwner getter 不见了 —— 若它被删或改名，请同步更新本简报条目而不是让它悄悄消失')
+  })
+})
+
+describe('§863 · 变异负控', () => {
+  it('把 activeId 校验删掉 ⇒ 第一组立刻红', () => {
+    const mutated = WORKSPACE.replace(
+      /workspaces\.some\(\s*\(w\)\s*=>\s*w\.id\s*===\s*this\.activeId\s*\)/,
+      'workspaces.length >= 0')
+    assert.notEqual(mutated, WORKSPACE, '变异没生效')
+    assert.doesNotMatch(mutated, /workspaces\.some\(\s*\(w\)\s*=>\s*w\.id\s*===\s*this\.activeId\s*\)/)
+  })
+
+  it('把 isOwner 改回跨 ID 空间比较 ⇒ 第三组立刻红', () => {
+    const mutated = WORKSPACE.replace(/m\.user_id/, 'm.__placeholder__')
+    assert.doesNotMatch(mutated + '', /m\.user_id/)
+  })
+})
