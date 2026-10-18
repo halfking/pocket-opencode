@@ -457,3 +457,218 @@ describe('§878 · SQLite JSON 列的解码口径必须只有一个落点', () =
       'get() 必须抛可识别的错误 —— 返回 null 就是把损坏报成「不存在」（§876/D45）')
   })
 })
+
+// ─────────────────────────────────────────────────────────────────────────
+// §880：一次操作里的**多次写**普查（阴性结论 + 常驻门）。
+//
+// 普查口径：按**函数体**取（不是按文本窗口），凡函数体内有 ≥2 处
+// `localDB.run(` / `db.run(` 且没有 `runInTransaction` 的，列进来。
+//
+// ⚠ 普查结果（2026-10-18）：**9 处**。逐条看过执行路径后，只有 1 处
+//   「一次调用必写两次」（`chat-store.saveMessage`），而它所在的模块
+//   **整模块零引用** —— 已被仓里既有的 `audit-dead-features` 报出并在基线里。
+//   ⇒ **本轴在生产路径上是干净的**：SQLite 的写原子性没有漏网的真实缺陷。
+//   ⇒ 但「干净」是**今天**的干净，所以把普查钉成门：新增第 10 处会红，
+//     逼出一次有意识的决定，而不是等下一次审计重新普查一遍。
+import { readdirSync, statSync } from 'node:fs'
+
+const SCAN_ROOTS = ['native', 'stores', 'features', 'api', 'composables', 'utils'].map((r) => join(SRC, r))
+const RUN_RE = /\b(?:localDB|this\.db|db)\.run\(/g
+
+/**
+ * 取函数体：先剥注释，再定位声明 → **括号配平**扫参数表 → 花括号配平扫函数体。
+ *
+ * ⚠⚠⚠ 这段解析器返工了三代，全部记在这里（它们是同一个错误的三种形状）：
+ *   v1 用正则 `[^)]*` 匹配参数表 —— 会**跨行**，某处缩进的 `foo(a)` 一路吃到下面的
+ *       `export async function handleServerEvent(`，真函数被整段吞掉（少认，且不报错）。
+ *   v2 改成 `[^\n)]*` 只吃单行 —— 修好了上面那个，却**漏掉多行签名**：
+ *       `runNotesIndexBackfill(db: NotesIndexDb,\n decrypt: ...)` 直接消失。
+ *   v3（现在）不用正则碰括号，改为**逐字符配平**：定位声明头 → 跳泛型 → 扫到配平的
+ *       `(` … `)` → 扫返回类型（到 `{` 或 `;` 为止）→ 花括号配平取体。
+ *       顺带排除 `if/for/catch/...` 控制流关键字（形状与方法相同）。
+ *
+ * ⭐ 教训：**正则一旦需要"跨结构"，就会在某一个真实文件上悄悄漏掉，且不报错。**
+ *   门禁最容易在这种地方变成「永远绿的装饰」—— 抓它的是「反向断言」
+ *   （允许清单不得有过期条目）与「合成输入自证」，两者都在下面。
+ */
+const CONTROL_KEYWORDS = new Set([
+  'if', 'for', 'while', 'switch', 'catch', 'return', 'function', 'constructor',
+  'do', 'else', 'try', 'finally', 'new', 'typeof', 'await',
+])
+
+/** 从 `from` 开始找配平的 `(`…`)`；返回 `)` 之后的下标，找不到返回 -1。 */
+function skipBalancedParens(src: string, from: number): number {
+  while (from < src.length && /\s/.test(src[from])) from++
+  if (src[from] !== '(') return -1
+  let depth = 0
+  for (let i = from; i < src.length; i++) {
+    if (src[i] === '(') depth++
+    else if (src[i] === ')') {
+      depth--
+      if (depth === 0) return i + 1
+    }
+  }
+  return -1
+}
+
+/** 跳到函数体的 `{`（跳过泛型实参与返回类型），遇到 `;` 说明这不是函数声明。 */
+function findBodyBrace(src: string, from: number): number {
+  let i = from
+  while (i < src.length && /\s/.test(src[i])) i++
+  if (src[i] === '<') {
+    let depth = 0
+    for (; i < src.length; i++) {
+      if (src[i] === '<') depth++
+      else if (src[i] === '>') { depth--; if (depth === 0) { i++; break } }
+    }
+  }
+  const afterParen = skipBalancedParens(src, i)
+  if (afterParen < 0) return -1
+  i = afterParen
+  while (i < src.length && /\s/.test(src[i])) i++
+  if (src[i] === ':') {
+    for (; i < src.length; i++) {
+      if (src[i] === '{') return i
+      if (src[i] === ';') return -1
+    }
+    return -1
+  }
+  return src[i] === '{' ? i : -1
+}
+
+function functionBodies(code: string): { name: string; body: string }[] {
+  const src = strip(code)
+  const out: { name: string; body: string }[] = []
+  const heads = [
+    ...src.matchAll(/(?:^|\n)\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s+(\w+)/g),
+    ...src.matchAll(
+      /(?:\n)\s{2,}(?:(?:public|private|protected|static|async|get|set)\s+)*([A-Za-z_]\w*)\s*(?=\()/g,
+    ),
+  ]
+  for (const h of heads) {
+    const name = h[1]
+    if (!name || CONTROL_KEYWORDS.has(name)) continue
+    const open = findBodyBrace(src, h.index + h[0].length)
+    if (open < 0) continue
+    let depth = 0
+    for (let i = open; i < src.length; i++) {
+      if (src[i] === '{') depth++
+      else if (src[i] === '}') {
+        depth--
+        if (depth === 0) { out.push({ name, body: src.slice(open, i + 1) }); break }
+      }
+    }
+  }
+  return out
+}
+
+/**
+ * 递归收集源码文件。
+ *
+ * ⚠⚠ **必须递归**：第一版只 `readdirSync(root)` 一层，于是
+ *   `features/notes/notes-store.ts`、`features/email/*.ts` 这些**两级目录**
+ *   整个没被扫到 ⇒ 普查只认出 4 处而不是 10 处，而且**完全不报错**。
+ *   抓住它的是「允许清单不得有过期条目」那条**反向**断言 ——
+ *   正向断言（新条目会红）在漏扫时永远是绿的，**只有反向断言会喊**。
+ */
+function collectSources(dir: string, out: string[] = []): string[] {
+  for (const name of readdirSync(dir)) {
+    const full = join(dir, name)
+    let st
+    try { st = statSync(full) } catch { continue }
+    if (st.isDirectory()) {
+      if (name === '__tests__' || name === 'node_modules') continue
+      collectSources(full, out)
+    } else if (/\.(ts|vue)$/.test(name) && !name.includes('.test.')) {
+      out.push(full)
+    }
+  }
+  return out
+}
+
+/** 全仓枚举「一次操作里写两次以上」的函数。 */
+function multiWriteFunctions(): { file: string; fn: string; runs: number }[] {
+  const found: { file: string; fn: string; runs: number }[] = []
+  for (const full of SCAN_ROOTS.flatMap((root) => collectSources(root))) {
+    for (const f of functionBodies(readFileSync(full, 'utf8'))) {
+      const runs = (f.body.match(RUN_RE) ?? []).length
+      if (runs >= 2 && !f.body.includes('runInTransaction')) {
+        found.push({ file: full.replace(SRC + '/', ''), fn: f.name, runs })
+      }
+    }
+  }
+  return found
+}
+
+describe('§880 · 一次操作里的多次写（普查门）', () => {
+  /**
+   * ⚠ 允许清单**逐条写明理由**，不是「这 9 处没关系」的笼统放行。
+   *   新增条目必须在这里出现并写清「为什么它不是半个操作」。
+   */
+  const ALLOW = new Map<string, { why: string; runs: number }>([
+    ['native/outboxStore.ts::put', { runs: 2, why: 'INSERT 撞幂等键才走 UPDATE，两条互斥（不是一次调用写两次）' }],
+    ['native/asset-store.ts::upsert', { runs: 2, why: '先查存在性再 INSERT 或 UPDATE，两条互斥' }],
+    ['native/approvalStore.ts::upsertSnapshot', { runs: 2, why: 'if/else 二选一，两条互斥' }],
+    ['features/notes/notes-store.ts::handleServerEvent', { runs: 2, why: 'if(existing) UPDATE else INSERT，两条互斥' }],
+    ['features/notes/notes-persist.ts::createNote', { runs: 2, why: 'INSERT + 回填 UPDATE，顺序由外键约束固定（见 note-persist-fk-order 门）' }],
+    ['features/notes/notes-fts-backfill.ts::runNotesIndexBackfill', { runs: 2, why: '两条是 UPDATE search_text 与 INSERT _schema_migrations；FTS 那两条是 execute 不计入，合事务与否见简报 100' }],
+    ['features/email/invoices-store.ts::remapLocalId', { runs: 2, why: 'if(existing) DELETE else UPDATE，两条互斥' }],
+    ['features/email/email-folders-store.ts::recordOpsEntry', { runs: 2, why: 'UPDATE 分支与 INSERT 分支互斥' }],
+    ['features/chat/chat-store.ts::saveMessage', { runs: 2, why: '⚠ 真的连写两次，但整个模块零引用（audit-dead-features 已报）——死代码，不装修' }],
+    ['features/meetings/voiceprints-store.ts::saveVoiceprint', { runs: 2, why: 'planVoiceprintWrite 分成 rename/insert 两条互斥分支（多行签名，曾被 v2 解析器漏掉）' }],
+    ['features/email/email-folders-store.ts::flushEmailOps', { runs: 2, why: '逐行标 pushed；中途失败 ⇒ 部分行仍 pending ⇒ 下轮重推，但 pushOps 带幂等键，重复推送会被去重（有意为之）' }],
+  ])
+
+  it('★ 普查结果与允许清单逐条一致（新增第 N+1 处、或已有处多写一次，都会红）', () => {
+    const found = multiWriteFunctions()
+    const keys = found.map((f) => `${f.file}::${f.fn}`)
+    const missing = keys.filter((k) => !ALLOW.has(k))
+    assert.deepEqual(missing, [],
+      `新出现「一次操作里写两次」的函数，必须在 §880 允许清单里写清理由：\n  - ${missing.join('\n  - ')}`)
+    // ⚠⚠ 必须**同时**钉住写次数。第一版只比函数名，结果在已放行的函数里
+    //   多加一句 `db.run(...)` 时全绿 —— 而那恰恰是最该抓的改动。
+    const drifted = found
+      .map((f) => ({ k: `${f.file}::${f.fn}`, runs: f.runs, want: ALLOW.get(`${f.file}::${f.fn}`)?.runs }))
+      .filter((x) => x.want !== undefined && x.want !== x.runs)
+    assert.deepEqual(drifted, [],
+      `已放行的函数改动过写次数：\n${drifted.map((x) => `  - ${x.k}: 期望 ${x.want} 次，实得 ${x.runs} 次`).join('\n')}`)
+  })
+
+  it('★ 允许清单不得有「已不存在」的条目（清单会悄悄过期）', () => {
+    const keys = new Set(multiWriteFunctions().map((f) => `${f.file}::${f.fn}`))
+    const stale = [...ALLOW.keys()].filter((k) => !keys.has(k))
+    assert.deepEqual(stale, [],
+      `允许清单里有条目已不成立（函数被重写或删除）⇒ 清单会骗人，请同步删：\n  - ${stale.join('\n  - ')}`)
+  })
+
+  it('★ 每条放行都必须写明理由与读数（不许出现空理由 / 0 次写）', () => {
+    for (const [k, v] of ALLOW) {
+      assert.ok(v.why.trim().length > 0, `${k} 的放行理由是空的`)
+      assert.ok(v.runs >= 2, `${k} 的读数是 ${v.runs} —— 少于 2 次就不该出现在清单里`)
+    }
+  })
+
+  it('★ 负控：分类器在合成输入上认得出「一次写两次」', () => {
+    // ⚠⚠ 自证的**只有计数**。本分类器是**纯文本**的，它不懂分支 ——
+    //   「这两处 run 是否互斥」是**人工**判定的，结论写在 ALLOW 的理由里。
+    //   早先一版把「互斥分支只该数出 1 次」也写进负控，红了 ——
+    //   那说明把「人的判断」当成了「量具的能力」。写在这里免得下一个人也这么写。
+    const fake = `
+      async function demoTwoWrites(db) {
+        await db.run('UPDATE a SET x = ?', [1])
+        await db.run('UPDATE b SET y = ?', [2])
+      }
+      async function demoOneWrite(db) {
+        await db.run('UPDATE a SET x = ?', [1])
+      }
+    `
+    const bodies = functionBodies(fake)
+    // ⚠ 前提自证：分类器确实认得这两个名字，否则下面两条都在「没扫到」上假绿。
+    assert.deepEqual(bodies.map((b) => b.name).sort(), ['demoOneWrite', 'demoTwoWrites'])
+    assert.ok(
+      (bodies.find((b) => b.name === 'demoTwoWrites')!.body.match(RUN_RE) ?? []).length >= 2,
+      '分类器在合成输入上认不出「一次写两次」⇒ 主判据可能恒空转',
+    )
+    assert.equal((bodies.find((b) => b.name === 'demoOneWrite')!.body.match(RUN_RE) ?? []).length, 1)
+  })
+})
