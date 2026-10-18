@@ -668,3 +668,114 @@ describe('§891 · D61：base64 解码失败必须返回 null（不抛），否�
       'download-encoding.ts 必须 re-export utf8ToBase64（§875：带 .ts 扩展名才能在 node 里加载）')
   })
 })
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §895：§891 收编后的**字节级行为门**（utf-8 → base64 族）。
+//
+// 为什么 §891 那批判据不够 —— 它们是**自洽判据**：
+//   §891 唯一覆盖「搬家之后行为对」的是判据 3「往返不变」
+//   （`base64ToUtf8(utf8ToBase64(s)) === s`），而往返的**真值由本仓自己的
+//   两个实现共同产生** ⇒ 两侧同时换成另一族，往返照样成立，但落盘字节已不是 UTF-8。
+//
+//   实测（Node 22）：把这一族整体换成 utf-16le ——
+//     mutEnc(s) === mutDec(mutEnc(s))            ✅ 往返判据全绿
+//     mutEnc(s) === Buffer.from(s,'utf8')…        ❌ 字节已经错了
+//   ⇒ 「往返不变」证明的是「这两个函数互为逆」，**不是**「落盘的是 UTF-8」。
+//   而 §891 收编动的是 `note-files.ts:71` 的**正文写盘**：
+//   字节错一次 = 已落盘的正文文件变成另一族编码，而解码侧会把它还原成同样的字符串
+//   ⇒ **跨进程、跨版本、跨设备全都无感**，只有和别的工具互操作时才炸。
+//
+// 判据锚点：**Node Buffer 的 UTF-8 真值**，不是抄一份实现再比一遍
+// （§889.8.3 同一纪律：抄实现 = 用同一个错误证明自己）。
+// 形态无关：直接 import 真实函数，不看声明形态。
+// 逐落点限定：只钉 §891 真正收编过的那几个落点，不做全仓唯一性断言。
+// ─────────────────────────────────────────────────────────────────────────────
+describe('§895 · §891 收编的字节级行为门：落盘字节必须是 UTF-8（不是「往返自洽」即可）', () => {
+  // 样本刻意覆盖 UTF-8 的每一处边界：BMP 中文、增补平面 emoji（代理对）、
+  // NUL、单个 latin1 最高位、以及纯 ASCII。少一样，下面某条边界就没人守。
+  const SAMPLES = [
+    ['纯 ASCII', 'hello world'],
+    ['BMP 中文', '（语音草稿）你好世界'],
+    ['增补平面 emoji（代理对）', '👋🎉🧑‍💻'],
+    ['NUL 与控制字符', 'a\u0000b\u0007c'],
+    ['latin1 最高位与边界', '\x7f\x80\xff'],
+    ['组合字符与变体选择', 'é vs é 👩‍🔬'],
+    ['长正文（跨分块无关，测的是编码族）', '（语音草稿）你好世界👋🎉'.repeat(500)],
+  ]
+
+  it('★★★ utf8ToBase64 的落盘字节与 Node Buffer 的 UTF-8 真值**逐字节一致**', () => {
+    // ⚠ 这条**不能**用往返替代：往返是自洽判据（见本块头部的实测）。
+    for (const [name, s] of SAMPLES) {
+      assert.equal(
+        utf8ToBase64(s),
+        Buffer.from(s, 'utf8').toString('base64'),
+        `${name}：utf8ToBase64 的输出不是 UTF-8 字节 ⇒ §891 收编后落盘的正文编码错了`,
+      )
+    }
+  })
+
+  it('★★★ base64ToUtf8 对 UTF-8 字节的还原与 Buffer 一致（解码侧同样锚 Buffer）', () => {
+    for (const [name, s] of SAMPLES) {
+      assert.equal(
+        base64ToUtf8(Buffer.from(s, 'utf8').toString('base64')),
+        s,
+        `${name}：base64ToUtf8 还原不出 Buffer 编码的字节 ⇒ 解码侧与编码侧不同族`,
+      )
+    }
+  })
+
+  it('★★★ 负控：换成 utf-16le 的自洽同族**能过往返、过不了字节门**', () => {
+    // ⚠ 先确认对照本身**确实有病**，否则上面两条可能只是「碰巧对」。
+    const mutEnc = (x) => Buffer.from(x, 'utf16le').toString('base64')
+    const mutDec = (x) => Buffer.from(x, 'base64').toString('utf16le')
+    const s = '（语音草稿）你好世界👋🎉'
+    // 对照的两个性质必须同时成立，否则它证明不了任何事：
+    assert.equal(mutDec(mutEnc(s)), s,
+      '负控假定失效：这个变异对连往返都不成立 ⇒ 它证明不了「往返是自洽判据」')
+    assert.notEqual(mutEnc(s), Buffer.from(s, 'utf8').toString('base64'),
+      '负控假定失效：这个变异对的字节与 UTF-8 相同 ⇒ 它证明不了「字节门能咬住」')
+    // 而真实现必须字节对齐（正向）。
+    assert.equal(utf8ToBase64(s), Buffer.from(s, 'utf8').toString('base64'),
+      '真实现自己没通过字节门 ⇒ 字节门的锚点写错了')
+  })
+
+  it('★★ 逐落点限定：§891 收编的落点里不许再自带 utf-8→base64 实现（形状判定，非函数名）', () => {
+    // ⚠ 形态无关：判「形状」不判「名字」—— §889.8.1 实测按名字+形态判时，
+    //   注入 const 箭头形态（甚至换名）的副本全绿逃掉。
+    // ⚠ 逐落点限定：不能全仓判，否则 `crypto.ts` 的内联编码会假红（§889.3）。
+    const hasUtf8ToBase64 = (src) =>
+      /\bbtoa\(/.test(src) && /encodeURIComponent\(/.test(src)
+    const SRC_ROOT = new URL('../../', import.meta.url).pathname
+    const strip = (s) => s
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/(^|[^:])\/\/.*$/gm, '$1')
+    const RECLAIMED = [
+      'features/notes/note-files.ts',
+      'utils/download-encoding.ts',
+    ]
+    const back = []
+    for (const file of RECLAIMED) {
+      const src = strip(readFileSync(resolve(SRC_ROOT, file), 'utf8'))
+      if (hasUtf8ToBase64(src)) back.push(file)
+    }
+    assert.deepEqual(back, [],
+      `这些 §891 收编过的落点又自带了一份 utf-8→base64 实现：\n  - ${back.join('\n  - ')}\n` +
+      '公共实现在 utils/base64.ts::utf8ToBase64，请改成 import。\n' +
+      '⚠ 注意：即使写法换了、形状也认得 —— 但上面的字节门才是行为保证，这一条只是防搬回去。')
+  })
+
+  it('★ 量具自检：形状规则认得出非 function 形态，且不误伤 utf-16le 那一族', () => {
+    const hasUtf8ToBase64 = (src) =>
+      /\bbtoa\(/.test(src) && /encodeURIComponent\(/.test(src)
+    assert.ok(hasUtf8ToBase64([
+      'const toB64 = (s: string): string => {',
+      '  return btoa(unescape(encodeURIComponent(s)))',
+      '}',
+    ].join('\n')), '规则认不出 const 箭头形态的副本 ⇒ 换个写法就逃得掉（§889.8.1 同款假绿）')
+    assert.ok(!hasUtf8ToBase64([
+      'function bytesToBase64(buf: Uint8Array): string {',
+      '  return btoa(String.fromCharCode(...buf))',
+      '}',
+    ].join('\n')), '规则把 bytes→base64（另一个概念）误判了 ⇒ 规则太宽')
+  })
+})
