@@ -386,3 +386,74 @@ describe('§862 · 变异负控', () => {
       '守卫样本与真源码不匹配')
   })
 })
+
+// ─────────────────────────────────────────────────────────────────────────
+// §878：读 SQLite「一列 JSON」这件事此前有**三份实现、三种降级口径**，全零留证。
+//
+//   ① native/outboxStore.ts          裸 JSON.parse → 直接抛（一条坏行永久堵死整个队列）
+//   ② config-sync/settings-store.ts  catch { payload = {} } → 谎报成空（定时任务列表出现空条目）
+//   ③ config-sync/outbox.ts          同上，但这份是**推送队列** ⇒ 空 payload 会被真的发出去
+//   ④ native/approvalStore.ts        同上，但**唯一非破坏**的一处（展示只看 kind/state）
+//
+// ⚠ 这 4 处是**按能力枚举**出来的（扫 `JSON.parse` 落在 DB 行字段上），
+//   不是按调用点一个个撞出来的 —— 只查 outbox 会漏掉另外三处。
+// ⚠ 行为那一层（真 SQLite + 真 drain）在
+//   `native/__tests__/outboxDrain.test.mjs`；这里是**形状层**，只保证口径没退回三份。
+describe('§878 · SQLite JSON 列的解码口径必须只有一个落点', () => {
+  /** 4 个「读 DB 行上的 JSON 列」的文件。数量被钉住 —— 新增落点必须是一个有意识的决定。 */
+  const DECODE_SITES = [
+    'native/outboxStore.ts',
+    'native/approvalStore.ts',
+    'native/config-sync/settings-store.ts',
+    'native/config-sync/outbox.ts',
+  ]
+
+  it('★ 4 个落点全部走同一个解码器', () => {
+    for (const rel of DECODE_SITES) {
+      const code = strip(read(rel))
+      // ⚠ 正则必须认 `readJsonColumn<...>(`：调用点都带泛型实参，
+      //   写成 `readJsonColumn\(` 会在**真源码**上 0 命中（第一版就栽在这，
+      //   又一次「量具坏了」而不是「代码坏了」）。
+      assert.match(code, /readJsonColumn[<(]/,
+        `${rel} 没有走共用解码器 ⇒ 解码口径又各自漂移了（§878.1 的起点）`)
+      assert.doesNotMatch(code, /JSON\.parse\(\s*String\(\s*\w+\s*\.\s*payload/,
+        `${rel} 又自己解析 payload 列了 ⇒ 多了一份实现就会各自漂移`)
+    }
+  })
+
+  it('★ 解码器全仓只有一个定义点', () => {
+    const defs = strip(read('native/sqlDb.ts')).match(/export function readJsonColumn/g) ?? []
+    assert.equal(defs.length, 1, `readJsonColumn 定义了 ${defs.length} 次 —— 必须只有一个落点`)
+  })
+
+  it('★ 「谎报成空」的降级不得回来（那两处是 §878.2 的缺陷形态）', () => {
+    for (const rel of ['native/config-sync/settings-store.ts', 'native/config-sync/outbox.ts']) {
+      const code = strip(read(rel))
+      assert.doesNotMatch(code, /payload\s*=\s*\{\}/,
+        `${rel} 又把损坏的 payload 降级成 {} 了 ⇒ 列表里会出现既没标题也没 id 的空条目`)
+      assert.match(code, /continue|filter\(/,
+        `${rel} 必须显式跳过损坏的行，而不是把它换成一个空对象`)
+    }
+  })
+
+  it('★ 唯一允许降级成空的那一处必须写明「为什么它非破坏」', () => {
+    const raw = read('native/approvalStore.ts')
+    const body = fnBody(raw, 'toApprovalRow')
+    assert.ok(body, '取不到 toApprovalRow 的函数体')
+    assert.match(body, /readJsonColumn[<(]/, '它也必须走共用解码器（只是决定不同）')
+    // ⚠ 这条断言的是**理由必须在场**，不是「注释里提到就算数」——
+    //   它只要求注释存在且与 kind/state 有关，是「人写给人看的」那条约定。
+    assert.match(raw, /kind[\s\S]{0,200}state|state[\s\S]{0,200}kind/,
+      'approvalStore 的降级理由（展示只依赖 kind/state）不见了 —— 那时降级就不再是非破坏的')
+  })
+
+  it('★ 点查与批量读的口径差异必须显式（一个抛、一个跳过）', () => {
+    const code = strip(read('native/outboxStore.ts'))
+    // 批量读：跳过 + 过滤
+    assert.match(code, /if\s*\(rec\s*!==\s*null\)\s*out\.push\(rec\)/,
+      'listReady 必须逐行跳过损坏的记录，不能整批 reject')
+    // 点查：抛，且带可被断言的标记
+    assert.match(code, /throw new Error\(\s*`\[outbox_corrupt\]/,
+      'get() 必须抛可识别的错误 —— 返回 null 就是把损坏报成「不存在」（§876/D45）')
+  })
+})

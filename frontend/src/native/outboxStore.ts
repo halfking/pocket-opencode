@@ -8,7 +8,7 @@
 
 import type { OutboxRecord, OutboxState, OutboxStorage } from '../utils/outbox.ts'
 import type { SqlDb } from './sqlDb.ts'
-import { isUniqueViolation } from './sqlDb.ts'
+import { isUniqueViolation, readJsonColumn, warnCorruptColumn } from './sqlDb.ts'
 
 interface OutboxSqlRow {
   id: unknown
@@ -25,13 +25,32 @@ interface OutboxSqlRow {
   ttl_ms: unknown
 }
 
-function toRecord(r: OutboxSqlRow): OutboxRecord {
+/**
+ * §878：行 → 记录。**payload 损坏时返回 null（跳过该行），不再抛。**
+ *
+ * ⚠⚠ 修之前的形状是裸 `JSON.parse(...)` 直接抛，而 `listReady` 的调用方
+ *   `drainOutbox` 外面**没有** try/catch，`listReady` 又是
+ *   `ORDER BY created_at ASC LIMIT ?` ⇒ 一条排在队首的坏 payload
+ *   会让**每一次** drain 整个 reject ⇒ **整个离线队列（session.create /
+ *   session.prompt / approval.reply）永久停摆**，且没有任何提示。
+ *   ⇒ 这是「一条坏数据连累同批全部」的家族，与 §876/D45「损坏谎报成空」
+ *   同源但**后果更重**：那一条谎报，这一条是**永久堵死**。
+ *
+ * ⚠ 损坏的行**留在表里不删**：原始字节本身就是证据（§876 的原则是
+ *   「损坏不许覆写」），删了就再也查不出当时坏成什么样。
+ */
+function toRecord(r: OutboxSqlRow): OutboxRecord | null {
+  const payload = readJsonColumn<unknown>(r as unknown as Record<string, unknown>, 'payload', 'local_outbox')
+  if (!payload.ok) {
+    warnCorruptColumn('local_outbox', String(r.id), payload.reason)
+    return null
+  }
   return {
     id: String(r.id),
     idempotencyKey: String(r.idempotency_key),
     workspaceId: String(r.workspace_id),
     action: String(r.action),
-    payload: JSON.parse(String(r.payload ?? 'null')),
+    payload: payload.value,
     createdAt: Number(r.created_at),
     nextAttemptAt: Number(r.next_attempt_at),
     attempts: Number(r.attempts),
@@ -40,6 +59,18 @@ function toRecord(r: OutboxSqlRow): OutboxRecord {
     state: String(r.state) as OutboxState,
     ttlMs: Number(r.ttl_ms),
   }
+}
+
+/** §878：点查。**损坏必须抛**，不能报成「没有这一行」。 */
+function toRecordOrThrow(r: OutboxSqlRow): OutboxRecord {
+  const rec = toRecord(r)
+  if (rec === null) {
+    throw new Error(
+      `[outbox_corrupt] local_outbox 的行 ${String(r.id)} 的 payload 已损坏；`
+      + '该行仍在表里（未删未改写），请检查 localStorage/localDB 后再重试。',
+    )
+  }
+  return rec
 }
 
 function fromRecord(record: OutboxRecord): unknown[] {
@@ -102,7 +133,8 @@ export class SqliteOutboxStore implements OutboxStorage {
 
   async get(id: string): Promise<OutboxRecord | null> {
     const rows = await this.db.all(`SELECT ${OUTBOX_COLUMNS} FROM local_outbox WHERE id = ?`, [id])
-    return rows.length > 0 ? toRecord(rows[0] as unknown as OutboxSqlRow) : null
+    if (rows.length === 0) return null
+    return toRecordOrThrow(rows[0] as unknown as OutboxSqlRow)
   }
 
   async delete(id: string): Promise<void> {
@@ -116,7 +148,13 @@ export class SqliteOutboxStore implements OutboxStorage {
        ORDER BY created_at ASC LIMIT ?`,
       [now, limit],
     )
-    return rows.map((r) => toRecord(r as unknown as OutboxSqlRow))
+    // §878：逐行解码，损坏的跳过 ⇒ 同批的其它记录照常重放（不再整批堵死）。
+    const out: OutboxRecord[] = []
+    for (const row of rows) {
+      const rec = toRecord(row as unknown as OutboxSqlRow)
+      if (rec !== null) out.push(rec)
+    }
+    return out
   }
 
   async countByState(states: OutboxState[]): Promise<number> {

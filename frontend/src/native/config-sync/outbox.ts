@@ -1,5 +1,6 @@
 import { localDB } from '../local-db'
 import { nowUnixSec } from './planner'
+import { readJsonColumn, warnCorruptColumn } from '../sqlDb'
 
 export interface ConfigOutboxRow {
   id: string
@@ -46,20 +47,29 @@ export async function listQueuedConfigPushes(): Promise<ConfigOutboxRow[]> {
     `SELECT id, namespace, entity_id, payload, secret, updated_at, attempts, state
      FROM local_config_outbox WHERE state = 'queued' ORDER BY created_at`,
   )
-  return rows.map((row) => {
-    let payload: unknown = {}
-    try { payload = JSON.parse(String(row.payload ?? '{}')) } catch { payload = {} }
-    return {
+  // §878：损坏的行跳过，不拿 `{}` 冒充。
+  // ⚠ 后果对比：旧的 `catch { payload = {} }` 会把一条坏推送**照样发出去**，
+  //   只是内容变成空 —— 服务端收到一个「什么都没有」的实体更新，
+  //   而本地记录会显示「已推送成功」（`markConfigPushDone`）。
+  const out: ConfigOutboxRow[] = []
+  for (const row of rows) {
+    const payload = readJsonColumn<unknown>(row, 'payload', 'local_config_outbox')
+    if (!payload.ok) {
+      warnCorruptColumn('local_config_outbox', String(row.id), payload.reason)
+      continue
+    }
+    out.push({
       id: String(row.id),
       namespace: String(row.namespace),
       entityId: String(row.entity_id),
-      payload,
+      payload: payload.value,
       secret: String(row.secret ?? ''),
       updatedAt: Number(row.updated_at ?? 0),
       attempts: Number(row.attempts ?? 0),
       state: String(row.state),
-    }
-  })
+    })
+  }
+  return out
 }
 
 export async function markConfigPushDone(id: string): Promise<void> {

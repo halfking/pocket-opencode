@@ -175,3 +175,128 @@ test('records before the retry window are not claimed early', async () => {
   assert.equal(rows.length, 1)
   assert.equal(rows[0].idempotencyKey, 'appr_permission_req_1')
 })
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * §878：一条损坏的 payload 曾经能**永久堵死整个离线队列**。
+ *
+ * 缺陷形态（修之前）：`toRecord` 里裸 `JSON.parse`，而 `listReady` 的调用方
+ * `drainOutbox` 外面没有 try/catch，`listReady` 又是 `ORDER BY created_at ASC`。
+ * ⇒ 排在队首的一条坏 payload，让**每一次** drain 整个 reject，
+ *   session.create / session.prompt / approval.reply 全部停摆，且零提示。
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+/** 直接往表里塞一条 payload 损坏的行（模拟写坏/截断/跨版本 schema）。 */
+async function injectCorruptRow(db, id, createdAt) {
+  await db.run(
+    `INSERT INTO local_outbox
+       (id, idempotency_key, workspace_id, action, payload,
+        created_at, next_attempt_at, attempts, cursor, last_error, state, ttl_ms)
+     VALUES (?,?,?,?,?,?,?,0,NULL,NULL,'queued',?)`,
+    // ⚠ 少一个右括号：这是**真实的 JSON 截断**形态，不是随手写的乱码。
+    [id, id, WS, 'approval.reply', '{"requestId":"req_1"', createdAt, createdAt, 86_400_000],
+  )
+}
+
+/** 捕获 console.warn，用来证明判据区分得开「有损坏」与「没损坏」。 */
+async function captureWarnings(fn) {
+  const original = console.warn
+  const seen = []
+  console.warn = (...args) => void seen.push(args.join(' '))
+  try {
+    const value = await fn()
+    return { value, seen }
+  } finally {
+    console.warn = original
+  }
+}
+
+test('§878 一条坏 payload 不得堵死 drain（同批的其它记录照常重放）', async () => {
+  const db = new NodeSqlDb()
+  const outbox = new SqliteOutboxStore(db)
+
+  // ⚠ 坏行排在**队首**（created_at 更小）—— 这正是「永久堵死」的形状。
+  await injectCorruptRow(db, 'corrupt-1', 500)
+  await outbox.put(queuedRecord()) // 队尾，createdAt = 1000
+
+  const sent = []
+  const { value: result, seen } = await captureWarnings(() =>
+    drainOutbox(outbox, {
+      workspaceId: WS,
+      senders: {
+        'approval.reply': async (record) => {
+          sent.push(record.idempotencyKey)
+          return { ok: true, cursor: 'req_1' }
+        },
+      },
+      now: () => 1000,
+    }),
+  )
+
+  assert.equal(result.succeeded, 1, '坏行连累了同批的好行 ⇒ 整个离线队列被一条数据堵死')
+  assert.deepEqual(sent, ['appr_permission_req_1'])
+  assert.equal(
+    seen.some((w) => w.includes('local_outbox') && w.includes('corrupt-1')),
+    true,
+    `跳过了坏行却没有任何告警 ⇒ 下一个人无法知道队列里躺着一条坏数据（实际：${JSON.stringify(seen)}）`,
+  )
+})
+
+test('§878 损坏的行必须留在表里（原始字节是证据，不许销毁）', async () => {
+  const db = new NodeSqlDb()
+  const outbox = new SqliteOutboxStore(db)
+  await injectCorruptRow(db, 'corrupt-1', 500)
+  await outbox.put(queuedRecord())
+
+  await captureWarnings(() =>
+    drainOutbox(outbox, {
+      workspaceId: WS,
+      senders: { 'approval.reply': async () => ({ ok: true, cursor: 'req_1' }) },
+      now: () => 1000,
+    }),
+  )
+
+  const rows = await db.all('SELECT id, payload FROM local_outbox')
+  assert.equal(rows.length, 1, '好行已发送后应只剩坏行')
+  assert.equal(rows[0].id, 'corrupt-1')
+  assert.equal(rows[0].payload, '{"requestId":"req_1"',
+    '坏行的原始字节被改写了 ⇒ 证据没了（§876「损坏不许覆写」是同一条原则）')
+})
+
+test('§878 点查不得把损坏报成「没有这一行」（§876/D45 的形态）', async () => {
+  const db = new NodeSqlDb()
+  const outbox = new SqliteOutboxStore(db)
+  await injectCorruptRow(db, 'corrupt-1', 500)
+
+  // ⚠ 断言错误标记本身：`assert.rejects` 接受任何 reject（§876 M33）。
+  await assert.rejects(
+    () => outbox.get('corrupt-1'),
+    /outbox_corrupt/,
+    'get 返回 null 会让调用方以为「这条记录不存在」—— 谎报',
+  )
+  // 不存在的 id 仍然老老实实返回 null（不能一律抛）。
+  assert.equal(await outbox.get('never-existed'), null)
+})
+
+test('§878 对照组：数据全好时读数必须不同（判据有牙，不是碰巧绿）', async () => {
+  const db = new NodeSqlDb()
+  const outbox = new SqliteOutboxStore(db)
+  await outbox.put(queuedRecord())
+
+  const sent = []
+  const { value: result, seen } = await captureWarnings(() =>
+    drainOutbox(outbox, {
+      workspaceId: WS,
+      senders: {
+        'approval.reply': async (record) => {
+          sent.push(record.idempotencyKey)
+          return { ok: true, cursor: 'req_1' }
+        },
+      },
+      now: () => 1000,
+    }),
+  )
+
+  assert.equal(result.succeeded, 1)
+  assert.equal(sent.length, 1)
+  assert.deepEqual(seen, [], '数据完好时不该有任何「损坏」告警 —— 否则告警就是噪声')
+})
