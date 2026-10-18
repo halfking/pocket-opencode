@@ -234,7 +234,7 @@ type ModelOption struct {
 // 不足（429/1113，充值后零改动可用）。gpt-audio 系仍是「列了但没有上游」。
 func RecommendedGatewayModels() []ModelOption {
 	return []ModelOption{
-		{Model: "mimo-v2.5-asr", Group: "gateway", Note: "实测可用（2026-10-06 zh/en 全对）· 网关 /models 未标 audio，勿按目录过滤掉它"},
+		{Model: "mimo-v2.5-asr", Group: "gateway", Note: "实测可用（2026-10-06 zh/en 全对）· 勿按目录的 modality 过滤掉它"},
 		{Model: "minimax-asr-1.0", Group: "gateway", Note: "实测可用（2026-10-06 zh/en 全对）· 客户端勿改打 speech_to_text，网关内部适配 · SSE 流式 · 500s 限长", Streaming: true, MaxSeconds: 500, USDPerHour: 0.38},
 		{Model: "glm-asr", Group: "gateway", Note: "智谱 ASR · 数据面已接通（2026-10-08 网关 multipart 透传目录种子）· 智谱凭据余额不足 429/1113，充值后零改动可用 · SSE 流式 · 30s 限长 + 热词", Streaming: true, MaxSeconds: 30, USDPerHour: 0.50},
 		{Model: "gpt-audio-mini", Group: "gateway", Note: "网关列了但实测 503 no_provider（2026-10-06）"},
