@@ -142,3 +142,149 @@ test('负对照·把真实文件里一个带守卫的循环换成裸的，主判
   const bare = columnLoops(mutatedSrc).filter((l) => !/pragma_table_info/.test(l.body))
   assert.ok(bare.length > 0, '真文件被换成裸循环，判据却没抓到 ⇒ 主判据对真文件恒绿')
 })
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * §879 **行为层**：FTS 重灌失败时，不得把这次迁移记成「已完成」。
+ *
+ * 上面那道门是源码扫描；这一段跑**真 SQLite（含真 FTS5）+ 故障注入**，
+ * 因为本条性质的核心是**时序**（失败 → 版本号），文本扫不出来。
+ *
+ * ⚠ 本文件导入的是 `notes-fts-backfill.ts` 而不是 `notes-fts-ready.ts`：
+ *   后者顶层 import `localDB` 与 `native/crypto`，那条链在 node 里
+ *   加载不了（无扩展名 import 那一族，简报第 94 条）。
+ *   可测核心单独成模块是 §820「决策放纯函数」的同款手法。
+ * ═══════════════════════════════════════════════════════════════════════════ */
+import { DatabaseSync } from 'node:sqlite'
+import { runNotesIndexBackfill, NOTES_FTS_MIGRATION } from '../../features/notes/notes-fts-backfill.ts'
+
+/** 真 SQLite + 真 FTS5 的最小夹具，与生产 schema 对齐到够用的程度。 */
+function makeNotesFixture(opts = {}) {
+  const sqlite = new DatabaseSync(':memory:')
+  // ⚠⚠ 必须是**外部内容表**（`content='local_notes'`），与 `native/schema.ts:49` 一致。
+  //   第一版写成普通 `fts5(title, content)`，于是 `'delete-all'` 抛
+  //   「may only be used with a contentless or external content fts5 table」
+  //   —— 读上去像**生产代码一直在失败**，实际是夹具没复刻关键那一列。
+  //   ⇒ 替身不复刻关键性质时，它测的是量具，不是代码。
+  sqlite.exec(`
+    CREATE TABLE local_notes (
+      rowid INTEGER PRIMARY KEY,
+      id TEXT NOT NULL,
+      title TEXT,
+      content TEXT,
+      tags TEXT,
+      search_text TEXT,
+      encrypted_content INTEGER DEFAULT 0,
+      storage_tier TEXT,
+      deleted_at INTEGER,
+      workspace_id TEXT DEFAULT 'default'
+    );
+    CREATE VIRTUAL TABLE local_notes_fts USING fts5(
+      title, content, content='local_notes', content_rowid='rowid',
+      tokenize='unicode61 remove_diacritics 2'
+    );
+    CREATE TABLE _schema_migrations (version TEXT PRIMARY KEY, description TEXT, applied_at INTEGER);
+  `)
+  for (const n of opts.notes ?? ['alpha', 'beta', 'gamma']) {
+    sqlite.prepare(
+      `INSERT INTO local_notes (id, title, content, search_text) VALUES (?,?,?,NULL)`,
+    ).run(n, `标题 ${n}`, `正文 ${n} 的内容`)
+  }
+  const db = {
+    isReady: () => true,
+    queryOne: async (sql, values = []) => sqlite.prepare(sql).get(...values) ?? null,
+    query: async (sql, values = []) => sqlite.prepare(sql).all(...values),
+    run: async (sql, values = []) => Number(sqlite.prepare(sql).run(...values).changes),
+    execute: async (sql) => {
+      // ⚠ 故障注入点：让「delete-all 成功、重灌失败」成为可能 ——
+      //   这正是真实世界里最危险的形状（清空已生效，补回没生效）。
+      if (opts.failRepopulate && /INSERT INTO local_notes_fts\(rowid/.test(sql)) {
+        throw new Error('injected: repopulate failed (disk full)')
+      }
+      sqlite.exec(sql)
+      return 0
+    },
+  }
+  return { sqlite, db }
+}
+
+const decryptOk = async (s) => s
+/**
+ * ⚠⚠⚠ **必须用 MATCH 量，不能用 `COUNT(*)`。**
+ *   `local_notes_fts` 是**外部内容表**，`SELECT COUNT(*) FROM local_notes_fts`
+ *   数的是**内容表 `local_notes` 的行数** —— 与索引里有没有词**完全无关**。
+ *   第一版就栽在这：明明索引是空的，读出来却是 3。
+ *   ⇒ 这与 §877「替身要造出真实语义」是同一条：量具测的必须是**被测的那件事**。
+ *   ⚠ 还必须用**拉丁词**去 MATCH：生产用 `unicode61`，它把连续汉字当成**一词**
+ *   （`正文 alpha 的内容` → 词元 `正文` / `alpha` / `的内容`）
+ *   ⇒ `MATCH '内容'` 永远 0 命中。这也是 `notes-search.ts` 要并一层 LIKE 的原因。
+ */
+const ftsRowCount = (sqlite) =>
+  Number(sqlite.prepare('SELECT COUNT(*) AS n FROM local_notes_fts WHERE local_notes_fts MATCH ?')
+    .get('alpha OR beta OR gamma').n)
+const migrationStamped = (sqlite) =>
+  Number(sqlite.prepare('SELECT COUNT(*) AS n FROM _schema_migrations WHERE version = ?')
+    .get(NOTES_FTS_MIGRATION).n)
+
+test('§878/879 正控：FTS5 可用时回填成功，索引条数与笔记数一致', async () => {
+  const { sqlite, db } = makeNotesFixture()
+  const r = await runNotesIndexBackfill(db, decryptOk)
+  assert.equal(r.changed, 3, '三条笔记的 search_text 都该被回填')
+  assert.equal(r.ftsOk, true)
+  assert.equal(r.stamped, true)
+  assert.equal(ftsRowCount(sqlite), 3, '重灌后索引条数必须等于笔记数')
+  assert.equal(migrationStamped(sqlite), 1)
+})
+
+test('§879 ★ 重灌失败 ⇒ 迁移版本号不得写入（否则这次回填永不重跑）', async () => {
+  const { sqlite, db } = makeNotesFixture({ failRepopulate: true })
+  const r = await runNotesIndexBackfill(db, decryptOk)
+  assert.equal(r.ftsOk, false, '注入的失败没有被认出来')
+  assert.equal(r.stamped, false,
+    '重灌失败却把迁移记成已完成 ⇒ 本次回填再也不会重跑，索引永久残缺')
+  assert.equal(migrationStamped(sqlite), 0,
+    '迁移表里不该出现这条记录')
+})
+
+test('§879 ★ 重灌失败后下一次调用会重试（不是记成「已完成」就跳过）', async () => {
+  const { sqlite, db } = makeNotesFixture({ failRepopulate: true })
+  await runNotesIndexBackfill(db, decryptOk)
+  // ⚠ 同一个 db（故障仍在注入中）⇒ 第二轮仍应尝试重跑，而不是读到版本号就 return。
+  const second = await runNotesIndexBackfill(db, decryptOk)
+  assert.equal(second.changed, 0,
+    '第二轮没重跑回填（search_text 已回填过 ⇒ changed 应为 0）但它**必须跑到这里**')
+  assert.equal(second.stamped, false, '故障仍在 ⇒ 第二轮同样不该记成完成')
+  assert.equal(migrationStamped(sqlite), 0)
+})
+
+test('§879 对照组：故障撤掉后，下一轮能把索引补回来并记成完成', async () => {
+  // ⚠ 没有这一条，「不写版本号」可能只是把问题推迟；必须证明它**真的会自愈**。
+  const sqlite0 = new DatabaseSync(':memory:')
+  const fixtureA = makeNotesFixture({ failRepopulate: true })
+  await runNotesIndexBackfill(fixtureA.db, decryptOk)
+  assert.equal(ftsRowCount(fixtureA.sqlite), 0, '清空已生效、重灌没生效 ⇒ 索引此刻是空的')
+
+  // 换一个**不再注入故障**的 db 连到同一个 sqlite 上（即故障撤除）。
+  const healed = {
+    ...fixtureA.db,
+    execute: async (sql) => { fixtureA.sqlite.exec(sql); return 0 },
+  }
+  const r = await runNotesIndexBackfill(healed, decryptOk)
+  assert.equal(r.ftsOk, true)
+  assert.equal(ftsRowCount(fixtureA.sqlite), 3, '索引应被补回 3 条')
+  assert.equal(migrationStamped(fixtureA.sqlite), 1, '这次才该记成已完成')
+  assert.ok(sqlite0)
+})
+
+test('§879 Web 降级不是失败：虚表不存在时仍应记成完成', async () => {
+  // ⚠ 旧代码对「web 无 FTS5」和「Android 真失败」一视同仁地静默；
+  //   但两者不能一刀切 —— web 上没有索引这件事是**预期**的。
+  const { sqlite, db } = makeNotesFixture()
+  const noFts = { ...db, execute: async (sql) => {
+    if (/local_notes_fts/.test(sql)) throw new Error('no such table: local_notes_fts')
+    return 0
+  } }
+  const r = await runNotesIndexBackfill(noFts, decryptOk)
+  assert.equal(r.ftsOk, false, '虚表不存在仍算「没重灌」')
+  assert.equal(r.stamped, true,
+    'web 上没有 FTS 是预期降级 ⇒ 不该每次搜索都重跑整轮回填')
+})
