@@ -100596,3 +100596,209 @@ function loadNS<T>(ns) {
 - ⚠ §876.4 的行为判据能跑，是因为**只有这一个 import** 被补了 `.ts`；
   仓里其余无扩展名 import（`email-body-cache.ts` 那一族）**依然加载不了**，
   仍登记在简报第 94 条。
+
+---
+
+## §877 IndexedDB 层：写事务的「成功」发生在数据真正落库之前（D46 / D47 / D48）
+
+§866–§876 十一节都在**键值层**（localStorage、Capacitor 偏好、原生 snapshot-store）。
+本节换轴到 **IndexedDB** —— 全仓只有两处用到，但它是**会议录音与卡片媒体真正落盘**的那一层。
+
+### §877.1 普查：IndexedDB 在本仓的全部落点
+
+按「枚举能力而不是枚举调用点」（本会话已因此翻案 5 次），
+先列**所有直接使用 `indexedDB` 的地方**，而不是先看谁调用了 `writeFile`：
+
+| 文件 | 用途 | 写事务成败判据 | 连接归还 |
+|---|---|---|---|
+| `native/meeting-audio.ts` | 会议完整录音（存 / 取 / 删） | `tx.oncomplete` ✅ | 写在 `await` 之后 ⚠ |
+| `native/pocket-native.ts` | web 端「文件系统」抽象的底层 | `IDBRequest.onsuccess` ❌ | **完全没有** ❌ |
+
+⇒ 同一层、同一份技术、两套实现、**两种语义**，且较差的那一套挂在**业务代码真正走的那条路**上。
+
+### §877.2 D46：写事务在 request 成功时就宣布成功
+
+`pocket-native.ts` 修前的 `withStore`：
+
+```ts
+const ret = fn(store)
+ret.onsuccess = () => settleOk(ret.result)   // ← 这里就 resolve 了
+ret.onerror = () => settleErr(...)
+tx.onerror = () => settleErr(...)
+tx.onabort = () => settleErr(...)            // ← 永远轮不到它
+```
+
+**规范依据**（MDN `IDBTransaction.oncomplete` 示例的注释原文）：
+
+> report the success of the request (**this does not mean the item has been stored
+> successfully in the DB** - for that you need transaction.oncomplete)
+
+`IDBRequest.onsuccess` 只说明**请求本身**排进了事务；事务随后**仍可能 abort**
+（配额超限 / 磁盘 I/O 错误 / 某个 success handler 抛未捕获异常），此时写入被回滚。
+因为 `settled` 标志已经置位，后到的 `tx.onabort` 被 `settleErr` 的 guard 直接吞掉
+⇒ **一次被回滚的写，向调用方报告为成功。**
+
+修法：写事务以 `tx.oncomplete` 为准（只读事务仍按请求成功返回）。
+
+#### D46 的消费者（先数，再判）
+
+`native.filesystem.writeFile` 的全部调用点，以及它们**能不能走到 web 实现**：
+
+| 调用点 | web 可达？ | 失败会不会被看见 |
+|---|---|---|
+| `utils/version.ts:295`（APK 更新包） | ✅ **无平台守卫** | 会被看见，但**以错误的身份** |
+| `features/flashcards/utils/flashcardMedia.ts:134` | ✅ | 不被看见（web 侧从不读回，见下） |
+| `utils/download.ts:114` | ❌ 上游已 `platform==='web'` 早退 | —— |
+| `features/rss/RssDigestView.vue:111` | ❌ 显式守卫 | —— |
+| `features/flashcards/utils/flashcardIo.ts:68` | ❌ 守卫 android/ios | —— |
+
+⇒ 唯一**没有**平台守卫的是**应用更新**那条路。那里 `writeFile` 之后紧跟 `getUri`（读回），
+  所以 abort 造成的「假成功」最终**以 `filesystem.readFile: not found` 的面貌**冒出来
+  ⇒ **写失败被谎报成读失败**，排查的人会去查读的那一端。
+  ⇒ 这是 §866–§876 那一族的第 12 次：**同一件事在两层上说两种话**。
+
+### §877.3 D48：每次读写都开一个连接，从不归还
+
+`withStore` 每次调用都 `await openDb()`，**从头到尾没有 `db.close()`**。
+⇒ 每读写一个文件漏一条 IndexedDB 连接；未关闭的连接会**阻塞后续 `versionchange`**，
+让下一次 `open` 卡在 `onblocked` 上（`meeting-audio.ts` 的 `openDB` 连 `onblocked` 都没处理）。
+
+同层的 `meeting-audio.ts` 三个函数**都调了 `close()`** —— 两套实现的差别不是风格，是漏没漏。
+
+⚠ 它此前的写法是 `db.close()` 放在 `await` **之后**：一旦函数 reject，连接同样永久留着。
+⇒ 本节把它统一改成 `try/finally`，三个函数都改。
+
+**读数（M34）**：10 次读写，变异前 `opens=10 closes=0`。
+
+### §877.4 D47：`deleteFile` 的裸 catch 与它自己的注释、测试文件头都不符
+
+修前的 `makeWebFilesystem.deleteFile`：
+
+```ts
+try { await store.delete(...) }
+catch { /* 不存在 = 忽略（与 @capacitor/filesystem 行为对齐） */ }
+```
+
+注释说的是「不存在」，代码做的是「**一切**」。⚠ 更严重的是
+`native/__tests__/pocket-native.test.mjs` 的文件头第 5 条写着：
+
+> 5. 任何 store 抛错都会向上抛（不静默吞）
+
+而该文件对 `delete` **一条断言都没有** —— 文件头第 5 条此前是**假的**
+（与 §873 的「活代码的注释在吹牛」同族：这里吹牛的甚至是一份**测试**的注释）。
+
+修法：只吞「本来就不存在」（`NotFoundError` / `not found` / `ENOENT`），其余原样上抛。
+
+#### 但它的消费者必须数清楚 —— 数完发现今天**没人**踩到
+
+`native.filesystem.deleteFile` 的调用点只有 `flashcardMedia.deleteMediaFile`，
+而它第一行就是 `if (native.platform === 'web') return`
+⇒ **web 上零消费者**。
+
+⇒ 按 §869.4 的规矩，这一条**不是止血，是接口契约修复**：
+它今天不造成用户可见损失，但它是**一层写着「我不静默吞」的抽象**，
+下一个接 web 删除的人会直接踩进去。本节照样修，但**不把它算成缺陷事件**。
+
+### §877.5 M34：三次变异，各命中 1 条（判据与被测性质一一对应）
+
+| 变异（真实改源码，一次只动一个变量） | 结果 | 红的条目 |
+|---|---|---|
+| 写事务改回 `req.onsuccess` resolve | 16 / **1** | 「abort 时 put 必须 reject」 |
+| `finally { db.close() }` 改空 | 16 / **1** | 「每次读写都要 close」 |
+| `deleteFile` 改回裸 `catch {}` | 16 / **1** | 「delete 失败必须上抛」 |
+| `meeting-audio` 整段删掉 try/finally（复刻原形态） | 13 / **2** | 「close 必须在 finally 里」+「写事务必须有 onabort 出口」 |
+
+⇒ 红条目的名字都指向被测性质，没有一条是「碰巧也红了」。
+⚠ 第四条第一次变异**没配平**（把 `try/finally` 降级成裸 `try`），
+结果撞上一个工具链限制而不是撞上判据，见 §877.6。
+
+### §877.6 判据：替身要造的是**事件顺序**，不是浏览器
+
+`fake-indexeddb` 不在依赖里，本节手写了一个最小替身。**关键不在于它像浏览器**，
+而在于它能造出 IndexedDB 的那条顺序：`request.onsuccess` **先于** `tx.oncomplete` / `tx.onabort`。
+
+⚠⚠ 若 abort 发生在请求成功**之前**，「按请求成功 resolve」与「按事务提交 resolve」
+测出来的读数**完全一样**，判据会假绿 —— 而这正是最容易写出来的替身。
+
+⇒ 因此判据里有三条彼此咬合的用例：
+
+1. **正控**：提交结局 ⇒ `put` 成功且值能读回；
+2. **判据**：abort 结局 ⇒ `put` **必须 reject**，且数据**没进 map**（回滚）；
+3. **对照组**：同一个替身上，内联一份**复刻修复前写法**的 store ⇒ 它**不报错**。
+   —— 没有第 3 条，前两条就只是「我编的顺序」。
+
+⚠ 第 2 条断言的是**错误消息**（`/提交阶段失败/`）而不是「reject 了」：
+`assert.rejects` 接受任何 reject（§876 M33 教训）。
+
+**分层与盲区（如实记录）**：
+
+| 文件 | 判据形态 | 能证明什么 | 看不见什么 |
+|---|---|---|---|
+| `pocket-native.test.mjs` | **行为**（替身 + 对照组） | abort 时真的 reject、连接真的被关 | 真浏览器的 abort 触发条件与概率 |
+| `meeting-audio-persist-honesty.test.ts` | **形状**（剥注释后扫源码） | 形状没退回去 | **abort 的真实时序** |
+
+形状判据那条在文件里写了一句负控条目，内容就是「这条负控**不是通过**，是记录盲区」。
+
+⚠⚠ **本轮踩到的工具链限制**（已写进判据注释）：
+`node --experimental-strip-types` **解析不了「裸 try 块（无 catch/finally）」**，
+报 `ERR_INVALID_TYPESCRIPT_SYNTAX: Expected a semicolon`，整个测试文件加载失败。
+⇒ 复刻「`db.close()` 写在 await 之后」这个缺陷形态，必须**整段删掉 try/finally**；
+把它降级成裸 try 不是缺陷形态，而是一个连解析都过不去的东西。
+⇒ 这是 §875「变异必须复刻原始缺陷形态并保持结构配平」的第三个实例。
+
+### §877.6bis ⚠⚠ 判据事故 7：注释里照抄缺陷的**字面形态**，会被当成真缺陷
+
+第一次跑全量门禁，`[3/45] test:all` 直接红：
+
+```
+发现 1 处「无理由的静默 catch」—— src/native/pocket-native.ts:569
+```
+
+那行**根本不是 catch**，是我在 D47 的注释里写下的那句
+「旧代码是裸 `catch {}`」。`silent-catch-must-explain-itself` 的检测器
+`silentCatches()` 跑在**未剥注释的原文**上（它只在**判定块体是否为空**时才调 `stripComments`）
+⇒ 注释里出现的缺陷字面形态，和真缺陷在它眼里**完全一样**。
+
+⇒ 修法：只改措辞、**不动语义** —— 把注释里的 `catch {}` 写成「空块体 catch」，
+并在注释里写清**为什么不能照抄**（§869 已用过一次「撞门禁只改措辞」的规定，
+这是它第一次以「量具被注释喂到」的形式出现）。
+
+⭐ 这一条与 §879 是**同一个洞的两面**：
+- §879：注释里写了缺陷形态 ⇒ 判据**假绿**（说有的东西算数了）；
+- 本次：注释里写了缺陷形态 ⇒ 判据**假红**（说没有的东西被抓了）。
+⇒ 通用式：**任何在原文上做模式匹配的判据，都会被注释里的示例代码喂偏**；
+  正确做法是判据侧先剥注释（本轮未改，因为该检测器的语义要求就是「看原文」），
+  **写注释的一侧则绝不在注释里照抄被扫描的字面形态**。
+
+### §877.7 附带发现：`onabort` 补上之后，录音收尾不再可能「悬死」
+
+`meeting-audio.ts` 此前只挂了 `tx.onerror`。⚠ 若是**提交阶段**失败（磁盘 / 配额在 commit 时），
+按规范只会触发 `abort` 事件而请求本身并未报错 ⇒ 旧代码下那个 Promise **永不 settle**
+⇒ `recordingRuntime.stop()` 里的 `await saveMeetingAudio(...)` 悬住，
+**整个录音收尾流程卡死**，连 §830 那个 10s 上限都保护不了它（它卡在更早的位置）。
+⛔ 未实测（触发条件是推断，非本机复现）。
+
+两个消费点（`use-meeting-studio.ts:86` / `MeetingListView.vue:304`）此前已经在 §838 里
+改成了「catch 里说出来」⇒ 这次是**把悬死变成一句 toast**，不是新增出口。
+
+### §877.8 待拍板（新增 2 条）
+
+96. **web 端 IndexedDB 写失败要不要对用户说话** ——
+    应用更新那条路现在是「写失败报成 `readFile: not found`」。要不要在
+    `version.ts` 把两类失败分开措辞？（现状：都归到「落盘失败：…」里）
+97. **web 端卡片媒体要不要接通** ——
+    `flashcardMedia` 在 web 上「存了但 `loadMediaDataUrl` 直接 return null」
+    ⇒ 照片进了 IndexedDB 却永远读不回来。要么接通读侧，要么 web 端干脆别存
+    （现在两头的浪费都在）。
+
+### §877.9 口径与未实测
+
+- ⛔ **未实测**：D46 在真浏览器上的触发概率（需真机 + 真实配额压力）。
+  本节定它为缺陷的依据是**规范语义**，不是本机复现 —— 判据里的替身只证明
+  「代码在 abort 时会谎报」，不证明「浏览器会 abort」。
+- ⛔ **未实测**：`onabort` 悬死路径（§877.7）在本机从未复现。
+- ⚠ D47 已按 §869.4 数过消费者：**web 上零消费者**，本节不把它算成缺陷事件。
+- ⚠ 本节**没有**给 web 端 IndexedDB 失败加任何用户可见提示（登记在第 96 条）。
+- ⚠ `meeting-audio.ts` 的形状判据**必须先剥整行注释**再判定 ——
+  本轮我在同一批改动里往函数注释里写了「`db.close()`」和「`finally`」这些字样，
+  不剥就会变成「注释里提到就算数」（§879 同族）。

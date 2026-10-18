@@ -7074,3 +7074,5 @@ pluginAvailable∈{Sherpa,BackgroundMic}`，**真源码零改动**）跑出来�
   **只扫测试函数体会低估 4 倍**（166 vs 635），因为多数 store 类测试的 skip 写在
   **28 个 helper** 里（`newTestStore` / `newTestPGStore` / `newWorkspaceTestStore` / `newIsolatedPGPool` …）。
   ⇒ 扩到全仓前必须先解决「怎么在静态层面追到 helper 里的 skip」，否则会建出一张漏掉 2/3 目标的门。
+96. **web 端 IndexedDB 写失败要不要对用户说、以及要不要把「写失败」与「读失败」分开措辞** —— §877/D46 查出 web 文件系统的写事务在**请求成功**时就 resolve（`IDBRequest.onsuccess` 不代表落库，规范原话见 §877.2），本节已改为以 `tx.oncomplete` 为准。① 应用更新那条路（`utils/version.ts:295`，**全仓唯一没有平台守卫的 `writeFile` 消费点**）现在的失败会以 `filesystem.readFile: not found` 的面貌冒出来 ⇒ **写失败被谎报成读失败**，要不要在 `version.ts` 把两类分开措辞？② 更根本的：web 端 IndexedDB 失败要不要有用户可见提示，还是维持「console 报错即可」？③ ⛔ 本节**未实测**真浏览器上的触发概率（§877.9）（§877.2 / §877.8）
+97. **web 端卡片媒体要不要接通** —— `features/flashcards/utils/flashcardMedia.ts` 在 web 上「**存了但读不回来**」：`pickAndSaveImage` 的 web 分支把 base64 写进 IndexedDB，而 `loadMediaDataUrl` 第一行就 `if (native.platform === 'web') return null` ⇒ 照片永久滞留在 IndexedDB 里、界面永远拿不到。① 接通 web 读侧（把 `MediaRef` 改成存 base64 或走 data URL）？② 还是反过来——web 端干脆别写，省掉一份永远读不回来的数据？③ 这与 §873 的正文缓存是同一个「只写不删」的形状，是否要合并进同一套配额治理？（§877.4 / §877.8）
