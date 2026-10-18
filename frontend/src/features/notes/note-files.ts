@@ -1,7 +1,7 @@
 import { Capacitor } from '@capacitor/core'
 import { Filesystem, Directory } from '@capacitor/filesystem'
 import { localDB } from '../../native/local-db'
-import { blobToBase64 } from '../../utils/base64'
+import { blobToBase64, utf8ToBase64, base64ToUtf8 } from '../../utils/base64'
 import { noteDir, noteFileRelPath, type NoteFileKind } from './note-paths'
 import type { NoteFileRecord, NoteMediaInput } from './notes-types'
 
@@ -68,7 +68,7 @@ export async function persistNotePayload(input: PersistNotePayloadInput): Promis
 
   if (input.persistBodyFile && input.body) {
     const rel = noteFileRelPath(dir, 'body')
-    const dataBase64 = btoa(unescape(encodeURIComponent(input.body)))
+    const dataBase64 = utf8ToBase64(input.body)
     await writeRelPath(rel, dataBase64)
     bodyPath = Capacitor.isNativePlatform() ? rel : `sqlite:${rel}`
     const row: NoteFileRecord = {
@@ -117,6 +117,29 @@ export async function persistNotePayload(input: PersistNotePayloadInput): Promis
   return { bodyPath, files, audioPath }
 }
 
+/**
+ * §891：正文 base64 解码。**解不出来就出声并返回 null**，绝不把「读不到」
+ * 报成「正文是空的」。
+ *
+ * ⚠⚠ D61 的根因就在这：这三处原先是裸的
+ *   `decodeURIComponent(escape(atob(x)))`，正文文件被截断时会抛
+ *   URIError / DOMException，**绕过了 `loadFullContent` 的 null 降级**
+ *   ⇒ 那条写在 `notes-persist.ts:79-80` 的降级契约在损坏场景下形同虚设。
+ *
+ * ⚠ 出声而不上抛，是因为上游 `NoteDetailView` / `NoteEditView` 的 catch
+ *   会把异常显示成「加载笔记失败」—— 对用户是「笔记坏了」，
+ *   而这里要说的是「这个文件的 base64 解不开、路径是 X」。
+ */
+function decodeBody(base64: string, bodyPath: string): string | null {
+  const text = base64ToUtf8(base64)
+  if (text === null) {
+    console.warn(
+      `[note-files] 正文 base64 解码失败（长度 ${base64.length}）：${bodyPath}`,
+    )
+  }
+  return text
+}
+
 export async function readNoteBody(bodyPath: string | null): Promise<string | null> {
   if (!bodyPath) return null
   if (bodyPath.startsWith('sqlite:')) {
@@ -126,20 +149,20 @@ export async function readNoteBody(bodyPath: string | null): Promise<string | nu
       [rel, bodyPath],
     )
     if (!row?.data_base64) return null
-    return decodeURIComponent(escape(atob(row.data_base64)))
+    return decodeBody(row.data_base64, bodyPath)
   }
   if (!Capacitor.isNativePlatform()) return null
   try {
     const res = await Filesystem.readFile({ path: bodyPath, directory: Directory.Data })
     const data = typeof res.data === 'string' ? res.data : ''
-    return decodeURIComponent(escape(atob(data)))
+    return decodeBody(data, bodyPath)
   } catch {
     const row = await localDB.queryOne<{ data_base64: string }>(
       'SELECT data_base64 FROM local_note_files WHERE rel_path = ?',
       [bodyPath],
     )
     if (!row?.data_base64) return null
-    return decodeURIComponent(escape(atob(row.data_base64)))
+    return decodeBody(row.data_base64, bodyPath)
   }
 }
 

@@ -78,6 +78,13 @@ export async function createNote(input: CreateNoteInput): Promise<LocalNote> {
   // 所以先插父行（body_path/media_json 留空），附件写完再 UPDATE 回填。
   // 附件写失败时父行仍在，loadFullContent() 会退回 note.content，
   // 用户至少拿得到文字——比整条丢失、且报错被吞要好。
+  //
+  // ⚠⚠ §891/D61：上面这条降级**只在 body_path 还没回填时成立**
+  //   （读函数首行 `if (!note.bodyPath) return note.content` 直接短路）。
+  //   一旦 body_path 已回填、正文文件又读不到，现在**抛错而不是退回 content** ——
+  //   因为此时 content 是 `decideNoteStorage` 写进去的 ≤280 字**摘要**，
+  //   退回它等于让摘要冒充全文，而本函数下方的 updateNote 会把它写回去覆盖全文。
+  //   ⇒ 「附件写失败」是安全降级，「正文丢失」不是，两者不可混为一谈。
   await localDB.run(
     `INSERT INTO local_notes
        (id, workspace_id, title, content, content_type, domain, category, tags,
@@ -328,10 +335,48 @@ export async function getNote(id: string, includeDeleted = false, workspaceId = 
   return asset?.kind === 'note' && asset.source === 'enex_import' ? assetToNote(asset) : null
 }
 
+/**
+ * §891/D61：`storage_tier='file'` 的笔记**正文文件读不到**时抛这个错。
+ *
+ * ⚠⚠ 这是为了**挡住静默的数据销毁**，不是为了「加载不出就报错」：
+ *   `note-storage-policy.ts::decideNoteStorage` 在 tier='file' 时
+ *   `displayContent = summarizeForDisplay(body)`（**只取第一段、≤280 字**），
+ *   而它落的就是 `local_notes.content` 那一列。
+ *   ⇒ 原来 `body ?? note.content` 在正文读不到时，是**拿 280 字摘要冒充全文**。
+ *   而 `updateNote`（本文件）在 `patch.content !== undefined` 时会
+ *   `persistNotePayload({ body: nextContent })` 把这份摘要**写回正文文件**
+ *   ⇒ 「打开笔记 → 改个标题 → 保存」就足以把全文永久换成摘要。
+ *
+ * ⚠ 与既有行为一致：正文文件**损坏**时原先就会抛（裸 URIError/DOMException），
+ *   本节只是让「文件不存在 / sqlite 行缺失」与它对齐 —— 两者都读不到全文，
+ *   差别只在损坏与缺失，**不该一个静默销毁数据、一个报错**。
+ */
+export class NoteBodyUnavailableError extends Error {
+  readonly bodyPath: string
+  constructor(bodyPath: string) {
+    super(`笔记正文文件读不到：${bodyPath}（不做降级：tier='file' 的 content 只是 ≤280 字摘要，保存会把它写回正文文件覆盖全文）`)
+    this.name = 'NoteBodyUnavailableError'
+    this.bodyPath = bodyPath
+  }
+}
+
 export async function loadFullContent(note: LocalNote): Promise<string> {
   if (note.storageTier !== 'file' || !note.bodyPath) return note.content
   const body = await readNoteBody(note.bodyPath)
-  return body ?? note.content
+  // ⚠⚠ §891/D61：原来这里是 `return body ?? note.content`。
+  //   在 tier='file' 下 `note.content` 是摘要不是全文，而 updateNote 会把它写回去
+  //   ⇒ **打开再保存就能销毁全文**。读不到就必须出声，不许静默降级。
+  //
+  //   ⚠ 上游影响（已核对，非推断）：
+  //     NoteDetailView.vue / NoteEditView.vue 的 load() 都在 try 里
+  //     ⇒ 用户看到 `errors.loadNotesFailed`，且视图不会 hydrate
+  //     ⇒ **无法进入「编辑并保存」那条销毁路径**（数据因此保住）。
+  //   ⛔ 未实测：正文文件缺失/损坏在真机上的真实发生率。
+  //   ⚠ 产品口径待拍板（简报 114）：若要「仍能打开」，正确设计是给
+  //     updateNote 传一个「本次内容是降级来的」标记，禁止它被写回，
+  //     而不是让摘要冒充全文。
+  if (body === null) throw new NoteBodyUnavailableError(note.bodyPath)
+  return body
 }
 
 export async function listNotes(opts: {

@@ -13,10 +13,11 @@
  *   - arrayBufferToBase64: chunk 拆分 0x8000 防止 btoa 超参
  */
 
-/** UTF-8 安全 base64 编码（避免 btoa 对中文字符抛 InvalidCharacterError）。 */
-export function utf8ToBase64(s: string): string {
-  return btoa(unescape(encodeURIComponent(s)))
-}
+/**
+ * UTF-8 安全 base64 编码（避免 btoa 对中文字符抛 InvalidCharacterError）。
+ */
+// §891：实现搬进 utils/base64.ts（这一族曾有 3 份同义实现），公共 API 不变。
+export { utf8ToBase64 } from './base64.ts'
 
 // §888：原来这里另外实现了一份 blobToBase64（公共实现在 base64.ts，
 //   两份都已有 null 处理与 reject，行为等价）⇒ 改为 re-export，公共 API 不变。

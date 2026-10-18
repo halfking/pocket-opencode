@@ -102370,3 +102370,679 @@ strings.Contains(s, `Note: "网关 ASR 模型（目录里被标成 text）"`)
 - 唯一产品改动是 `3aaa8737`（`target.go` 一行 + 门禁新增一个测试函数）。
 - 工作树另外 7 个文件（email / utils / transcode）属并行会话在制品，**未触碰**。
 - 未改动 `gates.json` / `package.json`。
+
+## §890 D60：「data URL → Blob」在格式坏掉时**静默**产出 0 字节附件；而「让它出声」的天然修法会把保存按钮打死
+
+§888 简报 111 的遗留问项：「`base64ToBlob` / `utf8ToBase64` 一族要不要同样收编」。
+本节按那个口径把普查扩到整个 base64 族的**反方向**，结果比预想的严重：
+既有同型副本，也有一个**真缺陷**，以及一个**「修法自伤」陷阱**。
+
+### §890.1 普查读数：base64 族两个方向
+
+| 方向 | 份数 | 落点 |
+|---|---|---|
+| bytes → base64 | 3（§889 已收编） | — |
+| **base64 → bytes/Blob/File** | **5** | `utils/download.ts:170`（`webDownloadFallback`）、`features/notes/note-edit-helpers.ts:12`、`native/pocket-native.ts:445`、`features/email/email-body-format.ts:464`、`native/crypto.ts:130` |
+| **utf-8 字符串 → base64** | **3** | `utils/download-encoding.ts:18`、`features/notes/note-files.ts:71`、`native/pocket-native.ts:432` |
+| **base64 → utf-8 字符串** | **5** | `native/pocket-native.ts:433`、`features/notes/note-files.ts:129/135/142`，及 `download-encoding.ts` 的对称写法 |
+
+⚠⭐ **这 5 份「base64 → Blob」里，只有 1 份有格式守卫**：
+`native/pocket-native.ts:445` 的 `dataURLToFile` 写着 `if (!m) return null`。
+⇒ **本仓不是不会写，是漏了一处。** 这句话比「新增一道门」更有价值。
+
+### §890.2 D60 本体：`dataUrlToBlob` 把「格式坏掉」报成「附件是空的」
+
+实测（改动前，逐条复刻该函数体执行）：
+
+| 输入 | 结果 |
+|---|---|
+| 正常 `data:image/png;base64,iVBORw0KGgo=` | ok，size=8 |
+| ⚠ `data:image/png;base64`（**没有逗号**） | **ok，size=0**，不抛不告警 |
+| ⚠ `''`（空串） | **ok，size=0** |
+| ⚠ `data:` | **ok，size=0** |
+| ⚠ `https://cdn.example.com/a.png`（外链） | **ok，size=0** |
+| `data:image/svg+xml,%3Csvg%3E`（URL 编码传输） | THROW `DOMException` |
+| `data:image/png;base64,@@@@`（payload 被污染） | THROW `DOMException` |
+
+⚠⚠ **核心不对称**：**非法 base64 字符抛错（大声），payload 缺失返回 0 字节（无声）**。
+原写法 `const [head, body] = dataUrl.split(',')` + `atob(body || '')` 里，
+`body` 缺失时 `atob('')` **不抛**而返回空串 —— 与 §888 的 D58 **完全同型**：
+把「读到了但内容是空的」与「没读到」混为一谈。
+
+**下游链**（已逐段核对）：
+`attachmentsToMedia` → `NoteEditView.onSave` 的 `media` → `persistNotePayload`：
+`media.blob.size === 0` **不超上限、不被跳过** ⇒ 照常 `blobToBase64` + 写文件 +
+`INSERT local_note_files` ⇒ **0 字节图片被当成功落盘**，用户以为图存上了。
+与 §888 里 `audio-parts` 那条「写 0 字节并 `return id` 报成功」是同一条链的镜像。
+
+⚠ 附带缺陷：`attachmentsToMedia` 原来的
+`mime: a.dataUrl.split(';')[0]?.replace('data:','')` 对 `https://` 外链会把
+**整个 URL 当成 mime**，最终写进 `local_note_files.mime`。
+
+⛔ **口径**：`composables/useAttachments.ts:18` 的注释明写 `/** data:image/... 或 https:// 外链 */`，
+但 `addDataUrl` 的**全部 3 个调用点**（FileReader / Camera / 粘贴）都传真 data URL
+⇒ 「外链」这条路径在当前仓内**未被行使**，是**未被兑现的契约**，本节据实记录。
+
+### §890.3 ⚠⚠ 修法自伤：把「静默」改成「抛错」会**卡死保存按钮**
+
+D60 的天然修法是「让它出声」——但直接改会引出**比原缺陷更糟**的东西：
+
+```
+onSave() {
+  if (!canSave.value || saving.value) return
+  saving.value = true
+  saveError.value = ''
+  const media = [...pendingMedia.value, ...collectComposerMedia()]   // ← 在 try 之外！
+  const payload = {...}
+  try { ... await createNote(payload) ... }
+  catch (e) { saving.value = false; saveError.value = apiError(...) }  // ← 复位只在这里
+}
+```
+
+`collectComposerMedia()` 原来在 `try` **之外**（`try` 从下一行才开始），
+而 `saving.value = false` 与 `saveError` **都在 `catch` 里**
+⇒ 一旦 `dataUrlToBlob` 抛错，就**绕过整个 catch** ⇒ `saving` 永久卡在 `true`
+⇒ 首行 `if (saving.value) return` ⇒ **保存按钮再也点不动，且没有任何提示**。
+
+⇒ 所以本节**两处必须同时落地**：`dataUrlToBlob` 抛具名错误 + 媒体收集挪进 `try`。
+这也是判据里必须有「自洽性」那条的原因：它量的是**相对位置**，
+不是「`try` 出现过」「`collectComposerMedia()` 出现过」。
+
+⭐ 这一条同时补上了 §886 那四类假绿之外的**第五类**：
+**「修好了 A，却把 A 的失败路径接到了 B 的死路上」**。
+
+### §890.4 修法
+
+1. `note-edit-helpers.ts` 新增**具名错误** `DataUrlFormatError`，
+   `dataUrlToBlob` 对「无逗号」「payload 为空」「payload 非合法 base64」三种一律抛。
+   错误信息只带 40 字符摘要（data URL 可达数 MB，全量进 message 会撑爆日志）。
+   ⇒ **成功路径零行为变化**（判据里钉了逐字节比对）。
+2. `attachmentsToMedia` 的 `mime` 改从 `blob.type` 取 ⇒ **mime 只有一个推导口径**，
+   「URL 当 mime」那条路随 1 一起消失。
+3. `NoteEditView.onSave` 的媒体收集与 `payload` 一起挪进 `try`
+   ⇒ 失败走**既有 catch**（复位 + `errors.saveFailed` 提示），成功路径零变化。
+4. **不动**他人判据语义：`submit-guard-audit.test.ts:121` 登记表钉的
+   「函数体显式 `if (saving.value) return`」原样保留，并补了一条反向判据守住它。
+
+### §890.5 判据（并入既有 `note-edit-helpers.test.ts`，2 → 15 例）
+
+| # | 断言 |
+|---|---|
+| 1 | ⭐⭐⭐ 四种「缺 payload」输入各自必须抛 `DataUrlFormatError` |
+| 2 | ⭐⭐⭐ 抛的是**具名**错误，且信息带得上原文摘要 |
+| 3 | ⭐⭐ payload 非合法 base64 仍抛（不许退回无声） |
+| 4 | ⭐⭐ 正常 data URL 的 size / mime / **逐字节**与改动前一致 |
+| 5 | ⭐⭐⭐ **负控**：复刻改动前的实现，确认它真的静默返回 size=0 |
+| 6 | ⭐⭐ mime 只有一个推导口径；外链不再走到 mime 那一行 |
+| 7 | ⭐⭐⭐ **自洽性**：`collectComposerMedia()` 的位置晚于 `try {` |
+| 8 | ⭐⭐ `catch` 必须复位 `saving.value` 并给提示（抛错要有出路） |
+| 9 | ⭐ 反向：不得动 `submit-guard-audit` 登记表钉的重入守卫 |
+
+⚠⚠ **本节踩到一条新的量具事故**（已写进判据注释）：
+`resolve(HERE, '../NoteEditView.vue')` 写错成上一级目录 ⇒ 报 `ENOENT`，
+而 node:test 对「**suite 构造期**失败」的计数是 **`# fail 0`**
+⇒ 只看 `# fail 0` 会把一条**根本没跑**的判据当成全绿。
+⇒ 验收判据必须同时看 **`not ok`** 与退出码，不能只看计数。
+
+### §890.6 M48：六次变异
+
+| 变异 | 结果 | 红条目 |
+|---|---|---|
+| V1 还原 `split` 写法（删 comma 守卫）——D60 完全复现 | 9 / **6** | 判据 1/2/3/6 |
+| V2 `collectComposerMedia` 挪回 `try` 之外（**修法自伤**） | 14 / **1** | 判据 7（自洽性） |
+| V3 `catch` 里删掉 `saving.value = false` | 14 / **1** | 判据 8 |
+| V4 删掉重入守卫 | 14 / **1** | 判据 9（反向） |
+| V5 **负控自伤**：把复刻的旧实现改成抛错 | 14 / **1** | 判据 5（证明对照本身有区分力） |
+| V6 把抛错改成 `resolve` 空 Blob（往「静默」方向变异） | 9 / **6** | 判据 1/2/3/6 |
+
+还原后 15 / 15 绿。
+
+### §890.7 口径与未实测
+
+- ✅ `dataUrlToBlob` 三类格式缺失改为抛具名错误；`mime` 单一推导口径；
+  `onSave` 媒体收集挪进 `try`；判据 9 条（15 例）；`typecheck` EXIT=0、`gates` 45/45（52.4s）。
+- ⚠ **行为变化**：格式坏掉的 data URL 从「静默存 0 字节」变成**保存失败并提示**
+  （方向与 §883 / §888 一致：静默改写比报错更糟）。
+- ⚠ 错误信息只带 40 字符摘要，不带完整 data URL。
+- ⛔ **未实测**：`useAttachments.ts:18` 注释宣称的「https 外链」在当前仓内**无调用点**，
+  本节据实登记为**未被兑现的契约**，未在真机核对是否存在仓外的调用来源。
+- ⛔ **未实测**：哪些上游真的会产生「无逗号 / 空 dataUrl」的附件
+  （`addDataUrl` 的 3 个调用点都由 FileReader/Camera 产出规范 data URL）。
+  本节改的是**导出函数本身的契约**，不依赖「上游会不会产生坏数据」这个前提成立。
+- ⛔ 未审：`email-body-format.ts:464` / `crypto.ts:130` 两份 `base64 → bytes`
+  是否也需要格式守卫（它们解的是**已落库**的 base64，与本节的 data URL 入口不同层）。
+
+## §891 D61：`loadFullContent` 的降级是**数据销毁机制** —— 打开笔记再保存就能把全文换成摘要
+
+§890 简报 113 第 ④ 问留下的一句话：「`email-body-format.ts:464` 与 `crypto.ts:130` 两份
+『base64 → bytes』本节未审：它们解的是**已落库**的 base64」。
+本节审这条线，结果比「要不要加格式守卫」严重得多。
+
+### §891.1 普查：utf-8 ↔ base64 这一族
+
+| 方向 | 落点 |
+|---|---|
+| **utf-8 → base64** | `utils/download-encoding.ts:18`（`utf8ToBase64`）、`features/notes/note-files.ts:71`、`native/pocket-native.ts:432`（web 桩 `crypto.encrypt`） |
+| **base64 → utf-8** | `features/notes/note-files.ts:129 / 135 / 142`（同一个函数 `readNoteBody` 的三条分支）、`native/pocket-native.ts:433`（web 桩 `crypto.decrypt`） |
+
+⇒ 「utf-8 → base64」收编为 `utils/base64.ts::utf8ToBase64`（3 → 1，`download-encoding.ts` 改 re-export，
+公共 API 与 `download.ts:28,33` 的 import 均不变）；`note-files.ts` 的 4 处裸实现全部改调公共实现。
+
+⚠ `native/pocket-native.ts` 的 web 桩**本节不动**：它是 `crypto` 抽象的平台兜底，
+契约面与「正文文件解码」不同层，动它会牵到 Web 端加密路径（简报 114）。
+
+### §891.2 实测：`atob` 的失败边界不是「随机」的
+
+| 输入 | 结果 |
+|---|---|
+| 完整合法 base64 | ok，往返逐字一致 |
+| **含换行 / 空白**（MIME 折行） | **ok** —— `atob` 按 RFC 2045 **容忍**空白 |
+| 末尾截断 1 个字符 | THROW `DOMException` |
+| 末尾截断 3 个字符 | THROW `DOMException` |
+| 长度非 4 的倍数（截到 7） | THROW `URIError` |
+| 中间插非法字符 | THROW `DOMException` |
+| payload 含 NUL | THROW `DOMException` |
+
+⇒ **「截断」是这条链上真实可达的损坏形态**，不是理论值；
+⇒ 同时「空白合法」必须写进判据，否则修「抛错」时容易顺手收紧，把**合法**的 MIME 折行判成损坏。
+
+### §891.3 D61 本体：降级契约在最需要它的场景下形同虚设
+
+`notes-persist.ts:79-80` 写着一条**明确的降级契约**：
+
+> 附件写失败时父行仍在，`loadFullContent()` 会退回 `note.content`，
+> 用户至少拿得到文字——比整条丢失、且报错被吞要好。
+
+⚠⚠ 但这条降级的前提是 `readNoteBody` **返回 null**。而它的三条分支原先都是裸的
+`decodeURIComponent(escape(atob(x)))` ⇒ 正文文件**损坏**时直接抛
+（`URIError` / `DOMException`），**把降级彻底绕过去**。
+⇒ 「损坏 → 抛」「缺失/空行 → 静默降级」两个**后果完全相反**的分支并存。
+
+### §891.4 ⭐⭐⭐ 而那条降级本身是**不可逆的数据销毁**
+
+顺着降级往下一段，结论反转：
+
+```
+note-storage-policy.ts:55-62   tier='file' ⇒ displayContent = summarizeForDisplay(body)
+                              ⭐ 只取第一段、≤280 字
+notes-persist.ts:81-93        INSERT 写进 local_notes.content 的就是这个 storedContent
+notes-persist.ts:331-334      body 读不到 ⇒ 退回 note.content（= 280 字摘要）
+notes-persist.ts:213,217-223 updateNote：patch.content !== undefined
+                              ⇒ persistNotePayload({ body: nextContent }) 写回正文文件
+```
+
+⇒ **「打开笔记 → 只改个标题 → 保存」就足以把全文永久换成 280 字摘要。**
+
+⚠ 完整的销毁路径（已核对视图侧，非推断）：
+`NoteEditView.load()` 第 197 行 `existing.content = await loadFullContent(existing)`
+⇒ 拿到摘要就 `hydrate` 进 `form.content` ⇒ 用户保存时
+`updateNote(..., { content: form.content.trim() })` 把摘要写回正文文件。
+⇒ 全文只剩 `search_text` 里有（`buildSearchText` 用的是完整 body），
+而 `search_text` 不再是用户可见的正文。
+
+⭐ **修法因此不能是「让损坏也返回 null」**——那等于把一条可恢复的报错
+（数据保住、用户看到失败）换成一条不可逆的销毁（数据没了、用户以为保存成功）。
+这与 §884「静默改写比报错更糟」是同一条原则，只是这次的对象是**降级**而不是**写入**。
+
+⇒ 所以本节的修法是**反向**的：把 `loadFullContent` 的降级**收紧**成「抛具名错误」，
+让「文件损坏」与「文件缺失」行为一致，两者都**不**用摘要冒充全文；
+同时把 `notes-persist.ts:79-80` 那条注释补上边界 —— 它描述的是
+**body_path 尚未回填**的场景（此时 `content` 还是全文），与「正文丢失」不是一回事。
+
+### §891.5 修法
+
+1. `utils/base64.ts` 新增 `base64ToUtf8(base64): string | null` —— **解不出来返回 null，不抛**。
+   纯函数不带日志策略，出声交给调用方。
+2. `note-files.ts` 新增私有 `decodeBody(base64, bodyPath)`：解不出来时
+   `console.warn` 带上**路径与长度**后返回 null；`readNoteBody` 三条分支统一走它。
+3. `notes-persist.ts` 新增具名错误 `NoteBodyUnavailableError`，
+   `loadFullContent` 在 `body === null` 时抛它。
+4. `utf8ToBase64` 搬进 `utils/base64.ts`，`download-encoding.ts` 改 re-export（公共 API 不变）。
+5. **不动** `native/pocket-native.ts` 的 web 桩（不同层，见简报 114）。
+
+⚠ **行为变化**：`storage_tier='file'` 且正文读不到时，从「显示摘要并可保存」
+变成「加载失败（`errors.loadNotesFailed`），视图不 hydrate、无法进入保存路径」。
+方向是**用「打不开」换「不销毁数据」**。
+
+### §891.6 判据（并入 `base64-null-result.test.mjs`，23 → 32 例）
+
+| # | 断言 |
+|---|---|
+| 1 | ⭐⭐⭐ 行为门：5 类截断/污染输入返回 null 而**不抛**（直接调用真实函数 ⇒ 形态无关） |
+| 2 | ⭐⭐⭐ **负控**：复刻旧实现，确认它**确实抛** |
+| 3 | ⭐⭐ 往返不变（中文 / emoji / NUL / 全 latin1 字节） |
+| 4 | ⭐⭐ **含空白的 base64 仍要解得出**（防「矫枉过正」） |
+| 5 | ⭐⭐ `utf8ToBase64` 搬家后契约不变（承接 `download.test.mjs` 既有断言） |
+| 6 | ⭐⭐⭐ D61：`loadFullContent` 不许再用 `?? note.content` |
+| 7 | ⭐⭐⭐ **反向**：body_path 未回填时的**安全**降级必须保留 |
+| 8 | ⭐⭐ `note-files.ts` 三处解码必须走 `decodeBody` |
+| 9 | ⭐⭐ `download-encoding.ts` 必须仍导出 `utf8ToBase64`（防结构性破坏） |
+
+⭐ 第 4 条与第 7 条都是**反向判据**：本节的修法有两个「顺手改坏」的入口
+（把空白判成损坏、把安全降级一起删掉），没有它们，门会奖励过度收紧。
+
+### §891.7 M49：七次变异
+
+| 变异 | 结果 | 红条目 |
+|---|---|---|
+| V1 `base64ToUtf8` 改回抛（D61 根因复现） | 31 / **1** | 判据 1 |
+| V2 `loadFullContent` 还原 `?? note.content`（**D61 本体复现**） | 31 / **1** | 判据 6 |
+| V3 删掉首行守卫（矫枉过正方向） | 31 / **1** | 判据 7 |
+| V4 `note-files` 一处改回裸 `atob` | 31 / **1** | 判据 8 |
+| V5 删掉 `download-encoding` 的 re-export | 31 / **1** | 判据 9 |
+| V6 **负控自伤**：把复刻的旧实现改成不抛 | 31 / **1** | 判据 2 |
+| V7 把空白也判成损坏（矫枉过正方向） | 31 / **1** | 判据 4 |
+
+还原后 32 / 32 绿。
+
+⚠⚠ **V6 第一版逃掉了（32/32 全绿），且原因不在判据、在我自己的变异方式**：
+我同时改了「被复刻的旧实现」**和「断言方向」**（把 `assert.ok(threw)` 改成
+`assert.equal(threw, false)`）⇒ 那条断言已经不再是负控，而是对新实现的重复断言。
+⇒ 重做成「只改旧实现、不动断言方向」后，红 1 条。
+⇒ ★ 这是 [[变异没施加 ≠ 判据无敏感性]] 的又一次复现：
+**验证负控时必须只动对照，不得动断言。**
+
+### §891.8 口径与未实测
+
+- ✅ base64↔utf-8 收编为公共实现；`base64ToUtf8` 返回 null 契约；
+  `loadFullContent` 不再用摘要冒充全文；判据 9 条（32 例）；
+  `typecheck` EXIT=0、`gates` 45/45（54.3s），`download.test.mjs` 9/9 绿。
+- ⚠ **行为变化**（用「打不开」换「不销毁数据」，见 §891.4）。
+- ⛔ **未实测**：正文文件缺失/截断在真机上的真实发生率；
+  本节修的是**契约**，不依赖该发生率成立。
+- ⛔ **未审**：`native/pocket-native.ts:432-433`（web 加密桩）、
+  `email-body-format.ts:464`（MIME charset 解码，非 utf-8 路径）、
+  `crypto.ts:130`（KDF 解码）—— 三者解的是**不同语义**的 base64，本节不合并。
+
+## §892 D62：把 D61 的教训从「一个 bug」变成「一条跨切面不变量」—— 降级取值的**可逆性**普查
+
+§891 证明了一件事：**读路径拿「为别的目的存在的低保真副本」兜底，而写入路径会把那个兜底值
+当真身写回**，就构成不可逆的数据销毁。
+本节把这条教训横切到整个笔记模块，产出**一条完整的阴性结论 + 一道常驻门**。
+
+### §892.1 普查读数
+
+扫描 `features/notes` 生产代码（排除 `__tests__` 与 `*.test.*`，剥注释后匹配）：
+
+| 口径 | 读数 |
+|---|---|
+| 扫描文件数 | **30** |
+| 「行内含 `??`/`||` 且引用任一保真度字段」的站点 | **32** |
+
+逐条判定（登记表全量在判据里，32 条）：
+
+| 类别 | 处数 | 能不能被写回 |
+|---|---|---|
+| 模板只读渲染（卡片标题/摘要、相关笔记标题、草稿横幅、aria-label） | 7 | ❌ |
+| 本地计算 / 只读输入（标题建议、领域推断、标签抽取、AI 种子、检索候选目录、相关笔记预览、FTS 回填读行、向量化输入） | 15 | ❌ |
+| 同字段兜底（摘要列写摘要、助手摘要写助手摘要、行映射 `?? null`） | 5 | ❌ 字段对字段 |
+| **保守合并**（来值为空则**保留原值**） | 3 | ❌ 方向与降级相反 |
+| 写入**条件**里的 `||`（`patch.content !== undefined \|\| media.length > 0`） | 1 | ❌ 不是取值 |
+| ★ §891 保留的安全降级（`body_path` 未回填时 `content` 仍是全文） | 1 | ❌ |
+| **能把低保真副本写回正文** | **0** | — |
+
+⇒ **完整阴性结论**：`features/notes` 里唯一具备「写回」能力的那一处，就是 §891 修掉的 D61。
+其余 31 处按类别全部是只读、同字段或保守合并。
+
+⚠ 同口径复查过另外两条链，**本节未重复它们的既有覆盖**：
+· 会议转写：`meeting-dedup.test.ts:648-651` 已实测「全 `src/` 18 个 `updateMeeting` 调用点
+  （其中 6 个跨行），patch 里带**裸** `transcript` 键的**只有 1 个**」，即精校稿不会覆盖原始转写；
+· 会议精修留存：§783/§831 的 `assessRefineRetention` 已挡住「响应完整但被做成摘要」那一档。
+
+### §892.2 ⭐ 门的设计：登记表的键必须是**行内容哈希**
+
+第一版登记表键是 `路径::字段`。**M50-M2 实测被整条逃掉**：
+
+> 在 `features/notes/notes-persist.ts` 里新增一处 `const __probe = read() ?? note.summary`
+> —— 而 `notes-persist.ts::summary` **早已在登记表里** ⇒ 13/13 全绿。
+
+⇒ 「这个文件用过某个低保真字段」**不等于**「这一处用法是安全的」。
+
+⇒ 改为 `路径::字段::行内容 sha1 前 8 位`：
+· **不用行号**（§844 的 z-index-ladder 已咬过多次，行号会因无关编辑漂移）；
+· 只在**这一行本身**被增/删/改时变化 ⇒ 三种漂移都会立刻暴露。
+
+### §892.3 ⭐ 第二处逃逸：低保真字段可以在 `??` 的**左边**
+
+`LOW_FIDELITY_WRITEBACK_RE` 第一版要求低保真字段出现在 `??` **右侧**，
+于是这条 —— 正是 D61 的**原形**（摘要流进 content，`??` 只是「优先用 nextContent」）——
+**整条逃掉**（M50-M2 第二版）：
+
+```
+content: existing.summary ?? nextContent
+```
+
+⇒ 规则改成两边都看：`写入正文类字段` ∧ `引用低保真字段`，同现即算命中。
+
+### §892.4 ⭐ 第三处逃逸：两步流（`??` 左侧 + 中间变量）
+
+```
+const __degraded = existing.summary ?? nextContent   // 步骤 1
+content: __degraded                                  // 步骤 2（变量名不含任何低保真字样）
+```
+
+单行规则无论怎么写都抓不到 —— 而它恰恰是 D61 那种数据流的**最短复刻**。
+
+⇒ 于是把「降级取值点」的定义从「`||` 的右值是什么」改成**行级**：
+**该行含 `??`/`||` 且引用了任一保真度字段**。
+问的就不再是「它流到哪」（需要数据流分析），而是
+「**这一行有没有在拿某个保真度字段做兜底**」—— 后者由**逐行登记表**回答。
+站点数因此从 10 涨到 **32**，覆盖面显著变宽。
+
+⚠ 如实登记口径边界：本门只覆盖 `features/notes`；跨模块的同类写法（会议、RSS、设置）
+**不在射程内**，本节**没有**声称全仓覆盖。
+
+### §892.5 判据（并入既有 `note-file-size-bytes.test.mjs`，6 → 13 例）
+
+| # | 断言 |
+|---|---|
+| 1 | ⭐ 前置闸：扫描器真扫到了 notes 侧生产代码（防扫描根退一级那种假绿） |
+| 2 | ⭐⭐⭐ 每一个降级取值点都必须已登记（**新增的不许默认放行**） |
+| 3 | ⭐⭐ 登记项不得腐化：每条在源文件里仍能找到 |
+| 4 | ⭐⭐⭐ 登记表里**不许藏**「可写回」的判定（登记 ≠ 豁免） |
+| 5 | ⭐⭐⭐ D61 形态：写入正文类字段 ∧ 引用低保真副本的行，必须已登记；命中数有上限断言 |
+| 6 | ⭐⭐⭐ 量具自检：必须抓住 7 个变体（含左右两侧 / 裸形态），且不得误伤 4 个同族形态 |
+
+⚠ 第 6 条的第一版自检样例写错了：`content: body ?? note.content` 右边是 `.content`，
+**不在规则射程内**，规则判它合规是对的 —— 是样例越错了门槛
+（同 §887「反例必须落在待测参数能起作用的区间」）。
+
+### §892.6 M50：七次变异（含三次「逃逸 ⇒ 改规则」的迭代）
+
+| 变异 | 结果 | 红条目 |
+|---|---|---|
+| M1 新增一处 `summary` 兜底（**第一版逃逸** ⇒ 键改行哈希） | 12 / **1** | 判据 2 |
+| M2 `content: existing.summary ?? nextContent`（**第二版逃逸** ⇒ 规则两边都看） | 12 / **1** | 判据 5 |
+| M5 裸形态 `body: note.summary`（无 `??`） | 12 / **1** | 判据 5 |
+| M6 两步流（**第三版逃逸** ⇒ 降级点定义改行级） | 12 / **1** | 判据 2 |
+| M3 删掉一处现存降级点（登记表 stale） | 11 / **2** | 判据 2 + 3 |
+| M4 把登记项判定改成「可写回」 | 12 / **1** | 判据 4 |
+| M7 量具退化成「什么都不匹配」 | 10 / **3** | 判据 2 + 5 + 6 |
+
+还原后 13 / 13 绿。
+
+⚠⚠ **三次逃逸全部是我自己的门太粗**（键太粗 / 规则只管单侧 / 规则只管单行），
+不是被测代码的问题。而每次逃逸的**症状都一样**：`13/13 全绿`。
+⇒ 这是本会话「0 命中的第一嫌疑永远是量具坏了」的第 N 次复现，
+也是**阴性结论类门**特有的风险：它天生容易「什么都没覆盖」还全绿。
+
+### §892.7 顺带登记的缺口（不是缺陷，本节**不代拍**）
+
+`persistNotePayload` 里**附件有上限、正文没有**（`note-files.ts:93` 有 `MAX_ATTACHMENT_BYTES`
+且会跳过超限项，而 `:69-72` 的正文写入没有任何检查）。实测（Node 22）：
+
+| 正文字符（纯中文） | base64 长度 | 倍率 | 耗时 | 峰值堆增长 |
+|---|---|---|---|---|
+| 88,896 | 355,584 | **4.000×** | 6ms | ≈1MB |
+| 444,448 | 1,777,792 | **4.000×** | 18ms | ≈2MB |
+| 1,777,784 | 7,111,136 | **4.000×** | 97ms | ≈8MB |
+
+⚠ `MAX_ATTACHMENT_BYTES` 的注释理由（「base64 后膨胀约 1/3，整块读进内存再写 SQLite」）
+**同样适用于正文**，但正文这条路径没有检查。
+⚠ 已排除的伪担忧：`search_text` 的增长是**有界**的 ——
+`cjkBigramTokens` 最多产出 80 个 gram（`note-fts-query.ts:24`），不会随正文线性膨胀。
+⛔ **未实测**：真实笔记正文的规模分布；本节**不把它写成缺陷**，登记待拍板（简报 115）。
+
+## §893 D63：复核 §891 那次改动的**真实影响面** —— 比我记的更宽，还顺带关掉了一处更早的静默缺陷
+
+§891 修完 D61 后做了一件事：**回到自己的改动上，把影响面逐个调用点核实一遍**，
+而不是只相信文档里写的那句「打不开笔记」。结论是文档口径**不完整**，另有收获。
+
+### §893.1 复核读数：`updateNote` 在内容没变时也会加载全文
+
+`notes-persist.ts:162`：
+
+```
+const nextContent = patch.content !== undefined ? patch.content : await loadFullContent(existing)
+```
+
+⇒ **`patch` 里没有 `content` 时，它会无条件加载正文文件。**
+全仓 `updateNote` 调用点逐个核对（剥注释、括号配平取表达式）：
+
+| 调用点 | patch 形态 | 是否会加载全文 | 失败时用户看到 |
+|---|---|---|---|
+| `NoteEditView.vue:248` | `{ title, content, domain, tags }` | ❌ 带 content | `errors.saveFailed` |
+| `useNoteRecording.ts:52` | `{ content: text }` | ❌ 带 content | 上层处理 |
+| `NoteListView.vue:552` `onMetaSave` | `{ ...data, status: 'saved' }`（title/domain/tags） | ✅ **会** | `toast.error(...)`，归因正确 |
+| `NoteListView.vue:460` 摘要落库 | `{ summary }` | ✅ **会** | ⚠ 归因**错误**（见 §893.2） |
+
+⚠⚠ ⇒ **§891 的影响面比简报 114 记的更宽**：不只是「打不开笔记」，
+而是**元信息保存（改标题/领域/标签）与 AI 摘要落库也会被挡住**。
+⚠ 两个调用点都在 `try` 内（已核对），所以是「可见的失败」而非静默死路 ——
+这一点是幸运，不是设计：`NoteListView.vue:437` 的 try 从 447 行前就包住了 460 行。
+
+### §893.2 ⭐ 附带发现：一处**更早的静默缺陷**被 §891 顺带关掉了
+
+同一段代码在 §891 之前是这样的（`loadFullContent` 读不到正文时返回 `note.content`，
+而 `tier='file'` 下那是 ≤280 字**摘要**）：
+
+```
+nextContent = 摘要
+decided = decideNoteStorage({ body: 摘要, ... })   // ⇒ searchText = buildSearchText(摘要)
+UPDATE local_notes SET … search_text = ?  …        // 值为按**摘要**重建的检索文本
+```
+
+⚠ `note-files.ts` 的 `updateNote` 在 `patch.content === undefined` 且无媒体时
+**不会重写正文文件**（第 213 行的条件），但**仍会执行这条 UPDATE**
+⇒ **正文不丢，可全文检索无声地退化成摘要检索**，不报错、不提示、无任何痕迹。
+
+§891 把降级收紧成抛错之后，这条路径不再走到 ⇒ **该降级被一并关闭。**
+⇒ 这也是「把静默改掉」偶尔会**顺带**关掉别的东西的实例，值得写进文档：
+一个缺陷的修复可能同时是另一条链的修复，而那条链此前**没有任何测试覆盖**。
+
+### §893.3 ⭐ 根因是一个**设计取舍**，本节**不代拍**
+
+`updateNote` 的核心是：**即使内容没变，也要用全文重建派生状态**
+（`decided.tier` / `decided.summary` / `decided.search_text` / 向量）。
+而派生需要全文，于是「内容没变」也依赖「正文文件可读」。
+
+- **更干净的替代**：内容没变就**完全不重建**派生状态，沿用 `existing` 的那一组。
+  ⚠ 但它不成立：`title` 与 `tags` 可能同时变了，
+  而 `search_text = buildSearchText(新标题, 全文, 新标签)` 需要全文才能重建。
+  ⇒ 要做就得引入「增量更新检索文本」这种更复杂的东西。
+- ⇒ 这正是「产品/架构口径一律登记不代拍」的边界，本节只把**取舍的两端**写清楚（简报 116）。
+
+### §893.4 ⭐ 一条**登记风险**：自定义错误码会被语义兜底规则静默劫持
+
+`api/error-message.ts` 的约定是后端错误形如 `code: 说明`，
+`resolveErrorI18nKey` 先查 `ERROR_CODE_I18N_KEYS`，查不到再按 `SEMANTIC_RULES` **对整条原文**做语义匹配。
+
+实测（用真函数，非推断）：
+
+| 错误消息 | `resolveErrorI18nKey` | 用户看到 |
+|---|---|---|
+| `笔记正文文件读不到：…`（当前形态，中文无码前缀） | `null` | `errors.loadNotesFailed`（「加载笔记失败」） |
+| `note_body_unavailable: 笔记正文文件读不到…` | ⭐ **`errors.notConfigured`** | **「该功能尚未完成配置」** |
+| `note_body_missing: …` | `null` | `errors.loadNotesFailed` |
+| `note_body_corrupt: …` | `null` | `errors.loadNotesFailed` |
+| `note_body_not_found: …` | `null` | `errors.loadNotesFailed` |
+
+⇒ **`..._unavailable` 是这个语义最自然的命名，却会被 `/unavailable/i` 命中**，
+把「文件读不到」说成「功能尚未配置」—— 与真实原因毫无关系，且**没有任何报错**。
+
+⚠ **但当前暴露面为 0**，如实登记：全仓显式 `this.name = '...'` 的错误共 **7** 个
+（`ApiError` / `AssetDeletedError` / `DataUrlFormatError` / `DownloadUnsupportedError` /
+`NoteBodyUnavailableError` / `TimeoutError` / `VersionConfigUnavailableError`），
+**snake_case 型一个都没有** ⇒ 现有错误名都不会被 `extractErrorCode` 误认成错误码。
+⇒ 这是**给下一个人的陷阱登记**，不是活缺陷；§893.5 的门只钉住现状不被悄悄改坏。
+
+### §893.5 判据（并入既有 `note-edit-preserves-media.test.mjs`，8 → 14 例）
+
+| # | 断言 |
+|---|---|
+| 1 | ⭐ 量具自证：函数体抽得到、且确实按「内容没变就沿用」处理 |
+| 2 | ⭐⭐⭐ 内容缺省时会加载全文（D63 根因，也是 §891 抛错面的来源） |
+| 3 | ⭐⭐⭐ 派生链自洽：**UPDATE 参数数组**里 `search_text` 由 `decided` 派生、向量那条也是 |
+| 4 | ⭐⭐⭐ 反向：不得改成「内容没变就用 `existing.content` 当 nextContent」（D61 原形） |
+| 5 | ⭐⭐ 两个真实调用点都必须在 `catch` 里（否则抛错是无提示的死路） |
+| 6 | ⭐⭐ 如实登记：摘要落库那条的错误**归因是错的**（本节只钉住事实，不代拍文案） |
+
+⚠⚠ 第 3 条**两次**才写对：
+· 第一版只断言 `/decided\.searchText/` 出现过 ⇒ M51-M3 把 UPDATE 那一处换成
+  `existing.searchText` 时**照样全绿**（该词在向量实参处还出现一次）——
+  这是 §886「出现过 ≠ 用在这里」的第四类假绿；
+· 第二版改用 `UPDATE … WHERE id = ?` 之间的窗口 ⇒ 又踩坑：**SQL 模板里的 `WHERE`
+  排在参数数组之前**，那个窗口只有列名列表、没有值（实测 `setAt=-1`）；
+· 第三版改为从 `UPDATE` 之后的第一个 `[` 起做**括号配平**（SQL 模板里没有方括号）⇒ 命中。
+
+### §893.6 M51：五次变异
+
+| 变异 | 结果 | 红条目 |
+|---|---|---|
+| M1 还原 D61 原形（拿 `existing.content` 当 nextContent） | 11 / **3** | 判据 1 + 3 + 4 |
+| M2 去掉 `await loadFullContent(existing)` | 12 / **2** | 判据 1 + 2 |
+| M3 UPDATE 里的 `decided.searchText` 换成别的来源（**第一版逃逸** ⇒ 判据改流向） | 13 / **1** | 判据 3 |
+| M4 `onMetaSave` 的 `try` 被去掉 | 13 / **1** | 判据 5 |
+| M5 摘要落库的错误文案不再归因成「总结失败」 | 13 / **1** | 判据 6 |
+
+还原后 14 / 14 绿。
+
+### §893.7 ⭐ 一件必须记下的事：**一个被我丢弃的量具**
+
+我一度想普查「写入前判空」，写了个启发式扫描器，结果是
+**246 条来自 api/store 的赋值里 238 条「相邻两行无判空」** ——
+逐条看下去，里面绝大多数是 `const apiError = useApiError()`、
+`x.value = await api.y()` 这类**根本不需要判空**的语句。
+
+⇒ 该普查器**没有分辨力**（命中率高到等于没筛），按「量具过宽就该丢弃」原则**弃用**，
+**没有**把 238 这个数字写进任何结论。
+⚠ 这一条与「0 命中的第一嫌疑永远是量具坏了」是同一个错误的镜像：
+**「几百条命中」同样可能是量具坏了，而不是「缺陷遍地」。**
+
+### §893.8 顺带取得的全仓读数（供简报 115 第 ① 问决策用）
+
+`features/notes` 之外的全仓普查（`src/` **585** 个生产文件，排除 `__tests__` 与 `*.test.*`）：
+
+| 口径 | 读数 |
+|---|---|
+| 「写入形态 ∧ 引用保真度字段」的同现行 | **11** 行 |
+| 其中能写回全文正文字段的 | **0** 行 |
+
+11 行逐条判定：模板只读 4、纯空值归一 4、只读输入 2（`meeting-ingest` 的
+`refinedTranscript || transcript` 已由 §783/§831 留存闸守住；
+`meeting-page-actions` 的 `description` 是派单输入且完整 prompt 已含纪要）、
+**本仓已有的正确范式 1** —— `EmailDetailView.vue:347`：
+
+```ts
+const text = (res.summary || '').trim()
+if (!text) { toast.error('未能生成总结，请稍后重试'); return }   // ⭐ 空值出声，绝不写空
+summary.value = text
+```
+
+⇒ 「空值不出声」这个教训本仓**已经会了**（邮件侧），只是笔记侧的三个地方
+（§888 / §890 / §891）各自又学了一遍。
+
+⛔ **未实测**：全仓普查只覆盖 `src/`；`scripts/` 与 Go 侧不在其中。
+
+## §894 D64：向量索引每保存一条笔记就**重新分配整块内存**，成本随笔记数线性增长
+
+§881 登记过两条未实测项：「向量的 MAX_VECTORS 内存」。本节把 `MAX_VECTORS` 旁边
+那段「增量更新内存索引」的代码读了，发现问题不在上限值，在**每次 `add` 的写法**。
+
+### §894.1 缺陷形态
+
+`native/vector-index.ts` 修前的 `add()` 末尾：
+
+```ts
+this.ids.push(noteId)
+const newSize = this.ids.length * DIM
+const newMatrix = new Float32Array(newSize)   // ⭐ 每次都重新分配整块
+newMatrix.set(this.matrix)                    // ⭐ 并把旧的整段拷一遍
+newMatrix.set(normalized.subarray(0, DIM), newSize - DIM)
+this.matrix = newMatrix                       // 旧的整块被丢弃
+```
+
+⇒ 单次 `add` 的成本 **O(当前条数)**，且每次都要**分配并丢弃一块同等大小的缓冲**。
+⇒ 而 `add` 在**保存笔记的路径**上被调用（`notes-persist.ts` 的 `embedAndStore`）
+⇒ **保存一条笔记会随库里笔记数增长而线性变慢**，主线程 GC 压力随之上升。
+
+### §894.2 实测（Node 22，预热后测边际成本，三轮取平均）
+
+| 条数 n | 该次拷贝量 | 修前 | 修后 | 加速 |
+|---|---|---|---|---|
+| 200 | 1.17 MB | 0.076ms | 0.041ms | 1.9× |
+| 800 | 4.69 MB | 0.277ms | 0.044ms | 6.3× |
+| 2000 | 11.72 MB | **1.368ms** | 0.046ms | 30× |
+| 4000 | 23.44 MB | **2.969ms** | 0.049ms | 61× |
+| 8000 | 46.88 MB | **5.276ms** | 0.056ms | **94×** |
+
+⇒ 修前**明确线性于 n**；修后在 40 倍规模范围内基本持平（0.041 → 0.056ms）。
+
+⚠⚠ **两次量具事故，都写在这里**（本节最贵的部分）：
+· **第一版基准根本没跑到被测代码**：`add` 是 `async`，第一处 `await this.db.run(...)`
+  **之后**才是内存索引代码，而我调用时**没有 `await`** ⇒ 那些 `add` 只跑完了
+  `normalize` + 发起 DB 调用，内存索引那段从未执行 ⇒ 读数恒定 ~0.041ms，
+  「不随 n 变化」——一个**看起来很干净但完全错误**的结论。
+· **第二版读数非单调**（200→87ms、500→2.1ms、1000→166ms）⇒ 噪声主导，
+  我的第一次外推因此无效 ⇒ 改为**预热 + 测边际成本 + 三轮取平均**才有上面这张表。
+⇒ ★ 这正是 [[变异没施加 ≠ 判据无敏感性]] 在**基准**上的同构版本：
+**「读数很漂亮」与「读数正确」之间没有必然联系。**
+
+### §894.3 修法：容量与长度分离 + 几何增长
+
+```
+private capacity = 0          // matrix 能装多少条 = matrix.length / DIM
+private grow() {
+  const next = Math.min(MAX_VECTORS, Math.max(64, this.capacity * 2))
+  if (next <= this.capacity) return
+  const m = new Float32Array(next * DIM)
+  m.set(this.matrix)         // 只在扩容那一刻搬一次
+  this.matrix = m; this.capacity = next
+}
+```
+
+- `add` 里：`push` → 需要就 `grow()` → **就地** `matrix.set(…, (len-1)*DIM)`，不再重建。
+- `load()` 是「按库里有多少装多少」的**权威点** ⇒ 它的两处赋值都要同步重置 `capacity`
+  （含 `rows.length === 0` 那条早退）。
+- ⚠ **容量上限必须钉在 `MAX_VECTORS`**：不钉的话倍增会让峰值内存比原来**多一倍**
+  （50000 × 1536 × 4B ≈ **293MB** 的两倍在移动端不可接受）。
+  ⇒ `MAX_VECTORS` 那个「移动端可接受的上限」的注释因此仍然成立。
+
+### §894.4 判据（并入既有 `migration-guards.test.mjs`，13 → 20 例）
+
+| # | 断言 |
+|---|---|
+| 1 | ⭐ 前置闸：夹具真能灌进去（否则下面全是恒真） |
+| 2 | ⭐⭐⭐ **分配容量 > 实际条数**（精确分配的 slack 恒为 0） |
+| 3 | ⭐⭐⭐ 容量 ≤ 实际条数 × 2（不许为提速无限超额分配） |
+| 4 | ⭐⭐⭐ 峰值内存不得比修前更大（`grow()` 必须用 `Math.min(MAX_VECTORS, …)`） |
+| 5 | ⭐⭐⭐ 跨容量边界后每条向量仍能被正确检索（扩容不得改变语义） |
+| 6 | ⭐⭐⭐ `load()` 之后 `capacity` 必须与实际条数对齐 |
+| 7 | ⭐⭐ 量具自检：判据确实能区分「精确分配」与「几何增长」 |
+
+⭐ **刻意不用计时做判据**：CI 上时间必然抖动。改用**不依赖时间的性质**——
+「分配容量 > 实际条数」这一条 slack 就足以区分两种实现。
+⇒ 反过来说：**只有能被性质断言的改进才配写进门禁**；计时留在文档里当读数。
+
+⚠ 判据本身踩了两次坑，都写进了文件注释：
+· 本文件原本只 `import { test }` ⇒ 我用 `describe/it` 直接报 `describe is not defined`；
+· `filled()` 第一版自建 db 却只返回 index ⇒ 测试 6 用外层空 db 重建，读到 **0 条**
+  （症状「从库重建后条数不对：0 !== 300」）；
+· 测试 5 的期望值我**自己算错**了：夹具给奇数项的是 `vec(1,1)`，归一化后与查询向量
+  `(1,0)` 点积是 **0.707** 而不是 0 ⇒ 第一版红。
+  ⚠ 这是**量具的错**，不是实现的错 —— 别把量具算错当成产品缺陷。
+
+### §894.5 M52：五次变异
+
+| 变异 | 结果 | 红条目 |
+|---|---|---|
+| M1 还原「精确分配」原形（D64 完全复现） | 17 / **3** | 判据 2 + 6 + 7 |
+| M2 容量不钉 `MAX_VECTORS`（峰值内存翻倍） | 19 / **1** | 判据 4 |
+| M3 `load()` 不重置 `capacity`（残留旧值 ⇒ 下次 `add` 跳过扩容） | 19 / **1** | 判据 6 |
+| M4 扩容时跳过搬旧数据（向量被覆盖） | 19 / **1** | 判据 5 |
+| M5 倍率改成 `+8`（超额分配无上限的形状） | 18 / **2** | 判据 2 + 7 |
+
+还原后 20 / 20 绿。
+
+⚠ M5 值得单独记：`+8` 在小规模下会让 `capacity` **收敛到等于 `size`**
+（8,16,24,…,120）⇒ slack 归零 ⇒ 判据抓住的是**性质**不是**实现写法**。
+
+### §894.6 口径与未实测
+
+- ✅ 向量索引改为容量/长度分离 + 几何增长；`load()` 两处同步重置 `capacity`；
+  判据 7 条（20 例）；`typecheck` EXIT=0、`gates` 45/45。
+- ⚠ **峰值内存上限不变**（仍钉在 `MAX_VECTORS` × `DIM` × 4B ≈ 293MB）。
+- ⚠ §881 已登记的「超过上限后新向量永远不进内存索引 ⇒ 沉默的搜不全」**本节未处理**，
+  注释里那句「查询时降级为仅 FTS」在 `search()` 里**仍未实现**（简报 117）。
+- ⛔ **未实测**：真机上真实的笔记条数分布与保存耗时。
+  上表的 n 是刻意放大的压力读数；本节修的是**增长曲线**，不是某个具体秒数。

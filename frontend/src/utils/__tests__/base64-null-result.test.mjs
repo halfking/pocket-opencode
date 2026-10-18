@@ -28,7 +28,7 @@ import { execFileSync } from 'node:child_process'
 import { readFileSync, readdirSync } from 'node:fs'
 import { dirname, join, relative, resolve } from 'node:path'
 import { afterEach, describe, it } from 'node:test'
-import { blobToBase64, arrayBufferToBase64 } from '../base64.ts'
+import { blobToBase64, arrayBufferToBase64, utf8ToBase64, base64ToUtf8 } from '../base64.ts'
 
 const RealFileReader = globalThis.FileReader
 afterEach(() => { globalThis.FileReader = RealFileReader })
@@ -547,5 +547,124 @@ describe('§889 · D59：bytes→base64 的实现收编到一处（形态无关�
     ].join('\n'))
     assert.ok(hasBytesToBase64(rogue),
       '规则连这种一眼可见的副本都认不出 ⇒ 形状规则本身坏了，上面几条的通过毫无意义')
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §891 D61：`loadFullContent` 的降级 `body ?? note.content` 是**数据销毁机制**。
+//
+// 链条（逐段核对源码，非推断）：
+//   1. note-storage-policy.ts:55-62  tier='file' ⇒ displayContent = summarizeForDisplay(body)
+//                               （**只取第一段、≤280 字**），落进 local_notes.content
+//   2. notes-persist.ts:81-93       INSERT 写的就是这个 storedContent
+//   3. notes-persist.ts:331-334     body 读不到 ⇒ 退回 note.content（= 摘要）
+//   4. notes-persist.ts:213,217-223 updateNote 里 patch.content !== undefined
+//                               ⇒ persistNotePayload({ body: nextContent }) 写回正文文件
+//   ⇒ 「打开笔记 → 只改标题 → 保存」足以把全文永久换成摘要。
+//
+// 而原先正文**损坏**时 readNoteBody 是抛的，**只有缺失/空行才走降级**
+// ⇒ 一个静默销毁数据、一个报错。D61 把两者对齐成「都出声」。
+// ─────────────────────────────────────────────────────────────────────────────
+describe('§891 · D61：base64 解码失败必须返回 null（不抛），否则降级契约形同虚设', () => {
+  // ⚠⚠ 本文件里已有一个 `SRC_ROOT`，但它是 §889 那个 describe 内部的**局部**常量，
+  //   在这里取不到。⇒ 这里自己算一份，别指望复用。
+  //   （顺带：本块第一版写成 `HERE` 而这里没有 HERE，跑出来是 suite 构造期
+  //     `ReferenceError: HERE is not defined`，而汇总行仍是 `# pass 23 / # fail 0`
+  //     —— 正是「suite 构造期失败不计进 # fail」那条。只看计数会把整块判据当成全绿。）
+  const SRC_ROOT = new URL('../../', import.meta.url).pathname
+  const NOTES_PERSIST = resolve(SRC_ROOT, 'features/notes/notes-persist.ts')
+  const NOTE_FILES = resolve(SRC_ROOT, 'features/notes/note-files.ts')
+
+  it('★★★ 行为门：截断/污染的 base64 返回 null 而不是抛', () => {
+    // ⚠ 直接调用被导出的真实函数 ⇒ 形态无关（§889 被审计批过的「按名字+形态判」
+    //   那类假绿在这里不成立：把实现从 function 改成 const 箭头，用例照样咬得住）。
+    const valid = utf8ToBase64('（语音草稿）你好世界'.repeat(20))
+    for (const [name, bad] of [
+      ['末尾截断 1 个字符', valid.slice(0, -1)],
+      ['末尾截断 3 个字符', valid.slice(0, -3)],
+      ['长度非 4 的倍数', valid.slice(0, 7)],
+      ['中间插非法字符', valid.slice(0, 10) + '!' + valid.slice(10)],
+      ['payload 含 NUL', valid.slice(0, 10) + '\u0000' + valid.slice(10)],
+    ]) {
+      assert.equal(base64ToUtf8(bad), null, `${name} 时必须返回 null，不能抛 —— 抛会绕过 loadFullContent 的降级契约`)
+    }
+  })
+
+  it('★★★ 负控：复刻旧的 decodeURIComponent(escape(atob(...)))，确认它确实抛', () => {
+    // 本仓「负控自伤」教训：必须先确认**对照本身**确实有病。
+    const legacy = (b64) => decodeURIComponent(escape(atob(b64)))
+    const valid = utf8ToBase64('（语音草稿）你好世界'.repeat(20))
+    let threw = false
+    try { legacy(valid.slice(0, -1)) } catch { threw = true }
+    assert.ok(threw, '负控假定失效：旧实现在截断时不再抛 ⇒ 本门失去区分力')
+  })
+
+  it('★★ 正常内容往返不变（含中文/emoji/NUL/全 latin1 字节）', () => {
+    for (const s of ['abc', '你好世界', '👋🎉', 'a\u0000b', '\x00\x01\x7f\x80\xff']) {
+      assert.equal(base64ToUtf8(utf8ToBase64(s)), s, `往返失败：${JSON.stringify(s)}`)
+    }
+  })
+
+  it('★★ 含空白的 base64 仍要解得出（atob 容忍 RFC 2045 换行）', () => {
+    // ⭐ 防「矫枉过正」：修「抛错」时很容易顺手把空白也收紧，
+    //   而 MIME 的 base64 是允许折行的 —— 收紧会让**合法**输入被判成损坏。
+    const valid = utf8ToBase64('（语音草稿）你好世界')
+    const wrapped = valid.slice(0, 10) + '\n  ' + valid.slice(10)
+    assert.equal(base64ToUtf8(wrapped), '（语音草稿）你好世界')
+  })
+
+  it('★★ utf8ToBase64 搬家后契约不变（承接 download.test.mjs 的既有断言）', () => {
+    assert.equal(utf8ToBase64('hello'), 'aGVsbG8=')
+    assert.equal(utf8ToBase64(''), '')
+    const cn = utf8ToBase64('你好 POCKET')
+    assert.equal(Buffer.from(cn, 'base64').toString('utf8'), '你好 POCKET')
+  })
+
+  // ⚠⚠ 下面两条源码断言都必须**先剥注释**再匹配：
+  //   §891 的修复动作本身留下了大量解释性注释，其中就写着
+  //   「原来这里是 `return body ?? note.content`」与
+  //   「这三处原先是裸的 `decodeURIComponent(escape(atob(x)))`」。
+  //   不剥的话，判据会命中**我自己写的说明文字** ⇒ 一份完全正确的源码被判红。
+  //   （本仓同类事故已发生过两次：note-persist-fk-order.test.mjs:55 与本文件 §889。）
+  const strip = (t) =>
+    t.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
+      .replace(/(^|[^:])\/\/[^\n]*/g, '$1')
+
+  it('★★★ D61：loadFullContent 不许再用 `?? note.content` 冒充全文', () => {
+    const src = readFileSync(NOTES_PERSIST, 'utf8')
+    const start = src.indexOf('export async function loadFullContent(')
+    assert.ok(start > 0, '定位失败：找不到 loadFullContent()')
+    const body = strip(src.slice(start, src.indexOf('\nexport ', start + 10)))
+    assert.doesNotMatch(body, /\?\?\s*note\.content/,
+      'loadFullContent 不许退回 note.content —— tier=\'file\' 时它是 ≤280 字摘要，updateNote 会把它写回正文文件覆盖全文（D61）')
+    assert.match(body, /if \(body === null\) throw new NoteBodyUnavailableError\(/,
+      '正文读不到时必须抛具名错误（与「文件损坏」路径已有的抛错行为对齐）')
+  })
+
+  it('★★★ 反向：body_path 未回填时的**安全**降级必须保留（不许一刀切删掉）', () => {
+    // ⭐ 防矫枉过正：把降级整体删掉会让「附件写失败」的笔记也打不开，
+    //   而那正是 notes-persist.ts:79-80 注释里明确要的降级。
+    //   两种场景不可混为一谈：**附件写失败**（content 还是全文）vs **正文丢失**（content 是摘要）。
+    const src = readFileSync(NOTES_PERSIST, 'utf8')
+    const start = src.indexOf('export async function loadFullContent(')
+    const body = src.slice(start, start + 600)
+    assert.match(body, /if \(note\.storageTier !== 'file' \|\| !note\.bodyPath\) return note\.content/,
+      'body_path 未回填时的降级必须保留 —— 那时 note.content 仍是全文，不是摘要')
+  })
+
+  it('★★ note-files.ts 的三处解码必须走 decodeBody（不再有裸 atob 字面）', () => {
+    const src = strip(readFileSync(NOTE_FILES, 'utf8'))
+    assert.doesNotMatch(src, /decodeURIComponent\(escape\(atob\(/,
+      'note-files.ts 仍有裸的 base64→utf-8 实现：解不出来时会抛并绕过降级契约')
+    assert.match(src, /function decodeBody\(/, '应有一个统一的解码 + 出声入口')
+    assert.equal((src.match(/decodeBody\(/g) || []).length, 4,
+      '应是 1 处定义 + 3 处调用（sqlite 行 / 文件内容 / sqlite 兜底行）')
+  })
+
+  it('★★ download-encoding.ts 必须仍导出 utf8ToBase64（公共 API 未变）', () => {
+    // ⛔ 若这条例外，download.ts:28,33 的 import 会直接崩 —— 属于结构性破坏。
+    const src = readFileSync(resolve(SRC_ROOT, 'utils/download-encoding.ts'), 'utf8')
+    assert.match(src, /export \{ utf8ToBase64 \} from '\.\/base64\.ts'/,
+      'download-encoding.ts 必须 re-export utf8ToBase64（§875：带 .ts 扩展名才能在 node 里加载）')
   })
 })

@@ -80,3 +80,42 @@ export function arrayBufferToBase64(buffer: ArrayBufferLike): string {
   }
   return btoa(binary)
 }
+
+/**
+ * UTF-8 字符串 → base64（无 data: 前缀）。
+ *
+ * §891：从 `utils/download-encoding.ts` 收编进来（本仓这一族曾有 3 份同义实现：
+ * download-encoding.ts / note-files.ts:71 / pocket-native.ts:432 的 web 桩）。
+ * 原生 `btoa` 只吃 latin1，中文与 emoji 会抛 InvalidCharacterError，
+ * 所以必须先 encodeURIComponent 成 UTF-8 百分号串再 unescape 回 latin1。
+ *
+ * ⚠ 已知边界：`encodeURIComponent` 对**孤立代理项**抛 URIError。
+ *   ⛔ 未实测：正文里真出现孤立代理项的发生率（实测中文/emoji/组合字符/往返全部正确）。
+ */
+export function utf8ToBase64(s: string): string {
+  return btoa(unescape(encodeURIComponent(s)))
+}
+
+/**
+ * base64 → UTF-8 字符串。**解不出来时返回 null，不抛。**
+ *
+ * ⚠⚠ §891/D61：这是 `readNoteBody` 的解码侧，而调用方的降级契约是
+ *   「返回 null ⇒ 退回 note.content」（`notes-persist.ts::loadFullContent`）。
+ *   原先那三处 `decodeURIComponent(escape(atob(x)))` 在正文文件被截断/损坏时
+ *   会**抛** URIError / DOMException，把那条降级彻底绕过去 ⇒ 降级形同虚设。
+ *
+ * ⚠ 实测（Node 22）：`atob` **容忍**空白与换行（RFC 2045），
+ *   但**不容忍**截断 —— 末尾少 1 个字符就抛 DOMException，
+ *   少 2/3 个字符或长度非 4 的倍数抛 URIError（decodeURIComponent 侧）。
+ *   ⇒ 「截断」这一类损坏是真实可达的，不是理论值。
+ *
+ * ⚠ 这里选「返回 null」而不是「抛」：纯函数不该带日志策略，
+ *   出声由调用方负责（`readNoteBody` 会 `console.warn` 并带上 bodyPath）。
+ */
+export function base64ToUtf8(base64: string): string | null {
+  try {
+    return decodeURIComponent(escape(atob(base64)))
+  } catch {
+    return null
+  }
+}
