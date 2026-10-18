@@ -253,6 +253,7 @@ import { displayApiBase, probeHealthz, resolveApiBase } from '../../config/api-b
 import { clearSelectedInstance, readSelectedInstance } from '../../config/selected-instance'
 import { useConfirm } from '../../composables/useConfirm'
 import { useToast } from '../../composables/useToast'
+import { useAuthStore } from '../../stores/auth'
 import { useThemeStore, type ThemePreference } from '../../stores/theme'
 import LanguageSwitcher from '../../components/LanguageSwitcher.vue'
 
@@ -261,6 +262,7 @@ const { confirm } = useConfirm()
 const toast = useToast()
 const { t } = useI18n()
 const apiError = useApiError()
+const authStore = useAuthStore()
 const theme = useThemeStore()
 
 // 皮肤三选项（图标 + 词条），选中即调用 setPreference 全局生效
@@ -435,9 +437,21 @@ function goScheduledTasks() {
 
 async function handleLogout() {
   if (await confirm({ title: t('settings.logout'), message: t('settings.logoutConfirm'), confirmText: t('settings.logout'), danger: true })) {
-    localStorage.removeItem('pocket_user')
-    localStorage.removeItem('selected_server')
+    // ⚠⚠⚠§870/D40：这里原来只 `removeItem('pocket_user')` +
+    // `removeItem('selected_server')` 然后 `router.push('/login')` ——
+    // **token 没删、内存没清、也没打后端撤销**。
+    // 而路由守卫判的是**内存**里的 `auth.isAuthenticated`（见 app/routeGuards.ts:69/76/82/87）
+    // ⇒ 用户被推到登录页之后，**后退即可回到应用**，仍然持有效 token：
+    // 「退出登录」在**本次会话**根本没发生。
+    // 重启后之所以看起来登出了，只是因为 `pocket_user` 恰好被删了
+    // （`isAuthenticated = Boolean(token) && Boolean(user)`），
+    // 而 `pocket_token` / `pocket_workspace_id` / `pocket_auth_method`
+    // 仍以明文留在 localStorage 里。
+    // 修法：走 store 的正规登出（打后端撤销 + 清内存 + 清存储），
+    // 再补两个与本应用相关的键。
+    await authStore.logout()
     clearSelectedInstance()
+    localStorage.removeItem('selected_server')
     router.push('/login')
   }
 }

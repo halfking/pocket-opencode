@@ -99805,3 +99805,132 @@ applyRemoteSetting → localStorage 投影写失败（静默）
       与 §859 第 1 条是同一件事：这套「设备档位 / STT 偏好」到底要不要接回 UI？
       若接回，D38 里「远端下发不更新内存」就会**立刻变成真缺陷**，
       届时必须补内存同步。
+### §870.1 口径：前五节扫的是 `setItem`，**删除**侧从未扫过
+
+§866–§869 四节加上 §868/§869 的判据，全部围绕
+`localStorage.setItem`（**写入**）。`removeItem` / `clear` 这条
+**删除**侧一次都没进过扫面，而它牵着「退出登录」这个安全动作。
+
+扫面：`removeItem` **9 处**，`clear()` **0 处**。
+
+| 落点 | 分诊 |
+|---|---|
+| `stores/auth.ts:195-198`（`clearLocal`，4 条） | 🔴 **D39** |
+| `features/settings/SettingsView.vue`（`handleLogout`） | 🔴 **D40** |
+| `features/settings/SettingsView.vue`（`selected_server`） | ✅ 随 D40 一并处理 |
+| `features/servers/ServerSelectView.vue:162` | ✅ 在已覆盖的 try 内，且换服务器本就整体重载 |
+| `native/recordingRuntime.ts:127` | ✅ §868 已判定的正确形态（在 §867/D36 之后那段 try 里） |
+
+⭐ 本节的核心口径是把 §866 的族规律**反过来用一次**：
+
+> 写失败 = 用户的会话被弄丢（**丢东西**）；
+> **删失败 = 会话被留在盘上** —— 用户明确点了「退出」，而系统其实还在记着他。
+
+同一个「静默」，两个方向，后果严重度完全不同。
+
+### §870.2 ⭐ D39：`clearLocal()` 四条裸 `removeItem`
+
+失败链（逐行取证）：
+
+```
+clearLocal()
+  ├─ this.token = '' … authMethod = ''      ← 内存态已清（本次会话看着登出成功）
+  └─ localStorage.removeItem(TOKEN_KEY)      ← 裸奔；写不进去就抛错
+        ↓
+state: () => ({ token: localStorage.getItem(TOKEN_KEY) || '', … })
+        ↓
+下次启动把**旧 token 读回来** ⇒ 共享设备上「退出登录」等于没退
+```
+
+且抛错会冒泡出 `clearLocal()` —— `logout()` **没有**包 try/catch。
+
+⚠ **一处必须澄清的对照**：`api/http.ts` 的 401 路径**是**包了
+（`try { auth.clearLocal() } catch { /* 清理失败也要继续跳转 */ }`）
+—— 那里是**正确形态的样板**，本节不改它。只有用户主动点的那条路没兜底。
+
+**修法**：逐键 `try/catch` + `console.warn`（点名哪个键没删掉）+
+`sessionClearFailed` / `sessionClearMissing` 两个 state 字段。
+
+### §870.3 ⭐⭐ D40：设置页的「退出登录」**根本没有退出**
+
+这是本节最重的一条，而且是**读代码时一眼可见、却显然没人验证过**的一条。
+
+`SettingsView.vue::handleLogout` 的原文：
+
+```js
+localStorage.removeItem('pocket_user')
+localStorage.removeItem('selected_server')
+clearSelectedInstance()
+router.push('/login')
+```
+
+⇒ **token 没删、内存没清、也没打后端撤销。**
+
+而路由守卫判的是**内存**里的 `auth.isAuthenticated`
+（`app/routeGuards.ts:69/76/82/87`，全部读 `auth.isAuthenticated`）：
+
+```
+点「退出登录」 → 只删了 pocket_user → router.push('/login')
+              → 内存里 token 与 user 都还在 ⇒ isAuthenticated 仍为 true
+              ⇒ 用户在登录页按一下后退 ⇒ 直接回到应用，仍持有效 token
+```
+
+**「退出登录」在本次会话根本没发生。**
+
+⚠ 为什么重启后看起来登出了？因为 `pocket_user` 恰好被删了，
+而 `isAuthenticated = Boolean(token) && Boolean(user)`。
+⇒ 现状精确地说是：**内存里还登录着，磁盘上只剩一个明文的残留 token**
+（`pocket_token` / `pocket_workspace_id` / `pocket_auth_method` 都在）。
+
+**修法**：走 store 的正规登出 `authStore.logout()`
+（打后端撤销 + 清内存 + 清存储），再补两个与本应用相关的键
+（`clearSelectedInstance()` + `selected_server`）。
+
+⭐ 这条同时补上了一个 §867/D33 遗留的对称缺口：D33 修好了**登录**的写入，
+本节修好了**登出**的删除 —— 一个账户在本地存储上的生命周期两端现在都有判据。
+
+### §870.4 判据与变异
+
+`frontend/src/__tests__/local-storage-remove-failure.test.ts`（**7 例**，新建）：
+尺子自证两条 + D39 两条 + D40 一条 + 两条负控。
+
+⭐ 本判据把 D40 钉成「**必须走 store 的正规登出**」而不是
+「必须删除某个键」—— 因为缺陷的本质是**没走那条完整的路**，
+逐键断言反而会让人以为补几行 `removeItem` 就修好了。
+
+**M27 真实文件端到端变异（2 路）**：
+
+| 变异 | 自己判据 |
+|---|---|
+| 基线 | **7 / 0** ✅ |
+| M27-a `clearLocal` 改回四条裸 `removeItem` | **4 / 3** 🔴 |
+| M27-b 设置页退出改回「只删 pocket_user」 | **4 / 3** 🔴 |
+| 还原核对 | **7 / 0** ✅ |
+
+⚠ 判据本轮**首轮就绿**（前几节每次都要修 3–5 次量具）——
+记一笔，是因为本节把前四节的血泪直接写进了注释
+（`strip` 先处理 HTML 注释、判据先抽 `<script>` 再定位再剥注释、
+`fnBody` 锚到行首），**把量具的事故当文档用，是能省下返工的**。
+
+### §870.5 口径与未实测
+
+- ⛔ **未实测**：真实设备上 `removeItem` 失败的**发生率**；
+  D40 的「后退即可回到应用」是**逐行代码取证**
+  （守卫 4 处判据全部读内存 `isAuthenticated`），**未在真机上点过**。
+- ⚠ 本节**没有**给 D39 加界面出口 —— 「本地未能清除登录状态」要不要对用户说，
+  属产品口径（§870.6 第 89 条）。这与 §865/§867 的做法一致。
+- ⚠ 本节**没有**动 `api/http.ts` 的 401 路径（那里是正确的样板）。
+- ⚠ 顺带发现但**未取证**：`auth.ts` 底部的 `storage` 事件监听只同步
+  `TOKEN_KEY` / `USER_KEY` 两个键，**不同步** `workspaceId` / `userId`
+  ⇒ 跨标签登出后，另一标签的 `workspaceId` 会残留。登记为下一节的候选。
+
+### §870.6 待拍板（新增 1 条）
+
+89. **「本地未能真正清除登录状态」要不要对用户说** —— §870 只把它变成
+   `sessionClearFailed` + `sessionClearMissing` + warn，**界面仍然不说话**：
+   ① 登出后要不要提示「本地未能清除登录状态，请手动清理浏览器数据」？
+      这与 §865/§867/§868 的三处提示是同一族，但性质更重（涉及隐私）。
+   ② 提示里要不要给「跳转清理存储」的入口？（Android WebView 下
+      清 WebView 数据会连带清掉录音缓存，要不要一并警告？）
+   ③ §870.5 那条 `storage` 监听只同步两个键的跨标签差异，要不要本节一并补齐？
+      本节按「未取证、不改」处理。

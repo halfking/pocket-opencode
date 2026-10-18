@@ -57,6 +57,13 @@ export const useAuthStore = defineStore('auth', {
      * 只置位 + warn，界面出口属产品口径（简报第 86 条）。
      */
     sessionPersistFailed: false,
+    /**
+     * ⚠§870/D39：**删除**失败与写入失败同样要可见。
+     * 为 true 时，「退出登录」没有真的把会话从本地存储里删掉。
+     */
+    sessionClearFailed: false,
+    /** 未删掉的键名（可诊断用；界面出口属产品口径，简报第 89 条）。 */
+    sessionClearMissing: [] as string[],
   }),
   getters: {
     isAuthenticated: (s) => Boolean(s.token) && Boolean(s.user),
@@ -192,10 +199,26 @@ export const useAuthStore = defineStore('auth', {
       this.workspaceId = ''
       this.userId = ''
       this.authMethod = ''
-      localStorage.removeItem(TOKEN_KEY)
-      localStorage.removeItem(USER_KEY)
-      localStorage.removeItem(WS_KEY)
-      localStorage.removeItem(METHOD_KEY)
+      // ⚠⚠⚠§870/D39：原来这里是四条裸 `removeItem`。失败链与 §867/D33
+      // **恰好相反但后果更重**：写失败 = 用户的会话被弄丢（只是丢东西），
+      // 而**删失败 = 会话被留在盘上** —— 用户明确点了「退出」，
+      // 而系统其实还在记着他。
+      //   内存态已经在上面清掉了 ⇒ 本次会话看起来登出成功；
+      //   但 `state: () => ({ token: localStorage.getItem(TOKEN_KEY) … })`
+      //   在下次启动会把**旧 token 读回来** ⇒ 共享设备上「退出登录」等于没退。
+      // 而且抛错会冒泡出本函数 —— `logout()` 没有包 try/catch。
+      //   ⚠ 对照：`api/http.ts` 的 401 路径**是**包了的（那里是正确的样板）。
+      const failed: string[] = []
+      for (const k of [TOKEN_KEY, USER_KEY, WS_KEY, METHOD_KEY]) {
+        try {
+          localStorage.removeItem(k)
+        } catch (err) {
+          failed.push(k)
+          console.warn(`[auth] 本地会话键 ${k} 未能删除（下次启动可能仍被视为已登录）：`, err)
+        }
+      }
+      this.sessionClearFailed = failed.length > 0
+      this.sessionClearMissing = failed
     },
     /**
      * Phase 1: 先调后端 /api/auth/logout 撤销 RedClaw session，再清本地。
