@@ -1,8 +1,14 @@
 <template>
   <div v-if="open" class="dialog-mask" @click.self="close">
     <section class="dialog" role="dialog" aria-modal="true" aria-labelledby="master-password-title">
-      <h2 id="master-password-title">{{ mode === 'create' ? '创建主密码' : '修改主密码' }}</h2>
-      <p class="hint">主密码独立于登录密码，用于解锁本地数据。请妥善保管，丢失后无法恢复。</p>
+      <!-- ⚠§859/D26：mode='unlock' 是**本机加密配置读取失败**后的专用形态。
+           它必须存在，否则用户明明早就设过主密码，却会看到一个标题写着
+           「创建主密码」、提示写着「丢失后无法恢复」的对话框；
+           而 initLobster 第一步就是 verifyMasterPassword
+           ⇒ 输错就只得到「主密码不正确」⇒ 被卡在「创建→不正确→再创建」的循环里。 -->
+      <h2 id="master-password-title">{{ title }}</h2>
+      <p class="hint">{{ hintText }}</p>
+      <p v-if="mode === 'unlock'" class="recovered" role="status">{{ recoveredNote }}</p>
       <input v-model="password" type="password" autocomplete="new-password" placeholder="主密码（至少 8 位）" />
       <input v-model="confirm" type="password" autocomplete="new-password" placeholder="再次输入主密码" @keyup.enter="submit" />
       <input v-model="hint" type="text" placeholder="密码提示（可选）" />
@@ -18,12 +24,26 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { initLobster } from '../../native/lobster-init'
 import { persistMasterSecretIfBound } from '../../native/biometricAuth'
 import { useCryptoConfig } from '../../stores/crypto-config'
 
-withDefaults(defineProps<{ open: boolean; mode: 'create' | 'change' }>(), { mode: 'create' })
+const props = withDefaults(defineProps<{ open: boolean; mode: 'create' | 'change' | 'unlock' }>(), { mode: 'create' })
+
+const title = computed(() =>
+  props.mode === 'create' ? '创建主密码'
+    : props.mode === 'change' ? '修改主密码'
+      : '输入主密码解锁',
+)
+// ⚠ 不能叫 `hint` —— 弹窗里已有一个 `hint` ref（密码提示输入框），
+//   同名会直接撞车（第一版就撞了，typecheck 报重复标识符）。
+const hintText = computed(() =>
+  props.mode === 'unlock'
+    ? '本机加密配置无法读取，请输入你原来设置的主密码解锁本地数据。'
+    : '主密码独立于登录密码，用于解锁本地数据。请妥善保管，丢失后无法恢复。',
+)
+const recoveredNote = '检测到本机加密配置损坏（内容已另存备查）。如果想不起主密码，本地数据将无法恢复。'
 const emit = defineEmits<{ (event: 'close'): void; (event: 'success', password: string): void }>()
 const cryptoConfig = useCryptoConfig()
 const password = ref('')

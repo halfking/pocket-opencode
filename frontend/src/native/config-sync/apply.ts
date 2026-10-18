@@ -124,7 +124,7 @@ function applyChatSettings(settings: ChatSettingsPayload): void {
         const parsed = JSON.parse(raw)
         current = parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : {}
       } catch {
-        preserveCorruptRaw('settings', raw)
+        preserveCorruptRaw('pocket:ai-chat:corrupt', 'settings', raw)
         current = {}
       }
     }

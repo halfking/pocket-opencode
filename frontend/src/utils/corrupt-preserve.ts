@@ -11,7 +11,8 @@
  *   ② 写入失败不抛（配额满时连留证都写不下，由调用方负责对用户说话）。
  */
 
-const CORRUPT_PREFIX = 'pocket:ai-chat:corrupt'
+/** AI 对话侧的留证命名空间（§858/D21 起）。crypto 侧见 §859/D26 的调用点。 */
+export const AI_CHAT_CORRUPT_NS = 'pocket:ai-chat:corrupt'
 
 /** 与 `aiChatStore.storageScope()` 同口径：workspace > user > 'local'。 */
 export function storageScope(): string {
@@ -25,13 +26,18 @@ export function storageScope(): string {
 }
 
 /**
- * 把损坏的原始串另存到 `pocket:ai-chat:corrupt:<kind>:<scope>:<ts>`。
+ * 把损坏的原始串另存到 `<ns>:<kind>:<scope>:<ts>`。
+ *
+ * ⚠ `ns` 是**命名空间前缀**，必须由调用方给全（`pocket:ai-chat:corrupt` /
+ *   `pocket:crypto:corrupt` …）。理由同文件头：同一个 key 命名空间里若出现两份
+ *   键名实现就会各自漂移；而**跨命名空间也不能各写各的函数** ——
+ *   §859/D26 加了第二个命名空间之后，沿用同一个函数才让「留证」这件事只有一个落点。
  *
  * @returns 留证键；没写下去（无内容 / 配额满 / localStorage 不可用）返回 null。
  */
-export function preserveCorruptRaw(kind: string, raw: string | null): string | null {
+export function preserveCorruptRaw(ns: string, kind: string, raw: string | null): string | null {
   if (!raw) return null
-  const key = `${CORRUPT_PREFIX}:${kind}:${storageScope()}:${Date.now()}`
+  const key = `${ns}:${kind}:${storageScope()}:${Date.now()}`
   try {
     localStorage.setItem(key, raw)
     return key

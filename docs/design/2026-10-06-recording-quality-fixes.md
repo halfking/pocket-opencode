@@ -98676,3 +98676,151 @@ DB 调用，失败时「跳过这次迁移」本来就是正确行为 ⇒ **要�
 另外提醒属主一条方法论结论（不是待拍板项，是**给未来做门禁的人**的）：
 **「跨边界/同族」类口径的收益几乎全在「枚举完整性」，不在「扫得准」**
 ⇒ 真做成门禁时，要固化的是那份**消费者清单**，而不是扫描逻辑。
+
+## §862 把 §861.6 的账结掉：21 处「存储值直接进 JSON.parse」逐条取证 → ⭐ **D26 一条高严重度缺陷**
+
+§861.6 留的账：本节只按 key 归并检查了 AI 聊天设置那一个 key，其余 **21 处未逐条取证**。
+本节把它们读完 —— **拿到 1 条比 D21/D24/D25 都严重得多的缺陷**，
+以及 **6 组阴性（含两个「本仓正确形态的样板」）**。
+
+### §862.1 清单（22 处，按文件列全）
+
+`apply.ts`(§859 已修) · `config-sync/runtime.ts`(§861 已修) · `snapshot-store.ts` ·
+`selected-instance.ts` · `SettingsView.vue` · `contacts-store.ts` · `aiChatStore.ts`×2(§858 已修) ·
+`sessionArchive.ts` · `note-search-parse.ts` · `notes-fts-ready.ts` · `note-search.ts` ·
+`meetings-live.ts` · `meetings-store.ts` · `EmailDetailView.vue`(§859 已判阴性) ·
+**`stores/crypto-config.ts`** · `stores/flashcards.ts`×2 · `utils/update-state.ts` ·
+`localagent/tools/index.ts` · `localagent/runtime.ts` · `navigationContext.ts`(§860 已判为样板)
+
+### §862.2 ⭐⭐ D26：加密配置读失败，被谎报成「你从来没有主密码」
+
+```ts
+// stores/crypto-config.ts，原文
+function loadConfig(): CryptoConfig {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY)
+    if (!raw) return { ...DEFAULT_CONFIG }
+    return { ...DEFAULT_CONFIG, ...JSON.parse(raw) }   // ⚠ 字段级也没有校验
+  } catch {
+    return { ...DEFAULT_CONFIG }                       // ⚠⚠ 读失败 = 首次安装
+  }
+}
+```
+
+`hasMasterPassword` 决定三件事：
+
+1. `LoginView.vue:348` / `:538` 与 `RegisterView.vue:234`：
+   `if (!cfg.hasMasterPassword) { showMasterPasswordDialog = true; return }`
+   ⇒ **每次登录都被要求「设置主密码」**；
+2. `MasterPasswordDialog` 的标题：`mode="create"` ⇒ **「创建主密码」**，
+   提示写着「主密码独立于登录密码…**丢失后无法恢复**」；
+3. `shouldEncryptField()`（`notes-persist.ts:69/247`、`notes-store.ts:49`）⇒ 新笔记是否做字段加密。
+
+⚠⚠ **完整的受害链**（每一步都实测过源码）：
+
+```
+pocket_crypto_cfg 损坏
+  → loadConfig 的 catch 返回 DEFAULT_CONFIG（hasMasterPassword: false）
+  → 登录后弹出对话框，标题「创建主密码」
+  → 用户明明有主密码，凭直觉输入 → initLobster 第一步 verifyMasterPassword
+    （lobster-init.ts:76）→ 抛「主密码不正确」
+  → 他只会以为自己从来没设过，于是再点一次「确认」
+  → 同样的循环，且界面上没有任何一处说明真实原因是「配置损坏」
+```
+
+⚠ **数据安全没有被破坏**（这点必须说清楚，否则会夸大定级）：
+`initLobster` 先 `verifyMasterPassword` 才碰加密状态，
+`local-db.ts:128` 的实现里「未存 secret / web fallback」返回 true ⇒
+错密码**不会**被静默接受、**不会**重写数据库密钥。
+⇒ 危害是**用户被一个说谎的对话框困住 + 唯一的排查证据被覆盖**，不是数据丢失。
+
+**修法**（§858/D21 的形态，但**不能照抄** —— 这里的正确姿态是「解锁」而不是「新建」）：
+
+1. **留证**：原始串另存到 `pocket:crypto:corrupt:config:<scope>:<ts>`；
+2. **不谎报**：raw 存在说明这台机器**曾经有过**一份加密配置
+   ⇒ 失败分支置 `hasMasterPassword: true`，按**锁定**处理而不是按「没有」处理。
+   这一步安全，因为真正的判据是 `verifyMasterPassword`，错密码一定被挡住；
+3. **字段级校验**：`fieldEncryption === 'enabled' ? …`、`hasMasterPassword === true`
+   （`{ ...DEFAULT, ...JSON.parse(raw) }` 里的 `as CryptoConfig` 只对编译器说话）;
+4. **界面说实话**：`configRecovered` 导出后，`MasterPasswordDialog` 增加第三种形态
+   **`unlock`**（标题「输入主密码解锁」+ 一行「检测到本机加密配置损坏（内容已另存备查）。
+   如果想不起主密码，本地数据将无法恢复。」），`LoginView`/`RegisterView` 按
+   `cryptoConfig.configRecovered ? 'unlock' : 'create'` 选模式。
+
+#### ⭐ 因此把留证工具升级成「支持多命名空间」
+
+§859 把留证落点抽成了 `utils/corrupt-preserve.ts`，当时只有一个命名空间
+（`pocket:ai-chat:corrupt`）。D26 需要第二个（`pocket:crypto:corrupt`）
+⇒ 签名改为 `preserveCorruptRaw(ns, kind, raw)`，并导出 `AI_CHAT_CORRUPT_NS` 常量。
+⚠ 代价是既有断言要跟着改：§859 的 D24 断言原先钉死第一个实参是 `'settings'`，
+现在必须钉「**留证的是 settings**」这件事而不是实参顺序。
+（这正是「判据钉的是性质、不是写法」的又一次兑现。）
+
+### §862.3 六组阴性（每条带读数与理由）
+
+| 落点 | 判定 | 理由 |
+|---|---|---|
+| `selected-instance.ts` | ✅ **样板** | 坏 JSON **明确降级**到 id-only key（注释写着「坏 JSON 落到 id-only」），且对 `parsed.id` 做了 `typeof === 'string' && 非空` 的**字段级校验** —— 这是 §860 那三个正确形态的第四个实例 |
+| `snapshot-store.ts::loadNS` | 阴性 | §859.5 已判；两个 namespace 都是 `dirty:false` 纯缓存 |
+| `flashcards.ts` ×2 | 阴性 | 缓存 + 待回推队列；`readOutbox` 失败返回 `[]` 的后果（未回推项被覆盖）已在 §859.5 记为「同族低危」，本节不重复计 |
+| `sessionArchive.ts` | 阴性 | `JSON.parse` 失败后走 `parseArchivedIds` 的既有兜底，归档列表本身可重建 |
+| `meetings-live.ts` / `meetings-store.ts` | ✅ **样板** | 同一行里写死了形态：`try { return JSON.parse(raw) } catch { return fallback }` —— **签名上就带着 fallback 参数**，调用方必须显式提供兜底值，不会出现「忘了给默认值」 |
+| `localagent/runtime.ts` / `tools/index.ts` | 阴性 | 有明确的解析失败出口且不写回存储；`localagent` 的存储是工具沙箱的临时态 |
+| `update-state.ts` | 阴性 | 指纹读失败返回 `null` ⇒ 语义就是「没有指纹」，与 §857 D18 的「已过不可撤销确认却零反馈」不同：这里没有不可逆动作 |
+| `contacts-store.ts` / `notes-fts-ready.ts` / `note-search*.ts` / `SettingsView.vue` | 阴性 | 分别是 meta 合并、FTS 标签与搜索片段解析，都是**派生数据**（可重建），失败后下一次正常路径会重新生成 |
+| `EmailDetailView::restoreTranslations` | 阴性 | §859.5 已判（翻译是缓存，丢了只是多花 token） |
+
+⭐ 值得注意的是：**正确形态在本仓是成片的**（`selected-instance` 的字段级校验、
+`meetings-store` 的 fallback 形参、`navigationContext` 的 schema 校验），
+这说明 §858–§862 这几节修的不是「本仓不会写代码」，而是**这几处恰好没人写**。
+
+### §862.4 判据与变异
+
+`sync-enum-and-payload-audit.test.ts`：**17 → 27 例**（新增 D26 五条 + 界面三条 + 负控一条 + 命名一条）。
+
+**M19 真实文件端到端变异（2 路）**：
+
+| 变异 | 自己判据 | 既有门 `vue-template-compile` |
+|---|---|---|
+| 基线 | 27 / 0 ✅ | 187 / 0 |
+| M19-a 失败分支改回 `return { ...DEFAULT_CONFIG }` | **25 / 2** 🔴 | 187 / 0 |
+| M19-b 弹窗 `unlock` 标题改回「创建主密码」 | **26 / 1** 🔴 | — |
+| 还原核对 | **27 / 0** ✅ | 187 / 0 |
+
+⚠ 本节踩的四个坑（全部是「量具/写入自己坏了」这一族）：
+
+1. ⭐⭐ **heredoc 写入时丢了一个右括号**：判据文件末尾出现 `  }` 而不是 `  })`
+   ⇒ `node --experimental-strip-types` 直接 `ERR_INVALID_TYPESCRIPT_SYNTAX`，
+   而 `vue-tsc` **全绿**（测试目录不在它的检查范围里）
+   ⇒ 定位手法：用仓库自带的 `typescript` 做 `createSourceFile().parseDiagnostics`
+   拿到**精确行列**，再用「删掉某个块再解析」二分。
+   ⇒ **判据文件自己语法坏了，`typecheck 不一定会告诉你** —— 判据必须单独跑一遍。
+2. ⭐ **同一文件里两个 `hint` 撞名**：我给弹窗的提示文案加了个 `const hint = computed(...)`，
+   而弹窗里已经有一个 `hint` ref（密码提示输入框）⇒ `vue-tsc` 报重复标识符。
+   ⇒ 判据里钉了一条「`const hint` 只能出现一次」，防下一个人再踩。
+3. ⭐ **负控查了整份文件**：我想验「失败分支不再说没有主密码」，
+   但 `setMasterPassword()` 里本来就有 `cfg.value.hasMasterPassword = true`
+   ⇒ 负控恒红。**这是量具坏了，不是被测代码坏了** ⇒ 收窄到 `loadConfig` 函数体。
+4. ⚠ 判据同步：`preserveCorruptRaw` 加参数后，§859 的 D24 断言钉死实参顺序而恒红
+   ⇒ 改成钉「留证的是 settings 这件事」（见 §862.2 末尾）。
+
+### §862.5 口径与未实测
+
+- 本节只覆盖「存储值直接进 `JSON.parse`」这 22 处；
+  ⛔ **其它形式的存储读**（不经过 `JSON.parse` 的字符串读，例如
+  `pocket_device_tier`、`pocket_stt_pref`、`app_theme`、`selected_instance_id`）
+  **不在读数内** —— 其中 `theme`/`locale` 已在 §859 硬化，`device*` 是零出口死状态（待拍板 77）。
+- ⛔ **未实测**：`pocket_crypto_cfg` 损坏的**真实发生率**（与 §858 的
+  `pocket:ai-chat:v2` 同属「本地存储被写坏」这一族，发生率都未知）；
+  D26 触发后用户在弹窗里的**真实行为**（是否会去找旧密码、是否会放弃）。
+- ⛔ **未做的产品决策**（已登记 81）：`fieldEncryption` 在损坏后该回落成什么 ——
+  现在仍回落 `'disabled'`，后果是「旧行照常解密、新行写成明文」的混合状态。
+
+### §862.6 待拍板（新增 1 条）
+
+81. **`pocket_crypto_cfg` 损坏后，`fieldEncryption` 该回落成什么** ——
+   本节只保证「不谎报有没有主密码」，没有动这个默认值。
+   现在回落 `'disabled'` ⇒ 损坏前是 `enabled` 的话，
+   **旧行照常带着 `encrypted_content=1` 解密，新行写成明文**，
+   库里会出现明文与密文混合的状态。要不要在检测到损坏时直接**禁止写入**
+   （只读不写，等用户处理完），还是维持现状（§862.2 第 4 点、§862.5 第 3 条）

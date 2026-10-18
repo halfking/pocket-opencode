@@ -19,7 +19,7 @@ import { listNodes, getAvailableModels, getFeaturedModels } from '../../api/gate
 import { useToast } from '../../composables/useToast'
 import { storeApiError } from '../../api/store-error'
 import { useChatAgentStore } from '../../stores/chatAgentStore'
-import { preserveCorruptRaw } from '../../utils/corrupt-preserve'
+import { AI_CHAT_CORRUPT_NS, preserveCorruptRaw } from '../../utils/corrupt-preserve'
 
 export type ChatRole = 'system' | 'user' | 'assistant'
 
@@ -153,7 +153,7 @@ function preserveCorrupt(kind: 'conversations' | 'settings', raw: string | null)
   // §859/D24：留证落点抽到 utils/corrupt-preserve.ts，让本 key 的**写侧**
   // （native/config-sync/apply.ts 的 applyChatSettings）复用同一份键名约定。
   // 键名与落点都不变：pocket:ai-chat:corrupt:<kind>:<scope>:<ts>。
-  preserveCorruptRaw(kind, raw)
+  preserveCorruptRaw(AI_CHAT_CORRUPT_NS, kind, raw)
 }
 
 function loadConversations(): Conversation[] | null {

@@ -223,7 +223,7 @@ async function importLegacyPrefsIfMissing(): Promise<void> {
         //   而界面上零提示（§858 那条提示覆盖不到这条路径）。
         // ⇒ 与前两处同构：先留证，再跳过；并留一条 warn 以便排查。
         //   ⚠ 迁移路径没有界面出口，warn 是这里唯一说得出口的地方。
-        preserveCorruptRaw('settings', raw)
+        preserveCorruptRaw('pocket:ai-chat:corrupt', 'settings', raw)
         console.warn('[config-sync] 旧 AI 聊天设置损坏，已留证并跳过迁移')
         return
       }

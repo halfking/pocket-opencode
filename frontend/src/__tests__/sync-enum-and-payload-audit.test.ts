@@ -179,7 +179,9 @@ describe('§859 · D24 写侧不能静默丢掉远端更新（与 §858 读侧�
   it('★★★ 解析失败必须留证', () => {
     const body = fnBody(APPLY, 'applyChatSettings')
     assert.ok(body, '找不到 applyChatSettings')
-    assert.match(body, /preserveCorruptRaw\(\s*'settings'/,
+    // ⚠§862/D26 起留证函数多了「命名空间」实参（AI 对话侧与 crypto 侧各一个 ns），
+    //   所以这里不能钉死第一个实参 —— 判据要钉的是「**留证的是 settings**」这件事本身。
+    assert.match(body, /preserveCorruptRaw\(\s*'[^']+'\s*,\s*'settings'/,
       'applyChatSettings 解析失败没有留证 ⇒ 又一次把唯一的排查证据扔掉')
   })
 
@@ -275,5 +277,107 @@ describe('§859 · 变异负控（这些形态出现时判据必须转红）', (
     const body = /applyPrompt\(\s*form\.kind\s*,\s*parsePayloadText\(\)\s*\?\?\s*\{\}/.test(
       'applyPrompt(form.kind, parsePayloadText() ?? {}, form.prompt)')
     assert.equal(body, true, '负控样本没匹配上 D23 那条守卫的表达式')
+  })
+})
+
+// ============================================================================
+// §862/D26：加密配置读失败被谎报成「从来没有主密码」
+//
+// 原文：stores/crypto-config.ts::loadConfig 的 catch 是 `return { ...DEFAULT_CONFIG }`
+//   ⇒ 「读不出来」与「首次安装」是同一个值，而 hasMasterPassword 决定：
+//     · 登录后是否弹主密码对话框（LoginView / RegisterView）
+//     · 弹窗标题（mode="create" ⇒ **「创建主密码」**）
+//     · 新笔记是否做字段加密（shouldEncryptField()）
+// ⇒ 明明早就设过主密码的用户，会被困在「创建 → 主密码不正确 → 再创建」的循环里。
+// ============================================================================
+
+const CRYPTO = read('stores/crypto-config.ts')
+const DIALOG = read('features/auth/MasterPasswordDialog.vue')
+const DIALOG_TPL = strip(/<template>([\s\S]*)<\/template>/.exec(DIALOG)?.[1] ?? '')
+const LOGIN = read('features/auth/LoginView.vue')
+const REGISTER = read('features/auth/RegisterView.vue')
+
+describe('§862 · D26 读失败不得谎报成「没有主密码」', () => {
+  it('★★★ catch 里必须留证（否则 setMasterPassword 会覆盖掉唯一的证据）', () => {
+    const body = fnBody(CRYPTO, 'loadConfig')
+    assert.ok(body, '找不到 loadConfig')
+    assert.match(body, /preserveCorruptRaw\(\s*'pocket:crypto:corrupt'/,
+      '解析失败没有留证 ⇒ 用户输入主密码后 save() 会把这串损坏内容覆盖掉')
+  })
+
+  it('★★★ catch 里必须置位 configRecovered（否则界面无从告知）', () => {
+    const body = fnBody(CRYPTO, 'loadConfig')
+    assert.match(body, /configRecovered\.value = true/,
+      '没有置位 ⇒ 弹窗不知道该说「解锁」而不是「创建」')
+  })
+
+  it('★★★ 失败分支不得把 hasMasterPassword 谎报成 false', () => {
+    const body = fnBody(CRYPTO, 'loadConfig')
+    const tail = body.slice(body.lastIndexOf('catch'))
+    assert.doesNotMatch(tail, /hasMasterPassword:\s*false/,
+      '失败分支仍然说「没有主密码」⇒ 用户会被要求重新创建，且 verifyMasterPassword 会拒')
+    assert.match(tail, /hasMasterPassword:\s*true/,
+      '失败分支应按「锁定」处理：raw 存在说明这台机器曾经有过一份加密配置')
+  })
+
+  it('★★ 字段级校验不得省略（`as CryptoConfig` 只对编译器说话）', () => {
+    const body = fnBody(CRYPTO, 'loadConfig')
+    assert.doesNotMatch(body, /\.\.\.JSON\.parse\(/,
+      '仍是 `{ ...DEFAULT, ...JSON.parse(raw) }` ⇒ 一个合法 JSON 里的任意字段类型都能进来')
+    assert.match(body, /fieldEncryption\s*===\s*'enabled'\s*\?\s*'enabled'\s*:\s*'disabled'/,
+      'fieldEncryption 没有按枚举校验')
+    assert.match(body, /hasMasterPassword\s*===\s*true/,
+      'hasMasterPassword 没有按布尔校验')
+  })
+
+  it('★★ configRecovered 必须导出', () => {
+    const ret = /useCryptoConfig[\s\S]*?\n  return \{[\s\S]*?\n  \}/.exec(strip(CRYPTO))?.[0] ?? ''
+    assert.match(ret, /configRecovered/, 'store 没导出 configRecovered ⇒ 视图拿不到')
+  })
+})
+
+describe('§862 · D26 界面必须说**实话**（损坏时不能说「创建主密码」）', () => {
+  it('★★★ 弹窗必须有 unlock 形态，且它的标题不得是「创建主密码」', () => {
+    assert.match(DIALOG, /'create'\s*\|\s*'change'\s*\|\s*'unlock'/,
+      '弹窗没有 unlock 模式 ⇒ 配置损坏时用户会被要求「创建」一个他早就有的主密码')
+    assert.match(DIALOG_TPL, /\{\{\s*title\s*\}\}/, '标题没有随 mode 变化')
+    assert.match(strip(DIALOG), /'输入主密码解锁'/,
+      'unlock 模式的标题缺失')
+  })
+
+  it('★★★ unlock 形态必须说清「是读取失败，不是你忘了设」', () => {
+    assert.match(DIALOG_TPL, /v-if="mode === 'unlock'"/,
+      'unlock 形态没有独立的告知行')
+    assert.match(strip(DIALOG), /检测到本机加密配置损坏/,
+      '没有告诉用户真实原因 ⇒ 他只会以为自己从来没设过')
+  })
+
+  it('★★ 两个入口都必须按 configRecovered 选模式', () => {
+    for (const [name, code] of [['LoginView', LOGIN], ['RegisterView', REGISTER]] as const) {
+      assert.match(code, /:mode="cryptoConfig\.configRecovered \? 'unlock' : 'create'"/,
+        `${name} 没有按 configRecovered 选模式`)
+    }
+  })
+
+  it('★ computed 不能叫 hint（弹窗里已有一个 hint ref）', () => {
+    // 第一版把提示文案的 computed 命名为 `hint`，与密码提示输入框的 ref 同名
+    // ⇒ typecheck 报重复标识符。判据钉住「两处不能同名」。
+    const hintDecls = (strip(DIALOG).match(/\bconst hint\b/g) ?? []).length
+    assert.equal(hintDecls, 1, `弹窗里出现了 ${hintDecls} 个 const hint（应为 1：只有输入框那个 ref）`)
+  })
+})
+
+describe('§862 · 变异负控', () => {
+  it('把 catch 改回「没有主密码」⇒ 会被 D26 那组抓住', () => {
+    const mutated = CRYPTO.replace(
+      /return \{ \.\.\.DEFAULT_CONFIG, hasMasterPassword: true \}/,
+      'return { ...DEFAULT_CONFIG }')
+    assert.notEqual(mutated, CRYPTO, '变异没生效（锚点与真源码不匹配 ⇒ 判据与变异没共用一把尺子）')
+    // ⚠ 只能在 **loadConfig 的函数体**里查，不能查整份文件：
+    //   `setMasterPassword()` 里本来就有 `cfg.value.hasMasterPassword = true`
+    //   —— 第一版查了整份文件，于是这条负控恒红（是量具坏了，不是被测代码坏了）。
+    const body = fnBody(mutated, 'loadConfig')
+    assert.doesNotMatch(body.slice(body.lastIndexOf('catch')), /hasMasterPassword:\s*true/,
+      '守卫样本与真源码不匹配')
   })
 })
