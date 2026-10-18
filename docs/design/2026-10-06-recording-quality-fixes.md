@@ -102511,3 +102511,145 @@ onSave() {
   本节改的是**导出函数本身的契约**，不依赖「上游会不会产生坏数据」这个前提成立。
 - ⛔ 未审：`email-body-format.ts:464` / `crypto.ts:130` 两份 `base64 → bytes`
   是否也需要格式守卫（它们解的是**已落库**的 base64，与本节的 data URL 入口不同层）。
+
+## §891 D61：`loadFullContent` 的降级是**数据销毁机制** —— 打开笔记再保存就能把全文换成摘要
+
+§890 简报 113 第 ④ 问留下的一句话：「`email-body-format.ts:464` 与 `crypto.ts:130` 两份
+『base64 → bytes』本节未审：它们解的是**已落库**的 base64」。
+本节审这条线，结果比「要不要加格式守卫」严重得多。
+
+### §891.1 普查：utf-8 ↔ base64 这一族
+
+| 方向 | 落点 |
+|---|---|
+| **utf-8 → base64** | `utils/download-encoding.ts:18`（`utf8ToBase64`）、`features/notes/note-files.ts:71`、`native/pocket-native.ts:432`（web 桩 `crypto.encrypt`） |
+| **base64 → utf-8** | `features/notes/note-files.ts:129 / 135 / 142`（同一个函数 `readNoteBody` 的三条分支）、`native/pocket-native.ts:433`（web 桩 `crypto.decrypt`） |
+
+⇒ 「utf-8 → base64」收编为 `utils/base64.ts::utf8ToBase64`（3 → 1，`download-encoding.ts` 改 re-export，
+公共 API 与 `download.ts:28,33` 的 import 均不变）；`note-files.ts` 的 4 处裸实现全部改调公共实现。
+
+⚠ `native/pocket-native.ts` 的 web 桩**本节不动**：它是 `crypto` 抽象的平台兜底，
+契约面与「正文文件解码」不同层，动它会牵到 Web 端加密路径（简报 114）。
+
+### §891.2 实测：`atob` 的失败边界不是「随机」的
+
+| 输入 | 结果 |
+|---|---|
+| 完整合法 base64 | ok，往返逐字一致 |
+| **含换行 / 空白**（MIME 折行） | **ok** —— `atob` 按 RFC 2045 **容忍**空白 |
+| 末尾截断 1 个字符 | THROW `DOMException` |
+| 末尾截断 3 个字符 | THROW `DOMException` |
+| 长度非 4 的倍数（截到 7） | THROW `URIError` |
+| 中间插非法字符 | THROW `DOMException` |
+| payload 含 NUL | THROW `DOMException` |
+
+⇒ **「截断」是这条链上真实可达的损坏形态**，不是理论值；
+⇒ 同时「空白合法」必须写进判据，否则修「抛错」时容易顺手收紧，把**合法**的 MIME 折行判成损坏。
+
+### §891.3 D61 本体：降级契约在最需要它的场景下形同虚设
+
+`notes-persist.ts:79-80` 写着一条**明确的降级契约**：
+
+> 附件写失败时父行仍在，`loadFullContent()` 会退回 `note.content`，
+> 用户至少拿得到文字——比整条丢失、且报错被吞要好。
+
+⚠⚠ 但这条降级的前提是 `readNoteBody` **返回 null**。而它的三条分支原先都是裸的
+`decodeURIComponent(escape(atob(x)))` ⇒ 正文文件**损坏**时直接抛
+（`URIError` / `DOMException`），**把降级彻底绕过去**。
+⇒ 「损坏 → 抛」「缺失/空行 → 静默降级」两个**后果完全相反**的分支并存。
+
+### §891.4 ⭐⭐⭐ 而那条降级本身是**不可逆的数据销毁**
+
+顺着降级往下一段，结论反转：
+
+```
+note-storage-policy.ts:55-62   tier='file' ⇒ displayContent = summarizeForDisplay(body)
+                              ⭐ 只取第一段、≤280 字
+notes-persist.ts:81-93        INSERT 写进 local_notes.content 的就是这个 storedContent
+notes-persist.ts:331-334      body 读不到 ⇒ 退回 note.content（= 280 字摘要）
+notes-persist.ts:213,217-223 updateNote：patch.content !== undefined
+                              ⇒ persistNotePayload({ body: nextContent }) 写回正文文件
+```
+
+⇒ **「打开笔记 → 只改个标题 → 保存」就足以把全文永久换成 280 字摘要。**
+
+⚠ 完整的销毁路径（已核对视图侧，非推断）：
+`NoteEditView.load()` 第 197 行 `existing.content = await loadFullContent(existing)`
+⇒ 拿到摘要就 `hydrate` 进 `form.content` ⇒ 用户保存时
+`updateNote(..., { content: form.content.trim() })` 把摘要写回正文文件。
+⇒ 全文只剩 `search_text` 里有（`buildSearchText` 用的是完整 body），
+而 `search_text` 不再是用户可见的正文。
+
+⭐ **修法因此不能是「让损坏也返回 null」**——那等于把一条可恢复的报错
+（数据保住、用户看到失败）换成一条不可逆的销毁（数据没了、用户以为保存成功）。
+这与 §884「静默改写比报错更糟」是同一条原则，只是这次的对象是**降级**而不是**写入**。
+
+⇒ 所以本节的修法是**反向**的：把 `loadFullContent` 的降级**收紧**成「抛具名错误」，
+让「文件损坏」与「文件缺失」行为一致，两者都**不**用摘要冒充全文；
+同时把 `notes-persist.ts:79-80` 那条注释补上边界 —— 它描述的是
+**body_path 尚未回填**的场景（此时 `content` 还是全文），与「正文丢失」不是一回事。
+
+### §891.5 修法
+
+1. `utils/base64.ts` 新增 `base64ToUtf8(base64): string | null` —— **解不出来返回 null，不抛**。
+   纯函数不带日志策略，出声交给调用方。
+2. `note-files.ts` 新增私有 `decodeBody(base64, bodyPath)`：解不出来时
+   `console.warn` 带上**路径与长度**后返回 null；`readNoteBody` 三条分支统一走它。
+3. `notes-persist.ts` 新增具名错误 `NoteBodyUnavailableError`，
+   `loadFullContent` 在 `body === null` 时抛它。
+4. `utf8ToBase64` 搬进 `utils/base64.ts`，`download-encoding.ts` 改 re-export（公共 API 不变）。
+5. **不动** `native/pocket-native.ts` 的 web 桩（不同层，见简报 114）。
+
+⚠ **行为变化**：`storage_tier='file'` 且正文读不到时，从「显示摘要并可保存」
+变成「加载失败（`errors.loadNotesFailed`），视图不 hydrate、无法进入保存路径」。
+方向是**用「打不开」换「不销毁数据」**。
+
+### §891.6 判据（并入 `base64-null-result.test.mjs`，23 → 32 例）
+
+| # | 断言 |
+|---|---|
+| 1 | ⭐⭐⭐ 行为门：5 类截断/污染输入返回 null 而**不抛**（直接调用真实函数 ⇒ 形态无关） |
+| 2 | ⭐⭐⭐ **负控**：复刻旧实现，确认它**确实抛** |
+| 3 | ⭐⭐ 往返不变（中文 / emoji / NUL / 全 latin1 字节） |
+| 4 | ⭐⭐ **含空白的 base64 仍要解得出**（防「矫枉过正」） |
+| 5 | ⭐⭐ `utf8ToBase64` 搬家后契约不变（承接 `download.test.mjs` 既有断言） |
+| 6 | ⭐⭐⭐ D61：`loadFullContent` 不许再用 `?? note.content` |
+| 7 | ⭐⭐⭐ **反向**：body_path 未回填时的**安全**降级必须保留 |
+| 8 | ⭐⭐ `note-files.ts` 三处解码必须走 `decodeBody` |
+| 9 | ⭐⭐ `download-encoding.ts` 必须仍导出 `utf8ToBase64`（防结构性破坏） |
+
+⭐ 第 4 条与第 7 条都是**反向判据**：本节的修法有两个「顺手改坏」的入口
+（把空白判成损坏、把安全降级一起删掉），没有它们，门会奖励过度收紧。
+
+### §891.7 M49：七次变异
+
+| 变异 | 结果 | 红条目 |
+|---|---|---|
+| V1 `base64ToUtf8` 改回抛（D61 根因复现） | 31 / **1** | 判据 1 |
+| V2 `loadFullContent` 还原 `?? note.content`（**D61 本体复现**） | 31 / **1** | 判据 6 |
+| V3 删掉首行守卫（矫枉过正方向） | 31 / **1** | 判据 7 |
+| V4 `note-files` 一处改回裸 `atob` | 31 / **1** | 判据 8 |
+| V5 删掉 `download-encoding` 的 re-export | 31 / **1** | 判据 9 |
+| V6 **负控自伤**：把复刻的旧实现改成不抛 | 31 / **1** | 判据 2 |
+| V7 把空白也判成损坏（矫枉过正方向） | 31 / **1** | 判据 4 |
+
+还原后 32 / 32 绿。
+
+⚠⚠ **V6 第一版逃掉了（32/32 全绿），且原因不在判据、在我自己的变异方式**：
+我同时改了「被复刻的旧实现」**和「断言方向」**（把 `assert.ok(threw)` 改成
+`assert.equal(threw, false)`）⇒ 那条断言已经不再是负控，而是对新实现的重复断言。
+⇒ 重做成「只改旧实现、不动断言方向」后，红 1 条。
+⇒ ★ 这是 [[变异没施加 ≠ 判据无敏感性]] 的又一次复现：
+**验证负控时必须只动对照，不得动断言。**
+
+### §891.8 口径与未实测
+
+- ✅ base64↔utf-8 收编为公共实现；`base64ToUtf8` 返回 null 契约；
+  `loadFullContent` 不再用摘要冒充全文；判据 9 条（32 例）；
+  `typecheck` EXIT=0、`gates` 45/45（54.3s），`download.test.mjs` 9/9 绿。
+- ⚠ **行为变化**（用「打不开」换「不销毁数据」，见 §891.4）。
+- ⛔ **未实测**：正文文件缺失/截断在真机上的真实发生率；
+  本节修的是**契约**，不依赖该发生率成立。
+- ⛔ **未审**：`native/pocket-native.ts:432-433`（web 加密桩）、
+  `email-body-format.ts:464`（MIME charset 解码，非 utf-8 路径）、
+  `crypto.ts:130`（KDF 解码）—— 三者解的是**不同语义**的 base64，本节不合并。
