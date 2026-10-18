@@ -99101,3 +99101,111 @@ isOwner: (s) => {
    它**全仓零引用**且文件头此前在撒谎（本节已把注释改成事实）。
    接回 UI / 删除 / 保留待用，三选。⚠ 注意它与待拍板 82（`isOwner` 的语义）
    是**同一个决定的两面**：如果这套能力不接上，82 就不用回答了。
+
+## §865 权限申请的**第二条路径**：D29 —— 申请完不看结果 ⇒ 审批提醒静默失效且零解释
+
+前面八节（§858–§864）扫的是「失败被折叠」与「哑雷」，本节换到**用户可见**的一面：
+**权限被拒绝之后，用户看得见吗、能修吗。**
+
+### §865.1 口径
+
+枚举本仓全部权限申请点（`requestPermission` / `requestNotifications` /
+`ensurePermission` / `checkPermissions` / `permissions.query`）⇒ 共 11 处，落在四类：
+
+| 类别 | 落点 | 判定 |
+|---|---|---|
+| 通知（共享路径） | `composables/useNotificationPermission.ts` + `features/settings/SettingsPermissionsView.vue` | ✅ **样板**（见 §865.3） |
+| **通知（自带路径）** | `composables/useApprovalAlerts.ts::ensurePermission` | ❌ **D29** |
+| 麦克风 / 相机 / 照片 | `useMicPermission.ts` / `useNativePermission.ts`（经 `useAppSettings`） | ✅ 单一路径、有 `openPermissionSettings` 出口（§848 已记被拒率未实测） |
+| 生物识别 | `native/biometricAuth.ts` | ✅ `withPlugin(fn, fallback)`，且 §863 已钉 |
+
+### §865.2 ⭐ D29：全仓出现**第二套**权限申请实现
+
+```ts
+// composables/useApprovalAlerts.ts，原文
+async function ensurePermission(): Promise<void> {
+  if (!isNative) return
+  try {
+    const status = await LocalNotifications.checkPermissions()
+    if (status.display !== 'granted' && !permissionAsked) {
+      permissionAsked = true
+      await LocalNotifications.requestPermissions()   // ⚠⚠ 不看结果
+    }
+  } catch (err) { console.warn('[approval-alerts] permission check failed:', err) }
+}
+// setup 里：void ensurePermission()   ← 用户一进任务页就弹系统框
+```
+
+三条问题，按后果排序：
+
+1. ⚠⚠⚠ **申请完不检查结果** ⇒ 用户被拒之后，「待审批满 3 分钟提醒」（`ALERT_AFTER_MS`）
+   **静默失效**：他提交了审批请求、等不到通知、界面上**没有任何一处解释**。
+   而设置页其实**有**通知权限的真实状态 —— 只是这条路完全不汇入它。
+2. ⚠ **第二条独立实现** ⇒ 结果不进 `useNotificationPermission` 的共享 state，
+   设置页渲染的那份状态与实际申请结果**可能不一致**；
+   且共享 composable 里那套完整回退（原生 `appSettings` → 旧 `LocalNotifications` → Web `Notification`）
+   在这里被绕开了。
+3. ⚠ **无 rationale 的系统弹窗** —— 触发时机是「用户一进任务页就弹」。
+   共享 composable 本来就有 `prompt-with-rationale` 这一态（正是 Android 上
+   「先解释再申请」的状态机），**这条路径上用不上**。
+
+**修法**（与 §859–§861「同族必须唯一」一致）：**复用共享 composable，删掉本地实现**。
+- `ensurePermission` 改为 `permission.ensure()`；
+- 结果非 `granted` 时留一条**可诊断的 warn**（含具体状态）；
+- 结果同时进入设置页已渲染的那个共享状态；
+- 新增 `permissionState` 暴露给调用方 —— ⭐ **让宿主「有机会说实话」**，
+  但**本节不让它说任何话**（要不要提示、跳不跳转属产品口径，见 §865.6）。
+
+⚠ 这个修法**没有**改变「什么时候问」（仍是进任务页）——
+「先解释再问」属于产品口径，已登记。
+
+### §865.3 ⭐ 同族的第四种形态
+
+| 节 | 同族形态 |
+|---|---|
+| §859/D24 | 同一个 key 的**第 2 个**消费者 |
+| §861/D25 | 同一个 key 的**第 3 个**消费者 |
+| **§865/D29** | **同一个能力的第 2 套实现** |
+
+⇒ 前两次的教训是「**枚举这一族的全部成员**」；
+这一次连「成员」都变了（不是多一处调用，是多一套实现）⇒
+**枚举时要枚举的是「能力」而不是「调用点」**。
+
+### §865.4 判据与变异
+
+`frontend/src/__tests__/permission-denial-outlet.test.ts`（**8 例**）：
+D29 四条（不得自带申请路径 / 必须检查结果 / granted 早退必须在申请之前 /
+共享 composable 是唯一真值）+ 尺子自证 + 两条负控。
+
+**M22 真实文件端到端变异（2 路）**：
+
+| 变异 | 自己判据 | 既有门 |
+|---|---|---|
+| 基线 | 8 / 0 ✅ | — |
+| M22-a 改回直连插件（第二条申请路径） | **4 / 4** 🔴 | — |
+| M22-b 不检查申请结果（`if (false)`） | **7 / 1** 🔴 | — |
+| 还原核对 | **8 / 0** ✅ | 45/45 全绿 |
+
+⚠ M22-a 一次红 4 条，是因为「自带申请路径」这件事同时破坏了
+「必须复用共享 composable」「必须检查结果」「granted 早退位置」三条 ——
+**结构性缺陷往往一次变异压多条断言**，这是好事（说明这几条确实同源）。
+
+### §865.5 口径与未实测
+
+- 本节只覆盖**权限申请/查询点**（11 处）；⛔ 不覆盖
+  「功能在无权限时的降级行为」本身（例如无麦克风时录音按钮如何）。
+- ⛔ **未实测**：Android 上通知权限的**真实被拒率**；
+  「无 rationale 弹窗被拒率更高」这一条是**平台通用经验，不是本项目实测**。
+- ⚠ 本节**没有**改动申请时机，也**没有**让界面说话 ⇒
+  用户当前的可见问题（被拒后零解释）在界面上**仍需等拍板才能根治**，
+  本节只把「事实可见化」铺好（共享状态 + warn + `permissionState`）。
+
+### §865.6 待拍板（新增 1 条）
+
+84. **审批提醒被拒之后要不要提示、要不要给跳转** ——
+   §865/D29 只把事实铺到了「可诊断」（共享状态 + warn + `permissionState` 暴露），
+   **界面仍然不说话**。三个子问题：
+   ① 被拒后要不要在任务页给一次性提示？
+   ② 提示里要不要带「去系统设置」跳转（`useAppSettings().openPermissionSettings` 已有）？
+   ③ 要不要把申请时机从「进任务页就弹」改成「用户首次真正等待审批时 + 带一句说明」？
+   ③ 会改变「什么时候弹窗」这一产品行为，故一并登记（§865.2、§865.5）。
