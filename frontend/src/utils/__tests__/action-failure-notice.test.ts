@@ -246,3 +246,157 @@ describe('§838 D2/D3 · 媒体清理与软删顺序（扫描层）', () => {
     assert.match(PERSIST, /清理排在\*\*写成功之后\*\*/, '那句原则注释被删了 ⇒ 请重新判断 D3 的正当性')
   })
 })
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §884 D54：本地编辑路径可以**静默改写墓碑行**，而「软删」在本仓是单向不可逆的。
+//
+// 修复前的完整链条（每一步都有代码证据）：
+//   1. enex 导入 ⇒ local_assets 一行 kind='note', source='enex_import'
+//      （import-service.ts:36-51）
+//   2. PKM 的 kind 常量 NOTE_KIND 同样等于 'note'（pkm-store.ts:56），
+//      且 pkm 的 listNotes 调 assetStore.search 时**不按 source 过滤**
+//      ⇒ 这条导入的笔记也会出现在 PKM 列表里，点进去就是 /pkm/n/:id
+//   3. /notes 侧能列出它（notes-persist.getNote 第 328 行那条
+//      `source === 'enex_import'` 回退就是为此存在的）⇒ 可以删掉它，
+//      于是 assetStore.softDeleteForWorkspace 把 deleted_at 置上，界面提示删除成功。
+//   4. 浏览器后退 / 分享深链 /pkm/n/:id 重新打开（NotesHubView.vue:29 的注释
+//      明写「详情仍走独立深链……分享与历史不受影响」⇒ 深链是**被支持的**访问方式）
+//      ⇒ PkmEditor.load → pkm-store.getNote → assetStore.get(id)
+//      ⚠ 那条读路径**既不过滤 deleted_at 也不校验 workspace_id**
+//      ⇒ 已删除笔记的全文照常显示在编辑器里。
+//   5. 改一个字 ⇒ 800ms 后 doSave ⇒ lastSaved=true 界面显示「已保存」
+//      ⇒ assetStore.upsert 的 UPDATE 分支里**既没有 deleted_at 也不检查它**
+//      ⇒ 墓碑保持，且 pkm.saveNote 不传 source ⇒ source 被写成 NULL。
+//   6. 结果：用户保存成功，那条内容却**永远不再出现在 PKM 列表、notes 列表、
+//      任何 FTS 搜索里**；又因 source 变成 NULL，notes 侧那条
+//      `source === 'enex_import'` 回退也不再成立 ⇒ 它从 notes 侧一并消失。
+//      而全仓**没有任何一处**把 deleted_at 清回 NULL
+//      （schema.ts:9 写着「保留可恢复」，那个「恢复」从未实现）⇒ 不可恢复。
+//
+// 一句话：**「保存成功」与「被完成的事」不是同一件**（与 §879 D51 同一族）。
+// ─────────────────────────────────────────────────────────────────────────────
+describe('§884 · 墓碑不可逆（源码结构，assetStore 在 node 里跑不起来）', () => {
+  const ASSET_STORE = read('../../native/asset-store.ts')
+  const PKM_STORE = read('../../features/pkm/pkm-store.ts')
+  const CONTACTS_STORE = read('../../features/contact/contacts-store.ts')
+  const PKM_NOTE_VIEW = read('../../features/pkm/PkmNoteView.vue')
+  const PKM_EDITOR = read('../../features/pkm/PkmEditor.vue')
+
+  /** 剥掉注释：判据锚点必须落在真代码上，不能落在自己写的说明文字上。 */
+  const strip = (t: string): string =>
+    t.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
+     .replace(/(^|[^:])\/\/[^\n]*/g, '$1')
+     .replace(/<!--[\s\S]*?-->/g, (m) => m.replace(/[^\n]/g, ' '))
+
+  const upsertBody = (): string => {
+    const code = strip(ASSET_STORE)
+    const at = code.indexOf('async upsert(')
+    assert.ok(at > 0, '★ 阳性对照失败：找不到 assetStore.upsert')
+    const rest = code.slice(at)
+    const next = rest.slice(1).search(/\n  (?:async |private |static )/)
+    return next > 0 ? rest.slice(0, next + 1) : rest
+  }
+
+  it('★★★ 改写一行 asset 之前必须先看 deleted_at（不看就等于没看见墓碑）', () => {
+    const body = upsertBody()
+    // ⚠ 不能只断言「出现过 deleted_at」—— 修复前的 SELECT 里没有它，
+    //   而把它加进 SELECT 却不做任何判断，同样能让「出现过」这条通过
+    //   ⇒ 这里要求**条件判断形态**（拿不到墓碑就跟没查一样）。
+    assert.match(body, /\.deleted_at\s*(?:===|!==|==|!=)\s*(?:null|undefined)/,
+      'upsert 没有对 deleted_at 做任何判断 ⇒ 已软删的行会被静默改写（D54）')
+  })
+
+  it('★★★ 存在性检查必须把 deleted_at 一起取出来', () => {
+    // 与上一条配对：判断要成立，前提是查得到。
+    // 钉**读数**（§880 M37 教训：只钉「出现过」会被「只改了量」顶穿）。
+    const body = upsertBody()
+    const sel = body.slice(0, body.indexOf('if (existing)'))
+    assert.match(sel, /SELECT[^;]*deleted_at[^;]*FROM local_assets/,
+      '存在性检查的 SELECT 没有取 deleted_at ⇒ 后面就算写了判断也永远拿不到值')
+  })
+
+  it('★★★ 墓碑拒绝必须排在 UPDATE 之前', () => {
+    const body = upsertBody()
+    const atReject = body.search(/\.deleted_at\s*(?:===|!==|==|!=)/)
+    const atUpdate = body.search(/UPDATE local_assets/)
+    assert.ok(atReject >= 0, '★ 阳性对照失败：找不到墓碑判断')
+    assert.ok(atUpdate >= 0, '★ 阳性对照失败：找不到 UPDATE 语句')
+    assert.ok(atReject < atUpdate, '墓碑判断排在 UPDATE **之后** ⇒ 先改了再说，等于没拦')
+  })
+
+  it('★★★ 不得用「静默清墓碑」的方式修（那是未告知的复活）', () => {
+    // 修复必须是**显式拒绝**，不是顺手在 UPDATE 里写 deleted_at=NULL。
+    // 后者会把 D54 从「静默改写」变成「静默复活」——用户删掉的东西自己回来了，
+    // 而他从没要求过恢复。这条钉住的是**修法的形状**。
+    const body = upsertBody()
+    const atUpdate = body.search(/UPDATE local_assets/)
+    assert.ok(atUpdate >= 0, '★ 阳性对照失败：找不到 UPDATE 语句')
+    assert.doesNotMatch(body.slice(atUpdate), /deleted_at\s*=/,
+      'UPDATE 语句里写了 deleted_at ⇒ 若目的是清空它，那是静默复活；' +
+      '要恢复必须走显式入口并让用户知道')
+  })
+
+  it('★★★ PKM 读单条不得再走「不过滤墓碑、也不校验 workspace」的 assetStore.get(id)', () => {
+    // 钉**性质**不钉调用写法：要求 getNote 用的是 getForWorkspace
+    // （它同时带 workspace_id 与 deleted_at IS NULL 两个条件）。
+    const code = strip(PKM_STORE)
+    const at = code.indexOf('export async function getNote(')
+    assert.ok(at > 0, '★ 阳性对照失败：找不到 pkm-store.getNote')
+    const body = code.slice(at, at + 1200)
+    assert.match(body, /getForWorkspace\(/,
+      'PKM 的 getNote 又用回了不过滤墓碑的读法（D54）')
+    assert.doesNotMatch(body, /assetStore\.get\(/,
+      'PKM 的 getNote 直接用 assetStore.get ⇒ 已删除笔记仍能被深链打开并改写')
+  })
+
+  it('★★★ PKM 的两个读取调用点必须传 workspaceId（否则真机读不到）', () => {
+    // getForWorkspace 会校验 workspace_id。列表与保存都用 auth.workspaceId，
+    // 只读若退回 'default'，真机 `ws_user-admin` 分区的笔记全部读不到 ——
+    // 那正是 PkmNoteView.vue:46 注释记的「保存成功但列表看不到」的同族坑。
+    //
+    // ⚠⚠ 参数必须**逐字符配平**地取，不能用 `getNote\(([^)]*)\)`：
+    //   实参里有嵌套括号 `currentWorkspaceId()`，第一版用 `[^)]*` 取到的是
+    //   `'id, currentWorkspaceId('`（在那个 '(' 上就停了，闭合括号没进来）
+    //   ⇒ 断言恒红，而代码是对的。这是 §880「要跨结构就配平，不要正则」
+    //   在调用实参上的同形复现 —— 量具栽第 12 次。
+    const callArgs = (code: string, callee: string): string => {
+      const at = code.indexOf(`${callee}(`)
+      assert.ok(at > 0, `★ 阳性对照失败：找不到 ${callee}( 调用`)
+      const from = at + callee.length // 指向 '('
+      let depth = 0
+      for (let i = from; i < code.length; i++) {
+        if (code[i] === '(') depth++
+        else if (code[i] === ')') {
+          depth--
+          if (depth === 0) return code.slice(from + 1, i)
+        }
+      }
+      assert.fail(`★ 阳性对照失败：${callee}( 的括号没配平`)
+    }
+    for (const [name, src] of [['PkmNoteView', PKM_NOTE_VIEW], ['PkmEditor', PKM_EDITOR]] as const) {
+      const args = callArgs(strip(src), 'getNote')
+      assert.match(args, /currentWorkspaceId\(\)/,
+        `${name} 的 getNote 实参是 (${args}) ⇒ 没传 workspaceId，真机会读不到（退回 'default'）`)
+    }
+  })
+
+  it('★★ 反向断言：contacts 的 getContact 同型，但当前没有软删入口（阴性结论登记）', () => {
+    // contacts 的 getContact 同样不过滤墓碑，**但 kind='contact' 目前没有任何
+    // 软删写入点** ⇒ 读出墓碑不可达，本节不改它（改了也只是纯防御，
+    // 还会引入 workspace 回归风险）。
+    // 这条钉的是那个**前提**：一旦有人给 contact 接上删除，本条会红，
+    // 提醒必须同时把读路径对齐（与 PKM 一样）。
+    const softDeleteCallers = countMatches(
+      ASSET_STORE + CONTACTS_STORE,
+      /softDelete(?:ForWorkspace)?\(/g,
+    )
+    assert.equal(softDeleteCallers, 2,
+      'local_assets 的软删入口不再是 2 个（softDelete + softDeleteForWorkspace 的定义）：' +
+      '若新增了针对 contact 的删除入口，必须同时让 contacts-store.getContact 过滤 deleted_at')
+  })
+})
+
+/** 数一处源码里某个模式的匹配次数（按 §880 的教训，计数类读数要逐条钉）。 */
+function countMatches(src: string, re: RegExp): number {
+  return (src.match(re) || []).length
+}

@@ -65,6 +65,24 @@ export interface AssetBlob {
   createdAt: number
 }
 
+/**
+ * §884：目标行已被软删（墓碑）时抛出。
+ *
+ * 为什么要有这个错：本仓的「软删」是**单向不可逆**的 —— 写侧只有
+ * `softDelete` / `softDeleteForWorkspace` 两处把 `deleted_at` 置上，
+ * **全仓没有任何一处把它清回 NULL**（schema.ts 的文件头写着「保留可恢复」，
+ * 那个「恢复」从未实现）。所以一次对墓碑行的 UPDATE 不是「编辑已删除的内容」，
+ * 它是**把新内容写进一个谁都读不到、且永远不会被读到的行**。
+ */
+export class AssetDeletedError extends Error {
+  readonly assetId: string
+  constructor(assetId: string) {
+    super(`Asset 已被软删，拒绝改写：${assetId}`)
+    this.name = 'AssetDeletedError'
+    this.assetId = assetId
+  }
+}
+
 /** 创建/更新 Asset 的入参。 */
 export interface AssetInput {
   id?: string // 省略则自动生成
@@ -123,14 +141,34 @@ class AssetStore {
     }
 
     // 先查是否已存在（决定 INSERT 还是 UPDATE + client_rev 自增）
-    const existing = await localDB.queryOne<{ client_rev: number; workspace_id: string }>(
-      'SELECT client_rev, workspace_id FROM local_assets WHERE id = ?',
+    // ⚠ §884：`deleted_at` 必须一起取出来 —— 下面的 UPDATE 语句里**没有**这一列，
+    //   也就是说它既不会被清掉、也不会被看一眼就放行。修复前这里只取
+    //   `client_rev, workspace_id`，于是一条已被软删的 asset 照样被静默改写。
+    const existing = await localDB.queryOne<{ client_rev: number; workspace_id: string; deleted_at: number | null }>(
+      'SELECT client_rev, workspace_id, deleted_at FROM local_assets WHERE id = ?',
       [id],
     )
 
     if (existing) {
       if (input.workspaceId && existing.workspace_id !== input.workspaceId) {
         throw new Error('Asset 不属于当前 workspace')
+      }
+      // ⚠⚠ §884 D54：命中墓碑必须**显式拒绝**，不能静默改写。
+      //   实际触发路径（每一步都有代码证据，见设计文档 §884）：
+      //     enex 导入 ⇒ kind='note', source='enex_import'
+      //       ⇒ 同一个 kind 也让这条笔记出现在 PKM 列表（listNotes 不按 source 过滤）
+      //       ⇒ 在 /notes 侧删掉它（notes-persist.deleteNote 的 storage==='asset' 分支）
+      //       ⇒ 浏览器后退 / 分享深链 /pkm/n/:id 重新打开（PkmEditor → pkm.getNote）
+      //          ⚠ 那条读路径用的是**不过滤墓碑**的 assetStore.get
+      //       ⇒ 编辑器里正文全文照常显示，改一个字 → 界面显示「已保存」
+      //       ⇒ 但本 UPDATE 既不清 deleted_at、也不保留 source
+      //          （pkm.saveNote 不传 source ⇒ 这里写成 NULL）
+      //     ⇒ 用户保存成功，那条内容却**永远不再出现在任何列表/搜索里**，
+      //        且因 source 被抹成 NULL，notes 侧 `getNote` 的
+      //        `source === 'enex_import'` 回退条件也不再成立 ⇒ 它从 notes 侧一并消失。
+      //   一句话：**「保存成功」与「被完成的事」不是同一件**（与 §879 D51 同一族）。
+      if (existing.deleted_at !== null && existing.deleted_at !== undefined) {
+        throw new AssetDeletedError(id)
       }
       await localDB.run(
         `UPDATE local_assets

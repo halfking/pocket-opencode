@@ -101450,3 +101450,146 @@ if (!isInMemory) { /* 超上限就 warn */ return }   // ⚠ 这里把「已存�
   对话轮次 / 主密码设置 / 复习队列 / 输入框），
   本节**不**提议统一文案（登记在简报第 102 条的第 ③ 小问里）。
 - ⛔ 未实测：四套的**真机触发率**（本节判定的是结构性质，与发生率无关）。
+
+---
+
+## §884 删除侧：本地编辑路径可以**静默改写墓碑行**，而「软删」在本仓是单向不可逆的
+
+§883 收掉了「写侧要说实话」那一族（4 套，全阴性）。本节做它的姊妹轴：**删除侧**。
+问题不是「删不掉」，而是反过来的那句：**「删掉了」之后，那件事其实还能被做**。
+
+### §884.1 先数消费者：三条写墓碑的路径，只有一条可达
+
+`local_assets` 的墓碑（`deleted_at` 非 NULL）全仓只有两处写入点：
+
+| 写入点 | 有无 UI 消费者 | 结论 |
+|---|---|---|
+| `notes-persist.ts:297` `softDeleteForWorkspace` | ✅ `NoteDetailView.vue:251` / `NoteListView.vue:566` | 真实可达 |
+| `pkm-store.ts:133` `softDeleteForWorkspace` | ❌ **无任何调用方**（死导出） | ⛔ 不可达，不写 |
+
+⚠ 这一步是本节的**第一道闸**。若不数，`pkm.deleteNote` 看上去就是一条完整的
+「删除 → 再编辑 → 数据损坏」链；数完才发现 pkm **根本没有删除入口**，
+那条链的前半段压根走不到。（本会话第 N 次「先数消费者」救回一个假缺陷。）
+
+⇒ 但**可达的删除落在同一张表上**，而这张表被另一个模块用**不过滤墓碑**的方式读。
+
+### §884.2 D54 的完整链条（每一步都有代码证据）
+
+1. **enex 导入** ⇒ `local_assets` 一行 `kind='note'`, `source='enex_import'`
+   （`import-service.ts:36-51`）。
+2. **PKM 的 kind 常量同样是 `'note'`**（`pkm-store.ts:56`），且 pkm 的 `listNotes`
+   调 `assetStore.search` 时**不按 `source` 过滤**
+   ⇒ 这条导入的笔记**也会出现在 PKM 列表**里，点进去就是 `/pkm/n/:id`。
+3. **`/notes` 侧能列出它** —— `notes-persist.getNote` 第 328 行那条
+   `source === 'enex_import'` 回退就是为它存在的 ⇒ **可以删**，
+   于是 `softDeleteForWorkspace` 置上 `deleted_at`，界面提示删除成功。
+4. **深链重新打开** —— `NotesHubView.vue:29` 的注释明写「详情仍走独立深链
+   （/notes/:id、/meetings/:id、/pkm/n/:id），**分享与历史不受影响**」
+   ⇒ 深链是**被明确支持**的访问方式，不是臆造的边缘路径。
+   浏览器后退 / 分享链接 ⇒ `PkmEditor.load` → `pkm-store.getNote`
+   → `assetStore.get(id)` —— ⚠ **全仓唯一一处既不过滤 `deleted_at`、
+   也不校验 `workspace_id` 的读** ⇒ 已删除笔记的全文照常显示。
+5. **改一个字** ⇒ 800ms 后 `doSave` ⇒ `lastSaved = true`，界面显示「已保存」
+   ⇒ `assetStore.upsert` 的 UPDATE 分支**既不含 `deleted_at`、也不检查它**
+   ⇒ 墓碑保持；且 `pkm.saveNote` 不传 `source` ⇒ **`source` 被写成 NULL**。
+6. **结果**：
+   - 用户保存成功，那条内容**永远不再出现在 PKM 列表、notes 列表、任何 FTS 搜索里**；
+   - 又因 `source` 变成 NULL，notes 侧那条 `source === 'enex_import'` 回退
+     **也不再成立** ⇒ 它从 notes 侧一并消失；
+   - 而**全仓没有任何一处把 `deleted_at` 清回 NULL**
+     ⇒ **不可恢复**（`schema.ts:9` 写着「保留可恢复」——那个「恢复」从未实现）。
+
+⇒ 一句话：**「保存成功」与「被完成的事」不是同一件**。
+⭐ 与 §879 D51（`lockedSkipped` 代表不了「重灌成功」、`changed` 代表不了「索引是好的」）
+同一族：**同一个错误会在第二个变量上原样重现**，这里它重现在 `deleted_at` 上。
+
+### §884.3 修法：显式拒绝，不是静默复活
+
+**修 1（技术，已落地）** `assetStore.upsert` 的存在性检查带上 `deleted_at`，
+命中墓碑即抛 `AssetDeletedError`。
+放在这一层而不是调用方，是因为它是**唯一能保证任何调用方都不会在不知情时
+改写墓碑**的位置——本节里能走到墓碑的路径有 4 个（pkm / contacts / import / notes），
+逐个加判断必然漏。
+
+**修 2（技术，已落地）** `pkm-store.getNote` 改走 `assetStore.getForWorkspace`
+（`AND workspace_id = ? AND deleted_at IS NULL`），与 notes 侧完全对齐。
+⚠ 它必须同时接收 `workspaceId` 并由调用方传 `currentWorkspaceId()`：
+`getForWorkspace` 会校验 `workspace_id`，若只在 store 里默认 `'default'`，
+真机 `ws_user-admin` 分区的笔记会**全部读不到** —— 那正是
+`PkmNoteView.vue:46` 注释记的「保存成功但列表看不到」的同族坑，
+而 `saveNote` / `listNotes` 两处**早已**用 `currentWorkspaceId()`，只有读取漏了。
+
+**⭐ 修法的形状本身被钉住**（判据第 4 条）：不得用「在 UPDATE 里顺手写
+`deleted_at = NULL`」来修。那会把 D54 从「静默改写」变成**「静默复活」**——
+用户删掉的东西自己回来了，而他从没要求过恢复。
+
+### §884.4 contacts：同型但**不可达**，只登记不改
+
+`contacts-store.getContact` 同样用不过滤墓碑的 `assetStore.get`。
+但 `kind='contact'` **没有任何软删写入点** ⇒ 墓碑永不产生 ⇒ 读出墓碑不可达。
+本节**不改它**：改了也只是纯防御，却要动 `ContactDetailView` 的 workspace 口径
+（contacts 的 `listContacts` 默认就是 `'default'`，与 pkm 不同）⇒ 有引入回归的风险。
+
+⇒ 按 §880/§883 的纪律，把这个**前提**钉成反向断言（判据第 7 条）：
+一旦有人给 contact 接上删除入口，那条会红，提醒必须同时对齐读路径。
+
+### §884.5 判据（并入 `action-failure-notice.test.ts`，7 条）
+
+并入既有文件而非新建：`npm run test:all` 有 **20000 字符 argv 上限**
+（375 个测试文件 / 19954 字符）⇒ 不能再新增测试文件。
+选这个文件是因为它的主题正是「对外声称完成 vs 实际完成」（§838 的 D1–D3）。
+
+| # | 断言 | 钉的性质 |
+|---|---|---|
+| 1 | `upsert` 必须有 `deleted_at` 的**条件判断形态** | 「看到了并拒绝了」，不是「查过了」 |
+| 2 | 存在性检查的 SELECT 必须取 `deleted_at` | 钉**读数**（§880 M37：只钉「出现过」会被「只改了量」顶穿） |
+| 3 | 墓碑判断必须排在 `UPDATE` **之前** | 顺序 |
+| 4 | UPDATE 语句里**不得**出现 `deleted_at =` | 钉**修法的形状**：显式拒绝，不是静默复活 |
+| 5 | `pkm.getNote` 不得再用 `assetStore.get(` | 读路径对称性 |
+| 6 | 两个读取调用点必须传 `currentWorkspaceId()` | 防真机 workspace 回归（配平取实参） |
+| 7 | 反向断言：软删入口数仍为 2 | 钉住 §884.4 那个阴性前提 |
+
+⚠ 这些是**源码结构判据**：`assetStore` 在 node 里跑不起来
+（`local-db` → `sqlite-web-init` 是无扩展名 import，简报第 94 条），
+与 §875 的 ⛔ 同源。
+
+### §884.6 M42：七次变异（含一条负控）
+
+| 变异 | 结果 | 红条目 |
+|---|---|---|
+| V1 把墓碑拒绝改成 `if (false)` | 24 / **2** | 「条件判断形态」+「顺序」 |
+| V2 SELECT 里去掉 `deleted_at`（保留判断） | 25 / **1** | 「存在性检查必须取 deleted_at」 |
+| V3 `pkm.getNote` 改回 `assetStore.get(id)` | 25 / **1** | 「读路径对称性」 |
+| V4 `PkmEditor` 的调用去掉 workspaceId | 25 / **1** | 「必须传 workspaceId」 |
+| V5 **负控**：加一行无关注释 | **26 / 0** | 不被排版顶红 |
+| V6 给 contacts 接上软删入口 | 25 / **1** | 「反向断言」 |
+| V7 改成「静默清墓碑」修法 | 25 / **1** | 「不得用静默复活的方式修」 |
+
+⭐ V1 一处改动红 2 条（判断形态与顺序**不重叠**），与 §879 M36 同一读法。
+
+### §884.7 ⚠⚠ 判据事故 12：`[^)]*` 取调用实参，在嵌套括号上截断
+
+判据第 6 条第一版写 `/getNote\(([^)]*)\)/`，实测红，报错里的 `actual` 是
+`'id, currentWorkspaceId('` —— 正则在 `currentWorkspaceId(` 的那个 `(` 上就停了，
+闭合括号没进来 ⇒ 断言要求 `currentWorkspaceId\(\)` 恒不匹配。
+
+**代码是对的，量具是错的。** 这与 §880「要跨结构就配平，不要正则」
+在**调用实参**上的同形复现（那一节记的是函数体/签名，这是它的孪生场景）。
+
+⇒ 改成逐字符配平取实参（遇 `(` 加一、遇 `)` 减一，归零即取到）。
+⭐ **判据红先问「量具量的是不是那件事」**——本会话 12 次判据事故里的第 12 次。
+
+### §884.8 口径与未实测
+
+- ✅ 本节**改了生产代码**（`asset-store.ts` / `pkm-store.ts` / `PkmNoteView.vue` /
+  `PkmEditor.vue`）与判据；`typecheck` EXIT=0、`gates` 45/45 通过。
+- ⚠ **修 1 之后 `PkmEditor.doSave` 的 catch 只 `console.error`** ⇒ 用户改不动
+  已删除笔记时**界面零反馈**（§882 D53 同族）。本节**不代拍**文案，登记简报 103 ③。
+- ⚠ **修 2 之后打开已删除深链 ⇒ `getNote` 返回 null** ⇒ 走的是既有的
+  「不存在 → 回 Today」分支（`PkmNoteView.vue:70-72`），文案仍写「不存在」，
+  而真实原因是「已删除」。⛔ 未实测该分支在真机上的实际去向，登记简报 103 ①。
+- ⛔ 未实测：enex 笔记**真的同时出现在 PKM 列表**（静态可证：kind 相同且
+  `listNotes` 不按 source 过滤；⛔ 但未在真机点过）。
+- ⛔ 未实测：`/pkm/n/:id` 深链在真机上被「后退 / 分享」打开的发生率。
+- ⛔ 未实测：PKM 里用 TipTap 编辑一条 **markdown** 正文（enex 存的是
+  `note.contentMarkdown`，编辑器按 HTML 解析）是否造成额外的格式破坏。
