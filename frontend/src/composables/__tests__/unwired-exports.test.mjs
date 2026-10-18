@@ -133,8 +133,25 @@ function walk(dir, acc = [], filterFn = () => true) {
  * 那次是**假引用**让门禁漏报，这次是**真引用**（我自己）让门禁失灵。
  * ⇒ 任何以「符号名列表」驱动判据的门禁，都得先把自己从语料里剔掉。
  */
-const SELF = new Set(['unwired-exports.test.mjs', 'handler-wiring.test.mjs'])
-
+/**
+ * 2026-10-18（§864/D28 那一轮）新增：§864 的判据文件也要进 SELF。
+ *
+ * `src/__tests__/cross-boundary-validation.test.ts` 是**另一道判据**，
+ * 它为了断言「死代码的头注释是否诚实」必须去读 `composables/useDetailFlow.ts`
+ * —— 而**读文件路径本身就在语料里留下了那个符号名**
+ * ⇒ 扫描器会把 `useDetailFlow` 数成有引用 ⇒ 基线条目成陈旧
+ * ⇒ 「量具自证」与「BASELINE 无陈旧条目」两条当场转红（实测）。
+ *
+ * ⚠ 这与本文件头注释描述的坑是**同一个**，只是发生在别的判据上：
+ *   「任何以符号名列表驱动判据的门禁，都得先把自己从语料里剔掉」。
+ *   本条不是放宽卡口 —— SELF 只排除**判据文件自己**，
+ *   被它检查的源码（`useDetailFlow.ts`）照旧全量参与扫描。
+ */
+const SELF = new Set([
+  'unwired-exports.test.mjs',
+  'handler-wiring.test.mjs',
+  'cross-boundary-validation.test.ts',
+])
 const ALL_SRC = (() => {
   const out = []
   const rec = (d) => {

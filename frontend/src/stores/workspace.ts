@@ -1,11 +1,22 @@
 /**
  * workspace.ts — S0-A workspace 状态管理。
  *
- * 持有当前选中的 workspace_id（其他 store 通过它来 scope），以及成员/设备列表。
- * workspace_id 选择影响所有后续 API 调用的隔离边界。
+ * ⚠⚠§864：这份文件头此前把本 store 描述成「所有 store 的作用域来源」
+ * 以及「API 隔离边界的决定者」—— **两条都不成立**（实测 2026-10-18）：
+ *   ① `useWorkspaceStore` **全仓零引用**：没有 .vue 引用、没有 composable 引用、
+ *      连测试都没有 ⇒ 这个 store 从来没有被实例化过；
+ *   ② 真正做隔离边界的是 **auth store** 的 `auth.workspaceId`
+ *      （`routeGuards.ts:87`、`usePendingApprovals.ts:80` 等用的都是它），
+ *      它由登录/续期响应写入 `pocket_workspace_id`，与本 store 无关。
  *
- * 设计：登录后由 F0.7 的扩展登录流程自动 setWorkspaceId。多 workspace
- * 用户可在 UI 切换（v1 仅显示，不做切换器；切换器留给 S1）。
+ * ⇒ 为什么这句假注释值得修：它是**维护者陷阱**。
+ *   下一个读到这里的人会以为「多 workspace 切换已经接好了」，
+ *   于是把新功能挂到这个实际上从不存在的边界上。
+ *   （对照：`composables/useDetailFlow.ts` 同样零消费，
+ *     但它的头注释老实写着「opt-in，不修改任何现有页面」—— 同一仓的两种写法。）
+ *
+ * 那「多 workspace / 成员 / 设备 / 邀请 / 撤销」这套能力本身怎么处理
+ * （接回 UI / 删除 / 保留待用）属产品口径 ⇒ 已登记（简报第 83 条），不代拍。
  */
 import { defineStore } from 'pinia'
 import { identityApi, type Workspace, type WorkspaceMember, type Device } from '../api/identity'

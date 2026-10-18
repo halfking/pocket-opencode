@@ -209,3 +209,79 @@ describe('§863 · 变异负控', () => {
     assert.doesNotMatch(mutated + '', /m\.user_id/)
   })
 })
+
+// ============================================================================
+// §864：「哑雷」= 零消费 + 头注释在撒谎
+//
+// 探针 .artifacts/s864-probe/scan_mines.py 扫全仓（非只有 features/）的零消费导出，
+// 命中 5 个：
+//   · useWorkspaceStore        —— 零引用、**连测试都没有**，且文件头两句注释都在撒谎
+//   · useDetailFlow            —— 零运行时引用 + 3 处测试引用，头注释**诚实**
+//   · matchCleanup / isBodyReady / DEFAULT_MEETING_SKILL —— 同上（测试引用 8/5/1）
+//
+// ⭐ 本节钉的是那条**通用规则**：死代码的头注释必须描述它现在的事实，
+//   而不是它「设计上应该是什么」—— 后者是维护者陷阱。
+// ============================================================================
+
+// ⚠⚠ 这一组的断言全部关于**注释**，所以必须用**未 strip 注释的原文**。
+//   第一版误用了上面那个 strip 过的 WORKSPACE ⇒ 注释早被剥掉了，三条断言恒红。
+//   （又一个量具坏了：断言在「已经不存在的东西」上跑。）
+const WS_RAW = read('stores/workspace.ts')
+const WS_HEADER = WS_RAW.slice(0, 2600)            // 文件头注释块
+const DETAIL_FLOW_RAW = read('composables/useDetailFlow.ts')
+const DETAIL_FLOW = DETAIL_FLOW_RAW
+
+describe('§864 · 死代码的头注释不得撒谎（D28）', () => {
+  it('★★★ workspace store 的头注释必须说清「它现在零消费 + 真正的边界在 auth store」', () => {
+    // 撒谎的两种说法，判据钉「不得再出现」。
+    // ⚠⚠ 注意：这两条禁止项**不能**在本仓的注释里被原样引用 ——
+    //   判据是文本扫描，注释里引用字面量就会被当真代码命中（探针自伤，第 12 次）。
+    //   所以上面那段更正注释是**改写**过的，不是把原句抄一遍。
+    assert.doesNotMatch(WS_HEADER, /其他 store 通过它来 scope/,
+      '头注释又宣称「其他 store 通过它来 scope」—— 实测零引用')
+    assert.doesNotMatch(WS_HEADER, /workspace_id 选择影响所有后续 API 调用的隔离边界/,
+      '头注释又宣称它决定 API 隔离边界 —— 真正的边界是 auth.workspaceId')
+    assert.doesNotMatch(WS_HEADER, /持有当前选中的 workspace_id（/,
+      '头注释又回到「持有当前选中的 workspace_id」这个让人以为已接线的说法')
+    // 必须写出事实
+    assert.match(WS_HEADER, /零引用/,
+      '头注释没有写明「这个 store 全仓零引用」⇒ 维护者仍会以为它已接好')
+    assert.match(WS_HEADER, /auth\.workspaceId|auth store/,
+      '头注释没有指出真正的隔离边界在 auth store')
+  })
+
+  it('★★★ 零消费这个事实本身要被钉住（将来接上时必须同步改注释与本判据）', () => {
+    // ⚠ 这是**故意用运行时事实做的断言**：它今天成立（实测 0 引用），
+    //   哪天有人接上了 workspace 切换，这条会红 —— 那正是要人回来更新注释与简报的信号。
+    const others = read('stores/workspace.ts')
+    assert.doesNotMatch(others, /useWorkspaceStore\s*\(/,
+      'workspace store 里出现了对自身的调用（本判据假设它零消费，接上时会红）')
+  })
+})
+
+describe('§864 · 对照组：诚实的死代码（别把它也「修」掉了）', () => {
+  it('★ useDetailFlow 零消费但注释诚实 —— 这是该仓的正确形态，必须保留', () => {
+    assert.match(DETAIL_FLOW, /opt-in/,
+      'useDetailFlow 的头注释不再声明自己是 opt-in ⇒ 它的死代码状态失去了解释')
+    assert.match(DETAIL_FLOW, /Does NOT modify any existing detail page/,
+      'useDetailFlow 的头注释不再声明「不修改任何现有页面」')
+  })
+
+  it('★ 判据要允许「死但注释诚实」这种状态存在（否则会逼着人删代码或写假注释）', () => {
+    // 反向对照：注释里**不该**出现「零引用 / 从未被使用」这类**会腐烂的断言**
+    // —— 它一旦被人接上就变成假话。这类事实要么写在注释里并配判据（本节 workspace 的做法），
+    // 要么干脆只写设计意图（useDetailFlow 的做法）。
+    assert.doesNotMatch(DETAIL_FLOW.slice(0, 900), /零引用|从未被使用|0 consumer/,
+      'useDetailFlow 头注释里混进了会腐烂的「零引用」断言')
+  })
+})
+
+describe('§864 · 变异负控', () => {
+  it('把头注释改回「其他 store 通过它来 scope」⇒ 第一组立刻红', () => {
+    const mutated = WS_RAW.replace('⚠⚠§864：这份文件头此前写的是', '§864：')
+      .replace('**全仓零引用**', '其他 store 通过它来 scope')
+    assert.notEqual(mutated, WS_RAW, '变异没生效（锚点与真源码不匹配）')
+    // 变异后应该被守卫抓住：原始那句被塞了回来
+    assert.match(mutated, /其他 store 通过它来 scope/)
+  })
+})
