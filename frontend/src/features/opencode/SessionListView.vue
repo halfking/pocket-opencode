@@ -175,10 +175,18 @@ onMounted(async () => {
     await openCodeStore.selectInstance(instanceId)
   } else {
     // 尝试从本地存储恢复
-    const savedInstance = localStorage.getItem('selected_opencode_instance')
-    if (savedInstance) {
-      const instance = JSON.parse(savedInstance)
-      await openCodeStore.selectInstance(instance.id)
+    // ⚠§866/D32：原来这里是裸 JSON.parse —— 值一旦损坏，抛错会顶掉整个 onMounted
+    //   （连 subscribeToRealTimeUpdates 都跑不到），表现为「会话页进不去且无解释」。
+    //   读不出来不等于「没有选过」，但这里的兜底是**非破坏性**的（只是退回
+    //   「请手动选一次实例」），所以可以安全降级；必须区分探针失败与真的没存。
+    try {
+      const savedInstance = localStorage.getItem('selected_opencode_instance')
+      if (savedInstance) {
+        const instance = JSON.parse(savedInstance)
+        await openCodeStore.selectInstance(instance.id)
+      }
+    } catch (err) {
+      console.warn('[opencode] 恢复上次选择的实例失败，请手动选一次：', err)
     }
   }
 

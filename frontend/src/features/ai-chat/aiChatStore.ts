@@ -243,12 +243,34 @@ export const useAIChatStore = defineStore('ai-chat', () => {
     active.value ? active.value.messages.some((m) => m.streaming) : false,
   )
 
+  /**
+   * ⚠⚠§866/D30：写失败**不能**与「保存成功」同一个表现。
+   *
+   * 原文是一个空的 catch（注释写着「容量超限等忽略」）⇒ 存储写不进去时，
+   * 应用继续**表现得一切正常**，而用户这轮对话**根本没有落盘** ——
+   * 退出/刷新后凭空消失，界面上零提示。
+   *
+   * ⚠ 这不是理论风险，**本仓自己记录过它会发生**：
+   *   `features/email/email-body-cache.ts` 的文件头写着
+   *   「localStorage 在 Android WebView 里总配额约 5–10MB，一旦写超，
+   *     snapshot-store 的 saveNS 会静默吞掉」
+   * ⇒ 而 AI 对话历史装的是**完整对话全文**（`MAX_HISTORY = 40` 轮），
+   *   在真机上是最容易把配额撑爆的那一类数据。
+   *
+   * ⇒ 修法与 §858/D21 读侧同族：**留一个标志，让界面如实告知**
+   *   （写侧没有「损坏内容」需要留证，但必须让用户知道这轮不会保存）。
+   */
+  const persistFailed = ref(false)
+
   function persist() {
     try {
       localStorage.setItem(storageKey(STORAGE_KEY_PREFIX), JSON.stringify(conversations.value))
       localStorage.setItem(storageKey(SETTINGS_KEY_PREFIX), JSON.stringify(settings.value))
-    } catch {
-      /* 容量超限等忽略 */
+      persistFailed.value = false
+    } catch (err) {
+      // 写不进去 ≠ 保存成功：界面必须知道，否则用户会以为这轮已经存下。
+      persistFailed.value = true
+      console.warn('[ai-chat] 本地存储写入失败，本轮对话不会被保存：', err)
     }
   }
 
@@ -764,6 +786,7 @@ export const useAIChatStore = defineStore('ai-chat', () => {
     // 不得拿它去参与「没有对话」的空态判定（那正是本缺陷的原型）。
     conversationsRecovered,
     settingsRecovered,
+    persistFailed,
     models,
     modelsLoading,
     modelsError,

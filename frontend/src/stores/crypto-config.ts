@@ -77,9 +77,29 @@ function loadConfig(): CryptoConfig {
 export const useCryptoConfig = defineStore('crypto-config', () => {
   const cfg = ref<CryptoConfig>(loadConfig())
 
+  /**
+   * ⚠⚠§866/D31：原文**没有 try/catch** ⇒ 配额满/隐私模式下 `setItem` 抛错，
+   * 而它唯一的调用者之一是 `MasterPasswordDialog::submit`：
+   *   initLobster（已成功）→ setMasterPassword → save() 抛
+   *   ⇒ catch 里显示的是「本地数据初始化失败」，
+   *   **但初始化其实成功了**，真正失败的是「这一步没存住」；
+   *   而且 `hasMasterPassword` 没落盘 ⇒ 下次启动又回到 §862/D26 那个
+   *   「创建主密码」的对话框（用户会以为系统从没保存过他的主密码）。
+   *
+   * ⇒ 修法：写失败**自己承担**（不冒泡给一个与它无关的错误出口），
+   *   留 warn + 置位，让界面有机会说「设置已生效但没能保存」。
+   */
+  const persistFailed = ref(false)
+
   function save() {
     cfg.value.updatedAt = Date.now()
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(cfg.value))
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(cfg.value))
+      persistFailed.value = false
+    } catch (err) {
+      persistFailed.value = true
+      console.warn('[crypto-config] 加密配置写入失败（存储满或不可用）：', err)
+    }
   }
 
   function setFieldEncryption(mode: FieldEncryptionMode) {
@@ -106,6 +126,7 @@ export const useCryptoConfig = defineStore('crypto-config', () => {
   return {
     cfg,
     configRecovered,
+    persistFailed,
     setFieldEncryption,
     setMasterPassword,
     resetMasterPassword,

@@ -71,6 +71,11 @@ async function submit() {
   try {
     await initLobster(password.value)
     cryptoConfig.setMasterPassword(hint.value.trim() || null)
+    // ⚠§866/D31：写失败不再冒泡（冒泡会被本函数外层的 catch 说成「初始化失败」，
+    //   而初始化其实已经成功了）。这里如实区分「解锁成功但没存住」。
+    if (cryptoConfig.persistFailed) {
+      error.value = '主密码已通过验证并解锁成功，但设置没能写入本地存储（存储满或不可用）——下次启动可能需要重新验证。'
+    }
     await persistMasterSecretIfBound(password.value)
     emit('success', password.value)
     password.value = ''

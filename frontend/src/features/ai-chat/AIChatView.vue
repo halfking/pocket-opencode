@@ -26,6 +26,12 @@
     </div>
     <!-- 顶部"会话/角色/操作"栏：合并到 AppLayout 单层标题栏的右侧 chrome
          (HeaderActionsPortal)，左侧 ≡/返回由壳层提供；消灭原双层顶栏。 -->
+    <!-- ⚠§866/D30：写侧也要说实话。读失败是「读出来是坏的」，写失败是「这轮根本没存下」，
+         两者后果完全不同，却曾共用一句「忽略」。文案不得出现任何暗示「已保存」的措辞。 -->
+    <div v-if="store.persistFailed" class="recovered-notice" role="alert">
+      <strong>本地存储写不进去</strong>，本轮对话<strong>不会被保存</strong> ——
+      退出或刷新后可能消失。清理浏览器/应用的存储空间后会自动恢复保存。
+    </div>
     <HeaderActionsPortal>
       <button
         v-if="conversations.length > 1 || active"
