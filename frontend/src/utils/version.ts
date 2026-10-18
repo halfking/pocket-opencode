@@ -1,4 +1,6 @@
 import { App } from '@capacitor/app'
+// §888：收编到公共实现。
+import { blobToBase64 } from './base64.ts'
 // 这三个 import 显式带 .ts 扩展名：tsconfig 已开 allowImportingTsExtensions，
 // Vite 也能解析。带扩展名是为了让 node --test 能直接 import 本文件跑行为用例
 // （Node 原生 ESM 不做无扩展名解析）。仓库里 invoice-totals-wire-keys.test.mjs
@@ -302,18 +304,6 @@ export async function prefetchApk(
 }
 
 /** Blob → base64（无 data: 前缀）。分块喂给 FileReader，避免一次性拼超长字符串。 */
-function blobToBase64(blob: Blob): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onerror = () => reject(new Error('读取下载内容失败'))
-    reader.onload = () => {
-      const result = String(reader.result ?? '')
-      const comma = result.indexOf(',')
-      resolve(comma >= 0 ? result.slice(comma + 1) : result)
-    }
-    reader.readAsDataURL(blob)
-  })
-}
 
 // 格式化文件大小
 export function formatFileSize(bytes: number): string {

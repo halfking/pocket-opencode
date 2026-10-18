@@ -5,6 +5,14 @@
 import { Capacitor } from '@capacitor/core'
 import { Filesystem, Directory } from '@capacitor/filesystem'
 import { localDB } from '../../native/local-db'
+// §888：原来这里自己有一份 blobToBase64，而它的失败路径是
+//   `String(reader.result || '')` → `''` → `i < 0` → **resolve('空串')**（而不是 reject）
+// ⇒ 原生平台会写出一个 **0 字节的 webm**、库里 data_base64 存空串、
+//   `return id` 仍报成功 ⇒ 那一段录音**永久丢失且无痕迹**。
+//   而 ingest-speech.ts:52 的 catch（它即是唯一的诊断线索）**永远不会触发**。
+// ⇒ 收编到公共实现（它对 null/type 异常、onerror、onabort 都 reject，
+//   并透传真实的 reader.error 而不是 ProgressEvent）。
+import { blobToBase64 } from '../../utils/base64.ts'
 
 export interface AudioPartRow {
   id: string
@@ -14,19 +22,6 @@ export interface AudioPartRow {
   dataBase64: string
   filePath: string | null
   createdAt: number
-}
-
-async function blobToBase64(blob: Blob): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = () => {
-      const s = String(reader.result || '')
-      const i = s.indexOf(',')
-      resolve(i >= 0 ? s.slice(i + 1) : s)
-    }
-    reader.onerror = () => reject(reader.error)
-    reader.readAsDataURL(blob)
-  })
 }
 
 export async function saveAudioPart(

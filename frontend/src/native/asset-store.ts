@@ -17,7 +17,7 @@
  */
 import { localDB } from './local-db'
 import { encryptString, decryptString } from './crypto'
-import { buildFtsQuery, likePattern, needsCjkLike } from './fts-query'
+import { buildFtsQuery, likePattern, needsCjkLike } from './fts-query.ts'
 
 /** Asset 的业务类型。开放枚举——调用方可自由扩展。 */
 export type AssetKind =

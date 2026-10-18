@@ -18,31 +18,9 @@ export function utf8ToBase64(s: string): string {
   return btoa(unescape(encodeURIComponent(s)))
 }
 
-export function blobToBase64(blob: Blob): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onloadend = () => {
-      const dataUrl = reader.result
-      // result 可能是 null（读取被中止/已失败）。`as string` 之后直接 .split
-      // 会在事件处理器里抛 TypeError，而**事件处理器里的异常不会 reject promise**
-      // ⇒ await 永久挂起、真实原因只能从 console 的 uncaught 里捞。
-      // 与 utils/base64.ts 是同一个洞（那边是真机复现出来的）。
-      if (typeof dataUrl !== 'string') {
-        reject(new Error('文件编码失败'))
-        return
-      }
-      // 去除 data:...;base64, 前缀，PocketFilesystem.writeFile 只接受纯 base64
-      const base64 = dataUrl.split(',')[1] ?? ''
-      if (!base64) {
-        reject(new Error('文件编码失败'))
-        return
-      }
-      resolve(base64)
-    }
-    reader.onerror = () => reject(reader.error ?? new Error('文件读取失败'))
-    reader.readAsDataURL(blob)
-  })
-}
+// §888：原来这里另外实现了一份 blobToBase64（公共实现在 base64.ts，
+//   两份都已有 null 处理与 reject，行为等价）⇒ 改为 re-export，公共 API 不变。
+export { blobToBase64 } from './base64.ts'
 
 export function arrayBufferToBase64(buffer: ArrayBuffer): string {
   const bytes = new Uint8Array(buffer)

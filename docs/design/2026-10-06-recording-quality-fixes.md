@@ -101951,3 +101951,118 @@ if (!isInMemory) { /* 超上限就 warn */ return }   // ⚠ 这里把「已存�
   搜索失败一律静默空态）**本节未动**：那是「推荐」而非「检索」，
   空态危害与口径都要属主定（简报 110 第 ② 小问）。
 - ⛔ 未实测：LIKE 40 字符截断对会议搜索结果集的实际影响（静态可证口径，未跑真实数据）。
+
+---
+
+## §888 D58：`blobToBase64` 有 **5 份实现**，其中一份让**录音分片的丢失变成静默**
+
+本节回到本项目主线（录音转写质量）。选题来自一个普查：全仓 2688 个具名函数定义里，
+**161 个名字出现 > 1 次**。大多是视图内的小函数（`load` 38 处、`goBack` 23 处）——
+正常。真正扎眼的是**工具函数**：公共实现已经在 `utils/` 了，仍然有 4 份副本。
+
+⭐ 这是 §887「收编不彻底」的**升级版**：§887 是 3 份里搬了 1 份（还剩 2 份），
+本节是 **5 份**（**一份都没搬**，公共实现一直就在那儿）。
+
+### §888.1 普查读数
+
+| 位置 | 形态 | `result = null` 时 | 危害 |
+|---|---|---|---|
+| `utils/base64.ts:5` | **公共实现** | reject（带可读原因） | — |
+| `utils/download-encoding.ts:21` | 第二份公共实现 | reject | 纯重复 |
+| `utils/version.ts:305` | 私有副本 | reject | 纯重复 |
+| `features/email/use-invoice-thumbs.ts:37` | 私有副本 | reject | 纯重复 |
+| `composables/usePdfViewer.ts:35` | 私有副本 | **Promise 永久挂起** | ❌ 真缺陷 |
+| `features/meetings/audio-parts.ts:19` | 私有副本 | **resolve(空串)** | ❌❌ 最严重 |
+
+### §888.2 ⭐⭐ D58：`audio-parts.ts` —— 那一段录音永久丢失，且连诊断都没有
+
+`audio-parts.ts` 是**会议录音分片落盘**，本仓录音主链路。那份实现的失败路径是：
+
+```ts
+reader.onload = () => {
+  const s = String(reader.result || '')   // null → ''
+  const i = s.indexOf(',')               // -1
+  resolve(i >= 0 ? s.slice(i + 1) : s)   // ⇒ resolve('') 而不是 reject
+}
+```
+
+⇒ `saveAudioPart` 拿到**空串**后照常往下走：
+
+1. 原生平台 `Filesystem.writeFile({ data: '' })` ⇒ 写出**一个 0 字节的 webm 文件**（不抛错）；
+2. 落库 `filePath ? '' : dataBase64` ⇒ `data_base64` **存空串**；
+3. `return id` ⇒ **报成功**。
+
+⚠ **最狠的一点**：`ingest-speech.ts:52` 那个
+`void saveAudioPart(...).catch((e) => console.warn(...))` —— 它是这条链上
+**唯一存在的诊断线索**，而失败压根没走失败分支 ⇒ **catch 永不触发**。
+
+⚠ 该处注释还写着：「§826 让这件事在 Android 上变得不可逆：原生模式压根不产整段音频，
+**分片是那段话的唯一一份拷贝**」。
+
+⇒ 与 §876/D46（「排队成功」被报成「落盘成功」）同族，但**更狠**：
+那里至少还走过成功分支，这里**连失败分支都没进**，所以连诊断都没有。
+
+### §888.3 `usePdfViewer.ts` —— Promise 永久挂起，try/catch 兜不住
+
+那份是 `reader.result as string` 直接 `.split(',')`。`result` 为 null 时 TypeError
+**发生在事件处理器里**，不会转成 promise 的 reject ⇒ `await` 永久挂起
+⇒ 外面那层 `try/catch`（第 115 行有 `catch` 设 `error.value = 'PDF 打开失败'`）**根本兜不住**
+⇒ 页面永久 loading。
+
+⚠ `utils/base64.ts:10-22` 的注释**早就把这条写清楚了**，还带着 2026-10-06 红米真机复现
+——也就是说这个坑**被诊断过、修过一次**，而 §885 的普查把它漏掉了（§885 只数了
+`formatDuration`）。**它一直躺在另一个文件里。**
+
+### §888.4 修法（收编 + 取更严格的那一份）
+
+5 处全部改用 `utils/base64.ts`（`download-encoding.ts` 改为 re-export，公共 API 不变）。
+
+⚠⚠ 合并时撞出一条**既有测试守住的真实差异**：`download.test.mjs:132` 要求
+「data URL 缺 base64 部分**抛**『文件编码失败』」——那是 `download-encoding` 那份的契约；
+而 `base64.ts` 原来 `resolve(split(',')[1] || '')` 在同样情况下 **resolve 空串**。
+⇒ 合并必须取**更严格**的一份：`base64.ts` 现在对「读到了但没有 base64 部分」也 reject。
+
+⭐ 这正是「读到了但内容是空的」与「没读到」属于**同一类失败**，都必须出声。
+
+⚠⚠ **撞了 §875 那条已知限制**：`node --experimental-strip-types` **不接受无扩展名 import**
+⇒ 我收编时写的 `from './base64'` 让两个**本来能跑**的既有测试（`download.test.mjs` /
+`app-version-identity.test.mjs`）直接加载失败。⇒ 补 `.ts` 扩展名（本仓可测文件的既有做法）。
+
+⚠ §888 自己的判据也因这次补扩展名而**假红**（写死了 `from '.../base64'`）
+⇒ 按 §869/§882 的做法**只改判据措辞**（改成 `from '[^']*utils/base64`，抗有无扩展名），不动语义。
+
+### §888.5 判据（并入 `base64-null-result.test.mjs`，6 条 → 13 例）
+
+| # | 断言 |
+|---|---|
+| 1 | 阳性对照：扫描器能看到全仓（**前置闸**） |
+| 2 | `blobToBase64` 的**定义数**全仓为 1，且必须是 `utils/base64.ts` |
+| 3 | `audio-parts.ts` 不许再自带实现（唯一一份「失败报成成功」的） |
+| 4 | `usePdfViewer.ts` 必须用公共实现（永久挂起那一份） |
+| 5 | ⭐ **负控**：复刻 `audio-parts` 那份，确认它真的 resolve 空串 |
+| 6 | ⭐ 新实现对同一场景 reject（对照的另一半：不是对照自己太弱） |
+
+⭐ 第 5/6 条沿用本文件既有的**子进程负控**手法（该文件已记录过：
+同进程跑负控会因 node:test 也在监听 `uncaughtException` 而把整份文件判红）。
+
+### §888.6 M46：三次变异
+
+| 变异 | 结果 | 红条目 |
+|---|---|---|
+| V1 `audio-parts` 复活自带副本（D58 完全复现） | 11 / **2** | 「定义数」+「不许自带实现」 |
+| V2 `invoice-thumbs` 新增副本（另一处） | 12 / **1** | 「定义数」 |
+| V3 **负控自伤**：把复刻的旧实现改成 reject | 12 / **1** | 「负控」——证明对照本身有效 |
+
+### §888.7 口径与未实测
+
+- ✅ 收编 5 份为 1 份；`base64.ts` 对「缺 base64 部分」改抛错；
+  判据 6 条；`typecheck` EXIT=0、`gates` 45/45（52.2s）。
+- ⚠ **行为变化**（都是「静默」变「出声」，方向与 §883 一致）：
+  · `audio-parts` 编码失败 ⇒ reject ⇒ `ingest-speech` 的 warn **终于会触发**；
+  · `usePdfViewer` 读取失败 ⇒ 从永久 loading 变成显示「PDF 打开失败」；
+  · `version.ts` / `invoice-thumbs` 的调用点本来就已 reject ⇒ 行为等价。
+- ⚠ 收编后的 import 一律带 `.ts`（§875），这是**为了让既有测试还能在 node 里加载**。
+- ⛔ 未实测：真机上 FileReader 返回 null 的发生率（§888 的两条缺陷都需要它触发）；
+  ⛔ 未实测原生平台 `writeFile({data:''})` 是否真会写出 0 字节文件而不报错
+  （这是「静默丢失」链条的最后一环，本节按 API 语义推断，**未在真机核对**）。
+- ⛔ 未审：`base64ToBlob` / `arrayBufferToBase64` 一族是否也有同型副本（普查只做了 `blobToBase64`）。

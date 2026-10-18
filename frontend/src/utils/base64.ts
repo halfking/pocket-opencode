@@ -26,7 +26,20 @@ export function blobToBase64(blob: Blob): Promise<string> {
           : `文件读取失败：FileReader.result 类型异常（${typeof dataUrl}）`))
         return
       }
-      resolve(dataUrl.split(',')[1] || '')
+      // ⚠⚠ §888：这里原本是 `resolve(dataUrl.split(',')[1] || '')` ——
+      //   「读到了但 data URL 里没有 base64 部分」时会 **resolve 空串**，
+      //   而下游（会议录音分片落盘）会把空串当成「编码成功」⇒ 写出 0 字节文件。
+      //   `utils/download-encoding.ts` 里那份同族实现是**抛错**的，且
+      //   `__tests__/download.test.mjs:132` 已经把它钉成了契约
+      //   （「data URL 缺 base64 部分抛『文件编码失败』」）。
+      //   §888 把 5 份实现收编成 1 份 ⇒ 取**更严格**的那一份：
+      //   读到了但编码不出内容，与读不到是同一类失败，都必须出声。
+      const base64 = dataUrl.split(',')[1]
+      if (!base64) {
+        reject(new Error('文件编码失败：data URL 里没有 base64 部分'))
+        return
+      }
+      resolve(base64)
     }
     // 透传真正的 reader.error（DOMException，带 name/message），
     // 而不是 ProgressEvent —— 否则根因不可观测，排查只能靠猜。

@@ -6,7 +6,7 @@ import { assetToNote, rowToNote } from './notes-row'
 import type { LocalNote, NoteRow, SearchResult } from './notes-types'
 import { buildFtsQuery, mergeSearchHits, needsCjkLike } from './note-fts-query'
 import { ensureNotesSearchIndex } from './notes-fts-ready'
-import { likePattern } from '../../native/fts-query'
+import { likePattern } from '../../native/fts-query.ts'
 
 export function sanitizeFtsQuery(q: string): string {
   return buildFtsQuery(q)
