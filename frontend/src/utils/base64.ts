@@ -60,9 +60,10 @@ export function blobToBase64(blob: Blob): Promise<string> {
  *   `String.fromCharCode` 与 `Function.prototype.apply` 都有**参数个数上限**，
  *   整块传会在大文件上直接 RangeError。
  *   本实现保留分块，不是风格能提齐到写法一致。
+ *
+ * ⚠ 参数放宽为 `ArrayBufferLike`：`Uint8Array.buffer` 的类型是 `ArrayBufferLike`（可能是
+ *   SharedArrayBuffer），只接 `ArrayBuffer` 会让每个调用点都要先转一次。
  */
-/** ⚠ 参数放宽为 `ArrayBufferLike`：`Uint8Array.buffer` 的类型是 `ArrayBufferLike`（可能是
- *  SharedArrayBuffer），只接 `ArrayBuffer` 会让每个调用点都要先转一次。 */
 export function arrayBufferToBase64(buffer: ArrayBufferLike): string {
   const bytes = new Uint8Array(buffer)
   const CHUNK = 32768

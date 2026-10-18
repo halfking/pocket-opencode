@@ -28,7 +28,7 @@ import { execFileSync } from 'node:child_process'
 import { readFileSync, readdirSync } from 'node:fs'
 import { dirname, join, relative, resolve } from 'node:path'
 import { afterEach, describe, it } from 'node:test'
-import { blobToBase64 } from '../base64.ts'
+import { blobToBase64, arrayBufferToBase64 } from '../base64.ts'
 
 const RealFileReader = globalThis.FileReader
 afterEach(() => { globalThis.FileReader = RealFileReader })
@@ -359,11 +359,14 @@ describe('§888 · D58：blobToBase64 只能有一份实现，且所有调用点
  *
  * ⚠ **D59**：`email-body-format.ts` 里那个 `base64ToBytesSafe`，名字读起来像
  *   「`base64ToBytes` 的安全版」，实际语义是「**跳过 base64 解码**、按 latin1
- *   取原始字节」—— 它不是加固版，是**另一条路径**。若被当成加固版调用，
- *   传给 `decodePartBytes(…, charset)` 的就是未校验的 latin1 字节而不是字符
- *   ⇒ **邮件正文乱码**。§889 改名为 `latin1PartToBytes`（私有、单一调用点 ⇒ 零风险）。
+ *   取原始字节」—— 它不是加固版，是**另一条路径**。
+ *   而**同一个文件里确实另有一个真叫 `base64ToBytes` 的**（§889 审计时读到，
+ *   `email-body-format.ts:464`）⇒ 旧名不是"啰嗦"，是**指向隔壁那个函数**。
+ *   若被当成加固版调用，传给 `decodePartBytes(…, charset)` 的就是未校验的
+ *   latin1 字节而不是字符 ⇒ **邮件正文乱码**。
+ *   §889 改名为 `latin1PartToBytes`（私有、单一调用点 ⇒ 零风险）。
  */
-describe('§889 · D59：bytes→base64 这个「概念」只能有一份实现', () => {
+describe('§889 · D59：bytes→base64 的实现收编到一处（形态无关判定）', () => {
   const SRC_ROOT = new URL('../../', import.meta.url).pathname
   const SKIP = (p) => p.includes('__tests__') || p.endsWith('.test.ts') || p.endsWith('.test.mjs')
 
@@ -383,30 +386,49 @@ describe('§889 · D59：bytes→base64 这个「概念」只能有一份实现'
      .replace(/(^|[^:])\/\/[^\n]*/g, '$1')
 
   /**
+   * 「这个文件里有没有 bytes→base64 的实现」——
+   *
+   * ⚠⚠ 判定用**形状**（`btoa(` 与 `String.fromCharCode` 同时出现），
+   *   **不用函数名**。原因（实测，见下面「量具自检」那条）：
+   *   判据写成 `/function\s+arrayBufferToBase64/` 时，
+   *   `const bytesToBase64 = (buf) => …` 这种**形态**的副本**全绿逃掉**。
+   *   名字可以改、形态可以换，形状改不掉 —— 字节变 base64 只能靠
+   *   「把字节摊成 binary string」+「btoa」这两步。
+   *
+   * ⚠ 但形状**不能拿来做全仓唯一性**判定：`native/crypto.ts` 里把 salt/密钥
+   *   存进 localStorage 时用的就是 `btoa(String.fromCharCode(...))` ——
+   *   形状相同，但那是业务流程里顺手的一步，不是可复用工具，收编过去反而别扭。
+   *   ⇒ **形状只在这 4 个「收编落点」上判**（它们本来就该只剩公共实现），
+   *   全仓不做唯一性断言。
+   */
+  const hasBytesToBase64 = (src) =>
+    /\bbtoa\(/.test(src) && /String\.fromCharCode/.test(src)
+
+  /**
    * 四个**收编落点**：每一处都不许再自带 bytes→base64 实现。
    *
-   * ⚠⚠ 这里刻意**不**做「全仓形状唯一」的断言（第一版那样写过）：
-   *   那个量具把 `native/crypto.ts` 的两处**函数体内联编码**
-   *   （`btoa(String.fromCharCode(...salt))`，用来把 salt/密钥材料存进
-   *   localStorage）也判成了「第 2、3 份实现」。
-   *   ⭐ 而它们**不该**收编 —— 那不是可复用工具，是业务流程里顺手的一步。
-   *   ⇒ 「bytes→base64」这个**形状**天然会在多处出现（任何把字节存成字符串的
-   *   地方都得这么写），所以形状不是判据，**「这几处收编过」才是**。
+   * ⚠ `email-body-format.ts` 那份**有意**留了一个薄包装 `b64FromBytes`：
+   *   它套的 `catch → ''` 是既有行为（§889 不代拍，改它属行为变更）。
+   *   ⇒ 这里判的是「体内不再自己拼 base64」，而不是「函数不许存在」。
    */
   const RECLAIMED = [
-    ['native/recording-audio-transcode.ts', /function\s+arrayBufferToBase64/,
-      '它是录音转写上传链路那份（§889 收编自它）'],
-    ['utils/download-encoding.ts', /function\s+arrayBufferToBase64/,
-      '它是第二份公共实现（§889 收编自它）'],
-    ['features/email/email-image-preload.ts', /function\s+bytesToBase64/,
-      '它原本叫 bytesToBase64，用 apply(null, Array.from(...)) 多一次拷贝'],
-    // ⚠ email-body-format 那份**有意**留了一个薄包装 `b64FromBytes`：
-    //   它套的 `catch → ''` 是既有行为（§889 不代拍，改它属行为变更，简报 112）。
-    //   ⇒ 这里判的是**体内不再自己拼 base64**，而不是「函数不许存在」——
-    //   否则就把「保留既有 try/catch 外壳」也判成了回归（第一版就是这么写错的，
-    //   而且它当场把自己刚写的收编判成了红）。
-    ['features/email/email-body-format.ts', /\bbtoa\(/,
-      '它体内又出现 btoa( ⇒ 又自己拼了一遍 base64（薄包装里应直接调公共实现）'],
+    ['native/recording-audio-transcode.ts', '录音转写上传链路那份（§889 收编自它）'],
+    ['utils/download-encoding.ts', '第二份公共实现（§889 收编自它）'],
+    ['features/email/email-image-preload.ts', '原本叫 bytesToBase64（apply(null, Array.from(...))，多一次拷贝）'],
+    ['features/email/email-body-format.ts', '薄包装 b64FromBytes（外面套着既有的 catch → ""）'],
+  ]
+
+  /**
+   * 这三个落点**没有任何合法的 btoa**（实测：base64.ts 之外，btoa 只出现在
+   * `crypto.ts` / `pocket-native.ts` / `note-files.ts` / `download-encoding.ts` 的
+   * `utf8ToBase64` 里）⇒ 规则 A 之外再加一条更紧的「连 btoa 都不许出现」。
+   * `download-encoding.ts` 排除在外：它那句 btoa 是 **utf8ToBase64**（字符串→base64，
+   * 与 bytes→base64 是**两个概念**），不是漏网的副本。
+   */
+  const NO_BTOA_AT_ALL = [
+    'native/recording-audio-transcode.ts',
+    'features/email/email-image-preload.ts',
+    'features/email/email-body-format.ts',
   ]
 
   const assertScanned = () => {
@@ -417,16 +439,48 @@ describe('§889 · D59：bytes→base64 这个「概念」只能有一份实现'
     assertScanned()
   })
 
-  it('★★★ 四个收编落点都不许再自带 bytes→base64 实现', () => {
+  it('★★★ 量具自检：规则能抓住**非 function 形态**的副本，且不误伤 utf8ToBase64', () => {
+    // 这条不是"同伴用例"，它是**量具自己的体检**。
+    // ⚠ 判据若写成 `/function\s+名字/`，const/箭头形态的副本会**全绿逃掉**：
+    //   §889 变异实测（注入 const 形态副本）⇒ 19/19 全绿 ⇒ 判据无敏感性。
+    const constForm = [
+      'const bytesToBase64 = (buf: ArrayBuffer): string => {',
+      '  let bin = \'\';',
+      '  for (let i = 0; i < buf.byteLength; i += 0x8000) {',
+      '    bin += String.fromCharCode(...new Uint8Array(buf, i, 0x8000));',
+      '  }',
+      '  return btoa(bin);',
+      '}',
+    ].join('\n')
+    assert.ok(hasBytesToBase64(constForm),
+      '规则没抓住 const 形态的副本 ⇒ 判据退化成「只认 function 声明」，换个写法就逃得掉')
+    assert.ok(!hasBytesToBase64(
+      'export function utf8ToBase64(s: string): string {\n  return btoa(unescape(encodeURIComponent(s)))\n}'),
+      '规则把 utf8ToBase64（字符串→base64，另一个概念）误判了 ⇒ 规则太宽')
+  })
+
+  it('★★★ 四个收编落点都不许再自带 bytes→base64 实现（形态无关）', () => {
     assertScanned()
     const back = []
-    for (const [file, pat, why] of RECLAIMED) {
+    for (const [file, why] of RECLAIMED) {
       const src = strip(readFileSync(resolve(SRC_ROOT, file), 'utf8'))
-      if (pat.test(src)) back.push(`${file} —— ${why}`)
+      if (hasBytesToBase64(src)) back.push(`${file} —— ${why}`)
     }
     assert.deepEqual(back, [],
-      `这些收编过的落点又自带了一份实现：\n  - ${back.join('\n  - ')}\n` +
+      `这些收编过的落点又自带了一份 bytes→base64 实现：\n  - ${back.join('\n  - ')}\n` +
       '公共实现在 utils/base64.ts（arrayBufferToBase64 / blobToBase64），请改成 import。')
+  })
+
+  it('★★★ 三个落点里连 btoa 都不许出现（download-encoding 的 utf8ToBase64 除外）', () => {
+    assertScanned()
+    const back = []
+    for (const file of NO_BTOA_AT_ALL) {
+      const src = strip(readFileSync(resolve(SRC_ROOT, file), 'utf8'))
+      if (/\bbtoa\(/.test(src)) back.push(file)
+    }
+    assert.deepEqual(back, [],
+      `这些落点里出现了 btoa( ⇒ 要么自己拼了 base64，要么加了一个新的编码器：\n  - ${back.join('\n  - ')}\n` +
+      '新增编码器请先想清楚它是不是「bytes→base64」的又一份副本。')
   })
 
   it('★★★ 公共实现必须保留分块（整块传会在大文件上 RangeError）', () => {
@@ -435,13 +489,25 @@ describe('§889 · D59：bytes→base64 这个「概念」只能有一份实现'
       'arrayBufferToBase64 里看不到分块常量 ⇒ String.fromCharCode 超参会抛 RangeError')
   })
 
+  it('★★★ 公共实现与 Node Buffer **逐字节**一致，且跨分块边界', () => {
+    // ⚠ 边界值必须覆盖：32767 / 32768 / 32769 —— 只测 0 与 200000 会漏掉
+    //   「恰好等于分块大小」这一档（`i + CHUNK` 越界一格就会多编一个空块）。
+    for (const size of [0, 1, 32767, 32768, 32769, 65536, 200000]) {
+      const buf = new ArrayBuffer(size)
+      const dv = new DataView(buf)
+      for (let i = 0; i < size; i++) dv.setUint8(i, (i * 7) % 256)
+      assert.equal(arrayBufferToBase64(buf), Buffer.from(new Uint8Array(buf)).toString('base64'),
+        `size=${size} 与 Buffer 不一致 ⇒ 公共实现的分块边界有问题`)
+    }
+  })
+
   it('★★★ 录音链路那份必须 re-export 且带 .ts（§881 的判据在 node 里 import 它）', () => {
     assertScanned()
     const src = strip(readFileSync(resolve(SRC_ROOT, 'native/recording-audio-transcode.ts'), 'utf8'))
     // ⚠ 这里**必须带扩展名**：§881 的判据在 node 里 import 这个模块，而
     //   `node --experimental-strip-types` 不接受无扩展名 import（§875）。
     assert.match(src, /export \{ arrayBufferToBase64 \} from '\.\.\/utils\/base64\.ts'/,
-      're-export 必须写成 `export { arrayBufferToBase64 } from \'../utils/base64.ts\'`，' +
+      "re-export 必须写成 `export { arrayBufferToBase64 } from '../utils/base64.ts'`，" +
       '否则 §881 的判据加载不了本模块')
   })
 
@@ -460,9 +526,26 @@ describe('§889 · D59：bytes→base64 这个「概念」只能有一份实现'
     // `native/crypto.ts` 把 salt / 密钥材料编码成字符串存 localStorage，
     // 用的也是 `btoa(String.fromCharCode(...))` —— 形状与公共实现相同，
     // 但它**不是可复用工具**，收编过去反而别扭。
-    // ⇒ 「bytes→base64」这个形状天然会在多处出现，所以形状不是判据。
+    // ⇒ 「bytes→base64」这个形状天然会在多处出现，所以形状不是**全仓**判据。
     const cryptoSrc = strip(readFileSync(resolve(SRC_ROOT, 'native/crypto.ts'), 'utf8'))
     assert.match(cryptoSrc, /btoa\(String\.fromCharCode\(/,
-      'crypto.ts 的内联编码不见了 ⇒ 若它被改成了别的形态，请重新评估「形状不是判据」这个前提')
+      'crypto.ts 的内联编码不见了 ⇒ 若它被改成了别的形态，请重新评估「形状不是全仓判据」这个前提')
+  })
+
+  it('★★ 边界登记：这道门**只覆盖那 4 个落点**，不是全仓唯一性断言', () => {
+    // 如实登记已知边界（不假装覆盖范围比实际大）：
+    // 在**别处**新写第 5 份 bytes→base64 副本，这道门抓不到
+    // （§889 变异实测：新增 src/utils/rogue-base64.ts ⇒ 19/19 全绿）。
+    // ⇒ 全仓唯一性靠**审计普查**（§888 那类「同名函数 > 1 次」清单），
+    //   不靠这道门。门只负责"已经收编过的地方别退回去"。
+    const rogue = strip([
+      'export function bytesToBase64(buf: ArrayBuffer): string {',
+      '  let bin = \'\'',
+      '  bin += String.fromCharCode(...new Uint8Array(buf))',
+      '  return btoa(bin)',
+      '}',
+    ].join('\n'))
+    assert.ok(hasBytesToBase64(rogue),
+      '规则连这种一眼可见的副本都认不出 ⇒ 形状规则本身坏了，上面几条的通过毫无意义')
   })
 })

@@ -9,7 +9,7 @@
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { extractEmailBody } from '../email-body-format.ts'
+import { extractEmailBody, resolveCidImages } from '../email-body-format.ts'
 
 // 1x1 透明 PNG
 const PNG_B64 =
@@ -180,4 +180,44 @@ test('新增形态不破坏原有行为：未命中的 CSS cid 原样保留', ()
     buildRelatedWithHtml('yes@corp', '<div style="background:url(cid:no@corp)"></div>'),
   )
   assert.ok(html.includes('cid:no@corp'), '不存在的 cid 应保持原样\n' + html)
+})
+
+
+/**
+ * §889 D59 补的行为门：**非 base64 编码**的 cid 图片部件。
+ *
+ * ⚠ 为什么必须单独钉这一条：
+ *   §889 把「bytes → base64」收编成一份实现，而这条路径（`b64FromBytes`）
+ *   是**收编唯一真正改到的数据路径** —— 7bit/8bit 部件的正文是「一字节一字符」
+ *   的原始字节，要先按 latin1 取回字节、再编成 base64。
+ *   而 §889 之前，全仓的 cid 测试**用的都是 base64 编码的部件** ⇒
+ *   这条路径**零行为覆盖** —— 收编做得对不对，只有文本扫描说了算。
+ *
+ * ⭐ 判据是**字节级**的：期望值由 Node 的 Buffer 直接算出（latin1 语义），
+ *   不是抄一份实现再比一遍（那是「用同一个错误证明自己」）。
+ */
+test('cid: 8bit（非 base64）部件按 latin1 原始字节内联（§889 收编后的数据路径）', () => {
+  // 含 >0x7F 的字节：latin1 与 utf8 在这里必然分叉（0xFF 在 utf8 下占 2 字节），
+  // 所以这条断言能区分「按 latin1 取字节」与「按 utf8 编码」两种实现。
+  const bytes = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0xff, 0xfe, 0x00, 0x01])
+  const body = Array.from(bytes, (b) => String.fromCharCode(b)).join('')
+  const parts = [{
+    contentType: 'image/png',
+    contentId: 'raw@corp',
+    encoding: '8bit',
+    charset: '',
+    body,
+  }]
+
+  const out = resolveCidImages('<img src="cid:raw@corp">', parts)
+
+  const latin1B64 = Buffer.from(bytes).toString('base64')
+  assert.ok(out.includes(`data:image/png;base64,${latin1B64}`),
+    '8bit 部件必须按 latin1 原始字节内联，实际拿到:\n' + out)
+
+  // 负控：这条断言的区分力来自「latin1 ≠ utf8」。若哪天两者相等了（例如字节里
+  // 全是 <0x80），本用例就退化成恒绿 ⇒ 这里显式断言它们**确实不同**。
+  const utf8B64 = Buffer.from(body, 'utf8').toString('base64')
+  assert.notEqual(latin1B64, utf8B64,
+    'latin1 与 utf8 的 base64 相同了 ⇒ 本用例已失去区分力，请换一组含 >0x7F 的字节')
 })
