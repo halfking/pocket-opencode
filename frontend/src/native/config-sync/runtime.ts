@@ -147,7 +147,13 @@ export async function syncUserSettings(): Promise<ConfigSyncReport> {
         namespace: rec.namespace, id: rec.id, payload: rec.payload, updatedAt: rec.updatedAt,
       })
       if (won) {
-        await applyRemoteSetting(rec)
+        const failed = await applyRemoteSetting(rec)
+        // ⚠⚠§869/D37/D38：writeLocalIfNewer 已把这条设置在 **DB** 里标记为
+        // 「已是最新」（dirty = 0），而 localStorage 投影可能刚写失败
+        // ⇒ 两者会永久分叉且**不会重试**。这里至少留一条可检索的日志。
+        if (failed.length > 0) {
+          console.warn(`[config-sync] 远端设置 ${rec.namespace}/${rec.id} 未能完全落地：${failed.join('、')}`)
+        }
         pulled++
       }
     }

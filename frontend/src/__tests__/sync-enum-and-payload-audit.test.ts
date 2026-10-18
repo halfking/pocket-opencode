@@ -109,14 +109,19 @@ describe('§859 · D22 跨边界枚举必须白名单校验（与 applyRemoteLoc
     }
     // ⭐ 判据钉的是「**写进去的值**」而不是「有没有 setItem」——
     //   校验了但又把原始字段写回去，是这一族最典型的假修。
+    // ⚠⚠§869：原写法只认 `setItem('key', X)` 这一个字面形状，而本节把写入
+    //   收拢到逐字段的 `persist('key', X, 标签)` 里（为了让一个字段写失败
+    //   **不连坐**其余字段）⇒ 旧形状匹配不到、门禁转红。
+    //   这里**只放宽形状、绝不放宽语义**：仍然要求「该 key 落盘的值不是原始
+    //   payload 字段」。按惯例，撞门禁只改自己措辞、不动门禁语义。
     for (const [key, field] of [
       ['app_theme', 'prefs.theme'],
       ['pocket_device_tier', 'prefs.deviceTier'],
       ['pocket_stt_pref', 'prefs.sttPref'],
     ] as const) {
-      const re = new RegExp(`setItem\\(\\s*'${key}'\\s*,\\s*([^)]+)\\)`)
+      const re = new RegExp(`(?:setItem|persist)\\(\\s*'${key}'\\s*,\\s*([^,)]+)`)
       const m = re.exec(body)
-      assert.ok(m, `没找到 setItem('${key}', …)`)
+      assert.ok(m, `没找到 '${key}' 的落盘点`)
       assert.notEqual(m![1].trim(), field,
         `'${key}' 直接落盘了未校验的 ${field} —— 远端下发什么就存什么`)
     }

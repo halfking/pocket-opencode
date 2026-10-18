@@ -33,6 +33,8 @@ const strip = (t: string): string =>
    .replace(/(^|[^:])\/\/[^\n]*/g, '$1')
 
 const CARDS = strip(read('stores/flashcards.ts'))
+const APPLY = strip(read('native/config-sync/apply.ts'))
+const RUNTIME = strip(read('native/config-sync/runtime.ts'))
 /**
  * ⚠⚠ strip 的顺序陷阱（本节踩到）：
  *   HTML 注释**必须先**去掉，再做块注释那一步。否则文件头注释里出现的
@@ -44,11 +46,21 @@ const CARDS = strip(read('stores/flashcards.ts'))
 const HUB = read('features/study/StudyHubView.vue')
 const HUB_TPL = strip(/<template>([\s\S]*)<\/template>/.exec(HUB)?.[1] ?? '')
 
-/** 取函数体：支持 `function 名(` 与对象方法简写 `名() {` 两种写法。 */
+/**
+ * 取函数体：支持 `function 名(` 与对象方法简写 `名() {` 两种写法。
+ * ⚠⚠ 取件器翻车记录（本会话累计第 4 次）：
+ *   ① 只认 `function 名(`，认不出 Pinia actions 的方法简写 `名() {`；
+ *   ② 前置字符限定在 行首/空白/`{`/`,` **仍然不够** ——
+ *      `return applyChatSettings(...)` 前面就是一个空格，
+ *      而**调用点出现在定义之前**（applyRemoteSetting 在文件上方）
+ *      ⇒ fnBody 抓到了调用点、返回了它所在的函数体 ⇒ 判据报「找不到 catch」。
+ * ⇒ 修法：把匹配**锚到行首**（可有缩进）。这同时挡掉 `this.名(`、
+ *   `return 名(`、`await 名(` 等一切调用点。
+ */
 function fnBody(rawCode: string, name: string): string {
   const code = strip(rawCode)
   const m = new RegExp(
-    `(?:^|[\\s{,])(?:async\\s+)?(?:function\\s+)?${name}\\s*(?:<[^>]*>)?\\s*\\(`,
+    `(?:^|\\n)\\s*(?:async\\s+)?(?:function\\s+)?${name}\\s*(?:<[^>]*>)?\\s*\\(`,
   ).exec(code)
   if (!m) return ''
   let d = 0
@@ -178,5 +190,162 @@ describe('§868 · 变异负控', () => {
     const at = mutated.indexOf('store.persistFailed')
     const chainAt = mutated.indexOf('store.loading')
     assert.ok(at > chainAt, '尺子坏了：挪进互斥链之后仍然判绿')
+  })
+})
+
+/**
+ * §869：远端配置下发的**写侧**。
+ *
+ * 结构前提（取证所得，必须先知道才能判断对错）：
+ *   `writeLocalIfNewer` 把记录写进 **SQLite**（`local_user_settings`，dirty = 0），
+ *   而 `applyRemoteSetting` 把它投影到 **localStorage**。
+ *   ⇒ 两套存储。投影写失败时 DB 仍被标记为「已是最新」⇒ **永不重试**。
+ *
+ * D37 applyChatSettings 的写侧 catch 是 `// ignore` —— 它守着的正是
+ *      §859/D24 刚修好的那份数据（读侧已会留证，写侧却静默丢弃，两头不对称）。
+ * D38 applyAppPrefs 用一个**大 try** 包住全部字段 ⇒ 第 1 个字段写失败，
+ *      后面两个写入与 `<html data-theme>` 更新**全都不会执行**（连坐），
+ *      而 catch 里只有一句「localStorage may be unavailable」，零可见性。
+ */
+
+/** D37：写失败不许是 `// ignore`，且必须说清丢的是什么。 */
+function remoteChatWriteTells(src: string) {
+  const body = fnBody(src, 'applyChatSettings')
+  if (!body) return { ok: false, why: '找不到 applyChatSettings' }
+  const catchAt = body.indexOf('catch')
+  if (catchAt < 0) return { ok: false, why: 'applyChatSettings 没有 catch' }
+  const tail = body.slice(catchAt)
+  if (/ignore/i.test(tail)) return { ok: false, why: '写失败仍写着 ignore ⇒ 远端 AI 对话设置被静默丢弃' }
+  if (!/console\.warn/.test(tail)) return { ok: false, why: '写失败没有任何日志 ⇒ 事后无法判断这条路是否已被关掉' }
+  if (!/return false/.test(tail)) return { ok: false, why: '写失败没有返回失败标记 ⇒ 调用方无从判断' }
+  return { ok: true }
+}
+
+/**
+ * D38：**任一写入失败不得拖累其余写入**。
+ *
+ * ⛔ 机械性质的写法比想象的难选：第一版查「相邻两个 setItem 之间有没有 try」，
+ *   旧代码读数确实是 0，但那只在**所有写入都是裸的**时候成立；
+ *   一旦重构出一个 `persist()` 辅助函数，它自己的 try 就落在两个裸写入**之前**，
+ *   于是「连坐形态」照样判绿 —— 量具坏了。已换成直接数：
+ *   **任何一个 try 块里不得同时出现两个及以上写入点。**
+ *
+ * 用 §867 探针验证过的花括号栈（从函数体开头一路维护），
+ * 不做任何「找函数边界」之外的定位。
+ */
+function writesAreIndependent(src: string) {
+  const body = fnBody(src, 'applyAppPrefs')
+  if (!body) return { ok: false, why: '找不到 applyAppPrefs' }
+  const WRITE = 'localStorage.setItem'
+  if (!body.includes(WRITE)) return { ok: false, why: 'applyAppPrefs 里找不到写入点' }
+  const stack: { kind: string; writes: number }[] = []
+  for (let i = 0; i < body.length; i++) {
+    const ch = body[i]
+    if (ch === '{') {
+      const kind = /\btry\s*$/.test(body.slice(0, i)) ? 'try' : 'block'
+      stack.push({ kind, writes: 0 })
+      continue
+    }
+    if (ch === '}' && stack.length) {
+      const popped = stack.pop()
+      if (popped && popped.kind === 'try' && popped.writes >= 2) {
+        return { ok: false, why: `有一个 try 块里同时包了 ${popped.writes} 个写入 ⇒ 一次失败会连坐其余写入（§869/D38）` }
+      }
+      continue
+    }
+    if (body.startsWith(WRITE, i)) {
+      for (const frame of stack) if (frame.kind === 'try') frame.writes++
+      i += WRITE.length - 1
+    }
+  }
+  return { ok: true }
+}
+
+/** D38：失败的字段必须回报给调用方（否则「永不重试」这件事连日志都没有）。 */
+function applyReportsFailures(src: string, runtimeSrc: string) {
+  const sig = /export function applyRemoteSetting\([^)]*\)\s*:\s*string\[\]/.exec(src)
+  if (!sig) return { ok: false, why: 'applyRemoteSetting 没有返回失败字段名 ⇒ 调用方无从知道远端下发是否落地' }
+  const body = fnBody(src, 'applyAppPrefs')
+  if (!body) return { ok: false, why: '找不到 applyAppPrefs' }
+  if (!/failed\.push/.test(body)) return { ok: false, why: 'applyAppPrefs 没有收集失败的字段名' }
+  // 调用方必须消费返回值并留痕
+  if (!/const failed = await applyRemoteSetting/.test(runtimeSrc)) {
+    return { ok: false, why: 'runtime 的 pull 路径没有接住返回值' }
+  }
+  if (!/failed\.length > 0/.test(runtimeSrc) || !/console\.warn/.test(runtimeSrc)) {
+    return { ok: false, why: 'runtime 没有为「远端设置未完全落地」留任何日志' }
+  }
+  return { ok: true }
+}
+
+const ruler869 = (src: string, rt: string) => ({
+  chat: remoteChatWriteTells(src),
+  indep: writesAreIndependent(src),
+  report: applyReportsFailures(src, rt),
+})
+
+describe('§869 · D37/D38 远端配置下发的写侧必须说清「没生效」', () => {
+  it('★★ 先证明这把尺子在真源码上是绿的', () => {
+    const v = ruler869(APPLY, RUNTIME)
+    assert.ok(v.chat.ok, v.chat.why)
+    assert.ok(v.indep.ok, v.indep.why)
+    assert.ok(v.report.ok, v.report.why)
+  })
+
+  it('★★★ 写失败不许是 ignore（D37）', () => {
+    const v = ruler869(APPLY, RUNTIME)
+    assert.ok(v.chat.ok, v.chat.why)
+  })
+
+  it('★★★ 一个字段写失败不得连坐其余写入（D38）', () => {
+    const v = ruler869(APPLY, RUNTIME)
+    assert.ok(v.indep.ok, v.indep.why)
+  })
+
+  it('★★★ 未落地必须回报并留痕（否则 DB 已标干净、投影永不重试）', () => {
+    const v = ruler869(APPLY, RUNTIME)
+    assert.ok(v.report.ok, v.report.why)
+  })
+
+  it('把 chat 设置的写失败改回 `// ignore` ⇒ D37 立刻红', () => {
+    const body = fnBody(APPLY, 'applyChatSettings')
+    assert.ok(body, '取不到 applyChatSettings 的函数体')
+    const mutatedBody = body.replace(/catch \(err\) \{[\s\S]*?\n    return false\n  \}/, 'catch {\n    // ignore\n  }')
+    assert.notEqual(mutatedBody, body, '变异没生效（锚点与真源码不匹配）')
+    const mutated = APPLY.replace(body, mutatedBody)
+    assert.equal(remoteChatWriteTells(mutated).ok, false, '尺子坏了：把缺陷形态喂回去竟然还判绿')
+  })
+
+  it('把 app_prefs 改回「一个大 try 包全部字段」⇒ D38 立刻红', () => {
+    // ⚠⚠ 这一条我写错过两版，两版都是**变异没做到它声称的动作**，于是
+    //   尺子判绿、报错却说「尺子坏了」——反过来冤枉了量具：
+    //   ① 第一版：只把两个 persist 调用换成裸 setItem ⇒ 它们并不在**同一个**
+    //      try 里，所以「一个 try 包多个写入」这个性质根本没被触发；
+    //   ② 第二版：查「相邻写入之间有没有 try」，读数在重构出 persist() 后
+    //      就失去意义了。
+    // ⇒ 现在直接把函数体换成**真实的缺陷形态**（一个大 try 包全部写入）。
+    const body = fnBody(APPLY, 'applyAppPrefs')
+    assert.ok(body, '取不到 applyAppPrefs 的函数体')
+    const defective = body.replace(
+      /const failed[\s\S]*$/,
+      `try {
+    if (theme) localStorage.setItem('app_theme', theme)
+    if (prefs.locale) applyRemoteLocale(prefs.locale)
+    if (deviceTier) localStorage.setItem('pocket_device_tier', deviceTier)
+    if (sttPref) localStorage.setItem('pocket_stt_pref', sttPref)
+    if (theme && typeof document !== 'undefined') {
+      const root = document.documentElement
+      if (theme === 'system') root.removeAttribute('data-theme')
+      else root.setAttribute('data-theme', theme)
+    }
+  } catch {
+    // localStorage may be unavailable
+  }
+  return failed
+}`,
+    )
+    assert.notEqual(defective, body, '变异没生效（锚点与真源码不匹配）')
+    assert.equal(writesAreIndependent(APPLY.replace(body, defective)).ok, false,
+      '尺子坏了：改回连坐形态后仍然判绿')
   })
 })
