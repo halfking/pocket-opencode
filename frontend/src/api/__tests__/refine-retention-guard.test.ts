@@ -11,7 +11,7 @@
 // ⇒ 「响应完整、但模型把精校做成了摘要」这一档此前无人看守。
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import {
@@ -112,5 +112,127 @@ describe('§831 · 接线（扫描层，零牙已如实标注）', () => {
     const win = API.slice(at, at + 400)
     assert.match(win, /hasRefined && retention\.ok \? \(raw as string\) : transcript/,
       '兜底路径没有按判定二选一')
+  })
+})
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * §911 · D80：**每个产出 `refinedTranscript` 的点都必须过留存判定**
+ * ═══════════════════════════════════════════════════════════════════════════
+ * 简报 134 问「两道缩写护栏要不要合并成一道」，而这个决定的前提是
+ * **客户端那道是否覆盖了全部产出路径**。
+ *
+ * 实测（2026-10-19，全 src 逐点核）：**没有第三个生产者**。
+ * 全仓的写入点只有三类，且全部是 `normalizeRefine` 的**透传**：
+ *
+ *   refine-ingest-writeback.ts:70/79/83   纯函数，从 refine 透传
+ *   meeting-recording-finalize.ts:228      updateMeeting(result.refinedTranscript)
+ *   meeting-ingest.ts:127/145             updateMeeting / 云同步（writeback|refine）
+ *
+ * 而 `MeetingDetailView` 是**纯读者**（`resolveRefinedView`），无独立精校入口。
+ * ⇒ 今天合并是安全的；留着客户端那道是**面向将来的保险**（新增产出路径时自动生效）。
+ *
+ * ⚠ 本节把这件事**钉成判据**：将来有人加一条产出 `refinedTranscript` 的路，
+ * 若它不是上面三种透传形态之一 ⇒ 判据转红，迫使其想清楚「过没过留存判定」。
+ */
+describe('§911 · D80：产出 refinedTranscript 的点只能是受守卫的透传', () => {
+  /**
+   * 允许出现 `refinedTranscript` 的形态 —— **逐条实测得出**，不是随手写的。
+   *
+   * ⚠⚠ 白名单的第一版只有 6 条，跑出来 8 个「 offender」，
+   *   我**逐条看过**才决定放宽的（放宽白名单时最容易被当成「让判据变绿」），
+   *   8 条分别是：
+   *     ① api/meetings.ts:297  云同步 payload 透传一个 RefineResult
+   *     ② api/meetings.ts:360  读 raw 字段**喂给守卫**
+   *     ③ api/meetings.ts:415  ★ **守卫本身**（normalizeRefine 的受守卫产出）
+   *     ④ api/meetings.ts:587  ★ **守卫本身**（refineFromLlmContent 的受守卫产出）
+   *     ⑤ MeetingDetailView.vue:272  读进 view 入参（纯读者）
+   *     ⑥ meetings-store.ts:124  createMeeting 的默认值 null
+   *     ⑦ meetings-store.ts:221  SQL 列写入，patch 的透传
+   *     ⑧ refined-ingest-writeback.ts:89  读本地变量
+   *   ⇒ ①②⑦ 是透传，②⑤⑧ 是读取，⑥ 是默认值，③④⑤…是守卫本身 —— 都不是新的产出路径。
+   */
+  const SAFE = [
+    /const refinedTranscript = refine\.refinedTranscript/,
+    /return \{ refinedTranscript,/,
+    /^refinedTranscript,$/,
+    /refinedTranscript: result\.refinedTranscript/,
+    /refinedTranscript: writeback\.refinedTranscript/,
+    /refinedTranscript: refine\.refinedTranscript/,
+    /refinedTranscript: payload\.refinedTranscript/,
+    /refined_transcript: patch\.refinedTranscript/,   // ← 唯一合法的蛇形写入
+    /const serverRefined = raw\.refined_transcript/,
+    /const raw = parsed\.refined_transcript/,          // ← 读，喂给守卫
+    // SQL 列名清单（没有 `:` 赋值 ⇒ 不是写入）
+    /^[\w, ]+refined_transcript,[\w, ]*$/,
+    // ★ 两个**受守卫的产出**本身（守卫就在这两行里）
+    /refinedTranscript: retention\.ok \? String\(serverRefined/,
+    /refinedTranscript: hasRefined && retention\.ok/,
+    // 读取与声明
+    /^refinedTranscript\??: string( \| null)?$/,   // 类型声明
+    /refinedTranscript: null,/,
+    /refinedTranscript: meeting\.value\?\.refinedTranscript/,
+    /const serverRefined = raw\.refined_transcript/,
+    /truncateCodeUnits\(refinedTranscript,/,
+    /meeting\?\.refinedTranscript/,
+    /r\.refined_transcript as string/,
+    /\|\s*'refinedTranscript'/,
+  ]
+
+  it('★★★ 两个受守卫的产出必须存在（防白名单被人越放越宽直到门空转）', () => {
+    assert.match(
+      API,
+      /refinedTranscript: retention\.ok \? String\(serverRefined \?\? fallback\) : fallback/,
+      '⚠ normalizeRefine 不再用留存判定决定正文取值 ⇒ 客户端这道守卫形同虚设',
+    )
+    const fb = readFileSync(join(HERE, '../../api/meetings.ts'), 'utf8')
+    assert.match(
+      fb,
+      /refinedTranscript: hasRefined && retention\.ok/,
+      '⚠ refineFromLlmContent（浏览器内兜底路径）不再过留存判定 ⇒ §831「两个调用点都过」已不成立',
+    )
+  })
+
+  it('★★ 前置闸：三个落点仍然是这几处（清单没漂移）', () => {
+    const finalize = readFileSync(join(HERE, '../../features/meetings/meeting-recording-finalize.ts'), 'utf8')
+    const ingest = readFileSync(join(HERE, '../../features/meetings/meeting-ingest.ts'), 'utf8')
+    assert.match(finalize, /refinedTranscript: result\.refinedTranscript/,
+      '收尾落点不再透传 result ⇒ 前置闸失效，请重新普查产出路径')
+    assert.match(ingest, /refinedTranscript: writeback\.refinedTranscript/,
+      '入库落点不再透传 writeback ⇒ 前置闸失效，请重新普查产出路径')
+  })
+
+  it('★★★ 任何新增的 refinedTranscript 写入必须是受守卫的透传', () => {
+    // ⚠⚠ §911.4 同族：手列目录**必然漏**（第一版只列了 4 个根，
+    //   `native/` 就不在其中 —— 那里确有 3 处出现该字段，
+    //   逐一核过是「迁移 ALTER / DDL 列声明 / 注释」，没有裸写值，
+    //   但**门看不见**）。⇒ 改成从 `src/` 整棵树走，
+    //   让「我忘了某个目录」这一类盲区不再可能。
+    const roots = ['../../']
+    const offenders: string[] = []
+    for (const root of roots) {
+      const stack = [join(HERE, root)]
+      while (stack.length) {
+        const dir = stack.pop()!
+        for (const entry of readdirSync(dir, { withFileTypes: true })) {
+          const p = join(dir, entry.name)
+          if (entry.isDirectory()) { stack.push(p); continue }
+          if (!/\.(ts|vue)$/.test(entry.name) || /\.test\.|\.spec\.|__tests__/.test(p)) continue
+          const src = readFileSync(p, 'utf8')
+          src.split('\n').forEach((line, i) => {
+            const t = line.trim()
+            if (t.startsWith('//') || t.startsWith('*')) return
+            // ⚠⚠ §911 自曝：第一版只认驼峰，于是变异把蛇形 SQL 列
+            //   `refined_transcript:` 改掉时**整行不匹配、直接逃过扫描**。
+            if (!/refined_?[Tt]ranscript/.test(line)) return
+            if (SAFE.some((re) => re.test(t))) return
+            if (!/refined_?[Tt]ranscript\s*[:,]/.test(line) && !/refined_?[Tt]ranscript$/.test(t)) return
+            offenders.push(`${p.replace(HERE, '.')}:${i + 1}  ${t}`)
+          })
+        }
+      }
+    }
+    assert.equal(offenders.length, 0,
+      `发现 ${offenders.length} 处不是受守卫透传的 refinedTranscript：\n${offenders.join('\n')}\n` +
+      `⇒ 新增产出路径若没过 assessRefineRetention，用户会看到一份被砍半的正文。`)
   })
 })
