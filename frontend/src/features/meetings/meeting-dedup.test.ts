@@ -222,8 +222,58 @@ describe('D · 接线层：所有出口都必须去重（防回退）', () => {
   it('★ useLiveSummary 喂给 LLM 的 segments 必须去重', () => {
     const s = read('../../composables/useLiveSummary.ts')
     assert.match(s, /dedupeSegments\(segments\.value\)/, '摘要/推荐拿到的仍是含重复的 segments')
-    assert.match(s, /summarize\(\s*\n\s*id,\s*\n\s*cleanSegments/, 'summarize 未使用去重后的 segments')
-    assert.match(s, /recommend\(id, cleanSegments,/, 'recommend 未使用去重后的 segments')
+    // ⚠⚠ §924：这条断言的**指向**变了，**语义没变**。
+    //
+    // 旧形态：`summarize(id, cleanSegments, …)` / `recommend(id, cleanSegments, …)`
+    //   —— 载荷是「去重后的**全量**」。
+    // 新形态（§924）：服务端契约是「已有摘要 + **新增转写**」⇒ 载荷变成
+    //   「从去重后的全量里**选出来**的增量 / 有界尾部」
+    //   ⇒ 字面量 `cleanSegments` 不再直接出现在实参位上。
+    //
+    // ⇒ 但这道门要钉的**仍然是同一件事**：**喂给 LLM 的段必须来自去重后的数组**。
+    // ⇒ 所以这里钉的是**来源链**（三段），而不是某个字面量：
+    //   cleanSegments = dedupeSegments(segments.value)   ← 去重后的数组
+    //   selection     = selectSummarySegments(cleanSegments, …)  ← 从它里面选
+    //   payload       = selection.segments               ← 送出去的就是选出来的
+    assert.match(
+      s, /const cleanSegments = dedupeSegments\(segments\.value\)/,
+      '去重后的数组不再是 cleanSegments',
+    )
+    assert.match(
+      s, /const selection = selectSummarySegments\(cleanSegments, sentSegmentIds\)/,
+      '摘要载荷不再是从 cleanSegments 里选出来的',
+    )
+    assert.match(
+      s, /const payloadSegments = selection\.segments/,
+      '送进 summarize 的不再是选出来的那份',
+    )
+    assert.match(
+      s, /summarize\(\s*\n\s*id,\s*\n\s*payloadSegments/,
+      'summarize 未使用选出来的（去重后的）增量段',
+    )
+    assert.match(
+      s, /recommend\(id, selectRecommendSegments\(cleanSegments\)/,
+      'recommend 未使用去重后的 segments',
+    )
+  })
+
+  it('★★ 负控：把载荷改回「未经去重的 segments」必须判红', () => {
+    // ⛔ 只看「改完是绿的」不能证明这道门有牙 —— 必须让它红一次。
+    const s = read('../../composables/useLiveSummary.ts')
+    // 同形变异：只把载荷的**来源**换回未去重的那份（其余一律不动）。
+    const mutated = s.replace(
+      'const payloadSegments = selection.segments',
+      'const payloadSegments = segments.value',
+    )
+    assert.notEqual(mutated, s, '变异没落盘 ⇒ 这条负控不算数')
+    assert.ok(
+      !/const payloadSegments = selection\.segments/.test(mutated),
+      '负控前提失效：变异没有真的改掉来源',
+    )
+    assert.match(
+      s, /const payloadSegments = selection\.segments/,
+      '判据前提失效：真实源码不满足「载荷来自选出来的那份」',
+    )
   })
 
   it('★ api/meetings.ts 的三条降级路径都要去重（离线时用户正走这些）', () => {

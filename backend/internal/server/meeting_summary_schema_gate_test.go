@@ -71,6 +71,44 @@ func TestRollingSummaryPromptAlwaysCarriesSchema(t *testing.T) {
 	}
 }
 
+// TestRollingSummaryPromptKeepsIncrementalLabel 是 §924 的**跨语言契约**门。
+//
+// 服务端这条提示词是「已有摘要 + **新增转写**」⇒ 前端据此**只送这一轮新增的段**
+// （前端 `frontend/src/features/meetings/live-summary-payload.ts` 的
+// `selectSummarySegments`；接线在 `composables/useLiveSummary.ts`）。
+// ⇒ **这条标签就是那个语义的唯一源头**：
+//
+//	把它改成「转写」「以下是该会议的转写」之类
+//	⇒ 前端送增量就变成「模型被告知这是全场，其实只给了新的一段」
+//	⇒ 静默失配，**没有任何门会响**（前端那条判据只管自己送什么）。
+//
+// ⚠ 这不是文案洁癖：§924 的实测读数里，长会议的请求体/提示词
+//
+//	从 O(会议时长) 降到**常数**，靠的**就是**前端按这条标签送增量。
+//
+// ⇒ 改这条标签时，必须回头复核前端那一侧。
+func TestRollingSummaryPromptKeepsIncrementalLabel(t *testing.T) {
+	const transcript = "[张伟] 这周的进度我先同步一下。\n"
+	const prev = "上一轮：确认了发布时间。"
+
+	rolling := buildSummaryPrompt(transcript, prev)
+
+	if !strings.Contains(rolling, "新增转写") {
+		t.Errorf("滚动轮提示词里没有「新增转写」标签：%q", rolling)
+	}
+	// 负控：不得把请求体里那一段说成「整场」——
+	// 前端只送增量时，那会与提示词自相矛盾。
+	for _, wrong := range []string{"整场转写", "全部转写", "会议全文"} {
+		if strings.Contains(rolling, wrong) {
+			t.Errorf("滚动轮提示词把请求体里的段说成「%s」：前端只送增量时会与提示词自相矛盾", wrong)
+		}
+	}
+	// 增量语义的另一半：「已有摘要」必须还在。
+	if !strings.Contains(rolling, prev) {
+		t.Errorf("滚动轮没有带上已有摘要 —— 「已有摘要 + 新增转写」这套语义不成立")
+	}
+}
+
 // TestParseSummaryJSONRejectsValidButEmpty 是 §20.2 那道兜底的行为断言。
 //
 // 模型完全可能返回**合法却空**的 JSON（真网关第 3 轮就是）。
