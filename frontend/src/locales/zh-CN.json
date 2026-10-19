@@ -400,6 +400,7 @@
     "imapUnauthorized": "邮箱授权已失效，请重新授权",
     "imapFailed": "连接邮箱服务器失败，请检查网络与账户信息",
     "sttNotConfigured": "语音转写服务尚未配置",
+    "sttAudioTooLarge": "音频太大，单次上传最多 25 MB，请改用更短的录音",
     "llmNotConfigured": "尚未配置可用的大模型，请先在模型设置中选择",
     "modelNotFound": "找不到该模型，可能已被移除",
     "gatewayUnreachable": "无法连接模型网关，请检查网关地址与网络",

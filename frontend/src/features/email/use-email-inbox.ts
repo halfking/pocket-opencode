@@ -72,7 +72,22 @@ export function useEmailInbox() {
     purgeBusy.value = true
     try {
       await purgeEmailsLocal(ids)
-      try { await emailApi.purgeEmails(ids) } catch { /* 本地已删，服务端稍后重试 */ }
+      // ⚠ §922：服务端那步失败**不能静默**。
+      //   旧实现是空 catch，注释写着「本地已删，服务端稍后重试」——
+      //   但**根本没有任何重试机制**（`emails-store.ts` 那条是服务端→本地的
+      //   反向同步，不是重试队列）⇒ 那句注释是**说谎的**。
+      //   ⇒ 旧实现的具体后果：选中超过 100 封时服务端 400 被吞 ⇒
+      //   **本地已清、服务端没清**（正文其实没清掉），界面却毫无提示。
+      //   ⇒ 现在 `emailApi.purgeEmails` 已按服务端上限分批，不再撞那道闸；
+      //   这里仍保留 catch，但**必须出声** ——「本地清成功」与「服务端清成功」是两件事。
+      try {
+        await emailApi.purgeEmails(ids)
+      } catch (e) {
+        console.warn(
+          `[email] 已清空本地 ${ids.length} 封的正文，但服务端清理失败 ⇒ 服务端正文未清，需重试。`,
+          e,
+        )
+      }
       exitSelect()
       return ids
     } finally {

@@ -400,6 +400,7 @@
     "imapUnauthorized": "L'autorisation de la boîte mail a expiré. Reconnectez-la.",
     "imapFailed": "Impossible de joindre le serveur de messagerie. Vérifiez le réseau et le compte.",
     "sttNotConfigured": "La reconnaissance vocale n'est pas encore configurée.",
+    "sttAudioTooLarge": "Ce fichier audio est trop volumineux. Un envoi unique est limité à 25 Mo.",
     "llmNotConfigured": "Aucun modèle configuré. Choisissez-en un dans les réglages Modèles.",
     "modelNotFound": "Ce modèle n'existe plus ; il a peut-être été supprimé.",
     "gatewayUnreachable": "Passerelle de modèle injoignable. Vérifiez son adresse et le réseau.",

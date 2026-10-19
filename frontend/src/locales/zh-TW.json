@@ -400,6 +400,7 @@
     "imapUnauthorized": "信箱授權已失效，請重新授權",
     "imapFailed": "連線信箱伺服器失敗，請檢查網路與帳號資訊",
     "sttNotConfigured": "語音轉寫服務尚未設定",
+    "sttAudioTooLarge": "音訊檔太大，單次上傳最多 25 MB，請改用更短的錄音",
     "llmNotConfigured": "尚未設定可用的大模型，請先在模型設定中選擇",
     "modelNotFound": "找不到該模型，可能已被移除",
     "gatewayUnreachable": "無法連線模型閘道，請檢查閘道位址與網路",

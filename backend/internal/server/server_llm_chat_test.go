@@ -249,7 +249,7 @@ var lengthLimitRegistry = []struct {
 	{"adapter/disk/parse.go", "len(tag) > 60", "O", ""},
 	{"agentbridge/store.go", "len(s) >= 2", "O", ""},
 	{"agentbridge/store.go", "len(s) >= 2", "O", ""},
-	{"auth/email_codes.go", "len(s) > 254", "A", "客户端提交的**邮箱地址**（发送验证码路径 email_codes.go:73 ⇒ ErrEmailInvalid）；`len(s)`=**字节** ⇒ 254 字节"},
+	{"auth/email_codes.go", "len(s) > 254", "A", "客户端提交的**邮箱地址**（发送验证码路径 email_codes.go:73 ⇒ ErrEmailInvalid）；`len(s)`=**字节** ⇒ 254 字节。**可达性：可达·不可区分**（超长邮箱与「格式不对」回**同一个**错误 ⇒ 用户看不出是「太长」）⇒ 用户可改短重试 ⇒ 只登记不修"},
 	{"db/pg.go", "len(s) > 63", "O", ""},
 	{"email/fetcher.go", "len(s) > 64", "O", ""},
 	{"email/invoice.go", "len(raw) > 64 << 10", "O", ""},
@@ -273,7 +273,7 @@ var lengthLimitRegistry = []struct {
 	{"orchestrator/acc_dispatcher.go", "len(prompt) > 64", "O", ""},
 	{"rss/sharecard.go", "len(lines) > 4", "O", ""},
 	{"rss/sharecard.go", "len(summaryLines) > 6", "O", ""},
-	{"server/flashcards_handler.go", "len([]rune(name)) > 80", "A", "客户端提交的**卡片名**；`[]rune` ⇒ **码元**闸（80 码元，不是 80 字节）；400 拒绝"},
+	{"server/flashcards_handler.go", "len([]rune(name)) > 80", "A", "客户端提交的**卡片名**；`[]rune` ⇒ **码元**闸（80 码元，不是 80 字节）；400「name too long (max 80)」。**可达性：可达·可区分**（⚠ 但**错误信息没写单位**：80 码元 ≠ 80 字节）⇒ 用户可改短重试 ⇒ 只登记不修"},
 	{"server/flashcards_handler.go", "len(parts) >= 2", "O", ""},
 	{"server/flashcards_handler.go", "len(parts) >= 2", "O", ""},
 	{"server/flashcards_handler.go", "len(parts) >= 3", "O", ""},
@@ -285,24 +285,24 @@ var lengthLimitRegistry = []struct {
 	{"server/server.go", "len(path) > 6", "O", ""},
 	{"server/server.go", "len(path) > 8", "O", ""},
 	{"server/server.go", "len(path) > 8", "O", ""},
-	{"server/server_assistant.go", "len(audioData) > 25 << 20", "A", "客户端**上传**的音频（解码后字节）；400 拒绝"},
-	{"server/server_assistant.go", "len(body.Messages) > 50", "A", "消息**条数**（计数）"},
-	{"server/server_assistant.go", "len(body.Subject) > 500", "A", "邮件主题 500 **字节**（§918 已修）"},
-	{"server/server_assistant.go", "len(body.Text) > 16000", "A", "embed 文本 16000 **字节**（§917 已修）"},
-	{"server/server_assistant.go", "len(m.Content) > 32000", "A", "chat 消息 32000 **字节**（§916 已修）"},
+	{"server/server_assistant.go", "len(audioData) > 25 << 20", "A", "客户端**上传**的音频（解码后字节）；400「audio too large (max 25 MB)」。⚠ **可达性：不可达**（**§922 实测**）：前端发的是 JSON+base64（体积 ×4/3）⇒ 外层 25 MiB 卡的是**请求体** ⇒ 解码后最多 ~18.75 MiB ⇒ **永远到不了 25 MiB** ⇒ 这条文案对 JSON 形态是**死文案**（multipart 形态才可达）⇒ §922 已把「太大」与「无效」分开（413 + `stt_audio_too_large`）"},
+	{"server/server_assistant.go", "len(body.Messages) > 50", "A", "消息**条数**（计数）。**可达性：不可达**（前端每次只发 1~2 条）⇒ 登记"},
+	{"server/server_assistant.go", "len(body.Subject) > 500", "A", "邮件主题 500 **字节**（§918 已修：前端按字节裁尾保前缀）。**可达性：可达·可区分**（400 带单位）⇒ 已修"},
+	{"server/server_assistant.go", "len(body.Text) > 16000", "A", "embed 文本 16000 **字节**（§917 已修：切段器两道字节保险）。**可达性：可达·可区分** ⇒ 已修"},
+	{"server/server_assistant.go", "len(m.Content) > 32000", "A", "chat 消息 32000 **字节**（§916 已修：按字节装配 + 转写取尾部）。**可达性：可达·可区分** ⇒ 已修"},
 	{"server/server_assistant.go", "len(runes) > 60", "O", ""},
 	{"server/server_chatagent.go", "len(result) > 20", "O", ""},
 	{"server/server_email_classify_gateway.go", "len([]rune(summary)) > 60", "O", ""},
-	{"server/server_email_folders.go", "len(name) > 200", "A", "客户端提交的**邮箱文件夹名**；400 拒绝"},
-	{"server/server_email_purge.go", "len(body.IDs) > 100", "A", "ID **条数**（计数）"},
-	{"server/server_llmbff.go", "len(body.Messages) > 50", "A", "消息**条数**（计数）"},
-	{"server/server_llmbff.go", "len(body.Tools) > 20", "A", "工具**条数**（计数）"},
-	{"server/server_llmbff.go", "len(m.Content) > 32000", "A", "stream 消息 32000 **字节**（§919 已修）"},
+	{"server/server_email_folders.go", "len(name) > 200", "A", "客户端提交的**邮箱文件夹名**；400「folder name too long」。**可达性：可达·可区分**（⚠ **错误信息没写单位**）⇒ 用户可改短重试 ⇒ 只登记不修"},
+	{"server/server_email_purge.go", "len(body.IDs) > 100", "A", "ID **条数**（计数）；400「too many ids」。⚠ **可达性：可达·不可区分**（**§922 实测**：前端旧实现一次全发 ⇒ 选中 >100 封时服务端 400 被调用方**空 catch 吞掉** ⇒ **本地已清、服务端没清**（正文其实没清掉），界面毫无提示）⇒ **§922 已修**：前端按上限分批（跨语言契约钉住）+ 失败出声"},
+	{"server/server_llmbff.go", "len(body.Messages) > 50", "A", "消息**条数**（计数）。**可达性：不可达**（localagent 最多 1 system + 1 user + 12×2 = **26 条**，`maxSteps` 默认 12）⇒ 登记（⚠ 若 `maxSteps` 提到 25 以上就会撞）"},
+	{"server/server_llmbff.go", "len(body.Tools) > 20", "A", "工具**条数**（计数）。**可达性：不可达**（前端 `ChatStreamInput` **没有 tools 字段** ⇒ 从不发）⇒ 登记"},
+	{"server/server_llmbff.go", "len(m.Content) > 32000", "A", "stream 消息 32000 **字节**（§919 已修：`fitToStreamGate`）。⚠ **可达性：可达·可区分**，但 §919 的修复**只管 `meetings-ai.ts` 那条路**；**localagent 那条路没有字节闸** ⇒ 现在靠两个魔数兜着（`toolResultLimit=4000` 字符 ⇒ ≤12000 字节；`maxSteps=12` ⇒ ≤26 条）⇒ 这两个数**与服务端的闸没有契约** ⇒ 登记（⚠ 调大任一个就会开始 400）"},
 	{"server/server_marketplace.go", "len(parts) >= 3", "O", ""},
 	{"server/server_marketplace.go", "len(s) > 1024", "O", ""},
 	{"server/session_transcript.go", "len([]rune(summary)) > 400", "O", ""},
 	{"server/session_transcript.go", "len(runes) > 80", "O", ""},
-	{"server/task_collaboration_handler.go", "len(clientEventID) > 80", "A", "客户端提交的**事件 ID**；超限返回 error"},
+	{"server/task_collaboration_handler.go", "len(clientEventID) > 80", "A", "客户端提交的**事件 ID**；超限返回 error。**可达性：不可达**（前端生成 `client-<base36>-<8>` ≈ **23 字符**）⇒ 登记"},
 	{"stt/sniff.go", "len(data) >= 12", "O", ""},
 	{"stt/sniff.go", "len(data) >= 12", "O", ""},
 	{"stt/sniff.go", "len(data) >= 2", "O", ""},
@@ -539,5 +539,27 @@ func TestLengthLimitRegistryCoversEveryLengthGate(t *testing.T) {
 	if len(aSet) != 13 {
 		t.Errorf("A 类（客户端可提交字段上的限制）实际 %d 条，期望 13 条 ⇒ "+
 			"要么有人把 A 类改成了 O 类，要么新增了一处客户端可提交的限制没分类", len(aSet))
+	}
+
+	// ④ §922：**每条 A 类都必须写明「可达性」结论**。
+	//
+	// ⚠ 为什么必须有：清单只说「有一道闸」，不说「它会不会真的咬到用户」——
+	//   §922 的可达性审计就卡在这：13 条里有 **4 条根本触发不了**（外层闸先挡）、
+	//   **2 条的错误信息指不到点**（用户改了也不知道是「太长」）。
+	//   ⇒ 没有这条强制，下一个人加闸时**不会**去想「它可达吗、用户看得懂吗」。
+	//
+	// ⚠ 这条只保证「**写下了结论**」，保证不了「结论正确」——可达性是**人工事实**
+	//   （同 ④ 的局限：kind 也是人工事实）。它的作用是**逼人回源码读一遍**。
+	verdictRe := regexp.MustCompile(`可达性：(不可达|可达·可区分|可达·不可区分)`)
+	for _, r := range lengthLimitRegistry {
+		if r.kind != "A" {
+			continue
+		}
+		if !verdictRe.MatchString(r.note) {
+			t.Errorf("清单里 %s %q 是 A 类，但 note 里没有「可达性：<结论>」⇒ "+
+				"§922 的可达性审计对它**没有结论** ⇒ 请回源码读一遍并补上"+
+				"（结论只能是「不可达」/「可达·可区分」/「可达·不可区分」三种之一；"+
+				"「不可达」通常意味着有更外层的闸先挡着）", r.file, r.expr)
+		}
 	}
 }

@@ -400,6 +400,7 @@
     "imapUnauthorized": "Mailbox authorization expired. Please reconnect it.",
     "imapFailed": "Could not reach the mail server. Check your network and account details.",
     "sttNotConfigured": "Speech-to-text is not configured yet.",
+    "sttAudioTooLarge": "That audio file is too large. A single upload is limited to 25 MB.",
     "llmNotConfigured": "No language model configured yet. Pick one in Model settings.",
     "modelNotFound": "That model no longer exists; it may have been removed.",
     "gatewayUnreachable": "Cannot reach the model gateway. Check its address and your network.",

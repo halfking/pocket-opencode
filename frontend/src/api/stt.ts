@@ -34,6 +34,7 @@
 import { sherpa } from '../native/sherpa'
 import { http } from './http'
 import { blobToBase64 } from '../utils/base64'
+import { utf8ByteLength } from '../utils/text'
 
 /**
  * 单段语音转写的客户端超时。
@@ -42,6 +43,22 @@ import { blobToBase64 } from '../utils/base64'
  * **与服务端相等等于客户端先到点**。
  */
 export const STT_TRANSCRIBE_TIMEOUT_MS = 3 * 60_000
+
+/**
+ * 单次上传的**请求体**上限（字节）。
+ *
+ * ⚠ §922：这是**跨语言**的数字 —— 服务端 `requestBodyLimitMiddleware` 对
+ *   `/api/stt/transcribe*` 用 `maxAudioBodyBytes = 25 << 20`（25 MiB）卡**整个请求体**。
+ *   ⇒ 前端必须按**同一个上限**自己先拦一次：不然超限的请求会被服务端
+ *   **截断成半截 JSON** ⇒ 回 400 "invalid body" ⇒「音频太大」被说成「请求体无效」
+ *   （**实测**：26 MiB 的 base64 body 拿到的就是 400 "invalid body"，
+ *   而真实原因是 body 超过了外层的 25 MiB 上限）。
+ *
+ * ⚠ 量的是 **base64 之后的 JSON 体**，不是原始音频：
+ *   base64 把体积放大约 4/3 ⇒ 25 MiB 的请求体 ⇒ 原始音频最多约 **18.75 MiB**。
+ *   ⇒ 判据会拿后端源码里的闸值与这个常量比对 ⇒ 后端改了这里必须同步。
+ */
+export const STT_TRANSCRIBE_MAX_BODY_BYTES = 25 * 1024 * 1024
 import { filenameForMimeType } from './stt-filename'
 import {
   CLOUD_STT_NEED_BLOB,
@@ -93,6 +110,19 @@ export const sttApi = {
       audioBase64: base64,
       filename: filenameForMimeType(audioBlob.type || 'audio/webm'),
     })
+
+    // ⚠ §922：超限就在**本地**拦，不要发出去。
+    //   发了会被服务端截断成半截 JSON ⇒ 400 "invalid body" ⇒ 用户无从判断是「太大」。
+    //   ⇒ 抛的错误与服务端 413 用**同一个错误码** ⇒ extractErrorCode 取得到
+    //   ⇒ 界面上是一句「音频太大」，而不是「操作失败」。
+    //   ⚠ 用 utf8ByteLength（§916/§917 那两道字节闸用的同一个 helper）而不是
+    //   `body.length`：后者是 UTF-16 code units，不是字节。
+    const bodyBytes = utf8ByteLength(body)
+    if (bodyBytes > STT_TRANSCRIBE_MAX_BODY_BYTES) {
+      throw new Error(
+        `stt_audio_too_large: audio too large (max ${STT_TRANSCRIBE_MAX_BODY_BYTES} bytes per upload, got ${bodyBytes})`,
+      )
+    }
 
     // 音频转写比普通 CRUD 慢一个量级（整段 base64 上传 + 推理）。
     //

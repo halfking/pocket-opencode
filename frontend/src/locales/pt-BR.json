@@ -400,6 +400,7 @@
     "imapUnauthorized": "A autorização da caixa de e-mail expirou. Conecte-a novamente.",
     "imapFailed": "Não foi possível contatar o servidor de e-mail. Verifique a rede e a conta.",
     "sttNotConfigured": "A transcrição de voz ainda não foi configurada.",
+    "sttAudioTooLarge": "Esse arquivo de áudio é muito grande. Um único envio é limitado a 25 MB.",
     "llmNotConfigured": "Nenhum modelo de linguagem configurado ainda. Escolha um nas Configurações de modelo.",
     "modelNotFound": "Esse modelo não existe mais; ele pode ter sido removido.",
     "gatewayUnreachable": "Não foi possível acessar o gateway de modelos. Verifique o endereço e a rede.",

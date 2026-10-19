@@ -400,6 +400,7 @@
     "imapUnauthorized": "메일 인증이 만료되었습니다. 다시 인증하세요.",
     "imapFailed": "메일 서버에 연결할 수 없습니다. 네트워크와 계정 정보를 확인하세요.",
     "sttNotConfigured": "음성 인식이 아직 설정되지 않았습니다.",
+    "sttAudioTooLarge": "해당 음성 파일이 너무 큽니다. 한 번의 업로드는 최대 25 MB입니다.",
     "llmNotConfigured": "사용 가능한 모델이 아직 설정되지 않았습니다. 모델 설정에서 선택하세요.",
     "modelNotFound": "해당 모델을 찾을 수 없습니다. 삭제되었을 수 있습니다.",
     "gatewayUnreachable": "모델 게이트웨이에 연결할 수 없습니다. 주소와 네트워크를 확인하세요.",

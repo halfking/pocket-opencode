@@ -28,6 +28,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, it } from 'node:test'
 import { createRequire } from 'node:module'
+import { loadBundle } from '../../../api/__tests__/_wire-helpers.mjs'
 
 const require = createRequire(import.meta.url)
 const ts = require('typescript')
@@ -614,5 +615,206 @@ describe('判据自检：syncNow 的负控必须转红', () => {
     assert.notEqual(inflated, fetcherSrc, '负控样本没有插进注释（替换没命中）')
     assert.equal(syncServerBudgetMs(inflated), syncServerBudgetMs(fetcherSrc),
       '注释里的预算被算进去了——反推判据必须剥注释')
+  })
+})
+// ─────────────────────────────────────────────────────────────────────
+// §922：客户端的「单次预算」必须与服务端的上限是**同一个数字**。
+//
+// 起因是同族的两次静默失败：
+//  ① purge：服务端 `handleEmailPurge` 一次最多 100 个 ID，而前端旧实现一次全发
+//     ⇒ 选中超过 100 封时服务端 400，而调用方把失败**空 catch 吞掉**
+//     ⇒ **本地已清、服务端没清**（正文其实没清掉），界面**毫无提示**；
+//  ② stt：服务端对 `/api/stt/transcribe*` 的**整个请求体**限 25 MiB，
+//     前端不先拦 ⇒ body 超限时被**截断成半截 JSON** ⇒ 服务端回 400 "invalid body"
+//     ⇒「音频太大」被说成「请求体无效」（**实测**：26 MiB 的 body 就是这个结果）。
+//
+// 本文件把这两个数字钉成**跨语言契约**：服务端源码里的闸值 == 前端常量。
+// ⇒ 后端改闸值而前端没跟上 ⇒ 这里转红。
+// ─────────────────────────────────────────────────────────────────────
+
+const STT_API_SRC = path.join(SRC, 'api', 'stt.ts')
+const BACKEND_PURGE = path.join(REPO, 'backend', 'internal', 'server', 'server_email_purge.go')
+const BACKEND_SERVER = path.join(REPO, 'backend', 'internal', 'server', 'server.go')
+
+const sttSrc = fs.readFileSync(STT_API_SRC, 'utf8')
+const purgeGoSrc = fs.readFileSync(BACKEND_PURGE, 'utf8')
+const serverGoSrc = fs.readFileSync(BACKEND_SERVER, 'utf8')
+
+/**
+ * 只取**代码行**：行首（去空白）不是 `//` / `*` / 块注释起始。
+ *
+ * ⚠ 为什么不用本文件既有的 `stripGoComments`：
+ *   它先做**块注释**的非贪婪配对，而 `backend/internal/server/server.go`
+ *   的**第 103 行**（一条 `//` 注释里）写着 `/api/learning/*` ⇒ 于是那个块注释起始
+ *   一直吃到下一个块注释结束 ⇒ **把 `maxAudioBodyBytes` 那整个 const 块吃掉了**
+ *   ⇒ 判据读到「后端没有这个常量」⇒ **量具坏了却像是后端改了**。
+ *   ⇒ 这与 §921 的「手写剥注释状态机吃掉 14 处真实代码」是同一族。
+ *
+ *   本函数**只按行首判断**（Go 的行注释与块注释内容行都以 `//` 或 `*` 开头）⇒
+ *   不做跨行配对 ⇒ 不会跨结构吞代码。⚠ 已知残留：块注释里若有一行不以
+ *   `*` 开头且**正好**写着被查的那个表达式，仍会被算进来 ⇒ 用负控盯住。
+ *
+ * ⚠ 写这段注释时踩过一次：正文里若出现块注释的结束符，**会把自己的注释提前闭合**
+ *   ⇒ 下一个词被当成代码 ⇒ SyntaxError。⇒ 注释里别写结束符。
+ */
+export function goCodeLines(src) {
+  return src.split('\n').filter((l) => {
+    const t = l.trim()
+    return t && !t.startsWith('//') && !t.startsWith('*') && !t.startsWith('/*')
+  })
+}
+
+/** 从 Go 源码里取 `len(body.IDs) > N` 的 N。 */
+/**
+ * ⚠ **两层**过滤，缺一不可：
+ *   ① `goCodeLines` 排掉**整行**注释（行首是 `//` / `*`）；
+ *   ② 正则**锚在语句位置**（行首是 `if`）⇒ **行尾**注释（`if … { // 说明`）
+ *      里若塞了一个假数字，**锚定**让它匹配不上。
+ *   ⚠ 只做①的实测后果：负控注入 `\tif // len(body.IDs) > 999`
+ *      （行首是 `if`、不是 `//`）⇒ 被算进去 ⇒ 判据读到 999。
+ */
+export function purgeServerMaxIds(goSrc) {
+  for (const l of goCodeLines(goSrc)) {
+    const m = /^\s*if\s+len\(\s*body\.IDs\s*\)\s*>\s*(\d+)/.exec(l)
+    if (m) return Number(m[1])
+  }
+  return null
+}
+
+/** 从 Go 源码里取 `maxAudioBodyBytes = N << K` 的字节数（只看代码行）。 */
+export function audioServerMaxBodyBytes(goSrc) {
+  for (const l of goCodeLines(goSrc)) {
+    const m = /^\s*maxAudioBodyBytes\s*=\s*(\d+)\s*<<\s*(\d+)/.exec(l)
+    if (m) return Number(m[1]) * (1 << Number(m[2]))
+  }
+  return null
+}
+
+/**
+ * 取 `export const <objectName> = { <methodName>(...) {...} }` 的方法体，
+ * 返回它**调用过的实参文本**与**引用过的标识符**。
+ *
+ * 走 AST 而不是字符串匹配，是为了让注释满足不了它
+ * （本文件既有的 `pipelineWiring` 同一个理由）。
+ */
+export function methodBodyRefs(src, objectName, methodName) {
+  const sf = ts.createSourceFile('x.ts', src, ts.ScriptTarget.Latest, true)
+  const calls = []
+  const idents = new Set()
+  const walk = (node) => {
+    if (ts.isVariableDeclaration(node)
+      && node.name.getText(sf) === objectName
+      && node.initializer && ts.isObjectLiteralExpression(node.initializer)) {
+      for (const prop of node.initializer.properties) {
+        let name = ''
+        let body = null
+        if (ts.isPropertyAssignment(prop)) {
+          name = prop.name.getText(sf)
+          body = prop.initializer
+        } else if (ts.isMethodDeclaration(prop)) {
+          name = prop.name.getText(sf)
+          body = prop.body
+        }
+        if (!body || name !== methodName) continue
+        const visit = (n) => {
+          if (ts.isCallExpression(n)) {
+            calls.push({
+              callee: n.expression.getText(sf),
+              args: n.arguments.map((a) => a.getText(sf).replace(/\s+/g, ' ')),
+            })
+          }
+          if (ts.isIdentifier(n)) idents.add(n.getText(sf))
+          ts.forEachChild(n, visit)
+        }
+        visit(body)
+      }
+    }
+    ts.forEachChild(node, walk)
+  }
+  walk(sf)
+  return { calls, idents }
+}
+
+describe('§922 客户端单次预算必须与服务端闸值是同一个数字', () => {
+  it('purge：前端分批上限 == 服务端 handleEmailPurge 的 ID 上限', () => {
+    const serverMax = purgeServerMaxIds(purgeGoSrc)
+    assert.ok(serverMax !== null,
+      '后端源码里读不到 `len(body.IDs) > N` ⇒ 判据的量具坏了（不是「后端没这道闸」）')
+    const frontMax = evalConstMs(apiSrc, 'PURGE_MAX_IDS_PER_REQUEST')
+    assert.equal(frontMax, serverMax,
+      `前端 PURGE_MAX_IDS_PER_REQUEST=${frontMax} ≠ 服务端 handleEmailPurge 的 ${serverMax}` +
+      ' ⇒ 前端会按错的尺寸发 ⇒ 选中超过服务端上限的邮件时服务端 400，而调用方把失败吞掉了')
+  })
+
+  it('stt：前端上传体上限 == 服务端对 /api/stt/transcribe* 的请求体上限', () => {
+    const serverMax = audioServerMaxBodyBytes(serverGoSrc)
+    assert.ok(serverMax !== null,
+      '后端源码里读不到 `maxAudioBodyBytes = N << K` ⇒ 判据的量具坏了')
+    const frontMax = evalConstMs(sttSrc, 'STT_TRANSCRIBE_MAX_BODY_BYTES')
+    assert.equal(frontMax, serverMax,
+      `前端 STT_TRANSCRIBE_MAX_BODY_BYTES=${frontMax} ≠ 服务端 maxAudioBodyBytes 的 ${serverMax}` +
+      ' ⇒ 前端会发一个服务端必定拒掉的请求体 ⇒ 而服务端回的是「请求体无效」这种指不到点的文案')
+  })
+
+  it('purge 的分批真接上了（不是只定义了常量）', () => {
+    const { calls } = methodBodyRefs(apiSrc, 'emailApi', 'purgeEmails')
+    const hit = calls.find((c) => c.callee === 'chunkByLimit')
+    assert.ok(hit,
+      'emailApi.purgeEmails 没有调用 chunkByLimit ⇒ 分批没接上（常量定义了也没用）')
+    assert.equal(hit.args[1], 'PURGE_MAX_IDS_PER_REQUEST',
+      '分批用的不是那个常量 ⇒ 上限会与跨语言契约脱钩')
+  })
+
+  it('stt 的上限检查真在发请求之前（不是只定义了常量）', () => {
+    const { idents } = methodBodyRefs(sttSrc, 'sttApi', 'transcribe')
+    assert.ok(idents.has('STT_TRANSCRIBE_MAX_BODY_BYTES'),
+      'sttApi.transcribe 没引用上限常量 ⇒ 超限请求照发')
+    assert.ok(idents.has('utf8ByteLength'),
+      'sttApi.transcribe 没用 utf8ByteLength ⇒ 量的是 UTF-16 code units 而不是字节（§916 同族坑）')
+  })
+})
+
+describe('§922 chunkByLimit 的分批语义（行为断言）', () => {
+  it('按上限切批：不丢不重，空数组不出批', async () => {
+    const mod = await loadBundle(path.join(SRC, 'utils', 'chunk.ts'), 's922-chunk')
+    const { chunkByLimit } = mod
+    assert.equal(typeof chunkByLimit, 'function', 'chunkByLimit 没导出 ⇒ 判据的量具坏了')
+
+    // 边界：恰好等于上限 ⇒ 1 批
+    assert.equal(chunkByLimit([1, 2, 3], 3).length, 1)
+    // 超过上限 ⇒ 分批
+    const ids = Array.from({ length: 101 }, (_, i) => `e-${i}`)
+    const batches = chunkByLimit(ids, 100)
+    assert.equal(batches.length, 2, '101 个 id / 上限 100 ⇒ 应切 2 批')
+    assert.equal(batches[0].length, 100)
+    assert.equal(batches[1].length, 1)
+    // ⭐ 不丢不重：合起来正好是原数组（顺序也保持）
+    assert.deepEqual(batches.flat(), ids, '分批丢了或重了元素 ⇒ 会有邮件既没本地清也没服务端清')
+    // 空数组 ⇒ 不出批（不该发空请求）
+    assert.deepEqual(chunkByLimit([], 100), [])
+    // 上限 ≤ 0 不许死循环
+    assert.equal(chunkByLimit([1, 2], 0).length, 2, '上限 0 时没有死循环（且没有丢元素）')
+  })
+})
+
+describe('§922 判据自检：负控必须转红', () => {
+  it('负控：服务端的闸值改了而前端没跟上 ⇒ 跨语言判据转红', () => {
+    const broken = purgeGoSrc.replace('len(body.IDs) > 100', 'len(body.IDs) > 250')
+    assert.notEqual(broken, purgeGoSrc, '负控样本没有改到后端闸值（替换没命中）')
+    const serverMax = purgeServerMaxIds(broken)
+    const frontMax = evalConstMs(apiSrc, 'PURGE_MAX_IDS_PER_REQUEST')
+    assert.notEqual(frontMax, serverMax,
+      '后端闸值改了、前端没跟上，判据却判成通过——跨语言判据坏了')
+  })
+
+  it('负控：注释里的闸值不许被算进去（反推判据必须剥注释）', () => {
+    // 两种形态都注入：① 整行注释（行首是 //）② 行尾注释（行首是 if）
+    const inflated = purgeGoSrc.replace(
+      '\tif len(body.IDs) > 100 {',
+      '\t// len(body.IDs) > 999\n\tif len(body.IDs) > 100 { // len(body.IDs) > 888',
+    )
+    assert.notEqual(inflated, purgeGoSrc, '负控样本没有插进注释（替换没命中）')
+    assert.equal(purgeServerMaxIds(inflated), purgeServerMaxIds(purgeGoSrc),
+      '注释里的闸值被算进去了——反推判据必须既排整行注释、又锚在语句位置')
   })
 })

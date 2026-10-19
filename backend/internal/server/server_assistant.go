@@ -2692,6 +2692,15 @@ func (s *Server) handleSttTranscribe(w http.ResponseWriter, r *http.Request) {
 	if strings.HasPrefix(ct, "multipart/form-data") {
 		// 解析 multipart，限制 25 MB
 		if err := r.ParseMultipartForm(25 << 20); err != nil {
+			// ⚠ §922：body 超过外层上限时，ParseMultipartForm 的错误里裹着
+			//   *http.MaxBytesError ⇒ 原先回 400 且把 Go 内部串直接拼进文案
+			//   ⇒ 同样改成 413 + 稳定错误码（前端 extractErrorCode 能取到）。
+			var maxErr *http.MaxBytesError
+			if errors.As(err, &maxErr) {
+				writeError(w, http.StatusRequestEntityTooLarge,
+					"stt_audio_too_large: audio too large (max 25 MB)")
+				return
+			}
 			writeError(w, http.StatusBadRequest, "failed to parse multipart: "+err.Error())
 			return
 		}
@@ -2709,11 +2718,31 @@ func (s *Server) handleSttTranscribe(w http.ResponseWriter, r *http.Request) {
 		}
 	} else if strings.HasPrefix(ct, "application/json") || ct == "" {
 		// JSON body: { "audioBase64": "..." }
+		//
+		// ⚠ §922：原来直接 `json.NewDecoder(r.Body).Decode(&body)` ⇒ body 超限时
+		//   JSON **被截在半截** ⇒ decode 必然失败 ⇒ 回 **400 "invalid body"**
+		//   ⇒「音频太大」被伪装成「请求体无效」⇒ 用户完全无从判断。
+		//   ⇒ 实测：26 MiB 的 base64 body 拿到的就是 400 "invalid body"，
+		//   而真实原因是 body 超过了外层的 25 MiB 上限。
+		//   ⇒ 改成先读出来，并把两种结论分开：**读超了** ⇒ 413 + 明确文案
+		//   （前端 extractErrorCode 取 'stt_audio_too_large'）；
+		//   **JSON 坏了** ⇒ 仍是 400 "invalid body"（**不改变既有语义**）。
+		raw, readErr := io.ReadAll(r.Body)
+		if readErr != nil {
+			var maxErr *http.MaxBytesError
+			if errors.As(readErr, &maxErr) {
+				writeError(w, http.StatusRequestEntityTooLarge,
+					"stt_audio_too_large: audio too large (max 25 MB)")
+				return
+			}
+			writeError(w, http.StatusBadRequest, "read body: "+readErr.Error())
+			return
+		}
 		var body struct {
 			AudioBase64 string `json:"audioBase64"`
 			Filename    string `json:"filename"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		if err := json.NewDecoder(bytes.NewReader(raw)).Decode(&body); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid body")
 			return
 		}
