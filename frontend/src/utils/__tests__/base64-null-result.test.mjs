@@ -779,3 +779,151 @@ describe('§895 · §891 收编的字节级行为门：落盘字节必须是 UTF
     ].join('\n')), '规则把 bytes→base64（另一个概念）误判了 ⇒ 规则太宽')
   })
 })
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §896：§888 收编 `blobToBase64`（5 份 → 1 份）后的**字节级行为门**。
+//
+// 缺口形态：§888.5 的 6 条判据里，**没有一条钉字节** ——
+//   判据 2/3/4 是文本扫描（证明「实现搬走了」），判据 5/6 是负控，
+//   字节侧只有一条 `blobToBase64(new Blob(['x'])) === 'QUJD'`（**单字符**样本）。
+// ⇒ 「搬走之后行为对」只靠一个 ASCII 字符撑着：改一下 base64 的**编码族**
+//   （例如把二进制当 utf-8 文本再编一次），单字符样本照样绿。
+//
+// 而这条数据路径是**落盘**路径：`note-files.ts:101`（附件）、`audio-parts.ts:34`
+//   （录音分片）、`download.ts:79`、`api/stt.ts:91`（音频上传）
+//   ⇒ 字节错一次 = 写出去的 base64 解回来不是原字节。
+//
+// 判据锚点：**Node Buffer 的字节真值**（不是抄一份实现再比一遍，§889.8.3 纪律）。
+// 判据形态：直接 import 真实函数 + 真实 Blob ⇒ 形态无关。
+// 负控用**自洽同族**（§895 纪律：自洽判据对「两侧同时换族」无感，
+//   所以负控必须是自洽的，才证明字节门抓的是「字节族」而不是「单侧改动」）。
+// ─────────────────────────────────────────────────────────────────────────────
+describe('§896 · §888 收编的字节级行为门：Blob 字节必须原样编成 base64', () => {
+  /**
+   * 装一个**真读字节**的 FileReader 桩。
+   * ⚠ 为什么不能用现成的 `stubFileReader({result})`：它返回写死的字符串，
+   *   于是测试锚的是**桩里手写的常量**，不是 Blob 的真实字节 ⇒ 门会失明。
+   *   这里让桩自己去 `blob.arrayBuffer()` 取真字节，再用 Buffer 编 base64 ——
+   *   锚点仍是 Node Buffer 的字节真值。
+   */
+  const stubRealFileReader = () => {
+    globalThis.FileReader = class RealishFileReader {
+      constructor() {
+        this.result = null
+        this.error = null
+        this.onloadend = null
+        this.onerror = null
+        this.onabort = null
+      }
+      readAsDataURL(blob) {
+        queueMicrotask(async () => {
+          try {
+            const bytes = Buffer.from(await blob.arrayBuffer())
+            this.result = `data:${blob.type || 'application/octet-stream'};base64,${bytes.toString('base64')}`
+            this.onloadend?.({ type: 'loadend', target: this })
+          } catch (err) {
+            this.error = err
+            this.onerror?.({ type: 'error', target: this })
+          }
+        })
+      }
+    }
+  }
+
+  /**
+   * 逐字节覆盖：0..255 全量、跨分块、含 0x00/0x80/0xFF 的边界。
+   *
+   * ⚠ **空 Blob 不在这里**，它单列在下面那条「边界登记」里 ——
+   *   实测：空 Blob 的 data URL 是 `data:...;base64,`（**没有 payload**），
+   *   而 §888 的公共实现把「缺 base64 部分」当失败 ⇒ reject。
+   *   这是**既有行为**（不是本节引入的），本节**不改生产代码**，
+   *   只把这条边界如实钉住，免得下一个人以为「空 blob 也该编出空串」。
+   */
+  const BYTE_CASES = [
+    ['单字节 0x41', new Uint8Array([0x41])],
+    ['全 0..255 字节', new Uint8Array(Array.from({ length: 256 }, (_, i) => i))],
+    ['含 NUL 与高位字节', new Uint8Array([0x00, 0x01, 0x7f, 0x80, 0xfe, 0xff])],
+    ['跨 32768 分块边界', new Uint8Array(Array.from({ length: 40000 }, (_, i) => i % 256))],
+  ]
+
+  it('★★★ blobToBase64 的输出与 Node Buffer 的字节真值逐字节一致', async () => {
+    stubRealFileReader()
+    for (const [name, bytes] of BYTE_CASES) {
+      const blob = new Blob([bytes], { type: 'application/octet-stream' })
+      const got = await blobToBase64(blob)
+      assert.equal(got, Buffer.from(bytes).toString('base64'),
+        `${name}：blobToBase64 的输出与 Blob 字节不一致 ⇒ §888 收编后落盘的 base64 解回来不是原字节`)
+    }
+  })
+
+  it('★★ 边界登记：空 Blob 走「缺 base64 部分」⇒ reject（既有行为，非本节引入）', async () => {
+    // ⚠ 如实登记，而不是把它塞进上面的字节真值表里 —— 空 Blob 的 base64
+    //   确实是空串（Buffer 对得上），但**公共实现到不了那一步**：
+    //   它的 data URL 形如 `data:...;base64,`，split(',')[1] 是空串 ⇒
+    //   被 §888 的「缺 base64 部分」守卫判为失败 ⇒ reject。
+    //   这条是**既有行为**（§888 收编前那 5 份里行为不一，本节不代拍统一口径）。
+    //   登记它，是为了让「空 blob 静默产出空串」这种改动**必须显式改这条用例**，
+    //   而不会被当成无关重构顺手带过去。
+    stubRealFileReader()
+    const got = await settleWithin(blobToBase64(new Blob([])))
+    assert.ok(got, '★ promise 挂起')
+    assert.equal(got.state, 'rejected',
+      '空 Blob 现在 resolve 了（多半是 resolve 空串）—— 这与 §888 的守卫不一致，' +
+      '若确属有意变更，请连同本用例与简报一并改口径')
+    assert.match(got.value.message, /base64/, '拒绝原因应说得出是 data URL 里没有 base64 部分')
+  })
+
+  it('★★ 负控：换成 utf-8 扩张的**自洽同族**时，字节门必须红（单字符样本抓不住）', () => {
+    // ⚠ 这个对照的关键性质：**它自洽**。
+    //   enc_wrong：把二进制当 latin1 字符串再按 utf-8 编码一遍（高位字节 ⇒ 变长）
+    //   dec_wrong：反向做一次
+    //   ⇒ dec_wrong(enc_wrong(x)) === x（往返成立）
+    //   ⇒ 但 enc_wrong(x) 的**字节**与 x 不同。
+    // 也就是 §895 记录的形态：单侧/双侧自洽的「另一族」都能骗过往返型判据，
+    // 只有锚 Buffer 的字节门能抓住。
+    const enc_wrong = (bytes) => {
+      const latin1 = String.fromCharCode(...bytes)
+      return Buffer.from(unescape(encodeURIComponent(latin1)), 'latin1').toString('base64')
+    }
+    const dec_wrong = (b64) => {
+      const bin = atob(b64)
+      const u = new Uint8Array(bin.length)
+      for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i)
+      return decodeURIComponent(escape(String.fromCharCode(...u)))
+    }
+    const bytes = new Uint8Array([0x00, 0x41, 0x80, 0xff])
+    // 对照的两个性质必须同时成立，否则它证明不了任何事：
+    assert.equal(dec_wrong(enc_wrong(bytes)), String.fromCharCode(...bytes),
+      '负控假定失效：这个对照连往返都不成立 ⇒ 它证明不了「往返型判据无感」')
+    assert.notEqual(enc_wrong(bytes), Buffer.from(bytes).toString('base64'),
+      '负控假定失效：这个对照的字节与真值相同 ⇒ 它证明不了「字节门能咬住」')
+    // 而单字符样本（§888 既有那条 'x' → 'QUJD'）**抓不住**它 ⇒ 这就是缺口本身。
+    assert.equal(enc_wrong(new Uint8Array([0x78])), 'eA==',
+      '负控前提失效：单字符样本在新同族下应当仍然成立（它全 ASCII ⇒ 编码族无关）')
+  })
+
+  it('★ 落点登记：Blob→base64 的落盘/上传路径必须走公共实现', () => {
+    // 这一条是**逐落点限定**的形状门（证明「别搬回去」），不是字节门。
+    const SRC_ROOT = new URL('../../', import.meta.url).pathname
+    const strip = (s) => s
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/(^|[^:])\/\/.*$/gm, '$1')
+    // 形状：Blob → base64 必经「读字节 + 编 base64」两步。
+    // ⚠ 不能判 `btoa(`：Blob 那条路走的是 FileReader 的 data URL，不经 btoa。
+    //   判据锚的是「自带 FileReader」这一形态——那就是自带实现的特征。
+    const hasOwnReader = (src) => /new\s+FileReader\s*\(/.test(src) || /readAsDataURL\s*\(/.test(src)
+    const LANDING = [
+      'features/meetings/audio-parts.ts',
+      'composables/usePdfViewer.ts',
+      'features/email/use-invoice-thumbs.ts',
+    ]
+    const back = []
+    for (const file of LANDING) {
+      const src = strip(readFileSync(resolve(SRC_ROOT, file), 'utf8'))
+      if (hasOwnReader(src)) back.push(file)
+    }
+    assert.deepEqual(back, [],
+      `这些 §888 收编过的落点又自带了一份 Blob→base64 实现：\n  - ${back.join('\n  - ')}\n` +
+      '公共实现在 utils/base64.ts::blobToBase64，请改成 import。')
+  })
+})
