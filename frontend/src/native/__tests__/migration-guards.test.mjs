@@ -929,6 +929,42 @@ describe('§899 · D68：增量重嵌与段边界稳定性', () => {
     ).join('\n\n')
   }
 
+  /**
+   * ⭐ **真实转写形状**的语料（§900）。
+   *
+   * ⚠⚠ 实测 `.artifacts/asr-s788/seg-asr/merged.txt`（一场真实会议的合并转写）：
+   *   3392 字 / **52 行** / 单 `\n` **52** 次 / `\n\n` **0** 次 / **空行率 0%**
+   *   每行就是一个 ASR 分段（中位 66 字）。
+   *   ⇒ 「空行锚点」在真实数据上**一个边界都找不到** ⇒ 增量重嵌退化成 0 复用。
+   *
+   * ⚠ 这条语料必须保持这个形状 —— 下面每条判据的结论都建立在它身上。
+   */
+  function realTranscriptShape(n) {
+    return Array.from({ length: n }, (_, i) =>
+      `第${i}点网关的抽象层现在有一个整体系有一套那个整大模型抽象层，然后所谓的CI能够借用到这个抽象层${'细节'.repeat(5)}`,
+    ).join('\n')
+  }
+
+  it('★★★ 真实转写形状的语料：改一处之后仍要绝大多数段不变（§900 回归钉）', () => {
+    // ⚠ 下面这条是 §900 的**回归钉**：§899 的空行锚点在这条语料上复用率是 0。
+    const text = realTranscriptShape(320)
+    // 先自证语料形状 —— 不然下面量的是「另一个形状」
+    assert.equal(text.split('\n\n').length, 1, '语料里出现了空行 ⇒ 不是真实转写的形状')
+    assert.equal(text.split('\n').length, 320, '行数不对')
+    assert.ok(text.length > 16000, `语料只有 ${text.length} 字，还没超过单发上限`)
+
+    const before = splitForEmbedding(text)
+    const after = splitForEmbedding(text.replace('第8点', '第8点（已更正）'))
+    assert.ok(before.length > 1, `只切出 ${before.length} 段 ⇒ 没走到分段路径`)
+    const set = new Set(before.map((c) => c.text))
+    const same = after.filter((c) => set.has(c.text)).length
+    assert.ok(
+      same / after.length >= 0.6,
+      `真实形状下改一处只有 ${same}/${after.length} 段未变（${((same / after.length) * 100).toFixed(1)}%）` +
+        `⇒ 锚点退化了（空行锚点在真实转写上复用率是 0，§900 实测）`,
+    )
+  })
+
   it('★★★ 前置闸：夹具必须真的走「分段」路径（否则下面几条全是恒真）', () => {
     const text = meetingText(300)
     assert.ok(text.length > 16000, `夹具只有 ${text.length} 字，还没超过单发上限 16000 ⇒ 下面走的是早退分支`)
