@@ -419,8 +419,11 @@ describe('§896 · D66：向量化用的文本不该是 FTS 文本，也不该�
     assert.match(u, /const EMBED_TEXT_CHAR_LIMIT = 16000/,
       'EMBED_TEXT_CHAR_LIMIT 不存在或不是 16000 ⇒ /api/embed 会拿到必然被拒的请求体')
     // 请求体必须发的是**段文本**，不是原 content
-    assert.match(u, /JSON\.stringify\(\{ text: c\.text \}\)/,
-      '/api/embed 请求体没有用段文本 c.text（仍在发整篇 content ⇒ 超长必然 400）')
+    // ⚠⚠ §899：段文本的取法从 `c.text` 变成 `chunks[i].text`（增量重嵌那一版），
+    //   所以这里**不再钉死变量名**，只钉「发的是某个段的 .text」。
+    //   ⇒ 钉变量名会把「换了取法但语义没变」误判成缺陷。
+    assert.match(u, /JSON\.stringify\(\{ text: [A-Za-z_\[\]0-9.]+\.text \}\)/,
+      '/api/embed 请求体没有用段文本（仍在发整篇 content ⇒ 超长必然 400）')
     assert.doesNotMatch(u, /JSON\.stringify\(\{ text: content \}\)/,
       '/api/embed 又在发整篇 content ⇒ 超长笔记必然 400 且永远拿不到向量')
     // 行为：切段器吐出来的每一段都必须在上限内，且**整篇被覆盖**（不丢尾部）
