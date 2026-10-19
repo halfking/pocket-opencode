@@ -469,9 +469,10 @@ function normalizeActionItems(raw: unknown): ActionItem[] {
  * ⚠⚠ **单位是 UTF-8 字节，不是字符** —— 这是本节最要紧的一条。
  *
  *   出处（服务端两处同值）：
- *   `backend/internal/server/server_assistant.go:2948`
+ *   `backend/internal/server/server_assistant.go` 的 `handleLLMChat`
  *     —— `if len(m.Content) > 32000 { 400 "message too long (max 32000 bytes per message)" }`
- *   `backend/internal/server/server_llmbff.go:125`（流式那条入口，同值）
+ *   `backend/internal/server/server_llmbff.go` 的 `/api/llm/stream` 入口（同值）
+ *   ⚠ **不写行号**：行号会随代码增长漂（本处就曾漂过 7 行）⇒ 按**符号**指。
  *
  *   Go 的 `len(string)` 返回的是**字节数**
  *   ⇒ 32000 字节 ≈ **10666 个中文字**（这是**闸的语义**：按 3 字节/字）。
@@ -482,7 +483,8 @@ function normalizeActionItems(raw: unknown): ActionItem[] {
  *     ⇒ 精校兜底（模板开销 3172 字节）≈ **33.9 分钟**
  *     ⇒ 流式纪要（§919 修好后）**永不超闸**（被裁进闸内）。
  *   ⚠⚠ 这比先前按「字符」估的「≈2 小时」**短 3 倍** ——
- *     同样地，`/api/embed` 的 16000 闸（`server_assistant.go:2853`，也是字节）
+ *     同样地，`/api/embed` 的 16000 闸（`server_assistant.go` 的 `handleEmbed`：
+ *     `len(body.Text) > 16000`，也是字节）
  *     只装得下 **5333 个中文字** ≈ **19.7 分钟**，
  *     而 §896/§912 当时按「16000 字」算出来的是「63 分钟」⇒ **那两个数字要更正**。
  *   ⚠ 错误信息原先写的是「chars」⇒ **信息与判定不同形**（这正是本节那个坑的成因）

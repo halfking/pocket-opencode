@@ -2,6 +2,13 @@ package server
 
 // server_llm_chat_test.go — /api/llm/chat 迁移动态网关（BFF）后的行为回归。
 //
+// ⚠⚠ §921 起，本文件**还**守着**全仓「长度限制」清单**（`lengthLimitRegistry`）
+//   —— ⚠ 因为闸有 4 道 A 类字节闸散在两个 handler（`server_assistant.go` 与
+//   `server_llmbff.go`）里，而「它们在哪个文件」这件事在 §918 被人工核对时**漏了一道**
+//   ⇒ 本文件后半段的清单门是那道漏的**结构性补丁**。
+//   ⇒ 清单门与本文件原有的跨语言常量门是**两件事**：前者守「有没有漏登记」，
+//     后者守「登记的值与服务端一不一致」。
+//
 // 关键契约（2026-09-05 迁移，见 runbook §14/§15）：
 //  1. llmBFF 已装配时，即使静态 s.llm 为 nil（启动时未配 POCKET_LLM_API_KEY），
 //     /api/llm/chat 也必须 200 —— 旧的恒 503 分支已消除；
@@ -10,11 +17,20 @@ package server
 //  3. 响应形状保持 {"content","model"}，前端（meetings.ts 兜底路径）无需改动。
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/printer"
+	"go/token"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -192,5 +208,336 @@ func TestLLMChatLengthGateConstantMatchesFrontend(t *testing.T) {
 	if bffGate != streamFrontGate {
 		t.Fatalf("前端 /api/llm/stream 镜像的闸值 %s ≠ 服务端该端点的 %s ⇒ 流式会议纪要对长会议必然 400（§919）",
 			streamFrontGate, bffGate)
+	}
+}
+
+// §921：全仓「长度限制」清单 —— **防漏门**。
+//
+// ⚠ 为什么要有它（这是本节的起因）：§918 逐条人工核对「A 类内容长度闸全仓只有 3 道」
+//
+//	⇒ §919 实测发现**第 4 道**（/api/llm/stream 的 32000）⇒ **人工清单 ≠ 全集**
+//	⇒ 缺陷复发（本仓这一族已经复发四次：§916 / §917 / §918 / §919）。
+//	⇒ 本门把清单变成**数据**，并用 **go/parser（官方 AST）**把全集扫出来逐处比对。
+//
+// ⚠ 三条口径（每一条都是本节的**量具事故**换来的，三次连栽）：
+//
+//	① **必须用 go/parser**，不能正则、也不能手写剥注释：
+//	   · 正则的 `[^;]+` 贪婪吃到 `{` ⇒ 阈值变成 "16000 {" ⇒ 候选 **0 处**
+//	   · 手写逐字符状态机 ⇒ 未闭合的 `"` 把后面整段当字符串 ⇒ 候选 **0 处**
+//	   · 行级块注释状态机 ⇒ 块注释吃掉 **14 处**真实代码（含 4 道 A 类闸）
+//	   ⇒ 三次都表现为「0 命中」⇒ 记忆里那条「0 命中的第一嫌疑是量具坏了」当场命中。
+//	② **必须钉住候选的绝对条数**（65）⇒ 否则扫描器坏了门也绿（**假绿**）。
+//	③ 键 = 「文件 + 表达式文本」⇒ 同一键可重复 ⇒ 门用**多重集**比对。
+//
+// ⚠ **已知局限**（明确写出，不假装覆盖）：
+//
+//	· **只管 `len()` 形态**。请求体上限（`http.MaxBytesReader` / `io.LimitReader(r.Body, …)`，
+//	  §918 的 C 类：全局 2 MiB + 聊天 32 MiB + 移动端 1 MiB）**不在本清单内**
+//	  ⇒ 新增一道请求体上限，本门**不会**红。
+//	· 只认**字面量阈值**（含 `N<<K`）⇒ 阈值来自常量或变量时扫不到。
+//	· 只扫 `backend/internal/`（不含 `cmd/`）。
+//	· kind 只是**人工分类**（A = 客户端可提交字段上的限制）：门能防「新增一处却没登记」，
+//	  并用**第二份钉住清单**（lengthLimitRegistryAKeys）保证「清单里的 A 类集合」与
+//	  「被钉住的 A 类集合」一致 ⇒ **A↔O 对调**（条数守恒的那种）**也会红**。
+//	  ⚠ 但「这个键到底算不算客户端可提交」本身仍是**人工事实**：门保证的是**一致**，
+//	    保证不了**正确** ⇒ 本节实测人工分类就错了 4 处（2 条 O→A、2 条 A→O）⇒
+//	    所以每条 A 类的 note 都写成**带证据**的形式（来源 + 拒绝还是截断 + 单位），好让下一个人复核。
+var lengthLimitRegistry = []struct {
+	file, expr, kind, note string
+}{
+	{"adapter/disk/codex.go", "len(rest) > 20", "O", ""},
+	{"adapter/disk/parse.go", "len(tag) > 60", "O", ""},
+	{"agentbridge/store.go", "len(s) >= 2", "O", ""},
+	{"agentbridge/store.go", "len(s) >= 2", "O", ""},
+	{"auth/email_codes.go", "len(s) > 254", "A", "客户端提交的**邮箱地址**（发送验证码路径 email_codes.go:73 ⇒ ErrEmailInvalid）；`len(s)`=**字节** ⇒ 254 字节"},
+	{"db/pg.go", "len(s) > 63", "O", ""},
+	{"email/fetcher.go", "len(s) > 64", "O", ""},
+	{"email/invoice.go", "len(raw) > 64 << 10", "O", ""},
+	{"email/invoice_file.go", "len(data) >= 12", "O", ""},
+	{"email/invoice_file.go", "len(data) >= 3", "O", ""},
+	{"email/invoice_file.go", "len(data) >= 8", "O", ""},
+	{"email/invoice_harvest.go", "len(b) > 1024", "O", ""},
+	{"email/invoice_harvest.go", "len(out) > 10", "O", ""},
+	{"email/invoice_harvest.go", "len(u) > 2000", "O", ""},
+	{"email/store_folders.go", "len(entries) > 200", "O", ""},
+	{"email/store_folders.go", "len(ids) > 200", "O", ""},
+	{"email/store_folders.go", "len(ids) > 500", "O", ""},
+	{"email/store_folders.go", "len(keys) > 500", "O", ""},
+	{"feishu/sheet.go", "len(values) > 5000", "O", ""},
+	{"finance/recognizer.go", "len(m) >= 2", "O", ""},
+	{"finance/recognizer.go", "len(m) >= 3", "O", ""},
+	{"mcp/client.go", "len(msg) > 512", "O", ""},
+	{"mcp/client.go", "len(parts) >= 2", "O", ""},
+	{"migration/service.go", "len(last) > 200", "O", ""},
+	{"migration/service.go", "len(text) > 500", "O", "从 **adapter 消息派生**的状态摘要（**截断** 500 字节，不是拒绝）"},
+	{"orchestrator/acc_dispatcher.go", "len(prompt) > 64", "O", ""},
+	{"rss/sharecard.go", "len(lines) > 4", "O", ""},
+	{"rss/sharecard.go", "len(summaryLines) > 6", "O", ""},
+	{"server/flashcards_handler.go", "len([]rune(name)) > 80", "A", "客户端提交的**卡片名**；`[]rune` ⇒ **码元**闸（80 码元，不是 80 字节）；400 拒绝"},
+	{"server/flashcards_handler.go", "len(parts) >= 2", "O", ""},
+	{"server/flashcards_handler.go", "len(parts) >= 2", "O", ""},
+	{"server/flashcards_handler.go", "len(parts) >= 3", "O", ""},
+	{"server/llm_gateway_admin_client.go", "len(trimmed) > 200", "O", "**网关错误体**截断（服务端派生，不是客户端提交的字段）"},
+	{"server/llm_gateway_nodes_proxy.go", "len(s) > 64", "O", ""},
+	{"server/mobile_api.go", "len(tokenString) > 7", "O", ""},
+	{"server/mobile_idempotency.go", "len(c.entries) > 4096", "O", ""},
+	{"server/mobile_idempotency.go", "len(c.entries) > 4096", "O", ""},
+	{"server/server.go", "len(path) > 6", "O", ""},
+	{"server/server.go", "len(path) > 8", "O", ""},
+	{"server/server.go", "len(path) > 8", "O", ""},
+	{"server/server_assistant.go", "len(audioData) > 25 << 20", "A", "客户端**上传**的音频（解码后字节）；400 拒绝"},
+	{"server/server_assistant.go", "len(body.Messages) > 50", "A", "消息**条数**（计数）"},
+	{"server/server_assistant.go", "len(body.Subject) > 500", "A", "邮件主题 500 **字节**（§918 已修）"},
+	{"server/server_assistant.go", "len(body.Text) > 16000", "A", "embed 文本 16000 **字节**（§917 已修）"},
+	{"server/server_assistant.go", "len(m.Content) > 32000", "A", "chat 消息 32000 **字节**（§916 已修）"},
+	{"server/server_assistant.go", "len(runes) > 60", "O", ""},
+	{"server/server_chatagent.go", "len(result) > 20", "O", ""},
+	{"server/server_email_classify_gateway.go", "len([]rune(summary)) > 60", "O", ""},
+	{"server/server_email_folders.go", "len(name) > 200", "A", "客户端提交的**邮箱文件夹名**；400 拒绝"},
+	{"server/server_email_purge.go", "len(body.IDs) > 100", "A", "ID **条数**（计数）"},
+	{"server/server_llmbff.go", "len(body.Messages) > 50", "A", "消息**条数**（计数）"},
+	{"server/server_llmbff.go", "len(body.Tools) > 20", "A", "工具**条数**（计数）"},
+	{"server/server_llmbff.go", "len(m.Content) > 32000", "A", "stream 消息 32000 **字节**（§919 已修）"},
+	{"server/server_marketplace.go", "len(parts) >= 3", "O", ""},
+	{"server/server_marketplace.go", "len(s) > 1024", "O", ""},
+	{"server/session_transcript.go", "len([]rune(summary)) > 400", "O", ""},
+	{"server/session_transcript.go", "len(runes) > 80", "O", ""},
+	{"server/task_collaboration_handler.go", "len(clientEventID) > 80", "A", "客户端提交的**事件 ID**；超限返回 error"},
+	{"stt/sniff.go", "len(data) >= 12", "O", ""},
+	{"stt/sniff.go", "len(data) >= 12", "O", ""},
+	{"stt/sniff.go", "len(data) >= 2", "O", ""},
+	{"stt/sniff.go", "len(data) >= 3", "O", ""},
+	{"stt/sniff.go", "len(data) >= 4", "O", ""},
+	{"stt/sniff.go", "len(data) >= 4", "O", ""},
+	{"stt/sniff.go", "len(data) >= 4", "O", ""},
+}
+
+// lengthLimitRegistryAKeys = 清单里**必须**是 A 类的那些键（文件 + 表达式文本）。
+//
+// ⚠⚠ **为什么不能只钉「A 类条数」**（这是本节实测出来的，不是假想）：
+//
+//	本节把 4 条改对了分类（**2 条 O→A、2 条 A→O**）⇒ **A 类条数恰好不变（13 → 13）**
+//	⇒ 只钉条数的话，门对「A↔O 对调」**完全无感、照样全绿**。
+//	⇒ 条数是**守恒量**，对调是它的盲区。
+//
+// ⇒ 改为钉**键的集合**：集合在 A↔O 对调下**不守恒** ⇒ 门立刻红。
+//
+// ⚠ **仍然存在的局限**（不假装覆盖）：「这个键到底算不算客户端可提交」本身是
+//
+//	**人工事实**。这份钉住清单只能保证「清单与钉住清单**一致**」，
+//	保证不了「事实**正确**」⇒ 本节已实证人工分类会错（4 处），所以每条 A 类的
+//	note 都写成了**带证据**的形式（来源 + 是拒绝还是截断 + 单位），好让下一个人能复核。
+var lengthLimitRegistryAKeys = []lengthLimitGateKey{
+	{"auth/email_codes.go", "len(s) > 254"},
+	{"server/flashcards_handler.go", "len([]rune(name)) > 80"},
+	{"server/server_assistant.go", "len(audioData) > 25 << 20"},
+	{"server/server_assistant.go", "len(body.Messages) > 50"},
+	{"server/server_assistant.go", "len(body.Subject) > 500"},
+	{"server/server_assistant.go", "len(body.Text) > 16000"},
+	{"server/server_assistant.go", "len(m.Content) > 32000"},
+	{"server/server_email_folders.go", "len(name) > 200"},
+	{"server/server_email_purge.go", "len(body.IDs) > 100"},
+	{"server/server_llmbff.go", "len(body.Messages) > 50"},
+	{"server/server_llmbff.go", "len(body.Tools) > 20"},
+	{"server/server_llmbff.go", "len(m.Content) > 32000"},
+	{"server/task_collaboration_handler.go", "len(clientEventID) > 80"},
+}
+
+// lengthLimitGateKey 是清单/扫描共用的键。
+type lengthLimitGateKey struct {
+	file, expr string
+}
+
+// scanLengthLimits 用 **go/parser** 扫出 backend/internal/ 下所有
+// 「len(x) 与字面量阈值比较」的出现处。
+//
+// ⚠ 它**故意**与清单生成器同款：同一套判定（BasicLit 或 `N<<K`、
+//
+//	阈值 ≥ 2、只看 `>` / `>=`）⇒ 清单与扫描口径**逐字一致**，不会互相漂。
+func scanLengthLimits(t *testing.T) map[lengthLimitGateKey]int {
+	t.Helper()
+	fset := token.NewFileSet()
+	got := map[lengthLimitGateKey]int{}
+	root := ".."
+	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			// ⚠ 跳过 `testdata` / `vendor`：Go 工具链本来就不编译这两个目录。
+			//   · testdata 里可能有**故意写坏**的 .go（供测试解析失败用）⇒ 解析失败会让本门 Fatal；
+			//   · vendor 里全是第三方代码 ⇒ 会扫出一堆与本仓无关的 `len(x) > N`。
+			if d.Name() == "testdata" || d.Name() == "vendor" {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		name := d.Name()
+		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			return nil
+		}
+		f, perr := parser.ParseFile(fset, p, nil, parser.SkipObjectResolution)
+		if perr != nil {
+			t.Fatalf("解析 %s 失败：%v（门依赖官方 AST ⇒ 解析不了就不能比对）", p, perr)
+		}
+		rel, rerr := filepath.Rel(root, p)
+		if rerr != nil {
+			return rerr
+		}
+		rel = filepath.ToSlash(rel)
+		ast.Inspect(f, func(n ast.Node) bool {
+			be, ok := n.(*ast.BinaryExpr)
+			if !ok || (be.Op != token.GTR && be.Op != token.GEQ) {
+				return true
+			}
+			call, ok := be.X.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			id, ok := call.Fun.(*ast.Ident)
+			if !ok || id.Name != "len" || len(call.Args) != 1 {
+				return true
+			}
+			threshold := ""
+			switch y := be.Y.(type) {
+			case *ast.BasicLit:
+				if y.Kind == token.INT {
+					threshold = y.Value
+				}
+			case *ast.BinaryExpr:
+				// ⚠ `len(x) > 64 << 10` 这类：右侧不是 BasicLit
+				//   ⇒ 只认 BasicLit 的口径会漏掉它们（实测漏 2 处，
+				//   其中一处正是 §918 记的「音频 25 MiB」）。
+				if y.Op == token.SHL {
+					if l, ok3 := y.X.(*ast.BasicLit); ok3 && l.Kind == token.INT {
+						threshold = exprText(fset, be.Y)
+					}
+				}
+			}
+			if threshold == "" {
+				return true
+			}
+			base := strings.TrimSpace(strings.SplitN(threshold, "<<", 2)[0])
+			v, cerr := strconv.Atoi(base)
+			if cerr != nil || v < 2 {
+				return true
+			}
+			op := ">"
+			if be.Op == token.GEQ {
+				op = ">="
+			}
+			expr := fmt.Sprintf("len(%s) %s %s", exprText(fset, call.Args[0]), op, threshold)
+			got[lengthLimitGateKey{rel, expr}]++
+			return true
+		})
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("扫描 %s 失败：%v", root, err)
+	}
+	return got
+}
+
+// exprText 打印一个 AST 表达式的源码文本（与清单生成器同款 ⇒ 逐字可比）。
+func exprText(fset *token.FileSet, e ast.Expr) string {
+	var b bytes.Buffer
+	_ = printer.Fprint(&b, fset, e)
+	return b.String()
+}
+
+// §921 的门本体：**清单与 AST 扫出来的全集必须逐处一致**（双向）。
+//
+// ⚠ 双向：只查「清单里的每条都还在」⇒ 新增一处没人登记就不会红（那正是本节要防的）；
+//
+//	只查「扫到的每条都在清单里」⇒ 清单里留着一行过期记录也没人发现。
+func TestLengthLimitRegistryCoversEveryLengthGate(t *testing.T) {
+	got := scanLengthLimits(t)
+
+	// ⚠ 量具自证：候选数必须**恰好**等于清单条数。
+	//   ⇒ 扫描器坏了（读到 0 处）时这道门会红，而不是**恒绿**。
+	//   ⚠ 这不是假设：本节的探针连续两次读到「0 处」（正则贪婪 / 状态机卡住）。
+	if len(got) == 0 {
+		t.Fatalf("量具失效：AST 扫出 0 处长度限制 ⇒ 门会变成空气门（改判据前先看扫描器）")
+	}
+	total := 0
+	for _, n := range got {
+		total += n
+	}
+	if total != len(lengthLimitRegistry) {
+		// ⚠⚠ 用 Errorf **不是** Fatalf：后面那段「逐处点名」必须**也跑**
+		//   ⇒ 否则「新增了一处没人登记」只会被报成「总数不对」，
+		//   维护者还得自己去找是哪一处 ⇒ 判据的**可用性**打折。
+		//   ⚠ 这不是假设：变异 V3/V4 第一次跑时，红的**全部**是这一条，
+		//   点名的那段根本没执行 ⇒ 「能定位到具体哪一处」当时**没被证明**。
+		t.Errorf("长度限制出现处共 %d 处，清单只有 %d 条 ⇒ 差 %d 处未登记（下面会逐处点名）",
+			total, len(lengthLimitRegistry), total-len(lengthLimitRegistry))
+	}
+
+	want := map[lengthLimitGateKey]int{}
+	for _, r := range lengthLimitRegistry {
+		want[lengthLimitGateKey{r.file, r.expr}]++
+	}
+	// ① 清单里多出来的（已失效的行）
+	for k, n := range want {
+		if got[k] == 0 {
+			t.Errorf("清单里的 %s %q 在源码里已经找不到了 ⇒ 它已失效，请更新或删掉这一行", k.file, k.expr)
+			continue
+		}
+		if got[k] != n {
+			t.Errorf("清单里 %s %q 记了 %d 处，源码里实际 %d 处 ⇒ 清单与现实不符", k.file, k.expr, n, got[k])
+		}
+	}
+	// ② 源码里多出来的（**新增却没人登记** ⇒ 本门要抓的就是这个）
+	for k, n := range got {
+		if want[k] == 0 {
+			t.Errorf("源码里新增了一处长度限制：%s %q（%d 处）⇒ 必须登记到 lengthLimitRegistry，"+
+				"否则前端侧没人知道这道闸的存在（§918 漏掉 /api/llm/stream 就是这么漏的）", k.file, k.expr, n)
+		}
+	}
+
+	// ③ A 类（客户端可提交字段上的限制）：**钉住键的集合**，不是钉条数。
+	//
+	// ⚠⚠ 只钉条数是**守恒量盲区**：本节实测把 4 条改对分类（2 条 O→A、2 条 A→O）
+	//   ⇒ A 类条数恰好不变（13 → 13）⇒ 只钉条数时门**全绿**，对 A↔O 对调**完全看不见**。
+	//   ⇒ 集合在 A↔O 对调下**不守恒** ⇒ 这里必须红。
+	aRows := 0
+	aSet := map[lengthLimitGateKey]bool{}
+	for _, r := range lengthLimitRegistry {
+		switch r.kind {
+		case "A":
+			aRows++
+			aSet[lengthLimitGateKey{r.file, r.expr}] = true
+		case "O":
+		default:
+			t.Errorf("清单里 %s %q 的 kind=%q 非法（只能 A 或 O）", r.file, r.expr, r.kind)
+		}
+	}
+	// ⚠ 量具自证：钉住清单不能是空的 ⇒ 否则下面的集合比对会变成空气门。
+	if len(lengthLimitRegistryAKeys) == 0 {
+		t.Fatalf("量具失效：lengthLimitRegistryAKeys 是空的 ⇒ A 类比对会变成空气门（改判据前先看钉住清单）")
+	}
+	// ⚠ 集合会**塌缩**：清单里若出现**重复的 A 类键**，集合比对会漏掉那个重复项。
+	if aRows != len(aSet) {
+		t.Errorf("A 类有 %d 行但只有 %d 个不同的键 ⇒ 清单里有**重复的 A 类键** ⇒ 集合比对会漏（重复项让集合塌缩）",
+			aRows, len(aSet))
+	}
+	pinned := map[lengthLimitGateKey]bool{}
+	for _, k := range lengthLimitRegistryAKeys {
+		pinned[k] = true
+	}
+	for k := range aSet {
+		if !pinned[k] {
+			t.Errorf("清单里 %s %q 标成了 A 类，但 lengthLimitRegistryAKeys 里没有它 ⇒ A 类集合被改了（"+
+				"若同时把别的一条 A 改成 O，**条数守恒、只钉条数根本看不出来**）", k.file, k.expr)
+		}
+	}
+	for k := range pinned {
+		if !aSet[k] {
+			t.Errorf("lengthLimitRegistryAKeys 里的 %s %q 在清单里不是 A 类 ⇒ 两份清单不一致", k.file, k.expr)
+		}
+	}
+	if len(aSet) != 13 {
+		t.Errorf("A 类（客户端可提交字段上的限制）实际 %d 条，期望 13 条 ⇒ "+
+			"要么有人把 A 类改成了 O 类，要么新增了一处客户端可提交的限制没分类", len(aSet))
 	}
 }
