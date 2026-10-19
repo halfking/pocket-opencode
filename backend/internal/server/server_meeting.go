@@ -1083,6 +1083,11 @@ func guardRefineResult(parsed map[string]any, transcript string, meta meetingMet
 	if leak := participantLeak(refined, meta, transcript); leak != "" {
 		fb := refineFallbackPayload(transcript)
 		fb["refine_rejected"] = true
+		// ⚠⚠ §908/D77：`refine_rejected` 现在有**两个**成因，前端要分开说。
+		//   不带这个字段时，前端会说「检测到与参会人名单不符的人名」——
+		//   而这次拦下的真实原因是「模型回显不完」，用户会被指向一个错的原因。
+		//   ⇒ 桶名是对外承诺（`refine-outcome-notice.ts` 自己写着这条纪律）。
+		fb["refine_rejected_reason"] = "participant_leak"
 		return fb, true
 	}
 	// ⚠⚠ §907/D76：精校稿明显比原文短 ⇒ 模型在**缩写**，不是在纠错。
@@ -1095,6 +1100,7 @@ func guardRefineResult(parsed map[string]any, transcript string, meta meetingMet
 		log.Printf("[meeting] llm refine rejected: %s", reason)
 		fb := refineFallbackPayload(transcript)
 		fb["refine_rejected"] = true
+		fb["refine_rejected_reason"] = "shrinkage" // §908/D77：与名单污染**分开说**
 		return fb, true
 	}
 	return parsed, false

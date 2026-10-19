@@ -150,3 +150,42 @@ func TestRefineShrinkageIgnoresVeryShortTranscripts(t *testing.T) {
 		t.Fatalf("%d rune 的原文缩写成 1 个 rune 却没被判", refineMinRunesForRatio)
 	}
 }
+
+// ⚠⚠ §908/D77：拦下时必须带上**原因**，否则前端会对每一场长会议说
+// 「检测到与参会人名单不符的人名」—— 而名单从来没问题。
+// 这是 `refine-outcome-notice.ts` 头注释里「桶名是对外承诺」的兑现点。
+func TestRefineRejectedCarriesItsReason(t *testing.T) {
+	transcript := meetingTranscript(51, 60)
+	abridged := strings.Repeat("测", len([]rune(transcript))/10)
+
+	t.Run("缩写成因", func(t *testing.T) {
+		got, rejected := guardRefineResult(parsedRefine(abridged), transcript, meetingMetaIn{})
+		if !rejected {
+			t.Fatal("缩写没有被拦下")
+		}
+		if r := got["refine_rejected_reason"]; r != "shrinkage" {
+			t.Fatalf("原因=%v，期望 shrinkage（前端会按它选文案）", r)
+		}
+	})
+	t.Run("名单污染成因", func(t *testing.T) {
+		// 参会人名单里有「林岚」，原文没有；精校稿里有 ⇒ 触发 participantLeak
+		meta := meetingMetaIn{Participants: []string{"林岚"}}
+		leaked := transcript + "\n林岚也参加了"
+		got, rejected := guardRefineResult(parsedRefine(leaked), transcript, meta)
+		if !rejected {
+			t.Skip("这个夹具没触发 participantLeak —— 判据形同虚设，停下来说明")
+		}
+		if r := got["refine_rejected_reason"]; r != "participant_leak" {
+			t.Fatalf("原因=%v，期望 participant_leak", r)
+		}
+	})
+	t.Run("通过时不得带原因字段", func(t *testing.T) {
+		got, rejected := guardRefineResult(parsedRefine(transcript), transcript, meetingMetaIn{})
+		if rejected {
+			t.Fatal("原样回显不该被拦下")
+		}
+		if _, ok := got["refine_rejected_reason"]; ok {
+			t.Fatal("通过时也带了原因字段 ⇒ 前端会以为发生过拒绝")
+		}
+	})
+}

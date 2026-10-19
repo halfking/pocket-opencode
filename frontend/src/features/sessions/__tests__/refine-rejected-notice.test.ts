@@ -96,7 +96,10 @@ describe('精校被拦下的文案', () => {
       'normalizeRefine 没认 camelCase 的 refineRejected',
     )
     assert.ok(
-      /rejected\s*\?\s*\{\s*rejected:\s*true\s*\}/.test(init),
+      // ⚠ §908/D77：`rejected: true` 后面现在还跟着一个可选的 `rejectedReason`
+      //   （返回对象多带一个字段），所以这里放行 `,` 与 `}` 两种收尾。
+      //   **语义没动**：算出了 rejected 就必须写进返回值。
+      /rejected\s*\?\s*\{\s*rejected:\s*true\s*[,}]/.test(init),
       'normalizeRefine 算出了 rejected 却没有写进返回值 ⇒ 信号在最后一跳丢掉',
     )
     assert.ok(
@@ -266,5 +269,69 @@ describe('降级时的会议状态', () => {
       /func refineDegraded\(/.test(go),
       'refineDegraded 没定义',
     )
+  })
+})
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * §908 · D77：`refine_rejected` 有**两个**成因，文案必须对得上真实原因
+ * ═══════════════════════════════════════════════════════════════════════════
+ * §907 给长会议加了「缩写」护栏（`refineShrinkage`），它**复用了同一个标志位**
+ * `refine_rejected` ⇒ 于是前端会对**每一场长会议**说
+ *
+ *     「检测到与参会人名单不符的人名」
+ *
+ * 而真实原因是「转写太长，模型回显不完」—— 名单从来没问题。
+ * 这正是本文件头写的「**桶名是对外承诺**」：两个成因共用一个 flag，
+ * 前端不拆开就会用**一句错的话解释一次正确的行为**。
+ * ⇒ 服务端补 `refine_rejected_reason`，一路透传到文案层。
+ */
+describe('§908 · D77：被拦下的原因必须对上文案', () => {
+  it('★★★ shrinkage（缩写）不得说成「参会人名单不符」', () => {
+    const n = buildRefineNotice({ fromFallback: true, rejected: true, rejectedReason: 'shrinkage' })
+    assert.equal(n.kind, 'info', '降级不是成功')
+    assert.match(n.text, /太长|回显/, `实际文案：${n.text}`)
+    assert.doesNotMatch(
+      n.text,
+      /参会人名单/,
+      '⚠ 这是 §907 打破的那条纪律：用户会被指向一个根本不存在的错因',
+    )
+    assert.doesNotMatch(n.text, /无法解析/, '缩写不是解析失败')
+  })
+
+  it('★★★ participant_leak 仍然必须说名单污染（不能被新分支吞掉）', () => {
+    const n = buildRefineNotice({ fromFallback: true, rejected: true, rejectedReason: 'participant_leak' })
+    assert.match(n.text, /参会人名单/, `实际文案：${n.text}`)
+    assert.doesNotMatch(n.text, /太长|回显/, '这条不是缩写')
+  })
+
+  it('★★ 不给原因时保持既有行为（向后兼容，旧服务端没有这个字段）', () => {
+    const n = buildRefineNotice({ fromFallback: true, rejected: true })
+    assert.match(n.text, /参会人名单/, `实际文案：${n.text}`)
+  })
+
+  it('★★★ 原因必须一路透传到文案层（接线：缺了就退回错的那句）', () => {
+    const api = read('../../../api/meetings.ts')
+    const init = api.slice(api.indexOf('export function normalizeRefine'))
+    assert.match(
+      init,
+      /raw\.refine_rejected_reason\s*\?\?\s*raw\.refineRejectedReason/,
+      'normalizeRefine 没读 refine_rejected_reason ⇒ 原因在 API 层就丢了',
+    )
+    assert.match(
+      init,
+      /rejectedReason/,
+      'normalizeRefine 没有把原因写进返回值',
+    )
+    const callSite = read('../../meetings/meeting-recording-finalize.ts')
+    assert.match(
+      callSite,
+      /rejectedReason:\s*result\.rejectedReason/,
+      '⚠ 收尾调用点没有把原因传给 buildRefineNotice ⇒ 长会议仍然会被说成名单污染',
+    )
+  })
+
+  it('★★ RefineResult 类型必须声明这个字段（否则调用点拿不到）', () => {
+    const api = read('../../../api/meetings.ts')
+    assert.match(api, /rejectedReason\?:\s*'participant_leak'\s*\|\s*'shrinkage'/)
   })
 })

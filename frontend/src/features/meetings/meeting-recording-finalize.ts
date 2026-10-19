@@ -257,6 +257,10 @@ export async function finalizeRecording(
     const notice = buildRefineNotice({
       fromFallback: result.fromFallback,
       rejected: result.rejected,
+      // ⚠⚠ §908/D77：原因必须**一路传到底**，否则文案会退回「名单污染」那句 ——
+      //   而长会议上真正的原因是「转写太长，模型回显不完」。
+      //   不传这一项，`rejectedReason` 就断在 API 层，用户被指向一个错的原因。
+      rejectedReason: result.rejectedReason,
       adopted: outcome.adopted && finalText.applied,
       failedSegments: finalText.failedSegments,
     })

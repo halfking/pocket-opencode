@@ -123,13 +123,20 @@ export interface RefineResult {
   /** true = 云端不可用，仅本地拼装转写，非真正精翻 */
   fromFallback?: boolean
   /**
-   * true = 云端精校**成功**，但结果里混进了原始转写中不存在的参会人姓名，
-   * 已由服务端 guardRefineResult 整体丢弃并回落原文（2026-10-07）。
+   * true = 云端精校**成功**，但结果不可信，已由服务端 guardRefineResult
+   * 整体丢弃并回落原文。
    *
    * ⚠ 与 fromFallback 同时为 true，但**原因完全不同**：前者是「云端解析不了」，
    *   后者是「云端解析好了，但结果不可信」。文案必须分开（桶名是对外承诺）。
    */
   rejected?: boolean
+  /**
+   * ⚠⚠ §908/D77：`rejected` 的**成因**。它现在有两个，而它们的用户侧动作不同：
+   *   - `participant_leak`：混进了原文没有的参会人姓名（§35）
+   *   - `shrinkage`：模型**缩写**了，回显不完（§907/D76，长会议恒触发）
+   * 缺省按 `participant_leak` 处理（向后兼容）。
+   */
+  rejectedReason?: 'participant_leak' | 'shrinkage'
   /**
    * 服务端本次送给 LLM 的转写规模（**runes**，不是字节）。
    *
@@ -375,6 +382,15 @@ export function normalizeRefine(raw: Record<string, unknown>, segments: MeetingS
   // 而实际上 JSON 解析得好好的，是名单污染被拦下了。
   // 用户会照着错误原因去查网络，而真正的原因无人知晓。
   const rejected = raw.refine_rejected === true || raw.refineRejected === true
+  // ⚠⚠ §908/D77：`refine_rejected` 现在有**两个**成因，必须把原因也带出来。
+  //   §907 给长会议加了「缩写」护栏之后，前端若只知道「被拦下」，
+  //   就会对每一场长会议说「检测到与参会人名单不符的人名」——
+  //   而名单从来没问题，真实原因是「转写太长，模型回显不完」。
+  //   ⇒ 桶名是对外承诺（`refine-outcome-notice.ts` 头注释写着这条纪律）。
+  const rejectedReason = (raw.refine_rejected_reason ?? raw.refineRejectedReason) as
+    | 'participant_leak'
+    | 'shrinkage'
+    | undefined
   // ⚠ §426：与 summaryInputRunes 同理——服务端记下的**本次 LLM 输入规模**。
   //   ⚠ 它的用处正是把两种现在**完全同形**的回落区分开：
   //     「转写太长、请求被上游拒了」与「模型没按契约返回」——
@@ -395,7 +411,7 @@ export function normalizeRefine(raw: Record<string, unknown>, segments: MeetingS
     noteId: (raw.note_id ?? raw.noteId) as string | undefined,
     tasksCreated: Number(raw.tasks_created ?? raw.tasksCreated ?? 0) || undefined,
     ...(fromFallback ? { fromFallback: true } : {}),
-    ...(rejected ? { rejected: true } : {}),
+    ...(rejected ? { rejected: true, ...(rejectedReason ? { rejectedReason } : {}) } : {}),
     ...(refineInputRunes === undefined ? {} : { inputRunes: Number(refineInputRunes) }),
   }
 }

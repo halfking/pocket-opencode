@@ -78,10 +78,13 @@ describe('§831 · 接线（扫描层，零牙已如实标注）', () => {
   it('★ 服务端路径：不通过时必须退回原文并标记降级', () => {
     const at = API.indexOf('assessRefineRetention({ original: fallback')
     assert.ok(at > 0, '找不到 normalizeRefine 里的判定')
-    // ⚠ 窗口要够宽：判定点到「正文二选一」隔着 `rejected`/`refineInputRunes` 两段
-    //   （实测 1196 字符）。第一版取 900 ⇒ 正确代码被判红 —— 又是一次「窗口太小
-    //   ⇒ 肯定断言变假红」。**判据指错位置与判据有洞同样要当场修**。
-    const win = API.slice(at, at + 1600)
+    // ⚠ 窗口要够宽：判定点到「正文二选一」隔着 `rejected`/`rejectedReason`/`refineInputRunes`
+    //   几段。第一版取 900 ⇒ 正确代码被判红 —— 又是一次「窗口太小 ⇒ 肯定断言变假红」。
+    //   900 → 1600 是上一轮加长后的补丁；§908 往 `normalizeRefine` 里补了
+    //   `rejectedReason` 的一段之后实测**相距 1566 字符**，只剩 34 字符余量，
+    //   任何人再加一行注释就会再红一次 ⇒ 这里一次给到 **2600**，
+    //   留出约 1000 字符的余量。**判据指错位置与判据有洞同样要当场修**。
+    const win = API.slice(at, at + 2600)
     // ⚠⚠ 必须锚在 **`const fromFallback = …` 那一段**里，不能对整个窗口搜
     //   `!retention.ok`：warn 前面还有一个同名的 `if (!retention.ok)` 守卫，
     //   变异把降级标记改掉之后判据照样命中那个 ⇒ **0 红**（本轮第 5 次「判据指错地方」）。
