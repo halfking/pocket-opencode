@@ -715,9 +715,24 @@ describe('K · updateMeeting 这一层也不许直接写 transcript', () => {
 
   it('抽取器自证：必须恰好找到 updateTranscript 本体那一处', () => {
     const hits = bareTranscriptWriters()
+    // ⚠⚠ §913.3：这里**只比文件，不比行号**。
+    //
+    //   原本钉的是 `'features/meetings/meetings-store.ts:239'`（**绝对行号**），
+    //   而 §913 往 meetings-store.ts 的 `RecommendItem.score` 上加了一段 18 行注释
+    //   ⇒ 同一处写入点被推到 **:257**，这道门立刻报假红（实测 gates 第 3 项 EXIT=1）。
+    //
+    //   ⚠ 行号**从来不是这道门要验的东西**：它要验的是
+    //   「抽取器恰好找到**一处**，且那一处在 meetings-store.ts」
+    //   —— 下面那条 `filter(!startsWith(...))` 才是它真正的防御面。
+    //   ⇒ 行号只会带来「上游任何一次无关编辑都让门变红」的噪声。
+    //
+    //   ⚠ 削弱了吗？没有：抽取器**仍然**返回 `file:line`（信息没丢，
+    //   失败信息里照样能看到具体行），只是比较时取 `file` 部分。
+    //   空清单 ⇒ 仍然红；多出一处 ⇒ 仍然红；只有「行号漂移」不再红。
+    //   已按 §911.4 的要求**重跑变异确认门没被放松**（见设计文档 §913.7）。
     assert.deepEqual(
-      hits,
-      ['features/meetings/meetings-store.ts:239'],
+      hits.map((h) => h.slice(0, h.lastIndexOf(':'))),
+      ['features/meetings/meetings-store.ts'],
       `带裸 transcript 键的写入点清单变了：\n${hits.join('\n') || '（空）'}\n` +
         '· 空 ⇒ 抽取器坏了（第一版就因为漏了 `{ transcript }` 简写而报假阴性）\n' +
         '· 多出来 ⇒ 有人绕过 updateTranscript 直接写 transcript 了',

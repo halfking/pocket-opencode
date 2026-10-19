@@ -94,6 +94,24 @@ export interface RecommendItem {
   id: string
   title: string
   snippet: string
+  /**
+   * ⚠⚠⚠ **这个数在不同来源之间不可比**（§913/D81 实测，全仓**零个消费者**）。
+   *
+   * 四个生产者，三种量纲：
+   *   · 笔记（`searchRelatedNotes` → `searchHybrid` 的 RRF）⇒ **[0.0152, 0.0323]**
+   *   · 会议（`searchRelatedMeetings`）⇒ `1/(i+1)`，而 `i` 来自
+   *     `ORDER BY started_at DESC` ⇒ 它量的是**新旧**，不是相关度
+   *   · 维基（`parseWikipediaOpenSearch`）⇒ `1/(i+1)` 位次；
+   *     Wikipedia OpenSearch **不返回任何相关度**
+   *   · kxmemory 服务端（`backend/internal/kxmemory/client.go` 的 `Score`）⇒ 同名字段
+   *
+   * ⇒ **笔记的最高分只有会议/维基最低分的 0.10×** ⇒ 任何
+   *   「按 score 降序」的实现都会把**全部笔记沉到会议/维基之后**。
+   * ⇒ 而唯一可能用到它的 `mergeRecommendations` **明确不排序**
+   *   （它只做「拼接 → 去重 → 截断」），本仓没有任何地方读这个字段。
+   * ⇒ **要按相关度排序，先统一口径再改排序**，不要顺手加一句
+   *   `.sort((a, b) => b.score - a.score)`（那是简报 137 第 ① 问）。
+   */
   score: number
   url?: string
 }
