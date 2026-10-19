@@ -92,3 +92,30 @@ export function truncateUtf8BytesTail(s: string, maxBytes: number): string {
   }
   return s.slice(end)
 }
+
+/**
+ * §917：从 `from` 往前取，返回**不超过 maxBytes 个 UTF-8 字节**的
+ * **最长前缀**的结束下标（码元索引，exclusive）。
+ *
+ * ⚠ 与 `truncateUtf8BytesTail` 的区别：那是**从尾部**取（§916 的滚动摘要），
+ *   这是**从头部**取（§917 的段级嵌入：块太大时要再切一刀）。
+ *   ⇒ 两个方向都要有，因为「块太大要切」与「提示词太长要裁」是两种切法。
+ *
+ * ⚠ 切点按**码点**走 ⇒ 不会留下落单代理对（同 `truncateUtf8BytesTail`）。
+ * ⚠ 若第一个码点本身就超过 maxBytes（例如 4 字节的星平面字符而 maxBytes=3），
+ *   返回 `from`（**不切**）⇒ 调用方必须能处理「零进展」，
+ *   否则会死循环 —— 本仓的调用点（`capChunksByBytes`）显式处理了这一条。
+ */
+export function sliceEndByUtf8Bytes(s: string, from: number, maxBytes: number): number {
+  if (maxBytes <= 0) return from
+  let bytes = 0
+  let i = from
+  while (i < s.length) {
+    const cp = s.codePointAt(i) as number
+    const width = cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4
+    if (bytes + width > maxBytes) break
+    bytes += width
+    i += cp > 0xffff ? 2 : 1
+  }
+  return i
+}
