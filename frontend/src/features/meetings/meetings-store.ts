@@ -2,6 +2,8 @@
  * meetings-store.ts — 🦞 龙虾钳子：会议/声纹本地存储
  */
 import { localDB } from '../../native/local-db'
+import { utf8ByteLength } from '../../utils/text'
+import { shouldPersistTranscript, meetingListSql } from './meeting-transcript-cache.ts'
 
 // 'refine-failed' = 精校**降级或被拦下**，显示的是原始转写（§17/§35）。
 // 它不能并进 'completed'：那会让「正常完成」与「精校失败」共用一个桶。
@@ -173,12 +175,12 @@ export async function listMeetings(
 ): Promise<LocalMeeting[]> {
   const archived = opts?.archived === true
   const offset = opts?.offset ?? 0
-  const rows = await localDB.query<any>(
-    archived
-      ? `SELECT * FROM local_meetings WHERE deleted_at IS NULL AND IFNULL(archived_at, 0) > 0 ORDER BY started_at DESC LIMIT ? OFFSET ?`
-      : `SELECT * FROM local_meetings WHERE deleted_at IS NULL AND IFNULL(archived_at, 0) = 0 ORDER BY started_at DESC LIMIT ? OFFSET ?`,
-    [limit, offset],
-  )
+  // ⚠ §925：此前是 `SELECT *` ⇒ 每次列表都把每场会的**整场转写 + 整场精校稿**读出来
+  //   （本地 SQLite 的一行本来就可能几百 KB ⇒ 30 场会议 = 1.45 MB，
+  //     而这两列的唯一消费者只要 120 字的预览 ⇒ 界面要 ≈10.5 KB）。
+  //   ⇒ 现在只取**有界片段**（`meetingListSql`），预览逐字不变。
+  //   ⚠ 详情页走 `getMeeting`（`SELECT *`）⇒ 那里拿到的**仍是全文** ⇒ 不受影响。
+  const rows = await localDB.query<any>(meetingListSql(archived), [limit, offset])
   return rows.map(rowToMeeting)
 }
 
@@ -253,7 +255,47 @@ export async function updateMeeting(
   await localDB.run(`UPDATE local_meetings SET ${sets.join(', ')} WHERE id = ?`, vals)
 }
 
-export async function updateTranscript(id: string, transcript: string): Promise<void> {
+/**
+ * §925：每场会议**上一次落库**时转写的字节数。
+ *
+ * ⚠ 这是**节流状态**，不是事实源：事实源永远是 `local_meeting_segments`。
+ * ⚠ 进程重启后会丢 ⇒ 丢了的代价是「重启后第一次多落一次库」（可接受）。
+ * ⚠ 为什么不在 DB 里存：为一个缓存的节流状态建一列/一张表，
+ *   代价大于收益（而且它重启后本来就可以重算）。
+ */
+const lastPersistedTranscriptBytes = new Map<string, number>()
+
+/**
+ * §925：把「到目前为止的整场转写」落进 `local_meetings.transcript`。
+ *
+ * ⚠⚠ 此前这里是**每新增一段就整段重写** ⇒ 一场会的写入量 **O(时长²)**：
+ *   实测（真 SQLite，真实 ASR 语料，1952 段 = 8 小时）落库 **376.3 MB**、
+ *   中位纯写 **17.3 秒**（5 轮交错；Mac 直连 SSD，手机上更贵）。
+ *
+ * ⚠ `throttled` 是**显式 opt-in**（见 `meeting-transcript-cache.ts` 的文件头）：
+ *   默认 = 立刻落库（安全的一侧）；只有「逐段追加」那条路径声明节流。
+ *   ⇒ 将来新增的写入点忘了声明 ⇒ 只是多写几次，**不会丢内容**。
+ *   ⇒ 逐段追加那条路径声明它 ⇒ 8 小时会议 376.3 MB → **2.4 MB**、17.3 s → **1.44 s**。
+ *
+ * ⚠ 为什么这一列可以节流：它在本地**只有一个消费者** ——
+ *   `NotesHubView` 的预览（`preview()` 只取 120 字），
+ *   而**头部**始终是最新的 ⇒ 尾部滞后在预览里看不出来。
+ *   ⇒ 详情页 / 精校链 / 同音纠正全部走分段，不走这一列 ⇒ 不受影响。
+ * ⚠ **尾部最多落后 32 KB ≈ 41 分钟**（按真实语料折算），
+ *   **但只在录音期间** —— `recordingRuntime.stop()` 收尾会**整篇补齐**一次
+ *   ⇒ 会议结束后这一列是**完整**的。
+ */
+export async function updateTranscript(
+  id: string,
+  transcript: string,
+  opts?: { throttled?: boolean },
+): Promise<void> {
+  const bytes = utf8ByteLength(transcript)
+  const last = lastPersistedTranscriptBytes.get(id) ?? 0
+  if (!shouldPersistTranscript({ lastPersistedBytes: last, nextBytes: bytes, throttled: opts?.throttled })) {
+    return
+  }
+  lastPersistedTranscriptBytes.set(id, bytes)
   await updateMeeting(id, { transcript })
 }
 

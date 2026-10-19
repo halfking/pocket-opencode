@@ -495,6 +495,7 @@ async function onAppendUtterance(text: string) {
       // ⚠ 走到这里时**分段已经存进库了** ⇒ 后面任何失败都不是「什么都没存」，
       //   文案必须换一副说法（否则用户会重说一遍，得到两条重复分段）。
       appendStage.value = 'transcript'
+      // ⚠ §925：**不声明** `throttled` ⇒ 立刻落库 —— 「补一句」是**用户可见**的改动。
       await updateTranscript(meetingId.value, renderTranscript(storedSegments.value))
       appendStage.value = 'related'
       await refreshRelated()

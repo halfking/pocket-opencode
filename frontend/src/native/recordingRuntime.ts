@@ -578,7 +578,11 @@ export class MeetingRecorderRuntime {
     this.segments.value.push(saved)
     // 去重渲染：与 ingest-speech.ts 同一口径（相邻段重叠消解）。
     // 本地 sherpa 实时字幕路径是**另一条**录音入口，此前也在原样拼接。
-    await updateTranscript(meetingId, renderTranscript(this.segments.value))
+    // ⚠ §925：`throttled` —— 这是**逐段追加**那条路径，声明「我可以晚点落库」
+    //   ⇒ 8 小时会议的转写落库量从 376.3 MB 降到 2.4 MB（纯写中位 17.3 s → 1.44 s）。
+    //   ⚠ 节流是**显式 opt-in**：不声明的写入点一律立刻落库（安全的那一侧）。
+    //   ⚠ 收尾会**整篇补齐**一次（`stop()`）⇒ 会议结束时这一列是完整的。
+    await updateTranscript(meetingId, renderTranscript(this.segments.value), { throttled: true })
     return saved
   }
 
@@ -606,6 +610,8 @@ export class MeetingRecorderRuntime {
     // §132：用户校对过的正文享受人工段豁免，否则下一段落库时
     // 它会被当成重转写裁碎。
     seg.origin = 'manual'
+    // ⚠ §925：**不声明** `throttled` ⇒ 立刻落库 —— 这是**用户可见**的改动（他刚改了一句），
+    //   晚一点落库就等于「用户的修改没生效」。
     await updateTranscript(meetingId, renderTranscript(this.segments.value))
     return true
   }
@@ -709,6 +715,7 @@ export class MeetingRecorderRuntime {
     }
     await Promise.all(ownUpdates.map((u) => updateSegmentSpeaker(u.segId, u.label)))
     // 转写正文里也带着说话人前缀，不重渲染的话用户看到的是「标签改了、正文没改」。
+    // ⚠ §925：**不声明** `throttled` ⇒ 立刻落库 —— 改说话人名是**用户可见**的改动。
     await updateTranscript(meetingId, renderTranscript(this.segments.value))
     this.syncSpeakers()
   }
@@ -850,6 +857,10 @@ export class MeetingRecorderRuntime {
       //   ⚠ 而 `resolveRefinedView` 在精校成功时展示的是 `refinedTranscript`
       //     （徽章「已精校」）⇒ 用户看到的是一份**缺了最后几句**、却标着「已精校」的正文。
       //   （晚到的段会自己补写 `transcript`，但那条路在精校视图里**不展示**。）
+      //   ⚠ §925 更正：补写的是**分段**（事实源，`local_meeting_segments`），
+      //   而**转写正文那一列是缓存** ⇒ 节流下那一次补写**可能不落**（增长不足 32 KB）。
+      //   ⇒ 影响面：只有那一列落后**最后这一两段**（它的**头部**始终最新 ⇒ 预览不受影响），
+      //   而详情页读的是**分段** ⇒ 用户看得到那几段。
       //
       // ⚠⚠ 上面这段注释里**刻意不写**收尾合并那个方法的名字：仓库里有一道门
       //   按标识符在 stop() 的函数体里做 indexOf，断言「合并」排在「等在途分段」之后
@@ -888,6 +899,21 @@ export class MeetingRecorderRuntime {
           await this.mergeOverSplitSpeakers(meetingId)
         } catch (e) {
           console.warn('[meeting-recorder] speaker merge failed, 收尾继续:', e)
+        }
+        // ⚠ §925：收尾**整篇**落库（**不声明** `throttled` ⇒ 立刻落库）。
+        //   为什么必须有这一步：录音期间那一列是**节流**的（增长 ≥32 KB 才写一次）
+        //   ⇒ 会议刚结束时它可能落后**几十 KB / 四十来分钟**的语音。
+        //   ⇒ 这一步把「会议结束」变成一个明确边界：**结束之后这一列是完整的**。
+        //   ⚠ 为什么必须**保护**（try/catch）：它失败绝不能阻断收尾的后半段 ——
+        //   后面 `status:'completed'` 那一写才是收尾的**主**产出（§834/D1）。
+        //   ⚠ 为什么 `segments.length` 要守卫：没有分段时写空串会把这一列**清空**，
+        //   而 `classifyRecovery` 靠「转写非空」判「录音中断可恢复」⇒ 清空 = 误报。
+        if (this.segments.value.length) {
+          try {
+            await updateTranscript(meetingId, renderTranscript(this.segments.value))
+          } catch (e) {
+            console.warn('[meeting-recorder] transcript persist failed, 收尾继续:', e)
+          }
         }
         // ⚠⚠ §834/D1：这一句此前**完全没有保护**，而它是三处收尾落库里
         //   唯一一处「写整个完成状态」的（status: 'completed' 全仓只写这一处）。

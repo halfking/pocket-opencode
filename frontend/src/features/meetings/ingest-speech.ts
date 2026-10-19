@@ -93,7 +93,11 @@ export async function ingestSpeechBlob(opts: {
   //   相邻两段因此可能取到重叠音频并被转写两次 ⇒ 文本重复。
   //   整条前端链路此前**完全没有**去重（后端 mergeIncremental 属于
   //   IncrementalTranscriber，前端从不调用它），所以必须在这一层消解。
-  await updateTranscript(meetingId, renderTranscript(opts.segments))
+  // ⚠ §925：`throttled` —— 这是**逐段追加**那条路径（Web 链），声明「我可以晚点落库」
+  //   ⇒ 8 小时会议的转写落库量从 376.3 MB 降到 2.4 MB（纯写中位 17.3 s → 1.44 s）。
+  //   ⚠ 节流是**显式 opt-in**：不声明的写入点一律立刻落库（安全的那一侧）。
+  //   ⚠ 收尾会**整篇补齐**一次（`recordingRuntime.stop()`）⇒ 会议结束时这一列是完整的。
+  await updateTranscript(meetingId, renderTranscript(opts.segments), { throttled: true })
 
   void liveTranslate(saved.text, lang)
     .then((translation) => {

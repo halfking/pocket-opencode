@@ -23,10 +23,18 @@
 // 代价就是必须在文本侧消解。
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { readdirSync, readFileSync } from 'node:fs'
-import { fileURLToPath } from 'node:url'
+import { readdirSync, readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { dirname, join, relative } from 'node:path'
+import { tmpdir } from 'node:os'
+import { build } from 'esbuild'
 import { dedupeSegmentText, dedupeSegments, dedupeStep, dedupeTranscriptParagraphs, likelyAudioOverlap, renderTranscript } from './meeting-dedup.ts'
+import {
+  shouldPersistTranscript,
+  meetingListSql,
+  TRANSCRIPT_PERSIST_MIN_GROWTH_BYTES,
+  TRANSCRIPT_LIST_PREVIEW_CHARS,
+} from './meeting-transcript-cache.ts'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const read = (f: string) => readFileSync(join(HERE, f), 'utf8')
@@ -1101,3 +1109,698 @@ describe('§914 · 长会议去重必须是线性的（修掉的是 O(n²)）', 
       `（比值 ${(tOld / tNew).toFixed(1)}×）—— 二次方可能回来了`)
   })
 })
+
+/**
+ * L · §925 `local_meetings.transcript` 这一列是**派生缓存**，不是事实源
+ *
+ * ── 为什么放在这个文件 ──
+ *
+ * J/K 两组已经在守「谁在写 `updateTranscript`、写的是不是去重后的渲染」，
+ * ⇒ 这一列的**写入纪律**归本组；本组只加**新的那一维**：它怎么被维护、怎么被读。
+ *
+ * ── 缺陷本体（实测）──
+ *
+ * `local_meeting_segments` 是事实源（每段一行）；
+ * `local_meetings.transcript` 是它的派生缓存（整场转写拼成一段文本）。
+ * ⚠ 而它此前是**当事实源在维护**的：
+ *   · 写入：每新增一段就把「到目前为止的整场转写」**整段重写** ⇒ 写入量 O(时长²)
+ *     （真 SQLite + 真实 ASR 语料实测：1952 段 = 8 小时 ⇒ 落库 **376.3 MB**、
+ *      中位纯写 **17.3 s**；节流后 **2.4 MB** / **1.44 s**）。
+ *   · 读取：`listMeetings` 是 `SELECT *` ⇒ 每次列表都把每场会的**整场转写 + 整场精校稿**读出来
+ *     （30 场 × (25 KB + 25 KB) = **1.45 MB**，而界面只要 **≈10.5 KB**：30 × 120 字预览；
+ *      有界片段后 **85.7 KB**）。
+ *
+ * ⚠ 修法把「风险落在慢的那一侧」：
+ *   节流是**显式 opt-in**（`{ throttled: true }`）⇒ 新增写入点忘了声明 ⇒ 只是多写几次，
+ *   **不会丢内容**（默认永远落库）。
+ */
+describe('L · §925 转写列是派生缓存：写入节流 + 列表只取有界片段', () => {
+  const STORE_SRC = read('meetings-store.ts')
+
+  // ── 行为门：拿**真**的 `updateTranscript` / `listMeetings` 跑（把 localDB 换成内存假件）──
+  //
+  // ★ 为什么这两条**不能**只做源码扫描：
+  //   §925 的第一版接线判据是「函数名出现过」⇒ 变异 **M8**
+  //   （`if (false && !shouldPersist(...))` ⇒ 永远落库）**漏网**
+  //   ⇒ 「按写法找」= 假阴性 ⇒ 必须行为化。
+  //   （做法与 `__tests__/ingest-behavior.test.mjs` 同款：esbuild 打包期替掉 I/O。）
+  const S925_WRITES: { sql: string; params: unknown }[] = []
+  const S925_QUERIES: { sql: string; params: unknown }[] = []
+  ;(globalThis as unknown as Record<string, unknown>).__s925Writes = S925_WRITES
+  ;(globalThis as unknown as Record<string, unknown>).__s925Queries = S925_QUERIES
+
+  let storeBundle: Promise<{ updateTranscript: Function; listMeetings: Function }> | null = null
+  function loadStoreModule() {
+    if (storeBundle) return storeBundle
+    storeBundle = (async () => {
+      const work = mkdtempSync(join(tmpdir(), 'pocket-s925-'))
+      const stub = join(work, 'local-db-stub.mjs')
+      writeFileSync(stub, `
+        export const localDB = {
+          async run(sql, params) { globalThis.__s925Writes.push({ sql: String(sql), params }) },
+          async query(sql, params) { globalThis.__s925Queries.push({ sql: String(sql), params }); return [] },
+          async queryOne(sql, params) { globalThis.__s925Queries.push({ sql: String(sql), params }); return null },
+        }`, 'utf8')
+      const entry = join(work, 'entry.ts')
+      writeFileSync(entry, `export { updateTranscript, listMeetings } from '${join(HERE, 'meetings-store.ts')}'\n`, 'utf8')
+      const outfile = join(work, 'out.mjs')
+      await build({
+        entryPoints: [entry],
+        bundle: true,
+        format: 'esm',
+        platform: 'neutral',
+        outfile,
+        logLevel: 'error',
+        plugins: [{
+          name: 'stub-io',
+          setup(b) {
+            b.onResolve({ filter: /^\.\.\/\.\.\/native\/local-db$/ }, () => ({ path: stub }))
+          },
+        }],
+      })
+      const mod = await import(pathToFileURL(outfile).href)
+      process.on('exit', () => { try { rmSync(work, { recursive: true, force: true }) } catch { /* 临时目录清理失败不影响判据结论 */ } })
+      return mod as { updateTranscript: Function; listMeetings: Function }
+    })()
+    return storeBundle
+  }
+
+  it('★★ 行为：真的 updateTranscript 在**节流**下不写库、在**默认**下写库', async () => {
+    const { updateTranscript } = await loadStoreModule()
+    S925_WRITES.length = 0
+    // ① 默认（不声明 throttled）⇒ **必须**写（用户的内容不能丢）
+    await updateTranscript('m-default', '短短的一段')
+    assert.equal(S925_WRITES.length, 1, '默认路径没有写库 ⇒ 用户的内容会丢')
+    assert.ok(
+      String(S925_WRITES[0].sql).includes('UPDATE local_meetings SET transcript = ?'),
+      `写库用的不是那列：${S925_WRITES[0].sql}`,
+    )
+    // ② 节流：第一次**必须**写（否则短会议那一列永远是空的）
+    S925_WRITES.length = 0
+    await updateTranscript('m-thr', 'x'.repeat(1000), { throttled: true })
+    assert.equal(S925_WRITES.length, 1, '节流路径的第一次没落库 ⇒ 短会议的预览会整行空白')
+    // ③ 节流：增长不足阈值 ⇒ **必须不写**（这一条是 M8 的死因）
+    S925_WRITES.length = 0
+    await updateTranscript('m-thr', `${'x'.repeat(1000)}y`, { throttled: true })
+    assert.equal(S925_WRITES.length, 0,
+      '增长不到阈值却写库了 ⇒ 节流没生效 ⇒ 写入量回到 O(时长²)')
+    // ④ 节流：增长超过阈值 ⇒ 必须写
+    S925_WRITES.length = 0
+    await updateTranscript('m-thr', `${'x'.repeat(1000)}${'z'.repeat(TRANSCRIPT_PERSIST_MIN_GROWTH_BYTES)}`, { throttled: true })
+    assert.equal(S925_WRITES.length, 1, '超过阈值却没落库 ⇒ 转写会一直落后')
+  })
+
+  it('★★ 行为：真的 listMeetings 发出去的 SQL 必须**只取有界片段**', async () => {
+    const { listMeetings } = await loadStoreModule()
+    S925_QUERIES.length = 0
+    await listMeetings(30)
+    assert.equal(S925_QUERIES.length, 1, 'listMeetings 没发查询（桩的形状变了？）')
+    const sql = S925_QUERIES[0].sql
+    assert.ok(!/SELECT\s+\*/i.test(sql), `列表 SQL 又是 SELECT *：${sql}`)
+    assert.ok(
+      sql.includes(`substr(transcript, 1, ${TRANSCRIPT_LIST_PREVIEW_CHARS}) AS transcript`),
+      `列表 SQL 没有取有界的转写片段：${sql}`,
+    )
+    assert.ok(
+      sql.includes(`substr(refined_transcript, 1, ${TRANSCRIPT_LIST_PREVIEW_CHARS}) AS refined_transcript`),
+      `列表 SQL 里精校稿还是整列读：${sql}`,
+    )
+  })
+
+  it('★★ 量具自证：扫描用的两个助手必须**真的有牙**（否则上面那些扫描判据是假绿）', () => {
+    // ① `stripComments` 必须能剥掉注释里的 SELECT *（本节踩过：注释里写着「此前是 SELECT *」）。
+    assert.ok(
+      !/SELECT\s+\*/i.test(stripComments('const q = 1 // 此前是 SELECT *\nconst r = 2')),
+      'stripComments 剥不掉行注释 ⇒ 扫描会把说明文字当成真 SQL（假红）',
+    )
+    assert.ok(
+      !/SELECT\s+\*/i.test(stripComments('/* 此前是 SELECT * */ const q = 1')),
+      'stripComments 剥不掉块注释 ⇒ 同上',
+    )
+    // ② 但它**不许**把字符串字面量里的内容也剥掉
+    //    （否则「SQL 文本里真的写了 SELECT *」这种真缺陷会被吞掉 ⇒ 假绿）。
+    assert.ok(
+      /SELECT\s+\*/i.test(stripComments("const sql = 'SELECT * FROM t'")),
+      'stripComments 把字符串字面量也剥了 ⇒ 真缺陷会被吞掉（假绿）',
+    )
+    // ③ `functionBody` 必须绕开**参数里的类型字面量**
+    //    （`opts?: { archived?: boolean }` 的 `{` 不是函数体起点 —— 本节踩过）。
+    const sample = 'function f(a: number, opts?: { x?: boolean }): void { return 1 }'
+    const body = functionBody(sample, 'f')
+    assert.ok(body.includes('return 1'), `functionBody 切错了函数体：${JSON.stringify(body)}`)
+    assert.ok(!body.includes('archived'), `functionBody 把类型字面量当成了函数体：${JSON.stringify(body)}`)
+    // ④ **正则字面量**里可以有反引号（`/[#*_>`~\[\]()]/g`）——
+    //    不认正则的扫描器会把那个反引号当成「字符串开始」⇒ 后面一大段被吞掉
+    //    ⇒ 括号配平失败 ⇒ 判据**假红**（本节踩过：preview 就在 `NotesHubView.vue` 里）。
+    const reSample = 'function g(): string { const r = /[#*_>`~]/g; return String(r) }'
+    const reBody = functionBody(reSample, 'g')
+    assert.ok(reBody.includes('return String(r)'), `functionBody 把正则当成了字符串：${JSON.stringify(reBody)}`)
+    //    ⇒ 模板串同理（`${…}` 里有花括号，不能参与配平）。
+    const tplSample = 'function h(): string { return `${a({ b: 1 })}` }'
+    assert.ok(functionBody(tplSample, 'h').includes('return'), 'functionBody 切错了模板串函数体')
+  })
+
+  it('★★ 安全侧：默认（不声明 throttled）必须**立刻落库**', () => {
+    // ⭐ 这是本组最重要的一条：节流是 opt-in ⇒ 默认的那条路不能被节流。
+    assert.equal(
+      shouldPersistTranscript({ lastPersistedBytes: 10_000, nextBytes: 10_001 }),
+      true,
+      '默认路径被节流了 ⇒ 将来新增一个写入点忘了声明，用户的内容可能不落库',
+    )
+    assert.equal(
+      shouldPersistTranscript({ lastPersistedBytes: 10_000, nextBytes: 10_001, throttled: false }),
+      true,
+      '显式 throttled:false 也必须立刻落库',
+    )
+  })
+
+  it('★ 节流路径：第一次一定要落库（短会议不能整列都是空的）', () => {
+    assert.equal(
+      shouldPersistTranscript({ lastPersistedBytes: 0, nextBytes: 200, throttled: true }),
+      true,
+      '第一次没落库 ⇒ 一场短会议（转写不到阈值）的这一列永远是空的 ⇒ 预览整行空白',
+    )
+  })
+
+  it('★★ 节流路径：增长不到阈值不落库，超过阈值才落库', () => {
+    const T = TRANSCRIPT_PERSIST_MIN_GROWTH_BYTES
+    assert.equal(
+      shouldPersistTranscript({ lastPersistedBytes: 100_000, nextBytes: 100_000 + T - 1, throttled: true }),
+      false,
+      '差一个字节就落库 ⇒ 节流形同虚设',
+    )
+    assert.equal(
+      shouldPersistTranscript({ lastPersistedBytes: 100_000, nextBytes: 100_000 + T, throttled: true }),
+      true,
+      '正好到阈值却没落库 ⇒ 阈值判错了',
+    )
+  })
+
+  it('★ 节流路径：转写被**整份替换**（变短）时也要落库', () => {
+    // 整场重转的结果可能比原来的分段转写短 ⇒ 差值是负数 ⇒ 用绝对值。
+    assert.equal(
+      shouldPersistTranscript({
+        lastPersistedBytes: 200_000,
+        nextBytes: 200_000 - TRANSCRIPT_PERSIST_MIN_GROWTH_BYTES,
+        throttled: true,
+      }),
+      true,
+      '变短了却没落库 ⇒ 这一列会一直留着旧版本',
+    )
+  })
+
+  it('★★ 性质：列表只取片段后，用户看到的预览**逐字不变**', () => {
+    // ⚠⚠ 这是「省体积」类改动的**必要**证据（§924 立的纪律）：
+    //   少读字节必须证明**用户看到的内容一个字符都不变**。
+    //
+    // ① 漂移守卫：预览的**真实**实现住在 `NotesHubView.vue` 里（不是共享模块）
+    //   ⇒ 这里把它的**真实源码**抠出来核对 ⇒ 它一改，这条门立刻响（不会默默漂移）。
+    const NOTES_SRC = read('../notes/NotesHubView.vue')
+    const previewBody = functionBody(NOTES_SRC, 'preview')
+    for (const needle of ['<[^>]*>', '[#*_>`~\\[\\]()]', '\\s+', 'slice(0, max)']) {
+      assert.ok(previewBody.includes(needle), `preview 的实现变了（缺 ${needle}）—— 这条性质判据的前提没了，先修判据`)
+    }
+    assert.ok(/max\s*=\s*120/.test(NOTES_SRC), 'preview 的默认长度不是 120 —— 前提变了，先修判据')
+
+    // ② 与 ① 核对过 ⇒ 本地这份 strip 与真实实现**等价**（只用于算「显示文本」）。
+    const display = (s: string): string =>
+      s.replace(/<[^>]*>/g, ' ').replace(/[#*_>`~\[\]()]/g, ' ').replace(/\s+/g, ' ').trim()
+
+    // ③ 用**生产渲染器** `renderTranscript` 造真实形状的转写（含 markdown 噪声）。
+    //    ⚠ 语料必须**超过** 512 字符，否则这条判据量不到任何东西（自己踩过）。
+    const speeches = [
+      '这周先把**登录**流程做完，<b>优先级</b>很高。',
+      '好，我这边先出接口文档，#待办 记得同步给王强。',
+      '收到，周三之前给结论，`日志` 采集也要一起看。',
+      '那我们先看 error 再看 warn，别一上来就上全量。',
+      '压测环境昨晚重启过，机器上只有 4 核，跑不动全量。',
+      '那就在 2 核上跑 smoke，完整回归放到周五夜里。',
+    ]
+    const full = renderTranscript(
+      Array.from({ length: 20 }, (_, i) => ({
+        speakerLabel: ['张伟', '李娜', '王强'][i % 3],
+        text: `${speeches[i % speeches.length]}（第 ${i + 1} 轮）`,
+      })),
+    )
+    assert.ok(full.length > TRANSCRIPT_LIST_PREVIEW_CHARS, '样本太短，这条性质判据没意义')
+
+    // ④ 关键性质：截到 512 字符之后，用户看到的**那一行**必须逐字不变。
+    const shownFull = display(full).slice(0, 120)
+    const shownTrunc = display(full.slice(0, TRANSCRIPT_LIST_PREVIEW_CHARS)).slice(0, 120)
+    assert.equal(shownTrunc, shownFull, '截断后预览变了 ⇒ 用户会看到不一样的一行')
+    //   ⇒ 而且不能**变短**（短了就是少给了内容）。
+    assert.ok(
+      display(full.slice(0, TRANSCRIPT_LIST_PREVIEW_CHARS)).length >= 120,
+      '截断后连 120 字都不到 ⇒ 预览会短一截',
+    )
+    // ⚠ 口径：SQLite 的 `substr` 按**字符**（码点）切，JS 的 `slice` 按 **UTF-16 码元**切
+    //   ⇒ 含 emoji 时两者差 1 个字符。本条只比较 120 字的前缀 ⇒ 不受影响。
+  })
+
+  it('★★ 列表查询不许再用 `SELECT *`（那会把整场转写读出来）', () => {
+    for (const archived of [false, true]) {
+      const sql = meetingListSql(archived)
+      assert.ok(!/SELECT\s+\*/i.test(sql), `列表 SQL 又是 SELECT *：${sql}`)
+      assert.ok(
+        sql.includes(`substr(transcript, 1, ${TRANSCRIPT_LIST_PREVIEW_CHARS}) AS transcript`),
+        `列表 SQL 没有取有界的转写片段：${sql}`,
+      )
+    }
+  })
+
+  it('★★ 列表查询里的**精校稿**也必须只取有界片段（它是同一类派生缓存）', () => {
+    // ⚠ `refined_transcript` 与 `transcript` 是**同一类东西**（分段转写的派生），
+    //   列表里的消费者**也只有**那一个 120 字预览 ⇒ 只修一半 ⇒ 读侧只降一半。
+    const sql = meetingListSql(false)
+    assert.ok(
+      sql.includes(`substr(refined_transcript, 1, ${TRANSCRIPT_LIST_PREVIEW_CHARS}) AS refined_transcript`),
+      `列表 SQL 里精校稿还是整列读：${sql}`,
+    )
+    // ⇒ 反向核对：SELECT 列表里**不许**出现「裸的」两列（那说明有人把它改回去了）。
+    //   ⚠ 必须在**项**这一层核对（不是整条 SQL 上正则）——
+    //     `AS refined_transcript` 里的那个 refined_transcript 是**别名**，不是裸列。
+    const items = selectItems(sql)
+    for (const bare of ['transcript', 'refined_transcript']) {
+      assert.ok(!items.includes(bare), `列表 SQL 里还有裸的 ${bare} 列：${sql}`)
+    }
+  })
+
+  it('★★ 列表查询的列必须**恰好**是 rowToMeeting 读的那些（防漏列）', () => {
+    // ⭐ 这一条是「抄两份」的老毛病（§80）的解法：
+    //   列清单在 SQL 里、字段名在 rowToMeeting 里 ⇒ 两份 ⇒ 必然漂移。
+    // ⇒ 这里**互相核对**：少一列 ⇒ 列表里那个字段恒为 undefined（用户看到空标题之类）。
+    const body = functionBody(STORE_SRC, 'rowToMeeting')
+    const wanted = [...new Set([...body.matchAll(/\br\.(\w+)/g)].map((m) => m[1]))].sort()
+    assert.ok(wanted.length >= 20, `只从 rowToMeeting 里认出 ${wanted.length} 个字段 —— 抽取器坏了`)
+    const sql = meetingListSql(false)
+    const got = selectColumns(sql).sort()
+    assert.deepEqual(got, wanted,
+      '列表 SQL 的列与 rowToMeeting 读的字段对不上 ⇒ 少列 = 列表里那个字段恒为 undefined')
+  })
+
+  it('★★ 接线：store 必须真的用上这两个决策', () => {
+    const upd = functionBody(STORE_SRC, 'updateTranscript')
+    assert.ok(upd.includes('shouldPersistTranscript('), 'updateTranscript 没有走节流决策')
+    assert.ok(upd.includes('updateMeeting(id, { transcript })'), 'updateTranscript 不再写 transcript 列')
+    const list = functionBody(STORE_SRC, 'listMeetings')
+    assert.ok(list.includes('meetingListSql('), 'listMeetings 没有用会议列表 SQL')
+    // ⚠⚠ 扫描前必须**剥注释**（本节自己踩过）：`listMeetings` 的注释里写着
+    //   「此前是 `SELECT *`」—— 不剥就会把**说明文字**当成真的 SQL ⇒ 假红。
+    assert.ok(!/SELECT\s+\*/i.test(stripComments(list)), 'listMeetings 里还有 SELECT *')
+  })
+
+  it('★★ 节流只能出现在「逐段追加」那两条路径上', () => {
+    // ⚠ 这条是**枚举型**判据（只覆盖名字已经写下来的调用点）⇒ 它的缺口要说清：
+    //   但**方向是安全的** —— 漏声明只会多写几次，**不会丢内容**。
+    const sites: string[] = []
+    for (const f of walkSrc()) {
+      const src = readFileSync(f, 'utf8')
+      if (src.includes('throttled: true')) sites.push(relative(SRC_ROOT, f))
+    }
+    assert.deepEqual(sites.sort(), [
+      'features/meetings/ingest-speech.ts',
+      'native/recordingRuntime.ts',
+    ], `节流出现在这些文件里：${sites.join(', ')} —— 只有「逐段追加」那两条路径可以节流`)
+  })
+
+  it('★★ 阈值必须同时满足两条**派生性质**（钉住的是性质，不是那个字面量）', () => {
+    // ⚠⚠ 为什么要**派生性质**而不是「阈值必须等于 32768」：
+    //   第一版判据全部用 `TRANSCRIPT_PERSIST_MIN_GROWTH_BYTES` 自己算期望值
+    //   ⇒ **判据与实现同源** ⇒ 变异 M13「阈值调大 1000 倍」**照样全绿**（漏网）。
+    //   ⇒ 这里改成两条**与实现无关**的量化性质（用 §925.2 的实测语料折算）。
+    //
+    // ① 够大：8 小时会议（转写 394.4 KB）的落库次数 ≤ 20 次
+    //    ⇒ 阈值 ≥ 394.4 KB / 20 ≈ 19.7 KB
+    const EIGHT_HOUR_TRANSCRIPT_BYTES = 394.4 * 1024
+    assert.ok(
+      TRANSCRIPT_PERSIST_MIN_GROWTH_BYTES >= 20 * 1024,
+      `阈值 ${TRANSCRIPT_PERSIST_MIN_GROWTH_BYTES} B ⇒ 8 小时会议要落库 `
+      + `${(EIGHT_HOUR_TRANSCRIPT_BYTES / TRANSCRIPT_PERSIST_MIN_GROWTH_BYTES).toFixed(0)} 次（>20 次）`
+      + ' ⇒ 写入量回不到 O(时长) 的量级',
+    )
+    // ② 够小：录音期间的滞后 ≤ 1 小时语音
+    //    ⇒ 实测语料 792.5 B/分 ⇒ 阈值 ≤ 40 KB ⇒ 滞后 ≤ 51.6 分钟
+    const BYTES_PER_MINUTE = 792.5
+    assert.ok(
+      TRANSCRIPT_PERSIST_MIN_GROWTH_BYTES <= 40 * 1024,
+      `阈值 ${TRANSCRIPT_PERSIST_MIN_GROWTH_BYTES} B ⇒ 录音期间滞后 `
+      + `${(TRANSCRIPT_PERSIST_MIN_GROWTH_BYTES / BYTES_PER_MINUTE).toFixed(0)} 分钟（>1 小时）`
+      + ' ⇒ 这一列在会议结束前就长时间不是「当前转写」',
+    )
+  })
+
+  it('★★ 收尾必须**整篇**落库（否则这一列在会议结束时仍落后四十来分钟）', () => {
+    // ⚠ 为什么必须有这一步：录音期间那一列是**节流**的 ⇒ 会议刚结束时它可能落后
+    //   **几十 KB / 四十来分钟**的语音 ⇒ 「会议结束」就必须是一个明确的补齐点。
+    // ⚠ 这条是**源码形状**判据（`stop()` 是类方法，node 里跑不到）⇒ 但它钉的是
+    //   「**这个函数体里有一个不声明 throttled 的整篇写**」这个**具体形态**，
+    //   而不只是「函数名出现过」（§925.5 的 M8 就是栽在后者上）。
+    const RT = read('../../native/recordingRuntime.ts')
+    const stop = methodBody(RT, 'stop')
+    // ⚠ 前提登记：`recordingRuntime.ts` 里有**两个** `stop()`（会议那条 / 随手记那条）
+    //   ⇒ 必须证明切到的是**会议**那条（它才有在途分段的等待）。
+    assert.ok(stop.includes('inFlightSegments'),
+      '切到的不是会议那条 stop()（随手记那条没有在途分段）—— 判据失效，先修判据')
+    const writes = [...stop.matchAll(/updateTranscript\(([^)]*)\)/g)].map((m) => m[1])
+    assert.ok(writes.length > 0, 'stop() 里没有 updateTranscript 调用 —— 收尾不补齐这一列')
+    const forced = writes.filter((w) => !w.includes('throttled'))
+    assert.ok(forced.length > 0,
+      `stop() 里的转写写入都声明了 throttled（${writes.length} 处）⇒ 收尾不补齐这一列`)
+    // ⇒ 且必须**有分段才写**（没分段时写空串会把这一列清空 ⇒ 误报「可恢复」）。
+    assert.ok(
+      /if\s*\(\s*this\.segments\.value\.length\s*\)/.test(stop),
+      '收尾的整篇写入没有「有分段才写」的守卫 ⇒ 没有分段时会把这一列清空',
+    )
+  })
+
+  it('★★ 详情页必须拿到**全文**（列表那一份是截断的，不许被当成正文）', () => {
+    // ⚠ 列表 SQL 只取 512 字符 ⇒ 那个值**不能**当正文展示。
+    //   详情页走 `getMeetingWithSegments` → `getMeeting`（**`SELECT *`**）⇒ 全文。
+    // ⇒ 这里把这条**数据来源**钉住：将来有人为了让列表更快而把详情页也改成读列表那份
+    //   ⇒ 用户会看到一份**被砍半**的精校正文（正是 `refine-retention-guard` 那道门防的事）。
+    const VIEW = read('MeetingDetailView.vue')
+    assert.ok(
+      /getMeetingWithSegments\s*\(/.test(VIEW),
+      '详情页不再走 getMeetingWithSegments ⇒ 它可能改读列表那份（截断的）',
+    )
+    const getMeetingBody = functionBody(STORE_SRC, 'getMeeting')
+    assert.ok(
+      /SELECT\s+\*/.test(getMeetingBody),
+      'getMeeting 不再是 `SELECT *` ⇒ 详情页拿到的不是全文',
+    )
+  })
+
+  it('★★ 负控：默认变成节流时上面那条必须判红', () => {
+    // 与真实实现**同形**的样本：只是把默认值反过来。
+    const inverted = (i: { lastPersistedBytes: number; nextBytes: number; throttled?: boolean }): boolean => {
+      if (i.throttled === false) return true
+      if (i.lastPersistedBytes <= 0) return true
+      return Math.abs(i.nextBytes - i.lastPersistedBytes) >= TRANSCRIPT_PERSIST_MIN_GROWTH_BYTES
+    }
+    assert.equal(inverted({ lastPersistedBytes: 10_000, nextBytes: 10_001 }), false,
+      '负控前提失效：样本竟然没有反转默认行为')
+    assert.equal(shouldPersistTranscript({ lastPersistedBytes: 10_000, nextBytes: 10_001 }), true,
+      '真实现与负控同形 ⇒ 量具坏了，不是判据坏了')
+  })
+
+  it('★★ 负控：列表 SQL 里的转写片段被去掉时必须判红', () => {
+    const broken = meetingListSql(false).replace(/substr\(transcript, 1, \d+\) AS transcript/, 'transcript')
+    assert.notEqual(broken, meetingListSql(false), '负控样本没改成功')
+    assert.ok(!/substr\(transcript, 1, \d+\) AS transcript/.test(broken),
+      '负控失败：去掉片段后仍然判绿 ⇒ 上面那条判据没有牙')
+  })
+})
+
+/**
+ * ── 一个够用的 JS 记号扫描器（门禁用）──
+ *
+ * ⚠⚠ 为什么不能只认「字符串」：**正则字面量**里可以有引号和反引号。
+ *   本节踩过：`/[#*_>`~\[\]()]/g` 里那个**反引号**被当成「字符串开始」⇒
+ *   后面一大段被吞掉 ⇒ 括号配平失败 ⇒ 判据假红。
+ * ⇒ 所以下面这套同时认：**行注释 / 块注释 / 字符串 / 模板串 / 正则字面量**。
+ *
+ * ⚠ 记号扫描的返回值约定：一律返回**记号最后一个字符的下标**（含），
+ *   「此处不是记号」时返回**原下标**（调用方据此判断「没跳过任何东西」）。
+ */
+
+/** 正则可以跟在这些**关键字**后面（`return /re/` 这种）。 */
+const REGEX_AFTER_WORDS = new Set([
+  'return', 'typeof', 'case', 'in', 'of', 'new', 'delete', 'void',
+  'instanceof', 'do', 'else', 'yield', 'await', 'throw',
+])
+
+/** `src[i]` 处的 `/` 是正则字面量的开头吗（还是除号）。 */
+function isRegexStart(src: string, i: number): boolean {
+  let k = i - 1
+  while (k >= 0 && /\s/.test(src[k])) k--
+  if (k < 0) return true
+  const c = src[k]
+  if (c === ')' || c === ']') return false
+  if (/[A-Za-z0-9_$]/.test(c)) {
+    let w = k
+    while (w >= 0 && /[A-Za-z0-9_$]/.test(src[w])) w--
+    return REGEX_AFTER_WORDS.has(src.slice(w + 1, k + 1))
+  }
+  return true
+}
+
+/** 跳过引号字符串（返回**结束引号**的下标）。 */
+function skipQuoted(src: string, i: number): number {
+  const q = src[i]
+  let k = i + 1
+  while (k < src.length) {
+    if (src[k] === '\\') { k += 2; continue }
+    if (src[k] === q) return k
+    if (src[k] === '\n') return k // 没闭合 ⇒ 止于行尾
+    k++
+  }
+  return src.length - 1
+}
+
+/** 跳过模板串（含 `${…}` 里的嵌套记号与嵌套花括号）。 */
+function skipTemplate(src: string, i: number): number {
+  let k = i + 1
+  while (k < src.length) {
+    const c = src[k]
+    if (c === '\\') { k += 2; continue }
+    if (c === '`') return k
+    if (c === '$' && src[k + 1] === '{') {
+      let depth = 1
+      k += 2
+      while (k < src.length && depth > 0) {
+        const t = skipToken(src, k)
+        if (t !== k) { k = t + 1; continue }
+        if (src[k] === '{') depth++
+        else if (src[k] === '}') depth--
+        k++
+      }
+      continue
+    }
+    k++
+  }
+  return src.length - 1
+}
+
+/** 跳过正则字面量（`[...]` 里的 `/` 不结束正则）。 */
+function skipRegex(src: string, i: number): number {
+  let k = i + 1
+  let inClass = false
+  while (k < src.length) {
+    const c = src[k]
+    if (c === '\\') { k += 2; continue }
+    if (c === '\n') return k - 1 // 没闭合 ⇒ 多半不是正则
+    if (inClass) { if (c === ']') inClass = false; k++; continue }
+    if (c === '[') { inClass = true; k++; continue }
+    if (c === '/') {
+      k++
+      while (k < src.length && /[a-z]/i.test(src[k])) k++
+      return k - 1
+    }
+    k++
+  }
+  return src.length - 1
+}
+
+/** 从 `i` 开始跳过一个记号；`i` 处不是记号则**原样返回** `i`。 */
+function skipToken(src: string, i: number): number {
+  const c2 = src.slice(i, i + 2)
+  if (c2 === '//') { const nl = src.indexOf('\n', i); return nl < 0 ? src.length - 1 : nl }
+  if (c2 === '/*') { const e = src.indexOf('*/', i + 2); return e < 0 ? src.length - 1 : e + 1 }
+  const c = src[i]
+  if (c === '"' || c === "'") return skipQuoted(src, i)
+  if (c === '`') return skipTemplate(src, i)
+  if (c === '/' && isRegexStart(src, i)) return skipRegex(src, i)
+  return i
+}
+
+/**
+ * 取某个函数体（**括号配平**，不能用正则猜边界 —— §439 记过这个坑）。
+ *
+ * ⚠⚠ 参数里的**类型字面量**会骗过「第一个 `{` 就是函数体」这种写法：
+ *   `listMeetings(limit = 30, opts?: { archived?: boolean })` 的第一个 `{` 是**类型**的，
+ *   按它切出来的「函数体」是 ` archived?: boolean; offset?: number ` ⇒ 判据全部读到垃圾。
+ * ⇒ 这里先扫到**参数列表的右括号**（按配平、跳过记号），再找它后面的第一个 `{`。
+ *
+ * ⚠ 已知边界：返回类型里带花括号的函数（如 `(): { a: number } {`）会切错。
+ *   本组扫的三个函数（`rowToMeeting` / `updateTranscript` / `listMeetings`）与
+ *   `preview` 的返回类型都是简单类型 ⇒ 不触发。
+ */
+function functionBody(src: string, name: string): string {
+  // ⚠ 锚点带**左括号**：`function getMeeting(` 不会误命中 `function getMeetingWithSegments(`。
+  const at = src.indexOf(`function ${name}(`)
+  // ⚠ 判据用 `at >= 0`（不是 `> 0`）：函数在**下标 0** 处也是找得到
+  //   （自证样本 `function f(...)` 就是）⇒ 用 `> 0` 会把「在开头」误判成「找不到」。
+  assert.ok(at >= 0, `解析不到 ${name} —— 判据失效，先修判据`)
+  return bodyFrom(src, at, name)
+}
+
+/**
+ * 取**类方法**的体（`async stop(): … {` 这种**没有** `function` 关键字的）。
+ *
+ * ⚠ 为什么单列一个：类方法与函数声明的**声明形态**不同
+ *   （`function f(...)` vs `  async stop(...)`）⇒ 用 `indexOf('function stop')` 找不到。
+ * ⚠ 同一个类里可能有**同名方法**（`recordingRuntime.ts` 里 `stop()` 有两处：
+ *   会议那条与随手记那条）⇒ 取**第 occurrence 个**，并在调用处做**前提登记**。
+ */
+function methodBody(src: string, name: string, occurrence = 0): string {
+  const re = new RegExp(`^[ \\t]*(?:async[ \\t]+)?${name}[ \\t]*\\(`, 'gm')
+  const hits: number[] = []
+  for (let m = re.exec(src); m; m = re.exec(src)) hits.push(m.index)
+  assert.ok(hits.length > occurrence, `解析不到第 ${occurrence} 个 ${name} 方法 —— 判据失效，先修判据`)
+  return bodyFrom(src, hits[occurrence], `${name}（第 ${occurrence} 个）`)
+}
+
+/** 从声明处开始取函数体（**括号配平**，跳过记号）。 */
+function bodyFrom(src: string, declIndex: number, label: string): string {
+  // ① 参数列表的右括号
+  let i = src.indexOf('(', declIndex)
+  assert.ok(i > 0, `${label} 没有参数列表 —— 判据失效，先修判据`)
+  let depth = 0
+  let close = -1
+  for (; i < src.length; i++) {
+    const t = skipToken(src, i)
+    if (t !== i) { i = t; continue }
+    const c = src[i]
+    if (c === '(') depth++
+    else if (c === ')') {
+      depth--
+      if (depth === 0) { close = i; break }
+    }
+  }
+  assert.ok(close > 0, `${label} 的参数列表不配平 —— 判据失效，先修判据`)
+  // ② 跳过返回类型，找到**顶层**的 `{`（函数体起点）
+  const open = findBodyBrace(src, close)
+  assert.ok(open > 0, `找不到 ${label} 的函数体起点 —— 判据失效，先修判据`)
+  depth = 0
+  for (let k = open; k < src.length; k++) {
+    const t = skipToken(src, k)
+    if (t !== k) { k = t; continue }
+    const c = src[k]
+    if (c === '{') depth++
+    else if (c === '}') {
+      depth--
+      if (depth === 0) return src.slice(open + 1, k)
+    }
+  }
+  throw new Error(`${label} 的括号不配平`)
+}
+
+/**
+ * 从 `from` 开始找**顶层**的 `{`（函数体起点）。
+ *
+ * ⚠⚠ **不能**用「`)` 之后的第一个 `{`」：返回类型里可能有花括号 ——
+ *   `async stop(): Promise<{ audioPath: string; … } | null> {` 的第一个 `{`
+ *   是**返回类型**的 ⇒ 按它切出来的「函数体」是 ` audioPath: string; … ` ⇒ 判据读到垃圾
+ *   （本节实测踩到：`stop()` 有两个同名方法，靠 `inFlightSegments` 前提登记才发现切错了）。
+ * ⇒ 这里按**括号配平**跳过嵌套组（`{}` / `<>` / `()` / `[]`），取**顶层**那个 `{`。
+ */
+function findBodyBrace(src: string, from: number): number {
+  const stack: string[] = []
+  let i = from
+  while (i < src.length) {
+    const t = skipToken(src, i)
+    if (t !== i) { i = t + 1; continue }
+    const c = src[i]
+    // `=>` 里的 `>` 不是泛型的收尾 ⇒ 必须当成两个字符跳过。
+    if (c === '=' && src[i + 1] === '>') { i += 2; continue }
+    if (c === '{' || c === '<' || c === '(' || c === '[') {
+      if (c === '{' && stack.length === 0) return i // 顶层花括号 = 函数体
+      stack.push(c)
+      i++
+      continue
+    }
+    if (c === '}' || c === '>' || c === ')' || c === ']') {
+      stack.pop()
+      i++
+      continue
+    }
+    i++
+  }
+  return -1
+}
+
+/**
+ * 剥掉注释（行注释 + 块注释），**保留字符串/模板串/正则字面量**。
+ *
+ * ⚠⚠ 本节自己踩过这个坑：`listMeetings` 的**注释**里写着「此前是 `SELECT *`」，
+ *   不剥注释的扫描会把**说明文字**当成真的 SQL ⇒ 假红。
+ *
+ * ⚠ 反过来，字面量必须**原样保留**（不能被当成注释剥掉）——
+ *   否则「SQL 文本里真的写了 SELECT *」这种真缺陷会被吞掉 ⇒ 假绿。
+ */
+function stripComments(src: string): string {
+  let out = ''
+  let i = 0
+  while (i < src.length) {
+    const c2 = src.slice(i, i + 2)
+    if (c2 === '//') {
+      while (i < src.length && src[i] !== '\n') i++
+      continue
+    }
+    if (c2 === '/*') {
+      const end = src.indexOf('*/', i + 2)
+      i = end < 0 ? src.length : end + 2
+      out += ' ' // 用空格占位，免得把注释两边的代码粘成一个 token
+      continue
+    }
+    const c = src[i]
+    if (c === '"' || c === "'" || c === '`') {
+      const end = c === '`' ? skipTemplate(src, i) : skipQuoted(src, i)
+      out += src.slice(i, end + 1)
+      i = end + 1
+      continue
+    }
+    if (c === '/' && isRegexStart(src, i)) {
+      const end = skipRegex(src, i)
+      out += src.slice(i, end + 1)
+      i = end + 1
+      continue
+    }
+    out += c
+    i++
+  }
+  return out
+}
+
+/**
+ * 遍历 `src/` 下的源文件（.ts / .vue，跳过测试文件）。
+ *
+ * ⚠ J/K 两组各自有一份同款遍历器（它们在各自的 describe 作用域里）。
+ *   本组**再抄第三份**是明知的重复 ⇒ 但**不重构** J/K（那是另一节的判据，
+ *   动它会扩大本节的改动面）⇒ 这里如实记一笔：**三份遍历器**，
+ *   若将来要收编，请连 J/K 一起收（三处一起改才不会漂）。
+ */
+const SRC_ROOT = join(HERE, '..', '..')
+function walkSrc(dir: string = SRC_ROOT, out: string[] = []): string[] {
+  for (const e of readdirSync(dir, { withFileTypes: true })) {
+    if (e.name === 'node_modules' || e.name === '.git') continue
+    const p = join(dir, e.name)
+    if (e.isDirectory()) walkSrc(p, out)
+    else if (/\.(ts|vue)$/.test(e.name) && !/\.test\.ts$/.test(e.name)) out.push(p)
+  }
+  return out
+}
+
+/** 取 SELECT 列表的**原始项**（括号里的逗号不算分隔符）。 */
+function selectItems(sql: string): string[] {
+  const list = sql.slice(sql.indexOf('SELECT ') + 'SELECT '.length, sql.indexOf(' FROM '))
+  const parts: string[] = []
+  let depth = 0
+  let cur = ''
+  for (const c of list) {
+    if (c === '(') depth++
+    if (c === ')') depth--
+    if (c === ',' && depth === 0) { parts.push(cur.trim()); cur = ''; continue }
+    cur += c
+  }
+  if (cur.trim()) parts.push(cur.trim())
+  return parts
+}
+
+/** 取 SELECT 列表的**输出列名**（括号里的逗号不算分隔符）。 */
+function selectColumns(sql: string): string[] {
+  return selectItems(sql).map((p) => {
+    const as = p.toUpperCase().lastIndexOf(' AS ')
+    return as >= 0 ? p.slice(as + 4).trim() : p
+  })
+}
