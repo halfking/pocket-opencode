@@ -94,8 +94,12 @@ const defaultTranscribeFull = (blob: Blob, filename: string) =>
   // ★ segments 必须一起带回来：它是把高精度文本挂回说话人的唯一依据。
   //   只回 {text, failed} 就等于在接缝处把它扔了
   //   （见 meeting-final-transcript.ts 的 FullSegmentReceipt 头注释）。
+  // ★ error 也必须带回来（§927）：服务端「一次成功段都没有」时回
+  //   `{ok:false, error:…}`（HTTP 仍是 200）⇒ text/failed 都是空
+  //   ⇒ 丢掉 error 就分不清「整块纯静音」与「整块真失败」
+  //   ⇒ 前者会被误报成「有 N 段没转出来」。
   sttSettingsApi.transcribeFull(blob, filename).then((r) => ({
-    text: r.text, failed: r.failed, segments: r.segments,
+    text: r.text, failed: r.failed, segments: r.segments, error: r.error,
   }))
 
 /**

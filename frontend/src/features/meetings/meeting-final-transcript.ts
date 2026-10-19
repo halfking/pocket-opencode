@@ -41,6 +41,9 @@
  */
 import { loadMeetingAudio } from '../../native/meeting-audio.ts'
 import { filenameForMimeType } from '../../api/stt-filename.ts'
+import {
+  mergeChunkedOutcomes, planWavChunks, sliceWavChunk, type ChunkedTranscribePart,
+} from './meeting-full-transcribe-chunks.ts'
 import type { MeetingSegment } from './meetings-store'
 
 /**
@@ -70,6 +73,16 @@ export interface FullTranscribeOutcome {
   failed: number
   /** 逐段回执；老调用方/老后端可能没有，那时走单段降级。 */
   segments?: FullSegmentReceipt[] | null
+  /**
+   * 服务端返回的错误信息（如「全量转写没有任何有效文本（5 段全部失败…）」）。
+   *
+   * ★ 为什么需要它（§927）：服务端在「一次成功段都没有」时返回
+   *   `{ok:false, error:…}`（HTTP 仍是 200）⇒ 客户端**拿不到任何内容**。
+   *   而「整块都是纯静音」与「整块真失败」**服务端用同一形态返回**，
+   *   只有 error 文案能区分（`backend/internal/stt/full.go:506` 的「纯静音」提示）。
+   *   ⇒ 没有它，纯静音的块会被当成失败报给用户（「有 N 段没转出来」，其实没失败）。
+   */
+  error?: string
 }
 
 export interface FinalTranscribeResult {
@@ -129,6 +142,15 @@ export async function refetchFullTranscript(
      *   「webm 进、wav 出」是**可执行**的断言，不再是阅读理解题。
      */
     loadAudio?: (meetingId: string) => Promise<Blob | null>
+    /**
+     * §927：整场重转的**分块长度**（秒）。不传 = 生产默认值
+     * （`FULL_TRANSCRIBE_CHUNK_SECONDS` = 8 分钟，取值依据见
+     * `meeting-full-transcribe-chunks.ts` 的文件头）。
+     *
+     * ⚠ 这是一个**注入点**，不是设置项：要不要暴露给用户属产品口径
+     *   （简报第 151 条待拍板），本处不代拍。
+     */
+    chunkSeconds?: number
   },
 ): Promise<FinalTranscribeResult> {
   if (!meetingId) return { text: null, applied: false, reason: 'no-meeting-id' }
@@ -175,7 +197,10 @@ export async function refetchFullTranscript(
     }
     const target = resolveUploadTarget(blob, wav)
 
-    const res = await transcribeFull(target.blob, target.filename)
+    // ⚠⚠ §927（= §923 的 P2）：整场重转**分块** ⇒ 每块各拿一份服务端的 10 分钟预算。
+    //   改造前这里是一次整场调用 ⇒ 段数一多，服务端那条 10 分钟的
+    //   `fullTranscribeTimeout` 就会把整场重转腰斩（§923.3「墙 3」实测推导）。
+    const res = await transcribeInChunks(target, wav, transcribeFull, opts?.chunkSeconds)
     const text = String(res?.text ?? '').trim()
     // 转码失败无论后面成没成都要透出：成功也可能是「退回原 blob 后恰好被接受」，
     // 那种情况下这次失败同样需要有人知道。
@@ -204,6 +229,93 @@ export async function refetchFullTranscript(
       try { URL.revokeObjectURL(audioUrl) } catch { /* ok */ }
     }
   }
+}
+
+/**
+ * §927：把「整场重转」按块发出去（服务端零改动）。
+ *
+ * ⭐ **短音频（装得下一块）走原来的单次调用** ⇒ 行为**逐字不变**
+ * （绝大多数会议都在这一侧 ⇒ 零风险）。
+ * ⭐ **只有拿到 WAV 时才切**：webm 兜底路径（`toWav` 失败）没有 demuxer
+ * ⇒ 保持单次调用 ⇒ 那一侧的墙仍在（= §923 的 P3，⛔ 真机未验证）。
+ *
+ * ⚠ **一块失败不许把整场拖死**：其余块的内容仍然值钱 ⇒ 逐块兜住；
+ * 但**全部**失败时的失败形态必须与改造前**同义** ⇒
+ *   · 块是**抛错**的（网络/超时）⇒ 抛第一个错 ⇒ `reason` 仍是 `transcribe-failed`；
+ *   · 块是**服务端回 ok:false** 的（HTTP 200 但没有内容）⇒ 不抛 ⇒
+ *     合并后文本为空 ⇒ `reason` 是 `empty-transcript` ——
+ *     ⚠ 这与改造前**逐字同义**（单次调用时服务端也这么回）。
+ * ⇒ 不新增任何失败形态（属主看得懂的失败形态集合不变）。
+ *
+ * ⚠⚠ **整块失败时真实段数未知**（服务端按自己的静音切段决定，而失败时
+ * 连回执都不返回）⇒ 这里只记 **1** ⇒ 用户提示里的「有 N 段没转出来」
+ * 在这种情形下会**少报** ⇒ 如实记一笔，不虚报。
+ * ⚠ **纯静音的块不算失败**：服务端把「整段都是纯静音」与「整段都失败」
+ *   用**同一个形态**返回（都是 ok:false），只有 error 文案能区分
+ *   （`backend/internal/stt/full.go:506`）⇒ 靠文案判定 ⇒
+ *   **服务端改文案时这条会退化成「静音也算失败」**（方向是保守的：
+ *   多报一次失败，不会少报）。
+ */
+async function transcribeInChunks(
+  target: { blob: Blob; filename: string },
+  wav: ArrayBuffer | null,
+  transcribeFull: (blob: Blob, filename: string) => Promise<FullTranscribeOutcome>,
+  chunkSeconds?: number,
+): Promise<FullTranscribeOutcome> {
+  const plan = wav ? planWavChunks(wav, chunkSeconds ? { chunkSeconds } : undefined) : null
+  if (!plan || plan.bounds.length <= 1 || !wav) {
+    return transcribeFull(target.blob, target.filename)
+  }
+  const parts: ChunkedTranscribePart[] = []
+  let firstError: unknown = null
+  let succeeded = 0
+  let failedChunks = 0
+  for (let i = 0; i < plan.bounds.length; i++) {
+    const offsetSec = plan.offsetsSec[i]
+    try {
+      // ⚠ 块**现切现用**：切完立刻发，发完这一轮就被回收
+      //   ⇒ 峰值内存 = 原件 + 一块，与会议时长无关。
+      const chunk = sliceWavChunk(wav, plan, i)
+      const outcome = await transcribeFull(new Blob([chunk], { type: 'audio/wav' }), 'meeting.wav')
+      const text = String(outcome?.text ?? '')
+      if (!text && !Number(outcome?.failed)) {
+        // 这一块**没有产出任何内容** ⇒ 要么整块纯静音，要么整块失败。
+        if (isSilenceOnly(outcome?.error)) {
+          // 纯静音：不是失败，也不该出现在「有 N 段没转出来」里。
+          parts.push({ outcome: { text: '', failed: 0 }, offsetSec })
+          continue
+        }
+        failedChunks += 1
+        parts.push({ outcome: { text: '', failed: 0 }, offsetSec })
+        continue
+      }
+      parts.push({ outcome, offsetSec })
+      succeeded += 1
+    } catch (e) {
+      if (firstError === null) firstError = e
+      failedChunks += 1
+      parts.push({ outcome: { text: '', failed: 0 }, offsetSec })
+    }
+  }
+  // 全部失败且失败形态是「抛错」⇒ 抛出去（与单次调用同义）。
+  if (succeeded === 0 && firstError !== null) throw firstError
+  const merged = mergeChunkedOutcomes(parts)
+  return { ...merged, failed: merged.failed + failedChunks }
+}
+
+/**
+ * 服务端「这一块整段都是纯静音」的文案特征。
+ *
+ * 出处：服务端在全量转写「一次成功段都没有」时，把错误写成
+ * `全量转写没有任何有效文本（N 段全部失败，首段错误：…）`，
+ * 而当所有段都是被跳过的纯静音时，首段错误是
+ * `（无逐段错误，全部段被判定为纯静音而跳过）`（`backend/internal/stt/full.go:506`）。
+ */
+const SILENCE_ONLY_MARK = '纯静音'
+
+/** 这一块是不是「整段纯静音」而不是「失败」。 */
+function isSilenceOnly(error?: string): boolean {
+  return typeof error === 'string' && error.includes(SILENCE_ONLY_MARK)
 }
 
 /**
