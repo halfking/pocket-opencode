@@ -1085,7 +1085,66 @@ func guardRefineResult(parsed map[string]any, transcript string, meta meetingMet
 		fb["refine_rejected"] = true
 		return fb, true
 	}
+	// ⚠⚠ §907/D76：精校稿明显比原文短 ⇒ 模型在**缩写**，不是在纠错。
+	//   原先这里**只有参会人那一条检查**，缩写是全漏的 ——
+	//   而缩写的后果比「精校没生效」严重得多：前端
+	//   `ingestMeetingArtifacts` 用 `refine.refinedTranscript || meeting.transcript`
+	//   建笔记 ⇒ 缩写稿成了**笔记正文** ⇒ §898 起那套段级向量索引到的
+	//   也就只有被缩写后的那一部分 ⇒ 长会议尾部**从未被索引过**，且零诊断。
+	if reason := refineShrinkage(refined, transcript); reason != "" {
+		log.Printf("[meeting] llm refine rejected: %s", reason)
+		fb := refineFallbackPayload(transcript)
+		fb["refine_rejected"] = true
+		return fb, true
+	}
 	return parsed, false
+}
+
+// refineMinLenRatio 精校稿最短能到原文的多少（按 rune）。
+//
+// ⚠⚠ 阈值是**算出来的**，不是拍的：
+//
+//	误伤余量（真实转写 `.artifacts/asr-s788/seg-asr/merged.txt`，3341 字 / 51 行）：
+//	  模型若把每行的 `[姓名] ` 前缀**全部去掉**（本任务只要求纠错、不要求保留说话人）
+//	  ⇒ 2 字名损失 7.6%、3 字名损失 9.2% ⇒ 仍高于 0.70，**不会误伤**。
+//
+//	要拦的是什么（§901 补充的真实字符↔时长读数 271 字/分钟）：
+//	  1 小时 ≈ 16,260 字 / 2 小时 ≈ 32,520 字 / 4 小时 ≈ 65,040 字
+//	  而这条链要求模型**原样回显**整篇 ⇒ 4 小时 ≈ 65,040 token 的输出，
+//	  远超常见 8k/16k 上限 ⇒ 长会议上模型**必然缩写**。
+//	  只回显 10% 时（6,504 字）远低于 0.70 ⇒ 被拦下、回落原文。
+//
+// ⚠ 取 0.70 是**故意宽松**：只拦「灾难性缩写」，不校准「刚好多少算异常」。
+//
+//	⛔ 这个阈值**未用真网关校准**（网关 key 401）⇒ 已登记为待属主定的一个数。
+//	回落方向是**原文**，与本文件既有的取舍一致（「不误改」优先于「多修一点」）。
+const refineMinLenRatio = 0.70
+
+// refineMinRunesForRatio 比例判据的**绝对下限**（rune）。
+//
+// ⚠ 没有它，比例判据会在极短文本上乱判（见 refineShrinkage 里的说明）。
+const refineMinRunesForRatio = 200
+
+// refineShrinkage 返回「精校稿被缩写得不像纠错」的说明串；长度正常则返回 ""。
+// ⚠ 按 rune 而不是按字节：中文一字 3 字节，按字节比会把正常的纠错判成缩写。
+func refineShrinkage(refined, transcript string) string {
+	orig := len([]rune(transcript))
+	if orig < refineMinRunesForRatio {
+		// ⚠⚠ §907：原文太短时**比例没有意义**。
+		//   这是被既有判据撞出来的（`meeting_sync_id_upsert_test.go` 的夹具是
+		//   15 字原文 / 4 字精校稿，桩数据）—— 一条 15 字的转写本来就不是会议，
+		//   「精校后还剩 27%」在它身上既可能是缩写、也可能只是桩，两边分不开。
+		//   ⇒ 绝对下限取 200 rune：按 §901 校准的 271 字/分钟，
+		//     200 字 ≈ **44 秒发言**，远低于任何真实会议，又高于任何桩夹具。
+		return ""
+	}
+	got := len([]rune(refined))
+	if float64(got) >= float64(orig)*refineMinLenRatio {
+		return ""
+	}
+	return fmt.Sprintf("refined transcript shrank to %d/%d runes (%.0f%%, floor %d%%) - "+
+		"the model abbreviated instead of correcting, falling back to raw transcript",
+		got, orig, float64(got)/float64(orig)*100, int(refineMinLenRatio*100))
 }
 
 // participantLeak 返回「**原本不在转写里**、却出现在结果里」的参会人姓名。
