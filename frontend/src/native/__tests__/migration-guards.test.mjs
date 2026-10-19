@@ -1101,3 +1101,83 @@ describe('§899 · D68：增量重嵌与段边界稳定性', () => {
     assert.match(src, /groupByParagraph/, '切段器里没有段落分组 ⇒ 段边界不稳定 ⇒ 增量重嵌不成立')
   })
 })
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * §901 · D70：随手记链的转写**零分隔符** ⇒ 锚点必须能退化到「句号」
+ * ═══════════════════════════════════════════════════════════════════════════
+ * §900 把锚点改成「任意换行」后，本节查了**另一条**转写链，发现它**根本没有行**：
+ *   · 会议链 `renderTranscript`（meeting-dedup.ts:429）⇒ `[说话人] 文本` + `\n` ✔
+ *   · 随手记增量链 `appendTranscript`（note-recording.ts:74）
+ *     ⇒ `` `${committed}${finalChunk}` ``，**零分隔符直接拼接** ⇒ 整份是**一整行**
+ *   ⇒ 只认「行」的锚点在随手记链上一个边界都找不到：
+ *     实测（零换行的真实转写 20046 字、798 个句号）改两个词：
+ *       行锚点 2 段，**0/2 存活**；句号锚点 6 段，**5/6 存活**。
+ *
+ * ⇒ 锚点按**可用结构逐级退化**：行 → 句号 → 纯大小切。
+ */
+describe('§901 · D70：锚点必须能退化到句号（随手记链没有行）', () => {
+  /** 随手记增量链的形状：**零换行**，一整行。 */
+  function quickNoteShape(n) {
+    // ⚠ n 必须让文本**超过 16000**（每段约 41 字 ⇒ n≥450），
+    //   否则走「整篇一段」早退分支 ⇒ 下面几条判据全是恒真。
+    //   ⚠ 这不是假想：n=300 时只有 12190 字，前置闸当场报红（它就是这么用的）。
+    return Array.from({ length: n }, (_, i) =>
+      `第${i}点网关的抽象层现在有一套整大模型抽象层。${'细节'.repeat(5)}这样才能最好。`,
+    ).join('')
+  }
+
+  it('★★★ 前置闸：语料必须是「零换行 + 有句号 + 超过上限」的真实随手记形状', () => {
+    const text = quickNoteShape(600)
+    assert.equal(text.includes('\n'), false, '语料里出现了换行 ⇒ 不是随手记链的形状')
+    assert.ok((text.match(/[。！？]/g) || []).length > 100, '句号太少 ⇒ 句号锚点没有可用的边界')
+    assert.ok(text.length > 16000, `语料只有 ${text.length} 字，还没超过单发上限`)
+    assert.ok(splitForEmbedding(text).length > 1, '只切出一段 ⇒ 夹具没走到分段路径')
+  })
+
+  it('★★★ 零换行的转写：改一处之后仍要绝大多数段不变（句号退化）', () => {
+    const text = quickNoteShape(600)
+    const edited = text.replace('第8点', '第8点（已更正）')
+    const before = splitForEmbedding(text)
+    const after = splitForEmbedding(edited)
+    assert.ok(before.length > 1, '夹具没走到分段路径')
+    const set = new Set(before.map((c) => c.text))
+    const same = after.filter((c) => set.has(c.text)).length
+    assert.ok(
+      same / after.length >= 0.6,
+      `零换行语料下改一处只有 ${same}/${after.length} 段未变（${((same / after.length) * 100).toFixed(1)}%）` +
+        `⇒ 句号退化没生效（只认行时实测是 0/2，§901）`,
+    )
+  })
+
+  it('★★★ 退化不得破坏其它不变量（子串 / 上限）', () => {
+    const text = quickNoteShape(600)
+    const edited = text.replace('第8点', '第8点（已更正）')
+    for (const c of splitForEmbedding(edited)) {
+      assert.ok(c.text.length <= 16000, `有一段长 ${c.text.length} 字符，超过上限`)
+      assert.equal(edited.slice(c.start, c.end), c.text, '有一段不是原文真子串')
+    }
+  })
+
+  it('★★★ 有行的语料必须优先用行（行是转写的自然单元）', () => {
+    // ⚠ 优先级判据：会议链**同时**有行和句号，必须走行。
+    // ⚠⚠ 第一版用「段里包含换行」来判 ⇒ **无区分力**：
+    //   按句号分组时一个组会横跨很多行，`text.includes('\n')` 照样为真，
+    //   变异「把两级顺序颠倒」全绿。
+    // ⇒ 改用能区分的性质：**每段都起止于行边界**
+    //   （实测同一语料：行锚定 5/5 段起止在行边界；句号锚定只有 1/5）。
+    const text = Array.from({ length: 400 }, (_, i) => `第${i}行只有一句。${'补充细节'.repeat(8)}`).join('\n')
+    const chunks = splitForEmbedding(text)
+    assert.ok(chunks.length > 1, '夹具没走到分段路径')
+    // ⚠⚠ 这里也踩过一次：两个辅助函数的名字**写反了**（`atLineEnd` 实际测的是行首），
+    //   于是判据在**正确实现**上报红 —— 我第一反应差点去改实现。
+    //   ⇒ 「判据红了」的第一件事仍然是「先问是不是量具写错了」，别先动被测代码。
+    const startIsLineStart = (i) => i === 0 || text[i - 1] === '\n'
+    const endIsLineEnd = (i) => i === text.length || text[i] === '\n'
+    const badStart = chunks.filter((c) => !startIsLineStart(c.start))
+    const badEnd = chunks.filter((c) => !endIsLineEnd(c.end))
+    assert.equal(badStart.length, 0,
+      `${badStart.length}/${chunks.length} 段的起点不在行边界 ⇒ 用的是句号锚点，而有行时应当优先用行`)
+    assert.equal(badEnd.length, 0,
+      `${badEnd.length}/${chunks.length} 段的终点不在行边界 ⇒ 用的是句号锚点，而有行时应当优先用行`)
+  })
+})

@@ -175,41 +175,68 @@ export function splitForEmbedding(
  * ⚠ **完全没有换行的文本**（一整块）⇒ 退化成 1 组 ⇒ 由调用方按大小再切。
  */
 function groupByParagraph(text: string, target: number): { start: number; end: number }[] {
-  const seps: number[] = []
-  const re = /\n+/g
-  let m: RegExpExecArray | null
-  while ((m = re.exec(text)) !== null) seps.push(m.index)
-  // 段落区间：[0, sep0), [sep0 + 分隔符长度, sep1 + 分隔符长度), …
-  const bounds: { start: number; end: number }[] = []
-  let start = 0
-  for (const sep of seps) {
-    const end = sep
-    if (end > start) bounds.push({ start, end })
-    // 跳过分隔符本身（含它后面的空白）
-    let next = sep + 1
-    while (next < text.length && /\s/.test(text[next])) next++
-    start = next
-  }
-  if (start < text.length) bounds.push({ start, end: text.length })
+  // ⚠⚠⚠ §901：**按可用结构逐级退化** —— 先按「行」，没有行就按「句号」。
+  //
+  //   为什么要有第二级：两条转写链的**行结构不同**，实测：
+  //     · 会议链 `renderTranscript`（meeting-dedup.ts:429）⇒ `[说话人] 文本` 每段一行、\`\n\` 拼接 ✔
+  //     · 随手记增量链 `appendTranscript`（note-recording.ts:74）
+  //       ⇒ `${committed}${finalChunk}`，**零分隔符直接拼接** ⇒ 整份是**一整行** ⛔
+  //   ⇒ 只认「行」的锚点在随手记链上**一个边界都找不到**：
+  //     实测（零换行的真实转写 20046 字、798 个句号）改两个词：
+  //       行锚点 2 段，**0/2 段存活** ⇒ 增量重嵌退化
+  //       句号锚点 6 段，**5/6 段存活** ⇒ 照常生效
+  //
+  //   优先级「行优先」的理由：转写的自然单元是 **ASR 分段**，而分段边界就是行。
+  //   句号是行内更细的结构，只有在没有行时才用。
+  let bounds = splitOnBounds(text, /\n+/)
+  if (bounds.length < 2) bounds = splitOnBounds(text, /[。！？!?]+[”"』」）)]*/)
+  return accumulateToTarget(bounds, text, target)
+}
 
-  const groups: { start: number; end: number }[] = []
-  let curStart = -1
-  let curEnd = -1
-  for (const b of bounds) {
-    if (curStart < 0) {
-      curStart = b.start
-      curEnd = b.end
+/** 按 `re` 把文本切成若干区间；分隔符本身不进任何区间。 */
+function splitOnBounds(text: string, re: RegExp): { start: number; end: number }[] {
+  const bounds: { start: number; end: number }[] = []
+  const scan = new RegExp(re.source, re.flags.includes('g') ? re.flags : re.flags + 'g')
+  let m: RegExpExecArray | null
+  let start = 0
+  while ((m = scan.exec(text)) !== null) {
+    // ⚠ 零宽匹配会让这个循环永远不推进 ⇒ 直接跳过（两个正则都不会产生零宽，
+    //   但这里必须防御：判据的变异里出现过同形的写法）。
+    if (m[0].length === 0) {
+      scan.lastIndex++
       continue
     }
-    if (b.end - curStart > target) {
-      groups.push({ start: curStart, end: curEnd })
-      curStart = b.start
-      curEnd = b.end
+    if (m.index > start) bounds.push({ start, end: m.index })
+    start = m.index + m[0].length
+  }
+  if (start < text.length) bounds.push({ start, end: text.length })
+  return bounds
+}
+
+/** 把若干小单元累积成约 `target` 字符的大组（**保持原文偏移**，不重建文本）。 */
+function accumulateToTarget(
+  bounds: { start: number; end: number }[],
+  text: string,
+  target: number,
+): { start: number; end: number }[] {
+  const groups: { start: number; end: number }[] = []
+  let cs = -1
+  let ce = -1
+  for (const b of bounds) {
+    if (cs < 0) {
+      cs = b.start
+      ce = b.end
+      continue
+    }
+    if (b.end - cs > target) {
+      groups.push({ start: cs, end: ce })
+      cs = b.start
+      ce = b.end
     } else {
-      curEnd = b.end
+      ce = b.end
     }
   }
-  if (curStart >= 0) groups.push({ start: curStart, end: curEnd })
+  if (cs >= 0) groups.push({ start: cs, end: ce })
   return groups
 }
 
