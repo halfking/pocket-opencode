@@ -1724,8 +1724,12 @@ func (s *Server) handleEmailSend(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "no valid recipients")
 		return
 	}
+	// ⚠ §918：这里限的是 **UTF-8 字节**（Go 的 `len(string)`），**不是字符数**
+	//   —— 500 字节只装得下 166 个中文字。
+	//   ⚠ 主题是**从原邮件派生的**（客户端不许编辑）⇒ 原主题一长，
+	//     **回复/转发就永远发不出去** ⇒ 客户端自己按字节裁（见简报 142）。
 	if len(body.Subject) > 500 {
-		writeError(w, http.StatusBadRequest, "subject too long")
+		writeError(w, http.StatusBadRequest, "subject too long (max 500 bytes)")
 		return
 	}
 

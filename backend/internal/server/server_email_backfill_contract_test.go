@@ -121,3 +121,33 @@ func keys(m map[string]bool) []string {
 	}
 	return out
 }
+
+// §918：`/api/email/send` 的**主题**上限按 **UTF-8 字节**算（Go 的 `len(string)`），
+// 而主题是**客户端从原邮件派生**的（用户不能编辑）⇒ 原主题一长，
+// **回复/转发就永远发不出去**，且界面只显示泛化的「发送失败」。
+//
+// ⚠ 这道门是**源码级**的：handleEmailSend 需要活的 Postgres
+//
+//	（emailStore 是具体类型，打不了桩 ⇒ 见本文件头部的说明），
+//	⇒ 端到端打不到那道 400 ⇒ 只能把两边的**字面量**钉在一起。
+//
+// ⚠ 匹配数必须**恰好 1 处**：改成 0 处或 2 处都当场红（§913 那族教训的护栏）。
+func TestEmailSubjectLengthGateConstantMatchesFrontend(t *testing.T) {
+	one := func(src, pattern, what string) string {
+		t.Helper()
+		all := regexp.MustCompile(pattern).FindAllStringSubmatch(src, -1)
+		if len(all) != 1 {
+			t.Fatalf("%s 里匹配到 %d 处 %q（要求恰好 1 处）：判据前提变了，请重读 §918",
+				what, len(all), pattern)
+		}
+		return all[0][1]
+	}
+	goGate := one(readFrontend(t, "server_assistant.go"),
+		`len\(body\.Subject\)\s*>\s*(\d+)`, "server_assistant.go")
+	frontGate := one(readFrontend(t, "../../../frontend/src/features/email/compose-mode.ts"),
+		`EMAIL_SUBJECT_BYTE_LIMIT\s*=\s*(\d+)`, "frontend/src/features/email/compose-mode.ts")
+	if goGate != frontGate {
+		t.Fatalf("前端镜像的主题字节闸 %s ≠ 服务端的 %s ⇒ 长主题的回复/转发必然 400",
+			frontGate, goGate)
+	}
+}

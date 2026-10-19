@@ -119,3 +119,17 @@ export function sliceEndByUtf8Bytes(s: string, from: number, maxBytes: number): 
   }
   return i
 }
+
+/**
+ * §918：从**头部**保留最多 maxBytes 个 **UTF-8 字节**（切点必在字符边界）。
+ *
+ * ⚠ 与 `truncateUtf8BytesTail`（§916，从尾部）是一对：
+ *   「提示词太长要裁尾」与「标题太长要裁头」是两种不同的切法。
+ * ⚠ 与 `truncateCodeUnits`（**码元**、从头部）**故意不同**：
+ *   这里的对手是**服务端的字节闸**（`len(body.Subject) > 500`），
+ *   不是 §245.7 那个**尚未拍板**的「字节/码元/字符」产品口径。
+ */
+export function truncateUtf8BytesHead(s: string, maxBytes: number): string {
+  if (maxBytes <= 0) return ''
+  return s.slice(0, sliceEndByUtf8Bytes(s, 0, maxBytes))
+}
