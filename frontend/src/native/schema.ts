@@ -93,6 +93,10 @@ CREATE TABLE IF NOT EXISTS local_note_vectors (
     -- §898：这一行装的是**几个段向量**（长会议按段嵌入）。
     --   默认 1 = 旧数据语义（整篇一个向量），旧库由 local-db 的列迁移补上。
     chunks INTEGER NOT NULL DEFAULT 1,
+    -- §899：每段文本的 SHA-1（逗号分隔）——用来判断「哪些段没变」，
+    --   没变的段**直接复用库里的向量**，不再调 /api/embed。
+    --   默认 '' = 旧数据没有哈希 ⇒ 一律重嵌（安全侧）。
+    chunk_hashes TEXT NOT NULL DEFAULT '',
     FOREIGN KEY (note_id) REFERENCES local_notes(id) ON DELETE CASCADE
 );
 

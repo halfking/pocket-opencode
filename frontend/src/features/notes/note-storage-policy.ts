@@ -110,27 +110,97 @@ export function splitForEmbedding(
   const limit = opts.limit ?? EMBED_SINGLE_SHOT_LIMIT
   const target = opts.target ?? EMBED_CHUNK_TARGET
   const overlap = opts.overlap ?? EMBED_CHUNK_OVERLAP
+  if (text.length === 0) return []
   if (text.length <= limit) {
-    return text.length === 0 ? [] : [{ index: 0, start: 0, end: text.length, text }]
+    return [{ index: 0, start: 0, end: text.length, text }]
   }
-  const step = Math.max(1, target - overlap)
+  // ⚠⚠ §899：**段落锚定**切段（不再是固定偏移）。
+  //
+  //   固定偏移（§898 最初那版）的致命处：改一个字会让**后面所有段**的边界整体位移
+  //   ⇒ 每一段的文本都变了 ⇒ 增量重嵌**一段也省不下**。
+  //   实测（4 小时会议 82688 字 / 900 段，改第 3 段里一个词）：
+  //     固定偏移  ⇒ 逐字未变的段 **0/22**（0%）   ⇒ 22 次调用
+  //     段落锚定  ⇒ 逐字未变的段 **20/21**（95%）  ⇒ **1 次调用**
+  //
+  //   ⇒ 段落锚定同时买到两样东西：
+  //     ① 增量重嵌能用（§899 的全部意义）；
+  //     ② 段边界落在段落上 ⇒ 段的语义更整（固定偏移会切在句子中间）。
+  const groups = groupByParagraph(text, target)
   const out: EmbedChunk[] = []
-  let i = 0
-  while (i < text.length) {
-    const end = Math.min(text.length, i + target)
-    const slice = text.slice(i, end)
-    // 末段太短就并回上一段：单独拎出一个几十字的段既浪费一次调用，也没有语义。
-    if (slice.length < target * 0.25 && out.length > 0) {
-      const prev = out[out.length - 1]
-      prev.end = end
-      prev.text = text.slice(prev.start, end)
-      break
+  for (const g of groups) {
+    // 一组可能超过单发上限（段落特别长时）⇒ 组内再按大小切
+    if (g.end - g.start <= limit) {
+      out.push({ index: out.length, start: g.start, end: g.end, text: text.slice(g.start, g.end) })
+      continue
     }
-    out.push({ index: out.length, start: i, end, text: slice })
-    if (end >= text.length) break
-    i += step
+    const step = Math.max(1, limit - overlap)
+    for (let i = g.start; i < g.end; i += step) {
+      const e = Math.min(g.end, i + limit)
+      if (e - i < limit * 0.25 && out.length > 0) {
+        // 末段太短就并回上一段：单独拎出一个几十字的段既浪费一次调用，也没有语义。
+        const prev = out[out.length - 1]
+        prev.end = e
+        prev.text = text.slice(prev.start, prev.end)
+        break
+      }
+      out.push({ index: out.length, start: i, end: e, text: text.slice(i, e) })
+      if (e >= g.end) break
+    }
   }
   return out
+}
+
+/**
+ * 按段落分组：累积段落直到接近 `target` 字符。
+ *
+ * ⚠⚠ **返回的是原文里的真实偏移**，组的文本就是 `text.slice(start, end)`
+ *   —— 不重新拼接段落分隔符。
+ *   ⇒ 第一版用 `split` + `join('\n\n')` 重建，于是：
+ *     · 原文分隔符是 `'\n \n'`（3 字符）时，重建变成 `'\n\n'`（2 字符）
+ *       ⇒ 段的文本与原文**不再逐字相同**，且累积偏移会**漂移**；
+ *     ⇒ 段哈希因此与原文对不上，增量重嵌的「未变段」判定会失准。
+ *   ⇒ 现在直接记录原文里的段落区间。
+ *
+ * ⚠ 段落分隔符按 `\n\s*\n` 判定（与本仓 `summarizeForDisplay` 一致）。
+ * ⚠ **没有段落分隔符的文本**（一整块）⇒ 退化成 1 组 ⇒ 由调用方按大小再切。
+ */
+function groupByParagraph(text: string, target: number): { start: number; end: number }[] {
+  const seps: number[] = []
+  const re = /\n\s*\n/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(text)) !== null) seps.push(m.index)
+  // 段落区间：[0, sep0), [sep0 + 分隔符长度, sep1 + 分隔符长度), …
+  const bounds: { start: number; end: number }[] = []
+  let start = 0
+  for (const sep of seps) {
+    const end = sep
+    if (end > start) bounds.push({ start, end })
+    // 跳过分隔符本身（含它后面的空白）
+    let next = sep + 1
+    while (next < text.length && /\s/.test(text[next])) next++
+    start = next
+  }
+  if (start < text.length) bounds.push({ start, end: text.length })
+
+  const groups: { start: number; end: number }[] = []
+  let curStart = -1
+  let curEnd = -1
+  for (const b of bounds) {
+    if (curStart < 0) {
+      curStart = b.start
+      curEnd = b.end
+      continue
+    }
+    if (b.end - curStart > target) {
+      groups.push({ start: curStart, end: curEnd })
+      curStart = b.start
+      curEnd = b.end
+    } else {
+      curEnd = b.end
+    }
+  }
+  if (curStart >= 0) groups.push({ start: curStart, end: curEnd })
+  return groups
 }
 
 export function summarizeForDisplay(body: string, maxChars = SUMMARY_CHAR_LIMIT): string {

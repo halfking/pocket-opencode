@@ -70,6 +70,8 @@ const NOTES_CAPTURE_V1_COLUMNS = [
  */
 const NOTE_VECTORS_V1_COLUMNS = [
   { table: 'local_note_vectors', column: 'chunks', sql: 'ALTER TABLE local_note_vectors ADD COLUMN chunks INTEGER NOT NULL DEFAULT 1' },
+  // §899：段文本哈希（增量重嵌用）。默认 '' ⇒ 旧数据没有哈希 ⇒ 一律重嵌（安全侧）。
+  { table: 'local_note_vectors', column: 'chunk_hashes', sql: "ALTER TABLE local_note_vectors ADD COLUMN chunk_hashes TEXT NOT NULL DEFAULT ''" },
 ]
 
 const EMAIL_SYNC_V1_COLUMNS = [

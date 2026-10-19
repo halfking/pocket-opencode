@@ -58,6 +58,8 @@ export class VectorIndex {
    * ⚠ 连续是**不变式**：新增笔记追加在尾部；段数变化时走 `load()` 重建以恢复连续。
    */
   private noteSpans = new Map<string, { start: number; count: number }>()
+  /** §899：noteId → 它那一行记录的段哈希（增量重嵌用）。 */
+  private hashes = new Map<string, string[]>()
   private loaded = false
 
   // ⚠ 不能写成参数属性 `constructor(private readonly db: VectorDb = …)`：
@@ -71,13 +73,19 @@ export class VectorIndex {
   /** 从本地库加载全部向量到内存。App 启动后调用一次。 */
   async load(): Promise<void> {
     const rows = (await this.db.all(
-      'SELECT note_id, embedding, chunks FROM local_note_vectors',
-    )) as unknown as { note_id: string; embedding: ArrayBuffer; chunks?: number | null }[]
+      'SELECT note_id, embedding, chunks, chunk_hashes FROM local_note_vectors',
+    )) as unknown as {
+      note_id: string
+      embedding: ArrayBuffer
+      chunks?: number | null
+      chunk_hashes?: string | null
+    }[]
     if (rows.length === 0) {
       this.ids = []
       this.matrix = new Float32Array(0)
       this.capacity = 0
       this.noteSpans = new Map()
+      this.hashes = new Map()
       this.loaded = true
       return
     }
@@ -101,7 +109,49 @@ export class VectorIndex {
     this.matrix = buf
     this.capacity = perRow.length
     this.noteSpans = buildSpans(this.ids)
+    // ⚠ §899：段哈希按行存（逗号分隔），这里按**行**记下，供 `existingChunks()` 用。
+    this.hashes = new Map()
+    for (const r of rows) {
+      this.hashes.set(r.note_id, (r.chunk_hashes ?? '').split(',').filter(Boolean))
+    }
     this.loaded = true
+  }
+
+  /**
+   * 取某条笔记**已存**的段向量与它们的哈希（§899 增量重嵌用）。
+   *
+   * ⚠ 返回的顺序与 `chunks` 列一致；哈希与向量**一一对应**。
+   * ⚠ 没有任何记录时返回 null（调用方据此「全部重嵌」）。
+   * ⚠ `model` 也会返回：换了 embedding 模型时**不能复用**旧向量
+   *   （不同模型的向量不在同一个空间里，混用会让相似度失去意义）。
+   */
+  async existingChunks(noteId: string): Promise<{ hashes: string[]; vectors: Float32Array[]; model: string } | null> {
+    const rows = (await this.db.all(
+      'SELECT embedding, dim, model, chunks, chunk_hashes FROM local_note_vectors WHERE note_id = ?',
+      [noteId],
+    )) as unknown as {
+      embedding: ArrayBuffer
+      dim: number
+      model: string
+      chunks?: number | null
+      chunk_hashes?: string | null
+    }[]
+    if (rows.length === 0) return null
+    const r = rows[0]
+    const chunks = Math.max(1, r.chunks ?? 1)
+    const raw = new Float32Array(r.embedding)
+    const vectors: Float32Array[] = []
+    for (let c = 0; c < chunks; c++) {
+      const off = c * DIM
+      if (off + DIM > raw.length) break
+      vectors.push(raw.slice(off, off + DIM))
+    }
+    const hashes = (r.chunk_hashes ?? '').split(',').filter(Boolean)
+    // ⚠ 哈希与向量必须**等长**才能一一对应；不等长就当「没有可复用的」⇒ 全部重嵌。
+    if (hashes.length !== vectors.length) {
+      return { hashes: [], vectors: [], model: r.model }
+    }
+    return { hashes, vectors, model: r.model }
   }
 
   /**
@@ -113,7 +163,12 @@ export class VectorIndex {
    *     `embedding` BLOB 里连续放 `chunks × dim` 个 float，`chunks` 列记个数。
    *   ⇒ 旧数据 chunks=1，语义与从前逐字一致。
    */
-  async add(noteId: string, embedding: Float32Array | Float32Array[], model: string): Promise<void> {
+  async add(
+    noteId: string,
+    embedding: Float32Array | Float32Array[],
+    model: string,
+    hashes?: string[],
+  ): Promise<void> {
     const list = Array.isArray(embedding) ? embedding : [embedding]
     if (list.length === 0) return
     // L2 归一化，之后点积即余弦相似度
@@ -123,12 +178,15 @@ export class VectorIndex {
     normalized.forEach((v, i) => flat.set(v.subarray(0, DIM), i * DIM))
     const blob = new Uint8Array(flat.buffer, flat.byteOffset, flat.byteLength)
 
+    // ⚠ §899：哈希与向量**一一对应**；长度对不上就写空串（⇒ 下次一律重嵌，安全侧）。
+    const hashText = hashes && hashes.length === normalized.length ? hashes.join(',') : ''
     await this.db.run(
-      `INSERT INTO local_note_vectors (note_id, embedding, dim, model, chunks, created_at)
-       VALUES (?, ?, ?, ?, ?, ?)
-       ON CONFLICT(note_id) DO UPDATE SET embedding = EXCLUDED.embedding, dim = EXCLUDED.dim, model = EXCLUDED.model, chunks = EXCLUDED.chunks`,
-      [noteId, blob.buffer, DIM, model, normalized.length, Date.now()],
+      `INSERT INTO local_note_vectors (note_id, embedding, dim, model, chunks, chunk_hashes, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(note_id) DO UPDATE SET embedding = EXCLUDED.embedding, dim = EXCLUDED.dim, model = EXCLUDED.model, chunks = EXCLUDED.chunks, chunk_hashes = EXCLUDED.chunk_hashes`,
+      [noteId, blob.buffer, DIM, model, normalized.length, hashText, Date.now()],
     )
+    this.hashes.set(noteId, hashText ? hashText.split(',') : [])
 
     // ⚠⚠§881：这条笔记**已经在内存索引里**时，必须**就地覆盖**那一行向量。
     //   修之前的形状是 `isInMemory = !已存在 && 未超上限` ⇒ 更新一条已有笔记时

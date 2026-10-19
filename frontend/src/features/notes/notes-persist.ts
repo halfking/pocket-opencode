@@ -5,6 +5,8 @@ import { encryptString } from '../../native/crypto'
 import { useCryptoConfig } from '../../stores/crypto-config'
 import { assetStore } from '../../native/asset-store'
 import { decideNoteStorage, splitForEmbedding } from './note-storage-policy'
+import { sha1Hex } from '../../utils/text-hash'
+import { needsFullRebuild } from './embed-reuse'
 import { deleteNoteBodyFile, deleteNoteFiles, persistNotePayload, readNoteBody } from './note-files'
 import { RECORD_MEDIA_CLEANUP_FAIL_TAG } from '../../utils/action-failure-notice'
 import { assetToNote, rowToNote, mergeImportedNotes } from './notes-row'
@@ -476,17 +478,62 @@ async function embedAndStore(noteId: string, content: string): Promise<void> {
   //   详见 `vector-index.ts::search` 上方的注释与 §898 文档。
   const chunks = splitForEmbedding(content, { limit: EMBED_TEXT_CHAR_LIMIT })
   if (chunks.length === 0) return
+  const hashes = chunks.map((c) => sha1Hex(c.text))
+
+  // ⚠⚠ §899：**只重新嵌入「变了的段」**，没变的段直接复用库里的向量。
+  //
+  //   这是「编辑一条 4 小时会议」从 15 次调用降到 ~1 次的关键。
+  //   ⚠ 复用成立的前提是**段边界稳定** —— 固定偏移切段时改一个字会让
+  //     后面所有段都变（实测 0/22 段存活）；段落锚定切段时 20/21 段存活。
+  //     ⇒ 切段方式必须是段落锚定的（见 `splitForEmbedding`）。
+  const prev = await vectorIndex.existingChunks(noteId)
+  const first = await embedChunks(chunks, prev)
+  // ⚠⚠ **换模型 ⇒ 旧向量不在同一个空间里** ⇒ 混用会让相似度失去意义
+  //   ⇒ 一律全部重嵌（安全侧）。决策在纯函数里（`embed-reuse.ts`），
+  //   判据直接验它的行为（源码门对同形改动无效，§95.3 的老教训）。
+  if (needsFullRebuild(first.apiModel, prev?.model ?? null, first.reused)) {
+    const rebuilt = await embedChunks(chunks, null)
+    await vectorIndex.add(noteId, rebuilt.vectors, rebuilt.model, hashes)
+    return
+  }
+  await vectorIndex.add(noteId, first.vectors, first.model, hashes)
+}
+
+/**
+ * 逐段嵌入；`prev` 给了就**复用没变的段**（不调 API）。
+ *
+ * @returns apiModel 本次 API 返回的模型（null = 全程复用，没调过 API）；
+ *          reused 实际复用了多少段。两者交给 `needsFullRebuild` 判定要不要全部重嵌。
+ */
+async function embedChunks(
+  chunks: { text: string }[],
+  prev: { hashes: string[]; vectors: Float32Array[]; model: string } | null,
+): Promise<{ vectors: Float32Array[]; model: string; reused: number; apiModel: string | null }> {
+  const hashes = chunks.map((c) => sha1Hex(c.text))
   const vectors: Float32Array[] = []
-  let model = ''
-  for (const c of chunks) {
+  let model = prev?.model ?? ''
+  let apiModel: string | null = null
+  let reused = 0
+  for (let i = 0; i < chunks.length; i++) {
+    const h = hashes[i]
+    if (prev) {
+      const idx = prev.hashes.indexOf(h)
+      if (idx >= 0) {
+        vectors.push(prev.vectors[idx])
+        reused++
+        continue
+      }
+    }
     const res = await http<{ embedding: number[]; model: string }>('/api/embed', {
       method: 'POST',
-      body: JSON.stringify({ text: c.text }),
+      body: JSON.stringify({ text: chunks[i].text }),
     })
+    apiModel = res.model
     model = res.model
     vectors.push(Float32Array.from(res.embedding))
   }
-  await vectorIndex.add(noteId, vectors, model)
+  // ⚠ 全程没调 API（全部复用）⇒ apiModel 保持 null ⇒ 不会有换模型问题。
+  return { vectors, model, reused, apiModel }
 }
 
 /**

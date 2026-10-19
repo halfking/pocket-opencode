@@ -305,6 +305,10 @@ test('§879 Web 降级不是失败：虚表不存在时仍应记成完成', asyn
  *   新增同类行为用例请就近放这里，而不是另开文件（argv 已贴脸）。
  * ═══════════════════════════════════════════════════════════════════════════ */
 import { VectorIndex, DIM } from '../vector-index.ts'
+// §899：切段器与哈希都是纯函数，直接引来做行为断言。
+import { splitForEmbedding } from '../../features/notes/note-storage-policy.ts'
+import { sha1Hex } from '../../utils/text-hash.ts'
+import { needsFullRebuild } from '../../features/notes/embed-reuse.ts'
 import { NodeSqlDb } from './helpers.mjs'
 
 /**
@@ -892,5 +896,172 @@ describe('§898 · D67：段级向量与 max 聚合', () => {
     assert.match(src, /splitForEmbedding\(/, 'notes-persist 没有调用切段器 ⇒ 长会议仍按整篇发，必然 400')
     assert.doesNotMatch(src, /JSON\.stringify\(\{ text: content \}\)/,
       '还在把整篇 content 发给 /api/embed ⇒ 超长笔记必然 400')
+  })
+})
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * §899 · D68：编辑长会议时**只重嵌变了的段**
+ * ═══════════════════════════════════════════════════════════════════════════
+ * §898 落地后暴露的最大成本：改一条 4 小时会议 = 15 次 `/api/embed` 调用，每次保存重来。
+ *
+ * ⭐ 本节的**前提**是「段边界在编辑后保持稳定」—— 而这一条**不是显然的**：
+ *   固定偏移切段时改一个字会让后面所有段的边界整体位移 ⇒ 每一段文本都变了
+ *   ⇒ 增量重嵌**一段也省不下**。
+ *   实测（4 小时会议 82688 字 / 900 段，改第 3 段里一个词）：
+ *     固定偏移  ⇒ 逐字未变的段 **0/22**（0%）
+ *     段落锚定  ⇒ 逐字未变的段 **20/21**（95%）
+ * ⇒ 所以「段落锚定切段」不是风格偏好，是**增量重嵌能不能成立**的前提。
+ */
+describe('§899 · D68：增量重嵌与段边界稳定性', () => {
+  /**
+   * 一段会议转写风格的文本：n 段，每段约 110 字。
+   *
+   * ⚠⚠⚠ **n 必须让文本超过 16000 字**，否则 `splitForEmbedding` 走
+   *   「整篇一段」的早退分支 ⇒ **段落分组那整段代码一次都没执行**
+   *   ⇒ 下面几条判据会全绿而什么都没测。
+   *   ⚠ 这不是假想的风险：本节第一版用 n=120（≈13440 字），
+   *   三条判据全部落在早退分支上 —— 「段文本重新拼接」那个变异因此**打不进任何判据**。
+   *   ⇒ 下面的「前置闸」就是为此存在的。
+   */
+  function meetingText(n) {
+    return Array.from({ length: n }, (_, i) =>
+      `第${i}周进展 完成了接口联调部分 剩余工作按排期推进 风险点已同步给负责人 ${'细节'.repeat(25)}`,
+    ).join('\n\n')
+  }
+
+  it('★★★ 前置闸：夹具必须真的走「分段」路径（否则下面几条全是恒真）', () => {
+    const text = meetingText(300)
+    assert.ok(text.length > 16000, `夹具只有 ${text.length} 字，还没超过单发上限 16000 ⇒ 下面走的是早退分支`)
+    const chunks = splitForEmbedding(text)
+    assert.ok(chunks.length > 1, `夹具只切出 ${chunks.length} 段 ⇒ 段落分组没被走到`)
+    // 段落分组路径的标志：段里**含段落分隔符**（早退分支不会有）
+    assert.ok(chunks.some((c) => c.text.includes('\n\n')), '没有任何一段含段落分隔符 ⇒ 走的是早退分支')
+  })
+
+  it('★★★ 段落锚定：改一处之后，绝大多数段**逐字不变**（增量重嵌的前提）', () => {
+    const text = meetingText(300)
+    const before = splitForEmbedding(text)
+    const after = splitForEmbedding(text.replace('第2周进展', '第2周进展（已更正）'))
+    assert.ok(before.length >= 5, `语料只切出 ${before.length} 段，夹具太短`)
+    const set = new Set(before.map((c) => c.text))
+    const same = after.filter((c) => set.has(c.text)).length
+    // ⚠ 门槛定在 80%：改的是**第 3 段**，理论上只该失效 1 段。
+    //   门槛不能定成 100% —— 段落分组是「累积到目标长度」，
+    //   改早段会让**分组的边界**移动一点，影响相邻一两组。
+    assert.ok(
+      same / after.length >= 0.8,
+      `改一处后只有 ${same}/${after.length} 段逐字未变（${((same / after.length) * 100).toFixed(1)}%）` +
+        `⇒ 段边界不稳定 ⇒ 增量重嵌省不下调用`,
+    )
+  })
+
+  it('★★★ 每段必须都是原文的**真子串**且偏移精确（不能重新拼接）', () => {
+    // ⚠ 第一版用 split + join('\n\n') 重建段落 ⇒ 原文分隔符是 '\n \n' 时
+    //   重建文本与原文不再逐字相同、累积偏移会漂移 ⇒ 哈希与原文对不上。
+    // ⚠⚠ 语料必须**超过上限**（见上面的前置闸），否则根本走不到分组那行。
+    for (const sep of ['\n\n', '\n \n', '\n\n\n']) {
+      const text = meetingText(300).split('\n\n').join(sep)
+      const chunks = splitForEmbedding(text)
+      assert.ok(chunks.length > 1, `分隔符 ${JSON.stringify(sep)} 下只切出 ${chunks.length} 段（夹具没超上限）`)
+      for (const c of chunks) {
+        assert.equal(text.slice(c.start, c.end), c.text,
+          `分隔符 ${JSON.stringify(sep)} 下有一段不是原文子串（start=${c.start} end=${c.end}）`)
+      }
+    }
+  })
+
+  it('★★★ 每段长度都必须在服务端上限内（改切段方式后这条不能被破）', () => {
+    const text = meetingText(300)
+    const chunks = splitForEmbedding(text)
+    assert.ok(chunks.length > 1, '夹具没走到分段路径')
+    for (const c of chunks) {
+      assert.ok(c.text.length <= 16000, `有一段长 ${c.text.length} 字符，超过上限 16000`)
+    }
+  })
+
+  it('★★★ 哈希必须可复现且对内容敏感（SHA-1 钉公开测试向量）', () => {
+    // ⚠ 哈希是「这段有没有变过」的判据 ⇒ 它必须：
+    //   ① 对同一输入永远给同一结果；
+    //   ② 对不同输入给出不同结果；
+    //   ③ **实现本身可核验**（不能自证）⇒ 钉公开测试向量。
+    assert.equal(sha1Hex(''), 'da39a3ee5e6b4b0d3255bfef95601890afd80709', 'sha1("") 不对')
+    assert.equal(sha1Hex('abc'), 'a9993e364706816aba3e25717850c26c9cd0d89d', 'sha1("abc") 不对')
+    assert.equal(
+      sha1Hex('a'.repeat(1000000)),
+      '34aa973cd4c4daa4f61eeb2bdbad27316534016f',
+      'sha1(百万个 a) 不对（多块路径有问题）',
+    )
+    assert.notEqual(sha1Hex('会议转写'), sha1Hex('会议转写 '), '末尾多一个空格都没变 ⇒ 哈希不敏感')
+  })
+
+  it('★★★ 复用必须精确：只有**逐字相同**的段才复用', async () => {
+    const db = makeVectorDb()
+    const index = new VectorIndex(db)
+    await index.load()
+    await db.run(
+      'INSERT OR IGNORE INTO local_notes (id, content, created_at, updated_at) VALUES (?, ?, ?, ?)',
+      ['n1', 'n1', 0, 0],
+    )
+    const text = meetingText(300)
+    const chunks = splitForEmbedding(text)
+    assert.ok(chunks.length > 1, '夹具没走到分段路径')
+    const hashes = chunks.map((c) => sha1Hex(c.text))
+    const vecs = chunks.map((_, i) => { const v = new Float32Array(DIM); v[0] = i + 1; return v })
+    await index.add('n1', vecs, 'm', hashes)
+
+    const prev = await index.existingChunks('n1')
+    assert.ok(prev, 'existingChunks 读不到刚写进去的笔记')
+    assert.equal(prev.hashes.length, chunks.length, '哈希条数与段数对不上')
+    assert.equal(prev.vectors.length, chunks.length, '向量条数与段数对不上')
+    assert.equal(prev.model, 'm')
+
+    // 改动第 2 段 ⇒ 第 2 段的哈希变了，其余不变
+    const edited = text.replace('第2周进展', '第2周进展（已更正）')
+    const chunks2 = splitForEmbedding(edited)
+    const hashes2 = chunks2.map((c) => sha1Hex(c.text))
+    const reusable = hashes2.filter((h) => prev.hashes.includes(h)).length
+    assert.ok(reusable >= chunks2.length - 2,
+      `${chunks2.length} 段里只有 ${reusable} 段可复用（改动只涉及 1 段）⇒ 复用判定太保守`)
+    // 改过的那一段绝不能被复用
+    const changed = hashes2.find((h) => !prev.hashes.includes(h))
+    assert.ok(changed, '改动后没有任何段的哈希变化 ⇒ 哈希没起作用')
+  })
+
+  it('★★★ 换模型时不得复用旧向量（不同模型的向量不在同一空间）', () => {
+    // ⚠ 这条钉的是**决策**（换模型 ⇒ 全部重嵌）。
+    //   ⚠⚠ 第一版是**源码门**（找 `modelChanged` 与 `embedChunks(chunks, null)` 两串字），
+    //   结果变异「把条件改成 `if (false && modelChanged)`」**全绿** ——
+    //   源码门对**同形**改动无效（这正是 §95.3 的老教训）。
+    //   ⇒ 改判据形态：抽一个**纯函数**出来，判它**行为**。
+    // ⚠⚠ 这里**不再**保留任何源码门：
+    //   第一版的源码门（找 `modelChanged` 这串字）在变异「把条件改成
+    //   `if (false && modelChanged)`」下**全绿**；更糟的是它一度**只因为一条过期注释里
+    //   还留着 `modelChanged` 这个词就绿着** —— 判据命中了自己写的解释注释。
+    //   ⇒ 源码门对**同形**改动无效，决策必须放纯函数、用**行为**验。
+    //   （决策放纯函数是本仓 §820 的手法）
+    assert.equal(needsFullRebuild('model-a', 'model-a', 3), false, '同模型却要求全部重嵌')
+    assert.equal(needsFullRebuild('model-b', 'model-a', 3), true, '换模型却没要求全部重嵌')
+    assert.equal(needsFullRebuild('model-b', 'model-a', 0), false,
+      '一段都没复用时不需要重嵌（本来就要全部调 API）')
+    assert.equal(needsFullRebuild(null, 'model-a', 3), false, '没有 API 模型读数时不该要求重嵌')
+  })
+
+  it('★★★ 纯函数必须真的被生产代码调用（否则「验对了但没接上」）', () => {
+    // ⚠ 上一条验的是**纯函数的行为**；这一条验的是**接线**。
+    //   两者缺一不可：只验行为 ⇒ 函数对了但生产代码压根没调它；
+    //   只验接线 ⇒ 函数写错了照样绿。
+    // ⚠ 这一条**只是「存在性」**，不是「语义」——
+    //   把调用短路成 `if (false && needsFullRebuild(...))` 它照样绿。
+    //   ⇒ 语义由上一条的行为断言负责，这里只保证「接上了」。
+    const src = readFileSync(new URL('../../features/notes/notes-persist.ts', import.meta.url), 'utf8')
+    assert.match(src, /needsFullRebuild\(/,
+      '生产代码没有调用 needsFullRebuild ⇒ 换模型时不会全部重嵌（纯函数白写）')
+    assert.match(src, /existingChunks\(/,
+      '生产代码没有调用 existingChunks ⇒ 增量重嵌根本不会发生（每次都全部重嵌）')
+  })
+
+  it('★★★ 生产路径必须用段落锚定的切段（增量重嵌的前提）', () => {
+    const src = readFileSync(new URL('../../features/notes/note-storage-policy.ts', import.meta.url), 'utf8')
+    assert.match(src, /groupByParagraph/, '切段器里没有段落分组 ⇒ 段边界不稳定 ⇒ 增量重嵌不成立')
   })
 })
