@@ -8,6 +8,7 @@ import { updateSegmentTranslation } from './meetings-live'
 import { saveSegment, updateTranscript } from './meetings-store'
 import type { SpeakerDiarizer } from '../../native/speaker-diarization'
 import { renderTranscript } from './meeting-dedup.ts'
+import { describeSegmentDrop } from './segment-drop-notice.ts'
 import type { MeetingSegment } from './meetings-store.ts'
 
 export async function ingestSpeechBlob(opts: {
@@ -40,9 +41,28 @@ export async function ingestSpeechBlob(opts: {
     //   现在失败是显式的 null，由 SpeakerDiarizer 走整场共用的兜底标签。
     extractEmbeddingResult(opts.blob),
   ])
-  if (!sttResult.text.trim()) return null
+  // ⚠⚠⚠ §828：**音频分片必须先于「转写有没有出字」落盘。**
+  //
+  //   旧顺序是「先判空文本 → return null → 才 saveAudioPart」⇒ 转写无字的那一段，
+  //   **文字没建行、音频分片也没落盘、没有任何提示**，两样都没了。
+  //   而 `audio-parts.ts` 的头注释写的就是「崩溃后可凭 local_meeting_audio_parts
+  //   恢复转写」—— 既然分片的用途就是**事后补救**，那它在补救之前就不能先被跳过。
+  //   ⚠§826 让这件事在 Android 上变得不可逆：原生模式压根不产整段音频，
+  //   分片是那段话的**唯一一份拷贝**。
+  void saveAudioPart(meetingId, opts.seq, opts.blob).catch((e) => {
+    // §818/§819 同一族：观测失败不得影响转写，但也不许完全无声 ——
+    // 这里是唯一一份音频拷贝，它没存下来就等于那段话永久找不回来了。
+    console.warn(`[ingest-speech] 第 ${opts.seq} 段音频分片落盘失败：`, e)
+  })
 
-  void saveAudioPart(meetingId, opts.seq, opts.blob).catch(() => {})
+  if (!sttResult.text.trim()) {
+    // 「转写成功但没出字」与「转写失败」在调用点**长得一样**（都不抛错），
+    // 而前者更隐蔽：它连 sttError 都不会触发。不留痕 ⇒ 这段话凭空消失。
+    console.warn(describeSegmentDrop({
+      seq: opts.seq, startMs: opts.startMs, endMs: opts.endMs, engine: sttResult.engine,
+    }))
+    return null
+  }
 
   const { profileId, label } = opts.diarizer.identify(
     embeddingResult.ok ? embeddingResult.embedding : null,

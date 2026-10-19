@@ -1,4 +1,5 @@
 /** 邮件正文展示与转发草稿：识别 HTML、引用原文、解析收件人。 */
+import { arrayBufferToBase64 } from '../../utils/base64.ts'
 import { decodePartBytes, isLegacyCharset } from './email-charset.ts'
 
 const CAT: Record<string, string> = {
@@ -527,7 +528,7 @@ export function resolveCidImages(html: string, parts: MimePart[]): string {
     const isBase64 = part.encoding.toLowerCase() === 'base64'
     const raw64 = isBase64
       ? part.body.replace(/\s+/g, '')
-      : b64FromBytes(base64ToBytesSafe(part.body))
+      : b64FromBytes(latin1PartToBytes(part.body))
     if (!raw64) return null
     // base64 长度 ≈ 原始字节 * 4/3
     const approxBytes = Math.floor((raw64.length * 3) / 4)
@@ -599,20 +600,42 @@ function safeDecodeCid(cid: string): string {
   }
 }
 
-/** 非 base64 部件的原始字节（7bit/8bit 图片是 latin1 可逆的）。 */
-function base64ToBytesSafe(body: string): Uint8Array {
+/**
+ * 非 base64 部件的原始字节（7bit/8bit 图片是 latin1 可逆的）。
+ *
+ * ⚠⚠ §889：原名是 `base64ToBytesSafe`，**名字与语义相反**。
+ *   读起来像「base64ToBytes 的安全版本」，实际却是「**跳过 base64 解码**的
+ *   latin1 字节提取」——它不是加固版，是**另一条路径**；若被
+ *   当成加固版实现子调用，传给 `decodePartBytes(…, charset)` 的就是未校验的
+ *   latin1 字节而不是字符 ⇒ **邮件正文乱码**。
+ *   改名为 `latin1PartToBytes`（本文件内唯一调用点 → 零风险）。
+ */
+function latin1PartToBytes(body: string): Uint8Array {
   return latin1ToBytes(body)
 }
 
-/** 原始字节转 base64（data URI 用）。 */
+/**
+ * 原始字节 → base64（拼 data URI 用）。**收编后的薄包装，§889.7 / 简报 112。**
+ *
+ * ⚠ **名字登记（简报 112 第 ① 问，属主 2026-10-19 拍板：只写清、不加新判据）**：
+ *   `b64FromBytes` 是**缩写名**，但它**不读错**——它说的是「bytes（字节）from →
+ *   base64」，与 `latin1PartToBytes` 的方向相反且不重名。
+ *   与 D59 那个 `base64ToBytesSafe` 的区别在于：后者读起来像**同文件里另一个真
+ *   函数**（`base64ToBytes`，见下方 decodeBody 路径）的加固版 ⇒ 会被误当成
+ *   子调用 ⇒ 正文乱码。**缩写本身不是缺陷，被误读成邻居才是。**
+ *   ⇒ 族级「命名原则」未立：判据钉不住「名字与语义一致」，只会退化成「有没有注释」。
+ *
+ * ⚠⚠ **`catch → ''` 是有意保留的**（简报 112 第 ② 问，属主 2026-10-19 拍板「不改」）：
+ *   它是既有行为，改它属行为变更。三条理由：
+ *   ① 调用点 `if (!raw64) return null` 已经把空串当成「这张图不内联」；
+ *   ② 改成抛会**打断整封邮件的 cid 解析** —— 而 §891 的教训正是「出声」很容易
+ *      自伤成阻断（D60 的 `DataUrlFormatError` 就曾把保存按钮打死）；
+ *   ③ 触发条件（`btoa` 抛错）经 §889.8 实测与收编前**完全一致**，不是收编引入的。
+ *   ⛔ 触发率仍未实测（§889.7 登记至今）。
+ */
 function b64FromBytes(bytes: Uint8Array): string {
   try {
-    let bin = ''
-    const CHUNK = 0x8000
-    for (let i = 0; i < bytes.length; i += CHUNK) {
-      bin += String.fromCharCode(...bytes.subarray(i, i + CHUNK))
-    }
-    return btoa(bin)
+    return arrayBufferToBase64(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength))
   } catch {
     return ''
   }

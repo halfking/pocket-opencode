@@ -34,6 +34,9 @@ export interface VadSegmenterOptions {
   onSegment: (seg: VadSegment) => void
 }
 
+/** §808：等最后一枚切片的硬上限，超时就照常返回，绝不挂死收尾。 */
+const FINAL_FLUSH_TIMEOUT_MS = 1000
+
 const DEFAULTS = {
   silenceMs: 1500,
   minSpeechMs: 400,
@@ -56,6 +59,8 @@ export class VadSegmenter {
   private inSpeech = false
   private sliceBuffer: { blob: Blob; atMs: number }[] = []
   private fullChunks: Blob[] = []
+  /** §808：`stop()` 之后那最后一枚 `dataavailable` 的兑现钩子（由 awaitFinalChunk 挂上）。 */
+  private finalFlush: (() => void) | null = null
   /**
    * 强制切段（maxSpeechMs）后，下一段必须从「上一段最后一片之后」接上。
    * §536.3 甲：不记这个的话，下一段的预卷条件 `atMs >= speechStartMs - sliceMs`
@@ -98,6 +103,8 @@ export class VadSegmenter {
 
     this.recorder = new MediaRecorder(stream)
     this.recorder.ondataavailable = (e) => {
+      // ★ §808：最后一枚必须在停机前挂的等待里兑现，否则 tail 会被丢掉
+      this.finalFlush?.()
       if (e.data.size > 0) {
         const atMs = Date.now() - this.startTime
         this.sliceBuffer.push({ blob: e.data, atMs })
@@ -246,15 +253,28 @@ export class VadSegmenter {
     this.opts.onSegment({ blob, startMs: this.speechStartMs, endMs })
   }
 
-  /** 停止并刷新最后一段语音 */
-  stop(): Blob | null {
+  /**
+   * 停止并刷新最后一段语音。**返回 Promise** —— 它必须等 MediaRecorder 的
+   * **最后一次 `dataavailable`** 落地后才能把 blob 交出去。
+   *
+   * ⚠⚠ §808 实测（生产类本体，6/6 轮，sliceMs=250）：同步建 blob 会**系统性**丢掉
+   * 末尾 **162–164ms**（σ≈0.8ms）。原因：规范上 `stop()` 触发的最后一次
+   * `dataavailable` 是**异步**事件，而旧实现 `stop()` 之后立刻 `new Blob(fullChunks)`，
+   * 那时 `fullChunks` 还差最后一枚。⇒ 每一次录音都被截掉同一截尾巴，无任何提示。
+   *
+   * ⇒ 故这里先挂好等待、**再**调 `stop()`，并在超时后照常返回
+   * （超时只影响那最后一枚，绝不让 `stop()` 挂死录音收尾）。
+   */
+  async stop(): Promise<Blob | null> {
     cancelAnimationFrame(this.rafId)
     if (this.inSpeech) {
       this.finalizeSegment(Date.now() - this.startTime)
       this.inSpeech = false
     }
-    if (this.recorder && this.recorder.state !== 'inactive') {
-      try { this.recorder.stop() } catch { /* ok */ }
+    const recorder = this.recorder
+    const flushed = this.awaitFinalChunk(recorder)
+    if (recorder && recorder.state !== 'inactive') {
+      try { recorder.stop() } catch { /* ok */ }
     }
     this.recorder = null
     if (this.audioCtx) {
@@ -263,8 +283,31 @@ export class VadSegmenter {
     }
     this.analyserL = null
     this.analyserR = null
+    await flushed
     if (this.fullChunks.length === 0) return null
     return new Blob(this.fullChunks, { type: 'audio/webm' })
+  }
+
+  /**
+   * 等 `stop()` 之后那最后一枚 `dataavailable` 落地。
+   *
+   * ⚠ 必须在调 `recorder.stop()` **之前**挂上 —— 事件是异步的，晚挂会漏。
+   * ⚠ 超时是硬上限：`stop()` 在录音收尾链路上，绝不能因为它挂死。
+   */
+  private awaitFinalChunk(recorder: MediaRecorder | null): Promise<void> {
+    if (!recorder || recorder.state === 'inactive') return Promise.resolve()
+    return new Promise<void>((resolve) => {
+      let settled = false
+      const done = () => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        this.finalFlush = null
+        resolve()
+      }
+      const timer = setTimeout(done, FINAL_FLUSH_TIMEOUT_MS)
+      this.finalFlush = done
+    })
   }
 
   getStream(): MediaStream | null {

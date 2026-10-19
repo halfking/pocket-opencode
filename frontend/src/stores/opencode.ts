@@ -36,6 +36,17 @@ interface OpenCodeState {
   instances: OpenCodeInstance[]
   selectedInstance: OpenCodeInstance | null
   sessions: OpenCodeSession[]
+  /**
+   * §844：当前 `sessions` 是**哪个实例**的。
+   *
+   * 它存在的唯一理由是让「读失败要不要清空 sessions」有据可依：
+   *   · 刷新**同一个**实例失败 ⇒ 行还是那个实例的行 ⇒ **保留**（原实现无条件清空，
+   *     一次抖动就把用户正在看的列表抹掉）；
+   *   · 切到**另一个**实例失败 ⇒ 行属于旧实例 ⇒ **必须清**，
+   *     否则会在新实例的标题下显示旧实例的会话（比清空更糟）。
+   * ⇒ 原来那句无条件的 `this.sessions = []` 其实是**用一个坏行为挡住另一个更坏的行为**。
+   */
+  sessionsOwnerId: string | null
   sessionHistory: Record<string, HistoryEvent[]>
   realTimeStatus: Record<string, string>
   loading: boolean
@@ -55,6 +66,7 @@ export const useOpenCodeStore = defineStore('opencode', {
     instances: [],
     selectedInstance: null,
     sessions: [],
+    sessionsOwnerId: null,
     sessionHistory: {},
     realTimeStatus: {},
     loading: false,
@@ -180,10 +192,16 @@ export const useOpenCodeStore = defineStore('opencode', {
         }))
         
         console.log('✅ 加载会话成功:', this.sessions.length)
+        this.sessionsOwnerId = instanceId
       } catch (err: any) {
         console.error('❌ 加载会话失败:', err)
         this.error = err.message || '加载会话失败'
-        this.sessions = []
+        // ⚠ 2026-10-18（§844）：原来是无条件 `this.sessions = []` ——
+        //   刷新同一个实例时，一次网络抖动就把用户正在看的会话列表整个抹掉，
+        //   而会话在 OpenCode 侧一直都在。
+        // ⇒ 改为按**归属**判断：行属于别的实例就必须清（那是有害的错配），
+        //   行就是这个实例的才保留。判据见 `sessionsOwnerId` 的注释。
+        if (this.sessionsOwnerId !== instanceId) this.sessions = []
       } finally {
         this.loading = false
       }

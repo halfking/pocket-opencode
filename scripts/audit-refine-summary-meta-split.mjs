@@ -395,6 +395,10 @@ const MUTATIONS = [
 ];
 
 function meta() {
+  console.log('\n════ 判据自证臂（META）════');
+  console.log('⚠ 本臂所有 findings/notes 描述的都是**临时变异副本**，不是仓库基线。');
+  console.log('  例：M7「回退 §388」会让 A6 报「§388 的修复不在」—— 那正是该变异');
+  console.log('  **被注入**出来的效果，不是发现。基线是否成立，只看本段之后那遍。');
   const pristine = load(REPO_ROOT);
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'meta-split-'));
   const write = (files) => {
@@ -425,8 +429,8 @@ function meta() {
       console.log(`META  ${m.name}\n      ${reacted ? '✅ 有反应' : '❌ 完全无反应 —— 闸没有牙'}  预期：${m.expect}`);
       if (reacted) {
         alive++;
-        for (const x of r.findings) console.log(`      findings：${x.kind}: ${x.msg}`);
-        for (const x of r.notes) console.log(`      notes：${x.kind}: ${x.msg}`);
+        for (const x of r.findings) console.log(`      findings［变异副本，非基线］：${x.kind}: ${x.msg}`);
+        for (const x of r.notes) console.log(`      notes［变异副本，非基线］：${x.kind}: ${x.msg}`);
       } else broken++;
     }
   } finally {
@@ -434,6 +438,7 @@ function meta() {
   }
 
   console.log(`\n=== 判据自证 ===\n${alive} 个变异有反应，${broken} 个无反应`);
+  console.log('↑ 以上全部属于变异臂。**不要**据其中任何一条去撤登记项 —— 基线读数在下一遍。');
   if (broken > 0) {
     console.log('闸失去区分能力 —— 这是**闸**坏了，不是代码坏了。');
     process.exit(2);
@@ -447,6 +452,8 @@ if (process.argv[2] === '--meta') {
   meta();
 } else {
   const { findings, notes, sites } = audit();
+  console.log('\n════ 基线审计（**未做任何变异**）════');
+  console.log('⚠ 只有本段是仓库现状；上一段的变异臂读数不可用于撤登记项。');
   console.log(`扫描根 ${REPO_ROOT}`);
   console.log(`metaTermHint 生产调用点：${sites.length} 个 ${sites.map((s) => `L${s.line}`).join(', ')}`);
   for (const n of notes) console.log(`\n${n.kind}\n  ${n.msg}`);

@@ -64,7 +64,8 @@ let saveTimer: ReturnType<typeof setTimeout> | null = null
 
 /** 加载笔记并初始化编辑器。 */
 async function load(id: string) {
-  const note = await getNote(id)
+  // ⚠ §884：同 PkmNoteView —— getNote 走 getForWorkspace，workspace 必须传。
+  const note = await getNote(id, currentWorkspaceId())
   currentNote.value = note
   title.value = note?.title ?? ''
   // 销毁旧编辑器（noteId 变化时）

@@ -122,11 +122,21 @@ async function refreshInstances() {
 
 function selectInstance(instance: OpenCodeInstance) {
   // 保存选择的实例
-  localStorage.setItem('selected_opencode_instance', JSON.stringify(instance))
-  
+  // ⚠§866/D32：这次写入原来裸奔 —— 配额满时 setItem 抛错，而它后面还跟着
+  //   「选中实例 + 跳转会话列表」两步。⇒ 一次**缓存写入失败会把用户已经点下的
+  //   那次选择整个取消**，界面上表现为「点了没反应」，零解释。
+  // 姿态与 D30/D31 相反：这一条只是「下次不带 ?instance_id= 进来时的恢复便利」，
+  //   丢不丢都不影响用户手上的动作 ⇒ **不阻断**、不占用 UI 出口，只留日志。
+  //   （对比：AI 对话历史 / 主密码设置是用户正在产出的数据，丢不得，必须说话。）
+  try {
+    localStorage.setItem('selected_opencode_instance', JSON.stringify(instance))
+  } catch (err) {
+    console.warn('[opencode] 实例选择未能写入本地存储（本次选择仍生效，但下次直接进会话页不会被恢复）：', err)
+  }
+
   // 选择实例并加载会话
   openCodeStore.selectInstance(instance.id)
-  
+
   // 跳转到会话列表
   router.push(`/opencode/sessions?instance_id=${instance.id}`)
 }

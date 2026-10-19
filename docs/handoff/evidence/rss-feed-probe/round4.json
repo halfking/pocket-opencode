@@ -1,0 +1,302 @@
+[
+    {
+        "url": "https://www.qbitai.com/feed",
+        "title": "量子位",
+        "category": "ai",
+        "status": 200,
+        "ctype": "application/rss+xml; charset=UTF-8",
+        "items": 10,
+        "ms": 166,
+        "err": ""
+    },
+    {
+        "url": "https://huggingface.co/blog/feed.xml",
+        "title": "Hugging Face Blog",
+        "category": "ai",
+        "status": 200,
+        "ctype": "application/rss+xml; charset=utf-8",
+        "items": 880,
+        "ms": 483,
+        "err": ""
+    },
+    {
+        "url": "https://blog.google/technology/ai/rss/",
+        "title": "Google AI Blog",
+        "category": "ai",
+        "status": 200,
+        "ctype": "application/xml; charset=utf-8",
+        "items": 20,
+        "ms": 816,
+        "err": ""
+    },
+    {
+        "url": "https://www.marktechpost.com/feed/",
+        "title": "MarkTechPost",
+        "category": "ai",
+        "status": 200,
+        "ctype": "application/rss+xml; charset=UTF-8",
+        "items": 10,
+        "ms": 543,
+        "err": ""
+    },
+    {
+        "url": "https://www.technologyreview.com/topic/artificial-intelligence/feed",
+        "title": "MIT Tech Review AI",
+        "category": "ai",
+        "status": 200,
+        "ctype": "application/rss+xml; charset=UTF-8",
+        "items": 10,
+        "ms": 213,
+        "err": ""
+    },
+    {
+        "url": "https://arstechnica.com/ai/feed/",
+        "title": "Ars Technica AI",
+        "category": "ai",
+        "status": 200,
+        "ctype": "application/rss+xml; charset=UTF-8",
+        "items": 20,
+        "ms": 1262,
+        "err": ""
+    },
+    {
+        "url": "https://openai.com/blog/rss.xml",
+        "title": "OpenAI Blog（验证旧地址仍可用，分类从 it 迁到 ai）",
+        "category": "ai",
+        "status": 200,
+        "ctype": "text/xml; charset=utf-8",
+        "items": 1299,
+        "ms": 1814,
+        "err": ""
+    },
+    {
+        "url": "https://openai.com/news/rss.xml",
+        "title": "OpenAI News（新地址，与旧地址同内容；为保导入幂等未收录新 URL）",
+        "category": "ai",
+        "status": 200,
+        "ctype": "text/xml; charset=utf-8",
+        "items": 1299,
+        "ms": 1093,
+        "err": ""
+    },
+    {
+        "url": "https://www.producthunt.com/feed",
+        "title": "Product Hunt",
+        "category": "product",
+        "status": 200,
+        "ctype": "application/atom+xml; charset=utf-8",
+        "items": 50,
+        "ms": 543,
+        "err": ""
+    },
+    {
+        "url": "https://www.tomshardware.com/feeds/all",
+        "title": "Tom's Hardware",
+        "category": "product",
+        "status": 200,
+        "ctype": "application/xml",
+        "items": 50,
+        "ms": 2228,
+        "err": ""
+    },
+    {
+        "url": "https://www.ifanr.com/feed",
+        "title": "爱范儿",
+        "category": "product",
+        "status": 200,
+        "ctype": "application/xml; charset=utf-8",
+        "items": 20,
+        "ms": 321,
+        "err": ""
+    },
+    {
+        "url": "https://www.engadget.com/rss.xml",
+        "title": "Engadget",
+        "category": "product",
+        "status": 200,
+        "ctype": "text/xml; charset=UTF-8",
+        "items": 20,
+        "ms": 221,
+        "err": ""
+    },
+    {
+        "url": "https://www.servethehome.com/feed/",
+        "title": "ServeTheHome",
+        "category": "product",
+        "status": 200,
+        "ctype": "application/rss+xml; charset=UTF-8",
+        "items": 6,
+        "ms": 892,
+        "err": ""
+    },
+    {
+        "url": "http://feed.smzdm.com",
+        "title": "什么值得买·好价（https 变体 403，必须用 http）",
+        "category": "deals",
+        "status": 200,
+        "ctype": "application/rss+xml; charset=utf-8",
+        "items": 30,
+        "ms": 197,
+        "err": ""
+    },
+    {
+        "url": "https://slickdeals.net/newsearch.php?src=SearchV2&searcharea=deals&searchin=first&q=gpu&rss=1",
+        "title": "Slickdeals GPU 促销",
+        "category": "deals",
+        "status": 200,
+        "ctype": "text/xml; charset=UTF-8",
+        "items": 25,
+        "ms": 1274,
+        "err": ""
+    },
+    {
+        "url": "https://slickdeals.net/newsearch.php?src=SearchV2&searcharea=deals&searchin=first&q=ssd&rss=1",
+        "title": "Slickdeals SSD 促销",
+        "category": "deals",
+        "status": 200,
+        "ctype": "text/xml; charset=UTF-8",
+        "items": 25,
+        "ms": 1309,
+        "err": ""
+    },
+    {
+        "url": "https://www.jiqizhixin.com/rss",
+        "title": "机器之心（候选，未收录）",
+        "category": "ai",
+        "status": 200,
+        "ctype": "text/html; charset=utf-8",
+        "items": 0,
+        "ms": 553,
+        "err": "返回 HTML 而非 feed"
+    },
+    {
+        "url": "https://venturebeat.com/category/ai/feed/",
+        "title": "VentureBeat AI（候选，未收录）",
+        "category": "ai",
+        "status": 429,
+        "ctype": "",
+        "items": 0,
+        "ms": 192,
+        "err": "HTTP Error 429: Too Many Requests"
+    },
+    {
+        "url": "https://launchingnext.com/feed/",
+        "title": "Launching Next（候选，未收录）",
+        "category": "product",
+        "status": 200,
+        "ctype": "text/html",
+        "items": 0,
+        "ms": 1939,
+        "err": "返回 HTML 而非 feed"
+    },
+    {
+        "url": "https://next.36kr.com/feed",
+        "title": "NEXT 产品榜（候选，未收录）",
+        "category": "product",
+        "status": 200,
+        "ctype": "text/html",
+        "items": 0,
+        "ms": 452,
+        "err": "返回 HTML 而非 feed"
+    },
+    {
+        "url": "https://feed.smzdm.com",
+        "title": "什么值得买 https 变体（未收录）",
+        "category": "deals",
+        "status": 403,
+        "ctype": "",
+        "items": 0,
+        "ms": 122,
+        "err": "HTTP Error 403: Forbidden"
+    },
+    {
+        "url": "https://feeds.feedburner.com/SlickdealsFP",
+        "title": "Slickdeals Frontpage feedburner（未收录）",
+        "category": "deals",
+        "status": 404,
+        "ctype": "",
+        "items": 0,
+        "ms": 1196,
+        "err": "HTTP Error 404: Not Found"
+    },
+    {
+        "url": "https://feeds.feedburner.com/Slickdealsnew",
+        "title": "Slickdeals Popular feedburner（未收录）",
+        "category": "deals",
+        "status": 404,
+        "ctype": "",
+        "items": 0,
+        "ms": 1247,
+        "err": "HTTP Error 404: Not Found"
+    },
+    {
+        "url": "https://www.dealnews.com/rss.xml",
+        "title": "DealNews（未收录）",
+        "category": "deals",
+        "status": 404,
+        "ctype": "",
+        "items": 0,
+        "ms": 512,
+        "err": "HTTP Error 404: Not Found"
+    },
+    {
+        "url": "https://www.mydealz.de/rss.xml",
+        "title": "mydealz（未收录）",
+        "category": "deals",
+        "status": 403,
+        "ctype": "",
+        "items": 0,
+        "ms": 239,
+        "err": "HTTP Error 403: Forbidden"
+    },
+    {
+        "url": "https://news.mydrivers.com/rss.htm",
+        "title": "快科技（未收录）",
+        "category": "product",
+        "status": 404,
+        "ctype": "",
+        "items": 0,
+        "ms": 129,
+        "err": "HTTP Error 404: Not Found"
+    },
+    {
+        "url": "https://www.expreview.com/rss",
+        "title": "超能网（未收录）",
+        "category": "product",
+        "status": 200,
+        "ctype": "text/html; charset=utf-8",
+        "items": 0,
+        "ms": 140,
+        "err": "返回 HTML 而非 feed"
+    },
+    {
+        "url": "https://slickdeals.net/newsearch.php?mode=popdeals&rss=1",
+        "title": "Slickdeals popdeals（未收录）",
+        "category": "deals",
+        "status": 0,
+        "ctype": "",
+        "items": 0,
+        "ms": 3008,
+        "err": "SSL: UNEXPECTED_EOF_WHILE_READING"
+    },
+    {
+        "url": "https://www.chiphell.com/rss.php",
+        "title": "Chiphell（候选，未收录）",
+        "category": "product",
+        "status": 200,
+        "ctype": "text/html; charset=UTF-8",
+        "items": 0,
+        "ms": 181,
+        "err": "返回 HTML 而非 feed"
+    },
+    {
+        "url": "https://www.ithome.com/rss/",
+        "title": "IT之家（基线复测：既有目录条目，round1 起已收录）",
+        "category": "it",
+        "status": 200,
+        "ctype": "text/xml; charset=utf-8",
+        "items": 60,
+        "ms": 158,
+        "err": ""
+    }
+]

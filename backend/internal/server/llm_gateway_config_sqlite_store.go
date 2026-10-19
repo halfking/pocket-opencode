@@ -38,6 +38,19 @@ func NewLLMGatewaySQLiteConfigStore(dbPath string, cipher llmGatewayCipher) (*LL
 	if dbPath == "" {
 		return nil, fmt.Errorf("empty db path")
 	}
+	// 与 PG store（NewLLMGatewayStore）同一道防线、同一份契约：没有可用的
+	// cipher 就构造失败，由调用方（cmd/pocketd/main.go）打 WARN 并放弃持久化，
+	// 网关回落 env 默认值——绝不能构造"成功"后在第一次加解密时 panic。
+	//
+	// 实测形态：main.go 传进来的是 NewGatewayCipher(cfg.JWTSecret) 的返回值，
+	// secret 为空时它是 nil *gatewayKeyCipher；装进 llmGatewayCipher 接口后
+	// `cipher == nil` 判不住（typed-nil），旧代码会构造成功，直到第一次
+	// encrypt/decrypt 才在 nil receiver 上解引用 g.key panic。无 PG 且
+	// POCKET_JWT_SECRET 漏配的实例，启动自愈（EnsureLLMGatewayDefaults）或
+	// 用户在设置页保存配置即触发。这与 3ea18409 在 PG store 修掉的是同一类洞。
+	if cipher == nil || typedNilCipher(cipher) {
+		return nil, fmt.Errorf("LLM gateway API-key encryption is not configured (cipher=%T)", cipher)
+	}
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
 		return nil, err
 	}
@@ -115,13 +128,13 @@ func (s *LLMGatewaySQLiteConfigStore) SaveConfig(ctx context.Context, workspaceI
 }
 
 // encryptString encrypts plaintext via cipher; empty input returns empty.
-// Unlike the PG store which has tighter contract, SQLite store allows nil cipher
-// so that unit tests can run without crypto plumbing.
+// nil / typed-nil cipher（含单测直构的 nil）都返回显式 error，绝不 panic：
+// 调用方（启动自愈、设置页保存）据此降级，见构造器内的注释。
 func encryptString(c llmGatewayCipher, plain string) (string, error) {
 	if plain == "" {
 		return "", nil
 	}
-	if c == nil {
+	if c == nil || typedNilCipher(c) {
 		return "", fmt.Errorf("no cipher configured for gateway config persistence - cannot encrypt sensitive field")
 	}
 	return c.EncryptString(plain)
@@ -131,7 +144,7 @@ func decryptString(c llmGatewayCipher, enc string) (string, error) {
 	if enc == "" {
 		return "", nil
 	}
-	if c == nil {
+	if c == nil || typedNilCipher(c) {
 		return "", fmt.Errorf("no cipher configured for gateway config persistence - cannot decrypt sensitive field")
 	}
 	return c.DecryptString(enc)

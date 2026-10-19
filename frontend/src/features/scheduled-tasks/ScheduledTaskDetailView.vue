@@ -25,6 +25,7 @@ import { describeTaskSchedule } from './schedule-plan'
 import { markListDirty } from '../../composables/list-scene-store'
 import { useApiError } from '../../composables/useApiError'
 import { useConfirm } from '../../composables/useConfirm'
+import { useToast } from '../../composables/useToast'
 
 const route = useRoute(); const router = useRouter(); const store = useScheduledTasksStore()
 const { confirm } = useConfirm()
@@ -33,6 +34,7 @@ const task = computed(() => store.selected)
 const running = ref(false)
 /** Store 只保存后端原始错误；展示前统一经 apiError 归一为可读文案（不泄露内部错误码）。 */
 const apiError = useApiError()
+const toast = useToast()
 const errorText = computed(() => (store.error ? apiError(store.error, 'errors.loadTasksFailed') : ''))
 function runErrorText(raw: string) { return apiError(raw, 'errors.loadTasksFailed') }
 function load() { return store.loadOne(taskId.value).catch(() => {}) }
@@ -41,8 +43,36 @@ async function runNow() {
   running.value = true
   try { await store.run(task.value.id); await load() } catch (e: any) { store.error = String(e?.message ?? e) } finally { running.value = false }
 }
-async function toggle() { if (task.value) { await store.update(task.value.id, { enabled: !task.value.enabled }); markListDirty('scheduled-tasks') } }
-async function remove() { if (!task.value) return; const ok = await confirm({ title: '删除自动化', message: `删除自动化「${task.value.name}」？`, confirmText: '删除', danger: true }); if (!ok) return; await store.remove(task.value.id); markListDirty('scheduled-tasks'); router.replace('/settings/scheduled-tasks') }
+/**
+ * §854：与 `ScheduledTaskListView` 的 toggle/remove 是**同一个缺陷的第二个落点**。
+ * store 的 `error` 只由 load/loadOne 设置，`update`/`remove` 都不碰它 ⇒ 这里抛出去
+ * 既不会点亮模板 :7 的 `errorText` 横幅（那条 `v-else-if` 还与 `<main v-else-if="task">`
+ * 互斥），也不会有人接 —— 而本视图零 toast。
+ * ⇒ 用户点了「停用自动化」/「删除自动化」（删除还过了确认弹窗），界面上什么都不发生。
+ * 对照组：同文件 `runNow` **有** catch（`store.error = …`）—— 说明作者知道要处理，只是漏了这两处。
+ */
+async function toggle() {
+  if (!task.value) return
+  try {
+    await store.update(task.value.id, { enabled: !task.value.enabled })
+    markListDirty('scheduled-tasks')
+  } catch (e: any) {
+    toast.error(apiError(e, 'errors.operateFailed'))
+  }
+}
+async function remove() {
+  if (!task.value) return
+  const ok = await confirm({ title: '删除自动化', message: `删除自动化「${task.value.name}」？`, confirmText: '删除', danger: true })
+  if (!ok) return
+  try {
+    await store.remove(task.value.id)
+  } catch (e: any) {
+    toast.error(apiError(e, 'errors.operateFailed'))
+    return
+  }
+  markListDirty('scheduled-tasks')
+  router.replace('/settings/scheduled-tasks')
+}
 onMounted(load)
 watch(taskId, (id, previous) => { if (id && id !== previous) void load() })
 </script>

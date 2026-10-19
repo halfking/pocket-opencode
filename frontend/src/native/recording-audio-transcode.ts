@@ -133,15 +133,9 @@ export function sliceToWavBytes(
 }
 
 /** ArrayBuffer → base64。分块转换：12 秒 PCM 实测一次性展开会爆栈。 */
-export function arrayBufferToBase64(buffer: ArrayBuffer): string {
-  const bytes = new Uint8Array(buffer)
-  let binary = ''
-  const CHUNK = 32768
-  for (let i = 0; i < bytes.length; i += CHUNK) {
-    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK) as unknown as number[])
-  }
-  return btoa(binary)
-}
+// §889：收编到公共实现（三份同义实现收为一份）。
+// ⚠ 本模块被 §881 的判据直接 import，所以这里的跳转必须**带扩展名**（§875）。
+export { arrayBufferToBase64 } from '../utils/base64.ts'
 
 export type DecodeContext = {
   decode: (arrayBuffer: ArrayBuffer) => Promise<{ samples: Float32Array; sampleRate: number; durationSec: number }>

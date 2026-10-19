@@ -5,16 +5,45 @@ import { rssApi, type RSSItem } from '../../api/rss'
 import { useI18n } from 'vue-i18n'
 import { toUserMessage } from '../../api/error-message'
 import AddToLearningButton from '../study/AddToLearningButton.vue'
+import { sanitizeHtml } from '../../utils/markdown'
+import { safeExternalUrl } from '../../utils/safe-url'
 
 const route = useRoute()
 const router = useRouter()
 const item = ref<RSSItem | null>(null)
+
+/**
+ * §851：RSS 正文是**订阅源作者完全可控**的 HTML，而这里原来直接 `v-html` 渲染。
+ * ⛔ 取证：服务端 `backend/internal/rss/store_entities.go` 把 `content` **原样**入库
+ *   （无任何净化），`index.html` **也没有 CSP** ⇒ 一条订阅里的
+ *   `<img src=x onerror="...">` 会在这台设备的 WebView 里执行，
+ *   而这个 WebView 带着 Capacitor bridge（能读 localStorage 里的登录态）。
+ *
+ * ⇒ 复用仓库里**已有的**共享净化器 `utils/markdown.ts::sanitizeHtml`
+ *   （配置里明写 FORBID_TAGS: ['style','script']，且不含 style 属性）。
+ *   同一仓库对聊天/笔记/会议摘要都走它，RSS 是唯一漏掉的一个。
+ */
+const safeContent = computed(() => sanitizeHtml(item.value?.content ?? ''))
+
+/**
+ * §852：URL sink 也要过协议白名单 —— `item.url` 来自订阅源（服务端原样入库），
+ * `<a href="javascript:…">` 会同源执行，`intent:` / `market:` 还会被 Android
+ * 交给系统去解析。显示用的文本不受影响，只有 href/window.open 走这里。
+ */
+const itemUrl = computed(() => safeExternalUrl(item.value?.url))
+const shareDeepLink = computed(() => safeExternalUrl(shareResult.value?.deepLink))
 const loading = ref(true)
 const errorMsg = ref('')
 const shareOpen = ref(false)
 const shareCaption = ref('')
 const shareResult = ref<{ copyText?: string; deepLink?: string; hint?: string } | null>(null)
 const shareBusy = ref(false)
+/**
+ * §849：分享弹窗内部的提示位。
+ * ⚠ 刻意**不**复用页面级的 `errorMsg`：那一条挂在 `v-else-if="errorMsg"` 上，
+ *   与 `<article>` 互斥 ⇒ 用它报「复制失败」会让正文整块消失。
+ */
+const shareNotice = ref('')
 const { t } = useI18n()
 
 async function load() {
@@ -41,6 +70,7 @@ function openShare() {
   if (!item.value) return
   shareCaption.value = item.value.summary?.slice(0, 120) || item.value.title
   shareResult.value = null
+  shareNotice.value = ''
   shareOpen.value = true
 }
 
@@ -48,16 +78,24 @@ async function doShare(dest: 'wechat' | 'weibo' | 'clipboard' | 'download') {
   if (!item.value) return
   shareBusy.value = true
   shareResult.value = null
+  shareNotice.value = ''
   try {
     const r = await rssApi.share(item.value.id, dest, shareCaption.value)
     shareResult.value = r
     if (dest === 'clipboard' && r.copyText) {
       try {
         await navigator.clipboard.writeText(r.copyText)
-      } catch { /* 浏览器/Capacitor 不支持时静默 */ }
+      } catch {
+        // §849：服务端那步已经成功、**成功态也已经设上了**，而写剪贴板可能失败
+        // （WebView 无剪贴板权限，或 navigator.clipboard 根本不存在）。
+        // 原来这里是静默 catch ⇒ 用户看到复制内容、以为复制好了，
+        // 粘贴出来却是空的上一次内容。
+        // ⇒ 失败要在这个弹窗里说出来，并说清「内容已生成、没进剪贴板」。
+        shareNotice.value = '未能写入剪贴板，内容已显示在下方，请长按手动复制'
+      }
     }
-    if (dest === 'weibo' && r.deepLink) {
-      window.open(r.deepLink, '_blank')
+    if (dest === 'weibo' && safeExternalUrl(r.deepLink)) {
+      window.open(safeExternalUrl(r.deepLink), '_blank', 'noopener')
     }
   } catch (e: any) {
     errorMsg.value = `分享失败：${e?.message ?? e}`
@@ -98,7 +136,7 @@ function back() {
       <div class="meta-row">
         <span v-if="item.author">{{ item.author }}</span>
         <span v-if="item.publishedAt">{{ new Date(item.publishedAt).toLocaleString() }}</span>
-        <a :href="item.url" target="_blank" rel="noopener">原文 ↗</a>
+        <a v-if="itemUrl" :href="itemUrl" target="_blank" rel="noopener">原文 ↗</a>
       </div>
       <div v-if="item.summary" class="summary">{{ item.summary }}</div>
       <!-- P2：RSS 条目 → 学习条目（读过的订阅会按记忆法则回来找你） -->
@@ -106,7 +144,7 @@ function back() {
         <AddToLearningButton source-kind="rss" :source-id="item.id" />
         <AddToLearningButton source-kind="rss" :source-id="item.id" as-task task-type="research" />
       </div>
-      <div v-if="item.content" class="content" v-html="item.content"></div>
+      <div v-if="safeContent" class="content" v-html="safeContent"></div>
     </article>
 
     <footer v-if="item" class="actions-bar">
@@ -139,10 +177,11 @@ function back() {
             <button class="btn" :disabled="shareBusy" @click="doShare('download')">下载卡片图</button>
           </div>
         </div>
+        <div v-if="shareNotice" class="notice" role="alert">{{ shareNotice }}</div>
         <div v-if="shareResult" class="result">
           <div v-if="shareResult.deepLink">
             <strong>微博深链接：</strong>
-            <a :href="shareResult.deepLink" target="_blank">{{ shareResult.deepLink }}</a>
+            <a v-if="shareDeepLink" :href="shareDeepLink" target="_blank" rel="noopener">{{ shareResult.deepLink }}</a>
           </div>
           <div v-if="shareResult.copyText">
             <strong>复制内容：</strong>
@@ -160,6 +199,13 @@ function back() {
 .bar { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
 .title-clamp { flex: 1; font-size: var(--text-xl); margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .empty { padding: 32px; text-align: center; color: var(--text-muted); }
+.notice {
+  margin: 8px 0;
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: var(--warn-bg, #4a3a00);
+  color: var(--warn-fg, #ffb300);
+}
 .error { padding: 8px 12px; background: var(--err-bg); color: var(--err-fg); border-radius: 6px; margin-bottom: 8px; }
 .article { padding: 12px 0; }
 .meta-row { font-size: var(--text-sm); color: var(--text-muted); display: flex; gap: 12px; margin-bottom: 12px; }

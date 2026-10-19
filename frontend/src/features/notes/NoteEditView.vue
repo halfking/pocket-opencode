@@ -222,20 +222,26 @@ async function onSave() {
   saving.value = true
   saveError.value = ''
 
-  const media = [...pendingMedia.value, ...collectComposerMedia()]
-  const payload = {
-    title: form.title.trim() || undefined,
-    content: form.content.trim(),
-    domain: form.domain,
-    tags: parseTagsInput(form.tagsInput),
-    audioPath: form.audioPath ?? undefined,
-    audioDurationMs: form.audioDurationMs,
-    workspaceId: currentWorkspaceId(),
-    createdByVoice: false,
-    media,
-  }
-
+  // ⚠⚠ §890/D60：媒体收集原来在 `try` **之外**（try 从下面才开始）。
+  //   §890 让 `dataUrlToBlob` 对格式坏掉的 data URL 抛 `DataUrlFormatError`，
+  //   而 `saving.value = false` 与 `saveError` **都在 catch 里**
+  //   ⇒ 抛错会让 saving 永久卡在 true ⇒ 第 221 行 `if (saving.value) return`
+  //   ⇒ **保存按钮再也点不动，且没有任何提示**。
+  //   把收集与 payload 一起挪进 try：失败走既有 catch（复位 + 提示），成功路径零变化。
   try {
+    const media = [...pendingMedia.value, ...collectComposerMedia()]
+    const payload = {
+      title: form.title.trim() || undefined,
+      content: form.content.trim(),
+      domain: form.domain,
+      tags: parseTagsInput(form.tagsInput),
+      audioPath: form.audioPath ?? undefined,
+      audioDurationMs: form.audioDurationMs,
+      workspaceId: currentWorkspaceId(),
+      createdByVoice: false,
+      media,
+    }
+
     if (isNew.value) {
       await notesStore.createNote(payload)
     } else {

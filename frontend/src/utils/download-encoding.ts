@@ -13,43 +13,13 @@
  *   - arrayBufferToBase64: chunk 拆分 0x8000 防止 btoa 超参
  */
 
-/** UTF-8 安全 base64 编码（避免 btoa 对中文字符抛 InvalidCharacterError）。 */
-export function utf8ToBase64(s: string): string {
-  return btoa(unescape(encodeURIComponent(s)))
-}
+/**
+ * UTF-8 安全 base64 编码（避免 btoa 对中文字符抛 InvalidCharacterError）。
+ */
+// §891：实现搬进 utils/base64.ts（这一族曾有 3 份同义实现），公共 API 不变。
+export { utf8ToBase64 } from './base64.ts'
 
-export function blobToBase64(blob: Blob): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onloadend = () => {
-      const dataUrl = reader.result
-      // result 可能是 null（读取被中止/已失败）。`as string` 之后直接 .split
-      // 会在事件处理器里抛 TypeError，而**事件处理器里的异常不会 reject promise**
-      // ⇒ await 永久挂起、真实原因只能从 console 的 uncaught 里捞。
-      // 与 utils/base64.ts 是同一个洞（那边是真机复现出来的）。
-      if (typeof dataUrl !== 'string') {
-        reject(new Error('文件编码失败'))
-        return
-      }
-      // 去除 data:...;base64, 前缀，PocketFilesystem.writeFile 只接受纯 base64
-      const base64 = dataUrl.split(',')[1] ?? ''
-      if (!base64) {
-        reject(new Error('文件编码失败'))
-        return
-      }
-      resolve(base64)
-    }
-    reader.onerror = () => reject(reader.error ?? new Error('文件读取失败'))
-    reader.readAsDataURL(blob)
-  })
-}
-
-export function arrayBufferToBase64(buffer: ArrayBuffer): string {
-  const bytes = new Uint8Array(buffer)
-  let binary = ''
-  const chunk = 0x8000 // 分块拼接，避免 String.fromCharCode 超参
-  for (let i = 0; i < bytes.length; i += chunk) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + chunk))
-  }
-  return btoa(binary)
-}
+// §888：原来这里另外实现了一份 blobToBase64（公共实现在 base64.ts，
+//   两份都已有 null 处理与 reject，行为等价）⇒ 改为 re-export，公共 API 不变。
+// §889：收编到公共实现（三份同义实现收为一份）。
+export { blobToBase64, arrayBufferToBase64 } from './base64.ts'

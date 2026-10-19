@@ -254,3 +254,100 @@ describe('负控：把行为改回去必须报红', () => {
     assert.ok(risks.some((r) => /kind/.test(r)))
   })
 })
+// ===========================================================================
+// §893 D63：`updateNote` 在 **patch 里没有 content** 时会无条件加载全文。
+//
+// §891/D61 把 `loadFullContent` 的降级收紧成抛错。本节复核那次改动的**影响面**，
+// 结论是：影响面比 §891 记录的「打不开笔记」更宽，而且顺带关掉了一处更早的
+// 静默缺陷。两条都钉在这里，免得下一个人重新怀疑一遍。
+// ===========================================================================
+
+describe('§893 · D63：updateNote 的派生状态来源（内容没变时也要重建）', () => {
+  const u = stripComments(updateNoteBody || '')
+
+  it('★ 量具自证：updateNote 的函数体抽得到、且确实在加载全文', () => {
+    assert.ok(u.length > 0, '抽不到 updateNote() 函数体 ⇒ 下面几条会变成恒真')
+    assert.match(u, /patch\.content !== undefined\s*\?\s*patch\.content\s*:\s*await loadFullContent\(existing\)/,
+      'updateNote 已不按「内容没变就沿用」处理 —— 请重新判断本节各条的结论是否还成立')
+  })
+
+  it('★★★ 内容缺省时会加载全文（这就是 D63 的根因，也是 §891 抛错面的来源）', () => {
+    // ⚠ 这不是缺陷断言，是**事实**断言：它锁住「为什么元信息保存也会被正文问题挡住」。
+    //   两个真实调用点都落在这一支（已逐个核对）：
+    //     NoteListView.vue:552  onMetaSave  → { ...data, status: 'saved' }（title/domain/tags）
+    //     NoteListView.vue:460  摘要落库     → { summary }
+    assert.match(u, /await loadFullContent\(existing\)/,
+      'updateNote 不再加载全文 ⇒ 本节记录的影响面已变，请重核')
+  })
+
+  it('★★★ 派生状态（content / search_text / storage_tier）在每次 updateNote 都会被重建', () => {
+    // ⚠⭐ 这一条同时记录了 §891 **顺带堵住**的一处静默缺陷：
+    //   §891 之前，`loadFullContent` 在正文读不到时返回 note.content（tier='file' 下是
+    //   ≤280 字摘要）⇒ `decideNoteStorage({ body: 摘要 })` ⇒ `search_text` 被**用摘要重建**
+    //   ⇒ 全文检索无声地退化成摘要检索（不丢正文、但检索质量静默下降，且没有任何提示）。
+    //   §891 改成抛错后这条路径不再走到 ⇒ 该降级被一并关闭。
+    assert.match(u, /decideNoteStorage\(\{/, 'updateNote 不再重算存储分层 ⇒ 请重核本节结论')
+
+    // ⚠⚠⚠ 必须定位到 **UPDATE 语句的参数数组**，不能只断言「出现过 decided.searchText」。
+    //   `decided.searchText` 在 updateNote 里出现**两次**（UPDATE 的值 + 向量写入的实参），
+    //   所以 `/decided\.searchText/` 这种「出现过」式的断言在把 UPDATE 那一处
+    //   换成 `existing.searchText` 时**照样全绿** —— M51-M3 实测逃掉。
+    //   ⇒ 判据要量的是「它被写进 UPDATE 的值里」这个**流向**，不是「源码里有这个词」。
+    //
+    // ⚠ 第二版又踩了一次定位坑：第一版取 `UPDATE … WHERE id = ?` 之间的窗口，
+    //   而 SQL 模板里的 WHERE **排在参数数组之前** ⇒ 那个窗口只有列名列表，没有值。
+    //   ⇒ 改为从 `UPDATE` 之后的第一个 `[` 起做**括号配平**（SQL 模板里没有方括号）。
+    const setAt = u.indexOf('UPDATE local_notes SET')
+    assert.ok(setAt > 0, '定位失败：updateNote 里找不到 UPDATE 语句')
+    const br = u.indexOf('[', setAt)
+    assert.ok(br > 0, '定位失败：UPDATE 之后找不到参数数组的左括号')
+    let depth = 0
+    let end = -1
+    for (let i = br; i < u.length; i++) {
+      if (u[i] === '[') depth++
+      else if (u[i] === ']') {
+        depth--
+        if (depth === 0) { end = i + 1; break }
+      }
+    }
+    assert.ok(end > 0, '参数数组括号不配平 ⇒ 定位失败')
+    const updateParams = u.slice(br, end)
+    assert.match(updateParams, /decided\.searchText/,
+      'search_text 不再由 decided 派生（改成了别的来源）⇒ 派生链已变，请重核本节结论')
+    assert.match(updateParams, /decided\.tier/, 'storage_tier 同样应由 decided 派生')
+    // 向量那条也必须用重建后的检索文本，否则索引与 FTS 会分叉。
+    assert.match(u, /embedAndStore\(id, decided\.searchText\)/,
+      '向量写入不再用 decided.searchText ⇒ 请重核派生链')
+  })
+
+  it('★★★ 反向：不得改成「内容没变就用 existing.content 当 nextContent」', () => {
+    // ⭐ 防矫枉过正：那正是 §891/D61 的原形 —— tier='file' 时 existing.content 是摘要，
+    //   而它会被 persistNotePayload 写回正文文件（打开再保存就销毁全文）。
+    //   正确的替代方案（内容没变就**完全不重建**派生状态）属设计取舍，见简报 116；
+    //   在属主拍板前，这里只钉住「不许退回去」。
+    assert.doesNotMatch(
+      u,
+      /:\s*existing\.content\s*(?:;|,|\n)/,
+      'updateNote 把 existing.content 当 nextContent 了 ⇒ D61 原形复活（摘要会被写回正文文件）',
+    )
+  })
+
+  it('★★ 两个真实调用点都必须在 catch 里（否则抛错是无提示的死路）', () => {
+    const list = read(path.join(SRC, 'features', 'notes', 'NoteListView.vue'))
+    // onMetaSave：try/catch 就在 updateNote 两侧
+    assert.match(list, /async function onMetaSave[\s\S]{0,400}?try \{[\s\S]{0,300}?updateNote\([\s\S]{0,400}?\} catch/,
+      'onMetaSave 的 updateNote 不在 try/catch 里 ⇒ 元信息保存失败会变成无提示的死路')
+    // 摘要落库那一支在 onMetaSummarize 的 try 内
+    assert.match(list, /try \{[\s\S]{0,4000}?updateNote\(noteId, \{ summary \}[\s\S]{0,4000}?\} catch/,
+      '摘要落库的 updateNote 不在 try/catch 里 ⇒ 会变成未处理的 rejection')
+  })
+
+  it('★★ 如实登记：摘要落库那条的**错误归因是错的**（本节不代拍，只钉住事实）', () => {
+    // ⚠ 摘要已经由服务端生成并拿回来了，抛错的只是**本地落库**；
+    //   用户看到的却是「总结失败，可稍后在笔记详情页重试」。
+    //   修它要改文案（产品口径）⇒ 登记在简报 116，这里只钉住「catch 写的是总结失败」。
+    const list = read(path.join(SRC, 'features', 'notes', 'NoteListView.vue'))
+    assert.match(list, /summarizeError\.value = apiError\(e, '总结失败/,
+      '摘要落库那条的错误文案已改（不再归因成「总结失败」）⇒ 简报 116 第 ① 条可以撤了')
+  })
+})

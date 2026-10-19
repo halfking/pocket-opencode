@@ -10,6 +10,10 @@
 import { ref, onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
+import { safeExternalUrl } from '../../utils/safe-url'
+
+// §852：条目 URL 来自订阅源，必须过协议白名单
+const safeUrl = (u?: string) => safeExternalUrl(u)
 import { rssApi, type RSSDigest, type RSSDigestListItem } from '../../api/rss'
 import { toUserMessage } from '../../api/error-message'
 import { getPocketNative } from '../../native/pocket-native'
@@ -190,7 +194,7 @@ function openSources() {
               <span v-if="it.publishedAt">{{ new Date(it.publishedAt).toLocaleString() }}</span>
             </div>
             <div v-if="it.summary" class="item-summary">{{ it.summary }}</div>
-            <a v-if="it.url" class="item-link" :href="it.url" target="_blank" rel="noreferrer" @click.stop>
+            <a v-if="safeUrl(it.url)" class="item-link" :href="safeUrl(it.url)" target="_blank" rel="noreferrer" @click.stop>
               {{ it.url }}
             </a>
           </li>

@@ -22,7 +22,7 @@ import { Capacitor } from '@capacitor/core'
 import { pickSupportedRecorderMime } from './recorderMime'
 import { RollingWebmDecoder, arrayBufferToBase64 } from './recording-audio-transcode'
 import { sttFailureText } from '../api/stt-error'
-import { saveMeetingAudio } from './meeting-audio'
+import { saveMeetingAudio, resolvePersistedAudio } from './meeting-audio'
 import { VadSegmenter } from './vad-segmenter'
 import { SpeakerDiarizer } from './speaker-diarization'
 import { loadSpeakerProfiles, upsertVoiceprintLabel } from '../features/meetings/voiceprints-store'
@@ -37,6 +37,26 @@ import {
   applyCaptionResult, createLiveCaption, pickSpeechRecognition, type SpeechRecLike,
 } from '../features/meetings/meeting-live-caption'
 import { buildUtteranceSegment } from '../features/meetings/meeting-utterance'
+import { describeUnsettledSegments } from '../features/meetings/unsettled-segments-notice'
+import {
+  applySpeakerLabelToSegments,
+  SPEAKER_RENAME_FAIL_TAG,
+  type SpeakerLabelOutcome,
+} from '../features/meetings/meeting-edit-failure-notice'
+import {
+  LIVE_CAPTION_PERSIST_FAIL,
+  LIVE_CAPTION_PERSIST_FAIL_TAG,
+} from '../features/meetings/meeting-append-notice'
+import {
+  describeMeetingFinalizePersistFailure,
+  MEETING_FINALIZE_PERSIST_FAIL_TAG,
+} from '../features/meetings/meeting-finalize-persist-notice'
+import {
+  describeVoiceDraftUpdateFailure,
+  shouldBackfillVoiceDraft,
+  VOICE_DRAFT_UPDATE_FAIL_TAG,
+} from '../features/notes/voice-draft-update-notice'
+import { runBestEffort } from './best-effort'
 import { useMicPermission } from '../composables/useMicPermission'
 import { useToast } from '../composables/useToast'
 import { openPreferredMicStream, listAudioInputs, type AudioInput } from './audio-inputs'
@@ -60,6 +80,7 @@ import {
 import { decideMeetingStart, decideNoteStart } from './recordingPolicy'
 import { planSpeakerRelabel } from './speaker-relabel'
 import { isPlaceholderSpeaker } from '../features/meetings/meeting-roster-homophone'
+import { carriedStartTime, resolveWallClockDurationMs } from '../features/meetings/recording-duration-consistency'
 
 // ---------------------------------------------------------------------------
 // 录音语音播报（进程级单例）
@@ -207,6 +228,35 @@ export class MeetingRecorderRuntime {
   private backgroundMicReason = ref('')
   private stopCaption: (() => void) | null = null
   private stopping = false
+  /**
+   * ★§825：本次保存的音频**从会议的哪一刻开始**（毫秒；0 = 从头覆盖）。
+   *
+   * 它要回答的是一个坐标系问题：服务端逐段回执里的 `startSec/endSec` 是
+   * **上传那段音频自己的局部坐标**（从 0 起），而 `original` 分段用的是
+   * **会议绝对时间**（0→total）。两者只有在「音频从会议开头就开始」时才同基。
+   *
+   * 一旦中途切过设备且切换前确实录到了音频，`start()` 会 `new VadSegmenter`
+   * （`fullChunks` 从空开始）⇒ 保存的音频只覆盖切换之后 ⇒ 回执的局部 0
+   * 对应的是会议的 `keptElapsed` 毫秒 ⇒ **整条归属按时间重叠分桶，全部错位**：
+   * 后半场的话会被挂到前半场的说话人名下，而前半场自己的实时原文被顶掉
+   * （实测见 §825，`.artifacts/s824-probe/attrib2.mjs`）。
+   *
+   * ⚠ 只作**标志**用，不作偏移量用：切换瞬间有一小段设备打开/清理的空隙，
+   *   `keptElapsed` 只是它的近似 ⇒ 拿它去平移回执等于拿未实测的数当精度。
+   *   真正的解（拼接各段 + 精确偏移）属存储形态口径，待属主拍板（§824）。
+   */
+  private audioStartsAtMs = 0
+  /**
+   * §834/D1：上一次 stop() 的收尾写库是否失败。
+   *
+   * ⚠ 刻意做成**公开字段**而不是 stop() 返回值里的一个字段：既有两道门
+   *   （§825 audio-time-base、§826 meeting-audio-native-mode）把 stop() 的
+   *   签名与那个返回对象**逐字**钉住了，加字段会让它们一起红。
+   *   而「只有 stop 自己知道那次 updateMeeting 有没有抛」这条信息必须外传 ⇒
+   *   公开字段是唯一不与既有契约打架的通道。
+   *   在 stop() 开头清零，否则上一轮的失败会挂到这一轮的成功 toast 上。
+   */
+  lastFinalizePersistFailed = false
   // 在途分段转写 promise:stop() 必须等它们落库,否则 refine 拿到的
   // transcript 缺尾巴,晚到的 updateTranscript 还会与 completed 状态竞争。
   private inFlightSegments = new Set<Promise<void>>()
@@ -309,6 +359,11 @@ export class MeetingRecorderRuntime {
       this.elapsedMs.value = 0
       this.processingCount.value = 0
       this.partSeq = 0
+      // §825：新一场录音的音频一定从会议开头开始 ⇒ 上一场遗留的偏移必须清掉。
+      // 放在 freshSession 里而不是 start() 开头：resume（切设备）要留着它。
+      this.audioStartsAtMs = 0
+      // §834/D1：同理，上一场收尾写库的失败不能挂到这一场的停止 toast 上。
+      this.lastFinalizePersistFailed = false
     }
     // 换场录音先中止上一场还在跑的分片转写：那些语音块属于已经结束的会议，
     // 留着只会白烧上游 ASR 配额，并且它们的分段会被写进新会议里。
@@ -434,12 +489,40 @@ export class MeetingRecorderRuntime {
   async switchDevice(meetingId: string, deviceId: string): Promise<boolean> {
     if (!this.isRecording.value) return this.start(meetingId, { deviceId })
     if (this.elapsedTimer) { clearInterval(this.elapsedTimer); this.elapsedTimer = null }
-    const keptElapsed = this.elapsedMs.value
-    this.vadSegmenter?.stop()
+    // ⚠⚠ §814：这里读缓存会拿到**过期**值（后台节流），故当场重算（§812）
+    const keptElapsed = resolveWallClockDurationMs(
+      Date.now(), this.startTime, this.elapsedMs.value, this.isPaused.value)
+    // §808：`stop()` 现在要等最后一枚切片落地，返回 Promise —— 必须 await
+    const preSwitchBlob = await this.vadSegmenter?.stop()
+    // ⚠⚠⚠ §824：上面那次 stop 的返回值**原来被直接丢弃** —— 而 `start()` 会
+    //   `new VadSegmenter(...)`（其 fullChunks 从空开始）⇒ **切换前录下的音频
+    //   永远不会进入最终保存的那份「完整录音」**（saveMeetingAudio 全仓只有
+    //   stop() 里一处调用，拿的是当前那个 segmenter 的 blob）。
+    //   分段文本不受影响（onSegment 逐段实时落库）⇒ 这是**只丢音频、不丢文字**的洞，
+    //   且完全静默。⚠ 拼接各段 WebM 需重新编码（容器不可直接相连），
+    //   属存储形态口径 ⇒ 拼接方案待属主拍板，本轮只保证**不再无声**。
+    if (preSwitchBlob && preSwitchBlob.size > 0 && keptElapsed > 0) {
+      // ★§825：记下「保存的音频不再从会议开头开始」。收尾链据此拒绝把整段
+      //   重转按绝对时间挂回说话人（见 planRefine 的 audio-time-base-offset）。
+      this.audioStartsAtMs = keptElapsed
+      console.warn(
+        `[meeting-recorder] 切换设备：${preSwitchBlob.size} 字节切换前音频`
+        + `（对应约 ${Math.round(keptElapsed / 1000)}s）不会进入本次保存的完整录音`
+        + ' —— 分段文本不受影响，但「整段高精度重转」只能覆盖切换之后的部分。',
+      )
+    }
     await this.cleanupMedia()
     this.isRecording.value = false
     const ok = await this.start(meetingId, { deviceId, resume: true })
-    if (ok) this.elapsedMs.value = keptElapsed
+    if (ok) {
+      this.elapsedMs.value = keptElapsed
+      // ⚠⚠ §814 的关键一行：`start()` 里 `this.startTime = Date.now()` 是**无条件**执行的
+      //   ⇒ 旧代码只补 `elapsedMs.value = keptElapsed`，**下一个 interval tick（≤200ms）
+      //   就把它覆盖成「切换之后」的时长**，累计时长就此丢失。
+      //   把起点往前挪，等于让 interval（`Date.now() - startTime`）与 §812 的重算
+      //   **都**从 keptElapsed 自然续上 —— 一行同时修好两个消费者。
+      this.startTime = carriedStartTime(Date.now(), keptElapsed)
+    }
     return ok
   }
 
@@ -464,7 +547,19 @@ export class MeetingRecorderRuntime {
       onResult: (result) => {
         applyCaptionResult(result, {
           setInterim: (text) => { this.interimCaption.value = text },
-          commit: (text) => { void this.appendText(text) },
+          commit: (text) => {
+            // ⚠⚠ §836/D2：这里此前是 `void this.appendText(text)` ⇒ 抛错时
+            //   **什么都不发生**（void 不处理 rejection）：没有 console、没有提示、
+            //   没有分段。而这条路径是系统语音识别的**每一句话** ⇒ 整场会议可能
+            //   一句都没存进去，用户看到的实时字幕却**一直正常滚动**。
+            //   ⇒ 与手工追加（§836/D1）一样，失败必须出声。
+            void this.appendText(text).catch((e) => {
+              console.warn(LIVE_CAPTION_PERSIST_FAIL_TAG, e)
+              // 写 sttError 而不是 toast：字幕是**连续**的，toast 会连续弹；
+              // sttError 是页面上一条稳定的错误行，且录音中就能看到。
+              this.sttError.value = LIVE_CAPTION_PERSIST_FAIL
+            })
+          },
         })
       },
     })
@@ -623,8 +718,17 @@ export class MeetingRecorderRuntime {
     this.speakers.value = this.diarizer.getProfiles().map((p) => ({ profileId: p.id, label: p.label }))
   }
 
-  async labelSpeaker(profileId: string, displayName: string) {
-    if (!this.diarizer) return
+  /**
+   * 改一个说话人的名字。⚠§835：此前这里是「一段写失败就跳出循环」的写法 ⇒
+   * **半改半不改且完全无声**（`onSpeakerLabel` 也没有 try/catch）。
+   * 现在：一段失败只跳过那一段，其余继续；统计结果交回调用方，由它决定说什么。
+   *
+   * @returns 落点统计。`profileFailed` 表示声纹标签那一行没写成功
+   *   （此前它写失败会**直接跳过整个分段循环**，等于一段都没改）。
+   */
+  async labelSpeaker(profileId: string, displayName: string): Promise<SpeakerLabelOutcome> {
+    const outcome: SpeakerLabelOutcome = { renamed: 0, failed: 0, profileFailed: false }
+    if (!this.diarizer) return outcome
     this.diarizer.labelProfile(profileId, displayName)
     this.syncSpeakers()
     const profile = this.diarizer.getProfile(profileId)
@@ -632,44 +736,136 @@ export class MeetingRecorderRuntime {
     // 后者对已存在的行会 sample_count + 1，而这里是「改一次名」，
     // 不是「又多了一个音频样本」—— 改一次名多记一个样本，会把两个
     // 无关的量绑在一起（详见 voiceprints-store.ts 的注释）。
-    if (profile) await upsertVoiceprintLabel({ id: profileId, displayName, embedding: profile.embedding })
+    // ⚠§835：失败只记账，不再往上抛 —— 它曾把整个分段循环一起带走。
+    if (profile) {
+      try {
+        await upsertVoiceprintLabel({ id: profileId, displayName, embedding: profile.embedding })
+      } catch {
+        outcome.profileFailed = true
+      }
+    }
+    const applied = await applySpeakerLabelToSegments(
+      [...this.segmentProfiles.entries()],
+      profileId,
+      displayName,
+      updateSegmentSpeaker,
+    )
+    outcome.renamed = applied.renamed
+    outcome.failed = applied.failed
+    if (applied.failed > 0) {
+      console.warn(
+        `${SPEAKER_RENAME_FAIL_TAG}${applied.failed} 段未写回（${applied.failedIds.join(',')}）`,
+      )
+    }
+    // 内存副本同步：写库成功的那几段要把运行时里的标签一起改掉，
+    // 否则正文重渲染时又退回旧名（这一段与落库成败无关，内存总是要改）。
     for (const [segId, pid] of this.segmentProfiles) {
       if (pid !== profileId) continue
-      await updateSegmentSpeaker(segId, displayName)
       const seg = this.segments.value.find((s) => s.id === segId)
       if (seg) seg.speakerLabel = displayName
     }
+    return outcome
   }
 
   /**
    * 正式收尾录音(用户显式停止 / 新录音顶替 / 全局指示条停止)。
    * 落盘音频 + 等在途分段 + meeting 置 completed。
    */
-  async stop(): Promise<{ audioPath: string; durationMs: number } | null> {
+  // ⚠§834：`finalizePersistFailed` 让调用方能说真话 —— 收尾写库失败时，
+  //   「会议录音已结束并保存」这句话是假的。它**不在返回值里**：
+  //   既有两道门（§825 audio-time-base / §826 meeting-audio-native-mode）把
+  //   下面这行签名与那个返回对象**逐字**钉住了，加字段会让它们一起红
+  //   ⇒ 改走公开字段 `lastFinalizePersistFailed`。
+  async stop(): Promise<{ audioPath: string; durationMs: number; audioStartsAtMs: number } | null> {
     if (!this.isRecording.value || this.stopping) return null
     this.stopping = true
     const meetingId = this.activeMeetingId.value
+    // §834/D1：每次 stop 从 false 重新开始。放在**开头**而不是只写在
+    // `if (meetingId)` 分支里：没有会议归属时那个分支不执行，
+    // 而返回值仍然会把这个字段交出去 ⇒ 不清零就会把上一轮的失败带进这一轮。
+    this.lastFinalizePersistFailed = false
     try {
       this.isRecording.value = false
       if (this.elapsedTimer) { clearInterval(this.elapsedTimer); this.elapsedTimer = null }
       navigator.mediaDevices?.removeEventListener?.('devicechange', this.onDeviceChange)
 
-      const fullBlob = this.vadSegmenter?.stop() ?? null
+      // ⚠ §808：`stop()` 已改成 async（等最后一枚 dataavailable）—— 旧写法
+      //   `?.stop() ?? null` 拿到的是 **Promise**，会被当成 Blob 存进库。
+      // ⚠ §826：必须**在 cleanupMedia() 之前**取值 —— 它会把 nativeMode 置回 false，
+      //   而下面的决策发生在它之后 ⇒ 晚一步读到的恒为 false，这条诊断就成了死代码
+      //   （而且不报任何错：它只是永远不触发）。
+      const wasNativeMode = this.nativeMode
+      const fullBlob = (await this.vadSegmenter?.stop()) ?? null
       await this.cleanupMedia()
-      const durationMs = this.elapsedMs.value
+      // ⚠⚠ §812：**不读 interval 的缓存值**，而在此刻重算。
+      //   `elapsedMs` 只由 `setInterval(200ms)` 更新（第 387 行），而页面隐藏时
+      //   浏览器会**节流定时器**，与此同时 `onHidden`（第 232 行）**只弹 toast、
+      //   并不停止录音**（只有 nativeMode 才早退）⇒ 后台录音继续，缓存值却可能
+      //   过期数秒到数分钟，写进 DB 的 `durationMs` 就是个陈旧值。
+      //   ⚠ 这还会连带影响 §805 的时长一致性护栏：它比的就是这个数。
+      //   本文件另一条路径（第 1166 行）本来就直接重算，这里与之对齐。
+      //   `isPaused` 目前**全仓从未被赋值**（暂停未接线），恒为 false，
+      //   所以重算与 interval 口径等价 —— 保留 paused 分支是为了将来接线时不回归。
+      const durationMs = resolveWallClockDurationMs(
+        Date.now(), this.startTime, this.elapsedMs.value, this.isPaused.value)
       let audioPath = ''
+      // ★§820：落盘成败必须分清。此前 catch 里一句「ok」就吞掉异常，而下面
+      //   后面那句「把 audioPath 与完成状态一起写库」的 updateMeeting **照样**写入
+      //   objectURL ⇒ 落盘失败时用户看到一个「完好」的会议记录，刷新后音频彻底消失，
+      //   且 `loadMeetingAudio` 返回 null ⇒ 整段重转永久不可用。
+      //   ⚠⚠ **后续更正（务必先读，§826.2）**：本段原话写的是「能播的音频」——
+      //   实测前端**没有任何音频播放界面**（全仓无 `<audio>`／`new Audio`／播放器组件），
+      //   `audioPath` 只被 API 序列化、笔记音频徽章、以及 `loadMeetingAudio` 消费
+      //   ⇒ 这次失败对用户的真实表现是「精校质量降级」，不是「放不出声」。
+      //   结论（落盘失败要如实写 null）**不变**，变的是对后果的描述。
+      //   决策在跑得到的纯函数 `resolvePersistedAudio` 里（§52：类方法在 node 里测不到）。
+      let audioPersisted = false
+      let audioSaveError: unknown = null
       if (fullBlob && fullBlob.size > 0) {
         audioPath = URL.createObjectURL(fullBlob)
         if (meetingId) {
-          try { await saveMeetingAudio(meetingId, fullBlob) } catch { /* ok */ }
+          try {
+            await saveMeetingAudio(meetingId, fullBlob)
+            audioPersisted = true
+          } catch (e) {
+            audioSaveError = e
+          }
         }
       }
+      const audioDecision = resolvePersistedAudio({
+        objectUrl: audioPath,
+        persisted: audioPersisted,
+        error: audioSaveError,
+        // ★§826：原生后台录音下 `vadSegmenter` 从不创建 ⇒ fullBlob 恒为 null
+        //   ⇒ 不是「存失败」，而是「压根没有整段音频可存」。两者成因不同，必须分开说。
+        nativeMode: wasNativeMode,
+      })
+      if (audioDecision.warning) console.warn(`[meeting-recorder] ${audioDecision.warning}`)
       // 等在途分段转写落库再置 completed；上限 10s，防止个别请求挂死卡住停止流程。
+      //
+      // ⚠⚠ §830：这个上限**原来是完全无声的**，而它有一处真实的用户可见后果：
+      //   超时后本函数继续往下走 ⇒ 下面的「收尾合并」用**当下**的
+      //   `this.segments` 重渲染正文、`completed` 也照写 ⇒ 而 `finalizeRecording`
+      //   紧接着从 DB 读分段做整段重转与精校 ⇒ **晚到的那几段不在精校输入里**。
+      //   ⚠ 而 `resolveRefinedView` 在精校成功时展示的是 `refinedTranscript`
+      //     （徽章「已精校」）⇒ 用户看到的是一份**缺了最后几句**、却标着「已精校」的正文。
+      //   （晚到的段会自己补写 `transcript`，但那条路在精校视图里**不展示**。）
+      //
+      // ⚠⚠ 上面这段注释里**刻意不写**收尾合并那个方法的名字：仓库里有一道门
+      //   按标识符在 stop() 的函数体里做 indexOf，断言「合并」排在「等在途分段」之后
+      //   ⇒ 注释里出现同名标识符会被它**先命中**，正确代码也会被判成「合并早于等待」。
+      //   （本轮第 4 次撞上「注释里的代码字面量被源码扫描门当真代码命中」。）
       if (this.inFlightSegments.size) {
         await Promise.race([
           Promise.allSettled([...this.inFlightSegments]),
           new Promise((resolve) => setTimeout(resolve, 10_000)),
         ])
+      }
+      if (this.inFlightSegments.size) {
+        console.warn(describeUnsettledSegments({
+          pending: this.inFlightSegments.size,
+          limitMs: 10_000,
+        }))
       }
       if (meetingId) {
         // ★ 收尾合并被过度拆开的说话人（2026-10-07）。
@@ -693,15 +889,47 @@ export class MeetingRecorderRuntime {
         } catch (e) {
           console.warn('[meeting-recorder] speaker merge failed, 收尾继续:', e)
         }
-        await updateMeeting(meetingId, {
-          audioPath: audioPath || null,
-          durationMs,
-          status: 'completed',
+        // ⚠⚠ §834/D1：这一句此前**完全没有保护**，而它是三处收尾落库里
+        //   唯一一处「写整个完成状态」的（status: 'completed' 全仓只写这一处）。
+        //   抛错的连锁后果实测得出：
+        //     · 异常冒泡出 stop() ⇒ RecordingPill.onStop 里那句
+        //       toast.success('会议录音已结束并保存') **不执行** ⇒ 点完没反应；
+        //     · 下面那句 activeMeetingId = '' 被跳过 ⇒ runtime 仍认为在录；
+        //     · 会议永久停在 recording ⇒ 列表一直显示「录音中」，
+        //       而 MeetingDetailView 会对这个状态**自动开麦**（§834/D2）。
+        //   ⇒ 收尾必须**完成**，写库失败只降级为「告知用户」。
+        //   ⚠ 与上面两处的区别不是「这处更重要」，而是那两处已经包了 ——
+        //     同一个函数里三处落库，三种保护，是遗漏而不是取舍。
+        try {
+          await updateMeeting(meetingId, {
+            // ⚠§820：落盘失败时写 null，**不写那个刷新后必然失效的 objectURL**。
+            //   本次会话内的回放仍走返回值 `audioPath`（它此刻是真的），
+            //   但库里必须是 null —— 否则等于对用户谎报「录音还在」。
+            audioPath: audioDecision.audioPath,
+            durationMs,
+            status: 'completed',
+          })
+        } catch (e) {
+          this.lastFinalizePersistFailed = true
+          console.error(MEETING_FINALIZE_PERSIST_FAIL_TAG, e)
+          // ⚠ 通道选择：`MeetingRecorderRuntime` **没有** `error` ref（那是笔记侧的），
+          //   它对外的用户可见通道一直只有 `this.toast`（见 onHidden）。
+          //   ⚠ 也**刻意不**写 sttError：那是「分片转写失败」的语义，
+          //   塞进去会让用户以为自己的录音没转出来。
+          this.toast.error(describeMeetingFinalizePersistFailure({ error: e }))
+        }
+        // 收尾后的元数据同步是 best-effort：失败不得冒泡成未处理拒绝（见 best-effort.ts）。
+        void runBestEffort('meeting-recorder/metadata-sync', async () => {
+          const m = await getMeeting(meetingId)
+          if (m) await syncMeetingMetadata(m)
         })
-        void getMeeting(meetingId).then((m) => { if (m) syncMeetingMetadata(m) })
       }
       this.activeMeetingId.value = ''
-      return { audioPath, durationMs }
+      // §825：把偏移随返回值一起交出去 —— 收尾链（finalizeRecording）需要它，
+      // 而它只存在于 runtime（唯一知道切过设备的地方）。
+      // ⚠ §834：结论不走这里（签名与返回对象被 §825/§826 两道门逐字钉住），
+      //   调用方读公开字段 `lastFinalizePersistFailed`。
+      return { audioPath, durationMs, audioStartsAtMs: this.audioStartsAtMs }
     } finally {
       this.stopping = false
       // 播报「录音结束」。放在 finally：无论收尾成功还是抛错，用户都会听到
@@ -1083,7 +1311,17 @@ export class NoteRecorderRuntime {
       return
     }
     const windowSec = wav.byteLength / 2 / 16000
-    const endSec = this.elapsedMs.value / 1000
+    // ⚠⚠ §815：`elapsedMs` 只由 `setInterval(250)` 更新（第 938-941 行），页面隐藏时
+    //   会被浏览器节流 ⇒ 这里若读缓存，送上服务端的时间窗就是**过期**的。
+    //   ⇒ 与 §812/§814 同一个病根，最后一处数据关键读点，改为当场重算。
+    //   ⚠ 影响面（已核）：前端**从不读回** `res.startSec/endSec`，服务端按下式
+    //   `startSec = endSec - windowSec` 使用 ⇒ 起止**同步偏移**，按长度判定的逻辑
+    //   （`full.go:163` 的 `EndSec-StartSec >= minUsefulSegmentSec`）**不受影响**；
+    //   残留影响限于服务端记录的增量分段时间戳在后台节流时可能偏移。
+    //   ⚠ `isPaused` 传 `false`：那条 ref 只存在于 `MeetingRecorderRuntime`（§812.2），
+    //   随手记这条路**没有暂停概念**，也印证了那个状态全仓从未被赋值。
+    const endSec = resolveWallClockDurationMs(
+      Date.now(), this.startedAt, this.elapsedMs.value, false) / 1000
     const startSec = Math.max(0, endSec - windowSec)
     try {
       const res = await sttSettingsApi.transcribeIncremental({
@@ -1211,8 +1449,13 @@ export class NoteRecorderRuntime {
             audioBlob,
             durationMs,
           })
-        } catch {
+        } catch (e) {
           // 落库异常不该让用户丢掉转写：退回旧的「界面再建」路径。
+          // ⚠ §833：这一处的用户可见出口是**下游**那一条 —— draftId 为空时
+          //   pendingResult 会把 NoteListView 引到 createVoiceDraft，而那条路径
+          //   自 §832 起有 try/catch + draftSaveError ⇒ 建草稿再失败也会出声。
+          //   本 catch 因此只补诊断，不改行为、不改控制流（避免两条错误行互相顶）。
+          console.error('[note-recorder] 语音草稿预落库失败，将退回界面侧建草稿：', e)
           draftId = null
         }
       }
@@ -1300,11 +1543,25 @@ export class NoteRecorderRuntime {
       // note-edit-preserves-media 那道门）。进程在窗口期死掉也不会走到这里，
       // 但草稿带着「（语音草稿）」+ 完整音频已经是用户能拿回的东西。
       const finalText = this.transcript.value.trim()
-      if (draftId && finalText && finalText !== settledText) {
+      if (shouldBackfillVoiceDraft({ draftId, settledText, finalText })) {
         try {
-          await this.voiceDraftSink!.update(draftId, finalText)
-        } catch {
+          await this.voiceDraftSink!.update(draftId!, finalText)
+        } catch (e) {
           // 回填失败不该吞掉录音：草稿已经落库了，音频在，只是文字没跟上。
+          //
+          // ⚠⚠ §833：此前这里是**完全空的 catch**，什么都不说。而后果不是
+          //   「录音丢了」，是三条**看起来都正常**的东西：
+          //   ① 草稿正文永久停在 settledText（停止瞬间那版）；
+          //   ② 紧接着的 /summarize 读的是**库里那份正文**（NoteListView 的
+          //      presentVoiceDraft 只拿 text 做空值门槛，从不把它写回笔记）
+          //      ⇒ 即时摘要是按不完整的正文生成的；
+          //   ③ 那份摘要读起来完全正常 ⇒ 用户无从分辨。
+          //   ⇒ 失败必须变成一句人话：写 this.error（NoteListView 停止后
+          //     仍用 v-else-if="recError" 单独渲染它，见 recordErrorText）。
+          //   ⚠ 与 EMPTY_RECORDING_NOTICE 互斥：回填只在 finalText 非空时发生，
+          //     而那条只在「无字」时触发，两者不会互相覆盖（判据已钉住）。
+          console.error(VOICE_DRAFT_UPDATE_FAIL_TAG, e)
+          this.error.value = describeVoiceDraftUpdateFailure({ error: e })
         }
       }
       this.pendingResult = { text: finalText, audioBlob, durationMs, draftId }

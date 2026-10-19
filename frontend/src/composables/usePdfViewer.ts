@@ -9,6 +9,10 @@
  * web / iOS 上 PdfRenderer 不存在，supported=false，由调用方回退到 <iframe>。
  */
 import { ref, type Ref } from 'vue'
+// §888：原来这里自己有一份，而它的 `reader.result as string` 在 result 为 null 时
+//   会在**事件处理器里**抛 TypeError ⇒ 不会转成 promise reject ⇒ **await 永久挂起**
+//   ⇒ 下面那个 try/catch 根本兜不住 ⇒ 页面永久 loading。收编到公共实现。
+import { blobToBase64 } from '../utils/base64.ts'
 import { Filesystem, Directory } from '@capacitor/filesystem'
 import { documentNative, hasNativeDocumentSupport, renderWidthForViewport } from '../native/document'
 import { useApiError } from './useApiError'
@@ -32,19 +36,6 @@ export interface PdfViewer {
   reset(): void
 }
 
-async function blobToBase64(blob: Blob): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onloadend = () => {
-      const dataUrl = reader.result as string
-      const base64 = dataUrl.split(',')[1] ?? ''
-      if (!base64) { reject(new Error('文件编码失败')); return }
-      resolve(base64)
-    }
-    reader.onerror = () => reject(reader.error ?? new Error('文件读取失败'))
-    reader.readAsDataURL(blob)
-  })
-}
 
 export function usePdfViewer(): PdfViewer {
   const supported = hasNativeDocumentSupport()

@@ -3,6 +3,7 @@
  */
 import { localDB } from '../local-db'
 import { nowUnixSec } from './planner'
+import { readJsonColumn, warnCorruptColumn } from '../sqlDb'
 
 export interface LocalSetting {
   namespace: string
@@ -13,17 +14,29 @@ export interface LocalSetting {
   dirty: number
 }
 
-function rowToSetting(row: Record<string, unknown>): LocalSetting {
-  let payload: unknown = {}
-  try {
-    payload = JSON.parse(String(row.payload ?? '{}'))
-  } catch {
-    payload = {}
+/**
+ * §878：行 → 设置。**payload 损坏时返回 null（跳过该行），不再冒充 `{}`。**
+ *
+ * ⚠ 修之前是 `catch { payload = {} }`。后果：调用方
+ *   `scheduled-tasks/store.ts` 做 `row.payload as ScheduledTask`
+ *   ⇒ 列表里出现一个**既没有 id 也没有标题的空任务**；
+ *   `stores/chatAgentStore.ts` 同理，出现一个空角色。
+ *   两者都**零提示** —— 用户看到的是「有一个条目，但里面什么都没有」。
+ *
+ * ⚠ 为什么不降级成 `{}`（§870 的判据）：降级**可能破坏** ——
+ *   一份设置凭空变成空对象，后续任何「以本地为准」的合并都可能拿它当事实。
+ *   ⇒ 这一列损坏时，**最诚实的降级是「这一行没有」**，且原始字节留在表里。
+ */
+function rowToSetting(row: Record<string, unknown>): LocalSetting | null {
+  const parsed = readJsonColumn<unknown>(row, 'payload', 'local_user_settings')
+  if (!parsed.ok) {
+    warnCorruptColumn('local_user_settings', `${String(row.namespace)}/${String(row.id)}`, parsed.reason)
+    return null
   }
   return {
     namespace: String(row.namespace),
     id: String(row.id),
-    payload,
+    payload: parsed.value,
     secretEncrypted: String(row.secret_encrypted ?? ''),
     updatedAt: Number(row.updated_at ?? 0),
     dirty: Number(row.dirty ?? 0),
@@ -35,7 +48,8 @@ export async function listLocalSettings(): Promise<LocalSetting[]> {
   const rows = await localDB.query<Record<string, unknown>>(
     'SELECT namespace, id, payload, secret_encrypted, updated_at, dirty FROM local_user_settings',
   )
-  return rows.map(rowToSetting)
+  // §878：损坏的行被跳过（返回 null 的是它）⇒ 其余设置照常返回。
+  return rows.map(rowToSetting).filter((r): r is LocalSetting => r !== null)
 }
 
 export async function getLocalSetting(namespace: string, id: string): Promise<LocalSetting | null> {
@@ -44,7 +58,13 @@ export async function getLocalSetting(namespace: string, id: string): Promise<Lo
     'SELECT namespace, id, payload, secret_encrypted, updated_at, dirty FROM local_user_settings WHERE namespace = ? AND id = ?',
     [namespace, id],
   )
-  return row ? rowToSetting(row) : null
+  if (!row) return null
+  // ⚠ 点查：返回的 null 只表示「**没有这一行**」⇒ 损坏必须能被区分。
+  //   这里损坏时同样返回 null，但已经 warn 过一次；调用方拿到的 null 是
+  //   「这一行不可用」，与「这一行不存在」在**接口上无法区分** ——
+  //   与 outboxStore.get 的处理**故意不同**：那里是队列消息，宁可抛。
+  //   为什么不统一：见设计文档 §878.3（登记为待拍板第 98 条）。
+  return rowToSetting(row)
 }
 
 export async function writeLocalSetting(input: {

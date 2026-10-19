@@ -149,6 +149,12 @@ function onSuggestTags() {
 }
 
 function onSave() {
+  // ⚠⚠ §835/D1：这里此前在 emit('save') 之后**紧跟着 emit('close')**。
+  //   Vue 的 emit 是**同步**的，父组件的 `onMetaSave` 是 async 且**没人 await**
+  //   ⇒ 面板在写库结果出来之前就关了，form 随之销毁；而父侧那行
+  //   `await updateMeeting(...)` 没有 try/catch ⇒ 写失败时是零反馈，
+  //   **用户刚填的内容已经从屏幕上消失了**（失败与成功完全不可区分）。
+  //   ⇒ 关闭权交给父组件：它只在**写库成功后**才关，失败时面板留着让用户重试。
   emit('save', {
     title: form.title.trim(),
     topic: form.topic.trim(),
@@ -157,7 +163,6 @@ function onSave() {
     tags: parseTagInput(form.tags),
     summarySkill: form.summarySkill,
   })
-  emit('close')
 }
 </script>
 

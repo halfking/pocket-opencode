@@ -28,6 +28,9 @@ type RSSConfig struct {
 	MaxConcurrency        int
 	RetentionDays         int
 	DiscoverySearchURL    string
+	// AllowBenchmarkIPs 放开 RFC2544/5180 基准段的 SSRF 拦截（默认 false，
+	// fail-closed）。仅用于开发机透明代理（fake-ip）环境；生产勿开。
+	AllowBenchmarkIPs     bool
 	DiscoverySearchAPIKey string
 	PublishMode           string // share_only | weibo
 	WeiboClientID         string
@@ -395,6 +398,7 @@ func Load() Config {
 			MaxConcurrency:        getEnvInt("POCKET_RSS_MAX_CONCURRENCY", 4),
 			RetentionDays:         getEnvInt("POCKET_RSS_RETENTION_DAYS", 30),
 			DiscoverySearchURL:    getEnv("POCKET_RSS_DISCOVERY_SEARCH_URL", ""),
+			AllowBenchmarkIPs:     getEnv("POCKET_RSS_ALLOW_BENCHMARK_IPS", "") == "true",
 			DiscoverySearchAPIKey: getEnv("POCKET_RSS_DISCOVERY_SEARCH_API_KEY", ""),
 			PublishMode:           getEnv("POCKET_RSS_PUBLISH_MODE", "share_only"),
 			WeiboClientID:         getEnv("POCKET_RSS_WEIBO_CLIENT_ID", ""),
@@ -549,6 +553,11 @@ func (c Config) Validate() error {
 	}
 	if c.RSS.MaxConcurrency < 1 {
 		return fmt.Errorf("POCKET_RSS_MAX_CONCURRENCY must be >= 1")
+	}
+	// 逃生阀只服务开发机的透明代理（fake-ip）环境。生产 DNS 正常，
+	// 打开它只会无谓削弱 SSRF 防护——fail-closed，直接拒绝启动。
+	if c.RSS.AllowBenchmarkIPs {
+		return fmt.Errorf("POCKET_RSS_ALLOW_BENCHMARK_IPS must not be enabled in production (dev/fake-ip networks only)")
 	}
 	// 日报时刻越界会让 nextRun 算出一个"永远到不了"的时间点，日报就静默不发了。
 	if c.RSS.DigestHour < 0 || c.RSS.DigestHour > 23 {

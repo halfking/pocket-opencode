@@ -35,12 +35,18 @@ WHITE = (255, 255, 255, 255)
 WORDMARK = "AI Work Mess"
 FONT_PATH = "/System/Library/Fonts/Supplemental/Arial Bold.ttf"
 
-# 明度→色彩 停靠点：t=0 阴影深靛蓝，中段兰紫，高光破晓金（价值）
-STOPS = [
-    (0.00, (30, 36, 110)),    # 沉潜：技术与沉淀
-    (0.55, (179, 123, 235)),  # 兰紫：AI 创造力
-    (0.85, (255, 196, 106)),  # 破晓金：价值
-    (1.00, (255, 224, 150)),  # 晨光：机遇与希望
+# 秩分位 → 色彩 停靠点（分位为「墨迹亮度在全部墨迹中的百分位」）。
+# 用秩（分位）而非绝对亮度：本 logo 亮度极度集中（p25–p75 落在 20–52，
+# 仅 5% 超过 179），线性拉伸会把 ~87% 墨迹压成同一暗色，"破晓金" 读不出来。
+# 改用 CDF 秩映射后，下面三个色区的面积占比恒定且可调。
+#   0–28%  深靛蓝  沉潜：技术沉淀（暗部保留 logo 原有体积感）
+#   28–62% 兰紫    AI 创造力（过渡带）
+#   62–100% 破晓金 价值与光（本 logo 的主体色，占最大面积）
+RANK_STOPS = [
+    (0.00, (26, 32, 96)),
+    (0.28, (92, 78, 198)),
+    (0.62, (255, 198, 112)),
+    (1.00, (255, 232, 168)),
 ]
 
 
@@ -50,31 +56,31 @@ def gradient(w: int, h: int) -> Image.Image:
     return Image.fromarray(arr.astype(np.uint8), "RGB")
 
 
-def _lut() -> np.ndarray:
-    """256 级明度→RGB 查找表（分段线性）。"""
+def _rank_lut() -> np.ndarray:
+    """256 级「墨迹亮度分位秩」→RGB 查找表（分段线性）。"""
     lut = np.zeros((256, 3), dtype=float)
     for i in range(256):
         t = i / 255.0
-        for k in range(len(STOPS) - 1):
-            t0, c0 = STOPS[k]
-            t1, c1 = STOPS[k + 1]
+        for k in range(len(RANK_STOPS) - 1):
+            t0, c0 = RANK_STOPS[k]
+            t1, c1 = RANK_STOPS[k + 1]
             if t <= t1:
                 f = 0.0 if t1 == t0 else (t - t0) / (t1 - t0)
                 f = max(0.0, min(1.0, f))
                 lut[i] = np.array(c0) + f * (np.array(c1) - np.array(c0))
                 break
         else:
-            lut[i] = STOPS[-1][1]
+            lut[i] = RANK_STOPS[-1][1]
     return lut.clip(0, 255).astype(np.uint8)
 
 
-LUT = _lut()
+LUT = _rank_lut()
 
 _LOGO_CROPPED: dict = {}
 
 
 def recolored_logo(out_size: int) -> Image.Image:
-    """按逐像素明度把开轩 logo 上色（保留层次），裁到墨迹 bbox 后等比缩放。"""
+    """按墨迹亮度的**分位秩**把开轩 logo 上色（保留层次与体积感）。"""
     if not _LOGO_CROPPED:
         src = Image.open(LOGO).convert("RGBA")
         a = np.array(src).astype(float)
@@ -84,10 +90,16 @@ def recolored_logo(out_size: int) -> Image.Image:
             raise SystemExit(f"logo 无墨迹像素: {LOGO}")
         rgb = a[..., :3]
         lum = 0.299 * rgb[..., 0] + 0.587 * rgb[..., 1] + 0.114 * rgb[..., 2]
-        p5, p95 = np.percentile(lum[ink], [5, 95])
-        t = np.clip((lum - p5) / max(1.0, p95 - p5), 0, 1)
-        col = LUT[(t * 255).astype(int)]
-        img = Image.fromarray(np.dstack([col, alpha]).astype(np.uint8), "RGBA")
+        # 只用墨迹像素的经验 CDF 求秩，半透明羽化像素沿用最近墨迹秩（clamp）。
+        ink_lum = np.sort(lum[ink])
+        rank = np.searchsorted(ink_lum, lum, side="right") / float(len(ink_lum))
+        rank = np.clip(rank, 0.0, 1.0)
+        col = LUT[(rank * 255).astype(int)]
+        # 上色后把 alpha 归一化到不透明：源 logo 的 alpha 是二值 192，
+        # 直接叠加会让 25% 底色透进来，把金色洗淡（实测 43.9%→14.5%）。
+        # 羽化边缘（0<alpha<255）按比例保留相对羽化。
+        out_alpha = np.where(alpha > 0, np.clip(alpha / alpha.max() * 255.0, 0, 255), 0.0)
+        img = Image.fromarray(np.dstack([col, out_alpha]).astype(np.uint8), "RGBA")
         ys, xs = np.where(ink)
         pad = 4
         box = (max(0, xs.min() - pad), max(0, ys.min() - pad),

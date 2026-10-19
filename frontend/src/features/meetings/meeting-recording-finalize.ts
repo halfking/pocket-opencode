@@ -40,6 +40,7 @@ import { getMeeting, updateMeeting, type MeetingSegment } from './meetings-store
 import { ingestMeetingArtifacts } from './meeting-ingest'
 import { buildIngestNotice } from './meeting-ingest-notice'
 import { buildRefineNotice, refineStatusFor } from '../sessions/refine-outcome-notice'
+import { assessDurationDrift, createMeasuringToWav, finalizeFailureNotice } from './recording-duration-consistency'
 
 export interface FinalizeDeps {
   /** 一次全量重转。注入而非直接调 API，便于单测与换实现。 */
@@ -123,6 +124,13 @@ export async function finalizeRecording(
   segments: MeetingSegment[],
   elapsedMs: number,
   deps: FinalizeDeps,
+  /**
+   * ★§825：同一场录音的采集侧事实，来自 `rt.stop()` 的返回值。
+   *
+   * ⚠ 必须由调用方从 stop() 的返回值取（与 durationMs 同一条纪律，§49）：
+   *   录音态的读数在 stop 之后不可信。
+   */
+  recording?: { audioStartsAtMs?: number },
 ): Promise<FinalizeOutcome> {
   const outcome: FinalizeOutcome = {
     refined: false, aborted: false, adopted: false,
@@ -133,6 +141,19 @@ export async function finalizeRecording(
   if (!meetingId) return outcome
 
   const segs = segments ?? []
+
+  // ★ §803/§804：把「墙钟说有 62 秒」和「音频真的有 62 秒」放在同一处比一次。
+  //   此前**没有任何一处**做这件事 —— 整条链路每个时长数字都是 `Date.now()` 的差，
+  //   产物真实长度从未被测量 ⇒ §785 那 4.64 秒缺口运行时无从察觉。
+  //   这里能比，是因为全量重转**本来就要**把 webm 解成 WAV（`toWav` 那一次 decode
+  //   是无条件发生的），而 WAV 的字节数自带动长 ⇒ **零额外解码成本**。
+  //   ⚠ 刻意不拿分段 `endMs` 对照 `elapsedMs`：两者同出墙钟，是恒等式（§803.2）。
+  let measuredAudioSec: number | null = null
+  const toWav: NonNullable<FinalizeDeps['toWav']> = createMeasuringToWav(
+    deps.toWav ?? defaultToWav,
+    (sec) => { measuredAudioSec = sec },
+  )
+
   const finalText = await refetchFullTranscript(
     meetingId,
     deps.transcribeFull ?? defaultTranscribeFull,
@@ -140,8 +161,35 @@ export async function finalizeRecording(
     //   录音产物是 webm/opus，网关只收 wav/mp3 ⇒ 重转直接失败；
     //   且 `stt.SplitWAV` 对 webm 不可切（实测 splittable=false）
     //   ⇒ 就算发得出去也只回 1 条回执 ⇒ 说话人归因整块不生效。
-    { toWav: deps.toWav ?? defaultToWav },
+    { toWav },
   )
+
+  // 只 warn、不改状态：阈值与是否升级为阻断属产品口径（§805.3）。
+  // `no-ground-truth` 不算异常 —— 转码失败那条路由 `refetchFullTranscript` 自己兜。
+  const drift = assessDurationDrift(elapsedMs, measuredAudioSec)
+  if (!drift.ok) {
+    console.warn(
+      `[meeting-finalize] 录音时长与落盘音频不符：墙钟 ${elapsedMs}ms vs 音频 `
+      + `${measuredAudioSec === null ? '未知' : Math.round(measuredAudioSec * 1000) + 'ms'}`
+      + `（差 ${drift.driftMs}ms > 容差 ${Math.round(drift.toleranceMs)}ms，${drift.reason}）`,
+    )
+  }
+  // ★§818：让「转码失败」本身可见。
+  //
+  // ⚠ 此前这条链**从头到尾静默**：转码失败被空 catch 块吞掉 ⇒ 退回原 webm 上传
+  // ⇒ 网关拒收 ⇒ `reason = 'empty-transcript'` ⇒ 而**唯一生产调用方（本函数）
+  // 一个 `reason` 字段都不读** ⇒ 用户只看到「只有分段文本，没有全文精校」，真因从未出现。
+  // 时长护栏在这条路上也判 `ok`（`no-ground-truth`）——
+  // `assessDurationDrift` 的注释本来就写着「真正的处理是让转码失败本身可见」。
+  //
+  // ⚠⚠ **决策在纯函数 `finalizeFailureNotice` 里**，不在这里：本函数跑不到（§52），
+  //   把判断写在调用点的话，判据只能对着 `console.warn` 做源码匹配 ——
+  //   实测把 warn 改成 `void 0 && console.warn` 照样全绿（零牙）。
+  //
+  // ⚠ 触达面与上面那条一致：**只到开发者 console**（§813）。要不要升到用户可见
+  //   （`notify('warning')`）属产品口径，**待属主拍板，本轮不代拍**。
+  const notice = finalizeFailureNotice(finalText)
+  if (notice) console.warn(`[meeting-finalize] ${notice}`)
   // ★ 决策全部在纯函数里（§52）：采纳什么、用哪些分段、名单是谁、改哪几个同音字。
   //   这一段此前散在本函数体内，而本函数在 node 里跑不到 ⇒ 那些决策
   //   **一行行为门都没有**（§45/§48/§49/§50 四轮 bug 全在这里面）。
@@ -152,6 +200,8 @@ export async function finalizeRecording(
     full: { text: finalText.text, applied: finalText.applied, segments: finalText.segments },
     participants: meeting?.participants,
     elapsedMs,
+    // §825：音频时间基错位时，整段重转文本**不进**精校（理由见 planRefine）。
+    audioStartsAtMs: recording?.audioStartsAtMs ?? 0,
   })
   outcome.adopted = plan.adopted
   const { roster, refineSegments } = plan

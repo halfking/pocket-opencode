@@ -18,6 +18,7 @@ import { watch, onUnmounted, type Ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { Capacitor, type PluginListenerHandle } from '@capacitor/core'
 import { LocalNotifications } from '@capacitor/local-notifications'
+import { useNotificationPermission, type NotificationPermissionState } from './useNotificationPermission'
 import type { PendingItem } from '../features/tasks/useInstanceApprovals'
 
 /** 待审批等待多久仍未处理则通知（设计方案 §4.2-5 默认 3 分钟）。 */
@@ -36,8 +37,16 @@ function notificationIdFor(requestId: string): number {
 }
 
 export interface UseApprovalAlertsReturn {
-  /** 手动触发权限申请（Android 13+ POST_NOTIFICATIONS）；静默失败 */
+  /** 手动触发权限申请（Android 13+ POST_NOTIFICATIONS）。 */
   ensurePermission: () => Promise<void>
+  /**
+   * ⚠§865/D29：最近一次申请的结果（`'granted' | 'denied' | …`）。
+   * 暴露出来是为了让宿主**有机会说实话** ——
+   * 被拒之后审批提醒是静默失效的（用户提交了审批、等不到通知、界面零解释），
+   * 而本 composable 此前连结果都不看。
+   * ⚠ 宿主现在还没有用它说任何话（要不要提示、跳不跳转属产品口径，已登记）。
+   */
+  permissionState: Ref<NotificationPermissionState>
 }
 
 export function useApprovalAlerts(
@@ -46,6 +55,9 @@ export function useApprovalAlerts(
 ): UseApprovalAlertsReturn {
   const router = useRouter()
   const isNative = Capacitor.isNativePlatform()
+  // §865/D29：申请路径必须唯一 —— 共享 composable 才有那套完整的跨平台回退
+  // （原生 appSettings → 旧 LocalNotifications → Web Notification）与 `prompt-with-rationale` 态。
+  const permission = useNotificationPermission()
   const alertAfterMs = args.alertAfterMs ?? ALERT_AFTER_MS
   /** requestId → 通知 id；已触发/已排程的记录，防重复。 */
   const scheduled = new Map<string, number>()
@@ -53,16 +65,34 @@ export function useApprovalAlerts(
   let tapListener: Promise<PluginListenerHandle> | null = null
   let permissionAsked = false
 
+  /**
+   * ⚠⚠§865/D29：这里原本是**第二条独立的权限申请路径** ——
+   *   直接调 `LocalNotifications.checkPermissions()` + `requestPermissions()`，
+   *   ① 不走共享的 `useNotificationPermission`（⇒ 结果不汇入设置页已经渲染的那个状态）；
+   *   ② **申请完不看结果**（⇒ 被拒之后审批提醒静默失效，界面上零解释）；
+   *   ③ 而且触发时机是「用户一进任务页就弹系统框」，**没有任何前置说明**
+   *      （Android 上无 rationale 的弹窗被拒率显著更高 ——
+   *       共享 composable 里本来就有 `prompt-with-rationale` 这一态，只是这里用不上）。
+   *
+   * ⇒ 修法是**复用共享 composable**，让「申请路径」全仓只有一条；
+   *   结果同时进入设置页已渲染的状态，并在这里留一条 warn 供诊断。
+   */
+  const permissionState = permission.state
   async function ensurePermission(): Promise<void> {
     if (!isNative) return
+    if (permissionState.value === 'granted') return
+    if (permissionAsked) return
+    permissionAsked = true
     try {
-      const status = await LocalNotifications.checkPermissions()
-      if (status.display !== 'granted' && !permissionAsked) {
-        permissionAsked = true
-        await LocalNotifications.requestPermissions()
+      const result = await permission.ensure()
+      if (result !== 'granted') {
+        console.warn(
+          `[approval-alerts] 通知权限未开启（${result}）：待审批 3 分钟后不会提醒，`
+          + '设置页可查看并跳转系统设置',
+        )
       }
     } catch (err) {
-      console.warn('[approval-alerts] permission check failed:', err)
+      console.warn('[approval-alerts] permission request failed:', err)
     }
   }
 
@@ -152,5 +182,5 @@ export function useApprovalAlerts(
     })
   }
 
-  return { ensurePermission }
+  return { ensurePermission, permissionState }
 }

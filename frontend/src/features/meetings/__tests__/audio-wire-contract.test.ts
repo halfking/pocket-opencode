@@ -16,6 +16,9 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import { refetchFullTranscript } from '../meeting-final-transcript.ts'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { dirname, join } from 'node:path'
 
 /** 真机产物：`VadSegmenter.stop()` 产的就是 `audio/webm`。 */
 const WEBM = new Blob([new Uint8Array([0x1a, 0x45, 0xdf, 0xa3, 0x9f, 0x42, 0x86, 0x81])], { type: 'audio/webm' })
@@ -95,5 +98,45 @@ describe('接缝：真机 webm 必须被转成 wav 才上传（§50）', () => {
     const r = await refetchFullTranscript('m1', gw.call, { loadAudio: async () => null, toWav: fakeToWav })
     assert.deepEqual({ applied: r.applied, reason: r.reason }, { applied: false, reason: 'audio-not-found' })
     assert.equal(gw.seen.length, 0, '没有音频却仍然发起了上传')
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────
+// §818 · 转码失败必须**留痕**，且唯一的生产调用方必须真的把它喊出来。
+describe('§818 转码失败的可见性（真网关行为复刻）', () => {
+  it('★ 真链路上（webm → 400）必须同时带 transcodeFailed 与下游 symptom', async () => {
+    const gw = fakeGateway()
+    const boom = async () => { throw new Error('decodeAudioData failed') }
+    const r = await refetchFullTranscript('m1', gw.call, { loadAudio: load(WEBM), toWav: boom })
+    assert.equal(r.applied, false)
+    // 下游症状：网关拒收 webm
+    assert.match(String(r.reason), /transcribe-failed|invalid_audio_request/)
+    // ★ 根因：此前这个信息在空 catch 里被吞掉，生产里没有任何出口
+    assert.equal(r.transcodeFailed, true,
+      '真链路上转码失败必须留痕 —— 否则 reason 只是网关的 400，根因丢失')
+    assert.match(String(r.transcodeError), /decodeAudioData failed/)
+  })
+
+  it('负控：转码成功时不得出现 transcodeFailed', async () => {
+    const gw = fakeGateway()
+    const r = await refetchFullTranscript('m1', gw.call, { loadAudio: load(WEBM), toWav: fakeToWav })
+    assert.equal(r.applied, true)
+    assert.equal('transcodeFailed' in r, false)
+  })
+
+  it('★ 失败文案决策必须落在**跑得到的纯函数**里，而不是调用点', () => {
+    // ⚠ 这条只能是接线扫描：`finalizeRecording` 依赖 localDB + HTTP，在 node 里跑不到。
+    //   第一版修复把判断写在调用点，判据对着 `console.warn` 匹配 ——
+    //   实测把 warn 改成 `void 0 && console.warn` 照样 8/8 全绿，**零牙**。
+    //   ⇒ 现在只要求「决策由纯函数产出、调用点按结果 warn」，
+    //   真正的牙齿在 `finalizeFailureNotice` 的行为用例上。
+    const src = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), '../meeting-recording-finalize.ts'),
+      'utf8',
+    )
+    assert.match(src, /finalizeFailureNotice\s*\(/,
+      '调用点没走纯函数 ⇒ 决策又回到跑不到的地方（§52 的老坑）')
+    assert.match(src, /const notice = finalizeFailureNotice\([^)]*\)\s*\n\s*if \(notice\)\s+console\.warn/,
+      '必须拿到文案才 warn（而不是无条件 warn 或完全不 warn）')
   })
 })

@@ -52,6 +52,7 @@
     "check:crlf-needles": "node scripts/check-crlf-fragile-needles.mjs",
     "check:gofmt": "node ../scripts/check-gofmt.mjs",
     "check:blankline-bloat": "node ../scripts/check-blankline-bloat.mjs",
+    "check:doc-empty-string-literal": "node ../scripts/check-doc-empty-string-literal.mjs --selftest && node ../scripts/check-doc-empty-string-literal.mjs",
     "check:maestro-flows": "node ../scripts/check-maestro-flows.mjs --selftest && node ../scripts/check-maestro-flows.mjs",
     "check:env-example": "node ../scripts/check-env-example.mjs --selftest && node ../scripts/check-env-example.mjs",
     "check:hide-app-header": "node ../scripts/check-hide-app-header.mjs --selftest && node ../scripts/check-hide-app-header.mjs",

@@ -32,7 +32,12 @@ export function useConfigList(): UseConfigListReturn {
       instances.value = await api.getInstances()
     } catch (e) {
       error.value = apiError(e, 'errors.loadSettingsFailed')
-      instances.value = []
+      // ⚠ 2026-10-18（§845）：原来是无条件 `instances.value = []`。
+      //   成功路径会整体赋值，失败路径**根本不该碰 instances** ——
+      //   碰了就是把已加载的行抹掉，而「有行时点重试失败」正是这个场景
+      //   （§845 给本页加了重试入口，这条就从「无害」变成「有害」了）。
+      // ⇒ 与 §843/§844 同一口径：失败只挂提示，不动数据。
+      console.error('[config-list] 读取实例失败：', e)
     } finally {
       loading.value = false
     }

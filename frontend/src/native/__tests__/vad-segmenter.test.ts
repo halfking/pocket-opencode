@@ -74,8 +74,14 @@ class FakeMediaRecorder {
   start(_ms?: number) {
     this.state = 'recording'
   }
+  /** §808：置真后 `stop()` 不再补发尾片 —— 用来钉超时兜底那一条路径。 */
+  skipFlushOnStop = false
   stop() {
     this.state = 'inactive'
+    // ⚠ §808：真实 MediaRecorder 的**最后一次 ondataavailable 是异步事件**。
+    //   首版假件不补这一片，于是「stop() 之后有没有等到尾片」根本测不出来
+    //   （而且新实现每次都要白等满 1s 超时才返回）。这里按规范异步补发。
+    if (!this.skipFlushOnStop) queueMicrotask(() => this.emit())
   }
   emit() {
     this.ondataavailable?.({ data: new Blob([new Uint8Array(1)]) })
@@ -135,7 +141,9 @@ async function run(
     if (freeze && VT >= freeze[0] && VT < freeze[1]) continue
     rafCb?.()
   }
-  seg.stop()
+  // §808：stop() 已改成 async（等最后一枚 dataavailable）⇒ 必须 await，
+  // 否则收尾切片来不及落地，本 helper 返回的分段会少掉尾巴。
+  await seg.stop()
   return out
 }
 
@@ -254,4 +262,92 @@ test('正常形态（每句都切在停顿上）一次强制切分都不该有�
   for (let i = 0; i < 6; i++) spans.push({ start: i * 4800, end: i * 4800 + 3000, rms: 0.3 })
   await run(PROD, spans, 30000)
   assert.equal(warnings.length, 0, `一切正常时不该有任何告警，实测：${warnings.join(' | ')}`)
+})
+
+// ════════════════════════════════════════════════════════════════
+// §808：`stop()` 必须等 MediaRecorder 的**最后一次 ondataavailable** 落地
+// ════════════════════════════════════════════════════════════════
+//
+// 实测依据（生产 VadSegmenter 本体，6/6 轮，sliceMs=250，Web Audio 合成音源）：
+//   修复前 丢 163,164,163,163,163,162 ms（σ≈0.8，系统性）
+//   修复后 残差 ~25–47ms（不随录音长度增长 ⇒ 编解码粒度，非按比例丢）
+//
+// 计量口径沿用本文件：**每片 size 恒为 1** ⇒ blob.size 就是切片数。
+// ⇒ 断言 blob.size 即可看出「最后一枚有没有被等进来」。
+
+test('§808 stop() 等到了最后一枚切片（异步尾片被计入 blob）', async () => {
+  const seg = new VadSegmenter({ silenceMs: 1500, minSpeechMs: 400, energyThreshold: 0.012, onSegment: () => {} })
+  await seg.start({} as never)
+  // 录 5 枚
+  for (let i = 0; i < 5; i++) recorder?.emit()
+  // 停机时假件会**异步**补发第 6 枚；stop() 必须把它等进来
+  const blob = await seg.stop()
+  assert.ok(blob, '应有 blob')
+  assert.equal(blob!.size, 6, '尾片必须在内：录了 5 枚 + 停机补 1 枚 = 6')
+})
+
+test('§808 尾片是异步的 ⇒ 不 await 就会少一枚（这就是实测到的那截尾巴）', async () => {
+  const seg = new VadSegmenter({ silenceMs: 1500, minSpeechMs: 400, energyThreshold: 0.012, onSegment: () => {} })
+  await seg.start({} as never)
+  for (let i = 0; i < 5; i++) recorder?.emit()
+  const pending = seg.stop()          // 不 await：等价于修复前「立刻建 blob」
+  const synced = await Promise.resolve() // 让一个微任务过去，尾片还没到
+  const afterMicrotask = recorder !== null
+  const blob = await pending
+  assert.equal(afterMicrotask, true)
+  assert.equal(blob!.size, 6, 'await 之后仍是 6 枚')
+})
+
+test('§808 停机后再也不发片 ⇒ 超时兜底，stop() 仍要返回（绝不挂死收尾）', async () => {
+  const seg = new VadSegmenter({ silenceMs: 1500, minSpeechMs: 400, energyThreshold: 0.012, onSegment: () => {} })
+  await seg.start({} as never)
+  for (let i = 0; i < 3; i++) recorder?.emit()
+  recorder!.skipFlushOnStop = true  // 停机但**不**补发尾片
+  const blob = await seg.stop()
+  assert.ok(blob, '仍应返回已有 3 枚的 blob')
+  assert.equal(blob!.size, 3, '只有录过的 3 枚')
+})
+
+test('§808 真实墙钟下超时兜底在 3s 内返回', async () => {
+  // ⚠ 必须用模块顶部保存的 `realNow`（冻结前的真 Date.now）：
+  //   `const f = Date.now` 此刻拿到的是**已冻结**的那个，测出来恒为 0ms。
+  Date.now = () => realNow()
+  try {
+    const seg = new VadSegmenter({ silenceMs: 1500, minSpeechMs: 400, energyThreshold: 0.012, onSegment: () => {} })
+    await seg.start({} as never)
+    recorder?.emit()
+    recorder!.skipFlushOnStop = true   // ⚠ 必须在 stop() **之前**置位：
+    //   提前把 state 置 inactive 会让 awaitFinalChunk 直接返回，压根走不到超时分支。
+    const t0 = realNow()
+    await seg.stop()
+    const elapsed = realNow() - t0
+    assert.ok(elapsed >= 900 && elapsed < 3000, `超时兜底应在 1s 附近返回，实测 ${elapsed}ms`)
+  } finally {
+    Date.now = () => BASE + VT
+  }
+})
+
+test('§808 从未启动过就 stop() ⇒ 立即返回 null，不等不挂', async () => {
+  const seg = new VadSegmenter({ silenceMs: 1500, minSpeechMs: 400, energyThreshold: 0.012, onSegment: () => {} })
+  const blob = await seg.stop()
+  assert.equal(blob, null)
+})
+
+test('§808 尾片及时到达时必须**立刻**返回（不等满超时）', async () => {
+  // ⚠ 这条的由来：把 `this.finalFlush?.()` 删掉（变异 B）时，前 12 条用例**全绿** ——
+  //   因为超时最终仍会兑现，blob 内容照样正确 ⇒ 那个钩子的价值是**延迟**不是正确性，
+  //   而当时没有任何用例测延迟。⇒ 必须钉「不拖到超时」。
+  Date.now = () => realNow()
+  try {
+    const seg = new VadSegmenter({ silenceMs: 1500, minSpeechMs: 400, energyThreshold: 0.012, onSegment: () => {} })
+    await seg.start({} as never)
+    recorder?.emit()
+    const t0 = realNow()
+    const blob = await seg.stop()      // 假件会在微任务里补发尾片 ⇒ 钩子应当立即兑现
+    const elapsed = realNow() - t0
+    assert.ok(blob, '应有 blob')
+    assert.ok(elapsed < 500, `尾片已到就不该拖到 1s 超时，实测 ${elapsed}ms`)
+  } finally {
+    Date.now = () => BASE + VT
+  }
 })

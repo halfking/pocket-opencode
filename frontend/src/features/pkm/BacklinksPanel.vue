@@ -10,7 +10,11 @@
     <h3 class="bl-title">
       反向链接 <span class="bl-count">{{ links.length }}</span>
     </h3>
-    <div v-if="links.length === 0" class="bl-empty">
+    <div v-if="failed" class="bl-empty bl-failed">
+      反向链接加载失败
+      <button type="button" class="bl-retry" @click="reload">重试</button>
+    </div>
+    <div v-else-if="links.length === 0" class="bl-empty">
       还没有其它笔记引用「{{ targetTitle }}」
     </div>
     <ul v-else class="bl-list">
@@ -37,11 +41,27 @@ const emit = defineEmits<{ (e: 'open', id: string): void }>()
 
 const links = ref<PkmNote[]>([])
 const ready = ref(false)
-
+/**
+ * §854：`ready` 同时充当「加载中」和「要不要渲染」的开关（模板 `v-if="ready"`），
+ * 而 `getBacklinks` → `localDB.query` 不吞错 ⇒ **一次查询失败就让 `ready` 永远停在 false**，
+ * 整个反向链接面板永久不渲染，且与「加载中」完全不可区分。
+ * 失败还不止于此：未处理的 rejection 会在控制台留痕，用户侧零反馈。
+ * ⇒ 必须复位 `ready`，并给一条**说清是失败、且可重试**的提示（而不是伪装成空态）。
+ */
+const failed = ref(false)
 async function reload() {
   ready.value = false
-  links.value = await getBacklinks(props.targetTitle, props.workspaceId)
-  ready.value = true
+  failed.value = false
+  try {
+    links.value = await getBacklinks(props.targetTitle, props.workspaceId)
+  } catch (e: any) {
+    console.error('[pkm] 反向链接查询失败:', e)
+    links.value = []
+    failed.value = true
+  } finally {
+    // ⚠ 无论成败都要复位：`ready` 是渲染开关，卡在 false 就等于面板永久消失。
+    ready.value = true
+  }
 }
 
 onMounted(reload)
@@ -81,6 +101,21 @@ function formatTime(ts: number): string {
   font-size: var(--text-smd);
   color: var(--text-secondary, #999);
   padding: 8px 0;
+}
+/* §854：失败态要与空态视觉可区分 —— 谎报成「没有反向链接」会让用户以为笔记真的没被引用。 */
+.bl-failed {
+  color: var(--text-danger, #c0392b);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.bl-retry {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  color: var(--text-primary);
+  padding: 3px 10px;
+  cursor: pointer;
 }
 .bl-list {
   list-style: none;

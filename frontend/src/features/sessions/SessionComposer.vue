@@ -156,6 +156,15 @@ const { confirm } = useConfirm()
 
 <template>
   <div class="composer-card" :class="{ disabled: props.disabled }">
+    <!-- ⚠§882：草稿落盘失败必须**出声**。草稿是用户还没发出去的字，
+         静默失败 ⇒ 他以为存住了，关掉页面才发现没了，且无从补救。
+         ⚠ 但绝不阻断输入（打字不该被存储卡住）—— 与 §866/D30 同一族的两条纪律。
+         ⚠ 文案不得出现任何暗示「已保存」的措辞（§866 的口径）。 -->
+    <div v-if="drafts.persistFailed.value" class="draft-notice" role="alert">
+      <strong>草稿没能保存到本地</strong>，切换页面或重启 App 后<strong>可能丢失</strong> ——
+      请先复制这段文字，或清理存储空间后重试。
+    </div>
+
     <!-- 收起把手：点按把输入面板收回为右下 FAB（热区经 ::after 扩展到 ~44px） -->
     <button
       type="button"
@@ -280,6 +289,16 @@ const { confirm } = useConfirm()
 }
 .composer-card.disabled {
   opacity: 0.85;
+}
+/* §882：草稿落盘失败提示。与 §866/D30 的 AIChatView 提示同一形态。 */
+.draft-notice {
+  font-size: var(--text-xs, 11px);
+  line-height: 1.5;
+  color: var(--danger, #b3261e);
+  background: color-mix(in srgb, var(--danger, #b3261e) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger, #b3261e) 28%, transparent);
+  border-radius: var(--radius-sm, 6px);
+  padding: 4px 8px;
 }
 
 /* ── 收起把手（视觉 26px；::after 把热区纵向扩到 ~44px） ── */

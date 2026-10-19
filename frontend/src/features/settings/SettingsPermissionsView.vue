@@ -138,10 +138,14 @@ import {
 import type { PermissionStatus } from '../../composables/permission-action'
 import { useConfirm } from '../../composables/useConfirm'
 import { useToast } from '../../composables/useToast'
+import { useApiError } from '../../composables/useApiError'
 
 const router = useRouter()
 const { confirm } = useConfirm()
 const toast = useToast()
+/** §857/D20：刷新失败提示走仓库既定的错误映射，不把原始 e.message 上屏
+ *  （`check:raw-error` 正是守这条的）。 */
+const apiError = useApiError()
 const mic = useMicPermission()
 const notif = useNotificationPermission()
 const camera = useNativePermission('camera')
@@ -238,7 +242,13 @@ function goBack() {
 }
 
 async function refreshAll() {
+  if (refreshing.value) return
   refreshing.value = true
+  // ⚠§857/D20：原来只有 try/finally。五个 `recheck()`（mic / notif / camera /
+  //   photos / biometric）**都不吞错** —— `appSettings.checkPermission` 直接 await
+  //   —— 而这里是 `Promise.all` ⇒ 任一 reject 就整批逃逸
+  //   ⇒ 刷新按钮转一圈结束、权限状态停在旧值、界面零反馈，用户只会以为「没变化」。
+  //   与同文件 `openSystemSettings` 的失败出口（toast.error）保持一致。
   try {
     const jobs: Promise<unknown>[] = [
       mic.recheck(),
@@ -250,6 +260,9 @@ async function refreshAll() {
     // 服务端 WebAuthn 凭据数只在 Web 分支展示，原生平台不发这次（可能 401 的）请求
     if (!Capacitor.isNativePlatform()) jobs.push(bio.refresh())
     await Promise.all(jobs)
+  } catch (e) {
+    console.error('[permissions] 刷新权限状态失败:', e)
+    toast.error(apiError(e, '权限状态刷新失败，请稍后重试'))
   } finally {
     refreshing.value = false
   }

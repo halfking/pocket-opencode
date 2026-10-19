@@ -123,7 +123,7 @@ func TestRSSStarterRoutesEndToEnd(t *testing.T) {
 			t.Errorf("starter feed missing categoryLabel: %v", m)
 		}
 	}
-	for _, c := range []string{"it", "finance", "news"} {
+	for _, c := range []string{"it", "ai", "finance", "product", "deals", "news"} {
 		if !cats[c] {
 			t.Errorf("starter catalog missing category %q", c)
 		}

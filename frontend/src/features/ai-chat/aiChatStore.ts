@@ -19,6 +19,7 @@ import { listNodes, getAvailableModels, getFeaturedModels } from '../../api/gate
 import { useToast } from '../../composables/useToast'
 import { storeApiError } from '../../api/store-error'
 import { useChatAgentStore } from '../../stores/chatAgentStore'
+import { AI_CHAT_CORRUPT_NS, preserveCorruptRaw } from '../../utils/corrupt-preserve'
 
 export type ChatRole = 'system' | 'user' | 'assistant'
 
@@ -120,6 +121,41 @@ export function inferModality(id: string): ModalityKey {
   return 'text'
 }
 
+/**
+ * ⚠⚠§858/D21：这里原来在 catch 里直接 `return null`，
+ *   而 `init()` 的判据是 `if (saved && saved.length > 0) … else createConversation()`
+ *   ⇒ **`JSON.parse` 失败会被当成「没有对话」**，走进 `createConversation()`；
+ *   那个函数最后调 `persist()`，而 `persist()` 做的是
+ *   `localStorage.setItem(STORAGE_KEY, JSON.stringify(conversations.value))`
+ *   —— 此时 `conversations.value` 里只有那个**新建的空对话**
+ *   ⇒ **一次读失败 = 该用户的全部 AI 对话历史被永久覆盖**（不可逆）。
+ *
+ *   而「存储里的 JSON 为什么坏了」并不罕见：配额超限后的部分写入、
+ *   多标签页并发写、跨版本迁移写坏、浏览器异常退出留下半截内容。
+ *
+ *   ⇒ 修法：**读失败时先把原始串另存一份**，再让流程继续（用户仍要能用）。
+ *     这样「数据不见了」变成「数据换了个地方，且界面会告诉你」。
+ *
+ * ⚠§859/D24：留证键前缀与写入落点已移到 `utils/corrupt-preserve.ts`
+ *   （同一个 key 的**写侧**也要留证，键名约定只能有一份）。
+ */
+
+/** §858/D21：读失败时置位，供视图如实告知（不参与任何空态分支判定）。 */
+const conversationsRecovered = ref(false)
+const settingsRecovered = ref(false)
+
+/** 读一次 localStorage 供「损坏留证」用 —— 它自己绝不能抛。 */
+function safeGetItem(key: string): string | null {
+  try { return localStorage.getItem(key) } catch { return null }
+}
+
+function preserveCorrupt(kind: 'conversations' | 'settings', raw: string | null): void {
+  // §859/D24：留证落点抽到 utils/corrupt-preserve.ts，让本 key 的**写侧**
+  // （native/config-sync/apply.ts 的 applyChatSettings）复用同一份键名约定。
+  // 键名与落点都不变：pocket:ai-chat:corrupt:<kind>:<scope>:<ts>。
+  preserveCorruptRaw(AI_CHAT_CORRUPT_NS, kind, raw)
+}
+
 function loadConversations(): Conversation[] | null {
   try {
     const key = storageKey(STORAGE_KEY_PREFIX)
@@ -130,6 +166,10 @@ function loadConversations(): Conversation[] | null {
     }
     return raw ? (migrateConversations(JSON.parse(raw)) as Conversation[]) : null
   } catch {
+    // ⚠§858/D21：不要在这里「当作没有对话」—— init() 会新建空对话并 persist，
+    // 那会把原始内容覆盖掉。先留证据。
+    preserveCorrupt('conversations', safeGetItem(storageKey(STORAGE_KEY_PREFIX)))
+    conversationsRecovered.value = true
     return null
   }
 }
@@ -155,6 +195,10 @@ function loadSettings(): ChatSettings {
       modelByModality: { ...DEFAULT_SETTINGS.modelByModality, ...(parsed.modelByModality ?? {}) },
     }
   } catch {
+    // ⚠§858/D21：settings 是同族 —— 读失败会退回默认设置，而 `persist()`
+    // 会把默认设置写回 ⇒ 原设置同样被覆盖。同一处理：留证 + 置位。
+    preserveCorrupt('settings', safeGetItem(storageKey(SETTINGS_KEY_PREFIX)))
+    settingsRecovered.value = true
     return { ...DEFAULT_SETTINGS }
   }
 }
@@ -199,12 +243,34 @@ export const useAIChatStore = defineStore('ai-chat', () => {
     active.value ? active.value.messages.some((m) => m.streaming) : false,
   )
 
+  /**
+   * ⚠⚠§866/D30：写失败**不能**与「保存成功」同一个表现。
+   *
+   * 原文是一个空的 catch（注释写着「容量超限等忽略」）⇒ 存储写不进去时，
+   * 应用继续**表现得一切正常**，而用户这轮对话**根本没有落盘** ——
+   * 退出/刷新后凭空消失，界面上零提示。
+   *
+   * ⚠ 这不是理论风险，**本仓自己记录过它会发生**：
+   *   `features/email/email-body-cache.ts` 的文件头写着
+   *   「localStorage 在 Android WebView 里总配额约 5–10MB，一旦写超，
+   *     snapshot-store 的 saveNS 会静默吞掉」
+   * ⇒ 而 AI 对话历史装的是**完整对话全文**（`MAX_HISTORY = 40` 轮），
+   *   在真机上是最容易把配额撑爆的那一类数据。
+   *
+   * ⇒ 修法与 §858/D21 读侧同族：**留一个标志，让界面如实告知**
+   *   （写侧没有「损坏内容」需要留证，但必须让用户知道这轮不会保存）。
+   */
+  const persistFailed = ref(false)
+
   function persist() {
     try {
       localStorage.setItem(storageKey(STORAGE_KEY_PREFIX), JSON.stringify(conversations.value))
       localStorage.setItem(storageKey(SETTINGS_KEY_PREFIX), JSON.stringify(settings.value))
-    } catch {
-      /* 容量超限等忽略 */
+      persistFailed.value = false
+    } catch (err) {
+      // 写不进去 ≠ 保存成功：界面必须知道，否则用户会以为这轮已经存下。
+      persistFailed.value = true
+      console.warn('[ai-chat] 本地存储写入失败，本轮对话不会被保存：', err)
     }
   }
 
@@ -716,6 +782,11 @@ export const useAIChatStore = defineStore('ai-chat', () => {
     // state
     conversations,
     activeId,
+    // §858/D21：本地存储读失败且已留证。视图据此**如实告知**，
+    // 不得拿它去参与「没有对话」的空态判定（那正是本缺陷的原型）。
+    conversationsRecovered,
+    settingsRecovered,
+    persistFailed,
     models,
     modelsLoading,
     modelsError,

@@ -79,6 +79,21 @@ export interface FinalTranscribeResult {
   applied: boolean
   /** 降级原因，写日志用。 */
   reason?: string
+  /**
+   * ★§818：转码这一步**失败过**（`toWav` 抛错），不是「没传 toWav」。
+   *
+   * ⚠⚠ 为什么必须把它与 `reason` 分开：`reason` 描述的是**最终结果**
+   * （`empty-transcript` / `transcribe-failed: …`），而转码失败的后果要再经过
+   * 「退回原 webm 上传 → 网关只收 wav/mp3 → 拒收」才浮现 ⇒ 到了 `reason` 那里
+   * **根因已经丢了**，只剩一个下游症状。
+   *
+   * 此前这个信息在 `:144` 的空 catch 块里被整个吞掉：转码失败 ⇒ 退回原 blob ⇒
+   * 网关拒收 ⇒ `empty-transcript`，而唯一生产调用方 `finalizeRecording`
+   * 一个 `reason` 字段都不读 ⇒ **整条失败链在生产里没有任何出口**。
+   */
+  transcodeFailed?: boolean
+  /** 转码失败的原始异常信息，便于定位是解码失败还是缺 AudioContext。 */
+  transcodeError?: string
   /** 有多少段没转出来（transcribeFull 的 failed 计数）。 */
   failedSegments?: number
   /** ★ 逐段回执：带时间范围，是**唯一**能把高精度文本重新挂回说话人的依据。 */
@@ -131,6 +146,16 @@ export async function refetchFullTranscript(
     return { text: null, applied: false, reason: 'audio-not-found' }
   }
 
+  // ★§818：转码失败**必须留痕**。此前这里是空 catch 块，失败被整个吞掉，
+  // 而它的后果（退回原 webm → 网关拒收）在 `reason` 里只呈现为 `empty-transcript`
+  // ⇒ 根因丢失，且唯一生产调用方 `finalizeRecording` 不读 `reason` ⇒ 全链路静默。
+  // 声明刻意放在 try **之外**：转码失败后可能一路走到外层 catch（连上传都抛了），
+  // 那里同样要透出，否则「上传失败」会把「转码失败」这个更早的根因盖掉。
+  let transcodeFailed = false
+  let transcodeError = ''
+  /** 转码痕迹的统一展开形状；没失败时是空对象（不改变任何现有返回的形状）。 */
+  const tc = () => (transcodeFailed ? { transcodeFailed: true, transcodeError } : {})
+
   try {
     const blob = injected ?? (await (await fetch(audioUrl!)).blob())
     if (!blob.size) return { text: null, applied: false, reason: 'audio-empty' }
@@ -141,19 +166,24 @@ export async function refetchFullTranscript(
     if (opts?.toWav) {
       try {
         wav = await opts.toWav(blob)
-      } catch {
-        // 转码失败不致命，继续用原 blob。
+      } catch (e) {
+        // 转码失败不致命，继续用原 blob —— **降级行为完全不变**，只是让失败可见。
         wav = null
+        transcodeFailed = true
+        transcodeError = msg(e)
       }
     }
     const target = resolveUploadTarget(blob, wav)
 
     const res = await transcribeFull(target.blob, target.filename)
     const text = String(res?.text ?? '').trim()
-    if (!text) return { text: null, applied: false, reason: 'empty-transcript' }
+    // 转码失败无论后面成没成都要透出：成功也可能是「退回原 blob 后恰好被接受」，
+    // 那种情况下这次失败同样需要有人知道。
+    if (!text) return { text: null, applied: false, reason: 'empty-transcript', ...tc() }
     return {
       text,
       applied: true,
+      ...tc(),
       // 有段失败必须透出，否则用户以为记录是完整的。
       ...(res.failed > 0 ? { failedSegments: res.failed } : {}),
       // ★ 逐段回执必须一起带上来。它是后面 `attributeFullTranscript` 唯一
@@ -161,7 +191,12 @@ export async function refetchFullTranscript(
       ...(res.segments?.length ? { segments: res.segments } : {}),
     }
   } catch (e) {
-    return { text: null, applied: false, reason: `transcribe-failed: ${msg(e)}` }
+    return {
+      text: null,
+      applied: false,
+      reason: `transcribe-failed: ${msg(e)}`,
+      ...tc(),
+    }
   } finally {
     // loadMeetingAudio 返回的是 objectURL，用完必须释放，否则长录音会
     // 一直占着内存（会议音频动辄几十 MB）。

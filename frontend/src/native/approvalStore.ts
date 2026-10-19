@@ -10,6 +10,7 @@
  */
 
 import type { SqlDb } from './sqlDb.ts'
+import { readJsonColumn, warnCorruptColumn } from './sqlDb.ts'
 
 export type MobileApprovalKind = 'permission' | 'question'
 export type MobileApprovalState = 'pending' | 'sent' | 'expired'
@@ -55,12 +56,18 @@ const APPROVAL_COLUMNS =
   'id, workspace_id, instance_id, session_id, kind, payload, decision, state, created_at, updated_at, replied_at'
 
 function toApprovalRow(r: ApprovalSqlRow): MobileApprovalRow {
+  // §878：这一处**保留**降级成空对象的行为 —— 它是四处 JSON 列里**唯一**非破坏的：
+  // 审批行的展示/过期只依赖 kind + state，payload 只是附加上下文
+  // （kind 已在上面由 `r.kind` 归一、state 由 `r.state` 归一，两者都不走 payload）。
+  // ⇒ 跳过整行反而会让用户看不到「有一条待处理但内容坏了」的审批。
+  // ⚠ 这条降级**不能照抄**到另外三处：那里 payload 是主内容，
+  //   降级成空 = 谎报（§870：降级是否破坏性，决定能不能降）。
+  const parsed = readJsonColumn<Record<string, unknown>>(r as unknown as Record<string, unknown>, 'payload', 'local_approvals')
   let payload: Record<string, unknown> = {}
-  try {
-    const parsed = JSON.parse(String(r.payload ?? '{}')) as Record<string, unknown>
-    if (parsed !== null && typeof parsed === 'object') payload = parsed
-  } catch {
-    // 快照损坏时保留空对象，行本身仍可展示/过期
+  if (parsed.ok && parsed.value !== null && typeof parsed.value === 'object') {
+    payload = parsed.value
+  } else if (!parsed.ok) {
+    warnCorruptColumn('local_approvals', String(r.id), parsed.reason)
   }
   return {
     id: String(r.id),
