@@ -166,6 +166,8 @@ import { buildSummaryPrompt } from './meeting-skills'
 import { captureDeviceLocation, formatCapturedTitle } from './meeting-meta'
 import { mergeRecommendations, relatedQueryFromTranscript } from './meeting-related'
 import { searchRelatedContext } from './meeting-related-search'
+// ⚠ §926：相关推荐刷新的并发闸（至多一个在途 + 在途期间合并成一次补跑）。
+import { RelatedRefreshGate } from './meeting-related-refresh.ts'
 import { createMeetingTodos, handoffTodoToAcc, shareTodoWithPerson } from './meeting-todo-persist'
 import { buildMeetingReminderNote, buildNoActionItemsNote } from './meeting-reminder-note.ts'
 import { dedupeSegments, renderTranscript } from './meeting-dedup.ts'
@@ -243,6 +245,19 @@ const noteRecs = ref<RecommendItem[]>([])
  */
 const agentRecs = ref<RecommendItem[]>([])
 let relatedTimer: ReturnType<typeof setTimeout> | null = null
+/**
+ * ⚠ §926：相关推荐刷新的**并发闸**。
+ *
+ * 缺陷形态：刷新是**每段触发**的（`watch(displaySegments.length)` ⇒ 2.5 s 定时器），
+ * 而一次刷新要等 `searchRelatedContext` 的三路（`Promise.all`）⇒ 段到达得比
+ * 一次刷新更快时，**每一次段到达都会再叠一个在途刷新** ⇒ 在途的第三方请求数
+ * 没有上界（实测每次触发 1.89 次外网请求，真实语料上中位 406 ms / max 6932 ms）。
+ *
+ * ⚠⚠ **这里合并的是「请求的并发」，不是「结果的合并」**：
+ * `refreshRelated()` 仍然**整体覆盖** `noteRecs`（§411 那道门钉着的既有契约），
+ * 合并掉的只是**中间轮次**，而补跑读的是**最新**分段 ⇒ 面板内容与「每次都跑」一致。
+ */
+const relatedGate = new RelatedRefreshGate()
 
 const {
   isRecording, segments, sttError, interimCaption, speakers, start, stop, appendText, formatElapsed, labelSpeaker,
@@ -620,11 +635,18 @@ function onOpenRelated(item: RecommendItem) {
 }
 
 async function refreshRelated() {
-  const q = relatedQueryFromTranscript(displaySegments.value.map((s) => s.text))
-  // 笔记按 workspace_id 分区，不传会落到 'default'、关联笔记永远为空
-  noteRecs.value = await searchRelatedContext(q, {
-    excludeMeetingId: meetingId.value,
-    workspaceId: auth.workspaceId || 'default',
+  // ⚠ §926：走并发闸 —— 至多一个在途；期间到达的段合并成一次补跑。
+  // ⚠ 注意这里**不能**加 catch：`fire-and-forget-audit` 门按「函数体内有无 catch」
+  //   决定 `void refreshRelated()` 要不要登记（`src/__tests__/fire-and-forget-audit.test.ts`
+  //   里那条 `MeetingDetailView.vue::refreshRelated` count=1 就是它）。
+  //   而 `searchRelatedContext` 的三条子查询各自 catch 后返回 [] ⇒ 本函数不会抛。
+  await relatedGate.run(async () => {
+    const q = relatedQueryFromTranscript(displaySegments.value.map((s) => s.text))
+    // 笔记按 workspace_id 分区，不传会落到 'default'、关联笔记永远为空
+    noteRecs.value = await searchRelatedContext(q, {
+      excludeMeetingId: meetingId.value,
+      workspaceId: auth.workspaceId || 'default',
+    })
   })
 }
 
