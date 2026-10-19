@@ -1181,3 +1181,90 @@ describe('§901 · D70：锚点必须能退化到句号（随手记链没有行�
       `${badEnd.length}/${chunks.length} 段的终点不在行边界 ⇒ 用的是句号锚点，而有行时应当优先用行`)
   })
 })
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * §902 · D71：`local_note_vectors` 的两个新列，**旧库升级后语义必须不变**
+ * ═══════════════════════════════════════════════════════════════════════════
+ * §898 加了 `chunks`（一行装几个段向量）、§899 加了 `chunk_hashes`（增量重嵌用）。
+ * 两者都是**纯加列**，好处正是「旧数据零改动继续可用」——
+ * ⚠ 但「旧数据零改动」这句话，到本节为止**没有任何判据在管**，纯靠注释。
+ *
+ * 本节跑**真 SQLite**（`node:sqlite`，与本文件 §879 那几段同一手法）：
+ *   ① 按「§898 之前的旧形状」建表并塞一条旧行；
+ *   ② 用**从 local-db.ts 源码里抽出来的** ALTER 语句升级；
+ *   ③ 断言旧行语义不变（chunks 默认 1、哈希默认空、向量仍能解析成 DIM 维）。
+ * ⇒ ② 之所以从源码抽：判据里抄一份 SQL 就是**第二份真相**，日后必然漂移。
+ */
+describe('§902 · D71：向量表加列后，旧库语义不变', () => {
+  /** 从 local-db.ts 的源码里抽出 `*_COLUMNS` 数组的内容（不手抄 SQL）。 */
+  function columnSql(name) {
+    const src = readFileSync(new URL('../local-db.ts', import.meta.url), 'utf8')
+    const at = src.indexOf(`const ${name} = [`)
+    assert.ok(at >= 0, `源码里找不到 ${name}`)
+    const end = src.indexOf('\n]', at)
+    assert.ok(end > at, `${name} 的数组没闭合`)
+    const body = src.slice(at, end)
+    return [...body.matchAll(/sql:\s*("(?:[^"\\]|\\.)*"|'[^']*')/g)].map((m) =>
+      m[1][0] === '"' ? JSON.parse(m[1]) : m[1].slice(1, -1),
+    )
+  }
+
+  it('★★★ 迁移清单必须声明这两个列（否则旧库升级后 load() 会查询失败）', () => {
+    const sql = columnSql('NOTE_VECTORS_V1_COLUMNS')
+    assert.equal(sql.length, 2, `NOTE_VECTORS_V1_COLUMNS 有 ${sql.length} 条，期望 2（chunks + chunk_hashes）`)
+    assert.match(sql[0], /ALTER TABLE local_note_vectors ADD COLUMN chunks INTEGER NOT NULL DEFAULT 1/,
+      `chunks 列的 ALTER 不对：${sql[0]}`)
+    assert.match(sql[1], /ALTER TABLE local_note_vectors ADD COLUMN chunk_hashes TEXT NOT NULL DEFAULT ''/,
+      `chunk_hashes 列的 ALTER 不对：${sql[1]}`)
+  })
+
+  it('★★★ 旧库升级后语义不变（真 SQLite：chunks 默认 1、哈希默认空、向量仍可解析）', () => {
+    const sqlite = new DatabaseSync(':memory:')
+    // §898 **之前**的表形状
+    sqlite.exec(`
+      CREATE TABLE local_notes (id TEXT PRIMARY KEY, content TEXT, created_at INTEGER, updated_at INTEGER);
+      CREATE TABLE local_note_vectors (
+        note_id TEXT PRIMARY KEY,
+        embedding BLOB NOT NULL,
+        dim INTEGER NOT NULL,
+        model TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+      );
+    `)
+    const vec = new Float32Array(DIM)
+    vec[0] = 1
+    sqlite.prepare('INSERT INTO local_notes (id, content, created_at, updated_at) VALUES (?,?,?,?)')
+      .run('old1', 'old1', 0, 0)
+    sqlite.prepare('INSERT INTO local_note_vectors (note_id, embedding, dim, model, created_at) VALUES (?,?,?,?,?)')
+      .run('old1', new Uint8Array(vec.buffer), DIM, 'm', 0)
+
+    // 升级：用源码里的 ALTER 语句（不是判据里手抄的一份）
+    for (const sql of columnSql('NOTE_VECTORS_V1_COLUMNS')) sqlite.exec(sql)
+
+    const cols = sqlite.prepare("SELECT name FROM pragma_table_info('local_note_vectors')").all().map((r) => r.name)
+    for (const c of ['chunks', 'chunk_hashes']) {
+      assert.ok(cols.includes(c), `升级后仍然没有 ${c} 列（现有：${cols.join(',')}）`)
+    }
+    const row = sqlite.prepare('SELECT note_id, chunks, chunk_hashes, dim FROM local_note_vectors WHERE note_id = ?').get('old1')
+    assert.ok(row, '升级后旧行不见了')
+    assert.equal(row.chunks, 1, `旧行 chunks=${row.chunks}，应为 1（旧数据是「整篇一个向量」）`)
+    assert.equal(row.chunk_hashes, '', `旧行 chunk_hashes=${JSON.stringify(row.chunk_hashes)}，应为空串（⇒ 下次一律重嵌，安全侧）`)
+    // 旧向量仍能解析成 DIM 维 —— 这是「升级没有损坏数据」的核心
+    const blob = row.dim ?? DIM
+    const raw = sqlite.prepare('SELECT embedding FROM local_note_vectors WHERE note_id = ?').get('old1').embedding
+    const bytes = new Uint8Array(raw.buffer, raw.byteOffset, raw.byteLength)
+    assert.equal(bytes.byteLength, blob * 4, `旧向量 BLOB 是 ${bytes.byteLength} 字节，应为 ${blob * 4}`)
+    const f = new Float32Array(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength))
+    assert.equal(f.length, blob, `旧向量解析出 ${f.length} 维，应为 ${blob}`)
+    assert.equal(f[0], 1, '旧向量的内容被升级改动了')
+  })
+
+  it('★★★ 新库（DDL 内联列）必须与迁移后的列形状一致', () => {
+    const src = readFileSync(new URL('../schema.ts', import.meta.url), 'utf8')
+    const ddl = src.slice(src.indexOf('CREATE TABLE IF NOT EXISTS local_note_vectors'))
+    assert.match(ddl.slice(0, ddl.indexOf(');')), /chunks INTEGER NOT NULL DEFAULT 1/,
+      'schema.ts 的 DDL 里没有 chunks 列 ⇒ 新库与升级后的旧库形状不同')
+    assert.match(ddl.slice(0, ddl.indexOf(');')), /chunk_hashes TEXT NOT NULL DEFAULT ''/,
+      'schema.ts 的 DDL 里没有 chunk_hashes 列 ⇒ 新库与升级后的旧库形状不同')
+  })
+})
