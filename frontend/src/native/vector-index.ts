@@ -22,6 +22,35 @@ export const DIM = 1536 // OpenAI text-embedding-3-small 维度（§881 导出�
 //   所以容量的实际缩水只来自「长会议笔记占比」这一个变量（§897.4）。
 const MAX_VECTORS = 50000
 
+/**
+ * ⚠⚠ §904/D73：这一行能不能按 `DIM` 解读？不能 ⇒ 返回原因字符串（供 warn 用），能 ⇒ null。
+ *
+ * ## 为什么需要它（这是本节修掉的真缺陷）
+ *
+ * 内存矩阵的每行宽就是 `DIM`，所以**库里的行只有「自己记的 dim 就是 DIM、
+ * 且 BLOB 恰好是 DIM 的整数倍」时才能被正确解读**。而修之前，三条路径
+ * （`load()` / `existingChunks()` / `add()`）**全都拿模块常量 `DIM` 无条件解读**：
+ *
+ * | 情形 | 修之前 | 后果 |
+ * |---|---|---|
+ * | 网关换成更高维的模型（3072） | `add()` 把它**截断成前一半**，`dim` 列照旧写 1536 | 索引里是**半条向量**，检索自信地给出错结果 |
+ * | 网关换成更低维的模型（1024） | `add()` 把它**补零到 1536**，`dim` 列照旧写 1536 | `dim` 列**记录的不是事实** |
+ * | 库里已是别的维度的行（换过设备/版本/模型，或被写坏） | `load()` 切不出完整一段 | 该笔记**静默消失**，零诊断 |
+ *
+ * ⚠ `dim` 列此前**只写不读**（`load()` 的 SELECT 里根本没有它），
+ *   所以它写的那个常量从来没人核对过。
+ *
+ * ⚠ 为什么不「自动适配别的维度」：内存矩阵是 DIM 宽的，混装不同维度的向量
+ *   在数学上就没有意义（点积不可比）。**正确的做法是把它们排除并出声**，
+ *   而不是硬凑成 DIM —— 凑出来的向量会让搜索**自信地答错**，比搜不到更糟。
+ */
+function unusableRow(floatCount: number, dim: number | null | undefined): string | null {
+  if (floatCount === 0) return `BLOB 为空`
+  if ((dim ?? DIM) !== DIM) return `dim=${dim} ≠ ${DIM}`
+  if (floatCount % DIM !== 0) return `BLOB 是 ${floatCount} 个 float，不是 ${DIM} 的整数倍`
+  return null
+}
+
 export interface VectorMatch {
   noteId: string
   score: number
@@ -58,8 +87,6 @@ export class VectorIndex {
    * ⚠ 连续是**不变式**：新增笔记追加在尾部；段数变化时走 `load()` 重建以恢复连续。
    */
   private noteSpans = new Map<string, { start: number; count: number }>()
-  /** §899：noteId → 它那一行记录的段哈希（增量重嵌用）。 */
-  private hashes = new Map<string, string[]>()
   private loaded = false
 
   // ⚠ 不能写成参数属性 `constructor(private readonly db: VectorDb = …)`：
@@ -73,10 +100,11 @@ export class VectorIndex {
   /** 从本地库加载全部向量到内存。App 启动后调用一次。 */
   async load(): Promise<void> {
     const rows = (await this.db.all(
-      'SELECT note_id, embedding, chunks, chunk_hashes FROM local_note_vectors',
+      'SELECT note_id, embedding, dim, chunks, chunk_hashes FROM local_note_vectors',
     )) as unknown as {
       note_id: string
       embedding: ArrayBuffer
+      dim?: number | null
       chunks?: number | null
       chunk_hashes?: string | null
     }[]
@@ -85,16 +113,27 @@ export class VectorIndex {
       this.matrix = new Float32Array(0)
       this.capacity = 0
       this.noteSpans = new Map()
-      this.hashes = new Map()
       this.loaded = true
       return
     }
     // ⚠ §898：每行可能是**多个段向量**（chunks 列），旧行 chunks=1。
     //   一行里的段向量在 BLOB 里连续存放（chunks × dim 个 float）。
+    // ⚠⚠ §904/D73：内存矩阵的**每行宽就是 DIM**，所以一行只有「恰好是 DIM 的整数倍、
+    //   且自己记的 dim 就是 DIM」时才可能被正确解读。**此前这里用模块常量 DIM
+    //   无条件解读每一行，`dim` 列根本没进 SELECT** ⇒ 非 DIM 维的行要么
+    //   **静默消失**（dim 小：切不出完整一段，被 `break` 掉）、
+    //   要么**静默取到错的片段**（dim 大：拿前 DIM 个 float 当一条向量）。
+    //   两者都零诊断 ⇒ 那条笔记永久搜不到，或**自信地给出错误结果**。
     const perRow: { noteId: string; vec: Float32Array }[] = []
+    const unusable: string[] = []
     for (const r of rows) {
-      const chunks = Math.max(1, r.chunks ?? 1)
       const raw = new Float32Array(r.embedding)
+      const why = unusableRow(raw.length, r.dim)
+      if (why) {
+        unusable.push(`${r.note_id}(${why})`)
+        continue
+      }
+      const chunks = Math.max(1, r.chunks ?? 1)
       const usable = Math.min(raw.length, chunks * DIM)
       const vec = raw.subarray(0, usable)
       for (let c = 0; c < chunks; c++) {
@@ -103,17 +142,21 @@ export class VectorIndex {
         perRow.push({ noteId: r.note_id, vec: vec.subarray(off, off + DIM) })
       }
     }
+    // ⚠ §883 的「只出声、不阻断」：坏行**排除出索引**（不能让错的向量参与点积），
+    //   但必须**汇总成一条 warn** —— 逐行 warn 会把真正的问题淹在日志里。
+    if (unusable.length > 0) {
+      console.warn(
+        `[vector] ${unusable.length} 行向量无法解读，已排除出内存索引（这些笔记将搜不到）：` +
+        `${unusable.slice(0, 5).join('、')}${unusable.length > 5 ? ` 等 ${unusable.length} 条` : ''}。` +
+        `常见原因：换过 embedding 模型（维度不同）、或 BLOB 被写坏。`,
+      )
+    }
     this.ids = perRow.map((p) => p.noteId)
     const buf = new Float32Array(perRow.length * DIM)
     perRow.forEach((p, i) => buf.set(p.vec, i * DIM))
     this.matrix = buf
     this.capacity = perRow.length
     this.noteSpans = buildSpans(this.ids)
-    // ⚠ §899：段哈希按行存（逗号分隔），这里按**行**记下，供 `existingChunks()` 用。
-    this.hashes = new Map()
-    for (const r of rows) {
-      this.hashes.set(r.note_id, (r.chunk_hashes ?? '').split(',').filter(Boolean))
-    }
     this.loaded = true
   }
 
@@ -138,8 +181,14 @@ export class VectorIndex {
     }[]
     if (rows.length === 0) return null
     const r = rows[0]
-    const chunks = Math.max(1, r.chunks ?? 1)
     const raw = new Float32Array(r.embedding)
+    // ⚠⚠ §904/D73：维度对不上的行**绝不能拿来做「复用」** ——
+    //   它要么切不出段（复用 0 条），要么切出**错位**的一段（复用错向量）。
+    //   按本函数既有的「没有可复用的」形态返回 ⇒ 调用方全部重嵌。
+    if (unusableRow(raw.length, r.dim)) {
+      return { hashes: [], vectors: [], model: r.model }
+    }
+    const chunks = Math.max(1, r.chunks ?? 1)
     const vectors: Float32Array[] = []
     for (let c = 0; c < chunks; c++) {
       const off = c * DIM
@@ -171,6 +220,25 @@ export class VectorIndex {
   ): Promise<void> {
     const list = Array.isArray(embedding) ? embedding : [embedding]
     if (list.length === 0) return
+    // ⚠⚠ §904/D73：**拒绝**把维度不对的向量写进库。
+    //   修之前的形状：`flat = new Float32Array(段数 × DIM)` + `set(v.subarray(0, DIM))`
+    //   ⇒ 更高维的向量被**静默截断成前一半**、更低维的被**静默补零**，
+    //     而 `dim` 列两种情况都写成常量 `DIM` ⇒ 这一列**记录的不是事实**。
+    //   实测（Node 22 + 真 node:sqlite，production add()）：
+    //     3072 维入参 ⇒ 库里 dim=1536、BLOB 6144 字节（应为 12288）
+    //     1024 维入参 ⇒ 库里 dim=1536、BLOB 6144 字节（应为 4096）
+    //   ⇒ 后果是索引里混着不同模型的向量，而 `search()` 会**自信地给出错结果**
+    //     （比「搜不到」更糟：用户无法分辨哪个结果是错的）。
+    //   按 §883「只出声、不阻断」：出声 + 不写库，**不**让保存笔记整条失败。
+    const bad = list.find((v) => v.length !== DIM)
+    if (bad) {
+      console.warn(
+        `[vector] 拒绝写入 ${model} 的向量：维度 ${bad.length} ≠ 索引维度 ${DIM}。` +
+        `该笔记这次不会进语义索引（笔记本身已保存）。` +
+        `若整个 workspace 都这样，说明网关的 embedding 模型换了维度 —— 需要重建索引。`,
+      )
+      return
+    }
     // L2 归一化，之后点积即余弦相似度
     const normalized = list.map((v) => normalize(v))
     const total = normalized.length * DIM
@@ -186,7 +254,6 @@ export class VectorIndex {
        ON CONFLICT(note_id) DO UPDATE SET embedding = EXCLUDED.embedding, dim = EXCLUDED.dim, model = EXCLUDED.model, chunks = EXCLUDED.chunks, chunk_hashes = EXCLUDED.chunk_hashes`,
       [noteId, blob.buffer, DIM, model, normalized.length, hashText, Date.now()],
     )
-    this.hashes.set(noteId, hashText ? hashText.split(',') : [])
 
     // ⚠⚠§881：这条笔记**已经在内存索引里**时，必须**就地覆盖**那一行向量。
     //   修之前的形状是 `isInMemory = !已存在 && 未超上限` ⇒ 更新一条已有笔记时

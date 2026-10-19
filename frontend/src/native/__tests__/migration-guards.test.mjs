@@ -1353,3 +1353,156 @@ describe('§903 · D72：load() 失败一次后，新向量必须仍然可被检
   //     本节的修复**没有去动它们**（它们还表达着「没装载就不作答」的意图，
   //     将来 n 的定义一变就可能有意义），但如实登记「今天删了也没事」。
 })
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * §904 · D73：`dim` 列**只写不读**；三条路径全都拿模块常量 `DIM` 无条件解读
+ * ═══════════════════════════════════════════════════════════════════════════
+ * 缺陷（实测，Node 22 + 真 node:sqlite + 生产 add()/load()/existingChunks()）：
+ *
+ *   | 入参/库里的行            | 修之前                                   | 后果 |
+ *   |------------------------|-----------------------------------------|------|
+ *   | 网关换成 3072 维模型      | 截断成**前一半**，`dim` 列照旧写 1536      | 索引里是半条向量，**自信地答错** |
+ *   | 网关换成 1024 维模型      | 补零到 1536，`dim` 列照旧写 1536          | `dim` 列**记录的不是事实** |
+ *   | 库里已是别的维度的行       | `load()` 切不出完整一段，被 `break` 掉     | 该笔记**静默消失**，零诊断 |
+ *
+ * ⇒ 关键事实：`load()` 的 SELECT **根本没查 `dim`** ⇒ 那个列写了两年没人核对。
+ * ⇒ 修法：**排除并出声**，不硬凑成 DIM（凑出来的向量会让搜索自信地答错，比搜不到更糟）。
+ */
+describe('§904 · D73：维度不对的向量必须被排除并出声，而不是硬凑', () => {
+  /**
+   * 抓 warn（§883 的「只出声、不阻断」：出声是本节要验的一半）。
+   *
+   * ⚠⚠⚠ **第一版是同步的，被两条判据当场揭穿**：`try { return { value: fn(), lines } }
+   *   finally { restore }` 里，`finally` 在 `fn()` **返回 promise 的那一刻**就跑了
+   *   —— 而 `load()` 的第一句就是 `await this.db.all(...)`，
+   *   它后面 emit 的 warn 全部发生在 restore 之后 ⇒ 抓了个空。
+   *   `add()` 之所以碰巧过了，是因为它的 warn 在**第一个 await 之前**（同步段）。
+   *   ⇒ 教训同 §901：**判据红先问「量具量的是不是那件事」**，别先动被测代码。
+   */
+  async function captureWarn(fn) {
+    const original = console.warn
+    const lines = []
+    console.warn = (...a) => lines.push(a.join(' '))
+    try { await fn() } finally { console.warn = original }
+    return lines
+  }
+
+  /** 造一条**维度是 DIM 之外**的库行（模拟换过模型 / 换过设备 / 被写坏）。 */
+  async function seedRowOfDim(db, nodeDb, noteId, dim) {
+    await seedNote(db, noteId)
+    const v = new Float32Array(dim)
+    v[0] = 1
+    await db.run(
+      'INSERT INTO local_note_vectors (note_id, embedding, dim, model, chunks, chunk_hashes, created_at)' +
+      ' VALUES (?,?,?,?,?,?,?)',
+      [noteId, new Uint8Array(v.buffer), dim, `model-${dim}`, 1, '', 0],
+    )
+  }
+
+  it('★★★ 前置闸：非 DIM 的向量确实进不了 DIM 宽的索引（否则下面几条都是恒真）', async () => {
+    const db = makeVectorDb()
+    await seedRowOfDim(db, null, 'odd', 1024)
+    const q = queryVec(1, 0)
+    assert.equal(q.length, DIM, '查询向量必须与 DIM 同宽')
+    // 数学前提：1024 个 float 切不出 1536 宽的一段。
+    assert.ok(1024 < DIM, `夹具前提不成立：${1024} 不小于 ${DIM}`)
+  })
+
+  it('★★★ add() 收到非 DIM 维的向量：拒绝写库 + 出声', async () => {
+    const db = makeVectorDb()
+    await seedNote(db, 'big')
+    const index = new VectorIndex(db)
+    await index.load()
+    const over = new Float32Array(3072); over[0] = 1
+    const lines = await captureWarn(() => index.add('big', over, 'model-3072'))
+    assert.ok(lines.some((l) => l.includes('3072')),
+      `没有为维度不符出声（收到的 warn：${JSON.stringify(lines)}）`)
+    const row = await db.all('SELECT dim FROM local_note_vectors WHERE note_id = ?', ['big'])
+    assert.equal(row.length, 0,
+      `仍写进库了（dim=${row[0]?.dim}）⇒ 半条向量会进索引，检索会自信地答错`)
+  })
+
+  it('★★★ 低维向量同样被拒绝（不能靠「补零」蒙混过关）', async () => {
+    const db = makeVectorDb()
+    await seedNote(db, 'small')
+    const index = new VectorIndex(db)
+    await index.load()
+    const under = new Float32Array(1024); under[0] = 1
+    const lines = await captureWarn(() => index.add('small', under, 'model-1024'))
+    assert.ok(lines.some((l) => l.includes('1024')), `没有出声：${JSON.stringify(lines)}`)
+    assert.equal((await db.all('SELECT note_id FROM local_note_vectors WHERE note_id = ?', ['small'])).length, 0,
+      '低维向量被补零写进库了 ⇒ dim 列记录的不是事实')
+  })
+
+  it('★★★ 库里的低维行：load() 必须排除它，且**同库的好行仍然搜得到**', async () => {
+    const db = makeVectorDb()
+    await seedRowOfDim(db, null, 'odd', 1024)
+    await seedNote(db, 'good')
+    const index = new VectorIndex(db)
+    await index.load()
+    await index.add('good', vec(1, 0), 'm')
+
+    const hits = index.search(queryVec(1, 0), 5)
+    assert.equal(hits.length, 1, `好行没搜到（hits=${JSON.stringify(hits)}）⇒ 一条坏行把整个索引搞坏了`)
+    assert.equal(hits[0].noteId, 'good')
+    assert.ok(!hits.some((h) => h.noteId === 'odd'), '维度不对的行仍参与了检索')
+  })
+
+  it('★★★ 库里的高维行：load() 必须排除它（不能拿前一半当向量）', async () => {
+    const db = makeVectorDb()
+    await seedRowOfDim(db, null, 'big', 3072)
+    const index = new VectorIndex(db)
+    const lines = await captureWarn(() => index.load())
+    assert.equal(index.search(queryVec(1, 0), 5).length, 0,
+      '3072 维的行进了索引 ⇒ 取的是它的前一半，检索结果是错的')
+    assert.ok(lines.some((l) => l.includes('3072')), `load() 没有出声：${JSON.stringify(lines)}`)
+  })
+
+  it('★★★ 坏行必须出声（不能只是静默消失）', async () => {
+    const db = makeVectorDb()
+    await seedRowOfDim(db, null, 'odd', 1024)
+    const index = new VectorIndex(db)
+    const lines = await captureWarn(() => index.load())
+    assert.ok(lines.some((l) => l.includes('odd') && l.includes('1024')),
+      `没有点名是哪一条、哪一维：${JSON.stringify(lines)}`)
+  })
+
+  it('★★★ 复用路径：高维 + 有哈希的行，绝不能被当成「可复用」', async () => {
+    // ⚠ 这条是本节**唯一一条低维形态盖不住**的判据，形状必须精确：
+    //   低维（1024）行在**修之前**就被 `hashes.length !== vectors.length` 挡住了
+    //   （vectors 切出来是 0 条）⇒ 用低维形态写这条判据，它对修复是**恒绿**的（无牙）。
+    //   高维（3072）+ **非空 chunk_hashes** 才是真的漏网：
+    //     修之前 vectors 切出 **1 条**（前一半）、hashes 也是 1 条 ⇒ 长度相等
+    //     ⇒ `existingChunks()` 返回「可复用」⇒ §899 会**拿半条向量当正确的旧向量**
+    //       跳过 API 调用，笔记从此带着错向量留在索引里。
+    const db = makeVectorDb()
+    await seedNote(db, 'big')
+    const v = new Float32Array(3072); v[0] = 1
+    await db.run(
+      'INSERT INTO local_note_vectors (note_id, embedding, dim, model, chunks, chunk_hashes, created_at)' +
+      ' VALUES (?,?,?,?,?,?,?)',
+      ['big', new Uint8Array(v.buffer), 3072, 'model-3072', 1, 'deadbeef', 0],
+    )
+    const index = new VectorIndex(db)
+    await index.load()
+    const prev = await index.existingChunks('big')
+    assert.equal(prev?.hashes.length, 0,
+      '维度不对的行仍被当成可复用 ⇒ §899 会拿半条向量跳过 API 调用')
+    assert.equal(prev?.vectors.length, 0, '维度不对的行仍返回了向量')
+  })
+
+  it('★★ 正控：DIM 维的正常向量一切照旧（这条防「把好行也一起排除」）', async () => {
+    const db = makeVectorDb()
+    await seedNote(db, 'good')
+    const index = new VectorIndex(db)
+    const lines = await captureWarn(() => index.load())
+    await index.add('good', vec(1, 0), 'm')
+    assert.equal(lines.length, 0, `正常库不该出声：${JSON.stringify(lines)}`)
+    const hits = index.search(queryVec(1, 0), 5)
+    assert.equal(hits.length, 1, '正常向量搜不到了')
+    assert.ok(Math.abs(hits[0].score - 1) < 1e-6, `score=${hits[0].score}`)
+    // dim 列必须记**实际**维度
+    const row = await db.all('SELECT dim FROM local_note_vectors WHERE note_id = ?', ['good'])
+    assert.equal(row[0].dim, DIM, `dim 列记成了 ${row[0].dim}，应=${DIM}`)
+  })
+})
