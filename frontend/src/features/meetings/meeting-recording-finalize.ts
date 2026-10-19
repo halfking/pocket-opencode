@@ -261,6 +261,9 @@ export async function finalizeRecording(
       //   而长会议上真正的原因是「转写太长，模型回显不完」。
       //   不传这一项，`rejectedReason` 就断在 API 层，用户被指向一个错的原因。
       rejectedReason: result.rejectedReason,
+      // ⚠⚠ §910/D79：留存判定的原因也必须传到文案层，
+      //   否则「模型写成了摘要」会被报成「云端返回无法解析」。
+      retentionReason: result.retentionReason,
       adopted: outcome.adopted && finalText.applied,
       failedSegments: finalText.failedSegments,
     })

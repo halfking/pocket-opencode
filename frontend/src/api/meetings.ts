@@ -138,6 +138,15 @@ export interface RefineResult {
    */
   rejectedReason?: 'participant_leak' | 'shrinkage'
   /**
+   * ⚠⚠ §910/D79：`assessRefineRetention` 判定**不通过**时的原因码。
+   *
+   * ⚠ 它此前只进了 `console.warn`（`refine-too-short(1234<2500，原文 5000)` 这种），
+   *   而对用户的文案一律压成「云端返回无法解析」——
+   *   **可 JSON 解析得好好的**，真实原因是「模型把精校做成了摘要」。
+   *   ⇒ 与 §907/§908 同族：**桶名是对外承诺**，把已有的判定原因放出来不需要新机制。
+   */
+  retentionReason?: string
+  /**
    * 服务端本次送给 LLM 的转写规模（**runes**，不是字节）。
    *
    * ⚠ §426：精校链**也不带转写截断**，而 `ErrOutputTruncated` 只认**输出**侧
@@ -361,6 +370,10 @@ export function normalizeRefine(raw: Record<string, unknown>, segments: MeetingS
   //   「响应完整、但模型把精校做成了摘要」无人看守 ⇒ 用户看到少了很多的正文，
   //   徽章却写「已精校」。判定放在纯模块里（§52：本文件在 node 里 import 不了）。
   const retention = assessRefineRetention({ original: fallback, refined: String(serverRefined ?? '') })
+  // ⚠⚠ §910：把**原因**带出��去，不再只进 console.warn。
+  //   「精校稿比原文短太多」与「云端返回无法解析」对用户是**两件事**，
+  //   后者会让用户去查网络/云端，而真正的原因无人知晓。
+  const retentionReason = retention.ok ? undefined : retention.reason
   if (!retention.ok) {
     console.warn(
       `[meetings] 精校结果未通过内容留存判定（${retention.reason}）：`
@@ -412,6 +425,7 @@ export function normalizeRefine(raw: Record<string, unknown>, segments: MeetingS
     tasksCreated: Number(raw.tasks_created ?? raw.tasksCreated ?? 0) || undefined,
     ...(fromFallback ? { fromFallback: true } : {}),
     ...(rejected ? { rejected: true, ...(rejectedReason ? { rejectedReason } : {}) } : {}),
+    ...(retentionReason ? { retentionReason } : {}),
     ...(refineInputRunes === undefined ? {} : { inputRunes: Number(refineInputRunes) }),
   }
 }
@@ -568,6 +582,8 @@ export function refineFromLlmContent(content: string, transcript: string): Refin
   //   本函数**恒** `fromFallback: true`，所以文案与状态已经对；此处只管正文用哪一份。
   const retention = assessRefineRetention({ original: transcript, refined: hasRefined ? (raw as string) : '' })
   return {
+    // ⚠ §910：这条是**浏览器内 LLM 兜底路径**，原因同样带出去（两条路都得给同一个真相）
+    ...(retention.ok ? {} : { retentionReason: retention.reason }),
     refinedTranscript: hasRefined && retention.ok ? (raw as string) : transcript,
     translations: (parsed.translations ?? {}) as Record<string, string>,
     structuredMinutes: {

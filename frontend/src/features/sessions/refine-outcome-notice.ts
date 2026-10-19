@@ -33,6 +33,14 @@ export interface RefineNoticeInput {
    * 不给就按 `participant_leak` 说（保持既有行为，向后兼容）。
    */
   rejectedReason?: RefineRejectReason
+  /**
+   * ⚠⚠ §910/D79：`assessRefineRetention` 判定**不通过**的原因码
+   * （`refine-empty` / `refine-too-short(...)`）。
+   * ⚠ 它命中的正是「响应完整、但模型把精校做成了摘要」那一档 ——
+   *   而文案此前一律说「云端返回无法解析」，那是**错的**：
+   *   JSON 解析得好好的，模型解析失败那句话会让用户去查错的方向。
+   */
+  retentionReason?: string
   /** 本地整段重转已采用 */
   adopted?: boolean
   /** 重转里有分片失败 */
@@ -51,7 +59,7 @@ export function buildRefineNotice(input: RefineNoticeInput): {
   kind: 'info' | 'success'
   text: string
 } {
-  const { fromFallback, rejected, rejectedReason, adopted, failedSegments } = input
+  const { fromFallback, rejected, rejectedReason, retentionReason, adopted, failedSegments } = input
   const adoptSuffix = adopted ? '已整段重转；' : ''
 
   // ⚠ 顺序不能反：rejected 同时也会带 fromFallback=true，
@@ -75,6 +83,16 @@ export function buildRefineNotice(input: RefineNoticeInput): {
     }
   }
   if (fromFallback) {
+    // ⚠⚠ §910/D79：留存判定不通过**不是**「无法解析」。
+    //   `refine-too-short` 的形态是「响应完整、但模型把精校做成了摘要」，
+    //   报成解析失败会让用户去查网络/云端，而真正的原因无人知晓。
+    if (retentionReason?.startsWith('refine-too-short')) {
+      return {
+        kind: 'info',
+        text: `${adoptSuffix}精翻未生效（这份精校比原文短太多，可能是模型写成了摘要），`
+          + `显示的是原始转写（内容完整，只少了错字纠正）`,
+      }
+    }
     return {
       kind: 'info',
       text: `${adoptSuffix}精翻未生效（云端返回无法解析），显示的是原始转写`,
