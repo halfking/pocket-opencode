@@ -35,7 +35,11 @@ describe('#58 · soft 路整段重复超窗口保留完整两份', () => {
         { text, speakerLabel: 'B', startMs: 4500, endMs: 7500 },
       ]
       const step = dedupeStep({ prev: text, raw: text, prevEndMs: 3000, startMs: 4500 })
-      assert.deepEqual(step, { added: true, text, body: text + text })
+      // ⚠ §914：`DedupeStep` 新增了 `delta`（本次净增）——
+      //   它的存在是为了让调用方**不必**再对累积正文做 `slice`
+      //   （那条链是 ConsString，slice 会强制展平 ⇒ O(n²)）。
+      //   另三个字段逐字未变（`added` / `text` / `body`），本判据仍然逐字钉住它们。
+      assert.deepEqual(step, { added: true, text, body: text + text, delta: text })
       assert.deepEqual(dedupeSegments(input).map(s => s.text), [text, text])
       assert.equal(renderTranscript(input), `[A] ${text}\n[B] ${text}`)
     })

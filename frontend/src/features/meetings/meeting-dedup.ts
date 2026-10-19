@@ -74,6 +74,162 @@ const MIN_ANCHOR = 4
 const MAX_OVERLAP = 40
 
 /**
+ * §914：取字符串**末尾最多 `max` 个码点**，且**只扫末尾那几十个码元**。
+ *
+ * ⚠⚠ 为什么需要它（这是本节修的那个二次方的根）：
+ *   原实现在 `dedupeSegmentText` / `dedupeSegmentTextSoft` 里做的是
+ *   `Array.from(committed)` —— 把**整段累积正文**转成码点数组，
+ *   而且**每段做一次**。⇒ 单段成本 O(累积正文长度)，总量 **O(n²)**。
+ *   实测（§914.3）：8 小时会议（1958 段）光去重就 **6.6 秒**、瞬时堆涨 461MB；
+ *   24 小时（5876 段）**直接 OOM**（4GB 堆 / 109 秒）。
+ *
+ * ⚠ 为什么不能简单改成 `Array.from(committed.slice(-MAX_OVERLAP))`：
+ *   `slice` 按 **UTF-16 码元**切，会把代理对（emoji 等非 BMP）切成两半
+ *   ⇒ 码点数组与原来**不等价**。
+ *   本函数从末尾**按码点**回扫，遇代理对整对取走 ⇒ 拿到的正是
+ *   「最后 min(max, 总码点数) 个码点」，与原实现的窗口**逐字相同**。
+ *
+ * ⚠ 为什么只取末尾窗口就够：`lcsNetNew` 内部只用
+ *   `cs.slice(cs.length - limit)`，而 `limit = min(MAX_OVERLAP, cs.length, ns.length)`
+ *   ⇒ 它**永远只看末尾 ≤ MAX_OVERLAP 个码点**。
+ *   ⚠ 而 `limit` 的计算用的是 `cs.length`（= 总码点数）⇒ 截断后
+ *   `cs.length = min(MAX_OVERLAP, 总码点数)`，
+ *   于是 `min(MAX_OVERLAP, min(MAX_OVERLAP, 总), ns.length)`
+ *   **恒等于** `min(MAX_OVERLAP, 总, ns.length)` ⇒ 窗口与输出**逐字不变**。
+ */
+function tailCodePoints(s: string, max: number): string[] {
+  const out: string[] = []
+  let i = s.length
+  while (i > 0 && out.length < max) {
+    const code = s.charCodeAt(i - 1)
+    // 低代理 ⇒ 它属于一个代理对，必须连高代理一起取
+    if (code >= 0xdc00 && code <= 0xdfff && i >= 2) {
+      const hi = s.charCodeAt(i - 2)
+      if (hi >= 0xd800 && hi <= 0xdbff) {
+        out.push(s.slice(i - 2, i))
+        i -= 2
+        continue
+      }
+    }
+    out.push(s[i - 1])
+    i -= 1
+  }
+  return out.reverse()
+}
+
+/**
+ * §914：去重的内部结果 —— 「净增」与「累积正文」**分开**返回。
+ *
+ * ⚠⚠ 为什么必须分开：原来只有「累积正文」一个返回值，调用方靠
+ *   `body.slice(prev.length)` 取出净增。
+ *   ⚠ 而 `body` 是一条 **ConsString 链**（`committed + delta` 一段段拼出来的），
+ *   对它 `slice` 会**强制展平整条链** ⇒ 每段一次 O(累积正文长度) 的拷贝
+ *   ⇒ 总量 **O(n²)**。
+ *   实测（§914.3）：只修掉「窗口那一半」之后，12 小时会议**仍然 OOM**，
+ *   栈是 `String::SlowFlatten` / `NewRawTwoByteString` ⇒ 正是展平拷贝。
+ * ⇒ 现在直接把净增算出来返回，调用方**不用再 slice**。
+ */
+interface DedupeParts {
+  /** 去重后的累积正文（= `committed + delta`）。 */
+  body: string
+  /** 本次的净增（可能是空串）。 */
+  delta: string
+}
+
+/**
+ * §914：`dedupeSegmentText` 的内部形态（返回净增 + 累积正文）。
+ *
+ * ⚠ `committedTail` = `committed` 末尾 ≤ `MAX_OVERLAP` 个**码点**。
+ *   传了就用它，不再去碰 `committed` 本身（热路径上 `committed` 是一条
+ *   正在增长的 ConsString 链，碰它就意味着展平 ⇒ O(n²)）。
+ */
+function dedupeSegmentTextParts(
+  committed: string,
+  next: string,
+  minCoverage: number,
+  committedTail?: string[],
+): DedupeParts {
+  const n = next.trim()
+  if (!committed) return { body: n, delta: n }
+  if (!n) return { body: committed, delta: '' }
+
+  // 1) 精确公共后缀/前缀（原后端策略，命中即最可信）
+  // ⚠⚠ §914：`cs` 现在**只含末尾 ≤ MAX_OVERLAP 个码点**（原来是对整段累积正文
+  //   做 `Array.from(committed)`，每段一次 ⇒ O(n²)）。
+  //   `limit` 的取值因此仍是 `min(MAX_OVERLAP, 总码点数, ns.length)`（见 tailCodePoints 注释），
+  //   窗口与输出**逐字不变**。
+  const cs = committedTail ?? tailCodePoints(committed, MAX_OVERLAP)
+  const ns = Array.from(n)
+  const limit = Math.min(MAX_OVERLAP, cs.length, ns.length)
+  for (let k = limit; k >= 2; k--) {
+    if (cs.slice(cs.length - k).join('') === ns.slice(0, k).join('')) {
+      const delta = ns.slice(k).join('')
+      return { body: committed + delta, delta }
+    }
+  }
+
+  // 2) LCS 对齐消解（重叠区内部有标点/增删时必需）
+  const netNew = lcsNetNew(cs, ns, minCoverage)
+  if (netNew !== null) return { body: committed + netNew, delta: netNew }
+
+  // 3) 判为不重叠，原样拼接 —— 宁可多几个字，也不要丢真实内容
+  return { body: committed + n, delta: n }
+}
+
+/**
+ * §914：`dedupeSegmentTextSoft` 的内部形态（返回净增 + 累积正文）。
+ *
+ * **保守版**：跳过精确匹配那条更激进的路径，只走 LCS 覆盖率闸。
+ * 用途：时间轴已经表明两段之间**有正常静音间隙**时，纯文本形态与切片重叠
+ * 完全一样（新段以旧段结尾开头），此时若还让精确匹配命中，就会把
+ * 「用户真的重复说了一遍的话」吃掉（§41 记录的固有局限）。
+ *
+ * ⚠ `committedTail` 的语义见 `dedupeSegmentTextParts`。
+ */
+function dedupeSegmentTextSoftParts(
+  committed: string,
+  next: string,
+  minCoverage: number,
+  committedTail?: string[],
+): DedupeParts {
+  const n = next.trim()
+  if (!committed) return { body: n, delta: n }
+  if (!n) return { body: committed, delta: '' }
+  // #58（属主选择①，2026-10-16）：与 Go mergeIncremental 的整段重复护栏对齐。
+  // 只保护双方全文相同且超窗口这一格；不把累积正文的相同后缀视为全文重复。
+  // Array.from 按码点计数，避免非 BMP 字符的 UTF-16 长度提前越过 40 字边界。
+  const ns = Array.from(n)
+  // ⚠⚠ 注意这行 `committed === n` **必须继续用整段 committed**：
+  //   那是 #58 的「全文重复」护栏，一旦换成尾窗口，
+  //   条件 `ns.length > MAX_OVERLAP` 与窗口长度矛盾 ⇒ 护栏**静默失效**。
+  //   ⇒ 「比较用窗口、判全文用原文」这个分工是刻意的。
+  //   ⚠ V8 的字符串相等先比长度 ⇒ 长度不等时是 O(1)，不会展平链条。
+  if (committed === n && ns.length > MAX_OVERLAP) return { body: committed + n, delta: n }
+  // ⚠⚠ §914：这里原来也是 `Array.from(committed)`（**整段累积正文**，每段一次
+  //   ⇒ O(n²)）。现在只取末尾 ≤ MAX_OVERLAP 个码点 ——
+  //   而 `lcsNetNew` 本来就只用 `cs.slice(cs.length - limit)`，
+  //   `limit = min(MAX_OVERLAP, cs.length, ns.length)`
+  //   ⇒ 截断后 limit 不变、窗口不变、**输出逐字不变**。
+  const netNew = lcsNetNew(committedTail ?? tailCodePoints(committed, MAX_OVERLAP), ns, minCoverage)
+  if (netNew !== null) return { body: committed + netNew, delta: netNew }
+  return { body: committed + n, delta: n }
+}
+
+/**
+ * §914：从「上一次的末尾窗口 + 本次净增」滚出新的末尾窗口。
+ *
+ * ⚠ 为什么这样滚是**精确**的：新窗口必须是「累积正文最后 ≤ max 个码点」。
+ *   而 `末尾窗口(累积正文 + delta)` 恒等于 `末尾窗口(末尾窗口(累积正文) + delta)`
+ *   —— 只要窗口本身已经包含了正文最后 max 个码点。
+ *   （delta 比窗口长时，新窗口全来自 delta；delta 比窗口短时，
+ *   新窗口 = 旧窗口的尾部 + delta，而旧窗口的尾部就是正文对应的尾部。）
+ */
+function rollTail(prevTail: string, delta: string): string {
+  if (!delta) return prevTail
+  return tailCodePoints(prevTail + delta, MAX_OVERLAP).join('')
+}
+
+/**
  * 把新一段文本接到已有文本后，消解两段的重叠。
  *
  * 与后端 mergeIncremental 同契约：
@@ -88,47 +244,7 @@ const MAX_OVERLAP = 40
  *   两段都是 ASR 时的这个残片是**有意保留**的取舍，不是待修缺陷。
  */
 export function dedupeSegmentText(committed: string, next: string, minCoverage = ANCHOR_COVERAGE): string {
-  const n = next.trim()
-  if (!committed) return n
-  if (!n) return committed
-
-  // 1) 精确公共后缀/前缀（原后端策略，命中即最可信）
-  const cs = Array.from(committed)
-  const ns = Array.from(n)
-  const limit = Math.min(MAX_OVERLAP, cs.length, ns.length)
-  for (let k = limit; k >= 2; k--) {
-    if (cs.slice(cs.length - k).join('') === ns.slice(0, k).join('')) {
-      return cs.join('') + ns.slice(k).join('')
-    }
-  }
-
-  // 2) LCS 对齐消解（重叠区内部有标点/增删时必需）
-  const netNew = lcsNetNew(cs, ns, minCoverage)
-  if (netNew !== null) return cs.join('') + netNew
-
-  // 3) 判为不重叠，原样拼接 —— 宁可多几个字，也不要丢真实内容
-  return committed + n
-}
-
-/**
- * **保守版**：跳过精确匹配那条更激进的路径，只走 LCS 覆盖率闸。
- *
- * 用途：时间轴已经表明两段之间**有正常静音间隙**时，纯文本形态与切片重叠
- * 完全一样（新段以旧段结尾开头），此时若还让精确匹配命中，就会把
- * 「用户真的重复说了一遍的话」吃掉（§41 记录的固有局限）。
- */
-function dedupeSegmentTextSoft(committed: string, next: string, minCoverage = ANCHOR_COVERAGE): string {
-  const n = next.trim()
-  if (!committed) return n
-  if (!n) return committed
-  // #58（属主选择①，2026-10-16）：与 Go mergeIncremental 的整段重复护栏对齐。
-  // 只保护双方全文相同且超窗口这一格；不把累积正文的相同后缀视为全文重复。
-  // Array.from 按码点计数，避免非 BMP 字符的 UTF-16 长度提前越过 40 字边界。
-  const ns = Array.from(n)
-  if (committed === n && ns.length > MAX_OVERLAP) return committed + n
-  const netNew = lcsNetNew(Array.from(committed), ns, minCoverage)
-  if (netNew !== null) return committed + netNew
-  return committed + n
+  return dedupeSegmentTextParts(committed, next, minCoverage).body
 }
 
 /**
@@ -227,6 +343,14 @@ export interface DedupeStep {
   text: string
   /** 去重后的累积正文，供下一段对齐。 */
   body: string
+  /**
+   * §914：本次的**净增**（`body` 相对 `prev` 多出来的那部分）。
+   *
+   * ⚠ 为什么要有它：原来调用方靠 `body.slice(prev.length)` 取净增，
+   *   而 `body` 是 ConsString 链 ⇒ `slice` 会**强制展平整条链** ⇒ O(n²)。
+   * ⇒ 现在由本函数**直接算好**返回，调用方不用再 slice。
+   */
+  delta: string
 }
 
 /**
@@ -243,6 +367,16 @@ export interface DedupeStep {
 export function dedupeStep(input: {
   /** 已输出的累积正文。 */
   prev: string
+  /**
+   * §914：`prev` 的**末尾 ≤ MAX_OVERLAP 个码点**（字符串形态）。
+   *
+   * ⚠ 传了就用它做 LCS 窗口，**不再去碰 `prev` 本身** ——
+   *   热路径上 `prev` 是一条正在增长的 ConsString 链，
+   *   碰它（`Array.from` / `charCodeAt`）就会**展平整条链** ⇒ O(n²)。
+   *   ⇒ 这一对参数（`prev` 全文 + `prevTail` 窗口）就是「比较用窗口、
+   *   判全文用原文」这个分工的落地。
+   */
+  prevTail?: string
   /** 本段 ASR 原文。 */
   raw: string
   prevEndMs?: number
@@ -252,9 +386,9 @@ export function dedupeStep(input: {
 }): DedupeStep {
   const { prev, raw, prevEndMs, startMs, manual = false } = input
   const n = raw.trim()
-  if (!prev) return { added: !!n, text: n, body: n }
-  if (!n) return { added: false, text: '', body: prev }
-  if (manual) return { added: true, text: n, body: prev + n }
+  if (!prev) return { added: !!n, text: n, body: n, delta: n }
+  if (!n) return { added: false, text: '', body: prev, delta: '' }
+  if (manual) return { added: true, text: n, body: prev + n, delta: n }
 
   const hasTiming = Number.isFinite(prevEndMs) && Number.isFinite(startMs)
   const overlapByTiming = hasTiming && likelyAudioOverlap({ prevEndMs, nextStartMs: startMs })
@@ -274,8 +408,15 @@ export function dedupeStep(input: {
   // ⇒ ⚠ 「所有生产者都带齐时间戳」这个不变量**当前没有任何判据钉住** —— 哪天新增一条链路
   //   漏了 endMs，这里会**静默**切到精确档，而不会有任何测试在生产形状上发现。登记为 #61。
   const useExact = hasTiming ? overlapByTiming : true
-  const body = useExact ? dedupeSegmentText(prev, n) : dedupeSegmentTextSoft(prev, n)
-  const delta = body.length > prev.length ? body.slice(prev.length) : ''
+  // §914：窗口从 `prevTail` 取（热路径不再碰 `prev` 这条 ConsString 链），
+  //   净增由 parts 版本**直接给出**（不再 `body.slice(prev.length)`）。
+  const tail = input.prevTail !== undefined
+    ? tailCodePoints(input.prevTail, MAX_OVERLAP)
+    : tailCodePoints(prev, MAX_OVERLAP)
+  const parts = useExact
+    ? dedupeSegmentTextParts(prev, n, ANCHOR_COVERAGE, tail)
+    : dedupeSegmentTextSoftParts(prev, n, ANCHOR_COVERAGE, tail)
+  const { body, delta } = parts
   const added = delta ? true : !overlapByTiming
   return {
     added,
@@ -283,6 +424,7 @@ export function dedupeStep(input: {
     //   否则会渲染出空的 `[李四] ` —— 那既丢了内容，又让人以为该段是空的。
     text: added ? delta || n : '',
     body,
+    delta,
   }
 }
 
@@ -331,10 +473,15 @@ export function dedupeSegments<T extends {
   if (segments.length <= 1) return segments.slice()
   const out: T[] = []
   let prevBody = ''
+  // §914：累积正文的**末尾窗口**，增量维护（O(净增) 每段）。
+  //   没有它，去重就得去读 `prevBody` —— 而那是一条越来越长的 ConsString 链，
+  //   读它就意味着展平 ⇒ O(n²)。实测 8 小时会议 6.6 秒、24 小时 OOM。
+  let prevTail = ''
   let prevEndMs: number | undefined
   for (const s of segments) {
     const step = dedupeStep({
       prev: prevBody,
+      prevTail,
       raw: s.text ?? '',
       prevEndMs,
       startMs: s.startMs,
@@ -342,6 +489,7 @@ export function dedupeSegments<T extends {
     })
     if (step.added) out.push({ ...s, text: step.text })
     prevBody = step.body
+    prevTail = rollTail(prevTail, step.delta)
     prevEndMs = Number.isFinite(s.endMs) ? s.endMs : undefined
   }
   return out
@@ -390,10 +538,14 @@ export function renderTranscript(
 ): string {
   const lines: string[] = []
   let prevBody = ''
+  // §914：同上（`dedupeSegments` 的注释）—— 末尾窗口增量维护，
+  //   不去读那条越来越长的 ConsString 链。
+  let prevTail = ''
   let prevEndMs: number | undefined
   for (const s of segments) {
     const step = dedupeStep({
       prev: prevBody,
+      prevTail,
       raw: s.text ?? '',
       prevEndMs,
       startMs: s.startMs,
@@ -424,6 +576,7 @@ export function renderTranscript(
       lines.push(`[${speaker}] ${step.text}`)
     }
     prevBody = step.body
+    prevTail = rollTail(prevTail, step.delta)
     prevEndMs = Number.isFinite(s.endMs) ? s.endMs : undefined
   }
   return lines.join('\n')

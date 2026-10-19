@@ -26,7 +26,7 @@ import { describe, it } from 'node:test'
 import { readdirSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, relative } from 'node:path'
-import { dedupeSegmentText, dedupeSegments, dedupeTranscriptParagraphs, likelyAudioOverlap, renderTranscript } from './meeting-dedup.ts'
+import { dedupeSegmentText, dedupeSegments, dedupeStep, dedupeTranscriptParagraphs, likelyAudioOverlap, renderTranscript } from './meeting-dedup.ts'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const read = (f: string) => readFileSync(join(HERE, f), 'utf8')
@@ -830,5 +830,224 @@ describe('§608 · 已登记的 Go↔TS 行为差异：整段重复超阈值时 
     const src = read('meeting-dedup.test.ts')
     assert.ok(src.includes('#58'),
       '本文件的差异说明引用了决策简报 #58；若要删这段说明，请先改简报条目')
+  })
+})
+
+/**
+ * §914 / D82：长会议的相邻去重**曾经是二次方的** ——
+ * 打开一场 8 小时的会议，光去重就要 6.6 秒；12 小时以上直接把页面打死。
+ *
+ * ── 缺陷形态（**只有一层**是二次方；另一层是实测证伪的）──
+ *
+ * ① **窗口那一层（真病根）**：`dedupeSegmentText` / `dedupeSegmentTextSoft`
+ *    里做的是 `Array.from(committed)` —— 把**整段累积正文**转成码点数组，
+ *    而且**每段做一次**。⇒ 单段 O(累积正文长度)，总量 O(n²)。
+ *    ⚠ 第一版修复只把 `Array.from(committed)` 换成「取末尾窗口」，
+ *      但窗口是用 `charCodeAt` 逐字读的 —— 而 `committed` 是 ConsString 链，
+ *      **读它就得展平** ⇒ 12 小时会议**仍然 OOM**（栈 `String::SlowFlatten`）。
+ *    ⇒ 真正的修法是：**窗口由调用方增量维护，函数内一次都不碰 `committed`**。
+ *
+ * ② **展平那一层（⚠ 实测证伪，不是病根）**：调用方原本靠
+ *    `body.slice(prev.length)` 取净增，看着像会强制展平整条链。
+ *    ⚠⚠ **实测否定了这个推断**：把净增改回 `body.slice(prev.length)` 后，
+ *    1200 段仍然只要 **36ms**、且 **ms/段 持平**（0.024 → 0.035，线性）
+ *    ⇒ V8 对 ConsString **尾部**的 slice 不必展平整条链。
+ *    ⇒ 「delta 由函数直接算好返回」是**顺手的清理**（少一次拷贝、
+ *      且 `rollTail` 需要它），**但它不是 O(n²) 的来源**。
+ *    ⚠ 所以下面规模判据**不**该靠它变红：把它改回 slice 是**语义等价**的
+ *      （判据②正是用来证明这一点的）⇒ 那种变异**理应**不红。
+ *
+ * ── 修法 ──
+ * 比较窗口由调用方**增量维护**（`rollTail`），函数内**一次都不碰**那条链；
+ * 净增由函数直接算好返回（`DedupeStep.delta`）。
+ *
+ * ── 这道门守什么 ──
+ * ① **差分**：新实现必须与「修复前的逐字副本」在随机语料上**完全一致**
+ *    （这是「性能优化不改变行为」的判别器）；
+ * ② **delta 语义**：`delta` 必须恒等于修复前的取法 `body.slice(prev.length)`；
+ * ③ **规模**：2000 段（≈8 小时会议）必须在预算内完成 ⇒ 钉住「线性」。
+ */
+describe('§914 · 长会议去重必须是线性的（修掉的是 O(n²)）', () => {
+  const LEGACY_MAX_OVERLAP = 40
+  const LEGACY_MIN_ANCHOR = 4
+  const LEGACY_COVERAGE = 0.6
+
+  /**
+   * §914 **冻结参照实现** —— 修复**之前**的 `lcsNetNew`，逐字副本。
+   *
+   * ⚠ 为什么要在判据里放一份**抄写**：它是「输出应当逐字不变」的判别器。
+   *   抄写件与生产件一旦分叉 ⇒ 这条差分会红 ⇒ 那**是真实信号**
+   *   （两版算法开始分叉了），此时应当去读 §914 的文档并同步复核 Go 侧差分。
+   */
+  function legacyLcsNetNew(cs: string[], ns: string[], minCoverage = LEGACY_COVERAGE): string | null {
+    const limit = Math.min(LEGACY_MAX_OVERLAP, cs.length, ns.length)
+    if (limit < 2) return null
+    const tail = cs.slice(cs.length - limit)
+    const head = ns.slice(0, limit)
+    const n = limit
+    const dp: number[][] = Array.from({ length: n + 1 }, () => new Array<number>(n + 1).fill(0))
+    for (let i = 1; i <= n; i++) {
+      for (let j = 1; j <= n; j++) {
+        if (tail[i - 1] === head[j - 1]) dp[i][j] = dp[i - 1][j - 1] + 1
+        else dp[i][j] = Math.max(dp[i - 1][j], dp[i][j - 1])
+      }
+    }
+    const lcsLen = dp[n][n]
+    if (lcsLen / n < minCoverage) return null
+    if (lcsLen < LEGACY_MIN_ANCHOR) return null
+    const matched = new Array<boolean>(n + 1).fill(false)
+    let i = n
+    let j = n
+    while (i > 0 && j > 0) {
+      if (tail[i - 1] === head[j - 1]) { matched[j] = true; i--; j-- }
+      else if (dp[i - 1][j] >= dp[i][j - 1]) i--
+      else j--
+    }
+    const out: string[] = []
+    for (let k = 1; k <= n; k++) if (!matched[k]) out.push(head[k - 1])
+    if (ns.length > limit) out.push(...ns.slice(limit))
+    return out.join('')
+  }
+
+  /**
+   * §914 **冻结参照实现** —— 修复**之前**的 `dedupeSegmentText`，逐字副本。
+   * ⚠ 注意 `Array.from(committed)` 与 `cs.join('')` 这两处**正是**被 §914 改掉的
+   *   「窗口那一层」；它们必须原样保留，否则这份参照就不再是「修复前」。
+   */
+  function legacyDedupeSegmentText(committed: string, next: string, minCoverage = LEGACY_COVERAGE): string {
+    const n = next.trim()
+    if (!committed) return n
+    if (!n) return committed
+    const cs = Array.from(committed)
+    const ns = Array.from(n)
+    const limit = Math.min(LEGACY_MAX_OVERLAP, cs.length, ns.length)
+    for (let k = limit; k >= 2; k--) {
+      if (cs.slice(cs.length - k).join('') === ns.slice(0, k).join('')) {
+        return cs.join('') + ns.slice(k).join('')
+      }
+    }
+    const netNew = legacyLcsNetNew(cs, ns, minCoverage)
+    if (netNew !== null) return cs.join('') + netNew
+    return committed + n
+  }
+
+  /** 确定性伪随机语料（不用 Math.random ⇒ 判据可复现）。 */
+  function makeCorpus(seed: number): Array<[string, string]> {
+    let s = (seed >>> 0) || 1
+    const rnd = () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 0x100000000 }
+    const pool = ['季度预算', '排期', '张伟', '王芳', '确认一下', '今天下午三点', '交付', '里程碑', 'a', 'bc']
+    const nonBmp = ['\u{20000}', '\u{20001}', '\u{1F600}']
+    const out: Array<[string, string]> = []
+    for (let i = 0; i < 300; i++) {
+      const len = 1 + Math.floor(rnd() * 90)
+      let c = ''
+      for (let k = 0; k < len; k++) {
+        c += rnd() < 0.12 ? nonBmp[Math.floor(rnd() * nonBmp.length)] : pool[Math.floor(rnd() * pool.length)]
+      }
+      // committed 有时是长正文（> 40 码点，正是 §914 动到的那一格），
+      // 有时是 next 的一半（真实切片重叠形态），有时与 next 全文相同（#58 那一格）。
+      const roll = rnd()
+      const committed = roll < 0.4 ? c.repeat(1 + Math.floor(rnd() * 3))
+        : roll < 0.75 ? c.slice(0, Math.floor(c.length / 2))
+        : c
+      out.push([committed, c])
+    }
+    return out
+  }
+
+  it('★ 差分：新实现与「修复前」的逐字副本在 300×5 条随机语料上完全一致', () => {
+    let checked = 0
+    for (const seed of [1, 7, 42, 20261019, 99991]) {
+      for (const [committed, next] of makeCorpus(seed)) {
+        const want = legacyDedupeSegmentText(committed, next)
+        const got = dedupeSegmentText(committed, next)
+        assert.equal(got, want,
+          `§914 的性能改动**改变了输出**（seed=${seed}）：\n` +
+          `  committed=${JSON.stringify(committed)}\n  next=${JSON.stringify(next)}\n` +
+          `  修复前=${JSON.stringify(want)}\n  修复后=${JSON.stringify(got)}`)
+        checked++
+      }
+    }
+    assert.equal(checked, 1500, '语料条数不对 ⇒ 差分覆盖面被改小了')
+  })
+
+  it('★ delta 的语义恒等于「修复前」的取净增方式 body.slice(prev.length)', () => {
+    for (const [committed, next] of makeCorpus(2026)) {
+      const step = dedupeStep({ prev: committed, raw: next, prevEndMs: 3000, startMs: 4500 })
+      const legacyDelta = step.body.length > committed.length ? step.body.slice(committed.length) : ''
+      assert.equal(step.delta, legacyDelta,
+        `delta 与修复前的取法不一致：\n  body=${JSON.stringify(step.body)}\n  delta=${JSON.stringify(step.delta)}`)
+    }
+  })
+
+  /**
+   * §914 **冻结参照实现** —— 修复**之前**的 `dedupeSegmentTextSoft`（活路径）。
+   * ⚠ 它的 `Array.from(committed)` 正是「窗口那一层」的病根。
+   */
+  function legacyDedupeSegmentTextSoft(committed: string, next: string, minCoverage = LEGACY_COVERAGE): string {
+    const n = next.trim()
+    if (!committed) return n
+    if (!n) return committed
+    const ns = Array.from(n)
+    if (committed === n && ns.length > LEGACY_MAX_OVERLAP) return committed + n
+    const netNew = legacyLcsNetNew(Array.from(committed), ns, minCoverage)
+    if (netNew !== null) return committed + netNew
+    return committed + n
+  }
+
+  /**
+   * §914 **冻结参照实现** —— 修复**之前**的热循环：
+   * 「累积正文 + 每段一次 `Array.from(committed)` + 每段一次 `body.slice(prev.length)`」。
+   * ⚠ 它存在的唯一目的是**当成本尺子**：判据拿它量新实现的快慢。
+   */
+  function legacyDedupeLoop(segs: Array<{ text: string }>): void {
+    let body = ''
+    for (const s of segs) {
+      const n = (s.text ?? '').trim()
+      if (!body) { body = n; continue }
+      const prev = body
+      body = legacyDedupeSegmentTextSoft(body, n)
+      // ⚠ 修复前就是靠这一句取净增 —— 而它会**强制展平整条 ConsString 链**。
+      void body.slice(prev.length)
+    }
+  }
+
+  /** 真实 ASR 行长中位 66 字（§788 实测）；判据不能依赖 .artifacts/（已 gitignore）。 */
+  const ASR_LINE = '第三季度的续费方案基本上已经定了，没签的那两个客户我们走线下合同，'
+    + '另外交付里程碑要挪到下个迭代，排期表我今天下午发群里，大家确认一下各自负责的部分。'
+
+  it('★ 规模：新实现必须比「修复前」快一个数量级 —— 钉住「线性」', () => {
+    const N = 1200
+    const segs = Array.from({ length: N }, (_, i) => ({
+      text: `${i} ${ASR_LINE}`,
+      speakerLabel: '张明', startMs: i * 14_600, endMs: (i + 1) * 14_600,
+    }))
+
+    // ⚠ 相对量而不是绝对量：**比值对机器速度免疫**（CI 慢就两边一起慢）。
+    //   取 min 而不是平均：min 是「最快能多快」的稳健估计，不受调度抖动影响。
+    const timeMin = (fn: () => void, runs: number): number => {
+      let best = Infinity
+      for (let i = 0; i < runs; i++) {
+        const t0 = process.hrtime.bigint()
+        fn()
+        const ms = Number(process.hrtime.bigint() - t0) / 1e6
+        if (ms < best) best = ms
+      }
+      return best
+    }
+
+    const tNew = timeMin(() => { dedupeSegments(segs) }, 5)
+    const tOld = timeMin(() => { legacyDedupeLoop(segs) }, 1)
+
+    // ⚠ 阈值的来历（真实 ASR 行长、实测读数）：
+    //   修复后 1200 段 ≈ 27ms；修复前 ≈ 788ms ⇒ 比值 **29×**。
+    //   ⇒ 门限取 8× ⇒ 余量 3.6×。
+    //   ⚠ 而「把净增改回 `body.slice(prev.length)`」这一变异**不会**让本判据变红
+    //   —— 那是**语义等价**的改写（实测 36ms、仍线性），**不是回归**。
+    //   真正会让本判据变红的是「窗口层退回 Array.from(committed)」（实测比值掉到 1× 附近）。
+    assert.ok(tNew < 500, `新实现 1200 段用了 ${tNew.toFixed(0)}ms（预算 500ms）`)
+    assert.ok(tOld > tNew * 8,
+      `新实现没有比修复前快一个数量级：新 ${tNew.toFixed(0)}ms vs 修复前 ${tOld.toFixed(0)}ms` +
+      `（比值 ${(tOld / tNew).toFixed(1)}×）—— 二次方可能回来了`)
   })
 })
