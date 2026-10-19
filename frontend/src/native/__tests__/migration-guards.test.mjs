@@ -509,7 +509,10 @@ describe('§894 · D64：向量索引必须几何增长，不得每次重分配�
     // 50000 × 1536 × 4B ≈ 293MB。倍增若不钉上限，最坏会变成两倍。
     const MAX_CAP = 50000
     const src = readFileSync(new URL('../vector-index.ts', import.meta.url), 'utf8')
-    assert.match(src, /Math\.min\(MAX_VECTORS,/, 'grow() 的容量上限必须用 Math.min 钉在 MAX_VECTORS')
+    // ⚠ §906/D75：`MAX_VECTORS` 变成了构造参数 `maxVectors`（默认仍是它），
+    //   这里跟着改的是**指向**，**语义没动** —— 「倍增必须被上限常量用 Math.min 钉住」
+    //   仍然成立；而「默认值就是 50000」由 §906 的判据单独钉着。
+    assert.match(src, /Math\.min\((?:this\.maxVectors|MAX_VECTORS),/, 'grow() 的容量上限必须用 Math.min 钉在上限常量上')
     assert.ok(capOf(await idxOf(120)) <= MAX_CAP, '容量超过了 MAX_VECTORS')
   })
 
@@ -1666,4 +1669,107 @@ describe('§905 · D74：写路径必须等在途的 load() 落地', () => {
   //   ⚠ 反过来也记一笔：判据红过一次之后，很容易想当然地以为
   //     「同一条修法到处都该配一条判据」—— 这里恰恰**不该有**判据，
   //     因为没有差异就别造门（造出来的必然是恒真门）。
+})
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * §906 · D75：内存上限 `MAX_VECTORS` 只在**写入路径**生效，读取路径完全没护栏
+ * ═══════════════════════════════════════════════════════════════════════════
+ * `MAX_VECTORS` 的注释写着「50000 × 1536 × 4B ≈ 300MB，**移动端可接受的上限**」。
+ * 而实测（Node 22 + 真 node:sqlite，库里 50001 行 = 上限 +1）：
+ *
+ *     load() 用时 875ms、size() = 50001、矩阵 **293MB**、**零 warning**
+ *
+ * ⇒ 那句「可接受的上限」当时**并不成立** —— 上限只在 `add()` 里查，
+ *   而 `add()` 的「段数变化 ⇒ load()」分支 **在上限检查之前就 return 了**
+ *   ⇒ 在容量已满时编辑一条长会议笔记，就会静默建出**超限**的矩阵。
+ *   这不需要任何非常规条件：容量已满 + 编辑一条段数会增长的长会议笔记。
+ *
+ * ⚠ 判据为什么用**注入的小上限**（§906 把 `maxVectors` 做成构造参数）：
+ *   真上限 50000 ⇒ 一条段向量 6KB ⇒ 判据要 300MB 才跑得到边界，跑不动。
+ *   ⇒ 「上限必须在读取路径上也生效」这条不变式就会一直没有判据。
+ *   与 `DIM` 导出同一个理由（§881：「判据不该硬编码这个数」）。
+ */
+describe('§906 · D75：读取路径也必须卡住内存上限', () => {
+  /** 注入一个小上限，让判据跑得动；生产不传这个参数。 */
+  function makeCappedDb(cap, noteCount) {
+    const inner = makeVectorDb()
+    const rows = []
+    for (let i = 0; i < noteCount; i++) rows.push({ id: `n${i}`, a: 1, b: (i % 3) + 1 })
+    return { inner, rows, cap }
+  }
+
+  async function fill(g) {
+    for (const r of g.rows) {
+      await seedNote(g.inner, r.id)
+      await g.inner.run(
+        'INSERT INTO local_note_vectors (note_id, embedding, dim, model, chunks, chunk_hashes, created_at)' +
+        ' VALUES (?,?,?,?,?,?,?)',
+        [r.id, new Uint8Array(vec(r.a, r.b).buffer), DIM, 'm', 1, '', 0],
+      )
+    }
+  }
+
+  it('★★★ 库里的段数超过上限时，load() 只能载入到上限，且必须出声', async () => {
+    const g = makeCappedDb(4, 6)
+    await fill(g)
+    const index = new VectorIndex(g.inner, g.cap)
+    const original = console.warn
+    const lines = []
+    console.warn = (...a) => lines.push(a.join(' '))
+    try { await index.load() } finally { console.warn = original }
+
+    assert.equal(index.size(), 4,
+      `load() 载入了 ${index.size()} 段，越过上限 ${g.cap} ⇒ 「移动端可接受的上限」是假的`)
+    assert.ok(lines.some((l) => l.includes('上限')),
+      `超限时一声不吭（收到的 warn：${JSON.stringify(lines)}）`)
+  })
+
+  it('★★★ 超限被丢下的段**仍在库里**（这是「排除」不是「删除」）', async () => {
+    const g = makeCappedDb(4, 6)
+    await fill(g)
+    const index = new VectorIndex(g.inner, g.cap)
+    const original = console.warn
+    console.warn = () => {}
+    try { await index.load() } finally { console.warn = original }
+
+    const inDb = await g.inner.all('SELECT note_id FROM local_note_vectors', [])
+    assert.equal(inDb.length, 6, `库里只剩 ${inDb.length} 行 ⇒ load() 把数据删了（它只该管内存）`)
+  })
+
+  it('★★ 未超上限时必须全部载入、且零 warn（防「一律截断」这种过度修法）', async () => {
+    const g = makeCappedDb(10, 6)
+    await fill(g)
+    const index = new VectorIndex(g.inner, g.cap)
+    const original = console.warn
+    const lines = []
+    console.warn = (...a) => lines.push(a.join(' '))
+    try { await index.load() } finally { console.warn = original }
+
+    assert.equal(index.size(), 6, '未超上限却截断了')
+    assert.equal(lines.length, 0, `未超上限却出声：${JSON.stringify(lines)}`)
+  })
+
+  it('★★ 容量已满时 add() 仍应拒绝新向量（§906 之前的既有行为，防回归）', async () => {
+    const g = makeCappedDb(2, 2)
+    await fill(g)
+    await seedNote(g.inner, 'brand-new')   // ⚠ 向量表有外键指向 local_notes
+    const index = new VectorIndex(g.inner, g.cap)
+    const original = console.warn
+    const lines = []
+    console.warn = (...a) => lines.push(a.join(' '))
+    await index.load()
+    try { await index.add('brand-new', vec(1, 0), 'm') } finally { console.warn = original }
+
+    assert.equal(index.size(), 2, '容量已满却把新向量塞进了内存索引')
+    assert.ok(lines.length > 0, '容量已满时一声不吭（应该有 warn）')
+  })
+
+  it('★★ 默认上限必须仍是 50000（注入只是判据的口子，不是把护栏放松了）', async () => {
+    const src = readFileSync(new URL('../vector-index.ts', import.meta.url), 'utf8')
+    const decl = src.match(/const MAX_VECTORS = (\d+)/)
+    assert.ok(decl, 'MAX_VECTORS 声明不见了')
+    assert.equal(Number(decl[1]), 50000, `默认上限变成了 ${decl[1]}，必须仍是 50000`)
+    assert.match(src, /constructor\(db: VectorDb, maxVectors: number = MAX_VECTORS\)/,
+      '默认参数不是 MAX_VECTORS ⇒ 生产路径的上限可能被悄悄改掉')
+  })
 })

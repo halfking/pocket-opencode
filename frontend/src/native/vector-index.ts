@@ -90,13 +90,21 @@ export class VectorIndex {
   private loaded = false
   /** §905/D74：当前在途的 `load()`。写路径必须等它落地再改内存（见 `settleLoad()`）。 */
   private loading: Promise<void> | null = null
+  /** §906/D75：内存索引的段数上限（生产 = `MAX_VECTORS`；判据可注入小值）。 */
+  private readonly maxVectors: number
 
   // ⚠ 不能写成参数属性 `constructor(private readonly db: VectorDb = …)`：
   //   `node --experimental-strip-types` **不支持 parameter properties**，
   //   加载直接报 ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX ⇒ 判据跑不起来。
   //   与「裸 try 块」是同一族工具链限制。
-  constructor(db: VectorDb) {
+  // ⚠⚠ §906/D75：`maxVectors` 可注入，**生产不传**（默认就是 MAX_VECTORS）。
+  //   为什么要有这个口子：`MAX_VECTORS = 50000`，一条段向量 6KB ⇒ 真库要 300MB
+  //   才跑得到边界，**判据根本跑不动** ⇒ 这条「内存上限必须在读取路径上也生效」
+  //   的不变式就会一直没有判据。
+  //   ⇒ 与 `DIM` 导出同一个理由（§881：「判据不该硬编码这个数」）。
+  constructor(db: VectorDb, maxVectors: number = MAX_VECTORS) {
     this.db = db
+    this.maxVectors = maxVectors
   }
 
   /** 从本地库加载全部向量到内存。App 启动后调用一次。 */
@@ -160,6 +168,7 @@ export class VectorIndex {
     //   两者都零诊断 ⇒ 那条笔记永久搜不到，或**自信地给出错误结果**。
     const perRow: { noteId: string; vec: Float32Array }[] = []
     const unusable: string[] = []
+    let droppedSegments = 0
     for (const r of rows) {
       const raw = new Float32Array(r.embedding)
       const why = unusableRow(raw.length, r.dim)
@@ -171,10 +180,30 @@ export class VectorIndex {
       const usable = Math.min(raw.length, chunks * DIM)
       const vec = raw.subarray(0, usable)
       for (let c = 0; c < chunks; c++) {
+        // ⚠⚠ §906/D75：这里**也必须**卡 `MAX_VECTORS`，否则「移动端可接受的上限」是假的。
+        //   修之前上限只在 `add()` 里查，而 `add()` 的「段数变化 ⇒ load()」分支
+        //   **在上限检查之前就 return 了** ⇒ 在容量已满时编辑一条长会议笔记，
+        //   就会静默建出**超限**的矩阵。
+        //   实测（Node 22 + 真 node:sqlite，库里 50001 行 = 上限 +1）：
+        //     load() 用时 875ms、size()=50001、矩阵 **293MB**、**零 warning**
+        //     ⇒ 「293MB 是移动端可接受的上限」这个论证当时**并不成立**。
+        if (perRow.length >= this.maxVectors) { droppedSegments++; break }
         const off = c * DIM
         if (off + DIM > usable) break
         perRow.push({ noteId: r.note_id, vec: vec.subarray(off, off + DIM) })
       }
+      if (droppedSegments > 0) break
+    }
+    if (droppedSegments > 0) {
+      // ⚠ 同 §904「只出声、不阻断」：超限的段**留在库里**（数据没丢），
+      //   但这一次不进内存索引 ⇒ 它们的笔记本次会话搜不到。
+      //   ⚠ 保留的取舍是**按库里的行顺序取前 MAX_VECTORS 段**（不是按相关度，
+      //   也不排除长会议）—— 这是有意为之的简单口径，不假装是 LRU。
+      console.warn(
+        `[vector] 内存索引上限 ${this.maxVectors} 段，库里更多 ⇒ 本次只载入前 ${this.maxVectors} 段，` +
+        `其余 ${droppedSegments} 段留在库里但**本次会话搜不到**（数据没丢）。` +
+        `考虑清理旧笔记或启用 sqlite-vec。`,
+      )
     }
     // ⚠ §883 的「只出声、不阻断」：坏行**排除出索引**（不能让错的向量参与点积），
     //   但必须**汇总成一条 warn** —— 逐行 warn 会把真正的问题淹在日志里。
@@ -319,8 +348,8 @@ export class VectorIndex {
     // ⚠ 后果：此后新向量**永远不进内存索引** ⇒ `search()` 只在旧的那批里找
     //   （沉默的「搜不全」，登记在简报第 101 条），而注释写的
     //   「查询时降级为仅 FTS」在 `search()` 里**并没有实现**。
-    if (this.ids.length + normalized.length > MAX_VECTORS) {
-      console.warn(`[vector] 已达内存索引上限 ${MAX_VECTORS}，新向量仅存库不加载到内存。考虑启用 sqlite-vec。`)
+    if (this.ids.length + normalized.length > this.maxVectors) {
+      console.warn(`[vector] 已达内存索引上限 ${this.maxVectors}，新向量仅存库不加载到内存。考虑启用 sqlite-vec。`)
       return
     }
 
@@ -368,7 +397,7 @@ export class VectorIndex {
 
   /** 容量翻倍并搬一次（摊还后每次 add 的拷贝是常数级）。 */
   private grow(): void {
-    const next = Math.min(MAX_VECTORS, Math.max(64, this.capacity * 2))
+    const next = Math.min(this.maxVectors, Math.max(64, this.capacity * 2))
     if (next <= this.capacity) return
     const m = new Float32Array(next * DIM)
     m.set(this.matrix)
