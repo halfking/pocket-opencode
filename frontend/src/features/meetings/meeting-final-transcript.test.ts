@@ -22,7 +22,8 @@ import { dirname, join } from 'node:path'
 import { resolveUploadTarget, shouldAdoptFullTranscript, refetchFullTranscript } from './meeting-final-transcript.ts'
 import {
   planWavChunks, sliceWavChunk, parseWavLayout, mergeChunkedOutcomes,
-  FULL_TRANSCRIBE_CHUNK_SECONDS,
+  FULL_TRANSCRIBE_CHUNK_SECONDS, FULL_TRANSCRIBE_CUT_SEARCH_SECONDS,
+  MIN_CHUNK_SECONDS,
 } from './meeting-full-transcribe-chunks.ts'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -306,43 +307,95 @@ describe('G · §818 转码失败必须留痕（行为层）', () => {
 //
 // ⇒ 这道门钉的是**性质**（字节不丢、块合法、切在静音、失败形态不变），
 //   不是「文件里有没有某个词」。
+/**
+ * 独立实现：某点处**居中 100 ms** 窗口的 RMS。
+ *
+ * ⚠ 为什么必须居中：切点质量取决于**两侧**是否安静 ——
+ *   只看一侧的话，切点可能正好落在词尾，词照样被劈开。
+ * ⚠ 门槛 0.012 = 服务端 `silenceFloor`（`backend/internal/stt/full.go:109`）。
+ *
+ * ⚠⚠ **§928**：这个门槛只在**合成夹具**上可判（真静音 = 采样全 0）。
+ * 真实会议录音里 100 ms 居中窗低于 0.012 的**只占 11.0%**
+ * ⇒ 真实可断言的命题是「切点比**硬切**安静」。
+ */
+const centeredRms = (wav: ArrayBuffer, sec: number): number => {
+  const bytes = new Uint8Array(wav)
+  const dv = new DataView(wav)
+  const sampleRate = dv.getUint32(24, true)
+  const half = Math.round(0.05 * sampleRate)
+  const n = Math.round(0.1 * sampleRate)
+  const start = Math.round(sec * sampleRate) - half
+  let sum = 0
+  for (let f = start; f < start + n; f++) {
+    const v = dv.getInt16(44 + f * 2, true) / 32768
+    sum += v * v
+  }
+  return Math.sqrt(sum / n)
+}
+
+/** 静音门槛（= 服务端 `silenceFloor`）。 */
+const SILENCE_RMS = 0.012
+
+/**
+ * 块长**上界**（秒）：任何一个块都不会超过这个长度。
+ *
+ * ⚠⚠ **块长 ≠ 块长参数**（§928.6）：切点是在「目标点 ± 搜索窗」里**吸附**出来的 ⇒
+ *   - 相邻两切点之差最大 = `块长 + 2×搜索窗`；
+ *   - **尾块**还能多出一个「最小块长」（网格点离文件尾太近时循环直接 break）。
+ * ⇒ 上界 = `max(块长 + 2×搜索窗, 块长 + 最小块长)`。
+ *
+ * ⚠ 这个公式写在**判据侧**（而不是生产模块里导出一个函数）——
+ * 因为那个函数只被测试引用 ⇒ 是**死能力** ⇒ `check:dead-features` 会红（§928.11 的教训）。
+ * ⇒ 于是「公式」与「行为」必须**互相钉住**：
+ *   ① 这条公式算出来的上界要**钉住实际块长**（I 组那两条）；
+ *   ② 默认参数下的上界要**钉住文档里的那个数**（下面那条断言）⇒
+ *      改了 `FULL_TRANSCRIBE_CHUNK_SECONDS` / 搜索窗 / 最小块长 ⇒
+ *      文档 §928.6 的「540 s / 6.3 s」必须同步改，否则当场红。
+ */
+const chunkLengthBound = (chunkSeconds: number, searchSeconds: number, minChunkSeconds: number): number =>
+  Math.max(chunkSeconds + 2 * searchSeconds, chunkSeconds + minChunkSeconds)
+
+  /**
+ * 造一段 WAV：每 `speechEvery` 秒的开头 `speechLen` 秒是 220 Hz 正弦，
+ * 其余是**真静音**（采样值全 0）。
+ *
+ * 为什么用「真静音」而不是「很轻的底噪」：静音处窗口 RMS 精确为 0，
+ * 语音处 ≈ amp/√2 ⇒ 两档可分 ⇒ 判据能用「RMS < 0.012」判定「切在静音里」。
+ */
+const buildWav = (seconds: number, opts?: { speechEvery?: number; speechLen?: number; amp?: number }): ArrayBuffer => {
+  const sampleRate = 16000
+  const speechEvery = opts?.speechEvery ?? 3
+  const speechLen = opts?.speechLen ?? 1
+  const amp = opts?.amp ?? 0.3
+  const frames = Math.round(seconds * sampleRate)
+  const data = new Uint8Array(frames * 2) // 全 0 ⇒ 静音
+  const dv = new DataView(data.buffer)
+  for (let startSec = 0; startSec < seconds; startSec += speechEvery) {
+    const from = Math.round(startSec * sampleRate)
+    const to = Math.min(frames, Math.round((startSec + speechLen) * sampleRate))
+    for (let f = from; f < to; f++) {
+      const t = f / sampleRate
+      dv.setInt16(f * 2, Math.round(Math.sin(2 * Math.PI * 220 * t) * amp * 32767), true)
+    }
+  }
+  const buffer = new ArrayBuffer(44 + data.length)
+  const out = new DataView(buffer)
+  const w = (o: number, s: string) => { for (let i = 0; i < s.length; i++) out.setUint8(o + i, s.charCodeAt(i)) }
+  w(0, 'RIFF'); out.setUint32(4, 36 + data.length, true); w(8, 'WAVE')
+  w(12, 'fmt '); out.setUint32(16, 16, true); out.setUint16(20, 1, true); out.setUint16(22, 1, true)
+  out.setUint32(24, sampleRate, true); out.setUint32(28, sampleRate * 2, true)
+  out.setUint16(32, 2, true); out.setUint16(34, 16, true)
+  w(36, 'data'); out.setUint32(40, data.length, true)
+  new Uint8Array(buffer, 44).set(data)
+  return buffer
+}
+
+/** 通用夹具：30 秒「每 3 秒 1 秒正弦 + 其余真静音」。 */
+const WAV = buildWav(30)
+
 describe('H · §927 整场重转分块（长会议不再被腰斩）', () => {
   // ── 夹具：16 kHz 单声道 16-bit PCM WAV（客户端 `toWav` 的真实产物形态）──
 
-  /**
-   * 造一段 WAV：每 `speechEvery` 秒的开头 `speechLen` 秒是 220 Hz 正弦，
-   * 其余是**真静音**（采样值全 0）。
-   *
-   * 为什么用「真静音」而不是「很轻的底噪」：静音处窗口 RMS 精确为 0，
-   * 语音处 ≈ amp/√2 ⇒ 两档可分 ⇒ 判据能用「RMS < 0.012」判定「切在静音里」。
-   */
-  const buildWav = (seconds: number, opts?: { speechEvery?: number; speechLen?: number; amp?: number }): ArrayBuffer => {
-    const sampleRate = 16000
-    const speechEvery = opts?.speechEvery ?? 3
-    const speechLen = opts?.speechLen ?? 1
-    const amp = opts?.amp ?? 0.3
-    const frames = Math.round(seconds * sampleRate)
-    const data = new Uint8Array(frames * 2) // 全 0 ⇒ 静音
-    const dv = new DataView(data.buffer)
-    for (let startSec = 0; startSec < seconds; startSec += speechEvery) {
-      const from = Math.round(startSec * sampleRate)
-      const to = Math.min(frames, Math.round((startSec + speechLen) * sampleRate))
-      for (let f = from; f < to; f++) {
-        const t = f / sampleRate
-        dv.setInt16(f * 2, Math.round(Math.sin(2 * Math.PI * 220 * t) * amp * 32767), true)
-      }
-    }
-    const buffer = new ArrayBuffer(44 + data.length)
-    const out = new DataView(buffer)
-    const w = (o: number, s: string) => { for (let i = 0; i < s.length; i++) out.setUint8(o + i, s.charCodeAt(i)) }
-    w(0, 'RIFF'); out.setUint32(4, 36 + data.length, true); w(8, 'WAVE')
-    w(12, 'fmt '); out.setUint32(16, 16, true); out.setUint16(20, 1, true); out.setUint16(22, 1, true)
-    out.setUint32(24, sampleRate, true); out.setUint32(28, sampleRate * 2, true)
-    out.setUint16(32, 2, true); out.setUint16(34, 16, true)
-    w(36, 'data'); out.setUint32(40, data.length, true)
-    new Uint8Array(buffer, 44).set(data)
-    return buffer
-  }
 
   /** 独立解析：取 data 载荷（**不复用**被测模块的解析器，否则判据自证）。 */
   const dataPayload = (wav: ArrayBuffer): Uint8Array => {
@@ -355,37 +408,12 @@ describe('H · §927 整场重转分块（长会议不再被腰斩）', () => {
     return bytes.subarray(44, 44 + dv.getUint32(40, true))
   }
 
-  /**
-   * 独立实现：某点处**居中 100 ms** 窗口的 RMS。
-   *
-   * ⚠ 为什么必须居中：切点质量取决于**两侧**是否安静 ——
-   *   只看一侧的话，切点可能正好落在词尾，词照样被劈开。
-   * ⚠ 门槛 0.012 = 服务端 `silenceFloor`（`backend/internal/stt/full.go:109`）。
-   */
-  const centeredRms = (wav: ArrayBuffer, sec: number): number => {
-    const bytes = new Uint8Array(wav)
-    const dv = new DataView(wav)
-    const sampleRate = dv.getUint32(24, true)
-    const half = Math.round(0.05 * sampleRate)
-    const n = Math.round(0.1 * sampleRate)
-    const start = Math.round(sec * sampleRate) - half
-    let sum = 0
-    for (let f = start; f < start + n; f++) {
-      const v = dv.getInt16(44 + f * 2, true) / 32768
-      sum += v * v
-    }
-    return Math.sqrt(sum / n)
-  }
-
   const sameBytes = (a: Uint8Array, b: Uint8Array): boolean => {
     if (a.length !== b.length) return false
     for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false
     return true
   }
 
-  const SILENCE_RMS = 0.012 // = 服务端 silenceFloor
-
-  const WAV = buildWav(30)
   const loadAudio = async () => new Blob([new Uint8Array([0x1a, 0x45, 0xdf, 0xa3])], { type: 'audio/webm' })
   const toWav = async () => WAV
 
@@ -420,7 +448,12 @@ describe('H · §927 整场重转分块（长会议不再被腰斩）', () => {
     }
   })
 
-  it('★ 每个切点都必须落在静音里（切在词中间 ⇒ 两侧各错一点）', () => {
+  it('★ 每个切点都必须落在**夹具的**静音里（⚠ 合成夹具性质，真实录音上不成立 ⇒ 见 §928）', () => {
+    // ⚠⚠ 这条判据只在**合成夹具**上成立（真静音 = 采样全 0 ⇒ 两档可分）。
+    // §928 用 12.54 min 真人会议语料实测：100 ms 居中窗低于 0.012 的**只占 11.0%**
+    // ⇒ 真实录音上「切点落在静音里」**不是可达命题**，
+    // 可断言的命题是「**切点比硬切安静**」（I 组那条，无真静音夹具）。
+    // ⇒ 保留这条是为了守住「搜索确实在找安静处」这件事（合成夹具上可精确判定）。
     const plan = planWavChunks(WAV, { chunkSeconds: 5, searchSeconds: 1.5, minChunkSeconds: 1 })!
     assert.ok(plan.cutPointsMs.length >= 1, '没有切点 ⇒ 这条判据是恒真的')
     for (const ms of plan.cutPointsMs) {
@@ -651,7 +684,7 @@ describe('H · §927 整场重转分块（长会议不再被腰斩）', () => {
 
   // ── ⑤ 两道墙的算术登记（读服务端真值，不是抄常量）──
 
-  it('★ 块长推导的算术必须成立（8 分钟 ⇒ 每次上游调用仍有 7.1 s 预算）', () => {
+  it('★ 块长推导的算术必须成立（8 分钟 ⇒ 最坏一块的每次上游调用仍有 ≥ 6.3 s 预算；§928 更正）', () => {
     const goSrc = read('../../../../backend/internal/server/server_stt_stream.go')
     const m = /fullTranscribeTimeout\s*=\s*(\d+)\s*\*\s*time\.Minute/.exec(goSrc)
     assert.ok(m, '读不到服务端的 fullTranscribeTimeout —— 判据失明（不许当成通过）')
@@ -660,10 +693,23 @@ describe('H · §927 整场重转分块（长会议不再被腰斩）', () => {
     const segsPerMinute = 10.5
     // 每次上游调用至少需要的秒数（**要求值不是读数**：网关 key 401，未实测）
     const minPerCallSec = 5
-    const calls = (FULL_TRANSCRIBE_CHUNK_SECONDS / 60) * segsPerMinute
+    // ⚠⚠ §928 更正：**块长 ≠ 块长参数**。
+    // 切点是在「目标点 ± 搜索窗」里吸附出来的 ⇒ 相邻两切点之差最大是
+    // `块长 + 2×搜索窗`；**尾块**还能多出一个「最小块长」。
+    // ⇒ 真上界 = max(块长 + 2×搜索窗, 块长 + 最小块长)（见本文件的 chunkLengthBound）。
+    // §928 之前这里按「块长 + 0」算 ⇒ 报出 7.1 s ⇒ **余量被高估了 12%**
+    //（结论没变：仍高于 5 s 的要求值；但推导必须按真上界算）。
+    const maxChunkSec = chunkLengthBound(
+      FULL_TRANSCRIBE_CHUNK_SECONDS, FULL_TRANSCRIBE_CUT_SEARCH_SECONDS, MIN_CHUNK_SECONDS,
+    )
+    // ⭐ 钉住**默认参数下的那个数**（文档 §928.6 写的是 540 s / 6.3 s）
+    // ⇒ 改了块长、搜索窗或最小块长 ⇒ 文档必须同步改，否则当场红。
+    assert.equal(maxChunkSec, 540,
+      `默认块长上界从 540 s 变成 ${maxChunkSec} s ⇒ 文档 §928.6 的「540 s / 6.3 s」必须同步改`)
+    const calls = (maxChunkSec / 60) * segsPerMinute
     const perCall = budgetSec / calls
     assert.ok(perCall > minPerCallSec,
-      `每块的每次上游调用只剩 ${perCall.toFixed(2)} s（要求 ≥ ${minPerCallSec} s）⇒ 块长 ${FULL_TRANSCRIBE_CHUNK_SECONDS / 60} 分钟太长`)
+      `最坏一块的每次上游调用只剩 ${perCall.toFixed(2)} s（要求 ≥ ${minPerCallSec} s）⇒ 块长 ${FULL_TRANSCRIBE_CHUNK_SECONDS / 60} 分钟太长`)
   })
 
   it('★ 字节墙是真的：服务端 400 MiB 只够 3.55 小时 ⇒ 整场发不出去', () => {
@@ -687,5 +733,156 @@ describe('H · §927 整场重转分块（长会议不再被腰斩）', () => {
       assert.ok(Math.abs(payload.length - sec * bytesPerSec) <= 2,
         `块的字节数 ${payload.length} 与时长 ${sec}s 不匹配`)
     }
+  })
+})
+
+// ══════════════════════════════════════════════════════════════════════════
+// I · §928 真实录音实测后的更正
+//
+// §928 用**真实会议音频**（12.54 min / 16 kHz / 单声道 / 16 bit）实测了
+// §927 的分块与服务端的 `SplitWAV`；读数与结论见设计文档 §928。
+//
+// 这组判据钉的是**真实录音上可达**的命题（不是合成夹具上的）：
+//   ① 块长上界（预算推导的依据，§928 更正过）；
+//   ② 「切点比硬切安静」（真实录音上「落在静音里」**不可达** ⇒ 只有这条可断言）；
+//   ③ 找不到静音**也必须切**（真实录音上「静音」只占 11% ⇒ 不许因此退化成整场一次）。
+// ══════════════════════════════════════════════════════════════════════════
+describe('I · §928 真实录音实测后的更正', () => {
+  /**
+   * 造一段**没有真静音**的 WAV：全程底噪高于门槛 0.012，
+   * 另有一段「凹陷」比别处安静、但**仍高于门槛**。
+   *
+   * ⭐ 为什么必须有这个夹具（§928 的核心读数）：
+   * 真实会议录音里 100 ms 居中窗低于 0.012 的**只占 11.0%**
+   * ⇒「切点落在静音里」在真实录音上**不是可达命题**
+   * ⇒ 能断言的只有「切点比**硬切**安静」。
+   *
+   * ⚠ 幅度用**交替正负**的方波（不是直流）：真实底噪零均值；
+   *   直流会让「RMS」与「幅度」脱钩，夹具就失去对抗性。
+   */
+  const buildNoisyWav = (seconds: number, opts: {
+    loud: number
+    dip?: number
+    dipFrom?: number
+    dipTo?: number
+  }): ArrayBuffer => {
+    const sampleRate = 16000
+    const frames = Math.round(seconds * sampleRate)
+    const data = new Uint8Array(frames * 2)
+    const dv = new DataView(data.buffer)
+    const dip = opts.dip ?? opts.loud
+    const dipFrom = opts.dipFrom ?? 0
+    const dipTo = opts.dipTo ?? 0
+    for (let f = 0; f < frames; f++) {
+      const t = f / sampleRate
+      const inDip = t >= dipFrom && t < dipTo
+      const amp = inDip ? dip : opts.loud
+      dv.setInt16(f * 2, Math.round((f % 2 === 0 ? amp : -amp) * 32767), true)
+    }
+    const buffer = new ArrayBuffer(44 + data.length)
+    const out = new DataView(buffer)
+    const w = (o: number, s: string) => { for (let i = 0; i < s.length; i++) out.setUint8(o + i, s.charCodeAt(i)) }
+    w(0, 'RIFF'); out.setUint32(4, 36 + data.length, true); w(8, 'WAVE')
+    w(12, 'fmt '); out.setUint32(16, 16, true); out.setUint16(20, 1, true); out.setUint16(22, 1, true)
+    out.setUint32(24, sampleRate, true); out.setUint32(28, sampleRate * 2, true)
+    out.setUint16(32, 2, true); out.setUint16(34, 16, true)
+    w(36, 'data'); out.setUint32(40, data.length, true)
+    new Uint8Array(buffer, 44).set(data)
+    return buffer
+  }
+
+  /**
+   * 造一段「**均匀响** + 指定位置有凹陷」的 WAV。
+   *
+   * ⭐ 为什么需要它（§928）：通用夹具只能当回归护栏，抓不住「搜索窗被放宽」；
+   * 要抓它，夹具必须**对抗**：
+   *   凹陷 A 在 3.5 s ⇒ 切点 1 早吸附；
+   *   凹陷 B 在 **12.5 s** ⇒ 落在原搜索窗 [8.5, 11.5] **之外**、
+   *   却落在放宽后的窗口 [7, 13] **之内**
+   * ⇒ 窗口一旦被放宽，切点 2 会从 8.5 s 跳到 12.5 s
+   * ⇒ 块长从 5.0 s 涨到 9.0 s ⇒ 超过上界 8 s ⇒ 判红。
+   */
+  const buildUniformWithDips = (seconds: number, loud: number, dips: Array<[number, number]>): ArrayBuffer => {
+    const sampleRate = 16000
+    const frames = Math.round(seconds * sampleRate)
+    const data = new Uint8Array(frames * 2)
+    const dv = new DataView(data.buffer)
+    for (let f = 0; f < frames; f++) {
+      const t = f / sampleRate
+      let amp = loud
+      for (const [from, to] of dips) {
+        if (t >= from && t < to) { amp = loud * 0.2; break }
+      }
+      dv.setInt16(f * 2, Math.round((f % 2 === 0 ? amp : -amp) * 32767), true)
+    }
+    const buffer = new ArrayBuffer(44 + data.length)
+    const out = new DataView(buffer)
+    const w = (o: number, s: string) => { for (let i = 0; i < s.length; i++) out.setUint8(o + i, s.charCodeAt(i)) }
+    w(0, 'RIFF'); out.setUint32(4, 36 + data.length, true); w(8, 'WAVE')
+    w(12, 'fmt '); out.setUint32(16, 16, true); out.setUint16(20, 1, true); out.setUint16(22, 1, true)
+    out.setUint32(24, sampleRate, true); out.setUint32(28, sampleRate * 2, true)
+    out.setUint16(32, 2, true); out.setUint16(34, 16, true)
+    w(36, 'data'); out.setUint32(40, data.length, true)
+    new Uint8Array(buffer, 44).set(data)
+    return buffer
+  }
+
+  it('★ 块长上界 = 块长 + 2×搜索窗（或 + 最小块长，取大者）—— 预算推导的唯一依据', () => {
+    const chunkSeconds = 5
+    const searchSeconds = 1.5
+    const minChunkSeconds = 1
+    const plan = planWavChunks(WAV, { chunkSeconds, searchSeconds, minChunkSeconds })!
+    const bound = chunkLengthBound(chunkSeconds, searchSeconds, minChunkSeconds)
+    for (let i = 0; i < plan.bounds.length; i++) {
+      const [from, to] = plan.bounds[i]
+      const len = (to - from) / plan.layout.sampleRate
+      assert.ok(len <= bound + 1e-6,
+        `第 ${i} 块长 ${len.toFixed(3)}s 超过上界 ${bound}s ⇒ 预算推导（按上界算的那条）会失真`)
+    }
+  })
+
+  it('★ 块长上界必须**抗得住搜索窗被放宽**（夹具对抗：放宽窗口 ⇒ 切点跳进外侧的凹陷 ⇒ 块长超标）', () => {
+    // 凹陷 A 在 3.5 s（早吸附）、凹陷 B 在 12.5 s（原窗 [8.5,11.5] 之外、放宽窗 [7,13] 之内）。
+    const wav = buildUniformWithDips(30, 0.05, [[3.25, 3.75], [12.25, 12.75]])
+    const chunkSeconds = 5
+    const searchSeconds = 1.5
+    const minChunkSeconds = 1
+    const plan = planWavChunks(wav, { chunkSeconds, searchSeconds, minChunkSeconds })!
+    const bound = chunkLengthBound(chunkSeconds, searchSeconds, minChunkSeconds)
+    for (let i = 0; i < plan.bounds.length; i++) {
+      const [from, to] = plan.bounds[i]
+      const len = (to - from) / plan.layout.sampleRate
+      assert.ok(len <= bound + 1e-6,
+        `第 ${i} 块长 ${len.toFixed(3)}s 超过上界 ${bound}s ⇒ 搜索窗被放宽（或切点逻辑变了）而没人发现`)
+    }
+  })
+
+  it('★ 切点必须比**硬切**安静（真实录音上「落在静音里」不可达 ⇒ 这才是可断言的命题）', () => {
+    // 底噪 0.05、凹陷 0.018 —— **全程没有任何窗口低于 0.012** ⇒
+    // 「切点落在静音里」在这个夹具上**不可达** ⇒ 只能断言「比硬切安静」。
+    const loud = 0.05
+    const dip = 0.018
+    const wav = buildNoisyWav(20, { loud, dip, dipFrom: 6.5, dipTo: 8.5 })
+    const plan = planWavChunks(wav, { chunkSeconds: 10, searchSeconds: 4, minChunkSeconds: 1 })!
+    assert.ok(plan.cutPointsMs.length >= 1, '没有切点 ⇒ 这条判据是恒真的')
+    const cutSec = plan.cutPointsMs[0] / 1000
+    const cutRms = centeredRms(wav, cutSec)
+    const hardRms = centeredRms(wav, 10) // 硬切目标（= 块长参数）
+    // 量具自证：夹具必须对抗 —— 硬切目标必须明显比凹陷响。
+    assert.ok(hardRms > dip * 1.5,
+      `夹具不够对抗：硬切目标 RMS=${hardRms.toFixed(4)} 不比凹陷 ${dip} 响 ⇒ 这条判据证明不了搜索起了作用`)
+    // 量具自证：这个夹具里**没有**低于门槛的点 ⇒ 「落在静音里」确实不可达。
+    assert.ok(cutRms >= SILENCE_RMS,
+      `夹具里出现了低于门槛的点（RMS=${cutRms.toFixed(5)}）⇒ 夹具没起到「无真静音」的作用`)
+    assert.ok(cutRms < hardRms,
+      `切点 RMS=${cutRms.toFixed(5)} 不比硬切 ${hardRms.toFixed(5)} 安静 ⇒ 静音搜索没起作用`)
+  })
+
+  it('★ 找不到静音**也必须切**（真实录音上「静音」只占 11% ⇒ 不许因此退化成整场一次）', () => {
+    // 全程一样响（连凹陷都没有）⇒ 「切在静音里」在物理上不可能。
+    const wav = buildNoisyWav(20, { loud: 0.05 })
+    const plan = planWavChunks(wav, { chunkSeconds: 10, searchSeconds: 4, minChunkSeconds: 1 })
+    assert.ok(plan, '没有安静点就不切 ⇒ 长会议退回整场一次 ⇒ 撞服务端 10 分钟预算（腰斩）')
+    assert.ok(plan.bounds.length >= 2, `只切出一块 ⇒ 等于没切（${plan.bounds.length} 块）`)
   })
 })
