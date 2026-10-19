@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { describe, it } from 'node:test'
+import { afterEach, beforeEach, describe, it } from 'node:test'
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import {
@@ -143,7 +143,9 @@ describe('§220 面板措辞不得说错', () => {
  *   "max 32000 **chars** per message" ⇒ **信息与判定不同形**
  *   ⇒ 任何「按字符数修」的实现，对中文内容会**超闸 3 倍**（1 个中文字 = 3 字节）。
  *   ⇒ 实测（Go）：`len("中") == 3`；32000 字节 ≈ **10666 个中文字**
- *     ≈ **39.4 分钟**的会议（@271 中文字/分，§896/§912 口径）。
+ *     （**闸的语义**；⚠ §920 更正了换算成会议时长的那一半：真实提示词斜率是
+ *     **844 字节/分**（真实 ASR 语料实测，含 `[说话人] ` 前缀）⇒ 摘要兜底越闸点
+ *     **37.1 分钟**、精校兜底 **33.9 分钟** ⇒ 原写的「39.4 分钟」偏高）。
  *   ⇒ ⚠⚠ 同一枚钉子还更正了 §896/§912 的两个数字：
  *     `/api/embed` 的 16000 闸（`server_assistant.go:2853`，**也是字节**）
  *     只装得下 **5333 个中文字** ≈ **19.7 分钟**，
@@ -399,9 +401,17 @@ describe('§919 服务端字节闸的调用方登记簿（每个调用点都得�
       gate: '/api/llm/chat',
       file: 'src/api/meetings.ts',
       marker: "kind: 'meeting_refine'",
-      bound: '⚠ **无上限**：整场转写直接进提示词 ⇒ >37.5 分钟的会议必然 400。' +
-        '产物是「全文精校稿」，取尾裁会改变产物形状 ⇒ 产品口径待拍（简报 140 第 ② 问）',
-      retest: null,   // ⛔ 无上限 ⇒ 钉「它超闸」= 钉缺陷为期望
+      // ⚠⚠ §920 **更正了本行的定性**：原来写「⚠ 无上限 ⇒ 登记不修」，
+      //   但那**违反了我自己定的判别标准**（§918：「用户能不能自己绕开」）——
+      //   转写是**用户不能编辑的派生输入** ⇒ 用户**绕不开** ⇒ 属「**必须修**」类。
+      //   ⚠ 修法（裁尾 / 分段精校 / 别的）是**产品口径**（简报 140 第 ② 问）⇒ 不代拍。
+      //   ⇒ §920 只做了两件事：① 量化（越闸点 **33.9 分钟**，比摘要那条早 3.2 分钟）
+      //     ② 让「它必然 400」**出声**（降级行为一行未改）。
+      bound: '⚠ **无上限**：整场转写直接进提示词 ⇒ 越闸点 **33.9 分钟**（§920 实测，' +
+        '比摘要兜底的 37.1 分钟早 3.2 分钟）⇒ 必然 400 ⇒ 用户拿到未精校原文。' +
+        '⚠ **按 §918 的判别标准它属「必须修」**（转写不可编辑 ⇒ 用户绕不开），' +
+        '但修法是产品口径（简报 140 第 ② 问）⇒ §920 只加了 warn，不代拍',
+      retest: null,   // §920 的门已钉（在 §920 自己的 describe 里）⇒ 本表不重测
     },
     {
       gate: '/api/llm/chat',
@@ -730,6 +740,38 @@ describe('§919 服务端字节闸的调用方登记簿（每个调用点都得�
     }
   })
 
+  /**
+   * 本 describe 里**真正实现**的重测（retest 键 → 用例标题）。
+   *
+   * ⚠⚠ 为什么要有这张表（**这是本节自己踩出来的坑**）：
+   *   `SITES[].retest` 这个字段最初**没有任何判据消费它** ⇒ 「我声明要重测」
+   *   只是一行字 ⇒ 登记簿照样会长出「说得出怎么限住、但**没人验证过**」的行。
+   *   ⇒ 本表把「声明」与「实现」**双向**钉住：
+   *     ① 键集合必须**完全一致**（加一行没加重测 ⇒ 红；删了重测没改表 ⇒ 红）；
+   *     ② 每个键对应的**用例必须逐字存在**（否则「实现了」只是键表上的一行字）。
+   */
+  const IMPLEMENTED_RETESTS: Record<string, string> = {
+    translate: '★ 重测：邮件翻译每块的提示词必须过字节闸',
+    'stream-gate': '★ 重测：流式会议纪要的两条 message 各自必须过字节闸（§919 的本体）',
+    'slice-cap': '★ 重测：note-search 的码元上限换算成字节后必须离闸有余量',
+    'email-subject': '★ 重测：邮件主题必须按字节裁到闸内（§918）',
+  }
+
+  it('★ 登记簿里标了 retest 的行，本表必须真的重测它（retest 不许是空头支票）', () => {
+    const declared = [...new Set(SITES.map((s) => s.retest).filter((r): r is string => r !== null))].sort()
+    assert.deepEqual(declared, Object.keys(IMPLEMENTED_RETESTS).sort(),
+      `登记簿声明要重测的键（${declared.join(',') || '一个都没有'}）与本表实现的重测键` +
+      `（${Object.keys(IMPLEMENTED_RETESTS).sort().join(',')}）必须**完全一致**`)
+    // ⚠ 并且：每个键对应的**用例必须真的在这个文件里**（标题逐字匹配）⇒
+    //   否则「实现了」只是键表上的一行字。
+    const self = readFileSync(
+      join(FRONTEND_ROOT, 'src/api/__tests__/summary-fallback-local-shape.test.ts'), 'utf8')
+    for (const [key, title] of Object.entries(IMPLEMENTED_RETESTS)) {
+      assert.ok(self.includes(`it('${title}'`),
+        `retest「${key}」对应的用例不见了（标题：${title}）⇒ 要么用例被删了，要么键表过期`)
+    }
+  })
+
   it('★ 负控 ①：登记簿少一行 ⇒ 「每个调用点都必须登记」当场转红', () => {
     const sites = scanSites()
     const shrunk = SITES.slice(1)   // 故意删掉第一行
@@ -748,5 +790,159 @@ describe('§919 服务端字节闸的调用方登记簿（每个调用点都得�
       (s) => !broken.some((r) => r.gate === s.gate && r.file === s.file && s.window.includes(r.marker)))
     assert.ok(unregistered.length > 0,
       '把 marker 改错居然还匹配得上 ⇒ marker 匹配是模糊的（文件级）⇒ 登记簿分不清同文件的多个调用点')
+  })
+})
+
+/**
+ * §920：精校兜底（`fallbackRefine`）的提示词**没有上限** ⇒ 超过 32000 **字节**时，
+ * 服务端那道闸（`len(m.Content) > 32000`）会**必然 400** ⇒ 用户拿到的是
+ * **未精校的原文**。
+ *
+ * ── 为什么这一条值得单立一节（它不在 §919 的登记簿里被修）──
+ *   §919 的登记簿把 `meeting_refine` 这一行标成「⚠ 无上限 ⇒ 登记不修」。
+ *   ⚠⚠ **那个定性违反了我自己定的判别标准**（§918 定的）：
+ *   「**用户能不能自己绕开**」——转写是**用户不能编辑的派生输入** ⇒ 用户**绕不开**
+ *   ⇒ 按那条标准它属于「**必须修**」类，不是「登记不修」类。
+ *   ⇒ 本节把它**从「登记」升级成「已实测的缺陷」**，并把**修法**（产品口径）交回属主。
+ *
+ * ── 实测读数（真实 ASR 语料 `.artifacts/asr-s788/seg-asr/merged.txt`）──
+ *   · 真实斜率 = 844 字节/分（`renderTranscript` 的输出**含** `[说话人] ` 前缀）
+ *   · 越闸点 ≈ **33.9 分钟**（精校模板开销 3172 字节 ⇒ 比摘要那条的 522 大得多
+ *     ⇒ **比摘要兜底早 3.2 分钟**撞闸）
+ *   · ⚠⚠ **不对称**：同一份转写走后端那条路（`/api/meetings/{id}/refine`）
+ *     **没有**这道 32000 字节闸（实测 62.5 分钟的会议送 70301 字节照样发得出去）
+ *     ⇒ 「**后端精校失败时，长会议的用户一定拿不到精校**」
+ *   · 这条兜底是**高频**路径（§54：后端 60s 超时 ⇒ 前端必走这里）
+ *
+ * ── 本节**只出声、不改降级行为**（与 §818/§819/§820 同款纪律）──
+ *   修法（裁尾 / 分段精校 / 别的）是**产品口径**（简报 140 第 ② 问）⇒ 不代拍。
+ *
+ * ⚠ 判据里**不钉分钟数**：那依赖 `.artifacts/` 的真实语料（已 gitignore）⇒
+ *   判据只钉**字节层面的性质**（真实语料读数在注释与简报里）。
+ */
+describe('§920 精校兜底超字节闸时必须出声（降级行为一行未改）', () => {
+  const GATE = 32000
+  const META = { title: '季度会议' }
+
+  beforeEach(async () => {
+    stubBrowser()
+    await activatePinia()
+  })
+  afterEach(() => { restoreGlobals() })
+
+  /**
+   * 造一场 minutes 分钟的会议。
+   *
+   * ⚠⚠ **每行内容必须互不相同** —— 内容相同会被 `renderTranscript` 的**去重**
+   *   裁掉（那是**正确**行为：相邻重复的发言只留净增）。
+   *   ⚠ 本节第一版探针每行内容完全相同 ⇒ 产物只剩原文 55% ⇒ **读数失真**
+   *     （与 §916 探针「`slice(0,66)` 截的是 33 字的串」是同族量具事故）。
+   */
+  function makeSegments(minutes: number) {
+    const lineChars = 66
+    const count = Math.ceil((minutes * 271) / lineChars)
+    const base = '会议讨论季度预算与交付里程碑排期以及客户跟进安排事项与负责人确认。'
+    const out = []
+    for (let i = 0; i < count; i++) {
+      const head = `第${i}：`
+      const need = lineChars - head.length
+      out.push({
+        id: `s${i}`, meetingId: 'm1', speakerLabel: '说话人', lang: 'zh',
+        confidence: 0.9, startMs: i * 20000, endMs: (i + 1) * 20000,
+        text: head + base.repeat(Math.ceil(need / base.length)).slice(0, need),
+        origin: 'asr',
+      })
+    }
+    return out
+  }
+
+  /** 跑一次 refine（后端 502 ⇒ 走前端兜底），抓 warn / 实际请求 / 产物。 */
+  async function runRefine(minutes: number) {
+    const mod = await loadBundle(join(FRONTEND_ROOT, 'src/api/meetings.ts'), 's920-mod')
+    const md = await loadBundle(join(FRONTEND_ROOT, 'src/features/meetings/meeting-dedup.ts'), 's920-md')
+    const rp = await loadBundle(join(FRONTEND_ROOT, 'src/features/meetings/refine-prompt.ts'), 's920-rp')
+    const segs = makeSegments(minutes)
+    const seen = captureRequests({ '/api/meetings/m1/refine': 502, '/api/llm/chat': 400 })
+    const warns: string[] = []
+    const realWarn = console.warn
+    console.warn = (...a: unknown[]) => { warns.push(a.map(String).join(' ')) }
+    let res: unknown
+    try {
+      res = await mod.meetingsApi.refine('m1', segs, ['en'], META)
+    } finally {
+      console.warn = realWarn
+    }
+    const req = seen.find((s) => s.path === '/api/llm/chat')
+    return {
+      segs, warns, req, res,
+      expected: rp.buildFallbackRefinePrompt(md.renderTranscript(segs), META),
+    }
+  }
+
+  it('★ 超闸时必须出声，且 warn 里的字节数就是**实际发出去**的字节数', async () => {
+    const r = await runRefine(60)
+    // ⚠ 不能靠「没调用就当没违规」过关：先证明兜底请求**确实打了**。
+    assert.ok(r.req, '兜底请求没打出来 ⇒ 这条判据测不到任何东西')
+    const content = r.req.body.messages[0].content
+    const actual = Buffer.byteLength(content, 'utf8')
+    assert.ok(actual > GATE,
+      `前置失效：60 分钟的兜底提示词只有 ${actual} 字节（未超闸 ${GATE}）⇒ 这条用例测不到「超闸」`)
+
+    const hit = r.warns.find((w) => w.includes('refine-fallback'))
+    assert.ok(hit, `超闸却没有出声（warns=${JSON.stringify(r.warns)}）⇒ 「它必然 400」这件事仍是静默的`)
+    // ⚠⚠ 断言「warn 里出现的**每一个**『N 字节』都必须是这两个数之一」——
+    //   ① `actual`（实测的提示词字节数）② `GATE`（闸值）。
+    //   ⚠ 为什么不用「含 32000」这种宽松写法：只查「含」的话，
+    //   **主形态被改**（32000→16000）会红，但**另有一处错值并存**抓不到
+    //   ⇒ 开发者会在同一条 warn 里看到两个闸值 ⇒ 那比写错一个更糟。
+    //   ⚠ 变异 V4 就是这么长牙的：V4a（主形态被改）与 V4c（并存错值）都红，
+    //   而 V4b（多写一遍**正确**的 32000，语义等价）不红。
+    const byteNumbers = [...hit.matchAll(/(\d+) 字节/g)].map((m) => Number(m[1]))
+    assert.ok(byteNumbers.length > 0, `warn 里没有「N 字节」形态，量不到：${hit}`)
+    for (const n of byteNumbers) {
+      assert.ok(n === actual || n === GATE,
+        `warn 里出现了既不是实测字节数（${actual}）也不是闸值（${GATE}）的数字 ${n} 字节 ⇒ ` +
+        `同一条 warn 里出现两个闸值 ⇒ 开发者会读到矛盾的说明：${hit}`)
+    }
+    assert.ok(hit.includes(`> 闸 ${GATE} 字节`),
+      `warn 里没有「> 闸 ${GATE} 字节」这个形态 ⇒ 闸值可能写错了：${hit}`)
+    // ⚠★ **口径自证**：warn 里报的字节数必须与**实际发出去的**那个 content 一致。
+    //   ⇒ 它抓的是「warn 报的是估算 / 报的是别的那个字符串」。
+    assert.ok(hit.includes(`${actual} 字节`),
+      `warn 报的字节数与实际发出去的 ${actual} 字节不一致 ⇒ 量的不是同一个东西：${hit}`)
+  })
+
+  it('★ 负控：闸内时**不得**出声（否则 warn 就成了噪声，久了没人看）', async () => {
+    const r = await runRefine(10)
+    assert.ok(r.req, '兜底请求没打出来')
+    const content = r.req.body.messages[0].content
+    const actual = Buffer.byteLength(content, 'utf8')
+    assert.ok(actual <= GATE,
+      `前置失效：10 分钟的兜底提示词已经 ${actual} 字节（超闸 ${GATE}）⇒ 这条负控失效`)
+    const hit = r.warns.find((w) => w.includes('refine-fallback'))
+    assert.equal(hit, undefined, `闸内却出声了：${hit}`)
+  })
+
+  it('★ 降级行为**一行未改**：发出去的 content 与提示词逐字一致', async () => {
+    // ⚠ 这条钉的是「我加的只是 warn，没动送出去的东西」。
+    //   ⇒ 防止将来有人「顺手裁一下」而**没人发现产物变了**。
+    const r = await runRefine(60)
+    assert.ok(r.req, '兜底请求没打出来')
+    const content = r.req.body.messages[0].content
+    assert.equal(content, r.expected,
+      '兜底发出去的 content 与 buildFallbackRefinePrompt(renderTranscript(segments)) 不一致 ⇒ ' +
+      '要么提示词构造被改了，要么转写来源被改了 ⇒ §920 只加了 warn，这两处都不该动')
+  })
+
+  it('★ 失败形态：400 之后用户拿到的是**未精校的原文**（不是空白）', async () => {
+    // ⚠ 这一条是**行为事实**（不是「必然 400」那个缺陷）⇒ 将来若改成裁剪/分段，
+    //   产物形状会变 ⇒ **这条判据会红 ⇒ 那时人应该更新它**（它不是把缺陷钉成期望）。
+    const r = await runRefine(60)
+    assert.ok(r.req, '兜底请求没打出来')
+    const res = r.res as { refinedTranscript: string; fromFallback?: boolean; retentionReason?: string }
+    assert.equal(res.fromFallback, true, '兜底产物没有置 fromFallback ⇒ 界面无从区分「没精校」')
+    assert.ok(res.refinedTranscript.length > 0, '兜底产物是空串 ⇒ 用户看到的是空白而不是原文')
+    assert.equal(res.retentionReason, 'refined-empty',
+      `retentionReason 变了（${res.retentionReason}）⇒ 用户侧文案（refine-outcome-notice.ts）要跟着看`)
   })
 })

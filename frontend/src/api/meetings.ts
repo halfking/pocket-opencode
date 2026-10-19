@@ -474,7 +474,13 @@ function normalizeActionItems(raw: unknown): ActionItem[] {
  *   `backend/internal/server/server_llmbff.go:125`（流式那条入口，同值）
  *
  *   Go 的 `len(string)` 返回的是**字节数**
- *   ⇒ 32000 字节 ≈ **10666 个中文字** ≈ **39.4 分钟**的会议。
+ *   ⇒ 32000 字节 ≈ **10666 个中文字**（这是**闸的语义**：按 3 字节/字）。
+ *   ⚠⚠ §920 **更正**了「分钟」那一半：换算成会议时长**不能**用「10666 字 ÷ 271 字/分」，
+ *     因为真实提示词里还有**说话人前缀**（`[说话人] ` 每行约 16 字节）且真实转写密度是
+ *     **2.93 字节/字**（不是 3）⇒ 真实斜率 = **844 字节/分**（真实 ASR 语料实测）
+ *     ⇒ 摘要兜底（模板开销 522 字节）的越闸点 ≈ **37.1 分钟**
+ *     ⇒ 精校兜底（模板开销 3172 字节）≈ **33.9 分钟**
+ *     ⇒ 流式纪要（§919 修好后）**永不超闸**（被裁进闸内）。
  *   ⚠⚠ 这比先前按「字符」估的「≈2 小时」**短 3 倍** ——
  *     同样地，`/api/embed` 的 16000 闸（`server_assistant.go:2853`，也是字节）
  *     只装得下 **5333 个中文字** ≈ **19.7 分钟**，
@@ -557,7 +563,8 @@ async function fallbackSummarize(
   //   是摘要链里**时间点的唯一来源**（schema 里没有 next_meeting）。
   //   与服务端 `buildSummaryPrompt` 的防漂由 summary-prompt-parity.test.mjs 承担。
   // ⚠⚠ §916：转写可能超过 `/api/llm/chat` 的 32000 **字节**硬闸
-  //   （实测 32000 字节 ≈ 10666 个中文字 ≈ **39 分钟**的会议）
+  //   （实测 32000 字节 ≈ 10666 个中文字；按真实提示词斜率 844 字节/分
+  //   ⇒ 越闸点 ≈ **37.1 分钟**，§920 实测 ⇒ 原写的「39 分钟」偏高）
   //   ⇒ 不裁就是**必然 400**，兜底**结构性不可达** ⇒ 摘要退化成「转写前 200 字」。
   //   ⇒ 这里按闸裁（取**尾部**：新的内容在尾部，更早的由 prevSummary 携带）。
   //   ⚠ 低于闸时**逐字不变**（`fitSummaryPromptToGate` 原样返回）
@@ -615,6 +622,33 @@ async function fallbackRefine(
   meta?: { title?: string; participants?: string[]; location?: string },
 ): Promise<RefineResult> {
   const transcript = renderTranscript(segments)
+  const prompt = buildFallbackRefinePrompt(transcript, meta)
+
+  // ⚠⚠ §920：这条兜底的提示词**没有上限** ⇒ 超过 `LLM_CHAT_MAX_CONTENT_BYTES`
+  //   **字节**时，服务端那道闸（`len(m.Content) > 32000`）会**必然 400**
+  //   ⇒ 走不到下面的 catch ⇒ 用户拿到的是**未精校的原文**。
+  //
+  //   ── 实测读数（真实 ASR 语料，斜率 844 字节/分，含说话人前缀）──
+  //   · 越闸点 ≈ **33.9 分钟**（精校模板开销 3172 字节，比摘要那条的 522 大得多
+  //     ⇒ **比摘要兜底早 3.2 分钟**撞闸）
+  //   · ⚠ 这条路是**高频**兜底（§54：后端 60s 超时 ⇒ 前端必走这里）
+  //   · ⚠⚠ 而转写是**用户不能编辑的派生输入** ⇒ 用户**绕不开**
+  //     （§918 定的判别标准：不可编辑的派生输入撞闸 ⇒ 必须修）
+  //   · ⚠⚠ **不对称**：同一份转写走后端那条路（`/api/meetings/{id}/refine`）
+  //     **没有**这道 32000 字节闸（实测 62.5 分钟的会议送 70301 字节照样发得出去）
+  //     ⇒ 「后端精校失败时，长会议的用户一定拿不到精校」
+  //
+  //   ── 这里**只出声、不改降级行为**（与 §818/§819/§820 同款纪律）──
+  //   修法（裁尾 / 分段精校 / 别的）是**产品口径**，已挂在简报 140 第 ② 问
+  //   ⇒ 本节不代拍 ⇒ 只把「它必然 400」从静默变成可见。
+  const promptBytes = utf8ByteLength(prompt)
+  if (promptBytes > LLM_CHAT_MAX_CONTENT_BYTES) {
+    console.warn(
+      `[refine-fallback] 兜底提示词 ${promptBytes} 字节 > 闸 ${LLM_CHAT_MAX_CONTENT_BYTES} 字节` +
+      ` ⇒ 这条请求**必然 400**（转写约 ${(promptBytes / 844).toFixed(1)} 分钟；` +
+      `实测越闸点 33.9 分钟）⇒ 精校会回落成原文。修法待拍板（简报 140 第 ② 问）。`,
+    )
+  }
 
   try {
     const res = await http<{ content: string }>('/api/llm/chat', {
@@ -623,7 +657,7 @@ async function fallbackRefine(
         kind: 'meeting_refine',
         messages: [{
           role: 'user',
-          content: buildFallbackRefinePrompt(transcript, meta),
+          content: prompt,
         }],
       }),
       signal,
