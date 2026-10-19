@@ -164,10 +164,40 @@ _start_container_db() {
   [[ -z "$password_key" ]] || _env_ensure_key "$password_key" "$password"
   _env_ensure_key "$dsn_key" "$dsn"
   [[ "$name" != postgres ]] || _env_ensure_key POCKET_PG_SCHEMA "${OPP_PG_SCHEMA:-opencode_pocket}"
+
+  # ── postgres 的 PGDATA：命名卷为默认，bind mount 需显式 opt-in ──────────
+  #
+  # 2026-10-17 拍板（理由与实测见 docker-compose.db.yml 里那段注释）：
+  # 宿主 bind mount 在 macOS 上**无法**让 initdb 跑起来（Docker Desktop 的文件
+  # 共享层使容器内 chown 失效，宿主 sudo chown 也会被 virtiofs 重新呈现成 501）
+  # ⇒ 首次启动跳过建库 ⇒ POSTGRES_DB 根本不存在，而旧 healthcheck 照样报 healthy。
+  #
+  # ⇒ 默认走命名卷；只有显式设置 OPP_PG_DATA_MODE=bind 才用宿主目录。
+  local pg_volume=""
+  if [[ "$name" == postgres ]]; then
+    if [[ "${OPP_PG_DATA_MODE:-volume}" == "bind" ]]; then
+      pg_volume="$data_dir"
+      echo "  ⚠️ postgres: 你显式要求了 bind mount（OPP_PG_DATA_MODE=bind）"
+      if [[ "$(uname -s)" == "Darwin" ]]; then
+        echo "     ⚠️ macOS + Docker Desktop：这条路上容器内 chown 不生效，" >&2
+        echo "        首次启动很可能跳过创建 POSTGRES_DB。除非你知道自己在做什么，" >&2
+        echo "        否则请 unset OPP_PG_DATA_MODE 回到命名卷。" >&2
+      fi
+    fi
+  fi
+  OPP_PG_VOLUME="$pg_volume" \
   DOCKER_DB_HOST="$host" DOCKER_DB_PORT="$port" DOCKER_DB_IMAGE="$image" \
   DOCKER_DB_DATA_DIR="$data_dir" \
     docker compose -p "$project" -f "$compose_file" up -d --wait --wait-timeout 60 "$svc" || return 1
-  echo "  ✅ ${name} 容器已起 (port=${port}, data=${data_dir})"
+  if [[ "$name" == postgres ]]; then
+    if [[ -n "$pg_volume" ]]; then
+      echo "  ✅ ${name} 容器已起 (port=${port}, data=bind:$pg_volume)"
+    else
+      echo "  ✅ ${name} 容器已起 (port=${port}, data=命名卷 ${OPP_PG_VOLUME_NAME:-opp-pgdata})"
+    fi
+  else
+    echo "  ✅ ${name} 容器已起 (port=${port}, data=${data_dir})"
+  fi
 
 }
 

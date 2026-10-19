@@ -116,7 +116,12 @@ func TestFullVsChunkedProbeKeepsSkipAndPartLossVisible(t *testing.T) {
 		t.Fatalf("读探针源码失败: %v", err)
 	}
 	s := string(src)
-	code := stripGoComments(s) // 注释里的判据不算数（§467 同族）
+	// ⚠ 2026-10-17：这里原先调用的是 §467 台账文件里的 `stripGoComments`。
+	//	§775 普查轮把那套手写扫描器换成 go/parser 后该函数随之消失，
+	//	本文件编译失败才暴露出来 —— 这是「同一份逻辑散在多处」的典型代价。
+	//	同包 `dedup_threshold_sync_test.go` 里已有 `stripGoCommentsKeepLines`，
+	//	语义相同且保留行数（这里只用 strings.Contains，行数无影响）⇒ 直接改用它。
+	code := stripGoCommentsKeepLines(s) // 注释里的判据不算数（§467 同族）
 
 	// ① 跳过整档必须有出声路径。
 	//

@@ -547,11 +547,69 @@ ORDER BY total_exec_time DESC LIMIT 20;
 --   docker exec opp-db-postgres sh -c 'tail -f /var/lib/postgresql/data/log/postgresql-$(date +%F).log'
 ```
 
-> ⚠️ 已经跑过初始化的实例**不会**重跑初始化脚本，`pg_stat_statements` 需手工补一次：
-> ```sql
-> CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
+> ⚠️ **存量实例必须补一次**（2026-10-17 加脚本）。
+> `pg-init-slow-query.sql` 挂在 `/docker-entrypoint-initdb.d/`，而镜像**只在数据目录
+> 为空的那一次**执行该目录 ⇒ 已经跑过初始化的实例**永远不会**再装它。
+> ⇒ 上面两条查询在存量实例上必然报 `relation "pg_stat_statements" does not exist`。
+>
+> ```bash
+> deploy/bin/pg-backfill-slow-query.sh            # 先查后做，幂等，完成后复核
+> deploy/bin/pg-backfill-slow-query.sh --dry-run  # 只看会做什么
 > ```
-> `shared_preload_libraries` 同理只能走启动参数，改完需重启容器。
+>
+> 该脚本只做**运行期**能做的部分（建扩展 + 建视图），
+> 并**报告** `shared_preload_libraries` 的状态而不擅自重启容器——
+> `shared_preload_libraries` 只能走启动参数（`ALTER SYSTEM` 补不回来，要重启才生效），
+> 它写在 `docker-compose.db.yml` 的 `command:` 里，所以存量实例重建一次容器即可带上：
+>
+> ```bash
+> docker compose -p opp-db-postgres -f deploy/bin/docker-compose.db.yml up -d postgres
+> ```
+
+---
+
+## PGDATA 在哪：命名卷 vs 宿主目录（2026-10-17 定案）
+
+**默认是 Docker 命名卷**（`opp-pgdata`），**不再**把 PGDATA 绑到宿主目录。
+
+| | 命名卷（默认） | 宿主 bind mount |
+|---|---|---|
+| 首次启动建库 | ✅ Docker 按镜像 uid 建目录，initdb 必然能跑 | ⚠️ macOS 上起不来，见下 |
+| 数据在宿主可见 | ❌ 需 `docker cp` / `pg_dump` | ✅ 直接可翻 |
+| 换一台机器 | `pg_dump` / `pg_dumpall` | 拷目录（**不跨 uid 场景**） |
+
+**为什么从 bind mount 退回来**（不是偏好，三条实测/事实）：
+
+1. **uid 70 是镜像实现细节**，是 Debian 系 postgres 镜像里 postgres 用户的 uid。
+   把它固化进宿主目录属主 = 把部署焊死在某个镜像版本的用户表上。
+2. **macOS 上「修」不了。** Docker Desktop 的 bind mount 过文件共享层，
+   容器内 `chown` 不生效；宿主 `sudo chown 70:70` 也会被 virtiofs 重新呈现成 uid 501。
+   ⇒ 属主不对 ⇒ initdb 的临时 `pg_ctl` 以 postgres 身份起不来 ⇒
+   镜像入口看到 `PG_VERSION` 就「目录已有数据库，**跳过初始化**」⇒
+   **`POSTGRES_DB` 根本没被创建**。（2026-10-17 在 macOS + Docker Desktop 上实机复现。）
+3. 官方 postgres 镜像的入口脚本本就围绕「一个它自己拥有的目录」设计。
+
+**确实需要宿主可见时**（备份工具、想直接翻文件）显式退回 bind mount：
+
+```bash
+export OPP_PG_DATA_MODE=bind          # PGDATA 走 ${POCKET_PG_DATA_DIR}
+deploy/bin/ensure-databases.sh
+```
+
+⚠ **切换模式 = 换数据位置**（同名卷与宿主目录是两个不同的库）。
+来回切会得到一个空库。切之前先 `pg_dump`。
+在 macOS 上退回 bind mount 会让 `doctor.sh` 直接报 **fail**（不是 warn）——
+因为那个环境下它一定会踩到上面那条故障链。
+
+**怎么知道自己有没有踩过**：旧故障的症状是「容器 healthy，但 `pocket` 库不存在」。
+
+```bash
+docker exec opp-db-postgres psql -U llm_gateway -d pocket -tAc 'SELECT 1'   # 报错就是踩了
+```
+
+healthcheck 现在会真的把连接建起来（库/角色/密码任一不对即转红），
+所以这类故障不会再以 healthy 的形态潜伏；但注意它有 **12 次 × 10s ≈ 2 分钟**
+的判定延迟。
 
 ### Backend 优化
 

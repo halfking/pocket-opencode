@@ -29,17 +29,48 @@
 //	台账一旦可以只增不减，它就会烂成一张**永久通行证**。
 //
 // ② **必须剥注释**：`t.Skip` 出现在注释里时不算数（§464 同族）。
-// ③ **量具先自证**：先断言「确实扫到了 ≥8 个可跳过的探针」，
+//
+// ③ **量具先自证**：先断言「确实扫到了 ≥N 个可跳过的探针」，
 //
 //	否则「台账是空的」和「抽取器坏了」读数一样。
+//
+// ── 2026-10-17：这道门自己曾经**绿着漏掉一条** ─────────────────────
+//
+// §775 的普查轮把抽取器收编进 `internal/skipaudit` 时，实测发现：
+//
+//	台账登记 10 条，源码里真实在跳过的有 **11 个**。
+//	多出来的那条是 `TestLiveASRModelFallsBackToGlobalDefault` —— 它用的是
+//	**`t.Skipf(`**，而 §467 的抽取器只匹配字面量 `t.Skip(`。
+//
+// ⇒ **「双向精确匹配」在一个少认了一种写法的量具上双向精确。**
+//
+//	门是绿的，而它漏着。这正是本轮审计的主病：
+//
+//	**失效的东西因为一直在输出而没人怀疑。**
+//
+// 修法（连同 §467 抽取器的另外两个幽灵点一起）：
+//
+// ① 抽取器换成 `go/parser`（`internal/skipaudit`）。AST 里没有注释，
+//
+//	字符串字面量也不是 CallExpr ⇒ 纪律②免费成立，
+//	§467 那版「剥注释后按正则找 t.Skip(」的三个幽灵点一起消失。
+//
+// ② **豁免整体取消。** §467 必须豁免本文件自己（负控样本里有原始字符串
+//
+//	写着 `func TestReal(t *testing.T) { t.Skip(...) }`）。改用 AST 后
+//	那份样本不再是调用 ⇒ 本文件贡献 **0** 个跳过点。
+//
+//	TestSkipLedger_本文件不再需要豁免 把这件事钉死：
+//	哪天有人在本文件里写进一个真的 t.Skip(，它会立刻报红并要求你
+//	把豁免与自证**一起**加回来 —— 而不是像以前那样，豁免可以悄悄扩大。
 package stt
 
 import (
 	"os"
 	"path/filepath"
-	"regexp"
-	"strings"
 	"testing"
+
+	"github.com/halfking/pocket-opencode/backend/internal/skipaudit"
 )
 
 // ── 台账 ──────────────────────────────────────────────────────────────
@@ -49,300 +80,153 @@ import (
 // 否则下一个会话会把「跳过」重新登记成「没查」。
 // ── 这道门的能力边界（必须如实说，不得夸大）─────────────────────────
 //
-// ⚠ 本门是**静态**检查：它看的是源码里「某个 Test 函数体内有没有 `t.Skip(`」，
+// ⚠ 本门是**静态**检查：它看的是源码里「某个 Test 函数体内有没有跳过调用」，
 //
 //	**不是**「这次运行它到底跳没跳」。
-//
 //	外部变异②实测过了：把某探针的守卫从 `!= "1"` 改成 `== "1"`，
 //	该测试在本机就从 SKIP 变成 **FAIL**（守卫失效 ⇒ 真去跑了 ⇒ 缺 env 而失败），
-//	而本门**仍然绿** —— 因为 `t.Skip(` 那行还在源码里。
+//	而本门**仍然绿** —— 因为那个跳过调用还在源码里。
 //
 // ⇒ 这不是缺陷，是**有意的取舍**：静态判据是确定性的、与本机有没有凭据无关；
 //
 //	运行时判据在有网关的机器上会自动变绿，等于把台账交给环境决定。
-//	⚠ 代价必须记住：**「有 t.Skip 字样」不等于「这次真的跳了」**。
+//	⚠ 代价必须记住：**「源码里有跳过调用」不等于「这次真的跳了」**。
 //	要看真实跳过数请跑：`go test ./internal/stt/ -v | grep -c '^--- SKIP'`。
-//
-// skipLedgerEntry 结构体字段定义在其上方（knownSkips 变量表之前）。
-type skipLedgerEntry struct {
-	test   string
-	reason string
-	unlock []string
+var knownSkips = []skipaudit.Entry{
+	skipaudit.E("TestLiveGatewayASR", skipaudit.CatCredential, "真网关 ASR 基础探针",
+		"POCKET_LIVE_GATEWAY=1", "POCKET_LLM_GATEWAY_URL", "POCKET_LLM_GATEWAY_API_KEY",
+		"POCKET_LIVE_ASR_AUDIO（仓内无音频文件，需自备 16k WAV）", "POCKET_LIVE_ASR_MODEL"),
+	skipaudit.E("TestLiveGatewayASRCer", skipaudit.CatCredential, "真网关 CER 实测（用户最关心的「转写准不准」）",
+		"POCKET_LIVE_GATEWAY=1", "POCKET_LLM_GATEWAY_URL", "POCKET_LLM_GATEWAY_API_KEY",
+		"POCKET_LIVE_ASR_AUDIO", "POCKET_LIVE_ASR_MODEL"),
+	skipaudit.E("TestLiveGatewayASRMergeOverlappingChunks", skipaudit.CatCredential, "切片重叠去重的真网关实测",
+		"POCKET_LIVE_GATEWAY=1", "POCKET_LLM_GATEWAY_URL", "POCKET_LLM_GATEWAY_API_KEY",
+		"POCKET_LIVE_ASR_AUDIO", "POCKET_LIVE_ASR_MODEL"),
+	skipaudit.E("TestLiveGatewayFullVsChunked", skipaudit.CatCredential, "整段转写 vs 切块转写的真网关对比",
+		"POCKET_LIVE_GATEWAY=1", "POCKET_LLM_GATEWAY_URL", "POCKET_LLM_GATEWAY_API_KEY",
+		"POCKET_LIVE_ASR_AUDIO", "POCKET_LIVE_ASR_MODEL"),
+	skipaudit.E("TestLiveGatewayOverlapTimingVsText", skipaudit.CatCredential, "重叠时序 vs 重叠文本（语速锚点）",
+		"POCKET_LIVE_GATEWAY=1", "POCKET_LLM_GATEWAY_URL", "POCKET_LLM_GATEWAY_API_KEY",
+		"POCKET_LIVE_ASR_AUDIO", "POCKET_LIVE_ASR_MODEL"),
+	// ⚠ 这一条有 **2 个**跳过调用（不是 1 个），Points 必须照实写 2。
+	//
+	//	Points 刻意**手写**而不是 init() 里自动补：自动补会让
+	//	「台账点数 == 实际点数」这条交叉校验恒真 —— 那就白设了。
+	//	（§467 的手写扫描器时代没有这条校验；加它当场就抓到了本条。）
+	{
+		Test:   "TestLiveGatewayOneASRModel",
+		Cat:    skipaudit.CatCredential,
+		Reason: "指定单一 ASR 模型的定点验证",
+		Unlock: []string{"POCKET_LIVE_GATEWAY=1", "POCKET_LIVE_ASR_MODEL"},
+		Points: 2,
+	},
+	skipaudit.E("TestLiveGatewayASRCandidateSupply", skipaudit.CatCredential, "网关实际供应了哪些 ASR 模型",
+		"POCKET_LIVE_GATEWAY=1", "POCKET_LLM_GATEWAY_URL", "POCKET_LLM_GATEWAY_API_KEY"),
+	skipaudit.E("TestLiveASRCandidateCoverage", skipaudit.CatCredential, "目标清单里的候选是否真被网关覆盖",
+		"POCKET_LIVE_GATEWAY=1", "POCKET_LLM_GATEWAY_URL", "POCKET_LLM_GATEWAY_API_KEY"),
+	skipaudit.E("TestLiveGatewayProdSegment", skipaudit.CatCredential, "生产整段切分形态 vs 整段单发（含跨段合并对照）",
+		"POCKET_LIVE_GATEWAY=1", "POCKET_LLM_GATEWAY_URL", "POCKET_LLM_GATEWAY_API_KEY",
+		"POCKET_LIVE_ASR_AUDIO", "POCKET_LIVE_ASR_MODEL"),
+	skipaudit.E("TestDumpSplitSegments", skipaudit.CatDiagProbe, "切分结果的人工取证转储（开发工具，非断言）",
+		"POCKET_DIAG_DATA_DIR 或显式运行（属转储工具而非门）"),
+	// ↓ 2026-10-17 补登：§467 漏掉的第 11 条（用的是 t.Skipf）
+	skipaudit.E("TestLiveASRModelFallsBackToGlobalDefault", skipaudit.CatPremiseFailed,
+		"断言「线上真正在用的 mimo-v2.5-asr 未登记 MaxSeconds ⇒ 回落全局默认 25s」。"+
+			"一旦该模型被登记 MaxSeconds，本用例的前提就不成立 ⇒ 跳过并要求更新 §481.5 的结论。"+
+			"⚠ 正因为它是 CatPremiseFailed，它**永远不会失败**："+
+			"模型被登记的那天，这里静默跳过，而绿色读数与「跑过并通过」无法区分。",
+		"无需 env；解锁方式是给本用例换一个仍满足「未登记 MaxSeconds」的模型，"+
+			"或当 mimo-v2.5-asr 真的被登记后重写判据（此时它应转为一条真正的断言）"),
 }
 
-// knownSkips 是**全部**允许被跳过的测试。不在表内的一律红。
-var knownSkips = []skipLedgerEntry{
-	{"TestLiveGatewayASR", "真网关 ASR 基础探针",
-		[]string{"POCKET_LIVE_GATEWAY=1", "POCKET_LLM_GATEWAY_URL", "POCKET_LLM_GATEWAY_API_KEY",
-			"POCKET_LIVE_ASR_AUDIO（仓内无音频文件，需自备 16k WAV）", "POCKET_LIVE_ASR_MODEL"}},
-	{"TestLiveGatewayASRCer", "真网关 CER 实测（用户最关心的「转写准不准」）",
-		[]string{"POCKET_LIVE_GATEWAY=1", "POCKET_LLM_GATEWAY_URL", "POCKET_LLM_GATEWAY_API_KEY",
-			"POCKET_LIVE_ASR_AUDIO", "POCKET_LIVE_ASR_MODEL"}},
-	{"TestLiveGatewayASRMergeOverlappingChunks", "切片重叠去重的真网关实测",
-		[]string{"POCKET_LIVE_GATEWAY=1", "POCKET_LLM_GATEWAY_URL", "POCKET_LLM_GATEWAY_API_KEY",
-			"POCKET_LIVE_ASR_AUDIO", "POCKET_LIVE_ASR_MODEL"}},
-	{"TestLiveGatewayFullVsChunked", "整段转写 vs 切块转写的真网关对比",
-		[]string{"POCKET_LIVE_GATEWAY=1", "POCKET_LLM_GATEWAY_URL", "POCKET_LLM_GATEWAY_API_KEY",
-			"POCKET_LIVE_ASR_AUDIO", "POCKET_LIVE_ASR_MODEL"}},
-	{"TestLiveGatewayOverlapTimingVsText", "重叠时序 vs 重叠文本（语速锚点）",
-		[]string{"POCKET_LIVE_GATEWAY=1", "POCKET_LLM_GATEWAY_URL", "POCKET_LLM_GATEWAY_API_KEY",
-			"POCKET_LIVE_ASR_AUDIO", "POCKET_LIVE_ASR_MODEL"}},
-	{"TestLiveGatewayOneASRModel", "指定单一 ASR 模型的定点验证",
-		[]string{"POCKET_LIVE_GATEWAY=1", "POCKET_LIVE_ASR_MODEL"}},
-	{"TestLiveGatewayASRCandidateSupply", "网关实际供应了哪些 ASR 模型",
-		[]string{"POCKET_LIVE_GATEWAY=1", "POCKET_LLM_GATEWAY_URL", "POCKET_LLM_GATEWAY_API_KEY"}},
-	{"TestLiveASRCandidateCoverage", "目标清单里的候选是否真被网关覆盖",
-		[]string{"POCKET_LIVE_GATEWAY=1", "POCKET_LLM_GATEWAY_URL", "POCKET_LLM_GATEWAY_API_KEY"}},
-	{"TestLiveGatewayProdSegment", "生产整段切分形态 vs 整段单发（含跨段合并对照）",
-		[]string{"POCKET_LIVE_GATEWAY=1", "POCKET_LLM_GATEWAY_URL", "POCKET_LLM_GATEWAY_API_KEY",
-			"POCKET_LIVE_ASR_AUDIO", "POCKET_LIVE_ASR_MODEL"}},
-	{"TestDumpSplitSegments", "切分结果的人工取证转储（开发工具，非断言）",
-		[]string{"POCKET_DIAG_DATA_DIR 或显式运行（属转储工具而非门）"}},
+var sttLedger = skipaudit.Ledger{
+	Pkg:      "./internal/stt",
+	Entries:  knownSkips,
+	MinFuncs: 10, // 实测 11 个
 }
 
-// stripGoComments 去掉 // 与 /* */ 注释，**保留字符串字面量**
-// （与前端那两道门同样的教训：我要找的东西可能就住在字符串里）。
-func stripGoComments(src string) string {
-	var b strings.Builder
-	b.Grow(len(src))
-	for i := 0; i < len(src); {
-		c := src[i]
-		switch {
-		case c == '/' && i+1 < len(src) && src[i+1] == '/':
-			for i < len(src) && src[i] != '\n' {
-				i++
-			}
-		case c == '/' && i+1 < len(src) && src[i+1] == '*':
-			i += 2
-			for i+1 < len(src) && !(src[i] == '*' && src[i+1] == '/') {
-				i++
-			}
-			i += 2
-			if i > len(src) {
-				i = len(src)
-			}
-		case c == '"':
-			b.WriteByte(c)
-			i++
-			for i < len(src) {
-				if src[i] == '\\' && i+1 < len(src) {
-					b.WriteString(src[i : i+2])
-					i += 2
-					continue
-				}
-				b.WriteByte(src[i])
-				if src[i] == '"' {
-					i++
-					break
-				}
-				i++
-			}
-		case c == '`':
-			b.WriteByte(c)
-			i++
-			for i < len(src) {
-				b.WriteByte(src[i])
-				if src[i] == '`' {
-					i++
-					break
-				}
-				i++
-			}
-		default:
-			b.WriteByte(c)
-			i++
-		}
-	}
-	return b.String()
-}
-
-var testFuncRe = regexp.MustCompile(`(?m)^func\s+(Test[A-Za-z0-9_]*)\s*\(\s*t\s+\*testing\.T\s*\)`)
-
-// skippableTests 返回本包里「函数体内出现 t.Skip(」的测试名。
-func skippableTests(t *testing.T) []string {
+func sttDir(t *testing.T) string {
 	t.Helper()
-	files, err := filepath.Glob("*.go")
+	d, err := skipaudit.DirOf("internal/stt")
 	if err != nil {
-		t.Fatalf("列目录失败: %v", err)
+		t.Fatalf("定位包目录失败: %v", err)
 	}
-	seen := map[string]bool{}
-	for _, f := range files {
-		if !strings.HasSuffix(f, "_test.go") {
-			continue
-		}
-		// ⚠ 豁免**只有本文件一个**，且是必需的：
-		//   本文件的负控样本是一个**反引号原始字符串**，里面写着
-		//   `func TestReal(t *testing.T) { t.Skip("…") }`。
-		//   而 stripGoComments **保留字符串字面量**（前端两道门踩出来的教训），
-		//   ⇒ 样本里的 t.Skip 会被算成真跳过，门会把自己报成「未登记」。
-		//
-		//   ⚠ 这是同一个家族的第 N 次：2026-10-11 这一轮我已经在 §463/§464/§466
-		//   踩了三次「掩码抹掉了我要找的东西」，这次是**反面**——
-		//   「掩码没抹掉我不想它看见的东西」。⇒ 两个方向都要考虑。
-		if f == "live_probe_skip_ledger_test.go" {
-			continue
-		}
-		raw, err := os.ReadFile(f)
-		if err != nil {
-			t.Fatalf("读 %s 失败: %v", f, err)
-		}
-		code := stripGoComments(string(raw))
-		for _, loc := range testFuncRe.FindAllStringIndex(code, -1) {
-			name := testFuncRe.FindStringSubmatch(code[loc[0]:loc[1]])[1]
-			// 从 `{` 起做花括号配平，取函数体
-			open := strings.Index(code[loc[1]:], "{")
-			if open < 0 {
-				continue
-			}
-			open += loc[1]
-			depth, end := 0, -1
-			for i := open; i < len(code); i++ {
-				if code[i] == '{' {
-					depth++
-				} else if code[i] == '}' {
-					depth--
-					if depth == 0 {
-						end = i
-						break
-					}
-				}
-			}
-			if end < 0 {
-				continue
-			}
-			if strings.Contains(code[open:end], "t.Skip(") {
-				seen[name] = true
-			}
-		}
-	}
-	out := make([]string, 0, len(seen))
-	for n := range seen {
-		out = append(out, n)
-	}
-	return out
+	return d
 }
 
+// scanStt 是本包唯一的扫描入口。
+// ⛔ exempt 传 nil：本包**不再有任何豁免**（见文件头）。
+func scanStt(t *testing.T) skipaudit.Result {
+	t.Helper()
+	res, err := skipaudit.Check(sttLedger, sttDir(t), nil)
+	if err != nil {
+		t.Fatalf("扫描失败: %v", err)
+	}
+	return res
+}
+
+// ③ 量具自证。
+func TestSkipLedgerIsCompleteAndNotStale_量具自证(t *testing.T) {
+	res := scanStt(t)
+	if err := skipaudit.SelfTestOK(sttLedger, res); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("%s：跳过测试 %d 个 / 跳过点 %d 个，台账登记 %d 条", sttLedger.Pkg, res.Found, res.Points, len(knownSkips))
+}
+
+// ① 双向精确匹配。
 func TestSkipLedgerIsCompleteAndNotStale(t *testing.T) {
-	got := skippableTests(t)
-
-	// 纪律③：量具先自证
-	if len(got) < 8 {
-		t.Fatalf("量具失效：只扫到 %d 个可跳过的测试（%v）。\n"+
-			"  ⚠ 这**不是**「现在没有东西被跳过」—— 先怀疑抽取器，再怀疑代码。", len(got), got)
+	res := scanStt(t)
+	if !res.OK() {
+		t.Error(res.String())
 	}
+	if res.LedgeredPoints != res.Points {
+		t.Errorf("台账点数 %d ≠ 实际点数 %d ⇒ Points 字段没跑 Register 补齐",
+			res.LedgeredPoints, res.Points)
+	}
+}
 
-	ledger := map[string]skipLedgerEntry{}
+// 类别分布显式钉住。
+func TestSkipLedger_前提不成立类计数被钉住(t *testing.T) {
+	const wantPremiseFailed = 1
+	got := 0
 	for _, e := range knownSkips {
-		ledger[e.test] = e
-	}
-
-	actual := map[string]bool{}
-	for _, n := range got {
-		actual[n] = true
-	}
-
-	// 方向①：有东西在跳过，却不在台账里
-	for _, n := range got {
-		if _, ok := ledger[n]; !ok {
-			t.Errorf("跳过但未登记：%s\n"+
-				"  ⇒ 它需要什么才能跑？请写进 knownSkips（含 unlock），否则「全绿」会一直掩盖它。", n)
+		if e.Cat == skipaudit.CatPremiseFailed {
+			got++
 		}
 	}
-	// 方向②：台账里有，可代码里已经不跳了（陈旧条目）
-	for name, e := range ledger {
-		if !actual[name] {
-			t.Errorf("台账陈旧：%s 已经在台账里，但源码里找不到它的 t.Skip。\n"+
-				"  ⇒ 要么测试被删/改名，要么它不再跳过 —— 两种都要更新台账。\n"+
-				"  ⚠ 台账只增不减就会烂成一张永久通行证。", name)
-		}
-		if strings.TrimSpace(e.reason) == "" || len(e.unlock) == 0 {
-			t.Errorf("台账条目 %s 缺 reason 或 unlock —— 空话解锁不了任何东西", name)
-		}
+	if got != wantPremiseFailed {
+		t.Errorf("「前提不成立就跳过」类实际 %d 条，钉住值是 %d。"+
+			"⇒ 新增一条要有意识地改这个常量并写明理由。", got, wantPremiseFailed)
 	}
 }
 
-// 负控：注释里的 t.Skip 不算。
-func TestSkipLedgerExtractorIgnoresComments(t *testing.T) {
-	sample := `package stt
-// func TestInComment(t *testing.T) { t.Skip("注释里的不算") }
-/* func TestInBlock(t *testing.T) { t.Skip("块注释里的也不算") } */
-func TestReal(t *testing.T) { t.Skip("这个才算") }
-`
-	code := stripGoComments(sample)
-	loc := testFuncRe.FindStringIndex(code)
-	if loc == nil {
-		t.Fatalf("负控样本没被解析器认出来 —— 量具失效")
+// ⭐ 负控：抽取器必须看不见「字面量里的假调用」。
+//
+// 这条是「本文件不再需要豁免」的全部依据 —— 如果哪天抽取器退回了
+// 「剥注释 + 正则 + 配平花括号」，本测试会红，而豁免就必须加回来。
+//
+// 样本刻意覆盖三种曾经各坑过一次的形态：
+//   - 行注释里的假函数（§464）
+//   - 块注释里的假函数
+//   - **原始字符串里的假函数**（§467 必须为本文件豁免的就是这个）
+func TestSkipLedger_抽取器看不见字面量里的假调用(t *testing.T) {
+	dir := t.TempDir()
+	const sample = "package stt\n" +
+		"// func TestInComment(t *testing.T) { t.Skip(\"注释里的不算\") }\n" +
+		"/* func TestInBlock(t *testing.T) { t.Skip(\"块注释里的也不算\") } */\n" +
+		"const raw = `func TestInRaw(t *testing.T) { t.Skip(\"原始字符串里的也不算\") }`\n" +
+		"func TestReal(t *testing.T) { t.Skip(\"这个才算\") }\n"
+	if err := os.WriteFile(filepath.Join(dir, "zz_sample_test.go"), []byte(sample), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	if strings.Contains(code[:loc[0]], "TestInComment") {
-		t.Fatalf("注释里的测试名没被剥掉")
+	fs, err := skipaudit.ScanDir(dir, nil)
+	if err != nil {
+		t.Fatalf("扫描失败: %v", err)
 	}
-	if strings.Count(code, "t.Skip(") != 1 {
-		t.Fatalf("期望只剩 1 个 t.Skip(，实测 %d 个 ⇒ 注释没剥干净", strings.Count(code, "t.Skip("))
+	if len(fs) != 1 || fs[0].Name != "TestReal" || fs[0].Points != 1 {
+		t.Fatalf("期望只认出 TestReal/1 点，实测 %+v\n"+
+			"  ⚠ 注释或原始字符串里的假调用被算进来了 ⇒ 本文件的豁免必须加回来，"+
+			"并且 §467 那三个幽灵点会重新出现在普查里", fs)
 	}
-}
-
-// 豁免自证：豁免必须**只有本文件一个，且确实必需**。
-// 否则「本文件可跳过」会在某次重构后变成一条悄悄的永久豁免
-// —— 台账一旦能被悄悄绕过，它就不再是台账。
-func TestSkipLedgerExemptionIsExactlyThisFileAndStillNeeded(t *testing.T) {
-	files, _ := filepath.Glob("*_test.go")
-	exempt := 0
-	selfHasSkipInSample := false
-	for _, f := range files {
-		raw, err := os.ReadFile(f)
-		if err != nil {
-			t.Fatalf("读 %s 失败: %v", f, err)
-		}
-		if f == "live_probe_skip_ledger_test.go" {
-			exempt++
-			// 判据自己**必须**仍含有会被误读的样本，否则豁免已无必要。
-			selfHasSkipInSample = strings.Contains(string(raw), "t.Skip(") &&
-				strings.Contains(string(raw), "`package stt")
-			continue
-		}
-		if !strings.Contains(string(raw), "t.Skip(") {
-			continue
-		}
-		// 其它含 t.Skip 的文件必须都在台账里（重复一遍主判据，确保豁免没有外溢）
-		code := stripGoComments(string(raw))
-		for _, loc := range testFuncRe.FindAllStringIndex(code, -1) {
-			name := testFuncRe.FindStringSubmatch(code[loc[0]:loc[1]])[1]
-			open := strings.Index(code[loc[1]:], "{")
-			if open < 0 {
-				continue
-			}
-			open += loc[1]
-			depth, end := 0, -1
-			for i := open; i < len(code); i++ {
-				if code[i] == '{' {
-					depth++
-				} else if code[i] == '}' {
-					depth--
-					if depth == 0 {
-						end = i
-						break
-					}
-				}
-			}
-			if end > 0 && strings.Contains(code[open:end], "t.Skip(") {
-				if _, ok := ledgerIndex()[name]; !ok {
-					t.Errorf("非豁免文件里的 %s 在跳过但没登记（豁免外溢）", name)
-				}
-			}
-		}
-	}
-	if exempt != 1 {
-		t.Fatalf("豁免数应为 1，实测 %d", exempt)
-	}
-	if !selfHasSkipInSample {
-		t.Fatal("本文件的负控样本已不复存在 ⇒ 豁免不再必需，请把这一处删掉（否则豁免会烂成通行证）")
-	}
-}
-
-func ledgerIndex() map[string]skipLedgerEntry {
-	m := map[string]skipLedgerEntry{}
-	for _, e := range knownSkips {
-		m[e.test] = e
-	}
-	return m
 }

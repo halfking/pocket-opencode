@@ -186,39 +186,62 @@ fi
 #   check_warn "端口 $PORT 未监听（服务未运行？）"
 # fi
 
-# ── 6. Docker 数据目录属主（2026-10-17 新增） ──────────────────────────
+# ── 6. postgres PGDATA 模式（2026-10-17 定案并实测）─────────────────────
 #
-# 为什么要有这条：`docker-compose.db.yml` 把 PGDATA 绑到宿主目录。
-# 镜像内 postgres 是 uid 70；宿主目录若是别的属主，首次启动时
-# initdb 的临时 `pg_ctl` 会以 postgres 身份起不来 → 镜像入口放弃重试
-# 并「目录已有数据库，跳过初始化」⇒ **POSTGRES_DB 根本没被创建**，
-# 而 healthcheck 过去用 pg_isready（对不存在的库也返回 0）照样报 healthy。
+# 为什么要有这条：docker-compose.db.yml 现在把 PGDATA 默认放在 Docker **命名卷**上。
+# 之前是宿主 bind mount，于是 macOS 上有一条真实故障链（2026-10-17 实测复现）：
+#   宿主目录属主 uid 501（容器内 postgres 是 uid 70）
+#   → initdb 的临时 pg_ctl 以 postgres 身份起不来（wrong ownership）
+#   → 镜像入口放弃重试，看到 PG_VERSION 就「目录已有数据库，跳过初始化」
+#   → **POSTGRES_DB 根本没被创建**，而旧 healthcheck 用 pg_isready 照样报 healthy
 #
-# 现在 healthcheck 改用真连库，会转红；本条负责**事前**把它拦下来，
-# 因为那个故障的真实线索埋在 `docker logs` 里，现场极难定位。
-if [[ -n "${DOCKER_DB_DATA_DIR:-}" ]]; then
-  if [[ ! -d "$DOCKER_DB_DATA_DIR" ]]; then
-    # ⚠️ 必须写成 ${VAR}：紧跟全角「（」时 bash 会把「（」的字节当成变量名的一部分，
-    #    报 `VAR: unbound variable`（本次首次实现时真的踩到了）。
-    check_warn "DOCKER_DB_DATA_DIR 不存在：${DOCKER_DB_DATA_DIR}（compose 会自建，但属主将是当前用户）"
+# 定案：**命名卷为默认**（理由见 docker-compose.db.yml 里那段注释）——
+# uid 70 是镜像实现细节、macOS 上容器内 chown 不生效、官方镜像入口本就围绕
+# 「一个它自己拥有的目录」设计。
+#
+# ⇒ 本条只在**有人显式退回 bind mount**时才说话，且在 macOS 上是 **fail** 不是 warn：
+#    过去的 warn 提的修法（sudo chown 70:70）在 macOS 上**根本无效**，
+#    一条永远无法执行的建议等于没有建议。
+if [[ "${OPP_PG_DATA_MODE:-volume}" == "bind" ]]; then
+  pg_dir="${DOCKER_DB_DATA_DIR:-}"
+  owner_uid=""
+  [[ -n "$pg_dir" && -d "$pg_dir" ]] && owner_uid=$(stat -c %u "$pg_dir" 2>/dev/null || stat -f %u "$pg_dir" 2>/dev/null || echo "")
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    check_fail "postgres 退回 bind mount（OPP_PG_DATA_MODE=bind）于 macOS：PGDATA 属主 ${owner_uid:-?} ≠ 容器内 postgres(70)，且 Docker Desktop 的文件共享层使容器内 chown **不生效**。"
+    check_fail "  ⇒ 首次启动会跳过创建 POSTGRES_DB（2026-10-17 实测复现）。修法只有一条：unset OPP_PG_DATA_MODE 改用命名卷。"
+    check_fail "    若已踩坑：数据在宿主目录里，先备份再删掉该目录重建（换模式 = 换数据位置，两边不是同一个库）。"
+  elif [[ "$owner_uid" == "70" ]]; then
+    check_pass "postgres 用 bind mount，PGDATA 属主 70（与容器内 postgres 一致）"
   else
-    owner_uid=$(stat -c %u "$DOCKER_DB_DATA_DIR" 2>/dev/null || stat -f %u "$DOCKER_DB_DATA_DIR" 2>/dev/null || echo "")
-    if [[ "$(uname -s)" == "Darwin" ]]; then
-      # macOS 的 bind mount 走 Docker Desktop 的文件共享层，容器内 chown 不生效
-      # （chown 需 sudo 且仍可能被忽略）。实测结论：这种环境下**必须**用
-      # Docker 命名卷，否则首次启动会跳过建库。
-      check_warn "macOS + bind mount：PGDATA 属主 ${owner_uid:-?} ≠ 容器内 postgres(70)，且容器内 chown 不生效。"
-      check_warn "  ⇒ 首次启动可能跳过创建 POSTGRES_DB。改用 Docker 命名卷可正常建库；"
-      check_warn "    若已踩坑，删掉该目录重建即可（会丢数据，先备份）。"
-    elif [[ "$owner_uid" == "70" ]]; then
-      check_pass "PGDATA 属主 70（与容器内 postgres 一致）"
-    else
-      check_fail "PGDATA 属主 ${owner_uid:-?} ≠ 70（容器内 postgres 的 uid）⇒ initdb 起不来，POSTGRES_DB 会被跳过创建。修：sudo chown 70:70 ${DOCKER_DB_DATA_DIR}"
-    fi
+    check_fail "postgres 用 bind mount，但 PGDATA 属主 ${owner_uid:-?} ≠ 70 ⇒ initdb 起不来，POSTGRES_DB 会被跳过创建。修：sudo chown 70:70 ${pg_dir}"
   fi
 else
-  # compose 里该变量是必填的，没设就说明尚未进入容器化部署
-  check_warn "DOCKER_DB_DATA_DIR 未设置（容器化部署前可忽略）"
+  # 默认路径。命名卷由 Docker 按镜像 uid 创建，initdb 必然能跑，无需查属主。
+  check_pass "postgres PGDATA 用 Docker 命名卷（${OPP_PG_VOLUME_NAME:-opp-pgdata}）—— initdb 不会因属主不符而跳过建库"
+  if [[ -n "${DOCKER_DB_DATA_DIR:-}" ]]; then
+    check_warn "  （旧的 ${DOCKER_DB_DATA_DIR} 宿主目录已不再挂载；若那里曾有旧数据，它现在是**孤儿**——新卷是空库，别把两个搞混）"
+  fi
+fi
+
+# ── 6b. 存量实例的慢查询观测（2026-10-17 新增）─────────────────────────
+#
+# 为什么单独一条：pg-init-slow-query.sql 挂在 /docker-entrypoint-initdb.d/，
+# 而镜像**只在数据目录为空的那一次**执行它 ⇒ 已经跑过初始化的实例**永远**
+# 不会再装 pg_stat_statements。而 DEPLOYMENT_GUIDE 却让人查
+# pocket_slow_statements ⇒ 存量环境里那条语句必然报 relation does not exist。
+#
+# ⇒ 这是「新增配置只对新环境生效」的典型，而没人对存量环境补过。
+if docker inspect opp-db-postgres >/dev/null 2>&1; then
+  if [[ "$(docker inspect --format '{{.State.Status}}' opp-db-postgres 2>/dev/null)" == "running" ]]; then
+    if docker exec opp-db-postgres psql -U "${OPP_PG_USER:-llm_gateway}" -d "${OPP_PG_DB:-pocket}" \
+         -tAc "SELECT 1 FROM pg_extension WHERE extname='pg_stat_statements';" 2>/dev/null | grep -q 1; then
+      check_pass "慢查询观测已就绪（pg_stat_statements 已装）"
+    else
+      check_fail "存量实例缺 pg_stat_statements ⇒ DEPLOYMENT_GUIDE 里的慢查询查询必然报 relation does not exist。补：deploy/bin/pg-backfill-slow-query.sh"
+    fi
+  else
+    check_warn "容器 opp-db-postgres 未运行，跳过慢查询观测检查"
+  fi
 fi
 
 # ── 汇总 ───────────────────────────────────────────────────────────

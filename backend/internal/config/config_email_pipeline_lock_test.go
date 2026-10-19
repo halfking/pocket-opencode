@@ -16,6 +16,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -106,6 +107,19 @@ func TestSchedulerAdvisoryLock_IsStillUnconsumed(t *testing.T) {
 		// 本文件自己就写了这个标识符（注释里解释它为什么是死配置），
 		// 不跳过就会自己扫到自己、永远判定"已有消费方"。
 		if filepath.Base(path) == "config_email_pipeline_lock_test.go" {
+			return nil
+		}
+		// ── 2026-10-17 新增：跳过 skip 台账文件 ──────────────────────────
+		// 本门问的是「这个配置**在运行时**有没有消费方」。
+		// `internal/*/skip_ledger_test.go` 是「哪些测试会跳过、为什么」的**登记表**，
+		// 它提到某个配置键名是为了写清那条测试的解锁条件，
+		// **不是**去读那个配置。把它算成消费方 = 把文档当成调用点。
+		//
+		// ⚠ 这不是「为了让新加的文件能过而放宽」：
+		//   台账是**随跳过测试增��而增长**的，每新增一条提到该配置键的台账条目
+		//   都会把本门打红 —— 那是把「登记文档」与「死配置」两件事焊死在一起，
+		//   下一个人会以为配置突然复活了。
+		if strings.HasSuffix(filepath.Base(path), "_ledger_test.go") {
 			return nil
 		}
 		if filepath.Base(path) == filepath.Base(os.Args[0]) {

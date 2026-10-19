@@ -18,7 +18,7 @@
  *              仅 media 用,与导出无关）。
  *   - iOS stub：pocket-native.share 抛 notImpl；web fallback 继续工作。
  */
-import { getPocketNative } from '../../../native/pocket-native'
+import { getPocketNative } from '../../../native/pocket-native.ts'
 import type { FlashcardCard, FlashcardDeckConfig, FlashcardNote, FlashcardReviewLog } from '../../../types/flashcards'
 
 const EXPORT_VERSION = 1

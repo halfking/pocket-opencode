@@ -184,10 +184,9 @@ const waived = { ...(WAIVERS.unrunnable ?? {}), ...(WAIVERS.zeroCase ?? {}) }
  * 而不是往 JSON 里塞一行就完事。
  */
 const ALLOWED_WAIVERS = new Set([
-  // 无扩展名 import，node --test 直接 ERR_MODULE_NOT_FOUND
-  'src/features/flashcards/utils/__tests__/flashcardIo.test.ts',
-  // 全文 3 行注释的空占位（理由见 waivers JSON）
-  'src/native/__tests__/recordingRuntimeMimeFallback.test.mjs',
+  // 2026-10-17 起为空：两条豁免都已处置（详见 test-coverage-waivers.json 的 history）。
+  // ⚠ 冻结机制**保留**：往 waivers JSON 里塞一条依然会让本门 EXIT=0，
+  //    所以「多一条豁免」仍然必须先在这里手写一行才合法。
 ])
 const unapprovedWaivers = Object.keys(waived).filter((f) => !ALLOWED_WAIVERS.has(f))
 

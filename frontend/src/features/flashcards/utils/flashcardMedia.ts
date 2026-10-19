@@ -14,7 +14,7 @@
  *
  * Phase 9 简化：仅图片。音频（Recorder → audio ref）走 PocketRecorder，Phase 9.2。
  */
-import { getPocketNative, type PocketPlatform } from '../../../native/pocket-native'
+import { getPocketNative, type PocketPlatform } from '../../../native/pocket-native.ts'
 
 const MEDIA_DIR = 'flashcards'
 

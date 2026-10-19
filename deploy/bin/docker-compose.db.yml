@@ -1,6 +1,13 @@
 # =============================================================================
 # docker-compose.db.yml — AI Work Mess 容器化 DB 部署片段
 #
+# ⚠ 2026-10-17：原来 DOCKER_DB_PORT / DOCKER_DB_DATA_DIR 写成 `:?`（必填）。
+#   实测代价：`docker compose down` 与 `docker compose config` 在**没有设这两个
+#   变量**的 shell 里直接报「required variable ... is missing」而失败
+#   ⇒ 连收尾都做不了。ensure-databases.sh 本来就会传它们，所以改成有默认值
+#   不改变任何自动化路径，只是让这个文件可以被单独检视与拆除。
+# =============================================================================
+#
 # 仅当 OPP_DEPLOY_<PG|REDIS|MYSQL>=true 且 detect 未命中外部实例时启动。
 # 数据持久化到 ${DEPLOY_BASE_DIR}/<db>/（通过 DOCKER_DB_DATA_DIR 注入）。
 # 端口绑 127.0.0.1，避免对外暴露。
@@ -24,7 +31,7 @@ services:
     image: ${DOCKER_DB_IMAGE:-postgres:17}
     container_name: opp-db-postgres
     ports:
-      - "127.0.0.1:${DOCKER_DB_PORT:?DOCKER_DB_PORT must be set}:5432"
+      - "127.0.0.1:${DOCKER_DB_PORT:-5432}:5432"
     <<: *db-common
     # ── 慢查询观测（2026-10-17 审计新增）──────────────────────────────────
     # 此前这三项全是 PostgreSQL 的**默认关闭**：`log_min_duration_statement = -1`
@@ -52,7 +59,30 @@ services:
       POSTGRES_PASSWORD: ${OPP_PG_PASSWORD:-}
       POSTGRES_DB: ${OPP_PG_DB:-pocket}
     volumes:
-      - ${DOCKER_DB_DATA_DIR:?DOCKER_DB_DATA_DIR must be set}:/var/lib/postgresql/data
+      # ── ⭐ 2026-10-17 拍板：PGDATA 默认用 Docker **命名卷**，不再用宿主 bind mount ──
+      #
+      # 拍板理由（不是偏好，是三条实测/事实）：
+      #
+      #  ① **uid 70 是镜像实现细节，不是稳定契约。** 那是 Debian 系 postgres
+      #     镜像里 postgres 用户的 uid。换大版本（postgres:17 → 18）或换基础镜像，
+      #     它就可能变。把它固化进「宿主目录的属主」= 把部署焊死在某个镜像版本的
+      #     用户表上。
+      #  ② **macOS 上 chown 这条路根本走不通。** Docker Desktop 的 bind mount 过
+      #     文件共享层，容器内 `chown` 不生效；宿主 `sudo chown 70:70` 也会被
+      #     virtiofs 重新呈现成 uid 501。⇒ 在 macOS 上，"修法"本身是无效的，
+      #     而 doctor.sh 过去只给 warn —— 一道永远红的建议没人执行。
+      #  ③ 官方 postgres 镜像的入口脚本就是围绕"一个它自己拥有的目录"设计的；
+      #     命名卷由 Docker 按镜像 uid 创建，initdb 必然能跑。
+      #
+      # **怎么切换**：Compose 的卷源规则是「以 `/` 或 `.` 开头 ⇒ bind mount，
+      # 否则 ⇒ 命名卷」。所以**一个变量**就能切换，不需要两份 compose：
+      #
+      #     默认（命名卷，推荐）: 不设 OPP_PG_VOLUME
+      #     需要宿主可见（备份工具/直接翻文件）: OPP_PG_VOLUME=/绝对/路径
+      #
+      # ⚠ 切换会换掉数据位置。已有环境改模式前先备份，且**不要**在两种模式之间
+      #   来回切（同名卷与宿主目录是两个不同的库）。
+      - ${OPP_PG_VOLUME:-opp-pgdata}:/var/lib/postgresql/data
       # 首次初始化时装上 pg_stat_statements 并建好慢查询视图。
       - ./pg-init-slow-query.sql:/docker-entrypoint-initdb.d/10-slow-query.sql:ro
     # ⚠️ 这里**不能**再用 `pg_isready`：实测它对**完全不存在的角色和库**也返回
@@ -81,10 +111,10 @@ services:
     image: ${DOCKER_DB_IMAGE:-redis:7}
     container_name: opp-db-redis
     ports:
-      - "127.0.0.1:${DOCKER_DB_PORT:?DOCKER_DB_PORT must be set}:6379"
+      - "127.0.0.1:${DOCKER_DB_PORT:-5432}:6379"
     <<: *db-common
     volumes:
-      - ${DOCKER_DB_DATA_DIR:?DOCKER_DB_DATA_DIR must be set}:/data
+      - ${DOCKER_DB_DATA_DIR:-./.docker-db-data}:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -95,15 +125,22 @@ services:
     image: ${DOCKER_DB_IMAGE:-mysql:8}
     container_name: opp-db-mysql
     ports:
-      - "127.0.0.1:${DOCKER_DB_PORT:?DOCKER_DB_PORT must be set}:3306"
+      - "127.0.0.1:${DOCKER_DB_PORT:-5432}:3306"
     <<: *db-common
     environment:
       MYSQL_ROOT_PASSWORD: ${OPP_MYSQL_PASSWORD:-}
       MYSQL_DATABASE: ${OPP_MYSQL_DB:-openpocket}
     volumes:
-      - ${DOCKER_DB_DATA_DIR:?DOCKER_DB_DATA_DIR must be set}:/var/lib/mysql
+      - ${DOCKER_DB_DATA_DIR:-./.docker-db-data}:/var/lib/mysql
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1"]
       interval: 10s
       timeout: 5s
       retries: 12
+
+# ── 命名卷声明（仅当 OPP_PG_VOLUME 未设成宿主路径时才用到）────────────────
+volumes:
+  opp-pgdata:
+    name: ${OPP_PG_VOLUME_NAME:-opp-pgdata}
+    # ⚠ 不写 external：写 external 会要求卷**事先存在**，而首次部署时它并不存在，
+    #   `docker compose up` 会直接失败 —— 那正是这道门要根治的那类「首次启动才炸」。

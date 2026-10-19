@@ -19,3 +19,30 @@ consolidation §6.4 已裁定「应删」（一次性签名修补，已进正式
 保留在 `scripts/` 的 email 验证工具箱（email-audit-* / email-*-verify /
 imap-stub-* / inject-fixture-* / verify-email-*）不属本类：成套、可复跑、
 仍在随邮件线演进。
+
+---
+
+## 2026-10-17 删除：`scripts/append-handoff-*.mjs`（23 个）
+
+同属一次性脚本，按上节「删除（未归档）」的先例处理，不入本目录：
+
+| 脚本 | 当年用途 | 为何删除 |
+|---|---|---|
+| `append-handoff-4111…4118.mjs`（8 个） | 往 `docs/handoff/*.md` 追加当轮小节 | 追加动作早已完成；内容固化在文档里 |
+| `append-handoff-480…490.mjs`（11 个） | 同上（另一批） | 同上 |
+| `append-handoff-aw.mjs` / `-part.mjs` / `-v2.mjs` / `-v2b.mjs`（4 个） | 同上（含 CRLF/无 BOM 的追加变体） | 同上 |
+
+**判定依据（2026-10-17 实测，不是推断）**：
+
+- 23 个脚本**在 `package.json` / `gates.json` / 任何 CI workflow / 任何其他脚本里
+  都没有被引用**（`grep -rn "append-handoff" --include=package.json --include=gates.json
+  --include=*.yml` 返回空；脚本间也无 require/import）。
+- 全部已被 git 跟踪 ⇒ 需要时 `git show <commit>:<path>` 随时可取，
+  留在工作区只会让人以为它们还能用。
+- `scripts/check-no-hardcoded-abs-paths.mjs` 的 `LIVE_SCRIPTS` **本来就不含它们**
+  ⇒ 删除不会让那道门失去任何豁免或覆盖面。
+
+⚠ **刻意保留** `scripts/unappend-handoff-last-section.mjs`：它不是一次性脚本，
+而是「回退最后一段追加」的可复用工具，与被删的 23 个不同类。
+`docs/handoff/_part-4.75.md` 记的「CRLF/无 BOM 的文档追加」**技法**也随之保留
+（由该工具承载），删掉的只是当年执行它的那些一次性副本。

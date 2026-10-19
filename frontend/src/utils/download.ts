@@ -21,7 +21,7 @@
  *
  * 调用方只需捕获 DownloadUnsupportedError 与通用异常并 toast，无需感知平台差异。
  */
-import { getPocketNative } from '../native/pocket-native'
+import { getPocketNative } from '../native/pocket-native.ts'
 import { runtimePlatform } from '../native/runtime-platform'
 import { documentNative, hasNativeDocumentSupport } from '../native/document'
 import {
