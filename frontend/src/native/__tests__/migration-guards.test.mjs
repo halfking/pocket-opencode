@@ -1506,3 +1506,164 @@ describe('§904 · D73：维度不对的向量必须被排除并出声，而不�
     assert.equal(row[0].dim, DIM, `dim 列记成了 ${row[0].dim}，应=${DIM}`)
   })
 })
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * §905 · D74：在途的 `load()` 会把期间落地的 `add()` **整体覆盖掉**
+ * ═══════════════════════════════════════════════════════════════════════════
+ * `load()` 是「读库 → 整体重建 ids/matrix/noteSpans」，它读的快照是**调用时**取的、
+ * 结果晚到。若这期间 `add()` 落地，新向量会被随后到达的 load **整体覆盖**：
+ *
+ *   load() 在途 → add('D') 写库并进内存（size 2、D 搜得到）
+ *   → load() 落地，用**旧快照**重建 ⇒ size 掉回 1、**D 搜不到了**
+ *
+ * 而 D **在库里** ⇒ 这条笔记要等到**下次冷启动**才能被搜到，全程零诊断。
+ *
+ * ⚠⚠ 夹具的关键性质（本节第一版栽在这上面）：
+ *   替身必须**调用即取快照**、只是结果晚到 —— 真 DB 就是这个语义。
+ *   我第一版的 `all()` 在** resolve 时**才读 store，等于建模成「查询会重读」
+ *   ⇒ 读数是「没丢」，读的是一个**不存在的数据库**的行为。
+ *   这就是 §877/§879 那条纪律的第三次兑现：**替身要复刻关键性质，否则读数是假的**。
+ */
+describe('§905 · D74：写路径必须等在途的 load() 落地', () => {
+  /**
+   * 真 SQLite 打底，但 `all()` **调用即取快照、结果由 gate 手动放行**。
+   * ⇒ 能确定性制造交错，不依赖 sleep；也**不会死锁**（gate 只有一个，release 先于 await）。
+   *
+   * ⚠⚠ 关键性质（本节第一版栽在这上面）：替身必须**调用即取快照**。
+   *   我第一版的 `all()` 在 resolve 时才读 store，等于建模成「查询会重读」
+   *   ⇒ 读出「没丢」，量的是一个**不存在的数据库**的行为。
+   */
+  function makeGatedDb() {
+    const inner = makeVectorDb()
+    let gate = null
+    let lastSnapshot = []
+    return {
+      db: inner,
+      /** load() 那次 `all()` 拍到的 noteId 列表 —— 用来证明交错真的发生了。 */
+      snapshot: () => lastSnapshot,
+      hold() { gate = {}; gate.promise = new Promise((r) => { gate.resolve = r }); return gate.promise },
+      release() { const g = gate; gate = null; g?.resolve() },
+      all: async (sql, params = []) => {
+        const snap = await inner.all(sql, params)      // ← 此刻取快照（同步语义）
+        lastSnapshot = snap.map((r) => r.note_id)
+        if (gate) await gate.promise
+        return snap
+      },
+      run: (sql, params = []) => inner.run(sql, params),
+    }
+  }
+
+  /** 建一条已入库的种子笔记（让 load 有内容可重建）。 */
+  async function seedVector(g, id, a, b) {
+    await seedNote(g.db, id)
+    await g.db.run(
+      'INSERT INTO local_note_vectors (note_id, embedding, dim, model, chunks, chunk_hashes, created_at)' +
+      ' VALUES (?,?,?,?,?,?,?)',
+      [id, new Uint8Array(vec(a, b).buffer), DIM, 'm', 1, '', 0],
+    )
+  }
+
+  /** 让出一个微任务，确保 load() 真的已经发出了 all()、快照已经拍下。 */
+  const tick = () => new Promise((r) => setTimeout(r, 0))
+
+  it('★★★ 前置闸：load 的快照必须**早于** add 的落库（否则交错没造出来）', async () => {
+    const g = makeGatedDb()
+    await seedVector(g, 'seed', 1, 0)
+    await seedNote(g.db, 'D')                          // ⚠ 向量表有外键指向 local_notes
+    const index = new VectorIndex({ all: g.all, run: g.run })
+    await index.load()
+
+    g.hold()
+    const loading = index.load()
+    await tick()
+    const adding = index.add('D', vec(0, 1), 'm')     // 落库后会被 settleLoad 挡住
+    await tick()
+    assert.ok(!g.snapshot().includes('D'),
+      `前置闸失败：load 的快照已经看到了 D（${JSON.stringify(g.snapshot())}）⇒ 交错没造出来`)
+    g.release()
+    await Promise.all([loading, adding])
+  })
+
+  it('★★★ load() 落地后，期间 add 的向量必须仍在索引里、仍搜得到', async () => {
+    const g = makeGatedDb()
+    await seedVector(g, 'seed', 1, 0)
+    await seedNote(g.db, 'D')                          // ⚠ 向量表有外键指向 local_notes
+    const index = new VectorIndex({ all: g.all, run: g.run })
+    await index.load()
+    const before = index.noteCount()
+
+    g.hold()
+    const loading = index.load()
+    await tick()
+    const adding = index.add('D', vec(0, 1), 'm')
+    // 前置闸：load 的快照必须早于 D 的落库，否则下面那条断言没有意义
+    assert.ok(!g.snapshot().includes('D'),
+      `前置闸失败：load 的快照已经看到了 D（${JSON.stringify(g.snapshot())}）`)
+    g.release()
+    await Promise.all([loading, adding])             // load 用**旧快照**重建
+
+    assert.equal(index.noteCount(), before + 1,
+      `D 被在途的 load() 整体覆盖掉了（noteCount ${before} → ${index.noteCount()}）` +
+      `⇒ 它要等下次冷启动才能被搜到`)
+    assert.ok(index.search(queryVec(0, 1), 5).some((h) => h.noteId === 'D'),
+      'D 搜不到了（数据在库里，是内存索引丢了）')
+  })
+
+  it('★★★ 串行化只该挡内存变更，**不能挡落库**（否则保存笔记会被一次慢 load 拖住）', async () => {
+    const g = makeGatedDb()
+    await seedVector(g, 'seed', 1, 0)
+    await seedNote(g.db, 'D')
+    const index = new VectorIndex({ all: g.all, run: g.run })
+    await index.load()
+
+    g.hold()
+    const loading = index.load()                      // 卡住
+    await tick()
+    const adding = index.add('D', vec(0, 1), 'm')
+    // ⚠ load 还没落地，但**落库必须已经完成**
+    const rows = await g.db.all('SELECT note_id FROM local_note_vectors WHERE note_id = ?', ['D'])
+    assert.equal(rows.length, 1, 'add() 被在途的 load() 挡住了落库 ⇒ 一次慢重建会拖慢每次保存笔记')
+    g.release()
+    await Promise.all([loading, adding])
+  })
+
+  it('★★★ 生产上真实的触发：add() 因段数变化自带的重建，也不能覆盖期间到达的 add', async () => {
+    // 段数变了（编辑让正文跨过段边界）⇒ add() 走 `await this.load()` 重建。
+    // ⇒ 这是**生产上唯一**「load 在途、而事先没有任何人调用 load()」的入口。
+    const g = makeGatedDb()
+    await seedVector(g, 'seed', 1, 0)
+    await seedNote(g.db, 'D')
+    await seedNote(g.db, 'long')
+    const index = new VectorIndex({ all: g.all, run: g.run })
+    await index.load()
+    await index.add('long', [vec(1, 0)], 'm')           // 先建 1 段的行
+
+    g.hold()
+    const rebuilding = index.add('long', [vec(1, 0), vec(0, 1)], 'm')  // 段数 1→2 ⇒ 触发重建
+    await tick()
+    const arriving = index.add('D', vec(0, 1), 'm')    // 重建在途期间落地
+    // 前置闸：重建的快照必须早于 D 的落库
+    assert.ok(!g.snapshot().includes('D'),
+      `前置闸失败：重建的快照已经看到了 D（${JSON.stringify(g.snapshot())}）`)
+    g.release()
+    await Promise.all([rebuilding, arriving])
+
+    // ⚠ 这条同时证明「重建分支真的走了」：段数 1→2 ⇒ 总段数应是 1 + 2 + 1 = 4
+    assert.equal(index.size(), 4,
+      `重建分支没走（size=${index.size()}，期望 4）⇒ 下面两条断言可能是恒真的`)
+
+    assert.ok(index.search(queryVec(0, 1), 5).some((h) => h.noteId === 'D'),
+      `D 被段数变化触发的重建覆盖掉了（noteCount=${index.noteCount()}）`)
+    assert.ok(index.search(queryVec(1, 0), 5).some((h) => h.noteId === 'long'),
+      '段数变化的那条笔记自己丢了')
+  })
+
+  // ⚠⚠ 自曝：`remove()` 里那行 `await this.settleLoad()` **当前无可观测差异** ——
+  //   remove() 的重建是**它自己**发起的，前面不可能有在途的 `load()`，
+  //   所以变异 M62-V3 把它删掉，本节 66/66 照样全绿。
+  //   ⇒ 按 §903/§904 的做法如实登记：它是**防御性代码**，不是本节修掉的缺陷；
+  //     保留是因为它表达「写路径一律等重建」的意图，且零成本。
+  //   ⚠ 反过来也记一笔：判据红过一次之后，很容易想当然地以为
+  //     「同一条修法到处都该配一条判据」—— 这里恰恰**不该有**判据，
+  //     因为没有差异就别造门（造出来的必然是恒真门）。
+})

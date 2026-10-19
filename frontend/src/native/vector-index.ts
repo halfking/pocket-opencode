@@ -88,6 +88,8 @@ export class VectorIndex {
    */
   private noteSpans = new Map<string, { start: number; count: number }>()
   private loaded = false
+  /** §905/D74：当前在途的 `load()`。写路径必须等它落地再改内存（见 `settleLoad()`）。 */
+  private loading: Promise<void> | null = null
 
   // ⚠ 不能写成参数属性 `constructor(private readonly db: VectorDb = …)`：
   //   `node --experimental-strip-types` **不支持 parameter properties**，
@@ -99,6 +101,38 @@ export class VectorIndex {
 
   /** 从本地库加载全部向量到内存。App 启动后调用一次。 */
   async load(): Promise<void> {
+    const p = this.loadFromDb()
+    this.loading = p
+    try {
+      await p
+    } finally {
+      if (this.loading === p) this.loading = null
+    }
+  }
+
+  /**
+   * ⚠⚠ §905/D74：在途的 `load()` 落地之前，写路径**不许改内存索引**。
+   *
+   * 缺陷：`load()` 是「读库 → **整体重建** `ids`/`matrix`/`noteSpans`」，
+   * 而它读的快照是**调用时**取的、结果晚到。若这期间 `add()` 落地，
+   * 新向量会被随后到达的 `load()` **整体覆盖掉** ——
+   * 实测（Node 22，生产 `VectorIndex`）：
+   *     load() 在途 → add('D') 写库并进内存（size 2、D 搜得到）
+   *     → load() 落地，用**旧快照**重建 ⇒ size 掉回 1、**D 搜不到了**
+   *   而 D **在库里** ⇒ 这条笔记要等到**下次冷启动**才能被搜到，全程零诊断。
+   *
+   * ⇒ 修法不是「合并」（那要判断新旧），而是**串行化**：
+   *   写路径在动内存之前先 `await` 在途的 `load()`，
+   *   于是每次内存变更前状态都是「已装载且无在途重建」。
+   *   ⚠ 注意 `add()` 里的 `db.run()` **故意留在 await 之前** ——
+   *     落库不能被一次慢 `load()` 挡住（那会让保存笔记变慢）；
+   *     被挡的只有内存变更，而内存变更本来就该等重建结束。
+   */
+  private async settleLoad(): Promise<void> {
+    while (this.loading) await this.loading
+  }
+
+  private async loadFromDb(): Promise<void> {
     const rows = (await this.db.all(
       'SELECT note_id, embedding, dim, chunks, chunk_hashes FROM local_note_vectors',
     )) as unknown as {
@@ -255,6 +289,10 @@ export class VectorIndex {
       [noteId, blob.buffer, DIM, model, normalized.length, hashText, Date.now()],
     )
 
+    // ⚠ §905：落库**不等**（上面的 db.run 已经完成了），但内存变更必须等
+    //   在途的 load() 落地 —— 否则会被它的旧快照整体覆盖掉。
+    await this.settleLoad()
+
     // ⚠⚠§881：这条笔记**已经在内存索引里**时，必须**就地覆盖**那一行向量。
     //   修之前的形状是 `isInMemory = !已存在 && 未超上限` ⇒ 更新一条已有笔记时
     //   该值为 false ⇒ 写完库就 return ⇒ **内存矩阵永远留着旧向量**。
@@ -341,6 +379,7 @@ export class VectorIndex {
   /** 删除一条向量（笔记删除时）。 */
   async remove(noteId: string): Promise<void> {
     await this.db.run('DELETE FROM local_note_vectors WHERE note_id = ?', [noteId])
+    await this.settleLoad()
     if (this.noteSpans.has(noteId)) {
       // 重建内存索引（删除不频繁，全量重建可接受）
       await this.load()
