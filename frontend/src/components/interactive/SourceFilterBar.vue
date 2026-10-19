@@ -112,13 +112,15 @@ watch(
   align-items: center;
   gap: var(--space-1);
   flex: 0 0 auto;
+  /* iOS 标准按钮：矩形 + 小圆角，44px 触摸热区（过滤/筛选类按钮统一规范） */
+  min-height: 44px;
   padding: var(--space-1) var(--space-3);
-  border-radius: var(--radius-full);
+  border-radius: var(--radius-md);
   border: 1px solid var(--border);
   background: var(--bg-card);
   color: var(--text-secondary);
   font-size: var(--text-sm);
-  line-height: 1.6;
+  line-height: 1.4;
   white-space: nowrap;
   cursor: pointer;
   transition:

@@ -749,7 +749,7 @@ onUnmounted(() => setHeaderTitle(null))
   -ms-overflow-style: none;
 }
 .filters::-webkit-scrollbar { display: none; }
-.chip { padding: var(--space-1) var(--space-3); border-radius: var(--radius-full); border: 1px solid var(--border); background: var(--bg-card); color: var(--text-secondary); font-size: var(--text-sm); white-space: nowrap; }
+.chip { display: inline-flex; align-items: center; min-height: 44px; padding: var(--space-1) var(--space-3); border-radius: var(--radius-md); border: 1px solid var(--border); background: var(--bg-card); color: var(--text-secondary); font-size: var(--text-sm); white-space: nowrap; }
 .chip.active { background: var(--brand-primary); color: var(--text-inverse); border-color: var(--brand-primary); }
 .inbox-scroll { flex: 1; min-height: 0; }
 .state-wrap { padding: var(--space-2) 0; }

@@ -677,7 +677,9 @@ useListScene('notes', load)
 }
 .context-row::-webkit-scrollbar { display: none; }
 .chip {
-  padding: 5px 10px; border-radius: 999px; border: 1px solid var(--border);
+  /* iOS 标准按钮：矩形 + 小圆角，44px 触摸热区（过滤类按钮统一规范） */
+  display: inline-flex; align-items: center; min-height: 44px;
+  padding: 0 12px; border-radius: var(--radius-md); border: 1px solid var(--border);
   background: var(--bg-base); color: var(--text-secondary); font-size: var(--text-sm); flex-shrink: 0;
 }
 .chip.active { background: var(--brand-bg); color: var(--text-primary); border-color: var(--brand-primary); }

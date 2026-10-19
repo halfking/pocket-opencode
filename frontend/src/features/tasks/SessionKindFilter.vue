@@ -36,8 +36,10 @@ button {
   border: 1px solid var(--border, #ddd);
   background: transparent;
   color: inherit;
-  border-radius: 999px;
-  padding: 4px 10px;
+  /* iOS 标准按钮：矩形 + 小圆角，44px 触摸热区（过滤类按钮统一规范） */
+  min-height: 44px;
+  padding: 8px 14px;
+  border-radius: var(--radius-md);
   font-size: var(--text-sm);
 }
 button.on { background: var(--accent, #3b82f6); color: #fff; border-color: transparent; }

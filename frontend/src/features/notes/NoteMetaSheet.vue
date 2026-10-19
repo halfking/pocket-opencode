@@ -179,7 +179,9 @@ function onClose() {
 }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .chip {
-  padding: 6px 12px; border-radius: 999px; border: 1px solid var(--border);
+  /* iOS 标准按钮：矩形 + 小圆角，44px 触摸热区（选择类按钮统一规范） */
+  display: inline-flex; align-items: center; min-height: 44px;
+  padding: 0 14px; border-radius: var(--radius-md); border: 1px solid var(--border);
   background: var(--bg-card); color: var(--text-secondary); font-size: var(--text-smd);
 }
 .chip.active { background: var(--brand-bg); color: var(--brand-primary); border-color: var(--brand-primary); }
