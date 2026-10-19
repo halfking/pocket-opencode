@@ -453,12 +453,18 @@ export async function awaitNoteMirror(noteId: string): Promise<void> {
 }
 
 /**
- * `/api/embed` 服务端的字符硬上限。
+ * `/api/embed` 服务端的长度硬上限。
  *
  * ⚠ 出处：`backend/internal/server/server_assistant.go:2853`
- *   `if len(body.Text) > 16000 { 400 "text too long (max 16000 chars)" }`
+ *   `if len(body.Text) > 16000 { 400 "text too long (max 16000 bytes)" }`
  *   —— 这是**服务端**的数，前端此前**完全不知道**，超了就是一次必然失败的请求。
  *   两处硬编码要不要收敛成一处契约，见简报 119（属主口径，本节未代拍）。
+ *
+ * ⚠⚠ **单位是 UTF-8 字节，不是字符**（§916 实测：Go 的 `len(string)`）⇒
+ *   16000 字节只装得下 **5333 个中文字**。
+ *   ⚠ 常量名里的「CHAR」是**历史遗留的名字**（那时按字符理解），
+ *     它的**值** 16000 仍是服务端那个数，但**单位**是字节。
+ *   ⇒ 切段是否真的按字节做，是另一件事 —— 见 §917。
  */
 const EMBED_TEXT_CHAR_LIMIT = 16000
 

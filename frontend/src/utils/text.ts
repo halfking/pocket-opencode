@@ -33,3 +33,62 @@ export function truncateCodeUnits(s: string, n: number): string {
   const cut = s.slice(0, n)
   return /[\uD800-\uDBFF]$/.test(cut) ? cut.slice(0, -1) : cut
 }
+
+/**
+ * §916：字符串的 **UTF-8 字节长度** —— 与 Go 的 `len(string)` 同一口径。
+ *
+ * ⚠⚠ **为什么必须按字节而不是按字符**（这是 §916 的坑本体）：
+ *   服务端 `/api/llm/chat` 的长度闸写的是
+ *     `if len(m.Content) > 32000 { 400 "message too long (max 32000 bytes per message)" }`
+ *   （`backend/internal/server/server_assistant.go:2948`）
+ *   —— Go 的 `len()` 对 string 返回的是**字节数**。
+ *   ⇒ 实测：`len("中") == 3`（Go 跑出来的，见 §916 文档），
+ *     32000 **字节**只装得下 **10666 个中文字** ⇒ 按「字符」算的实现会超闸 3 倍。
+ *   ⇒ ⚠ 错误信息原先写的是「chars」—— **信息与判定不同形**，
+ *     正是这个错单位把「按字符修」的实现放过去的 ⇒ 已按实测把文案改成 bytes。
+ *
+ * ⚠ 用 `TextEncoder` 而不是手写字节累加：`TextEncoder` 是**标准**，
+ *   落单代理对按 U+FFFD（3 字节）编码，与 Go `json.Unmarshal` 的替换行为一致；
+ *   手写一份必然带来「复刻与真值漂移」的老问题（§244 那条门的老教训）。
+ */
+const _utf8Encoder = new TextEncoder()
+
+export function utf8ByteLength(s: string): number {
+  return _utf8Encoder.encode(s).length
+}
+
+/**
+ * §916：从**尾部**保留最多 maxBytes 个 **UTF-8 字节**，且切点必在字符边界。
+ *
+ * ⚠ 为什么需要「尾部」这一版：`truncateCodeUnits` 只能取头部，
+ *   而**滚动摘要**的输入里，新的内容在**尾部**（会议还没讲完）⇒
+ *   只取头部会让兜底每次都在总结会议开头，永远看不到新说的话。
+ *
+ * ⚠⚠ **单位是字节，不是码元** —— 与 `truncateCodeUnits` **不同**，
+ *   这是故意的：这里的对手是**服务端的字节闸**（`len(m.Content)`），
+ *   不是 §245.7 那个尚未拍板的「字节/码元/字符」产品口径。
+ *   ⇒ 两处并存不是同一件事的两种写法，注释各自写清自己在对谁。
+ *
+ * ⚠ 切点按**码点**走（不是码元）⇒ 不会留下落单代理对
+ *   （§245.2 的静默变脏：落单代理对过 JSON 到 Go 会被换成 U+FFFD 且 err==nil）。
+ */
+export function truncateUtf8BytesTail(s: string, maxBytes: number): string {
+  if (maxBytes <= 0) return ''
+  let bytes = 0
+  let end = s.length
+  while (end > 0) {
+    let start = end - 1
+    const c = s.charCodeAt(start)
+    // 低代理前面若跟着高代理 ⇒ 这俩是一个码点（星平面字符）⇒ 一起取走
+    if (c >= 0xdc00 && c <= 0xdfff && start > 0) {
+      const p = s.charCodeAt(start - 1)
+      if (p >= 0xd800 && p <= 0xdbff) start -= 1
+    }
+    const cp = s.codePointAt(start) as number
+    const width = cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4
+    if (bytes + width > maxBytes) break
+    bytes += width
+    end = start
+  }
+  return s.slice(end)
+}

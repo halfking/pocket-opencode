@@ -122,8 +122,10 @@ func (s *Server) handleLLMBFFStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, m := range body.Messages {
+		// ⚠ §916：限的是 **UTF-8 字节**（Go 的 `len(string)`），不是字符数
+		//   —— 与 server_assistant.go 的同名闸同值，错误信息的单位已按实测改正。
 		if len(m.Content) > 32000 {
-			writeError(w, http.StatusBadRequest, "message too long (max 32000 chars)")
+			writeError(w, http.StatusBadRequest, "message too long (max 32000 bytes)")
 			return
 		}
 		// 多模态图片校验：数量与单张大小限制 + scheme 白名单（只放行

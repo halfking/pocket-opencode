@@ -2851,7 +2851,7 @@ func (s *Server) handleEmbed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(body.Text) > 16000 {
-		writeError(w, http.StatusBadRequest, "text too long (max 16000 chars)")
+		writeError(w, http.StatusBadRequest, "text too long (max 16000 bytes)")
 		return
 	}
 
@@ -2945,8 +2945,11 @@ func (s *Server) handleLLMChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, m := range body.Messages {
+		// ⚠ §916：这里限的是 **UTF-8 字节**（Go 的 `len(string)`），**不是字符数**
+		//   —— 1 个中文字 = 3 字节 ⇒ 32000 字节只装得下 10666 个中文字。
+		//   错误信息里的单位原先写的是「chars」（与判定不同形），已按实测改正。
 		if len(m.Content) > 32000 {
-			writeError(w, http.StatusBadRequest, "message too long (max 32000 chars per message)")
+			writeError(w, http.StatusBadRequest, "message too long (max 32000 bytes per message)")
 			return
 		}
 	}

@@ -6,7 +6,7 @@ import { buildFallbackRefinePrompt } from '../features/meetings/refine-prompt.ts
 import { buildFallbackSummaryPrompt } from '../features/meetings/summary-prompt.ts'
 import { http, isAbortError } from './http'
 import type { ActionItem, LiveSummary, MeetingSegment, RecommendItem } from '../features/meetings/meetings-store'
-import { truncateCodeUnits } from '../utils/text.ts'
+import { truncateCodeUnits, truncateUtf8BytesTail, utf8ByteLength } from '../utils/text.ts'
 import { assessRefineRetention } from './refine-retention-guard.ts'
 
 // ⚠ helper 的真身在中立层 `src/utils/text.ts`（§251.2 兄弟链：
@@ -463,6 +463,86 @@ function normalizeActionItems(raw: unknown): ActionItem[] {
   )
 }
 
+/**
+ * §916：`/api/llm/chat` 的**单条消息**长度硬上限。
+ *
+ * ⚠⚠ **单位是 UTF-8 字节，不是字符** —— 这是本节最要紧的一条。
+ *
+ *   出处（服务端两处同值）：
+ *   `backend/internal/server/server_assistant.go:2948`
+ *     —— `if len(m.Content) > 32000 { 400 "message too long (max 32000 bytes per message)" }`
+ *   `backend/internal/server/server_llmbff.go:125`（流式那条入口，同值）
+ *
+ *   Go 的 `len(string)` 返回的是**字节数**
+ *   ⇒ 32000 字节 ≈ **10666 个中文字** ≈ **39.4 分钟**的会议。
+ *   ⚠⚠ 这比先前按「字符」估的「≈2 小时」**短 3 倍** ——
+ *     同样地，`/api/embed` 的 16000 闸（`server_assistant.go:2853`，也是字节）
+ *     只装得下 **5333 个中文字** ≈ **19.7 分钟**，
+ *     而 §896/§912 当时按「16000 字」算出来的是「63 分钟」⇒ **那两个数字要更正**。
+ *   ⚠ 错误信息原先写的是「chars」⇒ **信息与判定不同形**（这正是本节那个坑的成因）
+ *     ⇒ 已按实测把两处文案改成 bytes。
+ *
+ * ⚠ 为什么前端必须知道这个上限（§916 的缺陷本体）：
+ *   兜底路径是把**整场转写**拼进提示词再打 `/api/llm/chat` ⇒
+ *   转写一旦超过闸（≳40 分钟的会议）⇒ 请求**必然 400** ⇒
+ *   兜底**结构性不可达** ⇒ 摘要退化成「转写前 200 字 + summaryFallback 标志」，
+ *   而那**不是摘要**（§220 已把它的形状与信号钉住）。
+ *
+ * ⚠ 与 `EMBED_TEXT_CHAR_LIMIT`（§896）同形：这里也是**前端镜像**服务端的一个数。
+ *   两份常量要收敛成一处契约的问题**未拍板**（简报 119 的延伸）。
+ *   ⚠ 名字里带 `BYTES` 是刻意的：这个名字就是防「按字符算」的那道护栏。
+ */
+const LLM_CHAT_MAX_CONTENT_BYTES = 32000
+
+/**
+ * §916：把摘要兜底的提示词装进 `/api/llm/chat` 的长度闸。
+ *
+ * ── 裁剪顺序（有讲究，不是随手挑的）──
+ *   ① 先裁**转写**，且取**尾部**：
+ *      滚动摘要的提示词结构是「已有摘要 + 新增转写」⇒ **新的内容在尾部**
+ *      （会议还没讲完），更早的内容由 `prevSummary` 携带
+ *      ⇒ 若取头部，兜底会每次都在总结会议开头，**永远看不到新说的话**。
+ *   ② 转写裁光还超 ⇒ 只可能是 `prevSummary` 本身太大
+ *      （§101 明确**不设** `max_tokens` ⇒ 模型的 summary 字段长度不受控）
+ *      ⇒ 再裁它的**头部**（保留最近一次改写的结果）。
+ *
+ * ── 为什么这个扣减是**精确**的 ──
+ *   读 `buildFallbackSummaryPrompt` 的模板可知：
+ *     · **转写是纯后缀**（`…新增转写：\n${transcript}`）
+ *     · **`prevSummary` 原样内嵌**（`已有摘要：\n${prevSummary}`）
+ *   ⇒ `build(t, p)` 的字节数 == 模板开销 + t 的字节数 + p 的字节数
+ *   ⇒ 「扣掉开销再裁」**不会**出现「裁完还超」或「裁过头」。
+ *
+ * ⚠ 不改**单位口径**：这里量的是**服务端的字节闸**，与 §245.7 那个
+ *   （尚未拍板的）「字节/码元/字符」产品口径**无关** —— 本函数不碰
+ *   `truncateCodeUnits`（200/500 那两处回落截断的单位仍未拍板，§244.4）。
+ */
+function fitSummaryPromptToGate(
+  transcript: string,
+  prevSummary?: string,
+): { transcript: string; prevSummary?: string } {
+  const build = buildFallbackSummaryPrompt
+  const gate = LLM_CHAT_MAX_CONTENT_BYTES
+
+  let t = transcript
+  let p = prevSummary
+
+  // ① 裁转写（取尾部）。开销 = 模板 + prevSummary（转写按纯后缀扣）。
+  if (utf8ByteLength(build(t, p)) > gate) {
+    const overhead = utf8ByteLength(build('', p))
+    t = truncateUtf8BytesTail(t, Math.max(0, gate - overhead))
+  }
+
+  // ② 仍超 ⇒ 只能是「已有摘要」自己就超了（模板开销 ≈ 600 字节，不可能是它）。
+  if (utf8ByteLength(build(t, p)) > gate) {
+    // prevSummary 在模板里**原样内嵌** ⇒ 用一个 1 字节的探针量出模板开销。
+    const overhead = utf8ByteLength(build('', 'X')) - 1
+    p = truncateUtf8BytesTail(p ?? '', Math.max(0, gate - overhead))
+  }
+
+  return { transcript: t, prevSummary: p }
+}
+
 /** LLM 兜底：直接调 /api/llm/chat */
 async function fallbackSummarize(
   segments: MeetingSegment[],
@@ -476,7 +556,16 @@ async function fallbackSummarize(
   //   与 §54 在精校链上发现并已修复的缺陷同型，而 action_items[].due
   //   是摘要链里**时间点的唯一来源**（schema 里没有 next_meeting）。
   //   与服务端 `buildSummaryPrompt` 的防漂由 summary-prompt-parity.test.mjs 承担。
-  const prompt = buildFallbackSummaryPrompt(transcript, prevSummary)
+  // ⚠⚠ §916：转写可能超过 `/api/llm/chat` 的 32000 **字节**硬闸
+  //   （实测 32000 字节 ≈ 10666 个中文字 ≈ **39 分钟**的会议）
+  //   ⇒ 不裁就是**必然 400**，兜底**结构性不可达** ⇒ 摘要退化成「转写前 200 字」。
+  //   ⇒ 这里按闸裁（取**尾部**：新的内容在尾部，更早的由 prevSummary 携带）。
+  //   ⚠ 低于闸时**逐字不变**（`fitSummaryPromptToGate` 原样返回）
+  //     ⇒ 短会议行为零变化。
+  //   ⚠ `transcript`（全量）仍留给下面的 `parseSummaryJson` ——
+  //     那一步要的是「转写原文」来兜底，不是「送进提示词的那一段」。
+  const fitted = fitSummaryPromptToGate(transcript, prevSummary)
+  const prompt = buildFallbackSummaryPrompt(fitted.transcript, fitted.prevSummary)
 
   try {
     const res = await http<{ content: string }>('/api/llm/chat', {

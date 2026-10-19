@@ -2,7 +2,9 @@ import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { FRONTEND_ROOT, loadBundle } from './_wire-helpers.mjs'
+import {
+  FRONTEND_ROOT, activatePinia, captureRequests, loadBundle, restoreGlobals, stubBrowser,
+} from './_wire-helpers.mjs'
 
 const PANEL = 'src/features/meetings/MeetingInsightPanel.vue'
 
@@ -124,5 +126,151 @@ describe('§220 面板措辞不得说错', () => {
       /summary\?\.summaryFallback/,
       '别用可选链比较：summary 是可空 prop，祖先链不保证它非空（check:vacuous-guard 会红）',
     )
+  })
+})
+/**
+ * §916：摘要兜底必须**打得进** `/api/llm/chat` 的 32000 **字节**硬闸。
+ *
+ * ── 缺陷本体（实测）──
+ *   兜底路径把**整场转写**拼进提示词再打 `/api/llm/chat`，
+ *   而服务端有 `if len(m.Content) > 32000 { 400 }`
+ *   （`server_assistant.go:2948`）⇒ 转写一旦超过闸 ⇒ 请求**必然 400**
+ *   ⇒ 兜底**结构性不可达** ⇒ 摘要退化成「转写前 200 字 + summaryFallback 标志」
+ *   （而那**不是摘要** —— §220 已把它的形状与信号钉住）。
+ *
+ * ── ⚠⚠ 单位是**字节**，不是字符（本节最要紧的一条）──
+ *   Go 的 `len(string)` 返回**字节数**，而错误信息写的是
+ *   "max 32000 **chars** per message" ⇒ **信息与判定不同形**
+ *   ⇒ 任何「按字符数修」的实现，对中文内容会**超闸 3 倍**（1 个中文字 = 3 字节）。
+ *   ⇒ 实测（Go）：`len("中") == 3`；32000 字节 ≈ **10666 个中文字**
+ *     ≈ **39.4 分钟**的会议（@271 中文字/分，§896/§912 口径）。
+ *   ⇒ ⚠⚠ 同一枚钉子还更正了 §896/§912 的两个数字：
+ *     `/api/embed` 的 16000 闸（`server_assistant.go:2853`，**也是字节**）
+ *     只装得下 **5333 个中文字** ≈ **19.7 分钟**，
+ *     而那两节当时按「16000 字」算出来的是「63 分钟」。
+ *
+ * ── 修法 ──
+ *   兜底拼提示词**之前**先把提示词装进闸里（按**字节**），且转写取**尾部**
+ *   （滚动摘要的结构是「已有摘要 + 新增转写」⇒ 新的内容在尾部）。
+ *   ⚠ 低于闸时**逐字不变** ⇒ 短会议行为零变化（下面第 3 条钉住这条）。
+ *
+ * ── 量具纪律 ──
+ *   测字节数用 **Node 自己的** `Buffer.byteLength(s,'utf8')`，
+ *   **不**用生产代码里的 `utf8ByteLength`（那是 `TextEncoder`）
+ *   ⇒ 两份实现互为对照：口径漂了判据会红，而不是跟着一起错。
+ *   ⚠ 语料必须是**中文**：ASCII 下字节数 == 码元数 ⇒ 单位陷阱根本测不出来
+ *   （§244 那条门的老教训：ASCII 语料让整份门恒绿）。
+ */
+describe('§916 摘要兜底必须打得进 /api/llm/chat 的 32000 字节硬闸', () => {
+  /** ⚠ 刻意**不**从生产代码 import 这个数：写死服务端那个值，
+   *  前端的镜像常量一旦漂移，本判据立刻红（否则两边一起错就没人知道）。 */
+  const GATE = 32000
+
+  const bytes = (s: string) => Buffer.byteLength(s, 'utf8')
+  const chars = (s: string) => [...s].length
+
+  /** 会议转写的真实形态：中文为主。 */
+  const FILLER = '会议纪要讨论季度预算与交付里程碑排期以及客户跟进安排事项'
+
+  /** 每段内容**互不相同**（含序号）⇒ `renderTranscript` 的相邻去重不会把段丢掉
+   *  （§244 ④ 的教训：整段重复会被去重逻辑整段丢弃 ⇒ 截断压根不发生）。 */
+  const mkSegments = (n: number, charsPer: number) => Array.from({ length: n }, (_, i) => ({
+    id: `seg-${i}`,
+    meetingId: 'm1',
+    speakerLabel: '张明',
+    lang: 'zh',
+    confidence: 1,
+    startMs: i * 14_600,
+    endMs: (i + 1) * 14_600,
+    text: `第${i}段` + FILLER.repeat(Math.ceil(charsPer / FILLER.length) + 1).slice(0, charsPer),
+    translation: null,
+    origin: 'asr',
+  }))
+
+  // ⚠ loadBundle 每次都要跑一遍 esbuild（~1s）⇒ 模块只装一次，5 个用例共用。
+  let _api: any = null
+  let _prompt: any = null
+  let _dedup: any = null
+  const apiMod = async () => (_api ??= await loadBundle(join(FRONTEND_ROOT, 'src/api/meetings.ts'), 's916-api'))
+  const promptMod = async () => (_prompt ??= await loadBundle(join(FRONTEND_ROOT, 'src/features/meetings/summary-prompt.ts'), 's916-prompt'))
+  const dedupMod = async () => (_dedup ??= await loadBundle(join(FRONTEND_ROOT, 'src/features/meetings/meeting-dedup.ts'), 's916-dedup'))
+
+  /** 让主摘要端点失败 ⇒ 必然走兜底；再把兜底那次请求抓下来。 */
+  async function runFallback(segments: unknown[], prev?: string) {
+    stubBrowser()
+    await activatePinia()
+    const mod = await apiMod()
+    const seen = captureRequests({})   // 一个路由都没配 ⇒ 全部 404
+    try {
+      await mod.meetingsApi.summarize('m1', segments as never, prev)
+      const hit = seen.find((s: { path: string }) => s.path === '/api/llm/chat')
+      assert.ok(hit, `没有打 /api/llm/chat（实际打了 ${seen.map((s: { path: string }) => s.path).join(', ') || '一个都没打'}）`)
+      return String(hit.body.messages[0].content)
+    } finally {
+      restoreGlobals()
+    }
+  }
+
+  it('★ 长会议：兜底提示词的**字节数**必须 ≤ 闸（超了 ⇒ 这条请求必然 400）', async () => {
+    const content = await runFallback(mkSegments(200, 300))
+    assert.ok(bytes(content) <= GATE,
+      `兜底提示词 ${bytes(content)} 字节 > 闸 ${GATE} 字节 ⇒ 这条请求**必然 400** ⇒ ` +
+      '兜底永远走不到 ⇒ 摘要只会是「转写前 200 字」')
+  })
+
+  it('★ 单位陷阱：**字符数不超闸、字节数超闸**的转写必须被裁到闸的字节数以内', async () => {
+    const segs = mkSegments(10, 3000)
+    const full = (await dedupMod()).renderTranscript(segs)
+    // ⚠ 前置：这条用例必须真的踩在「按字符判会放行、按字节判会拦下」的缝里。
+    //   两个前置都不过 ⇒ 它量不到单位差异（是夹具坏了，不是产品好了）。
+    assert.ok(chars(full) <= GATE,
+      `前置失效：输入转写有 ${chars(full)} 个字符 > ${GATE} ⇒ 这条用例量不到单位差异`)
+    assert.ok(bytes(full) > GATE,
+      `前置失效：输入转写只有 ${bytes(full)} 字节 ≤ ${GATE} ⇒ 这条用例量不到单位差异`)
+
+    const content = await runFallback(segs)
+    assert.ok(bytes(content) <= GATE,
+      `兜底提示词 ${bytes(content)} 字节 > 闸 ${GATE} 字节。` +
+      `输入转写 ${chars(full)} 字符 / ${bytes(full)} 字节 —— 字符数不超闸、字节数超闸，` +
+      '**按字符判的实现会把它原样放行**，而服务端按字节判 ⇒ 必然 400')
+  })
+
+  it('★ 负控：低于闸的会议，兜底提示词**逐字未变**（短会议行为零变化）', async () => {
+    const segs = mkSegments(5, 100)
+    const full = (await dedupMod()).renderTranscript(segs)
+    // ⚠ 期望值用**产品自己的**提示词拼装器算，不是这里复刻一份模板。
+    const expected = (await promptMod()).buildFallbackSummaryPrompt(full, undefined)
+    assert.ok(bytes(expected) < GATE, '前置失效：这条用例的夹具本来就该低于闸')
+
+    const content = await runFallback(segs)
+    assert.equal(content, expected,
+      '低于闸时兜底提示词被改了 ⇒ 短会议的行为变了（这条是「零变化」的护栏）')
+  })
+
+  it('★ 裁剪必须取**尾部**：最新说的话不能被裁掉', async () => {
+    const segs = mkSegments(200, 300)
+    segs[0].text = 'FIRSTHEAD ' + segs[0].text
+    segs[segs.length - 1].text = segs[segs.length - 1].text + ' ZZZLAST'
+    const full = (await dedupMod()).renderTranscript(segs)
+    assert.ok(full.includes('FIRSTHEAD') && full.includes('ZZZLAST'),
+      '前置失效：标记没进渲染结果（去重把它吃了？）⇒ 这条用例量不到裁剪方向')
+
+    const content = await runFallback(segs)
+    assert.ok(content.includes('ZZZLAST'),
+      '兜底提示词的**结尾**没有最后一段的正文 ⇒ 裁剪取错了头（滚动摘要靠尾部才是新的内容）')
+    assert.ok(!content.includes('FIRSTHEAD'),
+      '开头还在 ⇒ 说明压根没裁（长会议下这条请求会 400）')
+  })
+
+  it('★ 连「已有摘要」本身都超闸时，也必须打得进闸（否则 400 照旧）', async () => {
+    const segs = mkSegments(50, 300)
+    // ⚠ 上一轮摘要由模型产出，而 §101 明确**不设** `max_tokens`
+    //   ⇒ 它的长度不受控 ⇒ 「已有摘要自己就超闸」不是纯理论情形。
+    const prev = '上一轮摘要：客户跟进排在十月中旬。'.repeat(3000)
+    assert.ok(bytes(prev) > GATE, '前置失效：这条用例的「已有摘要」本来就该超闸')
+
+    const content = await runFallback(segs, prev)
+    assert.ok(bytes(content) <= GATE,
+      `兜底提示词 ${bytes(content)} 字节 > 闸 ${GATE} 字节（已有摘要自己就超了闸）⇒ 必然 400`)
   })
 })

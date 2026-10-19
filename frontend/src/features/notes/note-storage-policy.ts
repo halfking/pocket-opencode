@@ -55,9 +55,13 @@ export function buildSearchText(
 }
 
 /**
- * §898：单次 `/api/embed` 的字符上限（与服务端硬编码一致）。
+ * §898：单次 `/api/embed` 的长度上限（与服务端硬编码一致）。
  * ⚠ 出处：`backend/internal/server/server_assistant.go:2853`
- *   `if len(body.Text) > 16000 { 400 "text too long (max 16000 chars)" }`
+ *   `if len(body.Text) > 16000 { 400 "text too long (max 16000 bytes)" }`
+ * ⚠⚠ **单位是 UTF-8 字节，不是字符**（§916 实测：Go 的 `len(string)`）⇒
+ *   16000 字节只装得下 **5333 个中文字**。
+ *   ⚠ 这个常量**按码元**在用（`text.length` / `text.slice`）⇒ 切段是否
+ *     真的按字节做，是另一件事 —— 见 §917。
  */
 export const EMBED_SINGLE_SHOT_LIMIT = 16000
 
