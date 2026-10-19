@@ -201,7 +201,10 @@ export async function countEntries(): Promise<number> {
 
 /**
  * 返回本地龙虾钳子缓存的统计信息（同步、非阻塞）。
- * - vectorCount: 当前 vectorIndex 中已索引的笔记向量数
+ * - vectorCount: 当前 vectorIndex 中的**段向量**条数
+ *   ⚠⚠ §898：这条数的含义变了 —— 段级化之后「一条笔记」可能是**多个段向量**
+ *   （长会议按段嵌入），所以它**不再等于笔记数**。
+ *   要笔记数请用 `vectorIndex.noteCount()`。
  * - ftsEnabled: schema 总是创建 FTS5 虚表（local_notes_fts），固定 true
  */
 export function getCacheStats(): { vectorCount: number; ftsEnabled: boolean } {

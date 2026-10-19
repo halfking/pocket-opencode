@@ -86,10 +86,13 @@ CREATE INDEX IF NOT EXISTS idx_note_files_note ON local_note_files(note_id);
 -- ============================================================
 CREATE TABLE IF NOT EXISTS local_note_vectors (
     note_id TEXT PRIMARY KEY,
-    embedding BLOB NOT NULL,         -- Float32Array 序列化：4 bytes/维
+    embedding BLOB NOT NULL,         -- Float32Array 序列化：4 bytes/维；§898 起是 chunks×dim 连续存放
     dim INTEGER NOT NULL,            -- 维度（如 1536）
     model TEXT NOT NULL,
     created_at INTEGER NOT NULL,
+    -- §898：这一行装的是**几个段向量**（长会议按段嵌入）。
+    --   默认 1 = 旧数据语义（整篇一个向量），旧库由 local-db 的列迁移补上。
+    chunks INTEGER NOT NULL DEFAULT 1,
     FOREIGN KEY (note_id) REFERENCES local_notes(id) ON DELETE CASCADE
 );
 

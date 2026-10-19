@@ -38,6 +38,8 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, it } from 'node:test'
+// §898：切段器是纯函数，直接引来做**行为断言**（源码形状断言管不住「换个写法绕过上限」）。
+import { splitForEmbedding } from '../note-storage-policy.ts'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const SRC = path.resolve(HERE, '..', '..', '..')
@@ -407,14 +409,33 @@ describe('§896 · D66：向量化用的文本不该是 FTS 文本，也不该�
       'buildSearchText 不再带 gram ⇒ FTS 的 CJK 子串匹配塌了（§886 的修法被误伤）')
   })
 
-  it('★★★ 必须按服务端上限截断，且上限值与后端硬编码一致', () => {
+  it('★★★ 发出去的每一段都必须在服务端上限内，且上限值与后端硬编码一致', () => {
+    // ⚠⚠ §898：这条门**换了实现**（截断 ⇒ 分段），但**不变量没变**：
+    //   「/api/embed 收到的 text 永远不超过服务端上限」才是要守的东西。
+    //   ⇒ 而且判据从「源码里有截断」升级成**行为断言**：
+    //     直接对切段器喂超长文本，检查**每一段**的长度。
+    //   （源码形状断言管不住「换个写法绕过上限」，行为断言管得住。）
     const u = read(path.join(SRC, 'features', 'notes', 'notes-persist.ts'))
     assert.match(u, /const EMBED_TEXT_CHAR_LIMIT = 16000/,
       'EMBED_TEXT_CHAR_LIMIT 不存在或不是 16000 ⇒ /api/embed 会拿到必然被拒的请求体')
-    assert.match(u, /content\.length > EMBED_TEXT_CHAR_LIMIT\s*\n?\s*\?\s*content\.slice\(0, EMBED_TEXT_CHAR_LIMIT\)\s*\n?\s*:\s*content/,
-      'embedAndStore 没有在发请求前截断 ⇒ 超长笔记必然 400 且永远拿不到向量')
-    // 请求体必须用的是截断后的值，不是原 content
-    assert.match(u, /JSON\.stringify\(\{ text \}\)/, '/api/embed 请求体没有用截断后的 text（仍在发原 content）')
+    // 请求体必须发的是**段文本**，不是原 content
+    assert.match(u, /JSON\.stringify\(\{ text: c\.text \}\)/,
+      '/api/embed 请求体没有用段文本 c.text（仍在发整篇 content ⇒ 超长必然 400）')
+    assert.doesNotMatch(u, /JSON\.stringify\(\{ text: content \}\)/,
+      '/api/embed 又在发整篇 content ⇒ 超长笔记必然 400 且永远拿不到向量')
+    // 行为：切段器吐出来的每一段都必须在上限内，且**整篇被覆盖**（不丢尾部）
+    const LIMIT = 16000
+    const long = '甲'.repeat(70000)
+    const chunks = splitForEmbedding(long, { limit: LIMIT })
+    assert.ok(chunks.length > 1, `70000 字只切出 ${chunks.length} 段 ⇒ 分段没生效`)
+    for (const c of chunks) {
+      assert.ok(c.text.length <= LIMIT,
+        `有一段长 ${c.text.length} 字符，超过服务端上限 ${LIMIT} ⇒ 必然 400`)
+    }
+    // 整篇必须被覆盖到（这是「不再截断」与「截断」的本质区别）
+    const covered = chunks.map((c) => c.text).join('')
+    assert.ok(covered.length >= long.length - LIMIT,
+      `分段后覆盖的字符数 ${covered.length} 远小于原文 ${long.length} ⇒ 尾部被丢了`)
   })
 
   it('★★★ 两条嵌入路径的失败必须同样出声（编辑保存那条曾是完全静默的）', () => {

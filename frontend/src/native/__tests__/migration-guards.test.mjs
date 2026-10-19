@@ -62,7 +62,10 @@ function columnLoops(src) {
   return out
 }
 
-const EXPECTED_METHODS = 8
+// §898：新增 runNoteVectorsV1Migration（向量表加 chunks 列）⇒ 8 → 9。
+// ⚠ 这条是「前提自证」：它保证下面的扫描**扫到了全部**迁移方法，
+//   数字必须与源码同步 —— 少写一个数 ⇒ 下面的判据可能全在「没扫到」上假绿。
+const EXPECTED_METHODS = 9
 
 test('前提自证·扫到的方法数与源码一致（否则下面几条可能全在「没扫到」上假绿）', () => {
   const methods = migrationMethods(SRC)
@@ -73,7 +76,8 @@ test('前提自证·扫到的方法数与源码一致（否则下面几条可能
       `若是解析器坏了，先修解析器 —— 这条会变成「空对空恒真」。`,
   )
   const arrays = [...new Set(columnLoops(SRC).map((l) => l.array))]
-  assert.equal(arrays.length, 8, `扫到 ${arrays.length} 个 *_COLUMNS 数组，期望 8 个：${arrays.join(', ')}`)
+  // §898：新增 NOTE_VECTORS_V1_COLUMNS（向量表加 chunks 列）⇒ 8 → 9。
+  assert.equal(arrays.length, 9, `扫到 ${arrays.length} 个 *_COLUMNS 数组，期望 9 个：${arrays.join(', ')}`)
 })
 
 test('前提自证·分类器能区分「有守卫」与「无守卫」（在**合成输入**上自证，不依赖仓里还有缺陷）', () => {
@@ -742,5 +746,151 @@ describe('§895 · D65：语义检索不得整段占满 UI 线程', () => {
     assert.deepEqual(await index.searchAsync(queryVec(1, 0), 0), [], 'topK=0 应返回空数组')
     assert.deepEqual(index.search(queryVec(1, 0), 0), [], '同步版 topK=0 也应返回空数组（两者须一致）')
     assert.deepEqual(await index.searchAsync(queryVec(1, 0), -3), [], 'topK 为负应返回空数组')
+  })
+})
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * §898 · D67：长会议必须**按段**可检索 —— 「一条笔记一个向量」这族在结构上就做不到
+ * ═══════════════════════════════════════════════════════════════════════════
+ * 属主要求「会议时长无上限、只受存储约束、不大量增加存储或资源」。
+ * §897 定位到唯一瓶颈是向量化（16000 字符硬上限），本节把它落地成段级向量。
+ *
+ * ⭐ 本节要钉的核心性质（实测推导见 `vector-index.ts::search` 上方注释）：
+ *   局部代理嵌入（TF-IDF，1536 维）下，4 小时会议（18 段）第 10 段埋一句关键信息：
+ *     截断 0.0452 / 质心 0.0492 / 整篇单向量 0.0914 / **段级 max 0.1442**
+ *   而一条中等相关的短笔记是 0.0394
+ *   ⇒ 截断与质心只比它高 15%~25% ⇒ 长会议在有若干短笔记的库里会被挤出 top-k。
+ *   ⇒ **max 聚合是必须的**，而「同一条笔记的多个段各占一个 top-k 名额」是错的。
+ *
+ * ⚠ 判据全部用**性质**而不是实现细节：
+ *   「一条多段笔记在结果里只出现一次」「它的分数等于它最好那一段的分数」
+ *   「旧数据（chunks=1）照样能检索」—— 这三条与内部怎么存无关。
+ */
+describe('§898 · D67：段级向量与 max 聚合', () => {
+  /** 一条笔记的 N 个段向量：第 i 段朝 queryVec(i,0) 方向，强度递增。 */
+  function chunkVecs(n) {
+    const out = []
+    for (let i = 0; i < n; i++) {
+      const v = new Float32Array(DIM)
+      v[0] = i + 1
+      v[1] = 0
+      out.push(v)
+    }
+    return out
+  }
+
+  it('★★★ 一条多段笔记在结果里只出现一次，且分数 = 最好那一段的分数', async () => {
+    const db = makeVectorDb()
+    const index = new VectorIndex(db)
+    await index.load()
+    await db.run(
+      'INSERT OR IGNORE INTO local_notes (id, content, created_at, updated_at) VALUES (?, ?, ?, ?)',
+      ['long', 'long', 0, 0],
+    )
+    // 5 段，第 4 段（index 3）最强：v[0]=4
+    await index.add('long', chunkVecs(5), 'm')
+    // 再放 3 条单段笔记，分数介于 1 与 4 之间
+    for (const [id, strength] of [['a', 2], ['b', 3], ['c', 1.5]]) {
+      await db.run(
+        'INSERT OR IGNORE INTO local_notes (id, content, created_at, updated_at) VALUES (?, ?, ?, ?)',
+        [id, id, 0, 0],
+      )
+      const v = new Float32Array(DIM)
+      v[0] = strength
+      await index.add(id, v, 'm')
+    }
+    const hits = index.search(queryVec(1, 0), 10)
+    const longs = hits.filter((h) => h.noteId === 'long')
+    assert.equal(longs.length, 1,
+      `结果里 'long' 出现了 ${longs.length} 次 ⇒ 同一笔记的多个段各占了一个 top-k 名额`)
+    // 归一化后：段 i 的向量是 (1,0) 方向 ⇒ 分数恒为 1；强度不影响方向，只影响归一化后是否仍朝同一方向。
+    // 这里所有段都是 (x,0) 方向 ⇒ 归一化后都是 (1,0) ⇒ 分数都是 1。
+    assert.equal(longs[0].score, 1, `long 的分数是 ${longs[0].score}，不是它最好那一段的分数`)
+  })
+
+  it('★★★ max 聚合：分数必须取**各段最高**，而不是平均或最后一段', async () => {
+    const db = makeVectorDb()
+    const index = new VectorIndex(db)
+    await index.load()
+    await db.run(
+      'INSERT OR IGNORE INTO local_notes (id, content, created_at, updated_at) VALUES (?, ?, ?, ?)',
+      ['m', 'm', 0, 0],
+    )
+    // ⚠⚠ 夹具必须让「最高段」「最后一段」「平均」三者**互不相同** ——
+    //   第一版三段是 (1,0) / (0,1) / (0.5,0)：归一化后段 0 与段 2 **都是 (1,0)**，
+    //   于是「取最后一段」恰好等于「取最高段」⇒ 变异全绿（反例没落在能起作用的区间）。
+    //   现在用 (1,0) / (0,1) / (0.707,0.707)：
+    //     最高段 = 1.000（第 1 段）   最后一段 = 0.707   平均 = 0.569
+    const mk = (a, b) => { const v = new Float32Array(DIM); v[0] = a; v[1] = b; return v }
+    await index.add('m', [mk(1, 0), mk(0, 1), mk(0.707, 0.707)], 'm')
+    const hits = index.search(queryVec(1, 0), 5)
+    assert.equal(hits.length, 1, `'m' 出现了 ${hits.length} 次`)
+    assert.ok(Math.abs(hits[0].score - 1) < 1e-6,
+      `分数是 ${hits[0].score}：最高段应是 1.000，最后一段是 0.707、平均是 0.569 ⇒ max 聚合被改坏了`)
+  })
+
+  it('★★★ 旧数据（chunks=1）必须照样能检索，且与段级数据同形', async () => {
+    const db = makeVectorDb()
+    const index = new VectorIndex(db)
+    await index.load()
+    await db.run(
+      'INSERT OR IGNORE INTO local_notes (id, content, created_at, updated_at) VALUES (?, ?, ?, ?)',
+      ['legacy', 'legacy', 0, 0],
+    )
+    // 模拟旧库：直接写一行 chunks=1 的向量（不经过 add）
+    const v = new Float32Array(DIM)
+    v[0] = 1
+    await db.run(
+      `INSERT INTO local_note_vectors (note_id, embedding, dim, model, chunks, created_at)
+       VALUES (?, ?, ?, ?, 1, ?)`,
+      ['legacy', new Uint8Array(v.buffer).buffer, DIM, 'm', 0],
+    )
+    await index.load()
+    const hits = index.search(queryVec(1, 0), 5)
+    assert.equal(hits.length, 1, `旧数据检索不到（hits=${JSON.stringify(hits)}）`)
+    assert.equal(hits[0].noteId, 'legacy')
+  })
+
+  it('★★★ 库里一行装 N 段：embedding BLOB 长度 = chunks × dim × 4', async () => {
+    const db = makeVectorDb()
+    const index = new VectorIndex(db)
+    await index.load()
+    await db.run(
+      'INSERT OR IGNORE INTO local_notes (id, content, created_at, updated_at) VALUES (?, ?, ?, ?)',
+      ['x', 'x', 0, 0],
+    )
+    await index.add('x', chunkVecs(7), 'm')
+    const rows = await db.all('SELECT embedding, dim, chunks FROM local_note_vectors WHERE note_id = ?', ['x'])
+    assert.equal(rows.length, 1, `写了 ${rows.length} 行 ⇒ 一条笔记应只有一行`)
+    const blob = rows[0].embedding
+    const bytes = blob.byteLength ?? blob.length
+    assert.equal(rows[0].chunks, 7, `chunks 列是 ${rows[0].chunks}，应为 7`)
+    assert.equal(bytes, 7 * DIM * 4, `BLOB 是 ${bytes} 字节，应为 ${7 * DIM * 4}（7 段 × ${DIM} 维 × 4B）`)
+  })
+
+  it('★★★ 段数变化时必须重建（否则段的连续布局会错位）', async () => {
+    const db = makeVectorDb()
+    const index = new VectorIndex(db)
+    await index.load()
+    await db.run(
+      'INSERT OR IGNORE INTO local_notes (id, content, created_at, updated_at) VALUES (?, ?, ?, ?)',
+      ['y', 'y', 0, 0],
+    )
+    await index.add('y', chunkVecs(3), 'm')
+    assert.equal(index.size(), 3, '3 段应占 3 行')
+    // 改成 5 段
+    await index.add('y', chunkVecs(5), 'm')
+    assert.equal(index.size(), 5, `改成 5 段后索引里是 ${index.size()} 行 ⇒ 段数变化时没有重建`)
+    assert.equal(index.noteCount(), 1, `noteCount() 是 ${index.noteCount()}，应为 1（一条笔记）`)
+    // 检索仍然按 5 段工作
+    const hits = index.search(queryVec(1, 0), 5)
+    assert.equal(hits.length, 1, `重建后检索结果有 ${hits.length} 条`)
+  })
+
+  it('★★★ 生产路径必须按段嵌入（不得再把整篇发给 /api/embed）', () => {
+    const src = readFileSync(new URL('../../features/notes/notes-persist.ts', import.meta.url), 'utf8')
+    assert.match(src, /splitForEmbedding\(/, 'notes-persist 没有调用切段器 ⇒ 长会议仍按整篇发，必然 400')
+    assert.doesNotMatch(src, /JSON\.stringify\(\{ text: content \}\)/,
+      '还在把整篇 content 发给 /api/embed ⇒ 超长笔记必然 400')
   })
 })

@@ -4,7 +4,7 @@ import { http } from '../../api/http'
 import { encryptString } from '../../native/crypto'
 import { useCryptoConfig } from '../../stores/crypto-config'
 import { assetStore } from '../../native/asset-store'
-import { decideNoteStorage } from './note-storage-policy'
+import { decideNoteStorage, splitForEmbedding } from './note-storage-policy'
 import { deleteNoteBodyFile, deleteNoteFiles, persistNotePayload, readNoteBody } from './note-files'
 import { RECORD_MEDIA_CLEANUP_FAIL_TAG } from '../../utils/action-failure-notice'
 import { assetToNote, rowToNote, mergeImportedNotes } from './notes-row'
@@ -461,22 +461,32 @@ export async function awaitNoteMirror(noteId: string): Promise<void> {
 const EMBED_TEXT_CHAR_LIMIT = 16000
 
 async function embedAndStore(noteId: string, content: string): Promise<void> {
-  // ⚠⚠ §896/D66：必须在这里**主动**截到上限以下。
-  //   此前发的是不截断的整份文本 ⇒ 正文超过约 15753 字（≈63 分钟连续发言）
-  //   的笔记，/api/embed **必然 400**；两个调用点一个只 `console.warn`、
-  //   一个 `.catch(() => {})` 完全静默，而全仓**没有 embedding 回填**
-  //   ⇒ 这条笔记**永远不会有向量**，语义检索永远搜不到它，用户零提示。
-  //   截断取**头部**：会议转写的主题句在开头（`cjkBigramTokens` 同样只取头部）。
-  //   ⛔ 「取头部」是本节的技术默认值；「分段嵌入再合并 / 先摘要再嵌入」属产品口径，
-  //   已登记在简报 119，未代拍。
-  const text = content.length > EMBED_TEXT_CHAR_LIMIT
-    ? content.slice(0, EMBED_TEXT_CHAR_LIMIT)
-    : content
-  const res = await http<{ embedding: number[]; model: string }>('/api/embed', {
-    method: 'POST',
-    body: JSON.stringify({ text }),
-  })
-  await vectorIndex.add(noteId, Float32Array.from(res.embedding), res.model)
+  // ⚠⚠ §898：超长文本**不再截断**，而是**按段分别嵌入**。
+  //
+  //   §896 的做法是「截到 16000 字就发」⇒ 长会议的后半段**永远进不了索引**
+  //   （尾部不是「弱相关」，是**完全不相关**）。
+  //   ⇒ 现在改成：短文本仍是一次调用一个向量（行为与从前逐字一致），
+  //     超过单发上限的按段切开，逐段嵌入，**整篇每一段都被索引到**。
+  //
+  //   ⚠ 为什么必须「每段一个向量」而不是「所有段平均成 1 个」：
+  //   实测（局部代理嵌入，4 小时会议 18 段，第 10 段埋一句关键信息）：
+  //     截断 0.0452 / 质心 0.0492 / 整篇单向量 0.0914 / 段级 max **0.1442**
+  //   而一条中等相关的短笔记是 0.0394 ⇒ 截断与质心只比它高 15%~25%
+  //   ⇒ 长会议在有若干短笔记的库里会被挤出 top-k。
+  //   详见 `vector-index.ts::search` 上方的注释与 §898 文档。
+  const chunks = splitForEmbedding(content, { limit: EMBED_TEXT_CHAR_LIMIT })
+  if (chunks.length === 0) return
+  const vectors: Float32Array[] = []
+  let model = ''
+  for (const c of chunks) {
+    const res = await http<{ embedding: number[]; model: string }>('/api/embed', {
+      method: 'POST',
+      body: JSON.stringify({ text: c.text }),
+    })
+    model = res.model
+    vectors.push(Float32Array.from(res.embedding))
+  }
+  await vectorIndex.add(noteId, vectors, model)
 }
 
 /**
