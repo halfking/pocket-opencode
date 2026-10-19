@@ -176,11 +176,21 @@ func TestLLMChatLengthGateConstantMatchesFrontend(t *testing.T) {
 	bffGate := one(readFrontend(t, "server_llmbff.go"), `len\(m\.Content\)\s*>\s*(\d+)`, "server_llmbff.go")
 	frontGate := one(readFrontend(t, "../../../frontend/src/api/meetings.ts"),
 		`LLM_CHAT_MAX_CONTENT_BYTES\s*=\s*(\d+)`, "frontend/src/api/meetings.ts")
+	// ⚠ §919：/api/llm/stream（server_llmbff.go）是**另一个 handler**，
+	//   它有**自己那一份** 32000 ⇒ 改 chat 那道不会自动改 stream 这道。
+	//   而前端也**各写各的**（流式走 llm-bff 通道，非流式走 http 通道）
+	//   ⇒ 前端镜像常量同样有两份 ⇒ 4 路必须相等。
+	streamFrontGate := one(readFrontend(t, "../../../frontend/src/features/meetings/meetings-ai.ts"),
+		`LLM_STREAM_MAX_CONTENT_BYTES\s*=\s*(\d+)`, "frontend/src/features/meetings/meetings-ai.ts")
 	if goGate != bffGate {
 		t.Fatalf("两处服务端闸不一致：server_assistant.go=%s、server_llmbff.go=%s", goGate, bffGate)
 	}
 	if goGate != frontGate {
 		t.Fatalf("前端镜像的闸值 %s ≠ 服务端的 %s ⇒ 前端会按错的尺寸装配提示词 ⇒ 兜底会被 400 拦掉",
 			frontGate, goGate)
+	}
+	if bffGate != streamFrontGate {
+		t.Fatalf("前端 /api/llm/stream 镜像的闸值 %s ≠ 服务端该端点的 %s ⇒ 流式会议纪要对长会议必然 400（§919）",
+			streamFrontGate, bffGate)
 	}
 }

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import {
   FRONTEND_ROOT, activatePinia, captureRequests, loadBundle, restoreGlobals, stubBrowser,
@@ -272,5 +272,481 @@ describe('§916 摘要兜底必须打得进 /api/llm/chat 的 32000 字节硬闸
     const content = await runFallback(segs, prev)
     assert.ok(bytes(content) <= GATE,
       `兜底提示词 ${bytes(content)} 字节 > 闸 ${GATE} 字节（已有摘要自己就超了闸）⇒ 必然 400`)
+  })
+})
+
+/**
+ * §919：服务端**字节闸**的**调用方登记簿** —— 让这一族**不再复发**。
+ *
+ * ── 为什么要有这张表 ──
+ *   这个家族缺陷在同一个仓里被撞到**三次**（§916 摘要、§917 嵌入、§919 流式纪要），
+ *   根因永远是同一句：**服务端判的是 UTF-8 字节，前端按字符理解**。
+ *   §918 把服务端那几道内容闸全查过了，**但调用方这一侧还会长出新的**
+ *   （§919 实测：§916 修好了 `/api/llm/chat`，却漏了**同一个值的** `/api/llm/stream`
+ *    ⇒ 两条会议纪要路径能力不一致：一条能用、一条对长会议**必然 400**）。
+ *   ⇒ 「新增一个调用点 ⇒ 忘了按字节裁」这件事，**只能靠登记逼出来**：
+ *   没人会主动想起「这个端点也有字节闸」。
+ *
+ * ── 这张表的形状照抄 `api-timeout-budget-table.test.mjs` ──
+ *   那张表守的是同一种东西：「客户端超时必须 > 服务端预算」，
+ *   它的文件头已经写明了失效模式 ——
+ *   「手工核对的失效模式很清楚：下次有人加一条长路由，表不会自己更新」
+ *   ⇒ 它的解法是**数据驱动的登记表**。本表同构。
+ *
+ * ── 闸值本身钉在哪 ──
+ *   服务端 4 道 A 类内容闸（§918 的分类：内容长度闸 / 计数闸 / 请求体上限），
+ *   闸值与前端镜像常量的对齐由 **Go 侧**那道跨语言门钉住
+ *   （`server_llm_chat_test.go` 的 4 路比较）⇒ 本表**不重复钉**闸值。
+ *
+ * ── 扫描口径（两条，都是实测踩出来的）──
+ *   ① **必须剥注释**：`src/api/llm-bff.ts:138` 的 JSDoc 里写着
+ *      `llmBffApi.streamChat({ messages, model }, ...)` ⇒ 不剥就是**假阳**，
+ *      而「一条注释把登记表变成空气门」是真实发生过的（§917 的单位门就是）。
+ *   ② **必须按调用形态匹配**（`http<…>('/api/xxx'`、`llmBffApi.streamChat(`），
+ *      不是裸端点字符串 ⇒ 注释/文档里提到端点的地方不算调用点。
+ */
+describe('§919 服务端字节闸的调用方登记簿（每个调用点都得说得出内容怎么被限住）', () => {
+  interface Gate {
+    /** 端点路径。 */
+    endpoint: string
+    /** 服务端那道闸的值（**字节**）。⚠ 闸值本身由 Go 侧跨语言门钉住。 */
+    gateBytes: number
+    /** 该端点在前端的**全部**调用形态（已知封装层也列进来）。 */
+    callForms: RegExp[]
+    /** 真正**构造请求**的位置（裸 fetch / http(…端点)）。 */
+    exitForms: RegExp[]
+    /** 出口数期望值。⚠ 有人绕过封装裸写 fetch ⇒ 这里会变 ⇒ 当场红。 */
+    exitCount: number
+  }
+
+  const GATES: Gate[] = [
+    {
+      endpoint: '/api/llm/chat',
+      gateBytes: 32000,
+      callForms: [/http\s*(<[^>]*>)?\s*\(\s*['"`]\/api\/llm\/chat/g],
+      exitForms: [/http\s*(<[^>]*>)?\s*\(\s*['"`]\/api\/llm\/chat/g],
+      exitCount: 4,
+    },
+    {
+      // ⚠ 这道闸是 §919 才发现的：它是**另一个 handler**（server_llmbff.go:127），
+      //   闸值与 chat 那道**同值**（32000）⇒ 改一处不会改另一处。
+      endpoint: '/api/llm/stream',
+      gateBytes: 32000,
+      // ⚠ 这条通道有**封装**（llm-bff.ts）⇒ 业务调用形态是封装的方法名，
+      //   真正构造请求的位置在封装内部（`fetch(`${base}/api/llm/stream`)`）。
+      //   ⚠ `aiStreamRuntime.spawnChat(` 也在列 —— `localagent/llm-stream.ts`
+      //   **绕过**了 llmBffApi 直接调它 ⇒ 只扫封装方法会漏掉它。
+      callForms: [/llmBffApi\.streamChat\s*\(/g, /aiStreamRuntime\.spawnChat\s*\(/g],
+      exitForms: [/fetch\s*\(\s*`[^`]*\/api\/llm\/stream/g],
+      exitCount: 1,
+    },
+    {
+      endpoint: '/api/embed',
+      gateBytes: 16000,
+      callForms: [/http\s*(<[^>]*>)?\s*\(\s*['"`]\/api\/embed/g],
+      exitForms: [/http\s*(<[^>]*>)?\s*\(\s*['"`]\/api\/embed/g],
+      exitCount: 2,
+    },
+    {
+      // ⚠ 这道闸判的是 **body 里的 subject 字段**（`len(body.Subject) > 500`），
+      //   不是「消息内容」⇒ 它量的对象与前三个不同，但同样是**字节**闸。
+      endpoint: '/api/email/send',
+      gateBytes: 500,
+      callForms: [/http\s*(<[^>]*>)?\s*\(\s*['"`]\/api\/email\/send/g],
+      exitForms: [/http\s*(<[^>]*>)?\s*\(\s*['"`]\/api\/email\/send/g],
+      exitCount: 1,
+    },
+  ]
+
+  interface Site {
+    /** 属于哪道闸。 */
+    gate: string
+    /** 调用点所在文件（相对 frontend/）。 */
+    file: string
+    /** 出现在该调用点**附近**（±600 字符）的标记 ⇒ 用来把同文件的多个调用点分开。 */
+    marker: string
+    /** 内容**怎么被限住** —— 说不出就是没限住。 */
+    bound: string
+    /**
+     * 可否当场重测（重测键；null = 不重测）。
+     * ⚠ `null` 有两种正当理由：
+     *   ① 已被别的判据钉住（同一件事不重复钉）；
+     *   ② **没有上限**（内容多大发多大）⇒ 钉「它超闸」等于把缺陷钉成期望，⛔ 不可。
+     */
+    retest: string | null
+  }
+
+  /**
+   * 登记簿：**每一行 = 一个调用点 + 它的内容怎么被限住**。
+   *
+   * ⚠ 判别标准（沿用 §918 的那条）：**用户能不能自己绕开**。
+   *   · 内容是**不可编辑的派生输入**（会议转写、邮件原主题）
+   *     ⇒ 用户绕不开 ⇒ **必须修**（§918 邮件主题、§919 流式转写）。
+   *   · 内容是**用户可编辑的输入**（草稿、聊天消息、查询词）
+   *     ⇒ 用户自己能改短 ⇒ **登记不修**。
+   *   · 失败**优雅降级** ⇒ 登记不修。
+   */
+  const SITES: Site[] = [
+    // ── /api/llm/chat（4 个调用点）──
+    {
+      gate: '/api/llm/chat',
+      file: 'src/api/meetings.ts',
+      marker: "kind: 'meeting_summary'",
+      bound: '§916 的 fitSummaryPromptToGate 按字节装配（转写取尾部 + 已有摘要取头部）',
+      retest: null,   // §916 的三条行为判据已钉
+    },
+    {
+      gate: '/api/llm/chat',
+      file: 'src/api/meetings.ts',
+      marker: "kind: 'meeting_refine'",
+      bound: '⚠ **无上限**：整场转写直接进提示词 ⇒ >37.5 分钟的会议必然 400。' +
+        '产物是「全文精校稿」，取尾裁会改变产物形状 ⇒ 产品口径待拍（简报 140 第 ② 问）',
+      retest: null,   // ⛔ 无上限 ⇒ 钉「它超闸」= 钉缺陷为期望
+    },
+    {
+      gate: '/api/llm/chat',
+      file: 'src/features/email/EmailDetailView.vue',
+      marker: 'async function llmChat(',
+      bound: '邮件翻译走 translateBodyPipeline ⇒ **切块**后逐块翻译。' +
+        '实测最大块 6000 码元（中文 18000 字节）⇒ 余量 44%',
+      retest: 'translate',
+    },
+    {
+      gate: '/api/llm/chat',
+      file: 'src/features/meetings/live-translate.ts',
+      marker: "kind: 'live_translate'",
+      bound: '每次只送**一个 ASR 段**（调用方 ingest-speech.ts:98 传 `saved.text`）⇒ 单段远小于闸',
+      retest: null,
+    },
+    // ── /api/llm/stream（7 个调用点）──
+    {
+      gate: '/api/llm/stream',
+      file: 'src/api/llm-bff.ts',
+      marker: 'aiStreamRuntime.spawnChat(id, input, {',
+      bound: '**relay**：封装本身把 input 交给 runtime。真正的出口是本文件的 ' +
+        '`fetch(`${base}/api/llm/stream`)`（全仓唯一）⇒ 内容由下面 6 个业务调用点各自限住',
+      retest: null,
+    },
+    {
+      gate: '/api/llm/stream',
+      file: 'src/composables/usePromptOptimizer.ts',
+      marker: 'llmBffApi.streamChat(',
+      bound: '用户**草稿**（可编辑输入）⇒ 超了用户自己能改短 ⇒ 登记不修',
+      retest: null,
+    },
+    {
+      gate: '/api/llm/stream',
+      file: 'src/features/ai-chat/aiChatStore.ts',
+      marker: "kind: 'chat'",
+      bound: '每条 message 各自送自己的内容（**用户可编辑**）⇒ 超了用户能删掉那条 ⇒ 登记不修',
+      retest: null,
+    },
+    {
+      gate: '/api/llm/stream',
+      file: 'src/features/ai-chat/aiChatStore.ts',
+      marker: "kind: 'optimize'",
+      bound: '「原问题 + 待检查的回答」⇒ 回答是模型生成的 ⇒ 用户能删掉那条回答 ⇒ 登记不修',
+      retest: null,
+    },
+    {
+      gate: '/api/llm/stream',
+      file: 'src/features/meetings/meetings-ai.ts',
+      marker: "kind: 'meeting_summary'",
+      bound: '§919 的 fitToStreamGate 按字节装配（转写取尾部 + 省略说明；system 过长时取头部）',
+      retest: 'stream-gate',
+    },
+    {
+      gate: '/api/llm/stream',
+      file: 'src/features/notes/note-search.ts',
+      marker: 'llmBffApi.streamChat(',
+      bound: '两条：① extractTagsWithAi 送 `content.slice(0, 4000)` 码元' +
+        '（UTF-8 单码点最多 4 字节 ⇒ 最坏 16000 字节，余量 50%）' +
+        '② searchNotesWithIntent 送「问题 + 20 条候选目录」⇒ 候选 summary **无上限**' +
+        '⇒ 可能超 ⇒ 失败时**优雅**降级为本地抽取式摘要',
+      retest: 'slice-cap',
+    },
+    {
+      gate: '/api/llm/stream',
+      file: 'src/localagent/llm-stream.ts',
+      marker: 'aiStreamRuntime.spawnChat(id, input, handlers)',
+      bound: 'local agent 的会话历史（模型/工具产生）⇒ 用户能新开对话绕开 ⇒ 登记不修。' +
+        '⚠ 它**绕过**了 llmBffApi 封装 ⇒ 出口仍在 llm-bff.ts（出口唯一性门盯着）',
+      retest: null,
+    },
+    // ── /api/embed（2 个调用点）──
+    {
+      gate: '/api/embed',
+      file: 'src/features/notes/notes-persist.ts',
+      marker: "http<{ embedding: number[]; model: string }>('/api/embed'",
+      bound: '§917 的 splitForEmbedding + capChunksByBytes ⇒ 每一块 ≤ 16000 字节',
+      retest: null,   // §917 的行为判据已钉
+    },
+    {
+      gate: '/api/embed',
+      file: 'src/features/notes/notes-search.ts',
+      marker: "http<{ embedding: number[]; model: string }>('/api/embed'",
+      bound: '只送**查询词**（用户输入）⇒ 登记不修',
+      retest: null,
+    },
+    // ── /api/email/send（1 个调用点）──
+    {
+      gate: '/api/email/send',
+      file: 'src/api/email.ts',
+      marker: "http('/api/email/send'",
+      bound: '主题由 §918 的 defaultReplySubject/defaultForwardSubject **按字节**裁到 ≤ 500 字节' +
+        '（原主题用户**不能编辑** ⇒ 派生输入 ⇒ 必须与服务端同口径）',
+      retest: 'email-subject',
+    },
+  ]
+
+  /**
+   * 剥掉注释（等长空白替换，**保持偏移**）。
+   *
+   * ⚠ 为什么必须剥（实测）：`src/api/llm-bff.ts:138` 的 JSDoc 里写着
+   *   `llmBffApi.streamChat({ messages, model }, ...)` ⇒ 不剥就是**假阳**。
+   * ⚠ 字符串字面量**保留**（只剥注释）⇒ 这样 marker 匹配与调用点扫描看的是同一份文本。
+   */
+  function stripComments(src: string): string {
+    let out = ''
+    let i = 0
+    let inBlock = false
+    let inStr = ''
+    while (i < src.length) {
+      const c = src[i]
+      const two = src.slice(i, i + 2)
+      if (inBlock) {
+        if (two === '*/') { out += '  '; i += 2; inBlock = false; continue }
+        out += c === '\n' ? '\n' : ' '
+        i++
+        continue
+      }
+      if (inStr) {
+        out += c
+        if (c === '\\') { out += src[i + 1] ?? ''; i += 2; continue }
+        if (c === inStr) inStr = ''
+        i++
+        continue
+      }
+      if (two === '/*') { out += '  '; i += 2; inBlock = true; continue }
+      if (two === '//') {
+        while (i < src.length && src[i] !== '\n') { out += ' '; i++ }
+        continue
+      }
+      if (c === '"' || c === "'" || c === '`') { inStr = c; out += c; i++; continue }
+      out += c
+      i++
+    }
+    return out
+  }
+
+  interface SiteHit { gate: string; file: string; window: string }
+
+  /** 扫出前端**真实**的调用点（按调用形态匹配 + 先剥注释）。 */
+  function scanSites(): SiteHit[] {
+    const out: SiteHit[] = []
+    const walk = (dir: string, rel: string) => {
+      for (const e of readdirSync(dir)) {
+        if (e === '__tests__' || e === 'node_modules') continue
+        const abs = join(dir, e)
+        const relPath = rel ? `${rel}/${e}` : e
+        if (statSync(abs).isDirectory()) { walk(abs, relPath); continue }
+        if (!/\.(ts|vue)$/.test(e) || /\.test\.(ts|mjs)$/.test(e)) continue
+        // ⚠ 剥注释后再扫：否则 JSDoc 里的示例代码会变成假阳。
+        const src = stripComments(readFileSync(abs, 'utf8'))
+        for (const g of GATES) {
+          for (const re of g.callForms) {
+            re.lastIndex = 0
+            let m: RegExpExecArray | null
+            while ((m = re.exec(src)) !== null) {
+              out.push({
+                gate: g.endpoint,
+                file: relPath,
+                window: src.slice(Math.max(0, m.index - 600), m.index + 600),
+              })
+            }
+          }
+        }
+      }
+    }
+    walk(FRONTEND_ROOT, '')
+    return out
+  }
+
+  /** 某个闸的**真正出口**数（裸 fetch / http(…端点)）。 */
+  function countExits(g: Gate): number {
+    let n = 0
+    const walk = (dir: string) => {
+      for (const e of readdirSync(dir)) {
+        if (e === '__tests__' || e === 'node_modules') continue
+        const abs = join(dir, e)
+        if (statSync(abs).isDirectory()) { walk(abs); continue }
+        if (!/\.(ts|vue)$/.test(e) || /\.test\.(ts|mjs)$/.test(e)) continue
+        const src = stripComments(readFileSync(abs, 'utf8'))
+        for (const re of g.exitForms) {
+          re.lastIndex = 0
+          while (re.exec(src) !== null) n++
+        }
+      }
+    }
+    walk(FRONTEND_ROOT)
+    return n
+  }
+
+  it('★ 每一个真实调用点都必须在登记簿里（新增调用点必须登记）', () => {
+    const sites = scanSites()
+    assert.ok(sites.length > 0, '量具失效：一个调用点都没扫到 ⇒ 扫描正则坏了')
+    // ⚠★ **数量**也要钉：只断言「每个都登记了」不够 ——
+    //   「一个都没扫到」和「全都登记了」在结果上长得一样（都绿）。
+    //   ⇒ 扫到的个数必须**恰好**等于登记簿的行数：多一个 = 有人加了新调用点没登记，
+    //     少一个 = 扫描口径漏了（量具坏了）或有人删了调用点没改登记簿。
+    assert.equal(sites.length, SITES.length,
+      `扫到 ${sites.length} 个调用点，登记簿有 ${SITES.length} 行 ⇒ ` +
+      `两者必须**恰好**相等（多 = 有未登记的新调用点；少 = 扫描口径漏了或调用点被删）`)
+    for (const s of sites) {
+      const hits = SITES.filter((r) => r.gate === s.gate && r.file === s.file && s.window.includes(r.marker))
+      assert.equal(hits.length, 1,
+        `${s.file} 的 ${s.gate} 有一个调用点，但登记簿里匹配到 ${hits.length} 行` +
+        `（要求恰好 1 行）⇒ 新增调用点必须先在这里登记：它送出的内容怎么被限住？` +
+        `⚠ 本表只覆盖表里列出的调用形态（裸 fetch 的相对路径写法扫不到）。`)
+    }
+  })
+
+  it('★ 登记簿的每一行都还找得到它的调用点（不许留过期行）', () => {
+    const sites = scanSites()
+    for (const r of SITES) {
+      const hit = sites.some((s) => s.gate === r.gate && s.file === r.file && s.window.includes(r.marker))
+      assert.ok(hit,
+        `登记项 ${r.gate} / ${r.file} / ${r.marker} 找不到对应的调用点了 ⇒ 它已失效，` +
+        `请更新或删掉这一行（留着会让「登记簿」变成一张不反映现实的清单）`)
+    }
+  })
+
+  it('★ 每个闸的真正出口数必须与登记一致（有人绕过封装裸写 fetch 就会红）', () => {
+    for (const g of GATES) {
+      const n = countExits(g)
+      assert.equal(n, g.exitCount,
+        `${g.endpoint} 的真正出口数是 ${n}，登记的是 ${g.exitCount} ⇒ ` +
+        `要么有人绕过封装裸写了请求（必须登记 + 限住），要么某个出口被删了（登记要改）`)
+    }
+  })
+
+  it('★ 重测：流式会议纪要的两条 message 各自必须过字节闸（§919 的本体）', async () => {
+    const mod = await loadBundle(
+      join(FRONTEND_ROOT, 'src/features/meetings/meetings-ai.ts'), 's919-stream-gate')
+    const GATE = 32000
+    const bytes = (s: string) => Buffer.byteLength(s, 'utf8')
+    const SYSTEM = '你是会议记录助手。请用中文输出结构化会议纪要。'
+
+    // ① 低于闸 ⇒ **逐字不变**（短会议行为零变化）。
+    const short = '会议讨论了季度预算。'.repeat(100)
+    const ok = mod.fitToStreamGate(SYSTEM, short)
+    assert.equal(ok.transcript, short, '低于闸时转写被改了 ⇒ 短会议的产物形状变了')
+    assert.equal(ok.system, SYSTEM, '低于闸时 system 被改了 ⇒ 短会议的指令变了')
+
+    // ② ★ 单位陷阱：**字符数不超闸、字节数超闸**的转写必须被裁。
+    //    11000 个中文字 = 33000 字节（字符数 11000 « 32000）⇒ 必须被裁。
+    const trap = '会议讨论季度预算与交付里程碑排期。'.repeat(1000)
+    assert.ok(trap.length < GATE, '前置失效：这条语料的字符数本来就该低于闸')
+    assert.ok(bytes(trap) > GATE, '前置失效：这条语料的字节数本来就该超过闸')
+    const fitted = mod.fitToStreamGate(SYSTEM, trap)
+    assert.ok(bytes(fitted.transcript) <= GATE,
+      `裁完还是 ${bytes(fitted.transcript)} 字节 > 闸 ${GATE} ⇒ 这条请求**必然 400**`)
+    assert.ok(bytes(fitted.system) <= GATE,
+      `裁完 system 还是 ${bytes(fitted.system)} 字节 > 闸 ${GATE} ⇒ 逐条判闸 ⇒ 必然 400`)
+    assert.ok(fitted.system.includes('尾部'),
+      '裁了转写却没告诉模型内容被截断 ⇒ 模型会把片段当成整场会议 ⇒ 会编造不存在的内容')
+
+    // ③ ★ 保留**尾部**：会议结论/行动项在后段 ⇒ 裁头会丢它们。
+    assert.ok(fitted.transcript.endsWith('排期。'),
+      '裁剪没有保留尾部 ⇒ 会议结论/行动项（§66.4：摘要链里时间点的唯一来源）会被丢掉')
+
+    // ④ 极端：转写巨大 + system 也巨大 ⇒ 两条仍各自过闸。
+    const huge = '甲'.repeat(200000)
+    const bigSystem = '指令。'.repeat(20000)
+    const both = mod.fitToStreamGate(bigSystem, huge)
+    assert.ok(bytes(both.transcript) <= GATE && bytes(both.system) <= GATE,
+      `system 与转写都超长时裁不住：system ${bytes(both.system)} / 转写 ${bytes(both.transcript)} 字节`)
+  })
+
+  it('★ 重测：邮件翻译每块的提示词必须过字节闸', async () => {
+    const te = await loadBundle(
+      join(FRONTEND_ROOT, 'src/features/email/translate-email.ts'), 's919-te')
+    const GATE = 32000
+    // ⚠ 语料要覆盖**密度**与**结构**两种维度：
+    //   ① 纯中文（3 字节/字）② emoji（4 字节/字）③ ASCII ④ HTML/URL 密集
+    //   ⇒ 密度决定同一块字符数下的字节数，结构决定占位符保护是缩还是涨。
+    const corpora: [string, string][] = [
+      ['纯中文', '会议纪要讨论季度预算与交付里程碑排期以及客户跟进安排事项与负责人确认。'.repeat(400)],
+      ['emoji 密集', '会议纪要🔥讨论季度预算🚀与交付里程碑排期📌以及客户跟进安排✅'.repeat(400)],
+      ['ASCII', 'Meeting notes discuss quarterly budget and delivery milestones and client follow-up. '.repeat(400)],
+      ['HTML/URL 密集', '<p>见 <a href="https://example.com/a/b/c?x=1">链接</a> 金额 1234.56 邮箱 a.b@c.de</p>\n\n'.repeat(200)],
+    ]
+    let worst = 0
+    for (const [name, body] of corpora) {
+      const chunks = te.splitForTranslation(body)
+      assert.ok(chunks.length > 0, `${name}：切出 0 块`)
+      for (const c of chunks) {
+        const prompt = te.buildTranslatePrompt(te.protectSegments(c).text, 'en')
+        const b = Buffer.byteLength(prompt, 'utf8')
+        worst = Math.max(worst, b)
+        assert.ok(b <= GATE,
+          `${name}：有一块的提示词 ${b} 字节 > 闸 ${GATE} 字节 ⇒ 这一块**必然 400** ⇒ ` +
+          '翻译会**静默**回落成原文 ⇒ 用户看到一封半中半英的邮件')
+      }
+    }
+    assert.ok(worst > 0, '量具失效：一个字节都没量到')
+  })
+
+  it('★ 重测：note-search 的码元上限换算成字节后必须离闸有余量', () => {
+    // ⚠ 这条是**源码数值 + 算术**：从源码读出 `content.slice(0, N)` 的 N，
+    //   再用「UTF-8 单码点最多 4 字节」换算成最坏字节数，与闸比。
+    //   ⇒ 它能抓住「有人把 4000 改成 60000」（⇒ 最坏 240000 字节 ⇒ 必然 400），
+    //   而纯算术断言（4000×4 ≤ 16000）是**恒真式**，抓不住任何东西。
+    const src = readFileSync(join(FRONTEND_ROOT, 'src/features/notes/note-search.ts'), 'utf8')
+    const m = /content\.slice\(0,\s*(\d+)\)/.exec(stripComments(src))
+    assert.ok(m, '量具失效：note-search.ts 里找不到 `content.slice(0, N)` ⇒ 写法变了，判据要跟上')
+    const cap = Number(m[1])
+    const worstBytes = cap * 4          // UTF-8 单码点最多 4 字节（星平面字符）
+    const GATE = 32000
+    assert.ok(worstBytes <= GATE * 0.75,
+      `note-search 的 ${cap} 码元上限 ⇒ 最坏 ${worstBytes} 字节，` +
+      `离 ${GATE} 字节的闸余量不足 25% ⇒ 容易被吃光`)
+  })
+
+  it('★ 重测：邮件主题必须按字节裁到闸内（§918）', async () => {
+    const cm = await loadBundle(
+      join(FRONTEND_ROOT, 'src/features/email/compose-mode.ts'), 's919-subject')
+    const GATE = 500
+    // ⚠ 语料必须是中文：500 字节 ≈ 166 中文字 ⇒ 300 字的中文主题必然超闸。
+    const longSubject = '关于季度预算与交付里程碑排期以及客户跟进安排事项与负责人确认的会议纪要'.repeat(6)
+    for (const [name, fn] of [
+      ['回复', cm.defaultReplySubject],
+      ['转发', cm.defaultForwardSubject],
+    ] as [string, (s: string) => string][]) {
+      const got = fn(longSubject)
+      const b = Buffer.byteLength(got, 'utf8')
+      assert.ok(b <= GATE, `${name}主题 ${b} 字节 > 闸 ${GATE} 字节 ⇒ 这封信永远发不出去`)
+      assert.ok(/^(Re|Fwd):/.test(got), `${name}主题丢了前缀：${got.slice(0, 20)}`)
+    }
+  })
+
+  it('★ 负控 ①：登记簿少一行 ⇒ 「每个调用点都必须登记」当场转红', () => {
+    const sites = scanSites()
+    const shrunk = SITES.slice(1)   // 故意删掉第一行
+    const unregistered = sites.filter(
+      (s) => !shrunk.some((r) => r.gate === s.gate && r.file === s.file && s.window.includes(r.marker)))
+    assert.ok(unregistered.length > 0,
+      '负控本该抓出未登记的调用点却没抓到 ⇒ 上面那条判据没在读登记簿')
+  })
+
+  it('★ 负控 ②：把一行的 marker 改错 ⇒ 该调用点立刻变成「未登记」', () => {
+    // ⚠ 这条证明「marker 匹配是**精确**的」—— 若匹配是模糊的（文件级），
+    //   把 marker 写错也照样能匹配上 ⇒ 这条负控就抓不到东西。
+    const sites = scanSites()
+    const broken = SITES.map((r, i) => (i === 0 ? { ...r, marker: 'kind: NOT_EXIST_ANYWHERE' } : r))
+    const unregistered = sites.filter(
+      (s) => !broken.some((r) => r.gate === s.gate && r.file === s.file && s.window.includes(r.marker)))
+    assert.ok(unregistered.length > 0,
+      '把 marker 改错居然还匹配得上 ⇒ marker 匹配是模糊的（文件级）⇒ 登记簿分不清同文件的多个调用点')
   })
 })
