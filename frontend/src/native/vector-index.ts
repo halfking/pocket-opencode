@@ -199,6 +199,7 @@ export class VectorIndex {
       if (span.count === normalized.length) {
         // 段数没变 ⇒ 就地覆盖（O(段数×DIM)，不重建）
         normalized.forEach((v, i) => this.matrix.set(v.subarray(0, DIM), (span.start + i) * DIM))
+        this.markPopulated()
         return
       }
       // ⚠⚠ §898：段数变了（正文长度跨过了一个段边界）⇒ 行的连续布局不再成立。
@@ -236,6 +237,28 @@ export class VectorIndex {
     if (this.ids.length > this.capacity) this.grow()
     normalized.forEach((v, i) => this.matrix.set(v.subarray(0, DIM), (start + i) * DIM))
     this.noteSpans.set(noteId, { start, count: normalized.length })
+    this.markPopulated()
+  }
+
+  /**
+   * ⚠⚠ §903/D72：内存索引**只要真的被填过**，就算「已装载」。
+   *
+   * 修之前的形状：`loaded` 只在 `load()` 成功时置 true，而 `prepare()` 拿
+   * `!this.loaded` 当闸 ⇒ 一旦 `load()` 抛错（比如 §902 那条被吞掉的 ALTER 失败
+   * 让 `SELECT chunks` 报 `no such column`），**整场会话的语义检索就死了**：
+   *   向量**已经落库**、`add()` 也确实把新向量塞进了 `ids`/`matrix`/`noteSpans`，
+   *   但 `search()` / `searchAsync()` 因为 `loaded === false` 恒返回空
+   *   ⇒ 用户看到的是「搜不到」，界面上没有任何错误（`lobster-init.ts:87` 只 warn）。
+   *   实测（Node 22，复刻 §902 的失败形态）：load 抛 → add 一条 → 搜索恒 0 命中。
+   *
+   * ⚠ 为什么 `!this.loaded` 这个闸本来就没价值：`prepare()` 的**下一句**已经是
+   *   `this.ids.length === 0` ⇒ 「索引是空的」本来就挡住了空索引。
+   *   `loaded` 只在「有内容却 loaded=false」时才有话说，而那正是上面那个坏状态。
+   *   ⇒ 这里保留 `loaded` 字段（它仍记录「是否装载过」），
+   *     但凡**真的写进内存索引**就地置位，不让一个启动期的失败锁死整场会话。
+   */
+  private markPopulated(): void {
+    this.loaded = true
   }
 
   /** 容量翻倍并搬一次（摊还后每次 add 的拷贝是常数级）。 */

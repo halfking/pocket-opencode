@@ -1268,3 +1268,88 @@ describe('§902 · D71：向量表加列后，旧库语义不变', () => {
       'schema.ts 的 DDL 里没有 chunk_hashes 列 ⇒ 新库与升级后的旧库形状不同')
   })
 })
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * §903 · D72：`load()` 失败一次 ⇒ **整场会话的语义检索静默失效**
+ * ═══════════════════════════════════════════════════════════════════════════
+ * §902 补了「迁移把旧库升级成什么样」的保障，但没管**迁移失败之后**会怎样。
+ * 实测（Node 22，生产 `VectorIndex` + 真 node:sqlite）：
+ *
+ *   启动时 `lobster-init.ts:87` 调 `vectorIndex.load()`，失败只 `console.warn`；
+ *   而 `prepare()` 拿 `!this.loaded` 当闸，`add()` 又从不置 `loaded`
+ *   ⇒ 向量**已经落库**、`add()` 也确实把新向量写进了 `ids`/`matrix`/`noteSpans`，
+ *     但 `search()` / `searchAsync()` 恒返回空
+ *   ⇒ 用户看到的是「搜不到」，界面上没有任何错误，日志里只有一行 warn。
+ *
+ * ⚠ **触发条件的口径**（这一条是量出来的，不是猜的）：
+ *   先试过「一行坏数据让 load() 抛错」，**不成立** —— SQLite 是动态类型，
+ *   BLOB 列里塞 TEXT 时 `new Float32Array("hello")` 给出**长度 0**（不抛），
+ *   塞 number 时给出等长的**全零**数组（也不抛）⇒ 两种都被 `if (off + DIM > usable) break`
+ *   静默跳过。⇒ `load()` 现实里只有 **DB 级错误**（库忙 / 未迁移 / 密钥错）才会抛。
+ *   ⚠ 那个 DB 级错误本身 ⛔ 未在真机复现，本节量的是**它一旦发生后的后果**。
+ */
+describe('§903 · D72：load() 失败一次后，新向量必须仍然可被检索到', () => {
+  /**
+   * 真 SQLite + 在 `all()` 上注入**一次** DB 级失败（复刻「启动那一刻库忙」）。
+   * ⚠ 只注入 `all()` 不注入 `run()`：未迁移的表上 `add()` 的 INSERT 也会抛，
+   *   那是另一条（且更彻底）的失效路径；本节要量的是
+   *   「**写能写、读索引读不出来**」这个更隐蔽的形态。
+   */
+  function makeFlakyLoadDb() {
+    const inner = makeVectorDb()
+    let fail = true
+    return {
+      run: (sql, params = []) => inner.run(sql, params),
+      all: async (sql, params = []) => {
+        if (fail) { fail = false; throw new Error('database is locked (SQLITE_BUSY)') }
+        return inner.all(sql, params)
+      },
+    }
+  }
+
+  it('★★★ 前置闸：确认夹具真能让 load() 抛错（否则下面两条全是恒真）', async () => {
+    const db = makeFlakyLoadDb()
+    await assert.rejects(() => new VectorIndex(db).load(), /locked/,
+      '夹具没能让 load() 抛错 ⇒ 下面的判据会在没有失效的状态下空转')
+  })
+
+  it('★★★ load() 失败后 add() 的新向量，search / searchAsync 都必须能命中', async () => {
+    const db = makeFlakyLoadDb()
+    await seedNote(db, 'note-1')
+    const index = new VectorIndex(db)
+    // 启动路径：lobster-init.ts:87 —— 失败只 warn，App 照常 ready
+    await assert.rejects(() => index.load(), /locked/)
+    await index.add('note-1', vec(1, 0), 'm')
+
+    const sync = index.search(queryVec(1, 0), 5)
+    const async = await index.searchAsync(queryVec(1, 0), 5)
+    assert.equal(sync.length, 1,
+      `同步 search 恒 0 命中（内存索引里明明有 note-1）⇒ add() 没把索引标记为已装载`)
+    assert.equal(async.length, 1, `异步 searchAsync 恒 0 命中（生产走的是它）`)
+    assert.ok(Math.abs(sync[0].score - 1) < 1e-6, `score=${sync[0].score}，应≈1`)
+  })
+
+  it('★★★ 坏的是内存索引、不是数据：换个实例重新 load() 就必须能搜到', async () => {
+    const db = makeFlakyLoadDb()
+    await seedNote(db, 'note-1')
+    const first = new VectorIndex(db)
+    await assert.rejects(() => first.load(), /locked/)
+    await first.add('note-1', vec(1, 0), 'm')
+
+    // 换一个实例 = 模拟「下次冷启动」，此时 all() 已经不失败了
+    const next = new VectorIndex(db)
+    await next.load()
+    const hits = next.search(queryVec(1, 0), 5)
+    assert.equal(hits.length, 1,
+      '重新 load() 后仍搜不到 ⇒ 向量根本没落库（问题在落库侧，不在内存索引）')
+  })
+
+  // ⚠⚠ 自曝：本节第一版还写了第 4 条「未装载且未 add 的索引 search 必须返回 0」
+  //   （想当「别把启动期的空索引守卫弄掉」的负控）。**已删** —— 它是恒真门：
+  //   实测变异 M60-V2 把 `prepare()` 里的 `!this.loaded || this.ids.length === 0`
+  //   **整个删掉**，这条判据**照样全绿**（54/54）⇒ 因为 n=0 时 for 循环本来就空转。
+  //   ⇒ 按 §891「不拿恒真门充数」删掉，不补。
+  //   ⭐ 顺带一条读数：那两个守卫**当前是冗余的** —— 删掉它们不改变任何行为。
+  //     本节的修复**没有去动它们**（它们还表达着「没装载就不作答」的意图，
+  //     将来 n 的定义一变就可能有意义），但如实登记「今天删了也没事」。
+})
