@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""§935 … §947：把各批变异**依次**跑一遍。
+"""§935 … §948：把各批变异**依次**跑一遍。
 
 ⚠ 为什么要「依次」而不是「并行」：s919 与 s920 都会改
    `frontend/src/api/meetings.ts` ⇒ 并行会互相踩（还原时会把对方的改动冲掉）⇒
@@ -20,7 +20,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
-BATCHES = ['s919.py', 's920.py', 's921.py', 's922.py', 's936.py', 's937.py', 's938.py', 's939.py', 's940.py', 's941.py', 's942.py', 's943.py', 's944.py', 's945.py', 's946.py', 's947.py']
+BATCHES = ['s919.py', 's920.py', 's921.py', 's922.py', 's936.py', 's937.py', 's938.py', 's939.py', 's940.py', 's941.py', 's942.py', 's943.py', 's944.py', 's945.py', 's946.py', 's947.py', 's948.py']
 
 failed = []
 refused = []
