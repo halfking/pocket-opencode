@@ -81,12 +81,49 @@ const (
 	s943GuardUnqualified s943Guard = "unqualified"
 )
 
+// s943Reach 是「撞号**可达性**」的口径（人工定性，§944 新增）。
+//
+// ⚠ 这一维回答的是「**id 能不能被外部指定**」：
+//
+//	它是 §944 收口 §943 那 9 处待定性项时的**关键**——
+//	同样是「没有归属守卫」，**id 由客户端自选**（可达 ⇒ 必须修）
+//	与**id 由服务端派生**（撞号要先知道对方的 id ⇒ 登记即可）是两件事。
+type s943Reach string
+
+const (
+	// s943ReachClientChosen = id 由**客户端/请求体**提供 ⇒ 撞号可达。
+	s943ReachClientChosen s943Reach = "client-chosen"
+	// s943ReachServerDerived = id 由**服务端派生**（随机/哈希/验证器）
+	// ⇒ 撞号需要先知道对方的 id。
+	s943ReachServerDerived s943Reach = "server-derived"
+	// s943ReachDead = 该写入路径在仓内**没有生产调用方**（死能力）⇒ 不可达。
+	//
+	// ⚠ 只认**仓内**的调用方；移动端在仓外 ⇒ 这一维**不等于**「线上没人用」
+	//   ⇒ 但它足以说明「这条路径现在没人踩」。
+	s943ReachDead s943Reach = "dead-capability"
+)
+
+// s943Fix 是「处置」的口径（人工定性，§944 新增）。
+type s943Fix string
+
+const (
+	// s943FixFixed = 已补归属守卫（§939 / §943 / §944）。
+	s943FixFixed s943Fix = "fixed"
+	// s943FixQualified = 已定性为**不是洞**（写入前守卫 / id 服务端派生 /
+	// 死能力）⇒ 登记，不代拍。
+	s943FixQualified s943Fix = "qualified"
+)
+
 // s943Entry 是一处候选点的台账条目。
 type s943Entry struct {
 	// Table 是目标表名。
 	Table string
 	// Guard 是守卫形态（人工定性）。
 	Guard s943Guard
+	// Reach 是撞号可达性（人工定性，§944 新增）。
+	Reach s943Reach
+	// Fix 是处置口径（人工定性，§944 新增）。
+	Fix s943Fix
 	// Note 是定性的理由（一行）。
 	Note string
 }
@@ -96,66 +133,93 @@ type s943Entry struct {
 // ⚠ 条数是**绝对值**（12）⇒ 任何增删都必须回来改这张表 ⇒ ⇒⇒⇒ 「新增一处」
 // 必然触发一次重新定性。
 //
-// ⚠ 三处「本节已修」（带守卫）：
-
-//	notes               §939 补的 `WHERE notes.user_id = $2`（QueryRow 读得到拒绝）
-//	meetings            §943 补的 owner + workspace 守卫（同上）
-//	meeting_tombstones  §943 补的 owner + workspace 守卫（同上）
+// ⚠⚠ §944：这张表现在**把 §943 留下的 9 处待定性项全部收口**了
+// （两维新口径：Reach = 撞号可达性、Fix = 处置），并因此多出一条
+// **机器可判**的不变量：
 //
-// ⚠ 其余 9 处**不在会议/录音链上**，本节**不代拍**（简报第 167 条 ②）：
-
-// biometric_credentials  改的是**生物认证公钥** ⇒ 后果最重（认证链）
-// asset_mirrors          SET 里带 workspace_id ⇒ 撞 id 会**把资产密文搬走**
-// devices                SET 里带 workspace_id ⇒ 撞 id 会**把设备行搬走**
-// emails / email_vacation_replies / notification_rules /
-// opencode_sessions / scheduled_task_tombstones
+//	「**id 由客户端自选** ⇒ 必须有归属守卫（sql-where 或 precheck）」
+//
+// ⇒ ⇒⇒ 将来有人新写一处「客户端自选 id + 裸 id DO UPDATE」⇒ 这道门立刻红
+// ⇒ ⇒⇒⇒ 而不是因为「忘了登记」而溜过去。
+//
+// ⚠ 已修（带守卫）的那几处：
+//
+//	notes                §939 补的 `WHERE notes.user_id = $2`（QueryRow 读得到拒绝）
+//	meetings             §943 补的 owner + workspace 守卫（同上）
+//	meeting_tombstones   §943 补的 owner + workspace 守卫（同上）
+//	biometric_credentials §944 D1 补的 user_id 守卫（后果最重：认证链接管）
+//	asset_mirrors         §944 D2 补的 workspace_id 守卫（密文被搬走 + 覆盖）
+//	devices               §944 D3 补的 user_id 守卫（设备行被搬走 + push_token 被换）
+//	notification_rules    §944 D4 补的 workspace_id 守卫（通知规则被改写）
 var s943Registry = map[string]s943Entry{
 	"backend/internal/auth/biometric.go|biometric_credentials": {
-		Table: "biometric_credentials", Guard: s943GuardNone,
-		Note: "SET 改的是 public_key/counter ⇒ 撞 id 会改掉别人的**认证公钥**（后果最重）；id 来源待查",
+		Table: "biometric_credentials", Guard: s943GuardSQLWhere,
+		Reach: s943ReachClientChosen, Fix: s943FixFixed,
+		Note: "§944 D1 补的 user_id 守卫（QueryRow 读得到拒绝）⇒ 撞 id 不再覆盖别人的**认证公钥**" +
+			"（不覆盖 ⇒ 登录链按 id 取行时验的仍是原主人的公钥 ⇒ 不能顶替身份）；" +
+			"id 来源：P0 stub 路径**完全由请求体给**、WebAuthn 路径由 attestation 派生",
 	},
 	"backend/internal/email/store.go|email_vacation_replies": {
-		Table: "email_vacation_replies", Guard: s943GuardNone,
-		Note: "休假期间的自动回复；SET 不含归属 ⇒ 撞 id 会改掉别人的那一条",
+		Table: "email_vacation_replies", Guard: s943GuardPrecheck,
+		Reach: s943ReachServerDerived, Fix: s943FixQualified,
+		Note: "守卫在**写入前的 SELECT**（校验已存在那行绑的 account 在 scope 内 ⇒ 不成立即 ErrNotFound）" +
+			"⇒ SQL 里没有 WHERE；id 由服务端生成（randomID(\"vac\")）",
 	},
 	"backend/internal/email/store.go|emails": {
 		Table: "emails", Guard: s943GuardNone,
-		Note: "只刷新 snippet/importance/action_reason ⇒ 不搬归属，但撞 id 会改掉别人的邮件摘要",
+		Reach: s943ReachServerDerived, Fix: s943FixQualified,
+		Note: "id 服务端派生（em-pop3-<account>-<uidl>）⇒ 撞号要先知道对方 account + uidl；" +
+			"SET 不含归属列 ⇒ 后果限于 snippet/importance/action_reason",
 	},
 	"backend/internal/identity/store.go|devices": {
-		Table: "devices", Guard: s943GuardNone,
-		Note: "SET 里**有** workspace_id ⇒ 撞 id 会把别人的设备行**搬到攻击者租户**；id 由**请求体**提供 ⇒ 可猜",
+		Table: "devices", Guard: s943GuardSQLWhere,
+		Reach: s943ReachClientChosen, Fix: s943FixFixed,
+		Note: "§944 D3 补的 user_id 守卫（QueryRow 读得到拒绝）⇒ 撞 id 不再把别人的设备行搬走；" +
+			"★ 守卫**只**断言 user_id（不断言 workspace_id）⇒「设备跟随主人换租户」的既有语义不被误伤",
 	},
 	"backend/internal/lobster/store.go|asset_mirrors": {
-		Table: "asset_mirrors", Guard: s943GuardNone,
-		Note: "SET 里**有** workspace_id 且带 cipher_blob ⇒ 撞 id 会把别人的**资产密文**搬走",
+		Table: "asset_mirrors", Guard: s943GuardSQLWhere,
+		Reach: s943ReachClientChosen, Fix: s943FixFixed,
+		Note: "§944 D2 补的 workspace_id 守卫（QueryRow 读得到拒绝）⇒ 撞 id 不再把别人的 cipher_blob " +
+			"搬进自己的租户并覆盖；id 由请求体 pushes[].id 提供",
 	},
 	"backend/internal/meeting/pg_store.go|meeting_tombstones": {
 		Table: "meeting_tombstones", Guard: s943GuardSQLWhere,
+		Reach: s943ReachClientChosen, Fix: s943FixFixed,
 		Note: "§943 D3 补的 owner + workspace 守卫（QueryRow 读得到拒绝）⇒ 不再搬走别人的墓碑",
 	},
 	"backend/internal/meeting/pg_store.go|meetings": {
 		Table: "meetings", Guard: s943GuardSQLWhere,
+		Reach: s943ReachClientChosen, Fix: s943FixFixed,
 		Note: "§943 D1 补的 owner + workspace 守卫（QueryRow 读得到拒绝）⇒ 撞号换号，绝不覆盖",
 	},
 	"backend/internal/notes/store.go|notes": {
 		Table: "notes", Guard: s943GuardSQLWhere,
+		Reach: s943ReachClientChosen, Fix: s943FixFixed,
 		Note: "§939 补的 `WHERE notes.user_id = $2`（QueryRow 读得到拒绝）",
 	},
 	"backend/internal/notifycenter/service.go|notification_rules": {
-		Table: "notification_rules", Guard: s943GuardNone,
-		Note: "改的是别人的通知规则（渠道/优先级/静默时段）",
+		Table: "notification_rules", Guard: s943GuardSQLWhere,
+		Reach: s943ReachClientChosen, Fix: s943FixFixed,
+		Note: "§944 D4 补的 workspace_id 守卫（QueryRow 读得到拒绝）⇒ 撞 id 不再改写别人的通知规则；" +
+			"id 由请求体提供",
 	},
 	"backend/internal/opencode/store.go|opencode_sessions": {
 		Table: "opencode_sessions", Guard: s943GuardNone,
-		Note: "改的是别人的会话统计（status/message_count/…）",
+		Reach: s943ReachDead, Fix: s943FixQualified,
+		Note: "SaveSession 在仓内**没有生产调用方**（只有测试引用）⇒ 死能力；" +
+			"且本表**没有归属列** ⇒ 将来接线时必须把归属一起设计" +
+			"（⚠ 移动端在仓外 ⇒ 这一维不等于「线上没人用」）",
 	},
 	"backend/internal/scheduledtask/store.go|scheduled_task_tombstones": {
-		Table: "scheduled_task_tombstones", Guard: s943GuardNone,
-		Note: "只改 deleted_at ⇒ 撞 id 会把别人的墓碑时间窗改掉",
+		Table: "scheduled_task_tombstones", Guard: s943GuardPrecheck,
+		Reach: s943ReachServerDerived, Fix: s943FixQualified,
+		Note: "写墓碑**之前**那句 DELETE 已按 user_id + workspace_id 限定（RowsAffected==0 即 ErrTaskNotFound " +
+			"⇒ 走不到插入）⇒ 撞不到别人的行；SQL 里没有 WHERE",
 	},
 	"backend/internal/task/store.go|tasks": {
 		Table: "tasks", Guard: s943GuardPrecheck,
+		Reach: s943ReachClientChosen, Fix: s943FixQualified,
 		Note: "守卫写在**写入前的 SELECT**（跨 workspace 同 ID ⇒ 拒绝写入并保留原行）⇒ SQL 里没有 WHERE",
 	},
 }
@@ -262,6 +326,13 @@ func s943ScanGo(t *testing.T, root, rel string) []s943Candidate {
 //	③ 台账里声明为「SQL 谓词守卫」的条目 ⇒ 那一条**必须**真的有 WHERE
 //	   （这一维是机械可判的；其余形态**不判** ⇒ 避免假阴性）。
 //
+// ⚠⚠ §944 新增第四件事：
+//
+//	④ 「**id 由客户端自选** ⇒ 必须有归属守卫」这条**蕴含**
+//	   （Reach = client-chosen 的条目，Guard 必须是 sql-where 或 precheck）。
+//	   ⇒ 这是 §943 那 9 处「待定性」的**收口**：定性结果落进台账两维，
+//	   而「可达 + 无守卫」这个组合**再也过不去**。
+//
 // ⚠ 失败信息要说清「该怎么办」：这张表就是**待定性的清单**，
 //
 //	新增一处 ⇒ 请先定性（可达性 / 后果），再改这张表。
@@ -313,6 +384,31 @@ func TestS943BareIDConflictCandidateSetIsPinned(t *testing.T) {
 		if entry.Guard == s943GuardSQLWhere && !c.HasWhereClause {
 			t.Errorf("%s 在台账里声明为「SQL 谓词守卫」，但实际 DO UPDATE 后面**没有 WHERE** ⇒ "+
 				"要么守卫被删了，要么台账过期（台账过期会误导后来人）", c.Key)
+		}
+	}
+
+	// ④ §944 的**新不变量**：「id 由客户端自选 ⇒ 必须有归属守卫」。
+	//
+	//	★ 这条把 §943 留下的 9 处待定性项**收口**成一件**机器可判**的事：
+	//	「撞号可达」（id 由请求体给）+「没有归属守卫」⇒ 只能是两种结果：
+	//	**要么**补守卫，**要么**把定性改成「不可达」（id 服务端派生 / 死能力）
+	//	⇒ ⇒⇒ 将来有人新写一处「客户端自选 id + 裸 id DO UPDATE」⇒ 这道门立刻红
+	//	⇒ ⇒⇒⇒ 而不是因为「忘了登记」而溜过去。
+	//
+	//	⚠ 为什么不是「全部都要有守卫」：
+	//	`emails`（id 服务端派生）与 `opencode_sessions`（死能力）确实没有守卫，
+	//	但它们**撞不到** ⇒ ⇒⇒ 把它们也要求成「必须有守卫」只会逼着人写
+	//	**没有意义的守卫**（那反而会让真守卫被淹没）。
+	//	⇒ ⇒⇒ 所以判据断言的是「**可达 ⇒ 必须有守卫**」这条**蕴含**。
+	for _, c := range found {
+		entry := s943Registry[c.Key]
+		if entry.Reach != s943ReachClientChosen {
+			continue
+		}
+		if entry.Guard != s943GuardSQLWhere && entry.Guard != s943GuardPrecheck {
+			t.Errorf("%s 的 id 由**客户端自选**（撞号可达）却没有归属守卫（台账写的是 %q）⇒ "+
+				"要么补守卫，要么把 Reach 改成「不可达」并说清理由（§944 的通用口径）",
+				c.Key, entry.Guard)
 		}
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -88,7 +89,29 @@ var ErrBiometricNotConfigured = errors.New("auth: biometric store not configured
 // ErrBiometricNotFound 表示找不到指定 credential_id。
 var ErrBiometricNotFound = errors.New("auth: biometric credential not found")
 
+// ErrBiometricCredentialScopeConflict 表示 credential_id 已属于**别的用户**。
+//
+// ⚠⚠ §944 D1：这条错误的**存在**才是那道归属守卫能被读到的原因
+// （守卫不成立时 PG **不报错**，只是**不返回行**⇒ ⇒ ⇒ 用 Exec 的话这道守卫
+// 就是**哑弹**——存在、但无声 ⇒ 等于没有）。
+//
+// 后果为什么最重：登录链按 **credential_id 取行**（`Get` 不按用户过滤——登录时
+// 还不知道是谁）⇒ ⇒ ⇒ 撞 id 覆盖掉**别人那行**的 public_key 之后，
+// `FinishLogin(..., storedCred.PublicKey, ...)` 会拿**被覆盖后的公钥**验签 ⇒
+// ⇒ ⇒ 而签发的 token 用的是 `storedCred.UserID` ⇒ ⇒⇒⇒ 那一行仍属于原主人
+// ⇒ ⇒⇒⇒ **攻击者用自己的私钥就能顶替原主人登录**。
+var ErrBiometricCredentialScopeConflict = errors.New("auth: biometric credential belongs to another user")
+
 // Register 写入一条新凭证。同 credential_id 已存在则覆盖（升级场景）。
+//
+// ⚠⚠ §944 D1：**同一个用户**重注册（升级场景）仍然覆盖；
+// 但 credential_id 已属于**别的用户**时 ⇒ ⇒⇒ **绝不覆盖**，而是返回
+// ErrBiometricCredentialScopeConflict（守卫不成立 ⇒ 一行都不改）。
+//
+//	为什么这条必须这么严：登录链按 **credential_id** 取行（`Get` 不按用户
+//	过滤——登录那一刻还不知道是谁）⇒ ⇒ ⇒ 撞 id 换掉那一行的 public_key
+//	之后，验签用的就是**被换掉的公钥**，而签发的 token 用的是那一行的
+//	user_id ⇒ ⇒⇒⇒ ⇒ 攻击者用自己的私钥就能以原主人的身份登录。
 func (s *BiometricStore) Register(ctx context.Context, c *BiometricCredential) error {
 	if c.ID == "" || c.UserID == "" || c.WorkspaceID == "" {
 		return fmt.Errorf("id, user_id, workspace_id are required")
@@ -104,11 +127,38 @@ func (s *BiometricStore) Register(ctx context.Context, c *BiometricCredential) e
 		// 内存路径（测试/单机部署）
 		s.memoryMu.Lock()
 		defer s.memoryMu.Unlock()
+		// ⚠⚠ §944 D1：内存路径**也**必须判归属。
+		//
+		//	内存路径原来直接 `s.memory[c.ID] = &clone` ⇒ ⇒ ⇒ 撞 id 会把**整行**
+		//	**连 user_id 一起**换成提交者的 ⇒ ⇒ ⇒ 比 PG 版还严重（PG 版的
+		//	user_id 不在 SET 列表里，归属至少保留）⇒ ⇒⇒ ⇒ 两个实现必须
+		//	**同形**（★ §943 的元教训：「门禁跑在内存版上，生产跑的是 PG 版」）。
+		if existing, ok := s.memory[c.ID]; ok && existing.UserID != c.UserID {
+			return fmt.Errorf("register biometric credential %s: %w",
+				c.ID, ErrBiometricCredentialScopeConflict)
+		}
 		clone := *c
 		s.memory[c.ID] = &clone
 		return nil
 	}
-	_, err := s.pool.Exec(ctx, `
+	// ⚠⚠ §944 D1：ON CONFLICT **必须带归属守卫**。
+	//
+	//	修复前它的 SET 列表里**没有** user_id ⇒ ⇒ ⇒ 撞上一个**别的用户**的
+	//	credential_id 时，它会把**那一行的 public_key 整个换掉**（归属还留在
+	//	原主人名下）⇒ ⇒ ⇒ 登录链按 id 取行、按行里的 public_key 验签 ⇒ ⇒⇒
+	//	**攻击者用自己的私钥就能以原主人的身份登录**。
+	//
+	//	守卫断言的是「**不变归属列**」= user_id：SET 里**不出现**的归属列
+	//	（⇒ 它永远不会被搬走）才是断言的对象；而 workspace_id 之所以**不**
+	//	断言 ⇒ 是为了不误伤「同一个用户换 workspace 重新注册」这条正常路径
+	//	（⇒ §944.2 的口径表：只断言「不可搬走」的归属列）。
+	//
+	//	⚠⚠ **必须用 QueryRow + RETURNING，不能用 Exec**：
+	//	守卫不成立时 PG **不报错**，只是**不返回行**（`Exec` 拿到的是一个
+	//	成功的命令标签）⇒ ⇒ ⇒ 用 Exec 的话这道守卫就是**哑弹**
+	//	（★ §942 在 notes 上、§943 在 meeting_tombstones 上都踩过同族坑）。
+	var storedID string
+	err := s.pool.QueryRow(ctx, `
 		INSERT INTO biometric_credentials (id, user_id, workspace_id, device_name, public_key, counter, transports, created_at, last_used_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		ON CONFLICT (id) DO UPDATE SET
@@ -116,8 +166,19 @@ func (s *BiometricStore) Register(ctx context.Context, c *BiometricCredential) e
 			public_key   = EXCLUDED.public_key,
 			counter      = EXCLUDED.counter,
 			transports   = EXCLUDED.transports
-	`, c.ID, c.UserID, c.WorkspaceID, c.DeviceName, c.PublicKey, int64(c.Counter), c.Transports, c.CreatedAt, c.LastUsedAt)
-	return err
+		WHERE biometric_credentials.user_id = EXCLUDED.user_id
+		RETURNING id
+	`, c.ID, c.UserID, c.WorkspaceID, c.DeviceName, c.PublicKey, int64(c.Counter), c.Transports, c.CreatedAt, c.LastUsedAt).Scan(&storedID)
+	if err != nil {
+		// ErrNoRows ⇒ 守卫把「这个 credential_id 属于别的用户」挡掉了
+		// ⇒ ⇒ ⇒ 绝不覆盖别人的认证公钥（宁可报错，也不静默顶替）。
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("register biometric credential %s: %w",
+				c.ID, ErrBiometricCredentialScopeConflict)
+		}
+		return err
+	}
+	return nil
 }
 
 // Get 按 credential_id 查一条凭证。

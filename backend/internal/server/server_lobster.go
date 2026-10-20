@@ -34,6 +34,8 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
+	"log"
 	"net/http"
 	"strconv"
 
@@ -80,8 +82,28 @@ func (s *Server) handleAssetSync(w http.ResponseWriter, r *http.Request) {
 		res, err := s.lobsterSync.Push(ctx, &m)
 		if err != nil {
 			// 单条 push 失败不中断整批；记录错误结果。
+			//
+			// ⚠⚠ §944 D2：这条错误**必须**回给客户端。
+			//
+			//	修复前这里只记了一个 `{asset_id}` ⇒ ⇒ ⇒ 与「成功但 rev=0」
+			//	**不可区分** ⇒ ⇒ ⇒ 客户端会把本地资产标成已同步
+			//	⇒ ⇒⇒⇒ **静默丢数据**（服务端根本没收到那份密文）。
+			//
+			//	⇒ 现在把「失败」写进 PushResult.Error（可选字段 ⇒ 老客户端
+			//	不受影响）⇒ ⇒ 「失败必须可区分」在响应形状层面落地。
+			//
+			//	⚠ 归属冲突（撞上别的租户的 asset_id）单独给一句可读文本
+			//	⇒ 客户端能区分「撞号」与「一般失败」⇒ 可以提示用户。
+			//	⚠ 一般错误**不回传内部细节**（可能带 SQL 文本）⇒ 只回
+			//	一句通用文本，真实原因记服务端日志。
+			log.Printf("WARN: asset push failed: asset_id=%s err=%v", m.ID, err)
+			text := "push failed"
+			if errors.Is(err, lobster.ErrAssetScopeConflict) {
+				text = "asset_id 已属于其他租户"
+			}
 			pushResults = append(pushResults, lobster.PushResult{
 				AssetID: m.ID,
+				Error:   text,
 			})
 			continue
 		}

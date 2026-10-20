@@ -239,6 +239,11 @@ func (s *Server) handleDevices(w http.ResponseWriter, r *http.Request, wsID stri
 			OS:          body.OS,
 		}
 		if err := s.identityStore.UpsertDevice(r.Context(), d); err != nil {
+			// ⚠ §944 D3：撞上**别人**的 device id ⇒ 409（可区分），不是 500。
+			if errors.Is(err, identity.ErrDeviceScopeConflict) {
+				writeError(w, http.StatusConflict, "device id 已属于其他账号")
+				return
+			}
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}

@@ -36,6 +36,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -91,6 +92,16 @@ type Event struct {
 
 // ErrNotFound is returned on single-row miss.
 var ErrNotFound = errors.New("notifycenter: not found")
+
+// ErrRuleScopeConflict 表示 rule id 已属于**别的 workspace**。
+//
+// ⚠⚠ §944 D4：rule id 由**客户端**提供（POST /api/notifications/rules 的
+// 请求体 id）⇒ ⇒ ⇒ 撞上一个别的租户的 rule id 时，修复前那条 ON CONFLICT
+// 会把那一行的**规则内容整个改写成提交者的**（渠道 / 优先级 / 静默时段 /
+// 开关）⇒ ⇒⇒⇒ 而 workspace_id **不在** SET 列表里 ⇒ ⇒⇒⇒ 那条规则**留在
+// 受害者的租户里**却已经**听攻击者的**了 ⇒ ⇒⇒⇒ 受害者的通知被静默、
+// 被改道到别的渠道。
+var ErrRuleScopeConflict = errors.New("notifycenter: rule belongs to another workspace")
 
 // Store manages the notifications + rules tables.
 type Store struct {
@@ -245,6 +256,10 @@ FROM notification_rules WHERE workspace_id = $1 ORDER BY enabled DESC, source, k
 }
 
 // UpsertRule creates or updates a rule (id is the key).
+//
+// ⚠⚠ §944 D4：同一个 workspace 的 id 重复提交照常更新（改规则是正常用法）；
+// 但这个 id 已经属于**别的 workspace**时 ⇒ ⇒⇒ **绝不覆盖**，返回
+// ErrRuleScopeConflict（守卫不成立 ⇒ 一行都不改）。
 func (s *Store) UpsertRule(ctx context.Context, r *Rule) error {
 	if r.WorkspaceID == "" {
 		r.WorkspaceID = "default"
@@ -253,15 +268,36 @@ func (s *Store) UpsertRule(ctx context.Context, r *Rule) error {
 		r.Channels = []string{string(ChannelInbox)}
 	}
 	chJSON, _ := json.Marshal(r.Channels)
-	_, err := s.pool.Exec(ctx, `
+	// ⚠⚠ §944 D4：ON CONFLICT **必须带归属守卫**。
+	//
+	//	守卫断言 workspace_id：它**不在** SET 列表里 ⇒ 它**永远不会被搬走**
+	//	⇒ 它就是「这条规则属于谁」的唯一稳定锚点（★ 这正是「只断言不可搬走
+	//	的归属列」这条通用口径的又一个实例）。
+	//
+	//	⚠⚠ **必须用 QueryRow + RETURNING，不能用 Exec**：
+	//	守卫不成立时 PG **不报错**，只是**不返回行**（`Exec` 拿到的是一个
+	//	成功的命令标签）⇒ ⇒ ⇒ 用 Exec 的话这道守卫就是**哑弹**
+	//	（存在、但无声 ⇒ 等于没有 ⇒ §942/§943 连着踩过同族坑）。
+	var storedID string
+	err := s.pool.QueryRow(ctx, `
 INSERT INTO notification_rules (id, workspace_id, source, kind, channels, priority, quiet_start_min, quiet_end_min, enabled)
 VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9)
 ON CONFLICT (id) DO UPDATE SET
 	source=EXCLUDED.source, kind=EXCLUDED.kind, channels=EXCLUDED.channels,
 	priority=EXCLUDED.priority, quiet_start_min=EXCLUDED.quiet_start_min,
 	quiet_end_min=EXCLUDED.quiet_end_min, enabled=EXCLUDED.enabled
-`, r.ID, r.WorkspaceID, r.Source, r.Kind, string(chJSON), r.Priority, r.QuietStartMin, r.QuietEndMin, r.Enabled)
-	return err
+WHERE notification_rules.workspace_id = EXCLUDED.workspace_id
+RETURNING id
+`, r.ID, r.WorkspaceID, r.Source, r.Kind, string(chJSON), r.Priority, r.QuietStartMin, r.QuietEndMin, r.Enabled).Scan(&storedID)
+	if err != nil {
+		// ErrNoRows ⇒ 守卫把「这个 rule id 属于别的 workspace」挡掉了
+		// ⇒ ⇒ ⇒ 绝不改写别人的通知规则。
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("upsert notification rule %s: %w", r.ID, ErrRuleScopeConflict)
+		}
+		return err
+	}
+	return nil
 }
 
 // matchRule finds the first enabled rule matching (source, kind). Wildcards
