@@ -239,3 +239,25 @@ func TestS946HelperFamilyUsesSafePath(t *testing.T) {
 		}
 	})
 }
+
+// TestS946SSEWriteReturnsError 是断言 ⑤：SSE 写 helper 必须**把错误交回去**。
+//
+// ⚠ 为什么这条不能省：SSE 的失败语义是「写失败 = 这条流已经死了」
+// 　 ⇒ ⇒⇒ 调用方必须能**中断**它 ⇒ ⇒⇒ ⇒ 而「能不能中断」完全取决于
+// 　 ⇒ ⇒⇒ ⇒ helper **返不返回**那个错误。
+// 　 ⇒ ⇒⇒ ⇒ 如果 helper 把错误吞掉（返回 nil）⇒ ⇒⇒⇒ 调用方的
+// 　 ⇒ ⇒⇒ ⇒ `if err != nil { return }` 永远不成立 ⇒ ⇒⇒⇒ ⇒ 死流会一直写。
+func TestS946SSEWriteReturnsError(t *testing.T) {
+	logBuf, restore := s946CaptureLog(t)
+	defer restore()
+
+	w := &s946FailWriter{}
+	err := s946SSEWritef(w, "data: %s\n\n", "x")
+	if err == nil {
+		t.Errorf("SSE 写失败时 s946SSEWritef 返回了 nil ⇒ 调用方**无法中断**这条流\n" +
+			"⇒ 死流会继续写（每次都失败），客户端那边只是一直收不到事件")
+	}
+	if !strings.Contains(logBuf.String(), "SSE") {
+		t.Errorf("SSE 写失败时没有留痕（日志=%q）", logBuf.String())
+	}
+}

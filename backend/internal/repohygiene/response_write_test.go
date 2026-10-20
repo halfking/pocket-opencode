@@ -136,6 +136,16 @@ func s946IsFmtWriteCall(call *ast.CallExpr, rwNames map[string]bool) bool {
 	return ok && rwNames[target.Name]
 }
 
+// s946IsSSEHelperCall 判一个调用是不是 §946 的 SSE 写 helper。
+//
+// ⚠ 为什么单列一族：SSE 的失败语义是「写失败 = 这条流已经死了」
+// 　 ⇒ ⇒⇒ 调用方必须能**中断**它 ⇒ ⇒⇒ ⇒ 而这完全取决于 helper **返不返回**
+// 　 ⇒ ⇒⇒ ⇒ 那个错误 ⇒ ⇒⇒ ⇒ 它的结果一旦被丢弃，死流就会一直写。
+func s946IsSSEHelperCall(call *ast.CallExpr) bool {
+	id, ok := call.Fun.(*ast.Ident)
+	return ok && id.Name == "s946SSEWritef"
+}
+
 // s946ResponseWriterParams 收集一个函数的 `http.ResponseWriter` 形参名。
 //
 // ⚠ 为什么用**形参类型**而不是「receiver 叫 w」：本仓里 `s.Write(r, ...)` 是
@@ -264,6 +274,12 @@ func s946ScanAST(t *testing.T, fset *token.FileSet, f *ast.File, rel string) []s
 						File: rel, Line: fset.Position(call.Pos()).Line,
 						Text: exprText(fset, call), Kind: "fmt",
 					})
+				case s946IsSSEHelperCall(call):
+					// D 族：SSE 写 helper 的结果被丢弃 ⇒ 调用方**无法中断**死流。
+					out = append(out, s946Finding{
+						File: rel, Line: fset.Position(call.Pos()).Line,
+						Text: exprText(fset, call), Kind: "sse",
+					})
 				default:
 					// B 族：http.ResponseWriter 上的 Write 结果被丢弃。
 					sel, ok := call.Fun.(*ast.SelectorExpr)
@@ -369,6 +385,16 @@ func j(buf *bytes.Buffer) {
 	fmt.Fprintf(buf, "x") // ← 不能扫出来（接收者不是响应体）
 }
 
+func l(w http.ResponseWriter) {
+	s946SSEWritef(w, "x") // ← D 族，必须扫出来（结果被丢弃 ⇒ 无法中断死流）
+}
+
+func m(w http.ResponseWriter) {
+	if err := s946SSEWritef(w, "x"); err != nil { // ← 不能扫出来
+		_ = err
+	}
+}
+
 func k(w http.ResponseWriter, buf *bytes.Buffer) {
 	_ = json.NewEncoder(buf).Encode(map[string]any{"x": 1}) // ← 不能扫出来（编码目标不是响应体）
 }
@@ -380,9 +406,9 @@ func k(w http.ResponseWriter, buf *bytes.Buffer) {
 	}
 	got := s946ScanAST(t, fset, f, "synthetic.go")
 
-	// 正对照：三族各 2 处。
-	if len(got) != 6 {
-		t.Errorf("扫描器在合成源码上报出 %d 处（期望 6 处）⇒ 扫描器可能坏了\n  %s",
+	// 正对照：三族各 2 处 + D 族 1 处。
+	if len(got) != 7 {
+		t.Errorf("扫描器在合成源码上报出 %d 处（期望 7 处）⇒ 扫描器可能坏了\n  %s",
 			len(got), s946FormatFindings(got))
 		return
 	}
@@ -390,7 +416,7 @@ func k(w http.ResponseWriter, buf *bytes.Buffer) {
 	for _, f := range got {
 		kinds[f.Kind]++
 	}
-	for kind, want := range map[string]int{"encode": 2, "write": 2, "fmt": 2} {
+	for kind, want := range map[string]int{"encode": 2, "write": 2, "fmt": 2, "sse": 1} {
 		if kinds[kind] != want {
 			t.Errorf("「%s」族扫出 %d 处，期望 %d 处\n  %s", kind, kinds[kind], want, s946FormatFindings(got))
 		}
