@@ -51,26 +51,18 @@
 import { execFileSync, spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { homedir } from 'node:os'
+import { whichFirst } from './lib/which-first.mjs'
 
 // adb 位置同样不能写死：原值是某台 Windows 开发机的
 // C:/Users/86133/AppData/Local/Android/platform-tools/adb.exe，在别的宿主上
 // 直接 `[FAIL] adb 不存在` —— 而这条报错的措辞把矛头指向 adb，实际是本脚本
 // 绑死了一台机器。改为 env 覆盖 -> PATH -> 常见安装位置。
-function whichFirst(cands) {
-  for (const c of cands) {
-    if (!c) continue
-    if (c.includes('/') || c.includes('\\')) {
-      if (existsSync(c)) return c
-      continue
-    }
-    const r = execFileSync(process.platform === 'win32' ? 'where' : 'which', [c],
-      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
-    const first = (r.stdout || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean)[0]
-    if (r.status === 0 && first) return first
-  }
-  return null
-}
-
+//
+// ⚠ 2026-10-20：本文件原先自带一份 whichFirst 副本，而那份副本有**同一个 bug**
+//   （execFileSync 返回的是 stdout 字符串，代码却去读 `r.stdout` / `r.status`
+//   ⇒ 两者恒 undefined ⇒ PATH 分支恒不成立 ⇒ 永远挑不到 PATH 上的 adb）。
+//   现改用 lib/which-first.mjs 这个**单一来源**（与 adb-cdp.mjs 2026-10-17 的
+//   收编同源），别再写第二份解析。
 const IS_WIN = process.platform === 'win32'
 const ADB = process.env.POCKET_ADB
   || process.env.POCKET_ADB_BIN

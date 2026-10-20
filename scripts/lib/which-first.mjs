@@ -39,11 +39,20 @@ export function whichFirst(cands) {
       continue
     }
     try {
-      const r = execFileSync(process.platform === 'win32' ? 'where' : 'which', [c],
+      // ⚠ execFileSync 的返回值**就是 stdout 的字符串本身**（不像 spawnSync 返回结果对象）。
+      //   2026-10-20 实测踩坑：这里原先写 `r.stdout` / `r.status` ⇒ 两者恒为 undefined
+      //   ⇒ 「PATH 命中」这个分支**恒不成立**（死代码）⇒ 每次都跳到后面的绝对路径候选。
+      //   后果不是「找不到工具」，而是**静默挑错工具**：本机 PATH 上是 go1.27.2 的 gofmt，
+      //   但门禁实际调用的是 /usr/local/go/bin/gofmt（go1.24.5）；
+      //   而 CI 是 setup-go + go-version-file: backend/go.mod（go1.27.x）
+      //   ⇒ 本地门禁与 CI 门禁用的是**两套不同的 Go 行为**（Go 1.25 改过 doc comment 判定：
+      //   go/printer 的 intersperseComments 新增了 `tok != token.IDENT`，
+      //   于是「struct 里列 1、紧跟字段名的注释」在 1.25+ 不再被当 doc comment 改写）。
+      const stdout = execFileSync(process.platform === 'win32' ? 'where' : 'which', [c],
         { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
-      const first = (r.stdout || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean)[0]
-      if (r.status === 0 && first) return first
-    } catch { /* which/where 不可用就跳到下一个候选 */ }
+      const first = String(stdout || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean)[0]
+      if (first) return first
+    } catch { /* which/where 不可用（或命令不存在）就跳到下一个候选 */ }
   }
   return null
 }
