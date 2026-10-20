@@ -110746,3 +110746,242 @@ func getTestPool(t *testing.T) *pgxpool.Pool { return nil }   // 注释：For no
 
 1. **软删的笔记要留多久**（现在**永不回收** ⇒ 「删掉」不释放存储 ⇒ 存储 ∝ **历史总量**）—— 要不要**按天数硬删** / 要不要给用户一个「清空已删除」的动作？
 2. **客户端删笔记要不要镜像到服务端**（现在只删本地 ⇒ 服务端的副本**永久留存** ⇒ 移动端在仓外，行为未实测）。
+
+## §943 会议本体的**写入链**：撞 id 能**覆盖**别人的会议 + `meeting.synced` **全体广播**把别人的会议 id 泄给所有人
+
+### §943.1 为什么查这条链（它是整条链的**上游**，此前**一条判据都没有**）
+
+§939–§942 查的是「**建**笔记」与「**删**笔记」那几条链（落点 / 广播 / 正文上限 / 复活 / 404）⇒ ⇒ ⇒ 而「**会议本体**」这条 —— 客户端录完把会议元数据 POST 上来、落进 `meetings` 表 —— **一次都没被查过**：
+
+- 全仓 `ON CONFLICT (id) DO UPDATE` 命中 `meetings` 表 ⇒ 但**没有任何判据**说它「撞上别人的 id 会怎样」；
+- `DELETE /api/meetings/{id}` 的承重门只覆盖**跨 workspace 同 owner** 那一头，而且**只跑在内存版上**（见 §943.5）。
+
+⇒ ⇒ ⇒ 而它恰恰是整条「会议 → 笔记」链的**上游** ⇒ ⇒ ⇒ 它写的那一行，
+后面每一次**精校 / 摘要 / 待办 / 笔记派生**都要拿它的 id 去认领 ⇒ ⇒ ⇒⇒
+**上游写错了，下游每一环都在错的行上工作。**
+
+### §943.2 D1：撞 id ⇒ **覆盖**别人的会议（越权写入）
+
+`meeting.PGStore.CreateScoped` 的 `ON CONFLICT (id) DO UPDATE` **不带任何谓词**：
+
+```sql
+ON CONFLICT (id) DO UPDATE SET
+    title=EXCLUDED.title, duration=EXCLUDED.duration,
+    transcript=CASE WHEN EXCLUDED.transcript<>'' THEN EXCLUDED.transcript ELSE meetings.transcript END,
+    summary=…, status=…, location=…, participants=…, note_id=…,
+    updated_at=EXCLUDED.updated_at
+```
+
+⇒ ⇒ ⇒ `owner_id` 与 `workspace_id` **不在 SET 列表里** ⇒ ⇒ ⇒ **那一行仍然属于原主人，正文却已经是别人的了**。
+
+⚠ **修复前实测**（本节勘察时当场量的，探针用完即删）：
+
+| 动作 | 读数 |
+|---|---|
+| A POST `/api/meetings`（id=`mtg-probe-x`，「A的会议 / 正文A」） | **201** |
+| B POST `/api/meetings`（**同一个 id**，「B的会议 / 正文B」） | **201** |
+| 直接读原始行 | `owner="probe-user-a" ws="ws-probe" title="B的会议" transcript="B的正文"` |
+| A GET `/api/meetings/mtg-probe-x` | **200**，但返回的是**B 的正文** |
+| B GET `/api/meetings/mtg-probe-x` | **404** |
+| B 收到的响应体 | 带回了 **A 的 `owner_id` 与 `workspace_id`** |
+
+⇒ ⇒ ⇒⇒ **⇒ 篡改**静默发生**：受害者自己读回来看到的是别人的正文，**且没有任何报错**；
+⇒ ⇒ ⇒⇒ **⇒ 跨用户信息泄露**：提交者的响应里带着受害者的 `owner_id` / `workspace_id`。
+
+⚠ 与 §939 的 D3（notes 那处）**完全同形** ⇒ ⇒ ⇒ **同一族缺陷出现在两处**，
+而 **notes 那处 §939 已经修好了、meetings 这处没有** ⇒ ⇒ ⇒⇒ ⇒ 这正是
+「**同一段逻辑抄两遍 ⇒ 同一缺陷必然出现在两处**」（§80 记过的形状）。
+
+### §943.3 D2：`meeting.synced` **全体广播** ⇒ 别人的会议 id 泄给所有人（D1 的 id 泄露通道）
+
+`server_meeting_ingest.go` 的两处广播用的是 `wsHub.Broadcast`（**全体广播**），载荷是：
+
+```go
+map[string]string{"meetingId": m.ID, "userId": uid}
+```
+
+⇒ ⇒ ⇒ **每一个在线用户**都会收到**别人**的 `meetingId` 与 `userId`。
+
+⚠ **修复前实测**：另一个用户（完全不同的账号）确实收到了
+`{"type":"meeting.synced","payload":{"meetingId":"mtg-probe-bcast","userId":"probe-ws-a"}}` ⇒ ⇒ ⇒
+**⇒ D1 的 id 来源根本不需要猜** ⇒ ⇒ ⇒⇒ ⇒ **D1 + D2 = 一条完整的、可直接利用的跨用户篡改链。**
+
+⚠ 承载这条广播的 WS 端点 `/ws` **要鉴权**（`requireAuth`）⇒ ⇒ ⇒ 所以「任意登录用户」即可 ⇒ ⇒ ⇒
+不是「匿名可利用」，但**任何一个注册用户**都够。
+
+### §943.4 D3：墓碑被**整个搬走** ⇒ 受害者的**已删会议复活**
+
+`meeting_tombstones` 的 `ON CONFLICT (id) DO UPDATE` 同样**不带谓词**，而它的 SET 列表里
+**有** `owner_id` 与 `workspace_id` ⇒ ⇒ ⇒ 撞 id ⇒ **把别人的墓碑整个搬走** ⇒ ⇒ ⇒⇒
+
+- 受害者**自己**的墓碑清单里**再也没有**那条 id（墓碑清单按 `owner_id + workspace_id` 过滤）
+  ⇒ ⇒ ⇒⇒ **已删的会议在增量同步里「复活」**（客户端以为服务器上还有它）；
+- 攻击者的租户里**多出一行**别人的墓碑 ⇒ ⇒ ⇒⇒ 跨用户的「删除记录」被注入；
+- `deleted_at` 也被改 ⇒ ⇒ ⇒ 墓碑的时间窗可以任意调。
+
+⚠ **内存版当时**也**没有**这道守卫 ⇒ ⇒ ⇒⇒ ⇒ **两个实现都错**（⇒ 见 §943.5）。
+
+### §943.5 ⭐⭐⭐ 本节最贵的发现（元问题）：「**门禁跑在内存版上，生产跑的是 PG 版**」
+
+`meeting.MeetingStore` 有**两份实现**：内存版 `*Store` 与 PG 版 `*PGStore` ⇒ ⇒ ⇒
+`cmd/pocketd` 在 pool 就绪时注入 **PG 版** ⇒ ⇒ ⇒⇒ **生产跑的是 PG 版。**
+
+而当时唯一钉「跨作用域撞号」那条语义的承重门
+（`server/meeting_sync_id_upsert_test.go` 的 `TestClientIDCollisionAcrossWorkspacesNeverOverwrites`）
+**只跑在内存版上**（它用 `newTestServerWithAuth` 拿默认的内存 store）⇒ ⇒ ⇒⇒
+
+> **⇒ ⇒ ⇒ 两个实现分叉时，那道门是绿的。而分叉的那一头就是生产。**
+
+⚠⚠ **更难看的是：两个实现的注释在互相指错对方**：
+
+- 内存版注释：「PG 版靠唯一约束 + 重试换号挡住了这件事（pg_store.go 的 isUniqueViolation 分支），内存版没有那层护栏 ⇒ **两个 store 会不同形，而门禁跑在内存版上**」
+  ⇒ ⇒ ⇒⇒ **它把 PG 版的行为说反了**（PG 版当时根本没有护栏，是它自己在覆盖别人的行）；
+- PG 版注释：「客户端 id 撞上已有行时 ON CONFLICT 已处理……而客户端 id 不该被改 ⇒ 直接返回错误，**绝不允许**退回 nextMeetingID 静默换号：换号 = 偷换别人的行 = 数据越权」
+  ⇒ ⇒ ⇒⇒ **它把「换号」与「越权」画上了等号**：换号新建的是**自己**的一行（不越权），
+  越权的是**覆盖**别人的行。
+
+⇒ ⇒ ⇒⇒ ⇒ **⇒ 「注释写了风险」≠「有人补了判据」** —— 内存版的注释**早就写着**
+「两个 store 会不同形，而门禁跑在内存版上」，可那道门一直就只跑在内存版上。
+
+⇒ ⇒ ⇒ 修法**不是**「给 PG 补一道门」⇒ ⇒ ⇒⇒ 而是「**一条判据同时钉两个实现**」
+⇒ ⇒ ⇒⇒ 于是「两个实现分叉」这件事本身变成**可测的**（§943.7 的 meeting 包判据）。
+
+### §943.6 修法
+
+**D1（覆盖）** —— `backend/internal/meeting/pg_store.go`：
+
+- `ON CONFLICT (id) DO UPDATE` 加**归属守卫**：
+  `WHERE meetings.owner_id = EXCLUDED.owner_id AND meetings.workspace_id = EXCLUDED.workspace_id`
+  ⇒ ⇒ ⇒ 守卫不成立时 PG **一行都不返回**（`ErrNoRows`）⇒ ⇒ ⇒ 调用方**换号**
+  ⇒ ⇒ ⇒⇒ **绝不覆盖**别人的行 ⇒ ⇒ ⇒⇒ **与内存版同形**（内存版早就有这道护栏）。
+- ⚠ 换号的**代价**（**既有取舍**，本节不代拍）：客户端拿到的云端 id 与它本地的 id 不同
+  ⇒ ⇒⇒ 后续按 id 的云端操作（**精校 / 删除**）会 404 ⇒ ⇒⇒ 已挂简报第 **167** 条 ①。
+- ⚠ **不**把 `workspace_id` 加进 SET 列表（notes 的 `Upsert` 加了）：notes 那边加它是为了
+  **修复存量**落错租户的行（§939 的 D1 留下的），而 meetings 的落点一直取自 JWT
+  （**没有**落错租户的存量）⇒ ⇒⇒ 在这里加它会**新造**一次「会议跨租户搬家」⇒ ⇒⇒ 不加。
+
+**D2（广播）** —— `backend/internal/server/server_meeting_ingest.go`：两处 `wsHub.Broadcast`
+⇒ ⇒ ⇒ 改 `wsHub.BroadcastToUser(uid, "meeting.synced", …)`（**按 UserID**，与笔记链
+5 个广播点同口径）⇒ ⇒ ⇒ 载荷字段**一个字没动**。
+⚠ WS 客户端的身份取自 JWT（`server.go` 的 `NewClientWithIdentity(…, claims.UserID, workspaceID)`）
+⇒ ⇒⇒ 属主自己的**所有**设备（含**仓外移动端**）仍然收得到 ⇒ ⇒⇒ 定向**不会**打断同步。
+
+**D3（墓碑）** —— `pg_store.go`（PG）+ `store.go`（内存）**各一份**：
+
+- 同样的归属守卫（`owner_id` + `workspace_id`）；
+- 守卫不成立 ⇒ **报错**（新的 typed error `meeting.ErrMeetingTombstoneScopeConflict`）
+  ⇒ ⇒ ⇒ **不**像会议本体那样换号：墓碑的 id **必须等于被删会议的 id**，
+  换号会写出一条**指向不存在会议**的墓碑 ⇒ ⇒⇒ 「**绝不覆盖**」是共通不变量，
+  但「**不成立之后怎么办**」要按表的语义分别定（**本体换号、墓碑报错**）；
+- ⚠ **必须用 `QueryRow` + `RETURNING`，不能用 `Exec`**：守卫不成立时 PG **不报错**，
+  只是**不返回行**（`Exec` 拿到的是一个成功的命令标签）⇒ ⇒⇒ 用 `Exec` 的话这道守卫
+  就是**哑弹**（存在、但无声 ⇒ 等于没有 ⇒ §942 在 notes 上刚踩过同族坑）。
+
+### §943.7 判据（meeting 包 **5** 条 + server 包 **2** 条 + repohygiene 包 **1** 条）
+
+⚠ 全部**需要真 PG**（生产跑的是 PG 版；内存版当时早就有护栏 ⇒ 只测内存版会漏掉生产行为）⇒ ⇒ ⇒
+没有 PG 时用例会 skip，而 skip 的退出码是 0 ⇒ ⇒⇒ 变异批次用 `forbid_skip=True` 把「被 skip」变成失败。
+
+**meeting 包（真 PG，`internal/meeting/`）**
+
+| 判据 | 量的是 |
+|---|---|
+| `TestS943CrossOwnerCollisionNeverOverwrites` | 跨 **owner** 撞 id ⇒ 受害者的行**一字未改** + 提交者被**换号** + 拿到的是自己的一行；**两个实现逐字一致** |
+| `TestS943CrossWorkspaceCollisionNeverOverwrites` | 跨 **workspace**（同 owner）撞 id ⇒ 同样换号、同样不覆盖（**既有承重门 3 那一头，补上 PG 那一半**）|
+| `TestS943SameScopeCollisionStaysIdempotent` | **负控**：同 owner 同 workspace 撞 id ⇒ 仍然**幂等更新**（不换号、只有一行、内容被更新）|
+| `TestS943TombstoneGuardRefusesToMoveAnotherScopesTombstone` | 墓碑守卫：造出「墓碑属于别人」的状态 ⇒ 删除必须**失败** + 别人的墓碑**一字未改** + 会议**还在**（不得半处理）|
+| `TestS943TombstoneGuardKeepsNormalDeleteWorking` | **负控**：正常删除照常，墓碑写进去了、墓碑清单里有它 |
+
+⚠ **两个实现必须逐字一致**这件事本身是**被测对象**：两个实现跑**同一组**用例 ⇒ 产出两份
+observation ⇒ 逐字段比 ⇒ ⇒ ⇒ 「分叉」本身可见（★ §943.5 那个元问题的正面写法）。
+
+**server 包（真 PG，`internal/server/`）**
+
+| 判据 | 量的是 |
+|---|---|
+| `TestS943CreateMeetingCannotOverwriteAnotherUsersMeeting` | 端到端：跨用户撞 id ⇒ 受害者的行**一字未改**（读回来验）+ 攻击者**拿不到**它（404）+ 攻击者**被换号**；**负控**：受害者同 id 重发 ⇒ 仍然幂等 |
+| `TestS943MeetingSyncedBroadcastReachesOnlyOwner` | `meeting.synced` ⇒ **臂 A**（属主必须收到 = 正控）+ **臂 B**（另一个用户**必须收不到**）⇒ 用**两个真 WS 连接** |
+
+**repohygiene 包（普查棘轮，`internal/repohygiene/`）**
+
+`TestS943BareIDConflictCandidateSetIsPinned` ⇒ 全仓「**裸 id 主键 + ON CONFLICT DO UPDATE**」的
+**候选集棘轮**（**12** 处）：
+
+- ① 候选集的**绝对条数**（12）—— 少一处 ⇒ 有人删了它却没更新台账；
+- ② 候选集的**逐个身份**（文件 + 表）—— 换了一处等价的写法也要知道；
+- ③ 台账里声明为「SQL 谓词守卫」的那几条 ⇒ 那一条**必须**真的有 `WHERE`。
+⇒ ⇒ ⇒ 候选集一变 ⇒ 卡口立刻红 ⇒ ⇒⇒⇒ **逼着人重新定性**。
+
+⚠⚠ **本节的普查推翻了「我自己的普查」**（★ 「**N 命中的第一嫌疑也是量具坏了**」 —— 不只是 0 命中）：
+
+- 我用 `grep` 数出「裸 id + ON CONFLICT DO UPDATE」**6 处** ⇒ ⇒ ⇒ **而按 AST 扫字符串字面量数出 12 处**
+  ⇒ ⇒⇒ 漏掉的是：`ON CONFLICT(id)` **无空格**写法、**跨字面量拼接**的 SQL
+  （`"INSERT INTO tasks (" + cols + ")" + values + "ON CONFLICT …"`）、
+  以及 `INSERT INTO` 与 `ON CONFLICT` **不在同一个字面量**里的情形；
+- ⇒ ⇒⇒ 普查改用 **`go/parser` 走 AST**（只认**字符串字面量**）⇒ ⇒⇒⇒
+  **注释里**出现的 `ON CONFLICT` 天然不算数（★ §917 记过：注释里的字样足以让一条门恒绿），
+  而且跨字面量拼接的 SQL 也能被看到 ⇒ ⇒⇒ **不需要手写剥注释器**；
+- ⚠⚠ **台账的守卫维度是枚举**（`sql-where` / `precheck` / `none` / `unqualified`），
+  **不是**布尔 ⇒ ⇒⇒ 因为**自动判「有没有 WHERE」会造假阴性**：
+  `task/store.go` 的守卫写在**写入前的 SELECT** 里（跨 workspace 同 ID ⇒ 拒绝写入并保留原行）
+  ⇒ ⇒⇒ 自动判会把它记成「没守卫」⇒ ⇒⇒ 台账被写歪 ⇒ ⇒⇒⇒ 后来人以为那里有洞。
+
+### §943.8 变异：落盘 `scripts/mutations/s943.py` ⇒ ⇒ **实测 15/15**
+
+| 变异 | 内容 | 期望 |
+|---|---|---|
+| **M1** | `meetings` 的归属守卫被去掉 | 判据红：先是「**两个实现口径已分叉**」，端到端那条红在「攻击者拿到了受害者的 id」 |
+| **M2** | `meeting.synced` 退回 `wsHub.Broadcast` | 判据红：「另一个用户收到了别人的 meeting.synced」 |
+| **M3** | PG 版的墓碑守卫被去掉 | 判据红：「它把别人的墓碑搬走了」 |
+| **M4** | 内存版的墓碑守卫被去掉 | 判据红（**证明两个实现都要修**）|
+| **M5** | `notes` 的归属守卫被去掉 | **普查棘轮**红：「台账里声明为「SQL 谓词守卫」，但实际 DO UPDATE 后面**没有 WHERE**」 |
+| **N1–N4** | 守卫写成位置参数 / 广播载荷换写法 / 两处守卫的条件**换序**（**语义等价**）| **必须保持绿** |
+
+⚠⚠ **本批的判据有**三个**运行器**（meeting + server + repohygiene）⇒ ⇒⇒ 必须**一起跑**：
+③ 会在「某处把归属守卫删掉」时红（★ 共享/被改的东西 ⇒ 别的批次必须一起跑）。
+
+⚠⚠ **两个过程事实**（都写进脚本注释了）：
+
+- ⚠⚠ **M1 的期望消息是**实测**出来的，不是猜的**：守卫被去掉 ⇒ **PG 版**开始覆盖、
+  **内存版**仍换号 ⇒ ⇒ ⇒ 两个实现的观测**不一致** ⇒ ⇒ ⇒ 判据**先**红在
+  「**口径已分叉**」⇒ ⇒ ⇒⇒ 而这正是本节最核心的那个信号（★ §943.5 的元问题就是它）
+  ⇒ ⇒⇒⇒ 端到端那条则先红在「攻击者拿到了受害者的 id」
+  ⇒ ⇒⇒⇒ ★ **「变异转红了」≠「变异验到了你想验的那条」** ⇒ ⇒⇒ 必须把**期望消息**也钉住。
+- ⚠⚠ **普查棘轮自己也有一个量具缺陷**（当场逮住）：「带 WHERE」的判定原本取的是
+  **整份文件**里 `ON CONFLICT` 之后的全部文本 ⇒ ⇒⇒ 那个文本里几乎总有别的语句带 `WHERE`
+  ⇒ ⇒⇒⇒ **恒真** ⇒ ⇒⇒⇒ 于是一道本该咬住「守卫被删」的棘轮**一直不咬**
+  ⇒ ⇒⇒⇒ ⇒ 修法：改成**按字面量**判定（守卫与 `ON CONFLICT` 必然在同一条 SQL 字面量里）
+  ⇒ ⇒⇒⇒ ★ **「恒绿」的第一嫌疑永远是量具坏了**。
+
+### §943.9 ⛔ 本节**没有**做的事（与如实登记的局限）
+
+- ⛔ **未实测仓外移动端**：`meeting.synced` 在**仓内前端**没有订阅者（`ws-bus.ts` 只订阅
+  `note.created` / `email.classified` / `vault.synced`）⇒ ⇒⇒ 移动端在仓外 ⇒ ⇒⇒
+  「移动端是否订阅 `meeting.synced`、以及它对**定向**后的事件作何反应」**未实测**
+  ⇒ ⇒⇒ ⇒ 本节的 D2 修的是**服务端契约**（载荷与作用域），「用户路径上会不会走到」**未实测**。
+- ⛔ **未实测生产库里已存在的「被撞号」脏数据**：D1 在生产上跑过多久、是否已经有人撞过号
+  ⇒ ⇒⇒ ⇒ 本节**只**保证「从现在起不再覆盖」⇒ ⇒⇒ **不追溯**已发生的篡改。
+- ⛔ **未实测 D3 路径的真实发生率**：墓碑被搬走需要「同 id 的会议先被 A 删、后被 B 建再删」
+  ⇒ ⇒⇒ 客户端 id 是 `meeting-<ms>-<6 位随机>` ⇒ ⇒⇒ 发生率**未实测**。
+- ⛔ **未实测多用户真实环境**下的端到端影响（A 的客户端会不会把被改的会议同步到别的设备）。
+- ⚠ **本节没有改**其余 **9** 处「裸 id + ON CONFLICT DO UPDATE」的候选点
+  （`biometric_credentials` / `asset_mirrors` / `devices` / `emails` /
+  `email_vacation_replies` / `notification_rules` / `opencode_sessions` /
+  `scheduled_task_tombstones` / `task`）⇒ ⇒⇒ 它们**不在会议/录音链上**
+  ⇒ ⇒⇒⇒ ⇒ 其中 **`biometric_credentials` 存的是生物认证公钥**（撞 id ⇒ 把别人的
+  `public_key` 换成自己的 ⇒ 那是**认证链**上的越权）⇒ ⇒⇒ **后果最重**
+  ⇒ ⇒⇒⇒ ⇒ 已登记为**待定性**（简报第 **167** 条 ②）⇒ ⇒⇒⇒ **本节不代拍**。
+- ⚠ **本节没有改**任何**产品口径**（换号的后果、墓碑保留多久、其余 9 处的取舍）
+  ⇒ ⇒⇒ 全部登记在简报第 **167** 条。
+
+### §943.10 简报 167 的待拍板项
+
+两件，**都不是「能不能修」的问题，而是「该修成什么样」的问题** ⇒ ⇒ ⇒ **不代拍**（详见简报第 **167** 条）：
+
+1. **撞号后换号，要不要改成「明确报错」让客户端知道**（现在客户端拿到的云端 id 与本地 id 不同
+   ⇒ ⇒⇒ 后续按 id 的云端操作——**精校 / 删除**——会 404 ⇒ ⇒⇒ 用户看到的是「这场会没同步上去」）
+2. **其余 9 处「裸 id + ON CONFLICT DO UPDATE」要不要一起补归属守卫**
+   （其中 **`biometric_credentials`** 撞 id ⇒ **改掉别人的生物认证公钥** ⇒ 那是**认证链**上的越权
+   ⇒ ⇒⇒ **后果比本节那三处都重**；而 `devices` / `asset_mirrors` 的 SET 里带 `workspace_id`
+   ⇒ ⇒⇒ 撞 id 会把**别人的行整个搬到攻击者租户**）⇒ ⇒⇒ 它们的 id 可达性各不相同
+   ⇒ ⇒⇒ 需要**逐个定性**（本节只做了普查与台账）。
