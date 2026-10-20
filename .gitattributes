@@ -1,0 +1,16 @@
+# .gitattributes —— 行尾与文本属性的**入库**约定。
+#
+# 为什么需要（docs/handoff/2026-10-04-round41-gofmt-is-the-culprit.md §7.1）：
+#   core.autocrlf=true 的机器上检出后 840 个 .go 是 CRLF
+#   ⇒ `gofmt -l` 报满 840 个（check-gofmt.mjs 已把这类行尾噪声归一化掉，所以门禁是绿的，
+#     但**裸跑 `gofmt -w <dir>` 会把整个 backend 的行尾刷成 LF**，制造全仓伪 diff）。
+#
+#   .gitattributes 是**随仓库分发**的，优先于任何一台机器自己的 core.autocrlf
+#   ⇒ 换机器、换克隆方式（tar 拷贝 / CI checkout / 同事的 Windows）都得到同一份行尾。
+#
+# ⚠ 作用域刻意最小：只管 *.go。
+#   试过 broad 的 `* text=auto`：renormalize 会 churn 8 个文件，
+#   其中 frontend/android/gradlew.bat 是 Windows 批处理，**必须保持 CRLF**；
+#   scripts/maestro-run.mjs 也仍是 CRLF（有 CRLF 脆弱针门在盯着它）。
+#   ⇒ 这里只声明 Go 源码，其余文件保持现状，不顺手改别人。
+*.go text eol=lf
