@@ -36,10 +36,14 @@ import (
 // ⇒ ⇒ ⇒ 「看不见」这个症状有**两个**成因，其中一个会掩盖另一个；
 // ⇒ ⇒ ⇒ 修法必须**一次把两个都修**，否则第一个修完症状反而更严重。
 type meetingNoteTarget struct {
-	// WorkspaceID 是这条笔记所属的租户。空值必须由调用方归一（见下）。
-	WorkspaceID string
-	// OwnerID 是这条笔记的属主（也是广播的唯一目标）。
-	OwnerID string
+	// noteTarget 是**共用**的落点口径（租户 + 属主）。
+	//
+	// ⚠ §941：此前这个结构把 WorkspaceID / OwnerID **自己抄了一份**，
+	//	而随手记那条链（handleNotes POST）是内联写的
+	//	⇒ ⇒ ⇒ 「同一段逻辑抄两遍 ⇒ 同一缺陷必然出现在两处」（§80 的形状）
+	//	⇒ ⇒ ⇒ 现在收成**一份**（server_note_ingest.go 的 noteTarget），
+	//	两条链都从它派生 ⇒ ⇒ ⇒ 「落点只认 JWT 不认 body」只写一次。
+	noteTarget
 	// MeetingID 是会议 id：它派生出这条笔记的 id。
 	MeetingID string
 }
@@ -71,8 +75,12 @@ func (t meetingNoteTarget) noteID() string {
 // 「target 为零值时退化为全局广播」）⇒ ⇒ ⇒ 这里必须保证 UserID 非空，
 // 否则一次「广播目标忘了填」就会变成「把会议笔记推给全体在线用户」。
 // ⇒ ⇒ ⇒ 判据专门钉这一格（server_meeting_note_ingest_test.go）。
+//
+// ⚠ §941：这个方法现在**从 noteTarget 提升上来**（共用那一份）——
+// 随手记链（handleNotes POST）用的是**同一个**实现
+// ⇒ ⇒ ⇒ 两条链的广播口径**物理上**不可能再分叉。
 func (t meetingNoteTarget) broadcastTarget() ws.BroadcastTarget {
-	return ws.BroadcastTarget{UserID: t.OwnerID}
+	return t.noteTarget.broadcastTarget()
 }
 
 // newMeetingNoteTarget 从调用方身份推出落点。
@@ -80,17 +88,13 @@ func (t meetingNoteTarget) broadcastTarget() ws.BroadcastTarget {
 // ⚠ workspaceID 为空时回落 "default"，与 §938 的 meetingTodoTarget
 // **同口径**（同一个 workspace 归一 ⇒ 会议缓存、会议待办、会议笔记
 // 落在同一个租户里）⇒ ⇒ ⇒ 改这一处必须同步改那两处。
+//
+// ⚠ §941：归一本身也收到**共用**的 newNoteTarget 里（随手记链走同一个）
+// ⇒ ⇒ ⇒ 「空租户回落 default」只有一个来源。
 func newMeetingNoteTarget(uid, workspaceID, meetingID string) meetingNoteTarget {
-	if uid == "" {
-		uid = "local"
-	}
-	if workspaceID == "" {
-		workspaceID = "default"
-	}
 	return meetingNoteTarget{
-		WorkspaceID: workspaceID,
-		OwnerID:     uid,
-		MeetingID:   meetingID,
+		noteTarget: newNoteTarget(uid, workspaceID),
+		MeetingID:  meetingID,
 	}
 }
 
@@ -111,12 +115,17 @@ func newMeetingNoteTarget(uid, workspaceID, meetingID string) meetingNoteTarget 
 //	   症状（会议自动生成的手记在笔记列表里永远看不见，且不报任何错）——
 //	   只不过前端已经修了，服务端这一侧漏了，而且形态更重
 //	   （'' 连 'default' 作用域都查不到）。
+//	   ⚠ §941：这一列现在由**共用**的 ingestNote 写入（不是在这里写）
+//	   ⇒ ⇒ ⇒ 「落点只认 JWT」只有**一个**来源 ⇒ 随手记链与会议链
+//	   **不可能**再分叉（这正是 D1 当时发生的形状）。
 //
 //	D2 广播：只发给属主。
 //	   修复前是 wsHub.Broadcast ⇒ **全体广播** ⇒ 每个在线用户的设备都会
 //	   收到这条会议笔记，并由 notes-store.ts 的 handleServerEvent 落进
 //	   对方自己的本地库。与随手记那条链（handleNotes 用 BroadcastTo
 //	   {UserID: uid}）形态分叉 ⇒ 「同一件事抄两遍 ⇒ 同一缺陷出现在两处」。
+//	   ⚠ §941：广播目标现在也来自**共用**的 noteTarget.broadcastTarget()
+//	   ⇒ 随手记链用的是**同一个**实现 ⇒ 两条链的广播口径**物理上**统一。
 //
 //	D3 幂等：id 由 meetingID 派生 ⇒ 重复精校 = 更新同一行。
 //
@@ -140,10 +149,11 @@ func (s *Server) ingestMeetingNote(
 	}
 	now := time.Now().Unix()
 	n := notes.Note{
-		ID:     target.noteID(),
-		UserID: target.OwnerID,
-		// ★ §939 D1：这一行是「这条笔记对用户可见」的全部原因。
-		WorkspaceID:    target.WorkspaceID,
+		ID: target.noteID(),
+		// ⚠ §941 D2：UserID / WorkspaceID **不在这里写** ——
+		//	落点由 ingestNote 统一写入（它无条件覆写成 target 的值）
+		//	⇒ ⇒ ⇒ 「落点只认 JWT 不认 body」只有**一个**来源
+		//	（§939 D1 的形状就是「抄两份、其中一份抄错」的产物）。
 		Title:          title,
 		Snippet:        truncateStr(content, 500),
 		ContentType:    "voice",
@@ -152,12 +162,12 @@ func (s *Server) ingestMeetingNote(
 		CreatedAt:      now,
 		UpdatedAt:      now,
 	}
-	if err := s.notesStore.Upsert(ctx, &n); err != nil {
+	// ★ §939 D2：定向广播。**不是** wsHub.Broadcast。
+	//	§941：落库 → 广播 → 异步分类这三步现在与随手记链**共用同一份**
+	//	（server_note_ingest.go 的 ingestNote）⇒ ⇒ ⇒ 两条链不可能再分叉。
+	if err := s.ingestNote(ctx, target.noteTarget, &n); err != nil {
 		return "", err
 	}
-	// ★ §939 D2：定向广播。**不是** wsHub.Broadcast。
-	s.wsHub.BroadcastTo(target.broadcastTarget(), "note.created", &n)
-	go s.classifyNoteAsync(n)
 	log.Printf("[meeting] created note %s from meeting %s (workspace=%s)",
 		n.ID, target.MeetingID, target.WorkspaceID)
 	return n.ID, nil

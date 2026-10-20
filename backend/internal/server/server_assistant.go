@@ -348,27 +348,35 @@ func (s *Server) handleNotes(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, resp)
 	case http.MethodPost:
+		// ⚠ §941 D1：正文上限与「太大 vs 格式错」的区分都收到 readNoteBody 一份。
+		//	此前这条链有**两份**上限（POST 走全局 2 MiB、PUT 走 handler 自己的
+		//	1 MiB 字面量）⇒ ⇒ ⇒ 同一条笔记写得进去、改不回来。
+		raw, ok := s.readNoteBody(w, r)
+		if !ok {
+			return
+		}
 		var n notes.Note
-		if err := json.NewDecoder(r.Body).Decode(&n); err != nil {
+		if err := decodeNoteJSON(raw, &n); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid body")
 			return
 		}
-		n.UserID = uid
-		// Ownership comes from the JWT, never from the body: a client-supplied
-		// workspaceId would otherwise let a caller write into another workspace.
-		n.WorkspaceID = wsID
 		if n.ID == "" {
 			n.ID = randomID("note")
 		}
-		// 龙虾架构：异步触发 kxmemory AI 编排（分类/SSOT/关联/待办提取）
-		if err := s.notesStore.Upsert(r.Context(), &n); err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+		// ★ §941 D2：落库 → 定向广播 → 异步分类走**共用的那一份**（ingestNote）。
+		//
+		//	Ownership comes from the JWT, never from the body: a client-supplied
+		//	workspaceId would otherwise let a caller write into another workspace.
+		//	⇒ 这条不变量现在只写在 ingestNote 里一处（此前这里与会议链各写一遍
+		//	⇒ §80 形状 ⇒ §939 的 D1「落进空租户」就是这么来的）。
+		target := newNoteTarget(uid, wsID)
+		if err := s.ingestNote(r.Context(), target, &n); err != nil {
+			// ⚠ §941 D3：归属冲突（撞 id 但那一行不是自己的）必须回 409，
+			//	不是 500 ⇒ 否则客户端以为「重试有用」。
+			s.writeNoteWriteError(w, r, err)
 			return
 		}
 		writeJSON(w, http.StatusCreated, n)
-		s.wsHub.BroadcastTo(ws.BroadcastTarget{UserID: uid}, "note.created", &n)
-		// 异步调 kxmemory（非阻塞）
-		go s.classifyNoteAsync(n)
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "GET/POST only")
 	}
@@ -439,9 +447,15 @@ func (s *Server) handleNoteOperations(w http.ResponseWriter, r *http.Request) {
 // 字段才会写。空串是"清空"而不是"不改"，这与前端 Partial<NoteInput> 的
 // 预期一致，也让"清空标题"成为可表达的操作。
 func (s *Server) handleNoteUpdate(w http.ResponseWriter, r *http.Request, id, uid, wsID string) {
-	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "read body: "+err.Error())
+	// ⚠ §941 D1：此前这里是 handler **自己**的一条 1 MiB 闸
+	//	（`io.ReadAll(io.LimitReader(r.Body, 1<<20))`，还是**字面量**）
+	//	⇒ ⇒ ⇒ 而 POST 走的是全局 2 MiB ⇒ ⇒ ⇒ 同一条笔记**写得进去、改不回来**
+	//	⇒ ⇒ ⇒ 而超限时 JSON 被**截断** ⇒ 回 400 "invalid request body:
+	//	unexpected end of JSON input" ⇒ **与「JSON 坏了」完全同形**
+	//	（实测：1.5 MiB 的 PUT 拿到的就是这句）。
+	//	⇒ ⇒ ⇒ 现在与 POST 共用 readNoteBody：上限**一份**，「太大」是 413。
+	body, ok := s.readNoteBody(w, r)
+	if !ok {
 		return
 	}
 	var in struct {

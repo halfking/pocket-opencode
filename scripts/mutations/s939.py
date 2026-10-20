@@ -33,6 +33,14 @@ TARGETS = [
     'backend/internal/server/server_meeting_note_ingest.go',
     'backend/internal/server/server_meeting_ingest.go',
     'backend/internal/notes/store.go',
+    # ⚠⚠ §941：落点 / 广播目标 / 归一这三件事被收进了**共用**那一份
+    #   （backend/internal/server/server_note_ingest.go）
+    #   ⇒ ⇒ ⇒ 本批次里对应的锚点（M1 / M2 / M4 / M5 / N1 / N3）**全部挪到了这里**
+    #   ⇒ ⇒ ⇒ ⇒ ★ 这是「**锚点会随实现重构一起漂**」的第 N 次出现
+    #   ⇒ ⇒ ⇒ ⇒ 撞上时的正确动作是「**重新指向**」，**不是**改判据、也不是
+    #   ⇒ ⇒ ⇒ ⇒ 把 §939 的语义降级（每条变异要证的**那件事**一个字没变）。
+    #   ⇒ ⇒ ⇒ ⇒ ⚠ 它**必须**在 targets 里 ⇒ ⇒ 否则 harness 还原时会漏掉它。
+    'backend/internal/server/server_note_ingest.go',
 ]
 
 # ⛔ 只注入**测试专用** DSN（独立 schema + 自动 DROP）⇒ 绝不碰生产库。
@@ -58,26 +66,38 @@ b = Batch('§939 服务端「会议 → 笔记」的租户落点 / 广播作用�
 NOTE_GO = b.targets[0]
 INGEST_GO = b.targets[1]
 STORE_GO = b.targets[2]
+SHARED_GO = b.targets[3]
 
 # ── 变异的锚点（必须与实现**逐字**一致；不一致 ⇒ 落盘自证会失败并中止）──
 
 # M1（D1）：落点丢租户 ⇒ notes 行的 workspace_id 落空串 ⇒ 谁也查不到。
 #
 # ⚠ 这就是**修复前**的形态（修复前连 WorkspaceID 这个字段都没传）。
-WS_FIELD_OLD = '\t\tWorkspaceID:    target.WorkspaceID,\n'
-WS_FIELD_NONE = '\t\tWorkspaceID:    "",\n'
+#
+# ⚠⚠ §941：这一行**搬到了共用那一份**（ingestNote 统一写落点）
+#   ⇒ ⇒ ⇒ 锚点跟着搬（语义不变：还是「落点丢租户」）。
+WS_FIELD_OLD = '\tn.WorkspaceID = target.WorkspaceID\n'
+WS_FIELD_NONE = '\tn.WorkspaceID = ""\n'
 
 # M2（D2）：广播退回**全体广播** ⇒ 会议笔记被推进每一个在线用户的设备。
 #
 # ⚠ 只改**这一处** ⇒ 纯函数层（broadcastTarget）仍绿 ⇒ 单点变异。
-BROADCAST_OLD = '\ts.wsHub.BroadcastTo(target.broadcastTarget(), "note.created", &n)\n'
-BROADCAST_ALL = '\ts.wsHub.Broadcast("note.created", &n)\n'
+# ⚠⚠ §941：广播那一步**搬到了共用那一份**（ingestNote）⇒ ⇒ ⇒ 锚点跟着搬
+#   ⇒ ⇒ ⇒ 语义不变：还是「调用点退回全体广播」，纯函数层（broadcastTarget）仍绿。
+BROADCAST_OLD = '\ts.wsHub.BroadcastTo(target.broadcastTarget(), "note.created", n)\n'
+BROADCAST_ALL = '\ts.wsHub.Broadcast("note.created", n)\n'
 
 # M3（D3）：id 退回随机 ⇒ 同一场会议精校两次 ⇒ 两条笔记（旧那条成孤儿）。
-ID_FIELD_OLD = '\t\tID:     target.noteID(),\n'
-ID_FIELD_RAND = '\t\tID:     randomID("note"),\n'
+# ⚠⚠ §941：结构体字面量里**少了一行**（UserID/WorkspaceID 不再在这里写）
+#   ⇒ ⇒ ⇒ gofmt 重新对齐了 ⇒ 锚点的**空格数**变了 ⇒ ⇒ ⇒ 锚点跟着更新
+#   ⇒ ⇒⇒ ⇒ 语义不变：还是「id 退回随机」。
+ID_FIELD_OLD = '\t\tID: target.noteID(),\n'
+ID_FIELD_RAND = '\t\tID: randomID("note"),\n'
 
 # M4：归属归一失效（空 uid 不再回落 "local"）。
+#
+# ⚠⚠ §941：归一**搬到了共用那一份**（newNoteTarget）⇒ ⇒ ⇒ 锚点跟着搬
+#   ⇒ ⇒⇒ ⇒ 语义不变：还是「空 uid 不再回落 local」。
 UID_FALLBACK_OLD = '\t\tuid = "local"\n'
 UID_FALLBACK_NONE = '\t\tuid = ""\n'
 
@@ -85,6 +105,8 @@ UID_FALLBACK_NONE = '\t\tuid = ""\n'
 #
 # ⚠ 与 M2 的区别：M2 换的是**调用方式**，M5 换的是**目标值**
 #   ⇒ ⇒ M5 会**额外**让纯函数层那条判据红 ⇒ 两者可区分。
+# ⚠⚠ §941：广播目标**搬到了共用那一份**（noteTarget.broadcastTarget）
+#   ⇒ ⇒ ⇒ 锚点跟着搬（**字面量一模一样**，只是换了文件）⇒ ⇒⇒ 语义不变。
 TARGET_OLD = '\treturn ws.BroadcastTarget{UserID: t.OwnerID}\n'
 TARGET_ZERO = '\treturn ws.BroadcastTarget{}\n'
 
@@ -136,15 +158,21 @@ DUP_NEW = (
 
 # ── 负控的锚点（语义等价 ⇒ 必须保持绿）────────────────────────────────
 
-# N1：只改**对齐空格**（gofmt 会改回去，但语义完全相同）。
-N1_OLD = '\t\tWorkspaceID:    target.WorkspaceID,\n'
-N1_NEW = '\t\tWorkspaceID: target.WorkspaceID,\n'
+# N1：只改**排版**（语义完全相同）。
+#
+# ⚠⚠ §941：落点那一行**搬到了共用那一份**，而且它是**赋值**（不是结构体字段）
+#   ⇒ ⇒ ⇒ 没有「对齐」可改 ⇒ ⇒ ⇒ 改成「`=` 前面多一个空格」
+#   ⇒ ⇒⇒ ⇒ 语义不变（Go 不在乎），判据必须仍然绿。
+N1_OLD = '\tn.WorkspaceID = target.WorkspaceID\n'
+N1_NEW = '\tn.WorkspaceID  = target.WorkspaceID\n'
 
 # N2：SQL **只改排版**（`$2` 两侧的空格）。
 N2_OLD = '\t\tWHERE notes.user_id = $2\n'
 N2_NEW = '\t\tWHERE notes.user_id=$2\n'
 
 # N3：广播目标**显式写空** WorkspaceID（零值本来就是空 ⇒ 语义等价）。
+#
+# ⚠⚠ §941：同上 ⇒ 广播目标搬到了共用那一份 ⇒ ⇒ ⇒ 锚点跟着搬。
 N3_OLD = '\treturn ws.BroadcastTarget{UserID: t.OwnerID}\n'
 N3_NEW = '\treturn ws.BroadcastTarget{UserID: t.OwnerID, WorkspaceID: ""}\n'
 
@@ -156,14 +184,14 @@ def body():
 
     # ── M1 必须红：落点丢租户 ────────────────────────────────────────
     def m1():
-        b.mutate(NOTE_GO, WS_FIELD_OLD, WS_FIELD_NONE, 'M1')
+        b.mutate(SHARED_GO, WS_FIELD_OLD, WS_FIELD_NONE, 'M1')
     b.case('M1 落点丢租户（workspace_id 落空串）⇒ 租户落点判据必须红', True,
            must_contain=['D1：落错租户'],
            mutate_fn=m1)
 
     # ── M2 必须红：广播退回全体广播 ──────────────────────────────────
     def m2():
-        b.mutate(NOTE_GO, BROADCAST_OLD, BROADCAST_ALL, 'M2')
+        b.mutate(SHARED_GO, BROADCAST_OLD, BROADCAST_ALL, 'M2')
     b.case('M2 广播退回全体广播 ⇒ 「别人收不到」判据必须红（纯函数层仍绿）', True,
            must_contain=['另一个用户收到了这条会议笔记'],
            mutate_fn=m2)
@@ -177,14 +205,14 @@ def body():
 
     # ── M4 必须红：归属归一失效 ──────────────────────────────────────
     def m4():
-        b.mutate(NOTE_GO, UID_FALLBACK_OLD, UID_FALLBACK_NONE, 'M4')
+        b.mutate(SHARED_GO, UID_FALLBACK_OLD, UID_FALLBACK_NONE, 'M4')
     b.case('M4 空归属不再回落 "local" ⇒ 归一判据必须红', True,
            must_contain=['空归属归一为'],
            mutate_fn=m4)
 
     # ── M5 必须红：广播目标漏填 UserID（零值 ⇒ 退化成全局广播）──────
     def m5():
-        b.mutate(NOTE_GO, TARGET_OLD, TARGET_ZERO, 'M5')
+        b.mutate(SHARED_GO, TARGET_OLD, TARGET_ZERO, 'M5')
     b.case('M5 广播目标漏填 UserID（零值 target）⇒ 目标判据 + 广播判据必须红', True,
            must_contain=['广播目标是零值', '另一个用户收到了这条会议笔记'],
            mutate_fn=m5)
@@ -234,7 +262,7 @@ def body():
 
     # ── N1 负控：只改对齐空格 ⇒ 必须保持绿 ───────────────────────────
     def n1():
-        b.mutate(NOTE_GO, N1_OLD, N1_NEW, 'N1')
+        b.mutate(SHARED_GO, N1_OLD, N1_NEW, 'N1')
     b.case('N1（负控）只改对齐空格 ⇒ 必须保持绿', False,
            must_not_contain=['FAIL'],
            mutate_fn=n1)
@@ -248,7 +276,7 @@ def body():
 
     # ── N3 负控：显式写空 WorkspaceID ⇒ 必须保持绿 ───────────────────
     def n3():
-        b.mutate(NOTE_GO, N3_OLD, N3_NEW, 'N3')
+        b.mutate(SHARED_GO, N3_OLD, N3_NEW, 'N3')
     b.case('N3（负控）广播目标显式写空 WorkspaceID（语义等价）⇒ 必须保持绿', False,
            must_not_contain=['FAIL'],
            mutate_fn=n3)
