@@ -2,6 +2,9 @@ package notes
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"os"
 	"testing"
 	"time"
 
@@ -11,9 +14,6 @@ import (
 // TestStore_Upsert_Insert tests inserting a new note
 func TestStore_Upsert_Insert(t *testing.T) {
 	pool := getTestPool(t)
-	if pool == nil {
-		t.Skip("no test database available")
-	}
 	defer cleanupTestData(t, pool)
 
 	store, err := NewStore(pool)
@@ -56,9 +56,6 @@ func TestStore_Upsert_Insert(t *testing.T) {
 // TestStore_Upsert_Update tests updating an existing note
 func TestStore_Upsert_Update(t *testing.T) {
 	pool := getTestPool(t)
-	if pool == nil {
-		t.Skip("no test database available")
-	}
 	defer cleanupTestData(t, pool)
 
 	store, err := NewStore(pool)
@@ -104,9 +101,6 @@ func TestStore_Upsert_Update(t *testing.T) {
 // TestStore_Upsert_InvalidDomain tests that invalid domains are handled
 func TestStore_Upsert_InvalidDomain(t *testing.T) {
 	pool := getTestPool(t)
-	if pool == nil {
-		t.Skip("no test database available")
-	}
 	defer cleanupTestData(t, pool)
 
 	store, err := NewStore(pool)
@@ -140,9 +134,6 @@ func TestStore_Upsert_InvalidDomain(t *testing.T) {
 // TestStore_List tests listing notes by user
 func TestStore_List(t *testing.T) {
 	pool := getTestPool(t)
-	if pool == nil {
-		t.Skip("no test database available")
-	}
 	defer cleanupTestData(t, pool)
 
 	store, err := NewStore(pool)
@@ -177,9 +168,6 @@ func TestStore_List(t *testing.T) {
 // TestStore_GetByID_NotFound tests GetByID returns nil for non-existent note
 func TestStore_GetByID_NotFound(t *testing.T) {
 	pool := getTestPool(t)
-	if pool == nil {
-		t.Skip("no test database available")
-	}
 
 	store, err := NewStore(pool)
 	if err != nil {
@@ -198,9 +186,6 @@ func TestStore_GetByID_NotFound(t *testing.T) {
 // TestStore_Delete tests soft delete functionality
 func TestStore_Delete(t *testing.T) {
 	pool := getTestPool(t)
-	if pool == nil {
-		t.Skip("no test database available")
-	}
 	defer cleanupTestData(t, pool)
 
 	store, err := NewStore(pool)
@@ -238,16 +223,85 @@ func TestStore_Delete(t *testing.T) {
 
 // Helper functions
 
+// getTestPool 建一个**隔离 schema** 的真 PG 连接池，用完即删。
+//
+// ⚠⚠ §940 的 D2：这一段原来是
+//
+//	func getTestPool(t *testing.T) *pgxpool.Pool { return nil }
+//
+// 注释写着「For now, we'll return nil to skip tests that need a real DB」
+// ——⇒ ⇒ 本包里**每一个** PG 用例都**无条件 SKIP** ⇒ ⇒ 不是「环境没配」，
+// 而是「这条用例在任何环境下都不会跑」⇒ ⇒ ⇒ §940 的 D1（时间戳往返偏一个
+// 时区差）就是这么活下来的：门禁里根本没有能看见它的用例。
+//
+// ⇒ ⇒ ⇒ 照抄 flashcards / calendar 的房规（每测试一个 schema + 结束 DROP
+// CASCADE）：只认测试专用 DSN（**无生产库回退** —— email 包踩过并把 schema
+// 留在生产库里的事故），search_path 钉在 `notes_test_<hex>`，收尾 DROP。
+//
+// ⚠ 没有 DSN 时 **Skip**（而不是返回 nil）：返回 nil 会让调用方的
+// `if pool == nil { t.Skip }` 变成一段**永远走不到**的分支 ⇒ ⇒ 读代码的人
+// 会以为「这些用例在跑」⇒ ⇒ ⇒ 判据的可信度不能靠注释维持。
 func getTestPool(t *testing.T) *pgxpool.Pool {
-	// Try to connect to test database
-	// This uses the same connection logic as the main app but points to a test DB
-	// For now, we'll return nil to skip tests that need a real DB
-	// In production, you'd set up a test database connection here
-	return nil
+	t.Helper()
+	return newNotesTestPool(t, nil)
+}
+
+// newNotesTestPool 是 getTestPool 的可调参版本。
+//
+// ⚠ runtimeParams 用来改**会话级**参数（例如 TimeZone）⇒ ⇒ §940 需要它
+// 来证明「往返精度**与会话时区无关**」⇒ ⇒ ⇒ 这个参数必须真的生效，
+// 否则那条判据就是「恰好在本机时区对」。
+func newNotesTestPool(t *testing.T, runtimeParams map[string]string) *pgxpool.Pool {
+	t.Helper()
+	dsn := os.Getenv("POCKET_TEST_POSTGRES_DSN")
+	if dsn == "" {
+		dsn = os.Getenv("POCKET_TEST_PG_DSN") // 兼容别名，与 rss/server 同口径
+	}
+	if dsn == "" {
+		t.Skip("POCKET_TEST_POSTGRES_DSN not set; skipping notes PG integration test")
+	}
+	ctx := context.Background()
+	rootPool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	b := make([]byte, 6)
+	if _, err := rand.Read(b); err != nil {
+		rootPool.Close()
+		t.Fatalf("rand: %v", err)
+	}
+	schema := "notes_test_" + hex.EncodeToString(b)
+	if _, err := rootPool.Exec(ctx, "CREATE SCHEMA "+schema); err != nil {
+		rootPool.Close()
+		t.Fatalf("create schema: %v", err)
+	}
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		rootPool.Close()
+		t.Fatalf("parse dsn: %v", err)
+	}
+	cfg.ConnConfig.RuntimeParams["search_path"] = schema + ",public"
+	for k, v := range runtimeParams {
+		cfg.ConnConfig.RuntimeParams[k] = v
+	}
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		rootPool.Close()
+		t.Fatalf("test pool: %v", err)
+	}
+	// 用 t.Cleanup 而不是让调用方 defer：下面任一 t.Fatalf 走
+	// runtime.Goexit() 时，栈上的 defer 不会执行，schema 就留在库里了。
+	t.Cleanup(func() {
+		pool.Close()
+		_, _ = rootPool.Exec(ctx, "DROP SCHEMA "+schema+" CASCADE")
+		rootPool.Close()
+	})
+	return pool
 }
 
 func cleanupTestData(t *testing.T, pool *pgxpool.Pool) {
-	// Clean up test data
+	// 行是隔离 schema 里的，schema 收尾会被整个 DROP ⇒ 这里只是让
+	// 同一个用例内的多次写入互不干扰。
 	_, err := pool.Exec(context.Background(), `DELETE FROM notes WHERE id LIKE 'test-note-%'`)
 	if err != nil {
 		t.Logf("cleanup warning: %v", err)

@@ -27,13 +27,20 @@ const (
 // The actual `notes` table in PG was created by a separate migration
 // (docs/appendix-a-pg-migration.sql) and uses different types from what
 // this store originally assumed: created_at / updated_at are
-// `timestamp without time zone DEFAULT CURRENT_TIMESTAMP`, `tags` is
+// `timestamp without time zone`, `tags` is
 // `jsonb DEFAULT '[]'::jsonb`, and there are extra columns (`content`,
 // `ai_summary`, `confidence_score`, `deleted_at`). This store now adapts
 // to that schema: timestamps are converted at the boundary, tags are
 // marshalled to / unmarshalled from jsonb arrays, and the `content`
 // column is filled from `Note.Snippet` on insert (the Go-side Note model
 // only carries Snippet today; full content lives in kxmemory).
+//
+// ⚠ §940：上面那句「`timestamp without time zone`」是**修复前**的状态 ——
+// 三个时间列现在被 migrate() 统一转成 **timestamptz**（绝对时刻）。
+// 原因与实测读数见 ensureTimestampColumns 的注释；一句话版本：
+// 裸墙钟在「写按会话时区渲染 / 读按 UTC 解释」下往返偏一个时区差
+// （实测 +8 小时）⇒ ⇒ 增量同步每轮都重推最近 8 小时的改动 ⇒ ⇒
+// 成本 ∝ 8 小时改动量，而不是 ∝ 新增量。
 type Store struct {
 	pool *pgxpool.Pool
 }
@@ -50,6 +57,10 @@ func (s *Store) migrate() error {
 	// Idempotent: table already exists in the DB (from appendix-a), so
 	// CREATE TABLE IF NOT EXISTS is a no-op. ADD COLUMN IF NOT EXISTS
 	// covers the (rare) fresh-install case.
+	//
+	// ⚠ §940：三个时间列现在直接声明成 **TIMESTAMPTZ**（新库一步到位）。
+	// 已存在的旧库（列是 `timestamp without time zone`）由下面的
+	// ensureTimestampColumns 转换 —— 见那里的完整说明。
 	_, err := s.pool.Exec(context.Background(), `
 	CREATE TABLE IF NOT EXISTS notes (
 		id TEXT PRIMARY KEY,
@@ -66,23 +77,205 @@ func (s *Store) migrate() error {
 		created_by_voice BOOLEAN DEFAULT TRUE,
 		ai_summary TEXT,
 		confidence_score REAL,
-		created_at TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-		updated_at TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-		deleted_at TIMESTAMP WITHOUT TIME ZONE
+		created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+		updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+		deleted_at TIMESTAMPTZ
 	);
 	ALTER TABLE notes ADD COLUMN IF NOT EXISTS content TEXT NOT NULL DEFAULT '';
 	ALTER TABLE notes ADD COLUMN IF NOT EXISTS snippet TEXT;
 	ALTER TABLE notes ADD COLUMN IF NOT EXISTS tags JSONB DEFAULT '[]'::jsonb;
 	ALTER TABLE notes ADD COLUMN IF NOT EXISTS ai_summary TEXT;
 	ALTER TABLE notes ADD COLUMN IF NOT EXISTS confidence_score REAL;
-	ALTER TABLE notes ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP WITHOUT TIME ZONE;
+	ALTER TABLE notes ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
 	CREATE INDEX IF NOT EXISTS idx_notes_user_domain ON notes(user_id, domain);
 	CREATE INDEX IF NOT EXISTS idx_notes_updated ON notes(updated_at DESC);
 	`)
 	if err != nil {
 		return fmt.Errorf("notes store migration failed: %w", err)
 	}
+	// ⚠ §940：旧库的时间列是 `timestamp without time zone` ⇒ 必须转。
+	if err := s.ensureTimestampColumns(context.Background()); err != nil {
+		return fmt.Errorf("notes store timestamp migration failed: %w", err)
+	}
 	return nil
+}
+
+// notesTimestampColumns 是 notes 表里必须保持 timestamptz 的三个时间列。
+//
+// ⚠ 为什么是这三个：created_at/updated_at 决定**增量同步的水位线**
+// （`GET /api/notes?since=` 按 updated_at 过滤），deleted_at 决定**墓碑**
+// （`ListDeletedIDsScoped` 按 deleted_at 比对）⇒ ⇒ 三个都直接参与
+// 「客户端能不能把改动同步到」这件事 ⇒ ⇒ 三个都必须是**绝对时刻**。
+var notesTimestampColumns = []string{"created_at", "updated_at", "deleted_at"}
+
+// notesTimestampAdvisoryLock 是 ensureTimestampColumns 用的事务级 advisory lock。
+//
+// ⚠⚠ §940：**这个锁的理由被实测推翻过一次** —— 原先的理由是错的，
+//
+//	记录在案，免得后人照着那个错故事改代码。
+//
+//	原说法：「类型转换**不是幂等**的 —— 第二个实例在第一个转完之后**再转一次**
+//	⇒ ⇒ 会把已经正确的 instant 当成墙钟再解释一遍 ⇒ ⇒ 数据被**静默**平移
+//	一个时区差。」
+//
+//	⇒ ⇒ **实测否掉了这个说法**：对**已经是 timestamptz** 的列再执行一次
+//	`ALTER ... TYPE timestamptz USING col AT TIME ZONE current_setting('TimeZone')`
+//	⇒ ⇒ epoch **一字不变**（把会话时区换成 America/New_York 再转一次也不变）
+//	⇒ ⇒ ⇒ **值上是幂等的** ⇒ ⇒ ⇒ 双实例重复转换**不会**平移数据。
+//	⇒ ⇒ ⇒ ⇒ 所以这个锁**不防漂移**。
+//
+// ⚠ 但**成本上不幂等** —— 这才是这个锁的真实理由（实测）：
+//
+//	每一次 `ALTER COLUMN ... TYPE` 都会**重写整张表**（实测 relfilenode 变）
+//	⇒ ⇒ ACCESS EXCLUSIVE + 全表拷贝 + WAL ⇒ ⇒⇒ 成本 ∝ 表大小。
+//	⇒ ⇒⇒ 多个实例同时启动 ⇒ 各自排一次全表重写 ⇒ ⇒⇒ 而它们转的是**同一张表**
+//	⇒ ⇒⇒ 于是一张表被重写 N 次 ⇒ ⇒⇒ 成本 ∝ N × 表大小。
+//
+// ⇒ ⇒⇒ 用 advisory lock 把「查类型 + 转换」整段串行化 ⇒ ⇒ 第二个实例拿到锁时
+// 看到的已经是**已转换**的类型 ⇒ ⇒ **直接跳过** ⇒ ⇒⇒ 全表只重写**一次**。
+const notesTimestampAdvisoryLock = 94020261020
+
+// notesColumnNeedsConversion 判定一个时间列**要不要**做类型转换。
+//
+// ⚠⚠ 它是**纯函数** ⇒ ⇒ ⇒ 好处有三个（都不是「为了写测试」才抽的）：
+//
+//	① **口径只有一份**：判断「这一列是不是已经是绝对时刻」这件事只有这一处
+//	   ⇒ ⇒ 将来有人加第四个时间列，判据自动跟着走；
+//	② **不依赖 PG 就能测** ⇒ ⇒ ⇒ CI 的 backend job（**没有 PG**）里
+//	   这一段逻辑**仍然有门**（不是「整段只能靠真 PG 才验得了」）；
+//	③ 变异脚本的锚点是**单行** ⇒ ⇒ 不会因为「中间多了一行注释」而失效
+//	   （★ 本轮踩过：锚点凭记忆写 ⇒ 与真实文件差一行注释 ⇒ 0 命中）。
+//
+// ⚠ 类型名只认 PG 的 `format_type` 输出形态（实测：`timestamptz` 输出的是
+// **"timestamp with time zone"** 而不是 "timestamptz"）⇒ ⇒ 别的类型**不猜**，
+// 直接报错 ⇒ ⇒ 宁可停下来说明，也不要默默按错的类型解释。
+func notesColumnNeedsConversion(typ string) (bool, error) {
+	switch typ {
+	case "timestamp with time zone":
+		return false, nil // ✅ 已经是绝对时刻
+	case "timestamp without time zone":
+		return true, nil // 裸墙钟 ⇒ 必须转
+	default:
+		return false, fmt.Errorf("unexpected column type %s", typ)
+	}
+}
+
+// ensureTimestampColumns 把 notes 表的时间列统一成 timestamptz。
+//
+// ⚠⚠ §940 的 D1（这是本函数存在的全部理由）：
+//
+// `timestamp without time zone` 在 PG 里是**裸墙钟**（naive wall clock）——
+// 它**不携带时区**，PG 对它的处理是：
+//
+//	写：参数是 timestamptz（instant）⇒ PG 用**会话时区**把这个 instant
+//	    **渲染成墙钟**再存进去；
+//	    `CURRENT_TIMESTAMP` 同样是会话时区的墙钟。
+//	读：pgx 把裸墙钟**按 UTC 解释** ⇒ ⇒ 往返误差 = 会话时区差。
+//
+// 实测（本机 PG 会话时区 Asia/Shanghai）：写进去再读回来，epoch 偏
+// **+28800 秒（+8 小时）** ⇒ ⇒ 笔记的 updated_at 一律落在**未来 8 小时**
+// ⇒ ⇒ `since` 过滤**永远命中** ⇒ ⇒ **每一轮增量轮询都把最近 8 小时的
+// 改动重推一遍** ⇒ ⇒ 成本 ∝ **8 小时的改动量**，而不是 ∝ **新增量**
+// ⇒ ⇒⇒ 这正是属主要求（「成本只取决于存储/新增量」）的反面。
+//
+// ⇒ ⇒ ⇒ 为什么是 timestamptz：它是**绝对时刻**，与会话时区无关；
+// **全仓其余 store 用的都是它**（meeting / redclaw / lobster / auth /
+// quota / finance / llm_gateway_nodes …）⇒ ⇒ notes 是**唯一的例外** ⇒
+// ⇒ ⇒ ⇒ 这一步同时把 notes 拉回全仓口径。
+//
+// ⚠ 存量行的还原：`timestamp without time zone` 里的值是**写它那一刻的会话
+// 墙钟** ⇒ ⇒ 要还原成 instant，必须用**当时的会话时区**去解释 ⇒ ⇒
+// 这里用 `AT TIME ZONE current_setting('TimeZone')` ⇒ ⇒ **不硬编码 '-8 hours'**
+// ⇒ ⇒ 换到别的部署时区上也不会错得更多。
+// ⚠⚠ **如实登记的残余**：如果 PG 的会话时区在「写入」与「本次迁移」之间
+// **被改过**，那批行会被还原成「按新时区解释的墙钟」⇒ ⇒ 仍偏一个时区差。
+// ⇒ ⇒ 本机/生产的会话时区在观测期内**未变**（⛔ 未实测生产），故按当前
+// 会话时区还原是**当下最准**的还原；真正的根治是让 PG 的时区**不再变动**。
+//
+// ⚠ 幂等：**值上**幂等（实测：重复转换 epoch 不变），**成本上**不幂等
+// （实测：每次转换都重写整表）⇒ ⇒⇒ 所以「先查列类型、已是 timestamptz 就
+// 直接跳过」这一步不是可有可无的优化：它保证**每次进程启动对 notes 表零 DDL**
+// ——既不拿 ACCESS EXCLUSIVE，也不重写表。
+// ⇒ ⇒⇒ 这一条由 store_timestamp_test.go 的
+// 「第二次创建 store 不得重写 notes 表」判据钉住。
+//
+// ⚠⚠ DEFAULT **不需要**额外处理（实测，§940）：
+//
+//	PG 在转换列类型时会**自己**把默认值表达式适配到新类型：实测一个
+//	`TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP` 的列转成
+//	timestamptz 之后，`pg_get_expr` 仍然是 `CURRENT_TIMESTAMP`，且转换后
+//	新插入的行拿到的是**正确的 instant**（epoch 与 `now()` 一致）。
+//	⇒ ⇒⇒ 进一步实测：旧默认值若是 `now()::timestamp` 或 `localtimestamp`
+//	（转换后仍保留裸墙钟形态），新插入的行**同样**是正确的 instant
+//	——因为往 timestamptz 列赋值时那次转换**按会话时区**解释那个墙钟。
+//	⇒ ⇒⇒ ⇒ 所以这里**不需要**再发一条 `SET DEFAULT CURRENT_TIMESTAMP`
+//	⇒ ⇒⇒ ⇒ 那条 DDL 是「每次启动都要再拿一次 ACCESS EXCLUSIVE」的纯开销，
+//	而且它当年被写进来时的理由（「PG 会保留那个 cast ⇒ 得显式重设」）
+//	—— 经实测是**错的**（保留 cast 也不会让 instant 变错）。
+func (s *Store) ensureTimestampColumns(ctx context.Context) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// ⚠ 并发护栏：见 notesTimestampAdvisoryLock 的说明。
+	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", int64(notesTimestampAdvisoryLock)); err != nil {
+		return fmt.Errorf("advisory lock: %w", err)
+	}
+
+	// to_regclass('notes') 走 search_path 解析 ⇒ 命中的就是**本连接真正
+	// 使用的那张表**（测试里是隔离 schema，生产是 public）。
+	rows, err := tx.Query(ctx, `
+		SELECT a.attname, format_type(a.atttypid, a.atttypmod)
+		FROM pg_attribute a
+		WHERE a.attrelid = to_regclass('notes')
+		  AND a.attnum > 0 AND NOT a.attisdropped
+		  AND a.attname = ANY($1)`, notesTimestampColumns)
+	if err != nil {
+		return fmt.Errorf("read column types: %w", err)
+	}
+	types := map[string]string{}
+	for rows.Next() {
+		var name, typ string
+		if err := rows.Scan(&name, &typ); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan column type: %w", err)
+		}
+		types[name] = typ
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate column types: %w", err)
+	}
+
+	for _, col := range notesTimestampColumns {
+		typ, ok := types[col]
+		if !ok {
+			// 列不存在（不该发生：migrate() 的 ADD COLUMN IF NOT EXISTS 保证它在）
+			continue
+		}
+		needs, err := notesColumnNeedsConversion(typ)
+		if err != nil {
+			return fmt.Errorf("notes.%s: %w", col, err)
+		}
+		if !needs {
+			continue // ✅ 已经是绝对时刻
+		}
+		// ⚠ 列名来自上面的常量表，不是用户输入 ⇒ 拼进 DDL 是安全的。
+		alter := fmt.Sprintf(
+			"ALTER TABLE notes ALTER COLUMN %s TYPE timestamptz USING %s AT TIME ZONE current_setting('TimeZone')",
+			col, col)
+		if _, err := tx.Exec(ctx, alter); err != nil {
+			return fmt.Errorf("alter %s: %w", col, err)
+		}
+	}
+	// ⚠ 这里**故意没有**「SET DEFAULT CURRENT_TIMESTAMP」这一段 ——
+	// 理由见本函数的文档注释（实测：PG 自己会适配默认值表达式；即便旧
+	// 默认值仍是裸墙钟形态，往 timestamptz 列赋值时那次转换也按会话时区
+	// 解释 ⇒ instant 仍然正确）⇒ ⇒⇒ 而那条 DDL 会让**每次启动**都再拿一次
+	// ACCESS EXCLUSIVE ⇒ ⇒⇒ ⇒ 删掉它，「启动时对 notes 表零 DDL」才成立。
+	return tx.Commit(ctx)
 }
 
 // Upsert caches or updates a note's metadata after kxmemory confirms it.
@@ -118,8 +311,10 @@ func (s *Store) Upsert(ctx context.Context, n *Note) error {
 	}
 
 	// Convert epoch-second timestamps (Note.CreatedAt / UpdatedAt are int64
-	// seconds) to time.Time for PG `timestamp` columns. CreatedAt == 0
-	// means "not set" → let DB default kick in.
+	// seconds) to time.Time for PG `timestamptz` columns.
+	// ⚠ §940：列现在是 timestamptz（绝对时刻）⇒ ⇒ pgx 直接送 instant ⇒
+	// 往返**精确**（修复前是裸墙钟 ⇒ 往返偏一个会话时区差，实测 +8h）。
+	// CreatedAt == 0 means "not set" → let DB default kick in.
 	var createdAt, updatedAt any
 	if n.CreatedAt > 0 {
 		createdAt = time.Unix(n.CreatedAt, 0).UTC()
