@@ -22,12 +22,16 @@ onMounted(() => {
   if (agentStore.agents.length === 0) {
     // §847：store 会 rethrow，接住以免变成未处理 rejection；失败已被转成
     // `agentStore.error` 并由模板渲染（同一个 ref，跨视图共享）。
-    agentStore.loadAgents().catch(() => {})
+    agentStore.loadAgents().catch(() => {
+      // 失败已由 store 转成 `agentStore.error` 并由模板渲染（跨视图共享同一个 ref）⇒ 这里只接住 rethrow。
+    })
   }
 })
 
 function retryLoad() {
-  agentStore.loadAgents().catch(() => {})
+  agentStore.loadAgents().catch(() => {
+    // 同上：失败已由 store 转成 `agentStore.error` 并由模板渲染，这里只接住 rethrow。
+  })
 }
 
 /**

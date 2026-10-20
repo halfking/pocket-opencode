@@ -199,7 +199,10 @@ describe('§854 · D8/D8b 用户主动触发的自动化任务动作，失败必
     // 这一条是本节的核心防呆：判据若把「所有空 catch」判红，就会逼着人把
     // `store.load` 的 catch 去掉 —— 那是错的，load 失败会设 store.error，
     // 而模板渲染了它（还带重试按钮）。
-    assert.match(LIST, /store\.load\([^)]*\)\.catch\(\(\) => \{\}\)/,
+    // ⚠ §948：load 的 catch 从「空块」改成了「体内带一句理由注释的空块」
+    //   ⇒ 形态变了、**语义没变**（仍是「失败由 store.error 呈现、这里只接住 rethrow」）
+    //   ⇒ 本条的正则随之放宽到「体里只有 `//` 注释」，并保留原说明。
+    assert.match(LIST, /store\.load\([^)]*\)\.catch\(\(\) => \{\s*\n(?:\s*\/\/[^\n]*\n)*\s*\}\)/,
       'load 的空 catch 形态变了 —— 若已改成 toast，请同步更新本条的说明')
     assert.equal(rendersStoreError(strip(LIST)), true,
       '列表页不再渲染 store.error ⇒ load 的空 catch 就成了真缺口')

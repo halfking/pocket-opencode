@@ -74,7 +74,11 @@ export const useDeviceStore = defineStore('device', {
       } catch (err) {
         console.warn('[device] 设备档位未能写入本地存储（本次会话内有效，重启后会回到旧值）：', err)
       }
-      import('../native/config-sync/prefs').then((m) => m.persistAppPrefs()).catch(() => {})
+      import('../native/config-sync/prefs').then((m) => m.persistAppPrefs()).catch((e) => {
+        // 应用偏好没能落进本地库 ⇒ 本次会话内有效，重启后回到旧值。
+        // 跨设备同步靠的才是这条持久化路径 ⇒ 失败时别处看不到 ⇒ 留痕。
+        console.warn('[device] 应用偏好未能持久化：', e)
+      })
     },
     setSttPreference(p: 'local' | 'cloud' | 'auto') {
       this.sttPreference = p
@@ -83,7 +87,11 @@ export const useDeviceStore = defineStore('device', {
       } catch (err) {
         console.warn('[device] 语音识别偏好未能写入本地存储（本次会话内有效，重启后会回到旧值）：', err)
       }
-      import('../native/config-sync/prefs').then((m) => m.persistAppPrefs()).catch(() => {})
+      import('../native/config-sync/prefs').then((m) => m.persistAppPrefs()).catch((e) => {
+        // 应用偏好没能落进本地库 ⇒ 本次会话内有效，重启后回到旧值。
+        // 跨设备同步靠的才是这条持久化路径 ⇒ 失败时别处看不到 ⇒ 留痕。
+        console.warn('[device] 应用偏好未能持久化：', e)
+      })
     },
   },
 })

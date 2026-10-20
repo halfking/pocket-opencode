@@ -242,10 +242,16 @@ async function load() {
 
     if (found && !found.isRead) {
       // 已读状态回写不挡首屏：不等它。
-      void emailsStore.markRead(found.id, true).catch(() => {}).then(() => {
-        found.isRead = true
-        markListDirty('email')
-      })
+      void emailsStore.markRead(found.id, true)
+        .catch((e) => {
+          // 已读状态没能写回本地库 ⇒ 内存里已乐观置为已读，重进页面又变回未读。
+          // 界面上看不出差别 ⇒ 别处看不到 ⇒ 留痕。
+          console.warn('[email] 已读状态未能写回本地库：', e)
+        })
+        .then(() => {
+          found.isRead = true
+          markListDirty('email')
+        })
     }
 
     if (!found) return

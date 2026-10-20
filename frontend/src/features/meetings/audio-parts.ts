@@ -37,7 +37,10 @@ export async function saveAudioPart(
     try {
       const dir = `recordings/${meetingId}`
       const path = `${dir}/part-${seq}.webm`
-      await Filesystem.mkdir({ path: dir, directory: Directory.Data, recursive: true }).catch(() => {})
+      await Filesystem.mkdir({ path: dir, directory: Directory.Data, recursive: true }).catch(() => {
+        // mkdir 失败不致命：紧接着的 writeFile 会自己抛出去，被下面的 catch 收成
+        // filePath = null（改为把 base64 内联存库）⇒ 这里的失败不会消失。
+      })
       await Filesystem.writeFile({
         path,
         data: dataBase64,

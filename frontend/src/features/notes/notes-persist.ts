@@ -599,7 +599,11 @@ async function mirrorNoteToBackend(note: LocalNote): Promise<void> {
       createdByVoice: note.createdByVoice,
     }),
   })
-  await http(`/api/notes/${note.id}/classify`, { method: 'POST' }).catch(() => {})
+  await http(`/api/notes/${note.id}/classify`, { method: 'POST' }).catch((e) => {
+    // 自动分类没上报成功 ⇒ 这条笔记不会被服务端归类（正文照常落库，主链路不受影响）。
+    // 没有别处会提示 ⇒ 留痕。
+    console.warn('[notes] 笔记自动分类未能上报：', e)
+  })
   void res
 }
 

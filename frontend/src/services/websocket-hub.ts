@@ -190,6 +190,8 @@ class WebSocketHub {
     
     this.reconnectTimer = setTimeout(() => {
       this.connect(this.url).catch(error => {
+        // 重连失败就地消化：正常的 onerror 之后必到 onclose ⇒ onclose 会再排一次
+        // 退避重连，这里再抛出去只会变成未处理 rejection ⇒ 只留痕。
         console.error('[WebSocketHub] 重连失败', error)
       })
     }, delay)

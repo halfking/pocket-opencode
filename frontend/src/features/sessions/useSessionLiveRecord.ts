@@ -33,7 +33,12 @@ export function useSessionLiveRecord(sessionId: () => string, sessionTitle: () =
   })
 
   onMounted(async () => {
-    const leftover = await getRecordingBySession(sessionId()).catch(() => null)
+    // 查不到遗留录音 ⇒ 不弹「上次录音未正常结束」提示（用户以为自己没录过）。
+    // 「查询失败」与「确实没有遗留」在界面上完全同形 ⇒ 留痕。
+    const leftover = await getRecordingBySession(sessionId()).catch((e) => {
+      console.warn('[live-record] 遗留录音查询失败（可能漏报「上次录音未正常结束」）：', e)
+      return null
+    })
     if (leftover) {
       // ⚠ §834/D2：这句话现在是**共享常量** —— 原来只有这里有一份，
       // 而 MeetingDetailView 对同一状态却是「静默自动开麦」。两处引同一个常量，

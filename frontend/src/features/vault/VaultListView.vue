@@ -195,19 +195,34 @@ async function lock() {
   entries.value = []
 }
 
+/**
+ * §948：复制失败**不许**再说「已复制」。
+ *
+ * 原来这里是 `writeText(pwd).catch(() => {})` 之后无条件 `toast.success('已生成并复制…')`
+ * ⇒ 剪贴板被别的应用锁住时，界面仍然报「已复制」，用户照着提示去找密码却找不到
+ * ⇒ 界面说谎比复制失败本身更糟（与 §868「说出口的话必须是真的」同一条纪律）。
+ */
+async function copyToClipboard(pwd: string): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(pwd)
+    toast.success('已生成并复制（30秒后剪贴板自动清空）')
+  } catch (e) {
+    console.warn('[vault] 密码未能复制到剪贴板：', e)
+    toast.error('已生成，但复制失败（请手动记录后再保存）')
+  }
+}
+
 async function generate() {
   try {
     const pwd = await keystore.generatePassword({ length: 20, upper: true, lower: true, digits: true, symbols: true })
-    await navigator.clipboard.writeText(pwd).catch(() => {})
-    toast.success('已生成并复制（30秒后剪贴板自动清空）')
+    await copyToClipboard(pwd)
   } catch {
     // cap-keystore 不可用：用 Web Crypto 生成
     const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*'
     const arr = new Uint32Array(20)
     crypto.getRandomValues(arr)
     const pwd = Array.from(arr, (n) => chars[n % chars.length]).join('')
-    await navigator.clipboard.writeText(pwd).catch(() => {})
-    toast.success('已生成并复制（30秒后剪贴板自动清空）')
+    await copyToClipboard(pwd)
   }
 }
 

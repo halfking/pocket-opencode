@@ -224,7 +224,11 @@ if (Capacitor.isNativePlatform()) {
     void submitSystemBack()
   })
   onUnmounted(() => {
-    void backSub.then(h => h.remove()).catch(() => {})
+    void backSub.then(h => h.remove()).catch((e) => {
+      // 移除监听失败 ⇒ 订阅残留：下次进页面会再挂一个，硬件返回键会触发两次。
+      // 不影响本次交互，但「返回一次却跳了两层」只能靠这条线索定位。
+      console.warn('[app-layout] 返回键监听移除失败：', e)
+    })
   })
 }
 

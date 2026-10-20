@@ -514,18 +514,42 @@ class LocalDB {
         await this.conn.execute(col.sql, false)
       } catch { /* 列可能已存在 */ }
     }
-    await this.conn.execute('CREATE INDEX IF NOT EXISTS idx_email_invoices_email_date ON local_email_invoices(email_date DESC);', false).catch(() => {})
-    await this.conn.execute('CREATE INDEX IF NOT EXISTS idx_email_invoices_dirty ON local_email_invoices(dirty);', false).catch(() => {})
-    await this.conn.execute('CREATE INDEX IF NOT EXISTS idx_emails_updated ON local_emails(updated_at DESC);', false).catch(() => {})
-    await this.conn.execute('CREATE INDEX IF NOT EXISTS idx_meetings_updated ON local_meetings(updated_at DESC);', false).catch(() => {})
+    await this.conn.execute('CREATE INDEX IF NOT EXISTS idx_email_invoices_email_date ON local_email_invoices(email_date DESC);', false).catch((e) => {
+      // §948：DDL / 回填失败不致命，但必须留痕 —— 索引没建出来 ⇒ 列表查询变慢；
+      // 表没建出来 ⇒ 对应功能直接不可用；回填没跑 ⇒ updated_at 不收敛。
+      console.warn('[local-db] DDL 执行失败（本地库已退化）：', e)
+    })
+    await this.conn.execute('CREATE INDEX IF NOT EXISTS idx_email_invoices_dirty ON local_email_invoices(dirty);', false).catch((e) => {
+      // §948：DDL / 回填失败不致命，但必须留痕 —— 索引没建出来 ⇒ 列表查询变慢；
+      // 表没建出来 ⇒ 对应功能直接不可用；回填没跑 ⇒ updated_at 不收敛。
+      console.warn('[local-db] DDL 执行失败（本地库已退化）：', e)
+    })
+    await this.conn.execute('CREATE INDEX IF NOT EXISTS idx_emails_updated ON local_emails(updated_at DESC);', false).catch((e) => {
+      // §948：DDL / 回填失败不致命，但必须留痕 —— 索引没建出来 ⇒ 列表查询变慢；
+      // 表没建出来 ⇒ 对应功能直接不可用；回填没跑 ⇒ updated_at 不收敛。
+      console.warn('[local-db] DDL 执行失败（本地库已退化）：', e)
+    })
+    await this.conn.execute('CREATE INDEX IF NOT EXISTS idx_meetings_updated ON local_meetings(updated_at DESC);', false).catch((e) => {
+      // §948：DDL / 回填失败不致命，但必须留痕 —— 索引没建出来 ⇒ 列表查询变慢；
+      // 表没建出来 ⇒ 对应功能直接不可用；回填没跑 ⇒ updated_at 不收敛。
+      console.warn('[local-db] DDL 执行失败（本地库已退化）：', e)
+    })
     await this.conn.execute(
       'UPDATE local_emails SET updated_at = COALESCE(NULLIF(updated_at, 0), date, created_at) WHERE IFNULL(updated_at, 0) = 0;',
       false,
-    ).catch(() => {})
+    ).catch((e) => {
+      // §948：DDL / 回填失败不致命，但必须留痕 —— 索引没建出来 ⇒ 列表查询变慢；
+      // 表没建出来 ⇒ 对应功能直接不可用；回填没跑 ⇒ updated_at 不收敛。
+      console.warn('[local-db] DDL 执行失败（本地库已退化）：', e)
+    })
     await this.conn.execute(
       'UPDATE local_meetings SET updated_at = COALESCE(NULLIF(updated_at, 0), started_at, created_at) WHERE IFNULL(updated_at, 0) = 0;',
       false,
-    ).catch(() => {})
+    ).catch((e) => {
+      // §948：DDL / 回填失败不致命，但必须留痕 —— 索引没建出来 ⇒ 列表查询变慢；
+      // 表没建出来 ⇒ 对应功能直接不可用；回填没跑 ⇒ updated_at 不收敛。
+      console.warn('[local-db] DDL 执行失败（本地库已退化）：', e)
+    })
     await this.conn.execute(`
       CREATE TABLE IF NOT EXISTS local_list_snapshots (
         namespace TEXT NOT NULL,
@@ -535,7 +559,11 @@ class LocalDB {
         dirty INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY (namespace, id)
       );
-    `, false).catch(() => {})
+    `, false).catch((e) => {
+      // §948：DDL / 回填失败不致命，但必须留痕 —— 索引没建出来 ⇒ 列表查询变慢；
+      // 表没建出来 ⇒ 对应功能直接不可用；回填没跑 ⇒ updated_at 不收敛。
+      console.warn('[local-db] DDL 执行失败（本地库已退化）：', e)
+    })
     await this.conn.execute(`
       CREATE TABLE IF NOT EXISTS local_ai_conversations (
         id TEXT PRIMARY KEY,
@@ -548,7 +576,11 @@ class LocalDB {
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
       );
-    `, false).catch(() => {})
+    `, false).catch((e) => {
+      // §948：DDL / 回填失败不致命，但必须留痕 —— 索引没建出来 ⇒ 列表查询变慢；
+      // 表没建出来 ⇒ 对应功能直接不可用；回填没跑 ⇒ updated_at 不收敛。
+      console.warn('[local-db] DDL 执行失败（本地库已退化）：', e)
+    })
     await this.conn.execute(`
       CREATE TABLE IF NOT EXISTS local_ai_messages (
         id TEXT PRIMARY KEY,
@@ -559,7 +591,11 @@ class LocalDB {
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
       );
-    `, false).catch(() => {})
+    `, false).catch((e) => {
+      // §948：DDL / 回填失败不致命，但必须留痕 —— 索引没建出来 ⇒ 列表查询变慢；
+      // 表没建出来 ⇒ 对应功能直接不可用；回填没跑 ⇒ updated_at 不收敛。
+      console.warn('[local-db] DDL 执行失败（本地库已退化）：', e)
+    })
     await this.conn.execute(
       "INSERT OR IGNORE INTO _schema_migrations (version, description, applied_at) VALUES ('2026-09-08-list-sync-v1', '列表本地优先 dirty/email_date/client_id', strftime('%s', 'now') * 1000);",
       false,
@@ -694,7 +730,11 @@ class LocalDB {
       'CREATE INDEX IF NOT EXISTS idx_note_files_note ON local_note_files(note_id);',
       false,
     )
-    await this.conn.execute('CREATE INDEX IF NOT EXISTS idx_notes_status ON local_notes(status) WHERE deleted_at IS NULL;', false).catch(() => {})
+    await this.conn.execute('CREATE INDEX IF NOT EXISTS idx_notes_status ON local_notes(status) WHERE deleted_at IS NULL;', false).catch((e) => {
+      // §948：DDL / 回填失败不致命，但必须留痕 —— 索引没建出来 ⇒ 列表查询变慢；
+      // 表没建出来 ⇒ 对应功能直接不可用；回填没跑 ⇒ updated_at 不收敛。
+      console.warn('[local-db] DDL 执行失败（本地库已退化）：', e)
+    })
 
     // BUG-AH：三个 FTS 触发器原来是把**多语句字符串**整块丢给
     // `this.conn.execute()`。触发器体里本来就带分号（`local_notes_ad` / `_au`

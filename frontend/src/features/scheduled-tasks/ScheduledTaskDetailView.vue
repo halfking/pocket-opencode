@@ -37,7 +37,11 @@ const apiError = useApiError()
 const toast = useToast()
 const errorText = computed(() => (store.error ? apiError(store.error, 'errors.loadTasksFailed') : ''))
 function runErrorText(raw: string) { return apiError(raw, 'errors.loadTasksFailed') }
-function load() { return store.loadOne(taskId.value).catch(() => {}) }
+function load() {
+  return store.loadOne(taskId.value).catch(() => {
+    // 失败已由 store 置成 `store.error` 并 rethrow，模板渲染同一个 ref ⇒ 这里只接住它。
+  })
+}
 async function runNow() {
   if (!task.value || running.value) return
   running.value = true

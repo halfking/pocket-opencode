@@ -235,7 +235,10 @@ describe('负控：把行为改回去必须报红', () => {
   it('负控4：deleteNoteBodyFile 里放回 rmdir → 报红', () => {
     assert.ok(deleteBodyFileBody, '拿不到 deleteNoteBodyFile() 函数体')
     const mutated = deleteBodyFileBody.replace(
-      /await Filesystem\.deleteFile\([^)]*\)\.catch\(\(\) => \{\}\)/,
+      // ⚠ §948：deleteFile 的 catch 从「`.catch(() => {})`」改成了
+      //   「`.catch((e) => { 理由注释 + console.warn })`」⇒ 锚点随之更新
+      //   （语义不变：仍然删的是那个文件，只是失败时留了痕）。
+      /await Filesystem\.deleteFile\([^)]*\)\.catch\(\(e\) => \{[\s\S]*?\n    \}\)/,
       "await Filesystem.rmdir({ path: rel, directory: Directory.Data, recursive: true }).catch(() => {})",
     )
     assert.notEqual(mutated, deleteBodyFileBody, '变异没生效：源码结构与预期不符，先看源码再改门')

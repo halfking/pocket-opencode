@@ -96,7 +96,11 @@ async function tryCapacitorFs(): Promise<(FsBackend & { kind: 'capacitor' }) | n
     const mod = await import('@capacitor/filesystem')
     const { Filesystem, Directory, Encoding } = mod
     // 探测一次:目录能 mkdir 说明原生桥在。
-    await Filesystem.mkdir({ path: SANDBOX_ROOT, directory: Directory.Data, recursive: true }).catch(() => {})
+    // ⚠ §948：这里**不能**吞掉 mkdir 的失败 —— 原来写成 `.catch(() => {})`，
+    // 于是这次「探测」**永远通过**：原生桥真坏时也会返回 capacitor 后端，
+    // 后面每个 read/write 都在真机上失败。改成让错误抛到外层 catch
+    // ⇒ 返回 null ⇒ 走 MemoryFsBackend 兜底（这才是上面那句注释的意思）。
+    await Filesystem.mkdir({ path: SANDBOX_ROOT, directory: Directory.Data, recursive: true })
     const join = (p: string) => (p ? `${SANDBOX_ROOT}/${p}` : SANDBOX_ROOT)
     return {
       kind: 'capacitor',

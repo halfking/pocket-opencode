@@ -71,7 +71,10 @@ const installTarget = ref<MarketplacePackage | null>(null)
 const versionsByPackage = ref<Record<string, PackageVersion[]>>({})
 
 onMounted(() => {
-  store.loadPackages('agent').catch(() => {})
+  store.loadPackages('agent').catch(() => {
+    // loadPackages 内部已 catch 并置成 `store.error`（不会 rethrow）⇒ 这里接不到东西，
+    // 只是防止它的实现将来改成往外抛时产生未处理 rejection。
+  })
 })
 
 const filtered = computed(() => {
@@ -139,7 +142,9 @@ async function runInstall() {
 }
 
 function refresh() {
-  return store.loadPackages('agent').catch(() => {})
+  return store.loadPackages('agent').catch(() => {
+    // 同上：loadPackages 内部已置成 `store.error`，这里只是防御性地接住未来的 rethrow。
+  })
 }
 </script>
 

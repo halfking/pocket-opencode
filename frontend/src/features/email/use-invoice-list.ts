@@ -209,7 +209,11 @@ export function useInvoiceList() {
     } finally {
       loading.value = false
     }
-    void pushDirtyInvoices().catch(() => {})
+    void pushDirtyInvoices().catch((err) => {
+      // 脏发票没能推上服务端 ⇒ 状态仍停在本地，下次拉列表会再推一次。
+      // 这条链路上没有别处会报 ⇒ 留痕。
+      console.warn('[email] 脏发票未能推送到服务端：', err)
+    })
   }
   async function loadMore() {
     if (loading.value || loadingMore.value || !hasMore.value) return

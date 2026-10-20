@@ -36,7 +36,10 @@ onMounted(async () => {
     // §847：原来是无保护 `await`，store rethrow 时整个 onMounted 拒绝 ⇒
     // 未处理 rejection，且后续初始化全部不执行。改成 catch 后本函数继续跑完，
     // 失败状态由 `agent` 为空这一事实与页面自身的空态表达。
-    await agentStore.loadAgents().catch(() => {})
+    await agentStore.loadAgents().catch(() => {
+      // 失败已由 store 转成 `agentStore.error`（无本地缓存时）并 rethrow，
+      // 页面自身的空态表达同一件事 ⇒ 这里只负责接住 rethrow，不中断后续初始化。
+    })
   }
 })
 

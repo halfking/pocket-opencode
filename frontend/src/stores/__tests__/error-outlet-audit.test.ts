@@ -422,7 +422,12 @@ describe('§847 · 变异负控（每条都必须让上面那把尺子转红）'
   })
 
   it('★ 变异 D：拿掉 `loadAgents` 的 `.catch` ⇒ 调用点判据转红', () => {
-    const mutated = LIB.replace('agentStore.loadAgents().catch(() => {})', 'agentStore.loadAgents()')
+    // ⚠ §948：loadAgents 的 catch 从「`.catch(() => {})`」改成了
+    //   「`.catch(() => { 理由注释 })`」⇒ 锚点随之更新（语义不变）。
+    const mutated = LIB.replace(
+      /agentStore\.loadAgents\(\)\.catch\(\(\) => \{[\s\S]*?\n  \}\)/,
+      'agentStore.loadAgents()',
+    )
     assert.notEqual(mutated, LIB, '★ 变异没生效')
     const bare = mutated.split('\n').filter((l) => l.includes('loadAgents(') && !l.includes('.catch('))
     assert.ok(bare.length > 0, '变异后仍有带 catch 的调用点，负控无效')
