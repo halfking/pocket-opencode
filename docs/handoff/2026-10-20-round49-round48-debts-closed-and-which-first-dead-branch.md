@@ -308,6 +308,11 @@ oracle: /opt/homebrew/bin/gofmt（go1.27.2，backend/go.mod 声明 Go 1.27）
 这是把它原有的「找不到 gofmt ⇒ exit 1」契约**按同一条纪律**延长，
 而不是新增一条更严的规则。
 
+★ **这两条「无法判定」路径都实跑过**（不是只读代码）：把 `backend/go.mod` 的 go 指令
+临时改成 `1.99.1`（本机没有任何 1.99 的 gofmt）⇒ **两道门都 exit 1**，
+消息把探测到的候选与版本都列出来（`1.27.2` / `1.24.5`）+ 给出修法；
+还原后 md5 逐字节一致。⇒ 「门不会在量具失效时静默放行」这句话**有读数支撑**。
+
 ---
 
 ## 4. 验证
@@ -317,6 +322,7 @@ oracle: /opt/homebrew/bin/gofmt（go1.27.2，backend/go.mod 声明 Go 1.27）
 | `node scripts/check-doc-empty-string-literal.mjs --selftest` | EXIT 0 — 实跑 **51** / 声明 51 |
 | 变异 M1（去掉 gofmt 大版本校验） | **EXIT 1** — 「版本不符的候选必须被拒绝」转红 |
 | 变异 M2（连 `declared` 守卫一起去掉） | **EXIT 1** — 2 条转红 |
+| **探针：把 `backend/go.mod` 的 go 指令改成 `1.99.1`（本机没有 1.99 的 gofmt）** | **两道门都 EXIT 1** —— `check-gofmt.mjs` 与 `check-doc-empty-string-literal.mjs` 各自打印「无法判定」并列出探测到的候选与版本（`1.27.2` / `1.24.5`）⇒ **门不会在量具失效时静默放行**。还原后 md5 `a9eb7a32...` 逐字节一致 |
 | `node scripts/check-doc-empty-string-literal.mjs` | EXIT 0 — 全仓 **0 命中**（附 oracle 打印） |
 | 同上（在 `frontend/` cwd 下跑，验证 ROOT 不依赖 cwd） | EXIT 0 — 0 命中 |
 | 正控：`//` 形态真 doc 注入 `''` | **EXIT 1** — 点名 `store_select_scan_parity_test.go:76`；gofmt 独立量具一致 |
