@@ -140,13 +140,15 @@
  */
 import { spawnSync } from 'node:child_process'
 import {
-  readFileSync, readdirSync, statSync, realpathSync,
+  readFileSync, readdirSync, statSync,
   mkdtempSync, mkdirSync, copyFileSync, writeFileSync, rmSync,
 } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { whichFirst, gofmtCandidates } from './lib/which-first.mjs'
+import {
+  readDeclaredGoMinor, gofmtVersionOf, pickMatchingGofmt, resolveAuthoritativeGofmt,
+} from './lib/gofmt-oracle.mjs'
 
 const SELF = path.resolve(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(path.dirname(SELF), '..')
@@ -198,92 +200,16 @@ const countRightQuote = (s) => {
 //   逐个候选探测版本，取第一个与 backend/go.mod 声明的大版本一致者；
 //   一个都没有 ⇒ 「无法判定」，exit 1（不是「通过」）。
 
-/**
- * 读 backend/go.mod 的 `go` 指令 ⇒ 声明的大版本（如 '1.27'）。
- * 读不到 ⇒ null（调用方按「无法判定」处理，不静默降级）。
- */
-export function readDeclaredGoMinor() {
-  try {
-    const src = readFileSync(path.join(ROOT, 'backend', 'go.mod'), 'utf8')
-    const m = src.match(/^go\s+(\d+)\.(\d+)/m)
-    return m ? `${m[1]}.${m[2]}` : null
-  } catch {
-    return null
-  }
-}
-
-/**
- * 取某个 gofmt 二进制的版本 ⇒ {full:'1.27.2', minor:'1.27'} 或 null。
- * 两条来源：GOROOT 的 VERSION 文件 → `go version -m`。
- */
-export function gofmtVersionOf(gofmtPath) {
-  const parse = (s) => {
-    const m = String(s).match(/go(\d+\.\d+)(?:\.(\d+))?/)
-    if (!m) return null
-    return { full: m[2] ? `${m[1]}.${m[2]}` : m[1], minor: m[1] }
-  }
-  try {
-    const bin = realpathSync(gofmtPath)
-    const goroot = path.resolve(path.dirname(bin), '..')
-    const p = parse(readFileSync(path.join(goroot, 'VERSION'), 'utf8'))
-    if (p) return p
-  } catch { /* 不是标准安装布局 ⇒ 换下一条来源 */ }
-  try {
-    const r = spawnSync('go', ['version', '-m', gofmtPath], { encoding: 'utf8' })
-    if (!r.error && r.status === 0) {
-      const p = parse((r.stdout || '').split('\n')[0])
-      if (p) return p
-    }
-  } catch { /* go 不在 PATH 上 */ }
-  return null
-}
-
-/**
- * 从候选里挑出**与声明大版本一致**的那个 gofmt。
- *
- * ★ 这条是纯函数、候选表是参数 ⇒ 「一个都不匹配 ⇒ 判无法判定」这条**失败分支
- *   可被自证**（否则它只是一段从没跑过的代码，而「无法判定」恰恰是最该被验的分支：
- *   它是「门在量具失效时会不会静默放行」的唯一防线）。
- *
- * @param {string[]} candidates 候选位置（裸名或绝对路径）
- * @param {string|null} declared 声明的大版本，如 '1.27'；null = 读不到声明
- * @returns {{path:string,version:string,declared:string,probed:Array}
- *          |{error:string,declared:string|null,probed:Array}}
- */
-export function pickMatchingGofmt(candidates, declared) {
-  const probed = []
-  const seen = new Set()
-  for (const c of candidates) {
-    const abs = whichFirst([c])
-    if (!abs || seen.has(abs)) continue
-    seen.add(abs)
-    const version = gofmtVersionOf(abs)
-    probed.push({ path: abs, version: version ? version.full : null })
-    if (declared && version && version.minor === declared) {
-      return { path: abs, version: version.full, declared, probed }
-    }
-  }
-  if (!declared) {
-    return {
-      error: `读不到 backend/go.mod 的 go 指令 ⇒ 无法确定权威 gofmt 的版本。`,
-      declared, probed,
-    }
-  }
-  const lines = probed.map((p) => `    ${p.path}  →  ${p.version || '版本未知'}`).join('\n')
-  return {
-    error: `找不到与 backend/go.mod 声明的 Go ${declared} 匹配的 gofmt。\n`
-      + `  已探测：\n${lines || '    （一个都没找到）'}\n`
-      + `  本门的判据锚在**声明工具链**的 gofmt 上（Go 1.25 改过 doc comment 的判定，\n`
-      + `  用错版本会得出与 CI 相反的结论）⇒ 这是「无法判定」，不是「通过」。\n`
-      + `  修法：装 Go ${declared}.x，或用 GOFMT=/path/to/gofmt 显式指定。`,
-    declared, probed,
-  }
-}
-
-/** 用真实的候选表与真实的声明去解析权威 gofmt。 */
-export function resolveAuthoritativeGofmt() {
-  return pickMatchingGofmt(gofmtCandidates(), readDeclaredGoMinor())
-}
+// ★ oracle 的解析（版本锁定 / 候选探测 / 失败分支）**已收编到 lib/gofmt-oracle.mjs**，
+//   与 scripts/check-gofmt.mjs **共用同一份** ——
+//   两道门必须用同一个 gofmt，否则同一台机器上可能各说各话（详见 lib 的头注释）。
+//   下面这几个名字从 lib 转出，只是为了本门的自测能直接钉住它们。
+export {
+  readDeclaredGoMinor,
+  gofmtVersionOf,
+  pickMatchingGofmt,
+  resolveAuthoritativeGofmt,
+} from './lib/gofmt-oracle.mjs'
 
 const ORACLE = resolveAuthoritativeGofmt()
 if (ORACLE.error) {
