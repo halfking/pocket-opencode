@@ -3,7 +3,7 @@
 // 锁住需求「后台执行的 api 可以强行终止」。
 //
 // 背景：2026-10-03 普查后台作业时这一整类能力基本是空的。口径是「客户端超时
-// >= 90 秒的调用点必须能被中止」，15 个长任务调用点里当时只有一部分接了 signal，
+// >= 90 秒的调用点必须能被中止」，**当时的 15 个**长任务调用点里只有一部分接了 signal，
 // 而会议链那 4 个**接了也白接**：
 //
 //   meetings.summarize / meetings.refine 的 catch 写成 `catch { return fallback… }`。
@@ -14,7 +14,7 @@
 //
 // 本文件锁三件事：
 //   1. 判据本身（isAbortError）真把中止和失败分开，且跨 realm 也认；
-//   2. 15 个长任务调用点**逐个在册**，新增一个而不登记就转红；
+//   2. 长任务调用点**逐个在册**，新增一个而不登记就转红（§929 起是 19 个）；
 //   3. 在册且非 by-design 的调用点，signal 必须真的进了 http 选项，且它所在
 //      函数的签名里真的有 signal 形参；catch 降级链必须先放行中止。
 //
@@ -45,7 +45,12 @@ const SRC = path.resolve(HERE, '..')
 const LONG_TASK_FLOOR_MS = 90_000
 
 /**
- * 长任务调用点登记表。键 = (file, path)。
+ * 长任务调用点登记表。键 = (file, path, fn)。
+ *
+ * ⚠⚠ §929：键原来只有 (file, path) ⇒ **同一条路由的第二个调用点无法逐个登记**
+ *   （而本表又有「不能有重复键」那条断言 ⇒ 两个条件同时为真 ⇒ 那种组合
+ *   **根本无解** ⇒ 门禁对它是**瞎的**）。§929 的两个兜底调用点
+ *   （都打 `/api/llm/chat`）第一次撞上这个组合 ⇒ 键已细到调用点级。
  *
  * state 三态，含义不可互换：
  *   wired    —— 调用方真的持有 AbortController 并传了 signal，界面上也有停止入口
@@ -53,46 +58,56 @@ const LONG_TASK_FLOOR_MS = 90_000
  *   by-design —— 刻意不接，必须在 reason 里写清为什么
  */
 const LONG_TASK_CALL_SITES = [
-  { file: 'api/email.ts', path: '/api/email/backfill', state: 'wired', surface: '邮件回填',
+  { file: 'api/email.ts', path: '/api/email/backfill', fn: 'backfill', state: 'wired', surface: '邮件回填',
     reason: 'use-email-inbox 的 backfill controller，界面有「停止」' },
-  { file: 'api/email.ts', path: '/api/emails/${encodeURIComponent(id)}/summarize', state: 'wired', surface: '单封邮件摘要',
+  { file: 'api/email.ts', path: '/api/emails/${encodeURIComponent(id)}/summarize', fn: 'summarizeEmail', state: 'wired', surface: '单封邮件摘要',
     reason: 'summarizeEmail 已接 signal，界面可重试/放弃' },
-  { file: 'api/email.ts', path: '/api/emails/classify', state: 'wired', surface: '收件箱归类',
+  { file: 'api/email.ts', path: '/api/emails/classify', fn: 'classifyInbox', state: 'wired', surface: '收件箱归类',
     reason: 'cancelClassifyRun，界面有「停止」' },
-  { file: 'api/email.ts', path: '/api/emails/move', state: 'plumbed', surface: '邮件移动（IMAP MOVE）',
+  { file: 'api/email.ts', path: '/api/emails/move', fn: 'moveEmails', state: 'plumbed', surface: '邮件移动（IMAP MOVE）',
     reason: 'moveEmails 已接 signal，但 EmailInboxView 只有 moveBusy 禁用态，无停止入口' },
-  { file: 'api/email.ts', path: '/api/emails/ops/sync', state: 'plumbed', surface: '离线操作回放',
+  { file: 'api/email.ts', path: '/api/emails/ops/sync', fn: 'syncOps', state: 'plumbed', surface: '离线操作回放',
     reason: 'syncOps 已接 signal，调用点 email-folders-store 无中止器' },
   // 2026-10-02 补：syncNow 原本吃 http() 的默认 30s，被放宽到
   // LONG_REQUEST_TIMEOUT_MS(120s) 之后就被本判据认成「长任务」而必须在册。
   // 记 plumbed 而不是 by-design：signal 形参与 http 选项都真的接上了，
   // 只是两个调用点（email-inbox-page 的 syncInboxFromServer、
   // use-invoice-list 的 syncAndReload）都还没有中止器，界面上按不掉。
-  { file: 'api/email.ts', path: '/api/emails/sync', state: 'plumbed', surface: '手动同步（全部账户）',
+  { file: 'api/email.ts', path: '/api/emails/sync', fn: 'syncNow', state: 'plumbed', surface: '手动同步（全部账户）',
     reason: 'syncNow 已接 signal 形参并传进 http 选项，但两个调用点都还没有 AbortController，界面上无「停止同步」入口' },
-  { file: 'api/email.ts', path: '/api/emails/organize', state: 'plumbed', surface: '智能整理通知邮件',
+  { file: 'api/email.ts', path: '/api/emails/organize', fn: 'organizeInbox', state: 'plumbed', surface: '智能整理通知邮件',
     reason: 'organizeInbox 已接 signal，但 onOrganize 只有 organizing 禁用态，无停止入口' },
-  { file: 'api/email.ts', path: '/api/emails/invoices/extract', state: 'wired', surface: '发票整理',
+  { file: 'api/email.ts', path: '/api/emails/invoices/extract', fn: 'extractInvoice', state: 'wired', surface: '发票整理',
     reason: 'use-invoice-list 的 controller，界面有「停止本轮整理」' },
-  { file: 'api/email.ts', path: '/api/email/pipeline/run', state: 'wired', surface: '邮件流水线（全量）',
+  { file: 'api/email.ts', path: '/api/email/pipeline/run', fn: 'runPipeline', state: 'wired', surface: '邮件流水线（全量）',
     reason: 'email-job-runtime 的 pipeline controller，界面有「停止」' },
-  { file: 'api/notes.ts', path: '/api/notes/${id}/summarize', state: 'plumbed', surface: '语音草稿的即时总结',
+  { file: 'api/notes.ts', path: '/api/notes/${id}/summarize', fn: 'summarize', state: 'plumbed', surface: '语音草稿的即时总结',
     reason: 'signal 已透传，NoteListView 的 summarizing 态没有停止入口' },
-  { file: 'api/meetings.ts', path: '/api/meetings/${meetingId}/summary', state: 'plumbed', surface: '会议实时摘要',
+  { file: 'api/meetings.ts', path: '/api/meetings/${meetingId}/summary', fn: 'summarize', state: 'plumbed', surface: '会议实时摘要',
     reason: 'signal 已透传且中止不再被降级链吞掉，但 useLiveSummary 没有中止入口' },
-  { file: 'api/meetings.ts', path: '/api/meetings/${meetingId}/refine', state: 'plumbed', surface: '会议事后精翻',
+  { file: 'api/meetings.ts', path: '/api/meetings/${meetingId}/refine', fn: 'refine', state: 'plumbed', surface: '会议事后精翻',
     reason: '同上；catch 已改成先放行中止，界面还没有停止入口' },
-  { file: 'api/stt-settings.ts', path: '/api/stt/discover', state: 'plumbed', surface: '重新扫描网关',
+  // ⚠⚠ §929：下面这两个**兜底**调用点，§929 之前吃 `http()` 的默认 30 s
+  //   （⇒ 不算长任务，本来就不在这张表里）⇒ §929 把它们的预算放宽到 120 s 之后
+  //   **第一次**落进这张表 ⇒ 也**第一次**暴露了本表的一个结构性盲区：
+  //   「键只有 (file, path) ⇒ 同一条路由的第二个调用点**无法逐个登记**」
+  //   ⇒ 键已改成 (file, path, fn)，且 `enclosingFn` 的 `function` 声明盲区已修
+  //   （原先这两个点会被解析成上面那个 `summarize` ⇒ 查的是错的函数）。
+  { file: 'api/meetings.ts', path: '/api/llm/chat', fn: 'fallbackSummarize', state: 'plumbed', surface: '会议实时摘要的浏览器内兜底',
+    reason: 'signal 已透传、catch 里中止会继续往外抛，但界面没有停止入口（用户只能干等到 120 s 超时）' },
+  { file: 'api/meetings.ts', path: '/api/llm/chat', fn: 'fallbackRefine', state: 'plumbed', surface: '会议事后精翻的浏览器内兜底',
+    reason: '同上；§929 把它的预算从 30 s 放宽到 120 s（服务端有效预算是 85 s）⇒ 之前它比服务端先放弃 55 s' },
+  { file: 'api/stt-settings.ts', path: '/api/stt/discover', fn: 'discover', state: 'plumbed', surface: '重新扫描网关',
     reason: 'discover 已接 signal，界面只有「扫描中…」禁用态，无停止入口' },
-  { file: 'api/stt-settings.ts', path: '/api/stt/transcribe-full', state: 'wired', surface: '录音收尾的兜底全量转写',
+  { file: 'api/stt-settings.ts', path: '/api/stt/transcribe-full', fn: 'transcribeFull', state: 'wired', surface: '录音收尾的兜底全量转写',
     reason: 'NoteRecorderRuntime.transcribeAbort，界面有「停止转写」' },
-  { file: 'api/stt-settings.ts', path: '/api/stt/probe', state: 'plumbed', surface: 'STT 试转',
+  { file: 'api/stt-settings.ts', path: '/api/stt/probe', fn: 'probe', state: 'plumbed', surface: 'STT 试转',
     reason: 'signal 已透传，SettingsSTT 的 running 态没有停止入口' },
-  { file: 'api/stt-settings.ts', path: '/api/stt/transcribe-incremental', state: 'by-design', surface: '录音分片增量转写',
+  { file: 'api/stt-settings.ts', path: '/api/stt/transcribe-incremental', fn: 'transcribeIncremental', state: 'by-design', surface: '录音分片增量转写',
     reason: '刻意不接：note-transcription-cancellable 那条不变量把「停止转写」按钮限定在 '
       + "phase==='stopping'，即**录完之后**。录音进行中给中止入口等于允许用户停掉自己正在录的音，"
       + '是错的语义；要接必须先改那条不变量。' },
-  { file: 'api/stt.ts', path: '/api/stt/transcribe', state: 'wired', surface: '单段语音转写',
+  { file: 'api/stt.ts', path: '/api/stt/transcribe', fn: 'transcribe', state: 'wired', surface: '单段语音转写',
     reason: '会议分片走 MeetingRecorderRuntime.cancelSegmentTranscription；语音输入那条刻意'
       + '跨页存活、由 orphan 交付，不提供中止' },
 ]
@@ -201,12 +216,60 @@ export function httpCallAt(src, route) {
   return httpCalls(src).find((c) => hasRouteLiteral(c.text, route)) ?? null
 }
 
+/**
+ * ★ §929：取**指定函数内**、指定路由的那个 http 调用。
+ *
+ * 为什么不能只用 `httpCallAt(src, route)`：同一条路由可能在同一个文件里
+ * 出现**多次**（§929 的两个兜底都打 `/api/llm/chat`，分别在
+ * `fallbackSummarize` / `fallbackRefine` 里）⇒ `httpCallAt` 只会返回
+ * **第一个** ⇒ 拿它去断言 signal 形参，第二个调用点**根本没被检查**
+ * ⇒ ⇒ 那是一条**假绿**。所以身份必须是「文件 + 路由 + 所在函数」。
+ */
+export function httpCallInFn(src, route, fnName) {
+  for (const c of httpCalls(src)) {
+    if (!hasRouteLiteral(c.text, route)) continue
+    const fn = enclosingFn(src, c.start)
+    if (fn && fn.name === fnName) return c
+  }
+  return null
+}
+
+/**
+ * ★ §929：调用点的**身份键** = (文件, 路由, 所在函数)。
+ *
+ * ⚠ 原来只有 (文件, 路由) ⇒ **结构上无法逐个登记**同路由的第二个调用点
+ *   （而登记表又有「不能有重复键」那条断言 ⇒ 两条同时为真 ⇒ 那个组合根本
+ *   不可能满足 ⇒ 门禁对这种形态**无解**）。
+ *   ⚠ 不能用「第几个」来区分：登记表与源码两个列表的顺序**互不相干**
+ *   ⇒ 位置化会变成**可互换**的 ⇒ 两条的 state/reason 写反了也照样绿。
+ *   ⇒ 函数名是**调用点自身**的属性 ⇒ 两边算出来必然一致。
+ */
+export function siteKey(x) {
+  return `${x.file}::${x.path}@${x.fn}`
+}
+
 /** 这些词后面跟 `(` 也不是函数声明——认错会把 `if (…)` 当成调用点所在的函数。 */
 const NOT_A_FN = new Set(['if', 'for', 'while', 'switch', 'catch', 'return', 'await', 'typeof', 'do', 'else', 'function'])
 
-/** 调用点所在函数的「签名 + 参数表」，用于查 signal 形参。 */
+/**
+ * 调用点所在函数的「签名 + 参数表」，用于查 signal 形参。
+ *
+ * ⚠⚠ §929 更正：原来的正则**认不出 `function` 声明** ——
+ *   `async function fallbackSummarize(` 这类形态里，`(\w+)` 会先吃掉
+ *   `function` 这个词，后面要求 `(` 时遇到的是函数名 ⇒ 整条不匹配
+ *   ⇒ ⇒ `best` 只能退到**上一个**匹配（本例是 `syncMeeting`）
+ *   ⇒ ⇒ **查的是错的函数**：signal 断言会拿着别人的参数表做判。
+ *
+ *   之前 17 个在册调用点恰好全是**对象字面量方法 / 类方法**形态
+ *   （`  backfill(…) {`、`  summarize(…) {`）⇒ 一个都没踩到 ⇒ 门禁一直绿着。
+ *   ⇒ §929 把两个兜底调用点的预算放宽到 120 s，它们**第一次**落进
+ *   `async function` 声明里 ⇒ 盲区当场暴露。
+ *
+ * ⇒ 修法：把 `export` / `default` / `async` / `function` 都认成**可选前缀**，
+ *   名字只取真正的标识符。⚠ `function (`（匿名）仍会被 `NOT_A_FN` 滤掉。
+ */
 export function enclosingFn(src, callStart) {
-  const re = /(?:^|\n)[ \t]*(?:async\s+)?(\w+)\s*(?:<[^<>()]*>)?\s*\(/g
+  const re = /(?:^|\n)[ \t]*(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:function\s+)?(\w+)\s*(?:<[^<>()]*>)?\s*\(/g
   let best = null
   for (let m = re.exec(src); m && m.index < callStart; m = re.exec(src)) {
     if (NOT_A_FN.has(m[1])) continue
@@ -239,7 +302,16 @@ export function discoverLongCallSites(dir = path.join(SRC, 'api'), opts = {}) {
       if (ms === undefined || ms < LONG_TASK_FLOOR_MS) continue
       const route = call.text.match(/['`](\/api\/[^'`$]*(?:\$\{[^`']*\})?[^'`$]*)['`]/)
       if (!route) continue
-      found.push({ file: `api/${name}`, budget: t[1], path: route[1], ms })
+      const fn = enclosingFn(src, call.start)
+      found.push({
+        file: `api/${name}`,
+        budget: t[1],
+        path: route[1],
+        ms,
+        // ⚠ §929：所在函数名是身份的一部分（同路由可能有多个调用点）。
+        //   认不出所属函数时给一个显式占位，而不是 null ⇒ 键不会是字符串 "null"。
+        fn: fn ? fn.name : '(top-level)',
+      })
     }
   }
   return found
@@ -288,9 +360,8 @@ describe('中止判据本身（先确认判据没坏，再谈性质）', () => {
 
 describe('长任务调用点必须逐个在册（新增而不登记就转红）', () => {
   const discovered = discoverLongCallSites()
-  const key = (x) => `${x.file}::${x.path}`
-  const seen = discovered.map(key).sort()
-  const registered = LONG_TASK_CALL_SITES.map(key).sort()
+  const seen = discovered.map(siteKey).sort()
+  const registered = LONG_TASK_CALL_SITES.map(siteKey).sort()
 
   it('源码里的长任务调用点与登记表一一对应', () => {
     assert.deepEqual(
@@ -302,7 +373,7 @@ describe('长任务调用点必须逐个在册（新增而不登记就转红）'
   })
 
   it('登记表本身没有重复键（重复行会让「一一对应」失去意义）', () => {
-    assert.equal(new Set(registered).size, registered.length, '登记表里有重复的 (file, path)')
+    assert.equal(new Set(registered).size, registered.length, '登记表里有重复的 (file, path, fn)')
   })
 
   it('这张表不是空的、也没有把缺口全涂掉', () => {
@@ -336,18 +407,26 @@ describe('长任务调用点必须逐个在册（新增而不登记就转红）'
 
 describe('signal 真的进了 http 选项（不是只写在签名里）', () => {
   for (const site of LONG_TASK_CALL_SITES.filter((s) => s.state !== 'by-design')) {
-    it(`${site.file} ${site.path} 带了 signal，且所在函数签名有 signal 形参`, () => {
+    it(`${site.file} ${site.path} @${site.fn} 带了 signal，且所在函数签名有 signal 形参`, () => {
       const src = readSrc(site.file)
-      const call = httpCallAt(src, site.path)
-      assert.notEqual(call, null, `${site.file} 里找不到 ${site.path} 的 http 调用（判据可能已失效）`)
+      // ⚠ §929：必须**按函数**定位调用点，不能只按路由 ——
+      //   同一条路由在同一个文件里可能有多个调用点（§929 的两个兜底都打
+      //   `/api/llm/chat`）⇒ 只按路由找会永远命中**第一个** ⇒
+      //   后面的调用点**根本没被检查** ⇒ 那是一条假绿。
+      const call = httpCallInFn(src, site.path, site.fn)
+      assert.notEqual(call, null, `${site.file} 里找不到 ${site.path} 在 ${site.fn}() 里的 http 调用（判据可能已失效）`)
       assert.match(
         call.text,
         /(^|[^.\w])signal\s*[,}]/m,
-        `${site.path} 的请求选项里没有 signal —— 预算这么久却停不掉，`
+        `${site.path} @${site.fn} 的请求选项里没有 signal —— 预算这么久却停不掉，`
         + '用户只能干等到超时',
       )
       const fn = enclosingFn(src, call.start)
       assert.notEqual(fn, null, `找不到 ${site.path} 所在的函数`)
+      assert.equal(
+        fn.name, site.fn,
+        `${site.path} 实际落在 ${fn.name}() 里，登记表写的是 ${site.fn}() —— 键指错了地方`,
+      )
       assert.match(
         fn.params,
         /signal\?:\s*AbortSignal/,
@@ -515,13 +594,76 @@ describe('判据自检：负控必须转红', () => {
   it('给源码塞一个未登记的长任务调用点 → 在册性判据转红', () => {
     const injected = [
       ...discoverLongCallSites(),
-      { file: 'api/email.ts', path: '/api/emails/brand-new', budget: 'X', ms: 300_000 },
+      { file: 'api/email.ts', path: '/api/emails/brand-new', fn: 'brandNew', budget: 'X', ms: 300_000 },
     ]
     assert.notDeepEqual(
-      injected.map((x) => `${x.file}::${x.path}`).sort(),
-      LONG_TASK_CALL_SITES.map((x) => `${x.file}::${x.path}`).sort(),
+      injected.map(siteKey).sort(),
+      LONG_TASK_CALL_SITES.map(siteKey).sort(),
       '负控本该转红却判成了通过 —— 新增长任务可以不登记就混过去',
     )
+  })
+
+  // ⚠⚠ §929：下面两条是**这次改造本身**的负控。
+  //   改键、改定位方式这类「改判据」的改动，最容易出的事是
+  //   「判据变宽了 ⇒ 漏的东西也一起变宽」⇒ 护栏看着在、其实不咬人。
+  it('★ 同一条路由的第二个调用点不登记 → 在册性判据转红（键必须区分调用点）', () => {
+    const real = discoverLongCallSites()
+    // 前提：确实存在「同一 (file, path) 有多个调用点」这一形态（§929 的两个兜底）。
+    const byRoute = new Map()
+    for (const s of real) {
+      const k = `${s.file}::${s.path}`
+      byRoute.set(k, (byRoute.get(k) ?? 0) + 1)
+    }
+    const dupRoute = [...byRoute.entries()].find(([, n]) => n > 1)
+    assert.ok(dupRoute, '前提变了：源码里已经没有「同一路由多个调用点」⇒ 这条负控会空转')
+    const [dupKey] = dupRoute
+    // 只登记其中一个（去掉同一路由的其余调用点）⇒ 键集合必须对不上。
+    const oneOfThem = real.filter((s) => `${s.file}::${s.path}` !== dupKey)
+    const rest = real.filter((s) => `${s.file}::${s.path}` === dupKey).slice(0, 1)
+    const partial = [...oneOfThem, ...rest]
+    assert.notDeepEqual(
+      partial.map(siteKey).sort(),
+      LONG_TASK_CALL_SITES.map(siteKey).sort(),
+      '负控本该转红却判成了通过 —— 同路由的第二个调用点可以不登记就混过去',
+    )
+    // 反向自检：键必须**真的**带上函数名，否则上面那条差异可能被别的字段凑出来。
+    assert.ok(
+      real.filter((s) => `${s.file}::${s.path}` === dupKey).map(siteKey).length
+        === new Set(real.filter((s) => `${s.file}::${s.path}` === dupKey).map(siteKey)).size,
+      '同路由的多个调用点算出了相同的身份键 ⇒ 键没区分调用点',
+    )
+  })
+
+  it('★ enclosingFn 认得出 `function` 声明（旧形态认不出 ⇒ 会去查别人的参数表）', () => {
+    const sample = 'async function fallbackSummarize(a: number, signal?: AbortSignal) {\n'
+      + '  await http("/x")\n}\n'
+    const fn = enclosingFn(sample, sample.indexOf('await http'))
+    assert.notEqual(fn, null, 'enclosingFn 对 function 声明返回 null ⇒ 判据会直接跳过这个调用点')
+    assert.equal(fn.name, 'fallbackSummarize', '认出了函数名，但认错了')
+    assert.match(fn.params, /signal\?:\s*AbortSignal/, '参数表取错了')
+    // 前提自检：**旧形态**（只认方法/箭头式声明）确实认不出 function 声明。
+    // 这条不成立的话，上面那几条断言就不再说明「盲区被闭了」。
+    assert.equal(
+      /(?:^|\n)[ \t]*(?:async\s+)?(\w+)\s*(?:<[^<>()]*>)?\s*\(/.test('async function fallbackSummarize('),
+      false,
+      '前提变了：旧形态居然能认出 function 声明 ⇒ 这条负控不再说明问题',
+    )
+  })
+
+  it('★ 只按路由定位会永远命中第一个调用点（所以必须按函数定位）', () => {
+    const src = readSrc('api/meetings.ts')
+    const route = '/api/llm/chat'
+    const all = httpCalls(src).filter((c) => c.text.includes(`'${route}'`))
+    assert.ok(all.length >= 2, `前提变了：${route} 现在只有 ${all.length} 个调用点`)
+    const first = httpCallAt(src, route)
+    const firstFn = enclosingFn(src, first.start)
+    const second = httpCallInFn(src, route, 'fallbackRefine')
+    assert.notEqual(second, null, '按函数定位找不到 fallbackRefine 里那个调用点')
+    assert.notEqual(
+      first.start, second.start,
+      '按路由定位与按函数定位指的是同一个调用点 ⇒ 本仓已经没有同路由多调用点，这两条负控都该重写',
+    )
+    assert.notEqual(firstFn.name, 'fallbackRefine', '前提变了：第一个调用点已经是 fallbackRefine')
   })
 
   it('evalBudgetMs 去掉乘法分支 → 4 个最长的预算被静默漏扫（判据自身的盲区）', () => {
@@ -548,8 +690,8 @@ describe('判据自检：负控必须转红', () => {
     }
     const real = discoverLongCallSites()
     const blind = discoverLongCallSites(apiDir, { localConstsOf: blindConsts, globalConsts: blindGlobals })
-    const blindKeys = blind.map((x) => `${x.file}::${x.path}`).sort()
-    const realKeys = real.map((x) => `${x.file}::${x.path}`).sort()
+    const blindKeys = blind.map(siteKey).sort()
+    const realKeys = real.map(siteKey).sort()
     const missed = realKeys.filter((k) => !blindKeys.includes(k))
 
     // 期望漏掉哪些，自己从源码算，别写死个数——写死的话源码一改这条就成了
@@ -565,7 +707,7 @@ describe('判据自检：负控必须转红', () => {
     }
     const expected = real
       .filter((x) => mulBudgets.has(x.budget))
-      .map((x) => `${x.file}::${x.path}`).sort()
+      .map(siteKey).sort()
 
     assert.ok(expected.length >= 7, `样本前提变了：乘法写法的长预算只剩 ${expected.length} 个`)
     assert.deepEqual(

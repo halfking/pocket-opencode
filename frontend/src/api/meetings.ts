@@ -4,7 +4,7 @@
 import { renderTranscript } from '../features/meetings/meeting-dedup.ts'
 import { buildFallbackRefinePrompt } from '../features/meetings/refine-prompt.ts'
 import { buildFallbackSummaryPrompt } from '../features/meetings/summary-prompt.ts'
-import { http, isAbortError } from './http'
+import { http, isAbortError, LLM_CHAT_TIMEOUT_MS } from './http'
 import type { ActionItem, LiveSummary, MeetingSegment, RecommendItem } from '../features/meetings/meetings-store'
 import { truncateCodeUnits, truncateUtf8BytesTail, utf8ByteLength } from '../utils/text.ts'
 import { assessRefineRetention } from './refine-retention-guard.ts'
@@ -584,6 +584,10 @@ async function fallbackSummarize(
         messages: [{ role: 'user', content: prompt }],
       }),
       signal,
+      // ⚠ §929：这条兜底此前吃 `http()` 的默认 **30 s**，而服务端那条路的
+      //   有效预算是 **85 s**（网关客户端的 ResponseHeaderTimeout）
+      //   ⇒ 客户端比服务端先放弃 55 s ⇒ 兜底路径在生产上基本必然超时。
+      timeoutMs: LLM_CHAT_TIMEOUT_MS,
     })
     return parseSummaryJson(res.content, transcript)
   } catch (e) {
@@ -663,6 +667,10 @@ async function fallbackRefine(
         }],
       }),
       signal,
+      // ⚠ §929：同上 —— 这条兜底此前吃 30 s 默认，而服务端有效预算 85 s。
+      //   它是**高频**兜底（§54：后端先超时 ⇒ 前端必走这里）⇒ 30 s 意味着
+      //   「后端 502 之后，兜底也必然超时」⇒ 用户拿回原文 + 「未生效」。
+      timeoutMs: LLM_CHAT_TIMEOUT_MS,
     })
     return refineFromLlmContent(res.content, transcript)
   } catch (e) {

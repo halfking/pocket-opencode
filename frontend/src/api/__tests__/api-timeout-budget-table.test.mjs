@@ -382,3 +382,225 @@ describe('判据自检：负控必须转红', () => {
     assert.match(r.reason, /找不到 handler/)
   })
 })
+
+// ══════════════════════════════════════════════════════════════════════
+// §929 `/api/llm/chat` 的客户端超时预算
+//
+// ── 为什么单开一块（2026-10-03 那次普查的漏项）──
+//
+// 本文件头注释里记着那张 2026-10-03 的普查表：
+//
+//	/api/meetings/{id}/refine       客户端 30s  服务端 90s
+//
+// ⇒ 也就是说「客户端比服务端先放弃」这件事**当时就查出来了**，
+//   而上面那张 TABLE 修的是**直接调用**那条路（`MEETING_REFINE_TIMEOUT_MS` = 150s）。
+//
+// ⚠⚠ **但兜底路径从来不在那张表里** ——
+// 浏览器侧的兜底打的是 `/api/llm/chat`（`fallbackRefine` / `fallbackSummarize`），
+// 而它的客户端超时**没人给** ⇒ 吃 `http()` 的默认 **30 s**。
+//
+// ⇒ ⇒ 而 `/api/llm/chat` 的**服务端有效预算不是 handler 的 WithTimeout**，
+//   而是网关客户端的 `Transport.ResponseHeaderTimeout`：
+//   `backend/internal/llmgateway/client.go:116` ⇒ **85 s**
+//   （`Timeout: 90s` 是整体上限；响应头若拖到 90s，body 就没有时间可读了）。
+//
+// ⇒ ⇒ **30 s ≪ 85 s** ⇒ 客户端比服务端先放弃 55 s
+//   ⇒ §54 实测：网关 auto 路由到 deepseek-v4-flash 时**首字节就要 24~142 s**
+//   ⇒ ⇒ 兜底路径在生产上基本是「必然超时」的（后端 502 之后，前端兜底也超时）。
+//
+// ⭐ 顺带把**同族一次扫全**（§918/§921 的纪律）：
+//   四个调用点（两条会议兜底 + 逐段翻译 + 邮件翻译）**全部**没有 timeoutMs。
+// ══════════════════════════════════════════════════════════════════════
+
+/**
+ * 剥 TS/Vue 的注释。
+ *
+ * ⚠ quote-aware：字符串里的 `//`（例如 `'http://x'`）**不是**注释。
+ *   本文件里已有的 `stripGoComments` 是行级的、对 Go 够用；TS 侧要另写一个。
+ */
+export function stripTsComments(src) {
+  let out = ''
+  let i = 0
+  const n = src.length
+  while (i < n) {
+    const c = src[i]
+    const c2 = src[i + 1]
+    if (c === '/' && c2 === '/') {
+      while (i < n && src[i] !== '\n') i++
+      continue
+    }
+    if (c === '/' && c2 === '*') {
+      i += 2
+      while (i < n && !(src[i] === '*' && src[i + 1] === '/')) i++
+      i += 2
+      out += ' '
+      continue
+    }
+    if (c === '"' || c === "'" || c === '`') {
+      const quote = c
+      out += c
+      i++
+      while (i < n) {
+        if (src[i] === '\\') { out += src[i] + (src[i + 1] ?? ''); i += 2; continue }
+        out += src[i]
+        if (src[i] === quote) { i++; break }
+        i++
+      }
+      continue
+    }
+    out += c
+    i++
+  }
+  return out
+}
+
+/** 取 `{` 到配对 `}` 的那段文本（跳过字符串里的括号）。 */
+function balancedObject(src, openIdx) {
+  if (src[openIdx] !== '{') return null
+  let depth = 0
+  for (let i = openIdx; i < src.length; i++) {
+    const c = src[i]
+    if (c === '"' || c === "'" || c === '`') {
+      const quote = c
+      i++
+      while (i < src.length) {
+        if (src[i] === '\\') { i++; continue }
+        if (src[i] === quote) break
+        i++
+      }
+      continue
+    }
+    if (c === '{') depth++
+    else if (c === '}') {
+      depth--
+      if (depth === 0) return src.slice(openIdx, i + 1)
+    }
+  }
+  return null
+}
+
+/**
+ * 找出**所有** `/api/llm/chat` 的调用点。
+ *
+ * ⚠ 匹配的是**调用形态** `http<...>('/api/llm/chat'` 而不是字符串本身
+ *   ⇒ 注释里提到这个路径（到处都是）不会被算成调用点。
+ * ⛔ 但注释里**也可能**写出调用形态 ⇒ 上面先剥注释。
+ */
+export function findLlmChatCallers(rootDir) {
+  const out = []
+  const walk = (dir) => {
+    for (const n of fs.readdirSync(dir)) {
+      const p = path.join(dir, n)
+      const st = fs.statSync(p)
+      if (st.isDirectory()) { walk(p); continue }
+      if (!/\.(ts|vue|mjs)$/.test(n)) continue
+      if (/\.test\.(ts|mjs)$/.test(n)) continue
+      const raw = fs.readFileSync(p, 'utf8')
+      if (!raw.includes('/api/llm/chat')) continue
+      const code = stripTsComments(raw)
+      const re = /http(?:<[^>]*>)?\(\s*'\/api\/llm\/chat'/g
+      let m
+      while ((m = re.exec(code)) !== null) {
+        const after = code.indexOf('{', m.index + m[0].length)
+        const obj = after >= 0 ? balancedObject(code, after) : null
+        let timeoutMs = null
+        let hasTimeout = false
+        if (obj) {
+          const tm = /timeoutMs:\s*([^,\n}]+)/.exec(obj)
+          hasTimeout = !!tm
+          if (tm) timeoutMs = tm[1].trim()
+        }
+        const line = code.slice(0, m.index).split('\n').length
+        out.push({ file: path.relative(rootDir, p), line, hasTimeout, timeoutMs })
+      }
+    }
+  }
+  walk(rootDir)
+  return out
+}
+
+/** 服务端 `/api/llm/chat` 的有效预算：网关客户端的 `ResponseHeaderTimeout`（毫秒）。 */
+export function llmChatServerBudgetMs(goSrc) {
+  const src = goSrc ?? fs.readFileSync(
+    path.resolve(SRC, '..', '..', 'backend', 'internal', 'llmgateway', 'client.go'), 'utf8')
+  const code = stripGoComments(src)
+  const m = /ResponseHeaderTimeout:\s*([0-9]+)\s*\*\s*time\.Second/.exec(code)
+  if (!m) return null
+  return Number(m[1]) * 1000
+}
+
+/** 把调用点里的 `timeoutMs` 取值解析成毫秒（字面量或 http.ts 里的常量）。 */
+export function resolveTimeoutMs(caller) {
+  if (!caller.hasTimeout) return null
+  const v = caller.timeoutMs
+  if (/^[0-9_]+$/.test(v)) return Number(v.replace(/_/g, ''))
+  const c = constMs('api/http.ts', v)
+  return c
+}
+
+describe('§929 `/api/llm/chat` 的客户端超时必须超过服务端有效预算', () => {
+  it('★ 服务端有效预算能从源码反推出来（不是写死的数）', () => {
+    const b = llmChatServerBudgetMs()
+    assert.notEqual(b, null, '读不到 llmgateway 的 ResponseHeaderTimeout —— 判据失明（不许当成通过）')
+    assert.equal(b, 85_000, `网关的 ResponseHeaderTimeout 变了：${b}ms ⇒ 客户端超时也得跟着改`)
+  })
+
+  it('★ 每个 `/api/llm/chat` 调用点都必须显式带 timeoutMs（默认 30 s ≪ 服务端 85 s）', () => {
+    const callers = findLlmChatCallers(SRC)
+    assert.ok(callers.length >= 4, `只扫到 ${callers.length} 个调用点 ⇒ 扫描口径坏了（应 ≥ 4）`)
+    const missing = callers.filter((c) => !c.hasTimeout)
+    assert.deepEqual(
+      missing.map((c) => `${c.file}:${c.line}`),
+      [],
+      '这些调用点没给 timeoutMs ⇒ 吃 http() 的默认 30 s ⇒ 比服务端 85 s 早放弃 55 s',
+    )
+  })
+
+  it('★ 每个调用点的 timeoutMs 都必须严格大于服务端有效预算', () => {
+    const server = llmChatServerBudgetMs()
+    assert.notEqual(server, null, '判据失明')
+    const callers = findLlmChatCallers(SRC)
+    const bad = []
+    for (const c of callers) {
+      const ms = resolveTimeoutMs(c)
+      if (ms === null) { bad.push(`${c.file}:${c.line} ⇒ timeoutMs 解析不了（${c.timeoutMs}）`); continue }
+      if (!(ms > server)) bad.push(`${c.file}:${c.line} ⇒ ${ms}ms ≤ 服务端 ${server}ms`)
+    }
+    assert.deepEqual(bad, [], `客户端超时必须严格大于服务端有效预算：\n${bad.join('\n')}`)
+  })
+
+  it('★ 调用点集合的条数被钉住（新增调用点要么带上 timeoutMs，要么改这个数）', () => {
+    const callers = findLlmChatCallers(SRC)
+    assert.equal(callers.length, 4,
+      `现在有 ${callers.length} 个 \`/api/llm/chat\` 调用点（期望 4）：\n` +
+      callers.map((c) => `  ${c.file}:${c.line}`).join('\n') +
+      '\n⇒ 新增调用点必须显式带 timeoutMs，并把这里的条数一起改。')
+  })
+})
+
+describe('§929 判据自检：负控必须转红', () => {
+  it('把网关的 ResponseHeaderTimeout 调大 → 客户端 120 s 就不再够（证明判据在读源码）', () => {
+    const real = llmChatServerBudgetMs()
+    const src = fs.readFileSync(
+      path.resolve(SRC, '..', '..', 'backend', 'internal', 'llmgateway', 'client.go'), 'utf8')
+    const patched = src.replace(
+      /ResponseHeaderTimeout:\s*85\s*\*\s*time\.Second/,
+      'ResponseHeaderTimeout: 150 * time.Second',
+    )
+    assert.notEqual(patched, src, '负控样本没有真的改到预算（替换没命中）')
+    const bigger = llmChatServerBudgetMs(patched)
+    assert.equal(bigger, 150_000, '反推没跟着变 —— 判据是写死的，假护栏')
+    const client = constMs('api/http.ts', 'LLM_CHAT_TIMEOUT_MS')
+    assert.ok(client <= bigger,
+      '网关预算涨到 150s 之后客户端仍被判为足够 —— 余量逻辑坏了')
+  })
+
+  it('把某个调用点的 timeoutMs 去掉 → 「必须显式带」那条转红', () => {
+    const callers = findLlmChatCallers(SRC)
+    const withTimeout = callers.filter((c) => c.hasTimeout)
+    assert.ok(withTimeout.length > 0, '负控样本无效：所有调用点本来就没有 timeoutMs')
+    const stripped = withTimeout.map((c) => ({ ...c, hasTimeout: false }))
+    const missing = stripped.filter((c) => !c.hasTimeout)
+    assert.ok(missing.length > 0, '负控失败：去掉 timeoutMs 后没有转红 ⇒ 判据形同虚设')
+  })
+})

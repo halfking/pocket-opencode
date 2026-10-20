@@ -56,6 +56,34 @@ const DEFAULT_TIMEOUT_MS = 30_000
 /** 少数天然慢的端点(同步/大音频/批量推理)在调用处显式放宽。 */
 export const LONG_REQUEST_TIMEOUT_MS = 120_000
 
+/**
+ * `/api/llm/chat` 的**客户端**超时（§929）。
+ *
+ * ⚠⚠ **为什么必须显式给、而且必须比 120000 还大**：
+ * 服务端那条路的**有效预算不是 handler 的 `WithTimeout`**，而是网关客户端的
+ * `Transport.ResponseHeaderTimeout`：
+ *
+ *	backend/internal/llmgateway/client.go:116
+ *	  Timeout:               90 * time.Second   ← 整体上限
+ *	  ResponseHeaderTimeout: 85 * time.Second   ← **实际可用预算**
+ *
+ * ⇒ 客户端计时从请求发出开始，服务端的从 handler 进来开始，中间还隔着网络与鉴权
+ * ⇒ ⇒ **必须 > 85 s**，否则「服务端还在算、客户端先断开」。
+ *
+ * ⛔ 2026-10-03 的普查其实已经查出「`/api/meetings/{id}/refine 客户端 30s 服务端 90s」
+ * 这条（见 `api-timeout-budget-table.test.mjs` 的头注释）⇒ 但那张表当时只列了
+ * **直接调用**那条路，**兜底路径**（浏览器侧打 `/api/llm/chat`）**不在表里**
+ * ⇒ ⇒ 没人守它 ⇒ 四个调用点一直吃 `http()` 的默认 **30 s**
+ * ⇒ ⇒ **比服务端的有效预算短 55 s** ⇒ 兜底路径在生产上基本是「必然超时」的
+ * （§54 实测：网关 auto 路由到 deepseek-v4-flash 时**首字节就要 24~142 s**）。
+ *
+ * ⚠ 取 120 s 而不是 85 s：留 35 s 给「服务端已经开工、客户端还没收到响应头」的
+ *   那段（网络 + 鉴权 + 上游排队）。⚠ 这不是保证成功（§101：同一份提示词
+ *   28.8 s / 84.4 s 两次都发生过，**预算落在方差中间**）⇒ 它只让
+ *   **本来能在服务端预算内跑完**的请求有机会跑完。
+ */
+export const LLM_CHAT_TIMEOUT_MS = 120_000
+
 export interface HttpOptions extends RequestInit {
   /** 覆盖本次请求的毫秒上限;传 0 表示不设上限(仅限长轮询等已知场景)。 */
   timeoutMs?: number
