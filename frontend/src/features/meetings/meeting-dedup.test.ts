@@ -28,7 +28,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { dirname, join, relative } from 'node:path'
 import { tmpdir } from 'node:os'
 import { build } from 'esbuild'
-import { dedupeSegmentText, dedupeSegments, dedupeStep, dedupeTranscriptParagraphs, likelyAudioOverlap, renderTranscript } from './meeting-dedup.ts'
+import { dedupeSegmentText, dedupeSegments, dedupeStep, dedupeTranscriptParagraphs, likelyAudioOverlap, renderTranscript, createTranscriptRenderer } from './meeting-dedup.ts'
 import {
   shouldPersistTranscript,
   meetingListSql,
@@ -672,23 +672,26 @@ describe('J · updateTranscript 的每个写入点都必须走去重', () => {
     }
   })
 
-  it('★ 每一处调用都必须把 renderTranscript 的结果写进去', () => {
-    const bad = callSites().filter((s) => !/updateTranscript\([^,]*,\s*renderTranscript\(/.test(s.text))
+  it('★ 每一处调用都必须把**去重渲染**的结果写进去', () => {
+    // ⚠ §931：写法有两种 —— 直接 `renderTranscript(...)`，
+    //   或 §931 的**惰性源** `xxx.source()`（正文只在真要落库时才渲染）。
+    //   两者都是「去重后的渲染」⇒ **语义不变，只是指向变了**。
+    const DEDUPED = /updateTranscript\([^,]*,\s*(renderTranscript\(|[^,]*\.source\(\))/
+    const bad = callSites().filter((s) => !DEDUPED.test(s.text))
     assert.deepEqual(
       bad.map((b) => `${b.file}:${b.line}  ${b.text}`),
       [],
       '这些写入点没有走去重渲染 ⇒ 重复会原样落库、默认展示、并流进 LLM 提示词。\n' +
-        '修法：第二个实参传 renderTranscript(...) 的返回值。',
+        '修法：第二个实参传 renderTranscript(...) 的返回值，或 §931 的惰性源 xxx.source()。',
     )
   })
 
   it('负控：直接传原始拼接的写入点必须被上面那条判红', () => {
     // 真实存在过的坏写法（§438 之前的 appendText 形态）。
     const legacy = 'await updateTranscript(meetingId, this.segments.value.map((s) => `[${s.speakerLabel}] ${s.text}`).join("\\n"))'
-    assert.ok(
-      !/updateTranscript\([^,]*,\s*renderTranscript\(/.test(legacy),
-      '负控样本必须通不过上面那条判据，否则那道判据恒绿',
-    )
+    const DEDUPED = /updateTranscript\([^,]*,\s*(renderTranscript\(|[^,]*\.source\(\))/
+    assert.ok(!DEDUPED.test(legacy),
+      '负控样本必须通不过上面那条判据，否则那道判据恒绿')
   })
 })
 
@@ -1144,46 +1147,9 @@ describe('L · §925 转写列是派生缓存：写入节流 + 列表只取有�
   //   （`if (false && !shouldPersist(...))` ⇒ 永远落库）**漏网**
   //   ⇒ 「按写法找」= 假阴性 ⇒ 必须行为化。
   //   （做法与 `__tests__/ingest-behavior.test.mjs` 同款：esbuild 打包期替掉 I/O。）
-  const S925_WRITES: { sql: string; params: unknown }[] = []
-  const S925_QUERIES: { sql: string; params: unknown }[] = []
-  ;(globalThis as unknown as Record<string, unknown>).__s925Writes = S925_WRITES
-  ;(globalThis as unknown as Record<string, unknown>).__s925Queries = S925_QUERIES
-
-  let storeBundle: Promise<{ updateTranscript: Function; listMeetings: Function }> | null = null
-  function loadStoreModule() {
-    if (storeBundle) return storeBundle
-    storeBundle = (async () => {
-      const work = mkdtempSync(join(tmpdir(), 'pocket-s925-'))
-      const stub = join(work, 'local-db-stub.mjs')
-      writeFileSync(stub, `
-        export const localDB = {
-          async run(sql, params) { globalThis.__s925Writes.push({ sql: String(sql), params }) },
-          async query(sql, params) { globalThis.__s925Queries.push({ sql: String(sql), params }); return [] },
-          async queryOne(sql, params) { globalThis.__s925Queries.push({ sql: String(sql), params }); return null },
-        }`, 'utf8')
-      const entry = join(work, 'entry.ts')
-      writeFileSync(entry, `export { updateTranscript, listMeetings } from '${join(HERE, 'meetings-store.ts')}'\n`, 'utf8')
-      const outfile = join(work, 'out.mjs')
-      await build({
-        entryPoints: [entry],
-        bundle: true,
-        format: 'esm',
-        platform: 'neutral',
-        outfile,
-        logLevel: 'error',
-        plugins: [{
-          name: 'stub-io',
-          setup(b) {
-            b.onResolve({ filter: /^\.\.\/\.\.\/native\/local-db$/ }, () => ({ path: stub }))
-          },
-        }],
-      })
-      const mod = await import(pathToFileURL(outfile).href)
-      process.on('exit', () => { try { rmSync(work, { recursive: true, force: true }) } catch { /* 临时目录清理失败不影响判据结论 */ } })
-      return mod as { updateTranscript: Function; listMeetings: Function }
-    })()
-    return storeBundle
-  }
+  //
+  // ⚠ §931：加载器已**提到模块级**（`loadStoreModule`）—— M 组要用同一份
+  //   （§3 的教训：同一段机制抄两份 ⇒ 两份必然漂）。
 
   it('★★ 行为：真的 updateTranscript 在**节流**下不写库、在**默认**下写库', async () => {
     const { updateTranscript } = await loadStoreModule()
@@ -1650,9 +1616,26 @@ function methodBody(src: string, name: string, occurrence = 0): string {
   return bodyFrom(src, hits[occurrence], `${name}（第 ${occurrence} 个）`)
 }
 
+/**
+ * 取**带修饰符**的方法体（`private async xxx(` / `public xxx(`）。
+ *
+ * ⚠ 为什么单列一个：`methodBody` 的正则是 `^[ \t]*(?:async[ \t]+)?NAME\s*\(`，
+ *   它**不认** `private` / `public` / `protected` / `static` 这些修饰符
+ *   ⇒ `private async processSegment(` 那种声明会**找不到**。
+ * ⇒ 本函数把修饰符列进可选前缀。
+ */
+function methodBodyWithModifiers(src: string, name: string): string {
+  const re = new RegExp(
+    `^[ \\t]*(?:(?:private|public|protected|static|readonly)\\s+)*(?:async\\s+)?${name}\\s*\\(`,
+    'm',
+  )
+  const m = re.exec(src)
+  assert.ok(m, `解析不到 ${name} 方法（带修饰符的形态）—— 判据失效，先修判据`)
+  return bodyFrom(src, m.index, name)
+}
+
 /** 从声明处开始取函数体（**括号配平**，跳过记号）。 */
-function bodyFrom(src: string, declIndex: number, label: string): string {
-  // ① 参数列表的右括号
+function bodyFrom(src: string, declIndex: number, label: string): string {  // ① 参数列表的右括号
   let i = src.indexOf('(', declIndex)
   assert.ok(i > 0, `${label} 没有参数列表 —— 判据失效，先修判据`)
   let depth = 0
@@ -1804,3 +1787,355 @@ function selectColumns(sql: string): string[] {
     return as >= 0 ? p.slice(as + 4).trim() : p
   })
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// §931 提上来的模块级加载器（原来在 L 组的作用域里，M 组要用同一份）
+// ═══════════════════════════════════════════════════════════════════════
+
+const S925_WRITES: { sql: string; params: unknown }[] = []
+const S925_QUERIES: { sql: string; params: unknown }[] = []
+;(globalThis as unknown as Record<string, unknown>).__s925Writes = S925_WRITES
+;(globalThis as unknown as Record<string, unknown>).__s925Queries = S925_QUERIES
+
+let storeBundle: Promise<{ updateTranscript: Function; listMeetings: Function }> | null = null
+function loadStoreModule() {
+  if (storeBundle) return storeBundle
+  storeBundle = (async () => {
+    const work = mkdtempSync(join(tmpdir(), 'pocket-s925-'))
+    const stub = join(work, 'local-db-stub.mjs')
+    writeFileSync(stub, `
+      export const localDB = {
+        async run(sql, params) { globalThis.__s925Writes.push({ sql: String(sql), params }) },
+        async query(sql, params) { globalThis.__s925Queries.push({ sql: String(sql), params }); return [] },
+        async queryOne(sql, params) { globalThis.__s925Queries.push({ sql: String(sql), params }); return null },
+      }`, 'utf8')
+    const entry = join(work, 'entry.ts')
+    writeFileSync(entry, `export { updateTranscript, listMeetings } from '${join(HERE, 'meetings-store.ts')}'\n`, 'utf8')
+    const outfile = join(work, 'out.mjs')
+    await build({
+      entryPoints: [entry],
+      bundle: true,
+      format: 'esm',
+      platform: 'neutral',
+      outfile,
+      logLevel: 'error',
+      plugins: [{
+        name: 'stub-io',
+        setup(b) {
+          b.onResolve({ filter: /^\.\.\/\.\.\/native\/local-db$/ }, () => ({ path: stub }))
+        },
+      }],
+    })
+    const mod = await import(pathToFileURL(outfile).href)
+    process.on('exit', () => { try { rmSync(work, { recursive: true, force: true }) } catch { /* 临时目录清理失败不影响判据结论 */ } })
+    return mod as { updateTranscript: Function; listMeetings: Function }
+  })()
+  return storeBundle
+}
+
+/**
+ * M · §931 转写列的**渲染**也必须有界：逐段追加那条路径不得每段整场重渲染
+ *
+ * ── 缺陷本体（实测，§931.1）──
+ *
+ * §925 把「每段整篇重写」改成了「按增长量节流」⇒ **写**的量从 O(时长²) 降到 O(时长)。
+ * 但**渲染**没被节流：`recordingRuntime.appendText`（本地实时字幕）与
+ * `ingest-speech.ts`（ASR 段）两条**逐段追加**的路径，每落一段就把**整场**
+ * `renderTranscript(全部段)` 重新渲染一遍 —— 而那次渲染的结果在节流判定里
+ * **绝大多数被直接丢弃**（8 小时会议真正落库 13 次）。
+ *
+ * ⚠⚠ 实测（**生产真函数** + 真实 ASR 语料，1952 段 = 8 小时）：
+ *   · 单次全量渲染 = **O(n)**，每步 ~16–40 µs，**不随 n 增长**
+ *     （链 vs 同长扁平串 1.0× / 4.2× / 1.0× ⇒ 不是 ConsString 展平）
+ *   · 现状「每段渲染一次」= **O(n²)**：100 段 61×、200 段 122×、400 段 405×、
+ *     800 段 174×（倍数 ≈ n/2）⇒ 8 小时外推 **~100 s 纯 CPU**（主线程）
+ *
+ * ⇒ 与 §925 同一族：**写**那一半修好了，**算**那一半没修。
+ *
+ * ── 本组钉的是什么 ──
+ *
+ * 钉「**渲染次数**」而不是「渲染有多快」—— 前者可测，后者只能靠基准。
+ * ⇒ 核心那一条是**落库层**的行为：节流说不写时，那次 O(n) 的渲染**根本没发生**。
+ */
+describe('M · §931 逐段追加那条路径不得每段整场重渲染', () => {
+  /**
+   * 造一段**有真实重叠**的语料（相邻段共享尾巴 ⇒ 去重真的会裁字）。
+   *
+   * ⚠⚠ 为什么语料是**逐段生成**的（而不是先造好一整段再循环）：
+   *   §931 的快路径要求「数组**逐段增长**」这个形态（生产上就是如此：
+   *   `appendText` 往尾巴上 push、`ingestSpeechBlob` 按 startMs 有序插）。
+   *   若把**整段数组**反复传进 `appendAt`，那每次都是「非尾部追加」
+   *   ⇒ 渲染器会整场重算 ⇒ **快路径根本没被走到**
+   *   ⇒ 那时的「逐字相同」是**重建路径**的等价性，证明不了快路径。
+   *   ⇒ 本节的等价性用例因此**逐段 push**（生产形态）。
+   */
+  function mkSeg(i: number, tail = 6) {
+    const text = `${i > 0 ? `第${i - 1}段新增的内容`.slice(-tail) : ''}第${i}段新增的内容`
+    return { speakerLabel: i % 2 ? '乙' : '甲', text, startMs: i * 1000, endMs: i * 1000 + 800, origin: 'asr' as const }
+  }
+
+  it('★ 前置自证：这份语料**真的踩到去重**（否则下面那些「逐字相同」恒成立）', () => {
+    const segs = []
+    for (let i = 0; i < 20; i++) segs.push(mkSeg(i))
+    const raw = segs.map((s) => s.text).join('')
+    const rendered = renderTranscript(segs)
+    assert.ok(rendered.length < raw.length, '前置失效：语料没有重叠 ⇒ 去重没被踩到 ⇒ 下面的等价性断言说明不了问题')
+    assert.ok(rendered.includes('第0段新增的内容'), '前置失效：第一段都不在渲染结果里')
+  })
+
+  it('★★★ 行为：增量渲染器与整场渲染**逐字相同**（尾插 / 中间插 / 改写后追加 / 数组替换）', () => {
+    // ① 尾插（原生链形态：appendText 往尾巴上 push）
+    const a: ReturnType<typeof mkSeg>[] = []
+    const r1 = createTranscriptRenderer()
+    for (let i = 0; i < 40; i++) { a.push(mkSeg(i)); r1.appendAt(a, a.length - 1) }
+    assert.equal(r1.source().text(), renderTranscript(a), '尾插逐段追加：增量结果与整场渲染不一致')
+
+    // ② 中间插（Web 链形态：按 startMs 有序插入 ⇒ 插到中间）
+    const b: ReturnType<typeof mkSeg>[] = []
+    const r2 = createTranscriptRenderer()
+    for (let i = 0; i < 100; i++) { b.push(mkSeg(i)); r2.appendAt(b, b.length - 1) }
+    b.splice(50, 0, { ...mkSeg(999), startMs: b[50].startMs + 1, endMs: b[50].endMs + 1 })
+    r2.appendAt(b, 50)
+    assert.equal(r2.source().text(), renderTranscript(b), '中间插入：增量结果与整场渲染不一致')
+
+    // ③ 段被就地改写（用户改字）后再追加
+    const c: ReturnType<typeof mkSeg>[] = []
+    const r3 = createTranscriptRenderer()
+    for (let i = 0; i < 100; i++) { c.push(mkSeg(i)); r3.appendAt(c, c.length - 1) }
+    c[10] = { ...c[10], text: '用户手工改过的正文' }
+    r3.invalidate()
+    c.push(mkSeg(100))
+    r3.appendAt(c, c.length - 1)
+    assert.equal(r3.source().text(), renderTranscript(c), '改写后追加：增量结果与整场渲染不一致')
+
+    // ④ 数组被**整份替换**（seedSegments / freshSession 会换掉数组对象）
+    const d: ReturnType<typeof mkSeg>[] = []
+    const r4 = createTranscriptRenderer()
+    for (let i = 0; i < 80; i++) { d.push(mkSeg(i)); r4.appendAt(d, d.length - 1) }
+    const e = []
+    for (let i = 0; i < 120; i++) e.push(mkSeg(i))
+    r4.appendAt(e, 0)
+    assert.equal(r4.source().text(), renderTranscript(e), '数组整份替换：增量结果与整场渲染不一致')
+
+    // ④b ⭐ 数组被**整份替换**、且**新数组的长度恰好 = 已渲染段数 + 1**
+    //    （生产形态：seedSegments 灌回库里那一批，再来一段 ⇒ 先 push 再 appendAt）
+    //    ⇒ 这是**「数组身份检查」唯一能救**的形态：`index === consumed`
+    //    ⇒ 「index !== consumed ⇒ 整场重算」那条**兜不住**它（两者都成立）。
+    //    ⚠ 第一版只写了 ④ ⇒ 变异 MU7（删掉身份检查）**没转红**
+    //    ⇒ 量具错（用例没隔离那条分支），**不是实现错** ⇒ 这里补上隔离形态。
+    const f: ReturnType<typeof mkSeg>[] = []
+    const r5 = createTranscriptRenderer()
+    for (let i = 0; i < 40; i++) { f.push(mkSeg(i)); r5.appendAt(f, f.length - 1) }
+    const g: ReturnType<typeof mkSeg>[] = []
+    for (let i = 0; i < 40; i++) g.push(mkSeg(i + 5000))   // **内容完全不同**的同样长度
+    g.push(mkSeg(6000))                                      // 再来一段（生产形态）
+    r5.appendAt(g, g.length - 1)                             // index = 40 === consumed ⇒ 快路径会被触发
+    assert.equal(r5.source().text(), renderTranscript(g),
+      '数组被整份替换（长度 = 已渲染段数 + 1）后：增量结果与整场渲染不一致 ⇒ 身份检查没起作用')
+  })
+
+  it('★★ 字节账：source().byteLength 必须等于正文的 UTF-8 字节数（节流靠它判定）', () => {
+    // ⚠ 量具纪律：用 **Node 自己的** Buffer.byteLength，**不**用生产代码里的
+    //   utf8ByteLength（那是 TextEncoder）⇒ 两份实现互为对照，口径漂了判据会红。
+    const segs: ReturnType<typeof mkSeg>[] = []
+    const r = createTranscriptRenderer()
+    for (let i = 0; i < 30; i++) { segs.push(mkSeg(i)); r.appendAt(segs, segs.length - 1) }
+    const body = r.source().text()
+    assert.equal(r.source().byteLength, Buffer.byteLength(body, 'utf8'),
+      '字节账与正文对不上 ⇒ 节流判的「增长了多少字节」是错的')
+    // ⚠ 必须含**多字节**字符，否则 ASCII 下字节数 == 码元数 ⇒ 单位陷阱测不出来。
+    assert.ok(Buffer.byteLength(body, 'utf8') > body.length, '前置失效：语料是纯 ASCII ⇒ 字节账这条量不到单位差异')
+  })
+
+  it('★★★ 行为：节流说不写时，惰性源的正文**绝不能**被渲染出来', async () => {
+    const { updateTranscript } = await loadStoreModule()
+    S925_WRITES.length = 0
+    let renders = 0
+    const body = 'x'.repeat(1000)
+    const src = { byteLength: Buffer.byteLength(body, 'utf8'), text: () => { renders++; return body } }
+    // ① 第一次 ⇒ **必写**（否则短会议那一列永远是空的）
+    await updateTranscript('m-931', src, { throttled: true })
+    assert.equal(S925_WRITES.length, 1, '节流路径的第一次没落库 ⇒ 短会议的预览会整行空白')
+    assert.equal(renders, 1, '要写的时候反而没渲染正文')
+    // ② 增长不足阈值 ⇒ **不写** ⇒ 正文**绝不能**被渲染
+    // ⚠⚠ 必须**重置写入计数**：上面那一次已经写了 1 条 ⇒ 这里判的是「这一轮有没有写」。
+    S925_WRITES.length = 0
+    renders = 0
+    await updateTranscript('m-931', src, { throttled: true })
+    assert.equal(S925_WRITES.length, 0, '增长不到阈值却写库了 ⇒ 节流没生效')
+    assert.equal(renders, 0,
+      '★ 节流说不写，却仍然渲染了整场正文 ⇒ O(n) 的渲染白烧（§931 修的就是这个）')
+  })
+
+  it('★★ 行为：要写时，写进库的必须**逐字**是惰性源给的正文', async () => {
+    const { updateTranscript } = await loadStoreModule()
+    S925_WRITES.length = 0
+    const body = '第一行\n第二行'
+    await updateTranscript('m-931b', { byteLength: Buffer.byteLength(body, 'utf8'), text: () => body }, { throttled: true })
+    assert.equal(S925_WRITES.length, 1, '没落库')
+    assert.equal(S925_WRITES[0].params[0], body, '写进库的不是惰性源给的正文')
+  })
+
+  /** 两条逐段追加热路径的「是否仍当场整场渲染」违规清单（空 = 合规）。 */
+  function hotPathViolations(runtimeSrc: string, ingestSrc: string): string[] {
+    const bad: string[] = []
+    // ⚠⚠ 必须**先剥注释**再扫：本节第一版的判据扫**原始源码**，
+    //   而 appendText 的**注释里**正好写着 `renderTranscript(this.segments.value)`
+    //   （说明「以前是什么样」）⇒ 不剥注释就会把注释当成代码 ⇒ **假红**。
+    //   （与 §930 在 Go 侧踩的「手写剥注释器」是同一族坑。）
+    const runtime = stripComments(runtimeSrc)
+    const ingest = stripComments(ingestSrc)
+    const append = methodBodyWithModifiers(runtime, 'appendText')
+    if (!/transcriptRenderer\s*\.\s*source\(\)/.test(append)) {
+      bad.push('recordingRuntime.appendText 没有走增量渲染器')
+    }
+    if (/renderTranscript\(\s*this\.segments\.value\s*\)/.test(append)) {
+      bad.push('recordingRuntime.appendText 仍在当场整场渲染')
+    }
+    const proc = methodBodyWithModifiers(runtime, 'processSegment')
+    if (!/transcriptRenderer\s*:\s*this\.transcriptRenderer/.test(proc)) {
+      bad.push('recordingRuntime.processSegment 没把增量渲染器交给 ingestSpeechBlob')
+    }
+    if (!/renderer\s*\?\s*renderer\.source\(\)/.test(ingest)) {
+      bad.push('ingest-speech.ts 没走惰性正文源')
+    }
+    return bad
+  }
+
+  it('★★ 接线：两条逐段追加的热路径必须走**增量渲染器**（不得当场整场渲染）', () => {
+    const runtime = read('../../native/recordingRuntime.ts')
+    const ingest = read('ingest-speech.ts')
+    assert.deepEqual(hotPathViolations(runtime, ingest), [],
+      '逐段追加那条路径仍在每段整场渲染 ⇒ 算力白烧（§931 的根）')
+  })
+
+  it('★★ 量具自证：接线判据的抽取器**真的有牙**（否则上面那条恒绿）', () => {
+    const runtime = read('../../native/recordingRuntime.ts')
+    const append = methodBodyWithModifiers(stripComments(runtime), 'appendText')
+    assert.ok(append.includes('transcriptRenderer.source()'),
+      '抽取器没在 appendText 体内找到增量渲染 ⇒ 接线判据量具坏了')
+    assert.ok(append.includes('updateTranscript('),
+      '抽取器没在 appendText 体内找到落库调用 ⇒ 接线判据量具坏了')
+    // ⚠ 还要证「剥注释」这一步是**必要**的：注释里就写着旧写法 ⇒ 不剥必然假红。
+    const raw = methodBodyWithModifiers(runtime, 'appendText')
+    assert.ok(/renderTranscript\(\s*this\.segments\.value\s*\)/.test(raw),
+      '前置失效：appendText 的注释里已经没有那个旧写法了 ⇒ 「必须剥注释」这条前提不成立')
+  })
+
+  it('★★ 负控：把热路径改回「当场整场渲染」必须被上面那条判红', () => {
+    const runtime = read('../../native/recordingRuntime.ts')
+    const ingest = read('ingest-speech.ts')
+    // 同形变异 ①：只把**增量渲染器**换回整场渲染，其余一律不动。
+    const mutatedRuntime = runtime.replace(
+      'await updateTranscript(meetingId, this.transcriptRenderer.source(), { throttled: true })',
+      'await updateTranscript(meetingId, renderTranscript(this.segments.value), { throttled: true })',
+    )
+    assert.notEqual(mutatedRuntime, runtime, '变异没落盘 ⇒ 这条负控不算数')
+    assert.ok(
+      hotPathViolations(mutatedRuntime, ingest).length > 0,
+      '负控前提失效：变异没有真的把增量渲染换回整场渲染',
+    )
+    // 同形变异 ②：把渲染器从 ingestSpeechBlob 的实参里去掉
+    const mutatedRuntime2 = runtime.replace('transcriptRenderer: this.transcriptRenderer,', '')
+    assert.notEqual(mutatedRuntime2, runtime, '变异没落盘 ⇒ 这条负控不算数')
+    assert.ok(
+      hotPathViolations(mutatedRuntime2, ingest).length > 0,
+      '负控前提失效：变异没有真的把渲染器传下去',
+    )
+    // 同形变异 ③：把 ingest-speech 的惰性源换回当场整场渲染
+    const mutatedIngest = ingest.replace(
+      'renderer ? renderer.source() : renderTranscript(opts.segments)',
+      'renderTranscript(opts.segments)',
+    )
+    assert.notEqual(mutatedIngest, ingest, '变异没落盘 ⇒ 这条负控不算数')
+    assert.ok(
+      hotPathViolations(runtime, mutatedIngest).length > 0,
+      '负控前提失效：变异没有真的把惰性源换回当场渲染',
+    )
+  })
+
+  it('★★ 形状：正文必须在**节流判定之后**才渲染（渲染早于判定 ⇒ 浪费照旧）', () => {
+    const store = read('meetings-store.ts')
+    const fn = functionBody(store, 'updateTranscript')
+    const gateAt = fn.indexOf('shouldPersistTranscript')
+    const renderAt = fn.indexOf('.text()')
+    assert.ok(gateAt >= 0, '判据失效：updateTranscript 里找不到节流判定')
+    assert.ok(renderAt >= 0, '判据失效：updateTranscript 里没有惰性渲染（§931 的修复不在？）')
+    assert.ok(renderAt > gateAt,
+      '正文在节流判定**之前**就渲染了 ⇒ 节流说不写时那次 O(n) 渲染照样发生')
+  })
+
+  it('★★ 负控：把渲染挪到节流判定**之前**必须被上面那条判红', () => {
+    const store = read('meetings-store.ts')
+    const fn = functionBody(store, 'updateTranscript')
+    const gateAt = fn.indexOf('shouldPersistTranscript')
+    const renderAt = fn.indexOf('.text()')
+    assert.ok(gateAt >= 0 && renderAt > gateAt, '前置失效：真实源码不满足「渲染在判定之后」')
+    // 同形变异：把渲染提到判定之前
+    const mutated = fn.replace(
+      /const bytes = [^\n]*\n/,
+      'const bytes = 0\n  const eager = typeof source === \'string\' ? source : source.text()\n',
+    )
+    assert.notEqual(mutated, fn, '变异没落盘 ⇒ 这条负控不算数')
+    const mGate = mutated.indexOf('shouldPersistTranscript')
+    const mRender = mutated.indexOf('.text()')
+    assert.ok(mRender < mGate, '负控前提失效：变异没有把渲染提到判定之前')
+  })
+
+  /**
+   * ★★ 相对成本：快路径必须**真的**比「每段整场渲染」便宜一个量级以上。
+   *
+   * ⚠ 为什么要有这条（前面那些都证明不了「快路径被走到了」）：
+   *   等价性用例证明「结果一样」，**证明不了**「走的哪条路」。
+   *   而快路径一旦被绕开（每次都整场重算），结果**照样逐字相同** ⇒ 假绿。
+   *   ⇒ 这里用**相对量**（项目纪律：性能判据优先用相对量）把「走的哪条路」钉住。
+   *
+   * ⚠ 阈值怎么来的：比值随 n **线性**增长（实测 100/200/400/800 段 ⇒ 61×/122×/405×/174×，
+   *   ≈ 0.6n；n=1952 实测 **2949×**）⇒ n=300 时理论 ≈180× ⇒ 取 **20×** 作闸
+   *   ⇒ 留 **9×** 误伤余量。
+   *   （绝对时间不设闸：机器负载波动会误伤，相对比值稳定得多。）
+   *
+   * ⚠⚠ 为什么 N 只取 300：**判据自己不能变成负载**。
+   *   第一版取 2000 ⇒ 这条用例单跑 **60.4 s**（全量门禁里不可接受）。
+   *   ⇒ 降到 300 ⇒ 约 4 s，而比值（≈180×）离闸（20×）仍有 9× 余量。
+   */
+  it('★★ 相对成本：增量快路径必须比「每段整场渲染」快 ≥20 倍', () => {
+    const N = 300
+    const all = []
+    for (let i = 0; i < N; i++) all.push(mkSeg(i))
+
+    // 快路径（生产形态：数组逐段增长）—— 便宜 ⇒ 取 3 次**最小值**（压掉 GC 停顿）
+    const runFast = () => {
+      const live: ReturnType<typeof mkSeg>[] = []
+      const fast = createTranscriptRenderer()
+      const t = performance.now()
+      for (let i = 0; i < N; i++) { live.push(all[i]); fast.appendAt(live, live.length - 1) }
+      return performance.now() - t
+    }
+    let fastMs = Infinity
+    for (let i = 0; i < 3; i++) fastMs = Math.min(fastMs, runFast())
+
+    // 现状：每段整场渲染（贵 ⇒ 只跑一次）
+    const slowMs = (() => {
+      const t = performance.now()
+      for (let i = 0; i < N; i++) renderTranscript(all.slice(0, i + 1))
+      return performance.now() - t
+    })()
+
+    assert.ok(slowMs / fastMs >= 20,
+      `增量快路径没有明显更快（慢 ${(slowMs / fastMs).toFixed(1)}×，闸 20×）⇒ ` +
+      '快路径多半没被走到 ⇒ §931 的优化没生效')
+
+    // ★ 负控：同一份语料走「每次都整场重算」的路（index 故意不等于已渲染段数）必须**慢**。
+    const alwaysMs = (() => {
+      const live2: ReturnType<typeof mkSeg>[] = []
+      const always = createTranscriptRenderer()
+      const t = performance.now()
+      for (let i = 0; i < N; i++) { live2.push(all[i]); always.appendAt(live2, 0) }
+      return performance.now() - t
+    })()
+    assert.ok(alwaysMs / fastMs >= 20,
+      `负控失效：整场重算那条路没有明显更慢（${(alwaysMs / fastMs).toFixed(1)}×）⇒ ` +
+      '这条相对成本判据量具坏了（不是产品慢了）')
+  })
+})

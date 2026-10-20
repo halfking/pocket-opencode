@@ -32,7 +32,7 @@ import {
 } from '../features/meetings/meetings-store'
 import { syncMeetingMetadata } from '../features/meetings/meeting-ingest'
 import { ingestSpeechBlob } from '../features/meetings/ingest-speech'
-import { renderTranscript } from '../features/meetings/meeting-dedup.ts'
+import { renderTranscript, createTranscriptRenderer, type TranscriptRenderer } from '../features/meetings/meeting-dedup.ts'
 import {
   applyCaptionResult, createLiveCaption, pickSpeechRecognition, type SpeechRecLike,
 } from '../features/meetings/meeting-live-caption'
@@ -260,6 +260,20 @@ export class MeetingRecorderRuntime {
   // 在途分段转写 promise:stop() 必须等它们落库,否则 refine 拿到的
   // transcript 缺尾巴,晚到的 updateTranscript 还会与 completed 状态竞争。
   private inFlightSegments = new Set<Promise<void>>()
+  /**
+   * §931：转写正文的**增量渲染器**。
+   *
+   * ⚠⚠ 为什么需要它：逐段追加那条路径（本地实时字幕 + ASR 段）以前每落一段
+   *   就把**整场**重新渲染一次，而那次渲染的结果在 §925 的节流里
+   *   **绝大多数被直接丢弃**（8 小时会议真正落库 13 次）
+   *   ⇒ 算力白烧：实测 800 段 19.6 s，8 小时外推 ~100 s 纯 CPU（主线程）。
+   *
+   * ⚠ 它与 `this.segments` **必须指向同一批段**：两条追加路径
+   *   （`appendText` 尾插 / `ingestSpeechBlob` 按 startMs 有序插）都往
+   *   `this.segments.value` 里塞 ⇒ 渲染器自己按**数组身份**发现「整份替换」
+   *   （`seedSegments` / `freshSession` 会换掉数组对象）并整场重算。
+   */
+  private transcriptRenderer: TranscriptRenderer = createTranscriptRenderer()
   private toast = useToast()
 
   private async cleanupMedia() {
@@ -582,7 +596,12 @@ export class MeetingRecorderRuntime {
     //   ⇒ 8 小时会议的转写落库量从 376.3 MB 降到 2.4 MB（纯写中位 17.3 s → 1.44 s）。
     //   ⚠ 节流是**显式 opt-in**：不声明的写入点一律立刻落库（安全的那一侧）。
     //   ⚠ 收尾会**整篇补齐**一次（`stop()`）⇒ 会议结束时这一列是完整的。
-    await updateTranscript(meetingId, renderTranscript(this.segments.value), { throttled: true })
+    // ⚠⚠ §931：**增量**渲染 ⇒ 渲染成本从 O(n²) 降到 O(n)。
+    //   以前是 `renderTranscript(this.segments.value)`（当场整场渲染）⇒ 每段一次 O(n)，
+    //   而那次结果绝大多数被节流直接丢弃（8 小时真正落库 13 次）⇒ 纯浪费。
+    //   ⚠ 正文**惰性** ⇒ 只有真要落库时才渲染。
+    this.transcriptRenderer.appendAt(this.segments.value, this.segments.value.length - 1)
+    await updateTranscript(meetingId, this.transcriptRenderer.source(), { throttled: true })
     return saved
   }
 
@@ -612,6 +631,9 @@ export class MeetingRecorderRuntime {
     seg.origin = 'manual'
     // ⚠ §925：**不声明** `throttled` ⇒ 立刻落库 —— 这是**用户可见**的改动（他刚改了一句），
     //   晚一点落库就等于「用户的修改没生效」。
+    // ⚠⚠ §931：这一改**就地改写了**段正文 ⇒ 增量渲染器的状态已过期
+    //   ⇒ 必须 invalidate（否则下一段的增量结果会基于旧的这段）。
+    this.transcriptRenderer.invalidate()
     await updateTranscript(meetingId, renderTranscript(this.segments.value))
     return true
   }
@@ -625,6 +647,8 @@ export class MeetingRecorderRuntime {
         await ingestSpeechBlob({
           meetingId: this.activeMeetingId.value, blob, startMs, endMs, seq: this.partSeq, diarizer: this.diarizer!,
           segments: this.segments.value, segmentProfiles: this.segmentProfiles,
+          // ⚠ §931：把增量渲染器交给它 ⇒ ASR 段那条路径不再每段整场重渲染。
+          transcriptRenderer: this.transcriptRenderer,
           signal: this.segmentAbort?.signal,
         })
         this.syncSpeakers()
@@ -716,6 +740,8 @@ export class MeetingRecorderRuntime {
     await Promise.all(ownUpdates.map((u) => updateSegmentSpeaker(u.segId, u.label)))
     // 转写正文里也带着说话人前缀，不重渲染的话用户看到的是「标签改了、正文没改」。
     // ⚠ §925：**不声明** `throttled` ⇒ 立刻落库 —— 改说话人名是**用户可见**的改动。
+    // ⚠⚠ §931：说话人标签被**就地改写** ⇒ 增量渲染器状态过期 ⇒ invalidate。
+    this.transcriptRenderer.invalidate()
     await updateTranscript(meetingId, renderTranscript(this.segments.value))
     this.syncSpeakers()
   }
@@ -910,6 +936,11 @@ export class MeetingRecorderRuntime {
         //   而 `classifyRecovery` 靠「转写非空」判「录音中断可恢复」⇒ 清空 = 误报。
         if (this.segments.value.length) {
           try {
+            // ⚠⚠ §931：这里刻意**仍然用整场渲染**（`renderTranscript`），
+            //   而不是增量渲染器 ⇒ 收尾这一写是**权威真相**，与增量路径无关。
+            //   ⇒ 增量渲染器就算有偏差，也不会污染会议结束后的这一列。
+            //   （代价：O(n) 一次 —— 8 小时会议实测 31 ms，可以接受。）
+            this.transcriptRenderer.invalidate()
             await updateTranscript(meetingId, renderTranscript(this.segments.value))
           } catch (e) {
             console.warn('[meeting-recorder] transcript persist failed, 收尾继续:', e)

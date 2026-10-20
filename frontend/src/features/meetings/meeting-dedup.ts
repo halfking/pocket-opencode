@@ -46,6 +46,10 @@
  *   重叠 ≥1.6s 时闸门才会触发。读数与分工见设计文档 §523。
  */
 
+// ⚠ 必须带 `.ts` 扩展名：本文件被 node --experimental-strip-types 直接 import
+//   （门禁 `meeting-dedup.test.ts` / `meeting-dedup-asr.test.ts`）⇒ 无扩展名解析不了。
+import { utf8ByteLength } from '../../utils/text.ts'
+
 /**
  * LCS 覆盖率下限：这次识别出来的字里有多大比例是重复的。
  *
@@ -496,6 +500,109 @@ export function dedupeSegments<T extends {
 }
 
 /**
+ * 一段会议转写参与渲染/去重时，**结构上**必须有的字段。
+ *
+ * ⚠ 单独抽出来，是为了让 `renderTranscript`（整场渲染）与
+ *   `createTranscriptRenderer`（增量渲染）**共用同一个入参类型** ——
+ *   §3 的教训正是「同一段逻辑被抄两份 ⇒ 同一个缺陷能同时存在于两个出口」。
+ */
+export interface TranscriptSegmentLike {
+  speakerLabel: string | null
+  text: string
+  startMs?: number
+  endMs?: number
+  /** §132：人工段享受豁免（§401 补齐——此前本函数完全不认这个字段）。 */
+  origin?: 'asr' | 'manual'
+}
+
+/**
+ * §931：说话人前缀的**唯一**实现。
+ *
+ * ⚠ §427：说话人**必须有兜底**，否则 null/undefined 会原样拼进
+ *   `[null] …` / `[undefined] …`，而这条渲染有 5 个出口：
+ *   ① `local_meetings.transcript` 派生列（**用户可见**）
+ *   ② ③ api/meetings.ts 的 fallbackSummarize / fallbackRecommend 提示词
+ *   ④ ⑤ fallbackRefine 提示词（§54 说它是**高频**路径）
+ *
+ *   null 是**真会出现的**：`buildRefineBaseSegments` 的第三条路径
+ *   （采纳整段重转但说话人挂不回去）显式造 `speakerLabel: null`。
+ *
+ *   兜底词沿用本仓**另外两处**已经在用的那个，不新造：
+ *   · Go `segmentsToText`：`if speaker == "" { speaker = "说话人" }`
+ *   · `MeetingDetailView.onSummarize`（§427 已改成直接复用本函数）
+ *   ⇒ 三个出口此前两个有、一个没有，这正是它开始漂的原因。
+ * ⚠ 只对「空」兜底，**不顺手 trim 真名**：非空说话人必须原样输出。
+ *   第一版写成 `String(...).trim() || '说话人'` ⇒ 把 ` 王总 ` 变成 `王总`，
+ *   那是**超出缺陷范围**的行为改变（判据 §427 #3 把它抓了出来）。
+ *   trim 只用来**判空**。
+ */
+function speakerPrefix(speakerLabel: string | null): string {
+  const rawSpeaker = String(speakerLabel ?? '')
+  return rawSpeaker.trim() ? rawSpeaker : '说话人'
+}
+
+/**
+ * §931：渲染的**唯一实现**（状态机）。
+ *
+ * ⚠⚠ 为什么要抽成类（这就是本节修的那个二次方的根）：
+ *   §925 把「每段整篇重写」改成「按增长量节流」⇒ **写**的量从 O(时长²) 降到 O(时长)。
+ *   但**渲染**没被节流：`recordingRuntime.appendText` 与 `ingest-speech.ts`
+ *   每落一段就把**整场**重新渲染一遍，而那次渲染的结果在节流判定里
+ *   **绝大多数被直接丢弃**（8 小时会议真正落库 13 次）。
+ *   ⇒ 实测（**生产真函数** + 真实 ASR 语料，1952 段 = 8 小时）：
+ *     · 单次全量渲染 = **O(n)**，每步 ~16–40 µs，**不随 n 增长**
+ *       （链 vs 同长扁平串 1.0×/4.2×/1.0× ⇒ 不是 ConsString 展平）
+ *     · 现状「每段渲染一次」= **O(n²)**：800 段 19.6 s；8 小时外推 ~100 s 纯 CPU
+ *   ⇒ 与 §925 同一族：**写**那一半修好了，**算**那一半没修。
+ *
+ * ⚠ 这个类是**唯一**实现：`renderTranscript` 与 `createTranscriptRenderer`
+ *   都走它 ⇒ 两个出口不可能漂（§3 的教训）。
+ */
+class TranscriptRenderState {
+  private readonly lines: string[] = []
+  /** §914：累积正文（一条 ConsString 链；热路径**不读**它）。 */
+  private prevBody = ''
+  /** §914：累积正文的**末尾窗口**，增量维护（O(净增) 每段）。 */
+  private prevTail = ''
+  private prevEndMs: number | undefined
+  /** 渲染结果的 UTF-8 **字节数**（增量维护 ⇒ O(1) 可读）。 */
+  private bytes = 0
+
+  append(s: TranscriptSegmentLike): void {
+    const step = dedupeStep({
+      prev: this.prevBody,
+      prevTail: this.prevTail,
+      raw: s.text ?? '',
+      prevEndMs: this.prevEndMs,
+      startMs: s.startMs,
+      // ★ §401：与 dedupeSegments 同一豁免。缺省按 asr（去重）处理——
+      //   反过来把未知当 manual 会让去重静默失效，那比多裁一次危险得多。
+      manual: s.origin === 'manual',
+    })
+    if (step.added) {
+      const line = `[${speakerPrefix(s.speakerLabel)}] ${step.text}`
+      this.lines.push(line)
+      // ⚠ 字节账必须**增量**：text() = lines.join('\n')
+      //   ⇒ 字节 = Σ每行字节 + (行数 − 1) 个 '\n'（每个 1 字节）。
+      this.bytes += utf8ByteLength(line) + (this.lines.length > 1 ? 1 : 0)
+    }
+    this.prevBody = step.body
+    this.prevTail = rollTail(this.prevTail, step.delta)
+    this.prevEndMs = Number.isFinite(s.endMs) ? s.endMs : undefined
+  }
+
+  /** 整场正文（O(总长) ⇒ **只在真要落库时**才该调）。 */
+  text(): string {
+    return this.lines.join('\n')
+  }
+
+  /** 与 `utf8ByteLength(text())` **逐字节相等**（判据钉住这一点）。 */
+  get byteLength(): number {
+    return this.bytes
+  }
+}
+
+/**
  * 把段落列表渲染成 transcript 全文，**相邻段之间做重叠去重**。
  *
  * 为什么逐段保留 `[说话人]` 前缀、而不是先合并全文再拼前缀：
@@ -526,58 +633,103 @@ export function dedupeSegments<T extends {
  * 现在与 `dedupeSegments` **同一口径**（`origin` 缺省按 asr，见其注释）。
  * 判据见 `__tests__/render-transcript-manual-origin.test.mjs`。
  */
-export function renderTranscript(
-  segments: Array<{
-    speakerLabel: string | null
-    text: string
-    startMs?: number
-    endMs?: number
-    /** §132：人工段享受豁免（§401 补齐——此前本函数完全不认这个字段）。 */
-    origin?: 'asr' | 'manual'
-  }>,
-): string {
-  const lines: string[] = []
-  let prevBody = ''
-  // §914：同上（`dedupeSegments` 的注释）—— 末尾窗口增量维护，
-  //   不去读那条越来越长的 ConsString 链。
-  let prevTail = ''
-  let prevEndMs: number | undefined
-  for (const s of segments) {
-    const step = dedupeStep({
-      prev: prevBody,
-      prevTail,
-      raw: s.text ?? '',
-      prevEndMs,
-      startMs: s.startMs,
-      // ★ §401：与 dedupeSegments 同一豁免。缺省按 asr（去重）处理——
-      //   反过来把未知当 manual 会让去重静默失效，那比多裁一次危险得多。
-      manual: s.origin === 'manual',
-    })
-    if (step.added) {
-      // ⚠ §427：说话人**必须有兜底**，否则 null/undefined 会原样拼进
-      //   `[null] …` / `[undefined] …`，而这条函数有 5 个出口：
-      //   ① `local_meetings.transcript` 派生列（**用户可见**）
-      //   ② ③ api/meetings.ts 的 fallbackSummarize / fallbackRecommend 提示词
-      //   ④ ⑤ fallbackRefine 提示词（§54 说它是**高频**路径）
-      //
-      //   null 是**真会出现的**：`buildRefineBaseSegments` 的第三条路径
-      //   （采纳整段重转但说话人挂不回去）显式造 `speakerLabel: null`。
-      //
-      //   兜底词沿用本仓**另外两处**已经在用的那个，不新造：
-      //   · Go `segmentsToText`：`if speaker == "" { speaker = "说话人" }`
-      //   · `MeetingDetailView.onSummarize`（§427 已改成直接复用本函数）
-      //   ⇒ 三个出口此前两个有、一个没有，这正是它开始漂的原因。
-      // ⚠ 只对「空」兜底，**不顺手 trim 真名**：非空说话人必须原样输出。
-      //   第一版写成 `String(...).trim() || '说话人'` ⇒ 把 ` 王总 ` 变成 `王总`，
-      //   那是**超出缺陷范围**的行为改变（判据 §427 #3 把它抓了出来）。
-      //   trim 只用来**判空**。
-      const rawSpeaker = String(s.speakerLabel ?? '')
-      const speaker = rawSpeaker.trim() ? rawSpeaker : '说话人'
-      lines.push(`[${speaker}] ${step.text}`)
-    }
-    prevBody = step.body
-    prevTail = rollTail(prevTail, step.delta)
-    prevEndMs = Number.isFinite(s.endMs) ? s.endMs : undefined
+export function renderTranscript(segments: TranscriptSegmentLike[]): string {
+  const state = new TranscriptRenderState()
+  for (const s of segments) state.append(s)
+  return state.text()
+}
+
+/**
+ * §931：增量渲染器 —— 把「逐段追加」那条路径的渲染成本从 O(n²) 降到 O(n)。
+ *
+ * ── 它解决的是什么 ──
+ *
+ * `recordingRuntime.appendText`（本地实时字幕）与 `ingest-speech.ts`（ASR 段）
+ * 两条**逐段追加**的路径，每落一段就把**整场**重新渲染一次（`renderTranscript(全部段)`），
+ * 而 §925 的节流把那次渲染的结果**绝大多数直接丢弃**（8 小时会议真正落库 13 次）。
+ * ⇒ 算力白烧：实测 800 段 19.6 s，8 小时外推 ~100 s 纯 CPU（主线程）。
+ *
+ * ── 它怎么保证「与整场渲染逐字相同」 ──
+ *
+ * ① **同一个状态机**：增量与整场都走 `TranscriptRenderState.append`，
+ *    而 `dedupeStep` 只依赖**上一段**（prev/prevTail/prevEndMs）⇒ 顺序追加时逐步等价。
+ * ② **任何非尾部追加 ⇒ 整场重算**：Web 链按 `startMs` **有序插入**，
+ *    插到中间会让**后面那些段**的去重结果变 ⇒ 增量状态不再等价 ⇒ 整场重算。
+ * ③ **数组被整份替换 ⇒ 整场重算**（`seedSegments` / `freshSession` 会换掉数组对象）。
+ * ④ **段被就地改写 ⇒ 下次整场重算**（`invalidate()`：改字 / 改说话人）。
+ *
+ * ⚠ 与 §914 一样：这里**不引入第二套去重算法**，只是把同一套算法**按顺序喂**。
+ *
+ * ── 为什么 `source()` 是**惰性**的 ──
+ *
+ * 节流判定需要「这一轮有多少字节」，而正文有 O(n) 的渲染成本。
+ * ⇒ `source()` 把**字节数**（O(1) 增量维护）与**正文**（O(n)，惰性）分开给：
+ *   落库层先看字节数决定「要不要写」，**只有真的要写**时才调 `text()`。
+ *   ⇒ 渲染次数从「每段一次」降到「每次真落库一次」（8 小时 13 次）。
+ */
+export interface TranscriptRenderer {
+  /**
+   * 段被追加/插入到 `index`。
+   *
+   * @param index 新段在数组里的位置。**等于已渲染的段数** ⇒ 走增量快路径；
+   *              否则（插到中间 / 数组被换掉 / 段被改写过）⇒ 整场重算。
+   */
+  appendAt(segments: TranscriptSegmentLike[], index: number): void
+  /** 整场重算并同步（段被就地改写后调用）。 */
+  refresh(segments: TranscriptSegmentLike[]): void
+  /** 标记「已渲染状态已过期」（段被就地改写：改字 / 改说话人）。 */
+  invalidate(): void
+  /**
+   * 惰性正文源：`byteLength` O(1)，`text()` 只在**真要落库**时才渲染。
+   *
+   * ⚠ `byteLength` 必须是**取时**的值（getter）而不是快照 ——
+   *   渲染器可能在 `source()` 之后又整场重算过。
+   */
+  source(): { byteLength: number; text: () => string }
+}
+
+export function createTranscriptRenderer(): TranscriptRenderer {
+  let state = new TranscriptRenderState()
+  /** 已渲染进 state 的段数。 */
+  let consumed = 0
+  /** 上一次渲染用的**数组对象**（用来发现「整份替换」）。 */
+  let arrayRef: TranscriptSegmentLike[] | null = null
+  /** 段被就地改写过 ⇒ 增量状态过期。 */
+  let dirty = true
+
+  const rebuild = (segments: TranscriptSegmentLike[]): void => {
+    const next = new TranscriptRenderState()
+    for (const s of segments) next.append(s)
+    state = next
+    consumed = segments.length
+    arrayRef = segments
+    dirty = false
   }
-  return lines.join('\n')
+
+  return {
+    appendAt(segments: TranscriptSegmentLike[], index: number): void {
+      // ⚠ 数组被**整份替换**（`seedSegments` / `freshSession`）⇒ 身份变了就整场重算。
+      if (segments !== arrayRef) { rebuild(segments); return }
+      // ⚠ 段被**就地改写**（改字 / 改说话人）⇒ 增量状态已过期。
+      if (dirty) { rebuild(segments); return }
+      // ⚠ 新段不是接在**尾巴**上（Web 链按 startMs 有序插入）⇒
+      //   后面那些段的去重结果会变 ⇒ 必须整场重算。
+      if (index !== consumed) { rebuild(segments); return }
+      // ★ 快路径：只喂新增的那些段 ⇒ O(新增段数)，不是 O(总段数)。
+      for (let i = consumed; i < segments.length; i++) state.append(segments[i])
+      consumed = segments.length
+    },
+    refresh(segments: TranscriptSegmentLike[]): void {
+      rebuild(segments)
+    },
+    invalidate(): void {
+      dirty = true
+    },
+    source() {
+      return {
+        get byteLength(): number { return state.byteLength },
+        text: (): string => state.text(),
+      }
+    },
+  }
 }

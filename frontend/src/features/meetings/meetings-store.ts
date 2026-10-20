@@ -285,17 +285,61 @@ const lastPersistedTranscriptBytes = new Map<string, number>()
  *   **但只在录音期间** —— `recordingRuntime.stop()` 收尾会**整篇补齐**一次
  *   ⇒ 会议结束后这一列是**完整**的。
  */
+/**
+ * §931：转写正文的来源 —— 字符串，**或**一个「字节数已知、正文惰性」的源。
+ *
+ * ⚠ 为什么要后者：节流判定需要「这一轮多少字节」，而**渲染整场正文是 O(n)**。
+ *   逐段追加那条路径（`recordingRuntime.appendText` / `ingest-speech.ts`）
+ *   每来一段都要走一次 ⇒ 若正文是**当场就算出来**的，那次 O(n) 的渲染在
+ *   **绝大多数情况下会被节流直接丢弃** ⇒ 纯浪费（实测 8 小时 ~100 s 纯 CPU）。
+ *   ⇒ 把「字节数」（O(1) 增量维护）与「正文」（惰性）分开给：
+ *   **只有真的要落库时才渲染**。
+ */
+export type TranscriptSource =
+  | string
+  | {
+      /** 正文的 UTF-8 **字节数**（必须与 `text()` 的字节数相等）。 */
+      byteLength: number
+      /** 惰性正文（O(总长) ⇒ 只在真要落库时调）。 */
+      text: () => string
+    }
+
+/**
+ * §925：把「到目前为止的整场转写」落进 `local_meetings.transcript`。
+ *
+ * ⚠⚠ 此前这里是**每新增一段就整段重写** ⇒ 一场会的写入量 **O(时长²)**：
+ *   实测（真 SQLite，真实 ASR 语料，1952 段 = 8 小时）落库 **376.3 MB**、
+ *   中位纯写 **17.3 秒**（5 轮交错；Mac 直连 SSD，手机上更贵）。
+ *
+ * ⚠ `throttled` 是**显式 opt-in**（见 `meeting-transcript-cache.ts` 的文件头）：
+ *   默认 = 立刻落库（安全的那一侧）；只有「逐段追加」那条路径声明节流。
+ *   ⇒ 将来新增的写入点忘了声明 ⇒ 只是多写几次，**不会丢内容**。
+ *   ⇒ 逐段追加那条路径声明它 ⇒ 8 小时会议 376.3 MB → **2.4 MB**、17.3 s → **1.44 s**。
+ *
+ * ⚠ 为什么这一列可以节流：它在本地**只有一个消费者** ——
+ *   `NotesHubView` 的预览（`preview()` 只取 120 字），
+ *   而**头部**始终是最新的 ⇒ 尾部滞后在预览里看不出来。
+ *   ⇒ 详情页 / 精校链 / 同音纠正全部走分段，不走这一列 ⇒ 不受影响。
+ * ⚠ **尾部最多落后 32 KB ≈ 41 分钟**（按真实语料折算），
+ *   **但只在录音期间** —— `recordingRuntime.stop()` 收尾会**整篇补齐**一次
+ *   ⇒ 会议结束后这一列是**完整**的。
+ *
+ * ⚠⚠ §931：`source` 传惰性源时，**正文只在真要落库时才渲染** ——
+ *   这条路径以前每次调用都要 O(n) 渲染一次，而结果绝大多数被节流丢弃。
+ */
 export async function updateTranscript(
   id: string,
-  transcript: string,
+  source: TranscriptSource,
   opts?: { throttled?: boolean },
 ): Promise<void> {
-  const bytes = utf8ByteLength(transcript)
+  const bytes = typeof source === 'string' ? utf8ByteLength(source) : source.byteLength
   const last = lastPersistedTranscriptBytes.get(id) ?? 0
   if (!shouldPersistTranscript({ lastPersistedBytes: last, nextBytes: bytes, throttled: opts?.throttled })) {
     return
   }
   lastPersistedTranscriptBytes.set(id, bytes)
+  // ⚠ 惰性源：**到这里才渲染** ⇒ 节流说不写时，那次 O(n) 渲染根本不会发生。
+  const transcript = typeof source === 'string' ? source : source.text()
   await updateMeeting(id, { transcript })
 }
 

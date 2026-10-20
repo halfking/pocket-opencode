@@ -22,6 +22,7 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 
 import { renderTranscript, dedupeSegments } from '../meeting-dedup.ts'
+import { renderImpl } from './_render-impl.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 // 本文件在 __tests__/ 下，被测模块与 api 都在上两级。
@@ -86,27 +87,75 @@ describe('§401 · renderTranscript 人工段豁免', () => {
 describe('§401 · 形态层（读生产源码，不在测试里重算）', () => {
   const src = readFileSync(DEDUP_SRC, 'utf8')
 
-  it('#5 renderTranscript 体内真的把 origin 传给了 dedupeStep', () => {
-    // 切出函数体，避免命中 dedupeSegments 里的 origin（那处本来就对）。
-    const start = src.indexOf('export function renderTranscript')
-    assert.ok(start > 0, '找不到 renderTranscript')
-    const body = src.slice(start)
+  it('#5 渲染实现里真的把 origin 传给了 dedupeStep', () => {
+    // ⚠ §931：渲染实现被重构成「**状态机 + 薄包装**」⇒ origin 的传递
+    //   落在 `TranscriptRenderState.append` 里，而 `renderTranscript` 本身
+    //   只剩三行包装 ⇒ ⇒ **只改指向、不动语义**：扫的区间从
+    //   「renderTranscript 的函数体」改成「**整个渲染实现**」
+    //   （共享提取器 `_render-impl.mjs` ⇒ 抄两份必然漂移）。
+    // ⚠ 语义**没变**：问的仍然是「origin 有没有被真的接上去」。
+    // ⚠⚠ 区间**必须排除** `dedupeSegments`（它在本文件更靠前）⇒
+    //   否则这条门会命中「那处本来就对」的 origin ⇒ **失去区分力**。
+    const body = renderImpl(src)
+    assert.ok(body && body.length > 200, `取不到渲染实现的区间（${body?.length ?? 0} 字）`)
     assert.match(
       body,
       /origin/,
-      'renderTranscript 函数体内没有任何 origin 引用 ⇒ 豁免没接上（#1 之所以能红是因为它）',
+      '渲染实现里没有任何 origin 引用 ⇒ 豁免没接上（#1 之所以能红是因为它）',
     )
     assert.match(
       body,
       /manual\s*:\s*s\.origin\s*===\s*['"]manual['"]/,
-      'renderTranscript 没把 origin===\'manual\' 传给 dedupeStep 的 manual 入参',
+      '渲染实现没把 origin===\'manual\' 传给 dedupeStep 的 manual 入参',
+    )
+    // ★ 负控：把 manual 那行改掉 ⇒ 上面那条**必须**判红（否则这道门恒绿）。
+    const bad = body.replace(
+      /manual\s*:\s*s\.origin\s*===\s*['"]manual['"]/,
+      'manual: false',
+    )
+    assert.notEqual(bad, body, '变异没落盘 ⇒ 这条负控不算数')
+    assert.ok(
+      !/manual\s*:\s*s\.origin\s*===\s*['"]manual['"]/.test(bad),
+      '负控前提失效：改掉 manual 之后正则仍然匹配 ⇒ 这道门没有牙',
     )
   })
 
   it('#6 入参类型声明了 origin（否则调用方传了也被结构性丢弃）', () => {
-    const start = src.indexOf('export function renderTranscript')
-    const sig = src.slice(start, src.indexOf('): string {', start))
-    assert.match(sig, /origin\?:\s*['"]asr['"]\s*\|\s*['"]manual['"]/, 'renderTranscript 入参没有 origin 字段')
+    // ⚠ §931：入参类型现在叫 `TranscriptSegmentLike` —— 抽出来是为了让
+    //   「整场渲染」与「增量渲染」**共用**同一份类型（§3 的教训：抄两份必然漂）。
+    //   ⇒ 判据改为两件事**一起**判：
+    //     ① 类型里**有** origin 字段；
+    //     ② `renderTranscript` 的入参**用的就是它**
+    //        （否则类型改了、函数没接上 ⇒ 又是「看似有、实则丢」）。
+    const body = renderImpl(src)
+    const typeAt = body.indexOf('export interface TranscriptSegmentLike')
+    // ⚠⚠ §931：这里用 `>= 0`（**不是** `> 0`）—— 区间**就是**从这一行开始
+    //   ⇒ 下标是 0 ⇒ 用 `> 0` 会把「找得到」误判成「找不到」。
+    //   ⚠ 这**正是** `meeting-dedup.test.ts` 的 L 组早就写下的那条：
+    //   「判据用 `at >= 0`（不是 `> 0`）：函数在下标 0 处也是找得到」。
+    //   ⇒ 我在本节又踩了一次 ⇒ 登记为「已知的坑，写在注释里也会被踩」。
+    assert.ok(typeAt >= 0, '找不到 TranscriptSegmentLike 类型声明')
+    const typeBody = body.slice(typeAt, body.indexOf('\n}', typeAt))
+    assert.match(
+      typeBody,
+      /origin\?:\s*['"]asr['"]\s*\|\s*['"]manual['"]/,
+      '入参类型没有 origin 字段',
+    )
+    assert.match(
+      body,
+      /export function renderTranscript\(segments:\s*TranscriptSegmentLike\[\]\)/,
+      'renderTranscript 的入参没用 TranscriptSegmentLike ⇒ 类型改了它也不接',
+    )
+    // ★ 负控：把类型里的 origin 去掉 ⇒ 上面那条**必须**判红（否则这道门恒绿）。
+    const badType = typeBody.replace(
+      /origin\?:\s*['"]asr['"]\s*\|\s*['"]manual['"]/,
+      '',
+    )
+    assert.notEqual(badType, typeBody, '变异没落盘 ⇒ 这条负控不算数')
+    assert.ok(
+      !/origin\?:\s*['"]asr['"]\s*\|\s*['"]manual['"]/.test(badType),
+      '负控前提失效：去掉 origin 之后正则仍然匹配 ⇒ 这道门没有牙',
+    )
   })
 
   it('#7 直连 LLM 的那个出口确实走 renderTranscript（形态变了这条判据会提醒重审）', () => {

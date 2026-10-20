@@ -7,7 +7,7 @@ import { liveTranslate } from './live-translate'
 import { updateSegmentTranslation } from './meetings-live'
 import { saveSegment, updateTranscript } from './meetings-store'
 import type { SpeakerDiarizer } from '../../native/speaker-diarization'
-import { renderTranscript } from './meeting-dedup.ts'
+import { renderTranscript, type TranscriptRenderer } from './meeting-dedup.ts'
 import { describeSegmentDrop } from './segment-drop-notice.ts'
 import type { MeetingSegment } from './meetings-store.ts'
 
@@ -19,6 +19,13 @@ export async function ingestSpeechBlob(opts: {
   seq: number
   diarizer: SpeakerDiarizer
   segments: MeetingSegment[]
+  /**
+   * §931：增量渲染器（**生产调用方必须传**）。
+   *
+   * ⚠ 不传时退回「每段整场重渲染」—— 行为**正确**但成本是 O(n²)
+   *   ⇒ 生产上必须传（`recordingRuntime.processSegment` 传的是它自己那个）。
+   */
+  transcriptRenderer?: TranscriptRenderer
   segmentProfiles: Map<string, string>
   signal?: AbortSignal
 }): Promise<MeetingSegment | null> {
@@ -88,6 +95,11 @@ export async function ingestSpeechBlob(opts: {
   let at = opts.segments.length
   while (at > 0 && opts.segments[at - 1].startMs > saved.startMs) at--
   opts.segments.splice(at, 0, saved)
+  // ⚠⚠ §931：增量渲染 —— 必须**紧跟 splice**（中间不能有 await）。
+  //   ⇒ 否则并发转写的另一段可能插进来，`at` 就过期了。
+  //   ⚠ 插到**中间**时（at !== 已渲染段数）渲染器会整场重算 ⇒ 正确性不依赖调用方。
+  const renderer = opts.transcriptRenderer
+  if (renderer) renderer.appendAt(opts.segments, at)
   // ★ 相邻段去重（2026-10-06）。VadSegmenter 的取片窗口带 sliceMs 余量以
   //   补偿 MediaRecorder 缓冲延迟，RAF 节流又会让语音起点判定回退，
   //   相邻两段因此可能取到重叠音频并被转写两次 ⇒ 文本重复。
@@ -97,7 +109,11 @@ export async function ingestSpeechBlob(opts: {
   //   ⇒ 8 小时会议的转写落库量从 376.3 MB 降到 2.4 MB（纯写中位 17.3 s → 1.44 s）。
   //   ⚠ 节流是**显式 opt-in**：不声明的写入点一律立刻落库（安全的那一侧）。
   //   ⚠ 收尾会**整篇补齐**一次（`recordingRuntime.stop()`）⇒ 会议结束时这一列是完整的。
-  await updateTranscript(meetingId, renderTranscript(opts.segments), { throttled: true })
+  // ⚠⚠ §931：传惰性源 ⇒ **正文只在真要落库时**才渲染。
+  //   以前这里是 `renderTranscript(opts.segments)`（当场整场渲染）⇒ 每段一次 O(n)，
+  //   而那次结果绝大多数被节流直接丢弃（8 小时真正落库 13 次）⇒ 纯浪费。
+  // ⚠ 这一句**必须写在一行** ⇒ 门禁 J（§442）按**行**扫 updateTranscript 的调用点。
+  await updateTranscript(meetingId, renderer ? renderer.source() : renderTranscript(opts.segments), { throttled: true })
 
   void liveTranslate(saved.text, lang)
     .then((translation) => {
