@@ -558,7 +558,7 @@ function speakerPrefix(speakerLabel: string | null): string {
  * ⚠ 这个类是**唯一**实现：`renderTranscript` 与 `createTranscriptRenderer`
  *   都走它 ⇒ 两个出口不可能漂（§3 的教训）。
  */
-class TranscriptRenderState {
+class TranscriptRenderState<T extends TranscriptSegmentLike = TranscriptSegmentLike> {
   private readonly lines: string[] = []
   /** §914：累积正文（一条 ConsString 链；热路径**不读**它）。 */
   private prevBody = ''
@@ -567,8 +567,18 @@ class TranscriptRenderState {
   private prevEndMs: number | undefined
   /** 渲染结果的 UTF-8 **字节数**（增量维护 ⇒ O(1) 可读）。 */
   private bytes = 0
+  /**
+   * §932：**去重后的段**（与 `dedupeSegments(segments)` **逐字相同**）。
+   *
+   * ⚠ 零净增段**不进来**（`dedupeSegments` 也是这个口径）⇒
+   *   ⇒ 两条路的产物**逐字相同**，换过去**不改变任何行为**。
+   * ⚠ 为什么能「顺手」攒：去重是**从左到右的折叠**，而本状态机维护的
+   *   正是那个折叠的**全部状态**（prev/prevTail/prevEndMs）⇒
+   *   ⇒ 每段多存一个对象引用，**不多花一分算力**。
+   */
+  private readonly deduped: T[] = []
 
-  append(s: TranscriptSegmentLike): void {
+  append(s: T): void {
     const step = dedupeStep({
       prev: this.prevBody,
       prevTail: this.prevTail,
@@ -585,6 +595,8 @@ class TranscriptRenderState {
       // ⚠ 字节账必须**增量**：text() = lines.join('\n')
       //   ⇒ 字节 = Σ每行字节 + (行数 − 1) 个 '\n'（每个 1 字节）。
       this.bytes += utf8ByteLength(line) + (this.lines.length > 1 ? 1 : 0)
+      // ★ §932：与 `dedupeSegments` 里那句**逐字相同**（同一个 `step.text`、同样的展开）。
+      this.deduped.push({ ...s, text: step.text })
     }
     this.prevBody = step.body
     this.prevTail = rollTail(this.prevTail, step.delta)
@@ -599,6 +611,11 @@ class TranscriptRenderState {
   /** 与 `utf8ByteLength(text())` **逐字节相等**（判据钉住这一点）。 */
   get byteLength(): number {
     return this.bytes
+  }
+
+  /** §932：去重后的段（**与 `dedupeSegments` 逐字相同**）。 */
+  dedupedSegments(): T[] {
+    return this.deduped
   }
 }
 
@@ -667,16 +684,16 @@ export function renderTranscript(segments: TranscriptSegmentLike[]): string {
  *   落库层先看字节数决定「要不要写」，**只有真的要写**时才调 `text()`。
  *   ⇒ 渲染次数从「每段一次」降到「每次真落库一次」（8 小时 13 次）。
  */
-export interface TranscriptRenderer {
+export interface TranscriptRenderer<T extends TranscriptSegmentLike = TranscriptSegmentLike> {
   /**
    * 段被追加/插入到 `index`。
    *
    * @param index 新段在数组里的位置。**等于已渲染的段数** ⇒ 走增量快路径；
    *              否则（插到中间 / 数组被换掉 / 段被改写过）⇒ 整场重算。
    */
-  appendAt(segments: TranscriptSegmentLike[], index: number): void
+  appendAt(segments: T[], index: number): void
   /** 整场重算并同步（段被就地改写后调用）。 */
-  refresh(segments: TranscriptSegmentLike[]): void
+  refresh(segments: T[]): void
   /** 标记「已渲染状态已过期」（段被就地改写：改字 / 改说话人）。 */
   invalidate(): void
   /**
@@ -686,28 +703,51 @@ export interface TranscriptRenderer {
    *   渲染器可能在 `source()` 之后又整场重算过。
    */
   source(): { byteLength: number; text: () => string }
+  /**
+   * §932：若**当前状态对应的就是这一个数组** ⇒ 返回去重后的段
+   * （**与 `dedupeSegments(segments)` 逐字相同**）；否则返回 `null`。
+   *
+   * ⚠⚠ **为什么必须返回 null 而不是「尽力给一个」**：
+   *   消费方（摘要链）会把这份数组**当整场去重结果**用 ⇒
+   *   若渲染器的状态与传入数组**对不上**（数组被整份替换过、段被就地改写过、
+   *   或有段不是经由本渲染器进来的）⇒ 给出去的就是**过期的正文**
+   *   ⇒ ⇒ 用户看到的摘要是**上一轮的内容** ⇒ 静默的错误。
+   *   ⇒ ⇒ 宁可回退到「整场去重」（慢但正确），也不能给错。
+   */
+  dedupedSegmentsFor(segments: T[]): T[] | null
 }
 
-export function createTranscriptRenderer(): TranscriptRenderer {
-  let state = new TranscriptRenderState()
+export function createTranscriptRenderer<T extends TranscriptSegmentLike = TranscriptSegmentLike>(): TranscriptRenderer<T> {
+  let state = new TranscriptRenderState<T>()
   /** 已渲染进 state 的段数。 */
   let consumed = 0
   /** 上一次渲染用的**数组对象**（用来发现「整份替换」）。 */
-  let arrayRef: TranscriptSegmentLike[] | null = null
+  let arrayRef: T[] | null = null
   /** 段被就地改写过 ⇒ 增量状态过期。 */
   let dirty = true
+  /**
+   * §932：去重后段**是否还新鲜**。
+   *
+   * ⚠⚠ `invalidate()` 只标脏、**不重算** ⇒ 那一刻 `state.deduped` 里装的
+   *   还是**改写前**的正文 ⇒ 若这时把它给出去 ⇒ 摘要链拿到的是**旧内容**
+   *   ⇒ ⇒ **静默的错误**（用户看到的摘要是上一轮的）。
+   *   ⇒ ⇒ 标脏之后**一律返回 null**（调用方回退整场去重，慢但正确），
+   *   直到下一次 `appendAt` / `refresh` 把它重算回来。
+   */
+  let dedupedValid = false
 
-  const rebuild = (segments: TranscriptSegmentLike[]): void => {
-    const next = new TranscriptRenderState()
+  const rebuild = (segments: T[]): void => {
+    const next = new TranscriptRenderState<T>()
     for (const s of segments) next.append(s)
     state = next
     consumed = segments.length
     arrayRef = segments
     dirty = false
+    dedupedValid = true
   }
 
   return {
-    appendAt(segments: TranscriptSegmentLike[], index: number): void {
+    appendAt(segments: T[], index: number): void {
       // ⚠ 数组被**整份替换**（`seedSegments` / `freshSession`）⇒ 身份变了就整场重算。
       if (segments !== arrayRef) { rebuild(segments); return }
       // ⚠ 段被**就地改写**（改字 / 改说话人）⇒ 增量状态已过期。
@@ -719,17 +759,39 @@ export function createTranscriptRenderer(): TranscriptRenderer {
       for (let i = consumed; i < segments.length; i++) state.append(segments[i])
       consumed = segments.length
     },
-    refresh(segments: TranscriptSegmentLike[]): void {
+    refresh(segments: T[]): void {
       rebuild(segments)
     },
     invalidate(): void {
       dirty = true
+      // ⚠⚠ §932：`dirty` 只管「渲染正文」这一份状态，`state.deduped` 是**另一份**
+      //   增量状态 ⇒ 只标脏的话，去重后段仍是**改写前**的 ⇒ 必须一起标过期。
+      dedupedValid = false
     },
     source() {
       return {
         get byteLength(): number { return state.byteLength },
         text: (): string => state.text(),
       }
+    },
+    dedupedSegmentsFor(segments: T[]): T[] | null {
+      // ⚠ 三个条件都要成立：① **状态还新鲜**（`invalidate()` 之后那份是改写前的）
+      //   ② **同一个数组对象**（否则中间被整份替换过）
+      //   ③ **已处理的段数 == 数组长度**（否则有段不是经由本渲染器进来的）
+      //   ⇒ 任一不成立 ⇒ 返回 null（调用方回退整场去重）。
+      if (!dedupedValid) return null
+      if (segments !== arrayRef) return null
+      if (consumed !== segments.length) return null
+      // ⚠⚠ §932：**≤1 段时必须回到唯一实现**。
+      //   `dedupeSegments` 对 ≤1 段有**短路**（`segments.slice()`：原样返回、
+      //   **不 trim**、纯空白段也留着），而本渲染器是**无条件折叠**（会 trim）
+      //   ⇒ 两者在单段形态下**分叉**（§932 实测：单段带前后空白 ⇒ 文本不同；
+      //   单段纯空白 ⇒ 一边留、一边不留）。
+      //   ⇒ 单段形态在生产上**极常见**（会议第一分钟只有一段）
+      //   ⇒ 这里必须与 `dedupeSegments` **一致**，否则「逐字相同」的承诺是假的。
+      //   （`dedupeSegments` 对 ≤1 段是 O(1) ⇒ 不影响本节的性能目标。）
+      if (segments.length <= 1) return dedupeSegments(segments)
+      return state.dedupedSegments()
     },
   }
 }

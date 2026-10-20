@@ -21,7 +21,12 @@ export function useSessionLiveRecord(sessionId: () => string, sessionTitle: () =
   const { confirm } = useConfirm()
   const toast = useToast()
   const recorder = useMeetingRecorder(meetingId)
-  const summary = useLiveSummary(meetingId, recorder.segments)
+  // ⚠⚠ §932：录音 runtime 的增量渲染器**已经**维护着同一批段的去重状态
+  //   ⇒ 摘要链直接拿它那份**逐字相同**的结果（每轮从 O(n) 变成 O(新增)）。
+  //   ⚠ 拿不到 ⇒ 返回 null ⇒ 摘要链回退整场去重（慢但正确）。
+  const summary = useLiveSummary(meetingId, recorder.segments, {
+    dedupedSegments: (raw) => recorder.runtime.dedupedSegmentsFor(meetingId.value, raw),
+  })
 
   watch(meetingId, (id) => {
     if (id) void summary.refresh(true)

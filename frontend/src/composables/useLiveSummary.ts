@@ -19,6 +19,25 @@ export function useLiveSummary(
   opts?: {
     onUpdated?: (summary: LiveSummary) => void
     meta?: Ref<{ title?: string; participants?: string[]; location?: string }>
+    /**
+     * §932：**去重后段**的提供方（可选）。
+     *
+     * ⚠⚠ 为什么需要它：这一层此前每轮刷新（30 秒一轮）都
+     *   `dedupeSegments(segments.value)` —— **O(n)** ⇒ 8 小时会议
+     *   （1952 段 / 691 轮）实测累计 **20.6–23.4 s 纯 CPU**（§932 实测，两批读数）
+     *   ⇒ 与 §931 那条（108.9 s）**同族同阶**。
+     *   ⇒ 而录音 runtime 的增量渲染器**本来就在**维护同一批段的去重状态
+     *   （同一个折叠）⇒ ⇒ 可以给出**逐字相同**的结果。
+     *
+     * ⚠ **必须逐字相同**：本层把这份数组当「整场去重结果」用
+     *   （`selectSummarySegments` 按 id 选、`selectRecommendSegments` 取尾部）
+     *   ⇒ 差一个字就是**送给 LLM 的提示词变了**。
+     *
+     * ⚠ **返回 null ⇒ 调用方回退到整场去重**（慢但正确）：
+     *   提供方对不上（数组被整份替换 / 会议不匹配 / 有段不是经由渲染器进来的）
+     *   时必须给 null ⇒ **宁可慢，不可给错**。
+     */
+    dedupedSegments?: (segments: MeetingSegment[]) => MeetingSegment[] | null
   },
 ) {
   const liveSummary = ref<LiveSummary | null>(null)
@@ -101,7 +120,22 @@ export function useLiveSummary(
     //   /summary 与 /recommend，重复会出现在摘要、关键点、行动项里，
     //   还会让下面的 topicShift 主题漂移判断失准。
     //   去重后的副本不改 startMs —— 时间戳是真实采集的，不该被篡改。
-    const cleanSegments = dedupeSegments(segments.value)
+    // ⚠⚠ §932：优先用提供方给的**去重后段**（O(新增)），拿不到才回退整场去重（O(n)）。
+    //   ⚠ **本轮去重用的那份数组引用**只取一次（下面两处都用它）：
+    //   数组在两次读之间被整份替换的话，两处会看到**不同的数组** ⇒ 结果不自洽。
+    //   （⚠ 准确口径：`segments.value` 在本函数里**别处**也读了几次 ——
+    //   这里保证的是「去重那一条路**只读一次数组**」，不是「本函数只读一次 segments.value」。）
+    const rawSegments = segments.value
+    // ⚠⚠ §932：提供方是**可选**的、且**可能抛**（它跨了 runtime 边界）。
+    //   ⇒ 抛了就回退整场去重（慢但正确）⇒ 绝不让「一次异常」把这一轮摘要刷挂
+    //   ⇒ 降级**必须**留痕（否则提供方里的缺陷会一直静默）。
+    let provided: MeetingSegment[] | null = null
+    try {
+      provided = opts?.dedupedSegments?.(rawSegments) ?? null
+    } catch (e) {
+      console.warn('[live-summary] dedupedSegments 提供方异常 ⇒ 回退整场去重:', e)
+    }
+    const cleanSegments = provided ?? dedupeSegments(rawSegments)
     // ⚠⚠ §924：服务端契约是「已有摘要 + **新增转写**」⇒ 本轮只送**新增的那几段**。
     //   此前送的是整场会议（每 30 秒一次）⇒ 请求体/提示词 O(会议时长)、
     //   累计 O(时长²)；长会议上服务端那条一次性 chat 路径的 45 秒预算会被撑爆

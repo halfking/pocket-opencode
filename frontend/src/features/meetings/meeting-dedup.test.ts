@@ -229,7 +229,17 @@ describe('D · 接线层：所有出口都必须去重（防回退）', () => {
 
   it('★ useLiveSummary 喂给 LLM 的 segments 必须去重', () => {
     const s = read('../../composables/useLiveSummary.ts')
-    assert.match(s, /dedupeSegments\(segments\.value\)/, '摘要/推荐拿到的仍是含重复的 segments')
+    // ⚠⚠ §932：这条断言的**指向**变了，**语义没变**。
+    //
+    // 旧形态：`dedupeSegments(segments.value)`
+    // 新形态（§932）：优先用**提供方**给的去重后段，拿不到才回退
+    //   `const rawSegments = segments.value` → `provided ?? dedupeSegments(rawSegments)`
+    // ⇒ 这里认**两种**形态：语义仍是「喂给 LLM 的段来自**去重后**的数组」
+    //   （提供方那份与整场去重**逐字相同**，由 N 组的行为门钉住）。
+    assert.match(
+      s, /dedupeSegments\(\s*(?:segments\.value|rawSegments)\s*\)/,
+      '摘要/推荐拿到的仍是含重复的 segments',
+    )
     // ⚠⚠ §924：这条断言的**指向**变了，**语义没变**。
     //
     // 旧形态：`summarize(id, cleanSegments, …)` / `recommend(id, cleanSegments, …)`
@@ -244,7 +254,7 @@ describe('D · 接线层：所有出口都必须去重（防回退）', () => {
     //   selection     = selectSummarySegments(cleanSegments, …)  ← 从它里面选
     //   payload       = selection.segments               ← 送出去的就是选出来的
     assert.match(
-      s, /const cleanSegments = dedupeSegments\(segments\.value\)/,
+      s, /const cleanSegments = (?:provided \?\? )?dedupeSegments\(\s*(?:segments\.value|rawSegments)\s*\)/,
       '去重后的数组不再是 cleanSegments',
     )
     assert.match(
@@ -299,7 +309,53 @@ describe('D · 接线层：所有出口都必须去重（防回退）', () => {
 
   it('★ MeetingDetailView 在源头去重（整页消费者共用）', () => {
     const s = read('MeetingDetailView.vue')
-    assert.match(s, /displaySegments = computed\(\(\) => dedupeSegments\(/, '详情页未在源头去重')
+    // ⚠⚠ §932：这条断言的**指向**变了，**语义没变**。
+    //
+    // 旧形态：`displaySegments = computed(() => dedupeSegments(…)`
+    // 新形态（§932）：computed 体内「先问提供方、拿不到才回退整场去重」
+    // ⇒ 详情页仍然「在源头去重」，只是那份去重结果来自 runtime 的增量渲染器
+    //   （与整场去重**逐字相同**，由 N 组的行为门钉住）。
+    //
+    // ⇒ 这里认**两种**形态 —— 语义（详情页在源头去重）在两种形态下都成立。
+    const oldForm = /displaySegments = computed\(\(\) => dedupeSegments\(/.test(s)
+    const newForm = /dedupeSegments\s*\(/.test(computedBody(stripComments(s), 'displaySegments'))
+    assert.ok(oldForm || newForm, '详情页未在源头去重')
+  })
+
+  it('★★ 负控：把「源头去重」摘掉必须判红（D3 + D6 改指向后配套）', () => {
+    // ⛔ §932 改了 D3 / D6 的**指向** ⇒ 必须让它们**各红一次**，
+    //   否则「认两种形态」可能变成「什么都认」⇒ 门就没牙了。
+    const live = read('../../composables/useLiveSummary.ts')
+    const detail = read('MeetingDetailView.vue')
+
+    // ① D3：把去重整个摘掉（`cleanSegments` 直接等于原始数组）
+    const liveMutated = live.replace(
+      'const cleanSegments = provided ?? dedupeSegments(rawSegments)',
+      'const cleanSegments = rawSegments',
+    )
+    assert.notEqual(liveMutated, live, '变异没落盘 ⇒ 这条负控不算数')
+    assert.ok(
+      !/const cleanSegments = (?:provided \?\? )?dedupeSegments\(\s*(?:segments\.value|rawSegments)\s*\)/.test(liveMutated),
+      '负控前提失效：变异没有真的把去重摘掉（D3 仍然绿 ⇒ 指向改宽了）',
+    )
+    assert.match(
+      live,
+      /const cleanSegments = (?:provided \?\? )?dedupeSegments\(\s*(?:segments\.value|rawSegments)\s*\)/,
+      '判据前提失效：真实源码不满足「cleanSegments 来自去重后的数组」',
+    )
+
+    // ② D6：把界面那列的去重摘掉（直接返回原始段）
+    const detailMutated = detail.replace(
+      'return dedupeSegments(live.length ? live : storedSegments.value)',
+      'return live.length ? live : storedSegments.value',
+    )
+    assert.notEqual(detailMutated, detail, '变异没落盘 ⇒ 这条负控不算数')
+    const oldFormMutated = /displaySegments = computed\(\(\) => dedupeSegments\(/.test(detailMutated)
+    const newFormMutated = /dedupeSegments\s*\(/.test(computedBody(stripComments(detailMutated), 'displaySegments'))
+    assert.ok(
+      !(oldFormMutated || newFormMutated),
+      '负控前提失效：变异没有真的把界面那列的去重摘掉（D6 仍然绿 ⇒ 指向改宽了）',
+    )
   })
 })
 
@@ -1580,6 +1636,44 @@ function skipToken(src: string, i: number): number {
 }
 
 /**
+ * 取一次**调用**的实参文本（`useLiveSummary(...)` 的括号里那段）。
+ *
+ * ⚠ 不能用 `bodyFrom`（那是取**函数体**的）⇒ 调用点后面没有 `{` ⇒ 它会失败。
+ */
+function callArgs(src: string, callName: string): string {
+  const at = src.indexOf(`${callName}(`)
+  assert.ok(at >= 0, `解析不到 ${callName}( —— 判据失效，先修判据`)
+  let depth = 0
+  let close = -1
+  for (let i = at + callName.length; i < src.length; i++) {
+    const t = skipToken(src, i)
+    if (t !== i) { i = t; continue }
+    const c = src[i]
+    if (c === '(') depth++
+    else if (c === ')') { depth--; if (depth === 0) { close = i; break } }
+  }
+  assert.ok(close > 0, `${callName}( 的参数列表不配平 —— 判据失效，先修判据`)
+  return src.slice(at + callName.length + 1, close)
+}
+
+/** 取 `const X = computed(() => { … })` 的函数体。 */
+function computedBody(src: string, name: string): string {
+  const at = src.indexOf(`const ${name} = computed(`)
+  assert.ok(at >= 0, `解析不到 ${name} 这个 computed —— 判据失效，先修判据`)
+  const open = src.indexOf('{', at)
+  assert.ok(open > 0, `找不到 ${name} 的函数体起点 —— 判据失效，先修判据`)
+  let depth = 0
+  for (let k = open; k < src.length; k++) {
+    const t = skipToken(src, k)
+    if (t !== k) { k = t; continue }
+    const c = src[k]
+    if (c === '{') depth++
+    else if (c === '}') { depth--; if (depth === 0) return src.slice(open + 1, k) }
+  }
+  throw new Error(`${name} 的括号不配平`)
+}
+
+/**
  * 取某个函数体（**括号配平**，不能用正则猜边界 —— §439 记过这个坑）。
  *
  * ⚠⚠ 参数里的**类型字面量**会骗过「第一个 `{` 就是函数体」这种写法：
@@ -1857,23 +1951,27 @@ function loadStoreModule() {
  * 钉「**渲染次数**」而不是「渲染有多快」—— 前者可测，后者只能靠基准。
  * ⇒ 核心那一条是**落库层**的行为：节流说不写时，那次 O(n) 的渲染**根本没发生**。
  */
-describe('M · §931 逐段追加那条路径不得每段整场重渲染', () => {
-  /**
-   * 造一段**有真实重叠**的语料（相邻段共享尾巴 ⇒ 去重真的会裁字）。
-   *
-   * ⚠⚠ 为什么语料是**逐段生成**的（而不是先造好一整段再循环）：
-   *   §931 的快路径要求「数组**逐段增长**」这个形态（生产上就是如此：
-   *   `appendText` 往尾巴上 push、`ingestSpeechBlob` 按 startMs 有序插）。
-   *   若把**整段数组**反复传进 `appendAt`，那每次都是「非尾部追加」
-   *   ⇒ 渲染器会整场重算 ⇒ **快路径根本没被走到**
-   *   ⇒ 那时的「逐字相同」是**重建路径**的等价性，证明不了快路径。
-   *   ⇒ 本节的等价性用例因此**逐段 push**（生产形态）。
-   */
-  function mkSeg(i: number, tail = 6) {
-    const text = `${i > 0 ? `第${i - 1}段新增的内容`.slice(-tail) : ''}第${i}段新增的内容`
-    return { speakerLabel: i % 2 ? '乙' : '甲', text, startMs: i * 1000, endMs: i * 1000 + 800, origin: 'asr' as const }
-  }
+/**
+ * 造一段**有真实重叠**的语料（相邻段共享尾巴 ⇒ 去重真的会裁字）。
+ *
+ * ⚠⚠ 为什么语料是**逐段生成**的（而不是先造好一整段再循环）：
+ *   §931 的快路径要求「数组**逐段增长**」这个形态（生产上就是如此：
+ *   `appendText` 往尾巴上 push、`ingestSpeechBlob` 按 startMs 有序插）。
+ *   若把**整段数组**反复传进 `appendAt`，那每次都是「非尾部追加」
+ *   ⇒ 渲染器会整场重算 ⇒ **快路径根本没被走到**
+ *   ⇒ 那时的「逐字相同」是**重建路径**的等价性，证明不了快路径。
+ *   ⇒ 本节的等价性用例因此**逐段 push**（生产形态）。
+ *
+ * ⚠ §932：提到**模块级**（M 组与 N 组共用一份）——
+ *   判据里的语料抄两份必然漂（§3 的教训），而 §932 恰恰要证明
+ *   「两条路给出**逐字相同**的结果」⇒ 语料必须**同一份**。
+ */
+function mkSeg(i: number, tail = 6) {
+  const text = `${i > 0 ? `第${i - 1}段新增的内容`.slice(-tail) : ''}第${i}段新增的内容`
+  return { speakerLabel: i % 2 ? '乙' : '甲', text, startMs: i * 1000, endMs: i * 1000 + 800, origin: 'asr' as const }
+}
 
+describe('M · §931 逐段追加那条路径不得每段整场重渲染', () => {
   it('★ 前置自证：这份语料**真的踩到去重**（否则下面那些「逐字相同」恒成立）', () => {
     const segs = []
     for (let i = 0; i < 20; i++) segs.push(mkSeg(i))
@@ -2137,5 +2235,332 @@ describe('M · §931 逐段追加那条路径不得每段整场重渲染', () =>
     assert.ok(alwaysMs / fastMs >= 20,
       `负控失效：整场重算那条路没有明显更慢（${(alwaysMs / fastMs).toFixed(1)}×）⇒ ` +
       '这条相对成本判据量具坏了（不是产品慢了）')
+  })
+})
+
+describe('N · §932 摘要链与界面分段列表必须共用同一份去重结果', () => {
+  /**
+   * §932 修的是 §931 登记的**同族**路径：`useLiveSummary` 每轮刷新（30 秒一轮）
+   * 都 `dedupeSegments(segments.value)` ⇒ **O(n)** ⇒ 8 小时会议（1952 段 / 691 轮）
+   * 实测累计 **20.6–23.4 s 纯 CPU**（§932 实测，两批读数）⇒ 与 §931 那条（108.9 s）同阶。
+   *
+   * ★ 这一组守的是**正确性**，不是性能：
+   *   §932 把「整场去重」换成了「增量渲染器顺手攒的那份」⇒
+   *   ⇒ **喂给 LLM 的提示词必须逐字不变**（差一个字就是行为变更），
+   *   ⇒ **拿不到就必须回退**（宁可慢，不可给错）。
+   */
+
+  const eqJson = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b)
+
+  it('★ 前置自证：这份语料**真的踩到去重**（否则下面那些「逐字相同」恒成立）', () => {
+    const segs = []
+    for (let i = 0; i < 20; i++) segs.push(mkSeg(i))
+    const raw = segs.map((s) => s.text).join('')
+    assert.ok(renderTranscript(segs).length < raw.length,
+      '前置失效：语料没有重叠 ⇒ 去重没被踩到 ⇒ 下面的「逐字相同」断言说明不了问题')
+  })
+
+  it('★★★ 行为：增量攒出来的「去重后段」必须与 `dedupeSegments` **逐字相同**（八种形态）', () => {
+    // ① 尾插逐段追加（原生链形态：appendText 往尾巴上 push）
+    const a: ReturnType<typeof mkSeg>[] = []
+    const r1 = createTranscriptRenderer()
+    for (let i = 0; i < 40; i++) { a.push(mkSeg(i)); r1.appendAt(a, a.length - 1) }
+    assert.ok(eqJson(r1.dedupedSegmentsFor(a), dedupeSegments(a)),
+      '① 尾插逐段追加：与整场去重不一致 ⇒ 送给 LLM 的提示词变了')
+
+    // ② 中间插入（Web 链形态：按 startMs 有序插入）
+    const b: ReturnType<typeof mkSeg>[] = []
+    const r2 = createTranscriptRenderer()
+    for (let i = 0; i < 60; i++) { b.push(mkSeg(i)); r2.appendAt(b, b.length - 1) }
+    b.splice(30, 0, { ...mkSeg(999), startMs: b[30].startMs + 1, endMs: b[30].endMs + 1 })
+    r2.appendAt(b, 30)
+    assert.ok(eqJson(r2.dedupedSegmentsFor(b), dedupeSegments(b)),
+      '② 中间插入：与整场去重不一致')
+
+    // ③ 段被就地改写后 refresh（用户改字 / 改说话人 —— §932 把两处都换成了 refresh）
+    const c: ReturnType<typeof mkSeg>[] = []
+    const r3 = createTranscriptRenderer()
+    for (let i = 0; i < 40; i++) { c.push(mkSeg(i)); r3.appendAt(c, c.length - 1) }
+    c[10] = { ...c[10], text: '用户手工改过的正文' }
+    r3.refresh(c)
+    assert.ok(eqJson(r3.dedupedSegmentsFor(c), dedupeSegments(c)),
+      '③ 就地改写后 refresh：与整场去重不一致')
+
+    // ④ 数组被整份替换（seedSegments / freshSession 会换掉数组对象）
+    const d: ReturnType<typeof mkSeg>[] = []
+    const r4 = createTranscriptRenderer()
+    for (let i = 0; i < 40; i++) { d.push(mkSeg(i)); r4.appendAt(d, d.length - 1) }
+    const e: ReturnType<typeof mkSeg>[] = []
+    for (let i = 0; i < 70; i++) e.push(mkSeg(i + 5000))
+    r4.appendAt(e, e.length - 1)
+    assert.ok(eqJson(r4.dedupedSegmentsFor(e), dedupeSegments(e)),
+      '④ 数组被整份替换：与整场去重不一致')
+
+    // ⚠⚠⑤ 单段（**前后有空白**）—— §932 实测抓到的分歧形态
+    //   `dedupeSegments` 对 ≤1 段走**短路**（`segments.slice()`：原样返回、**不 trim**），
+    //   而增量渲染器是**无条件折叠**（会 trim）⇒ 不修就会**分叉**。
+    //   ⇒ 单段形态在生产上**极常见**（会议第一分钟只有一段）⇒ 必须一致。
+    const f = [{ ...mkSeg(0), text: '  单段正文  ' }]
+    const r5 = createTranscriptRenderer()
+    r5.appendAt(f, 0)
+    assert.ok(eqJson(r5.dedupedSegmentsFor(f), dedupeSegments(f)),
+      '⑤ 单段（前后有空白）：与整场去重不一致 ⇒ 会议第一分钟送出的提示词就变了')
+
+    // ⑥ 单段（**纯空白**）—— 短路会**留着**它，折叠会**丢掉**它
+    const g = [{ ...mkSeg(0), text: '   ' }]
+    const r6 = createTranscriptRenderer()
+    r6.appendAt(g, 0)
+    assert.ok(eqJson(r6.dedupedSegmentsFor(g), dedupeSegments(g)),
+      '⑥ 单段（纯空白）：与整场去重不一致')
+
+    // ⑦ 单段（manual —— 人工段享受豁免）
+    const h = [{ ...mkSeg(0), text: ' 手工输入 ', origin: 'manual' as const }]
+    const r7 = createTranscriptRenderer()
+    r7.appendAt(h, 0)
+    assert.ok(eqJson(r7.dedupedSegmentsFor(h), dedupeSegments(h)),
+      '⑦ 单段（manual）：与整场去重不一致')
+
+    // ⑧ 两段且第一段纯空白（长度 ≥2 ⇒ 两边都走折叠 ⇒ 必须一致）
+    const i2 = [{ ...mkSeg(0), text: '  ' }, { ...mkSeg(1), startMs: 1000, endMs: 1800 }]
+    const r8 = createTranscriptRenderer()
+    r8.appendAt(i2, 0)
+    r8.appendAt(i2, 1)
+    assert.ok(eqJson(r8.dedupedSegmentsFor(i2), dedupeSegments(i2)),
+      '⑧ 两段且首段纯空白：与整场去重不一致')
+  })
+
+  it('★★★ 守卫：三个条件任一不成立就必须给 null（拿不到 ⇒ 调用方回退整场去重）', () => {
+    const arr: ReturnType<typeof mkSeg>[] = []
+    const r = createTranscriptRenderer()
+    for (let i = 0; i < 20; i++) { arr.push(mkSeg(i)); r.appendAt(arr, arr.length - 1) }
+
+    // ⚠ 负控前提：对得上的形态**必须**给出
+    //   （否则「永远返回 null」也能让下面三条全绿 ⇒ 假绿）
+    assert.ok(r.dedupedSegmentsFor(arr) !== null,
+      '负控前提失效：对得上的形态竟然给不出结果 ⇒ 这组守卫判据量具坏了')
+
+    // ① 数组被**整份替换**（身份不同）
+    const stranger: ReturnType<typeof mkSeg>[] = []
+    for (let i = 0; i < 20; i++) stranger.push(mkSeg(i))
+    assert.equal(r.dedupedSegmentsFor(stranger), null,
+      '数组被整份替换却给出了结果 ⇒ 会把过期正文当整场结果送出去')
+
+    // ② 段数对不上（有段不是经由本渲染器进来的 ⇒ 最后一段会被漏掉）
+    const arr2: ReturnType<typeof mkSeg>[] = []
+    const r2 = createTranscriptRenderer()
+    for (let i = 0; i < 20; i++) { arr2.push(mkSeg(i)); r2.appendAt(arr2, arr2.length - 1) }
+    arr2.push(mkSeg(999))
+    assert.equal(r2.dedupedSegmentsFor(arr2), null,
+      '段数对不上却给出了结果 ⇒ 最后一段永远进不了摘要')
+
+    // ③ 状态已过期（`invalidate()` 之后 ⇒ 那份是**改写前**的）
+    r.invalidate()
+    assert.equal(r.dedupedSegmentsFor(arr), null,
+      'invalidate 之后却给出了结果 ⇒ 摘要链会拿到改写前的正文 ⇒ 静默的错误')
+  })
+
+  it('★★★ 行为：就地改写后，摘要链拿到的必须是**改写后**的正文', () => {
+    const arr: ReturnType<typeof mkSeg>[] = []
+    const r = createTranscriptRenderer()
+    for (let i = 0; i < 20; i++) { arr.push(mkSeg(i)); r.appendAt(arr, arr.length - 1) }
+    arr[10] = { ...arr[10], text: '用户手工改过的正文' }
+
+    // ⚠ 这一步是 §932 之前的形态：只标脏、不重算。
+    //   ⇒ 那份「去重后段」仍是**改写前**的 ⇒ 摘要链会拿到旧正文。
+    r.invalidate()
+    assert.equal(r.dedupedSegmentsFor(arr), null,
+      '标脏之后竟然给出了结果 ⇒ 摘要链会拿到改写前的正文 ⇒ 静默的错误')
+
+    // ⇒ §932 把两处就地改写都换成了 `refresh()` ⇒ 必须给出**改写后**的。
+    r.refresh(arr)
+    const got = r.dedupedSegmentsFor(arr)
+    assert.ok(got !== null, 'refresh 之后竟然给不出结果')
+    assert.ok(got.some((s) => s.text.includes('用户手工改过的正文')),
+      'refresh 之后给出的去重后段里没有改写后的正文 ⇒ 摘要链会拿到旧内容')
+    assert.ok(eqJson(got, dedupeSegments(arr)), 'refresh 之后与整场去重不一致')
+  })
+
+  it('★★ 相对成本：提供方那条路必须比整场去重快 ≥20 倍（证明「走的哪条路」）', () => {
+    const N = 300
+    const arr: ReturnType<typeof mkSeg>[] = []
+    const r = createTranscriptRenderer()
+    for (let i = 0; i < N; i++) { arr.push(mkSeg(i)); r.appendAt(arr, arr.length - 1) }
+
+    // ⚠ 前提：提供方**必须给得出**（给不出 ⇒ 调用方会回退整场去重 ⇒ 比值就没意义了）
+    assert.ok(r.dedupedSegmentsFor(arr) !== null, '前提失效：提供方给不出结果 ⇒ 相对成本无从谈起')
+
+    const best = (fn: () => void, reps: number): number => {
+      let b = Infinity
+      for (let i = 0; i < reps; i++) { const t = performance.now(); fn(); b = Math.min(b, performance.now() - t) }
+      return b
+    }
+    const fastMs = best(() => { r.dedupedSegmentsFor(arr) }, 5)
+    const slowMs = best(() => { dedupeSegments(arr) }, 3)
+
+    // ⚠⚠ 量级合理性自检：慢的那条**必须**有可见成本
+    //   （否则「比值很大」可能只是因为快的那条被计成了 0 ms ⇒ 判据量具坏了）
+    assert.ok(slowMs >= 1, `量级自检失效：整场去重只花了 ${slowMs.toFixed(3)} ms ⇒ 这个比值不可信`)
+    assert.ok(slowMs / fastMs >= 20,
+      `提供方那条路没有明显更快（慢 ${(slowMs / fastMs).toFixed(1)}×，闸 20×）⇒ §932 的优化没生效`)
+
+    // ★ 负控：守卫不成立时**没有**快路径可走（必须给 null，让调用方回退）
+    const stranger: ReturnType<typeof mkSeg>[] = []
+    for (let i = 0; i < N; i++) stranger.push(mkSeg(i))
+    assert.equal(r.dedupedSegmentsFor(stranger), null,
+      '负控前提失效：数组对不上却给出了快路径结果')
+  })
+
+  // ── 接线层：判据钉「**真的用上了提供方**」，否则上面那些行为门全是空转 ──
+
+  /** `useLiveSummary` 自己的接线违规清单（空 = 合规）。 */
+  function liveSummaryWiringViolations(src: string): string[] {
+    const bad: string[] = []
+    const body = functionBody(stripComments(src), 'refresh')
+    const call = /opts\?\s*\.\s*dedupedSegments\?\s*\.\s*\(\s*([A-Za-z_$][\w$]*)\s*\)/.exec(body)
+    if (!call) {
+      bad.push('useLiveSummary.refresh 没有调用 opts.dedupedSegments 提供方')
+      return bad
+    }
+    const arg = call[1]
+    // ⚠⚠ §932 的语义是「**优先**用提供方」⇒ 光「调用了」不够：
+    //   必须钉住「提供方的结果**真的进了 cleanSegments**」
+    //   （「调了但不用」= 优化没生效，而 D3 那道门认两种形态 ⇒ 它抓不到）。
+    if (!/const\s+cleanSegments\s*=\s*provided\s*\?\?/.test(body)) {
+      bad.push('useLiveSummary.refresh 没有优先用提供方的结果（provided 没进 cleanSegments）')
+    }
+    // ⚠ 回退必须用**同一个**数组（两处看到不同的数组 ⇒ 结果不自洽）
+    if (!new RegExp(`\\?\\?\\s*dedupeSegments\\(\\s*${arg}\\s*\\)`).test(body)) {
+      bad.push(`useLiveSummary.refresh 的回退整场去重没有用同一个数组（${arg}）`)
+    }
+    // ⚠ 那个数组必须**取自 segments.value**、且**只取一次**
+    const takes = body.match(
+      new RegExp(`(?:const|let|var)\\s+${arg}\\s*=\\s*segments\\s*\\.\\s*value`, 'g'),
+    ) ?? []
+    if (takes.length !== 1) {
+      bad.push(`useLiveSummary.refresh 里 ${arg} 的取值次数是 ${takes.length}（应为 1）`)
+    }
+    return bad
+  }
+
+  /** 两个消费方的接线违规清单（空 = 合规）。 */
+  function consumerWiringViolations(detailSrc: string, sessionSrc: string): string[] {
+    const bad: string[] = []
+    const detail = stripComments(detailSrc)
+    const session = stripComments(sessionSrc)
+
+    // ① 详情页：摘要链必须收到提供方
+    if (!/dedupedSegments\s*:/.test(callArgs(detail, 'useLiveSummary'))) {
+      bad.push('MeetingDetailView 没有把提供方传给 useLiveSummary')
+    }
+    // ② 详情页：界面分段列表必须走提供方（否则界面那列仍是每段整场去重 ⇒ O(时长²)）
+    const display = computedBody(detail, 'displaySegments')
+    if (!/dedupedSegmentsProvider\s*\(/.test(display)) {
+      bad.push('MeetingDetailView.displaySegments 没有用提供方 ⇒ 界面那列仍是每段整场去重')
+    }
+    // ③ 详情页：必须保留整场去重的兜底（拿不到时给出错的分段比慢更糟）
+    if (!/dedupeSegments\s*\(/.test(display)) {
+      bad.push('MeetingDetailView.displaySegments 没有保留整场去重的兜底')
+    }
+    // ④ 随手记那条摘要链
+    if (!/dedupedSegments\s*:/.test(callArgs(session, 'useLiveSummary'))) {
+      bad.push('useSessionLiveRecord 没有把提供方传给 useLiveSummary')
+    }
+    return bad
+  }
+
+  /** runtime 侧接线的违规清单（空 = 合规）。 */
+  function runtimeWiringViolations(src: string): string[] {
+    const bad: string[] = []
+    const s = stripComments(src)
+    const m = methodBodyWithModifiers(s, 'dedupedSegmentsFor')
+    // ① 必须按会议隔离（否则会拿到**另一场**的正文 ⇒ 跨会议串台）
+    if (!/activeMeetingId\s*\.\s*value\s*!==\s*meetingId/.test(m)) {
+      bad.push('recordingRuntime.dedupedSegmentsFor 没有按会议隔离')
+    }
+    if (!/return\s+null/.test(m)) {
+      bad.push('recordingRuntime.dedupedSegmentsFor 没有 null 出口')
+    }
+    // ② 必须把数组交给渲染器去判（守卫在那儿）
+    if (!/transcriptRenderer\s*\.\s*dedupedSegmentsFor\(\s*segments\s*\)/.test(m)) {
+      bad.push('recordingRuntime.dedupedSegmentsFor 没有把数组交给渲染器的守卫')
+    }
+    // ③ 两处「就地改写」必须 refresh（invalidate 只标脏 ⇒ 那份是改写前的）
+    for (const name of ['editSegmentInMemory', 'mergeOverSplitSpeakers']) {
+      const body = methodBodyWithModifiers(s, name)
+      if (!/transcriptRenderer\s*\.\s*refresh\s*\(/.test(body)) {
+        bad.push(`recordingRuntime.${name} 没有整场重算（refresh）`)
+      }
+      if (/transcriptRenderer\s*\.\s*invalidate\s*\(/.test(body)) {
+        bad.push(`recordingRuntime.${name} 仍在 invalidate ⇒ 摘要链会拿到改写前的正文`)
+      }
+    }
+    return bad
+  }
+
+  it('★★ 接线：摘要链必须**优先用提供方**、拿不到才回退整场去重', () => {
+    const src = read('../../composables/useLiveSummary.ts')
+    assert.deepEqual(liveSummaryWiringViolations(src), [],
+      '摘要链没有用上提供方 ⇒ 每轮仍是整场去重 ⇒ §932 的优化没生效')
+  })
+
+  it('★★ 接线：界面分段列表与随手记那条摘要链都必须接上提供方', () => {
+    const detail = read('MeetingDetailView.vue')
+    const session = read('../sessions/useSessionLiveRecord.ts')
+    assert.deepEqual(consumerWiringViolations(detail, session), [],
+      '消费方没接上提供方 ⇒ 界面那列 / 随手记摘要仍是每轮整场去重')
+  })
+
+  it('★★ 接线：runtime 必须按会议隔离，且两处就地改写必须整场重算', () => {
+    const src = read('../../native/recordingRuntime.ts')
+    assert.deepEqual(runtimeWiringViolations(src), [],
+      'runtime 侧接线不合规 ⇒ 会跨会议串台，或摘要链拿到改写前的正文')
+  })
+
+  it('★★ 量具自证：三条接线判据的抽取器**真的有牙**（否则上面那三条恒绿）', () => {
+    const live = read('../../composables/useLiveSummary.ts')
+    const detail = read('MeetingDetailView.vue')
+    const session = read('../sessions/useSessionLiveRecord.ts')
+    const runtime = read('../../native/recordingRuntime.ts')
+
+    // ① 抽取器必须真的能在**生产源码**上定位到东西
+    assert.equal(liveSummaryWiringViolations(live).length, 0, '生产源码被判成不合规 ⇒ 抽取器有问题')
+    assert.equal(consumerWiringViolations(detail, session).length, 0, '生产源码被判成不合规 ⇒ 抽取器有问题')
+    assert.equal(runtimeWiringViolations(runtime).length, 0, '生产源码被判成不合规 ⇒ 抽取器有问题')
+
+    // ② 负控：把提供方调用删掉 ⇒ 摘要链那条必须判红
+    const liveMutated = live.replace(
+      'provided = opts?.dedupedSegments?.(rawSegments) ?? null',
+      'provided = null',
+    )
+    assert.notEqual(liveMutated, live, '变异没落盘 ⇒ 这条负控不算数')
+    assert.ok(liveSummaryWiringViolations(liveMutated).length > 0,
+      '负控前提失效：变异没有真的摘掉提供方调用')
+
+    // ③ 负控：把界面那列改回「只用整场去重」⇒ 消费方那条必须判红
+    const detailMutated = detail.replace(
+      'const provided = dedupedSegmentsProvider(live)',
+      'const provided = null',
+    )
+    assert.notEqual(detailMutated, detail, '变异没落盘 ⇒ 这条负控不算数')
+    assert.ok(consumerWiringViolations(detailMutated, session).length > 0,
+      '负控前提失效：变异没有真的摘掉界面那列的提供方')
+
+    // ④ 负控：把会议隔离删掉 ⇒ runtime 那条必须判红
+    const runtimeMutated = runtime.replace(
+      'if (this.activeMeetingId.value !== meetingId) return null',
+      'if (false) return null',
+    )
+    assert.notEqual(runtimeMutated, runtime, '变异没落盘 ⇒ 这条负控不算数')
+    assert.ok(runtimeWiringViolations(runtimeMutated).length > 0,
+      '负控前提失效：变异没有真的摘掉会议隔离')
+
+    // ⑤ 负控：把 refresh 换回 invalidate ⇒ runtime 那条必须判红
+    const runtimeMutated2 = runtime.replace(
+      'this.transcriptRenderer.refresh(this.segments.value)',
+      'this.transcriptRenderer.invalidate()',
+    )
+    assert.notEqual(runtimeMutated2, runtime, '变异没落盘 ⇒ 这条负控不算数')
+    assert.ok(runtimeWiringViolations(runtimeMutated2).length > 0,
+      '负控前提失效：变异没有真的把 refresh 换回 invalidate')
   })
 })

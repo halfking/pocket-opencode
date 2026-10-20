@@ -273,7 +273,7 @@ export class MeetingRecorderRuntime {
    *   `this.segments.value` 里塞 ⇒ 渲染器自己按**数组身份**发现「整份替换」
    *   （`seedSegments` / `freshSession` 会换掉数组对象）并整场重算。
    */
-  private transcriptRenderer: TranscriptRenderer = createTranscriptRenderer()
+  private transcriptRenderer: TranscriptRenderer<MeetingSegment> = createTranscriptRenderer<MeetingSegment>()
   private toast = useToast()
 
   private async cleanupMedia() {
@@ -500,6 +500,28 @@ export class MeetingRecorderRuntime {
     this.segments.value = [...stored]
   }
 
+  /**
+   * §932：当前活跃会议的**去重后段**（与 `dedupeSegments(segments.value)` **逐字相同**）。
+   *
+   * ⚠⚠ **为什么摘要链需要它**：`useLiveSummary` 每轮刷新（30 秒一轮）此前都
+   *   `dedupeSegments(segments.value)`（**O(n)**）⇒ 8 小时会议（1952 段 / 691 轮）
+   *   实测累计 **20.6–23.4 s 纯 CPU**（§932 实测，两批读数）⇒ 与 §931 那条（108.9 s）**同族同阶**。
+   *   ⇒ 而这个渲染器**本来就在**维护同一批段的去重状态（同一个折叠）⇒
+   *   ⇒ 顺手就能给出**逐字相同**的结果 ⇒ 每轮从 O(n) 变成 **O(新增)**。
+   *
+   * ⚠⚠ **两个守卫都要有，否则会给错内容**：
+   *   ① **会议不匹配** ⇒ 返回 `null` —— 否则会拿到**另一场**的正文
+   *      ⇒ 摘要会用别场的内容（跨会议串台）。
+   *   ② **数组对不上**（被整份替换 / 有段不是经由本渲染器进来的）⇒ 返回 `null`
+   *      —— 渲染器内部再判一次（`dedupedSegmentsFor`）。
+   *   ⇒ 返回 `null` 时，调用方**必须回退到整场去重**（慢但正确）。
+   */
+  dedupedSegmentsFor(meetingId: string, segments: MeetingSegment[]): MeetingSegment[] | null {
+    if (!meetingId) return null
+    if (this.activeMeetingId.value !== meetingId) return null
+    return this.transcriptRenderer.dedupedSegmentsFor(segments)
+  }
+
   async switchDevice(meetingId: string, deviceId: string): Promise<boolean> {
     if (!this.isRecording.value) return this.start(meetingId, { deviceId })
     if (this.elapsedTimer) { clearInterval(this.elapsedTimer); this.elapsedTimer = null }
@@ -631,10 +653,15 @@ export class MeetingRecorderRuntime {
     seg.origin = 'manual'
     // ⚠ §925：**不声明** `throttled` ⇒ 立刻落库 —— 这是**用户可见**的改动（他刚改了一句），
     //   晚一点落库就等于「用户的修改没生效」。
-    // ⚠⚠ §931：这一改**就地改写了**段正文 ⇒ 增量渲染器的状态已过期
-    //   ⇒ 必须 invalidate（否则下一段的增量结果会基于旧的这段）。
-    this.transcriptRenderer.invalidate()
-    await updateTranscript(meetingId, renderTranscript(this.segments.value))
+    // ⚠⚠ §931/§932：这一改**就地改写了**段正文 ⇒ 增量渲染器的状态已过期
+    //   ⇒ **必须整场重算**（refresh）。
+    //   ⚠⚠ 为什么不是 `invalidate()`（只标脏、下一段再重算）：§932 起
+    //   这个渲染器**同时**是「去重后段」的来源（摘要链要用）
+    //   ⇒ 只标脏的话，在下一段到来之前，摘要链拿到的是**改写前**的正文
+    //   ⇒ ⇒ 用户看到的摘要是旧内容 ⇒ 静默的错误。
+    //   ⇒ 代价：O(n) 一次 —— 而这一处**本来就是 O(n)**（此前整场渲染）⇒ 无额外成本。
+    this.transcriptRenderer.refresh(this.segments.value)
+    await updateTranscript(meetingId, this.transcriptRenderer.source())
     return true
   }
 
@@ -740,9 +767,11 @@ export class MeetingRecorderRuntime {
     await Promise.all(ownUpdates.map((u) => updateSegmentSpeaker(u.segId, u.label)))
     // 转写正文里也带着说话人前缀，不重渲染的话用户看到的是「标签改了、正文没改」。
     // ⚠ §925：**不声明** `throttled` ⇒ 立刻落库 —— 改说话人名是**用户可见**的改动。
-    // ⚠⚠ §931：说话人标签被**就地改写** ⇒ 增量渲染器状态过期 ⇒ invalidate。
-    this.transcriptRenderer.invalidate()
-    await updateTranscript(meetingId, renderTranscript(this.segments.value))
+    // ⚠⚠ §931/§932：说话人标签被**就地改写** ⇒ 增量渲染器状态过期
+    //   ⇒ **整场重算**（refresh）—— 理由同 `editSegmentInMemory`：
+    //   摘要链会读这份「去重后段」，只标脏会让它拿到**改写前**的说话人。
+    this.transcriptRenderer.refresh(this.segments.value)
+    await updateTranscript(meetingId, this.transcriptRenderer.source())
     this.syncSpeakers()
   }
 

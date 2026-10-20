@@ -167,4 +167,48 @@ describe('§401 · 形态层（读生产源码，不在测试里重算）', () =
       '若换成了 dedupeSegments 更好，但本条的形态判据需随之更新，不能让它静默失真',
     )
   })
+
+  it('#8 提取器自证：区间必须**含渲染实现**且**排除 dedupeSegments**（否则上面两条失去区分力）', () => {
+    // ⚠⚠ §932：共享提取器 `_render-impl.mjs` 的锚点被 §932 的**泛型化**打断过
+    //   （`createTranscriptRenderer<T …>()` ⇒ 锚点带左括号就永远匹配不上
+    //   ⇒ 提取器返回空串 ⇒ 两条门以「取不到渲染实现的区间（0 字）」**假红**）。
+    //   ⇒ 这里把「提取器**真的取到了该取的区间**」本身**钉成判据**
+    //   ⇒ 下次再有人改函数签名，这一条会**先**红，并直接指出是提取器的锚点坏了。
+    const body = renderImpl(src)
+    assert.ok(body && body.length > 200, `取不到渲染实现的区间（${body?.length ?? 0} 字）`)
+    // ① 必须**含**渲染实现本体
+    assert.ok(
+      body.includes('class TranscriptRenderState'),
+      '区间里没有 TranscriptRenderState ⇒ 提取器的起点锚点失效了',
+    )
+    assert.ok(
+      body.includes('createTranscriptRenderer'),
+      '区间里没有 createTranscriptRenderer ⇒ 提取器的终点锚点失效了',
+    )
+    // ② 必须**排除** dedupeSegments（§401 这条门的区分力全靠这个排除）
+    //    ⚠ 它在文件里更靠前 ⇒ 区间从 TranscriptSegmentLike 起 ⇒ 天然排除
+    //    ⇒ 这里钉住这个不变量（否则将来有人把区间往前挪 ⇒ 门会命中「那处本来就对」的 origin）
+    //
+    // ⚠⚠ 锚点**不能带左括号**：`dedupeSegments` 本身也是**泛型**的
+    //   （`export function dedupeSegments<T extends {…}>(…)`）⇒ 带括号就永远匹配不上
+    //   ⇒ 这条断言会**恒真** ⇒ 门失去区分力而没人知道
+    //   （与 §932 打断 `createTranscriptRenderer` 那个锚点是**同一个坑**。）
+    assert.ok(
+      !body.includes('export function dedupeSegments'),
+      '区间把 dedupeSegments 包进来了 ⇒ §401 这条门会命中「那处本来就对」的 origin ⇒ 失去区分力',
+    )
+    // ★ 负控：把区间起点往前挪（模拟「有人把 dedupeSegments 圈进来」）⇒ 必须被判出来
+    const at = src.indexOf('export function dedupeSegments')
+    assert.ok(at >= 0, '负控前提失效：源码里找不到 dedupeSegments 的声明')
+    const widened = src.slice(at)
+    assert.notEqual(widened, src, '变异没落盘 ⇒ 这条负控不算数')
+    assert.ok(
+      widened.includes('export function dedupeSegments'),
+      '负控前提失效：区间没真的变宽',
+    )
+    assert.ok(
+      widened.length > body.length,
+      '负控前提失效：变宽后的区间并没有比原区间长 ⇒ 负控没模拟到「圈进 dedupeSegments」',
+    )
+  })
 })

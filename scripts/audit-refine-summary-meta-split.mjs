@@ -200,11 +200,24 @@ function audit(root = REPO_ROOT) {
   }
 
   // ---- A3 / A4：两条 useLiveSummary 调用点的不一致
+  //
+  // ⚠⚠⚠ §932：判定必须看「**有没有传 meta**」，**不能**看「有没有第三个实参」。
+  //
+  //   §932 给 `useSessionLiveRecord` 也加了**第三个实参**（`{ dedupedSegments }`）
+  //   ⇒ 旧写法（`argCount >= 3`）会同时造成**两个**假结论：
+  //     ① 报 STALE 登记项「已经传 meta 了」—— **它并没有传 meta**
+  //        ⇒ 待拍板① 的缺口**仍然成立** ⇒ 这条提示会把人引向**撤掉一个仍有效的登记项**；
+  //     ② 报「A3/A4 同构」—— 两条路径在 **meta** 上**仍然不同**（一条传、一条不传）
+  //        ⇒ §385 钉的「不一致」**没有**消失。
+  //
+  //   ⇒ ⇒ 判据改成看**第三个实参里有没有 `meta`**（**语义不变，指向修正**）：
+  //   实参表是**按括号配平**取出来的（`extractCalls`）⇒ 里面已无注释 ⇒ 不会误命中注释里的 `meta:`。
+  const passesMeta = (c) => c.argCount >= 3 && /\bmeta\s*:/.test(c.args);
   const sCalls = liveSummaryCalls(sessionSrc);
   const dCalls = liveSummaryCalls(detailSrc);
   if (sCalls.length !== 1) {
     findings.push({ kind: 'A3 调用点数', msg: `useSessionLiveRecord 里 useLiveSummary 调用点期望 1 个，实测 ${sCalls.length} 个` });
-  } else if (sCalls[0].argCount >= 3) {
+  } else if (passesMeta(sCalls[0])) {
     // ★ 转绿 = 登记项过期，这不是一个「失败」，而是一条必须处理的提示
     notes.push({
       kind: 'STALE 登记项',
@@ -215,7 +228,7 @@ function audit(root = REPO_ROOT) {
   }
   if (dCalls.length !== 1) {
     findings.push({ kind: 'A4 调用点数', msg: `MeetingDetailView 里 useLiveSummary 调用点期望 1 个，实测 ${dCalls.length} 个` });
-  } else if (dCalls[0].argCount < 3) {
+  } else if (!passesMeta(dCalls[0])) {
     findings.push({
       kind: 'A4 对照臂消失',
       msg: `MeetingDetailView.vue:${dCalls[0].line} 不再传 meta ⇒ 「两条路径不一致」的对照臂没了，` +
@@ -224,7 +237,8 @@ function audit(root = REPO_ROOT) {
   }
 
   // ---- 一致性：A3/A4 必须真的不一致，否则本闸钉的是同一条实验
-  if (sCalls.length === 1 && dCalls.length === 1 && (sCalls[0].argCount >= 3) === (dCalls[0].argCount >= 3)) {
+  // ⚠⚠ §932：比的是「**有没有传 meta**」，不是「实参个数」（理由见上）。
+  if (sCalls.length === 1 && dCalls.length === 1 && passesMeta(sCalls[0]) === passesMeta(dCalls[0])) {
     findings.push({
       kind: 'A3/A4 同构',
       msg: '两条路径的传参形态相同 ⇒ §385 钉的「不一致」已不存在',
@@ -323,8 +337,20 @@ const MUTATIONS = [
   {
     name: 'M2 给 useSessionLiveRecord 补上 opts.meta（把待拍板① 直接修掉）',
     apply: (f) => {
-      f.session = f.session.replace('useLiveSummary(meetingId, recorder.segments)',
-        'useLiveSummary(meetingId, recorder.segments, { meta: computed(() => ({ title: sessionTitle() })) })');
+      // ⚠⚠⚠ §932：锚点必须跟着实现走。
+      //   实现现在**已经有第三个实参**了（`{ dedupedSegments }`）⇒ 旧锚点
+      //   `useLiveSummary(meetingId, recorder.segments)` **不存在** ⇒
+      //   变异会**静默变成空操作** ⇒ 而臂却会显示「有反应」——
+      //   那是**基线本来就红**造成的假象（§929 记过的「变异随实现一起过期」）。
+      //   ⇒ 现在锚在**选项对象的开头**，并**断言真的注入进去了**。
+      const anchor = 'useLiveSummary(meetingId, recorder.segments, {';
+      if (!f.session.includes(anchor)) {
+        throw new Error('M2 前提不成立：找不到 useLiveSummary 的第三个实参（实现又变形了？）');
+      }
+      const before = f.session;
+      f.session = f.session.replace(anchor,
+        'useLiveSummary(meetingId, recorder.segments, { meta: computed(() => ({ title: sessionTitle() })),');
+      if (f.session === before) throw new Error('M2 没能注入 opts.meta');
     },
     expect: 'A3 转绿 ⇒ 报 STALE 登记项（不是「失败」，是必须处理的提示）',
   },
@@ -392,6 +418,25 @@ const MUTATIONS = [
     },
     expect: 'A6 ID 片段可流入',
   },
+  {
+    // ⚠⚠ §932 回归臂：**有第三个实参 ≠ 传了 meta**。
+    //   §932 给 `MeetingDetailView` 之外的路径加选项时，最容易把「实参个数」
+    //   当成「有没有传 meta」⇒ 那会让 A4 的对照臂判定**失去区分力**
+    //   （对照臂在、但它其实没传 meta）。
+    //   ⇒ 这里把 detail 那条的 `meta:` 去掉、**但保留第三个实参**
+    //   ⇒ 判据必须仍判「对照臂消失」。
+    //   ⇒ 用旧写法（`argCount >= 3`）的话，这一条**不会**触发 A4 ⇒ 这条臂就有牙。
+    name: 'M8 把 MeetingDetailView 的 meta 去掉但保留第三个实参（§932 的形态）',
+    apply: (f) => {
+      const anchor = '  meta: computed(() => ({';
+      if (!f.detail.includes(anchor)) throw new Error('M8 前提不成立：找不到 detail 那条的 meta:');
+      const before = f.detail;
+      f.detail = f.detail.replace(anchor, '  onUpdated: () => void (0), _metaUnused: computed(() => ({');
+      if (f.detail === before) throw new Error('M8 没能去掉 meta:');
+    },
+    expect: 'A4 对照臂消失（判据看的是「有没有传 meta」，不是「有没有第三个实参」）',
+    expectKinds: ['A4 对照臂消失'],
+  },
 ];
 
 function meta() {
@@ -409,7 +454,7 @@ function meta() {
     }
   };
 
-  let alive = 0;
+  let aliveCount = 0;
   let broken = 0;
   try {
     // 阴性对照：干净源码必须全绿
@@ -418,6 +463,13 @@ function meta() {
     const cleanBad = clean.findings.length;
     console.log(`META  N0 干净源码零误报\n      ${cleanBad === 0 ? '✅ 未报红' : `❌ 报了 ${cleanBad} 处：${clean.findings.map((f) => f.msg).join(' | ')}`}`);
     if (cleanBad !== 0) broken++;
+    // ⚠⚠ §932：N0 原来**只数 findings** ⇒ **notes（STALE 登记项）漏在外面**
+    //   ⇒ §932 那次「假 STALE」正是从这条缝里漏过去的
+    //   （闸说「已经传 meta 了」⇒ 会让人去撤一个**仍然成立**的登记项）。
+    //   ⇒ ⇒ 干净基线上**一条 STALE 都不许有**。
+    const cleanStale = clean.notes.filter((n) => n.kind === 'STALE 登记项');
+    console.log(`META  N0b 干净源码零 STALE 登记项（否则会误导人去撤仍有效的登记项）\n      ${cleanStale.length === 0 ? '✅ 未报 STALE' : `❌ 报了 ${cleanStale.length} 条：${cleanStale.map((n) => n.msg).join(' | ')}`}`);
+    if (cleanStale.length !== 0) broken++;
 
     for (const m of MUTATIONS) {
       const f = { ...pristine };
@@ -426,9 +478,14 @@ function meta() {
       const r = audit(tmp);
       // M2 的正确反应是 **note**，不是 finding —— 两者都算「闸有反应」
       const reacted = r.findings.length > 0 || r.notes.length > 0;
-      console.log(`META  ${m.name}\n      ${reacted ? '✅ 有反应' : '❌ 完全无反应 —— 闸没有牙'}  预期：${m.expect}`);
-      if (reacted) {
-        alive++;
+      // ⚠⚠ §932：光看「有反应」**太粗** —— 基线本来就红时，任何臂都会「有反应」。
+      //   ⇒ 支持 `expectKinds`：必须**出现指定的那几条**才算这条臂活着。
+      const kinds = [...r.findings.map((x) => x.kind), ...r.notes.map((x) => x.kind)];
+      const missing = (m.expectKinds || []).filter((k) => !kinds.includes(k));
+      const alive = reacted && missing.length === 0;
+      console.log(`META  ${m.name}\n      ${alive ? '✅ 有反应' : (reacted ? '❌ 反应的**不是**预期的那些（缺：' + missing.join('、') + '）' : '❌ 完全无反应 —— 闸没有牙')}  预期：${m.expect}`);
+      if (alive) {
+        aliveCount++;
         for (const x of r.findings) console.log(`      findings［变异副本，非基线］：${x.kind}: ${x.msg}`);
         for (const x of r.notes) console.log(`      notes［变异副本，非基线］：${x.kind}: ${x.msg}`);
       } else broken++;
@@ -437,7 +494,7 @@ function meta() {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 
-  console.log(`\n=== 判据自证 ===\n${alive} 个变异有反应，${broken} 个无反应`);
+  console.log(`\n=== 判据自证 ===\n${aliveCount} 个变异有反应，${broken} 个无反应`);
   console.log('↑ 以上全部属于变异臂。**不要**据其中任何一条去撤登记项 —— 基线读数在下一遍。');
   if (broken > 0) {
     console.log('闸失去区分能力 —— 这是**闸**坏了，不是代码坏了。');

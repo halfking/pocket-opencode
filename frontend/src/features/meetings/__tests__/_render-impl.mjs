@@ -33,7 +33,18 @@ export function renderImpl(src) {
   if (start < 0) return ''
   // 渲染实现是文件的**最后一段**（createTranscriptRenderer 收尾）⇒ 到文件末尾即可。
   // ⚠ 但要确认末尾确实是它 ⇒ 否则会把后面新增的东西也扫进来。
-  const lastAnchor = src.lastIndexOf('export function createTranscriptRenderer(')
+  //
+  // ⚠⚠ §932：`createTranscriptRenderer` 变成**泛型**了 ⇒ 函数名与左括号之间
+  //   多了一段类型参数（`createTranscriptRenderer<T extends TranscriptSegmentLike = …>()`）
+  //   ⇒ 锚点**不能带那个左括号**，否则永远匹配不上 ⇒ 提取器返回空串
+  //   ⇒ 那两条门会以「取不到渲染实现的区间（0 字）」**假红**。
+  //   ⇒ 锚到**函数名**（不带括号）⇒ 泛型与非泛型两种形态都认。
+  //   （这与 §931 的教训同族：**指向失效 ≠ 语义失效** ⇒ 只改指向、不动语义。）
+  const lastAnchor = src.lastIndexOf('export function createTranscriptRenderer')
   if (lastAnchor < 0) return ''
+  // ⚠ 兑现上面那句承诺：**它后面不许再有别的导出**
+  //   （否则区间会把后面新增的东西也扫进来 ⇒ 门失去区分力）。
+  const after = src.slice(lastAnchor + 'export function createTranscriptRenderer'.length)
+  if (/\bexport\s+(?:const|function|class|interface|type|let|var)\b/.test(after)) return ''
   return src.slice(start, src.length)
 }
