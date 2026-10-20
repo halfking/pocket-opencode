@@ -139,7 +139,11 @@
  *   node scripts/check-doc-empty-string-literal.mjs --selftest   # 敏感度/特异度/变盲/交叉核对自证
  */
 import { spawnSync } from 'node:child_process'
-import { readFileSync, readdirSync, statSync, realpathSync } from 'node:fs'
+import {
+  readFileSync, readdirSync, statSync, realpathSync,
+  mkdtempSync, mkdirSync, copyFileSync, writeFileSync, rmSync,
+} from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { whichFirst, gofmtCandidates } from './lib/which-first.mjs'
@@ -235,14 +239,21 @@ export function gofmtVersionOf(gofmtPath) {
 }
 
 /**
- * 解析**权威 gofmt**：与 backend/go.mod 声明的大版本一致的那一个。
- * 返回 {path, version, declared, probed} 或 {error, declared, probed}。
+ * 从候选里挑出**与声明大版本一致**的那个 gofmt。
+ *
+ * ★ 这条是纯函数、候选表是参数 ⇒ 「一个都不匹配 ⇒ 判无法判定」这条**失败分支
+ *   可被自证**（否则它只是一段从没跑过的代码，而「无法判定」恰恰是最该被验的分支：
+ *   它是「门在量具失效时会不会静默放行」的唯一防线）。
+ *
+ * @param {string[]} candidates 候选位置（裸名或绝对路径）
+ * @param {string|null} declared 声明的大版本，如 '1.27'；null = 读不到声明
+ * @returns {{path:string,version:string,declared:string,probed:Array}
+ *          |{error:string,declared:string|null,probed:Array}}
  */
-export function resolveAuthoritativeGofmt() {
-  const declared = readDeclaredGoMinor()
+export function pickMatchingGofmt(candidates, declared) {
   const probed = []
   const seen = new Set()
-  for (const c of gofmtCandidates()) {
+  for (const c of candidates) {
     const abs = whichFirst([c])
     if (!abs || seen.has(abs)) continue
     seen.add(abs)
@@ -267,6 +278,11 @@ export function resolveAuthoritativeGofmt() {
       + `  修法：装 Go ${declared}.x，或用 GOFMT=/path/to/gofmt 显式指定。`,
     declared, probed,
   }
+}
+
+/** 用真实的候选表与真实的声明去解析权威 gofmt。 */
+export function resolveAuthoritativeGofmt() {
+  return pickMatchingGofmt(gofmtCandidates(), readDeclaredGoMinor())
 }
 
 const ORACLE = resolveAuthoritativeGofmt()
@@ -569,6 +585,43 @@ if (process.argv.includes('--selftest')) {
     const v = gofmtVersionOf(RESOLVED_GOFMT)
     return !!declared && !!v && v.minor === declared
   })
+  // ★ 下面几条专打**「无法判定」那条失败分支**。
+  //   它是「量具失效时门会不会静默放行」的唯一防线 ⇒ 从前只是一段从没跑过的代码。
+  add('oracle·版本不符的候选必须被拒绝（真二进制 + 伪造 VERSION）', () => {
+    // 造一个**能用的** gofmt（二进制是真的），但让它的 VERSION 说自己是 go1.99.0
+    // ⇒ 声明要 1.27 时必须**拒绝它**，不许「反正它能跑就拿来用」。
+    const tmp = mkdtempSync(path.join(os.tmpdir(), 'doc-empty-gofmt-'))
+    try {
+      const bin = path.join(tmp, 'bin')
+      mkdirSync(bin, { recursive: true })
+      const fake = path.join(bin, 'gofmt')
+      copyFileSync(RESOLVED_GOFMT, fake)
+      writeFileSync(path.join(tmp, 'VERSION'), 'go1.99.0\n')
+      const v = gofmtVersionOf(fake)
+      if (!v || v.minor !== '1.99') return false // 量具自证：版本确实被读成 1.99
+      const r = pickMatchingGofmt([fake], '1.27')
+      return !!r.error && !r.path // ⇒ 必须是「无法判定」，不是「选中」
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+    }
+  })
+  add('oracle·候选表为空 ⇒ 判无法判定（不许静默放行）', () => {
+    const r = pickMatchingGofmt([], '1.27')
+    return !!r.error && !r.path
+  })
+  add('oracle·候选指向不存在的文件 ⇒ 判无法判定', () => {
+    const r = pickMatchingGofmt(['/definitely/not/here/gofmt'], '1.27')
+    return !!r.error && !r.path
+  })
+  add('oracle·声明读不到（null）⇒ 判无法判定（不许拿任意候选凑数）', () => {
+    const r = pickMatchingGofmt([RESOLVED_GOFMT], null)
+    return !!r.error && !r.path
+  })
+  add('oracle·与声明一致的候选必被选中', () => {
+    const minor = gofmtVersionOf(RESOLVED_GOFMT).minor
+    const r = pickMatchingGofmt([RESOLVED_GOFMT], minor)
+    return !r.error && r.path === RESOLVED_GOFMT
+  })
 
   // ── ⭐ 交叉核对：同一批样本，**本门的裁决**必须与**真实 gofmt 的输出**一致。
   //    这条的意义：若哪天 Go 改了 doc comment 的格式化行为，
@@ -617,7 +670,10 @@ if (process.argv.includes('--selftest')) {
   //   不是 add()/push() —— 一条按调用形态做的普查会漏掉它（§103.2 的扫描器就漏了）。
   //   修前实测：把 18 个数组元素全删 ⇒ `selftest: 0/0 通过` + EXIT=0（假绿）。
   //   下限只能手工改这个常量，不接受命令行参数。
-  const MIN_SELFTEST_CASES = 18
+  // ★ 2026-10-20：下限**按当前实跑条数棘轮**到 51（46 → +5 条 oracle 失败分支）。
+  //   语义是「只许增不许减」：删掉任何一条都必须**手改这个常量**才能过 ⇒
+  //   「悄悄少测一条」从此必须是一个显式的决定，而不是一个没人注意到的 diff。
+  const MIN_SELFTEST_CASES = 51
   if (cases.length < MIN_SELFTEST_CASES) {
     console.error(`[doc-empty-string] 自检只跑了 ${cases.length}/${MIN_SELFTEST_CASES} 例 —— cases 数组被改过。`)
     console.error('   「0/0 通过」不是通过：守卫空转时的读数和它要抓的病一模一样。')

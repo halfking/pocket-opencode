@@ -139,8 +139,24 @@ Go 的 doc comment 格式化规则**跨版本变过**，手写副本会随 Go �
 
 ⚠ **还原纪律**：读备份自己 = 恒真 = 假读数 ⇒ 校验必须读**被改的那个路径**（本轮照此执行）。
 
-`--selftest` **46 例**（9 扫描 / 14 敏感度 / 15 特异度 / 3 变盲 / 2 自指 / 2 oracle / 1 与真实 gofmt 交叉核对）
-全绿，`MIN_SELFTEST_CASES = 18` 下限闸保留。
+`--selftest` **51 例**（9 扫描 / 14 敏感度 / 15 特异度 / 3 变盲 / 2 自指 / 7 oracle / 1 与真实 gofmt 交叉核对）
+全绿，`MIN_SELFTEST_CASES` 下限闸**按当前实跑条数棘轮到 51**（语义「只许增不许减」：
+删掉任何一条都必须**手改这个常量**才能过 ⇒ 「悄悄少测一条」从此必须是一个显式的决定）。
+
+★ 其中 **5 条 oracle 用例专打「找不到匹配版本 ⇒ 判无法判定」那条失败分支**。
+这条分支是「**量具失效时门会不会静默放行**」的唯一防线，而它从前只是一段**从没跑过的代码**
+（`resolveAuthoritativeGofmt` 原来把候选表写死在函数体里 ⇒ 无法在不改动生产代码的前提下测它
+⇒ 顺手把它拆成纯函数 `pickMatchingGofmt(candidates, declared)`，薄封装 `resolveAuthoritativeGofmt()` 仍读真候选表）。
+**变异验牙**（每种坏法各打中不同分支）：
+
+| 变异 | 期望 | 实测 |
+|---|---|---|
+| M1 去掉大版本校验（`version.minor === declared` → `version`） | 「版本不符的候选必须被拒绝」转红 | ✅ 转红 |
+| M2 连 `declared` 守卫一起去掉 | 上一条 + 「声明读不到（null）⇒ 判无法判定」转红 | ✅ 转红 2 条 |
+
+其中「版本不符的候选必须被拒绝」用的是**真二进制 + 伪造 VERSION**：
+把真的 gofmt 复制到临时目录、给它写一个 `go1.99.0` 的 `VERSION` 文件
+⇒ 它**能跑**，但版本对不上 ⇒ 必须被拒绝（不许「反正它能跑就拿来用」）。
 其中「与真实 gofmt 交叉核对」那一条**逐例比较本门裁决与真实 gofmt 的输出**——
 Go 的行为若变，会当场报红，而不是继续用一份过期清单自说自话。
 
@@ -253,7 +269,9 @@ if tok != token.IDENT &&                          // ← Go 1.25 新增
 
 ⇒ 新门禁**按 `backend/go.mod` 声明的大版本过滤 gofmt 候选**：
 逐个候选探测版本（`GOROOT/VERSION` → `go version -m`），
-取第一个大版本一致的；**一个都没有 ⇒「无法判定」exit 1**，不是「通过」。
+取第一个大版本一致的；**一个都没有 ⇒「无法判定」exit 1**，不是「通过」
+（★ 这条**失败分支已由 5 条 selftest 用例 + 变异验证**，见 §1.3 末段——
+它是「量具失效时门会不会静默放行」的唯一防线）。
 ⇒ 门禁每次都会把 oracle 打印出来（`oracle: /opt/homebrew/bin/gofmt（go1.27.2，backend/go.mod 声明 Go 1.27）`），
 **读数可审计**。
 
@@ -263,7 +281,9 @@ if tok != token.IDENT &&                          // ← Go 1.25 新增
 
 | 命令 | 结果 |
 |---|---|
-| `node scripts/check-doc-empty-string-literal.mjs --selftest` | EXIT 0 — 实跑 **46** / 声明 46 |
+| `node scripts/check-doc-empty-string-literal.mjs --selftest` | EXIT 0 — 实跑 **51** / 声明 51 |
+| 变异 M1（去掉 gofmt 大版本校验） | **EXIT 1** — 「版本不符的候选必须被拒绝」转红 |
+| 变异 M2（连 `declared` 守卫一起去掉） | **EXIT 1** — 2 条转红 |
 | `node scripts/check-doc-empty-string-literal.mjs` | EXIT 0 — 全仓 **0 命中**（附 oracle 打印） |
 | 同上（在 `frontend/` cwd 下跑，验证 ROOT 不依赖 cwd） | EXIT 0 — 0 命中 |
 | 正控：`//` 形态真 doc 注入 `''` | **EXIT 1** — 点名 `store_select_scan_parity_test.go:76`；gofmt 独立量具一致 |
