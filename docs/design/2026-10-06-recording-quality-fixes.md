@@ -107723,3 +107723,219 @@ http 选项**都真的接上了**（§928 那批判据逐条验过），但界�
 ### §929.9 简报 153 的待拍板项
 
 见 `2026-10-11-pending-decisions-brief.md` 第 **153** 条。
+
+## §930 「长路由三段预算」的全路由普查 ⇒ 抓到 2 处「相等即错」+ 1 处门禁盲区 + 1 处判据量具缺陷
+
+### §930.0 一句话结论
+
+§929 修的是**一条**路由（`/api/llm/chat`）⇒ 它的服务端有效预算在网关客户端里。
+本节把那条不变式**推广到全路由**，口径是**三段**预算：
+
+| 段 | 在哪 | 判据要求 |
+|---|---|---|
+| ① 客户端 | `frontend/src/api/**` 的 `timeoutMs` | **① > ②** |
+| ② 服务端 handler | `context.WithTimeout(r.Context(), D)` | |
+| ③ 服务端 WriteTimeout | `http.Server.WriteTimeout` = **30 s** | **② > 30 s ⇒ 该路由必须在 long-lived 白名单里** |
+
+⇒ ⇒ 三段**每一段**都出过问题，而且**形态一致**：**靠手工维护的清单**。
+⇒ ⇒ **本节查出的**：
+① `/api/stt/discover`：**相等即错**（客户端 120 s == 服务端 120 s）⇒ **已修**（150 s）；
+② 随手记的整段兜底转写：**相等即错**（客户端 10 分钟 == 服务端 10 分钟）⇒ **已修**（11 分钟，单一真值）；
+③ **服务端那道 AST 审计门禁的解析器只认内联字面量** ⇒ 预算写成**命名常量**的 handler 对它**隐形**
+⇒ ⇒ 它一直绿着，而 `/api/emails/ops/sync`（以及 `move` / `organize` / `meetings/*/analyze`）**真的没被豁免**
+⇒ ⇒ **解析器已修 ⇒ 门禁随即变红 ⇒ 真实缺陷被暴露并修掉**；
+④ **判据自己的量具**：仓里有 **5 份**手写的 Go 剥注释器拷贝，**全都**认不出
+**字符串字面量里的斜杠** ⇒ 会吞掉真代码（`server.go` 里正好有那种字面量）⇒ **已统一到唯一一份 quote-aware 实现**。
+
+### §930.1 客户端侧：**17 个**带 timeoutMs 的调用点 / **16 条**路由（机械枚举，不是手数）
+
+`src/api/**` 下每一个带 `timeoutMs` 的 http 调用点：
+
+| 路由 | 客户端常量 | 值 |
+|---|---|---|
+| `/api/email/backfill` | `BACKFILL_TIMEOUT_MS` | 600 000 |
+| `/api/emails/{id}/summarize` | `LONG_REQUEST_TIMEOUT_MS` | 120 000 |
+| `/api/emails/sync` | `LONG_REQUEST_TIMEOUT_MS` | 120 000 |
+| `/api/emails/classify` | `CLASSIFY_TIMEOUT_MS` | 960 000 |
+| `/api/emails/move` | `LONG_REQUEST_TIMEOUT_MS` | 120 000 |
+| `/api/emails/ops/sync` | `LONG_REQUEST_TIMEOUT_MS` | 120 000 |
+| `/api/emails/organize` | `LONG_REQUEST_TIMEOUT_MS` | 120 000 |
+| `/api/emails/invoices/extract` | `INVOICE_EXTRACT_TIMEOUT_MS` | 180 000 |
+| `/api/email/pipeline/run` | `PIPELINE_TIMEOUT_MS` | 1 020 000 |
+| `/api/llm/chat`（**两个**调用点） | `LLM_CHAT_TIMEOUT_MS` | 120 000 |
+| `/api/notes/{id}/summarize` | `NOTE_SUMMARIZE_TIMEOUT_MS` | 90 000 |
+| `/api/stt/discover` | `STT_DISCOVER_TIMEOUT_MS` | **150 000**（§930 改） |
+| `/api/stt/transcribe-full` | `FULL_TRANSCRIBE_TIMEOUT_MS` | 660 000 |
+| `/api/stt/transcribe-incremental` | `LONG_REQUEST_TIMEOUT_MS` | 120 000 |
+| `/api/stt/probe` | `STT_PROBE_TIMEOUT_MS` | 180 000 |
+| `/api/stt/transcribe` | `STT_TRANSCRIBE_TIMEOUT_MS` | 180 000 |
+
+⚠ **「相等即错」的来历**（那张表的表头就写着）：客户端计时从**请求发出**开始，
+服务端的从 **handler 进来**开始，中间还隔着网络与鉴权 ⇒ ⇒
+**取相等值时客户端实际总是先到点** ⇒ 「刚好用满预算」的那一档**必然**失败，
+而它**不总是复现**，看起来像网络抖动。
+
+### §930.2 发现 ①：`/api/stt/discover` —— 客户端 120 s **==** 服务端 120 s
+
+- 服务端：`server_stt_settings.go:760` 的 `context.WithTimeout(r.Context(), 120*time.Second)`。
+- 客户端：此前吃**共用**的 `LONG_REQUEST_TIMEOUT_MS` = **120 000 ms**。
+
+⇒ ⇒ **相等即错** ⇒ 「刚好用满预算」的那一档必然失败。
+
+⚠⚠ **而且服务端注释已经漂移**：`server.go` 的 `longLivedPaths` 注释里写
+「`/api/stt/discover` **90 秒**（逐个探测网关候选）」⇒ **代码是 120 秒**。
+⇒ ⇒ 那条注释**把一个真实缺陷掩护成了「90s < 120s，安全」** ⇒ **已一并更正**。
+
+⇒ **修法**：客户端改用**专用**常量 `STT_DISCOVER_TIMEOUT_MS = 150_000`。
+⚠ **为什么不能直接调大 `LONG_REQUEST_TIMEOUT_MS`**：它是**共用**常量
+（邮件的 sync/move/organize/ops-sync、逐封摘要、STT 的 transcribe-incremental 都在用）
+⇒ 动它会波及六条不相干的路由。
+
+### §930.3 发现 ②：随手记的整段兜底转写 —— 客户端 10 分钟 **==** 服务端 10 分钟
+
+`recordingRuntime.ts` 的兜底转写此前写的是 `withTimeout(…, 10 * 60_000)`，
+而服务端的 `fullTranscribeTimeout`（`server_stt_stream.go:39`）**也是 10 分钟**
+⇒ ⇒ **相等即错** ⇒ 一场刚好跑满 10 分钟的录音**必然**失败，
+而失败形态是「转写失败」、**录音却还在** ⇒ 用户以为白录了。
+
+⇒ **修法**：改用**共享常量** `FULL_TRANSCRIBE_TIMEOUT_MS`（11 分钟）⇒ **单一真值**，两处再也不会漂。
+⚠ 此前那个常量在 `api/stt-settings.ts` 里是**私有**的 ⇒ §930 把它**导出**（生产代码在用 ⇒ 不是死能力）。
+
+### §930.4 发现 ③：⭐ 服务端那道 AST 审计门禁的**解析器盲区**
+
+`backend/internal/server/long_lived_route_audit_test.go` 是一道**机械**门禁：
+AST 扫出所有 `context.WithTimeout(x, D)` 且 `D > 30s` 的 handler ⇒ 要求它的路由命中白名单。
+⚠ 但它的 `durationOfExpr` **只认内联字面量** `N * time.Second`：
+
+```go
+const opsExecTimeout = 90 * time.Second   // 包级常量
+ctx, cancel := context.WithTimeout(r.Context(), opsExecTimeout)   // ← 认不出
+```
+
+⇒ ⇒ **预算写成命名常量的 handler，对这道门禁是隐形的**：
+
+| 常量 | 值 | 所在文件 |
+|---|---|---|
+| `opsExecTimeout` | 90 s | `server_email_ops.go:224` |
+| `fullTranscribeTimeout` | 10 分钟 | `server_stt_stream.go:39` |
+| `meetingAnalyzeTimeout` | 90 s | `server_meeting_analyze.go:39` |
+
+⇒ ⇒ **三个全部不被计入** ⇒ ⇒ 门禁一直绿着，
+而 `/api/emails/ops/sync`（服务端预算 90 s > WriteTimeout 30 s）**真的没被豁免**
+⇒ ⇒ 一旦跑满 30 s，连接写 deadline 到期、handler 在 90 s 才写响应 ⇒
+**客户端拿到空响应、服务端其实成功了**（与 2026-10-01 那次 pipeline/run 事故**同一形态**）。
+
+⇒ ⇒ **修法不是「把常量展开回字面量」**（那只是换一种写法，盲区还在），
+而是**让解析器认这三种形态**（内联字面量 / 函数内 const / **包级 const**）：
+新增 `durationConstsInDecls` / `durationConstsInStmts` / `durationOfExprScoped`
+⇒ ⇒ **门禁随即变红**，报出两条真缺陷：
+
+```
+executeOpsEntries 预算 1m30s 但其 router 的路由 /api/emails/ops/sync 未豁免
+handleMeetingLiveAnalyze 预算 1m30s 但其 router 的路由 /api/meetings/ 未豁免
+```
+
+⇒ ⇒ **已修**：白名单补 3 条（`/api/emails/ops/sync`、`/api/emails/move`、`/api/emails/organize`
+—— 三条共用同一段执行逻辑 `executeOpsEntries`，只豁免一条另外两条照样被掐）
++ pattern 补 1 条（`/api/meetings/*/analyze`，**不用** `/api/meetings/` 前缀整段豁免，
+理由见 `longLivedPatterns` 的原注释：那样连 `GET /api/meetings/{id}` 这种毫秒级读也会被解除保护）。
+
+⚠ **`/api/meetings/{id}/analyze` 前端目前没有调用方**（可能是移动端在用）⇒ 已登记（简报 154）。
+
+### §930.5 发现 ④：⭐ 判据的**量具**缺陷 —— 5 份手写剥注释器拷贝，全都认不出字符串里的斜杠
+
+仓里有 **5 份**手写的 Go 剥注释器：`_wire-helpers.mjs`、
+`api-timeout-budget-table.test.mjs`、`email-long-request-budget.test.mjs`、
+`refine-prompt-parity.test.mjs`、`summary-prompt-parity.test.mjs`。
+它们全都是「**先**做块注释的非贪婪配对，**再**按行首双斜杠切行」
+⇒ ⇒ **字符串字面量里的斜杠会被当成注释起点** ⇒ ⇒ **吞掉真代码**。
+
+两个实测地雷：
+① `server.go:103` 的**注释里**写着一条带通配符的路径 ⇒ 块注释配对从那里一直吃到下一个结束符
+⇒ **把后面整个 const 块吃掉** ⇒ 判据读到「后端没有这个常量」
+⇒ **量具坏了却像是后端改了**（`email-long-request-budget.test.mjs` 的 `goCodeLines`
+头注释记着这件事 ⇒ **当时是另写一份绕开的，根没修**）。
+② `server.go` 的 `longLivedPatterns` 里是**字符串字面量**（路径中带通配符），
+后面紧跟的另一个字面量里也有结束符 ⇒ 朴素的正则会把**这两行名单**吃掉
+⇒ **读出来的名单少三行**（§930 探针实测）。
+
+⇒ ⇒ **已修**：`_wire-helpers.mjs` 那份改成**状态机**（字符串字面量里的斜杠一律不是注释），
+并让表判据**改用它**（不再自带一份）⇒ 重复的拷贝从 5 份降到 4 份。
+⚠ **注释里别写块注释的结束符** —— 写这段注释时踩了两次：
+正文里一出现结束符就**把自己的注释提前闭合** ⇒ 下一个词被当成代码 ⇒ `SyntaxError`。
+
+### §930.6 判据与变异
+
+**前端**（并入既有 `frontend/src/api/__tests__/api-timeout-budget-table.test.mjs`，
+**不新增测试文件**）—— §930 块 **8 条**：
+
+1. ★ **枚举完整性**：`src/api/**` 下每个带 `timeoutMs` 的调用点**必须在册**
+   （机械枚举 vs 手工清单，**多重集**比较 ⇒ 漏登记当场红）；
+2. ★ **条数钉住**（17 条）⇒ 防止「两边同时少一条」蒙混过关；
+3. ★ 每条的客户端超时都**严格大于**默认的 30 s（不许退回默认值）；
+4. ★ 随手记的兜底转写**必须用共享常量**（不许自己写死一个数）；
+5. ★ 那个共享常量**确实大于**服务端的 10 分钟；
+6. 负控：新增一个没在册的调用点 ⇒ 转红；
+7. 负控：去掉一个在册条目 ⇒ 转红；
+8. 负控：剥注释器**不许吞掉字符串字面量里的斜杠**（§930 亲手踩过两次）。
+
+⇒ **表本身也扩了两行**（此前**根本写不出来**）：
+`/api/stt/transcribe-full`（服务端预算是**包级常量** ⇒ 旧的反推返回 null ⇒
+「反推失败」看起来像「这个路由没有预算」，其实只是**解析器少认一种形态**）
+与 `/api/stt/discover`（§930 修的那条）。
+
+**Go 侧**（`long_lived_route_audit_test.go`）—— 解析器扩到认三种命名形态 +
+**新负控**（§930 亲手踩过的形态）：包级 const / 函数内 const 两个子用例，
+各带**前提自检**（断言旧的字面量解析器认不出 ⇒ 否则这条负控不再说明问题）。
+
+**变异**：
+
+| 侧 | # | 变异 | 抓住它的判据 |
+|---|---|---|---|
+| 前端 | M1 | discover 客户端退回 120 s | 表行「客户端 > 服务端」|
+| 前端 | M2 | discover 改吃通用 `LONG_REQUEST_TIMEOUT_MS` | 表行 + 在册清单 |
+| 前端 | M3 | 随手记写回 `10 * 60_000` | 随手记那条 |
+| 前端 | M4 | 新增一个没在册的调用点 | 枚举完整性 |
+| 前端 | M5 | 剥注释器退回朴素版 | 剥注释负控 |
+| 前端 | M6 | `httpOptionsAfter` 退回「往后找最近的 `{`」| 枚举完整性（假阳性）|
+| Go | G1 | 白名单去掉 `/api/emails/ops/sync` | AST 审计门禁（**红**）|
+| Go | G2 | 服务端预算改小到 25 s（≤ WriteTimeout）| AST 审计门禁（**绿**，反向对照）|
+
+⇒ **前端 6/6、Go 2/2 全部双向通过**（变异时符合预期、还原后绿）。
+
+### §930.7 ⚠⚠ 本节的**四次「量具坏了」**（全是我自己写的探针/判据的错）
+
+⇒ ⇒ 与 §929 的三次同族 ⇒ **连续两节各踩 3–4 次** ⇒ ⇒ 纪律追加（见记忆）：
+
+1. **探针的剥注释器状态机顺序反了**（先判引号、后判注释）⇒ 注释里的一对引号
+   让扫描器进入字符串模式、扫不到闭合引号 ⇒ **整行被吞** ⇒
+   读出来「长名单 0 条」⇒ **0 命中的第一嫌疑是量具坏了**（本轮第三次踩这条纪律）。
+2. **探针只认函数体内的时长常量** ⇒ **包级** const（`opsExecTimeout`）被漏
+   ⇒ `/api/emails/ops/sync` 在读数里**根本不存在** ⇒ 「服务端没这回事」是假的。
+3. **枚举器用 `indexOf('{')` 往后找选项对象** ⇒ `http('/api/emails/invoices/summary')`
+   这种**没有选项对象**的调用捡到了**后面另一条语句**的 `{` ⇒ 读出不相关的
+   `timeoutMs` ⇒ **假阳性**（枚举 18 条 vs 实际 17 条）⇒ 已改成「紧跟其后才是 `{`」。
+4. **注释里写了块注释的结束符** ⇒ **把自己的注释提前闭合** ⇒ `SyntaxError`（两次）。
+
+⇒ ⇒ ★ **纪律**：**扫描器上线前先让它被自己的负控咬一次**；
+**「没扫到」与「扫错了」在读数上很像**（第 1、2 条都是「没扫到」）。
+
+### §930.8 本节**没有**做的事 & ⛔ 未实测项
+
+- **没有**改服务端任何**预算值**（`opsExecTimeout` 90 s、`fullTranscribeTimeout` 10 分钟
+  都是既有拍板 ⇒ 只补**豁免**，不改预算）。
+- **没有**给剩下 4 条**服务端预算反推不出来**的路由硬凑一个数
+  （`email/backfill`、`emails/{id}/summarize`、`emails/sync`、`emails/move`、
+  `emails/organize`、`emails/invoices/extract`、`email/pipeline/run`）⇒
+  它们的预算**形态各异**（有的在 callee 里、有的按「单封 × 条数」推导）⇒ **登记**，不在本节强推。
+- **没有**扩 `src/api/` 之外的前端调用点（`src/features/**` 里还有 224 − 17 = 207 个普通调用点，
+  它们吃默认 30 s 且服务端预算更短 ⇒ 不在本节口径内）。
+- ⛔ **未实测**：这些路由在真机上的真实耗时（**网关 key 401**，§787/§795 挡着）
+  ⇒ 「相等即错」是**算术 + 源码读数**的结论，**不是本轮实测**。
+- ⛔ **未实测**：`/api/emails/ops/sync` 在真机上是否**真的**跑过 30 s
+  ⇒ 「30 s 处被掐断」是**按服务端自身预算（90 s）推出来的上限**，不是实测。
+- ⛔ **未实测**：`/api/meetings/{id}/analyze` 到底有没有客户端（前端无调用方）。
+
+### §930.9 简报 154 的待拍板项
+
+见 `2026-10-11-pending-decisions-brief.md` 第 **154** 条。

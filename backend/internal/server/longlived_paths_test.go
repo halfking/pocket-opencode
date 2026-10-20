@@ -85,6 +85,13 @@ var mustBeLongLived = []string{
 	// 单封邮件的发票提取：命中但缺开票日期时会拉一次 IMAP 原文，
 	// 实测单封就能超过 30s（见文件头的事故记录）。
 	"/api/emails/invoices/extract",
+	// ⚠⚠ §930 新增：邮件的批量 IMAP 操作这一族。
+	//   服务端预算是 `opsExecTimeout = 90 秒`（server_email_ops.go:224），
+	//   超出 WriteTimeout 的 30s ⇒ 不豁免就会「服务端成功、客户端空响应」。
+	//   三条路由共用同一段执行逻辑（executeOpsEntries）⇒ 要豁免就一起豁免。
+	"/api/emails/ops/sync",
+	"/api/emails/move",
+	"/api/emails/organize",
 	// SSE / 长连接类端点。
 	"/api/llm/stream",
 	"/api/llm-gateway/nodes/",

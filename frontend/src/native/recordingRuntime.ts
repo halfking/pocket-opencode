@@ -65,7 +65,7 @@ import {
   stopBackgroundMic, listenBackgroundMicParts, nativePartToBlob,
 } from './background-mic'
 import { sttApi } from '../api/stt'
-import { sttSettingsApi } from '../api/stt-settings'
+import { sttSettingsApi, FULL_TRANSCRIBE_TIMEOUT_MS } from '../api/stt-settings'
 import { filenameForMimeType } from '../api/stt-filename'
 import { sherpa } from './sherpa'
 import {
@@ -1539,7 +1539,14 @@ export class NoteRecorderRuntime {
               payload ? 'note.wav' : `note${filenameForMimeType(blobType)}`,
               controller.signal,
             ),
-            10 * 60_000,
+            // ⚠⚠ §930：此前这里写的是 `10 * 60_000`，而服务端的
+            //   `fullTranscribeTimeout` **也是 10 分钟** ⇒ **相等即错**：
+            //   客户端计时含网络与鉴权开销，实际总是先到点 ⇒ 一场刚好跑满
+            //   10 分钟的录音**必然**失败，而失败形态是「转写失败」、
+            //   录音却还在 ⇒ 用户以为白录了。
+            //   ⇒ 改用**同一个常量**（11 分钟，服务端预算的 1.1 倍），
+            //   两处再也不会各自写死一个数。
+            FULL_TRANSCRIBE_TIMEOUT_MS,
           )
           this.transcript.value = result.text
           // 部分段失败时整体仍成功（保住成功段内容），但必须告诉用户

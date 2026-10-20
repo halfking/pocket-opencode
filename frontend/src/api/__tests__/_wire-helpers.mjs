@@ -62,12 +62,83 @@ export async function loadBundle(entry, name) {
 /** ★ 剥注释用**等长空白替换**，不是删除 —— 删掉会让行号/偏移错位。 */
 export const blank = (m) => m.replace(/[^\n]/g, ' ')
 
-/** 剥掉 Go 的注释（块注释 + 行注释）。判据扫源码时**必须**先剥，否则恒真。 */
-export const stripGoComments = (t) =>
-  t.replace(/\/\*[\s\S]*?\*\//g, blank).split('\n').map((l) => {
-    const i = l.indexOf('//')
-    return i < 0 ? l : l.slice(0, i)
-  }).join('\n')
+/**
+ * 剥掉 Go 的注释（块注释 + 行注释）。判据扫源码时**必须**先剥，否则恒真。
+ *
+ * ⚠⚠⚠ §930：这一份是**唯一**的 quote-aware 实现；仓里此前有 **5 份拷贝**
+ *   （本文件、`api-timeout-budget-table.test.mjs`、`email-long-request-budget.test.mjs`、
+ *   `refine-prompt-parity.test.mjs`、`summary-prompt-parity.test.mjs`），
+ *   全都是「先做块注释的非贪婪配对、再按行首双斜杠切行」
+ *   ⇒ **字符串字面量里的斜杠会被当成注释起点** ⇒ ⇒ **吞掉真代码**。
+ *
+ *   实测的两个地雷：
+ *   ① `backend/internal/server/server.go:103` 的**注释里**写着一条带通配符的
+ *      路径 ⇒ 块注释配对从那里一直吃到下一个结束符
+ *      ⇒ **把后面整个 const 块吃掉** ⇒ 判据读到「后端没有这个常量」
+ *      ⇒ **量具坏了却像是后端改了**（`email-long-request-budget.test.mjs`
+ *      的 `goCodeLines` 头注释记着这件事）。
+ *   ② `server.go` 的 `longLivedPatterns` 里是**字符串字面量**（路径中带通配符）
+ *      ⇒ 后面紧跟的另一个字面量里也有结束符 ⇒ 朴素的块注释正则会把
+ *      **这两行名单**吃掉 ⇒ **读出来的名单少三行**（§930 探针实测）。
+ *
+ * ⇒ 本实现走**状态机**：字符串字面量里的斜杠一律不是注释。
+ *   ⚠ 注释替换成**等长空白**（保行数与偏移）—— 判据常按行号定位。
+ *
+ * ⚠ 写这段注释时踩过一次：正文里若出现**块注释的结束符**，会把自己的注释
+ *   提前闭合 ⇒ 下一个词被当成代码 ⇒ SyntaxError。⇒ 注释里别写结束符。
+ */
+export const stripGoComments = (t) => {
+  const src = String(t)
+  let out = ''
+  let i = 0
+  const n = src.length
+  while (i < n) {
+    const c = src[i]
+    // ① 先判字符串字面量（Go 有双引号串、反引号原始串、字符字面量）
+    if (c === '"' || c === '`' || c === "'") {
+      const quote = c
+      out += c
+      i += 1
+      while (i < n) {
+        if (quote !== '`' && src[i] === '\\') {
+          out += src.slice(i, i + 2)
+          i += 2
+          continue
+        }
+        out += src[i]
+        if (src[i] === quote) {
+          i += 1
+          break
+        }
+        i += 1
+      }
+      continue
+    }
+    // ② 行注释
+    if (c === '/' && src[i + 1] === '/') {
+      while (i < n && src[i] !== '\n') {
+        out += ' '
+        i += 1
+      }
+      continue
+    }
+    // ③ 块注释
+    if (c === '/' && src[i + 1] === '*') {
+      while (i < n && !(src[i] === '*' && src[i + 1] === '/')) {
+        out += src[i] === '\n' ? '\n' : ' '
+        i += 1
+      }
+      if (i < n) {
+        out += '  '
+        i += 2
+      }
+      continue
+    }
+    out += c
+    i += 1
+  }
+  return out
+}
 
 /** 从 URL 里取 pathname 做**精确**比较（子串匹配量的是形状，不是同一个端点）。 */
 export function pathnameOf(u) {

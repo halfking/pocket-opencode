@@ -990,6 +990,29 @@ var longLivedPaths = []string{
 	"/api/email/pipeline/run",      // 手动触发一轮完整流水线（实测 1m30s）
 	"/api/emails/invoices/harvest", // 只下载发票文件（自带 5 分钟预算）
 
+	// ⚠⚠ §930 新增：邮件的**批量 IMAP 操作**这一族。
+	//
+	// 它们的服务端预算是 `opsExecTimeout = 90 秒`
+	//（server_email_ops.go:224，**包级 const**），而 30s 的 WriteTimeout
+	// 会先到 ⇒ ⇒ 一旦真的跑满 30s，连接写 deadline 到期、
+	// handler 在 90s 才 writeJSON ⇒ 写不进去 ⇒
+	// **客户端拿到空响应、服务端其实成功了**（同 pipeline/run 那次事故同一形态）。
+	//
+	// ⚠ 三条路由共用同一段执行逻辑（executeOpsEntries）：
+	//   /api/emails/ops/sync   离线操作回放
+	//   /api/emails/move        邮件移动（IMAP MOVE）
+	//   /api/emails/organize    智能整理通知邮件
+	// ⇒ 只豁免其中一条，另外两条照样被掐 ⇒ ⇒ 三条一起进名单。
+	//
+	// ⚠ 这三条**以前不是漏网之鱼**：它们的服务端预算一直写着 90 秒，
+	//   只是**服务端那道 AST 审计门禁认不出包级 const**（只认内联字面量）
+	//   ⇒ 对它隐形 ⇒ 门禁一直绿着。
+	//   ⇒ 门禁的解析器已修（long_lived_route_audit_test.go 的
+	//   durationOfExprScoped），现在这三条是**被门禁点名要求豁免**的。
+	"/api/emails/ops/sync",
+	"/api/emails/move",
+	"/api/emails/organize",
+
 	// 语音转写：这些端点是「同步等上游 ASR 回来」的阻塞式调用，
 	// 服务端耗时上限远大于 http.Server 的 30s WriteTimeout：
 	//
@@ -997,7 +1020,14 @@ var longLivedPaths = []string{
 	//	/api/stt/transcribe-incremental  90 秒
 	//	/api/stt/transcribe              Transcriber 自身 120 秒
 	//	/api/stt/probe                   120 秒（试转一段真实语音）
-	//	/api/stt/discover                90 秒（逐个探测网关候选）
+	//	/api/stt/discover                120 秒（逐个探测网关候选）
+	//
+	// ⚠⚠ §930 更正：上面这行的「90 秒」是**过时的** —— 代码里是
+	//   `context.WithTimeout(r.Context(), 120*time.Second)`
+	//   （server_stt_settings.go:760）。而客户端此前也正好是 120 秒
+	//   ⇒ **相等即错** ⇒ 「刚好用满预算」的那一档必然失败。
+	//   ⇒ 客户端已放宽到 150 秒（STT_DISCOVER_TIMEOUT_MS）。
+	//   ⇒ ⇒ 这条注释以前**把一个真实缺陷掩护成了「90s < 120s，安全」**。
 	//
 	// 2026-10-01 实测的故障：不豁免时，一段 79 秒的会议录音转写耗时
 	// **30.17 秒**，后端日志明明打了 `[SLOW] POST /api/stt/transcribe-full - 200`，
@@ -1104,6 +1134,13 @@ var longLivedPatterns = []string{
 	"/api/meetings/*/transcribe",
 	"/api/meetings/*/refine",
 	"/api/meetings/*/summary",
+	// ⚠⚠ §930 新增：`analyze` 是「录制中的实时 LLM 分析」（滚动摘要 + hints），
+	//   它的服务端预算是 `meetingAnalyzeTimeout = 90 秒`
+	//   （server_meeting_analyze.go:39，**包级 const**）> WriteTimeout 的 30 秒
+	//   ⇒ ⇒ 不豁免的话，跑满 30s 就写不出响应 ⇒ 客户端拿空响应、服务端其实成功。
+	//   ⇒ 用**精确模式**而不是 "/api/meetings/" 前缀（理由见上）。
+	//   ⚠ 前端目前**没有**调用方（可能是移动端在用）⇒ 已登记，见简报 154。
+	"/api/meetings/*/analyze",
 }
 
 // matchPathPattern 逐段比较；`*` 匹配恰好一个非空段。
