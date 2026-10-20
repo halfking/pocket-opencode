@@ -379,6 +379,30 @@ func (s *Store) Upsert(ctx context.Context, n *Note) error {
 	//	  ⚠ 守卫只判 user_id、不判 workspace_id ⇒ 「同一个用户的笔记在
 	//	  另一个租户下」会被**搬回来**（这是修复，不是越权：行本来就属于
 	//	  这个人）；「别人的行」则一行都动不了。
+	//
+	//	③ deleted_at = NULL —— **复活**（§942）。
+	//	  修复前 SET 列表里**没有** deleted_at ⇒ ⇒ ⇒ 「已被软删的那一行」
+	//	  被同一个 id 再次写入时 ⇒ **内容被更新了，但 deleted_at 还挂着**
+	//	  ⇒ ⇒ ⇒ ⇒ 而所有读路径都按 `deleted_at IS NULL` 过滤
+	//	  ⇒ ⇒ ⇒ ⇒ **⇒ 这条笔记变成了「哑弹」**：
+	//	  - 服务端的**所有**读路径（ListScoped / GetByIDScoped /
+	//	    UpdateNoteScoped / ListDeletedIDsScoped）都当它**不存在**；
+	//	  - 而它的正文**确实**在库里，而且是最新的那份；
+	//	  - 墓碑清单（deletedIds）**仍然列着它** ⇒ ⇒ ⇒ 客户端会按墓碑
+	//	    把本地那份也删掉。
+	//	  ⇒ ⇒ ⇒ ⇒ **⇒ 用户的最新正文在服务端库里，但服务端自己看不见、
+	//	  客户端还会主动删掉它** ⇒ ⇒ ⇒ ⇒ **⇒ 与 §939 的 D1
+	//	  （落进空租户 ⇒ 谁都查不到）完全同形的哑弹**。
+	//	  ⇒ ⇒ ⇒ 现在复活它：deleted_at 清空 ⇒ ⇒ ⇒ **墓碑自动消失**
+	//	  （墓碑就是这一列）⇒ ⇒ ⇒ ⇒ **⇒ 一处改动，两个问题一起消**。
+	//	  ⇒ ⇒ ⇒ 复活**不是**越权：守卫（WHERE notes.user_id = $2）仍然
+	//	  只对**自己的**行生效；别人的行一行都动不了。
+	//	  ⇒ ⇒⇒ 复活**能传播**给别的设备：POST 会广播 note.created
+	//	  ⇒ ⇒⇒ ⇒ 已经按墓碑删掉本地副本的设备会收到广播并重新插入
+	//	  ⇒ ⇒⇒ ⇒ ⇒ 所以复活**不丢通知**（§942.4 的口径论证）。
+	//	  ⚠ 复活时 `workspace_id = EXCLUDED.workspace_id` 同样生效
+	//	  ⇒ ⇒ ⇒ 同一行可能被搬到**另一个租户** ⇒ ⇒ ⇒ ⇒ 这是 §939 的
+	//	  既有口径（「同一个用户的行可以被搬回来」），**不是**新增行为。
 	tag, err := s.pool.Exec(ctx, `
 		INSERT INTO notes (id, user_id, workspace_id, title, content, snippet, content_type, domain, tags, audio_path, audio_duration, created_by_voice, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, COALESCE($13, CURRENT_TIMESTAMP), COALESCE($14, CURRENT_TIMESTAMP))
@@ -390,7 +414,8 @@ func (s *Store) Upsert(ctx context.Context, n *Note) error {
 			domain        = EXCLUDED.domain,
 			tags          = EXCLUDED.tags,
 			workspace_id  = EXCLUDED.workspace_id,
-			updated_at    = COALESCE($14, CURRENT_TIMESTAMP)
+			updated_at    = COALESCE($14, CURRENT_TIMESTAMP),
+			deleted_at    = NULL
 		WHERE notes.user_id = $2
 	`,
 		n.ID, n.UserID, n.WorkspaceID, n.Title, content, n.Snippet, contentTypeVal, domainVal, tagsVal, n.AudioPath, n.AudioDuration, n.CreatedByVoice, createdAt, updatedAt)
@@ -671,9 +696,16 @@ type NotePatch struct {
 	AudioDuration *int
 }
 
-// ErrNoteNotFound is returned by UpdateNoteScoped when no row matches the
-// (id, user, workspace, not-deleted) tuple. Distinct from a DB error so the
-// HTTP layer can answer 404 instead of 500.
+// ErrNoteNotFound is returned by UpdateNoteScoped and DeleteScoped when no
+// row matches the (id, user, workspace, not-deleted) tuple. Distinct from a DB
+// error so the HTTP layer can answer 404 instead of 500.
+//
+// ⚠ §942：DeleteScoped 此前返回的是**裸字符串**错误
+// （"note not found or already deleted"）⇒ ⇒ ⇒ HTTP 层无法用
+// errors.Is 区分「不存在/不是我的」与「数据库坏了」⇒ ⇒ ⇒ 两者都被回成
+// **500** ⇒ ⇒ ⇒ 而同一批接口的 GET / PUT / 会议链的 DELETE 都回 **404**
+// ⇒ ⇒ ⇒ ⇒ 形态分叉。现在**复用这一个 typed error** ⇒ ⇒ ⇒ HTTP 层
+// 一律 404（§942 的 D2）。
 var ErrNoteNotFound = errors.New("notes: note not found")
 
 // snippetRunes is the snippet length the local cache uses for list rendering.
@@ -789,17 +821,26 @@ func (s *Store) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
-// DeleteScoped soft-deletes a note with ownership verification
+// DeleteScoped soft-deletes a note with ownership verification.
+//
+// ⚠ §942：软删**不是**硬删 ⇒ ⇒ ⇒ 那一行**连同整份正文**留在表里
+// ⇒ ⇒ ⇒ 「删掉」**不释放任何存储** ⇒ ⇒ ⇒ 存储 ∝ **历史总量**，
+// 而不是 ∝ **当前保留量** ⇒ ⇒⇒ ⇒ 而保留多久是**产品口径**
+// （已挂在简报第 166 条 ①）⇒ ⇒ ⇒ 本节**只登记、不代拍**。
+// ⇒ ⇒⇒ ⚠ 而 `deleted_at` 就是**墓碑**（ListDeletedIDsScoped 查的就是它）
+// ⇒ ⇒⇒ ⇒ 所以 §942 的「复活」= 清这一列 ⇒ ⇒⇒ ⇒ 一处改动，墓碑自动消失。
 func (s *Store) DeleteScoped(ctx context.Context, id, userID, workspaceID string) error {
 	result, err := s.pool.Exec(ctx, `
-		UPDATE notes SET deleted_at = CURRENT_TIMESTAMP 
+		UPDATE notes SET deleted_at = CURRENT_TIMESTAMP
 		WHERE id = $1 AND user_id = $2 AND workspace_id = $3 AND deleted_at IS NULL
 	`, id, userID, workspaceID)
 	if err != nil {
 		return fmt.Errorf("delete note %s: %w", id, err)
 	}
 	if result.RowsAffected() == 0 {
-		return fmt.Errorf("note not found or already deleted")
+		// ⚠ §942：回**既有的 typed error**，不要裸字符串 ⇒ ⇒ ⇒ HTTP 层
+		// 才能用 errors.Is 判出「不存在 / 不是我的」⇒ ⇒ ⇒ ⇒ 404。
+		return ErrNoteNotFound
 	}
 	return nil
 }

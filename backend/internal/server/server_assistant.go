@@ -432,6 +432,20 @@ func (s *Server) handleNoteOperations(w http.ResponseWriter, r *http.Request) {
 		s.handleNoteUpdate(w, r, id, uid, wsID)
 	case http.MethodDelete:
 		if err := s.notesStore.DeleteScoped(r.Context(), id, uid, wsID); err != nil {
+			// ⚠ §942 D2：「这条笔记不存在 / 不是我的」是**客户端的状态**，
+			//	不是服务端出错 ⇒ ⇒ ⇒ 必须回 **404**，不能回 500。
+			//
+			//	修复前**所有**删除错误都回 500（含「不存在」）
+			//	⇒ ⇒ ⇒ 客户端以为「重试有用」，而它永远重试都不会成功
+			//	⇒ ⇒ ⇒ 而同一批接口的 GET / PUT（以及**会议链**的 DELETE）
+			//	都回 404 ⇒ ⇒ ⇒ ⇒ 形态分叉。
+			//
+			//	⚠ 响应**形状**一个字没动（仍是 `writeError`、仍无 `code` 字段）
+			//	⇒ ⇒ ⇒ 与 GET / PUT 保持一致（★ 不在一条链上造第二种形状）。
+			if errors.Is(err, notes.ErrNoteNotFound) {
+				writeError(w, http.StatusNotFound, "note not found")
+				return
+			}
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
