@@ -744,10 +744,16 @@ func main() {
 		rssSched.SetInterval(cfg.RSS.FetchInterval)
 		rssSched.SetMaxParallel(cfg.RSS.MaxConcurrency)
 		srv.SetRSSScheduler(rssSched)
-		rssSched.Start(context.Background())
+		// §947：Start 会因为「RSS store 不可用 / scope 不完整」而失败
+		// ⇒ 失败时调度器**根本没起来** ⇒ ⇒⇒ 若还照旧打「started」就是一句
+		// 假话 ⇒ 失败不许无声：把真实状态打进日志。
+		if err := rssSched.Start(context.Background()); err != nil {
+			log.Printf("WARN: RSS scheduler NOT started: %v", err)
+		} else {
+			log.Printf("RSS scheduler started (enabled=%v, tick=%s, max_parallel=%d, source_interval=%s)",
+				cfg.RSS.Enabled, cfg.RSS.FetchInterval, cfg.RSS.MaxConcurrency, cfg.RSS.DefaultSourceInterval)
+		}
 		defer rssSched.Stop()
-		log.Printf("RSS scheduler started (enabled=%v, tick=%s, max_parallel=%d, source_interval=%s)",
-			cfg.RSS.Enabled, cfg.RSS.FetchInterval, cfg.RSS.MaxConcurrency, cfg.RSS.DefaultSourceInterval)
 	}
 
 	// Flashcards：注入 store（PG 已就绪时）。v1 仅暴露 store；scheduler 与后台任务由后续 agent 接入。

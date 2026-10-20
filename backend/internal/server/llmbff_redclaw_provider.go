@@ -90,7 +90,11 @@ func (p *redclawBFFProvider) Stream(ctx context.Context, req llmbff.ChatRequest,
 	if resp.Content != "" && !fn(llmbff.Delta{Content: resp.Content}) {
 		return &resp.Usage, nil // 客户端断开
 	}
-	fn(llmbff.Delta{Done: true, FinishReason: "stop", Usage: &resp.Usage})
+	// §947：fn 的布尔结果以前被丢弃 ⇒ 客户端断开后仍往下走（还发终态帧）。
+	// fn 的契约是「false = 消费方已经不要了」⇒ 断开了就别再发。
+	if !fn(llmbff.Delta{Done: true, FinishReason: "stop", Usage: &resp.Usage}) {
+		return &resp.Usage, nil // 客户端断开
+	}
 	return &resp.Usage, nil
 }
 
@@ -164,7 +168,12 @@ func (p *fallbackBFFProvider) Stream(ctx context.Context, req llmbff.ChatRequest
 		return usage, err
 	}
 	// 主通道首帧前失败：把回退进度告知前端（retry 帧语义），再走备用通道。
-	fn(llmbff.Delta{Retry: "redclaw"})
+	//
+	// §947：fn 的布尔结果以前被丢弃 ⇒ 客户端断开后**仍然**起备用通道
+	// ⇒ 为一个已经没人要的请求再跑一遍上游 ⇒ 现在按 fn 的契约停下。
+	if !fn(llmbff.Delta{Retry: "redclaw"}) {
+		return usage, err
+	}
 	return p.fallback.Stream(ctx, req, fn)
 }
 

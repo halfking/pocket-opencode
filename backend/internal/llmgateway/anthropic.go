@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 )
@@ -374,9 +375,13 @@ func parseAnthropicSSE(r io.Reader, fn func(StreamDelta) bool) (*StreamDelta, er
 		}
 		return true
 	}
-	forEachSSEEvent(r, func(event, data string) {
+	// clientGone：消费方（fn）已经说「不要了」⇒ 后面连终态帧都不发。
+	// §947：以前 emit 的**布尔结果被丢弃** ⇒ 客户端断开后仍把整条上游流
+	// 读完（还在为没人要的输出付上游的钱），终态帧也照发。
+	clientGone := false
+	forEachSSEEvent(r, func(event, data string) bool {
 		if data == "" || data == "[DONE]" {
-			return
+			return true
 		}
 		var payload struct {
 			Type    string `json:"type"`
@@ -404,7 +409,7 @@ func parseAnthropicSSE(r io.Reader, fn func(StreamDelta) bool) (*StreamDelta, er
 			} `json:"usage"`
 		}
 		if err := json.Unmarshal([]byte(data), &payload); err != nil {
-			return
+			return true
 		}
 		etype := payload.Type
 		if etype == "" {
@@ -425,7 +430,10 @@ func parseAnthropicSSE(r io.Reader, fn func(StreamDelta) bool) (*StreamDelta, er
 			case "text_delta", "text":
 				if payload.Delta.Text != "" {
 					final.Content += payload.Delta.Text
-					emit(StreamDelta{Content: payload.Delta.Text})
+					if !emit(StreamDelta{Content: payload.Delta.Text}) {
+						clientGone = true
+						return false
+					}
 				}
 			case "input_json_delta":
 				if acc := toolAcc[payload.Index]; acc != nil {
@@ -460,7 +468,11 @@ func parseAnthropicSSE(r io.Reader, fn func(StreamDelta) bool) (*StreamDelta, er
 				// 为什么单测没抓到：llmgateway 的用例断言的是 parseAnthropicSSE
 				// **返回值**里的 ToolCalls，而返回值一直是正确的 ——
 				// 错的是「没有推给消费者」。判据量错了对象。
-				emit(StreamDelta{ToolCalls: []ToolCall{tc}})
+				// §947：emit 的布尔结果以前被丢弃 ⇒ 消费方断开后仍继续往下走。
+				if !emit(StreamDelta{ToolCalls: []ToolCall{tc}}) {
+					clientGone = true
+					return false
+				}
 				delete(toolAcc, payload.Index)
 			}
 		case "message_delta":
@@ -476,9 +488,14 @@ func parseAnthropicSSE(r io.Reader, fn func(StreamDelta) bool) (*StreamDelta, er
 		case "message_stop":
 			stopSeen = true
 		}
+		return true
 	})
 	if len(final.ToolCalls) > 0 && final.FinishReason == "" {
 		final.FinishReason = "tool_calls"
+	}
+	// §947：消费方已经断开 ⇒ 终态帧发出去也没人收 ⇒ 不发。
+	if clientGone {
+		return final, nil
 	}
 	if final.FinishReason != "" || stopSeen {
 		final.Done = true
@@ -493,7 +510,9 @@ func parseAnthropicSSE(r io.Reader, fn func(StreamDelta) bool) (*StreamDelta, er
 		// 终态帧**不重复携带 ToolCalls**：工具调用已在 content_block_stop
 		// 逐个下发过，再带一遍会让下游按 index 累加时把参数追加两次。
 		if final.FinishReason != "" {
-			emit(StreamDelta{
+			// §947：emit 的**布尔结果**也不许丢 —— 消费方恰在终态帧这一刻
+			// 断开时，后面已无动作可做，但**结果必须被接住**（不许写成裸语句）。
+			if !emit(StreamDelta{
 				// 终态帧带上 Done，与「返回值里 final.Done=true」保持一致。
 				//
 				// ⚠ 2026-10-06 自查更正：最初给这里加 `Done: true` 时，
@@ -512,7 +531,12 @@ func parseAnthropicSSE(r io.Reader, fn func(StreamDelta) bool) (*StreamDelta, er
 				PromptTokens:     final.PromptTokens,
 				CompletionTokens: final.CompletionTokens,
 				TotalTokens:      final.TotalTokens,
-			})
+			}) {
+				// 消费方恰在终态帧这一刻断开 ⇒ 后面已无动作（马上就返回）。
+				// 这里**必须显式接住**结果：写成裸语句就是 §947 要抓的那一族；
+				// 同时**留痕**（断开这件事本身是值得知道的事实）。
+				log.Printf("[llmgateway/anthropic] 终态帧的消费者已断开（content 已返回给调用方）")
+			}
 		}
 	}
 	return final, nil
@@ -527,22 +551,37 @@ type toolAccumulator struct {
 
 // forEachSSEEvent 把 SSE 字节流拆成 (event, data) 事件对回调。
 // 兼容 CRLF；跨多行 data: 按 SSE 规范用 \n 连接。
-func forEachSSEEvent(r io.Reader, cb func(event, data string)) {
+//
+// ⚠ §947：cb 现在**返回 bool** —— 返回 false 表示**消费方已经不要了**
+//
+//	（客户端断开）⇒ 必须**停止读上游** ⇒ 以前 cb 没有返回值 ⇒
+//	⇒⇒ 消费方断开后**没人知道** ⇒ 服务端为一个已经没人要的流
+//	⇒⇒ ⇒ **继续读、继续付上游的钱** ⇒ ⇒⇒ 终止也不许无声。
+func forEachSSEEvent(r io.Reader, cb func(event, data string) bool) {
 	buf := make([]byte, 0, 64*1024)
 	tmp := make([]byte, 32*1024)
 	var event, data string
+	stopped := false
 	flush := func() {
 		if event == "" && data == "" {
 			return
 		}
-		cb(event, data)
+		if !cb(event, data) {
+			stopped = true
+		}
 		event, data = "", ""
 	}
 	for {
+		if stopped {
+			return
+		}
 		n, err := r.Read(tmp)
 		if n > 0 {
 			buf = append(buf, tmp[:n]...)
 			for {
+				if stopped {
+					break
+				}
 				idx := bytes.IndexByte(buf, '\n')
 				if idx < 0 {
 					break
@@ -564,6 +603,9 @@ func forEachSSEEvent(r io.Reader, cb func(event, data string)) {
 					}
 				}
 			}
+		}
+		if stopped {
+			return
 		}
 		if err != nil {
 			flush()

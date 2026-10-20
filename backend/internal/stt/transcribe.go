@@ -525,7 +525,12 @@ func (t *Transcriber) transcriptions(ctx context.Context, target *Target, audio 
 	if strings.HasPrefix(lang, "zh") {
 		_ = w.WriteField("prompt", SimplifiedChineseBiasPrompt)
 	}
-	w.Close()
+	// §947：multipart 的 Close 负责写**结束边界** ⇒ 它的失败意味着
+	// **请求体是不完整的** ⇒ 上游会收到一个畸形 multipart（400，或解析出
+	// 半个文件却当成完整文件）⇒ ⇒⇒ 失败不许无声 ⇒ 直接让这次转写失败。
+	if err := w.Close(); err != nil {
+		return 0, "", nil, false, fmt.Errorf("close multipart writer: %w", err)
+	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		strings.TrimRight(target.BaseURL, "/")+"/audio/transcriptions", &buf)
