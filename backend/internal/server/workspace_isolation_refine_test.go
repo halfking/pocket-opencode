@@ -54,7 +54,7 @@ func TestMeetingRefineWorkspaceIsolation(t *testing.T) {
 	// (d) No spurious stub may appear in the legacy "default" workspace under
 	// either the authenticated user or the legacy "local" owner.
 	for _, owner := range []string{"shared-user", "local"} {
-		strays, lerr := srv.meetingStore.ListScoped(owner, "default")
+		strays, _, lerr := srv.meetingStore.ListScoped(owner, "default", meeting.ListOptions{})
 		if lerr != nil {
 			t.Fatalf("list default workspace for owner %s: %v", owner, lerr)
 		}
@@ -64,7 +64,7 @@ func TestMeetingRefineWorkspaceIsolation(t *testing.T) {
 	}
 
 	// The owning workspace must still hold exactly one meeting — no duplicate.
-	own, err := srv.meetingStore.ListScoped("shared-user", "ws-a")
+	own, _, err := srv.meetingStore.ListScoped("shared-user", "ws-a", meeting.ListOptions{})
 	if err != nil {
 		t.Fatalf("list ws-a: %v", err)
 	}
@@ -75,7 +75,7 @@ func TestMeetingRefineWorkspaceIsolation(t *testing.T) {
 	// A refine targeting a meeting that is not visible in the given workspace
 	// must not create anything anywhere.
 	srv.finalizeMeetingRefine(context.Background(), "shared-user", "ws-b", meetingA.ID, map[string]any{"refined_transcript": "x"}, meetingMetaIn{Title: "cross"})
-	crossList, err := srv.meetingStore.ListScoped("shared-user", "ws-b")
+	crossList, _, err := srv.meetingStore.ListScoped("shared-user", "ws-b", meeting.ListOptions{})
 	if err != nil {
 		t.Fatalf("list ws-b: %v", err)
 	}

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -35,12 +34,29 @@ func (s *Server) handleMeetings(w http.ResponseWriter, r *http.Request) {
 // handleListMeetings returns the workspace-scoped list with a total counter so
 // the mobile UI can render pagination without a second round-trip.
 //
+// ⚠ §936：**total 现在是「作用域内的真实总条数」**，不是本页行数。
+//
+//	修复前 total = len(list)，而 list 已被 `LIMIT 500` 截断 ⇒
+//	用户有 600 场会议时 total 恒为 500 ⇒ 移动端分页器显示「共 500 场」，
+//	第 501 场之后**永远取不到** —— 而且当时**根本没有** limit/offset 参数，
+//	⇒ ⇒ 本函数上面那句注释承诺的「一个来回渲染分页」在实现上**不可能成立**。
+//	⇒ ⇒ 现在 total 来自一条独立的 COUNT（与 since 同一过滤条件），
+//	并新增可选的 limit / offset 让「分页」这句话真的能兑现。
+//
 // 增量同步：可选 since（Unix 秒或毫秒）只返回 UpdatedAt 更晚的行，并附带
 // deletedIds 墓碑与 serverTimeMs，供客户端做无刷新差异合并。
+// ⚠ since 现在**下推进 SQL**（先过滤后 LIMIT）⇒ 一场「创建于 500 名之外
+// 但刚被更新」的会议不再永远同步不到（§936 的 D2）。
 func (s *Server) handleListMeetings(w http.ResponseWriter, r *http.Request) {
 	uid := s.userIDFromRequest(r)
 	workspaceID := s.workspaceIDFromRequest(r)
-	list, err := s.meetingStore.ListScoped(uid, workspaceID)
+	query := r.URL.Query()
+	opts := meeting.ListOptions{
+		Since:  meeting.ParseListSince(query.Get("since")),
+		Limit:  meeting.ParseListInt(query.Get("limit"), meeting.ListDefaultLimit),
+		Offset: meeting.ParseListInt(query.Get("offset"), 0),
+	}
+	list, total, err := s.meetingStore.ListScoped(uid, workspaceID, opts)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list meetings: "+err.Error())
 		return
@@ -48,32 +64,14 @@ func (s *Server) handleListMeetings(w http.ResponseWriter, r *http.Request) {
 	if list == nil {
 		list = []*meeting.Meeting{}
 	}
-	var since time.Time
-	if v := r.URL.Query().Get("since"); v != "" {
-		if n, parseErr := strconv.ParseInt(v, 10, 64); parseErr == nil && n > 0 {
-			if n > 1_000_000_000_000 {
-				since = time.UnixMilli(n)
-			} else {
-				since = time.Unix(n, 0)
-			}
-		}
-	}
-	if !since.IsZero() {
-		filtered := make([]*meeting.Meeting, 0, len(list))
-		for _, m := range list {
-			if m.UpdatedAt.After(since) {
-				filtered = append(filtered, m)
-			}
-		}
-		list = filtered
-	}
 	resp := map[string]any{
-		"meetings":     list,
-		"total":        len(list),
+		"meetings": list,
+		// ⚠ total 是**作用域内的总条数**（过滤后、分页前），不是 len(list)。
+		"total":        total,
 		"serverTimeMs": time.Now().UnixMilli(),
 	}
-	if !since.IsZero() {
-		resp["deletedIds"] = s.meetingStore.DeletedIDsSince(uid, workspaceID, since)
+	if !opts.Since.IsZero() {
+		resp["deletedIds"] = s.meetingStore.DeletedIDsSince(uid, workspaceID, opts.Since)
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

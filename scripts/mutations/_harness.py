@@ -21,6 +21,7 @@
 ⚠ **「落盘自证」不能用「旧串不在场」**（旧串不在场可能只是锚点写错）：
    ⇒ 用「文件确实变了 **且** 新串在场」。
 """
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -182,6 +183,50 @@ def go_runner(test_pattern, cwd=None):
                            text=True, timeout=900)
         return p.returncode, p.stdout + p.stderr
     return run
+
+
+def go_pkg_runner(pkg, test_pattern, env=None, cwd=None, forbid_skip=False):
+    """跑 Go 侧判据（可指定包），可选把「被 skip」当成**失败**。
+
+    ⚠ **forbid_skip 的理由**（§935.4.2 的教训）：Go 的 `t.Skip` 之后
+    退出码**仍是 0** ⇒ ⇒ 「用例被跳过」与「用例全过」在退出码上**完全同形**
+    ⇒ ⇒ 一条依赖 PG 的判据在没有 PG 的机器上会**绿得毫无意义**。
+    ⇒ ⇒ 本 runner 看到 `--- SKIP` 就返回非 0 ⇒ 批次要么真跑，要么拒绝跑。
+
+    ⚠ env 用来注入 `POCKET_TEST_POSTGRES_DSN`（测试专用 DSN）。
+    ⛔ **绝不**注入 `POCKET_POSTGRES_DSN` —— 那个会让测试打**生产库**。
+    """
+    cmd = ['go', 'test', pkg, '-run', test_pattern, '-count=1']
+
+    def run():
+        run_env = dict(os.environ)
+        if env:
+            run_env.update(env)
+        p = subprocess.run(cmd, cwd=str(cwd or BACKEND), capture_output=True,
+                           text=True, timeout=1800, env=run_env)
+        out = p.stdout + p.stderr
+        if forbid_skip and '--- SKIP' in out:
+            return 4, out + '\n\n[mutations] 判据里有用例被 skip ⇒ 结论无效（退出码 0 同样是绿）\n'
+        return p.returncode, out
+    return run
+
+
+def require_pg_dsn(var='POCKET_TEST_POSTGRES_DSN'):
+    """取测试专用 PG DSN；**没有就抛**（而不是让它 skip 成「绿」）。
+
+    ⚠ 为什么必须抛：§935.4.2 记着那道 Go 门在缺前端树时会 skip ⇒
+    退出码 0 ⇒ 绿得毫无意义 ⇒ ⇒ 缺依赖时**拒绝跑**才是诚实做法。
+    ⚠ ⛔ 只认 `POCKET_TEST_POSTGRES_DSN`（独立 schema + 自动 DROP），
+    **绝不**碰 `POCKET_POSTGRES_DSN`（那是生产库，见 pg_store_test.go 的注释）。
+    """
+    dsn = os.environ.get(var, '').strip()
+    if not dsn:
+        raise HarnessError(
+            '需要 %s（测试专用 PG DSN）才跑得动本批次。\n'
+            '  ⛔ 不要设 POCKET_POSTGRES_DSN —— 那个会打生产库。\n'
+            '  ⚠ 没有它 ⇒ 依赖 PG 的判据会被 skip ⇒ 退出码仍是 0 ⇒ 绿得毫无意义。\n'
+            '  例：export %s=postgres://opk@127.0.0.1:55432/opk?sslmode=disable' % (var, var))
+    return dsn
 
 
 def run(batch, body, extra_runners=()):

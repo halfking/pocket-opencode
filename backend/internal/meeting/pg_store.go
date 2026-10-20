@@ -109,6 +109,37 @@ const meetingSelectCols = `id, owner_id, workspace_id, title, duration,
 	location, COALESCE(participants, '[]'::jsonb), note_id,
 	created_at, updated_at`
 
+// listScopedQuery 是 PG 版的列表 SQL（§936）。
+//
+// ⚠⚠ **子句顺序是语义**（§936 的 D2）：`updated_at > $3` 必须在 `LIMIT` **之前**。
+//
+//	修复前：SELECT … ORDER BY created_at DESC LIMIT 500   ← 先截断
+//	        （since 过滤在 Go 里、查完之后才做）
+//	⇒ ⇒ 一场**创建于 500 名之外**但**刚被更新**的会议不在 newest-500 里
+//	⇒ ⇒ 它永远同步不到更新（而且 `ORDER BY created_at` ⇒ 被更新的老会议
+//	排序不变 ⇒ 用户端「已精校」徽章永远不亮）
+//
+//	修复后：先过滤 → 再排序 → 再 LIMIT ⇒ 增量只省响应体，**也省 DB 读**。
+//
+// ⚠ 排序带 `id DESC` 的 tie-break：created_at 精度到微秒，同批写入会撞时刻
+// ⇒ 只按 created_at 排的话顺序不确定 ⇒ 与内存版的逐字一致就做不到。
+const listScopedQuery = `SELECT ` + meetingSelectCols + `
+	FROM meetings
+	WHERE owner_id=$1 AND workspace_id=$2
+	  AND ($3::timestamptz IS NULL OR updated_at > $3)
+	ORDER BY created_at DESC, id DESC
+	LIMIT $4 OFFSET $5`
+
+// listScopedCountQuery 是同一次查询的**总条数**（§936 的 D1）。
+//
+// ⚠ 它必须与 listScopedQuery 用**同一个**过滤条件（同一个 $3 口径）⇒ ⇒
+// 否则 total 与 meetings 数组对不上（分页器会算错页数）。
+// ⚠ 它**不含** LIMIT/OFFSET ⇒ total 恒为「过滤后的全部条数」。
+const listScopedCountQuery = `SELECT COUNT(*)
+	FROM meetings
+	WHERE owner_id=$1 AND workspace_id=$2
+	  AND ($3::timestamptz IS NULL OR updated_at > $3)`
+
 func scanMeeting(row pgx.Row) (*Meeting, error) {
 	var (
 		m           Meeting
@@ -308,23 +339,39 @@ func (s *PGStore) GetScoped(id, ownerID, workspaceID string) (*Meeting, error) {
 	return m, nil
 }
 
-func (s *PGStore) ListScoped(ownerID, workspaceID string) ([]*Meeting, error) {
+// ListScoped 返回一页会议 + 过滤后的总条数（§936）。
+//
+// ⚠ 修复前它返回 `LIMIT 500` 截断后的列表，而 handler 把 len(list) 写成
+// `total` ⇒ 用户有 600 场会议时 total 恒为 500 ⇒ 分页器显示「共 500 场」，
+// 第 501 场之后**永远取不到**（当时**根本没有** limit/offset 参数）。
+func (s *PGStore) ListScoped(ownerID, workspaceID string, opts ListOptions) ([]*Meeting, int, error) {
 	if ownerID == "" {
-		return nil, fmt.Errorf("owner_id is required")
+		return nil, 0, fmt.Errorf("owner_id is required")
 	}
 	if workspaceID == "" {
-		return nil, fmt.Errorf("workspace_id is required")
+		return nil, 0, fmt.Errorf("workspace_id is required")
 	}
+
+	opts = NormalizeListOptions(opts)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	q := `SELECT ` + meetingSelectCols + `
-		FROM meetings WHERE owner_id=$1 AND workspace_id=$2
-		ORDER BY created_at DESC LIMIT 500`
-	rows, err := s.pool.Query(ctx, q, ownerID, workspaceID)
+	// $3 传 *time.Time：nil ⇒ SQL NULL ⇒ `IS NULL` 分支成立（不过滤）。
+	// 用指针而不是 any(nil)，是为了让 pgx 明确知道这个参数是 timestamptz。
+	var since *time.Time
+	if !opts.Since.IsZero() {
+		since = &opts.Since
+	}
+
+	var total int
+	if err := s.pool.QueryRow(ctx, listScopedCountQuery, ownerID, workspaceID, since).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	rows, err := s.pool.Query(ctx, listScopedQuery, ownerID, workspaceID, since, opts.Limit, opts.Offset)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer rows.Close()
 
@@ -334,11 +381,14 @@ func (s *PGStore) ListScoped(ownerID, workspaceID string) ([]*Meeting, error) {
 	for rows.Next() {
 		m, err := scanMeeting(rows)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		result = append(result, m)
 	}
-	return result, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	return result, total, nil
 }
 
 func (s *PGStore) UpdateScoped(m *Meeting, ownerID, workspaceID string) error {

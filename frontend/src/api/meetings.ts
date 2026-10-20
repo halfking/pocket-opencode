@@ -282,7 +282,17 @@ export const meetingsApi = {
     }
   },
 
-  /** 云同步会议元数据（不含音频/转写全文） */
+  /**
+   * 云同步会议元数据。
+   *
+   * ⚠ §936：旧注释写「不含音频/转写全文」是**错的** —— 它**确实**把
+   * `refinedTranscript` 放进了请求体（下一行）⇒ ⇒ 服务端每场会议存一份
+   * 精校全文副本。两个调用点里只有 `syncMeetingMetadata` 不带全文。
+   *
+   * ⚠ 本轮**只把注释改成实话，不改行为**：「多端之间要不要同步精校全文」
+   * 是**产品口径**（服务端存储形态 + 仓外移动端兼容）⇒ 登记待拍板
+   * （简报第 160 条 ②），不在技术层自决。
+   */
   async syncMeeting(payload: MeetingSyncPayload): Promise<void> {
     await http('/api/meetings', {
       method: 'POST',

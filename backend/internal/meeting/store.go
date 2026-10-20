@@ -26,7 +26,15 @@ const (
 type MeetingStore interface {
 	CreateScoped(req CreateMeetingRequest, ownerID, workspaceID string) (*Meeting, error)
 	GetScoped(id, ownerID, workspaceID string) (*Meeting, error)
-	ListScoped(ownerID, workspaceID string) ([]*Meeting, error)
+	// ListScoped 返回**一页**会议 + **过滤后的总条数**（§936）。
+	//
+	// ⚠ total **不是** len(page)：有上限时「本页有几行」是**谎话**（§936 的 D1
+	// —— 修复前 total = len(被 LIMIT 截断后的列表) ⇒ 用户有 600 场会议时
+	// total 恒为 500 ⇒ 分页器显示「共 500 场」，第 501 场之后永远取不到）。
+	//
+	// ⚠ 两个实现必须**逐字一致**（同一份数据、同一组 opts ⇒ 同样的 id 序列
+	// 与同样的 total）⇒ 口径见 list.go，判据见 list_test.go。
+	ListScoped(ownerID, workspaceID string, opts ListOptions) ([]*Meeting, int, error)
 	UpdateScoped(m *Meeting, ownerID, workspaceID string) error
 	DeleteScoped(id, ownerID, workspaceID string) error
 	// DeletedIDsSince 见 pg_store.go 同名方法：查询失败时返回 nil 而非 error。
@@ -267,25 +275,35 @@ func (s *Store) List() ([]*Meeting, error) {
 	return result, nil
 }
 
-// ListScoped returns meeting records for the specified owner/workspace.
-func (s *Store) ListScoped(ownerID, workspaceID string) ([]*Meeting, error) {
+// ListScoped returns one page of meeting records for the specified
+// owner/workspace, plus the total number of rows that matched the filter
+// (before paging).
+//
+// ⚠ §936 之前，本方法**既无上限、也不排序**（map 遍历 ⇒ 随机顺序），
+// 而 PG 版有 `LIMIT 500` + `ORDER BY created_at DESC` ⇒ 同一个端点在两种
+// store 下形状不同 ⇒ dev 环境测不出生产的问题。现在两个实现共用
+// list.go 的口径（排序 / 过滤 / 分页 / 计数各只有一份）。
+func (s *Store) ListScoped(ownerID, workspaceID string, opts ListOptions) ([]*Meeting, int, error) {
 	if ownerID == "" {
-		return nil, fmt.Errorf("owner_id is required")
+		return nil, 0, fmt.Errorf("owner_id is required")
 	}
 	if workspaceID == "" {
-		return nil, fmt.Errorf("workspace_id is required")
+		return nil, 0, fmt.Errorf("workspace_id is required")
 	}
 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	result := make([]*Meeting, 0)
+	scoped := make([]*Meeting, 0)
 	for _, m := range s.meetings {
 		if m.OwnerID == ownerID && m.WorkspaceID == workspaceID {
-			result = append(result, copyMeeting(m))
+			scoped = append(scoped, copyMeeting(m))
 		}
 	}
-	return result, nil
+	// 与 PG 版一致返回非 nil 空切片：handler 直接把它写进 JSON 的 meetings，
+	// nil 切片编码成 null 会让前端拿到"字段存在但不是数组"的形状。
+	page, total := ApplyListOptions(scoped, opts)
+	return page, total, nil
 }
 
 // Delete removes a meeting by ID.

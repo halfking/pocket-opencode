@@ -155,7 +155,7 @@ func TestPersistence_PositiveAndNegativeControl(t *testing.T) {
 		}
 
 		after := reattach(t, store)
-		list, err := after.ListScoped("u1", "ws-a")
+		list, _, err := after.ListScoped("u1", "ws-a", ListOptions{})
 		if err != nil {
 			t.Fatalf("list after restart: %v", err)
 		}
@@ -186,7 +186,7 @@ func TestPersistence_PositiveAndNegativeControl(t *testing.T) {
 		}
 
 		restarted := NewStore() // 这就是后端进程重启
-		list, err := restarted.ListScoped("u1", "ws-a")
+		list, _, err := restarted.ListScoped("u1", "ws-a", ListOptions{})
 		if err != nil {
 			t.Fatalf("list after restart: %v", err)
 		}
@@ -292,7 +292,7 @@ func TestPGStore_DeleteScoped_WritesTombstone(t *testing.T) {
 	if _, err := after.GetScoped(keep.ID, "u1", "ws-a"); err != nil {
 		t.Fatalf("未删的 %s 丢了: %v", keep.ID, err)
 	}
-	list, err := after.ListScoped("u1", "ws-a")
+	list, _, err := after.ListScoped("u1", "ws-a", ListOptions{})
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -324,7 +324,7 @@ func TestPGStore_WorkspaceIsolation(t *testing.T) {
 	if _, err := store.GetScoped(mine.ID, "u1", "ws-b"); err == nil {
 		t.Fatal("换 workspace 竟然能读到")
 	}
-	list, err := store.ListScoped("u1", "ws-b")
+	list, _, err := store.ListScoped("u1", "ws-b", ListOptions{})
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -379,7 +379,7 @@ func TestPGStore_InputValidation(t *testing.T) {
 	if _, err := store.GetScoped("", "u1", "ws-a"); err == nil {
 		t.Fatal("空 id 应当被拒")
 	}
-	if _, err := store.ListScoped("", "ws-a"); err == nil {
+	if _, _, err := store.ListScoped("", "ws-a", ListOptions{}); err == nil {
 		t.Fatal("空 owner 列举应当被拒")
 	}
 }
@@ -406,7 +406,7 @@ func TestPGStore_CreateScoped_IDUnique(t *testing.T) {
 		seen[m.ID] = true
 	}
 	after := reattach(t, store)
-	list, err := after.ListScoped("u1", "ws-a")
+	list, _, err := after.ListScoped("u1", "ws-a", ListOptions{})
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
