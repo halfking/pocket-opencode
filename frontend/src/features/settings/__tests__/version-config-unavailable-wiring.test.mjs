@@ -97,9 +97,19 @@ describe('服务端：缺配置必须冒泡成 503 + 可识别的 error 码', ()
       /errors\.Is\(err, ErrVersionConfigNotFound\)/,
       '调用方不再区分「配置没配对」与「配置坏了」，两者会退化成同一个 500',
     )
+    // ⚠ 2026-10-21（§946）：这一条的**期望形态**变了，**语义没变**。
+    //
+    // 原来服务端是 `w.WriteHeader(http.StatusServiceUnavailable)` + 直接
+    // `json.NewEncoder(w).Encode(...)` ⇒ §946 把这一族统一成了
+    // `writeJSON(w, http.StatusServiceUnavailable, ...)`（先编码后写状态行，
+    // 编码失败不再被吞）⇒ ⇒⇒ ⇒ 所以这里要**两种写法都认**。
+    //
+    // ⇒ 但**不能**退化成「body 里出现过 StatusServiceUnavailable 就算过」
+    // ⇒ ⇒⇒ ⇒ 那样「503 只是被提到、实际写的是 500」也会绿
+    // ⇒ ⇒⇒ ⇒ 所以要求它**出现在写响应的那一处**（下面那条负控证明它有牙）。
     assert.match(
       body,
-      /w\.WriteHeader\(http\.StatusServiceUnavailable\)/,
+      /(writeJSON\(w,\s*http\.StatusServiceUnavailable|w\.WriteHeader\(http\.StatusServiceUnavailable\))/,
       '配置缺失应是 503：这是部署问题，不是服务端内部错误',
     )
   })
@@ -198,6 +208,24 @@ describe('判据自检：负控必须转红', () => {
       body,
       /code === VERSION_CONFIG_UNAVAILABLE/,
       '判据在取消分流之后仍然通过 —— 负控无效',
+    )
+  })
+
+  // ⚠ 2026-10-21（§946）：上一条断言的**期望形态**放宽了（认两种写法）
+  // ⇒ ⇒⇒ ⇒ 「放宽后的判据还有没有牙」必须由这条负控回答
+  // ⇒ ⇒⇒ ⇒ 否则「认两种写法」就可能变成「什么写法都认」。
+  it('把 Go 端的 503 改回 500 → 服务端判据报出违规', () => {
+    const mutated = serverGo.replace(
+      /(writeJSON\(w,\s*|w\.WriteHeader\()http\.StatusServiceUnavailable/,
+      '$1http.StatusInternalServerError',
+    )
+    assert.notEqual(mutated, serverGo, '前提不成立：负控锚点没命中，负控会静默 no-op')
+
+    const body = fnBody(mutated, 'func (s *Server) handleCheckUpdate(w http.ResponseWriter, r *http.Request) {')
+    assert.doesNotMatch(
+      body,
+      /http\.StatusServiceUnavailable/,
+      '判据在把 503 改成 500 之后仍然通过 —— 负控无效',
     )
   })
 })
