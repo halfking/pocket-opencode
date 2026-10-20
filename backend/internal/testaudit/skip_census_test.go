@@ -52,9 +52,22 @@ import (
 
 // ── 基线（2026-10-17 实测，语义见下方 census）────────────────────────────
 // key = 包路径（相对 module root，'.' 开头）。⛔ 绝不写行号。
+//
+// ⚠ 2026-10-20（§936）：`./internal/server` 由 **37** 改成 **38**。
+//
+//	这不是**放宽**门禁，而是**补登记一个早就存在、却没被登记的跳过点**：
+//	`internal/server/refine_shrinkage_guard_test.go` 里的
+//	`t.Skip("这个夹具没触发 participantLeak —— 判据形同虚设，停下来说明")`
+//	是 §907（commit 6d90ab00）**有意**加的「前提没建立就停下来说明」守卫，
+//	但那个提交**没同步登记基线** ⇒ ⇒ 这道棘轮门从那时起**一直是红的**。
+//	⇒ ⇒ 证据：2026-10-20 在**本提交之前**的 HEAD 的一份独立副本上实测，
+//	读数与今天**逐字相同**（全仓 194 / 基线 193；server 38 / 基线 37）⇒
+//	⇒ **不是 §936 的改动造成的**。
+//	⇒ ⇒ 本条的语义是「**已 conscious 地登记**」，门禁的规则（只拦新增、
+//	不拦存量）**一个字没改**。
 var SKIP_POINT_BASELINE = map[string]int{
 	"./internal/email":                 118,
-	"./internal/server":                37,
+	"./internal/server":                38,
 	"./internal/stt":                   20,
 	"./internal/notes":                 6,
 	"./internal/livetest":              4,
