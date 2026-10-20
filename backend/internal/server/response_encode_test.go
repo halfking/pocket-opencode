@@ -110,9 +110,20 @@ func TestS946EncodeFailureIsVisible(t *testing.T) {
 	if err := json.Unmarshal([]byte(body), &payload); err != nil {
 		t.Fatalf("兜底响应体不是**合法 JSON**（%v）：%q", err, body)
 	}
-	if got := payload["code"]; got != s946EncodeFailureCode {
+	// ⚠⚠ 稳定错误码必须**逐字**钉住，不能只比常量。
+	//
+	//	若这里只比 `payload["code"] != s946EncodeFailureCode`
+	//	⇒ ⇒⇒ 那就等于「常量与它自己比」⇒ ⇒⇒⇒ **改掉常量的值判据照样绿**
+	//	⇒ ⇒⇒ ⇒ 而前端是按这个码做映射的 ⇒ 改了它 = 改了契约。
+	//	⇒ ⇒⇒ ⇒ 所以这里钉**字面量**。
+	const wantCode = "response_encode_failed"
+	if s946EncodeFailureCode != wantCode {
+		t.Errorf("稳定错误码常量 = %q（期望 %q）⇒ 前端按这个码做映射 ⇒ 改它等于改契约",
+			s946EncodeFailureCode, wantCode)
+	}
+	if got := payload["code"]; got != wantCode {
 		t.Errorf("兜底响应体的 code = %v（期望 %q）⇒ 客户端/前端要靠它区分「服务端自己没写出响应」",
-			got, s946EncodeFailureCode)
+			got, wantCode)
 	}
 	if got, ok := payload["retryable"].(bool); !ok || got {
 		t.Errorf("兜底响应体的 retryable = %v（期望 false）\n"+
