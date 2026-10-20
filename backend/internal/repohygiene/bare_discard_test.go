@@ -840,11 +840,20 @@ func sortedKeys(m map[string]bool) []string {
 }
 
 // s947IsPersistenceWrite 判一处丢弃是不是「持久化写」。
+//
+// ⚠ `*os.File` 的 **Close** 也在内 —— 它是写的**最后一环**
+//
+//	（写成功但 Close 失败 ⇒ 数据可能没落盘）⇒ 与 §945 的口径一致。
+//
+// ⚠⚠ 这条判据**必须**覆盖下面那条断言要检查的全部形态：
+//
+//	否则会出现**死分支**（判据写了但永远走不到 ⇒ 门绿而没有牙）。
+//	★ 本仓第十六批变异（M6）就是靠这一点把它挖出来的。
 func s947IsPersistenceWrite(s s947Site) bool {
 	switch s.Recv {
 	case "*os.File":
 		switch s.Callee {
-		case "Write", "WriteString", "WriteByte", "WriteRune", "Sync":
+		case "Write", "WriteString", "WriteByte", "WriteRune", "Sync", "Close":
 			return true
 		}
 	case "*mime/multipart.Writer":
@@ -870,23 +879,32 @@ func TestS947PersistenceWriteMustBeGuarded(t *testing.T) {
 		if !s947IsPersistenceWrite(s) {
 			continue
 		}
-		// 文件的 Close 是持久化写的最后一环 ⇒ 同样按「持久化写」对待。
-		if s.Recv == "*os.File" && s.Callee == "Close" {
-			if !s.InErr {
-				problems = append(problems, fmt.Sprintf(
-					"%s:%d [%s] %s 的失败没有被兜底（不在 err != nil 分支内）",
-					s.Rel, s.Line, s.Func, s.Callee))
-			}
-			continue
+		if !s.InErr {
+			problems = append(problems, fmt.Sprintf(
+				"%s:%d [%s] 持久化写 %s.%s 的失败没有被兜底（不在 err != nil 分支内）",
+				s.Rel, s.Line, s.Func, s.Recv, s.Callee))
 		}
-		problems = append(problems, fmt.Sprintf(
-			"%s:%d [%s] 持久化写 %s.%s 的错误被丢弃且没有兜底",
-			s.Rel, s.Line, s.Func, s.Recv, s.Callee))
 	}
 	if len(problems) > 0 {
 		sort.Strings(problems)
 		t.Fatalf("§947 有 %d 处持久化写的失败没有兜底：\n  - %s",
 			len(problems), strings.Join(problems, "\n  - "))
+	}
+	// ★ 正控：这条断言必须**真的能看到**那几处「文件 Close」⇒
+	//   否则「它一次都没命中过」就说明判据本身是**死分支**
+	//   （★ 本仓第十六批变异 M6 挖出来的就是这种死分支：
+	//   `s947IsPersistenceWrite` 里原本没有 "Close" ⇒ 下面那个分支
+	//   永远走不到 ⇒ 门绿而没有牙）。
+	//   ⇒ 判别动作：**「0 命中的第一嫌疑是量具坏了」**。
+	var fileCloses int
+	for _, s := range sites {
+		if s.Kind == "bare" && s.Recv == "*os.File" && s.Callee == "Close" {
+			fileCloses++
+		}
+	}
+	if fileCloses == 0 {
+		t.Fatalf("§947 判据自身坏了：「持久化写必须被兜底」这条**一次都没命中过** " +
+			"⇒ 它可能是死分支（判据写了但永远走不到 ⇒ 门绿而没有牙）")
 	}
 }
 
