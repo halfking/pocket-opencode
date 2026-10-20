@@ -519,6 +519,39 @@ func (s *Store) ListTasksScoped(ctx context.Context, wsID string) ([]Task, error
 		normalizeWorkspace(wsID))
 }
 
+// ListTasksByOrigin returns the tasks of one workspace that carry the given
+// provenance pair (origin_kind, origin_ref).
+//
+// ★§938：这是「会议待办」**两条落库路径共用**的查重入口 ——
+//
+//   - 精校链（handleMeetingRefine → finalizeMeetingRefine → ingestMeetingTasks）
+//
+//   - from-source 链（POST /api/tasks/from-source → createTasksFromMeeting）
+//
+//     两条链写的 task 都带 origin_kind='meeting' / origin_ref=<meetingID>
+//     ⇒ ⇒ **同一把钥匙** ⇒ 一条链建出来的东西，另一条链一定看得见。
+//     （修复前：精校链**一条都不写**这两列 ⇒ from-source 的去重看不见它
+//     ⇒ 用户手动点一次「转待办」就再得一整套重复的。）
+//
+// ⚠ 为什么不复用 ListTasksScoped 再在内存里过滤：那条路要把**整个 workspace
+//
+//	的全部任务**搬进进程，代价 ∝ 租户的任务总数，而查重真正需要的只有
+//	「这一场会议的待办」⇒ ⇒ 这里让过滤**下推进 SQL**。
+//
+// ⚠ 空 origin 对不返回任何行（而不是返回该租户的全部任务）——
+//
+//	「没写溯源」与「溯源是这一场会议」是两件事，混起来会让查重变成全表扫。
+func (s *Store) ListTasksByOrigin(ctx context.Context, wsID, originKind, originRef string) ([]Task, error) {
+	if strings.TrimSpace(originKind) == "" || strings.TrimSpace(originRef) == "" {
+		return []Task{}, nil
+	}
+	return s.queryTasks(ctx,
+		`SELECT `+taskColumns+` FROM tasks
+		 WHERE workspace_id = $1 AND origin_kind = $2 AND origin_ref = $3
+		 ORDER BY updated_at DESC`,
+		normalizeWorkspace(wsID), originKind, originRef)
+}
+
 func (s *Store) queryTasks(ctx context.Context, query string, args ...any) ([]Task, error) {
 	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {

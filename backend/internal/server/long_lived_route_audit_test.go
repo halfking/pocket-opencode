@@ -83,6 +83,23 @@ func isMethodCallOnServer(call *ast.CallExpr) (string, bool) {
 
 // durationOfExpr 只认 `N * time.Second` / `N * time.Minute` 这类字面量乘法，
 // 认不出就返回 ok=false —— 宁可漏判也不要用猜出来的值判合规。
+//
+// ⚠⚠ §930：**它认不出「命名预算」** —— 判据的解析器只覆盖了**一种**写法。
+//
+//	内联字面量：context.WithTimeout(r.Context(), 90*time.Second)   ← 认得出
+//	函数内 const：const x = 90 * time.Second; …(r.Context(), x)    ← 认不出
+//	包级 const：  const x = 90 * time.Second（文件级）…(r.Context(), x) ← 认不出
+//
+// ⇒ **凡是预算写成常量的 handler，对这道门禁是隐形的**：
+//
+//	opsExecTimeout（90s，server_email_ops.go）、fullTranscribeTimeout（10 分钟，
+//	server_stt_stream.go）、meetingAnalyzeTimeout（90s，server_meeting_analyze.go）
+//	三个包级常量**全部**不被计入 ⇒ ⇒ 这道门禁一直是绿的，
+//	而 `/api/emails/ops/sync` 真的**没有**被豁免 WriteTimeout。
+//
+// ⇒ ⇒ 修法不是「把常量展开回字面量」（那只是换一种写法，盲区还在），
+//
+//	而是**让解析器认这三种形态** —— 判据的解析器必须覆盖生产代码的真实写法。
 func durationOfExpr(e ast.Expr) (time.Duration, bool) {
 	bin, ok := e.(*ast.BinaryExpr)
 	if !ok || bin.Op != token.MUL {
@@ -109,6 +126,91 @@ func durationOfExpr(e ast.Expr) (time.Duration, bool) {
 		return time.Duration(num) * time.Second, true
 	case "Minute":
 		return time.Duration(num) * time.Minute, true
+	case "Hour":
+		return time.Duration(num) * time.Hour, true
+	}
+	return 0, false
+}
+
+// durationConstsInDecls 收集**声明块**里的时长常量（名字 → 时长）。
+//
+// ⚠ 认 `const x = …` 与 `var x = …` 两种包级/局部声明。
+// ⚠ 只认**右侧是字面量乘法**的值；右侧是别的东西就跳过 ——
+//
+//	宁可漏判也不猜。
+func durationConstsInDecls(decls []ast.Decl) map[string]time.Duration {
+	out := map[string]time.Duration{}
+	for _, decl := range decls {
+		d, ok := decl.(*ast.GenDecl)
+		if !ok || (d.Tok != token.CONST && d.Tok != token.VAR) {
+			continue
+		}
+		for _, spec := range d.Specs {
+			vs, ok := spec.(*ast.ValueSpec)
+			if !ok {
+				continue
+			}
+			for i, name := range vs.Names {
+				if i >= len(vs.Values) {
+					continue
+				}
+				if dur, ok := durationOfExpr(vs.Values[i]); ok {
+					out[name.Name] = dur
+				}
+			}
+		}
+	}
+	return out
+}
+
+// durationConstsInStmts 收集**语句序列**里的时长常量（名字 → 时长）。
+//
+// ⚠ 认三种声明形态：`const x = …`（包在 DeclStmt 里）、`var x = …`、
+//
+//	`x := …` —— 少认一种的后果不是「报红」，而是那一类写法静默失去守护。
+func durationConstsInStmts(stmts []ast.Stmt) map[string]time.Duration {
+	out := map[string]time.Duration{}
+	for _, stmt := range stmts {
+		switch s := stmt.(type) {
+		case *ast.DeclStmt:
+			for name, dur := range durationConstsInDecls([]ast.Decl{s.Decl}) {
+				out[name] = dur
+			}
+		case *ast.AssignStmt:
+			if s.Tok != token.DEFINE {
+				continue
+			}
+			for i, lhs := range s.Lhs {
+				id, ok := lhs.(*ast.Ident)
+				if !ok || i >= len(s.Rhs) {
+					continue
+				}
+				if dur, ok := durationOfExpr(s.Rhs[i]); ok {
+					out[id.Name] = dur
+				}
+			}
+		}
+	}
+	return out
+}
+
+// durationOfExprScoped 在字面量之外，再认**命名预算**。
+//
+// scope 的优先级：函数内声明（局部）> 包级声明。
+// ⚠ 认不出仍然返回 ok=false —— 绝不猜。
+func durationOfExprScoped(e ast.Expr, local, pkg map[string]time.Duration) (time.Duration, bool) {
+	if dur, ok := durationOfExpr(e); ok {
+		return dur, true
+	}
+	id, ok := e.(*ast.Ident)
+	if !ok {
+		return 0, false
+	}
+	if dur, ok := local[id.Name]; ok {
+		return dur, true
+	}
+	if dur, ok := pkg[id.Name]; ok {
+		return dur, true
 	}
 	return 0, false
 }
@@ -226,6 +328,22 @@ func analyzeRoutes(fset *token.FileSet, files map[string]*ast.File) routeAudit {
 	}
 	out.inheritedRouteOf = map[string]string{}
 
+	// 0) **包级**时长常量（§930）。
+	//
+	// ⚠ 没有这张表，预算写成包级 const 的 handler 对这道门禁是**隐形**的：
+	//   opsExecTimeout（90s）、fullTranscribeTimeout（10 分钟）、
+	//   meetingAnalyzeTimeout（90s）三个**全部**不被计入
+	//   ⇒ ⇒ 这道门禁一直绿着，而 `/api/emails/ops/sync` 真的没被豁免。
+	//
+	// 包级常量在**整个 package 可见** ⇒ 必须跨文件收集
+	// （只在单个文件里找会漏掉「声明在 A 文件、用在 B 文件」那种）。
+	pkgDurations := map[string]time.Duration{}
+	for _, f := range files {
+		for name, dur := range durationConstsInDecls(f.Decls) {
+			pkgDurations[name] = dur
+		}
+	}
+
 	// 1) 路由注册：mux.HandleFunc("/path", … s.Handler(…))
 	for _, f := range files {
 		ast.Inspect(f, func(n ast.Node) bool {
@@ -310,12 +428,15 @@ func analyzeRoutes(fset *token.FileSet, files map[string]*ast.File) routeAudit {
 			// 只认**请求作用域**的超时。挂在 context.Background() 上的
 			// 长预算属于后台任务，不受 WriteTimeout 约束，算进来就是误报。
 			reqNames := requestScopedNames(fn)
+			// ⚠ §930：作用域里的命名预算（函数内 const / 包级 const）。
+			//   没有它，预算写成常量的 handler 对这道门禁**隐形**。
+			localDurations := durationConstsInStmts(fn.Body.List)
 			ast.Inspect(fn.Body, func(n ast.Node) bool {
 				call, ok := n.(*ast.CallExpr)
 				if !ok || !isContextWithTimeout(call) {
 					return true
 				}
-				d, ok := durationOfExpr(call.Args[1])
+				d, ok := durationOfExprScoped(call.Args[1], localDurations, pkgDurations)
 				if !ok {
 					return true
 				}
@@ -802,6 +923,11 @@ func TestNewlyExemptedPathsSurviveWriteTimeout(t *testing.T) {
 		"/api/email/backfill",
 		"/api/notes/n1/summarize", // 后缀匹配
 		"/api/emails/e1/summarize",
+		// ⚠ §930 新增：批量 IMAP 操作这一族（服务端预算 90s > WriteTimeout 30s）
+		"/api/emails/ops/sync",
+		"/api/emails/move",
+		"/api/emails/organize",
+		"/api/meetings/m1/analyze", // 录制中的实时 LLM 分析（90s）
 	} {
 		t.Run("exempt:"+p, func(t *testing.T) {
 			code, body, err := getStatus(base + p)
@@ -880,8 +1006,113 @@ func (s *Server) registerSynthetic(mux *http.ServeMux) {
 	}
 }
 
-// TestCoveredLongHandlerIsNotReported 是**反向负控**。
+// TestUncoveredLongHandlerWithNamedBudgetIsReported 是 §930 的**新形态负控**。
 //
+// 为什么要单独一条：上面那条负控（TestUncoveredLongHandlerIsReported）用的样本
+// 是**内联字面量** `120*time.Second` ⇒ 它只证明「字面量形态」被守住了。
+// 而 §930 修的正是**另一种**形态：预算写成**命名常量**时，
+// 解析器（durationOfExpr）认不出 ⇒ 对这道门禁**隐形** ⇒
+// `opsExecTimeout`(90s) / `fullTranscribeTimeout`(10 分钟) /
+// `meetingAnalyzeTimeout`(90s) 三个包级常量**全部**不被计入
+// ⇒ ⇒ 门禁一直绿着，而 `/api/emails/ops/sync` 真的没被豁免。
+//
+// ⇒ ⇒ 负控必须覆盖**两种命名形态**（包级 const / 函数内 const），
+// 而且要带**前提自检**：断言「旧的字面量解析器认不出这个写法」
+// —— 否则这条负控可能只是又测了一遍字面量。
+func TestUncoveredLongHandlerWithNamedBudgetIsReported(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+	}{
+		{
+			name: "包级 const",
+			src: `package server
+
+import (
+	"context"
+	"net/http"
+	"time"
+)
+
+const slowBudget = 120 * time.Second
+
+func (s *Server) handleSomethingSlow(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), slowBudget)
+	defer cancel()
+	_ = ctx
+}
+
+func (s *Server) registerSynthetic(mux *http.ServeMux) {
+	mux.HandleFunc("/api/slow/whatever", s.requireAuth(s.handleSomethingSlow))
+}
+`,
+		},
+		{
+			name: "函数内 const",
+			src: `package server
+
+import (
+	"context"
+	"net/http"
+	"time"
+)
+
+func (s *Server) handleSomethingSlow(w http.ResponseWriter, r *http.Request) {
+	const slowBudget = 120 * time.Second
+	ctx, cancel := context.WithTimeout(r.Context(), slowBudget)
+	defer cancel()
+	_ = ctx
+}
+
+func (s *Server) registerSynthetic(mux *http.ServeMux) {
+	mux.HandleFunc("/api/slow/whatever", s.requireAuth(s.handleSomethingSlow))
+}
+`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fset := token.NewFileSet()
+			f, err := parser.ParseFile(fset, "synthetic.go", tc.src, 0)
+			if err != nil {
+				t.Fatalf("合成源码解析失败: %v", err)
+			}
+			audit := analyzeRoutes(fset, map[string]*ast.File{"synthetic.go": f})
+
+			if _, ok := audit.longBudgets["handleSomethingSlow"]; !ok {
+				t.Fatalf("负控样本自身有问题：没识别出 120s 的 handler（%s 形态），扫到的是 %v",
+					tc.name, audit.longBudgets)
+			}
+			bad := uncoveredLongHandlers(audit, longLivedPaths, longLivedSuffixes, longLivedPatterns)
+			if len(bad) == 0 {
+				t.Fatalf("负控失败（%s 形态）：命名预算的长 handler 挂在未豁免的路由上，"+
+					"守卫却没有报出来 —— 这道闸门在命名写法上是假的", tc.name)
+			}
+			if !strings.Contains(bad[0], "handleSomethingSlow") {
+				t.Errorf("报出的内容没点名 handler：%q", bad[0])
+			}
+		})
+	}
+
+	// ⚠ 前提自检：**旧形态**（只认内联字面量）确实认不出命名写法。
+	//   这条不成立的话，上面两个子用例可能只是又测了一遍字面量。
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "synthetic.go", cases[0].src, 0)
+	if err != nil {
+		t.Fatalf("合成源码解析失败: %v", err)
+	}
+	ast.Inspect(f, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok || !isContextWithTimeout(call) {
+			return true
+		}
+		if _, ok := durationOfExpr(call.Args[1]); ok {
+			t.Fatalf("前提变了：字面量解析器居然认得出命名预算 ⇒ 这条负控不再说明问题")
+		}
+		return true
+	})
+}
+
 // 只测「会报错」不够：解析器若把一切都当成没豁免，上面那条也会绿。
 // 同一个合成 handler，把前缀加进白名单后必须**不再**报。
 func TestCoveredLongHandlerIsNotReported(t *testing.T) {

@@ -78,7 +78,16 @@ func (s *Server) handleEmailClassify(w http.ResponseWriter, r *http.Request) {
 			log.Printf("[email/classify] %s: %v", it.ID, cerr)
 		}
 	}
-	remaining, _ := s.emailStore.CountUnclassifiedScoped(r.Context(), userID, wsID)
+	// ⚠⚠ §945：原来这里是 `remaining, _ := s.emailStore.CountUnclassifiedScoped(...)`
+	//	⇒ ⇒⇒ **读失败被报成「剩余 0」** ⇒ ⇒⇒⇒ ⇒ 响应里的 `remaining: 0`
+	//	⇒ ⇒⇒⇒ ⇒ 会被 UI 读成「**全部分类完了**」⇒ ⇒⇒⇒ ⇒ 而库里可能还堆着
+	//	⇒ ⇒⇒⇒ ⇒ 几百封没分类的邮件 ⇒ ⇒⇒⇒ ⇒ 用户以为分类已收工。
+	//	⚠ 不改响应形状（`remaining` 该怎么表达「读不到」是**产品口径**⇒ 登记不代拍）
+	//	⇒ ⇒⇒⇒ ⇒ 这里只做「让失败看得见」。
+	remaining, err := s.emailStore.CountUnclassifiedScoped(r.Context(), userID, wsID)
+	if err != nil {
+		log.Printf("ERROR: 统计未分类邮件数失败（响应里的 remaining=0 是**假值**，库里可能仍有未分类邮件）: %v", err)
+	}
 	classified := 0
 	for _, row := range results {
 		if row.Category != "" && row.Error == "" {

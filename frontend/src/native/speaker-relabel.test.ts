@@ -500,7 +500,41 @@ describe('recordingRuntime 接线', () => {
     const body = src.slice(start, src.indexOf('\n  private syncSpeakers()', start))
     assert.match(body, /planSpeakerRelabel\(\{/, '决策必须走纯函数（否则 node 门禁覆盖不到）')
     assert.match(body, /updateSegmentSpeaker\(u\.segId/, '必须回写分段标签')
-    assert.match(body, /updateTranscript\(meetingId, renderTranscript\(/, '转写正文里的说话人前缀也要重渲染')
+    // ⚠⚠ §932：这条断言的**指向**变了，**语义没变**。
+    //
+    //   旧形态：`updateTranscript(meetingId, renderTranscript(…)`
+    //   新形态（§932）：`this.transcriptRenderer.refresh(…)` 整场重算
+    //                 + `updateTranscript(meetingId, this.transcriptRenderer.source())`
+    //   ⇒ 两种形态下「说话人前缀被重渲染」**都成立** ⇒ 这里认两种。
+    //
+    // ⚠⚠ 但新形态**必须连着 `refresh` 一起认**：
+    //   若只 `invalidate()`（标脏、不重算）就 `source()` ⇒ 写进库的是
+    //   **改写前**的正文 ⇒ 用户看到的还是旧说话人 ⇒ 这条门的语义就破了。
+    //   ⇒ ⇒ 重算必须**排在**写入**之前**（顺序也是语义的一部分）。
+    const oldForm = /updateTranscript\(meetingId, renderTranscript\(/.test(body)
+    const refreshAt = body.indexOf('this.transcriptRenderer.refresh(')
+    const writeAt = body.indexOf('updateTranscript(meetingId, this.transcriptRenderer.source()')
+    const newForm = refreshAt > 0 && writeAt > refreshAt
+    assert.ok(
+      oldForm || newForm,
+      '转写正文里的说话人前缀也要重渲染',
+    )
+
+    // ★ 负控：把「整场重算」换回「只标脏」⇒ 上面那条**必须**判红
+    //   （否则「认两种形态」会变成「什么都认」⇒ 这道门就没牙了）。
+    const mutated = body.replace(
+      'this.transcriptRenderer.refresh(this.segments.value)',
+      'this.transcriptRenderer.invalidate()',
+    )
+    assert.notEqual(mutated, body, '变异没落盘 ⇒ 这条负控不算数')
+    const mRefreshAt = mutated.indexOf('this.transcriptRenderer.refresh(')
+    const mWriteAt = mutated.indexOf('updateTranscript(meetingId, this.transcriptRenderer.source()')
+    const mOldForm = /updateTranscript\(meetingId, renderTranscript\(/.test(mutated)
+    const mNewForm = mRefreshAt > 0 && mWriteAt > mRefreshAt
+    assert.ok(
+      !(mOldForm || mNewForm),
+      '负控前提失效：把 refresh 换成 invalidate 之后仍然判绿 ⇒ 这道门没有牙',
+    )
   })
 
   test('历史声纹里已有人名的 profile 被打成锚点', () => {

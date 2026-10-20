@@ -43,6 +43,7 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 
 import { renderTranscript } from '../meeting-dedup.ts'
+import { renderImpl } from './_render-impl.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const DEDUP_SRC = join(here, '..', 'meeting-dedup.ts')
@@ -165,19 +166,32 @@ describe('§427 · renderTranscript 的说话人兜底', () => {
     )
   })
 
-  it('#6 形态自证：兜底确实长在 renderTranscript 体内', () => {
+  it('#6 形态自证：兜底确实长在**渲染实现**里', () => {
     const src = readFileSync(DEDUP_SRC, 'utf8')
-    const body = funcBody(src, 'export function renderTranscript')
-    assert.ok(body && body.length > 200, `取不到 renderTranscript 的函数体（${body?.length ?? 0} 字）`)
+    // ⚠ §931：渲染实现被重构成「状态机 + 薄包装」⇒ 兜底词落在
+    //   `speakerPrefix` 与 `TranscriptRenderState.append` 里，而
+    //   `renderTranscript` 本身只剩三行包装 ⇒ **只改指向，不动语义**：
+    //   扫的区间从「renderTranscript 的函数体」改成「**整个渲染实现**」
+    //   （共享提取器见 `_render-impl.mjs` ⇒ 抄两份必然漂移）。
+    // ⚠ 语义**没变**：问的仍然是「兜底词在不在**会产出正文的那段代码**里」。
+    const body = renderImpl(src)
+    assert.ok(body && body.length > 200, `取不到渲染实现的区间（${body?.length ?? 0} 字）`)
     // ⚠ 先剥注释再查：修复时写的解释注释里**逐字包含** `[${s.speakerLabel}]`。
     const code = stripComments(body)
     assert.ok(
       code.includes(`'${FALLBACK}'`),
-      'renderTranscript 体内找不到兜底词 —— 判据量的是函数体不是注释',
+      '渲染实现里找不到兜底词 —— 判据量的是代码不是注释',
     )
     assert.ok(
       !/`\[\$\{s\.speakerLabel\}\]/.test(code),
       '代码里仍有无兜底的 `[${s.speakerLabel}]` 拼接（注释不算）',
+    )
+    // ★ 负控：把「无兜底」那种写法塞回去 ⇒ 上面那条正则**必须**能抓住它
+    //   （否则这道门是恒绿的 —— §911 的教训）。
+    const bad = code + '\nlines.push(`[${s.speakerLabel}] ${step.text}`)\n'
+    assert.ok(
+      /`\[\$\{s\.speakerLabel\}\]/.test(bad),
+      '负控前提失效：塞回去的无兜底写法没被上面那条正则捕获 ⇒ 这道门没有牙',
     )
   })
 })

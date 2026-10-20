@@ -2,9 +2,11 @@ import { localDB } from '../../native/local-db'
 import { likePattern } from '../../native/fts-query'
 import { searchHybrid } from '../notes/notes-store'
 import type { RecommendItem } from './meetings-store'
-import {
-  mergeRecommendations, parseWikipediaOpenSearch, wikipediaSearchUrl,
-} from './meeting-related'
+import { mergeRecommendations } from './meeting-related'
+// ⚠ §926：第三方检索搬进可测核心（带**等待上界**）—— 原来这里是裸 `fetch`，
+//   是整条录音链上**唯一没有超时**的对外请求（App 自己的 `http()` 有 30 s 上限）。
+//   「主查 + 至多一次回落」的请求预算也钉在那个模块里。
+import { searchRelatedWeb } from './wikipedia-search.ts'
 
 export async function searchRelatedNotes(query: string, limit = 3, workspaceId = 'default'): Promise<RecommendItem[]> {
   const q = query.trim()
@@ -55,25 +57,9 @@ export async function searchRelatedMeetings(
   }
 }
 
-async function fetchWikipedia(query: string): Promise<RecommendItem[]> {
-  const url = wikipediaSearchUrl(query)
-  if (!url) return []
-  try {
-    const res = await fetch(url)
-    if (!res.ok) return []
-    return parseWikipediaOpenSearch(await res.json())
-  } catch {
-    return []
-  }
-}
-
-export async function searchRelatedWeb(query: string): Promise<RecommendItem[]> {
-  const primary = await fetchWikipedia(query)
-  if (primary.length) return primary
-  const fallback = query.split(/\s+/).filter(Boolean).pop() || ''
-  if (!fallback || fallback === query) return []
-  return fetchWikipedia(fallback)
-}
+// ⚠ §926：维基那一路现在住在 `wikipedia-search.ts`（带等待上界 + 请求预算的钉子）。
+//   这里原样再导出一次，**保持本模块的对外形状不变**。
+export { searchRelatedWeb } from './wikipedia-search.ts'
 
 export async function searchRelatedContext(
   query: string,

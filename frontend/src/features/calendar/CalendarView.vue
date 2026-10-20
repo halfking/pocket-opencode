@@ -433,9 +433,10 @@ onMounted(() => {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  min-height: 32px;
-  padding: 0 10px;
-  border-radius: 999px;
+  /* iOS 标准按钮：矩形 + 小圆角，44px 触摸热区（过滤类按钮统一规范） */
+  min-height: 44px;
+  padding: 0 12px;
+  border-radius: var(--radius-md);
   border: 1px solid var(--border);
   background: var(--bg-card);
   color: var(--text-primary);

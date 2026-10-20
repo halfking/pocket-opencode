@@ -9,6 +9,7 @@ import { topicShift } from '../features/meetings/topic-change'
 import { dedupeSegments } from '../features/meetings/meeting-dedup.ts'
 import { mergeSummaryReferences } from '../features/meetings/meeting-summary-merge.ts'
 import { shouldRefreshSummary, SUMMARY_INTERVAL_MS } from '../features/meetings/live-summary-gate.ts'
+import { selectSummarySegments, selectRecommendSegments } from '../features/meetings/live-summary-payload.ts'
 import { nextRefreshDelay, LIVE_SUMMARY_DEBOUNCE_MS } from '../features/meetings/live-summary-schedule.ts'
 
 
@@ -18,6 +19,25 @@ export function useLiveSummary(
   opts?: {
     onUpdated?: (summary: LiveSummary) => void
     meta?: Ref<{ title?: string; participants?: string[]; location?: string }>
+    /**
+     * §932：**去重后段**的提供方（可选）。
+     *
+     * ⚠⚠ 为什么需要它：这一层此前每轮刷新（30 秒一轮）都
+     *   `dedupeSegments(segments.value)` —— **O(n)** ⇒ 8 小时会议
+     *   （1952 段 / 691 轮）实测累计 **20.6–23.4 s 纯 CPU**（§932 实测，两批读数）
+     *   ⇒ 与 §931 那条（108.9 s）**同族同阶**。
+     *   ⇒ 而录音 runtime 的增量渲染器**本来就在**维护同一批段的去重状态
+     *   （同一个折叠）⇒ ⇒ 可以给出**逐字相同**的结果。
+     *
+     * ⚠ **必须逐字相同**：本层把这份数组当「整场去重结果」用
+     *   （`selectSummarySegments` 按 id 选、`selectRecommendSegments` 取尾部）
+     *   ⇒ 差一个字就是**送给 LLM 的提示词变了**。
+     *
+     * ⚠ **返回 null ⇒ 调用方回退到整场去重**（慢但正确）：
+     *   提供方对不上（数组被整份替换 / 会议不匹配 / 有段不是经由渲染器进来的）
+     *   时必须给 null ⇒ **宁可慢，不可给错**。
+     */
+    dedupedSegments?: (segments: MeetingSegment[]) => MeetingSegment[] | null
   },
 ) {
   const liveSummary = ref<LiveSummary | null>(null)
@@ -31,6 +51,29 @@ export function useLiveSummary(
   const recommendFallback = ref(false)
   const isUpdating = ref(false)
   const lastSegmentCount = ref(0)
+  /**
+   * §924：已经并入**当前摘要**的段 id。
+   *
+   * ⚠ 为什么需要它：服务端 `buildSummaryPrompt` 的契约是
+   *   「已有摘要 + **新增转写**」⇒ 请求体里的 segments 本该是「这一轮新增的部分」。
+   *   而这里此前送的是**整场会议**（每 30 秒一次）⇒ 请求体与提示词都 O(会议时长)，
+   *   一场会的累计流量是 O(时长²)；且服务端那条一次性 chat 路径不截断转写
+   *   ⇒ 提示词随会议变长 ⇒ 45 秒预算被撑爆 ⇒ 回落浏览器内 32000 **字节**闸
+   *   ⇒ §916 的「裁尾」让长会议上的摘要**只剩最后那 37 分钟**，且不报错。
+   *
+   * ⚠ 按 **id** 记，不按下标：`segments` 会被整份替换（`seedSegments`），
+   *   按下标切会在替换后切到新数组的中间 ⇒ 前半段被静默跳过。
+   */
+  let sentSegmentIds: string[] = []
+  /**
+   * §924：这份状态属于**哪一场**会议。
+   *
+   * ⚠ 同一个 composable 实例会换会议：`useSessionLiveRecord` 的
+   *   `meetingId.value = m.id`（同一会话里第二次开麦）⇒ 不隔离的话，
+   *   上一场的摘要会作为「已有摘要」被带进新会议，
+   *   而新会议的第一份摘要就成了「在旧摘要上更新」的产物。
+   */
+  let stateMeetingId = ''
   let throttleTimer: ReturnType<typeof setTimeout> | null = null
   let lastUpdateAt = 0
   /** ⚠ §424：上一次**分段变化**的时刻。debounce 的 ceiling 必须相对它算，
@@ -39,7 +82,20 @@ export function useLiveSummary(
 
   async function refresh(force = false) {
     const id = unref(meetingId)
-    if (!id || segments.value.length === 0) return
+    if (!id) return
+    // ⚠ §924：换场先把上一场的状态**全部**作废。
+    //   这一步必须在「有没有段」的早退**之前** —— 否则新会议还没攒够段的
+    //   那段时间里，界面显示的还是上一场的摘要（`liveSummary` 没被清）。
+    if (id !== stateMeetingId) {
+      stateMeetingId = id
+      sentSegmentIds = []
+      lastSegmentCount.value = 0
+      lastUpdateAt = 0
+      liveSummary.value = null
+      recommendations.value = []
+      recommendFallback.value = false
+    }
+    if (segments.value.length === 0) return
     // ⚠ §424 在飞守卫：**重排而不是跳过**。
     //   跳过不可接受 —— 会议最后一段到达后可能再没有新分段，
     //   丢掉这一次刷新就等于尾段永远进不了摘要。
@@ -64,11 +120,32 @@ export function useLiveSummary(
     //   /summary 与 /recommend，重复会出现在摘要、关键点、行动项里，
     //   还会让下面的 topicShift 主题漂移判断失准。
     //   去重后的副本不改 startMs —— 时间戳是真实采集的，不该被篡改。
-    const cleanSegments = dedupeSegments(segments.value)
+    // ⚠⚠ §932：优先用提供方给的**去重后段**（O(新增)），拿不到才回退整场去重（O(n)）。
+    //   ⚠ **本轮去重用的那份数组引用**只取一次（下面两处都用它）：
+    //   数组在两次读之间被整份替换的话，两处会看到**不同的数组** ⇒ 结果不自洽。
+    //   （⚠ 准确口径：`segments.value` 在本函数里**别处**也读了几次 ——
+    //   这里保证的是「去重那一条路**只读一次数组**」，不是「本函数只读一次 segments.value」。）
+    const rawSegments = segments.value
+    // ⚠⚠ §932：提供方是**可选**的、且**可能抛**（它跨了 runtime 边界）。
+    //   ⇒ 抛了就回退整场去重（慢但正确）⇒ 绝不让「一次异常」把这一轮摘要刷挂
+    //   ⇒ 降级**必须**留痕（否则提供方里的缺陷会一直静默）。
+    let provided: MeetingSegment[] | null = null
+    try {
+      provided = opts?.dedupedSegments?.(rawSegments) ?? null
+    } catch (e) {
+      console.warn('[live-summary] dedupedSegments 提供方异常 ⇒ 回退整场去重:', e)
+    }
+    const cleanSegments = provided ?? dedupeSegments(rawSegments)
+    // ⚠⚠ §924：服务端契约是「已有摘要 + **新增转写**」⇒ 本轮只送**新增的那几段**。
+    //   此前送的是整场会议（每 30 秒一次）⇒ 请求体/提示词 O(会议时长)、
+    //   累计 O(时长²)；长会议上服务端那条一次性 chat 路径的 45 秒预算会被撑爆
+    //   ⇒ 回落浏览器内 32000 字节闸 ⇒ 摘要静默退化成「最后 37 分钟」。
+    const selection = selectSummarySegments(cleanSegments, sentSegmentIds)
+    const payloadSegments = selection.segments
     try {
       const result = await meetingsApi.summarize(
         id,
-        cleanSegments,
+        payloadSegments,
         liveSummary.value?.summary,
         opts?.meta?.value,
       )
@@ -85,11 +162,20 @@ export function useLiveSummary(
       }
       lastSegmentCount.value = segments.value.length
       lastUpdateAt = Date.now()
+      // ⚠ §924：本轮送出去的段已经「并入摘要」了 ⇒ 记下水位线。
+      //   记在**摘要拿到之后**：`meetingsApi.summarize` 内部会吞掉失败并回落到
+      //   浏览器内兜底（内容仍然被算作已并入），只有**中止**会抛出来。
+      //   ⇒ 中止时不记 ⇒ 下一轮把同一批段重发 ⇒ **不丢内容**。
+      sentSegmentIds = selection.sentIds
 
       await updateMeeting(id, { liveSummary: liveSummary.value, summary: result.summary })
       opts?.onUpdated?.(liveSummary.value)
 
-      const recs = await meetingsApi.recommend(id, cleanSegments, result.summary)
+      // ⚠ §924：推荐这条送**有界的尾部**（服务端自己会截到 2000 个渲染码元，
+      //   它的注释写明「把预算花在最新的若干段上就够了，summary 已经承载了全局信息」）。
+      //   送整场会议 ⇒ 中间那些段**每轮白传一遍**（O(时长²) 的另一半来源）。
+      //   尾部取「≥ 服务端截断量」⇒ 服务端拼出来的提示词**逐字不变**。
+      const recs = await meetingsApi.recommend(id, selectRecommendSegments(cleanSegments), result.summary)
       if (recs.items.length > 0) {
         recommendations.value = recs.items
         // 拿到东西 ⇒ 之前那次「没拿到」的说法就该撤销（§30：宁可少说一句）。

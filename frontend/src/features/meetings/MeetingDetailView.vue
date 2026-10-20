@@ -166,6 +166,8 @@ import { buildSummaryPrompt } from './meeting-skills'
 import { captureDeviceLocation, formatCapturedTitle } from './meeting-meta'
 import { mergeRecommendations, relatedQueryFromTranscript } from './meeting-related'
 import { searchRelatedContext } from './meeting-related-search'
+// ⚠ §926：相关推荐刷新的并发闸（至多一个在途 + 在途期间合并成一次补跑）。
+import { RelatedRefreshGate } from './meeting-related-refresh.ts'
 import { createMeetingTodos, handoffTodoToAcc, shareTodoWithPerson } from './meeting-todo-persist'
 import { buildMeetingReminderNote, buildNoActionItemsNote } from './meeting-reminder-note.ts'
 import { dedupeSegments, renderTranscript } from './meeting-dedup.ts'
@@ -243,26 +245,59 @@ const noteRecs = ref<RecommendItem[]>([])
  */
 const agentRecs = ref<RecommendItem[]>([])
 let relatedTimer: ReturnType<typeof setTimeout> | null = null
+/**
+ * ⚠ §926：相关推荐刷新的**并发闸**。
+ *
+ * 缺陷形态：刷新是**每段触发**的（`watch(displaySegments.length)` ⇒ 2.5 s 定时器），
+ * 而一次刷新要等 `searchRelatedContext` 的三路（`Promise.all`）⇒ 段到达得比
+ * 一次刷新更快时，**每一次段到达都会再叠一个在途刷新** ⇒ 在途的第三方请求数
+ * 没有上界（实测每次触发 1.89 次外网请求，真实语料上中位 406 ms / max 6932 ms）。
+ *
+ * ⚠⚠ **这里合并的是「请求的并发」，不是「结果的合并」**：
+ * `refreshRelated()` 仍然**整体覆盖** `noteRecs`（§411 那道门钉着的既有契约），
+ * 合并掉的只是**中间轮次**，而补跑读的是**最新**分段 ⇒ 面板内容与「每次都跑」一致。
+ */
+const relatedGate = new RelatedRefreshGate()
 
 const {
   isRecording, segments, sttError, interimCaption, speakers, start, stop, appendText, formatElapsed, labelSpeaker,
-  seedSegments, editSegmentInMemory,
+  seedSegments, editSegmentInMemory, runtime: recorderRuntime,
 } = useMeetingRecorder(meetingId)
+/**
+ * §932：录音 runtime 的**增量渲染器**已经维护着同一批段的去重状态 ⇒
+ *   摘要链与界面分段列表都能直接拿它那份**逐字相同**的去重结果。
+ *
+ * ⚠ 拿不到（没在录 / 数组被整份替换 / 会议不匹配）⇒ 返回 `null`
+ *   ⇒ 消费方**回退到整场去重**（慢但正确）。
+ */
+const dedupedSegmentsProvider = (raw: MeetingSegment[]): MeetingSegment[] | null =>
+  recorderRuntime.dedupedSegmentsFor(meetingId.value, raw)
 const { liveSummary, recommendations, recommendFallback, isUpdating, refresh } = useLiveSummary(meetingId, segments, {
   meta: computed(() => ({
     title: meeting.value?.title ?? undefined,
     participants: meeting.value?.participants,
     location: meeting.value?.location ?? undefined,
   })),
+  dedupedSegments: dedupedSegmentsProvider,
 })
 
 const micOn = computed(() => wantMic.value || isRecording.value)
 // ★ 在源头去重（2026-10-06）：整页所有消费者（渲染、重新总结、待办转交）
 //   都从这里取数据，重复文本会顺着流进 LLM 摘要与待办。在 computed 里
 //   做一次即可，computed 本身带缓存，不会每帧重算。
-const displaySegments = computed(() => dedupeSegments(
-  segments.value.length ? segments.value : storedSegments.value,
-))
+const displaySegments = computed(() => {
+  // ⚠⚠ §932：录音中这一列是**每段到达就重算**的 ⇒ 此前每段一次 O(n) 全量去重
+  //   ⇒ 8 小时会议累计 O(时长²)。⇒ 优先用 runtime 增量渲染器那份
+  //   **逐字相同**的去重结果（O(1) 读）。
+  // ⚠ 拿不到 ⇒ 回退整场去重（没在录时 `segments.value` 是空的，
+  //   走的是 `storedSegments` —— 那份是**一次性**载入的 ⇒ 不构成 O(n²)）。
+  const live = segments.value
+  if (live.length) {
+    const provided = dedupedSegmentsProvider(live)
+    if (provided) return provided
+  }
+  return dedupeSegments(live.length ? live : storedSegments.value)
+})
 // §411：智能体那一路（实时 + 库里那份）作为 primary，检索那一路作为 extra ——
 //   与改动前的优先级一致，只是多接上了库里那份。三个来源两两去重按 type:id。
 const mergedRecs = computed(() =>
@@ -495,6 +530,7 @@ async function onAppendUtterance(text: string) {
       // ⚠ 走到这里时**分段已经存进库了** ⇒ 后面任何失败都不是「什么都没存」，
       //   文案必须换一副说法（否则用户会重说一遍，得到两条重复分段）。
       appendStage.value = 'transcript'
+      // ⚠ §925：**不声明** `throttled` ⇒ 立刻落库 —— 「补一句」是**用户可见**的改动。
       await updateTranscript(meetingId.value, renderTranscript(storedSegments.value))
       appendStage.value = 'related'
       await refreshRelated()
@@ -619,11 +655,18 @@ function onOpenRelated(item: RecommendItem) {
 }
 
 async function refreshRelated() {
-  const q = relatedQueryFromTranscript(displaySegments.value.map((s) => s.text))
-  // 笔记按 workspace_id 分区，不传会落到 'default'、关联笔记永远为空
-  noteRecs.value = await searchRelatedContext(q, {
-    excludeMeetingId: meetingId.value,
-    workspaceId: auth.workspaceId || 'default',
+  // ⚠ §926：走并发闸 —— 至多一个在途；期间到达的段合并成一次补跑。
+  // ⚠ 注意这里**不能**加 catch：`fire-and-forget-audit` 门按「函数体内有无 catch」
+  //   决定 `void refreshRelated()` 要不要登记（`src/__tests__/fire-and-forget-audit.test.ts`
+  //   里那条 `MeetingDetailView.vue::refreshRelated` count=1 就是它）。
+  //   而 `searchRelatedContext` 的三条子查询各自 catch 后返回 [] ⇒ 本函数不会抛。
+  await relatedGate.run(async () => {
+    const q = relatedQueryFromTranscript(displaySegments.value.map((s) => s.text))
+    // 笔记按 workspace_id 分区，不传会落到 'default'、关联笔记永远为空
+    noteRecs.value = await searchRelatedContext(q, {
+      excludeMeetingId: meetingId.value,
+      workspaceId: auth.workspaceId || 'default',
+    })
   })
 }
 

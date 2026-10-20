@@ -244,14 +244,33 @@ func (h *InvoiceHarvester) harvestOne(ctx context.Context, inv *Invoice) string 
 	if err != nil || em == nil {
 		inv.Status = "failed"
 		inv.LastError = "source email missing"
-		_ = h.Store.UpdateInvoiceHarvest(ctx, inv)
+		// ⚠⚠ §945：这行原来被 `_ =` 吞掉 ⇒ ⇒⇒ **完全无声**。
+		//
+		//	后果（比「日志没打」重）：**写失败 ⇒ 库里那份 status 仍是旧的**
+		//	（多半还是 "pending"）⇒ ⇒⇒ 而 `LastError`（失败原因）也丢了
+		//	⇒ ⇒⇒⇒ ⇒ 下一轮采集会**把它当成还没采过的票再采一遍**
+		//	⇒ ⇒⇒⇒ ⇒ 而这一轮那两条日志（:146 的 `-> failed`）只说了
+		//	⇒ ⇒⇒⇒ ⇒ 「处理结果失败」，**没说「连失败都没记进库」**
+		//	⇒ ⇒⇒⇒ ⇒ ⇒ 看起来像「重试了就会好」，实际是「永远重试」。
+		//
+		//	⚠ 为什么**不**改成致命错误：本函数返回的 "failed" **已经**
+		//	  进了 :146 的逐张日志与 `res.Failed` 计数 ⇒ ⇒⇒⇒ 主结果已可见
+		//	  ⇒ ⇒⇒⇒ 而写库失败**不该**再把「本轮采不到」升级成「本轮崩了」。
+		if err := h.Store.UpdateInvoiceHarvest(ctx, inv); err != nil {
+			log.Printf("[email/invoice-harvest] update invoice %s (failed: %s): %v —— 库里的状态未更新，下一轮会再采一次这张票",
+				inv.ID, inv.LastError, err)
+		}
 		return "failed"
 	}
 	if em.UID <= 0 {
 		// 客户端推送的历史邮件没有 UID，拉不到原文：标 failed 说明原因
 		inv.Status = "failed"
 		inv.LastError = "no IMAP uid (pushed email)"
-		_ = h.Store.UpdateInvoiceHarvest(ctx, inv)
+		// ⚠ §945：同上 —— 写失败必须留痕（库里状态没更新 ⇒ 下一轮重采）。
+		if err := h.Store.UpdateInvoiceHarvest(ctx, inv); err != nil {
+			log.Printf("[email/invoice-harvest] update invoice %s (failed: %s): %v —— 库里的状态未更新，下一轮会再采一次这张票",
+				inv.ID, inv.LastError, err)
+		}
 		return "failed"
 	}
 	// 重新判定 seller 是不是发件人兜底。
@@ -303,7 +322,11 @@ func (h *InvoiceHarvester) harvestOne(ctx context.Context, inv *Invoice) string 
 			if isPOP3SourcedEmail(*em) {
 				inv.Status = "failed"
 				inv.LastError = rerr.Error()
-				_ = h.Store.UpdateInvoiceHarvest(ctx, inv)
+				// ⚠ §945：同上 —— 写失败必须留痕（库里状态没更新 ⇒ 下一轮重采）。
+				if err := h.Store.UpdateInvoiceHarvest(ctx, inv); err != nil {
+					log.Printf("[email/invoice-harvest] update invoice %s (failed: %s): %v —— 库里的状态未更新，下一轮会再采一次这张票",
+						inv.ID, inv.LastError, err)
+				}
 				return "failed"
 			}
 			return h.markRetry(ctx, inv, fmt.Sprintf("fetch raw: %v", rerr))

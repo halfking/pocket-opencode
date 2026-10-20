@@ -130,7 +130,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api } from '../../api/client'
 import { emailApi } from '../../api/email'
-import { http } from '../../api/http'
+import { http, LLM_CHAT_TIMEOUT_MS } from '../../api/http'
 import { useToast } from '../../composables/useToast'
 import AddToLearningButton from '../study/AddToLearningButton.vue'
 import { ErrorState } from '../../components'
@@ -392,6 +392,8 @@ async function llmChat(prompt: string): Promise<string> {
   const res = await http<{ content: string }>('/api/llm/chat', {
     method: 'POST',
     body: JSON.stringify({ messages: [{ role: 'user', content: prompt }] }),
+    // ⚠ §929：此前吃 30 s 默认，而服务端有效预算是 85 s ⇒ 客户端先放弃 55 s。
+    timeoutMs: LLM_CHAT_TIMEOUT_MS,
   })
   return res.content
 }

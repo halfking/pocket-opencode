@@ -1,7 +1,6 @@
 package server
 
 import (
-	"encoding/json"
 	"net/http"
 	"strconv"
 	"strings"
@@ -111,7 +110,10 @@ func (s *Server) handleSessionSummarize(w http.ResponseWriter, r *http.Request, 
 	writeSessionJSON(w, map[string]any{"summary": summary})
 }
 
+// writeSessionJSON 写会话转写相关的 JSON 响应。
+//
+// ⚠ §946：走 writeJSON ⇒ 编码错误不再被吞（原来这里是 `_ =`）。
+// 　 字节与旧实现逐字相同（§946 实测：Marshal+"\n" == Encoder.Encode）。
 func writeSessionJSON(w http.ResponseWriter, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(v)
+	writeJSON(w, http.StatusOK, v)
 }

@@ -442,14 +442,14 @@ onMounted(() => {
 }
 .save-link { color: var(--brand-primary); font-weight: 600; }
 
-/* 模板切换 tab（M3 segmented button 风格） */
+/* 模板切换 tab（iOS 风格分段控件：矩形 + 小圆角，44px 触摸热区，与 ViewSegmentBar 统一） */
 .template-tabs {
   display: flex;
   gap: var(--space-1);
   margin: 0 var(--space-4) var(--space-2);
   padding: 4px;
   background: var(--bg-subtle);
-  border-radius: var(--radius-full);
+  border-radius: var(--radius-md);
   width: fit-content;
 }
 
@@ -460,12 +460,12 @@ onMounted(() => {
   padding: var(--space-1) var(--space-3);
   background: transparent;
   border: none;
-  border-radius: var(--radius-full);
+  border-radius: var(--radius-md);
   color: var(--text-secondary);
   font-size: var(--text-smd);
   font-weight: var(--font-weight-medium);
   cursor: pointer;
-  min-height: 32px;
+  min-height: 44px;
 }
 
 .tab .material-symbols-outlined {

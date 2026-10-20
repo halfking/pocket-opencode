@@ -107,6 +107,11 @@ func (s *Server) handleNotificationRules(w http.ResponseWriter, r *http.Request)
 			return
 		}
 		if err := s.notifyStore.UpsertRule(r.Context(), &body); err != nil {
+			// ⚠ §944 D4：撞上**别的租户**的 rule id ⇒ 409（可区分），不是 500。
+			if errors.Is(err, notifycenter.ErrRuleScopeConflict) {
+				writeError(w, http.StatusConflict, "rule id 已属于其他租户")
+				return
+			}
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}

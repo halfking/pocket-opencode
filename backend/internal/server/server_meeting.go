@@ -91,6 +91,51 @@ func (s *Server) handleMeetingRouter(w http.ResponseWriter, r *http.Request) {
 // STT is not configured) and updates the meeting status / transcript under the
 // caller's workspace scope. Returns 404 if the meeting is missing or owned by
 // another workspace.
+// ⚠⚠ §945：会议**状态写入**的两个 helper（原来 6 处都是 `_ = s.meetingStore.UpdateScoped(...)`）
+//
+//	★ 为什么要抽一份：**同一段逻辑抄两遍 ⇒ 同一缺陷必然出现在两处**
+//	（★ §80 形状）⇒ ⇒⇒ 6 处各写一遍「失败了怎么办」⇒ ⇒⇒ 处置就会**分叉**
+//	⇒ ⇒⇒ 所以这里把「写状态」这件事**收成共用的一份**，并把两种语义**分开命名**：
+//
+//	① markMeetingProgress —— **进度**标记（"transcribing" / "summarizing"）
+//	   ⇒ 写失败**不阻断**本次请求：它不是最终结果，后面还有终态写；
+//	     而如果这里就 500，会把一次**本来成功**的转写/摘要变成失败。
+//	   ⇒ 但失败必须**留痕**（日志）⇒ ⇒⇒ 「纯静音」不算失败处理。
+//
+//	② setMeetingStatus —— **终态**（"failed"）
+//	   ⇒ 写失败**必须让用户看见**（调用方回 500）⇒ ⇒⇒ 理由见函数注释。
+//
+//	⚠⚠ **终态写失败为什么必须让用户看见**（这是 §945 最重的一条）：
+//	失败的那一行会**永远停在中间状态**（例如 "summarizing"）
+//	⇒ ⇒⇒ 而那个状态**会被增量同步到别的设备**（§939 的同步链）
+//	⇒ ⇒⇒⇒ 用户在**所有设备**上都看到「总结中」，而且**永远不会自己结束**
+//	⇒ ⇒⇒⇒ 而 HTTP 层此刻会回「摘要失败」⇒ ⇒⇒⇒ **两处状态互相矛盾**
+//	⇒ ⇒⇒⇒ ⇒ 「失败必须可区分」在这里的含义是：错误文本要说出**真正卡住的地方**
+//	⇒ ⇒⇒⇒ ⇒ 而不是笼统的「失败了」。
+//
+//	⚠ 修法**不改响应形状**：终态写失败时回 500 + **错误文本**（与「摘要本身失败」
+//	  的文本**不同**）⇒ ⇒⇒ 客户端能区分「摘要失败」与「状态没写回去」。
+func (s *Server) markMeetingProgress(m *meeting.Meeting, status, ownerID, workspaceID string) {
+	m.Status = status
+	if err := s.meetingStore.UpdateScoped(m, ownerID, workspaceID); err != nil {
+		log.Printf("WARN: meeting %s: 进度状态 %q 写入失败（不阻断本次请求；后续终态写会覆盖它）: %v",
+			m.ID, status, err)
+	}
+}
+
+// setMeetingStatus 写一次**终态**状态，并**返回写库错误**（**不吞**）。
+//
+//	调用方必须自己决定怎么处置 ⇒ ⇒⇒ **不要**在这里返回 HTTP 响应
+//	（helper 带上 ResponseWriter 就会把「写库」与「HTTP」两件事揉在一起）。
+func (s *Server) setMeetingStatus(m *meeting.Meeting, status, ownerID, workspaceID string) error {
+	m.Status = status
+	if err := s.meetingStore.UpdateScoped(m, ownerID, workspaceID); err != nil {
+		log.Printf("ERROR: meeting %s: 状态 %q 写入失败: %v", m.ID, status, err)
+		return err
+	}
+	return nil
+}
+
 func (s *Server) handleTranscribeMeeting(w http.ResponseWriter, r *http.Request, id string) {
 	if id == "" {
 		writeError(w, http.StatusBadRequest, "missing meeting id")
@@ -107,21 +152,29 @@ func (s *Server) handleTranscribeMeeting(w http.ResponseWriter, r *http.Request,
 		writeError(w, http.StatusNotFound, "meeting not found")
 		return
 	}
-	m.Status = "transcribing"
-	_ = s.meetingStore.UpdateScoped(m, uid, workspaceID)
+	s.markMeetingProgress(m, "transcribing", uid, workspaceID)
 
 	r.Body = http.MaxBytesReader(w, r.Body, maxAudioBodyBytes)
 	audioData, err := io.ReadAll(r.Body)
 	if err != nil {
-		m.Status = "failed"
-		_ = s.meetingStore.UpdateScoped(m, uid, workspaceID)
+		if serr := s.setMeetingStatus(m, "failed", uid, workspaceID); serr != nil {
+			// ⚠ §945：终态写失败 ⇒ 会议会**永远停在 "transcribing"** ⇒ ⇒⇒
+			// 而那个状态**会被同步到别的设备** ⇒ ⇒⇒⇒ 回 500 并把「卡在哪」说清楚
+			// ⇒ ⇒⇒⇒ （不是笼统的 400「音频读失败」—— 那个会把状态矛盾藏起来）
+			writeError(w, http.StatusInternalServerError,
+				"failed to read audio data, and the meeting status could not be persisted (it may stay in progress)")
+			return
+		}
 		writeError(w, http.StatusBadRequest, "failed to read audio data")
 		return
 	}
 	defer r.Body.Close()
 	if len(audioData) == 0 {
-		m.Status = "failed"
-		_ = s.meetingStore.UpdateScoped(m, uid, workspaceID)
+		if serr := s.setMeetingStatus(m, "failed", uid, workspaceID); serr != nil {
+			writeError(w, http.StatusInternalServerError,
+				"empty audio data, and the meeting status could not be persisted (it may stay in progress)")
+			return
+		}
 		writeError(w, http.StatusBadRequest, "empty audio data")
 		return
 	}
@@ -150,8 +203,14 @@ func (s *Server) handleTranscribeMeeting(w http.ResponseWriter, r *http.Request,
 	// ⇒ 登记为 #24 待拍；修法是本处改走 plain 形态（试转页保持开）。
 	result, err := s.transcriber.TranscribeFor(ctx, scope, audioData, stt.FilenameForAudio(audioData, "meeting.wav"))
 	if err != nil {
-		m.Status = "failed"
-		_ = s.meetingStore.UpdateScoped(m, uid, workspaceID)
+		if serr := s.setMeetingStatus(m, "failed", uid, workspaceID); serr != nil {
+			// ⚠ §945：终态写失败 ⇒ 会议永远停在 "transcribing" ⇒ ⇒⇒ 回 500
+			//   并把「卡在哪」说清楚（⚠ 与下面那个 502「转写失败」**区分开**：
+			//   ⇒⇒⇒ 一个是「转写服务失败」，一个是「状态没写回去」）
+			writeError(w, http.StatusInternalServerError,
+				"transcription failed, and the meeting status could not be persisted (it may stay in progress)")
+			return
+		}
 		// 已带错误码的（stt_unavailable: …）原样回传。api/error-message.ts 取
 		// 第一个冒号前的 [a-z0-9_]+ 当错误码；再套 "transcription failed: "
 		// 前缀会让它匹配失败，用户就只能看到通用「服务端错误」。
@@ -196,13 +255,23 @@ func (s *Server) handleSummarizeMeeting(w http.ResponseWriter, r *http.Request, 
 		writeError(w, http.StatusBadRequest, "meeting has no transcript, transcribe first")
 		return
 	}
-	m.Status = "summarizing"
-	_ = s.meetingStore.UpdateScoped(m, uid, workspaceID)
+	s.markMeetingProgress(m, "summarizing", uid, workspaceID)
 
 	summary, err := meeting.SummarizeTranscript(m.Transcript, m.Title)
 	if err != nil {
-		m.Status = "failed"
-		_ = s.meetingStore.UpdateScoped(m, uid, workspaceID)
+		if serr := s.setMeetingStatus(m, "failed", uid, workspaceID); serr != nil {
+			// ⚠⚠ §945：这一处**是活路径**（前端 useLiveSummary.ts 真的在调
+			//   /api/meetings/{id}/summarize）⇒ ⇒⇒ 终态写失败 ⇒ 会议**永远
+			//   停在 "summarizing"** ⇒ ⇒⇒ 而那个状态**会被增量同步到别的设备**
+			//   ⇒ ⇒⇒⇒ 用户在所有设备上都看到「总结中」且永远不会结束
+			//   ⇒ ⇒⇒⇒ 而下面那句 500「summarization failed」只说了「摘要失败」
+			//   ⇒ ⇒⇒⇒ ⇒ 库里的状态与 HTTP 说的**互相矛盾** ⇒ ⇒⇒⇒
+			//   ⇒ 「失败必须可区分」：这里要说清**真正卡住的地方**。
+			log.Printf("ERROR: meeting %s: 摘要失败且状态未能写回（会议将停在 summarizing）: %v", m.ID, err)
+			writeError(w, http.StatusInternalServerError,
+				"summarization failed, and the meeting status could not be persisted (it may stay in progress)")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "summarization failed: "+err.Error())
 		return
 	}
@@ -1083,9 +1152,74 @@ func guardRefineResult(parsed map[string]any, transcript string, meta meetingMet
 	if leak := participantLeak(refined, meta, transcript); leak != "" {
 		fb := refineFallbackPayload(transcript)
 		fb["refine_rejected"] = true
+		// ⚠⚠ §908/D77：`refine_rejected` 现在有**两个**成因，前端要分开说。
+		//   不带这个字段时，前端会说「检测到与参会人名单不符的人名」——
+		//   而这次拦下的真实原因是「模型回显不完」，用户会被指向一个错的原因。
+		//   ⇒ 桶名是对外承诺（`refine-outcome-notice.ts` 自己写着这条纪律）。
+		fb["refine_rejected_reason"] = "participant_leak"
+		return fb, true
+	}
+	// ⚠⚠ §907/D76：精校稿明显比原文短 ⇒ 模型在**缩写**，不是在纠错。
+	//   原先这里**只有参会人那一条检查**，缩写是全漏的 ——
+	//   而缩写的后果比「精校没生效」严重得多：前端
+	//   `ingestMeetingArtifacts` 用 `refine.refinedTranscript || meeting.transcript`
+	//   建笔记 ⇒ 缩写稿成了**笔记正文** ⇒ §898 起那套段级向量索引到的
+	//   也就只有被缩写后的那一部分 ⇒ 长会议尾部**从未被索引过**，且零诊断。
+	if reason := refineShrinkage(refined, transcript); reason != "" {
+		log.Printf("[meeting] llm refine rejected: %s", reason)
+		fb := refineFallbackPayload(transcript)
+		fb["refine_rejected"] = true
+		fb["refine_rejected_reason"] = "shrinkage" // §908/D77：与名单污染**分开说**
 		return fb, true
 	}
 	return parsed, false
+}
+
+// refineMinLenRatio 精校稿最短能到原文的多少（按 rune）。
+//
+// ⚠⚠ 阈值是**算出来的**，不是拍的：
+//
+//	误伤余量（真实转写 `.artifacts/asr-s788/seg-asr/merged.txt`，3341 字 / 51 行）：
+//	  模型若把每行的 `[姓名] ` 前缀**全部去掉**（本任务只要求纠错、不要求保留说话人）
+//	  ⇒ 2 字名损失 7.6%、3 字名损失 9.2% ⇒ 仍高于 0.70，**不会误伤**。
+//
+//	要拦的是什么（§901 补充的真实字符↔时长读数 271 字/分钟）：
+//	  1 小时 ≈ 16,260 字 / 2 小时 ≈ 32,520 字 / 4 小时 ≈ 65,040 字
+//	  而这条链要求模型**原样回显**整篇 ⇒ 4 小时 ≈ 65,040 token 的输出，
+//	  远超常见 8k/16k 上限 ⇒ 长会议上模型**必然缩写**。
+//	  只回显 10% 时（6,504 字）远低于 0.70 ⇒ 被拦下、回落原文。
+//
+// ⚠ 取 0.70 是**故意宽松**：只拦「灾难性缩写」，不校准「刚好多少算异常」。
+//
+//	⛔ 这个阈值**未用真网关校准**（网关 key 401）⇒ 已登记为待属主定的一个数。
+//	回落方向是**原文**，与本文件既有的取舍一致（「不误改」优先于「多修一点」）。
+const refineMinLenRatio = 0.70
+
+// refineMinRunesForRatio 比例判据的**绝对下限**（rune）。
+//
+// ⚠ 没有它，比例判据会在极短文本上乱判（见 refineShrinkage 里的说明）。
+const refineMinRunesForRatio = 200
+
+// refineShrinkage 返回「精校稿被缩写得不像纠错」的说明串；长度正常则返回 ""。
+// ⚠ 按 rune 而不是按字节：中文一字 3 字节，按字节比会把正常的纠错判成缩写。
+func refineShrinkage(refined, transcript string) string {
+	orig := len([]rune(transcript))
+	if orig < refineMinRunesForRatio {
+		// ⚠⚠ §907：原文太短时**比例没有意义**。
+		//   这是被既有判据撞出来的（`meeting_sync_id_upsert_test.go` 的夹具是
+		//   15 字原文 / 4 字精校稿，桩数据）—— 一条 15 字的转写本来就不是会议，
+		//   「精校后还剩 27%」在它身上既可能是缩写、也可能只是桩，两边分不开。
+		//   ⇒ 绝对下限取 200 rune：按 §901 校准的 271 字/分钟，
+		//     200 字 ≈ **44 秒发言**，远低于任何真实会议，又高于任何桩夹具。
+		return ""
+	}
+	got := len([]rune(refined))
+	if float64(got) >= float64(orig)*refineMinLenRatio {
+		return ""
+	}
+	return fmt.Sprintf("refined transcript shrank to %d/%d runes (%.0f%%, floor %d%%) - "+
+		"the model abbreviated instead of correcting, falling back to raw transcript",
+		got, orig, float64(got)/float64(orig)*100, int(refineMinLenRatio*100))
 }
 
 // participantLeak 返回「**原本不在转写里**、却出现在结果里」的参会人姓名。
@@ -1631,7 +1765,7 @@ func parseRefineJSON(content string) (map[string]any, error) {
 // 的结果会入库或返回给客户端，全都会踩到：
 //
 //	server_email_summary.go:226   邮件 AI 摘要 → SetClassificationScoped 写库
-//	server_meeting_ingest.go:186  笔记 snippet → 写库
+//	server_meeting_note_ingest.go  笔记 snippet → 写库（§939 起搬到这里）
 //	server_meeting.go:437         会议摘要兜底 → JSON 返回
 //
 // 保留"字节上限"是有意的：这些上限都是按字节定的（500/200），改成字符上限

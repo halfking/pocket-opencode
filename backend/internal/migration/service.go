@@ -270,14 +270,39 @@ func originPriority(o string) int {
 
 // recordMigrationLink 在 task_session_links 记录迁移关系（逻辑会话链）。
 // Role 用新取值 migrated_from（旧会话）/ migrated_to（新会话）。
+//
+// ⚠⚠ §945：原来这两行是 `_ = s.execLink(...)` ⇒ ⇒⇒ **完全无声**。
+//
+//	为什么这个错误**不能**只当「日志没打」：
+//	迁移**命令已经下发**了（`migrate_to` 已送达目标实例）⇒ ⇒⇒ 会话**真的**
+//	迁过去了 ⇒ ⇒⇒ 而 `task_session_links` 是**逻辑会话链**的载体 ⇒ ⇒⇒
+//	⇒ 写失败 ⇒ 那条边**不在链上** ⇒ ⇒⇒⇒ 而按会话链重建逻辑会话的地方
+//	⇒ ⇒⇒⇒ **看不到这次迁移**（会话像是凭空断掉）。
+//
+//	⚠ 更糟的是**可能只写进一条边**：两条边是两次独立写入（`execLink` 各自
+//	  加锁、各自 INSERT）⇒ ⇒⇒⇒ 若是第二条失败 ⇒ ⇒⇒⇒⇒ 链上只剩
+//	  ⇒ ⇒⇒⇒⇒ `migrated_from` ⇒ ⇒⇒⇒⇒ **半条链**比**没有链**更难解释。
+//	  ⇒ ⇒⇒⇒ 本节**如实登记**「两条边应当原子写入」这条产品/实现口径，
+//	  ⇒ ⇒⇒⇒ ⇒ **不代拍**（改成一次事务写两行是改语义）。
+//
+//	⚠ 为什么**不**把它变成致命错误：迁移**已经发生**了（命令已下发）
+//	⇒ ⇒⇒⇒ 回一个失败会让调用方以为「没迁」⇒ ⇒⇒⇒⇒ 而事实上会话已经
+//	⇒ ⇒⇒⇒⇒ 在新实例上了 ⇒ ⇒⇒⇒ ⇒ 那是拿一个**记录**失败去否定
+//	⇒ ⇒⇒⇒⇒ **已经发生的事实** ⇒ ⇒⇒⇒ ⇒ 正确处置是「留痕」。
 func (s *Service) recordMigrationLink(taskID, fromInst, fromSession, toInst, newSession string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	now := time.Now().Unix()
 	// 旧会话标记为 migrated_from
-	_ = s.execLink(ctx, taskID, fromInst, fromSession, "migrated_from", now)
+	if err := s.execLink(ctx, taskID, fromInst, fromSession, "migrated_from", now); err != nil {
+		log.Printf("ERROR: 迁移链写入失败 task=%s from=%s/%s role=migrated_from —— 会话链上看不到这次迁移: %v",
+			taskID, fromInst, fromSession, err)
+	}
 	// 新会话标记为 migrated_to
-	_ = s.execLink(ctx, taskID, toInst, newSession, "migrated_to", now)
+	if err := s.execLink(ctx, taskID, toInst, newSession, "migrated_to", now); err != nil {
+		log.Printf("ERROR: 迁移链写入失败 task=%s to=%s/%s role=migrated_to —— 会话链上看不到这次迁移（可能只剩半条链）: %v",
+			taskID, toInst, newSession, err)
+	}
 }
 
 var linkMu sync.Mutex

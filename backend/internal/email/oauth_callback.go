@@ -214,7 +214,16 @@ func HandleOAuthCallback(cfg OAuthCallbackConfig) http.HandlerFunc {
 		}
 		// 返回成功页面（或重定向到移动端 deep link）
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprintf(w, `<html><body><h2>✅ OAuth 授权成功</h2><p>账户 %s 已连接，请返回应用。</p></body></html>`, entry.EmailAddress)
+		// §947：这是**响应体写** ⇒ 写失败（对端已走）在这时**改不了状态码**
+		// （响应头已经发出）⇒ 按 §946 的第三类处置：**留痕**，不许无声。
+		//
+		// ⚠ §946 的扫描器当时漏掉了这一处：它只认**函数形参**里的
+		//   `http.ResponseWriter`，而这里的 `w` 是**闭包形参**
+		//   （`HandleOAuthCallback` 返回的 handler）⇒ §947 用类型信息重扫时
+		//   才把它捞出来。
+		if _, err := fmt.Fprintf(w, `<html><body><h2>✅ OAuth 授权成功</h2><p>账户 %s 已连接，请返回应用。</p></body></html>`, entry.EmailAddress); err != nil {
+			log.Printf("WARN: oauth callback html write failed: %v", err)
+		}
 	}
 }
 

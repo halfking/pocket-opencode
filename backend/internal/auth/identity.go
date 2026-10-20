@@ -277,8 +277,33 @@ func RecordShadow(provider, subject, tenantID, displayName, primaryEmail string)
 		return
 	}
 	if displayName != "" || primaryEmail != "" {
-		if su, err := d.GetByProvider(ctx, provider, subject, tenantID); err == nil && su != nil {
-			_ = d.UpdateProfile(ctx, su.ShadowUserID, displayName, primaryEmail, "")
+		// ⚠⚠ §945：这一段原来把**读**错误和**写**错误都静默吞掉了：
+		//
+		//	① `err == nil && su != nil` ⇒ GetByProvider 失败时**直接跳过**
+		//	② `_ = d.UpdateProfile(...)` ⇒ 写失败时**连日志都没有**
+		//
+		//	⇒ ⇒⇒ 而本函数的契约（上面那段注释）白纸黑字写着
+		//	⇒ ⇒⇒ 「**Failures are logged** but never propagate」⇒ ⇒⇒⇒
+		//	⇒ ⇒⇒⇒ ⇒ 契约说「要记日志」，实现却是「一声不吭」⇒ ⇒⇒⇒
+		//	⇒ ⇒⇒⇒ ⇒ ⇒ **契约与实现矛盾** ⇒ ⇒⇒⇒ 而且矛盾点就在
+		//	⇒ ⇒⇒⇒ ⇒ ⇒ 正上方 5 行（:276 那句 shadowLog.Warn）⇒ ⇒⇒⇒
+		//	⇒ ⇒⇒⇒ ⇒ ⇒ ⇒ 所以修法落在**这一份**上（★ 同仓里已有正确
+		//	⇒ ⇒⇒⇒ ⇒ ⇒   写法时，修法要落在那一份上）。
+		//
+		//	后果：影子用户的**显示名/主邮箱**没更新 ⇒ ⇒⇒ 而这些字段是
+		//	按 provider+subject 存的 ⇒ ⇒⇒⇒ 同一份登录信息在影子库里
+		//	⇒ ⇒⇒⇒ 停留在旧值 ⇒ ⇒⇒⇒ ⇒ 而**没有任何一条日志**指向它。
+		su, err := d.GetByProvider(ctx, provider, subject, tenantID)
+		if err != nil {
+			shadowLog.Warn("shadow GetByProvider failed", "provider", provider, "subject", subject, "err", err)
+			return
+		}
+		if su == nil {
+			shadowLog.Warn("shadow GetByProvider returned no user", "provider", provider, "subject", subject)
+			return
+		}
+		if err := d.UpdateProfile(ctx, su.ShadowUserID, displayName, primaryEmail, ""); err != nil {
+			shadowLog.Warn("shadow UpdateProfile failed", "provider", provider, "subject", subject, "err", err)
 		}
 	}
 }

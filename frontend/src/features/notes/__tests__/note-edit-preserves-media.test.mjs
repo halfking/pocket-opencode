@@ -38,6 +38,8 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, it } from 'node:test'
+// §898：切段器是纯函数，直接引来做**行为断言**（源码形状断言管不住「换个写法绕过上限」）。
+import { splitForEmbedding } from '../note-storage-policy.ts'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const SRC = path.resolve(HERE, '..', '..', '..')
@@ -315,9 +317,14 @@ describe('§893 · D63：updateNote 的派生状态来源（内容没变时也�
     assert.match(updateParams, /decided\.searchText/,
       'search_text 不再由 decided 派生（改成了别的来源）⇒ 派生链已变，请重核本节结论')
     assert.match(updateParams, /decided\.tier/, 'storage_tier 同样应由 decided 派生')
-    // 向量那条也必须用重建后的检索文本，否则索引与 FTS 会分叉。
-    assert.match(u, /embedAndStore\(id, decided\.searchText\)/,
-      '向量写入不再用 decided.searchText ⇒ 请重核派生链')
+    // 向量那条必须同样来自**本次重建**的 decided（§896/D66 改用 decided.embedText，
+    // 它是同一份 decided 里的「纯内容」投影，与 searchText 同源不同形）。
+    // ⚠ 不变量没变：向量不得改用 existing.* / 旧值 / 别处重建的文本 ——
+    //   旧值在 tier='file' 时是 ≤280 字摘要（§891/D61 同族，会让向量与索引分叉）。
+    assert.match(u, /embedAndStore\(id, decided\.embedText\)/,
+      '向量写入不再用本次重建的 decided.embedText ⇒ 请重核派生链')
+    assert.doesNotMatch(u, /embedAndStore\([^)]*existing\./,
+      '向量改用了 existing.*（tier=file 时那是 ≤280 字摘要）⇒ 向量会与 FTS 索引分叉')
   })
 
   it('★★★ 反向：不得改成「内容没变就用 existing.content 当 nextContent」', () => {
@@ -349,5 +356,238 @@ describe('§893 · D63：updateNote 的派生状态来源（内容没变时也�
     const list = read(path.join(SRC, 'features', 'notes', 'NoteListView.vue'))
     assert.match(list, /summarizeError\.value = apiError\(e, '总结失败/,
       '摘要落库那条的错误文案已改（不再归因成「总结失败」）⇒ 简报 116 第 ① 条可以撤了')
+  })
+})
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * §896 · D66：送去做向量的那份文本有两个缺陷
+ * ═══════════════════════════════════════════════════════════════════════════
+ * ① **喂给 embedding 模型的是 FTS 检索文本**，而那份文本的尾巴是
+ *    `cjkBigramTokens` 合成出来的机器 bigram（最多 80 个 gram ≈ 239 字符）
+ *    —— 它是给 FTS5 做 CJK 子串匹配用的，对 embedding 是纯噪声。
+ *    实测：正文 200 字的随手记，实收文本里 **53.2%** 是合成 gram。
+ * ② **`/api/embed` 服务端有 16000 字符硬上限**
+ *    （`backend/internal/server/server_assistant.go:2853`），
+ *    前端此前**不知道**，发的是不截断的整份文本
+ *    ⇒ 正文超过约 15753 字（≈63 分钟连续发言）必然 400；
+ *    而创建路径只 `console.warn`、编辑保存路径 `.catch(() => {})` **完全静默**，
+ *    全仓又没有 embedding 回填 ⇒ **这条笔记永远不会有向量**，语义检索永远搜不到它。
+ *
+ * 本组判据盯三件事：**去噪**、**长度预算**、**失败不再静默**。
+ * 最后一组带负控：把两个 `.catch` 换回原来的形状，门必须报红。
+ */
+describe('§896 · D66：向量化用的文本不该是 FTS 文本，也不该无上限', () => {
+  it('★★★ 向量必须用 decided.embedText（纯内容），不得用 decided.searchText', () => {
+    const u = read(path.join(SRC, 'features', 'notes', 'notes-persist.ts'))
+    assert.match(u, /embedAndStore\(id, decided\.embedText\)/,
+      '编辑保存路径的向量又改回 decided.searchText ⇒ 合成 gram 回到 embedding 输入里')
+    assert.match(u, /embedAndStore\(note\.id, decided\.embedText \|\| note\.content\)/,
+      '创建路径的向量没有走 decided.embedText')
+    // 反向：searchText 只该出现在 UPDATE 的派生列里，不该再被送去做向量。
+    // ⚠ 量具事故（已写进注释）：第一版正则要求实参是 `note.id`，
+    //   而编辑保存那条传的是裸 `id` ⇒ 只数到 1 处 ⇒ 判据自己红了。
+    //   「数量判据」必须允许两种入参写法，否则它会替漏网背书。
+    const embedCalls = [...u.matchAll(/embedAndStore\(\s*[\w.]+\s*,\s*([^)]*)\)/g)].map((m) => m[1].trim())
+    assert.ok(embedCalls.length >= 2, `只找到 ${embedCalls.length} 处 embedAndStore 调用（判据该按数量而不是按字面量钉）`)
+    for (const arg of embedCalls) {
+      assert.doesNotMatch(arg, /searchText/,
+        `embedAndStore 的实参是 ${JSON.stringify(arg)} —— 那是 FTS 文本（含合成 bigram），不是 embedding 输入`)
+    }
+  })
+
+  it('★★★ decideNoteStorage 必须同时给出两个投影，且 embedText 不含 gram', () => {
+    const pol = read(path.join(SRC, 'features', 'notes', 'note-storage-policy.ts'))
+    assert.match(pol, /export function buildEmbedText\(/, 'note-storage-policy 少了 buildEmbedText')
+    assert.match(pol, /embedText,\n?\s*persistBodyFile: false,/, 'inline 分支没有产出 embedText')
+    assert.match(pol, /embedText,\n?\s*persistBodyFile: true,/, 'file 分支没有产出 embedText')
+    // buildEmbedText 自身不得引用 gram 构造器 —— 这就是「去噪」这件事本身。
+    const body = pol.slice(pol.indexOf('export function buildEmbedText'), pol.indexOf('export function buildSearchText'))
+    assert.doesNotMatch(body, /cjkBigramTokens/,
+      'buildEmbedText 里又出现了 cjkBigramTokens ⇒ 去噪被撤销')
+    // 反向负控：buildSearchText 必须仍然带 gram（FTS 侧一个字都不能变）
+    assert.match(pol.slice(pol.indexOf('export function buildSearchText')), /cjkBigramTokens/,
+      'buildSearchText 不再带 gram ⇒ FTS 的 CJK 子串匹配塌了（§886 的修法被误伤）')
+  })
+
+  it('★★★ 发出去的每一段都必须在服务端上限内，且上限值与后端硬编码一致', () => {
+    // ⚠⚠ §898：这条门**换了实现**（截断 ⇒ 分段），但**不变量没变**：
+    //   「/api/embed 收到的 text 永远不超过服务端上限」才是要守的东西。
+    //   ⇒ 而且判据从「源码里有截断」升级成**行为断言**：
+    //     直接对切段器喂超长文本，检查**每一段**的长度。
+    //   （源码形状断言管不住「换个写法绕过上限」，行为断言管得住。）
+    const u = read(path.join(SRC, 'features', 'notes', 'notes-persist.ts'))
+    assert.match(u, /const EMBED_TEXT_CHAR_LIMIT = 16000/,
+      'EMBED_TEXT_CHAR_LIMIT 不存在或不是 16000 ⇒ /api/embed 会拿到必然被拒的请求体')
+    // 请求体必须发的是**段文本**，不是原 content
+    // ⚠⚠ §899：段文本的取法从 `c.text` 变成 `chunks[i].text`（增量重嵌那一版），
+    //   所以这里**不再钉死变量名**，只钉「发的是某个段的 .text」。
+    //   ⇒ 钉变量名会把「换了取法但语义没变」误判成缺陷。
+    assert.match(u, /JSON\.stringify\(\{ text: [A-Za-z_\[\]0-9.]+\.text \}\)/,
+      '/api/embed 请求体没有用段文本（仍在发整篇 content ⇒ 超长必然 400）')
+    assert.doesNotMatch(u, /JSON\.stringify\(\{ text: content \}\)/,
+      '/api/embed 又在发整篇 content ⇒ 超长笔记必然 400 且永远拿不到向量')
+    // 行为：切段器吐出来的每一段都必须在上限内，且**整篇被覆盖**（不丢尾部）
+    //
+    // ⚠⚠⚠ §917：这条门原先量的是**字符**（`c.text.length <= LIMIT`），
+    //   而**服务端那道闸判的是 UTF-8 字节**（Go 的 `len(string)`）
+    //   ⇒ **信息与判定不同形** ⇒ 这道门在 CJK 夹具上**恒绿**：
+    //   `'甲'` 是 3 字节 ⇒ 修复前每块 16000 字符 = **48000 字节**
+    //   ⇒ 服务端**必然 400**（⇒ 那条笔记 0 向量），而这道门**全绿**。
+    //   ⇒ 门**没有变松**：是**测量单位被纠正**成它自己标题里写的那个量
+    //   （「在服务端上限内」）。⚠ 纠正之后它当场变红 ⇒ 这正是空气门被识破的样子。
+    const LIMIT = 16000
+    const long = '甲'.repeat(70000)
+    const chunks = splitForEmbedding(long, { limit: LIMIT })
+    assert.ok(chunks.length > 1, `70000 字只切出 ${chunks.length} 段 ⇒ 分段没生效`)
+    for (const c of chunks) {
+      const bytes = Buffer.byteLength(c.text, 'utf8')
+      assert.ok(bytes <= LIMIT,
+        `有一段长 ${c.text.length} 字符 / ${bytes} 字节，超过服务端上限 ${LIMIT} **字节** ⇒ 必然 400`)
+      // 字符数那条**保留**：字节 ≤ 16000 ⇒ 码元必然 ≤ 16000（每码元 ≥ 1 字节）
+      assert.ok(c.text.length <= LIMIT,
+        `有一段长 ${c.text.length} 字符，超过 ${LIMIT} ⇒ 切段失控`)
+    }
+    // 整篇必须被覆盖到（这是「不再截断」与「截断」的本质区别）
+    const covered = chunks.map((c) => c.text).join('')
+    assert.ok(covered.length >= long.length - LIMIT,
+      `分段后覆盖的字符数 ${covered.length} 远小于原文 ${long.length} ⇒ 尾部被丢了`)
+  })
+
+  it('★★★ 两条嵌入路径的失败必须同样出声（编辑保存那条曾是完全静默的）', () => {
+    const u = read(path.join(SRC, 'features', 'notes', 'notes-persist.ts'))
+    const catches = [...u.matchAll(/embedAndStore\([^)]*\)\.catch\(\(([^)]*)\)\s*=>\s*\{([^}]*)\}/g)]
+    assert.equal(catches.length, 2,
+      `找到 ${catches.length} 处 embedAndStore().catch()（期望 2：创建 + 编辑保存）`)
+    for (const [, param, body] of catches) {
+      assert.match(param, /e|err|error/, `有一处 catch 没接住错误参数：${param}`)
+      assert.match(body, /console\.(warn|error)/,
+        `有一处 embedAndStore().catch() 是空的 ⇒ 嵌入失败零痕迹（${body.trim()}）`)
+    }
+    // 反向负控：不得出现「参数接了但什么也不做」
+    assert.doesNotMatch(u, /embedAndStore\([^)]*\)\.catch\(\(\)\s*=>\s*\{\s*\}\)/,
+      '又有 embedAndStore().catch(() => {}) 空吞了 —— 这正是 §896 修掉的那一行')
+  })
+})
+
+/**
+ * §917：`/api/embed` 的闸是 **UTF-8 字节**，而切段器历史上按**码元**切
+ * ⇒ 「按 16000 码元切出来的块」是 **48000 字节** ⇒ **每一次 `/api/embed` 都 400**
+ * ⇒ 那条笔记**一个向量都建不出来** ⇒ 语义检索对它 **0 命中**（FTS 仍可用）。
+ *
+ * ── 缺陷本体（实测，真实 ASR 语料）──
+ *   `.artifacts/asr-s788/seg-asr/merged.txt`：3392 字 / **9938 字节** / 51 行
+ *   ⇒ **2.93 字节/字** ⇒ 16000 字节的闸只装得下 **5460 个中文字**。
+ *   ⇒ **失败带 = 5460 ~ 16000 字**（≈ **20 ~ 59 分钟**发言）：
+ *     ① 走「整篇一段」的早退分支 ⇒ **1 块 16000 字节以上** ⇒ 400；
+ *     ② 无换行无句号的正文 ⇒ 按 16000 **码元**切 ⇒ 每块 **48000 字节** ⇒ 全 400。
+ *   ⇒ ⚠ **1 小时以上反而正常**（按 §900 的行/句锚点切成 ~4000 字的组 ⇒ 11.7KB/块）
+ *     ⇒ 所以这是**一条失败带**，不是单调退化 ⇒ 只看长文本会以为没问题。
+ *
+ * ── 修法 ──
+ *   切段器的「整篇一段」早退分支要**同时**满足码元阈值与**字节**闸；
+ *   切完再过一道 `capChunksByBytes` 兜住「组内再切」与「末段并回上一段」两条路径。
+ *   ⚠ **不动分组逻辑** ⇒ §899 的段边界与既有笔记的块哈希**不变**
+ *     （实测：>16000 字的文本**逐段一致**）⇒ 增量重嵌的复用率不受影响。
+ */
+describe('§917 每块送进 /api/embed 的文本必须过**字节**闸（不是字符闸）', () => {
+  /** ⚠ 刻意**不**从生产代码 import 这个数：写死服务端那个值，
+   *  前端的镜像常量一旦漂移，本判据立刻红（否则两边一起错就没人知道）。 */
+  const GATE = 16000
+  const bytes = (s) => Buffer.byteLength(s, 'utf8')
+
+  /** 真实转写的形状：每行一个 ASR 分段（中位 66 字，§900 实测）。 */
+  const realTranscriptShape = (n) => Array.from({ length: n }, (_, i) =>
+    `第${i}点网关的抽象层现在有一个整体系有一套那个整大模型抽象层，然后所谓的CI能够借用到这个抽象层${'细节'.repeat(5)}`,
+  ).join('\n')
+
+  /** 无换行但有句号的形状（随手记增量链 `appendTranscript` 的形状）。 */
+  const noNewline = (n) => Array.from({ length: n }, (_, i) =>
+    `第${i}点网关的抽象层现在有一个整体系有一套那个整大模型抽象层${'细节'.repeat(5)}。`,
+  ).join('')
+
+  /** 既无换行也无句号（纯口述无标点）。 */
+  const noStructure = (n) => '会议纪要讨论季度预算与交付里程碑排期以及客户跟进安排事项与负责人确认'.repeat(n)
+
+  /**
+   * ⚠ 三条语料各取多少段，**必须先量**（本节第一版取 60 段 ⇒ 字数不够，
+   *   三条都**没踩进失败带** ⇒ 量具自证当场把它抓了出来 —— 这条自证存在的意义）。
+   *   实测（真实形状，中文约 2.93 字节/字）：
+   *     真实转写形状 150 段 = 8889 字 / 25089 字节 ✔ 在带内
+   *     无换行有句号 150 段 = 6190 字 / 17890 字节 ✔ 在带内
+   *     无结构     200 段 = 6800 字 / 20400 字节 ✔ 在带内
+   */
+  const BAND_N = { rt: 150, noNewline: 150, noStructure: 200 }
+
+  it('★ 量具自证：三条语料必须真的踩在「字符不超闸、字节超闸」的缝里', () => {
+    for (const [name, text] of [
+      ['真实转写形状', realTranscriptShape(BAND_N.rt)],
+      ['无换行有句号', noNewline(BAND_N.noNewline)],
+      ['无结构', noStructure(BAND_N.noStructure)],
+    ]) {
+      const chars = [...text].length
+      const b = bytes(text)
+      assert.ok(chars <= GATE,
+        `量具失效：${name} 有 ${chars} 个字符 > ${GATE} ⇒ 它量不到单位差异`)
+      assert.ok(b > GATE,
+        `量具失效：${name} 只有 ${b} 字节 ≤ ${GATE} ⇒ 它量不到单位差异`)
+    }
+  })
+
+  it('★ 每块送进 /api/embed 的文本，**字节数**必须 ≤ 闸（三种形态 × 多个长度）', () => {
+    const shapes = [
+      ['真实转写形状', realTranscriptShape],
+      ['无换行有句号', noNewline],
+      ['无结构', noStructure],
+    ]
+    for (const [name, mk] of shapes) {
+      for (const n of [30, 60, 120, 200, 400, 900]) {
+        const text = mk(n)
+        const chunks = splitForEmbedding(text)
+        assert.ok(chunks.length > 0, `${name}/${n}：切出 0 段`)
+        for (const c of chunks) {
+          const b = bytes(c.text)
+          assert.ok(b <= GATE,
+            `${name}/${n}（${text.length} 字）：有一段 ${c.text.length} 字符 / **${b} 字节** ` +
+            `> 闸 ${GATE} 字节 ⇒ 这一次 /api/embed **必然 400** ⇒ 这条笔记 0 向量`)
+        }
+      }
+    }
+  })
+
+  it('★ 失败带（字符不超闸、字节超闸）必须**被切开**，不能整篇一次发出去', () => {
+    // ⚠ 这条是本节的**判别动作**：修复前这一段是**整篇一块** ⇒ 必然 400。
+    for (const [name, text] of [
+      ['真实转写形状', realTranscriptShape(BAND_N.rt)],
+      ['无换行有句号', noNewline(BAND_N.noNewline)],
+    ]) {
+      assert.ok([...text].length <= GATE && bytes(text) > GATE,
+        `量具失效：${name} 不在失败带里`)
+      const chunks = splitForEmbedding(text)
+      assert.ok(chunks.length > 1,
+        `${name}：${text.length} 字 / ${bytes(text)} 字节 被整篇发成 1 块 ⇒ 必然 400`)
+    }
+  })
+
+  it('★ 切段不能丢内容，且每块必须是原文的**真子串**（偏移精确）', () => {
+    const text = realTranscriptShape(200)
+    const chunks = splitForEmbedding(text)
+    for (const c of chunks) {
+      assert.equal(text.slice(c.start, c.end), c.text,
+        `有一段不是原文的真子串（start=${c.start} end=${c.end}）⇒ 哈希与原文对不上`)
+    }
+    // 覆盖度：按顺序把每段文本拼起来，应当覆盖原文去掉分隔符后的全部内容
+    const stripped = text.replace(/\n+/g, '')
+    const joined = chunks.map((c) => c.text).join('')
+    let i = 0
+    for (const ch of joined) { if (i < stripped.length && stripped[i] === ch) i++ }
+    assert.equal(i, stripped.length,
+      `切段后只覆盖了原文的 ${((i / stripped.length) * 100).toFixed(1)}% ⇒ 内容丢了`)
+  })
+
+  it('★ 短笔记行为**逐字不变**（低于闸 ⇒ 仍然整篇一块，一个字都不动）', () => {
+    const text = '张伟：下周三跟客户过一遍方案。\n李娜：预算按季度复核，缺口走专项。'
+    const chunks = splitForEmbedding(text)
+    assert.equal(chunks.length, 1, `短笔记被切成了 ${chunks.length} 块 ⇒ 行为变了`)
+    assert.equal(chunks[0].text, text, '短笔记的块文本与原文不一致 ⇒ 行为变了')
   })
 })

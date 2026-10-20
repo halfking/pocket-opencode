@@ -12,6 +12,7 @@ package server
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -127,16 +128,24 @@ func (s *Server) createTasksFromMeeting(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
-	existing, err := s.taskStore.ListTasksScoped(r.Context(), wsID)
+	// ★ §938：与精校链**共用同一把查重钥匙**（meetingTodoIndex）。
+	//
+	//	修复前这里是 ListTasksScoped（把**整个 workspace 的全部任务**搬进
+	//	进程）再在内存里按 origin 过滤 ⇒ 代价 ∝ 租户的任务总数。
+	//
+	//	更关键的是：那条过滤键的溯源列，**精校链一条都不写** ⇒ ⇒
+	//	这个查重看不见精校链建的 task ⇒ ⇒ 用户手动点一次「转待办」，
+	//	就再得一整套重复的待办（两套形状还不一样）。
+	//
+	//	⇒ 现在两条链都写 origin_kind='meeting' / origin_ref=<meetingID>，
+	//	  也都用这一个入口查 ⇒ ⇒ 互相可见。
+	seen, err := s.meetingTodoIndex(r.Context(), meetingTodoTarget{
+		WorkspaceID: wsID,
+		MeetingID:   meetingID,
+	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
-	}
-	seen := map[string]bool{}
-	for _, t := range existing {
-		if t.OriginKind == task.OriginMeeting && t.OriginRef == meetingID {
-			seen[strings.TrimSpace(t.Title)] = true
-		}
 	}
 
 	now := time.Now()
@@ -150,7 +159,7 @@ func (s *Server) createTasksFromMeeting(w http.ResponseWriter, r *http.Request, 
 			skipped++
 			continue
 		}
-		if seen[title] {
+		if seen[meetingTodoDedupeKey(title)] {
 			skipped++
 			continue
 		}
@@ -174,7 +183,7 @@ func (s *Server) createTasksFromMeeting(w http.ResponseWriter, r *http.Request, 
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		seen[title] = true
+		seen[meetingTodoDedupeKey(title)] = true
 		out = append(out, *created)
 		s.recordOriginEvent(r, wsID, userID, created)
 		s.broadcastTaskEvent("task_created", created)
@@ -197,7 +206,7 @@ func (s *Server) recordOriginEvent(r *http.Request, wsID, userID string, t *task
 	// EventID is derived from the provenance, so converting the same meeting
 	// twice does not double the activity entry.
 	eventID := "origin:" + t.OriginKind + ":" + t.OriginRef
-	_ = s.taskStore.AppendEvent(r.Context(), task.WorkItemEvent{
+	if err := s.taskStore.AppendEvent(r.Context(), task.WorkItemEvent{
 		WorkspaceID: wsID,
 		TaskID:      t.ID,
 		EventID:     eventID,
@@ -205,7 +214,24 @@ func (s *Server) recordOriginEvent(r *http.Request, wsID, userID string, t *task
 		ActorUserID: userID,
 		Payload:     payload,
 		CreatedAt:   t.CreatedAt.Unix(),
-	})
+	}); err != nil {
+		// ⚠⚠ §945：这行原来被 `_ =` 吞掉 ⇒ ⇒⇒ **无声**。
+		//
+		//	而这个函数上面那段注释自己写着：这条条目让 provenance
+		//	「**在 UI 与审计链里可见**，而不是只活在数据库列里」
+		//	⇒ ⇒⇒⇒ 写失败时，**它恰好发生了那条注释要避免的后果**
+		//	⇒ ⇒⇒⇒ （溯源只活在 `origin_kind` / `origin_ref` 两列里）
+		//	⇒ ⇒⇒⇒ ⇒ 而且**没人知道**它没写成。
+		//
+		//	⚠ 为什么**不能**把整个请求变成 500：
+		//	任务**已经建好了**（`CreateTask` 成功、响应已经是 201 的内容）
+		//	⇒ ⇒⇒ 回 500 会让客户端以为「没建成」⇒ ⇒⇒⇒ 而客户端的重试
+		//	⇒ ⇒⇒⇒ 会把这次成功**变成一次失败**⇒ ⇒⇒⇒ ⇒ 那是拿一个
+		//	⇒ ⇒⇒⇒ 次要副作用去否定**主要结果**。
+		//	⇒ ⇒⇒ 所以：**不改响应**，但必须**留痕**（⇒ 「纯静音」不算失败处理）。
+		log.Printf("ERROR: task %s: 溯源活动条目写入失败（originKind=%s originRef=%s）—— 溯源将只存在于 origin_kind/origin_ref 两列里，审计链里看不到: %v",
+			t.ID, t.OriginKind, t.OriginRef, err)
+	}
 }
 
 // meetingActionDescription preserves the action item's owner and deadline,

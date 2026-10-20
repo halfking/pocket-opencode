@@ -23,8 +23,34 @@ import { filenameForMimeType } from './stt-filename'
  * 切成 N 段**串行**转写（两小时会议约 288 段），服务端自身给到 10 分钟。
  * 客户端必须比服务端更宽裕，否则会出现「服务端还在算、客户端先断开」，
  * 而用户看到的是「转写失败」。
+ *
+ * ⚠⚠ §930：**导出**它，让随手记那条兜底转写用**同一个数**。
+ *   此前随手记在 `recordingRuntime.ts` 里自己写了一个 `10 * 60_000` 的
+ *   `withTimeout` ⇒ 它的**有效**客户端预算被压回 10 分钟 ⇒ **正好等于**
+ *   服务端的 `fullTranscribeTimeout`（10 分钟）⇒ **「相等即错」**：
+ *   客户端计时含网络与鉴权开销，实际总是先到点 ⇒ 一场刚好跑满 10 分钟的
+ *   录音**必然**失败，而失败形态是「转写失败」、录音却还在。
+ *   ⇒ 单一真值 ⇒ 两处再也不会漂。
  */
-const FULL_TRANSCRIBE_TIMEOUT_MS = 11 * 60_000
+export const FULL_TRANSCRIBE_TIMEOUT_MS = 11 * 60_000
+
+/**
+ * 「重新扫描网关」的客户端超时（§930）。
+ *
+ * ⚠⚠ 此前它吃的是**通用**的 `LONG_REQUEST_TIMEOUT_MS`（120s），
+ *   而服务端 `handleSTTDiscover` 的预算**也是 120 秒**
+ *   （`server_stt_settings.go:760` 的 `context.WithTimeout(r.Context(), 120*time.Second)`）
+ *   ⇒ ⇒ **相等即错** ⇒ 「刚好用满预算」的那一档必然失败。
+ *
+ * ⚠ 为什么不能直接调大 `LONG_REQUEST_TIMEOUT_MS`：它是**共用**常量
+ *   （邮件的 sync/move/organize/ops-sync、逐封摘要、STT 的 discover 与
+ *   transcribe-incremental 都在用）⇒ 动它会波及六条不相干的路由。
+ *   ⇒ 给 discover 自己的常量。
+ *
+ * ⚠ 150 s 的余量（30 s）给「服务端已经开工、客户端还没收到响应头」那段：
+ *   网络 + 鉴权 + 网关候选逐个探测的排队。
+ */
+export const STT_DISCOVER_TIMEOUT_MS = 150_000
 
 /**
  * 「试转」的客户端超时。
@@ -240,7 +266,9 @@ export const sttSettingsApi = {
     return http<SttDiscoveryResult>('/api/stt/discover', {
       method: 'POST',
       signal,
-      timeoutMs: LONG_REQUEST_TIMEOUT_MS,
+      // ⚠ §930：此前吃通用 LONG_REQUEST_TIMEOUT_MS（120s），而服务端预算是
+      //   **120 秒** ⇒ **相等即错** ⇒ 改用专用常量（150s）。
+      timeoutMs: STT_DISCOVER_TIMEOUT_MS,
     })
   },
 

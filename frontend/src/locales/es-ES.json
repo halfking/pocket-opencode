@@ -400,6 +400,7 @@
     "imapUnauthorized": "La autorización del buzón caducó. Vuelve a conectarla.",
     "imapFailed": "No se pudo conectar con el servidor de correo. Revisa la red y la cuenta.",
     "sttNotConfigured": "El reconocimiento de voz aún no está configurado.",
+    "sttAudioTooLarge": "Ese archivo de audio es demasiado grande. Una sola subida está limitada a 25 MB.",
     "llmNotConfigured": "Aún no hay ningún modelo configurado. Elige uno en Ajustes de modelos.",
     "modelNotFound": "Ese modelo ya no existe; puede que se haya eliminado.",
     "gatewayUnreachable": "No se puede conectar con la pasarela de modelos. Revisa su dirección y la red.",

@@ -156,6 +156,73 @@ func TestSttTranscribeRejectsUnsupportedContentType(t *testing.T) {
 	}
 }
 
+// §922：音频**太大**必须与「请求体无效」分开。
+//
+// 缺陷本体（**实测**）：前端发的是 JSON + base64（`frontend/src/api/stt.ts`），
+// 而服务端对 `/api/stt/transcribe*` 的**整个请求体**限 25 MiB
+// （`requestBodyLimitMiddleware` 的 `maxAudioBodyBytes`）。
+// ⇒ body 超限时，`json.NewDecoder(r.Body).Decode()` 读到的是**被截断的半截 JSON**
+// ⇒ decode 必然失败 ⇒ 旧实现回 **400 "invalid body"**
+// ⇒「音频太大」被说成「请求体无效」⇒ 用户完全无从判断
+// （**实测**：26 MiB 的 base64 body 拿到的就是 400 "invalid body"）。
+//
+// 修法：先读 body，并把两种结论分开 ——「读超了」（*http.MaxBytesError）
+// ⇒ **413 + stt_audio_too_large**（前端 `extractErrorCode` 取得到 ⇒ 有中文文案）；
+// 「JSON 坏了」⇒ 仍是 400 "invalid body"（**不改变既有语义**）。
+//
+// ⚠ 附带一条**实测事实**（本节读数）：因为前端发的是 base64（体积 ×4/3），
+// 而外层卡的是**请求体** ⇒ 25 MiB 的 body 解码后只有 ~18.75 MiB
+// ⇒ 服务端那道**内层**的 `len(audioData) > 25<<20` 闸**永远不触发**
+// ⇒ 它那条 "audio too large (max 25 MB)" 文案对 JSON 形态是**死文案**。
+func TestSttTranscribeOversizedBodyIsNotReportedAsInvalidBody(t *testing.T) {
+	srv, tokens := newWorkspaceIsolationServer(t)
+	srv.transcriber = stt.NewTranscriber("", "", "")
+
+	// body 必须**超过外层上限**（25 MiB）才会碰到 MaxBytesReader。
+	// 用合法 base64 字符（'A'），长度取 4 的倍数 ⇒ JSON 本身是合法的
+	// ⇒ 这样返回 400 就只可能是因为「被截断了」，不会与「JSON 坏了」混淆。
+	big := strings.Repeat("A", (25<<20)+4096)
+	body := `{"audioBase64":"` + big + `","filename":"a.wav"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/stt/transcribe", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+tokens["ws-a"])
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("超限 STT status=%d body=%s —— 期望 413：「太大」要说「太大」，不能混进「请求体无效」",
+			rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "stt_audio_too_large") {
+		t.Fatalf("超限 STT body=%s —— 缺少稳定错误码 stt_audio_too_large ⇒ 前端映射不到中文文案",
+			rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), "invalid body") {
+		t.Fatalf("超限 STT 被说成「请求体无效」：%s", rr.Body.String())
+	}
+}
+
+// 负控：**真的**坏 JSON 仍然回 400 "invalid body"。
+//
+// ⚠ 这条不许被上面的改动带跑偏：把「太大」和「无效」分开是对的，
+// 但不能顺手把「无效」也改成 413 ⇒ 客户端就分不清「重试有用」还是「重试没用」。
+func TestSttTranscribeStillReportsInvalidJSONAsBadRequest(t *testing.T) {
+	srv, tokens := newWorkspaceIsolationServer(t)
+	srv.transcriber = stt.NewTranscriber("", "", "")
+
+	req := httptest.NewRequest(http.MethodPost, "/api/stt/transcribe", strings.NewReader(`{"audioBase64":`))
+	req.Header.Set("Authorization", "Bearer "+tokens["ws-a"])
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("坏 JSON 的 STT status=%d body=%s —— 期望 400（不是 413）", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "invalid body") {
+		t.Fatalf("坏 JSON 的 STT body=%s —— 期望仍是 invalid body", rr.Body.String())
+	}
+}
 func TestAudioFilenameForContentType(t *testing.T) {
 	for _, tc := range []struct {
 		contentType string

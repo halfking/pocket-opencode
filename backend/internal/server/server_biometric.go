@@ -21,6 +21,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -147,6 +148,12 @@ func (s *Server) handleBiometricRegisterFinish(w http.ResponseWriter, r *http.Re
 			Transports:  "[]", // TODO: 从 ccr 提取 transports
 		}
 		if err := s.biometricStore.Register(r.Context(), cred); err != nil {
+			// ⚠ §944 D1：撞上**别人**的 credential_id ⇒ 409（可区分），
+			// 不是 500 —— 500 会让客户端以为「服务端坏了」而重试。
+			if errors.Is(err, auth.ErrBiometricCredentialScopeConflict) {
+				writeError(w, http.StatusConflict, "credential_id 已属于其他账号")
+				return
+			}
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -191,6 +198,18 @@ func (s *Server) handleBiometricRegisterFinish(w http.ResponseWriter, r *http.Re
 		Transports:  body.Transports,
 	}
 	if err := s.biometricStore.Register(r.Context(), cred); err != nil {
+		// ⚠ §944 D1：同上，撞号 ⇒ 409（可区分）。
+		//
+		// ⚠⚠ 路径 2（webAuthnVerifier == nil 的 P0 stub）的 credential_id
+		//	**完全由客户端提供**（只校验了 base64url 合法性）⇒ ⇒ ⇒ 服务端
+		//	**更不能**假定这个 id 是新出现的 ⇒ ⇒ ⇒ 归属守卫是这条路径上
+		//	**唯一**的防线（★ 而登录路径在 stub 下是 501 ⇒ 撞号的后果是
+		//	「把别人的那行公钥换掉」＝ 受害者设备登录失败 + 一旦启用验证器
+		//	就变成认证链接管）。
+		if errors.Is(err, auth.ErrBiometricCredentialScopeConflict) {
+			writeError(w, http.StatusConflict, "credential_id 已属于其他账号")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}

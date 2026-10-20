@@ -61,9 +61,10 @@ defineEmits<{
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  height: 32px;
+  /* iOS 标准按钮：矩形 + 小圆角，44px 触摸热区（过滤/筛选/分段类按钮统一规范） */
+  min-height: 44px;
   padding: 0 14px;
-  border-radius: 999px;
+  border-radius: var(--radius-md);
   border: 1px solid var(--border);
   background: transparent;
   color: var(--text-secondary);

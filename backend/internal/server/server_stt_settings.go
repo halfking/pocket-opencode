@@ -142,10 +142,27 @@ func (s *Server) loadSTTSettings(userID, workspaceID string) (sttSettingsPayload
 		return p, false
 	}
 	rec, err := s.sttSettingsRepo().Get(userID, workspaceID, sttSettingsNamespace, sttSettingsID)
-	if err != nil || rec == nil {
+	if err != nil {
+		// ⚠⚠ §945：这里原来把「**读失败**」与「**没有记录**」混成了同一个
+		//	`ok=false` ⇒ ⇒⇒ 而 4 个调用点写的是 `p, _ := s.loadSTTSettings(...)`
+		//	⇒ ⇒⇒ ⇒ ok 被丢掉 ⇒ ⇒⇒⇒ ⇒ 两种情况在调用方眼里**完全一样**：
+		//	⇒ ⇒⇒⇒ ⇒ 「用户没设过」与「数据库读挂了」都表现为「默认配置」。
+		//	⇒ ⇒⇒⇒ ⇒ ⇒ 而**读失败会被伪装成「用户没设置」** ⇒ ⇒⇒⇒ ⇒
+		//	⇒ ⇒⇒⇒ ⇒ 用户改了设置却「没生效」，而且**没有任何一条日志**。
+		//	⇒ ⇒⇒⇒ ⇒ ★ 所以这里必须**把两种情况分开**：没有记录是正常的（不记日志），
+		//	⇒ ⇒⇒⇒ ⇒ 读失败是异常（必须留痕）。
+		log.Printf("ERROR: 读 STT 设置失败（会回落到默认配置，与「用户未设置」无法区分）user=%s ws=%s: %v",
+			userID, workspaceID, err)
+		return p, false
+	}
+	if rec == nil {
+		// 没有记录 ⇒ 正常的「未设置」⇒ 不记日志（否则每次打开设置页都刷一条）。
 		return p, false
 	}
 	if err := json.Unmarshal(rec.Payload, &p); err != nil {
+		// ⚠ §945：同样要把「载荷坏了」与「未设置」分开（否则设置**静默不生效**）。
+		log.Printf("ERROR: 解析 STT 设置载荷失败（会回落到默认配置）user=%s ws=%s: %v",
+			userID, workspaceID, err)
 		return p, false
 	}
 	return p, true

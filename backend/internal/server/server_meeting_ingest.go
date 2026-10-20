@@ -3,17 +3,15 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/halfking/pocket-opencode/backend/internal/kxmemory"
 	"github.com/halfking/pocket-opencode/backend/internal/meeting"
-	"github.com/halfking/pocket-opencode/backend/internal/notes"
-	"github.com/halfking/pocket-opencode/backend/internal/task"
 )
 
 // handleMeetings dispatches GET (list) / POST (create) on /api/meetings.
@@ -35,12 +33,29 @@ func (s *Server) handleMeetings(w http.ResponseWriter, r *http.Request) {
 // handleListMeetings returns the workspace-scoped list with a total counter so
 // the mobile UI can render pagination without a second round-trip.
 //
+// ⚠ §936：**total 现在是「作用域内的真实总条数」**，不是本页行数。
+//
+//	修复前 total = len(list)，而 list 已被 `LIMIT 500` 截断 ⇒
+//	用户有 600 场会议时 total 恒为 500 ⇒ 移动端分页器显示「共 500 场」，
+//	第 501 场之后**永远取不到** —— 而且当时**根本没有** limit/offset 参数，
+//	⇒ ⇒ 本函数上面那句注释承诺的「一个来回渲染分页」在实现上**不可能成立**。
+//	⇒ ⇒ 现在 total 来自一条独立的 COUNT（与 since 同一过滤条件），
+//	并新增可选的 limit / offset 让「分页」这句话真的能兑现。
+//
 // 增量同步：可选 since（Unix 秒或毫秒）只返回 UpdatedAt 更晚的行，并附带
 // deletedIds 墓碑与 serverTimeMs，供客户端做无刷新差异合并。
+// ⚠ since 现在**下推进 SQL**（先过滤后 LIMIT）⇒ 一场「创建于 500 名之外
+// 但刚被更新」的会议不再永远同步不到（§936 的 D2）。
 func (s *Server) handleListMeetings(w http.ResponseWriter, r *http.Request) {
 	uid := s.userIDFromRequest(r)
 	workspaceID := s.workspaceIDFromRequest(r)
-	list, err := s.meetingStore.ListScoped(uid, workspaceID)
+	query := r.URL.Query()
+	opts := meeting.ListOptions{
+		Since:  meeting.ParseListSince(query.Get("since")),
+		Limit:  meeting.ParseListInt(query.Get("limit"), meeting.ListDefaultLimit),
+		Offset: meeting.ParseListInt(query.Get("offset"), 0),
+	}
+	list, total, err := s.meetingStore.ListScoped(uid, workspaceID, opts)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list meetings: "+err.Error())
 		return
@@ -48,32 +63,14 @@ func (s *Server) handleListMeetings(w http.ResponseWriter, r *http.Request) {
 	if list == nil {
 		list = []*meeting.Meeting{}
 	}
-	var since time.Time
-	if v := r.URL.Query().Get("since"); v != "" {
-		if n, parseErr := strconv.ParseInt(v, 10, 64); parseErr == nil && n > 0 {
-			if n > 1_000_000_000_000 {
-				since = time.UnixMilli(n)
-			} else {
-				since = time.Unix(n, 0)
-			}
-		}
-	}
-	if !since.IsZero() {
-		filtered := make([]*meeting.Meeting, 0, len(list))
-		for _, m := range list {
-			if m.UpdatedAt.After(since) {
-				filtered = append(filtered, m)
-			}
-		}
-		list = filtered
-	}
 	resp := map[string]any{
-		"meetings":     list,
-		"total":        len(list),
+		"meetings": list,
+		// ⚠ total 是**作用域内的总条数**（过滤后、分页前），不是 len(list)。
+		"total":        total,
 		"serverTimeMs": time.Now().UnixMilli(),
 	}
-	if !since.IsZero() {
-		resp["deletedIds"] = s.meetingStore.DeletedIDsSince(uid, workspaceID, since)
+	if !opts.Since.IsZero() {
+		resp["deletedIds"] = s.meetingStore.DeletedIDsSince(uid, workspaceID, opts.Since)
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -120,13 +117,44 @@ func (s *Server) handleCreateMeeting(w http.ResponseWriter, r *http.Request) {
 	//   （都是 meeting.title），所以这里只改 title，不碰任何另一路才写的字段。
 	if id := strings.TrimSpace(req.ID); id != "" {
 		if existing, err := s.meetingStore.GetScoped(id, uid, workspaceID); err == nil {
-			existing.Title = req.Title
-			if err := s.meetingStore.UpdateScoped(existing, uid, workspaceID); err != nil {
+			// ⚠ §937（D2）：只改 title ⇒ **定向更新**，不重写整行（不碰 transcript）。
+			//
+			//	修复前：UpdateScoped 无条件重写 transcript 列 ⇒ 一场长会议每同步
+			//	一次就把**整份转写**重写一遍 ⇒ 写放大 ∝ 时长²；且「读-改-写整行」
+			//	会把并发写入的新转写覆盖回旧值。
+			//
+			//	⚠ 这里**仍然要读整行**：响应体就是这一整条会议（含 transcript）⇒
+			//	「详情/列表要不要带全文」是**响应形状 + 仓外移动端兼容**问题
+			//	（§936 的 D4 / 简报第 160 条 ①）⇒ 不在技术层自决。
+			//	⇒ 本轮只把**写**那一半从 O(全文) 降到 O(1)。
+			title := req.Title
+			updatedAt, err := s.meetingStore.UpdateMetaScoped(id, uid, workspaceID, &title, nil)
+			if err != nil {
 				writeError(w, http.StatusInternalServerError, "failed to update meeting: "+err.Error())
 				return
 			}
+			existing.Title = title
+			existing.UpdatedAt = updatedAt
 			writeJSON(w, http.StatusCreated, existing)
-			s.wsHub.Broadcast("meeting.synced", map[string]string{"meetingId": existing.ID, "userId": uid})
+			// ⚠⚠ §943 D2：这条广播**必须**是定向的。
+			//
+			//	修复前是 `wsHub.Broadcast` ⇒ **全体广播** ⇒ 每个在线用户的
+			//	设备都会收到这条 `meeting.synced`，而载荷里带着**别人的**
+			//	`meetingId` 与 `userId`。
+			//
+			//	⇒ ⇒ ⇒ 它不是「多推了一条无害的消息」，它是 **D1 的 id 泄露通道**：
+			//	任何人只要连着 /ws（登录即可），就能把**别人**的会议 id 收全
+			//	⇒ ⇒ ⇒⇒ 而 D1（撞 id ⇒ 覆盖别人的会议正文）在 PG 版上当时
+			//	**真的能覆盖** ⇒ ⇒ ⇒⇒ ⇒ ⇒ 两条合起来就是一条**完整的
+			//	跨用户篡改链**（实测：另一个用户确实收到了
+			//	`{"meetingId":"mtg-probe-bcast","userId":"probe-ws-a"}`）。
+			//
+			//	⇒ 定向到**属主**（按 UserID，与笔记链 5 个广播点同口径：
+			//	  零值 target 会退化成全体广播 ⇒ 这里必须带非空 UserID）。
+			//	⇒ ⚠ WS 客户端的身份取自 JWT（server.go 的
+			//	  `NewClientWithIdentity(..., claims.UserID, workspaceID)`）
+			//	  ⇒ ⇒⇒ 属主自己的**所有**设备（含仓外移动端）仍然收得到。
+			s.wsHub.BroadcastToUser(uid, "meeting.synced", map[string]string{"meetingId": existing.ID, "userId": uid})
 			return
 		}
 	}
@@ -137,7 +165,9 @@ func (s *Server) handleCreateMeeting(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, m)
-	s.wsHub.Broadcast("meeting.synced", map[string]string{"meetingId": m.ID, "userId": uid})
+	// ⚠⚠ §943 D2：定向广播（**不是**全体广播）——理由见上面那一处。
+	//	⚠ 载荷字段**一个字没动**（仍是 meetingId + userId）⇒ 响应/事件形状不变。
+	s.wsHub.BroadcastToUser(uid, "meeting.synced", map[string]string{"meetingId": m.ID, "userId": uid})
 }
 
 // finalizeMeetingRefine 精翻完成后：笔记入库 + 待办任务 + 更新 meeting 缓存
@@ -159,8 +189,33 @@ func (s *Server) finalizeMeetingRefine(
 		refined = strVal(result["refinedTranscript"])
 	}
 
+	// ★ §938：落点（租户 + 归属）**在最开始就定好**。
+	//
+	//	修复前这条链把 workspace / owner 整个丢了 ⇒ 任务落进遗留单租户桶
+	//	"default" 且没有归属 ⇒ 用户在自己的 workspace 里**看不见**这些待办，
+	//	点进去也**点不开**（CanReadWorkItem 对创建者本人为 false）。
+	//
+	//	⚠ 这里的回落与 meetingStore 那一半**必须同口径**：
+	//	  同一个 workspace 归一 ⇒ 会议缓存与会议待办落在同一个租户里。
+	uidForStore := uid
+	if uidForStore == "" {
+		uidForStore = "local"
+	}
+	workspaceIDForStore := workspaceID
+	if workspaceIDForStore == "" {
+		// Legacy single-tenant callsites that never carried a workspace.
+		workspaceIDForStore = "default"
+	}
+
+	// ★ §939：笔记的落点与**待办同一个租户**（同一份归一口径）。
+	//
+	//	修复前这条链建笔记时**根本不传 workspace** ⇒ notes 行落在
+	//	workspace_id='' ⇒ 所有作用域读路径都查不到它 ⇒
+	//	「会议 → 笔记」这条链在服务端是**断的**。
+	noteTarget := newMeetingNoteTarget(uidForStore, workspaceIDForStore, meetingID)
+
 	if noteID == "" && refined != "" {
-		if id, err := s.ingestMeetingNote(ctx, uid, meetingID, refined, meta); err == nil {
+		if id, err := s.ingestMeetingNote(ctx, noteTarget, refined, meta); err == nil {
 			noteID = id
 		} else {
 			log.Printf("[meeting] note ingest failed %s: %v", meetingID, err)
@@ -168,7 +223,11 @@ func (s *Server) finalizeMeetingRefine(
 	}
 
 	todos := extractTodos(result)
-	tasksCreated := s.ingestMeetingTasks(ctx, uid, meetingID, todos)
+	tasksCreated := s.ingestMeetingTasks(ctx, meetingTodoTarget{
+		WorkspaceID: workspaceIDForStore,
+		OwnerID:     uidForStore,
+		MeetingID:   meetingID,
+	}, todos)
 
 	if noteID != "" {
 		result["note_id"] = noteID
@@ -177,40 +236,32 @@ func (s *Server) finalizeMeetingRefine(
 
 	// 更新 PG meeting 缓存（严格限定在调用方的 workspace 作用域内）
 	if s.meetingStore != nil {
-		uidForStore := uid
-		if uidForStore == "" {
-			uidForStore = "local"
+		// ⚠⚠ §937（D2）：**定向更新** title/status —— 不读、也不写 transcript。
+		//
+		//	修复前：GetScoped（读**整行**，含整份转写）+ UpdateScoped（写**整行**，
+		//	含整份转写）⇒ 一场长会议每精校一块就把**整份转写**重写一遍
+		//	⇒ ⇒ 写放大 ∝ 时长²；而且「读-改-写整行」在两步之间若有人并发
+		//	写入了新转写，会被这一轮**覆盖回旧值**（lost update）。
+		//
+		//	⇒ 现在只写两列 ⇒ 成本与会议长度**无关**，且不存在覆盖窗口。
+		var titlePtr *string
+		if meta.Title != "" {
+			titlePtr = &meta.Title
 		}
-		workspaceIDForStore := workspaceID
-		if workspaceIDForStore == "" {
-			// Legacy single-tenant callsites that never carried a workspace.
-			workspaceIDForStore = "default"
+		status := "refined"
+		if refineDegraded(result) {
+			status = "refine-failed"
 		}
-		if existing, err := s.meetingStore.GetScoped(meetingID, uidForStore, workspaceIDForStore); err == nil {
-			if meta.Title != "" {
-				existing.Title = meta.Title
-			}
-			// ⚠ 2026-10-07：降级或被拦下时**不能**标 refined。
-			//
-			//   前端列表徽章把 refined 渲染成「已精翻」。而这里原先是无条件赋值，
-			//   于是 refine_fallback（§17 解析失败）与 refine_rejected（§35 名单污染
-			//   被 guardRefineResult 拦下）两种降级都会留下「已精翻」。
-			//   用户点进去看到的是刚说过的原话。
-			//
-			//   注意：这条不能只改前端 —— meetingStore 里缓存的 status
-			//   会覆盖前端本地的判断，列表读的是它。
-			existing.Status = "refined"
-			if refineDegraded(result) {
-				existing.Status = "refine-failed"
-			}
-			if err := s.meetingStore.UpdateScoped(existing, uidForStore, workspaceIDForStore); err != nil {
+		if _, err := s.meetingStore.UpdateMetaScoped(
+			meetingID, uidForStore, workspaceIDForStore, titlePtr, &status); err != nil {
+			if errors.Is(err, meeting.ErrMeetingNotFound) {
+				// No stub creation: fabricating a row here would land it in the wrong
+				// workspace and mask a genuine cross-workspace/missing-meeting error.
+				log.Printf("[meeting] refine target %s not found in workspace %s (owner=%s): %v",
+					meetingID, workspaceIDForStore, uidForStore, err)
+			} else {
 				log.Printf("[meeting] update after refine %s: %v", meetingID, err)
 			}
-		} else {
-			// No stub creation: fabricating a row here would land it in the wrong
-			// workspace and mask a genuine cross-workspace/missing-meeting error.
-			log.Printf("[meeting] refine target %s not found in workspace %s (owner=%s): %v",
-				meetingID, workspaceIDForStore, uidForStore, err)
 		}
 	}
 
@@ -220,67 +271,13 @@ func (s *Server) finalizeMeetingRefine(
 	return result
 }
 
-func (s *Server) ingestMeetingNote(
-	ctx context.Context, uid, meetingID, content string, meta meetingMetaIn,
-) (string, error) {
-	if s.notesStore == nil {
-		return "", fmt.Errorf("notes store not configured")
-	}
-	title := meta.Title
-	if title == "" {
-		title = "会议纪要"
-	}
-	now := time.Now().Unix()
-	n := notes.Note{
-		ID:             randomID("note"),
-		UserID:         uid,
-		Title:          title,
-		Snippet:        truncateStr(content, 500),
-		ContentType:    "voice",
-		Domain:         "work",
-		CreatedByVoice: true,
-		CreatedAt:      now,
-		UpdatedAt:      now,
-	}
-	if err := s.notesStore.Upsert(ctx, &n); err != nil {
-		return "", err
-	}
-	s.wsHub.Broadcast("note.created", &n)
-	go s.classifyNoteAsync(n)
-	log.Printf("[meeting] created note %s from meeting %s", n.ID, meetingID)
-	return n.ID, nil
-}
-
-func (s *Server) ingestMeetingTasks(ctx context.Context, uid, meetingID string, todos []todoItem) int {
-	if s.taskStore == nil || len(todos) == 0 {
-		return 0
-	}
-	created := 0
-	for _, td := range todos {
-		if strings.TrimSpace(td.Text) == "" {
-			continue
-		}
-		t := &task.Task{
-			ID:          randomID("task"),
-			Title:       td.Text,
-			Description: fmt.Sprintf("来自会议 %s", meetingID),
-			Status:      "pending",
-			Priority:    mapTodoPriority(td.Priority),
-			Source:      "meeting",
-		}
-		if err := s.taskStore.CreateTask(ctx, t); err != nil {
-			log.Printf("[meeting] create task failed: %v", err)
-			continue
-		}
-		created++
-		s.wsHub.Broadcast("task.created", t)
-	}
-	if created > 0 {
-		log.Printf("[meeting] created %d tasks from meeting %s (user=%s)", created, meetingID, uid)
-	}
-	return created
-}
-
+// ⚠ §939：`ingestMeetingNote`（会议笔记的落库）已经搬到
+// server_meeting_note_ingest.go —— 因为它与随手记那条建笔记路径是
+// **同一件事的两条路径**（租户/归属/id/广播目标），口径必须抽成一份共用，
+// 而不是抄两遍（抄两遍 ⇒ 同一缺陷必然出现在两处）。
+//
+// ⚠§938：`ingestMeetingTasks`（会议待办的落库）也搬到了
+// server_meeting_todo_ingest.go —— 理由相同（它有两条落库路径）。
 type todoItem struct {
 	Text     string
 	Priority string

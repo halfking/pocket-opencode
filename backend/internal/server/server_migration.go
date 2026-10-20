@@ -91,10 +91,12 @@ func (s *Server) handleMigrationPreview(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
+// writeMigrationJSON 写迁移相关的 JSON 响应。
+//
+// ⚠ §946：走 writeJSON ⇒ 编码错误不再被吞（原来这里是 `_ =`）。
+// 　 字节与旧实现逐字相同（§946 实测：Marshal+"\n" == Encoder.Encode）。
 func writeMigrationJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
+	writeJSON(w, status, v)
 }
 
 func writeMigrationError(w http.ResponseWriter, status int, msg string) {

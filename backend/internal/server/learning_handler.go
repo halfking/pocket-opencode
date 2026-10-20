@@ -132,8 +132,7 @@ func (s *Server) learningCapture(w http.ResponseWriter, r *http.Request) {
 		status = http.StatusOK
 	}
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(item)
+	writeJSON(w, status, item)
 }
 
 func (s *Server) learningListItems(w http.ResponseWriter, r *http.Request) {
@@ -145,8 +144,7 @@ func (s *Server) learningListItems(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"items": items})
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
 func (s *Server) learningDueSummary(w http.ResponseWriter, r *http.Request) {
@@ -157,8 +155,7 @@ func (s *Server) learningDueSummary(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(summary)
+	writeJSON(w, http.StatusOK, summary)
 }
 
 func (s *Server) learningUpdateItem(w http.ResponseWriter, r *http.Request, id string) {
@@ -187,8 +184,7 @@ func (s *Server) learningUpdateItem(w http.ResponseWriter, r *http.Request, id s
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"id": id, "stage": body.Stage})
+	writeJSON(w, http.StatusOK, map[string]any{"id": id, "stage": body.Stage})
 }
 
 func (s *Server) handleLearningReminders(w http.ResponseWriter, r *http.Request) {
@@ -212,8 +208,7 @@ func (s *Server) handleLearningReminders(w http.ResponseWriter, r *http.Request)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusCreated)
-		_ = json.NewEncoder(w).Encode(reminder)
+		writeJSON(w, http.StatusCreated, reminder)
 	case http.MethodGet:
 		reminders, err := s.learningService.ListReminders(
 			r.Context(), s.workspaceIDFromRequest(r), s.userIDFromRequest(r),
@@ -222,8 +217,7 @@ func (s *Server) handleLearningReminders(w http.ResponseWriter, r *http.Request)
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"reminders": reminders})
+		writeJSON(w, http.StatusOK, map[string]any{"reminders": reminders})
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "GET or POST only")
 	}
@@ -270,8 +264,7 @@ func (s *Server) handleLearningReminderOps(w http.ResponseWriter, r *http.Reques
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"id": id, "snoozedUntil": until})
+		writeJSON(w, http.StatusOK, map[string]any{"id": id, "snoozedUntil": until})
 
 	case op == "ack" && r.Method == http.MethodPost:
 		if err := s.learningService.AckReminder(r.Context(), wsID, userID, id); err != nil {
@@ -282,8 +275,7 @@ func (s *Server) handleLearningReminderOps(w http.ResponseWriter, r *http.Reques
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"id": id, "state": "acked"})
+		writeJSON(w, http.StatusOK, map[string]any{"id": id, "state": "acked"})
 
 	default:
 		writeError(w, http.StatusNotFound, "not found")
@@ -320,8 +312,7 @@ func (s *Server) handleLearningStreak(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(view)
+	writeJSON(w, http.StatusOK, view)
 }
 
 // handleLearningSchedule exposes the server-side scheduler so a client can ask
@@ -349,8 +340,7 @@ func (s *Server) handleLearningSchedule(w http.ResponseWriter, r *http.Request) 
 	if in.Now == 0 {
 		in.Now = time.Now().UTC().Unix()
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(learning.Schedule(in))
+	writeJSON(w, http.StatusOK, learning.Schedule(in))
 }
 
 // learningStore exposes the underlying store for the handlers that need a

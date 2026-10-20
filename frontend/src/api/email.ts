@@ -6,6 +6,7 @@ import { http, LONG_REQUEST_TIMEOUT_MS, ApiError } from './http'
 import { assertNotHTML } from './jsonGuard'
 import { resolveRuntimeApiBase } from '../config/api-base'
 import { useAuthStore } from '../stores/auth'
+import { chunkByLimit } from '../utils/chunk'
 
 /**
  * isStaleWriteError 判断一次失败是不是「LWW 守卫拒绝」。
@@ -91,6 +92,16 @@ export const CLASSIFY_TIMEOUT_MS = 16 * 60_000
  * 而反复点击。取 3 分钟，与 harvest 的 5 分钟同量级。
  */
 export const INVOICE_EXTRACT_TIMEOUT_MS = 3 * 60_000
+
+/**
+ * 服务端**单次** purge 接受的 ID 上限（`handleEmailPurge` 的 `len(body.IDs) > 100`）。
+ *
+ * ⚠ §922：这是**跨语言**的数字 —— 服务端那道闸**已被判据钉住**
+ *   （`server_email_write_ops_test.go` 精确测了 100 与 101 两档），
+ *   但**前端侧没有对应的东西** ⇒ 选中超过 100 封时前端一次全发 ⇒ 服务端 400。
+ *   ⇒ 判据会拿后端源码里的闸值与这个常量比对 ⇒ **后端改了这里必须同步**。
+ */
+export const PURGE_MAX_IDS_PER_REQUEST = 100
 
 export type EmailCategory =
   | 'work' | 'bill' | 'notification' | 'personal' | 'marketing' | 'spam'
@@ -534,11 +545,26 @@ export const emailApi = {
       timeoutMs: CLASSIFY_TIMEOUT_MS,
     })
   },
-  purgeEmails(ids: string[]): Promise<{ purged: number }> {
-    return http('/api/emails/purge', {
-      method: 'POST',
-      body: JSON.stringify({ ids }),
-    })
+  /**
+   * 清空选中的邮件正文（服务端软删除 + 删正文缓存）。
+   *
+   * ⚠ §922：服务端**一次最多 100 个 ID**（`handleEmailPurge` 的
+   *   `len(body.IDs) > 100` ⇒ 超了直接 400「too many ids」）。
+   *   ⇒ 旧实现把 ids **一次全发** ⇒ 用户选中超过 100 封时服务端 400，
+   *   而调用方（`use-email-inbox.ts`）把失败**空 catch 吞掉** ⇒
+   *   **本地已清、服务端没清**（正文其实没清掉），且界面**无任何提示**。
+   *   ⇒ 这里按服务端上限**分批**发 ⇒ 选多少封都能真的清干净。
+   */
+  async purgeEmails(ids: string[]): Promise<{ purged: number }> {
+    let purged = 0
+    for (const chunk of chunkByLimit(ids, PURGE_MAX_IDS_PER_REQUEST)) {
+      const r = await http<{ purged: number }>('/api/emails/purge', {
+        method: 'POST',
+        body: JSON.stringify({ ids: chunk }),
+      })
+      purged += r?.purged ?? 0
+    }
+    return { purged }
   },
 
   // ── 自定义邮件目录（同邮箱服务器能力：创建/列表/移动） ────────────────

@@ -400,6 +400,7 @@
     "imapUnauthorized": "Die Postfach-Autorisierung ist abgelaufen. Bitte verbinde es erneut.",
     "imapFailed": "Der Mailserver ist nicht erreichbar. Prüfe Netzwerk und Kontodaten.",
     "sttNotConfigured": "Spracherkennung ist noch nicht eingerichtet.",
+    "sttAudioTooLarge": "Diese Audiodatei ist zu groß. Ein einzelner Upload ist auf 25 MB begrenzt.",
     "llmNotConfigured": "Noch kein Sprachmodell eingerichtet. Wähle eines in den Modell-Einstellungen.",
     "modelNotFound": "Dieses Modell existiert nicht mehr; es wurde möglicherweise entfernt.",
     "gatewayUnreachable": "Das Modell-Gateway ist nicht erreichbar. Prüfe Adresse und Netzwerk.",

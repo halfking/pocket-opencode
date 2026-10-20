@@ -33,11 +33,23 @@ func newApprovalProjector(reg *registry.Registry, writer task.ApprovalProjection
 
 func (p *approvalProjector) nextVersion() int64 {
 	version := p.version.Add(1)
-	if now := time.Now().UnixNano(); now > version {
-		p.version.CompareAndSwap(version, now)
-		version = p.version.Load()
+	now := time.Now().UnixNano()
+	if now <= version {
+		return version
 	}
-	return version
+	// §947：CAS 的**布尔结果**以前被丢弃 ⇒ 竞争下会读到别人的版本
+	// ⇒ 那个版本**可能小于 now** ⇒ 版本号相对时间**回退** ⇒
+	// ⇒⇒ 改成真正的 CAS 循环：写不进去就重试，直到自己写进去或发现
+	// ⇒⇒ 别人已经写到了不小于 now 的值。
+	for {
+		cur := p.version.Load()
+		if cur >= now {
+			return cur
+		}
+		if p.version.CompareAndSwap(cur, now) {
+			return now
+		}
+	}
 }
 
 func (p *approvalProjector) apply(ctx context.Context, kind task.ApprovalKind, state task.ApprovalState, instanceID, sessionID, requestID, decision string) error {

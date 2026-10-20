@@ -2,6 +2,7 @@
 package meeting
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -17,6 +18,28 @@ const (
 	legacyWorkspaceID = "default"
 )
 
+// ErrMeetingTombstoneScopeConflict 是「这条墓碑属于**别的作用域**」。
+//
+// ⚠ §943 D3：墓碑的 id 必须等于被删会议的 id ⇒ 撞上别人的墓碑时
+//
+//	**不能**像会议本体那样「换号」（换号会写出一条指向不存在会议的墓碑）
+//	⇒ ⇒ ⇒ 只能**报错** ⇒ ⇒ ⇒ 但**绝不**把别人的墓碑搬到自己名下
+//	（搬走的后果：受害者自己的墓碑清单里再也没有那条 id
+//	⇒ ⇒ ⇒⇒ **已删的会议在增量同步里「复活」**）。
+//
+// ⚠ 两个实现必须用**同一个**哨兵（errors.Is 才有意义）⇒ 且错误文本**逐字相同**
+//
+//	（「两个实现逐字一致」那条判据会逐字比它）。
+var ErrMeetingTombstoneScopeConflict = errors.New("meeting: tombstone belongs to another scope")
+
+// ErrMeetingNotFound 是「作用域内没有这条会议」的哨兵错误（§937）。
+//
+// ⚠ 文本与既有实现**逐字相同**（"meeting not found"）⇒ 不改变任何对外可见的
+//
+//	错误串；存在的意义只是让调用方能用 errors.Is 区分「不存在」与「数据库坏了」
+//	⇒ ⇒ 否则只能靠字符串匹配（脆弱）。
+var ErrMeetingNotFound = errors.New("meeting not found")
+
 // MeetingStore 是会议存储的抽象，内存版（*Store）与 PG 版（*PGStore）共用。
 //
 // 这里显式列出服务端与 learning resolver 真正调用到的方法，而不是直接拿
@@ -26,8 +49,38 @@ const (
 type MeetingStore interface {
 	CreateScoped(req CreateMeetingRequest, ownerID, workspaceID string) (*Meeting, error)
 	GetScoped(id, ownerID, workspaceID string) (*Meeting, error)
-	ListScoped(ownerID, workspaceID string) ([]*Meeting, error)
+	// ListScoped 返回**一页**会议 + **过滤后的总条数**（§936）。
+	//
+	// ⚠ total **不是** len(page)：有上限时「本页有几行」是**谎话**（§936 的 D1
+	// —— 修复前 total = len(被 LIMIT 截断后的列表) ⇒ 用户有 600 场会议时
+	// total 恒为 500 ⇒ 分页器显示「共 500 场」，第 501 场之后永远取不到）。
+	//
+	// ⚠ 两个实现必须**逐字一致**（同一份数据、同一组 opts ⇒ 同样的 id 序列
+	// 与同样的 total）⇒ 口径见 list.go，判据见 list_test.go。
+	ListScoped(ownerID, workspaceID string, opts ListOptions) ([]*Meeting, int, error)
 	UpdateScoped(m *Meeting, ownerID, workspaceID string) error
+	// TranscriptTailScoped 返回转写从第 fromRune 个字符（0 起）起的**尾部**，
+	// 以及全文字符数（§937 的 D1）。
+	//
+	// ⚠ 为什么要尾读而不是整读：整读 ⇒ 每轮轮询都把**整份转写**从库里搬到
+	//   进程里（DB→网络→应用内存）⇒ 一场 4 小时的会议按 30 秒轮询 ⇒ 累计搬运量
+	//   ∝ 时长² ⇒ ⇒ 这是 §924（客户端整场重发）的**服务端孪生**。
+	//   ⇒ 尾读让每轮只搬「这次新增的那一段」⇒ 每轮成本只取决于新增了多少。
+	//
+	// ⚠ 两个实现必须**逐字一致**（同一份 transcript + 同一个 fromRune ⇒ 同一个
+	//   尾部、同一个字符数）⇒ 口径见 transcript.go，判据见 transcript_test.go。
+	TranscriptTailScoped(id, ownerID, workspaceID string, fromRune int) (tail string, totalRunes int, err error)
+	// UpdateMetaScoped **只**更新 title / status 两列（nil = 该列不动），
+	// **不读也不写 transcript**（§937 的 D2）。
+	//
+	// ⚠ 存在的理由：这两个字段的写入点原先走的是「GetScoped（读整行）+
+	//   UpdateScoped（写整行）」⇒ 一场长会议每改一次标题就把**整份转写**
+	//   重写一遍 ⇒ 写放大 ∝ 时长²；而且「读-改-写整行」会把**并发写入的
+	//   新转写覆盖回旧值**（lost update）。
+	//
+	// ⚠ 返回本次写入盖上的 updated_at（与 UpdateScoped 同口径）⇒ 调用方
+	//   回响应时不会拿到一个过期的时间戳。
+	UpdateMetaScoped(id, ownerID, workspaceID string, title, status *string) (time.Time, error)
 	DeleteScoped(id, ownerID, workspaceID string) error
 	// DeletedIDsSince 见 pg_store.go 同名方法：查询失败时返回 nil 而非 error。
 	DeletedIDsSince(ownerID, workspaceID string, since time.Time) []string
@@ -101,10 +154,22 @@ func (s *Store) CreateScoped(req CreateMeetingRequest, ownerID, workspaceID stri
 	// 服务端另发号会让那条链必然 404。
 	//
 	// ⚠ 但**只在没人占着它的时候**用：`s.meetings` 是按 ID 索引的单表，
-	//   盲写会把别的 owner/workspace 的同名行直接顶掉。PG 版靠唯一约束
-	//   + 重试换号挡住了这件事（pg_store.go 的 isUniqueViolation 分支），
-	//   内存版没有那层护栏 ⇒ **两个 store 会不同形**，而门禁跑在内存版上。
-	//   这里显式对齐 PG 语义：异作用域撞号 ⇒ 退回服务端发号，绝不覆盖。
+	//   盲写会把别的 owner/workspace 的同名行直接顶掉。PG 版靠**归属守卫**
+	//   （pg_store.go 的 `ON CONFLICT ... WHERE owner_id/workspace_id`）挡住了
+	//   同一件事 ⇒ ⇒ 两个实现**同形**：作用域冲突 ⇒ 退回服务端发号，绝不覆盖。
+	//   ⇒ 这里显式对齐 PG 语义：异作用域撞号 ⇒ 退回服务端发号，绝不覆盖。
+	//
+	// ⚠ §943：**PG 版此前并没有**这道护栏（它的 ON CONFLICT 不带任何谓词
+	//   ⇒ 撞上别的作用域的 id 就把**那一行整个改掉**）
+	//   ⇒ ⇒ ⇒ 而当时唯一钉这条语义的承重门**只跑在内存版上**
+	//   ⇒ ⇒ ⇒⇒ **两个实现分叉时门禁是绿的** ⇒ ⇒⇒⇒ 补法是「一条判据同时钉两个
+	//   实现」（见 meeting 包 store_scope_conflict_test.go）。
+	//
+	// ⚠ 口径是「作用域（owner + workspace）冲突 ⇒ 换号」，**不是**「报错」：
+	//   换号新建的是**自己**的一行（不越权）；越权的是**覆盖**别人的行。
+	//   ⚠ 换号的**代价**（既有取舍，本节不代拍）：客户端拿到的云端 id 与它本地
+	//   的 id 不同 ⇒ 后续按 id 的云端操作（精校 / 删除）会 404
+	//   ⇒ ⇒⇒ 要不要改成「明确报错让客户端知道」= **产品口径**（已挂简报第 167 条 ①）。
 	if req.StartedAt > 0 {
 		now = time.UnixMilli(req.StartedAt)
 	}
@@ -254,6 +319,67 @@ func (s *Store) UpdateScoped(m *Meeting, ownerID, workspaceID string) error {
 	return nil
 }
 
+// TranscriptTailScoped 返回转写尾部与全文字符数（§937 的 D1）。
+//
+// ⚠ 与 PG 版**逐字一致**：同一份 transcript + 同一个 fromRune ⇒ 同一个尾部。
+//
+//	口径只有一份（transcript.go 的 TranscriptTail）⇒ 形态分叉不可能发生。
+func (s *Store) TranscriptTailScoped(id, ownerID, workspaceID string, fromRune int) (string, int, error) {
+	if strings.TrimSpace(id) == "" {
+		return "", 0, fmt.Errorf("meeting ID cannot be empty")
+	}
+	if ownerID == "" {
+		return "", 0, fmt.Errorf("owner_id is required")
+	}
+	if workspaceID == "" {
+		return "", 0, fmt.Errorf("workspace_id is required")
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	m, ok := s.meetings[id]
+	if !ok || m.OwnerID != ownerID || m.WorkspaceID != workspaceID {
+		return "", 0, ErrMeetingNotFound
+	}
+	tail, total := TranscriptTail(m.Transcript, fromRune)
+	return tail, total, nil
+}
+
+// UpdateMetaScoped 只更新 title / status 两列（nil = 该列不动），
+// **不碰 transcript**（§937 的 D2）。
+//
+// ⚠ 与 PG 版同口径：同样盖 updated_at、同样在跨作用域时拒绝。
+func (s *Store) UpdateMetaScoped(id, ownerID, workspaceID string, title, status *string) (time.Time, error) {
+	if strings.TrimSpace(id) == "" {
+		return time.Time{}, fmt.Errorf("meeting ID cannot be empty")
+	}
+	if ownerID == "" {
+		return time.Time{}, fmt.Errorf("owner_id is required")
+	}
+	if workspaceID == "" {
+		return time.Time{}, fmt.Errorf("workspace_id is required")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	m, ok := s.meetings[id]
+	if !ok || m.OwnerID != ownerID || m.WorkspaceID != workspaceID {
+		return time.Time{}, ErrMeetingNotFound
+	}
+	if title != nil {
+		m.Title = *title
+	}
+	if status != nil {
+		m.Status = *status
+	}
+	now := time.Now()
+	m.UpdatedAt = now
+	s.meetings[id] = copyMeeting(m)
+	return now, nil
+}
+
 // List returns all meeting records.
 // Deprecated: Use ListScoped for production code with ownership filtering.
 func (s *Store) List() ([]*Meeting, error) {
@@ -267,25 +393,35 @@ func (s *Store) List() ([]*Meeting, error) {
 	return result, nil
 }
 
-// ListScoped returns meeting records for the specified owner/workspace.
-func (s *Store) ListScoped(ownerID, workspaceID string) ([]*Meeting, error) {
+// ListScoped returns one page of meeting records for the specified
+// owner/workspace, plus the total number of rows that matched the filter
+// (before paging).
+//
+// ⚠ §936 之前，本方法**既无上限、也不排序**（map 遍历 ⇒ 随机顺序），
+// 而 PG 版有 `LIMIT 500` + `ORDER BY created_at DESC` ⇒ 同一个端点在两种
+// store 下形状不同 ⇒ dev 环境测不出生产的问题。现在两个实现共用
+// list.go 的口径（排序 / 过滤 / 分页 / 计数各只有一份）。
+func (s *Store) ListScoped(ownerID, workspaceID string, opts ListOptions) ([]*Meeting, int, error) {
 	if ownerID == "" {
-		return nil, fmt.Errorf("owner_id is required")
+		return nil, 0, fmt.Errorf("owner_id is required")
 	}
 	if workspaceID == "" {
-		return nil, fmt.Errorf("workspace_id is required")
+		return nil, 0, fmt.Errorf("workspace_id is required")
 	}
 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	result := make([]*Meeting, 0)
+	scoped := make([]*Meeting, 0)
 	for _, m := range s.meetings {
 		if m.OwnerID == ownerID && m.WorkspaceID == workspaceID {
-			result = append(result, copyMeeting(m))
+			scoped = append(scoped, copyMeeting(m))
 		}
 	}
-	return result, nil
+	// 与 PG 版一致返回非 nil 空切片：handler 直接把它写进 JSON 的 meetings，
+	// nil 切片编码成 null 会让前端拿到"字段存在但不是数组"的形状。
+	page, total := ApplyListOptions(scoped, opts)
+	return page, total, nil
 }
 
 // Delete removes a meeting by ID.
@@ -324,6 +460,21 @@ func (s *Store) DeleteScoped(id, ownerID, workspaceID string) error {
 	m, ok := s.meetings[id]
 	if !ok || m.OwnerID != ownerID || m.WorkspaceID != workspaceID {
 		return fmt.Errorf("meeting not found")
+	}
+	// ⚠⚠ §943 D3：墓碑的**归属守卫**（与 PG 版同形，缺一不可）。
+	//
+	//	修复前这里直接 `s.tombstones[id] = ...` ⇒ 撞上**别的作用域**的墓碑时
+	//	会把那一行**整个搬走**（连 ownerID / workspaceID 一起换）
+	//	⇒ ⇒ ⇒ 后果：受害者自己的墓碑清单里**再也没有**那条 id
+	//	⇒ ⇒ ⇒⇒ **已删的会议在增量同步里「复活」**。
+	//
+	//	⇒ 守卫不成立 ⇒ **报错**（墓碑不能换号：它的 id 必须等于被删会议的 id）。
+	//	⚠ 判据必须在**删会议之前**判 ⇒ 否则会出现「会议没了、墓碑没写成」的
+	//	  半处理状态（★ §942 在 notes 上刚踩过同族坑）。
+	if t, ok := s.tombstones[id]; ok &&
+		(t.ownerID != ownerID || t.workspaceID != workspaceID) {
+		return fmt.Errorf("delete meeting: tombstone %q belongs to another scope: %w",
+			id, ErrMeetingTombstoneScopeConflict)
 	}
 	delete(s.meetings, id)
 	s.tombstones[id] = meetingTombstone{ownerID: ownerID, workspaceID: workspaceID, at: time.Now()}

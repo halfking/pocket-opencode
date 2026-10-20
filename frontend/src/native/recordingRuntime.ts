@@ -32,7 +32,7 @@ import {
 } from '../features/meetings/meetings-store'
 import { syncMeetingMetadata } from '../features/meetings/meeting-ingest'
 import { ingestSpeechBlob } from '../features/meetings/ingest-speech'
-import { renderTranscript } from '../features/meetings/meeting-dedup.ts'
+import { renderTranscript, createTranscriptRenderer, type TranscriptRenderer } from '../features/meetings/meeting-dedup.ts'
 import {
   applyCaptionResult, createLiveCaption, pickSpeechRecognition, type SpeechRecLike,
 } from '../features/meetings/meeting-live-caption'
@@ -65,7 +65,7 @@ import {
   stopBackgroundMic, listenBackgroundMicParts, nativePartToBlob,
 } from './background-mic'
 import { sttApi } from '../api/stt'
-import { sttSettingsApi } from '../api/stt-settings'
+import { sttSettingsApi, FULL_TRANSCRIBE_TIMEOUT_MS } from '../api/stt-settings'
 import { filenameForMimeType } from '../api/stt-filename'
 import { sherpa } from './sherpa'
 import {
@@ -260,6 +260,20 @@ export class MeetingRecorderRuntime {
   // 在途分段转写 promise:stop() 必须等它们落库,否则 refine 拿到的
   // transcript 缺尾巴,晚到的 updateTranscript 还会与 completed 状态竞争。
   private inFlightSegments = new Set<Promise<void>>()
+  /**
+   * §931：转写正文的**增量渲染器**。
+   *
+   * ⚠⚠ 为什么需要它：逐段追加那条路径（本地实时字幕 + ASR 段）以前每落一段
+   *   就把**整场**重新渲染一次，而那次渲染的结果在 §925 的节流里
+   *   **绝大多数被直接丢弃**（8 小时会议真正落库 13 次）
+   *   ⇒ 算力白烧：实测 800 段 19.6 s，8 小时外推 ~100 s 纯 CPU（主线程）。
+   *
+   * ⚠ 它与 `this.segments` **必须指向同一批段**：两条追加路径
+   *   （`appendText` 尾插 / `ingestSpeechBlob` 按 startMs 有序插）都往
+   *   `this.segments.value` 里塞 ⇒ 渲染器自己按**数组身份**发现「整份替换」
+   *   （`seedSegments` / `freshSession` 会换掉数组对象）并整场重算。
+   */
+  private transcriptRenderer: TranscriptRenderer<MeetingSegment> = createTranscriptRenderer<MeetingSegment>()
   private toast = useToast()
 
   private async cleanupMedia() {
@@ -486,6 +500,28 @@ export class MeetingRecorderRuntime {
     this.segments.value = [...stored]
   }
 
+  /**
+   * §932：当前活跃会议的**去重后段**（与 `dedupeSegments(segments.value)` **逐字相同**）。
+   *
+   * ⚠⚠ **为什么摘要链需要它**：`useLiveSummary` 每轮刷新（30 秒一轮）此前都
+   *   `dedupeSegments(segments.value)`（**O(n)**）⇒ 8 小时会议（1952 段 / 691 轮）
+   *   实测累计 **20.6–23.4 s 纯 CPU**（§932 实测，两批读数）⇒ 与 §931 那条（108.9 s）**同族同阶**。
+   *   ⇒ 而这个渲染器**本来就在**维护同一批段的去重状态（同一个折叠）⇒
+   *   ⇒ 顺手就能给出**逐字相同**的结果 ⇒ 每轮从 O(n) 变成 **O(新增)**。
+   *
+   * ⚠⚠ **两个守卫都要有，否则会给错内容**：
+   *   ① **会议不匹配** ⇒ 返回 `null` —— 否则会拿到**另一场**的正文
+   *      ⇒ 摘要会用别场的内容（跨会议串台）。
+   *   ② **数组对不上**（被整份替换 / 有段不是经由本渲染器进来的）⇒ 返回 `null`
+   *      —— 渲染器内部再判一次（`dedupedSegmentsFor`）。
+   *   ⇒ 返回 `null` 时，调用方**必须回退到整场去重**（慢但正确）。
+   */
+  dedupedSegmentsFor(meetingId: string, segments: MeetingSegment[]): MeetingSegment[] | null {
+    if (!meetingId) return null
+    if (this.activeMeetingId.value !== meetingId) return null
+    return this.transcriptRenderer.dedupedSegmentsFor(segments)
+  }
+
   async switchDevice(meetingId: string, deviceId: string): Promise<boolean> {
     if (!this.isRecording.value) return this.start(meetingId, { deviceId })
     if (this.elapsedTimer) { clearInterval(this.elapsedTimer); this.elapsedTimer = null }
@@ -578,7 +614,16 @@ export class MeetingRecorderRuntime {
     this.segments.value.push(saved)
     // 去重渲染：与 ingest-speech.ts 同一口径（相邻段重叠消解）。
     // 本地 sherpa 实时字幕路径是**另一条**录音入口，此前也在原样拼接。
-    await updateTranscript(meetingId, renderTranscript(this.segments.value))
+    // ⚠ §925：`throttled` —— 这是**逐段追加**那条路径，声明「我可以晚点落库」
+    //   ⇒ 8 小时会议的转写落库量从 376.3 MB 降到 2.4 MB（纯写中位 17.3 s → 1.44 s）。
+    //   ⚠ 节流是**显式 opt-in**：不声明的写入点一律立刻落库（安全的那一侧）。
+    //   ⚠ 收尾会**整篇补齐**一次（`stop()`）⇒ 会议结束时这一列是完整的。
+    // ⚠⚠ §931：**增量**渲染 ⇒ 渲染成本从 O(n²) 降到 O(n)。
+    //   以前是 `renderTranscript(this.segments.value)`（当场整场渲染）⇒ 每段一次 O(n)，
+    //   而那次结果绝大多数被节流直接丢弃（8 小时真正落库 13 次）⇒ 纯浪费。
+    //   ⚠ 正文**惰性** ⇒ 只有真要落库时才渲染。
+    this.transcriptRenderer.appendAt(this.segments.value, this.segments.value.length - 1)
+    await updateTranscript(meetingId, this.transcriptRenderer.source(), { throttled: true })
     return saved
   }
 
@@ -606,7 +651,17 @@ export class MeetingRecorderRuntime {
     // §132：用户校对过的正文享受人工段豁免，否则下一段落库时
     // 它会被当成重转写裁碎。
     seg.origin = 'manual'
-    await updateTranscript(meetingId, renderTranscript(this.segments.value))
+    // ⚠ §925：**不声明** `throttled` ⇒ 立刻落库 —— 这是**用户可见**的改动（他刚改了一句），
+    //   晚一点落库就等于「用户的修改没生效」。
+    // ⚠⚠ §931/§932：这一改**就地改写了**段正文 ⇒ 增量渲染器的状态已过期
+    //   ⇒ **必须整场重算**（refresh）。
+    //   ⚠⚠ 为什么不是 `invalidate()`（只标脏、下一段再重算）：§932 起
+    //   这个渲染器**同时**是「去重后段」的来源（摘要链要用）
+    //   ⇒ 只标脏的话，在下一段到来之前，摘要链拿到的是**改写前**的正文
+    //   ⇒ ⇒ 用户看到的摘要是旧内容 ⇒ 静默的错误。
+    //   ⇒ 代价：O(n) 一次 —— 而这一处**本来就是 O(n)**（此前整场渲染）⇒ 无额外成本。
+    this.transcriptRenderer.refresh(this.segments.value)
+    await updateTranscript(meetingId, this.transcriptRenderer.source())
     return true
   }
 
@@ -619,6 +674,8 @@ export class MeetingRecorderRuntime {
         await ingestSpeechBlob({
           meetingId: this.activeMeetingId.value, blob, startMs, endMs, seq: this.partSeq, diarizer: this.diarizer!,
           segments: this.segments.value, segmentProfiles: this.segmentProfiles,
+          // ⚠ §931：把增量渲染器交给它 ⇒ ASR 段那条路径不再每段整场重渲染。
+          transcriptRenderer: this.transcriptRenderer,
           signal: this.segmentAbort?.signal,
         })
         this.syncSpeakers()
@@ -709,7 +766,12 @@ export class MeetingRecorderRuntime {
     }
     await Promise.all(ownUpdates.map((u) => updateSegmentSpeaker(u.segId, u.label)))
     // 转写正文里也带着说话人前缀，不重渲染的话用户看到的是「标签改了、正文没改」。
-    await updateTranscript(meetingId, renderTranscript(this.segments.value))
+    // ⚠ §925：**不声明** `throttled` ⇒ 立刻落库 —— 改说话人名是**用户可见**的改动。
+    // ⚠⚠ §931/§932：说话人标签被**就地改写** ⇒ 增量渲染器状态过期
+    //   ⇒ **整场重算**（refresh）—— 理由同 `editSegmentInMemory`：
+    //   摘要链会读这份「去重后段」，只标脏会让它拿到**改写前**的说话人。
+    this.transcriptRenderer.refresh(this.segments.value)
+    await updateTranscript(meetingId, this.transcriptRenderer.source())
     this.syncSpeakers()
   }
 
@@ -850,6 +912,10 @@ export class MeetingRecorderRuntime {
       //   ⚠ 而 `resolveRefinedView` 在精校成功时展示的是 `refinedTranscript`
       //     （徽章「已精校」）⇒ 用户看到的是一份**缺了最后几句**、却标着「已精校」的正文。
       //   （晚到的段会自己补写 `transcript`，但那条路在精校视图里**不展示**。）
+      //   ⚠ §925 更正：补写的是**分段**（事实源，`local_meeting_segments`），
+      //   而**转写正文那一列是缓存** ⇒ 节流下那一次补写**可能不落**（增长不足 32 KB）。
+      //   ⇒ 影响面：只有那一列落后**最后这一两段**（它的**头部**始终最新 ⇒ 预览不受影响），
+      //   而详情页读的是**分段** ⇒ 用户看得到那几段。
       //
       // ⚠⚠ 上面这段注释里**刻意不写**收尾合并那个方法的名字：仓库里有一道门
       //   按标识符在 stop() 的函数体里做 indexOf，断言「合并」排在「等在途分段」之后
@@ -888,6 +954,26 @@ export class MeetingRecorderRuntime {
           await this.mergeOverSplitSpeakers(meetingId)
         } catch (e) {
           console.warn('[meeting-recorder] speaker merge failed, 收尾继续:', e)
+        }
+        // ⚠ §925：收尾**整篇**落库（**不声明** `throttled` ⇒ 立刻落库）。
+        //   为什么必须有这一步：录音期间那一列是**节流**的（增长 ≥32 KB 才写一次）
+        //   ⇒ 会议刚结束时它可能落后**几十 KB / 四十来分钟**的语音。
+        //   ⇒ 这一步把「会议结束」变成一个明确边界：**结束之后这一列是完整的**。
+        //   ⚠ 为什么必须**保护**（try/catch）：它失败绝不能阻断收尾的后半段 ——
+        //   后面 `status:'completed'` 那一写才是收尾的**主**产出（§834/D1）。
+        //   ⚠ 为什么 `segments.length` 要守卫：没有分段时写空串会把这一列**清空**，
+        //   而 `classifyRecovery` 靠「转写非空」判「录音中断可恢复」⇒ 清空 = 误报。
+        if (this.segments.value.length) {
+          try {
+            // ⚠⚠ §931：这里刻意**仍然用整场渲染**（`renderTranscript`），
+            //   而不是增量渲染器 ⇒ 收尾这一写是**权威真相**，与增量路径无关。
+            //   ⇒ 增量渲染器就算有偏差，也不会污染会议结束后的这一列。
+            //   （代价：O(n) 一次 —— 8 小时会议实测 31 ms，可以接受。）
+            this.transcriptRenderer.invalidate()
+            await updateTranscript(meetingId, renderTranscript(this.segments.value))
+          } catch (e) {
+            console.warn('[meeting-recorder] transcript persist failed, 收尾继续:', e)
+          }
         }
         // ⚠⚠ §834/D1：这一句此前**完全没有保护**，而它是三处收尾落库里
         //   唯一一处「写整个完成状态」的（status: 'completed' 全仓只写这一处）。
@@ -1513,7 +1599,14 @@ export class NoteRecorderRuntime {
               payload ? 'note.wav' : `note${filenameForMimeType(blobType)}`,
               controller.signal,
             ),
-            10 * 60_000,
+            // ⚠⚠ §930：此前这里写的是 `10 * 60_000`，而服务端的
+            //   `fullTranscribeTimeout` **也是 10 分钟** ⇒ **相等即错**：
+            //   客户端计时含网络与鉴权开销，实际总是先到点 ⇒ 一场刚好跑满
+            //   10 分钟的录音**必然**失败，而失败形态是「转写失败」、
+            //   录音却还在 ⇒ 用户以为白录了。
+            //   ⇒ 改用**同一个常量**（11 分钟，服务端预算的 1.1 倍），
+            //   两处再也不会各自写死一个数。
+            FULL_TRANSCRIBE_TIMEOUT_MS,
           )
           this.transcript.value = result.text
           // 部分段失败时整体仍成功（保住成功段内容），但必须告诉用户

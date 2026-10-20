@@ -24,13 +24,31 @@ export type RefineOutcome = 'ok' | 'parse-fallback' | 'rejected' | 'adopted-with
 export interface RefineNoticeInput {
   /** normalizeRefine 判定「结果不是真正精校」 */
   fromFallback?: boolean
-  /** 服务端 guardRefineResult 拦下了名单污染 */
+  /** 服务端 guardRefineResult 拦下了精校结果 */
   rejected?: boolean
+  /**
+   * ⚠⚠ §908/D77：`rejected` 的**成因**。它现在有两个，说法必须不同：
+   *   - `participant_leak`：精校稿混进了原文没有的参会人姓名（§35）
+   *   - `shrinkage`：模型**缩写**了（回显不完），不是纠错（§907/D76）
+   * 不给就按 `participant_leak` 说（保持既有行为，向后兼容）。
+   */
+  rejectedReason?: RefineRejectReason
+  /**
+   * ⚠⚠ §910/D79：`assessRefineRetention` 判定**不通过**的原因码
+   * （`refine-empty` / `refine-too-short(...)`）。
+   * ⚠ 它命中的正是「响应完整、但模型把精校做成了摘要」那一档 ——
+   *   而文案此前一律说「云端返回无法解析」，那是**错的**：
+   *   JSON 解析得好好的，模型解析失败那句话会让用户去查错的方向。
+   */
+  retentionReason?: string
   /** 本地整段重转已采用 */
   adopted?: boolean
   /** 重转里有分片失败 */
   failedSegments?: number
 }
+
+/** 精校结果被拦下的两种成因（§908/D77）。 */
+export type RefineRejectReason = 'participant_leak' | 'shrinkage'
 
 /**
  * 返回给用户的精校结果文案。
@@ -41,18 +59,40 @@ export function buildRefineNotice(input: RefineNoticeInput): {
   kind: 'info' | 'success'
   text: string
 } {
-  const { fromFallback, rejected, adopted, failedSegments } = input
+  const { fromFallback, rejected, rejectedReason, retentionReason, adopted, failedSegments } = input
   const adoptSuffix = adopted ? '已整段重转；' : ''
 
   // ⚠ 顺序不能反：rejected 同时也会带 fromFallback=true，
   //   先判 parse-fallback 会把「被拦下」误报成「无法解析」。
   if (rejected) {
+    // ⚠⚠ §908/D77：`shrinkage` 与 `participant_leak` 的**原因对用户完全不同**。
+    //   §907 给长会议加了缩写护栏之后，这条分支会在**每一场长会议**上触发；
+    //   若仍说「检测到与参会人名单不符的人名」，用户会去查参会人名单 ——
+    //   而名单从来没问题，真实原因是「这场会太长，模型回显不完」。
+    //   ⇒ 本文件头写着「桶名是对外承诺」，这条就是它的第二个兑现点。
+    if (rejectedReason === 'shrinkage') {
+      return {
+        kind: 'info',
+        text: `${adoptSuffix}精校未生效：这场会议转写太长，模型没能完整回显，` +
+          `已丢弃不完整的精校稿并显示原始转写（内容完整，只少了错字纠正）`,
+      }
+    }
     return {
       kind: 'info',
       text: `${adoptSuffix}精校结果被拦下（检测到与参会人名单不符的人名，已丢弃并显示原始转写）`,
     }
   }
   if (fromFallback) {
+    // ⚠⚠ §910/D79：留存判定不通过**不是**「无法解析」。
+    //   `refine-too-short` 的形态是「响应完整、但模型把精校做成了摘要」，
+    //   报成解析失败会让用户去查网络/云端，而真正的原因无人知晓。
+    if (retentionReason?.startsWith('refine-too-short')) {
+      return {
+        kind: 'info',
+        text: `${adoptSuffix}精翻未生效（这份精校比原文短太多，可能是模型写成了摘要），`
+          + `显示的是原始转写（内容完整，只少了错字纠正）`,
+      }
+    }
     return {
       kind: 'info',
       text: `${adoptSuffix}精翻未生效（云端返回无法解析），显示的是原始转写`,

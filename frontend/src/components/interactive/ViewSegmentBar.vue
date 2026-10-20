@@ -80,9 +80,10 @@ defineEmits<{ 'update:modelValue': [value: string] }>()
 .seg-bar {
   display: flex;
   gap: var(--space-1);
-  padding: var(--space-1) var(--space-3);
+  padding: 4px;
   margin-bottom: var(--space-2);
-  border-radius: var(--radius-full);
+  /* 矩形 + 圆角，iOS 风格分段控件；不再用胶囊（999px） */
+  border-radius: var(--radius-md);
   background: var(--bg-subtle);
 }
 
@@ -95,15 +96,17 @@ defineEmits<{ 'update:modelValue': [value: string] }>()
   align-items: center;
   justify-content: center;
   gap: var(--space-1);
-  height: 32px;
-  padding: 0 var(--space-2);
+  /* iOS 标准按钮高度（44pt 触摸热区），过滤/筛选/分段类按钮统一 */
+  min-height: 44px;
+  padding: 0 var(--space-3);
   border: none;
-  border-radius: var(--radius-full);
+  /* 矩形 + 小圆角，匹配 iOS 标准按钮 */
+  border-radius: var(--radius-md);
   background: transparent;
   color: var(--text-secondary);
   font-size: var(--text-sm);
   font-weight: 500;
-  line-height: 1.6;
+  line-height: 1.4;
   white-space: nowrap;
   overflow: hidden;
   cursor: pointer;

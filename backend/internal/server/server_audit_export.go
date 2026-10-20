@@ -138,16 +138,24 @@ func writeAuditPage(w http.ResponseWriter, page *redclaw.AuditPage, format audit
 		if attachment {
 			w.Header().Set("Content-Disposition", "attachment; filename=audit-export.jsonl")
 		}
+		// ⚠ §946：这是**流式**响应（NDJSON，一行一条）⇒ ⇒⇒ 不能套
+		//　 writeJSON 的「先编码后写状态」——那会把整份导出攒进内存
+		//　 ⇒ ⇒⇒ 但「编码错误被整个吞掉」仍然要修 ⇒ ⇒⇒ 失败就**停下并留痕**
+		//　 （状态行早已提交 ⇒ 只能让这一批少几行，但服务端**有记录**）。
 		enc := json.NewEncoder(w)
-		for _, e := range page.Entries {
-			_ = enc.Encode(e)
+		for i, e := range page.Entries {
+			if err := enc.Encode(e); err != nil {
+				log.Printf("[ERROR] 审计导出 JSONL 写出失败（已写出 %d/%d 条）：%v", i, len(page.Entries), err)
+				break
+			}
 		}
 	case auditFormatJSON:
 		w.Header().Set("Content-Type", "application/json")
 		if attachment {
 			w.Header().Set("Content-Disposition", "attachment; filename=audit-export.json")
 		}
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		// ⚠ §946：走 writeJSON ⇒ 编码错误不再被吞（原来这里是 `_ =`）。
+		writeJSON(w, http.StatusOK, map[string]interface{}{
 			"entries": page.Entries,
 			"total":   len(page.Entries),
 		})

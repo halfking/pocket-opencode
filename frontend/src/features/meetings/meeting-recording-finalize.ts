@@ -94,8 +94,12 @@ const defaultTranscribeFull = (blob: Blob, filename: string) =>
   // ★ segments 必须一起带回来：它是把高精度文本挂回说话人的唯一依据。
   //   只回 {text, failed} 就等于在接缝处把它扔了
   //   （见 meeting-final-transcript.ts 的 FullSegmentReceipt 头注释）。
+  // ★ error 也必须带回来（§927）：服务端「一次成功段都没有」时回
+  //   `{ok:false, error:…}`（HTTP 仍是 200）⇒ text/failed 都是空
+  //   ⇒ 丢掉 error 就分不清「整块纯静音」与「整块真失败」
+  //   ⇒ 前者会被误报成「有 N 段没转出来」。
   sttSettingsApi.transcribeFull(blob, filename).then((r) => ({
-    text: r.text, failed: r.failed, segments: r.segments,
+    text: r.text, failed: r.failed, segments: r.segments, error: r.error,
   }))
 
 /**
@@ -257,6 +261,13 @@ export async function finalizeRecording(
     const notice = buildRefineNotice({
       fromFallback: result.fromFallback,
       rejected: result.rejected,
+      // ⚠⚠ §908/D77：原因必须**一路传到底**，否则文案会退回「名单污染」那句 ——
+      //   而长会议上真正的原因是「转写太长，模型回显不完」。
+      //   不传这一项，`rejectedReason` 就断在 API 层，用户被指向一个错的原因。
+      rejectedReason: result.rejectedReason,
+      // ⚠⚠ §910/D79：留存判定的原因也必须传到文案层，
+      //   否则「模型写成了摘要」会被报成「云端返回无法解析」。
+      retentionReason: result.retentionReason,
       adopted: outcome.adopted && finalText.applied,
       failedSegments: finalText.failedSegments,
     })

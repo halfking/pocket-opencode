@@ -4,9 +4,9 @@
 import { renderTranscript } from '../features/meetings/meeting-dedup.ts'
 import { buildFallbackRefinePrompt } from '../features/meetings/refine-prompt.ts'
 import { buildFallbackSummaryPrompt } from '../features/meetings/summary-prompt.ts'
-import { http, isAbortError } from './http'
+import { http, isAbortError, LLM_CHAT_TIMEOUT_MS } from './http'
 import type { ActionItem, LiveSummary, MeetingSegment, RecommendItem } from '../features/meetings/meetings-store'
-import { truncateCodeUnits } from '../utils/text.ts'
+import { truncateCodeUnits, truncateUtf8BytesTail, utf8ByteLength } from '../utils/text.ts'
 import { assessRefineRetention } from './refine-retention-guard.ts'
 
 // ⚠ helper 的真身在中立层 `src/utils/text.ts`（§251.2 兄弟链：
@@ -123,13 +123,29 @@ export interface RefineResult {
   /** true = 云端不可用，仅本地拼装转写，非真正精翻 */
   fromFallback?: boolean
   /**
-   * true = 云端精校**成功**，但结果里混进了原始转写中不存在的参会人姓名，
-   * 已由服务端 guardRefineResult 整体丢弃并回落原文（2026-10-07）。
+   * true = 云端精校**成功**，但结果不可信，已由服务端 guardRefineResult
+   * 整体丢弃并回落原文。
    *
    * ⚠ 与 fromFallback 同时为 true，但**原因完全不同**：前者是「云端解析不了」，
    *   后者是「云端解析好了，但结果不可信」。文案必须分开（桶名是对外承诺）。
    */
   rejected?: boolean
+  /**
+   * ⚠⚠ §908/D77：`rejected` 的**成因**。它现在有两个，而它们的用户侧动作不同：
+   *   - `participant_leak`：混进了原文没有的参会人姓名（§35）
+   *   - `shrinkage`：模型**缩写**了，回显不完（§907/D76，长会议恒触发）
+   * 缺省按 `participant_leak` 处理（向后兼容）。
+   */
+  rejectedReason?: 'participant_leak' | 'shrinkage'
+  /**
+   * ⚠⚠ §910/D79：`assessRefineRetention` 判定**不通过**时的原因码。
+   *
+   * ⚠ 它此前只进了 `console.warn`（`refine-too-short(1234<2500，原文 5000)` 这种），
+   *   而对用户的文案一律压成「云端返回无法解析」——
+   *   **可 JSON 解析得好好的**，真实原因是「模型把精校做成了摘要」。
+   *   ⇒ 与 §907/§908 同族：**桶名是对外承诺**，把已有的判定原因放出来不需要新机制。
+   */
+  retentionReason?: string
   /**
    * 服务端本次送给 LLM 的转写规模（**runes**，不是字节）。
    *
@@ -266,7 +282,17 @@ export const meetingsApi = {
     }
   },
 
-  /** 云同步会议元数据（不含音频/转写全文） */
+  /**
+   * 云同步会议元数据。
+   *
+   * ⚠ §936：旧注释写「不含音频/转写全文」是**错的** —— 它**确实**把
+   * `refinedTranscript` 放进了请求体（下一行）⇒ ⇒ 服务端每场会议存一份
+   * 精校全文副本。两个调用点里只有 `syncMeetingMetadata` 不带全文。
+   *
+   * ⚠ 本轮**只把注释改成实话，不改行为**：「多端之间要不要同步精校全文」
+   * 是**产品口径**（服务端存储形态 + 仓外移动端兼容）⇒ 登记待拍板
+   * （简报第 160 条 ②），不在技术层自决。
+   */
   async syncMeeting(payload: MeetingSyncPayload): Promise<void> {
     await http('/api/meetings', {
       method: 'POST',
@@ -354,6 +380,10 @@ export function normalizeRefine(raw: Record<string, unknown>, segments: MeetingS
   //   「响应完整、但模型把精校做成了摘要」无人看守 ⇒ 用户看到少了很多的正文，
   //   徽章却写「已精校」。判定放在纯模块里（§52：本文件在 node 里 import 不了）。
   const retention = assessRefineRetention({ original: fallback, refined: String(serverRefined ?? '') })
+  // ⚠⚠ §910：把**原因**带出��去，不再只进 console.warn。
+  //   「精校稿比原文短太多」与「云端返回无法解析」对用户是**两件事**，
+  //   后者会让用户去查网络/云端，而真正的原因无人知晓。
+  const retentionReason = retention.ok ? undefined : retention.reason
   if (!retention.ok) {
     console.warn(
       `[meetings] 精校结果未通过内容留存判定（${retention.reason}）：`
@@ -375,6 +405,15 @@ export function normalizeRefine(raw: Record<string, unknown>, segments: MeetingS
   // 而实际上 JSON 解析得好好的，是名单污染被拦下了。
   // 用户会照着错误原因去查网络，而真正的原因无人知晓。
   const rejected = raw.refine_rejected === true || raw.refineRejected === true
+  // ⚠⚠ §908/D77：`refine_rejected` 现在有**两个**成因，必须把原因也带出来。
+  //   §907 给长会议加了「缩写」护栏之后，前端若只知道「被拦下」，
+  //   就会对每一场长会议说「检测到与参会人名单不符的人名」——
+  //   而名单从来没问题，真实原因是「转写太长，模型回显不完」。
+  //   ⇒ 桶名是对外承诺（`refine-outcome-notice.ts` 头注释写着这条纪律）。
+  const rejectedReason = (raw.refine_rejected_reason ?? raw.refineRejectedReason) as
+    | 'participant_leak'
+    | 'shrinkage'
+    | undefined
   // ⚠ §426：与 summaryInputRunes 同理——服务端记下的**本次 LLM 输入规模**。
   //   ⚠ 它的用处正是把两种现在**完全同形**的回落区分开：
   //     「转写太长、请求被上游拒了」与「模型没按契约返回」——
@@ -395,7 +434,8 @@ export function normalizeRefine(raw: Record<string, unknown>, segments: MeetingS
     noteId: (raw.note_id ?? raw.noteId) as string | undefined,
     tasksCreated: Number(raw.tasks_created ?? raw.tasksCreated ?? 0) || undefined,
     ...(fromFallback ? { fromFallback: true } : {}),
-    ...(rejected ? { rejected: true } : {}),
+    ...(rejected ? { rejected: true, ...(rejectedReason ? { rejectedReason } : {}) } : {}),
+    ...(retentionReason ? { retentionReason } : {}),
     ...(refineInputRunes === undefined ? {} : { inputRunes: Number(refineInputRunes) }),
   }
 }
@@ -433,6 +473,94 @@ function normalizeActionItems(raw: unknown): ActionItem[] {
   )
 }
 
+/**
+ * §916：`/api/llm/chat` 的**单条消息**长度硬上限。
+ *
+ * ⚠⚠ **单位是 UTF-8 字节，不是字符** —— 这是本节最要紧的一条。
+ *
+ *   出处（服务端两处同值）：
+ *   `backend/internal/server/server_assistant.go` 的 `handleLLMChat`
+ *     —— `if len(m.Content) > 32000 { 400 "message too long (max 32000 bytes per message)" }`
+ *   `backend/internal/server/server_llmbff.go` 的 `/api/llm/stream` 入口（同值）
+ *   ⚠ **不写行号**：行号会随代码增长漂（本处就曾漂过 7 行）⇒ 按**符号**指。
+ *
+ *   Go 的 `len(string)` 返回的是**字节数**
+ *   ⇒ 32000 字节 ≈ **10666 个中文字**（这是**闸的语义**：按 3 字节/字）。
+ *   ⚠⚠ §920 **更正**了「分钟」那一半：换算成会议时长**不能**用「10666 字 ÷ 271 字/分」，
+ *     因为真实提示词里还有**说话人前缀**（`[说话人] ` 每行约 16 字节）且真实转写密度是
+ *     **2.93 字节/字**（不是 3）⇒ 真实斜率 = **844 字节/分**（真实 ASR 语料实测）
+ *     ⇒ 摘要兜底（模板开销 522 字节）的越闸点 ≈ **37.1 分钟**
+ *     ⇒ 精校兜底（模板开销 3172 字节）≈ **33.9 分钟**
+ *     ⇒ 流式纪要（§919 修好后）**永不超闸**（被裁进闸内）。
+ *   ⚠⚠ 这比先前按「字符」估的「≈2 小时」**短 3 倍** ——
+ *     同样地，`/api/embed` 的 16000 闸（`server_assistant.go` 的 `handleEmbed`：
+ *     `len(body.Text) > 16000`，也是字节）
+ *     只装得下 **5333 个中文字** ≈ **19.7 分钟**，
+ *     而 §896/§912 当时按「16000 字」算出来的是「63 分钟」⇒ **那两个数字要更正**。
+ *   ⚠ 错误信息原先写的是「chars」⇒ **信息与判定不同形**（这正是本节那个坑的成因）
+ *     ⇒ 已按实测把两处文案改成 bytes。
+ *
+ * ⚠ 为什么前端必须知道这个上限（§916 的缺陷本体）：
+ *   兜底路径是把**整场转写**拼进提示词再打 `/api/llm/chat` ⇒
+ *   转写一旦超过闸（≳40 分钟的会议）⇒ 请求**必然 400** ⇒
+ *   兜底**结构性不可达** ⇒ 摘要退化成「转写前 200 字 + summaryFallback 标志」，
+ *   而那**不是摘要**（§220 已把它的形状与信号钉住）。
+ *
+ * ⚠ 与 `EMBED_TEXT_CHAR_LIMIT`（§896）同形：这里也是**前端镜像**服务端的一个数。
+ *   两份常量要收敛成一处契约的问题**未拍板**（简报 119 的延伸）。
+ *   ⚠ 名字里带 `BYTES` 是刻意的：这个名字就是防「按字符算」的那道护栏。
+ */
+const LLM_CHAT_MAX_CONTENT_BYTES = 32000
+
+/**
+ * §916：把摘要兜底的提示词装进 `/api/llm/chat` 的长度闸。
+ *
+ * ── 裁剪顺序（有讲究，不是随手挑的）──
+ *   ① 先裁**转写**，且取**尾部**：
+ *      滚动摘要的提示词结构是「已有摘要 + 新增转写」⇒ **新的内容在尾部**
+ *      （会议还没讲完），更早的内容由 `prevSummary` 携带
+ *      ⇒ 若取头部，兜底会每次都在总结会议开头，**永远看不到新说的话**。
+ *   ② 转写裁光还超 ⇒ 只可能是 `prevSummary` 本身太大
+ *      （§101 明确**不设** `max_tokens` ⇒ 模型的 summary 字段长度不受控）
+ *      ⇒ 再裁它的**头部**（保留最近一次改写的结果）。
+ *
+ * ── 为什么这个扣减是**精确**的 ──
+ *   读 `buildFallbackSummaryPrompt` 的模板可知：
+ *     · **转写是纯后缀**（`…新增转写：\n${transcript}`）
+ *     · **`prevSummary` 原样内嵌**（`已有摘要：\n${prevSummary}`）
+ *   ⇒ `build(t, p)` 的字节数 == 模板开销 + t 的字节数 + p 的字节数
+ *   ⇒ 「扣掉开销再裁」**不会**出现「裁完还超」或「裁过头」。
+ *
+ * ⚠ 不改**单位口径**：这里量的是**服务端的字节闸**，与 §245.7 那个
+ *   （尚未拍板的）「字节/码元/字符」产品口径**无关** —— 本函数不碰
+ *   `truncateCodeUnits`（200/500 那两处回落截断的单位仍未拍板，§244.4）。
+ */
+function fitSummaryPromptToGate(
+  transcript: string,
+  prevSummary?: string,
+): { transcript: string; prevSummary?: string } {
+  const build = buildFallbackSummaryPrompt
+  const gate = LLM_CHAT_MAX_CONTENT_BYTES
+
+  let t = transcript
+  let p = prevSummary
+
+  // ① 裁转写（取尾部）。开销 = 模板 + prevSummary（转写按纯后缀扣）。
+  if (utf8ByteLength(build(t, p)) > gate) {
+    const overhead = utf8ByteLength(build('', p))
+    t = truncateUtf8BytesTail(t, Math.max(0, gate - overhead))
+  }
+
+  // ② 仍超 ⇒ 只能是「已有摘要」自己就超了（模板开销 ≈ 600 字节，不可能是它）。
+  if (utf8ByteLength(build(t, p)) > gate) {
+    // prevSummary 在模板里**原样内嵌** ⇒ 用一个 1 字节的探针量出模板开销。
+    const overhead = utf8ByteLength(build('', 'X')) - 1
+    p = truncateUtf8BytesTail(p ?? '', Math.max(0, gate - overhead))
+  }
+
+  return { transcript: t, prevSummary: p }
+}
+
 /** LLM 兜底：直接调 /api/llm/chat */
 async function fallbackSummarize(
   segments: MeetingSegment[],
@@ -446,7 +574,17 @@ async function fallbackSummarize(
   //   与 §54 在精校链上发现并已修复的缺陷同型，而 action_items[].due
   //   是摘要链里**时间点的唯一来源**（schema 里没有 next_meeting）。
   //   与服务端 `buildSummaryPrompt` 的防漂由 summary-prompt-parity.test.mjs 承担。
-  const prompt = buildFallbackSummaryPrompt(transcript, prevSummary)
+  // ⚠⚠ §916：转写可能超过 `/api/llm/chat` 的 32000 **字节**硬闸
+  //   （实测 32000 字节 ≈ 10666 个中文字；按真实提示词斜率 844 字节/分
+  //   ⇒ 越闸点 ≈ **37.1 分钟**，§920 实测 ⇒ 原写的「39 分钟」偏高）
+  //   ⇒ 不裁就是**必然 400**，兜底**结构性不可达** ⇒ 摘要退化成「转写前 200 字」。
+  //   ⇒ 这里按闸裁（取**尾部**：新的内容在尾部，更早的由 prevSummary 携带）。
+  //   ⚠ 低于闸时**逐字不变**（`fitSummaryPromptToGate` 原样返回）
+  //     ⇒ 短会议行为零变化。
+  //   ⚠ `transcript`（全量）仍留给下面的 `parseSummaryJson` ——
+  //     那一步要的是「转写原文」来兜底，不是「送进提示词的那一段」。
+  const fitted = fitSummaryPromptToGate(transcript, prevSummary)
+  const prompt = buildFallbackSummaryPrompt(fitted.transcript, fitted.prevSummary)
 
   try {
     const res = await http<{ content: string }>('/api/llm/chat', {
@@ -456,6 +594,10 @@ async function fallbackSummarize(
         messages: [{ role: 'user', content: prompt }],
       }),
       signal,
+      // ⚠ §929：这条兜底此前吃 `http()` 的默认 **30 s**，而服务端那条路的
+      //   有效预算是 **85 s**（网关客户端的 ResponseHeaderTimeout）
+      //   ⇒ 客户端比服务端先放弃 55 s ⇒ 兜底路径在生产上基本必然超时。
+      timeoutMs: LLM_CHAT_TIMEOUT_MS,
     })
     return parseSummaryJson(res.content, transcript)
   } catch (e) {
@@ -496,6 +638,33 @@ async function fallbackRefine(
   meta?: { title?: string; participants?: string[]; location?: string },
 ): Promise<RefineResult> {
   const transcript = renderTranscript(segments)
+  const prompt = buildFallbackRefinePrompt(transcript, meta)
+
+  // ⚠⚠ §920：这条兜底的提示词**没有上限** ⇒ 超过 `LLM_CHAT_MAX_CONTENT_BYTES`
+  //   **字节**时，服务端那道闸（`len(m.Content) > 32000`）会**必然 400**
+  //   ⇒ 走不到下面的 catch ⇒ 用户拿到的是**未精校的原文**。
+  //
+  //   ── 实测读数（真实 ASR 语料，斜率 844 字节/分，含说话人前缀）──
+  //   · 越闸点 ≈ **33.9 分钟**（精校模板开销 3172 字节，比摘要那条的 522 大得多
+  //     ⇒ **比摘要兜底早 3.2 分钟**撞闸）
+  //   · ⚠ 这条路是**高频**兜底（§54：后端 60s 超时 ⇒ 前端必走这里）
+  //   · ⚠⚠ 而转写是**用户不能编辑的派生输入** ⇒ 用户**绕不开**
+  //     （§918 定的判别标准：不可编辑的派生输入撞闸 ⇒ 必须修）
+  //   · ⚠⚠ **不对称**：同一份转写走后端那条路（`/api/meetings/{id}/refine`）
+  //     **没有**这道 32000 字节闸（实测 62.5 分钟的会议送 70301 字节照样发得出去）
+  //     ⇒ 「后端精校失败时，长会议的用户一定拿不到精校」
+  //
+  //   ── 这里**只出声、不改降级行为**（与 §818/§819/§820 同款纪律）──
+  //   修法（裁尾 / 分段精校 / 别的）是**产品口径**，已挂在简报 140 第 ② 问
+  //   ⇒ 本节不代拍 ⇒ 只把「它必然 400」从静默变成可见。
+  const promptBytes = utf8ByteLength(prompt)
+  if (promptBytes > LLM_CHAT_MAX_CONTENT_BYTES) {
+    console.warn(
+      `[refine-fallback] 兜底提示词 ${promptBytes} 字节 > 闸 ${LLM_CHAT_MAX_CONTENT_BYTES} 字节` +
+      ` ⇒ 这条请求**必然 400**（转写约 ${(promptBytes / 844).toFixed(1)} 分钟；` +
+      `实测越闸点 33.9 分钟）⇒ 精校会回落成原文。修法待拍板（简报 140 第 ② 问）。`,
+    )
+  }
 
   try {
     const res = await http<{ content: string }>('/api/llm/chat', {
@@ -504,10 +673,14 @@ async function fallbackRefine(
         kind: 'meeting_refine',
         messages: [{
           role: 'user',
-          content: buildFallbackRefinePrompt(transcript, meta),
+          content: prompt,
         }],
       }),
       signal,
+      // ⚠ §929：同上 —— 这条兜底此前吃 30 s 默认，而服务端有效预算 85 s。
+      //   它是**高频**兜底（§54：后端先超时 ⇒ 前端必走这里）⇒ 30 s 意味着
+      //   「后端 502 之后，兜底也必然超时」⇒ 用户拿回原文 + 「未生效」。
+      timeoutMs: LLM_CHAT_TIMEOUT_MS,
     })
     return refineFromLlmContent(res.content, transcript)
   } catch (e) {
@@ -552,6 +725,8 @@ export function refineFromLlmContent(content: string, transcript: string): Refin
   //   本函数**恒** `fromFallback: true`，所以文案与状态已经对；此处只管正文用哪一份。
   const retention = assessRefineRetention({ original: transcript, refined: hasRefined ? (raw as string) : '' })
   return {
+    // ⚠ §910：这条是**浏览器内 LLM 兜底路径**，原因同样带出去（两条路都得给同一个真相）
+    ...(retention.ok ? {} : { retentionReason: retention.reason }),
     refinedTranscript: hasRefined && retention.ok ? (raw as string) : transcript,
     translations: (parsed.translations ?? {}) as Record<string, string>,
     structuredMinutes: {

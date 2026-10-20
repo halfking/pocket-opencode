@@ -13,6 +13,13 @@
 //   - 转写变短（重转写）→ 游标自动归零重析；
 //   - 进程重启丢游标 → 下次从头全量分析，无正确性风险（转写本体在库）。
 //
+// ⚠⚠ §937（D1）：轮询**只取游标之后的新增段**（meetingStore.TranscriptTailScoped），
+//
+//	而不是把整份转写读进来再在 Go 里切 ⇒ ⇒ 每轮从库里搬走的字节数
+//	∝ **这次新增了多少**，而不是 ∝ 全文 ⇒ ⇒ 一场 N 小时的会议按 P 秒轮询，
+//	累计搬运量从 ∝ N²/P 降到 ∝ N（这是 §924 客户端整场重发的**服务端孪生**）。
+//	⇒ ⇒ 尾巴的**口径只有一份**（meeting/transcript.go）⇒ PG 版与内存版不会分叉。
+//
 // LLM 走对话流的同一份 workspace 网关配置（ResolveGatewayForUser），成本
 // 归属该 workspace 的 key；model 传空时按 preferred 首选 → auto 兜底，与
 // resolveChatModel 同口径。
@@ -98,12 +105,65 @@ func (s *Server) handleMeetingLiveAnalyze(w http.ResponseWriter, r *http.Request
 	}
 	uid := s.userIDFromRequest(r)
 	workspaceID := s.workspaceIDFromRequest(r)
-	m, err := s.meetingStore.GetScoped(meetingID, uid, workspaceID)
+
+	// ── 滚动状态（锁内取，锁外用）──────────────────────────────────
+	//
+	// ⚠ §937（D1）：这里**只取游标**，不再为了算游标而把整份转写读进来。
+	meetingAnalyzeStates.mu.Lock()
+	st, exists := meetingAnalyzeStates.m[meetingID]
+	fromRune := 0
+	cachedPrior := ""
+	var cachedResult *llmgateway.AnalyzeResult
+	hasResult := false
+	if exists {
+		fromRune = st.sentRunes
+		cachedPrior = st.priorSummary
+		cachedResult = st.lastResult
+		hasResult = cachedResult != nil
+	}
+	meetingAnalyzeStates.mu.Unlock()
+
+	if body.Reset {
+		// 显式重置 → 从头析（与旧实现同一条判据）。
+		fromRune = 0
+		cachedPrior = ""
+		cachedResult = nil
+		hasResult = false
+	}
+
+	// ⚠⚠ §937（D1）：**只取尾部**（游标起的新增段）+ 全文字符数。
+	//
+	//	修复前：GetScoped ⇒ 每轮把**整份转写**从库里搬进进程
+	//	⇒ ⇒ 一场 4 小时的会议按 30 秒轮询 ⇒ 累计搬运量 ∝ 时长²
+	//	⇒ ⇒ 这是 §924（客户端整场重发）的**服务端孪生**。
+	//
+	//	修复后：每轮只搬「这次新增的那一段」⇒ 每轮成本 ∝ 新增量。
+	tail, totalRunes, err := s.meetingStore.TranscriptTailScoped(meetingID, uid, workspaceID, fromRune)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "meeting not found")
 		return
 	}
-	if strings.TrimSpace(m.Transcript) == "" {
+	if totalRunes < fromRune {
+		// 转写变短（重转写覆盖）→ 游标归零重析（与旧实现同一条判据）。
+		fromRune = 0
+		cachedPrior = ""
+		cachedResult = nil
+		hasResult = false
+		tail, totalRunes, err = s.meetingStore.TranscriptTailScoped(meetingID, uid, workspaceID, 0)
+		if err != nil {
+			writeError(w, http.StatusNotFound, "meeting not found")
+			return
+		}
+	}
+
+	// ⚠ 空转写守卫：**只在读到整份时**判定（fromRune==0 ⇒ tail 就是全文）
+	//   ⇒ 与旧实现的 strings.TrimSpace(m.Transcript)=="" 是同一条判据。
+	//
+	//   fromRune>0 时不做这个判定：那时「上一次读到全文时它非空」已经成立
+	//   （sentRunes>0 ⇒ 上一次 analyze 成功过 ⇒ 那时转写非空）⇒
+	//   ⇒ 唯一差别是「转写被换成一段**等长**的纯空白」：旧实现会 400、
+	//   新实现会继续（§937 的登记项 R3）。
+	if fromRune == 0 && strings.TrimSpace(tail) == "" {
 		writeError(w, http.StatusBadRequest, "meeting has no transcript, transcribe first")
 		return
 	}
@@ -121,38 +181,28 @@ func (s *Server) handleMeetingLiveAnalyze(w http.ResponseWriter, r *http.Request
 		model = "auto"
 	}
 
-	// ── 滚动状态（锁内取，锁外用）──────────────────────────────────
-	totalRunes := utf8.RuneCountInString(m.Transcript)
-	meetingAnalyzeStates.mu.Lock()
-	st, exists := meetingAnalyzeStates.m[meetingID]
-	if !exists {
-		st = &meetingAnalyzeLive{lastUsed: time.Now()}
-		meetingAnalyzeStates.m[meetingID] = st
-	}
-	if body.Reset || totalRunes < st.sentRunes {
-		// 显式重置，或转写变短（重转写覆盖）→ 从头析。
-		*st = meetingAnalyzeLive{lastUsed: time.Now()}
-	}
 	prior := strings.TrimSpace(body.PriorSummary)
 	if prior == "" {
-		prior = st.priorSummary
+		prior = cachedPrior
 	}
-	segment := ""
-	if totalRunes > st.sentRunes {
-		runes := []rune(m.Transcript)
-		segment = string(runes[st.sentRunes:])
-	}
-	unchanged := segment == "" && st.lastResult != nil
+	// ⚠ §937：segment 现在就是**尾读**拿到的那一段（游标起的新增）⇒
+	//   旧实现是「整读之后在 Go 里切」⇒ 结果逐字相同，但搬运量差一个全文。
+	segment := tail
+	unchanged := segment == "" && hasResult
 	var cached *llmgateway.AnalyzeResult
 	if unchanged {
-		cached = st.lastResult
+		cached = cachedResult
 	}
 	// 防御：segment 空且无缓存（理论不可达——转写非空 + sentRunes>0 才可能，
 	// 重置后必全量）→ 退回全量分析而不是给网关发空 transcript。
-	if segment == "" && st.lastResult == nil {
-		segment = m.Transcript
+	if segment == "" && !hasResult {
+		whole, _, err := s.meetingStore.TranscriptTailScoped(meetingID, uid, workspaceID, 0)
+		if err != nil {
+			writeError(w, http.StatusNotFound, "meeting not found")
+			return
+		}
+		segment = whole
 	}
-	meetingAnalyzeStates.mu.Unlock()
 
 	if unchanged {
 		writeJSON(w, http.StatusOK, map[string]any{
@@ -181,7 +231,15 @@ func (s *Server) handleMeetingLiveAnalyze(w http.ResponseWriter, r *http.Request
 	}
 
 	// ── 提交新状态（锁内）────────────────────────────────────────
+	//
+	// ⚠ §937：状态条目在**提交时**才建（而不是像旧实现那样在读库之后立刻建）
+	//   ⇒ ⇒ 404/400/503 这三条早退路径**不留垃圾条目**（旧实现同口径）。
 	meetingAnalyzeStates.mu.Lock()
+	st, exists = meetingAnalyzeStates.m[meetingID]
+	if !exists {
+		st = &meetingAnalyzeLive{lastUsed: time.Now()}
+		meetingAnalyzeStates.m[meetingID] = st
+	}
 	st.priorSummary = res.Summary
 	st.sentRunes = totalRunes
 	st.lastResult = res

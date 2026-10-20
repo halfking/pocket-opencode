@@ -83,7 +83,12 @@ func (openaiProvider) BuildRequest(ctx context.Context, r ProviderRequest) (*htt
 	if strings.HasPrefix(lang, "zh") {
 		_ = w.WriteField("prompt", SimplifiedChineseBiasPrompt)
 	}
-	w.Close()
+	// §947：multipart 的 Close 写**结束边界** ⇒ 失败即**请求体不完整**
+	// ⇒ 上游会拿到畸形 multipart（400 / 只解析出半个文件）
+	// ⇒ ⇒⇒ 失败不许无声 ⇒ 直接让这次请求构造失败。
+	if err := w.Close(); err != nil {
+		return nil, fmt.Errorf("close multipart writer: %w", err)
+	}
 
 	url := strings.TrimRight(r.Target.BaseURL, "/") + "/audio/transcriptions"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, &buf)

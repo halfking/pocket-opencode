@@ -59,6 +59,21 @@ const NOTES_CAPTURE_V1_COLUMNS = [
   { table: 'local_notes', column: 'media_json', sql: 'ALTER TABLE local_notes ADD COLUMN media_json TEXT' },
 ]
 
+/**
+ * §898：向量表加一列 `chunks`（一行装几个段向量）。
+ *
+ * ⚠ 为什么**只加列**、不改主键：本地库的迁移机制只支持 `ALTER TABLE ADD COLUMN`
+ *   （见上面每一组 `*_COLUMNS` 的写法），**不支持重建表**。
+ *   而复合主键 `(note_id, chunk_idx)` 必须重建表 ⇒ 得另造一套迁移基建，风险远高于收益。
+ *   ⇒ 形态改成「一行仍是 note_id，embedding BLOB 里连续放 chunks×dim 个 float」。
+ *   ⇒ 旧数据 `chunks=1`，语义与从前**逐字一致**，迁移是**纯加列**、零数据风险。
+ */
+const NOTE_VECTORS_V1_COLUMNS = [
+  { table: 'local_note_vectors', column: 'chunks', sql: 'ALTER TABLE local_note_vectors ADD COLUMN chunks INTEGER NOT NULL DEFAULT 1' },
+  // §899：段文本哈希（增量重嵌用）。默认 '' ⇒ 旧数据没有哈希 ⇒ 一律重嵌（安全侧）。
+  { table: 'local_note_vectors', column: 'chunk_hashes', sql: "ALTER TABLE local_note_vectors ADD COLUMN chunk_hashes TEXT NOT NULL DEFAULT ''" },
+]
+
 const EMAIL_SYNC_V1_COLUMNS = [
   { table: 'local_email_accounts', column: 'updated_at', sql: 'ALTER TABLE local_email_accounts ADD COLUMN updated_at INTEGER DEFAULT 0' },
   { table: 'local_email_invoices', column: 'file_name', sql: "ALTER TABLE local_email_invoices ADD COLUMN file_name TEXT DEFAULT ''" },
@@ -310,6 +325,13 @@ class LocalDB {
       await this.runMeetingsStudioV1Migration()
     } catch (e) {
       console.warn('[localDB] meetings studio v1 migration failed:', e)
+    }
+    try {
+      // §898：向量表加 chunks 列。必须排在 `initialized` 置位之前 ——
+      //   `vectorIndex.load()` 会 SELECT chunks 列，列不存在就是一次查询失败。
+      await this.runNoteVectorsV1Migration()
+    } catch (e) {
+      console.warn('[localDB] note vectors v1 migration failed:', e)
     }
     try {
       await this.runListSyncV1Migration()
@@ -726,6 +748,31 @@ class LocalDB {
       "INSERT OR IGNORE INTO _schema_migrations (version, description, applied_at) VALUES ('2026-09-08-notes-capture-v1', '笔记草稿/分级存储/附件', strftime('%s', 'now') * 1000);",
       false,
     )
+  }
+
+  /**
+   * §898：向量表加 `chunks` 列（一行装几个段向量）。
+   *
+   * ⚠ 与别的迁移不同，这里**不用 `_schema_migrations` 的版本标记**：
+   *   本仓库的迁移标记是「跑一次就不再跑」，而加列是**幂等且必须每次核对**的
+   *   （旧库可能是在别处建的、也可能上次加到一半失败）。
+   *   ⇒ 每次开库都查 `pragma_table_info`，缺就补 —— 这与既有 `*_COLUMNS` 的写法一致，
+   *     也天然覆盖「表刚被 CREATE TABLE IF NOT EXISTS 建出来、列已在 DDL 里」的情况。
+   */
+  private async runNoteVectorsV1Migration(): Promise<void> {
+    if (!this.conn) return
+    for (const col of NOTE_VECTORS_V1_COLUMNS) {
+      const exists = await this.queryForMigration<{ cnt: number }>(
+        `SELECT COUNT(*) AS cnt FROM pragma_table_info('${col.table}') WHERE name = ?`,
+        [col.column],
+      )
+      if (exists && exists.cnt > 0) continue
+      try {
+        await this.conn.execute(col.sql, false)
+      } catch {
+        // 列可能已存在（并发开库），忽略
+      }
+    }
   }
 
   /** 会议工作台：归档 / 标签 / 主题 / 总结技能 / 待办关联。 */

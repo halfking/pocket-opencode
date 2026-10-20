@@ -43,10 +43,90 @@ import (
 
 // ---- 公共辅助 ----
 
+// s946EncodeFailureCode 是「响应体编码失败」的**稳定错误码**。
+//
+// ⚠ 前端 `extractErrorCode` 按 `:` 切错误串取前半段（见 frontend/src/api/error-message.ts）
+// 　⇒ ⇒⇒ 所以错误文案**必须**以这个码开头，前端才认得出这是哪一类失败。
+const s946EncodeFailureCode = "response_encode_failed"
+
+// writeJSON 写 JSON 响应。
+//
+// # ⚠ §946：**先编码、后写状态行**（顺序是本函数存在的理由）
+//
+// 　**实测（§946，2026-10-21）**：`json.Encoder.Encode` 是先把值 marshal 进
+// 　**内部 buffer**、**成功之后**才写出去 ⇒ ⇒⇒ 所以「值不可编码」时
+// 　**响应体是空的**（不是截断的）—— 实测 `status=200 bodyLen=0`。
+//
+// 　而旧写法**先 `WriteHeader` 了** ⇒ ⇒⇒⇒ 客户端拿到的是
+// 　「**200 OK + 空体**」⇒ ⇒⇒⇒ 服务端**一个字都没留**（错误被 `_ =` 吞掉）
+// 　⇒ ⇒⇒⇒ 前端只看到「Unexpected end of JSON input」⇒ ⇒⇒⇒ 排查时
+// 　⇒ ⇒⇒⇒ **完全看不出发生过什么**（既没有 5xx，也没有一行日志）。
+//
+// 　⇒ 改成先编码 ⇒ 编码失败时**状态行还没提交** ⇒ 还能给一个**说得清的**
+// 　　500（见 writeJSONEncodeFailure）⇒ ⇒⇒ 而 loggingMiddleware 会把
+// 　　5xx 连同 request_id 一起记下来。
+//
+// # ⚠ 字节兼容（§946 实测）
+//
+// 　`json.Marshal(v) + "\n"` 与 `json.Encoder.Encode(v)` **逐字相同**
+// 　（实测：Marshal = `{"a":1,"b":"中文\u003c\u0026\u003e"}`，
+// 　Encoder = 同一串**加一个换行**）⇒ ⇒⇒ 所以这次改动**响应体一个字节都没变**
+// 　⇒ ⇒⇒ ⇒ 只有「编码失败」那条路径的行为变了（200+空体 ⇒ 500+可区分错误体）。
+//
+// # ⚠ 内存代价
+//
+// 　先编码意味着**整份响应体要先进内存**。`json.Marshal` 本来也要在内部
+// 　buffer 一份 ⇒ ⇒⇒ 峰值比原来多约一份响应体。⇒ 本仓最大 JSON 响应是
+// 　会议/任务列表那类（受 §941 的 2 MiB 正文上限约束）⇒ 这个量级可以接受
+// 　⇒ ⇒⇒⇒ 但**不要**把这条路径用在流式响应上（SSE / NDJSON 导出走的是别的写法）。
 func writeJSON(w http.ResponseWriter, status int, v any) {
+	body, err := json.Marshal(v)
+	if err != nil {
+		writeJSONEncodeFailure(w, status, err)
+		return
+	}
+	// ⚠ 补回 Encoder 的那个换行 ⇒ 字节与旧实现逐字一致（见上面的「字节兼容」）。
+	body = append(body, '\n')
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
+	if _, err := w.Write(body); err != nil {
+		// ⚠ 写失败（客户端断开 / 连接被重置）**没法再改状态行**了 ⇒
+		//　 只能留痕。旧实现把这个错误**整个吞掉** ⇒ 「客户端收到截断响应」
+		//　 而服务端**没有任何记录**。
+		log.Printf("[WARN] writeJSON: 响应体写出失败（status=%d）：%v", status, err)
+	}
+}
+
+// writeJSONEncodeFailure 是「响应体编码失败」时的兜底响应。
+//
+// ⚠ 为什么是 **500 + 稳定错误码**，而不是沿用原状态码：
+//
+//	旧写法**先提交了状态行** ⇒ 编码失败时客户端拿到「200 OK + 空体」
+//
+// 　⇒ 「成功但没有内容」⇒ 前端解析失败、用户以为接口坏了、服务端查不到日志。
+// 　⇒ 现在状态行还没提交 ⇒ 这里给 500 + 稳定错误码 ⇒ 客户端能**区分**
+// 　 「业务失败」与「服务端自己没能把响应写出来」。
+//
+// ⚠ 为什么 `retryable: false`：
+//
+//	编码失败发生在**业务动作之后** ⇒ ⇒⇒ 主结果**可能已经落库**
+//
+// 　⇒ ⇒⇒⇒ 客户端盲目重试可能造成**重复副作用** ⇒ ⇒⇒⇒ 明确告诉它别自动重试。
+//
+// ⚠ 兜底体用**常量字节**而不是再走一次编码：
+//
+//	编码失败的原因很可能就是「值里有 NaN / 循环引用」⇒ ⇒⇒ 兜底体必须
+//
+// 　⇒ ⇒⇒ ⇒ **保证**写得出去 ⇒ ⇒⇒ ⇒ 不能让它自己再失败一次。
+func writeJSONEncodeFailure(w http.ResponseWriter, originStatus int, err error) {
+	log.Printf("[ERROR] writeJSON: 响应体编码失败（原状态码 %d）：%v", originStatus, err)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusInternalServerError)
+	body := `{"error":"response_encode_failed: failed to encode JSON response body",` +
+		`"code":"response_encode_failed","retryable":false}` + "\n"
+	if _, werr := w.Write([]byte(body)); werr != nil {
+		log.Printf("[WARN] writeJSON: 编码失败兜底体写出也失败：%v", werr)
+	}
 }
 
 func writeError(w http.ResponseWriter, status int, msg string) {
@@ -70,9 +150,9 @@ func writeKxmemoryError(w http.ResponseWriter, err error) {
 	if kxe.Retryable() {
 		status = http.StatusServiceUnavailable
 	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]any{
+	// ⚠ §946：走 writeJSON ⇒ 编码错误不再被吞（原来这里是 `_ =`）。
+	//　 字节与旧实现逐字相同（§946 实测：Marshal+"\n" == Encoder.Encode）。
+	writeJSON(w, status, map[string]any{
 		"error":     kxe.Error(),
 		"code":      kxe.Code,
 		"retryable": kxe.Retryable(),
@@ -348,27 +428,35 @@ func (s *Server) handleNotes(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, resp)
 	case http.MethodPost:
+		// ⚠ §941 D1：正文上限与「太大 vs 格式错」的区分都收到 readNoteBody 一份。
+		//	此前这条链有**两份**上限（POST 走全局 2 MiB、PUT 走 handler 自己的
+		//	1 MiB 字面量）⇒ ⇒ ⇒ 同一条笔记写得进去、改不回来。
+		raw, ok := s.readNoteBody(w, r)
+		if !ok {
+			return
+		}
 		var n notes.Note
-		if err := json.NewDecoder(r.Body).Decode(&n); err != nil {
+		if err := decodeNoteJSON(raw, &n); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid body")
 			return
 		}
-		n.UserID = uid
-		// Ownership comes from the JWT, never from the body: a client-supplied
-		// workspaceId would otherwise let a caller write into another workspace.
-		n.WorkspaceID = wsID
 		if n.ID == "" {
 			n.ID = randomID("note")
 		}
-		// 龙虾架构：异步触发 kxmemory AI 编排（分类/SSOT/关联/待办提取）
-		if err := s.notesStore.Upsert(r.Context(), &n); err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+		// ★ §941 D2：落库 → 定向广播 → 异步分类走**共用的那一份**（ingestNote）。
+		//
+		//	Ownership comes from the JWT, never from the body: a client-supplied
+		//	workspaceId would otherwise let a caller write into another workspace.
+		//	⇒ 这条不变量现在只写在 ingestNote 里一处（此前这里与会议链各写一遍
+		//	⇒ §80 形状 ⇒ §939 的 D1「落进空租户」就是这么来的）。
+		target := newNoteTarget(uid, wsID)
+		if err := s.ingestNote(r.Context(), target, &n); err != nil {
+			// ⚠ §941 D3：归属冲突（撞 id 但那一行不是自己的）必须回 409，
+			//	不是 500 ⇒ 否则客户端以为「重试有用」。
+			s.writeNoteWriteError(w, r, err)
 			return
 		}
 		writeJSON(w, http.StatusCreated, n)
-		s.wsHub.BroadcastTo(ws.BroadcastTarget{UserID: uid}, "note.created", &n)
-		// 异步调 kxmemory（非阻塞）
-		go s.classifyNoteAsync(n)
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "GET/POST only")
 	}
@@ -424,6 +512,20 @@ func (s *Server) handleNoteOperations(w http.ResponseWriter, r *http.Request) {
 		s.handleNoteUpdate(w, r, id, uid, wsID)
 	case http.MethodDelete:
 		if err := s.notesStore.DeleteScoped(r.Context(), id, uid, wsID); err != nil {
+			// ⚠ §942 D2：「这条笔记不存在 / 不是我的」是**客户端的状态**，
+			//	不是服务端出错 ⇒ ⇒ ⇒ 必须回 **404**，不能回 500。
+			//
+			//	修复前**所有**删除错误都回 500（含「不存在」）
+			//	⇒ ⇒ ⇒ 客户端以为「重试有用」，而它永远重试都不会成功
+			//	⇒ ⇒ ⇒ 而同一批接口的 GET / PUT（以及**会议链**的 DELETE）
+			//	都回 404 ⇒ ⇒ ⇒ ⇒ 形态分叉。
+			//
+			//	⚠ 响应**形状**一个字没动（仍是 `writeError`、仍无 `code` 字段）
+			//	⇒ ⇒ ⇒ 与 GET / PUT 保持一致（★ 不在一条链上造第二种形状）。
+			if errors.Is(err, notes.ErrNoteNotFound) {
+				writeError(w, http.StatusNotFound, "note not found")
+				return
+			}
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -439,9 +541,15 @@ func (s *Server) handleNoteOperations(w http.ResponseWriter, r *http.Request) {
 // 字段才会写。空串是"清空"而不是"不改"，这与前端 Partial<NoteInput> 的
 // 预期一致，也让"清空标题"成为可表达的操作。
 func (s *Server) handleNoteUpdate(w http.ResponseWriter, r *http.Request, id, uid, wsID string) {
-	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "read body: "+err.Error())
+	// ⚠ §941 D1：此前这里是 handler **自己**的一条 1 MiB 闸
+	//	（`io.ReadAll(io.LimitReader(r.Body, 1<<20))`，还是**字面量**）
+	//	⇒ ⇒ ⇒ 而 POST 走的是全局 2 MiB ⇒ ⇒ ⇒ 同一条笔记**写得进去、改不回来**
+	//	⇒ ⇒ ⇒ 而超限时 JSON 被**截断** ⇒ 回 400 "invalid request body:
+	//	unexpected end of JSON input" ⇒ **与「JSON 坏了」完全同形**
+	//	（实测：1.5 MiB 的 PUT 拿到的就是这句）。
+	//	⇒ ⇒ ⇒ 现在与 POST 共用 readNoteBody：上限**一份**，「太大」是 413。
+	body, ok := s.readNoteBody(w, r)
+	if !ok {
 		return
 	}
 	var in struct {
@@ -1724,8 +1832,12 @@ func (s *Server) handleEmailSend(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "no valid recipients")
 		return
 	}
+	// ⚠ §918：这里限的是 **UTF-8 字节**（Go 的 `len(string)`），**不是字符数**
+	//   —— 500 字节只装得下 166 个中文字。
+	//   ⚠ 主题是**从原邮件派生的**（客户端不许编辑）⇒ 原主题一长，
+	//     **回复/转发就永远发不出去** ⇒ 客户端自己按字节裁（见简报 142）。
 	if len(body.Subject) > 500 {
-		writeError(w, http.StatusBadRequest, "subject too long")
+		writeError(w, http.StatusBadRequest, "subject too long (max 500 bytes)")
 		return
 	}
 
@@ -1851,7 +1963,15 @@ func (s *Server) handleEmailBody(w http.ResponseWriter, r *http.Request, emailID
 	// 1) 缓存命中：body_path 非空才尝试读缓存文件，避免对未缓存邮件做无谓的 IO。
 	//    （em.BodyPath 来自 GetEmailByIDScoped 的 body_path 列；旧逻辑每次盲试文件。）
 	if em.BodyPath != "" {
-		if cached, _ := s.readCachedEmailBody(ctx, emailID, em.UID); cached != nil {
+		// ⚠ §945：原来这里是 `if cached, _ := s.readCachedEmailBody(...); cached != nil`
+		//	⇒ ⇒⇒ 读缓存失败 ⇒ ⇒⇒⇒ ⇒ 落到下面的「回源抓取」路径 ⇒ ⇒⇒⇒ ⇒
+		//	⇒ ⇒⇒⇒ ⇒ 后果是**一次多余的 IMAP 往返**（慢，但**正确**）
+		//	⇒ ⇒⇒⇒ ⇒ ⇒ 属可接受降级 ⇒ ⇒⇒⇒ ⇒ 但「为什么慢」必须看得见。
+		cached, cacheErr := s.readCachedEmailBody(ctx, emailID, em.UID)
+		if cacheErr != nil {
+			log.Printf("WARN: 读缓存邮件正文失败（将回源抓取，会多一次 IMAP 往返）email=%s: %v", emailID, cacheErr)
+		}
+		if cached != nil {
 			writeJSON(w, http.StatusOK, s.emailBodyResponse(emailID, "cache", cached))
 			return
 		}
@@ -2688,6 +2808,15 @@ func (s *Server) handleSttTranscribe(w http.ResponseWriter, r *http.Request) {
 	if strings.HasPrefix(ct, "multipart/form-data") {
 		// 解析 multipart，限制 25 MB
 		if err := r.ParseMultipartForm(25 << 20); err != nil {
+			// ⚠ §922：body 超过外层上限时，ParseMultipartForm 的错误里裹着
+			//   *http.MaxBytesError ⇒ 原先回 400 且把 Go 内部串直接拼进文案
+			//   ⇒ 同样改成 413 + 稳定错误码（前端 extractErrorCode 能取到）。
+			var maxErr *http.MaxBytesError
+			if errors.As(err, &maxErr) {
+				writeError(w, http.StatusRequestEntityTooLarge,
+					"stt_audio_too_large: audio too large (max 25 MB)")
+				return
+			}
 			writeError(w, http.StatusBadRequest, "failed to parse multipart: "+err.Error())
 			return
 		}
@@ -2705,11 +2834,31 @@ func (s *Server) handleSttTranscribe(w http.ResponseWriter, r *http.Request) {
 		}
 	} else if strings.HasPrefix(ct, "application/json") || ct == "" {
 		// JSON body: { "audioBase64": "..." }
+		//
+		// ⚠ §922：原来直接 `json.NewDecoder(r.Body).Decode(&body)` ⇒ body 超限时
+		//   JSON **被截在半截** ⇒ decode 必然失败 ⇒ 回 **400 "invalid body"**
+		//   ⇒「音频太大」被伪装成「请求体无效」⇒ 用户完全无从判断。
+		//   ⇒ 实测：26 MiB 的 base64 body 拿到的就是 400 "invalid body"，
+		//   而真实原因是 body 超过了外层的 25 MiB 上限。
+		//   ⇒ 改成先读出来，并把两种结论分开：**读超了** ⇒ 413 + 明确文案
+		//   （前端 extractErrorCode 取 'stt_audio_too_large'）；
+		//   **JSON 坏了** ⇒ 仍是 400 "invalid body"（**不改变既有语义**）。
+		raw, readErr := io.ReadAll(r.Body)
+		if readErr != nil {
+			var maxErr *http.MaxBytesError
+			if errors.As(readErr, &maxErr) {
+				writeError(w, http.StatusRequestEntityTooLarge,
+					"stt_audio_too_large: audio too large (max 25 MB)")
+				return
+			}
+			writeError(w, http.StatusBadRequest, "read body: "+readErr.Error())
+			return
+		}
 		var body struct {
 			AudioBase64 string `json:"audioBase64"`
 			Filename    string `json:"filename"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		if err := json.NewDecoder(bytes.NewReader(raw)).Decode(&body); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid body")
 			return
 		}
@@ -2851,7 +3000,7 @@ func (s *Server) handleEmbed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(body.Text) > 16000 {
-		writeError(w, http.StatusBadRequest, "text too long (max 16000 chars)")
+		writeError(w, http.StatusBadRequest, "text too long (max 16000 bytes)")
 		return
 	}
 
@@ -2945,8 +3094,11 @@ func (s *Server) handleLLMChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, m := range body.Messages {
+		// ⚠ §916：这里限的是 **UTF-8 字节**（Go 的 `len(string)`），**不是字符数**
+		//   —— 1 个中文字 = 3 字节 ⇒ 32000 字节只装得下 10666 个中文字。
+		//   错误信息里的单位原先写的是「chars」（与判定不同形），已按实测改正。
 		if len(m.Content) > 32000 {
-			writeError(w, http.StatusBadRequest, "message too long (max 32000 chars per message)")
+			writeError(w, http.StatusBadRequest, "message too long (max 32000 bytes per message)")
 			return
 		}
 	}

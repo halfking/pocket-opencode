@@ -439,8 +439,35 @@ func handleDocEvent(ev struct {
 	}
 }
 
+// writeJSON 写飞书 webhook 的 JSON 应答。
+//
+// ⚠ §946：**先编码、后写状态行**。
+//
+// 　实测：`json.Encoder.Encode` 先把值 marshal 进内部 buffer、成功后才写
+// 　⇒ ⇒⇒ 编码失败时**响应体是空的** ⇒ ⇒⇒ 而旧写法**先 WriteHeader 了**
+// 　⇒ ⇒⇒⇒ 飞书侧收到「200 + 空体」⇒ ⇒⇒⇒ 服务端**一个字都没留**。
+// 　⇒ 改成先编码 ⇒ 编码失败时状态行还没提交 ⇒ 还能给一个说得清的 500。
+//
+// ⚠ 飞书自己的应答约定是 `{"code": -1, "msg": "..."}`（不是本仓 server 包的
+// 　 `{error, code, retryable}`）⇒ ⇒⇒ 兜底体沿用它，别把两套约定混起来。
 func writeJSON(w http.ResponseWriter, status int, body any) {
+	raw, err := json.Marshal(body)
+	if err != nil {
+		log.Printf("[ERROR] 飞书应答编码失败（原状态码 %d）：%v", status, err)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		// ⚠ 用**常量字节**：编码失败的原因可能就是值本身不可编码 ⇒
+		//　 兜底体必须**保证**写得出去。
+		if _, werr := w.Write([]byte(`{"code":-1,"msg":"response encode failed"}` + "\n")); werr != nil {
+			log.Printf("[WARN] 飞书应答兜底体写出失败：%v", werr)
+		}
+		return
+	}
+	// ⚠ 补回 Encoder 的那个换行 ⇒ 字节与旧实现逐字一致（§946 实测）。
+	raw = append(raw, '\n')
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(body)
+	if _, err := w.Write(raw); err != nil {
+		log.Printf("[WARN] 飞书应答写出失败：%v", err)
+	}
 }

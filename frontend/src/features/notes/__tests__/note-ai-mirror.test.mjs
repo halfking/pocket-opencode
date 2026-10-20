@@ -31,6 +31,32 @@ const read = (f) => readFileSync(join(HERE, '..', f), 'utf8')
 const readRepo = (f) =>
   readFileSync(join(HERE, '..', '..', '..', '..', '..', f), 'utf8')
 
+// notesDecodeChain 取出「notes POST 的解码链」源码：
+//   调用点（server_assistant.go 的 POST 分支）+ 实现（server_note_ingest.go 的
+//   decodeNoteJSON）⇒ ⇒ **两段都要** ⇒ ⇒ 否则「解码搬到共用那一份」之后，
+//   判据只看得到调用点、看不见**真解码** ⇒ ⇒⇒ 下面那条负控会**失去牙**。
+const notesDecodeChain = () => {
+  const goSrc = readRepo('backend/internal/server/server_assistant.go')
+  const helperSrc = readRepo('backend/internal/server/server_note_ingest.go')
+  const start = goSrc.indexOf('case http.MethodPost:')
+  const callSite = goSrc.slice(start, start + 400)
+  const i = helperSrc.indexOf('func decodeNoteJSON')
+  const helper = i >= 0 ? helperSrc.slice(i) : ''
+  return `${callSite}\n${helper}`
+}
+
+// notesDecodeCallRE 认「普通 Decode」的两种形态：
+//   ① §941 之前：解码直接写在 POST 分支里（json.NewDecoder(r.Body).Decode(&n)）
+//   ② §941 之后：分支里调**共用那一份** decodeNoteJSON(raw, &n)
+// ⇒ ⇒ ⇒ 两种都认 ⇒ ⇒ ⇒ 将来实现再换写法，本门不该误报。
+const notesDecodeCallRE =
+  /(json\.NewDecoder\(r\.Body\)\.Decode\(&n\)|decodeNoteJSON\(raw, &n\))/
+
+// notesDecodeIsPlainDecode 是这条前提判据的**可测函数**（供下面的负控调用）：
+//   notes 的解码链上**没有** DisallowUnknownFields ⇒ ⇒ 字段名拼错会被**静默丢弃**
+//   ⇒ ⇒ 所以前端那条「逐字段对齐」的断言才有必要。
+const notesDecodeIsPlainDecode = (chain) => !/DisallowUnknownFields/.test(chain)
+
 describe('A · 接线层：笔记必须先镜像到后端，AI 能力才有得可查', () => {
   it('createNote 必须 POST /api/notes 落行，且把 promise 登记给消费者', () => {
     const src = read('notes-persist.ts')
@@ -116,10 +142,18 @@ describe('B · 后端契约：镜像的字段名必须与 notes.Note 对得上',
     // decodeCalendarJSON 用了 DisallowUnknownFields；notes 侧是普通 Decode，
     // 所以「字段名拼错」在这条链路上**不会**报错而是静默丢失 —— 这正是
     // 必须逐字段对齐的原因。把这条前提钉成事实。
-    const goSrc = readRepo('backend/internal/server/server_assistant.go')
-    const decode = goSrc.slice(goSrc.indexOf('case http.MethodPost:'), goSrc.indexOf('case http.MethodPost:') + 400)
-    assert.match(decode, /json\.NewDecoder\(r\.Body\)\.Decode\(&n\)/, 'notes POST 仍是普通 Decode')
-    assert.ok(!/DisallowUnknownFields/.test(decode),
+    //
+    // ⚠ §941：notes POST 的解码**搬到了共用那一份**
+    //   （backend/internal/server/server_note_ingest.go 的 decodeNoteJSON）
+    //   ⇒ ⇒ 断言的**指向**跟着搬，但**语义一个字不改**：
+    //   「notes 侧仍是普通 Decode（不是 DisallowUnknownFields）」。
+    //   ⇒ ⇒ ⇒ 而且解码链必须**同时**包含调用点**与**实现 ——
+    //   ⇒ ⇒ ⇒ 只看调用点的话，实现搬走之后这条负控会**失去牙**
+    //   （它就看不见「真解码」里有没有 DisallowUnknownFields 了）。
+    const chain = notesDecodeChain()
+    assert.match(chain, notesDecodeCallRE,
+      'notes POST 仍是普通 Decode（§941 起解码搬到了共用那一份 ⇒ 两种形态都认）')
+    assert.ok(notesDecodeIsPlainDecode(chain),
       '若哪天 notes 改用 DisallowUnknownFields，本门这条负控需要重写（拼错会直接报错而不是静默丢失）')
   })
 })
@@ -173,5 +207,23 @@ describe('C · 负控：证明判据不是恒真', () => {
     assert.notEqual(mutated, src, '变异没落上 —— 锚点已过期')
     assert.ok(!/snippet: note\.content\.slice\(0, NOTE_MIRROR_SNIPPET_RUNES\)/.test(mutated),
       '负控：去掉 snippet 截断后仍被判过 ⇒ 与服务端 snippetRunes=200 的对齐没人守')
+  })
+
+  // ★§941：上面那条「Go 侧是普通 Decode」的前提判据，**指向**跟着解码搬家改了
+  //   ⇒ ⇒ ⇒ 「改了指向」的判据必须**证明它仍有牙** ⇒ ⇒⇒
+  //   ⇒ ⇒⇒ 否则就是「把门指向新位置」而不是「守住同一件事」
+  //   ⇒ ⇒⇒ ⇒ 负控：给解码加上 DisallowUnknownFields ⇒ 前提判据必须转红。
+  it('负控：给 notes 的解码加上 DisallowUnknownFields ⇒ 本门那条前提判据必须转红', () => {
+    const chain = notesDecodeChain()
+    assert.ok(notesDecodeIsPlainDecode(chain),
+      '前提：真源码此刻应当**没有** DisallowUnknownFields')
+    const mutated = chain.replace(
+      'json.NewDecoder(bytes.NewReader(raw))',
+      'json.NewDecoder(bytes.NewReader(raw))\n\tdec.DisallowUnknownFields()',
+    )
+    assert.notEqual(mutated, chain, '变异没落上 —— 锚点已过期，本负控失去意义')
+    assert.match(mutated, /DisallowUnknownFields/, '负控：变异没造出来 ⇒ 本负控无效')
+    assert.ok(!notesDecodeIsPlainDecode(mutated),
+      '负控：加了 DisallowUnknownFields 后前提判据仍判过 ⇒ 本门那条前提恒真')
   })
 })

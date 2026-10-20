@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -93,6 +94,20 @@ func queryAuditRangeContext(ctx context.Context, store RangeStore, query AuditQu
 
 // Run 阻塞轮询直到 ctx 取消。单轮失败只记日志语义（返回被吞掉），
 // 下一轮重试；游标推进保证不会重复导出大段数据。
+//
+// ⚠⚠ §945：这里原来只有 `_, _ = f.ExportOnce(ctx)` ⇒ ⇒⇒ **完全无声**。
+//
+//	⚠ 矛盾点就在**这段注释自己身上**：注释写着「单轮失败**只记日志**语义」，
+//	  而 `ExportOnce` 内部**不记日志**（它只是 `return written, err`）
+//	  ⇒ ⇒⇒⇒ ⇒ 于是「记日志」这件事**谁都没做** ⇒ ⇒⇒⇒ ⇒ 注释描述的
+//	  ⇒ ⇒⇒⇒ ⇒ 行为与实际行为**不一致** ⇒ ⇒⇒⇒ ⇒ 而这类不一致最难查：
+//	  ⇒ ⇒⇒⇒ ⇒ 读代码的人**按注释**以为失败会被记录下来。
+//
+//	⚠ 为什么必须留痕：这是**审计导出** ⇒ ⇒⇒ 导出失败 ⇒ **审计条目没落到文件**
+//	⇒ ⇒⇒⇒ 而游标只在成功时推进 ⇒ ⇒⇒⇒ ⇒ 下一轮会重试 ⇒ ⇒⇒⇒ ⇒ 可要是
+//	⇒ ⇒⇒⇒ ⇒ 失败**每轮都发生**（磁盘满、权限、路径坏）⇒ ⇒⇒⇒ ⇒ 那么
+//	⇒ ⇒⇒⇒ ⇒ 它会**永远失败、永远不出声** ⇒ ⇒⇒⇒ ⇒ 审计导出在彻底失效
+//	⇒ ⇒⇒⇒ ⇒ 的情况下看上去一切正常 ⇒ ⇒⇒⇒ ⇒ ⇒ 这是最坏的一种失效。
 func (f *FileExporter) Run(ctx context.Context) {
 	ticker := time.NewTicker(f.cfg.Interval)
 	defer ticker.Stop()
@@ -101,7 +116,9 @@ func (f *FileExporter) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			_, _ = f.ExportOnce(ctx)
+			if _, err := f.ExportOnce(ctx); err != nil {
+				log.Printf("ERROR: redclaw: 审计导出本轮失败（审计条目未落盘，游标未推进，下一轮重试）: %v", err)
+			}
 		}
 	}
 }

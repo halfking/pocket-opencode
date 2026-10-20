@@ -33,6 +33,19 @@ import (
 // ErrNotFound is returned on single-row miss.
 var ErrNotFound = errors.New("lobster: asset mirror not found")
 
+// ErrAssetScopeConflict 表示 asset_id 已属于**别的 workspace**。
+//
+// ⚠⚠ §944 D2：asset_id 是**客户端自选**的（请求体 pushes[].id）⇒ ⇒ ⇒
+// 撞上一个**别的租户**的 id 时，修复前那条 ON CONFLICT 会把那一行
+// **连 cipher_blob 一起搬进提交者的租户**（SET 里**有** workspace_id 和
+// cipher_blob）⇒ ⇒⇒⇒ 后果是：受害者的加密资产**从自己的租户消失**、
+// 出现在攻击者租户里，且内容被攻击者的密文**覆盖**。
+//
+//	而 handler 那一行注释自己写着「强制绑定 caller workspace，**防越权**」
+//
+// ⇒ ⇒⇒⇒ 也就是说：**SQL 并没有兑现 handler 承诺的那句「防越权」**。
+var ErrAssetScopeConflict = errors.New("lobster: asset belongs to another workspace")
+
 // AssetMirror is the server-side view of an e2ee asset. CipherTitle and
 // CipherBlob are opaque ciphertext from the client; the server cannot decrypt.
 type AssetMirror struct {
@@ -112,6 +125,17 @@ type PushResult struct {
 	ServerRev int    `json:"server_rev"`
 	Conflict  bool   `json:"conflict,omitempty"`  // true if a newer rev existed
 	PrevBlob  string `json:"prev_blob,omitempty"` // when conflict, the superseded blob for client merge
+
+	// ⚠ §944 D2：单条 push 失败时**必须**让客户端看得见。
+	//
+	//	修复前 handler 把失败的那条 push 记成一个「只有 asset_id、
+	//	server_rev=0」的结果 ⇒ ⇒ ⇒ 与「成功但 rev=0」**不可区分**
+	//	⇒ ⇒ ⇒ 客户端会把本地资产标成已同步 ⇒ ⇒⇒⇒ **静默丢数据**
+	//	（服务端根本没收到那份密文）。
+	//
+	//	⇒ 这里加一个**可选**字段（omitempty ⇒ 老客户端不受影响）
+	//	⇒ ⇒ 「失败必须可区分」这条不变量在**响应形状**层面落地。
+	Error string `json:"error,omitempty"`
 }
 
 // Push upserts an asset mirror. Every successful push receives a unique,
@@ -161,7 +185,19 @@ func (s *SyncStore) Push(ctx context.Context, m *AssetMirror) (*PushResult, erro
 		return nil, err
 	}
 
-	if _, err := tx.Exec(ctx, `
+	// ⚠⚠ §944 D2：ON CONFLICT **必须带归属守卫**。
+	//
+	//	asset_mirrors **没有**别的归属列（唯一的归属列 workspace_id 在
+	//	SET 列表里 ⇒ 会被搬走）⇒ ⇒⇒ 所以「撞号」在这里就等于「换主人」
+	//	⇒ ⇒⇒⇒ 守卫必须断言 workspace_id（代价：跨租户搬迁资产这条路被
+	//	关掉 ⇒ 那是**产品口径**，已登记在简报待拍板，不在本节代拍）。
+	//
+	//	⚠⚠ **必须用 QueryRow + RETURNING，不能用 Exec**：
+	//	守卫不成立时 PG **不报错**，只是**不返回行**（`Exec` 拿到的是一个
+	//	成功的命令标签）⇒ ⇒ ⇒ 用 Exec 的话这道守卫就是**哑弹**
+	//	（存在、但无声 ⇒ 等于没有 ⇒ §942/§943 连着踩过同族坑）。
+	var mirroredID string
+	if err := tx.QueryRow(ctx, `
 	INSERT INTO asset_mirrors (id, workspace_id, kind, client_rev, server_rev, cipher_title, cipher_blob, deleted_at, updated_at)
 	VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 	ON CONFLICT (id) DO UPDATE SET
@@ -173,7 +209,14 @@ func (s *SyncStore) Push(ctx context.Context, m *AssetMirror) (*PushResult, erro
 		cipher_blob  = EXCLUDED.cipher_blob,
 		deleted_at   = EXCLUDED.deleted_at,
 		updated_at   = EXCLUDED.updated_at
-	`, m.ID, m.WorkspaceID, m.Kind, m.ClientRev, newServerRev, m.CipherTitle, m.CipherBlob, m.DeletedAt, m.UpdatedAt); err != nil {
+	WHERE asset_mirrors.workspace_id = EXCLUDED.workspace_id
+	RETURNING id
+	`, m.ID, m.WorkspaceID, m.Kind, m.ClientRev, newServerRev, m.CipherTitle, m.CipherBlob, m.DeletedAt, m.UpdatedAt).Scan(&mirroredID); err != nil {
+		// ErrNoRows ⇒ 守卫把「这个 asset_id 属于别的租户」挡掉了
+		// ⇒ ⇒ ⇒ 绝不把别人的密文搬进自己的租户（宁可整笔回滚）。
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("push asset %s: %w", m.ID, ErrAssetScopeConflict)
+		}
 		return nil, err
 	}
 	res.ServerRev = newServerRev

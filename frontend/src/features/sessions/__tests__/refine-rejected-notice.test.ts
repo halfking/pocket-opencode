@@ -96,7 +96,10 @@ describe('精校被拦下的文案', () => {
       'normalizeRefine 没认 camelCase 的 refineRejected',
     )
     assert.ok(
-      /rejected\s*\?\s*\{\s*rejected:\s*true\s*\}/.test(init),
+      // ⚠ §908/D77：`rejected: true` 后面现在还跟着一个可选的 `rejectedReason`
+      //   （返回对象多带一个字段），所以这里放行 `,` 与 `}` 两种收尾。
+      //   **语义没动**：算出了 rejected 就必须写进返回值。
+      /rejected\s*\?\s*\{\s*rejected:\s*true\s*[,}]/.test(init),
       'normalizeRefine 算出了 rejected 却没有写进返回值 ⇒ 信号在最后一跳丢掉',
     )
     assert.ok(
@@ -265,6 +268,133 @@ describe('降级时的会议状态', () => {
     assert.ok(
       /func refineDegraded\(/.test(go),
       'refineDegraded 没定义',
+    )
+  })
+})
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * §908 · D77：`refine_rejected` 有**两个**成因，文案必须对得上真实原因
+ * ═══════════════════════════════════════════════════════════════════════════
+ * §907 给长会议加了「缩写」护栏（`refineShrinkage`），它**复用了同一个标志位**
+ * `refine_rejected` ⇒ 于是前端会对**每一场长会议**说
+ *
+ *     「检测到与参会人名单不符的人名」
+ *
+ * 而真实原因是「转写太长，模型回显不完」—— 名单从来没问题。
+ * 这正是本文件头写的「**桶名是对外承诺**」：两个成因共用一个 flag，
+ * 前端不拆开就会用**一句错的话解释一次正确的行为**。
+ * ⇒ 服务端补 `refine_rejected_reason`，一路透传到文案层。
+ */
+describe('§908 · D77：被拦下的原因必须对上文案', () => {
+  it('★★★ shrinkage（缩写）不得说成「参会人名单不符」', () => {
+    const n = buildRefineNotice({ fromFallback: true, rejected: true, rejectedReason: 'shrinkage' })
+    assert.equal(n.kind, 'info', '降级不是成功')
+    assert.match(n.text, /太长|回显/, `实际文案：${n.text}`)
+    assert.doesNotMatch(
+      n.text,
+      /参会人名单/,
+      '⚠ 这是 §907 打破的那条纪律：用户会被指向一个根本不存在的错因',
+    )
+    assert.doesNotMatch(n.text, /无法解析/, '缩写不是解析失败')
+  })
+
+  it('★★★ participant_leak 仍然必须说名单污染（不能被新分支吞掉）', () => {
+    const n = buildRefineNotice({ fromFallback: true, rejected: true, rejectedReason: 'participant_leak' })
+    assert.match(n.text, /参会人名单/, `实际文案：${n.text}`)
+    assert.doesNotMatch(n.text, /太长|回显/, '这条不是缩写')
+  })
+
+  it('★★ 不给原因时保持既有行为（向后兼容，旧服务端没有这个字段）', () => {
+    const n = buildRefineNotice({ fromFallback: true, rejected: true })
+    assert.match(n.text, /参会人名单/, `实际文案：${n.text}`)
+  })
+
+  it('★★★ 原因必须一路透传到文案层（接线：缺了就退回错的那句）', () => {
+    const api = read('../../../api/meetings.ts')
+    const init = api.slice(api.indexOf('export function normalizeRefine'))
+    assert.match(
+      init,
+      /raw\.refine_rejected_reason\s*\?\?\s*raw\.refineRejectedReason/,
+      'normalizeRefine 没读 refine_rejected_reason ⇒ 原因在 API 层就丢了',
+    )
+    assert.match(
+      init,
+      /rejectedReason/,
+      'normalizeRefine 没有把原因写进返回值',
+    )
+    const callSite = read('../../meetings/meeting-recording-finalize.ts')
+    assert.match(
+      callSite,
+      /rejectedReason:\s*result\.rejectedReason/,
+      '⚠ 收尾调用点没有把原因传给 buildRefineNotice ⇒ 长会议仍然会被说成名单污染',
+    )
+  })
+
+  it('★★ RefineResult 类型必须声明这个字段（否则调用点拿不到）', () => {
+    const api = read('../../../api/meetings.ts')
+    assert.match(api, /rejectedReason\?:\s*'participant_leak'\s*\|\s*'shrinkage'/)
+  })
+})
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * §910 · D79：留存判定（`assessRefineRetention`）的**原因**此前只进 console.warn
+ * ═══════════════════════════════════════════════════════════════════════════
+ * ⚠⚠ 这条纠正的是**我自己在 §907 写下的一个错误结论**。
+ *
+ * §907 写「精校稿被缩写时没有任何护栏 ⇒ 全漏」。**那是错的**：
+ * `assessRefineRetention`（§831 落的）早就在两个调用点上接住
+ * 「响应完整、但模型把精校做成了摘要」那一档，阈值 0.5 + 绝对下限 200。
+ * §907 的 Go 护栏只在 **[0.5, 0.7)** 这一带有增量覆盖。
+ *
+ * 而真正漏掉的是另一件事：那道守卫命中时，原因只进了 `console.warn`
+ * （`refine-too-short(1234<2500，原文 5000)`），而对用户的文案一律是
+ *
+ *     「精翻未生效（云端返回无法解析）」
+ *
+ * **可 JSON 解析得好好的** —— 真实原因是模型写成了摘要。
+ * ⇒ 与 §907/§908 同族：**桶名是对外承诺**，而这次不需要新机制，
+ *   判定本来就已经分好了 `reason`，只是没往外带。
+ */
+describe('§910 · D79：留存判定不通过的原因必须对上文案', () => {
+  it('★★★ refine-too-short 不得说成「云端返回无法解析」', () => {
+    const n = buildRefineNotice({
+      fromFallback: true,
+      retentionReason: 'refine-too-short(1234<2500，原文 5000)',
+    })
+    assert.equal(n.kind, 'info')
+    assert.match(n.text, /短太多|摘要/, `实际文案：${n.text}`)
+    assert.doesNotMatch(
+      n.text,
+      /无法解析/,
+      '⚠ 可 JSON 解析得好好的 —— 这句会让用户去查网络/云端，而真正的原因无人知晓',
+    )
+    assert.match(n.text, /内容完整/, '应当说清原文是完整的（只是少了错字纠正）')
+  })
+
+  it('★★ 其他原因仍按「无法解析」说（不要把所有降级都说成摘要）', () => {
+    const n = buildRefineNotice({ fromFallback: true, retentionReason: 'refined-empty' })
+    assert.match(n.text, /无法解析/, `实际文案：${n.text}`)
+    const bare = buildRefineNotice({ fromFallback: true })
+    assert.match(bare.text, /无法解析/, '不给原因时保持既有文案')
+  })
+
+  it('★★★ 原因必须从两个调用点一路传到文案层', () => {
+    const api = read('../../../api/meetings.ts')
+    // ① 两个调用点都要算出来并带出去
+    const calls = [...api.matchAll(/const retention = assessRefineRetention\(/g)]
+    assert.equal(calls.length, 2, `assessRefineRetention 只有 ${calls.length} 个调用点（§831 要求两处都过）`)
+    assert.match(api, /retention\.ok\s*\?\s*undefined\s*:\s*retention\.reason/,
+      'normalizeRefine 没有把判定原因算出来')
+    assert.ok(
+      [...api.matchAll(/retentionReason/g)].length >= 4,
+      'retentionReason 在 API 层只出现了一两次 ⇒ 没从两个调用点都透出',
+    )
+    // ② 调用点要传给文案层
+    const callSite = read('../../meetings/meeting-recording-finalize.ts')
+    assert.match(
+      callSite,
+      /retentionReason:\s*result\.retentionReason/,
+      '⚠ 收尾调用点没有把留存判定的原因传给 buildRefineNotice ⇒ 又退回错的那句',
     )
   })
 })

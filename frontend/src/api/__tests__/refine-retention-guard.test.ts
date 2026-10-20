@@ -11,7 +11,7 @@
 // ⇒ 「响应完整、但模型把精校做成了摘要」这一档此前无人看守。
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import {
@@ -78,10 +78,13 @@ describe('§831 · 接线（扫描层，零牙已如实标注）', () => {
   it('★ 服务端路径：不通过时必须退回原文并标记降级', () => {
     const at = API.indexOf('assessRefineRetention({ original: fallback')
     assert.ok(at > 0, '找不到 normalizeRefine 里的判定')
-    // ⚠ 窗口要够宽：判定点到「正文二选一」隔着 `rejected`/`refineInputRunes` 两段
-    //   （实测 1196 字符）。第一版取 900 ⇒ 正确代码被判红 —— 又是一次「窗口太小
-    //   ⇒ 肯定断言变假红」。**判据指错位置与判据有洞同样要当场修**。
-    const win = API.slice(at, at + 1600)
+    // ⚠ 窗口要够宽：判定点到「正文二选一」隔着 `rejected`/`rejectedReason`/`refineInputRunes`
+    //   几段。第一版取 900 ⇒ 正确代码被判红 —— 又是一次「窗口太小 ⇒ 肯定断言变假红」。
+    //   900 → 1600 是上一轮加长后的补丁；§908 往 `normalizeRefine` 里补了
+    //   `rejectedReason` 的一段之后实测**相距 1566 字符**，只剩 34 字符余量，
+    //   任何人再加一行注释就会再红一次 ⇒ 这里一次给到 **2600**，
+    //   留出约 1000 字符的余量。**判据指错位置与判据有洞同样要当场修**。
+    const win = API.slice(at, at + 2600)
     // ⚠⚠ 必须锚在 **`const fromFallback = …` 那一段**里，不能对整个窗口搜
     //   `!retention.ok`：warn 前面还有一个同名的 `if (!retention.ok)` 守卫，
     //   变异把降级标记改掉之后判据照样命中那个 ⇒ **0 红**（本轮第 5 次「判据指错地方」）。
@@ -111,3 +114,181 @@ describe('§831 · 接线（扫描层，零牙已如实标注）', () => {
       '兜底路径没有按判定二选一')
   })
 })
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * §911 · D80：**每个产出 `refinedTranscript` 的点都必须过留存判定**
+ * ═══════════════════════════════════════════════════════════════════════════
+ * 简报 134 问「两道缩写护栏要不要合并成一道」，而这个决定的前提是
+ * **客户端那道是否覆盖了全部产出路径**。
+ *
+ * 实测（2026-10-19，全 src 逐点核）：**没有第三个生产者**。
+ * 全仓的写入点只有三类，且全部是 `normalizeRefine` 的**透传**：
+ *
+ *   refine-ingest-writeback.ts:70/79/83   纯函数，从 refine 透传
+ *   meeting-recording-finalize.ts:228      updateMeeting(result.refinedTranscript)
+ *   meeting-ingest.ts:127/145             updateMeeting / 云同步（writeback|refine）
+ *
+ * 而 `MeetingDetailView` 是**纯读者**（`resolveRefinedView`），无独立精校入口。
+ * ⇒ 今天合并是安全的；留着客户端那道是**面向将来的保险**（新增产出路径时自动生效）。
+ *
+ * ⚠ 本节把这件事**钉成判据**：将来有人加一条产出 `refinedTranscript` 的路，
+ * 若它不是上面三种透传形态之一 ⇒ 判据转红，迫使其想清楚「过没过留存判定」。
+ */
+describe('§911 · D80：产出 refinedTranscript 的点只能是受守卫的透传', () => {
+
+  it('★★★ 两个受守卫的产出必须存在（防白名单被人越放越宽直到门空转）', () => {
+    assert.match(
+      API,
+      /refinedTranscript: retention\.ok \? String\(serverRefined \?\? fallback\) : fallback/,
+      '⚠ normalizeRefine 不再用留存判定决定正文取值 ⇒ 客户端这道守卫形同虚设',
+    )
+    const fb = readFileSync(join(HERE, '../../api/meetings.ts'), 'utf8')
+    assert.match(
+      fb,
+      /refinedTranscript: hasRefined && retention\.ok/,
+      '⚠ refineFromLlmContent（浏览器内兜底路径）不再过留存判定 ⇒ §831「两个调用点都过」已不成立',
+    )
+  })
+
+  it('★★ 前置闸：三个落点仍然是这几处（清单没漂移）', () => {
+    const finalize = readFileSync(join(HERE, '../../features/meetings/meeting-recording-finalize.ts'), 'utf8')
+    const ingest = readFileSync(join(HERE, '../../features/meetings/meeting-ingest.ts'), 'utf8')
+    assert.match(finalize, /refinedTranscript: result\.refinedTranscript/,
+      '收尾落点不再透传 result ⇒ 前置闸失效，请重新普查产出路径')
+    assert.match(ingest, /refinedTranscript: writeback\.refinedTranscript/,
+      '入库落点不再透传 writeback ⇒ 前置闸失效，请重新普查产出路径')
+  })
+
+  it('★★★ 任何新增的 refinedTranscript 写入必须是受守卫的透传', () => {
+    // ⚠⚠ §911.4 同族：手列目录**必然漏**（第一版只列了 4 个根，
+    //   `native/` 就不在其中 —— 那里确有 3 处出现该字段，
+    //   逐一核过是「迁移 ALTER / DDL 列声明 / 注释」，没有裸写值，
+    //   但**门看不见**）。⇒ 改成从 `src/` 整棵树走，
+    //   让「我忘了某个目录」这一类盲区不再可能。
+    const roots = ['../../']
+    const offenders: string[] = []
+    for (const root of roots) {
+      const stack = [join(HERE, root)]
+      while (stack.length) {
+        const dir = stack.pop()!
+        for (const entry of readdirSync(dir, { withFileTypes: true })) {
+          const p = join(dir, entry.name)
+          if (entry.isDirectory()) { stack.push(p); continue }
+          if (!/\.(ts|vue)$/.test(entry.name) || /\.test\.|\.spec\.|__tests__/.test(p)) continue
+          const src = readFileSync(p, 'utf8')
+          offenders.push(...findRefinedTranscriptOffenders(src, p.replace(HERE, '.')))
+        }
+      }
+    }
+    assert.equal(offenders.length, 0,
+      `发现 ${offenders.length} 处不是受守卫透传的 refinedTranscript：\n${offenders.join('\n')}\n` +
+      `⇒ 新增产出路径若没过 assessRefineRetention，用户会看到一份被砍半的正文。`)
+  })
+
+  it('★★ 负控：白名单新放的那条（有界**读取**）不许放过「被截断的写入」', () => {
+    // ⚠ 这条是 §925 放宽白名单时**必须**配套的负控：
+    //   放宽一条白名单时最容易被当成「让判据变绿」⇒ 必须当场证明
+    //   「**形态相近但语义相反**的那一种」仍然判红。
+    //
+    // ① 允许的形态：列表查询里的**有界读取**（`AS refined_transcript` 别名 ⇒ 只可能是 SELECT）
+    const read = findRefinedTranscriptOffenders(
+      'const cols = `substr(refined_transcript, 1, 512) AS refined_transcript`',
+      'sample-read.ts',
+    )
+    assert.deepEqual(read, [], '有界读取被当成 offender 了 ⇒ 白名单条目写错了')
+    // ② ⛔ 不许放过：把**被截断**的精校正文**写进去**（这才是这道门要防的那件事）
+    const write = findRefinedTranscriptOffenders(
+      'await updateMeeting(id, { refinedTranscript: String(raw).slice(0, 512) })',
+      'sample-write.ts',
+    )
+    assert.equal(write.length, 1,
+      `被截断的写入没有判红（${JSON.stringify(write)}）⇒ 白名单把「写入」也放过了 ⇒ 门形同虚设`)
+    // ③ ⛔ 也不许放过：蛇形 SQL 的**赋值**形态
+    const sqlWrite = findRefinedTranscriptOffenders(
+      "await localDB.run('UPDATE local_meetings SET refined_transcript = ? WHERE id = ?', [x])",
+      'sample-sql.ts',
+    )
+    assert.equal(sqlWrite.length, 1,
+      `蛇形 SQL 写入没有判红（${JSON.stringify(sqlWrite)}）⇒ 白名单把「写入」也放过了`)
+  })
+})
+
+/**
+ * 允许出现 `refinedTranscript` 的形态 —— **逐条实测得出**，不是随手写的。
+ *
+ * ⚠⚠ 白名单的第一版只有 6 条，跑出来 8 个「 offender」，
+ *   我**逐条看过**才决定放宽的（放宽白名单时最容易被当成「让判据变绿」），
+ *   8 条分别是：
+ *     ① api/meetings.ts:297  云同步 payload 透传一个 RefineResult
+ *     ② api/meetings.ts:360  读 raw 字段**喂给守卫**
+ *     ③ api/meetings.ts:415  ★ **守卫本身**（normalizeRefine 的受守卫产出）
+ *     ④ api/meetings.ts:587  ★ **守卫本身**（refineFromLlmContent 的受守卫产出）
+ *     ⑤ MeetingDetailView.vue:272  读进 view 入参（纯读者）
+ *     ⑥ meetings-store.ts:124  createMeeting 的默认值 null
+ *     ⑦ meetings-store.ts:221  SQL 列写入，patch 的透传
+ *     ⑧ refined-ingest-writeback.ts:89  读本地变量
+ *   ⇒ ①②⑦ 是透传，②⑤⑧ 是读取，⑥ 是默认值，③④⑤…是守卫本身 —— 都不是新的产出路径。
+ *
+ * ⚠ §925：白名单被移到**模块级**，因为下面那条**负控必须调同一个扫描器**
+ *   （抄第二份扫描逻辑 ⇒ 两份必然漂移 ⇒ 负控会变成「另一份实现自己的结论」）。
+ */
+const SAFE = [
+  /const refinedTranscript = refine\.refinedTranscript/,
+  /return \{ refinedTranscript,/,
+  /^refinedTranscript,$/,
+  /refinedTranscript: result\.refinedTranscript/,
+  /refinedTranscript: writeback\.refinedTranscript/,
+  /refinedTranscript: refine\.refinedTranscript/,
+  /refinedTranscript: payload\.refinedTranscript/,
+  /refined_transcript: patch\.refinedTranscript/,   // ← 唯一合法的蛇形写入
+  /const serverRefined = raw\.refined_transcript/,
+  /const raw = parsed\.refined_transcript/,          // ← 读，喂给守卫
+  // SQL 列名清单（没有 `:` 赋值 ⇒ 不是写入）
+  /^[\w, ]+refined_transcript,[\w, ]*$/,
+  // ★ 两个**受守卫的产出**本身（守卫就在这两行里）
+  /refinedTranscript: retention\.ok \? String\(serverRefined/,
+  /refinedTranscript: hasRefined && retention\.ok/,
+  // 读取与声明
+  /^refinedTranscript\??: string( \| null)?$/,   // 类型声明
+  /refinedTranscript: null,/,
+  /refinedTranscript: meeting\.value\?\.refinedTranscript/,
+  /const serverRefined = raw\.refined_transcript/,
+  /truncateCodeUnits\(refinedTranscript,/,
+  /meeting\?\.refinedTranscript/,
+  /r\.refined_transcript as string/,
+  /\|\s*'refinedTranscript'/,
+  // ★ §925：**列表查询里的有界读取**（`substr(refined_transcript, 1, N) AS refined_transcript`）
+  //   ⇒ 这是**读**（列表只取片段），不是**写入** ⇒ 不需要过留存判定。
+  //   ⇒ 唯一消费者是 `NotesHubView` 的 **120 字预览**（`preview()`）⇒ 用户所见**逐字不变**
+  //     （§925.4 的判据 12 用**真实**的 `preview()` 实现钉住这一点）。
+  //   ⚠ 形态必须钉死：`AS refined_transcript` 这个**别名**只可能出现在 SELECT 列表里
+  //   ⇒ 真写入（`refined_transcript:` / `refinedTranscript:`）**命中不了**这一条
+  //   ⇒ 负控见下面那条用例（「被截断的写入」必须仍然判红）。
+  /substr\(refined_transcript, 1, [^)]*\) AS refined_transcript/,
+]
+
+/**
+ * 扫出一段源码里「不是受守卫透传的 `refinedTranscript`」的行。
+ *
+ * ⚠ 为什么要提成函数：§925 往白名单里加了一条「有界**读取**」，
+ *   而**负控必须调同一个扫描器** —— 抄第二份扫描逻辑 ⇒ 两份必然漂移
+ *   ⇒ 负控会变成「另一份实现自己的结论」⇒ 什么也证明不了。
+ */
+function findRefinedTranscriptOffenders(src: string, where: string): string[] {
+  const out: string[] = []
+  src.split('\n').forEach((line, i) => {
+    const t = line.trim()
+    if (t.startsWith('//') || t.startsWith('*')) return
+    // ⚠⚠ §911 自曝：第一版只认驼峰，于是变异把蛇形 SQL 列
+    //   `refined_transcript:` 改掉时**整行不匹配、直接逃过扫描**。
+    if (!/refined_?[Tt]ranscript/.test(line)) return
+    if (SAFE.some((re) => re.test(t))) return
+    // ⚠⚠ §925 又补上一个盲点：候选条件原本只有 `[:,]` ⇒ **SQL 赋值形态**
+    //   （`UPDATE … SET refined_transcript = ?`）**扫不到** ——
+    //   也就是说「绕过留存判定直接写正文」最像样的那种写法，这道门**看不见**。
+    //   ⚠ 加宽到 `[:,=]` 后全树实测 **0 offender** ⇒ 不会误伤既有代码。
+    if (!/refined_?[Tt]ranscript\s*[:,=]/.test(line) && !/refined_?[Tt]ranscript$/.test(t)) return
+    out.push(`${where}:${i + 1}  ${t}`)
+  })
+  return out
+}

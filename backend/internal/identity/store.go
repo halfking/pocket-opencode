@@ -85,6 +85,16 @@ var ErrNotFound = errors.New("identity: not found")
 // ErrInviteeLimit is returned when an invite would exceed MaxInvitees.
 var ErrInviteeLimit = errors.New("identity: invitee limit reached")
 
+// ErrDeviceScopeConflict 表示 device id 已属于**别的用户**。
+//
+// ⚠⚠ §944 D3：device id 是**客户端自选**的（请求体 id）⇒ ⇒ ⇒ 撞上一个
+// 别的用户的 device id 时，修复前那条 ON CONFLICT 会把那一行
+// **连 workspace_id 一起搬进提交者的租户**（SET 里**有** workspace_id）
+// ⇒ ⇒⇒⇒ 后果是：受害者的设备行**从自己的租户消失**（他在自己的设备列表里
+// 再也看不到、也撤不掉它）、出现在攻击者租户里，且 push_token 被换成
+// 攻击者的 ⇒ ⇒⇒ 推送通道被劫持 + 设备审计丢失。
+var ErrDeviceScopeConflict = errors.New("identity: device belongs to another user")
+
 // Store manages the identity tables. It receives the shared pgxpool from
 // main.go, matching the existing pocketd store wiring convention.
 type Store struct {
@@ -351,13 +361,33 @@ ORDER BY w.created_at
 // UpsertDevice registers or refreshes a device. The fingerprint is the natural
 // key; calling again with the same fingerprint updates push_token / OS /
 // last_seen_at (e.g. on app foreground).
+//
+// ⚠⚠ §944 D3：同一个 user 的 id 重复注册照常更新（刷新路径不变）；
+// 但这个 id 已经属于**别的用户**时 ⇒ ⇒⇒ **绝不覆盖**，返回
+// ErrDeviceScopeConflict（守卫不成立 ⇒ 一行都不改）。
 func (s *Store) UpsertDevice(ctx context.Context, d *Device) error {
 	now := time.Now().Unix()
 	if d.CreatedAt == 0 {
 		d.CreatedAt = now
 	}
 	d.LastSeenAt = now
-	_, err := s.pool.Exec(ctx, `
+	// ⚠⚠ §944 D3：ON CONFLICT **必须带归属守卫**。
+	//
+	//	守卫断言的是 **user_id**（不是 workspace_id）—— 这不是偷懒，是
+	//	**按「不可搬走的归属列」来断言**：
+	//	· user_id **不在** SET 列表里 ⇒ 它**永远不会被搬走** ⇒ 它就是
+	//	  「这一行属于谁」的唯一稳定锚点 ⇒ ⇒ 撞号时它对不上 ⇒ 必须挡。
+	//	· workspace_id **在** SET 列表里 ⇒ 「设备跟随主人换租户」是这条
+	//	  路径的**既有语义**（同一个用户换 workspace 时设备行要跟着走）
+	//	  ⇒ ⇒⇒ 若把 workspace_id 也断言住，就会把这条正常路径**误伤**。
+	//	⇒ ⇒⇒ 通用口径：**只断言「不可搬走」的归属列**（详见 §944.2）。
+	//
+	//	⚠⚠ **必须用 QueryRow + RETURNING，不能用 Exec**：
+	//	守卫不成立时 PG **不报错**，只是**不返回行**（`Exec` 拿到的是一个
+	//	成功的命令标签）⇒ ⇒ ⇒ 用 Exec 的话这道守卫就是**哑弹**
+	//	（存在、但无声 ⇒ 等于没有 ⇒ §942/§943 连着踩过同族坑）。
+	var storedID string
+	err := s.pool.QueryRow(ctx, `
 INSERT INTO devices (id, user_id, workspace_id, fingerprint, push_token, os, last_seen_at, created_at)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 ON CONFLICT (id) DO UPDATE SET
@@ -365,8 +395,18 @@ ON CONFLICT (id) DO UPDATE SET
 	os           = EXCLUDED.os,
 	last_seen_at = EXCLUDED.last_seen_at,
 	workspace_id = EXCLUDED.workspace_id
-`, d.ID, d.UserID, d.WorkspaceID, d.Fingerprint, d.PushToken, d.OS, d.LastSeenAt, d.CreatedAt)
-	return err
+WHERE devices.user_id = EXCLUDED.user_id
+RETURNING id
+`, d.ID, d.UserID, d.WorkspaceID, d.Fingerprint, d.PushToken, d.OS, d.LastSeenAt, d.CreatedAt).Scan(&storedID)
+	if err != nil {
+		// ErrNoRows ⇒ 守卫把「这个 device id 属于别的用户」挡掉了
+		// ⇒ ⇒ ⇒ 绝不把别人的设备行搬进自己的租户。
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("upsert device %s: %w", d.ID, ErrDeviceScopeConflict)
+		}
+		return err
+	}
+	return nil
 }
 
 // ListDevices returns all devices for a workspace (the owner sees all

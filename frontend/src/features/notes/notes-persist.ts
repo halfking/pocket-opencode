@@ -4,7 +4,9 @@ import { http } from '../../api/http'
 import { encryptString } from '../../native/crypto'
 import { useCryptoConfig } from '../../stores/crypto-config'
 import { assetStore } from '../../native/asset-store'
-import { decideNoteStorage } from './note-storage-policy'
+import { decideNoteStorage, splitForEmbedding } from './note-storage-policy'
+import { sha1Hex } from '../../utils/text-hash'
+import { needsFullRebuild } from './embed-reuse'
 import { deleteNoteBodyFile, deleteNoteFiles, persistNotePayload, readNoteBody } from './note-files'
 import { RECORD_MEDIA_CLEANUP_FAIL_TAG } from '../../utils/action-failure-notice'
 import { assetToNote, rowToNote, mergeImportedNotes } from './notes-row'
@@ -122,7 +124,12 @@ export async function createNote(input: CreateNoteInput): Promise<LocalNote> {
     )
   }
 
-  embedAndStore(note.id, decided.searchText || note.content).catch((e) => {
+  // ⚠⚠ §896/D66：喂给 embedding 的是 `embedText`（纯内容）**不是** `searchText`
+  //   ——后者带着给 FTS 用的合成 bigram 尾巴（短笔记里能占一半以上）。
+  //   这两个失败都是 fire-and-forget（正文已落 SQLite，不该让主链路等云端），
+  //   所以**两条路径的失败必须同样出声**：此前一条 warn、一条完全吞掉，
+  //   于是「保存一条长会议笔记」既没有向量、也没有任何痕迹。
+  embedAndStore(note.id, decided.embedText || note.content).catch((e) => {
     console.warn('[lobster] 嵌入失败，笔记已存但暂无向量:', e)
   })
   // 记下这次镜像的 promise，让依赖后端行存在的调用方（录音后的 AI 总结）
@@ -271,7 +278,11 @@ export async function updateNote(
     ],
   )
   if (patch.content !== undefined) {
-    embedAndStore(id, decided.searchText).catch(() => {})
+    // ⚠ §896/D66：此前是 `.catch(() => {})` —— 整条编辑保存路径的嵌入失败**零痕迹**，
+    //   而它是长笔记**唯一**的重试机会（创建时已经失败过一次）。改为与创建路径对称。
+    embedAndStore(id, decided.embedText).catch((e) => {
+      console.warn('[notes] 正文已更新但向量写入失败，语义检索暂时搜不到这条:', e)
+    })
   }
 }
 
@@ -441,12 +452,98 @@ export async function awaitNoteMirror(noteId: string): Promise<void> {
   }
 }
 
+/**
+ * `/api/embed` 的**切段触发阈值**（与服务端硬编码同值）。
+ *
+ * ⚠ 出处：`backend/internal/server/server_assistant.go:2853`
+ *   `if len(body.Text) > 16000 { 400 "text too long (max 16000 bytes)" }`
+ *   —— 这是**服务端**的数，前端此前**完全不知道**，超了就是一次必然失败的请求。
+ *   两处硬编码要不要收敛成一处契约，见简报 119（属主口径，本节未代拍）。
+ *
+ * ⚠⚠ **单位陷阱（§917 的本体）**：服务端那道闸判的是 **UTF-8 字节**
+ * （Go 的 `len(string)`，实测 `len("中") == 3`）⇒ 16000 字节只装得下
+ * **5333 个中文字**；而**服务端那段错误信息原先写的也是「chars」**
+ * ⇒ 信息与判定不同形 ⇒ 任何「按字符数理解」的实现都会超闸 3 倍。
+ *
+ * ⚠ **本常量现在只是「要不要切成多段」的码元阈值**；
+ *   **真正不可越过的红线是字节闸**（`note-storage-policy.ts` 的
+ *   `EMBED_BYTE_LIMIT`）⇒ 每一个送进 `/api/embed` 的块都必须 ≤ 它（§917 落地）。
+ *   ⇒ 常量名里的「CHAR」是**历史遗留的名字**（那时按字符理解），别再照字面理解它。
+ */
+const EMBED_TEXT_CHAR_LIMIT = 16000
+
 async function embedAndStore(noteId: string, content: string): Promise<void> {
-  const res = await http<{ embedding: number[]; model: string }>('/api/embed', {
-    method: 'POST',
-    body: JSON.stringify({ text: content }),
-  })
-  await vectorIndex.add(noteId, Float32Array.from(res.embedding), res.model)
+  // ⚠⚠ §898：超长文本**不再截断**，而是**按段分别嵌入**。
+  //
+  //   §896 的做法是「截到 16000 字就发」⇒ 长会议的后半段**永远进不了索引**
+  //   （尾部不是「弱相关」，是**完全不相关**）。
+  //   ⇒ 现在改成：短文本仍是一次调用一个向量（行为与从前逐字一致），
+  //     超过单发上限的按段切开，逐段嵌入，**整篇每一段都被索引到**。
+  //
+  //   ⚠ 为什么必须「每段一个向量」而不是「所有段平均成 1 个」：
+  //   实测（局部代理嵌入，4 小时会议 18 段，第 10 段埋一句关键信息）：
+  //     截断 0.0452 / 质心 0.0492 / 整篇单向量 0.0914 / 段级 max **0.1442**
+  //   而一条中等相关的短笔记是 0.0394 ⇒ 截断与质心只比它高 15%~25%
+  //   ⇒ 长会议在有若干短笔记的库里会被挤出 top-k。
+  //   详见 `vector-index.ts::search` 上方的注释与 §898 文档。
+  const chunks = splitForEmbedding(content, { limit: EMBED_TEXT_CHAR_LIMIT })
+  if (chunks.length === 0) return
+  const hashes = chunks.map((c) => sha1Hex(c.text))
+
+  // ⚠⚠ §899：**只重新嵌入「变了的段」**，没变的段直接复用库里的向量。
+  //
+  //   这是「编辑一条 4 小时会议」从 15 次调用降到 ~1 次的关键。
+  //   ⚠ 复用成立的前提是**段边界稳定** —— 固定偏移切段时改一个字会让
+  //     后面所有段都变（实测 0/22 段存活）；段落锚定切段时 20/21 段存活。
+  //     ⇒ 切段方式必须是段落锚定的（见 `splitForEmbedding`）。
+  const prev = await vectorIndex.existingChunks(noteId)
+  const first = await embedChunks(chunks, prev)
+  // ⚠⚠ **换模型 ⇒ 旧向量不在同一个空间里** ⇒ 混用会让相似度失去意义
+  //   ⇒ 一律全部重嵌（安全侧）。决策在纯函数里（`embed-reuse.ts`），
+  //   判据直接验它的行为（源码门对同形改动无效，§95.3 的老教训）。
+  if (needsFullRebuild(first.apiModel, prev?.model ?? null, first.reused)) {
+    const rebuilt = await embedChunks(chunks, null)
+    await vectorIndex.add(noteId, rebuilt.vectors, rebuilt.model, hashes)
+    return
+  }
+  await vectorIndex.add(noteId, first.vectors, first.model, hashes)
+}
+
+/**
+ * 逐段嵌入；`prev` 给了就**复用没变的段**（不调 API）。
+ *
+ * @returns apiModel 本次 API 返回的模型（null = 全程复用，没调过 API）；
+ *          reused 实际复用了多少段。两者交给 `needsFullRebuild` 判定要不要全部重嵌。
+ */
+async function embedChunks(
+  chunks: { text: string }[],
+  prev: { hashes: string[]; vectors: Float32Array[]; model: string } | null,
+): Promise<{ vectors: Float32Array[]; model: string; reused: number; apiModel: string | null }> {
+  const hashes = chunks.map((c) => sha1Hex(c.text))
+  const vectors: Float32Array[] = []
+  let model = prev?.model ?? ''
+  let apiModel: string | null = null
+  let reused = 0
+  for (let i = 0; i < chunks.length; i++) {
+    const h = hashes[i]
+    if (prev) {
+      const idx = prev.hashes.indexOf(h)
+      if (idx >= 0) {
+        vectors.push(prev.vectors[idx])
+        reused++
+        continue
+      }
+    }
+    const res = await http<{ embedding: number[]; model: string }>('/api/embed', {
+      method: 'POST',
+      body: JSON.stringify({ text: chunks[i].text }),
+    })
+    apiModel = res.model
+    model = res.model
+    vectors.push(Float32Array.from(res.embedding))
+  }
+  // ⚠ 全程没调 API（全部复用）⇒ apiModel 保持 null ⇒ 不会有换模型问题。
+  return { vectors, model, reused, apiModel }
 }
 
 /**

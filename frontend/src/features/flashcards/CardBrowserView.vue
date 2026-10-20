@@ -360,15 +360,16 @@ onMounted(() => {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 6px 10px;
+  /* iOS 标准按钮：矩形 + 小圆角，44px 触摸热区（过滤类按钮统一规范） */
+  padding: 0 12px;
   background: var(--bg-card);
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--radius-md);
   color: var(--text-secondary);
   font-size: var(--text-sm);
   font-weight: var(--font-weight-medium);
   cursor: pointer;
-  min-height: 32px;
+  min-height: 44px;
 }
 
 .chip .material-symbols-outlined {

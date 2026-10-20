@@ -28,6 +28,7 @@ package llmbff
 
 import (
 	"context"
+	"log"
 	"time"
 )
 
@@ -195,10 +196,32 @@ func (s *Service) Chat(ctx context.Context, req ChatRequest, kind string) (*Chat
 		return nil, err
 	}
 	// Best-effort usage recording — never fail the chat on a logging error.
+	//
+	// ⚠⚠ §945：这里原来只有 `_ =`，**连日志都没有** ⇒ ⇒⇒ 而 usage 是
+	//	**按 workspace / 按用途分账**的数据（kind 进 `RecordUsage`）⇒ ⇒⇒
+	//	⇒ 写失败 ⇒ **那一笔 token 用量从账上消失了** ⇒ ⇒⇒⇒ 而账单只会
+	//	⇒ ⇒⇒⇒ **偏小**（看起来「省了」）⇒ ⇒⇒⇒ ⇒ 这是**最坏的方向**：
+	//	⇒ ⇒⇒⇒ ⇒ 少算**没有任何人会去查**，多算会有人来对账。
+	//	⇒ ⇒⇒⇒ ⇒ ⇒ 「best-effort」不等于「无声」⇒ ⇒⇒⇒ 必须留痕。
+	//
+	//	⚠ **保持不阻断 chat**：本包接口注释写着「Best-effort: must not block
+	//	  the caller」⇒ ⇒⇒⇒ 那条契约**不动** ⇒ ⇒⇒⇒ 只补「看得见」。
 	if resp.Usage.TotalTokens > 0 {
-		_ = s.recorder.RecordUsage(ctx, req.WorkspaceID, resp.Model, req.User, resp.Usage, kind)
+		s.recordUsage(ctx, req.WorkspaceID, resp.Model, req.User, resp.Usage, kind)
 	}
 	return resp, nil
+}
+
+// recordUsage 记一次用量；**写失败必须留痕**，但**不阻断调用方**。
+//
+// ⚠ 抽成一份而不是在 3 处各抄一遍（★ 同一段逻辑抄 N 遍 ⇒ 同一个缺陷必然
+//
+//	出现在 N 处）：Chat / Stream / Embed 三条路径的处置必须一致。
+func (s *Service) recordUsage(ctx context.Context, wsID, model, userID string, u Usage, kind string) {
+	if err := s.recorder.RecordUsage(ctx, wsID, model, userID, u, kind); err != nil {
+		log.Printf("ERROR: llmbff: usage 记录写入失败（ws=%s model=%s kind=%s tokens=%d）—— 这一笔用量不会出现在账上: %v",
+			wsID, model, kind, u.TotalTokens, err)
+	}
 }
 
 // Stream performs a streaming completion, forwarding Deltas to fn. After the
@@ -216,7 +239,7 @@ func (s *Service) Stream(ctx context.Context, req ChatRequest, kind string, fn f
 		return nil, err
 	}
 	if usage != nil && usage.TotalTokens > 0 {
-		_ = s.recorder.RecordUsage(ctx, req.WorkspaceID, req.Model, req.User, *usage, kind)
+		s.recordUsage(ctx, req.WorkspaceID, req.Model, req.User, *usage, kind)
 	}
 	return usage, nil
 }
@@ -231,7 +254,7 @@ func (s *Service) Embed(ctx context.Context, req EmbedRequest, kind string) (*Em
 		return nil, err
 	}
 	if resp.Usage.TotalTokens > 0 {
-		_ = s.recorder.RecordUsage(ctx, req.WorkspaceID, resp.Model, "", resp.Usage, kind)
+		s.recordUsage(ctx, req.WorkspaceID, resp.Model, "", resp.Usage, kind)
 	}
 	return resp, nil
 }

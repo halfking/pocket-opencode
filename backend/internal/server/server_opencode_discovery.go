@@ -1,7 +1,6 @@
 package server
 
 import (
-	"encoding/json"
 	"log"
 	"net/http"
 	"strconv"
@@ -66,8 +65,7 @@ func (s *Server) handleDiscoverInstances(w http.ResponseWriter, r *http.Request)
 		result = append(result, info)
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"instances": result,
 		"total":     len(result),
 		"timestamp": time.Now().Unix(),
@@ -164,8 +162,7 @@ func (s *Server) handleGetInstanceTasks(w http.ResponseWriter, r *http.Request) 
 		})
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"instanceId": instanceID,
 		"tasks":      tasks,
 		"total":      len(sessions),
@@ -266,8 +263,7 @@ func (s *Server) handleGetTaskDetail(w http.ResponseWriter, r *http.Request) {
 		Metadata:     task.Metadata,
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(detail)
+	writeJSON(w, http.StatusOK, detail)
 }
 
 // handleListAllTasks 列出所有实例的所有任务（聚合视图）
@@ -352,8 +348,7 @@ func (s *Server) handleListAllTasks(w http.ResponseWriter, r *http.Request) {
 		statusStats[session.Status]++
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"tasks":         tasks,
 		"total":         len(allSessions),
 		"filtered":      len(tasks),

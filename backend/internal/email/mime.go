@@ -202,6 +202,30 @@ func (f *Fetcher) FetchMessageRaw(ctx context.Context, accountID string, uid int
 	return nil, fmt.Errorf("fetch raw uid=%d (textproto): %v", uid, rawErr)
 }
 
+// s947ReadLiteralTerminator 读掉 IMAP literal 末尾的 \r\n。
+//
+// ⚠ §947：以前这两次 ReadByte 的**错误被丢弃** ⇒ 服务端少发 CRLF
+//
+//	（或连接断了）时**没人知道** ⇒ 正文被**截断**却照样当成完整邮件
+//	往下走 ⇒ ⇒⇒ 失败不许无声。
+//
+// ⚠ 但 EOF **不致命**：RFC 3501 要求 literal 后跟 CRLF，而**不是所有实现
+//
+//	都发** ⇒ 缺失时继续解析（后面会读到 tagged response），只**留痕**
+//	⇒ ⇒⇒ 「读失败」与「读都没读」要分开处理。
+func s947ReadLiteralTerminator(br *bufio.Reader) error {
+	for i := 0; i < 2; i++ {
+		if _, err := br.ReadByte(); err != nil {
+			if !errors.Is(err, io.EOF) {
+				return fmt.Errorf("read literal terminator: %w", err)
+			}
+			log.Printf("[email/fetcher/raw] WARN: literal 之后没有 CRLF（服务端未按 RFC 3501 发送）")
+			return nil
+		}
+	}
+	return nil
+}
+
 // fetchRawByTextproto 走原始 IMAP 文本协议直接拉取 BODY[]：
 //  1. 与 server 握手读 greeting；
 //  2. LOGIN user pass；
@@ -366,9 +390,12 @@ func (f *Fetcher) fetchRawByTextproto(ctx context.Context, acc *Account, passwor
 					return nil, fmt.Errorf("read literal %d: %w", size, err)
 				}
 				collected.Write(payload)
-				// literal 末尾的 \r\n
-				br.ReadByte() // \r
-				br.ReadByte() // \n
+				// literal 末尾的 \r\n ⇒ §947：以前这两次 ReadByte 的
+				// **错误被丢弃** ⇒ 服务端少发 CRLF（或连接断了）时没人知道，
+				// 正文被**截断**却照样当成完整邮件往下走。
+				if err := s947ReadLiteralTerminator(br); err != nil {
+					return nil, err
+				}
 			}
 			continue
 		}

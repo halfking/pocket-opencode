@@ -95,6 +95,5 @@ func (s *Server) handleCancelTask(w http.ResponseWriter, r *http.Request, taskID
 		s.auditTaskStatusChange(r, updated, current.Status)
 	}
 	s.broadcastTaskEvent("task_updated", updated)
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(updated)
+	writeJSON(w, http.StatusOK, updated)
 }

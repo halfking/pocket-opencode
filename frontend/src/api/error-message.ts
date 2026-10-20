@@ -29,6 +29,9 @@ export const ERROR_CODE_I18N_KEYS: Record<string, string> = {
   imap_unauthorized: 'errors.imapUnauthorized',
   imap_error: 'errors.imapFailed',
   stt_unavailable: 'errors.sttNotConfigured',
+  // §922：音频单次上传超限（服务端 413 `stt_audio_too_large`，
+  // 前端上传前也会用同一个码本地拦一次 ⇒ 两边共用一个 i18n key）。
+  stt_audio_too_large: 'errors.sttAudioTooLarge',
   llm_unavailable: 'errors.llmNotConfigured',
   model_not_found: 'errors.modelNotFound',
   gateway_unreachable: 'errors.gatewayUnreachable',

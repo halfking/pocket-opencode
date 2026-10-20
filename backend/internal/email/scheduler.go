@@ -913,15 +913,32 @@ func (s *Scheduler) summarizeUser(ctx context.Context, userID, workspaceID, date
 	// 会产生 Go-syntax 输出如 "[kxmemory.ExtractedTodo{...}]"，不可解析）。
 	actionItemsJSON := ""
 	if len(resp.Todos) > 0 {
-		b, _ := json.Marshal(resp.Todos)
+		// ⚠ §945：原来这里是 `b, _ := json.Marshal(resp.Todos)` ⇒ ⇒⇒ 序列化失败
+		//	**不可见** ⇒ ⇒⇒ 而 actionItems 会变成**空字符串**（不是空列表）
+		//	⇒ ⇒⇒⇒ ⇒ 摘要里的「行动项」会**整段消失**，而没人知道为什么。
+		b, err := json.Marshal(resp.Todos)
+		if err != nil {
+			return fmt.Errorf("序列化行动项失败（摘要的行动项会缺失）: %w", err)
+		}
 		actionItemsJSON = string(b)
 	}
 
 	// A6: 复用当天已有 summary 的 ID，避免 ON CONFLICT 触发 update 后旧
 	// row 变孤儿（primary key 变更）。查询必须带 workspace，否则会复用另一个
 	// workspace 的 summary ID。
+	//
+	// ⚠⚠ §945：原来这里是 `if existing, _ := s.store.GetSummaryByDateScoped(...)`
+	//	⇒ ⇒⇒ **读失败与「没有旧行」被混为一谈** ⇒ ⇒⇒⇒ ⇒ 读失败时
+	//	⇒ ⇒⇒⇒ ⇒ `existing == nil` ⇒ ⇒⇒⇒ ⇒ 走 else 分支 ⇒ ⇒⇒⇒ ⇒ **生成新的
+	//	⇒ ⇒⇒⇒ ⇒ summary ID** ⇒ ⇒⇒⇒ ⇒ ⇒ 那正是这段注释要防的事：
+	//	⇒ ⇒⇒⇒ ⇒ ⇒ 「旧 row 变孤儿」在**读失败**时被**亲手制造出来**。
+	//	⇒ ⇒⇒⇒ ⇒ ⇒ ⇒ 所以这里必须**把错误读出来**并**中止本轮**。
+	existing, err := s.store.GetSummaryByDateScoped(ctx, userID, workspaceID, date)
+	if err != nil {
+		return fmt.Errorf("查当天已有 summary 失败（本轮不写，避免旧行变孤儿）: %w", err)
+	}
 	summaryID := ""
-	if existing, _ := s.store.GetSummaryByDateScoped(ctx, userID, workspaceID, date); existing != nil {
+	if existing != nil {
 		summaryID = existing.ID
 	} else {
 		summaryID = randomID("summary")

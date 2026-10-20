@@ -1,7 +1,6 @@
 package server
 
 import (
-	"encoding/json"
 	"net/http"
 	"strconv"
 	"time"
@@ -70,8 +69,7 @@ func (s *Server) handleOpenCodeSessions(w http.ResponseWriter, r *http.Request) 
 	since := parseSinceQuery(r.URL.Query().Get("since"))
 	sessions = filterCachedSessionsSince(sessions, since)
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"sessions":     sessions,
 		"total":        len(sessions),
 		"serverTimeMs": time.Now().UnixMilli(),
@@ -217,8 +215,7 @@ func (s *Server) handleOpenCodeSessionSummary(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"sessionId": sessionID,
 		"summary":   summary,
 	})
@@ -280,8 +277,7 @@ func (s *Server) handleOpenCodeInstanceStats(w http.ResponseWriter, r *http.Requ
 		}
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"instanceId": instanceID,
 		"stats":      stats,
 	})
@@ -308,8 +304,7 @@ func (s *Server) handleOpenCodeRefreshCache(w http.ResponseWriter, r *http.Reque
 
 	s.opencodeManager.InvalidateCache(instanceID)
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"success": true,
 		"message": "cache invalidated",
 	})

@@ -402,13 +402,22 @@ func (c *MobileClient) writePump() {
 			if err != nil {
 				return
 			}
-			w.Write(message)
+			// §947：写失败 = **这条流已经死了**（对端已走）⇒ 与 §946 对 SSE
+			// 的处置同一条口径：**中断这条流**，不许继续往一条死流里写。
+			// 丢弃它 ⇒ 客户端断开后服务端还在闷头写，直到下一次写才暴露。
+			if _, err := w.Write(message); err != nil {
+				return
+			}
 
 			// Batch writes if available
 			n := len(c.send)
 			for i := 0; i < n; i++ {
-				w.Write([]byte{'\n'})
-				w.Write(<-c.send)
+				if _, err := w.Write([]byte{'\n'}); err != nil {
+					return
+				}
+				if _, err := w.Write(<-c.send); err != nil {
+					return
+				}
 			}
 
 			if err := w.Close(); err != nil {

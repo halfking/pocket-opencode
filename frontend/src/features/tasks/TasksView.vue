@@ -1920,15 +1920,16 @@ function timeAgo(dateStr?: string): string {
   align-items: center;
   gap: 4px;
   flex-shrink: 0;
-  padding: 5px 10px;
-  border-radius: 999px;
+  /* iOS 标准按钮：矩形 + 小圆角，44px 触摸热区（过滤类按钮统一规范） */
+  padding: 0 12px;
+  border-radius: var(--radius-md);
   border: 1px solid var(--border);
   background: var(--bg-card);
   color: var(--text-secondary);
   font-size: var(--text-sm);
   font-weight: 500;
   cursor: pointer;
-  min-height: 30px;
+  min-height: 44px;
 }
 
 .chip.active {
@@ -1940,8 +1941,8 @@ function timeAgo(dateStr?: string): string {
 
 .chip.subtle {
   font-size: var(--text-2xs);
-  padding: 4px 9px;
-  min-height: 26px;
+  padding: 0 10px;
+  min-height: 44px;
 }
 
 .chip-count {

@@ -88,10 +88,14 @@ func handleVerify(w http.ResponseWriter, r *http.Request, cfg config.Config) {
 }
 
 // writePlain 原样写出明文，Content-Type 固定 text/plain。
+//
+// ⚠ §946：写失败原来被 `_, _ =` 整个吞掉 ⇒ 服务端**零记录** ⇒ 只能留痕。
 func writePlain(w http.ResponseWriter, s string) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	_, _ = w.Write([]byte(s))
+	if _, err := w.Write([]byte(s)); err != nil {
+		log.Printf("[WARN] 企业微信响应体写出失败：%v", err)
+	}
 }
 
 // encryptedEnvelope 是 POST body 的外层信封。
@@ -200,7 +204,10 @@ func extractEncrypt(raw []byte) string {
 func writeSuccess(w http.ResponseWriter, code int) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(code)
-	_, _ = w.Write([]byte("success"))
+	// ⚠ §946：写失败原来被 `_, _ =` 整个吞掉 ⇒ 服务端**零记录** ⇒ 只能留痕。
+	if _, err := w.Write([]byte("success")); err != nil {
+		log.Printf("[WARN] 企业微信响应体写出失败：%v", err)
+	}
 }
 
 // truncate 按字节截断并补省略号，但**回退到完整字符边界**。
