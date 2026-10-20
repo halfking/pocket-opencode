@@ -275,6 +275,39 @@ if tok != token.IDENT &&                          // ← Go 1.25 新增
 ⇒ 门禁每次都会把 oracle 打印出来（`oracle: /opt/homebrew/bin/gofmt（go1.27.2，backend/go.mod 声明 Go 1.27）`），
 **读数可审计**。
 
+### 3.4 ⚠ 自己引入的隐患：两道门可能各用一个 gofmt ⇒ 已收编成**单一来源**
+
+复核时发现一个**由本轮改动自己引入**的隐患：
+
+- 新门禁按**版本**过滤候选；
+- 而 `check-gofmt.mjs` 仍用 `whichFirst(gofmtCandidates())`（= PATH 优先）；
+- ⇒ 在一台**同时装着多个 Go 版本**的机器上（**本机就装着 1.24.5 与 1.27.2**，
+  只差 PATH 指向谁），两道门可能**各用一个 gofmt** ⇒ 各说各话。
+
+实测对照（把 PATH 指向旧的 1.24.5）：
+
+```
+$ PATH=/usr/local/go/bin:$PATH which gofmt
+/usr/local/go/bin/gofmt                       ← go1.24.5
+修之前（whichFirst）  → /usr/local/go/bin/gofmt = go1.24.5   ← check-gofmt 会用它
+修之后（版本锁定）    → /opt/homebrew/bin/gofmt = go1.27.2   ← 两道门都用它
+```
+
+⇒ 修法：把 oracle 的解析**提成 `scripts/lib/gofmt-oracle.mjs`（单一来源）**，
+两道门都从它取；并让 `check-gofmt.mjs` 也**按声明大版本锁定**、
+且**把 oracle 打印出来**（两道门的读数可当场对照）：
+
+```
+$ node scripts/check-gofmt.mjs
+· oracle（判据用的 gofmt）  : /opt/homebrew/bin/gofmt（go1.27.2，backend/go.mod 声明 Go 1.27）
+$ node scripts/check-doc-empty-string-literal.mjs
+oracle: /opt/homebrew/bin/gofmt（go1.27.2，backend/go.mod 声明 Go 1.27）
+```
+
+⚠ `check-gofmt.mjs` 找不到匹配版本时同样 **exit 1「无法判定」**——
+这是把它原有的「找不到 gofmt ⇒ exit 1」契约**按同一条纪律**延长，
+而不是新增一条更严的规则。
+
 ---
 
 ## 4. 验证
@@ -295,8 +328,10 @@ if tok != token.IDENT &&                          // ← Go 1.25 新增
 | `POCKET_TEST_POSTGRES_DSN=… go test -race -count=1 -v ./internal/server/` | **EXIT 0** — PASS 770 / FAIL 0 / **DATA RACE 0** |
 | `go test -race -count=1 ./...` | **EXIT 0** — ok 61 / FAIL 0 / DATA RACE 0（1m25.7s） |
 | NEGCTRL 探针 | DATA RACE ×2 / FAIL / exit 1 ⇒ detector 武装（探针已删） |
-| `node scripts/check-gofmt.mjs` | EXIT 0 — 1117 个 .go，0 真债 |
-| `npm run gates`（frontend/） | **EXIT 0 — 全部 47 项通过，用时 65.0s** |
+| `node scripts/check-gofmt.mjs` | EXIT 0 — 1117 个 .go，0 真债（并打印 oracle） |
+| **PATH 指向 go1.24.5 时两道门的 oracle** | **同一个**（都是 go1.27.2）⇒ 不会各说各话（对照见 §3.4） |
+| `node scripts/run-gates.mjs --ci`（**CI job 的原样命令**） | **EXIT 0 — 全部 36 项通过**（26.6s）⇒ CI 不会被我推红 |
+| `npm run gates`（frontend/） | **EXIT 0 — 全部 47 项通过，用时 55.6s** |
 
 ---
 
@@ -311,9 +346,9 @@ if tok != token.IDENT &&                          // ← Go 1.25 新增
    会 churn 8 个文件且会破坏 `gradlew.bat`。若将来要扩大范围，**单独一轮做**。
 3. **48h 审计线的 §8.7 四件事不在本轮范围**（`handoff/2026-10-17-48h-audit-and-fixes.md`）：
    简报 119 三个问待属主拍板、7 道新门的「自洽判据」回扫 ⇒ 需要属主决策，不擅自动。
-4. **`check-gofmt.mjs` 本身没有版本锁**：它判的是**格式**（缩进/对齐），
-   这部分 Go 各版本一致 ⇒ 本轮未改。但若将来发现格式规则也跨版本变了，
-   它需要和本门一样的版本锁定。**已登记，不在本轮。**
+4. ~~**`check-gofmt.mjs` 本身没有版本锁**~~ ⇒ ✅ **本轮已关掉**（见 §3.4）：
+   两道把 gofmt 当判据的门现在**共用同一个 oracle**（`scripts/lib/gofmt-oracle.mjs`），
+   都按 `backend/go.mod` 声明的大版本锁定 ⇒ 不可能各说各话，也不可能与 CI 不一致。
 5. 本轮**未触碰** 5432 上的 `llm-gateway-pg`（别的项目的生产库），也未改动
    `handoff/2026-10-17-48h-audit-and-fixes.md` 提到的 `ViewSegmentBar.vue` WIP
    （属另一条任务线，仍留在工作树）。

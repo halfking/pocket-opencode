@@ -33,7 +33,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
-import { whichFirst, gofmtCandidates } from './lib/which-first.mjs'
+import { resolveAuthoritativeGofmt, describeOracle } from './lib/gofmt-oracle.mjs'
 
 const REPO = path.resolve(import.meta.dirname, '..')
 const GO_DIR = path.join(REPO, 'backend')
@@ -43,14 +43,26 @@ const GO_DIR = path.join(REPO, 'backend')
 //   本门禁「拒绝把 ENOENT 当通过」是对的（见下方 gofmtList），
 //   但那只是**如实报告**，不等于可用 —— 它让整条门槛在半数机器上永远跑不完。
 //   ⇒ 按 2026-10-07 的先例（a8cfb14b「收编到 lib 的单一来源」），
-//     改用 lib/which-first.mjs 的「env → PATH → 常见位置」解析。
+//     改用 lib/which-first.mjs 的「env → PATH → 常见位置」解析
+//     （2026-10-20 起再收编到 lib/gofmt-oracle.mjs，见下）。
 //     注意那个文件里还有 adb 用的同一套解析，两边不再各抄一份。
-const RESOLVED_GOFMT = whichFirst(gofmtCandidates())
+//
+// ⚠️ 2026-10-20：改用 **lib/gofmt-oracle.mjs** 的解析，且**按版本锁定**。
+//   两个理由：
+//   ① **与另一道门必须是同一个 gofmt** —— 本仓还有 check-doc-empty-string-literal
+//      也把 gofmt 当判据。两道门若各用一个版本，同一台机器上会「各说各话」
+//      （Go 1.25 改过 doc comment 判定 ⇒ 同一段 doc 在 1.24/1.27 下结论相反）。
+//   ② **本地要与 CI 同一个版本** —— CI 是 setup-go + go-version-file: backend/go.mod，
+//      权威版本就是 backend/go.mod 声明的那个。
+//   找不到匹配版本 ⇒ 「无法判定」exit 1（不是「通过」），理由同下方 gofmtList：
+//   **「无法判定」不是「通过」**。
+const ORACLE = resolveAuthoritativeGofmt()
+if (ORACLE.error) {
+  console.error(`✗ ${ORACLE.error}`)
+  process.exit(1)
+}
+const RESOLVED_GOFMT = ORACLE.path
 const GO_BIN = RESOLVED_GOFMT
-  // 全部候选都没命中时**不回落到裸命令名**：那会把「工具没找到」
-  // 重新塞回 spawn ENOENT，正是本模块要消灭的错误形态。
-  // 交由 gofmtList() 打印人话并 exit 1。
-  || null
 // Windows 命令行长度上限约 8191 字符（.cmd 包装走 cmd.exe，不是 PowerShell 的 32767）。
 // 每批 30 个绝对路径 ≈ 1.4 KB，留足余量。
 const BATCH = 30
@@ -149,6 +161,7 @@ const eolOnly = files.filter((f) => {
 
 const pct = (n) => `${n} (${((n / files.length) * 100).toFixed(1)}%)`
 
+console.log(`· oracle（判据用的 gofmt）  : ${describeOracle(ORACLE)}`)
 console.log(`· backend 下 .go 文件        : ${files.length}`)
 console.log(`· 原样 gofmt -l 报出        : ${asIs.size}  ← 含行尾噪声，不代表代码脏`)
 console.log(`· 其中纯行尾伪债           : ${eolOnly}`)
