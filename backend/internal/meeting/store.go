@@ -2,6 +2,7 @@
 package meeting
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -16,6 +17,14 @@ const (
 	legacyOwnerID     = "local"
 	legacyWorkspaceID = "default"
 )
+
+// ErrMeetingNotFound 是「作用域内没有这条会议」的哨兵错误（§937）。
+//
+// ⚠ 文本与既有实现**逐字相同**（"meeting not found"）⇒ 不改变任何对外可见的
+//
+//	错误串；存在的意义只是让调用方能用 errors.Is 区分「不存在」与「数据库坏了」
+//	⇒ ⇒ 否则只能靠字符串匹配（脆弱）。
+var ErrMeetingNotFound = errors.New("meeting not found")
 
 // MeetingStore 是会议存储的抽象，内存版（*Store）与 PG 版（*PGStore）共用。
 //
@@ -36,6 +45,28 @@ type MeetingStore interface {
 	// 与同样的 total）⇒ 口径见 list.go，判据见 list_test.go。
 	ListScoped(ownerID, workspaceID string, opts ListOptions) ([]*Meeting, int, error)
 	UpdateScoped(m *Meeting, ownerID, workspaceID string) error
+	// TranscriptTailScoped 返回转写从第 fromRune 个字符（0 起）起的**尾部**，
+	// 以及全文字符数（§937 的 D1）。
+	//
+	// ⚠ 为什么要尾读而不是整读：整读 ⇒ 每轮轮询都把**整份转写**从库里搬到
+	//   进程里（DB→网络→应用内存）⇒ 一场 4 小时的会议按 30 秒轮询 ⇒ 累计搬运量
+	//   ∝ 时长² ⇒ ⇒ 这是 §924（客户端整场重发）的**服务端孪生**。
+	//   ⇒ 尾读让每轮只搬「这次新增的那一段」⇒ 每轮成本只取决于新增了多少。
+	//
+	// ⚠ 两个实现必须**逐字一致**（同一份 transcript + 同一个 fromRune ⇒ 同一个
+	//   尾部、同一个字符数）⇒ 口径见 transcript.go，判据见 transcript_test.go。
+	TranscriptTailScoped(id, ownerID, workspaceID string, fromRune int) (tail string, totalRunes int, err error)
+	// UpdateMetaScoped **只**更新 title / status 两列（nil = 该列不动），
+	// **不读也不写 transcript**（§937 的 D2）。
+	//
+	// ⚠ 存在的理由：这两个字段的写入点原先走的是「GetScoped（读整行）+
+	//   UpdateScoped（写整行）」⇒ 一场长会议每改一次标题就把**整份转写**
+	//   重写一遍 ⇒ 写放大 ∝ 时长²；而且「读-改-写整行」会把**并发写入的
+	//   新转写覆盖回旧值**（lost update）。
+	//
+	// ⚠ 返回本次写入盖上的 updated_at（与 UpdateScoped 同口径）⇒ 调用方
+	//   回响应时不会拿到一个过期的时间戳。
+	UpdateMetaScoped(id, ownerID, workspaceID string, title, status *string) (time.Time, error)
 	DeleteScoped(id, ownerID, workspaceID string) error
 	// DeletedIDsSince 见 pg_store.go 同名方法：查询失败时返回 nil 而非 error。
 	DeletedIDsSince(ownerID, workspaceID string, since time.Time) []string
@@ -260,6 +291,67 @@ func (s *Store) UpdateScoped(m *Meeting, ownerID, workspaceID string) error {
 	m.WorkspaceID = workspaceID
 	s.meetings[m.ID] = copyMeeting(m)
 	return nil
+}
+
+// TranscriptTailScoped 返回转写尾部与全文字符数（§937 的 D1）。
+//
+// ⚠ 与 PG 版**逐字一致**：同一份 transcript + 同一个 fromRune ⇒ 同一个尾部。
+//
+//	口径只有一份（transcript.go 的 TranscriptTail）⇒ 形态分叉不可能发生。
+func (s *Store) TranscriptTailScoped(id, ownerID, workspaceID string, fromRune int) (string, int, error) {
+	if strings.TrimSpace(id) == "" {
+		return "", 0, fmt.Errorf("meeting ID cannot be empty")
+	}
+	if ownerID == "" {
+		return "", 0, fmt.Errorf("owner_id is required")
+	}
+	if workspaceID == "" {
+		return "", 0, fmt.Errorf("workspace_id is required")
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	m, ok := s.meetings[id]
+	if !ok || m.OwnerID != ownerID || m.WorkspaceID != workspaceID {
+		return "", 0, ErrMeetingNotFound
+	}
+	tail, total := TranscriptTail(m.Transcript, fromRune)
+	return tail, total, nil
+}
+
+// UpdateMetaScoped 只更新 title / status 两列（nil = 该列不动），
+// **不碰 transcript**（§937 的 D2）。
+//
+// ⚠ 与 PG 版同口径：同样盖 updated_at、同样在跨作用域时拒绝。
+func (s *Store) UpdateMetaScoped(id, ownerID, workspaceID string, title, status *string) (time.Time, error) {
+	if strings.TrimSpace(id) == "" {
+		return time.Time{}, fmt.Errorf("meeting ID cannot be empty")
+	}
+	if ownerID == "" {
+		return time.Time{}, fmt.Errorf("owner_id is required")
+	}
+	if workspaceID == "" {
+		return time.Time{}, fmt.Errorf("workspace_id is required")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	m, ok := s.meetings[id]
+	if !ok || m.OwnerID != ownerID || m.WorkspaceID != workspaceID {
+		return time.Time{}, ErrMeetingNotFound
+	}
+	if title != nil {
+		m.Title = *title
+	}
+	if status != nil {
+		m.Status = *status
+	}
+	now := time.Now()
+	m.UpdatedAt = now
+	s.meetings[id] = copyMeeting(m)
+	return now, nil
 }
 
 // List returns all meeting records.

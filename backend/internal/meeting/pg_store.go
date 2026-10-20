@@ -4,6 +4,7 @@ package meeting
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -438,6 +439,93 @@ func (s *PGStore) UpdateScoped(m *Meeting, ownerID, workspaceID string) error {
 	}
 	m.UpdatedAt = now
 	return nil
+}
+
+// transcriptTailQuery 是「只取转写尾部」的 SQL（§937 的 D1）。
+//
+// ⚠⚠ **它绝不能退化成 `SELECT … transcript`**：整读 ⇒ 每轮轮询都把整份转写
+//
+//	从库里搬到进程里 ⇒ 一场 4 小时的会议按 30 秒轮询 ⇒ 累计搬运量 ∝ 时长²。
+//
+// ⚠ substr(transcript, $4) 按**字符**定位（PG 的 substr 起始位置是 1）⇒
+//
+//	与 Go 侧 rune 口径同义（transcript.go 的 TranscriptTail）。
+//
+// ⚠ char_length(transcript) = 全文字符数 = 旧实现的 utf8.RuneCountInString。
+//
+//	⇒ ⚠ 这两个表达式在 DB 进程内是 O(全文) 的**扫描**，但它们**不产生进程间搬运**
+//	⇒ ⇒ 省掉的是「网络 + 应用内存 + 分配」，不是「DB 内的字符计数」。
+const transcriptTailQuery = `SELECT substr(transcript, $4), char_length(transcript)
+	FROM meetings WHERE id=$1 AND owner_id=$2 AND workspace_id=$3`
+
+// TranscriptTailScoped 返回转写尾部与全文字符数（§937 的 D1）。
+//
+// ⚠ 与内存版**逐字一致**（口径见 transcript.go）⇒ 跨 store 一致性由
+//
+//	transcript_test.go 钉住。
+func (s *PGStore) TranscriptTailScoped(id, ownerID, workspaceID string, fromRune int) (string, int, error) {
+	if strings.TrimSpace(id) == "" {
+		return "", 0, fmt.Errorf("meeting ID cannot be empty")
+	}
+	if ownerID == "" {
+		return "", 0, fmt.Errorf("owner_id is required")
+	}
+	if workspaceID == "" {
+		return "", 0, fmt.Errorf("workspace_id is required")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// ⚠ PG 的 substr 起始位置是 **1** ⇒ Go 侧 0 基游标要 +1。
+	//   游标越过末尾（start > 字符数）⇒ PG 返回空串（不是报错）⇒
+	//   ⇒ 「没有新增」与「会议不存在」在形状上分得开。
+	start := fromRune + 1
+	if start < 1 {
+		start = 1
+	}
+	var tail string
+	var total int
+	err := s.pool.QueryRow(ctx, transcriptTailQuery, id, ownerID, workspaceID, start).Scan(&tail, &total)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", 0, ErrMeetingNotFound
+		}
+		return "", 0, err
+	}
+	return tail, total, nil
+}
+
+// UpdateMetaScoped 只更新 title / status 两列（nil = 该列不动），
+// **不碰 transcript**（§937 的 D2）。
+//
+// ⚠ SQL 由 buildMetaUpdateSQL 生成（唯一口径）⇒ 那条「SQL 里绝不出现
+//
+//	transcript」的不变式可以被判据直接验。
+func (s *PGStore) UpdateMetaScoped(id, ownerID, workspaceID string, title, status *string) (time.Time, error) {
+	if strings.TrimSpace(id) == "" {
+		return time.Time{}, fmt.Errorf("meeting ID cannot be empty")
+	}
+	if ownerID == "" {
+		return time.Time{}, fmt.Errorf("owner_id is required")
+	}
+	if workspaceID == "" {
+		return time.Time{}, fmt.Errorf("workspace_id is required")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	now := time.Now()
+	q, args := buildMetaUpdateSQL(id, ownerID, workspaceID, title, status, now)
+	tag, err := s.pool.Exec(ctx, q, args...)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if tag.RowsAffected() == 0 {
+		return time.Time{}, ErrMeetingNotFound
+	}
+	return now, nil
 }
 
 func (s *PGStore) DeleteScoped(id, ownerID, workspaceID string) error {

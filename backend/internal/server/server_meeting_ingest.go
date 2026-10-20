@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -118,11 +119,24 @@ func (s *Server) handleCreateMeeting(w http.ResponseWriter, r *http.Request) {
 	//   （都是 meeting.title），所以这里只改 title，不碰任何另一路才写的字段。
 	if id := strings.TrimSpace(req.ID); id != "" {
 		if existing, err := s.meetingStore.GetScoped(id, uid, workspaceID); err == nil {
-			existing.Title = req.Title
-			if err := s.meetingStore.UpdateScoped(existing, uid, workspaceID); err != nil {
+			// ⚠ §937（D2）：只改 title ⇒ **定向更新**，不重写整行（不碰 transcript）。
+			//
+			//	修复前：UpdateScoped 无条件重写 transcript 列 ⇒ 一场长会议每同步
+			//	一次就把**整份转写**重写一遍 ⇒ 写放大 ∝ 时长²；且「读-改-写整行」
+			//	会把并发写入的新转写覆盖回旧值。
+			//
+			//	⚠ 这里**仍然要读整行**：响应体就是这一整条会议（含 transcript）⇒
+			//	「详情/列表要不要带全文」是**响应形状 + 仓外移动端兼容**问题
+			//	（§936 的 D4 / 简报第 160 条 ①）⇒ 不在技术层自决。
+			//	⇒ 本轮只把**写**那一半从 O(全文) 降到 O(1)。
+			title := req.Title
+			updatedAt, err := s.meetingStore.UpdateMetaScoped(id, uid, workspaceID, &title, nil)
+			if err != nil {
 				writeError(w, http.StatusInternalServerError, "failed to update meeting: "+err.Error())
 				return
 			}
+			existing.Title = title
+			existing.UpdatedAt = updatedAt
 			writeJSON(w, http.StatusCreated, existing)
 			s.wsHub.Broadcast("meeting.synced", map[string]string{"meetingId": existing.ID, "userId": uid})
 			return
@@ -184,31 +198,32 @@ func (s *Server) finalizeMeetingRefine(
 			// Legacy single-tenant callsites that never carried a workspace.
 			workspaceIDForStore = "default"
 		}
-		if existing, err := s.meetingStore.GetScoped(meetingID, uidForStore, workspaceIDForStore); err == nil {
-			if meta.Title != "" {
-				existing.Title = meta.Title
-			}
-			// ⚠ 2026-10-07：降级或被拦下时**不能**标 refined。
-			//
-			//   前端列表徽章把 refined 渲染成「已精翻」。而这里原先是无条件赋值，
-			//   于是 refine_fallback（§17 解析失败）与 refine_rejected（§35 名单污染
-			//   被 guardRefineResult 拦下）两种降级都会留下「已精翻」。
-			//   用户点进去看到的是刚说过的原话。
-			//
-			//   注意：这条不能只改前端 —— meetingStore 里缓存的 status
-			//   会覆盖前端本地的判断，列表读的是它。
-			existing.Status = "refined"
-			if refineDegraded(result) {
-				existing.Status = "refine-failed"
-			}
-			if err := s.meetingStore.UpdateScoped(existing, uidForStore, workspaceIDForStore); err != nil {
+		// ⚠⚠ §937（D2）：**定向更新** title/status —— 不读、也不写 transcript。
+		//
+		//	修复前：GetScoped（读**整行**，含整份转写）+ UpdateScoped（写**整行**，
+		//	含整份转写）⇒ 一场长会议每精校一块就把**整份转写**重写一遍
+		//	⇒ ⇒ 写放大 ∝ 时长²；而且「读-改-写整行」在两步之间若有人并发
+		//	写入了新转写，会被这一轮**覆盖回旧值**（lost update）。
+		//
+		//	⇒ 现在只写两列 ⇒ 成本与会议长度**无关**，且不存在覆盖窗口。
+		var titlePtr *string
+		if meta.Title != "" {
+			titlePtr = &meta.Title
+		}
+		status := "refined"
+		if refineDegraded(result) {
+			status = "refine-failed"
+		}
+		if _, err := s.meetingStore.UpdateMetaScoped(
+			meetingID, uidForStore, workspaceIDForStore, titlePtr, &status); err != nil {
+			if errors.Is(err, meeting.ErrMeetingNotFound) {
+				// No stub creation: fabricating a row here would land it in the wrong
+				// workspace and mask a genuine cross-workspace/missing-meeting error.
+				log.Printf("[meeting] refine target %s not found in workspace %s (owner=%s): %v",
+					meetingID, workspaceIDForStore, uidForStore, err)
+			} else {
 				log.Printf("[meeting] update after refine %s: %v", meetingID, err)
 			}
-		} else {
-			// No stub creation: fabricating a row here would land it in the wrong
-			// workspace and mask a genuine cross-workspace/missing-meeting error.
-			log.Printf("[meeting] refine target %s not found in workspace %s (owner=%s): %v",
-				meetingID, workspaceIDForStore, uidForStore, err)
 		}
 	}
 
