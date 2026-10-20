@@ -207,34 +207,41 @@ func s943ScanGo(t *testing.T, root, rel string) []s943Candidate {
 	})
 	// 按源码顺序拼接（AST 的遍历顺序本身已是源码序，但显式排一次更稳）。
 	sort.Slice(lits, func(i, j int) bool { return lits[i].pos < lits[j].pos })
-	var b strings.Builder
-	for _, l := range lits {
-		// 用换行分隔 ⇒ 不会把两段无关的字面量**粘成**一个 token。
-		b.WriteString(l.text)
-		b.WriteString("\n")
-	}
-	sql := b.String()
-
+	// 逐个字面量找候选点。
+	//
+	// ⚠⚠ **「带 WHERE」必须在【本字面量】里判定**（★ 本轮第一版就错在这）：
+	//   它原本取的是「整份文件里 ON CONFLICT 之后的全部文本」
+	//   ⇒ ⇒⇒ 那个文本里几乎总有别的语句带 WHERE ⇒ ⇒⇒ **恒真**
+	//   ⇒ ⇒⇒⇒ 于是一道本该咬住「守卫被删」的棘轮**一直不咬**
+	//   ⇒ ⇒⇒⇒ （★ 「恒绿」的第一嫌疑永远是量具坏了）。
+	//
+	// ⚠ 表名：优先取**本字面量**里的 INSERT INTO；
+	//   本字面量里没有（SQL 是跨字面量拼出来的，例如 task/store.go 那样）
+	//   ⇒ ⇒⇒ 回退到**源码序在前**的最近一个 INSERT INTO。
 	var out []s943Candidate
-	for _, m := range s943ConflictRE.FindAllStringIndex(sql, -1) {
-		rest := sql[m[1]:]
+	for i, l := range lits {
+		m := s943ConflictRE.FindStringIndex(l.text)
+		if m == nil {
+			continue
+		}
+		rest := l.text[m[1]:]
 		du := s943DoUpdateRE.FindStringIndex(rest)
 		if du == nil {
 			// 光有 ON CONFLICT (id) 而没有 DO UPDATE（例如 DO NOTHING）⇒ 不是候选。
 			continue
 		}
 		table := "?"
-		// 取**在这次冲突子句之前**的**最近一个** INSERT INTO。
-		// ⚠ 不能用 FindStringSubmatchIndex（它只返回**第一个**匹配）
-		//   ⇒ 一个文件里有好几条 INSERT 时会张冠李戴
-		//   （★ 本轮第一版就栽在这：identity/store.go 里的 devices
-		//   被算成了前面那条 workspaces）。
-		for _, tm := range s943InsertRE.FindAllStringSubmatchIndex(sql, -1) {
-			if tm[0] < m[0] {
-				table = sql[tm[2]:tm[3]]
-				continue
+		if tm := s943InsertRE.FindStringSubmatchIndex(l.text); tm != nil {
+			table = l.text[tm[2]:tm[3]]
+		} else {
+			// 回退：源码序在前**最近一个** INSERT INTO。
+			// ⚠ 不能取**第一个**（一个文件里常有好几条 INSERT）⇒ 否则张冠李戴。
+			for j := i - 1; j >= 0; j-- {
+				if tm := s943InsertRE.FindStringSubmatchIndex(lits[j].text); tm != nil {
+					table = lits[j].text[tm[2]:tm[3]]
+					break
+				}
 			}
-			break
 		}
 		out = append(out, s943Candidate{
 			Key:            rel + "|" + table,
