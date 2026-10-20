@@ -18,6 +18,20 @@ const (
 	legacyWorkspaceID = "default"
 )
 
+// ErrMeetingTombstoneScopeConflict 是「这条墓碑属于**别的作用域**」。
+//
+// ⚠ §943 D3：墓碑的 id 必须等于被删会议的 id ⇒ 撞上别人的墓碑时
+//
+//	**不能**像会议本体那样「换号」（换号会写出一条指向不存在会议的墓碑）
+//	⇒ ⇒ ⇒ 只能**报错** ⇒ ⇒ ⇒ 但**绝不**把别人的墓碑搬到自己名下
+//	（搬走的后果：受害者自己的墓碑清单里再也没有那条 id
+//	⇒ ⇒ ⇒⇒ **已删的会议在增量同步里「复活」**）。
+//
+// ⚠ 两个实现必须用**同一个**哨兵（errors.Is 才有意义）⇒ 且错误文本**逐字相同**
+//
+//	（「两个实现逐字一致」那条判据会逐字比它）。
+var ErrMeetingTombstoneScopeConflict = errors.New("meeting: tombstone belongs to another scope")
+
 // ErrMeetingNotFound 是「作用域内没有这条会议」的哨兵错误（§937）。
 //
 // ⚠ 文本与既有实现**逐字相同**（"meeting not found"）⇒ 不改变任何对外可见的
@@ -140,10 +154,22 @@ func (s *Store) CreateScoped(req CreateMeetingRequest, ownerID, workspaceID stri
 	// 服务端另发号会让那条链必然 404。
 	//
 	// ⚠ 但**只在没人占着它的时候**用：`s.meetings` 是按 ID 索引的单表，
-	//   盲写会把别的 owner/workspace 的同名行直接顶掉。PG 版靠唯一约束
-	//   + 重试换号挡住了这件事（pg_store.go 的 isUniqueViolation 分支），
-	//   内存版没有那层护栏 ⇒ **两个 store 会不同形**，而门禁跑在内存版上。
-	//   这里显式对齐 PG 语义：异作用域撞号 ⇒ 退回服务端发号，绝不覆盖。
+	//   盲写会把别的 owner/workspace 的同名行直接顶掉。PG 版靠**归属守卫**
+	//   （pg_store.go 的 `ON CONFLICT ... WHERE owner_id/workspace_id`）挡住了
+	//   同一件事 ⇒ ⇒ 两个实现**同形**：作用域冲突 ⇒ 退回服务端发号，绝不覆盖。
+	//   ⇒ 这里显式对齐 PG 语义：异作用域撞号 ⇒ 退回服务端发号，绝不覆盖。
+	//
+	// ⚠ §943：**PG 版此前并没有**这道护栏（它的 ON CONFLICT 不带任何谓词
+	//   ⇒ 撞上别的作用域的 id 就把**那一行整个改掉**）
+	//   ⇒ ⇒ ⇒ 而当时唯一钉这条语义的承重门**只跑在内存版上**
+	//   ⇒ ⇒ ⇒⇒ **两个实现分叉时门禁是绿的** ⇒ ⇒⇒⇒ 补法是「一条判据同时钉两个
+	//   实现」（见 meeting 包 store_scope_conflict_test.go）。
+	//
+	// ⚠ 口径是「作用域（owner + workspace）冲突 ⇒ 换号」，**不是**「报错」：
+	//   换号新建的是**自己**的一行（不越权）；越权的是**覆盖**别人的行。
+	//   ⚠ 换号的**代价**（既有取舍，本节不代拍）：客户端拿到的云端 id 与它本地
+	//   的 id 不同 ⇒ 后续按 id 的云端操作（精校 / 删除）会 404
+	//   ⇒ ⇒⇒ 要不要改成「明确报错让客户端知道」= **产品口径**（已挂简报第 167 条 ①）。
 	if req.StartedAt > 0 {
 		now = time.UnixMilli(req.StartedAt)
 	}
@@ -434,6 +460,21 @@ func (s *Store) DeleteScoped(id, ownerID, workspaceID string) error {
 	m, ok := s.meetings[id]
 	if !ok || m.OwnerID != ownerID || m.WorkspaceID != workspaceID {
 		return fmt.Errorf("meeting not found")
+	}
+	// ⚠⚠ §943 D3：墓碑的**归属守卫**（与 PG 版同形，缺一不可）。
+	//
+	//	修复前这里直接 `s.tombstones[id] = ...` ⇒ 撞上**别的作用域**的墓碑时
+	//	会把那一行**整个搬走**（连 ownerID / workspaceID 一起换）
+	//	⇒ ⇒ ⇒ 后果：受害者自己的墓碑清单里**再也没有**那条 id
+	//	⇒ ⇒ ⇒⇒ **已删的会议在增量同步里「复活」**。
+	//
+	//	⇒ 守卫不成立 ⇒ **报错**（墓碑不能换号：它的 id 必须等于被删会议的 id）。
+	//	⚠ 判据必须在**删会议之前**判 ⇒ 否则会出现「会议没了、墓碑没写成」的
+	//	  半处理状态（★ §942 在 notes 上刚踩过同族坑）。
+	if t, ok := s.tombstones[id]; ok &&
+		(t.ownerID != ownerID || t.workspaceID != workspaceID) {
+		return fmt.Errorf("delete meeting: tombstone %q belongs to another scope: %w",
+			id, ErrMeetingTombstoneScopeConflict)
 	}
 	delete(s.meetings, id)
 	s.tombstones[id] = meetingTombstone{ownerID: ownerID, workspaceID: workspaceID, at: time.Now()}

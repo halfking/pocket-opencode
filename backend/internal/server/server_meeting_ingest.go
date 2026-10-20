@@ -136,7 +136,25 @@ func (s *Server) handleCreateMeeting(w http.ResponseWriter, r *http.Request) {
 			existing.Title = title
 			existing.UpdatedAt = updatedAt
 			writeJSON(w, http.StatusCreated, existing)
-			s.wsHub.Broadcast("meeting.synced", map[string]string{"meetingId": existing.ID, "userId": uid})
+			// ⚠⚠ §943 D2：这条广播**必须**是定向的。
+			//
+			//	修复前是 `wsHub.Broadcast` ⇒ **全体广播** ⇒ 每个在线用户的
+			//	设备都会收到这条 `meeting.synced`，而载荷里带着**别人的**
+			//	`meetingId` 与 `userId`。
+			//
+			//	⇒ ⇒ ⇒ 它不是「多推了一条无害的消息」，它是 **D1 的 id 泄露通道**：
+			//	任何人只要连着 /ws（登录即可），就能把**别人**的会议 id 收全
+			//	⇒ ⇒ ⇒⇒ 而 D1（撞 id ⇒ 覆盖别人的会议正文）在 PG 版上当时
+			//	**真的能覆盖** ⇒ ⇒ ⇒⇒ ⇒ ⇒ 两条合起来就是一条**完整的
+			//	跨用户篡改链**（实测：另一个用户确实收到了
+			//	`{"meetingId":"mtg-probe-bcast","userId":"probe-ws-a"}`）。
+			//
+			//	⇒ 定向到**属主**（按 UserID，与笔记链 5 个广播点同口径：
+			//	  零值 target 会退化成全体广播 ⇒ 这里必须带非空 UserID）。
+			//	⇒ ⚠ WS 客户端的身份取自 JWT（server.go 的
+			//	  `NewClientWithIdentity(..., claims.UserID, workspaceID)`）
+			//	  ⇒ ⇒⇒ 属主自己的**所有**设备（含仓外移动端）仍然收得到。
+			s.wsHub.BroadcastToUser(uid, "meeting.synced", map[string]string{"meetingId": existing.ID, "userId": uid})
 			return
 		}
 	}
@@ -147,7 +165,9 @@ func (s *Server) handleCreateMeeting(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, m)
-	s.wsHub.Broadcast("meeting.synced", map[string]string{"meetingId": m.ID, "userId": uid})
+	// ⚠⚠ §943 D2：定向广播（**不是**全体广播）——理由见上面那一处。
+	//	⚠ 载荷字段**一个字没动**（仍是 meetingId + userId）⇒ 响应/事件形状不变。
+	s.wsHub.BroadcastToUser(uid, "meeting.synced", map[string]string{"meetingId": m.ID, "userId": uid})
 }
 
 // finalizeMeetingRefine 精翻完成后：笔记入库 + 待办任务 + 更新 meeting 缓存

@@ -272,22 +272,62 @@ func (s *PGStore) CreateScoped(req CreateMeetingRequest, ownerID, workspaceID st
 			status=EXCLUDED.status, location=EXCLUDED.location,
 			participants=EXCLUDED.participants, note_id=EXCLUDED.note_id,
 			updated_at=EXCLUDED.updated_at
+		WHERE meetings.owner_id = EXCLUDED.owner_id
+		  AND meetings.workspace_id = EXCLUDED.workspace_id
 		RETURNING ` + meetingSelectCols
 
-	// 唯一冲突只可能来自 ID 撞号（客户端没带 id 时走 nextMeetingID），重试即换一个新 ID。
+	// ⚠⚠ §943：ON CONFLICT 的 **归属守卫**（缺一不可，缺了就是越权写入）。
 	//
-	// §105：**第一次**尝试用客户端给的 ID（`req.ID`），之后才退回服务端发号。
-	//   客户端没带 id ⇒ nextMeetingID() 每次循环都 new（内部自增），重试换号有意义；
-	//   客户端带了 id ⇒ 同 id 重试由 ON CONFLICT DO UPDATE 收敛到同一行；如果撞号
-	//   走到 isUniqueViolation 分支说明是另一个 owner/workspace 占用了该 ID——
-	//   这种情况必须直接报错（见下方 `req.ID != ""` 拦截），**绝不允许退回 nextMeetingID
-	//   静默换号**：换号 = 偷换别人的行 = 数据越权。
+	//	WHERE meetings.owner_id = EXCLUDED.owner_id
+	//	  AND meetings.workspace_id = EXCLUDED.workspace_id
+	//
+	//	修复前这条 ON CONFLICT **不带任何谓词** ⇒ 撞上一个**别的作用域**的
+	//	id 时，它把**那一行整个改掉**（title / transcript / summary / status /
+	//	location / participants / note_id 全部换成提交者的内容，而 owner_id 与
+	//	workspace_id **不在 SET 列表里** ⇒ 那行仍然属于原主人，**正文却已经是
+	//	别人的了**）。
+	//
+	//	⇒ ⇒ ⇒ **修复前实测**（§943 当场量的，探针用完即删）：
+	//	    用户 A 建会议「A的会议 / 正文A」
+	//	    ⇒ 用户 B POST **同一个 id**（「B的会议 / 正文B」）⇒ **201**
+	//	    ⇒ 库里那一行变成「B的会议 / 正文B」，而 owner 仍是 A
+	//	    ⇒ ⇒ ⇒ **A 自己读回来看到的是 B 的正文** ⇒ 篡改**静默**发生，用户无感
+	//	    ⇒ ⇒ ⇒ 而且 B 的响应里带回了 **A 的 owner_id 与 workspace_id**
+	//	    （跨用户信息泄露）
+	//
+	//	⇒ 守卫不成立时 PG **一行都不返回**（ErrNoRows）⇒ 调用方必须**换号**
+	//	（与内存版同形，见 store.go 的 CreateScoped）⇒ ⇒ **绝不覆盖**别人的行。
+	//
+	//	⚠ 为什么**不**把 workspace_id 加进 SET 列表（notes 的 Upsert 加了）：
+	//	notes 那边加它是为了**修复存量**落错租户的行（§939 的 D1 留下的），
+	//	而 meetings 的落点一直取自 JWT（**没有**落错租户的存量）
+	//	⇒ ⇒ ⇒ 在这里加它会**新造**一次「会议跨租户搬家」⇒ ⇒ ⇒ 不加。
+	//
+	// ⚠ 作用域冲突的口径（全仓**一份**，内存版见 store.go 的 CreateScoped）：
+	//
+	//	「客户端带来的 id 已被**别的作用域**占用」⇒ 退回服务端发号
+	//	（新建**自己**的一行），**绝不覆盖**别人的行。
+	//
+	//	⚠ 这条口径**两个实现必须逐字一致** ⇒ ⇒ §943 补了一条**同时跑两个实现**
+	//	的判据：此前那条「跨作用域撞号」的承重门**只跑在内存版上**
+	//	⇒ ⇒ ⇒ 而生产跑的是 PG 版 ⇒ ⇒ ⇒⇒ 两个实现分叉时门禁是绿的。
+	//
+	//	⚠ 修复前这里写的是「客户端 id 不该被改 ⇒ 直接报错，**绝不允许**退回
+	//	  nextMeetingID 静默换号：换号 = 偷换别人的行 = 数据越权」
+	//	—— 那句话把「换号」与「越权」画上了等号：
+	//	  **换号新建的是自己的一行（不越权），越权的是覆盖别人的行。**
+	//	  而当时 PG 版的行为恰恰是**覆盖**（守卫缺失）
+	//	⇒ ⇒ ⇒⇒ 两边的注释都指错了对方（内存版说「PG 靠重试换号挡住了」，
+	//	  PG 说「客户端 id 不该被改」）⇒ ⇒⇒ 这一节把它们统一成上面那一份口径。
 	var lastErr error
+	// clientID 是「客户端带来的 id」；一旦它被守卫挡掉（作用域冲突），
+	// 就置空 ⇒ 下一轮退回服务端发号（换号），**不覆盖**别人的行。
+	clientID := strings.TrimSpace(req.ID)
 	for attempt := 0; attempt < 5; attempt++ {
 		now := time.Now()
 		// 客户端带了 id 就用它（并由 ON CONFLICT 保证重复 POST 收敛到同一行）；
 		// 没带才走服务端生成。撞号重试时必须换新 id，否则重试没有意义。
-		id := strings.TrimSpace(req.ID)
+		id := clientID
 		if id == "" {
 			id = nextMeetingID()
 		}
@@ -301,12 +341,24 @@ func (s *PGStore) CreateScoped(req CreateMeetingRequest, ownerID, workspaceID st
 		if err == nil {
 			return m, nil
 		}
+		// ★ §943：归属守卫把「撞上别的作用域」挡掉时，PG **一行都不返回**
+		//   ⇒ ErrNoRows ⇒ 这不是数据库坏了，是「这个 id 不是我的」
+		//   ⇒ ⇒ ⇒ 与内存版同形：换号，绝不覆盖。
+		if errors.Is(err, pgx.ErrNoRows) {
+			if clientID == "" {
+				// 服务端发号还能撞上 ⇒ 理论上不该发生（纳秒 + 进程内自增）。
+				return nil, fmt.Errorf("create meeting: generated id conflicted with an existing meeting: %w", err)
+			}
+			clientID = ""
+			continue
+		}
 		if !isUniqueViolation(err) {
 			return nil, err
 		}
-		// 客户端 id 撞上已有行时 ON CONFLICT 已处理，走到这里说明是真的主键冲突，
-		// 而客户端 id 不该被改 ⇒ 直接返回错误，别偷偷换成别人的行。
-		if strings.TrimSpace(req.ID) != "" {
+		// 主键冲突已被 ON CONFLICT 处理（要么更新成功、要么被守卫挡掉）
+		// ⇒ ⇒ 走到这里说明是**别的**唯一约束 ⇒ 那张表将来若加了新唯一索引，
+		// 这里就是它的兜底。
+		if clientID != "" {
 			return nil, fmt.Errorf("create meeting: client id %q conflicts with an existing meeting: %w", req.ID, err)
 		}
 		lastErr = err
@@ -560,11 +612,50 @@ func (s *PGStore) DeleteScoped(id, ownerID, workspaceID string) error {
 	}
 	// 墓碑按主键去重：同一 id 重复删除（已删过又被人重放）不会炸，
 	// 也不会把 deleted_at 往回拨。
+	//
+	// ⚠⚠ §943 D3：这条 ON CONFLICT **必须带归属守卫**。
+	//
+	//	修复前它的 SET 列表里**有** owner_id 与 workspace_id
+	//	⇒ ⇒ ⇒ 撞上一个**别的作用域**的 id 时，它会把**那一行墓碑整个搬走**
+	//	（连 owner_id / workspace_id 一起换成提交者的）⇒ ⇒ ⇒⇒ 后果是：
+	//	· 受害者**自己**的墓碑清单里**不再有**那条 id
+	//	  （墓碑清单按 owner_id + workspace_id 过滤）
+	//	  ⇒ ⇒ ⇒ **已删的会议在增量同步里「复活」**（客户端以为服务器上还有它）
+	//	· 攻击者的租户里**多出一行**别人的墓碑
+	//	  ⇒ ⇒ ⇒⇒ 跨用户的「删除记录」被注入
+	//	· deleted_at 也被改 ⇒ 墓碑的时间窗可以任意调
+	//
+	//	⇒ 守卫不成立时 PG **一行都不改**（ErrNoRows）⇒ 这里必须**报错**。
+	//
+	//	⚠ 为什么这里**不**像会议本体那样「换号」：
+	//	墓碑的 id **必须等于被删会议的 id** ⇒ 换号会写出一条**指向不存在会议**
+	//	的墓碑 ⇒ ⇒ ⇒ 那是错的 ⇒ ⇒⇒ 「绝不覆盖」这条**不变量**是共通的，
+	//	但**不成立之后怎么办**要按表的语义分别定（本体换号、墓碑报错）。
+	//
+	//	⚠ 这道守卫在**当前调用链上不可达**（上面那句 DELETE 已按
+	//	owner_id + workspace_id 限定 ⇒ 走不到这里时，那条墓碑必然是**同一个
+	//	归属**的）⇒ ⇒⇒ 它守的是**不变量**，不是**分支**：
+	//	⇒ 一旦将来有人改了上面那句 DELETE 的作用域逻辑，它会立刻变成一道真守卫。
+	//
+	//	⚠⚠ **必须用 QueryRow + RETURNING，不能用 Exec**：
+	//	守卫不成立时 PG **不报错**，只是**不返回行**（`Exec` 拿到的是一个
+	//	成功的命令标签）⇒ ⇒ ⇒ 用 Exec 的话这道守卫就是**哑弹**
+	//	（存在、但无声 ⇒ 等于没有 ⇒ §942 在 notes 上刚踩过同族坑）。
 	const tomb = `INSERT INTO meeting_tombstones (id, owner_id, workspace_id, deleted_at)
 		VALUES ($1,$2,$3,$4)
 		ON CONFLICT (id) DO UPDATE SET owner_id=EXCLUDED.owner_id,
-			workspace_id=EXCLUDED.workspace_id, deleted_at=EXCLUDED.deleted_at`
-	if _, err := tx.Exec(ctx, tomb, id, ownerID, workspaceID, time.Now()); err != nil {
+			workspace_id=EXCLUDED.workspace_id, deleted_at=EXCLUDED.deleted_at
+		WHERE meeting_tombstones.owner_id = EXCLUDED.owner_id
+		  AND meeting_tombstones.workspace_id = EXCLUDED.workspace_id
+		RETURNING id`
+	var tombID string
+	if err := tx.QueryRow(ctx, tomb, id, ownerID, workspaceID, time.Now()).Scan(&tombID); err != nil {
+		// ErrNoRows ⇒ 守卫把「这条墓碑属于别的作用域」挡掉了
+		// ⇒ ⇒ ⇒ 绝不搬走别人的墓碑（宁可整笔回滚，也不静默改归属）。
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("delete meeting: tombstone %q belongs to another scope: %w",
+				id, ErrMeetingTombstoneScopeConflict)
+		}
 		return err
 	}
 	return tx.Commit(ctx)
