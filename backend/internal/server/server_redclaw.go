@@ -16,8 +16,7 @@ func (s *Server) handleRedClawHealth(w http.ResponseWriter, r *http.Request) {
 	}
 
 	healthy := s.redclawBridge.HealthCheck()
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"connected": healthy,
 		"tenant_id": s.cfg.RedClawTenantID,
 	})
@@ -59,8 +58,7 @@ func (s *Server) handleRedClawChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // handleRedClawKnowledgeSearch RedClaw 知识库检索代理
@@ -98,8 +96,7 @@ func (s *Server) handleRedClawKnowledgeSearch(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // redclawTenantID maps an authenticated pocket workspace onto the RedClaw

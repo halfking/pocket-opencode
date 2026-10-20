@@ -104,8 +104,7 @@ func (s *Server) handleTaskSessionBundle(w http.ResponseWriter, r *http.Request,
 		}
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(out)
+	writeJSON(w, http.StatusOK, out)
 }
 
 func accSessionToRow(row mcp.AccSession) sessionBundleRow {

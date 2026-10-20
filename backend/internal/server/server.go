@@ -1253,7 +1253,11 @@ func (s *Server) handleOpenCodeInstanceOperations(w http.ResponseWriter, r *http
 
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte("ok"))
+	// ⚠ §946：写失败（客户端断开 / 连接被重置）原来被 `_, _ =` 整个吞掉
+	//　⇒ 服务端**零记录** ⇒ 只能留痕（状态行早已提交 ⇒ 改不了状态码）。
+	if _, err := w.Write([]byte("ok")); err != nil {
+		log.Printf("[WARN] 健康检查响应体写出失败：%v", err)
+	}
 }
 
 func (s *Server) handleInstances(w http.ResponseWriter, r *http.Request) {
@@ -1280,8 +1284,7 @@ func (s *Server) handleInstances(w http.ResponseWriter, r *http.Request) {
 	}
 	instances = filterInstancesSince(instances, parseSinceQuery(r.URL.Query().Get("since")))
 
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
+	writeJSON(w, http.StatusOK, map[string]any{
 		"instances": instances,
 	})
 }
@@ -1316,8 +1319,7 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
+	writeJSON(w, http.StatusOK, map[string]any{
 		"sessions": sessions,
 	})
 }
@@ -1380,8 +1382,7 @@ func (s *Server) handleAllSessions(w http.ResponseWriter, r *http.Request) {
 		sessions = filterSessionsSince(sessions, since)
 
 		paged := pageSessions(sessions, offset, limit)
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
+		writeJSON(w, http.StatusOK, map[string]any{
 			"sessions": paged,
 			"total":    len(sessions),
 			"limit":    limit,
@@ -1401,8 +1402,7 @@ func (s *Server) handleAllSessions(w http.ResponseWriter, r *http.Request) {
 	allSessions = filterSessionsSince(allSessions, since)
 
 	paged := pageSessions(allSessions, offset, limit)
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
+	writeJSON(w, http.StatusOK, map[string]any{
 		"sessions": paged,
 		"total":    len(allSessions),
 		"limit":    limit,
@@ -1459,8 +1459,7 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 			} else {
 				resp = FormatCursorPage(tasks, "", 0, false)
 			}
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(resp)
+			writeJSON(w, http.StatusOK, resp)
 			return
 		}
 
@@ -1555,8 +1554,7 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 		}
 
 		allTasks = filterTasksSince(allTasks, parseSinceQuery(r.URL.Query().Get("since")))
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"tasks": allTasks})
+		writeJSON(w, http.StatusOK, map[string]any{"tasks": allTasks})
 
 	case http.MethodPost:
 		// 提前 body 解析用于 source 校验：即使 taskStore 为 nil 也要
@@ -1673,8 +1671,7 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 		s.broadcastTaskEvent("task_created", &req)
 
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusCreated)
-		_ = json.NewEncoder(w).Encode(req)
+		writeJSON(w, http.StatusCreated, req)
 
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -1777,8 +1774,7 @@ func (s *Server) handleDelegateTask(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"source": "acc", "task_id": result.TaskID, "run_id": result.RunID, "operation_id": result.OperationID, "status": result.Status, "raw": out})
+	writeJSON(w, http.StatusOK, map[string]any{"source": "acc", "task_id": result.TaskID, "run_id": result.RunID, "operation_id": result.OperationID, "status": result.Status, "raw": out})
 }
 
 func (s *Server) handleTaskOperations(w http.ResponseWriter, r *http.Request) {
@@ -1884,15 +1880,13 @@ func (s *Server) handleTaskOperations(w http.ResponseWriter, r *http.Request) {
 		if s.taskStore != nil {
 			task, err := s.taskStore.GetTaskScoped(r.Context(), taskID, workspaceID)
 			if err == nil {
-				w.Header().Set("Content-Type", "application/json")
-				_ = json.NewEncoder(w).Encode(task)
+				writeJSON(w, http.StatusOK, task)
 				return
 			}
 		}
 		// 本地库未配置或未命中：按 LIST 同款语义回退磁盘/OpenCode 会话合成任务。
 		if synthetic := s.lookupDiskSessionTask(r.Context(), workspaceID, taskID); synthetic != nil {
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(synthetic)
+			writeJSON(w, http.StatusOK, synthetic)
 			return
 		}
 		http.Error(w, "task not found", http.StatusNotFound)
@@ -1965,8 +1959,7 @@ func (s *Server) handleTaskOperations(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		s.broadcastTaskEvent("task_updated", updated)
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(updated)
+		writeJSON(w, http.StatusOK, updated)
 		return
 	}
 
@@ -1984,8 +1977,7 @@ func (s *Server) handleTaskOperations(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.broadcastTaskEvent("task_deleted", &task.Task{ID: path})
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]bool{"deleted": true})
+		writeJSON(w, http.StatusOK, map[string]bool{"deleted": true})
 		return
 	}
 
@@ -2058,7 +2050,10 @@ func (s *Server) handleAttachSession(w http.ResponseWriter, r *http.Request, tas
 	s.broadcastSessionEvent("session_attached", &req)
 
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte(`{"success":true}`))
+	// ⚠ §946：写失败原来被 `_, _ =` 整个吞掉 ⇒ 服务端**零记录** ⇒ 只能留痕。
+	if _, err := w.Write([]byte(`{"success":true}`)); err != nil {
+		log.Printf("[WARN] 附加会话响应体写出失败：%v", err)
+	}
 }
 
 // handleAcceptTask implements POST /api/tasks/{id}/accept. Acceptance is the
@@ -2108,8 +2103,7 @@ func (s *Server) handleAcceptTask(w http.ResponseWriter, r *http.Request, taskID
 	s.auditTaskStatusChange(r, accepted, previous.Status)
 	s.broadcastTaskEvent("task_updated", accepted)
 
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(accepted)
+	writeJSON(w, http.StatusOK, accepted)
 }
 
 func (s *Server) pendingApprovalsForTask(ctx context.Context, taskID, workspaceID string) (int, error) {
@@ -2168,8 +2162,7 @@ func (s *Server) handleTaskSessions(w http.ResponseWriter, r *http.Request, task
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"sessions": links})
+	writeJSON(w, http.StatusOK, map[string]any{"sessions": links})
 }
 
 func (s *Server) handleModelConfig(w http.ResponseWriter, r *http.Request) {
@@ -2201,8 +2194,7 @@ func (s *Server) handleModelConfig(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"config": config})
+		writeJSON(w, http.StatusOK, map[string]any{"config": config})
 
 	case http.MethodPut:
 		if s.configAdapter == nil {
@@ -2220,8 +2212,7 @@ func (s *Server) handleModelConfig(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]bool{"success": true})
+		writeJSON(w, http.StatusOK, map[string]bool{"success": true})
 
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -2256,8 +2247,7 @@ func (s *Server) handleConfigReload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
+	writeJSON(w, http.StatusOK, map[string]any{
 		"success":    true,
 		"reloadedAt": time.Now().UTC().Format(time.RFC3339),
 	})
@@ -2300,8 +2290,7 @@ func (s *Server) handleModelTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]bool{"success": true})
+	writeJSON(w, http.StatusOK, map[string]bool{"success": true})
 }
 
 func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
@@ -2607,8 +2596,7 @@ func (s *Server) handleCheckUpdate(w http.ResponseWriter, r *http.Request) {
 			// 唯一的线索就是它。
 			log.Printf("ERROR: %v", err)
 			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusServiceUnavailable)
-			_ = json.NewEncoder(w).Encode(map[string]string{
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{
 				"error":   "version_config_not_found",
 				"message": "服务端版本配置缺失或路径不对，无法判断是否有更新",
 				"detail":  err.Error(),
@@ -2636,8 +2624,7 @@ func (s *Server) handleCheckUpdate(w http.ResponseWriter, r *http.Request) {
 		resp.Message = "发现新版本"
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(resp)
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // handleDownloadAPK 下载 APK

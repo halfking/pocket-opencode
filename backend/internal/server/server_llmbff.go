@@ -203,8 +203,19 @@ func (s *Server) handleLLMBFFStream(w http.ResponseWriter, r *http.Request) {
 			return false
 		default:
 		}
-		payload, _ := json.Marshal(d)
-		fmt.Fprintf(w, "data: %s\n\n", payload)
+		payload, mErr := json.Marshal(d)
+		if mErr != nil {
+			// ⚠ §946：SSE 事件的 JSON 编码失败 ⇒ 客户端会收到一条**空 data**
+			//　 的事件（看起来像「上游没说话」）⇒ ⇒⇒ 停下并留痕。
+			log.Printf("[ERROR] LLM SSE 事件编码失败（中止流）：%v", mErr)
+			abort = true
+			return false
+		}
+		if wErr := s946SSEWritef(w, "data: %s\n\n", payload); wErr != nil {
+			// ⚠ §946：SSE 写失败 = 客户端已断开 ⇒ 这条流已经死了 ⇒ 中断。
+			abort = true
+			return false
+		}
 		flusher.Flush()
 		// 每次 flush 后重置 write deadline，让流在有进展时不会被超时杀死。
 		_ = rc.SetWriteDeadline(time.Now().Add(sseStreamTimeout))
@@ -218,14 +229,22 @@ func (s *Server) handleLLMBFFStream(w http.ResponseWriter, r *http.Request) {
 		// Stream already started (200 + headers sent) — surface error as an
 		// SSE event rather than trying to change the status code.
 		errDelta := llmbff.Delta{Done: true, FinishReason: "error"}
-		payload, _ := json.Marshal(map[string]any{"error": err.Error(), "delta": errDelta})
-		fmt.Fprintf(w, "data: %s\n\n", payload)
+		payload, mErr := json.Marshal(map[string]any{"error": err.Error(), "delta": errDelta})
+		if mErr != nil {
+			log.Printf("[ERROR] LLM SSE 错误事件编码失败：%v", mErr)
+			return
+		}
+		if wErr := s946SSEWritef(w, "data: %s\n\n", payload); wErr != nil {
+			return
+		}
 		flusher.Flush()
 		return
 	}
 
 	// Final [DONE] marker (OpenAI convention) so clients know the stream ended.
-	fmt.Fprint(w, "data: [DONE]\n\n")
+	if wErr := s946SSEWritef(w, "data: [DONE]\n\n"); wErr != nil {
+		return
+	}
 	flusher.Flush()
 }
 

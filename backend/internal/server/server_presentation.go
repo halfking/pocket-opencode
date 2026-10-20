@@ -3,6 +3,7 @@ package server
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 
 	"github.com/halfking/pocket-opencode/backend/internal/presentation"
@@ -94,7 +95,10 @@ func (s *Server) handleRenderPresentation(w http.ResponseWriter, r *http.Request
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Write([]byte(html))
+		// ⚠ §946：写失败原来被**整个吞掉**（连 `_ =` 都没有）⇒ 服务端**零记录**。
+		if _, err := w.Write([]byte(html)); err != nil {
+			log.Printf("[WARN] 演示 HTML 响应体写出失败：%v", err)
+		}
 
 	case "markdown":
 		md, err := renderer.RenderToMarkdown(p)
@@ -103,7 +107,10 @@ func (s *Server) handleRenderPresentation(w http.ResponseWriter, r *http.Request
 			return
 		}
 		w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
-		w.Write([]byte(md))
+		// ⚠ §946：写失败原来被**整个吞掉**（连 `_ =` 都没有）⇒ 服务端**零记录**。
+		if _, err := w.Write([]byte(md)); err != nil {
+			log.Printf("[WARN] 演示 Markdown 响应体写出失败：%v", err)
+		}
 
 	default:
 		http.Error(w, `{"error":"unsupported format, use html or markdown"}`, http.StatusBadRequest)

@@ -136,25 +136,18 @@ var s945Ledger = []s945LedgerRow{
 	{"backend/internal/scheduledtask/executors/webhook.go", "Write", 1},
 	{"backend/internal/scheduledtask/store.go", "Write", 1},
 	{"backend/internal/server/server.go", "SetWriteDeadline", 1},
-	{"backend/internal/server/server.go", "Write", 2},
 	{"backend/internal/server/server_assistant.go", "Close", 3},
-	{"backend/internal/server/server_audit_export.go", "Encode", 1},
 	{"backend/internal/server/server_audit_export.go", "Write", 2},
-	{"backend/internal/server/server_email_invoice_file.go", "Write", 2},
 	{"backend/internal/server/server_llmbff.go", "SetWriteDeadline", 1},
-	{"backend/internal/server/server_marketplace.go", "Write", 2},
-	{"backend/internal/server/server_rss.go", "Write", 1},
 	{"backend/internal/server/server_stt_settings.go", "loadSTTSettings", 4},
 	{"backend/internal/server/smtp_probe.go", "Close", 1},
 	{"backend/internal/server/smtp_probe.go", "Extension", 1},
 	{"backend/internal/server/smtp_send.go", "Close", 4},
 	{"backend/internal/server/smtp_send.go", "Extension", 1},
 	{"backend/internal/server/smtp_send.go", "Quit", 1},
-	{"backend/internal/server/task_run_events.go", "Write", 1},
 	{"backend/internal/stt/provider.go", "WriteField", 4},
 	{"backend/internal/stt/provider_openai.go", "WriteField", 6},
 	{"backend/internal/stt/transcribe.go", "WriteField", 6},
-	{"backend/internal/wecom/handler.go", "Write", 2},
 }
 
 // s945MethodReasons 是**按方法名**给出的「为什么可以丢」的理由。
@@ -169,16 +162,16 @@ var s945Ledger = []s945LedgerRow{
 var s945MethodReasons = map[string]string{
 	"Close": "关闭句柄/连接/文件。失败之后**没有可执行的后续动作**（句柄已经不可用），" +
 		"且不影响任何持久化状态 ⇒ 登记不修。",
-	"Write": "写出。仓里有三类：① HTTP 响应体（`w.Write`）② 哈希（`h.Write`）③ HMAC（`sig.Write`）。" +
-		"三类**都不是持久化** ⇒ 登记不修。⚠ ① 的失败后果（客户端可能收到截断响应）属**另一类**问题，" +
-		"已在 §945 文档的「非候选」清单里登记，不在本节范围。",
+	"Write": "写出。⚠ §946 之后仓里**剩下**三类：① CSV 编码器（`cw.Write`，审计导出）② 哈希（`h.Write`）" +
+		"③ HMAC（`sig.Write`）。三类**都不是持久化** ⇒ 登记不修。" +
+		"⚠⚠ 第四类「HTTP 响应体（`w.Write`）」**已在 §946 修掉**（写失败必须留痕）⇒ 不再登记在这里。",
 	"WriteString": "往本地临时文件写一行（PID）。同一个文件后面还有 `f.Close()`，" +
 		"真写坏了会在关闭/后续读取时暴露 ⇒ 登记不修。",
 	"WriteField": "multipart 表单字段写出（stt 转发到上游）。底层 writer 已坏时后续字段也写不出去，" +
 		"上游请求整体会失败并被看见 ⇒ 登记不修。",
 	"WriteControl": "websocket 关闭帧写出。**尽力而为**的控制帧，失败时这条连接本来就要关 ⇒ 登记不修。",
-	"Encode": "CSV/JSON 编码器写出（审计导出）。失败时响应体不完整；" +
-		"属「响应体写失败」那一类（见 `Write` 的注）⇒ 登记不修。",
+	"Encode": "JSON 编码器写出（`cmd/wasmprobe/marshal` 这个 CLI 探针写 stdout）。" +
+		"⚠ 审计导出的 JSON Encode 已由 §946 修掉；SSE 事件编码也由 §946 修掉。",
 	"SetDeadline": "设置 socket 超时。失败 ⇒ 该连接后续读写的保护失效（应记日志），" +
 		"但**不影响任何持久化状态** ⇒ 登记不修。",
 	"SetReadDeadline":  "设置 socket 读超时（同 `SetDeadline`）⇒ 登记不修。",
@@ -577,10 +570,13 @@ func TestS945LedgerMatchesSource(t *testing.T) {
 
 	// ①c 绝对条数（★ 扫描型判据必须钉住候选集的绝对条数）。
 	//    ⇒ 只钉「台账条数」不够：条数不变但**总处数**变了也要能看见。
-	if got, want := len(res.Discards), 97; got != want {
+	// ⚠⚠ 97 → 86（§946）：§946 修掉了 11 处「HTTP 响应体写出」的丢弃
+	//　（writeJSON 家族 + 直接 Encode + w.Write + SSE 的 fmt.Fprintf）
+	//　⇒ ⇒⇒ 那 11 处**不再**是「被丢弃的调用」⇒ ⇒⇒ ⇒ 台账必须同步减掉。
+	if got, want := len(res.Discards), 86; got != want {
 		t.Errorf("被丢弃的调用总处数 = %d（台账登记的是 %d 处）⇒ 数量变了必须重新定性", got, want)
 	}
-	if got, want := len(s945Ledger), 46; got != want {
+	if got, want := len(s945Ledger), 39; got != want {
 		t.Errorf("台账行数 = %d（期望 %d）⇒ 台账行数变了必须重新定性", got, want)
 	}
 }

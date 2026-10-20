@@ -39,6 +39,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -987,7 +988,10 @@ func (s *Server) handleRSSShareCard(w http.ResponseWriter, r *http.Request, id s
 	}
 	w.Header().Set("Content-Type", "image/png")
 	w.Header().Set("Cache-Control", "private, max-age=300")
-	_, _ = w.Write(png)
+	// ⚠ §946：写失败原来被 `_, _ =` 整个吞掉 ⇒ 服务端**零记录** ⇒ 只能留痕。
+	if _, err := w.Write(png); err != nil {
+		log.Printf("[WARN] RSS 分享卡响应体写出失败：%v", err)
+	}
 }
 
 // handleRSSShare 生成可分享的深链 / 文本。

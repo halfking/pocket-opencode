@@ -58,7 +58,7 @@ var byteSliceAllowlist = map[string]string{
 	// \\xNN，输出恒为合法 UTF-8（validUTF8=true，尾部 \"预预预\\xe9\"），
 	// 所以落库的审计 detail 不会被 PG 拒。属于**意外**消毒，不是设计——
 	// 谁把 %q 去掉就必须同步改这里。
-	"internal/server/server_marketplace.go:86": "%q 把非法字节转义成 \\xNN，输出合法（2026-10-08 实测）",
+	"internal/server/server_marketplace.go:87": "%q 把非法字节转义成 \\xNN，输出合法（2026-10-08 实测）",
 }
 
 type byteSliceHit struct {

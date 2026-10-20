@@ -43,10 +43,90 @@ import (
 
 // ---- 公共辅助 ----
 
+// s946EncodeFailureCode 是「响应体编码失败」的**稳定错误码**。
+//
+// ⚠ 前端 `extractErrorCode` 按 `:` 切错误串取前半段（见 frontend/src/api/error-message.ts）
+// 　⇒ ⇒⇒ 所以错误文案**必须**以这个码开头，前端才认得出这是哪一类失败。
+const s946EncodeFailureCode = "response_encode_failed"
+
+// writeJSON 写 JSON 响应。
+//
+// # ⚠ §946：**先编码、后写状态行**（顺序是本函数存在的理由）
+//
+// 　**实测（§946，2026-10-21）**：`json.Encoder.Encode` 是先把值 marshal 进
+// 　**内部 buffer**、**成功之后**才写出去 ⇒ ⇒⇒ 所以「值不可编码」时
+// 　**响应体是空的**（不是截断的）—— 实测 `status=200 bodyLen=0`。
+//
+// 　而旧写法**先 `WriteHeader` 了** ⇒ ⇒⇒⇒ 客户端拿到的是
+// 　「**200 OK + 空体**」⇒ ⇒⇒⇒ 服务端**一个字都没留**（错误被 `_ =` 吞掉）
+// 　⇒ ⇒⇒⇒ 前端只看到「Unexpected end of JSON input」⇒ ⇒⇒⇒ 排查时
+// 　⇒ ⇒⇒⇒ **完全看不出发生过什么**（既没有 5xx，也没有一行日志）。
+//
+// 　⇒ 改成先编码 ⇒ 编码失败时**状态行还没提交** ⇒ 还能给一个**说得清的**
+// 　　500（见 writeJSONEncodeFailure）⇒ ⇒⇒ 而 loggingMiddleware 会把
+// 　　5xx 连同 request_id 一起记下来。
+//
+// # ⚠ 字节兼容（§946 实测）
+//
+// 　`json.Marshal(v) + "\n"` 与 `json.Encoder.Encode(v)` **逐字相同**
+// 　（实测：Marshal = `{"a":1,"b":"中文\u003c\u0026\u003e"}`，
+// 　Encoder = 同一串**加一个换行**）⇒ ⇒⇒ 所以这次改动**响应体一个字节都没变**
+// 　⇒ ⇒⇒ ⇒ 只有「编码失败」那条路径的行为变了（200+空体 ⇒ 500+可区分错误体）。
+//
+// # ⚠ 内存代价
+//
+// 　先编码意味着**整份响应体要先进内存**。`json.Marshal` 本来也要在内部
+// 　buffer 一份 ⇒ ⇒⇒ 峰值比原来多约一份响应体。⇒ 本仓最大 JSON 响应是
+// 　会议/任务列表那类（受 §941 的 2 MiB 正文上限约束）⇒ 这个量级可以接受
+// 　⇒ ⇒⇒⇒ 但**不要**把这条路径用在流式响应上（SSE / NDJSON 导出走的是别的写法）。
 func writeJSON(w http.ResponseWriter, status int, v any) {
+	body, err := json.Marshal(v)
+	if err != nil {
+		writeJSONEncodeFailure(w, status, err)
+		return
+	}
+	// ⚠ 补回 Encoder 的那个换行 ⇒ 字节与旧实现逐字一致（见上面的「字节兼容」）。
+	body = append(body, '\n')
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
+	if _, err := w.Write(body); err != nil {
+		// ⚠ 写失败（客户端断开 / 连接被重置）**没法再改状态行**了 ⇒
+		//　 只能留痕。旧实现把这个错误**整个吞掉** ⇒ 「客户端收到截断响应」
+		//　 而服务端**没有任何记录**。
+		log.Printf("[WARN] writeJSON: 响应体写出失败（status=%d）：%v", status, err)
+	}
+}
+
+// writeJSONEncodeFailure 是「响应体编码失败」时的兜底响应。
+//
+// ⚠ 为什么是 **500 + 稳定错误码**，而不是沿用原状态码：
+//
+//	旧写法**先提交了状态行** ⇒ 编码失败时客户端拿到「200 OK + 空体」
+//
+// 　⇒ 「成功但没有内容」⇒ 前端解析失败、用户以为接口坏了、服务端查不到日志。
+// 　⇒ 现在状态行还没提交 ⇒ 这里给 500 + 稳定错误码 ⇒ 客户端能**区分**
+// 　 「业务失败」与「服务端自己没能把响应写出来」。
+//
+// ⚠ 为什么 `retryable: false`：
+//
+//	编码失败发生在**业务动作之后** ⇒ ⇒⇒ 主结果**可能已经落库**
+//
+// 　⇒ ⇒⇒⇒ 客户端盲目重试可能造成**重复副作用** ⇒ ⇒⇒⇒ 明确告诉它别自动重试。
+//
+// ⚠ 兜底体用**常量字节**而不是再走一次编码：
+//
+//	编码失败的原因很可能就是「值里有 NaN / 循环引用」⇒ ⇒⇒ 兜底体必须
+//
+// 　⇒ ⇒⇒ ⇒ **保证**写得出去 ⇒ ⇒⇒ ⇒ 不能让它自己再失败一次。
+func writeJSONEncodeFailure(w http.ResponseWriter, originStatus int, err error) {
+	log.Printf("[ERROR] writeJSON: 响应体编码失败（原状态码 %d）：%v", originStatus, err)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusInternalServerError)
+	body := `{"error":"response_encode_failed: failed to encode JSON response body",` +
+		`"code":"response_encode_failed","retryable":false}` + "\n"
+	if _, werr := w.Write([]byte(body)); werr != nil {
+		log.Printf("[WARN] writeJSON: 编码失败兜底体写出也失败：%v", werr)
+	}
 }
 
 func writeError(w http.ResponseWriter, status int, msg string) {
@@ -70,9 +150,9 @@ func writeKxmemoryError(w http.ResponseWriter, err error) {
 	if kxe.Retryable() {
 		status = http.StatusServiceUnavailable
 	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]any{
+	// ⚠ §946：走 writeJSON ⇒ 编码错误不再被吞（原来这里是 `_ =`）。
+	//　 字节与旧实现逐字相同（§946 实测：Marshal+"\n" == Encoder.Encode）。
+	writeJSON(w, status, map[string]any{
 		"error":     kxe.Error(),
 		"code":      kxe.Code,
 		"retryable": kxe.Retryable(),

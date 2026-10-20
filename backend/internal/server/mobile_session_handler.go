@@ -402,7 +402,10 @@ func (s *Server) handleMobileSessionEventViaManager(w http.ResponseWriter, r *ht
 	})
 
 	if err != nil {
-		fmt.Fprintf(w, "event: error\ndata: {\"error\":\"%s\"}\n\n", err.Error())
+		// ⚠ §946：SSE 写失败 = 客户端已断开 ⇒ 这条流已经死了 ⇒ 中断。
+		if werr := s946SSEWritef(w, "event: error\ndata: {\"error\":\"%s\"}\n\n", err.Error()); werr != nil {
+			return
+		}
 		flusher.Flush()
 		return
 	}
@@ -413,7 +416,10 @@ func (s *Server) handleMobileSessionEventViaManager(w http.ResponseWriter, r *ht
 	defer heartbeat.Stop()
 
 	// 写 connected 事件
-	fmt.Fprintf(w, "event: server.connected\ndata: {\"sessionId\":\"%s\"}\n\n", sessionID)
+	// ⚠ §946：SSE 写失败 = 客户端已断开 ⇒ 这条流已经死了 ⇒ 中断。
+	if werr := s946SSEWritef(w, "event: server.connected\ndata: {\"sessionId\":\"%s\"}\n\n", sessionID); werr != nil {
+		return
+	}
 	flusher.Flush()
 
 	for {
@@ -421,11 +427,15 @@ func (s *Server) handleMobileSessionEventViaManager(w http.ResponseWriter, r *ht
 		case <-ctx.Done():
 			return
 		case <-heartbeat.C:
-			fmt.Fprint(w, ": ping\n\n")
+			if werr := s946SSEWritef(w, ": ping\n\n"); werr != nil {
+				return
+			}
 			flusher.Flush()
 		case domainEvt, ok := <-events:
 			if !ok {
-				fmt.Fprint(w, "event: upstream.closed\ndata: {}\n\n")
+				if werr := s946SSEWritef(w, "event: upstream.closed\ndata: {}\n\n"); werr != nil {
+					return
+				}
 				flusher.Flush()
 				return
 			}
@@ -439,9 +449,13 @@ func (s *Server) handleMobileSessionEventViaManager(w http.ResponseWriter, r *ht
 			}
 			evtType := domainEvt.Type
 			if evtType != "" {
-				fmt.Fprintf(w, "event: %s\n", evtType)
+				if werr := s946SSEWritef(w, "event: %s\n", evtType); werr != nil {
+					return
+				}
 			}
-			fmt.Fprintf(w, "data: %s\n\n", data)
+			if werr := s946SSEWritef(w, "data: %s\n\n", data); werr != nil {
+				return
+			}
 			flusher.Flush()
 		}
 	}
@@ -472,7 +486,10 @@ func (s *Server) handleMobileSessionEventDirect(w http.ResponseWriter, r *http.R
 
 	events, cleanup, err := s.opencode.SubscribeEvents(ctx, apiBaseURL, directory, workspaceID)
 	if err != nil {
-		fmt.Fprintf(w, "event: error\ndata: {\"error\":\"%s\"}\n\n", err.Error())
+		// ⚠ §946：SSE 写失败 = 客户端已断开 ⇒ 这条流已经死了 ⇒ 中断。
+		if werr := s946SSEWritef(w, "event: error\ndata: {\"error\":\"%s\"}\n\n", err.Error()); werr != nil {
+			return
+		}
 		flusher.Flush()
 		return
 	}
@@ -483,7 +500,10 @@ func (s *Server) handleMobileSessionEventDirect(w http.ResponseWriter, r *http.R
 	defer heartbeat.Stop()
 
 	// 写一个 connected 事件
-	fmt.Fprintf(w, "event: server.connected\ndata: {\"sessionId\":\"%s\"}\n\n", sessionID)
+	// ⚠ §946：SSE 写失败 = 客户端已断开 ⇒ 这条流已经死了 ⇒ 中断。
+	if werr := s946SSEWritef(w, "event: server.connected\ndata: {\"sessionId\":\"%s\"}\n\n", sessionID); werr != nil {
+		return
+	}
 	flusher.Flush()
 
 	for {
@@ -491,11 +511,15 @@ func (s *Server) handleMobileSessionEventDirect(w http.ResponseWriter, r *http.R
 		case <-ctx.Done():
 			return
 		case <-heartbeat.C:
-			fmt.Fprint(w, ": ping\n\n")
+			if werr := s946SSEWritef(w, ": ping\n\n"); werr != nil {
+				return
+			}
 			flusher.Flush()
 		case evt, ok := <-events:
 			if !ok {
-				fmt.Fprint(w, "event: upstream.closed\ndata: {}\n\n")
+				if werr := s946SSEWritef(w, "event: upstream.closed\ndata: {}\n\n"); werr != nil {
+					return
+				}
 				flusher.Flush()
 				return
 			}
@@ -508,9 +532,13 @@ func (s *Server) handleMobileSessionEventDirect(w http.ResponseWriter, r *http.R
 			}
 			evtType := eventTypeOf(evt)
 			if evtType != "" {
-				fmt.Fprintf(w, "event: %s\n", evtType)
+				if werr := s946SSEWritef(w, "event: %s\n", evtType); werr != nil {
+					return
+				}
 			}
-			fmt.Fprintf(w, "data: %s\n\n", data)
+			if werr := s946SSEWritef(w, "data: %s\n\n", data); werr != nil {
+				return
+			}
 			flusher.Flush()
 		}
 	}

@@ -2,6 +2,7 @@ package server
 
 import (
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -76,7 +77,10 @@ func (s *Server) handleEmailInvoiceFile(w http.ResponseWriter, r *http.Request, 
 	w.Header().Set("Content-Type", invoiceContentType(kind))
 	w.Header().Set("Content-Disposition", fmt.Sprintf("%s; filename=%q", disp, name))
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(data)
+	// ⚠ §946：写失败原来被 `_, _ =` 整个吞掉 ⇒ 服务端**零记录** ⇒ 只能留痕。
+	if _, err := w.Write(data); err != nil {
+		log.Printf("[WARN] 发票文件响应体写出失败：%v", err)
+	}
 }
 
 // handleEmailInvoiceThumb — GET /api/emails/invoices/{id}/thumb
@@ -93,7 +97,10 @@ func (s *Server) handleEmailInvoiceThumb(w http.ResponseWriter, r *http.Request,
 	w.Header().Set("Content-Type", ct)
 	w.Header().Set("Cache-Control", "private, max-age=3600")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(thumb)
+	// ⚠ §946：写失败原来被 `_, _ =` 整个吞掉 ⇒ 服务端**零记录** ⇒ 只能留痕。
+	if _, err := w.Write(thumb); err != nil {
+		log.Printf("[WARN] 发票缩略图响应体写出失败：%v", err)
+	}
 }
 
 func invoiceContentType(kind string) string {

@@ -2,6 +2,7 @@ package updates
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 	"time"
 )
@@ -95,8 +96,38 @@ func (h *UpdateHandler) HandleCheckUpdate(w http.ResponseWriter, r *http.Request
 		resp.Message = "发现新版本"
 	}
 
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// writeJSON 写 JSON 应答。
+//
+// ⚠ §946：**先编码、后写状态行**。
+//
+// 　实测：`json.Encoder.Encode` 先把值 marshal 进内部 buffer、成功后才写
+// 　⇒ ⇒⇒ 编码失败时**响应体是空的** ⇒ ⇒⇒ 而旧写法**先 WriteHeader 了**
+// 　⇒ ⇒⇒⇒ 客户端收到「200 + 空体」⇒ ⇒⇒⇒ 服务端**一个字都没留**。
+// 　⇒ 改成先编码 ⇒ 编码失败时状态行还没提交 ⇒ 还能给一个说得清的 500。
+//
+// ⚠ 字节与旧实现逐字相同（§946 实测：Marshal+"\n" == Encoder.Encode）。
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	body, err := json.Marshal(v)
+	if err != nil {
+		log.Printf("[ERROR] 版本检查应答编码失败（原状态码 %d）：%v", status, err)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		// ⚠ 用**常量字节**：编码失败的原因可能就是值本身不可编码 ⇒
+		//　 兜底体必须**保证**写得出去。
+		if _, werr := w.Write([]byte(`{"error":"response_encode_failed: failed to encode JSON response body"}` + "\n")); werr != nil {
+			log.Printf("[WARN] 版本检查应答兜底体写出失败：%v", werr)
+		}
+		return
+	}
+	body = append(body, '\n')
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+	w.WriteHeader(status)
+	if _, err := w.Write(body); err != nil {
+		log.Printf("[WARN] 版本检查应答写出失败：%v", err)
+	}
 }
 
 // HandleDownloadAPK 处理 APK 下载

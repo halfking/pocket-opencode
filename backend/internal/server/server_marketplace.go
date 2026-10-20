@@ -41,6 +41,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -569,7 +570,10 @@ func (s *Server) handleMarketplaceReleaseBlob(w http.ResponseWriter, r *http.Req
 	w.Header().Set("Content-Type", meta.ContentType)
 	w.Header().Set("Content-Length", strconv.FormatInt(meta.Size, 10))
 	w.Header().Set("X-Digest", meta.Digest)
-	_, _ = w.Write(content)
+	// ⚠ §946：写失败原来被 `_, _ =` 整个吞掉 ⇒ 服务端**零记录** ⇒ 只能留痕。
+	if _, err := w.Write(content); err != nil {
+		log.Printf("[WARN] 市场发布包响应体写出失败：%v", err)
+	}
 }
 
 // marketplaceKeyIDPattern 约束 publisher key_id 的形状：字母/数字开头，
@@ -702,7 +706,10 @@ func (s *Server) handleMarketplaceBlobDownload(w http.ResponseWriter, r *http.Re
 	w.Header().Set("Content-Type", meta.ContentType)
 	w.Header().Set("Content-Length", strconv.FormatInt(meta.Size, 10))
 	w.Header().Set("X-Digest", meta.Digest)
-	_, _ = w.Write(content)
+	// ⚠ §946：写失败原来被 `_, _ =` 整个吞掉 ⇒ 服务端**零记录** ⇒ 只能留痕。
+	if _, err := w.Write(content); err != nil {
+		log.Printf("[WARN] 市场素材下载响应体写出失败：%v", err)
+	}
 }
 
 // handleMarketplaceSigningKeys 分发 /api/marketplace/signing/keys：
