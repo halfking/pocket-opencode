@@ -94,6 +94,20 @@ $ git diff --stat                  →  空（工作树 == 暂存区）
 （`scripts/maestro-run.mjs` 同理，且有 CRLF 脆弱针门盯着它）
 ⇒ 本次只声明 Go 源码，其余文件保持现状，**不顺手改别人**。
 
+★ **「一劳永逸」这句话本身也实测过**（不靠文档行为推断）：
+round41 §7.1 的原话是「加 `*.go text eol=lf` 能一劳永逸」——
+本轮在 `core.autocrlf=true` 下建了两个 worktree 做**前后对照**
+（`git -c core.autocrlf=true worktree add`，检出后逐字节读）：
+
+| | `.gitattributes` | backend 下 1117 个 `.go` | `gradlew.bat` / `maestro-run.mjs` |
+|---|---|---|---|
+| 改前（`51814ed7`） | 无 | **1117 个全是 CRLF**（0 个纯 LF） | CRLF |
+| 改后（`main`） | 有 | **0 个 CRLF、1117 个纯 LF** | **仍是 CRLF** ✔ |
+
+⇒ 改前正是 round41 §7.1 描述的病灶（检出即 CRLF ⇒ `gofmt -l` 报满）；
+改后**全部 LF**，而**非 `.go` 的文件一行没动** ⇒ 「一劳永逸」成立，且没有顺手改别人。
+（对照用 worktree 跑完已 `git worktree remove`，临时目录已清。）
+
 ### 1.3 遗留③：本门不覆盖 `/* */` 块注释形式的 doc ✅
 
 这一项没有「补一条规则」了事，而是**把判据整体换掉**。
@@ -323,6 +337,7 @@ oracle: /opt/homebrew/bin/gofmt（go1.27.2，backend/go.mod 声明 Go 1.27）
 | 变异 M1（去掉 gofmt 大版本校验） | **EXIT 1** — 「版本不符的候选必须被拒绝」转红 |
 | 变异 M2（连 `declared` 守卫一起去掉） | **EXIT 1** — 2 条转红 |
 | **探针：把 `backend/go.mod` 的 go 指令改成 `1.99.1`（本机没有 1.99 的 gofmt）** | **两道门都 EXIT 1** —— `check-gofmt.mjs` 与 `check-doc-empty-string-literal.mjs` 各自打印「无法判定」并列出探测到的候选与版本（`1.27.2` / `1.24.5`）⇒ **门不会在量具失效时静默放行**。还原后 md5 `a9eb7a32...` 逐字节一致 |
+| **`.gitattributes` 前后对照（`core.autocrlf=true` 的 worktree 检出后逐字节读）** | 改前 **1117/1117 个 `.go` 检出即 CRLF**（round41 §7.1 的病灶）→ 改后 **0/1117（全部 LF）**，且 `gradlew.bat` / `maestro-run.mjs` **仍是 CRLF** ⇒ 「一劳永逸」成立且没顺手改别人（详见 §1.2） |
 | `node scripts/check-doc-empty-string-literal.mjs` | EXIT 0 — 全仓 **0 命中**（附 oracle 打印） |
 | 同上（在 `frontend/` cwd 下跑，验证 ROOT 不依赖 cwd） | EXIT 0 — 0 命中 |
 | 正控：`//` 形态真 doc 注入 `''` | **EXIT 1** — 点名 `store_select_scan_parity_test.go:76`；gofmt 独立量具一致 |
