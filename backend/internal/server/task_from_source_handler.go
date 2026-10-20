@@ -127,16 +127,24 @@ func (s *Server) createTasksFromMeeting(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
-	existing, err := s.taskStore.ListTasksScoped(r.Context(), wsID)
+	// ★ §938：与精校链**共用同一把查重钥匙**（meetingTodoIndex）。
+	//
+	//	修复前这里是 ListTasksScoped（把**整个 workspace 的全部任务**搬进
+	//	进程）再在内存里按 origin 过滤 ⇒ 代价 ∝ 租户的任务总数。
+	//
+	//	更关键的是：那条过滤键的溯源列，**精校链一条都不写** ⇒ ⇒
+	//	这个查重看不见精校链建的 task ⇒ ⇒ 用户手动点一次「转待办」，
+	//	就再得一整套重复的待办（两套形状还不一样）。
+	//
+	//	⇒ 现在两条链都写 origin_kind='meeting' / origin_ref=<meetingID>，
+	//	  也都用这一个入口查 ⇒ ⇒ 互相可见。
+	seen, err := s.meetingTodoIndex(r.Context(), meetingTodoTarget{
+		WorkspaceID: wsID,
+		MeetingID:   meetingID,
+	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
-	}
-	seen := map[string]bool{}
-	for _, t := range existing {
-		if t.OriginKind == task.OriginMeeting && t.OriginRef == meetingID {
-			seen[strings.TrimSpace(t.Title)] = true
-		}
 	}
 
 	now := time.Now()
@@ -150,7 +158,7 @@ func (s *Server) createTasksFromMeeting(w http.ResponseWriter, r *http.Request, 
 			skipped++
 			continue
 		}
-		if seen[title] {
+		if seen[meetingTodoDedupeKey(title)] {
 			skipped++
 			continue
 		}
@@ -174,7 +182,7 @@ func (s *Server) createTasksFromMeeting(w http.ResponseWriter, r *http.Request, 
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		seen[title] = true
+		seen[meetingTodoDedupeKey(title)] = true
 		out = append(out, *created)
 		s.recordOriginEvent(r, wsID, userID, created)
 		s.broadcastTaskEvent("task_created", created)

@@ -109778,3 +109778,243 @@ tail: expected 3 arguments, got 4
 ### §937.8 简报 161 的待拍板项
 
 见 `2026-10-11-pending-decisions-brief.md` 第 **161** 条。
+
+## §938 服务端「精校 → 待办落库」：落错租户、状态不在契约里、没有归属，还会重复
+
+### §938.0 起因：§937 只量了这条链的**成本**，没量它的**语义**
+
+§936/§937 查的是服务端会议链的**成本**（每次搬多少字节、每次写多少字节）⇒ ⇒ **落什么、落到哪儿、归谁**这三件事**一次都没查**。
+
+⇒ ⇒ 本节接着 §937 查「精校收尾之后，那条链把**待办**写到哪儿去了」⇒ ⇒ 结果是：**成本那一半早就被发现了，语义那一半是六个缺陷叠在一起** ⇒ ⇒ ⇒ **同一个函数，三种坏法同时成立**（落错租户 / 状态不在契约里 / 没有归属），**再加上三种重复**（批内 / 跨次 / 跨路径）。
+
+⚠ 判别标准沿用 §918：「内容是用户不可编辑的派生输入 ⇒ 用户绕不开 ⇒ 必须修」⇒ ⇒ 这里的待办是**模型从转写里派生的行动项**，用户**改不了**它 ⇒ ⇒ 落错地方、看不见、重复 ⇒ 用户绕不开 ⇒ ⇒ **必须修** ⇒ ⇒ 技术性 ⇒ 自己修。
+
+⚠ 但有**两件**本节**不代拍**（产品口径）：①「前端要不要也读 `structured_minutes.action_items`」⇒ ⇒ 那会让客户端**多建**一批待办与提醒 ⇒ ⇒ 属**产品口径**（登记 R1）；②「存量要不要回填」⇒ ⇒ 见 §938.6.3 ⇒ ⇒ 登记 R2。
+
+### §938.1 勘察：这条链有**两条**落库路径，而前端有**两道**去重
+
+⇒ ⇒ 先把「谁在写待办」列清楚（不是手数，是按**落库目标**枚举）：
+
+| # | 路径 | 落点 | 批内去重 | 跨次去重 | 溯源列 | 租户 | 归属 | 状态 |
+|---|---|---|---|---|---|---|---|---|
+| A | **精校链**：`handleMeetingRefine` → `finalizeMeetingRefine` → `ingestMeetingTasks` | PG `tasks` | ❌ | ❌ | ❌ | ❌ | ❌ | ⚠ `pending` |
+| B | **from-source 链**：`POST /api/tasks/from-source` → `createTasksFromMeeting` | PG `tasks` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ `active` |
+| C | **客户端链**：`finalizeRecording` → `ingestMeetingArtifacts` → `createLocalTodos` | 客户端 SQLite `local_todos` | ✅ `dedupeTodos` | ✅ `alreadyIngestedTodo` | — | — | — | — |
+
+⇒ ⇒ ★ **三个来源，一份事实，三种口径**：
+- **A 与 B 写的是同一张表**（PG `tasks`）⇒ ⇒ 同一件事在库里有**两套**的可能；
+- **C 写的是客户端的本地库** ⇒ ⇒ **云端与本地本来就不是同一份**（这属已登记的「对偶实现」口径）；
+- ⇒ ⇒ **前端有两道去重，服务端精校链一道都没有** ⇒ ⇒ 而前端注释**自己写着**这个不对称是缺陷：
+
+> `frontend/src/features/meetings/meeting-ingest.ts:252` —
+> 「⚠ 同文件里 `next_meeting` 那条日历**有**去重（`isDuplicateNextMeetingEvent`），
+> 而待办与提醒没有 —— 同一个函数里两种口径，**这个不对称本身就是缺陷**。」
+
+⇒ ⇒ ⇒ 而服务端**连这个不对称都没有**：它既不批内去重，也不跨次去重 ⇒ ⇒ ⇒ **A 链是三条里唯一一条「什么都不知道」的**。
+
+⇒ ⇒ ⚠ **重复是提示词设计出来的常态**（不是偶发）：精校的 JSON 契约**明确要求**模型同时填两个数组 ——
+
+> `backend/internal/server/server_meeting.go:1453-1457` —
+> `{"structured_minutes":{"…","action_items":[…]},"todos":[…]}`
+> + 「★ structured_minutes.action_items 与 todos 的要求（缺了它们，下游拿不到任何东西）」
+> + 「6. action_items 与 todos 内容一致即可（**下游两处都读**）。」
+
+⇒ ⇒ 而服务端的 `extractTodos` **真的两处都读**（`todos` / `action_items` / `structured_minutes.action_items`）⇒ ⇒ ⇒ **同一个行动项必然被收两遍** ⇒ ⇒ **建两条 task**。
+
+⇒ ⇒ ⚠ **形态分叉是双向的**（前端反而建得更少）：客户端的 `normalizeRefine` 把 `structured_minutes.action_items` 放进 `structuredMinutes.actionItems`，而 `ingestMeetingArtifacts` 的待办数组是 `[...refine.todos, ...(meeting.liveSummary?.actionItems ?? [])]` ⇒ ⇒ **客户端不读 `structured_minutes.action_items`** ⇒ ⇒ 本地 N 条、云端 2N 条。
+
+### §938.2 量到的六个缺陷
+
+#### §938.2.1 ⭐⭐⭐ D1 租户落错：会议待办落进**遗留单租户桶**
+
+`ingestMeetingTasks` 收 `(ctx, uid, meetingID, todos)` ⇒ ⇒ **签名里根本没有 workspace** ⇒ ⇒ 建 task 时 `WorkspaceID` 空 ⇒ ⇒ `task.Store.CreateTask` 里 `normalizeWorkspace("")` ⇒ ⇒ **`"default"`**（`internal/task/store.go:221`）。
+
+⇒ ⇒ ⚠ **对比仓内其余三条建任务路径**（它们都写租户与归属）：
+
+| 路径 | `WorkspaceID` | `OwnerID` | 参与者种子 |
+|---|---|---|---|
+| `POST /api/tasks`（`server.go:1636`） | ✅ `s.workspaceIDFromRequest(r)` | ✅ `s.userIDFromRequest(r)` | ✅ |
+| `POST /api/tasks/from-source`（`task_from_source_handler.go:91`） | ✅ `wsID` | ✅ `userID` | ❌ |
+| `POST /api/tasks/{id}/children`（`task_hierarchy_handler.go:124`） | ✅ `wsID` | ✅ `ownerID` | ✅ |
+| **精校链 `ingestMeetingTasks`** | ❌ **空 ⇒ `default`** | ❌ **空** | ❌ |
+
+⇒ ⇒ ⇒ ★ **精校链是全仓唯一一条「不写租户、也不写归属」的建任务路径**。
+
+⇒ ⇒ ⚠ **形态分叉（必须写清，否则后人以为 dev 上就能复现）**：
+- claims 里带**非 `default`** 的 workspace ⇒ ⇒ **落错桶** ⇒ ⇒ 用户在自己 workspace 的任务列表里**永远看不到**这些待办，而所有人的会议待办**堆在同一个 `default` 桶里** ⇒ ⇒ **跨租户可见**；
+- claims 缺失 workspace（回落 `"default"`）⇒ ⇒ 落点**恰好**是对的 ⇒ ⇒ ⇒ **单租户部署看不出来**。
+
+⇒ ⇒ ⚠ 真机的 workspace 是 **`ws_user-admin`**（`frontend/src/features/meetings/meeting-ingest.ts:81` 的注释记着这个**真机实测值**：「用户自己的笔记在 `auth.workspaceId`（真机实测 `ws_user-admin`）」）⇒ ⇒ ⇒ **真机上就是落错桶的形态**。
+
+#### §938.2.2 ⭐⭐ D2 任务状态不在契约里 ⇒ 前端**三个分桶都不收** ⇒ 列表里根本不显示
+
+`ingestMeetingTasks` 写 `Status: "pending"`。
+
+⇒ ⇒ 而**前端的任务列表只有三个分桶**（`frontend/src/features/tasks/TasksView.vue:868-882`）：
+
+```js
+const activeTasks    = computed(() => tasks.value.filter((t) => t.status === 'active'))
+const blockedTasks   = computed(() => tasks.value.filter((t) => t.status === 'blocked'))
+const completedTasks = computed(() => tasks.value.filter((t) => t.status === 'completed'))
+```
+
+⇒ ⇒ ⇒ **`pending` 落在三个分桶之外** ⇒ ⇒ ⇒ 任务在列表里**不显示**（而「看不见」对用户就是「没有」）。
+
+⇒ ⇒ 而仓内**其余三条建任务路径全部写 `"active"`**（`server.go` / `task_from_source_handler.go:95,161` / `task_hierarchy_handler.go:130`）⇒ ⇒ ⇒ `pending` 在**任务**域里**根本不是合法状态**（它在 `task` 包里只出现在 `ApprovalStatePending`——那是**审批态**，不是任务态）⇒ ⇒ ⇒ ⇒ **它不是「另一种风格的状态」，是「一个不存在的状态」**。
+
+⇒ ⇒ ⚠ ⇒ **即使 D1 的租户修好了，D2 仍会让这些待办不显示** ⇒ ⇒ ⇒ 两个缺陷**互相掩盖**：租户错 ⇒ 根本查不到；租户对了 ⇒ 状态错 ⇒ 查到了也不显示 ⇒ ⇒ ⇒ **只修一个，看不到任何改善** ⇒ ⇒ ⇒ ★ **纪律**：「看不见」的症状**往往不止一个原因** ⇒ ⇒ 判据必须**逐个原因**各自能红（⇒ §938.4 的 D1/D2 各有一条独立断言）。
+
+#### §938.2.3 ⭐⭐ D3 没有归属 ⇒ 创建者本人**点不开**自己建的待办
+
+`ingestMeetingTasks` 不写 `OwnerID`、不种参与者 ⇒ ⇒ 而 `normalizeWorkItem` 会把 `Visibility` 补成 `VisibilityPrivate` ⇒ ⇒ ⇒
+
+```go
+// internal/task/access.go:39
+func CanReadWorkItem(t *Task, parts []Participant, userID string) bool {
+    if strings.TrimSpace(t.OwnerID) == id { return true }   // ← owner_id 空 ⇒ 不成立
+    if isParticipant(parts, id) { return true }             // ← 没有参与者 ⇒ 不成立
+    return t.Visibility == VisibilityWorkspace            // ← private ⇒ 不成立
+}
+```
+
+⇒ ⇒ ⇒ **创建者本人返回 false** ⇒ ⇒ ⇒ 被 `CanReadWorkItem` 守着的入口**全部点不开**：`server.go:2021`（详情/改）、`task_collaboration_handler.go:80,170,265`（协作）、`task_hierarchy_handler.go:36,48,179`（层级）。
+
+⇒ ⇒ ⚠ 而 `server.go:1637` 的注释明写：「**owner_id 是「谁建的 / 现在归谁」的唯一可查来源，协作鉴权（CanReadWorkItem）依赖它**」⇒ ⇒ ⇒ **注释承诺在这条链上没兑现** ⇒ ⇒ ⇒ 属「注释承诺必须兑现」那一族（§918 起的纪律）。
+
+#### §938.2.4 ⭐⭐ D4 批内重复：同一件事**必然**建两条
+
+见 §938.1：提示词要求两个数组内容一致，而 `extractTodos` 两处都读、**不去重** ⇒ ⇒ ⇒ **同一个行动项收两遍** ⇒ ⇒ ⇒ 建两条 task。
+
+⇒ ⇒ ⚠ 与前端对照：客户端的 `createLocalTodos` **先 `dedupeTodos` 再建**（`meeting-ingest.ts:232`）⇒ ⇒ ⇒ **前端 1 条、云端 2 条**。
+
+⇒ ⇒ ⚠ **用户为什么看不见这个重复**：前端报给用户的条数是 `ingested.todosCreated`（**本地**那份的条数，`meeting-recording-finalize.ts:245`）⇒ ⇒ ⇒ 服务端那 2N **不进用户的提示** ⇒ ⇒ ⇒ **重复是静默的**。
+
+#### §938.2.5 ⭐⭐ D5 跨次重复：同一场会议再精校一次就再插一遍
+
+前端有 `alreadyIngestedTodo`（`meeting_id IS ? AND title = ? AND extracted_from_voice = 1`）⇒ ⇒ ⇒ 服务端**没有** ⇒ ⇒ ⇒
+
+⇒ ⇒ ⚠ 「录一段 → 停 → 再录一段」是**正常用法**（前端 `meeting-ingest.ts:247-250` 的注释明写）⇒ ⇒ ⇒ 同一场会的行动项会**再插一遍** ⇒ ⇒ ⇒ 而**用户只会觉得「待办怎么这么多」**，不会知道发生过什么。
+
+#### §938.2.6 ⭐⭐ D6 两条落库路径**互相看不见** ⇒ 手动转一次就再得一整套
+
+`createTasksFromMeeting`（路径 B）**本来就有**幂等：它查 `OriginKind == meeting && OriginRef == meetingID` 的已有 task，按标题跳过。
+
+⇒ ⇒ ⚠ **但它键上的那两列，精校链（路径 A）一条都不写** ⇒ ⇒ ⇒ **B 的去重看不见 A 建的 task** ⇒ ⇒ ⇒ 用户手动点一次「转待办」，就再得一整套重复的（而且**两套形状还不一样**：A 的 `status=active` / 无 `tags` / `description="来自会议 <id>"`；B 的 `status=active` / `tags=["meeting"]` / `description="会议《X》待办"`）。
+
+⇒ ⇒ ⇒ ★★ 这就是「**同一批数据有两条路径在管**」的典型形态（§937 记过的那条纪律：**修其中一条前，必须读另一条的完整语义**）⇒ ⇒ ⇒ 而**修法不是「记得也写上溯源」**（那是把同一个动作抄两遍）⇒ ⇒ ⇒ **修法是让两条路径用同一把查重钥匙**（§938.3）。
+
+### §938.3 修法：把「会议待办落库」的口径**抽成一份**，两条路径共用
+
+⇒ ⇒ ⚠ **为什么必须抽一份**：「同一段逻辑抄两遍 ⇒ 同一缺陷必然出现在两处」（§80 记过的形状）⇒ ⇒ ⇒ 「什么算同一条待办」「批内怎么去重」「查重入口在哪」「落到哪个租户」这四件事**各只有一份** ⇒ ⇒ ⇒ 形态分叉不可能发生。
+
+⇒ ⇒ **新增 `backend/internal/server/server_meeting_todo_ingest.go`**（口径只有一份）：
+
+| 东西 | 位置 | 干什么 |
+|---|---|---|
+| `meetingTodoTarget` | 同文件 | 落点：**租户 + 归属 + 会议** |
+| `meetingTodoDedupeKey(text)` | 同文件 | 「同一条待办」的键 = `strings.TrimSpace(text)` ⇒ **逐字对应前端 `dedupeTodos`** |
+| `dedupeTodoItems(items)` | 同文件 | 批内去重，**保留第一条** |
+| `meetingTodoIndex(ctx, target)` | 同文件 | **两条路径共用的查重入口**（一次查询同时解决跨次与跨路径） |
+| `ingestMeetingTasks(ctx, target, todos)` | 同文件（从 `server_meeting_ingest.go` 搬过来） | 落库：批内去重 → 查重 → 建 task → 补参与者 |
+
+⇒ ⇒ **新增 `task.Store.ListTasksByOrigin(ctx, wsID, originKind, originRef)`**（`internal/task/store.go`）：按 (租户, 溯源) 查 ⇒ ⇒ 查重**下推进 SQL**（成本 ∝ 这一场会议的待办数，**不是** ∝ 租户的任务总数）⇒ ⇒ 而路径 B 原来那条 `ListTasksScoped` + 内存过滤**逐字等价**（同一个过滤条件），只是更贵。
+
+⇒ ⇒ **路径 B 改用同一把钥匙**（`createTasksFromMeeting` 里换成 `s.meetingTodoIndex(...)`）⇒ ⇒ ⇒ **D6 结构上关闭**（不是「记得也写上溯源」）。
+
+⇒ ⇒ ⚠ **响应形状**（本节**没有**新增或删除任何 JSON 字段）：
+- `task.Task` 的 `originKind` / `originRef` **本来就存在**（`omitempty`）⇒ ⇒ 只是**值**从空变成 `"meeting"` / `<meetingID>` ⇒ ⇒ **键集不变**；
+- `workspaceId` / `ownerId` **本来就存在**（不 omitempty）⇒ ⇒ 同样只是值变化；
+- `status` 从 `pending` 变成 `active` ⇒ ⇒ **值变化，而且是「从不可见变成可见」**；
+- ⚠ `tasks_created` 的**值**从 2N 变成 N ⇒ ⇒ 前端 `normalizeRefine` 读它，但**报给用户的条数走的是本地那份**（§938.2.4）⇒ ⇒ 用户界面上的数字**不变**；
+- ⇒ ⇒ ⇒ **唯一会变的用户可见效果**：修好之后新精校的会议，其待办**第一次出现在云端任务列表里**（`active` 分桶）。
+
+⇒ ⇒ ⇒ ★ **判别标准**：「不可见 → 可见」属「用户绕不开 ⇒ 必须修」⇒ ⇒ 自己拍；⇒ ⇒ 而「客户端要不要也读 `structured_minutes.action_items`」会让客户端**多建**一批 ⇒ ⇒ 属产品口径 ⇒ ⇒ **登记 R1，不代拍**。
+
+### §938.4 判据：一个新文件，11 条测试函数（4 条纯函数 + 7 条真 PG）
+
+⇒ ⇒ 新增 `backend/internal/server/server_meeting_todo_ingest_test.go`（§937 的判据在 `internal/meeting` 与 `internal/server` 两个包里各有一个文件；本节**只需要 server 包**，因为要量的全是**落库之后的行**）。
+
+⚠ **判据量的是行为，不是源码文本** ⇒ ⇒ 「源码里出现了 `workspace_id`」这种形状守卫**证明不了**「真的落进了那个租户」⇒ ⇒ ⇒ 全部改成**读库**。
+
+| # | 判据 | 量的是 | 需要 PG |
+|---|---|---|---|
+| 1 | `TestS938MeetingTodoDedupeKeyTrims` | 判定键忽略首尾空白 | — |
+| 2 | `TestS938DedupeTodoItemsKeepsFirstOccurrence` | 批内去重**保留第一条**（含 `due`） | — |
+| 3 | `TestS938DedupeTodoItemsDropsBlankText` | 空白待办不进库 | — |
+| 4 | `TestS938ExtractTodosCollectsAllThreeSources` | **口径守卫**：提取阶段**不**去重（去重在建之前，与前端口径同形） | — |
+| 5 | `TestS938IngestMeetingTasksWritesTenantOwnerAndOrigin` | D1/D2/D6 落点四件套 + **「`default` 桶里不许有东西」**（跨租户可见） | ✅ |
+| 6 | `TestS938IngestMeetingTasksSeedsOwnerParticipant` | D3 的**行为**判据：`CanReadWorkItem(创建者) == true` | ✅ |
+| 7 | `TestS938IngestMeetingTasksIsIdempotentAcrossCalls` | D5 跨次幂等（第二次 `created == 0` **且**库里仍 1 条） | ✅ |
+| 8 | `TestS938IngestMeetingTasksSkipsDuplicateWithinBatch` | D4 批内去重 | ✅ |
+| 9 | `TestS938IngestMeetingTasksKeepsSameTitleAcrossMeetings` | **负控**：跨会议**不得**去重（误去重会把用户的待办吃掉） | ✅ |
+| 10 | `TestS938FromSourceSkipsTasksCreatedByRefine` | **D6 端到端**：精校链建 ⇒ from-source 必须 `skipped=1 / tasks=0` | ✅ |
+| 11 | `TestS938ListTasksByOriginIsWorkspaceScoped` | 查重键**必须**带租户 + **必须**带会议 | ✅ |
+
+⇒ ⇒ ⚠ 第 10 条是本节**最关键**的一条：它把「两条路径互相看不见」变成了**一个可观测的读数**（`skipped` 与 `tasks` 两个数）⇒ ⇒ 而不是「我改了两处代码，希望它们对得上」。
+
+⇒ ⇒ ⚠ 第 9 条是**负控**：去重的键是「(会议, 标题)」⇒ ⇒ 两场不同的会议里同名的一条待办是**两件事** ⇒ ⇒ 误去重会**吃掉用户的待办** ⇒ ⇒ 所以「跨会议不去重」必须**自己也有一条判据**（否则一个「把会议维度去掉」的修复会**全绿**）。
+
+⇒ ⇒ ⚠ **需要真 PG**：`task.Store` **只有 PostgreSQL 一个实现** ⇒ ⇒ 没有内存版可测 ⇒ ⇒ ⇒ 缺 PG 时这些用例会 `t.Skip`（**退出码仍是 0** ⇒ 与「全过」同形）⇒ ⇒ ⇒ 变异批次因此用 `forbid_skip=True` 把「被 skip」变成**失败**（§938.5）。
+
+### §938.5 变异：M1–M9 + N1–N3（**16/16**），七批合计 **111/111**
+
+⇒ ⇒ 按 §935 的教训，**变异脚本必须落盘** ⇒ ⇒ 新增 `scripts/mutations/s938.py`（并把 `s938.py` 接进 `run_all.py`）⇒ ⇒ 缺真 PG 时本批次**拒绝跑**（退出码 3），而不是让用例被 `t.Skip` 掉。
+
+| 编号 | 类别 | 变异 | 结果 |
+|---|---|---|---|
+| M1 | 必须红 | 批内去重退化成**不去重** | ✅ 红：**纯函数级** + **落库级**两条（⇒ 证明落库那条**真的在看库里几条**） |
+| M2 | 必须红 | 跨次查重退化成**不查**（入口还在调，结果被丢掉） | ✅ 红：跨次幂等判据（**from-source 那条不受影响** ⇒ 单点） |
+| M3 | 必须红 | 不写溯源列 | ✅ 红：溯源判据 **+ 两条路径互见判据** |
+| M4 | 必须红 | 查重键**丢掉会议维度**（整租户按标题去重） | ✅ 红：跨会议误去重判据（**跨次幂等那条仍绿** ⇒ 单点） |
+| M5 | 必须红 | 状态退回 `"pending"` | ✅ 红：状态判据 |
+| M6 | 必须红 | 租户退回遗留单租户桶 `default` | ✅ 红：租户落点判据 |
+| M7 | 必须红 | 不写 `owner` | ✅ 红：归属判据 |
+| M8 | 必须红 | 不种参与者 | ✅ 红：参与者判据 |
+| M9 | 必须红 | from-source 用**另一把**查重钥匙（会议 id 不一致） | ✅ 红：两条路径互见判据 |
+| N1 | 负控·必须绿 | 空判断 `key != ""` ⇒ `len(key) > 0` | ✅ 绿 |
+| N2 | 负控·必须绿 | 批内去重把 `\|\|` 拆成两条 `if`（语义等价） | ✅ 绿 |
+| N3 | 负控·必须绿 | 查重 SQL **只改排版** | ✅ 绿 |
+
+⇒ ⇒ **实测读数**：`scripts/mutations/s938.py` **16 / 16**（基线 1 + 变异 12 + 收尾 3）⇒ ⇒ 七批合计 **111 / 111**（§919 **22** / §920 **14** / §921 **13** / §922 **18** / §936 **13** / §937 **15** / §938 **16**）⇒ ⇒ 改 harness **没有**弄坏前六批。
+
+⇒ ⇒ ⚠ **本节一次就过，没有踩「变异自己的错」** ⇒ ⇒ ⇒ 那不是本事，是**把 §937 踩过的坑提前避开了**：M2 刻意**保留** `s.meetingTodoIndex(...)` 的调用（只丢结果）⇒ ⇒ 不会让「另一条路径」跟着一起坏 ⇒ ⇒ ⇒ **单点变异 ⇒ 必红的判据是那一条** ⇒ ⇒ ⇒ 而 M4/M9 各自只改**一个维度**（会议维度 / 钥匙）⇒ ⇒ ⇒ ⇒ ★ **纪律（可复用）**：**一条变异只改一个维度** ⇒ ⇒ 红了哪几条判据就**能说明它改坏的是哪一处** ⇒ ⇒ 否则「一条变异红 5 条」只能说明「它改坏的东西很多」，**定位不到**。
+
+### §938.6 三条新发现
+
+#### §938.6.1 ⭐⭐⭐ **「看不见」的症状往往不止一个原因 —— 而两个原因会互相掩盖**
+
+⇒ ⇒ D1（租户错）与 D2（状态不在契约里）**各自都足以**让待办不显示 ⇒ ⇒ ⇒ **只修一个，用户侧看不到任何改善** ⇒ ⇒ ⇒ 而在单租户部署里，D1 压根不成立 ⇒ ⇒ ⇒ ⇒ **dev 环境下只看得见 D2** ⇒ ⇒ ⇒ ⇒ 真机上 D1 与 D2 **同时**成立。
+
+⇒ ⇒ ⇒ ★ **纪律（可复用）**：**「用户看不见 X」这个症状，必须把每个可能原因各钉一条能红的判据** ⇒ ⇒ 否则「修了一个就说好了」⇒ ⇒ ⇒ 而本节的判据里，D1 与 D2 各有**独立**断言（`workspace_id` 与 `status`）⇒ ⇒ ⇒ 变异 M5 / M6 各自只红一条 ⇒ ⇒ ⇒ ⇒ **哪个原因被修掉，是可以从红绿读出来的**。
+
+#### §938.6.2 ⭐⭐ **「同一批数据有两条路径在管」⇒ 修法不是「两边都记得写」，是「两边用同一把钥匙」**
+
+⇒ ⇒ D6 的直觉修法是「让精校链也写 `origin_kind`/`origin_ref`」⇒ ⇒ 但那只修好了**今天**，而**明天**再有人加第三条落库路径，它又会犯同样的错 ⇒ ⇒ ⇒ ⇒ **结构性修法**是：**把查重入口抽成一个函数，两条路径都调它** ⇒ ⇒ ⇒ 于是「写溯源列」这件事**变成那个函数的隐含契约**（不写 ⇒ 查重看不见 ⇒ 判据红）⇒ ⇒ ⇒ ⇒ ★★ **纪律（可复用）**：**「同一批数据有两条路径在管」时，修法要落在「共用的那一份」上**，而不是「让两边各做对一半」⇒ ⇒ 后者只在**今天**成立。
+
+⇒ ⇒ ⚠ 而这正是 §937 记过的那条（**修其中一条前，必须读另一条的完整语义**）在本节的**第二次出现** ⇒ ⇒ ⇒ ★ **纪律在**第二次**出现时就该升级成规则** ⇒ ⇒ ⇒ §937 那次只是「读」，这次是「抽」⇒ ⇒ ⇒ ⇒ **「读」→「抽」是同一个认识的两个阶段**。
+
+#### §938.6.3 ⚠ **存量不可回填** —— 而且这件事**只能如实登记**，不能顺手做
+
+⇒ ⇒ 修好之后，**存量**那些已经落进 `default` 桶的会议待办**仍然**在错的地方、仍然没有归属、仍然是 `pending` ⇒ ⇒ ⇒ **用户侧仍然是「看不见」**。
+
+⇒ ⇒ ⇒ ⚠ 而**回填做不了**（不是「懒得做」）：**存量的 `origin_kind` / `origin_ref` 是空的** ⇒ ⇒ ⇒ 按溯源列**根本查不到它们** ⇒ ⇒ ⇒ 唯一可能的匹配是 `description` 的自由文本（`"来自会议 <id>"`）⇒ ⇒ ⇒ ⇒ 那是**文本匹配**，脆且会误伤 ⇒ ⇒ ⇒ ⇒ **要回填就得接受「按文本匹配」这个口径** ⇒ ⇒ ⇒ ⇒ **是不是接受 = 产品口径** ⇒ ⇒ ⇒ ⇒ **登记 R2，不代拍**。
+
+⇒ ⇒ ⇒ ⚠ ⇒ 同理：**存量**对路径 B 的查重**也**是隐形的 ⇒ ⇒ ⇒ 修好之后用户第一次点「转待办」，**仍会**得到一整套重复的（因为存量没有溯源）⇒ ⇒ ⇒ ⇒ **一次性**现象，不会持续 ⇒ ⇒ ⇒ ⇒ **写下来，免得下一个人以为修复没生效**。
+
+⇒ ⇒ ⇒ ⚠ 同理：存量的 `status='pending'` **不会被**改成 `active` ⇒ ⇒ ⇒ 用户**不会**突然看到一大批旧待办 ⇒ ⇒ ⇒ ⇒ 这其实是**好事**（否则一次性涌进来一批）⇒ ⇒ ⇒ ⇒ 但也因此「修好之后还是没看到旧会议的待办」是**预期行为**，不是回归。
+
+### §938.7 ⛔ 本节**没有**做的事
+
+- ⚠ **没有**改任何**响应形状** ⇒ ⇒ `task.Task` 的字段集合**一个字没动**（`originKind`/`originRef` 本来就有，只是值从空变成非空）⇒ ⇒ 仓外移动端读 task JSON **不受影响**；
+- ⚠ **没有**让客户端也读 `structured_minutes.action_items` ⇒ ⇒ 那会让客户端**多建**一批待办与提醒 ⇒ ⇒ **产品口径** ⇒ ⇒ 登记 **R1**，**不代拍**；
+- ⚠ **没有**回填存量 ⇒ ⇒ 存量**缺溯源列** ⇒ ⇒ 唯一口径是「按 `description` 文本匹配」⇒ ⇒ **产品口径** ⇒ ⇒ 登记 **R2**，**不代拍**；
+- ⚠ **没有**统一两条路径产出的 task **形状**（`description` 文案 / `priority` 词表（`medium` vs `normal`）/ `tags`）⇒ ⇒ 那会改路径 B 的**响应**（它把建好的 task 原样返回）⇒ ⇒ **响应形状 + 仓外兼容** ⇒ ⇒ 不代拍；
+- ⚠ **没有**改「会议待办落 PG `tasks`」这个架构选择本身（`docs/学习muse/03-架构方案.md:267` 写的是「Phase 2 迁移到 PG，保留本地写入作为离线回退」）⇒ ⇒ ⇒ 客户端本地 `local_todos` 与服务端 PG `tasks` **仍是两份** ⇒ ⇒ ⇒ 登记 **R3**（要不要把两端合成一份 = 产品口径）；
+- ⚠ **没有**新增前端测试文件（argv 上限）⇒ ⇒ 判据全在 Go 侧；
+- ⚠ **没有**把 §938 的判据接进前端那套 `gates`（46 项）⇒ ⇒ 它们是 **Go 侧**判据 ⇒ ⇒ CI 的 `backend.yml`（`go test -race ./...`）与 `backend-pg.yml`（`make test-pg`）各跑一半 ⇒ ⇒ **无 PG 的那个 job 里那 7 条会被 skip**（exit 0）⇒ ⇒ 记为**已知局限**；
+- ⚠ **没有**声称「真机上现在能看到了」⇒ ⇒ **⛔ 未实测**（无真机、无真网关 key）⇒ ⇒ 本节的读数全部来自**真 PG 上的行为判据**；
+- ⚠ **没有**动 `check:dead-api` 等既有门禁的语义。
+
+### §938.8 简报 162 的待拍板项
+
+见 `2026-10-11-pending-decisions-brief.md` 第 **162** 条。

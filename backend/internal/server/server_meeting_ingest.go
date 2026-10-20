@@ -13,7 +13,6 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/kxmemory"
 	"github.com/halfking/pocket-opencode/backend/internal/meeting"
 	"github.com/halfking/pocket-opencode/backend/internal/notes"
-	"github.com/halfking/pocket-opencode/backend/internal/task"
 )
 
 // handleMeetings dispatches GET (list) / POST (create) on /api/meetings.
@@ -171,6 +170,24 @@ func (s *Server) finalizeMeetingRefine(
 		refined = strVal(result["refinedTranscript"])
 	}
 
+	// ★ §938：落点（租户 + 归属）**在最开始就定好**。
+	//
+	//	修复前这条链把 workspace / owner 整个丢了 ⇒ 任务落进遗留单租户桶
+	//	"default" 且没有归属 ⇒ 用户在自己的 workspace 里**看不见**这些待办，
+	//	点进去也**点不开**（CanReadWorkItem 对创建者本人为 false）。
+	//
+	//	⚠ 这里的回落与 meetingStore 那一半**必须同口径**：
+	//	  同一个 workspace 归一 ⇒ 会议缓存与会议待办落在同一个租户里。
+	uidForStore := uid
+	if uidForStore == "" {
+		uidForStore = "local"
+	}
+	workspaceIDForStore := workspaceID
+	if workspaceIDForStore == "" {
+		// Legacy single-tenant callsites that never carried a workspace.
+		workspaceIDForStore = "default"
+	}
+
 	if noteID == "" && refined != "" {
 		if id, err := s.ingestMeetingNote(ctx, uid, meetingID, refined, meta); err == nil {
 			noteID = id
@@ -180,7 +197,11 @@ func (s *Server) finalizeMeetingRefine(
 	}
 
 	todos := extractTodos(result)
-	tasksCreated := s.ingestMeetingTasks(ctx, uid, meetingID, todos)
+	tasksCreated := s.ingestMeetingTasks(ctx, meetingTodoTarget{
+		WorkspaceID: workspaceIDForStore,
+		OwnerID:     uidForStore,
+		MeetingID:   meetingID,
+	}, todos)
 
 	if noteID != "" {
 		result["note_id"] = noteID
@@ -189,15 +210,6 @@ func (s *Server) finalizeMeetingRefine(
 
 	// 更新 PG meeting 缓存（严格限定在调用方的 workspace 作用域内）
 	if s.meetingStore != nil {
-		uidForStore := uid
-		if uidForStore == "" {
-			uidForStore = "local"
-		}
-		workspaceIDForStore := workspaceID
-		if workspaceIDForStore == "" {
-			// Legacy single-tenant callsites that never carried a workspace.
-			workspaceIDForStore = "default"
-		}
 		// ⚠⚠ §937（D2）：**定向更新** title/status —— 不读、也不写 transcript。
 		//
 		//	修复前：GetScoped（读**整行**，含整份转写）+ UpdateScoped（写**整行**，
@@ -264,36 +276,9 @@ func (s *Server) ingestMeetingNote(
 	return n.ID, nil
 }
 
-func (s *Server) ingestMeetingTasks(ctx context.Context, uid, meetingID string, todos []todoItem) int {
-	if s.taskStore == nil || len(todos) == 0 {
-		return 0
-	}
-	created := 0
-	for _, td := range todos {
-		if strings.TrimSpace(td.Text) == "" {
-			continue
-		}
-		t := &task.Task{
-			ID:          randomID("task"),
-			Title:       td.Text,
-			Description: fmt.Sprintf("来自会议 %s", meetingID),
-			Status:      "pending",
-			Priority:    mapTodoPriority(td.Priority),
-			Source:      "meeting",
-		}
-		if err := s.taskStore.CreateTask(ctx, t); err != nil {
-			log.Printf("[meeting] create task failed: %v", err)
-			continue
-		}
-		created++
-		s.wsHub.Broadcast("task.created", t)
-	}
-	if created > 0 {
-		log.Printf("[meeting] created %d tasks from meeting %s (user=%s)", created, meetingID, uid)
-	}
-	return created
-}
-
+// ⚠§938：`ingestMeetingTasks`（会议待办的落库）已经搬到
+// server_meeting_todo_ingest.go —— 因为它有**两条调用路径**（精校链与
+// from-source 链），去重的口径必须**抽成一份**共用，而不是抄两遍。
 type todoItem struct {
 	Text     string
 	Priority string
