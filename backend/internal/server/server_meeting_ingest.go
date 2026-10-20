@@ -12,7 +12,6 @@ import (
 
 	"github.com/halfking/pocket-opencode/backend/internal/kxmemory"
 	"github.com/halfking/pocket-opencode/backend/internal/meeting"
-	"github.com/halfking/pocket-opencode/backend/internal/notes"
 )
 
 // handleMeetings dispatches GET (list) / POST (create) on /api/meetings.
@@ -188,8 +187,15 @@ func (s *Server) finalizeMeetingRefine(
 		workspaceIDForStore = "default"
 	}
 
+	// ★ §939：笔记的落点与**待办同一个租户**（同一份归一口径）。
+	//
+	//	修复前这条链建笔记时**根本不传 workspace** ⇒ notes 行落在
+	//	workspace_id='' ⇒ 所有作用域读路径都查不到它 ⇒
+	//	「会议 → 笔记」这条链在服务端是**断的**。
+	noteTarget := newMeetingNoteTarget(uidForStore, workspaceIDForStore, meetingID)
+
 	if noteID == "" && refined != "" {
-		if id, err := s.ingestMeetingNote(ctx, uid, meetingID, refined, meta); err == nil {
+		if id, err := s.ingestMeetingNote(ctx, noteTarget, refined, meta); err == nil {
 			noteID = id
 		} else {
 			log.Printf("[meeting] note ingest failed %s: %v", meetingID, err)
@@ -245,40 +251,13 @@ func (s *Server) finalizeMeetingRefine(
 	return result
 }
 
-func (s *Server) ingestMeetingNote(
-	ctx context.Context, uid, meetingID, content string, meta meetingMetaIn,
-) (string, error) {
-	if s.notesStore == nil {
-		return "", fmt.Errorf("notes store not configured")
-	}
-	title := meta.Title
-	if title == "" {
-		title = "会议纪要"
-	}
-	now := time.Now().Unix()
-	n := notes.Note{
-		ID:             randomID("note"),
-		UserID:         uid,
-		Title:          title,
-		Snippet:        truncateStr(content, 500),
-		ContentType:    "voice",
-		Domain:         "work",
-		CreatedByVoice: true,
-		CreatedAt:      now,
-		UpdatedAt:      now,
-	}
-	if err := s.notesStore.Upsert(ctx, &n); err != nil {
-		return "", err
-	}
-	s.wsHub.Broadcast("note.created", &n)
-	go s.classifyNoteAsync(n)
-	log.Printf("[meeting] created note %s from meeting %s", n.ID, meetingID)
-	return n.ID, nil
-}
-
-// ⚠§938：`ingestMeetingTasks`（会议待办的落库）已经搬到
-// server_meeting_todo_ingest.go —— 因为它有**两条调用路径**（精校链与
-// from-source 链），去重的口径必须**抽成一份**共用，而不是抄两遍。
+// ⚠ §939：`ingestMeetingNote`（会议笔记的落库）已经搬到
+// server_meeting_note_ingest.go —— 因为它与随手记那条建笔记路径是
+// **同一件事的两条路径**（租户/归属/id/广播目标），口径必须抽成一份共用，
+// 而不是抄两遍（抄两遍 ⇒ 同一缺陷必然出现在两处）。
+//
+// ⚠§938：`ingestMeetingTasks`（会议待办的落库）也搬到了
+// server_meeting_todo_ingest.go —— 理由相同（它有两条落库路径）。
 type todoItem struct {
 	Text     string
 	Priority string

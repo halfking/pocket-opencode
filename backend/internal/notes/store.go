@@ -96,6 +96,14 @@ var allowedDomains = map[string]bool{"work": true, "study": true, "life": true, 
 // handler is wired but the backing store is not configured.
 var ErrStoreUnavailableNotes = errors.New("notes: store not configured")
 
+// ErrNoteOwnershipConflict 表示「这个 id 已经存在，但**不属于**调用方」。
+//
+// ⚠ §939：Upsert 的 ON CONFLICT 带了归属守卫（WHERE notes.user_id = $2），
+// 撞上一个不属于自己的 id 时**一行都不会改**。这必须是一个**错误**
+// 而不是静默成功 —— 静默成功的话，调用方会以为「笔记写好了」，
+// 而用户的笔记其实一个字都没被保存（而且对方那行也被保住了）。
+var ErrNoteOwnershipConflict = errors.New("notes: note id belongs to another user")
+
 func (s *Store) Upsert(ctx context.Context, n *Note) error {
 	// `content` 列是 TEXT NOT NULL，没有长度限制。2026-10-06 起真正写正文
 	// （此前这里只写 n.Snippet，等于把整篇正文截成 200 字存进 content 列）。
@@ -155,7 +163,28 @@ func (s *Store) Upsert(ctx context.Context, n *Note) error {
 	}
 	var contentTypeVal any = contentType
 
-	_, err := s.pool.Exec(ctx, `
+	// ⚠ §939：ON CONFLICT 的两个变化，缺一不可。
+	//
+	//	① WHERE notes.user_id = $2 —— **归属守卫**。
+	//	  修复前 ON CONFLICT (id) DO UPDATE 不带任何谓词 ⇒ 撞上**别人的**
+	//	  id 就会把那一行的 title/content/snippet **整个覆盖掉**
+	//	  （user_id 列不在 SET 列表里 ⇒ 那行仍然属于原主人，但正文已经是
+	//	  攻击者的了）⇒ ⇒ ⇒ 任何登录用户 POST /api/notes 带别人的 id
+	//	  就能改别人的笔记。
+	//	  §939 把会议笔记的 id 改成了**派生 id**（note_mtg_<meetingID>），
+	//	  id 从「随机猜不到」变成「**可推算**」⇒ ⇒ ⇒ 这条攻击面必须
+	//	  在同一节里关掉，否则等于自己开一个门。
+	//	  ⇒ 守卫不成立时**一行都不改**（而不是改一行别人的）。
+	//
+	//	② workspace_id = EXCLUDED.workspace_id —— **可修复**。
+	//	  修复前 SET 列表里没有 workspace_id ⇒ 一条**已经**落错租户的行
+	//	  （比如 §939 之前落进 workspace_id='' 的那些）**永远改不回来**：
+	//	  同一个 id 再写一次也只改别的列 ⇒ ⇒ ⇒ D1 的修法对存量行无效。
+	//	  ⇒ 现在重精校一次就能把它搬回正确的租户。
+	//	  ⚠ 守卫只判 user_id、不判 workspace_id ⇒ 「同一个用户的笔记在
+	//	  另一个租户下」会被**搬回来**（这是修复，不是越权：行本来就属于
+	//	  这个人）；「别人的行」则一行都动不了。
+	tag, err := s.pool.Exec(ctx, `
 		INSERT INTO notes (id, user_id, workspace_id, title, content, snippet, content_type, domain, tags, audio_path, audio_duration, created_by_voice, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, COALESCE($13, CURRENT_TIMESTAMP), COALESCE($14, CURRENT_TIMESTAMP))
 		ON CONFLICT (id) DO UPDATE SET
@@ -165,11 +194,18 @@ func (s *Store) Upsert(ctx context.Context, n *Note) error {
 			content_type  = EXCLUDED.content_type,
 			domain        = EXCLUDED.domain,
 			tags          = EXCLUDED.tags,
+			workspace_id  = EXCLUDED.workspace_id,
 			updated_at    = COALESCE($14, CURRENT_TIMESTAMP)
+		WHERE notes.user_id = $2
 	`,
 		n.ID, n.UserID, n.WorkspaceID, n.Title, content, n.Snippet, contentTypeVal, domainVal, tagsVal, n.AudioPath, n.AudioDuration, n.CreatedByVoice, createdAt, updatedAt)
 	if err != nil {
 		return fmt.Errorf("upsert note %s: %w", n.ID, err)
+	}
+	// ⚠ 守卫不成立 ⇒ 一行都没动（撞 id 但不是同一个用户的行）⇒
+	// 必须**报错**，否则调用方会以为「写成功了」。
+	if tag.RowsAffected() == 0 {
+		return ErrNoteOwnershipConflict
 	}
 	return nil
 }

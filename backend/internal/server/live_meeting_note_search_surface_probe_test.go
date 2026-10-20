@@ -3,7 +3,8 @@
 //
 // 缺陷/限制
 // ----------
-// `server_meeting_ingest.go:225`（ingestMeetingNote）只填 **Snippet**：
+// §939 起 ingestMeetingNote 在 `server_meeting_note_ingest.go`（原先在
+// `server_meeting_ingest.go`）里只填 **Snippet**：
 //
 //	Snippet: truncateStr(content, 500),        // content 是精校稿全文
 //
@@ -36,6 +37,21 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/notes"
 )
 
+// meetingSnippetBudgetFiles 是「尺子可能在哪个文件里」的候选表。
+//
+// ⚠ §939：ingestMeetingNote 已搬到 server_meeting_note_ingest.go ⇒
+// 尺子那一行也跟着搬了 ⇒ ⇒ ⇒ **指向**必须跟着改。
+// ⚠ 只改指向，**不动语义**：门禁量的仍然是「落库尺子之外的正文不可检索」
+// 这个**机制**，不是「500」这个数字（§333.7 的原意）。
+//
+// ⚠ 为什么是「候选表 + 恰好命中一个」而不是「写死一个文件名」：
+// 尺子的**单一真源**必须是生产那一行。若那一行被复制到第二个文件，
+// 两份会各自漂移 ⇒ 判据就钉不住「唯一的真源」⇒ 必须当场 Fatal。
+var meetingSnippetBudgetFiles = []string{
+	"server_meeting_note_ingest.go",
+	"server_meeting_ingest.go",
+}
+
 // meetingSnippetBudget 从**生产源码**读出 ingestMeetingNote 传给 truncateStr 的上限。
 //
 // ⚠ 2026-10-09（§333.7）：第一版把 500 **在夹具里另写了一遍**
@@ -50,20 +66,38 @@ import (
 //	绝不静默退回一个写死的 500（那等于把漂移重新引入）。
 func meetingSnippetBudget(t *testing.T) int {
 	t.Helper()
-	src, err := os.ReadFile("server_meeting_ingest.go")
-	if err != nil {
-		t.Fatalf("读不到 server_meeting_ingest.go：%v", err)
+	re := regexp.MustCompile(`Snippet:\s*truncateStr\(content,\s*(\d+)\)`)
+	var found []string
+	budget := 0
+	for _, name := range meetingSnippetBudgetFiles {
+		src, err := os.ReadFile(name)
+		if err != nil {
+			continue
+		}
+		m := re.FindSubmatch(src)
+		if m == nil {
+			continue
+		}
+		n, err := strconv.Atoi(string(m[1]))
+		if err != nil || n <= 0 {
+			t.Fatalf("%s 里读出的上限 %q 不是正整数", name, m[1])
+		}
+		found = append(found, name)
+		budget = n
 	}
-	m := regexp.MustCompile(`Snippet:\s*truncateStr\(content,\s*(\d+)\)`).FindSubmatch(src)
-	if m == nil {
-		t.Fatalf("server_meeting_ingest.go 里找不到 `Snippet: truncateStr(content, N)` —— " +
-			"ingestMeetingNote 的落库形状变了，本夹具复刻的是旧行为，须同步改写")
+	switch len(found) {
+	case 1:
+		return budget
+	case 0:
+		t.Fatalf("在 %v 里都找不到 `Snippet: truncateStr(content, N)` —— "+
+			"ingestMeetingNote 的落库形状变了，本夹具复刻的是旧行为，须同步改写",
+			meetingSnippetBudgetFiles)
+	default:
+		t.Fatalf("尺子同时出现在 %v ⇒ 有两份会各自漂移的真源（须只留一份）", found)
 	}
-	n, err := strconv.Atoi(string(m[1]))
-	if err != nil || n <= 0 {
-		t.Fatalf("读出的上限 %q 不是正整数", m[1])
-	}
-	return n
+	// ⚠ 上面每个分支都以 Fatal 结束（Fatal 会 runtime.Goexit），
+	//   但编译器不认识 Fatal ⇒ 必须补一条兜底返回。
+	return 0
 }
 
 // storedMeetingNote 复刻 ingestMeetingNote 落库后的形状：

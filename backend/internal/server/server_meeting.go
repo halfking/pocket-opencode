@@ -1696,7 +1696,7 @@ func parseRefineJSON(content string) (map[string]any, error) {
 // 的结果会入库或返回给客户端，全都会踩到：
 //
 //	server_email_summary.go:226   邮件 AI 摘要 → SetClassificationScoped 写库
-//	server_meeting_ingest.go:186  笔记 snippet → 写库
+//	server_meeting_note_ingest.go  笔记 snippet → 写库（§939 起搬到这里）
 //	server_meeting.go:437         会议摘要兜底 → JSON 返回
 //
 // 保留"字节上限"是有意的：这些上限都是按字节定的（500/200），改成字符上限

@@ -110018,3 +110018,241 @@ func CanReadWorkItem(t *Task, parts []Participant, userID string) bool {
 ### §938.8 简报 162 的待拍板项
 
 见 `2026-10-11-pending-decisions-brief.md` 第 **162** 条。
+
+## §939 服务端「会议 → 笔记」：落进**空租户**（谁都查不到）、**全体广播**（推进别人设备）、还会重复
+
+### §939.0 起因：§938 查的是「精校 → **待办**」，「精校 → **笔记**」那半条链一次没查
+
+§936/§937 查的是服务端会议链的**成本**；§938 查的是服务端「精校 → **待办**」那条链的**语义** ⇒ ⇒ ⇒ **「精校 → 笔记」这半条链，两样都没查过**。
+
+⇒ ⇒ 而它是**笔记链上唯一的「服务端自动建笔记」入口**（另一条是随手记：`POST /api/notes`）⇒ ⇒ ⇒ 它坏掉时，用户看到的症状是「**会议自动生成的手记在笔记列表里永远看不见，而且不报任何错**」⇒ ⇒ ⇒ 而前端**自己写过**这条注释（`frontend/src/features/meetings/meeting-ingest.ts`）：
+
+> 「会议自动生成的手记在笔记列表里永远看不见，且不报任何错」
+
+⇒ ⇒ ⇒ 前端**修过**，**服务端这一侧漏了** ⇒ ⇒ ⇒ 而且服务端这一侧**更重**（原因见 §939.2 的 D1：它连 `'default'` 作用域都查不到）。
+
+⚠ 判别标准沿用 §918：「内容是用户不可编辑的派生输入 ⇒ 用户绕不开 ⇒ 必须修」⇒ ⇒ 会议精校稿是**模型派生**的，用户改不了 ⇒ ⇒ 落错地方、看不见、重复 ⇒ ⇒ 用户绕不开 ⇒ ⇒ **必须修** ⇒ ⇒ 技术性 ⇒ 自己修。
+
+⚠ 但有**五件**本节**不代拍**（产品口径）⇒ ⇒ 登记进简报第 **163** 条（见 §939.8）。
+
+### §939.1 勘察：服务端有**两条**建笔记的路径，而它们的落点口径**不一样**
+
+⇒ ⇒ 先把「谁在写笔记」按**落库目标**枚举清楚（不是手数）：
+
+| # | 路径 | 落点 | 租户 | 归属 | id | 广播 | 幂等 |
+|---|---|---|---|---|---|---|---|
+| A | **会议精校链**：`handleMeetingRefine` → `finalizeMeetingRefine` → `ingestMeetingNote` | PG `notes` | ❌ 落 `''` | ✅ | ❌ 随机 | ❌ **全体** | ❌ |
+| B | **随手记链**：`POST /api/notes` → `handleNotes` → `notesStore.Upsert` | PG `notes` | ✅ | ✅ | ✅ 设备本地 id | ✅ `BroadcastTo{UserID}` | ✅ |
+
+⇒ ⇒ ★ **同一张表、同一件事，两种口径** ⇒ ⇒ ⇒ 而 §938 刚刚因为同样的形状（会议待办 vs from-source 待办）抽出过一份共用口径 ⇒ ⇒ ⇒ **本节照抄那个形状**：把「会议 → 笔记」的落点口径**抽成一份**（§939.3）。
+
+⚠ **A 链不是唯一入口**，还有一条**形态分叉**必须写清（否则会误判本节修了什么）：
+
+> `finalizeMeetingRefine` 的第一句是 `noteID := strVal(result["note_id"])` ⇒ ⇒
+> **精校结果里已经带了 `note_id` 时，服务端根本不会调 `ingestMeetingNote`** ⇒ ⇒
+> ⇒ ⇒ **A 链的三个缺陷只发生在「服务端自己建笔记」那条路径上**
+> （LLM 兜底链，或 kxmemory 响应里没有 `note_id`）⇒ ⇒ ⇒
+> 而**上游（kxmemory）建好的笔记存在 kxmemory 侧，不在本地 `notes` 表里**
+> ⇒ ⇒ ⇒ 本地笔记列表**仍然看不到它** ⇒ ⇒ ⇒ **那是另一个缺口** ⇒ ⇒ ⇒ 登记（§939.7）。
+
+### §939.2 量到的三个缺陷（+ 一个登记不代拍的）
+
+#### §939.2.1 ⭐⭐⭐ D1 落点丢租户 ⇒ 落进的是 **`''`**（**空串**），不是 `'default'`
+
+`ingestMeetingNote` 的签名是 `(ctx, uid, meetingID, content, meta)` ⇒ ⇒ **签名里根本没有 workspace** ⇒ ⇒ `notes.Note.WorkspaceID` 是 Go 的**零值 `""`** ⇒ ⇒ INSERT **显式传了该列** ⇒ ⇒ ⇒ **列的 `DEFAULT 'default'` 根本不生效** ⇒ ⇒ ⇒ 落库值是 **`''`**。
+
+⇒ ⇒ ⇒ 而 `notes.Store` 的**所有作用域**读/写路径都按 `workspace_id = $2` 过滤：
+
+| 路径 | 作用域过滤 | 空租户行能碰到吗 | 仓内生产调用方 |
+|---|---|---|---|
+| `ListScoped` | `workspace_id = $2` | ❌ | ✅ `GET /api/notes` |
+| `GetByIDScoped` | `workspace_id = $3` | ❌ | ✅ 详情 / 分类 / 摘要 |
+| `UpdateNoteScoped` | `WHERE … workspace_id = $3` | ❌ 改不动 | ✅ `PUT /api/notes/{id}` |
+| `DeleteScoped` | `WHERE … workspace_id = $3` | ❌ 删不掉 | ✅ `DELETE /api/notes/{id}` |
+| `ListDeletedIDsScoped` | `workspace_id = $2` | ❌ | ✅ 增量同步墓碑 |
+| `List`（**未作用域**） | **只按 `user_id`** | ⚠ **能** | ⛔ **无生产调用方** |
+| `GetByID` / `Delete`（**未作用域**） | **不带作用域** | ⚠ **能** | ⛔ **无生产调用方** |
+
+⇒ ⇒ ⇒ ⇒ ⇒ **所有生产读/写路径都查不到它** ⇒ ⇒ ⇒ ⇒ ⇒ 而唯一能碰到它的那三条**未作用域**方法，`notes.Store` 自己的注释就写着别用（*「`List` filters on user_id only, so the same user in two workspaces would see both workspaces' notes. Use this instead of List on request paths」*）⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **仓内实测：它们没有生产调用方** ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ 所以「**这条笔记对用户完全不可见**」**成立**，且**不报任何错** ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ 比 §938 的「落进 `'default'`」**更重一档**（`''` 连 `'default'` 作用域都查不到 ⇒ ⇒ 而 `'default'` 至少还能被遗留单租户部署看到）。
+
+⚠ **形态分叉**：claims 带**非 `default`** 的 workspace（真机是 `ws_user-admin`）⇒ ⇒ 落 `''` ⇒ ⇒ **真机上必然看不见**；而**单租户部署**（claims 缺 workspace ⇒ 回落 `"default"`）⇒ ⇒ 落点**恰好是对的** ⇒ ⇒ ⇒ **dev 测不出** ⇒ ⇒ ⇒ 与 §938 的 D1 **同款形态分叉**。
+
+#### §939.2.2 ⭐⭐⭐ D2 广播没有作用域 ⇒ 会议笔记被推进**别人**的设备
+
+修复前用的是 `s.wsHub.Broadcast("note.created", &n)` ⇒ ⇒ **全体广播**（`websocket/hub.go` 的 `Broadcast` 遍历**全部** client）⇒ ⇒ ⇒ 每个在线用户的设备都会收到这条会议笔记 ⇒ ⇒ ⇒ 而前端 `features/notes/notes-store.ts` 的 `handleServerEvent`：
+
+```ts
+export async function handleServerEvent(note: LocalNote): Promise<void> {
+  if (!note || !note.id) return
+  const workspaceId = note.workspaceId ?? 'default'
+  const existing = await getNote(note.id, true, workspaceId)
+  …
+  await localDB.run(`INSERT INTO local_notes (…) VALUES (?,?,…)`, […])
+```
+
+⇒ ⇒ ⇒ **它不做任何用户/租户过滤** ⇒ ⇒ ⇒ 直接把别人的会议笔记（标题 + 正文片段）**写进自己的设备本地库** ⇒ ⇒ ⇒ **跨用户数据泄漏**（不是「消息弹了一下」，是**落库**）。
+
+⇒ ⇒ 而随手记那条链用的是 `s.wsHub.BroadcastTo(ws.BroadcastTarget{UserID: uid}, "note.created", &n)` ⇒ ⇒ ⇒ **两条链形态分叉** ⇒ ⇒ ⇒ 同一个广播、同一个事件名、**两个作用域口径**。
+
+⚠⚠ **D1 与 D2 有顺序依赖 —— 这是本节最要紧的一条**：
+
+- 只修 D1（不修 D2）⇒ ⇒ payload 里**带上了真的 `workspace_id`** ⇒ ⇒ 而它被**全体广播** ⇒ ⇒ ⇒ 于是「笔记没人看见」被**升级**成「**笔记写进了别人的库**」⇒ ⇒ ⇒ **症状更严重**；
+- ⇒ ⇒ ⇒ 所以这两个成因必须**一次一起修** ⇒ ⇒ ⇒ 而**不是**「先修看得见的那个」。
+
+⇒ ⇒ ⇒ ★ 这与 §938 的「看不见往往不止一个原因」**同族但更狠**：§938 是「两个原因**互相掩盖**」（只修一个看不到改善），本节是「**修一个会让另一个的后果更严重**」⇒ ⇒ ⇒ ⇒ **两者必须绑成一次修完**。
+
+#### §939.2.3 ⭐ D3 没有幂等 ⇒ 同一场会议精校两次 ⇒ 两条笔记
+
+id 是 `randomID("note")` ⇒ ⇒ 每次精校都是**新的一行** ⇒ ⇒ ⇒ 同一场会议精校两次 ⇒ 两条笔记（同名）⇒ ⇒ ⇒ 而**用户在旧那条上改过的正文**被留成孤儿 ⇒ ⇒ ⇒ 且旧那条**永远查不到**（§939.2.1 的 D1 让它连 `'default'` 都不可见）⇒ ⇒ ⇒ **用户根本发现不了自己有两条**。
+
+⇒ ⇒ ⇒ 修法：`notes` 表主键是 `id`，冲突走 `ON CONFLICT` ⇒ ⇒ ⇒ **id 稳定 ⇒ 重复精校 = 更新同一行** ⇒ ⇒ ⇒ 幂等是**免费的**（只要 id 稳定）。
+
+#### §939.2.4 ⚠ D4 正文只留前 500 **字节** ⇒ 本节**不代拍**（登记）
+
+`ingestMeetingNote` 只填 `Snippet: truncateStr(content, 500)`，`Content` **为空** ⇒ ⇒ ⇒ `notes.Store.Upsert` 对 `content` 列是 `NOT NULL` ⇒ ⇒ ⇒ 回落 `content = n.Snippet` ⇒ ⇒ ⇒ **落库的正文恒为 ≤500 字节**。
+
+⚠⚠ **更正一个前提**：§333.5 与简报第 162 条 ① 的措辞是「存 `Content` 全文」，而**现状是「截断」不是「摘要」** ⇒ ⇒ ⇒ `truncateStr` 是**按字节**切的（`server_meeting.go:1707`，「为什么不直接 `s[:n]`：中文一个字 3 字节，切在字的中间会产出非法 UTF-8」）⇒ ⇒ ⇒ 中文场景下 **500 字节 ≈ 166 字**。
+
+⇒ ⇒ ⇒ 而这与属主的核心诉求（「会议时长无限长、只取决于存储的大小」）**直接相关**：正文恒 ≤500 字节 ⇒ ⇒ 与会议**多长完全无关**（但也**只覆盖开头**）⇒ ⇒ ⇒ `classifyNoteAsync`（`BodyForLLM(4000)`）与 agent 检索都只覆盖开头。
+
+⇒ ⇒ ⇒ ⚠ **但这不是本节能定的**：要不要为精校正文存全文 = **存储取舍**（与 `meetings.transcript` **同源再存一份** ⇒ 与「不增加大量存储」这条要求**正面相关**）⇒ ⇒ ⇒ **登记**（简报 163 ①；**这个问题最先由 §937 登记在简报 161 ①**），**不代拍** ⇒ ⇒ ⇒ 本节只把「现状是截断」这个前提**更正**过去。
+
+### §939.3 修法：把落点口径**抽成一份**（同 §938 的形状）
+
+⇒ ⇒ **为什么是抽一份而不是「两边都记得写」**：§938 已经把这条纪律**升级成规则**（「同一批数据有两条路径在管 ⇒ 修法要落在**共用的那一份**上」）⇒ ⇒ ⇒ 本节照做 ⇒ ⇒ ⇒ 新增 `backend/internal/server/server_meeting_note_ingest.go`，把三件事**各留一份**：
+
+| 口径 | 内容 | 为什么缺一不可 |
+|---|---|---|
+| **落点** | `meetingNoteTarget{WorkspaceID, OwnerID, MeetingID}` + `newMeetingNoteTarget()` | 租户来自 JWT（**不是 body**）；空值归一（空 uid → `local`、空 workspace → `default`，**与 §938 的 `meetingTodoTarget` 同口径** ⇒ ⇒ 会议缓存 / 会议待办 / 会议笔记落在**同一个租户**里）|
+| **id** | `noteID() = "note_mtg_" + MeetingID` | 同一场会议 ⇒ 同一行 ⇒ 幂等（D3）；前缀与设备本地 id（`note-<ts>-<rand>`）**命名空间不撞** |
+| **广播目标** | `broadcastTarget() = ws.BroadcastTarget{UserID: OwnerID}` | **只发给属主**（D2）；⚠ 零值 target 在 hub 里会**退化成全局广播** ⇒ ⇒ ⇒ **UserID 必须非空** ⇒ ⇒ ⇒ 判据专门钉这一格 |
+
+⇒ ⇒ ⇒ 三者**有顺序依赖**（§939.2.2）⇒ ⇒ ⇒ **一次一起改**。
+
+#### §939.3.1 ⚠⚠ 派生 id ⇒ 必须**同节**关掉「按 id 猜别人的行」这条攻击面
+
+`randomID` ⇒ id **猜不到**；`note_mtg_<meetingID>` ⇒ id **可推算** ⇒ ⇒ ⇒ 而 `notes.Store.Upsert` 的 `ON CONFLICT (id) DO UPDATE` **不带任何谓词** ⇒ ⇒ ⇒
+
+```sql
+ON CONFLICT (id) DO UPDATE SET title = EXCLUDED.title, content = EXCLUDED.content, …
+```
+
+⇒ ⇒ ⇒ 撞上**别人的** id 就会把那一行的 title/content/snippet **整个覆盖掉**（`user_id` 不在 SET 列表里 ⇒ 那行仍属于原主人，**但正文已经是攻击者的了**）⇒ ⇒ ⇒ **任何登录用户 `POST /api/notes` 带别人的 id 就能改别人的笔记**。
+
+⇒ ⇒ ⇒ ⇒ ★ **这是本节自己开出来的门 ⇒ ⇒ ⇒ 必须在同一节关掉** ⇒ ⇒ ⇒ 两处：
+
+1. **归属守卫**：`ON CONFLICT … WHERE notes.user_id = $2` ⇒ ⇒ 守卫不成立时**一行都不改**（而不是改一行别人的）；
+2. **冲突要报错**：新增 `notes.ErrNoteOwnershipConflict`；`RowsAffected() == 0` ⇒ 返回它 ⇒ ⇒ ⇒ **静默成功不行**（调用方会以为「笔记写好了」，而用户的笔记**一个字都没被保存**）。
+
+⚠ 守卫**只判 `user_id`、不判 `workspace_id`** ⇒ ⇒ 「**自己**在另一个租户下的笔记」会被**搬回来**（这是修复，不是越权：行本来就属于这个人）⇒ ⇒ ⇒ 「**别人的**行」则一行都动不了。
+
+#### §939.3.2 `ON CONFLICT` 的 SET 补上 `workspace_id` ⇒ ⇒ 修法对**存量**生效
+
+修复前的 SET 列表**没有 `workspace_id`** ⇒ ⇒ ⇒ 一条**已经**落错租户的行**永远改不回来**（同一个 id 再写一次也只改别的列）⇒ ⇒ ⇒ ⇒ 现在补上 `workspace_id = EXCLUDED.workspace_id` ⇒ ⇒ ⇒ **重精校一次就能把它搬回正确的租户**。
+
+⚠ 但**存量仍然不可见**（见 §939.7 的局限）：存量的 id 是**随机的** ⇒ ⇒ ⇒ 派生 id **命中不到** ⇒ ⇒ ⇒ **重精校一次会新建一条正确的**（旧的仍是孤儿）⇒ ⇒ ⇒ **一次性现象**。
+
+⚠⚠ **全部 `Upsert` 调用点已逐个核过**（这是本节**自己引入**的风险，必须核）：`notes.Store.Upsert` 现在会把 `workspace_id` **写成传入值** ⇒ ⇒ ⇒ 若某处传入**空串**，那条行会被**搬进空租户**。实测四个调用点：
+
+| 调用点 | `WorkspaceID` 来源 | 可能为空吗 |
+|---|---|---|
+| `handleNotes`（随手记 POST） | `s.workspaceIDFromRequest(r)` | ❌ 永不为空（`server_identity.go:33` 空值回落 `"default"`）|
+| `handleNoteClassify` 回写 | `GetByIDScoped` 查回来的行 | ❌（查得到 ⇒ `workspace_id` 匹配得上）|
+| `classifyNoteAsync` 回写 | 调用方传入的 `note` | ❌（来自上面两条 + 本节）|
+| `ingestMeetingNote`（本节） | `target.WorkspaceID`（已归一）| ❌ |
+
+⇒ ⇒ ⇒ **全部非空** ⇒ ⇒ ⇒ 新增的 SET **不会**把行搬进空租户。
+
+### §939.4 判据：11 条测试函数（3 条纯函数 + 8 条真 PG，其中 1 条要**真 WebSocket**）
+
+⇒ ⇒ 文件：`backend/internal/server/server_meeting_note_ingest_test.go`（新增）⇒ ⇒ 沿用既有夹具（`mustTestPool` ⇒ **每个用例一个独立 schema** ⇒ 用例之间不串味；`newTestServerWithAuth`）。
+
+| # | 判据 | 量的是 | 类别 |
+|---|---|---|---|
+| 1 | `TestS939MeetingNoteIDIsDerivedAndStable` | 同会议 ⇒ 同 id；不同会议 ⇒ 不同 id；前缀命名空间 | 纯函数 |
+| 2 | `TestS939BroadcastTargetIsScopedToOwner` | 目标 `UserID` = 属主；**且不是零值**（零值 ⇒ 退化成全局广播）；`WorkspaceID` 为空（与随手记那条链同口径）| 纯函数 |
+| 3 | `TestS939MeetingNoteTargetNormalizesEmptyScope` | 空 uid → `local`；空 workspace → `default` | 纯函数 |
+| 4 | `TestS939MeetingNoteLandsInCallerWorkspace` | `ListScoped` 查得到 + `GetByIDScoped` 查得到 + **`default` 桶里不许有东西** | 真 PG |
+| 5 | `TestS939MeetingNoteIsIdempotentAcrossRefines` | 两次精校 ⇒ **一行**；且正文**确实被更新**（不是「插了但没更新」）| 真 PG |
+| 6 | `TestS939MeetingNoteUpsertRepairsWrongWorkspace` | 预置 `workspace_id=''` 的行 ⇒ 重精校后**能被搬回来** | 真 PG |
+| 7 | `TestS939UpsertRejectsAnotherUsersNoteId` | 撞别人的 id ⇒ `ErrNoteOwnershipConflict` **且对方那行一个字没被改** | 真 PG |
+| 8 | `TestS939DifferentMeetingsGetDifferentNotes` | 两场会议 ⇒ 两条笔记（**负控**：不得跨会议去重）| 真 PG |
+| 9 | `TestS939FinalizeMeetingRefineLandsNoteInCallerWorkspace` | **端到端** `finalizeMeetingRefine` ⇒ 落点在调用方租户 | 真 PG |
+| 10 | `TestS939MeetingNoteBroadcastReachesOnlyOwner` | **真 WebSocket**：属主收到 `note.created`（正控）+ **另一个用户收不到** | 真 PG + **真 WS** |
+| 11 | `TestS939RefineResultWithNoteIDSkipsLocalNote` | 精校结果已带 `note_id` ⇒ **不**建本地笔记（**负控**，明知它绿）| 真 PG |
+
+#### §939.4.1 ⭐ 判据 10 为什么必须是**行为**判据（不是源码形状判据）
+
+⇒ ⇒ `websocket.Client` 的字段（`send` / `userID` / `workspaceID`）**都不导出** ⇒ ⇒ ⇒ 从 `server` 包**看不到**「谁收到了哪条消息」⇒ ⇒ ⇒ 纯函数层（第 2 条）只能验 `broadcastTarget()` 这个**值**，**验不了调用点有没有用对它** ⇒ ⇒ ⇒ **把调用点的 `BroadcastTo` 换成 `Broadcast`，第 2 条判据照样全绿** ⇒ ⇒ ⇒ 那是**假绿**。
+
+⇒ ⇒ ⇒ ⇒ 所以判据 10 接**两条真 WebSocket 连接**（属主 + 另一个用户，同一 workspace）⇒ ⇒ ⇒ 看消息**到底落到谁那里** ⇒ ⇒ ⇒ 两条臂**缺一不可**：
+
+- **臂 A（正控）**：属主**必须**收到 `note.created` ⇒ ⇒ 否则「臂 B 的别人收不到」可能只是因为「**谁都没收到**」（量具坏了，不是被测对象对）；
+- **臂 B**：另一个用户**必须收不到** ⇒ ⇒ ⇒ 这才是 D2 的真判据。
+
+⚠ 臂 B 的宽限期取 **1 s**：hub 在**同一个** `Run` 循环迭代里把消息塞进各客户端的 `send` 队列 ⇒ ⇒ 若走全体广播，两条连接是**同时**被投递的 ⇒ ⇒ ⇒ 属主都收到了，1 s 内对方不可能还没收到。
+
+⚠ **形态分叉**（第 11 条，明知它绿）：`finalizeMeetingRefine` 在结果**已带** `note_id` 时**不**建本地笔记 ⇒ ⇒ ⇒ D1/D2/D3 **只发生在**「服务端自己建笔记」那条路径上 ⇒ ⇒ ⇒ 写成负控，免得后人以为本节覆盖了**全部**精校路径。
+
+### §939.5 既有门禁：**只改指向、不动语义**（§333 的尺子夹具）
+
+⇒ ⇒ §333 的那道门（`live_meeting_note_search_surface_probe_test.go`）用**生产那一行**当尺子：
+
+```go
+m := regexp.MustCompile(`Snippet:\s*truncateStr\(content,\s*(\d+)\)`).FindSubmatch(src)
+```
+
+⇒ ⇒ 而它读的是**硬编码的文件名** `server_meeting_ingest.go` ⇒ ⇒ ⇒ §939 把 `ingestMeetingNote` **搬了文件** ⇒ ⇒ ⇒ 那行跟着搬了 ⇒ ⇒ ⇒ **门禁当场 Fatal**（实测：`server_meeting_ingest.go 里找不到 … ⇒ 须同步改写`）⇒ ⇒ ⇒ ⇒ 门禁自己写着「须同步改写」。
+
+⇒ ⇒ ⇒ 修法（**只改指向，不动语义**）：
+
+- 改成**候选表**（`server_meeting_note_ingest.go` / `server_meeting_ingest.go`）⇒ ⇒ ⇒ **尺子的单一真源仍然是生产那一行**；
+- ⚠ **必须恰好命中一个**：**0 个** ⇒ 尺子没了 ⇒ Fatal（**绝不**静默退回一个写死的 500 ⇒ 那等于把漂移重新引入）；**≥2 个** ⇒ 尺子被**抄成两份** ⇒ 两份会各自漂移 ⇒ Fatal。
+
+⇒ ⇒ ⇒ ⇒ 门禁量的仍然是「**落库尺子之外的正文不可检索**」这个**机制**，不是「500」这个数字（§333.7 的原意）⇒ ⇒ ⇒ ⇒ **配套负控**：§939.6 的 **M10**（尺子那一行从生产代码里消失 ⇒ 门禁必须红）与 **M11**（尺子被抄成两份 ⇒ 门禁必须红）⇒ ⇒ ⇒ ⇒ **改指向 ≠ 削弱判据**，这两条就是证据。
+
+⚠ 同节还改了 `server_meeting.go:1699` 那条**注释里的指针**（`server_meeting_ingest.go:186` → `server_meeting_note_ingest.go`）⇒ ⇒ ⇒ **注释里的指针也会随重构过期** ⇒ ⇒ ⇒ 顺手改掉。
+
+### §939.6 变异：落盘 `scripts/mutations/s939.py` ⇒ ⇒ **实测 19/19**
+
+⇒ ⇒ 11 条变异 + 3 条负控 + 4 条收尾自证（基线 / 还原后判据 / 还原后附加判据 / 逐字节回原样 / 工作树一致）⇒ ⇒ ⇒ **19/19 通过**。
+
+⚠ **每条变异只改一个维度** ⇒ ⇒ ⇒ 「**红了哪几条判据**」才能定位到改坏的是哪一处：
+
+| 变异 | 改的**一处** | 必红的判据 | 可区分性 |
+|---|---|---|---|
+| **M1** | 落库那一行 `WorkspaceID` 置空 | 租户落点（D1）| 与 M9 区分：M9 改**调用点**传参 |
+| **M2** | `BroadcastTo` → `Broadcast` | 臂 B | 与 M5 区分：**纯函数层仍绿** |
+| **M3** | `noteID()` → `randomID("note")` | 幂等（D3）| — |
+| **M4** | 空 uid 不再回落 `local` | 归一 | — |
+| **M5** | 广播目标**漏填** `UserID`（零值）| 目标判据 **+** 臂 B | 与 M2 区分：M5 额外红纯函数层 |
+| **M6** | 删 `ON CONFLICT` 的 `WHERE` 谓词 | 守卫（**且对方那行被改**）| 与 M7 区分 |
+| **M7** | 守卫在、但**不报错** | 只红「没报错」那一条 | 与 M6 区分：对方那行**不动** |
+| **M8** | SET 列表少 `workspace_id` | 存量修不回来 | — |
+| **M9** | 调用点把租户丢掉 | **只**红端到端那一条 | 与 M1 区分：落库层**不受影响** |
+| **M10** | 尺子那一行从生产代码消失 | §333 门禁 | — |
+| **M11** | 尺子被**抄成两份** | §333 门禁 | — |
+
+⇒ ⇒ ⇒ 负控：N1（只改对齐空格）/ N2（SQL 只改排版）/ N3（广播目标**显式写空** `WorkspaceID` ⇒ 语义等价）⇒ ⇒ ⇒ 三条**必须保持绿**。
+
+⚠⚠ **本节第一次跑就抓到一次「变异自己的错」**（★ 「变异必须只改语义」第 **4** 次出现）：**M7 第一版把整块判据**删掉** ⇒ ⇒ `tag` 变成**未使用** ⇒ ⇒ **编译失败** ⇒ ⇒ 判据**一条都没跑到**，而**退出码仍是 1** ⇒ ⇒ ⇒ 「变红」是**假的** ⇒ ⇒ ⇒ 是 `must_contain` 把它逮住的（期望消息没出现）⇒ ⇒ ⇒ 改成 **`_ = tag`**（`tag` 仍被使用 ⇒ 编译过 ⇒ 只去掉「报错」这一个维度）⇒ ⇒ ⇒ 重跑通过。
+
+⇒ ⇒ ⇒ ⇒ ★ **纪律再次兑现**：「**变异转红了 ≠ 变异验到了你想验的那条**」⇒ ⇒ ⇒ 红灯的位置也要钉（`must_contain`）⇒ ⇒ ⇒ **编译失败 / SQL 跑不通 / 占位符数量错 / 未使用 import 的变异零证据价值**。
+
+### §939.7 ⛔ 本节**没有**做的事（与如实登记的局限）
+
+- ⚠ **没有**让服务端为精校正文存全文 ⇒ ⇒ 现状仍是**截断前 500 字节**（**不是**摘要）⇒ ⇒ ⇒ **存储取舍**（与 `meetings.transcript` 同源再存一份 ⇒ 与「不增加大量存储」正面相关）⇒ ⇒ ⇒ **登记 163 ①**，**不代拍**；
+- ⚠ **没有**改客户端「拿到服务端 `note_id` 就不建本地笔记」的行为（`meeting-ingest.ts` 的 `refine.noteId ?? meeting.noteId`）⇒ ⇒ ⇒ **设备与服务端两边都没有笔记** ⇒ ⇒ ⇒ 与简报 162 ③ 同族 ⇒ ⇒ ⇒ **登记 163 ②**，**不代拍**；
+- ⚠ **没有**回填存量笔记 ⇒ ⇒ ⇒ **做不了**（不是「懒得做」）：存量的 `workspace_id` 是 `''` **且 id 是随机的** ⇒ ⇒ ⇒ 派生 id **命中不到** ⇒ ⇒ ⇒ 唯一口径是「按 `description` 自由文本匹配」⇒ ⇒ ⇒ **是不是接受 = 产品口径** ⇒ ⇒ ⇒ **登记 163 ③**，**不代拍**；
+- ⚠ **没有**把 `Upsert` 的归属冲突改成 **409** ⇒ ⇒ ⇒ 现状走既有 **500** 分支（`handleNotes` POST 的 `writeError(500, err.Error())`）⇒ ⇒ ⇒ 409 更贴切，但那是**响应形状** ⇒ ⇒ ⇒ **登记 163 ④**，**不代拍**；
+- ⚠ **没有**处理「同设备换账号」时 `mirrorNoteToBackend` 撞上**旧账号**的设备本地 id ⇒ ⇒ ⇒ 现在的行为是「**不写云端**」（严格更安全，但**行为变了**：此前是「静默覆盖」）⇒ ⇒ ⇒ **登记 163 ⑤**，**不代拍**；
+- ⚠ **没有**改「上游（kxmemory）建的笔记不在本地 `notes` 表」这件事 ⇒ ⇒ ⇒ 那是**另一个缺口**（§939.1 末尾）⇒ ⇒ ⇒ 本地笔记列表**仍然看不到**它 ⇒ ⇒ ⇒ 与 163 ② 一起定；
+- ⚠ **没有**改 `meeting.refined` / `meeting.synced` 这两个**仍是全体广播**的事件 ⇒ ⇒ ⇒ 但实测**前端 ws-bus 只处理 `note.created` 与 `email.classified`** ⇒ ⇒ ⇒ 那两个事件**当前无人消费** ⇒ ⇒ ⇒ **不产生跨用户落库** ⇒ ⇒ ⇒ 登记为**待观察**（将来有人订阅它们时必须一起改成定向）；
+- ⚠ **没有**新增前端测试文件（argv 上限）⇒ ⇒ ⇒ 判据全在 Go 侧；
+- ⚠ **没有**把 §939 的判据接进前端那套 `gates`（46 项）⇒ ⇒ ⇒ 它们是 **Go 侧**判据 ⇒ ⇒ ⇒ CI 的 `backend.yml`（`go test -race ./...`）与 `backend-pg.yml`（`make test-pg`）各跑一半 ⇒ ⇒ ⇒ **无 PG 的那个 job 里那 8 条会被 skip**（exit 0）⇒ ⇒ ⇒ 记为**已知局限**；
+- ⚠ **没有**声称「真机上现在能看到了」⇒ ⇒ **⛔ 未实测**（无真机、无真网关 key ⇒ §787/§795 仍 401）⇒ ⇒ ⇒ 本节的读数全部来自**真 PG 上的行为判据** + **真 WebSocket 连接**；
+- ⚠ **没有**动 `check:dead-api` 等既有门禁的语义（只改了 §333 那道夹具的**指向**，且**配套两条负控**）。
+
+### §939.8 简报 163 的待拍板项
+
+见 `2026-10-11-pending-decisions-brief.md` 第 **163** 条。
