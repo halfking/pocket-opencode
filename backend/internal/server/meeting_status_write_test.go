@@ -46,6 +46,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/halfking/pocket-opencode/backend/internal/meeting"
@@ -60,26 +61,50 @@ type s945FailingMeetingStore struct {
 	meeting.MeetingStore
 	// failStatuses 是「这些状态写下去会失败」的集合。
 	failStatuses map[string]bool
+	// mu 保护 attempted（判据在 -race 下跑 ⇒ 读和写可能不同 goroutine）。
+	mu sync.Mutex
+	// attempted 记录**被要求写入**的状态（按顺序）。
+	//
+	// ⚠ 为什么需要它：光断言「结果没变」是**没法红**的 ⇒ ⇒⇒
+	//   「进度写失败不阻断」这种「断言某件事**没有**发生」的判据，
+	//   **任何合理变异都不会改变它的结论** ⇒ ⇒⇒ ⇒ 它是**负控**
+	//   ⇒ ⇒⇒ ⇒ 它的牙要靠**另一半**（「确实尝试写过了」）来撑。
+	attempted []string
+}
+
+// s945Attempted 返回被要求写入过的状态序列。
+func (s *s945FailingMeetingStore) s945Attempted() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.attempted...)
 }
 
 func (s *s945FailingMeetingStore) UpdateScoped(m *meeting.Meeting, ownerID, workspaceID string) error {
+	s.mu.Lock()
+	s.attempted = append(s.attempted, m.Status)
+	s.mu.Unlock()
 	if s.failStatuses[m.Status] {
 		return errors.New("s945 injected status write failure")
 	}
 	return s.MeetingStore.UpdateScoped(m, ownerID, workspaceID)
 }
 
-// s945StatusServer 造一个带故障注入的 server（返回 server 与内层真 store）。
-func s945StatusServer(t *testing.T, failStatuses map[string]bool) *Server {
+// s945StatusServer 造一个带故障注入的 server。
+//
+// ⚠ 返回包装器**和** server：判据要读「被要求写入的状态序列」⇒
+//
+//	⇒ ⇒⇒ 而包装器被塞进 Server 之后拿不回来 ⇒ ⇒⇒ ⇒ 所以在这里就交出去。
+func s945StatusServer(t *testing.T, failStatuses map[string]bool) (*Server, *s945FailingMeetingStore) {
 	t.Helper()
 	pool := mustTestPool(t)
 	store, err := meeting.NewPGStore(context.Background(), pool)
 	if err != nil {
 		t.Fatalf("meeting.NewPGStore: %v", err)
 	}
+	wrapped := &s945FailingMeetingStore{MeetingStore: store, failStatuses: failStatuses}
 	srv, _ := newTestServerWithAuth(t)
-	srv.SetMeetingStore(&s945FailingMeetingStore{MeetingStore: store, failStatuses: failStatuses})
-	return srv
+	srv.SetMeetingStore(wrapped)
+	return srv, wrapped
 }
 
 // s945PostTranscribe POST /api/meetings/{id}/transcribe（body 可为空）。
@@ -94,7 +119,7 @@ func s945PostTranscribe(t *testing.T, srv *Server, token, id string) (int, strin
 
 // TestS945MeetingTerminalStatusWriteFailureIsVisible 终态写失败 ⇒ 500 + 可区分文本。
 func TestS945MeetingTerminalStatusWriteFailureIsVisible(t *testing.T) {
-	srv := s945StatusServer(t, map[string]bool{"failed": true})
+	srv, _ := s945StatusServer(t, map[string]bool{"failed": true})
 	tok := s943Token(t, srv, "s945-owner", "s945-ws")
 
 	code, body := s943PostMeeting(t, srv, tok, "s945-mtg-1", "标题", "正文")
@@ -136,7 +161,7 @@ func TestS945MeetingTerminalStatusWriteFailureIsVisible(t *testing.T) {
 //
 // ⚠ 期望消息按**实测**写：转写链在音频为空时回的是 400 + "empty audio data"。
 func TestS945MeetingProgressStatusWriteFailureDoesNotBlock(t *testing.T) {
-	srv := s945StatusServer(t, map[string]bool{"transcribing": true})
+	srv, wrapped := s945StatusServer(t, map[string]bool{"transcribing": true})
 	tok := s943Token(t, srv, "s945-owner", "s945-ws")
 
 	code, body := s943PostMeeting(t, srv, tok, "s945-mtg-2", "标题", "正文")
@@ -146,7 +171,14 @@ func TestS945MeetingProgressStatusWriteFailureDoesNotBlock(t *testing.T) {
 
 	code, body = s945PostTranscribe(t, srv, tok, "s945-mtg-2")
 
-	// 进度写失败**不许**改变本次请求的结局 ⇒ ⇒⇒ 仍然是「音频为空」的 400。
+	// ① 进度状态**确实被尝试写过一次**（「transcribing」）。
+	//    ⚠ 这一条才是这道判据的**牙**：光断言「结果没变」是**没法红**的
+	//    ⇒ ⇒⇒ 「断言某件事没有发生」的判据对任何合理变异都免疫
+	//    ⇒ ⇒⇒ ⇒ 所以必须**同时**断言「那件事确实发生了」。
+	if got := wrapped.s945Attempted(); len(got) == 0 || got[0] != "transcribing" {
+		t.Errorf("进度状态没有被尝试写入（attempted=%v）⇒ 期望第一次写的是 \"transcribing\"", got)
+	}
+	// ② 进度写失败**不许**改变本次请求的结局 ⇒ ⇒⇒ 仍然是「音频为空」的 400。
 	if code != http.StatusBadRequest {
 		t.Errorf("进度写失败时的状态码 = %d（期望 400，即**照常**走到「音频为空」那一步）⇒ 进度写失败把请求**阻断**了。body=%s", code, body)
 	}
@@ -158,7 +190,7 @@ func TestS945MeetingProgressStatusWriteFailureDoesNotBlock(t *testing.T) {
 // s945BaselineEmptyAudioBody 取「音频为空」那条基线响应体（用于可区分性比较）。
 func s945BaselineEmptyAudioBody(t *testing.T) string {
 	t.Helper()
-	srv := s945StatusServer(t, nil)
+	srv, _ := s945StatusServer(t, nil)
 	tok := s943Token(t, srv, "s945-owner", "s945-ws")
 	code, body := s943PostMeeting(t, srv, tok, "s945-mtg-baseline", "标题", "正文")
 	if code != http.StatusOK && code != http.StatusCreated {
@@ -175,7 +207,7 @@ func s945BaselineEmptyAudioBody(t *testing.T) string {
 //	⇒ 如果**没有**这条负控，那么「不阻断」和「本来就会 400」是**分不开**的
 //	⇒ ⇒⇒ ⇒ 断言就没有证据强度 ⇒ ⇒⇒ ⇒ 这是「负控 = 让错误实现产生独有症状」。
 func TestS945MeetingStatusWriteBaseline(t *testing.T) {
-	srv := s945StatusServer(t, nil)
+	srv, _ := s945StatusServer(t, nil)
 	tok := s943Token(t, srv, "s945-owner", "s945-ws")
 
 	code, body := s943PostMeeting(t, srv, tok, "s945-mtg-3", "标题", "正文")
