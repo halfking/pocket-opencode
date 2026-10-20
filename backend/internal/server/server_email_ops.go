@@ -205,7 +205,27 @@ func (s *Server) handleEmailOpsSync(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rep := s.executeOpsEntries(r, entries)
-	rep.Remaining, _ = s.emailStore.CountPendingOps(r.Context(), uid, ws)
+	// ⚠⚠ §945：这行原来被 `_ =` 吞掉 ⇒ ⇒⇒ **读失败被报成「剩余 0」**。
+	//
+	//	⚠ 这是**读**错误（不是写错误）⇒ ⇒⇒ 它落在本节「写错误」范围之外
+	//	⇒ ⇒⇒⇒ 但它**属于同一类缺陷**（失败无声 ⇒ 对外说了假话）⇒ ⇒⇒⇒
+	//	⇒ ⇒⇒⇒ ⇒ 所以本节做**能做的部分**：留痕。
+	//
+	//	⚠ 为什么**不**改响应（也不把它升级成 500）：
+	//	① 操作**已经执行完了**（`executeOpsEntries` 的结果在 `rep` 里）
+	//	  ⇒ ⇒⇒⇒ 回 500 会让客户端以为「没执行」⇒ ⇒⇒⇒⇒ 而客户端的重试
+	//	  ⇒ ⇒⇒⇒⇒ 会**再执行一遍**⇒ ⇒⇒⇒ ⇒ 那是拿一个**读**失败去否定
+	//	  ⇒ ⇒⇒⇒⇒ **已经发生的事实**。
+	//	② `remaining` 该填什么（-1？置空？整条响应标失败？）是**产品口径**
+	//	  ⇒ ⇒⇒⇒ ⇒ **登记不代拍**（见简报第 169 条）。
+	//
+	//	⇒ ⇒⇒⇒ 所以这里只做「让人看得见」：库里可能还堆着待同步的操作，
+	//	⇒ ⇒⇒⇒ 而客户端以为「都同步完了」⇒ ⇒⇒⇒ ⇒ 这个**误判**必须能被追到。
+	if n, err := s.emailStore.CountPendingOps(r.Context(), uid, ws); err != nil {
+		log.Printf("ERROR: /ops/sync: 统计待同步操作数失败（响应里的 remaining=0 是**假值**，库里可能仍有待同步项）: %v", err)
+	} else {
+		rep.Remaining = n
+	}
 	writeJSON(w, http.StatusOK, rep)
 }
 

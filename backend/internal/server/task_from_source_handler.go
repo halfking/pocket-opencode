@@ -12,6 +12,7 @@ package server
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -205,7 +206,7 @@ func (s *Server) recordOriginEvent(r *http.Request, wsID, userID string, t *task
 	// EventID is derived from the provenance, so converting the same meeting
 	// twice does not double the activity entry.
 	eventID := "origin:" + t.OriginKind + ":" + t.OriginRef
-	_ = s.taskStore.AppendEvent(r.Context(), task.WorkItemEvent{
+	if err := s.taskStore.AppendEvent(r.Context(), task.WorkItemEvent{
 		WorkspaceID: wsID,
 		TaskID:      t.ID,
 		EventID:     eventID,
@@ -213,7 +214,24 @@ func (s *Server) recordOriginEvent(r *http.Request, wsID, userID string, t *task
 		ActorUserID: userID,
 		Payload:     payload,
 		CreatedAt:   t.CreatedAt.Unix(),
-	})
+	}); err != nil {
+		// ⚠⚠ §945：这行原来被 `_ =` 吞掉 ⇒ ⇒⇒ **无声**。
+		//
+		//	而这个函数上面那段注释自己写着：这条条目让 provenance
+		//	「**在 UI 与审计链里可见**，而不是只活在数据库列里」
+		//	⇒ ⇒⇒⇒ 写失败时，**它恰好发生了那条注释要避免的后果**
+		//	⇒ ⇒⇒⇒ （溯源只活在 `origin_kind` / `origin_ref` 两列里）
+		//	⇒ ⇒⇒⇒ ⇒ 而且**没人知道**它没写成。
+		//
+		//	⚠ 为什么**不能**把整个请求变成 500：
+		//	任务**已经建好了**（`CreateTask` 成功、响应已经是 201 的内容）
+		//	⇒ ⇒⇒ 回 500 会让客户端以为「没建成」⇒ ⇒⇒⇒ 而客户端的重试
+		//	⇒ ⇒⇒⇒ 会把这次成功**变成一次失败**⇒ ⇒⇒⇒ ⇒ 那是拿一个
+		//	⇒ ⇒⇒⇒ 次要副作用去否定**主要结果**。
+		//	⇒ ⇒⇒ 所以：**不改响应**，但必须**留痕**（⇒ 「纯静音」不算失败处理）。
+		log.Printf("ERROR: task %s: 溯源活动条目写入失败（originKind=%s originRef=%s）—— 溯源将只存在于 origin_kind/origin_ref 两列里，审计链里看不到: %v",
+			t.ID, t.OriginKind, t.OriginRef, err)
+	}
 }
 
 // meetingActionDescription preserves the action item's owner and deadline,

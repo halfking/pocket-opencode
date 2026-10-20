@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"log"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -276,11 +277,32 @@ func (s *Store) DeleteTaskScoped(ctx context.Context, id, userID, workspaceID st
 	if tag.RowsAffected() == 0 {
 		return ErrTaskNotFound
 	}
-	_, _ = s.pool.Exec(ctx, `
+	// ⚠⚠ §945：这一行原来被 `_, _ =` 吞掉 ⇒ ⇒⇒ **完全无声**。
+	//
+	//	后果（比「日志没打」重）：墓碑（tombstone）是**删除传播的唯一载体**
+	//	—— 增量同步的客户端靠 `ListDeletedTaskIDsScoped` 才知道「这个任务
+	//	在别的设备上被删了」⇒ ⇒⇒⇒ 而 DELETE **已经成功了**（任务行没了）
+	//	⇒ ⇒⇒⇒ ⇒ ⇒ 墓碑写失败 ⇒ ⇒⇒⇒⇒ **删除只发生了一半**：
+	//	⇒ ⇒⇒⇒⇒ ・服务端：这台设备上任务确实没了
+	//	⇒ ⇒⇒⇒⇒ ・其它设备：**永远看不到这条删除** ⇒ ⇒⇒⇒⇒ 它们会一直
+	//	⇒ ⇒⇒⇒⇒ 显示那个已经删掉的任务（直到一次全量重拉能纠正它）
+	//	⇒ ⇒⇒⇒⇒ ⇒ 而**没有任何一条日志**说明这件事发生过。
+	//
+	//	⚠ 为什么**不**把它变成致命错误：
+	//	DELETE 已经成功 ⇒ ⇒⇒⇒ 回错会让客户端以为「没删掉」⇒ ⇒⇒⇒⇒ 而它
+	//	⇒ ⇒⇒⇒⇒ 重试时 DELETE 会命中 0 行 ⇒ 返回 ErrTaskNotFound ⇒ ⇒⇒⇒⇒
+	//	⇒ ⇒⇒⇒⇒ 客户端拿到的是「找不到」，不是「删掉了」⇒ ⇒⇒⇒ ⇒ 那是拿
+	//	⇒ ⇒⇒⇒ ⇒ 一个**传播**失败去否定**已经发生的事实**。
+	//
+	//	⚠ 「删除传播不出去」这件事本身属**产品/架构口径**（要不要在墓碑
+	//	  写失败时降级成别的同步策略）⇒ ⇒⇒⇒ ⇒ 本节**登记不代拍**。
+	if _, err := s.pool.Exec(ctx, `
 		INSERT INTO scheduled_task_tombstones (id, user_id, workspace_id, deleted_at)
 		VALUES ($1, $2, $3, $4)
 		ON CONFLICT (id) DO UPDATE SET deleted_at = EXCLUDED.deleted_at`,
-		id, userID, workspaceID, time.Now().Unix())
+		id, userID, workspaceID, time.Now().Unix()); err != nil {
+		log.Printf("ERROR: 定时任务删除墓碑写入失败（任务已删除，但**别的设备不会知道**）id=%s: %v", id, err)
+	}
 	return nil
 }
 

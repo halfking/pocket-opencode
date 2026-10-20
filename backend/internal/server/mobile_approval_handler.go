@@ -105,7 +105,26 @@ func (s *Server) replyMobilePermission(w http.ResponseWriter, r *http.Request, r
 		return
 	}
 
-	workspaceID, _ := s.requireMobileWorkspace(w, r)
+	// ⚠⚠ §945：原来这里是 `workspaceID, _ := s.requireMobileWorkspace(w, r)`
+	//	⇒ ⇒⇒ **把守卫的 fail-closed 标志丢掉了**。
+	//
+	//	⚠ `requireMobileWorkspace` 的契约白纸黑字写着「**fails closed**」
+	//	  （mobile_endpoint_scope.go:233）⇒ ⇒⇒⇒ 守卫失败时它**已经写了**
+	//	  ⇒ ⇒⇒⇒ 401/400 响应 ⇒ ⇒⇒⇒ 而调用方丢掉 ok ⇒ ⇒⇒⇒ ⇒ **handler
+	//	  ⇒ ⇒⇒⇒ ⇒ 继续往下跑**（用一个空 workspace 去执行副作用）。
+	//
+	//	⚠ **今天还不可利用**（这一点必须说清，不能夸大）：
+	//	  上面 :103 的 `validateMobileApproval` **已经**检查过同样的两件事
+	//	  （claims 非空 + workspace_id 非空 + scope 校验）⇒ ⇒⇒⇒ ⇒ 所以
+	//	  ⇒ ⇒⇒⇒ ⇒ 走到这里时守卫**不可能失败** ⇒ ⇒⇒⇒ ⇒ 那三个 `_` 今天
+	//	  ⇒ ⇒⇒⇒ ⇒ 是**死代码**，不是活的越权。
+	//	  ⇒ ⇒⇒⇒ 但它是**潜伏的 fail-open**：哪天有人调整了
+	//	  ⇒ ⇒⇒⇒ ⇒ `validateMobileApproval` 的前置顺序，这三行就会**静默**
+	//	  ⇒ ⇒⇒⇒ ⇒ 变成真正的越权 ⇒ ⇒⇒⇒ ⇒ 所以按守卫契约补上 `if !ok`。
+	workspaceID, ok := s.requireMobileWorkspace(w, r)
+	if !ok {
+		return
+	}
 
 	// Pocket↔ACC 审批互锁（fail-closed）。accRuntime 未配置 → gate 不生效，
 	// 行为与历史版本完全一致。gate 生效时：
@@ -250,7 +269,26 @@ func (s *Server) replyMobileQuestion(w http.ResponseWriter, r *http.Request, req
 		return
 	}
 
-	workspaceID, _ := s.requireMobileWorkspace(w, r)
+	// ⚠⚠ §945：原来这里是 `workspaceID, _ := s.requireMobileWorkspace(w, r)`
+	//	⇒ ⇒⇒ **把守卫的 fail-closed 标志丢掉了**。
+	//
+	//	⚠ `requireMobileWorkspace` 的契约白纸黑字写着「**fails closed**」
+	//	  （mobile_endpoint_scope.go:233）⇒ ⇒⇒⇒ 守卫失败时它**已经写了**
+	//	  ⇒ ⇒⇒⇒ 401/400 响应 ⇒ ⇒⇒⇒ 而调用方丢掉 ok ⇒ ⇒⇒⇒ ⇒ **handler
+	//	  ⇒ ⇒⇒⇒ ⇒ 继续往下跑**（用一个空 workspace 去执行副作用）。
+	//
+	//	⚠ **今天还不可利用**（这一点必须说清，不能夸大）：
+	//	  上面 :103 的 `validateMobileApproval` **已经**检查过同样的两件事
+	//	  （claims 非空 + workspace_id 非空 + scope 校验）⇒ ⇒⇒⇒ ⇒ 所以
+	//	  ⇒ ⇒⇒⇒ ⇒ 走到这里时守卫**不可能失败** ⇒ ⇒⇒⇒ ⇒ 那三个 `_` 今天
+	//	  ⇒ ⇒⇒⇒ ⇒ 是**死代码**，不是活的越权。
+	//	  ⇒ ⇒⇒⇒ 但它是**潜伏的 fail-open**：哪天有人调整了
+	//	  ⇒ ⇒⇒⇒ ⇒ `validateMobileApproval` 的前置顺序，这三行就会**静默**
+	//	  ⇒ ⇒⇒⇒ ⇒ 变成真正的越权 ⇒ ⇒⇒⇒ ⇒ 所以按守卫契约补上 `if !ok`。
+	workspaceID, ok := s.requireMobileWorkspace(w, r)
+	if !ok {
+		return
+	}
 	if err := s.quesMgr.ReplyForWorkspace(r.Context(), workspaceID, body.InstanceID, body.SessionID, requestID, body.Answers); err != nil {
 		s.writeApprovalManagerError(w, r, err)
 		return
@@ -272,7 +310,26 @@ func (s *Server) rejectMobileQuestion(w http.ResponseWriter, r *http.Request, re
 		return
 	}
 
-	workspaceID, _ := s.requireMobileWorkspace(w, r)
+	// ⚠⚠ §945：原来这里是 `workspaceID, _ := s.requireMobileWorkspace(w, r)`
+	//	⇒ ⇒⇒ **把守卫的 fail-closed 标志丢掉了**。
+	//
+	//	⚠ `requireMobileWorkspace` 的契约白纸黑字写着「**fails closed**」
+	//	  （mobile_endpoint_scope.go:233）⇒ ⇒⇒⇒ 守卫失败时它**已经写了**
+	//	  ⇒ ⇒⇒⇒ 401/400 响应 ⇒ ⇒⇒⇒ 而调用方丢掉 ok ⇒ ⇒⇒⇒ ⇒ **handler
+	//	  ⇒ ⇒⇒⇒ ⇒ 继续往下跑**（用一个空 workspace 去执行副作用）。
+	//
+	//	⚠ **今天还不可利用**（这一点必须说清，不能夸大）：
+	//	  上面 :103 的 `validateMobileApproval` **已经**检查过同样的两件事
+	//	  （claims 非空 + workspace_id 非空 + scope 校验）⇒ ⇒⇒⇒ ⇒ 所以
+	//	  ⇒ ⇒⇒⇒ ⇒ 走到这里时守卫**不可能失败** ⇒ ⇒⇒⇒ ⇒ 那三个 `_` 今天
+	//	  ⇒ ⇒⇒⇒ ⇒ 是**死代码**，不是活的越权。
+	//	  ⇒ ⇒⇒⇒ 但它是**潜伏的 fail-open**：哪天有人调整了
+	//	  ⇒ ⇒⇒⇒ ⇒ `validateMobileApproval` 的前置顺序，这三行就会**静默**
+	//	  ⇒ ⇒⇒⇒ ⇒ 变成真正的越权 ⇒ ⇒⇒⇒ ⇒ 所以按守卫契约补上 `if !ok`。
+	workspaceID, ok := s.requireMobileWorkspace(w, r)
+	if !ok {
+		return
+	}
 	if err := s.quesMgr.RejectForWorkspace(r.Context(), workspaceID, body.InstanceID, body.SessionID, requestID); err != nil {
 		s.writeApprovalManagerError(w, r, err)
 		return

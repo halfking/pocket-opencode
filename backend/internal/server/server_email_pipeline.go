@@ -483,7 +483,21 @@ func (s *Server) handleEmailInvoiceExport(w http.ResponseWriter, r *http.Request
 		skipped[name] = true
 	}
 	now := time.Now().Unix()
-	exported := 0
+	// ⚠⚠ §945：这行原来被 `_ =` 吞掉 ⇒ ⇒⇒ 发票的 `exported_at` 保持 0
+	// ⇒ ⇒⇒ 而**选取口径**是「已下载且 exported_at=0」（email/pipeline_a4.go
+	// 里那句口径注释）⇒ ⇒⇒⇒ **下一轮会把同一批票再拼一次 A4**
+	// ⇒ ⇒⇒⇒ ⇒ exports 目录每天多一个文件、里面是同一批票
+	// ⇒ ⇒⇒⇒ ⇒ 而**定时流水线那份已经是这么处理的**（pipeline_a4.go：
+	// ⇒ ⇒⇒⇒ ⇒ `rep.AddError(...)` + `continue` ⇒ 不计入 marked）
+	// ⇒ ⇒⇒⇒ ⇒ **同一段逻辑的两份实现，一份对、一份静默**
+	// ⇒ ⇒⇒⇒ ⇒ ⇒ 修法落点就在这份静默的实现上（★ 同仓里已有正确写法时，
+	// ⇒ ⇒⇒⇒ ⇒   修法要落在那一份上）。
+	//
+	// ⚠ **不改整体响应码**：文件**已经生成**了（产物成功就是成功）
+	// ⇒ ⇒⇒ 但「哪些票没记上」必须**可区分** ⇒ ⇒⇒ ⇒ 响应里带一个**可选**字段
+	// ⇒ ⇒⇒ ⇒（`omitempty` ⇒ 老客户端不受影响 ⇒ 与 §944 D2 的 PushResult.error
+	// ⇒ ⇒⇒ ⇒  同一形状的先例）。
+	var unmarked []string
 	for i, f := range files {
 		if i >= len(exportedIDs) {
 			break
@@ -491,8 +505,11 @@ func (s *Server) handleEmailInvoiceExport(w http.ResponseWriter, r *http.Request
 		if skipped[filepath.Base(f)] {
 			continue
 		}
-		_ = s.emailStore.MarkInvoiceExported(r.Context(), exportedIDs[i], uid, wsID, now)
-		exported++
+		if err := s.emailStore.MarkInvoiceExported(r.Context(), exportedIDs[i], uid, wsID, now); err != nil {
+			log.Printf("ERROR: 发票 %s 标记已导出失败（下一轮会重导同一张票）: %v", exportedIDs[i], err)
+			unmarked = append(unmarked, exportedIDs[i])
+			continue
+		}
 	}
 	if s.wsHub != nil {
 		s.wsHub.BroadcastToUser(uid, "email.invoices.exported", map[string]any{
@@ -500,13 +517,29 @@ func (s *Server) handleEmailInvoiceExport(w http.ResponseWriter, r *http.Request
 			"skipped": gridExport.Skipped,
 		})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	// ⚠⚠ §945：响应体是 **map[string]any**，不是结构体 ⇒ ⇒⇒ ⇒
+	//	**`omitempty` 对 map 的值不生效** ⇒ ⇒⇒⇒ ⇒ 所以不能直接把
+	//	`"unmarked": unmarked` 放进 map ⇒ ⇒⇒⇒ ⇒ 否则正常路径也会出现
+	//	`"unmarked": null` ⇒ ⇒⇒⇒ ⇒ 而 TS 端若声明 `unmarked?: string[]`
+	//	⇒ ⇒⇒⇒ ⇒ （strictNullChecks 下）**null 不等于 undefined** ⇒ ⇒⇒⇒ ⇒
+	//	⇒ ⇒⇒⇒ ⇒ 客户端会拿到一个**类型不匹配**的值。
+	//	⇒ ⇒⇒⇒ ⇒ ⇒ ⇒ 所以：**有内容才加这个键**（这才是「可选字段」的真义）。
+	//
+	//	⚠ 这条是**判据写出来的**（§945 的 J-C 负控）：它本来会红，
+	//	  因为第一版直接把键塞进了 map ⇒ ⇒⇒ ⇒ 「omitempty 失效」这件事
+	//	  ⇒ ⇒⇒ ⇒ **只有真跑一遍响应体才看得见** ⇒ ⇒⇒ ⇒ ⇒ 源码读不出来。
+	respBody := map[string]any{
 		"file":    filepath.Base(outPath),
 		"count":   gridExport.Count,
 		"grid":    body.Grid,
 		"skipped": gridExport.Skipped,
 		"url":     "/api/emails/invoices/export/download?file=" + filepath.Base(outPath),
-	})
+	}
+	if len(unmarked) > 0 {
+		// 没记上「已导出」的票（下一轮会被重选 ⇒ 重复导出）
+		respBody["unmarked"] = unmarked
+	}
+	writeJSON(w, http.StatusOK, respBody)
 }
 
 // handleEmailInvoiceExportDownload — GET /api/emails/invoices/export/download?file=<name>

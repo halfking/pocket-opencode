@@ -1883,7 +1883,15 @@ func (s *Server) handleEmailBody(w http.ResponseWriter, r *http.Request, emailID
 	// 1) 缓存命中：body_path 非空才尝试读缓存文件，避免对未缓存邮件做无谓的 IO。
 	//    （em.BodyPath 来自 GetEmailByIDScoped 的 body_path 列；旧逻辑每次盲试文件。）
 	if em.BodyPath != "" {
-		if cached, _ := s.readCachedEmailBody(ctx, emailID, em.UID); cached != nil {
+		// ⚠ §945：原来这里是 `if cached, _ := s.readCachedEmailBody(...); cached != nil`
+		//	⇒ ⇒⇒ 读缓存失败 ⇒ ⇒⇒⇒ ⇒ 落到下面的「回源抓取」路径 ⇒ ⇒⇒⇒ ⇒
+		//	⇒ ⇒⇒⇒ ⇒ 后果是**一次多余的 IMAP 往返**（慢，但**正确**）
+		//	⇒ ⇒⇒⇒ ⇒ ⇒ 属可接受降级 ⇒ ⇒⇒⇒ ⇒ 但「为什么慢」必须看得见。
+		cached, cacheErr := s.readCachedEmailBody(ctx, emailID, em.UID)
+		if cacheErr != nil {
+			log.Printf("WARN: 读缓存邮件正文失败（将回源抓取，会多一次 IMAP 往返）email=%s: %v", emailID, cacheErr)
+		}
+		if cached != nil {
 			writeJSON(w, http.StatusOK, s.emailBodyResponse(emailID, "cache", cached))
 			return
 		}

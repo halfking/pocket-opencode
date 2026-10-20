@@ -10,6 +10,7 @@ package agentbridge
 import (
 	"context"
 	"fmt"
+	"log"
 	"time"
 )
 
@@ -100,6 +101,32 @@ type SendResult struct {
 	Attached   bool   `json:"attached"`
 }
 
+// updateStatus 写一次实例状态，**写失败必须留痕**（不吞）。
+//
+// ⚠⚠ §945：这 5 处原来都是 `_ = b.store.UpdateStatus(...)` ⇒ ⇒⇒ **完全无声**。
+//
+//	为什么这个错误**很重**（比「日志没打」严重）：
+//	状态**不是装饰** —— 它是**健康探测的判据**：库里那份状态决定了下一次
+//	探测会不会**继续往这个实例上派活**。
+//	⇒ ⇒⇒⇒ 写失败时，库里**仍然是旧状态** ⇒ ⇒⇒⇒ 比如「实例明明连不上，
+//	⇒ ⇒⇒⇒ 但库里还写着 online」⇒ ⇒⇒⇒ 下一次探测会继续往一个坏实例派活
+//	⇒ ⇒⇒⇒⇒ 而**没有人知道**状态没写进去 ⇒ ⇒⇒⇒ 派活失败会一直失败，
+//	⇒ ⇒⇒⇒ 且**没有任何一条日志指向真正的原因**。
+//
+//	⚠ 为什么**不**把它变成致命错误：
+//	本函数**每一步的失败都已经通过返回值可见**（下面 4 处都 `return err`）
+//	⇒ ⇒⇒⇒ 所以状态写失败**不该**再把主结果否定掉（那会拿一个次要的
+//	⇒ ⇒⇒⇒ 副作用去否定**主要结果**）⇒ ⇒⇒⇒ 正确处置是「留痕」。
+//
+//	⚠ 抽成**一个** helper 而不是抄 5 遍：★ 同一段逻辑抄 N 遍 ⇒
+//	  同一个缺陷必然出现在 N 处 ⇒ ⇒⇒⇒ 这里 5 处的处置必须一致。
+func (b *Bridge) updateStatus(ctx context.Context, agentID string, st Status) {
+	if err := b.store.UpdateStatus(ctx, agentID, st); err != nil {
+		log.Printf("ERROR: agentbridge: agent %s 状态写 %q 失败（库里状态未更新，健康探测仍按旧状态判断）: %v",
+			agentID, st, err)
+	}
+}
+
 // Send dispatches a prompt to the agent's underlying instance, creating a new
 // session. When opts.TaskID is set, the session is auto-attached to that task
 // via task_session_links (the spec §6.2 fix — previously dispatch did NOT
@@ -133,7 +160,7 @@ func (b *Bridge) Send(ctx context.Context, agentID, prompt string, opts SendOpti
 	// 2. Resolve instance → API base URL for the caller's workspace.
 	apiBase, err := b.resolver.ResolveAPIBaseForWorkspace(opts.WorkspaceID, agent.InstanceID)
 	if err != nil {
-		_ = b.store.UpdateStatus(ctx, agentID, StatusOffline)
+		b.updateStatus(ctx, agentID, StatusOffline)
 		return nil, fmt.Errorf("resolve instance %s: %w", agent.InstanceID, err)
 	}
 
@@ -148,11 +175,11 @@ func (b *Bridge) Send(ctx context.Context, agentID, prompt string, opts SendOpti
 	if err != nil {
 		// 创建会话失败不等同于实例离线——可能只是单次资源竞争。标记
 		// unknown 让下一次健康探测重新评估，而不是误判为 offline/busy。
-		_ = b.store.UpdateStatus(ctx, agentID, StatusUnknown)
+		b.updateStatus(ctx, agentID, StatusUnknown)
 		return nil, fmt.Errorf("create session: %w", err)
 	}
 	if info == nil || info.ID == "" {
-		_ = b.store.UpdateStatus(ctx, agentID, StatusUnknown)
+		b.updateStatus(ctx, agentID, StatusUnknown)
 		return nil, fmt.Errorf("create session returned empty id")
 	}
 
@@ -160,14 +187,14 @@ func (b *Bridge) Send(ctx context.Context, agentID, prompt string, opts SendOpti
 	sendIn := &SendPromptInput{Agent: opts.AgentName, Text: prompt}
 	if err := b.creator.SendPromptToSession(ctx, apiBase, info.ID, sendIn); err != nil {
 		// 会话已创建（实例可达）但本轮提示发送失败 → busy 而非 offline。
-		_ = b.store.UpdateStatus(ctx, agentID, StatusBusy)
+		b.updateStatus(ctx, agentID, StatusBusy)
 		return nil, fmt.Errorf("send prompt: %w", err)
 	}
 
 	// 5. Mark agent online — a session was created and prompted successfully,
 	//    so the instance is confirmed reachable (previously this incorrectly
 	//    left the agent stuck at "busy" after every successful dispatch).
-	_ = b.store.UpdateStatus(ctx, agentID, StatusOnline)
+	b.updateStatus(ctx, agentID, StatusOnline)
 
 	// 6. THE S0 FIX: auto-attach session to task if task_id was given.
 	res := &SendResult{

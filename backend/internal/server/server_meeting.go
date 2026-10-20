@@ -91,6 +91,51 @@ func (s *Server) handleMeetingRouter(w http.ResponseWriter, r *http.Request) {
 // STT is not configured) and updates the meeting status / transcript under the
 // caller's workspace scope. Returns 404 if the meeting is missing or owned by
 // another workspace.
+// ⚠⚠ §945：会议**状态写入**的两个 helper（原来 6 处都是 `_ = s.meetingStore.UpdateScoped(...)`）
+//
+//	★ 为什么要抽一份：**同一段逻辑抄两遍 ⇒ 同一缺陷必然出现在两处**
+//	（★ §80 形状）⇒ ⇒⇒ 6 处各写一遍「失败了怎么办」⇒ ⇒⇒ 处置就会**分叉**
+//	⇒ ⇒⇒ 所以这里把「写状态」这件事**收成共用的一份**，并把两种语义**分开命名**：
+//
+//	① markMeetingProgress —— **进度**标记（"transcribing" / "summarizing"）
+//	   ⇒ 写失败**不阻断**本次请求：它不是最终结果，后面还有终态写；
+//	     而如果这里就 500，会把一次**本来成功**的转写/摘要变成失败。
+//	   ⇒ 但失败必须**留痕**（日志）⇒ ⇒⇒ 「纯静音」不算失败处理。
+//
+//	② setMeetingStatus —— **终态**（"failed"）
+//	   ⇒ 写失败**必须让用户看见**（调用方回 500）⇒ ⇒⇒ 理由见函数注释。
+//
+//	⚠⚠ **终态写失败为什么必须让用户看见**（这是 §945 最重的一条）：
+//	失败的那一行会**永远停在中间状态**（例如 "summarizing"）
+//	⇒ ⇒⇒ 而那个状态**会被增量同步到别的设备**（§939 的同步链）
+//	⇒ ⇒⇒⇒ 用户在**所有设备**上都看到「总结中」，而且**永远不会自己结束**
+//	⇒ ⇒⇒⇒ 而 HTTP 层此刻会回「摘要失败」⇒ ⇒⇒⇒ **两处状态互相矛盾**
+//	⇒ ⇒⇒⇒ ⇒ 「失败必须可区分」在这里的含义是：错误文本要说出**真正卡住的地方**
+//	⇒ ⇒⇒⇒ ⇒ 而不是笼统的「失败了」。
+//
+//	⚠ 修法**不改响应形状**：终态写失败时回 500 + **错误文本**（与「摘要本身失败」
+//	  的文本**不同**）⇒ ⇒⇒ 客户端能区分「摘要失败」与「状态没写回去」。
+func (s *Server) markMeetingProgress(m *meeting.Meeting, status, ownerID, workspaceID string) {
+	m.Status = status
+	if err := s.meetingStore.UpdateScoped(m, ownerID, workspaceID); err != nil {
+		log.Printf("WARN: meeting %s: 进度状态 %q 写入失败（不阻断本次请求；后续终态写会覆盖它）: %v",
+			m.ID, status, err)
+	}
+}
+
+// setMeetingStatus 写一次**终态**状态，并**返回写库错误**（**不吞**）。
+//
+//	调用方必须自己决定怎么处置 ⇒ ⇒⇒ **不要**在这里返回 HTTP 响应
+//	（helper 带上 ResponseWriter 就会把「写库」与「HTTP」两件事揉在一起）。
+func (s *Server) setMeetingStatus(m *meeting.Meeting, status, ownerID, workspaceID string) error {
+	m.Status = status
+	if err := s.meetingStore.UpdateScoped(m, ownerID, workspaceID); err != nil {
+		log.Printf("ERROR: meeting %s: 状态 %q 写入失败: %v", m.ID, status, err)
+		return err
+	}
+	return nil
+}
+
 func (s *Server) handleTranscribeMeeting(w http.ResponseWriter, r *http.Request, id string) {
 	if id == "" {
 		writeError(w, http.StatusBadRequest, "missing meeting id")
@@ -107,21 +152,29 @@ func (s *Server) handleTranscribeMeeting(w http.ResponseWriter, r *http.Request,
 		writeError(w, http.StatusNotFound, "meeting not found")
 		return
 	}
-	m.Status = "transcribing"
-	_ = s.meetingStore.UpdateScoped(m, uid, workspaceID)
+	s.markMeetingProgress(m, "transcribing", uid, workspaceID)
 
 	r.Body = http.MaxBytesReader(w, r.Body, maxAudioBodyBytes)
 	audioData, err := io.ReadAll(r.Body)
 	if err != nil {
-		m.Status = "failed"
-		_ = s.meetingStore.UpdateScoped(m, uid, workspaceID)
+		if serr := s.setMeetingStatus(m, "failed", uid, workspaceID); serr != nil {
+			// ⚠ §945：终态写失败 ⇒ 会议会**永远停在 "transcribing"** ⇒ ⇒⇒
+			// 而那个状态**会被同步到别的设备** ⇒ ⇒⇒⇒ 回 500 并把「卡在哪」说清楚
+			// ⇒ ⇒⇒⇒ （不是笼统的 400「音频读失败」—— 那个会把状态矛盾藏起来）
+			writeError(w, http.StatusInternalServerError,
+				"failed to read audio data, and the meeting status could not be persisted (it may stay in progress)")
+			return
+		}
 		writeError(w, http.StatusBadRequest, "failed to read audio data")
 		return
 	}
 	defer r.Body.Close()
 	if len(audioData) == 0 {
-		m.Status = "failed"
-		_ = s.meetingStore.UpdateScoped(m, uid, workspaceID)
+		if serr := s.setMeetingStatus(m, "failed", uid, workspaceID); serr != nil {
+			writeError(w, http.StatusInternalServerError,
+				"empty audio data, and the meeting status could not be persisted (it may stay in progress)")
+			return
+		}
 		writeError(w, http.StatusBadRequest, "empty audio data")
 		return
 	}
@@ -150,8 +203,14 @@ func (s *Server) handleTranscribeMeeting(w http.ResponseWriter, r *http.Request,
 	// ⇒ 登记为 #24 待拍；修法是本处改走 plain 形态（试转页保持开）。
 	result, err := s.transcriber.TranscribeFor(ctx, scope, audioData, stt.FilenameForAudio(audioData, "meeting.wav"))
 	if err != nil {
-		m.Status = "failed"
-		_ = s.meetingStore.UpdateScoped(m, uid, workspaceID)
+		if serr := s.setMeetingStatus(m, "failed", uid, workspaceID); serr != nil {
+			// ⚠ §945：终态写失败 ⇒ 会议永远停在 "transcribing" ⇒ ⇒⇒ 回 500
+			//   并把「卡在哪」说清楚（⚠ 与下面那个 502「转写失败」**区分开**：
+			//   ⇒⇒⇒ 一个是「转写服务失败」，一个是「状态没写回去」）
+			writeError(w, http.StatusInternalServerError,
+				"transcription failed, and the meeting status could not be persisted (it may stay in progress)")
+			return
+		}
 		// 已带错误码的（stt_unavailable: …）原样回传。api/error-message.ts 取
 		// 第一个冒号前的 [a-z0-9_]+ 当错误码；再套 "transcription failed: "
 		// 前缀会让它匹配失败，用户就只能看到通用「服务端错误」。
@@ -196,13 +255,23 @@ func (s *Server) handleSummarizeMeeting(w http.ResponseWriter, r *http.Request, 
 		writeError(w, http.StatusBadRequest, "meeting has no transcript, transcribe first")
 		return
 	}
-	m.Status = "summarizing"
-	_ = s.meetingStore.UpdateScoped(m, uid, workspaceID)
+	s.markMeetingProgress(m, "summarizing", uid, workspaceID)
 
 	summary, err := meeting.SummarizeTranscript(m.Transcript, m.Title)
 	if err != nil {
-		m.Status = "failed"
-		_ = s.meetingStore.UpdateScoped(m, uid, workspaceID)
+		if serr := s.setMeetingStatus(m, "failed", uid, workspaceID); serr != nil {
+			// ⚠⚠ §945：这一处**是活路径**（前端 useLiveSummary.ts 真的在调
+			//   /api/meetings/{id}/summarize）⇒ ⇒⇒ 终态写失败 ⇒ 会议**永远
+			//   停在 "summarizing"** ⇒ ⇒⇒ 而那个状态**会被增量同步到别的设备**
+			//   ⇒ ⇒⇒⇒ 用户在所有设备上都看到「总结中」且永远不会结束
+			//   ⇒ ⇒⇒⇒ 而下面那句 500「summarization failed」只说了「摘要失败」
+			//   ⇒ ⇒⇒⇒ ⇒ 库里的状态与 HTTP 说的**互相矛盾** ⇒ ⇒⇒⇒
+			//   ⇒ 「失败必须可区分」：这里要说清**真正卡住的地方**。
+			log.Printf("ERROR: meeting %s: 摘要失败且状态未能写回（会议将停在 summarizing）: %v", m.ID, err)
+			writeError(w, http.StatusInternalServerError,
+				"summarization failed, and the meeting status could not be persisted (it may stay in progress)")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "summarization failed: "+err.Error())
 		return
 	}

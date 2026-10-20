@@ -262,7 +262,22 @@ func main() {
 			log.Fatalf("user store: %v", err)
 		}
 		userStore = us
-		if n, _ := us.CountUsers(context.Background()); n == 0 {
+		// ⚠⚠ §945：原来这里是 `if n, _ := us.CountUsers(ctx); n == 0 {`
+		//	⇒ ⇒⇒ **读失败被当成「库里一个人都没有」** ⇒ ⇒⇒⇒ ⇒ 于是走 bootstrap
+		//	⇒ ⇒⇒⇒ ⇒ 分支 ⇒ ⇒⇒⇒ ⇒ 而 bootstrap 会**再插一个 admin 用户**。
+		//
+		//	⚠ 后果（为什么这不是「无害的小错」）：
+		//	「库里本来有用户、但这一次 count 查询失败了」⇒ ⇒⇒⇒ ⇒ 走 bootstrap
+		//	⇒ ⇒⇒⇒ ⇒ ⇒ InsertUser 要么撞用户名（被 WARN 掉，看不出真相）
+		//	⇒ ⇒⇒⇒ ⇒ 要么**真的插出第二个 admin**（当 bootstrap 用的名字没被占用）
+		//	⇒ ⇒⇒⇒ ⇒ ⇒ ⇒⇒ ⇒ **多一个 admin 账号是安全问题**，而它的成因
+		//	⇒ ⇒⇒⇒ ⇒ ⇒ 完全看不见（因为 count 的错误被丢了）。
+		//
+		//	⚠ 修法：**读失败 ⇒ 不 bootstrap**（对未知状态不做动作，fail-closed）
+		//	  ⇒ ⇒⇒ 而不是「当成空库」。
+		if n, err := us.CountUsers(context.Background()); err != nil {
+			log.Printf("ERROR: 统计用户数失败（**不**执行 first-user bootstrap，以免在未知状态下多插一个 admin）: %v", err)
+		} else if n == 0 {
 			create, user, pass, note := bootstrapDecision(cfg.DevAuthUser, cfg.DevAuthPass)
 			switch {
 			case note != "":
@@ -1308,38 +1323,55 @@ func main() {
 
 	// 1. 注册 OpenCode HTTP adapter
 	opencodeAgentAdapter := agent.NewOpenCodeAdapter(opencodeAdapter)
-	_ = agentReg.Register(agent.AgentRef{Type: "opencode", Target: ""}, opencodeAgentAdapter)
+	// ⚠⚠ §945：原来这里是 `_ = agentReg.Register(...)` ⇒ ⇒⇒ **注册失败完全无声**
+	//	⇒ ⇒⇒⇒ ⇒ 那个 agent 类型**根本没接上** ⇒ ⇒⇒⇒ ⇒ 而现象是「这个
+	//	⇒ ⇒⇒⇒ ⇒ agent 类型怎么调都不响应」⇒ ⇒⇒⇒ ⇒ **看起来像下游问题**，
+	//	⇒ ⇒⇒⇒ ⇒ 实际上问题在**注册这一步**（早了几百行、几万个字之前）。
+	//	⚠ 注册失败**不该**让整个进程退出（其余 adapter 仍可用）⇒ ⇒⇒⇒ ⇒
+	//	⇒ ⇒⇒⇒ ⇒ 正确处置是「留痕」。
+	if err := agentReg.Register(agent.AgentRef{Type: "opencode", Target: ""}, opencodeAgentAdapter); err != nil {
+		log.Printf("ERROR: 注册 opencode agent adapter 失败（该 agent 类型将不可用）: %v", err)
+	}
 	// 用 instanceMap 把 instance_id 也映射到 opencode adapter（兼容旧 query）
 	for _, ref := range reg.ListInstances() {
 		apiBase, err := reg.GetInstanceAPIBase(ref.ID)
 		if err != nil {
 			continue
 		}
-		_ = agentReg.Register(
+		// ⚠ §945：同上 —— 注册失败必须留痕（否则这个 instance 静默不可用）。
+		if err := agentReg.Register(
 			agent.AgentRef{Type: "opencode", Target: apiBase},
 			opencodeAgentAdapter,
 			ref.ID,
-		)
+		); err != nil {
+			log.Printf("ERROR: 注册 opencode agent adapter 失败（instance=%s 将不可用）: %v", ref.ID, err)
+		}
 	}
 
 	// 2. 注册 ACP stdio adapter（新增）
 	acpStdioAdapter := agent.NewACPStdioAdapter()
 	// 示例：注册 agent_echo（测试用）
 	if agentEchoPath := os.Getenv("AGENT_ECHO_PATH"); agentEchoPath != "" {
-		_ = agentReg.Register(
+		// ⚠ §945：注册失败必须留痕（否则 agent-echo 这个 agent 类型静默不可用）。
+		if err := agentReg.Register(
 			agent.AgentRef{Type: "acp-stdio", Target: agentEchoPath},
 			acpStdioAdapter,
 			"agent-echo-1", // instance_id for legacy query
-		)
+		); err != nil {
+			log.Printf("ERROR: 注册 ACP stdio agent（agent-echo）失败: %v", err)
+		}
 		log.Printf("Registered ACP stdio agent: agent_echo at %s", agentEchoPath)
 	}
 	// 示例：注册 Claude CLI（如果存在）
 	if claudePath := os.Getenv("CLAUDE_CLI_PATH"); claudePath != "" {
-		_ = agentReg.Register(
+		// ⚠ §945：注册失败必须留痕（否则 claude-1 这个 instance 静默不可用）。
+		if err := agentReg.Register(
 			agent.AgentRef{Type: "acp-stdio", Target: claudePath},
 			acpStdioAdapter,
 			"claude-1", // instance_id
-		)
+		); err != nil {
+			log.Printf("ERROR: 注册 ACP stdio agent（claude-1）失败: %v", err)
+		}
 		log.Printf("Registered ACP stdio agent: Claude CLI at %s", claudePath)
 	}
 
@@ -1348,11 +1380,14 @@ func main() {
 	// `pi --mode json` 子进程。PI_CLI_PATH 设置时才注册，缺省不注册。
 	if piPath := os.Getenv("PI_CLI_PATH"); piPath != "" {
 		piAdapter := agent.NewPiAdapter(piPath, "")
-		_ = agentReg.Register(
+		// ⚠ §945：注册失败必须留痕（否则 pi-1 这个 instance 静默不可用）。
+		if err := agentReg.Register(
 			agent.AgentRef{Type: "pi", Target: piPath},
 			piAdapter,
 			"pi-1", // instance_id
-		)
+		); err != nil {
+			log.Printf("ERROR: 注册 pi agent adapter 失败: %v", err)
+		}
 		log.Printf("Registered pi coding agent at %s", piPath)
 	}
 

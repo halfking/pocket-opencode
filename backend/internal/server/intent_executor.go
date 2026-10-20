@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net/mail"
 	"strings"
 	"time"
@@ -75,7 +76,19 @@ func (e *intentExecutor) executeRouteFolder(ctx context.Context, intent email.Ac
 	// 服务器侧已迁移，同步本地归属记录，收件箱视图随即隐藏该邮件。
 	if _, err := e.store.SetEmailsFolderScoped(ctx, []string{em.ID}, intent.UserID, intent.WorkspaceID, folder); err != nil {
 		// 只记日志不失败：IMAP 已成功，本地标记失败会在下次 sync 收敛。
-		_ = err
+		//
+		// ⚠⚠ §945：原来这里是 `_ = err` ⇒ ⇒⇒ **注释说「只记日志」，
+		//	  而代码里根本没有日志** ⇒ ⇒⇒⇒ ⇒ 注释描述的行为**不存在**
+		//	  ⇒ ⇒⇒⇒ ⇒ 而这类「注释与实现不一致」最难查：读代码的人会
+		//	  ⇒ ⇒⇒⇒ ⇒ **按注释**相信失败被记录了。
+		//
+		//	后果：本地归属没更新 ⇒ ⇒⇒ 而收件箱视图是**按本地 folder 过滤**的
+		//	⇒ ⇒⇒⇒ ⇒ 这封已经被 IMAP 移走的邮件，在本地视图里**还会出现**
+		//	⇒ ⇒⇒⇒ ⇒ 而「下次 sync 会收敛」这句话**没有任何证据支撑**
+		//	⇒ ⇒⇒⇒ ⇒ （sync 会不会覆盖、什么时候覆盖，都不在这一行里）
+		//	⇒ ⇒⇒⇒ ⇒ ⇒ 而日志是**唯一**能让人回头查这件事的东西。
+		log.Printf("ERROR: route-folder: 更新本地邮件归属失败（IMAP 已移到 %s，本地视图可能仍显示在原文件夹）email=%s: %v",
+			folder, em.ID, err)
 	}
 	return nil
 }
