@@ -83,14 +83,14 @@ appId: com.kaixuan.opencode.pocket
     timeout: 40000
 - assertVisible: "更多功能|More features"
 - tapOn:
-    text: ".*邮箱.*"
+    text: ".*邮箱.*|.*Email.*"
     retryTapIfNoChange: true
 - runFlow:
     when:
-      notVisible: "邮箱"
+      notVisible: "邮箱|Email"
     commands:
       - tapOn:
-          text: ".*邮箱.*"
+          text: ".*邮箱.*|.*Email.*"
           retryTapIfNoChange: true
       - waitForAnimationToEnd:
           timeout: 3000
