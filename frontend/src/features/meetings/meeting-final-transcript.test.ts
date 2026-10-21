@@ -1119,8 +1119,10 @@ describe('J · §954 接线层（源码扫描，⚠ 按 §818 的教训对「信
     const at = s.indexOf('refetchFullTranscript(')
     assert.ok(at > 0, '收尾里找不到 refetchFullTranscript 调用')
     const window = s.slice(at, at + 600)
-    assert.match(window, /loadAudioChunks/,
-      'refetchFullTranscript 的调用点上没有 loadAudioChunks ⇒ 分块源永远传不进去')
+    // ⚠ 断言必须钉**「传的是 deps 那个」**而不是「窗口里出现过 loadAudioChunks 这几个字」
+    //   —— 否则 `loadAudioChunks: undefined` 这种「把整条链掐断」的写法照样绿。
+    assert.match(window, /loadAudioChunks:\s*deps\.loadAudioChunks/,
+      'refetchFullTranscript 的调用点上没有把 deps.loadAudioChunks 传进去 ⇒ 分块源永远传不进去')
   })
 
   it('★ 默认分块源必须**只在原生平台**生效（非原生返回 null ⇒ Web/iOS 行为一个字不变）', () => {
