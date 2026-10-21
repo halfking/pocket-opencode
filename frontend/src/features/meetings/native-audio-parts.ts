@@ -35,6 +35,14 @@
  *   ⇒ **与会议时长无关**（1 小时与 8 小时同量级）⇒ 满足属主那条
  *     「时长无限长、只取决于存储的大小」。
  *   ⚠ 对照：把整场拼成一块再送，峰值 = 整场（115.2 MB/小时 ⇒ 8 小时 921 MB）。
+ *
+ * ── §955：这一层的**形状**被收紧成「生产者的类型比消费者的更严格」──
+ *   §954 落地后，「§805 的时长护栏在原生链上复活」那句话是**假的**：
+ *   生产者产出的形状里**没有 `durationSec`** ⇒ 消费侧读到 `undefined`
+ *   ⇒ 护栏**仍然**恒判 `no-ground-truth`（详见 `NativeAudioChunkSource` 的头注释）。
+ *   ⇒ 而当时判据**量不到**真件（真件住在 import 了 `Filesystem`/`local-db` 的
+ *   模块里 ⇒ **node 跑不到**）⇒ ⇒ 本模块因此多了一个**纯的**入口
+ *   （`streamNativeAudioChunkSources`，**I/O 注入**）⇒ 真件在 node 里可直接跑。
  */
 import {
   FULL_TRANSCRIBE_CHUNK_SECONDS,
