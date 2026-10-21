@@ -13,6 +13,7 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/background"
 	"github.com/halfking/pocket-opencode/backend/internal/model"
 	"github.com/halfking/pocket-opencode/backend/internal/outbound"
+	"github.com/halfking/pocket-opencode/backend/internal/sizedread"
 )
 
 // InstanceConfig 实例配置（从环境变量或配置文件加载，或由发现/注册产生）
@@ -263,7 +264,7 @@ func (r *Registry) checkInstanceHealth(ctx context.Context, apiBaseURL string) h
 		Capabilities []string          `json:"capabilities"`
 		Machine      model.MachineInfo `json:"machine"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.NewDecoder(sizedread.Limit(resp.Body, sizedread.MaxJSONBodyBytes)).Decode(&result); err != nil {
 		return healthProbe{Health: "unhealthy"}
 	}
 

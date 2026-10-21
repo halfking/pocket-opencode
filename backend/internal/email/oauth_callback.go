@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -13,6 +12,7 @@ import (
 	"time"
 
 	"github.com/halfking/pocket-opencode/backend/internal/outbound"
+	"github.com/halfking/pocket-opencode/backend/internal/sizedread"
 )
 
 // oauthTokenTimeout 是访问 provider token 端点的总超时（§950：出站必须有上界）。
@@ -276,7 +276,10 @@ func exchangeCodeForToken(ctx context.Context, provider Provider, code, codeVeri
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
+	body, readErr := sizedread.All(resp.Body, sizedread.MaxJSONBodyBytes)
+	if readErr != nil {
+		return nil, fmt.Errorf("read token response: %w", readErr)
+	}
 	if resp.StatusCode != 200 {
 		return nil, fmt.Errorf("token exchange failed: %d %s", resp.StatusCode, string(body))
 	}

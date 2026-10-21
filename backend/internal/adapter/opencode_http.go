@@ -13,6 +13,7 @@ import (
 
 	"github.com/halfking/pocket-opencode/backend/internal/background"
 	"github.com/halfking/pocket-opencode/backend/internal/outbound"
+	"github.com/halfking/pocket-opencode/backend/internal/sizedread"
 )
 
 type OpenCodeHTTPAdapter struct {
@@ -83,7 +84,7 @@ func (a *OpenCodeHTTPAdapter) GetSessionSummary(ctx context.Context, instanceBas
 		} `json:"data"`
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.NewDecoder(sizedread.Limit(resp.Body, sizedread.MaxJSONBodyBytes)).Decode(&result); err != nil {
 		return "", fmt.Errorf("decode session failed: %w", err)
 	}
 
@@ -130,7 +131,7 @@ type OpenCodeSessionInfo struct {
 // 实际响应格式：直接是数组 [SessionInfo, ...]
 func parseSessionList(body io.Reader) ([]OpenCodeSession, error) {
 	// 先尝试读取响应体
-	bodyBytes, err := io.ReadAll(body)
+	bodyBytes, err := sizedread.All(body, sizedread.MaxJSONBodyBytes)
 	if err != nil {
 		return nil, fmt.Errorf("read response body failed: %w", err)
 	}
@@ -212,7 +213,7 @@ func (a *OpenCodeHTTPAdapter) ListRemoteTasks(ctx context.Context, instanceBaseU
 	var response struct {
 		Data []OpenCodeSessionInfo `json:"data"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+	if err := json.NewDecoder(sizedread.Limit(resp.Body, sizedread.MaxJSONBodyBytes)).Decode(&response); err != nil {
 		return nil, fmt.Errorf("decode sessions failed: %w", err)
 	}
 
@@ -264,7 +265,7 @@ func (a *OpenCodeHTTPAdapter) GetSessionDetail(ctx context.Context, instanceBase
 	}
 
 	// 双格式兼容：裸对象 {id, ...} 或包装 {data: {id, ...}}
-	body, err := io.ReadAll(resp.Body)
+	body, err := sizedread.All(resp.Body, sizedread.MaxJSONBodyBytes)
 	if err != nil {
 		return nil, fmt.Errorf("read session body failed: %w", err)
 	}
@@ -317,7 +318,7 @@ func (a *OpenCodeHTTPAdapter) CreateSession(ctx context.Context, instanceBaseURL
 
 	// OpenCode 真实响应是裸对象 {id, slug, ...}，旧版可能是 {data: {...}} 包装。
 	// 双格式兼容：先试裸对象，再试包装对象。
-	respBody, readErr := io.ReadAll(resp.Body)
+	respBody, readErr := sizedread.All(resp.Body, sizedread.MaxJSONBodyBytes)
 	if readErr != nil {
 		return nil, fmt.Errorf("read session body failed: %w", readErr)
 	}
@@ -383,7 +384,7 @@ func (a *OpenCodeHTTPAdapter) SendPrompt(ctx context.Context, instanceBaseURL, s
 	var wrapper struct {
 		Data SendPromptResponse `json:"data"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&wrapper); err == nil {
+	if err := json.NewDecoder(sizedread.Limit(resp.Body, sizedread.MaxJSONBodyBytes)).Decode(&wrapper); err == nil {
 		return &wrapper.Data, nil
 	}
 
@@ -469,7 +470,7 @@ func (a *OpenCodeHTTPAdapter) GetSessionMessages(ctx context.Context, instanceBa
 
 	// OpenCode 真实响应是裸数组 [...]，但旧版/某些端点可能返回 {data:[...]} 包装。
 	// 双格式兼容：先试裸数组，再试包装对象（与 parseSessionList 策略一致）。
-	body, err := io.ReadAll(resp.Body)
+	body, err := sizedread.All(resp.Body, sizedread.MaxJSONBodyBytes)
 	if err != nil {
 		return nil, fmt.Errorf("read messages body failed: %w", err)
 	}
@@ -523,7 +524,7 @@ func (a *OpenCodeHTTPAdapter) GetSessionContext(ctx context.Context, instanceBas
 	var response struct {
 		Data []OpenCodeMessage `json:"data"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+	if err := json.NewDecoder(sizedread.Limit(resp.Body, sizedread.MaxJSONBodyBytes)).Decode(&response); err != nil {
 		return nil, fmt.Errorf("decode context failed: %w", err)
 	}
 
@@ -674,7 +675,7 @@ func (a *OpenCodeHTTPAdapter) HealthCheck(ctx context.Context, instanceBaseURL s
 		Healthy bool   `json:"healthy"`
 		Version string `json:"version"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.NewDecoder(sizedread.Limit(resp.Body, sizedread.MaxJSONBodyBytes)).Decode(&result); err != nil {
 		return fmt.Errorf("decode health check response failed: %w", err)
 	}
 
@@ -751,14 +752,14 @@ func (a *OpenCodeHTTPAdapter) GetPermissionRequests(ctx context.Context, instanc
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body := sizedread.Snippet(resp.Body, sizedread.MaxErrorBodyBytes)
 		return nil, fmt.Errorf("opencode get permission requests returned %d: %s", resp.StatusCode, string(body))
 	}
 
 	var response struct {
 		Data []PermissionRequest `json:"data"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+	if err := json.NewDecoder(sizedread.Limit(resp.Body, sizedread.MaxJSONBodyBytes)).Decode(&response); err != nil {
 		return nil, fmt.Errorf("decode permission requests failed: %w", err)
 	}
 
@@ -795,14 +796,14 @@ func (a *OpenCodeHTTPAdapter) GetAllPendingPermissionRequests(ctx context.Contex
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body := sizedread.Snippet(resp.Body, sizedread.MaxErrorBodyBytes)
 		return nil, fmt.Errorf("opencode get all pending permission requests returned %d: %s", resp.StatusCode, string(body))
 	}
 
 	var response struct {
 		Data []PermissionRequest `json:"data"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+	if err := json.NewDecoder(sizedread.Limit(resp.Body, sizedread.MaxJSONBodyBytes)).Decode(&response); err != nil {
 		return nil, fmt.Errorf("decode permission requests failed: %w", err)
 	}
 
@@ -838,7 +839,7 @@ func (a *OpenCodeHTTPAdapter) ReplyPermission(ctx context.Context, instanceBaseU
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
-		respBody, _ := io.ReadAll(resp.Body)
+		respBody := sizedread.Snippet(resp.Body, sizedread.MaxErrorBodyBytes)
 		return fmt.Errorf("opencode reply permission returned %d: %s", resp.StatusCode, string(respBody))
 	}
 
@@ -914,14 +915,14 @@ func (a *OpenCodeHTTPAdapter) GetQuestionRequests(ctx context.Context, instanceB
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body := sizedread.Snippet(resp.Body, sizedread.MaxErrorBodyBytes)
 		return nil, fmt.Errorf("opencode get question requests returned %d: %s", resp.StatusCode, string(body))
 	}
 
 	var response struct {
 		Data []QuestionRequest `json:"data"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+	if err := json.NewDecoder(sizedread.Limit(resp.Body, sizedread.MaxJSONBodyBytes)).Decode(&response); err != nil {
 		return nil, fmt.Errorf("decode question requests failed: %w", err)
 	}
 
@@ -957,14 +958,14 @@ func (a *OpenCodeHTTPAdapter) GetAllPendingQuestionRequests(ctx context.Context,
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body := sizedread.Snippet(resp.Body, sizedread.MaxErrorBodyBytes)
 		return nil, fmt.Errorf("opencode get all pending question requests returned %d: %s", resp.StatusCode, string(body))
 	}
 
 	var response struct {
 		Data []QuestionRequest `json:"data"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+	if err := json.NewDecoder(sizedread.Limit(resp.Body, sizedread.MaxJSONBodyBytes)).Decode(&response); err != nil {
 		return nil, fmt.Errorf("decode question requests failed: %w", err)
 	}
 
@@ -1000,7 +1001,7 @@ func (a *OpenCodeHTTPAdapter) ReplyQuestion(ctx context.Context, instanceBaseURL
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
-		respBody, _ := io.ReadAll(resp.Body)
+		respBody := sizedread.Snippet(resp.Body, sizedread.MaxErrorBodyBytes)
 		return fmt.Errorf("opencode reply question returned %d: %s", resp.StatusCode, string(respBody))
 	}
 
@@ -1029,7 +1030,7 @@ func (a *OpenCodeHTTPAdapter) RejectQuestion(ctx context.Context, instanceBaseUR
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
-		respBody, _ := io.ReadAll(resp.Body)
+		respBody := sizedread.Snippet(resp.Body, sizedread.MaxErrorBodyBytes)
 		return fmt.Errorf("opencode reject question returned %d: %s", resp.StatusCode, string(respBody))
 	}
 

@@ -8,6 +8,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
@@ -15,7 +16,6 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/halfking/pocket-opencode/backend/internal/outbound"
+	"github.com/halfking/pocket-opencode/backend/internal/sizedread"
 )
 
 func env(k string) string {
@@ -98,8 +99,8 @@ func get(rawurl string) (int, string) {
 		return 0, "ERR " + err.Error()
 	}
 	defer res.Body.Close()
-	b, _ := io.ReadAll(res.Body)
-	return res.StatusCode, string(b)
+	b := sizedread.Snippet(res.Body, sizedread.MaxErrorBodyBytes)
+	return res.StatusCode, b
 }
 
 func main() {

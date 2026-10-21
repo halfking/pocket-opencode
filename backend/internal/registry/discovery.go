@@ -19,6 +19,7 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/background"
 	"github.com/halfking/pocket-opencode/backend/internal/model"
 	"github.com/halfking/pocket-opencode/backend/internal/outbound"
+	"github.com/halfking/pocket-opencode/backend/internal/sizedread"
 )
 
 // DefaultPorts is the ordered list of ports to scan for OpenCode instances.
@@ -227,7 +228,7 @@ func probeHealth(ctx context.Context, client *http.Client, host string, port int
 		Capabilities []string          `json:"capabilities"` // 真实能力
 		Machine      model.MachineInfo `json:"machine"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.NewDecoder(sizedread.Limit(resp.Body, sizedread.MaxJSONBodyBytes)).Decode(&result); err != nil {
 		return InstanceConfig{}, false
 	}
 	if !result.Healthy && result.Status != "ok" {

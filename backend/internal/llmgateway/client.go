@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/halfking/pocket-opencode/backend/internal/outbound"
+	"github.com/halfking/pocket-opencode/backend/internal/sizedread"
 )
 
 // normalizeBaseURL 把用户/配置里可能带 /v1 后缀的网关地址收敛为「不含 /v1、
@@ -255,7 +256,7 @@ func (c *Client) chatOpenAI(ctx context.Context, req ChatRequest) (*ChatResponse
 	}
 
 	var out ChatResponse
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+	if err := json.NewDecoder(sizedread.Limit(resp.Body, sizedread.MaxJSONBodyBytes)).Decode(&out); err != nil {
 		return nil, fmt.Errorf("decode chat response: %w", err)
 	}
 	return &out, nil
@@ -442,7 +443,7 @@ func (c *Client) Embed(ctx context.Context, req EmbeddingRequest) (*EmbeddingRes
 	}
 
 	var out EmbeddingResponse
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+	if err := json.NewDecoder(sizedread.Limit(resp.Body, sizedread.MaxJSONBodyBytes)).Decode(&out); err != nil {
 		return nil, fmt.Errorf("decode embed response: %w", err)
 	}
 	return &out, nil
@@ -476,7 +477,7 @@ func (c *Client) ListModels(ctx context.Context) ([]ModelInfo, error) {
 	var out struct {
 		Data []ModelInfo `json:"data"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+	if err := json.NewDecoder(sizedread.Limit(resp.Body, sizedread.MaxJSONBodyBytes)).Decode(&out); err != nil {
 		return nil, fmt.Errorf("decode models: %w", err)
 	}
 	return out.Data, nil
@@ -530,7 +531,7 @@ func (c *Client) ExportSession(ctx context.Context, gwSessionID, tenantID string
 	}
 
 	var pack SessionPack
-	if err := json.NewDecoder(resp.Body).Decode(&pack); err != nil {
+	if err := json.NewDecoder(sizedread.Limit(resp.Body, sizedread.MaxJSONBodyBytes)).Decode(&pack); err != nil {
 		return nil, fmt.Errorf("decode session pack: %w", err)
 	}
 	return &pack, nil
@@ -565,7 +566,7 @@ func (c *Client) ImportPack(ctx context.Context, pack *SessionPack, tenantID str
 	}
 
 	var out ImportPackResp
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+	if err := json.NewDecoder(sizedread.Limit(resp.Body, sizedread.MaxJSONBodyBytes)).Decode(&out); err != nil {
 		return nil, fmt.Errorf("decode import resp: %w", err)
 	}
 	return &out, nil
@@ -592,7 +593,7 @@ func (c *Client) FetchPack(ctx context.Context, packID, tenantID string) (*Sessi
 	}
 
 	var pack SessionPack
-	if err := json.NewDecoder(resp.Body).Decode(&pack); err != nil {
+	if err := json.NewDecoder(sizedread.Limit(resp.Body, sizedread.MaxJSONBodyBytes)).Decode(&pack); err != nil {
 		return nil, fmt.Errorf("decode pack: %w", err)
 	}
 	return &pack, nil

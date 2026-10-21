@@ -13,13 +13,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
 	"github.com/halfking/pocket-opencode/backend/internal/outbound"
+	"github.com/halfking/pocket-opencode/backend/internal/sizedread"
 )
 
 // RefreshError is the structured error returned by DefaultOAuthRefresher
@@ -150,7 +150,10 @@ func (r *DefaultOAuthRefresher) Refresh(ctx context.Context, tokenURL, clientID,
 		return nil, &RefreshError{Permanent: false, Code: "network_error", Cause: err}
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
+	body, readErr := sizedread.All(resp.Body, sizedread.MaxJSONBodyBytes)
+	if readErr != nil {
+		return nil, &RefreshError{Permanent: false, Code: "read_error", Cause: readErr}
+	}
 	if resp.StatusCode != http.StatusOK {
 		providerCode := parseOAuthErrorBody(body)
 		classifier := classifyRefreshStatus(resp.StatusCode, providerCode)

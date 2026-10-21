@@ -23,6 +23,7 @@ import (
 	"github.com/emersion/go-imap/v2/imapclient"
 
 	"github.com/halfking/pocket-opencode/backend/internal/background"
+	"github.com/halfking/pocket-opencode/backend/internal/sizedread"
 )
 
 // mime.go — 发票采集流水线的全文抓取与 MIME 解析。
@@ -539,6 +540,18 @@ func ParseMIMEMessage(raw []byte) (*ParsedMessage, error) {
 // maxWalkDepth 防 multipart 深层嵌套（恶意构造）打爆递归。
 const maxWalkDepth = 8
 
+// §952：MIME 部件正文与编码字的大小上界。
+//
+// ⚠ 上游已经把**整封邮件**限在 8 MiB（同一文件里的 maxMessageBytes）
+// ⇒⇒⇒ 下面这两档是**兜底**：正常路径永远碰不到，
+// ⇒⇒⇒ 目的不是「限流量」，是「**保证读的长度是有限的**」。
+const (
+	// maxMIMEPartBytes 单个 MIME 部件正文的上限（16 MiB）。
+	maxMIMEPartBytes = 16 << 20
+	// maxMIMEWordBytes 单个 MIME 编码字（RFC 2047）的上限（64 KiB）。
+	maxMIMEWordBytes = 64 << 10
+)
+
 func walkMultipart(r io.Reader, mediaType, boundary string, out *ParsedMessage, depth int) {
 	if depth > maxWalkDepth || boundary == "" {
 		return
@@ -615,8 +628,16 @@ func decodePartBody(r io.Reader, contentType, transferEncoding string) (string, 
 func decodePartBytes(r io.Reader, transferEncoding string) ([]byte, error) {
 	switch strings.ToLower(strings.TrimSpace(transferEncoding)) {
 	case "base64":
-		raw, err := io.ReadAll(base64.NewDecoder(base64.StdEncoding, r))
+		raw, err := io.ReadAll(sizedread.Limit(base64.NewDecoder(base64.StdEncoding, r), maxMIMEPartBytes))
 		if err != nil {
+			if errors.Is(err, sizedread.ErrTooLarge) {
+				// §952：太大 ⇒ **明确失败**。
+				//
+				// ⚠ 不能沿用下面那行「有部分数据就算数」的旧口径：
+				// 那样会把**半个附件**当成完整附件存下来
+				// ⇒⇒⇒ 而「截断了」与「完整」在下游完全同形。
+				return nil, err
+			}
 			if len(raw) == 0 {
 				return nil, err
 			}
@@ -632,7 +653,7 @@ func decodePartBytes(r io.Reader, transferEncoding string) ([]byte, error) {
 		// 解出空串 —— 差别只有行尾。
 		// QP 载荷本身是 7bit ASCII 安全的，把行尾统一成 LF 不会改变任何
 		// 被编码的字节，所以这里先归一再解。
-		raw, err := io.ReadAll(r)
+		raw, err := sizedread.All(r, maxMIMEPartBytes)
 		if err != nil {
 			return nil, err
 		}
@@ -642,9 +663,9 @@ func decodePartBytes(r io.Reader, transferEncoding string) ([]byte, error) {
 		if bytes.Contains(raw, []byte("\r")) {
 			raw = bytes.ReplaceAll(raw, []byte("\r"), []byte("\n"))
 		}
-		return io.ReadAll(quotedprintable.NewReader(bytes.NewReader(raw)))
+		return sizedread.All(quotedprintable.NewReader(bytes.NewReader(raw)), maxMIMEPartBytes)
 	default:
-		return io.ReadAll(r)
+		return sizedread.All(r, maxMIMEPartBytes)
 	}
 }
 
@@ -661,7 +682,7 @@ func decodeMIMEWord(s string) string {
 	}
 	dec := &mime.WordDecoder{
 		CharsetReader: func(label string, input io.Reader) (io.Reader, error) {
-			raw, err := io.ReadAll(input)
+			raw, err := sizedread.All(input, maxMIMEWordBytes)
 			if err != nil {
 				return nil, err
 			}

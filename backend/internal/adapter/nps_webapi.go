@@ -5,13 +5,13 @@ import (
 	"crypto/md5"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strconv"
 	"time"
 
 	"github.com/halfking/pocket-opencode/backend/internal/outbound"
+	"github.com/halfking/pocket-opencode/backend/internal/sizedread"
 )
 
 type NPSWebAPIAdapter struct {
@@ -45,8 +45,8 @@ func (a *NPSWebAPIAdapter) ListClients(ctx context.Context) ([]NPSClient, error)
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("nps client list returned %d: %s", resp.StatusCode, string(body))
+		body := sizedread.Snippet(resp.Body, sizedread.MaxErrorBodyBytes)
+		return nil, fmt.Errorf("nps client list returned %d: %s", resp.StatusCode, body)
 	}
 
 	var result struct {
@@ -58,7 +58,7 @@ func (a *NPSWebAPIAdapter) ListClients(ctx context.Context) ([]NPSClient, error)
 		} `json:"rows"`
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.NewDecoder(sizedread.Limit(resp.Body, sizedread.MaxJSONBodyBytes)).Decode(&result); err != nil {
 		return nil, fmt.Errorf("nps client list decode failed: %w", err)
 	}
 

@@ -38,6 +38,7 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/llmbff"
 	"github.com/halfking/pocket-opencode/backend/internal/notes"
 	"github.com/halfking/pocket-opencode/backend/internal/redclaw"
+	"github.com/halfking/pocket-opencode/backend/internal/sizedread"
 	"github.com/halfking/pocket-opencode/backend/internal/stt"
 	ws "github.com/halfking/pocket-opencode/backend/internal/websocket"
 )
@@ -2801,6 +2802,14 @@ func (s *Server) handleSttTranscribe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// §952：把这条链的上限**写在 handler 里**（与 requestBodyLimitMiddleware
+	// 对本路径取的同一个数字 ⇒ 两层是同一个值，不会分叉）。
+	//
+	// ⚠ 为什么不能只靠中间件：中间件是**全局**的一层，
+	// 而这条链的体积上限是**按路径**定的 ⇒ 读 body 的代码
+	// 必须能在**自己这一层**看见那个上限。
+	r.Body = http.MaxBytesReader(w, r.Body, maxAudioBodyBytes)
+
 	var audioData []byte
 	var filename string
 
@@ -2828,7 +2837,7 @@ func (s *Server) handleSttTranscribe(w http.ResponseWriter, r *http.Request) {
 		}
 		defer file.Close()
 		filename = header.Filename
-		audioData, err = io.ReadAll(file)
+		audioData, err = sizedread.All(file, maxAudioBodyBytes)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to read audio file: "+err.Error())
 			return

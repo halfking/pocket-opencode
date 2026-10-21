@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"github.com/halfking/pocket-opencode/backend/internal/outbound"
+	"github.com/halfking/pocket-opencode/backend/internal/sizedread"
 )
 
 // RefineRequest 是精细化转写的入参。Model 必填（执行精修的 chat 模型，
@@ -156,11 +157,11 @@ func (c *Client) postAudioTransform(ctx context.Context, path string, req any, o
 				Code    string `json:"code"`
 			} `json:"error"`
 		}
-		_ = json.NewDecoder(resp.Body).Decode(&eb)
+		_ = json.NewDecoder(sizedread.Limit(resp.Body, sizedread.MaxBinaryBodyBytes)).Decode(&eb)
 		if eb.Error.Code != "" {
 			return fmt.Errorf("gateway %s: %s", eb.Error.Code, eb.Error.Message)
 		}
 		return fmt.Errorf("gateway http %d on %s", resp.StatusCode, path)
 	}
-	return json.NewDecoder(resp.Body).Decode(out)
+	return json.NewDecoder(sizedread.Limit(resp.Body, sizedread.MaxBinaryBodyBytes)).Decode(out)
 }

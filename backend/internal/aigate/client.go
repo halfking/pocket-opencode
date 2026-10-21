@@ -18,11 +18,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"time"
 
 	"github.com/halfking/pocket-opencode/backend/internal/outbound"
+	"github.com/halfking/pocket-opencode/backend/internal/sizedread"
 )
 
 // Embedder computes a vector for a text fragment. Stateless: no storage.
@@ -66,8 +66,8 @@ func (e *OpenAIEmbedder) Embed(ctx context.Context, text string) ([]float32, str
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		r, _ := io.ReadAll(resp.Body)
-		return nil, "", fmt.Errorf("embed API %d: %s", resp.StatusCode, string(r))
+		r := sizedread.Snippet(resp.Body, sizedread.MaxErrorBodyBytes)
+		return nil, "", fmt.Errorf("embed API %d: %s", resp.StatusCode, r)
 	}
 
 	var out struct {
@@ -76,7 +76,7 @@ func (e *OpenAIEmbedder) Embed(ctx context.Context, text string) ([]float32, str
 		} `json:"data"`
 		Model string `json:"model"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+	if err := json.NewDecoder(sizedread.Limit(resp.Body, sizedread.MaxJSONBodyBytes)).Decode(&out); err != nil {
 		return nil, "", fmt.Errorf("decode embed response: %w", err)
 	}
 	if len(out.Data) == 0 {
@@ -108,8 +108,8 @@ func (l *OpenAILLM) Chat(ctx context.Context, model string, messages []ChatMessa
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		r, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("llm API %d: %s", resp.StatusCode, string(r))
+		r := sizedread.Snippet(resp.Body, sizedread.MaxErrorBodyBytes)
+		return "", fmt.Errorf("llm API %d: %s", resp.StatusCode, r)
 	}
 
 	var out struct {
@@ -119,7 +119,7 @@ func (l *OpenAILLM) Chat(ctx context.Context, model string, messages []ChatMessa
 			} `json:"message"`
 		} `json:"choices"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+	if err := json.NewDecoder(sizedread.Limit(resp.Body, sizedread.MaxJSONBodyBytes)).Decode(&out); err != nil {
 		return "", fmt.Errorf("decode llm response: %w", err)
 	}
 	if len(out.Choices) == 0 {

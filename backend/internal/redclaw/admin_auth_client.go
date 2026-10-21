@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/halfking/pocket-opencode/backend/internal/outbound"
+	"github.com/halfking/pocket-opencode/backend/internal/sizedread"
 )
 
 // AdminAuthClientConfig 描述 RedClaw Admin / Auth Agent 客户端配置。
@@ -204,7 +205,7 @@ func (c *AdminAuthClient) Login(ctx context.Context, employeeID, password string
 	}
 
 	var out LoginResult
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+	if err := json.NewDecoder(sizedread.Limit(resp.Body, sizedread.MaxJSONBodyBytes)).Decode(&out); err != nil {
 		return nil, fmt.Errorf("%w: decode login response: %v", ErrRedClawUnavailable, err)
 	}
 	if out.Token == "" {
@@ -239,7 +240,7 @@ func (c *AdminAuthClient) Me(ctx context.Context, token string) (*MeResult, erro
 	}
 
 	var out MeResult
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+	if err := json.NewDecoder(sizedread.Limit(resp.Body, sizedread.MaxJSONBodyBytes)).Decode(&out); err != nil {
 		return nil, fmt.Errorf("%w: decode me response: %v", ErrRedClawUnavailable, err)
 	}
 	return &out, nil
@@ -368,7 +369,7 @@ func (c *AdminAuthClient) SsoCallback(ctx context.Context, code, state string) (
 	}
 
 	var out SsoCallbackResult
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+	if err := json.NewDecoder(sizedread.Limit(resp.Body, sizedread.MaxJSONBodyBytes)).Decode(&out); err != nil {
 		return nil, fmt.Errorf("%w: decode sso callback: %v", ErrRedClawUnavailable, err)
 	}
 	if out.JWT == "" {
@@ -413,7 +414,7 @@ func (c *AdminAuthClient) doAdminWithToken(ctx context.Context, method, path str
 
 // parseAdminError 解析 RedClaw 的标准错误包络 { "error": { "code", "message" } }。
 func (c *AdminAuthClient) parseAdminError(status int, body io.Reader) error {
-	data, _ := io.ReadAll(body)
+	data := []byte(sizedread.Snippet(body, sizedread.MaxErrorBodyBytes))
 	var env redClawAdminError
 	if json.Unmarshal(data, &env) == nil && env.Error.Code != "" {
 		switch env.Error.Code {

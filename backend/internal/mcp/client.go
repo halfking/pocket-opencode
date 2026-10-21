@@ -19,6 +19,7 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/halfking/pocket-opencode/backend/internal/outbound"
+	"github.com/halfking/pocket-opencode/backend/internal/sizedread"
 )
 
 // Client MCP 客户端
@@ -262,7 +263,7 @@ func (c *Client) doRawWithBearer(ctx context.Context, payload []byte, useJWT boo
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := sizedread.All(resp.Body, sizedread.MaxJSONBodyBytes)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to read response: %w", err)
 	}
@@ -801,7 +802,7 @@ func (c *Client) ListRunEvents(ctx context.Context, runID string, after uint64) 
 	var envelope struct {
 		Events []AccRunEvent `json:"events"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+	if err := json.NewDecoder(sizedread.Limit(resp.Body, sizedread.MaxJSONBodyBytes)).Decode(&envelope); err != nil {
 		return nil, fmt.Errorf("ACC events decode: %w", err)
 	}
 	return envelope.Events, nil

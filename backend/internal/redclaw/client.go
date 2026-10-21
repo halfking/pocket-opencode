@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/halfking/pocket-opencode/backend/internal/outbound"
+	"github.com/halfking/pocket-opencode/backend/internal/sizedread"
 )
 
 // Client RedClaw API 客户端
@@ -48,7 +49,7 @@ func (c *Client) Health() (*HealthResponse, error) {
 			lastErr = err
 			continue
 		}
-		body, readErr := io.ReadAll(resp.Body)
+		body, readErr := sizedread.All(resp.Body, sizedread.MaxJSONBodyBytes)
 		resp.Body.Close()
 		if readErr != nil {
 			lastErr = readErr
@@ -93,12 +94,12 @@ func (c *Client) Chat(req ChatRequest) (*ChatResponse, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, decodeRedClawError(resp.StatusCode, body)
+		body := sizedread.Snippet(resp.Body, sizedread.MaxErrorBodyBytes)
+		return nil, decodeRedClawError(resp.StatusCode, []byte(body))
 	}
 
 	var result ChatResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.NewDecoder(sizedread.Limit(resp.Body, sizedread.MaxJSONBodyBytes)).Decode(&result); err != nil {
 		return nil, fmt.Errorf("decode chat response: %w", err)
 	}
 	return &result, nil
@@ -123,12 +124,12 @@ func (c *Client) KnowledgeSearch(req KnowledgeSearchRequest) (*KnowledgeSearchRe
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, decodeRedClawError(resp.StatusCode, body)
+		body := sizedread.Snippet(resp.Body, sizedread.MaxErrorBodyBytes)
+		return nil, decodeRedClawError(resp.StatusCode, []byte(body))
 	}
 
 	var result KnowledgeSearchResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.NewDecoder(sizedread.Limit(resp.Body, sizedread.MaxJSONBodyBytes)).Decode(&result); err != nil {
 		return nil, fmt.Errorf("decode knowledge search response: %w", err)
 	}
 	return &result, nil
@@ -154,12 +155,12 @@ func (c *Client) VerifyUser(userID string) (*VerifyUserResponse, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, decodeRedClawError(resp.StatusCode, body)
+		body := sizedread.Snippet(resp.Body, sizedread.MaxErrorBodyBytes)
+		return nil, decodeRedClawError(resp.StatusCode, []byte(body))
 	}
 
 	var result VerifyUserResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.NewDecoder(sizedread.Limit(resp.Body, sizedread.MaxJSONBodyBytes)).Decode(&result); err != nil {
 		return nil, fmt.Errorf("decode verify user response: %w", err)
 	}
 	return &result, nil

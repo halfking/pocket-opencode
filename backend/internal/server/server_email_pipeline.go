@@ -32,6 +32,7 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/feishu"
 	"github.com/halfking/pocket-opencode/backend/internal/notifycenter"
 	"github.com/halfking/pocket-opencode/backend/internal/outbound"
+	"github.com/halfking/pocket-opencode/backend/internal/sizedread"
 )
 
 // feishuInvoicePusher 把 email.InvoicePusher 接到 feishu.Client 上。
@@ -376,7 +377,7 @@ func (s *Server) delegatePipeline(ctx context.Context) *email.PipelineReport {
 			fmt.Sprintf("delegate: remote pipeline returned %s", resp.Status)}}
 	}
 	var rep email.PipelineReport
-	if err := json.NewDecoder(resp.Body).Decode(&rep); err != nil {
+	if err := json.NewDecoder(sizedread.Limit(resp.Body, sizedread.MaxJSONBodyBytes)).Decode(&rep); err != nil {
 		return &email.PipelineReport{Errors: []string{"delegate decode: " + err.Error()}}
 	}
 	return &rep
