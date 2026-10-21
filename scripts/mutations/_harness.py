@@ -22,6 +22,7 @@
    ⇒ 用「文件确实变了 **且** 新串在场」。
 """
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -47,7 +48,38 @@ BACKEND = REPO / 'backend'
 #   ⇒ ⇒ 交互式 `go test` 与跑批**不再共用缓存目录** ⇒ 交互侧污染不到它。
 #   ⚠ 目录名带 `-v2`：上一份（无后缀）曾在并发跑批期间被写过 ⇒ ⛔ 保留不删
 #     （可恢复删除闸拦 `rm`）⇒ 改用新名 ⇒ 本轮跑批从**未被写过**的缓存起步。
-MUTATION_GOCACHE = os.path.join(tempfile.gettempdir(), 'opk-mutation-gocache-v2')
+# ⚠⚠⚠ §958：**位置选错 ⇒ 系统会把它清掉**（本轮实测到的一次真实事故）
+#
+#   ⚠⚠ **实测**：本轮跑批时 `s949` 整批 10 条红项，根因是
+#     `link: cannot open file .../opk-mutation-gocache-v2/6b/6b6ec...-d:
+#      no such file or directory`
+#     ⇒ ⇒ **linker 正在读那个缓存条目时，它被删了**
+#     ⇒ ⇒ 目录本身还在、mtime 变过、大小从 **535 M 掉到 55 M**
+#     ⇒ ⇒ ⇒ **macOS 的临时目录清理器**（`/var/folders/…/T/`，实测 11 900+ 项）
+#     ⇒ ⇒ ⇒ **会删掉这里的东西**（Go 官方缓存就不放这儿：它在 `~/Library/Caches/go-build`）。
+#
+#   ⇒ ⇒ **处置**：专属缓存搬到 **`~/.cache/openpocket-mutations/gocache-v3`**
+#     ⇒ ⇒ 与系统清理区**物理隔离** ⇒ ⇒ 与交互式 `go test` 仍然隔离（另一个维度）。
+#
+#   ⚠ 目录名带 `-v3`：前一份（`-v2`，在临时目录里的那份）已被系统清理过
+#     ⇒ ⛔ **不删**（可恢复删除闸拦 `rm`）⇒ 改用新名 ⇒ 从**没被写过**的缓存起步。
+MUTATION_GOCACHE = os.path.join(
+    os.path.expanduser('~'), '.cache', 'openpocket-mutations', 'gocache-v3')
+
+# ⚠⚠⚠ §958：**「构建环境坏了」的特征**（本轮实测到的一次真实事故）
+#
+#   ⇒ 症状：linker 读缓存条目时那个条目**被删了**
+#     `link: cannot open file …/opk-mutation-gocache-v2/6b/…-d: no such file or directory`
+#   ⇒ 或：包编译失败（`FAIL … [build failed]`）
+#
+#   ⇒ ⇒ 为何必须单独认出来：**退出码非 0 在 harness 眼里 = 「门红」**
+#     ⇒ ⇒ 而「门红」的下一步动作是**改判据**（拆门）
+#     ⇒ ⇒⇒ ⇒ 而这次的红**根本不是判据的问题** ⇒ ⇒ 必须挡住这条误读。
+_BUILD_ENV_BROKEN_RE = re.compile(
+    r'cannot open file .*gocache|no such file or directory'
+    r'|\[build failed\]|compile: |cannot find package|'
+    r'cache entry not found|failed to load cache',
+    re.IGNORECASE)
 
 
 class HarnessError(RuntimeError):
@@ -132,6 +164,16 @@ class Batch:
             if mutate_fn is not None:
                 mutate_fn()
             rc, out = run()
+            # ⚠⚠⚠ §958：「构建环境坏了」⇒ **不是门红** ⇒ 换新缓存复跑
+            #   （退出码 5 = `_go_runner` 认出的构建环境故障）
+            if rc == 5:
+                fresh = getattr(run, 'with_fresh_cache', None)
+                if callable(fresh):
+                    rc2, out2 = fresh()
+                    if rc2 != 5:
+                        stale_cache_note = ('（首次红是**构建环境坏了**（缓存条目被系统清理）'
+                                            '⇒ 换全新缓存复跑后转红）')
+                        rc, out = rc2, out2
             if expect_red and rc == 0:
                 # ⛔ 「该红却绿」⇒ 先排除「变异没进二进制」⇒ 再谈「门没牙」。
                 fresh = getattr(run, 'with_fresh_cache', None)
@@ -232,6 +274,16 @@ def _go_runner(cmd, env=None, cwd=None, forbid_skip=False, timeout=1800):
         out = p.stdout + p.stderr
         if forbid_skip and '--- SKIP' in out:
             return 4, out + '\n\n[mutations] 判据里有用例被 skip ⇒ 结论无效（退出码 0 同样是绿）\n'
+        # ⚠⚠⚠ §958：**构建环境坏了 ⇒ 不是「门红」**（本轮实测到的第三类）
+        #   症状：`link: cannot open file .../opk-mutation-gocache-v2/6b/…-d:
+        #         no such file or directory`
+        #   ⇒ ⇒ 那是**缓存条目在 linker 读它的时候被删了**
+        #   ⇒ ⇒⇒ ⇒ 若不认出来，就会被当成「门红 ⇒ 判据有问题 ⇒ 改判据」
+        #   ⇒ ⇒⇒ ⇒ 而**下一步动作是改判据** ⇒ ⇒⇒ ⇒ 那是**拆门** ⇒ ⇒ 必须挡住。
+        if _BUILD_ENV_BROKEN_RE.search(out):
+            return 5, out + ('\n\n[mutations] ⚠️ **构建环境坏了**（缓存条目消失 / 编译失败）'
+                             '\n  ⇒ ⇒ 这**不是**「门红」⇒ ⇒ **不要**据此改判据'
+                             '\n  ⇒ ⇒ 请换一份全新缓存复跑（with_fresh_cache）再下结论。\n')
         return p.returncode, out
 
     def run():
@@ -244,8 +296,9 @@ def _go_runner(cmd, env=None, cwd=None, forbid_skip=False, timeout=1800):
         ⇒ 否则「第一次 fresh 之后目录里已有产物」⇒ 第二次就退化成普通复跑。
         """
         counter['n'] += 1
-        fresh = os.path.join(tempfile.gettempdir(),
-                             'opk-mutation-gocache-fresh-%d-%d' % (os.getpid(), counter['n']))
+        fresh = os.path.join(
+            os.path.dirname(MUTATION_GOCACHE),
+            'gocache-fresh-%d-%d' % (os.getpid(), counter['n']))
         os.makedirs(fresh, exist_ok=True)
         return _run_with(fresh)
 

@@ -117,7 +117,7 @@ def main():
 
     # ── M3 必须红：退化不留痕（近似时间轴被当成精确的）──────────────────
     M3_OLD = '  const degraded = prev.degraded || clamped\n'
-    M3_NEW = '    degraded: false,\n'
+    M3_NEW = '  const degraded = false\n'
 
     def m3():
         b.mutate(TIMELINE, M3_OLD, M3_NEW, 'M3')

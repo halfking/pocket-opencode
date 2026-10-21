@@ -276,6 +276,65 @@ def _has_main_guard(tree):
     return False
 
 
+def _shape_mismatch(old, new):
+    """判断「替换片段」是否**明显**形态不兼容（会让目标文件语法坏掉）。
+
+    ⚠⚠ **为什么要有这条**（§958 实测）：
+      本轮修 `s956` 的 M3 锚点时，我**只改了 `OLD`、忘了改 `NEW`**
+      ⇒ ⇒ `NEW` 仍是**旧形态**（对象字面量里的 `degraded: false,`）
+      ⇒ ⇒ 替换进去 ⇒ **目标文件语法坏掉**
+      ⇒ ⇒ 判据确实红了 —— 但**红在「编译失败」上**，不是红在
+      ⇒ ⇒ 「退化不留痕」那条语义上 ⇒ ⇒ 用例报「缺预期文案」
+      ⇒ ⇒⇒ ⇒ 而**门红 ≠ 变异生效** ⇒ ⇒ 这是「假红」的另一种形态。
+
+    ⚠⚠ **刻意收窄到只剩「缩进」**（前两版都误报 ⇒ 都撤掉）：
+      · 第一版比「赋值左侧**整段文本**」⇒ 把 `list, total, err :=` → `list, _, err :=`
+        （Go 里 `_` **完全合法**）误判成不兼容 ⇒ **21 条误报**；
+      · 第二版加「赋值左侧**首标识符**」⇒ 仍误报 9 条
+        （例如 `body := readBody(...)` → `cap := 200` + `body := readBody(...)`
+        —— **完全合法**的 Go 变异）⇒ ⇒ **也撤掉**。
+      ⇒ ⇒ 只留**缩进**：它是唯一「不一致 ⇒ 几乎必然语法坏掉」的信号
+        ⇒ ⇒ **并排除「逐行删除」那类合法变异**（删一个字段声明 ⇒ 缩进必变、语法合法）。
+      ⇒ ⇒ ★ 通用式：**判据不准就放过** ⇒ 宁可漏报，**不可误报**
+      ⇒ ⇒ ⇒ 误报的判据会让人**习惯性地忽略它** ⇒ 那它就白做了。
+
+    ⇒ 返回不一致的维度名列表（空列表 = 形态一致 / 判不准 ⇒ 放过）。
+    """
+    def indent(t):
+        head = t.split('\n')[0]
+        return head[:len(head) - len(head.lstrip())]
+
+    def is_line_deletion(o, n):
+        """NEW 是否 = 逐行删掉 OLD 的某些行（⇒ **删字段声明**那类**合法**变异）。
+
+        ⚠ 例：`  epochMs?: number\n}\n` → `}\n` ⇒ 缩进不同，但**语法完全合法**
+          ⇒ ⇒ 不能按缩进差就报「形态不兼容」。
+        """
+        o_lines = o.split('\n')
+        n_lines = n.split('\n')
+        # 保留 NEW 的行，按序在 OLD 里找 ⇒ 找得到就算「逐行删除」
+        i = 0
+        for ln in n_lines:
+            found = False
+            while i < len(o_lines):
+                if o_lines[i] == ln:
+                    i += 1
+                    found = True
+                    break
+                i += 1
+            if not found:
+                return False
+        return len(n_lines) < len(o_lines)
+
+    if is_line_deletion(old, new):
+        return []   # 合法变异（删行）⇒ 放过
+
+    bad = []
+    if indent(old) != indent(new):
+        bad.append('缩进')
+    return bad
+
+
 def check_batch(script):
     """返回 (用例数, [问题列表])。问题列表每项 = (标签, 类别, 说明)。"""
     tree = ast.parse(script.read_text(encoding='utf-8'), filename=str(script))
@@ -307,6 +366,12 @@ def check_batch(script):
         if n != count:
             rel = path.relative_to(REPO) if str(path).startswith(str(REPO)) else path
             problems.append((tag, 'STALE', '锚点在 %s 里出现 %d 次（应为 %d）' % (rel, n, count)))
+        elif new:
+            bad_shape = _shape_mismatch(old, new)
+            if bad_shape:
+                problems.append((tag, 'SHAPE',
+                                 '替换片段与原片段形态不兼容（%s）⇒ 替换进去会让目标文件语法坏掉'
+                                 ' ⇒ 门会红在「编译失败」上 ⇒ **假红**' % '、'.join(bad_shape)))
     return len(calls), problems
 
 
