@@ -425,6 +425,9 @@ func (c *s952FuncCtx) s952IsMemorySink(call *ast.CallExpr) bool {
 	switch t {
 	case "*bytes.Buffer", "*bytes.Reader", "*strings.Builder":
 		return true
+		// ⚠ `io.Discard` 的静态类型是 `io.Writer` ⇒ 它**不在**这个清单里
+		//   ⇒ 天然被当成「非内存目标」（把 body 丢掉 ≠ 把 body 读进内存）。
+		//   ⇒⇒⇒ 改这个清单时要记得它 —— §952 变异 M17 就是拿这一条做的。
 	}
 	// 类型不认识 ⇒ 保守当作**不是**内存（避免误报）。
 	return false
@@ -687,6 +690,21 @@ func s952ClassifySource(src, rel string) ([]s952Site, error) {
 // 台账
 // =============================================================================
 
+// s952LedgerEntry 是台账的一条豁免。
+type s952LedgerEntry struct {
+	// Reason 是「上界由谁提供」的书面理由。
+	Reason string
+	// WantCap 是该处上限**必须长成的样子**（源码文本）。
+	//
+	// ⚠ **为什么必须钉住上限的样子**（§952 变异 M14 逼出来的）：
+	//
+	//	台账只记「哪个函数是豁免的」⇒⇒⇒ 则「那个函数把上限删掉了」
+	//	**察觉不到** —— 它从「有界（上限由调用方给）」变成了
+	//	「完全无界」，但两者的**分类**都是「src=other ⇒ 无界」
+	//	⇒⇒⇒ ⇒ 台账必须把**上限的形态**也钉住。
+	WantCap string
+}
+
 // s952Ledger 是「上限由**调用方**提供」的豁免清单。
 //
 // ⚠ 口径：这类 helper **不是**没有上界，而是**上界在参数上**。
@@ -695,15 +713,22 @@ func s952ClassifySource(src, rel string) ([]s952Site, error) {
 //	是**约定**不是**保证**）⇒⇒⇒ ⇒ 它们必须逐条登记，
 //	**并且**由 `TestS952LedgerCallersPassConstants` 逐个调用点核实
 //	「每个调用方都给了正常量」⇒⇒⇒ ⇒ 台账的每一条都带**可执行的证明**。
-var s952Ledger = map[string]string{
-	"backend/internal/adapter/opencode_config.go::readTruncated": "上限由参数 n 给；" +
-		"调用点 opencode_config.go:126 传字面量 256（错误消息片段）",
-	"backend/internal/agent/helpers.go::readBody": "上限由参数 maxLen 给；" +
-		"4 个调用点（transport_http.go:90/180/240、transport_ws.go:82）全传字面量 200（错误消息片段）",
-	"backend/internal/rss/url.go::readLimited": "上限由参数 max 给；" +
-		"调用点 discovery.go:54 传常量 DefaultMaxBodyBytes、fetcher.go:91 传可配置项 " +
-		"f.maxBodyBytes（**恒为正**：SetMaxBodyBytes 只接受 n > 0；" +
-		"且上限 <= 0 时**失败关闭**）⇒ 行为证明见 internal/rss/read_limited_test.go",
+var s952Ledger = map[string]s952LedgerEntry{
+	"backend/internal/adapter/opencode_config.go::readTruncated": {
+		Reason:  "上限由参数 n 给；调用点 opencode_config.go:126 传字面量 256（错误消息片段）",
+		WantCap: "int64(n)",
+	},
+	"backend/internal/agent/helpers.go::readBody": {
+		Reason: "上限由参数 maxLen 给；4 个调用点（transport_http.go:90/180/240、" +
+			"transport_ws.go:82）全传字面量 200（错误消息片段）",
+		WantCap: "int64(maxLen)",
+	},
+	"backend/internal/rss/url.go::readLimited": {
+		Reason: "上限由参数 max 给；调用点 discovery.go:54 传常量 DefaultMaxBodyBytes、" +
+			"fetcher.go:91 传可配置项 f.maxBodyBytes（**恒为正**：SetMaxBodyBytes 只接受 n > 0；" +
+			"且上限 <= 0 时**失败关闭**）⇒ 行为证明见 internal/rss/read_limited_test.go",
+		WantCap: "max + 1",
+	},
 }
 
 // s952LedgerKeyForFunc 按 helper 名找它在台账里的键。
@@ -830,12 +855,43 @@ func TestS952LedgerIsNotStale(t *testing.T) {
 			live[s.Rel+"::"+s.Func] = true
 		}
 	}
-	for key, reason := range s952Ledger {
+	for key, entry := range s952Ledger {
 		if !live[key] {
 			t.Errorf("台账条目 %q **已过期**（代码里已经没有这个无界读点了）\n"+
 				"⇒ 理由：%s\n"+
 				"⇒⇒⇒ 要么代码被修好了（删掉这条），要么台账键写错了（改键）",
-				key, reason)
+				key, entry.Reason)
+		}
+	}
+}
+
+// TestS952LedgerCapFormIsPinned 钉住「台账里的上限**形态**没被改掉」。
+//
+// ⚠ **这条是 §952 变异 M14 逼出来的**（见 s952LedgerEntry.WantCap 的注释）：
+//
+//	台账原本只记「哪个函数豁免」⇒⇒⇒ 「那个函数把上限删了」察觉不到
+//	⇒⇒⇒ ⇒ 现在每条台账都钉住上限的**源码形态**。
+func TestS952LedgerCapFormIsPinned(t *testing.T) {
+	sites := s952Census(t)
+	seen := map[string]bool{}
+	for _, s := range sites {
+		key := s.Rel + "::" + s.Func
+		entry, ok := s952Ledger[key]
+		if !ok {
+			continue
+		}
+		seen[key] = true
+		if s.Cap != entry.WantCap {
+			t.Errorf("台账条目 %q 的上限形态 = %q（期望 %q）\n"+
+				"⇒ 理由：%s\n"+
+				"⇒⇒⇒ ⚠ 这条台账的**前提**变了：「上限由调用方给」已经名存实亡\n"+
+				"⇒⇒⇒ ⇒ 要么改台账（并重新核实调用点），要么把上限改回来",
+				key, s.Cap, entry.WantCap, entry.Reason)
+		}
+	}
+	for key := range s952Ledger {
+		if !seen[key] {
+			t.Errorf("台账条目 %q 在代码里**找不到对应的读点**", key)
 		}
 	}
 }
@@ -864,7 +920,7 @@ func TestS952LedgerCallersPassConstants(t *testing.T) {
 		// ⚠ 放行不是「相信台账」：每条这样的台账都必须**指名**它的行为证明
 		//   （本仓里是 internal/rss/read_limited_test.go）。
 		key := s952LedgerKeyForFunc(c.Callee)
-		reason := s952Ledger[key]
+		reason := s952Ledger[key].Reason
 		if !strings.Contains(reason, "恒为正") && !strings.Contains(reason, "失败关闭") {
 			t.Errorf("台账 helper %s 的调用点 %s:%d 传的**不是正常量**，"+
 				"而台账没有写明「恒为正」或「失败关闭」\n"+
