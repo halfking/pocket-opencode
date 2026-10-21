@@ -42,10 +42,10 @@ func TestClientSendsSignedServiceToken(t *testing.T) {
 	c, err := New(acchttp.Config{
 		BaseURL: ts.URL,
 		Signer: accjwt.NewSigner(accjwt.Options{
-			Secret:           "control-secret",
-			Subject:          "pocketd:test",
-			TenantID:         "tenant-a",
-			ServiceIdentity:  true,
+			Secret:          "control-secret",
+			Subject:         "pocketd:test",
+			TenantID:        "tenant-a",
+			ServiceIdentity: true,
 		}),
 	})
 	if err != nil {

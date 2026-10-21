@@ -107,27 +107,47 @@ func (s *Server) handleTaskSessionBundle(w http.ResponseWriter, r *http.Request,
 	writeJSON(w, http.StatusOK, out)
 }
 
+// accSessionToRow 把 ACC 上报的一条会话映射成任务详情页的一行。
+//
+// 取值顺序：**ACC 顶层字段优先，metadata 兜底**。
+// 2026-10-22 实测 ACC 的 acc_list_sessions 把 agent_session_id /
+// gw_session_id / dispatch_id 放在**顶层**（sessionmanager.SessionRecord），
+// 从来不返回 "metadata" 这个嵌套对象；旧实现只读 metadata，于是
+// agent_session_id 取不到、退到 row.SessionID（ACC 也不返回 "session_id"，
+// 是空串）⇒ session-bundle 里的会话 id 是空的（实测 `{"id":""}`），
+// 会话点不开。metadata 分支保留给更老的上报格式。
 func accSessionToRow(row mcp.AccSession) sessionBundleRow {
 	var meta accMeta
 	if len(row.Metadata) > 0 {
 		_ = json.Unmarshal(row.Metadata, &meta)
 	}
-	agentSess := meta.AgentSessionID
-	if agentSess == "" {
-		agentSess = row.SessionID
+	pick := func(top string, fallback string) string {
+		if v := strings.TrimSpace(top); v != "" {
+			return v
+		}
+		return strings.TrimSpace(fallback)
 	}
+	agentSess := pick(row.AgentSessionID, meta.AgentSessionID)
+	if agentSess == "" {
+		agentSess = pick(row.SessionID, "")
+	}
+	gwSession := pick(row.GwSessionID, meta.GwSessionID)
+	agentKind := pick(row.AgentKind, meta.AgentKind)
+	sessionPath := pick(row.SessionPath, meta.SessionPath)
+	// ACC 现在给 created_at；老格式给 started_at。
+	startedAt := pick(row.StartedAt, row.CreatedAt)
 	title := strings.TrimSpace(row.Input)
 	if title == "" {
 		title = agentSess
 	}
 	return sessionBundleRow{
-		ID:           row.SessionID,
+		ID:           pick(row.ID, row.SessionID),
 		Title:        title,
-		Lane:         classifyLane(meta.SessionPath, meta.GwSessionID),
-		AgentKind:    firstNonEmpty(meta.AgentKind, row.AgentID),
+		Lane:         classifyLane(sessionPath, gwSession),
+		AgentKind:    firstNonEmpty(agentKind, row.AgentID),
 		AgentSession: agentSess,
-		GwSessionID:  meta.GwSessionID,
-		StartedAt:    row.StartedAt,
+		GwSessionID:  gwSession,
+		StartedAt:    startedAt,
 		EndedAt:      row.EndedAt,
 		TokensIn:     row.InputTokens,
 		TokensOut:    row.OutputTokens,
