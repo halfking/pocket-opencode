@@ -1204,49 +1204,6 @@ function wakeDevice() {
   return awake
 }
 
-/**
- * 预授运行时权限 —— 否则系统权限弹窗会盖住整个 App。
- *
- * 缺陷现场（2026-10-22 实测，emulator-5556 / AOSP Android 14）：全新安装
- * 后第一次启动，App 申请 POST_NOTIFICATIONS，系统弹出
- * 「Allow AI Work Mess to send you notifications?」。这个对话框**盖在登录页
- * 与「创建主密码」弹窗之上**，把点击全吃掉：preflight 把登录表单和主密码都
- * 填好了，最后仍停在登录页 30s 超时 —— 而**后端一条 /api/auth/login 都
- * 没收到**（请求压根没发出去）。
- *
- * 为什么这个洞能长期存在：唯一的清理机制 _dismiss-system-dialogs.yaml
- * **只在 MIUI 设备上跑**（见 preFlows = isMiui ? [...] : []），理由是
- * 「那些弹窗是 Xiaomi 独有的」。但 POST_NOTIFICATIONS 是 **AOSP 原生**
- * 运行时权限（Android 13+），AOSP 的弹窗文案是
- * "Allow <App> to send you notifications?" —— 按钮就在那个 flow 的
- * "允许|Allow" 正则里，只是非 MIUI 设备根本不跑它。
- *
- * 更糟的是它**只在全新安装后第一次启动出现**：包已装的后续轮次不复现，
- * 于是「装完先跑一条冒烟流」的那一轮必然被挡住，结论还会读成
- * 「登录功能坏了」。
- *
- * 修法：启动 App 之前用 `pm grant` 预授，弹窗就不会出现 —— 确定性的，
- * 不依赖厂商弹窗文案，也不用等 UI（比在 flow 里 tap 快得多）。
- * 授不到的（App 未声明 / 非运行时权限）静默跳过：那说明该权限不适用，
- * 不是失败。
- */
-const RUNTIME_PERMISSIONS = ['android.permission.POST_NOTIFICATIONS']
-
-function grantRuntimePermissions() {
-  const granted = []
-  for (const perm of RUNTIME_PERMISSIONS) {
-    try {
-      adb(['shell', 'pm', 'grant', PKG, perm], 30000)
-      granted.push(perm.replace('android.permission.', ''))
-    } catch {
-      // 未声明 / 非运行时权限 → 不适用，跳过。
-    }
-  }
-  if (granted.length) {
-    console.log(`[preflight] 已预授运行时权限：${granted.join(', ')}（否则系统权限弹窗会盖住登录）`)
-  }
-}
-
 async function preflight() {
   if (!(await ensureBackend())) return false
   if (!(await assertDeviceReachesBackend())) return false
@@ -1276,7 +1233,6 @@ async function preflight() {
   } catch (e) {
     console.log(`[preflight] 检查 ${PKG} 启用状态失败（继续）：${String(e.message || e).slice(0, 120)}`)
   }
-  grantRuntimePermissions()
   console.log('[preflight] 强停并重新启动 App（绕开 MIUI 吞掉 force-stop 后启动意图的问题）')
   try { adb(['shell', 'am', 'force-stop', PKG]) } catch { /* 本来就没跑 */ }
   await sleep(1500)
@@ -1813,96 +1769,31 @@ if (process.env.POCKET_SKIP_CDP_LOGIN !== '1') {
     //
     //   修法用 new RegExp 而不是把斜杠拼进字符串：既保持 JSON.stringify 的
     //   转义/防注入意图，类型又是对的。
-    // 逐个框填值。两条通路，先 CDP 后系统 IME。
-    //
-    // ★ 2026-10-22 实测（emulator-5556，AOSP Android 14）：**CDP 的
-    // Input.insertText 在本机上不生效** —— 焦点判定通过
-    // （document.activeElement === el）、insertText 也返回成功，但框值
-    // 纹丝不动，最后读回 [15,0,0]（15 是登录密码的长度，弹窗两个框都是 0），
-    // 于是报成「登录后仍停在登录页」—— 离真因隔了两跳，读起来像登录坏了。
-    //
-    // 与之相对，**走系统 IME 的 `adb shell input text` 是有效的**，前提是
-    // 那个框拿到**原生焦点**（软键盘真的弹起来）：同一台机上，用真实点击
-    // 命中那个框之后，input text 一次就成，两框都拿到 13 位、点确认后弹窗
-    // 关闭、路由跳到 #/ai。
-    //
-    // ⇒ 修法：先用 CDP 的 **Input.dispatchMouseEvent** 在框上点一下（这是
-    // 渲染器认的指针事件，会把焦点与 IME 一起挂上去），再用 adb 的
-    // `input text` 敲进去；原来的 CDP insertText 保留为第一条通路 —— 两条
-    // 都试过仍读不到值，才判失败。
-    //
-    // 为什么不用 adb tap：那是**屏幕**坐标，还得从 viewport 换算（状态栏
-    // 偏移、滚动位置），错一点就点到别的控件上。CDP 的鼠标事件直接用
-    // viewport 坐标，由渲染器自己换算，没有这层误差。
-    const shQuote = (s) => "'" + String(s).replace(/'/g, `'\\''`) + "'"
-    const masterText = master || ''
     for (const which of ['至少', '再次']) {
-      // 取框的中心（viewport 坐标）并先滚到可视区，再点。
-      const rect = await cdpEval(`(function(){
+      const f = await cdpEval(`(function(){
         try {
           var ins = Array.from(document.querySelectorAll('input'))
           var re = new RegExp(${JSON.stringify(which)})
           var el = ins.filter(function(x){ return re.test(x.placeholder||'') })[0]
-          if(!el) return ''
-          el.scrollIntoView({block:'center'})
-          var r = el.getBoundingClientRect()
-          return JSON.stringify({x: r.left + r.width/2, y: r.top + r.height/2})
-        } catch (e) { return '' }
+          if (!el) return 'no-el'
+          el.value = ''
+          el.focus()
+          return document.activeElement === el ? 'focused' : 'focus-failed'
+        } catch (e) { return 'err:' + String(e).slice(0,80) }
       })()`)
-      let box = null
-      try { box = JSON.parse(rect) } catch { box = null }
-      if (!box) {
-        console.log(`[preflight] ⚠️ 找不到主密码框(/${which}/)`)
+      if (f !== 'focused') { console.log(`[preflight] ⚠️ focus 失败(/${which}/)：${f}`); break }
+      await sleep(300)
+      // ★ 2026-10-11：填值通路从 `adb input text` 换成 CDP `Input.insertText`。
+      //   原因见 cdpInsertText 的注释：模拟器上程序化 focus **不会**激活系统 IME，
+      //   那条通路实测**完全不生效**（`input keyevent 67` 与 input text 都被忽略）。
+      //   所以「清空」也不能再用 keyevent 67 —— 改成在 DOM 层直接置空，
+      //   再由 insertText 触发 input 事件，让 Vue 的 v-model 读到干净的新值。
+      const put = await cdpInsertText(master || '')
+      if (!put) {
+        console.log(`[preflight] ⚠️ Input.insertText 失败(/${which}/)：CDP 没有回 result`)
         break
       }
-      // 通路 1：CDP 指针事件点一下（让 IME 挂上去），再试 CDP insertText。
-      await cdpCall('Input.dispatchMouseEvent', { type: 'mousePressed', x: box.x, y: box.y, button: 'left', clickCount: 1 }, 8000)
-      await cdpCall('Input.dispatchMouseEvent', { type: 'mouseReleased', x: box.x, y: box.y, button: 'left', clickCount: 1 }, 8000)
-      await sleep(400)
-      await cdpEval(`(function(){
-        try {
-          var ins = Array.from(document.querySelectorAll('input'))
-          var re = new RegExp(${JSON.stringify(which)})
-          var el = ins.filter(function(x){ return re.test(x.placeholder||'') })[0]
-          if (el) { el.value = ''; el.focus() }
-          return 'ok'
-        } catch (e) { return 'err' }
-      })()`)
-      const put = await cdpInsertText(masterText)
-      await sleep(400)
-      let got = await cdpEval(`(function(){
-        try {
-          var ins = Array.from(document.querySelectorAll('input'))
-          var re = new RegExp(${JSON.stringify(which)})
-          var el = ins.filter(function(x){ return re.test(x.placeholder||'') })[0]
-          return el ? (el.value||'').length : -1
-        } catch (e) { return -1 }
-      })()`)
-      if (!put || got !== masterText.length) {
-        // 通路 2：系统 IME。前面那次真实点击已经把 IME 挂在这个框上了，
-        // 于是 `input text` 这一次能真正落到 v-model 里。
-        // 清空走 keyevent（KEYCODE_MOVE_END + N×KEYCODE_DEL）。
-        const dels = Array.from({ length: 40 }, () => 'input keyevent 67').join(' && ')
-        try { ash(`input keyevent 123 && ${dels}`) } catch { /* 清空失败也往下走 */ }
-        await sleep(300)
-        try { ash(`input text ${shQuote(masterText)}`) } catch {
-          console.log(`[preflight] ⚠️ 系统 IME 填值失败(/${which}/)`)
-          break
-        }
-        await sleep(500)
-        got = await cdpEval(`(function(){
-          try {
-            var ins = Array.from(document.querySelectorAll('input'))
-            var re = new RegExp(${JSON.stringify(which)})
-            var el = ins.filter(function(x){ return re.test(x.placeholder||'') })[0]
-            return el ? (el.value||'').length : -1
-          } catch (e) { return -1 }
-        })()`)
-        console.log(`[preflight] 主密码框(/${which}/)：CDP insertText 未生效 → 改走系统 IME，长度=${got}`)
-      }
-      if (got !== masterText.length) {
-        console.log(`[preflight] ⚠️ 主密码框(/${which}/) 填值长度=${got}，期望 ${masterText.length}`)
-      }
+      await sleep(500)
     }
     const lens = await cdpEval(`JSON.stringify(Array.from(document.querySelectorAll('input'))
         .filter(function(i){ return (i.type||'')==='password' })
@@ -1993,6 +1884,17 @@ if (process.env.POCKET_SKIP_CDP_LOGIN !== '1') {
 {
   const back = process.env.POCKET_START_ROUTE || '#/ai'
   await setRoute(`${back}?__afterunlock=${Date.now()}`, 'true', 8000)
+  // ★ 2026-10-22：与 resetToStart 同理 —— **造完 hash 变化后落回纯路由**。
+  //   留着 `?__afterunlock=<ts>` 的话，底部导航的 `<router-link to="/ai">`
+  //   与当前地址**不是同一条路由**，flow 里点当前 tab 就是一次真实导航，
+  //   而导航是异步的：flow 在导航落地前已经点开了弹窗，等重挂载发生，
+  //   弹窗连同已输入内容一起被销毁 ⇒ 断言必红、失败截图是**首页**。
+  //   实测（emulator-5556 / Android 14，tasks-crud）：
+  //     带 `tapOn: "首页|Home"`             → FAILED
+  //     去掉它（其余步骤完全不变）           → COMPLETED
+  //   第一条 flow 没有 per-flow 复位（只有 preflight 的这一次），
+  //   所以这里不落回纯路由的话，第一条 flow 必踩。
+  await setRoute(back, 'true', 8000)
   let h2 = '(读不到)'
   try { h2 = String(await cdpEval('location.hash') || '') } catch { /* 通道也坏了 */ }
   // ⚠️ 2026-10-02 实测踩到：POCKET_SKIP_CDP_LOGIN=1（有意不登录）时，
@@ -2195,6 +2097,27 @@ async function gotoPreRoute() {
 async function resetToStart() {
   const want = `${START_ROUTE}?__reflow=${Date.now()}`
   const ok = await setRoute(want, 'true', 8000)
+  // ★ 2026-10-22：造完 hash 变化之后**再落回纯路由**。
+  //
+  // 为什么必须有这一步（实测，emulator-5556 / Android 14，tasks-crud 红在
+  // `Assert that "创建", enabled is visible`）：
+  //   复位把地址栏留在 `#/ai?__reflow=<ts>`。底部导航是
+  //   `<router-link to="/ai">`，于是 flow 里点当前 tab
+  //   （`tapOn: "首页|Home"`）时，**那不是同一条路由** —— 少了 `__reflow`
+  //   这个 query —— 于是那一下点击变成一次**真实导航**。
+  //
+  //   真实导航是异步的，而 flow 在导航落地之前已经点开了「创建任务」弹窗；
+  //   等重挂载真正发生，弹窗连同已输入的标题一起被销毁 ⇒
+  //   `创建` 按钮的 enabled 断言必红，而且失败截图是**首页**（弹窗已经不在），
+  //   读起来像「创建功能坏了」，离真因隔了三跳。
+  //
+  //   实测对照（同一台机、同一条 flow，只差这一行）：
+  //     带 `tapOn: "首页|Home"`            → FAILED
+  //     去掉 `tapOn: "首页|Home"`（其他不变） → COMPLETED
+  //
+  //   落回纯路由后，点当前 tab 就是**同路由导航**，vue-router 直接忽略，
+  //   不会有重挂载，也就没有这个竞态。flow 侧因此不必知道 `__reflow` 的存在。
+  await setRoute(START_ROUTE, 'true', 8000)
   let h = '(读不到)'
   try { h = String(await cdpEval('location.hash') || '') } catch { /* 通道也坏了 */ }
   console.log(`[per-flow] ${ok ? '✅' : '⚠️ '} 复位到起点 ${h}`)
