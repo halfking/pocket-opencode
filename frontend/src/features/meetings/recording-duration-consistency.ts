@@ -217,6 +217,131 @@ export function resolveWallClockDurationMs(
   return Math.max(0, now - startTime)
 }
 
+// ---------------------------------------------------------------------------
+// §955：护栏的**输入**从哪来 —— 原生链与 Web 链的墙钟**不同源**
+// ---------------------------------------------------------------------------
+
+/**
+ * §955：原生采集窗口的快照。
+ *
+ * ⚠⚠ **为什么原生链需要另一个墙钟**：
+ *   护栏比的是「墙钟 vs 真实音频」⇒ **两个数必须同源**，否则差的是**系统偏移**
+ *   而不是「音频丢了多少」。
+ *   原生链的墙钟有两个候选：
+ *     ① JS 墙钟（`Date.now() - startTime`）—— 它的起点是 **JS 侧**的
+ *        `start()`，而原生服务是**先**开始采音、`start()` 才 resolve
+ *        （`BackgroundMicPlugin.start` 等的是服务回报 `reportStart(true)`）
+ *        ⇒ 两者起点**不同相位** ⇒ 差一个**未实测的启动延迟**
+ *        ⇒ 短录音会超过容差（500 ms）⇒ **假警报**；
+ *     ② **原生采集窗口**（原生侧每片带的 `endMs`，相对原生 `captureStart`）
+ *        —— 它与盘上的音频**同源**（那些片就是盘上的音频）⇒ 可比。
+ *   ⇒ ⇒ 护栏在原生链上必须用 ②。
+ */
+export interface NativeCaptureSnapshot {
+  /** 本次是否走了原生后台采集。 */
+  used: boolean
+  /**
+   * 原生采集窗口（毫秒）。
+   *
+   * ⚠ `null` = **不可信**：中途切过设备时原生服务会重启，而它的时间轴**从 0 重新开始**
+   *   （`MeetingRecordService.startCapture` 先 `stopCapture()`，`captureStart` 每轮重取）
+   *   ⇒ 分片的时间戳会**回卷** ⇒ 这时任何「窗口」都是错基的
+   *   ⇒ 宁可判「量不到」，也不拿一个错基的数去比。
+   */
+  windowMs: number | null
+}
+
+/** 护栏的墙钟来源（写进告警文案：排查的人要知道拿的是哪个钟）。 */
+export type DurationGuardSource = 'js-wall-clock' | 'native-window' | 'native-untrusted'
+
+export interface DurationGuardInput {
+  /**
+   * 拿来比的墙钟（毫秒）。
+   *
+   * ⚠ **0 = 量不到** ⇒ `assessDurationDrift` 判 `no-ground-truth`
+   *   （「没有那个量」与「那个量为 0」必须能分开 —— §803.1）。
+   */
+  wallClockMs: number
+  /** 真实音频时长（秒）；`null` = 量不到。 */
+  audioSec: number | null
+  source: DurationGuardSource
+}
+
+/**
+ * §955：决定护栏拿**哪个墙钟**去比（**纯函数** ⇒ node 里可直接测）。
+ *
+ * ⚠⚠ **三条分支，每一条都有明确理由**：
+ *   ① **不是原生链**（`nativeCapture` 缺省，或 `used` 为假）⇒ 用 **JS 墙钟**
+ *      ⇒ **Web / iOS 链的行为与 §805 以来一字未变**。
+ *   ② **原生链且窗口可信** ⇒ 用**原生采集窗口** ⇒ 与盘上音频**同源** ⇒ 护栏**真的能判**。
+ *   ③ **原生链但窗口不可信**（切过设备）⇒ **不拿 JS 墙钟顶替**
+ *      ⇒ 宁可判「量不到」（`wallClockMs = 0` ⇒ `no-ground-truth`），
+ *      也不要拿一个**不同源**的墙钟制造**结构性系统偏移**（那会让短录音假警报）。
+ *
+ * ⚠ 为什么**不能**在③里退回 JS 墙钟：JS 墙钟与原生音频**不同源**，
+ *   它的读数里带着一个**未实测的启动延迟** ⇒ 拿它比 ⇒ 短录音（容差只有 500 ms）
+ *   几乎必然越界 ⇒ **每次都报「音频比墙钟短」** ⇒ 噪声 ⇒ 训练人忽略报警（§803.4）。
+ */
+export function resolveDurationGuardInput(opts: {
+  /** 调用方拿到的墙钟（JS 侧 `Date.now() - startTime`）。 */
+  elapsedMs: number
+  /** 原生采集窗口快照；缺省 = 本次没有原生采集（⇒ 走①）。 */
+  nativeCapture?: NativeCaptureSnapshot | null
+  /** 实测音频总时长（秒）。 */
+  measuredAudioSec?: number | null
+}): DurationGuardInput {
+  const audioSec = (
+    typeof opts.measuredAudioSec === 'number'
+    && Number.isFinite(opts.measuredAudioSec)
+    && opts.measuredAudioSec > 0
+  ) ? opts.measuredAudioSec : null
+
+  const native = opts.nativeCapture
+  if (!native || !native.used) {
+    return { wallClockMs: opts.elapsedMs, audioSec, source: 'js-wall-clock' }
+  }
+  if (typeof native.windowMs === 'number' && Number.isFinite(native.windowMs) && native.windowMs > 0) {
+    return { wallClockMs: native.windowMs, audioSec, source: 'native-window' }
+  }
+  return { wallClockMs: 0, audioSec, source: 'native-untrusted' }
+}
+
+/**
+ * §955：原生采集窗口在**收到新一片**之后是多少（**纯函数** ⇒ 可测）。
+ *
+ * ⚠⚠ 为什么不把它写成 runtime 里的一行赋值：
+ *   `recordingRuntime.ts` 在 node 里跑不到（它 import vue / store / api）
+ *   ⇒ 决策写在它体内 ⇒ 一行行为门都没有（§52 纪律：决策必须能测）。
+ *   ⇒ 「窗口怎么累积」是**决策**（要不要单调？非法读数怎么办？）⇒ 提到纯函数里。
+ *
+ * ⚠ **必须单调不减**：原生侧每片的 `endMs` 相对它自己的 `captureStart`
+ *   ⇒ 正常情况下单调增长；
+ *   但**中途切过设备**时它会**回卷**（新的一轮从 0 重新开始）
+ *   ⇒ 那时整个窗口是**错基**的 —— 那件事由 runtime 单独标成「不可信」，
+ *   **不靠**这个函数来救（函数只保证「不因为一个乱序/非法读数而变小」）。
+ */
+export function nativeCaptureWindowAfterPart(currentMs: number, partEndMs: number): number {
+  if (!Number.isFinite(partEndMs) || partEndMs < 0) return currentMs
+  return partEndMs > currentMs ? partEndMs : currentMs
+}
+
+/**
+ * §803.4 的诊断出口：把「护栏没判成异常」这件事的**原因**说出来。
+ *
+ * ⚠ 只在**有异常**时用（`finalizeRecording` 的告警文案里带上它）⇒
+ *   「量不到」这件事本身**不喊**（§803.4：不要让每一次失败都喊一次时长不符）。
+ */
+export function describeDurationGuardSource(source: DurationGuardSource): string {
+  switch (source) {
+    case 'native-window':
+      return '原生采集窗口（与盘上音频同源）'
+    case 'native-untrusted':
+      return '原生采集窗口不可信（中途切过设备，原生时间轴回卷）'
+    default:
+      return 'JS 墙钟'
+  }
+}
+
 /**
  * 换设备后续接录音时，**把计时起点往前挪**，让累计时长接着走。
  *

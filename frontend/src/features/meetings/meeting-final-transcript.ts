@@ -98,14 +98,28 @@ export interface FullTranscribeOutcome {
  *     「它会改存储形态 ⇒ 属产品口径」的前提在本方案下**不成立**；
  *     ② **峰值内存 O(块)**（不是 O(时长)）⇒ 满足属主那条
  *     「时长无限长、只取决于存储的大小」。
+ *
+ * ⚠⚠⚠ **§955 订正**：`durationSec` 由**可选**改成**必填**，而这不是洁癖：
+ *   §954 的文档写着「§805 的时长护栏在原生链上复活（`measuredAudioSec` 由各块
+ *   时长之和给出）」⇒ **那句话是假的**：生产者（`audio-parts.ts`）当时产出的形状是
+ *   `{blob, offsetSec, bytes}` —— **没有 `durationSec`** ⇒ 这里读到的恒 `undefined`
+ *   ⇒ `measuredAudioSec` 恒不产出 ⇒ 护栏**仍然**恒判 `no-ground-truth`。
+ *   ⇒ 而类型没拦住它，因为这里是**可选**字段、那边是**匿名对象字面量**。
+ *   ⇒ 现在两边都**必填** ⇒ 漏字段编译期就红（详见 `native-audio-parts.ts` 的
+ *   `NativeAudioChunkSource` 头注释）。
  */
 export interface AudioChunkSource {
   /** 这一块的音频（WAV）。 */
   blob: Blob
   /** 这一块在整场里的起点（秒）—— 用来把回执的时间轴平移回整场。 */
   offsetSec: number
-  /** 这一块的音频时长（秒）；缺省时**量不到**整场真实时长（§805 会判 no-ground-truth）。 */
-  durationSec?: number
+  /**
+   * 这一块的音频时长（秒）—— **必填**（§955）。
+   *
+   * ⚠ 它是 §805 时长护栏唯一的真值来源：没有它 ⇒ 整场真实时长**量不到**
+   *   ⇒ 护栏恒判 `no-ground-truth`（护栏是死的，且**看不出来**）。
+   */
+  durationSec: number
 }
 
 export interface FinalTranscribeResult {
@@ -121,6 +135,12 @@ export interface FinalTranscribeResult {
    * ⚠ §805 的时长护栏比的是「墙钟 vs 真实音频」⇒ 原生链上 `toWav` 根本不会被调用
    *   （没有整场音频可转）⇒ 那个数恒为 null ⇒ 护栏恒判 `no-ground-truth`。
    *   ⇒ 走**分块音频源**时，这里给出各块时长之和 ⇒ **护栏在原生链上复活**。
+   *
+   * ⚠⚠⚠ **§955 订正**：上面那句「护栏在原生链上复活」**此前是假的** ——
+   *   `durationSec` 在生产者与消费者之间被丢掉（见 `AudioChunkSource` 头注释）⇒
+   *   这个字段此前**恒不产出**。现在接上了，护栏在原生链上**才真的**有真值可比。
+   *   ⚠ 注意：**有真值 ≠ 能比** ⇒ 墙钟必须与音频**同源**，否则是结构性系统偏移
+   *     ⇒ 那件事由 `resolveDurationGuardInput`（`recording-duration-consistency.ts`）管。
    */
   measuredAudioSec?: number
   /**
@@ -408,7 +428,15 @@ async function transcribeChunkStream(
   let measuredAny = false
   for await (const chunk of chunks) {
     const offsetSec = chunk.offsetSec
-    if (typeof chunk.durationSec === 'number' && Number.isFinite(chunk.durationSec)) {
+    // ⚠⚠ §955：时长是**必填**的（`AudioChunkSource.durationSec`）⇒ 这里不再判断
+    //   「有没有这个字段」，只判断**这个值算不算数**。
+    //   ⚠ 为什么要多一道 `> 0`：0 长度既不是「量到了 0 秒」也不是「量不到」，
+    //   而是一个**坏读数**（生产者出了错）⇒ 把它当 0 累加 ⇒ 整场时长被算小
+    //   ⇒ 护栏会报「音频比墙钟短一大截」⇒ **假警报**。
+    //   ⇒ 坏读数只能让这一块**不参与**测量；全部块都坏 ⇒ `measuredAny` 保持 false
+    //   ⇒ `measuredAudioSec` 不产出 ⇒ 护栏判 `no-ground-truth`（**量不到**，
+    //   而不是「量到了 0」）—— 这正是 §803.1 要的那个区别。
+    if (Number.isFinite(chunk.durationSec) && chunk.durationSec > 0) {
       measuredSec += chunk.durationSec
       measuredAny = true
     }

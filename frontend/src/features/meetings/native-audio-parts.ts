@@ -50,6 +50,44 @@ import {
 export type WavPartBytes = Uint8Array
 
 /**
+ * §955：一块「分块音频源」—— 全量重转的**输入单位**（**生产者的形状**）。
+ *
+ * ⚠⚠⚠ `durationSec` 在这里是**必填**，而此前它是**可选**的 ⇒ 这一节要说清为什么：
+ *
+ *   §954 让原生链的整场重转**真的发生**（从盘上分片流式供给），并在文档里写下
+ *   「**§805 的时长护栏在原生链上复活**：`measuredAudioSec` 现在由各块时长之和给出」。
+ *   ⇒ 而那句话是**假的**：生产者的形状是**手写的对象字面量**
+ *     （`audio-parts.ts` 里 `yield { blob, offsetSec, bytes }`），
+ *     **没有 `durationSec`**；消费侧（`meeting-final-transcript.ts`）读的是
+ *     `chunk.durationSec` ⇒ 恒 `undefined` ⇒ `measuredAudioSec` 恒不产出
+ *     ⇒ `finalizeRecording` 的 `measuredAudioSec` 恒 `null`
+ *     ⇒ 护栏**仍然**恒判 `no-ground-truth`（还是死的）。
+ *   ⇒ 而**类型系统没拦住**它，因为：① 消费侧那个字段是**可选**的；
+ *     ② 生产者的形状是**匿名对象字面量**（多一个 `bytes`、少一个 `durationSec`
+ *     都仍然「合法」）。
+ *   ⇒ ⇒ ★ **「消费侧有可选字段」+「生产侧是手写字面量」= 一道没有牙的接缝**：
+ *     两边都「对」，合起来却把信息丢了，而**所有行为判据照样全绿**
+ *     （§954 的 J-12 用的**假件**比真件还完整 ⇒ 那一格永远量不到真件）。
+ *
+ * ⇒ 修法（本模块）：**生产者的类型比消费者的更严格** ⇒
+ *   `durationSec` 必填 ⇒ 谁再把它写漏，**编译期就红**（不是运行时才发现）。
+ */
+export interface NativeAudioChunkSource {
+  /** 这一块的音频（WAV）。 */
+  blob: Blob
+  /** 这一块在整场里的起点（秒）—— 用来把回执的时间轴平移回整场。 */
+  offsetSec: number
+  /** 这一块的音频时长（秒）—— **必填**：§805 时长护栏唯一的真值来源。 */
+  durationSec: number
+}
+
+/** §955：生成块的选项（在切块选项之上多一个「只进消息」的标签）。 */
+export interface NativeAudioChunkSourceOptions extends NativeWavChunkOptions {
+  /** 报错时用来指认是哪一场（**只进消息**，不参与任何判定）。 */
+  label?: string
+}
+
+/**
  * 音频分片在应用数据目录下的**相对目录**。
  *
  * ⚠ 写入与读回**共用这一处** ⇒ 不会「写一处、读另一处」（那正是 §954 之前
@@ -371,4 +409,51 @@ export async function* streamNativeWavChunks(
     for (const chunk of planner.push(part)) yield chunk
   }
   for (const chunk of planner.flush()) yield chunk
+}
+
+/**
+ * §955：把盘上的分片**流式**接成整场音频的若干块（**生产者的本体**）。
+ *
+ * ⚠⚠⚠ **为什么把 I/O 注入出来、把它放在这个纯模块里**：
+ *
+ *   §954 之后，生产者住在 `audio-parts.ts`，而那个文件 import 了
+ *   `@capacitor/filesystem` 与 localDB ⇒ **node 里跑不到**
+ *   ⇒ 判据只能对着**假件**测 ⇒ **真件与假件之间那道接缝从未被量到**
+ *   ⇒ 于是「假件带 `durationSec`、真件不带」这件事，**所有判据都看不见**
+ *   ⇒ §954 才会写下那句假的「护栏在原生链上复活」。
+ *   ⇒ 现在：**读哪一片、读到什么，由调用方注入** ⇒ 生产者本体在 node 里直接跑
+ *   ⇒ ⇒ ★ **判据必须能跑到真件**（否则「假件比真件完整」这条永远查不出来）。
+ *
+ * ⭐ **逐字段显式映射**（不用 `{...chunk}` 展开）：展开会把「哪个字段该叫什么」
+ *   藏在运行期，而**字段名漂移**（§954 那条接缝的病根）恰恰是编译期看不见的那一类
+ *   ⇒ 显式写出来 ⇒ 漏字段/写错名都当场暴露。
+ *
+ * ⚠ **读不到一片就整条中止**（§954 的决定，**这里第一次可测**）：
+ *   跳过一个读不到的片 ⇒ 那一段音频变成一个**洞** ⇒ 洞之后的偏移会与墙钟错开
+ *   ⇒ 说话人归属整体错位 ⇒ **比「没有整场重转」更糟**。
+ */
+export async function* streamNativeAudioChunkSources(
+  files: ReadonlyArray<{ seq: number; mimeType: string }>,
+  readPart: (seq: number, mimeType: string) => Promise<Uint8Array | null>,
+  opts: NativeAudioChunkSourceOptions = {},
+): AsyncGenerator<NativeAudioChunkSource> {
+  const { label, ...chunkOpts } = opts
+  async function* parts(): AsyncGenerator<Uint8Array> {
+    for (const f of files) {
+      const bytes = await readPart(f.seq, f.mimeType)
+      if (!bytes) {
+        throw new Error(
+          `原生音频分片读不到：${label ? `${label} ` : ''}seq=${f.seq}`,
+        )
+      }
+      yield bytes
+    }
+  }
+  for await (const chunk of streamNativeWavChunks(parts(), chunkOpts)) {
+    yield {
+      blob: new Blob([chunk.wav], { type: 'audio/wav' }),
+      offsetSec: chunk.offsetSec,
+      durationSec: chunk.durationSec,
+    }
+  }
 }

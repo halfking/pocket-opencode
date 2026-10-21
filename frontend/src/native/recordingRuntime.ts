@@ -80,7 +80,12 @@ import {
 import { decideMeetingStart, decideNoteStart } from './recordingPolicy'
 import { planSpeakerRelabel } from './speaker-relabel'
 import { isPlaceholderSpeaker } from '../features/meetings/meeting-roster-homophone'
-import { carriedStartTime, resolveWallClockDurationMs } from '../features/meetings/recording-duration-consistency'
+import {
+  carriedStartTime,
+  nativeCaptureWindowAfterPart,
+  resolveWallClockDurationMs,
+  type NativeCaptureSnapshot,
+} from '../features/meetings/recording-duration-consistency'
 
 // ---------------------------------------------------------------------------
 // 录音语音播报（进程级单例）
@@ -257,6 +262,44 @@ export class MeetingRecorderRuntime {
    *   在 stop() 开头清零，否则上一轮的失败会挂到这一轮的成功 toast 上。
    */
   lastFinalizePersistFailed = false
+  /**
+   * §955：本次录音是否走过**原生后台采集**。
+   *
+   * ⚠ 原生链上，护栏（§805）要比的「墙钟」必须与盘上音频**同源**
+   *   ⇒ 用原生侧每片带来的 `endMs`（相对原生 `captureStart`）⇒ 见
+   *   `nativeCaptureSnapshot()`。
+   */
+  private nativeCaptureUsed = false
+  /**
+   * §955：原生采集窗口**是否可信**。
+   *
+   * ⚠⚠ 中途切过设备时原生服务会**重启**，而它的时间轴**从 0 重新开始**
+   *   （`MeetingRecordService.startCapture` 先 `stopCapture()`，`captureStart` 每轮重取）
+   *   ⇒ 分片的时间戳会**回卷** ⇒ 这时任何「窗口」都是**错基**的
+   *   ⇒ 宁可判「量不到」，也不拿错基的数去比（护栏宁可瞎也不误报）。
+   */
+  private nativeCaptureTrusted = false
+  /** §955：原生服务**这一轮**采到的窗口（毫秒）＝ 各片 `endMs` 的最大值。 */
+  private nativeCaptureWindowMs = 0
+  /** §955：这一场录音里原生服务启动过几轮（>1 ⇒ 切过设备）。 */
+  private nativeCaptureRuns = 0
+  /**
+   * §955：取「原生采集窗口」的快照。
+   *
+   * ⚠⚠ **刻意做成方法而不是字段**：窗口会随分片到达而**增长**，而原生服务在
+   *   停止之后还会**补发尾片**（`MeetingRecordService` 的循环退出后才 emit 最后一片）
+   *   ⇒ 若在 `stop()` 那一刻把值取走，护栏拿到的窗口会**少最后一截**
+   *   ⇒ 与音频（那一片**在盘上**）不是同一时刻的读数 ⇒ **假警报**。
+   *   ⇒ ⇒ **取值必须发生在「音频量完之后」** ⇒ 收尾链在量完音频的那一刻调它。
+   *
+   * @returns `used=false` ⇒ 本次没走原生采集（Web / iOS）；
+   *          `windowMs=null` ⇒ 走了但**不可信**（切过设备）。
+   */
+  nativeCaptureSnapshot(): NativeCaptureSnapshot {
+    if (!this.nativeCaptureUsed) return { used: false, windowMs: null }
+    if (!this.nativeCaptureTrusted) return { used: true, windowMs: null }
+    return { used: true, windowMs: this.nativeCaptureWindowMs }
+  }
   // 在途分段转写 promise:stop() 必须等它们落库,否则 refine 拿到的
   // transcript 缺尾巴,晚到的 updateTranscript 还会与 completed 状态竞争。
   private inFlightSegments = new Set<Promise<void>>()
@@ -378,6 +421,15 @@ export class MeetingRecorderRuntime {
       this.audioStartsAtMs = 0
       // §834/D1：同理，上一场收尾写库的失败不能挂到这一场的停止 toast 上。
       this.lastFinalizePersistFailed = false
+      // ⚠⚠ §955：原生采集窗口同理 —— **新的一场**才有「第一轮原生服务」，
+      //   而「轮次」正是判断中途切没切过设备的依据。
+      //   ⚠ 刻意**只**在 freshSession 里清：`resume`（切设备）**不能**清
+      //   ⇒ 切完设备再开一轮 ⇒ 轮次变成 2 ⇒ 窗口被标成「不可信」✔
+      //   （原生时间轴回卷了，窗口是错基的）。
+      this.nativeCaptureUsed = false
+      this.nativeCaptureTrusted = false
+      this.nativeCaptureWindowMs = 0
+      this.nativeCaptureRuns = 0
     }
     // 换场录音先中止上一场还在跑的分片转写：那些语音块属于已经结束的会议，
     // 留着只会白烧上游 ASR 配额，并且它们的分段会被写进新会议里。
@@ -418,9 +470,28 @@ export class MeetingRecorderRuntime {
         this.nativeMode = started.ok
         if (!started.ok) this.backgroundMicReason.value = started.reason || '未知原因'
         if (this.nativeMode) {
+          // ⚠⚠ §955：原生服务**每启动一轮**，它的时间轴就从 0 重新开始
+          //   （`MeetingRecordService.startCapture` 先 `stopCapture()`，
+          //     `captureStart` 每轮重取）⇒ **分片的时间戳会回卷**。
+          // ⇒ ⇒ 采集窗口**只有第一轮可信**；第二轮（= 中途切过设备）一律标成
+          //   「不可信」⇒ 护栏宁可判「量不到」，也不拿错基的数去比。
+          this.nativeCaptureRuns += 1
+          this.nativeCaptureUsed = true
+          this.nativeCaptureTrusted = this.nativeCaptureRuns === 1
+          this.nativeCaptureWindowMs = 0
           this.selectedInput.value = this.inputs.value.find((i) => i.deviceId === opts?.deviceId)
             || this.inputs.value[0]
           this.unlistenNative = await listenBackgroundMicParts((part) => {
+            // ⚠⚠ §955：原生侧每片都带**与音频同源**的墙钟
+            //   （`endMs`，相对原生 `captureStart`；`MeetingRecordService.emitPart`）
+            //   ⇒ 它的最大值就是「这一轮原生采到了多久」
+            //   ⇒ 与盘上的音频**同一个世界** ⇒ 护栏可以直接比。
+            //   ⚠ 此前这个值**只被用于实时分段的时间范围**（`processSegment`），
+            //   从来没有被留住 ⇒ 原生链**唯一**与音频同源的墙钟被丢掉了。
+            //   ⚠ 累积规则在纯函数里（`nativeCaptureWindowAfterPart`）⇒ node 里可测。
+            this.nativeCaptureWindowMs = nativeCaptureWindowAfterPart(
+              this.nativeCaptureWindowMs, part.endMs,
+            )
             void this.processSegment(nativePartToBlob(part), part.startMs, part.endMs)
           }, (msg) => { this.sttError.value = msg })
         }

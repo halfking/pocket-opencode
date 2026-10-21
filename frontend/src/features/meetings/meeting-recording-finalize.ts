@@ -43,7 +43,7 @@ import { getMeeting, updateMeeting, type MeetingSegment } from './meetings-store
 import { ingestMeetingArtifacts } from './meeting-ingest'
 import { buildIngestNotice } from './meeting-ingest-notice'
 import { buildRefineNotice, refineStatusFor } from '../sessions/refine-outcome-notice'
-import { assessDurationDrift, createMeasuringToWav, finalizeFailureNotice } from './recording-duration-consistency'
+import { assessDurationDrift, createMeasuringToWav, finalizeFailureNotice, describeDurationGuardSource, resolveDurationGuardInput, type NativeCaptureSnapshot } from './recording-duration-consistency'
 
 export interface FinalizeDeps {
   /** 一次全量重转。注入而非直接调 API，便于单测与换实现。 */
@@ -57,6 +57,23 @@ export interface FinalizeDeps {
    *   **不需要每个调用方各自接线**（§49 的教训：两条录音路径必须共用一份收尾）。
    */
   loadAudioChunks?: (meetingId: string) => AsyncIterable<AudioChunkSource> | null
+  /**
+   * §955：**原生采集窗口**的取值函数（原生链才有）。
+   *
+   * ⚠⚠ 为什么原生链需要**另一个**墙钟：护栏比的是「墙钟 vs 真实音频」⇒
+   *   **两个数必须同源**，否则差的是**系统偏移**而不是「音频丢了多少」。
+   *   原生链上 JS 墙钟的起点（`start()`）比原生服务真正开采的时刻**晚**
+   *   （`BackgroundMicPlugin.start` 等的是服务回报 `reportStart(true)`）
+   *   ⇒ 两者**不同相位** ⇒ 拿 JS 墙钟比 ⇒ 差一个**未实测的启动延迟**
+   *   ⇒ 短录音（容差只有 500 ms）几乎必然越界 ⇒ **假警报** ⇒ 噪声。
+   *   ⇒ 而原生侧每片带来的 `endMs` 与盘上音频**同源** ⇒ 用它。
+   *
+   * ⚠ 传**取值函数**而不是值：原生服务停止后还会**补发尾片**，窗口会继续增长
+   *   ⇒ 取值必须发生在「音频量完之后」⇒ 由收尾链在那一刻调它。
+   *
+   * ⚠ 缺省（Web / iOS 链）⇒ 护栏用 JS 墙钟 ⇒ **行为一字未变**。
+   */
+  nativeCaptureSnapshot?: () => NativeCaptureSnapshot | null
   /**
    * 落盘音频 → 可切分的 WAV。注入便于单测。
    *
@@ -137,6 +154,27 @@ const defaultLoadAudioChunks = (meetingId: string): AsyncIterable<AudioChunkSour
 }
 
 /**
+ * §955：取「原生采集窗口」的快照（**观测失败不得影响主流程**，§818）。
+ *
+ * ⚠ 取值失败时返回「**原生但不可信**」而不是「没有原生」：
+ *   「没有原生」会让护栏退回 **JS 墙钟** ⇒ 那是**不同源**的钟 ⇒ 差的是系统偏移
+ *   ⇒ 短录音会**假警报**；
+ *   而「不可信」⇒ 护栏判 `no-ground-truth`（**量不到**）⇒ 宁可瞎也不误报
+ *   （§803.4：宁可漏报，也不要训练人忽略报警）。
+ */
+function readNativeCaptureSnapshot(
+  provider: FinalizeDeps['nativeCaptureSnapshot'],
+): NativeCaptureSnapshot | null {
+  if (!provider) return null
+  try {
+    return provider() ?? null
+  } catch (e) {
+    console.warn('[meeting-finalize] 取原生采集窗口失败，本场不做时长一致性判定：', e)
+    return { used: true, windowMs: null }
+  }
+}
+
+/**
  * 收尾：全量重转 → 说话人归因 → 人名同音纠正 → LLM 精校 → 入库（笔记/待办/提醒）。
  *
  * 顺序每一环都不能换：
@@ -201,13 +239,25 @@ export async function finalizeRecording(
     measuredAudioSec = finalText.measuredAudioSec
   }
 
+  // ⚠⚠ §955：护栏的**墙钟**不再恒等于 `elapsedMs`。
+  //   原生链上必须用**与盘上音频同源**的原生采集窗口
+  //   ⇒ 否则比的是两个**不同相位**的钟（JS 的 `start()` 比原生服务开采**晚**）
+  //   ⇒ 差的是**系统偏移**而不是「音频丢了多少」⇒ 短录音会假警报。
+  //   ⇒ 决策在纯函数 `resolveDurationGuardInput` 里（§52 纪律：决策必须在能测的地方）。
+  //   ⇒ Web / iOS 链（没有原生窗口）⇒ 走 JS 墙钟 ⇒ **行为一字未变**。
+  const guardInput = resolveDurationGuardInput({
+    elapsedMs,
+    nativeCapture: readNativeCaptureSnapshot(deps.nativeCaptureSnapshot),
+    measuredAudioSec,
+  })
   // 只 warn、不改状态：阈值与是否升级为阻断属产品口径（§805.3）。
   // `no-ground-truth` 不算异常 —— 转码失败那条路由 `refetchFullTranscript` 自己兜。
-  const drift = assessDurationDrift(elapsedMs, measuredAudioSec)
+  const drift = assessDurationDrift(guardInput.wallClockMs, guardInput.audioSec)
   if (!drift.ok) {
     console.warn(
-      `[meeting-finalize] 录音时长与落盘音频不符：墙钟 ${elapsedMs}ms vs 音频 `
-      + `${measuredAudioSec === null ? '未知' : Math.round(measuredAudioSec * 1000) + 'ms'}`
+      `[meeting-finalize] 录音时长与落盘音频不符：墙钟 ${guardInput.wallClockMs}ms`
+      + `（${describeDurationGuardSource(guardInput.source)}）vs 音频 `
+      + `${guardInput.audioSec === null ? '未知' : Math.round(guardInput.audioSec * 1000) + 'ms'}`
       + `（差 ${drift.driftMs}ms > 容差 ${Math.round(drift.toleranceMs)}ms，${drift.reason}）`,
     )
   }

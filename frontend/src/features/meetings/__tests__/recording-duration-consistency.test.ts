@@ -18,6 +18,8 @@ import {
   finalizeFailureNotice,
   carriedStartTime,
   resolveWallClockDurationMs,
+  resolveDurationGuardInput,
+  nativeCaptureWindowAfterPart,
   wavDurationSec,
 } from '../recording-duration-consistency.ts'
 
@@ -445,3 +447,126 @@ describe('finalizeFailureNotice —— §818 的决策点（真行为断言）',
     assert.match(String(n), /转码失败/, '去掉 transcodeFailed 分支后仍报 ⇒ 判据没咬到那个分支')
   })
 })
+
+// ─────────────────────────────────────────────────────────────────────────
+// §955 · `resolveDurationGuardInput` —— 护栏拿**哪个墙钟**去比。
+//
+// ★ 为什么它必须是**纯函数**（§52 纪律）：`finalizeRecording` 在 node 里跑不到
+//   ⇒ 决策写在它体内 ⇒ 一行行为门都没有 ⇒ 变异打不红。
+//
+// ⚠⚠ 这一组存在的理由是 §954 的一个**假声称**：
+//   §954 的文档写着「§805 的时长护栏在原生链上复活」，而那句话是**假的**
+//   —— `durationSec` 在生产者与消费者之间被丢掉 ⇒ 护栏恒判 `no-ground-truth`。
+//   而更根本的是：**就算接上了，比的也是两个不同相位的钟**
+//   （JS 的 `start()` 比原生服务开采**晚**）⇒ 短录音会假警报。
+//   ⇒ 护栏在原生链上必须用**与盘上音频同源**的原生采集窗口。
+describe('§955 · 护栏的墙钟必须与盘上音频同源', () => {
+  it('★ Web / iOS 链（没有原生窗口）⇒ 墙钟就是 JS 墙钟，行为一字未变', () => {
+    const g = resolveDurationGuardInput({ elapsedMs: 62_000, measuredAudioSec: 57.36 })
+    assert.equal(g.source, 'js-wall-clock')
+    assert.equal(g.wallClockMs, 62_000, 'Web 链的墙钟被换掉了 ⇒ §805 以来行为变了')
+    assert.equal(g.audioSec, 57.36)
+    // ⭐ 端到端：Web 链上 §785 那个真实缺口仍然判得出来
+    const d = assessDurationDrift(g.wallClockMs, g.audioSec)
+    assert.equal(d.ok, false)
+    assert.equal(d.reason, 'audio-shorter')
+  })
+
+  it('★★ 原生链且窗口可信 ⇒ 墙钟必须换成**原生采集窗口**（不是 JS 墙钟）', () => {
+    const g = resolveDurationGuardInput({
+      elapsedMs: 62_000,
+      nativeCapture: { used: true, windowMs: 60_000 },
+      measuredAudioSec: 57.36,
+    })
+    assert.equal(g.source, 'native-window')
+    assert.equal(g.wallClockMs, 60_000, '原生链仍然拿 JS 墙钟比 ⇒ 比的是系统偏移，不是「音频丢了多少」')
+    // 同源比较：窗口 60s、音频 57.36s ⇒ 差 2.64s（这才是真的缺口）
+    const d = assessDurationDrift(g.wallClockMs, g.audioSec)
+    assert.equal(d.ok, false)
+    assert.equal(d.reason, 'audio-shorter')
+    assert.equal(d.driftMs, 2640)
+  })
+
+  // ⚠⚠ 这一条是本组**最关键**的一条：不可信时**不许**退回 JS 墙钟。
+  it('★★ 原生链但窗口不可信（切过设备）⇒ 判「量不到」，**不许**拿 JS 墙钟顶替', () => {
+    const g = resolveDurationGuardInput({
+      elapsedMs: 62_000,
+      nativeCapture: { used: true, windowMs: null },
+      measuredAudioSec: 60,
+    })
+    assert.equal(g.source, 'native-untrusted')
+    assert.equal(g.wallClockMs, 0, '拿 JS 墙钟顶替 ⇒ 差的是系统偏移 ⇒ 短录音会假警报')
+    const d = assessDurationDrift(g.wallClockMs, g.audioSec)
+    assert.equal(d.ok, true)
+    assert.equal(d.reason, 'no-ground-truth', '不可信时必须判「量不到」，而不是判成「正常」')
+  })
+
+  it('★ 负控：拿 JS 墙钟当原生窗口 ⇒ 差值会变成「系统偏移」而不是真缺口', () => {
+    // 真实场景的量级：原生服务比 JS 的 start() 晚 ~1.5s 开始 ⇒ 音频 60s、窗口 61.5s。
+    // 若错用 JS 墙钟 62s ⇒ 报「差 2s」；用同源窗口 61.5s ⇒ 报「差 1.5s」—— 后者才是真的。
+    const wrong = assessDurationDrift(62_000, 60)
+    const right = assessDurationDrift(
+      resolveDurationGuardInput({ elapsedMs: 62_000, nativeCapture: { used: true, windowMs: 61_500 }, measuredAudioSec: 60 }).wallClockMs,
+      60,
+    )
+    assert.equal(wrong.driftMs, 2000)
+    assert.equal(right.driftMs, 1500)
+    assert.notEqual(wrong.driftMs, right.driftMs, '两个钟算出来的差值必须不同，否则这条判据恒真')
+  })
+
+  it('★ 音频时长量不到时，护栏输入里的 audioSec 必须是 null（不是 0）', () => {
+    for (const bad of [undefined, null, 0, Number.NaN, -5]) {
+      const g = resolveDurationGuardInput({
+        elapsedMs: 60_000,
+        nativeCapture: { used: true, windowMs: 60_000 },
+        measuredAudioSec: bad as number | null | undefined,
+      })
+      assert.equal(g.audioSec, null, `${String(bad)} 被折成了 ${g.audioSec} ⇒ 「量不到」与「量为 0」混了`)
+      assert.equal(assessDurationDrift(g.wallClockMs, g.audioSec).reason, 'no-ground-truth')
+    }
+  })
+
+  it('★ 原生窗口为 0（还没有分片到）⇒ 判「量不到」，不许当成 0ms 的墙钟去比', () => {
+    const g = resolveDurationGuardInput({
+      elapsedMs: 60_000,
+      nativeCapture: { used: true, windowMs: 0 },
+      measuredAudioSec: 60,
+    })
+    assert.equal(g.source, 'native-untrusted')
+    assert.equal(assessDurationDrift(g.wallClockMs, g.audioSec).reason, 'no-ground-truth')
+  })
+
+  it('★ nativeCapture 缺省 / used=false ⇒ 一律走 JS 墙钟（原生链没启用时）', () => {
+    assert.equal(resolveDurationGuardInput({ elapsedMs: 1_000, measuredAudioSec: 1 }).source, 'js-wall-clock')
+    assert.equal(
+      resolveDurationGuardInput({ elapsedMs: 1_000, nativeCapture: { used: false, windowMs: null }, measuredAudioSec: 1 }).source,
+      'js-wall-clock',
+    )
+  })
+})
+
+describe('§955 · 原生采集窗口的累积规则（纯函数）', () => {
+  it('★ 随分片单调增长', () => {
+    assert.equal(nativeCaptureWindowAfterPart(0, 8_000), 8_000)
+    assert.equal(nativeCaptureWindowAfterPart(8_000, 16_000), 16_000)
+    assert.equal(nativeCaptureWindowAfterPart(16_000, 24_000), 24_000)
+  })
+
+  // ⚠ 中途切过设备时原生时间轴**回卷**（新一轮从 0 开始）⇒ 这时不能把窗口变小，
+  //   否则护栏会拿一个「倒退」的墙钟去比 ⇒ 读数毫无意义。
+  it('★ 乱序/回卷的读数不得让窗口变小', () => {
+    assert.equal(nativeCaptureWindowAfterPart(16_000, 4_000), 16_000)
+  })
+
+  it('★ 非法读数（NaN / Infinity / 负数）不得污染窗口', () => {
+    for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, -1]) {
+      assert.equal(nativeCaptureWindowAfterPart(16_000, bad), 16_000,
+        `${String(bad)} 污染了窗口`)
+    }
+  })
+
+  it('★ 起点为 0 时也要能长起来（不是恒 0）', () => {
+    assert.notEqual(nativeCaptureWindowAfterPart(0, 8_000), 0)
+  })
+})
+

@@ -72,10 +72,35 @@ describe('A：精校结果的行动项必须真的落到待办与日程', () => 
     // 且 catch 段里没有把 ingest 的失败冒泡出去。
     const iRefine = code.indexOf('meetingsApi.refine(')
     const iIngest = code.indexOf('ingestMeetingArtifacts(')
-    const iCatch = code.indexOf('} catch (e) {')
+    // ⚠⚠ §955：**只改指向，不改语义**。
+    //   原锚点是「**全文件第一个** `} catch (e) {`」⇒ 而 §955 在收尾模块的**前面**
+    //   （`readNativeCaptureSnapshot`）加了一个 `catch (e)`（取原生采集窗口失败时的兜底）
+    //   ⇒ 那个锚点命中的是**新加的**那个 catch ⇒ 判据开始报「ingest 不在 refine 与 catch 之间」
+    //   ⇒ 而那不是真的：ingest 仍然夹在 refine 与**它自己的** catch 之间。
+    //   ⇒ ⇒ 锚点改成「**从 refine 往后**找那个 catch」⇒ 语义完全不变
+    //   （要守的仍然是「ingest 在 refine 的 try 块内、catch 之前」）。
+    const iCatch = code.indexOf('} catch (e) {', iRefine)
     assert.ok(iRefine > 0 && iIngest > 0 && iCatch > 0, '三个锚点都要能找到')
     assert.ok(iIngest > iRefine && iIngest < iCatch,
       'ingest 必须夹在 refine 成功与外层 catch 之间 —— 抛到外层会让精校明明成功却被报成失败')
+  })
+
+  it('★ 负控：把 ingest 挪到 catch **之后**（= 精校失败会被说成入库失败）必须被同一条判据抓住', () => {
+    // ⚠ 这条负控是 §955 改锚点时配套加的：锚点从「全文件第一个 catch」改成
+    //   「从 refine 往后找 catch」⇒ 必须证明**新锚点仍然有牙**。
+    const sample = `
+      const result = await meetingsApi.refine(id, refineSegments)
+    } catch (e) {
+      notify('warning', 'refine failed')
+    }
+      await ingestMeetingArtifacts(fresh, result)
+    `
+    const iRefine = sample.indexOf('meetingsApi.refine(')
+    const iIngest = sample.indexOf('ingestMeetingArtifacts(')
+    const iCatch = sample.indexOf('} catch (e) {', iRefine)
+    const ok = iIngest > iRefine && iIngest < iCatch
+    assert.equal(ok, false,
+      '负控样本构造错了：ingest 落在 catch 之后时，同一条判据必须判红（否则新锚点没牙）')
   })
 })
 

@@ -132,6 +132,12 @@ export function useSessionLiveRecord(sessionId: () => string, sessionTitle: () =
           else if (kind === 'warning') toast.warning(text)
           else toast.info(text)
         },
+        // ⚠⚠ §955：护栏（§805）在原生链上要比的**墙钟**必须与盘上音频**同源**
+        //   ⇒ 用原生采集窗口（原生侧每片带的 `endMs`），而不是 JS 墙钟
+        //   （JS 的 `start()` 比原生服务开采**晚** ⇒ 两个钟不同相位 ⇒ 差的是
+        //   系统偏移而不是「音频丢了多少」⇒ 短录音会假警报）。
+        //   ⚠ Web / iOS 链返回 `used=false` ⇒ 护栏用 JS 墙钟 ⇒ 行为一字未变。
+        nativeCaptureSnapshot: () => recorder.nativeCaptureSnapshot(),
       },
       // ★§825：与 durationMs 同源，都只能来自 stop() 的返回值。
       // 中途切过设备时这里非 0 ⇒ 收尾不再把整段重转按绝对时间挂回说话人。

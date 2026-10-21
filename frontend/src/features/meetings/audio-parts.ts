@@ -17,7 +17,8 @@ import {
   audioPartDir,
   audioPartExtForMime,
   audioPartRelativePath,
-  streamNativeWavChunks,
+  streamNativeAudioChunkSources,
+  type NativeAudioChunkSource,
 } from './native-audio-parts.ts'
 
 export interface AudioPartRow {
@@ -164,27 +165,25 @@ export async function readAudioPartBytes(
  *   **音频位置**（与 Web 链同一口径）⇒ 洞之后的偏移会与**墙钟**时间轴错开
  *   ⇒ 说话人归属会整体错位 ⇒ **比「没有整场重转」更糟**。
  *   ⇒ 宁可整条中止（退回分段文本，与今天的 Android 行为一致），也不要给一份错位的全文。
+ *
+ * ⚠⚠⚠ **§955：本函数现在只是一层薄适配**（读盘、读库都在这里）；
+ *   切块与「块的形状」在 `native-audio-parts.ts` 的 `streamNativeAudioChunkSources` 里
+ *   ⇒ 那儿是**纯的**（I/O 注入）⇒ **node 里能直接跑真件**
+ *   ⇒ 而此前真件住在本文件里（本文件 import 了 Filesystem 与 localDB ⇒ node 跑不到）
+ *   ⇒ 判据只能测**假件** ⇒ 「假件比真件完整」这件事没人查得出来
+ *   ⇒ §954 的「护栏在原生链上复活」那句话才会是假的。
+ *   ⇒ ⭐ 并且**本函数产出的每一块都带 `durationSec`**（`NativeAudioChunkSource` 里它**必填**）
+ *   ⇒ 漏字段**编译期**就红。
  */
 export async function* streamNativeMeetingAudioChunks(
   meetingId: string,
   opts?: { chunkSeconds?: number; searchSeconds?: number; minChunkSeconds?: number },
-): AsyncGenerator<{ blob: Blob; offsetSec: number; bytes: number }> {
+): AsyncGenerator<NativeAudioChunkSource> {
   const files = await listAudioPartFiles(meetingId)
   if (!files.length) return
-  async function* parts(): AsyncGenerator<Uint8Array> {
-    for (const f of files) {
-      const bytes = await readAudioPartBytes(meetingId, f.seq, f.mimeType)
-      if (!bytes) {
-        throw new Error(`原生音频分片读不到：meeting=${meetingId} seq=${f.seq}`)
-      }
-      yield bytes
-    }
-  }
-  for await (const chunk of streamNativeWavChunks(parts(), opts)) {
-    yield {
-      blob: new Blob([chunk.wav], { type: 'audio/wav' }),
-      offsetSec: chunk.offsetSec,
-      bytes: chunk.wav.length,
-    }
-  }
+  yield* streamNativeAudioChunkSources(
+    files,
+    (seq, mimeType) => readAudioPartBytes(meetingId, seq, mimeType),
+    { ...opts, label: `meeting=${meetingId}` },
+  )
 }

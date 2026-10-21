@@ -912,6 +912,7 @@ import {
   buildWavHeader,
   audioPartExtForMime,
   audioPartRelativePath,
+  streamNativeAudioChunkSources,
 } from './native-audio-parts.ts'
 
 /** 造一片 16 kHz 单声道 16-bit 的 WAV（**每片一个不同的响度** ⇒ 切点有得挑）。 */
@@ -1182,5 +1183,159 @@ describe('J · §954 接线层（源码扫描，⚠ 按 §818 的教训对「信
     assert.doesNotMatch(window, /part-\$\{seq\}\.webm/,
       '落盘又写死了 .webm ⇒ 文件名与内容不符')
     assert.match(window, /audioPartExtForMime/, '落盘没有按 MIME 推扩展名')
+  })
+})
+
+// ══════════════════════════════════════════════════════════════════════════
+// §955 · **真件**的形状 —— §954 的 J-12 用的是**假件**，而假件比真件完整。
+//
+// ⚠⚠⚠ 这一组的由来（§954 留下的一笔假账）：
+//   §954 的文档写着「**§805 的时长护栏在原生链上复活**：`measuredAudioSec` 现在由
+//   各块时长之和给出」⇒ 而**那句话是假的**：
+//   ① 生产者（`audio-parts.ts` 的 `streamNativeMeetingAudioChunks`）当时产出的形状是
+//      `{blob, offsetSec, bytes}` —— **没有 `durationSec`**；
+//   ② 消费侧（`meeting-final-transcript.ts`）读 `chunk.durationSec` ⇒ 恒 `undefined`
+//      ⇒ `measuredAudioSec` 恒不产出 ⇒ 护栏**仍然**恒判 `no-ground-truth`；
+//   ③ 而 J-12 那条「整场真实时长必须被量出来」用的是**假件**（`fakeChunks`）
+//      ⇒ 假件**带** `durationSec`、真件**不带**
+//      ⇒ ★ ⇒ 「真件与假件之间那道接缝」**从来没有被量到**
+//      ⇒ 所有判据全绿，而声称的效果**一次也没发生**。
+//
+//   ⇒ ⇒ ★★★ 通用式：**判据量到的必须是真件**。
+//      注入式判据（假件）只覆盖**消费侧**；**生产侧的接线必须单独量**，
+//      否则「假件比真件完整」这类缺陷**永远查不出来**。
+//   ⇒ 本组直接跑**生产者的本体**（`streamNativeAudioChunkSources`，I/O 注入 ⇒ 纯）。
+// ══════════════════════════════════════════════════════════════════════════
+describe('K · §955 真件：生产者产出的每一块都必须带 durationSec', () => {
+  /** 造 N 片 8s 的 WAV（生产形状：完整 WAV 文件）。 */
+  const partsOf = (count: number): Uint8Array[] =>
+    Array.from({ length: count }, (_, i) => makeWavPart(8, (i % 7) * 900 - 2700))
+
+  /** 用**真件**跑一遍（I/O 注入：读哪一片、读到什么由夹具给）。 */
+  const runReal = async (parts: Uint8Array[]) => {
+    const files = parts.map((_, i) => ({ seq: i + 1, mimeType: 'audio/wav' }))
+    const out: Array<{ blob: Blob; offsetSec: number; durationSec: number }> = []
+    for await (const c of streamNativeAudioChunkSources(
+      files,
+      async (seq) => parts[seq - 1] ?? null,
+    )) {
+      out.push(c)
+    }
+    return out
+  }
+
+  it('★★ 真件产出的每一块都必须带 durationSec（§954 当时真件根本没这个字段）', async () => {
+    const chunks = await runReal(partsOf(12))
+    assert.ok(chunks.length >= 1, '真件一块都没产出')
+    for (const c of chunks) {
+      assert.equal(typeof c.durationSec, 'number',
+        '真件产出的一块没有 durationSec ⇒ §805 的护栏在原生链上仍然是死的')
+      assert.ok(c.durationSec > 0, `durationSec=${c.durationSec} ⇒ 坏读数`)
+    }
+  })
+
+  it('★★ 真件接进整场重转 ⇒ 整场真实时长必须被量出来（护栏才有真值可比）', async () => {
+    const parts = partsOf(12) // 12 × 8s = 96s
+    const files = parts.map((_, i) => ({ seq: i + 1, mimeType: 'audio/wav' }))
+    const res = await refetchFullTranscript('m1', async () => ({ text: 'x', failed: 0 }), {
+      loadAudioChunks: () => streamNativeAudioChunkSources(
+        files,
+        async (seq) => parts[seq - 1] ?? null,
+      ),
+    })
+    assert.ok(typeof res.measuredAudioSec === 'number',
+      '真件接进去仍然量不到整场时长 ⇒ §805 的护栏在原生链上仍然是死的')
+    assert.ok(Math.abs((res.measuredAudioSec ?? 0) - 96) < 0.001,
+      `量出的时长 ${res.measuredAudioSec}s ≠ 96s`)
+  })
+
+  it('★ 负控：缺 durationSec 的块（= §954 当时的真件形状）必须量不到', async () => {
+    // ⭐ 这条是本组里最关键的一条：**证明上面两条不是恒真**。
+    //   缺 durationSec ⇒ 消费侧读到 undefined ⇒ 不参与测量 ⇒ 整场时长**量不到**
+    //   ⇒ 护栏判 no-ground-truth ⇒ **正是 §954 当时真机上的行为**。
+    async function* broken() {
+      yield { blob: new Blob([makeWavPart(8, 0)], { type: 'audio/wav' }), offsetSec: 0 } as never
+    }
+    const res = await refetchFullTranscript('m1', async () => ({ text: 'x', failed: 0 }), {
+      loadAudioChunks: () => broken(),
+    })
+    assert.equal(res.measuredAudioSec, undefined,
+      '缺 durationSec 的块竟然量出了时长 ⇒ 上面那条判据没有牙（或者测量逻辑坏了）')
+  })
+
+  it('★ 真件读不到一片时必须**整条中止**（不许静默跳过 ⇒ 洞之后的偏移会与墙钟错位）', async () => {
+    const parts = partsOf(12)
+    const files = parts.map((_, i) => ({ seq: i + 1, mimeType: 'audio/wav' }))
+    await assert.rejects(
+      async () => {
+        for await (const _ of streamNativeAudioChunkSources(
+          files,
+          async (seq) => (seq === 3 ? null : parts[seq - 1] ?? null),
+        )) { /* 只需触发异常 */ }
+      },
+      /读不到/,
+      '读不到一片却继续往下走 ⇒ 洞之后的偏移与墙钟错位 ⇒ 说话人归属整体错位',
+    )
+  })
+})
+
+describe('K · §955 接线层（源码扫描，⚠ 零牙已如实标注）', () => {
+  it('★ 生产者必须走那个**纯函数**（否则真件与被测的本体又分家了）', () => {
+    const s = stripComments(read('./audio-parts.ts'))
+    const at = s.indexOf('streamNativeMeetingAudioChunks')
+    assert.ok(at > 0, '找不到生产者')
+    const window = s.slice(at, at + 1200)
+    assert.match(window, /streamNativeAudioChunkSources\(/,
+      '生产者没有走那个纯函数 ⇒ 真件与被测的本体分家了 ⇒ 又一次「假件比真件完整」')
+    // ⚠ 绝对条数：防止「又在别处手写了一份形状」。
+    const n = (s.match(/streamNativeAudioChunkSources\(/g) || []).length
+    assert.equal(n, 1, `streamNativeAudioChunkSources 出现了 ${n} 处 ⇒ 形状被手写在了别处`)
+  })
+
+  it('★ 生产者的产出类型必须是那个**具名**的（不许再回到匿名对象字面量）', () => {
+    const s = stripComments(read('./audio-parts.ts'))
+    assert.match(s, /AsyncGenerator<NativeAudioChunkSource>/,
+      '生产者的产出类型又变回匿名了 ⇒ 字段漏掉时编译期不再报错（那正是 §954 的病根）')
+  })
+
+  it('★ 护栏的墙钟必须走那个**纯函数**（决策不得埋在 finalizeRecording 体内）', () => {
+    const s = stripComments(read('./meeting-recording-finalize.ts'))
+    assert.match(s, /resolveDurationGuardInput\(/,
+      '收尾没有走那个纯函数 ⇒ 墙钟的选择又埋进了跑不到的函数体（§52 纪律）')
+    // ⚠ 绝对条数：只调一次。
+    const n = (s.match(/resolveDurationGuardInput\(/g) || []).length
+    assert.equal(n, 1, `resolveDurationGuardInput 出现了 ${n} 处`)
+  })
+
+  it('★ 原生采集窗口必须由**两条录音路径**都传下去（漏一条 = 那个入口的护栏是死的）', () => {
+    // ⚠ 钉**形状**而不是「出现过这个词」：
+    //   `nativeCaptureSnapshot: undefined` 这种「把通道掐断」的写法
+    //   照样含有那个词 ⇒ 只匹配词名的判据是零牙的。
+    for (const p of [
+      '../sessions/useSessionLiveRecord.ts',
+      './MeetingDetailView.vue',
+    ]) {
+      assert.match(stripComments(read(p)), /nativeCaptureSnapshot:\s*\(\)\s*=>/,
+        `${p} 没把原生采集窗口接上去 ⇒ 那条入口的护栏拿不到同源的墙钟`)
+    }
+    // 收尾模块这一侧：声明 + **真的用上**（声明了却没人读 ⇒ 也是死代码）
+    const f = stripComments(read('./meeting-recording-finalize.ts'))
+    assert.match(f, /nativeCaptureSnapshot\?:\s*\(\)\s*=>/,
+      '收尾没有声明 nativeCaptureSnapshot 这个通道')
+    assert.match(f, /deps\.nativeCaptureSnapshot/,
+      '收尾声明了通道却没读它 ⇒ 那是一条死通道')
+  })
+
+  it('★ runtime 必须把原生侧带来的**同源墙钟**留住（endMs 此前只用于实时分段）', () => {
+    const s = stripComments(read('../../native/recordingRuntime.ts'))
+    const at = s.indexOf('listenBackgroundMicParts(')
+    assert.ok(at > 0, '找不到原生分片订阅')
+    const window = s.slice(at, at + 900)
+    // ⚠ 钉**调用那个纯函数**（累积规则在纯函数里 ⇒ 有行为门），
+    //   而不只是「窗口里出现过 endMs」。
+    assert.match(window, /nativeCaptureWindowAfterPart\(/,
+      '原生分片回调没有走那个纯函数 ⇒ 窗口怎么累积又成了没有行为门的决策')
+    assert.match(window, /part\.endMs/,
+      '原生分片回调里没有读 endMs ⇒ 原生链唯一与音频同源的墙钟被丢掉了')
   })
 })
