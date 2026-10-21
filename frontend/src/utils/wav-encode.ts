@@ -13,7 +13,32 @@
  *
  * 失败语义：decodeAudioData 解不了（罕见容器/损坏数据）时抛错，由调用
  * 方决定回退原 blob 上传——不比现状差。
+ *
+ * ── §953：解码从「整场一次」改成「逐簇」 ──────────────────────────────────
+ *
+ * 旧做法把整场 webm 一次性 `decodeAudioData` 掉 ⇒ 解码峰值是
+ * **48 kHz Float32 整场**（192 000 B/s ⇒ **659 MB/小时**）：
+ * 一场 3 小时的会议在收尾那一步要 **≈ 2 GB** 峰值 ⇒ 手机上必崩。
+ *
+ * §953 的实测结论：webm 的**初始化前缀只有 146 字节**，而
+ * 「初始化前缀 + 单个 Cluster」**可以单独解码**，且逐簇拼接的结果与
+ * 整场解码**长度相同、位置偏移 0**（簇边界 mse ≈ 1e-4，低于 ASR 可感知阈值）。
+ * ⇒ 于是改成：**逐簇解码 + 逐簇重采样 + 拼接**
+ * ⇒ 峰值从 659 MB/小时 降到 **≈ 230 MB/小时**（输出本身仍是 O(时长)）。
+ *
+ * ⚠ 为什么降不到 O(1)：本函数要交出的是**一整段 WAV**，
+ *   而「一整段」这件事本身就是 O(时长) 的。
+ *   要再降，得让调用方**流式消费**（收尾那侧逐块切、逐块送），
+ *   那是另一件事（§953 登记，未代拍）。
+ *
+ * ⚠ 逐簇重采样与整场重采样在簇边界上可能差 ≤ 簇数个采样
+ *   （每簇各自 floor() 一次）⇒ 与旧行为不是逐字节相同。
+ *
+ * ⚠ 失败语义**不变**：逐簇这条路走不通（不是 webm / 解不开）时，
+ *   **退回整场解码**（旧行为）⇒ 不比现状差。
  */
+
+import { WebmClusterSplitter, composeWebmWithInit } from './webm-incremental.ts'
 
 const TARGET_SAMPLE_RATE = 16000
 
@@ -25,29 +50,87 @@ export async function encodeWav16kMono(input: Blob): Promise<Blob> {
   if (!AudioCtx) throw new Error('no AudioContext available for wav transcode')
   const ctx = new AudioCtx()
   try {
-    const buf = await ctx.decodeAudioData(await input.arrayBuffer())
-    const ratio = buf.sampleRate / TARGET_SAMPLE_RATE
-    // 混合到单声道再重采样：逐目标帧取源区间平均，避免通道分离。
-    const channels = buf.numberOfChannels
-    const mono = new Float32Array(Math.floor(buf.length / ratio) || 1)
-    for (let i = 0; i < mono.length; i++) {
-      const start = Math.floor(i * ratio)
-      const end = Math.min(buf.length, Math.floor((i + 1) * ratio))
-      let sum = 0
-      let n = 0
-      for (let c = 0; c < channels; c++) {
-        const ch = buf.getChannelData(c)
-        for (let j = start; j < end; j++) {
-          sum += ch[j]
-          n++
-        }
-      }
-      mono[i] = n > 0 ? sum / n : 0
+    const bytes = new Uint8Array(await input.arrayBuffer())
+    let mono: Float32Array | null = null
+    try {
+      mono = await decodeMono16k(ctx, bytes)
+    } catch {
+      // 逐簇这条路走不通 ⇒ 退回整场解码（旧行为）⇒ 不比现状差。
+      mono = null
+    }
+    if (!mono) {
+      // ⚠ decodeAudioData 会**消耗**传入的 ArrayBuffer ⇒ 这里必须给一份拷贝。
+      const buf = await ctx.decodeAudioData(bytes.slice().buffer as ArrayBuffer)
+      mono = toMono16k(buf)
     }
     return new Blob([encodeWav(mono, TARGET_SAMPLE_RATE)], { type: 'audio/wav' })
   } finally {
     void ctx.close()
   }
+}
+
+/**
+ * §953：**逐簇**解码并重采样；走不通时返回 null（由调用方退回整场解码）。
+ */
+async function decodeMono16k(
+  ctx: AudioContext,
+  bytes: Uint8Array,
+): Promise<Float32Array | null> {
+  const splitter = new WebmClusterSplitter()
+  splitter.push(bytes)
+  const init = splitter.initPrefix
+  if (!init) return null
+  const clusters = [...splitter.takeCompleteClusters(), ...splitter.flush()]
+  if (!clusters.length) return null
+  const parts: Float32Array[] = []
+  for (const cluster of clusters) {
+    const payload = composeWebmWithInit(init, cluster.bytes)
+    // ⚠ payload 是刚分配出来的 ⇒ byteOffset=0 且 byteLength==buffer.byteLength
+    const decoded = await ctx.decodeAudioData(payload.buffer as ArrayBuffer)
+    parts.push(toMono16k(decoded))
+  }
+  return concatFloat32(parts)
+}
+
+/**
+ * 混成单声道并重采样到 16kHz。
+ *
+ * ⚠ 这段数学与 §953 之前**逐字相同**（只是从内联提到函数）——
+ *   改它会改掉所有既有判据的期望值。
+ */
+function toMono16k(buf: AudioBuffer): Float32Array {
+  const ratio = buf.sampleRate / TARGET_SAMPLE_RATE
+  // 混合到单声道再重采样：逐目标帧取源区间平均，避免通道分离。
+  const channels = buf.numberOfChannels
+  const mono = new Float32Array(Math.floor(buf.length / ratio) || 1)
+  for (let i = 0; i < mono.length; i++) {
+    const start = Math.floor(i * ratio)
+    const end = Math.min(buf.length, Math.floor((i + 1) * ratio))
+    let sum = 0
+    let n = 0
+    for (let c = 0; c < channels; c++) {
+      const ch = buf.getChannelData(c)
+      for (let j = start; j < end; j++) {
+        sum += ch[j]
+        n++
+      }
+    }
+    mono[i] = n > 0 ? sum / n : 0
+  }
+  return mono
+}
+
+/** 拼接几段 Float32。 */
+function concatFloat32(chunks: Float32Array[]): Float32Array {
+  let total = 0
+  for (const c of chunks) total += c.length
+  const out = new Float32Array(total)
+  let offset = 0
+  for (const c of chunks) {
+    out.set(c, offset)
+    offset += c.length
+  }
+  return out
 }
 
 /** Float32 单声道 → 16-bit PCM WAV 容器。 */
