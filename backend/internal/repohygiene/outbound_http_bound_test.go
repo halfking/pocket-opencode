@@ -66,7 +66,15 @@ package repohygiene
 //
 //	① `*_test.go` 与 `testdata/` 不是生产路径 ⇒ 排除。
 //	② `backend/third_party/` 是上游 vendored ⇒ 排除。
-//	③ 本卡口只看**后端**；前端的等价族（fetch 无超时）见 §948 的前端卡口。
+//	③ 本卡口只看**后端**。
+//
+//	⚠ 前端那一族**不是本节的空白**，而是**已由既有卡口守住**：
+//	  - `src/api/http.ts` 有统一的超时层（`DEFAULT_TIMEOUT_MS = 30s` +
+//	    `AbortController` + `TimeoutError`；它的头注释写着「一个不响应的后端
+//	    会让 await 永久挂起」——与本节要治的是**同一个病**）；
+//	  - `src/api/__tests__/api-timeout-budget-table.test.mjs` 用一张**数据驱动**的
+//	    预算表钉住「客户端超时 > 服务端执行预算」（它自己写着「相等即错」）。
+//	⇒⇒⇒ ⇒ 本节只补**后端**这一侧。
 
 import (
 	"go/ast"
