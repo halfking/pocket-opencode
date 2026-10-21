@@ -7,6 +7,7 @@ import { blobToBase64 } from './base64.ts'
 // 已经是这个路子。
 import { runtimePlatform } from '../native/runtime-platform.ts'
 import { assertNotHTML } from '../api/jsonGuard.ts'
+import { fetchWithTimeout } from '../api/fetch-timeout.ts'
 import { resolveApiBase } from '../config/api-base.ts'
 import { normalizeComparableVersion } from './update-state.ts'
 
@@ -173,7 +174,10 @@ export class VersionConfigUnavailableError extends Error {
 // 那条约束由此得到满足——不再依赖会漂移的常量。
 export async function checkUpdate(opts: { identity?: ResolvedAppVersion } = {}): Promise<CheckUpdateResponse> {
   const me = opts.identity ?? (await resolveAppVersion())
-  const response = await fetch(`${resolveApiBase()}/api/app/check-update`, {
+  // ⚠§951：原先是裸 fetch ⇒ 无上界。
+  // ⇒ 而这条在**冷启动**路径上（UpdateChecker 在 onMounted 就弹模态框）
+  // ⇒ 一挂就是「真的卡住不动」。
+  const response = await fetchWithTimeout(`${resolveApiBase()}/api/app/check-update`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json'
@@ -250,6 +254,24 @@ export interface PrefetchResult {
 export const MAX_PREFETCH_BYTES = 64 * 1024 * 1024
 
 /**
+ * APK 预下载的客户端超时（§951）。
+ *
+ * ⚠⚠ **为什么不能沿用默认的 30 s**：这一路最多下 **64 MiB**
+ * （MAX_PREFETCH_BYTES）⇒ 移动网络上 30 s 远远不够 ⇒ 用默认档会把
+ * 「网络慢」误判成「下载失败」⇒ 预下载功能形同虚设。
+ *
+ * ⚠⚠ **但它必须有界**：原先这一路是**裸 fetch**（`opts.fetchImpl ?? fetch`）
+ * ⇒ 一个不响应的下载源能让预下载**永久**挂住（§951 的普查漏了它 ——
+ * 它是**绑定形态**而不是**调用形态**，grep 找 `fetch(` 找不到 ⇒
+ * 由 AST 判据在 §951 的自证过程中把它翻出来）。
+ *
+ * ⚠ 取 5 分钟：它比 64 MiB 在慢速移动网络上的合理耗时 generous，
+ * 但**有限** ⇒ 「永远下不完」被掐断。超时后 UpdateChecker 只是拿不到预下载
+ * （用户仍可正常走「下载并安装」那条路）⇒ 失败是**可降级**的。
+ */
+export const APK_PREFETCH_TIMEOUT_MS = 300_000
+
+/**
  * 后台预下载 APK 到本地，装的时候直接用本地文件。
  *
  * 校验两件事，缺一件就不算成功：
@@ -271,7 +293,8 @@ export async function prefetchApk(
     return { ok: false, error: `安装包超过预下载上限（${expectedBytes} 字节）` }
   }
 
-  const doFetch = opts.fetchImpl ?? fetch
+  const doFetch = opts.fetchImpl
+    ?? ((u: string, i?: RequestInit) => fetchWithTimeout(u, i, { timeoutMs: APK_PREFETCH_TIMEOUT_MS }))
   let blob: Blob
   try {
     const res = await doFetch(url)

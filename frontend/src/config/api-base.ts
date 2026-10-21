@@ -6,6 +6,7 @@
  */
 
 export const API_BASE_STORAGE_KEY = 'pocket_api_base'
+import { fetchWithTimeout } from '../api/fetch-timeout.ts'
 export const PRODUCTION_API_BASE = 'https://pocket.itestu.cn'
 /**
  * 备用入口：与生产入口互为热备，二者可在系统设置中来回切换。
@@ -223,7 +224,13 @@ export function displayApiBase(opts?: {
 
 export async function probeHealthz(
   base: string,
-  fetchImpl: typeof fetch = fetch,
+  // ⚠§951：原先默认是**裸 fetch** ⇒ 健康探测无上界
+  // ⇒ 一台不响应的服务器能让「设置页测试连接」永远转圈。
+  // ⇒ 默认值改成唯一的那一层（../api/fetch-timeout，30s）。
+  // ⚠ 判据注入的假 fetchImpl 仍然优先（形参给了就用形参）⇒ 既有测试不受影响。
+  // ⚠ 本文件原来**零 import**（它是最底层的基址解析）⇒
+  //   新增的依赖是零依赖模块 ⇒ 不会绕成 import 环。
+  fetchImpl: typeof fetch = fetchWithTimeout,
 ): Promise<ProbeHealthzResult> {
   const prefix = base.replace(/\/+$/, '')
   const url = `${prefix}/healthz`

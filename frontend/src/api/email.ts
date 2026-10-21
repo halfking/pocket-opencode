@@ -5,6 +5,7 @@
 import { http, LONG_REQUEST_TIMEOUT_MS, ApiError } from './http'
 import { assertNotHTML } from './jsonGuard'
 import { resolveRuntimeApiBase } from '../config/api-base'
+import { fetchWithTimeout } from './fetch-timeout.ts'
 import { useAuthStore } from '../stores/auth'
 import { chunkByLimit } from '../utils/chunk'
 
@@ -688,7 +689,8 @@ export const emailApi = {
    */
   async fetchInvoiceFile(id: string): Promise<Blob> {
     const auth = useAuthStore()
-    const res = await fetch(`${resolveRuntimeApiBase()}/api/emails/invoices/${encodeURIComponent(id)}/file`, {
+    // ⚠§951：原先是裸 fetch ⇒ 无上界；发票 PDF 可能几百 KB ⇒ 慢下载更要有界。
+    const res = await fetchWithTimeout(`${resolveRuntimeApiBase()}/api/emails/invoices/${encodeURIComponent(id)}/file`, {
       headers: auth.token ? { Authorization: `Bearer ${auth.token}` } : undefined,
     })
     if (!res.ok) throw new Error(`下载失败（${res.status}）`)
@@ -697,7 +699,8 @@ export const emailApi = {
   },
   async fetchInvoiceThumb(id: string): Promise<Blob> {
     const auth = useAuthStore()
-    const res = await fetch(`${resolveRuntimeApiBase()}/api/emails/invoices/${encodeURIComponent(id)}/thumb`, {
+    // ⚠§951：原先是裸 fetch ⇒ 无上界。
+    const res = await fetchWithTimeout(`${resolveRuntimeApiBase()}/api/emails/invoices/${encodeURIComponent(id)}/thumb`, {
       headers: auth.token ? { Authorization: `Bearer ${auth.token}` } : undefined,
     })
     if (!res.ok) throw new Error(`缩略图不可用（${res.status}）`)
@@ -713,7 +716,8 @@ export const emailApi = {
   },
   async fetchInvoiceExport(file: string): Promise<Blob> {
     const auth = useAuthStore()
-    const res = await fetch(
+    // ⚠§951：原先是裸 fetch ⇒ 无上界；导出网格 PDF 是整批发票 ⇒ 慢是常态，更要有界。
+    const res = await fetchWithTimeout(
       `${resolveRuntimeApiBase()}/api/emails/invoices/export/download?file=${encodeURIComponent(file)}`,
       { headers: auth.token ? { Authorization: `Bearer ${auth.token}` } : undefined },
     )

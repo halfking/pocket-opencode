@@ -17,6 +17,7 @@
  */
 import { useAuthStore } from '../stores/auth'
 import { assertNotHTML } from './jsonGuard'
+import { fetchWithTimeout } from './fetch-timeout.ts'
 
 import { resolveApiBase } from '../config/api-base'
 import {
@@ -190,7 +191,10 @@ export const llmBffApi = {
 // 局部 http 引用，避免循环依赖（与 ./http.ts 同款）。
 async function http<T>(path: string): Promise<T> {
   const auth = useAuthStore()
-  const res = await fetch(`${resolveApiBase()}${path}`, {
+  // ⚠§951：原先是裸 fetch ⇒ 无上界。
+  // ⚠ 这个局部 http 仍然保留（它是为了避开 import 环），
+  //   但**超时原语**可以安全 import：./fetch-timeout 是零依赖的。
+  const res = await fetchWithTimeout(`${resolveApiBase()}${path}`, {
     headers: auth.token ? { Authorization: `Bearer ${auth.token}` } : {},
   })
   if (!res.ok) throw new Error(`usage failed: ${res.status}`)

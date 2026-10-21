@@ -34,6 +34,7 @@
     "check:stt-refine-receipts": "node ../scripts/audit-stt-refine-receipts.mjs --meta && node ../scripts/audit-stt-refine-receipts.mjs",
     "check:refine-summary-meta-split": "node ../scripts/audit-refine-summary-meta-split.mjs --meta && node ../scripts/audit-refine-summary-meta-split.mjs",
     "check:quicknote-summary-gate": "node scripts/check-quicknote-summary-gate.mjs",
+    "check:fetch-bounds": "node scripts/check-fetch-bounds.mjs",
     "audit:live-probes": "node ../scripts/audit-live-probes.mjs",
     "audit:hardcoded-model-lists": "node ../scripts/audit-hardcoded-model-lists.mjs",
     "check:dueclock": "node ../scripts/verify-dueclock-wiring.mjs",
