@@ -97,13 +97,18 @@ TESTFILE_CONTRACT = b.targets[6]
 
 def main():
     # ── M1 必须红：不认轮次边界 ⇒ 空隙恒 0 ⇒ 切换空隙被当成丢音频 ────────
+    #   ⚠⚠ **观察口必须是「最先红的那条断言」**（§951 的教训）：
+    #   本条变异让 `roundChanged` 恒假 ⇒ 那条用例里**先**红的是
+    #   `roundChanged` 的断言（「第二轮第一片必须被认成换了轮次」），
+    #   而**后面**那条 `gapMs` 的断言**根本不会执行**（node 的 assert 抛错即中止）
+    #   ⇒ ⇒ 锚 `gapMs` 的文案 ⇒ `must_contain` 永远匹配不上 ⇒ **假失败**。
     M1_OLD = '  const roundChanged = hasEpoch && prev.lastEpochMs !== null && epoch !== prev.lastEpochMs\n'
     M1_NEW = '  const roundChanged = false\n'
 
     def m1():
         b.mutate(TIMELINE, M1_OLD, M1_NEW, 'M1')
     b.case('M1 不认轮次边界 ⇒ 空隙恒 0 ⇒ 切换空隙被误报成丢音频 ⇒ 门必须红', True,
-           must_contain=['切换空隙必须是 2_500ms'],
+           must_contain=['第二轮第一片必须被认成'],
            mutate_fn=m1)
 
     # ── M2 必须红：所有跳跃都算空隙 ⇒ 丢了一片也被放过去 ─────────────────
