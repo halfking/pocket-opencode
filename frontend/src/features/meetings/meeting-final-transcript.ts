@@ -85,6 +85,29 @@ export interface FullTranscribeOutcome {
   error?: string
 }
 
+/**
+ * §954：一块音频（**分块音频源**的产出）。
+ *
+ * ⚠⚠ 为什么需要「分块音频源」这条入口：
+ *   §826 查实：Android（生产主路径）上 `saveMeetingAudio` **从不**被调用
+ *   ⇒ `loadMeetingAudio` 恒返回 null ⇒ 整段重转**永远不发生**。
+ *   而**整场音频其实早就在盘上**（`saveAudioPart` 把每一片都写进了
+ *   `files/recordings/{meetingId}/part-N.*`）⇒ 缺的只是「把它接起来」。
+ *   ⇒ 本入口让调用方**直接供给块** ⇒
+ *     ① **不产生任何新的存储**（不拼整段、不写新文件）⇒ §826.6 ① 那条
+ *     「它会改存储形态 ⇒ 属产品口径」的前提在本方案下**不成立**；
+ *     ② **峰值内存 O(块)**（不是 O(时长)）⇒ 满足属主那条
+ *     「时长无限长、只取决于存储的大小」。
+ */
+export interface AudioChunkSource {
+  /** 这一块的音频（WAV）。 */
+  blob: Blob
+  /** 这一块在整场里的起点（秒）—— 用来把回执的时间轴平移回整场。 */
+  offsetSec: number
+  /** 这一块的音频时长（秒）；缺省时**量不到**整场真实时长（§805 会判 no-ground-truth）。 */
+  durationSec?: number
+}
+
 export interface FinalTranscribeResult {
   /** 高精度整段文本；失败时为 null。 */
   text: string | null
@@ -92,6 +115,14 @@ export interface FinalTranscribeResult {
   applied: boolean
   /** 降级原因，写日志用。 */
   reason?: string
+  /**
+   * ★ 这次重转**实际送出去的音频总时长**（秒）。
+   *
+   * ⚠ §805 的时长护栏比的是「墙钟 vs 真实音频」⇒ 原生链上 `toWav` 根本不会被调用
+   *   （没有整场音频可转）⇒ 那个数恒为 null ⇒ 护栏恒判 `no-ground-truth`。
+   *   ⇒ 走**分块音频源**时，这里给出各块时长之和 ⇒ **护栏在原生链上复活**。
+   */
+  measuredAudioSec?: number
   /**
    * ★§818：转码这一步**失败过**（`toWav` 抛错），不是「没传 toWav」。
    *
@@ -143,6 +174,14 @@ export async function refetchFullTranscript(
      */
     loadAudio?: (meetingId: string) => Promise<Blob | null>
     /**
+     * §954：**分块音频源**（原生链用）。
+     *
+     * ⚠ 与 `loadAudio` **互斥**：给了它就**不去取整场音频**
+     *   ⇒ 原生链（`loadMeetingAudio` 恒 null）走的就是这条。
+     * ⚠ 返回 null / undefined ⇒ 退回既有路径（`loadAudio` → `loadMeetingAudio`）。
+     */
+    loadAudioChunks?: (meetingId: string) => AsyncIterable<AudioChunkSource> | null | undefined
+    /**
      * §927：整场重转的**分块长度**（秒）。不传 = 生产默认值
      * （`FULL_TRANSCRIBE_CHUNK_SECONDS` = 8 分钟，取值依据见
      * `meeting-full-transcribe-chunks.ts` 的文件头）。
@@ -154,6 +193,53 @@ export async function refetchFullTranscript(
   },
 ): Promise<FinalTranscribeResult> {
   if (!meetingId) return { text: null, applied: false, reason: 'no-meeting-id' }
+
+  // ★§818：转码失败**必须留痕**。此前这里是空 catch 块，失败被整个吞掉，
+  //   而它的后果（退回原 webm → 网关拒收）在 `reason` 里只呈现为 `empty-transcript`
+  //   ⇒ 根因丢失，且唯一生产调用方 `finalizeRecording` 不读 `reason` ⇒ 全链路静默。
+  // 声明刻意放在 try **之外**：转码失败后可能一路走到外层 catch（连上传都抛了），
+  // 那里同样要透出，否则「上传失败」会把「转码失败」这个更早的根因盖掉。
+  let transcodeFailed = false
+  let transcodeError = ''
+  /** 转码痕迹的统一展开形状；没失败时是空对象（不改变任何现有返回的形状）。 */
+  const tc = () => (transcodeFailed ? { transcodeFailed: true, transcodeError } : {})
+
+  // ⚠⚠ §954：**分块音频源**优先（原生链）。
+  //   ⛔ 必须在「取整场音频」**之前**判：原生链上 `loadMeetingAudio` 恒返回 null
+  //   ⇒ 既有代码会在 `audio-not-found` 上**早退** ⇒ 分块源永远轮不到。
+  //   ⇒ 这一条把 Android 上「整段重转永不发生」那条缺陷链（§826）接上。
+  const chunkFactory = opts?.loadAudioChunks
+  if (chunkFactory) {
+    const stream = chunkFactory(meetingId)
+    if (stream) {
+      try {
+        const res = await transcribeChunkStream(stream, transcribeFull)
+        // ⛔ 一块都没有 ⇒ 与「压根没有音频」**同义**（不新增失败形态）。
+        if (!res) return { text: null, applied: false, reason: 'audio-not-found' }
+        const text = String(res.outcome?.text ?? '').trim()
+        if (!text) {
+          return {
+            text: null, applied: false, reason: 'empty-transcript', ...tc(),
+            ...(res.measuredAudioSec !== undefined ? { measuredAudioSec: res.measuredAudioSec } : {}),
+          }
+        }
+        return {
+          text,
+          applied: true,
+          ...tc(),
+          ...(res.measuredAudioSec !== undefined ? { measuredAudioSec: res.measuredAudioSec } : {}),
+          // 有段失败必须透出，否则用户以为记录是完整的。
+          ...(res.outcome.failed > 0 ? { failedSegments: res.outcome.failed } : {}),
+          // ★ 逐段回执必须一起带上来（说话人归属的唯一依据）。
+          ...(res.outcome.segments?.length ? { segments: res.outcome.segments } : {}),
+        }
+      } catch (e) {
+        return {
+          text: null, applied: false, reason: `transcribe-failed: ${msg(e)}`, ...tc(),
+        }
+      }
+    }
+  }
 
   let audioUrl: string | null = null
   let injected: Blob | null = null
@@ -168,20 +254,10 @@ export async function refetchFullTranscript(
     return { text: null, applied: false, reason: 'audio-not-found' }
   }
 
-  // ★§818：转码失败**必须留痕**。此前这里是空 catch 块，失败被整个吞掉，
-  // 而它的后果（退回原 webm → 网关拒收）在 `reason` 里只呈现为 `empty-transcript`
-  // ⇒ 根因丢失，且唯一生产调用方 `finalizeRecording` 不读 `reason` ⇒ 全链路静默。
-  // 声明刻意放在 try **之外**：转码失败后可能一路走到外层 catch（连上传都抛了），
-  // 那里同样要透出，否则「上传失败」会把「转码失败」这个更早的根因盖掉。
-  let transcodeFailed = false
-  let transcodeError = ''
-  /** 转码痕迹的统一展开形状；没失败时是空对象（不改变任何现有返回的形状）。 */
-  const tc = () => (transcodeFailed ? { transcodeFailed: true, transcodeError } : {})
 
   try {
     const blob = injected ?? (await (await fetch(audioUrl!)).blob())
     if (!blob.size) return { text: null, applied: false, reason: 'audio-empty' }
-
     // 网关只收 mp3/wav，真机录的是 webm —— 必须转码。
     // 决策逻辑在 resolveUploadTarget（纯函数，可单测），这里只负责取 wav。
     let wav: ArrayBuffer | null = null
@@ -301,6 +377,72 @@ async function transcribeInChunks(
   if (succeeded === 0 && firstError !== null) throw firstError
   const merged = mergeChunkedOutcomes(parts)
   return { ...merged, failed: merged.failed + failedChunks }
+}
+
+/**
+ * §954：按**分块音频源**逐块转写（原生链用）。
+ *
+ * ⭐ 与 `transcribeInChunks` 的差别只有一处，但那一处是关键：
+ *   `transcribeInChunks` 需要**整场 WAV 在内存里**（`planWavChunks` + `sliceWavChunk`
+ *   都是对整场切片）⇒ 峰值 **O(时长)**；
+ *   而这里**块已经在外面切好了**（原生链从盘上的分片流式切出来）⇒ 峰值 **O(块)**。
+ *   ⇒ 会议时长不再影响峰值内存。
+ *
+ * ⚠ **失败形态与既有路径逐字同义**（属主看得懂的失败形态集合不变）：
+ *   · 块是**抛错**的（网络/超时）⇒ 抛第一个错 ⇒ `reason` 是 `transcribe-failed`；
+ *   · 块是**服务端回 ok:false** 的（HTTP 200 但没有内容）⇒ 不抛 ⇒
+ *     合并后文本为空 ⇒ `reason` 是 `empty-transcript`；
+ *   · **一块都没有** ⇒ `audio-not-found`（与「压根没有音频」同义，不新增形态）。
+ *
+ * ⚠ **纯静音的块不算失败**（与 `transcribeInChunks` 同一口径）。
+ */
+async function transcribeChunkStream(
+  chunks: AsyncIterable<AudioChunkSource>,
+  transcribeFull: (blob: Blob, filename: string) => Promise<FullTranscribeOutcome>,
+): Promise<{ outcome: FullTranscribeOutcome; measuredAudioSec?: number } | null> {
+  const parts: ChunkedTranscribePart[] = []
+  let firstError: unknown = null
+  let succeeded = 0
+  let failedChunks = 0
+  let measuredSec = 0
+  let measuredAny = false
+  for await (const chunk of chunks) {
+    const offsetSec = chunk.offsetSec
+    if (typeof chunk.durationSec === 'number' && Number.isFinite(chunk.durationSec)) {
+      measuredSec += chunk.durationSec
+      measuredAny = true
+    }
+    try {
+      const outcome = await transcribeFull(chunk.blob, 'meeting.wav')
+      const text = String(outcome?.text ?? '')
+      if (!text && !Number(outcome?.failed)) {
+        // 这一块**没有产出任何内容** ⇒ 要么整块纯静音，要么整块失败。
+        if (isSilenceOnly(outcome?.error)) {
+          // 纯静音：不是失败，也不该出现在「有 N 段没转出来」里。
+          parts.push({ outcome: { text: '', failed: 0 }, offsetSec })
+          continue
+        }
+        failedChunks += 1
+        parts.push({ outcome: { text: '', failed: 0 }, offsetSec })
+        continue
+      }
+      parts.push({ outcome, offsetSec })
+      succeeded += 1
+    } catch (e) {
+      if (firstError === null) firstError = e
+      failedChunks += 1
+      parts.push({ outcome: { text: '', failed: 0 }, offsetSec })
+    }
+  }
+  // ⛔ 一块都没有 ⇒ 交回 null（调用方判成 `audio-not-found`）。
+  if (parts.length === 0) return null
+  // 全部失败且失败形态是「抛错」⇒ 抛出去（与单次调用同义）。
+  if (succeeded === 0 && firstError !== null) throw firstError
+  const merged = mergeChunkedOutcomes(parts)
+  return {
+    outcome: { ...merged, failed: merged.failed + failedChunks },
+    ...(measuredAny ? { measuredAudioSec: measuredSec } : {}),
+  }
 }
 
 /**

@@ -141,8 +141,13 @@ export function resolvePersistedAudio(opts: {
       warning:
         '本次是原生后台录音：原生侧只产出分片、不产整段文件'
         + '（Android 前台服务用 AudioRecord 直接推 PCM，没有容器封装）'
-        + '⇒ 这场会议没有可保存的完整录音，整段高精度重转不会进行，'
-        + '精校只能基于录音期间逐段落库的文本。',
+        // ⚠⚠ §954：原文写的是「整段高精度重转不会进行」——**那句话现在不成立了**：
+        //   整段重转改成**从盘上已落的分片流式供给**（`streamNativeMeetingAudioChunks`）
+        //   ⇒ 它**会**发生。但「没有可保存的完整录音文件」这件事**仍然成立**
+        //   （那一条是 §826 的原始事实，且整条 128 行的 `audioPath` 语义依赖它）。
+        + '⇒ 这场会议没有可保存的完整录音文件；'
+        + '整段高精度重转改为从盘上已落的分片流式供给（§954），'
+        + '分片读不回来时仍只能基于录音期间逐段落库的文本。',
     }
   }
   const why = opts.error instanceof Error ? opts.error.message : String(opts.error ?? '未知原因')

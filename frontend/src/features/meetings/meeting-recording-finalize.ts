@@ -23,6 +23,7 @@
  * 这两条都由调用方保证，本模块只做纯编排 + 三处外部调用，便于单测。
  */
 import { sttSettingsApi } from '../../api/stt-settings'
+import { Capacitor } from '@capacitor/core'
 import { isAbortError } from '../../api/http'
 import { meetingsApi } from '../../api/meetings'
 import { planRefine } from './meeting-refine-plan'
@@ -30,9 +31,11 @@ import {
   buildRefineBaseSegments,
   refetchFullTranscript,
   shouldAdoptFullTranscript,
+  type AudioChunkSource,
   type FullSegmentReceipt,
   type FullTranscribeOutcome,
 } from './meeting-final-transcript'
+import { streamNativeMeetingAudioChunks } from './audio-parts'
 import { deriveRoster, repairRosterHomophones } from './meeting-roster-homophone'
 import { PINYIN_COMMON } from './pinyin-common'
 import { toGatewayWavBytes } from '../../utils/wav-encode'
@@ -45,6 +48,15 @@ import { assessDurationDrift, createMeasuringToWav, finalizeFailureNotice } from
 export interface FinalizeDeps {
   /** 一次全量重转。注入而非直接调 API，便于单测与换实现。 */
   transcribeFull?: (blob: Blob, filename: string) => Promise<FullTranscribeOutcome>
+  /**
+   * §954：**分块音频源**（原生链用）。
+   *
+   * ⚠ 不提供它 ⇒ 退回「取整场音频」那条路（`loadMeetingAudio`）
+   *   ⇒ 而原生链上它**恒返回 null**（§826）⇒ 整段重转**永不发生**。
+   * ⚠ 默认值 = `streamNativeMeetingAudioChunks`（原生平台才有意义）⇒
+   *   **不需要每个调用方各自接线**（§49 的教训：两条录音路径必须共用一份收尾）。
+   */
+  loadAudioChunks?: (meetingId: string) => AsyncIterable<AudioChunkSource> | null
   /**
    * 落盘音频 → 可切分的 WAV。注入便于单测。
    *
@@ -113,6 +125,18 @@ const defaultTranscribeFull = (blob: Blob, filename: string) =>
 const defaultToWav = (blob: Blob): Promise<ArrayBuffer | null> => toGatewayWavBytes(blob)
 
 /**
+ * §954：默认的**分块音频源** —— 只在**原生平台**上生效。
+ *
+ * ⚠ 非原生平台返回 null ⇒ 退回「取整场音频」那条路 ⇒ **Web / iOS 链的行为一个字没变**。
+ * ⚠ 原生平台上它把**盘上已有的分片**流式接成块（不拼整段、不写新文件）
+ *   ⇒ 整段重转在 Android 上**第一次真的发生**（§826 查实它此前永不发生）。
+ */
+const defaultLoadAudioChunks = (meetingId: string): AsyncIterable<AudioChunkSource> | null => {
+  if (!Capacitor.isNativePlatform()) return null
+  return streamNativeMeetingAudioChunks(meetingId)
+}
+
+/**
  * 收尾：全量重转 → 说话人归因 → 人名同音纠正 → LLM 精校 → 入库（笔记/待办/提醒）。
  *
  * 顺序每一环都不能换：
@@ -165,8 +189,17 @@ export async function finalizeRecording(
     //   录音产物是 webm/opus，网关只收 wav/mp3 ⇒ 重转直接失败；
     //   且 `stt.SplitWAV` 对 webm 不可切（实测 splittable=false）
     //   ⇒ 就算发得出去也只回 1 条回执 ⇒ 说话人归因整块不生效。
-    { toWav },
+    //
+    // ⚠ §954：`loadAudioChunks` 是**原生链**那条路 —— 那里压根没有「整场音频」可取
+    //   （`loadMeetingAudio` 恒 null，§826）⇒ 不给它，整段重转在 Android 上永不发生。
+    { toWav, loadAudioChunks: deps.loadAudioChunks ?? defaultLoadAudioChunks },
   )
+  // ⚠ §954：走分块音频源时 `toWav` 不会被调用（没有整场音频可转）
+  //   ⇒ §805 的时长护栏在原生链上原本恒判 `no-ground-truth`
+  //   ⇒ 现在用各块时长之和补上 ⇒ **护栏在原生链上复活**。
+  if (typeof finalText.measuredAudioSec === 'number' && Number.isFinite(finalText.measuredAudioSec)) {
+    measuredAudioSec = finalText.measuredAudioSec
+  }
 
   // 只 warn、不改状态：阈值与是否升级为阻断属产品口径（§805.3）。
   // `no-ground-truth` 不算异常 —— 转码失败那条路由 `refetchFullTranscript` 自己兜。
