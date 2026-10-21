@@ -753,7 +753,7 @@ func (a *OpenCodeHTTPAdapter) GetPermissionRequests(ctx context.Context, instanc
 
 	if resp.StatusCode != http.StatusOK {
 		body := sizedread.Snippet(resp.Body, sizedread.MaxErrorBodyBytes)
-		return nil, fmt.Errorf("opencode get permission requests returned %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("opencode get permission requests returned %d: %s", resp.StatusCode, body)
 	}
 
 	var response struct {
@@ -797,7 +797,7 @@ func (a *OpenCodeHTTPAdapter) GetAllPendingPermissionRequests(ctx context.Contex
 
 	if resp.StatusCode != http.StatusOK {
 		body := sizedread.Snippet(resp.Body, sizedread.MaxErrorBodyBytes)
-		return nil, fmt.Errorf("opencode get all pending permission requests returned %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("opencode get all pending permission requests returned %d: %s", resp.StatusCode, body)
 	}
 
 	var response struct {
@@ -840,7 +840,7 @@ func (a *OpenCodeHTTPAdapter) ReplyPermission(ctx context.Context, instanceBaseU
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
 		respBody := sizedread.Snippet(resp.Body, sizedread.MaxErrorBodyBytes)
-		return fmt.Errorf("opencode reply permission returned %d: %s", resp.StatusCode, string(respBody))
+		return fmt.Errorf("opencode reply permission returned %d: %s", resp.StatusCode, respBody)
 	}
 
 	return nil
@@ -916,7 +916,7 @@ func (a *OpenCodeHTTPAdapter) GetQuestionRequests(ctx context.Context, instanceB
 
 	if resp.StatusCode != http.StatusOK {
 		body := sizedread.Snippet(resp.Body, sizedread.MaxErrorBodyBytes)
-		return nil, fmt.Errorf("opencode get question requests returned %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("opencode get question requests returned %d: %s", resp.StatusCode, body)
 	}
 
 	var response struct {
@@ -959,7 +959,7 @@ func (a *OpenCodeHTTPAdapter) GetAllPendingQuestionRequests(ctx context.Context,
 
 	if resp.StatusCode != http.StatusOK {
 		body := sizedread.Snippet(resp.Body, sizedread.MaxErrorBodyBytes)
-		return nil, fmt.Errorf("opencode get all pending question requests returned %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("opencode get all pending question requests returned %d: %s", resp.StatusCode, body)
 	}
 
 	var response struct {
@@ -1002,7 +1002,7 @@ func (a *OpenCodeHTTPAdapter) ReplyQuestion(ctx context.Context, instanceBaseURL
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
 		respBody := sizedread.Snippet(resp.Body, sizedread.MaxErrorBodyBytes)
-		return fmt.Errorf("opencode reply question returned %d: %s", resp.StatusCode, string(respBody))
+		return fmt.Errorf("opencode reply question returned %d: %s", resp.StatusCode, respBody)
 	}
 
 	return nil
@@ -1031,7 +1031,7 @@ func (a *OpenCodeHTTPAdapter) RejectQuestion(ctx context.Context, instanceBaseUR
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
 		respBody := sizedread.Snippet(resp.Body, sizedread.MaxErrorBodyBytes)
-		return fmt.Errorf("opencode reject question returned %d: %s", resp.StatusCode, string(respBody))
+		return fmt.Errorf("opencode reject question returned %d: %s", resp.StatusCode, respBody)
 	}
 
 	return nil
