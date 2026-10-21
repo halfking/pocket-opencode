@@ -193,7 +193,39 @@ appId: com.kaixuan.opencode.pocket
 - extendedWaitUntil:
     visible: { text: "保存|Save", enabled: true }
     timeout: 20000
-- tapOn: { text: "保存|Save", enabled: true }
+# ⚠️ 2026-10-22 实测定性（emulator-5556 / AOSP Android 14）：这一步必须
+#   **显式点顶栏那个 Save**（index: 0），不能只写文本。
+#
+# 失败现场（screen-hierarchy）里**有两个** "Save"：
+#   顶栏  button.save-link  type="button" @click="save"   bounds [931,81][1047,160]
+#   底部  button.primary    type="submit"（在 <form> 里）      bounds [556,2026][1047,2142]
+# 原写法 `tapOn: { text: "保存|Save", enabled: true }` 没给 index，Maestro
+# 选中了**底部那个**，而此时**软键盘还开着**（上面两次 inputText 之后没
+# hideKeyboard）—— 键盘把屏幕下半部分盖住，底部按钮点在键盘上了 ⇒
+# 点没生效、页面纹丝不动，后端 PG 里 flashcard_notes = 0（**连 note 都没建**），
+# 报错却落在下一步的「今日待复习 1 张」上，离真因隔了 4 步。
+#
+# 这与本文件上面记的同族现象一致：「74% 是标签、91% 是卡组名称，后两者在
+# 键盘打开时被完全遮住，点不到」—— 这次是同一机制的另一个受害者。
+#
+# 为什么顶栏那个是对的（实测，2026-10-22）：
+#   · CDP 实测 `adb shell input tap`（Maestro 的真实点击机制）点顶栏 save-link
+#     ⇒ click 产生（isTrusted=true）、POST /api/flashcards/notes 发出、
+#     hash 正确回到 #/flashcards/decks/<id> ⇒ **点击机制本身没问题**；
+#   · 顶栏是 type="button" @click="save"，不依赖表单隐式提交，也不受键盘遮挡。
+# 所以这里是**选择器指错了目标**，不是产品缺陷、也不是 WebView 不派发 click。
+#
+# ⚠️⚠️ 这里**故意不加 hideKeyboard**（2026-10-22 实测踩到）：
+#   Android 上 Maestro 的 hideKeyboard 是**按返回键**实现的 ⇒ 它会顺带**导航回退**！
+#   加了它之后页面从建卡页直接回到卡组页（失败现场树里是 '回归卡组' 标题 +
+#   'This deck has no cards'，根本没有 Save 节点），下一步的 tapOn 于是报
+#   "Element not found: Text matching regex: 保存|Save, Index: 0, Enabled" ——
+#   报错指向"选择器写错"，真因却是上一行自己加的 hideKeyboard。
+#   键盘开着不要紧：顶栏 Save 在 y=81..160，本来就**不在**键盘遮挡区。
+- tapOn:
+    text: "保存|Save"
+    index: 0
+    enabled: true
 
 # ---------- 6. BUG-O 核心断言：回到卡组页必须看得到刚建的卡片 ----------
 # 修前：POST 201、PG 有数据，但客户端 cards 数组里自始至终没有这张卡，

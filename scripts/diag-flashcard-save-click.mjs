@@ -138,18 +138,25 @@ if (!saveBox) {
   process.exit(3)
 }
 const box = JSON.parse(saveBox)
-await c.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: box.x, y: box.y, button: 'left', clickCount: 1 })
-await c.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: box.x, y: box.y, button: 'left', clickCount: 1 })
-await sleep(2500)
-console.log('=== 合成 tap 之后 ===')
-console.log('clicks   =', JSON.stringify(await ev('window.__diag.clicks')))
-console.log('fetches  =', JSON.stringify(await ev('window.__diag.fetches')))
-console.log('hash     =', await ev('location.hash'))
-console.log('error节点=', await ev(`(function(){var p=document.querySelector('p.error');return p? p.textContent : '(无)'})()`))
+
+// DIAG_SKIP_CDP_TAP=1：跳过第 5 步（浏览器派发的合成事件），只做第 7 步的
+// **系统触摸**（adb input tap）—— 那是 Maestro 在 Android 上的真实机制。
+// 两个机制必须分开测：浏览器派发的事件必然产生 click，而系统触摸还要过
+// WebView 的触摸→click 转换，那一步在 Android WebView 上有已知限制。
+if (process.env.DIAG_SKIP_CDP_TAP !== '1') {
+  await c.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: box.x, y: box.y, button: 'left', clickCount: 1 })
+  await c.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: box.x, y: box.y, button: 'left', clickCount: 1 })
+  await sleep(2500)
+  console.log('=== CDP 合成事件之后 ===')
+  console.log('clicks   =', JSON.stringify(await ev('window.__diag.clicks')))
+  console.log('fetches  =', JSON.stringify(await ev('window.__diag.fetches')))
+  console.log('hash     =', await ev('location.hash'))
+  console.log('error节点=', await ev(`(function(){var p=document.querySelector('p.error');return p? p.textContent : '(无)'})()`))
+}
 
 // ---- 6. 若合成 tap 没产生 click，用真 click（b.click()）对照 ----
 const clicksAfterTap = (await ev('window.__diag.clicks.length')) || 0
-if (Number(clicksAfterTap) === 0) {
+if (process.env.DIAG_SKIP_CDP_TAP !== '1' && Number(clicksAfterTap) === 0) {
   console.log('--- 合成 tap 没产生任何 DOM click（H1 成立），改用 b.click() 对照 ---')
   await ev(`(function(){
     var bs = Array.prototype.slice.call(document.querySelectorAll('button'));
@@ -163,6 +170,47 @@ if (Number(clicksAfterTap) === 0) {
   console.log('fetches  =', JSON.stringify(await ev('window.__diag.fetches')))
   console.log('hash     =', await ev('location.hash'))
   console.log('error节点=', await ev(`(function(){var p=document.querySelector('p.error');return p? p.textContent : '(无)'})()`))
+}
+
+// ---- 7. 第三种机制：adb shell input tap（Maestro 在 Android 上的真实机制）----
+// 2026-10-22 实测：失败现场的树里**有两个** "Save" ——
+//   顶栏 save-link（type="button" @click="save"）与
+//   表单底部 primary（type="submit"，在同一张 <form> 里）。
+// flow 的 `tapOn: { text: "保存|Save" }` 没有 index，Maestro 选中哪一个
+// 决定了走的是 @click 还是表单隐式提交 —— 而本仓已有的同族记录说
+// 合成 tap 不触发 form 的 submit（建卡组那一步就是靠 pressKey: Enter 绕过的）。
+// 所以这里用**设备像素坐标**（Maestro 的真实点击方式）分别点两个 Save，
+// 看哪一种真的把 POST 打出去。
+const dpr = Number(await ev('window.devicePixelRatio')) || 1
+const both = await ev(`(function(){
+  var bs = Array.prototype.slice.call(document.querySelectorAll('button'));
+  var hit = bs.filter(function(b){ return /^(保存|Save)$/.test((b.textContent||'').trim()); });
+  return JSON.stringify(hit.map(function(b){
+    var r = b.getBoundingClientRect();
+    return { cls: b.className, type: b.type, x: r.left + r.width/2, y: r.top + r.height/2 };
+  }));
+})()`)
+console.log('dpr     =', dpr)
+console.log('saveBtns=', both)
+for (const b of JSON.parse(both || '[]')) {
+  console.log(`--- adb input tap ${b.cls}（type=${b.type}）---`)
+  await ev('window.__diag.clicks.length = 0; window.__diag.fetches.length = 0')
+  const devX = Math.round(b.x * dpr)
+  const devY = Math.round(b.y * dpr)
+  const { execFileSync } = await import('node:child_process')
+  const ADB = process.env.POCKET_ADB_BIN || 'adb'
+  const SER = process.env.POCKET_SERIAL || ''
+  try {
+    execFileSync(ADB, ['-s', SER, 'shell', 'input', 'tap', String(devX), String(devY)], { encoding: 'utf8' })
+  } catch (e) {
+    console.error('adb tap 失败:', e.message)
+    continue
+  }
+  await sleep(2500)
+  console.log('  clicks =', JSON.stringify(await ev('window.__diag.clicks')))
+  console.log('  fetches=', JSON.stringify(await ev('window.__diag.fetches')))
+  console.log('  hash   =', await ev('location.hash'))
+  console.log('  error  =', await ev(`(function(){var p=document.querySelector('p.error');return p? p.textContent : '(无)'})()`))
 }
 
 c.close()
