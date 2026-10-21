@@ -77,9 +77,15 @@ def main():
            mutate_fn=m1)
 
     # ── M2 必须红：假 Cluster ID 不再被 Timecode 校验挡住 ────────────────
+    # ⚠ 第一版写成「`?? 0`」（只废掉 Timecode 的解析）⇒ **门照样绿**：
+    #   「Timecode 严格递增」那道校验**顺手**把假 ID 挡住了（假 ID 的 timecode
+    #   读出来是 0 ⇒ 不大于上一个真簇的 0 ⇒ 被拒）。
+    #   ⇒⇒⇒ ⇒ ★ **一条变异没让门红 ⇒ 先问「它是不是被另一道校验顺手救回来了」**
+    #     —— 变异必须**同时**废掉那两道，才真的模拟出「载荷里的偶然匹配」。
     M2_OLD = ('    const timecode = readWebmClusterTimecode(bytes, i)\n'
-              '    if (timecode === null) continue\n')
-    M2_NEW = '    const timecode = readWebmClusterTimecode(bytes, i) ?? 0\n'
+              '    if (timecode === null) continue\n'
+              '    if (timecode <= lastTimecode) continue // 偶然匹配 / 非递增 ⇒ 不是簇起点\n')
+    M2_NEW = '    const timecode = 0\n'
 
     def m2():
         b.mutate(MODULE, M2_OLD, M2_NEW, 'M2')
@@ -156,8 +162,10 @@ def main():
            mutate_fn=m8)
 
     # ── N1 负控：只加一行注释 ⇒ 门必须保持绿（不许误报）────────────────
-    N1_OLD = '    const out: WebmCluster[] = []\n'
-    N1_NEW = '    const out: WebmCluster[] = []   // 负控：只加一行注释\n'
+    N1_OLD = ('    const out: WebmCluster[] = []\n'
+              '    // 最后一段簇不完整（它的结束还没出现）⇒ 只取到倒数第二段为止。')
+    N1_NEW = ('    const out: WebmCluster[] = []   // 负控：只加一行注释\n'
+              '    // 最后一段簇不完整（它的结束还没出现）⇒ 只取到倒数第二段为止。')
 
     def n1():
         b.mutate(MODULE, N1_OLD, N1_NEW, 'N1', count=1)
