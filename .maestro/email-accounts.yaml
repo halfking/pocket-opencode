@@ -68,8 +68,19 @@ appId: com.kaixuan.opencode.pocket
 - extendedWaitUntil:
     visible: "全部|All"
     timeout: 40000
+# ⚠️ 2026-10-22 实测修正：原判据 `已同步|个账户|新邮件|下拉同步邮件` 等的是
+#   **两个瞬时**的东西 ⇒ 判据在等「此刻恰好不在」的节点。
+#     · 「已同步 N 个账户，新邮件 M」是**后台收信刚完成时**的 fetchHint
+#       （email-fetch-run.ts 的 formatFetchHint），几秒后就消失；
+#     · 「下拉同步邮件」是**下拉手势进行中**才出现的提示
+#       （PullToRefresh.vue 的 refresh-text，静止态不渲染）。
+#   实测：本轮它等了 40s 仍红 ⇒ 失败现场的树上邮箱页**内容全在**
+#   （分类 chip + 真实邮件列表 + 顶栏「搜索/归类/更多」），就差这条瞬时提示。
+#   ⇒ 改成**常驻**信号：收件箱的分类 chip 组。
+#   ⚠️ 这些文案是**硬编码中文**（email-categories.ts:5-11，locales/en-US.json
+#   里没有对应条目）⇒ en-US 设备上也长这样 ⇒ **不必**补英文分支。
 - extendedWaitUntil:
-    visible: "已同步|个账户|新邮件|下拉同步邮件"
+    visible: "未分类|重要|工作|账单|私人|通知"
     timeout: 40000
 
 # ---------- 3. 顶栏「更多」菜单 → 邮箱设置 ----------
