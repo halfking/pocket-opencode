@@ -122,7 +122,6 @@ var SKIP_POINT_BASELINE = map[string]int{
 	"./internal/skipaudit":             22,
 	"./internal/stt":                   15,
 	"./third_party/identity-go/shadow": 2,
-
 }
 
 // censusFloor 是量具自证用的下限：抽取器若坏掉，读数会掉到接近 0。
