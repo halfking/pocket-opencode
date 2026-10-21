@@ -209,7 +209,7 @@ describe('assessDurationDrift —— 墙钟 vs 真实音频', () => {
     assert.equal(d.toleranceMs, 1_000)
   })
 
-  // ⚠ 量不到真值 ⇒ 判 ok 且 reason=no-ground-truth。这是 §803.4 那个静默缺口
+  // ⚠ 量不到真值 ⇒ 判 ok 且 reason=no-ground-truth。这是 §803 那个静默缺口
   // 的**诚实写法**：不能拿「量不到」当成「已排除」。
   it('真值量不到时判 ok 且 reason=no-ground-truth（不是 within-tolerance）', () => {
     for (const bad of [null, Number.NaN, Number.POSITIVE_INFINITY]) {

@@ -160,7 +160,7 @@ const defaultLoadAudioChunks = (meetingId: string): AsyncIterable<AudioChunkSour
  *   「没有原生」会让护栏退回 **JS 墙钟** ⇒ 那是**不同源**的钟 ⇒ 差的是系统偏移
  *   ⇒ 短录音会**假警报**；
  *   而「不可信」⇒ 护栏判 `no-ground-truth`（**量不到**）⇒ 宁可瞎也不误报
- *   （§803.4：宁可漏报，也不要训练人忽略报警）。
+ *   （§805.3：宁可漏报，也不要训练人忽略报警）。
  */
 function readNativeCaptureSnapshot(
   provider: FinalizeDeps['nativeCaptureSnapshot'],

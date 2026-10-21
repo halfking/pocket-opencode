@@ -160,7 +160,7 @@ export interface DurationDrift {
  * 比对墙钟时长与真实音频时长。
  *
  * ⚠ `actualSec = null`（转码失败 / 没转码 / 字节不是合法 WAV）时一律判 `ok` 且
- * `reason = 'no-ground-truth'` —— **量不到不等于没问题**（§803.4 的静默缺口）。
+ * `reason = 'no-ground-truth'` —— **量不到不等于没问题**（§803 的静默缺口）。
  * 这条刻意不做「保守报警」，因为它会在每次转码失败时刷噪声，训练人忽略报警；
  * 真正的处理是让转码失败本身可见，不是让每一次失败都喊一次时长不符。
  */
@@ -280,7 +280,7 @@ export interface DurationGuardInput {
  *
  * ⚠ 为什么**不能**在③里退回 JS 墙钟：JS 墙钟与原生音频**不同源**，
  *   它的读数里带着一个**未实测的启动延迟** ⇒ 拿它比 ⇒ 短录音（容差只有 500 ms）
- *   几乎必然越界 ⇒ **每次都报「音频比墙钟短」** ⇒ 噪声 ⇒ 训练人忽略报警（§803.4）。
+ *   几乎必然越界 ⇒ **每次都报「音频比墙钟短」** ⇒ 噪声 ⇒ 训练人忽略报警（§805.3）。
  */
 export function resolveDurationGuardInput(opts: {
   /** 调用方拿到的墙钟（JS 侧 `Date.now() - startTime`）。 */
@@ -326,10 +326,10 @@ export function nativeCaptureWindowAfterPart(currentMs: number, partEndMs: numbe
 }
 
 /**
- * §803.4 的诊断出口：把「护栏没判成异常」这件事的**原因**说出来。
+ * §805.3 的诊断出口：把「护栏没判成异常」这件事的**原因**说出来。
  *
  * ⚠ 只在**有异常**时用（`finalizeRecording` 的告警文案里带上它）⇒
- *   「量不到」这件事本身**不喊**（§803.4：不要让每一次失败都喊一次时长不符）。
+ *   「量不到」这件事本身**不喊**（§805.3：不要让每一次失败都喊一次时长不符）。
  */
 export function describeDurationGuardSource(source: DurationGuardSource): string {
   switch (source) {
