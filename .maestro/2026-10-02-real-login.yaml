@@ -53,9 +53,9 @@ appId: com.kaixuan.opencode.pocket
       # 登录按钮在两个字段都非空时才 enabled（LoginView 的 disabled 绑定），
       # 所以 enabled=true 同时证明密码真的落进了 input —— 比断言文本更稳。
       - extendedWaitUntil:
-          visible: { text: "登录", enabled: true }
+          visible: { text: "登录|Sign in", enabled: true }
           timeout: 20000
-      - tapOn: { text: "登录", enabled: true }
+      - tapOn: { text: "登录|Sign in", enabled: true }
 
 # ---------- 落点判据：登录后必须脱离登录态 ----------
 # 三种合法落点：进 App（底部导航已渲染）/ 创建主密码（D 态弹窗）/ 解锁本地数据（B 态）。

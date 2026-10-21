@@ -40,7 +40,7 @@ appId: com.kaixuan.opencode.pocket
 # 再点一次「更多」会跳到别的页面。notes-stt-error-visibility 用的是同一招。
 - runFlow:
     when:
-      notVisible: "更多功能"
+      notVisible: "更多功能|More features"
     commands:
       # ⚠️ 2026-10-12：optional:true —— 与 more-grid-reach.yaml 同因。
       #    driver 重装会 force-stop driver 连带打断 App，step 0 取树时多半是空的，
@@ -54,7 +54,7 @@ appId: com.kaixuan.opencode.pocket
       - waitForAnimationToEnd:
           timeout: 3000
 - extendedWaitUntil:
-    visible: "更多功能"
+    visible: "更多功能|More features"
     timeout: 30000
 
 # ---------- 2. 定时自动化：点进去 ----------
@@ -119,7 +119,7 @@ appId: com.kaixuan.opencode.pocket
 # 三者同时在，才说明顶栏真的回来了、且没把视图自己的内容顶掉。
 - assertVisible: "返回"
 - assertVisible: "定时任务"
-- assertVisible: "创建自动化"
+- assertVisible: "创建自动化|Create automation"
 
 # ---------- 4. 回宫格 ----------
 # 走**页面上的返回键**而不是系统 back —— 返回键现在存在，这正是本 flow 要验的东西。
@@ -128,7 +128,7 @@ appId: com.kaixuan.opencode.pocket
 # 判据只证明「返回键在屏幕上」，得再走一次才能证明「它真的能退回去」。
 - tapOn: "返回"
 - extendedWaitUntil:
-    visible: "更多功能"
+    visible: "更多功能|More features"
     timeout: 30000
 
 # ---------- 5. 成本与配额：滚到可见再点 ----------
@@ -139,12 +139,12 @@ appId: com.kaixuan.opencode.pocket
 #   2026-10-03 15:53 实测踩过：没逐项滚就断言，红在「会话」）。
 - scrollUntilVisible:
     element:
-      text: "成本与配额"
+      text: "成本与配额|Cost & Quota"
     direction: DOWN
     timeout: 20000
     visibilityPercentage: 100
-- assertVisible: "成本与配额"
-- tapOn: "成本与配额"
+- assertVisible: "成本与配额|Cost & Quota"
+- tapOn: "成本与配额|Cost & Quota"
 - extendedWaitUntil:
     visible: "用量汇总"
     timeout: 30000

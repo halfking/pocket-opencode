@@ -66,7 +66,7 @@ appId: com.kaixuan.opencode.pocket
 #   页面就绪信号改用收件箱自己就有的：分类 chip + 同步状态行。
 - tapOn: "邮箱|Email|Mail"
 - extendedWaitUntil:
-    visible: "全部"
+    visible: "全部|All"
     timeout: 40000
 - extendedWaitUntil:
     visible: "已同步|个账户|新邮件|下拉同步邮件"

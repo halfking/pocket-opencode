@@ -67,11 +67,11 @@ appId: com.kaixuan.opencode.pocket
     text: "更多|More"
     retryTapIfNoChange: true
 - extendedWaitUntil:
-    visible: "更多功能"
+    visible: "更多功能|More features"
     timeout: 40000
 - runFlow:
     when:
-      notVisible: "更多功能"
+      notVisible: "更多功能|More features"
     commands:
       - tapOn:
           text: "更多|More"
@@ -79,9 +79,9 @@ appId: com.kaixuan.opencode.pocket
       - waitForAnimationToEnd:
           timeout: 3000
 - extendedWaitUntil:
-    visible: "更多功能"
+    visible: "更多功能|More features"
     timeout: 40000
-- assertVisible: "更多功能"
+- assertVisible: "更多功能|More features"
 - tapOn:
     text: ".*邮箱.*"
     retryTapIfNoChange: true
@@ -97,19 +97,19 @@ appId: com.kaixuan.opencode.pocket
 
 # ---------- 2. 列表页渲染完整 ----------
 - extendedWaitUntil:
-    visible: "邮箱"
+    visible: "邮箱|Email"
     timeout: 40000
 - assertNotVisible: "密码登录"
 # 分类 chip 齐全：只有 EmailView 会同时渲染这五个
 #（实测文本就是「全部 / 未分类 / 重要 / 工作 / 账单」，无计数后缀，
 #  所以这里可以写整串而不是 `X.*`）。
-- assertVisible: "全部"
+- assertVisible: "全部|All"
 - assertVisible: "未分类"
-- assertVisible: "重要"
+- assertVisible: "重要|Important"
 - assertVisible: "工作"
 - assertVisible: "账单"
 # 页头动作：能进搜索/归类/更多，说明工具栏不是空壳
-- assertVisible: "搜索"
+- assertVisible: "搜索|Search"
 - assertVisible: "归类"
 
 # ---------- 3. 点开一封信 ----------
@@ -117,9 +117,9 @@ appId: com.kaixuan.opencode.pocket
     text: ".*\\d+\\s*分钟前.*|.*\\d+\\s*小时前.*|.*\\d+\\s*天前.*"
     retryTapIfNoChange: true
 - extendedWaitUntil:
-    visible: "邮件详情"
+    visible: "邮件详情|Email detail"
     timeout: 40000
-- assertVisible: "邮件详情"
+- assertVisible: "邮件详情|Email detail"
 
 # ---------- 4. 详情页是**能用的**，不是白屏 ----------
 # 动作齐全 = 这一屏真的渲染出了内容与操作面。
@@ -139,6 +139,6 @@ appId: com.kaixuan.opencode.pocket
 # ---------- 5. 返回能回到列表 ----------
 - tapOn: "返回"
 - extendedWaitUntil:
-    visible: "邮箱"
+    visible: "邮箱|Email"
     timeout: 30000
 - assertNotVisible: "邮件详情"

@@ -203,7 +203,9 @@ if (!flows.length) {
 // 实测 force-stop 成功（ActivityManager 打了 Killing）但之后**没有任何 Start proc**，
 // App 再没起来，45s 内界面停在桌面。改 stopApp:false 能起来，但 App 会保留
 // pocket:lastRoute 指向的任意页面（实测撞到过邮件详情），起始状态不可预测。
-// 所以这里统一走 adb：强停 + monkey 启动（实测这条路径在 MIUI 上可靠），
+// 所以这里统一走 adb：强停 + **显式组件 am start** 启动（2026-10-22 实测：
+// monkey 在 AOSP Android 14 上起不来这个 App —— 退出码 251、App 没起来、
+// 输出里也没有任何可匹配的失败标记；显式组件冷启动一次就成），
 // 让每次 run 的起始状态一致。App 也没有注册 deep link，没法用 intent 定位路由。
 const adb = (args, t = 60000) =>
   execFileSync(ADB, ['-s', DEVICE, ...args], { encoding: 'utf8', timeout: t, maxBuffer: 33554432 })
@@ -1291,6 +1293,8 @@ async function preflight() {
   try { adb(['shell', 'am', 'force-stop', PKG]) } catch { /* 本来就没跑 */ }
   await sleep(1500)
   // ★ 2026-10-07 补一层兜底：monkey 起不来时改用显式组件 am start。
+  //    （2026-10-22 起，显式组件已成**主路径** —— 实测 monkey 在 AOSP 14 上
+  //    恒定失败，详见下面那段注释；这段保留为该次排查的历史记录。）
   //
   // 上面那段 pm enable 的补救只覆盖**一种**成因（enabled=2/3/4 被系统清理）。
   // 实测还有**另一种**成因会让 monkey 报同一句「No activities found to run,
@@ -1304,39 +1308,46 @@ async function preflight() {
   //   立刻变成该包。
   // ⇒ 两个权威源自相矛盾时，别急着报「App 装不上」；显式组件不依赖隐式解析。
   // 旧行为是直接抛错，现象被误读成装不上，真因（SystemUI 退化）完全不可见。
+  // ⚠️ 2026-10-22 修：**monkey 在本机实测起不来 App，且失败特征不在输出里**。
+  //
+  // 冷启动实测（emulator-5556 / AOSP Android 14，force-stop 后跑）：
+  //   退出码 **251**、App **没起来**（前台仍是 NexusLauncher、pidof 无 pid），
+  //   而输出里既没有「No activities found to run, monkey aborted.」，也没有
+  //   「Events injected: 1」—— 从输出看它只是"没干活"，没有任何可匹配的标记。
+  //   ⇒ 判据只能是**「App 有没有真的在前台」**（下面那个循环查 topResumedActivity
+  //     + pidof），退出码与输出正则都不可靠。
+  //
+  // 原写法是「monkey 失败 → 退回显式组件 am start」。但 monkey 在这里是
+  // **恒定失败**（251）⇒ 每轮都白跑一次注定失败的 monkey，而日志把一个
+  // 必然发生的兜底写成偶发故障，排查时容易被带偏。
+  // 改成：**直接用显式组件 am start 为主路径** —— 它不依赖 PackageManager 的
+  // 隐式意图解析（宿主高负载把 SystemUI 压到 ANR 时隐式解析会临时失效，
+  // 见上面 2026-10-07 那段注释），实测冷启动一次就成（exit=0、前台立刻变成
+  // 该包的 MainActivity）。
+  //
+  // 先试最常见的 MainActivity；不成再从 dumpsys 里找带 LAUNCHER 的那个。
+  const tried = []
+  const cands = ['.MainActivity']
   try {
-    adb(['shell', 'monkey', '-p', PKG, '-c', 'android.intent.category.LAUNCHER', '1'], 30000)
-  } catch (e) {
-    const why = String(e.message || e).replace(/\s+/g, ' ').slice(0, 160)
-    console.log(`[preflight] monkey 启动失败（${why}）→ 退回显式组件 am start`)
-    // 先试最常见的 MainActivity；不成再从 dumpsys 里找带 LAUNCHER 的那个
-    const tried = []
-    const cands = ['.MainActivity']
+    const dump = adb(['shell', 'dumpsys', 'package', PKG], 30000)
+    for (const m of dump.matchAll(/([A-Za-z0-9_.$]+)\s+filter[^\n]*\n(?:[^\n]*\n)?[^\n]*android\.intent\.category\.LAUNCHER/g)) {
+      if (m[1] && !cands.includes(`.${m[1].split('.').pop()}`)) cands.push(`.${m[1].split('.').pop()}`)
+    }
+  } catch { /* dumpsys 都失败就只剩 MainActivity 可试 */ }
+  let started = false
+  for (const act of cands) {
     try {
-      const dump = adb(['shell', 'dumpsys', 'package', PKG], 30000)
-      for (const m of dump.matchAll(/([A-Za-z0-9_.$]+)\s+filter[^\n]*\n(?:[^\n]*\n)?[^\n]*android\.intent\.category\.LAUNCHER/g)) {
-        if (m[1] && !cands.includes(`.${m[1].split('.').pop()}`)) cands.push(`.${m[1].split('.').pop()}`)
-      }
-    } catch { /* dumpsys 都失败就只剩 MainActivity 可试 */ }
-    let started = false
-    for (const act of cands) {
-      try {
-        adb(['shell', 'am', 'start', '-n', `${PKG}/${act}`], 30000)
-        console.log(`[preflight] am start 成功：${PKG}/${act}`)
-        started = true
-        break
-      } catch (e2) {
-        tried.push(`${act}: ${String(e2.message || e2).replace(/\s+/g, ' ').slice(0, 60)}`)
-      }
+      adb(['shell', 'am', 'start', '-n', `${PKG}/${act}`], 30000)
+      console.log(`[preflight] am start 成功：${PKG}/${act}`)
+      started = true
+      break
+    } catch (e2) {
+      tried.push(`${act}: ${String(e2.message || e2).replace(/\s+/g, ' ').slice(0, 60)}`)
     }
-    if (!started) {
-      // 两条路都不通才抛，且把 monkey 的原始失败一并带上，别让「装不上」掩盖真因
-      const err = new Error(
-        `启动失败：monkey 与 am start 均不可用。monkey=${why}；am start 尝试=${tried.join(' | ') || '(无候选)'}`
-      )
-      err.code = e?.code
-      throw err
-    }
+  }
+  if (!started) {
+    // 显式组件也不通才抛，且把尝试过的候选一并带上，别让「装不上」掩盖真因
+    throw new Error(`启动失败：显式组件 am start 均不可用。尝试=${tried.join(' | ') || '(无候选)'}`)
   }
   // 等 WebView 真正起来，而不是盲等固定秒数
   const deadline = Date.now() + 60000
@@ -2338,10 +2349,14 @@ async function ensureAppAlive() {
   if (pid()) return true
 
   console.error(`\n[per-flow] ⚠️  ${PKG} 进程不在了（pidof 为空），正在重新拉起…`)
+  // ⚠️ 2026-10-22：这里原来也是 monkey。实测（emulator-5556 / AOSP 14）
+  // monkey 在本机**起不来**这个 App（退出码 251、App 没起来、输出里也没有
+  // 任何可匹配的失败标记），于是每次都必然走到底下的"拉起失败"分支 ——
+  // 而真因只是启动方式选错了。改用显式组件 am start（实测冷启动一次就成）。
   try {
-    adb(['shell', 'monkey', '-p', PKG, '-c', 'android.intent.category.LAUNCHER', '1'], 30000)
+    adb(['shell', 'am', 'start', '-n', `${PKG}/.MainActivity`], 30000)
   } catch (e) {
-    console.error(`        启动意图发不出去：${String(e.message || e).split('\n')[0]}`)
+    console.error(`        显式组件启动失败：${String(e.message || e).split('\n')[0]}`)
   }
   // 给它一点时间自己起来；不 blind wait 是因为下一步还要回读 pidof 自证。
   for (let k = 0; k < 20; k++) {
