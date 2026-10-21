@@ -9,7 +9,7 @@
 
 ## 一句话结论
 
-本轮不是「新功能轮」，是**审计轮**，挖到 **5 件真事**，其中 **3 件是上一轮的合并亲手带进 main 的**：
+本轮不是「新功能轮」，是**审计轮**，挖到 **10 件真事**，其中 **3 件是上一轮的合并亲手带进 main 的**：
 
 | # | 缺陷 | 谁带进来的 | 读数 |
 |---|---|---|---|
@@ -18,10 +18,21 @@
 | **D3** | `internal/server` 的 skip 台账漏登记一条跳过点 | §907 加的守卫，§936 只登记进 census | `go test ./internal/server` ⇒ **FAIL** |
 | **D4** | 主文档 **9 个严格小节指针**同时指向两段互不相干的内容 | 上一轮合并 `0fdda422` | `check:doc-ref-integrity` ⇒ **绿**（它只判死引用） |
 | **D5** | 三处**只在本机红**的门（路径分隔符 / CRLF） | Windows 检出形态 | 3 个包 ⇒ **FAIL**（CI/Linux 绿） |
+| **D6** | `check:local-todo-dedupe` 的抽取器**假设行尾是 LF** | 仓内既有（基线就有） | 自检 **5 条红** / 体检 EXIT 1 |
+| **D7** | `check:dead-features` 的 `rel()` **假设分隔符是 `/`** | 仓内既有（基线就有） | 11 条「新增未接线」⇒ EXIT 1 |
+| **D8** | `check:ci-trigger` 的 workflow 解析器**假设行尾是 LF** | 仓内既有（基线就有） | 13 条「新增」⇒ EXIT 1 |
+| **D9** | ESM `import()` 加载 Windows 绝对路径 ⇒ **一条证据臂从未跑过** | 仓内既有（基线就有） | `check:router-parity` EXIT 2；`check:marketplace-fix` **绿但降级** |
+| **D10** | `check:doc-encoding` 的豁免 Map key **是反斜杠** ⇒ 登记一条都查不到 | 仓内既有（基线就有） | 23 处问题 ⇒ EXIT 1 |
 
 ★ **最要紧的一条**：D1 ⇒ **main 从 `0fdda422` 起门禁 runner 就退出码 2**，
 而 round49 交接单里「全部 36 项通过」的读数取自**合并之前**的那个 HEAD
 ⇒ ⇒⇒ ⇒ **那条读数不能用来证明合并后的 main 是绿的**。
+
+★ **第二条最要紧的**：D1 修好之后，`run-gates.mjs --ci` 才**第一次真正跑起来** ——
+此前它一路在**规则-4 早退** ⇒ **`ciRuns` 的 39 条门禁一条都没跑过**
+⇒ ⇒⇒ ⇒ 于是 D6–D10 才**依次**冒出来（它们原本就红着，只是从没有机会被看见）。
+⇒ ⇒⇒ ⇒ ⇒ **推论（下一轮必须记住）**：「基线也是红的」这句话**只对 runner 自检成立**；
+⇒ ⇒⇒ ⇒ ⇒ 对第 1 步之后的每一道门，**基线读数是不存在的** ⇒ 必须**单独跑那一道门**去取。
 
 ---
 
@@ -40,6 +51,31 @@
 5. **D5**：豁免清单是**入库文件**（正斜杠），而 key 用 `filepath.Separator` 拼
    ⇒ Windows 上是反斜杠 ⇒ **每一条豁免都匹配不上**；跨语言 fixture 在
    前端目录 ⇒ `.gitattributes` 只声明 `*.go` ⇒ Windows 检出即 CRLF。
+6. **D6–D10 共享同一个形状**：**门禁的结论依赖了不该依赖的「检出形态」**
+   —— 行尾（CRLF）、路径分隔符（`/` vs `\`）、路径形态（绝对路径 vs ESM URL）。
+   ⇒ ⇒⇒ ⇒ 这些是**检出的属性**，不是**代码的属性**
+   ⇒ ⇒⇒ ⇒ 一道门若对它敏感，它在 Linux 上的绿就是**运气**，不是结论。
+   ⇒ ⇒⇒ ⇒ 五处的「被依赖属性 → 依赖它的判据 → 修法」对照表见主文档 §960.7.8。
+
+---
+
+## 1b. D6–D10 逐条（一句话根因）
+
+| # | 被依赖的环境属性 | 依赖它的判据 | 修法 | 修前 → 修后 |
+|---|---|---|---|---|
+| D6 | 行尾 CRLF | 循环头正则 `\{[ \t]*$`（尾部是 `{\r`）+ 「重拼」反推 `{` 绝对位置时少算每个 `\r` | 读入口归一 | 自检 5 红 → **16/16 绿** |
+| D7 | 分隔符 `\` | `rel()` = `f.replace(`${ROOT}/`, '')` ⇒ 模板成了**混合分隔符** ⇒ 永不匹配 | 先归一再剥前缀 | 11 条假「新增」→ **棘轮通过** |
+| D8 | 行尾 CRLF | `/^(\s+)run:\s*(.*)$` —— JS 的 `.` **不匹配 `\r`**、`$` 只匹配输入末尾 ⇒ 61 条 `run:` 行只认出 6 条 | 读入口归一 | 13 条假「新增」→ **基线 0 条** |
+| D9 | 路径形态 | `await import(<Windows 绝对路径>)` ⇒ Node 当成协议 `c:` 的 URL | `pathToFileURL(x).href` | 退出码 2 / 证据臂死 → **全绿、臂复活** |
+| D10 | 分隔符 `\` | `relToFile` 的 key（`path.relative()`）vs 登记表里的 `file`（正斜杠） | `relOf()` 归一（**产生处与消费处同一个函数**） | 23 处 → **0 处** |
+
+⇒ ⇒⇒ ⇒ **五处全部**：**没有改任何一份登记表 / 豁免 / 台账** ——
+⇒ ⇒⇒ ⇒ 错的从来不是登记，是**键的归一**。
+⇒ ⇒⇒ ⇒ ⇒ 这也是本轮最省事的地方：**基线一直是对的**。
+
+⇒ ⇒⇒ ⇒ ★ **本轮的门禁逮住了本轮自己的回归**：第 20 项 `check:gofmt` 报出
+⇒ ⇒⇒ ⇒ `backend/internal/testaudit/skip_census_test.go` 真债（修 D2 时留了个空行）
+⇒ ⇒⇒ ⇒ ⇒ **自己刚写进去的债，被自己修好的门禁逮住** —— 这是「把门禁真跑起来」本身的价值。
 
 ---
 
@@ -64,8 +100,14 @@
 | `backend/internal/repohygiene/truncate_byteslice_test.go` | `relToRepo` 统一 `filepath.ToSlash` | Windows 上豁免重新匹配得上 |
 | `backend/internal/stt/full_wire_contract_test.go` | 比对 fixture 前归一 CRLF | 同一份内容在 Windows/Linux 结论一致 |
 | `backend/internal/server/meeting_response_contract_test.go` | 同上（2 处） | 同上 |
-| `docs/design/2026-10-06-recording-quality-fixes.md` | **字节级门侧 §895/§896 → §958/§959**；追加 **§960** | 9 个歧义指针消失；本轮审计留档 |
-| `docs/design/2026-10-11-pending-decisions-brief.md` | 待拍板项 **118/119 → 182/183**；追加 **第 184 条** | 简报条目不再重号 |
+| `scripts/check-local-todo-dedupe.mjs` | 新增 `normalizeEol()`；读入口归一 CRLF；导出的 `reminderFollowsDedupe` 自己也归一 | D6：自检 5 红 → **16/16 绿**、体检 EXIT 0 |
+| `frontend/scripts/audit-dead-features.mjs` | `rel()` 改成「先归一分隔符再剥前缀」 | D7：11 条假「新增」→ **棘轮通过**（基线一个字没改） |
+| `frontend/scripts/check-ci-trigger-surface.mjs` | 新增 `readTextNormalized()`；两处读 workflow 归一 CRLF | D8：13 条假「新增」→ **基线 0 条**（driver 被正确认出） |
+| `scripts/check-router-runtime-parity.mjs` | 2 处 `import()` 改 `pathToFileURL(...).href` | D9a：退出码 2 → **EXIT 0**、自检 4/4 |
+| `scripts/verify-marketplace-fix.mjs` | 同上 2 处 | D9b：「运行期独立证词」由「未验成 ⬜」→ **「通过」**（一条死掉的证据臂复活） |
+| `scripts/audit-doc-encoding.mjs` | 新增 `relOf()`；Map key 与查询键**用同一个函数** | D10：23 处 → **0 处**（11 条登记全部命中） |
+| `docs/design/2026-10-06-recording-quality-fixes.md` | **字节级门侧 §895/§896 → §958/§959**；追加 **§960**（含 §960.7 的五处平台假红 + 同族总表） | 9 个歧义指针消失；本轮审计留档 |
+| `docs/design/2026-10-11-pending-decisions-brief.md` | 待拍板项 **118/119 → 182/183**；追加 **第 184 / 185 条** | 简报条目不再重号 |
 | `frontend/src/utils/__tests__/base64-null-result.test.mjs` | 注释里的 §895/§896 → §958/§959 | 代码注释与主文档同号 |
 | `handoff/2026-10-17-48h-audit-and-fixes.md` | 同上 + 「简报 119」→「简报 183」 | 同上 |
 | `docs/handoff/2026-10-20-round49-...md` | 「简报 119」→「简报 183」 | 同上 |

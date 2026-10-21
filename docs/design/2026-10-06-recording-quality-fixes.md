@@ -114415,7 +114415,7 @@ sessionMs = (epochMs - baseEpochMs) + nativeRelativeMs
 
 ### §960.0 一句话结论
 
-本轮（96 小时窗口审计 + 分支并合）挖到 **5 件真事**，其中 3 件是**上一轮的合并亲手带进 main 的**：
+本轮（96 小时窗口审计 + 分支并合）挖到 **10 件真事**，其中 3 件是**上一轮的合并亲手带进 main 的**：
 
 | # | 缺陷 | 谁带进来的 | 本机/CI 读数 |
 |---|---|---|---|
@@ -114424,10 +114424,19 @@ sessionMs = (epochMs - baseEpochMs) + nativeRelativeMs
 | D3 | `internal/server` 的 skip 台账漏登记一条跳过点 | §907 加的守卫，§936 只登记进 census | `go test ./internal/server` ⇒ **FAIL** |
 | D4 | 主文档 **9 个严格小节指针**同时指向两段互不相干的内容 | 上一轮合并 `0fdda422` | `check:doc-ref-integrity` ⇒ **绿**（它只判死引用） |
 | D5 | 三处**只在本机红**的门（路径分隔符 / CRLF） | Windows 检出形态 | 3 个包 ⇒ **FAIL**（CI/Linux 绿） |
+| D6 | `check:local-todo-dedupe` 的抽取器**假设行尾是 LF** ⇒ 本机恒红 | 仓内既有（`2ea2f140`，**基线就有**） | 自检 **5 条红** / 体检 EXIT 1（CI/Linux 绿） |
+| D7 | `check:dead-features` 的 `rel()` **假设路径分隔符是 `/`** ⇒ 本机恒红 | 仓内既有（**基线就有**） | 11 条「新增未接线」⇒ EXIT 1（CI/Linux 绿） |
+| D8 | `check:ci-trigger` 的 workflow 解析器**假设行尾是 LF** ⇒ 本机恒红 | 仓内既有（**基线就有**） | 13 条「新增」⇒ EXIT 1（CI/Linux 绿） |
+| D9 | 两道门用 ESM `import()` 加载 **Windows 绝对路径** ⇒ 一条**证据臂从未跑过** | 仓内既有（**基线就有**） | `check:router-parity` EXIT 2；`check:marketplace-fix` **绿但降级**（CI/Linux 绿） |
+| D10 | `check:doc-encoding` 的豁免 Map key **是反斜杠** ⇒ 登记一条都查不到 | 仓内既有（**基线就有**） | 23 处问题 ⇒ EXIT 1（CI/Linux 绿） |
 
 ⇒ ⇒⇒ ⇒ **D1 是本轮最要紧的一件**：它让 `main` 的门禁 runner 直接退出码 2，
 ⇒ ⇒⇒ ⇒ 而上一轮交接单里的读数（「全部 36 项通过」）取自**合并之前**的那个 HEAD
 ⇒ ⇒⇒ ⇒ ⇒ 那条读数**不能**用来证明合并后的 main 是绿的。
+
+⇒ ⇒⇒ ⇒ **D6–D8 是同一族的三个「量具平台假红」**，且它们**全都藏在 D1 后面**：
+⇒ ⇒⇒ ⇒ runner「失败即停」+ 规则-4 早退 ⇒ D1 存在时，**一道门都没真正跑过**
+⇒ ⇒⇒ ⇒ ⇒ 修好 D1 之后，它们才一个一个冒出来（详见 §960.7）。
 
 ### §960.1 D1：合并把两道门「整块」吞掉了
 
@@ -114575,3 +114584,214 @@ EXIT=2
   ⇒ ⇒⇒ ⇒ 新门走 `gates.json` 的 `ciRuns` 数据驱动，CI 侧无需改；
 - ⛔ **没有**删 `backup/pre-rebase-49e6a802` 之外的任何**非 window** 分支
   ⇒ ⇒⇒ ⇒ 只删「已确证合入」的三条。
+
+### §960.7 D6–D8：三道门禁的「量具平台假红」—— 以及「前面的门红 ⇒ 后面 33 条门全被遮住」
+
+⚠ 这一节最值钱的一条**不是**三个根因，是**遮蔽机制**。根因好办（都是归一行尾），
+⇒ ⇒⇒ ⇒ 难的是**为什么它们能一直躺在 main 上没人发现**。
+
+#### §960.7.1 遮蔽机制：runner「失败即停」+ 规则-4 早退 ⇒ **一道门都没真跑过**
+
+`frontend/scripts/run-gates.mjs` 的执行顺序是：
+
+1. **先**跑规则 1–5 的**自检**（`gates.json` ↔ `package.json` 对账等），任何一条不过 ⇒ `die()` ⇒ **立刻退出**；
+2. **再**按名单逐条跑门禁，**失败即停**（`process.exit(code)`）。
+
+⇒ ⇒⇒ ⇒ **D1 存在时**（`check:doc-ref-integrity` 有 script 却在 `gates.json` 里没登记）
+⇒ ⇒⇒ ⇒ 规则 4 在**第 1 步**就 `die()` 了 ⇒ ⇒⇒ ⇒ **`ciRuns` 里的 39 条门禁一条都没跑过**。
+
+⇒ ⇒⇒ ⇒ ★★ **由此得到一条必须记住的读数纪律**：
+⇒ ⇒⇒ ⇒ 「**基线也是红的**」这句话，**只对 runner 自检那一步成立**；
+⇒ ⇒⇒ ⇒ 对**第 1 步之后**的每一道门，**基线读数是不存在的** —— 必须**单独把那一道门跑一遍**去取。
+⇒ ⇒⇒ ⇒ 本轮三处都是这么做的（`0fdda422` 的独立 worktree 上单跑那一道门）：
+⇒ ⇒⇒ ⇒ `check:local-todo-dedupe` ⇒ EXIT 1（3 处问题）/
+⇒ ⇒⇒ ⇒ `check:dead-features` ⇒ EXIT 1（同样 11 条）/
+⇒ ⇒⇒ ⇒ `check:ci-trigger` ⇒ EXIT 1（同样 13 条），
+⇒ ⇒⇒ ⇒ 与本机读数**逐条相同** ⇒ ⇒⇒ ⇒ **确认是既有缺陷，不是本轮合并引入的**。
+
+⇒ ⇒⇒ ⇒ ⚠ **这条纪律反过来也成立**：**一道门红在前面，会把后面所有门的问题全遮住**。
+⇒ ⇒⇒ ⇒ 本轮 D1 修好之后，才依次暴露出第 6 / 第 15 / 第 16 / 第 20 / 第 31 项的红
+⇒ ⇒⇒ ⇒ ⇒ **它们原本就红着**，只是一直没有机会被看见。
+
+⇒ ⇒⇒ ⇒ ★★ **而门禁一旦真跑起来，第一件被它逮住的是「本轮自己犯的错」**：
+⇒ ⇒⇒ ⇒ 第 20 项 `check:gofmt` 报出 **1 个文件真债**：
+⇒ ⇒⇒ ⇒ `backend/internal/testaudit/skip_census_test.go` —— 正是本轮修 D2 时改的那个文件
+⇒ ⇒⇒ ⇒ （改 census 基线 `./internal/notes: 6` 时，在 map 字面量末尾**留了一个空行**）
+⇒ ⇒⇒ ⇒ ⇒ `gofmt -l` 报它 ⇒ 门红 ⇒ **本轮自己的回归被自己修好的门禁逮住**。
+⇒ ⇒⇒ ⇒ ⇒ 修法：删掉那个空行 ⇒ `gofmt -l` 为空、`go test ./internal/testaudit/...` 仍 ok。
+⇒ ⇒⇒ ⇒ ⇒ ★ **这是「把门禁真跑起来」这件事本身的价值**：它不只抓别人的债，也抓**审计轮自己刚写进去的债**。
+⇒ ⇒⇒ ⇒ ⇒ ⇒ 在 D1 修好之前，这个回归会**被第 20 项之前那道门挡住**，一路带到 main。
+
+#### §960.7.2 D6：`check:local-todo-dedupe` —— 抽取器假设「行尾是 LF」
+
+- **现象**：三处 `INSERT INTO local_todos` 全部报「定位不到包含 INSERT 的循环」；自检 5 条红（② ⑧b ⑧d ⑧e ⑧f）；体检 EXIT 1。
+- **环境事实**：本机 `core.autocrlf=true`；`.gitattributes` **只声明了 `*.go text eol=lf`**
+  ⇒ `frontend/src/**` 与 `scripts/**` 在对象层是 LF（`git ls-files --eol` 记 `i/lf w/crlf`），在 Windows 工作区检出成 **CRLF**。
+- **机制（两处，缺一不可）**：
+  ① `enclosingLoopBody` 的循环头正则 `/\b(?:for|while)\b[^{]*\{[ \t]*$/` 要求行以 `{` 收尾；
+     CRLF 下该行尾部是 `{\r`，`[ \t]*` 吃不掉 `\r` ⇒ **三个循环头一个都匹配不上**；
+  ② 更隐蔽的是**偏移量也算错**：`head.length - lines.slice(i).join('\n').length`
+     用「重拼」反推 `{` 的绝对位置，而重拼把 `\r\n` 还原成了 `\n`
+     ⇒ 偏移量少算了尾部每一行各一个 `\r` ⇒ 即使正则匹配上，取到的也不是那个 `{`。
+  ⇒ ⇒⇒ ⇒ **只把正则放宽成 `[ \t\r]*$` 是治标不治本**：① 会过、② 仍然错。
+- **同树口径反证**：把同一棵树用 `git -c core.autocrlf=false archive` 展开成 LF
+  ⇒ **16/16 自检全绿、体检 EXIT 0** ⇒ ⇒⇒ ⇒ 证明这 5 条失败唯一来自行尾，**不来自业务代码**。
+- **处置**：在**文本入口**归一（`stripComments` 里先 `.replace(/\r\n/g,'\n')`），
+  并让导出的 `reminderFollowsDedupe` 自己也归一（`at` 在归一后的串上算 ⇒ 偏移量与串始终自洽）。
+
+#### §960.7.3 D7：`check:dead-features` —— `rel()` 假设「路径分隔符是 `/`」
+
+- **现象**：门禁报 11 条「新增未被接线的导出」，而基线里登记的**恰好也是这 11 条、逐条同名** ⇒ 棘轮永远转 ⇒ 门恒红。
+- **机制**：`frontend/scripts/audit-dead-features.mjs` 里
+  `const rel = (f) => f.replace(`${ROOT}/`, '')` —— `ROOT` 由 `join()` 拼出，
+  Windows 上是**反斜杠** ⇒ 模板串成了 `C:\...\frontend/`（**混合分隔符**）
+  ⇒ 与待匹配的 `f`（也是反斜杠）**一次都匹配不上** ⇒ `rel()` 退化成**空操作**
+  ⇒ `--json` 里的 `dead[].file` 保持**绝对路径 + 反斜杠**
+  ⇒ `check-dead-features.mjs` 用 `${file}:${name}` 当棘轮 key ⇒ 与基线里登记的
+  **相对路径 + 正斜杠**逐条错位 ⇒ 存量 11 条全被当成「新增」；
+  ⇒ 顺带：`waived` 的那条也匹配不上 ⇒ 被误报成「**登记过期**」。
+- **实测证据（修复前）**：
+  `dead[].file` = `C:\workspace\pocket-opencode\frontend\src\features\meetings\audio-parts.ts`
+  vs 基线登记 = `src/features/meetings/audio-parts.ts`；**11 条 vs 11 条，集合不相等**。
+- **处置**：先归一分隔符再剥前缀（仓内同款先例：`backend/internal/repohygiene/truncate_byteslice_test.go`
+  的 `relToRepo` 加 `filepath.ToSlash`）。
+  ⇒ ⇒⇒ ⇒ **修复后 cur 与 base 集合完全相等（11 == 11，差集双向为空）**
+  ⇒ ⇒⇒ ⇒ ⇒ **基线一直是对的，一个字没改** —— 错的只是 key 归一。
+
+#### §960.7.4 D8：`check:ci-trigger` —— workflow 解析器假设「行尾是 LF」
+
+- **现象**：13 条「新增」：`driver :: 无任何 workflow 执行 run-gates.mjs --ci`、
+  `trigger :: check:vm-gaps :: …`、以及 **11 条** `exemption :: …`（每条 `ciCoveredElsewhere` 豁免都被判「没有任何兑现路径」）。
+- **机制**：`check-ci-trigger-surface.mjs` 解析 workflow 的正则
+  `/^(\s+)run:\s*(.*)$/`：
+  ① `.` 在 JS 正则里**不匹配 `\r`**（`\r` 是行终止符）；
+  ② `$`（无 `m` 旗标）**只匹配输入末尾**。
+  ⇒ 一行 `        run: node scripts/run-gates.mjs --ci\r`：
+  `(.*)` 停在 `\r` **之前**、`$` 落不到输入末尾 ⇒ **整行不匹配**。
+- **逐文件量过（5 个 workflow 全是 CRLF、bareLF=0）**：
+
+  | workflow | CRLF | `run:` 行 | 正则认出 | 其中不带 `\r` 的 |
+  |---|---|---|---|---|
+  | `backend-pg.yml` | 56 | 2 | 1 | 0 |
+  | `backend.yml` | 124 | 8 | 2 | 0 |
+  | `docker-smoke.yml` | 161 | 7 | 0 | 0 |
+  | `e2e-web.yml` | 104 | 9 | 0 | 0 |
+  | `frontend.yml` | 265 | 35 | 3 | 0 |
+  | **合计** | | **61** | **6** | **0** |
+
+  ⇒ ⇒⇒ ⇒ 61 条 `run:` 行只认出 **6** 条 —— 且**恰好是「`run:` 后面没有内容」的那 6 条**
+  ⇒ ⇒⇒ ⇒ （`\s*` 把 `\r` 吃掉了，`$` 正好落在末尾）。
+- **后果**：
+  ① 「脸② 驱动」看不见 workflow 里那句 ⇒ 误报「无任何 workflow 执行」
+     ⇒ 而**真相**是 `.github/workflows/frontend.yml:202` **明写着** `node scripts/run-gates.mjs --ci`；
+  ② 「脸③ 豁免」的手列判定（`armA`）同样建立在解析结果上 ⇒ 11 条豁免全被误判。
+- **处置**：新增 `readTextNormalized()`，在两处读 workflow 的入口归一行尾。
+  ⇒ ⇒⇒ ⇒ **没有**改基线、**没有**改 workflow、**没有**改任何 `ciCoveredElsewhere` 登记
+  ⇒ ⇒⇒ ⇒ ⇒ 「`trigger :: check:vm-gaps`」那条也随基线判定一起消失（基线 0 条）。
+
+#### §960.7.5 共同形状与处置纪律
+
+⇒ ⇒⇒ ⇒ **共同形状**：三道门禁的结论**依赖了不该依赖的环境属性** ——
+⇒ ⇒⇒ ⇒ 行尾（CRLF/LF）与路径分隔符（`/` / `\`）都不是**代码的属性**，是**检出的属性**。
+⇒ ⇒⇒ ⇒ 一道门禁若对检出形态敏感，它在 Linux 上给的绿就是**运气**，不是结论。
+
+⇒ ⇒⇒ ⇒ **处置纪律（三条）**：
+
+1. **在量具的文本入口归一，不动全仓行尾** ——
+   `.gitattributes` 只声明 `*.go text eol=lf` 是**刻意最小作用域**（它自己的注释写着
+   「试过 broad 的 `* text=auto`，renormalize 会 churn 8 个文件」）⇒ ⇒⇒ ⇒
+   ⇒ **不能**为了门禁去扩它（那会制造全仓伪 diff）⇒ ⇒⇒ ⇒ **归一放在门禁这一侧**；
+2. **归一必须是恒等变换（对 CI 侧）** —— 三处都逐条验证了「Linux 口径下新旧实现输出**逐字相同**」；
+3. **每个修复都必须配负控**，否则「门变绿了」分不清是「门修好了」还是「门被打哑了」：
+
+   | 修复 | 负控矩阵 | 结果 |
+   |---|---|---|
+   | D6 | `lf` / `crlf` 两棵树的干净体检与自检；两棵都注入第 4 处裸 INSERT | 干净树绿；**注入树红且点名** |
+   | D7 | A 干净树 / B 注入新死导出 / C 删掉基线登记的一条 | A 绿；B **红且点名**；C 绿且点出「本次未检出」 |
+   | D8 | A 干净 CRLF / B 干净 LF / C 删 driver 那句 / D 删 typecheck 的兑现路径 | A、B 绿且**输出逐字相同**；C **红且点名 driver**；D **红且点名豁免** |
+
+⇒ ⇒⇒ ⇒ ★ **「先量影响面再动手」这一条在本节又兑现了一次**：
+⇒ ⇒⇒ ⇒ D8 一上来是 **13 条**发现，看着像「CI 接线全坏了」这种大事故；
+⇒ ⇒⇒ ⇒ 逐文件量完（61 条 `run:` 行只认出 6 条）才发现是**一个根因**；
+⇒ ⇒⇒ ⇒ ⇒ 最终**没有动**基线、workflow、豁免登记里的任何一个字。
+⇒ ⇒⇒ ⇒ ⇒ 若是先按「13 条发现」逐条去「修」，会把三处本来正确的登记改坏。
+
+#### §960.7.6 D9：ESM 动态 `import()` 不接受 Windows 绝对路径 ⇒ **一条证据臂从未跑过**
+
+- **D9a（显性）**：`check:router-parity` 退出码 **2**「拒绝给结论」：
+  `Only URLs with a scheme in: file, data, and node are supported by the default
+  ESM loader. On Windows, absolute paths must be valid file:// URLs. Received protocol 'c:'`
+- **D9b（隐性，更值得记）**：`check:marketplace-fix` 退出码 **0**（绿），
+  但日志里那条 **「运行期独立证词·vue-router 实际 meta」** 显示为
+  **「⬜ 未验成：… Received protocol 'c:'」**
+  ⇒ ⇒⇒ ⇒ 也就是说：这道门声称它做的是「**文本口径 × 运行期实际持有值**逐条比对」，
+  ⇒ ⇒⇒ ⇒ 而在 Windows 上**运行期那一半从来没跑过** ⇒ ⇒⇒ ⇒ 它给的其实是「文本口径自证」。
+  ⇒ ⇒⇒ ⇒ ⇒ ⚠ 值得肯定的是：它把这条臂**显式标成「未验成」而不是静默跳过**
+  ⇒ ⇒⇒ ⇒ ⇒ ⇒ **「未验成」这个措辞让本轮能一眼看出臂是死的** —— 这正是它没被误判成绿的原因。
+- **机制**：ESM 的 `import()` 只接受 **URL** 或**相对 specifier**；
+  Windows 绝对路径 `C:\...\x.js` 会被当成一个**协议为 `c:` 的 URL** ⇒ Node 拒收。
+  Linux 上绝对路径合法 ⇒ ⇒⇒ ⇒ **CI 上这两条臂一直是活的** ⇒ 又一个「只在本机」的平台缺陷。
+- **四处（每一处都要改，漏一处那条臂就只活一半）**：
+
+  | 文件 | 处 | 原写法 |
+  |---|---|---|
+  | `scripts/check-router-runtime-parity.mjs` | esbuild | `import(require.resolve('esbuild', …))` ← `require.resolve` 返回绝对路径 |
+  | `scripts/check-router-runtime-parity.mjs` | 临时产物 | `import(tmp)` ← `mkdtemp` 出来的绝对路径 |
+  | `scripts/verify-marketplace-fix.mjs` | esbuild | `import(esbuildPath)` |
+  | `scripts/verify-marketplace-fix.mjs` | 临时产物 | `import(tmp)` |
+
+- **处置**：统一 `import(pathToFileURL(x).href)`。
+  ⚠ **仓内已有正确写法**：`scripts/check-back-navigation.mjs:229,294` 就是这么写的
+  ⇒ ⇒⇒ ⇒ **现成先例，不是新发明** ⇒ ⇒⇒ ⇒ ⇒ 本条的真正教训是「**正确的模式存在，却没被统一**」。
+- **对照读数（修复后）**：
+  `check-router-runtime-parity --selftest` ⇒ 自检 **4/4**、EXIT 0；
+  `check-router-runtime-parity` ⇒ 文本口径 **85** / 运行期 **85**、EXIT 0；
+  `verify-marketplace-fix` ⇒ 「运行期独立证词」由「未验成 ⬜」变成「**通过**」，
+  结论仍是「4 项指控全部证伪」、EXIT 0。
+
+#### §960.7.7 D10：`check:doc-encoding` 的豁免登记**一条都查不到**
+
+- **现象**：23 处问题 = **9 条**「`[豁免登记] … WAIVER_FILE_MISSING`」
+  + **14 处**文档里的 U+FFFD（其中大部分**本该被豁免**）。
+- **机制**：`scripts/audit-doc-encoding.mjs:413`
+  `const relToFile = new Map(files.map((f) => [path.relative(ROOT, f), f]))`
+  ⇒ Windows 上 `path.relative()` 返回**反斜杠**；
+  而豁免登记表 `scripts/doc-encoding-waivers.json` 的 `file` 字段一律用**正斜杠**
+  ⇒ `relToFile.get(w.file)` **永远查不到**
+  ⇒ ① 每条登记都报「豁免指向的文件不存在」；
+  ⇒ ② 连带：真正该被豁免的 U+FFFD 因为查不到登记，**也就没被豁免**
+  ⇒ ⇒⇒ ⇒ **已登记的**损坏点被一并报成问题。
+  ⚠ Linux 上 `path.relative()` 返回正斜杠 ⇒ 一切对上 ⇒ **CI 一直是绿的**。
+- **修法**：新增 `relOf()` 统一归一为正斜杠。
+  ★ **关键**：Map 的 key 与 `waived.get(rel)` 的查询键**必须用同一个函数** ——
+  本次两处都改了 ⇒ 否则「改了一半」仍然是查不到。
+- **对照读数**：
+  修复前：扫描 525 个 .md，发现 **23** 处问题 ⇒ EXIT 1；
+  修复后：扫描 525 个 .md，发现 **0** 处问题；
+  另有 **23** 个 U+FFFD 属登记豁免（**11 条登记**）⇒ EXIT 0。
+  ⇒ ⇒⇒ ⇒ **豁免登记一条没改**，11 条全部命中并生效 ⇒ **登记本身一直是对的**。
+
+#### §960.7.8 同族总表：五处平台假红到底共享同一个形状
+
+| # | 门 | 被依赖的**环境属性** | 依赖它的判据 | 修法 | 修前 → 修后 |
+|---|---|---|---|---|---|
+| D6 | `check:local-todo-dedupe` | **行尾**（CRLF） | 循环头正则 `\{[ \t]*$` + 「重拼」反推 `{` 的绝对位置 | 读入口归一 | 自检 5 红 → **16/16 绿** |
+| D7 | `check:dead-features` | **路径分隔符** | `rel()` = `f.replace(`${ROOT}/`, '')` | 先归一再剥前缀 | 11 条假「新增」→ **棘轮通过** |
+| D8 | `check:ci-trigger` | **行尾**（CRLF） | `/^(\s+)run:\s*(.*)$`（`.` 不匹配 `\r`、`$` 只匹配末尾） | 读入口归一 | 13 条假「新增」→ **基线 0 条** |
+| D9 | `check:router-parity` / `check:marketplace-fix` | **路径形态**（绝对路径 vs ESM URL） | `await import(<绝对路径>)` | `pathToFileURL(x).href` | 退出码 2 / 证据臂死 → **全绿、臂复活** |
+| D10 | `check:doc-encoding` | **路径分隔符** | `relToFile` 的 key vs 登记表里的 `file` | `relOf()` 归一 | 23 处 → **0 处** |
+
+⇒ ⇒⇒ ⇒ **一句话形状**：**门禁的结论依赖了不该依赖的「检出形态」**
+⇒ ⇒⇒ ⇒ （行尾 / 分隔符 / 路径是不是 URL）—— 这些是**检出的属性**，不是**代码的属性**。
+⇒ ⇒⇒ ⇒ 一道门若对它敏感，它在 Linux 上的绿就是**运气**，不是结论。
+
+⇒ ⇒⇒ ⇒ ★ **处置纪律（仍是那三条）**：
+⇒ ⇒⇒ ⇒ ① **在量具的读入口归一**，不去动全仓行尾 / 全仓路径；
+⇒ ⇒⇒ ⇒ ② **归一必须是恒等变换**（对 CI 侧）⇒ 每处都验证过「Linux 口径输出逐字不变」；
+⇒ ⇒⇒ ⇒ ③ **同一次修复里，所有「同一个 key 的产生处与消费处」都要一起改** ——
+⇒ ⇒⇒ ⇒ ⇒ D10 就是「只改产生处、不改消费处」的活教材（改一半仍然查不到）。
+
+⇒ ⇒⇒ ⇒ ⚠ **本轮只修了「已经爆出来」的五处** ⇒ ⇒⇒ ⇒
+⇒ ⇒⇒ ⇒ 仓里**可能还有尚未被跑到的同型门**（本轮做过一次静态扫描：
+⇒ ⇒⇒ ⇒ `split('\n')` 的用法 100+ 处、动态 `import()` 十几处，**但没有逐个判它们是否敏感**）
+⇒ ⇒⇒ ⇒ ⇒ 这个扫描**没做完** ⇒ 登记在简报 185 ①，**不代拍**。
