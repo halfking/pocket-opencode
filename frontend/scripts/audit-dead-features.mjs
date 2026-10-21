@@ -23,7 +23,7 @@
 //   node scripts/audit-dead-features.mjs --dir meetings # 只看 features/<dir>
 //   node scripts/audit-dead-features.mjs --selftest     # 负控：验证判据有牙
 import { readFileSync, readdirSync, statSync } from 'node:fs'
-import { join, dirname } from 'node:path'
+import { join, dirname, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -215,7 +215,37 @@ if (!scope.startsWith(FEATURES)) {
 
 const candidates = walk(scope)
 const dead = deadExports(candidates, walk(SRC), walkAll(SRC).filter(isTestFile))
-const rel = (f) => f.replace(`${ROOT}/`, '')
+
+/**
+ * 相对路径（**相对 `frontend/` 根**，分隔符恒为 `/`）。
+ *
+ * ★★ 2026-10-22 round50 实测修掉的**平台假红**（CI/Linux 绿，Windows 红）。
+ *
+ * 旧实现：`const rel = (f) => f.replace(`${ROOT}/`, '')`
+ *   —— `ROOT` 由 `join()` 拼出，Windows 上是**反斜杠**；
+ *      于是模板串变成 `C:\...\frontend/`（**混合分隔符**），
+ *      而待匹配的 `f` 也是反斜杠 ⇒ **一次都匹配不上** ⇒ `rel()` 成了空操作
+ *      ⇒ `--json` 里的 `dead[].file` 保持**绝对路径 + 反斜杠**。
+ *   ⇒ `check-dead-features.mjs` 用 `${file}:${name}` 当棘轮 key
+ *      ⇒ 与基线里登记的**相对路径 + 正斜杠**逐条错位
+ *      ⇒ 基线的 11 条**全部**被当成「新增未接线」⇒ 门禁恒红。
+ *   ⇒ Linux 上 `${ROOT}/` 恰好能匹配 ⇒ CI 一直是绿的 ⇒ **只有本机红**。
+ *
+ * 实测证据（修复前，Windows）：
+ *   `dead[].file` = `C:\workspace\pocket-opencode\frontend\src\features\meetings\audio-parts.ts`
+ *   基线登记     = `src/features/meetings/audio-parts.ts`
+ *   11 条 vs 11 条，集合**不相等** ⇒ 门禁把存量全部误报成新增。
+ *
+ * 修法：先归一分隔符再剥前缀（仓内同款先例：
+ *   `backend/internal/repohygiene/truncate_byteslice_test.go` 的 `relToRepo` 加 `filepath.ToSlash`）。
+ *   ⚠ Linux 上的输出**逐字不变**（旧实现在那边是能匹配的）⇒ CI 读数不受影响。
+ */
+const toSlash = (p) => p.split(sep).join('/')
+const ROOT_SLASH = toSlash(ROOT)
+const rel = (f) => {
+  const s = toSlash(f)
+  return s.startsWith(ROOT_SLASH + '/') ? s.slice(ROOT_SLASH.length + 1) : s
+}
 
 // `--json`：给 check:dead-features 的棘轮用。
 // ⚠ 打印给人看的那段**不能**被拿去解析 —— 文件分组、缩进、中文标题都在变。
