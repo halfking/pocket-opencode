@@ -25,6 +25,7 @@ import {
   FULL_TRANSCRIBE_CHUNK_SECONDS, FULL_TRANSCRIBE_CUT_SEARCH_SECONDS,
   MIN_CHUNK_SECONDS,
 } from './meeting-full-transcribe-chunks.ts'
+import { stripVueComments as stripComments } from '../../__tests__/source-scan.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const read = (f: string) => readFileSync(join(HERE, f), 'utf8')
@@ -42,11 +43,12 @@ const read = (f: string) => readFileSync(join(HERE, f), 'utf8')
  * ★ 教训复述：源码扫描的判据若不剥注释，会把**说明文字**当成**代码**。
  *   注释里提到一个调用点，就足以让顺序类判据彻底失灵，而且失败形态
  *   与「产品真的写反了」一模一样。
+ *
+ * ⚠ §956：这段实现**搬去了共用底座**（`src/__tests__/source-scan.mjs`）——
+ *   §956 要用**同一套**剥注释逻辑；两份实现漂移起来就会出现
+ *   「一个文件剥了注释、另一个没剥」⇒ 判据在一边**悄悄失牙**（而两边都是绿的）。
+ *   ⇒ 底座的行为另有自检（`src/__tests__/source-scan.test.mjs`）钉着。
  */
-const blank = (m: string) => m.replace(/[^\n]/g, ' ')
-const stripComments = (t: string) => t
-  .replace(/\/\*[\s\S]*?\*\//g, blank)
-  .split('\n').map((l) => { const i = l.indexOf('//'); return i < 0 ? l : l.slice(0, i) }).join('\n')
 
 const seg = (text: string) => [{ text }] as Array<{ text: string }>
 

@@ -22,6 +22,21 @@ import {
   nativeCaptureWindowAfterPart,
   wavDurationSec,
 } from '../recording-duration-consistency.ts'
+import {
+  createNativePartTimelineState,
+  describeNativeTimelineDegradation,
+  readNativeEpoch,
+  rebaseNativePartTimeline,
+} from '../native-part-timeline.ts'
+import { dedupeStep, likelyAudioOverlap } from '../meeting-dedup.ts'
+import { stripVueComments as stripComments } from '../../../__tests__/source-scan.mjs'
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+/** 读仓内源码（路径相对**本文件**所在目录）。 */
+const HERE = dirname(fileURLToPath(import.meta.url))
+const read = (rel: string) => readFileSync(join(HERE, rel), 'utf8')
 
 /**
  * 按**生产形状**造一段 WAV。
@@ -567,6 +582,215 @@ describe('§955 · 原生采集窗口的累积规则（纯函数）', () => {
 
   it('★ 起点为 0 时也要能长起来（不是恒 0）', () => {
     assert.notEqual(nativeCaptureWindowAfterPart(0, 8_000), 0)
+  })
+})
+
+// ══════════════════════════════════════════════════════════════════════════
+// §956 · 原生分片的**会话时间轴**
+//
+// ── 缺陷链（每一步都在生产代码里可核对）──
+//   1. `MeetingRecordService.loop()` 的 `captureStart` **每轮重取**
+//      ⇒ 原生服务每重启一轮，轮内相对量就**从 0 重新开始**。
+//   2. 中途切设备 ⇒ 原生服务重启一轮（`switchDevice` → `start(..., {resume:true})`
+//      → `ACTION_START` → `startCapture()` 先 `stopCapture()`）。
+//   3. `recordingRuntime` 把 `part.startMs/part.endMs` 直接当**分段时间范围**
+//      ⇒ **回卷的时间戳进了库** ⇒ 三处下游受损：
+//        ① 分段按 `startMs` 有序插入 ⇒ 后半场被排到**最前面**；
+//        ② 相邻段**重叠** ⇒ 去重的**精确裁剪档**（§634/§683 认定生产不可达、
+//           能吃掉正文的那一档）被打开；
+//        ③ 整场重转的回执按时间重叠分桶 ⇒ 后半场的话挂到前半场说话人名下。
+//
+// ── 修法 ──
+//   原生每片多报一个 `epochMs`（本轮采集原点的绝对墙钟）⇒ JS 侧据此把各轮
+//   **精确**拼回同一根会话时间轴；拿不到（旧原生包）时**钳位保单调**：
+//   时间轴是近似的，但**永不倒退** ⇒ ② 那条损伤不成立。
+// ══════════════════════════════════════════════════════════════════════════
+
+describe('§956 · 会话时间轴：换轮次必须精确重基', () => {
+  /** 第一轮采集原点的绝对墙钟（毫秒）。 */
+  const EPOCH_1 = 1_700_000_000_000
+  /** 第二轮采集原点：真实空隙 800ms（切设备那一下的墙钟）。 */
+  const EPOCH_2 = EPOCH_1 + 24_000 + 800
+
+  /** 一轮的 3 片（生产形状：每片 8s，轮内相对量）。 */
+  const roundOf = (epochMs: number, n = 3) =>
+    Array.from({ length: n }, (_, i) => ({
+      startMs: i * 8_000, endMs: (i + 1) * 8_000, epochMs,
+    }))
+
+  /** 把一串分片跑过重基，返回逐片结果。 */
+  const runTimeline = (parts: Array<{ startMs: number; endMs: number; epochMs?: number }>) => {
+    let st = createNativePartTimelineState()
+    return parts.map((p) => {
+      const r = rebaseNativePartTimeline(st, p)
+      st = r.state
+      return r
+    })
+  }
+
+  it('★ 同一轮：原样透传（单轮原生链的行为一字未变）', () => {
+    const out = runTimeline(roundOf(EPOCH_1))
+    out.forEach((r, i) => {
+      assert.equal(r.startMs, i * 8_000)
+      assert.equal(r.endMs, (i + 1) * 8_000)
+      assert.equal(r.clamped, false, '同一轮不该被钳位')
+      assert.equal(r.state.degraded, false, '同一轮不该退化')
+    })
+  })
+
+  it('★ 换轮次（带 epoch）：精确重基 ⇒ 真实空隙如实保留', () => {
+    const out = runTimeline([...roundOf(EPOCH_1), ...roundOf(EPOCH_2)])
+    assert.equal(out[2].endMs, 24_000, '第一轮结束于 24s')
+    // 第二轮第一片：轮内 0 ⇒ 会话坐标 = (EPOCH_2 - EPOCH_1) = 24_800
+    assert.equal(out[3].startMs, 24_800,
+      '换轮次必须精确重基（保留 800ms 真实空隙），不能从 0 重新开始')
+    assert.equal(out[3].rebased, true)
+    assert.equal(out[3].state.degraded, false, '精确重基不算退化')
+  })
+
+  it('★ 回卷（拿不到 epoch，旧原生包）：钳位保单调 + 标记退化', () => {
+    const out = runTimeline([
+      { startMs: 0, endMs: 8_000 },
+      { startMs: 8_000, endMs: 16_000 },
+      { startMs: 0, endMs: 8_000 },   // 第二轮：轮内相对量从 0 重新开始 ⇒ 回卷
+    ])
+    assert.equal(out[2].rolledBack, true, '必须识别出时间轴倒退')
+    assert.equal(out[2].clamped, true, '倒退必须被钳位')
+    assert.equal(out[2].startMs, 16_000, '倒退的部分必须被拉回不与上一片重叠')
+    assert.equal(out[2].state.degraded, true, '近似时间轴必须留痕')
+  })
+
+  it('★ 陈旧 epoch（比基准还早）：钳位 + 退化（不许算出天文数字偏移）', () => {
+    let st = createNativePartTimelineState()
+    st = rebaseNativePartTimeline(st, { startMs: 0, endMs: 8_000, epochMs: EPOCH_1 }).state
+    const r = rebaseNativePartTimeline(st, { startMs: 0, endMs: 8_000, epochMs: EPOCH_1 - 60_000 })
+    assert.ok(Number.isFinite(r.startMs) && r.startMs >= 0, '偏移必须有限且非负')
+    assert.equal(r.startMs, 8_000, '陈旧 epoch 必须被钳位，不得倒退')
+    assert.equal(r.state.degraded, true)
+  })
+
+  it('★ 非法 epoch（0 / NaN / 负数 / 缺失）不得产生荒谬偏移（0 = 1970 年，不是原点）', () => {
+    for (const bad of [0, Number.NaN, -1, undefined]) {
+      const r = rebaseNativePartTimeline(createNativePartTimelineState(),
+        { startMs: 0, endMs: 8_000, epochMs: bad })
+      assert.equal(r.startMs, 0, `${String(bad)} 被当成了原点`)
+      assert.ok(Math.abs(r.startMs) < 1e6, `${String(bad)} 产生了荒谬偏移`)
+    }
+  })
+
+  it('★ epoch=0 绝不能被当成原点（否则下一片的偏移是天文数字）', () => {
+    let st = createNativePartTimelineState()
+    st = rebaseNativePartTimeline(st, { startMs: 0, endMs: 8_000, epochMs: 0 }).state
+    const r = rebaseNativePartTimeline(st, { startMs: 0, endMs: 8_000, epochMs: 1_700_000_000_000 })
+    assert.ok(r.startMs < 1e6, `偏移爆炸了：${r.startMs}`)
+  })
+
+  it('★ 载荷里的 epoch 解析：缺失/非法一律 undefined（绝不当成 0）', () => {
+    for (const bad of [undefined, null, 0, Number.NaN, -1, '', 'abc', true, {}]) {
+      assert.equal(readNativeEpoch(bad), undefined,
+        `${JSON.stringify(bad)} 被折成了一个合法 epoch`)
+    }
+    assert.equal(readNativeEpoch(1_700_000_000_000), 1_700_000_000_000)
+    assert.equal(readNativeEpoch('1700000000000'), 1_700_000_000_000, '数字串也算数（桥可能给串）')
+  })
+
+  it('★ 不变式：任意序列输出恒单调、相邻不重叠（这是本模块存在的全部理由）', () => {
+    const shapes = [
+      [{ startMs: 0, endMs: 8_000 }, { startMs: 8_000, endMs: 16_000 }, { startMs: 0, endMs: 8_000 }],
+      [{ startMs: 0, endMs: 8_000, epochMs: EPOCH_1 }, { startMs: 0, endMs: 8_000, epochMs: EPOCH_2 }],
+      [{ startMs: 0, endMs: 8_000, epochMs: EPOCH_1 }, { startMs: 0, endMs: 8_000, epochMs: EPOCH_1 - 5_000 }],
+      [{ startMs: 16_000, endMs: 24_000 }, { startMs: Number.NaN, endMs: Number.NaN }, { startMs: -100, endMs: -50 }],
+    ]
+    for (const shape of shapes) {
+      let prevEnd = 0
+      for (const r of runTimeline(shape)) {
+        assert.ok(Number.isFinite(r.startMs) && Number.isFinite(r.endMs), '产生了非有限时间')
+        assert.ok(r.startMs >= prevEnd, `时间轴倒退了：${r.startMs} < ${prevEnd}`)
+        assert.ok(r.endMs >= r.startMs, 'endMs 必须 ≥ startMs')
+        prevEnd = r.endMs
+      }
+    }
+  })
+
+  it('★ 退化留痕文案必须说清「近似」与「不会被裁掉正文」', () => {
+    const r = rebaseNativePartTimeline(
+      { baseEpochMs: null, lastEndMs: 8_000, degraded: false },
+      { startMs: 0, endMs: 8_000 },
+    )
+    const msg = describeNativeTimelineDegradation(r, { startMs: 0, endMs: 8_000 })
+    assert.match(msg, /退化/)
+    assert.match(msg, /钳位/)
+    assert.match(msg, /不重叠/)
+  })
+})
+
+describe('§956 · 端到端：回卷会打开「能吃掉正文」的精确裁剪档，重基后必须不可达', () => {
+  it('★ 负控：回卷的原始时间轴确实让相邻段重叠（§634 的不变量被打破）', () => {
+    // 第一轮第二片结束于 16_000；第二轮第一片轮内从 0 开始 ⇒ 落回第一轮里面。
+    assert.equal(likelyAudioOverlap({ prevEndMs: 16_000, nextStartMs: 0 }), true,
+      '负控：回卷的原始时间轴确实重叠 —— 否则下面那条判据恒真')
+  })
+
+  it('★ 重基后相邻段不重叠 ⇒ 精确裁剪档不可达（§634/§683 的结论继续成立）', () => {
+    let st = createNativePartTimelineState()
+    const parts = [
+      { startMs: 0, endMs: 8_000, epochMs: 1_700_000_000_000 },
+      { startMs: 8_000, endMs: 16_000, epochMs: 1_700_000_000_000 },
+      { startMs: 0, endMs: 8_000, epochMs: 1_700_000_000_000 + 16_800 },
+    ]
+    const segs = parts.map((p) => {
+      const r = rebaseNativePartTimeline(st, p)
+      st = r.state
+      return { startMs: r.startMs, endMs: r.endMs }
+    })
+    for (let i = 1; i < segs.length; i++) {
+      assert.equal(
+        likelyAudioOverlap({ prevEndMs: segs[i - 1].endMs, nextStartMs: segs[i].startMs }),
+        false,
+        `第 ${i} 对相邻段重叠了 ⇒ 去重的精确裁剪档（§634：能吃掉正文）被打开`,
+      )
+    }
+  })
+
+  it('★ 正文不许被吃掉：用户真的一句重复（「好的」+「好的，我继续」）必须原样保留', () => {
+    const prev = '好的'
+    const next = '好的，我继续'
+    // 时间轴判为重叠 ⇒ 走**精确**档 ⇒ 前缀被裁（用户真说的话被吃掉）
+    const rolled = dedupeStep({ prev, raw: next, prevEndMs: 16_000, startMs: 0 })
+    assert.equal(rolled.text, '，我继续', '负控：重叠档确实把「好的」吃掉了')
+    // 不重叠 ⇒ 走**保守**档 ⇒ 原样保留
+    const ok = dedupeStep({ prev, raw: next, prevEndMs: 16_000, startMs: 16_000 })
+    assert.equal(ok.text, '好的，我继续', '不重叠时不得吃掉用户真说的话')
+  })
+})
+
+describe('§956 · 接线层（源码扫描，⚠ 零牙已如实标注）', () => {
+  const runtime = () => stripComments(read('../../../native/recordingRuntime.ts'))
+
+  it('★ 生产者必须走那个**纯函数**（否则真件与被测的本体又分家了）', () => {
+    const s = runtime()
+    assert.match(s, /from '\.\.\/features\/meetings\/native-part-timeline'/,
+      'runtime 没 import 那个纯模块')
+    assert.equal((s.match(/rebaseNativePartTimeline\(/g) ?? []).length, 1,
+      '必须恰好调用一次那个纯函数（多处调用 ⇒ 形状会漂）')
+  })
+
+  it('★ 喂给 processSegment 的必须是**重基后**的时间，不是原生的轮内相对量', () => {
+    const s = runtime()
+    const m = /processSegment\(\s*nativePartToBlob\(part\)\s*,\s*(\w+)\.startMs\s*,\s*(\w+)\.endMs\s*\)/.exec(s)
+    assert.ok(m, '找不到原生分片喂给 processSegment 的调用点')
+    assert.notEqual(m[1], 'part', '必须用重基结果的时间，不能直接用 part.startMs（那正是回卷的源头）')
+    assert.notEqual(m[2], 'part', '同上')
+  })
+
+  it('★ 新的一场必须重置时间轴；切设备（resume）绝不能清', () => {
+    const s = runtime()
+    const fi = s.indexOf('if (freshSession) {')
+    const ti = s.indexOf('this.nativeTimeline = createNativePartTimelineState()')
+    assert.ok(fi > 0, '找不到 freshSession 分支')
+    assert.ok(ti > fi, '时间轴的重置必须在 freshSession 分支里（新的一场才有新的原点）')
+    assert.equal((s.match(/this\.nativeTimeline = createNativePartTimelineState\(\)/g) ?? []).length, 1,
+      '时间轴只许在 freshSession 里重置一次（切设备走 resume ⇒ 清了就等于回卷）')
   })
 })
 
