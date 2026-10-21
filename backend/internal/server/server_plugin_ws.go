@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/halfking/pocket-opencode/backend/internal/background"
 	ws "github.com/halfking/pocket-opencode/backend/internal/websocket"
 )
 
@@ -75,8 +76,8 @@ func (s *Server) handlePluginConnection(conn *websocket.Conn, id, workspaceID, u
 	s.pluginHub.RegisterPlugin(pluginConn)
 
 	// Start read and write pumps
-	go pluginConn.WritePump()
-	go pluginConn.ReadPump()
+	background.Go("plugin-ws/write-pump", pluginConn.WritePump)
+	background.Go("plugin-ws/read-pump", pluginConn.ReadPump)
 }
 
 func (s *Server) handleManagerConnection(conn *websocket.Conn, id, workspaceID, userID string) {
@@ -98,8 +99,8 @@ func (s *Server) handleManagerConnection(conn *websocket.Conn, id, workspaceID, 
 	s.pluginHub.RegisterManager(managerConn)
 
 	// Start read and write pumps
-	go managerConn.WritePump()
-	go managerConn.ReadPump()
+	background.Go("manager-ws/write-pump", managerConn.WritePump)
+	background.Go("manager-ws/read-pump", managerConn.ReadPump)
 }
 
 func (s *Server) handleClientConnection(conn *websocket.Conn, id, workspaceID, userID string) {
@@ -120,8 +121,8 @@ func (s *Server) handleClientConnection(conn *websocket.Conn, id, workspaceID, u
 	s.pluginHub.RegisterClient(clientConn)
 
 	// Start read and write pumps
-	go clientConn.WritePump()
-	go clientConn.ReadPump()
+	background.Go("client-ws/write-pump", clientConn.WritePump)
+	background.Go("client-ws/read-pump", clientConn.ReadPump)
 }
 
 // handlePluginStatus returns the caller workspace's plugin hub status

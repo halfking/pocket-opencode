@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/halfking/pocket-opencode/backend/internal/outbound"
 )
 
 const DefaultMaxBodyBytes int64 = 8 << 20
@@ -139,7 +141,7 @@ func NewSafeHTTPClient(opts HTTPOptions) *http.Client {
 		}
 		return (&net.Dialer{Timeout: opts.DialTimeout}).DialContext(ctx, network, net.JoinHostPort(ips[0].String(), port))
 	}
-	client := &http.Client{Transport: tr, Timeout: opts.Timeout}
+	client := outbound.NewClient(opts.Timeout, outbound.WithTransport(tr))
 	client.CheckRedirect = func(req *http.Request, _ []*http.Request) error {
 		if err := ValidateURL(req.URL.String()); err != nil {
 			return err

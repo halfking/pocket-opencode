@@ -178,7 +178,13 @@ export function useApprovalAlerts(
     onUnmounted(() => {
       stop()
       if (timer !== null) clearInterval(timer)
-      if (tapListener) void tapListener.then((h) => void h.remove()).catch(() => {})
+      if (tapListener) {
+        void tapListener.then((h) => void h.remove()).catch((e) => {
+          // 移除通知点击监听失败 ⇒ 监听残留，重进页面会重复跳 deepLink。
+          // 不影响本次使用，但「点一次通知跳了两遍」只能靠这条线索定位。
+          console.warn('[approval-alerts] 通知点击监听移除失败：', e)
+        })
+      }
     })
   }
 

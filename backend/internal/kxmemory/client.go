@@ -12,7 +12,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"math/rand"
 	"net/http"
 	"sync"
@@ -21,6 +20,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/halfking/pocket-opencode/backend/internal/outbound"
+	"github.com/halfking/pocket-opencode/backend/internal/sizedread"
 )
 
 // Client 是 kxmemory 客户端抽象接口。所有 handler 都通过这个接口访问
@@ -180,7 +181,7 @@ func NewClientWithPaths(baseURL, apiKey string, retry RetryConfig, paths Paths) 
 	return &HTTPClient{
 		BaseURL:   baseURL,
 		APIKey:    apiKey,
-		Client:    &http.Client{Timeout: 30 * time.Second},
+		Client:    outbound.NewClient(30 * time.Second),
 		retry:     retry,
 		paths:     NormalizePaths(paths),
 		jwtSecret: apiKey, // 同时作为 JWT 签发密钥
@@ -390,7 +391,7 @@ func (c *HTTPClient) doOnce(ctx context.Context, path string, body []byte, out a
 		if out == nil {
 			return nil
 		}
-		if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+		if err := json.NewDecoder(sizedread.Limit(resp.Body, sizedread.MaxJSONBodyBytes)).Decode(out); err != nil {
 			return NewPermanentError("decode response: "+err.Error(), err)
 		}
 		return nil
@@ -398,17 +399,17 @@ func (c *HTTPClient) doOnce(ctx context.Context, path string, body []byte, out a
 
 	// 4xx → 永久错误（客户端代码错，无重试意义）
 	if resp.StatusCode >= 400 && resp.StatusCode < 500 {
-		bodyBytes, _ := io.ReadAll(resp.Body)
+		bodyBytes := sizedread.Snippet(resp.Body, sizedread.MaxErrorBodyBytes)
 		return NewPermanentError(
-			fmt.Sprintf("kxmemory %s returned %d: %s", path, resp.StatusCode, truncate(string(bodyBytes), 200)),
+			fmt.Sprintf("kxmemory %s returned %d: %s", path, resp.StatusCode, truncate(bodyBytes, 200)),
 			nil,
 		).WithStatus(resp.StatusCode)
 	}
 
 	// 5xx → 暂时错误（上游故障，重试）
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes := sizedread.Snippet(resp.Body, sizedread.MaxErrorBodyBytes)
 	return NewTransientError(
-		fmt.Sprintf("kxmemory %s returned %d: %s", path, resp.StatusCode, truncate(string(bodyBytes), 200)),
+		fmt.Sprintf("kxmemory %s returned %d: %s", path, resp.StatusCode, truncate(bodyBytes, 200)),
 		nil,
 	).WithStatus(resp.StatusCode)
 }
@@ -649,10 +650,10 @@ func (c *HTTPClient) postJSON(ctx context.Context, path string, reqBody, out any
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		r, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("kxmemory %s %d: %s", path, resp.StatusCode, string(r))
+		r := sizedread.Snippet(resp.Body, sizedread.MaxErrorBodyBytes)
+		return fmt.Errorf("kxmemory %s %d: %s", path, resp.StatusCode, r)
 	}
-	return json.NewDecoder(resp.Body).Decode(out)
+	return json.NewDecoder(sizedread.Limit(resp.Body, sizedread.MaxJSONBodyBytes)).Decode(out)
 }
 
 func (c *HTTPClient) MeetingSummary(ctx context.Context, req MeetingSummaryRequest) (*MeetingSummaryResponse, error) {

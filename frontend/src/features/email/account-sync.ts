@@ -194,8 +194,15 @@ export async function pushAccountToServer(_a: ServerAccount): Promise<boolean> {
     const status = (e as { status?: number } | null)?.status
     if (status === 409) {
       console.warn('[email] account push rejected as stale; server copy wins', _a.id)
+      // 拉不到账号列表 ⇒ 跳过本地镜像下行（服务端已是最新，本地镜像等下次同步补上）。
       const res = await emailApi.listAccounts().catch(() => null)
-      if (res?.accounts) await pullAccountsToLocal(res.accounts).catch(() => undefined)
+      if (res?.accounts) {
+        await pullAccountsToLocal(res.accounts).catch((err) => {
+          // 服务端已是最新（409 ⇒ server copy wins），但本地镜像没拉回来
+          // ⇒ 本地账号信息停在旧值。这条链路上没有别处会报 ⇒ 留痕。
+          console.warn('[email] 账号列表未能拉回本地镜像：', err)
+        })
+      }
       return true
     }
     void import('../../native/config-sync/outbox').then((m) =>

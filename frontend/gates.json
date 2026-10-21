@@ -49,10 +49,12 @@
     "check:card-deck-labels",
     "check:router-parity",
     "check:doc-encoding",
+    "check:doc-ref-integrity",
     "check:stt-refine-receipts",
     "check:refine-summary-meta-split",
     "check:quicknote-summary-gate",
-    "check:doc-empty-string-literal"
+    "check:doc-empty-string-literal",
+    "check:fetch-bounds"
   ],
   "ciRuns": [
     "check:build-mobile-selftest",
@@ -87,10 +89,12 @@
     "check:card-deck-labels",
     "check:router-parity",
     "check:doc-encoding",
+    "check:doc-ref-integrity",
     "check:stt-refine-receipts",
     "check:refine-summary-meta-split",
     "check:quicknote-summary-gate",
-    "check:doc-empty-string-literal"
+    "check:doc-empty-string-literal",
+    "check:fetch-bounds"
   ],
   "ciCoveredElsewhere": {
     "typecheck": "frontend.yml 的 frontend-lint job 已手列 `npm run typecheck`",

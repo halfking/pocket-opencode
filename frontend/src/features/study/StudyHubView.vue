@@ -376,8 +376,14 @@ onMounted(async () => {
   } catch {
     /* cache 损坏不致命：syncFromServer 会兜底 */
   }
-  void store.syncFromServer().catch(() => {})
-  void listNotes({ workspaceId: currentWorkspaceId(), limit: 1 }).catch(() => {})
+  void store.syncFromServer().catch(() => {
+    // 失败已由 store 置成 `store.error`（同步失败会 rethrow）⇒ 这里只接住 rethrow。
+  })
+  void listNotes({ workspaceId: currentWorkspaceId(), limit: 1 }).catch((e) => {
+    // 只是探一下笔记列表能不能拉到（limit 1），失败不影响本页功能。
+    // 但失败没有任何别处会显示 ⇒ 留痕，免得「列表一直是空的」查无实据。
+    console.warn('[study] 笔记列表探测失败：', e)
+  })
   await loadLearning()
 })
 

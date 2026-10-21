@@ -11,6 +11,8 @@ import (
 
 	"github.com/go-webauthn/webauthn/protocol"
 	"github.com/go-webauthn/webauthn/webauthn"
+
+	"github.com/halfking/pocket-opencode/backend/internal/background"
 )
 
 // WebAuthnVerifier 提供 challenge-session 管理与 COSE 签名验证能力。
@@ -45,7 +47,7 @@ func newChallengeStore() *challengeStore {
 		sessions: make(map[string]*challengeSession),
 		stopCh:   make(chan struct{}),
 	}
-	go s.cleanupLoop()
+	background.Go("webauthn/challenge-cleanup", s.cleanupLoop)
 	return s
 }
 

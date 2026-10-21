@@ -23,6 +23,7 @@
  * 这两条都由调用方保证，本模块只做纯编排 + 三处外部调用，便于单测。
  */
 import { sttSettingsApi } from '../../api/stt-settings'
+import { Capacitor } from '@capacitor/core'
 import { isAbortError } from '../../api/http'
 import { meetingsApi } from '../../api/meetings'
 import { planRefine } from './meeting-refine-plan'
@@ -30,9 +31,11 @@ import {
   buildRefineBaseSegments,
   refetchFullTranscript,
   shouldAdoptFullTranscript,
+  type AudioChunkSource,
   type FullSegmentReceipt,
   type FullTranscribeOutcome,
 } from './meeting-final-transcript'
+import { streamNativeMeetingAudioChunks } from './audio-parts'
 import { deriveRoster, repairRosterHomophones } from './meeting-roster-homophone'
 import { PINYIN_COMMON } from './pinyin-common'
 import { toGatewayWavBytes } from '../../utils/wav-encode'
@@ -40,11 +43,37 @@ import { getMeeting, updateMeeting, type MeetingSegment } from './meetings-store
 import { ingestMeetingArtifacts } from './meeting-ingest'
 import { buildIngestNotice } from './meeting-ingest-notice'
 import { buildRefineNotice, refineStatusFor } from '../sessions/refine-outcome-notice'
-import { assessDurationDrift, createMeasuringToWav, finalizeFailureNotice } from './recording-duration-consistency'
+import { assessDurationDrift, createMeasuringToWav, finalizeFailureNotice, describeCoverageGap, describeDurationGuardSource, resolveDurationGuardInput, type NativeCaptureSnapshot } from './recording-duration-consistency'
 
 export interface FinalizeDeps {
   /** 一次全量重转。注入而非直接调 API，便于单测与换实现。 */
   transcribeFull?: (blob: Blob, filename: string) => Promise<FullTranscribeOutcome>
+  /**
+   * §954：**分块音频源**（原生链用）。
+   *
+   * ⚠ 不提供它 ⇒ 退回「取整场音频」那条路（`loadMeetingAudio`）
+   *   ⇒ 而原生链上它**恒返回 null**（§826）⇒ 整段重转**永不发生**。
+   * ⚠ 默认值 = `streamNativeMeetingAudioChunks`（原生平台才有意义）⇒
+   *   **不需要每个调用方各自接线**（§49 的教训：两条录音路径必须共用一份收尾）。
+   */
+  loadAudioChunks?: (meetingId: string) => AsyncIterable<AudioChunkSource> | null
+  /**
+   * §955：**原生采集窗口**的取值函数（原生链才有）。
+   *
+   * ⚠⚠ 为什么原生链需要**另一个**墙钟：护栏比的是「墙钟 vs 真实音频」⇒
+   *   **两个数必须同源**，否则差的是**系统偏移**而不是「音频丢了多少」。
+   *   原生链上 JS 墙钟的起点（`start()`）比原生服务真正开采的时刻**晚**
+   *   （`BackgroundMicPlugin.start` 等的是服务回报 `reportStart(true)`）
+   *   ⇒ 两者**不同相位** ⇒ 拿 JS 墙钟比 ⇒ 差一个**未实测的启动延迟**
+   *   ⇒ 短录音（容差只有 500 ms）几乎必然越界 ⇒ **假警报** ⇒ 噪声。
+   *   ⇒ 而原生侧每片带来的 `endMs` 与盘上音频**同源** ⇒ 用它。
+   *
+   * ⚠ 传**取值函数**而不是值：原生服务停止后还会**补发尾片**，窗口会继续增长
+   *   ⇒ 取值必须发生在「音频量完之后」⇒ 由收尾链在那一刻调它。
+   *
+   * ⚠ 缺省（Web / iOS 链）⇒ 护栏用 JS 墙钟 ⇒ **行为一字未变**。
+   */
+  nativeCaptureSnapshot?: () => NativeCaptureSnapshot | null
   /**
    * 落盘音频 → 可切分的 WAV。注入便于单测。
    *
@@ -113,6 +142,41 @@ const defaultTranscribeFull = (blob: Blob, filename: string) =>
 const defaultToWav = (blob: Blob): Promise<ArrayBuffer | null> => toGatewayWavBytes(blob)
 
 /**
+ * §954：默认的**分块音频源** —— 只在**原生平台**上生效。
+ *
+ * ⚠ 非原生平台返回 null ⇒ 退回「取整场音频」那条路 ⇒ **Web / iOS 链的行为一个字没变**。
+ * ⚠ 原生平台上它把**盘上已有的分片**流式接成块（不拼整段、不写新文件）
+ *   ⇒ 整段重转在 Android 上**第一次真的发生**（§826 查实它此前永不发生）。
+ */
+const defaultLoadAudioChunks = (meetingId: string): AsyncIterable<AudioChunkSource> | null => {
+  if (!Capacitor.isNativePlatform()) return null
+  return streamNativeMeetingAudioChunks(meetingId)
+}
+
+/**
+ * §955：取「原生采集窗口」的快照（**观测失败不得影响主流程**，§818）。
+ *
+ * ⚠ 取值失败时返回「**原生但不可信**」而不是「没有原生」：
+ *   「没有原生」会让护栏退回 **JS 墙钟** ⇒ 那是**不同源**的钟 ⇒ 差的是系统偏移
+ *   ⇒ 短录音会**假警报**；
+ *   而「不可信」⇒ 护栏判 `no-ground-truth`（**量不到**）⇒ 宁可瞎也不误报
+ *   （§805.3：宁可漏报，也不要训练人忽略报警）。
+ */
+function readNativeCaptureSnapshot(
+  provider: FinalizeDeps['nativeCaptureSnapshot'],
+): NativeCaptureSnapshot | null {
+  if (!provider) return null
+  try {
+    return provider() ?? null
+  } catch (e) {
+    console.warn('[meeting-finalize] 取原生采集窗口失败，本场不做时长一致性判定：', e)
+    // ⚠⚠ §957：`gapMs` 也要给 `null`（= 量不到），**不能**给 0
+    //   （0 = 实测没有空隙 ⇒ 那是在说谎）。
+    return { used: true, windowMs: null, gapMs: null }
+  }
+}
+
+/**
  * 收尾：全量重转 → 说话人归因 → 人名同音纠正 → LLM 精校 → 入库（笔记/待办/提醒）。
  *
  * 顺序每一环都不能换：
@@ -165,19 +229,50 @@ export async function finalizeRecording(
     //   录音产物是 webm/opus，网关只收 wav/mp3 ⇒ 重转直接失败；
     //   且 `stt.SplitWAV` 对 webm 不可切（实测 splittable=false）
     //   ⇒ 就算发得出去也只回 1 条回执 ⇒ 说话人归因整块不生效。
-    { toWav },
+    //
+    // ⚠ §954：`loadAudioChunks` 是**原生链**那条路 —— 那里压根没有「整场音频」可取
+    //   （`loadMeetingAudio` 恒 null，§826）⇒ 不给它，整段重转在 Android 上永不发生。
+    { toWav, loadAudioChunks: deps.loadAudioChunks ?? defaultLoadAudioChunks },
   )
+  // ⚠ §954：走分块音频源时 `toWav` 不会被调用（没有整场音频可转）
+  //   ⇒ §805 的时长护栏在原生链上原本恒判 `no-ground-truth`
+  //   ⇒ 现在用各块时长之和补上 ⇒ **护栏在原生链上复活**。
+  if (typeof finalText.measuredAudioSec === 'number' && Number.isFinite(finalText.measuredAudioSec)) {
+    measuredAudioSec = finalText.measuredAudioSec
+  }
 
+  // ⚠⚠ §955：护栏的**墙钟**不再恒等于 `elapsedMs`。
+  //   原生链上必须用**与盘上音频同源**的原生采集窗口
+  //   ⇒ 否则比的是两个**不同相位**的钟（JS 的 `start()` 比原生服务开采**晚**）
+  //   ⇒ 差的是**系统偏移**而不是「音频丢了多少」⇒ 短录音会假警报。
+  //   ⇒ 决策在纯函数 `resolveDurationGuardInput` 里（§52 纪律：决策必须在能测的地方）。
+  //   ⇒ Web / iOS 链（没有原生窗口）⇒ 走 JS 墙钟 ⇒ **行为一字未变**。
+  const guardInput = resolveDurationGuardInput({
+    elapsedMs,
+    nativeCapture: readNativeCaptureSnapshot(deps.nativeCaptureSnapshot),
+    measuredAudioSec,
+  })
   // 只 warn、不改状态：阈值与是否升级为阻断属产品口径（§805.3）。
   // `no-ground-truth` 不算异常 —— 转码失败那条路由 `refetchFullTranscript` 自己兜。
-  const drift = assessDurationDrift(elapsedMs, measuredAudioSec)
+  const drift = assessDurationDrift(guardInput.wallClockMs, guardInput.audioSec)
   if (!drift.ok) {
     console.warn(
-      `[meeting-finalize] 录音时长与落盘音频不符：墙钟 ${elapsedMs}ms vs 音频 `
-      + `${measuredAudioSec === null ? '未知' : Math.round(measuredAudioSec * 1000) + 'ms'}`
+      `[meeting-finalize] 录音时长与落盘音频不符：墙钟 ${guardInput.wallClockMs}ms`
+      + `（${describeDurationGuardSource(guardInput.source)}）vs 音频 `
+      + `${guardInput.audioSec === null ? '未知' : Math.round(guardInput.audioSec * 1000) + 'ms'}`
       + `（差 ${drift.driftMs}ms > 容差 ${Math.round(drift.toleranceMs)}ms，${drift.reason}）`,
     )
   }
+  // ★§957：把**切换空隙**单独说一声。
+  //
+  // ⚠⚠ **为什么不能吞掉**：空隙是「那段时间本来就没在采音」（切设备 ⇒ 原生服务重启）
+  //   ⇒ 它**不是**丢音频 ⇒ 不该混进上面那条「时长不符」的告警里（那是假警报）；
+  //   但用户确实少了一截录音 ⇒ 也不能当没发生 ⇒ **单独留痕**。
+  //   ⚠ 决策在纯函数 `describeCoverageGap` 里（§52：决策必须在能测的地方）。
+  //   ⚠ 触达面：**只到开发者 console**（§813）——要不要升为用户可见属产品口径，
+  //   **待属主拍板，本轮不代拍**（简报第 181 条 ③）。
+  const gapNotice = describeCoverageGap(guardInput.coverageGapMs)
+  if (gapNotice) console.warn(`[meeting-finalize] ${gapNotice}`)
   // ★§818：让「转码失败」本身可见。
   //
   // ⚠ 此前这条链**从头到尾静默**：转码失败被空 catch 块吞掉 ⇒ 退回原 webm 上传

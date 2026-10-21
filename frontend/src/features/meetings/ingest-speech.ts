@@ -121,6 +121,10 @@ export async function ingestSpeechBlob(opts: {
       saved.translation = translation
       return updateSegmentTranslation(id, translation)
     })
-    .catch(() => {})
+    .catch((e) => {
+      // 翻译没回来（或译文写库失败）⇒ 这一段没有译文，用户侧只表现为「没翻译」。
+      // 没有别处会提示 ⇒ 留痕。
+      console.warn('[meetings] 实时翻译未能落库：', e)
+    })
   return saved
 }

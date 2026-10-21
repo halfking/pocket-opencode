@@ -4,6 +4,7 @@ package agent
 
 import (
 	"crypto/tls"
+	"github.com/halfking/pocket-opencode/backend/internal/sizedread"
 	"io"
 )
 
@@ -28,9 +29,15 @@ func readBody(r io.Reader, maxLen int) string {
 	return string(b)
 }
 
-// readAll 读完整 body（无限长）。
+// maxAgentFrameBytes 是 agent 协议帧的上限（32 MiB）。
+//
+// ⚠ §952：修复前这里**没有上限** ⇒ 一个超大响应帧能把内存打穿
+// ⇒⇒⇒ 而 §950 只给了**时间**上界（30s 内可以送来 30 GiB）。
+const maxAgentFrameBytes = 32 << 20
+
+// readAll 读完整 body（**至多 maxAgentFrameBytes**）。
 func readAll(r io.Reader) ([]byte, error) {
-	return io.ReadAll(r)
+	return sizedread.All(r, maxAgentFrameBytes)
 }
 
 // getString 从 map 安全取 string（type assertion + 默认值）。

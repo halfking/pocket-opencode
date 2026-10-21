@@ -9,6 +9,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/halfking/pocket-opencode/backend/internal/outbound"
 )
 
 // SchemaVersionV1 is the only supported event envelope schema version.
@@ -165,7 +167,7 @@ func (c *Client) consumeEventStream(ctx context.Context, path, cursor string, ha
 	// SSE streams must not inherit the shared client's request Timeout, which
 	// would kill long-lived streams; use a client without a deadline and rely
 	// on the request context instead.
-	httpClient := &http.Client{}
+	httpClient := outbound.NewStreamingClient()
 	if tr := c.httpDo.Transport; tr != nil {
 		httpClient.Transport = tr
 	}

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/halfking/pocket-opencode/backend/internal/background"
 	"github.com/halfking/pocket-opencode/backend/internal/config"
 )
 
@@ -182,7 +183,7 @@ func handleEvent(w http.ResponseWriter, r *http.Request, cfg config.Config, broa
 
 	if broadcast != nil {
 		// 广播不能拖慢响应：企业微信 5 秒超时，Hub 卡住会直接导致重试风暴。
-		go broadcast("wecom.event", ev)
+		background.Go2[string, any]("wecom/broadcast", broadcast, "wecom.event", ev)
 	}
 	writeSuccess(w, http.StatusOK)
 }

@@ -324,7 +324,12 @@ function hydrate(noteIdVal: string) {
 async function hydrateMediaUrls() {
   for (const m of mediaRefs.value) {
     if (mediaDataUrls.value[m.fileName]) continue
-    const url = await loadMediaDataUrl(m.fileName).catch(() => null)
+    const url = await loadMediaDataUrl(m.fileName).catch((e) => {
+      // 媒体预览读不出来 ⇒ 这张图不显示（用户看到的是空位，没有任何提示）。
+      // 没有别处会提示 ⇒ 留痕。
+      console.warn('[flashcards] 媒体预览读取失败：', e)
+      return null
+    })
     if (url) mediaDataUrls.value[m.fileName] = url
   }
 }
@@ -334,7 +339,12 @@ async function pickImage(role: MediaRef['role'], source: 'camera' | 'gallery') {
   try {
     const ref = await pickAndSaveImage({ role, source })
     mediaRefs.value = [...mediaRefs.value, ref]
-    const url = await loadMediaDataUrl(ref.fileName).catch(() => null)
+    const url = await loadMediaDataUrl(ref.fileName).catch((e) => {
+      // 媒体预览读不出来 ⇒ 这张图不显示（用户看到的是空位，没有任何提示）。
+      // 没有别处会提示 ⇒ 留痕。
+      console.warn('[flashcards] 媒体预览读取失败：', e)
+      return null
+    })
     if (url) mediaDataUrls.value = { ...mediaDataUrls.value, [ref.fileName]: url }
   } catch (e: any) {
     // 原来直接把 err.message 赋给页面级 error；该错误是本地媒体读取失败，
@@ -347,7 +357,10 @@ async function pickImage(role: MediaRef['role'], source: 'camera' | 'gallery') {
 async function removeMedia(ref: MediaRef) {
   mediaRefs.value = mediaRefs.value.filter((m) => m.fileName !== ref.fileName)
   delete mediaDataUrls.value[ref.fileName]
-  void deleteMediaFile(ref.fileName).catch(() => {})
+  void deleteMediaFile(ref.fileName).catch(() => {
+    // deleteMediaFile 内部已 try/catch（文件已不存在 = 忽略）⇒ 这里接不到东西，
+    // 只是防止它的实现将来改成往外抛时产生未处理 rejection。
+  })
 }
 
 async function save() {
@@ -371,7 +384,10 @@ async function save() {
       store.enqueuePatchNote(noteId.value, input)
       // 父牌组变更只影响 deck config（card 的 deckId 不变 → 树形归位靠 store 后续 patchCard）。
       // 这里先不入 outbox；Phase 4.1 再扩展 deck config 的 outbox 通道。
-      await store.flushOutbox().catch(() => {})
+      await store.flushOutbox().catch(() => {
+        // flushOutbox 内部逐条 try/catch（失败的留在 outbox 等下次）⇒ 不 rethrow。
+        // 这里只是防止它的实现将来改成往外抛时产生未处理 rejection。
+      })
     } else {
       store.enqueueCreateNote(input)
       // BUG-O（2026-09-30 真机验收）：新建 note 时，**首张 card 是服务端生成的**
@@ -405,7 +421,9 @@ async function confirmDelete() {
   const ok = await confirm({ title: t('common.delete'), message: t('flashcards.edit.confirmDelete'), confirmText: t('common.delete'), danger: true })
   if (!ok) return
   store.enqueueDeleteNote(noteId.value)
-  void store.flushOutbox().catch(() => {})
+  void store.flushOutbox().catch(() => {
+    // 同上：flushOutbox 内部逐条 try/catch（失败的留在 outbox 等下次）⇒ 不 rethrow。
+  })
   goBack()
 }
 
@@ -415,7 +433,11 @@ watch(noteId, (val) => {
 
 onMounted(() => {
   store.loadFromCache()
-  if (store.deckConfigs.length === 0) void store.refresh().catch(() => {})
+  if (store.deckConfigs.length === 0) {
+    void store.refresh().catch(() => {
+      // 失败已由 store 置成 `store.error`（同步失败会 rethrow）⇒ 这里只接住 rethrow。
+    })
+  }
   if (!selectedDeckId.value) {
     const qDeck = route.query.deckId ? String(route.query.deckId) : ''
     selectedDeckId.value = qDeck || store.deckConfigs[0]?.deckId || ''

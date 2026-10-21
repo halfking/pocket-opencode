@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/halfking/pocket-opencode/backend/internal/adapter"
+	"github.com/halfking/pocket-opencode/backend/internal/background"
 	"github.com/halfking/pocket-opencode/backend/internal/model"
 )
 
@@ -80,7 +81,7 @@ func (s *Server) listSessionsAcrossInstances(ctx context.Context, workspaceID st
 		}
 		inst := inst
 		wg.Add(1)
-		go func() {
+		background.Go("session/list-instances", func() {
 			defer wg.Done()
 			apiBase, err := s.registry.GetInstanceAPIBaseForWorkspace(workspaceID, inst.ID)
 			if err != nil {
@@ -96,13 +97,13 @@ func (s *Server) listSessionsAcrossInstances(ctx context.Context, workspaceID st
 			}
 			tagSessions(sessions, inst)
 			ch <- batch{sessions: sessions}
-		}()
+		})
 	}
 
-	go func() {
+	background.Go("session/list-collector", func() {
 		wg.Wait()
 		close(ch)
-	}()
+	})
 
 	var all []adapter.OpenCodeSession
 	for b := range ch {

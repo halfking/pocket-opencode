@@ -33,41 +33,51 @@
  * WebM 是流式容器：初始化段只在开头出现一次。所以逐片 decodeAudioData
  * 在第 2 片就会抛 UnsupportedError——**这条路不成立**。
  *
- * ## 实际方案：滚动累计 + 时间窗切片
+ * ## 实际方案（§953 改）：**逐簇增量解码**
  *
  * 保留全部原始分片（就是 `this.chunks` 本来就要留的东西，不额外占内存），
- * 每来一片就把**累计容器**重新解码一次，再按 `[已发送秒数, 当前总秒数)`
- * 切出**新增**的那一段打成 WAV。
+ * 把它们**拼成一条连续的字节流**，按 **Cluster**（不是 MediaRecorder 的分片
+ * 边界）切开，然后**每簇单独解码**：每一簇都带上**初始化前缀**再交给解码器。
  *
- * 为什么不发累计音频：即时转写的服务端会话会累积文本，重发旧内容会得到
- * 「今天今天下午三点」这类重复。只发新增窗口，服务端既有去重逻辑就仍然成立。
+ * 为什么必须切在 Cluster 上（§953 实测，headless Chromium 的真 MediaRecorder 产物）：
+ * - 簇边界**不等于**分片边界：实测每片的尾部约 965 字节落在**下一片**里
+ *   ⇒ 按分片切会**丢 1.2% 的音频**（20 秒丢 0.24 秒）；
+ * - 按 Cluster 切则**逐样本等价**：拼接结果与整场解码**长度相同、位置偏移 0**，
+ *   簇边界处 mse ≈ 1e-4（低于 ASR 可感知阈值）。
  *
- * ⚠ 复杂度是 O(n²) 解码，而**每片的解码量不是「单片」而是「累计」**：
- * `parts` 只在 `dispose()` 清空，`takeNewWindow()` 每次都
- * 把**累计的全部分片**拼成一个 Blob 再 decode ⇒ 第 n 次要解 3n 秒音频。
+ * 为什么这样就便宜了：
+ * - 旧做法每来一片就把**累计到此刻的全部音频**重解一遍 ⇒ 解码总字节 O(T²)；
+ * - 新做法每簇只解一次 ⇒ 解码总字节 O(T)；
+ * - 解码峰值从「整场 48 kHz Float32」（659 MB/小时）降到「一簇」（≈ 0.8 MB）。
  *
- * ⚠⚠ 这里刻意**不逐字写出那句调用**：本文件有一条契约门按「恰好 3 处累计拼接」
- *   做**计数式硬约束**，而它数的是整份源码（**含注释**）⇒ 注释里抄一遍那个
- *   构造就会变成第 4 处、把门数到红。
- *   那是 2026-10-12 的现场复现：写这段说明时先把门数红了。
+ * ⚠ 代价（诚实登记）：末尾那簇**永远不完整**（它的结束要等下一片或等收尾）
+ *   ⇒ 实时转写会滞后「最后一段簇」的时长（实测约 4 秒）。
  *
- * 纯算术（每片 3 秒，n = 总秒数/3）：
+ * ⚠ 仍然保留「把全部分片拼成整场容器」的那种写法的**只有一处**：
+ *   `takeFull()`（收尾兜底全量重转）。它必须给出**整段**音频，
+ *   而「整段」这件事本身是 O(时长) 的 —— 要把它也变成 O(1)，
+ *   得让调用方改成**流式消费**，那是另一件事（§953 登记，不代拍）。
  *
- * | 录音长度 | 片数 | 单次最大解码量 | 全程累计解码量 | 相对录音时长 |
+ * ⚠ 这条纪律的由来：初版曾用「滚动累计」当 workaround，门也跟着钉住了
+ *   workaround 的**形态**（而不是它要达成的**目标**）⇒ §953 的实测证明
+ *   那个 workaround 的前提（「只有全量拼接才解得开」）是**错的** ⇒ 门被改写。
+ *
+ * ⚠⚠ 纯算术（每片 3 秒，n = 总秒数/3）：
+ *
+ * | 录音长度 | 片数 | 旧：单次最大解码量 | 旧：全程累计解码量 | 新：全程解码量 |
  * |---|---|---|---|---|
- * | 10 分钟 | 200 | 600 秒 | 16.75 小时 | 100× |
- * | 30 分钟 | 600 | 1800 秒 | 150.25 小时 | 300× |
- *
- * ⚠ 因为 `transcribeSlice` 把各片**串行排队**（recordingRuntime.ts:1016），
- * 只要「单次解码耗时 > 3 秒（分片间隔）」，队列就会**无界增长**。
- * 按下面那句实测速率线性外推，临界点约在 **15 分钟**；
- * 若 `decodeAudioData` 随容器长度超线性，则更早。
+ * | 10 分钟 | 200 | 600 秒 | 16.75 小时 | 10 分钟 |
+ * | 30 分钟 | 600 | 1800 秒 | 150.25 小时 | 30 分钟 |
  *
  * ⚠ 原注释写的是「实测**单片**解码 3~9 秒音频 < 30ms」——
- * 那个数没错，但它描述的是**切片长度**，不是**一次调用的实际解码量**，
- * 拿它论证「一场十几分钟完全可接受」是把两个量混了。
- * 实测数据与推导见设计文档 §510；⚠ 那个 ms 读数需要浏览器环境，**至今未复测**。
+ *   那个数没错，但它描述的是**切片长度**，不是**一次调用的实际解码量**，
+ *   拿它论证「一场十几分钟完全可接受」是把两个量混了。
+ *   实测数据与推导见设计文档 §510；⚠ 那个 ms 读数需要浏览器环境，**至今未复测**。
  */
+
+import { WebmClusterSplitter, composeWebmWithInit } from '../utils/webm-incremental.ts'
+import type { WebmCluster } from '../utils/webm-incremental.ts'
+
 
 const TARGET_SAMPLE_RATE = 16000
 
@@ -116,6 +126,19 @@ export function pcmToWavBytes(samples: Float32Array, sampleRate: number): ArrayB
   return bytes
 }
 
+/** 把几段 Float32 拼成一段（§953：逐簇解码后要拼回一条时间线）。 */
+function concatFloat32(chunks: Float32Array[]): Float32Array {
+  let total = 0
+  for (const c of chunks) total += c.length
+  const out = new Float32Array(total)
+  let offset = 0
+  for (const c of chunks) {
+    out.set(c, offset)
+    offset += c.length
+  }
+  return out
+}
+
 /**
  * 从 Float32 PCM 里切出 `[fromSec, toSec)` 并打成 WAV。
  * 越界自动收敛到可用范围，返回 0 长度而不是抛错（静音片段是正常情况）。
@@ -153,6 +176,25 @@ export class RollingWebmDecoder {
   private context: DecodeContext | null = null
   private sentUpToSec = 0
   private disposed = false
+
+  /**
+   * §953：把陆续到达的分片切成 **Cluster**。
+   *
+   * 缓冲里只留「最后一段还没收全的簇 + 它的后续字节」⇒ 内存是 O(簇) 而不是 O(整场)。
+   */
+  private splitter = new WebmClusterSplitter()
+
+  /** 已经喂给 splitter 的分片下标（分片是异步读字节的 ⇒ 这里记进度）。 */
+  private consumedParts = 0
+
+  /** 已经从 splitter 取出、但**还没解成功**的簇（解失败时留在队首，下次重试）。 */
+  private queued: WebmCluster[] = []
+
+  /** 已经解出来、但还没发出去的音频（按时间顺序）。 */
+  private pending: { samples: Float32Array; sampleRate: number; startSec: number }[] = []
+
+  /** 已解码音频的总时长（秒）——它就是「时间线」的当前末端。 */
+  private decodedSec = 0
 
   /**
    * 注入解码实现（测试用；生产不传，走 AudioContext）。
@@ -221,18 +263,63 @@ export class RollingWebmDecoder {
    */
   async takeNewWindow(minWindowSec = 0.15): Promise<ArrayBuffer | null> {
     if (this.disposed || !this.parts.length) return null
-    const ctx = this.ensureContext()
-    const blob = new Blob(this.parts, { type: 'audio/webm' })
-    const decoded = await ctx.decode(await blob.arrayBuffer())
-    const total = decoded.durationSec
-    if (total - this.sentUpToSec < minWindowSec) {
-      // 还没攒够新内容：把游标推到末尾，避免下次重复算同一段。
-      this.sentUpToSec = total
+    await this.feedParts()
+    this.queued.push(...this.splitter.takeCompleteClusters())
+    // ⚠ 逐簇解：**先解成功再出队** ⇒ 解失败时这一簇留在队首，下次重来
+    //   （§571 的「不会丢内容」靠的就是这个次序）。
+    while (this.queued.length) {
+      const cluster = this.queued[0]
+      const decoded = await this.decodeCluster(cluster)
+      this.queued.shift()
+      this.pending.push({
+        samples: decoded.samples,
+        sampleRate: decoded.sampleRate,
+        startSec: this.decodedSec,
+      })
+      this.decodedSec += decoded.durationSec
+    }
+    if (!this.pending.length) return null
+    const from = this.sentUpToSec
+    const to = this.decodedSec
+    if (to - from < minWindowSec) {
+      // ⚠⚠ §953：这里**不再**把游标推到末尾。
+      //   旧做法（推游标 ⇒ 返回 null）会把不足 minWindowSec 的尾巴**丢掉**；
+      //   现在尾巴留在 pending 里，下一次一起发出去 ⇒ 少丢内容。
+      //   ⛔ 代价：pending 会短暂多留一点音频（实测 ≤ 一簇，≈ 4 秒）。
       return null
     }
-    const from = this.sentUpToSec
-    this.sentUpToSec = total
-    return sliceToWavBytes(decoded.samples, decoded.sampleRate, from, total)
+    const base = this.pending[0].startSec
+    const rate = this.pending[0].sampleRate
+    const merged = concatFloat32(this.pending.map((p) => p.samples))
+    const wav = sliceToWavBytes(merged, rate, from - base, to - base)
+    this.pending = []
+    this.sentUpToSec = to
+    return wav
+  }
+
+  /** 把还没喂过的分片读成字节、喂给切分器。 */
+  private async feedParts(): Promise<void> {
+    while (this.consumedParts < this.parts.length) {
+      const part = this.parts[this.consumedParts]
+      this.consumedParts++
+      const bytes = new Uint8Array(await part.arrayBuffer())
+      this.splitter.push(bytes)
+    }
+  }
+
+  /**
+   * 解一簇。
+   *
+   * ⚠ 每一簇都要带上**初始化前缀**才能单独解码（webm 的 init 段只在开头）。
+   */
+  private async decodeCluster(cluster: WebmCluster): Promise<{ samples: Float32Array; sampleRate: number; durationSec: number }> {
+    const init = this.splitter.initPrefix
+    if (!init) throw new Error('WEBM_INIT_PREFIX_MISSING')
+    const payload = composeWebmWithInit(init, cluster.bytes)
+    // ⚠ payload 是刚分配出来的 Uint8Array ⇒ byteOffset=0 且 byteLength==buffer.byteLength
+    //   ⇒ 直接把整个 buffer 交出去即可（不必再拷一份）。
+    const ctx = this.ensureContext()
+    return await ctx.decode(payload.buffer as ArrayBuffer)
   }
 
   /** 停止录音后的整段音频（走 transcribe-full 兜底）。 */

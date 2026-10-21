@@ -16,7 +16,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/halfking/pocket-opencode/backend/internal/background"
 	"github.com/halfking/pocket-opencode/backend/internal/model"
+	"github.com/halfking/pocket-opencode/backend/internal/outbound"
+	"github.com/halfking/pocket-opencode/backend/internal/sizedread"
 )
 
 // DefaultPorts is the ordered list of ports to scan for OpenCode instances.
@@ -154,7 +157,7 @@ type hostPort struct {
 // probeCandidates concurrently probes all candidates and returns configs for
 // those that respond as OpenCode instances.
 func probeCandidates(ctx context.Context, candidates []hostPort) ([]InstanceConfig, error) {
-	client := &http.Client{Timeout: 500 * time.Millisecond}
+	client := outbound.NewClient(500 * time.Millisecond)
 	var (
 		mu      sync.Mutex
 		configs []InstanceConfig
@@ -165,7 +168,7 @@ func probeCandidates(ctx context.Context, candidates []hostPort) ([]InstanceConf
 	for _, c := range candidates {
 		wg.Add(1)
 		sem <- struct{}{}
-		go func(hp hostPort) {
+		background.Go1("registry/probe-candidate", func(hp hostPort) {
 			defer wg.Done()
 			defer func() { <-sem }()
 
@@ -176,7 +179,7 @@ func probeCandidates(ctx context.Context, candidates []hostPort) ([]InstanceConf
 				mu.Unlock()
 				log.Printf("[discovery] found OpenCode instance: %s:%d (%s)", hp.Host, hp.Port, cfg.ID)
 			}
-		}(c)
+		}, c)
 	}
 	wg.Wait()
 
@@ -225,7 +228,7 @@ func probeHealth(ctx context.Context, client *http.Client, host string, port int
 		Capabilities []string          `json:"capabilities"` // 真实能力
 		Machine      model.MachineInfo `json:"machine"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.NewDecoder(sizedread.Limit(resp.Body, sizedread.MaxJSONBodyBytes)).Decode(&result); err != nil {
 		return InstanceConfig{}, false
 	}
 	if !result.Healthy && result.Status != "ok" {

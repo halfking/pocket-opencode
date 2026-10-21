@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/halfking/pocket-opencode/backend/internal/sizedread"
 	"github.com/halfking/pocket-opencode/backend/internal/stt"
 	"github.com/halfking/pocket-opencode/backend/internal/usersetting"
 )
@@ -964,7 +965,7 @@ func readSTTAudio(w http.ResponseWriter, r *http.Request, overrideFromJSON *prob
 			return nil, "", fmt.Errorf("missing 'file' field: %w", err)
 		}
 		defer file.Close()
-		data, err := io.ReadAll(file)
+		data, err := sizedread.All(file, maxAudioBodyBytes)
 		if err != nil {
 			return nil, "", fmt.Errorf("failed to read audio: %w", err)
 		}

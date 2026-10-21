@@ -21,7 +21,8 @@ export async function runDelegatedEmailFetch(opts?: { classify?: boolean }): Pro
   // reject 不能冒泡打断调用方 load() 里后续的 showLocal 刷新。
   let native: { used: boolean; synced: number; newCount: number; classified: number } | null = null
   if (await prepareNative().catch(() => false)) {
-    native = await runNativeEmailFetch().catch(() => null)
+      // 原生拉取失败 ⇒ 退回「仅服务端拉取」这条降级路（理由见上面那段注释）。
+      native = await runNativeEmailFetch().catch(() => null)
   }
   if (native?.used) {
     await pullInboxFromServer()

@@ -15,6 +15,7 @@
 import { resolveRuntimeApiBase as resolveApiBase } from '../config/api-base'
 import { useAuthStore } from '../stores/auth'
 import { ApiError, assertNotHTML, forceReauth } from './http'
+import { fetchWithTimeout } from './fetch-timeout.ts'
 import { buildTasksUrl, type TaskListFilters } from './tasks-url.ts'
 
 /**
@@ -32,7 +33,11 @@ async function authFetch(input: string, init: RequestInit = {}): Promise<Respons
   }
   if (auth.token) headers["Authorization"] = `Bearer ${auth.token}`
   
-  const response = await fetch(input, { ...init, headers })
+  // ⚠§951：这里原先是**裸 fetch** ⇒ 没有任何时间上界 ⇒ 后端不响应就永久挂起。
+  //　 而 authFetch 是任务/会话/实例/网关配置**整个面**的入口（15+ 个模块在用）⇒
+  //　 一挂就是一片「任务页空着、按钮点不动」。
+  // ⇒ 收进唯一的那一层（./fetch-timeout，30s + AbortController + TimeoutError）。
+  const response = await fetchWithTimeout(input, { ...init, headers })
   
   // 非 2xx 响应抛 ApiError（与 http.ts 行为一致）
   if (!response.ok) {

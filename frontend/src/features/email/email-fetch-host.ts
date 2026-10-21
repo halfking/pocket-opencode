@@ -68,5 +68,9 @@ export function startEmailFetchHost(): void {
     void App.addListener('appStateChange', (s: { isActive: boolean }) => {
       if (s.isActive) kick()
     })
-  }).catch(() => {})
+  }).catch((e) => {
+    // 原生插件加载失败 ⇒ 收不到 appStateChange ⇒ 回到前台时不会补拉邮件。
+    // Web 端该插件是空实现（走不到这里），原生端失败即真失效 ⇒ 留痕。
+    console.warn('[email] appStateChange 监听注册失败（回前台不补拉邮件）：', e)
+  })
 }

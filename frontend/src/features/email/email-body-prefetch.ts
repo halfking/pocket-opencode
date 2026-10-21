@@ -98,7 +98,12 @@ export function prefetchEmailBody(id: string, deps: PrefetchDeps): Promise<Prefe
       return { ok: true, body: '', purged: true }
     }
     const body = deps.extract(remote?.body || '')
-    if (body) await deps.writeCache(id, body).catch(() => {})
+    if (body) {
+      await deps.writeCache(id, body).catch(() => {
+        // 写缓存失败（隐私模式 / 配额耗尽）不该阻塞预取：正文这次仍会返回，
+        // 只是下次没有缓存可命中、还要再拉一次 ⇒ 是已知的降级路径，不留痕。
+      })
+    }
     return { ok: true, body, purged: false }
   })()
     .catch((error): PrefetchResult => ({ ok: false, error }))

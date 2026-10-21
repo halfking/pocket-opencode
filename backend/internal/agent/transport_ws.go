@@ -20,6 +20,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"github.com/halfking/pocket-opencode/backend/internal/background"
 )
 
 const maxWSTransportMessageBytes = 1 << 20
@@ -88,7 +90,7 @@ func (t *WSTransport) Start(ctx context.Context) error {
 	recvCtx, cancel := context.WithCancel(context.Background())
 	t.cancelFn = cancel
 	t.wg.Add(1)
-	go t.readLoop(recvCtx)
+	background.Go1("agent/ws-reader", t.readLoop, recvCtx)
 	return nil
 }
 

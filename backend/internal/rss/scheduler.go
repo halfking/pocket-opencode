@@ -6,6 +6,8 @@ import (
 	"log"
 	"sync"
 	"time"
+
+	"github.com/halfking/pocket-opencode/backend/internal/background"
 )
 
 type SchedulerStore interface {
@@ -64,7 +66,7 @@ func (s *Scheduler) Start(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	s.startOnce.Do(func() { s.wg.Add(1); go s.loop(ctx) })
+	s.startOnce.Do(func() { s.wg.Add(1); background.Go1("rss/scheduler-loop", s.loop, ctx) })
 	return nil
 }
 func (s *Scheduler) loop(ctx context.Context) {
@@ -136,14 +138,14 @@ func (s *Scheduler) scanScope(ctx context.Context, sc Scope) {
 	for i := range sources {
 		src := sources[i]
 		s.wg.Add(1)
-		go func() {
+		background.Go("rss/scan-scope", func() {
 			defer s.wg.Done()
 			s.sem <- struct{}{}
 			defer func() { <-s.sem }()
 			if _, e := s.fetcher.RefreshSource(ctx, src, rules); e != nil && !errors.Is(e, context.Canceled) {
 				log.Printf("[rss] refresh %s: %v", src.ID, e)
 			}
-		}()
+		})
 	}
 }
 func (s *Scheduler) Stop() {

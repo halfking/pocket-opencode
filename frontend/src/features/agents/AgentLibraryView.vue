@@ -31,13 +31,17 @@ onMounted(() => {
   // §847：store 会 rethrow，接住它以免变成未处理 rejection。
   // 这里**不是**吞错 —— 失败已被 store 转成 `error.value`，而下面的模板渲染它；
   // 换句话说这是一个「异常转状态」的 catch，不是「静默丢弃」。
-  agentStore.loadAgents().catch(() => {})
+  agentStore.loadAgents().catch(() => {
+    // 失败已由 store 转成 `error.value` 并由下面的模板渲染 ⇒ 这里只接住 rethrow。
+  })
   // 后台探测同步可用性（PG 未启用时静默失败）
   agentStore.checkSyncAvailable()
 })
 
 function retryLoad() {
-  agentStore.loadAgents().catch(() => {})
+  agentStore.loadAgents().catch(() => {
+    // 同上：失败已由 store 转成 `error.value` 并由模板渲染，这里只接住 rethrow。
+  })
 }
 
 // 过滤后的角色列表

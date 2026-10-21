@@ -62,7 +62,11 @@ export const useThemeStore = defineStore('theme', () => {
       // 存不进去也照常生效（本次会话内）
     }
     applyTheme()
-    import('../native/config-sync/prefs').then((m) => m.persistAppPrefs()).catch(() => {})
+    import('../native/config-sync/prefs').then((m) => m.persistAppPrefs()).catch((e) => {
+      // 主题偏好没能落进本地库 ⇒ 本次会话内有效，重启后回到旧值。
+      // 跨设备同步靠的才是这条持久化路径 ⇒ 失败时别处看不到 ⇒ 留痕。
+      console.warn('[theme] 主题偏好未能持久化：', e)
+    })
   }
 
   // 跟随系统模式下监听系统深浅变化（store 为应用级单例，监听随应用存活）

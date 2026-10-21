@@ -53,7 +53,10 @@ onMounted(async () => {
     // rejection **且下面的 form 初始化整段不执行** ⇒ 编辑已有角色时表单全空。
     // catch 之后本函数继续跑完，失败由 `editingAgent` 为空 + handleSave 的
     // 「编辑态却没拿到角色」守卫表达（见 handleSave）。
-    await agentStore.loadAgents().catch(() => {})
+    await agentStore.loadAgents().catch(() => {
+      // 失败已由 store 转成 `agentStore.error`（无本地缓存时）并 rethrow，
+      // 由 handleSave 的「编辑态却没拿到角色」守卫表达 ⇒ 这里只接住 rethrow。
+    })
   }
 
   if (isEditMode.value && editingAgent.value) {

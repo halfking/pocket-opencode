@@ -11,6 +11,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/halfking/pocket-opencode/backend/internal/outbound"
 )
 
 // maxConfigResponseBytes 限制上游配置响应体的读取上限，防止异常上游把内存打爆。
@@ -81,7 +83,7 @@ type OpenCodeConfigHTTPAdapter struct {
 // NewOpenCodeConfigHTTPAdapter 创建配置适配器
 func NewOpenCodeConfigHTTPAdapter(timeoutMS int) *OpenCodeConfigHTTPAdapter {
 	return &OpenCodeConfigHTTPAdapter{
-		client:  &http.Client{},
+		client:  outbound.NewClient(time.Duration(timeoutMS) * time.Millisecond),
 		timeout: time.Duration(timeoutMS) * time.Millisecond,
 	}
 }

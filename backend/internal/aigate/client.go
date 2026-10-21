@@ -18,9 +18,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"time"
+
+	"github.com/halfking/pocket-opencode/backend/internal/outbound"
+	"github.com/halfking/pocket-opencode/backend/internal/sizedread"
 )
 
 // Embedder computes a vector for a text fragment. Stateless: no storage.
@@ -64,8 +66,8 @@ func (e *OpenAIEmbedder) Embed(ctx context.Context, text string) ([]float32, str
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		r, _ := io.ReadAll(resp.Body)
-		return nil, "", fmt.Errorf("embed API %d: %s", resp.StatusCode, string(r))
+		r := sizedread.Snippet(resp.Body, sizedread.MaxErrorBodyBytes)
+		return nil, "", fmt.Errorf("embed API %d: %s", resp.StatusCode, r)
 	}
 
 	var out struct {
@@ -74,7 +76,7 @@ func (e *OpenAIEmbedder) Embed(ctx context.Context, text string) ([]float32, str
 		} `json:"data"`
 		Model string `json:"model"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+	if err := json.NewDecoder(sizedread.Limit(resp.Body, sizedread.MaxJSONBodyBytes)).Decode(&out); err != nil {
 		return nil, "", fmt.Errorf("decode embed response: %w", err)
 	}
 	if len(out.Data) == 0 {
@@ -106,8 +108,8 @@ func (l *OpenAILLM) Chat(ctx context.Context, model string, messages []ChatMessa
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		r, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("llm API %d: %s", resp.StatusCode, string(r))
+		r := sizedread.Snippet(resp.Body, sizedread.MaxErrorBodyBytes)
+		return "", fmt.Errorf("llm API %d: %s", resp.StatusCode, r)
 	}
 
 	var out struct {
@@ -117,7 +119,7 @@ func (l *OpenAILLM) Chat(ctx context.Context, model string, messages []ChatMessa
 			} `json:"message"`
 		} `json:"choices"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+	if err := json.NewDecoder(sizedread.Limit(resp.Body, sizedread.MaxJSONBodyBytes)).Decode(&out); err != nil {
 		return "", fmt.Errorf("decode llm response: %w", err)
 	}
 	if len(out.Choices) == 0 {
@@ -136,7 +138,7 @@ func NewEmbedder(baseURL, apiKey, model string) Embedder {
 	if model == "" {
 		model = "text-embedding-3-small"
 	}
-	return &OpenAIEmbedder{BaseURL: baseURL, APIKey: apiKey, Model: model, Client: &http.Client{Timeout: 30 * time.Second}}
+	return &OpenAIEmbedder{BaseURL: baseURL, APIKey: apiKey, Model: model, Client: outbound.NewClient(30 * time.Second)}
 }
 
 // NewLLM picks a provider by config. Groq is a good default for fast, cheap inference.
@@ -144,5 +146,5 @@ func NewLLM(baseURL, apiKey string) LLMClient {
 	if baseURL == "" {
 		baseURL = "https://api.groq.com/openai/v1"
 	}
-	return &OpenAILLM{BaseURL: baseURL, APIKey: apiKey, Client: &http.Client{Timeout: 60 * time.Second}}
+	return &OpenAILLM{BaseURL: baseURL, APIKey: apiKey, Client: outbound.NewClient(60 * time.Second)}
 }

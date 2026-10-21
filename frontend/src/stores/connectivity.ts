@@ -12,6 +12,7 @@ import { defineStore } from 'pinia'
 import { watch } from 'vue'
 import { useAuthStore } from './auth'
 import { resolveApiBase } from '../config/api-base'
+import { fetchWithTimeout } from '../api/fetch-timeout.ts'
 import { isLobsterReady, lobsterReady } from '../native/lobster-init'
 import { localDB, localDbAsSql } from '../native/local-db'
 import { MobileSyncRuntime, type RuntimeEvent } from '../native/mobileSyncRuntime'
@@ -64,7 +65,10 @@ export const useConnectivityStore = defineStore('connectivity', {
           return { token: auth.token, workspaceId: auth.workspaceId }
         },
         db: () => (isLobsterReady() ? localDbAsSql(localDB) : null),
-        fetchImpl: (...args: Parameters<typeof fetch>) => fetch(...args),
+        // ⚠§951：原先是**裸 fetch 透传** ⇒ 移动端同步的每个请求都没有上界
+        // ⇒ 离线队列会被一条挂死的请求卡住（outbox 永远排不空）。
+        // ⇒ 收进唯一的那一层（../api/fetch-timeout，30s）。
+        fetchImpl: (...args: Parameters<typeof fetch>) => fetchWithTimeout(args[0], args[1]),
         apiBase: resolveApiBase(),
         onEvent: (event) => this.applyRuntimeEvent(event),
       })

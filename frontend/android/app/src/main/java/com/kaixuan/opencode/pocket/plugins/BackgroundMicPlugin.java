@@ -160,7 +160,17 @@ public class BackgroundMicPlugin extends Plugin {
     }
   }
 
-  static void emitPart(int seq, byte[] wav, long startMs, long endMs) {
+  /**
+   * 发一片原生分片。
+   *
+   * ⚠⚠ §956：`startMs/endMs` 是**轮内相对量**（相对本轮的 `captureStart`）
+   *   ⇒ 原生服务每重启一轮（中途切设备）它就从 0 重新开始
+   *   ⇒ 所以**必须**连同 `epochMs`（本轮采集原点的绝对墙钟）一起报
+   *   ⇒ 消费侧（`features/meetings/native-part-timeline.ts`）据此把各轮
+   *     拼回**同一根会话时间轴**。
+   * ⇒ 旧字段 `startMs/endMs` **一字不改**（向后兼容：旧 JS 只看它们）。
+   */
+  static void emitPart(int seq, byte[] wav, long startMs, long endMs, long epochMs) {
     final BackgroundMicPlugin p = instance;
     if (p == null) return;
     final JSObject data = new JSObject();
@@ -169,6 +179,8 @@ public class BackgroundMicPlugin extends Plugin {
     data.put("dataBase64", Base64.encodeToString(wav, Base64.NO_WRAP));
     data.put("startMs", startMs);
     data.put("endMs", endMs);
+    // §956：本轮采集原点（绝对墙钟，毫秒）—— 拼回会话时间轴所需的那一个事实。
+    data.put("epochMs", epochMs);
     // 统一回主线程：worker 线程是连续调用的，投递到同一个 Handler 队列即可保持
     // 先后顺序，同时避免从后台线程碰 UI/桥接状态。
     p.main.post(new Runnable() {

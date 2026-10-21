@@ -36,12 +36,19 @@ function deviceLocaleCandidates(): string[] {
   return out
 }
 
-export function persistAppPrefs(): void {
-  void saveSettingLocalFirst('app_prefs', 'default', currentAppPrefs())
+/**
+ * §948：这两个函数原来返回 `void`（内部 `void saveSettingLocalFirst(...)`），
+ * 于是调用点写 `import(...).then((m) => m.persistAppPrefs()).catch(() => {})` 时，
+ * **那个 catch 根本接不到东西** —— 被丢弃的是 `saveSettingLocalFirst` 内部的
+ * 那个 promise，它的拒绝会变成**未处理 rejection**，而外层的 catch 看着像有保护。
+ * ⇒ 改成把 promise 返回出去：调用点的 catch 这才真的接得住（§948 已把那里改成留痕）。
+ */
+export function persistAppPrefs(): Promise<void> {
+  return saveSettingLocalFirst('app_prefs', 'default', currentAppPrefs())
 }
 
-export function persistChatSettings(settings: unknown): void {
-  void saveSettingLocalFirst('chat_settings', 'default', settings)
+export function persistChatSettings(settings: unknown): Promise<void> {
+  return saveSettingLocalFirst('chat_settings', 'default', settings)
 }
 
 export function persistSelectedInstance(instance: SelectedInstance): void {

@@ -39,7 +39,10 @@ function extFromMime(mime: string, fallback: string): string {
 async function writeRelPath(relPath: string, dataBase64: string): Promise<string> {
   const parent = relPath.slice(0, relPath.lastIndexOf('/'))
   if (Capacitor.isNativePlatform()) {
-    await Filesystem.mkdir({ path: parent, directory: Directory.Data, recursive: true }).catch(() => {})
+    await Filesystem.mkdir({ path: parent, directory: Directory.Data, recursive: true }).catch(() => {
+      // mkdir 失败不致命：紧接着的 writeFile 会自己抛出去（这里没有 catch），
+      // 调用方会拿到这个错误 ⇒ 失败不会消失。
+    })
     await Filesystem.writeFile({ path: relPath, data: dataBase64, directory: Directory.Data })
     const uri = await Filesystem.getUri({ path: relPath, directory: Directory.Data })
     return uri.uri
@@ -169,7 +172,11 @@ export async function readNoteBody(bodyPath: string | null): Promise<string | nu
 export async function deleteNoteFiles(noteId: string, createdAt: number): Promise<void> {
   const dir = noteDir(noteId, createdAt)
   if (Capacitor.isNativePlatform()) {
-    await Filesystem.rmdir({ path: dir, directory: Directory.Data, recursive: true }).catch(() => {})
+    await Filesystem.rmdir({ path: dir, directory: Directory.Data, recursive: true }).catch((e) => {
+      // 删不掉笔记目录 ⇒ 磁盘上留着一份孤儿文件（用户看不到，也不会自动清）。
+      // 没有别处会提示 ⇒ 留痕。
+      console.warn('[note-files] 笔记目录删除失败（磁盘上留下孤儿文件）：', e)
+    })
   }
   await localDB.run('DELETE FROM local_note_files WHERE note_id = ?', [noteId])
 }
@@ -189,7 +196,11 @@ export async function deleteNoteFiles(noteId: string, createdAt: number): Promis
 export async function deleteNoteBodyFile(noteId: string, createdAt: number): Promise<void> {
   const rel = noteFileRelPath(noteDir(noteId, createdAt), 'body')
   if (Capacitor.isNativePlatform()) {
-    await Filesystem.deleteFile({ path: rel, directory: Directory.Data }).catch(() => {})
+    await Filesystem.deleteFile({ path: rel, directory: Directory.Data }).catch((e) => {
+      // 正文文件删不掉 ⇒ 磁盘上留着一份孤儿文件（下次编辑会重新覆盖它）。
+      // 没有别处会提示 ⇒ 留痕。
+      console.warn('[note-files] 笔记正文文件删除失败（磁盘上留下孤儿文件）：', e)
+    })
   }
   // 只清 body 那一类子行；audio 等媒体行留着，播放与回填都依赖它们
   await localDB.run('DELETE FROM local_note_files WHERE note_id = ? AND kind = ?', [noteId, 'body'])

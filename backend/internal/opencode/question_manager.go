@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/halfking/pocket-opencode/backend/internal/adapter"
+	"github.com/halfking/pocket-opencode/backend/internal/background"
 	"github.com/halfking/pocket-opencode/backend/internal/registry"
 	"github.com/halfking/pocket-opencode/backend/internal/task"
 )
@@ -131,7 +132,7 @@ func (m *QuestionManager) startEventDriven(ctx context.Context) {
 		if inst.Health != "healthy" {
 			continue
 		}
-		go m.subscribeInstanceEvents(ctx, inst.ID)
+		background.Go2("opencode/question-events", m.subscribeInstanceEvents, ctx, inst.ID)
 	}
 
 	// 保留低频轮询作为兜底（30秒间隔）
@@ -495,7 +496,7 @@ func (m *QuestionManager) pollAllInstances(ctx context.Context) {
 		if inst.Health != "healthy" {
 			continue
 		}
-		go m.pollInstance(ctx, inst.ID)
+		background.Go2("opencode/question-poll", m.pollInstance, ctx, inst.ID)
 	}
 }
 

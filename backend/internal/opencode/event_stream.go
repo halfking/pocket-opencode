@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/halfking/pocket-opencode/backend/internal/adapter"
+	"github.com/halfking/pocket-opencode/backend/internal/background"
 	"github.com/halfking/pocket-opencode/backend/internal/registry"
 )
 
@@ -125,13 +126,13 @@ func (m *EventStreamManager) Subscribe(ctx context.Context, opts SubscribeOption
 	cleanup := func() {
 		stream.removeSubscriber(sub.id)
 	}
-	go func() {
+	background.Go("opencode/event-stream", func() {
 		select {
 		case <-ctx.Done():
 			cleanup()
 		case <-m.closeCh:
 		}
-	}()
+	})
 
 	return sub.ch, cleanup, nil
 }
@@ -225,7 +226,7 @@ func (m *EventStreamManager) getOrCreateStream(ctx context.Context, opts Subscri
 	}
 
 	m.streams[key] = stream
-	go m.runUpstreamLoop(stream)
+	background.Go1("opencode/upstream-loop", m.runUpstreamLoop, stream)
 
 	return stream, nil
 }

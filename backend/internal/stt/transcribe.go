@@ -23,6 +23,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/halfking/pocket-opencode/backend/internal/outbound"
 )
 
 // Scope 是一次转写请求的用户/工作区作用域。
@@ -53,7 +55,7 @@ func NewTranscriber(apiKey, model, baseURL string) *Transcriber {
 	if baseURL == "" {
 		baseURL = "https://api.groq.com/openai/v1"
 	}
-	t := &Transcriber{client: &http.Client{Timeout: 120 * time.Second}, timeout: 120 * time.Second}
+	t := &Transcriber{client: outbound.NewClient(120 * time.Second), timeout: 120 * time.Second}
 	if strings.TrimSpace(apiKey) == "" {
 		// 无 key：解析器直接报错，保持既有 502 契约。
 		t.resolve = func(context.Context, Scope) (*Target, error) {
@@ -72,7 +74,7 @@ func NewTranscriber(apiKey, model, baseURL string) *Transcriber {
 
 // NewResolver 构造按请求解析目标的转写器。
 func NewResolver(r Resolver) *Transcriber {
-	return &Transcriber{resolve: r, client: &http.Client{Timeout: 120 * time.Second}, timeout: 120 * time.Second}
+	return &Transcriber{resolve: r, client: outbound.NewClient(120 * time.Second), timeout: 120 * time.Second}
 }
 
 // SetHTTPClient 供测试注入。

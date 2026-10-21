@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/halfking/pocket-opencode/backend/internal/background"
 	"github.com/halfking/pocket-opencode/backend/internal/kxmemory"
 )
 
@@ -212,7 +213,7 @@ func (s *Scheduler) startPipelineLoop(ctx context.Context) {
 		hour := s.pipelineHour
 		s.startMu.Unlock()
 		log.Printf("[email/scheduler] daily pipeline runner injected (hour=%d)", hour)
-		go s.pipelineLoop(ctx)
+		background.Go1("email/pipeline-loop", s.pipelineLoop, ctx)
 	})
 }
 
@@ -247,17 +248,17 @@ func (s *Scheduler) Start(ctx context.Context) {
 	// whose tick() would be a no-op. The other loops already gate themselves on
 	// their own optional deps.
 	if s.fetcher != nil {
-		go s.pollLoop(ctx)
+		background.Go1("email/poll-loop", s.pollLoop, ctx)
 	}
-	go s.dailySummaryLoop(ctx)
+	background.Go1("email/daily-summary-loop", s.dailySummaryLoop, ctx)
 	if s.vacationSender != nil {
-		go s.vacationLoop(ctx)
+		background.Go1("email/vacation-loop", s.vacationLoop, ctx)
 	}
 	if s.intentExecutor != nil {
-		go s.intentLoop(ctx)
+		background.Go1("email/intent-loop", s.intentLoop, ctx)
 	}
 	if s.refresher != nil {
-		go s.refreshLoop(ctx)
+		background.Go1("email/refresh-loop", s.refreshLoop, ctx)
 	}
 	if s.pipelineRunner != nil && s.pipelineHour >= 0 {
 		s.startPipelineLoop(ctx)
@@ -696,10 +697,14 @@ func (s *Scheduler) tick(ctx context.Context) {
 		}
 		userID := a.UserID
 		wsID := defaultWorkspace(a.WorkspaceID)
-		go func() {
+		background.Go("email/scheduler-account-sync", func() {
 			// 这是个裸 goroutine，panic 会直接带走整个进程。IMAP 解析在
 			// go-imap 里有多处 panic 路径（例如 NumSetKind 对非法 NumSet 直接
 			// panic），一个账户的异常不该让后端整体崩掉，所以在这里兜住。
+			//
+			// §949：这层 recover 负责**说清是哪个账户**；外层 background.Go
+			// 是**最后一道网**（panic 若发生在本 defer 之外，例如这条日志
+			// 自己炸了，仍不至于带走整个进程）。
 			defer func() {
 				if r := recover(); r != nil {
 					log.Printf("[email/scheduler] sync %s panicked: %v", accountID, r)
@@ -744,7 +749,7 @@ func (s *Scheduler) tick(ctx context.Context) {
 			if _, cerr := ClassifyUnclassified(ctx, s.store, s.kxmem, userID, wsID, 20); cerr != nil {
 				log.Printf("[email/scheduler] classify %s: %v", accountID, cerr)
 			}
-		}()
+		})
 	}
 }
 

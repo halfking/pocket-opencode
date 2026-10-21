@@ -353,7 +353,11 @@ const emailRows = computed<HubRow[]>(() =>
     urgent: false,
     important: e.importance === 'high',
     to: `/email/${encodeURIComponent(e.id)}`,
-    onOpen: () => (e.isRead ? Promise.resolve() : markEmailRead(e.id, true).catch(() => {})),
+    onOpen: () => (e.isRead ? Promise.resolve() : markEmailRead(e.id, true).catch((err) => {
+      // 已读标记没能写回本地库 ⇒ 这封邮件下次仍显示未读。
+      // 行内已乐观置过状态 ⇒ 界面上看不出差别 ⇒ 留痕。
+      console.warn('[messages] 邮件已读标记未能写回本地库：', err)
+    })),
   })),
 )
 
@@ -373,7 +377,11 @@ const rssRows = computed<HubRow[]>(() =>
     // 塞进 f(i)，因为它是**产品决定**（多高才算值得打断用户）。
     important: it.relevance >= 0.8,
     to: `/rss/items/${encodeURIComponent(it.id)}`,
-    onOpen: () => (it.status === 'unread' ? rssApi.markRead(it.id).catch(() => {}) : Promise.resolve()),
+    onOpen: () => (it.status === 'unread' ? rssApi.markRead(it.id).catch((e) => {
+      // 服务端已读回写失败 ⇒ 下次拉列表这一条又变回未读。
+      // 没有别处会提示 ⇒ 留痕。
+      console.warn('[messages] RSS 已读回写失败：', e)
+    }) : Promise.resolve()),
   })),
 )
 
@@ -396,7 +404,11 @@ const taskRows = computed<HubRow[]>(() =>
       // 先本地置已读：否则等服务端往返的这几百毫秒里，这一行仍显示未读，
       // 用户会以为点了没反应。
       n.read_at = Math.floor(Date.now() / 1000)
-      await notifications.markRead(n.id).catch(() => {})
+      await notifications.markRead(n.id).catch((e) => {
+        // 服务端已读回写失败 ⇒ 下一次拉收件箱这一条又变回未读。
+        // 本地已乐观置位 ⇒ 界面上看不出差别 ⇒ 留痕。
+        console.warn('[messages] 通知已读回写失败：', e)
+      })
     },
   })),
 )

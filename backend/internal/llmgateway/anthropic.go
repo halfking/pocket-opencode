@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/halfking/pocket-opencode/backend/internal/sizedread"
 	"io"
 	"log"
 	"net/http"
@@ -243,7 +244,7 @@ func (c *Client) chatViaMessages(ctx context.Context, req ChatRequest) (*ChatRes
 		return nil, fmt.Errorf("llm-gateway anthropic messages %d: %s", resp.StatusCode, string(r))
 	}
 	var out anthropicResponse
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+	if err := json.NewDecoder(sizedread.Limit(resp.Body, sizedread.MaxJSONBodyBytes)).Decode(&out); err != nil {
 		return nil, fmt.Errorf("decode anthropic response: %w", err)
 	}
 	if out.Error != nil {
