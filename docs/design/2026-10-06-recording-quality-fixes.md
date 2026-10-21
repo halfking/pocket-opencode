@@ -112617,3 +112617,286 @@ Go 的 `net/http` 里，「请求没有时间上界」有**三种**卡法（都�
    ⇒⇒⇒ ⇒ 要不要加一条「**出站请求超过 N 秒 ⇒ WARN 日志**」？
    ⇒⇒⇒ ⇒ 这正是上面「真实发生率未实测」的**唯一解法** ——
    ⇒⇒⇒ ⇒ 没有它，本节只能证明「结构上不会再挂死」，**证明不了「现在没在挂死」**。
+
+---
+
+## §951 等一个不会自己结束的东西，必须自带 deadline：后端 SMTP + 前端 fetch
+
+### §951.1 为什么查这条（**§950 的另一半，只补两族**）
+
+§950 收的是「出站 **HTTP** 必须有上界」⇒⇒⇒ 它**只**管了 HTTP 那一族。
+⇒⇒⇒ 而「等一个不会自己结束的东西」还有两族**没被任何卡口管着**：
+
+① **后端 SMTP**（`backend/internal/notify/smtp.go`）
+② **前端 fetch**（`frontend/src/**` 里绕过统一超时层的那些）
+
+⇒⇒⇒ 两族的**共同病根**是同一句话：
+
+> **「有 ctx」不等于「有上界」。**
+
+- 后端 SMTP：`net/smtp` **没有 context 支持** ⇒ `conn.Auth(...)` / `conn.Mail(...)` /
+  `conn.Data()` 这些调用**阻塞在 socket 读上** ⇒ **ctx 取消管不到它们**
+  ⇒⇒⇒ 上界**只能**落在 `conn.SetDeadline(...)` 上。
+- 前端 fetch：`await fetch(...)` 在对端不响应时**永久挂起** ⇒ 状态机类交互会被击穿
+  （`api/http.ts` 的头注释自己写着这个病：录音 `stop()` 的 phase 永不归位
+  ⇒ 录音按钮失灵）。
+
+⇒⇒⇒ ⚠ 与属主那条「会议时长要无限长、只取决于存储大小」的关系，同 §950：
+「时长只取决于存储」的前提是**每一段都能走完**
+⇒⇒⇒ 一个永远走不完的 SMTP 发送 / fetch ⇒ 那一路**永远卡住**。
+
+### §951.2 实测数字（**不是推理**）
+
+**后端**（`go/parser` 走 AST，排除 `third_party/`、`testdata/`、`*_test.go`）：
+
+| 形态 | 处数 | 说明 |
+|---|---|---|
+| `smtp.Dial(` | **2** | `internal/notify/smtp.go` —— `net.Dial` **没有 Timeout** |
+| `tls.Dial(` | **1** | 同上（465 直连 TLS 那条） |
+| 裸 `net.Dial(` | **0** | 其它 13 处拨号都已走 `net.Dialer{Timeout: …}` |
+| `net.Dialer{…}` 字面量 | **14** | 其中 **13** 带 `Timeout:`、**1** 没有（`internal/server/ssrf.go`，上界由客户端 Timeout 提供 ⇒ 登记在册） |
+| `smtp.NewClient(` 调用点 | **7** | 分布在 3 个函数（notify 3 / smtp_probe 2 / smtp_send 2） |
+
+⇒⇒⇒ ⇒ **变更前** `internal/notify/smtp.go` 是仓里**唯一**用 `smtp.Dial` / `tls.Dial` 的地方
+⇒⇒⇒ ⇒ 也是**唯一**一个「建连之后全程没有 deadline」的 SMTP 入口。
+
+**前端**（TypeScript 解析器走 AST，非测试代码）：
+
+| 形态 | 处数 | 说明 |
+|---|---|---|
+| fetch 族调用点（修复后） | **10** | 判据枚举的结果（直接 fetch / `X.fetch` / 注入缝 / 绑定形态） |
+| ├ 自证有界（本地 `AbortController` + `setTimeout→abort`） | **4** | `api/fetch-timeout.ts` / `localagent/tools` / `email-image-preload` / `wikipedia-search` |
+| ├ 走唯一那层（`fetchWithTimeout`） | **2** | `config/api-base.ts` 的 `probeHealthz`（两处调用点） |
+| ├ **L1**（没有 signal ⇒ 登记在册） | **3** | 两个 blob: URL + 一个注入缝 |
+| └ **L2**（signal 来自调用方 ⇒ 登记在册） | **1** | `api/llm-bff.ts` 的 SSE |
+
+⚠⚠⚠ **量具踩了四个坑**（都写进判据头注释）：
+
+① **grep 只看到「调用形态」**（★ 本批最值钱的一条）：`utils/version.ts` 的
+   `prefetchApk` 里那处裸 fetch 形态是 **`opts.fetchImpl ?? fetch`** ——
+   它**不是**一次调用 ⇒ 任何按「`fetch(`」字面扫的普查都**看不见它**
+   ⇒ ⇒⇒ ★ **普查要认「绑定形态」**（`const g = fetch` / 形参默认值 / `??` 分支 /
+   **传递绑定** `const a = fetch; const b = a`）⇒ 那处被 AST 判据翻出来并修掉了。
+② **对象字面量的字段要认全两种形态**：`{ signal: x }` 与 **`{ signal }`（简写）**
+   —— 简写**不是** `PropertyAssignment` ⇒ 只认后者会漏掉一整族
+   ⇒ 而那一族恰好是 SSE 站点用的写法。
+③ **包装函数不是 fetch**：`const doFetch = async () => fetch(...)` 里
+   `doFetch` 是**包装** ⇒ 若把函数体里的 `fetch` 也算进绑定 ⇒
+   `doFetch()` 这个**包装调用**会被误判成一个 fetch 站点（实测多出 2 个假命中）。
+④ **作用域栈必须还原**：`const onCallerAbort = () => …` 之后的兄弟节点
+   若不还原作用域 ⇒ 会被记成 `onCallerAbort` ⇒ 台账键对不上。
+
+### §951.3 处置（一）：后端 —— 照仓里**已有的正确先例**改
+
+⚠ **同一个仓里早就有正确写法**（§951 靠它定位，而不是靠推理）：
+`internal/server/smtp_send.go` 与 `internal/server/smtp_probe.go` 都是
+「`net.Dialer{Timeout}` 管建连 + `conn.SetDeadline(绝对上界)` 管会话」
+⇒⇒⇒ ⇒ `internal/notify/smtp.go` 是**同族里唯一漏掉的那个**。
+
+改动（`backend/internal/notify/smtp.go`）：
+
+| 位置 | 变更 |
+|---|---|
+| `smtp.Dial(addr)` ×2 / `tls.Dial(...)` ×1 | ⇒ **自己拨号**：`dialer.DialContext(ctx, …)`（`net.Dialer{Timeout: 10s}`） |
+| 建连之后 | ⇒ **一个绝对 deadline**：`conn.SetDeadline(deadline)`，盖住 banner / EHLO / STARTTLS / AUTH / MAIL / RCPT / DATA / **QUIT** |
+| `tls` 分支 | ⇒ `tls.Client(conn, cfg)` + **显式 `Handshake()`**（握手也落在那个 deadline 里） |
+| 预算的算法 | ⇒ 新增 `newSMTPBudget(ctx)`：**ctx 的 deadline 更早时取更早的那个**；ctx 没有 deadline 时回落到 `smtpSessionTimeout`（30s）⇒ **上界不依赖调用方是否给 deadline** |
+
+⚠ **一个必须照抄的细节**：`net/smtp` 的 `smtp.Dial` 内部是
+`host, _, _ := net.SplitHostPort(addr)` 再 `NewClient(conn, host)`
+⇒⇒⇒ ⇒ 若图省事直接传 `addr`（含 `":587"`），
+**`smtp.PlainAuth` 的 host 校验（`server.Name != a.host`）会每次都失败**
+⇒ 本次实现照抄了 `SplitHostPort`（并把它写进注释钉住）。
+
+⚠ **一个必须注意的并发点**：预算在**调用方 goroutine** 里算好再传下去，
+而不是在拨号 goroutine 里读那两个 `var`
+⇒⇒⇒ ⇒ 否则测试把 `var` 改短/改回时，后台 goroutine 可能正在读它
+⇒⇒⇒ ⇒ `-race` 直接报数据竞争（本仓 `smtp_probe_test.go` 那种「改 var」的写法
+再叠一层后台 goroutine 就会踩到）。
+
+⚠ **连带修正**：§945 的 `swallowed_call_test.go` 台账里
+`backend/internal/notify/smtp.go ::Close` 由 **2** 改成 **7**
+（那 5 条新出现的 `_ = conn.Close()` 都是**放弃一条正在出错的连接**）
+⇒ 总处数 86 → 91。**这不是「放宽判据」，是台账如实跟着代码走。**
+
+### §951.4 处置（二）：前端 —— 收进**一个**零依赖的原语
+
+新建 `frontend/src/api/fetch-timeout.ts`：
+`DEFAULT_TIMEOUT_MS = 30_000` + `AbortController` + `TimeoutError` + `fetchWithTimeout()`。
+
+⚠ **为什么单独成文件、且零 import**：
+① **零依赖 ⇒ 任何模块都能 import 而不会绕成环**（前端的 import 图不是树：
+   `api/http.ts` → `../stores/auth` → `../api/auth` → `./http`
+   ⇒ `api/llm-buff.ts` 正是因为这个才自己写了一份局部 `http`）；
+② 它是**唯一**该直接触碰全局 `fetch` 的地方 ⇒ 判据只要盯住这一个文件
+   ⇒（§950 的同款口径：「兜底放在唯一的构造口 ⇒ 漏判只可能发生一次」）。
+
+改掉的 **8 处**真缺陷：
+
+| # | 位置 | 症状 |
+|---|---|---|
+| F1 | `api/client.ts` 的 `authFetch` | **15+ 个模块**在用（任务/会话/实例/网关配置）⇒ 一挂就是一片「任务页空着、按钮点不动」 |
+| F2 | `api/email.ts` 的发票 `file` 下载 | 几百 KB 的 blob，无上界 |
+| F3 | `api/email.ts` 的发票 `thumb` 下载 | 同上 |
+| F4 | `api/email.ts` 的发票 `export` 下载 | 整批发票的网格 PDF |
+| F5 | `api/llm-buff.ts` 的局部 `http` | 用量/配额查询 |
+| F6 | `utils/version.ts` 的 `checkUpdate` | **冷启动**路径（UpdateChecker 在 onMounted 就弹模态框） |
+| F7 | `config/api-base.ts` 的 `probeHealthz` 默认实现 | 设置页「测试连接」永远转圈 |
+| F8 | `stores/connectivity.ts` 的 `fetchImpl` 透传 | 移动端同步 ⇒ 离线队列被一条挂死的请求卡住（outbox 永远排不空） |
+| **F9** | `utils/version.ts` 的 `prefetchApk` | **由本节的 AST 判据翻出来的**（形态是 `opts.fetchImpl ?? fetch` ⇒ grep 找不到）⇒ APK 预下载（最多 64 MiB）无上界 |
+
+⚠ **F9 的超时取 5 分钟**（`APK_PREFETCH_TIMEOUT_MS = 300_000`）而不是默认的 30s：
+这一路最多下 **64 MiB** ⇒ 移动网络上 30s 远远不够 ⇒ 用默认档会把「网络慢」
+误判成「下载失败」⇒ 预下载功能形同虚设。
+⇒⇒⇒ ⇒ 但它**必须有界**（原先是裸 fetch）⇒ 取 5 分钟：比合理耗时 generous，
+但**有限** ⇒ 「永远下不完」被掐断 ⇒ 超时后只是拿不到预下载
+（用户仍可正常走「下载并安装」）⇒ **失败是可降级的**。
+
+⚠ **`api/http.ts` 的语义逐字保持**：`TimeoutError` 的类**搬**到新文件，
+`http.ts` **再导出** ⇒ `features/email/use-email-inbox.ts` 的 `instanceof` 判定
+仍然是**同一个类对象**；超时提示文案（「请求超时（30s）：/api/xxx」）也逐字不变。
+
+### §951.5 判据（后端 6 条 + 前端 5 条）+ 变异（**第二十批**）
+
+**后端**（`backend/internal/repohygiene/smtp_deadline_test.go`，**不需要 PG**）：
+
+① 不许 `smtp.Dial(` / `tls.Dial(` / 裸 `net.Dial(`（三个 stdlib 的**无拨号超时**口子）
+② 不许点导入（会让扫描器**整族失明** ⇒ 比没门更糟）
+③ 每个 `net.Dialer{…}` 必须带 `Timeout:`（`Timeout: 0` 也算违规）
+   —— 例外 **1 条**登记在册（`internal/server/ssrf.go`：上界由客户端 Timeout 提供）
+④ 台账**双向相等** + 绝对条数 **1**，每条必须写「上界由谁提供」
+⑤ 每个 `smtp.NewClient(` 所在函数必须有一个 `SetDeadline(`
+   —— ⚠ **没有它，SMTP 会话阶段就是无上界等待**（这正是 §951 修掉的那处）
+⑥ **自证臂** 7 个合成用例（含「注释里写 `net.Dialer{Timeout}` 不算违规」
+   与「`Timeout:` 写在下一行照样认得」两个**逐行 grep 的老坑**）
+
+⇒⇒⇒ ⇒ **不变式的完整推导**：① ⇒ 每个出站 TCP 拨号都有上界；
+③+④ ⇒ 例外只有一条且写明了上界来源；
+⑤ ⇒ 每个 SMTP 会话都有 socket deadline
+⇒⇒⇒ ⇒ **每一个「等一个不会自己结束的东西」都有上界**。
+
+**前端**（`frontend/scripts/check-fetch-bounds.mjs`，
+⚠ **不能**新增 `src/**/*.test.mjs` ⇒ `npm run test:all` 的 argv 上限**只剩 30 字符**
+⇒ ⇒⇒ ⇒ 门禁必须走 `scripts/check-*.mjs`）：
+
+① 枚举**全部** fetch 族调用点（直接 fetch / `X.fetch` / **注入缝** / **绑定形态**）
+② 每个站点必须落在「自证有界」/「走唯一那层」/「登记在册」三类之一
+③ **L1 台账**（没有 signal）**双向相等** + 绝对条数 **3**
+④ **L2 台账**（signal 来自调用方）**双向相等** + 绝对条数 **1**
+⑤ **自证臂** 8 个合成用例（含简写形态 / 传递绑定 / 包装函数不误判 / 注释不算）
+
+⇒⇒⇒ ⇒ **不变式的完整推导**：①+② ⇒ 每个 fetch 站点都被归类；
+「自证有界」要求**同一个函数**里有 `new AbortController` + 一个会 `abort()` 它的
+`setTimeout` ⇒ 是**真的**有界；「走唯一那层」由 `api/fetch-timeout.ts` 的
+**自证**兜住（它自己必须自证有界）⇒ ⇒⇒ ⇒ **每个出站 fetch 都至少有一个上界**。
+
+⚠ **已知边界（如实登记）**：
+- 前端判据**不解析跨模块绑定**（只做文件内的局部绑定解析）⇒
+  「某个模块导出的东西其实是个 fetch」看不见
+  ⇒ 实测该形态在仓里**不存在**（唯一的跨模块 fetch 绑定是它自己认的 `fetchWithTimeout`）。
+- 前端判据**不扫 `.vue` 模板**（只扫 `<script>` 块）⇒ 实测非测试 `.vue` 里 0 处 fetch。
+- 后端判据 ⑤ 是「**同一个函数**里有 SetDeadline」⇒ 它**不区分**这个 deadline
+  是设在**哪条**连接上的 ⇒ 当前三个 SMTP 入口各自只有一条连接 ⇒ 等价；
+  将来一个函数里若有两条连接，这条判据会**变宽**。
+
+**变异**：`scripts/mutations/s951.py`（第二十批，接进 `run_all.py`）
+⇒ 实测 **28/28**（24 条用例：M1–M13 + F1–F6 + N1–N5，加 4 条收尾自证；
+**不需要 PG**）。
+
+⚠⭐ **本批最值钱的一条是 F4**（不是 M10–M13 的「打坏量具」）：
+它把 `prefetchApk` 改回 `opts.fetchImpl ?? fetch`
+⇒⇒⇒ ⇒ **判据抓到了，而 grep 抓不到** ⇒ ⇒⇒ ⇒ ★ **普查要认「绑定形态」**。
+⚠⭐ **M1 是「上界算错」而不是「上界没有」**：
+把 deadline 算成**过去时刻** ⇒ 请求「立刻」失败 ⇒ 恰恰因为它**没有挂住**，
+只钉「不许挂住」的那条断言会**照样绿** ⇒ ⇒⇒ ⇒ ★ **时间上界的断言要双边**
+（既不许太慢，也不许太快）。
+⚠⭐ **F6 是「量具漏掉一整族写法」**：`{ signal }`（简写）不是 `PropertyAssignment`
+⇒ 只认后者会漏掉一整族 ⇒ ⇒⇒ ⇒ ★ **对象字面量的字段要认全两种形态**。
+
+### §951.6 两本台账（前端 L1 3 条 + L2 1 条；后端例外 1 条）
+
+**前端 L1（没有 signal ⇒ 登记在册）**：
+
+| 键 | 上界由谁提供 |
+|---|---|
+| `src/native/meeting-audio.ts#blobUrlToBase64` | **blob: URL** —— `createObjectURL` 出来的本地内存对象，不是网络请求 ⇒ 没有「等一个不会自己结束的东西」这回事（真要加 30s 反而是错的：录音 blob 可能有几百 MB） |
+| `src/features/meetings/meeting-final-transcript.ts#refetchFullTranscript` | 同族（`loadMeetingAudio` 返回的也是 `createObjectURL` 的结果） |
+| `src/native/mobileSyncRuntime.ts#createRuntimeFetch` | **注入缝** —— 生产实现由 `stores/connectivity.ts` 提供 = `fetchWithTimeout`（30s）⇒ ⚠ 判据**证明不了**这一点（deps 的生产绑定在另一个文件里）⇒ 登记在册，由人签字 |
+
+**前端 L2（signal 来自调用方 ⇒ 上界在调用方）**：
+
+| 键 | 上界由谁提供 |
+|---|---|
+| `src/api/llm-bff.ts#doFetch` | **SSE 长连接**（`/api/llm/stream`）—— 这条流**天生**没有固定长度 ⇒ 上界由调用方的 abort signal 提供（`aiStreamRuntime.spawnChat` 建的 controller）⇒ 与后端 `outbound.NewStreamingClient` 的 SSE 例外口**同构** |
+
+**后端（无 `Dialer.Timeout` 的例外）**：
+
+| 键 | 上界由谁提供 |
+|---|---|
+| `backend/internal/server/ssrf.go#safeOutboundHTTPClient` | 拨号本身没有 `Dialer.Timeout`；上界由 `outbound.NewClient(10s)` 的**客户端 Timeout** 提供 —— `http.Client.Timeout` 会给请求 ctx 设一个 deadline，而 Transport 的 `DialContext` 拿到的就是那个 ctx ⇒ 拨号被同一个上界掐断 |
+
+### §951.7 连带修正（本节**自己**踩的坑，当场修掉）
+
+① **判据自己有两个 bug，被自证臂当场抓住**：
+   ① 简写形态 `{ signal }` 没认（⇒ SSE 站点从 L2 掉进 L1）；
+   ② 标识符→标识符的**传递绑定**没认（`const a = fetch; const b = a`）。
+   ⇒ ⇒⇒ ⇒ ★ **自证臂的价值不在「证明量具能抓」，在「证明量具能认全形态」**
+   —— 这两条都是**自证臂红了才修的**，而它们红的原因恰恰是「量具漏了一族」。
+② **量具把包装函数误判成 fetch**（`const doFetch = async () => fetch(...)`）
+   ⇒ ⇒⇒ ⇒ ★ **绑定解析要区分「这个标识符是个 fetch」与「这个标识符包着一个 fetch」**。
+③ **作用域栈没还原** ⇒ 台账键对不上 ⇒ ⇒⇒ ⇒ ★ **作用域栈必须 push/pop 配对**。
+④ **前端 import 必须带 `.ts` 扩展名**（node 的 `--experimental-strip-types`）
+   ⇒ ⇒⇒ ⇒ 首版 7 处新 import 漏了扩展名 ⇒ **3 个测试文件当场加载失败**
+   （`api-base.test.ts` / `app-version-identity.test.mjs` / `server-select-logic.test.mjs`）
+   ⇒ ⇒⇒ ⇒ ★ **新增 import 时先确认这条规则**（仓里已有一半带、一半不带 ⇒ 容易看错）。
+⑤ **后端台账联动**：§945 的 `swallowed_call_test.go` 的 `Close` 条数 2 → 7、
+   总处数 86 → 91（**如实跟着代码走**，不是放宽判据）。
+⑥ **前端判据必须落成 `scripts/check-*.mjs` 而不是测试文件**：
+   `npm run test:all` 的 argv 上限是 **20000**，当前 **19970**（375 个测试文件）
+   ⇒ ⇒⇒ ⇒ **只剩 30 字符** ⇒ 新增一个测试文件就会把 `test:all` 顶爆（退出码 2）
+   ⇒ ⇒⇒ ⇒ ★ **前端加判据前先量 argv 余量**。
+⑦ **变异脚本自己踩了两个坑，当场修掉**（第一版跑挂了 10 分钟才发现）：
+   ① **变异必须先确认「改完还能编译」**：M8 第一版写成
+      `if err := error(nil); err != nil {` ⇒ `conn` 变成**未使用** ⇒ **编译失败**
+      ⇒ ⇒⇒ ⇒ 门是「**编译错**」红，不是「**判据**」红 ⇒ `must_contain` 的锚点
+      根本不会出现 ⇒ ⇒⇒ ⇒ ★ **变异红得「对」比红得「快」重要**。
+   ② **变异要挑「不会挂住」的那条断言当观察口**：M3 把 deadline 掏成零值
+      ⇒ `SetDeadline(零值)` = **没有 deadline** ⇒ 那台「一句话不说」的服务器会把
+      行为断言**挂住** ⇒ 批次卡到 Go 的 10 分钟测试超时
+      ⇒ ⇒⇒ ⇒ 改成只跑**纯函数**的那两条**预算**断言（它们不碰网络）
+      ⇒ ⇒⇒ ⇒ ★ **观察口要选「失败得快、且失败原因正确」的那条**。
+⑧ **改了一本台账 ⇒ 别的批次的变异锚点会过期**：
+   §951 把 §945 台账里 `notify/smtp.go ::Close` 由 **2** 改成 **7**
+   ⇒ ⇒⇒ ⇒ `scripts/mutations/s945.py` 的 M6 锚点（它按旧条数写死）就**过期**了
+   ⇒ ⇒⇒ ⇒ 全量批次跑出来是「**s945.py 拒绝跑**（缺依赖，不算通过）」
+   ⇒ ⇒⇒ ⇒ ★ **「拒绝跑」不是「通过」** —— `run_all.py` 刻意把「拒绝」与「失败」
+   分成两类并单独报出来 ⇒⇒⇒ ⇒ 若只看出「非 0 退出」，就会把「拒绝跑」当成
+   「这批坏了」⇒⇒⇒ ⇒ ⇒ 修法：锚点跟着台账一起改（2 → 7）⇒ 该批 **18/18** 通过。
+
+### §951.8 ⛔ 未实测 / 要你定
+
+**⛔ 未实测**：
+
+· **真机**（Android/iOS）上「设置页测试连接 ⇒ 后端不响应」的**实际后果**
+  （用户看到什么、多久能重试）⇒ 需真机 + 一个不响应的后端。
+· **生产**环境里「邮件通知真的挂死过吗」的**真实发生率**
+  （本节只做了结构面的普查，**没有一条真实发生率数据**）
+  ⇒ 「`internal/notify/smtp.go` 这条路真的被卡住过吗」**未实测**。
+· **APK 预下载 5 分钟上界**在真机慢速网络下的**真实耗时分布**
+  （最多 64 MiB ⇒ 5 分钟到底够不够）⇒ **没有实测数据**。
+· **前端 8 处 fetch 收进超时层之后**，真实网络抖动下用户看到的**错误文案**
+  （原先是「永远转圈」，现在会变成「请求超时（30s）：…」）⇒ **未实测**。
+· **SMTP 会话 30s 上界**在真实 SMTP 服务商（尤其是灰名单/延迟应答的）下的
+  **真实耗时分布** ⇒ **没有实测数据**。
+
+**要你定（三件，登记进简报第 175 条，不代拍）**：
+
+① **SMTP 会话上界取 30s**：真实 SMTP 服务商在灰名单（greylisting）期间
+   常常**故意延迟**几秒到几十秒才回 250 ⇒⇒⇒ ⇒ 30s 够不够？
+   ⇒⇒⇒ （⇒ 这是**行为变更**；本节按「仓里已有先例 `smtpProbeTimeout = 20s`」
+   ⇒⇒⇒ ⇒ 取了 30s（比探测宽一档，因为真实发送比探测重），但**档位是产品口径**，不代拍。）
+② **APK 预下载上界取 5 分钟**：够不够？⇒⇒⇒ ⇒ 要不要按**包大小**动态算
+   （例如按 `MAX_PREFETCH_BYTES` 折算带宽）？⇒⇒⇒ （⇒ 这是**新增机制**。）
+③ **前端 `authFetch` 的 30s**：任务/会话/实例**整个面**都吃这个默认值
+   ⇒⇒⇒ ⇒ 有没有哪条接口的真实耗时**超过 30s**（⇒ 例如导出类）？
+   ⇒⇒⇒ ⇒ 要不要给它单独一档？⇒⇒⇒ （⇒ 「哪条接口慢」需要**实测数据**。）

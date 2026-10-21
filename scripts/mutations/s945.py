@@ -129,8 +129,11 @@ M5_NEW = '\tif err := s.validateMobileApproval(r, body.InstanceID, body.SessionI
 # M6：台账里登记一个**持久化写** ⇒ 「台账里不许有持久化写」那条必须红
 #   ⇒ ⇒⇒ ⇒ 这是本卡口的**牙**：光有「双向相等」不够，否则「登记一下就
 #   ⇒ ⇒⇒ ⇒ 放过」这条路是通的。
-M6_OLD = '\t{"backend/internal/notify/smtp.go", "Close", 2},\n'
-M6_NEW = '\t{"backend/internal/notify/smtp.go", "UpdateStatus", 2},\n'
+# ⚠§951 连带修正：§951 把 internal/notify/smtp.go 的 SMTP 拨号改成了
+#   「自己拨号 + 每一个错误分支都显式关连接」⇒ 那一条台账的条数由 **2** 变成 **7**
+#   ⇒ ⇒⇒ ⇒ 锚点必须跟着走（否则本批会「锚点出现 0 次 ⇒ 锚点可能已过期」而**拒绝跑**）。
+M6_OLD = '\t{"backend/internal/notify/smtp.go", "Close", 7},\n'
+M6_NEW = '\t{"backend/internal/notify/smtp.go", "UpdateStatus", 7},\n'
 
 # M7：把 §945 参考集里的一条删掉 ⇒ 参考集的**绝对条数**必须红
 #   ⇒ ⇒⇒ ⇒ 这条防的是「把参考集改小来消红」。
