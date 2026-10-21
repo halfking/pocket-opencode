@@ -114161,7 +114161,7 @@ sessionMs = (epochMs - baseEpochMs) + nativeRelativeMs
 
 ### §957.9 变异（**第二十六批**，`scripts/mutations/s957.py`）
 
-**19/19 通过**（M1–M13 + N1 + 三条收尾自证）；**不需要 PG**。
+**19/19 通过**（M1–M13 + N1 + 2 条收尾自证 + 3 条还原自证）；**不需要 PG**。
 
 | 编号 | 变异 | 打的是哪一层 |
 |---|---|---|
