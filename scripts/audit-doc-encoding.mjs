@@ -410,7 +410,18 @@ function main() {
   }
   assertScope(files);
 
-  const relToFile = new Map(files.map((f) => [path.relative(ROOT, f), f]));
+  // ★ 2026-10-22 round50 修掉的**平台假红**（与 D7 同族：路径分隔符）。
+  //   豁免登记表 `scripts/doc-encoding-waivers.json` 里的 `file` 字段一律用
+  //   **正斜杠**（仓里所有名单型文件都是这个约定）；
+  //   而这里的 Map key 来自 `path.relative()` ⇒ Windows 上是**反斜杠**
+  //   ⇒ `relToFile.get(w.file)` 永远查不到 ⇒ 每条登记都报
+  //   **WAIVER_FILE_MISSING**（本次实测 9 条）⇒
+  //   而真正被豁免的 U+FFFD 因为查不到登记，也就**没被豁免** ⇒
+  //   ⇒ 文档里那些**已登记的**损坏点被一并报成问题（本次实测 14 处）。
+  //   ⚠ 在 Linux 上 `path.relative()` 返回正斜杠 ⇒ 一切对上 ⇒ **CI 一直是绿的**。
+  //   ⇒ 修法：key 统一归一成正斜杠（两侧都用同一个函数，保证自洽）。
+  const relOf = (f) => path.relative(ROOT, f).split(path.sep).join('/');
+  const relToFile = new Map(files.map((f) => [relOf(f), f]));
   const { waived, problems: waiverProblems } = resolveWaivers(relToFile);
 
   for (const p of waiverProblems) {
@@ -420,7 +431,9 @@ function main() {
   let total = 0;
   let waivedTotal = 0;
   for (const f of files) {
-    const rel = path.relative(ROOT, f);
+    // ⚠ 必须与上面 relOf() **逐字同形** —— waived 的 key 来自豁免登记表
+    //   （正斜杠），这里若用反斜杠就永远查不到豁免。
+    const rel = relOf(f);
     const text = fs.readFileSync(f, 'utf8');
     const all = detect(text);
     const allow = waived.get(rel) || new Set();
