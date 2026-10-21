@@ -3,7 +3,9 @@
 日期：2026-10-22
 基线：`0fdda422`（`Merge branch 'feat/app-icon-standard' into main` —— **本轮从这个红点出发**）
 承接：`docs/handoff/2026-10-20-round49-round48-debts-closed-and-which-first-dead-branch.md`
-本轮主线：主文档 `docs/design/2026-10-06-recording-quality-fixes.md` **§960**
+本轮主线：主文档 `docs/design/2026-10-06-recording-quality-fixes.md` **§960**（含 §960.7 平台假红专节与 §960.9 分支尾部合并）
+**本轮落地**：`0fdda422` → **`95b1f04f`**（**71 个提交 / 199 个文件 / +17282 −698**），已推送到 `origin/main`
+**远端分支**：已删 `feat/app-icon-standard` / `fix/maestro-login-assertions` / `backup/pre-rebase-49e6a802` 三条（**逐条核对过内容已并入**）
 
 ---
 
@@ -130,7 +132,7 @@ webm 解码从「整场/累计」换成「逐簇」、原生链的「整场重�
 
 | 命令 | 结果 |
 |---|---|
-| **`node frontend/scripts/run-gates.mjs --ci`** | **EXIT 0 —— 全部 39 项通过（99.9s）** ⇒ ★ **这是本仓自 `0fdda422` 起第一次全量 CI 门禁跑绿**（此前一路在规则-4 早退，一条门都没真跑过） |
+| **`node frontend/scripts/run-gates.mjs --ci`** | **EXIT 0 —— 全部 39 项通过** ⇒ ★ **这是本仓自 `0fdda422` 起第一次全量 CI 门禁跑绿**（此前一路在规则-4 早退，一条门都没真跑过）<br>读数：合并后 99.9s / 尾部合并后 198.1s / **最终推送态 `95b1f04f` 上 107.6s**，三次均 EXIT 0 |
 | `node scripts/check-doc-section-number-uniqueness.mjs --selftest` | **EXIT 0** —— 量具自证 **8/8** |
 | `node scripts/check-doc-section-number-uniqueness.mjs` | **EXIT 0** —— 实测重号 3 条 / 豁免 3 条 / **新增 0 / 过期 0** |
 | **负控**：注入 `## §957` 重号 | **EXIT 1** ⇒ 点名 `section:957` ✅ 转红 |
