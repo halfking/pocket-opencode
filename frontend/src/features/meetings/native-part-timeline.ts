@@ -53,6 +53,30 @@
  * ⇒ 即使拿不到 `epochMs`（旧原生包）或者收到**陈旧**的 epoch（比基准还早），
  *   本模块也会**钳位**（把倒退的部分拉回单调）⇒ 时间轴**永远不倒退**，
  *   代价是那一段变成**近似值**（`degraded`）⇒ 由调用方留痕。
+ *
+ * ## §957：把「切换空隙」变成一个**可测的量**
+ *
+ * §955 给护栏（§805）定的规则是「原生链切过设备 ⇒ 窗口不可信 ⇒ 判『量不到』」，
+ * 理由是「原生时间轴**回卷** ⇒ 窗口是错基的」。
+ * ⇒ **那个理由已经被本模块（§956）消灭了**：各轮已被精确拼回同一根轴。
+ * ⇒ 于是护栏不必再把整场原生录音判成「量不到」——**切换空隙是可以量的**。
+ *
+ * ⚠⚠ **空隙只算「轮次之间」的那一段**（本模块的 `gapMs`）：
+ *
+ * | 现象 | 是不是空隙 | 判据 |
+ * |---|---|---|
+ * | 切设备 ⇒ 原生服务重启 ⇒ 两轮之间那段墙钟**没有音频** | ✅ **是**空隙 | 这一片的 `epochMs` 与**上一片**不同 |
+ * | 同一轮里**丢了一片**（原生循环里片是连续的：`partStartRel = nowRel`） | ❌ **不是**空隙 | `epochMs` 没变，但时间戳跳了 ⇒ **丢片** |
+ *
+ * ⇒ 为什么必须分开：**空隙**是「本来就没录」（切设备那几秒没人在说话 / 服务在重启），
+ *   护栏拿它去比音频就会**误报**「音频比墙钟短」；
+ *   而**丢片**是「录了但没送到」⇒ 那是**真丢音频**，护栏**必须报出来**。
+ * ⇒ ⇒ 若把两者混为一谈，护栏就会把真丢音频当成「切换空隙」放过去 ⇒ **护栏被废掉**。
+ *
+ * ⇒ 本模块因此同时给出两件事实：
+ *   ① `gapMs`：**轮次之间**没有音频的墙钟（护栏要比的话要把它扣掉）；
+ *   ② `exact`：这条时间轴**是否精确**（每片都带 epoch 且从未被钳位）
+ *      —— 只有精确时，`gapMs` 才可信（否则分不清「空隙」与「丢片」）。
  */
 
 /** 一片原生分片（**事实**，不是坐标）。 */
@@ -90,6 +114,27 @@ export interface NativePartTimelineState {
    * ⚠ 粘性是对的：已经按近似时间落库的分段改不回来了。
    */
   degraded: boolean
+  /**
+   * §957：**上一片**所属那一轮的 epoch（毫秒）—— 用来认出「轮次边界」。
+   *
+   * ⚠ 与 `baseEpochMs` **不是一回事**：base 是会话原点（第一片那轮），
+   *   这个是「最近一片那轮」⇒ 两者不等 ⇒ **换了一轮**。
+   */
+  lastEpochMs: number | null
+  /**
+   * §957：累计的**轮次间空隙**（毫秒）—— 切换设备期间**没有音频**的那段墙钟。
+   *
+   * ⚠ 只累加**轮次边界**上的跳跃（见文件头那张表）：
+   *   同一轮里的跳跃是「丢了一片」⇒ **不算**空隙（否则护栏会把真丢音频放过去）。
+   */
+  gapMs: number
+  /**
+   * §957：是否**每一片**都带 epoch（粘性：一旦有一片没带就一直不完整）。
+   *
+   * ⚠ 没有它就**分不清**「空隙」与「丢片」⇒ `gapMs` 不可信
+   *   ⇒ 时间轴不算 `exact` ⇒ 护栏不拿它去比（宁可判「量不到」）。
+   */
+  allEpochsKnown: boolean
 }
 
 /** 一片分片重基之后的结果。 */
@@ -106,11 +151,38 @@ export interface NativePartTimelineResult {
   rebased: boolean
   /** 本片是否被**钳位**（原始坐标会倒退 ⇒ 被拉回单调）。 */
   clamped: boolean
+  /** §957：本片带来的**轮次间空隙**（毫秒）；同一轮里恒为 0。 */
+  gapMs: number
+  /** §957：本片是否**开启了新一轮**（这一片的 epoch 与上一片不同）。 */
+  roundChanged: boolean
+  /** §957：本片之后这条时间轴是否**精确**（可用来判护栏能不能比）。 */
+  exact: boolean
 }
 
 /** 新一场录音的初始状态。 */
 export function createNativePartTimelineState(): NativePartTimelineState {
-  return { baseEpochMs: null, lastEndMs: 0, degraded: false }
+  return {
+    baseEpochMs: null,
+    lastEndMs: 0,
+    degraded: false,
+    lastEpochMs: null,
+    gapMs: 0,
+    allEpochsKnown: true,
+  }
+}
+
+/**
+ * §957：这条会话时间轴**是否精确**（纯函数）。
+ *
+ * ⚠ 两个条件缺一不可：
+ *   ① `allEpochsKnown`：**每一片**都带 epoch ⇒ 才认得出轮次边界
+ *      ⇒ 才分得清「切换空隙」与「丢片」；
+ *   ② `!degraded`：从未被钳位 ⇒ 时间轴没有被人为拉平过。
+ *
+ * ⇒ 不精确时，护栏**不得**拿这条时间轴的窗口去比音频（宁可判「量不到」）。
+ */
+export function isNativeTimelineExact(state: NativePartTimelineState): boolean {
+  return state.allEpochsKnown && !state.degraded
 }
 
 /**
@@ -157,6 +229,9 @@ function readEpoch(raw: unknown): number | null {
  * ③ **两种都要过一道钳位**：任何情况下输出都不得与上一片重叠 ⇒
  *    §634/§683 那条「会议链相邻段不重叠」的不变量**继续成立**
  *    ⇒ 去重的精确裁剪档**继续不可达**。
+ *
+ * ⚠⚠ **§957 的第四条**：**空隙只算轮次边界上的跳跃**（`roundChanged`）
+ *   —— 同一轮里的跳跃是「丢了一片」，不是空隙（见文件头那张表）。
  */
 export function rebaseNativePartTimeline(
   state: NativePartTimelineState,
@@ -170,6 +245,7 @@ export function rebaseNativePartTimeline(
   let rebased = false
 
   const epoch = readEpoch(part.epochMs)
+  const hasEpoch = epoch !== null
   if (epoch !== null) {
     if (baseEpochMs === null) {
       // 第一片见到 epoch ⇒ 它就是会话时间轴的原点。
@@ -184,6 +260,11 @@ export function rebaseNativePartTimeline(
     }
   }
 
+  // ★§957：轮次边界 = 这一片的 epoch 与**上一片**不同（不是与基准不同）。
+  //   ⚠ 与基准不同只说明「不是第一轮」；与**上一片**不同才说明「**刚刚**换了轮」
+  //   ⇒ 只有后者才对应「两轮之间那段没有音频的墙钟」。
+  const roundChanged = hasEpoch && prev.lastEpochMs !== null && epoch !== prev.lastEpochMs
+
   // 「倒退」的判据是**原始坐标**比上一片更早（重基前）。
   const rolledBack = rawStart < prev.lastEndMs
 
@@ -192,13 +273,36 @@ export function rebaseNativePartTimeline(
   const endMs = Math.max(rawEnd, startMs)
   const clamped = startMs !== rawStart || endMs !== rawEnd
 
+  // ★§957：空隙 = **轮次之间**那段没有音频的墙钟。
+  //   ⚠⚠ 同一轮里的跳跃**不算**空隙：原生循环里片是连续的
+  //     （`partStartRel = nowRel`）⇒ 同一轮里跳一下 = **丢了一片**
+  //     ⇒ 那是真丢音频 ⇒ 必须让护栏报出来，不能当成「空隙」放过去。
+  const jumpMs = Math.max(0, startMs - prev.lastEndMs)
+  const gapMs = roundChanged ? jumpMs : 0
+
+  const degraded = prev.degraded || clamped
+  const allEpochsKnown = prev.allEpochsKnown && hasEpoch
+
   const next: NativePartTimelineState = {
     baseEpochMs,
     lastEndMs: endMs,
     // ⚠ 粘性：坏了就一直坏（已经落库的近似时间改不回来）。
-    degraded: prev.degraded || clamped,
+    degraded,
+    lastEpochMs: hasEpoch ? epoch : prev.lastEpochMs,
+    gapMs: prev.gapMs + gapMs,
+    allEpochsKnown,
   }
-  return { startMs, endMs, state: next, rolledBack, rebased, clamped }
+  return {
+    startMs,
+    endMs,
+    state: next,
+    rolledBack,
+    rebased,
+    clamped,
+    gapMs,
+    roundChanged,
+    exact: isNativeTimelineExact(next),
+  }
 }
 
 /**

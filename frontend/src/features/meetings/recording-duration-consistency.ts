@@ -243,12 +243,24 @@ export interface NativeCaptureSnapshot {
   /**
    * 原生采集窗口（毫秒）。
    *
-   * ⚠ `null` = **不可信**：中途切过设备时原生服务会重启，而它的时间轴**从 0 重新开始**
-   *   （`MeetingRecordService.startCapture` 先 `stopCapture()`，`captureStart` 每轮重取）
-   *   ⇒ 分片的时间戳会**回卷** ⇒ 这时任何「窗口」都是错基的
-   *   ⇒ 宁可判「量不到」，也不拿一个错基的数去比。
+   * ⚠ `null` = **不可信**：窗口拿不准时宁可判「量不到」，也不拿一个错基的数去比。
+   *   （§955 当时的理由是「切过设备 ⇒ 原生时间轴回卷 ⇒ 窗口错基」；
+   *   **那个理由已被 §956 消灭** ⇒ 现在不可信只剩两种原因：
+   *   ① 切过设备而**时间轴不精确**（拿不到采集原点 / 被钳位过）；
+   *   ② 压根没采到片（窗口恒 0）。）
    */
   windowMs: number | null
+  /**
+   * §957：**轮次之间的空隙**（毫秒）—— 切换设备期间**没有音频**的那段墙钟。
+   *
+   * ⚠ `null` = **量不到**（窗口不可信时，空隙同样不可信）。
+   * ⚠ `0` = 实测**没有**空隙（单轮录音就是 0）——
+   *   「量不到」与「量到是 0」必须能分开（§803.1）。
+   *
+   * ⚠⚠ **护栏要比的墙钟要把它扣掉**：盘上的音频里**没有**那段时间
+   *   ⇒ 不扣 ⇒ 护栏会把它当成「音频丢了」（**假警报**）。
+   */
+  gapMs: number | null
 }
 
 /** 护栏的墙钟来源（写进告警文案：排查的人要知道拿的是哪个钟）。 */
@@ -265,6 +277,41 @@ export interface DurationGuardInput {
   /** 真实音频时长（秒）；`null` = 量不到。 */
   audioSec: number | null
   source: DurationGuardSource
+  /**
+   * §957：被扣掉的**切换空隙**（毫秒）。
+   *
+   * ⚠ `null` = 量不到（原生链但窗口不可信）；`0` = 没有空隙。
+   * ⚠ 这不是「丢音频」——它是「那段时间**本来就没录**」：
+   *   丢音频仍然会体现在 `driftMs` 里（空隙只扣轮次之间的那段）。
+   */
+  coverageGapMs: number | null
+}
+
+/**
+ * §957：原生采集窗口**可不可信**（**纯函数** ⇒ node 里可直接测）。
+ *
+ * ⚠⚠ **规则变了（理由也变了）**：
+ *   §955 的规则是「轮次 > 1 ⇒ 窗口不可信」，理由是「切过设备 ⇒ 原生时间轴**回卷**
+ *   ⇒ 窗口错基」。
+ *   ⇒ **那个理由已被 §956 消灭**（各轮已被精确重基到同一根会话时间轴）
+ *   ⇒ 若还照旧，护栏在原生链跨设备时将**永远**判「量不到」。
+ *
+ * ⇒ 新规则：
+ *   ① **单轮**（`runs <= 1`）⇒ **可信**（原生循环自身单调 ⇒ 窗口就是准的）
+ *      —— 与 §955 一字不差 ⇒ **单轮行为不变**；
+ *   ② **多轮** ⇒ 只有当会话时间轴**精确**（每片都带采集原点、从未被钳位）
+ *      时才可信 ⇒ 因为只有精确时才分得清「切换空隙」与「丢片」
+ *      ⇒ 护栏扣掉空隙才不会把真丢音频放过去。
+ *   ⇒ 多轮且不精确 ⇒ **不可信**（与 §955 同一条 ⇒ 判「量不到」，宁可瞎也不误报）。
+ */
+export function nativeCaptureWindowTrustable(opts: {
+  /** 这一场录音里原生服务启动过几轮。 */
+  runs: number
+  /** 会话时间轴是否精确（`isNativeTimelineExact`）。 */
+  timelineExact: boolean
+}): boolean {
+  if (!Number.isFinite(opts.runs) || opts.runs <= 1) return true
+  return opts.timelineExact === true
 }
 
 /**
@@ -274,7 +321,9 @@ export interface DurationGuardInput {
  *   ① **不是原生链**（`nativeCapture` 缺省，或 `used` 为假）⇒ 用 **JS 墙钟**
  *      ⇒ **Web / iOS 链的行为与 §805 以来一字未变**。
  *   ② **原生链且窗口可信** ⇒ 用**原生采集窗口** ⇒ 与盘上音频**同源** ⇒ 护栏**真的能判**。
- *   ③ **原生链但窗口不可信**（切过设备）⇒ **不拿 JS 墙钟顶替**
+ *      ⚠⚠ **§957**：窗口里含**切换空隙**（那段时间没有音频）⇒ **要扣掉**
+ *      ⇒ 扣完才是「真正录到音的那段墙钟」⇒ 与实测音频**同口径**。
+ *   ③ **原生链但窗口不可信** ⇒ **不拿 JS 墙钟顶替**
  *      ⇒ 宁可判「量不到」（`wallClockMs = 0` ⇒ `no-ground-truth`），
  *      也不要拿一个**不同源**的墙钟制造**结构性系统偏移**（那会让短录音假警报）。
  *
@@ -298,12 +347,20 @@ export function resolveDurationGuardInput(opts: {
 
   const native = opts.nativeCapture
   if (!native || !native.used) {
-    return { wallClockMs: opts.elapsedMs, audioSec, source: 'js-wall-clock' }
+    return { wallClockMs: opts.elapsedMs, audioSec, source: 'js-wall-clock', coverageGapMs: 0 }
   }
   if (typeof native.windowMs === 'number' && Number.isFinite(native.windowMs) && native.windowMs > 0) {
-    return { wallClockMs: native.windowMs, audioSec, source: 'native-window' }
+    // ⚠⚠ §957：扣掉**切换空隙**（那段时间没有音频）。
+    //   ⚠ 扣减只认「有限的非负数」⇒ 非法值一律当 0（不得让窗口变成负数）。
+    const gapMs = (
+      typeof native.gapMs === 'number'
+      && Number.isFinite(native.gapMs)
+      && native.gapMs > 0
+    ) ? native.gapMs : 0
+    const wallClockMs = Math.max(0, native.windowMs - gapMs)
+    return { wallClockMs, audioSec, source: 'native-window', coverageGapMs: gapMs }
   }
-  return { wallClockMs: 0, audioSec, source: 'native-untrusted' }
+  return { wallClockMs: 0, audioSec, source: 'native-untrusted', coverageGapMs: null }
 }
 
 /**
@@ -336,10 +393,32 @@ export function describeDurationGuardSource(source: DurationGuardSource): string
     case 'native-window':
       return '原生采集窗口（与盘上音频同源）'
     case 'native-untrusted':
-      return '原生采集窗口不可信（中途切过设备，原生时间轴回卷）'
+      // ⚠⚠ §957：**理由换了**。§955 写的是「中途切过设备，原生时间轴回卷」——
+      //   那个理由已被 §956 消灭（各轮已被精确重基）⇒ 照抄会把人引向错误的排查方向。
+      return '原生采集窗口不可信（切过设备且会话时间轴不精确：拿不到采集原点或时间轴被钳位过）'
     default:
       return 'JS 墙钟'
   }
+}
+
+/**
+ * §957：把「切换空隙」单独说成一句话（**纯函数** ⇒ 判据能直接断言它说了什么）。
+ *
+ * ⚠⚠ **为什么要有这一句**：空隙是「那段时间**本来就没录**」，
+ *   它**不是**丢音频 ⇒ 不该混进「时长不符」的告警里 ⇒ 但也**不能吞掉**
+ *   （用户确实少了一截录音）。
+ * ⇒ 现状只到**开发者 console**（§813 的口径）；要不要升为用户可见
+ *   属**产品口径**（待属主拍板，本节不代拍）。
+ *
+ * @returns `null` = 没有空隙（不需要留痕）。
+ */
+export function describeCoverageGap(gapMs: number | null): string | null {
+  if (gapMs == null || !Number.isFinite(gapMs) || gapMs <= 0) return null
+  const sec = Math.round(gapMs / 100) / 10
+  return (
+    `切换设备期间有 ${Math.round(gapMs)}ms（${sec}s）没有录音`
+    + '（这段时间本来就没在采音，不算音频丢失；已从时长一致性比对里扣除）'
+  )
 }
 
 /**

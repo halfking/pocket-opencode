@@ -43,7 +43,7 @@ import { getMeeting, updateMeeting, type MeetingSegment } from './meetings-store
 import { ingestMeetingArtifacts } from './meeting-ingest'
 import { buildIngestNotice } from './meeting-ingest-notice'
 import { buildRefineNotice, refineStatusFor } from '../sessions/refine-outcome-notice'
-import { assessDurationDrift, createMeasuringToWav, finalizeFailureNotice, describeDurationGuardSource, resolveDurationGuardInput, type NativeCaptureSnapshot } from './recording-duration-consistency'
+import { assessDurationDrift, createMeasuringToWav, finalizeFailureNotice, describeCoverageGap, describeDurationGuardSource, resolveDurationGuardInput, type NativeCaptureSnapshot } from './recording-duration-consistency'
 
 export interface FinalizeDeps {
   /** 一次全量重转。注入而非直接调 API，便于单测与换实现。 */
@@ -170,7 +170,9 @@ function readNativeCaptureSnapshot(
     return provider() ?? null
   } catch (e) {
     console.warn('[meeting-finalize] 取原生采集窗口失败，本场不做时长一致性判定：', e)
-    return { used: true, windowMs: null }
+    // ⚠⚠ §957：`gapMs` 也要给 `null`（= 量不到），**不能**给 0
+    //   （0 = 实测没有空隙 ⇒ 那是在说谎）。
+    return { used: true, windowMs: null, gapMs: null }
   }
 }
 
@@ -261,6 +263,16 @@ export async function finalizeRecording(
       + `（差 ${drift.driftMs}ms > 容差 ${Math.round(drift.toleranceMs)}ms，${drift.reason}）`,
     )
   }
+  // ★§957：把**切换空隙**单独说一声。
+  //
+  // ⚠⚠ **为什么不能吞掉**：空隙是「那段时间本来就没在采音」（切设备 ⇒ 原生服务重启）
+  //   ⇒ 它**不是**丢音频 ⇒ 不该混进上面那条「时长不符」的告警里（那是假警报）；
+  //   但用户确实少了一截录音 ⇒ 也不能当没发生 ⇒ **单独留痕**。
+  //   ⚠ 决策在纯函数 `describeCoverageGap` 里（§52：决策必须在能测的地方）。
+  //   ⚠ 触达面：**只到开发者 console**（§813）——要不要升为用户可见属产品口径，
+  //   **待属主拍板，本轮不代拍**（简报第 181 条 ③）。
+  const gapNotice = describeCoverageGap(guardInput.coverageGapMs)
+  if (gapNotice) console.warn(`[meeting-finalize] ${gapNotice}`)
   // ★§818：让「转码失败」本身可见。
   //
   // ⚠ 此前这条链**从头到尾静默**：转码失败被空 catch 块吞掉 ⇒ 退回原 webm 上传

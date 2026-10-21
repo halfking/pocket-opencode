@@ -83,12 +83,14 @@ import { isPlaceholderSpeaker } from '../features/meetings/meeting-roster-homoph
 import {
   carriedStartTime,
   nativeCaptureWindowAfterPart,
+  nativeCaptureWindowTrustable,
   resolveWallClockDurationMs,
   type NativeCaptureSnapshot,
 } from '../features/meetings/recording-duration-consistency'
 import {
   createNativePartTimelineState,
   describeNativeTimelineDegradation,
+  isNativeTimelineExact,
   rebaseNativePartTimeline,
 } from '../features/meetings/native-part-timeline'
 
@@ -278,13 +280,22 @@ export class MeetingRecorderRuntime {
   /**
    * §955：原生采集窗口**是否可信**。
    *
-   * ⚠⚠ 中途切过设备时原生服务会**重启**，而它的时间轴**从 0 重新开始**
-   *   （`MeetingRecordService.startCapture` 先 `stopCapture()`，`captureStart` 每轮重取）
-   *   ⇒ 分片的时间戳会**回卷** ⇒ 这时任何「窗口」都是**错基**的
-   *   ⇒ 宁可判「量不到」，也不拿错基的数去比（护栏宁可瞎也不误报）。
+   * ⚠⚠ **§957：理由换了，规则也跟着换了**。
+   *   §955 当时的理由是「中途切过设备 ⇒ 原生时间轴**回卷** ⇒ 窗口错基」
+   *   ⇒ **那个理由已被 §956 消灭**（各轮已被精确重基到同一根会话时间轴）。
+   *   ⇒ 现在可信的条件是「轮次只有一轮」**或**「会话时间轴**精确**」
+   *   （每片都带采集原点、从未被钳位）⇒ 判定在纯函数
+   *   `nativeCaptureWindowTrustable` 里（§52：决策必须能测）。
+   *   ⚠ 多轮且时间轴不精确 ⇒ 仍判「不可信」⇒ 护栏判「量不到」（宁可瞎也不误报）。
    */
   private nativeCaptureTrusted = false
-  /** §955：原生服务**这一轮**采到的窗口（毫秒）＝ 各片 `endMs` 的最大值。 */
+  /**
+   * §955/§957：原生采集窗口（毫秒）—— 各片**结束时间**的最大值。
+   *
+   * ⚠⚠ **§957：喂进来的必须是「重基后」的会话坐标**（`t.endMs`），不是轮内相对量
+   *   （`part.endMs`）—— 否则第二轮的分片（相对量从 0 起）会把窗口拉回第二轮的跨度
+   *   ⇒ 与盘上音频（两轮之和）**不可比** ⇒ 护栏会算出巨大的假漂移。
+   */
   private nativeCaptureWindowMs = 0
   /** §955：这一场录音里原生服务启动过几轮（>1 ⇒ 切过设备）。 */
   private nativeCaptureRuns = 0
@@ -314,12 +325,15 @@ export class MeetingRecorderRuntime {
    *   ⇒ ⇒ **取值必须发生在「音频量完之后」** ⇒ 收尾链在量完音频的那一刻调它。
    *
    * @returns `used=false` ⇒ 本次没走原生采集（Web / iOS）；
-   *          `windowMs=null` ⇒ 走了但**不可信**（切过设备）。
+   *          `windowMs=null` ⇒ 走了但**不可信**（切过设备且时间轴不精确）。
    */
   nativeCaptureSnapshot(): NativeCaptureSnapshot {
-    if (!this.nativeCaptureUsed) return { used: false, windowMs: null }
-    if (!this.nativeCaptureTrusted) return { used: true, windowMs: null }
-    return { used: true, windowMs: this.nativeCaptureWindowMs }
+    if (!this.nativeCaptureUsed) return { used: false, windowMs: null, gapMs: null }
+    if (!this.nativeCaptureTrusted) return { used: true, windowMs: null, gapMs: null }
+    // ⚠⚠ §957：把**切换空隙**一起交出去 ——
+    //   护栏要比的墙钟要**扣掉**它（那段时间没有音频），而它本身也要**单独留痕**
+    //   （用户确实少了一截录音 ⇒ 不能吞掉）。
+    return { used: true, windowMs: this.nativeCaptureWindowMs, gapMs: this.nativeTimeline.gapMs }
   }
   // 在途分段转写 promise:stop() 必须等它们落库,否则 refine 拿到的
   // transcript 缺尾巴,晚到的 updateTranscript 还会与 completed 状态竞争。
@@ -496,28 +510,24 @@ export class MeetingRecorderRuntime {
         this.nativeMode = started.ok
         if (!started.ok) this.backgroundMicReason.value = started.reason || '未知原因'
         if (this.nativeMode) {
-          // ⚠⚠ §955：原生服务**每启动一轮**，它的时间轴就从 0 重新开始
+          // ⚠⚠ §955/§957：原生服务**每启动一轮**，它的时间轴就从 0 重新开始
           //   （`MeetingRecordService.startCapture` 先 `stopCapture()`，
           //     `captureStart` 每轮重取）⇒ **分片的时间戳会回卷**。
-          // ⇒ ⇒ 采集窗口**只有第一轮可信**；第二轮（= 中途切过设备）一律标成
-          //   「不可信」⇒ 护栏宁可判「量不到」，也不拿错基的数去比。
+          // ⇒ §956：每片多带一个 `epochMs`（本轮采集原点的绝对墙钟）
+          //   ⇒ JS 侧把各轮**精确**重基到同一根会话时间轴。
+          // ⇒ §957：因此窗口**可以**跨轮次累计（它现在是会话坐标），
+          //   而「切过设备 ⇒ 窗口不可信」那条规则（§955）**只对时间轴不精确时成立**。
+          //   ⇒ ⚠ **窗口在这里不再清零**：会话坐标跨轮次是连续的，
+          //     清零会让窗口只剩「最新一轮」的跨度 ⇒ 与盘上音频（各轮之和）不可比。
           this.nativeCaptureRuns += 1
           this.nativeCaptureUsed = true
-          this.nativeCaptureTrusted = this.nativeCaptureRuns === 1
-          this.nativeCaptureWindowMs = 0
+          this.nativeCaptureTrusted = nativeCaptureWindowTrustable({
+            runs: this.nativeCaptureRuns,
+            timelineExact: isNativeTimelineExact(this.nativeTimeline),
+          })
           this.selectedInput.value = this.inputs.value.find((i) => i.deviceId === opts?.deviceId)
             || this.inputs.value[0]
           this.unlistenNative = await listenBackgroundMicParts((part) => {
-            // ⚠⚠ §955：原生侧每片都带**与音频同源**的墙钟
-            //   （`endMs`，相对原生 `captureStart`；`MeetingRecordService.emitPart`）
-            //   ⇒ 它的最大值就是「这一轮原生采到了多久」
-            //   ⇒ 与盘上的音频**同一个世界** ⇒ 护栏可以直接比。
-            //   ⚠ 此前这个值**只被用于实时分段的时间范围**（`processSegment`），
-            //   从来没有被留住 ⇒ 原生链**唯一**与音频同源的墙钟被丢掉了。
-            //   ⚠ 累积规则在纯函数里（`nativeCaptureWindowAfterPart`）⇒ node 里可测。
-            this.nativeCaptureWindowMs = nativeCaptureWindowAfterPart(
-              this.nativeCaptureWindowMs, part.endMs,
-            )
             // ⚠⚠ §956：分段时间范围**不能**直接用原生的轮内相对量
             //   （切设备 ⇒ 原生服务重启 ⇒ 相对量从 0 重新开始 ⇒ **时间轴回卷**）。
             //   ⇒ 走纯函数重基到**会话时间轴**：带 `epochMs` ⇒ 精确重基（各轮
@@ -530,6 +540,22 @@ export class MeetingRecorderRuntime {
               // ⚠ 只到开发者 console（§813 的口径）；要不要升为用户可见属产品口径。
               console.warn(describeNativeTimelineDegradation(t, part))
             }
+            // ⚠⚠ §957：原生侧每片都带**与音频同源**的墙钟（分片的结束时间）
+            //   ⇒ 它的最大值就是「这一场原生采到了多久」
+            //   ⇒ 与盘上的音频**同一个世界** ⇒ 护栏可以直接比。
+            //   ⚠ 累积规则在纯函数里（`nativeCaptureWindowAfterPart`）⇒ node 里可测。
+            //   ⚠⚠ **必须喂「重基后」的会话坐标**（`t.endMs`），不是轮内相对量
+            //     （`part.endMs`）—— 否则第二轮（相对量从 0 起）会把窗口拉回去。
+            this.nativeCaptureWindowMs = nativeCaptureWindowAfterPart(
+              this.nativeCaptureWindowMs, t.endMs,
+            )
+            // ⚠⚠ §957：信任规则逐片更新（时间轴是否精确**要等片到了才知道**）：
+            //   单轮 ⇒ 可信；多轮 ⇒ 只有时间轴精确（每片都带采集原点、没被钳位）
+            //   才可信 ⇒ 否则判「量不到」。
+            this.nativeCaptureTrusted = nativeCaptureWindowTrustable({
+              runs: this.nativeCaptureRuns,
+              timelineExact: isNativeTimelineExact(this.nativeTimeline),
+            })
             void this.processSegment(nativePartToBlob(part), t.startMs, t.endMs)
           }, (msg) => { this.sttError.value = msg })
         }
