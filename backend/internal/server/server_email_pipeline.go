@@ -31,6 +31,7 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/email"
 	"github.com/halfking/pocket-opencode/backend/internal/feishu"
 	"github.com/halfking/pocket-opencode/backend/internal/notifycenter"
+	"github.com/halfking/pocket-opencode/backend/internal/outbound"
 )
 
 // feishuInvoicePusher 把 email.InvoicePusher 接到 feishu.Client 上。
@@ -358,7 +359,7 @@ func (s *Server) delegatePipeline(ctx context.Context) *email.PipelineReport {
 			fmt.Sprintf("delegate: POCKET_EMAIL_SERVER_PIPELINE_URL 必须是带 scheme 的 http(s) 绝对地址，当前值无法使用（%q）", raw),
 		}}
 	}
-	client := &http.Client{Timeout: 16 * time.Minute}
+	client := outbound.NewClient(16 * time.Minute)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target.String(), nil)
 	if err != nil {
 		return &email.PipelineReport{Errors: []string{"delegate: " + err.Error()}}

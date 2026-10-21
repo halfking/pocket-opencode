@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"time"
+
+	"github.com/halfking/pocket-opencode/backend/internal/outbound"
 )
 
 // Client RedClaw API 客户端
@@ -32,10 +34,8 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 		timeout = 30
 	}
 	return &Client{
-		cfg: cfg,
-		httpDo: &http.Client{
-			Timeout: time.Duration(timeout) * time.Second,
-		},
+		cfg:    cfg,
+		httpDo: outbound.NewClient(time.Duration(timeout) * time.Second),
 	}, nil
 }
 

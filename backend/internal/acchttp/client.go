@@ -30,6 +30,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/halfking/pocket-opencode/backend/internal/outbound"
 )
 
 // Config 控制客户端行为。BaseURL 必填；其他字段有合理默认值。
@@ -103,7 +105,7 @@ func New(cfg Config) (*Client, error) {
 
 	return &Client{
 		cfg:  cfg,
-		http: &http.Client{Transport: transport},
+		http: outbound.NewClient(cfg.Timeout, outbound.WithTransport(transport)),
 	}, nil
 }
 

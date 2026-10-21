@@ -12,6 +12,7 @@ import (
 
 	"github.com/halfking/pocket-opencode/backend/internal/background"
 	"github.com/halfking/pocket-opencode/backend/internal/model"
+	"github.com/halfking/pocket-opencode/backend/internal/outbound"
 )
 
 // InstanceConfig 实例配置（从环境变量或配置文件加载，或由发现/注册产生）
@@ -238,7 +239,7 @@ type healthProbe struct {
 func (r *Registry) checkInstanceHealth(ctx context.Context, apiBaseURL string) healthProbe {
 	endpoint := apiBaseURL + "/global/health"
 
-	client := &http.Client{Timeout: 3 * time.Second}
+	client := outbound.NewClient(3 * time.Second)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {

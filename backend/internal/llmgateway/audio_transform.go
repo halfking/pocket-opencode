@@ -28,6 +28,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/halfking/pocket-opencode/backend/internal/outbound"
 )
 
 // RefineRequest 是精细化转写的入参。Model 必填（执行精修的 chat 模型，
@@ -134,7 +136,15 @@ func (c *Client) postAudioTransform(ctx context.Context, path string, req any, o
 	}
 	httpReq.Header.Set("Authorization", "Bearer "+c.APIKey)
 	httpReq.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(httpReq)
+	// ⚠ §950：以前这里是 `http.DefaultClient` —— 它**没有客户端级上界**
+	//　 （请求 ctx 兜住了，所以不会挂死，但它绕过了本包构造的客户端）
+	//　⇒⇒⇒ 统一走 c.Client（90s 硬上界 + 85s ResponseHeaderTimeout）。
+	client := c.Client
+	if client == nil {
+		// 兜底：Client 被直接字面量构造时（测试里）可能为 nil。
+		client = outbound.NewClient(audioTransformTimeout)
+	}
+	resp, err := client.Do(httpReq)
 	if err != nil {
 		return err
 	}

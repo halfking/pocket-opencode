@@ -18,6 +18,7 @@ import (
 
 	"github.com/halfking/pocket-opencode/backend/internal/background"
 	"github.com/halfking/pocket-opencode/backend/internal/model"
+	"github.com/halfking/pocket-opencode/backend/internal/outbound"
 )
 
 // DefaultPorts is the ordered list of ports to scan for OpenCode instances.
@@ -155,7 +156,7 @@ type hostPort struct {
 // probeCandidates concurrently probes all candidates and returns configs for
 // those that respond as OpenCode instances.
 func probeCandidates(ctx context.Context, candidates []hostPort) ([]InstanceConfig, error) {
-	client := &http.Client{Timeout: 500 * time.Millisecond}
+	client := outbound.NewClient(500 * time.Millisecond)
 	var (
 		mu      sync.Mutex
 		configs []InstanceConfig

@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/halfking/pocket-opencode/backend/internal/background"
+	"github.com/halfking/pocket-opencode/backend/internal/outbound"
 )
 
 // HTTPTransport 是 ACP over Streamable HTTP transport。
@@ -65,9 +66,8 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 		return errors.New("transport already started")
 	}
 
-	t.client = &http.Client{
-		Timeout: 0, // SSE 长连接无总超时；用 ctx 控制
-	}
+	// SSE 长连接无总超时；上界由 ctx 提供
+	t.client = outbound.NewStreamingClient()
 
 	// 打开 GET /acp 长连接（SSE 推送）
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, t.cfg.BaseURL+"/acp", nil)
@@ -169,7 +169,7 @@ func (t *HTTPTransport) Call(ctx context.Context, method string, params any, out
 
 	// 简化实现：单独 POST + 阻塞等待 response body（不开 SSE 长连接用于本次响应）
 	// 真实生产应复用同一条 SSE 流匹配 id（性能更好）。
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := outbound.NewClient(30 * time.Second)
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		return ClassifyNetworkError(err)
@@ -230,7 +230,7 @@ func (t *HTTPTransport) Notify(ctx context.Context, method string, params any) e
 	if t.cfg.AuthToken != "" {
 		req.Header.Set("Authorization", "Bearer "+t.cfg.AuthToken)
 	}
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := outbound.NewClient(10 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		return ClassifyNetworkError(err)

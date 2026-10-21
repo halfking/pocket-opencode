@@ -18,6 +18,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/halfking/pocket-opencode/backend/internal/outbound"
 )
 
 // RefreshError is the structured error returned by DefaultOAuthRefresher
@@ -119,7 +121,7 @@ type DefaultOAuthRefresher struct {
 
 // NewDefaultOAuthRefresher returns a refresher with a 30s timeout client.
 func NewDefaultOAuthRefresher() *DefaultOAuthRefresher {
-	return &DefaultOAuthRefresher{Client: &http.Client{Timeout: 30 * time.Second}}
+	return &DefaultOAuthRefresher{Client: outbound.NewClient(30 * time.Second)}
 }
 
 // Refresh issues a refresh_token grant against the provider token endpoint.

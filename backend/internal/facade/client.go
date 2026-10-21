@@ -13,6 +13,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/halfking/pocket-opencode/backend/internal/outbound"
 )
 
 // Config configures a façade Client.
@@ -60,7 +62,7 @@ func NewClient(cfg Config) (*Client, error) {
 	}
 	httpClient := cfg.HTTPClient
 	if httpClient == nil {
-		httpClient = &http.Client{Timeout: time.Duration(timeout) * time.Second}
+		httpClient = outbound.NewClient(time.Duration(timeout) * time.Second)
 	}
 	return &Client{
 		cfg:            cfg,

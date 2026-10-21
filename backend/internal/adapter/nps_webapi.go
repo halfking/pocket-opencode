@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"strconv"
 	"time"
+
+	"github.com/halfking/pocket-opencode/backend/internal/outbound"
 )
 
 type NPSWebAPIAdapter struct {
@@ -22,7 +24,7 @@ func NewNPSWebAPIAdapter(baseURL, authKey string) *NPSWebAPIAdapter {
 	return &NPSWebAPIAdapter{
 		baseURL: baseURL,
 		authKey: authKey,
-		client:  &http.Client{Timeout: 10 * time.Second},
+		client:  outbound.NewClient(10 * time.Second),
 	}
 }
 

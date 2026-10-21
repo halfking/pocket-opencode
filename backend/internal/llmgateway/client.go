@@ -17,6 +17,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/halfking/pocket-opencode/backend/internal/outbound"
 )
 
 // normalizeBaseURL 把用户/配置里可能带 /v1 后缀的网关地址收敛为「不含 /v1、
@@ -110,12 +112,9 @@ func NewClient(baseURL, apiKey string) *Client {
 	return &Client{
 		BaseURL: normalizeBaseURL(baseURL),
 		APIKey:  apiKey,
-		Client: &http.Client{
-			Timeout: 90 * time.Second,
-			Transport: &http.Transport{
-				ResponseHeaderTimeout: 85 * time.Second,
-			},
-		},
+		Client: outbound.NewClient(90*time.Second, outbound.WithTransport(&http.Transport{
+			ResponseHeaderTimeout: 85 * time.Second,
+		})),
 	}
 }
 

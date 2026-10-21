@@ -21,6 +21,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/halfking/pocket-opencode/backend/internal/outbound"
 )
 
 // Client 是 kxmemory 客户端抽象接口。所有 handler 都通过这个接口访问
@@ -180,7 +181,7 @@ func NewClientWithPaths(baseURL, apiKey string, retry RetryConfig, paths Paths) 
 	return &HTTPClient{
 		BaseURL:   baseURL,
 		APIKey:    apiKey,
-		Client:    &http.Client{Timeout: 30 * time.Second},
+		Client:    outbound.NewClient(30 * time.Second),
 		retry:     retry,
 		paths:     NormalizePaths(paths),
 		jwtSecret: apiKey, // 同时作为 JWT 签发密钥

@@ -21,6 +21,8 @@ import (
 	"io"
 	"net/http"
 	"time"
+
+	"github.com/halfking/pocket-opencode/backend/internal/outbound"
 )
 
 // Embedder computes a vector for a text fragment. Stateless: no storage.
@@ -136,7 +138,7 @@ func NewEmbedder(baseURL, apiKey, model string) Embedder {
 	if model == "" {
 		model = "text-embedding-3-small"
 	}
-	return &OpenAIEmbedder{BaseURL: baseURL, APIKey: apiKey, Model: model, Client: &http.Client{Timeout: 30 * time.Second}}
+	return &OpenAIEmbedder{BaseURL: baseURL, APIKey: apiKey, Model: model, Client: outbound.NewClient(30 * time.Second)}
 }
 
 // NewLLM picks a provider by config. Groq is a good default for fast, cheap inference.
@@ -144,5 +146,5 @@ func NewLLM(baseURL, apiKey string) LLMClient {
 	if baseURL == "" {
 		baseURL = "https://api.groq.com/openai/v1"
 	}
-	return &OpenAILLM{BaseURL: baseURL, APIKey: apiKey, Client: &http.Client{Timeout: 60 * time.Second}}
+	return &OpenAILLM{BaseURL: baseURL, APIKey: apiKey, Client: outbound.NewClient(60 * time.Second)}
 }

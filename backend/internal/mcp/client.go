@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/halfking/pocket-opencode/backend/internal/outbound"
 )
 
 // Client MCP 客户端
@@ -114,14 +115,11 @@ func NewClientWithAuth(baseURL, secret, tenantID string, scopes []string, insecu
 		secret:   secret,
 		tenantID: tenantID,
 		scopes:   scopesCopy,
-		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
-			Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{
-					InsecureSkipVerify: insecureTLS, // 生产环境必须为 false
-				},
+		httpClient: outbound.NewClient(30*time.Second, outbound.WithTransport(&http.Transport{
+			TLSClientConfig: &tls.Config{
+				InsecureSkipVerify: insecureTLS, // 生产环境必须为 false
 			},
-		},
+		})),
 	}
 }
 

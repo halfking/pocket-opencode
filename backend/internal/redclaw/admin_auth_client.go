@@ -19,6 +19,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/halfking/pocket-opencode/backend/internal/outbound"
 )
 
 // AdminAuthClientConfig 描述 RedClaw Admin / Auth Agent 客户端配置。
@@ -72,8 +74,8 @@ func NewAdminAuthClient(cfg AdminAuthClientConfig) (*AdminAuthClient, error) {
 	}
 	return &AdminAuthClient{
 		cfg:       cfg,
-		adminHTTP: &http.Client{Timeout: time.Duration(timeout) * time.Second},
-		authHTTP:  &http.Client{Timeout: time.Duration(timeout) * time.Second},
+		adminHTTP: outbound.NewClient(time.Duration(timeout) * time.Second),
+		authHTTP:  outbound.NewClient(time.Duration(timeout) * time.Second),
 		authBase:  authBase,
 	}, nil
 }

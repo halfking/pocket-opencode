@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/halfking/pocket-opencode/backend/internal/background"
+	"github.com/halfking/pocket-opencode/backend/internal/outbound"
 )
 
 type OpenCodeHTTPAdapter struct {
@@ -21,7 +22,7 @@ type OpenCodeHTTPAdapter struct {
 
 func NewOpenCodeHTTPAdapter(timeoutMS int) *OpenCodeHTTPAdapter {
 	return &OpenCodeHTTPAdapter{
-		client:  &http.Client{},
+		client:  outbound.NewClient(time.Duration(timeoutMS) * time.Millisecond),
 		timeout: time.Duration(timeoutMS) * time.Millisecond,
 	}
 }
@@ -1088,10 +1089,8 @@ func (e *OpenCodeEvent) UnmarshalJSON(b []byte) error {
 // status: implemented — OpenCode GET /event (groups/event.ts:7-8,14-23) — SSE
 // wire format encoded by handlers/event.ts:12-86
 func (a *OpenCodeHTTPAdapter) SubscribeEvents(ctx context.Context, instanceBaseURL, directory, workspaceID string) (<-chan OpenCodeEvent, func(), error) {
-	// SSE 连接需要长超时，使用独立的 client
-	sseClient := &http.Client{
-		Timeout: 0, // 无限超时（由 ctx 控制）
-	}
+	// SSE 连接需要长超时，使用独立的 client（无总超时；上界由 ctx 提供）
+	sseClient := outbound.NewStreamingClient()
 
 	url := instanceBaseURL + "/event"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)

@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/halfking/pocket-opencode/backend/internal/outbound"
 )
 
 // CompanionClient is a client for the agent-companion read face.
@@ -37,7 +39,7 @@ func NewCompanionClient(baseURL, secret string) *CompanionClient {
 	return &CompanionClient{
 		baseURL: baseURL,
 		secret:  secret,
-		http:    &http.Client{Timeout: 12 * time.Second},
+		http:    outbound.NewClient(12 * time.Second),
 	}
 }
 
