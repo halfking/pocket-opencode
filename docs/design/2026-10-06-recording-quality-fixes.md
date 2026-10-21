@@ -113722,7 +113722,7 @@ node `--experimental-strip-types` 实跑：
   不可信时判「量不到」/ 负控：两个钟算出来的差值必须不同 / 量不到不许折成 0）
   + **原生采集窗口累积 4 条**；
 - `frontend/src/features/meetings/meeting-final-transcript.test.ts`（既有）
-  —— 新增 **K 组 9 条**（⭐ **直接跑真件**：`streamNativeAudioChunkSources` /
+  —— 新增 **K 组 10 条**（**行为 4 条** + **接线 6 条**；⭐ **直接跑真件**：`streamNativeAudioChunkSources` /
   ⭐ **负控**：缺 `durationSec` 的块必须量不到（= §954 真机上的行为）/
   读不到一片必须整条中止 / 接线扫描：适配层必须直接转发、形状只许手写一次、
   产出类型必须是具名的 / 两条路径都必须把窗口传下去）；
