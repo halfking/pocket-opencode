@@ -955,10 +955,38 @@ function planFromParts(count: number, partSeconds = 8): Array<{ wav: Uint8Array;
 
 describe('J · §954 原生链：分片接成整场音频的块（行为层）', () => {
   it('★ 一秒都不许丢：切出来的块加起来 == 喂进去的总时长', () => {
-    // 70 片 × 8 s = 560 s（刚好够 §954 的「组」阈值 480+20+60）
-    const chunks = planFromParts(70)
-    const total = chunks.reduce((n, c) => n + wavSecondsOf(c.wav), 0)
-    assert.ok(Math.abs(total - 560) < 0.001, `总时长 ${total}s ≠ 560s ⇒ 切点处丢了音频`)
+    // ⚠ 要覆盖**若干种总长**，不能只测一种：
+    //   会议恰好在切完时结束（余量为 0）与会议在**组还没满**时结束，两条路径不同。
+    //   ⭐ 只测前者的话，「收尾那一截不切就整块吐出去」那条变异会**打不红**
+    //   （那一截太短 ⇒ 本来就装得下一块 ⇒ 切不切都一样）—— 这是本轮真踩到的。
+    for (const parts of [69, 70, 71, 100, 150, 450]) {
+      const chunks = planFromParts(parts)
+      const total = chunks.reduce((n, c) => n + wavSecondsOf(c.wav), 0)
+      assert.ok(Math.abs(total - parts * 8) < 0.001,
+        `${parts} 片：总时长 ${total}s ≠ ${parts * 8}s ⇒ 切点处丢了音频`)
+    }
+  })
+
+  it('★★ 规划器手上留着的字节必须与会议时长无关（峰值内存 O(块)）', () => {
+    // ⚠⚠ 这条量的是**手上留着的字节**（carry + 本组），不是块长。
+    //   原因：把切块阈值写成「只按这一轮新收的秒数算」⇒ carry **单调增长**
+    //   ⇒ 手上留着的字节随时长线性涨 ⇒ 峰值内存回到 O(时长)
+    //   ⇒ 而**块长不变、时间轴连续、一秒不丢**三条判据**照样全绿**
+    //   ⇒ ⇒ 「内存不随时长变」这条性质**必须单独量**，量不到就等于没守。
+    const held = (count: number): number => {
+      const planner = new NativeWavChunkPlanner()
+      let max = 0
+      for (let i = 0; i < count; i++) {
+        planner.push(makeWavPart(8, (i % 7) * 900 - 2700))
+        max = Math.max(max, planner.heldBytes)
+      }
+      return max
+    }
+    const one = held(450)   // 1 小时
+    const four = held(1800) // 4 小时
+    assert.ok(four - one <= 32000,
+      `1 小时手上留 ${(one / 1024 / 1024).toFixed(1)} MB、4 小时留 ${(four / 1024 / 1024).toFixed(1)} MB `
+      + '⇒ 手上留的字节随时长涨 ⇒ 峰值内存回到 O(时长)')
   })
 
   it('★ 时间轴必须连续（每块的 offsetSec == 上一块的起点 + 上一块的时长）', () => {
