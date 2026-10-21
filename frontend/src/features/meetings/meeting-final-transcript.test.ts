@@ -1298,6 +1298,29 @@ describe('K · §955 接线层（源码扫描，⚠ 零牙已如实标注）', (
       '生产者的产出类型又变回匿名了 ⇒ 字段漏掉时编译期不再报错（那正是 §954 的病根）')
   })
 
+  // ⚠⚠⚠ 这条是 §955 变异 **M8 逼出来的**：M8 把适配层改回「自己手写形状」
+  //   （`yield { blob, offsetSec }`）⇒ **行为判据全绿**（它们量的是纯函数那一层）
+  //   ⇒ 只有**类型层**抓得到 ⇒ ⇒ 「生产走的那一段」与「判据量到的那一段」**不是同一段**。
+  //
+  //   ⇒ 而生产入口（`streamNativeMeetingAudioChunks`）住在 import 了
+  //     `@capacitor/filesystem` 与 `local-db` 的模块里 ⇒ **node 里跑不到**
+  //     （`local-db` 链上还有一批无扩展名 import，§875 登记的遗留）
+  //     ⇒ ⇒ 「让行为判据直接跑生产入口」这条路**当时不通**。
+  //   ⇒ ⇒ 退而求其次：**钉住「形状只写一处」这条结构不变式** ——
+  //     形状只允许在纯模块里手写一次 ⇒ 适配层只许转发。
+  //   ⇒ ⇒ 而这条扫描正好能抓住**类型层抓不到**的那种手写（见 M10：
+  //     `durationSec: 0` 是**类型合法**的 ⇒ 只有这条扫描能抓）。
+  it('★★ 适配层必须**直接转发**（形状只在纯模块里手写一次）', () => {
+    const s = stripComments(read('./audio-parts.ts'))
+    // ⚠ 绝对条数：形状**只许**在纯模块里出现一次。
+    const yields = s.match(/\byield\b/g) || []
+    assert.equal(yields.length, 1,
+      `适配层里有 ${yields.length} 处 yield ⇒ 形状被手写了不止一次 ⇒ `
+      + '「真件与被测的那一段分家」的老毛病又回来了')
+    assert.match(s, /yield\* streamNativeAudioChunkSources\(/,
+      '适配层没有直接转发那个纯函数 ⇒ 生产走的那一段不是被测的那一段')
+  })
+
   it('★ 护栏的墙钟必须走那个**纯函数**（决策不得埋在 finalizeRecording 体内）', () => {
     const s = stripComments(read('./meeting-recording-finalize.ts'))
     assert.match(s, /resolveDurationGuardInput\(/,
