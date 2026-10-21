@@ -20,11 +20,14 @@ import {
   resolveWallClockDurationMs,
   resolveDurationGuardInput,
   nativeCaptureWindowAfterPart,
+  nativeCaptureWindowTrustable,
+  describeCoverageGap,
   wavDurationSec,
 } from '../recording-duration-consistency.ts'
 import {
   createNativePartTimelineState,
   describeNativeTimelineDegradation,
+  isNativeTimelineExact,
   readNativeEpoch,
   rebaseNativePartTimeline,
 } from '../native-part-timeline.ts'
@@ -490,7 +493,7 @@ describe('§955 · 护栏的墙钟必须与盘上音频同源', () => {
   it('★★ 原生链且窗口可信 ⇒ 墙钟必须换成**原生采集窗口**（不是 JS 墙钟）', () => {
     const g = resolveDurationGuardInput({
       elapsedMs: 62_000,
-      nativeCapture: { used: true, windowMs: 60_000 },
+      nativeCapture: { used: true, windowMs: 60_000, gapMs: 0 },
       measuredAudioSec: 57.36,
     })
     assert.equal(g.source, 'native-window')
@@ -506,7 +509,7 @@ describe('§955 · 护栏的墙钟必须与盘上音频同源', () => {
   it('★★ 原生链但窗口不可信（切过设备）⇒ 判「量不到」，**不许**拿 JS 墙钟顶替', () => {
     const g = resolveDurationGuardInput({
       elapsedMs: 62_000,
-      nativeCapture: { used: true, windowMs: null },
+      nativeCapture: { used: true, windowMs: null, gapMs: null },
       measuredAudioSec: 60,
     })
     assert.equal(g.source, 'native-untrusted')
@@ -521,7 +524,7 @@ describe('§955 · 护栏的墙钟必须与盘上音频同源', () => {
     // 若错用 JS 墙钟 62s ⇒ 报「差 2s」；用同源窗口 61.5s ⇒ 报「差 1.5s」—— 后者才是真的。
     const wrong = assessDurationDrift(62_000, 60)
     const right = assessDurationDrift(
-      resolveDurationGuardInput({ elapsedMs: 62_000, nativeCapture: { used: true, windowMs: 61_500 }, measuredAudioSec: 60 }).wallClockMs,
+      resolveDurationGuardInput({ elapsedMs: 62_000, nativeCapture: { used: true, windowMs: 61_500, gapMs: 0 }, measuredAudioSec: 60 }).wallClockMs,
       60,
     )
     assert.equal(wrong.driftMs, 2000)
@@ -533,7 +536,7 @@ describe('§955 · 护栏的墙钟必须与盘上音频同源', () => {
     for (const bad of [undefined, null, 0, Number.NaN, -5]) {
       const g = resolveDurationGuardInput({
         elapsedMs: 60_000,
-        nativeCapture: { used: true, windowMs: 60_000 },
+        nativeCapture: { used: true, windowMs: 60_000, gapMs: 0 },
         measuredAudioSec: bad as number | null | undefined,
       })
       assert.equal(g.audioSec, null, `${String(bad)} 被折成了 ${g.audioSec} ⇒ 「量不到」与「量为 0」混了`)
@@ -544,7 +547,7 @@ describe('§955 · 护栏的墙钟必须与盘上音频同源', () => {
   it('★ 原生窗口为 0（还没有分片到）⇒ 判「量不到」，不许当成 0ms 的墙钟去比', () => {
     const g = resolveDurationGuardInput({
       elapsedMs: 60_000,
-      nativeCapture: { used: true, windowMs: 0 },
+      nativeCapture: { used: true, windowMs: 0, gapMs: null },
       measuredAudioSec: 60,
     })
     assert.equal(g.source, 'native-untrusted')
@@ -554,7 +557,7 @@ describe('§955 · 护栏的墙钟必须与盘上音频同源', () => {
   it('★ nativeCapture 缺省 / used=false ⇒ 一律走 JS 墙钟（原生链没启用时）', () => {
     assert.equal(resolveDurationGuardInput({ elapsedMs: 1_000, measuredAudioSec: 1 }).source, 'js-wall-clock')
     assert.equal(
-      resolveDurationGuardInput({ elapsedMs: 1_000, nativeCapture: { used: false, windowMs: null }, measuredAudioSec: 1 }).source,
+      resolveDurationGuardInput({ elapsedMs: 1_000, nativeCapture: { used: false, windowMs: null, gapMs: null }, measuredAudioSec: 1 }).source,
       'js-wall-clock',
     )
   })
@@ -713,10 +716,12 @@ describe('§956 · 会话时间轴：换轮次必须精确重基', () => {
   })
 
   it('★ 退化留痕文案必须说清「近似」与「不会被裁掉正文」', () => {
-    const r = rebaseNativePartTimeline(
-      { baseEpochMs: null, lastEndMs: 8_000, degraded: false },
-      { startMs: 0, endMs: 8_000 },
-    )
+    // ⚠ 状态用**工厂**造（不手写字面量）⇒ §957 给状态加了字段后，
+    //   这里不会因为「字面量少了字段」而悄悄变成另一个状态。
+    const st = rebaseNativePartTimeline(
+      createNativePartTimelineState(), { startMs: 0, endMs: 8_000 },
+    ).state
+    const r = rebaseNativePartTimeline(st, { startMs: 0, endMs: 8_000 })
     const msg = describeNativeTimelineDegradation(r, { startMs: 0, endMs: 8_000 })
     assert.match(msg, /退化/)
     assert.match(msg, /钳位/)
@@ -794,3 +799,267 @@ describe('§956 · 接线层（源码扫描，⚠ 零牙已如实标注）', () 
   })
 })
 
+
+// ══════════════════════════════════════════════════════════════════════════
+// §957 · 护栏在原生链**跨设备**之后仍然能判，并把「切换空隙」与「真丢音频」分开
+//
+// ── 缺陷链（每一步都在生产代码里可核对）──
+//   1. §955 给原生链的护栏定了规则：「轮次 > 1（切过设备）⇒ 窗口不可信
+//      ⇒ 判『量不到』」——理由是「原生时间轴**回卷** ⇒ 窗口错基」。
+//   2. §956 把各轮**精确**重基到同一根会话时间轴 ⇒ **那个理由已经不成立**
+//      ⇒ 若还照旧，护栏在原生链跨设备时将**永远**判「量不到」。
+//   3. 而跨设备时窗口里**含**一段「没有音频」的墙钟（切设备 ⇒ 原生服务重启）
+//      ⇒ 直接拿它比音频 ⇒ 会误报「音频比墙钟短」（**假警报**）。
+//
+// ── 修法 ──
+//   把「切换空隙」变成一个**可测的量**（`native-part-timeline.ts` 的 `gapMs`）
+//   ⇒ 护栏要比的墙钟 = 窗口 − 空隙 ⇒ 与盘上音频**同口径**。
+//
+// ⚠⚠ **空隙只算「轮次之间」的那段**：同一轮里的跳跃是「**丢了一片**」
+//   （原生循环里片是连续的：`partStartRel = nowRel`）
+//   ⇒ 那是**真丢音频** ⇒ 护栏**必须**报出来，不许被当成空隙放过去。
+// ══════════════════════════════════════════════════════════════════════════
+
+describe('§957 · 空隙只算「轮次之间」那段（丢片不算）', () => {
+  /** 第一轮采集原点的绝对墙钟（毫秒）。 */
+  const EPOCH_1 = 1_700_000_000_000
+  /** 第二轮采集原点：第一轮 24s + 切换空隙 2_500ms（切设备那一下的墙钟）。 */
+  const EPOCH_2 = EPOCH_1 + 24_000 + 2_500
+
+  /** 一轮的 3 片（生产形状：每片 8s，轮内相对量）。 */
+  const roundOf = (epochMs: number, n = 3) =>
+    Array.from({ length: n }, (_, i) => ({
+      startMs: i * 8_000, endMs: (i + 1) * 8_000, epochMs,
+    }))
+
+  /** 把一串分片跑过重基，返回逐片结果。 */
+  const runTimeline = (parts: Array<{ startMs: number; endMs: number; epochMs?: number }>) => {
+    let st = createNativePartTimelineState()
+    return parts.map((p) => {
+      const r = rebaseNativePartTimeline(st, p)
+      st = r.state
+      return r
+    })
+  }
+
+  it('★ 轮次之间的跳跃 = 切换空隙（护栏要比的话要扣掉它）', () => {
+    const out = runTimeline([...roundOf(EPOCH_1), ...roundOf(EPOCH_2)])
+    assert.equal(out[3].roundChanged, true, '第二轮第一片必须被认成「换了轮次」')
+    assert.equal(out[3].gapMs, 2_500, '切换空隙必须是 2_500ms')
+    assert.equal(out[3].state.gapMs, 2_500, '空隙必须累计进状态')
+    assert.equal(out[5].state.gapMs, 2_500, '同一轮里后续的片不得再加空隙')
+  })
+
+  it('★★ 同一轮里的跳跃 = 丢了一片 ⇒ **不算**空隙（否则护栏会把真丢音频放过去）', () => {
+    // 原生循环里片是连续的（partStartRel = nowRel）⇒ 丢一片时下一片的时间戳会跳 8s。
+    const out = runTimeline([
+      { startMs: 0, endMs: 8_000, epochMs: EPOCH_1 },
+      { startMs: 16_000, endMs: 24_000, epochMs: EPOCH_1 },   // ← 中间那片没到
+      { startMs: 24_000, endMs: 32_000, epochMs: EPOCH_1 },
+    ])
+    assert.equal(out[1].roundChanged, false, '同一轮不算换轮次')
+    assert.equal(out[1].gapMs, 0, '同一轮里的跳跃是丢片，不许算成空隙')
+    assert.equal(out[2].state.gapMs, 0, '丢片不许被当成空隙累计')
+    // ⚠ 但时间轴本身仍要单调（丢片那一片只是没了，不是倒退）。
+    assert.equal(out[1].startMs, 16_000)
+    assert.equal(out[1].state.degraded, false, '丢片不是退化（时间轴仍是精确的）')
+  })
+
+  it('★ 单轮全程 gapMs = 0（单轮原生链的行为一字未变）', () => {
+    const out = runTimeline(roundOf(EPOCH_1))
+    assert.equal(out[out.length - 1].state.gapMs, 0, '单轮没有轮次边界 ⇒ 没有空隙')
+    assert.equal(out[out.length - 1].exact, true)
+  })
+
+  it('★ 有一片没带 epoch ⇒ 时间轴**不精确**（分不清空隙与丢片 ⇒ 不许拿它去比）', () => {
+    const out = runTimeline([
+      { startMs: 0, endMs: 8_000, epochMs: EPOCH_1 },
+      { startMs: 8_000, endMs: 16_000 },              // ← 旧原生包：不带 epoch
+      { startMs: 16_000, endMs: 24_000, epochMs: EPOCH_1 },
+    ])
+    assert.equal(out[0].exact, true, '第一片带 epoch 时还是精确的')
+    assert.equal(out[1].exact, false, '有一片没带 epoch ⇒ 不精确')
+    assert.equal(out[2].state.allEpochsKnown, false, '「每片都带 epoch」是粘性的')
+    assert.equal(isNativeTimelineExact(out[2].state), false)
+  })
+
+  it('★ 被钳位过 ⇒ 不精确（近似时间轴不许拿去比音频）', () => {
+    // 陈旧 epoch ⇒ 倒退 ⇒ 被钳位 ⇒ 退化 ⇒ 不精确。
+    let st = createNativePartTimelineState()
+    st = rebaseNativePartTimeline(st, { startMs: 0, endMs: 8_000, epochMs: EPOCH_1 }).state
+    const r = rebaseNativePartTimeline(st, { startMs: 0, endMs: 8_000, epochMs: EPOCH_1 - 60_000 })
+    assert.equal(r.state.degraded, true)
+    assert.equal(r.exact, false, '被钳位过的时间轴不许算精确')
+    assert.equal(isNativeTimelineExact(r.state), false)
+  })
+})
+
+describe('§957 · 原生采集窗口的可信规则（理由换了 ⇒ 规则也换了）', () => {
+  it('★ 单轮 ⇒ 可信（与 §955 一字不差 ⇒ 单轮原生链行为不变）', () => {
+    assert.equal(nativeCaptureWindowTrustable({ runs: 1, timelineExact: false }), true)
+    assert.equal(nativeCaptureWindowTrustable({ runs: 1, timelineExact: true }), true)
+  })
+
+  it('★★ 多轮 + 时间轴精确 ⇒ **可信**（§957 的新事：护栏不再永久瞎掉）', () => {
+    assert.equal(nativeCaptureWindowTrustable({ runs: 2, timelineExact: true }), true)
+    assert.equal(nativeCaptureWindowTrustable({ runs: 3, timelineExact: true }), true)
+  })
+
+  it('★ 多轮 + 时间轴不精确 ⇒ 不可信（宁可判「量不到」，也不误报）', () => {
+    assert.equal(nativeCaptureWindowTrustable({ runs: 2, timelineExact: false }), false)
+    assert.equal(nativeCaptureWindowTrustable({ runs: 3, timelineExact: false }), false)
+  })
+
+  it('★ 非法轮次（NaN / 负数）不得把「多轮」判成「可信」', () => {
+    // 轮次读不出来时不能乐观 ⇒ 按单轮处理（单轮本来就是可信的），
+    // 但**不得**因为读数非法就跳到多轮分支去。
+    assert.equal(nativeCaptureWindowTrustable({ runs: Number.NaN, timelineExact: false }), true)
+    assert.equal(nativeCaptureWindowTrustable({ runs: -1, timelineExact: false }), true)
+  })
+})
+
+describe('§957 · 护栏要比的墙钟必须扣掉切换空隙', () => {
+  it('★★ 跨设备一场：扣掉空隙后与实测音频同口径 ⇒ **不误报**', () => {
+    // 第一轮 3 片（24s）+ 切换空隙 2.5s + 第二轮 3 片（24s）
+    // ⇒ 窗口 50_500ms，盘上音频 48s（空隙期间没录）。
+    const g = resolveDurationGuardInput({
+      elapsedMs: 51_000,
+      nativeCapture: { used: true, windowMs: 50_500, gapMs: 2_500 },
+      measuredAudioSec: 48,
+    })
+    assert.equal(g.source, 'native-window')
+    assert.equal(g.wallClockMs, 48_000, '必须扣掉切换空隙（那段时间没有音频）')
+    assert.equal(g.coverageGapMs, 2_500, '空隙必须被单独交出来（不能吞掉）')
+    const d = assessDurationDrift(g.wallClockMs, g.audioSec)
+    assert.equal(d.ok, true, '切换空隙不是丢音频 ⇒ 不许误报')
+    assert.equal(d.reason, 'within-tolerance')
+  })
+
+  it('★ 负控：不扣空隙就一定会误报「音频比墙钟短」（否则上面那条恒真）', () => {
+    const d = assessDurationDrift(50_500, 48)
+    assert.equal(d.ok, false, '不扣空隙 ⇒ 2.5s 的空隙被当成丢音频 ⇒ 误报')
+    assert.equal(d.reason, 'audio-shorter')
+  })
+
+  it('★★ 同一轮里丢了一片 ⇒ 护栏**必须**报出来（不许被当成空隙放过去）', () => {
+    // 窗口 48s（时间戳说的），但盘上少了一片（8s）⇒ 实测音频只有 40s。
+    const g = resolveDurationGuardInput({
+      elapsedMs: 48_000,
+      nativeCapture: { used: true, windowMs: 48_000, gapMs: 0 },
+      measuredAudioSec: 40,
+    })
+    const d = assessDurationDrift(g.wallClockMs, g.audioSec)
+    assert.equal(d.ok, false, '真丢音频必须报出来')
+    assert.equal(d.reason, 'audio-shorter')
+    assert.equal(d.driftMs, 8_000)
+  })
+
+  it('★ 单轮原生链：窗口与来源与 §955 **一字未变**（gapMs=0 ⇒ 不扣）', () => {
+    const g = resolveDurationGuardInput({
+      elapsedMs: 62_000,
+      nativeCapture: { used: true, windowMs: 60_000, gapMs: 0 },
+      measuredAudioSec: 57.36,
+    })
+    assert.equal(g.source, 'native-window')
+    assert.equal(g.wallClockMs, 60_000, '单轮原生链的墙钟被改了 ⇒ §955 以来行为变了')
+    assert.equal(g.coverageGapMs, 0)
+  })
+
+  it('★ 非法 gapMs（NaN / Infinity / 负数 / 缺失）⇒ 当 0（不许让窗口变负）', () => {
+    for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, -1, undefined, null]) {
+      const g = resolveDurationGuardInput({
+        elapsedMs: 60_000,
+        nativeCapture: { used: true, windowMs: 60_000, gapMs: bad as number | null },
+        measuredAudioSec: 60,
+      })
+      assert.equal(g.wallClockMs, 60_000, `${String(bad)} 污染了窗口`)
+      assert.equal(g.coverageGapMs, 0, `${String(bad)} 被当成空隙了`)
+    }
+  })
+
+  it('★ 窗口不可信时：空隙也必须说「量不到」（null），不许说 0', () => {
+    const g = resolveDurationGuardInput({
+      elapsedMs: 60_000,
+      nativeCapture: { used: true, windowMs: null, gapMs: null },
+      measuredAudioSec: 60,
+    })
+    assert.equal(g.source, 'native-untrusted')
+    assert.equal(g.coverageGapMs, null, '「量不到」与「量到是 0」必须能分开（§803.1）')
+    assert.equal(assessDurationDrift(g.wallClockMs, g.audioSec).reason, 'no-ground-truth')
+  })
+
+  it('★ Web / iOS 链：空隙恒为 0，墙钟一字未变（§805 以来行为不变）', () => {
+    const g = resolveDurationGuardInput({ elapsedMs: 62_000, measuredAudioSec: 57.36 })
+    assert.equal(g.source, 'js-wall-clock')
+    assert.equal(g.wallClockMs, 62_000)
+    assert.equal(g.coverageGapMs, 0)
+  })
+})
+
+describe('§957 · 空隙的留痕文案（只到开发者 console，§813）', () => {
+  it('★ 有空隙 ⇒ 文案必须说清「本来就没录」与「不算丢音频」', () => {
+    const msg = describeCoverageGap(2_500)
+    assert.ok(msg, '有空隙却没有文案')
+    assert.match(msg, /2500ms/)
+    assert.match(msg, /不算音频丢失/)
+  })
+
+  it('★ 没有空隙 / 量不到 ⇒ 不出声（不许制造噪声）', () => {
+    assert.equal(describeCoverageGap(0), null)
+    assert.equal(describeCoverageGap(null), null)
+    assert.equal(describeCoverageGap(Number.NaN), null)
+    assert.equal(describeCoverageGap(-5), null)
+  })
+})
+
+describe('§957 · 接线层（源码扫描，⚠ 零牙已如实标注）', () => {
+  const runtime = () => stripComments(read('../../../native/recordingRuntime.ts'))
+
+  it('★★ 窗口必须用**重基后**的会话坐标，不是轮内相对量', () => {
+    const s = runtime()
+    const at = s.indexOf('listenBackgroundMicParts(')
+    assert.ok(at > 0, '找不到原生分片订阅')
+    const w = s.slice(at, at + 900)
+    assert.match(w, /nativeCaptureWindowAfterPart\(/,
+      '原生分片回调没有走那个纯函数 ⇒ 窗口怎么累积又成了没有行为门的决策')
+    // ⚠⚠ 负向锚点：喂进去的**不能**是 `part.endMs`（轮内相对量）——
+    //   否则第二轮（相对量从 0 起）会把窗口拉回第二轮的跨度
+    //   ⇒ 与盘上音频（各轮之和）不可比 ⇒ 护栏算出巨大的假漂移。
+    assert.doesNotMatch(w, /part\.endMs/,
+      '窗口必须用重基后的会话坐标（t.endMs），不能用轮内相对量（part.endMs）')
+    assert.match(w, /\.endMs/, '窗口必须来自某一片的结束时间')
+  })
+
+  it('★ 窗口只许在 freshSession 里清零一次（切设备走 resume ⇒ 清了就只剩最新一轮）', () => {
+    const s = runtime()
+    const fi = s.indexOf('if (freshSession) {')
+    const wi = s.indexOf('this.nativeCaptureWindowMs = 0')
+    assert.ok(fi > 0, '找不到 freshSession 分支')
+    assert.ok(wi > fi, '窗口的清零必须在 freshSession 分支里（新的一场才有新的窗口）')
+    assert.equal((s.match(/this\.nativeCaptureWindowMs = 0/g) ?? []).length, 1,
+      '窗口只许在 freshSession 里清零一次（会话坐标跨轮次是连续的）')
+  })
+
+  it('★ 信任规则必须走那个**纯函数**（决策不得埋在 runtime 体内）', () => {
+    const s = runtime()
+    const at = s.indexOf('listenBackgroundMicParts(')
+    assert.ok(at > 0, '找不到原生分片订阅')
+    const w = s.slice(at, at + 900)
+    assert.match(w, /nativeCaptureWindowTrustable\(/,
+      '原生分片回调没有走那个纯函数 ⇒ 「窗口可不可信」又成了没有行为门的决策')
+    assert.match(s, /isNativeTimelineExact\(/,
+      'runtime 没有用那个纯函数判时间轴是否精确')
+  })
+
+  it('★ 快照必须把**空隙**一起交出去（护栏要扣它，也不能吞掉它）', () => {
+    const s = runtime()
+    assert.match(s, /gapMs:\s*this\.nativeTimeline\.gapMs/,
+      '快照没有把空隙交出去 ⇒ 护栏要么误报、要么看不见切换空隙')
+  })
+
+  it('★ 收尾链必须把空隙**单独留痕**（不许吞掉 ⇒ 用户确实少了一截录音）', () => {
+    const s = stripComments(read('../meeting-recording-finalize.ts'))
+    assert.match(s, /describeCoverageGap\(/,
+      '收尾链没有把切换空隙说出来 ⇒ 用户少的那一截录音被静默吞掉了')
+  })
+})

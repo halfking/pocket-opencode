@@ -227,3 +227,54 @@ describe('§956 · 原生分片必须带上本轮采集原点（epochMs）', () 
     assert.match(bridgeCode, /epochMs !== undefined/, '缺失的 epoch 不得写进载荷')
   })
 })
+
+// ══════════════════════════════════════════════════════════════════════════
+// §957 · 同一轮里的原生分片必须**首尾相接**
+//
+// ── 为什么这条是 §957 的地基 ──
+//   §957 要把「切换空隙」（轮次之间那段**没有音频**的墙钟）与「丢了一片」
+//   （同一轮里时间戳跳了一段）**分开** —— 否则护栏会把真丢音频当成空隙放过去。
+//   ⇒ 能分开的前提是：**同一轮里的分片本来就是连续的**
+//     （`MeetingRecordService.loop()` 每发一片就把 `partStartRel` 推进到 `nowRel`）
+//   ⇒ 于是「同一轮里出现跳跃」只可能是「丢了一片」，而不会是「原生侧留了缝」。
+//
+// ⚠⚠ 扫描前**必须剥注释**（共用底座 `src/__tests__/source-scan.mjs`）：
+//   本节在 Java 里写了大量提到 `partStartRel` / `nowRel` 的说明文字
+//   ⇒ 不剥的话下面每一条断言都会命中**注释**而不是代码。
+// ══════════════════════════════════════════════════════════════════════════
+
+describe('§957 · 同一轮里的原生分片必须首尾相接', () => {
+  const serviceCode = stripVueComments(service)
+
+  it('★ 每发完一片必须把 partStartRel 推进到 nowRel（片与片之间不留缝）', () => {
+    // ⚠ 锚定「赋值出现在 emitPart **之后**」—— 顺序反了就是「先推进再发」，
+    //   那样这一片的起点会落在**下一段**音频上（时间戳与音频错位）。
+    // ⚠ 末尾的 `;` 是刻意的：`partStartRel = nowRel + 100`（留缝）不该被这条放过。
+    assert.match(
+      serviceCode,
+      /emitPart\([^)]*\);[\s\S]{0,200}?partStartRel\s*=\s*nowRel\s*;/,
+      '发片之后没有把 partStartRel 推进到 nowRel ⇒ 同一轮里的片不再连续 ⇒ 「丢片」与「空隙」分不开了',
+    )
+  })
+
+  it('★ partStartRel 的初值必须是 0（第一片从原点开始）', () => {
+    assert.match(serviceCode, /long partStartRel = 0;/,
+      '第一片不从 0 开始 ⇒ 轮内相对量的原点对不上')
+  })
+
+  it('★ captureStart 必须**每轮只取一次**（取两次 ⇒ 时间轴又回卷）', () => {
+    const n = (serviceCode.match(/captureStart\s*=\s*System\.currentTimeMillis\(\)/g) ?? []).length
+    assert.equal(n, 1, `captureStart 被取了 ${n} 次 ⇒ 每轮必须只取一次（否则 §956 的重基失效）`)
+  })
+
+  it('★ 两处 emit（定时切片 + 收尾补片）都必须带**本轮**原点', () => {
+    const calls = [...serviceCode.matchAll(/emitPart\(([^)]*)\)/g)].map((m) => m[1])
+    assert.equal(calls.length, 2, '原生服务应当有两处 emitPart（定时切片 + 收尾补片）')
+    for (const args of calls) {
+      const parts = args.split(',').map((s) => s.trim())
+      assert.equal(parts.length, 5, 'emitPart 必须带 epoch（第 5 个实参）')
+      assert.equal(parts[4], 'captureStart',
+        '两处 emit 都必须带本轮原点（否则最后一片落回另一根轴 ⇒ 空隙算错）')
+    }
+  })
+})

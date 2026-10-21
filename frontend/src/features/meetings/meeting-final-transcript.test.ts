@@ -1351,7 +1351,7 @@ describe('K · §955 接线层（源码扫描，⚠ 零牙已如实标注）', (
       '收尾声明了通道却没读它 ⇒ 那是一条死通道')
   })
 
-  it('★ runtime 必须把原生侧带来的**同源墙钟**留住（endMs 此前只用于实时分段）', () => {
+  it('★ runtime 必须把原生侧带来的**同源墙钟**留住（§957：改用重基后的会话坐标）', () => {
     const s = stripComments(read('../../native/recordingRuntime.ts'))
     const at = s.indexOf('listenBackgroundMicParts(')
     assert.ok(at > 0, '找不到原生分片订阅')
@@ -1360,7 +1360,11 @@ describe('K · §955 接线层（源码扫描，⚠ 零牙已如实标注）', (
     //   而不只是「窗口里出现过 endMs」。
     assert.match(window, /nativeCaptureWindowAfterPart\(/,
       '原生分片回调没有走那个纯函数 ⇒ 窗口怎么累积又成了没有行为门的决策')
-    assert.match(window, /part\.endMs/,
-      '原生分片回调里没有读 endMs ⇒ 原生链唯一与音频同源的墙钟被丢掉了')
+    // ⚠⚠ §957：**指向改了，语义没改** —— 语义仍是「窗口由原生分片的**结束时间**累积」，
+    //   但锚点从 `part.endMs`（轮内相对量）改成 `t.endMs`（**重基后**的会话坐标）：
+    //   后者在第二轮（相对量从 0 起）会把窗口拉回去 ⇒ 与盘上音频（各轮之和）不可比。
+    //   ⇒ 负控（不许用回轮内相对量）放在 §957 那组里（recording-duration-consistency.test.ts）。
+    assert.match(window, /\.endMs/,
+      '原生分片回调里没有读结束时间 ⇒ 原生链唯一与音频同源的墙钟被丢掉了')
   })
 })
