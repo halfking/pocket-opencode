@@ -5,6 +5,7 @@
 import { Capacitor, registerPlugin as capRegisterPlugin } from '@capacitor/core'
 import type { AudioInput } from './audio-inputs'
 import { classifyAudioLabel, rankAudioInputs } from './audio-inputs'
+import { readNativeEpoch } from '../features/meetings/native-part-timeline'
 
 export interface NativeMicDevice {
   deviceId: string
@@ -96,6 +97,19 @@ export interface NativePart {
   dataBase64: string
   startMs: number
   endMs: number
+  /**
+   * §956：**本轮**采集原点的绝对墙钟（毫秒）—— 可选。
+   *
+   * ⚠⚠ **`startMs/endMs` 是「轮内相对量」**：原生服务每启动一轮（中途切设备
+   *   就会重启一轮）就把原点重取一次 ⇒ 相对量**从 0 重新开始** ⇒ 直接拿它当
+   *   会话坐标会**时间轴回卷**（后半场被排到前半场之前、且相邻段重叠 ⇒
+   *   去重的精确裁剪档被打开 ⇒ 正文可能被吃掉）。
+   * ⇒ 这个 epoch 就是**把各轮拼回同一根轴**所需的那一个事实。
+   *
+   * ⚠ **可选是刻意的**：旧原生包不带它 ⇒ 消费侧走「钳位保单调」的降级路
+   *   （时间轴是近似的，但**不倒退**）。
+   */
+  epochMs?: number
 }
 
 /**
@@ -131,13 +145,24 @@ export async function listenBackgroundMicParts(
   if (!_plugin) return () => {}
   const handles: Array<{ remove: () => Promise<void> }> = []
   handles.push(await _plugin.addListener('partReady', (data) => {
-    onPart({
+    // ⚠ §956：缺失/非法一律**不给**（undefined），绝不当成 0（0 = 1970 年的原点）。
+    //   解析规则在纯模块里（`readNativeEpoch`）⇒ 那条「不得折成 0」是**行为**判据。
+    const epochMs = readNativeEpoch(data.epochMs)
+    // ⚠⚠ 刻意**用类型标注构造载荷**（而不是对象字面量 + 展开）：
+    //   这样「载荷形状」由**类型层**守着 —— 少一个字段 / 多一个字段
+    //   ⇒ **编译期**就红（§955 的教训：类型层能兜住的，别让扫描重复守；
+    //   类型层兜不住的（值错、语义错）才另配行为判据）。
+    const part: NativePart = {
       seq: Number(data.seq ?? 0),
       mimeType: String(data.mimeType ?? 'audio/wav'),
       dataBase64: String(data.dataBase64 ?? ''),
       startMs: Number(data.startMs ?? 0),
       endMs: Number(data.endMs ?? 0),
-    })
+    }
+    // ⚠ 缺失的 epoch **不写进载荷**（而不是写 undefined）⇒ 消费侧能区分
+    //   「没有原点」与「原点是 0」。
+    if (epochMs !== undefined) part.epochMs = epochMs
+    onPart(part)
   }))
   handles.push(await _plugin.addListener('error', (data) => {
     onError?.(String(data.message ?? '录音失败'))

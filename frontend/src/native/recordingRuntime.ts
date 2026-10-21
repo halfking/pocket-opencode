@@ -86,6 +86,11 @@ import {
   resolveWallClockDurationMs,
   type NativeCaptureSnapshot,
 } from '../features/meetings/recording-duration-consistency'
+import {
+  createNativePartTimelineState,
+  describeNativeTimelineDegradation,
+  rebaseNativePartTimeline,
+} from '../features/meetings/native-part-timeline'
 
 // ---------------------------------------------------------------------------
 // 录音语音播报（进程级单例）
@@ -284,6 +289,22 @@ export class MeetingRecorderRuntime {
   /** §955：这一场录音里原生服务启动过几轮（>1 ⇒ 切过设备）。 */
   private nativeCaptureRuns = 0
   /**
+   * §956：原生分片的**会话时间轴**状态。
+   *
+   * ⚠⚠ 原生侧的 `part.startMs/part.endMs` 是**轮内相对量**（相对本轮的
+   *   `captureStart`）⇒ 原生服务**每重启一轮**（中途切设备）它就从 0 重新开始
+   *   ⇒ 直接拿它当分段时间范围 ⇒ **时间轴回卷**：
+   *     ① 分段按 `startMs` 有序插入 ⇒ 后半场被排到**最前面**；
+   *     ② 相邻段**重叠** ⇒ 去重的**精确裁剪档**（§634/§683 认定生产不可达、
+   *        能吃掉正文的那一档）被打开；
+   *     ③ 整场重转的回执按时间重叠分桶 ⇒ 后半场的话挂到前半场说话人名下。
+   * ⇒ 这里由 JS 侧持有时间轴：原生每片多报一个 `epochMs`（本轮采集原点的
+   *   绝对墙钟）⇒ 各轮**精确**拼回同一根轴（轮次之间的真实空隙如实保留）。
+   * ⇒ 拿不到 epoch（旧原生包）时走**钳位保单调**的降级路：时间轴是近似的，
+   *   但**永不倒退**（⇒ ② 那条损伤不成立）。
+   */
+  private nativeTimeline = createNativePartTimelineState()
+  /**
    * §955：取「原生采集窗口」的快照。
    *
    * ⚠⚠ **刻意做成方法而不是字段**：窗口会随分片到达而**增长**，而原生服务在
@@ -430,6 +451,11 @@ export class MeetingRecorderRuntime {
       this.nativeCaptureTrusted = false
       this.nativeCaptureWindowMs = 0
       this.nativeCaptureRuns = 0
+      // ⚠⚠ §956：会话时间轴同理 —— **新的一场**才有新的时间轴原点。
+      //   ⚠ 刻意**只**在 freshSession 里清：`resume`（切设备）**不能**清
+      //   ⇒ 切完设备后第二轮的分片被**重基**到同一根轴上（而不是从 0 重新开始
+      //   ⇒ 那样后半场会被排到前半场之前，且相邻段重叠 ⇒ 正文可能被裁）。
+      this.nativeTimeline = createNativePartTimelineState()
     }
     // 换场录音先中止上一场还在跑的分片转写：那些语音块属于已经结束的会议，
     // 留着只会白烧上游 ASR 配额，并且它们的分段会被写进新会议里。
@@ -492,7 +518,19 @@ export class MeetingRecorderRuntime {
             this.nativeCaptureWindowMs = nativeCaptureWindowAfterPart(
               this.nativeCaptureWindowMs, part.endMs,
             )
-            void this.processSegment(nativePartToBlob(part), part.startMs, part.endMs)
+            // ⚠⚠ §956：分段时间范围**不能**直接用原生的轮内相对量
+            //   （切设备 ⇒ 原生服务重启 ⇒ 相对量从 0 重新开始 ⇒ **时间轴回卷**）。
+            //   ⇒ 走纯函数重基到**会话时间轴**：带 `epochMs` ⇒ 精确重基（各轮
+            //     拼回同一根轴、真实空隙如实保留）；拿不到 ⇒ 钳位保单调（近似但
+            //     **不倒退** ⇒ 相邻段不重叠 ⇒ 去重的精确裁剪档继续不可达）。
+            const wasDegraded = this.nativeTimeline.degraded
+            const t = rebaseNativePartTimeline(this.nativeTimeline, part)
+            this.nativeTimeline = t.state
+            if (t.state.degraded && !wasDegraded) {
+              // ⚠ 只到开发者 console（§813 的口径）；要不要升为用户可见属产品口径。
+              console.warn(describeNativeTimelineDegradation(t, part))
+            }
+            void this.processSegment(nativePartToBlob(part), t.startMs, t.endMs)
           }, (msg) => { this.sttError.value = msg })
         }
       }

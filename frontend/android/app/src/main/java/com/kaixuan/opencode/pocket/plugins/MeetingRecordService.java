@@ -152,6 +152,18 @@ public class MeetingRecordService extends Service {
     int frame = SAMPLE_RATE / 10 * channels;
     short[] buf = new short[frame];
     ByteArrayOutputStream pcm = new ByteArrayOutputStream();
+    // ⚠⚠ §956：这是**本轮**的采集原点。
+    //
+    //   原生服务每启动一轮（中途切设备就会重启一轮）它就**重取一次**
+    //   ⇒ `partStartRel/nowRel` 这些**轮内相对量**在第二轮会**从 0 重新开始**
+    //   ⇒ 直接把它们当会话坐标 ⇒ 时间轴**回卷**（后半场被排到前半场之前，
+    //     且相邻段重叠 ⇒ 去重的精确裁剪档被打开 ⇒ 正文可能被吃掉）。
+    //
+    //   ⇒ 所以**把原点一起报上去**（epochMs）⇒ 由 JS 侧把各轮拼回同一根轴
+    //     （`features/meetings/native-part-timeline.ts`）。
+    //   ⇒ 刻意**不**在这里把锚点提成服务实例级：那样相对量本身就连续了，
+    //     JS 侧的重基就成了**永不触达**的分支 ⇒「判据量到的」与「生产跑的」
+    //     不是同一段（§955 的 M8 正是这么被逼出来的）。
     long captureStart = System.currentTimeMillis();
     long partStartRel = 0;
     int seq = 0;
@@ -168,7 +180,8 @@ public class MeetingRecordService extends Service {
         if (nowRel - partStartRel >= PART_MS && pcm.size() > 0) {
           seq++;
           byte[] wav = pcmToWav(pcm.toByteArray(), SAMPLE_RATE, 1);
-          BackgroundMicPlugin.emitPart(seq, wav, partStartRel, nowRel);
+          // §956：连同**本轮**的采集原点一起报（轮内相对量 + 原点 = 完整事实）。
+          BackgroundMicPlugin.emitPart(seq, wav, partStartRel, nowRel, captureStart);
           pcm.reset();
           partStartRel = nowRel;
         }
@@ -177,7 +190,7 @@ public class MeetingRecordService extends Service {
         seq++;
         long nowRel = System.currentTimeMillis() - captureStart;
         byte[] wav = pcmToWav(pcm.toByteArray(), SAMPLE_RATE, 1);
-        BackgroundMicPlugin.emitPart(seq, wav, partStartRel, nowRel);
+        BackgroundMicPlugin.emitPart(seq, wav, partStartRel, nowRel, captureStart);
       }
     } catch (Exception e) {
       BackgroundMicPlugin.emitError(e.getMessage() != null ? e.getMessage() : "录音中断");
