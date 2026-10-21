@@ -114810,9 +114810,68 @@ EXIT=2
 ⇒ ⇒⇒ ⇒ ⇒ D10 就是「只改产生处、不改消费处」的活教材（改一半仍然查不到）。
 
 ⇒ ⇒⇒ ⇒ ⚠ **本轮只修了「已经爆出来」的五处** ⇒ ⇒⇒ ⇒
-⇒ ⇒⇒ ⇒ 仓里**可能还有尚未被跑到的同型门**（本轮做过一次静态扫描：
-⇒ ⇒⇒ ⇒ `split('\n')` 的用法 100+ 处、动态 `import()` 十几处，**但没有逐个判它们是否敏感**）
-⇒ ⇒⇒ ⇒ ⇒ 这个扫描**没做完** ⇒ 登记在简报 185 ①，**不代拍**。
+⇒ ⇒⇒ ⇒ 仓里**可能还有尚未被跑到的同型门** ⇒ ⇒⇒ ⇒
+⇒ ⇒⇒ ⇒ ⇒ 这个疑问**已在 §960.7.9 用实测测完**（结论：当前 commit 上**没有**活跃实例）。
+
+#### §960.7.9 把「还有没有同型门」**测完**（而不是靠静态扫描猜）
+
+★ **方法**：造一棵**真的 LF 检出树**，让**同一个 commit** 在两种检出形态下各跑一遍全量门禁。
+
+1. `git -c core.autocrlf=false worktree add --detach <LF树> <commit>`
+   ⇒ ⇒⇒ ⇒ **必须逐个传 `-c`**，否则仓库级 `core.autocrlf=true` 会照样把工作区检出成 CRLF；
+2. `frontend/node_modules` / `frontend/dist` 用 `cmd /c mklink /J` 指回主工作区（它们是 gitignore 的）；
+3. ★ **自证**：`git ls-files --eol` 必须记 **`w/lf`** ⇒ 不是「LF」二字，是**每个文件都真的 LF**；
+4. 两边各跑 `node frontend/scripts/run-gates.mjs --ci` ⇒ 对照**结论行** + **跑过的门列表逐条**。
+
+**读数（commit `7ce60119`）**：
+
+| 检出形态 | 读数 | 跑过的门 |
+|---|---|---|
+| CRLF 工作树（本机） | **✅ 全部 39 项通过** | 39 |
+| **LF 检出树（= CI 形态）** | **✅ 全部 39 项通过** | 39 |
+| 门列表**逐条相同** | ✅（无「仅一侧有」的门） | — |
+
+⇒ ⇒⇒ ⇒ **⇒ 结论：当前 commit 上没有「仍在依赖检出形态」的门禁**
+⇒ ⇒⇒ ⇒ ⇒ ⇒ 五处（D6–D10）是**已全部**的活跃实例，不是「前五只」。
+
+⚠⚠ **★ 静态扫描在这一族上【不是】可靠判据 —— 14 个候选文件里，在 CI 路径上的 6 个**逐处核验后全是误报**：
+
+**读数**（扫描器 `.scratch/scan-eol-sensitivity.mjs`，扫 425 个 .mjs）：
+**14 个文件有候选点** ⇒ 其中 **6 个在 CI 路径上**（5 个被门**直接**调用 + 1 个被 `check:dead-features` **spawn**）
+⇒ ⇒⇒ ⇒ **6 个逐处核验，全部是误报**；其余 8 个**不在 CI 路径上**（代码在 CI 里根本不跑）⇒ 不影响 CI 结论。
+
+| 候选文件（**在 CI 路径上**） | 接线方式 | 命中 | 核验结论 |
+|---|---|---|---|
+| `frontend/scripts/check-ci-trigger-surface.mjs` | 直连 `check:ci-trigger` | `split('\n')` + `$` 锚 | **误报** —— 输入已过 `readTextNormalized()`（D8 的修法） |
+| `frontend/scripts/check-icon-subset.mjs` | 直连 `check:icons` | `split('\n')` + `/\.(vue\|ts\|css\|js\|mjs)$/` | **误报** —— 锚作用在**文件名**（`e.name`）上；逐行正则 `DECL_RE`/`DYNAMIC_LINE_RE`/`QUOTED_RE` **均无 `$` 锚** |
+| `frontend/scripts/audit-dead-features.mjs` | **间接**（被 `check:dead-features` spawn `--json`） | `${ROOT}/` 模板 | **误报** —— 命中的是**注释里那段历史代码**（L224）；真代码在 L243–248 用 `toSlash`/`ROOT_SLASH`（D7 的修法） |
+| `scripts/audit-refine-summary-meta-split.mjs` | 直连 `check:refine-summary-meta-split` | `split('\n')` + `/\bfunc\s+$/` | **误报** —— `split('\n')` 只用于**算行号**（`src.slice(0,i).split('\n').length`，CRLF 下同样正确）；`$` 锚作用于 `prefix`（`src` 的切片，**永不含 `\r`**）⇒ **两条不同的数据流** |
+| `scripts/check-doc-empty-string-literal.mjs` | 直连 `check:doc-empty-string-literal` | `split('\n')` + `/^\d+\.\d+$/` | **误报** —— 锚作用于 `readDeclaredGoMinor()` 的返回值（go.mod 版本号），**不是** split 出来的行 |
+| `scripts/device-matrix.mjs` | 直连 `check:device-matrix-selftest` | `split('\n')` + `/\.(vue\|css\|ts)$/` | **误报** —— 正则作用在 `e.name`（**文件名**）上 |
+| 其余 8 个 | 不在 CI 路径上 | — | 代码在 CI 里不跑 ⇒ 不影响 CI 结论 |
+
+⇒ ⇒⇒ ⇒ ⇒ **候选点要成立，必须同时满足三件事**：
+⇒ ⇒⇒ ⇒ ⇒ ① 读文件时**没有**归一行尾 ② 判据用 `$` 锚 / 字面量路径 ③ **两者在同一条数据流上**
+⇒ ⇒⇒ ⇒ ⇒ ⇒ ⇒ 6 处 CI 路径候选**全部**栽在 ② 或 ③ 上。
+⇒ ⇒⇒ ⇒ ⇒ ⇒ ⇒ **⇒ 这也是「不把它做成一条静态门禁」的客观理由**：
+⇒ ⇒⇒ ⇒ ⇒ ⇒ ⇒ 一条静态门禁要么**恒红**（误报）要么**恒绿**（漏报）—— 两种都无意义
+⇒ ⇒⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **防护手段只能是「定期跑实测对照」**，而那**不该塞进 CI**（要开第二棵树）。
+
+⚠⚠⚠ **★ 附一条方法论：扫描器自己也是判据，它也会骗人** —— 复核静态读数时发现，
+扫描器的「**哪些候选在 CI 路径上**」这一判定**自己有盲区**，而且**两次都错**：
+① 它的接线正则只认 `scripts/x.mjs` ⇒ `frontend/scripts/x.mjs`（命令里相对 `cwd=frontend` 写成
+`node scripts/x.mjs`）被剥掉前缀后**永远匹配不上** ⇒ 所有 `frontend/scripts/*` 被**错标「未接线」**
+⇒ 「CI 路径上的候选」少数成 **3** 个；
+② 修正①后**又多算了 2 个**：把「被 `readFileSync` **当数据读**的脚本源码」也算成了「被执行」
+（`check-icon-subset` 读 `build-material-symbols-subset.mjs`、`check-maestro-flows` 读 `maestro-run.mjs`
+—— 这两处那个脚本的**代码在 CI 里根本不跑**）⇒ 少数/多数来回两次，最终才是权威的 **6**。
+⇒ ⇒⇒ ⇒ ⇒ ⇒⇒ ⇒ **⇒ 连「静态扫描的误报率是多少」这种事，都必须先证明扫描器自己的接线判定是对的**
+⇒ ⇒⇒ ⇒ ⇒ ⇒⇒ ⇒ ⇒ ⇒⇒ ⇒ 否则你连「误报率」都算不准 —— **这跟「判据要先量具自证」是同一条纪律**。
+
+⇒ ⇒⇒ ⇒ ★ **⇒ 残余风险只剩一条**：「未来某次改动可能**重新引入**这类依赖」
+⇒ ⇒⇒ ⇒ ⇒ ⇒ 防护手段 = **把 A/B 对照做成常规动作**（脚本在本机 `.scratch/ab-crlf-lf-gates.mjs`，
+⇒ ⇒⇒ ⇒ ⇒ ⇒ 换机器要重写，但**方法与自证步骤在上面的 1–4 里**）。
+⇒ ⇒⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **是否把它立成「仓规」**（新门禁的入库检查项）**不代拍** ⇒ 登记在简报 185 ①。
 
 ### §960.9 分支在**审计期间**又推进了 ⇒ 合并之后才冒出 2 个提交（附判据方法）
 
