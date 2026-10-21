@@ -7,9 +7,9 @@
 // 用法：
 //   node scripts/maestro-run.mjs <flow.yaml> [更多 flow.yaml ...]
 //   node scripts/maestro-run.mjs .maestro/notes-crud.yaml
-import { readFileSync, existsSync } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync, unlinkSync, readdirSync } from 'node:fs'
 import { spawnSync, execFileSync } from 'node:child_process'
-import { resolve } from 'node:path'
+import { resolve, join, dirname, basename } from 'node:path'
 import { homedir } from 'node:os'
 
 const ROOT = resolve(new URL('..', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'))
@@ -2320,13 +2320,153 @@ function runFixture(name, mode) {
   return true
 }
 
-const runOne = (flow) =>
-  spawnSync(MAESTRO, ['--device', DEVICE, 'test', ...driverFlag, ...preFlows, flow], {
-    cwd: ROOT,
-    stdio: 'inherit',
-    shell: true,
-    env: maestroEnv,
-  })
+/**
+ * 把 flow 里的 `${POCKET_*}` 占位换成**真正能用的** Maestro 变量。
+ *
+ * 为什么需要（2026-10-22 实测，Maestro 2.11）：
+ *   Maestro 的 `${VAR}` 只在 flow **自己的 `env:` 块**里找，不读进程环境变量。
+ *   所以 flow 里写 `inputText: ${POCKET_DEV_PASS}` 时，Maestro 把它展开成
+ *   **字面量 "undefined"**（本仓 .maestro/_login.yaml、2026-10-02-real-login.yaml
+ *   都记着这个坑，但那时没有解法）。
+ *   实测 `${env.POCKET_X}` 也不行：Maestro 把它当 **JS 表达式**求值
+ *   （`env` 是 undefined → TypeError）。
+ *
+ * 解法：跑之前生成一份**临时 flow**，在前置区（第一个 `---` 之前）插入
+ *   env:
+ *     POCKET_DEV_PASS: "<真实口令>"
+ *     POCKET_MASTER: "<真实口令>"
+ * 跑完立刻删。口令因此**只存在于临时文件与进程 env**，绝不进仓库。
+ *
+ * 没有占位符的 flow 原样跑（不产生临时文件）。
+ */
+function materializeFlowWithEnv(flow) {
+  let raw
+  try {
+    raw = readFileSync(flow, 'utf8')
+  } catch {
+    return { file: flow, cleanup: null }
+  }
+  if (!/\$\{POCKET_[A-Z_]+\}/.test(raw)) return { file: flow, cleanup: null }
+
+  const secrets = {}
+  for (const key of ['POCKET_DEV_PASS', 'POCKET_MASTER']) {
+    const v = maestroEnv[key]
+    if (typeof v === 'string' && v.length) secrets[key] = v
+  }
+  if (!Object.keys(secrets).length) return { file: flow, cleanup: null }
+
+  const envBlock = Object.entries(secrets)
+    .map(([k, v]) => `  ${k}: ${JSON.stringify(v)}`)
+    .join('\n')
+  // 前置区 = 第一个 `---` 之前；插在它后面（appId 等键之后）。
+  const sep = raw.indexOf('\n---')
+  if (sep < 0) return { file: flow, cleanup: null }
+  const head = raw.slice(0, sep)
+  const tail = raw.slice(sep)
+  const withEnv = `${head}\nenv:\n${envBlock}${tail}`
+
+  const dir = dirname(flow)
+  const tmp = join(dir, `.maestro-tmp-${basename(flow)}`)
+  writeFileSync(tmp, withEnv, { mode: 0o600 })
+  return { file: tmp, cleanup: tmp }
+}
+
+/**
+ * 跑完一轮后，把 Maestro 落盘产物里的**口令明文**抹掉。
+ *
+ * 为什么必须做（2026-10-22 实测）：Maestro 会把**展开后**的命令参数写进自己的
+ * 日志与命令清单：
+ *   · maestro.log：`Input text ${POCKET_DEV_PASS}` 的 metadata 里就是口令明文；
+ *     「Define variables」那一条会把 flow 的 env 块**整个**打出来。
+ *   · commands.json：同样带展开后的明文。
+ * 落盘位置 ~/.maestro/tests/<ts>/<flow>/。那些文件不在仓库里，但它们是人工
+ * 排查时的第一手现场（失败现场的树/日志都在那儿），也容易被整体打包分享
+ * ⇒ 口令不该以明文留在里面。
+ *
+ * 做法：跑前记下 tests/ 下的目录清单，跑完只处理**新增**的目录，
+ * 把已知口令（DEV_PASS / MASTER）的明文替换成 <redacted>。
+ * 只按**精确值**替换，不做模糊匹配 ⇒ 不会误伤别的东西。
+ */
+const MAESTRO_TESTS_DIR = join(homedir(), '.maestro', 'tests')
+
+function listMaestroTestDirs() {
+  try {
+    return new Set(readdirSync(MAESTRO_TESTS_DIR))
+  } catch {
+    return new Set()
+  }
+}
+
+function scrubSecretsIn(files, secrets) {
+  let touched = 0
+  for (const f of files) {
+    let text
+    try {
+      text = readFileSync(f, 'utf8')
+    } catch {
+      continue
+    }
+    let out = text
+    for (const s of secrets) {
+      if (!s) continue
+      out = out.split(s).join('<redacted>')
+    }
+    if (out !== text) {
+      try {
+        writeFileSync(f, out)
+        touched++
+      } catch { /* 抹不掉不该让跑批崩掉 */ }
+    }
+  }
+  return touched
+}
+
+function scrubMaestroArtifacts(beforeDirs, secrets) {
+  const now = listMaestroTestDirs()
+  const fresh = [...now].filter((d) => !beforeDirs.has(d))
+  if (!fresh.length) return 0
+  const files = []
+  for (const d of fresh) {
+    const dir = join(MAESTRO_TESTS_DIR, d)
+    let stack = [dir]
+    while (stack.length) {
+      const cur = stack.pop()
+      let ents = []
+      try {
+        ents = readdirSync(cur, { withFileTypes: true })
+      } catch {
+        continue
+      }
+      for (const e of ents) {
+        const p = join(cur, e.name)
+        if (e.isDirectory()) stack.push(p)
+        else if (e.isFile()) files.push(p)
+      }
+    }
+  }
+  return scrubSecretsIn(files, secrets)
+}
+
+const runOne = (flow) => {
+  const { file, cleanup } = materializeFlowWithEnv(flow)
+  const beforeDirs = listMaestroTestDirs()
+  try {
+    return spawnSync(MAESTRO, ['--device', DEVICE, 'test', ...driverFlag, ...preFlows, file], {
+      cwd: ROOT,
+      stdio: 'inherit',
+      shell: true,
+      env: maestroEnv,
+    })
+  } finally {
+    if (cleanup) {
+      try { unlinkSync(cleanup) } catch { /* 临时文件删不掉不该让跑批崩掉 */ }
+    }
+    // 抹掉本轮落盘产物里的口令明文（口令只应存在于进程 env 与临时 flow 里）。
+    const secrets = [process.env.POCKET_DEV_PASS, process.env.POCKET_AUTH_PASS, process.env.POCKET_MASTER]
+    const n = scrubMaestroArtifacts(beforeDirs, secrets)
+    if (n) console.error(`[secret] 已抹掉 ${n} 个 Maestro 产物文件里的口令明文`)
+  }
+}
 
 /**
  * 每条流之前确认 App 还活着；死了就按 preflight 已验证的路径拉回来。
@@ -2405,6 +2545,30 @@ for (const [i, flow] of flows.entries()) {
       console.error('[fixture] ❌ induce 失败，跳过本条 flow（前提不成立时它必红，不是产品回归）')
       runFixture(fx.name, '--restore')
       process.exit(1)
+    }
+    // ⚠️ 2026-10-22 实测修正：夹具可能**重启 App**（flashcards-test 夹具为了
+    //   自证「重启后缓存确实没了」会 force-stop + 重启），而本地 SQLCipher 的
+    //   密钥**只存在于内存** ⇒ 重启后即使 token 还在，守卫也会把**依赖本地库**
+    //   的路由弹到「解锁本地数据」屏（B 态）。
+    //   preflight 里的解锁发生在夹具**之前**，所以这里必须**再解锁一次**。
+    //
+    //   症状长这样（2026-10-22 实测）：flashcards-write 前半段全过（建卡组、
+    //   建卡、点 Save 都 COMPLETED），却在最后一步红在「今日待复习 1 张」，
+    //   失败现场的树里是**解锁屏**（「检测到已有登录态，但本地加密库未解锁」）
+    //   —— 报错指向「闪卡到期数算错了」，真因是**这条 flow 根本没在闪卡页上跑**。
+    //   守卫是在「回到卡组页」（依赖本地库）那一刻才把解锁屏弹出来的。
+    if (process.env.POCKET_SKIP_CDP_LOGIN !== '1') {
+      if (!(await ensureLocalDbUnlocked())) {
+        console.error('[per-flow] ❌ 夹具重启了 App，本地库重新上锁且解锁失败 —— 跳过本条 flow。')
+        console.error('           这条 flow 会在一个**本就不该红**的地方红（守卫把受保护路由弹到解锁屏），')
+        console.error('           结论不可解释。')
+        process.exit(1)
+      }
+      // 解锁会把 App 停在 #/pkm/today ⇒ 必须复位回起点，否则 flow 第一条断言就不可解释。
+      // （与 preflight 里解锁后那次复位同因，见该处注释。）
+      const back = process.env.POCKET_START_ROUTE || '#/ai'
+      await setRoute(`${back}?__afterunlock=${Date.now()}`, 'true', 8000)
+      await setRoute(back, 'true', 8000)
     }
   }
   if (flows.length > 1) console.log(`\n──────── flow ${i + 1}/${flows.length}: ${flow} ────────`)
