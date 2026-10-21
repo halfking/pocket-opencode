@@ -24,6 +24,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/halfking/pocket-opencode/backend/internal/background"
 )
 
 // HTTPTransport 是 ACP over Streamable HTTP transport。
@@ -97,7 +99,7 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 	t.cancelFn = cancel
 
 	t.wg.Add(1)
-	go t.readSSE(recvCtx)
+	background.Go1("agent/http-sse-reader", t.readSSE, recvCtx)
 
 	return nil
 }

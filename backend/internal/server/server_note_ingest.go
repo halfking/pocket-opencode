@@ -29,6 +29,7 @@ import (
 	"io"
 	"net/http"
 
+	"github.com/halfking/pocket-opencode/backend/internal/background"
 	"github.com/halfking/pocket-opencode/backend/internal/notes"
 	ws "github.com/halfking/pocket-opencode/backend/internal/websocket"
 )
@@ -117,7 +118,7 @@ func (s *Server) ingestNote(ctx context.Context, target noteTarget, n *notes.Not
 	}
 	s.wsHub.BroadcastTo(target.broadcastTarget(), "note.created", n)
 	// 异步调 kxmemory（非阻塞）
-	go s.classifyNoteAsync(*n)
+	background.Go1("note/classify", s.classifyNoteAsync, *n)
 	return nil
 }
 

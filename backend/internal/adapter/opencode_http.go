@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/halfking/pocket-opencode/backend/internal/background"
 )
 
 type OpenCodeHTTPAdapter struct {
@@ -1133,7 +1135,7 @@ func (a *OpenCodeHTTPAdapter) SubscribeEvents(ctx context.Context, instanceBaseU
 	}
 
 	// 启动后台 goroutine 读取 SSE 流
-	go func() {
+	background.Go("opencode-http/subscribe-events", func() {
 		defer close(events)
 		reader := bufio.NewReader(resp.Body)
 		var dataBuffer strings.Builder
@@ -1189,7 +1191,7 @@ func (a *OpenCodeHTTPAdapter) SubscribeEvents(ctx context.Context, instanceBaseU
 			}
 			// 忽略其他 SSE 字段（event:, id:, retry:）
 		}
-	}()
+	})
 
 	return events, cancel, nil
 }

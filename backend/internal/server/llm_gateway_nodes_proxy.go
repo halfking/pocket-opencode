@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/halfking/pocket-opencode/backend/internal/background"
 )
 
 // resolveGatewayRoute 把移动端的 action 解析成白名单表里的一条上游路由。
@@ -228,7 +230,7 @@ func (s *Server) gatewayNodeOverview(w http.ResponseWriter, r *http.Request, wor
 	)
 	for _, b := range blocks {
 		wg.Add(1)
-		go func(b block) {
+		background.Go1("gateway/node-overview", func(b block) {
 			defer wg.Done()
 			payload, err := s.gatewayClient.do(ctx, secret, http.MethodGet, b.path, b.query, nil)
 			mu.Lock()
@@ -238,7 +240,7 @@ func (s *Server) gatewayNodeOverview(w http.ResponseWriter, r *http.Request, wor
 				return
 			}
 			results[b.key] = json.RawMessage(payload)
-		}(b)
+		}, b)
 	}
 	wg.Wait()
 

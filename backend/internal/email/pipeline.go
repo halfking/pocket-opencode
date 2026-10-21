@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/halfking/pocket-opencode/backend/internal/background"
 )
 
 // pipeline.go — 每日邮件处理流水线（可定时、可手动触发）。
@@ -154,7 +156,7 @@ func (p *Pipeline) syncAccounts(ctx context.Context, accounts []Account, rep *Pi
 		}
 		wg.Add(1)
 		sem <- struct{}{}
-		go func(idx int, acc Account) {
+		background.Go2("email/account-sync", func(idx int, acc Account) {
 			defer wg.Done()
 			defer func() { <-sem }()
 			t0 := time.Now()
@@ -175,10 +177,10 @@ func (p *Pipeline) syncAccounts(ctx context.Context, accounts []Account, rep *Pi
 			// 两者都要有：只有调度侧没有连接侧，卡死的账户每轮泄漏一条连接，
 			// 实测攒到 7 条后新连接本身就开始变慢。
 			ch := make(chan result, 1) // 缓冲 1：超时后没人收也不会永久阻塞 goroutine
-			go func() {
+			background.Go("email/account-sync-run", func() {
 				n, err := p.Fetcher.Sync(ctx, acc.ID)
 				ch <- result{new: n, err: err, elapse: time.Since(t0).Round(time.Millisecond), email: acc.EmailAddress}
-			}()
+			})
 			limit := p.AccountSyncTimeout
 			if limit <= 0 {
 				limit = DefaultAccountSyncTimeout
@@ -210,7 +212,7 @@ func (p *Pipeline) syncAccounts(ctx context.Context, accounts []Account, rep *Pi
 				log.Printf("[email/pipeline] step1 sync %s TIMED OUT after %s — 不再等待，继续后续步骤",
 					acc.EmailAddress, limit)
 			}
-		}(i, accounts[i])
+		}, i, accounts[i])
 	}
 	wg.Wait()
 
@@ -905,7 +907,7 @@ func (p *Pipeline) fetchBodies(ctx context.Context, keptIdx []int, jobs []bodyJo
 		}
 		wg.Add(1)
 		sem <- struct{}{}
-		go func(k, idx int) {
+		background.Go2("email/body-fetch", func(k, idx int) {
 			defer wg.Done()
 			defer func() { <-sem }()
 			e := jobs[idx].email
@@ -930,7 +932,7 @@ func (p *Pipeline) fetchBodies(ctx context.Context, keptIdx []int, jobs []bodyJo
 			results[k] = bodyResult{parsed: parsed, err: perr}
 			log.Printf("[email/pipeline] step1.5 body fetch acct=%s uid=%d in %s",
 				e.AccountID, e.UID, time.Since(t0).Round(time.Millisecond))
-		}(k, idx)
+		}, k, idx)
 	}
 	wg.Wait()
 	return results

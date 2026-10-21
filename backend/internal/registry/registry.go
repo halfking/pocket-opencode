@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/halfking/pocket-opencode/backend/internal/background"
 	"github.com/halfking/pocket-opencode/backend/internal/model"
 )
 
@@ -192,7 +193,7 @@ func (r *Registry) healthCheck(ctx context.Context) {
 	var wg sync.WaitGroup
 	for _, instanceID := range instances {
 		wg.Add(1)
-		go func(id string) {
+		background.Go1("registry/health-check", func(id string) {
 			defer wg.Done()
 
 			apiURL := urls[id]
@@ -217,7 +218,7 @@ func (r *Registry) healthCheck(ctx context.Context) {
 				}
 			}
 			r.mu.Unlock()
-		}(instanceID)
+		}, instanceID)
 	}
 
 	wg.Wait()

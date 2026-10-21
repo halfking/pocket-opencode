@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/halfking/pocket-opencode/backend/internal/background"
 	"github.com/halfking/pocket-opencode/backend/internal/opencode"
 )
 
@@ -193,8 +194,8 @@ func (h *MobileWSHub) ServeClient(conn *websocket.Conn, userID, deviceID string)
 	h.register <- client
 
 	// Start read and write pumps
-	go client.writePump()
-	go client.readPump()
+	background.Go("mobile-ws/write-pump", client.writePump)
+	background.Go("mobile-ws/read-pump", client.readPump)
 }
 
 // BroadcastEvent sends an event to all connected clients or to a specific session.

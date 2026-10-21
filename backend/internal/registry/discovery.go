@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/halfking/pocket-opencode/backend/internal/background"
 	"github.com/halfking/pocket-opencode/backend/internal/model"
 )
 
@@ -165,7 +166,7 @@ func probeCandidates(ctx context.Context, candidates []hostPort) ([]InstanceConf
 	for _, c := range candidates {
 		wg.Add(1)
 		sem <- struct{}{}
-		go func(hp hostPort) {
+		background.Go1("registry/probe-candidate", func(hp hostPort) {
 			defer wg.Done()
 			defer func() { <-sem }()
 
@@ -176,7 +177,7 @@ func probeCandidates(ctx context.Context, candidates []hostPort) ([]InstanceConf
 				mu.Unlock()
 				log.Printf("[discovery] found OpenCode instance: %s:%d (%s)", hp.Host, hp.Port, cfg.ID)
 			}
-		}(c)
+		}, c)
 	}
 	wg.Wait()
 

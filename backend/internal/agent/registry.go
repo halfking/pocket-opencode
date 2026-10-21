@@ -16,6 +16,8 @@ import (
 	"context"
 	"fmt"
 	"sync"
+
+	"github.com/halfking/pocket-opencode/backend/internal/background"
 )
 
 // Registry 管理多个 AgentAdapter 实例。
@@ -130,7 +132,7 @@ func (r *Registry) HealthCheckAll(ctx context.Context) map[AgentRef]HealthStatus
 	)
 	for _, ref := range refs {
 		wg.Add(1)
-		go func(ref AgentRef) {
+		background.Go1("agent/health-check", func(ref AgentRef) {
 			defer wg.Done()
 			status := HealthStatus{Ref: ref}
 			if err := adapters[ref].HealthCheck(ctx, ref); err != nil {
@@ -142,7 +144,7 @@ func (r *Registry) HealthCheckAll(ctx context.Context) map[AgentRef]HealthStatus
 			mu.Lock()
 			out[ref] = status
 			mu.Unlock()
-		}(ref)
+		}, ref)
 	}
 	wg.Wait()
 	return out

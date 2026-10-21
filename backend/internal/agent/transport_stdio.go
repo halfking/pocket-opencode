@@ -32,6 +32,8 @@ import (
 	"os/exec"
 	"sync"
 	"time"
+
+	"github.com/halfking/pocket-opencode/backend/internal/background"
 )
 
 // StdioTransport 是 stdio JSON-RPC transport。
@@ -105,12 +107,12 @@ func (t *StdioTransport) Start(ctx context.Context) error {
 
 	// 启动 stdout reader goroutine
 	t.wg.Add(1)
-	go t.readStdout(recvCtx, stdout)
+	background.Go2[context.Context, io.Reader]("agent/stdio-stdout", t.readStdout, recvCtx, stdout)
 
 	// 启动 stderr forwarder goroutine（仅在 cfg.Logger 非 nil 时）
 	if t.cfg.Logger != nil {
 		t.wg.Add(1)
-		go t.forwardStderr(recvCtx, stderr)
+		background.Go2[context.Context, io.Reader]("agent/stdio-stderr", t.forwardStderr, recvCtx, stderr)
 	}
 
 	return nil
@@ -143,7 +145,7 @@ func (t *StdioTransport) Close() error {
 	// 4. 等待子进程退出（5s 超时；强杀兜底）
 	if t.cmd != nil && t.cmd.Process != nil {
 		done := make(chan error, 1)
-		go func() { done <- t.cmd.Wait() }()
+		background.Go("agent/stdio-wait", func() { done <- t.cmd.Wait() })
 		select {
 		case <-done:
 		case <-time.After(5 * time.Second):

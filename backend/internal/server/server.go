@@ -24,6 +24,7 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/agentbridge"
 	"github.com/halfking/pocket-opencode/backend/internal/aigate"
 	"github.com/halfking/pocket-opencode/backend/internal/auth"
+	"github.com/halfking/pocket-opencode/backend/internal/background"
 	"github.com/halfking/pocket-opencode/backend/internal/calendar"
 	cs "github.com/halfking/pocket-opencode/backend/internal/chat_summary"
 	"github.com/halfking/pocket-opencode/backend/internal/chatagent"
@@ -251,13 +252,13 @@ func New(cfg config.Config, nps adapter.NPSAdapter, opencode adapter.OpenCodeAda
 func newServer(cfg config.Config, nps adapter.NPSAdapter, opencode adapter.OpenCodeAdapter, taskStore *task.Store, reg *registry.Registry, configAdapter adapter.OpenCodeConfigAdapter, notesStore *notes.Store, emailStore *email.Store, vaultStore vaultSyncStorer, transcriber *stt.Transcriber, mcpClient *mcp.Client, embedder aigate.Embedder, llm aigate.LLMClient, kxmem kxmemory.Client, opencodeManager *opencode.Manager, userStore *auth.UserStore, jwtSigner *auth.Signer, emailCrypto *email.Crypto, emailPending *email.PendingOAuth, emailScheduler *email.Scheduler, emailFetcher *email.Fetcher, dataDir string, startHubs bool, pool *pgxpool.Pool, flashcardStore *flashcards.Store) *Server {
 	hub := ws.NewHub()
 	if startHubs {
-		go hub.Run()
+		background.Go("websocket/hub", hub.Run)
 	}
 
 	// Initialize Plugin Hub
 	pluginHub := ws.NewPluginHub()
 	if startHubs {
-		go pluginHub.Run()
+		background.Go("websocket/plugin-hub", pluginHub.Run)
 	}
 	// 会话迁移方案：把 Registry 注入 PluginHub，
 	// 使边端插件/manager 的 instance.register / heartbeat 能写入 Registry
@@ -2319,8 +2320,8 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	s.wsHub.Register(client)
 
 	// 启动读写协程
-	go client.WritePump()
-	go client.ReadPump()
+	background.Go("websocket/write-pump", client.WritePump)
+	background.Go("websocket/read-pump", client.ReadPump)
 }
 
 // broadcastTaskEvent 广播任务事件

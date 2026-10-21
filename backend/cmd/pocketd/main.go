@@ -18,6 +18,7 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/agentbridge"
 	"github.com/halfking/pocket-opencode/backend/internal/aigate"
 	"github.com/halfking/pocket-opencode/backend/internal/auth"
+	"github.com/halfking/pocket-opencode/backend/internal/background"
 	"github.com/halfking/pocket-opencode/backend/internal/calendar"
 	"github.com/halfking/pocket-opencode/backend/internal/chatagent"
 	"github.com/halfking/pocket-opencode/backend/internal/config"
@@ -496,7 +497,7 @@ func main() {
 					}
 				}
 				emailPending = email.NewPendingOAuth()
-				go emailPending.GCLoop(context.Background())
+				background.Go1("email-pending/gc-loop", emailPending.GCLoop, context.Background())
 				if emailStore != nil {
 					emailFetcher = email.NewFetcherWithOptions(emailStore, emailCrypto, cfg.EmailIMAPInsecureSkipVerify, cfg.EmailIMAPUseStartTLS)
 					// POP3 降级路径的 UID 是位置序号而非 IMAP UID，事后无法用它
@@ -688,7 +689,7 @@ func main() {
 		log.Printf("⚠️ 启用完整 /24 子网扫描（生产慎用，开销较大）")
 	}
 	reg.EnableAutoDiscovery(discoveryFunc, 60*time.Second)
-	go reg.StartAutoDiscovery(context.Background())
+	background.Go1("registry/auto-discovery", reg.StartAutoDiscovery, context.Background())
 
 	srv := server.New(cfg, npsAdapter, opencodeAdapterForRouting, taskStore, reg, configAdapter,
 		notesStore, emailStore, vaultStore, transcriber, mcpClient, embedder, llm, kxmem, nil, /* opencodeManager (set below) */
@@ -1257,7 +1258,7 @@ func main() {
 	defer quesMgr.Close()
 
 	// 把 OpenCode 上游事件回灌给 ocMgr，驱动 active/idle 推断
-	go func() {
+	background.Go("opencode/event-pump", func() {
 		instances := reg.ListInstances()
 		for _, inst := range instances {
 			instanceID := inst.ID
@@ -1269,18 +1270,18 @@ func main() {
 				continue
 			}
 			defer cleanup()
-			go func(c <-chan opencode.DomainEvent, iid string) {
+			background.Go2("opencode/event-forward", func(c <-chan opencode.DomainEvent, iid string) {
 				for evt := range c {
 					if evt.SessionID != "" {
 						ocMgr.OnSessionEvent(evt.SessionID, evt.Type)
 					}
 				}
-			}(ch, instanceID)
+			}, ch, instanceID)
 		}
-	}()
+	})
 
 	// 每 30s 刷新一次 idle/active（兜底：长时间无事件则视为 idle）
-	go func() {
+	background.Go("opencode/idle-refresh", func() {
 		t := time.NewTicker(30 * time.Second)
 		defer t.Stop()
 		for {
@@ -1291,7 +1292,7 @@ func main() {
 				ocMgr.RefreshStatuses(5 * time.Minute)
 			}
 		}
-	}()
+	})
 
 	log.Printf("OpenCode domain managers wired: eventMgr + permMgr + quesMgr + ocMgr (refreshStatus 30s)")
 
@@ -1307,9 +1308,9 @@ func main() {
 	approvalBroadcaster.SetBroadcaster(srv.WSHub())
 	// Start only after the synchronous projector is installed. Otherwise an early
 	// upstream event could reach the in-memory cache without reaching the task gate.
-	go permMgr.Start(mgrCtx)
-	go quesMgr.Start(mgrCtx)
-	go approvalBroadcaster.Run(mgrCtx)
+	background.Go1("opencode/permission-manager", permMgr.Start, mgrCtx)
+	background.Go1("opencode/question-manager", quesMgr.Start, mgrCtx)
+	background.Go1("opencode/approval-broadcaster", approvalBroadcaster.Run, mgrCtx)
 
 	// ---- P1: 会话/轮次/任务健康事件广播（契约 §2 三类事件 + §3 快照端点）----
 	// 订阅 eventMgr 的 DomainEvent 流，按 session 维护 phase/round 状态机，广播
@@ -1319,7 +1320,7 @@ func main() {
 	sessionEvtBroadcaster.SetTaskSessionIndex(server.NewTaskSessionIndex(taskStore))
 	sessionEvtBroadcaster.SetBroadcaster(srv.WSHub())
 	srv.SetMobileEventsBroadcaster(sessionEvtBroadcaster)
-	go sessionEvtBroadcaster.Run(mgrCtx)
+	background.Go1("opencode/session-event-broadcaster", sessionEvtBroadcaster.Run, mgrCtx)
 
 	// ---- W5: 注入 ACP agent registry ----
 	// 当前 stage：
@@ -1517,7 +1518,7 @@ func startAuditFileExporter(store auditRangeStore, dir string, interval time.Dur
 		RetainDays: retainDays,
 	})
 	exporterCtx, exporterCancel := context.WithCancel(context.Background())
-	go exporter.Run(exporterCtx)
+	background.Go1("audit/exporter", exporter.Run, exporterCtx)
 	log.Printf("审计落盘导出已启用：dir=%s interval=%s retain=%dd", dir, interval, retainDays)
 	return exporterCancel, true
 }

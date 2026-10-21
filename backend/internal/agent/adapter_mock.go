@@ -11,6 +11,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/halfking/pocket-opencode/backend/internal/background"
 )
 
 // MockAgentAdapter 是用于测试的 AgentAdapter 实现。
@@ -240,7 +242,7 @@ func (m *MockAgentAdapter) SubscribeEvents(ctx context.Context, ref AgentRef) (<
 	}
 	ch := make(chan AgentEvent, 8)
 	cleanup := func() { close(ch) }
-	go func() {
+	background.Go("agent/mock-events", func() {
 		// 模拟流式事件：发一个 chunk + done
 		ch <- AgentEvent{
 			Type:      "message_chunk",
@@ -253,7 +255,7 @@ func (m *MockAgentAdapter) SubscribeEvents(ctx context.Context, ref AgentRef) (<
 			SessionID: ref.Target,
 			Timestamp: time.Now(),
 		}
-	}()
+	})
 	return ch, cleanup, nil
 }
 

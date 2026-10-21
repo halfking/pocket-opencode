@@ -12,6 +12,8 @@ import (
 	"log"
 	"sync"
 	"time"
+
+	"github.com/halfking/pocket-opencode/backend/internal/background"
 )
 
 // ACPStdioAdapter 实现 AgentAdapter，基于 stdio JSON-RPC 2.0 transport。
@@ -303,7 +305,7 @@ func (a *ACPStdioAdapter) SubscribeEvents(ctx context.Context, ref AgentRef) (<-
 	events := make(chan AgentEvent, 32)
 
 	// 启动后台 goroutine：从 Recv 拉帧，转发到 events
-	go func() {
+	background.Go("agent/acp-stdio-events", func() {
 		defer close(events)
 		for {
 			frame, err := tr.Recv(ctx)
@@ -327,7 +329,7 @@ func (a *ACPStdioAdapter) SubscribeEvents(ctx context.Context, ref AgentRef) (<-
 				return
 			}
 		}
-	}()
+	})
 
 	// cleanup 取消订阅（仅关闭 events channel，goroutine 由 ctx 触发退出）
 	var closed bool

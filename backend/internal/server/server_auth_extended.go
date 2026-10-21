@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/halfking/pocket-opencode/backend/internal/auth"
+	"github.com/halfking/pocket-opencode/backend/internal/background"
 	"github.com/halfking/pocket-opencode/backend/internal/notify"
 	"github.com/halfking/pocket-opencode/backend/internal/redclaw"
 )
@@ -83,7 +84,7 @@ func (s *Server) handleAuthSendCode(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 发邮件：失败仅 log（频控已成功消耗；用户后续可重试）
-	go s.sendCodeEmail(code, ttlSec, body.Email, purpose)
+	background.Go4("auth/send-code-email", s.sendCodeEmail, code, ttlSec, body.Email, purpose)
 
 	resp := map[string]any{"ok": true, "ttl_sec": ttlSec, "delivery": delivery}
 	// Debug 回显：SMTP 未配置 + 启用 debug 时，把 code 暴露给前端 dev 面板
@@ -168,7 +169,12 @@ func (s *Server) handleAuthRegister(w http.ResponseWriter, r *http.Request) {
 
 	s.issueTokenAndRespond(w, r, u.ID, body.Username, u.Email)
 	// mirror（fail-soft）：注册成功后才尝试同步到 RedClaw
-	go s.mirrorRegisterToRedClaw(u, body.Password)
+	//
+	// §949：走 background.Go ⇒ 这次 mirror 的 panic **不会带走整个进程**
+	//（原来它是裸 `go`，panic 会直接终止 pocketd ⇒ 连带正在录的会议全丢）。
+	// mirrorRegisterToRedClaw 自己那层 recover 留着：它知道是哪个用户，
+	// background.Go 是最后一道网（带栈）。
+	background.Go2("auth/redclaw-mirror", s.mirrorRegisterToRedClaw, u, body.Password)
 }
 
 // handleAuthCodeLogin — POST /api/auth/code-login

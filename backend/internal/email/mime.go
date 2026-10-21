@@ -21,6 +21,8 @@ import (
 
 	"github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapclient"
+
+	"github.com/halfking/pocket-opencode/backend/internal/background"
 )
 
 // mime.go — 发票采集流水线的全文抓取与 MIME 解析。
@@ -263,13 +265,13 @@ func (f *Fetcher) fetchRawByTextproto(ctx context.Context, acc *Account, passwor
 	// 立刻返回；连接关闭后 deadlineConn 的看门狗自行退出。
 	done := make(chan struct{})
 	defer close(done)
-	go func() {
+	background.Go("email/imap-deadline-watchdog", func() {
 		select {
 		case <-ctx.Done():
 			_ = dc.SetDeadline(time.Now().Add(-time.Second))
 		case <-done:
 		}
-	}()
+	})
 
 	// 明文 / 隐式 TLS 的判定必须与 fetcher.dial 用同一条规则
 	// （isPlainIMAPPort），降级通道才可能在主路径失败后真正救回场子。

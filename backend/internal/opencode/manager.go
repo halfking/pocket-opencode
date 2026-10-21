@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/halfking/pocket-opencode/backend/internal/adapter"
+	"github.com/halfking/pocket-opencode/backend/internal/background"
 	"github.com/halfking/pocket-opencode/backend/internal/registry"
 )
 
@@ -278,7 +279,7 @@ func (m *Manager) OnSessionEvent(sessionID, eventType string) {
 			// 所有步骤完成，检查是否还有进行中的工具
 			m.sessionCache.mu.Unlock()
 			// 短延迟后检查是否真的空闲（可能有后续步骤）
-			go func() {
+			background.Go("opencode/session-idle-recheck", func() {
 				time.Sleep(2 * time.Second)
 				m.sessionCache.mu.RLock()
 				steps := m.sessionCache.activeSteps[sessionID]
@@ -286,7 +287,7 @@ func (m *Manager) OnSessionEvent(sessionID, eventType string) {
 				if steps <= 0 {
 					m.UpdateSessionStatus(sessionID, "idle")
 				}
-			}()
+			})
 		} else {
 			m.sessionCache.mu.Unlock()
 		}
@@ -295,7 +296,7 @@ func (m *Manager) OnSessionEvent(sessionID, eventType string) {
 		"session.next.tool.success",
 		"session.next.tool.failed":
 		// 工具/Shell 结束 -> 检查是否所有活动都完成
-		go func() {
+		background.Go("opencode/session-idle-check", func() {
 			time.Sleep(1 * time.Second)
 			m.sessionCache.mu.RLock()
 			steps := m.sessionCache.activeSteps[sessionID]
@@ -305,7 +306,7 @@ func (m *Manager) OnSessionEvent(sessionID, eventType string) {
 			if steps <= 0 && time.Since(lastSeen) > 2*time.Second {
 				m.UpdateSessionStatus(sessionID, "idle")
 			}
-		}()
+		})
 
 	case "session.next.text.ended",
 		"session.next.reasoning.ended",
@@ -388,7 +389,7 @@ func (m *Manager) GetAllSessions(ctx context.Context) ([]*CachedSession, error) 
 
 	for _, inst := range instances {
 		wg.Add(1)
-		go func(instanceID string) {
+		background.Go1("opencode/list-sessions", func(instanceID string) {
 			defer wg.Done()
 
 			sessions, err := m.GetSessions(ctx, instanceID)
@@ -400,7 +401,7 @@ func (m *Manager) GetAllSessions(ctx context.Context) ([]*CachedSession, error) 
 			mu.Lock()
 			allSessions = append(allSessions, sessions...)
 			mu.Unlock()
-		}(inst.ID)
+		}, inst.ID)
 	}
 
 	wg.Wait()

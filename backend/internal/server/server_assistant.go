@@ -31,6 +31,7 @@ import (
 
 	"github.com/halfking/pocket-opencode/backend/internal/aigate"
 	"github.com/halfking/pocket-opencode/backend/internal/auth"
+	"github.com/halfking/pocket-opencode/backend/internal/background"
 	"github.com/halfking/pocket-opencode/backend/internal/email"
 	"github.com/halfking/pocket-opencode/backend/internal/finance"
 	"github.com/halfking/pocket-opencode/backend/internal/kxmemory"
@@ -2395,7 +2396,7 @@ func (s *Server) handleEmailSync(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		go s.classifyEmailsAsync(body.Emails, userID, wsID)
+		background.Go3("assistant/classify-emails", s.classifyEmailsAsync, body.Emails, userID, wsID)
 		writeJSON(w, http.StatusOK, map[string]any{"received": len(body.Emails), "classify": "async"})
 		return
 	}
@@ -2478,7 +2479,7 @@ func (s *Server) handleEmailSync(w http.ResponseWriter, r *http.Request) {
 	// 则零外呼）。注意邮件 date 是头日期而非入库时间，可能早于本轮（缺
 	// Date 头时甚至可能重复），窗口放宽到 24h 保证覆盖。
 	if email.ShouldProcessAfterFetch(synced, totalSaved) {
-		go func() {
+		background.Go("assistant/email-sync", func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 			defer cancel()
 			if _, err := email.ClassifyUnclassified(ctx, s.emailStore, s.kxmemory, userID, wsID, 20); err != nil {
@@ -2487,7 +2488,7 @@ func (s *Server) handleEmailSync(w http.ResponseWriter, r *http.Request) {
 			if recent, _, lerr := s.emailStore.ListEmailsSince(ctx, time.Now().Unix()-86400, 200); lerr == nil && len(recent) > 0 {
 				s.extractInvoicesAsync(recent, userID, wsID)
 			}
-		}()
+		})
 	}
 
 	result := map[string]any{

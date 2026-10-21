@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/halfking/pocket-opencode/backend/internal/background"
 )
 
 // Config 描述 SMTP 连接与认证信息。
@@ -84,10 +86,10 @@ func (c *Client) Send(ctx context.Context, m Message) error {
 		err  error
 	}
 	dialRes := make(chan dialResult, 1)
-	go func() {
+	background.Go("notify/smtp-send", func() {
 		conn, err := dialAndUpgrade(addr, c.cfg)
 		dialRes <- dialResult{conn: conn, err: err}
-	}()
+	})
 	select {
 	case <-ctx.Done():
 		return ctx.Err()

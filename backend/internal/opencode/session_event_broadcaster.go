@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/halfking/pocket-opencode/backend/internal/adapter"
+	"github.com/halfking/pocket-opencode/backend/internal/background"
 	"github.com/halfking/pocket-opencode/backend/internal/registry"
 )
 
@@ -275,7 +276,7 @@ func (b *SessionEventBroadcaster) Run(ctx context.Context) {
 				continue
 			}
 			subscribed[inst.ID] = true
-			go b.subscribeInstance(ctx, inst.ID)
+			background.Go2("opencode/session-event-subscribe", b.subscribeInstance, ctx, inst.ID)
 		}
 	}
 	rescan()
