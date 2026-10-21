@@ -35,7 +35,7 @@
 // 真实额度）。它们是取证工具而不是门禁，所以逐条登记、逐条写清解锁
 // 条件，而不是给一个通配豁免 —— 通配豁免正是 §467 要治的病。
 //
-// 另外本包有 **12 条 CatPremiseFailed**，占比远超其它包：8 条是
+// 另外本包有 **13 条 CatPremiseFailed**，占比远超其它包：8 条是
 // `if srv.<store> != nil { 跳过 }` 这一族 —— 测试服务器一旦挂上真实
 // store，要断言的「nil-store 默认形态」就永远观察不到，用例**再也不会失败**。
 // 这一族的代价不是「暂时没跑」，是「永远不会红」，所以单独立类并钉住计数。
@@ -74,6 +74,9 @@ var knownSkips = []skipaudit.Entry{
 
 	skipaudit.E("TestEmailClassifyModel_PrefersGatewayOverCfg", skipaudit.CatPremiseFailed, "它钉的是「分类模型 = 网关 preferredModels 首项，cfg.LLMModel 只是兜底」；"+
 		"默认列表为空时兜底真的会生效，作者自己在消息里写了「语义已变，请更新本用例」。", "无 env 可设：需重新登记 opencode.DefaultLLMGatewayPreferredModels（非空硬编码默认）后重写本用例的判据", "在那之前本用例恒跳过，而它要钉的「配置页的 LLMModel 对分类无效」无人验证"),
+
+	skipaudit.E("TestRefineRejectedCarriesItsReason", skipaudit.CatPremiseFailed, "它的第二个子用例要钉的是「参会人名单泄漏 ⇒ 精校被拦下并带出 participant_leak 成因」；"+
+		"而夹具（把「林岚」同时放进名单和正文）没触发那条 ⇒ 断言形同虚设 ⇒ 停下来说明。", "无 env 可设：需修夹具 —— 让 guardRefineResult 在该夹具上真的判定 participantLeak（否则这条子用例永远不成立）", "在那之前本用例的这半个断言在 CI 上恒跳过 ⇒ 「读侧拦住了名单泄漏」无人验证"),
 
 	{
 		Test:   "TestExportRefinePrompt",
@@ -222,7 +225,7 @@ func TestSkipLedger_双向精确匹配(t *testing.T) {
 //	永远观察不到 ⇒ **永远不会失败**。这不是「暂时没跑」，
 //	是「绿色读数与「跑过并通过」完全无法区分」。
 func TestSkipLedger_前提不成立类计数被钉住(t *testing.T) {
-	const wantPremiseFailed = 12
+	const wantPremiseFailed = 13
 	got := 0
 	for _, e := range knownSkips {
 		if e.Cat == skipaudit.CatPremiseFailed {

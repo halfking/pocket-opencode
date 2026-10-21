@@ -31,6 +31,7 @@
     "check:exit-reflects-verdict": "node ../scripts/check-exit-reflects-verdict.mjs --selftest && node ../scripts/check-exit-reflects-verdict.mjs",
     "check:doc-encoding": "node ../scripts/audit-doc-encoding.mjs --meta && node ../scripts/audit-doc-encoding.mjs",
     "check:doc-ref-integrity": "node ../scripts/check-doc-ref-integrity.mjs --meta && node ../scripts/check-doc-ref-integrity.mjs",
+    "check:doc-section-number-uniqueness": "node ../scripts/check-doc-section-number-uniqueness.mjs --selftest && node ../scripts/check-doc-section-number-uniqueness.mjs",
     "check:stt-refine-receipts": "node ../scripts/audit-stt-refine-receipts.mjs --meta && node ../scripts/audit-stt-refine-receipts.mjs",
     "check:refine-summary-meta-split": "node ../scripts/audit-refine-summary-meta-split.mjs --meta && node ../scripts/audit-refine-summary-meta-split.mjs",
     "check:quicknote-summary-gate": "node scripts/check-quicknote-summary-gate.mjs",

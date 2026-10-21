@@ -28,6 +28,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -84,7 +85,10 @@ func TestFullSegmentsWireFixture(t *testing.T) {
 	if err != nil {
 		t.Fatalf("读不到 fixture（首次请跑 UPDATE_FIXTURE=1）：%v", err)
 	}
-	if string(raw)+"\n" != string(want) {
+	// ⚠ fixture 在**前端**目录 ⇒ .gitattributes 只声明了 `*.go`
+	// ⇒⇒⇒ Windows 检出即 CRLF ⇒⇒⇒ 比对前必须归一行尾，否则同一份内容
+	// ⇒⇒⇒ 在 Windows/Linux 上给出**相反**的结论。
+	if string(raw)+"\n" != strings.ReplaceAll(string(want), "\r\n", "\n") {
 		t.Fatalf("wire 形状与前端共用的 fixture 不一致。\n--- 实际 marshal ---\n%s\n--- fixture 文件 ---\n%s\n"+
 			"前端 attributeFullTranscript 靠 startSec/endSec 归属；"+
 			"若这里红了而你没改前端，说明两端已经对不上，§36 的修复会静默退化成「全挂第一段」。",
