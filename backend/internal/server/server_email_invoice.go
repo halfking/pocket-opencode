@@ -20,6 +20,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/halfking/pocket-opencode/backend/internal/background"
 	"github.com/halfking/pocket-opencode/backend/internal/email"
 	ws "github.com/halfking/pocket-opencode/backend/internal/websocket"
 )
@@ -110,7 +111,7 @@ func (s *Server) extractInvoicesAsync(emails []email.Email, userID, workspaceID 
 	if s.emailStore == nil || len(emails) == 0 {
 		return
 	}
-	go func() {
+	background.Go("email/invoice-extract", func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		// 缓存正文解密依赖主密钥与数据目录；未配置时退化为纯主题+摘要提取
@@ -164,7 +165,7 @@ func (s *Server) extractInvoicesAsync(emails []email.Email, userID, workspaceID 
 				"count": extracted,
 			})
 		}
-	}()
+	})
 }
 
 func (s *Server) handleEmailInvoiceExtract(w http.ResponseWriter, r *http.Request) {

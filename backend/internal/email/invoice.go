@@ -909,14 +909,28 @@ func normalizeEnglishInvoiceDate(year, month, day int) string {
 }
 
 // isFutureInvoiceDate 判断 YYYY-MM-DD 是否比 now 晚了超过 1 天。
+//
+// ⚠ 时区（2026-10-22 CI 实测修掉的真缺陷）：被比较的日期必须与 now 在**同一时区**解析。
+//
+//	原实现用 time.Parse（**固定 UTC**）解析 d，而 cut 按 now.Location() 取整
+//	⇒ 两者时区不一致 ⇒ 结论**依赖运行环境的时区**：
+//	UTC+8 上恰好成立（t 比 cut 晚 8 小时 ⇒ After 为真），
+//	UTC 上恰好不成立（t 与 cut 相等 ⇒ After 为假）
+//	⇒ ubuntu CI（TZ=UTC）恒红、+08 开发机恒绿 ⇒ 看起来像「CI 坏了」。
+//
+//	修法：两边都用 now.Location() ⇒ 任何时区下结论一致，
+//	且**在 +08 上的逐条结论与修前完全相同**（无产品行为变化）。
 func isFutureInvoiceDate(d string, now time.Time) bool {
-	t, err := time.Parse("2006-01-02", d)
+	t, err := time.ParseInLocation("2006-01-02", d, now.Location())
 	if err != nil {
 		return false // 解析不了就当它不是未来日期，交给调用方按原样处理
 	}
 	cut := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()).
 		AddDate(0, 0, 2)
-	return t.After(cut)
+	// 宽限 1 天 ⇒ 比今天晚 2 天才算未来 ⇒ 边界取「≥」。
+	//   （原来用 t.After(cut) 是**严格大于** ⇒ 边界那天被判成「非未来」；
+	//   在 +08 上这个偏差被 8 小时的时区差恰好盖住 ⇒ 本机绿、CI 红。）
+	return !t.Before(cut)
 }
 
 // ParseInvoiceDateFromBytes 扫描文件字节（PDF 未压缩文本 / 图片旁路无效）。

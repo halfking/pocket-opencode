@@ -72,10 +72,26 @@ describe('A · 行为层：提醒任务带的是真实 due，不是「现在」'
     assert.equal(input.scheduleKind, 'at')
     // 关键判据：expr 解析出的时刻与 due 解析出的时刻**一致**（精确到分钟）。
     // 旧实现是 new Date(Date.now()+60_000).toISOString()，与 due 无关。
+    //
+    // ⚠ 这条断言必须**与时区无关**（2026-10-22 ubuntu CI 实测修掉）：
+    //   expr 的口径是「**本地墙钟** + **固定 +08:00 标签**」
+    //   （见 meeting-due.test.ts 的「与后端 at 解析闭环」及其负控），
+    //   而 `parsed.at` 是**设备本地时区**的时刻 ⇒ 两者**不是同一个瞬间**
+    //   ⇒ 直接比 epoch 会在非 +08:00 的环境（ubuntu CI = TZ=UTC）差一个时区偏移。
+    //   ⇒ 正确判据：expr 的墙上钟字段 == parsed.at 的本地墙上钟字段，
+    //   且偏移后缀是声明的 +08:00。
+    const d = new Date(parsed.at)
+    const p2 = (n: number) => String(n).padStart(2, '0')
+    const wall = `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}T${p2(d.getHours())}:${p2(d.getMinutes())}:00`
+    assert.equal(
+      input.scheduleExpr,
+      `${wall}+08:00`,
+      '提醒 expr 必须是 due 解析出的时刻（本地墙钟 + 声明的 +08:00 偏移）',
+    )
     assert.equal(
       Math.floor(Date.parse(input.scheduleExpr) / MINUTE),
-      Math.floor(parsed.at / MINUTE),
-      '提醒 expr 必须是 due 解析出的时刻',
+      Math.floor(Date.parse(`${wall}+08:00`) / MINUTE),
+      '提醒 expr 解析出的瞬间必须与 due 的墙上钟一致',
     )
     assert.ok(parsed.at - NOW > 12 * HOUR, '「明天下午三点」应距 now 半天以上，便于断言不是 now+60s')
   })

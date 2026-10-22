@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"fmt"
 	"image"
-	"io"
 	"strings"
 
 	// 注册 JPEG / PNG 解码器，供 image.DecodeConfig 读图片尺寸用。
@@ -12,6 +11,7 @@ import (
 	_ "image/jpeg"
 	_ "image/png"
 
+	"github.com/halfking/pocket-opencode/backend/internal/sizedread"
 	"github.com/pdfcpu/pdfcpu/pkg/api"
 )
 
@@ -200,6 +200,13 @@ func ExtractInvoiceThumb(data []byte) (thumb []byte, contentType string, ok bool
 //
 // 现在按同一条规矩补上：panic 转成普通 error，由 ExtractInvoiceThumb 当成
 // 「抽不出缩略图」。注意必须用**具名返回值**，否则 recover 里改不动 err。
+// maxInvoiceImageBytes 是「从 PDF 里抽出来的那张图」的上限（8 MiB）。
+//
+// ⚠ §952：PDF 本体已经被限在 20 MiB（MaxInvoicePDFBytes），
+// 但 **PDF 里的流是压缩过的** ⇒ 一个 20 MiB 的 PDF 可以展开出
+// 远大于 20 MiB 的图片 ⇒⇒⇒ 「PDF 有上界」**推不出**「内嵌图有上界」。
+const maxInvoiceImageBytes = 8 << 20
+
 func firstPDFEmbeddedImage(data []byte) (img []byte, fileType string, err error) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -215,7 +222,7 @@ func firstPDFEmbeddedImage(data []byte) (img []byte, fileType string, err error)
 			if img.Reader == nil {
 				continue
 			}
-			b, rerr := io.ReadAll(img.Reader)
+			b, rerr := sizedread.All(img.Reader, maxInvoiceImageBytes)
 			if rerr != nil || len(b) == 0 {
 				continue
 			}

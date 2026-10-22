@@ -18,6 +18,7 @@ import (
 	"github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapclient"
 	"github.com/emersion/go-sasl"
+	"github.com/halfking/pocket-opencode/backend/internal/background"
 	"github.com/halfking/pocket-opencode/backend/internal/email/rules"
 )
 
@@ -211,7 +212,7 @@ func (c *deadlineConn) Write(b []byte) (int, error) {
 func (c *deadlineConn) start() {
 	c.touch()
 	_ = c.Conn.SetDeadline(c.nextIdle())
-	go func() {
+	background.Go("email/fetcher", func() {
 		iv := c.idle / 3
 		if iv <= 0 {
 			return
@@ -235,7 +236,7 @@ func (c *deadlineConn) start() {
 				_ = c.Conn.SetDeadline(c.nextIdle())
 			}
 		}
-	}()
+	})
 }
 
 // nextIdle 返回「滚动空闲续期」应设的 socket deadline，且**永远不超过硬截止**。

@@ -478,7 +478,14 @@ export const useAIChatStore = defineStore('ai-chat', () => {
   function setSettings(patch: Partial<ChatSettings>) {
     Object.assign(settings.value, patch)
     persist()
-    import('../../native/config-sync/prefs').then((m) => m.persistChatSettings(settings.value)).catch(() => {})
+    import('../../native/config-sync/prefs')
+      .then((m) => m.persistChatSettings(settings.value))
+      .catch((e) => {
+        // 聊天设置没能落进本地库 ⇒ 本次会话内有效，重启后回到旧值。
+        // 上面 persist() 写的是 localStorage，**跨设备同步**靠的才是这条持久化路径
+        // ⇒ 失败时别处看不到 ⇒ 留痕。
+        console.warn('[ai-chat] 聊天设置未能持久化：', e)
+      })
   }
 
   function setCompareModels(list: string[]) {

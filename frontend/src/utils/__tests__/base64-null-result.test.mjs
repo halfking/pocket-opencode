@@ -28,6 +28,7 @@ import { execFileSync } from 'node:child_process'
 import { readFileSync, readdirSync } from 'node:fs'
 import { dirname, join, relative, resolve } from 'node:path'
 import { afterEach, describe, it } from 'node:test'
+import { fileURLToPath } from 'node:url'
 import { blobToBase64, arrayBufferToBase64, utf8ToBase64, base64ToUtf8 } from '../base64.ts'
 
 const RealFileReader = globalThis.FileReader
@@ -232,7 +233,7 @@ describe('阴性对照：旧实现必须被上面那些断言抓住', () => {
  *   这里连**失败分支都没进**，所以连诊断都没有。
  */
 describe('§888 · D58：blobToBase64 只能有一份实现，且所有调用点必须用公共实现', () => {
-  const SRC_ROOT = new URL('../../', import.meta.url).pathname
+  const SRC_ROOT = fileURLToPath(new URL('../../', import.meta.url))
   const SKIP = (p) => p.includes('__tests__') || p.endsWith('.test.ts') || p.endsWith('.test.mjs')
 
   function walk(dir, out = []) {
@@ -367,7 +368,7 @@ describe('§888 · D58：blobToBase64 只能有一份实现，且所有调用点
  *   §889 改名为 `latin1PartToBytes`（私有、单一调用点 ⇒ 零风险）。
  */
 describe('§889 · D59：bytes→base64 的实现收编到一处（形态无关判定）', () => {
-  const SRC_ROOT = new URL('../../', import.meta.url).pathname
+  const SRC_ROOT = fileURLToPath(new URL('../../', import.meta.url))
   const SKIP = (p) => p.includes('__tests__') || p.endsWith('.test.ts') || p.endsWith('.test.mjs')
 
   function walk(dir, out = []) {
@@ -571,7 +572,7 @@ describe('§891 · D61：base64 解码失败必须返回 null（不抛），否�
   //   （顺带：本块第一版写成 `HERE` 而这里没有 HERE，跑出来是 suite 构造期
   //     `ReferenceError: HERE is not defined`，而汇总行仍是 `# pass 23 / # fail 0`
   //     —— 正是「suite 构造期失败不计进 # fail」那条。只看计数会把整块判据当成全绿。）
-  const SRC_ROOT = new URL('../../', import.meta.url).pathname
+  const SRC_ROOT = fileURLToPath(new URL('../../', import.meta.url))
   const NOTES_PERSIST = resolve(SRC_ROOT, 'features/notes/notes-persist.ts')
   const NOTE_FILES = resolve(SRC_ROOT, 'features/notes/note-files.ts')
 
@@ -670,7 +671,7 @@ describe('§891 · D61：base64 解码失败必须返回 null（不抛），否�
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
-// §895：§891 收编后的**字节级行为门**（utf-8 → base64 族）。
+// §958：§891 收编后的**字节级行为门**（utf-8 → base64 族）。
 //
 // 为什么 §891 那批判据不够 —— 它们是**自洽判据**：
 //   §891 唯一覆盖「搬家之后行为对」的是判据 3「往返不变」
@@ -690,7 +691,7 @@ describe('§891 · D61：base64 解码失败必须返回 null（不抛），否�
 // 形态无关：直接 import 真实函数，不看声明形态。
 // 逐落点限定：只钉 §891 真正收编过的那几个落点，不做全仓唯一性断言。
 // ─────────────────────────────────────────────────────────────────────────────
-describe('§895 · §891 收编的字节级行为门：落盘字节必须是 UTF-8（不是「往返自洽」即可）', () => {
+describe('§958 · §891 收编的字节级行为门：落盘字节必须是 UTF-8（不是「往返自洽」即可）', () => {
   // 样本刻意覆盖 UTF-8 的每一处边界：BMP 中文、增补平面 emoji（代理对）、
   // NUL、单个 latin1 最高位、以及纯 ASCII。少一样，下面某条边界就没人守。
   const SAMPLES = [
@@ -745,7 +746,7 @@ describe('§895 · §891 收编的字节级行为门：落盘字节必须是 UTF
     // ⚠ 逐落点限定：不能全仓判，否则 `crypto.ts` 的内联编码会假红（§889.3）。
     const hasUtf8ToBase64 = (src) =>
       /\bbtoa\(/.test(src) && /encodeURIComponent\(/.test(src)
-    const SRC_ROOT = new URL('../../', import.meta.url).pathname
+    const SRC_ROOT = fileURLToPath(new URL('../../', import.meta.url))
     const strip = (s) => s
       .replace(/\/\*[\s\S]*?\*\//g, '')
       .replace(/(^|[^:])\/\/.*$/gm, '$1')
@@ -781,7 +782,7 @@ describe('§895 · §891 收编的字节级行为门：落盘字节必须是 UTF
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
-// §896：§888 收编 `blobToBase64`（5 份 → 1 份）后的**字节级行为门**。
+// §959：§888 收编 `blobToBase64`（5 份 → 1 份）后的**字节级行为门**。
 //
 // 缺口形态：§888.5 的 6 条判据里，**没有一条钉字节** ——
 //   判据 2/3/4 是文本扫描（证明「实现搬走了」），判据 5/6 是负控，
@@ -795,10 +796,10 @@ describe('§895 · §891 收编的字节级行为门：落盘字节必须是 UTF
 //
 // 判据锚点：**Node Buffer 的字节真值**（不是抄一份实现再比一遍，§889.8.3 纪律）。
 // 判据形态：直接 import 真实函数 + 真实 Blob ⇒ 形态无关。
-// 负控用**自洽同族**（§895 纪律：自洽判据对「两侧同时换族」无感，
+// 负控用**自洽同族**（§958 纪律：自洽判据对「两侧同时换族」无感，
 //   所以负控必须是自洽的，才证明字节门抓的是「字节族」而不是「单侧改动」）。
 // ─────────────────────────────────────────────────────────────────────────────
-describe('§896 · §888 收编的字节级行为门：Blob 字节必须原样编成 base64', () => {
+describe('§959 · §888 收编的字节级行为门：Blob 字节必须原样编成 base64', () => {
   /**
    * 装一个**真读字节**的 FileReader 桩。
    * ⚠ 为什么不能用现成的 `stubFileReader({result})`：它返回写死的字符串，
@@ -879,7 +880,7 @@ describe('§896 · §888 收编的字节级行为门：Blob 字节必须原样�
     //   dec_wrong：反向做一次
     //   ⇒ dec_wrong(enc_wrong(x)) === x（往返成立）
     //   ⇒ 但 enc_wrong(x) 的**字节**与 x 不同。
-    // 也就是 §895 记录的形态：单侧/双侧自洽的「另一族」都能骗过往返型判据，
+    // 也就是 §958 记录的形态：单侧/双侧自洽的「另一族」都能骗过往返型判据，
     // 只有锚 Buffer 的字节门能抓住。
     const enc_wrong = (bytes) => {
       const latin1 = String.fromCharCode(...bytes)
@@ -904,7 +905,7 @@ describe('§896 · §888 收编的字节级行为门：Blob 字节必须原样�
 
   it('★ 落点登记：Blob→base64 的落盘/上传路径必须走公共实现', () => {
     // 这一条是**逐落点限定**的形状门（证明「别搬回去」），不是字节门。
-    const SRC_ROOT = new URL('../../', import.meta.url).pathname
+    const SRC_ROOT = fileURLToPath(new URL('../../', import.meta.url))
     const strip = (s) => s
       .replace(/\/\*[\s\S]*?\*\//g, '')
       .replace(/(^|[^:])\/\/.*$/gm, '$1')

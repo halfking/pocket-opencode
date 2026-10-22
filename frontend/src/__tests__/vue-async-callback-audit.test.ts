@@ -31,7 +31,19 @@ import { dirname, join, relative } from 'node:path'
 // ⚠ 本文件在 src/__tests__/ 下 ⇒ 回退**两层**才是 src（features 下是三层）。
 const HERE = dirname(fileURLToPath(import.meta.url))
 const SRC = join(HERE, '..')
-const read = (rel: string) => readFileSync(join(SRC, rel), 'utf8')
+// ★ 读入口归一 CRLF → LF（2026-10-22 Windows 实测修掉）
+//
+//   本仓的 .ts/.vue 在 Windows 检出是 CRLF（core.autocrlf=true），
+//   而下面这些用例的「变异锚点」正则里写死了 \n ⇒ 锚点匹配不上
+//   ⇒ 变异根本没发生 ⇒ 断言报「变异没生效（锚点与真源码不匹配）」
+//   ⇒ 该报红的那条反而报红成「锚点没命中」，看起来像源码变了，其实没变。
+//   ⇒ Linux 上源文件是 LF ⇒ 锚点命中 ⇒ **Linux 一直绿**。
+//
+//   归一在**读入口**（一处盖住全部锚点），不是逐条改正则
+//   —— 与 D6–D10、§88 同族纪律，也与仓内既有先例一致：
+//   src/features/email/__tests__/account-read-path-normalization.test.mjs:46-48。
+
+const read = (rel: string) => readFileSync(join(SRC, rel), 'utf8').replace(/\r\n/g, '\n')
 const relOf = (p: string) => relative(SRC, p).split('\\').join('/')
 
 function collectVue(dir: string, out: string[] = []): string[] {
@@ -199,7 +211,10 @@ describe('§854 · D8/D8b 用户主动触发的自动化任务动作，失败必
     // 这一条是本节的核心防呆：判据若把「所有空 catch」判红，就会逼着人把
     // `store.load` 的 catch 去掉 —— 那是错的，load 失败会设 store.error，
     // 而模板渲染了它（还带重试按钮）。
-    assert.match(LIST, /store\.load\([^)]*\)\.catch\(\(\) => \{\}\)/,
+    // ⚠ §948：load 的 catch 从「空块」改成了「体内带一句理由注释的空块」
+    //   ⇒ 形态变了、**语义没变**（仍是「失败由 store.error 呈现、这里只接住 rethrow」）
+    //   ⇒ 本条的正则随之放宽到「体里只有 `//` 注释」，并保留原说明。
+    assert.match(LIST, /store\.load\([^)]*\)\.catch\(\(\) => \{\s*\n(?:\s*\/\/[^\n]*\n)*\s*\}\)/,
       'load 的空 catch 形态变了 —— 若已改成 toast，请同步更新本条的说明')
     assert.equal(rendersStoreError(strip(LIST)), true,
       '列表页不再渲染 store.error ⇒ load 的空 catch 就成了真缺口')

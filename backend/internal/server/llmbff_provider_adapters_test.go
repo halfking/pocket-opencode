@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -350,12 +351,18 @@ func TestDynamicGatewayStreamChainVisitsEachCandidateOnce(t *testing.T) {
 	defer func() { autoFallbackAttemptTimeout, autoFallbackTotalBudget = oldAttempt, oldBudget }()
 
 	var mu atomic.Int32
+	// ⚠ seen 由 httptest 的 handler goroutine 写、由主 goroutine 读
+	//   ⇒ 无锁访问就是**真 data race**（ubuntu CI 的 go test -race 实测报出，
+	//   本机 go test（不带 -race）永远是绿的 ⇒ 只有 -race 才看得见）。
+	var seenMu sync.Mutex
 	seen := map[string]int{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req llmgateway.ChatRequest
 		_ = json.NewDecoder(r.Body).Decode(&req)
 		n := mu.Add(1)
+		seenMu.Lock()
 		seen[req.Model]++
+		seenMu.Unlock()
 		if req.Model != "model-a" && req.Model != "model-b" {
 			// 第三候选：成功返回
 			w.Header().Set("Content-Type", "text/event-stream")
@@ -393,11 +400,17 @@ func TestDynamicGatewayStreamChainVisitsEachCandidateOnce(t *testing.T) {
 	if usage == nil || usage.TotalTokens != 2 {
 		t.Fatalf("usage = %+v, want total_tokens=2", usage)
 	}
-	if seen["model-a"] != 1 || seen["model-b"] != 1 {
-		t.Fatalf("candidate visits = %v, want model-a×1 model-b×1 (no revisit)", seen)
+	seenMu.Lock()
+	gotSeen := map[string]int{}
+	for k, v := range seen {
+		gotSeen[k] = v
 	}
-	if seen["model-c"] != 1 {
-		t.Fatalf("model-c visits = %d, want 1", seen["model-c"])
+	seenMu.Unlock()
+	if gotSeen["model-a"] != 1 || gotSeen["model-b"] != 1 {
+		t.Fatalf("candidate visits = %v, want model-a×1 model-b×1 (no revisit)", gotSeen)
+	}
+	if gotSeen["model-c"] != 1 {
+		t.Fatalf("model-c visits = %d, want 1", gotSeen["model-c"])
 	}
 	got = dropModelProgress(got)
 	if len(got) < 4 {

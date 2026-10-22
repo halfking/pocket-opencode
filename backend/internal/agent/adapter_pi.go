@@ -40,6 +40,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/halfking/pocket-opencode/backend/internal/background"
 )
 
 // PiAdapter 实现 AgentAdapter，通过驱动 pi CLI 的 headless JSON 模式。
@@ -389,10 +391,10 @@ func (a *PiAdapter) SubscribeEvents(ctx context.Context, ref AgentRef) (<-chan A
 		a.mu.Unlock()
 	}
 	// ctx cancel 时自动清理（cleanup 幂等，双路径安全）。
-	go func() {
+	background.Go("agent/pi-events", func() {
 		<-ctx.Done()
 		cleanup()
-	}()
+	})
 	return ch, cleanup, nil
 }
 

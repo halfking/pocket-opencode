@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/halfking/pocket-opencode/backend/internal/adapter"
+	"github.com/halfking/pocket-opencode/backend/internal/background"
 )
 
 // OpenCodeAdapter 把 internal/adapter.OpenCodeHTTPAdapter 包装为 agent.AgentAdapter。
@@ -183,7 +184,7 @@ func (a *OpenCodeAdapter) SubscribeEvents(ctx context.Context, ref AgentRef) (<-
 		return nil, cleanup, translateOpenCodeError(err)
 	}
 	out := make(chan AgentEvent, 32)
-	go func() {
+	background.Go("agent/opencode-events", func() {
 		defer close(out)
 		for {
 			select {
@@ -196,7 +197,7 @@ func (a *OpenCodeAdapter) SubscribeEvents(ctx context.Context, ref AgentRef) (<-
 				out <- ocToAgentEvent(evt)
 			}
 		}
-	}()
+	})
 	return out, cleanup, nil
 }
 

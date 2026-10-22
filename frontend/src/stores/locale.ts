@@ -27,7 +27,11 @@ export const useLocaleStore = defineStore('locale', () => {
       // localStorage 不可用时至少让界面语言生效
     }
     applyLocale(locale)
-    import('../native/config-sync/prefs').then((m) => m.persistAppPrefs()).catch(() => {})
+    import('../native/config-sync/prefs').then((m) => m.persistAppPrefs()).catch((e) => {
+      // 语言偏好没能落进本地库 ⇒ 本次会话内有效，重启后回到旧值。
+      // 跨设备同步靠的才是这条持久化路径 ⇒ 失败时别处看不到 ⇒ 留痕。
+      console.warn('[locale] 语言偏好未能持久化：', e)
+    })
   }
 
   return {

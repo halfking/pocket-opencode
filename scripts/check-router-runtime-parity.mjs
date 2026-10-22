@@ -25,7 +25,7 @@ import { readFileSync, writeFileSync, unlinkSync, existsSync, mkdtempSync } from
 import { createHash } from 'node:crypto'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
 import { routesOf } from './check-hide-app-header.mjs'
 
@@ -41,7 +41,18 @@ const ROUTER = join(FRONT, 'src', 'app', 'router-mobile.ts')
  * @returns {Promise<{total:number, hidden:string[], allPaths:string[]}>}
  */
 async function runtimeRoutes(entry) {
-  const { build } = await import(require.resolve('esbuild', { paths: [FRONT] }))
+  // ⚠⚠ 2026-10-22 round50 修掉的**平台假红**：ESM 的 `import()` 不接受
+  //   **Windows 绝对路径** —— `C:\...\main.js` 会被当成一个「协议为 `c:` 的 URL」
+  //   ⇒ 抛 `Only URLs with a scheme in: file, data, and node are supported by the
+  //   default ESM loader. On Windows, absolute paths must be valid file:// URLs.
+  //   Received protocol 'c:'`
+  //   ⇒ 本门「拒绝给结论」⇒ **退出码 2**（门禁跑不起来，不是断言失败）。
+  //   ⚠ 在 Linux 上绝对路径是合法的 ⇒ **CI 一直是绿的**
+  //   ⇒ 又一个「只在本机红、CI 绿」的平台缺陷。
+  //   ⇒ 修法：`pathToFileURL(x).href` 转成 file:// URL（**跨平台都合法**）。
+  //   ⚠ 本仓已有正确写法：`scripts/check-back-navigation.mjs:229,294` 就是
+  //   `await import(pathToFileURL(...).href)` ⇒ **现成先例，不是新发明**。
+  const { build } = await import(pathToFileURL(require.resolve('esbuild', { paths: [FRONT] })).href)
   const res = await build({
     entryPoints: [entry],
     bundle: true, format: 'esm', platform: 'node', write: false,
@@ -77,7 +88,16 @@ async function runtimeRoutes(entry) {
   globalThis.localStorage ??= store()
   globalThis.sessionStorage ??= store()
 
-  const mod = await import(tmp)
+  // ⚠⚠ 2026-10-22 round50 修掉的**平台假红**：ESM 的 `import()` 不接受
+  //   **Windows 绝对路径** —— `C:\...\router.mjs` 会被当成一个「协议为 `c:` 的 URL」
+  //   ⇒ 抛 `Only URLs with a scheme in: file, data, and node are supported by the
+  //   default ESM loader. On Windows, absolute paths must be valid file:// URLs.
+  //   Received protocol 'c:'`
+  //   ⇒ 本门「拒绝给结论」⇒ **退出码 2**（门禁跑不起来，不是断言失败）。
+  //   ⚠ 在 Linux 上 `import('/tmp/x/router.mjs')` 是合法的 ⇒ **CI 一直是绿的**
+  //   ⇒ 又一个「只在本机红、CI 绿」的平台缺陷。
+  //   ⇒ 修法：`pathToFileURL(x).href` 转成 file:// URL（**跨平台都合法**）。
+  const mod = await import(pathToFileURL(tmp).href)
   const routes = mod.default.options.routes
   return {
     total: routes.length,

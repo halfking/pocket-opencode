@@ -16,6 +16,8 @@ import (
 	"log"
 	"net/http"
 	"time"
+
+	"github.com/halfking/pocket-opencode/backend/internal/outbound"
 )
 
 // AuthClientConfig 描述 RedClaw auth-agent 镜像客户端配置。
@@ -59,9 +61,7 @@ func NewAuthClient(cfg AuthClientConfig) (*AuthClient, error) {
 			TenantID:   tenant,
 			TimeoutSec: timeout,
 		},
-		httpDo: &http.Client{
-			Timeout: time.Duration(timeout) * time.Second,
-		},
+		httpDo: outbound.NewClient(time.Duration(timeout) * time.Second),
 	}, nil
 }
 

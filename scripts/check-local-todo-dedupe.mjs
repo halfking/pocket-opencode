@@ -88,8 +88,45 @@ const MIN_SITES = 3
 
 // ── 剥注释（等长空白替换，保持行结构；不剥会把注释里的 SQL 算成写入点）────
 const blank = (m) => m.replace(/[^\n]/g, ' ')
+
+/**
+ * 行尾归一：CRLF ⇒ LF。
+ *
+ * ★★ 2026-10-22 round50 实测修掉的**量具平台假红**（不是产品缺陷）。
+ *
+ * 现象（Windows 上）：三处 INSERT 全部报「定位不到包含 INSERT 的循环」，
+ *   自检 5 条红（② ⑧b ⑧d ⑧e ⑧f），门禁本体 EXIT 1。
+ *   同一棵树用 `git -c core.autocrlf=false archive` 展开成 LF 之后 ⇒ **16/16 全绿、体检 EXIT 0**。
+ *   ⇒ 根因不在业务代码，在**本门读文件时看到的行尾**。
+ *
+ * 机制（本仓环境事实，不是猜的）：
+ *   ① `core.autocrlf=true`（本机）；
+ *   ② `.gitattributes` **只声明了 `*.go text eol=lf`** ⇒ `frontend/src/**` 与 `scripts/**`
+ *      在对象层是 LF（`git ls-files --eol` 记 `i/lf w/crlf`），在 Windows 工作区检出成 CRLF；
+ *   ③ `enclosingLoopBody` 的循环头正则要求行以 `{` 收尾：`/\b(?:for|while)\b[^{]*\{[ \t]*$/`
+ *      —— CRLF 下该行尾部是 `{\r`，`[ \t]*` 吃不掉 `\r` ⇒ **三个循环头一个都匹配不上**；
+ *   ④ 更隐蔽的是**偏移量也算错**：`head.length - lines.slice(i).join('\n').length`
+ *      这行用「重拼」反推 `{` 的绝对位置，而重拼把 `\r\n` 还原成了 `\n`
+ *      ⇒ 偏移量少算了**尾部每一行各一个 `\r`** ⇒ 即使正则匹配上了，取到的也不是那个 `{`。
+ *   ⇒ 只把正则放宽成 `[ \t\r]*$` 是**治标不治本**：③ 会过、④ 仍然错。
+ *
+ * ⇒ 正确的修法是**在文本入口处把行尾归一**，让下游所有判据只面对 LF。
+ *   本仓已有同款约定（不是本门首创）：
+ *     · `scripts/check-blankline-bloat.mjs:45` —— `readFileSync(f,'utf8').replace(/\r\n/g,'\n')`
+ *     · `scripts/check-gofmt.mjs:150`      —— 同款
+ *   ⇒ 门禁的结论**只取决于代码本身**，不取决于检出的行尾；这正是门禁该有的性质。
+ *
+ * ⚠ 为什么不能反过来「把 .gitattributes 扩到 frontend/**」：
+ *   那会把整个前端树重写成 LF ⇒ 全仓伪 diff；`.gitattributes` 自己的注释就写了
+ *   「作用域刻意最小：只管 *.go」（试过 broad 的 `* text=auto`，renormalize 会 churn 8 个文件）。
+ *   ⇒ **在门禁侧归一**，不去动全仓行尾。
+ */
+function normalizeEol(t) {
+  return t.replace(/\r\n/g, '\n')
+}
+
 function stripComments(t) {
-  return t
+  return normalizeEol(t)
     .replace(/\/\*[\s\S]*?\*\//g, blank)
     .split('\n')
     .map((l) => {
@@ -215,9 +252,12 @@ export function enclosingLoopBody(code, at) {
  * ⇒ 恰好排除了「提醒建在查重之前」与「提醒挪出这个循环」两种失效。
  */
 export function reminderFollowsDedupe(code) {
-  const at = code.indexOf('INSERT INTO local_todos')
+  // ⚠ 本函数是**导出的**，调用方未必经过 stripComments ⇒ 自己再归一行尾。
+  //   （`at` 在归一后的串上算 ⇒ 偏移量与串始终自洽，不会串位。）
+  const norm = normalizeEol(code)
+  const at = norm.indexOf('INSERT INTO local_todos')
   if (at < 0) return { ok: false, why: '找不到 INSERT（调用方不应这么用）' }
-  const body = enclosingLoopBody(code, at)
+  const body = enclosingLoopBody(norm, at)
   if (!body) return { ok: false, why: '定位不到包含 INSERT 的循环（抽取器可能失效）' }
   // ⚠⚠ 这里**必须**把 continue 锚在「await already*」那一格上。
   //   第一版写的是 `/\)\s*continue/`，它匹配的是循环里的**第一个** continue ——

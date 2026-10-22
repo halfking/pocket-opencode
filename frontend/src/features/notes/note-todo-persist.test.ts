@@ -54,10 +54,29 @@ describe('A · 行为层：笔记行动项的期限解析与会议侧同口径',
       text: '把回滚脚本补上', dueText: due, at: parsed.at, source: 'note-voice',
     })
     assert.equal(input.scheduleKind, 'at')
+    // ⚠ 这条断言必须**与时区无关**（2026-10-22 ubuntu CI 实测修掉）：
+    //   expr 的口径是「**本地墙钟** + **固定 +08:00 标签**」
+    //   （见 meeting-due.test.ts 的「与后端 at 解析闭环」及其负控，
+    //    以及 schedule-plan.encodeSchedule 的 once 分支），
+    //   而 `parsed.at` 是**设备本地时区**的时刻
+    //   ⇒ 两者**不是同一个瞬间** ⇒ 直接比 epoch 会在非 +08:00 的环境
+    //   （ubuntu CI = TZ=UTC）差**一个时区偏移**（实测 8 小时）⇒ CI 恒红。
+    //   ⇒ 正确判据：expr 的墙上钟字段 == parsed.at 的本地墙上钟字段，
+    //   且偏移后缀是声明的 +08:00。
+    const d = new Date(parsed.at)
+    const p2 = (n: number) => String(n).padStart(2, '0')
+    const wall = `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}T${p2(d.getHours())}:${p2(d.getMinutes())}:00`
+    assert.equal(
+      input.scheduleExpr,
+      `${wall}+08:00`,
+      '提醒 expr 必须是 due 解析出的时刻（本地墙钟 + 声明的 +08:00 偏移）',
+    )
+    // ★ 再钉一道**epoch 级**的判据（两边都用带偏移的字面量 ⇒ 与时区无关）：
+    //   后端按 RFC3339 解析 expr 得到的瞬间，必须等于「同一个墙上钟按 +08:00 解释」。
     assert.equal(
       Math.floor(Date.parse(input.scheduleExpr) / MINUTE),
-      Math.floor(parsed.at / MINUTE),
-      '提醒 expr 必须是 due 解析出的时刻',
+      Math.floor(Date.parse(`${wall}+08:00`) / MINUTE),
+      '提醒 expr 解析出的瞬间必须与 due 的墙上钟一致',
     )
     const payload = input.payload as { prompt: string; source: string; dueAt: number }
     assert.equal(payload.source, 'note-voice')
@@ -225,6 +244,11 @@ describe('B · 接线层：后端返回 action_items，前端真的建待办（�
 describe('§88 · 接线**值**：三个实参必须就是那三个变量', () => {
   /** 剥注释：源码里的说明文字会满足「实参」判据。 */
   const vueCode = read('NoteListView.vue')
+    // ★ 归一 CRLF（2026-10-22 Windows 实测修掉）：下面的跨行锚点是 **LF 形态**，
+    //   而 Windows 检出（core.autocrlf=true）下源文件是 CRLF
+    //   ⇒ 锚点**根本命中不了** ⇒ 负控样本等于没变异过 ⇒ 判据静默失效。
+    //   ⇒ 与 D6–D10 同族：归一必须发生在**读入口**（不是改锚点去迁就检出形态）。
+    .replace(/\r\n/g, '\n')
     .replace(/\/\*[\s\S]*?\*\//g, ' ')
     .split('\n').map((l) => { const i = l.indexOf('//'); return i < 0 ? l : l.slice(0, i) }).join('\n')
 

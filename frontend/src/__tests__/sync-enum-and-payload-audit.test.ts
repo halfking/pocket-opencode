@@ -28,7 +28,7 @@ import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { dirname, join } from 'node:path'
+import { dirname, join, relative } from 'node:path'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const SRC = join(HERE, '..')
@@ -605,7 +605,13 @@ function multiWriteFunctions(): { file: string; fn: string; runs: number }[] {
     for (const f of functionBodies(readFileSync(full, 'utf8'))) {
       const runs = (f.body.match(RUN_RE) ?? []).length
       if (runs >= 2 && !f.body.includes('runInTransaction')) {
-        found.push({ file: full.replace(SRC + '/', ''), fn: f.name, runs })
+        // ★ 正斜杠化的相对路径（2026-10-22 Windows 实测修掉）：
+        //   原来写的是 full.replace(SRC + '/', '')，而 Windows 上 SRC 是 C:\...\src、
+        //   full 是 C:\...\src\native\x.ts ⇒ SRC + '/' 匹配不上 ⇒ 产出的是**绝对路径**
+        //   ⇒ 与 ALLOW 清单（正斜杠相对路径，如 'native/outboxStore.ts::put'）逐条对不上
+        //   ⇒ 这道 §880 普查门恒红。Linux 上路径是 /.../src/... ⇒ 替换得上 ⇒ 一直绿。
+        //   ⇒ 与 meeting-dedup.test.ts 同款：归一在产出侧。
+        found.push({ file: relative(SRC, full).replace(/\\/g, '/'), fn: f.name, runs })
       }
     }
   }

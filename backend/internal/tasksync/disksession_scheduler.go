@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/halfking/pocket-opencode/backend/internal/adapter/disk"
+	"github.com/halfking/pocket-opencode/backend/internal/background"
 	"github.com/halfking/pocket-opencode/backend/internal/mcp"
 )
 
@@ -60,7 +61,7 @@ func (s *DiskSessionScheduler) Start(ctx context.Context) {
 		log.Println("[disksession-sync] disabled (disk adapter or mcp client not configured)")
 		return
 	}
-	go s.loop(ctx)
+	background.Go1("tasksync/disk-session-loop", s.loop, ctx)
 	log.Printf("[disksession-sync] started, interval=%s", s.interval)
 }
 

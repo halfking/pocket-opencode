@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/halfking/pocket-opencode/backend/internal/background"
 	"github.com/halfking/pocket-opencode/backend/internal/mcp"
 	"github.com/halfking/pocket-opencode/backend/internal/task"
 )
@@ -43,7 +44,7 @@ func (s *Scheduler) Start(ctx context.Context) {
 		log.Println("[tasksync] disabled (mcpClient or taskStore not configured)")
 		return
 	}
-	go s.loop(ctx)
+	background.Go1("tasksync/loop", s.loop, ctx)
 	log.Printf("[tasksync] started, interval=%s", s.interval)
 }
 

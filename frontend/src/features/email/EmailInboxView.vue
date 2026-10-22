@@ -546,7 +546,10 @@ async function onOrganize() {
       ? `已整理 ${moved} 封进「${folder}」（${rep.pending} 封待同步到服务器）`
       : `已整理 ${moved} 封进「${folder}」`
     // 本地镜像同步收敛：服务端已改 folder_name，这里重拉列表。
-    await pullInboxFromServer().catch(() => {})
+    await pullInboxFromServer().catch(() => {
+      // pullInboxFromServer 内部已逐段 try/catch 并 console.warn ⇒ 这里接不到东西，
+      // 只是防止它的实现将来改成往外抛时产生未处理 rejection。
+    })
     await showLocal(false)
   } catch (e: any) {
     syncHint.value = e?.message || '智能整理失败'

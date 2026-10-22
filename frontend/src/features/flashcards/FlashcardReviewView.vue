@@ -251,7 +251,12 @@ async function ensureMediaUrls(role: 'front' | 'back' | 'cloze') {
   const refs = (n.mediaRefs ?? []).filter((m) => m.role === role)
   for (const ref of refs) {
     if (mediaCache.value[ref.fileName]) continue
-    const url = await loadMediaDataUrl(ref.fileName).catch(() => null)
+    const url = await loadMediaDataUrl(ref.fileName).catch((e) => {
+      // 媒体预览读不出来 ⇒ 这张图不显示（用户看到的是空位，没有任何提示）。
+      // 没有别处会提示 ⇒ 留痕。
+      console.warn('[flashcards] 媒体预览读取失败：', e)
+      return null
+    })
     if (url) mediaCache.value = { ...mediaCache.value, [ref.fileName]: url }
   }
 }
@@ -304,10 +309,18 @@ async function rate(rating: FlashcardRating) {
 
 onMounted(() => {
   store.loadFromCache()
-  if (store.cards.length === 0) void store.refresh().catch(() => {})
+  if (store.cards.length === 0) {
+    void store.refresh().catch(() => {
+      // 失败已由 store 置成 `store.error`（同步失败会 rethrow）⇒ 这里只接住 rethrow。
+    })
+  }
   // vivo OriginOS 引导：首次进入时把当日提醒挂上
   void import('../../native/localNotifications').then((m) =>
-    m.scheduleDailyReview(9, 0, dueCountHint.value).catch(() => {}),
+    m.scheduleDailyReview(9, 0, dueCountHint.value).catch((e) => {
+      // 当日复习提醒没挂上 ⇒ 用户收不到提醒（复习功能本身不报错）。
+      // 没有别处会提示这件事 ⇒ 留痕。
+      console.warn('[flashcards] 当日复习提醒未能挂载：', e)
+    }),
   )
 })
 

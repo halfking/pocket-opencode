@@ -52,6 +52,13 @@ export function useMeetingRecorder(meetingId: MaybeRef<string>) {
     editSegmentInMemory: (segmentId: string, text: string) => rt.editSegmentInMemory(segmentId, text),
     formatElapsed: () => rt.formatElapsed(),
     labelSpeaker: (profileId: string, label: string) => rt.labelSpeaker(profileId, label),
+    /**
+     * §955：原生采集窗口的快照（原生链才有；Web / iOS 链返回 `used=false`）。
+     *
+     * ⚠ 护栏（§805）在原生链上要拿它当**墙钟** —— 它与盘上音频**同源**，
+     *   而 JS 墙钟与原生采集**不同相位**（推导见 `resolveDurationGuardInput` 的注释）。
+     */
+    nativeCaptureSnapshot: () => rt.nativeCaptureSnapshot(),
     langLabels: LANG_LABELS,
     /** runtime 单例直取(全局指示条/测试用)。 */
     runtime: rt as MeetingRecorderRuntime,

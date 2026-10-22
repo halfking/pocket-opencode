@@ -25,7 +25,19 @@ import { dirname, join, relative } from 'node:path'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const SRC = join(HERE, '..', '..')
-const read = (rel: string) => readFileSync(join(SRC, rel), 'utf8')
+// ★ 读入口归一 CRLF → LF（2026-10-22 Windows 实测修掉）
+//
+//   本仓的 .ts/.vue 在 Windows 检出是 CRLF（core.autocrlf=true），
+//   而下面这些用例的「变异锚点」正则里写死了 \n ⇒ 锚点匹配不上
+//   ⇒ 变异根本没发生 ⇒ 断言报「变异没生效（锚点与真源码不匹配）」
+//   ⇒ 该报红的那条反而报红成「锚点没命中」，看起来像源码变了，其实没变。
+//   ⇒ Linux 上源文件是 LF ⇒ 锚点命中 ⇒ **Linux 一直绿**。
+//
+//   归一在**读入口**（一处盖住全部锚点），不是逐条改正则
+//   —— 与 D6–D10、§88 同族纪律，也与仓内既有先例一致：
+//   src/features/email/__tests__/account-read-path-normalization.test.mjs:46-48。
+
+const read = (rel: string) => readFileSync(join(SRC, rel), 'utf8').replace(/\r\n/g, '\n')
 
 /**
  * 剥掉 HTML 注释后的模板区。
@@ -422,7 +434,12 @@ describe('§847 · 变异负控（每条都必须让上面那把尺子转红）'
   })
 
   it('★ 变异 D：拿掉 `loadAgents` 的 `.catch` ⇒ 调用点判据转红', () => {
-    const mutated = LIB.replace('agentStore.loadAgents().catch(() => {})', 'agentStore.loadAgents()')
+    // ⚠ §948：loadAgents 的 catch 从「`.catch(() => {})`」改成了
+    //   「`.catch(() => { 理由注释 })`」⇒ 锚点随之更新（语义不变）。
+    const mutated = LIB.replace(
+      /agentStore\.loadAgents\(\)\.catch\(\(\) => \{[\s\S]*?\n  \}\)/,
+      'agentStore.loadAgents()',
+    )
     assert.notEqual(mutated, LIB, '★ 变异没生效')
     const bare = mutated.split('\n').filter((l) => l.includes('loadAgents(') && !l.includes('.catch('))
     assert.ok(bare.length > 0, '变异后仍有带 catch 的调用点，负控无效')

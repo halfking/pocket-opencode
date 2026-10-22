@@ -21,6 +21,7 @@ import { readFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, it } from 'node:test'
+import { stripVueComments } from '../../__tests__/source-scan.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const NATIVE_DIR = resolve(HERE, '../../../android/app/src/main/java/com/kaixuan/opencode/pocket/plugins')
@@ -152,5 +153,128 @@ describe('前端：后台录音不可用时原因必须可见', () => {
       runtime,
       /if \(document\.visibilityState !== 'hidden'[\s\S]{0,120}?this\.nativeMode\) return/,
     )
+  })
+})
+
+// ══════════════════════════════════════════════════════════════════════════
+// §956 · 原生分片必须带上**本轮采集原点**（epochMs）
+//
+// ── 为什么 ──
+//   `MeetingRecordService.loop()` 的 `captureStart` 是**每轮重取**的
+//   ⇒ 原生服务每重启一轮（中途切设备就会重启一轮），轮内相对量
+//     `startMs/endMs` 就**从 0 重新开始** ⇒ 直接拿它当分段时间范围
+//     ⇒ **时间轴回卷** ⇒ 后半场被排到前半场之前 + 相邻段重叠
+//     ⇒ 去重的**精确裁剪档**（§634/§683：能吃掉正文）被打开。
+//
+// ⇒ 修法：原生**如实上报**本轮原点（epochMs），由 JS 侧把各轮
+//   **精确**拼回同一根会话时间轴（`features/meetings/native-part-timeline.ts`）。
+//
+// ⚠⚠ 扫描前**必须剥注释**（共用底座 `src/__tests__/source-scan.mjs`）：
+//   本节在 Java/TS 里写了大量提到 `epochMs` 的说明文字 ⇒ 不剥的话
+//   下面每一条断言都会命中**注释**而不是代码 ⇒ 全绿而毫无意义。
+// ══════════════════════════════════════════════════════════════════════════
+
+describe('§956 · 原生分片必须带上本轮采集原点（epochMs）', () => {
+  const pluginCode = stripVueComments(plugin)
+  const serviceCode = stripVueComments(service)
+  const bridgeCode = stripVueComments(bridge)
+
+  it('★ 载荷里必须有 epochMs（各轮的时间轴靠它拼回同一根轴）', () => {
+    assert.equal(
+      (pluginCode.match(/data\.put\("epochMs", epochMs\)/g) ?? []).length, 1,
+      'emitPart 的载荷里没有 epochMs ⇒ 换轮次后时间轴拼不回去（回卷照旧）',
+    )
+  })
+
+  it('★ 旧字段必须原样保留（向后兼容：旧 JS 只看 startMs/endMs）', () => {
+    assert.match(pluginCode, /data\.put\("startMs", startMs\)/)
+    assert.match(pluginCode, /data\.put\("endMs", endMs\)/)
+  })
+
+  it('★ emitPart 必须带 epoch 实参', () => {
+    assert.match(
+      pluginCode,
+      /static void emitPart\(int seq, byte\[\] wav, long startMs, long endMs, long epochMs\)/,
+    )
+  })
+
+  it('★ 服务侧传的 epoch 必须就是算相对时间用的那个原点（不许另取一个钟）', () => {
+    const calls = [...serviceCode.matchAll(/emitPart\(([^)]*)\)/g)]
+      .map((m) => m[1].split(',').map((s) => s.trim()))
+    assert.equal(calls.length, 2, '原生服务应当有两处 emitPart（定时切片 + 收尾补片）')
+    const origins = [...serviceCode.matchAll(/System\.currentTimeMillis\(\)\s*-\s*(\w+)/g)]
+      .map((m) => m[1])
+    assert.ok(origins.length >= 2, '找不到轮内相对量的计算')
+    assert.equal(new Set(origins).size, 1, '轮内相对量必须全部以同一个原点计算')
+    for (const args of calls) {
+      assert.equal(args.length, 5, 'emitPart 必须带 epoch（第 5 个实参）')
+      assert.equal(args[4], origins[0], 'emitPart 传的 epoch 必须就是算相对时间用的那个原点')
+    }
+  })
+
+  it('★ 桥侧不得把缺失的 epoch 折成 0（0 = 1970 年 ⇒ 偏移是天文数字）', () => {
+    assert.ok(!/epochMs\s*\?\?\s*0/.test(bridgeCode), '缺失的 epoch 不得被折成 0')
+    assert.ok(!/epochMs:\s*0\b/.test(bridgeCode), '缺失的 epoch 不得被折成 0')
+    // ⚠ 解析规则**只在纯模块里有一份**（`readNativeEpoch`）⇒ 桥侧必须调它。
+    //   自己再写一份 ⇒ 两处会漂（而漂的方向通常是「一边开始折成 0 了」）。
+    // ⇒ 这条断言只是「接线」；解析规则本身是**行为**判据（见纯模块那组用例）。
+    assert.match(bridgeCode, /readNativeEpoch\(/,
+      '桥侧必须用纯模块里那一个解析实现（自己再写一份 ⇒ 两处会漂）')
+  })
+
+  it('★ 桥侧必须把 epoch 转发给消费侧（解析完就扔 ⇒ 时间轴照样回卷）', () => {
+    assert.match(bridgeCode, /\.epochMs\s*=/, '载荷里没有 epoch ⇒ 消费侧拿不到原点')
+    assert.match(bridgeCode, /epochMs !== undefined/, '缺失的 epoch 不得写进载荷')
+  })
+})
+
+// ══════════════════════════════════════════════════════════════════════════
+// §957 · 同一轮里的原生分片必须**首尾相接**
+//
+// ── 为什么这条是 §957 的地基 ──
+//   §957 要把「切换空隙」（轮次之间那段**没有音频**的墙钟）与「丢了一片」
+//   （同一轮里时间戳跳了一段）**分开** —— 否则护栏会把真丢音频当成空隙放过去。
+//   ⇒ 能分开的前提是：**同一轮里的分片本来就是连续的**
+//     （`MeetingRecordService.loop()` 每发一片就把 `partStartRel` 推进到 `nowRel`）
+//   ⇒ 于是「同一轮里出现跳跃」只可能是「丢了一片」，而不会是「原生侧留了缝」。
+//
+// ⚠⚠ 扫描前**必须剥注释**（共用底座 `src/__tests__/source-scan.mjs`）：
+//   本节在 Java 里写了大量提到 `partStartRel` / `nowRel` 的说明文字
+//   ⇒ 不剥的话下面每一条断言都会命中**注释**而不是代码。
+// ══════════════════════════════════════════════════════════════════════════
+
+describe('§957 · 同一轮里的原生分片必须首尾相接', () => {
+  const serviceCode = stripVueComments(service)
+
+  it('★ 每发完一片必须把 partStartRel 推进到 nowRel（片与片之间不留缝）', () => {
+    // ⚠ 锚定「赋值出现在 emitPart **之后**」—— 顺序反了就是「先推进再发」，
+    //   那样这一片的起点会落在**下一段**音频上（时间戳与音频错位）。
+    // ⚠ 末尾的 `;` 是刻意的：`partStartRel = nowRel + 100`（留缝）不该被这条放过。
+    assert.match(
+      serviceCode,
+      /emitPart\([^)]*\);[\s\S]{0,200}?partStartRel\s*=\s*nowRel\s*;/,
+      '发片之后没有把 partStartRel 推进到 nowRel ⇒ 同一轮里的片不再连续 ⇒ 「丢片」与「空隙」分不开了',
+    )
+  })
+
+  it('★ partStartRel 的初值必须是 0（第一片从原点开始）', () => {
+    assert.match(serviceCode, /long partStartRel = 0;/,
+      '第一片不从 0 开始 ⇒ 轮内相对量的原点对不上')
+  })
+
+  it('★ captureStart 必须**每轮只取一次**（取两次 ⇒ 时间轴又回卷）', () => {
+    const n = (serviceCode.match(/captureStart\s*=\s*System\.currentTimeMillis\(\)/g) ?? []).length
+    assert.equal(n, 1, `captureStart 被取了 ${n} 次 ⇒ 每轮必须只取一次（否则 §956 的重基失效）`)
+  })
+
+  it('★ 两处 emit（定时切片 + 收尾补片）都必须带**本轮**原点', () => {
+    const calls = [...serviceCode.matchAll(/emitPart\(([^)]*)\)/g)].map((m) => m[1])
+    assert.equal(calls.length, 2, '原生服务应当有两处 emitPart（定时切片 + 收尾补片）')
+    for (const args of calls) {
+      const parts = args.split(',').map((s) => s.trim())
+      assert.equal(parts.length, 5, 'emitPart 必须带 epoch（第 5 个实参）')
+      assert.equal(parts[4], 'captureStart',
+        '两处 emit 都必须带本轮原点（否则最后一片落回另一根轴 ⇒ 空隙算错）')
+    }
   })
 })

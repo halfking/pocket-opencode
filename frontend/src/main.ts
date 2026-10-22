@@ -53,15 +53,26 @@ app.mount("#app")
 
 // Splash 就绪即隐（原生顺滑度审计 A3/P0 #3）：config 已关定时（launchShowDuration:0
 // + launchAutoHide:false），这里在 Vue mount + 首帧绘制完成后主动 fade 掉。
-// 双 rAF 确保首帧真的上屏；Web 端无 splash，no-op。插件加载失败静默——
-// 卡住 splash 比没有 splash 更糟，200ms 后兜底强隐。
+// 双 rAF 确保首帧真的上屏；Web 端无 splash，no-op。
+//
+// ⚠ §948：原来这里写着「插件加载失败静默——卡住 splash 比没有 splash 更糟，
+// 200ms 后兜底强隐」，但**那个 200ms 兜底强隐从来就不存在**（全仓没有）。
+// 没有插件就没有 hide 可调 ⇒ JS 侧无法强隐 ⇒ 唯一能做的是**留痕**：
+// 失败时至少留下一条线索，别让「白屏卡死」变成查不到根因的灵异事件。
+// （要不要改 capacitor.config 的 launchAutoHide 作安全网 = 产品口径，已登记。）
 if (Capacitor.isNativePlatform()) {
   const hideSplash = () => {
     import("@capacitor/splash-screen")
       .then(({ SplashScreen }) =>
-        SplashScreen.hide({ fadeOutDuration: 200 }).catch(() => {}),
+        SplashScreen.hide({ fadeOutDuration: 200 }).catch((e) => {
+          // hide 失败 ⇒ 启动画面可能一直盖着（launchAutoHide:false）。
+          console.warn('[splash] 隐藏启动画面失败：', e)
+        }),
       )
-      .catch(() => {})
+      .catch((e) => {
+        // 插件加载失败 ⇒ 没有 hide 可调 ⇒ 启动画面可能一直盖着。
+        console.warn('[splash] 插件加载失败，启动画面可能未被隐藏：', e)
+      })
   }
   requestAnimationFrame(() => requestAnimationFrame(hideSplash))
 }

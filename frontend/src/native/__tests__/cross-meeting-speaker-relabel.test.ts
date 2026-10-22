@@ -24,15 +24,18 @@ import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import path from 'node:path'
 import fs from 'node:fs'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const SRC = path.resolve(HERE, '..', '..')
 
 // ★ 装载真模块：`planSpeakerRelabel` 与 `isPlaceholderSpeaker` 都是零 I/O 的纯函数。
-const { planSpeakerRelabel } = await import(path.resolve(SRC, 'native/speaker-relabel.ts'))
+// ★ Windows 绝对路径必须转成 file:// URL 才能当 ESM specifier
+//   （2026-10-22 Windows 实测修掉：ERR_UNSUPPORTED_ESM_URL_SCHEME, protocol 'c:'）。
+//   Linux 上 '/abs/path' 恰好能当 specifier ⇒ **Linux 一直绿**。
+const { planSpeakerRelabel } = await import(pathToFileURL(path.resolve(SRC, 'native/speaker-relabel.ts')).href)
 const { isPlaceholderSpeaker } = await import(
-  path.resolve(SRC, 'features/meetings/meeting-roster-homophone.ts')
+  pathToFileURL(path.resolve(SRC, 'features/meetings/meeting-roster-homophone.ts')).href
 )
 
 const RUNTIME = path.resolve(SRC, 'native/recordingRuntime.ts')

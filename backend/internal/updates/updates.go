@@ -7,6 +7,11 @@ import (
 	"time"
 )
 
+// maxCheckUpdateBodyBytes 是「检查更新」请求体的上限（64 KiB）。
+//
+// ⚠ 这是一个很小的 JSON（版本号 + 平台 + 机型）⇒ 64 KiB 绰绰有余。
+const maxCheckUpdateBodyBytes = 64 << 10
+
 // VersionInfo 版本信息
 type VersionInfo struct {
 	Version     string    `json:"version"`     // 版本号 如 "1.2.0"
@@ -75,6 +80,17 @@ func (h *UpdateHandler) HandleCheckUpdate(w http.ResponseWriter, r *http.Request
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+
+	// §952：请求体的大小上界。
+	//
+	// ⚠ 这个 handler **在仓内没有注册点**（`grep` 全仓无 `HandleCheckUpdate`
+	// 的挂载处）⇒ 今天是**不可达**的 ⇒⇒⇒ 但「不可达」不是「有上界」：
+	// 哪天有人把它挂上 mux，一个超大 body 就能直接进内存。
+	// ⇒⇒⇒ ⇒ 仍然要限。
+	//
+	// ⚠ 为什么写在这里而不是靠中间件：这个 handler **不在** internal/server
+	// 的 mux 后面（那是另一个包的 handler）⇒ 它的请求体**没有**全局兜底。
+	r.Body = http.MaxBytesReader(w, r.Body, maxCheckUpdateBodyBytes)
 
 	var req CheckUpdateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {

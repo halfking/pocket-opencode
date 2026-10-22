@@ -53,7 +53,11 @@ const store = useScheduledTasksStore()
 const { confirm } = useConfirm()
 const enabledOnly = ref(false)
 
-function load() { return store.load(enabledOnly.value).catch(() => {}) }
+function load() {
+  return store.load(enabledOnly.value).catch(() => {
+    // 失败已由 store 置成 `store.error` 并 rethrow，模板渲染同一个 ref ⇒ 这里只接住它。
+  })
+}
 /**
  * §854：原来这里是一行 `.catch(() => {})` —— 用户主动点的「停用/启用」失败时**零反馈**，
  * 而 store 的 `error` 只由 load/create 设置（`update`/`remove` 都不碰它）

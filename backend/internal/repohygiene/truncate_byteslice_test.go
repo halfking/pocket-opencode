@@ -288,8 +288,15 @@ func analyzeFunc(fset *token.FileSet, fn *ast.FuncDecl, idx pkgIndex) []byteSlic
 
 func relToRepo(path string) string {
 	// 只需要稳定的后缀 key，裁到 internal/ 起即可。
-	if i := strings.Index(path, string(filepath.Separator)+"internal"+string(filepath.Separator)); i >= 0 {
-		return strings.TrimPrefix(path[i+1:], string(filepath.Separator))
+	//
+	// ⚠⚠ 必须统一成**正斜杠**：豁免清单（byteSliceAllowlist）是**入库文件**，
+	// 里面写的是 `internal/server/xxx.go:123`（正斜杠）。
+	// 而 filepath.Separator 在 Windows 上是 `\` ⇒⇒⇒ 用系统分隔符拼 key
+	// ⇒⇒⇒ Windows 上**每一条豁免都匹配不上** ⇒⇒⇒ 命中被当成「新增」、
+	// 豁免被当成「已失效」⇒⇒⇒ 这道门在 Windows 上**恒红**
+	// ⇒⇒⇒ （实测：2 条命中 + 2 条豁免失效，而那两行的行号**一点没动**）。
+	if i := strings.Index(filepath.ToSlash(path), "/internal/"); i >= 0 {
+		return filepath.ToSlash(path)[i+1:]
 	}
 	return filepath.Base(path)
 }

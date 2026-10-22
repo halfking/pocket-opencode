@@ -36,6 +36,29 @@ import {
   TRANSCRIPT_LIST_PREVIEW_CHARS,
 } from './meeting-transcript-cache.ts'
 
+
+// ★ 写入口的路径归一（2026-10-22 Windows 实测修掉）
+//
+//   事故形态：把 Windows 绝对路径**裸插**进单引号字符串字面量 ⇒
+//   反斜杠开头的 w / p / f / n 全被 JS 解析成转义序列
+//   ⇒ 路径被吃成 "C:workspacepocket-opencode" + 换行 + "ote-todo-persist.ts"
+//   ⇒ esbuild 解析不到 ⇒ before 钩子抛错 ⇒ 整组子用例 cancelledByParent
+//   ⇒ Linux 上路径是 "/workspace/..."，没有反斜杠 ⇒ **Linux 一直绿**
+//   ⇒ 这是 Windows 专属红：不阻塞 CI，但会让 Windows 上的本地读数完全失真。
+//
+//   修法两步（缺一不可）：
+//   ① 正斜杠化：Windows 的 fs 与 esbuild 都认 "C:/a/b" 这种形态
+//   ② JSON.stringify：做 JS 字符串字面量转义 ⇒ 路径里再有引号/反斜杠也不会破
+//
+//   ⚠ 归一在**写进入口**（不是逐个路径改对）—— 与 D6–D10、§88 同族纪律。
+//   ⚠ 本 helper **不带 TypeScript 注解**：本仓有用例是 .mjs（纯 JS），
+//     写上参数类型注解会直接 SyntaxError（本轮实测踩到）。
+//   ⚠ 注释里**绝不能出现反引号**：Node 的 TS stripper 会把 // 注释里的
+//     反引号当成模板串开头 ⇒ 后面整行被当代码解析（本轮实测踩到）。
+function asModulePath(p) {
+  return JSON.stringify(String(p).replace(/\\/g, '/'))
+}
+
 const HERE = dirname(fileURLToPath(import.meta.url))
 const read = (f: string) => readFileSync(join(HERE, f), 'utf8')
 const seg = (speakerLabel: string, text: string) => ({ speakerLabel, text }) as {
@@ -704,7 +727,7 @@ describe('J · updateTranscript 的每个写入点都必须走去重', () => {
           if (!line.includes('updateTranscript(')) return
           // 定义行：`export async function updateTranscript(id: string, ...`
           if (/function\s+updateTranscript\s*\(/.test(line)) return
-          out.push({ file: relative(SRC_ROOT, f), line: i + 1, text: line.trim() })
+          out.push({ file: relative(SRC_ROOT, f).replace(/\\/g, '/'), line: i + 1, text: line.trim() })
         })
     }
     return out
@@ -822,7 +845,7 @@ describe('K · updateMeeting 这一层也不许直接写 transcript', () => {
         )
         // 简写与带冒号两种形态都要认
         if (/(^|[^\w])transcript(\s*:|(?=\s*[,}\s]))/.test(stripped)) {
-          out.push(`${relative(SRC_ROOT, f)}:${src.slice(0, at).split('\n').length}`)
+          out.push(`${relative(SRC_ROOT, f).replace(/\\/g, '/')}:${src.slice(0, at).split('\n').length}`)
         }
         i = j
       }
@@ -1437,7 +1460,7 @@ describe('L · §925 转写列是派生缓存：写入节流 + 列表只取有�
     const sites: string[] = []
     for (const f of walkSrc()) {
       const src = readFileSync(f, 'utf8')
-      if (src.includes('throttled: true')) sites.push(relative(SRC_ROOT, f))
+      if (src.includes('throttled: true')) sites.push(relative(SRC_ROOT, f).replace(/\\/g, '/'))
     }
     assert.deepEqual(sites.sort(), [
       'features/meetings/ingest-speech.ts',
@@ -1904,7 +1927,7 @@ function loadStoreModule() {
         async queryOne(sql, params) { globalThis.__s925Queries.push({ sql: String(sql), params }); return null },
       }`, 'utf8')
     const entry = join(work, 'entry.ts')
-    writeFileSync(entry, `export { updateTranscript, listMeetings } from '${join(HERE, 'meetings-store.ts')}'\n`, 'utf8')
+    writeFileSync(entry, `export { updateTranscript, listMeetings } from ${asModulePath(join(HERE, 'meetings-store.ts'))}\n`, 'utf8')
     const outfile = join(work, 'out.mjs')
     await build({
       entryPoints: [entry],

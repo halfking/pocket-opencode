@@ -36,11 +36,17 @@ import { dirname, join } from 'node:path'
 import { nextRefreshDelay, LIVE_SUMMARY_DEBOUNCE_MS } from '../live-summary-schedule.ts'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
+// ★ 读入口归一 CRLF → LF（2026-10-22 Windows 实测修掉）：
+//   下面那个「同形负控」用 /if \(isUpdating\.value\)[\s\S]{0,120}?return\n\s*\}\n/
+//   把接线整段抠掉，**正则里写死了 \n** ⇒ Windows 检出是 CRLF ⇒ 抠不掉
+//   ⇒ 正向断言仍匹配 ⇒ 报「同形负控：抠掉接线后 callRe 仍匹配 ⇒ 正向断言恒真」。
+//   ⇒ 那不是判据恒真，是**变异没发生**（族 C 同根因）。
+//   ⇒ Linux 上源文件是 LF ⇒ 抠得掉 ⇒ **Linux 一直绿**。
 const SCHEDULE_SRC = stripJsComments(
-  readFileSync(join(HERE, '..', 'live-summary-schedule.ts'), 'utf8'),
+  readFileSync(join(HERE, '..', 'live-summary-schedule.ts'), 'utf8').replace(/\r\n/g, '\n'),
 )
 const COMPOSABLE_SRC = stripJsComments(
-  readFileSync(join(HERE, '..', '..', '..', 'composables', 'useLiveSummary.ts'), 'utf8'),
+  readFileSync(join(HERE, '..', '..', '..', 'composables', 'useLiveSummary.ts'), 'utf8').replace(/\r\n/g, '\n'),
 )
 
 const CEILING = 30_000 // 生产传进来的 SUMMARY_INTERVAL_MS

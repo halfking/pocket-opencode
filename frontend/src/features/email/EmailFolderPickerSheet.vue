@@ -54,7 +54,10 @@ async function load() {
   try {
     folders.value = await listLocalFolders()
     // 后台对齐服务端目录（离线时静默用镜像）。
-    syncFoldersFromServer().then((fresh) => { folders.value = fresh }).catch(() => {})
+    syncFoldersFromServer().then((fresh) => { folders.value = fresh }).catch(() => {
+      // 服务端目录拉不到（离线/服务端异常）⇒ 保留上面已读到的本地目录镜像，
+      // 下面的用户操作仍可用 ⇒ 降级是设计内的，不留痕。
+    })
   } catch (e: any) {
     loadError.value = e?.message || '目录加载失败'
   }

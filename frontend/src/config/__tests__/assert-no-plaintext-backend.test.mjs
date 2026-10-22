@@ -10,6 +10,7 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { describe, it } from 'node:test'
+import { fileURLToPath } from 'node:url'
 import { checkApiBase, checkSchemePair, isLoopbackHost, SCHEME_FIX_HINT } from '../../../scripts/assert-no-plaintext-backend.mjs'
 
 describe('isLoopbackHost', () => {
@@ -117,6 +118,12 @@ describe('checkSchemePair（BUG-F 第二轴）', () => {
  */
 describe('守卫 CLI 的第二轴接线', () => {
   const SCRIPT = new URL('../../../scripts/assert-no-plaintext-backend.mjs', import.meta.url)
+// ★ 用 fileURLToPath 而不是 SCRIPT.pathname（2026-10-22 Windows 实测修掉）：
+//   URL 的 pathname 在 Windows 上是 '/C:/workspace/...'（**带前导斜杠**的 URL 形态），
+//   直接当路径用 ⇒ 拼出 'C:\C:\workspace\...' ⇒ node 报
+//   「Cannot find module 'C:\C:\workspace\...\'」⇒ 这道门整个瘫掉。
+//   ⇒ Linux 上 pathname = '/workspace/...' 正常 ⇒ **Linux 一直绿**。
+//   ⇒ fileURLToPath 给的是**真文件系统路径**（Windows: 'C:\workspace\...'）。
 
   /** 起一个干净 env：先抹掉所有 VITE_ 变量，避免外层 shell 污染判定。 */
   function runEnv(vars) {
@@ -131,7 +138,7 @@ describe('守卫 CLI 的第二轴接线', () => {
 
   function run(vars) {
     try {
-      const stdout = execFileSync(process.execPath, [SCRIPT.pathname], {
+      const stdout = execFileSync(process.execPath, [fileURLToPath(SCRIPT)], {
         env: runEnv(vars),
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'pipe'],

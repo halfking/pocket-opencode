@@ -13,6 +13,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/halfking/pocket-opencode/backend/internal/background"
 	"github.com/halfking/pocket-opencode/backend/internal/notifycenter"
 )
 
@@ -194,7 +195,7 @@ func (s *Scheduler) Start(ctx context.Context) {
 		}
 		s.workerSemaphore()
 		s.wg.Add(1)
-		go s.loop(ctx)
+		background.Go1("scheduledtask/loop", s.loop, ctx)
 	})
 }
 
@@ -233,12 +234,12 @@ func (s *Scheduler) scan(ctx context.Context) {
 	for _, t := range tasks {
 		t := t
 		s.wg.Add(1)
-		go func() {
+		background.Go("scheduledtask/scan", func() {
 			defer s.wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
 			s.dispatch(ctx, t)
-		}()
+		})
 	}
 }
 
@@ -286,7 +287,7 @@ func (s *Scheduler) TriggerNow(ctx context.Context, taskID, userID, workspaceID 
 	// request while dispatch still applies the task's own timeout.
 	execCtx := context.Background()
 	s.wg.Add(1)
-	go func() {
+	background.Go("scheduledtask/trigger-now", func() {
 		defer s.wg.Done()
 		select {
 		case sem <- struct{}{}:
@@ -295,7 +296,7 @@ func (s *Scheduler) TriggerNow(ctx context.Context, taskID, userID, workspaceID 
 		case <-s.stop:
 			return
 		}
-	}()
+	})
 	return nil
 }
 

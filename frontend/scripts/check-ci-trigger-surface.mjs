@@ -56,6 +56,38 @@ const pkg = JSON.parse(readFileSync(join(FRONTEND, 'package.json'), 'utf8'))
 const doc = JSON.parse(readFileSync(join(FRONTEND, 'gates.json'), 'utf8'))
 const ciRuns = doc.ciRuns || []
 
+/**
+ * 读文本文件并**归一行尾**（CRLF ⇒ LF）。
+ *
+ * ★★ 2026-10-22 round50 实测修掉的**平台假红**（CI/Linux 绿，Windows 红）。
+ *
+ * 机制（不是猜的，逐文件量过）：
+ *   本机 `core.autocrlf=true` 且 `.gitattributes` 只声明了 `*.go text eol=lf`
+ *   ⇒ `.github/workflows/*.yml` 在工作区检出成 **CRLF**（实测 5 个文件全是 CRLF、bareLF=0）。
+ *
+ *   而本门解析 workflow 的正则是 `/^(\s+)run:\s*(.*)$/`：
+ *     · `.` 在 JS 正则里**不匹配 `\r`**（`\r` 是行终止符）；
+ *     · `$`（无 `m` 旗标）**只匹配输入末尾**。
+ *   ⇒ 一行 `        run: node scripts/run-gates.mjs --ci\r`：
+ *     `(.*)` 停在 `\r` **之前**，`$` 落不到输入末尾 ⇒ **整行不匹配**。
+ *   ⇒ 实测：5 个 workflow 共有 **61** 条 `run:` 行，本解析器只认出 **6** 条
+ *     —— 且恰好是**「`run:` 后面没有内容」的那 6 条**（`\s*` 把 `\r` 吃掉了，
+ *     `$` 正好落在末尾）。
+ *   ⇒ 后果：① 「脸② 驱动」看不见 workflow 里那句 `run-gates.mjs --ci`
+ *     ⇒ 误报「**无任何 workflow 执行 run-gates.mjs --ci**」
+ *     ⇒ 而真相是 `.github/workflows/frontend.yml:202` **明写着**那一句；
+ *     ② 所有「脸③ 豁免」的「手列」判定（`armA`）同样建立在解析结果上
+ *     ⇒ 11 条 `ciCoveredElsewhere` 豁免被误判成「没有任何兑现路径」。
+ *
+ * ⇒ 修法与本轮另外两处同款：**在读入口归一行尾**（仓内先例：
+ *   `check-blankline-bloat.mjs:45` / `check-gofmt.mjs:150` / 本轮新增的
+ *   `check-local-todo-dedupe.mjs` 的 `normalizeEol`）。
+ *   ⚠ Linux 上原文本就是 LF ⇒ 归一是**恒等变换** ⇒ CI 读数逐字不变。
+ */
+function readTextNormalized(file) {
+  return readFileSync(file, 'utf8').replace(/\r\n/g, '\n')
+}
+
 // ---- 1. 解析 workflow 的触发面 ---------------------------------------------
 // 只认 `on:` 块里的 `paths:` 子块。push 与 pull_request 分开收，因为
 // 「push 上没跑」与「PR 上没跑」后果不同（前者合并后仍会补跑一次）。
@@ -71,7 +103,7 @@ const ciRuns = doc.ciRuns || []
 // **输出与判定自相矛盾，而且矛盾的那一列还是绿的**，比单纯错更危险。
 // 加 `present` 字段就是为了让 ① 和 ② 不再共用同一个空数组。
 function readWorkflowTriggers(file) {
-  const lines = readFileSync(file, 'utf8').split('\n')
+  const lines = readTextNormalized(file).split('\n')
   const out = {
     push: { present: false, paths: [], branches: [] },
     pull_request: { present: false, paths: [], branches: [] },
@@ -198,7 +230,7 @@ function workflowCovers(wfName, relPath, kind) {
 // ★ 漏掉块标量是最容易犯且最不易自查的一种：11 处 `run: |` 里
 //   backend.yml 的 smart-quote 门禁就在块里，只认单行会把「已手列」误判成「没接」。
 function readRunCommands(file) {
-  const lines = readFileSync(file, 'utf8').split('\n')
+  const lines = readTextNormalized(file).split('\n')
   const out = []
   let i = 0
   let job = null

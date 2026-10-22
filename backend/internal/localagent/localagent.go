@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/halfking/pocket-opencode/backend/internal/background"
 )
 
 // Package localagent 实现 AI Work Mess 本地轻量级智能体运行时。
@@ -192,7 +194,7 @@ func (m *MockBackend) Name() string { return m.name }
 func (m *MockBackend) Execute(ctx context.Context, task *AgentTask) (<-chan AgentEvent, error) {
 	eventChan := make(chan AgentEvent, 10)
 
-	go func() {
+	background.Go("localagent/execute", func() {
 		defer close(eventChan)
 
 		select {
@@ -221,7 +223,7 @@ func (m *MockBackend) Execute(ctx context.Context, task *AgentTask) (<-chan Agen
 		}}:
 		case <-ctx.Done():
 		}
-	}()
+	})
 
 	return eventChan, nil
 }

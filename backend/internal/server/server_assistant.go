@@ -31,12 +31,14 @@ import (
 
 	"github.com/halfking/pocket-opencode/backend/internal/aigate"
 	"github.com/halfking/pocket-opencode/backend/internal/auth"
+	"github.com/halfking/pocket-opencode/backend/internal/background"
 	"github.com/halfking/pocket-opencode/backend/internal/email"
 	"github.com/halfking/pocket-opencode/backend/internal/finance"
 	"github.com/halfking/pocket-opencode/backend/internal/kxmemory"
 	"github.com/halfking/pocket-opencode/backend/internal/llmbff"
 	"github.com/halfking/pocket-opencode/backend/internal/notes"
 	"github.com/halfking/pocket-opencode/backend/internal/redclaw"
+	"github.com/halfking/pocket-opencode/backend/internal/sizedread"
 	"github.com/halfking/pocket-opencode/backend/internal/stt"
 	ws "github.com/halfking/pocket-opencode/backend/internal/websocket"
 )
@@ -2395,7 +2397,7 @@ func (s *Server) handleEmailSync(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		go s.classifyEmailsAsync(body.Emails, userID, wsID)
+		background.Go3("assistant/classify-emails", s.classifyEmailsAsync, body.Emails, userID, wsID)
 		writeJSON(w, http.StatusOK, map[string]any{"received": len(body.Emails), "classify": "async"})
 		return
 	}
@@ -2478,7 +2480,7 @@ func (s *Server) handleEmailSync(w http.ResponseWriter, r *http.Request) {
 	// 则零外呼）。注意邮件 date 是头日期而非入库时间，可能早于本轮（缺
 	// Date 头时甚至可能重复），窗口放宽到 24h 保证覆盖。
 	if email.ShouldProcessAfterFetch(synced, totalSaved) {
-		go func() {
+		background.Go("assistant/email-sync", func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 			defer cancel()
 			if _, err := email.ClassifyUnclassified(ctx, s.emailStore, s.kxmemory, userID, wsID, 20); err != nil {
@@ -2487,7 +2489,7 @@ func (s *Server) handleEmailSync(w http.ResponseWriter, r *http.Request) {
 			if recent, _, lerr := s.emailStore.ListEmailsSince(ctx, time.Now().Unix()-86400, 200); lerr == nil && len(recent) > 0 {
 				s.extractInvoicesAsync(recent, userID, wsID)
 			}
-		}()
+		})
 	}
 
 	result := map[string]any{
@@ -2800,6 +2802,14 @@ func (s *Server) handleSttTranscribe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// §952：把这条链的上限**写在 handler 里**（与 requestBodyLimitMiddleware
+	// 对本路径取的同一个数字 ⇒ 两层是同一个值，不会分叉）。
+	//
+	// ⚠ 为什么不能只靠中间件：中间件是**全局**的一层，
+	// 而这条链的体积上限是**按路径**定的 ⇒ 读 body 的代码
+	// 必须能在**自己这一层**看见那个上限。
+	r.Body = http.MaxBytesReader(w, r.Body, maxAudioBodyBytes)
+
 	var audioData []byte
 	var filename string
 
@@ -2827,7 +2837,7 @@ func (s *Server) handleSttTranscribe(w http.ResponseWriter, r *http.Request) {
 		}
 		defer file.Close()
 		filename = header.Filename
-		audioData, err = io.ReadAll(file)
+		audioData, err = sizedread.All(file, maxAudioBodyBytes)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to read audio file: "+err.Error())
 			return

@@ -10,7 +10,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/halfking/pocket-opencode/backend/internal/background"
 	"github.com/halfking/pocket-opencode/backend/internal/model"
+	"github.com/halfking/pocket-opencode/backend/internal/outbound"
+	"github.com/halfking/pocket-opencode/backend/internal/sizedread"
 )
 
 // InstanceConfig 实例配置（从环境变量或配置文件加载，或由发现/注册产生）
@@ -192,7 +195,7 @@ func (r *Registry) healthCheck(ctx context.Context) {
 	var wg sync.WaitGroup
 	for _, instanceID := range instances {
 		wg.Add(1)
-		go func(id string) {
+		background.Go1("registry/health-check", func(id string) {
 			defer wg.Done()
 
 			apiURL := urls[id]
@@ -217,7 +220,7 @@ func (r *Registry) healthCheck(ctx context.Context) {
 				}
 			}
 			r.mu.Unlock()
-		}(instanceID)
+		}, instanceID)
 	}
 
 	wg.Wait()
@@ -237,7 +240,7 @@ type healthProbe struct {
 func (r *Registry) checkInstanceHealth(ctx context.Context, apiBaseURL string) healthProbe {
 	endpoint := apiBaseURL + "/global/health"
 
-	client := &http.Client{Timeout: 3 * time.Second}
+	client := outbound.NewClient(3 * time.Second)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
@@ -261,7 +264,7 @@ func (r *Registry) checkInstanceHealth(ctx context.Context, apiBaseURL string) h
 		Capabilities []string          `json:"capabilities"`
 		Machine      model.MachineInfo `json:"machine"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.NewDecoder(sizedread.Limit(resp.Body, sizedread.MaxJSONBodyBytes)).Decode(&result); err != nil {
 		return healthProbe{Health: "unhealthy"}
 	}
 

@@ -266,7 +266,9 @@ func TestMeetingResponseKeyContract(t *testing.T) {
 	if err != nil {
 		t.Fatalf("读契约失败 %s（首次生成请跑 UPDATE_MEETING_KEY_CONTRACT=1）: %v", path, err)
 	}
-	if string(onDisk) != string(blob) {
+	// ⚠ fixture 在**前端**目录 ⇒ .gitattributes 只声明了 `*.go`
+	// ⇒⇒⇒ Windows 检出即 CRLF ⇒⇒⇒ 比对前必须归一行尾。
+	if strings.ReplaceAll(string(onDisk), "\r\n", "\n") != string(blob) {
 		t.Fatalf("会议响应键契约已过期：服务端发出的顶层键与 fixtures 不一致。\n"+
 			"这不是「顺手更新一下」—— 先问新键是干什么的、前端要不要接，\n"+
 			"有意忽略的写进前端门的 allowlist 并附理由，然后再跑 "+
@@ -404,7 +406,8 @@ func TestMetaTermHintFieldContract(t *testing.T) {
 	if err != nil {
 		t.Fatalf("读契约失败 %s（首次生成请跑 UPDATE_MEETING_KEY_CONTRACT=1）: %v", path, err)
 	}
-	if string(onDisk) != string(blob) {
+	// ⚠ 同上：前端 fixture 在 Windows 上是 CRLF ⇒ 比对前归一。
+	if strings.ReplaceAll(string(onDisk), "\r\n", "\n") != string(blob) {
 		t.Fatalf("metaTermHint 的字段集合已变（declared=%v used=%v unused=%v），但前端 fixtures 没跟着更新。\n"+
 			"先决定界面上的术语表说明要不要跟着改 —— 它承诺的字段集合必须与后端真正读的**一致**，\n"+
 			"否则说明就在撒谎。再跑 UPDATE_MEETING_KEY_CONTRACT=1。\n磁盘:\n%s\n实测:\n%s",

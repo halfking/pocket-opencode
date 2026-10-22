@@ -4,14 +4,26 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"net/url"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/halfking/pocket-opencode/backend/internal/outbound"
+	"github.com/halfking/pocket-opencode/backend/internal/sizedread"
 )
+
+// oauthTokenTimeout 是访问 provider token 端点的总超时（§950：出站必须有上界）。
+const oauthTokenTimeout = 30 * time.Second
+
+// oauthTokenClient 是访问 provider token 端点的出站客户端（§950）。
+//
+// ⚠ 以前这里是 `http.DefaultClient` —— 它**没有 Timeout**（= 没有上界）；
+// 　 配合「不带 ctx 的 http.NewRequest」，上游不返回就**永久挂住**
+// 　⇒⇒⇒ 而这条链在**移动端登录的 OAuth 回调**上（用户点「授权」后等回跳）。
+var oauthTokenClient = outbound.NewClient(oauthTokenTimeout)
 
 // pendingEntry 保存 OAuth 流程中间状态。
 type pendingEntry struct {
@@ -155,7 +167,7 @@ func HandleOAuthCallback(cfg OAuthCallbackConfig) http.HandlerFunc {
 			return
 		}
 		// 交换 code → token
-		tokens, err := exchangeCodeForToken(provider, code, entry.CodeVerifier, entry.ClientID, entry.ClientSecret, entry.RedirectURI)
+		tokens, err := exchangeCodeForToken(r.Context(), provider, code, entry.CodeVerifier, entry.ClientID, entry.ClientSecret, entry.RedirectURI)
 		if err != nil {
 			log.Printf("[oauth] exchange token: %v", err)
 			recordAudit(entry.UserID, entry.WorkspaceID, "email.oauth.completed.error",
@@ -237,7 +249,11 @@ type tokenResponse struct {
 }
 
 // exchangeCodeForToken 用 authorization code 交换 access + refresh token。
-func exchangeCodeForToken(provider Provider, code, codeVerifier, clientID, clientSecret, redirectURI string) (*tokenResponse, error) {
+//
+// ⚠ §950：请求必须**同时**有「客户端硬上界」和「请求 ctx 的 deadline」——
+// 　 以前两样都没有（http.NewRequest 不带 ctx + http.DefaultClient 无 Timeout）
+// 　⇒⇒⇒ 上游不返回就永久挂住，而这是移动端登录链上的一环。
+func exchangeCodeForToken(ctx context.Context, provider Provider, code, codeVerifier, clientID, clientSecret, redirectURI string) (*tokenResponse, error) {
 	data := url.Values{}
 	data.Set("grant_type", "authorization_code")
 	data.Set("code", code)
@@ -246,19 +262,24 @@ func exchangeCodeForToken(provider Provider, code, codeVerifier, clientID, clien
 	data.Set("client_secret", clientSecret)
 	data.Set("code_verifier", codeVerifier)
 
-	req, err := http.NewRequest(http.MethodPost, provider.OAuth2TokenURL, strings.NewReader(data.Encode()))
+	ctx, cancel := context.WithTimeout(ctx, oauthTokenTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, provider.OAuth2TokenURL, strings.NewReader(data.Encode()))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := oauthTokenClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
+	body, readErr := sizedread.All(resp.Body, sizedread.MaxJSONBodyBytes)
+	if readErr != nil {
+		return nil, fmt.Errorf("read token response: %w", readErr)
+	}
 	if resp.StatusCode != 200 {
 		return nil, fmt.Errorf("token exchange failed: %d %s", resp.StatusCode, string(body))
 	}

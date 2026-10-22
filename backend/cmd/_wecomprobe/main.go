@@ -8,6 +8,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
@@ -15,13 +16,15 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"os"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/halfking/pocket-opencode/backend/internal/outbound"
+	"github.com/halfking/pocket-opencode/backend/internal/sizedread"
 )
 
 func env(k string) string {
@@ -86,13 +89,18 @@ func encrypt(msg, aesKeyB64, corpID string) (string, error) {
 }
 
 func get(rawurl string) (int, string) {
-	res, err := http.Get(rawurl)
+	// ⚠ §950：包级 `http.Get` 走的是 `http.DefaultClient` —— **没有上界**。
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, rawurl, nil)
+	if err != nil {
+		return 0, "ERR " + err.Error()
+	}
+	res, err := outbound.NewClient(30 * time.Second).Do(req)
 	if err != nil {
 		return 0, "ERR " + err.Error()
 	}
 	defer res.Body.Close()
-	b, _ := io.ReadAll(res.Body)
-	return res.StatusCode, string(b)
+	b := sizedread.Snippet(res.Body, sizedread.MaxErrorBodyBytes)
+	return res.StatusCode, b
 }
 
 func main() {

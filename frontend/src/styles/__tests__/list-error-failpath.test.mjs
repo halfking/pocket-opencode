@@ -77,8 +77,16 @@ function walk(dir, out = []) {
 /** 所有在**视图**里用 <PullToRefresh 的文件（组件自身不算）。 */
 const pullViews = () =>
   walk(SRC)
-    .filter((p) => !p.endsWith('components/interactive/PullToRefresh.vue'))
-    .map((p) => ({ file: relative(SRC, p).split('\\').join('/'), text: readFileSync(p, 'utf8') }))
+    // ★ 排除规则也必须**按正斜杠**比较（2026-10-22 Windows 实测修掉）：
+    //   原来写的是 p.endsWith('components/interactive/PullToRefresh.vue')，
+    //   而 Windows 上 p 是 'C:\...\components\interactive\PullToRefresh.vue'
+    //   ⇒ 反斜杠 ⇒ 排除**不生效** ⇒ 组件自己被算成「一个用了 <PullToRefresh 的视图」
+    //   ⇒ 登记表里没有它 ⇒ 这道门恒红（报 'components/interactive/PullToRefresh.vue'）。
+    //   ⇒ Linux 上路径是 /.../components/... ⇒ 排除生效 ⇒ **Linux 一直绿**。
+    //   ⇒ 归一在**比较之前**（与上面 relative(...).split('\\').join('/') 同一层）。
+    .map((p) => relative(SRC, p).split('\\').join('/'))
+    .filter((rel) => rel !== 'components/interactive/PullToRefresh.vue')
+    .map((rel) => ({ file: rel, text: readFileSync(join(SRC, rel), 'utf8') }))
     .filter((v) => v.text.includes('<PullToRefresh'))
 
 /**

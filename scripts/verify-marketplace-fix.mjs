@@ -17,7 +17,7 @@ import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { dirname, join } from 'node:path'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -118,7 +118,15 @@ let runtimeState = '⬜ 未验成（不计入结论，但必须显式说明，�
 let runtimePaths = null
 try {
   const esbuildPath = require.resolve('esbuild', { paths: [join(repo, 'frontend')] })
-  const { build } = await import(esbuildPath)
+  // ⚠ 2026-10-22 round50 修掉的**平台假红**：ESM 的 `import()` 不接受 Windows 绝对路径
+  //   （`C:\...` 被当成「协议为 `c:` 的 URL」）⇒ 抛
+  //   `Only URLs with a scheme in: file, data, and node are supported...`
+  //   ⇒ 这两行原本在 try 里 ⇒ **被 catch 吞掉** ⇒ 门禁照样 EXIT 0，
+  //   但「运行期独立证词·vue-router 实际 meta」那条臂**从未真正跑过**
+  //   （日志里显示为「未验成 ⬜：… Received protocol 'c:'」）。
+  //   ⚠ Linux 上绝对路径合法 ⇒ CI 上这条臂一直是活的 ⇒ **只在本机是死的**。
+  //   ⇒ 修法：`pathToFileURL(x).href`（仓内现成先例：`scripts/check-back-navigation.mjs`）。
+  const { build } = await import(pathToFileURL(esbuildPath).href)
   const res = await build({
     entryPoints: [join(repo, 'frontend/src/app/router-mobile.ts')],
     bundle: true, format: 'esm', platform: 'node', write: false,
@@ -146,7 +154,7 @@ try {
   const store = () => { const m = new Map(); return { getItem: (k) => (m.has(k) ? m.get(k) : null), setItem: (k, v) => m.set(k, String(v)), removeItem: (k) => m.delete(k) } }
   globalThis.localStorage ??= store()
   globalThis.sessionStorage ??= store()
-  const mod = await import(tmp)
+  const mod = await import(pathToFileURL(tmp).href)
   runtimePaths = mod.default.options.routes
     .filter((r) => r.meta && r.meta.hideAppHeader === true)
     .map((r) => r.path)

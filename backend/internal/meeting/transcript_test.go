@@ -36,6 +36,45 @@ import (
 //
 //	切错一个字符 ⇒ 新增段里多/少一个字 ⇒ 上游看到的上下文就不对。
 //	而「切点落在字符中间」这件事在中文上**不会报错**，只会静默产出乱码。
+//
+// pgTimeEqual 判断两个时刻在 **PG 的微秒精度**下是否相等。
+//
+// ⚠ PG 的 timestamptz 只存**微秒**，而 Go 的 time.Time 是**纳秒**
+//
+//	⇒ 「内存里的原值」与「PG 往返后的值」永远差几百纳秒
+//	⇒ 直接 Equal 在 ubuntu CI 上恒红（实测差 1.46ns / 999ns / 7198ns）。
+//	⇒ 容差取 1 微秒 = **PG 的精度单位**（不是「随便放宽一点」）。
+func pgTimeEqual(a, b time.Time) bool {
+	d := a.Sub(b)
+	return d <= time.Microsecond && d >= -time.Microsecond
+}
+
+// TestPGTimeEqualTolerance 钉住上面那个容差口径。
+//
+// ★ **不需要 PG** ⇒ 本机就能验（PG 路径的那两条用例本机是 skip 的，
+//
+//	而 ubuntu CI 上它们红的就是这个精度差 ⇒ 不抽成可单测的纯函数，
+//	这条缺陷在本机**永远无法复现、也无法验证修好了**）。
+func TestPGTimeEqualTolerance(t *testing.T) {
+	base := time.Date(2026, 10, 21, 19, 14, 55, 346017826, time.UTC)
+	// ① PG 截断到微秒后必须判相等。
+	if !pgTimeEqual(base.Truncate(time.Microsecond), base) {
+		t.Errorf("PG 截断后的微秒值必须与纳秒原值判等（差 %v）", base.Truncate(time.Microsecond).Sub(base))
+	}
+	// ② PG 四舍五入到微秒后也必须判相等（两种实现都覆盖）。
+	if !pgTimeEqual(base.Round(time.Microsecond), base) {
+		t.Errorf("PG 四舍五入后的微秒值必须与纳秒原值判等（差 %v）", base.Round(time.Microsecond).Sub(base))
+	}
+	// ③ 负控：真的差 1 毫秒 ⇒ 必须判**不等**（否则容差把牙拆了）。
+	if pgTimeEqual(base.Add(time.Millisecond), base) {
+		t.Error("负控：差 1 毫秒必须判不等 —— 容差被放得太大")
+	}
+	// ④ 负控：负方向同样。
+	if pgTimeEqual(base.Add(-time.Millisecond), base) {
+		t.Error("负控：负方向差 1 毫秒必须判不等")
+	}
+}
+
 func TestTranscriptTail(t *testing.T) {
 	// ⚠ 语料刻意混了中文（3 字节）、ASCII 与 emoji（4 字节）⇒
 	//   按字节切与按字符切在这里给出**不同**的结果 ⇒ 判据才有牙。
@@ -393,8 +432,14 @@ func TestPGUpdateMetaScopedLeavesTranscriptUntouched(t *testing.T) {
 	if after.Transcript != live.Transcript {
 		t.Fatalf("定向更新覆盖了转写：\n got %q\nwant %q", after.Transcript, live.Transcript)
 	}
-	if !after.UpdatedAt.Equal(updatedAt) {
-		t.Fatalf("updated_at 不一致：row=%v returned=%v", after.UpdatedAt, updatedAt)
+	// ⚠ PG 的 timestamptz 精度是**微秒**，而 UpdateMetaScoped 返回的是内存里的
+	//   **纳秒**值 ⇒ 直接比字面必然差几百纳秒（CI 实测差 1.46ns / 999ns）
+	//   ⇒ 这条判据要比的是「同一个时刻在 PG 精度下是否相等」，
+	//   不是两个不同精度的字面相等（直接 Equal 在 ubuntu CI 上恒红）。
+	//   ⚠ 内存版那条（上面那个函数）**保持严格相等**：内存 store 不丢精度，
+	//   放宽它等于自己拆自己的牙。
+	if !pgTimeEqual(after.UpdatedAt, updatedAt) {
+		t.Fatalf("updated_at 不一致：row=%v returned=%v（差 %v，超过 PG 的微秒精度）", after.UpdatedAt, updatedAt, after.UpdatedAt.Sub(updatedAt))
 	}
 }
 

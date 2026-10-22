@@ -12,6 +12,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/halfking/pocket-opencode/backend/internal/background"
 )
 
 // DigestNotifier 是一条日报的投递出口（生产实现走 notifycenter）。
@@ -173,7 +175,7 @@ func (d *DigestService) Start(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	d.startOnce.Do(func() { d.wg.Add(1); go d.loop(ctx) })
+	d.startOnce.Do(func() { d.wg.Add(1); background.Go1("rss/digest-loop", d.loop, ctx) })
 	return nil
 }
 

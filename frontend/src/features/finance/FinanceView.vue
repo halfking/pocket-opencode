@@ -157,6 +157,7 @@ async function load() {
     const month = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
     const [listRes, statRes] = await Promise.all([
       financeApi.list(),
+      // 统计拉不到 ⇒ statRes 为 null ⇒ 下面走 statsError 分支（提示「统计加载失败」）。
       financeApi.stats(month, undefined, -now.getTimezoneOffset()).catch(() => null),
     ])
     txs.value = listRes.transactions ?? []

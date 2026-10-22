@@ -187,7 +187,11 @@ function goBack() {
 
 onMounted(() => {
   store.loadFromCache()
-  if (store.deckConfigs.length === 0) void store.refresh().catch(() => {})
+  if (store.deckConfigs.length === 0) {
+    void store.refresh().catch(() => {
+      // 失败已由 store 置成 `store.error`（同步失败会 rethrow）⇒ 这里只接住 rethrow。
+    })
+  }
   hydrate()
 })
 

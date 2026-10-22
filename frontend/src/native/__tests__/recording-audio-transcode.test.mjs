@@ -18,6 +18,25 @@
  * 仍需源码级断言的部分：浏览器专属行为（decodeAudioData 对 webm 分片
  * 能否解码、AudioContext 的存在性），那些在 Node 里无法执行，
  * 真机结论见 recording-audio-transcode.ts 头注释。
+ *
+ * ── §953：解码从「累计」改成「逐簇」之后，本文件换了三样东西 ──────────────
+ *
+ * ① **夹具从「任意字节」换成「结构正确的 webm」**：
+ *    旧夹具是 `new Blob([new Uint8Array(8)])`（8 个零字节）——
+ *    它在旧的累计解码下够用（解码器是假的，不看字节），
+ *    但增量解码要**按 Cluster 切**，零字节里根本没有 Cluster ⇒ 必须换成
+ *    真结构的合成 webm（见下方 `makeWebm`）。
+ *    ⚠ 合成的是**结构**（EBML 头 / Segment / Info / Tracks / Cluster），
+ *      载荷是填充字节 —— 真容器的载荷是 opus 帧，本仓不造那个。
+ *
+ * ② **假解码器的语义从「累计」改成「逐簇」**：
+ *    旧假解码器按「调用次数」返回**越来越长**的音频，那正是**旧实现**的形状；
+ *    新实现每次只解一簇 ⇒ 假解码器必须返回**一簇**的音频。
+ *    ⇒ 假解码器同时**计量喂给它的字节数** ⇒ 于是「O(时长²) 还是 O(时长)」
+ *      这件事从「源码里读出来的承诺」变成了**可测量的行为**。
+ *
+ * ③ **契约门换了指向**：旧门钉的是「必须把全部分片拼起来」（workaround 的形态），
+ *    新门钉的是「**解码路径不得**再拼整场容器」+「必须用初始化前缀逐簇解」。
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -27,6 +46,11 @@ import { fileURLToPath } from 'node:url'
 import {
   pcmToWavBytes, sliceToWavBytes, arrayBufferToBase64, RollingWebmDecoder,
 } from '../recording-audio-transcode.ts'
+import {
+  extractWebmInitPrefix, findWebmClusterOffsets, readWebmClusterTimecode,
+  composeWebmWithInit, WebmClusterSplitter,
+} from '../../utils/webm-incremental.ts'
+import { encodeWav16kMono } from '../../utils/wav-encode.ts'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const SRC = resolve(HERE, '../recording-audio-transcode.ts')
@@ -131,6 +155,134 @@ test('arrayBufferToBase64：空 buffer', () => {
 })
 
 // ---------------------------------------------------------------------------
+// §953：合成一个**结构正确**的 webm（EBML 头 / Segment / Info / Tracks / Cluster）
+// ---------------------------------------------------------------------------
+
+const ID_EBML = [0x1a, 0x45, 0xdf, 0xa3]
+const ID_SEGMENT = [0x18, 0x53, 0x80, 0x67]
+const ID_INFO = [0x15, 0x49, 0xa9, 0x66]
+const ID_TRACKS = [0x16, 0x54, 0xae, 0x6b]
+const ID_CLUSTER = [0x1f, 0x43, 0xb6, 0x75]
+const ID_TIMECODE = [0xe7]
+/** unknown size：1 字节 0xFF（Cluster 用）/ 8 字节（Segment 用）。 */
+const UNKNOWN_1 = [0xff]
+const UNKNOWN_8 = [0x01, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]
+
+function element(id, content) {
+  assert.ok(content.length < 127, '本夹具只支持 1 字节长度')
+  // ⚠ EBML 的 size 是**变长整数**：长度写在**前导位**里（1 字节长度 = 0x80 | len）。
+  //   写成裸字节（0x07）会被读成「长度 7、但占 0 字节」⇒ 整棵树解析错位。
+  return [...id, 0x80 | content.length, ...content]
+}
+
+/** 一段 Cluster：ID + unknown size + Timecode + 载荷。 */
+function cluster(timecodeMs, payloadLen, fill = 0x5a) {
+  // ⚠ Timecode 的值用**最少字节**写（EBML 允许 1..8 字节，size 说的是字节数）。
+  //   固定写 2 字节 ⇒ 超过 65535 就会**回绕** ⇒ 时间戳不再单调 ⇒
+  //   生产代码的「Timecode 必须严格递增」校验会正确地拒掉它（夹具的锅，不是实现的锅）。
+  const tc = []
+  let v = timecodeMs
+  do { tc.unshift(v & 0xff); v = Math.floor(v / 256) } while (v > 0)
+  return [...ID_CLUSTER, ...UNKNOWN_1, ...ID_TIMECODE, 0x80 | tc.length, ...tc,
+    ...new Array(payloadLen).fill(fill)]
+}
+
+/**
+ * 造一个结构正确的 webm。
+ * @param specs 每段簇的 { tc: Timecode(ms), len: 载荷字节数 }
+ */
+function makeWebm(specs) {
+  const headerBytes = element(ID_EBML, [0x42, 0x82, 0x84, 0x77, 0x65, 0x62, 0x6d])  // DocType "webm"
+  const segmentHeader = [...ID_SEGMENT, ...UNKNOWN_8]
+  const info = element(ID_INFO, [0x2a, 0xd7, 0xb1, 0x0f, 0x42, 0x40, 0x20, 0x40, 0x20, 0x40])
+  const tracks = element(ID_TRACKS, [0x01, 0x02, 0x03, 0x04])
+  const clusters = specs.map((s) => cluster(s.tc, s.len))
+  return {
+    bytes: Uint8Array.from([...headerBytes, ...segmentHeader, ...info, ...tracks, ...clusters.flat()]),
+    /** 初始化前缀的长度（= 第一个 Cluster 的起点）——独立算，不依赖生产实现。 */
+    initLength: headerBytes.length + segmentHeader.length + info.length + tracks.length,
+  }
+}
+
+test('§953 extractWebmInitPrefix：前缀正好停在第一个 Cluster 之前', () => {
+  const w = makeWebm([{ tc: 0, len: 100 }, { tc: 4020, len: 100 }])
+  const init = extractWebmInitPrefix(w.bytes)
+  assert.ok(init, '必须认出这是 webm')
+  assert.equal(init.length, w.initLength, '前缀长度 = 第一个 Cluster 的偏移')
+  // 前缀里必须含 EBML 头与 Segment 头，且**不含** Cluster ID。
+  assert.deepEqual([...init.slice(0, 4)], ID_EBML, '前缀应以 EBML 头开始')
+  assert.ok(!init.some((b, i) => b === 0x1f && init[i + 1] === 0x43 && init[i + 2] === 0xb6 && init[i + 3] === 0x75),
+    '前缀里不该出现 Cluster ID')
+  // 从前缀末尾接上第一段簇 ⇒ 合成体必须以 Cluster ID 开头。
+  const composed = composeWebmWithInit(init, w.bytes.slice(w.initLength))
+  assert.deepEqual([...composed.slice(init.length, init.length + 4)], ID_CLUSTER)
+})
+
+test('§953 extractWebmInitPrefix：不是 webm 时返回 null（不猜）', () => {
+  assert.equal(extractWebmInitPrefix(new Uint8Array(0)), null)
+  assert.equal(extractWebmInitPrefix(new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8])), null)
+  // EBML 头对了但后面没有 Segment ⇒ 仍然不认。
+  const fake = Uint8Array.from([...ID_EBML, 0x02, 0x00, 0x00])
+  assert.equal(extractWebmInitPrefix(fake), null)
+})
+
+test('§953 findWebmClusterOffsets：找出全部簇起点并读出 Timecode', () => {
+  const w = makeWebm([{ tc: 0, len: 100 }, { tc: 4020, len: 120 }, { tc: 8040, len: 140 }])
+  const offsets = findWebmClusterOffsets(w.bytes, 0, -1)
+  assert.equal(offsets.length, 3, '三段簇')
+  assert.equal(offsets[0], w.initLength, '第一段簇紧跟初始化前缀')
+  assert.deepEqual(offsets.map((o) => readWebmClusterTimecode(w.bytes, o)), [0, 4020, 8040])
+})
+
+test('§953 findWebmClusterOffsets：载荷里的假 Cluster ID 不得被当成簇起点', () => {
+  // 在第一段簇的载荷里塞一个**没有合法 Timecode** 的 Cluster ID。
+  // ⇒ 这是 opus 载荷偶然撞上 4 字节 ID 的真实形态 ⇒ 必须被 Timecode 校验挡掉。
+  const w = makeWebm([{ tc: 0, len: 64 }, { tc: 4020, len: 64 }])
+  const withFake = Uint8Array.from(w.bytes)
+  const fakeAt = w.initLength + 10
+  withFake.set(ID_CLUSTER, fakeAt)
+  const offsets = findWebmClusterOffsets(withFake, 0, -1)
+  assert.equal(offsets.length, 2, '假 ID 不该被算成簇起点（真簇只有 2 段）')
+  assert.ok(!offsets.includes(fakeAt), `假 Cluster 起点 ${fakeAt} 被认成了真簇`)
+})
+
+test('§953 WebmClusterSplitter：逐片推进，末尾那簇不完整时留在缓冲里', () => {
+  const w = makeWebm([{ tc: 0, len: 100 }, { tc: 4020, len: 120 }, { tc: 8040, len: 140 }])
+  const sp = new WebmClusterSplitter()
+  // 第一片：只有 init + 第一段簇的一半 ⇒ 取不到任何完整簇。
+  sp.push(w.bytes.slice(0, w.initLength + 50))
+  assert.equal(sp.takeCompleteClusters().length, 0, '第一片还不该有完整簇')
+  assert.ok(sp.initPrefix, '初始化前缀必须已扫到')
+  // 补齐第一段簇 + 第二段簇的一大半 ⇒ 第一段簇完整了。
+  sp.push(w.bytes.slice(w.initLength + 50, w.initLength + 100 + 60))
+  const got = sp.takeCompleteClusters()
+  assert.equal(got.length, 1, '应当只拿到第一段簇（第二段还没结束）')
+  assert.equal(got[0].timecodeMs, 0)
+  // 收尾：缓冲里还压着第二、第三段簇 ⇒ 收尾必须**全部**取走。
+  // ⚠ 只取第一段会把中间的音频丢掉（那正是这一版实现被单测抓出来的真缺陷）。
+  sp.push(w.bytes.slice(w.initLength + 100 + 60))
+  const tail = sp.flush()
+  assert.equal(tail.length, 2, '收尾必须把缓冲里剩下的两段簇都取走（只取第一段 ⇒ 丢音频）')
+  assert.deepEqual(tail.map((c) => c.timecodeMs), [4020, 8040])
+})
+
+test('§953 WebmClusterSplitter：缓冲不随录音时长增长（只留最后一段簇）', () => {
+  // 100 段簇，每段 4 KB ⇒ 整场 400 KB。
+  const specs = Array.from({ length: 100 }, (_, i) => ({ tc: i * 4020, len: 4096 }))
+  const w = makeWebm(specs)
+  const sp = new WebmClusterSplitter()
+  let maxBuffered = 0
+  // 每 8 KB 推一次（模拟 MediaRecorder 分片）。
+  for (let off = 0; off < w.bytes.length; off += 8192) {
+    sp.push(w.bytes.slice(off, off + 8192))
+    sp.takeCompleteClusters()
+    maxBuffered = Math.max(maxBuffered, sp.bufferedBytes)
+  }
+  assert.ok(maxBuffered < 64 * 1024,
+    `缓冲必须稳定在 O(簇) 而不是 O(整场)：实测最大 ${maxBuffered} 字节（整场 ${w.bytes.length}）`)
+})
+
+// ---------------------------------------------------------------------------
 // RollingWebmDecoder：游标语义（注入假解码器，Node 里造不出真 WebM）
 // ---------------------------------------------------------------------------
 
@@ -141,6 +293,40 @@ const fake = (sec, sampleRate = SR) => {
   return { samples, sampleRate, durationSec: sec }
 }
 
+/**
+ * §953 的假解码器：**逐簇**语义 + 计量喂给它的字节数。
+ * @param secPerCluster 每一簇解出来的秒数
+ */
+function makeFakeDecoder(secPerCluster = 3, sampleRate = SR) {
+  const stats = { calls: 0, bytesFed: 0, payloads: [] }
+  const decode = async (arrayBuffer) => {
+    const bytes = new Uint8Array(arrayBuffer)
+    stats.calls++
+    stats.bytesFed += bytes.length
+    stats.payloads.push(bytes)
+    return fake(secPerCluster, sampleRate)
+  }
+  return { decode, stats }
+}
+
+/**
+ * §953：把 webm 按**簇边界**切成几片（模拟 MediaRecorder 逐片到达）。
+ * @returns 每片一个 Blob（第一片带初始化前缀）
+ */
+function splitWebmByCluster(w) {
+  const offsets = findWebmClusterOffsets(w.bytes, 0, -1)
+  assert.ok(offsets.length >= 1, '夹具里至少要有一段簇')
+  const out = []
+  for (let i = 0; i < offsets.length; i++) {
+    const end = i + 1 < offsets.length ? offsets[i + 1] : w.bytes.length
+    // ⚠ 第一片必须**带上初始化前缀** —— 真实 webm 的 init 段就在第一片里，
+    //   少了它切分器认不出这是 webm（这正是本测试第一次跑就红的原因）。
+    const start = i === 0 ? 0 : offsets[i]
+    out.push(new Blob([w.bytes.slice(start, end)]))
+  }
+  return out
+}
+
 test('RollingWebmDecoder：无分片时返回 null（不发空请求）', async () => {
   const d = new RollingWebmDecoder(async () => fake(3))
   assert.equal(await d.takeNewWindow(), null)
@@ -148,43 +334,108 @@ test('RollingWebmDecoder：无分片时返回 null（不发空请求）', async 
 })
 
 test('RollingWebmDecoder：连续取用产出互不重叠的新增窗口', async () => {
-  let total = 0
-  const d = new RollingWebmDecoder(async () => { total += 3; return fake(total) })
-  // 必须先 push：生产实现在 `!this.parts.length` 时直接返回 null（不发空请求）。
-  // 漏掉这步的版本会得到「三次都应有新增内容」这种和实现无关的红。
-  d.push(new Blob([new Uint8Array(8)]))
-  const ws_ = [await d.takeNewWindow(), await d.takeNewWindow(), await d.takeNewWindow()]
-  assert.ok(ws_.every(Boolean), '三次都应有新增内容')
-  for (const w of ws_) assert.equal(header(w).dataSize, 3 * TARGET_SR * 2, '每片 3 秒')
+  // §953：夹具是**结构正确的 webm**，否则切不出簇。
+  const w = makeWebm([{ tc: 0, len: 64 }, { tc: 4020, len: 64 }, { tc: 8040, len: 64 }])
+  const { decode } = makeFakeDecoder(3)
+  const d = new RollingWebmDecoder(decode)
+  // ⭐ 一片一片地推、推一片取一次 ⇒ 验的正是「增量」这件事。
+  const ws_ = []
+  for (const part of splitWebmByCluster(w)) {
+    d.push(part)
+    ws_.push(await d.takeNewWindow())
+  }
+  // ⚠ 最后一段簇永远不完整（收尾前拿不到）⇒ 第三次只有前两段。
+  assert.equal(ws_[0], null, '第一片只有一段簇 ⇒ 还没有完整簇')
+  assert.ok(ws_[1], '第二片之后应当有一段完整簇')
+  assert.ok(ws_[2], '第三片之后应当又有一段完整簇')
+  for (const w2 of ws_.slice(1)) assert.equal(header(w2).dataSize, 3 * TARGET_SR * 2, '每段簇 3 秒')
   d.dispose()
 })
 
 test('RollingWebmDecoder：窗口只含新增内容（不重发已发送部分）', async () => {
-  // 假解码器按「调用次数」推进总时长：第 1 次 3s、第 2 次 6s。
-  // 负对照已做：把生产实现的窗口起点从游标改成 0（重发累计音频）后本条变红
-  // （第二片会变成 6 秒 = 192000 字节）。
-  let calls = 0
-  const d = new RollingWebmDecoder(async () => fake(++calls * 3))
-  d.push(new Blob([new Uint8Array(8)]))
+  const w = makeWebm([{ tc: 0, len: 64 }, { tc: 4020, len: 64 }, { tc: 8040, len: 64 }])
+  const { decode } = makeFakeDecoder(3)
+  const d = new RollingWebmDecoder(decode)
+  const parts = splitWebmByCluster(w)
+  d.push(parts[0])
+  d.push(parts[1])
   const w1 = await d.takeNewWindow()
+  d.push(parts[2])
   const w2 = await d.takeNewWindow()
-  assert.equal(header(w1).dataSize, 3 * TARGET_SR * 2, '第一片 3 秒')
+  assert.equal(header(w1).dataSize, 3 * TARGET_SR * 2, '第一段簇 3 秒')
   assert.equal(header(w2).dataSize, 3 * TARGET_SR * 2,
-    '第二片必须只含新增的 3 秒 —— 重发累计会得到 6 秒 / 192000 字节')
+    '第二段必须只含新增的 3 秒 —— 重发累计会得到 6 秒 / 192000 字节')
+  d.dispose()
+})
+
+test('★ §953：喂给解码器的字节是 O(整场)，不是 O(整场²)', async () => {
+  // 12 段簇、每段 4 KB ⇒ 整场约 50 KB。
+  // ⭐ 必须**一片一片推、推一片取一次** —— 一次性推完再取一次，
+  //   「解一次整场」和「逐簇解」喂进去的字节数是同一量级 ⇒ 这条判据会没有牙。
+  //   一片一片推时：逐簇解 ⇒ 总量 ≈ 1× 整场；每次解整场 ⇒ 总量 ≈ 6× 整场。
+  const specs = Array.from({ length: 12 }, (_, i) => ({ tc: i * 4020, len: 4096 }))
+  const w = makeWebm(specs)
+  const { decode, stats } = makeFakeDecoder(3)
+  const d = new RollingWebmDecoder(decode)
+  for (const part of splitWebmByCluster(w)) {
+    d.push(part)
+    await d.takeNewWindow()
+  }
+  assert.ok(stats.calls >= 1, '至少解过一簇')
+  assert.ok(stats.bytesFed <= w.bytes.length * 2,
+    `喂给解码器的字节必须是 O(整场)：实测 ${stats.bytesFed}，整场 ${w.bytes.length}` +
+    '（累计解码会喂进前缀和 ⇒ 约 6 倍 ⇒ 本条会红）')
+  d.dispose()
+})
+
+test('★ §953：每次解码都必须带上初始化前缀（否则单簇解不开）', async () => {
+  const w = makeWebm([{ tc: 0, len: 64 }, { tc: 4020, len: 64 }])
+  const { decode, stats } = makeFakeDecoder(3)
+  const d = new RollingWebmDecoder(decode)
+  d.push(new Blob([w.bytes]))
+  await d.takeNewWindow()
+  assert.ok(stats.payloads.length >= 1, '至少解过一簇')
+  for (const p of stats.payloads) {
+    assert.deepEqual([...p.slice(0, 4)], ID_EBML,
+      '每次解码的载荷都必须以 EBML 头开始（即带上了初始化前缀）')
+  }
   d.dispose()
 })
 
 test('RollingWebmDecoder：没有新内容时返回 null 而不是空 WAV', async () => {
   // 0 长度音频会让上游回 502 empty transcript，界面上凭空多一条错误。
-  const d = new RollingWebmDecoder(async () => fake(0.05))
-  d.push(new Blob([new Uint8Array(10)]))
+  const w = makeWebm([{ tc: 0, len: 64 }])
+  const { decode } = makeFakeDecoder(0.05)
+  const d = new RollingWebmDecoder(decode)
+  d.push(new Blob([w.bytes]))
+  // 末尾那簇不完整 ⇒ 本来就没有可发的内容。
   assert.equal(await d.takeNewWindow(0.15), null)
   d.dispose()
 })
 
+test('§953：不足 minWindowSec 的尾巴**不许被丢掉**（旧实现会丢）', async () => {
+  // 旧实现：凑不够 minWindowSec ⇒ 把游标推到末尾并返回 null ⇒ **尾巴被丢掉**。
+  // §953 改成：尾巴留在 pending 里，下一次一起发出去。
+  // ⚠ 需要**三段**簇：末尾那簇永远不完整 ⇒ 只有两段能被解出来。
+  const w = makeWebm([{ tc: 0, len: 64 }, { tc: 4020, len: 64 }, { tc: 8040, len: 64 }])
+  const { decode } = makeFakeDecoder(0.1)           // 每簇 100 ms < 150 ms
+  const d = new RollingWebmDecoder(decode)
+  const parts = splitWebmByCluster(w)
+  d.push(parts[0])
+  d.push(parts[1])
+  assert.equal(await d.takeNewWindow(0.15), null, '只有一段簇完整（100 ms）⇒ 本轮不发')
+  d.push(parts[2])
+  const w2 = await d.takeNewWindow(0.15)
+  assert.ok(w2, '★ 尾巴被丢掉了 —— 累计 200 ms 应当一次发出去')
+  // 200 ms @16k = 3200 点 = 6400 字节（丢掉一段就只剩 3200 字节）
+  assert.equal(header(w2).dataSize, 6400, '两段簇的尾巴必须都发出去（丢掉一段就只剩 3200 字节）')
+  d.dispose()
+})
+
 test('RollingWebmDecoder：解码抛错时向上抛（由调用方降级）', async () => {
+  const w = makeWebm([{ tc: 0, len: 64 }, { tc: 4020, len: 64 }])
   const d = new RollingWebmDecoder(async () => { throw new Error('UnsupportedError') })
-  d.push(new Blob([new Uint8Array(10)]))
+  d.push(new Blob([w.bytes]))
   await assert.rejects(() => d.takeNewWindow())
   d.dispose()
 })
@@ -200,12 +451,13 @@ test('RollingWebmDecoder：解码抛错时向上抛（由调用方降级）', as
  *   下一次调用必须**拿得回同一段**。若游标在失败时被推进过，那段就永久丢了。
  */
 test('★ §571：解码失败后游标未推进 ⇒ 下一次能拿回同一段（兑现「不会丢内容」）', async () => {
+  const w = makeWebm([{ tc: 0, len: 64 }, { tc: 4020, len: 64 }])
   let failNext = true
   const d = new RollingWebmDecoder(async () => {
     if (failNext) { failNext = false; throw new Error('UnsupportedError') }
     return fake(3)
   })
-  d.push(new Blob([new Uint8Array(10)]))
+  d.push(new Blob([w.bytes]))
 
   await assert.rejects(() => d.takeNewWindow(), '前提不成立：第一次调用应当抛错')
   const again = await d.takeNewWindow()
@@ -224,46 +476,98 @@ test('RollingWebmDecoder：dispose 后不再接受分片', async () => {
 })
 
 test('RollingWebmDecoder：takeFull 拿整段且不消耗游标', async () => {
-  let total = 3
-  const d = new RollingWebmDecoder(async () => fake(total))
-  d.push(new Blob([new Uint8Array(10)]))
+  const w = makeWebm([{ tc: 0, len: 64 }, { tc: 4020, len: 64 }])
+  const { decode } = makeFakeDecoder(3)
+  const d = new RollingWebmDecoder(decode)
+  d.push(new Blob([w.bytes]))
   const inc = await d.takeNewWindow()
-  total = 6
   const full = await d.takeFull()
   assert.equal(header(inc).dataSize, 3 * TARGET_SR * 2)
-  assert.equal(header(full).dataSize, 6 * TARGET_SR * 2, 'takeFull 应拿当下全部')
+  assert.equal(header(full).dataSize, 3 * TARGET_SR * 2,
+    'takeFull 走的是「整场容器」那条路（§953 登记：它必须给出整段 ⇒ 天然 O(时长)）')
   d.dispose()
+})
+
+/**
+ * §953：给 `encodeWav16kMono` 装一个**假 AudioContext**，
+ * 于是可以在 node 里真跑「会议收尾那条转码路」，并**数它解了几次**。
+ *
+ * ⭐ 这条判据的价值在于它量的是**行为**而不是源码形状：
+ *   整场解码 ⇒ 解 1 次、峰值 659 MB/小时；
+ *   逐簇解码 ⇒ 解 N 次、峰值 ≈ 230 MB/小时。
+ */
+function withFakeAudioContext(run) {
+  const calls = []
+  const g = globalThis
+  const prev = g.window
+  g.window = {
+    AudioContext: class {
+      async decodeAudioData(ab) {
+        calls.push(ab.byteLength)
+        return {
+          length: 192000, numberOfChannels: 1, sampleRate: SR,
+          getChannelData: () => new Float32Array(192000),
+        }
+      }
+      close() { /* 真实现是 void ctx.close() */ }
+    },
+  }
+  return (async () => {
+    try { return await run(calls) } finally { g.window = prev }
+  })()
+}
+
+test('★ §953：会议收尾的整场转码改为**逐簇**解码（峰值 659 → 230 MB/小时）', async () => {
+  const w = makeWebm([{ tc: 0, len: 64 }, { tc: 4020, len: 64 }, { tc: 8040, len: 64 }])
+  const blob = new Blob([w.bytes], { type: 'audio/webm' })
+  await withFakeAudioContext(async (calls) => {
+    const out = await encodeWav16kMono(blob)
+    assert.ok(out.size > 0, '必须产出 WAV')
+    assert.equal(calls.length, 3,
+      `必须逐簇解码（3 段簇 ⇒ 解 3 次）—— 退回整场解码会得到 1 次（峰值 659 MB/小时）`)
+    assert.ok(calls.every((n) => n < w.bytes.length),
+      '每次解码的输入都必须只是「一簇 + 初始化前缀」，不能是整场')
+  })
+})
+
+test('★ §953：不是 webm 时退回整场解码（失败语义不变，不比现状差）', async () => {
+  // 一个完全不是 webm 的容器（随机字节）⇒ 逐簇那条路走不通 ⇒ 必须退回整场。
+  const junk = new Blob([new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8])], { type: 'audio/webm' })
+  await withFakeAudioContext(async (calls) => {
+    const out = await encodeWav16kMono(junk)
+    assert.ok(out.size > 0, '必须仍然产出 WAV（退回整场解码）')
+    assert.equal(calls.length, 1, '退回整场解码 ⇒ 解 1 次')
+  })
 })
 
 // ---------------------------------------------------------------------------
 // 源码级契约（浏览器专属行为 / 生命周期顺序，无法在 Node 里执行）
 // ---------------------------------------------------------------------------
-
 const src = readFileSync(SRC, 'utf8')
 const runtime = readFileSync(RUNTIME, 'utf8')
 
-test('契约：解码器是「滚动累计」而非逐片独立解码', () => {
-  // 真机实测：片0 22330B 可解，片1 700B / 片3 111B 全部 UnsupportedError
-  // （WebM 初始化段只在第一片出现）。逐片解码在第 2 片必崩。
-  //
-  // 用**计数式硬约束**而不是负向文本匹配：初版的 doesNotMatch 是恒真的，
-  // 变异后仍全绿（详见本文件头）。改成「恰好 3 处全量拼接」后才真咬住。
-  assert.match(src.slice(src.indexOf('async takeNewWindow'), src.indexOf('async takeFull')),
-    /new Blob\(this\.parts/, 'takeNewWindow 必须拼接全部分片')
-  // ⚠⚠ §510：结束锚必须是**方法声明**，不能用 src.indexOf('dispose()')。
-  //   那取的是**首次出现**——头注释里一句「只在 dispose() 清空」就会把锚点
-  //   挪到 takeFull **之前**，slice(start, end) 直接返回空串，
-  //   断言报 `actual: ''`（2026-10-12 现场复现）。
-  //   ⇒ 锚到**声明行**上：只有真方法才带这个缩进 + 签名。
-  const takeFullEnd = src.indexOf('\n  dispose(): void {')
-  assert.ok(takeFullEnd > src.indexOf('async takeFull'),
-    `takeFull 的结束锚应在它之后（takeFullEnd=${takeFullEnd}）—— 锚点定义本身坏了`)
-  assert.match(src.slice(src.indexOf('async takeFull'), takeFullEnd),
-    /new Blob\(this\.parts/, 'takeFull 也必须拼接全部分片')
-  assert.equal((src.match(/new Blob\(this\.parts/g) || []).length, 3,
-    '应恰好 3 处累计拼接（takeNewWindow / takeFull / fullBlob）')
+test('契约：§953 解码路径**不得**再把全部分片拼成整场容器', () => {
+  // 旧门钉的是「必须拼全部分片」——那钉的是 **workaround 的形态**，
+  // 而 §953 的实测证明那个 workaround 的前提（「只有全量拼接才解得开」）是**错的**：
+  // 「初始化前缀 + 单个 Cluster」就能单独解（实测逐样本等价）。
+  // ⇒ 门改成钉**目标**（解码路径不得再拼整场容器），并留负控（见变异批次）。
+  const start = src.indexOf('async takeNewWindow')
+  const end = src.indexOf('/** 把还没喂过的分片读成字节')
+  assert.ok(start > 0 && end > start, `锚点坏了（start=${start} end=${end}）`)
+  const body = src.slice(start, end)
+  assert.doesNotMatch(body, /new Blob\(\s*this\.parts/,
+    'takeNewWindow 不得再把全部分片拼成整场容器（那是 O(时长²) 的来源）')
+  // 全文件：这种写法只允许出现在 takeFull / fullBlob 两处。
+  assert.equal((src.match(/new Blob\(\s*this\.parts/g) || []).length, 2,
+    '整场拼接只允许出现在 takeFull / fullBlob 两处')
+  // 增量路径必须真的用上初始化前缀。
+  assert.match(src, /composeWebmWithInit/, '增量解码必须走「初始化前缀 + 簇」')
+  assert.match(src, /WebmClusterSplitter/, '增量解码必须按 Cluster 切')
+  // ⛔ 旧的负向断言（「不能用最后一片单独解码」）作废：
+  //   §953 实测「初始化前缀 + 最后一片」是**能**解开的。
+  //   保留它就是把 workaround 当成需求。
   assert.doesNotMatch(src, /this\.parts\[this\.parts\.length - 1\]/,
-    '不能用最后一片单独解码')
+    '不能用最后一片单独解码（这条在 §953 之后已作废：init 前缀 + 任何一簇都能解）')
 })
 
 test('契约：base64 分块转换（一次性展开会爆栈，12 秒 PCM 实测 RangeError）', () => {
@@ -290,14 +594,14 @@ test('契约：模块不含 TS 参数属性（否则单测无法 import 生产�
   // 这条是本文件头那条返工教训的护栏：初版用 `constructor(private readonly x)`
   // 导致 node strip-only 报错，于是测试只好重抄实现 —— 那等于没测。
   //
-  // ⚠️ 必须**先剥注释**再匹配：模块头注释里就写着 `constructor(private readonly x)`
+  // ⚠ 必须**先剥注释**再匹配：模块头注释里就写着 `constructor(private readonly x)`
   // 这个反例原文，不剥的话本条恒红（第一次跑就踩了这个）。
   const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
   assert.doesNotMatch(code, /constructor\s*\([^)]*\b(private|public|protected|readonly)\b/,
     '构造器里不得有参数属性，node --experimental-strip-types 不支持')
   // 同时保证纯函数确实被本测试 import 了（不是本地副本）。
   //
-  // ⚠️ 两个踩过的坑：
+  // ⚠ 两个踩过的坑：
   //   ① 不能用 slice(0, 2000)：文件头注释很长，import 在第 29 行、偏移 >2000，
   //      截断会漏掉它而恒红。
   //   ② 正则不能要求整行：多行 import 的最后一行是 `} from '...'`，以 `}` 结尾。

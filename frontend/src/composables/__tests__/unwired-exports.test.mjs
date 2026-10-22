@@ -151,6 +151,13 @@ const SELF = new Set([
   'unwired-exports.test.mjs',
   'handler-wiring.test.mjs',
   'cross-boundary-validation.test.ts',
+  // ⚠ §948 新增：`silent-catch-must-explain-itself.test.mjs` 的**台账**里逐个文件
+  //   写着路径（如 `src/composables/useDetailFlow.ts`）⇒ 路径里含符号名
+  //   ⇒ 扫描器会把 `useDetailFlow` / `useHaptics` 等数成「有引用」
+  //   ⇒ 死符号集体复活、基线条目集体变陈旧。
+  //   ⇒ 与上面那三支判据**完全同族**（都是「以符号名列表驱动的判据」）：
+  //   判据文件自己必须从语料里剔掉，被它检查的源码照旧全量参与扫描。
+  'silent-catch-must-explain-itself.test.mjs',
 ])
 const ALL_SRC = (() => {
   const out = []

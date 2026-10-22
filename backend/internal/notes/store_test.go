@@ -13,6 +13,12 @@ import (
 
 // TestStore_Upsert_Insert tests inserting a new note
 func TestStore_Upsert_Insert(t *testing.T) {
+	// ⚠ 这条跳过**必须写在测试函数体内**：skipaudit 的 census 与本包台账
+	// 只数「测试函数体内」的 t.Skip( ⇒ 跳过点若只藏在 helper 里，读数是 0
+	// ⇒ 本包台账的 6 条会被判「过期」⇒ 门当场转红（§960）。
+	if testPGDSN() == "" {
+		t.Skip("POCKET_TEST_POSTGRES_DSN not set; skipping notes PG integration test")
+	}
 	pool := getTestPool(t)
 	defer cleanupTestData(t, pool)
 
@@ -55,6 +61,12 @@ func TestStore_Upsert_Insert(t *testing.T) {
 
 // TestStore_Upsert_Update tests updating an existing note
 func TestStore_Upsert_Update(t *testing.T) {
+	// ⚠ 这条跳过**必须写在测试函数体内**：skipaudit 的 census 与本包台账
+	// 只数「测试函数体内」的 t.Skip( ⇒ 跳过点若只藏在 helper 里，读数是 0
+	// ⇒ 本包台账的 6 条会被判「过期」⇒ 门当场转红（§960）。
+	if testPGDSN() == "" {
+		t.Skip("POCKET_TEST_POSTGRES_DSN not set; skipping notes PG integration test")
+	}
 	pool := getTestPool(t)
 	defer cleanupTestData(t, pool)
 
@@ -100,6 +112,12 @@ func TestStore_Upsert_Update(t *testing.T) {
 
 // TestStore_Upsert_InvalidDomain tests that invalid domains are handled
 func TestStore_Upsert_InvalidDomain(t *testing.T) {
+	// ⚠ 这条跳过**必须写在测试函数体内**：skipaudit 的 census 与本包台账
+	// 只数「测试函数体内」的 t.Skip( ⇒ 跳过点若只藏在 helper 里，读数是 0
+	// ⇒ 本包台账的 6 条会被判「过期」⇒ 门当场转红（§960）。
+	if testPGDSN() == "" {
+		t.Skip("POCKET_TEST_POSTGRES_DSN not set; skipping notes PG integration test")
+	}
 	pool := getTestPool(t)
 	defer cleanupTestData(t, pool)
 
@@ -133,6 +151,12 @@ func TestStore_Upsert_InvalidDomain(t *testing.T) {
 
 // TestStore_List tests listing notes by user
 func TestStore_List(t *testing.T) {
+	// ⚠ 这条跳过**必须写在测试函数体内**：skipaudit 的 census 与本包台账
+	// 只数「测试函数体内」的 t.Skip( ⇒ 跳过点若只藏在 helper 里，读数是 0
+	// ⇒ 本包台账的 6 条会被判「过期」⇒ 门当场转红（§960）。
+	if testPGDSN() == "" {
+		t.Skip("POCKET_TEST_POSTGRES_DSN not set; skipping notes PG integration test")
+	}
 	pool := getTestPool(t)
 	defer cleanupTestData(t, pool)
 
@@ -167,6 +191,12 @@ func TestStore_List(t *testing.T) {
 
 // TestStore_GetByID_NotFound tests GetByID returns nil for non-existent note
 func TestStore_GetByID_NotFound(t *testing.T) {
+	// ⚠ 这条跳过**必须写在测试函数体内**：skipaudit 的 census 与本包台账
+	// 只数「测试函数体内」的 t.Skip( ⇒ 跳过点若只藏在 helper 里，读数是 0
+	// ⇒ 本包台账的 6 条会被判「过期」⇒ 门当场转红（§960）。
+	if testPGDSN() == "" {
+		t.Skip("POCKET_TEST_POSTGRES_DSN not set; skipping notes PG integration test")
+	}
 	pool := getTestPool(t)
 
 	store, err := NewStore(pool)
@@ -185,6 +215,12 @@ func TestStore_GetByID_NotFound(t *testing.T) {
 
 // TestStore_Delete tests soft delete functionality
 func TestStore_Delete(t *testing.T) {
+	// ⚠ 这条跳过**必须写在测试函数体内**：skipaudit 的 census 与本包台账
+	// 只数「测试函数体内」的 t.Skip( ⇒ 跳过点若只藏在 helper 里，读数是 0
+	// ⇒ 本包台账的 6 条会被判「过期」⇒ 门当场转红（§960）。
+	if testPGDSN() == "" {
+		t.Skip("POCKET_TEST_POSTGRES_DSN not set; skipping notes PG integration test")
+	}
 	pool := getTestPool(t)
 	defer cleanupTestData(t, pool)
 
@@ -246,6 +282,23 @@ func getTestPool(t *testing.T) *pgxpool.Pool {
 	return newNotesTestPool(t, nil)
 }
 
+// testPGDSN 返回**测试专用** Postgres 的 DSN；没配就是空串。
+//
+// ⚠ 为什么抽成函数（而不是只在 helper 里判一次）：skipaudit 的 census 与
+// 本包台账**只数「测试函数体内」的 t.Skip(** ⇒⇒⇒ 跳过点若只藏在 helper 里，
+// 读数是 **0** ⇒⇒⇒ 而运行时**它确实会跳过** ⇒⇒⇒ 台账会被判「条目过期」
+// ⇒⇒⇒ 门当场转红（§960 实测：台账 6 条 / 可见跳过点 0 个）。
+// ⇒⇒⇒ 所以每个 PG 用例必须在**自己体内**也写一条同义的跳过。
+//
+// ⚠ 这里**只认测试专用 DSN**（无生产库回退 —— email 包踩过并把 schema
+// 留在生产库里的事故）。
+func testPGDSN() string {
+	if dsn := os.Getenv("POCKET_TEST_POSTGRES_DSN"); dsn != "" {
+		return dsn
+	}
+	return os.Getenv("POCKET_TEST_PG_DSN") // 兼容别名，与 rss/server 同口径
+}
+
 // newNotesTestPool 是 getTestPool 的可调参版本。
 //
 // ⚠ runtimeParams 用来改**会话级**参数（例如 TimeZone）⇒ ⇒ §940 需要它
@@ -253,10 +306,7 @@ func getTestPool(t *testing.T) *pgxpool.Pool {
 // 否则那条判据就是「恰好在本机时区对」。
 func newNotesTestPool(t *testing.T, runtimeParams map[string]string) *pgxpool.Pool {
 	t.Helper()
-	dsn := os.Getenv("POCKET_TEST_POSTGRES_DSN")
-	if dsn == "" {
-		dsn = os.Getenv("POCKET_TEST_PG_DSN") // 兼容别名，与 rss/server 同口径
-	}
+	dsn := testPGDSN()
 	if dsn == "" {
 		t.Skip("POCKET_TEST_POSTGRES_DSN not set; skipping notes PG integration test")
 	}

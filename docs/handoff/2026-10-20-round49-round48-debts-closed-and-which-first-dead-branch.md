@@ -366,7 +366,7 @@ oracle: /opt/homebrew/bin/gofmt（go1.27.2，backend/go.mod 声明 Go 1.27）
    `test-evidence/.../*.headers` 保持 CRLF）。这是**刻意**的：broad 的 `* text=auto`
    会 churn 8 个文件且会破坏 `gradlew.bat`。若将来要扩大范围，**单独一轮做**。
 3. **48h 审计线的 §8.7 四件事不在本轮范围**（`handoff/2026-10-17-48h-audit-and-fixes.md`）：
-   简报 119 三个问待属主拍板、7 道新门的「自洽判据」回扫 ⇒ 需要属主决策，不擅自动。
+   简报 183 三个问待属主拍板、7 道新门的「自洽判据」回扫 ⇒ 需要属主决策，不擅自动。
 4. ~~**`check-gofmt.mjs` 本身没有版本锁**~~ ⇒ ✅ **本轮已关掉**（见 §3.4）：
    两道把 gofmt 当判据的门现在**共用同一个 oracle**（`scripts/lib/gofmt-oracle.mjs`），
    都按 `backend/go.mod` 声明的大版本锁定 ⇒ 不可能各说各话，也不可能与 CI 不一致。

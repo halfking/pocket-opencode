@@ -257,12 +257,19 @@ function totalLabel(total: number) {
 }
 
 async function reload() {
-  await store.refresh().catch(() => {})
+  await store.refresh().catch(() => {
+    // 失败已由 store 置成 `store.error`（同步失败会 rethrow）⇒ 这里只接住 rethrow。
+  })
 }
 
 onMounted(async () => {
   store.loadFromCache()
-  await Promise.all([store.refresh().catch(() => {}), loadStarter()])
+  await Promise.all([
+    store.refresh().catch(() => {
+      // 失败已由 store 置成 `store.error`（同步失败会 rethrow）⇒ 这里只接住 rethrow。
+    }),
+    loadStarter(),
+  ])
 })
 </script>
 

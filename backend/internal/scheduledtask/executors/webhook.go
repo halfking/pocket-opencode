@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/halfking/pocket-opencode/backend/internal/outbound"
 	"github.com/halfking/pocket-opencode/backend/internal/scheduledtask"
 )
 
@@ -30,11 +31,14 @@ type HTTPWebhookExecutor struct {
 }
 
 func NewHTTPWebhookExecutor(client WebhookHTTPClient, timeout time.Duration) *HTTPWebhookExecutor {
-	if client == nil {
-		client = &http.Client{Timeout: timeout, CheckRedirect: noRedirect}
-	}
+	// ⚠ §950：默认值必须**先**落定再建客户端 ——
+	//　 原来顺序反了（先用原始 timeout 建客户端，再补默认值）
+	//　⇒⇒⇒ timeout <= 0 时客户端拿到 Timeout: 0 ⇒ **没有任何上界**。
 	if timeout <= 0 {
 		timeout = 30 * time.Second
+	}
+	if client == nil {
+		client = outbound.NewClient(timeout, outbound.WithCheckRedirect(noRedirect))
 	}
 	return &HTTPWebhookExecutor{client: client, timeout: timeout}
 }
@@ -74,6 +78,15 @@ func (e *HTTPWebhookExecutor) Execute(ctx context.Context, t *scheduledtask.Task
 	if body == nil {
 		body = json.RawMessage(`{}`)
 	}
+	// ⚠ §950：e.timeout 以前**只存不用** ⇒ 请求本身没有任何 deadline
+	//　 ⇒⇒⇒ 客户端是唯一的兜底（而客户端的 Timeout 曾经是 0）
+	//　⇒⇒⇒ 现在把它落到请求 ctx 上（与客户端 Timeout 双保险）。
+	timeout := e.timeout
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, method, u.String(), strings.NewReader(string(body)))
 	if err != nil {
 		return nil, fmt.Errorf("create webhook request: %w", err)
@@ -161,7 +174,7 @@ func NewSafeHTTPWebhookExecutor(timeout time.Duration, allowPrivate bool) *HTTPW
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
-	client := &http.Client{Timeout: timeout, CheckRedirect: noRedirect, Transport: &http.Transport{
+	client := outbound.NewClient(timeout, outbound.WithCheckRedirect(noRedirect), outbound.WithTransport(&http.Transport{
 		Proxy: nil,
 		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
 			host, port, err := net.SplitHostPort(address)
@@ -182,7 +195,7 @@ func NewSafeHTTPWebhookExecutor(timeout time.Duration, allowPrivate bool) *HTTPW
 			}
 			return (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, network, net.JoinHostPort(ips[0].String(), port))
 		},
-	}}
+	}))
 	return NewHTTPWebhookExecutor(client, timeout)
 }
 

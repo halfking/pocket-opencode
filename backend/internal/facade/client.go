@@ -13,6 +13,9 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/halfking/pocket-opencode/backend/internal/outbound"
+	"github.com/halfking/pocket-opencode/backend/internal/sizedread"
 )
 
 // Config configures a façade Client.
@@ -60,7 +63,7 @@ func NewClient(cfg Config) (*Client, error) {
 	}
 	httpClient := cfg.HTTPClient
 	if httpClient == nil {
-		httpClient = &http.Client{Timeout: time.Duration(timeout) * time.Second}
+		httpClient = outbound.NewClient(time.Duration(timeout) * time.Second)
 	}
 	return &Client{
 		cfg:            cfg,
@@ -177,7 +180,7 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 	if out == nil {
 		return nil
 	}
-	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+	if err := json.NewDecoder(sizedread.Limit(resp.Body, sizedread.MaxJSONBodyBytes)).Decode(out); err != nil {
 		return fmt.Errorf("facade: decode %s %s response: %w", method, path, err)
 	}
 	return nil

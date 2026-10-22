@@ -7,9 +7,15 @@ import { resolveRuntimeApiBase } from '../config/api-base'
 import { useAuthStore } from '../stores/auth'
 import { assertNotHTML } from './jsonGuard'
 import { isAbortError } from './abort'
+import { DEFAULT_TIMEOUT_MS, TimeoutError, fetchWithTimeout } from './fetch-timeout.ts'
 
 // 再导出：client.ts 等既有调用方统一从 ./http 取守卫。
 export { assertNotHTML }
+
+// ★ §951：超时原语搬到 ./fetch-timeout（零 import ⇒ 谁都能安全 import，不会绕成环）。
+// ⚠ 这里**再导出**而不是各自定义：TimeoutError 是靠 `instanceof` 认的
+//　 （features/email/use-email-inbox.ts 就是这么判的）⇒ 必须是**同一个类对象**。
+export { DEFAULT_TIMEOUT_MS, TimeoutError }
 
 export function getApiBase(): string {
   return resolveRuntimeApiBase()
@@ -50,8 +56,10 @@ async function maybeRefreshBeforeRequest(path: string): Promise<void> {
  * phase 置为 'stopping' 再做转写 IO,请求不返回 → phase 永不归位 →
  * decideNoteStart 拒绝新录音、toggle() 返回 null,录音按钮就此失灵。
  * 切页后台执行的长任务同理会永远占着进行中标记。
+ *
+ * ⚠§951：这条注释连同**实现**一起搬到了 `./fetch-timeout`（那里是前端唯一
+ * 触碰全局 fetch 的地方）⇒ 本文件只剩「注入 token + 解析 JSON」这一层。
  */
-const DEFAULT_TIMEOUT_MS = 30_000
 
 /** 少数天然慢的端点(同步/大音频/批量推理)在调用处显式放宽。 */
 export const LONG_REQUEST_TIMEOUT_MS = 120_000
@@ -104,16 +112,8 @@ export interface HttpOptions extends RequestInit {
 export { isAbortError }
 
 /** 区分「超时」和「服务端返回 4xx/5xx」,让上层能给出可读提示。 */
-export class TimeoutError extends Error {
-  readonly path: string
-  readonly timeoutMs: number
-  constructor(path: string, timeoutMs: number) {
-    super(`请求超时（${Math.round(timeoutMs / 1000)}s）：${path}`)
-    this.name = 'TimeoutError'
-    this.path = path
-    this.timeoutMs = timeoutMs
-  }
-}
+// ⚠§951：TimeoutError 的**类定义**在 ./fetch-timeout（上面已再导出）。
+//　 留这一行是为了让「这个文件里 TimeoutError 从哪来」有据可查。
 
 async function httpOnce<T = any>(path: string, opts: HttpOptions = {}): Promise<T> {
   const auth = useAuthStore()
@@ -126,27 +126,15 @@ async function httpOnce<T = any>(path: string, opts: HttpOptions = {}): Promise<
     headers['Content-Type'] = 'application/json'
   }
 
-  const controller = new AbortController()
-  const onCallerAbort = () => controller.abort()
-  if (callerSignal) {
-    if (callerSignal.aborted) controller.abort()
-    else callerSignal.addEventListener('abort', onCallerAbort, { once: true })
-  }
-  let timedOut = false
-  const timer = timeoutMs > 0
-    ? setTimeout(() => { timedOut = true; controller.abort() }, timeoutMs)
-    : null
-
-  let res: Response
-  try {
-    res = await fetch(`${resolveRuntimeApiBase()}${path}`, { ...init, headers, signal: controller.signal })
-  } catch (e) {
-    if (timedOut) throw new TimeoutError(path, timeoutMs)
-    throw e
-  } finally {
-    if (timer) clearTimeout(timer)
-    if (callerSignal) callerSignal.removeEventListener('abort', onCallerAbort)
-  }
+  // ⚠§951：上界与中止都交给唯一的那一层（./fetch-timeout）。
+  //　 · 超时 → TimeoutError（label 用 API 路径 ⇒ 提示文案与旧实现逐字一致）
+  //　 · 调用方取消 → AbortError 原样透传（`name === 'AbortError'` ⇒ 上层当「不是失败」）
+  // ⇒ 这里**不再**二次包装：fetch-timeout 抛的就是同一个类、同一组字段。
+  const res = await fetchWithTimeout(
+    `${resolveRuntimeApiBase()}${path}`,
+    { ...init, headers, signal: callerSignal },
+    { timeoutMs, label: path },
+  )
   if (!res.ok) {
     // 尝试解析响应 body，让调用方能拿到结构化错误（如 409 conflict 的 server_version）
     let parsedBody: any

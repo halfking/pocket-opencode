@@ -21,6 +21,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/halfking/pocket-opencode/backend/internal/outbound"
 )
 
 // Client 是最小出站客户端（并发安全）。
@@ -42,7 +44,7 @@ func New(appID, appSecret string) *Client {
 		AppID:     appID,
 		AppSecret: appSecret,
 		BaseURL:   "https://open.feishu.cn",
-		HTTP:      &http.Client{Timeout: 30 * time.Second},
+		HTTP:      outbound.NewClient(30 * time.Second),
 	}
 }
 

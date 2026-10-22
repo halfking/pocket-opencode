@@ -128,7 +128,7 @@ var s945Ledger = []s945LedgerRow{
 	{"backend/internal/marketplace/blob.go", "Rollback", 1},
 	{"backend/internal/meeting/pg_store.go", "Rollback", 1},
 	{"backend/internal/notes/store.go", "Rollback", 1},
-	{"backend/internal/notify/smtp.go", "Close", 2},
+	{"backend/internal/notify/smtp.go", "Close", 7},
 	{"backend/internal/notify/smtp.go", "Extension", 2},
 	{"backend/internal/notify/smtp.go", "Quit", 1},
 	{"backend/internal/opencode/config_merge.go", "Close", 5},
@@ -573,7 +573,11 @@ func TestS945LedgerMatchesSource(t *testing.T) {
 	// ⚠⚠ 97 → 86（§946）：§946 修掉了 11 处「HTTP 响应体写出」的丢弃
 	//　（writeJSON 家族 + 直接 Encode + w.Write + SSE 的 fmt.Fprintf）
 	//　⇒ ⇒⇒ 那 11 处**不再**是「被丢弃的调用」⇒ ⇒⇒ ⇒ 台账必须同步减掉。
-	if got, want := len(res.Discards), 86; got != want {
+	// ⚠ 86 → 91（§951）：§951 把 internal/notify/smtp.go 的 SMTP 拨号改成了
+	// 「自己拨号 + 每一个错误分支都显式关连接」⇒ 那 5 条新出现的 `_ = conn.Close()`
+	// 都是**放弃一条正在出错的连接**（错误本身已经是主信号，close 的错误无意义）
+	// ⇒ 与既有的 `Close` 登记同族 ⇒ 台账同步 +5。
+	if got, want := len(res.Discards), 91; got != want {
 		t.Errorf("被丢弃的调用总处数 = %d（台账登记的是 %d 处）⇒ 数量变了必须重新定性", got, want)
 	}
 	if got, want := len(s945Ledger), 39; got != want {

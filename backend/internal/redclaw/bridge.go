@@ -4,6 +4,8 @@ import (
 	"log"
 	"sync"
 	"time"
+
+	"github.com/halfking/pocket-opencode/backend/internal/background"
 )
 
 // BridgeEventCallback WebSocket 事件推送回调
@@ -40,7 +42,7 @@ func (b *Bridge) Start() {
 	log.Println("[RedClaw Bridge] started")
 
 	// 启动后台健康检查
-	go b.healthLoop()
+	background.Go("redclaw/health-loop", b.healthLoop)
 }
 
 // Stop stops the bridge service and background health monitoring.

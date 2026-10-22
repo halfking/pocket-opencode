@@ -134,8 +134,12 @@ func TestS943TombstoneGuardRefusesToMoveAnotherScopesTombstone(t *testing.T) {
 			if owner != s943TombOth || ws != s943TombWs {
 				t.Errorf("别人的墓碑被搬走了：owner=%q ws=%q（want %q / %q）", owner, ws, s943TombOth, s943TombWs)
 			}
-			if !at.UTC().Equal(plantedAt.UTC()) {
-				t.Errorf("别人的墓碑时间被改了：%v（want %v）", at, plantedAt)
+			// ⚠ PG 的 timestamptz 精度是**微秒**，而 plantedAt 是内存里的**纳秒**值
+			//   ⇒ 直接比字面必然差几百纳秒（CI 实测差 7198ns）
+			//   ⇒ 这条判据要比的是「同一个时刻在 PG 精度下是否相等」
+			//   （容差口径见 transcript_test.go 的 pgTimeEqual 与它的负控）。
+			if !pgTimeEqual(at, plantedAt) {
+				t.Errorf("别人的墓碑时间被改了：%v（want %v，差 %v）", at, plantedAt, at.Sub(plantedAt))
 			}
 
 			// ③ 会议必须还在（没有半处理）。

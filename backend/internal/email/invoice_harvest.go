@@ -16,6 +16,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/halfking/pocket-opencode/backend/internal/outbound"
 )
 
 // invoice_harvest.go — 发票文件采集流水线（对应需求「收取发票类邮件并解析
@@ -722,7 +724,7 @@ func (h *InvoiceHarvester) saveInvoiceFile(ctx context.Context, inv *Invoice, da
 func (h *InvoiceHarvester) downloadPDF(ctx context.Context, url string) ([]byte, error) {
 	client := h.HTTPClient
 	if client == nil {
-		client = &http.Client{Timeout: 30 * time.Second}
+		client = outbound.NewClient(30 * time.Second)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {

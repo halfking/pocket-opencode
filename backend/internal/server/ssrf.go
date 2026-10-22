@@ -9,6 +9,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/halfking/pocket-opencode/backend/internal/outbound"
 )
 
 const maxLLMGatewayResponseBytes = 1 << 20
@@ -194,42 +196,53 @@ func gatewayHTTPClient(timeout time.Duration) *http.Client {
 // newGuardedHTTPClient 是上面两者的共同实现：allowPrivate 决定私网/loopback
 // 是否放行，云元数据端点永远拒绝。
 func newGuardedHTTPClient(timeout time.Duration, allowPrivate bool) *http.Client {
-	return &http.Client{
-		Timeout: timeout,
-		Transport: &http.Transport{
-			Proxy: nil,
-			// DNS 重绑定防护：解析出的每一个 IP 都要过校验，然后直接拨已校验的
-			// IP，避免"校验时解析到公网、拨号时解析到内网"的时间差攻击。
-			DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
-				host, port, err := net.SplitHostPort(address)
-				if err != nil {
-					return nil, err
+	tr := &http.Transport{
+		Proxy: nil,
+		// DNS 重绑定防护：解析出的每一个 IP 都要过校验，然后直接拨已校验的
+		// IP，避免"校验时解析到公网、拨号时解析到内网"的时间差攻击。
+		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+			host, port, err := net.SplitHostPort(address)
+			if err != nil {
+				return nil, err
+			}
+			ips, err := net.LookupIP(host)
+			if err != nil {
+				return nil, err
+			}
+			if len(ips) == 0 {
+				return nil, fmt.Errorf("host has no addresses")
+			}
+			for _, ip := range ips {
+				if isCloudMetadataIP(ip) {
+					return nil, fmt.Errorf("resolved address is not allowed")
 				}
-				ips, err := net.LookupIP(host)
-				if err != nil {
-					return nil, err
+				if !allowPrivate && isBlockedOutboundIP(ip) {
+					return nil, fmt.Errorf("resolved address is not allowed")
 				}
-				if len(ips) == 0 {
-					return nil, fmt.Errorf("host has no addresses")
-				}
-				for _, ip := range ips {
-					if isCloudMetadataIP(ip) {
-						return nil, fmt.Errorf("resolved address is not allowed")
-					}
-					if !allowPrivate && isBlockedOutboundIP(ip) {
-						return nil, fmt.Errorf("resolved address is not allowed")
-					}
-				}
-				return (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, network, net.JoinHostPort(ips[0].String(), port))
-			},
-			// SSE 需要即时看到每个 chunk，禁用响应缓冲压缩带来的延迟。
-			DisableCompression:  true,
-			MaxIdleConnsPerHost: 4,
+			}
+			return (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, network, net.JoinHostPort(ips[0].String(), port))
 		},
-		CheckRedirect: func(*http.Request, []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
+		// SSE 需要即时看到每个 chunk，禁用响应缓冲压缩带来的延迟。
+		DisableCompression:  true,
+		MaxIdleConnsPerHost: 4,
 	}
+	noRedirect := func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	// ⚠ §950：timeout <= 0 是**故意**的 SSE 形态 ——
+	//   http.Client.Timeout 会在流到一半时掐断整个连接（不只是握手阶段）
+	//   ⇒⇒⇒ 这条路上界由**请求 ctx** 提供
+	//   ⇒⇒⇒ 它是**登记在册的例外**（见 repohygiene/outbound_http_bound_test.go）。
+	if timeout <= 0 {
+		return outbound.NewStreamingClient(
+			outbound.WithTransport(tr),
+			outbound.WithCheckRedirect(noRedirect),
+		)
+	}
+	return outbound.NewClient(timeout,
+		outbound.WithTransport(tr),
+		outbound.WithCheckRedirect(noRedirect),
+	)
 }
 
 func validateOutboundURL(rawURL string) error {
@@ -269,9 +282,8 @@ func isBlockedOutboundIP(ip net.IP) bool {
 }
 
 func safeOutboundHTTPClient() *http.Client {
-	return &http.Client{
-		Timeout: 10 * time.Second,
-		Transport: &http.Transport{
+	return outbound.NewClient(10*time.Second,
+		outbound.WithTransport(&http.Transport{
 			Proxy: nil,
 			DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
 				host, port, err := net.SplitHostPort(address)
@@ -292,11 +304,11 @@ func safeOutboundHTTPClient() *http.Client {
 				}
 				return (&net.Dialer{}).DialContext(ctx, network, net.JoinHostPort(ips[0].String(), port))
 			},
-		},
-		CheckRedirect: func(*http.Request, []*http.Request) error {
+		}),
+		outbound.WithCheckRedirect(func(*http.Request, []*http.Request) error {
 			return http.ErrUseLastResponse
-		},
-	}
+		}),
+	)
 }
 
 func outboundModelsURL(baseURL string) (string, error) {
