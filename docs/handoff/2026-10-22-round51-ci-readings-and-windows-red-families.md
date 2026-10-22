@@ -178,9 +178,16 @@ node --test src/features/meetings/__tests__/meeting-todo-readback-day.test.mjs
 6. ⏳ **e2e-web 的长期红**（14/14，2026-10-17 起）—— 报错 `connect ECONNREFUSED 127.0.0.1:8088`
    ⇒ **后端服务没起来** ⇒ 环境性红。⚠ 本机跑不了（要起后端 + Playwright）
    ⇒ ⇒ 改完只能靠 CI 读数；**先量影响面再动手**。
-7. ⏳ **本机残留 worktree**：`C:/workspace/_po-base-main`（detached `0fdda422`）、
-   `C:/workspace/_po-lf-main`（detached `23bc3529`，A/B 对照载体）——
-   **都有 junction，清理前先拆 junction**（否则会带走主工作区的 `node_modules`）。
+7. ⏳ **本机残留 worktree**（**本轮尝试清理被安全策略拦下 ⇒ 未动，两棵都还在**）：
+   - `C:/workspace/_po-base-main` —— detached `0fdda422`（**旧 commit，已无用**）
+   - `C:/workspace/_po-lf-main` —— detached `cdbf8422`
+     （**A/B 对照载体**：`scripts/tools/ab-crlf-lf-gates.mjs` 会复用它做 LF 检出树）
+   ⇒ ⚠ **两棵的 `frontend/node_modules` 与 `frontend/dist` 都是 junction**
+   （指向主工作区）⇒ **删之前必须先拆 junction**，
+   否则 `git worktree remove` 会把主工作区的 `node_modules` 一起带走。
+   ⇒ ⚠ 本轮用 `cmd /c rmdir` 拆 junction 被**本地安全策略拦下**
+   （「删除命令不可安全改写 ⇒ 走 mavis-trash」）⇒ **本轮没有做任何删除动作**。
+   ⇒ ⇒ 下一轮若要清理，**先确认 `node_modules` 是否还在主工作区**，再动手。
 
 ---
 
