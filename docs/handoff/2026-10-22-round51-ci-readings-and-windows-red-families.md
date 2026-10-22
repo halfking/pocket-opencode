@@ -18,7 +18,40 @@
 
 ---
 
-## 2. 读数：CI 的真实结论（工具：GitHub REST API，公开仓免鉴权）
+## 2. ⭐ CI 的**权威读数**（修完之后，横向对照 15 个 run × 4 个关键 job）
+
+| sha | frontend-lint | backend-test | gates-parity | e2e-web |
+|---|---|---|---|---|
+| `7ce60119` / `6dfbc907` / `21a393e2` / `cdbf8422`（**修之前 4 个 run**） | **failure** | **failure** | success | — |
+| `640ca85a`（本轮第 2 笔） | ✅ **success** | ✅ **success**（×3 job） | ❌ failure（gofmt） | ❌ failure |
+| `c6e9acfe`（本轮第 3 笔，修 gofmt） | 见 §2.1 | 见 §2.1 | 见 §2.1 | 见 §2.1 |
+
+⇒ ★ **本轮把「长期红」的前端与后端两个 job 全部修成了绿**：
+
+- **frontend-lint** ⇒ **success** ⇒ 12 次连续红断在这一笔。
+- **backend-test**（`test` / `test-pg`）⇒ **success**（3 个 job 全绿）
+  ⇒ ★ **特别是 Go#3（真 data race）**：CI 跑的是 `go test -race ./... -count=1`
+  （`.github/workflows/backend.yml:118`）⇒ **本机跑不了的那条，CI 跑通了**
+  ⇒ ⇒ **§5 里「Go#3 本地未验证」那条登记可以销账**。
+  ⇒ ★ `test-pg` 也绿 ⇒ **Go#2 的 `pgTimeEqual` 在真 PG 上生效**。
+- **gates-parity** ⇒ `640ca85a` 那次红在**第 20 项 `check:gofmt`**
+  ⇒ 成因是**本轮第 2 笔自引入的**（`transcript_test.go` 新增 doc comment 的
+  缩进是 Go 1.19 之前的形态）⇒ 第 3 笔用 `node scripts/check-gofmt.mjs --fix` 修掉
+  ⇒ ⚠ **门禁自己的口径**会先剔掉 CRLF 行尾噪声
+  （本机裸 `gofmt -l` 报 **816**，其中 **815 是纯行尾伪债**，真债只有 **1**）
+  ⇒ 拿 `gofmt -l` 当判据会得到「800+ 个文件不 gofmt」的**假结论**。
+- **e2e-web** ⇒ 报错原文 `connect ECONNREFUSED 127.0.0.1:8088`
+  ⇒ **后端服务没起来** ⇒ **环境性红**，与本轮改动零相关。
+
+### 2.1 ⏳ 待补：`c6e9acfe` 这一笔的最终读数
+
+⇒ **下一轮先读这一行**（GitHub REST API 的 run → job 结论）：
+`c6e9acfe` 的四个 job 结论 ⇒ 若 `gates-parity` 转绿 ⇒ main 上四个 job 只剩
+`e2e-web`（环境性）⇒ **长期红的成因已全部销账**。
+
+---
+
+## 3. 读数：CI 的真实结论（工具：GitHub REST API，公开仓免鉴权）
 
 | 项 | 读数 |
 |---|---|
@@ -114,22 +147,32 @@ node --test src/features/meetings/__tests__/meeting-todo-readback-day.test.mjs
 - **Linux 上全量前端到底绿不绿** —— 本机无 docker / 无 Linux ⇒
   「26 个红在 Linux 上是绿的」是**基于根因分析**（每个根因都逐条核到
   「该形态只在 Windows 出现」的代码位置），**不是**「在 Linux 上实测过」。
+  ⇒ ★ **但 CI 的 `npm run test:all` 在 Linux 上跑了全量 374 个文件且通过**
+  （frontend-lint job ✅ success，§2）⇒ **这条已由 CI 间接验证**。
 - **Go#3 的 `-race`** —— 本机 `CGO_ENABLED=0` 且**无 C 编译器**
-  ⇒ `go test -race` 直接报 `go: -race requires cgo` ⇒ **只能由 CI 验证**。
-- **CI 推上去之后是否转绿** —— 等 CI 读数。
+  ⇒ `go test -race` 直接报 `go: -race requires cgo`
+  ⇒ ★ **但 CI 的 backend job 跑的就是 `go test -race ./... -count=1` 且 ✅ success**
+  （§2）⇒ **这条已由 CI 验证**（本机跑不了的那条，CI 跑通了）。
+- **`c6e9acfe` 的最终读数** —— 交接时它还在跑 ⇒ 见 §2.1。
 
 ---
 
 ## 6. 遗留风险（下一轮的入口）
 
-1. ⏳ **Go#3 的 `-race` 验证**：CI 的 `go test -race ./... -count=1`
-   （`.github/workflows/backend.yml:118`）—— 推上去后看读数。
+1. ✅ **Go#3 的 `-race` 验证** —— **已由 CI 完成**：backend job ✅ success
+   （CI 跑的是 `go test -race ./... -count=1`）⇒ 那个 data race 真的修好了。
+   ⇒ 原 §5 里「本条本地未验证」的登记**可以销账**。
 2. ⏳ **「设备本地 vs 固定 +08」**的产品口径待拍板（简报 189 ①）。
    ⇒ 整链只在 +08 设备上自洽；本轮**只改判据层**，产品口径一个字没动。
 3. ⏳ **新门形态待设计**（简报 189 ②）：`check:crlf-needles` 只认**直接写在 `.replace()` 里**的
    字面量 ⇒ **看不见「变量/数组里存 needle 再传进去」**（族 A 正是如此）⇒ 该门有覆盖盲区。
 4. ⏳ **本机要不要装 C 工具链**（简报 189 ③）—— 决定 `-race` 类问题能不能在提交前看见。
-5. ⏳ **§948–§957 那 38 个提交的审计回填** —— 本轮**未做**。
+5. ✅ **§948–§957 的审计回填** —— 本轮**已做**：**39 笔（不是 38）成果全部还在 main 上，无一丢失**。
+   ⇒ 判据落在「成果」上（文件/符号是否还在），不落在「那一行有没有一个字没动」上
+   （第一版逐行匹配报出 17 笔「疑似丢失」，第一处就是误报：
+   `run_all.py` 的 BATCHES 列表只是换了行，s948–s957 全在）
+   ⇒ 报「有缺失」的 2 笔全是同一个符号 `§803.4`，而那**正是 §955 自己修掉的死引用**
+   ⇒ ⇒ **不判为丢失**。详见主文档 §963.7.1。
 6. ⏳ **本机残留 worktree**：`C:/workspace/_po-base-main`（detached `0fdda422`）、
    `C:/workspace/_po-lf-main`（detached `23bc3529`，A/B 对照载体）——
    **都有 junction，清理前先拆 junction**（否则会带走主工作区的 `node_modules`）。
@@ -138,19 +181,31 @@ node --test src/features/meetings/__tests__/meeting-todo-readback-day.test.mjs
 
 ## 7. 下一轮提示词
 
-> 请按本交接单 §6 的 6 条遗留风险逐条推进：
-> ① 读 CI 的**真实结论**（GitHub REST API：run → job → step 结论，不要只看本地门禁读数），
->    确认本轮推上去之后 backend / frontend 两个 job 是否转绿；
->    ⚠ 若 frontend job 仍红，**先看它红在哪个 step** —— 前面某个 step 红会把后面的遮住
->    （§960.7.1 那个机制本轮又生效了一次：`test:all` 从没跑到过，
->    是本轮修完前一处才第一次露出 `meeting-todo-readback-day` 的 TZ=UTC 红）。
-> ② 若 backend job 仍红，**读 job 日志里的 `--- FAIL:` 原文**，逐条定位；
->    ⚠ 注意「本机绿」的三类（真 race / 时区 / CRLF）**本机永远看不到**。
-> ③ 处理简报 189 的三件待拍板（**不代拍**）：产品口径 / 新门形态 / 要不要装 C 工具链。
-> ④ 做 §948–§957 那 38 个提交的审计回填。
-> ⑤ 收尾：清理本机两个残留 worktree（**先拆 junction**），
->    同步主文档 / 简报 / 新交接单，提交、合并到 main、推送。
-> 纪律沿用：**先量影响面再动手**（本轮第一版前端改法被 2×2 矩阵实测推翻并回退）、
-> **判据要有牙**（每处修复都做变异负控且实测转红，绿了不算数）、
-> **负控判「转红」要同时看退出码与 FAIL 行**（构建失败 ≠ 用例转红）、
-> **归一在产出口/读入口**（不是改断言形态）。
+> 请按本交接单 §6 的遗留风险逐条推进：
+> ① **先读 `c6e9acfe` 那一笔的 e2e-web 结论**（本交接时它还在跑）
+>    —— 前面三个 job（frontend-lint / backend-test / gates-parity）**已经全绿**，
+>    只剩 e2e-web。若它也红了，**先看它红在哪个 step + 报错原文**：
+>    `640ca85a` 那次的报错是 `connect ECONNREFUSED 127.0.0.1:8088`
+>    ⇒ **后端服务没起来** ⇒ **环境性红**（⇒ 判断依据：读日志原文，别猜）。
+> ② 处理简报 189 的三件待拍板（**不代拍**）：产品口径 / 新门形态 / 要不要装 C 工具链。
+>    ⚠ 特别提醒：**本轮「门禁 39/39 绿」已经不是 CI 绿不绿的问题了**
+>    —— 三个 job 真的绿了 ⇒ 下一轮起，「CI 红」必须**逐个 job 读结论**才算数，
+>    不能再用本地门禁读数代替。
+> ③ 清理本机两个残留 worktree：`C:/workspace/_po-base-main`（detached `0fdda422`）、
+>    `C:/workspace/_po-lf-main`（detached `23bc3529`，A/B 对照载体）
+>    —— ⚠ **都有 junction，清理前先拆 junction**
+>    （否则 `git worktree remove` 会把主工作区的 `node_modules` 一起带走）。
+>    ⇒ 也可以留着当 A/B 对照载体（`scripts/tools/ab-crlf-lf-gates.mjs` 会复用它）。
+> ④ 收尾：同步主文档 / 简报 / 新交接单，提交、合并到 main、推送。
+> ⑤ 若要再修 e2e-web：⚠ **本机跑不了 e2e**（要起后端服务 127.0.0.1:8088 + Playwright），
+>    ⇒ 改完只能靠 CI 读数 ⇒ **先量影响面再动手**。
+>
+> **纪律沿用（本轮的实测教训）**：
+> - **先量影响面再动手** —— 本轮第一版前端改法被 2×2 矩阵（HEAD vs 工作树 × TZ）实测推翻并回退。
+> - **判据要有牙** —— 每处修复都做变异负控且**实测转红**，绿了不算数。
+> - **负控判「转红」要同时看退出码与 FAIL 行** —— 构建失败 ≠ 用例转红（本轮踩到）。
+> - **归一在产出口/读入口**，不改断言形态（断言里的字面量是有意义的仓内约定）。
+> - **审计「成果还在吗」要落在「文件/符号还在吗」**，不落在「那一行有没有一个字没动」。
+> - **拿门禁自己的口径当判据** —— 本机裸 `gofmt -l` 报 816 个文件，
+>   而门禁（剔掉 CRLF 噪声后）只报 1 个 ⇒ 拿错口径会得到「800+ 个文件不 gofmt」的假结论。
+> - **「本机绿」的三类（真 race / 时区 / CRLF）本机永远看不到** ⇒ 必须靠 CI 读数收口。

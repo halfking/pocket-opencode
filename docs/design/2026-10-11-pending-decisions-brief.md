@@ -7328,6 +7328,14 @@ pluginAvailable∈{Sherpa,BackgroundMic}`，**真源码零改动**）跑出来�
 
 ⚠ **Windows 前端全量**（本机 374 个测试文件）：读到 **26 个失败文件 / 62 条失败**（⚠ 上一轮记的「30 个」与实测不符 ⇒ **以本轮 26 为准**）⇒ 逐文件**读报错原文**（不是看用例名）后归成 **4 个根因族**：**A** Windows 绝对路径**裸插**进 JS/TS 字符串字面量 ⇒ `\w` `\p` `\f` `\n` 被当转义符 ⇒ esbuild 解析不到 ⇒ `before` 钩子抛错 ⇒ 整组子用例 `cancelledByParent`（5 个文件）；**B** `new URL(...).pathname` 在 Windows 上是 `/C:/...` ⇒ 拼出 `C:\C:\...`，且 `path.relative()` 给**反斜杠**（6 个文件）；**C** 变异锚点**正则里写死 `\n`** ⇒ CRLF 下匹配不上 ⇒ 报「判据恒真」而**真因是「变异没发生」**（9 个文件）；**D** 判据产出的**绝对路径** vs 清单里的**正斜杠相对路径**、ESM `import()` 收 Windows 绝对路径（6 个文件）。⇒ **26/26 全是「平台形态」问题 ⇒ 不阻塞 CI**（Linux 上一直绿），但会让 **Windows 开发者的本地读数完全失真**（且报错形态**指向错误的根因**）⇒ ⇒ 逐族在**产出口/读入口**归一（不改断言形态：断言里的字面量是**有意义的仓内约定**）⇒ ⇒ **复测 4722 tests / 4720 pass / 0 fail / 0 失败文件**（Windows / TZ=Asia/Shanghai）。
 
+⇒ ⇒ ⇒ ⇒ **CI 的权威读数（修完之后，横向对照 15 个 run × 4 个关键 job）**：
+| sha | frontend-lint | backend-test | gates-parity | e2e-web |
+|---|---|---|---|---|
+| `7ce60119` / `6dfbc907` / `21a393e2` / `cdbf8422`（**修之前 4 个 run**） | **failure** | **failure** | success | — |
+| `640ca85a`（本轮第 2 笔） | ✅ **success** | ✅ **success**（×3 job） | ❌ failure（gofmt） | ❌ failure |
+| `c6e9acfe`（本轮第 3 笔，修 gofmt） | ✅ **success** | ✅ **success**（×3 job） | ✅ **success** | ⏳ 跑着 |
+⇒ ⇒ ⇒ ⇒ **本轮把「main 长期红」这件事销账了**：frontend-lint / backend-test / gates-parity 三个 job **全部从长期红转为绿** ⇒ ★ **特别是 Go#3（真 data race）**——CI 的 backend job 跑的就是 `go test -race ./... -count=1` ⇒ **本机跑不了的那条，CI 跑通了** ⇒ ⇒ 「本地永远看不到的那类红」这一族**只有 CI 能验**，这一条**已被 CI 验过**；⇒ ★ `test-pg` 也绿 ⇒ **Go#2 的 `pgTimeEqual` 在真 PG 上生效**（本机无 PG，那两条是 skip 的）；⇒ ⚠ `gates-parity` 在第 2 笔红在**第 20 项 `check:gofmt`** ⇒ 成因是**本轮自引入的**（`transcript_test.go` 新增 doc comment 的缩进是 Go 1.19 之前的形态）⇒ 第 3 笔用 `node scripts/check-gofmt.mjs --fix` 修掉 ⇒ ⚠ **门禁自己的口径**会先剔掉 CRLF 行尾噪声（本机裸 `gofmt -l` 报 **816**，其中 **815 是纯行尾伪债**，真债只有 **1**）⇒ 拿 `gofmt -l` 当判据会得到「800+ 个文件不 gofmt」的**假结论**；⇒ ⚠ `e2e-web` 的红是 `connect ECONNREFUSED 127.0.0.1:8088` ⇒ **后端服务没起来** ⇒ **环境性红**，与本轮改动零相关（本轮改的都是**测试文件**与文档）。
+
 ⇒ **要你定三件**（**不代拍**）：
 
 ① **「设备本地时区」还是「固定 +08:00」**？—— ⚠ **这是本轮唯一碰到的真产品口径冲突**：due 链的**读入口**（`localTime` / `parseDueAt`）用**设备本地时区**，**写出口**（`dueAtToScheduleExpr`）贴**写死 +08:00** 标签（`TZ_SUFFIX`），`schedule-plan.DEFAULT_TZ` / `meeting-due-plan.REMINDER_TZ` 也是 `Asia/Shanghai`，而 `meeting-due.test.ts` 的「与后端 at 解析闭环」明确钉住「本地墙钟 + 固定 +08:00」并带负控 ⇒ ⇒ **整链只在 +08 设备上自洽**。⇒ 本轮**只改了判据层**（让 CI 变绿、让结论与时区无关），**产品口径一个字没动** ⇒ ⇒ **要么统一到设备本地**（那 `TZ_SUFFIX` 与 `DEFAULT_TZ` 要改，跨时区设备的行为会变）⇒ **要么统一到固定 +08**（那读入口要改，非 +08 设备的「今天下午三点」会算错时）⇒ ⇒ **要么显式支持双时区**（工作量最大）⇒ ⇒⇒ ⇒ **要你定**（⇒ 本轮已把「本地墙钟 + 固定 +08」这个**既成事实**如实登记，不代拍）。
