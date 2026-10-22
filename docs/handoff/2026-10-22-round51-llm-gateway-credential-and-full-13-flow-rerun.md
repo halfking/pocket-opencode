@@ -24,15 +24,24 @@
 「key 留空会回落到内置默认 key」的**过期事实陈述**——那条错误说法正是
 本轮一开始找不到凭据的认知源头。
 
+**本轮还查出第二个、而且更隐蔽的问题**：agent-companion 的「识别 IDE/CLI 智能体」
+这项能力，在生产上**从 2026-10-22 04:56 起整个是关着的**——daemon 每次启动都打
+`runtime scanner disabled`，`/api/v1/runtime/agents` 恒 503、`/api/v1/agents` 恒空，
+而**其它面照样 200、不报任何错**。根因在**部署层**（npm 包的 `ac-ctl` 按 `.env`
+重生成 plist 时把 `AC_RUNTIME_SCAN_ENABLED` 丢了），已在本轮修掉并提交
+`d87c880`（§1.4）。修完实测：认得出 **1 个 MiniMax Code 主进程 + 8 个 helper 子进程**
+（helper 被正确归类为 `internal_worker`，没被当成 8 个独立智能体）。
+
+
 ---
 
 ## 1. agent-companion（当前态复核 + 重新下发）
 
 | 项 | 读数 |
 |---|---|
-| 代码 | `main` == `origin/main` @ **`59172c7`**，工作区干净（已 `pull --ff-only` 接上上游） |
-| 线上 daemon | **`0.1.0-59172c7.1792629980`**（本轮重新下发；旧包 `0.1.0-e1cf36c.1792616171` 保留，可回滚） |
-| 会话专项电池 | **TOTAL=71 PASS=71 FAIL=0 SKIP=0**（重新下发后复跑） |
+| 代码 | `main` == `origin/main` @ **`d87c880`**（先 `pull --ff-only` 接上上游 `59172c7`，**本轮自己**又提了一个修部署层的提交，见 §1.4） |
+| 线上 daemon | **`0.1.0-d87c880.1792632966`**（本轮重新下发两次；`0.1.0-59172c7.1792629980` 与 `0.1.0-e1cf36c.1792616171` 均保留，可回滚） |
+| 会话专项电池 | **TOTAL=71 PASS=71 FAIL=0 SKIP=0**（重新下发后复跑两次） |
 
 命令：
 
@@ -98,10 +107,108 @@ launchd 那份因抢不到 socket 直接退出。杀掉手动实例后
 
 | 检查 | 结果 |
 |---|---|
-| `GET /api/v1/version` | 200，`build_seq=1792630182`，`started_at=2026-10-22T00:49:42Z` |
+| `GET /api/v1/version` | 200，`build_seq=1792633048`，`started_at=2026-10-22T01:37:28Z` |
 | 日志 | `registering runtime runtime_id=acs-ac30-01 instance_id=acs-ac30-npm` ⇒ **身份没变**（没换机器、没换租户） |
 | 会话电池 | **71/71 PASS** |
 | ACC 侧 | `GET /api/acc/agents` 200 / 29 个实例 **全部 online** |
+| runtime scanner | **enabled**（`allowlist_path=~/kaixuan/acp/config/allowlist.local.json`）；`/api/v1/runtime/agents` → **total=9**（§1.4） |
+
+### 1.4 「识别 IDE/CLI 智能体」这项能力，在生产上曾经**整个是关着的** —— 本轮查实并修掉
+
+这是本轮**第二个**独立发现（第一个是网关凭据，见 §2），而且比凭据那条更隐蔽：
+它**不报错**。
+
+**daemon 日志时间线**（`~/kaixuan/acp/logs/agent-companion.log`）：
+
+| 时间 | 日志 | 含义 |
+|---|---|---|
+| `2026-10-22T04:56:26` | `runtime scanner disabled (set AC_RUNTIME_SCAN_ENABLED=true to enable)` | 从这一版 daemon 起，扫描**默认是关的** |
+| `08:48:08` / `08:49:42` | 同上 | 本轮**重新下发**之后**仍然关**（重新下发本身没让它开） |
+| `09:22:35` | `runtime scanner enabled` | 手工带着 env 变量起 ⇒ 开 |
+| `09:24:30` | `runtime scanner enabled` | `ac-ctl restart` 之后**仍是开**（因为 `.env` 里已经有那个键了） |
+| `09:37:28` | `runtime scanner enabled` | 本轮末尾用**修好的** ac-ctl 重新下发 ⇒ 依旧开 |
+
+**影响（能力层面）**
+
+- 扫描关着时：`GET /api/v1/runtime/agents` → **503**，`GET /api/v1/agents` → **恒空**。
+  ⇒「识别 IDE/CLI 智能体」这项能力**整个不生效**；而会话面、干预面、任务历史面**照样 200**
+  ⇒ 监控上**看不到任何红灯**，只是「它不认识任何智能体」——最坏的一种失效形态。
+- 扫描打开后（本轮实测读数）：
+  - `GET /api/v1/runtime/agents` → **total=9**，kind 分布 `{mmcode: 1, mmcode-helper: 8}`；
+  - 主智能体 `mmcode-86727` = `/Applications/MiniMax Code.app/Contents/MacOS/MiniMax Code`，
+    capabilities `[editor, ide, ai_inline, agent_runtime, acp_host]`，
+    `communication_mode=runtime_observe_only`；
+  - 8 个 `mmcode-helper-*`（MiniMax Code Helper / Helper (Renderer)）被标成 `internal_worker`
+    —— **没有**被当成 8 个独立智能体 ⇒ 这正是新提交 `5ceaac5`
+    （按命令行角色声明区分 Electron 应用与其子进程）的行为；
+  - `GET /api/v1/agents` → 200 / **9** 个；
+  - `xcode` / `sublime-text` 被 **allowlist fail-closed** 拒绝
+    （`runtime scan: denied by allowlist`）⇒ 符合设计。
+
+**根因（产品侧、部署层，不是环境问题）**
+
+`packaging/npm/ac-ctl` 的 `write_plist()` 把 `$DEPLOY_ROOT/.env` **原样**抄进 launchd plist 的
+`EnvironmentVariables`（launchd 没有 `EnvironmentFile`，plist 是唯一入口），而 `.env` 里没有
+`AC_RUNTIME_SCAN_ENABLED` ⇒ plist 里也没有 ⇒ daemon 端的 opt-in
+（`internal/config/config.go` 要求**恰好**是 `"true"`）不满足 ⇒ 扫描整个关掉。
+
+两个让它反复踩的细节：
+
+1. **「手工往 plist 里加一行」活不过下一次 install/restart** —— `ac-ctl install` 与
+   `ac-ctl restart` 都会调 `write_plist` 重生成 plist，手工改动必丢（这正是它掉了
+   04:56→09:24 这么久的原因：中间没人重新踩一遍）。
+2. **两个部署入口行为不一致** —— 仓库自带的 `deploy/launchd/install.sh:89` 早就有
+   `: "${AC_RUNTIME_SCAN_ENABLED:=true}"`，npm 这条部署路径没有；
+   `deploy/scripts/deploy-npm.sh` 的 env 合并也不补
+   ⇒ **装 npm 包的机器（154/245/252/ac-30）默认都缺这个键**，
+   systemd 主机（`/etc/agent-companion/env`）同样缺。
+
+**修法**（agent-companion 仓库，本轮提交 `d87c880`）
+
+| 改动 | 内容 |
+|---|---|
+| `packaging/npm/ac-ctl` | 渲染 plist 时补默认：`.env` 没写 → `true`；**显式写了就照写**（运维意图优先，写 `false` 也认）。另加 `ac-ctl render-plist`（只渲染、不装、不 boot ⇒ 可测），日志改走 stderr，保证 stdout 是干净的 plist 文本 |
+| `deploy/scripts/deploy-npm.sh` | env 合并补同样的默认值（覆盖 systemd 主机） |
+| `deploy/acctl_plist_contract_test.go`（新） | 4 条契约断言：缺省 `true` / 显式 `false` 优先且只出现一次 / 其它键原样保留 / `deploy-npm.sh` 也补默认 |
+| 本机 `~/kaixuan/acp/.env`（SSOT，**不入仓库**） | 补 `AC_RUNTIME_SCAN_ENABLED=true`（备份 `~/kaixuan/acp/.env.bak-20261022T092100-before-scan-enable`）⇒ 下次 `ac-ctl install` 重生成 plist 时就带着它 |
+
+daemon 自身的 opt-in 语义**没动**（`config.go` 仍要求恰好 `"true"`）——
+本次只保证「**部署路径**不再把这项能力静默关掉」。
+
+**复验**（本轮末尾，用**修好的** ac-ctl 重新下发）
+
+- 新包 `0.1.0-d87c880.1792632966`（旧包 `0.1.0-59172c7.1792629980` / `0.1.0-e1cf36c.1792616171` 保留可回滚）；
+- `ac-ctl install` + `restart` ⇒ plist 重新生成后仍带 `AC_RUNTIME_SCAN_ENABLED=true`；`plutil -lint` OK；
+- `GET /api/v1/runtime/agents` → total=9；`GET /api/v1/agents` → 200 / 9；
+- 会话电池 **71/71 PASS**；
+- 契约测试 `go test ./deploy/` 全绿；仓库全量 `go test ./...` **无失败包**。
+
+**踩到的第二个坑（记在这里免得下次再踩）**
+
+`ac-ctl install` + `restart` 之后，launchd 显示 `state = not running`、
+**`runs = 0`**、`last exit code = (never exited)` —— 即**一次都没被 spawn 过**
+（不是「起来又退了」）。`launchctl kickstart -k gui/$(id -u)/com.agent-companion.npm`
+立刻正常起来（PID 56938、12110 监听、身份不变）。
+
+⇒ 排查顺序改了：**先 `launchctl print` 看 `runs`**——
+`runs = 0` 说明压根没被拉起（`install` 里的 bootout→bootstrap 与 KeepAlive 抢跑）；
+`runs > 0` 才是「起来又退了」，那时才去看 admin socket 被谁占着（§1.2 的那个坑属于后者）。
+
+### 1.5 当前的能力边界（**如实登记**，不是待办）
+
+1. **minimax-code 现在只能「观测」，不能「驱动」。**
+   - 发现面（`discoverable_processes`，15 条）**含** `mmcode` / `mmcode-helper` ⇒ 认得出；
+   - 执行面（`processes`，8 条）只有 claude / claude-agent-acp / opencode / zcode-cli /
+     gemini / cursor-agent / qwen / pi，**不含** mmcode ⇒ 不允许 daemon 去驱动它；
+   - 实测 `/api/v1/runtime/agents` 里 mmcode 的 `communication_mode=runtime_observe_only`。
+   - ⇒ 「**向 minimax-code 分配任务**」这条在本机**无法真跑**：执行层白名单里没有它，
+     且本机 PATH 上只有 `opencode` 存在（zcode-cli / claude / gemini / cursor-agent / qwen / pi 都不在）。
+2. **任务历史与生成的文件，本轮仍没有真实 run 可取证。**
+   - `GET /api/v1/runs` → `total=0`；`GET /api/v1/interventions` → `total=0`。
+   - 能力面是有的（`/api/v1/runs`、`/api/v1/runs/:id/artifacts` 都 200，电池 D10/D11/D14/D15 覆盖），
+     但**没有派过任务 ⇒ 没有 run ⇒ 没有 artifact 可读**。
+   - ⇒ 本轮**没有**为这一面编造数据。要说「任务历史 / 生成的文件可用」，
+     还差**一次真实派单**。
 
 ---
 
@@ -638,6 +745,15 @@ Assert that "创建", enabled is visible... FAILED
 6. **没有**为了让 `tasks-crud` 变绿而去改 App 的返回键处理（把弹窗关掉这件事
    本身是产品该有的行为）——改的是**测试装置**里那一行多余的 `hideKeyboard`。
 7. **没有**动另外 3 条 flow 里保留着的 `hideKeyboard`（§6.4）——没有现场证据就不改。
+8. **没有**为了让运行时扫描「变成开的」去改 daemon 自己的 opt-in 语义
+   （`internal/config/config.go` 仍要求 `AC_RUNTIME_SCAN_ENABLED` **恰好**是 `"true"`）——
+   修的是**部署路径漏了这个键**这件事（§1.4）：默认值属于部署层，
+   daemon 侧的「必须显式开启」是有意的 fail-closed 设计，没动。
+9. **没有**为了让 `/api/v1/runs` 好看而去造一条 run 记录或一条 artifact ——
+   「任务历史 / 生成的文件」本轮**没有真实派单可取证**，如实登记在 §1.5 与 §8。
+10. **没有**为了让 minimax-code「可驱动」去动执行层白名单 `processes` ——
+   那是一条安全边界（哪些 CLI 允许被 daemon 驱动），不是测试装置；
+   本轮只如实登记「可观测、不可驱动」（§1.5）。
 
 ---
 
@@ -653,6 +769,9 @@ Assert that "创建", enabled is visible... FAILED
 | 6 | **后端 `go test ./...`** | 仅 `TestSkipLedger_*` 两包失败，**属并行会话负责的文件，本轮未触碰**。`internal/repohygiene` 本轮复跑 **通过**。 |
 | 7 | **另外 3 条 flow 的 `hideKeyboard` 未处理** | `login-gesture` / `_set-master-password` / `flashcards-write`（§6.4）——没有现场证据，**不盲改**。 |
 | 8 | **`agent-companion` 线上 daemon 的下发是「按 `.env` 重新生成 plist」** | 本机 `.env` 与更早一版手工改过的 plist 不一致；下发后 daemon 靠 `ac-ctl` 的 launchd 集成拉起，runtime/instance 身份未变、日志与 ACC 侧均正常。详见 §1.2。 |
+| 9 | **执行层白名单不含 mmcode ⇒ minimax-code「可观测、不可驱动」** | 发现面（`discoverable_processes`，15 条）**含** `mmcode`/`mmcode-helper`；执行面（`processes`，8 条）**不含** ⇒ 实测 `communication_mode=runtime_observe_only`。本机 PATH 上只有 `opencode` 存在（`zcode-cli`/`claude`/`gemini`/`cursor-agent`/`qwen`/`pi` 都不在）⇒「向 minimax-code 分配任务」本机**无法真跑**（§1.5）。 |
+| 10 | **`/api/v1/runs` 与 `/api/v1/interventions` 都是空的** | 能力面 200（电池 D10/D11/D14/D15 覆盖），但 `total=0` ⇒ **没有派过任务 ⇒ 没有 run ⇒ 没有 artifact 可读**。本轮**未编造数据**；「任务历史 / 生成的文件可用」还差**一次真实派单**（§1.5）。 |
+| 11 | **runtime scanner 曾长期处于关闭状态** | 自 2026-10-22 04:56 起 daemon 每次启动都打 `runtime scanner disabled` ⇒「识别 IDE/CLI 智能体」整项能力不生效且**不报错**（其它面照样 200）。根因在 agent-companion 的**部署层**，已修并提交 `d87c880`，线上重新下发后复验：9 个进程认得出、电池 71/71（§1.4）。 |
 
 ---
 
@@ -692,13 +811,15 @@ harness 跑 flow 前会**就地生成** `.maestro/.maestro-tmp-<flow>.yaml`，
 |---|---|
 | `/tmp/op-pocketd.env` / `-mcp.env` / `-acc.env` | 注入 `POCKET_LLM_GATEWAY_URL` + `POCKET_LLM_GATEWAY_API_KEY`；权限 644 → **600** |
 | pocketd :18099 / :18097 | 带 key 重启（`LLM/Embed gateway enabled (enterprise)`） |
-| agent-companion 线上 daemon | 重新下发到 `0.1.0-59172c7.1792629980`（`packages/` + 软链 + `ac-ctl`）；旧包 `0.1.0-e1cf36c.1792616171` 保留可回滚（§1.2） |
+| `~/kaixuan/acp/.env` | 补 `AC_RUNTIME_SCAN_ENABLED=true`（**SSOT**：`ac-ctl install` 按 `.env` 重生成 plist，手工改 plist 必丢）。备份 `~/kaixuan/acp/.env.bak-20261022T092100-before-scan-enable` |
+| agent-companion 线上 daemon | 重新下发到 `0.1.0-d87c880.1792632966`（`packages/` + 软链 + **修好的** `ac-ctl`；§1.4）。`0.1.0-59172c7.1792629980` 与 `0.1.0-e1cf36c.1792616171` 保留可回滚（§1.2） |
 
 ---
 
 ## 10. 提交与推送
 
-openpocket 分支 **`fix/acc-runtime-service-jwt`**（origin 已同步至 `d451a7c2`）：
+openpocket 分支 **`fix/acc-runtime-service-jwt`**（origin 已同步至 `1ac774f2`；
+本轮再追加一条文档提交）：
 
 | 提交 | 内容 |
 |---|---|
@@ -706,14 +827,21 @@ openpocket 分支 **`fix/acc-runtime-service-jwt`**（origin 已同步至 `d451a
 | `5743fa52` | fix(maestro): `tasks-crud` 的 `hideKeyboard` 会把创建弹窗关掉 —— 按 round50 同一取舍删掉（§6） |
 | `1517aa70` | fix(maestro): 设备级无障碍树抖动 —— 带护栏地重跑整条 flow，不放宽任何断言（§5） |
 | `02dabc31` | fix(repo): 忽略 `.maestro/.maestro-tmp-*.yaml` —— 那是含口令明文的临时 flow（§9） |
-| `d451a7c2` | docs: round51 报告 + round50 §5/§6 回写 |
+| `1ac774f2` | docs: round51 报告 + round50 §5/§6 回写 |
+| `HEAD` | docs: round51 报告补 §1.4（runtime scanner 缺口）+ §1.5 能力边界 + 如实登记 —— 文档提交本身没有自指 sha，取 `git log -1` 为准 |
 
 **本轮提交没有碰任何 `.go` 文件**（`git diff --stat d26c66ab..HEAD -- '*.go'` 为空）——
 所以后端 `go test ./...` 里那两包失败（`internal/notes` 与 `internal/server` 的
 `TestSkipLedger_*`）与本轮无关，属并行会话负责的台账工作，**未触碰**。
 
-**agent-companion**：`main` 已快进到 `origin/main` @ `59172c7`（本轮只接上游，
-无本地提交）；线上 daemon 重新下发到 `0.1.0-59172c7.1792629980`（§1）。
+**agent-companion**：先 `pull --ff-only` 接上上游到 `origin/main` @ `59172c7`，
+**本轮自己又提了一个修复部署层的提交**：
+
+| 提交 | 内容 |
+|---|---|
+| `d87c880` | fix(deploy): npm 部署路径补 `AC_RUNTIME_SCAN_ENABLED` 默认值 —— 别再静默关掉「识别 IDE/CLI 智能体」（§1.4） |
+
+线上 daemon 随之重新下发到 `0.1.0-d87c880.1792632966`，会话电池复跑 **71/71**（§1.4）。
 
 **主工作区**（`~/workspace/ai-native-tools/openpocket`，`main` 分支）已按上一轮的
 惯例镜像本轮 11 个文件的内容；**并行会话的 `backend/internal/skipaudit/*`
@@ -753,4 +881,13 @@ POCKET_SKIP_CDP_LOGIN=1 POCKET_ALLOW_UNCERTAIN_START=1 \
   node scripts/maestro-run.mjs .maestro/2026-10-02-real-login.yaml
 POCKET_SKIP_CDP_LOGIN=1 POCKET_ALLOW_UNCERTAIN_START=1 \
   node scripts/maestro-run.mjs .maestro/login-gesture.yaml
+# 4) 「识别 IDE/CLI 智能体」这一面（§1.4）
+curl -s --noproxy '*' http://127.0.0.1:12110/api/v1/runtime/agents   # total=9（1 mmcode + 8 helper）
+curl -s --noproxy '*' http://127.0.0.1:12110/api/v1/agents            # 200 / 9
+grep -n "runtime scanner \(enabled\|disabled\)" ~/kaixuan/acp/logs/agent-companion.log | tail -3
+# 部署层：ac-ctl 渲染的 plist 里必须带着这个键（不碰 launchd 的只读预览）
+AC_DEPLOY_ROOT=$HOME/kaixuan/acp sh ~/kaixuan/acp/ac-ctl render-plist 2>/dev/null \
+  | grep -A1 AC_RUNTIME_SCAN_ENABLED
+# 契约测试（锁住「部署路径不再静默关掉它」）
+cd ~/workspace/ai-native-tools/agent-companion && go test ./deploy/
 ```
