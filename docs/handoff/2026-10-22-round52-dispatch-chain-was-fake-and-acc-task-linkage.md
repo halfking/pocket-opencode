@@ -36,6 +36,12 @@
 
 **没有改 openpocket 的产品代码，没有放宽任何断言，没有编造数据。**
 
+> **续（§7/§8）**：本报告收尾后，openpocket 侧又出了一条红（`flashcards-write`），
+> 上一版曾把它归因成「外部重置掐断了后端」。§7 用**复现 + 逐层排除**推翻了那个归因：
+> 真因是**软键盘把「保存」按钮顶到了屏幕外 / 状态栏带子里**，点击压根没进前端。
+> 修的是 flow（关键盘 + 点底部 submit），**顺带把一条假通过的断言改严**；
+> 产品侧「真人用户也点不到」的观察**如实登记、未改产品**。
+
 ---
 
 ## 1. 起点：上一轮结束时，这条链只有「能力面」
@@ -326,17 +332,133 @@ body 带**新**提示词「创建第二个文件 second-round51.txt，内容写 
 | 1 | **ACC 任务状态不会随 run 终态推进** | `acctask` 客户端**没有「更新任务状态」的能力**，任务建出来后停在 `todo`，不会变成 done/cancelled。ACC 侧的 `PATCH /canonical/tasks/:id` 在 `RequireTaskWrite` 后面（资源级角色），**本轮没有实现**。 |
 | 2 | **ACC 侧只做了「读」侧授权** | 本机选择给 daemon 的 service identity 声明 `admin` 角色。更窄的做法是 ACC 侧用 `ACC_CANONICAL_WRITE_ROLES` 放行一个专用角色（`acc-go` 的现成旋钮），**需要改共享的 ACC 容器环境** —— 那个容器并行会话也在用，**本轮刻意没动**。 |
 | 3 | **minimax-code 仍不可驱动** | 执行层白名单 `processes` 不含 mmcode ⇒ minimax-code 只能观测。本轮用 **opencode** 验证的是「**可驱动**这条链路本身成立」，不改变 mmcode 的现状。 |
-| 4 | **13 条 Maestro 流本轮未重跑** | openpocket 的产品代码与 pocketd 本轮**未改动** ⇒ round51 的 13 绿 / 0 红 结论沿用。这是**推断**，不是本轮实测。 |
+| 4 | **13 条 Maestro 流本轮已重跑** | 本轮**逐条重跑**（含 flashcards-write 修复后的复跑与两条登录流的重跑），结果见 §7/§8。openpocket 的**产品代码本轮仍未改动**（改的是 Maestro flow 与新增诊断脚本）。 |
 | 5 | **本机仍无 USB Android 真机** | 仍是 AVD `emulator-5556`（AOSP Android 14 / WebView 113）。 |
 | 6 | **ACC 容器未改动** | `acc-blue`(:4100) 与 `acc-go-host`(:4101) 是共享容器；本轮只**读**它们、没改配置/没重启，避免打断并行会话。 |
 | 7 | **openpocket 的 `go test ./...`** | 仍只有 `TestSkipLedger_*` 两包失败，属**并行会话**负责的文件，本轮未触碰。 |
 | 8 | **daemon 的 ACC 注册仍是关的** | 日志里 `acc registry registration disabled: ACC_SERVICE_TOKEN not set`（注册面要 `sk-svc.*`，与本轮的 canonical 写入面是两回事）。 |
 | 9 | **「任务历史」是内存保留窗口，不跨 daemon 重启** | `GET /api/v1/runs` 读的是 `finishedRuns sync.Map` + `retainedRunTTL=1h`，**不落盘**。受控实测：重启前 `GET /runs/<id>` 200，重启后 **404**、`total=0`。`dag-store.db` 的持久台账是**编排面**的 run，不是派单 run。要跨重启存活需要把派单台账落盘（新增能力，本轮未做）。 |
 | 10 | **launchd 的 `install`+`restart` 偶发不拉起** | 表现为 `state = not running`、**`runs = 0`**（一次都没被 spawn 过），`launchctl kickstart -k` 即恢复。排查顺序：**先看 `runs`**。 |
+| 11 | **10:33–10:38 有一次外部重置事件** | 不是本会话发起的：两个 AVD、两个 pocketd 实例、`/tmp` 全部被清空，两条登录流的结果随 `/tmp` 丢失。已在本轮**重跑补齐**（两条全绿）。它一度被当成 `flashcards-write` 那条红的解释，**该解释是错的** —— 见 §7。 |
+| 12 | **产品侧：输入法弹出时顶栏「保存」不可点** | 键盘把 WebView 可见视口压到 530 CSS px，Chrome 把 `.content.scroll-shell` 滚到 165，顶栏 `save-link` 被推到**屏幕外**；键盘关掉后它仍落在状态栏带子内（中心 120 < 129）。**真人用户在这一步同样点不到**（只余 10 CSS px 窄边）。本轮**未改前端**（要改须重出 APK），如实登记。 |
 
 ---
 
-## 7. 复现命令
+## 7. flashcards-write 那条红：**不是环境事件**，是「保存」按钮根本不在可点的地方
+
+round52 收尾时 openpocket 的 13 条 Maestro 流是 **12 绿 1 红**，红的是 `flashcards-write`。
+上一轮把它归因成「10:33–10:38 那次外部重置把后端掐了」（见 §8），**这个归因是错的**。
+本节是**复现 + 逐层排除**后的定性。
+
+### 7.1 先证明它与后端无关
+
+| 证据 | 读数 |
+|---|---|
+| 复现环境 | 模拟器**新启动**、pocketd **新建进程**、ACC 容器未动、宿主负载 ~90 |
+| 复现结果 | **同一处红、同一断言**：`Assert that ".*今日待复习 1 张.*\|.*1 due today.*" is visible` FAILED |
+| 前端侧 | 设备 localStorage `flashcards:v1:outbox` = **null**、`notes` = **[]**、`lastSyncedAt` 停在建卡组那一刻（1792636432）⇒ **前端连「入队」都没发生** |
+| 后端侧 | PG `flashcard_notes` = **0 行**、`flashcard_cards` = 0 行；而 `flashcard_deck_config` 有「回归卡组」（created_at=1792636432）⇒ **建卡组成功、建卡失败**，中间那一步没做成 |
+| 失败帧 a11y 树 | 页面**仍停在建卡页**（`新建卡片` + 正反面输入框），**没有任何 error 节点** |
+
+「后端被掐断」这个假设会预言：**要么**请求发出后失败（页面应有 error、outbox 应有残留），
+**要么**至少有请求到达后端（PG 该有行或日志）。实测**三者皆无** ⇒
+**问题发生在「点保存」这一步之前**：点击根本没进前端。
+
+### 7.2 机制（CDP + a11y 树双证）
+
+1. **软键盘把 WebView 的可见视口压掉一半**：可视高度 866 CSS px → **530**（这台 AVD 的输入法占 385 CSS px）。
+2. **Chrome 为把焦点框（背面 textarea）留在键盘上方**，把
+   `<main class="content scroll-shell fullscreen">`（`overflow:hidden`，但**可被程序滚动**）
+   滚到 `scrollTop = 165.33`。
+3. 于是**顶栏那个 `save-link` 的屏幕位置变成 −254..−180 —— 整块被推到屏幕外**，
+   a11y 树里**根本没有它** ⇒ `tapOn: {text:"保存|Save", index: 0}` 选中的其实是
+   **底部**那个 `type=submit`（bounds `[556,1691][1047,1802]`），而它此刻**在键盘底下**
+   ⇒ 这一下打在键盘上 ⇒ 点不动、页面纹丝不动。
+4. 即使把键盘关掉，容器仍停在 `scrollTop=36.95`（= 它的全部溢出量），
+   顶栏 Save 落在 **83..157**，**中心 120 正好在系统状态栏带子 [0,129) 里**
+   （状态栏 129 设备像素 = body `padding-top` 49 CSS × dpr 2.625）⇒
+   Maestro 取 a11y 中心换算出的 (990,120) **打在系统状态栏上**，WebView 收不到。
+   而失败现场**没有任何错误提示**，因为 `save()` 压根没被调用。
+
+> 坐标事实（都实测）：a11y 边界 = 文档坐标 × dpr，**零偏移**。
+> 登录页「登录」按钮 CDP 文档 y=611 CSS，uiautomator 报 `[1603,1729]` ÷ 2.625 = 610.7 CSS。
+
+### 7.3 修法（改 flow，不改产品）
+
+`.maestro/flashcards-write.yaml` 第 5 段：
+
+```yaml
+- pressKey: Back          # 先关键盘：单次 keyevent，实测 IME 收起且 hash 不回退
+- extendedWaitUntil:
+    visible: { text: "保存|Save", index: 1, enabled: true }   # 底部那个 submit 才回到可视区
+    timeout: 20000
+- tapOn:
+    text: "保存|Save"
+    index: 1
+    enabled: true
+```
+
+- **为什么用 `pressKey: Back` 而不是 `hideKeyboard`**：Android 上 Maestro 的 `hideKeyboard` 是
+  按返回键实现的，上一版记过「加了它页面直接回到卡组页」—— 那是**多按了一次**返回键、
+  第二次才落到 App 路由上。`pressKey: Back` 只发**一次** keyevent；实测 IME 收起
+  （`mInputShown` true→false）而 **hash 仍停在 `#/flashcards/new`**，没有导航回退。
+- **为什么不点顶栏那个**：它在「页面上滚过」的状态下要么在屏幕外、要么中心落在状态栏带子里，
+  两条都不可靠；底部 `submit` 在键盘关掉后稳定落在 2028..2139（可见、不在键盘下、不在状态栏下）。
+- **保存链路本身是好的**：活体上点底部 submit ⇒ click 产生（`isTrusted=true`）、
+  `POST /api/flashcards/notes` 发出、hash 正确回到 `#/flashcards/decks/<id>`、页面无 error。
+
+### 7.4 顺带修掉一条**假通过**的断言
+
+第 6 段原来只有 `assertVisible: ".*回归正面.*"`，而**建卡页的正面 textarea 里就写着「回归正面」**
+⇒ 保存没生效时它照样成立（实测保存失败后 **131ms** 就「通过」了），
+报错被推到两步之后的「今日待复习 1 张」上，**离真因隔了 4 步** —— 上一轮红成那样正是被它掩盖的。
+现在先锚定「已经在卡组页」（`.*添加卡片.*|.*Add card.*`，建卡页没有这个按钮，
+与本文件第 4 步用的是同一个判据），再断言卡片内容。
+
+### 7.5 留下的产品侧观察（**未改产品**，如实登记）
+
+输入法弹出时，**顶栏「保存」会被推到屏幕外 / 压进状态栏** ⇒ **真人用户**在这一步同样会点不到
+（只余一条 10 CSS px 的窄边）。这属于**布局与安全区的关系**问题
+（`body { padding-top: env(safe-area-inset-top) }` 的让位在滚动容器之外，
+滚动容器一滚内容就滑进状态栏带子）。本轮**没有改前端**、也没有重建 APK：
+要改就得动 `frontend/src` 并重出安装包，超出本轮范围，且**不能**为了「让测试绿」
+就把它悄悄改掉 —— 这里如实登记，等下一轮决定。
+
+新增两个诊断脚本（只读为主，可复现上面全部读数）：
+
+| 脚本 | 作用 |
+|---|---|
+| `scripts/diag-statusbar-tap.mjs` | 分清「tap 压根没进页面」与「tap 落进了状态栏带子」；顺带实测 BACK / ESCAPE 收键盘后几何怎么变 |
+| `scripts/diag-flashcards-shift-reset.mjs` | 在**失败现场还热着**的时候量清是「DOM 滚动」还是「视觉视口偏移」，并逐个试补救手段 |
+
+---
+
+## 8. 10:33–10:38 的**外部重置事件**（如实登记，非本会话操作）
+
+round52 跑批的 10:33–10:35 期间，机器上发生了一次**不是本会话发起的**重置：
+
+| 现象 | 证据 |
+|---|---|
+| 两个 AVD 都没了 | `pocket-test`（5556）与并行会话的 `emulator-5554.avd` 同时消失 |
+| 两个 pocketd 实例都没了 | 18099 / 18097 端口的进程被清 |
+| `/tmp` 被清空 | 本会话的 worktree `/tmp/op-ac-test`、批次日志、env 文件**全部丢失**（worktree 事后重建） |
+| agent-companion 被重启 | daemon 10:50 重新起来（版本 `0.1.0-306f698.1792635154`） |
+
+后果与处置：
+
+1. **两条登录流（`2026-10-02-real-login`、`login-gesture`）的结果随 `/tmp` 一起丢失** ⇒
+   本轮**各自单独重跑**，两条**全绿**（前者走真实口令成功登录；后者故意用错口令，
+   断言「用户名或密码错误」出现、且「AI 工具」不出现 —— 拒绝路径符合预期）。
+2. `flashcards-write` 当时红在同一条断言上，**当时被归因成「后端被这次重置掐断」** ——
+   **该归因是错的**，见 §7：它在**后端健康、模拟器全新启动**的条件下**稳定复现**。
+   ⇒ 教训：**「环境事件」这个说法必须能被独立复现推翻**，否则它会变成一个
+   「反正可能是环境问题」的万能借口，把真实缺陷藏起来。
+3. 之后把批次产物（Maestro 的 `~/.maestro/tests/`、取证日志）**写到 `~/kaixuan/acp/logs/`**，
+   不再放 `/tmp` —— 本轮两次 `/tmp` 清空已经证明它不是持久存储。
+
+---
+
+## 9. 复现命令
 
 ```bash
 # 1) agent-companion 会话电池（71 条）
@@ -369,6 +491,28 @@ TOK=$(curl -s -X POST http://127.0.0.1:18099/api/auth/login -H 'Content-Type: ap
       | python3 -c "import sys,json;print(json.load(sys.stdin)['token'])")
 curl -s -H "Authorization: Bearer $TOK" http://127.0.0.1:18097/api/acc/sessions
 curl -s -H "Authorization: Bearer $TOK" http://127.0.0.1:18097/api/acc/tasks
+
+# 6) flashcards-write 修复后复跑（关键盘 + 点底部 submit）
+cd /tmp/op-ac-test
+export JAVA_HOME=/Users/niuer/.local/jdk/jdk-21.0.12.1+1/Contents/Home
+export PATH="$JAVA_HOME/bin:/Users/niuer/.local/bin:/Users/niuer/Library/Android/sdk/platform-tools:$PATH"
+export POCKET_DEV_PASS="$POCKET_DEV_PASS" POCKET_AUTH_PASS="$POCKET_AUTH_PASS" POCKET_MASTER="$POCKET_MASTER"
+export POCKET_SERIAL=emulator-5556 POCKET_API_BASE=http://127.0.0.1:18099
+export POCKET_MAESTRO_BIN=/Users/niuer/.maestro/bin/maestro
+export POCKET_ADB_BIN=/Users/niuer/Library/Android/sdk/platform-tools/adb
+export POCKET_APP_ID=com.kaixuan.opencode.pocket
+node scripts/maestro-run.mjs .maestro/flashcards-write.yaml
+# 期望：全绿（含「今日待复习 1 张」「^开始复习$ enabled」）
+
+# 7) 两条登录流（起点必须是无登录态，各跑一次）
+POCKET_SKIP_CDP_LOGIN=1 POCKET_ALLOW_UNCERTAIN_START=1 \
+  node scripts/maestro-run.mjs .maestro/2026-10-02-real-login.yaml
+POCKET_SKIP_CDP_LOGIN=1 POCKET_ALLOW_UNCERTAIN_START=1 \
+  node scripts/maestro-run.mjs .maestro/login-gesture.yaml
+
+# 8) 闪卡「保存点不动」的机制诊断（只读为主；§7 的读数都能复现）
+POCKET_SERIAL=emulator-5556 node scripts/diag-statusbar-tap.mjs
+POCKET_SERIAL=emulator-5556 node scripts/diag-flashcards-shift-reset.mjs
 
 # 5) agent-companion 契约测试（锁住本轮四处修复）
 cd ~/workspace/ai-native-tools/agent-companion

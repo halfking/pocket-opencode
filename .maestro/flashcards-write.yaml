@@ -193,46 +193,70 @@ appId: com.kaixuan.opencode.pocket
 - extendedWaitUntil:
     visible: { text: "保存|Save", enabled: true }
     timeout: 20000
-# ⚠️ 2026-10-22 实测定性（emulator-5556 / AOSP Android 14）：这一步必须
-#   **显式点顶栏那个 Save**（index: 0），不能只写文本。
+# ⚠️⚠️ 2026-10-22 二次实测定性（emulator-5556 / AOSP Android 14，健康后端、
+#   刚重启的模拟器上**稳定复现**同一处红）—— 这一段改成「**先关键盘，再点底部
+#   那个 type=submit**」。上一版写的是「点顶栏那个（index: 0）」，**是错的**。
 #
-# 失败现场（screen-hierarchy）里**有两个** "Save"：
-#   顶栏  button.save-link  type="button" @click="save"   bounds [931,81][1047,160]
-#   底部  button.primary    type="submit"（在 <form> 里）      bounds [556,2026][1047,2142]
-# 原写法 `tapOn: { text: "保存|Save", enabled: true }` 没给 index，Maestro
-# 选中了**底部那个**，而此时**软键盘还开着**（上面两次 inputText 之后没
-# hideKeyboard）—— 键盘把屏幕下半部分盖住，底部按钮点在键盘上了 ⇒
-# 点没生效、页面纹丝不动，后端 PG 里 flashcard_notes = 0（**连 note 都没建**），
-# 报错却落在下一步的「今日待复习 1 张」上，离真因隔了 4 步。
+# 真机制（CDP + a11y 树双证，不是推断）：
+#   1. 软键盘弹出 ⇒ WebView 的**可见视口**从 866 CSS px 被压到 530
+#      （这台 AVD 的输入法占 385 CSS px）。
+#   2. 为把焦点框（背面 textarea）留在键盘上方，Chrome 把
+#      <main class="content scroll-shell fullscreen">（overflow:hidden，
+#      但**可被程序滚动**）滚到 scrollTop=165.33。
+#   3. 于是顶栏 save-link 的屏幕位置变成 **-254..-180 —— 整块被推到屏幕外**，
+#      a11y 树里**根本没有它** ⇒ `index: 0` 选中的其实是**底部**那个 submit
+#      （bounds [556,1691][1047,1802]），而它此刻**在键盘底下**
+#      ⇒ tap 打在键盘上 ⇒ 点不动、页面纹丝不动：
+#        · 后端 PG flashcard_notes = 0 行；
+#        · App 连**本地队列**都没写（设备 localStorage `flashcards:v1:outbox` = null、
+#          notes=[]、lastSyncedAt 停在建卡组那一刻）⇒ 前端连入队都没发生。
+#   4. 关键盘（一次 BACK）后：容器 scrollTop 回到 36.95、可见视口恢复 866，
+#      底部 submit 落到 **2028..2139**（屏幕可见、不在键盘下、也不在状态栏下）⇒ 点得到。
+#      实测点它：click 产生（isTrusted=true）、POST /api/flashcards/notes 发出、
+#      hash 正确回到 #/flashcards/decks/<id>、页面无 error ⇒ **保存链路是好的**。
 #
-# 这与本文件上面记的同族现象一致：「74% 是标签、91% 是卡组名称，后两者在
-# 键盘打开时被完全遮住，点不到」—— 这次是同一机制的另一个受害者。
+# ⚠️ 为什么是 `pressKey: Back` 而不是 `hideKeyboard`：
+#   Android 上 Maestro 的 hideKeyboard 是**按返回键**实现的；本文件上一版记过
+#   「加了 hideKeyboard 之后页面直接回到卡组页」—— 那是**多按了一次**返回键、
+#   第二次才落到 App 的路由上。`pressKey: Back` 只发**一次** keyevent，
+#   实测（2026-10-22，emulator-5556）：IME 收起（mInputShown true→false），
+#   **hash 仍在 #/flashcards/new**（没有导航回退）。
+#   ⇒ 这里用 pressKey: Back；若哪天改回 hideKeyboard，必须同时盯住 hash 有没有回退。
 #
-# 为什么顶栏那个是对的（实测，2026-10-22）：
-#   · CDP 实测 `adb shell input tap`（Maestro 的真实点击机制）点顶栏 save-link
-#     ⇒ click 产生（isTrusted=true）、POST /api/flashcards/notes 发出、
-#     hash 正确回到 #/flashcards/decks/<id> ⇒ **点击机制本身没问题**；
-#   · 顶栏是 type="button" @click="save"，不依赖表单隐式提交，也不受键盘遮挡。
-# 所以这里是**选择器指错了目标**，不是产品缺陷、也不是 WebView 不派发 click。
-#
-# ⚠️⚠️ 这里**故意不加 hideKeyboard**（2026-10-22 实测踩到）：
-#   Android 上 Maestro 的 hideKeyboard 是**按返回键**实现的 ⇒ 它会顺带**导航回退**！
-#   加了它之后页面从建卡页直接回到卡组页（失败现场树里是 '回归卡组' 标题 +
-#   'This deck has no cards'，根本没有 Save 节点），下一步的 tapOn 于是报
-#   "Element not found: Text matching regex: 保存|Save, Index: 0, Enabled" ——
-#   报错指向"选择器写错"，真因却是上一行自己加的 hideKeyboard。
-#   键盘开着不要紧：顶栏 Save 在 y=81..160，本来就**不在**键盘遮挡区。
+# ⚠️ 为什么不用顶栏那个 save-link（它有 type=button @click="save"，本来更直接）：
+#   键盘关掉后它落在 83..157，**中心 120 正好在系统状态栏带子 [0,129) 里**
+#   （状态栏在设备像素里占 129px = body padding-top 49 CSS × dpr 2.625）。
+#   a11y 中心点被 Maestro 换算成 (990,120) ⇒ 这一下**打在系统状态栏上**，
+#   WebView 收不到 ⇒ 又是「点不动、页面不动、连本地队列都没写」，
+#   而且失败现场里**看不到任何错误提示**（save() 根本没被调用）。
+#   ⇒ 顶栏那个在「页面上滚过」的状态下不可靠，底部 submit 才稳定。
+- pressKey: Back
+# 键盘关掉后，**底部那个** submit 才会回到可视区（输入法开着时它在可视区之外），
+# 所以这条断言同时证明「键盘确实关了、布局确实回来了」。
+- extendedWaitUntil:
+    visible: { text: "保存|Save", index: 1, enabled: true }
+    timeout: 20000
 - tapOn:
     text: "保存|Save"
-    index: 0
+    index: 1
     enabled: true
 
 # ---------- 6. BUG-O 核心断言：回到卡组页必须看得到刚建的卡片 ----------
 # 修前：POST 201、PG 有数据，但客户端 cards 数组里自始至终没有这张卡，
 # 「开始复习」恒 disabled、列表不出现 —— 只看状态码/落库会误判成通过。
+#
+# ⚠️⚠️ 这里必须**先锚定「已经在卡组页」**再断言卡片内容（2026-10-22 修）：
+#   原来只有 `visible: ".*回归正面.*"`，而**建卡页的正面 textarea 里就写着
+#   「回归正面」** ⇒ 保存没生效时它照样成立（实测保存失败后 131ms 就「通过」了），
+#   报错被推到两步之后的「今日待复习 1 张」上，离真因隔了 4 步 —— 上一次红成那样，
+#   就是被这条假通过掩盖的。
+#   判据：卡组页有「添加卡片」按钮（`button.add-btn`，aria-label=添加卡片/Add card），
+#   **建卡页没有**（建卡页是「新建卡片」标题 + 正反面输入框 + Deck 选择）。
+#   同一个判据本文件第 4 步已经用过（进卡组页时），前后一致。
 - extendedWaitUntil:
-    visible: { text: ".*回归正面.*" }
+    visible: ".*添加卡片.*|.*Add card.*"
     timeout: 30000
+- assertVisible: ".*回归正面.*"
 # ⚠️ 收尾判据用**内容**而不是 enabled 状态。实测（2026-10-01）：
 #   卡组页有**两个**文本都是「开始复习」的按钮 —— 外屏 `.review`（在 FoldAwareLayout
 #   的外屏槽，rect 实测 [0,0,0,0]，真机上不可见）和内屏 `.primary.review-btn`。
