@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -350,12 +351,40 @@ func TestDynamicGatewayStreamChainVisitsEachCandidateOnce(t *testing.T) {
 	defer func() { autoFallbackAttemptTimeout, autoFallbackTotalBudget = oldAttempt, oldBudget }()
 
 	var mu atomic.Int32
+	// ⚠⚠ §963 实测（CI/Linux 上这个包报红，race detector 抓到）：
+	//   `seen` 原来是**裸 map**，而写它的 httptest handler 是**每个请求一个 goroutine**
+	//   ⇒ model-a 的 handler 还没退出（它在 `<-r.Context().Done()` 上等超时）时，
+	//   model-b 的 handler 已经进来写同一张 map ⇒ **并发 map 读写**。
+	//   Go 侧 `m[k]++` 会编译成「mapaccess1（读）+ mapassign（写）」两步
+	//   ⇒ race detector 报的就是这两步之间的读写冲突。
+	//   ⇒ ⇒ 这是**测试夹具**的缺陷（生产代码没碰这张 map），
+	//     所以修夹具的同步，**不动任何断言语义**（访问次数的期望值一个字不改）。
+	//   ⇒ ⚠ 不加锁的形态在 macOS 上**必现**（race detector 有 1/16 概率漏报，
+	//     但 map 越界写会 panic）⇒ 这不是「偶发」，是「随时可能炸」。
+	var seenMu sync.Mutex
 	seen := map[string]int{}
+	seenCount := func(model string) int {
+		seenMu.Lock()
+		defer seenMu.Unlock()
+		return seen[model]
+	}
+	// seenSnapshot 取一份**拷贝**用于报错输出（持锁读 ⇒ 不与 handler 写并发）。
+	seenSnapshot := func() map[string]int {
+		seenMu.Lock()
+		defer seenMu.Unlock()
+		out := make(map[string]int, len(seen))
+		for k, v := range seen {
+			out[k] = v
+		}
+		return out
+	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req llmgateway.ChatRequest
 		_ = json.NewDecoder(r.Body).Decode(&req)
 		n := mu.Add(1)
+		seenMu.Lock()
 		seen[req.Model]++
+		seenMu.Unlock()
 		if req.Model != "model-a" && req.Model != "model-b" {
 			// 第三候选：成功返回
 			w.Header().Set("Content-Type", "text/event-stream")
@@ -393,11 +422,13 @@ func TestDynamicGatewayStreamChainVisitsEachCandidateOnce(t *testing.T) {
 	if usage == nil || usage.TotalTokens != 2 {
 		t.Fatalf("usage = %+v, want total_tokens=2", usage)
 	}
-	if seen["model-a"] != 1 || seen["model-b"] != 1 {
-		t.Fatalf("candidate visits = %v, want model-a×1 model-b×1 (no revisit)", seen)
+	// ⚠ 读侧同样要持锁：handler goroutine 可能**还没退出**（它在等 ctx.Done()），
+	//   而它的 `seen[req.Model]++` 与这里的读并发 ⇒ 读侧不加锁同样会报 race。
+	if seenCount("model-a") != 1 || seenCount("model-b") != 1 {
+		t.Fatalf("candidate visits = %v, want model-a×1 model-b×1 (no revisit)", seenSnapshot())
 	}
-	if seen["model-c"] != 1 {
-		t.Fatalf("model-c visits = %d, want 1", seen["model-c"])
+	if seenCount("model-c") != 1 {
+		t.Fatalf("model-c visits = %d, want 1", seenCount("model-c"))
 	}
 	got = dropModelProgress(got)
 	if len(got) < 4 {

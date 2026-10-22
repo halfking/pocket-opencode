@@ -97,6 +97,48 @@ func s943TombCases(t *testing.T) []s943TombCase {
 	}
 }
 
+// sameStoredInstant 判断两个时刻在 **PG 的存储精度（微秒）** 下是不是同一个。
+//
+// ⚠⚠ §963 实测（CI/Linux 上这条判据红，本机 macOS 上恒绿）：
+//
+//	PG 的 `timestamptz` **物理上只能存微秒** ⇒ 种进去的纳秒尾数会被**四舍五入**
+//	（实测 .7µs 进位 / .3µs 舍去 / 恰好 .5µs 舍去 ⇒ round-half-to-even）。
+//	⇒ 而 `time.Now()` 的**平台时钟粒度不同**：macOS 常是微秒级（尾数恒为 0），
+//	  Linux 是纳秒级（尾数非 0）⇒ 按纳秒等值比，Linux 必红、macOS 必绿。
+//	⇒ 那是「量具依赖环境属性」（§960.7.9 同族），不是被测行为变了。
+//	⇒ 所以判据按**存储精度**比：容差 1µs（实测四舍五入的最大误差是 0.5µs）。
+//
+// ⚠ 这**不是**把判据放宽到「什么都算过」：
+//
+//	容差只有 1µs ⇒ 差 1ms 的真实改动照样被抓（见下面的负控用例）。
+func sameStoredInstant(a, b time.Time) bool {
+	d := a.Sub(b)
+	return d <= time.Microsecond && d >= -time.Microsecond
+}
+
+// TestS943SameStoredInstantTolerance 钉住上面那个容差的**确切边界**：
+// 负控 = 「差 1ms / 1µs 以外一律判为不同」。
+func TestS943SameStoredInstantTolerance(t *testing.T) {
+	base := time.Date(2026, 10, 7, 15, 4, 0, 0, time.UTC)
+	cases := []struct {
+		name string
+		d    time.Duration
+		want bool
+	}{
+		{"完全相同", 0, true},
+		{"亚微秒尾数（PG 会四舍五入掉的那部分）", 123 * time.Nanosecond, true},
+		{"刚好 1µs", time.Microsecond, true},
+		{"超过 1µs", time.Microsecond + time.Nanosecond, false},
+		{"差 1ms（真实改动，必须被抓）", time.Millisecond, false},
+		{"差 1s（真实改动，必须被抓）", time.Second, false},
+	}
+	for _, c := range cases {
+		if got := sameStoredInstant(base.Add(c.d), base); got != c.want {
+			t.Errorf("%s：sameStoredInstant(+%v) = %v，期望 %v", c.name, c.d, got, c.want)
+		}
+	}
+}
+
 // TestS943TombstoneGuardRefusesToMoveAnotherScopesTombstone 不得搬走别人的墓碑。
 //
 // ⚠ 三条腿缺一不可：
@@ -108,7 +150,11 @@ func TestS943TombstoneGuardRefusesToMoveAnotherScopesTombstone(t *testing.T) {
 	for _, tc := range s943TombCases(t) {
 		t.Run(tc.name, func(t *testing.T) {
 			// 别人的墓碑（早于这次删除存在）。
-			plantedAt := time.Now().Add(-2 * time.Hour)
+			// ⚠ §963：**显式**带上亚微秒尾数。
+			//   平台的时钟粒度不同（macOS 的 time.Now() 常是微秒级、Linux 是纳秒级）
+			//   ⇒ 不显式带上，这条判据在 macOS 上恒绿、在 Linux CI 上恒红
+			//   ⇒ 那是「量具依赖环境属性」，不是被测行为变了。
+			plantedAt := time.Now().Add(-2 * time.Hour).Add(123 * time.Nanosecond)
 			tc.plant(t, s943TombID, s943TombOth, s943TombWs, plantedAt)
 
 			// 自己名下有一场**同 id** 的会议。
@@ -134,8 +180,9 @@ func TestS943TombstoneGuardRefusesToMoveAnotherScopesTombstone(t *testing.T) {
 			if owner != s943TombOth || ws != s943TombWs {
 				t.Errorf("别人的墓碑被搬走了：owner=%q ws=%q（want %q / %q）", owner, ws, s943TombOth, s943TombWs)
 			}
-			if !at.UTC().Equal(plantedAt.UTC()) {
-				t.Errorf("别人的墓碑时间被改了：%v（want %v）", at, plantedAt)
+			// ⚠ 按 **存储精度** 比（PG 只存微秒）⇒ 见 sameStoredInstant 的注释。
+			if !sameStoredInstant(at, plantedAt) {
+				t.Errorf("别人的墓碑时间被改了：%v（want %v，差 %v）", at, plantedAt, at.Sub(plantedAt))
 			}
 
 			// ③ 会议必须还在（没有半处理）。

@@ -909,14 +909,27 @@ func normalizeEnglishInvoiceDate(year, month, day int) string {
 }
 
 // isFutureInvoiceDate 判断 YYYY-MM-DD 是否比 now 晚了超过 1 天。
+//
+// ⚠⚠ §963 实测（CI 的 TZ=UTC 上这个包报红：「2026-10-04」被判成非未来）：
+//
+//	`t` 是 time.Parse 出来的 **UTC 午夜**，而 `cut` 是 `now` 所在时区的午夜
+//	⇒ 两者是**跨帧**比较（比的是时刻，不是日历日）
+//	⇒ 边界随时区整体平移 ⇒ 同一份输入在 +08 机器上与 UTC 机器上结论不同。
+//	⇒ 而发票日期是**日历日**，本来就不该带时区
+//	⇒ 修法：两边都折算成 `now` 时区里的**日历日**再比。
+//
+//	⚠ 口径不变：在 +08（业务时区）上与修前**逐字同结论**
+//	（宽限 1 天：明天仍算「未过期」，后天起算未来）。
 func isFutureInvoiceDate(d string, now time.Time) bool {
 	t, err := time.Parse("2006-01-02", d)
 	if err != nil {
 		return false // 解析不了就当它不是未来日期，交给调用方按原样处理
 	}
-	cut := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()).
-		AddDate(0, 0, 2)
-	return t.After(cut)
+	loc := now.Location()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
+	day := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, loc)
+	// 宽限 1 天 ⇒ 明天（今天+1）仍不算未来，后天（今天+2）才算。
+	return day.After(today.AddDate(0, 0, 1))
 }
 
 // ParseInvoiceDateFromBytes 扫描文件字节（PDF 未压缩文本 / 图片旁路无效）。

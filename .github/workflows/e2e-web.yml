@@ -16,6 +16,19 @@ on:
       - "backend/**"
       - ".github/workflows/e2e-web.yml"
 
+env:
+  # ★ 业务时区基准：CI 必须与**生产部署**同时区（Asia/Shanghai）。
+  #
+  #   仓里有**故意**对进程时区敏感的判据（§393.7 的「写-读往返」门：
+  #   它的负控前提是「设备当地那天 ≠ UTC 那天」⇒ 在 TZ=UTC 下会**按设计**报红，
+  #   报「时区基准没对齐」，而不是悄悄让那几条退化成恒真断言）。
+  #   ⇒ CI 跑在 UTC ⇒ 哨兵每次都开火 ⇒ main 上每个 commit 都是红的。
+  #
+  #   而业务口径本来就全是 Asia/Shanghai（前端 `REMINDER_TZ`、
+  #   `schedule-plan.DEFAULT_TZ`、后端发票日期口径）⇒ CI 与生产同口径，
+  #   才测得到真问题（§963 实测：TZ=UTC 下 CI 红 3 个前端测试文件 + 1 个后端包）。
+  TZ: Asia/Shanghai
+
 jobs:
   e2e-web:
     runs-on: ubuntu-latest
