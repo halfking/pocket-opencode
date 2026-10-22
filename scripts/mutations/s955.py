@@ -134,8 +134,14 @@ def main():
            mutate_fn=m3)
 
     # ── M4 必须红：窗口不可信时退回 JS 墙钟（假警报路径）────────────────
-    M4_OLD = "  return { wallClockMs: 0, audioSec, source: 'native-untrusted' }\n"
-    M4_NEW = "  return { wallClockMs: opts.elapsedMs, audioSec, source: 'native-untrusted' }\n"
+    #   ⚠⚠ §958：锚点必须**跟着当前生产代码**走（§957 给这个返回值加了
+    #   `coverageGapMs` 字段 ⇒ 旧锚点 0 命中 ⇒ 本批在 M4 处**中途崩溃**
+    #   ⇒ ⇒⇒ ⇒ 后面那些用例（M5–M10/N1/收尾自证）**根本没跑**。
+    #   ⚠ 这里**只对齐锚点**，异语义不变：仍是「不可信时拿 JS 墙钟顶替」。
+    M4_OLD = ("  return { wallClockMs: 0, audioSec, source: 'native-untrusted',"
+              " coverageGapMs: null }\n")
+    M4_NEW = ("  return { wallClockMs: opts.elapsedMs, audioSec, source: 'native-untrusted',"
+              " coverageGapMs: null }\n")
 
     def m4():
         b.mutate(DURATION, M4_OLD, M4_NEW, 'M4')

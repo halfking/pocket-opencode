@@ -15,11 +15,21 @@
    ⇒ ⇒ 本文件因此带**基于 PID 存活**的单实例守卫（⚠ 不能用「我以为它超时了所以它死了」
    当判据 —— 那个假设在本轮**被证伪过**）。
 
+⚠⚠ §958：**跑批之前先过「锚点新鲜度预检」**（`check_anchors.py`）：
+   变异脚本把生产代码的**字面片段**写死成 `OLD` 锚点 ⇒ ⇒ 生产代码一改
+   （§957 给 `recording-duration-consistency.ts` 加了 `coverageGapMs`）⇒ ⇒
+   锚点失配 ⇒ ⇒ 批次跑到那一条时抛 `HarnessError` ⇒ ⇒ **整批中途崩溃**
+   ⇒ ⇒⇒ ⇒ 崩在**中途**意味着「后面那些用例根本没跑」
+   ⇒ ⇒⇒ ⇒ ⇒ 所以「这批跑过了」与「这批没跑完」**危害一样**（都让「全过」的结论失真）
+   ⇒ ⇒ 本文件因此在跑批**之前**先做一次静态预检
+   ⇒ ⇒ **预检不过 ⇒ 拒绝跑**（退出码 3），而不是跑到一半崩。
+
 ⚠ 退出码的读法（§935.4.2 的教训：skip 与通过在退出码上完全同形）：
      0  = 全部批次都跑了，且每条变异都符合预期
      1  = 至少一批**跑了**，但有变异没被抓住（或量具自证失败）
      2  = 至少一批**拒绝跑**（缺依赖，例如 §936/§937 需要真 PG）
      9  = **已有另一份跑批在跑** ⇒ 本次拒绝跑（不是「失败」，是「不并发」）
+     3  = **锚点预检没过** ⇒ 拒绝跑（锚点已过期 ⇒ 跑到一半会崩）
    ⇒ 「拒绝跑」**不算**通过 ⇒ 退出码非 0 ⇒ 不会被误读成「全绿」。
 
 用法：
@@ -78,9 +88,36 @@ def _acquire():
     return True
 
 
+def _preflight_anchors():
+    """跑批**之前**的锚点新鲜度预检（§958）。
+
+    ⚠ 为什么必须是「跑批之前」：锚点过期 ⇒ 批次**跑到一半**崩
+      ⇒ ⇒⇒ ⇒ 后面那些用例根本没跑 ⇒ 「这批跑过了」是**假的**
+      ⇒ ⇒⇒ ⇒ 与其跑一半再崩，不如**先拒绝跑**，并把失配点一次列全。
+
+    ⚠ 用**静态 AST 解析**（`check_anchors.py`）⇒ **不执行任何批次代码**
+      ⇒ ⇒ 预检本身**不会改工作树**（这点很要紧：§958 实测过
+      ⇒ ⇒ 「读一下批次脚本」如果用 import 实现，会**真的把批次跑起来**）。
+    """
+    p = subprocess.run([sys.executable, str(HERE / 'check_anchors.py')],
+                       cwd=str(REPO), capture_output=True, text=True)
+    if p.returncode != 0:
+        print('❌ 锚点新鲜度预检没过 ⇒ **拒绝跑**（跑到一半崩 ⇒ 后面那些用例根本没跑）')
+        print(p.stdout)
+        return False
+    # 预检通过 ⇒ 仍把摘要打出来（让人知道「检查过了」而不是「没检查」）
+    tail = [ln for ln in p.stdout.splitlines() if ln.startswith('合计')]
+    for ln in tail:
+        print('✅ 锚点预检：%s' % ln)
+    return True
+
+
 def main():
     if not _acquire():
         return 9
+    if not _preflight_anchors():
+        _release()
+        return 3
     failed = []
     refused = []
     try:
