@@ -105,10 +105,40 @@ func TestIsFutureInvoiceDate(t *testing.T) {
 	}
 }
 
+// TestIsFutureInvoiceDateIsTimezoneIndependent 钉住「结论与运行时区无关」。
+//
+// 事故形态（2026-10-22 CI 实测）：原实现用 time.Parse（固定 UTC）解析被比较的日期，
+// 而 cut 按 now.Location() 取整 ⇒ 两者时区不一致 ⇒ 结论**依赖运行环境时区**：
+// UTC+8 上恰好成立、UTC 上恰好不成立 ⇒ ubuntu CI（TZ=UTC）恒红、+08 开发机恒绿。
+//
+// 这条用例就是那道 CI 红的**对照**（负控）：把实现改回 time.Parse，它必转红。
+func TestIsFutureInvoiceDateIsTimezoneIndependent(t *testing.T) {
+	locs := []*time.Location{
+		time.UTC,
+		time.FixedZone("UTC+8", 8*3600),
+		time.FixedZone("UTC-5", -5*3600),
+		time.FixedZone("UTC+5:30", 5*3600+30*60),
+	}
+	want := map[string]bool{
+		"2026-10-02": false, // 当天
+		"2026-10-03": false, // 明天（1 天宽限内）
+		"2026-10-04": true,  // 晚 2 天 ⇒ 宽限之外 ⇒ 未来
+		"2026-12-31": true,
+		"2020-01-01": false,
+	}
+	for _, loc := range locs {
+		now := time.Date(2026, 10, 2, 12, 0, 0, 0, loc)
+		for d, w := range want {
+			if got := isFutureInvoiceDate(d, now); got != w {
+				t.Errorf("TZ=%s：isFutureInvoiceDate(%q) = %v，期望 %v（结论依赖了运行时区）", loc, d, got, w)
+			}
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // 接线：对外的 ParseInvoiceDate 仍然走这条逻辑（不能只测私有函数）
 // ---------------------------------------------------------------------------
-
 func TestParseInvoiceDate_PublicEntryGoesThroughTheGuard(t *testing.T) {
 	// 反面对照：只测 parseInvoiceDateAt 而不管 ParseInvoiceDate，判据就可能
 	// 只是一条没人调用的旁路——本轮前面已经吃过一次「判据存在、循环没接」。
