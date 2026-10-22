@@ -36,12 +36,14 @@ import (
 //
 //	切错一个字符 ⇒ 新增段里多/少一个字 ⇒ 上游看到的上下文就不对。
 //	而「切点落在字符中间」这件事在中文上**不会报错**，只会静默产出乱码。
+//
 // pgTimeEqual 判断两个时刻在 **PG 的微秒精度**下是否相等。
 //
 // ⚠ PG 的 timestamptz 只存**微秒**，而 Go 的 time.Time 是**纳秒**
-//   ⇒ 「内存里的原值」与「PG 往返后的值」永远差几百纳秒
-//   ⇒ 直接 Equal 在 ubuntu CI 上恒红（实测差 1.46ns / 999ns / 7198ns）。
-//   ⇒ 容差取 1 微秒 = **PG 的精度单位**（不是「随便放宽一点」）。
+//
+//	⇒ 「内存里的原值」与「PG 往返后的值」永远差几百纳秒
+//	⇒ 直接 Equal 在 ubuntu CI 上恒红（实测差 1.46ns / 999ns / 7198ns）。
+//	⇒ 容差取 1 微秒 = **PG 的精度单位**（不是「随便放宽一点」）。
 func pgTimeEqual(a, b time.Time) bool {
 	d := a.Sub(b)
 	return d <= time.Microsecond && d >= -time.Microsecond
@@ -50,8 +52,9 @@ func pgTimeEqual(a, b time.Time) bool {
 // TestPGTimeEqualTolerance 钉住上面那个容差口径。
 //
 // ★ **不需要 PG** ⇒ 本机就能验（PG 路径的那两条用例本机是 skip 的，
-//   而 ubuntu CI 上它们红的就是这个精度差 ⇒ 不抽成可单测的纯函数，
-//   这条缺陷在本机**永远无法复现、也无法验证修好了**）。
+//
+//	而 ubuntu CI 上它们红的就是这个精度差 ⇒ 不抽成可单测的纯函数，
+//	这条缺陷在本机**永远无法复现、也无法验证修好了**）。
 func TestPGTimeEqualTolerance(t *testing.T) {
 	base := time.Date(2026, 10, 21, 19, 14, 55, 346017826, time.UTC)
 	// ① PG 截断到微秒后必须判相等。
