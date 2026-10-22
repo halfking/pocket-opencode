@@ -114,7 +114,21 @@ appId: com.kaixuan.opencode.pocket
 # ---- 3. 填标题 ----
 - tapOn: { point: "50%,41%" }
 - inputText: "Maestro任务"
-- hideKeyboard
+# ⚠️⚠️ 这里**故意不加 hideKeyboard**（2026-10-22 round51 实测踩到）：
+#   Android 上 Maestro 的 hideKeyboard 是**按返回键**实现的 ⇒ 它会顺带**导航回退**。
+#   本条 flow 的弹窗是 BottomSheet（贴底），而 App 在弹窗打开时按返回键的语义是
+#   **关掉弹窗**：软键盘还没起来（模拟器刚重启、输入法首启很慢）时，那一发返回键
+#   被 **App 的返回处理器**吃掉 ⇒ 弹窗直接没了、页面退回 AI 工具首页。
+#   于是下一条 `{"创建", enabled: true}` 必然红，而失败现场的树里
+#   **看不到任何创建表单**（只有首页的「暂无运行中的任务」和「+ 新任务」）。
+#   ⇒ 报错指向「创建按钮没解禁」，真因却是上一行自己加的 hideKeyboard。
+#
+#   为什么删掉它也对：BottomSheet 贴底，键盘弹起时视口 resize 会把整张 sheet
+#   **顶到键盘上方**，「创建」按钮本来就不被键盘遮住，不需要先收键盘。
+#   （绿跑的现场证据：「创建」按钮 bounds=[175,2157][307,2268]，
+#     那是收完键盘后的位置；没有键盘遮挡时它在键盘上方。）
+#   与 notes-crud.yaml 同一取舍（那边也是去掉 hideKeyboard）。
+#
 # 「创建」必须随标题填入而解禁 —— 这条同时证明输入真的落进了 input。
 # 修成「点得开弹窗就当通过」正是 notes-crud.yaml 当初假绿过的地方。
 - extendedWaitUntil:
