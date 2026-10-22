@@ -15,6 +15,7 @@ import { describe, it } from 'node:test'
 import { formatDuration, formatRelative, toEpochSeconds } from '../relative-time.ts'
 import { readFileSync, readdirSync } from 'node:fs'
 import { join, relative } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 /** 剥掉注释：判据锚点必须落在真代码上，不能落在自己写的说明文字上。 */
 const strip = (t: string): string =>
@@ -180,7 +181,7 @@ describe('§885 · 时长格式化的单位与防护', () => {
   //   也就是说「漏扫」不会让它们喊。这不是小失误：
   //   **假绿比假红贵**，它会让你以为全仓都查过了。
   //   ⇒ 所以「扫够了没有」不是一条独立用例，而是**每条断言的前置**（见 assertScanned）。
-  const SRC_ROOT = new URL('../../', import.meta.url).pathname
+  const SRC_ROOT = fileURLToPath(new URL('../../', import.meta.url))
 
   /** 递归列出源码文件（只扫一层会漏两级目录 —— §880.6 那条）。 */
   const walk = (dir: string, out: string[] = []): string[] => {

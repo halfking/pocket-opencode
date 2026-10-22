@@ -21,11 +21,23 @@ import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { dirname, join } from 'node:path'
+import { dirname, join, relative } from 'node:path'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const SRC = join(HERE, '..')
-const read = (rel: string) => readFileSync(join(SRC, rel), 'utf8')
+// ★ 读入口归一 CRLF → LF（2026-10-22 Windows 实测修掉）
+//
+//   本仓的 .ts/.vue 在 Windows 检出是 CRLF（core.autocrlf=true），
+//   而下面这些用例的「变异锚点」正则里写死了 \n ⇒ 锚点匹配不上
+//   ⇒ 变异根本没发生 ⇒ 断言报「变异没生效（锚点与真源码不匹配）」
+//   ⇒ 该报红的那条反而报红成「锚点没命中」，看起来像源码变了，其实没变。
+//   ⇒ Linux 上源文件是 LF ⇒ 锚点命中 ⇒ **Linux 一直绿**。
+//
+//   归一在**读入口**（一处盖住全部锚点），不是逐条改正则
+//   —— 与 D6–D10、§88 同族纪律，也与仓内既有先例一致：
+//   src/features/email/__tests__/account-read-path-normalization.test.mjs:46-48。
+
+const read = (rel: string) => readFileSync(join(SRC, rel), 'utf8').replace(/\r\n/g, '\n')
 
 const strip = (t: string): string =>
   t.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
@@ -341,7 +353,13 @@ describe('§883 · 写侧要说实话：普查必须仍是 4 套，且每套双�
           if (name === '__tests__') continue
           walk(full)
         } else if (/\.(ts|vue)$/.test(name) && !name.includes('.test.')) {
-          if (DECLARE.test(strip(readFileSync(full, 'utf8')))) out.push(full.replace(SRC + '/', ''))
+          // ★ 相对路径要**正斜杠**（2026-10-22 Windows 实测修掉）：
+          //   原来写的是 full.replace(SRC + '/', '')，而 Windows 上 SRC 是
+          //   "C:\...\src"、full 是 "C:\...\src\features\..." ⇒ SRC + '/' 匹配不上
+          //   ⇒ 产出的是**绝对路径** ⇒ 与 KNOWN 里 'features/ai-chat/aiChatStore.ts'
+          //     这种正斜杠相对路径对不上 ⇒ census 的两条对账断言恒红。
+          //   ⇒ 改用 relative() 并归一正斜杠（与 meeting-dedup.test.ts 同款）。
+          if (DECLARE.test(strip(readFileSync(full, 'utf8')))) out.push(relative(SRC, full).replace(/\\/g, '/'))
         }
       }
     }

@@ -767,7 +767,11 @@ export function enumerateTimeoutCallSites(dir = path.join(SRC, 'api')) {
         const tm = /timeoutMs:\s*([A-Za-z_]\w*)/.exec(obj)
         if (!tm) continue
         out.push({
-          file: path.relative(SRC, p),
+          // ★ 正斜杠化（2026-10-22 Windows 实测修掉）：
+          //   path.relative 在 Windows 上给反斜杠，而 LONG_ROUTE_CALL_SITES 存的是
+          //   正斜杠相对路径（'api/notes.ts'）⇒ 逐条对不上 ⇒ 这道门恒红。
+          //   ⇒ 与 meeting-dedup.test.ts 同款：归一在产出侧。
+          file: path.relative(SRC, p).replace(/\\/g, '/'),
           route: m[1],
           constName: tm[1],
         })

@@ -235,7 +235,13 @@ const siteKey = (rel, field, line) =>
 function degradationSites() {
   const sites = new Set()
   for (const abs of walkProd(NOTES_ROOT)) {
-    const rel = path.relative(SRC, abs)
+    // ★ 正斜杠化（2026-10-22 Windows 实测修掉）：
+    //   path.relative 在 Windows 上给反斜杠（'features\notes\NoteDetailView.vue'），
+    //   而登记表 REGISTRY 存的是正斜杠相对路径（'features/notes/NoteDetailView.vue'）
+    //   ⇒ 站点键对不上 ⇒ 「每一个降级取值点都必须已登记」恒红。
+    //   ⇒ Linux 上路径是 /... ⇒ 替换得上 ⇒ **Linux 一直绿**。
+    //   ⇒ 归一在**产出侧**（与 meeting-dedup.test.ts 同款）。
+    const rel = path.relative(SRC, abs).replace(/\\/g, '/')
     for (const line of stripForScan(fs.readFileSync(abs, 'utf8')).split('\n')) {
       if (!DEGRADE_FALLBACK_RE.test(line)) continue
       DEGRADE_FIELD_RE.lastIndex = 0
@@ -349,7 +355,8 @@ describe('§892 · D62：降级取值的可逆性普查（跨切面不变量）'
     const offenders = []
     const unregistered = []
     for (const abs of walkProd(NOTES_ROOT)) {
-      const rel = path.relative(SRC, abs)
+      // ★ 同上：正斜杠化（Windows 上 path.relative 给反斜杠 ⇒ 位置串与登记表对不上）
+      const rel = path.relative(SRC, abs).replace(/\\/g, '/')
       stripForScan(fs.readFileSync(abs, 'utf8')).split('\n').forEach((line, i) => {
         if (!isWriteBackRisk(line)) return
         const where = `${rel}:${i + 1}  ${line.trim().slice(0, 80)}`

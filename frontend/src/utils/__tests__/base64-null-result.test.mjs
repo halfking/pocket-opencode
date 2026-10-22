@@ -28,6 +28,7 @@ import { execFileSync } from 'node:child_process'
 import { readFileSync, readdirSync } from 'node:fs'
 import { dirname, join, relative, resolve } from 'node:path'
 import { afterEach, describe, it } from 'node:test'
+import { fileURLToPath } from 'node:url'
 import { blobToBase64, arrayBufferToBase64, utf8ToBase64, base64ToUtf8 } from '../base64.ts'
 
 const RealFileReader = globalThis.FileReader
@@ -232,7 +233,7 @@ describe('阴性对照：旧实现必须被上面那些断言抓住', () => {
  *   这里连**失败分支都没进**，所以连诊断都没有。
  */
 describe('§888 · D58：blobToBase64 只能有一份实现，且所有调用点必须用公共实现', () => {
-  const SRC_ROOT = new URL('../../', import.meta.url).pathname
+  const SRC_ROOT = fileURLToPath(new URL('../../', import.meta.url))
   const SKIP = (p) => p.includes('__tests__') || p.endsWith('.test.ts') || p.endsWith('.test.mjs')
 
   function walk(dir, out = []) {
@@ -367,7 +368,7 @@ describe('§888 · D58：blobToBase64 只能有一份实现，且所有调用点
  *   §889 改名为 `latin1PartToBytes`（私有、单一调用点 ⇒ 零风险）。
  */
 describe('§889 · D59：bytes→base64 的实现收编到一处（形态无关判定）', () => {
-  const SRC_ROOT = new URL('../../', import.meta.url).pathname
+  const SRC_ROOT = fileURLToPath(new URL('../../', import.meta.url))
   const SKIP = (p) => p.includes('__tests__') || p.endsWith('.test.ts') || p.endsWith('.test.mjs')
 
   function walk(dir, out = []) {
@@ -571,7 +572,7 @@ describe('§891 · D61：base64 解码失败必须返回 null（不抛），否�
   //   （顺带：本块第一版写成 `HERE` 而这里没有 HERE，跑出来是 suite 构造期
   //     `ReferenceError: HERE is not defined`，而汇总行仍是 `# pass 23 / # fail 0`
   //     —— 正是「suite 构造期失败不计进 # fail」那条。只看计数会把整块判据当成全绿。）
-  const SRC_ROOT = new URL('../../', import.meta.url).pathname
+  const SRC_ROOT = fileURLToPath(new URL('../../', import.meta.url))
   const NOTES_PERSIST = resolve(SRC_ROOT, 'features/notes/notes-persist.ts')
   const NOTE_FILES = resolve(SRC_ROOT, 'features/notes/note-files.ts')
 
@@ -745,7 +746,7 @@ describe('§958 · §891 收编的字节级行为门：落盘字节必须是 UTF
     // ⚠ 逐落点限定：不能全仓判，否则 `crypto.ts` 的内联编码会假红（§889.3）。
     const hasUtf8ToBase64 = (src) =>
       /\bbtoa\(/.test(src) && /encodeURIComponent\(/.test(src)
-    const SRC_ROOT = new URL('../../', import.meta.url).pathname
+    const SRC_ROOT = fileURLToPath(new URL('../../', import.meta.url))
     const strip = (s) => s
       .replace(/\/\*[\s\S]*?\*\//g, '')
       .replace(/(^|[^:])\/\/.*$/gm, '$1')
@@ -904,7 +905,7 @@ describe('§959 · §888 收编的字节级行为门：Blob 字节必须原样�
 
   it('★ 落点登记：Blob→base64 的落盘/上传路径必须走公共实现', () => {
     // 这一条是**逐落点限定**的形状门（证明「别搬回去」），不是字节门。
-    const SRC_ROOT = new URL('../../', import.meta.url).pathname
+    const SRC_ROOT = fileURLToPath(new URL('../../', import.meta.url))
     const strip = (s) => s
       .replace(/\/\*[\s\S]*?\*\//g, '')
       .replace(/(^|[^:])\/\/.*$/gm, '$1')

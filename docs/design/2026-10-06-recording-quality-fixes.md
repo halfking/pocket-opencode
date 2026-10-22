@@ -115595,3 +115595,251 @@ gates **第 46 项红**、1–45 过、**47–50 因「失败即停」根本没�
 ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒⇒ ⇒⇒⇒⇒⇒⇒⇒⇒⇒⇒⇒⇒
 ⇒ ⇒ ⇒ ⇒ ⇒ ⇒⇒ **而 2026-10-17 那次枚举漏了一类（仓内被忽略的路径）
 ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ 结论就从「丢了」翻成「一直在」**
+
+## §963 读 CI 的**真实读数**发现 main 长期全红 —— 而「门禁 39/39 绿」只覆盖了门禁 job；本轮定位并修掉 4 条 Go + 2 条前端真红，以及 Windows 上 26 个前端红文件的 4 个根因族
+
+### §963.0 一句话结论
+
+上一轮记的「CI 全绿」是**局部读数**（只看了 `gates parity` job）。
+本轮按 GitHub REST API 读了 main 上最近 **12/12 次 run 的真实结论**：
+**全红**（backend + frontend 双 job failure），且**每次都红在同一个 step**。
+⇒ 39 条门禁在 Linux 上**是绿的**（`gates parity` ✅、`android assembleDebug` ✅、
+`backend build gate` ✅），**红的是测试 job**。
+⇒ 本轮定位并修掉 **4 条 Go 真红**（其中 1 条是**测试自身**的真 data race）
+＋ **2 条前端真红**（时区敏感断言）。
+⇒ 另在 Windows 上把**前端全量 374 个测试文件**跑了一遍：
+读到 **26 个失败文件 / 62 条失败**，逐文件归因成**4 个根因族**（全是**平台形态**问题，
+Linux 上一直绿），本轮**逐个修完** ⇒ 复测 **4717/4722 → 剩 0**。
+
+> ⚠ 本节与 §962 是**并发会话**的两笔工作（§962 讲「凭据收据其实一直在」）。
+> ⇒ **节号不冲突**（§962 = 并发会话，§963 = 本轮）；§961 同理（已由并发会话重编号过）。
+
+### §963.1 起因：上一轮的「CI 绿」是**局部读数**
+
+上一轮的门禁读数是 `node frontend/scripts/run-gates.mjs --ci` ⇒ **39/39 绿**。
+那是对的，但**只覆盖了门禁链**，不覆盖 workflow 里的**测试 job**。
+⇒ 「门禁 39/39 绿」**不能**推出「CI 绿」。
+
+本轮的读数方式（工具：`scripts/tools/ci-readings.mjs` 一类，走 GitHub REST API，
+公开仓免鉴权）：
+
+| 读数 | 值 |
+|---|---|
+| main 上最近 run 数 | 12 |
+| 结论 | **12/12 全红**（`5b44dca0` / `40b1d418` / `95b1f04f` / `6dfbc907` / `7ce60119` / `21a393e2` / `cdbf8422` …） |
+| backend job | `test` step「Run tests」failure |
+| frontend job | 「Run notes/meetings/permission helper tests」failure |
+| `gates parity` job | ✅ success（**39 条门禁在 Linux 上是绿的**） |
+| `android assembleDebug` | ✅ success |
+| `backend build gate` | ✅ success |
+
+⇒ **失败点定位**（读 job 日志，不是猜）：
+- backend 日志里的 `--- FAIL:` 恰好 4 条：
+  `TestIsFutureInvoiceDate` / `TestS943TombstoneGuardRefusesToMoveAnotherScopesTombstone`
+  / `TestPGUpdateMetaScopedLeavesTranscriptUntouched` / `TestDynamicGatewayStreamChainVisitsEachCandidateOnce`
+- frontend 日志里的 `not ok` 恰好 1 条：
+  `note-voice 来源的提醒 expr 带真实 due，且 prompt 不谎称来自会议`
+  （`expected: 29857860` / `actual: 29857380` ⇒ **差 480 分钟 = 8 小时 = 一个时区偏移**）
+
+### §963.2 Go#1：`isFutureInvoiceDate` 的结论**依赖运行环境时区**（真缺陷）
+
+`backend/internal/email/invoice.go:911`：
+
+```
+原实现：t, err := time.Parse("2006-01-02", d)     // ← 固定 UTC
+        cut := time.Date(..., now.Location())      // ← 基准方是本地时区
+        return t.After(cut)
+```
+
+⇒ **被比较方（UTC）与基准方（本地）时区不一致** ⇒ 结论随环境变：
+
+| 环境 | `d = 今天+2` | `d = 今天+3` |
+|---|---|---|
+| UTC+8 | `t` 比 `cut` 晚 8h ⇒ `After` 为真 ⇒ **未来** | 未来 |
+| UTC | `t` 与 `cut` **相等** ⇒ `After` 为假 ⇒ **不是未来** | 未来 |
+
+⇒ ubuntu CI（TZ=UTC）**恒红**、+08 开发机**恒绿** ⇒ 看起来像「CI 坏了」。
+
+修法（`ParseInLocation` + `!t.Before`）：
+
+```
+t, err := time.ParseInLocation("2006-01-02", d, now.Location())
+...
+return !t.Before(cut)
+```
+
+⇒ 两边同时区 ⇒ 任何时区结论一致；且 **+08 上的逐条结论与修前完全相同**（无产品行为变化）。
+（`After` → `!Before` 是把「差 2 天」这条**边界**从「非未来」改成「未来」——
+这正是用例期望的宽限口径；在 +08 上这个偏差被 8 小时的时区差恰好盖住，所以本机绿、CI 红。）
+
+**新判据**：`TestIsFutureInvoiceDateIsTimezoneIndependent`（4 个时区 × 5 个日期）。
+**变异负控（2 条，都实测转红）**：
+- 改回 `time.Parse` ⇒ 转红
+- 改回 `t.After(cut)` ⇒ 转红
+
+### §963.3 Go#2：PG 的 `timestamptz` 只存**微秒**，Go 是**纳秒**（判据缺陷，不是产品缺陷）
+
+`internal/meeting/transcript_test.go` / `store_tombstone_scope_test.go`：
+「内存里的原值」与「PG 往返后的值」**永远差几百纳秒**（实测 1.46ns / 999ns / 7198ns）
+⇒ 直接 `Equal` 在 ubuntu CI 上**恒红**。
+
+修法：新增 `pgTimeEqual`（容差 **1µs = PG 的精度单位**，不是「随便放宽一点」），
+PG 版断言改用它；**内存版那条保持严格相等**（内存 store 不丢精度 ⇒ 放宽它等于自己拆自己的牙）。
+★ 抽成**可单测纯函数**（`TestPGTimeEqualTolerance`，含 2 条负控：差 1ms 必判不等）
+⇒ **无 PG 也能本机验证判据本身**（PG 路径那两条用例本机是 skip 的）。
+
+**变异负控（3 条，都实测转红）**：容差 1µs→1ms / 改回严格 `Equal` / 容差收到 1ns。
+★ 负控纪律：第一次写负控时把 `return` 改掉却留下 `d` 变量 ⇒ **编译失败**（不是转红）
+⇒ 判据脚本必须**先看退出码、再看 FAIL 行、区分「构建失败」与「用例转红」**。
+
+### §963.4 Go#3：**测试自身**的真 data race（只有 `-race` 看得见）
+
+`internal/server/llmbff_provider_adapters_test.go:358`：
+`seen` map 由 httptest 的 **handler goroutine 写**、由**主 goroutine 读** ⇒ 无锁访问就是**真 race**。
+⇒ 本机 `go test`（不带 `-race`）**永远绿** ⇒ 这类红**只有 CI 的 `-race` 才看得见**。
+
+修法：加 `sync.Mutex`（`seenMu`），handler 写上锁、主 goroutine 读时**取快照**后解锁。
+⇒ 生产代码**一行没动**（是测试自己的缺陷）。
+
+⚠ **本机无法验证这一条**：本机 `CGO_ENABLED=0` 且**没有 C 编译器**
+（`go test -race` 直接报 `go: -race requires cgo`）
+⇒ 只能由 **CI 的 `go test -race ./... -count=1`** 验证（`.github/workflows/backend.yml:118`）。
+⇒ **如实登记：本条本地未验证，等 CI 读数。**
+
+### §963.5 前端#1：时区敏感断言（CI 实测 expected 29857860 / actual 29857380）
+
+`note-todo-persist.test.ts` / `meeting-due-plan.test.ts`：
+`expr` 的口径是「**本地墙钟** + **固定 +08:00 标签**」，而 `parsed.at` 是**设备本地时区**的时刻
+⇒ 两者**不是同一个瞬间** ⇒ 直接比 epoch 在非 +08 环境差**一个时区偏移**（8 小时）。
+
+修法：判据改为**与时区无关**（墙上钟字段相等 ＋ 后缀为声明的 `+08:00`），
+再钉一道 epoch 级判据（两边都用**带偏移的字面量**）。
+
+★ **第一版改法被实测推翻并回退**：我第一版改的是「读入口固定 +08:00」，
+跑 2×2 矩阵（HEAD vs 工作树 × TZ=UTC vs +08）发现 **TZ=UTC 下新坏 17 条**
+（既有测试钉的是**设备本地**语义）⇒ 立即 `git restore` 回退，改用**判据层**方案。
+⇒ **「先量影响面再动手」第二次救场。**
+
+★ 底层「设备本地 vs 固定 +08」是**产品口径冲突**（整链只在 +08 设备上自洽），
+**本轮不代拍**，如实登记待拍板（简报第 189 条）。
+
+**变异负控（5 条，都实测）**：断言退回 epoch 直比 ⇒ TZ=UTC 转红、America/New_York 转红、
+**TZ=+08 仍绿**（证明改动不改变 +08 行为）＝ 4 条；去掉 CRLF 归一 ⇒ Windows 下转红 ＝ 5 条。
+
+### §963.6 前端#2：CRLF 敏感 needle ⇒ **负控静默失效**（Windows 专属）
+
+`note-todo-persist.test.ts` 的负控锚点是 **LF 形态**跨行串，
+而 Windows 检出（`core.autocrlf=true`）是 CRLF ⇒ 锚点**命中不了**
+⇒ 报「样本构造失败：锚点没命中」⇒ **变异根本没发生** ⇒ 负控**静默失效**。
+
+修法：在**读入口**归一 `.replace(/\r\n/g, '\n')`
+（与 D6–D10 同族纪律：**归一在读入口**，不是改锚点去迁就检出形态）。
+
+### §963.7 Windows 前端全量：26 个失败文件 → 4 个根因族
+
+本机（Windows）跑全量前端 **374 个测试文件**：
+**tests=4704 pass=4605 fail=63**，失败文件 **26** 个。
+⚠ 上一轮记的「30 个」与实测不符 ⇒ **以本轮实测 26 为准**。
+
+逐文件归因（**读报错原文**，不是看用例名）后，26 个文件落在**4 个根因族**：
+
+| 族 | 根因 | 症状 | 文件数 | Linux 上 |
+|---|---|---|---|---|
+| **A** | Windows 绝对路径**裸插**进 JS/TS 字符串字面量 ⇒ `\w` `\p` `\f` `\n` 被当转义符 | esbuild `Could not resolve "C:workspacepocket-opencode\..."` ⇒ `before` 钩子抛错 ⇒ 整组子用例 `cancelledByParent` | 5 | **一直绿** |
+| **B** | `new URL(...).pathname` 在 Windows 上是 `/C:/...` ⇒ 拼出 `C:\C:\...`；`path.relative()` 给**反斜杠** | `ENOENT: scandir 'C:\C:\workspace\...'`；集合比对恒不中 | 6 | **一直绿** |
+| **C** | 变异锚点**正则里写死 `\n`** ⇒ CRLF 下匹配不上 | 「变异没生效（锚点与真源码不匹配）」⇒ **判据恒真** | 9 | **一直绿** |
+| **D** | 判据产出的**绝对路径** vs 清单里的**正斜杠相对路径**；ESM `import()` 收 Windows 绝对路径 | 「量具失明」「定位失败」 | 6 | **一直绿** |
+
+⇒ **26/26 全部是「平台形态」问题** ⇒ **不阻塞 CI**（CI 在 Linux 上一直绿），
+但会让 **Windows 开发者的本地读数完全失真**（62 条红，且报错形态**指向错误的根因**
+—— 比如族 C 报「判据恒真」，实际是「变异没发生」）。
+
+修法（**逐族、在产出口归一**，不改断言形态）：
+
+- **族 A**：新增 `asModulePath(p)` = 正斜杠化 + `JSON.stringify`（双重保险），
+  所有「写入口」都走它。
+  ⚠ 三个实现坑（本轮实测）：
+  ① helper **不能带 TS 类型注解** —— 本仓有 4 个目标是 `.mjs`（纯 JS），
+     写了 `p: string` 直接 `SyntaxError`；
+  ② helper **插在最后一个顶层 import 之后** —— 多行 `import {` 的**首行**才匹配 `^import`，
+     「最后一行匹配 `^import .*$`」会把 helper 插到 `import {` **中间** ⇒ 劈开 import 语句；
+  ③ **注释里不能出现反引号** —— Node 的 TS stripper 会把 `//` 注释里的反引号
+     当成模板串开头 ⇒ 后面整行被当代码解析。
+- **族 B**：`new URL(...).pathname` ⇒ `fileURLToPath(new URL(...))`；
+  `path.relative(...)` ⇒ `.replace(/\\/g, '/')`（仓内既有先例：
+  `list-error-failpath.test.mjs` 本来就写了 `.split('\\').join('/')`）。
+- **族 C**：**读入口**归一 `.replace(/\r\n/g, '\n')`
+  （仓内既有先例：`account-read-path-normalization.test.mjs:46-48` 明写
+  「本仓的 .ts 是 CRLF。归一化成 LF 再切边界，否则 '\n}\n' 永远匹配不到，
+  断言会以一种「函数不存在」的形式失败——那是个假信号，不是真缺陷。」）
+  ⚠ 已核：这 9 个文件**没有一个**依赖 `\r` 字面量 ⇒ 归一不改变判据语义。
+- **族 D**：`await import(绝对路径)` ⇒ `await import(pathToFileURL(...).href)`
+  （Windows 绝对路径必须转 `file://` URL 才能当 ESM specifier，
+  否则报 `ERR_UNSUPPORTED_ESM_URL_SCHEME: protocol 'c:'`）。
+
+⇒ **复测（Windows / TZ=Asia/Shanghai）**：失败文件 **26 → 2**、失败条数 **62 → 3**；
+再修掉最后 2 个（`live-summary-schedule` 的同形负控正则写死 `\n`、
+`note-file-size-bytes` 的第二处 `path.relative`）⇒ **全绿**。
+
+### §963.8 工具层：A/B 对照脚本**参数化后入库**（工具，**不是门禁**）
+
+`scripts/tools/ab-crlf-lf-gates.mjs`（本轮入库）：
+把「CRLF 检出树 × LF 检出树的全量门禁对照」从 `.scratch` 的一次性脚本
+变成**可复用的仓内工具**。
+
+- **为什么是工具不是门禁**：它要**建一个 worktree**、要**跑两遍全量门禁**
+  （本机实测单遍 249.5s）⇒ 接进 `gates` 会让每跑一次门禁就多花 5 分钟 + 占一个 worktree 槽位。
+  ⇒ 定位：**定期/合并前手工跑的对照工具**。
+- **参数化**：`--root` / `--wt` / `--out` / `--keep-wt` / `--no-gates` ＋ 位置参数 `ref`。
+- **保留的两个 Windows 坑**（改动时别改回去）：
+  ① 不能用 `cmd /c "... > log 2>&1"`：cmd 的重定向目标里**正斜杠会被当成开关分隔符**
+     ⇒ 报「文件名、目录名或卷标语法不正确」⇒ 改成**纯管道捕获 + node 自己落盘**
+     （顺带绕开 PowerShell `>` 的 UTF-16LE 陷阱）；
+  ② LF worktree 必须用 `git -c core.autocrlf=false worktree add` 建，
+     且建完要用 `git ls-files --eol` **自证**真的是 `w/lf` ——
+     否则对照的是「两棵 CRLF 树」⇒ 结论恒等于「一致」⇒ **假绿**。
+- **清理**：只删**本脚本自己建**的 worktree；删之前先拆 junction
+  （否则 `git worktree remove` 会把主工作区的 `node_modules` 一起带走）。
+
+### §963.9 本节沉淀的通用式
+
+1. ⭐⭐⭐⭐⭐ **「门禁 39/39 绿」≠「CI 绿」** ⇒ 门禁链与测试 job 是**两件事**，
+   要分别读；只跑本地门禁就宣布「CI 是绿的」是**局部读数冒充全称结论**。
+2. ⭐⭐⭐⭐⭐ **「本地永远绿」的那类红，只有 CI 才看得见** ——
+   真 data race（要 `-race`）、时区敏感（要 TZ≠本地）、CRLF 敏感（要 Windows 检出）。
+   ⇒ 本机绿**不能**当「这条没问题」的证据。
+3. ⭐⭐⭐⭐ **归一要在「产出口」或「读入口」，不是改断言** ——
+   断言里的字面量形态（「正斜杠相对路径」「LF 形态跨行 needle」）是有意义的仓内约定，
+   改成迁就检出形态 = 让判据失去跨平台意义。
+4. ⭐⭐⭐⭐ **Windows 上 `path.relative` / `new URL().pathname` / 绝对路径字符串字面量
+   三件套都会骗人** ⇒ 仓内应统一走 `fileURLToPath` / `pathToFileURL` / 正斜杠化。
+5. ⭐⭐⭐ **「变异没生效」与「判据恒真」必须分开** ——
+   族 C 那 9 条报的是「判据恒真」，真因是「**变异没发生**」
+   ⇒ 看到「恒真」先怀疑量具（锚点命中了吗），别急着重写判据。
+6. ⭐⭐⭐ **负控脚本判「转红」必须同时看退出码与 FAIL 行** ——
+   变异写错会给出「退出码≠0 但没有 FAIL 行」（构建失败），那不是「判据有牙」。
+7. ⭐⭐ **「查全量」要读报错原文，不是读用例名** ——
+   本轮 26 个失败文件里，用例名指向的根因**大多不准**
+   （「变异负控」实际是 CRLF、「接线层」实际是路径分隔符）。
+
+### §963.10 本节**没有**做的事（如实登记）
+
+- **没有**改 `frontend/gates.json` 的门禁清单（本轮全是**既有**用例的修复，不新增门）。
+- **没有**新增任何门禁（`check:crlf-needles` 有覆盖盲区：只认直接写在 `.replace()` 里的字面量，
+  看不见「变量/数组里存 needle 再传进去」⇒ 族 A 就是如此 ⇒ **新门形态待设计，本轮不代拍**）。
+- **没有**动「设备本地 vs 固定 +08」这个**产品口径**（已登记待拍板）。
+- **没有**在本机跑 `-race`（本机无 C 编译器）⇒ Go#3 **只能由 CI 验证**。
+- **没有**在 Linux 上跑过全量前端（本机无 docker/无 Linux）⇒
+  「26 个红在 Linux 上是绿的」这一判断是**基于根因分析**（每个根因都逐条核到
+  「该形态只在 Windows 出现」的代码位置），**不是**「在 Linux 上实测过」。
+  ⇒ **如实登记**：该结论**未在 Linux 上实测**。
+- **没有**碰 `.gitignore` 里的那份收据（§962 那一件，见该节）。
+
+### §963.11 下一轮的待办（不代拍）
+
+- ⏳ **Go#3 的 `-race` 验证**：等本节推上去后 CI 的 `go test -race ./... -count=1` 读数。
+- ⏳ **「设备本地 vs 固定 +08」**的产品口径拍板（简报第 189 条）。
+- ⏳ **新门形态**：「防 `.pathname` 族」＋「防变量 needle 逃过 `check:crlf-needles`」。
+- ⏳ **族 A/B/C/D 的仓规化**：是否把「路径三件套」与「读入口归一」立成**新增门禁的入库检查项**
+  （简报第 185 条 ① 那一问的延续）。
+- ⏳ **§948–§957 那 38 个提交的审计回填**（本轮未做）。

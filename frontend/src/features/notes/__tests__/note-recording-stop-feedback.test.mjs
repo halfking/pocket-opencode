@@ -66,8 +66,14 @@ describe('状态机：recording → stopping → idle', () => {
 })
 
 describe('接线：UI 必须真的用上这个状态（结构断言）', () => {
-  const widget = readFileSync(join(HERE, '..', 'VoiceRecorderWidget.vue'), 'utf8')
-  const list = readFileSync(join(HERE, '..', 'NoteListView.vue'), 'utf8')
+  // ★ 读入口归一 CRLF → LF（2026-10-22 Windows 实测修掉）：
+//   下面那个负控的变异 needle 是**跨行锚点**，而 Windows 检出是 CRLF
+//   ⇒ needle 命中不了 ⇒ 变异是空操作 ⇒ 判据恒真
+//   ⇒ 报出来的是「把复位挪出 finally 后判据仍然绿 ⇒ 它是恒真的」，
+//     读起来像「判据写错了」，其实是「变异没发生」。
+//   ⇒ 归一在读入口（与 D6–D10、§88 同族纪律）。
+const widget = readFileSync(join(HERE, '..', 'VoiceRecorderWidget.vue'), 'utf8').replace(/\r\n/g, '\n')
+  const list = readFileSync(join(HERE, '..', 'NoteListView.vue'), 'utf8').replace(/\r\n/g, '\n')
 
   it('FAB 组件提供 busy 形态，而不是只在录音中才变化', () => {
     assert.match(widget, /busy\?:\s*boolean/, 'VoiceRecorderWidget 缺少 busy prop')
@@ -267,7 +273,7 @@ function phaseResetCoverage(src) {
   return { ok: true, tryLine: lineOf(tryOpen), flipLine: lineOf(flipAt), finallyLine: lineOf(finOpen) }
 }
 
-const RUNTIME_SRC = readFileSync(join(HERE, '..', '..', '..', 'native', 'recordingRuntime.ts'), 'utf8')
+const RUNTIME_SRC = readFileSync(join(HERE, '..', '..', '..', 'native', 'recordingRuntime.ts'), 'utf8').replace(/\r\n/g, '\n')
 
 describe('§572：phase 复位必须被 finally 罩住（范围，不只是存在性）', () => {
   it('量具自证：runStop() 内 try 起点不晚于 phase 翻转', () => {

@@ -21,6 +21,29 @@ import os from 'node:os'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { build } from 'esbuild'
 
+
+// ★ 写入口的路径归一（2026-10-22 Windows 实测修掉）
+//
+//   事故形态：把 Windows 绝对路径**裸插**进单引号字符串字面量 ⇒
+//   反斜杠开头的 w / p / f / n 全被 JS 解析成转义序列
+//   ⇒ 路径被吃成 "C:workspacepocket-opencode" + 换行 + "ote-todo-persist.ts"
+//   ⇒ esbuild 解析不到 ⇒ before 钩子抛错 ⇒ 整组子用例 cancelledByParent
+//   ⇒ Linux 上路径是 "/workspace/..."，没有反斜杠 ⇒ **Linux 一直绿**
+//   ⇒ 这是 Windows 专属红：不阻塞 CI，但会让 Windows 上的本地读数完全失真。
+//
+//   修法两步（缺一不可）：
+//   ① 正斜杠化：Windows 的 fs 与 esbuild 都认 "C:/a/b" 这种形态
+//   ② JSON.stringify：做 JS 字符串字面量转义 ⇒ 路径里再有引号/反斜杠也不会破
+//
+//   ⚠ 归一在**写进入口**（不是逐个路径改对）—— 与 D6–D10、§88 同族纪律。
+//   ⚠ 本 helper **不带 TypeScript 注解**：本仓有用例是 .mjs（纯 JS），
+//     写上参数类型注解会直接 SyntaxError（本轮实测踩到）。
+//   ⚠ 注释里**绝不能出现反引号**：Node 的 TS stripper 会把 // 注释里的
+//     反引号当成模板串开头 ⇒ 后面整行被当代码解析（本轮实测踩到）。
+function asModulePath(p) {
+  return JSON.stringify(String(p).replace(/\\/g, '/'))
+}
+
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const SRC = path.resolve(HERE, '..') // → src/features/notes
 const WORK = fs.mkdtempSync(path.join(os.tmpdir(), 'pocket-note-todo-'))
@@ -73,7 +96,7 @@ let mod
 
 before(async () => {
   const entry = path.join(WORK, 'entry.ts')
-  fs.writeFileSync(entry, `export { createNoteTodos } from '${path.resolve(SRC, 'note-todo-persist.ts')}'\n`)
+  fs.writeFileSync(entry, `export { createNoteTodos } from ${asModulePath(path.resolve(SRC, 'note-todo-persist.ts'))}\n`)
   await build({
     entryPoints: [entry],
     bundle: true,

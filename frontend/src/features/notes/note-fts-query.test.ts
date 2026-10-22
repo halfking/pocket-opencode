@@ -254,7 +254,7 @@ describe('§886 · D56：用户输入进 FTS5 MATCH（真 SQLite 夹具）', () 
  *   ⇒ 公共实现的 `maxLen` 必须也放在 replace 之后。
  */
 describe('§887 · D57：likePattern 只能有一份实现，且口径不许漂移', () => {
-  const SRC_ROOT = new URL('../../', import.meta.url).pathname
+  const SRC_ROOT = fileURLToPath(new URL('../../', import.meta.url))
   const SKIP = (p: string) => p.includes('__tests__') || p.endsWith('.test.ts')
 
   const walk = (dir: string, out: string[] = []): string[] => {

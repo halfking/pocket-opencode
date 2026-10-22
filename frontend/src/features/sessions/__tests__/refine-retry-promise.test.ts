@@ -25,7 +25,7 @@ import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { dirname, join } from 'node:path'
+import { dirname, join, relative } from 'node:path'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 // HERE = frontend/src/features/sessions/__tests__ → 上四级到 frontend，再进 src
@@ -81,7 +81,12 @@ function stripComments(source: string): string {
 function refineCallSites(): string[] {
   const hits: string[] = []
   for (const f of walk(SRC)) {
-    if (/\b\w+\.refine\(/.test(stripComments(read(f)))) hits.push(f)
+    // ★ 产出**相对 SRC 的正斜杠路径**（2026-10-22 Windows 实测修掉）：
+    //   原来 push 的是绝对路径（Windows 形态：C:\...\meeting-recording-finalize.ts），
+    //   而 OWNER 是正斜杠相对路径 ⇒ f.endsWith(OWNER) 永假
+    //   ⇒ 「扣掉 owner 自己」这条判据恒不成立 ⇒ 量具失明。
+    //   ⇒ 与 meeting-dedup.test.ts 同款：归一在产出侧。
+    if (/\b\w+\.refine\(/.test(stripComments(read(f)))) hits.push(relative(SRC, f).replace(/\\/g, '/'))
   }
   return hits
 }
