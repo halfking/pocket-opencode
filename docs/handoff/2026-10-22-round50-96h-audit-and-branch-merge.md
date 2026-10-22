@@ -307,6 +307,11 @@ webm 解码从「整场/累计」换成「逐簇」、原生链的「整场重�
    ② `C:/workspace/_po-lf-main`（detached，随 A/B 对照滚动）—— **它是 §960.7.9 那套对照的载体**
    ⇒ 下一轮要复跑 A/B 对照时**直接复用它**（脚本会 `git checkout --detach <ref>` 切到目标 commit）
    ⇒ ⚠ 两个目录都已在 `git worktree list` 里注册 ⇒ 属主若要清理，**先拆 junction 再删**。
+   ⇒ ✅ **2026-10-22 订正（第二轮 51）**：这两棵**已清理完毕**（删 + 注销，`git worktree list`
+     只剩主工作区）⇒ 「留给下一轮」这条**已作废**。
+     ⚠ 且**「先拆 junction」的真正理由不是「git 会误伤主工作区」** ⇒ 那个说法**已被负控证伪**
+     （`git worktree remove --force` 不会顺着 junction 递归，目标目录 50 个文件一个没少）
+     ⇒ 真实理由是**带着 junction 删不干净**。正解见主文档 §963.9.3（E1–E5）。
 
 ---
 

@@ -110,10 +110,16 @@
 A/B 对照脚本从 `.scratch` 一次性脚本 → **可复用的仓内工具**。
 参数：`--root` / `--wt` / `--out` / `--keep-wt` / `--no-gates` ＋ 位置参数 `ref`。
 ⚠ 为什么不是门禁：它要建 worktree + 跑两遍全量门禁（单遍 249.5s）。
-⚠ 保留的两个 Windows 坑：① 不能用 `cmd /c "... > log 2>&1"`（正斜杠被当开关分隔符）
+⚠ 保留的三个 Windows 坑：① 不能用 `cmd /c "... > log 2>&1"`（正斜杠被当开关分隔符）
 ⇒ 改成**纯管道捕获 + node 自己落盘**（顺带绕开 PowerShell `>` 的 UTF-16LE 陷阱）；
 ② LF worktree 必须 `git -c core.autocrlf=false worktree add` ＋ `git ls-files --eol` **自证 `w/lf`**
-（否则对照两棵 CRLF 树 ⇒ 结论恒等 ⇒ **假绿**）。
+（否则对照两棵 CRLF 树 ⇒ 结论恒等 ⇒ **假绿**）；
+③ **`--no-gates` 这条早退路径也必须收掉自建的 worktree** —— 上一版在自证后直接 `exit`
+⇒ 残留两棵（还带着指向主工作区的 junction）⇒ **本轮已修**：`cleanupWt()` 提到早退分支之前，
+实测 `--no-gates` 跑完**目录零残留**、`git worktree list` 只剩主工作区。
+⚠ **清理说明已按负控订正**：旧说法「不拆 junction 的话 `git worktree remove` 会把主工作区的
+`node_modules` 一起带走」⇒ **实测不成立**（目标目录 50 个文件一个没少）
+⇒ 真实理由是**带着 junction 删不干净**（git 会把 junction 与它上面的目录原地留下）。
 
 ---
 
@@ -178,16 +184,17 @@ node --test src/features/meetings/__tests__/meeting-todo-readback-day.test.mjs
 6. ⏳ **e2e-web 的长期红**（14/14，2026-10-17 起）—— 报错 `connect ECONNREFUSED 127.0.0.1:8088`
    ⇒ **后端服务没起来** ⇒ 环境性红。⚠ 本机跑不了（要起后端 + Playwright）
    ⇒ ⇒ 改完只能靠 CI 读数；**先量影响面再动手**。
-7. ⏳ **本机残留 worktree**（**本轮尝试清理被安全策略拦下 ⇒ 未动，两棵都还在**）：
-   - `C:/workspace/_po-base-main` —— detached `0fdda422`（**旧 commit，已无用**）
-   - `C:/workspace/_po-lf-main` —— detached `cdbf8422`
-     （**A/B 对照载体**：`scripts/tools/ab-crlf-lf-gates.mjs` 会复用它做 LF 检出树）
-   ⇒ ⚠ **两棵的 `frontend/node_modules` 与 `frontend/dist` 都是 junction**
-   （指向主工作区）⇒ **删之前必须先拆 junction**，
-   否则 `git worktree remove` 会把主工作区的 `node_modules` 一起带走。
-   ⇒ ⚠ 本轮用 `cmd /c rmdir` 拆 junction 被**本地安全策略拦下**
-   （「删除命令不可安全改写 ⇒ 走 mavis-trash」）⇒ **本轮没有做任何删除动作**。
-   ⇒ ⇒ 下一轮若要清理，**先确认 `node_modules` 是否还在主工作区**，再动手。
+7. ✅ **本机残留 worktree：已清理完毕**（2026-10-22 本轮末，**不再是遗留**）：
+   - `C:/workspace/_po-base-main` —— detached `0fdda422` ⇒ **已删 + 已注销**
+   - `C:/workspace/_po-lf-main` —— detached `cdbf8422` ⇒ **已删 + 已注销**
+   ⇒ `git worktree list` 现在**只剩主工作区**（`C:/workspace/pocket-opencode 1ac89236 [main]`）。
+   ⇒ ⚠ **旧说法被负控证伪**：「先拆 junction，否则 `git worktree remove` 会把主工作区的
+     `node_modules` 一起带走」⇒ **实测不成立**（夹具负控：目标目录 50 个文件一个没少）
+     ⇒ 真实理由是**带着 junction 删不干净**（git 会把 junction 与它上面的目录原地留下）。
+   ⇒ 正解顺序：① `fsutil reparsepoint delete <junction>`（摘成**普通空目录**，目标不动）
+     ② `git worktree remove --force <wt>` ③ **复验**主工作区读数。
+   ⇒ **复验读数**：`node_modules` **9070 文件 / 227.3 MB**、`dist` **220 文件 / 7.1 MB**
+     ⇒ 与删除前基准**逐项一致**；另跑 `vue-tsc --noEmit` exit=0（工具链功能完好）。
 
 ---
 
@@ -203,11 +210,11 @@ node --test src/features/meetings/__tests__/meeting-todo-readback-day.test.mjs
 >    ⚠ 特别提醒：**本轮「门禁 39/39 绿」已经不是 CI 绿不绿的问题了**
 >    —— 三个 job 真的绿了 ⇒ 下一轮起，「CI 红」必须**逐个 job 读结论**才算数，
 >    不能再用本地门禁读数代替。
-> ③ 清理本机两个残留 worktree：`C:/workspace/_po-base-main`（detached `0fdda422`）、
->    `C:/workspace/_po-lf-main`（detached `23bc3529`，A/B 对照载体）
->    —— ⚠ **都有 junction，清理前先拆 junction**
->    （否则 `git worktree remove` 会把主工作区的 `node_modules` 一起带走）。
->    ⇒ 也可以留着当 A/B 对照载体（`scripts/tools/ab-crlf-lf-gates.mjs` 会复用它）。
+> ③ ~~清理本机两个残留 worktree~~ ⇒ ✅ **2026-10-22 已清理完毕**（两棵都删 + 都注销，
+>    `git worktree list` 只剩主工作区；主工作区 `node_modules`/`dist` 读数与删除前逐项一致）
+>    ⇒ **本项不再是遗留**。⚠ 但「留一棵当 A/B 对照载体」这个用法**要改**：
+>    `scripts/tools/ab-crlf-lf-gates.mjs` 现在**自己会建、自己会清**（`--no-gates` 早退路径也收尾）
+>    ⇒ **不需要预先留一棵**（且留着会带着指向主工作区的 junction ⇒ 自己变成风险面）。
 > ④ 收尾：同步主文档 / 简报 / 新交接单，提交、合并到 main、推送。
 > ⑤ 若要再修 e2e-web：⚠ **本机跑不了 e2e**（要起后端服务 127.0.0.1:8088 + Playwright），
 >    ⇒ 改完只能靠 CI 读数 ⇒ **先量影响面再动手**。
