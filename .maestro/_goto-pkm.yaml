@@ -54,10 +54,29 @@ appId: com.kaixuan.opencode.pocket
 #    所以任何 extendedWaitUntil 一旦超时，后面的补救根本没机会跑（实测踩过）。
 #    正确做法是：先用 runFlow when 做条件判断（判断本身不算失败），
 #    把可能失败的等待放在最后一条。
+# ⚠️ 2026-10-22 round51：这里的「再点一次笔记」原本会点中**分段控件**里的
+# 「Notes」chip，而不是底栏——#/notes 页上「笔记|Notes」有两个同名节点
+# （底栏 TextView + 分段控件 ToggleButton），Maestro 选树序更靠前的那个 = chip。
+# 点 chip 只切筛选，**不会重新挂载视图**；而本机 WebView 113 的 Android 无障碍树
+# 在增量更新时会整片丢掉滚动容器的子树 ⇒ 画面上「Open PKM」卡片明明在
+# （截图实证：卡片带「2」和 ›，就在标签页正下方），树里却查不到，
+# 断言 20s 超时。2026-10-22 实测复现 1/4 次（硬证据见 round51 报告 §4）。
+#
+# 修法：**退回去再进一次**，强制 NotesHubView 整体重新挂载。
+# 重新挂载 ⇒ see-all 卡片是「remove + insert」的新节点 ⇒ 按 §3.4 记录的机制
+# （本机 WebView 上「remove+insert 后即出现」），a11y 树会重新暴露它。
+#
+# 为什么用 `back` 而不是点底栏「首页」：底栏文字可能与**用户笔记标题撞名**
+# （"Home" 既是底栏项又是常见的笔记标题），`back` 不依赖任何文本，
+# 不存在误点用户数据的风险。
 - runFlow:
     when:
       notVisible: "打开 PKM"
     commands:
+      - back
+      - waitForAnimationToEnd:
+          timeout: 3000
+      # 此刻应回到 #/ai —— 该页上「笔记」只有底栏一个 ⇒ 命中底栏 ⇒ 重新挂载。
       - tapOn: "笔记|Notes"
       - waitForAnimationToEnd:
           timeout: 3000
@@ -77,7 +96,7 @@ appId: com.kaixuan.opencode.pocket
 # 入口在手边的另一个好处：这条 flow 也不再依赖「滚到底部」。
 - extendedWaitUntil:
     visible: "打开 PKM|Open PKM"
-    timeout: 20000
+    timeout: 40000
 - assertVisible: "打开 PKM|Open PKM"
 
 - tapOn: "打开 PKM|Open PKM"

@@ -11,6 +11,7 @@ import { readFileSync, writeFileSync, existsSync, unlinkSync, readdirSync } from
 import { spawnSync, execFileSync } from 'node:child_process'
 import { resolve, join, dirname, basename } from 'node:path'
 import { homedir } from 'node:os'
+import { readA11yGlitchFromDirs } from './lib/a11y-glitch.mjs'
 
 const ROOT = resolve(new URL('..', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'))
 const GO = resolve(ROOT, 'backend/internal/server/server_assistant.go')
@@ -2451,12 +2452,17 @@ const runOne = (flow) => {
   const { file, cleanup } = materializeFlowWithEnv(flow)
   const beforeDirs = listMaestroTestDirs()
   try {
-    return spawnSync(MAESTRO, ['--device', DEVICE, 'test', ...driverFlag, ...preFlows, file], {
+    const res = spawnSync(MAESTRO, ['--device', DEVICE, 'test', ...driverFlag, ...preFlows, file], {
       cwd: ROOT,
       stdio: 'inherit',
       shell: true,
       env: maestroEnv,
     })
+    // 把**本次新建**的 Maestro 产物目录带出去：失败归因只许看本次的产物，
+    // 否则「本条 flow 在 preflight 阶段就失败、根本没建新目录」时，
+    // 判定器会去读**上一条** flow 的现场，误判成命中症状。
+    const newDirs = [...listMaestroTestDirs()].filter((d) => !beforeDirs.has(d))
+    return { ...res, newDirs }
   } finally {
     if (cleanup) {
       try { unlinkSync(cleanup) } catch { /* 临时文件删不掉不该让跑批崩掉 */ }
@@ -2572,13 +2578,47 @@ for (const [i, flow] of flows.entries()) {
     }
   }
   if (flows.length > 1) console.log(`\n──────── flow ${i + 1}/${flows.length}: ${flow} ────────`)
+  // ⚠️ 2026-10-22 round51：设备级无障碍树抖动（WebView 113 增量更新丢子树）
+  //   ⇒ 有护栏地**重跑整条 flow**。断言一条不少地再跑一遍：设备这次把树填上了
+  //   就是绿，填不上就是红。护栏见 scripts/lib/a11y-glitch.mjs 的注释：
+  //   失败文本必须精确命中已知症状白名单**且**是超时失败（跑满自己的 timeout），
+  //   否则不重试、照实报红。
+  //   每次重试都会打印 [retry] 行 —— 报告里必须照实写明「第几次尝试过的」。
+  const MAX_A11Y_RETRIES = 2
+  let attempt = 0
   let one = { status: 0 }
-  try {
-    one = runOne(flow)
-  } finally {
-    // 无论 flow 绿还是红都还原，见上面「还原必须挂在 finally 上」。
-    // reset 不进这个分支 —— 它的「还原」等于把 flow 的产出删掉。
-    if (fx?.kind === 'fixture') runFixture(fx.name, '--restore')
+  while (true) {
+    attempt += 1
+    try {
+      one = runOne(flow)
+    } finally {
+      // 无论 flow 绿还是红都还原，见上面「还原必须挂在 finally 上」。
+      // reset 不进这个分支 —— 它的「还原」等于把 flow 的产出删掉。
+      if (fx?.kind === 'fixture') runFixture(fx.name, '--restore')
+    }
+    if (one.status === 0) break
+    if (attempt > MAX_A11Y_RETRIES) break
+    // 带夹具的 flow 不重试：夹具的 induce/restore 语义在「重跑一遍」里不能简单复制
+    // （还原已经跑过一次，再 induce 一次不一定回到同一个起点）⇒ 宁可不重试、照实报红。
+    if (fx) break
+    const glitch = readA11yGlitchFromDirs(one.newDirs || [])
+    if (!glitch) break
+    console.error(
+      `[retry] ⚠️ 本条 flow 命中**设备级无障碍树抖动**（${glitch.symptom}；` +
+        `该断言耗尽了自己的 timeout：${(glitch.elapsed / 1000).toFixed(1)}s / ${(glitch.timeout / 1000).toFixed(0)}s），`,
+    )
+    console.error(
+      `        画面上元素是在的（截图实证），是本机 WebView 113 的 Android 无障碍树整片丢了子树。`,
+    )
+    console.error(
+      `        重跑**同一条 flow、同样的断言**（第 ${attempt + 1}/${MAX_A11Y_RETRIES + 1} 次尝试）—— 不放宽任何断言。`,
+    )
+    if (!(await ensureAppAlive())) break
+    await resetToStart()
+    await gotoPreRoute()
+  }
+  if (attempt > 1 && one.status === 0) {
+    console.error(`[retry] ✅ 第 ${attempt} 次尝试通过（前 ${attempt - 1} 次命中设备级无障碍树抖动）。`)
   }
   if (one.status !== 0) r = one   // 保留失败那次的返回码，交给下面的归因逻辑
 }
