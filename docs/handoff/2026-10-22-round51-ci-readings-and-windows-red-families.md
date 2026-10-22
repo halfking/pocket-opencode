@@ -41,7 +41,8 @@
   （本机裸 `gofmt -l` 报 **816**，其中 **815 是纯行尾伪债**，真债只有 **1**）
   ⇒ 拿 `gofmt -l` 当判据会得到「800+ 个文件不 gofmt」的**假结论**。
 - **e2e-web** ⇒ 报错原文 `connect ECONNREFUSED 127.0.0.1:8088`
-  ⇒ **后端服务没起来** ⇒ **环境性红**，与本轮改动零相关。
+  ⇒ ⚠ **真因已查实：不是「后端没起来」，是「端口写死 8088 vs CI 把后端起在 8090」**
+  （见 §6 第 6 条）⇒ **固有的配置不一致** ⇒ 与本轮改动零相关。
   ⇒ ⚠ 但它**是长期红**：翻 14 次 run（2026-10-17 → 2026-10-22）⇒ **14/14 全红**
   ⇒ ⇒ 它与「12/12 全红」**不是同一个成因** ⇒ 别把两者混成一句「CI 都是红的」。
 
@@ -182,7 +183,14 @@ node --test src/features/meetings/__tests__/meeting-todo-readback-day.test.mjs
    ⇒ 报「有缺失」的 2 笔全是同一个符号 `§803.4`，而那**正是 §955 自己修掉的死引用**
    ⇒ ⇒ **不判为丢失**。详见主文档 §963.7.1。
 6. ⏳ **e2e-web 的长期红**（2026-10-17 起连续红）—— 报错 `connect ECONNREFUSED 127.0.0.1:8088`
-   ⇒ **后端服务没起来** ⇒ 环境性红。⚠ 本机跑不了（要起后端 + Playwright）
+   ⇒ ⚠ **真因已查实（读 job 日志原文）**：**CI 把后端起在 8090**（`POCKET_HTTP_PORT` ＋
+     healthz 探针都在 8090，vite 代理默认也是 8090），而 `e2e/web/helpers/tokenAuth.ts:125` 的
+     `assertTokenWorks(apiBase = 'http://127.0.0.1:8088')` **把端口写死 8088**，
+     且 `e2e/web/specs/authenticated-shell.spec.ts:54` 调它**不传参** ⇒ 探针必然 ECONNREFUSED
+     ⇒ **`beforeAll` 挂掉 ⇒ 整个 spec 全是噪音**（那份 spec 的注释自己写着「若这一步红了，后面全是噪音」）
+     ⇒ ⇒ **长期红的真因是「e2e 侧端口写死 vs CI 侧端口」的配置不一致，不是偶发环境问题**。
+     ⚠ 本机跑不了（要起后端 + Playwright）⇒ **修法很小但本轮没改**（改完会让一套从未真跑过的用例
+     第一次真跑 ⇒ 影响面本机量不了）⇒ 登记为待拍板（简报 189 ⑤）。
    ⇒ ⇒ 改完只能靠 CI 读数；**先量影响面再动手**。
    ⇒ 📌 **本轮复测的准确读数**：**最近 12 次 e2e-web run 全部 failure（success 0 次）**，
      最近一次在 `c6e9acfe`；⚠ **它最近 5 笔没出 run，不是「跑过」，是「按设计没触发」** ——
@@ -218,7 +226,8 @@ node --test src/features/meetings/__tests__/meeting-todo-readback-day.test.mjs
 >    —— 前面三个 job（frontend-lint / backend-test / gates-parity）**已经全绿**，
 >    只剩 e2e-web。若它也红了，**先看它红在哪个 step + 报错原文**：
 >    `640ca85a` 那次的报错是 `connect ECONNREFUSED 127.0.0.1:8088`
->    ⇒ **后端服务没起来** ⇒ **环境性红**（⇒ 判断依据：读日志原文，别猜）。
+>    ⇒ ⚠ **真因已查实：端口写死 8088 vs CI 起在 8090**（见 §6 第 6 条）
+>    ⇒ **不是偶发环境问题**（⇒ 判断依据：读日志原文，别猜 —— 本轮就是靠日志原文才发现不是「后端没起来」）。
 > ② 处理简报 189 的三件待拍板（**不代拍**）：产品口径 / 新门形态 / 要不要装 C 工具链。
 >    ⚠ 特别提醒：**本轮「门禁 39/39 绿」已经不是 CI 绿不绿的问题了**
 >    —— 三个 job 真的绿了 ⇒ 下一轮起，「CI 红」必须**逐个 job 读结论**才算数，
@@ -246,3 +255,78 @@ node --test src/features/meetings/__tests__/meeting-todo-readback-day.test.mjs
 > - **拿门禁自己的口径当判据** —— 本机裸 `gofmt -l` 报 816 个文件，
 >   而门禁（剔掉 CRLF 噪声后）只报 1 个 ⇒ 拿错口径会得到「800+ 个文件不 gofmt」的假结论。
 > - **「本机绿」的三类（真 race / 时区 / CRLF）本机永远看不到** ⇒ 必须靠 CI 读数收口。
+
+---
+
+## 8. ⭐ 并入的外部分支：`fix/acc-runtime-service-jwt`（ACC workstream）
+
+**为什么会有这一节**：属主「请提交代码并合并到主分支中推送」时，本会话的工作
+**早已提交推送完毕**（工作区干净、`main == origin/main`）⇒ 仓库里**唯一**没落地的东西
+是**另一个会话的分支** ⇒ 那一问的实际对象就是它。
+
+### 8.1 合并前的四道查证（缺一道都不该合）
+
+1. **它是不是真的「没并入 main」** ⇒ merge-base = `1134e751` = main tip
+   ⇒ 它是 main 的**严格后代** ⇒ 合并无冲突，**合并结果树 == 分支 tip 树**
+   （`44b5c8f9…`）⇒ main 现有内容**一字不丢**。
+2. ⭐ **它此前有没有被 CI 验过** ⇒ **没有**。`backend.yml` / `frontend.yml` /
+   `backend-pg.yml` 的 `push.branches` 是 `[main, feat/**, …]`，而它在 `fix/**` 下
+   ⇒ **只有无 branches 过滤的 `e2e-web` 跑过**（4 次全红 = 已知环境性红）
+   ⇒ ⇒ **合并是这 45 个文件（含 13 个 Go 文件）第一次进 CI** ⇒ 必须先本机验。
+3. **密钥扫描**（公开仓 ⇒ 必做）⇒ `scripts/seed_llm_gateway.sh` 只从 env/envs 读 key
+   且不写入仓库；新增行里的字面量密钥全是测试夹具（`static-token-abc` /
+   `signed.jwt.value` / `control-secret-abc`）⇒ **无泄漏**。
+4. **隔离 worktree 上按 CI 同口径跑**（`_po-acc-eval`；合并结果树 == 被验树 ⇒ 读数直接可用）：
+   - `run-gates.mjs --ci` ⇒ **39/39 全过**（99.7s）
+   - `npm run test:all` ⇒ **374/374 个测试文件全部实跑**
+   - `go build ./...` / `go vet ./...` ⇒ exit 0
+   - `go test ./... -count=1` ⇒ **连绿 3 轮**（另加 1 轮基线对照，共 4 次全绿）
+
+### 8.2 合并前抓到并修掉的 2 处门禁真债（都是分支自带的）
+
+| 门 | 现象 | 修法 |
+|---|---|---|
+| `check:gofmt`（第 20 项） | `backend/cmd/pocketd/main.go` 的 `accjwt.Options{...}` 新增 `ServiceIdentity: true`（键名更短）却没重排冒号对齐 | 门禁自己的 `--fix`（6 增 6 删，**纯对齐**，EOL 未变） |
+| `check:env-example`（第 23 项） | 分支新增的 `POCKET_ACC_RUNTIME_URL` / `POCKET_ACC_CONTROL_SECRET` 被 backend 读取却没登记进 `.env.example` | 按代码默认值（空串 = 不启用）补登记 |
+
+⇒ ★ **第二处是被「失败即停」遮住的**：第 20 项红 ⇒ 第 21+ 项**从没跑过**
+⇒ 修好第一处，第二处才**第一次露出来** ⇒ §963.9.1 **R10 的又一例**。
+
+### 8.3 一个差点误判的读数（记下来免得下次再踩）
+
+门禁输出里有 4 行 `FAIL appId 应为 com.kaixuan.opencode.pocket，实际 com.example.wrong`
+等 ⇒ 看着像 maestro 流有问题 ⇒ **实为 `check-maestro-flows` 的自检故意错值**
+（`scripts/check-maestro-flows.mjs` 敏感度 3：`yamlOf('com.example.wrong', …)`）
+⇒ 那道门实际 **exit 0 / 结果 OK** ⇒ ★ **门禁输出里的 `FAIL` 行 ≠ 门禁红**
+⇒ 要同时看**退出码**与**那道门的结论行**（§963.9.1 R4 的同族）。
+
+### 8.4 合并方式与结果
+
+- `git merge --no-ff`（**不做快进**）⇒ 万一 CI 翻红可 `git revert -m 1` **非破坏性**回退。
+- 合并提交 `227a5a96`；推送后 `origin/main == 227a5a96`。
+- 合并结果树 = 被验树 = `837c82f5…`（`git rev-parse HEAD^{tree}`）
+  ⇒ **推上去的就是验过的那棵树**。
+- CI 读数：`227a5a96`（合并提交）⇒ **三个关键 job 全绿**：`backend #1031` success（`build gate` ✅ ＋ `test` = `go test -race ./... -count=1` ✅）／`backend-pg #328` success（`test-pg` ✅）／`frontend #1016` success（`typecheck + build + node tests` ✅ ＋ `android assembleDebug` ✅ ＋ `gates parity` ✅）⇒ **这批内容第一次进 CI 就是绿的**；❌ 只剩 `e2e-web #463` failure（`connect ECONNREFUSED 127.0.0.1:8088`）
+
+### 8.5 本轮新增的两件待拍板（**不代拍**）
+
+1. ⚠ **要不要把 `fix/**` 加进 `backend.yml` / `frontend.yml` / `backend-pg.yml` 的 `push.branches`？**
+   —— 现在这三个 workflow 只认 `[main, feat/**, …]` ⇒ **任何 `fix/*` 分支的工作在合并前都进不了 CI**
+   ⇒ 本次这两处门禁真债正是「合并前才发现」的例子（若这批内容直接进了 main 而没被发现，
+   下游会带着两处门禁红）。代价：每个 `fix/*` 分支的 push 都会多跑 3 个 job（CI 分钟）。
+   ⇒ ⇒ 登记在简报 189 的 ④。
+2. ⚠ **e2e-web 的长期红按「真因」修不修**？—— 真因已查实（见 §6 第 6 条）：
+   **e2e helper 把端口写死 8088，而 CI 把后端起在 8090** ⇒ 探针必然被拒 ⇒ `beforeAll` 挂掉。
+   ⇒ 修法很小，但**改完会让一套从未真跑过的用例第一次真跑** ⇒ **影响面本机量不了** ⇒ 不代拍。
+   ⇒ ⇒ 登记在简报 189 的 ⑤。
+
+### 8.6 远端分支处置：**保留**（并发会话仍在活跃）
+
+- `origin/fix/acc-runtime-service-jwt`：**保留未删**。
+  ⇒ ⚠ **理由**：属主那个会话**仍在活跃** —— 判据是它的工作目录 `C:/workspace/acc-wc-test`
+  **2026-10-22 22:24:05 还在写入**（本轮合并前 6 分钟）⇒ 按并发纪律
+  **不删别人在途分支的远端引用**。
+- ⇒ ★ **但内容已经全部在 main 里**（合并提交 `227a5a96`）⇒ 删的只是引用，不是成果。
+- ⚠ **一个必须说清的后果**：我合的是它**截至 `f897b7df`（14:00）**的那一批；
+  它此后若再推新提交，**那些提交不会自动进 main** ⇒ 需要它自己再合一次，
+  或下一轮由我合（届时同样先做「四道查证」）。
