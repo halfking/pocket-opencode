@@ -728,12 +728,12 @@ func main() {
 	// 拒掉（2026-10-22 实测本机 ACC）。所以这里给 Signer 而不是 APIKey。
 	if cfg.ACCRuntimeURL != "" && cfg.ACCRuntimeSecret != "" {
 		signer := accjwt.NewSigner(accjwt.Options{
-			Secret:           cfg.ACCRuntimeSecret,
-			Subject:          "pocketd:" + cfg.ACCRuntimeURL,
-			Username:         "pocketd",
-			TenantID:         "tenant-a",
-			ServiceIdentity:  true,
-			TTL:              time.Hour,
+			Secret:          cfg.ACCRuntimeSecret,
+			Subject:         "pocketd:" + cfg.ACCRuntimeURL,
+			Username:        "pocketd",
+			TenantID:        "tenant-a",
+			ServiceIdentity: true,
+			TTL:             time.Hour,
 		})
 		accClient, err := accruntime.New(acchttp.Config{
 			BaseURL: cfg.ACCRuntimeURL,
