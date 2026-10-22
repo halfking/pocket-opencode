@@ -405,12 +405,19 @@ agent-companion :12110（`0.1.0-e1cf36c.1792616171`）。
 | 8 | `email-accounts` | ✅ | 28 / 0 | 本轮修：页面就绪判据从**瞬时**改成**常驻**（§3.3 ⑥） |
 | 9 | `email-browse` | ✅ | 28 / 0 | 本轮修：`tapOn` 加 `index: 0`（§3.9）；含「正文不是原始 MIME」负向判据 |
 | 10 | `flashcards-write` | ✅ | 37 / 0 | 本轮修：夹具重启 App 后**再解锁一次**（§3.8） |
-| 11 | `settings-llm-gateway` | ❌ | 17 / 1 | **红在环境前置缺失**：网关地址与模型列表都已渲染，唯一缺 API Key（§6.1） |
+| 11 | `settings-llm-gateway` | ✅ | 18 / 0 | **round51 已转绿**：补上部署级凭据后复跑 18 步全过（详见 round51 报告 §2） |
 | 12 | `2026-10-02-real-login` | ✅ | 15 / 0 | 单独跑（`POCKET_SKIP_CDP_LOGIN=1`）；本轮修三处判据（§3.7） |
 | 13 | `login-gesture` | ✅ | 17 / 0 | 单独跑（`POCKET_SKIP_CDP_LOGIN=1`）；**必须单独跑**（§3.10） |
 
-**12 绿 / 1 红。** 唯一那条红不是产品缺陷，而是**本机缺 LLM 网关凭据**
+**12 绿 / 1 红**（本轮结束时）。唯一那条红不是产品缺陷，而是**本机缺 LLM 网关凭据**
 （§6.1），失败现场已如实登记。
+
+> **round51 更新**：该红已转绿 —— 凭据在远端网关侧本来就存在（`alias=openpocket`
+> 的常驻租户 key），是本机部署**没把它注入 pocketd**。补上
+> `POCKET_LLM_GATEWAY_API_KEY` 后，`settings-llm-gateway` 18 步全过；
+> 13 条主包流已在同一后端状态下**全量重跑**（12 绿 / 1 条 a11y 抖动，
+> 见 round51 报告）。详见
+> [round51 报告](2026-10-22-round51-llm-gateway-credential-and-full-13-flow-rerun.md)。
 
 ⚠️ 这张表是**多轮拼出来的**，不是一轮跑完的：首轮 11 条批次有 6 条红，
 逐条定位并修掉装置缺陷后复跑（§3.5–§3.10）才得到上表。
@@ -427,6 +434,16 @@ agent-companion :12110（`0.1.0-e1cf36c.1792616171`）。
    凭据（本机 llm-gateway 的 `LLM_GATEWAY_SECRET_KEY` 对本地与远程网关都
    返回 401 `invalid_key`；ACC 侧无 `LLM_GATEWAY_API_KEY`）。
    **没有为通过测试而放宽断言、没有伪造绿灯。**
+
+   > **round51 更新：此条已解决，但结论要改写。**
+   > 上面那句「本机没有可用的 LLM 网关凭据」**是错的** —— 凭据一直存在：
+   > 远端网关上有一把 `alias=openpocket` / `application_code=openpocket`
+   > 的**常驻租户 key**（当天还在服务生产流量）。真正缺的是**本机部署没把它
+   > 注入 pocketd**（`POCKET_LLM_GATEWAY_API_KEY` 为空）。
+   > 补上后该 flow 18 步全绿。教训：找凭据时先查**远端**的 key 清单，
+   > 别只在本机 docker 里翻——本机那两把（`local-test` 等）对
+   > `llm.kxpms.cn` 一律 `invalid_key`，容易误判成「整个环境都没有凭据」。
+   > 详见 [round51 报告](2026-10-22-round51-llm-gateway-credential-and-full-13-flow-rerun.md)。
 2. **`login-gesture` / `2026-10-02-real-login` 需要未登录态**：这两条断言登录页
    文案，而 harness 的 preflight 已真实登录 ⇒ 起点是 `#/ai`、登录页根本不出现。
    用 `POCKET_SKIP_CDP_LOGIN=1` 单独跑（preflight 已有该开关）。
