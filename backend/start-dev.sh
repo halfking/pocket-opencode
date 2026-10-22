@@ -64,9 +64,12 @@ if [ -f "$ROOT_ENV" ]; then
   GW_KEY="$(read_env_key POCKET_LLM_GATEWAY_API_KEY)"
   export POCKET_LLM_GATEWAY_URL="${POCKET_LLM_GATEWAY_URL:-$GW_URL}"
   export POCKET_LLM_GATEWAY_API_KEY="${POCKET_LLM_GATEWAY_API_KEY:-$GW_KEY}"
-  # env 没注入时 pocketd 会回落到内置默认网关（opencode.DefaultLLMGateway*），
-  # 这里照实打印来源，别再显示成"未配置"——那会让人以为对话不可用。
-  echo "AI 网关: ${POCKET_LLM_GATEWAY_URL:-https://llm.kxpms.cn/v1 (内置默认)} (key: ${POCKET_LLM_GATEWAY_API_KEY:+env 已注入}${POCKET_LLM_GATEWAY_API_KEY:-内置默认})"
+  # 网关**地址**有内置默认（opencode.DefaultLLMGatewayBaseURL），
+  # **key 没有**：内置默认 key 常量已删除（见 opencode/config_writer.go 的注释：
+  # 那把明文租户 key 会进 git 历史，并让从未配置过的实例拿别人的 key 计费）。
+  # 所以 key 为空时如实说「未配置」，别写成「内置默认」——那会让运维以为
+  # 对话能用，直到真机测试红在「设置页显示未配置」才发现缺 key。
+  echo "AI 网关: ${POCKET_LLM_GATEWAY_URL:-https://llm.kxpms.cn/v1 (内置默认地址)} (key: ${POCKET_LLM_GATEWAY_API_KEY:+env 已注入}${POCKET_LLM_GATEWAY_API_KEY:-未配置 —— 无内置默认 key})"
 fi
 
 # 私网/loopback 放行：本地 dev 环境有时需要连内网 AI 网关（如 192.168.x.x），
