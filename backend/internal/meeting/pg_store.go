@@ -103,6 +103,43 @@ func nextMeetingID() string {
 	return fmt.Sprintf("mtg_%d_%d", time.Now().UnixNano(), meetingIDSeq.Add(1))
 }
 
+// pgTruncate 把一个时刻**向下**截断到微秒。
+//
+// ⚠⚠ §964 为什么需要它（这是 §963 之后剩下的那个洞）：
+//
+//	PG 的 `timestamptz` **物理上只能存微秒** ⇒ 存进去的亚微秒部分会被
+//	**四舍五入**掉（PG 用 round-half-to-even：实测 .7µs 进位 / .3µs 舍去）。
+//	⇒ 若把 `time.Now()` 的**纳秒**值原样写进去，
+//	  「内存里返回给调用方的时刻」与「库里真正存的那一刻」**不相等**
+//	  ⇒ 判据一比就红（实测 Linux CI 上 `TestPGUpdateMetaScopedLeavesTranscriptUntouched` 红）。
+//
+// ★ 关键在「**向下**截断」而不是「四舍五入」：
+//
+//	截断后的值**本身没有亚微秒部分** ⇒ PG 再存它时**不产生任何取整**
+//	⇒ 内存值 == 库值 ⇒ **判据可以保持严格等值**（不必放宽）。
+//	若改成四舍五入，截断后的值仍可能落在 .5µs 边界上 ⇒ PG 会再动它一次
+//	⇒ 严格等值立刻又不成立。
+//
+// ⚠ 截断会丢掉 <1µs ⇒ 对业务毫无影响（会议时间点的精度需求是分钟级）。
+// ⚠ `Truncate` 以**零时刻**为基准向下取整 ⇒ 对 1970 年之后的时间戳
+//
+//	就是「按 epoch 向下取整到微秒」⇒ 与 PG 的取整方向一致。
+func pgTruncate(t time.Time) time.Time {
+	return t.Truncate(time.Microsecond)
+}
+
+// pgNow 取「写进 PG 的那一刻」的时间戳，**截断到微秒**。
+//
+// ⇒ 凡是**写进 PG 的时间戳**都必须走它（别再直接调 `time.Now()`），
+//   否则「写进去的值」与「返回给调用方的值」会差一个亚微秒量。
+// ⚠ `nextMeetingID()` 里的 `time.Now().UnixNano()` **不归它管**
+//
+//	—— 那是 ID 唯一性用途，与时间戳精度无关（且 UnixNano 取的是 epoch 纳秒，
+//	  截断它反而会削弱唯一性）。
+func pgNow() time.Time {
+	return pgTruncate(time.Now())
+}
+
 const meetingSelectCols = `id, owner_id, workspace_id, title, duration,
 	recording_url, transcript, summary,
 	COALESCE(key_decisions, '[]'::jsonb), COALESCE(action_items, '[]'::jsonb), COALESCE(tags, '[]'::jsonb),
@@ -249,7 +286,7 @@ func (s *PGStore) CreateScoped(req CreateMeetingRequest, ownerID, workspaceID st
 	//
 	// created_at 用客户端的 startedAt（Unix 毫秒），没有就用 now；
 	// duration 由毫秒换算成秒；refinedTranscript 落到 transcript 列。
-	createdAt := time.Now()
+	createdAt := pgNow()
 	if req.StartedAt > 0 {
 		createdAt = time.UnixMilli(req.StartedAt)
 	}
@@ -324,7 +361,7 @@ func (s *PGStore) CreateScoped(req CreateMeetingRequest, ownerID, workspaceID st
 	// 就置空 ⇒ 下一轮退回服务端发号（换号），**不覆盖**别人的行。
 	clientID := strings.TrimSpace(req.ID)
 	for attempt := 0; attempt < 5; attempt++ {
-		now := time.Now()
+		now := pgNow()
 		// 客户端带了 id 就用它（并由 ON CONFLICT 保证重复 POST 收敛到同一行）；
 		// 没带才走服务端生成。撞号重试时必须换新 id，否则重试没有意义。
 		id := clientID
@@ -475,7 +512,7 @@ func (s *PGStore) UpdateScoped(m *Meeting, ownerID, workspaceID string) error {
 	defer cancel()
 
 	// 与内存版一致：UpdatedAt 由存储层盖时间戳，不接受调用方传入的值。
-	now := time.Now()
+	now := pgNow()
 	const q = `UPDATE meetings SET
 		title=$4, duration=$5, recording_url=$6, transcript=$7, summary=$8,
 		key_decisions=$9, action_items=$10, tags=$11, project_id=$12, status=$13, updated_at=$14
@@ -568,7 +605,7 @@ func (s *PGStore) UpdateMetaScoped(id, ownerID, workspaceID string, title, statu
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	now := time.Now()
+	now := pgNow()
 	q, args := buildMetaUpdateSQL(id, ownerID, workspaceID, title, status, now)
 	tag, err := s.pool.Exec(ctx, q, args...)
 	if err != nil {
@@ -649,7 +686,7 @@ func (s *PGStore) DeleteScoped(id, ownerID, workspaceID string) error {
 		  AND meeting_tombstones.workspace_id = EXCLUDED.workspace_id
 		RETURNING id`
 	var tombID string
-	if err := tx.QueryRow(ctx, tomb, id, ownerID, workspaceID, time.Now()).Scan(&tombID); err != nil {
+	if err := tx.QueryRow(ctx, tomb, id, ownerID, workspaceID, pgNow()).Scan(&tombID); err != nil {
 		// ErrNoRows ⇒ 守卫把「这条墓碑属于别的作用域」挡掉了
 		// ⇒ ⇒ ⇒ 绝不搬走别人的墓碑（宁可整笔回滚，也不静默改归属）。
 		if errors.Is(err, pgx.ErrNoRows) {
