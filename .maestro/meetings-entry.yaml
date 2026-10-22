@@ -217,3 +217,23 @@ appId: com.kaixuan.opencode.pocket
 - assertNotVisible: "还没有会议记录"
 - assertNotVisible: "密码登录"
 - takeScreenshot: "logs/maestro/meetings-record"
+
+# ---------- 5. 收尾：把录音停掉（本 flow 会真的开录）----------
+# ⚠️ 2026-10-22 实测踩到：这条 flow 进 `?record=1` 会**自动开始录音**
+#   （MeetingRecordView 的 replace 带 record=1），而原文件**从不收尾**
+#   ⇒ 录音一直开着，后果有两条：
+#     ① 设备麦克风在整轮跑批期间**一直在录**（不该留下的副作用）；
+#     ② 离开宿主页后屏幕上常驻一个「会议录音中 mm:ss」浮层
+#        （RecordingPill.vue），它**每秒刷新**（计时器）⇒ 页面每秒重绘
+#        ⇒ 后续 flow 的 scrollUntilVisible 拿不到稳定的无障碍树。
+#        实测它把 more-grid-reach / more-entries-open 两条带崩：失败截图里
+#        「Tasks」「Cost & Quota」**明明在屏内**，判定却说找不到元素。
+#   ⇒ 这条 flow 必须自己收尾。停完之后 dock 的 aria-label 从「停止录音」翻成
+#     「开始录音」（MeetingMicDock.vue:6），那正是「确实停了」的证据。
+#     ⚠️ 录音指示条只在**离开宿主页**时出现 ⇒ 要用浮条上的停止按钮就得先离开；
+#       这里直接用**宿主页自己**的 dock 按钮，省掉一次导航。
+- tapOn: "停止录音"
+- extendedWaitUntil:
+    visible: "开始录音"
+    timeout: 30000
+- assertNotVisible: "停止录音"

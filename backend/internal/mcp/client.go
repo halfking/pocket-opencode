@@ -742,19 +742,68 @@ func (c *Client) ReportSession(ctx context.Context, args map[string]interface{})
 }
 
 // AccSession is one row from acc_list_sessions.
+//
+// 字段必须与 ACC 的 sessionmanager.SessionRecord **顶层** JSON 对齐
+// （acc-go internal/sessionmanager/session_record.go）。2026-10-22 实测发现
+// 旧定义与之几乎全不重合：ACC 返回的是
+//
+//	{"id","gateway_type","task_id","input","output","input_tokens","output_tokens",
+//	 "agent_kind","agent_session_id","gw_session_id","session_path","dispatch_id",
+//	 "tenant_id","created_at"}
+//
+// 而旧结构体读的是 "session_id"/"metadata"/"started_at"/"ended_at" —— 其中
+// "metadata" **ACC 从不返回**。后果不是"少几个字段"，而是会话的标识全丢：
+// accSessionToRow 从 Metadata 里取 agent_session_id/gw_session_id，取不到就
+// 退到 row.SessionID（也是空）⇒ 拿到的会话 id 为空串。
+// 实测症状：`GET /api/tasks/<acc task_id>/session-bundle` 返回
+// `{"current":[{"id":"", ...}]}` —— id 是空的，会话根本没法被点开。
+//
+// 所以这里补齐 ACC 实际返回的字段；老的 metadata / started_at / ended_at
+// 保留为向后兼容的兜底（更老的 ACC 版本或历史上报确实带过）。
 type AccSession struct {
-	SessionID    string          `json:"session_id"`
-	TaskID       string          `json:"task_id"`
-	GatewayType  string          `json:"gateway_type"`
-	AgentID      string          `json:"agent_id"`
-	DeviceName   string          `json:"device_name"`
-	ModelID      string          `json:"model_id"`
-	Input        string          `json:"input"`
-	InputTokens  int             `json:"input_tokens"`
-	OutputTokens int             `json:"output_tokens"`
-	StartedAt    string          `json:"started_at"`
-	EndedAt      string          `json:"ended_at"`
-	Metadata     json.RawMessage `json:"metadata"`
+	// ID 是 ACC 给这条上报记录的主键。
+	ID string `json:"id"`
+
+	// TaskID 是本次上报归属的 ACC 任务（形如
+	// "<agent-id>:dispatch_<uuid>"）。
+	TaskID      string `json:"task_id"`
+	GatewayType string `json:"gateway_type"`
+	AgentID     string `json:"agent_id"`
+	DeviceName  string `json:"device_name"`
+	ModelID     string `json:"model_id"`
+
+	// Input/Output 是本次上报的提示词与产出。
+	Input        string `json:"input"`
+	Output       string `json:"output"`
+	InputTokens  int    `json:"input_tokens"`
+	OutputTokens int    `json:"output_tokens"`
+
+	// AgentKind 是智能体种类（pi/claude/codex…）。
+	AgentKind string `json:"agent_kind"`
+	// AgentSessionID 是**智能体自己的**会话 id（可续跑的线程），也就是
+	// agent-companion 侧的 session id —— 用它回查 companion 的 transcript。
+	AgentSessionID string `json:"agent_session_id"`
+	// GwSessionID 是网关侧会话 id。
+	GwSessionID string `json:"gw_session_id"`
+	// SessionPath 是智能体本地会话文件路径。
+	SessionPath string `json:"session_path"`
+	// DispatchID 是派发命令 id。
+	DispatchID string `json:"dispatch_id"`
+
+	TenantID string `json:"tenant_id"`
+
+	// CreatedAt 是上报时刻（RFC3339）。
+	CreatedAt string `json:"created_at"`
+
+	// ---- 向后兼容兜底 ----
+	// SessionID 是老版本 pocketd 期望的字段名；现在 ACC 用 "id"。
+	SessionID string `json:"session_id"`
+	// StartedAt/EndedAt 是老版本上报格式的时间字段；现在 ACC 用 created_at。
+	StartedAt string `json:"started_at"`
+	EndedAt   string `json:"ended_at"`
+	// Metadata 是老版本上报格式里携带 agent_session_id/gw_session_id 的
+	// 嵌套对象；ACC 现版本不再返回它，但历史数据里可能还有。
+	Metadata json.RawMessage `json:"metadata"`
 }
 
 // ListSessions 按 task_id 拉 ACC 已上报会话。
@@ -818,6 +867,38 @@ func (c *Client) ListSessions(ctx context.Context, taskID string, limit int) ([]
 	text, err := c.CallTool(ctx, ToolListSessions, map[string]interface{}{
 		"task_id": taskID,
 		"limit":   limit,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("%s failed: %w", ToolListSessions, err)
+	}
+	var rows []AccSession
+	if err := json.Unmarshal([]byte(text), &rows); err != nil {
+		return nil, fmt.Errorf("%s parse: %w", ToolListSessions, err)
+	}
+	return rows, nil
+}
+
+// ListAllSessions 列出 ACC 里**全部**已上报会话（不带 task_id 过滤）。
+//
+// 为什么需要它：ListSessions 只能按 task_id 查，而 ACC 的 canonical task
+// 列表（/api/v2/canonical/tasks）在本机实测是空的 ⇒ ACC 里有会话、却没有
+// 对应的 task 记录 ⇒ 按 task 查不到任何东西，会话于是"存在于 ACC 但在
+// pocketd 里不可见"。acc_list_sessions 不带 task_id 时返回全量（租户内），
+// 这条路才拿得到。
+//
+// limit 上限 200（ACC 侧硬上限，超出会被截到 200）。
+func (c *Client) ListAllSessions(ctx context.Context, limit int) ([]AccSession, error) {
+	if c == nil {
+		return nil, fmt.Errorf("%s failed: MCP client not configured", ToolListSessions)
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	text, err := c.CallTool(ctx, ToolListSessions, map[string]interface{}{
+		"limit": limit,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("%s failed: %w", ToolListSessions, err)

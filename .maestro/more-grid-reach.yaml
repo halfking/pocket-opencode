@@ -83,6 +83,15 @@ appId: com.kaixuan.opencode.pocket
     timeout: 30000
 
 # ---------- 2. 主功能宫格：10 项全在 ----------
+#
+# ⚠️ 2026-10-22 实测（emulator-5556 / AOSP Android 14，en-US locale）：
+#   本段原先「工作搭子」「闪卡」两条是**纯中文判据**，在英文设备上必然红
+#   （实测红在「工作搭子」）。这不是 App 缺陷 —— 标签走 t('nav.*')，
+#   en-US 下就是 "Workbuddy" / "Flashcards"；是判据缺英文分支。
+#   下面全部改成 `中文|English` 双分支，英文取自 frontend/src/locales/en-US.json
+#   （nav.workbuddy / nav.flashcards / nav.vault / routes.* / flashcards.io.title）。
+#   同一条 flow 上半段的「学习|Study」…「本地智能体|Local Agent」本来就有英文
+#   分支，所以它们过了 —— 这正是"半改"的危害：同屏同类断言一半有分支一半没有。
 - assertVisible: "学习|Study"
 - assertVisible: "对话|Chat"
 - assertVisible: "会议|Meetings"
@@ -91,8 +100,8 @@ appId: com.kaixuan.opencode.pocket
 - assertVisible: "技能市场|Skill Market"
 - assertVisible: "智能体市场|Agent Market"
 - assertVisible: "本地智能体|Local Agent"
-- assertVisible: "工作搭子"
-- assertVisible: "闪卡"
+- assertVisible: "工作搭子|Workbuddy"
+- assertVisible: "闪卡|Flashcards"
 
 # ---------- 2b. 负向断言：密码箱在 Android 上**必须不可见** ----------
 # 这条是本 flow 判别力最强的一条。
@@ -109,7 +118,9 @@ appId: com.kaixuan.opencode.pocket
 # ⚠️ **位置至关重要**：这条必须放在主功能区**还在视口内**的时候断言。
 #   运维分组在下面，滚过去之后主功能区已滚出视口，WebView 不再把它们放进树里，
 #   于是 `assertNotVisible: 密码箱` 会**恒真** —— 判据失明，绿灯不再携带信息。
-- assertNotVisible: "密码箱"
+#   ⚠️ 2026-10-22：这条也要补英文分支（nav.vault → en-US 是 "Vault"），
+#     否则在英文设备上它只是"找不到中文所以看不见"，负向判据更失明。
+- assertNotVisible: "密码箱|Vault"
 
 # ---------- 3. 运维与高级分组（逐项滚到视口内再断言）----------
 # ⚠️ 2026-10-03 15:53 实测修正：原先只 scrollUntilVisible 到分组标题「运维与高级」，
@@ -121,73 +132,73 @@ appId: com.kaixuan.opencode.pocket
 #     设备分辨率与行高，换一台机就错位。
 - scrollUntilVisible:
     element:
-      text: "运维与高级"
+      text: "运维与高级|Operations & advanced"
     direction: DOWN
     timeout: 20000
     visibilityPercentage: 100
-- assertVisible: "运维与高级"
+- assertVisible: "运维与高级|Operations & advanced"
 
 - scrollUntilVisible:
     element:
-      text: "设置"
+      text: "设置|Settings"
     direction: DOWN
     timeout: 20000
     visibilityPercentage: 100
-- assertVisible: "设置"
+- assertVisible: "设置|Settings"
 
 - scrollUntilVisible:
     element:
-      text: "实例"
+      text: "实例|Instances"
     direction: DOWN
     timeout: 20000
     visibilityPercentage: 100
-- assertVisible: "实例"
+- assertVisible: "实例|Instances"
 
 - scrollUntilVisible:
     element:
-      text: "会话"
+      text: "会话|Sessions"
     direction: DOWN
     timeout: 20000
     visibilityPercentage: 100
-- assertVisible: "会话"
+- assertVisible: "会话|Sessions"
 
 - scrollUntilVisible:
     element:
-      text: "任务"
+      text: "任务|Tasks"
     direction: DOWN
     timeout: 20000
     visibilityPercentage: 100
-- assertVisible: "任务"
+- assertVisible: "任务|Tasks"
 
 - scrollUntilVisible:
     element:
-      text: "成本与配额"
+      text: "成本与配额|Cost & Quota"
     direction: DOWN
     timeout: 20000
     visibilityPercentage: 100
-- assertVisible: "成本与配额"
+- assertVisible: "成本与配额|Cost & Quota"
 
 - scrollUntilVisible:
     element:
-      text: "网关节点"
+      text: "网关节点|Gateway Nodes"
     direction: DOWN
     timeout: 20000
     visibilityPercentage: 100
-- assertVisible: "网关节点"
+- assertVisible: "网关节点|Gateway Nodes"
 
 - scrollUntilVisible:
     element:
-      text: "选择服务器"
+      text: "选择服务器|Select server"
     direction: DOWN
     timeout: 20000
     visibilityPercentage: 100
-- assertVisible: "选择服务器"
+- assertVisible: "选择服务器|Select server"
 
 - scrollUntilVisible:
     element:
-      text: "导入导出"
+      text: "导入导出|Import / Export"
     direction: DOWN
     timeout: 20000
     visibilityPercentage: 100
-- assertVisible: "导入导出"
+- assertVisible: "导入导出|Import / Export"
 - takeScreenshot: "logs/maestro/more-grid-full"

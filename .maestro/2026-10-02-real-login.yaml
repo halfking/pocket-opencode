@@ -1,4 +1,4 @@
-# 真机登录流程（2026-10-03 按实测重写）
+# 真机登录流程（2026-10-03 按实测重写；2026-10-22 按实测再修）
 #
 # ⚠️ 旧版文件头（2026-10-02）写的是「这条 flow 在真机上必然红，原因是
 # Capacitor WebView 对 uiautomator 完全不透明、Maestro 看不见 App 的任何文本」。
@@ -17,6 +17,38 @@
 # 后半段的判据也一并更正：旧写法里的「打开菜单」来自**早已删除的抽屉式菜单**
 # （2026-09-05 抽屉收编成 MoreHubView，2026-10-03 一级导航又换成固定底部 tab），
 # 留着它只会让这条判据永远等不到。
+#
+# ── 2026-10-22 本轮修的三处（都是**判据本身错了**，不是产品坏了）──────────
+#
+# ① 落点判据把「还停在登录页」也算成合法落点 ⇒ 登录失败被彻底掩盖。
+#    旧写法：`visible: "创建主密码|解锁本地数据|密码登录"`。
+#    实测：口令没被 Maestro 展开（`Inputting text: undefined`）⇒ 登录 401 ⇒
+#    页面纹丝不动地停在登录页 ⇒ 上面那句里的第三个候选「密码登录」**恰好成立**
+#    ⇒ 这条 extendedWaitUntil 照样 COMPLETED ⇒ 真正的失败被推迟到下游，
+#    现场只剩一句「登录页还在」，把人引去查「为什么登录后又弹回登录页」。
+#    ⇒ 落点集合里必须**去掉「密码登录」**：成功落点只有
+#      ① 直接进 App（外壳 header 的 aria-label「打开菜单|Open menu」）
+#      ② D 态主密码弹窗（「创建主密码」）
+#      ③ B 态解锁屏（「解锁本地数据」）
+#    「还在登录页」是**失败**，不是落点。
+#
+# ② 收尾硬判据 `assertNotVisible: "^密码登录$"` 在 D 态下**永远不成立**。
+#    LoginView.handleLogin / completeAuth 在 `!cryptoConfig.cfg.hasMasterPassword`
+#    时是 `showMasterPasswordDialog.value = true; return` —— **直接 return，
+#    不跳 /ai**。而 MasterPasswordDialog 是**渲染在 LoginView 内部**的模态框
+#    ⇒ D 态下登录页整棵树仍然在无障碍树里（被弹窗盖着）⇒
+#    Maestro 的 visible 判定不区分遮挡 ⇒ 「登录页还在」为真。
+#    ⇒ 修法：先把 D 态弹窗处置掉（跑 _set-master-password.yaml），
+#      弹窗关闭后 LoginView 被 router.replace('/ai') 卸载 ⇒ 登录页才真正消失。
+#      这条断言的含义因此从「本来就不成立」变成「登录确实成功离开了登录页」。
+#
+# ③ 登录手势链里 `${POCKET_DEV_PASS}` 的展开，2026-10-22 之前**从来没成功过**。
+#    Maestro 的 `${VAR}` 只认**flow 自己 `env:` 块**里定义的变量，不读进程环境变量；
+#    没有 env 块时它展开成字符串 "undefined"（实测日志：
+#    `Inputting text: undefined`）⇒ 密码框里躺的是 "undefined" ⇒ 必然 401。
+#    现在由 scripts/maestro-run.mjs 的 materializeFlowWithEnv 在跑前生成
+#    临时 flow（前置区插 env 块，跑完删除）把它补上。
+#    ⚠️ 别退回「用 --env 传」：那会把口令暴露在进程命令行里。
 appId: com.kaixuan.opencode.pocket
 ---
 # ---------- 登录段：只有在真的停在登录页时才走 ----------
@@ -39,7 +71,7 @@ appId: com.kaixuan.opencode.pocket
     commands:
       # ⚠️ 2026-10-07 实测：密码框**没有可按文本选中的节点**。
       #   失败现场整棵树里只有两个 EditText：
-      #     EditText text='admin'  bounds=[105,1218][973,1336]  ← 用户名，有值
+      #     EditText text='admin' bounds=[105,1218][973,1336]  ← 用户名，有值
       #     EditText text=None     bounds=[105,1430][973,1551]  ← 密码，**无文本**
       #   而标签「用户名」「密码」都是 android.view.View、clickable=false，不是输入框；
       #   旧写法用的「输入密码」是 placeholder，同样不在树里。
@@ -53,21 +85,42 @@ appId: com.kaixuan.opencode.pocket
       # 登录按钮在两个字段都非空时才 enabled（LoginView 的 disabled 绑定），
       # 所以 enabled=true 同时证明密码真的落进了 input —— 比断言文本更稳。
       - extendedWaitUntil:
-          visible: { text: "登录", enabled: true }
+          visible: { text: "登录|Sign in", enabled: true }
           timeout: 20000
-      - tapOn: { text: "登录", enabled: true }
+      - tapOn: { text: "登录|Sign in", enabled: true }
 
-# ---------- 落点判据：登录后必须脱离登录态 ----------
-# 三种合法落点：进 App（底部导航已渲染）/ 创建主密码（D 态弹窗）/ 解锁本地数据（B 态）。
-# 「主导航」是 BottomNav 的 aria-label（zh-CN nav.mainNavigation）。
+# ---------- 落点判据：登录成功 ⇒ 离开登录页 ----------
+# ⚠️ 这三选一里**不能有「密码登录」**（见文件头 ①）：有它，登录失败也会过。
+# 「打开菜单|Open menu」是已登录 App 外壳 header 的 aria-label（走 i18n：
+# zh-CN「打开菜单」/ en-US「Open menu」），登录页与解锁页都没有它。
 - extendedWaitUntil:
-    # ⚠️ 2026-10-07 实测：三选一里的「主导航」是 BottomNav 的 aria-label，
-    #   本设备 a11y 树里 content-desc 全空 ⇒ 永远匹配不到（_goto-pkm 已踩实）。
-    #   换成一个**真的在登录页渲染成 text** 的：密码登录 / 验证码登录 两个 tab 之一。
-    visible: "创建主密码|解锁本地数据|密码登录"
+    visible: "打开菜单|Open menu|创建主密码|解锁本地数据"
     timeout: 60000
-- takeScreenshot: "logs/maestro/2026-10-02-real-login"
 
+# ---------- D 态：登录成功但本机还没有主密码 ----------
+# LoginView 登录成功后会弹「创建主密码」模态框并**停在登录页**（不跳 /ai），
+# 所以这一步必须显式处置，处置完才会 router.replace('/ai)。
+# ⚠️ `runFlow when` 是瞬时判定：上面那句 extendedWaitUntil 已经把落点等出来了，
+#   这里再判不会「判得太早」。
+- runFlow:
+    when:
+      visible: "创建主密码"
+    commands:
+      # ⚠️ 子流路径用**裸文件名**（与 _login.yaml 一致）：runFlow 的相对路径是
+      #   按**当前 flow 所在目录**解析的，写成 `.maestro/xxx.yaml` 会被解析成
+      #   `.maestro/.maestro/xxx.yaml` ⇒ 解析期就报 "Parsing Failed"，
+      #   报错位置指向外层 runFlow，离真因很远。
+      - runFlow: _set-master-password.yaml
+
+# ---------- 落点终判 + 收尾硬判据 ----------
+# 进 App 的唯一标志是外壳的「打开菜单|Open menu」。
+# ⚠️ 这条超时 = 登录没有走到 App（没进外壳、也没弹主密码弹窗）。
+#   失败现场的无障碍树会带出原因（例如「登录失败：用户名或密码错误」），
+#   **别把它读成「App 坏了」**。
+- extendedWaitUntil:
+    visible: "打开菜单|Open menu"
+    timeout: 90000
+- assertVisible: "打开菜单|Open menu"
 # 硬判据：登录成功后不该还停在登录页。
 # ⚠️ 2026-10-07 实测：点完「登录」后**必须先等往返**。
 #   原写法点完立刻断言，那一刻请求还在飞，登录页当然还在 ⇒ 报「登录失败」。

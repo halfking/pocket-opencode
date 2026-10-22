@@ -11,6 +11,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/halfking/pocket-opencode/backend/internal/acchttp"
+	"github.com/halfking/pocket-opencode/backend/internal/accjwt"
+	"github.com/halfking/pocket-opencode/backend/internal/accruntime"
 	"github.com/halfking/pocket-opencode/backend/internal/adapter"
 	"github.com/halfking/pocket-opencode/backend/internal/adapter/composite"
 	"github.com/halfking/pocket-opencode/backend/internal/adapter/disk"
@@ -711,6 +714,39 @@ func main() {
 		log.Printf("Companion client: %s (agent-companion read face)", cfg.CompanionURL)
 	} else {
 		log.Println("Companion client: not configured (set POCKET_COMPANION_URL to enable)")
+	}
+	// ACC Runtime Control 客户端（/api/v2/runtime/*、/api/v2/approvals）。
+	//
+	// 之前这里**根本没有装配**：accruntime 包存在、SetACCRuntime 存在、
+	// 只有测试在调，生产 main.go 从未 new 过。于是
+	//   · s.accRuntime 恒为 nil ⇒ 移动端审批回复**不经过** ACC permission
+	//     gate（mobile_approval_handler.go 里 `if s.accRuntime != nil`），
+	//     绑定到 ACC dispatch 的任务可以被本地直接放行 —— 门禁形同虚设；
+	//   · ACC-bound 任务的取消只会拿到 503 acc_runtime_not_configured。
+	//
+	// 装配需要**签名**：该面只认 HS256 服务 JWT，静态 Bearer 会被 401
+	// 拒掉（2026-10-22 实测本机 ACC）。所以这里给 Signer 而不是 APIKey。
+	if cfg.ACCRuntimeURL != "" && cfg.ACCRuntimeSecret != "" {
+		signer := accjwt.NewSigner(accjwt.Options{
+			Secret:          cfg.ACCRuntimeSecret,
+			Subject:         "pocketd:" + cfg.ACCRuntimeURL,
+			Username:        "pocketd",
+			TenantID:        "tenant-a",
+			ServiceIdentity: true,
+			TTL:             time.Hour,
+		})
+		accClient, err := accruntime.New(acchttp.Config{
+			BaseURL: cfg.ACCRuntimeURL,
+			Signer:  signer,
+		})
+		if err != nil {
+			log.Printf("WARN: ACC runtime client not wired: %v", err)
+		} else {
+			srv.SetACCRuntime(accClient)
+			log.Printf("ACC runtime client: %s (HS256 service JWT, fail-closed permission gate armed)", cfg.ACCRuntimeURL)
+		}
+	} else {
+		log.Println("ACC runtime client: not configured (set POCKET_ACC_RUNTIME_URL + POCKET_ACC_CONTROL_SECRET to enable)")
 	}
 	// 必须在下面 sources.New(..., srv.MeetingStore()) 之前注入，
 	// 否则 learning resolver 会拿到已被替换掉的那份内存 store。

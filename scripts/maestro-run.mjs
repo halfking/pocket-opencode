@@ -7,10 +7,11 @@
 // 用法：
 //   node scripts/maestro-run.mjs <flow.yaml> [更多 flow.yaml ...]
 //   node scripts/maestro-run.mjs .maestro/notes-crud.yaml
-import { readFileSync, existsSync } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync, unlinkSync, readdirSync } from 'node:fs'
 import { spawnSync, execFileSync } from 'node:child_process'
-import { resolve } from 'node:path'
+import { resolve, join, dirname, basename } from 'node:path'
 import { homedir } from 'node:os'
+import { readA11yGlitchFromDirs } from './lib/a11y-glitch.mjs'
 
 const ROOT = resolve(new URL('..', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'))
 const GO = resolve(ROOT, 'backend/internal/server/server_assistant.go')
@@ -203,7 +204,9 @@ if (!flows.length) {
 // 实测 force-stop 成功（ActivityManager 打了 Killing）但之后**没有任何 Start proc**，
 // App 再没起来，45s 内界面停在桌面。改 stopApp:false 能起来，但 App 会保留
 // pocket:lastRoute 指向的任意页面（实测撞到过邮件详情），起始状态不可预测。
-// 所以这里统一走 adb：强停 + monkey 启动（实测这条路径在 MIUI 上可靠），
+// 所以这里统一走 adb：强停 + **显式组件 am start** 启动（2026-10-22 实测：
+// monkey 在 AOSP Android 14 上起不来这个 App —— 退出码 251、App 没起来、
+// 输出里也没有任何可匹配的失败标记；显式组件冷启动一次就成），
 // 让每次 run 的起始状态一致。App 也没有注册 deep link，没法用 intent 定位路由。
 const adb = (args, t = 60000) =>
   execFileSync(ADB, ['-s', DEVICE, ...args], { encoding: 'utf8', timeout: t, maxBuffer: 33554432 })
@@ -1204,6 +1207,59 @@ function wakeDevice() {
   return awake
 }
 
+/**
+ * 预授运行时权限 —— 否则系统权限弹窗会盖住整个 App。
+ *
+ * 缺陷现场（2026-10-22 实测，emulator-5556 / AOSP Android 14）：全新安装
+ * 后第一次启动，App 申请 POST_NOTIFICATIONS，系统弹出
+ * 「Allow AI Work Mess to send you notifications?」。这个对话框**盖在登录页
+ * 与「创建主密码」弹窗之上**，把点击全吃掉：preflight 把登录表单和主密码都
+ * 填好了，最后仍停在登录页 30s 超时 —— 而**后端一条 /api/auth/login 都
+ * 没收到**（请求压根没发出去）。
+ *
+ * 为什么这个洞能长期存在：唯一的清理机制 _dismiss-system-dialogs.yaml
+ * **只在 MIUI 设备上跑**（见 preFlows = isMiui ? [...] : []），理由是
+ * 「那些弹窗是 Xiaomi 独有的」。但 POST_NOTIFICATIONS 是 **AOSP 原生**
+ * 运行时权限（Android 13+），AOSP 的弹窗文案是
+ * "Allow <App> to send you notifications?" —— 按钮就在那个 flow 的
+ * "允许|Allow" 正则里，只是非 MIUI 设备根本不跑它。
+ *
+ * 更糟的是它**只在全新安装后第一次启动出现**：包已装的后续轮次不复现，
+ * 于是「装完先跑一条冒烟流」的那一轮必然被挡住，结论还会读成
+ * 「登录功能坏了」。
+ *
+ * 修法：启动 App 之前用 `pm grant` 预授，弹窗就不会出现 —— 确定性的，
+ * 不依赖厂商弹窗文案，也不用等 UI（比在 flow 里 tap 快得多）。
+ * 授不到的（App 未声明 / 非运行时权限）静默跳过：那说明该权限不适用，
+ * 不是失败。
+ */
+// RECORD_AUDIO：Android 13+（API 33+）起，首次调用录音 API 会弹
+// AOSP 原生权限框「Allow <app> to record audio?」。这是**英文**文案，
+// 与 MIUI 的中文文案不是一套，所以 meetings-entry 这类 flow 里
+// 按中文文案清场的分支根本匹配不到（见 .maestro/meetings-entry.yaml）。
+// 后果：权限框盖住「会议详情」，flow 红在 Assert that "会议详情" is visible，
+// 症状看起来像"会议页坏了"，真因是系统弹窗。
+// 与 POST_NOTIFICATIONS 同理：预先 pm grant，弹窗就不会出现。
+const RUNTIME_PERMISSIONS = [
+  'android.permission.POST_NOTIFICATIONS',
+  'android.permission.RECORD_AUDIO',
+]
+
+function grantRuntimePermissions() {
+  const granted = []
+  for (const perm of RUNTIME_PERMISSIONS) {
+    try {
+      adb(['shell', 'pm', 'grant', PKG, perm], 30000)
+      granted.push(perm.replace('android.permission.', ''))
+    } catch {
+      // 未声明 / 非运行时权限 → 不适用，跳过。
+    }
+  }
+  if (granted.length) {
+    console.log(`[preflight] 已预授运行时权限：${granted.join(', ')}（否则系统权限弹窗会盖住登录）`)
+  }
+}
+
 async function preflight() {
   if (!(await ensureBackend())) return false
   if (!(await assertDeviceReachesBackend())) return false
@@ -1233,10 +1289,13 @@ async function preflight() {
   } catch (e) {
     console.log(`[preflight] 检查 ${PKG} 启用状态失败（继续）：${String(e.message || e).slice(0, 120)}`)
   }
+  grantRuntimePermissions()
   console.log('[preflight] 强停并重新启动 App（绕开 MIUI 吞掉 force-stop 后启动意图的问题）')
   try { adb(['shell', 'am', 'force-stop', PKG]) } catch { /* 本来就没跑 */ }
   await sleep(1500)
   // ★ 2026-10-07 补一层兜底：monkey 起不来时改用显式组件 am start。
+  //    （2026-10-22 起，显式组件已成**主路径** —— 实测 monkey 在 AOSP 14 上
+  //    恒定失败，详见下面那段注释；这段保留为该次排查的历史记录。）
   //
   // 上面那段 pm enable 的补救只覆盖**一种**成因（enabled=2/3/4 被系统清理）。
   // 实测还有**另一种**成因会让 monkey 报同一句「No activities found to run,
@@ -1250,39 +1309,46 @@ async function preflight() {
   //   立刻变成该包。
   // ⇒ 两个权威源自相矛盾时，别急着报「App 装不上」；显式组件不依赖隐式解析。
   // 旧行为是直接抛错，现象被误读成装不上，真因（SystemUI 退化）完全不可见。
+  // ⚠️ 2026-10-22 修：**monkey 在本机实测起不来 App，且失败特征不在输出里**。
+  //
+  // 冷启动实测（emulator-5556 / AOSP Android 14，force-stop 后跑）：
+  //   退出码 **251**、App **没起来**（前台仍是 NexusLauncher、pidof 无 pid），
+  //   而输出里既没有「No activities found to run, monkey aborted.」，也没有
+  //   「Events injected: 1」—— 从输出看它只是"没干活"，没有任何可匹配的标记。
+  //   ⇒ 判据只能是**「App 有没有真的在前台」**（下面那个循环查 topResumedActivity
+  //     + pidof），退出码与输出正则都不可靠。
+  //
+  // 原写法是「monkey 失败 → 退回显式组件 am start」。但 monkey 在这里是
+  // **恒定失败**（251）⇒ 每轮都白跑一次注定失败的 monkey，而日志把一个
+  // 必然发生的兜底写成偶发故障，排查时容易被带偏。
+  // 改成：**直接用显式组件 am start 为主路径** —— 它不依赖 PackageManager 的
+  // 隐式意图解析（宿主高负载把 SystemUI 压到 ANR 时隐式解析会临时失效，
+  // 见上面 2026-10-07 那段注释），实测冷启动一次就成（exit=0、前台立刻变成
+  // 该包的 MainActivity）。
+  //
+  // 先试最常见的 MainActivity；不成再从 dumpsys 里找带 LAUNCHER 的那个。
+  const tried = []
+  const cands = ['.MainActivity']
   try {
-    adb(['shell', 'monkey', '-p', PKG, '-c', 'android.intent.category.LAUNCHER', '1'], 30000)
-  } catch (e) {
-    const why = String(e.message || e).replace(/\s+/g, ' ').slice(0, 160)
-    console.log(`[preflight] monkey 启动失败（${why}）→ 退回显式组件 am start`)
-    // 先试最常见的 MainActivity；不成再从 dumpsys 里找带 LAUNCHER 的那个
-    const tried = []
-    const cands = ['.MainActivity']
+    const dump = adb(['shell', 'dumpsys', 'package', PKG], 30000)
+    for (const m of dump.matchAll(/([A-Za-z0-9_.$]+)\s+filter[^\n]*\n(?:[^\n]*\n)?[^\n]*android\.intent\.category\.LAUNCHER/g)) {
+      if (m[1] && !cands.includes(`.${m[1].split('.').pop()}`)) cands.push(`.${m[1].split('.').pop()}`)
+    }
+  } catch { /* dumpsys 都失败就只剩 MainActivity 可试 */ }
+  let started = false
+  for (const act of cands) {
     try {
-      const dump = adb(['shell', 'dumpsys', 'package', PKG], 30000)
-      for (const m of dump.matchAll(/([A-Za-z0-9_.$]+)\s+filter[^\n]*\n(?:[^\n]*\n)?[^\n]*android\.intent\.category\.LAUNCHER/g)) {
-        if (m[1] && !cands.includes(`.${m[1].split('.').pop()}`)) cands.push(`.${m[1].split('.').pop()}`)
-      }
-    } catch { /* dumpsys 都失败就只剩 MainActivity 可试 */ }
-    let started = false
-    for (const act of cands) {
-      try {
-        adb(['shell', 'am', 'start', '-n', `${PKG}/${act}`], 30000)
-        console.log(`[preflight] am start 成功：${PKG}/${act}`)
-        started = true
-        break
-      } catch (e2) {
-        tried.push(`${act}: ${String(e2.message || e2).replace(/\s+/g, ' ').slice(0, 60)}`)
-      }
+      adb(['shell', 'am', 'start', '-n', `${PKG}/${act}`], 30000)
+      console.log(`[preflight] am start 成功：${PKG}/${act}`)
+      started = true
+      break
+    } catch (e2) {
+      tried.push(`${act}: ${String(e2.message || e2).replace(/\s+/g, ' ').slice(0, 60)}`)
     }
-    if (!started) {
-      // 两条路都不通才抛，且把 monkey 的原始失败一并带上，别让「装不上」掩盖真因
-      const err = new Error(
-        `启动失败：monkey 与 am start 均不可用。monkey=${why}；am start 尝试=${tried.join(' | ') || '(无候选)'}`
-      )
-      err.code = e?.code
-      throw err
-    }
+  }
+  if (!started) {
+    // 显式组件也不通才抛，且把尝试过的候选一并带上，别让「装不上」掩盖真因
+    throw new Error(`启动失败：显式组件 am start 均不可用。尝试=${tried.join(' | ') || '(无候选)'}`)
   }
   // 等 WebView 真正起来，而不是盲等固定秒数
   const deadline = Date.now() + 60000
@@ -1769,31 +1835,96 @@ if (process.env.POCKET_SKIP_CDP_LOGIN !== '1') {
     //
     //   修法用 new RegExp 而不是把斜杠拼进字符串：既保持 JSON.stringify 的
     //   转义/防注入意图，类型又是对的。
+    // 逐个框填值。两条通路，先 CDP 后系统 IME。
+    //
+    // ★ 2026-10-22 实测（emulator-5556，AOSP Android 14）：**CDP 的
+    // Input.insertText 在本机上不生效** —— 焦点判定通过
+    // （document.activeElement === el）、insertText 也返回成功，但框值
+    // 纹丝不动，最后读回 [15,0,0]（15 是登录密码的长度，弹窗两个框都是 0），
+    // 于是报成「登录后仍停在登录页」—— 离真因隔了两跳，读起来像登录坏了。
+    //
+    // 与之相对，**走系统 IME 的 `adb shell input text` 是有效的**，前提是
+    // 那个框拿到**原生焦点**（软键盘真的弹起来）：同一台机上，用真实点击
+    // 命中那个框之后，input text 一次就成，两框都拿到 13 位、点确认后弹窗
+    // 关闭、路由跳到 #/ai。
+    //
+    // ⇒ 修法：先用 CDP 的 **Input.dispatchMouseEvent** 在框上点一下（这是
+    // 渲染器认的指针事件，会把焦点与 IME 一起挂上去），再用 adb 的
+    // `input text` 敲进去；原来的 CDP insertText 保留为第一条通路 —— 两条
+    // 都试过仍读不到值，才判失败。
+    //
+    // 为什么不用 adb tap：那是**屏幕**坐标，还得从 viewport 换算（状态栏
+    // 偏移、滚动位置），错一点就点到别的控件上。CDP 的鼠标事件直接用
+    // viewport 坐标，由渲染器自己换算，没有这层误差。
+    const shQuote = (s) => "'" + String(s).replace(/'/g, `'\\''`) + "'"
+    const masterText = master || ''
     for (const which of ['至少', '再次']) {
-      const f = await cdpEval(`(function(){
+      // 取框的中心（viewport 坐标）并先滚到可视区，再点。
+      const rect = await cdpEval(`(function(){
         try {
           var ins = Array.from(document.querySelectorAll('input'))
           var re = new RegExp(${JSON.stringify(which)})
           var el = ins.filter(function(x){ return re.test(x.placeholder||'') })[0]
-          if (!el) return 'no-el'
-          el.value = ''
-          el.focus()
-          return document.activeElement === el ? 'focused' : 'focus-failed'
-        } catch (e) { return 'err:' + String(e).slice(0,80) }
+          if(!el) return ''
+          el.scrollIntoView({block:'center'})
+          var r = el.getBoundingClientRect()
+          return JSON.stringify({x: r.left + r.width/2, y: r.top + r.height/2})
+        } catch (e) { return '' }
       })()`)
-      if (f !== 'focused') { console.log(`[preflight] ⚠️ focus 失败(/${which}/)：${f}`); break }
-      await sleep(300)
-      // ★ 2026-10-11：填值通路从 `adb input text` 换成 CDP `Input.insertText`。
-      //   原因见 cdpInsertText 的注释：模拟器上程序化 focus **不会**激活系统 IME，
-      //   那条通路实测**完全不生效**（`input keyevent 67` 与 input text 都被忽略）。
-      //   所以「清空」也不能再用 keyevent 67 —— 改成在 DOM 层直接置空，
-      //   再由 insertText 触发 input 事件，让 Vue 的 v-model 读到干净的新值。
-      const put = await cdpInsertText(master || '')
-      if (!put) {
-        console.log(`[preflight] ⚠️ Input.insertText 失败(/${which}/)：CDP 没有回 result`)
+      let box = null
+      try { box = JSON.parse(rect) } catch { box = null }
+      if (!box) {
+        console.log(`[preflight] ⚠️ 找不到主密码框(/${which}/)`)
         break
       }
-      await sleep(500)
+      // 通路 1：CDP 指针事件点一下（让 IME 挂上去），再试 CDP insertText。
+      await cdpCall('Input.dispatchMouseEvent', { type: 'mousePressed', x: box.x, y: box.y, button: 'left', clickCount: 1 }, 8000)
+      await cdpCall('Input.dispatchMouseEvent', { type: 'mouseReleased', x: box.x, y: box.y, button: 'left', clickCount: 1 }, 8000)
+      await sleep(400)
+      await cdpEval(`(function(){
+        try {
+          var ins = Array.from(document.querySelectorAll('input'))
+          var re = new RegExp(${JSON.stringify(which)})
+          var el = ins.filter(function(x){ return re.test(x.placeholder||'') })[0]
+          if (el) { el.value = ''; el.focus() }
+          return 'ok'
+        } catch (e) { return 'err' }
+      })()`)
+      const put = await cdpInsertText(masterText)
+      await sleep(400)
+      let got = await cdpEval(`(function(){
+        try {
+          var ins = Array.from(document.querySelectorAll('input'))
+          var re = new RegExp(${JSON.stringify(which)})
+          var el = ins.filter(function(x){ return re.test(x.placeholder||'') })[0]
+          return el ? (el.value||'').length : -1
+        } catch (e) { return -1 }
+      })()`)
+      if (!put || got !== masterText.length) {
+        // 通路 2：系统 IME。前面那次真实点击已经把 IME 挂在这个框上了，
+        // 于是 `input text` 这一次能真正落到 v-model 里。
+        // 清空走 keyevent（KEYCODE_MOVE_END + N×KEYCODE_DEL）。
+        const dels = Array.from({ length: 40 }, () => 'input keyevent 67').join(' && ')
+        try { ash(`input keyevent 123 && ${dels}`) } catch { /* 清空失败也往下走 */ }
+        await sleep(300)
+        try { ash(`input text ${shQuote(masterText)}`) } catch {
+          console.log(`[preflight] ⚠️ 系统 IME 填值失败(/${which}/)`)
+          break
+        }
+        await sleep(500)
+        got = await cdpEval(`(function(){
+          try {
+            var ins = Array.from(document.querySelectorAll('input'))
+            var re = new RegExp(${JSON.stringify(which)})
+            var el = ins.filter(function(x){ return re.test(x.placeholder||'') })[0]
+            return el ? (el.value||'').length : -1
+          } catch (e) { return -1 }
+        })()`)
+        console.log(`[preflight] 主密码框(/${which}/)：CDP insertText 未生效 → 改走系统 IME，长度=${got}`)
+      }
+      if (got !== masterText.length) {
+        console.log(`[preflight] ⚠️ 主密码框(/${which}/) 填值长度=${got}，期望 ${masterText.length}`)
+      }
     }
     const lens = await cdpEval(`JSON.stringify(Array.from(document.querySelectorAll('input'))
         .filter(function(i){ return (i.type||'')==='password' })
@@ -1884,6 +2015,14 @@ if (process.env.POCKET_SKIP_CDP_LOGIN !== '1') {
 {
   const back = process.env.POCKET_START_ROUTE || '#/ai'
   await setRoute(`${back}?__afterunlock=${Date.now()}`, 'true', 8000)
+  // ⚠️ 必须再复位一次，回到**纯路由** `#/ai`。
+  //    带 `?__afterunlock=...` 的 hash 与底部导航 `<router-link to="/ai">`
+  //    **不是同一条路由**：vue-router 认为两者不同，点"当前 tab"就是一次
+  //    真实导航（不是原地待着）。flow 里若接着点"创建任务"开弹窗，导航
+  //    异步落地会把刚开的弹窗连同已输入的标题一起销毁 ⇒ 「创建 enabled」
+  //    必红，而失败截图是首页 —— 看起来像"创建任务功能坏了"，真因是竞态。
+  //    制造完 hash 变化后再 setRoute 回纯路由，起点的语义才和 flow 一致。
+  await setRoute(back, 'true', 8000)
   let h2 = '(读不到)'
   try { h2 = String(await cdpEval('location.hash') || '') } catch { /* 通道也坏了 */ }
   // ⚠️ 2026-10-02 实测踩到：POCKET_SKIP_CDP_LOGIN=1（有意不登录）时，
@@ -2086,6 +2225,12 @@ async function gotoPreRoute() {
 async function resetToStart() {
   const want = `${START_ROUTE}?__reflow=${Date.now()}`
   const ok = await setRoute(want, 'true', 8000)
+  // ⚠️ 同上：造完 hash 变化后必须再复位回**纯路由**。
+  //    停在 `#/ai?__reflow=...` 时点底部"AI" tab 是一次真实导航，
+  //    异步落地会销毁 flow 刚打开的弹窗（已输入标题一并丢失），
+  //    于是「创建 enabled」必红、失败截图是首页。复位回 `#/ai` 后，
+  //    router 认为已在该路由，点当前 tab 不产生导航，弹窗得以存活。
+  await setRoute(START_ROUTE, 'true', 8000)
   let h = '(读不到)'
   try { h = String(await cdpEval('location.hash') || '') } catch { /* 通道也坏了 */ }
   console.log(`[per-flow] ${ok ? '✅' : '⚠️ '} 复位到起点 ${h}`)
@@ -2176,13 +2321,158 @@ function runFixture(name, mode) {
   return true
 }
 
-const runOne = (flow) =>
-  spawnSync(MAESTRO, ['--device', DEVICE, 'test', ...driverFlag, ...preFlows, flow], {
-    cwd: ROOT,
-    stdio: 'inherit',
-    shell: true,
-    env: maestroEnv,
-  })
+/**
+ * 把 flow 里的 `${POCKET_*}` 占位换成**真正能用的** Maestro 变量。
+ *
+ * 为什么需要（2026-10-22 实测，Maestro 2.11）：
+ *   Maestro 的 `${VAR}` 只在 flow **自己的 `env:` 块**里找，不读进程环境变量。
+ *   所以 flow 里写 `inputText: ${POCKET_DEV_PASS}` 时，Maestro 把它展开成
+ *   **字面量 "undefined"**（本仓 .maestro/_login.yaml、2026-10-02-real-login.yaml
+ *   都记着这个坑，但那时没有解法）。
+ *   实测 `${env.POCKET_X}` 也不行：Maestro 把它当 **JS 表达式**求值
+ *   （`env` 是 undefined → TypeError）。
+ *
+ * 解法：跑之前生成一份**临时 flow**，在前置区（第一个 `---` 之前）插入
+ *   env:
+ *     POCKET_DEV_PASS: "<真实口令>"
+ *     POCKET_MASTER: "<真实口令>"
+ * 跑完立刻删。口令因此**只存在于临时文件与进程 env**，绝不进仓库。
+ *
+ * 没有占位符的 flow 原样跑（不产生临时文件）。
+ */
+function materializeFlowWithEnv(flow) {
+  let raw
+  try {
+    raw = readFileSync(flow, 'utf8')
+  } catch {
+    return { file: flow, cleanup: null }
+  }
+  if (!/\$\{POCKET_[A-Z_]+\}/.test(raw)) return { file: flow, cleanup: null }
+
+  const secrets = {}
+  for (const key of ['POCKET_DEV_PASS', 'POCKET_MASTER']) {
+    const v = maestroEnv[key]
+    if (typeof v === 'string' && v.length) secrets[key] = v
+  }
+  if (!Object.keys(secrets).length) return { file: flow, cleanup: null }
+
+  const envBlock = Object.entries(secrets)
+    .map(([k, v]) => `  ${k}: ${JSON.stringify(v)}`)
+    .join('\n')
+  // 前置区 = 第一个 `---` 之前；插在它后面（appId 等键之后）。
+  const sep = raw.indexOf('\n---')
+  if (sep < 0) return { file: flow, cleanup: null }
+  const head = raw.slice(0, sep)
+  const tail = raw.slice(sep)
+  const withEnv = `${head}\nenv:\n${envBlock}${tail}`
+
+  const dir = dirname(flow)
+  const tmp = join(dir, `.maestro-tmp-${basename(flow)}`)
+  writeFileSync(tmp, withEnv, { mode: 0o600 })
+  return { file: tmp, cleanup: tmp }
+}
+
+/**
+ * 跑完一轮后，把 Maestro 落盘产物里的**口令明文**抹掉。
+ *
+ * 为什么必须做（2026-10-22 实测）：Maestro 会把**展开后**的命令参数写进自己的
+ * 日志与命令清单：
+ *   · maestro.log：`Input text ${POCKET_DEV_PASS}` 的 metadata 里就是口令明文；
+ *     「Define variables」那一条会把 flow 的 env 块**整个**打出来。
+ *   · commands.json：同样带展开后的明文。
+ * 落盘位置 ~/.maestro/tests/<ts>/<flow>/。那些文件不在仓库里，但它们是人工
+ * 排查时的第一手现场（失败现场的树/日志都在那儿），也容易被整体打包分享
+ * ⇒ 口令不该以明文留在里面。
+ *
+ * 做法：跑前记下 tests/ 下的目录清单，跑完只处理**新增**的目录，
+ * 把已知口令（DEV_PASS / MASTER）的明文替换成 <redacted>。
+ * 只按**精确值**替换，不做模糊匹配 ⇒ 不会误伤别的东西。
+ */
+const MAESTRO_TESTS_DIR = join(homedir(), '.maestro', 'tests')
+
+function listMaestroTestDirs() {
+  try {
+    return new Set(readdirSync(MAESTRO_TESTS_DIR))
+  } catch {
+    return new Set()
+  }
+}
+
+function scrubSecretsIn(files, secrets) {
+  let touched = 0
+  for (const f of files) {
+    let text
+    try {
+      text = readFileSync(f, 'utf8')
+    } catch {
+      continue
+    }
+    let out = text
+    for (const s of secrets) {
+      if (!s) continue
+      out = out.split(s).join('<redacted>')
+    }
+    if (out !== text) {
+      try {
+        writeFileSync(f, out)
+        touched++
+      } catch { /* 抹不掉不该让跑批崩掉 */ }
+    }
+  }
+  return touched
+}
+
+function scrubMaestroArtifacts(beforeDirs, secrets) {
+  const now = listMaestroTestDirs()
+  const fresh = [...now].filter((d) => !beforeDirs.has(d))
+  if (!fresh.length) return 0
+  const files = []
+  for (const d of fresh) {
+    const dir = join(MAESTRO_TESTS_DIR, d)
+    let stack = [dir]
+    while (stack.length) {
+      const cur = stack.pop()
+      let ents = []
+      try {
+        ents = readdirSync(cur, { withFileTypes: true })
+      } catch {
+        continue
+      }
+      for (const e of ents) {
+        const p = join(cur, e.name)
+        if (e.isDirectory()) stack.push(p)
+        else if (e.isFile()) files.push(p)
+      }
+    }
+  }
+  return scrubSecretsIn(files, secrets)
+}
+
+const runOne = (flow) => {
+  const { file, cleanup } = materializeFlowWithEnv(flow)
+  const beforeDirs = listMaestroTestDirs()
+  try {
+    const res = spawnSync(MAESTRO, ['--device', DEVICE, 'test', ...driverFlag, ...preFlows, file], {
+      cwd: ROOT,
+      stdio: 'inherit',
+      shell: true,
+      env: maestroEnv,
+    })
+    // 把**本次新建**的 Maestro 产物目录带出去：失败归因只许看本次的产物，
+    // 否则「本条 flow 在 preflight 阶段就失败、根本没建新目录」时，
+    // 判定器会去读**上一条** flow 的现场，误判成命中症状。
+    const newDirs = [...listMaestroTestDirs()].filter((d) => !beforeDirs.has(d))
+    return { ...res, newDirs }
+  } finally {
+    if (cleanup) {
+      try { unlinkSync(cleanup) } catch { /* 临时文件删不掉不该让跑批崩掉 */ }
+    }
+    // 抹掉本轮落盘产物里的口令明文（口令只应存在于进程 env 与临时 flow 里）。
+    const secrets = [process.env.POCKET_DEV_PASS, process.env.POCKET_AUTH_PASS, process.env.POCKET_MASTER]
+    const n = scrubMaestroArtifacts(beforeDirs, secrets)
+    if (n) console.error(`[secret] 已抹掉 ${n} 个 Maestro 产物文件里的口令明文`)
+  }
+}
 
 /**
  * 每条流之前确认 App 还活着；死了就按 preflight 已验证的路径拉回来。
@@ -2205,10 +2495,14 @@ async function ensureAppAlive() {
   if (pid()) return true
 
   console.error(`\n[per-flow] ⚠️  ${PKG} 进程不在了（pidof 为空），正在重新拉起…`)
+  // ⚠️ 2026-10-22：这里原来也是 monkey。实测（emulator-5556 / AOSP 14）
+  // monkey 在本机**起不来**这个 App（退出码 251、App 没起来、输出里也没有
+  // 任何可匹配的失败标记），于是每次都必然走到底下的"拉起失败"分支 ——
+  // 而真因只是启动方式选错了。改用显式组件 am start（实测冷启动一次就成）。
   try {
-    adb(['shell', 'monkey', '-p', PKG, '-c', 'android.intent.category.LAUNCHER', '1'], 30000)
+    adb(['shell', 'am', 'start', '-n', `${PKG}/.MainActivity`], 30000)
   } catch (e) {
-    console.error(`        启动意图发不出去：${String(e.message || e).split('\n')[0]}`)
+    console.error(`        显式组件启动失败：${String(e.message || e).split('\n')[0]}`)
   }
   // 给它一点时间自己起来；不 blind wait 是因为下一步还要回读 pidof 自证。
   for (let k = 0; k < 20; k++) {
@@ -2258,15 +2552,73 @@ for (const [i, flow] of flows.entries()) {
       runFixture(fx.name, '--restore')
       process.exit(1)
     }
+    // ⚠️ 2026-10-22 实测修正：夹具可能**重启 App**（flashcards-test 夹具为了
+    //   自证「重启后缓存确实没了」会 force-stop + 重启），而本地 SQLCipher 的
+    //   密钥**只存在于内存** ⇒ 重启后即使 token 还在，守卫也会把**依赖本地库**
+    //   的路由弹到「解锁本地数据」屏（B 态）。
+    //   preflight 里的解锁发生在夹具**之前**，所以这里必须**再解锁一次**。
+    //
+    //   症状长这样（2026-10-22 实测）：flashcards-write 前半段全过（建卡组、
+    //   建卡、点 Save 都 COMPLETED），却在最后一步红在「今日待复习 1 张」，
+    //   失败现场的树里是**解锁屏**（「检测到已有登录态，但本地加密库未解锁」）
+    //   —— 报错指向「闪卡到期数算错了」，真因是**这条 flow 根本没在闪卡页上跑**。
+    //   守卫是在「回到卡组页」（依赖本地库）那一刻才把解锁屏弹出来的。
+    if (process.env.POCKET_SKIP_CDP_LOGIN !== '1') {
+      if (!(await ensureLocalDbUnlocked())) {
+        console.error('[per-flow] ❌ 夹具重启了 App，本地库重新上锁且解锁失败 —— 跳过本条 flow。')
+        console.error('           这条 flow 会在一个**本就不该红**的地方红（守卫把受保护路由弹到解锁屏），')
+        console.error('           结论不可解释。')
+        process.exit(1)
+      }
+      // 解锁会把 App 停在 #/pkm/today ⇒ 必须复位回起点，否则 flow 第一条断言就不可解释。
+      // （与 preflight 里解锁后那次复位同因，见该处注释。）
+      const back = process.env.POCKET_START_ROUTE || '#/ai'
+      await setRoute(`${back}?__afterunlock=${Date.now()}`, 'true', 8000)
+      await setRoute(back, 'true', 8000)
+    }
   }
   if (flows.length > 1) console.log(`\n──────── flow ${i + 1}/${flows.length}: ${flow} ────────`)
+  // ⚠️ 2026-10-22 round51：设备级无障碍树抖动（WebView 113 增量更新丢子树）
+  //   ⇒ 有护栏地**重跑整条 flow**。断言一条不少地再跑一遍：设备这次把树填上了
+  //   就是绿，填不上就是红。护栏见 scripts/lib/a11y-glitch.mjs 的注释：
+  //   失败文本必须精确命中已知症状白名单**且**是超时失败（跑满自己的 timeout），
+  //   否则不重试、照实报红。
+  //   每次重试都会打印 [retry] 行 —— 报告里必须照实写明「第几次尝试过的」。
+  const MAX_A11Y_RETRIES = 2
+  let attempt = 0
   let one = { status: 0 }
-  try {
-    one = runOne(flow)
-  } finally {
-    // 无论 flow 绿还是红都还原，见上面「还原必须挂在 finally 上」。
-    // reset 不进这个分支 —— 它的「还原」等于把 flow 的产出删掉。
-    if (fx?.kind === 'fixture') runFixture(fx.name, '--restore')
+  while (true) {
+    attempt += 1
+    try {
+      one = runOne(flow)
+    } finally {
+      // 无论 flow 绿还是红都还原，见上面「还原必须挂在 finally 上」。
+      // reset 不进这个分支 —— 它的「还原」等于把 flow 的产出删掉。
+      if (fx?.kind === 'fixture') runFixture(fx.name, '--restore')
+    }
+    if (one.status === 0) break
+    if (attempt > MAX_A11Y_RETRIES) break
+    // 带夹具的 flow 不重试：夹具的 induce/restore 语义在「重跑一遍」里不能简单复制
+    // （还原已经跑过一次，再 induce 一次不一定回到同一个起点）⇒ 宁可不重试、照实报红。
+    if (fx) break
+    const glitch = readA11yGlitchFromDirs(one.newDirs || [])
+    if (!glitch) break
+    console.error(
+      `[retry] ⚠️ 本条 flow 命中**设备级无障碍树抖动**（${glitch.symptom}；` +
+        `该断言耗尽了自己的 timeout：${(glitch.elapsed / 1000).toFixed(1)}s / ${(glitch.timeout / 1000).toFixed(0)}s），`,
+    )
+    console.error(
+      `        画面上元素是在的（截图实证），是本机 WebView 113 的 Android 无障碍树整片丢了子树。`,
+    )
+    console.error(
+      `        重跑**同一条 flow、同样的断言**（第 ${attempt + 1}/${MAX_A11Y_RETRIES + 1} 次尝试）—— 不放宽任何断言。`,
+    )
+    if (!(await ensureAppAlive())) break
+    await resetToStart()
+    await gotoPreRoute()
+  }
+  if (attempt > 1 && one.status === 0) {
+    console.error(`[retry] ✅ 第 ${attempt} 次尝试通过（前 ${attempt - 1} 次命中设备级无障碍树抖动）。`)
   }
   if (one.status !== 0) r = one   // 保留失败那次的返回码，交给下面的归因逻辑
 }

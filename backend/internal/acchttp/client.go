@@ -43,6 +43,24 @@ type Config struct {
 	MaxRetries   int           // 重试上限（默认 2，共 3 次）
 	RetryBackoff time.Duration // 重试退避基础（默认 200ms，指数退避）
 	UserAgent    string        // 自定义 UA（默认 pocketd-acchttp/1.0）
+
+	// Signer 按请求现签 Authorization 令牌。ACC 的 /api/v2/* 面**只认**
+	// HS256 签名的服务 JWT：静态 Bearer 会被 401 "invalid bearer token"
+	// 拒掉（2026-10-22 实测本机 ACC）。所以要访问 ACC Runtime Control，
+	// 必须给 Signer 而不是 APIKey。
+	//
+	// Signer 与 APIKey 同时存在时 **Signer 优先**：签名 JWT 是该面唯一
+	// 被接受的形态，静态 token 只在别的面上有意义，不能因为它"也有值"
+	// 就把签名挤掉。
+	Signer Signer
+}
+
+// Signer 按请求现签一个 Authorization 令牌。
+type Signer interface {
+	// Token 返回可直接放进 Authorization 头的令牌值（不含 "Bearer " 前缀）。
+	// 签名失败必须返回 error —— 调用方会把请求失败掉，而不是退化成
+	// 无鉴权请求：那正是 fail-closed 门禁要拦下的形态。
+	Token() (string, error)
 }
 
 // Validate 确保关键字段非空。返回的 error 字符串不包含 APIKey 等敏感值。
@@ -233,7 +251,23 @@ func (c *Client) buildRequest(ctx context.Context, method, fullURL string, heade
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	if c.cfg.APIKey != "" {
+	// 鉴权头：签名令牌优先，其次静态 APIKey。
+	//
+	// 顺序不能反。ACC 的 /api/v2/* 只接受 HS256 签名的服务 JWT，静态
+	// Bearer 一律 401；若两者都配却让静态 token 抢占，请求会以
+	// "invalid bearer token" 失败，而签好的 JWT 就在配置里躺着 —— 排查
+	// 方向会被完全带偏（实测 2026-10-22）。
+	switch {
+	case c.cfg.Signer != nil:
+		tok, err := c.cfg.Signer.Token()
+		if err != nil {
+			return nil, fmt.Errorf("acchttp: sign request token: %w", err)
+		}
+		if strings.TrimSpace(tok) == "" {
+			return nil, errors.New("acchttp: signer returned an empty token")
+		}
+		req.Header.Set("Authorization", "Bearer "+tok)
+	case c.cfg.APIKey != "":
 		// 仅设置 Authorization 头；调用方不应该自己再加一份。
 		req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
 	}

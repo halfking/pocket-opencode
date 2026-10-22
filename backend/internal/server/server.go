@@ -847,6 +847,14 @@ func (s *Server) Handler() http.Handler {
 	// S0-D: Agent Bridge（list/get/create/send）。底层复用 opencode adapter。
 	mux.HandleFunc("/api/agents", s.requireAuth(s.handleAgents))
 	mux.HandleFunc("/api/agents/", s.requireAuth(s.handleAgentOps))
+	// ACC 生态读取面：经 ACC 看到的 agent-companion 生态（注册的 agent /
+	// canonical 任务 / 项目 / 上报回来的会话）。此前 pocketd 只有直连
+	// agent-companion 的 v1 面，没有一条经 ACC 的读取路径 —— 而多机器
+	// agent-companion 实例是汇聚在 ACC 上的。详见 acc_ecosystem.go。
+	mux.HandleFunc("/api/acc/agents", s.requireAuth(s.handleACCAgents))
+	mux.HandleFunc("/api/acc/tasks", s.requireAuth(s.handleACCTasks))
+	mux.HandleFunc("/api/acc/projects", s.requireAuth(s.handleACCProjects))
+	mux.HandleFunc("/api/acc/sessions", s.requireAuth(s.handleACCSessions))
 	// S0-E: Notification Center（inbox + rules）
 	mux.HandleFunc("/api/notifications", s.requireAuth(s.handleNotifications))
 	mux.HandleFunc("/api/notifications/", s.requireAuth(s.handleNotificationOps))

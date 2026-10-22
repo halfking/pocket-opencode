@@ -228,8 +228,11 @@ POCKET_FEISHU_APP_ID=
 POCKET_KXMEMORY_BASE_URL=
 
 # ---- 自有 OpenAI 兼容网关（https://llm.kxpms.cn/v1）----
-# key 留空时 pocketd 回落到内置默认 key（internal/opencode.DefaultLLMGatewayAPIKey），
-# 真值仍优先取 envs 注入的 POCKET_LLM_GATEWAY_API_KEY。
+# key **没有内置默认**：留空就是「未配置」（设置页显示「未配置」，对话/分类走不通）。
+# 内置默认 key 常量（opencode.DefaultLLMGatewayAPIKey）已删除——那把明文租户 key
+# 会进 git 历史，且会让从未配置过的实例拿别人的 key 去计费（详见
+# backend/internal/opencode/config_writer.go 的注释）。
+# 真值只能来自 envs 注入的 POCKET_LLM_GATEWAY_API_KEY。
 POCKET_LLM_GATEWAY_URL=https://llm.kxpms.cn/v1
 POCKET_LLM_GATEWAY_API_KEY=
 EOF
@@ -283,7 +286,7 @@ lines.append(f"POCKET_LLM_GATEWAY_API_KEY={key or existing_key}")
 path.write_text("\n".join(lines) + "\n")
 path.chmod(0o600)
 print("  🔑 injected POCKET_LLM_GATEWAY_URL=https://llm.kxpms.cn/v1")
-print("  🔑 POCKET_LLM_GATEWAY_API_KEY", "loaded" if key else "preserved" if existing_key else "empty (pocketd falls back to built-in default key)")
+print("  🔑 POCKET_LLM_GATEWAY_API_KEY", "loaded" if key else "preserved" if existing_key else "empty —— 网关将显示「未配置」；用 envs/loader.sh 注入 POCKET_LLM_GATEWAY_API_KEY（无内置默认 key）")
 PY
 }
 

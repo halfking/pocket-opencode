@@ -32,12 +32,15 @@ API_KEY="${POCKET_LLM_GATEWAY_API_KEY:-$(env_get POCKET_LLM_GATEWAY_API_KEY)}"
 BASE_URL="${POCKET_LLM_GATEWAY_URL:-https://llm.kxpms.cn/v1}"
 HAVE_KEY=1
 if [ -z "$API_KEY" ]; then
-  # envs 没有 key 时不再直接退出：pocketd 内置了自家网关默认 key
-  # （internal/opencode.DefaultLLMGatewayAPIKey），设置页与 POST /config 都能
-  # 沿用它。代价是 user-settings 那步不能做——PG 的 Put 会用请求里的 secret
+  # envs 没有 key 时不再直接退出，但**不能再声称 pocketd 有内置默认 key**——
+  # 那个常量（internal/opencode.DefaultLLMGatewayAPIKey）已删除：它会把一把
+  # 明文租户 key 写进 git 历史，并让从未配置过的实例拿别人的 key 去计费。
+  # 没有 key 就是「未配置」（设置页如实显示「未配置」）。
+  #
+  # 代价是 user-settings 那步不能做——PG 的 Put 会用请求里的 secret
   # 覆写 secret_encrypted，送空串等于把已存的 key 抹掉，所以这里跳过它。
   HAVE_KEY=0
-  echo "[seed] warn: POCKET_LLM_GATEWAY_API_KEY empty in env/envs; relying on pocketd built-in default key, user-settings PUT skipped" >&2
+  echo "[seed] warn: POCKET_LLM_GATEWAY_API_KEY empty in env/envs; 网关将显示「未配置」（无内置默认 key）, user-settings PUT skipped" >&2
 fi
 
 LOGIN_JSON="$(POCKET_ADMIN_USER="$ADMIN_USER" POCKET_ADMIN_PASS="$ADMIN_PASS" python3 -c 'import json,os; print(json.dumps({"username":os.environ["POCKET_ADMIN_USER"],"password":os.environ["POCKET_ADMIN_PASS"]}))')"

@@ -114,5 +114,5 @@ appId: com.kaixuan.opencode.pocket
 # ---------- 4. 负向锚点：不该出现的东西 ----------
 # · 「未配置 — AI 聊天需要密钥」是 apiKeySet=false 时的文案；
 #   与上面的「已配置」互斥，出现在同一屏就说明两个分支同时渲染了。
-- assertNotVisible: "未设置 — AI 聊天需要密钥"
+- assertNotVisible: "未设置 — AI 聊天需要密钥|Not set — AI chat requires key"
 - assertNotVisible: "该网关节点尚未补录 Admin 账号"

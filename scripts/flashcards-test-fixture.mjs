@@ -125,7 +125,29 @@ if (DRY) {
 const sh = (cmd) => adb(['shell', cmd], 30000)
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const launchApp = async () => {
-  sh(`monkey -p ${PKG} -c android.intent.category.LAUNCHER 1`)
+  // ⚠️ 2026-10-22 实测（emulator-5556 / AOSP Android 14）：**monkey 起不来
+  // 这个 App，且失败特征不在输出里**。
+  //   冷启动实测（force-stop 后跑）：退出码 **251**、App **没起来**（前台仍是
+  //   NexusLauncher、pidof 无 pid），而输出里既没有「No activities found to
+  //   run, monkey aborted.」，也没有「Events injected: 1」—— 从输出看它只是
+  //   "没干活"。⇒ 判据只能是**「App 有没有真的活着」**（下面那个 CDP 探测
+  //   循环：连得上 devtools socket 才算起来），退出码与输出都不可靠。
+  //
+  // 后果（实测）：本夹具原先直接 sh(monkey) 且没有兜底 ⇒ 恒定抛错 ⇒ 夹具
+  // 整个断掉 ⇒ runner 把 flashcards-write **跳过**，现象是"这条 flow 没跑"，
+  // 与夹具数据、与产品功能都无关（harness 的 preflight 因为外面套了
+  // try/catch → 走 am start 兜底 → 一直正常，这就是"同一台机器 harness 过、
+  // 夹具断"的原因）。
+  //
+  // 修法：显式组件 am start 为主路径 —— 它不依赖 PackageManager 的隐式意图
+  // 解析（宿主高负载把 SystemUI 压到 ANR 时隐式解析会临时失效），实测冷启动
+  // 一次就成（exit=0、前台立刻变成该包的 MainActivity）。
+  try {
+    sh(`am start -n ${PKG}/.MainActivity`)
+  } catch (e) {
+    console.log(`  显式组件启动异常，改用 monkey：${String(e?.message || e).replace(/\s+/g, ' ').slice(0, 140)}`)
+    try { sh(`monkey -p ${PKG} -c android.intent.category.LAUNCHER 1`) } catch { /* CDP 探测会兜住 */ }
+  }
   // devtools socket 是 App 起来之后才注册的，等久一点，别在半路去连。
   for (let i = 0; i < 20; i++) {
     await sleep(700)

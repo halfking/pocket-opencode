@@ -217,6 +217,14 @@ type Config struct {
 	CompanionURL          string // POCKET_COMPANION_URL：本机 agent-companion
 	CompanionSecret       string // POCKET_COMPANION_SECRET：companion inbound API secret
 
+	// —— ACC Runtime Control（/api/v2/*）——
+	// 该面**只认 HS256 签名的服务 JWT**：静态 Bearer 会被 401 拒掉
+	// （2026-10-22 实测本机 ACC：no-auth→401 missing / static→401
+	// invalid bearer / 签名 JWT→200）。所以这里配的是**签名密钥**，
+	// 不是现成的 token。
+	ACCRuntimeURL    string // POCKET_ACC_RUNTIME_URL：ACC Runtime Control 基址（如 http://127.0.0.1:4101）
+	ACCRuntimeSecret string // POCKET_ACC_CONTROL_SECRET：HS256 签名密钥（ACC 的 control secret）
+
 	// —— 会话迁移方案：实例感知增强配置 ——
 	DiscoveryFullSubnet bool     // POCKET_DISCOVERY_FULL_SUBNET：true=扫描完整 /24（默认 false 仅本机+网关）
 	DiscoveryPorts      []int    // POCKET_DISCOVERY_PORTS：自定义扫描端口（逗号分隔，空=默认 14096-14100）
@@ -374,6 +382,8 @@ func Load() Config {
 		DiskHome:              getEnv("POCKET_DISK_HOME", ""),
 		CompanionURL:          getEnv("POCKET_COMPANION_URL", ""),
 		CompanionSecret:       getEnv("POCKET_COMPANION_SECRET", ""),
+		ACCRuntimeURL:         getEnv("POCKET_ACC_RUNTIME_URL", ""),
+		ACCRuntimeSecret:      getEnv("POCKET_ACC_CONTROL_SECRET", ""),
 		// 会话迁移方案：实例感知增强
 		DiscoveryFullSubnet: getEnv("POCKET_DISCOVERY_FULL_SUBNET", "") == "true",
 		DiscoveryPorts:      parseIntList(getEnv("POCKET_DISCOVERY_PORTS", "")),

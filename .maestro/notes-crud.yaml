@@ -78,7 +78,15 @@ appId: com.kaixuan.opencode.pocket
 - tapOn: { text: "^无标题$" }
 - eraseText
 - inputText: "MaestroPKM笔记"
-- hideKeyboard
+# ⚠️⚠️ 这里**故意不加 hideKeyboard**（2026-10-22 实测踩到）：
+#   Android 上 Maestro 的 hideKeyboard 是**按返回键**实现的 ⇒ 它会顺带**导航回退**。
+#   实测：软键盘还没起来（模拟器刚重启、输入法首启很慢）时，这一步的返回键
+#   直接把页面从**编辑页带回列表页**；于是下一条 `^MaestroPKM笔记$` 必然红，
+#   而失败现场的树里那条笔记**明明建好了**（列表项文本是
+#   「MaestroPKM笔记空笔记10/22」——标题+摘要+日期被 WebView 合并成一个节点）。
+#   ⇒ 报错指向「判据写错」，真因却是上一行自己加的 hideKeyboard。
+#   与 flashcards-write.yaml 是同一条纪律：**能不收键盘就不收**。
+#   标题输入框在页面顶部，本来就不在键盘遮挡区；下一步点的「返回」箭头也在顶部。
 - extendedWaitUntil:
     visible: { text: "^MaestroPKM笔记$" }
     timeout: 15000

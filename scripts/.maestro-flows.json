@@ -39,7 +39,10 @@
     { "file": ".maestro/notes-stt-error-visibility.yaml", "appId": "com.kaixuan.opencode.pocket.sttdev", "fixture": "stt-error" },
     ".maestro/settings-llm-gateway.yaml",
     ".maestro/smoke-login.yaml",
-    ".maestro/tasks-crud.yaml",
+    {
+        "file": ".maestro/tasks-crud.yaml",
+        "fixture": "tasks-residue"
+    },
     { "file": ".maestro/_connectivity-sttdev.yaml", "appId": "com.kaixuan.opencode.pocket.sttdev" },
     ".maestro/_connectivity.yaml",
     ".maestro/_dismiss-system-dialogs.yaml",

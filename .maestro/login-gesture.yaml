@@ -34,13 +34,13 @@ appId: com.kaixuan.opencode.pocket
 ---
 # ---- 1. 起点必须是登录页 ----
 - extendedWaitUntil:
-    visible: "用户名"
+    visible: "用户名|Username"
     timeout: 45000
-- assertVisible: "^密码$"
+- assertVisible: "^密码$|^Password$"
 - assertNotVisible: "AI 工具"
 
 # ---- 2. 用户名：tap 起键盘 → inputText ----
-- tapOn: "用户名"
+- tapOn: "用户名|Username"
 - inputText: "admin"
 
 # ⚠️ 这里的中间 hideKeyboard 是**防御性**的，不是被证明必要的。
@@ -75,12 +75,12 @@ appId: com.kaixuan.opencode.pocket
 
 # 两个框都收到文本 ⇒ 提交按钮解禁
 - extendedWaitUntil:
-    visible: { text: "登录", enabled: true }
+    visible: { text: "登录|Sign in", enabled: true }
     timeout: 20000
-- assertVisible: { text: "登录", enabled: true }
+- assertVisible: { text: "登录|Sign in", enabled: true }
 
 # ---- 4. tap 提交 ⇒ 必须真的发出请求并把 401 显示出来 ----
-- tapOn: { text: "登录", enabled: true }
+- tapOn: { text: "登录|Sign in", enabled: true }
 - extendedWaitUntil:
     visible: ".*用户名或密码错误.*"
     timeout: 30000
