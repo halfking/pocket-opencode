@@ -45,6 +45,11 @@
 > **最终验收（§9）**：13 条主包 Maestro 流在同一台设备实例上**统一重跑，13/13 全绿**
 > （307 步 COMPLETED；2 步 FAILED 是本机 WebView 113 的**设备级无障碍树抖动**，
 > 护栏按设计**原样重跑同一条断言**后通过，未放宽任何断言）。
+>
+> **续（§10）**：复验时用真 agent 演练又查出 agent-companion 侧一条**真缺陷** ——
+> **被叫停的派单被报成 `agent_busy`**（其实槽位是空的，`in_flight=0`）。因为
+> `agent_busy` 的契约是「可稍后重试」，**叫停被降级成了可重试失败，重试可能把
+> 叫停的任务又跑起来**。已修（`463da0c`）+ 三条回归测试，演练 cancel 段 6/6 全绿。
 
 ---
 
@@ -311,6 +316,7 @@ body 带**新**提示词「创建第二个文件 second-round51.txt，内容写 
 | `ba83ecb` | feat(acc): 让 service identity 能声明角色（`ACC_SERVICE_ROLES`）—— 任务联动不再 403 |
 | `e96042f` | fix(acc): 新建任务的 `business_state` 用词表里的 `todo` —— `"pending"` 不存在 |
 | `306f698` | fix(acc): acctask 的 `Task` 按 ACC 的**读**契约解析 —— 原来按 `id` 解析，ID 恒为空 |
+| `463da0c` | fix(agentfacade): **被叫停的派单不能报成 `agent_busy`** —— 取消要落终态 `cancelled`（见 §10） |
 
 线上 daemon：**`0.1.0-306f698.1792635154`**（历次版本 `packages/` 下均保留可回滚）。
 
@@ -521,7 +527,84 @@ after 3600000ms`），**不是测试失败**（当时 FAILED=0）。改成 4 组
 
 ---
 
-## 10. 复现命令
+## 10. agent-companion 侧另查出一条**真缺陷**：被叫停的派单被报成 `agent_busy`
+
+这条**不在 openpocket 侧**，是在 §9 复验时用**真 agent 演练**（§11 第 2 步：
+`cmd/live-e2e`，真 opencode + 真模型）跑出来的：演练的 **cancel 段**在同一个 commit 上
+**4 次里 2 次红**，报错是：
+
+```
+LIVE_E2E_FAIL: cancel produced a failure instead of a cancellation:
+  agent_busy: agentfacade: another run holds this agent; gave up waiting for its slot
+```
+
+### 10.1 现场证据：那一刻**一点也不忙**
+
+在 `acquire` 两侧加临时日志（仅诊断用，未入库）后，同一次失败的时间线是：
+
+```
+[DIAG] slot wait begin  agent= dispatch=d-live-e2e-3 in_flight=0 t=23:59:19.630
+[DIAG] slot wait FAILED agent= dispatch=d-live-e2e-3                   t=23:59:19.630
+```
+
+两点关键：
+
+1. **`in_flight=0`** —— 那一刻槽位是**空的**，压根没有资源争用。「另一个 run 占着这个智能体」这句话是**假的**；
+2. **同一毫秒就失败** —— 不是等满了 20s 的等待上限。
+
+原因在 Go 的 `select`：当「ctx 已取消」与「槽位可抢」两条 case **同时就绪**时，
+`select` 是**随机**选的 ⇒ 同一个取消时而「抢到槽位把 run 启起来」、时而「报忙」——
+这就是它时红时绿的原因。
+
+旁证：把两次演练之间**拉开 25s 间隔**再跑，3/3 全绿 ⇒ 确认是**时序竞态**，不是别的东西。
+
+### 10.2 为什么这不只是「文案不准」
+
+| 错误码 | 下游该做什么 |
+|---|---|
+| `agent_busy` | 契约原文：「nothing was started, and retrying later is correct」⇒ **可以重试** |
+| `cancelled` | 终态：操作员叫停了，**不许再跑** |
+
+把取消报成 busy，等于告诉上游「这个可以稍后再来」⇒ 一个**明确被叫停**的派单
+可能被重试回来又执行一遍。**停止语义被降级成了「稍后重试」。**
+
+### 10.3 修法（agent-companion `main`，已推送）
+
+| 文件 | 改动 |
+|---|---|
+| `internal/agentfacade/agent_slot.go` | `acquire` **先看取消、再看忙**：进等待前 ctx 已取消 ⇒ 直接返回 `context.Canceled`；等待中被取消 ⇒ 同样返回 Canceled；**等待超时仍返回 `ErrAgentBusy`**（那时「忙」才是实话） |
+| `internal/agentfacade/executor.go` | `LaunchErrorCode` 把 `context.Canceled` 映射为 **`cancelled`**（ACC 契约的取消码 ⇒ `mapExecutorOutcome` 认它 ⇒ 落终态 `OutcomeCancelled`） |
+| `internal/agentfacade/agent_slot_cancel_test.go`（新） | 三条回归：**启动前取消**、**排队中取消**、**超时仍报 busy**（防止把取消当成万能解释、过度纠正） |
+| `docs/CANCEL_BEFORE_START_2026-10-22.md`（新） | 完整定性，并登记进 `docs/README.md` 审计交接表 |
+
+提交：**`463da0c`**（`main`，自 `04bb1e8` **快进**，无强推；另推分支
+`fix/cancel-before-start-agent-busy` 留痕）。改前的工作副本在临时 worktree 里，
+**主工作区一行未动**（并行会话在用）。
+
+### 10.4 验证
+
+| 场景 | 修复前 | 修复后 |
+|---|---|---|
+| `cmd/live-e2e`（真 opencode + 真模型，cancel 段） | 同一 commit **4 次里 2 次红** | **6/6 全绿**，每轮「cancel took effect in 0s」 |
+| `go test ./...` | 绿 | **53 包全绿、0 失败**（rebase 到最新 `origin/main` 后**复跑**） |
+| `internal/agentfacade` / `accbridge` / `acc` | 绿 | 绿 |
+
+### 10.5 区分另一类失败（不要混为一谈）
+
+同机还观察到 `acp initialize: agent closed the stream`（**智能体进程根本起不来**）。
+它与本条**不同源** —— 那是多个 opencode 并发启动时的争用，与取消路径无关。
+本机并行跑多个真 agent 演练会抬高它的命中率，**不能**算到本条头上。
+
+### 10.6 与 openpocket、§9 结论的关系
+
+本条**没有改 openpocket 的任何产品代码**，也不影响 §9 的 13/13 结论：它是 agent-companion
+**执行层的一处错误码语义错误**，openpocket 是消费方（经 ACC 看到任务状态）。
+但修好之后，用户目标里的「**停止**」这条才真正成立：
+**叫停 ⇒ 终态 `cancelled` ⇒ 不会被重试复活**。
+
+---
+
+## 11. 复现命令
 
 ```bash
 # 1) agent-companion 会话电池（71 条）
@@ -580,4 +663,9 @@ POCKET_SERIAL=emulator-5556 node scripts/diag-flashcards-shift-reset.mjs
 # 5) agent-companion 契约测试（锁住本轮四处修复）
 cd ~/workspace/ai-native-tools/agent-companion
 go test ./deploy/ ./internal/accjwt/ ./internal/acc/ ./internal/acctask/ ./internal/api/
+
+# 9) 取消路径回归（§10）：取消 ⇒ cancelled（终态），超时 ⇒ agent_busy（可重试）
+cd ~/workspace/ai-native-tools/agent-companion
+go test ./internal/agentfacade/ -run 'TestCancelled|TestTimeoutStillReportsBusy' -v
+# 期望：3 条全绿；其中 TestTimeoutStillReportsBusy 必须**仍然**报 busy
 ```
