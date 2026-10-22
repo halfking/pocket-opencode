@@ -181,9 +181,14 @@ node --test src/features/meetings/__tests__/meeting-todo-readback-day.test.mjs
    `run_all.py` 的 BATCHES 列表只是换了行，s948–s957 全在）
    ⇒ 报「有缺失」的 2 笔全是同一个符号 `§803.4`，而那**正是 §955 自己修掉的死引用**
    ⇒ ⇒ **不判为丢失**。详见主文档 §963.7.1。
-6. ⏳ **e2e-web 的长期红**（14/14，2026-10-17 起）—— 报错 `connect ECONNREFUSED 127.0.0.1:8088`
+6. ⏳ **e2e-web 的长期红**（2026-10-17 起连续红）—— 报错 `connect ECONNREFUSED 127.0.0.1:8088`
    ⇒ **后端服务没起来** ⇒ 环境性红。⚠ 本机跑不了（要起后端 + Playwright）
    ⇒ ⇒ 改完只能靠 CI 读数；**先量影响面再动手**。
+   ⇒ 📌 **本轮复测的准确读数**：**最近 12 次 e2e-web run 全部 failure（success 0 次）**，
+     最近一次在 `c6e9acfe`；⚠ **它最近 5 笔没出 run，不是「跑过」，是「按设计没触发」** ——
+     `.github/workflows/e2e-web.yml` 的 `on.push.paths` 只认 `e2e/web/**`·`frontend/src/**`·
+     `frontend/vite.config.ts`·`backend/**`·它自己 ⇒ 那 5 笔只动 `docs/**` 与 `scripts/tools/**`
+     ⇒ **一条都没匹配上** ⇒ **下一次它真跑，是有人改了 `frontend/src/**` 或 `backend/**` 的时候**。
 7. ✅ **本机残留 worktree：已清理完毕**（2026-10-22 本轮末，**不再是遗留**）：
    - `C:/workspace/_po-base-main` —— detached `0fdda422` ⇒ **已删 + 已注销**
    - `C:/workspace/_po-lf-main` —— detached `cdbf8422` ⇒ **已删 + 已注销**
@@ -195,6 +200,14 @@ node --test src/features/meetings/__tests__/meeting-todo-readback-day.test.mjs
      ② `git worktree remove --force <wt>` ③ **复验**主工作区读数。
    ⇒ **复验读数**：`node_modules` **9070 文件 / 227.3 MB**、`dist` **220 文件 / 7.1 MB**
      ⇒ 与删除前基准**逐项一致**；另跑 `vue-tsc --noEmit` exit=0（工具链功能完好）。
+8. ✅ **A/B 全量对照已在 `b6942ea7` 上复跑完毕**（本轮末）：
+   - CRLF 工作树 **✅ 全部 39 项通过**（退出码 0）
+   - LF 检出树 **✅ 全部 39 项通过**（退出码 0）
+   - **跑过的门列表逐条一致** ✓
+   ⇒ **当前 commit 上没有「仍在依赖检出形态」的门禁**（此前这条结论只属 `cdbf8422` 时期）
+   ⇒ ★ 工具的**完整路径首次端到端跑通**（建树 → 两遍全量门禁 → 自动拆 junction → 自动删树），
+     收尾**零残留**；跑完两遍门禁后主工作区工作区**仍干净**（门禁不弄脏树）。
+   ⇒ ⚠ 副作用已确认：跑对照期间**本机负载升高**（两遍各约 250s），别与别的重活并行。
 
 ---
 
@@ -218,6 +231,9 @@ node --test src/features/meetings/__tests__/meeting-todo-readback-day.test.mjs
 > ④ 收尾：同步主文档 / 简报 / 新交接单，提交、合并到 main、推送。
 > ⑤ 若要再修 e2e-web：⚠ **本机跑不了 e2e**（要起后端服务 127.0.0.1:8088 + Playwright），
 >    ⇒ 改完只能靠 CI 读数 ⇒ **先量影响面再动手**。
+>    ⚠ **触发面要知道**：`e2e-web.yml` 的 `on.push.paths` 只认 `e2e/web/**`·`frontend/src/**`·
+>    `frontend/vite.config.ts`·`backend/**`·它自己 ⇒ **只改 `docs/**` / `scripts/**` 不会触发它**
+>    ⇒ ⇒ **要验 e2e-web，改动就得落到 `frontend/src/**` 或 `backend/**` 上**。
 >
 > **纪律沿用（本轮的实测教训）**：
 > ⇒ 📌 **完整清单在主文档 §963.9.1（读数纪律 R1–R10）与 §963.9.2（合并纪律 M1–M10）**
