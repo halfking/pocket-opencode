@@ -50,6 +50,11 @@
 > **被叫停的派单被报成 `agent_busy`**（其实槽位是空的，`in_flight=0`）。因为
 > `agent_busy` 的契约是「可稍后重试」，**叫停被降级成了可重试失败，重试可能把
 > 叫停的任务又跑起来**。已修（`463da0c`）+ 三条回归测试，演练 cancel 段 6/6 全绿。
+>
+> **续（§11）**：把线上实例升到新构建后再实测「停止」，又查出**「正在等审批」的
+> 派单叫不停** —— 取消没有解除权限门 ⇒ run 永远停在 `cancelling`、**不落终态**
+> （>15 分钟），另一变体落成 `failed`/`permission_denied`。已修（`91de17d`），
+> 两条新回归测试（修复前 1 红），「停止」这条目标的两档缺口都补上了。
 
 ---
 
@@ -317,6 +322,7 @@ body 带**新**提示词「创建第二个文件 second-round51.txt，内容写 
 | `e96042f` | fix(acc): 新建任务的 `business_state` 用词表里的 `todo` —— `"pending"` 不存在 |
 | `306f698` | fix(acc): acctask 的 `Task` 按 ACC 的**读**契约解析 —— 原来按 `id` 解析，ID 恒为空 |
 | `463da0c` | fix(agentfacade): **被叫停的派单不能报成 `agent_busy`** —— 取消要落终态 `cancelled`（见 §10） |
+| `91de17d` | fix(agentfacade): 叫停要**解除权限门** —— 「正在等审批」的派单现在能停（见 §11） |
 
 线上 daemon：**`0.1.0-306f698.1792635154`**（历次版本 `packages/` 下均保留可回滚）。
 
@@ -529,7 +535,7 @@ after 3600000ms`），**不是测试失败**（当时 FAILED=0）。改成 4 组
 
 ## 10. agent-companion 侧另查出一条**真缺陷**：被叫停的派单被报成 `agent_busy`
 
-这条**不在 openpocket 侧**，是在 §9 复验时用**真 agent 演练**（§11 第 2 步：
+这条**不在 openpocket 侧**，是在 §9 复验时用**真 agent 演练**（§12 第 2 步：
 `cmd/live-e2e`，真 opencode + 真模型）跑出来的：演练的 **cancel 段**在同一个 commit 上
 **4 次里 2 次红**，报错是：
 
@@ -604,7 +610,80 @@ LIVE_E2E_FAIL: cancel produced a failure instead of a cancellation:
 
 ---
 
-## 11. 复现命令
+## 11. 再查出一条：**「正在等审批」的派单叫不停**（停止能力在这一档上是坏的）
+
+这一条同样是 agent-companion 侧的**真缺陷**，是在把线上 daemon 升到含 §10 修复的构建后，
+对**线上实例**做「立刻叫停」实测时查出来的。
+
+### 11.1 现场证据
+
+派一单要求执行 `sleep 120`，等它进入 `waiting_permission` 后发取消：
+
+```
+POST /api/v1/native/sessions          → runId=run-022435f0-…（state=waiting_permission）
+POST /api/v1/runs/run-022435f0-…/cancel → {"state":"cancelling","cancel_requested":true}
+
+t+4s … t+40s（10 次轮询）：state=cancelling | last_event=waiting_permission
+干预队列：int-a8405f42… | sleep 120 && echo done | pending   ← 一直 pending
+run 记录：ended_at=0001-01-01T00:00:00Z                     ← 从来没落终态
+```
+
+另一个变体更难看：取消**先于**智能体起来（cancel 到达时 session 还不存在），
+随后智能体进入等审批、人工拒绝 ⇒ run 落成 **`failed` / `permission_denied`** ——
+明明是操作员叫停的，回执却说「工具被拒」。
+
+### 11.2 为什么
+
+权限门等的是**人**的决定。daemon 侧取消时只做了两件事：给 agent 发 `session/cancel`、
+对**已经挂着**的那一次权限请求回一个 `cancelled` 应答 —— **没有解除这道门**。
+
+- 门等的是人 ⇒ 人不来 ⇒ 门一直开着；
+- 门的 ctx 派生自 run ctx，而 run ctx **不随取消结束**（取消只走 ACP 通知，不 cancel ctx）；
+- ⇒ driver 卡在 `Hub.Gate` ⇒ `<-permDone` 不返回 ⇒ `handle.finish()` 从不被调用
+  ⇒ **run 没有任何终态**。
+
+即使门最终超时（30s 默认）fail-closed 成「拒绝」，`permDenied` 分支又**排在**取消判定
+之前 ⇒ 报成 `permission_denied` / `failed`，而不是 `cancelled`。
+
+### 11.3 修法（agent-companion `main`，已推送）
+
+| 文件 | 改动 |
+|---|---|
+| `internal/agentfacade/acp_driver.go` | ① 给权限门**单独一个可取消的 ctx**（`gateCtx`），取消时 `cancelGate()` 释放它（fail-closed ⇒ driver 立刻能收尾；刻意**不动** prompt 的 ctx，让 agent 还能收到那次 `cancelled` 应答）；② 同一权限请求**只应答一次**（`answerPerm`）；③ 叫停期间的应答必须是 `cancelled`（ACP 取消规则），不是「拒绝」；④ **叫停优先于 `permission_denied`** |
+| `internal/agentfacade/acp_cancel_permission_gate_test.go`（新） | 两条回归：叫停 ⇒ 门被释放 + 落 `cancelled`（**修复前红**）；没有叫停的人工拒绝 ⇒ **仍然** `permission_denied`（防过度纠正） |
+| `docs/CANCEL_WHILE_WAITING_PERMISSION_2026-10-23.md`（新） | 完整定性，并登记进 `docs/README.md` 审计交接表 |
+
+提交：**`91de17d`**（`main`，自并行会话当时的 `origin/main` 快进，无强推）。
+
+### 11.4 验证
+
+| 场景 | 修复前 | 修复后 |
+|---|---|---|
+| 线上 daemon：叫停一个等审批的 run | 永远 `cancelling`，>15 分钟不落终态，干预条目永远 pending | **3 秒内落 `cancelled`**（`ended_at` 有值），干预队列清空 |
+| 线上 daemon：取消先于智能体起来 | `failed` / `permission_denied` | `cancelled`（t+21s：智能体起来后被中继叫停） |
+| `internal/agentfacade` 新回归两条 | 修复前 **1 红** | 全绿 |
+| `go test ./...` | 绿 | **全绿、0 失败**（54 包 ok，rebase 后复跑） |
+| `cmd/live-e2e`（真 opencode + 真模型） | 绿 | 绿（cancel 段不受影响） |
+| 线上 daemon 会话电池 | 71/71 | **71/71 PASS**（TOTAL=71 PASS=71 FAIL=0 SKIP=0） |
+
+线上实例已升级到 **agent-companion `0.1.0-91de17d.1792687911`**（含 §10 + §11 两条修复；
+npm 包 + `ac-ctl install`，旧版本 `0.1.0-306f698.1792635154` 仍在 `packages/` 里可回滚）。
+agent-companion 侧的完整定性见 `docs/CANCEL_WHILE_WAITING_PERMISSION_2026-10-23.md`
+（提交 `3fc6951` 补上了这批线上读数）。
+
+### 11.5 与 §10 **不是**同一个问题
+
+| | §10 | §11 |
+|---|---|---|
+| 取消发生在 | **还没拿到槽位**（启动路径） | **已经跑起来、正卡在等审批** |
+| 症状 | 被报成 `agent_busy`（可重试的失败） | 永远不落终态 / 落成 `permission_denied` |
+| 根因 | `select` 在两条 case 同时就绪时随机选 | 权限门没被解除 + `permDenied` 排在取消判定之前 |
+
+两条都在用户目标里的「**停止**」上 ⇒ 都必须通。
+
+---
+
+## 12. 复现命令
 
 ```bash
 # 1) agent-companion 会话电池（71 条）
@@ -668,4 +747,18 @@ go test ./deploy/ ./internal/accjwt/ ./internal/acc/ ./internal/acctask/ ./inter
 cd ~/workspace/ai-native-tools/agent-companion
 go test ./internal/agentfacade/ -run 'TestCancelled|TestTimeoutStillReportsBusy' -v
 # 期望：3 条全绿；其中 TestTimeoutStillReportsBusy 必须**仍然**报 busy
+
+# 10) 权限门回归（§11）：叫停 ⇒ 门被释放 + 落 cancelled；无叫停的拒绝 ⇒ permission_denied
+go test ./internal/agentfacade/ -run 'TestCancelReleasesPendingPermissionGate|TestPermissionDeniedWithoutCancel' -v
+# 期望：两条全绿（**修复前第 1 条红**：the cancel did not release the pending permission gate）
+
+# 11) 线上实例实测「叫停一个正在等审批的 run」（§11 的现场复现）
+RID=$(curl -s --noproxy '*' -X POST http://127.0.0.1:12110/api/v1/native/sessions \
+  -H 'Content-Type: application/json' \
+  -d '{"kind":"opencode","prompt":"sleep 120 然后回答 done","cwd":"/tmp/ac-live-demo","timeoutSeconds":300}' \
+  | python3 -c "import sys,json;print(json.load(sys.stdin)['runId'])")
+# 等它进入 waiting_permission 再取消，然后看终态：
+curl -s --noproxy '*' -X POST "http://127.0.0.1:12110/api/v1/runs/$RID/cancel" -H 'Content-Type: application/json' -d '{}'
+curl -s --noproxy '*' "http://127.0.0.1:12110/api/v1/runs/$RID"
+# 期望：state=cancelled（修复前：永远 cancelling / ended_at 空 / failed+permission_denied）
 ```
