@@ -239,8 +239,29 @@ body 带**新**提示词「创建第二个文件 second-round51.txt，内容写 
 
 | 读数 | 值 |
 |---|---|
-| `GET /api/v1/runs` | 本轮共 3 个真实 run（分配/继续/停止各一） |
+| `GET /api/v1/runs` | 列出**当前 daemon 实例**内的 run（分配/继续/停止各一条都实测过），带 `task_id`、`answer`、`state` |
 | `GET /api/v1/runs/:id/artifacts` | 每次文件写入都记到 `file_edit`（含完整路径） |
+
+**但「历史」的语义要说清楚（受控实测，别当成持久台账）**：
+
+`GET /api/v1/runs` 的实现是 **Server 上的内存保留窗口** ——
+`finishedRuns sync.Map`（`internal/api/api.go:98`）+ `retainedRunTTL = time.Hour`
+（`internal/api/operate.go:350`），再加上 facade 的在跑 run。
+**它不落盘**。受控实验：
+
+```
+派单 → GET /api/v1/runs/<id>        → HTTP 200（state=running，task_id 非空）
+      launchctl kickstart -k（重启 daemon）
+      GET /api/v1/runs/<id>        → **HTTP 404**
+      GET /api/v1/runs              → total=0
+```
+
+⇒ **daemon 重启后，先前的 run 记录就没了**。`dag-store.db` 那个持久台账是
+**编排面**的 run（`listRunsAll` → `dagStore.ListRuns`），与派单 run 不是一回事，
+不能拿来当「任务历史」的持久化。
+
+⇒ 要让任务历史跨重启存活，需要**把派单台账落盘**（新增能力，不是缺陷修复），
+本轮**没有**做，如实登记在 §6。
 
 ### 3.5 回归
 
@@ -310,7 +331,8 @@ body 带**新**提示词「创建第二个文件 second-round51.txt，内容写 
 | 6 | **ACC 容器未改动** | `acc-blue`(:4100) 与 `acc-go-host`(:4101) 是共享容器；本轮只**读**它们、没改配置/没重启，避免打断并行会话。 |
 | 7 | **openpocket 的 `go test ./...`** | 仍只有 `TestSkipLedger_*` 两包失败，属**并行会话**负责的文件，本轮未触碰。 |
 | 8 | **daemon 的 ACC 注册仍是关的** | 日志里 `acc registry registration disabled: ACC_SERVICE_TOKEN not set`（注册面要 `sk-svc.*`，与本轮的 canonical 写入面是两回事）。 |
-| 9 | **launchd 的 `install`+`restart` 偶发不拉起** | 表现为 `state = not running`、**`runs = 0`**（一次都没被 spawn 过），`launchctl kickstart -k` 即恢复。排查顺序：**先看 `runs`**。 |
+| 9 | **「任务历史」是内存保留窗口，不跨 daemon 重启** | `GET /api/v1/runs` 读的是 `finishedRuns sync.Map` + `retainedRunTTL=1h`，**不落盘**。受控实测：重启前 `GET /runs/<id>` 200，重启后 **404**、`total=0`。`dag-store.db` 的持久台账是**编排面**的 run，不是派单 run。要跨重启存活需要把派单台账落盘（新增能力，本轮未做）。 |
+| 10 | **launchd 的 `install`+`restart` 偶发不拉起** | 表现为 `state = not running`、**`runs = 0`**（一次都没被 spawn 过），`launchctl kickstart -k` 即恢复。排查顺序：**先看 `runs`**。 |
 
 ---
 
