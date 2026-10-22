@@ -255,3 +255,13 @@ backend/cmd/wasmprobe/*.wasm.json
 backend/cmd/wasmprobe/*/*.wasm.json
 backend/cmd/wasmbaseline/*.wasm
 
+# ⚠️ 2026-10-22 round51：Maestro harness 在跑 flow 前会**就地生成**一份带
+# `env:` 块的临时 flow（`.maestro/.maestro-tmp-<flow>.yaml`），里面是
+# **口令明文**——这是 Maestro 的 `${VAR}` 展开机制要求的：变量只认 flow 自己的
+# env 块，不认 --env（用 --env 会把口令暴露在进程命令行里）。
+#
+# harness 正常跑完会删掉它，但**跑批被中断/崩溃时它会留在原地**；
+# 它是 untracked 且原先没有任何 ignore 规则 ⇒ 一次 `git add -A` 就把
+# 登录口令提交进 git 历史（不可撤回）。
+# ⇒ 这里显式兜住。真正要提交的是 .maestro/ 下的**源** flow，不是这个临时件。
+.maestro/.maestro-tmp-*.yaml
