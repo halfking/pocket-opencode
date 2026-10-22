@@ -25,6 +25,7 @@
 //   --out=DIR    日志输出目录（默认 <root>/.scratch）
 //   --keep-wt    对照完**不删** LF worktree（默认：删掉，避免占槽位）
 //   --no-gates   只做 LF 树自证，不跑门禁（调试用）
+//                ⚠ 自建的 worktree 仍会在结束时**收掉**（不留残留）
 //
 // 退出码
 // ------
@@ -32,13 +33,16 @@
 //   1  两侧不一致（⇒ 存在检出形态敏感的门禁，详见两份日志的差异）
 //   2  LF 树自证失败（⇒ 对照装置本身坏了，结论无效）
 //
-// ⚠⚠ Windows 上的两个坑（本脚本已规避，改动时别改回去）
+// ⚠⚠ Windows 上的三个坑（本脚本已规避，改动时别改回去）
 //   ① 不能用 `cmd /c "... > log 2>&1"`：cmd 的重定向目标里**正斜杠会被当成开关分隔符**
 //      ⇒ 报「文件名、目录名或卷标语法不正确」（本轮实测踩到）
 //      ⇒ 改成**纯管道捕获 + node 自己落盘**（顺带绕开 PowerShell `>` 的 UTF-16LE 陷阱）。
 //   ② LF worktree 必须用 `git -c core.autocrlf=false worktree add` 建，
 //      且建完要用 `git ls-files --eol` **自证**真的是 w/lf ——
 //      否则对照的是「两棵 CRLF 树」⇒ 结论恒等于「一致」⇒ 假绿。
+//   ③ **`--no-gates` 这条路径也必须收掉自建的 worktree** ——
+//      上一版在自证后直接 exit ⇒ 把 worktree 留在盘上（2026-10-22 实测残留两棵，
+//      且它们带着指向主工作区的 junction ⇒ 下一轮清理时反而成了风险面）。
 import { execFileSync, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
@@ -104,8 +108,50 @@ if (!/w\/lf/.test(eol)) {
 }
 console.log('LF 树自证：w/lf ✓')
 
+// ── 清理函数（**必须定义在 --no-gates 分支之前**：那条路径也要用它）────────────
+// ⚠ 只删**本脚本自己建**的 worktree；复用来的不动（可能是别人在用的）。
+// ⚠ 删之前先拆 junction —— 但**理由不是**「怕 git 顺着它走进主工作区」：
+//   实测负控（2026-10-22）：`git worktree remove --force` **不会**跟着 junction 递归
+//   （目标目录 50 个文件一个没少）⇒ 那个流传的说法**是错的**。
+//   真实理由是**带着 junction 删不干净** —— git 会把 junction 与它上面的目录原地留下。
+//   ⇒ 拆法一：`cmd /c rmdir <junction>`（只拆链接，不碰目标）。
+//   ⇒ 拆法二（兜底）：`fsutil reparsepoint delete <junction>`
+//     把重解析点摘成**普通空目录**（★ 目标内容不受影响，已负控验证）。
+function dropJunction(link) {
+  if (!existsSync(link)) return 'absent'
+  spawnSync('cmd', ['/c', 'rmdir', link], { stdio: 'ignore' })
+  if (!existsSync(link)) return 'rmdir'
+  spawnSync('fsutil', ['reparsepoint', 'delete', link], { stdio: 'ignore' })
+  return existsSync(link) ? 'FAILED' : 'fsutil'
+}
+
+function cleanupWt() {
+  if (!createdWt || KEEP_WT) return false
+  console.log('\n清理：拆 junction + 删本脚本建的 LF worktree …')
+  for (const name of ['node_modules', 'dist']) {
+    const link = join(WT, 'frontend', name)
+    const how = dropJunction(link)
+    if (how !== 'absent') console.log(`  ⇒ ${name}: ${how}`)
+  }
+  try {
+    sh('git', ['worktree', 'remove', '--force', WT])
+  } catch (e) {
+    console.log(`  ⇒ git worktree remove 失败（${e.message?.slice(0, 120)}），改为 rm -rf 后 prune`)
+    rmSync(WT, { recursive: true, force: true })
+    try { sh('git', ['worktree', 'prune']) } catch { /* prune 失败不致命 */ }
+  }
+  // ★ 如实判定：目录真的没了才算删掉（上一版无条件打印「已删」⇒ 会说谎）
+  if (existsSync(WT)) {
+    console.log(`  ⚠ 目录仍在：${WT} ⇒ 如实登记为残留，别写「已删」`)
+    return false
+  }
+  console.log('  ⇒ 已删（目录已不存在）')
+  return true
+}
+
 if (NO_GATES) {
   console.log('--no-gates ⇒ 自证后停下。')
+  cleanupWt() // ★ 本脚本建的 worktree 必须收掉 ⇒ 别在盘上留残留
   process.exit(0)
 }
 
@@ -149,22 +195,9 @@ if (ok) {
 }
 
 // ── 4. 清理 ────────────────────────────────────────────────────────────────
-// ⚠ 只删**本脚本自己建**的 worktree；复用来的不动（可能是别人在用的）。
-// ⚠ 删之前先拆 junction，否则 git worktree remove 会把主工作区的 node_modules 一起带走。
+// ★ 实现在上面的 cleanupWt()（--no-gates 分支也要用它 ⇒ 不能只放在末尾）。
 if (createdWt && !KEEP_WT) {
-  console.log('\n清理：拆 junction + 删本脚本建的 LF worktree …')
-  for (const name of ['node_modules', 'dist']) {
-    const link = join(WT, 'frontend', name)
-    if (existsSync(link)) spawnSync('cmd', ['/c', 'rmdir', link], { stdio: 'ignore' })
-  }
-  try {
-    sh('git', ['worktree', 'remove', '--force', WT])
-    console.log('  ⇒ 已删')
-  } catch (e) {
-    console.log(`  ⇒ git worktree remove 失败（${e.message?.slice(0, 120)}），改为 rm -rf 后 prune`)
-    rmSync(WT, { recursive: true, force: true })
-    try { sh('git', ['worktree', 'prune']) } catch { /* prune 失败不致命 */ }
-  }
+  cleanupWt()
 } else if (KEEP_WT) {
   console.log('\n--keep-wt ⇒ 保留 LF worktree。')
 }
