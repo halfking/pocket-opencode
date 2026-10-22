@@ -41,6 +41,10 @@
 > 真因是**软键盘把「保存」按钮顶到了屏幕外 / 状态栏带子里**，点击压根没进前端。
 > 修的是 flow（关键盘 + 点底部 submit），**顺带把一条假通过的断言改严**；
 > 产品侧「真人用户也点不到」的观察**如实登记、未改产品**。
+>
+> **最终验收（§9）**：13 条主包 Maestro 流在同一台设备实例上**统一重跑，13/13 全绿**
+> （307 步 COMPLETED；2 步 FAILED 是本机 WebView 113 的**设备级无障碍树抖动**，
+> 护栏按设计**原样重跑同一条断言**后通过，未放宽任何断言）。
 
 ---
 
@@ -332,7 +336,7 @@ body 带**新**提示词「创建第二个文件 second-round51.txt，内容写 
 | 1 | **ACC 任务状态不会随 run 终态推进** | `acctask` 客户端**没有「更新任务状态」的能力**，任务建出来后停在 `todo`，不会变成 done/cancelled。ACC 侧的 `PATCH /canonical/tasks/:id` 在 `RequireTaskWrite` 后面（资源级角色），**本轮没有实现**。 |
 | 2 | **ACC 侧只做了「读」侧授权** | 本机选择给 daemon 的 service identity 声明 `admin` 角色。更窄的做法是 ACC 侧用 `ACC_CANONICAL_WRITE_ROLES` 放行一个专用角色（`acc-go` 的现成旋钮），**需要改共享的 ACC 容器环境** —— 那个容器并行会话也在用，**本轮刻意没动**。 |
 | 3 | **minimax-code 仍不可驱动** | 执行层白名单 `processes` 不含 mmcode ⇒ minimax-code 只能观测。本轮用 **opencode** 验证的是「**可驱动**这条链路本身成立」，不改变 mmcode 的现状。 |
-| 4 | **13 条 Maestro 流本轮已重跑** | 本轮**逐条重跑**（含 flashcards-write 修复后的复跑与两条登录流的重跑），结果见 §7/§8。openpocket 的**产品代码本轮仍未改动**（改的是 Maestro flow 与新增诊断脚本）。 |
+| 4 | **13 条 Maestro 流本轮已统一重跑：13/13 全绿** | 见 §9（307 步 COMPLETED / 2 步设备级 a11y 抖动后原样重跑通过）。openpocket 的**产品代码本轮仍未改动**（改的是 Maestro flow 与新增诊断脚本）。 |
 | 5 | **本机仍无 USB Android 真机** | 仍是 AVD `emulator-5556`（AOSP Android 14 / WebView 113）。 |
 | 6 | **ACC 容器未改动** | `acc-blue`(:4100) 与 `acc-go-host`(:4101) 是共享容器；本轮只**读**它们、没改配置/没重启，避免打断并行会话。 |
 | 7 | **openpocket 的 `go test ./...`** | 仍只有 `TestSkipLedger_*` 两包失败，属**并行会话**负责的文件，本轮未触碰。 |
@@ -458,7 +462,66 @@ round52 跑批的 10:33–10:35 期间，机器上发生了一次**不是本会�
 
 ---
 
-## 9. 复现命令
+## 9. 13 条主包 Maestro 流的**统一复跑**（本轮最终验收）
+
+时间：2026-10-22 23:2x–23:5x（同一台 AVD `pocket-test` / 5556，同一次开机后连续跑完）。
+设备：**本机仍无 USB Android 真机**，跑的是 AVD（AOSP Android 14 / WebView 113）—— 见 §6 第 5 条。
+
+### 9.1 结果
+
+| # | flow | 结果 | 步数 | 备注 |
+|---|---|---|---|---|
+| 1 | `smoke-login` | ✅ | 5 | |
+| 2 | `notes-crud` | ✅ | 33 | |
+| 3 | `tasks-crud` | ✅ | 25 | |
+| 4 | `meetings-entry` | ✅ | 16 | 含录音收尾断言 |
+| 5 | `messages-hub` | ✅ | 16 | |
+| 6 | `more-grid-reach` | ✅ | 37 | |
+| 7 | `more-entries-open` | ✅ | 18 | |
+| 8 | `email-accounts` | ✅（第 3 次尝试） | 26 | 前 2 次命中**设备级无障碍树抖动**（见 §9.2） |
+| 9 | `email-browse` | ✅ | 26 | |
+| 10 | `settings-llm-gateway` | ✅ | 18 | |
+| 11 | `flashcards-write` | ✅ | 37 | **本轮修的那条**（§7） |
+| 12 | `2026-10-02-real-login` | ✅ | 12 | 起点必须无登录态，**单独跑** |
+| 13 | `login-gesture` | ✅ | 16 | 故意用错口令，断言拒绝路径，**单独跑** |
+
+**13/13 全绿**，累计 **307 步 COMPLETED**、**2 步 FAILED**（见 §9.2），全部 flow 的 harness 退出码 **0**。
+
+### 9.2 那 2 步 FAILED 是什么（**不放宽断言**）
+
+`email-accounts` 的 `Assert that "邮箱设置" is visible` 连续两次 FAILED（26.5s / 25s 用尽自己的 timeout）。
+harness 的**无障碍树抖动护栏**按设计识别了它并**原样重跑整条 flow**（第 2/3、3/3 次尝试，
+**断言一个字都没改**），第 3 次通过：
+
+```
+[retry] ⚠️ 本条 flow 命中**设备级无障碍树抖动**（Assert that "邮箱设置" is visible FAILED；
+        该断言耗尽了自己的 timeout：26.5s / 25s），画面上元素是在的（截图实证），
+        是本机 WebView 113 的 Android 无障碍树整片丢了子树。
+        重跑**同一条 flow、同样的断言**—— 不放宽任何断言。
+[retry] ✅ 第 3 次尝试通过（前 2 次命中设备级无障碍树抖动）
+```
+
+这是**本机 WebView 113 的已知设备级抖动**（2026-10-07 起的既有白名单，`scripts/lib/a11y-glitch.mjs`），
+不是产品缺陷，也不是被放宽掉的失败 —— 判定权仍在断言本身，护栏只负责**重跑同一条断言**。
+
+### 9.3 复跑方式（为什么分 4 组）
+
+单批 11 条在第一轮跑到第 5 条时被**执行器的单任务 3600s 上限**掐断（`Background bash timed out
+after 3600000ms`），**不是测试失败**（当时 FAILED=0）。改成 4 组、每组 ≤3 条后一次跑完。
+批次产物落在 `~/kaixuan/acp/logs/rerun-round52/`（**不放 `/tmp`** —— 本轮两次 `/tmp` 清空已证明它不是持久存储）。
+
+### 9.4 同一轮里其它面的复验
+
+| 面 | 读数 | 判定 |
+|---|---|---|
+| agent-companion 会话电池 | `TOTAL=71 PASS=71 FAIL=0 SKIP=0` | ✅ |
+| openpocket → ACC | agents **29** / tasks **3** / projects **1** / sessions **21** | ✅ 会话与任务都看得到 |
+| daemon 识别面 | `GET /api/v1/agents` 200、`GET /api/v1/runtime/agents` 200 | ✅ |
+| 闪卡落库 | PG `flashcard_notes`=1、`flashcard_cards`=1，front=回归正面 / back=回归背面、due 已设 | ✅ 真落库，不是假绿 |
+
+---
+
+## 10. 复现命令
 
 ```bash
 # 1) agent-companion 会话电池（71 条）
