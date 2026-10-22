@@ -124,6 +124,20 @@ class Batch:
                            capture_output=True, text=True)
         return p.stdout
 
+    def _dirty_targets(self):
+        """本批目标文件里，哪些**相对 HEAD 不干净**（⇒ 还带着变异）。
+
+        ⚠ 用 `git diff --quiet HEAD -- <file>` 判（**不看工作树其它文件**）
+          ⇒ ⇒ 别的会话改的别的文件**不会**误报 ⇒ ⇒ 只盯本批的目标。
+        """
+        dirty = []
+        for t in self.targets:
+            p = subprocess.run(['git', 'diff', '--quiet', 'HEAD', '--', str(t)],
+                               cwd=str(REPO), capture_output=True, text=True)
+            if p.returncode != 0:
+                dirty.append(str(t.relative_to(REPO)))
+        return dirty
+
     # ── 落盘（**自证**：文件确实变了 且 新串在场）──────────────────
     def mutate(self, path, old, new, label, count=1):
         if path not in self.targets:
@@ -158,6 +172,28 @@ class Batch:
           ⇒ 本 harness 因此在「该红却绿」时**自动用全新缓存复跑**（若运行器支持）。
         """
         run = runner or self.runner
+        # ⚠⚠⚠ §958：**「本条开始前的快照」本身可能已经是脏的**
+        #   本轮实测到的一次真实事故（`s952` 的 N2 负控在跑批里红了，
+        #   独立复跑却 27/27 全绿）：
+        #   · N2 的锚点（`body, err := sizedread.All(resp.Body, …)`）是
+        #     **N1 与 M6 的锚点的真子串** ⇒ 三条变异**共用同一行文本**；
+        #   · ⇒ 于是「前序变异没被完全还原」时，N2 撞上的是**别人的形态**
+        #     ⇒ 实测「M6 态 + N2 态」叠加 ⇒ 判据红 + N2 的 must_not_contain
+        #       标记出现 ⇒ **精确复现了跑批里的现象**。
+        #
+        #   ⚠⚠ **检查的位置**：必须是「**本条开始前**」⇒ 因为还原是按**这个快照**
+        #     写回的 ⇒ ⇒ 若快照已脏 ⇒ 还原会把脏一起带下去 ⇒ ⇒ 本条量到的
+        #     **不是它自己那个变异** ⇒ ⇒ 而本条自己**看不出**异常（它量到的是对的）。
+        #   ⇒ ⇒ ⇒ 而「快照脏」这件事，**只能由下一条用例来发现**
+        #   ⇒ ⇒ ⇒ 所以每条用例**开始时**都要查一次：目标文件相对 HEAD 必须干净。
+        #   ⇒ ⇒ ⇒ 这一查把「前序残留」**当场**变成一条明确的错误，
+        #     而不是「留到后面那条用例去撞、然后误读成『负控写错了』」。
+        dirty_before = self._dirty_targets()
+        if dirty_before:
+            raise HarnessError(
+                '%s: 本条**开始前**目标文件相对 HEAD 就不干净 ⇒ 前序用例有残留'
+                ' ⇒ 本条量到的可能不是它自己的变异：\n  %s'
+                % (name, '\n  '.join(dirty_before)))
         before = {f: f.read_bytes() for f in self.targets}
         stale_cache_note = ''
         try:
