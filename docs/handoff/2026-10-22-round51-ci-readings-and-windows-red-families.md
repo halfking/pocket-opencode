@@ -42,6 +42,8 @@
   ⇒ 拿 `gofmt -l` 当判据会得到「800+ 个文件不 gofmt」的**假结论**。
 - **e2e-web** ⇒ 报错原文 `connect ECONNREFUSED 127.0.0.1:8088`
   ⇒ **后端服务没起来** ⇒ **环境性红**，与本轮改动零相关。
+  ⇒ ⚠ 但它**是长期红**：翻 14 次 run（2026-10-17 → 2026-10-22）⇒ **14/14 全红**
+  ⇒ ⇒ 它与「12/12 全红」**不是同一个成因** ⇒ 别把两者混成一句「CI 都是红的」。
 
 ### 2.1 ⏳ 待补：`c6e9acfe` 这一笔的最终读数
 
@@ -173,7 +175,10 @@ node --test src/features/meetings/__tests__/meeting-todo-readback-day.test.mjs
    `run_all.py` 的 BATCHES 列表只是换了行，s948–s957 全在）
    ⇒ 报「有缺失」的 2 笔全是同一个符号 `§803.4`，而那**正是 §955 自己修掉的死引用**
    ⇒ ⇒ **不判为丢失**。详见主文档 §963.7.1。
-6. ⏳ **本机残留 worktree**：`C:/workspace/_po-base-main`（detached `0fdda422`）、
+6. ⏳ **e2e-web 的长期红**（14/14，2026-10-17 起）—— 报错 `connect ECONNREFUSED 127.0.0.1:8088`
+   ⇒ **后端服务没起来** ⇒ 环境性红。⚠ 本机跑不了（要起后端 + Playwright）
+   ⇒ ⇒ 改完只能靠 CI 读数；**先量影响面再动手**。
+7. ⏳ **本机残留 worktree**：`C:/workspace/_po-base-main`（detached `0fdda422`）、
    `C:/workspace/_po-lf-main`（detached `23bc3529`，A/B 对照载体）——
    **都有 junction，清理前先拆 junction**（否则会带走主工作区的 `node_modules`）。
 
