@@ -55,6 +55,12 @@
 > 派单叫不停** —— 取消没有解除权限门 ⇒ run 永远停在 `cancelling`、**不落终态**
 > （>15 分钟），另一变体落成 `failed`/`permission_denied`。已修（`91de17d`），
 > 两条新回归测试（修复前 1 红），「停止」这条目标的两档缺口都补上了。
+>
+> **续（§12）**：**交付时的当前态全量复跑**（10-23 08:29–09:37）——
+> **13/13 全绿、285 步 COMPLETED、0 步 FAILED**（比 §9 那次更干净）。过程中撞到
+> 三件**环境事件**（SystemUI ANR 弹窗、lowmemorykiller 清理、模拟器连跑 11.96 小时
+> 后 launcher 反复 ANR），如实登记在 §12.2；其中第 2 件**没有钉死到最后一环**，
+> 不写成「已定位」。
 
 ---
 
@@ -348,7 +354,7 @@ body 带**新**提示词「创建第二个文件 second-round51.txt，内容写 
 | 1 | **ACC 任务状态不会随 run 终态推进** | `acctask` 客户端**没有「更新任务状态」的能力**，任务建出来后停在 `todo`，不会变成 done/cancelled。ACC 侧的 `PATCH /canonical/tasks/:id` 在 `RequireTaskWrite` 后面（资源级角色），**本轮没有实现**。 |
 | 2 | **ACC 侧只做了「读」侧授权** | 本机选择给 daemon 的 service identity 声明 `admin` 角色。更窄的做法是 ACC 侧用 `ACC_CANONICAL_WRITE_ROLES` 放行一个专用角色（`acc-go` 的现成旋钮），**需要改共享的 ACC 容器环境** —— 那个容器并行会话也在用，**本轮刻意没动**。 |
 | 3 | **minimax-code 仍不可驱动** | 执行层白名单 `processes` 不含 mmcode ⇒ minimax-code 只能观测。本轮用 **opencode** 验证的是「**可驱动**这条链路本身成立」，不改变 mmcode 的现状。 |
-| 4 | **13 条 Maestro 流本轮已统一重跑：13/13 全绿** | 见 §9（307 步 COMPLETED / 2 步设备级 a11y 抖动后原样重跑通过）。openpocket 的**产品代码本轮仍未改动**（改的是 Maestro flow 与新增诊断脚本）。 |
+| 4 | **13 条 Maestro 流本轮已统一重跑：13/13 全绿** | 见 §9（307 步 COMPLETED / 2 步设备级 a11y 抖动后原样重跑通过）与 **§12（交付时复跑：285 步 COMPLETED / 0 步 FAILED）**。openpocket 的**产品代码本轮仍未改动**（改的是 Maestro flow 与新增诊断脚本）。 |
 | 5 | **本机仍无 USB Android 真机** | 仍是 AVD `emulator-5556`（AOSP Android 14 / WebView 113）。 |
 | 6 | **ACC 容器未改动** | `acc-blue`(:4100) 与 `acc-go-host`(:4101) 是共享容器；本轮只**读**它们、没改配置/没重启，避免打断并行会话。 |
 | 7 | **openpocket 的 `go test ./...`** | 仍只有 `TestSkipLedger_*` 两包失败，属**并行会话**负责的文件，本轮未触碰。 |
@@ -535,7 +541,7 @@ after 3600000ms`），**不是测试失败**（当时 FAILED=0）。改成 4 组
 
 ## 10. agent-companion 侧另查出一条**真缺陷**：被叫停的派单被报成 `agent_busy`
 
-这条**不在 openpocket 侧**，是在 §9 复验时用**真 agent 演练**（§12 第 2 步：
+这条**不在 openpocket 侧**，是在 §9 复验时用**真 agent 演练**（§13 第 2 步：
 `cmd/live-e2e`，真 opencode + 真模型）跑出来的：演练的 **cancel 段**在同一个 commit 上
 **4 次里 2 次红**，报错是：
 
@@ -683,7 +689,65 @@ agent-companion 侧的完整定性见 `docs/CANCEL_WHILE_WAITING_PERMISSION_2026
 
 ---
 
-## 12. 复现命令
+## 12. 交付时的**全量复跑**（2026-10-23 08:29–09:37，13/13 全绿、0 步 FAILED）
+
+§9 那次复跑是 10-22 23:2x；本节是**交付时的当前态复跑**（同一台 AVD `pocket-test` / 5556，
+同一批 flow、同一批断言，**没有改任何断言**）。
+
+### 12.1 结果
+
+| 组 | flow | 步数 | 结果 | 退出码 |
+|---|---|---|---|---|
+| A | `smoke-login` / `notes-crud` / `tasks-crud` | 63 | ✅ | 0 |
+| B | `meetings-entry` / `messages-hub` / `more-grid-reach` | 69 | ✅ | 0 |
+| C | `more-entries-open` / `email-accounts` / `email-browse` | 70 | ✅ | 0 |
+| D | `settings-llm-gateway` / `flashcards-write` | 55 | ✅ | 0 |
+| — | `2026-10-02-real-login`（起点无登录态，单独跑） | 12 | ✅ | 0 |
+| — | `login-gesture`（故意错口令，单独跑） | 16 | ✅ | 0 |
+
+**13/13 全绿，累计 285 步 COMPLETED、0 步 FAILED**（比 §9 那次更干净：这次连设备级
+无障碍树抖动都没触发）。日志：`~/kaixuan/acp/logs/rerun-round52/final-{A,B,C,D}.log`、
+`final-login-{real,gesture}.log`、`final-batch.log`。
+
+### 12.2 过程中撞到的三件**环境事件**（如实登记，均不是产品回归）
+
+| # | 现象 | 证据 | 判定与处置 |
+|---|---|---|---|
+| 1 | **SystemUI ANR 对话框**盖住整屏 ⇒ Maestro 的无障碍树里看不到底下的 App 元素 ⇒ 前两条流红在「AI 工具」 | 失败截图（08:28）里是 "System UI isn't responding" 弹窗；`dumpsys window` 的 `mCurrentFocus=Application Not Responding: com.android.systemui` | 设备级事件。点「Wait」关掉后重跑即绿。**加了本地看门狗**（`~/kaixuan/acp/logs/rerun-round52/anr-watchdog.sh`，**不入仓库**）：只在系统 ANR 窗口在前台时点「Wait」，不碰 App、不碰断言 |
+| 2 | 设备**内存压力**：08:46:22 `lowmemorykiller` 清理进程（contacts 被杀、gapps/partnersetup 被清）⇒ `tasks-crud` 第一次尝试红在「创建」 | 失败帧截图里 **App 已回到登录页**（用户名 `admin` 在、密码空）；两个后端端口（:18099 / :18097）那段时间 **401 计数为 0** ⇒ 服务端**没有**判死会话；设备 logcat 同一时刻在杀进程 | 设备级事件（不是后端拒了会话）。harness 的设备级护栏按设计**原样重跑同一条 flow、同样的断言**后通过，最终日志 0 FAILED。**未放宽任何断言** |
+| 3 | 批跑结束后，模拟器已连续运行 **11.96 小时**，launcher 反复 ANR（看门狗每 14 秒命中一次） | `dumpsys meminfo` 显示 Google 系后台进程堆着；watchdog 日志连续多条 "Application Not Responding: com.google.android.apps.nexuslauncher" | **重启 AVD**（`-no-snapshot-load` 冷启，10 秒 boot_completed）→ 重建 `adb reverse tcp:18099/18097` → 复跑代表性 flow 复核（见 §12.3） |
+
+> ⚠️ **第 2 条没有钉死到最后一环**：能证明的是「服务端没发 401」「App 那一刻确实在登录页」
+> 「设备同时在杀进程」，但**没有**直接证据说明 App 是被谁踢回登录页的
+> （客户端守卫 / 进程重建 / 本地库上锁，三者都符合现有证据）。
+> **如实登记为未定因的环境事件**，不写成「已定位」。
+
+### 12.3 重启 AVD 后的代表性复核
+
+重启后复跑 4 条（含本轮修过的那两条：网关配置与闪卡写路径）：
+
+```
+adb -s emulator-5556 reverse tcp:18099 tcp:18099   # 与 tcp:18097
+node scripts/maestro-run.mjs .maestro/smoke-login.yaml .maestro/notes-crud.yaml \
+     .maestro/settings-llm-gateway.yaml .maestro/flashcards-write.yaml
+```
+
+→ **exit=0，93 步 COMPLETED，0 个真实失败**（日志 `post-reboot.log`；
+「FAILED 数」计数器为 0，日志里也没有任何 `Assertion is false`）。
+闪卡那条跑的是**零卡组分支**（夹具先清场并自证 PG=0）。
+
+### 12.4 重启 AVD 后的代表性复核结果
+
+| flow | 结果 | 步数 |
+|---|---|---|
+| `smoke-login` | ✅ | 5 |
+| `notes-crud` | ✅ | 33 |
+| `settings-llm-gateway` | ✅ | 18 |
+| `flashcards-write` | ✅ | 37 |
+
+---
+
+## 13. 复现命令
 
 ```bash
 # 1) agent-companion 会话电池（71 条）
