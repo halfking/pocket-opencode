@@ -128,13 +128,14 @@ func TestPGTruncateFloorsToMicrosecond(t *testing.T) {
 //	⇒ PG 往返差恒为 123ns（round-half-to-even 与 round-half-away 在 .123 上都舍去）
 //	⇒ 容差带在任何平台上都**非空**。
 func TestS964TombstoneFixtureKeepsDeterministicSubMicrosecondDelta(t *testing.T) {
-	// µs 对齐的基准（与 PG 落库后取回的值同形）。
-	base := time.Date(2026, 10, 21, 19, 14, 55, 346017000, time.UTC)
-	planted := base.Add(123 * time.Nanosecond)
-
+	// ★ 用**夹具本身**（`s943PlantedAt`）而不是另造一份 ——
+	//   否则「夹具被改回无亚微秒尾」这件事**没有任何判据会红**
+	//   （那个约定只写在注释里 ⇒ 没人守 ⇒ 迟早被改掉）。
+	planted := s943PlantedAt()
 	// ① 夹具的亚微秒尾必须是**确定的 123ns**（不多不少）。
+	base := planted.Truncate(time.Microsecond)
 	if got := planted.Sub(base); got != 123*time.Nanosecond {
-		t.Fatalf("夹具的亚微秒尾必须是 123ns，实际 %v", got)
+		t.Fatalf("夹具的亚微秒尾必须是 123ns，实际 %v（夹具被改回无亚微秒尾 ⇒ PG 往返差变成 0 ⇒ 容差带空转 ⇒ 判据没牙）", got)
 	}
 	// ② PG 往返：.123 < .5 ⇒ 舍去 ⇒ 存回来的是 base ⇒ 往返差恰为 123ns。
 	stored := base

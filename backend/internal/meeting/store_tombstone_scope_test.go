@@ -97,6 +97,27 @@ func s943TombCases(t *testing.T) []s943TombCase {
 	}
 }
 
+// s943PlantedAt 构造「别人的墓碑」的时刻。
+//
+// ⚠⚠ §964：它**显式带一个确定的亚微秒尾**（先 Truncate 到微秒，再 +123ns）。
+//
+//	为什么：墓碑那条判据用的是 `pgTimeEqual`（±1µs **容差带**）。
+//	若被比较的两个值**逐字相同**，那条带比的就是「0 vs 0」
+//	⇒ **把容差收到 0 也不会有人发现** ⇒ 判据在**最需要它的平台**上反而没牙。
+//	⚠ 而这不是假设：macOS 上实测 `time.Now()` 的纳秒尾 **2000/2000 全为 0**
+//	（µs 对齐的时钟）⇒ 不加干预时 PG 往返差**恰为 0**。
+//	⇒ 先 Truncate 到微秒（让基准确定）再 +123ns
+//	⇒ PG 的 round-half-to-even 在 `.123` 上是**舍去** ⇒ 往返差**恒为 123ns**
+//	⇒ 容差带在**任何**平台上都**非空** ⇒ 它是**真的被用上了**。
+//
+// ★ 为什么抽成函数：**夹具与判据共用同一份构造** ⇒
+//
+//	「夹具被改回无亚微秒尾」这件事**立刻被 transcript_test.go 里那条判据逮住**
+//	（否则这个约定只写在注释里 ⇒ 没人守 ⇒ 迟早被改掉而没有任何判据变红）。
+func s943PlantedAt() time.Time {
+	return time.Now().Add(-2 * time.Hour).Truncate(time.Microsecond).Add(123 * time.Nanosecond)
+}
+
 // TestS943TombstoneGuardRefusesToMoveAnotherScopesTombstone 不得搬走别人的墓碑。
 //
 // ⚠ 三条腿缺一不可：
@@ -109,17 +130,10 @@ func TestS943TombstoneGuardRefusesToMoveAnotherScopesTombstone(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			// 别人的墓碑（早于这次删除存在）。
 			//
-			// ⚠⚠ §964：显式带一个**确定的**亚微秒尾（µs 对齐 + 123ns）。
-			//
-			//	为什么：PG 臂那条判据用的是 pgTimeEqual（±1µs 容差）。
-			//	若两个值**逐字相同**，那条带比的就是「0 vs 0」
-			//	⇒ 把容差收到 0 也没人会发现 ⇒ 判据没牙。
-			//	⚠ 而这不是假设：macOS 上实测 `time.Now()` 的纳秒尾 **2000/2000 全为 0**
-			//	（µs 对齐的时钟）⇒ 不加干预时 PG 往返差**恰为 0**。
-			//	⇒ 先 Truncate 到微秒（让基准确定）再 +123ns
-			//	⇒ 往返差恒为 123ns（round-half-to-even 在 .123 上是舍去）
-			//	⇒ 容差带在**任何**平台上都非空 ⇒ 它是**真的被用上了**。
-			plantedAt := time.Now().Add(-2 * time.Hour).Truncate(time.Microsecond).Add(123 * time.Nanosecond)
+			// ⚠⚠ §964：时刻由 s943PlantedAt() 统一构造 ⇒ 夹具与判据**共用同一份**
+			//   ⇒ 「夹具被改回无亚微秒尾」这件事**立刻被那条判据逮住**
+			//   （详见 s943PlantedAt 的注释与 transcript_test.go 里那条判据）。
+			plantedAt := s943PlantedAt()
 			tc.plant(t, s943TombID, s943TombOth, s943TombWs, plantedAt)
 
 			// 自己名下有一场**同 id** 的会议。
