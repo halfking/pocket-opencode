@@ -209,6 +209,18 @@ func TestRSSDigestRoutesEndToEnd(t *testing.T) {
 		t.Fatalf("read scope: %v", err)
 	}
 	now := time.Now().UTC()
+	// ⚠⚠ §964：日报的条目窗是 **UTC 日窗**（`rss.DigestDayRange` ⇒ `[00:00, 24:00)`）
+	//
+	//	⇒ 夹具若用 `now` 与 `now-1h`，在 **UTC 00:00–01:00** 之间**会跨日界**
+	//	⇒ 后一条落到**昨天** ⇒ 被日窗过滤掉 ⇒ itemCount 变成 1
+	//	⇒ ⇒ 这条用例**每天 UTC 00:00–01:00 必红**（CI runner 就是 UTC）
+	//
+	//	⇒ ⇒ 修法**照抄仓里既有的正确形态**，不另创一套：
+	//	  `internal/email/fetcher_pipeline_test.go:418` 早就写着
+	//	  「Anchor to midday UTC so the ±24h day window can't straddle a boundary」
+	//	  ⇒ 同一族的另一处**没照做** ⇒ 这不是「没想到」，是「**同族形态没统一**」
+	//	⇒ ⇒ ⇒ 锚到当日正午 UTC ⇒ 两条离日界各 ≥11 小时 ⇒ 结论与挂钟时刻无关。
+	day := now.Truncate(24 * time.Hour).Add(12 * time.Hour)
 	srcID := "src-e2e-digest"
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO rss_sources(id,user_id,workspace_id,url,title,category,enabled,fetch_interval,next_fetch_at,created_at,updated_at)
@@ -222,7 +234,7 @@ func TestRSSDigestRoutesEndToEnd(t *testing.T) {
 			VALUES ($1,$2,$3,$4,$5,$6,$7,'摘要',$8,'unread')`,
 			fmt.Sprintf("it-e2e-%d", i), srcID, userID, workspaceID,
 			fmt.Sprintf("h%d", i), fmt.Sprintf("https://e2e.example/%d", i),
-			fmt.Sprintf("E2E 条目 %d", i), now.Add(time.Duration(-i)*time.Hour)); err != nil {
+			fmt.Sprintf("E2E 条目 %d", i), day.Add(time.Duration(-i)*time.Hour)); err != nil {
 			t.Fatalf("insert item: %v", err)
 		}
 	}
