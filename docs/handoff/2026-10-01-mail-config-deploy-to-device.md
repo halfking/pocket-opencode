@@ -480,7 +480,7 @@ Email scheduler started (fetch_enabled=true, kxmemory=false, ...)
 > **重要邮件提醒链路端到端是通的**。
 > kxmemory 缺的是 `ai_summary` / `suggested_action` / 每日总结这类 AI 增强，
 > 不是提醒本身。详见
-> [correction-important-reminder-works-without-kxmemory.md](./correction-important-reminder-works-without-kxmemory.md)。
+> [correction-important-reminder-works-without-kxmemory.md](./2026-10-02-correction-important-reminder-works-without-kxmemory.md)。
 
 ## 5.5 事故：`opencode_pocket` schema 被清空（2026-10-01 19:47，根因未定）
 

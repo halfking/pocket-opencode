@@ -122,7 +122,7 @@ em-10435 的 subject/snippet：
   否则报 `1310213`）
 - **重要邮件提醒**：~~`remindersSent=0` 的根因是 `importance` 恒空~~
   **（2026-10-02 05:4x 更正：这个结论是错的，见
-  [correction-important-reminder-works-without-kxmemory.md](./correction-important-reminder-works-without-kxmemory.md)）**
+  [correction-important-reminder-works-without-kxmemory.md](./2026-10-02-correction-important-reminder-works-without-kxmemory.md)）**
   实际上 `importance` 由本地规则引擎（`fetcher.go:771`）写入、与 kxmemory 无关，
   真实库里 28 封 `importance='high'`、24 封已提醒，`GET /api/notifications`
   能读到 `[email/email.important]` 通知。**重要邮件提醒是通的**。

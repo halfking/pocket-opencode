@@ -54,7 +54,7 @@ cd e2e/web && npm install && npx playwright install chromium && npx playwright t
 
 ## CI
 
-GitHub Actions：[`.github/workflows/e2e-web.yml`](../../.github/workflows/e2e-web.yml)（push 触发路径 `e2e/web/**`、`frontend/src/**`、`backend/**`；手跑 workflow_dispatch）。设计说明与排查指南见 [`docs/guides/E2E_CI.md`](../docs/guides/E2E_CI.md)。失败用例按 issue #20 约定转 issue。
+GitHub Actions：[`.github/workflows/e2e-web.yml`](../.github/workflows/e2e-web.yml)（push 触发路径 `e2e/web/**`、`frontend/src/**`、`backend/**`；手跑 workflow_dispatch）。设计说明与排查指南见 [`docs/guides/E2E_CI.md`](../docs/guides/E2E_CI.md)。失败用例按 issue #20 约定转 issue。
 
 ## Android / iOS
 
