@@ -131,7 +131,9 @@ func pgTruncate(t time.Time) time.Time {
 // pgNow 取「写进 PG 的那一刻」的时间戳，**截断到微秒**。
 //
 // ⇒ 凡是**写进 PG 的时间戳**都必须走它（别再直接调 `time.Now()`），
-//   否则「写进去的值」与「返回给调用方的值」会差一个亚微秒量。
+//
+//	否则「写进去的值」与「返回给调用方的值」会差一个亚微秒量。
+//
 // ⚠ `nextMeetingID()` 里的 `time.Now().UnixNano()` **不归它管**
 //
 //	—— 那是 ID 唯一性用途，与时间戳精度无关（且 UnixNano 取的是 epoch 纳秒，

@@ -75,6 +75,83 @@ func TestPGTimeEqualTolerance(t *testing.T) {
 	}
 }
 
+// TestPGTruncateFloorsToMicrosecond 钉住 pgTruncate 的两个要点：
+// ① 它是**向下**截断（floor），不是四舍五入（round）；
+// ② 它**只动亚微秒部分**，微秒及以上一字未改。
+//
+// ⚠ 为什么「向下」这件事必须有判据（这是 §964 的核心）：
+//
+//	PG 的 timestamptz 用 round-half-to-even（实测 .7µs 进位 / .3µs 舍去）
+//	⇒ 若写入侧也用 round，截断后的值仍可能落在 .5µs 边界上
+//	⇒ PG 存它时**还会再动一次** ⇒ 「内存值 == 库值」这条严格等值就不成立。
+//	⇒ ⇒ 必须**向下**截断（floor）：截断后的值本身没有亚微秒部分
+//	⇒ PG 再存它时不产生任何取整 ⇒ 严格等值成立。
+func TestPGTruncateFloorsToMicrosecond(t *testing.T) {
+	base := time.Date(2026, 10, 21, 19, 14, 55, 346017826, time.UTC)
+	want := time.Date(2026, 10, 21, 19, 14, 55, 346017000, time.UTC)
+
+	// ① 向下截断：.826µs ⇒ 舍去成 .000µs。
+	got := pgTruncate(base)
+	if !got.Equal(want) {
+		t.Fatalf("pgTruncate 必须向下截断到微秒：got %v want %v", got, want)
+	}
+	// ② 负控：若有人把它写成 Round，.826µs 会**进位**成 .346018 ⇒ 上面那条会红。
+	//    这条断言「Round 的结果与 want 不同」⇒ 证明 ① 的取值确实区分了
+	//    「向下」与「四舍五入」（否则 ① 就没有区分度）。
+	if base.Round(time.Microsecond).Equal(want) {
+		t.Fatal("负控：Round 会把 .826µs 进位 ⇒ ① 的 want 取值本身就错了")
+	}
+	// ③ 微秒及以上部分必须**一字未动**（不得截到秒/毫秒去）。
+	if got.Unix() != base.Unix() {
+		t.Fatalf("pgTruncate 不得改动秒级部分：got %v want %v", got.Unix(), base.Unix())
+	}
+	if got.Nanosecond()%1000 != 0 {
+		t.Fatalf("pgTruncate 后仍带亚微秒部分：%v", got.Nanosecond()%1000)
+	}
+	// ④ 负控：截到**毫秒**去是另一种结果 ⇒ 证明 ③ 的两个取值确实不同。
+	if base.Truncate(time.Millisecond).Equal(got) {
+		t.Error("负控：Truncate(毫秒) 必须与 pgTruncate 不同 —— 否则 ③ 没有区分度")
+	}
+}
+
+// TestS964TombstoneFixtureKeepsDeterministicSubMicrosecondDelta 钉住
+// 「**容差带必须真的被用上**」这条纪律。
+//
+// ⚠ 为什么这条重要（这是 §964 的第二个洞）：
+//
+//	墓碑那条判据用的是 pgTimeEqual（±1µs 容差）。
+//	若被比较的两个值**逐字相同** ⇒ 那条带比的是「0 vs 0」
+//	⇒ **把容差收到 0 也不会有人发现** ⇒ 判据在**最需要它的平台**上反而没牙。
+//	⚠ 而这不是假设：macOS 上实测 `time.Now()` 的纳秒尾 **2000/2000 全为 0**
+//	（µs 对齐的时钟）⇒ 不加干预时，往返差**恰为 0**。
+//	⇒ 修法：夹具**显式**带一个确定的亚微秒尾（µs 对齐 + 123ns）
+//	⇒ PG 往返差恒为 123ns（round-half-to-even 与 round-half-away 在 .123 上都舍去）
+//	⇒ 容差带在任何平台上都**非空**。
+func TestS964TombstoneFixtureKeepsDeterministicSubMicrosecondDelta(t *testing.T) {
+	// µs 对齐的基准（与 PG 落库后取回的值同形）。
+	base := time.Date(2026, 10, 21, 19, 14, 55, 346017000, time.UTC)
+	planted := base.Add(123 * time.Nanosecond)
+
+	// ① 夹具的亚微秒尾必须是**确定的 123ns**（不多不少）。
+	if got := planted.Sub(base); got != 123*time.Nanosecond {
+		t.Fatalf("夹具的亚微秒尾必须是 123ns，实际 %v", got)
+	}
+	// ② PG 往返：.123 < .5 ⇒ 舍去 ⇒ 存回来的是 base ⇒ 往返差恰为 123ns。
+	stored := base
+	if got := stored.Sub(planted); got != -123*time.Nanosecond {
+		t.Fatalf("往返差必须是 -123ns，实际 %v", got)
+	}
+	// ③ 正控：1µs 的容差带必须覆盖这个差（判据成立）。
+	if !pgTimeEqual(stored, planted) {
+		t.Error("正控：123ns 的往返差必须在 1µs 容差带内")
+	}
+	// ④ 负控：被比较的两个值必须**不逐字相同** ——
+	//    否则「零宽比较」（= 把容差收到 0）也会过 ⇒ 那条带形同虚设。
+	if stored.Equal(planted) {
+		t.Fatal("负控失效：往返后两个值逐字相同 ⇒ 容差带比的是 0 vs 0 ⇒ 带形同虚设")
+	}
+}
+
 func TestTranscriptTail(t *testing.T) {
 	// ⚠ 语料刻意混了中文（3 字节）、ASCII 与 emoji（4 字节）⇒
 	//   按字节切与按字符切在这里给出**不同**的结果 ⇒ 判据才有牙。
@@ -432,14 +509,20 @@ func TestPGUpdateMetaScopedLeavesTranscriptUntouched(t *testing.T) {
 	if after.Transcript != live.Transcript {
 		t.Fatalf("定向更新覆盖了转写：\n got %q\nwant %q", after.Transcript, live.Transcript)
 	}
-	// ⚠ PG 的 timestamptz 精度是**微秒**，而 UpdateMetaScoped 返回的是内存里的
-	//   **纳秒**值 ⇒ 直接比字面必然差几百纳秒（CI 实测差 1.46ns / 999ns）
-	//   ⇒ 这条判据要比的是「同一个时刻在 PG 精度下是否相等」，
-	//   不是两个不同精度的字面相等（直接 Equal 在 ubuntu CI 上恒红）。
-	//   ⚠ 内存版那条（上面那个函数）**保持严格相等**：内存 store 不丢精度，
-	//   放宽它等于自己拆自己的牙。
-	if !pgTimeEqual(after.UpdatedAt, updatedAt) {
-		t.Fatalf("updated_at 不一致：row=%v returned=%v（差 %v，超过 PG 的微秒精度）", after.UpdatedAt, updatedAt, after.UpdatedAt.Sub(updatedAt))
+	// ⚠⚠ §964：这条判据被**收回成严格等值**了 —— 因为生产侧已经治了。
+	//
+	//	§963 当时把它放宽成 pgTimeEqual（±1µs 容差），是因为**生产侧**还在写
+	//	纳秒值（PG 存进去会四舍五入到微秒 ⇒ 返回值与库值不相等）。
+	//	⇒ §964 加了 pgNow()：**写进 PG 的时间戳一律先向下截断到微秒**
+	//	⇒ 写进去的值**本身就是微秒对齐的** ⇒ PG 存它时**不产生任何取整**
+	//	⇒ 「返回给调用方的值」与「库里存的值」**逐位相等** ⇒ 可以严格比。
+	//
+	//	★ 这就是「**生产写的值**用**生产侧截断**治；**测试自己造的值**用
+	//	  **判据侧容差**治」那条分工：这条判据比的是**生产写的值**
+	//	  ⇒ 归生产侧治 ⇒ 判据保持严格（不靠容差撑着）。
+	//	⚠ 内存版那条（上面那个函数）**同样保持严格相等**：内存 store 不丢精度。
+	if !after.UpdatedAt.Equal(updatedAt) {
+		t.Fatalf("updated_at 不一致：row=%v returned=%v（差 %v）—— 写入前截断到微秒后二者必须逐位相等", after.UpdatedAt, updatedAt, after.UpdatedAt.Sub(updatedAt))
 	}
 }
 

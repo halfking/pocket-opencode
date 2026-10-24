@@ -108,7 +108,18 @@ func TestS943TombstoneGuardRefusesToMoveAnotherScopesTombstone(t *testing.T) {
 	for _, tc := range s943TombCases(t) {
 		t.Run(tc.name, func(t *testing.T) {
 			// 别人的墓碑（早于这次删除存在）。
-			plantedAt := time.Now().Add(-2 * time.Hour)
+			//
+			// ⚠⚠ §964：显式带一个**确定的**亚微秒尾（µs 对齐 + 123ns）。
+			//
+			//	为什么：PG 臂那条判据用的是 pgTimeEqual（±1µs 容差）。
+			//	若两个值**逐字相同**，那条带比的就是「0 vs 0」
+			//	⇒ 把容差收到 0 也没人会发现 ⇒ 判据没牙。
+			//	⚠ 而这不是假设：macOS 上实测 `time.Now()` 的纳秒尾 **2000/2000 全为 0**
+			//	（µs 对齐的时钟）⇒ 不加干预时 PG 往返差**恰为 0**。
+			//	⇒ 先 Truncate 到微秒（让基准确定）再 +123ns
+			//	⇒ 往返差恒为 123ns（round-half-to-even 在 .123 上是舍去）
+			//	⇒ 容差带在**任何**平台上都非空 ⇒ 它是**真的被用上了**。
+			plantedAt := time.Now().Add(-2 * time.Hour).Truncate(time.Microsecond).Add(123 * time.Nanosecond)
 			tc.plant(t, s943TombID, s943TombOth, s943TombWs, plantedAt)
 
 			// 自己名下有一场**同 id** 的会议。
