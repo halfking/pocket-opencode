@@ -54,10 +54,12 @@
 > **续（§11）**：把线上实例升到新构建后再实测「停止」，又查出**「正在等审批」的
 > 派单叫不停** —— 取消没有解除权限门 ⇒ run 永远停在 `cancelling`、**不落终态**
 > （>15 分钟），另一变体落成 `failed`/`permission_denied`。已修（`91de17d`），
-> 两条新回归测试（修复前 1 红），「停止」这条目标的两档缺口都补上了。
+> 两条新回归测试（修复前 1 红）。**（2026-10-25 审计轮订正：原文这里写「两档缺口都补上了」
+> 是过度声明 —— 第一档的修复只在 ACC 命令循环那条路可达，REST 面走不到；见 §16.4.3。）**
 >
 > **续（§12）**：**交付时的当前态全量复跑**（10-23 08:29–09:37）——
-> **13/13 全绿、285 步 COMPLETED、0 步 FAILED**（比 §9 那次更干净）。过程中撞到
+> **13/13 全绿、285 步 COMPLETED、0 步 FAILED**（最终尝试的计数；`tasks-crud`
+> 第一次尝试红过并由护栏原样重跑通过，见 §12.1 的订正）。过程中撞到
 > 三件**环境事件**（SystemUI ANR 弹窗、lowmemorykiller 清理、模拟器连跑 11.96 小时
 > 后 launcher 反复 ANR），如实登记在 §12.2；其中第 2 件**没有钉死到最后一环**，
 > 不写成「已定位」。
@@ -705,8 +707,16 @@ agent-companion 侧的完整定性见 `docs/CANCEL_WHILE_WAITING_PERMISSION_2026
 | — | `2026-10-02-real-login`（起点无登录态，单独跑） | 12 | ✅ | 0 |
 | — | `login-gesture`（故意错口令，单独跑） | 16 | ✅ | 0 |
 
-**13/13 全绿，累计 285 步 COMPLETED、0 步 FAILED**（比 §9 那次更干净：这次连设备级
-无障碍树抖动都没触发）。日志：`~/kaixuan/acp/logs/rerun-round52/final-{A,B,C,D}.log`、
+**13/13 全绿，累计 285 步 COMPLETED、0 步 FAILED**。
+
+> ⚠️ **2026-10-25 审计轮订正**：这个「0 步 FAILED」是**最终尝试**的计数，不是
+> 「整轮一次没红过」—— `tasks-crud` **第一次尝试红过**（设备内存压力把它踢回登录页，
+> 见 §12.2 第 2 条），由护栏**原样重跑同一条 flow、同样的断言**后通过。
+> 所以原文那句「这次连设备级无障碍树抖动都没触发」**不成立**，本轮删掉。
+> 另一个取证弱点一并登记：**护栏重跑会覆盖同名日志** ⇒ 事后**无法从日志数出红过几次**；
+> 本轮起日志改为按时间戳留存（§16.1）。
+
+日志：`~/kaixuan/acp/logs/rerun-round52/final-{A,B,C,D}.log`、
 `final-login-{real,gesture}.log`、`final-batch.log`。
 
 ### 12.2 过程中撞到的三件**环境事件**（如实登记，均不是产品回归）
@@ -972,3 +982,193 @@ curl -s --noproxy '*' -X POST "http://127.0.0.1:12110/api/v1/runs/$RID/cancel" -
 curl -s --noproxy '*' "http://127.0.0.1:12110/api/v1/runs/$RID"
 # 期望：state=cancelled（修复前：永远 cancelling / ended_at 空 / failed+permission_denied）
 ```
+
+---
+
+## 16. **批判式审计轮**（2026-10-25 15:13 起）：上一轮的结论逐条重验，抓到 1 条真缺口 + 1 场环境事故
+
+这一轮不做新功能，只做一件事：**把上一轮写进报告的每一条结论，拿当前态的证据重新核一遍**。
+核不实的改，核不上的如实登记。结果是：上一轮「两档叫停都通了」这句**过度声明**，本轮订正
+（§16.4.3）；同时撞上一场**环境事故**（PG/ACC 容器被并行会话拆除），把设备侧复跑整个掀翻
+（§16.1–§16.2）。
+
+### 16.1 环境事故：共享 PG 与 ACC 容器在本轮审计期间被拆除
+
+现场证据（`docker ps -a` / 端口探测 / 后端日志）：
+
+| 组件 | 上一轮（§14.2） | 本轮 | 谁动的 |
+|---|---|---|---|
+| `acc-pg17`（PG17，宿主 5432） | Up | **容器不存在** | 并行会话 |
+| `acc-blue`（ACC API，4100） | Up | **容器不存在** | 并行会话 |
+| `acc-go-host`（ACC Runtime，4101） | Up | **容器不存在** | 并行会话 |
+| docker 网络 `shared-infra` | 存在 | **不存在** | 并行会话 |
+| `llm-gateway-pg` | — | 存在但 Exited(137)、端口 54318 | 并行会话（它自己的） |
+| `kx-citus` | — | Up、端口 15433 | 并行会话（它自己的） |
+
+⇒ **openpocket 的全部 DB 接口当场 500**，后端日志逐条自证：
+
+```
+[ERROR] POST /api/tasks - 500 (1.466208ms) req=a17c629e5e3d77b7d3afde98d9febeb3
+[scheduledtask] claim due: failed to connect to `user=acc_super database=postgres`:
+    127.0.0.1:5432 (127.0.0.1): dial error: dial tcp 127.0.0.1:5432: connect: connection refused
+```
+
+设备侧 `tasks-crud` 因此**红了一条**（`POST /api/tasks` → 500 ⇒ 前端弹窗不关 ⇒
+`assertNotVisible: "创建任务"` 失败）。这不是产品缺陷，取证链有三段：
+
+1. 设备 logcat：`Failed to create task: ApiError: Internal Server Error`；
+2. 失败现场截图：**弹窗仍开着**、标题已填进 `Maestro任务`、「创建」按钮呈可点态
+   ⇒ **点击落地了**，是**后端 500** 把提交打了回来（不是「点歪了」）；
+3. 后端日志：同一时刻 `POST /api/tasks - 500`，根因就是上面那行 `connection refused`。
+
+**取证纪律的自我检讨**：上一轮同一条断言也曾红过一次，被护栏「原样重跑同一条 flow」重跑成绿
+——而**重跑会覆盖同名日志**，于是那次失败痕迹被抹掉，事后无法回答「到底红过几次」。
+本轮改成**日志按时间戳留存、绝不覆盖**（`audit-batch2.sh`），并给批跑加了**负载闸门**
+（`load1 < 25` 才开跑）。
+
+### 16.2 环境恢复：复制数据目录另起容器，**不与并行会话抢同一个 PGDATA**
+
+恢复时刻意**没有**直接用原数据目录 `~/kaixuan/pg/acc-pg17/data`：两个 postmaster 共用一个
+PGDATA 会损坏数据，而并行会话随时可能把 `acc-pg17` 拉起来。做法是复制一份：
+
+```bash
+cp -a ~/kaixuan/pg/acc-pg17/data/. ~/kaixuan/pg/ac-audit-pg17-data/   # 609MB，原目录原封不动
+docker run -d --name ac-audit-pg17 -p 127.0.0.1:5432:5432 \
+  -v ~/kaixuan/pg/ac-audit-pg17-data:/var/lib/postgresql/data \
+  -e POSTGRES_USER=acc_super -e POSTGRES_DB=postgres \
+  kx-citus-pg17:offline-arm64
+```
+
+复验读数：容器 `Up (healthy)`；`PG 17.10`；3 个 schema 齐全
+（`opencode_pocket` / `opencode_pocket_acc` / `opencode_pocket_mcp`）、`opencode_pocket` **68 张表**；
+DSN 里的口令认证 `auth-ok`。
+
+**pocketd 无需重启即自愈** —— PG 一恢复，原来 500 的接口当场回 200：
+
+| 接口 | PG 恢复前 | 恢复后 |
+|---|---|---|
+| `GET /api/tasks` | 500 | **200** |
+| `GET /api/notifications` | 500 | **200** |
+| `GET /api/user-settings` | 500 | **200** |
+| `GET /api/email/accounts` | 500 | **200** |
+| `POST /api/tasks` | 500 | 200（`tasks-crud` 的真因即此） |
+
+### 16.3 宿主负载：并行会话的 5554 模拟器长期吃满 CPU
+
+`ps` 实测：并行会话的 `emulator-5554`（headless）单进程 **197%–534% CPU**，
+`load1` 在本轮观测区间为 **115 → 142 → 186 → 224**。后果（**都是环境事件**）：
+
+- 我的 `emulator-5556`（AVD `pocket-test`）**adb 往返挂死**：进程活着、qemu CPU **0.0%**
+  （拿不到时间片），`adb shell getprop` 超过 25 秒无响应；
+- daemon 的派单 POST 在 20 秒客户端超时内**不返回**（派单同步抢槽位 + 主机极慢），
+  第一版能力实测脚本因此把两次派单记成「未返回 runId」——**是超时，不是失败**。
+
+### 16.4 agent-companion 能力面复验（当前构建 `0.1.0-d99eb26`）
+
+复验脚本 `~/kaixuan/acp/logs/rerun-round52/audit-capability.sh`，并带一条**自证有效性**的纪律：
+每次读 run 前后都记录 daemon 进程的启动时间，**中途变了就判本轮作废并自动重跑**
+（§16.4.2 那次「继续」测试就是这样被作废的：并行会话 15:35 重启了 daemon）。
+
+#### 16.4.1 派单 + 继续 + 改提示词 —— ✅ 通过（真 opencode + 真模型）
+
+| 步 | 读数 |
+|---|---|
+| 派单 `run-19f78d93-0624-429d-bc33-010222ed8253` | `succeeded`；产物 3 条（command_output×2 + file_edit）；落盘 `/tmp/ac-audit-cap/cap-r1-a.txt` = `dispatch-ok` |
+| 继续+改提示词 `run-93bcc86e-9475-4504-af5b-870016436d7a` | 同一个 native 会话 `ses_e8df9224effe3VJj32adhyVs46` 上 `POST /api/v1/native/sessions/{sid}/operate`，发的是**改写后的新提示词**；`succeeded`；产物 5 条；落盘 `cap-r1-b.txt` = `resume-prompt-edit-ok` |
+| 有效性 | daemon 启动时间前后一致（`Sun Oct 25 15:35:04 2026`）⇒ 未被重启打断 |
+
+⇒ 「分配任务 / 继续 / 提示词的修改」三项在**当前构建**上是真落地（不是只有回执没有产物）。
+
+#### 16.4.2 叫停（卡在等审批时）—— ✅ 通过
+
+| 读数 | 值 |
+|---|---|
+| 取消前 | `state=waiting_permission`，**pending 权限数 = 1** |
+| 取消后 | `state=cancelled`、`ErrorCode=cancelled`、**pending 权限数 = 0** |
+
+⇒ §11 修的「叫停必须解除权限门」在当前构建的线上读数成立：门确实解开了，
+不是「报了个 cancelled 却把权限请求永久挂在那儿」。
+
+#### 16.4.3 叫停（还没拿槽位时）—— ❌ **测不到，而且这本身是一条真缺口**（本轮新发现）
+
+代码层根因（三处，缺一不可）：
+
+1. `internal/agentfacade/facade.go`：`f.runs.Store(h.ID(), h)` 在 `d.Run(ctx, req)` **之后**
+   ⇒ **排队等槽位的派单根本不在 run 表里**，没有 runId ⇒ `POST /api/v1/runs/:id/cancel`
+   无从下手（实测：cancel 返回 `{"message":"agentfacade: run not found"}`）；
+2. `internal/api/sessions.go` 与 `internal/api/operate.go`：两面都用
+   `context.WithoutCancel(c.Request().Context())` ⇒ **客户端断开也不会取消**排队中的派单；
+3. 唯一的终结是 `DefaultMaxSlotWait = 20s` 超时 ⇒ 报 `agent_busy`。
+   按 §10 的设计这是**对的**（超时仍报 busy，因为那时可能真有另一个 run 占着槽位），
+   但对操作员来说，「稍后重试」不是「我要求停掉它」。
+
+⇒ **结论订正**：§10 的修复（取消 ⇒ `cancelled`，不是 `agent_busy`）修的是 **facade 层的错误映射**，
+它**只在 ACC 命令循环那条路可达**（`internal/agentfacade/executor.go` 的 `ExecuteRaw` 用的是
+可取消 ctx）。**REST 面走不到**：create/operate 都用 `WithoutCancel`，且排队中的派单还没有 runId。
+上一轮把它写成「两档叫停都通了」是**过度声明**，本轮订正为：
+「REST 面上，已启动的 run 可停（§16.4.2 实测通过）；**排队中的派单既不可见也不可停**」。
+
+⇒ 复现（实测本轮跑过）：
+
+```bash
+# 先用一条慢任务占住 opencode 的槽位
+curl -s -X POST http://127.0.0.1:12110/api/v1/native/sessions -H 'Content-Type: application/json' \
+  -d '{"kind":"opencode","prompt":"反复 sleep 120 秒，共 20 次","cwd":"/tmp/ac-audit-cap","timeoutSeconds":300}'
+# 再派第二条：它会**阻塞**在抢槽位上，客户端 120s 超时都拿不到 runId
+curl -s -m 120 -X POST http://127.0.0.1:12110/api/v1/native/sessions -H 'Content-Type: application/json' \
+  -d '{"kind":"opencode","prompt":"写文件","cwd":"/tmp/ac-audit-cap","timeoutSeconds":120}'
+# 期望（当前行为）：20 秒后 500 agent_busy；期间 GET /api/v1/runs 里**看不到**这条派单
+```
+
+⇒ 建议修法（本轮**未实施**，理由见 §16.6）：把「排队中」也注册进 run 表 + 给一个可取消的
+pending handle，并让 create/operate 面在**抢槽位之前**就把 runId 交给客户端
+（202 + runId，抢槽位放到后台），否则操作员永远拿不到可以按停的那个 id。
+
+### 16.5 读面活体验证：§13 那个洞在数据源这一侧确实闭合了
+
+ACC 容器此刻已被拆除，**v2 那一跳走不通**；但 ACC 回连时透传给 openpocket 的那份载荷
+（daemon 的 `GET /api/v1/runtime/agents`）是活的，且形状与 `docs/ACC_BRIDGE_SPEC.md §AgentState`
+一致。拿**真载荷**跑一遍 openpocket 的折叠代码（临时测试，跑完即删、不进仓库）：
+
+```
+活体载荷 42 条：running=26 offline=16；折叠后缺 id=0 type=0 status=0 last_seen_at=0
+```
+
+| 读数 | 值 |
+|---|---|
+| 智能体总数 | **42**（mmcode 1 / mmcode-helper 8 / opencode 8 / zcode 1 / zcode-cli 24） |
+| 状态分布 | running **26** / offline **16** |
+| 折叠后空字段 | id **0** / type **0** / status **0** / last_seen_at **0** |
+
+⇒ 「明明在线却显示 0 个」（§13）在**数据源这一侧**闭合；ACC 那一跳待并行会话把容器恢复后补验。
+
+### 16.6 合并到主分支并推送
+
+并行会话占着 openpocket 的**主工作区**（3 个 skipaudit 文件未提交），所以合并**没有在主工作区做**，
+而是另起临时 worktree（`/tmp/op-merge`）从 `origin/main` 合并 —— 主工作区**一个字节都没被碰**。
+
+| 步 | 读数 |
+|---|---|
+| 合并 | `git merge --no-ff fix/acc-runtime-service-jwt` ⇒ **无冲突**，合并提交 `255f1bc3` |
+| 合并后测试 | `cd backend && go test ./...` ⇒ **65 个包全绿、0 失败**（无 FAIL 行） |
+| 三道门禁 | `check-maestro-flows` / `check-doc-section-number-uniqueness` / `check-doc-ref-integrity` ⇒ **全部 exit=0** |
+| 推送 | `git push origin HEAD:main` ⇒ `15ca20b0..255f1bc3`；`origin/main` = `255f1bc3` |
+
+### 16.7 本轮**未完成**的事（如实登记，不得当成已通过）
+
+1. **设备侧 13 条 Maestro 全量复跑：本轮未完成**。宿主负载 115–224、emulator-5556 的 adb
+   往返 >25 秒无响应（qemu 抢不到 CPU）。已把批跑改成**带负载闸门 + 时间戳日志**的
+   `audit-batch2.sh` 并挂在后台，负载回落后自动开跑 —— **这是待办，不是绿灯**。
+   上一轮报告 §12.1 那句「285 步 0 FAILED / 连抖动都没触发」也据此订正：
+   tasks-crud 曾红过一次（环境所致），且**重跑覆盖日志**使事后不可追溯。
+2. **ACC 那一跳的端到端验证：本轮无法完成**（容器被并行会话拆除）。§16.5 只验证了
+   数据源侧与折叠逻辑，**不等于**「openpocket 经 ACC 取数」整体通过。
+3. **§16.4.3 的缺口未修**（排队中的派单不可见、不可停）。本轮**没有**动手改：
+   agent-companion 的主工作区正被并行会话占用（大量 staged 改动），贸然改同一批文件
+   会把两边的改动搅在一起；正确做法是另起 worktree 改 + 回归 + 再并，且需要决策
+   「create 面是否改为先返 202+runId」这一 API 契约问题。
+4. **run 历史不跨 daemon 重启**：实测并行会话 15:35 重启 daemon 后，正在跑的 run 被打断，
+   `GET /api/v1/runs/<id>` 返回 `{"message":"run not found"}`（内存表 `finishedRuns` 随进程消失）。
+   本轮第一次「继续」测试就是这样丢的（已由 §16.4 的自证纪律抓到并重跑）。
+5. 本机**没有 USB Android 真机**，设备侧仍是 AVD `emulator-5556`（`pocket-test`）。
+6. `mmcode`（minimax-code）仍**只可观测**（执行层白名单不含它），不能被派单。
