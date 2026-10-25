@@ -116586,7 +116586,7 @@ day := time.Now().UTC().Truncate(24 * time.Hour).Add(12 * time.Hour)
 - **没有**改 `frontend/gates.json`（`check:e2e-responsive` 仍登记在 `notGates`，
   理由是「需要一个先跑起来的 vite dev server」⇒ **仍然成立**）。
 - **没有**把 e2e-web 变成**卡门禁**的 job（它是独立 workflow，不挡其他 job）⇒ **那是流程口径 ⇒ 不代拍**。
-- ⛔ **未实测**：推送后的 CI 真实读数 ⇒ 本地绿不等于 CI 绿，必须推后用 `gh run` 结案。
+- ✅ **推送后的 CI 真实读数已拿到**（见 §965.10）⇒ **e2e-web 已转绿** ⇒ 本节结案。
 - ⚠⚠ **本节推上去时，main 上还有并发会话（ACC 线）引入的两处红 —— 不是本节引入，本节也**没有**修**：
   ① **frontend 6 条**（`gates parity` + `typecheck+build+node tests` 两个 job 都红）：
      全是**登记表漂移**类 —— `fire-and-forget-audit` / `error-outlet-audit` /
@@ -116602,7 +116602,32 @@ day := time.Now().UTC().Truncate(24 * time.Hour).Add(12 * time.Hour)
   （「逐条登记新调用点并写清理由」＋「并发迁移的死锁」）**都属于对方那条线的判断**。
   ⇒ ⇒ ⇒ 已登记为待拍板（简报第 192 条）⇒ **交由属主指派**。
 
-### §965.10 下一轮的待办（不代拍）
+### §965.10 推送后的 CI 权威读数（本节的**结案依据**）
+
+推送：`f593d4ae..bb879806` ⇒ `ls-remote origin refs/heads/main` =
+`bb879806d6570767089b9becccb4ffdcb3260cee` == 本地 HEAD ✔（三处对拍一致）
+
+| workflow | 上一笔 `f593d4ae` | 本笔 `bb879806` | 说明 |
+|---|---|---|---|
+| **`e2e-web`** | ❌ failure | ✅ **success** | **main 上最后一个红 job 转绿** |
+| `frontend` | ❌ failure | ❌ failure | **并发会话 ACC 线**的 6 条登记表漂移（**不是**本节引入，见 §965.9 ①） |
+| `backend` | ❌ failure | ⏳（本节提交时仍在跑） | 并发会话 ACC 线带入的 `TestConcurrentMigrationsDoNotDeadlock`（见 §965.9 ②） |
+
+⇒ ⇒ ★★ **e2e-web 的那笔读数与本机第三跑**逐字一致**：
+
+| | 修前 | 修后 |
+|---|---|---|
+| 本机 | 21 passed / 9 failed | **32 passed / 0 failed / 7 skipped**（EXIT=0） |
+| CI | 21 passed / 9 failed | **32 passed / 0 failed / 7 skipped**（`32 passed (1.7m)`） |
+
+⇒ ⇒ ⇒ ⇒ **「本机是 CI 的忠实替身」这条读数，在 CI 上得到验证**
+⇒ ⇒ ⇒ ⇒ ⇒ ★ **这条价值不在「修好了」，而在「**以后本地量 e2e 的影响面，可以直接采信**」**
+（⇒ §965.3 那个「35 == 35、差集双向为空」的对照，**不是一次性巧合，是可复用的能力**）。
+
+⇒ ⇒ ⚠ **CI 里那两条仍红的，不是本节引入，本节也没修**（§965.9 已登记为简报 192）
+⇒ ⇒ ⇒ **本节的结案只对 e2e-web 这一个 job 成立**。
+
+### §965.11 下一轮的待办（不代拍）
 
 - ⛔ **推后必须看 CI**：`e2e-web` 这个 job 的真实结论是本节的结案依据。
 - ⏳ **「e2e-web 要不要变成卡门禁的 job」**（简报第 191 条 ①）
