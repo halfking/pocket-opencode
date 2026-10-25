@@ -160,6 +160,44 @@
       </div>
     </section>
 
+    <!-- ACC 生态：当前任务与已上报的会话。
+         这两个读面此前只有 API 没有调用方（前端门禁 check:dead-api 判为
+         「新增死能力」⇒ 红的），而它们正是需求里的「获取到当前的会话和
+         任务等信息」⇒ 接上来，而不是删导出。
+         ⚠ 它**不在**「委托给 ACC」弹窗里：弹窗里多一块内容会让 sheet
+         变高到顶满屏（实测：sheet 顶部从 y≈1200 变成 y=0），于是弹窗里
+         输入框的坐标全部位移 —— 而那些坐标是 Maestro 流的判据。 -->
+    <section class="triage-card acc-eco-card" data-testid="acc-eco-card">
+      <div class="triage-card-head">
+        <span>ACC 生态</span>
+        <button
+          class="link-btn"
+          data-testid="acc-eco-toggle"
+          :disabled="accStore.ecosystemLoading"
+          @click="accStore.loadEcosystem()"
+        >
+          {{ accStore.ecosystemLoading ? '读取中…' : '读取任务与会话' }}
+        </button>
+      </div>
+      <div v-if="accStore.ecosystemError" class="acc-error">
+        读不到 ACC 生态：{{ apiError(accStore.ecosystemError, 'errors.operateFailed') }}
+      </div>
+      <div v-if="accStore.accTasks.length > 0" class="acc-eco-block" data-testid="acc-eco-tasks">
+        <div class="acc-eco-title">任务（{{ accStore.accTasks.length }}）</div>
+        <div v-for="t in accStore.accTasks.slice(0, 5)" :key="t.id" class="acc-eco-row">
+          <span class="acc-eco-name">{{ t.title || t.id }}</span>
+          <span v-if="t.status" class="acc-eco-status">{{ t.status }}</span>
+        </div>
+      </div>
+      <div v-if="accStore.accSessions.length > 0" class="acc-eco-block" data-testid="acc-eco-sessions">
+        <div class="acc-eco-title">会话（{{ accStore.accSessions.length }}）</div>
+        <div v-for="s in accStore.accSessions.slice(0, 5)" :key="s.id" class="acc-eco-row">
+          <span class="acc-eco-name">{{ s.agentId || s.agentKind || s.id }}</span>
+          <span v-if="s.dispatchId" class="acc-eco-status">{{ s.dispatchId }}</span>
+        </div>
+      </div>
+    </section>
+
     <!-- Section A: Running Tasks -->
     <section class="section running-section">
       <div class="section-header">
@@ -566,41 +604,6 @@
         </div>
         <div v-if="accStore.error" class="acc-error">{{ apiError(accStore.error, 'errors.operateFailed') }}</div>
 
-        <!--
-          ACC 生态：当前任务与已上报的会话。
-          这两个读面此前只有 API 没有调用方（前端门禁判为死能力 ⇒ 红），
-          而它们正是需求里的「获取到当前的会话和任务等信息」——
-          所以接上来，而不是删导出。
-        -->
-        <div class="form-group">
-          <label>ACC 当前任务与会话</label>
-          <button
-            class="link-btn"
-            data-testid="acc-ecosystem-toggle"
-            :disabled="accStore.ecosystemLoading"
-            @click="accStore.loadEcosystem()"
-          >
-            {{ accStore.ecosystemLoading ? '读取中…' : '读取 ACC 任务与会话' }}
-          </button>
-          <div v-if="accStore.ecosystemError" class="acc-error">
-            读不到 ACC 生态：{{ apiError(accStore.ecosystemError, 'errors.operateFailed') }}
-          </div>
-          <template v-if="accStore.accTasks.length > 0 || accStore.accSessions.length > 0">
-            <div v-if="accStore.accTasks.length > 0" class="acc-eco-block" data-testid="acc-eco-tasks">
-              <div class="acc-eco-title">任务（{{ accStore.accTasks.length }}）</div>
-              <div v-for="t in accStore.accTasks.slice(0, 5)" :key="t.id" class="acc-eco-row">
-                <span class="acc-eco-name">{{ t.title || t.id }}</span>
-                <span v-if="t.status" class="acc-eco-status">{{ t.status }}</span>
-              </div>
-            </div>
-            <div v-if="accStore.accSessions.length > 0" class="acc-eco-block" data-testid="acc-eco-sessions">
-              <div class="acc-eco-title">会话（{{ accStore.accSessions.length }}）</div>
-              <div v-for="s in accStore.accSessions.slice(0, 5)" :key="s.id" class="acc-eco-row">
-                <span class="acc-eco-name">{{ s.agentId || s.agentKind || s.id }}</span>
-                <span v-if="s.dispatchId" class="acc-eco-status">{{ s.dispatchId }}</span>
-              </div>
-            </div>
-          </template>
         </div>
       </div>
       <template #footer>

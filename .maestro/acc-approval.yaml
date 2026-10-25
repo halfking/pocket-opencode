@@ -6,44 +6,29 @@
 # ★ 根因（2026-10-26 实测，不是推测）：
 #   agent-companion 的 ACP 权限门把审批转发给 ACC 的
 #   POST /api/v2/runtime/commands/{dispatch_id}/permission，
-#   而 **acc-go 从未实现这条路由**（对权威 ACC 实测 GET/POST 都 404）。
-#   agent-companion 自己的 ACC_BRIDGE_SPEC.md 却写着这条（契约在，实现没有）。
+#   而 **acc-go 从未实现这条路由**（对权威 ACC 实测 GET/POST 都 404；
+#   agent-companion 自己的 ACC_BRIDGE_SPEC.md 却写着这条 —— 契约在，实现没有）。
 #   ⇒ 修复：ACC 端点未接线时，待批项停进 daemon 自己的干预队列等人应答；
 #     没人应答仍然 fail-closed。
-#   ⇒ 本流验的就是「App 看得到待批项 ⇒ 点允许 ⇒ 智能体继续跑完」。
+#   ⇒ 本流验的就是「App 看得到待批项 ⇒ 点允许 ⇒ 智能体继续跑完 ⇒ 卡片变已完成」。
+#
+# ★ 为什么前提由夹具造（scripts/acc-approval-fixture.mjs）：
+#   弹窗里的输入框在无障碍树里是 `[EditText] t="" cd=""` ⇒ 只能按坐标点，
+#   而弹窗内容一变坐标就位移（实测 sheet 顶部从 y≈1200 变成 y=0）。
+#   「委托给 ACC」的设备侧链路由 .maestro/acc-delegate-stop.yaml 覆盖；
+#   这条流只验审批面。
 #
 # 运行：node scripts/maestro-run.mjs .maestro/acc-approval.yaml
 appId: com.kaixuan.opencode.pocket
 ---
-# ---------- 0. 前置：harness 已真实登录，起点是 #/ai ----------
+# ---------- 0. 前置：夹具已造出「正在等审批」的派单，起点是 #/ai ----------
 - extendedWaitUntil:
     visible: "AI 工具"
     timeout: 60000
 - waitForAnimationToEnd:
     timeout: 15000
 
-# ---- 1. 打开「委托给 ACC」面板 ----
-- extendedWaitUntil:
-    visible: "委托 ACC"
-    timeout: 40000
-- tapOn: "委托 ACC"
-- extendedWaitUntil:
-    visible: "^委托给 ACC$"
-    timeout: 20000
-
-# ---- 2. 填标题并提交（要写文件 ⇒ 智能体会要审批）----
-# 输入框在无障碍树里是 [EditText] t="" cd="" ⇒ 只能按坐标点。
-- tapOn: { point: "50%,56%" }
-- inputText: "maestro-acc-approve"
-- tapOn: { text: "^委托给 ACC$", enabled: true }
-
-# ---- 3. 卡片出现 ----
-- extendedWaitUntil:
-    visible: "maestro-acc-approve"
-    timeout: 60000
-- assertVisible: "maestro-acc-approve"
-
-# ---- 4. ★ 待批卡片必须出现 ----
+# ---- 1. ★ 待批卡片必须出现 ----
 # 「ACC 待批（1）」里的括号数字会变 ⇒ 判据写正则（Maestro 的 visible 是
 # 完整匹配，「ACC 待批」匹配不上「ACC 待批（1）」——与 acc-delegate-stop.yaml
 # 里同一个坑）。
@@ -52,26 +37,35 @@ appId: com.kaixuan.opencode.pocket
     timeout: 90000
 - assertVisible: "ACC 待批.*"
 
-# ---- 5. ★ 一路点「允许一次」，直到没有待批项 ----
-# 智能体常常连问好几轮（先 mkdir 再 ls 再写文件）⇒ 必须循环应答，
-# 只答第一轮的话第二轮照样超时，任务照样 permission_denied。
-# while 条件用「允许一次」按钮是否可见。
-- repeat:
-    while:
-      visible: ".*允许一次.*"
-    commands:
-      - tapOn: ".*允许一次.*"
-      - waitForAnimationToEnd:
-          timeout: 10000
+# ---- 2. ★ 必须能应答 ----
+# option id 取智能体给过的那一个；找不到就没有这个按钮
+# （渲染一个必然被 daemon 拒的按钮是假动作）。
+- extendedWaitUntil:
+    visible: ".*允许一次.*"
+    timeout: 30000
+- assertVisible: ".*允许一次.*"
+- tapOn: ".*允许一次.*"
 
-# ---- 6. 待批项清空 ----
+# ---- 3. ★ 应答后待批卡片清空 ----
+# 这一条证明应答真的到了 daemon：App 只是把本地列表里那一条去掉，
+# 而 daemon 侧 pending 归零才是真话（后端读的是 daemon 的队列）。
 - extendedWaitUntil:
     notVisible: "ACC 待批.*"
-    timeout: 90000
+    timeout: 60000
 
-# ---- 7. ★ 任务卡片变成「已完成」----
-# 这一条依赖后端的状态回填（tasksync 的 ACC 派单状态回填，15s 一跳）：
+# ---- 4. ★ 任务卡片变成「已完成」----
+# 依赖后端的状态回填（tasksync 的 ACC 派单状态回填，15s 一跳）：
 # 本地那一行的状态跟着 ACC 的命令面走，否则卡片永远停在「进行中」。
+#
+# ⚠ 这里**不**靠用户下拉刷新 —— 回填会广播 task_updated，卡片必须自己变。
+#    刷新一下就能看见的状态不算数（那是用户替产品做了事）。
+#
+# ⚠ 残留风险：这条断言是屏上文本匹配，若同时存在别的「已完成」任务，
+#    它可能对错了行。夹具已清掉全部 maestro-* 同族残留（见
+#    scripts/acc-approval-fixture.mjs），当前工作区没有别的已完成任务。
+- extendedWaitUntil:
+    visible: "maestro-acc-approve"
+    timeout: 60000
 - extendedWaitUntil:
     visible: "已完成"
     timeout: 120000

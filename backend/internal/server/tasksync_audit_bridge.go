@@ -3,6 +3,7 @@ package server
 import (
 	"strings"
 
+	"github.com/halfking/pocket-opencode/backend/internal/task"
 	"github.com/halfking/pocket-opencode/backend/internal/tasksync"
 )
 
@@ -40,4 +41,16 @@ func (b *tasksyncAuditBridge) Write(userID, tenantID, action, resource string, f
 		Detail:  fields.Detail,
 		Success: fields.Success,
 	})
+}
+
+// NotifyTaskUpdated 让 tasksync 的 ACC 派单状态回填能把变化推给客户端。
+//
+// ★ 为什么必须有它：回填是直接写 store 的，没有广播 ⇒ App 的任务卡片会
+// 一直显示「进行中」，哪怕那一单早就跑完了。卡片是用户正在盯着的那一块，
+// 它必须是被推的，不是等用户下拉刷新才更新。
+func (s *Server) NotifyTaskUpdated(t *task.Task) {
+	if s == nil || t == nil {
+		return
+	}
+	s.broadcastTaskEvent("task_updated", t)
 }

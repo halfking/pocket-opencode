@@ -1504,6 +1504,8 @@ func main() {
 	if accClientRuntime != nil {
 		taskScheduler = taskScheduler.WithCommandReader(tasksync.AccCommandStatusReader{Client: accClientRuntime})
 	}
+	// 状态回填要推给客户端：否则卡片一直停在「进行中」。
+	taskScheduler = taskScheduler.WithNotifier(srv)
 	// 注入 audit writer：system tenant 用于标记 ACC 拉取不属于任何 workspace。
 	tasksync.SetAuditWriter(server.NewTasksyncAuditWriter(srv))
 	taskScheduler.Start(context.Background())

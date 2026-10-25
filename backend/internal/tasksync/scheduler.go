@@ -27,6 +27,9 @@ type Scheduler struct {
 	// ACC-bound status backfill is skipped): it is what lets a delegated
 	// task's card leave 「进行中」 once the dispatch is really over.
 	commands CommandStatusReader
+	// notifier broadcasts a task change to the connected clients.
+	// Optional (nil ⇒ no broadcast).
+	notifier TaskEventNotifier
 	// statusInterval is the cadence of the ACC-bound status backfill.
 	//
 	// It is deliberately **shorter** than the task-list sync interval:
@@ -56,6 +59,15 @@ func New(client *mcp.Client, store *task.Store, interval time.Duration) *Schedul
 func (s *Scheduler) WithCommandReader(r CommandStatusReader) *Scheduler {
 	if s != nil && r != nil {
 		s.commands = r
+	}
+	return s
+}
+
+// WithNotifier wires the client-facing broadcast used when the ACC-bound
+// status backfill changes a task's status.
+func (s *Scheduler) WithNotifier(n TaskEventNotifier) *Scheduler {
+	if s != nil && n != nil {
+		s.notifier = n
 	}
 	return s
 }

@@ -51,6 +51,20 @@ func (r AccCommandStatusReader) CommandStatus(ctx context.Context, dispatchID st
 	return cmd.Status, nil
 }
 
+// TaskEventNotifier tells the connected clients that a task changed.
+//
+// It is declared here (consumer side) so this package does not import the
+// server package (which imports this one).
+//
+// ★ Why it exists: the ACC-bound status backfill writes the new status
+// straight into the store. Without a broadcast, the App's task card keeps
+// showing 「进行中」 until the user pulls to refresh — the card lies about
+// a task that is already done. The delegated-task card is the one the user
+// is watching, so it must be pushed, not polled.
+type TaskEventNotifier interface {
+	NotifyTaskUpdated(t *task.Task)
+}
+
 // CommandStatusReader reads the terminal status of an ACC dispatch.
 //
 // It is declared here (consumer side) and satisfied by a thin adapter over
@@ -121,11 +135,16 @@ func (s *Scheduler) refreshACCDispatchStatuses(ctx context.Context) int {
 		if local == "" {
 			continue
 		}
-		if _, err := s.taskStore.UpdateTaskScoped(ctx, t.ID, t.WorkspaceID, task.TaskUpdate{
+		updatedTask, err := s.taskStore.UpdateTaskScoped(ctx, t.ID, t.WorkspaceID, task.TaskUpdate{
 			Status: &local,
-		}); err != nil {
+		})
+		if err != nil {
 			log.Printf("[tasksync] update acc-bound task %s status failed: %v", t.ID, err)
 			continue
+		}
+		// 推给客户端：卡片的「进行中」必须自己变成「已完成」。
+		if s.notifier != nil {
+			s.notifier.NotifyTaskUpdated(updatedTask)
 		}
 		updated++
 		log.Printf("[tasksync] acc-bound task %s -> %s (dispatch=%s acc_status=%s)",
