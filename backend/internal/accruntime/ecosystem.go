@@ -28,6 +28,18 @@ import (
 // Agent 是 ACC agent 注册表里的一条记录。agent-companion 的**每个实例**
 // （本机 daemon、CI 里的 runtime-dev、各机器上的 acs-*）都是独立一条，
 // status 是判断"这批智能体现在活着没有"的第一手依据。
+//
+// ★ 2026-10-25 实测：本机 ACC 的**注册表**（GET /api/v2/agents）在容器重启后
+// 是空的，而**运行时清单**（GET /api/v2/runtime/runtimes/{id}/agents，由 ACC
+// 回连 daemon 的读面）里是满的 —— 两面都是「ACC 里的 agent 清单」，但只有
+// 后者带活的状态。于是这里认**两种形状**：
+//
+//	注册表形状：{"id","name","type","status","last_seen_at","capabilities"}
+//	运行时形状：{"agent_id","kind","status","communication_mode","pid",
+//	             "command","last_active_at","capabilities"}
+//	             （契约见 agent-companion docs/ACC_BRIDGE_SPEC.md §AgentState）
+//
+// normalize() 把运行时形状折进注册表形状，下游（UI/调用方）只看一套字段。
 type Agent struct {
 	ID           string   `json:"id"`
 	Name         string   `json:"name"`
@@ -35,6 +47,31 @@ type Agent struct {
 	Status       string   `json:"status,omitempty"`
 	LastSeenAt   string   `json:"last_seen_at,omitempty"`
 	Capabilities []string `json:"capabilities,omitempty"`
+
+	// 运行时清单的契约字段（注册表形状不会出现）。
+	AgentID           string   `json:"agent_id,omitempty"`
+	Kind              string   `json:"kind,omitempty"`
+	CommunicationMode string   `json:"communication_mode,omitempty"`
+	PID               int      `json:"pid,omitempty"`
+	Command           string   `json:"command,omitempty"`
+	LastActiveAt      string   `json:"last_active_at,omitempty"`
+}
+
+// normalize 把运行时清单的契约字段折进注册表形状的字段里。
+// 没有这一步，UI 拿到的 type/status 会整片为空 —— 看上去就是「智能体不认识」。
+func (a *Agent) normalize() {
+	if a.ID == "" {
+		a.ID = a.AgentID
+	}
+	if a.Name == "" {
+		a.Name = a.AgentID
+	}
+	if a.Type == "" {
+		a.Type = a.Kind
+	}
+	if a.LastSeenAt == "" {
+		a.LastSeenAt = a.LastActiveAt
+	}
 }
 
 // ListAgents 读 GET /api/v2/agents。
@@ -73,6 +110,101 @@ func (c *Client) ListAgents(ctx context.Context) ([]Agent, error) {
 		return nil, fmt.Errorf("accruntime: decode agents: %w", err)
 	}
 	return out, nil
+}
+
+// ListRuntimeAgents 读 **运行时清单**（不是注册表）：
+//
+//	GET /api/v2/runtime/runtimes                      → 已注册的 runtime 列表
+//	GET /api/v2/runtime/runtimes/{runtime_id}/agents  → 该 runtime 的智能体清单
+//
+// ★ 为什么必须读这一面（2026-10-25 实测）：
+//
+//	· ACC 的**注册表**（GET /api/v2/agents）在 acc-go 容器重启后是**空的**，
+//	  而 agent-companion 明明在线（daemon 侧 /api/v1/agents 有 43 个）；
+//	· 运行时清单这一面是 ACC **回连 daemon 的读面**（GET {api_endpoint}
+//	  /api/v1/runtime/agents，api_endpoint 由 daemon 注册时广告），拿到的是
+//	  **活的**清单，带 status/communication_mode/pid；
+//	· 契约见 agent-companion docs/ACC_BRIDGE_SPEC.md。
+//
+// 回连不通时（runtime 没广告 api_endpoint、或 daemon 不可达）ACC 会退回到
+// drivers 兜底面（fallback_used=true）—— 那时 agents 为空，**不是故障**，
+// 故这里返回空切片而不是错误，交给调用方决定怎么呈现。
+func (c *Client) ListRuntimeAgents(ctx context.Context) ([]Agent, error) {
+	if err := c.ready(); err != nil {
+		return nil, err
+	}
+	runtimes, err := c.listRuntimeIDs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var out []Agent
+	for _, rid := range runtimes {
+		agents, err := c.listRuntimeAgentsOf(ctx, rid)
+		if err != nil {
+			// 单个 runtime 读不到（没广告读面 / 机器已下线）不影响其它
+			// runtime 的清单 —— 跳过即可，不能让一个下线的机器把整张表清空。
+			continue
+		}
+		out = append(out, agents...)
+	}
+	for i := range out {
+		out[i].normalize()
+	}
+	return out, nil
+}
+
+// listRuntimeIDs 读已注册 runtime 的 id 列表。
+func (c *Client) listRuntimeIDs(ctx context.Context) ([]string, error) {
+	resp, err := c.http.Get(ctx, "/api/v2/runtime/runtimes", nil)
+	if err != nil {
+		return nil, fmt.Errorf("accruntime: list runtimes: %w", err)
+	}
+	raw, err := readAll(resp)
+	if err != nil {
+		return nil, fmt.Errorf("accruntime: list runtimes: %w", err)
+	}
+	var doc struct {
+		Data []struct {
+			RuntimeID string `json:"runtime_id"`
+		} `json:"data"`
+		Items []struct {
+			RuntimeID string `json:"runtime_id"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return nil, fmt.Errorf("accruntime: decode runtimes: %w", err)
+	}
+	var ids []string
+	for _, r := range doc.Data {
+		if r.RuntimeID != "" {
+			ids = append(ids, r.RuntimeID)
+		}
+	}
+	for _, r := range doc.Items {
+		if r.RuntimeID != "" {
+			ids = append(ids, r.RuntimeID)
+		}
+	}
+	return ids, nil
+}
+
+// listRuntimeAgentsOf 读单个 runtime 的智能体清单。
+func (c *Client) listRuntimeAgentsOf(ctx context.Context, runtimeID string) ([]Agent, error) {
+	resp, err := c.http.Get(ctx, "/api/v2/runtime/runtimes/"+url.PathEscape(runtimeID)+"/agents", nil)
+	if err != nil {
+		return nil, fmt.Errorf("accruntime: list runtime agents: %w", err)
+	}
+	raw, err := readAll(resp)
+	if err != nil {
+		return nil, fmt.Errorf("accruntime: list runtime agents: %w", err)
+	}
+	var doc struct {
+		Agents []Agent `json:"agents"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return nil, fmt.Errorf("accruntime: decode runtime agents: %w", err)
+	}
+	return doc.Agents, nil
 }
 
 // ListCanonicalTasks 读 GET /api/v2/canonical/tasks —— ACC canonical

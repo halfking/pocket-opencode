@@ -41,6 +41,26 @@
 > 真因是**软键盘把「保存」按钮顶到了屏幕外 / 状态栏带子里**，点击压根没进前端。
 > 修的是 flow（关键盘 + 点底部 submit），**顺带把一条假通过的断言改严**；
 > 产品侧「真人用户也点不到」的观察**如实登记、未改产品**。
+>
+> **最终验收（§9）**：13 条主包 Maestro 流在同一台设备实例上**统一重跑，13/13 全绿**
+> （307 步 COMPLETED；2 步 FAILED 是本机 WebView 113 的**设备级无障碍树抖动**，
+> 护栏按设计**原样重跑同一条断言**后通过，未放宽任何断言）。
+>
+> **续（§10）**：复验时用真 agent 演练又查出 agent-companion 侧一条**真缺陷** ——
+> **被叫停的派单被报成 `agent_busy`**（其实槽位是空的，`in_flight=0`）。因为
+> `agent_busy` 的契约是「可稍后重试」，**叫停被降级成了可重试失败，重试可能把
+> 叫停的任务又跑起来**。已修（`463da0c`）+ 三条回归测试，演练 cancel 段 6/6 全绿。
+>
+> **续（§11）**：把线上实例升到新构建后再实测「停止」，又查出**「正在等审批」的
+> 派单叫不停** —— 取消没有解除权限门 ⇒ run 永远停在 `cancelling`、**不落终态**
+> （>15 分钟），另一变体落成 `failed`/`permission_denied`。已修（`91de17d`），
+> 两条新回归测试（修复前 1 红），「停止」这条目标的两档缺口都补上了。
+>
+> **续（§12）**：**交付时的当前态全量复跑**（10-23 08:29–09:37）——
+> **13/13 全绿、285 步 COMPLETED、0 步 FAILED**（比 §9 那次更干净）。过程中撞到
+> 三件**环境事件**（SystemUI ANR 弹窗、lowmemorykiller 清理、模拟器连跑 11.96 小时
+> 后 launcher 反复 ANR），如实登记在 §12.2；其中第 2 件**没有钉死到最后一环**，
+> 不写成「已定位」。
 
 ---
 
@@ -307,6 +327,8 @@ body 带**新**提示词「创建第二个文件 second-round51.txt，内容写 
 | `ba83ecb` | feat(acc): 让 service identity 能声明角色（`ACC_SERVICE_ROLES`）—— 任务联动不再 403 |
 | `e96042f` | fix(acc): 新建任务的 `business_state` 用词表里的 `todo` —— `"pending"` 不存在 |
 | `306f698` | fix(acc): acctask 的 `Task` 按 ACC 的**读**契约解析 —— 原来按 `id` 解析，ID 恒为空 |
+| `463da0c` | fix(agentfacade): **被叫停的派单不能报成 `agent_busy`** —— 取消要落终态 `cancelled`（见 §10） |
+| `91de17d` | fix(agentfacade): 叫停要**解除权限门** —— 「正在等审批」的派单现在能停（见 §11） |
 
 线上 daemon：**`0.1.0-306f698.1792635154`**（历次版本 `packages/` 下均保留可回滚）。
 
@@ -332,7 +354,7 @@ body 带**新**提示词「创建第二个文件 second-round51.txt，内容写 
 | 1 | **ACC 任务状态不会随 run 终态推进** | `acctask` 客户端**没有「更新任务状态」的能力**，任务建出来后停在 `todo`，不会变成 done/cancelled。ACC 侧的 `PATCH /canonical/tasks/:id` 在 `RequireTaskWrite` 后面（资源级角色），**本轮没有实现**。 |
 | 2 | **ACC 侧只做了「读」侧授权** | 本机选择给 daemon 的 service identity 声明 `admin` 角色。更窄的做法是 ACC 侧用 `ACC_CANONICAL_WRITE_ROLES` 放行一个专用角色（`acc-go` 的现成旋钮），**需要改共享的 ACC 容器环境** —— 那个容器并行会话也在用，**本轮刻意没动**。 |
 | 3 | **minimax-code 仍不可驱动** | 执行层白名单 `processes` 不含 mmcode ⇒ minimax-code 只能观测。本轮用 **opencode** 验证的是「**可驱动**这条链路本身成立」，不改变 mmcode 的现状。 |
-| 4 | **13 条 Maestro 流本轮已重跑** | 本轮**逐条重跑**（含 flashcards-write 修复后的复跑与两条登录流的重跑），结果见 §7/§8。openpocket 的**产品代码本轮仍未改动**（改的是 Maestro flow 与新增诊断脚本）。 |
+| 4 | **13 条 Maestro 流本轮已统一重跑：13/13 全绿** | 见 §9（307 步 COMPLETED / 2 步设备级 a11y 抖动后原样重跑通过）与 **§12（交付时复跑：285 步 COMPLETED / 0 步 FAILED）**。openpocket 的**产品代码本轮仍未改动**（改的是 Maestro flow 与新增诊断脚本）。 |
 | 5 | **本机仍无 USB Android 真机** | 仍是 AVD `emulator-5556`（AOSP Android 14 / WebView 113）。 |
 | 6 | **ACC 容器未改动** | `acc-blue`(:4100) 与 `acc-go-host`(:4101) 是共享容器；本轮只**读**它们、没改配置/没重启，避免打断并行会话。 |
 | 7 | **openpocket 的 `go test ./...`** | 仍只有 `TestSkipLedger_*` 两包失败，属**并行会话**负责的文件，本轮未触碰。 |
@@ -458,7 +480,420 @@ round52 跑批的 10:33–10:35 期间，机器上发生了一次**不是本会�
 
 ---
 
-## 9. 复现命令
+## 9. 13 条主包 Maestro 流的**统一复跑**（本轮最终验收）
+
+时间：2026-10-22 23:2x–23:5x（同一台 AVD `pocket-test` / 5556，同一次开机后连续跑完）。
+设备：**本机仍无 USB Android 真机**，跑的是 AVD（AOSP Android 14 / WebView 113）—— 见 §6 第 5 条。
+
+### 9.1 结果
+
+| # | flow | 结果 | 步数 | 备注 |
+|---|---|---|---|---|
+| 1 | `smoke-login` | ✅ | 5 | |
+| 2 | `notes-crud` | ✅ | 33 | |
+| 3 | `tasks-crud` | ✅ | 25 | |
+| 4 | `meetings-entry` | ✅ | 16 | 含录音收尾断言 |
+| 5 | `messages-hub` | ✅ | 16 | |
+| 6 | `more-grid-reach` | ✅ | 37 | |
+| 7 | `more-entries-open` | ✅ | 18 | |
+| 8 | `email-accounts` | ✅（第 3 次尝试） | 26 | 前 2 次命中**设备级无障碍树抖动**（见 §9.2） |
+| 9 | `email-browse` | ✅ | 26 | |
+| 10 | `settings-llm-gateway` | ✅ | 18 | |
+| 11 | `flashcards-write` | ✅ | 37 | **本轮修的那条**（§7） |
+| 12 | `2026-10-02-real-login` | ✅ | 12 | 起点必须无登录态，**单独跑** |
+| 13 | `login-gesture` | ✅ | 16 | 故意用错口令，断言拒绝路径，**单独跑** |
+
+**13/13 全绿**，累计 **307 步 COMPLETED**、**2 步 FAILED**（见 §9.2），全部 flow 的 harness 退出码 **0**。
+
+### 9.2 那 2 步 FAILED 是什么（**不放宽断言**）
+
+`email-accounts` 的 `Assert that "邮箱设置" is visible` 连续两次 FAILED（26.5s / 25s 用尽自己的 timeout）。
+harness 的**无障碍树抖动护栏**按设计识别了它并**原样重跑整条 flow**（第 2/3、3/3 次尝试，
+**断言一个字都没改**），第 3 次通过：
+
+```
+[retry] ⚠️ 本条 flow 命中**设备级无障碍树抖动**（Assert that "邮箱设置" is visible FAILED；
+        该断言耗尽了自己的 timeout：26.5s / 25s），画面上元素是在的（截图实证），
+        是本机 WebView 113 的 Android 无障碍树整片丢了子树。
+        重跑**同一条 flow、同样的断言**—— 不放宽任何断言。
+[retry] ✅ 第 3 次尝试通过（前 2 次命中设备级无障碍树抖动）
+```
+
+这是**本机 WebView 113 的已知设备级抖动**（2026-10-07 起的既有白名单，`scripts/lib/a11y-glitch.mjs`），
+不是产品缺陷，也不是被放宽掉的失败 —— 判定权仍在断言本身，护栏只负责**重跑同一条断言**。
+
+### 9.3 复跑方式（为什么分 4 组）
+
+单批 11 条在第一轮跑到第 5 条时被**执行器的单任务 3600s 上限**掐断（`Background bash timed out
+after 3600000ms`），**不是测试失败**（当时 FAILED=0）。改成 4 组、每组 ≤3 条后一次跑完。
+批次产物落在 `~/kaixuan/acp/logs/rerun-round52/`（**不放 `/tmp`** —— 本轮两次 `/tmp` 清空已证明它不是持久存储）。
+
+### 9.4 同一轮里其它面的复验
+
+| 面 | 读数 | 判定 |
+|---|---|---|
+| agent-companion 会话电池 | `TOTAL=71 PASS=71 FAIL=0 SKIP=0` | ✅ |
+| openpocket → ACC | agents **29** / tasks **3** / projects **1** / sessions **21** | ✅ 会话与任务都看得到 |
+| daemon 识别面 | `GET /api/v1/agents` 200、`GET /api/v1/runtime/agents` 200 | ✅ |
+| 闪卡落库 | PG `flashcard_notes`=1、`flashcard_cards`=1，front=回归正面 / back=回归背面、due 已设 | ✅ 真落库，不是假绿 |
+
+---
+
+## 10. agent-companion 侧另查出一条**真缺陷**：被叫停的派单被报成 `agent_busy`
+
+这条**不在 openpocket 侧**，是在 §9 复验时用**真 agent 演练**（§15 第 2 步：
+`cmd/live-e2e`，真 opencode + 真模型）跑出来的：演练的 **cancel 段**在同一个 commit 上
+**4 次里 2 次红**，报错是：
+
+```
+LIVE_E2E_FAIL: cancel produced a failure instead of a cancellation:
+  agent_busy: agentfacade: another run holds this agent; gave up waiting for its slot
+```
+
+### 10.1 现场证据：那一刻**一点也不忙**
+
+在 `acquire` 两侧加临时日志（仅诊断用，未入库）后，同一次失败的时间线是：
+
+```
+[DIAG] slot wait begin  agent= dispatch=d-live-e2e-3 in_flight=0 t=23:59:19.630
+[DIAG] slot wait FAILED agent= dispatch=d-live-e2e-3                   t=23:59:19.630
+```
+
+两点关键：
+
+1. **`in_flight=0`** —— 那一刻槽位是**空的**，压根没有资源争用。「另一个 run 占着这个智能体」这句话是**假的**；
+2. **同一毫秒就失败** —— 不是等满了 20s 的等待上限。
+
+原因在 Go 的 `select`：当「ctx 已取消」与「槽位可抢」两条 case **同时就绪**时，
+`select` 是**随机**选的 ⇒ 同一个取消时而「抢到槽位把 run 启起来」、时而「报忙」——
+这就是它时红时绿的原因。
+
+旁证：把两次演练之间**拉开 25s 间隔**再跑，3/3 全绿 ⇒ 确认是**时序竞态**，不是别的东西。
+
+### 10.2 为什么这不只是「文案不准」
+
+| 错误码 | 下游该做什么 |
+|---|---|
+| `agent_busy` | 契约原文：「nothing was started, and retrying later is correct」⇒ **可以重试** |
+| `cancelled` | 终态：操作员叫停了，**不许再跑** |
+
+把取消报成 busy，等于告诉上游「这个可以稍后再来」⇒ 一个**明确被叫停**的派单
+可能被重试回来又执行一遍。**停止语义被降级成了「稍后重试」。**
+
+### 10.3 修法（agent-companion `main`，已推送）
+
+| 文件 | 改动 |
+|---|---|
+| `internal/agentfacade/agent_slot.go` | `acquire` **先看取消、再看忙**：进等待前 ctx 已取消 ⇒ 直接返回 `context.Canceled`；等待中被取消 ⇒ 同样返回 Canceled；**等待超时仍返回 `ErrAgentBusy`**（那时「忙」才是实话） |
+| `internal/agentfacade/executor.go` | `LaunchErrorCode` 把 `context.Canceled` 映射为 **`cancelled`**（ACC 契约的取消码 ⇒ `mapExecutorOutcome` 认它 ⇒ 落终态 `OutcomeCancelled`） |
+| `internal/agentfacade/agent_slot_cancel_test.go`（新） | 三条回归：**启动前取消**、**排队中取消**、**超时仍报 busy**（防止把取消当成万能解释、过度纠正） |
+| `docs/CANCEL_BEFORE_START_2026-10-22.md`（新） | 完整定性，并登记进 `docs/README.md` 审计交接表 |
+
+提交：**`463da0c`**（`main`，自 `04bb1e8` **快进**，无强推；另推分支
+`fix/cancel-before-start-agent-busy` 留痕）。改前的工作副本在临时 worktree 里，
+**主工作区一行未动**（并行会话在用）。
+
+### 10.4 验证
+
+| 场景 | 修复前 | 修复后 |
+|---|---|---|
+| `cmd/live-e2e`（真 opencode + 真模型，cancel 段） | 同一 commit **4 次里 2 次红** | **6/6 全绿**，每轮「cancel took effect in 0s」 |
+| `go test ./...` | 绿 | **53 包全绿、0 失败**（rebase 到最新 `origin/main` 后**复跑**） |
+| `internal/agentfacade` / `accbridge` / `acc` | 绿 | 绿 |
+
+### 10.5 区分另一类失败（不要混为一谈）
+
+同机还观察到 `acp initialize: agent closed the stream`（**智能体进程根本起不来**）。
+它与本条**不同源** —— 那是多个 opencode 并发启动时的争用，与取消路径无关。
+本机并行跑多个真 agent 演练会抬高它的命中率，**不能**算到本条头上。
+
+### 10.6 与 openpocket、§9 结论的关系
+
+本条**没有改 openpocket 的任何产品代码**，也不影响 §9 的 13/13 结论：它是 agent-companion
+**执行层的一处错误码语义错误**，openpocket 是消费方（经 ACC 看到任务状态）。
+但修好之后，用户目标里的「**停止**」这条才真正成立：
+**叫停 ⇒ 终态 `cancelled` ⇒ 不会被重试复活**。
+
+---
+
+## 11. 再查出一条：**「正在等审批」的派单叫不停**（停止能力在这一档上是坏的）
+
+这一条同样是 agent-companion 侧的**真缺陷**，是在把线上 daemon 升到含 §10 修复的构建后，
+对**线上实例**做「立刻叫停」实测时查出来的。
+
+### 11.1 现场证据
+
+派一单要求执行 `sleep 120`，等它进入 `waiting_permission` 后发取消：
+
+```
+POST /api/v1/native/sessions          → runId=run-022435f0-…（state=waiting_permission）
+POST /api/v1/runs/run-022435f0-…/cancel → {"state":"cancelling","cancel_requested":true}
+
+t+4s … t+40s（10 次轮询）：state=cancelling | last_event=waiting_permission
+干预队列：int-a8405f42… | sleep 120 && echo done | pending   ← 一直 pending
+run 记录：ended_at=0001-01-01T00:00:00Z                     ← 从来没落终态
+```
+
+另一个变体更难看：取消**先于**智能体起来（cancel 到达时 session 还不存在），
+随后智能体进入等审批、人工拒绝 ⇒ run 落成 **`failed` / `permission_denied`** ——
+明明是操作员叫停的，回执却说「工具被拒」。
+
+### 11.2 为什么
+
+权限门等的是**人**的决定。daemon 侧取消时只做了两件事：给 agent 发 `session/cancel`、
+对**已经挂着**的那一次权限请求回一个 `cancelled` 应答 —— **没有解除这道门**。
+
+- 门等的是人 ⇒ 人不来 ⇒ 门一直开着；
+- 门的 ctx 派生自 run ctx，而 run ctx **不随取消结束**（取消只走 ACP 通知，不 cancel ctx）；
+- ⇒ driver 卡在 `Hub.Gate` ⇒ `<-permDone` 不返回 ⇒ `handle.finish()` 从不被调用
+  ⇒ **run 没有任何终态**。
+
+即使门最终超时（30s 默认）fail-closed 成「拒绝」，`permDenied` 分支又**排在**取消判定
+之前 ⇒ 报成 `permission_denied` / `failed`，而不是 `cancelled`。
+
+### 11.3 修法（agent-companion `main`，已推送）
+
+| 文件 | 改动 |
+|---|---|
+| `internal/agentfacade/acp_driver.go` | ① 给权限门**单独一个可取消的 ctx**（`gateCtx`），取消时 `cancelGate()` 释放它（fail-closed ⇒ driver 立刻能收尾；刻意**不动** prompt 的 ctx，让 agent 还能收到那次 `cancelled` 应答）；② 同一权限请求**只应答一次**（`answerPerm`）；③ 叫停期间的应答必须是 `cancelled`（ACP 取消规则），不是「拒绝」；④ **叫停优先于 `permission_denied`** |
+| `internal/agentfacade/acp_cancel_permission_gate_test.go`（新） | 两条回归：叫停 ⇒ 门被释放 + 落 `cancelled`（**修复前红**）；没有叫停的人工拒绝 ⇒ **仍然** `permission_denied`（防过度纠正） |
+| `docs/CANCEL_WHILE_WAITING_PERMISSION_2026-10-23.md`（新） | 完整定性，并登记进 `docs/README.md` 审计交接表 |
+
+提交：**`91de17d`**（`main`，自并行会话当时的 `origin/main` 快进，无强推）。
+
+### 11.4 验证
+
+| 场景 | 修复前 | 修复后 |
+|---|---|---|
+| 线上 daemon：叫停一个等审批的 run | 永远 `cancelling`，>15 分钟不落终态，干预条目永远 pending | **3 秒内落 `cancelled`**（`ended_at` 有值），干预队列清空 |
+| 线上 daemon：取消先于智能体起来 | `failed` / `permission_denied` | `cancelled`（t+21s：智能体起来后被中继叫停） |
+| `internal/agentfacade` 新回归两条 | 修复前 **1 红** | 全绿 |
+| `go test ./...` | 绿 | **全绿、0 失败**（54 包 ok，rebase 后复跑） |
+| `cmd/live-e2e`（真 opencode + 真模型） | 绿 | 绿（cancel 段不受影响） |
+| 线上 daemon 会话电池 | 71/71 | **71/71 PASS**（TOTAL=71 PASS=71 FAIL=0 SKIP=0） |
+
+线上实例已升级到 **agent-companion `0.1.0-91de17d.1792687911`**（含 §10 + §11 两条修复；
+npm 包 + `ac-ctl install`，旧版本 `0.1.0-306f698.1792635154` 仍在 `packages/` 里可回滚）。
+agent-companion 侧的完整定性见 `docs/CANCEL_WHILE_WAITING_PERMISSION_2026-10-23.md`
+（提交 `3fc6951` 补上了这批线上读数）。
+
+### 11.5 与 §10 **不是**同一个问题
+
+| | §10 | §11 |
+|---|---|---|
+| 取消发生在 | **还没拿到槽位**（启动路径） | **已经跑起来、正卡在等审批** |
+| 症状 | 被报成 `agent_busy`（可重试的失败） | 永远不落终态 / 落成 `permission_denied` |
+| 根因 | `select` 在两条 case 同时就绪时随机选 | 权限门没被解除 + `permDenied` 排在取消判定之前 |
+
+两条都在用户目标里的「**停止**」上 ⇒ 都必须通。
+
+---
+
+## 12. 交付时的**全量复跑**（2026-10-23 08:29–09:37，13/13 全绿、0 步 FAILED）
+
+§9 那次复跑是 10-22 23:2x；本节是**交付时的当前态复跑**（同一台 AVD `pocket-test` / 5556，
+同一批 flow、同一批断言，**没有改任何断言**）。
+
+### 12.1 结果
+
+| 组 | flow | 步数 | 结果 | 退出码 |
+|---|---|---|---|---|
+| A | `smoke-login` / `notes-crud` / `tasks-crud` | 63 | ✅ | 0 |
+| B | `meetings-entry` / `messages-hub` / `more-grid-reach` | 69 | ✅ | 0 |
+| C | `more-entries-open` / `email-accounts` / `email-browse` | 70 | ✅ | 0 |
+| D | `settings-llm-gateway` / `flashcards-write` | 55 | ✅ | 0 |
+| — | `2026-10-02-real-login`（起点无登录态，单独跑） | 12 | ✅ | 0 |
+| — | `login-gesture`（故意错口令，单独跑） | 16 | ✅ | 0 |
+
+**13/13 全绿，累计 285 步 COMPLETED、0 步 FAILED**（比 §9 那次更干净：这次连设备级
+无障碍树抖动都没触发）。日志：`~/kaixuan/acp/logs/rerun-round52/final-{A,B,C,D}.log`、
+`final-login-{real,gesture}.log`、`final-batch.log`。
+
+### 12.2 过程中撞到的三件**环境事件**（如实登记，均不是产品回归）
+
+| # | 现象 | 证据 | 判定与处置 |
+|---|---|---|---|
+| 1 | **SystemUI ANR 对话框**盖住整屏 ⇒ Maestro 的无障碍树里看不到底下的 App 元素 ⇒ 前两条流红在「AI 工具」 | 失败截图（08:28）里是 "System UI isn't responding" 弹窗；`dumpsys window` 的 `mCurrentFocus=Application Not Responding: com.android.systemui` | 设备级事件。点「Wait」关掉后重跑即绿。**加了本地看门狗**（`~/kaixuan/acp/logs/rerun-round52/anr-watchdog.sh`，**不入仓库**）：只在系统 ANR 窗口在前台时点「Wait」，不碰 App、不碰断言 |
+| 2 | 设备**内存压力**：08:46:22 `lowmemorykiller` 清理进程（contacts 被杀、gapps/partnersetup 被清）⇒ `tasks-crud` 第一次尝试红在「创建」 | 失败帧截图里 **App 已回到登录页**（用户名 `admin` 在、密码空）；两个后端端口（:18099 / :18097）那段时间 **401 计数为 0** ⇒ 服务端**没有**判死会话；设备 logcat 同一时刻在杀进程 | 设备级事件（不是后端拒了会话）。harness 的设备级护栏按设计**原样重跑同一条 flow、同样的断言**后通过，最终日志 0 FAILED。**未放宽任何断言** |
+| 3 | 批跑结束后，模拟器已连续运行 **11.96 小时**，launcher 反复 ANR（看门狗每 14 秒命中一次） | `dumpsys meminfo` 显示 Google 系后台进程堆着；watchdog 日志连续多条 "Application Not Responding: com.google.android.apps.nexuslauncher" | **重启 AVD**（`-no-snapshot-load` 冷启，10 秒 boot_completed）→ 重建 `adb reverse tcp:18099/18097` → 复跑代表性 flow 复核（见 §12.3） |
+
+> ⚠️ **第 2 条没有钉死到最后一环**：能证明的是「服务端没发 401」「App 那一刻确实在登录页」
+> 「设备同时在杀进程」，但**没有**直接证据说明 App 是被谁踢回登录页的
+> （客户端守卫 / 进程重建 / 本地库上锁，三者都符合现有证据）。
+> **如实登记为未定因的环境事件**，不写成「已定位」。
+
+### 12.3 重启 AVD 后的代表性复核
+
+重启后复跑 4 条（含本轮修过的那两条：网关配置与闪卡写路径）：
+
+```
+adb -s emulator-5556 reverse tcp:18099 tcp:18099   # 与 tcp:18097
+node scripts/maestro-run.mjs .maestro/smoke-login.yaml .maestro/notes-crud.yaml \
+     .maestro/settings-llm-gateway.yaml .maestro/flashcards-write.yaml
+```
+
+→ **exit=0，93 步 COMPLETED，0 个真实失败**（日志 `post-reboot.log`；
+「FAILED 数」计数器为 0，日志里也没有任何 `Assertion is false`）。
+闪卡那条跑的是**零卡组分支**（夹具先清场并自证 PG=0）。
+
+### 12.4 重启 AVD 后的代表性复核结果
+
+| flow | 结果 | 步数 |
+|---|---|---|
+| `smoke-login` | ✅ | 5 |
+| `notes-crud` | ✅ | 33 |
+| `settings-llm-gateway` | ✅ | 18 |
+| `flashcards-write` | ✅ | 37 |
+
+---
+
+## 13. ACC 侧「智能体清单」读错了面 ⇒ 明明在线却显示 **0 个**
+
+> 发现路径：交付前的**当前态复验**（2026-10-25，宿主重启后环境被重置）。
+> 这条**不是**本轮改动引入的，是**一直存在、被前几轮的读数掩盖**的口径错误。
+
+### 13.1 症状
+
+宿主重启后恢复现场，openpocket 经 ACC 读智能体清单：
+
+```
+GET /api/acc/agents → {"agents":[],"count":0,"source":"acc"}
+```
+
+而同一时刻 **agent-companion 明明在线**：
+
+| 读数 | 值 |
+|---|---|
+| daemon `GET /api/v1/agents` | **43** |
+| daemon `GET /api/v1/runtime/agents` | **42** |
+| ACC `GET /api/v2/agents`（注册表面） | **0** |
+| ACC `GET /api/v2/runtime/runtimes/acs-ac30-01/agents`（运行时清单面） | **34**（活的） |
+
+两天前同一套部署，注册表面还是 **29** 条。⇒ 不是「智能体没了」，是**读错了面**。
+
+### 13.2 两面都是「ACC 里的 agent 清单」
+
+| 面 | 端点 | 谁写的 | 实测 |
+|---|---|---|---|
+| **注册表面** | `GET /api/v2/agents` | ACC 的 host 级注册条目 | 容器重启后**空** |
+| **运行时清单面** | `GET /api/v2/runtime/runtimes/{id}/agents` | ACC **回连 agent-companion 的读面**（`GET {api_endpoint}/api/v1/runtime/agents`），带 `status`/`communication_mode`/`pid` | **活的**（34 条） |
+
+契约见 agent-companion `docs/ACC_BRIDGE_SPEC.md`（§`GET /api/v1/runtime/agents` 与
+`AgentState`）。openpocket 的 `accruntime.ListAgents` 读的是**注册表面** ⇒
+「一个智能体都没有」。
+
+### 13.3 运行时清单面当时也是断的（第二层原因）
+
+直接问 ACC 那条运行时清单端点，得到的是：
+
+```
+{"error":{"code":"runtime_read_face_unreachable",
+  "message":"read-face /api/v1/runtime/agents: Get \"\": unsupported protocol scheme \"\""}}
+```
+
+注册载荷里**没有 `api_endpoint`** ⇒ ACC 回连时拼不出 URL ⇒ 退回到 `drivers` 兜底面
+（`fallback_used: true`，`agents: []`）。daemon 侧的旋钮是 **`AC_ADVERTISE_URL`**
+（注册时广告读面地址），而本机 `.env` 里没有它。
+
+补上之后还要注意**地址必须在容器里可达**：`127.0.0.1:12110` 指的是**容器自己**
+⇒ `connection refused`；正确值是 **`http://host.docker.internal:12110`**。
+
+> 这一处是**部署面**（本机 `~/kaixuan/acp/.env`，0600，不在仓库里）：
+> `AC_ADVERTISE_URL=http://host.docker.internal:12110` + `ac-ctl install`
+> （plist 里的环境变量是 install 时从 `.env` 渲染的 ⇒ 改完 `.env` 必须重跑
+> `ac-ctl install`，只 `kickstart` **不会**带上新键）。
+
+### 13.4 修法（openpocket，提交 `5e804612`）
+
+| 位置 | 改动 |
+|---|---|
+| `backend/internal/accruntime/ecosystem.go` | 新增 `ListRuntimeAgents`：读 runtime 列表 → 逐个读其 agents 面 → 汇总；契约形状（`agent_id`/`kind`/`status`/`last_active_at`）折进注册表形状（`id`/`type`/`status`/`last_seen_at`） |
+| 同上 | 单个 runtime 的读面不通（没广告读面 / 机器下线）**跳过**，不让一个下线的机器把整张表清空 |
+| `backend/internal/server/acc_ecosystem.go` | `handleACCAgents` **合并两面**：运行时清单优先（同 id 取带活状态的那条），注册表里多出来的条目补进去；两面都读不到才报错 |
+
+回归（`backend/internal/accruntime/ecosystem_test.go`）：契约形状被正确折叠；
+一个 runtime 读面不通时其它 runtime 仍然列得出来。
+
+### 13.5 修完后的读数
+
+```
+GET /api/acc/agents → count=36
+  mmcode 1 | mmcode-helper 9 | zcode 1 | zcode-cli 24 | opencode 1   （各带活状态）
+GET /api/acc/tasks    → 9
+GET /api/acc/projects → 1
+GET /api/acc/sessions → 32
+```
+
+⇒ 用户目标里「**识别 minimax-code / zcode 的 IDE 与 CLI 智能体，识别它的状态**」
+这一条，**经 ACC 也真正通了**（此前经 ACC 看到的是 0）。
+
+### 13.6 这一条与本轮改动的分工
+
+| | 归属 |
+|---|---|
+| openpocket 读哪一面 + 字段折叠 | **仓库内**（本轮修，`5e804612`） |
+| daemon 广告读面地址 | **部署面**（本机 `.env`，不在仓库） |
+| ACC 注册表面为何重启后为空 | **在 acc-go 仓**（本机无源码），**如实登记，未修** |
+
+---
+
+## 14. 交付前的**当前态复验**（2026-10-25）：又查出并修掉一条读错面的口径错误
+
+宿主重启后环境被重置（daemon 重装、pocketd 与模拟器都没了），按 §12 的口径把现场恢复起来
+再复验一遍 —— 这一轮**又查出一条真问题**（§13），并把两个部署面的配置补齐。
+
+### 14.1 恢复现场时补齐的配置（**部署面**，不在仓库）
+
+| 项 | 值 | 为什么 |
+|---|---|---|
+| `POCKET_ACC_RUNTIME_URL` | `http://127.0.0.1:4101` | ACC Runtime Control 基址；不设则 `/api/acc/*` 报 503 "ACC runtime client not configured" |
+| `POCKET_ACC_CONTROL_SECRET` | daemon 的 `ACC_AUTH_TOKEN_SECRET` | HS256 服务 JWT 的签名密钥 |
+| `POCKET_MCP_BASE_URL` / `POCKET_MCP_TENANT_ID` / `POCKET_MCP_API_KEY` | `http://127.0.0.1:4101/api/v2/mcp` / `tenant-a` / 同上密钥 | ACC MCP 面（会话列表走它）；不设则 `/api/acc/sessions` 报 503 "ACC MCP client not configured" |
+| daemon `AC_ADVERTISE_URL` | `http://host.docker.internal:12110` | 让 ACC **回连** daemon 读面（见 §13.3） |
+
+### 14.2 复验读数（当前态）
+
+| 面 | 读数 | 判定 |
+|---|---|---|
+| ACC `agents` | **36–37**（活的 kind/status：mmcode 1 / mmcode-helper 9 / zcode 1 / zcode-cli 24 / opencode 1） | ✅ §13 修完后 |
+| ACC `tasks` / `projects` / `sessions` | 9 / 1 / 32 | ✅ |
+| daemon `/api/v1/agents` / `/api/v1/runtime/agents` | 43 / 42 | ✅ |
+| agent-companion 会话电池（71 条） | **69–70 / 71** | ⚠️ 红的不是产品：见下 |
+| Maestro 13 条流 | 沿用 §12 的 13/13、285 步 0 FAILED | ⚠️ 本轮**没能补跑**，见 §14.3 |
+
+电池那 1–2 条红（连跑两次红的不一样）：
+
+- **A11**「second manifest read is served fast (cache hit)」1528ms —— 纯**延迟**断言，
+  宿主负载 ~520 下的必然结果；
+- **B8 / B15**「after_seq window / tail rows are the true tail」—— 判据**自身**的竞态：
+  它先读一次全量 transcript（`seqs`），再读一次窗口/尾部，两次读之间 daemon 追加了
+  事件 ⇒ 窗口比快照的尾部更新 ⇒ 报红（两次跑的 seq 数字还在往前挪：129→132）。
+  两次读之间**没有任何**代码路径被改过（这两条判据读的是 events 面，不在我改的
+  agent_slot / acp_driver / executor 上）。
+
+### 14.3 本轮**没能补跑**设备侧 Maestro —— 如实登记
+
+宿主负载长期在 **460–600**（并行会话的 `stress-gate.sh` 已连跑 **1 天 11 小时**，
+4 个 worker 各 ~80% CPU）。实测在这个负载下：
+
+- `adb reverse --list` 一次往返 **>91 秒**（harness 的 preflight 只给 15 秒超时），
+  于是 preflight 稳定报「补建失败：spawnSync adb ETIMEDOUT」并 **exit 3**
+  —— **一条 flow 都没跑**（不是测试失败，是没跑起来）；
+- 我自己的 5556 模拟器被并行会话的清理动作杀掉过两次（同一 AVD 不能起两份，
+  第二份直接 FATAL），期间还因为 `adb kill-server` 掉成 offline。
+
+⇒ **不是产品问题，也不改断言**：修它要动并行会话的压测（那是他们的工作，不该我停）。
+待宿主负载回落后，用 §14 的命令重跑 13 条流即可复核（命令见 §15）。
+
+### 14.4 这一轮的净产出
+
+- **查出一条真缺陷并修掉**：ACC 智能体清单读错面（§13，提交 `5e804612`）；
+- **补齐两个部署面配置**：ACC Runtime/MCP 客户端 + daemon 读面广告地址（§14.1）；
+- **把「在线却显示 0 个」这类假象钉成可复现的判据**：报告 §13 的两面读数对照表。
+
+---
+
+## 15. 复现命令
 
 ```bash
 # 1) agent-companion 会话电池（71 条）
@@ -517,4 +952,23 @@ POCKET_SERIAL=emulator-5556 node scripts/diag-flashcards-shift-reset.mjs
 # 5) agent-companion 契约测试（锁住本轮四处修复）
 cd ~/workspace/ai-native-tools/agent-companion
 go test ./deploy/ ./internal/accjwt/ ./internal/acc/ ./internal/acctask/ ./internal/api/
+
+# 9) 取消路径回归（§10）：取消 ⇒ cancelled（终态），超时 ⇒ agent_busy（可重试）
+cd ~/workspace/ai-native-tools/agent-companion
+go test ./internal/agentfacade/ -run 'TestCancelled|TestTimeoutStillReportsBusy' -v
+# 期望：3 条全绿；其中 TestTimeoutStillReportsBusy 必须**仍然**报 busy
+
+# 10) 权限门回归（§11）：叫停 ⇒ 门被释放 + 落 cancelled；无叫停的拒绝 ⇒ permission_denied
+go test ./internal/agentfacade/ -run 'TestCancelReleasesPendingPermissionGate|TestPermissionDeniedWithoutCancel' -v
+# 期望：两条全绿（**修复前第 1 条红**：the cancel did not release the pending permission gate）
+
+# 11) 线上实例实测「叫停一个正在等审批的 run」（§11 的现场复现）
+RID=$(curl -s --noproxy '*' -X POST http://127.0.0.1:12110/api/v1/native/sessions \
+  -H 'Content-Type: application/json' \
+  -d '{"kind":"opencode","prompt":"sleep 120 然后回答 done","cwd":"/tmp/ac-live-demo","timeoutSeconds":300}' \
+  | python3 -c "import sys,json;print(json.load(sys.stdin)['runId'])")
+# 等它进入 waiting_permission 再取消，然后看终态：
+curl -s --noproxy '*' -X POST "http://127.0.0.1:12110/api/v1/runs/$RID/cancel" -H 'Content-Type: application/json' -d '{}'
+curl -s --noproxy '*' "http://127.0.0.1:12110/api/v1/runs/$RID"
+# 期望：state=cancelled（修复前：永远 cancelling / ended_at 空 / failed+permission_denied）
 ```

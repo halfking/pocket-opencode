@@ -43,10 +43,23 @@ type accAgentRow struct {
 	Capabilities []string `json:"capabilities,omitempty"`
 }
 
-// handleACCAgents 返回 ACC agent 注册表里的全部 agent。
+// handleACCAgents 返回 ACC 里的 agent 清单。
 //
-// agent-companion 的每个实例都是独立一条（名字都叫 agent-companion，id 不同），
-// status 字段是判断"这批智能体现在活着没有"的第一手依据。
+// agent-companion 的每个实例都是独立一条，status 字段是判断"这批智能体现在
+// 活着没有"的第一手依据。
+//
+// ★ 2026-10-25 实测：**读两个面，合并**。
+//
+//	· **运行时清单**（GET /api/v2/runtime/runtimes/{id}/agents）：ACC 回连
+//	  agent-companion 的读面拿到的是**活的**清单（status/communication_mode/pid）。
+//	  这才是"现在有哪些智能体、活着没有"的答案。
+//	· **注册表**（GET /api/v2/agents）：ACC 里的 host 级注册条目。实测 acc-go
+//	  容器重启后它是**空的**，而运行时清单是满的 —— 只读注册表会得出
+//	  "一个智能体都没有"的结论。
+//
+// 合并规则：以运行时清单为准（同 id 时取带活状态的那条），注册表里多出来的
+// 条目补进去。运行时清单读不到时（runtime 没广告读面 / daemon 不可达）退化为
+// 只读注册表 —— 那时至少不是空表。
 func (s *Server) handleACCAgents(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -56,14 +69,20 @@ func (s *Server) handleACCAgents(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "ACC runtime client not configured", http.StatusServiceUnavailable)
 		return
 	}
-	agents, err := s.accRuntime.ListAgents(r.Context())
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadGateway)
+	live, liveErr := s.accRuntime.ListRuntimeAgents(r.Context())
+	registry, regErr := s.accRuntime.ListAgents(r.Context())
+	if liveErr != nil && regErr != nil {
+		http.Error(w, liveErr.Error(), http.StatusBadGateway)
 		return
 	}
-	rows := make([]accAgentRow, 0, len(agents))
-	for _, a := range agents {
-		rows = append(rows, accAgentRow{
+	seen := make(map[string]bool, len(live))
+	merged := make([]accAgentRow, 0, len(live)+len(registry))
+	for _, a := range live {
+		if a.ID == "" || seen[a.ID] {
+			continue
+		}
+		seen[a.ID] = true
+		merged = append(merged, accAgentRow{
 			ID:           a.ID,
 			Name:         a.Name,
 			Type:         a.Type,
@@ -72,6 +91,21 @@ func (s *Server) handleACCAgents(w http.ResponseWriter, r *http.Request) {
 			Capabilities: a.Capabilities,
 		})
 	}
+	for _, a := range registry {
+		if a.ID == "" || seen[a.ID] {
+			continue
+		}
+		seen[a.ID] = true
+		merged = append(merged, accAgentRow{
+			ID:           a.ID,
+			Name:         a.Name,
+			Type:         a.Type,
+			Status:       a.Status,
+			LastSeenAt:   a.LastSeenAt,
+			Capabilities: a.Capabilities,
+		})
+	}
+	rows := merged
 	writeJSON(w, http.StatusOK, map[string]any{
 		"source": "acc",
 		"count":  len(rows),
