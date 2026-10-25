@@ -8,6 +8,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/halfking/pocket-opencode/backend/internal/pgtime"
 )
 
 // legacyOwnerID / legacyWorkspaceID are the identity defaults used by the
@@ -96,6 +98,16 @@ type Store struct {
 	// tombstones 记录已删除会议的墓碑（删除时间 + 归属），供增量同步
 	// 下发 deletedIds；内存实现重启即清空，客户端以全量对账兜底。
 	tombstones map[string]meetingTombstone
+
+	// nowFunc 是取「现在」的时钟（默认 `pgtime.Now`，即已截断到微秒）。
+	//
+	// ⚠ §966：内存版与 PG 版**必须同刻度** —— 它们是同一个接口的两个实现，
+	// 而 PG 版写进库的时刻是微秒对齐的 ⇒ 内存版若还是纳秒精度，
+	// ⇒ ⇒ 两个实现产出的时刻**逐字不同** ⇒ 「两个实现同形」这条纪律就破了
+	// （墓碑的 `at` / `deleted_at` 正是这一对）。
+	// ⚠ 它**只**给判据用（注入一个带 ns 尾的时刻，好让判据在
+	// 微秒对齐的平台上也有牙）⇒ 生产代码不设置它。
+	nowFunc func() time.Time
 }
 
 type meetingTombstone struct {
@@ -121,7 +133,31 @@ func NewStore() *Store {
 	return &Store{
 		meetings:   make(map[string]*Meeting),
 		tombstones: make(map[string]meetingTombstone),
+		nowFunc:    pgtime.Now,
 	}
+}
+
+// SetNowFunc 覆盖这个 store 取「现在」的时钟。
+//
+// ⚠ 形态照抄 internal/learning 的 `SetNowFunc`：测试用它注入一个
+// 带 ns 尾的时刻（好让「时刻精度」那条判据在微秒对齐的平台上也有牙），
+// 生产代码不调用它。
+func (s *Store) SetNowFunc(f func() time.Time) {
+	if s == nil || f == nil {
+		return
+	}
+	s.nowFunc = f
+}
+
+// now 取「写进库的那一刻」，**截断到微秒**。
+//
+// ⚠ 与 PG 版 `(*PGStore).now()` **同形** ⇒ 两个实现产出的时刻**逐字相同**
+// （见 §966 的「两个实现同刻度」那条判据）。
+func (s *Store) now() time.Time {
+	if s == nil || s.nowFunc == nil {
+		return pgtime.Now()
+	}
+	return pgtime.Truncate(s.nowFunc())
 }
 
 // Create creates a new meeting record with the given request.
@@ -146,7 +182,7 @@ func (s *Store) CreateScoped(req CreateMeetingRequest, ownerID, workspaceID stri
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	now := time.Now()
+	now := s.now()
 	// ★ 2026-10-07：与 PGStore 对齐——客户端带的 id 现在被尊重，
 	// 且**重复 POST 变成幂等更新**（旧实现无条件新生成 ⇒ 重试即重复行）。
 
@@ -285,7 +321,7 @@ func (s *Store) Update(m *Meeting) error {
 	if _, ok := s.meetings[m.ID]; !ok {
 		return fmt.Errorf("meeting not found: %s", m.ID)
 	}
-	m.UpdatedAt = time.Now()
+	m.UpdatedAt = s.now()
 	s.meetings[m.ID] = copyMeeting(m)
 	return nil
 }
@@ -312,7 +348,7 @@ func (s *Store) UpdateScoped(m *Meeting, ownerID, workspaceID string) error {
 	if !ok || existing.OwnerID != ownerID || existing.WorkspaceID != workspaceID {
 		return fmt.Errorf("meeting not found")
 	}
-	m.UpdatedAt = time.Now()
+	m.UpdatedAt = s.now()
 	m.OwnerID = ownerID
 	m.WorkspaceID = workspaceID
 	s.meetings[m.ID] = copyMeeting(m)
@@ -374,7 +410,7 @@ func (s *Store) UpdateMetaScoped(id, ownerID, workspaceID string, title, status 
 	if status != nil {
 		m.Status = *status
 	}
-	now := time.Now()
+	now := s.now()
 	m.UpdatedAt = now
 	s.meetings[id] = copyMeeting(m)
 	return now, nil
@@ -477,7 +513,7 @@ func (s *Store) DeleteScoped(id, ownerID, workspaceID string) error {
 			id, ErrMeetingTombstoneScopeConflict)
 	}
 	delete(s.meetings, id)
-	s.tombstones[id] = meetingTombstone{ownerID: ownerID, workspaceID: workspaceID, at: time.Now()}
+	s.tombstones[id] = meetingTombstone{ownerID: ownerID, workspaceID: workspaceID, at: s.now()}
 	return nil
 }
 

@@ -25,7 +25,18 @@
  *     源空态 '还没有订阅源。' + button.link '添加一个'
  *   - RssAddSource.vue：.bar h3 '添加订阅源'、label '粘贴网站或 feed URL'、
  *     input placeholder 'https://example.com 或 https://example.com/feed'、
- *     button '发现候选'（输入为空时 disabled）、divider '或者从内置种子开始'
+ *     button '发现候选'（输入为空时 disabled）、divider '或从内置目录选择…'
+ *
+ * ⚠⚠ §965 两条**定位器/文案漂移**的修正（本套用例**从未真跑过** ⇒ 漂移一直藏着）：
+ *
+ *	① `.rss-header .btn-secondary` 现在**匹配 2 个**按钮
+ *	   （「今日摘要」+「刷新」⇒ Playwright **strict mode** 直接拒绝）
+ *	   ⇒ 改成 `.rss-header button.btn-secondary` + `hasText: '刷新'` ⇒ **唯一且仍保留原意**
+ *	   （**不是**把断言放宽成「任意一个 secondary 按钮」）
+ *	② 「或者从内置种子开始」这条文案**已经不存在**了：
+ *	   组件现在写「或从内置目录选择（后台自动拉取最新内容）」（RssAddSource.vue:148）
+ *	   ⇒ **那一段仍在**（不是产品回归）⇒ 是**用例钉了旧文案**
+ *	   ⇒ 断言改成当前文案（钉稳定前缀，括号里那句是说明不是断言对象）
  *
  * TODO（真实添加订阅源，待接入）：
  *   fill 订阅输入框 → 点「发现候选」→ 从候选列表（.candidates li）点选 →
@@ -56,8 +67,13 @@ test.describe('RSS 冒烟', () => {
 
     // 页面骨架（RssListView.vue 模板原文案）
     await expect(page.locator('.rss-header h2')).toHaveText('RSS 订阅')
-    await expect(page.locator('.rss-header .btn-secondary')).toContainText('刷新')
-    await expect(page.locator('.rss-header .btn-primary')).toContainText('新增源')
+    // ⚠⚠ §965：`.btn-secondary` 头部有**两个**（「今日摘要」+「刷新」）⇒ 必须唯一化
+    await expect(
+      page.locator('.rss-header button.btn-secondary', { hasText: '刷新' }),
+    ).toContainText('刷新')
+    await expect(
+      page.locator('.rss-header button.btn-primary', { hasText: '新增源' }),
+    ).toContainText('新增源')
     await expect(page.locator('.tabs button', { hasText: '信息流' })).toBeVisible()
     await expect(page.locator('.tabs button', { hasText: /^源 \(/ })).toBeVisible()
   })
@@ -73,7 +89,8 @@ test.describe('RSS 冒烟', () => {
     }
 
     // 添加入口（RssListView 头部主按钮「新增源」，点击 router.push 到 rss-add）
-    const addEntry = page.locator('.rss-header .btn-primary')
+    // ⚠⚠ §965：同样唯一化（`.btn-primary` 现在只有 1 个，但钉住文案更稳）
+    const addEntry = page.locator('.rss-header button.btn-primary', { hasText: '新增源' })
     await expect(addEntry).toContainText('新增源')
     await addEntry.click()
     await expect(page).toHaveURL(/#\/rss\/add$/)
@@ -87,8 +104,10 @@ test.describe('RSS 冒烟', () => {
     const discoverBtn = page.getByRole('button', { name: '发现候选' })
     await expect(discoverBtn).toBeVisible()
     await expect(discoverBtn).toBeDisabled()
-    // 内置种子分区标题（GET /api/rss/sources/seeds 成功与否不影响骨架渲染）
-    await expect(page.getByText('或者从内置种子开始')).toBeVisible()
+    // 内置目录分区标题（GET /api/rss/sources/seeds 成功与否不影响骨架渲染）
+    // ⚠⚠ §965：文案已从「或者从内置种子开始」改成「或从内置目录选择（…）」
+    //（RssAddSource.vue:148）⇒ 那一段**仍在** ⇒ 是**用例钉了旧文案** ⇒ 钉当前文案
+    await expect(page.getByText('或从内置目录选择')).toBeVisible()
 
     // TODO(真实添加订阅)：见文件头注释 —— fill(urlInput, …) → discoverBtn.click()
     // → 候选选择 → 回到 /rss。外部网络依赖，本期不自动执行。

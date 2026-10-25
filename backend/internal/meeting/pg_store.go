@@ -12,6 +12,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/halfking/pocket-opencode/backend/internal/pgtime"
 )
 
 // PGStore 会议记录存储的 PostgreSQL 实现。
@@ -23,6 +25,11 @@ import (
 // 就绪时经 `Server.SetMeetingStore` 注入；未注入时仍退回内存版，测试环境零依赖。
 type PGStore struct {
 	pool *pgxpool.Pool
+
+	// nowFunc 是取「现在」的时钟（默认 `pgtime.Now`，即已截断到微秒）。
+	// ⚠ 它**只**给判据用（注入一个带 ns 尾的时刻，好让判据在
+	// 微秒对齐的平台上也有牙）⇒ 生产代码不设置它。
+	nowFunc func() time.Time
 }
 
 // Compile-time proof that the PG implementation structurally satisfies the
@@ -39,7 +46,7 @@ func NewPGStore(ctx context.Context, pool *pgxpool.Pool) (*PGStore, error) {
 	if pool == nil {
 		return nil, fmt.Errorf("meeting store: postgres pool is nil")
 	}
-	s := &PGStore{pool: pool}
+	s := &PGStore{pool: pool, nowFunc: pgtime.Now}
 	if err := s.migrate(ctx); err != nil {
 		return nil, fmt.Errorf("meeting migration failed: %w", err)
 	}
@@ -103,43 +110,62 @@ func nextMeetingID() string {
 	return fmt.Sprintf("mtg_%d_%d", time.Now().UnixNano(), meetingIDSeq.Add(1))
 }
 
-// pgTruncate 把一个时刻**向下**截断到微秒。
+// ⚠⚠ §966：**这段约定已经搬走了**，搬到了 `internal/pgtime`（单一事实源）。
 //
-// ⚠⚠ §964 为什么需要它（这是 §963 之后剩下的那个洞）：
+//	§964 把「向下截断到微秒」写成了本包里的 `pgTruncate`/`pgNow` 两个私有函数。
+//	⇒ 那份约定**只对 meeting 生效** ⇒ 下一个 store 会照抄一份
+//	⇒ ⇒ 抄到第 N 份时**迟早有一份抄错** ⇒⇒⇒ 「复制」出来的约定**没有主人**
+//	（这与「共享」出来的约定正好相反）。
+//	⇒ ⇒ ⇒ 现在统一走 `pgtime.Truncate` / `pgtime.Now`。
 //
-//	PG 的 `timestamptz` **物理上只能存微秒** ⇒ 存进去的亚微秒部分会被
-//	**四舍五入**掉（PG 用 round-half-to-even：实测 .7µs 进位 / .3µs 舍去）。
-//	⇒ 若把 `time.Now()` 的**纳秒**值原样写进去，
-//	  「内存里返回给调用方的时刻」与「库里真正存的那一刻」**不相等**
-//	  ⇒ 判据一比就红（实测 Linux CI 上 `TestPGUpdateMetaScopedLeavesTranscriptUntouched` 红）。
+// ⚠⚠⚠ **§964 当时写在这里的前提是错的，§966 用真机读数订正了**：
 //
-// ★ 关键在「**向下**截断」而不是「四舍五入」：
-//
-//	截断后的值**本身没有亚微秒部分** ⇒ PG 再存它时**不产生任何取整**
-//	⇒ 内存值 == 库值 ⇒ **判据可以保持严格等值**（不必放宽）。
-//	若改成四舍五入，截断后的值仍可能落在 .5µs 边界上 ⇒ PG 会再动它一次
-//	⇒ 严格等值立刻又不成立。
-//
-// ⚠ 截断会丢掉 <1µs ⇒ 对业务毫无影响（会议时间点的精度需求是分钟级）。
-// ⚠ `Truncate` 以**零时刻**为基准向下取整 ⇒ 对 1970 年之后的时间戳
-//
-//	就是「按 epoch 向下取整到微秒」⇒ 与 PG 的取整方向一致。
-func pgTruncate(t time.Time) time.Time {
-	return t.Truncate(time.Microsecond)
-}
-
-// pgNow 取「写进 PG 的那一刻」的时间戳，**截断到微秒**。
-//
-// ⇒ 凡是**写进 PG 的时间戳**都必须走它（别再直接调 `time.Now()`），
-//
-//	否则「写进去的值」与「返回给调用方的值」会差一个亚微秒量。
+//	原文写的是：「PG 的 `timestamptz` 物理上只能存微秒 ⇒ 存进去的亚微秒部分
+//	会被**四舍五入**掉（PG 用 round-half-to-even：实测 .7µs 进位 / .3µs 舍去）」。
+//	⇒ **对仓里实际走的参数绑定路径，这句话是错的**：
+//	**pgx 在客户端编码时就已经向下截断了** ⇒ PG 根本没见到亚微秒部分。
+//	⇒ 那个「.7µs 进位 / .3µs 舍去」的读数**只对 SQL 字面量路径成立**。
+//	⇒ ⇒ ⇒ 「向下截断」这个**结论不变**，但**理由**从「PG 会再动一次」
+//	换成「**驱动会再动一次**」。
+//	⇒ ⇒ ⇒ 前提的实测读数与「连真 PG 钉住前提」的那条判据，见
+//	`internal/pgtime` 包的注释与 `pg_driver_test.go`。
 //
 // ⚠ `nextMeetingID()` 里的 `time.Now().UnixNano()` **不归它管**
 //
 //	—— 那是 ID 唯一性用途，与时间戳精度无关（且 UnixNano 取的是 epoch 纳秒，
 //	  截断它反而会削弱唯一性）。
-func pgNow() time.Time {
-	return pgTruncate(time.Now())
+
+// SetNowFunc 覆盖这个 store 取「现在」的时钟。
+//
+// ⚠ 为什么时钟是**可注入**的（而不是直接调 `pgtime.Now()`）：
+//
+//	判据必须能在**任何平台**上量到「写进去的值 == 返回给调用方的值」。
+//	⇒ 而 macOS 的 `time.Now()` 是**微秒对齐**的（实测纳秒尾 2000/2000 全为 0）
+//	⇒ ⇒ 不注入一个**带 ns 尾**的时刻，那条判据在 macOS 上**恒真**
+//	⇒ ⇒ ⇒ 注入点让判据不依赖平台时钟（形态照抄 internal/learning 的 `nowFunc`）。
+//
+// ⚠ 形态照抄 internal/learning 的 `SetNowFunc`：测试用它，生产不调用。
+func (s *PGStore) SetNowFunc(f func() time.Time) {
+	if s == nil || f == nil {
+		return
+	}
+	s.nowFunc = f
+}
+
+// now 取「写进 PG 的那一刻」，**截断到微秒**。
+//
+// ⇒ 凡是**写进 PG 的时间戳**都必须走它（别再直接调 `time.Now()`），
+//
+//	否则「写进去的值」与「返回给调用方的值」会差一个亚微秒量。
+//
+// ⚠ 注入的时钟也会被截断（`pgtime.Truncate`）⇒ 注入点测的是「store 有没有
+//
+//	截断」，而不是「注入的时刻恰好有没有 ns 尾」。
+func (s *PGStore) now() time.Time {
+	if s == nil || s.nowFunc == nil {
+		return pgtime.Now()
+	}
+	return pgtime.Truncate(s.nowFunc())
 }
 
 const meetingSelectCols = `id, owner_id, workspace_id, title, duration,
@@ -288,7 +314,7 @@ func (s *PGStore) CreateScoped(req CreateMeetingRequest, ownerID, workspaceID st
 	//
 	// created_at 用客户端的 startedAt（Unix 毫秒），没有就用 now；
 	// duration 由毫秒换算成秒；refinedTranscript 落到 transcript 列。
-	createdAt := pgNow()
+	createdAt := s.now()
 	if req.StartedAt > 0 {
 		createdAt = time.UnixMilli(req.StartedAt)
 	}
@@ -363,7 +389,7 @@ func (s *PGStore) CreateScoped(req CreateMeetingRequest, ownerID, workspaceID st
 	// 就置空 ⇒ 下一轮退回服务端发号（换号），**不覆盖**别人的行。
 	clientID := strings.TrimSpace(req.ID)
 	for attempt := 0; attempt < 5; attempt++ {
-		now := pgNow()
+		now := s.now()
 		// 客户端带了 id 就用它（并由 ON CONFLICT 保证重复 POST 收敛到同一行）；
 		// 没带才走服务端生成。撞号重试时必须换新 id，否则重试没有意义。
 		id := clientID
@@ -514,7 +540,7 @@ func (s *PGStore) UpdateScoped(m *Meeting, ownerID, workspaceID string) error {
 	defer cancel()
 
 	// 与内存版一致：UpdatedAt 由存储层盖时间戳，不接受调用方传入的值。
-	now := pgNow()
+	now := s.now()
 	const q = `UPDATE meetings SET
 		title=$4, duration=$5, recording_url=$6, transcript=$7, summary=$8,
 		key_decisions=$9, action_items=$10, tags=$11, project_id=$12, status=$13, updated_at=$14
@@ -607,7 +633,7 @@ func (s *PGStore) UpdateMetaScoped(id, ownerID, workspaceID string, title, statu
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	now := pgNow()
+	now := s.now()
 	q, args := buildMetaUpdateSQL(id, ownerID, workspaceID, title, status, now)
 	tag, err := s.pool.Exec(ctx, q, args...)
 	if err != nil {
@@ -688,7 +714,7 @@ func (s *PGStore) DeleteScoped(id, ownerID, workspaceID string) error {
 		  AND meeting_tombstones.workspace_id = EXCLUDED.workspace_id
 		RETURNING id`
 	var tombID string
-	if err := tx.QueryRow(ctx, tomb, id, ownerID, workspaceID, pgNow()).Scan(&tombID); err != nil {
+	if err := tx.QueryRow(ctx, tomb, id, ownerID, workspaceID, s.now()).Scan(&tombID); err != nil {
 		// ErrNoRows ⇒ 守卫把「这条墓碑属于别的作用域」挡掉了
 		// ⇒ ⇒ ⇒ 绝不搬走别人的墓碑（宁可整笔回滚，也不静默改归属）。
 		if errors.Is(err, pgx.ErrNoRows) {

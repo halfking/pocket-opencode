@@ -42,6 +42,24 @@ const REPO_ROOT = resolve(HERE, '..', '..', '..')
 /** 与 backend/start-dev.sh 里的开发 secret 保持一致。 */
 export const DEFAULT_E2E_JWT_SECRET = 'test-secret-key-for-phase7-validation'
 
+/**
+ * 后端 API 的基址 —— **从后端自己用的那个环境变量推出来**，不再各写一份。
+ *
+ * ⚠⚠ §965：这里过去**写死 `http://127.0.0.1:8088`**，
+ * 而 CI 的后端起在 **8090**（`e2e-web.yml` 的 `POCKET_HTTP_PORT: "8090"`
+ * ＋ healthz 探针 ＋ vite 代理默认都是 8090）
+ * ⇒ `assertTokenWorks` 的探针必然 `ECONNREFUSED 127.0.0.1:8088`
+ * ⇒ `beforeAll` 挂掉 ⇒ **整个 spec 的用例全成噪音**
+ * ⇒ ⇒ 而 CI 日志里还混着另外 8 条**与端口无关**的真红
+ * ⇒ ⇒ ⇒ **端口只是遮蔽机制，不是唯一真因**（详见主文档 §965）。
+ *
+ * ⇒ 现在改成：`POCKET_HTTP_PORT`（**后端用的那个变量**）→ 默认 8090
+ * ⇒ ⇒ **单一事实源**：后端换端口，e2e 自动跟上，不需要改第二处。
+ */
+export const E2E_API_BASE =
+  process.env.E2E_API_BASE ??
+  `http://127.0.0.1:${process.env.POCKET_HTTP_PORT ?? '8090'}`
+
 export const E2E_USER = process.env.E2E_USER ?? 'e2e-user'
 export const E2E_WORKSPACE = process.env.E2E_WORKSPACE ?? 'e2e-ws'
 
@@ -80,6 +98,12 @@ let cached: string | null = null
 /**
  * 取 token：环境变量优先，否则调 backend/cmd/gen-jwt 现场签。
  * 结果进程内缓存——每个用例重新 `go run` 会把套件拖慢一个数量级。
+ *
+ * ⚠⚠ §965：secret 的来源过去只有 `E2E_JWT_SECRET`，
+ * 而 **CI 设的是 `POCKET_JWT_SECRET`**（后端自己用的那个变量）
+ * ⇒ ⇒ 于是 e2e 拿**开发 secret** 去签、后端拿 **CI secret** 去验
+ * ⇒ ⇒ **签出来的 token 必然被拒**（401）⇒ 探针即使连对了端口也会红。
+ * ⇒ ⇒ 现在把 `POCKET_JWT_SECRET` 也认（优先于开发默认值）⇒ **跟随后端侧那个变量**。
  */
 export function e2eToken(): string {
   if (cached) return cached
@@ -88,7 +112,11 @@ export function e2eToken(): string {
     cached = fromEnv
     return cached
   }
-  cached = mintViaBackend(process.env.E2E_JWT_SECRET ?? DEFAULT_E2E_JWT_SECRET)
+  cached = mintViaBackend(
+    process.env.E2E_JWT_SECRET ??
+      process.env.POCKET_JWT_SECRET ??
+      DEFAULT_E2E_JWT_SECRET,
+  )
   return cached
 }
 
@@ -121,8 +149,14 @@ export async function seedTokenAuth(page: Page, seed?: Partial<TokenAuthSeed>): 
   }, data)
 }
 
-/** 真打一次后端，证明这枚 token 不是「长得像 JWT」而是真能认证。 */
-export async function assertTokenWorks(apiBase = 'http://127.0.0.1:8088'): Promise<void> {
+/**
+ * 真打一次后端，证明这枚 token 不是「长得像 JWT」而是真能认证。
+ *
+ * ⚠⚠ §965：基址过去写死 `http://127.0.0.1:8088`，而 CI 的后端在 **8090**
+ * ⇒ 探针必然 `ECONNREFUSED 127.0.0.1:8088` ⇒ `beforeAll` 挂 ⇒ 整个 spec 全是噪音。
+ * ⇒ 现在走 `E2E_API_BASE`（从后端自己的 `POCKET_HTTP_PORT` 推出来）⇒ **单一事实源**。
+ */
+export async function assertTokenWorks(apiBase = E2E_API_BASE): Promise<void> {
   const res = await fetch(`${apiBase}/api/auth/me`, {
     headers: { Authorization: `Bearer ${e2eToken()}` },
   })

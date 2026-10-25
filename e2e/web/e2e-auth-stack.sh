@@ -139,6 +139,16 @@ echo "[e2e-stack] 代理链路已自证：vite :$WEB_PORT → 后端 :$API_PORT 
 
 echo "[e2e-stack] 跑 spec：$SPEC"
 cd "$SCRIPT_DIR"
+# ⚠⚠ §965：端口与 secret 必须**和后端拿到的是同一份** ⇒ 单一事实源。
+#
+#	本地栈默认 8088（避开 8090 —— 姊妹仓常占着），而 CI 那边是 8090
+#	⇒ 两个调用方的端口**本来就不一样** ⇒ 端口**不能写死**，只能从环境来
+#	⇒ ⇒ 这里把 `POCKET_HTTP_PORT` / `POCKET_JWT_SECRET`（**后端用的那两个变量名**）
+#	⇒ ⇒ 原样传给 playwright 步骤 ⇒ helper 从同一处取 ⇒ 两边必然一致。
+#	⚠ 过去这里只传了 `E2E_JWT_SECRET`，而 helper 里的端口是**写死的 8088**
+#	⇒ 对本地栈恰好对、对 CI 恰好错 ⇒ CI 那边必然 ECONNREFUSED。
 E2E_BASE_URL="http://127.0.0.1:$WEB_PORT" \
+POCKET_HTTP_PORT="$API_PORT" \
+POCKET_JWT_SECRET="$JWT_SECRET" \
 E2E_JWT_SECRET="$JWT_SECRET" \
   npx playwright test "$SPEC" --reporter=list

@@ -5,7 +5,7 @@
 **目的**: 把仓库里已经存在的功能特性摊开成一张表，作为后续需求/设计/原生化讨论的唯一事实层  
 **扫描范围**：`frontend/src/{features,pages,stores,api,native}`、`backend/internal/**`、`docs/`、`deploy/`
 
-> **2026-09-23 注**：本文为 2026-09-08 盘点快照（前端 25 域 + 后端 47 模块）。此后新增 `flashcards` / `more` / `study` 等前端域（09-23 融合重构 Phase 1-2）与 `flashcards` 后端模块（09-19），当前实数 = 前端 32 域 + 后端 61 模块（2026-10-24 复核；10 月新增 calendar / messages / more / study 域与 accruntime / calendar / learning / repohygiene / livetest / meetingagent / accjwt / background / outbound / sizedread / skipaudit / testaudit 模块）；新增域明细待后续增补，正文各表保留 09-08 时点内容。
+> **2026-09-23 注**：本文为 2026-09-08 盘点快照（前端 25 域 + 后端 47 模块）。此后新增 `flashcards` / `more` / `study` 等前端域（09-23 融合重构 Phase 1-2）与 `flashcards` 后端模块（09-19），当前实数 = 前端 32 域 + 后端 63 模块（2026-10-26 复核；9 月新增 local-agent / notifications 域与 accruntime / learning 模块，10 月新增 calendar / messages 域与 wecom / repohygiene / calendar / livetest / meetingagent / accjwt / background / outbound / sizedread / skipaudit / testaudit / pgmigrate / pgtime 模块）；新增域明细待后续增补，正文各表保留 09-08 时点内容。
 
 ---
 

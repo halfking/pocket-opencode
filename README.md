@@ -4,7 +4,7 @@
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)]()
 [![Go Version](https://img.shields.io/badge/Go-1.27+-00ADD8?logo=go)]()
-[![Node Version](https://img.shields.io/badge/Node-18+-339933?logo=node.js)]()
+[![Node Version](https://img.shields.io/badge/Node-22+-339933?logo=node.js)]()
 [![Vue](https://img.shields.io/badge/Vue-3.x-4FC08D?logo=vue.js)]()
 [![Android](https://img.shields.io/badge/Android-API%2024+-3DDC84?logo=android)]()
 
@@ -73,7 +73,7 @@ AI Work Mess 是一款强大的移动端AI编程助手应用，让开发者能�
 ### 环境要求
 
 - **Go**: 1.27+
-- **Node.js**: 18+
+- **Node.js**: 22+
 - **JDK**: 21 (Oracle标准版)
 - **Android SDK**: API 30+
 
@@ -213,7 +213,7 @@ adb shell am start -n com.kaixuan.opencode.pocket/.MainActivity
 ### 主要文档
 
 - [**文档索引**](docs/README.md) - docs 目录总入口
-- [**功能特性大盘（As-built）**](docs/2026-09-08-feature-inventory.md) - 前端 32 域 + 后端 61 模块 + 原生 35+ 能力位（2026-09-08 基线盘点 25 域 + 47 模块，其后新增 flashcards / study / more / calendar / messages 等域与 accruntime / learning / repohygiene / livetest / meetingagent 等模块，2026-10-24 复核）
+- [**功能特性大盘（As-built）**](docs/2026-09-08-feature-inventory.md) - 前端 32 域 + 后端 63 模块 + 原生 35+ 能力位（2026-09-08 基线盘点 25 域 + 47 模块，其后新增 flashcards / study / more / calendar / messages 等域与 accruntime / learning / repohygiene / livetest / meetingagent 等模块，2026-10-26 复核）
 - [**需求与设计（As-built）**](docs/2026-09-08-requirements-design.md) - 反向整理的需求清单与现行架构设计
 - [**原生化与跨平台路线图**](docs/2026-09-08-native-and-cross-platform.md) - iOS / Android / HarmonyOS 平台补齐方案
 - [**运维指南**](docs/guides/OPERATIONS_GUIDE.md) - 完整的部署和运维文档
