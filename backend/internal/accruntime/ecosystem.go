@@ -49,12 +49,20 @@ type Agent struct {
 	Capabilities []string `json:"capabilities,omitempty"`
 
 	// 运行时清单的契约字段（注册表形状不会出现）。
-	AgentID           string   `json:"agent_id,omitempty"`
-	Kind              string   `json:"kind,omitempty"`
-	CommunicationMode string   `json:"communication_mode,omitempty"`
-	PID               int      `json:"pid,omitempty"`
-	Command           string   `json:"command,omitempty"`
-	LastActiveAt      string   `json:"last_active_at,omitempty"`
+	AgentID           string `json:"agent_id,omitempty"`
+	Kind              string `json:"kind,omitempty"`
+	CommunicationMode string `json:"communication_mode,omitempty"`
+	PID               int    `json:"pid,omitempty"`
+	Command           string `json:"command,omitempty"`
+	LastActiveAt      string `json:"last_active_at,omitempty"`
+
+	// State 是 **inventory 形状**里的状态字段（2026-10-25 实测）。
+	//
+	// ACC 的 runtime 清单里，每个 runtime 自带一份 agent_inventory
+	//（心跳推上来的）：{"agent_id","kind","state","communication_mode","skills"}。
+	// 这里的字段名是 **state**，不是 status —— 而回连读面那份是 status。
+	// 两种形状都在 ACC 契约里活着，折进同一个 Status 字段。
+	State string `json:"state,omitempty"`
 }
 
 // normalize 把运行时清单的契约字段折进注册表形状的字段里。
@@ -71,6 +79,10 @@ func (a *Agent) normalize() {
 	}
 	if a.LastSeenAt == "" {
 		a.LastSeenAt = a.LastActiveAt
+	}
+	if a.Status == "" {
+		// inventory 形状（心跳推上来的那份）用 state，不叫 status。
+		a.Status = a.State
 	}
 }
 
@@ -112,49 +124,198 @@ func (c *Client) ListAgents(ctx context.Context) ([]Agent, error) {
 	return out, nil
 }
 
-// ListRuntimeAgents 读 **运行时清单**（不是注册表）：
+// ListRuntimeAgents 读 **运行时清单**（不是注册表）。
 //
-//	GET /api/v2/runtime/runtimes                      → 已注册的 runtime 列表
-//	GET /api/v2/runtime/runtimes/{runtime_id}/agents  → 该 runtime 的智能体清单
+// 这一面有**两条路**，两条都要走：
 //
-// ★ 为什么必须读这一面（2026-10-25 实测）：
+//	① 推送面：GET /api/v2/runtime/runtimes 里，每个 runtime 自带一份
+//	   agent_inventory（心跳推上来的）。
+//	② 拉取面：GET /api/v2/runtime/runtimes/{runtime_id}/agents —— ACC **回连**
+//	   daemon 的读面（GET {api_endpoint}/api/v1/runtime/agents，api_endpoint 由
+//	   daemon 注册时广告），拿到的是更全的那份（带 pid/command/last_active_at）。
+//
+// ★ 为什么两条都要读（2026-10-25 实测）：
 //
 //	· ACC 的**注册表**（GET /api/v2/agents）在 acc-go 容器重启后是**空的**，
-//	  而 agent-companion 明明在线（daemon 侧 /api/v1/agents 有 43 个）；
-//	· 运行时清单这一面是 ACC **回连 daemon 的读面**（GET {api_endpoint}
-//	  /api/v1/runtime/agents，api_endpoint 由 daemon 注册时广告），拿到的是
-//	  **活的**清单，带 status/communication_mode/pid；
-//	· 契约见 agent-companion docs/ACC_BRIDGE_SPEC.md。
+//	  而 agent-companion 明明在线（daemon 侧 /api/v1/runtime/agents 有 31 个）；
+//	· 拉取面要求 ACC **能回连到那台机器**：ACC 主机不在本机时，daemon 广告的
+//	  地址在 ACC 那边可能指向**另一台机器**，回连拿到 401/502（实测错误正文：
+//	  `runtime_read_face_unreachable: read-face /api/v1/runtime/agents: status
+//	  401: {"message":"missing bearer token"}`）⇒ 只读拉取面时，整张表会空掉；
+//	· 推送面（agent_inventory）**不依赖回连** —— daemon 心跳里就带着活的清单
+//	  （实测 31 条：zcode-cli 20 / mmcode-helper 8 / mmcode 1 / zcode 1 /
+//	  opencode 1，state = running/idle/denied_by_policy）。
 //
-// 回连不通时（runtime 没广告 api_endpoint、或 daemon 不可达）ACC 会退回到
-// drivers 兜底面（fallback_used=true）—— 那时 agents 为空，**不是故障**，
-// 故这里返回空切片而不是错误，交给调用方决定怎么呈现。
+// ★ 两面**故意**不一致，所以合并规则是写死的，不是"谁后到谁赢"：
+//
+//	实测同一台主机上 31 条里有 **14 条矛盾**，而且**两个方向都有**：
+//
+//		zcode-cli-34660：推送面 running / 拉取面 offline（进程已经退出了）
+//		mmcode-81930：  推送面 denied_by_policy / 拉取面 running
+//
+//	因此：状态以**拉取面**为准（它是请求时刻现读的存活信号，也是唯一带
+//	pid/command/last_active_at 的那份）；但推送面多带一样拉取面不知道的事实
+//	——**本机 allowlist 的裁决**（denied_by_policy），策略拒绝**不能**被拉取面
+//	里一句 running 盖掉：把被拒的智能体说成可派单，是危险的那一侧。
+//
+// 回连不通**不是故障**（那台机器没广告读面、或不可达）—— 推送面拿到多少就返回多少。
 func (c *Client) ListRuntimeAgents(ctx context.Context) ([]Agent, error) {
 	if err := c.ready(); err != nil {
 		return nil, err
 	}
-	runtimes, err := c.listRuntimeIDs(ctx)
+	runtimes, err := c.listRuntimes(ctx)
 	if err != nil {
 		return nil, err
 	}
-	var out []Agent
-	for _, rid := range runtimes {
-		agents, err := c.listRuntimeAgentsOf(ctx, rid)
+	byID := map[string]*agentFaces{}
+	var order []string
+	slot := func(key string) *agentFaces {
+		f, ok := byID[key]
+		if !ok {
+			f = &agentFaces{}
+			byID[key] = f
+			order = append(order, key)
+		}
+		return f
+	}
+	for _, rt := range runtimes {
+		// ① 推送面：runtime 清单里自带的 inventory
+		for _, a := range rt.AgentInventory {
+			a.normalize()
+			key := agentKey(a)
+			if key == "" {
+				continue
+			}
+			cp := a
+			slot(key).push = &cp
+		}
+		// ② 拉取面：ACC 回连 runtime 的读面
+		agents, err := c.listRuntimeAgentsOf(ctx, rt.RuntimeID)
 		if err != nil {
-			// 单个 runtime 读不到（没广告读面 / 机器已下线）不影响其它
-			// runtime 的清单 —— 跳过即可，不能让一个下线的机器把整张表清空。
+			// 单个 runtime 读不到（没广告读面 / 机器不可达 / 读面要鉴权）
+			// 不影响其它 runtime，也不影响推送面已经拿到的清单 ——
+			// 跳过即可，不能让一个连不上的机器把整张表清空。
 			continue
 		}
-		out = append(out, agents...)
+		for _, a := range agents {
+			a.normalize()
+			key := agentKey(a)
+			if key == "" {
+				continue
+			}
+			cp := a
+			slot(key).read = &cp
+		}
 	}
-	for i := range out {
-		out[i].normalize()
+	out := make([]Agent, 0, len(order))
+	for _, k := range order {
+		out = append(out, resolveAgent(*byID[k]))
 	}
 	return out, nil
 }
 
-// listRuntimeIDs 读已注册 runtime 的 id 列表。
-func (c *Client) listRuntimeIDs(ctx context.Context) ([]string, error) {
+// agentStateDeniedByPolicy 是清单里的"在，但不许跑"。
+//
+// 这是一个**独立取值**而不是复用 "offline" 或干脆不报（见 agent-companion
+// 的 InventoryStateDeniedByPolicy）："offline" 会让人以为重启一下就好，
+// 而省略这一条会让这台机器看起来像从没装过这个智能体。
+const agentStateDeniedByPolicy = "denied_by_policy"
+
+// agentFaces 是同一个智能体在 ACC 里的两面。
+type agentFaces struct {
+	// push 是心跳推上来的那一份（运行时清单里的 agent_inventory）。
+	push *Agent
+	// read 是 ACC 回连 daemon 读面拿到的那一份。
+	read *Agent
+}
+
+// agentKey 取一份记录的身份键。两面用的是同一个 id 空间
+// （agent_id / id），所以同一个智能体在两面能对上。
+func agentKey(a Agent) string {
+	if a.AgentID != "" {
+		return a.AgentID
+	}
+	return a.ID
+}
+
+// resolveAgent 把同一智能体的两面合成一条记录。
+//
+// 规则见 ListRuntimeAgents 的注释：状态以拉取面为准（更新、且更全），
+// 但推送面的策略裁决优先于任何运行状态；其余字段两面互补，谁有谁赢。
+func resolveAgent(f agentFaces) Agent {
+	out := Agent{}
+	if f.push != nil {
+		out = *f.push
+	}
+	if f.read != nil {
+		read := *f.read
+		// 拉取面独有的字段（pid/command/last_active_at/capabilities）补上。
+		fillEmpty(&out, read)
+		// 存活信号以拉取面为准 —— 它是请求时刻现读的。
+		if read.Status != "" {
+			out.Status = read.Status
+		}
+	}
+	// 策略裁决优先于任何运行状态：被拒的智能体不能被说成可派单。
+	if f.push != nil && f.push.State == agentStateDeniedByPolicy {
+		out.Status = agentStateDeniedByPolicy
+	}
+	return out
+}
+
+// fillEmpty 把 src 的非空字段填进 dst 尚未有值的字段（互补，不是覆盖）。
+func fillEmpty(dst *Agent, src Agent) {
+	if dst.ID == "" {
+		dst.ID = src.ID
+	}
+	if dst.Name == "" {
+		dst.Name = src.Name
+	}
+	if dst.Type == "" {
+		dst.Type = src.Type
+	}
+	if dst.Status == "" {
+		dst.Status = src.Status
+	}
+	if dst.LastSeenAt == "" {
+		dst.LastSeenAt = src.LastSeenAt
+	}
+	if len(dst.Capabilities) == 0 {
+		dst.Capabilities = src.Capabilities
+	}
+	if dst.AgentID == "" {
+		dst.AgentID = src.AgentID
+	}
+	if dst.Kind == "" {
+		dst.Kind = src.Kind
+	}
+	if dst.CommunicationMode == "" {
+		dst.CommunicationMode = src.CommunicationMode
+	}
+	if dst.PID == 0 {
+		dst.PID = src.PID
+	}
+	if dst.Command == "" {
+		dst.Command = src.Command
+	}
+	if dst.LastActiveAt == "" {
+		dst.LastActiveAt = src.LastActiveAt
+	}
+	if dst.State == "" {
+		dst.State = src.State
+	}
+}
+
+// runtimeRecord 是一条已注册 runtime 的记录。
+type runtimeRecord struct {
+	RuntimeID string `json:"runtime_id"`
+	// AgentInventory 是 runtime **自己推上来**的智能体清单（心跳里带的）。
+	// 它不依赖 ACC 回连 ⇒ ACC 连不上这台机器的读面时，活的清单仍然在这里。
+	AgentInventory []Agent `json:"agent_inventory"`
+}
+
+// listRuntimes 读已注册 runtime 的记录（含各自推上来的 agent_inventory）。
+func (c *Client) listRuntimes(ctx context.Context) ([]runtimeRecord, error) {
 	resp, err := c.http.Get(ctx, "/api/v2/runtime/runtimes", nil)
 	if err != nil {
 		return nil, fmt.Errorf("accruntime: list runtimes: %w", err)
@@ -164,28 +325,24 @@ func (c *Client) listRuntimeIDs(ctx context.Context) ([]string, error) {
 		return nil, fmt.Errorf("accruntime: list runtimes: %w", err)
 	}
 	var doc struct {
-		Data []struct {
-			RuntimeID string `json:"runtime_id"`
-		} `json:"data"`
-		Items []struct {
-			RuntimeID string `json:"runtime_id"`
-		} `json:"items"`
+		Data  []runtimeRecord `json:"data"`
+		Items []runtimeRecord `json:"items"`
 	}
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		return nil, fmt.Errorf("accruntime: decode runtimes: %w", err)
 	}
-	var ids []string
+	var out []runtimeRecord
 	for _, r := range doc.Data {
 		if r.RuntimeID != "" {
-			ids = append(ids, r.RuntimeID)
+			out = append(out, r)
 		}
 	}
 	for _, r := range doc.Items {
 		if r.RuntimeID != "" {
-			ids = append(ids, r.RuntimeID)
+			out = append(out, r)
 		}
 	}
-	return ids, nil
+	return out, nil
 }
 
 // listRuntimeAgentsOf 读单个 runtime 的智能体清单。
