@@ -22,6 +22,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -44,6 +46,21 @@ type accPermissionStub struct {
 	lastMethod string
 	lastPath   string
 	lastBody   map[string]any
+	// reqs 记录**每一次**请求（方法/路径/体）。取消路径现在会先 GET 命令
+	// 取当前 fencing token 再 POST 取消，只看「最后一次」会看不出这个顺序。
+	reqs []stubReq
+	// commandFencingToken 是 GET /api/v2/runtime/commands/{id} 报出的
+	// 当前围栏 token；0 表示命令已经终态（status=cancelled）。
+	commandFencingToken uint64
+	// commandStatus 是 GET 命令报出的状态。
+	commandStatus string
+}
+
+// stubReq 是一次被 stub 收到的请求。
+type stubReq struct {
+	Method string
+	Path   string
+	Body   map[string]any
 }
 
 func (s *accPermissionStub) handler() http.HandlerFunc {
@@ -55,6 +72,20 @@ func (s *accPermissionStub) handler() http.HandlerFunc {
 		s.lastPath = r.URL.Path
 		s.lastBody = nil
 		_ = json.NewDecoder(r.Body).Decode(&s.lastBody)
+		s.reqs = append(s.reqs, stubReq{Method: r.Method, Path: r.URL.Path, Body: s.lastBody})
+		// ★ 2026-10-25：ACC 的 holder 围栏要求取消请求带上**当前**的
+		// fencing_token，而 token 只能现读现用 ⇒ pocketd 在取消前会 GET
+		// 一次命令。stub 必须能答这个 GET，否则测的就不是真实路径。
+		if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v2/runtime/commands/") {
+			status := s.commandStatus
+			if status == "" {
+				status = "running"
+			}
+			w.WriteHeader(s.status)
+			_, _ = w.Write([]byte(`{"ok":true,"data":{"dispatch_id":"disp-7","status":"` + status +
+				`","fencing_token":` + strconv.FormatUint(s.commandFencingToken, 10) + `}}`))
+			return
+		}
 		w.WriteHeader(s.status)
 		_, _ = w.Write([]byte(`{"ok":true}`))
 	}
@@ -64,6 +95,15 @@ func (s *accPermissionStub) snapshot() (calls int, method, path string, body map
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.calls, s.lastMethod, s.lastPath, s.lastBody
+}
+
+// requests 返回按顺序记录的全部请求。
+func (s *accPermissionStub) requests() []stubReq {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]stubReq, len(s.reqs))
+	copy(out, s.reqs)
+	return out
 }
 
 // accGateAdapter 在 mobileRouteAdapter 之上补齐 PermissionCaller /

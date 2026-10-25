@@ -1862,3 +1862,135 @@ FAIL	github.com/halfking/pocket-opencode/backend/internal/meeting
   （`~/workspace/ai-native-tools/llm-gateway/llm-gateway-client`），而 openpocket
   的 Maestro 流是 Android 流 ⇒ 用不上。上一轮登记为「本机无 USB 真机」，这里补准：
   **无 Android 真机；有一台别家项目的 iOS 设备**。
+
+### 19.12 经真实 ACC 的端到端：链条摸到了，**「停止」这一步是断的**（19:35–20:05）
+
+§19.11.4 登记的未验项（经真实 ACC 建任务 → 取消 → 排队中的派单落 cancelled）本轮做了。
+脚本：`~/kaixuan/acp/logs/rerun-round52/acc-queued-cancel-e2e.py`（真实 ACC +
+真实 daemon）。**前 4 步全通，第 4 步炸了** —— 而且炸出来的不是环境问题，是产品缺陷。
+
+#### 19.12.1 实测：派单侧完全正常
+
+| 步骤 | 读数 |
+| --- | --- |
+| 占住 opencode 槽位（daemon REST 面） | `state=running` |
+| 经 ACC `POST /api/v2/runtime/dispatch`（runtime=acs-ac30-01, agent=opencode, operation=agent.task） | **202**，command_id=`dispatch_b5a2350b-…` |
+| daemon 侧那条派单 | **在 daemon 的 run 表里可见，`state=queued`，updates=0** |
+| ★ daemon 的 run id **就是** ACC 的 command_id | ✅ dispatch id 直通（`TaskRequestFromEvent` 把 RunID 设成 event.DispatchID） |
+
+⇒ 「排队中的派单在 daemon 侧看得见」这件事，在**真实 ACC** 上也成立。
+
+#### 19.12.2 断点：取消请求**不带 fencing token** ⇒ ACC 答 409，派单落 agent_busy
+
+```
+ACC cancel -> HTTP 409  {"error":{"code":"lease_fenced","message":"orchestration: stale fencing token","retryable":false}}
+daemon 终态 state=failed      ← 不是 cancelled
+```
+
+ACC 的 holder 围栏不只看 `holder_id`，还要 **`fencing_token`**，且它必须是**当前**那把
+（每次租约获取都会换）。带着当前 token 再取消一次：
+
+```
+command: status=running fencing_token=1
+cancel(带 token) -> HTTP 200
+daemon 终态 state=cancelled
+ACC 命令：status=cancelled cancel_state=delivered
+RESULT cancelled=True
+```
+
+⇒ **同一个取消，只差一个 token**：不带 ⇒ 409 ⇒ 派单等槽位超时落 `failed`
+（也就是 `agent_busy` 那条路：操作员说「停」，系统答「忙，稍后重试」）；
+带上 ⇒ 200 ⇒ 那条派单落 `cancelled`，**而且从未运行**（updates=0）。
+
+#### 19.12.3 更严重的一层：openpocket 的「停止」在**生产里根本没到 ACC**
+
+`handleCancelTask` 只有在 `current.ACCDispatchID != ""` 时才去碰 ACC。而：
+
+```
+$ grep -rn 'SetACCBinding' --include=*.go . | grep -v _test.go
+（只有定义与注释，**没有任何生产调用方**）
+```
+
+`acc_dispatch_id` / `acc_holder_id` 两列**唯一**的写入口就是 `SetACCBinding`，而它只被
+测试调用 ⇒ 生产里这两列**永远是空** ⇒ 取消永远走「未绑定 ⇒ 仅本地取消」分支：
+**本地卡片变成 cancelled，ACC 那边的派单照跑不误**。用户按「停止」，agent 继续跑。
+
+数据其实一直都在，只是没人去取：
+
+- run 绑定（`task_run_bindings`）里有 ACC 的 **run id** —— `BindVerifiedRun` 在生产是**有**
+  调用方的（`/api/tasks/delegate` 就在用）；
+- ACC 的运行事件里，`dispatch.*` 事件带 **`dispatch_id`**，`dispatch.leased` / `dispatch.started`
+  的 **`actor_id`** 就是**租约持有方**（companion runtime id）；
+- 但 openpocket 的 `mcp.AccRunEvent` 结构**只解了事件信封**，`dispatch_id` / `actor_id`
+  直接被丢掉了。
+
+#### 19.12.4 修法（三处，全在 openpocket）
+
+1. **`mcp.AccRunEvent` 补 `dispatch_id` / `actor_id` / `actor_type` / `new_state`** ——
+   ACC 本来就把它们放在事件顶层。
+2. **新增 `task_acc_dispatch.go`**：从 run 绑定 + ACC 运行事件里解出**当前**那条派单
+   （取**最后**一条带 dispatch_id 的事件：一次 run 可能有多次派单尝试，对着上一条已死的
+   派单发取消等于取消不存在的东西；持有方取最后一条 **agent 角色**事件的 actor_id ——
+   `dispatch.created` 的 actor 是用户，不是持有方）。
+3. **`handleCancelTask`**：派单 id 优先用已存的绑定，解不出就按 run 去 ACC 解；
+   然后 **GET 命令拿当前 fencing token** 再取消；命令**已终态**（succeeded/failed/cancelled/
+   expired/superseded）时**不重复发取消**（没有还在跑的副作用可停；再发只会撞
+   invalid_state_transition，然后被 fail-closed 变成 502，而任务其实早就结束了）。
+   围栏语义没动弱：ACC 仍是权威，它拒绝就照样 fail-closed（不本地取消）。
+
+#### 19.12.5 判据（**带真实测试库**跑的）
+
+```bash
+cd backend && POCKET_TEST_POSTGRES_DSN=… go test ./internal/server/ -run 'TestCancelTask|TestAccDispatchFromEvents' -count=1 -v
+# 10 条全 PASS（修复前这些判据不存在；ACC 侧那个 409 是实测出来的）
+```
+
+| 判据 | 结果 |
+| --- | --- |
+| 取消前先 GET 命令，再 POST 取消（带 holder + token） | ✅ |
+| token 来自**当前**命令（stub 报 7 ⇒ 请求体里就是 7） | ✅ |
+| ACC 说命令**已取消** ⇒ 不重复发取消，本地仍落 cancelled | ✅ |
+| 取 token 失败 ⇒ 照常发起取消，由 ACC 裁决；ACC 拒 ⇒ fail-closed | ✅ |
+| 生产实况（只有 run 绑定）⇒ 从事件解出派单并**真的**取消到 ACC | ✅ |
+| 事件里**没有**派单 ⇒ 不碰 ACC，仅本地取消 | ✅ |
+| 取**最后**一条派单事件（多次尝试）+ agent 角色的持有方 | ✅ |
+
+#### 19.12.6 ⚠️ 顺带查清的一件事：前几轮「后端 65 包全绿」的含金量
+
+这轮给测试注入了 `POCKET_TEST_POSTGRES_DSN`，才发现**没有 DSN 时大量 PG 集成测试是
+SKIP**（不是测过）：
+
+| 条件 | `internal/server` 的 SKIP 数 |
+| --- | --- |
+| 无 `POCKET_TEST_POSTGRES_DSN` | **143** |
+| 有 DSN | **23**（多真跑了 120 条，全部通过） |
+
+⇒ 前几轮那句「后端 65 包全绿、0 FAIL」准确说是「**跑到的**没红」，其中 143 条
+（仅 internal/server 一个包）当时是**跳过**的。本轮改成
+「干净环境 + DSN」：
+
+```bash
+cd backend
+env -i HOME=$HOME PATH=$PATH POCKET_TEST_POSTGRES_DSN=… go test ./... -count=1
+# 65 包全绿、0 FAIL、EXIT=0
+```
+
+★ **另一个坑：别把 pocketd 的运行环境整包注入测试环境**。注入 `POCKET_HTTP_PORT` /
+`POCKET_DEV_AUTH` / `POCKET_LLM_GATEWAY_*` 后，有 3 个测试误红 —— 其中
+`TestMeetingLiveAnalyzeGuards` 的前提是「网关**未配置**」，注入后它**真的调了真实 LLM
+网关**（glm-5.3 答了）并拿到 200。仓库的测试默认「环境干净」。
+
+#### 19.12.7 本节遗留风险更新
+
+- ✅ **「排队中的派单能不能被停掉」在真实 ACC 上有读数了**：带当前 fencing token ⇒
+  ACC 200、派单落 `cancelled`、从未运行；不带 ⇒ 409 ⇒ 落 `failed`（agent_busy 那条路）。
+- ✅ **openpocket 的「停止」现在真的会到 ACC**（不再只是改本地卡片）：派单 id 从 ACC
+  运行事件解出，取消带当前围栏 token。
+- ⚠️ **这条修复的线上验证还没做**：本轮修的是 openpocket 的后端逻辑，**线上跑的
+  pocketd 还是旧构建**（`/tmp/pocketd-r53`、`/tmp/pocketd-new`）。要拿到「用户在 App 里
+  按停止 ⇒ ACC 收到 ⇒ agent 真的停了」的读数，需要用**含本次修复**的构建起一个实例
+  并对真实 ACC 发一次取消。
+- ⚠️ **`SetACCBinding` 仍然没有生产调用方**（本轮没有去动它）：绑定仍靠「取消时现解」。
+  这是取舍（现解简单、不依赖事件同步的时序），但意味着取消一次要多一次 ACC 往返。
+- ⚠️ **create 面仍然阻塞**、**不预置 runId 的客户端仍停不掉排队中的派单**（daemon REST
+  面那条路；ACC 面不受此限，因为 dispatch id 直通）。

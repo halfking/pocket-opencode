@@ -206,7 +206,10 @@ func TestCancelCommand_SendsReasonAndIdempotencyKey(t *testing.T) {
 		gotPath           string
 		gotMethod         string
 		gotIdempotencyKey string
-		gotBody           map[string]string
+		// any 而不是 map[string]string：fencing_token 是**数字**，
+		// 用 map[string]string 解码整个 body 会失败（json: cannot unmarshal
+		// number into Go value of type string）⇒ 断言会读到空 map。
+		gotBody map[string]any
 	)
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath, gotMethod = r.URL.Path, r.Method
@@ -219,7 +222,7 @@ func TestCancelCommand_SendsReasonAndIdempotencyKey(t *testing.T) {
 	defer ts.Close()
 
 	c := newTestClient(t, ts)
-	if err := c.CancelCommand(context.Background(), "disp-9", "holder-1", "operator aborted"); err != nil {
+	if err := c.CancelCommand(context.Background(), "disp-9", "holder-1", 7, "operator aborted"); err != nil {
 		t.Fatalf("CancelCommand: %v", err)
 	}
 	if gotMethod != http.MethodPost || gotPath != "/api/v2/runtime/commands/disp-9/cancel" {
@@ -234,6 +237,73 @@ func TestCancelCommand_SendsReasonAndIdempotencyKey(t *testing.T) {
 	if gotBody["holder_id"] != "holder-1" {
 		t.Errorf("holder_id body = %v", gotBody)
 	}
+	// ★ fencing_token 必须上线路：ACC 的 holder 围栏不只看 holder_id，
+	// 还要**当前**那把 token；不带 ⇒ 409 lease_fenced（实测 2026-10-25）。
+	if gotBody["fencing_token"] != float64(7) {
+		t.Errorf("fencing_token body = %v, want 7", gotBody["fencing_token"])
+	}
+}
+
+// 不带 token 时**不**往 body 里塞 0：ACC 自己判断要不要围栏，客户端不替它决定。
+func TestCancelCommand_OmitsFencingTokenWhenUnknown(t *testing.T) {
+	var gotBody map[string]any
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &gotBody)
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"ok":true,"data":{}}`)
+	}))
+	defer ts.Close()
+
+	c := newTestClient(t, ts)
+	if err := c.CancelCommand(context.Background(), "disp-9", "holder-1", 0, "no token known"); err != nil {
+		t.Fatalf("CancelCommand: %v", err)
+	}
+	if _, present := gotBody["fencing_token"]; present {
+		t.Errorf("fencing_token must be omitted when unknown, body = %v", gotBody)
+	}
+}
+
+// GetCommand 读回 ACC 报的**当前**围栏 token（取消路径要用它）。
+func TestGetCommand_ParsesEnvelopeAndFencingToken(t *testing.T) {
+	var gotPath, gotMethod string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotMethod = r.URL.Path, r.Method
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"ok":true,"data":{"dispatch_id":"disp-9","status":"running","fencing_token":7,"agent_id":"opencode"}}`)
+	}))
+	defer ts.Close()
+
+	c := newTestClient(t, ts)
+	cmd, err := c.GetCommand(context.Background(), "disp-9")
+	if err != nil {
+		t.Fatalf("GetCommand: %v", err)
+	}
+	if gotMethod != http.MethodGet || gotPath != "/api/v2/runtime/commands/disp-9" {
+		t.Fatalf("method/path = %s %s", gotMethod, gotPath)
+	}
+	if cmd.FencingToken != 7 {
+		t.Errorf("FencingToken = %d, want 7", cmd.FencingToken)
+	}
+	if cmd.Status != "running" || cmd.DispatchID != "disp-9" || cmd.AgentID != "opencode" {
+		t.Errorf("command = %+v", cmd)
+	}
+}
+
+func TestGetCommand_RequiresCommandID(t *testing.T) {
+	hit := false
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hit = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+	c := newTestClient(t, ts)
+	if _, err := c.GetCommand(context.Background(), "  "); err == nil {
+		t.Fatal("expected a validation error for an empty command id")
+	}
+	if hit {
+		t.Fatal("an empty command id must not reach the wire")
+	}
 }
 
 func TestCancelCommand_RequiresCommandID(t *testing.T) {
@@ -245,7 +315,7 @@ func TestCancelCommand_RequiresCommandID(t *testing.T) {
 	defer ts.Close()
 
 	c := newTestClient(t, ts)
-	if err := c.CancelCommand(context.Background(), "", "holder-1", "x"); err == nil {
+	if err := c.CancelCommand(context.Background(), "", "holder-1", 0, "x"); err == nil {
 		t.Fatal("expected validation error")
 	}
 	if hit {
@@ -261,7 +331,7 @@ func TestCancelCommand_HTTPErrorWraps(t *testing.T) {
 	defer ts.Close()
 
 	c := newTestClient(t, ts)
-	err := c.CancelCommand(context.Background(), "disp-1", "holder-1", "late")
+	err := c.CancelCommand(context.Background(), "disp-1", "holder-1", 0, "late")
 	if err == nil {
 		t.Fatal("expected error")
 	}

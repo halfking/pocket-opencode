@@ -123,12 +123,87 @@ func (c *Client) AnswerPermission(ctx context.Context, d PermissionDecision) err
 	return discard(resp)
 }
 
+// Command is the ACC runtime-control view of one dispatched command.
+//
+// FencingToken is the token the CURRENT lease holder must present when it
+// acts on the command (cancel/start/heartbeat/complete). It changes on every
+// lease acquisition, so it can only be read — never cached — right before the
+// action that needs it.
+type Command struct {
+	DispatchID   string `json:"dispatch_id"`
+	RunID        string `json:"run_id"`
+	TaskID       string `json:"task_id"`
+	AgentID      string `json:"agent_id"`
+	Status       string `json:"status"`
+	FencingToken uint64 `json:"fencing_token"`
+	CancelState  string `json:"cancel_state"`
+	ErrorCode    string `json:"error_code"`
+}
+
+// commandEnvelope is ACC's {"ok":true,"data":{...}} wrapper.
+type commandEnvelope struct {
+	OK   bool            `json:"ok"`
+	Data json.RawMessage `json:"data"`
+}
+
+// GetCommand reads GET /api/v2/runtime/commands/{command_id}.
+//
+// Why it exists: ACC's holder-fenced endpoints (cancel among them) reject a
+// request whose fencing_token is not the CURRENT one. Pocketd holds the
+// holder id (it is the lease holder that bound the task) but not the token,
+// and the token is not part of the task row — it moves with every lease
+// acquisition. So the only correct way to act on a command is to read the
+// command first and act with the token it reports right now.
+//
+// Measured (2026-10-25, live ACC + live daemon): cancelling WITHOUT the
+// token answers HTTP 409 {"code":"lease_fenced","message":"orchestration:
+// stale fencing token"} and the dispatched run then dies of `agent_busy`
+// after its slot wait times out — i.e. the operator asked to stop and the
+// system answered "busy, retry later". With the token read from this
+// endpoint the same cancel answers 200 and the run lands `cancelled`.
+func (c *Client) GetCommand(ctx context.Context, commandID string) (Command, error) {
+	if err := c.ready(); err != nil {
+		return Command{}, err
+	}
+	if strings.TrimSpace(commandID) == "" {
+		return Command{}, errors.New("accruntime: get command: command_id is required")
+	}
+	resp, err := c.http.Get(ctx, "/api/v2/runtime/commands/"+url.PathEscape(commandID), nil)
+	if err != nil {
+		return Command{}, fmt.Errorf("accruntime: get command %s: %w", commandID, err)
+	}
+	raw, err := readAll(resp)
+	if err != nil {
+		return Command{}, fmt.Errorf("accruntime: get command %s: %w", commandID, err)
+	}
+	var env commandEnvelope
+	if err := json.Unmarshal(raw, &env); err != nil {
+		return Command{}, fmt.Errorf("accruntime: get command %s: decode: %w", commandID, err)
+	}
+	body := env.Data
+	if len(body) == 0 {
+		// Some deployments answer with the command at the top level.
+		body = raw
+	}
+	var cmd Command
+	if err := json.Unmarshal(body, &cmd); err != nil {
+		return Command{}, fmt.Errorf("accruntime: get command %s: decode data: %w", commandID, err)
+	}
+	return cmd, nil
+}
+
 // CancelCommand posts POST /api/v2/runtime/commands/{command_id}/cancel
-// with a {"holder_id","reason"} body. ACC's cancel endpoint is
-// holder-fenced: an empty holderID fails client-side (fail-closed, no wire
-// call). The Idempotency-Key header is "pocket-cancel-"+commandID so ACC's
-// orchestration plane dedupes retries of the same cancel intent.
-func (c *Client) CancelCommand(ctx context.Context, commandID, holderID, reason string) error {
+// with a {"holder_id","fencing_token","reason"} body. ACC's cancel endpoint
+// is holder-fenced: an empty holderID fails client-side (fail-closed, no wire
+// call), and a fencing token that is not the current one is rejected by ACC
+// with HTTP 409 lease_fenced. The Idempotency-Key header is
+// "pocket-cancel-"+commandID so ACC's orchestration plane dedupes retries of
+// the same cancel intent.
+//
+// fencingToken == 0 means "no token presented" — the wire call still happens
+// and ACC decides. Callers that can read the command should pass the token
+// GetCommand reported (see its doc for the measured failure without it).
+func (c *Client) CancelCommand(ctx context.Context, commandID, holderID string, fencingToken uint64, reason string) error {
 	if err := c.ready(); err != nil {
 		return err
 	}
@@ -139,9 +214,12 @@ func (c *Client) CancelCommand(ctx context.Context, commandID, holderID, reason 
 		return errors.New("accruntime: cancel command: holder_id is required (holder-fenced endpoint)")
 	}
 	headers := map[string]string{"Idempotency-Key": "pocket-cancel-" + commandID}
+	body := map[string]any{"holder_id": holderID, "reason": reason}
+	if fencingToken > 0 {
+		body["fencing_token"] = fencingToken
+	}
 	resp, err := c.http.Post(ctx,
-		"/api/v2/runtime/commands/"+url.PathEscape(commandID)+"/cancel", headers,
-		map[string]string{"holder_id": holderID, "reason": reason})
+		"/api/v2/runtime/commands/"+url.PathEscape(commandID)+"/cancel", headers, body)
 	if err != nil {
 		return fmt.Errorf("accruntime: cancel command %s: %w", commandID, err)
 	}

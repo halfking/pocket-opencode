@@ -808,12 +808,25 @@ type AccSession struct {
 
 // ListSessions 按 task_id 拉 ACC 已上报会话。
 type AccRunEvent struct {
-	EventID   string          `json:"event_id"`
-	EventType string          `json:"event_type"`
-	TenantID  string          `json:"tenant_id"`
-	RunID     string          `json:"run_id"`
-	TaskID    string          `json:"task_id,omitempty"`
-	Sequence  uint64          `json:"sequence"`
+	EventID   string `json:"event_id"`
+	EventType string `json:"event_type"`
+	TenantID  string `json:"tenant_id"`
+	RunID     string `json:"run_id"`
+	TaskID    string `json:"task_id,omitempty"`
+	Sequence  uint64 `json:"sequence"`
+	// DispatchID is the ACC command (dispatch) the event belongs to. It
+	// appears on every dispatch.* event and is what a cancel must target.
+	//
+	// It was NOT decoded before (2026-10-25): the struct only carried the
+	// event envelope, so the one canonical id a stop needs was thrown away
+	// even though ACC puts it right there in the payload.
+	DispatchID string `json:"dispatch_id,omitempty"`
+	// ActorID/ActorType identify who acted: for dispatch.leased and
+	// dispatch.started, ActorID is the **runtime-control lease holder**
+	// (the companion runtime id) — the other half of the holder fence.
+	ActorID   string `json:"actor_id,omitempty"`
+	ActorType string `json:"actor_type,omitempty"`
+	NewState  string `json:"new_state,omitempty"`
 	Payload   json.RawMessage `json:"payload,omitempty"`
 }
 
