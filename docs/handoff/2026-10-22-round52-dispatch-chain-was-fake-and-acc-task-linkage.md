@@ -2375,3 +2375,144 @@ task-71ca93dcd99dc72b19e904b7922e153d|ws_user-admin|cancelled|acc|dispatch_baaf1
    模拟器 shell 一度无响应 ⇒ 设备侧全量复跑（13 条流）**没有**在本轮重跑，
    第四轮那次的读数（13/13 全绿）仍是最新的一轮全量基线。本轮新增的
    `.maestro/acc-delegate-stop.yaml` 是在负载回落后单独跑绿的。
+
+---
+
+## 21. 批判式审计轮（四）：审批环的最后一跳 —— 「委托给 ACC」的任务**能自己跑完**了（2026-10-26 00:30–03:30）
+
+### 21.0 这一轮查到什么（**根因在 ACC，不在 openpocket**）
+
+上一轮把「委托给 ACC」「停止任务」打通了，但留下一个没被验证的缺口：
+**委托出去的任务一旦碰到需要人工批准的工具，会不会卡死？**
+
+实测（权威 ACC `http://100.106.67.198:4101`，探针 `deliverables/acc-permission-probe.py`）：
+
+```
+[Q1] GET  /api/v2/runtime/commands/{dispatch}/permission -> 404
+[Q1] POST /api/v2/runtime/commands/{dispatch}/permission -> 404
+```
+
+**404 而不是 405** ⇒ 路由**根本不存在**。旁证：`acc-go` 的
+`internal/httpapi/handlers/runtime_control_native.go` 注册了
+`/commands/:id` 的 start / heartbeat / complete / cancel / cancel-ack / receipts，
+**没有** `/permission`。
+
+而 agent-companion 自己的 `docs/ACC_BRIDGE_SPEC.md` 写着
+「companion→ACC：/commands/:id/start|complete|**permission**|cancel-ack」——
+**契约在，实现没有**。
+
+于是故障链是闭合的：
+
+```
+ACC 派单 → daemon 起 run → 智能体要工具审批
+  → daemon POST /commands/{id}/permission → 404
+  → ErrPermissionGateUnavailable → fail-closed 拒绝
+  → run 落 permission_denied
+```
+
+而且**原因被吞掉**：`internal/accbridge/executor.go` 的 `deny` 闭包只 return，
+不写日志；而 facade 的 `decide()` 只在**自己** `deny()` 时才记日志，
+门返回 `Allow=false`（不带 OptionID）时**不记**。
+
+现场（`~/kaixuan/acp/logs/agent-companion.log`）：
+
+```
+22:07:53.933 INFO  the run did not succeed; no product reference declared  error_code=permission_denied
+22:07:53.933 WARN  dispatch execution finished unsuccessfully  elapsed_ms=14159 error_code=permission_denied
+```
+
+这两行之间**没有任何 permission 行** —— 根因不可见。
+
+### 21.1 agent-companion 侧的修法（提交 `b51aa41`）
+
+三件事（详见 `agent-companion/docs/ACC_PERMISSION_ENDPOINT_GAP_2026-10-26.md`）：
+
+1. **deny 原因落日志**：`accbridge permission denied (fail-closed)`，带
+   dispatch_id / tool_call_id / reason。任何合成拒绝都必须可解释。
+2. **ACC 端点「未接线」（404/501）时回退到本地干预队列**
+   （`internal/intervention.Hub`，与 operate 路径同一个）：人应答 ⇒ 放行；
+   没人应答 ⇒ 仍然 fail-closed。ACC 仍是权威：它答了就用它的答，
+   它因其它原因出错 ⇒ **不落本地队列**，直接拒。
+3. **单次权限往返可配**（`AC_PERMISSION_TIMEOUT_MS`，默认 120s）：
+   facade 的 30s 是「机器应答」的量级，人在手机上答不够用。
+
+判据：`internal/accbridge/permission_local_fallback_test.go` 8 条全绿
+（404→本地应答/502→不 fallback/三元组缺失→本地队列 0 次调用/
+本地超时→仍拒/人给的 option 不在智能体选项里→拒/无本地队列→拒/
+ACC 自己答→透传/PermissionTimeout 落到 TaskRequest 上）。
+
+### 21.2 openpocket 侧的最后一跳（提交 `d646ae3d` / `9f8da87f` / `16e60897`）
+
+daemon 把待批项停进自己的队列之后，**App 必须能看见并应答它**：
+
+* `CompanionClient.ListInterventions` / `DecideIntervention`
+  （daemon 的 `/api/v1/interventions` + `/interventions/{id}/decision`）。
+  ★ daemon 的读面字段是 **camelCase**：读成 snake_case 会得到一行全零的、
+  用户看不懂也答不了的记录。
+* 新路由 `GET /api/acc/approvals`、`POST /api/acc/approvals/{id}/decision`。
+  companion 没配置 ⇒ **503**（不是 200+空列表：「没接线」与「没有待批项」
+  是两件事）；daemon 读不到 ⇒ 502。
+* App 新增「ACC 待批」卡片（允许一次 / 拒绝，5s 轮询）。
+  ★ option id **必须**取智能体给过的那一个（daemon 逐个比对，自造的一律拒；
+  daemon 又按 option 的 **kind** 决定允许还是拒绝）⇒ 挑不到就不渲染那个按钮
+  （渲染一个必然被拒的按钮是假动作）。
+* ★ **委托出来的任务此前没有任何状态来源**：ACC 的看板清单**不含**它
+  （委托建的是 `kind='agent_task/opencode'`），而清单里的行连 `status`
+  字段都没有 ⇒ 卡片永远停在「进行中」。权威终态只在命令面
+  ⇒ 新增 `ListACCBoundActiveTasks` + 15s 一跳的独立回填节拍；
+  回填**广播** `task_updated`（否则卡片要等用户下拉刷新才变）。
+* 本地任务状态词汇加 `failed`：ACC 的失败此前只能被写成 `cancelled`
+  （说成「用户取消了」）或留在 `active`（假的「还在跑」）—— 两种都是错的说法。
+
+### 21.3 真机流（`.maestro/acc-approval.yaml`）与它踩到的**三处判据缺陷**
+
+第一版这条流跑出来是**红的**，但红的不是产品：
+
+1. **假绿**：flow 断言 `visible: "maestro-acc-approve"` 匹配到的是
+   **弹窗输入框里的文字** —— 委托请求压根没发出去（PG 里没有那一行）。
+   ⇒ 现在先断言弹窗已关（`notVisible: "^委托给 ACC$"`），再断言任务卡片。
+2. **坐标失效**：弹窗里多一块「ACC 生态」内容 ⇒ sheet 变高到顶满屏
+   （实测 sheet 顶部从 y≈1200 变成 y=0，标题输入框从 y≈1350 移到 y≈324）
+   ⇒ 56% 那个坐标戳到了「描述」框，标题空着 ⇒ 提交按钮是禁用的。
+   ⇒ 把 ACC 生态整块**移出弹窗**；这条流不再自己点「委托 ACC」
+   （那条设备链路由 `acc-delegate-stop.yaml` 覆盖），改由夹具
+   `scripts/acc-approval-fixture.mjs` 用 API 造前提。
+3. **同名选择器**：弹窗标题与提交按钮**同名**（都叫「委托给 ACC」），
+   Maestro 按文本匹配会选中标题（实测点在 y=31）⇒ 提交按钮点不到。
+
+还有两处**夹具注册**的坑：`.maestro-flows.json` 里那条 flow 一度是普通字符串
+而不是带 `fixture` 的对象 ⇒ harness 不会造前提 ⇒ 流红在一个「本就不该红」
+的地方。已补回并登记。
+
+### 21.4 本轮**顺手修掉**的两条**上游门禁红**（都是上一轮我自己的提交带进去的）
+
+* `check:dead-api`：`accTasks.ts` 的 `listAccTasks` / `listAccSessions`
+  **导出了却没有任何调用方** ⇒ 门禁判「新增死能力」⇒ origin/main 上就是红的。
+  ⇒ 按需求（「获取到当前的会话和任务等信息」）**接上 UI**（委托面板旁的
+  「ACC 生态」区块），而不是删导出。
+* `check:raw-error`：`TasksView.vue` 的 `toast.error(e?.message ? …)`
+  是原始错误上屏 ⇒ 改成 `apiError(e, 'errors.operateFailed')`。
+
+另：`§947` 丢弃点台账（计数不裸丢）与 `§952` 普查条数（新增一个有界 decode）
+同步更新，`repohygiene` 绿。
+
+### 21.5 遗留风险（**诚实清单**）
+
+1. **ACC 侧仍欠两个端点**：`GET /api/v2/runtime/permissions`（待批清单）与
+   `POST /api/v2/runtime/permissions/{id}/decision`（应答，并解掉 daemon
+   那个挂着的 POST）。**没有实现、没有部署、没有验证** —— 本机到 `.211`
+   没有 SSH（实测 `Permission denied (publickey,password)`）。
+   本轮的兜底让功能今天就能用，但**治理面仍在 ACC 那边欠着**。
+2. **审批权从 ACC 挪到了 daemon 自己的队列**：这是「ACC 这一版没有这个
+   端点」时的**降级路径**，不是「设计如此」。ACC 补上端点后应切回。
+3. **设备侧只在本机 AVD（emulator-5556）验证**：5554 是并行会话的；
+   本轮中途设备弹过 ANR（`Process system isn't responding`，
+   system 与 App 双弹），重启模拟器后恢复。宿主 load1 一度到 25.25。
+4. **`daemon` 的 run 历史仍会被驱逐**：`/api/v1/runs` 实测会变成
+   `{"runs":null,"total":0}`（进程没重启）⇒ 事后查某条派单当时怎么了，
+   只能靠 ACC 的事件/命令面。
+5. **`/api/acc/approvals` 没有按 workspace 过滤**：daemon 是单机单租户的，
+   目前成立；一旦多租户共用 daemon，这条面要加租户边界。
+6. **本轮没有重跑设备侧全量 13 条流**：只跑了新增的 `acc-approval.yaml`
+   与受影响的 `acc-delegate-stop.yaml`；全量基线仍是第五轮（22:28–22:39）
+   的读数。
