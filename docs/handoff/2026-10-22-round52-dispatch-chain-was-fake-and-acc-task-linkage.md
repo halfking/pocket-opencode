@@ -541,7 +541,7 @@ after 3600000ms`），**不是测试失败**（当时 FAILED=0）。改成 4 组
 
 ## 10. agent-companion 侧另查出一条**真缺陷**：被叫停的派单被报成 `agent_busy`
 
-这条**不在 openpocket 侧**，是在 §9 复验时用**真 agent 演练**（§14 第 2 步：
+这条**不在 openpocket 侧**，是在 §9 复验时用**真 agent 演练**（§15 第 2 步：
 `cmd/live-e2e`，真 opencode + 真模型）跑出来的：演练的 **cancel 段**在同一个 commit 上
 **4 次里 2 次红**，报错是：
 
@@ -837,7 +837,63 @@ GET /api/acc/sessions → 32
 
 ---
 
-## 14. 复现命令
+## 14. 交付前的**当前态复验**（2026-10-25）：又查出并修掉一条读错面的口径错误
+
+宿主重启后环境被重置（daemon 重装、pocketd 与模拟器都没了），按 §12 的口径把现场恢复起来
+再复验一遍 —— 这一轮**又查出一条真问题**（§13），并把两个部署面的配置补齐。
+
+### 14.1 恢复现场时补齐的配置（**部署面**，不在仓库）
+
+| 项 | 值 | 为什么 |
+|---|---|---|
+| `POCKET_ACC_RUNTIME_URL` | `http://127.0.0.1:4101` | ACC Runtime Control 基址；不设则 `/api/acc/*` 报 503 "ACC runtime client not configured" |
+| `POCKET_ACC_CONTROL_SECRET` | daemon 的 `ACC_AUTH_TOKEN_SECRET` | HS256 服务 JWT 的签名密钥 |
+| `POCKET_MCP_BASE_URL` / `POCKET_MCP_TENANT_ID` / `POCKET_MCP_API_KEY` | `http://127.0.0.1:4101/api/v2/mcp` / `tenant-a` / 同上密钥 | ACC MCP 面（会话列表走它）；不设则 `/api/acc/sessions` 报 503 "ACC MCP client not configured" |
+| daemon `AC_ADVERTISE_URL` | `http://host.docker.internal:12110` | 让 ACC **回连** daemon 读面（见 §13.3） |
+
+### 14.2 复验读数（当前态）
+
+| 面 | 读数 | 判定 |
+|---|---|---|
+| ACC `agents` | **36–37**（活的 kind/status：mmcode 1 / mmcode-helper 9 / zcode 1 / zcode-cli 24 / opencode 1） | ✅ §13 修完后 |
+| ACC `tasks` / `projects` / `sessions` | 9 / 1 / 32 | ✅ |
+| daemon `/api/v1/agents` / `/api/v1/runtime/agents` | 43 / 42 | ✅ |
+| agent-companion 会话电池（71 条） | **69–70 / 71** | ⚠️ 红的不是产品：见下 |
+| Maestro 13 条流 | 沿用 §12 的 13/13、285 步 0 FAILED | ⚠️ 本轮**没能补跑**，见 §14.3 |
+
+电池那 1–2 条红（连跑两次红的不一样）：
+
+- **A11**「second manifest read is served fast (cache hit)」1528ms —— 纯**延迟**断言，
+  宿主负载 ~520 下的必然结果；
+- **B8 / B15**「after_seq window / tail rows are the true tail」—— 判据**自身**的竞态：
+  它先读一次全量 transcript（`seqs`），再读一次窗口/尾部，两次读之间 daemon 追加了
+  事件 ⇒ 窗口比快照的尾部更新 ⇒ 报红（两次跑的 seq 数字还在往前挪：129→132）。
+  两次读之间**没有任何**代码路径被改过（这两条判据读的是 events 面，不在我改的
+  agent_slot / acp_driver / executor 上）。
+
+### 14.3 本轮**没能补跑**设备侧 Maestro —— 如实登记
+
+宿主负载长期在 **460–600**（并行会话的 `stress-gate.sh` 已连跑 **1 天 11 小时**，
+4 个 worker 各 ~80% CPU）。实测在这个负载下：
+
+- `adb reverse --list` 一次往返 **>91 秒**（harness 的 preflight 只给 15 秒超时），
+  于是 preflight 稳定报「补建失败：spawnSync adb ETIMEDOUT」并 **exit 3**
+  —— **一条 flow 都没跑**（不是测试失败，是没跑起来）；
+- 我自己的 5556 模拟器被并行会话的清理动作杀掉过两次（同一 AVD 不能起两份，
+  第二份直接 FATAL），期间还因为 `adb kill-server` 掉成 offline。
+
+⇒ **不是产品问题，也不改断言**：修它要动并行会话的压测（那是他们的工作，不该我停）。
+待宿主负载回落后，用 §14 的命令重跑 13 条流即可复核（命令见 §15）。
+
+### 14.4 这一轮的净产出
+
+- **查出一条真缺陷并修掉**：ACC 智能体清单读错面（§13，提交 `5e804612`）；
+- **补齐两个部署面配置**：ACC Runtime/MCP 客户端 + daemon 读面广告地址（§14.1）；
+- **把「在线却显示 0 个」这类假象钉成可复现的判据**：报告 §13 的两面读数对照表。
+
+---
+
+## 15. 复现命令
 
 ```bash
 # 1) agent-companion 会话电池（71 条）
