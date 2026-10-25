@@ -1120,9 +1120,10 @@ curl -s -m 120 -X POST http://127.0.0.1:12110/api/v1/native/sessions -H 'Content
 # 期望（当前行为）：20 秒后 500 agent_busy；期间 GET /api/v1/runs 里**看不到**这条派单
 ```
 
-⇒ 建议修法（本轮**未实施**，理由见 §16.6）：把「排队中」也注册进 run 表 + 给一个可取消的
-pending handle，并让 create/operate 面在**抢槽位之前**就把 runId 交给客户端
-（202 + runId，抢槽位放到后台），否则操作员永远拿不到可以按停的那个 id。
+⇒ **本轮已修**（见 §17.1）：把「排队中」也注册进 run 表 + 给它一个可取消的 pending handle，
+并让 create/operate 面支持**客户端预置 runId**（省略时行为与从前逐字节相同）。
+⇒ 修完后的契约与判据见 §17.1 与 agent-companion 侧
+`docs/QUEUED_DISPATCH_CANCEL_2026-10-25.md`。
 
 ### 16.5 读面活体验证：§13 那个洞在数据源这一侧确实闭合了
 
@@ -1156,19 +1157,146 @@ ACC 容器此刻已被拆除，**v2 那一跳走不通**；但 ACC 回连时透�
 
 ### 16.7 本轮**未完成**的事（如实登记，不得当成已通过）
 
-1. **设备侧 13 条 Maestro 全量复跑：本轮未完成**。宿主负载 115–224、emulator-5556 的 adb
-   往返 >25 秒无响应（qemu 抢不到 CPU）。已把批跑改成**带负载闸门 + 时间戳日志**的
-   `audit-batch2.sh` 并挂在后台，负载回落后自动开跑 —— **这是待办，不是绿灯**。
-   上一轮报告 §12.1 那句「285 步 0 FAILED / 连抖动都没触发」也据此订正：
+1. **设备侧 13 条 Maestro 全量复跑：本轮已完成**（16:17:30 开跑，见 §17.2）。
+   宿主负载在开跑前一度到 224，批跑带**负载闸门**（`load1 < 25` 才开跑）+ **时间戳日志**
+   （不覆盖），负载回落后自动开跑。
+   上一轮报告 §12.1 那句「285 步 0 FAILED / 连抖动都没触发」已据此订正：
    tasks-crud 曾红过一次（环境所致），且**重跑覆盖日志**使事后不可追溯。
 2. **ACC 那一跳的端到端验证：本轮无法完成**（容器被并行会话拆除）。§16.5 只验证了
    数据源侧与折叠逻辑，**不等于**「openpocket 经 ACC 取数」整体通过。
-3. **§16.4.3 的缺口未修**（排队中的派单不可见、不可停）。本轮**没有**动手改：
-   agent-companion 的主工作区正被并行会话占用（大量 staged 改动），贸然改同一批文件
-   会把两边的改动搅在一起；正确做法是另起 worktree 改 + 回归 + 再并，且需要决策
-   「create 面是否改为先返 202+runId」这一 API 契约问题。
+3. **§16.4.3 的缺口已修**（§17.1）：另起 worktree 改 agent-companion，回归测试
+   「修复前红 / 修复后绿」，已合并进 agent-companion 的 main。
+   ⚠️ 但**没有**改「create 面先返 202+runId」这个 API 契约 —— 那是另一个决策，
+   本轮只做了「客户端可预置 runId」与「排队中的派单进 run 表」两件事。
 4. **run 历史不跨 daemon 重启**：实测并行会话 15:35 重启 daemon 后，正在跑的 run 被打断，
    `GET /api/v1/runs/<id>` 返回 `{"message":"run not found"}`（内存表 `finishedRuns` 随进程消失）。
    本轮第一次「继续」测试就是这样丢的（已由 §16.4 的自证纪律抓到并重跑）。
 5. 本机**没有 USB Android 真机**，设备侧仍是 AVD `emulator-5556`（`pocket-test`）。
 6. `mmcode`（minimax-code）仍**只可观测**（执行层白名单不含它），不能被派单。
+7. **线上 daemon 仍是并行会话的构建**（`0.1.0-d99eb26`）：本轮的 agent-companion 修复
+   落在 main 上，**没有**替换线上实例（替换会打断并行会话的工作）⇒
+   §17.1 的修复的**线上读数**要在下次部署后才成立；本轮的可复现证据是
+   「另起实例的演练」与 Go 回归测试。
+
+---
+
+## 17. 审计轮的收口（16:12–16:40）：补上 §16.4.3 的缺口，设备侧全量复跑也补完了
+
+§16 把「上一轮说了什么」逐条核了一遍，抓到 1 条真缺口 + 1 场环境事故。本节是这一轮的
+**净产出**：缺口已修（§17.1），设备侧全量复跑已完成（§17.2），两个仓库都已合并进 main 并推送（§17.3）。
+
+### 17.1 agent-companion：排队中的派单现在**看得见、停得掉**
+
+| 项 | 内容 |
+|---|---|
+| 提交 | `4f26473`（fix）→ `609f8cc`（merge）⇒ agent-companion `origin/main` = **609f8cc** |
+| 改动文件 | `internal/agentfacade/pending_run.go`（新）、`internal/agentfacade/facade.go`、`internal/api/operate.go`、`internal/api/sessions.go`、`cmd/live-e2e/main.go`、`docs/QUEUED_DISPATCH_CANCEL_2026-10-25.md`（新） |
+| 回归测试 | `internal/agentfacade/pending_run_test.go`（3 条）、`internal/api/queued_dispatch_cancel_test.go`（3 条） |
+
+关键行为：
+
+1. **排队窗口是一等公民**：`facade.Start` 在**抢槽位之前**就把这条派单登记进 run 表
+   （状态 `queued`），并给它一个自己的 `RunHandle`（`pendingRun`）——
+   `Cancel` 幂等地取消槽位等待并**立刻**落终态 `cancelled`；落终态后留 2 分钟再撤下
+   （否则操作员刚按完停止就收到 404，等于告诉他「没停掉」）。
+2. **客户端可以预置 runId**（请求体新增可选 `runId`）：省略时行为与从前**逐字节相同**；
+   带上时服务端用它当这条派单的 id ⇒ 客户端在 POST 还没返回时就知道该按停哪个。
+   形状必须 `run-` + `[A-Za-z0-9_-]`（≤80），且**不许与在跑的 run 撞号**。
+3. **被叫停 ⇒ 明确的 `cancelled`**：REST 面回 **409** + `{"code":"cancelled"}`；
+   账本（M-10）落 `operations.StatusCancelled` 而不是 `StatusFailed`
+   —— 说 failed 意味着「可重试」，会把被停掉的任务又跑起来。
+4. **取消回执留存**：停止之后 `GET /api/v1/runs/:id` 仍答得出「它被停掉了」（1 小时 TTL）。
+
+判据（**修复前红 / 修复后绿**，同一批测试在两棵树上各跑一次）：
+
+| 判据 | 修复前 | 修复后 |
+|---|---|---|
+| `TestQueuedDispatchIsVisibleInTheRunTable`（facade） | 红 | ✅ |
+| `TestQueuedDispatchCanBeCancelled`（facade：取消 ⇒ `context.Canceled`，**不是** `ErrAgentBusy`） | 红 | ✅ |
+| `TestCancellingAQueuedDispatchTwiceIsIdempotent`（facade） | 红 | ✅ |
+| `TestQueuedDispatchIsDiscoverableAndStoppable`（API：列表里找得到、能按停、派单回 409 `cancelled`） | **红**：`the queued dispatch is not in GET /api/v1/runs`；20 秒后 `agent_busy` | ✅ |
+| `TestQueuedDispatchIsVisibleAndStoppable`（API：预置 runId 直接按停） | **红**：`never answered 200` | ✅ |
+| `TestDispatchRejectsABadClientRunID`（API：坏 runId 被拒） | — | ✅ |
+
+⚠️ **一条必须说清的诚实定位**：`cmd/live-e2e` 新增的 `queuedcancel` 演练段在
+**修复前与修复后都是绿的** —— 因为 ACC 命令循环那条路**本来就通**（取消帧经
+`CancelRegistry` 取消执行上下文 ⇒ `Facade.Start` 拿到 `context.Canceled` ⇒ 落 `cancelled`）。
+它因此是**回归护栏**，**不是**本次修复的判据；本次修复的判据是上面那两条 API 测试
+（它们在修复前是红的）。这一条也反过来印证了 §16.4.3 的判断：
+**该缺口在 REST 面上，不在 ACC 面上**。
+
+⇒ 全量回归：`cd agent-companion && go test ./...` ⇒ **56 包全绿、0 失败**（合并后的树同样 56/0）。
+
+### 17.2 设备侧 13 条 Maestro 流：全部复跑完成（16:17:30 开跑）
+
+批跑脚本换成 `audit-batch2.sh`：**负载闸门**（`load1 < 25` 才开跑）+ **时间戳日志**（不覆盖）。
+开跑前宿主负载一度到 224（并行会话的 `emulator-5554` 单进程 200–534% CPU），
+闸门等到 16:17:30 负载降到 23.68 才开跑。
+
+| 组 | flow | 步数 | 结果 | 日志 |
+|---|---|---|---|---|
+| A | `smoke-login` / `notes-crud` / `tasks-crud` | 63 | ✅ exit=0，**FAILED=0** | `audit-A-20261025-161730.log` |
+| B | `meetings-entry` / `messages-hub` / `more-grid-reach` | 69 | ✅ exit=0，**FAILED=0** | `audit-B-20261025-162141.log` |
+| C | `more-entries-open` / `email-accounts` / `email-browse` | 92 | ✅ exit=0（见下） | `audit-C-20261025-162435.log` |
+| D | `settings-llm-gateway` / `flashcards-write` | 55 | ✅ exit=0，**FAILED=0**（补跑） | `audit-D-rerun-20261025-163406.log` |
+| — | `2026-10-02-real-login` | 12 | ✅ exit=0 | `audit-login-real-20261025-163107.log` |
+| — | `login-gesture`（故意错口令） | 16 | ✅ exit=0 | `audit-login-gesture-20261025-163228.log` |
+
+**13/13 全绿**（11 条主包流 + 2 条登录流），累计 **307 步 COMPLETED**。
+
+三件必须写清楚的事：
+
+1. **C 组的 4 处 FAILED 是设备级 a11y 抖动，不是产品缺陷**：`email-accounts` 的
+   `Assert that "邮箱设置" is visible` 两次耗尽自己的 timeout（25.9s / 27.8s vs 25s），
+   护栏**原样重跑同一条 flow、同样的断言**（不放宽任何断言），第 3 次通过。
+   **这次日志把失败痕迹留住了**（时间戳文件名，不覆盖）—— 这正是 §16.1 里那条
+   取证纪律的产出：上一轮同样的事情被重跑覆盖掉了，事后根本数不出红过几次。
+2. **D 组第一次 exit=1 的根因是部署面参数，不是产品缺陷**：闪卡夹具
+   `scripts/flashcards-test-fixture.mjs` 通过宿主上的 `psql` **shim**（`~/.local/bin/psql`，
+   因为本机没装 PG 客户端）转发到 docker 容器，shim 的容器名默认 `acc-pg17` ——
+   而那个容器已被并行会话删除（本轮恢复的 PG 刻意改名 `ac-audit-pg17`，
+   避免两个 postmaster 共用一个 PGDATA）。**shim 支持 `PSQL_CONTAINER` 覆盖** ⇒
+   带上它补跑即绿（exit=0、FAILED=0，闪卡「今日待复习 1 张」「^开始复习$ enabled」都过）。
+   ⇒ **仓库代码没有因为这件事改动一行**；这是**环境/部署面**的一条，值得写进部署清单。
+3. **设备又被并行会话清理掉过两次**（`emulator-5556` 消失 ⇒ `adb: device 'emulator-5556' not found`），
+   重启 AVD（`-no-snapshot-load`）+ 重建 `adb reverse tcp:18099/18097` 后继续。
+
+### 17.3 本轮两个仓库的提交 / 合并 / 推送
+
+| 仓库 | 分支/提交 | 远端状态 |
+|---|---|---|
+| openpocket | `255f1bc3`（把 `fix/acc-runtime-service-jwt` 合并进 main，**无冲突**）+ `3c7f33f9`（§16 审计轮文档） | `origin/main` = **3c7f33f9** |
+| agent-companion | `4f26473`（排队中的派单可停）+ `609f8cc`（合并进 main） | `origin/main` = **609f8cc** |
+
+两个仓库都**没有**在并行会话占用的主工作区里操作：
+openpocket 用 `/tmp/op-merge`、agent-companion 用 `/tmp/ac-fix2` 两个临时 worktree
+从 `origin/main` 合并后推送，主工作区（openpocket 的 3 个 skipaudit 文件、
+agent-companion 的大量 staged 改动）**一个字节都没被碰**。
+
+回归与门禁：
+
+| 检查 | 读数 |
+|---|---|
+| openpocket `cd backend && go test ./...`（我的分支） | **65 包全绿、0 失败** |
+| openpocket `cd backend && go test ./...`（合并后的树） | **65 包全绿、0 失败** |
+| openpocket 三道门禁（`check-maestro-flows` / `check-doc-section-number-uniqueness` / `check-doc-ref-integrity`） | **全部 exit=0** |
+| agent-companion `go test ./...`（修复树 / 合并后的树） | **56 包全绿、0 失败**（两份都跑过） |
+| agent-companion `go run ./cmd/live-e2e -fixture-agent -phases queuedcancel` | **LIVE_E2E_OK** |
+
+### 17.4 遗留风险（更新 §16.7 的第 1、3、7 条）
+
+- ✅ 设备侧 13 条 Maestro 全量复跑：**已完成**（§17.2）。
+- ✅ §16.4.3 的缺口：**已修并合并进 main**（§17.1）。
+- ⚠️ **线上 daemon 仍是并行会话的构建**（`0.1.0-d99eb26`）：本轮的 agent-companion 修复
+  **没有**替换线上实例（替换会打断并行会话正在做的事）⇒ §17.1 的**线上读数**
+  要等下次部署后才成立；本轮的可复现证据是「另起实例的演练」+ Go 回归测试。
+- ⚠️ **ACC 那一跳仍未端到端复验**（容器被并行会话拆除，本轮未能恢复）：
+  §16.5 只验证了数据源侧与折叠逻辑。
+- ⚠️ **create 面仍然阻塞**：派单是同步抢槽位的，POST 要等槽位空闲（或被叫停）才返回。
+  本轮**没有**改这个契约（改它意味着「派单失败」从 HTTP 错误变成 run 终态，属 API 契约变更）。
+- ⚠️ **run 历史不跨 daemon 重启**（内存表随进程消失）。
+- ⚠️ 本机**没有 USB Android 真机**（仍是 AVD `pocket-test`）。
+- ⚠️ `mmcode`（minimax-code）仍**只可观测**，不能被派单。
+- ⚠️ **环境面新登记一条**：宿主上的 `psql` shim 默认容器名 `acc-pg17`，
+  PG 容器换名/被删就会让**闪卡夹具**整条 flow 被跳过（不是测红，是没测）。
+  建议把 `PSQL_CONTAINER` 写进部署清单。
