@@ -205,3 +205,87 @@ func TestListAgents_HTTPErrorIsNotEmptyList(t *testing.T) {
 		t.Fatal("want error on HTTP 500, got nil")
 	}
 }
+
+// ── 运行时清单面（2026-10-25 实测新增）───────────────────────────────
+//
+// ACC 的**注册表**（/api/v2/agents）在 acc-go 容器重启后是空的，而运行时清单
+// （/api/v2/runtime/runtimes/{id}/agents，由 ACC 回连 daemon 读面）是满的 ——
+// 只读注册表会得出「一个智能体都没有」的结论。
+
+// 运行时清单读到的条目是**契约形状**（agent_id/kind/status），必须折进
+// 注册表形状（id/type/status），否则下游拿到的 type/status 整片为空。
+func TestListRuntimeAgents_NormalizesContractShape(t *testing.T) {
+	var paths []string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v2/runtime/runtimes":
+			_, _ = w.Write([]byte(`{"data":[{"runtime_id":"acs-ac30-01"}]}`))
+		case "/api/v2/runtime/runtimes/acs-ac30-01/agents":
+			_, _ = w.Write([]byte(`{"agents":[
+				{"agent_id":"mmcode-81930","kind":"mmcode","status":"running",
+				 "communication_mode":"runtime_observe_only","pid":81930,
+				 "last_active_at":"2026-10-25T10:17:56+08:00",
+				 "capabilities":["ide","agent_runtime"]}
+			]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer ts.Close()
+
+	agents, err := newEcoClient(t, ts).ListRuntimeAgents(context.Background())
+	if err != nil {
+		t.Fatalf("ListRuntimeAgents: %v", err)
+	}
+	if len(agents) != 1 {
+		t.Fatalf("len(agents) = %d, want 1 (%v)", len(agents), paths)
+	}
+	a := agents[0]
+	if a.ID != "mmcode-81930" {
+		t.Errorf("ID = %q, want mmcode-81930", a.ID)
+	}
+	if a.Type != "mmcode" {
+		t.Errorf("Type = %q, want mmcode", a.Type)
+	}
+	if a.Status != "running" {
+		t.Errorf("Status = %q, want running", a.Status)
+	}
+	if a.LastSeenAt != "2026-10-25T10:17:56+08:00" {
+		t.Errorf("LastSeenAt = %q", a.LastSeenAt)
+	}
+	if len(a.Capabilities) != 2 {
+		t.Errorf("Capabilities = %v", a.Capabilities)
+	}
+}
+
+// 一个 runtime 的读面不通（没广告 api_endpoint / 机器下线）**不能**把整张表
+// 清空：其它 runtime 的智能体仍然要列得出来。
+func TestListRuntimeAgents_SkipsUnreachableRuntime(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v2/runtime/runtimes":
+			_, _ = w.Write([]byte(`{"data":[
+				{"runtime_id":"acs-ac30-01"},{"runtime_id":"acs-offline-30"}
+			]}`))
+		case "/api/v2/runtime/runtimes/acs-ac30-01/agents":
+			_, _ = w.Write([]byte(`{"agents":[{"agent_id":"opencode","kind":"opencode","status":"idle"}]}`))
+		default:
+			http.Error(w, "runtime_read_face_unreachable", http.StatusBadGateway)
+		}
+	}))
+	defer ts.Close()
+
+	agents, err := newEcoClient(t, ts).ListRuntimeAgents(context.Background())
+	if err != nil {
+		t.Fatalf("ListRuntimeAgents: %v", err)
+	}
+	if len(agents) != 1 {
+		t.Fatalf("len(agents) = %d, want 1 (the reachable runtime only)", len(agents))
+	}
+	if agents[0].ID != "opencode" {
+		t.Errorf("ID = %q, want opencode", agents[0].ID)
+	}
+}
