@@ -75,44 +75,13 @@ func TestPGTimeEqualTolerance(t *testing.T) {
 	}
 }
 
-// TestPGTruncateFloorsToMicrosecond 钉住 pgTruncate 的两个要点：
-// ① 它是**向下**截断（floor），不是四舍五入（round）；
-// ② 它**只动亚微秒部分**，微秒及以上一字未改。
+// ⚠⚠ §966：原来这里有一条 `TestPGTruncateFloorsToMicrosecond`。
 //
-// ⚠ 为什么「向下」这件事必须有判据（这是 §964 的核心）：
-//
-//	PG 的 timestamptz 用 round-half-to-even（实测 .7µs 进位 / .3µs 舍去）
-//	⇒ 若写入侧也用 round，截断后的值仍可能落在 .5µs 边界上
-//	⇒ PG 存它时**还会再动一次** ⇒ 「内存值 == 库值」这条严格等值就不成立。
-//	⇒ ⇒ 必须**向下**截断（floor）：截断后的值本身没有亚微秒部分
-//	⇒ PG 再存它时不产生任何取整 ⇒ 严格等值成立。
-func TestPGTruncateFloorsToMicrosecond(t *testing.T) {
-	base := time.Date(2026, 10, 21, 19, 14, 55, 346017826, time.UTC)
-	want := time.Date(2026, 10, 21, 19, 14, 55, 346017000, time.UTC)
-
-	// ① 向下截断：.826µs ⇒ 舍去成 .000µs。
-	got := pgTruncate(base)
-	if !got.Equal(want) {
-		t.Fatalf("pgTruncate 必须向下截断到微秒：got %v want %v", got, want)
-	}
-	// ② 负控：若有人把它写成 Round，.826µs 会**进位**成 .346018 ⇒ 上面那条会红。
-	//    这条断言「Round 的结果与 want 不同」⇒ 证明 ① 的取值确实区分了
-	//    「向下」与「四舍五入」（否则 ① 就没有区分度）。
-	if base.Round(time.Microsecond).Equal(want) {
-		t.Fatal("负控：Round 会把 .826µs 进位 ⇒ ① 的 want 取值本身就错了")
-	}
-	// ③ 微秒及以上部分必须**一字未动**（不得截到秒/毫秒去）。
-	if got.Unix() != base.Unix() {
-		t.Fatalf("pgTruncate 不得改动秒级部分：got %v want %v", got.Unix(), base.Unix())
-	}
-	if got.Nanosecond()%1000 != 0 {
-		t.Fatalf("pgTruncate 后仍带亚微秒部分：%v", got.Nanosecond()%1000)
-	}
-	// ④ 负控：截到**毫秒**去是另一种结果 ⇒ 证明 ③ 的两个取值确实不同。
-	if base.Truncate(time.Millisecond).Equal(got) {
-		t.Error("负控：Truncate(毫秒) 必须与 pgTruncate 不同 —— 否则 ③ 没有区分度")
-	}
-}
+//	它的覆盖面（向下截断 / 只动亚微秒部分 / 两条负控）**逐字搬到**
+//	`internal/pgtime` 包的 `TestTruncateFloorsToMicrosecond` —— 因为
+//	`pgTruncate` 这个函数本身已经搬走了（§966 把那份约定收编成单一事实源）。
+//	⇒ ⇒ ⇒ **判据没有消失，只是换了住址**；本包现在钉的是「**store 的行为**」
+//	（写进去的值 == 返回给调用方的值 + 两个实现同刻度），见 pg_precision_test.go。
 
 // TestS964TombstoneFixtureKeepsDeterministicSubMicrosecondDelta 钉住
 // 「**容差带必须真的被用上**」这条纪律。
