@@ -1986,10 +1986,26 @@ env -i HOME=$HOME PATH=$PATH POCKET_TEST_POSTGRES_DSN=… go test ./... -count=1
   ACC 200、派单落 `cancelled`、从未运行；不带 ⇒ 409 ⇒ 落 `failed`（agent_busy 那条路）。
 - ✅ **openpocket 的「停止」现在真的会到 ACC**（不再只是改本地卡片）：派单 id 从 ACC
   运行事件解出，取消带当前围栏 token。
-- ⚠️ **这条修复的线上验证还没做**：本轮修的是 openpocket 的后端逻辑，**线上跑的
-  pocketd 还是旧构建**（`/tmp/pocketd-r53`、`/tmp/pocketd-new`）。要拿到「用户在 App 里
-  按停止 ⇒ ACC 收到 ⇒ agent 真的停了」的读数，需要用**含本次修复**的构建起一个实例
-  并对真实 ACC 发一次取消。
+- ✅ **这条修复的线上验证已做**（20:05）：用**含修复**的构建（`origin/main` =
+  `467fa8b1` 现建的 `/tmp/pocketd-fix`，跑在 18121）走 openpocket **自己的**取消接口，
+  对**真实 ACC** 发一次取消。脚本
+  `~/kaixuan/acp/logs/rerun-round52/openpocket-live-cancel-e2e.py`：
+
+  ```
+  ✅ openpocket 槽位被占住                run=run-28dab8e2-…
+  ✅ ACC 接受派单                          HTTP 202  command_id=dispatch_49a6fb93-…
+  ✅ daemon 侧这条派单在排队               state='queued'
+  ✅ openpocket 的取消接口返回 200         {"id":"acc-e2e-cancel-200603", …, "status":"cancelled"}
+  ✅ daemon 侧那条派单落 cancelled         state='cancelled'
+     ACC 命令：status=cancelled cancel_state=delivered
+  ✅ 本地卡片也是 cancelled                status='cancelled'
+  ✅ 端到端：openpocket 取消 → ACC（带当前 fencing token）→ daemon 排队派单落 cancelled
+  ```
+
+  ⇒ **「用户在 App 里按停止 ⇒ ACC 收到 ⇒ 排队中的 agent 真的停了」这条链，
+  在真实栈上第一次有读数**。（任务与 run 绑定是直接写库复现 delegate 路径
+  `BindVerifiedRun` 产出的形状：生产里 `acc_dispatch_id`/`acc_holder_id` 两列是空的。
+  测试任务跑完已删除。）
 - ⚠️ **`SetACCBinding` 仍然没有生产调用方**（本轮没有去动它）：绑定仍靠「取消时现解」。
   这是取舍（现解简单、不依赖事件同步的时序），但意味着取消一次要多一次 ACC 往返。
 - ⚠️ **create 面仍然阻塞**、**不预置 runId 的客户端仍停不掉排队中的派单**（daemon REST
