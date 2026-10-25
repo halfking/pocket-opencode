@@ -603,8 +603,6 @@
           </div>
         </div>
         <div v-if="accStore.error" class="acc-error">{{ apiError(accStore.error, 'errors.operateFailed') }}</div>
-
-        </div>
       </div>
       <template #footer>
         <button class="btn cancel" :disabled="accStore.submitting" @click="closeAccDelegate">取消</button>
