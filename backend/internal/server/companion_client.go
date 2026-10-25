@@ -153,6 +153,38 @@ type companionSessionLink struct {
 	UpdatedAt int64  `json:"updatedAt"`
 }
 
+// companionIntervention is one entry of agent-companion's human-approval
+// queue (GET /api/v1/interventions).
+//
+// ★ The field names are **camelCase** on the wire: the daemon serves
+//   {id, runId, sessionId, agentKind, toolCallId, title, kind, status,
+//   createdAt, reason, decidedBy, options[{id,title,kind}]}. Decoding it
+//   into a snake_case struct would silently produce a zero-valued row —
+//   an approval the user cannot answer and does not know why.
+type companionIntervention struct {
+	ID         string                       `json:"id"`
+	RunID      string                       `json:"runId"`
+	SessionID  string                       `json:"sessionId"`
+	AgentKind  string                       `json:"agentKind"`
+	ToolCallID string                       `json:"toolCallId"`
+	Title      string                       `json:"title"`
+	Kind       string                       `json:"kind"`
+	Status     string                       `json:"status"`
+	CreatedAt  string                       `json:"createdAt"`
+	Reason     string                       `json:"reason,omitempty"`
+	DecidedBy  string                       `json:"decidedBy,omitempty"`
+	Options    []companionInterventionOption `json:"options"`
+}
+
+// companionInterventionOption is one choice the agent offered. The id is
+// what the daemon expects back in a decision — it is NOT a decision word
+// like once/always/reject unless the agent offered exactly those ids.
+type companionInterventionOption struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+	Kind  string `json:"kind"`
+}
+
 func (c *CompanionClient) get(path string, q url.Values, dest any) error {
 	if c == nil {
 		return fmt.Errorf("companion not configured")
@@ -344,6 +376,60 @@ func (c *CompanionClient) GetSession(kind, id string) (companionSession, error) 
 	}
 	var out companionSession
 	err := c.get("/api/v1/native/sessions/"+url.PathEscape(id), q, &out)
+	return out, err
+}
+
+// ListInterventions reads agent-companion's human-approval queue.
+//
+// This is the **write-capable half** of an otherwise read-only client,
+// and it is here for one reason: the approval an ACC-dispatched run asks
+// for is parked in the daemon's own queue (its ACC command-level
+// permission endpoint does not exist — measured 2026-10-25, 404 on
+// GET and POST alike). Without this method the App can see a task stuck
+// on permission_denied with nobody able to answer.
+//
+// status: "pending" (default), "resolved", "expired" or "all".
+func (c *CompanionClient) ListInterventions(status string) ([]companionIntervention, error) {
+	if c == nil {
+		return nil, fmt.Errorf("companion not configured")
+	}
+	q := url.Values{}
+	if status != "" {
+		q.Set("status", status)
+	}
+	var out struct {
+		Items []companionIntervention `json:"items"`
+		Total int                     `json:"total"`
+	}
+	err := c.get("/api/v1/interventions", q, &out)
+	if err != nil {
+		return nil, err
+	}
+	return out.Items, nil
+}
+
+// DecideIntervention answers one pending approval.
+//
+// optionID must be one of the ids the agent offered (the daemon rejects
+// anything else — it refuses to relay a fabricated option to the agent).
+// The daemon answers with the updated item.
+func (c *CompanionClient) DecideIntervention(id, optionID, reason, decidedBy string) (companionIntervention, error) {
+	if c == nil {
+		return companionIntervention{}, fmt.Errorf("companion not configured")
+	}
+	payload := map[string]any{"optionId": optionID}
+	if reason != "" {
+		payload["reason"] = reason
+	}
+	if decidedBy != "" {
+		payload["decidedBy"] = decidedBy
+	}
+	raw, err := c.post("/api/v1/interventions/"+url.PathEscape(id)+"/decision", payload)
+	if err != nil {
+		return companionIntervention{}, err
+	}
+	var out companionIntervention
+	err = json.Unmarshal(raw, &out)
 	return out, err
 }
 

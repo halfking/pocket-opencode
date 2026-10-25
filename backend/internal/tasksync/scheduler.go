@@ -23,6 +23,18 @@ type Scheduler struct {
 	interval   time.Duration
 	stop       chan struct{}
 	lastErrLog time.Time
+	// commands reads ACC's runtime-control face. Optional (nil ⇒ the
+	// ACC-bound status backfill is skipped): it is what lets a delegated
+	// task's card leave 「进行中」 once the dispatch is really over.
+	commands CommandStatusReader
+	// statusInterval is the cadence of the ACC-bound status backfill.
+	//
+	// It is deliberately **shorter** than the task-list sync interval:
+	// the list sync replays ACC's kanban (5min is fine for a list), while
+	// the backfill answers "did the run I delegated just finish?" — and
+	// the App's card is watched live. 15s keeps the card honest without
+	// hammering ACC (only rows that are still active are read).
+	statusInterval time.Duration
 }
 
 // New creates a scheduler. Pass nil mcpClient to disable (will be a no-op).
@@ -36,6 +48,25 @@ func New(client *mcp.Client, store *task.Store, interval time.Duration) *Schedul
 		interval:  interval,
 		stop:      make(chan struct{}),
 	}
+}
+
+// WithCommandReader wires the ACC runtime-control reader used to backfill
+// the status of delegated tasks. Returns the receiver so it can be chained
+// onto New(...).
+func (s *Scheduler) WithCommandReader(r CommandStatusReader) *Scheduler {
+	if s != nil && r != nil {
+		s.commands = r
+	}
+	return s
+}
+
+// WithStatusInterval sets the cadence of the ACC-bound status backfill.
+// 0 ⇒ the 15s default.
+func (s *Scheduler) WithStatusInterval(d time.Duration) *Scheduler {
+	if s != nil && d > 0 {
+		s.statusInterval = d
+	}
+	return s
 }
 
 // Start launches the background goroutine. Call once from main.
@@ -59,6 +90,12 @@ func (s *Scheduler) loop(ctx context.Context) {
 
 	t := time.NewTicker(s.interval)
 	defer t.Stop()
+	statusEvery := s.statusInterval
+	if statusEvery <= 0 {
+		statusEvery = 15 * time.Second
+	}
+	st := time.NewTicker(statusEvery)
+	defer st.Stop()
 	for {
 		select {
 		case <-s.stop:
@@ -67,6 +104,12 @@ func (s *Scheduler) loop(ctx context.Context) {
 			return
 		case <-t.C:
 			s.runOnce(ctx)
+		case <-st.C:
+			// 只回填「还在活动」的 ACC 绑定行：一次很小的查询，
+			// 读不到就跳过（读不到 ≠ 失败）。
+			if n := s.refreshACCDispatchStatuses(ctx); n > 0 {
+				log.Printf("[tasksync] acc-bound task status backfilled: %d row(s)", n)
+			}
 		}
 	}
 }
@@ -120,6 +163,16 @@ func (s *Scheduler) runOnce(ctx context.Context) {
 	log.Printf("[tasksync] synced %d ACC tasks", len(parsed))
 	recordAudit("", systemTenantID(), "tasksync.sync", "acc_task:batch",
 		AuditFields{Success: true, Detail: countDetail(len(parsed), saved)})
+
+	// ACC 派单的状态回填：把本地「委托给 ACC」那一行的状态跟着命令面走。
+	// 这一步独立于上面的清单同步 —— 委托出来的任务**不在** ACC 的看板清单里
+	// （实测），它的终态只存在于命令面。
+	//
+	// 计数不是裸丢（§947 卡口）：真的改了行才留一条日志，
+	// 否则每 5 分钟一条「改了 0 行」纯属噪音。
+	if n := s.refreshACCDispatchStatuses(ctx); n > 0 {
+		log.Printf("[tasksync] acc-bound task status backfilled: %d row(s)", n)
+	}
 }
 
 // systemTenantID 与 server.AuditSystemTenant 同语义；tasksync 不依赖

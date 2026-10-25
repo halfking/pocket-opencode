@@ -23,35 +23,64 @@
     "kimmy.huang@163.com",
     "回归卡组",
     "回归正面",
-    "MaestroPKM笔记"
+    "MaestroPKM笔记",
+    "maestro-acc-stop",
+    "maestro-acc-approve"
   ],
   "flows": [
     ".maestro/2026-10-02-real-login.yaml",
     ".maestro/email-accounts.yaml",
     ".maestro/email-browse.yaml",
-    { "file": ".maestro/flashcards-write.yaml", "reset": "flashcards-test" },
+    {
+      "file": ".maestro/flashcards-write.yaml",
+      "reset": "flashcards-test"
+    },
     ".maestro/login-gesture.yaml",
     ".maestro/meetings-entry.yaml",
     ".maestro/messages-hub.yaml",
     ".maestro/more-grid-reach.yaml",
     ".maestro/more-entries-open.yaml",
     ".maestro/notes-crud.yaml",
-    { "file": ".maestro/notes-stt-error-visibility.yaml", "appId": "com.kaixuan.opencode.pocket.sttdev", "fixture": "stt-error" },
+    {
+      "file": ".maestro/notes-stt-error-visibility.yaml",
+      "appId": "com.kaixuan.opencode.pocket.sttdev",
+      "fixture": "stt-error"
+    },
     ".maestro/settings-llm-gateway.yaml",
     ".maestro/smoke-login.yaml",
     {
-        "file": ".maestro/tasks-crud.yaml",
-        "fixture": "tasks-residue"
+      "file": ".maestro/tasks-crud.yaml",
+      "fixture": "tasks-residue"
     },
-    { "file": ".maestro/_connectivity-sttdev.yaml", "appId": "com.kaixuan.opencode.pocket.sttdev" },
+    {
+      "file": ".maestro/_connectivity-sttdev.yaml",
+      "appId": "com.kaixuan.opencode.pocket.sttdev"
+    },
     ".maestro/_connectivity.yaml",
     ".maestro/_dismiss-system-dialogs.yaml",
     ".maestro/_goto-pkm.yaml",
     ".maestro/_login.yaml",
-    { "file": ".maestro/_probe-a11y.yaml", "kind": "probe" },
-    { "file": ".maestro/_probe-budget.yaml", "kind": "probe" },
-    { "file": ".maestro/_probe-tap.yaml", "kind": "probe" },
-    { "file": ".maestro/_probe-tasks-create.yaml", "kind": "probe" },
-    { "file": ".maestro/_set-master-password.yaml", "kind": "subflow" }
+    {
+      "file": ".maestro/_probe-a11y.yaml",
+      "kind": "probe"
+    },
+    {
+      "file": ".maestro/_probe-budget.yaml",
+      "kind": "probe"
+    },
+    {
+      "file": ".maestro/_probe-tap.yaml",
+      "kind": "probe"
+    },
+    {
+      "file": ".maestro/_probe-tasks-create.yaml",
+      "kind": "probe"
+    },
+    {
+      "file": ".maestro/_set-master-password.yaml",
+      "kind": "subflow"
+    },
+    ".maestro/acc-delegate-stop.yaml",
+    ".maestro/acc-approval.yaml"
   ]
 }

@@ -758,6 +758,10 @@ func main() {
 	//
 	// 装配需要**签名**：该面只认 HS256 服务 JWT，静态 Bearer 会被 401
 	// 拒掉（2026-10-22 实测本机 ACC）。所以这里给 Signer 而不是 APIKey。
+	// accClientRuntime is hoisted out of the block below: the ACC task
+	// scheduler needs it to read each dispatch's terminal status (a
+	// delegated task's card must leave 「进行中」 when the run is over).
+	var accClientRuntime *accruntime.Client
 	if cfg.ACCRuntimeURL != "" && cfg.ACCRuntimeSecret != "" {
 		signer := accjwt.NewSigner(accjwt.Options{
 			Secret:          cfg.ACCRuntimeSecret,
@@ -781,6 +785,7 @@ func main() {
 		if err != nil {
 			log.Printf("WARN: ACC runtime client not wired: %v", err)
 		} else {
+			accClientRuntime = accClient
 			srv.SetACCRuntime(accClient)
 			log.Printf("ACC runtime client: %s (HS256 service JWT, fail-closed permission gate armed)", cfg.ACCRuntimeURL)
 		}
@@ -1494,6 +1499,11 @@ func main() {
 
 	// Phase 5: 启动 ACC 任务后台同步（5 分钟一次把 ACC 任务拉取到本地）
 	taskScheduler := tasksync.New(mcpClient, taskStore, 5*60*1_000_000_000) // 5min
+	// 委托给 ACC 的任务不在 ACC 的看板清单里（实测），它的终态只在命令面
+	// ⇒ 把 runtime-control 读取器接进同步器，卡片才不会永远停在「进行中」。
+	if accClientRuntime != nil {
+		taskScheduler = taskScheduler.WithCommandReader(tasksync.AccCommandStatusReader{Client: accClientRuntime})
+	}
 	// 注入 audit writer：system tenant 用于标记 ACC 拉取不属于任何 workspace。
 	tasksync.SetAuditWriter(server.NewTasksyncAuditWriter(srv))
 	taskScheduler.Start(context.Background())
