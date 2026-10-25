@@ -1334,3 +1334,163 @@ agent-companion 侧同一份读数已写进 `docs/QUEUED_DISPATCH_CANCEL_2026-10
 
 ⇒ §17.4 第 1 条降级为：**线上 :12110 仍是旧构建**（属于部署动作，未做），
 但**修复本身的行为已有真进程读数**。
+
+---
+
+## 19. 批判式审计轮：ACC 那一跳的**根因**在心跳，不在读面（17:05–17:45）
+
+§18 收口时，「经 ACC 看智能体」这条链仍然只有**数据源**侧的修复（§13 / §16.5），
+而**线上 ACC 那一跳没有端到端复验**（§17.4 第 4 条）。本节把那一条补上，
+并且查到的根因比预期深一层。
+
+### 19.1 先把现场量出来：ACC 的智能体清单与 daemon 自己的读面**互相矛盾**
+
+拿自签的 HS256 服务 JWT 直打权威 ACC（`100.106.67.198:4101`），读运行时清单两面：
+
+| 面 | 请求 | 读数 |
+|---|---|---|
+| 推送面 | `GET /api/v2/runtime/runtimes` | 2 个 runtime；`acs-ac30-01` 自带 **31 条** `agent_inventory` |
+| 拉取面 | `GET /api/v2/runtime/runtimes/acs-ac30-01/agents` | **502** `runtime_read_face_unreachable: read-face /api/v1/runtime/agents: status 401: {"message":"missing bearer token"}` |
+
+推送面那份清单的字段是 `{agent_id, kind, **state**, communication_mode, skills}` ——
+状态字段叫 **state** 不是 status；`skills` 是每个智能体 400+ 条的技能名，
+与读面那份的 `capabilities`（`["editor","ide","ai_inline"]`）**语义不同**，不能混。
+
+★ **决定性的一步**：把这两面按 `agent_id` 对齐逐条比。31 条里 **14 条矛盾**，
+而且**两个方向都有**：
+
+```
+zcode-cli-34660：推送面 running   / 拉取面 offline    ← 进程早退出了，ACC 还在广播它活着
+mmcode-81930：  推送面 denied_by_policy / 拉取面 running ← 被 allowlist 拒了，却像可派单
+```
+
+**这两面读的是同一个 store**（daemon 的 `state.Store`），所以矛盾只可能来自
+「读的不是同一时刻」或「读的不是同一份加工」。查下去是后者，而且是**根因**。
+
+### 19.2 根因：心跳**算了**清单却**没发**
+
+agent-companion 的心跳循环每一拍都算出了清单（`inventoryForHeartbeat`），
+但 `contracts.HeartbeatRequest` **压根没有 `agent_inventory` 字段** —— 算完就扔了。
+于是 ACC 手里那份清单**永远停在首次注册那一刻**：
+
+- 进程一小时前退出了 ⇒ ACC 仍在广播它 `running`；
+- allowlist 的 `denied_by_policy` 标记是注册那一刻的 ⇒ 之后不再更新。
+
+而 ACC 侧的契约写得很明确（acc-go `runtime_control_native.go` 的
+`runtimeHeartbeatRequest` 注释）：心跳里的 `agent_inventory` 是可选项且可叠加，
+**「在心跳上发它，正是让这份答案不在首次接触时冻结下来的东西」**；
+acc-go 甚至有 `TestRuntimeControlHeartbeatCarriesAgentInventory` 证明心跳会刷新落库的清单。
+—— **对端从来没发过，所以那个刷新机制一直没被触发。**
+
+⇒ 这解释了 14 条矛盾的全部：**「心跳说 running / 读面说 offline」那 4 条是陈旧快照**，
+「心跳说 denied_by_policy / 读面说 running」那 10 条是策略标记（读面不知道 allowlist）。
+
+### 19.3 改了什么
+
+**agent-companion**（提交 `b5d5760`，合并 `045f6d5`）：
+
+1. `contracts.HeartbeatRequest` 新增 `AgentInventory`（`omitempty`，双向向后兼容：
+   老 ACC 不认就忽略，老 companion 不发也不会抹掉更新的那份）；
+2. 心跳循环把每拍算出来的清单放进请求；
+3. 顺带修掉同一处一个**潜伏空指针解引用**：`slog.Debug` 的参数是急切求值的，
+   `req.ResourceUsage.CPUPercent` / `req.FailureMetrics.FailedTotal` 在 collector 或
+   failure tracker 为 nil 时直接崩 —— 而这是 daemon 最吃重的 goroutine。
+
+**openpocket**（提交 `2e11ca7f`，合并 `d4ba181a`）：运行时清单面**两面都读**，并把合并规则**写死**：
+
+| 字段 | 以谁为准 | 为什么 |
+|---|---|---|
+| 存活信号 `status` | **拉取面** | 它是请求时刻现读的，比心跳那份贴近现场 |
+| 策略裁决 `denied_by_policy` | **推送面** | 拉取面根本不知道本机 allowlist；把被拒的智能体说成可派单是危险的那一侧 |
+| pid/command/last_active_at/capabilities | 拉取面 | 只有它有 |
+| 只在推送面出现的智能体 | 推送面 | 丢掉它 = 少报一个还活着的智能体 |
+
+`skills` **刻意不**折成 `capabilities`：一个是技能清单，一个是能力标签，
+混起来是撒谎。
+
+### 19.4 顺带查出的第二个同源故障：ACC 回连 daemon 的**命令面**也是 401
+
+ACC 容器日志里每 2 秒一条：
+
+```
+WARN companioncommand: intervention poll failed runtime=acs-ac30-01
+     error="companion 401: invalid token"
+```
+
+查 acc-go 源码：`companionSecrets()` 支持 `ACC_COMPANION_SECRETS=runtime=secret`
+覆盖表，而**读面**那一把 bearer 是另一个开关 —— `ACC_COMPANION_TOKEN`
+（`switchboard.Client{Token: os.Getenv("ACC_COMPANION_TOKEN")}`）。
+线上 acc-go-211 容器里 **`ACC_COMPANION_TOKEN` 计数为 0**（只有另一个用途的
+`ACC_COMPANION_API_SECRET`），而两台 daemon 各自的 `AC_API_SECRET` 又不同值。
+
+⇒ **部署面修复**（ACC 主机 211，`~/kaixuan/acp/logs/rerun-round52/fix-acc-companion-token.sh`）：
+
+```
+ACC_COMPANION_SECRETS=acs-ac30-01=<本机 daemon 的 AC_API_SECRET>   # 命令面
+ACC_COMPANION_TOKEN=<本机 daemon 的 AC_API_SECRET>                   # 读面
+```
+
+只加本机这一条覆盖，**不动** 211 自己那台 companion 的默认路径；顺带把「这台 ACC
+是怎么起来的」落成 0600 的 env 文件 + `run.sh`（原先全部环境变量只存在于容器自身）。
+旧容器停掉后**改名保留**（`acc-go-211-backup-<ts>`，并关掉 restart 策略以免抢端口），
+健康检查不过会自动回滚。
+
+### 19.5 线上读数（部署后实测）
+
+| 检查 | 修复前 | 修复后 |
+|---|---|---|
+| daemon 构建 | `0.1.0-edfad02.1792918850` | **`0.1.0-045f6d5.1792920937`**（origin/main） |
+| ACC 清单 vs 读面矛盾 | 31 条里 **14** 条（4 条陈旧快照 + 10 条策略差异） | **10 条**，且**全部**是 `denied_by_policy` vs running（设计性差异，合并规则处理） |
+| ACC 回连读面 | **502**（401 missing bearer token） | **200**，26 条，`fallback_used: false`，带 pid/command/last_active_at/capabilities |
+| ACC 命令面轮询本机 companion | 每 2 秒一条 `companion 401: invalid token` | **30 秒内 0 条** |
+| openpocket `GET /api/acc/agents` | **28 条**（全 offline、type 空、无 last_seen_at） | **55 条**：running 16 / idle 1 / denied_by_policy 10 / offline 28；活条目 **type/status 零空缺**，26 条带 last_seen_at 与 capabilities |
+| openpocket `GET /api/acc/tasks` / `projects` / `sessions` | 4 / 1 / 6 | **4 / 1 / 6**（不变；这四面走 ACC 自己的存储，不受读面影响） |
+
+⇒ 用户目标里「**openpocket 经 ACC 连接到 agent-companion，获取到当前的会话与任务等信息**」
+现在**有端到端线上读数**：会话 6 条、任务 4 条、项目 1 条、**活智能体 27 条**
+（此前是 0 条活的）。
+
+### 19.6 本轮的提交 / 合并 / 推送
+
+| 仓 | 提交 | 合并 | 远端 main |
+|---|---|---|---|
+| agent-companion | `b5d5760`（心跳带活清单 + 潜伏空指针）、`ded5510`（CI 脚本可执行位）、`7965317`（握手超时预算） | `045f6d5` | **`045f6d5`** |
+| openpocket | `2e11ca7f`（两面都读 + 合并规则） | `d4ba181a` | **`d4ba181a`** |
+
+合并一律走**临时 worktree + `git push origin HEAD:main`**，不碰并行会话的工作区。
+★ 顺带记一条**分支拓扑**上的事实：两个仓的**本地 `main` 都落后于 `origin/main`**
+（本地 main 是 origin/main 的祖先），并行会话的主工作区在那个落后的 `main` 上
+带着未提交改动。**直接推本地 `main` 会回退掉远端已有的工作**，所以本轮没有动它。
+
+### 19.7 测试（含修复前对照）
+
+| 检查 | 读数 |
+|---|---|
+| agent-companion `go test ./...` | **56 包全绿**（修复树）；改动后连跑 7 轮全量：5 轮全绿、2 轮各红一条**既有**偶发测试（见下） |
+| agent-companion `go test -race ./cmd/agent-companion/` | 通过 |
+| agent-companion 跨仓契约门禁 `scripts/verify-cross-repo-contracts.sh` | **PASS**（且修了它缺可执行位导致 CI 必红的问题） |
+| openpocket `cd backend && go test ./...` | **65 包全绿、0 失败** |
+| openpocket 三道门禁 | 全部 exit=0 |
+| 修复前对照（agent-companion） | 同一批心跳测试跑在 `edfad02` 树上 ⇒ **红**：「心跳体里没有 agent_inventory 键」；且旧树在同一场景**直接 panic**（证实那处潜伏空指针是真的） |
+| 修复前对照（openpocket） | 同一批测试跑在 `fdd35891` 树上 ⇒ **红**：「len(agents) = 0, want 2」「Status = running, want denied_by_policy」「len(agents) = 0, want 1」 |
+
+### 19.8 遗留风险（更新 §17.4）
+
+- ✅ §17.4 第 4 条（ACC 那一跳没端到端复验）：**已补**，见 §19.5。
+- ✅ §17.4 第 1 条（线上 daemon 是旧构建）：**已补**，线上现在是 origin/main 构建 `0.1.0-045f6d5`。
+- ⚠️ **两个仓的本地 `main` 仍落后于 `origin/main`**：本轮刻意没动（并行会话的工作区
+  在那个 `main` 上）。他们提交后推送会被拒（non-fast-forward），需要 rebase 或
+  先把本地 `main` 指到 `origin/main`。
+- ⚠️ **`internal/runtime` 的 `TestR5_ScanIsReadOnly` 仍会偶发红**：它统计的是**整台
+  宿主机的进程表**，并发跑别的包时进程数会飘。**同刻对比证明它与本轮改动无关**：
+  修复树 3/3 通过，**未修改的树 3 轮里红 1 轮**（68 → 77）。我试过用「多次采样取
+  最小值」稳它，**没用**（非负载下也红，耗时还从 3.5s 涨到 9.1s），已撤回 ⇒ 如实登记。
+- ⚠️ **`internal/acp` 的 `TestConnectHandshakeErrorDoesNotRepeatItself`**：同样是负载型
+  偶发红（握手超时由 ctx 的 deadline 决定，2 秒预算下读 stderr 的 goroutine 可能
+  还没被调度）。**已修**：预算 2s → 10s，照抄同文件兄弟测试的既有做法与理由。
+- ⚠️ **ACC 主机的 `ACC_COMPANION_TOKEN` 是全局一把**（acc-go 的读面 client 只支持一把）：
+  现在配的是本机 daemon 的密钥，211 那台 companion 若将来广告 api_endpoint，会 401
+  （它现在的 api_endpoint 本来就是空的 ⇒ 没有回退）。要两台都能回连，需要把两台
+  daemon 的 `AC_API_SECRET` 统一成同一把。
+- ⚠️ `mmcode` 仍只可观测（执行层白名单不含它）；create 面仍阻塞；run 历史不跨
+  daemon 重启；本机仍无 USB Android 真机（AVD `pocket-test`）—— 与 §17.4 一致。
