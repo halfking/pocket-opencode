@@ -73,15 +73,35 @@ func TestUnixNanoResolution(t *testing.T) {
 	for i := 0; i < n; i++ {
 		vals = append(vals, time.Now().UnixNano())
 	}
-	minDelta := int64(-1)
+	minDelta := int64(0)
+	haveMin := false
 	distinct := make(map[int64]struct{}, n)
+	backwards := 0
+	worstBack := int64(0)
 	for i := 1; i < len(vals); i++ {
 		d := vals[i] - vals[i-1]
 		if d < 0 {
-			t.Fatalf("时钟回拨：vals[%d]=%d < vals[%d]=%d", i, vals[i], i-1, vals[i-1])
+			// ★ 2026-10-25（审计轮）：这里原来是一句 t.Fatalf —— 但这个
+			// 测试**测的是平台特性（宿主墙钟），不是产品行为**，它自己的
+			// 注释就写着「只记录不判定失败」。墙钟被 NTP 校时或宿主机调整
+			// 一下就会回拨 ⇒ 与产品无关的事件让整个 internal/meeting 包变红
+			//（实测：vals[235] 比 vals[234] 小 0.5ms，go test 直接红）。
+			//
+			// 而且它当初守的那个**真缺陷**（会议 ID 撞车导致静默丢数据）
+			// 已经在同一个提交里修掉了：store.go 现在用
+			// `mtg_<nano>_<seq>`，seq 是进程内单调递增序号 ⇒ 同一进程内
+			// 必然唯一，与墙钟刻度无关。
+			//
+			// 所以回拨不但不该判红，它**加强**了本测试的结论：纳秒时间戳
+			// 连单调性都不保证，更不能当唯一 ID 来源。记下来即可。
+			backwards++
+			if d < worstBack {
+				worstBack = d
+			}
 		}
-		if minDelta < 0 || d < minDelta {
+		if !haveMin || d < minDelta {
 			minDelta = d
+			haveMin = true
 		}
 	}
 	for _, v := range vals {
@@ -90,5 +110,10 @@ func TestUnixNanoResolution(t *testing.T) {
 	t.Logf("%d 次 time.Now() 产生 %d 个不同值，最小间隔 %dns", n, len(distinct), minDelta)
 	if minDelta == 0 {
 		t.Logf("本机时钟刻度为 0ns —— 这正是会议 ID 必须带单调序号、不能只用纳秒时间戳的原因")
+	}
+	if backwards > 0 {
+		t.Logf("⚠ 观察到 %d 次时钟回拨（最大回退 %dns）：宿主墙钟被调整过 —— "+
+			"这是「不能拿 time.Now().UnixNano() 当唯一 ID」的又一条证据，不判红",
+			backwards, -worstBack)
 	}
 }

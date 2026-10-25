@@ -1698,3 +1698,167 @@ gofmt -l internal/agentfacade/{facade.go,slot_key_agent_id_test.go}             
   `GET /api/v1/runs` 发现再按停。openpocket 前端目前**没有**预置 runId 的用法。
 - ⚠️ 两个仓的本地 `main` 仍落后于 `origin/main`（并行会话的工作区在那上面），
   他们提交后推送会被拒（non-fast-forward）。
+- ✅ **「设备侧读数来自上一轮的旧二进制」**：本节成立时还是个 caveat，
+  已由 §19.11 闭合（第三轮用当前 main 现建的后端重跑，13/13 全绿）。
+
+### 19.11 第三轮设备侧复跑（当前 main 的二进制）＋ 宿主 psql shim 的「静默跳过」缺陷
+
+#### 19.11.1 为什么还要再跑一轮：第二轮的读数**不是**当前代码的读数
+
+第二轮（§19.9）的 13 条 Maestro 流跑在 `/tmp/pocketd-new` 上 —— 那个二进制是
+**今早 10:25** 构建的，而 openpocket 的 `backend/` 在那之后改过
+（`2e11ca7f` 的 ACC 两面读取修复）。当时登记的判断是「本轮改动只在
+`backend/internal/accruntime/`，而 `.maestro/` 没有 `/api/acc/` 引用 ⇒ 设备流与
+改动包不相交」—— 这个判断本身成立，但它只能推出「**行为等价**」，推不出
+「**读数对应当前代码**」。两者不是一回事：**没测 ≠ 过了**，反过来也一样。
+
+于是第三轮把这件事做成事实：
+
+- 后端用 **openpocket `origin/main`（`fecbde09`）现建**的 `/tmp/pocketd-final`；
+- **换端口 18111 / 18112** 起实例（18096 / 18097 / 18099 是并行会话共享的，
+  一律不动），harness 按 `POCKET_API_BASE` 的端口自建 `adb reverse`，App 的基址由
+  preflight 写 `localStorage.pocket_api_base` 覆盖（优先级高于构建期基址）；
+- App 不用重打：自 2026-10-22 02:36 装上以后，`frontend/src` **只有测试文件**变更
+  （`git log --since` 核对过：28 个文件全是 `*.test.*`），运行时代码一字未改 ⇒
+  已装的 APK 与当前前端行为一致。
+
+#### 19.11.2 顺带修掉一个**会让「没测」冒充「测过」**的缺陷：宿主 psql shim
+
+第二轮 D 组首跑 exit=1、FAILED=0 的根因是部署面：`~/.local/bin/psql` 这个 shim 把
+容器名**写死**成 `acc-pg17`，而那个容器已被并行会话删掉 ⇒ 夹具清场失败 ⇒
+`flashcards-write` **整条 flow 被跳过**（日志原文「清场失败，跳过本条 flow」）。
+
+危险的地方在于：**「跳过」在汇总表里长得很像「通过」**（0 FAILED）。所以这次不只
+是补一个环境变量，而是把 shim 的行为改掉：
+
+```bash
+# ~/.local/bin/psql（宿主级脚本，备份在 ~/.local/bin/psql.bak-20261025T1905）
+CONTAINER 解析顺序：
+  1) $PSQL_CONTAINER 显式指定          （行为不变）
+  2) acc-pg17 在跑就用它                 （行为不变）
+  3) 否则找**发布宿主 5432** 的容器      （新：夹具 DSN 指的就是 127.0.0.1:5432，
+                                          转发必须落到真正占着这个端口的容器上）
+  4) 再否则逐个试哪个运行中的容器里有 psql
+  找不到 ⇒ 明确报错退出 127（绝不静默 exec 一个不存在的容器）
+```
+
+这个思路与 openpocket 部署文档里**同类的第 7 行**一致（借道「确实发布了该端口」的
+引擎容器），已写进 `docs/部署方案.md` §3 第 10 行。
+
+实测（不带 `PSQL_CONTAINER`）：
+
+```
+$ POCKET_POSTGRES_DSN='postgresql://acc_super:***@127.0.0.1:5432/postgres?sslmode=disable'   psql -tAc "select 'shim-ok', current_database(), version() like 'PostgreSQL 17%'"
+shim-ok|postgres|t
+```
+
+⇒ 自动落到 `ac-audit-pg17`（发布宿主 5432 的那个），PG17 命中。
+
+#### 19.11.3 第三轮读数
+
+负载闸门**合法打开**（load1 = 8.31 < 25，19:10:51 开跑），被测构建见 §19.11.1。
+
+| 组 | 读数 | COMPLETED 步数 |
+| --- | --- | --- |
+| A（smoke-login / notes-crud / tasks-crud） | exit=0，FAILED=0 | 63 |
+| B（meetings-entry / messages-hub / more-grid-reach） | exit=0，FAILED=0 | 69 |
+| C（more-entries-open / email-accounts / email-browse） | exit=0，FAILED=0 | 70 |
+| D（settings-llm-gateway / flashcards-write） | exit=0，FAILED=0 | 55 |
+| login-real | exit=0，FAILED=0 | 12 |
+| login-gesture | exit=0，FAILED=0 | 16 |
+| **合计** | **13/13 全绿，0 FAILED** | **285** |
+
+- **D 组刻意不设 `PSQL_CONTAINER`** —— 这一组就是 shim 自动识别的回归。日志里能看到
+  清场**真的成功**了（上一轮这里是「清场失败，跳过本条 flow」）：
+
+  ```
+  [fixture] ✅ flashcards-test（清场，无参数）
+  ✅ 已清零并自证（PG=0 且重启后 flashcards:v1 无卡组），可以跑 flashcards-write.yaml（零卡组分支）
+  ──────── flow 2/2: .maestro/flashcards-write.yaml ────────
+  ```
+
+  ⇒ 上一轮那条**「跳过」**的 flow，这一轮是**真跑的**。
+- 步数与第二轮完全一致（63/69/70/55/12/16 = 285）⇒ 同一批断言、同一批 flow，
+  只是这次被测的二进制是当前 main 现建的。
+
+#### 19.11.4 ACC 面的排队取消：在最终树上再取一个读数
+
+`cmd/live-e2e` 的 `queuedcancel` 段是这条路的**仓内回归护栏**（ACC 的
+`dispatch.cancelled` 帧 ⇒ daemon 命令循环取消 dispatch ctx ⇒ 排队中的派单**从未运行**）。
+在 `origin/main` = `e91be86` 上重跑：
+
+```
+[live-e2e] the agent slot is now held by d-live-e2e-hold
+[live-e2e] cancelling the queued dispatch d-live-e2e-queued - it never got the slot ...
+[live-e2e] stub ACC: cancel-ack d-live-e2e-queued stage=delivered
+[live-e2e] the queued dispatch was reported as cancelled
+[live-e2e] the queued dispatch never ran — a dispatch stopped while queued stays stopped
+LIVE_E2E_OK
+```
+
+（exit=0。日志 `/tmp/ac-e2e-queuedcancel.log`。）
+
+⇒ 用户侧那条链（openpocket `POST /api/tasks/{id}/cancel` → ACC
+`POST /api/v2/runtime/commands/{id}/cancel` → ACC 写 `dispatch.cancelled` → daemon
+取消 dispatch ctx）的**每一跳都读过源码**，其中 daemon 那一跳有**在最终树上的活读数**。
+仍未做的是**经真实 ACC 建任务再取消**的那条完整端到端（ACC 的建任务要走编排器的
+路由策略，代价高、且会动 211 那台的生产服务）—— 如实登记为未验项。
+
+#### 19.11.5 跑全量测试时又踩到一条红：**文档说「已修」，代码从来没修过**
+
+第三轮跑完之后按惯例再跑一遍全量后端测试（`cd backend && go test ./... -count=1`），
+结果这次**红了**：
+
+```
+--- FAIL: TestUnixNanoResolution (0.00s)
+    id_collision_diag_test.go:81: 时钟回拨：vals[235]=1792927435024193000 < vals[234]=1792927435024750000
+FAIL	github.com/halfking/pocket-opencode/backend/internal/meeting
+```
+
+这是**墙钟回拨**（macOS 的 NTP 校时/宿主调整），与本轮改动（只有文档）无关。但查
+下去发现一件更值得记的事：
+
+- 这个测试**自己的注释**写着：「它测的是**平台特性**，不是产品行为，所以只记录不判定失败」；
+- 仓库的 `CHANGELOG-2026-09-30-BUG-D-root-fix.md:814` 写着：
+  「`TestUnixNanoResolution` **改为只记录不判定**（测的是平台特性，不是产品行为）」；
+- `docs/handoff/2026-09-30-android-e2e-bug-d-e-f.md:1505` 写着：
+  「修完缺陷后已改为只 `Logf` 不判定失败」。
+
+三处都指向同一个结论：**这个测试早该是「只记录」的**。而
+`git log -S '时钟回拨' -- backend/internal/meeting/id_collision_diag_test.go` 显示，
+那句 `t.Fatalf` **从 `0d9d52fa` 引入至今从未被改过** —— 也就是说
+**文档承诺的修法从来没有落到代码上**（同一个提交里，CHANGELOG 与代码就分岔了）。
+
+这正是本轮反复遇到的那一类问题（「只是声明一下就当完成」），只不过这次**声明写在
+自己的仓库里**。
+
+它守的那个**真缺陷**（会议 ID 撞车导致静默丢数据）确实早就修好了：
+`store.go` 现在用 `mtg_<nano>_<seq>`，`seq` 是进程内单调递增序号 ⇒ 同进程内必然唯一，
+与墙钟刻度无关。而**回拨**不但不该判红，它**加强**了本测试的结论：纳秒时间戳连
+单调性都不保证，更不能当唯一 ID 来源。
+
+**修法**（`backend/internal/meeting/id_collision_diag_test.go`）：把 `t.Fatalf` 换成
+**记录**（回拨次数 + 最大回退幅度 + 一条说明），并把最小间隔的哨兵从 `-1` 换成
+显式的 `haveMin`（否则第一次 delta 为负时最小值会算错）。判据与被测对象对齐：
+**它量的是平台特性，不是产品行为**。
+
+#### 19.11.6 本节带来的遗留风险更新
+
+- ✅ **「设备侧读数来自旧二进制」这条 caveat 已闭合**：第三轮的被测后端是当前 main
+  （`fecbde09`）现建的二进制，13/13 全绿、285 步 0 FAILED（§19.11.3）。
+- ✅ **宿主 `psql` shim 的「静默跳过」已修**：容器名不再写死，改成自动识别
+  （找不到就明确报错）；`docs/部署方案.md` §3 第 10 行已登记。D 组的
+  `flashcards-write` 从**被跳过**变成**真跑**。
+- ✅ **`internal/meeting` 那条「墙钟回拨即判红」的测试已修**（§19.11.5）：仓库自己的
+  CHANGELOG 与 09-30 handoff 都写着它「已改为只记录不判定」，而代码里那句
+  `t.Fatalf` 从未删掉 —— 这次让代码与文档对上了。
+- ⚠️ **经真实 ACC 建任务 → 取消 → 队列中的派单落 cancelled** 这条完整端到端
+  **仍未验**：ACC 的建任务要走编排器的路由策略（agent 绑定、kind 白名单、运行时
+  围栏），代价高且要动 211 那台的生产服务。本轮验到的是**每一跳的源码**加上
+  daemon 那一跳的活读数（`live-e2e queuedcancel`），**不等于**全链路验过。
+- ⚠️ **本机仍无 Android USB 真机**：`adb devices` 只有两个模拟器（5556 = 我的
+  `pocket-test`，5554 = 并行会话）。宿主机上确实挂着一台 **iOS** 设备
+  （`iproxy 18100→8100`），但它属于**另一个项目**
+  （`~/workspace/ai-native-tools/llm-gateway/llm-gateway-client`），而 openpocket
+  的 Maestro 流是 Android 流 ⇒ 用不上。上一轮登记为「本机无 USB 真机」，这里补准：
+  **无 Android 真机；有一台别家项目的 iOS 设备**。
