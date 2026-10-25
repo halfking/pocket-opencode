@@ -2316,7 +2316,29 @@ task-71ca93dcd99dc72b19e904b7922e153d|ws_user-admin|cancelled|acc|dispatch_baaf1
   是新代码**），但**证据文件自己写了一句与事实不符的话**。
   ⇒ 已把横幅改成**运行时现取**（监听进程 → 可执行文件 → `vcs.revision`；
   设备上已装包的 `versionName`），取不到就打印 `UNKNOWN`，绝不写死。
-- **本轮改动后的复跑**：见本节末尾的「提交与推送」小节。
+- **第五轮全量复跑（22:28–22:39，对着**装了本轮新代码的 APK** + **带 ACC 接线的新后端**）**：
+  A / B / C / D 四组 + `login-real` + `login-gesture`，**全部 exit=0、FAILED=0**，
+  整轮 EXIT=0（13 条流）。负载闸门：22:25–22:27 load1 在 28~39 之间（**超阈值**，
+  脚本等了 3 分钟），22:28:12 load1=21.24 ⇒ 开跑。
+- ⚠️ **横幅这件事，本轮自己踩了两次**（都记在这）：
+  1. 第四轮那次的横幅写死了「被测构建 = /tmp/pocketd-final（fecbde09）」，
+     而实际被测的是 /tmp/pocketd-main（`vcs.revision=759b5903`）——**测试打的是
+     新代码，证据文件自己写了句假话**。
+  2. 改成「运行时现取」之后，**第一版又取错了**：用 `lsof -Fn -p $pid | head -1`
+     取可执行文件，而 lsof 的 n 字段**第一个是 cwd** ⇒ 横幅把目录当二进制 ⇒
+     `vcs.revision=UNKNOWN`（实测横幅：`backend: ~/kaixuan/acp/logs/rerun-round52
+     pid=… vcs.revision=UNKNOWN`）。改用 `ps -o command=` 才对。
+  3. 又补了一项：`vcs.modified=true` ⇒ **编这份二进制时工作树有未提交改动** ⇒
+     revision 只代表 HEAD，不代表实际代码 ⇒ 横幅现在会明写
+     `⚠工作树有未提交改动(revision≠实际代码)`。
+  ⇒ 教训：**证据横幅本身也要被当成判据来测**。三次里错了两次，
+  而且两次错法都是「看起来有、其实不准」。
+- **最终部署物与推送提交对齐**：第五轮跑的是 21:08 编的二进制（当时改动还没
+  提交、且**缺** `longLivedPaths` 的 `/api/tasks/delegate` 豁免）；报告定稿后
+  用**已推送的提交**重编并重新部署：
+  `vcs.revision=d0807c74… vcs.modified=false` ⇒ 部署物与仓库代码逐字一致。
+  重部署后**再跑一遍**委托→停止的线上端到端，仍然全绿
+  （`delegate-live-e2e-final.log`）。
 
 ### 20.11 遗留风险（**诚实清单**）
 
