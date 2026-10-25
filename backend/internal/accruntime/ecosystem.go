@@ -19,11 +19,18 @@ package accruntime
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"strconv"
 	"strings"
 )
+
+// ErrNoDispatchableAgent 表示「ACC 上现在没有可派单的智能体」——
+// 与「读 ACC 失败」是**两件不同的事**：后者是通道问题（网关 502、
+// 超时、401），前者是库存问题。调用方必须能把它们分开报给用户，
+// 否则一次网关抖动会被说成「没有智能体可用」。
+var ErrNoDispatchableAgent = errors.New("accruntime: no dispatchable agent")
 
 // Agent 是 ACC agent 注册表里的一条记录。agent-companion 的**每个实例**
 // （本机 daemon、CI 里的 runtime-dev、各机器上的 acs-*）都是独立一条，
@@ -447,6 +454,60 @@ func (c *Client) ListProjects(ctx context.Context) ([]json.RawMessage, error) {
 		return nil, fmt.Errorf("accruntime: decode projects: %w", err)
 	}
 	return out, nil
+}
+
+// ResolveDispatchTarget picks the (runtime_id, agent_id) pair a dispatch
+// should be sent to.
+//
+// The runtime is the agent-companion instance registered with ACC; the agent
+// is one slot inside it. ACC's dispatch endpoint needs BOTH, and the pair has
+// to exist — a dispatch to an unknown runtime or agent is accepted by ACC and
+// then never picked up (the command sits at status=created forever).
+//
+// Rules:
+//   - agentID given → the runtime that pushed that agent up is used. The
+//     **push face** (agent_inventory in the runtime list) is used on purpose:
+//     it does not depend on ACC being able to call back to that host.
+//   - neither given → the first runtime with a dispatchable agent.
+//   - an agent whose state is denied_by_policy is never picked: ACC's own
+//     policy refused it, and dispatching to it would produce a task that can
+//     only fail.
+func (c *Client) ResolveDispatchTarget(ctx context.Context, agentID, runtimeID string) (string, string, error) {
+	if err := c.ready(); err != nil {
+		return "", "", err
+	}
+	runtimes, err := c.listRuntimes(ctx)
+	if err != nil {
+		return "", "", err
+	}
+	wantAgent := strings.TrimSpace(agentID)
+	wantRuntime := strings.TrimSpace(runtimeID)
+	for _, rt := range runtimes {
+		if wantRuntime != "" && rt.RuntimeID != wantRuntime {
+			continue
+		}
+		for _, a := range rt.AgentInventory {
+			a.normalize()
+			id := strings.TrimSpace(a.AgentID)
+			if id == "" {
+				id = strings.TrimSpace(a.ID)
+			}
+			if id == "" {
+				continue
+			}
+			if wantAgent != "" && id != wantAgent {
+				continue
+			}
+			if strings.EqualFold(strings.TrimSpace(a.State), "denied_by_policy") {
+				continue
+			}
+			return rt.RuntimeID, id, nil
+		}
+	}
+	if wantAgent != "" {
+		return "", "", fmt.Errorf("%w: runtime 没有可派单的 %q", ErrNoDispatchableAgent, wantAgent)
+	}
+	return "", "", ErrNoDispatchableAgent
 }
 
 // EscapePathSegment 把 id 里的路径分隔符转义掉，防止 task_id 形如

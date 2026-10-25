@@ -290,6 +290,17 @@ const TABLE = [
     note: '会议长录音转写（「相等即错」那一条）',
   },
   {
+    // 2026-10-25 审计轮补：移动端「委托给 ACC」这条路由此前**不在表里**，
+    // 而它恰恰是最需要预算的一条 —— 它要跟 ACC 往返两次（建任务 + 派发），
+    // ACC 的 runtime-control 面实测会抖到 22~67s。服务端预算 90s，
+    // 客户端 120s（相等即错，所以必须更大）。
+    route: 'POST /api/tasks/delegate',
+    tsFile: 'api/accTasks.ts',
+    constName: 'ACC_DELEGATE_TIMEOUT_MS',
+    server: { goFile: 'server.go', handler: 'handleDelegateTask' },
+    note: '移动端「委托给 ACC」（建任务 + 派发，两次 ACC 往返）',
+  },
+  {
     // ⚠⚠ §930 新增：这一行此前**进不了这张表**，因为服务端预算是
     //   **包级常量**（fullTranscribeTimeout，server_stt_stream.go:39）⇒
     //   旧的反推只认函数体内声明 ⇒ 直接返回 null ⇒ 「反推失败」看起来像
@@ -795,6 +806,10 @@ export function enumerateTimeoutCallSites(dir = path.join(SRC, 'api')) {
  *   省略时默认与 `file` 相同。
  */
 const LONG_ROUTE_CALL_SITES = [
+  // 2026-10-25 审计轮补：移动端「委托给 ACC」这条长路由此前不在册
+  //（它也**没有**自己的超时预算 —— 于是走默认 30s，而服务端这条路由
+  //  的预算是 90s ⇒ 客户端永远先超时）。新增带 timeoutMs 的调用点必须登记。
+  { file: 'api/accTasks.ts', route: '/api/tasks/delegate', constName: 'ACC_DELEGATE_TIMEOUT_MS' },
   { file: 'api/email.ts', route: '/api/email/backfill', constName: 'BACKFILL_TIMEOUT_MS' },
   { file: 'api/email.ts', route: '/api/emails/${encodeURIComponent(id)}/summarize', constName: 'LONG_REQUEST_TIMEOUT_MS', constFile: 'api/http.ts' },
   { file: 'api/email.ts', route: '/api/emails/sync', constName: 'LONG_REQUEST_TIMEOUT_MS', constFile: 'api/http.ts' },
@@ -831,10 +846,10 @@ describe('§930 长路由调用点全量在册（机械枚举 ⇒ 手工清单�
 
   it('★ 在册清单的条数被钉住（防止「两边同时少一条」蒙混过关）', () => {
     assert.equal(
-      enumerateTimeoutCallSites().length, 17,
-      '枚举到的长路由调用点不是 17 条 ⇒ 扫描口径变了（或者有人增删了调用点）',
+      enumerateTimeoutCallSites().length, 18,
+      '枚举到的长路由调用点不是 18 条 ⇒ 扫描口径变了（或者有人增删了调用点）',
     )
-    assert.equal(LONG_ROUTE_CALL_SITES.length, 17, '在册清单的条数变了')
+    assert.equal(LONG_ROUTE_CALL_SITES.length, 18, '在册清单的条数变了')
   })
 
   it('★ 每一条的客户端超时都**严格大于**默认的 30 s（不许退回默认值）', () => {

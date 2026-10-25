@@ -2010,3 +2010,346 @@ env -i HOME=$HOME PATH=$PATH POCKET_TEST_POSTGRES_DSN=… go test ./... -count=1
   这是取舍（现解简单、不依赖事件同步的时序），但意味着取消一次要多一次 ACC 往返。
 - ⚠️ **create 面仍然阻塞**、**不预置 runId 的客户端仍停不掉排队中的派单**（daemon REST
   面那条路；ACC 面不受此限，因为 dispatch id 直通）。
+
+
+---
+
+## 20. 批判式审计轮（三）：把「App 上的 ACC 功能」从**声明**变成**读数**（2026-10-25 20:30–21:40）
+
+本节只写**这一轮**新查出来的东西。前面 §1–§19 的结论**不覆写**，按原样留着
+（审计链要能看出结论是怎么一步步改的）。
+
+一句话结论：**上一轮把「停止」那一跳修通了，但 App 上「委托给 ACC」这个按钮
+从来没有通过过一次**——而且不只是前端少传一个字段那么浅：部署面上的 ACC
+接线指向的是一个**不存在的服务**，两个 pocketd 实例并发启动会**互相把对方
+打死**，派单还缺一组让智能体直接拒跑的**关联三元组**。这一轮把这一串都挖出来
+并修掉，最后在**真实 ACC + 真实 agent-companion daemon** 上拿到了第一条完整读数：
+**委托 → 智能体接单（running）→ 停止 → ACC 命令 cancelled/delivered → 本地卡片 cancelled**。
+
+### 20.1 部署面：ACC 接线指向的是一个**不存在的**服务（+ 旧密钥）
+
+设备侧 pocketd（18099 / 18097）当时的 ACC 接线是：
+
+| 变量 | 当时的值 | 实测 |
+|---|---|---|
+| `POCKET_ACC_RUNTIME_URL` | `http://127.0.0.1:4101` | HTTP 000（**连不上**：本机没有 4101） |
+| `POCKET_MCP_BASE_URL` | `http://127.0.0.1:4101/api/v2/mcp` | 同上 |
+| `POCKET_MCP_API_KEY` / `POCKET_ACC_CONTROL_SECRET` | 旧密钥（sha256 前 12 位 `187744757e21`） | 权威 ACC 校验的是 `ACC_AUTH_TOKEN_SECRET`（`da0cadc5176a`） |
+
+权威 ACC 在 **`100.106.67.198:4101`（== `192.168.31.211:4101`）**，而**本机是
+`192.168.31.33`**——也就是说那台实例根本不在本机（端口 4101 本机无监听）。
+旧实例日志里每 5 分钟一条 `[tasksync] fetch ACC tasks failed: ... 127.0.0.1:4101`
+就是这个原因。
+
+⇒ 那个实例上的 `/api/acc/*` 与 tasksync **全都不通**。「App 能通过 ACC 连到
+agent-companion」这条路在**设备部署面**是断的。
+
+**修法**（脚本 `~/kaixuan/acp/logs/rerun-round52/fix-pocketd-acc-wiring.sh`）：
+只改接线与凭据，其余环境一字不动；并且**把修好的值写回 0600 的 env 文件**，
+让「只靠 env 文件重启」这条路径也保持正确（第一版脚本只在进程内覆盖了 URL，
+env 文件里还是旧值——这是我自己修复里的缺口，第二版补上）。
+
+**修后的读数**（`acc-surface-probe.py` 对 18099）：
+
+```
+/api/acc/agents    -> 200  count=77
+/api/acc/tasks     -> 200  count=23
+/api/acc/projects  -> 200  count=1
+/api/acc/sessions  -> 200  count=23
+[tasksync] synced 2 ACC tasks          （之前是 "fetch ACC tasks failed: HTTP 401"）
+```
+
+### 20.2 两个实例同时起 ⇒ **互相把对方打死**（40P01 死锁）
+
+修好接线后重启 18099/18097，出现了一个和 ACC 无关、但同样致命的故障：
+
+```
+2026/10/25 20:32:12 task store: task migrate: ERROR: deadlock detected (SQLSTATE 40P01)
+⇒ 18099 根本没起来（healthz HTTP 000）
+```
+
+**根因**：每个 store 在启动时跑自己的 DDL 批次，而这一批是**一条多语句
+simple query** ⇒ PostgreSQL 把它放进**单个隐式事务** ⇒ 批次里每张表的锁
+（ACCESS EXCLUSIVE）一直持有到整批提交。两个实例同时对**同一 schema** 跑这段
+DDL，就会互持对方要的锁：
+
+```
+A: ALTER TABLE tasks …            → 持有 tasks 的 ACCESS EXCLUSIVE
+B: ALTER TABLE task_run_bindings… → 持有 task_run_bindings 的 ACCESS EXCLUSIVE
+A: 要 task_run_bindings → 等 B；B: 要 tasks → 等 A ⇒ 40P01，一方被中止
+```
+
+**修复前复现**（临时实验，6 轮并发 DDL）：
+
+```
+round 3: ERROR: deadlock detected (SQLSTATE 40P01)
+round 5: ERROR: deadlock detected (SQLSTATE 40P01)
+REPRO deadlock_40P01=2/6        （第二次复现 4/6）
+```
+
+**修法**：新增 `backend/internal/pgmigrate`——一个 **schema 级 advisory lock**
+（session 级，进程死了锁自动随连接消失），启动的**整个迁移阶段**只允许一个
+实例对同一 schema 跑 DDL。锁的 key 含 schema ⇒ 不同 schema 互不阻塞。
+
+**判据**（`internal/pgmigrate/lock_test.go`，真实 PG，3/3 绿）：
+
+- 同 schema 第二个实例**拿不到锁**（确定性，可判红）；
+- 释放后能拿到（不会饿死后续实例）；
+- 4 个并发迁移全部成功、**0 次 40P01**，且表真的建出来了；
+- 不同 schema 的锁**互不阻塞**。
+
+修后：18099 / 18097 **同时启动，两个都健康**。
+
+### 20.3 App 的「委托给 ACC」**从来没有通过过**
+
+| | 调用形态 | 结果 |
+|---|---|---|
+| 前端 `frontend/src/api/accTasks.ts` | `{title, description, kind}` | — |
+| 后端 `POST /api/tasks/delegate`（修前） | 要求 `run_id` | **400 `run_id is required for canonical task binding`** |
+
+线上实测（修前，18099）：`delegate_no_run_id -> 400`。**每一次点击都是 400。**
+
+**根因不是「前端少传一个字段」**，而是契约设计错了：**run 本来就是派发的产物**
+（ACC runtime control 在 dispatch 时才生成 `run_id` + `dispatch_id`），
+App 能提供的只有「做什么」。
+
+**修法**（`backend/internal/server/server_task_delegate_acc.go`）：缺 `run_id` 时
+由**后端**把这一段做完：
+
+```
+① 解析派单目标：哪台 agent-companion（runtime_id）× 哪个槽位（agent_id）
+② ACC 建任务：MCP acc_create_task            → ACC 任务 id
+③ 派发：ACC runtime control POST /api/v2/runtime/dispatch → dispatch_id + run_id
+④ 本地落一行任务（source=acc，落在**调用者**的 workspace）
+⑤ 写绑定：SetACCBinding(acc_task_id / acc_run_id / acc_dispatch_id / correlation_id)
+⑥ 返回本地 task_id + ACC 侧三个 id
+```
+
+第 ⑤ 步顺手补上了 §19.12 留下的那个洞：**`SetACCBinding` 此前没有任何生产
+调用方**（绑定只靠「取消时现解」）。现在委派路径自己写绑定 ⇒ 取消不再依赖
+事件同步的时序。
+
+### 20.4 派单缺一组三元组 ⇒ 智能体**直接拒跑**（fail-closed）
+
+第一次把派单发出去，daemon 侧日志是：
+
+```
+20:53:07 executing dispatch  dispatch_id=dispatch_62a46148… agent_id=opencode fencing_token=1
+20:53:15 facade acp permission denied (fail-closed)  reason="missing correlation triple"
+20:53:15 the run did not succeed  error_code=permission_denied
+```
+
+⇒ 派单**送达并执行了**，但智能体一申请工具权限就被 daemon 的门禁拒掉。
+根因在 agent-companion 的 ACP 驱动（`internal/agentfacade/acp_driver.go:675`）：
+
+```go
+if req.SourceRef == "" || req.CorrelationID == "" {
+    return deny("missing correlation triple")
+}
+```
+
+而 ACC 把这两个字段存在派单的 `input_snapshot` 里（`runtimecontrol/service.go:870`），
+它们**来自派单请求体**。我第一次派单时没带 ⇒ 快照里是空串 ⇒ 权限门 fail-closed。
+
+**带上之后**（`source_ref=pocketd`、`correlation_id=<本地任务 id>`）：
+
+```
+20:55:24 executing dispatch  dispatch_id=dispatch_56986f7b… (无 missing correlation triple)
+20:55:53 the run did not succeed  error_code=permission_denied   ← 换成"权限门 30s 超时"
+```
+
+⇒ 三元组确实就是那道关卡。**剩下的 `permission_denied` 是另一环**：智能体的
+工具权限请求要有人应答（ACC 审批箱 → App 的审批入口），30s 内没人答就超时拒绝。
+**这一环本轮只定位到，没有在 App 上打通**（见 §20.9 遗留风险）。
+
+### 20.5 取消：派单已知、租约持有方还空着 ⇒ 被误报成「绑定不全」
+
+`handleCancelTask` 的老逻辑：`dispatch_id` 有、`holder_id` 没有 ⇒ 直接
+502 `acc_cancel_unavailable`「binding incomplete」。但**刚派出去的单**正是这个
+状态（租约是异步发的）。而持有方就在同一批运行事件里（`dispatch.leased` /
+`dispatch.started` 的 `actor_id`）。
+
+**修法**：`dispatch_id` 已知而 `holder_id` 为空时，去运行事件里解**持有方**
+（`task_cancel.go`）。解不出来仍然 fail-closed 502——不放松围栏。
+
+### 20.6 ACC 的两个面**不是同一批东西**（tasksync 之前一直在同步 0 条）
+
+| 读面 | 看到什么 |
+|---|---|
+| MCP `acc_get_tasks` | ACC 的 **work item**（`acc_create_task` 建的那种），修前 tenant 里**一个都没有** ⇒ `[tasksync] synced 0 ACC tasks` |
+| ACC `/api/v2/canonical/tasks` | **canonical task**（agent-companion 每次开会话建的那种），实测 **23 条** |
+
+⇒ tasksync 同步 0 条**不是解析器坏了**（原始返回就是 `[]`），而是**它盯的那一面
+本来就没有东西**。修完接线 + 本轮建了 2 个 work item 之后，`[tasksync] synced 2
+ACC tasks` —— 数字对上了。
+
+⇒ 这也说明「ACC 任务」在系统里有**两套身份**，不能混用：canonical task 的
+`id` 与本地任务 id、ACC work item id、dispatch id 全都不同。
+
+### 20.7 环境事实：权威 ACC 的 runtime-control 面**当前不稳定**
+
+同一个 `GET /api/v2/runtime/runtimes`，连续实测：
+
+```
+200 (22.9s) → 502 (5.0s) → 502 (5.0s) → 200 (2.6s)
+```
+
+5s 网关超时会把慢请求打成 **502（空 body）**。⇒ 本轮对 ACC 侧调用做了两处
+加固：客户端超时 15s→**60s**、重试 2→**4 次**；派单目标优先用配置
+（`POCKET_ACC_DISPATCH_RUNTIME_ID` / `POCKET_ACC_DISPATCH_AGENT_ID`），
+少一次实时查询。**但这只能缓解，不能消除**——ACC 慢是**对面机器的状态**，
+不在本仓代码里。
+
+### 20.8 改动清单
+
+**后端（openpocket）**
+
+| 文件 | 关键行为 |
+|---|---|
+| `backend/internal/pgmigrate/lock.go`（新） | schema 级 advisory lock；`Acquire`/`Release`，带等待预算 |
+| `backend/internal/pgmigrate/lock_test.go`（新） | 3 条判据（互斥 / 不饿死 / 并发无死锁 / 跨 schema 不互斥） |
+| `backend/cmd/pocketd/main.go` | 启动迁移阶段持锁；ACC runtime 客户端超时 60s/重试 4 次 |
+| `backend/internal/accruntime/client.go`（新方法） | `Dispatch`（POST /api/v2/runtime/dispatch，**强制** source_ref + correlation_id） |
+| `backend/internal/accruntime/ecosystem.go` | `ResolveDispatchTarget`（runtime × agent 选派单目标）；`ErrNoDispatchableAgent` 哨兵 |
+| `backend/internal/server/server_task_delegate_acc.go`（新） | delegate 的「建任务 → 派发 → 写绑定」全链路 |
+| `backend/internal/server/task_cancel.go` | holder 缺失时从运行事件解持有方（仍 fail-closed） |
+| `backend/internal/server/server.go` | delegate 路由：缺 run_id 走新路径；90s 预算 + 写期限放宽 |
+| `backend/internal/config/config.go` | `POCKET_ACC_DISPATCH_RUNTIME_ID` / `POCKET_ACC_DISPATCH_AGENT_ID` |
+
+**前端（openpocket）**
+
+| 文件 | 关键行为 |
+|---|---|
+| `frontend/src/api/client.ts` | 新增 `api.cancelTask`（POST /api/tasks/{id}/cancel），失败带状态码 |
+| `frontend/src/api/accTasks.ts` | 委托响应改成**信封**（本地 `task_id` 与 ACC `acc_task_id` 分开）；新增 `listAccAgents/listAccTasks/listAccSessions`；`ACC_DELEGATE_TIMEOUT_MS=120s` |
+| `frontend/src/stores/accTasks.ts` | 委托卡片 id 取**本地** task_id；新增智能体清单状态与 `loadAgents` |
+| `frontend/src/features/tasks/TasksView.vue` | 任务菜单新增「⏹ 停止任务」；委托面板新增「派给哪个智能体」下拉 |
+| `frontend/src/api/__tests__/api-timeout-budget-table.test.mjs` | 登记 delegate 这条长路由（表 + 调用点清单 + 条数钉子） |
+
+**脚本 / 证据**（`~/kaixuan/acp/logs/rerun-round52/`）
+
+| 文件 | 作用 |
+|---|---|
+| `fix-pocketd-acc-wiring.sh` | ACC 接线 + 凭据修复，写回 0600 env 文件 |
+| `deliverables/acc-surface-probe.py` | ACC 接入面探针（登录/4 读面/任务可见性/delegate 契约） |
+| `deliverables/acc-direct-probe.py` | 直连 ACC 的 JWT 探针（读面/单任务/事件面） |
+| `deliverables/openpocket-delegate-live-e2e.py` | 委托 → 派发 → 停止 的线上端到端 |
+| `deliverables/migrate-deadlock-repro.log` | 迁移死锁的修复前/后对照证据 |
+| `audit-batch4.sh` | 证据横幅改成**运行时现取**（见 §20.9 最后一条） |
+
+### 20.9 本轮的测试读数
+
+**单元 / 集成判据**（干净环境 + 真实 PG DSN）
+
+```
+go test ./internal/pgmigrate/           → 3/3 PASS（真实 PG）
+go test ./internal/server/ -run "TestDelegateTask|TestAccTaskIDFromCreate"
+                                       → 3/3 PASS（2 条真跑 PG + 1 条解析表）
+node --test src/api/__tests__/api-timeout-budget-table.test.mjs → 33/33 PASS
+```
+
+**线上端到端**（真实 ACC + 真实 agent-companion daemon，脚本
+`deliverables/openpocket-delegate-live-e2e.py`，日志 `delegate-live-e2e.log`）：
+
+```
+✅ 委托（**不带 run_id** = App 的真实形态） → 200
+   local_task=task-95239e96…  acc_task=a8be3943…  run=run_6397450f…  dispatch=dispatch_782315ec…
+✅ ACC 命令存在                      status=created
+✅ daemon 真的接单了                 run_id=dispatch_782315ec… agent_id=opencode state=**running**
+✅ 停止（App 的「停止任务」）         → 200，本地任务 status=cancelled
+✅ ACC 命令真的停了                  status=cancelled  cancel_state=**delivered**
+✅ 清理                              DELETE → 200
+RESULT: PASS
+```
+
+⇒ **「App 里委托给 ACC → 智能体接单 → 按停止 → ACC 真的取消」这条链，
+第一次在真实栈上有端到端读数。**
+
+**设备侧（新增的 `.maestro/acc-delegate-stop.yaml`，真机 emulator-5556）**
+
+```
+Assert that "AI 工具" is visible... COMPLETED
+Tap on "委托 ACC"... COMPLETED
+Assert that "派给哪个智能体（可选）" is visible... COMPLETED     ← ★ 本轮新增的智能体选择器
+Assert that "自动选择当前可派的智能体" is visible... COMPLETED  ← ★ 读的是 ACC 的实时面
+Tap on "^委托给 ACC$", enabled... COMPLETED
+Assert that "maestro-acc-stop" is visible... COMPLETED           ← 委派真的进了本地列表
+Long press on "maestro-acc-stop"... COMPLETED
+Assert that ".*停止任务.*" is visible... COMPLETED               ← ★ 本轮新增的「⏹ 停止任务」
+Tap on ".*停止任务.*"... COMPLETED
+Tap on "^停止$"... COMPLETED
+Assert that "已停止" is visible... COMPLETED
+```
+
+⇒ **App 上「委托给 ACC」与「停止任务」两个入口第一次在真机上被走到过**
+（上一轮：前者每次 400，后者**根本不存在**）。
+
+落库复核（`opencode_pocket.tasks`，`psql` 直查）：
+
+```
+task-71ca93dcd99dc72b19e904b7922e153d|ws_user-admin|cancelled|acc|dispatch_baaf111f-…|maestro-acc-stop
+```
+
+⚠️ **但这一次的 ACC 侧命令终态是 `failed`，不是 `cancelled`** —— 必须说清楚：
+那台设备上智能体的工具权限请求**先超时失败**了（§20.4 的 30s 权限门没人应答），
+用户点「停止」时命令**已经是终态** ⇒ 按既有契约「终态不重复发取消」，
+后端只落了本地 `cancelled`，ACC 那边没有活着的副作用可停。
+⇒ **设备流证明的是「UI 路径存在且可用」**；
+⇒ **「停止真的到达 ACC」这条读数来自 §20.9 的 API 级端到端**（那条 run 停止时
+还活着 ⇒ ACC 命令 `cancelled` / `cancel_state=delivered`）。
+
+⚠️ 写这条流时踩到的两个**判据**坑（都不是产品缺陷，判据写法要改）：
+1. `visible: "派给哪个智能体"` 判红——实际文本是「派给哪个智能体（可选）」，
+   而 Maestro 的 visible 是**完整匹配**；
+2. `visible: "停止任务"` 判红——实际按钮文本是「**⏹** 停止任务」（带图标前缀），
+   失败现场的无障碍树里明明有 `[Button] '⏹ 停止任务' [49,1617][1031,1740]`。
+⇒ 判据要写成能容忍前缀/后缀的正则（`.*停止任务.*`）。
+
+### 20.10 设备侧复跑（第四轮 + 本轮改动后的复跑）
+
+- **第四轮全量复跑（部署后，对 origin/main = `759b5903` 的二进制）**：
+  A / B / C / D 四组 + `login-real` + `login-gesture`，**全部 exit=0、FAILED=0**，
+  整轮 EXIT=0（`audit4-summary.txt`，13 条流 / 285 步）。
+- ⚠️ **但那份证据的横幅是假的**：驱动脚本里写死了「被测构建 = `/tmp/pocketd-final`
+  （origin/main = fecbde09）」，而 18099 上实际跑的是 `/tmp/pocketd-main`。
+  用 `go version -m` 复核：被测二进制的 `vcs.revision=759b5903`（**测试本身打的
+  是新代码**），但**证据文件自己写了一句与事实不符的话**。
+  ⇒ 已把横幅改成**运行时现取**（监听进程 → 可执行文件 → `vcs.revision`；
+  设备上已装包的 `versionName`），取不到就打印 `UNKNOWN`，绝不写死。
+- **本轮改动后的复跑**：见本节末尾的「提交与推送」小节。
+
+### 20.11 遗留风险（**诚实清单**）
+
+1. **ACC 的工具权限审批环没在 App 上打通**：派单带三元组后，智能体申请工具权限
+   会进 daemon 的权限门；没人应答就 30s 超时拒绝（`permission_denied`）。
+   App 侧有审批入口（`/api/mobile/approvals/*`），但**本轮没有在真机上走通
+   「派单 → 智能体要权限 → App 批 → 智能体继续」**这条链。
+2. **ACC runtime-control 面当前不稳定**（§20.7）：502 会在慢时出现。客户端已
+   加固，但**根因在对面机器**。
+3. **停止「foreign」ACC 任务仍未打通**：本轮的停止只覆盖 **Pocket 自己委派出去
+   的任务**（本地有任务行 + 绑定）。ACC 上别人建的任务（canonical task），
+   App 里没有对应的本地任务行 ⇒ `POST /api/tasks/{id}/cancel` 会 404。
+4. **ACCP 审批面**：`/api/acc/agents|tasks|sessions` 的返回是 ACC 原样透传，
+   App 侧目前只用了 agents（选派单目标），tasks/sessions **只读未上 UI**。
+5. **tasksync 的缓存对用户其实是「死重」**：它把 ACC work item 写进
+   `workspace=default`，而 App 的登录用户是 `ws_user-admin`
+   ⇒ 这些缓存行**不在用户的任务列表里**（实测：`select workspace_id,count(*)
+   from opencode_pocket.tasks group by 1` ⇒ `default` 4 行 / `ws_user-admin` 1 行）。
+   而 App 列表里那几条 ACC 任务**不是缓存**，是 `GET /api/tasks` 的**三源聚合**里
+   实时去 ACC MCP 面拉的（`source=acc` 分支）⇒ 缓存与用户看到的东西**不是同一批**。
+   本轮没改（改它等于改多租户语义 + 缓存策略），登记为遗留。
+6. **`/api/opencode/dispatch` 那条路**（opencode 实例适配器）本轮没动，
+   它与 ACC 派发是两条不同的路。
+7. **两个仓的本地 `main` 仍落后**：并行会话在两仓都有未提交改动，我全程用
+   临时 worktree + `git push origin HEAD:main`，**没有动本地 main 引用**。
+8. **同 schema 的多个实例**现在靠 advisory lock 串行化迁移，但**运行期**它们
+   仍然共享一个 PG schema：tasksync 会在各实例上重复拉 ACC（幂等，可接受）。
+9. **daemon 的 run 历史是内存态、会被驱逐**：本轮 21:33 还能读到
+   `run_6397450f…`（那次 e2e 的 run），21:5x 再读 `/api/v1/runs` 已经
+   `{"runs":null,"total":0}`，而 daemon 进程**没有重启**（etime 3h17m、
+   healthz ok）⇒ 是被淘汰了。⇒ 「事后查某条派单当时怎么了」不能靠 daemon 的
+   run 列表，得靠 ACC 侧的运行事件 / 命令面。
+10. **机器负载**：本轮中后段宿主 load1 一度到 **127.81**（闸门阈值 25），
+   模拟器 shell 一度无响应 ⇒ 设备侧全量复跑（13 条流）**没有**在本轮重跑，
+   第四轮那次的读数（13/13 全绿）仍是最新的一轮全量基线。本轮新增的
+   `.maestro/acc-delegate-stop.yaml` 是在负载回落后单独跑绿的。

@@ -374,6 +374,12 @@
           class="ctx-btn danger"
           @click="ctxStopSessions"
         >⏹ 停止会话</button>
+        <button
+          v-if="contextTask?.status === 'active'"
+          class="ctx-btn danger"
+          :disabled="stoppingTaskId === contextTask?.id"
+          @click="ctxStopTask"
+        >⏹ 停止任务</button>
         <button class="ctx-btn" @click="ctxResume">▶ 继续跟进</button>
         <button
           v-if="contextTask?.status !== 'active'"
@@ -506,6 +512,19 @@
             maxlength="500"
           />
           <div class="char-counter">{{ accDraft.description.length }} / 500</div>
+        </div>
+        <div class="form-group">
+          <label>派给哪个智能体（可选）</label>
+          <select v-model="accDraft.agentId" class="acc-agent-select">
+            <option value="">自动选择当前可派的智能体</option>
+            <option v-for="a in accStore.agents" :key="a.id" :value="a.id">
+              {{ a.name || a.id }}{{ a.status ? `（${a.status}）` : '' }}
+            </option>
+          </select>
+          <div v-if="accStore.agentsLoading" class="char-counter">正在读取 ACC 智能体…</div>
+          <div v-else-if="accStore.agentsError" class="acc-error">
+            读不到智能体清单（可留空由服务端选）：{{ apiError(accStore.agentsError, 'errors.operateFailed') }}
+          </div>
         </div>
         <div v-if="accStore.error" class="acc-error">{{ apiError(accStore.error, 'errors.operateFailed') }}</div>
       </div>
@@ -823,12 +842,14 @@ function parseDueDate(value: string): number {
 const toast = useToast()
 const accStore = useAccTasksStore()
 const showAccModal = ref(false)
-const accDraft = ref({ title: '', description: '' })
+const accDraft = ref({ title: '', description: '', agentId: '' })
 
 function openAccDelegate() {
-  accDraft.value = { title: '', description: '' }
+  accDraft.value = { title: '', description: '', agentId: '' }
   accStore.reset()
   showAccModal.value = true
+  // 拉 ACC 的智能体清单，让用户能选「派给谁」。失败不阻断（后端会自己选）。
+  void accStore.loadAgents()
 }
 
 function closeAccDelegate() {
@@ -841,6 +862,7 @@ async function submitAccDelegate() {
   const created = await accStore.createTask({
     title,
     description: accDraft.value.description.trim() || undefined,
+    agentId: accDraft.value.agentId || undefined,
   })
   if (created) {
     // 追加到本地任务列表，不重新拉取
@@ -1372,6 +1394,52 @@ function ctxStopSessions() {
   if (!task) return
   closeContextMenu()
   void stopTaskSessions(task)
+}
+
+/**
+ * 停止任务（POST /api/tasks/{id}/cancel）。
+ *
+ * ★ 2026-10-25（审计轮）：这是**唯一**能把「停」送到 ACC 的通道 ——
+ * 对经 ACC 委派的任务，后端会取当前 fencing token 去取消那条派单。
+ * 此前 App 没有任何调用方（任务菜单只有「完成/删除」，会话级才有「停止」），
+ * 于是在手机上「停」这个动作根本不存在。
+ *
+ * 失败时把后端给的错误原样带出来：ACC 拒绝（502 acc_cancel_unavailable /
+ * 409 lease_fenced）与本地 404 是两回事，不能都显示成「失败，请重试」。
+ */
+const stoppingTaskId = ref<string | null>(null)
+
+async function stopTask(task: Task): Promise<void> {
+  if (!(await confirm({
+    title: '停止任务',
+    message: `停止「${task.title}」？如果它已派给 ACC，智能体会被真正叫停。`,
+    confirmText: '停止',
+    danger: true,
+  }))) return
+  stoppingTaskId.value = task.id
+  try {
+    await api.cancelTask(task.id, 'user_stopped')
+    const local = tasks.value.find((t) => t.id === task.id)
+    if (local) {
+      local.status = 'cancelled'
+      local.updatedAt = new Date().toISOString()
+    }
+    toast.success('已停止')
+    // 用本视图自己的刷新（useListScene('tasks', handleRefresh)），别引别处的脏标记
+    void handleRefresh()
+  } catch (e: any) {
+    console.error('Failed to cancel task:', e)
+    toast.error(e?.message ? `停止失败：${e.message}` : '停止失败，请重试')
+  } finally {
+    stoppingTaskId.value = null
+  }
+}
+
+function ctxStopTask() {
+  const task = contextTask.value
+  if (!task) return
+  closeContextMenu()
+  void stopTask(task)
 }
 
 /** 继续跟进：跳到任务最近的关联会话并预填「继续」草稿（可编辑再发送）。 */

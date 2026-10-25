@@ -224,6 +224,14 @@ type Config struct {
 	// 不是现成的 token。
 	ACCRuntimeURL    string // POCKET_ACC_RUNTIME_URL：ACC Runtime Control 基址（如 http://127.0.0.1:4101）
 	ACCRuntimeSecret string // POCKET_ACC_CONTROL_SECRET：HS256 签名密钥（ACC 的 control secret）
+	// 派单目标（可选）：POCKET_ACC_DISPATCH_RUNTIME_ID / POCKET_ACC_DISPATCH_AGENT_ID。
+	//
+	// 不配时会去 ACC 的 runtime 清单里现查（需要一个往返）。而 ACC 的
+	// runtime-control 面**实测会抖**：2026-10-25 观察到同一个 GET 在
+	// 2.6s / 22.9s / 67s 之间波动，5s 网关超时会把请求打成 502。
+	// 配了就少一次往返，派单不再依赖那次现查。
+	ACCDispatchRuntimeID string // POCKET_ACC_DISPATCH_RUNTIME_ID
+	ACCDispatchAgentID   string // POCKET_ACC_DISPATCH_AGENT_ID
 
 	// —— 会话迁移方案：实例感知增强配置 ——
 	DiscoveryFullSubnet bool     // POCKET_DISCOVERY_FULL_SUBNET：true=扫描完整 /24（默认 false 仅本机+网关）
@@ -384,6 +392,8 @@ func Load() Config {
 		CompanionSecret:       getEnv("POCKET_COMPANION_SECRET", ""),
 		ACCRuntimeURL:         getEnv("POCKET_ACC_RUNTIME_URL", ""),
 		ACCRuntimeSecret:      getEnv("POCKET_ACC_CONTROL_SECRET", ""),
+		ACCDispatchRuntimeID:  getEnv("POCKET_ACC_DISPATCH_RUNTIME_ID", ""),
+		ACCDispatchAgentID:    getEnv("POCKET_ACC_DISPATCH_AGENT_ID", ""),
 		// 会话迁移方案：实例感知增强
 		DiscoveryFullSubnet: getEnv("POCKET_DISCOVERY_FULL_SUBNET", "") == "true",
 		DiscoveryPorts:      parseIntList(getEnv("POCKET_DISCOVERY_PORTS", "")),

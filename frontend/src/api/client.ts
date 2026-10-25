@@ -334,6 +334,29 @@ export const api = {
     })
   },
 
+  /**
+   * 停止任务：POST /api/tasks/{id}/cancel。
+   *
+   * ★ 2026-10-25（审计轮）：这条端点对**经 ACC 委派**的任务会真的到达 ACC ——
+   * 后端取当前 fencing token 去取消那条派单（467fa8b1 修的那条路）。
+   * 此前 App **没有任何调用方**：任务菜单只有「完成/删除」，会话级才有「停止」，
+   * 于是「停」这个动作在手机上根本不存在。
+   *
+   * 失败时把状态码带出来：ACC 侧的拒绝（502 acc_cancel_unavailable /
+   * 409 lease_fenced）与本地 404 是完全不同的两件事，不能都显示成「失败」。
+   */
+  async cancelTask(id: string, reason?: string): Promise<void> {
+    const res = await authFetch(`${resolveApiBase()}/api/tasks/${id}/cancel`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reason: reason || "user_stopped" }),
+    })
+    if (!res.ok) {
+      const text = await res.text().catch(() => "")
+      throw new Error(`cancelTask failed: ${res.status} ${text.slice(0, 200)}`)
+    }
+  },
+
   async getTaskSessions(taskId: string): Promise<SessionLink[]> {
     const res = await authFetch(`${resolveApiBase()}/api/tasks/${taskId}/sessions`)
     const data = await res.json()

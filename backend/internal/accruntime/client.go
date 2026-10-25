@@ -226,6 +226,126 @@ func (c *Client) CancelCommand(ctx context.Context, commandID, holderID string, 
 	return discard(resp)
 }
 
+// DispatchRequest is the body of POST /api/v2/runtime/dispatch.
+//
+// SourceRef and CorrelationID are NOT optional decoration: ACC copies them
+// into the command's input_snapshot, the agent-companion daemon reads them
+// back as the durable event's Source/CorrelationID, and its ACP permission
+// gate refuses (fail-closed) to run when either is empty.
+//
+// Measured 2026-10-25 against the live ACC + the live daemon:
+//
+//	dispatch without source_ref/correlation_id → the agent starts, asks for a
+//	tool permission, and the daemon answers
+//	  "facade acp permission denied (fail-closed) ... reason=missing correlation triple"
+//	⇒ the run dies with error_code=permission_denied.
+//	the same dispatch WITH both fields → no "missing correlation triple"; the
+//	run proceeds and the command reaches status=running.
+type DispatchRequest struct {
+	// IdempotencyKey dedupes retries of the same dispatch intent.
+	IdempotencyKey string `json:"idempotency_key"`
+	// RuntimeID is the agent-companion runtime that should execute the task
+	// (e.g. "acs-ac30-01").
+	RuntimeID string `json:"runtime_id"`
+	// AgentID is the agent slot inside that runtime (e.g. "opencode").
+	AgentID string `json:"agent_id"`
+	// TaskID is the ACC task to execute.
+	TaskID string `json:"task_id"`
+	// Operation is the command verb ("agent.task").
+	Operation string `json:"operation"`
+	// SourceRef names the initiator ("pocketd").
+	SourceRef string `json:"source_ref"`
+	// CorrelationID ties the dispatch to the Pocket task that caused it.
+	CorrelationID string `json:"correlation_id"`
+	// Payload is the operation payload (e.g. {"prompt": "..."}).
+	Payload map[string]any `json:"payload,omitempty"`
+}
+
+// DispatchResult is ACC's answer to a dispatch.
+//
+// The wire shape is {"command_id": "...", "data": {dispatch_id, run_id,
+// task_id, status, ...}}. The data envelope is where the ids live, so the
+// decoder reads it from there and falls back to the top level for
+// deployments that answer differently.
+type DispatchResult struct {
+	CommandID  string `json:"command_id"`
+	DispatchID string `json:"dispatch_id"`
+	RunID      string `json:"run_id"`
+	TaskID     string `json:"task_id"`
+	Status     string `json:"status"`
+	AgentID    string `json:"agent_id"`
+}
+
+// Dispatch posts POST /api/v2/runtime/dispatch: "run this ACC task on that
+// agent-companion runtime".
+func (c *Client) Dispatch(ctx context.Context, req DispatchRequest) (DispatchResult, error) {
+	if err := c.ready(); err != nil {
+		return DispatchResult{}, err
+	}
+	if strings.TrimSpace(req.RuntimeID) == "" {
+		return DispatchResult{}, errors.New("accruntime: dispatch: runtime_id is required")
+	}
+	if strings.TrimSpace(req.AgentID) == "" {
+		return DispatchResult{}, errors.New("accruntime: dispatch: agent_id is required")
+	}
+	if strings.TrimSpace(req.TaskID) == "" {
+		return DispatchResult{}, errors.New("accruntime: dispatch: task_id is required")
+	}
+	if strings.TrimSpace(req.SourceRef) == "" {
+		// Fail closed here rather than let the run die later with
+		// "missing correlation triple": the symptom would be an opaque
+		// permission_denied minutes after the dispatch was accepted.
+		return DispatchResult{}, errors.New("accruntime: dispatch: source_ref is required (the agent's permission gate refuses a dispatch without it)")
+	}
+	if strings.TrimSpace(req.CorrelationID) == "" {
+		return DispatchResult{}, errors.New("accruntime: dispatch: correlation_id is required (the agent's permission gate refuses a dispatch without it)")
+	}
+	body := map[string]any{
+		"runtime_id":     req.RuntimeID,
+		"agent_id":       req.AgentID,
+		"task_id":        req.TaskID,
+		"operation":      req.Operation,
+		"source_ref":     req.SourceRef,
+		"correlation_id": req.CorrelationID,
+	}
+	if req.IdempotencyKey != "" {
+		body["idempotency_key"] = req.IdempotencyKey
+	}
+	if req.Payload != nil {
+		body["payload"] = req.Payload
+	}
+	resp, err := c.http.Post(ctx, "/api/v2/runtime/dispatch", nil, body)
+	if err != nil {
+		return DispatchResult{}, fmt.Errorf("accruntime: dispatch: %w", err)
+	}
+	raw, err := readAll(resp)
+	if err != nil {
+		return DispatchResult{}, fmt.Errorf("accruntime: dispatch: %w", err)
+	}
+	var env struct {
+		CommandID string          `json:"command_id"`
+		Data      json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(raw, &env); err != nil {
+		return DispatchResult{}, fmt.Errorf("accruntime: dispatch: decode: %w", err)
+	}
+	payload := env.Data
+	if len(payload) == 0 {
+		payload = raw
+	}
+	var out DispatchResult
+	if err := json.Unmarshal(payload, &out); err != nil {
+		return DispatchResult{}, fmt.Errorf("accruntime: dispatch: decode data: %w", err)
+	}
+	if out.CommandID == "" {
+		out.CommandID = env.CommandID
+	}
+	if out.DispatchID == "" {
+		return DispatchResult{}, fmt.Errorf("accruntime: dispatch: ACC accepted the dispatch but returned no dispatch_id")
+	}
+	return out, nil
+}
+
 // Approval is one entry of ACC's human approval inbox. Fields mirror
 // acc-go handlers.ApprovalRequest; decoding is lenient (see
 // ListApprovals) so unknown envelope shapes do not break the read.

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"strings"
 
 	"github.com/halfking/pocket-opencode/backend/internal/task"
 )
@@ -50,14 +51,42 @@ func (s *Server) handleCancelTask(w http.ResponseWriter, r *http.Request, taskID
 	// 就是**租约持有方**。所以解不出来时才退回去按 run 查事件。
 	dispatchID := current.ACCDispatchID
 	holderID := current.ACCHolderID
+	// 可能的 run id 来源：绑定列 + 运行绑定表。
+	runIDCandidates := []string{current.ACCRunID}
+	if rb, rerr := s.taskStore.GetTaskRunBinding(r.Context(), workspaceID, taskID); rerr == nil && rb.RunID != "" {
+		runIDCandidates = append(runIDCandidates, rb.RunID)
+	}
 	if dispatchID == "" {
-		if rb, rerr := s.taskStore.GetTaskRunBinding(r.Context(), workspaceID, taskID); rerr == nil && rb.RunID != "" {
-			ref, derr := s.resolveACCDispatch(r.Context(), rb.RunID)
+		for _, runID := range runIDCandidates {
+			if strings.TrimSpace(runID) == "" {
+				continue
+			}
+			ref, derr := s.resolveACCDispatch(r.Context(), runID)
 			if derr == nil {
 				dispatchID, holderID = ref.DispatchID, ref.HolderID
 				log.Printf("[tasks/cancel] task %s resolved ACC dispatch %s (holder %s) from run events", taskID, dispatchID, holderID)
-			} else {
-				log.Printf("[tasks/cancel] task %s: no ACC dispatch resolvable from run %s: %v", taskID, rb.RunID, derr)
+				break
+			}
+			log.Printf("[tasks/cancel] task %s: no ACC dispatch resolvable from run %s: %v", taskID, runID, derr)
+		}
+	}
+	// ★ 派单 id 已知、但租约持有方还空着时，去运行事件里解**持有方**。
+	//
+	// 2026-10-25 实测：委派链刚跑通时，任务行里写的是 dispatch_id，
+	// 而 holder_id 要等命令真正被租出去才有值（租约是异步发的）。
+	// 原来的写法在这里直接 502「binding incomplete」⇒ 用户按「停止」，
+	// 系统答「绑定不全」。而持有方就在同一批运行事件里（dispatch.leased /
+	// dispatch.started 的 actor_id），和 dispatch_id 是同一次解出来的。
+	if dispatchID != "" && holderID == "" {
+		for _, runID := range runIDCandidates {
+			if strings.TrimSpace(runID) == "" {
+				continue
+			}
+			ref, derr := s.resolveACCDispatch(r.Context(), runID)
+			if derr == nil && ref.HolderID != "" {
+				holderID = ref.HolderID
+				log.Printf("[tasks/cancel] task %s resolved ACC holder %s from run events", taskID, holderID)
+				break
 			}
 		}
 	}

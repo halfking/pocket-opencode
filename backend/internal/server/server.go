@@ -984,6 +984,19 @@ var longLivedPaths = []string{
 	"/api/llm-gateway/nodes/", // 网关运维控制面（live-stream 等）
 	"/api/mobile/sessions/",   // 移动端 session SSE（含 /event）
 	"/api/llmbff/stream",      // 同上的历史别名（保留兼容）
+	// 委托给 ACC（2026-10-25 审计轮新增）。
+	//
+	// 它要跟 ACC 往返两次（acc_create_task 建任务 + runtime control 派发），
+	// 而权威 ACC 的 runtime-control 面实测会抖到 22~67s ⇒ handler 预算是
+	// 90s（handleDelegateTask 里的 WithTimeout）。
+	// 不豁免的话：30s 的 WriteTimeout 先到 ⇒ 连接写 deadline 到期 ⇒
+	// handler 在 90s 才 writeJSON，写不进去 ⇒ **客户端拿到空响应、
+	// 服务端其实成功了**（与 /api/email/pipeline/run 那次事故同一形态，
+	// 症状极具误导性：日志记 200，客户端报 socket closed + bytesRead: 0）。
+	//
+	// handler 内部自己把写期限设成 105s（SetWriteDeadline），所以这条
+	// 豁免给的是「不再被 30s 掐断」，不是「无上界」。
+	"/api/tasks/delegate",
 	// 邮件流水线的长耗时同步端点。这些**不是** SSE，但同样会被 30s
 	// WriteTimeout 掐断，而且掐断的表现极具误导性：
 	//
@@ -1703,14 +1716,7 @@ func (s *Server) handleDelegateTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req struct {
-		Kind        string `json:"kind"`
-		Title       string `json:"title"`
-		Description string `json:"description"`
-		RunID       string `json:"run_id"`
-		TaskID      string `json:"task_id"`
-		OperationID string `json:"operation_id"`
-	}
+	var req delegateAccRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
@@ -1720,8 +1726,20 @@ func (s *Server) handleDelegateTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// ★ 2026-10-25（审计轮实测）：移动端的「委托给 ACC」只发
+	// {title, description, kind}，**没有 run_id** ⇒ 这里原本直接 400，
+	// 也就是说这个功能从来没通过过。而 run 本来就是**派发**的产物，
+	// 不该由 App 提供。缺 run_id 时改走「后端自己建任务并派发」。
 	if strings.TrimSpace(req.RunID) == "" {
-		http.Error(w, "run_id is required for canonical task binding", http.StatusBadRequest)
+		// ★ 这条路要跟 ACC 往返两次（建任务 + 派发），而 ACC 的
+		// runtime-control 面实测会抖到 22~67s（2026-10-25，5s 网关超时
+		// 会把请求打成 502）。所以给它一个明确的整体预算，并把写期限
+		// 一起放宽 —— 否则 30s 的默认 WriteTimeout 会把还在跑的请求腰斩，
+		// 客户端看到的是「超时」，服务端其实还在跑。
+		ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
+		defer cancel()
+		_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(105 * time.Second))
+		s.delegateCreateAndDispatch(ctx, w, r, req)
 		return
 	}
 	args := map[string]interface{}{"title": req.Title, "run_id": req.RunID, "task_id": req.TaskID}

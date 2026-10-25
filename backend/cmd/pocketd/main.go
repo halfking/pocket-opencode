@@ -45,6 +45,7 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/notifycenter"
 	"github.com/halfking/pocket-opencode/backend/internal/opencode"
 	"github.com/halfking/pocket-opencode/backend/internal/orchestrator"
+	"github.com/halfking/pocket-opencode/backend/internal/pgmigrate"
 	"github.com/halfking/pocket-opencode/backend/internal/quota"
 	"github.com/halfking/pocket-opencode/backend/internal/redclaw"
 	"github.com/halfking/pocket-opencode/backend/internal/registry"
@@ -97,6 +98,37 @@ func main() {
 		defer pool.Close()
 	} else {
 		log.Println("WARN: POCKET_POSTGRES_DSN not set, running in remote-only mode (no local task cache)")
+	}
+
+	// ---- Cross-process migration serialization ----
+	//
+	// Every store below runs its own DDL batch at boot, and each batch is a
+	// single multi-statement simple query ⇒ PostgreSQL holds every lock the
+	// batch takes until the whole batch commits. Two instances booting against
+	// the same schema therefore deadlock each other (40P01) and the victim
+	// dies before it can serve. Measured 2026-10-25: 18097 + 18099 starting
+	// together against schema `opencode_pocket` ⇒
+	//   task migrate: ERROR: deadlock detected (SQLSTATE 40P01)
+	// and 18099 never came up.
+	//
+	// Take a schema-scoped advisory lock for the whole migration phase so only
+	// one instance runs DDL per schema at a time. See internal/pgmigrate for
+	// the mechanism and the lock-key derivation.
+	var migLock *pgmigrate.Lock
+	if pool != nil {
+		l, lerr := pgmigrate.Acquire(context.Background(), pool, pgmigrate.DefaultWait)
+		if lerr != nil {
+			// Degraded, not fatal: booting without the lock risks a 40P01
+			// deadlock against a peer, but refusing to boot guarantees an
+			// outage. Log loudly so the failure is visible if it happens.
+			log.Printf("WARN: migration lock unavailable (%v); booting without cross-process migration serialization", lerr)
+		} else {
+			migLock = l
+			log.Printf("Postgres migration lock acquired (schema=%q)", cfg.PostgresSchema)
+			// Safety net: Release is idempotent, and the explicit release
+			// below happens first in the normal path.
+			defer migLock.Release()
+		}
 	}
 
 	// ---- Module stores (all share the pool) ----
@@ -738,6 +770,13 @@ func main() {
 		accClient, err := accruntime.New(acchttp.Config{
 			BaseURL: cfg.ACCRuntimeURL,
 			Signer:  signer,
+			// ★ 2026-10-25 实测：权威 ACC 的 runtime-control 面**会抖** ——
+			// 同一个 GET /api/v2/runtime/runtimes 实测耗时 2.6s / 22.9s / 67s，
+			// 期间 5s 网关超时会把请求打成 502。默认 15s 超时 + 2 次重试
+			// 在这种抖动下会直接失败 ⇒ 派单/取消都做不成。
+			// 这里放宽单次超时并多给两次重试。
+			Timeout:    60 * time.Second,
+			MaxRetries: 4,
 		})
 		if err != nil {
 			log.Printf("WARN: ACC runtime client not wired: %v", err)
@@ -1257,6 +1296,15 @@ func main() {
 	// 优先 PostgreSQL（Acc 模式：跨设备同步）；无 PG 时降级到本地 SQLite
 	// （单机离线也能用 AI 对话 + 内置/自定义角色，但不提供云端同步）。
 	chatAgentStore, chatAgentSync := initChatAgentStores(pool, dataDir)
+	// Every store has now been constructed (and therefore migrated). Release
+	// the schema migration lock so a peer instance can run its own DDL.
+	// (The lock is idempotent; the deferred release in main() is a no-op
+	// afterwards.)
+	if migLock != nil {
+		migLock.Release()
+		migLock = nil
+		log.Println("Postgres migration lock released")
+	}
 	if chatAgentStore == nil {
 		log.Println("WARN: chat agent store not initialized")
 	} else {

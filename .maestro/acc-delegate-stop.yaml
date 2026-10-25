@@ -1,0 +1,82 @@
+# Maestro 真机功能流 · ACC 委派与「停止任务」（2026-10-25 审计轮新增）
+#
+# 这条流守的是**上一轮从未存在过**的两件事：
+#   ① 移动端的「委托给 ACC」按钮**从来没有通过过**（每次点击都是 400
+#      "run_id is required for canonical task binding" ⇒ 契约错配，不是少传字段）；
+#   ② 任务菜单里**没有「停止任务」**（只有「完成/删除」，会话级才有「停止」）
+#      ⇒ 用户在手机上根本按不到那个能到达 ACC 的停止。
+#
+# 坐标与文案的来源（**实测**，不是推测）：
+#   失败现场的无障碍树（~/.maestro/tests/2026-10-25_215223/…/step-008-*.json）
+#     标题 *            [49,1254][1031,1304]
+#     描述（可选）      [49,1441][1031,1493]
+#     派给哪个智能体（可选）[49,1790][1031,1840]   ← ★ 本轮新增
+#     自动选择当前可派的智能体 [49,1848][1031,1953] ← ★ 本轮新增
+#     取消              [49,2157][181,2268]
+#     委托给 ACC        [175,2157][425,2268]
+#   设备 1080x2400。
+#
+# ⚠ 写这条流时踩到的第一条坑（**判据问题，不是产品缺陷**）：
+#   第一次跑用 `visible: "派给哪个智能体"` 判红，但失败现场的无障碍树里
+#   **明明有**「派给哪个智能体（可选）」——Maestro 的 visible 是**精确匹配**，
+#   标签多了「（可选）」就匹配不上。⇒ 判据要写全。
+#
+# 运行：node scripts/maestro-run.mjs .maestro/acc-delegate-stop.yaml
+appId: com.kaixuan.opencode.pocket
+---
+# ---------- 0. 前置：harness 已真实登录，起点是 #/ai ----------
+- extendedWaitUntil:
+    visible: "AI 工具"
+    timeout: 60000
+- waitForAnimationToEnd:
+    timeout: 15000
+
+# ---- 1. 打开「委托给 ACC」面板 ----
+- extendedWaitUntil:
+    visible: "委托 ACC"
+    timeout: 40000
+- tapOn: "委托 ACC"
+- extendedWaitUntil:
+    visible: "^委托给 ACC$"
+    timeout: 20000
+
+# ---- 2. ★ 本轮新增：能选「派给哪个智能体」，且清单来自 ACC 的实时读面 ----
+- assertVisible: "派给哪个智能体（可选）"
+- assertVisible: "自动选择当前可派的智能体"
+
+# ---- 3. 填标题并提交 ----
+# 输入框在无障碍树里是 [EditText] t="" cd=""（placeholder 与 label 都不暴露）
+# ⇒ 只能按坐标点。标题 label 在 y=1254~1304 ⇒ 输入框取 y≈1350（56%）。
+- tapOn: { point: "50%,56%" }
+- inputText: "maestro-acc-stop"
+- tapOn: { text: "^委托给 ACC$", enabled: true }
+
+# ---- 4. 新卡片出现（source=acc 的任务进了本地列表）----
+- extendedWaitUntil:
+    visible: "maestro-acc-stop"
+    timeout: 40000
+- assertVisible: "maestro-acc-stop"
+
+# ---- 5. ★ 长按卡片 → 菜单里必须出现「停止任务」----
+# （这是上一轮**没有**的按钮：菜单只有「完成/删除」）
+- longPressOn: "maestro-acc-stop"
+# ⚠ 按钮文本是「⏹ 停止任务」（带 ⏹ 前缀），而 Maestro 的 visible 是
+#   **完整匹配** ⇒ 上一轮判 "停止任务" 判红，但失败现场的无障碍树里
+#   明明有 [Button] '⏹ 停止任务' [49,1617][1031,1740]。
+#   ⇒ 判据要写成能容忍前缀的正则。（与 tasks-crud.yaml 里
+#     `visible: "Maestro任务.*"` 同一类坑。）
+- extendedWaitUntil:
+    visible: ".*停止任务.*"
+    timeout: 20000
+- assertVisible: ".*停止任务.*"
+
+# ---- 6. 点「停止任务」→ 确认 → 停止真的生效 ----
+- tapOn: ".*停止任务.*"
+- extendedWaitUntil:
+    visible: "^停止$"
+    timeout: 15000
+- tapOn: "^停止$"
+- extendedWaitUntil:
+    visible: "已停止"
+    timeout: 30000
+- assertVisible: "已停止"
