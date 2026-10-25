@@ -198,3 +198,72 @@ func TestDriverEncodesTimestamptzByFlooring(t *testing.T) {
 		t.Errorf("字面量路径的样本数不对：%d want %d", literalNotFloored, len(tails))
 	}
 }
+
+// TestBoundaryParamsShareTheStoredScale 钉住「**查询边界参数**与存储值同刻度」。
+//
+// ⚠⚠ 为什么这条必须存在（§966.7 那条断言的实测依据）：
+//
+//	§966.7 写着「驱动在编码时把**边界参数也一并**向下截断 ⇒ 存储值与边界值
+//	**天然同刻度** ⇒ ⇒ ⇒ 边界参数**不需要**手工截断」⇒ ⇒ ⇒ 那句话当时**只有推理**。
+//	⇒ ⇒ ⇒ 本条把它变成**读数**。
+//
+// ⚠ 判别手法（**一个比特**就能区分两种行为）：
+//
+//	写入 t = …700ns（带亚微秒尾）⇒ 库里存的是 floor(t) = …000000；
+//	再查 `WHERE ts = $1`，参数传**同一个 t**：
+//	  · 驱动若也 floor 参数 ⇒ 参数变成 …000000 ⇒ 与库值相等 ⇒ **查得到**
+//	  · 驱动若**不**处理参数 ⇒ 参数仍是 …700ns ⇒ 与库值不等 ⇒ **查不到**
+//
+// ⇒ ⇒ ⇒ ⇒ **「查得到 / 查不到」这一个比特，就是全部判据**。
+//
+// ⚠ 负控：把参数换成「库值 + 1µs」⇒ 必须**查不到**
+//
+//	⇒ ⇒ 否则上面那条可能是因为「等值查询恒真」而过的。
+func TestBoundaryParamsShareTheStoredScale(t *testing.T) {
+	pool, cleanup := newPGDriverEnv(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	if _, err := pool.Exec(ctx, `
+		CREATE TABLE probe (
+			id int primary key,
+			ts timestamptz not null
+		)`); err != nil {
+		t.Fatalf("create probe table: %v", err)
+	}
+
+	base := time.Date(2026, 10, 25, 12, 0, 0, 0, time.UTC)
+	tsVal := base.Add(700 * time.Nanosecond)
+
+	if _, err := pool.Exec(ctx, `INSERT INTO probe (id, ts) VALUES (1, $1)`, tsVal); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	// 库里的值：必须是 floor（驱动在客户端就截断了）。
+	var stored time.Time
+	if err := pool.QueryRow(ctx, `SELECT ts FROM probe WHERE id = 1`).Scan(&stored); err != nil {
+		t.Fatalf("select stored: %v", err)
+	}
+	if want := base.Truncate(time.Microsecond); !stored.Equal(want) {
+		t.Fatalf("库里存的必须是 floor 后的值：stored=%v want=%v", stored, want)
+	}
+
+	// ① 关键读数：等值查询，参数 = **写入时那个带 700ns 尾的值**。
+	//    ⇒ 查得到 ⇒ **参数也被向下截断** ⇒ 参数与存储值同刻度。
+	var n int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM probe WHERE ts = $1`, tsVal).Scan(&n); err != nil {
+		t.Fatalf("count with equal param: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("边界参数必须与存储值同刻度（等值查询应查到 1 行）：实际 %d 行 ⇒ 参数**没有**被向下截断", n)
+	}
+
+	// ② 负控：参数 = 库值 + 1µs ⇒ 必须**查不到**（否则 ① 没有区分度）。
+	var k int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM probe WHERE ts = $1`, stored.Add(time.Microsecond)).Scan(&k); err != nil {
+		t.Fatalf("count with +1µs param: %v", err)
+	}
+	if k != 0 {
+		t.Errorf("负控：参数比库值大 1µs 时必须查不到，实际 %d 行", k)
+	}
+}
