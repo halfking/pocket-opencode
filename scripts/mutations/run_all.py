@@ -44,7 +44,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
-BATCHES = ['s919.py', 's920.py', 's921.py', 's922.py', 's936.py', 's937.py', 's938.py', 's939.py', 's940.py', 's941.py', 's942.py', 's943.py', 's944.py', 's945.py', 's946.py', 's947.py', 's948.py', 's949.py', 's950.py', 's951.py', 's952.py', 's953.py', 's954.py', 's955.py', 's956.py', 's957.py']
+BATCHES = ['s919.py', 's920.py', 's921.py', 's922.py', 's936.py', 's937.py', 's938.py', 's939.py', 's940.py', 's941.py', 's942.py', 's943.py', 's944.py', 's945.py', 's946.py', 's947.py', 's948.py', 's949.py', 's950.py', 's951.py', 's952.py', 's953.py', 's954.py', 's955.py', 's956.py', 's957.py', 's966.py']
 
 # ⚠ PID 文件放**系统临时目录**（不在仓里 ⇒ 不会进版本库，也不会污染工作树）。
 PIDFILE = Path(tempfile.gettempdir()) / 'openpocket-mutations-run.pid'
