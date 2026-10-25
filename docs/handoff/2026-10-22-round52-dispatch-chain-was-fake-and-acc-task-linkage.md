@@ -1490,6 +1490,13 @@ ACC_COMPANION_TOKEN=<本机 daemon 的 AC_API_SECRET>                   # 读面
   `before=0 after=0`，耗时 4s → 1.2s；且**比旧判据更敏感**（旧的 +2 宽容度本身
   给真正的违规留了余地）。判据的分辨力单独验过：刻意起一个子进程，`base=0 →
   withChild=1` ⇒ 它真能抓违规，不是把断言放水成永远绿。
+  ★ **没有新增平台跳过**：第一版在 Windows 上加了一句 `t.Skip`，被 agent-companion
+  自己的门禁打回（`tests/skip_honesty_test.go` 的 `TestNoUnjustifiedPlatformSkips`：
+  平台门控的 skip 必须在 `justifiedSkips` 名单里给出可辩护的理由，而「Windows 上
+  修不了」并不成立 —— `Win32_Process` 带 `ParentProcessId`）。最终改成把 Windows
+  那条路实现出来：POSIX 用 `ps -axo pid=,ppid=`，Windows 用
+  `Get-CimInstance Win32_Process`，两者都取不到就**退回旧的整机计数判据**（粗，
+  但绝不静默跳过）⇒ 门禁 PASS，Windows 覆盖也没丢。
   ⚠️ 先前试过的「多次采样取最小值」方案**已撤回**（非负载下也红、耗时翻倍）——
   本次是「换判据」，不是「换采样」。
 - ⚠️ **`internal/acp` 的 `TestConnectHandshakeErrorDoesNotRepeatItself`**：同样是负载型
@@ -1501,3 +1508,42 @@ ACC_COMPANION_TOKEN=<本机 daemon 的 AC_API_SECRET>                   # 读面
   daemon 的 `AC_API_SECRET` 统一成同一把。
 - ⚠️ `mmcode` 仍只可观测（执行层白名单不含它）；create 面仍阻塞；run 历史不跨
   daemon 重启；本机仍无 USB Android 真机（AVD `pocket-test`）—— 与 §17.4 一致。
+
+### 19.9 设备侧 13 条 Maestro 流全量复跑（18:05–18:20）
+
+§19.8 之前那条「本轮没有重跑设备侧」在**开跑前的判断**是：改动只落在
+`backend/internal/accruntime/`（只服务 `/api/acc/*`），而 `.maestro/` 里**没有任何
+流引用 `/api/acc/`**；前端那套 ACC 集成调的是 `/api/tasks/delegate`（不是
+`/api/acc/*`）⇒ 设备流与本轮改动的包**完全不相交**。
+
+但「不相交」不等于「有当前态读数」。负载降到闸门以下后（load1 19.75 < 25，
+闸门是**合法打开**的，不是超时后强行开跑），本轮**补跑了设备侧全量**：
+
+| 组 | 读数 | 步数 |
+|---|---|---|
+| A（smoke-login / notes-crud / tasks-crud） | exit=0，FAILED=0 | 63 |
+| B（meetings-entry / messages-hub / more-grid-reach） | exit=0，FAILED=0 | 69 |
+| C（more-entries-open / email-accounts / email-browse） | exit=0，FAILED=0 | 70 |
+| D（settings-llm-gateway / flashcards-write） | 首跑 exit=1、FAILED=0 ⇒ **整条 flow 被跳过**；补跑 exit=0、FAILED=0 | 55 |
+| login-real | exit=0，FAILED=0 | 12 |
+| login-gesture | exit=0，FAILED=0 | 16 |
+| **合计** | **13/13 全绿，285 步 COMPLETED，0 FAILED** | 285 |
+
+★ D 组首跑 exit=1 的根因是**部署面事故，不是产品缺陷**：宿主上的 `psql` 是转发到
+docker 容器的 shim，默认容器名 `acc-pg17` 已被并行会话删除 ⇒ 闪卡夹具的清场步骤
+失败 ⇒ 夹具**主动跳过**整条 flow（日志原文：「清场失败，跳过本条 flow（场景没回到
+起点，它会测成另一条分支）」）。**没测 ≠ 过了**，所以用 `PSQL_CONTAINER=ac-audit-pg17`
+（自建的独立 PG 容器）补跑，D 组 55 步全 COMPLETED。
+
+★ 一条**我自己造成的**干扰，如实记账：第一次补跑 D 时我把它**和主批次的登录流并行**
+起了（主批次 18:13:36 还在跑 login-real/login-gesture），两条 Maestro 同时驱动
+**同一个设备上的同一个 App** ⇒ 补跑的 preflight 在「清登录态」时把登录页冲掉了，
+报「页面上没有输入用户名/输入密码；实际有 0 个输入框」⇒ exit=3。
+等主批次结束后单独补跑，一次就过（exit=0、55 步）。⇒ **同一台设备上不能并行跑两条
+Maestro 流**，这是本轮实测出来的纪律。
+
+★ 本轮设备的读数对应的是**上一轮那版后端二进制**（`/tmp/pocketd-new`）：本轮
+openpocket 的改动（`backend/internal/accruntime/`）**不在任何设备流的路径上**
+（依据同上：`.maestro/` 无 `/api/acc/` 引用；前端 ACC 集成走 `/api/tasks/delegate`），
+所以两个二进制在这些流上的行为**完全一致**；没有重启共享后端是为了不打断并行会话
+正在用同一套后端的工作。
