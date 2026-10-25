@@ -1300,3 +1300,37 @@ agent-companion 的大量 staged 改动）**一个字节都没被碰**。
 - ⚠️ **环境面新登记一条**：宿主上的 `psql` shim 默认容器名 `acc-pg17`，
   PG 容器换名/被删就会让**闪卡夹具**整条 flow 被跳过（不是测红，是没测）。
   建议把 `PSQL_CONTAINER` 写进部署清单。
+
+---
+
+## 18. 补齐 §17.4 第 1 条：「排队中的派单」的**线上读数**
+
+§17.4 登记过一条遗留：agent-companion 的修复已进 main，但**线上实例仍是并行会话的构建**
+（`0.1.0-d99eb26`），所以修复的线上读数缺失。本节把它补上。
+
+做法：**不覆盖线上实例**，而是用 `origin/main`（含修复的合并提交 `609f8cc`）构建一个
+**独立实例**监听 `127.0.0.1:12111`，用 mock ACP agent（`cmd/acp-mock-agent`，
+提示词里的 `[[HOLD]]` 让回合挂住）实测：
+
+| 步 | 读数 |
+|---|---|
+| 1) 派一条占住槽位 | `run-c12f4f9d…` → `running` |
+| 2) 再派一条（客户端预置 `runId=run-live-queued-2`） | 它**阻塞**在抢槽位上 |
+| 3) `GET /api/v1/runs` | `run-live-queued-2 \| queued` ⇒ **排队中的派单看得见** |
+| 4) `POST /api/v1/runs/run-live-queued-2/cancel` | **HTTP 200** + `state=cancelled` ⇒ **停得掉** |
+| 5) 被叫停的那条派单 | **409** `{"code":"cancelled","message":"dispatch cancelled before it started"}` ⇒ 落 cancelled，**不是 agent_busy** |
+| 6) 停止后再查 | **HTTP 200** + `state=cancelled` + `cancel_requested=true` ⇒ **停止的历史留得住** |
+
+顺带证明的两件事：
+
+- **撞号守卫生效**：同一个预置 runId 再派一次 ⇒ `409 {"message":"runId \"…\" is already in use"}`；
+- **超时仍是 busy**（设计如此，不是回归）：叫停晚于 20 秒（`DefaultMaxSlotWait`）⇒
+  那条派单落 `failed` / `agent_busy`。
+
+脚本与日志：`~/kaixuan/acp/logs/rerun-round52/live-rig-start.sh`、
+`live-rest-queued-cancel.py`、`live-rest-queued-cancel-final.log`；
+agent-companion 侧同一份读数已写进 `docs/QUEUED_DISPATCH_CANCEL_2026-10-25.md` §4.1
+（提交 `edfad02`）。
+
+⇒ §17.4 第 1 条降级为：**线上 :12110 仍是旧构建**（属于部署动作，未做），
+但**修复本身的行为已有真进程读数**。
