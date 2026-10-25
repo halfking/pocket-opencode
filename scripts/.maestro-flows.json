@@ -81,6 +81,9 @@
       "kind": "subflow"
     },
     ".maestro/acc-delegate-stop.yaml",
-    ".maestro/acc-approval.yaml"
+    {
+      "file": ".maestro/acc-approval.yaml",
+      "fixture": "acc-approval"
+    }
   ]
 }
