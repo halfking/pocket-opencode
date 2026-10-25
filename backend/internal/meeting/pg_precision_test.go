@@ -140,6 +140,33 @@ func TestS966PGWriteEqualsReturnedValue(t *testing.T) {
 	if got.CreatedAt.Equal(planted) {
 		t.Error("负控失败：读回来的时刻与种植时刻逐字相同 ⇒ 上面两条断言没有区分度")
 	}
+
+	// ④ ★★ 「**返回值不是从库里读回来的**」的那条路径 —— 本 store 里只有一处：
+	//
+	//	UpdateMetaScoped 返回的是**内存里的 `now`**（pg_store.go:636/645），
+	//	而它写进库的是**同一份值** ⇒ ⇒ ⇒ 若 store 没有截断，
+	//	⇒ ⇒ ⇒ **返回值带 ns 尾、库里那一行是微秒** ⇒ ⇒ ⇒ 两者不等
+	//	⇒ ⇒ ⇒ 而这个不等**会一路走到 API 响应里**（updated_at）。
+	//
+	// ⚠⚠ 这条是**变异批次 M3 打出来的**：M3 把 PG 版的截断去掉后，
+	//	判据**没有红** ⇒ ⇒ ⇒ 查下来是**判据有洞**（①② 被 RETURNING 兜住了）
+	//	⇒ ⇒ ⇒ 洞在这一条上 ⇒ 现在补上。
+	newTitle := "S966 PG 版（改标题）"
+	returnedAt, err := store.UpdateMetaScoped(created.ID, "owner-s966", "ws-s966", &newTitle, nil)
+	if err != nil {
+		t.Fatalf("UpdateMetaScoped: %v", err)
+	}
+	after, err := store.GetScoped(created.ID, "owner-s966", "ws-s966")
+	if err != nil {
+		t.Fatalf("GetScoped after UpdateMetaScoped: %v", err)
+	}
+	if !after.UpdatedAt.Equal(returnedAt) {
+		t.Errorf("UpdateMetaScoped 返回的时刻必须与库里那一行**逐字相同**：returned=%v db=%v",
+			returnedAt, after.UpdatedAt)
+	}
+	if !returnedAt.Equal(s966Floor(planted)) {
+		t.Errorf("UpdateMetaScoped 返回的时刻必须已被截断：got %v want %v", returnedAt, s966Floor(planted))
+	}
 }
 
 // TestS966TwoImplementationsShareOneScale 钉住「两个实现同刻度」。
