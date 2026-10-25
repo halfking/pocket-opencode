@@ -541,7 +541,7 @@ after 3600000ms`），**不是测试失败**（当时 FAILED=0）。改成 4 组
 
 ## 10. agent-companion 侧另查出一条**真缺陷**：被叫停的派单被报成 `agent_busy`
 
-这条**不在 openpocket 侧**，是在 §9 复验时用**真 agent 演练**（§13 第 2 步：
+这条**不在 openpocket 侧**，是在 §9 复验时用**真 agent 演练**（§14 第 2 步：
 `cmd/live-e2e`，真 opencode + 真模型）跑出来的：演练的 **cancel 段**在同一个 commit 上
 **4 次里 2 次红**，报错是：
 
@@ -747,7 +747,97 @@ node scripts/maestro-run.mjs .maestro/smoke-login.yaml .maestro/notes-crud.yaml 
 
 ---
 
-## 13. 复现命令
+## 13. ACC 侧「智能体清单」读错了面 ⇒ 明明在线却显示 **0 个**
+
+> 发现路径：交付前的**当前态复验**（2026-10-25，宿主重启后环境被重置）。
+> 这条**不是**本轮改动引入的，是**一直存在、被前几轮的读数掩盖**的口径错误。
+
+### 13.1 症状
+
+宿主重启后恢复现场，openpocket 经 ACC 读智能体清单：
+
+```
+GET /api/acc/agents → {"agents":[],"count":0,"source":"acc"}
+```
+
+而同一时刻 **agent-companion 明明在线**：
+
+| 读数 | 值 |
+|---|---|
+| daemon `GET /api/v1/agents` | **43** |
+| daemon `GET /api/v1/runtime/agents` | **42** |
+| ACC `GET /api/v2/agents`（注册表面） | **0** |
+| ACC `GET /api/v2/runtime/runtimes/acs-ac30-01/agents`（运行时清单面） | **34**（活的） |
+
+两天前同一套部署，注册表面还是 **29** 条。⇒ 不是「智能体没了」，是**读错了面**。
+
+### 13.2 两面都是「ACC 里的 agent 清单」
+
+| 面 | 端点 | 谁写的 | 实测 |
+|---|---|---|---|
+| **注册表面** | `GET /api/v2/agents` | ACC 的 host 级注册条目 | 容器重启后**空** |
+| **运行时清单面** | `GET /api/v2/runtime/runtimes/{id}/agents` | ACC **回连 agent-companion 的读面**（`GET {api_endpoint}/api/v1/runtime/agents`），带 `status`/`communication_mode`/`pid` | **活的**（34 条） |
+
+契约见 agent-companion `docs/ACC_BRIDGE_SPEC.md`（§`GET /api/v1/runtime/agents` 与
+`AgentState`）。openpocket 的 `accruntime.ListAgents` 读的是**注册表面** ⇒
+「一个智能体都没有」。
+
+### 13.3 运行时清单面当时也是断的（第二层原因）
+
+直接问 ACC 那条运行时清单端点，得到的是：
+
+```
+{"error":{"code":"runtime_read_face_unreachable",
+  "message":"read-face /api/v1/runtime/agents: Get \"\": unsupported protocol scheme \"\""}}
+```
+
+注册载荷里**没有 `api_endpoint`** ⇒ ACC 回连时拼不出 URL ⇒ 退回到 `drivers` 兜底面
+（`fallback_used: true`，`agents: []`）。daemon 侧的旋钮是 **`AC_ADVERTISE_URL`**
+（注册时广告读面地址），而本机 `.env` 里没有它。
+
+补上之后还要注意**地址必须在容器里可达**：`127.0.0.1:12110` 指的是**容器自己**
+⇒ `connection refused`；正确值是 **`http://host.docker.internal:12110`**。
+
+> 这一处是**部署面**（本机 `~/kaixuan/acp/.env`，0600，不在仓库里）：
+> `AC_ADVERTISE_URL=http://host.docker.internal:12110` + `ac-ctl install`
+> （plist 里的环境变量是 install 时从 `.env` 渲染的 ⇒ 改完 `.env` 必须重跑
+> `ac-ctl install`，只 `kickstart` **不会**带上新键）。
+
+### 13.4 修法（openpocket，提交 `5e804612`）
+
+| 位置 | 改动 |
+|---|---|
+| `backend/internal/accruntime/ecosystem.go` | 新增 `ListRuntimeAgents`：读 runtime 列表 → 逐个读其 agents 面 → 汇总；契约形状（`agent_id`/`kind`/`status`/`last_active_at`）折进注册表形状（`id`/`type`/`status`/`last_seen_at`） |
+| 同上 | 单个 runtime 的读面不通（没广告读面 / 机器下线）**跳过**，不让一个下线的机器把整张表清空 |
+| `backend/internal/server/acc_ecosystem.go` | `handleACCAgents` **合并两面**：运行时清单优先（同 id 取带活状态的那条），注册表里多出来的条目补进去；两面都读不到才报错 |
+
+回归（`backend/internal/accruntime/ecosystem_test.go`）：契约形状被正确折叠；
+一个 runtime 读面不通时其它 runtime 仍然列得出来。
+
+### 13.5 修完后的读数
+
+```
+GET /api/acc/agents → count=36
+  mmcode 1 | mmcode-helper 9 | zcode 1 | zcode-cli 24 | opencode 1   （各带活状态）
+GET /api/acc/tasks    → 9
+GET /api/acc/projects → 1
+GET /api/acc/sessions → 32
+```
+
+⇒ 用户目标里「**识别 minimax-code / zcode 的 IDE 与 CLI 智能体，识别它的状态**」
+这一条，**经 ACC 也真正通了**（此前经 ACC 看到的是 0）。
+
+### 13.6 这一条与本轮改动的分工
+
+| | 归属 |
+|---|---|
+| openpocket 读哪一面 + 字段折叠 | **仓库内**（本轮修，`5e804612`） |
+| daemon 广告读面地址 | **部署面**（本机 `.env`，不在仓库） |
+| ACC 注册表面为何重启后为空 | **在 acc-go 仓**（本机无源码），**如实登记，未修** |
+
+---
+
+## 14. 复现命令
 
 ```bash
 # 1) agent-companion 会话电池（71 条）
