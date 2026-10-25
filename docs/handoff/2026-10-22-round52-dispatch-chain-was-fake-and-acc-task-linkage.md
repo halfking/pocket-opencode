@@ -1547,3 +1547,154 @@ openpocket 的改动（`backend/internal/accruntime/`）**不在任何设备流�
 （依据同上：`.maestro/` 无 `/api/acc/` 引用；前端 ACC 集成走 `/api/tasks/delegate`），
 所以两个二进制在这些流上的行为**完全一致**；没有重启共享后端是为了不打断并行会话
 正在用同一套后端的工作。
+
+### 19.10 排队取消的**线上终版读数**，以及顺带挖出来的槽位键缺陷（18:33–19:05）
+
+#### 19.10.1 先订正上一轮的一个结论
+
+上一轮（§16.4.3 / §17.1）把「叫停排队中的派单」判成 ❌，后来又改口说
+「脚本未跟上新契约，非线上回归」。**那个结论的方向对，但说法不完整**，这里补齐：
+
+- 排队中的派单**看得见、停得掉**这件事，agent-companion `4f26473` 就已经实现了
+  （`internal/agentfacade/pending_run.go` + 客户端可**预置 runId**）。
+  `git merge-base --is-ancestor 4f26473 origin/main` = YES，且线上构建
+  `fac5b27` 已包含它 ⇒ **能力一直在线上，不是我这轮补的**。
+- 上一轮那个能力脚本判 FAIL 的原因有三条，**全是脚本的问题**，不是线上回归：
+  1. 它 POST 派单时**没预置 runId** ⇒ 拿不到 id ⇒ `cancel` 报 `run not found`；
+  2. 它按 `runId` / `id` 去 `GET /api/v1/runs` 里找那条派单 ⇒ **永远找不到**：
+     快照的 JSON 字段是 **snake_case**（`run_id` / `dispatch_id` / `state`）；
+  3. 它用 `jget errorCode` 从快照读错误码 ⇒ `RunSnapshot` **没有** `error_code`
+     字段 ⇒ 读到空 ⇒ `[ "$EC" != "agent_busy" ]` **恒真**（一条假判据）。
+     真正的错误码在**阻塞中那个 POST 的响应体**里（`code=cancelled`）。
+
+★ **本轮我自己的一次误判，如实记账**：接到「跑 queued-cancel-live.sh」这个待办时，
+我先读的是**本机落后的工作树**（本地 `main` = `8091fd6`，不含 `4f26473`），
+于是得出「daemon 不支持预置 runId、排队派单按构造就不可见 ⇒ 这个能力不存在」
+的结论，并据此差点把「修这个能力」当成新任务做。**结论是错的**：
+`4f26473` 一直在 `origin/main` 上。教训钉死：**读代码必须对着 `origin/main`
+（`git show origin/main:<path>`），不能读落后的本地工作树** —— 本轮已经因为
+「本地 `main` 落后」吃过一次亏。
+
+#### 19.10.2 线上终版读数（能力 [3]：叫停排队中的派单）
+
+脚本 `~/kaixuan/acp/logs/rerun-round52/queued-cancel-live.sh`
+（日志 `queued-cancel-live-20261025-184533.log`，EXIT=0），线上构建
+`0.1.0-fac5b27.1792921865`：
+
+| 判据 | 读数 |
+|---|---|
+| 预置 runId 派单**阻塞**在抢槽位上 | 是（客户端 120s 超时前不回） |
+| 排队中的派单在 `GET /api/v1/runs` 里**看得见** | ✅ 第 **2s** 出现，`state=queued` |
+| `POST /api/v1/runs/<runId>/cancel` | **200**，快照 `state=cancelled` |
+| 阻塞中的 POST 最终收场 | **HTTP 409** `{"code":"cancelled","message":"dispatch cancelled before it started"}` |
+
+⇒ **排队中的派单：看得见（queued）、停得掉（cancelled）、落的是 `cancelled`
+而不是 `agent_busy`** —— 结论成立，且这次是在**线上构建**上测的。
+
+**部署修复后（构建 `0.1.0-e91be86.1792925674`）再跑一次**，判据不变、全部仍绿，
+且多出一处**修复的直接证据**：排队中那条派单的 `agent_id` 从空串变成了
+`opencode`（`cancel` 的回执里也是 `opencode`）：
+
+```
+✅ 在列表里（第 2s 出现）state=queued · {"run_id":"run-queued-live-185538", ...,
+   "agent_id":"opencode", "kind":"opencode", "state":"queued", ...}
+cancel 响应: {..., "agent_id":"opencode", ..., "state":"cancelled"}
+阻塞中的派单最终响应: HTTP 409  {"code":"cancelled","message":"dispatch cancelled before it started"}
+```
+
+（日志 `queued-cancel-live-20261025-185538.log`，EXIT=0。）
+
+#### 19.10.3 顺带挖出来的缺陷：槽位的键错了（agent-companion `e91be86`，已修）
+
+上面那条读数里，排队中那条派单的快照长这样：
+
+```json
+{"run_id":"run-queued-live-184533", ..., "agent_id":"", "kind":"opencode", "state":"queued"}
+```
+
+`agent_id` 是**空的** —— 它明明要跑在 opencode 上。顺着这条线查下去，发现的是
+一个比「读数不好看」严重得多的问题：
+
+**根因**：`internal/agentfacade/facade.go` 的 `Start` 用 `req.AgentID` 当**槽位键**
+（`acquire(waitCtx, req.AgentID)`），而两个真实入口都不填它：
+
+- HTTP create/operate 两面按 **kind** 派单（`internal/api/sessions.go` 的
+  `TaskRequest` 里没有 `AgentID`）；
+- ACC 派单若 payload 只带 `kind` 不带 `agent_id`，
+  `TaskRequestFromEvent` 同样不填。
+
+⇒ 槽位键退化成空串 `""`：**整机一把锁**。而契约写的是「一个智能体一个槽位」
+（`agent_slot.go` 开头：「one live run per agent on a host」）。
+
+**后果**（第二个是危险的那个）：
+
+1. 不同智能体（不同进程）互相挤占 —— 吞吐 bug；
+2. 派给一个**空闲**智能体的任务会排队等槽位，等到超时后报 `agent_busy` ——
+   「另一个 run 占着这个智能体」对它想要的那个智能体是**假的**；而 `agent_busy`
+   的契约是「什么都没开始，稍后重试是对的」，于是操作员会去等一个**根本不存在**
+   的资源争用，还可能把一个本来能立刻跑的活儿推到重试队列里。
+
+**判据（修复前红 / 修复后绿）**，新增
+`internal/agentfacade/slot_key_agent_id_test.go`：
+
+| 判据 | 修复前（`origin/main` = `85129a9` 未改代码） | 修复后 |
+|---|---|---|
+| 按 kind 派给**两个不同**智能体 ⇒ 不互相阻塞 | **红**：`beta was blocked by alpha's slot: agentfacade: another run holds this agent` | ✅ |
+| 排队中的那条快照报出**解析后的** agent id | **红**：`queued snapshot agent_id = "", want "alpha"` | ✅ |
+
+**修法**（`e91be86`）：`Start` 里选出驱动之后回填
+
+```go
+if req.AgentID == "" {
+    req.AgentID = d.Spec().AgentID
+}
+```
+
+只影响三处：槽位键、排队快照的 `agent_id`、日志里的 `agent_id`。驱动自己用
+`spec.AgentID`，不受影响；ACC 路径带 `agent_id` 时选中的就是那个智能体 ⇒ 恒等。
+
+（agent-companion 侧的完整记录见
+`docs/QUEUED_DISPATCH_CANCEL_2026-10-25.md` §7。）
+
+**边界（如实登记）**：
+
+- 某个驱动连 `spec.AgentID` 都为空（`Register` 允许）时，键仍是空串 —— 无从更好；
+- 这台宿主当前只有 `opencode` 一个**可驱动**智能体，所以线上**看不到**跨智能体
+  互相挤占（要两个可驱动智能体才看得见）；这两条判据是用两个假驱动在单测里打掉的；
+- §5 第 1 条没变：**create 面仍然会阻塞**（POST 要等槽位空闲或被叫停才返回），
+  不预置 runId 的客户端仍然拿不到 id（但能从 `GET /api/v1/runs` **发现**排队中的
+  派单再按停）。
+
+#### 19.10.4 本轮测试（在含修复的树上）
+
+```bash
+cd /tmp/ac-slotfix                       # origin/main + e91be86
+go test ./... -count=1                    # 56 包全绿、0 FAIL、EXIT=0
+go test -race ./cmd/agent-companion/       # EXIT=0
+ACC_CODING_PILOT_ACC_ROOT=.../acc-go ./scripts/verify-cross-repo-contracts.sh   # PASS
+gofmt -l internal/agentfacade/{facade.go,slot_key_agent_id_test.go}              # 空
+```
+
+（openpocket 侧本轮**无代码改动**，只有本文档；它的 `go test ./...` 上一轮已在
+`4dfc5f06` 树上全绿。）
+
+#### 19.10.5 部署后复验（daemon 升到 `0.1.0-e91be86.1792925674`，pid 9172）
+
+| 检查 | 读数 |
+|---|---|
+| `GET /healthz` | `{"command_loop_ready":true,"ok":true}` |
+| ACC 回连 daemon 读面 `GET /api/v2/runtime/runtimes/acs-ac30-01/agents` | **200**，30 条，`fallback_used:false`，`pid/command/last_active_at` 等 10 个字段**逐条非空** |
+| ACC 命令面 401 | 最近 2 分钟 **0** 条 |
+| openpocket `/api/acc/{agents,tasks,projects,sessions}` | HTTP 200 ×4，59 / 14 / 1 / 13（计数随线上活动浮动） |
+
+#### 19.10.6 遗留风险（更新 §19.8）
+
+- ✅ 「排队中的派单停不掉」：**已复验为绿**（§19.10.2），且这条能力在
+  `4f26473` 就已实现 —— 不是本轮新增，但本轮**第一次拿到线上构建上的读数**。
+- ✅ 「槽位的键退化成整机一把」：**已修**（agent-companion `e91be86`）。
+- ⚠️ **create 面仍然阻塞**：派单同步抢槽位，POST 要等槽位空闲（或被叫停）才返回。
+  这是 API 契约问题（改成「run 终态」而不是 HTTP 错误），要另做决策。
+- ⚠️ **不预置 runId 的客户端仍然停不掉排队中的派单**（拿不到 id）；它只能先
+  `GET /api/v1/runs` 发现再按停。openpocket 前端目前**没有**预置 runId 的用法。
+- ⚠️ 两个仓的本地 `main` 仍落后于 `origin/main`（并行会话的工作区在那上面），
+  他们提交后推送会被拒（non-fast-forward）。
