@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -322,6 +323,34 @@ func isTimeoutError(err error) bool {
 	return errors.As(err, &ne) && ne.Timeout()
 }
 
+// isTransportEOF：传输层被掐断（EOF / unexpected EOF / 连接被重置 / 管道断）。
+//
+// ★ 2026-10-26 补：ACC 的 MCP 面**就是用 EOF 把委派打死的** ——
+//   实测（两处独立证据）：
+//     ① 今日早些时候：ACC 的 MCP 面返回过一次 EOF（POST /api/v2/mcp），
+//        之后 pocketd 的委派全部 502；
+//     ② 本轮 22:09 真机夹具：委托直接 502，
+//        错误是 `acc_create_task failed: MCP not initialized: initialize failed:
+//        failed to send request: Post "http://100.106.67.198:4101/api/v2/mcp": EOF`。
+//   而 initialize 当时的重试集是「dial 失败 | 429/502/503/504 | 超时」——
+//   **EOF 不在里面** ⇒ 一次 EOF 就让整个进程在 ACC 恢复之后**再也初始化不了**。
+//   ⇒ initialize 是**幂等**的（握手而已，重做一次没有副作用）⇒ EOF 必须重试。
+//   ⚠ 写工具**不**因此重试：EOF 同样可能发生在「服务器已经建好任务之后」，
+//      而 acc_create_task 没有幂等键 ⇒ 重发会建出重复任务。
+func isTransportEOF(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	// 连接被对端重置 / 管道断开：同样是「传输层被掐断」。
+	if errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE) {
+		return true
+	}
+	return false
+}
+
 // doRawWithRetry 发请求并对**瞬时**故障重试。
 //
 // retryAmbiguous=false ⇒ 只重试「请求没到服务器」的失败（dial 失败）。
@@ -340,7 +369,11 @@ func (c *Client) doRawWithRetry(ctx context.Context, payload []byte, retryAmbigu
 		lastErr = err
 		retryable := isDialFailure(err)
 		if retryAmbiguous {
-			retryable = retryable || isTransientStatus(err) || isTimeoutError(err)
+			// 幂等步骤（initialize）：可以重试「请求可能没被处理」的失败 ——
+			// 网关类状态码、超时、**传输层被掐断（EOF/连接重置）**。
+			// ⚠ 写工具走的是 retryAmbiguous=false ⇒ 这些一律不重试
+			//   （acc_create_task 没有幂等键，重发会建出重复任务）。
+			retryable = retryable || isTransientStatus(err) || isTimeoutError(err) || isTransportEOF(err)
 		}
 		if !retryable || attempt == mcpRetryAttempts {
 			return nil, nil, err

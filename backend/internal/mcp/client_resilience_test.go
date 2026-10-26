@@ -33,13 +33,22 @@ import (
 //  3. 永久故障（403）必须**快速失败**，不能白重试（也不该被当成瞬时故障）。
 
 // mcpTestServer 造一个可控的 MCP 假服务器。
+//
+// ★ 2026-10-26 扩充：除了「第一次 initialize 被掐」，现在还能控制
+//   「连续掐前 N 次 initialize / 前 N 次 tools/call」以及
+//   「掐掉全部 initialize（模拟 ACC 持续不可用）」，
+//   并允许在测试中途把服务器改回健康 ——
+//   因为「EOF 也要重试」和「失败不缓存」是**两条不同的判据**，
+//   共用一个夹具才能同时测出「一次 EOF 就让整个进程永久失效」。
 type mcpTestServer struct {
 	*httptest.Server
-	mu         sync.Mutex
-	initCalls  int
-	callCalls  int
-	initStatus int  // 0 = 正常；非 0 = initialize 返回该状态码
-	killFirst  bool // 第一次 initialize 直接掐连接（客户端看到 EOF）
+	mu            sync.Mutex
+	initCalls     int
+	callCalls     int
+	initStatus    int  // 0 = 正常；非 0 = initialize 返回该状态码
+	killInitCalls int  // 还要掐断多少次 initialize（客户端看到 EOF）；0 = 不掐
+	killCallCalls int  // 还要掐断多少次 tools/call（客户端看到 EOF）；0 = 不掐
+	killAllInits  bool // true = 掐掉**每一次** initialize（ACC 持续不可用）
 }
 
 func newMCPTestServer(t *testing.T, cfg func(*mcpTestServer)) *mcpTestServer {
@@ -56,18 +65,17 @@ func newMCPTestServer(t *testing.T, cfg func(*mcpTestServer)) *mcpTestServer {
 		switch req.Method {
 		case "initialize":
 			ts.initCalls++
-			n := ts.initCalls
 			status := ts.initStatus
-			kill := ts.killFirst && n == 1
+			kill := ts.killAllInits
+			if ts.killInitCalls > 0 {
+				ts.killInitCalls--
+				kill = true
+			}
 			ts.mu.Unlock()
 			if kill {
 				// 直接掐连接：客户端的 Do() 会拿到 EOF。
-				hj, ok := w.(http.Hijacker)
-				if ok {
-					if conn, _, err := hj.Hijack(); err == nil {
-						_ = conn.Close()
-						return
-					}
+				if hijackClose(w) {
+					return
 				}
 			}
 			if status != 0 {
@@ -78,7 +86,16 @@ func newMCPTestServer(t *testing.T, cfg func(*mcpTestServer)) *mcpTestServer {
 			return
 		case "tools/call":
 			ts.callCalls++
+			kill := ts.killCallCalls > 0
+			if kill {
+				ts.killCallCalls--
+			}
 			ts.mu.Unlock()
+			if kill {
+				if hijackClose(w) {
+					return
+				}
+			}
 			ts.serveOK(w)
 			return
 		default:
@@ -92,6 +109,29 @@ func newMCPTestServer(t *testing.T, cfg func(*mcpTestServer)) *mcpTestServer {
 		cfg(ts)
 	}
 	return ts
+}
+
+// hijackClose 直接掐断连接（客户端的 Do() 会拿到 EOF）。
+func hijackClose(w http.ResponseWriter) bool {
+	hj, ok := w.(http.Hijacker)
+	if !ok {
+		return false
+	}
+	conn, _, err := hj.Hijack()
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
+}
+
+// setHealthy 把服务器改回健康（用于「失败不缓存」判据的后半段）。
+func (ts *mcpTestServer) setHealthy() {
+	ts.mu.Lock()
+	ts.killAllInits = false
+	ts.killInitCalls = 0
+	ts.killCallCalls = 0
+	ts.mu.Unlock()
 }
 
 func (ts *mcpTestServer) serveOK(w http.ResponseWriter) {
@@ -115,15 +155,23 @@ func (ts *mcpTestServer) counts() (int, int) {
 }
 
 // ① 判据：initialize 失败**不能**被永久缓存。
+//
+// ⚠ 2026-10-26 改写：原来用 killFirst（掐**第一次** initialize），
+//   那时 initialize 不重试 ⇒ 第一次 CallTool 必然失败。
+//   现在 initialize 对 EOF **会重试**（见 client_eof_retry_test.go），
+//   所以「掐一次」的语义变了 —— 要测「失败不被缓存」，
+//   必须掐**每一次** initialize（模拟 ACC 持续不可用），
+//   再把服务器改回健康，看客户端能否自愈。
 func TestCallTool_InitializeFailureDoesNotPoisonClient(t *testing.T) {
-	srv := newMCPTestServer(t, func(s *mcpTestServer) { s.killFirst = true })
+	srv := newMCPTestServer(t, func(s *mcpTestServer) { s.killAllInits = true })
 	c := NewClient(srv.URL, "acc-api-key", false)
 	ctx := context.Background()
 
 	if _, err := c.CallTool(ctx, "acc_get_tasks", map[string]any{}); err == nil {
-		t.Fatalf("第一次调用应当失败（服务器掐了连接）")
+		t.Fatalf("服务器一直掐连接 ⇒ 第一次调用应当失败")
 	}
 	// 关键断言：客户端必须能自愈。
+	srv.setHealthy()
 	if _, err := c.CallTool(ctx, "acc_get_tasks", map[string]any{}); err != nil {
 		t.Fatalf("第二次调用应当成功：初始化失败被永久缓存了（sync.Once + initErr）⇒ %v", err)
 	}

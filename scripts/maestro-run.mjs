@@ -1864,6 +1864,24 @@ if (process.env.POCKET_SKIP_CDP_LOGIN !== '1') {
       break
     }
     masterDialogSeen = true
+    // ★ 2026-10-26 修：循环现在最多 15 轮（为了等弹窗出现），
+    //   如果每轮都重填一遍，反复的 CDP 点击 + insertText 会把弹窗搞乱：
+    //   实测 21:44 那轮连续填了 7 轮之后，弹窗**自己消失了**
+    //   ⇒ 后面「找不到主密码框(/再次/)」+「no-confirm」⇒ 登录卡死。
+    //   ⇒ 先读框里的长度：已经填好就**跳出循环**去点确认，别再填。
+    //   ⚠ 这里只能用 master（环境变量原值）：masterText 是下面才声明的
+    //   const，在它之前引用会踩 TDZ（2026-10-26 21:50 实测：
+    //   ReferenceError: Cannot access 'masterText' before initialization）。
+    const masterLen = (master || '').length
+    const lensBeforeRaw = await cdpEval(`JSON.stringify(Array.from(document.querySelectorAll('input'))
+      .filter(function(i){ return (i.type||'')==='password' })
+      .map(function(e){ return e.value.length }))`)
+    let lensBefore = []
+    try { lensBefore = JSON.parse(lensBeforeRaw) } catch { lensBefore = [] }
+    if (lensBefore.filter((n) => n === masterLen).length >= 2) {
+      console.log(`[preflight] 主密码弹窗：两框已输入，长度=${lensBefore}（不再重复填）`)
+      break
+    }
     // 逐个框：CDP focus 选框（确定）→ adb input text 敲键盘（v-model 才收得到）
     //
     // ⚠️ 2026-10-05 修的真 bug：这里原来写的是
