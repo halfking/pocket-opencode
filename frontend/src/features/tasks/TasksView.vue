@@ -463,10 +463,11 @@
         <span class="expand-icon" :class="{ open: showCompleted }">›</span>
       </div>
 
-      <div v-if="showCompleted" class="completed-list">
+      <div v-if="showCompleted" class="completed-list" role="list" aria-live="polite">
         <div
           v-for="task in finishedTasks"
           :key="task.id"
+          role="listitem"
           class="task-card compact completed-card"
           :class="`status-${task.status}`"
           @click="onTaskClick(task.id)"

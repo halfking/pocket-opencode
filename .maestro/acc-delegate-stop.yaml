@@ -69,6 +69,29 @@ appId: com.kaixuan.opencode.pocket
 - inputText: "maestro-acc-stop"
 - tapOn: { text: "^委托给 ACC$", enabled: true }
 
+# ---- 3.5 ★★ 弹窗必须**关闭**（2026-10-27 05:48 现场取证）----
+#
+# ★ 这一步是**判据缺陷的修复**，不是产品缺陷。
+#
+# 上一版这里直接 `extendedWaitUntil: visible: "maestro-acc-stop"`，
+# 而**弹窗的标题输入框里正好输入着这个字符串** ⇒
+# 委托**失败**、弹窗**根本没关**时，那条断言**照样绿**（恒真）。
+# 实测（2026-10-27 05:46~05:48 那轮）：
+#   · 后端：`GET /api/acc/agents` ⇒ ACC 的 `/runtimes/{id}/agents` 连着 502；
+#     `POST /api/tasks/delegate` ⇒ `acc_create_task` 超时 ⇒ 复查 ACC 列表也 EOF
+#     ⇒ 照实 502；
+#   · App：弹窗里显示「读不到智能体清单（可留空由服务端选）：操作失败，请稍后重试」
+#     ⇒ **弹窗还开着**；
+#   · Maestro：`visible: "maestro-acc-stop"` 命中了**输入框** ⇒ 绿；
+#     接着 `longPressOn: "maestro-acc-stop"` 长按的是**输入框**
+#     ⇒ 没有上下文菜单 ⇒ 「停止任务」永远不出现 ⇒ 判红在错的地方。
+#
+# ⇒ 所以必须**先断言弹窗关掉了**，再断言卡片出现了。
+#   弹窗关闭后，屏上就不存在那个输入框 ⇒ 标题断言只可能命中任务卡片。
+- extendedWaitUntil:
+    notVisible: "ACC 会接管后续会话与执行.*"
+    timeout: 60000
+
 # ---- 4. 新卡片出现（source=acc 的任务进了本地列表）----
 - extendedWaitUntil:
     visible: "maestro-acc-stop"
