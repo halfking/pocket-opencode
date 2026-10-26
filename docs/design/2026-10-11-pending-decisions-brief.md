@@ -7410,7 +7410,7 @@ pluginAvailable∈{Sherpa,BackgroundMic}`，**真源码零改动**）跑出来�
 
 ⚠⚠⚠⚠ **§972 更新（本条里的「那一类间歇红」已修 ⇒ 现在是「四类稳定红 ＋ 零类间歇红」）**：要点三条：
 
-⑨ ★★ **那一类间歇红（`internal/opencode` 的 `TestEventStreamManager_Stats`）已由 §972 修掉** ⇒ ⇒ ⇒ **本条现在是「四类稳定红 ＋ 零类间歇红」** ⇒ ⇒ ⇒ ⇒ **但那四类稳定红本会话仍一处理都没代修**（归属：gofmt 真债 ＋ `check:env-example` 归并发会话 ACC 线；`TestConcurrentMigrationsDoNotDeadlock` 归既有 `internal/pgmigrate`；`check:stt-refine-receipts` 归既有的「收据未入 git」）⇒ ⇒ ⇒ ⇒ **仍等你指派归属** ⇒ ⇒ ⇒ ⇒ ⇒
+⑨ ★★ **那一类间歇红（`internal/opencode` 的 `TestEventStreamManager_Stats`）已由 §972 修掉** ⇒ ⇒ ⇒ **本条现在是「四类稳定红 ＋ 零类间歇红」** ⇒ ⇒ ⇒ ⇒ **但那四类稳定红本会话仍一处理都没代修**（归属：gofmt 真债 ＋ `check:env-example` 归并发会话 ACC 线；`TestConcurrentMigrationsDoNotDeadlock` 归既有 `internal/pgmigrate`；`check:stt-refine-receipts` 归既有的「收据未入 git」）⇒ ⇒ ⇒ ⇒ **仍等你指派归属** ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **CI 独立确认**（`c36fc9c9`）：`backend` / `backend-pg` 的失败包列表里**只剩** `internal/pgmigrate` ⇒ ⇒ ⇒ ⇒ **`internal/opencode` 已从 CI 失败包列表里消失** ⇒ ⇒ ⇒ ⇒ ⇒ **那条间歇红在 CI 上独立地不见了** ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ （§972.8 / 主文档）
 
 ⑩ ⚠⚠⚠⚠ **⚠ §968 更新 ④ 对它的形态判断是错的，已原位订正** —— 原文写「CI 日志里紧邻 `dropping event ... (buffer full)` ⇒ ⇒ **buffer 满 ⇒ 事件被丢 ⇒ 计数 0**」⇒ ⇒ ★ **那行日志来自【同包的另一条用例】**（`TestEventStreamManager_SlowSubscriberDoesNotBlock` **故意**造一个 `BufferSize: 1` 的慢订阅者 ⇒ 它**必然**打出 `buffer full`）⇒ ⇒ ⇒ **相邻日志 ≠ 因果** ⇒ ⇒ ⇒ 且「buffer 满」**根本不是**那条红点的触发条件（一次性诊断 3000 次迭代：「`connectCount` 早于 channel 注册 ⇒ `emit` 静默丢事件」= **0/3000**；「事件已投递但 `TotalEvents` 仍读作 0」= **6/3000**）⇒ ⇒ ⇒ ⇒ **真因：上游循环里 `m.fanout(domain)` 在 `m.incEvent()` 之前** ⇒ 用例等的是**投递**、断言的是**计数** ⇒ ⇒ ⇒ **两者之间缺一个 happens-before** ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **⇒ 「相邻日志」不能当因果证据**：同包不同用例的日志会挨在一起 ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒
 
