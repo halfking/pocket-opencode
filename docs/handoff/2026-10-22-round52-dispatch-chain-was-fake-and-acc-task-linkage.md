@@ -2516,3 +2516,137 @@ daemon 把待批项停进自己的队列之后，**App 必须能看见并应答�
 6. **本轮没有重跑设备侧全量 13 条流**：只跑了新增的 `acc-approval.yaml`
    与受影响的 `acc-delegate-stop.yaml`；全量基线仍是第五轮（22:28–22:39）
    的读数。
+
+---
+
+## 22. 批判式审计轮（五）：审批环在真机上断掉的**真正**机理 —— 「卡片在屏幕上，无障碍树里却没有」（2026-10-26 13:50–22:10）
+
+> §21 把审批环的最后一跳补上了（脚本层闭环：派单→待批→应答→ACC 命令 succeeded）。
+> 这一轮上真机，发现**脚本层闭环 ≠ 人能在手机上答完**，
+> 而且挖出的根因**不在 agent-companion，也不在 ACC**。
+
+### 22.1 现场：屏幕上有卡片，无障碍树里没有
+
+`.maestro/acc-approval.yaml` 在真机上**始终红在最后一条断言**
+（`completed-task-title` + `text=maestro-acc-approve`），前面全过。
+attempt9 的工件（`~/.maestro/tests/2026-10-26_135801/acc-approval/`）给出决定性对照：
+
+* **同一时刻的截图**（`screenshots/step-017-*.png`）：
+  `ACC 待批（1）` 卡片、`/tmp/maestro-acc-approve` 标题、
+  `✓ 允许一次` / `✕ 拒绝` 两个按钮 —— **全都好好地画在屏幕上**。
+* **同一时刻的无障碍快照**（`screen-hierarchy/step-017-*.json`）：
+  `main` 的子节点从「下拉同步邮件」**直接跳到「ACC 生态」** ——
+  中间**整个 section 节点不见了**，「ACC 待批」「允许一次」一个字都没有。
+
+Maestro 的 `visible` 读的就是无障碍树 ⇒ 看不见那张卡 ⇒ `runFlow when visible`
+条件为假 ⇒ **tap 被跳过** ⇒ 没人应答 ⇒ 120s 后 `permission denied (fail-closed)`
+⇒ 任务失败。daemon 的时间线把因果链坐实：
+
+```
+13:57:52.170  PARKED     ← 第 1 个审批请求
+13:58:48.891  ANSWERED   ← tap#1 真的到了 daemon
+13:58:48.917  PARKED     ← 第 2 个审批请求（同一个 toolCallId）
+13:59:13.623  ANSWERED   ← tap#2
+13:59:22.538  PARKED     ← 第 3 个审批请求 ⇒ 没人点
+14:01:22.539  DENIED     ← 120s 超时 fail-closed ⇒ 任务失败
+```
+
+### 22.2 两个原因叠在一起
+
+**① 一次危险工具调用会让 opencode 连发 2~3 个审批请求，而且同一个 `toolCallId`。**
+
+daemon 的 ACP 原始帧实测（`AC_DEBUG_ACP_FRAMES=1`）：
+
+```
+18:27:17.977  frame in   {"id":0,"method":"session/request_permission","kind":"other",
+                            "rawInput":{"command":"mkdir -p /tmp/probe-late && printf 'l\n' > …",
+                                        "directories":["/tmp"],"patterns":["/tmp/*"]}}   ← 写路径检查
+18:28:34.475  frame out  {"id":0,"result":{"outcome":{"outcome":"selected","optionId":"once"}}}
+18:28:34.495  frame in   {"id":1,…,"kind":"execute","rawInput":{"command":"…"}}          ← 执行检查
+18:28:37.477  frame out  {"id":1,…}
+18:28:37.863  tool_call_update in_progress → completed                                ← 工具真跑了
+18:28:43.566  frame in   {"id":2,…}                                                   ← 读检查
+```
+
+⇒ **每个都要单独应答，漏一个就 120s 超时被拒**。
+⇒ 「答一条 ⇒ 列表清空 ⇒ 下一条又来」是**常态**。
+
+> 这一条推翻了本轮中途的一个错误结论：当时读到 `id=0` 的应答后 20ms 就来了 `id=1`，
+> 曾判「daemon 把 `id=0` 的应答丢了」。**错**：`id=1` 不是重发，是**另一个**权限检查
+> （载荷形状不同：kind=other/带 patterns vs kind=execute/只有 command）。
+> 直连 opencode 的探针也印证：探针跑的是 `echo`（只触发一个检查），
+> 所以「75 秒晚答也不重问」—— 不是 daemon 丢应答，是那条命令**只需要一个检查**。
+
+**② App 的 ACC 待批 `<section>` 挂着 `v-if` ⇒ 列表空时整段被卸载，下一条待批到达时又重建；
+而 Android WebView 的无障碍树在「节点被卸载后同位置重建」时会丢一整段子树。**
+
+卡片被拒后（14:01:22）树又自己好了 —— 因为那时 section 又被卸载一次，缓存被刷新。
+**这不是测试专属问题**：Android 的无障碍树就是 TalkBack / Switch Access 读屏用户的入口，
+读屏用户在这段时间里同样看不到那张待批卡片 ⇒
+「人在手机上能看到并应答审批」这个需求，在读屏场景下当时**不成立**。
+
+### 22.3 修法与判据
+
+* **openpocket / `frontend/src/features/tasks/TasksView.vue`**：
+  `<section>` **常驻 DOM**（只让里面的内容随列表进出；空的时候靠 `.is-empty`
+  去掉外观，**不用 `display:none`** —— 那会把节点从无障碍树里也摘掉，
+  等于换个写法再犯同一个错）；列表容器加 `aria-live="polite"`。
+* **openpocket / `frontend/src/stores/accApprovals.ts`**：
+  应答失败（404/409 = daemon 侧已不是 pending）时**把条目从列表里摘掉** ——
+  原来它留在列表里 ⇒ 用户怎么点都没用 ⇒ 屏幕上挂着一张永远消不掉的死卡片。
+* **openpocket / `TasksView.vue`**：终态三兄弟（completed / failed / cancelled）
+  一起进「已结束」区（原来只收 completed ⇒ **被拒/被停的任务在手机上彻底消失**），
+  标题 testid 带状态后缀（`finished-task-title-<status>`）⇒ 判据才分得开。
+* **agent-companion / `internal/acc/lease.go`**：租约续租失败后要**很快**再试
+  （见 §22.4）。
+* 判据：`.maestro/acc-approval.yaml` 现在是这条链的判据（连答 2~3 张卡必须全绿），
+  末态断言用带状态后缀的 testid ⇒ 漏答一轮导致的 `permission_denied` 一定红。
+
+### 22.4 顺带挖出的第二个**产品缺陷**：租约续租失败后要等 14 秒才重试
+
+21:22 那轮的真机读数：
+
+```
+21:22:28  executing dispatch            ← ACC 给了 120 秒租约
+21:22:58  第 1 个审批请求挂进本地干预队列
+21:24:19  permission answered locally    ← 人在手机上答了第 1 张卡
+21:24:19  第 2 个审批请求到达
+21:24:33  lease expired mid-execution   ← 租约没了 ⇒ fail-closed ⇒ 任务被判死
+```
+
+⇒ **租约在人还在审批流程里就到期了**。
+
+根因在 `internal/acc/lease.go`：续租失败后只是 `continue` ⇒ 回到循环顶部按
+「剩余租约的 60%」再等一轮。对 120 秒租约：第 1 次续租在 72s 失败 ⇒
+下一次要等到 ~101s；而续租请求本身又要耗时（ACC 抖时 7s 超时）⇒
+**租约必丢**。而这个函数自己的注释写着「renew immediately on first failure」——
+**注释与行为不符**，这就是它长期没被发现的原因。
+
+修法：失败后**短退避**立即重试（200ms 起，翻倍，上限 5s，且永远不超过剩余租约的一半）；
+成功与失败都留日志（原来续租失败一行日志都没有）。
+判据 2 条：纯函数一条（短、有上限、不超过剩余租约的一半）+ 行为一条
+（一次 500 之后必须很快再试）。**诚实对照**：把修复整个收起后判据是编译不过
+（纯函数不存在），那不算「红」；另做了一次更严格的对照 ——
+保留新辅助函数、只把重试调度还原成旧行为 ⇒ **行为判据红**
+（「续租失败后 **1.441s** 才重试，上限 600ms」），恢复修复 ⇒ 绿（~0.2s）。
+
+**顺带查明的事实**：
+
+* ACC 的租约 TTL **不认 `requested_ttl_ms`**：daemon 请求 30 秒，ACC 实测仍给 **120 秒**
+  ⇒ 想让审批窗口更长，**只能靠续租**，不能靠请求更长的租约。
+* ACC 的续租端点 `POST /api/v2/runtime/lease {action:"renew"}` **是存在的**
+  （对已过期租约返回 409 `lease_expired`）⇒ 路是通的，上面那个缺陷就是路被堵死的地方。
+
+### 22.5 本轮**没有**做到的事（诚实清单）
+
+1. **acc-go 侧确实没有那两个端点** —— 本轮在**本地 acc-go 源码**里全文搜过
+   `runtime/permissions` / `/permission` / `request_permission`：**零命中**
+   ⇒ 「契约在、实现没有」这句话现在有本地源码证据，不只是对权威 ACC 的 404 实测。
+   但 **没有实现、没有部署、没有验证**（本机到 `.211` 无 SSH）。
+2. **真机全绿读数仍未拿到**（详见 handoff `round55`）：设备侧的 a11y 判据已能复现，
+   但 Maestro 整条流在本轮被**宿主负载**反复打断（login 阶段 CDP 求值超时、
+   设备端 `uiautomator dump` 被 SIGKILL ⇒ 无障碍服务整体卡死 ⇒ 重启模拟器后恢复）。
+3. `failed`/`cancelled` 任务虽然已经在「已结束」区渲染，但**真机上的呈现**
+   （折叠分区的展开、状态标签）本轮没拿到读数。
+4. 任务历史 / 生成文件的同步面**仍未做**（ACC 派单的 run 不进 daemon 的 run 历史，
+   `GET /api/v1/runs` 对 ACC 派单恒空）。
