@@ -17,13 +17,13 @@
 
 | 流 | 覆盖的东西 | 读数 |
 |---|---|---|
-| `.maestro/acc-approval.yaml` | 委托 ACC → 智能体要工具批准 → **手机上看得到并答得了** → 智能体跑完 → 任务进「已结束」区 | ✅ PASS |
-| `.maestro/acc-delegate-stop.yaml` | 委托 ACC → 长按卡片 → 「停止任务」→ 确认 → 任务被停 → **以「已取消」出现在已结束区** | ✅ PASS |
+| `.maestro/acc-approval.yaml` | 委托 ACC → 智能体要工具批准 → **手机上看得到并答得了** → 智能体跑完 → 任务进「已结束」区 | ❌ **未拿到整条流全绿**（2026-10-27 01:0x 那轮：步骤 0~3 过，**步骤 4 红**）。根因已钉死：**上一轮的修复根本没装到设备上**（设备 165458754 字节 / 本地 165459013 字节，§4.4.1）⇒ 22:23 那轮的「第 2 张卡看不见」正是**旧包**的 `v-if` 卸载行为（Maestro 逐命令时间线 + 它自己存下的无障碍树工件，§4.4.2）。修复后的构建已在 01:01 装上，浏览器层隔离实验在它上面读数正常（§4.4.3），但**修复后 App 的整条流还没拿到全绿读数**（宿主 load 455，设备无障碍服务采不到树） |
+| `.maestro/acc-delegate-stop.yaml` | 委托 ACC → 长按卡片 → 「停止任务」→ 确认 → 任务被停 → **以「已取消」出现在已结束区** | ⚠️ **本轮未重跑**（上一轮的 ✅ PASS 是 50s 读数，来自**旧的** App 基线；§6 有记录） |
 
 后端全量：67 包全绿、0 FAIL（`internal/agent` 的 3 条超时红是宿主负载 100+ 时的 flaky，
 单跑绿，§3.3 有记录）。
-agent-companion 全量：只有 `tests/TestNoUnjustifiedPlatformSkips` 红（**既有失败**，
-与本轮改动无关，§3.4 有记录）。
+agent-companion 全量：**本轮全绿** —— 上一轮留下的既有失败
+`tests/TestNoUnjustifiedPlatformSkips` 已修（§2.10）。
 
 ---
 
@@ -248,6 +248,44 @@ option id（业务细节 —— 而命令里可能有用户输入的任意内容
 | **假「已确认」** | 确认按钮**可能是 disabled**（两个框没都拿到值时它是灰的），而 disabled 按钮上的 `b.click()` 是**静默无效**的 —— 原实现照样打印 `confirmed`，于是「点了确认」是个**假陈述** | 重查按钮 + 读 `disabled` 状态 + 如实报告（`confirm-disabled` / `no-confirm`），还没生效就再等一轮（最多 6 轮） |
 | **driver APK 缺失被报成「设备策略问题」** | `logs/maestro/driver-extracted/` 被清空（/tmp 被重启清过）时只报一句「APK 不存在」，而那句与「MIUI 拦截安装」**同形**（同一行日志、同样非 0 退出）⇒ 真因被读成设备问题，实测白跑一轮（21:05 那轮） | 缺 APK 时自己从 `maestro-client.jar` 解包（`extract-maestro-driver.mjs` 已跨平台化），解不出来才报错，并写明「这不是设备策略问题」 |
 
+### 2.10 agent-companion 的 `go test ./...` 在 main 上**一直是红的**（既有失败，本轮修掉）
+
+`tests/TestNoUnjustifiedPlatformSkips` 把
+`internal/runtime/scenario_matrix_test.go` 的 `TestR5CriterionCanSeeALeftoverChild`
+判为「**平台门跳过**」⇒ agent-companion 的 `go test ./...` 在 main 上就是红的。
+
+* **不是审计误报**：那个 skip（`if !exact { t.Skip("no parent-PID source on this host") }`）
+  确实让 **R-5 的负控**在拿不到父 PID 表时静默跳过 ⇒ 判据退化成恒真
+  ⇒ 正是审计要防的「读起来像通过」。
+* **也不是平台限制**：internal/runtime 自己的 prober 用的就是同一族来源
+  （darwin: `ps -axo pid=,comm=`；windows: `Win32_Process` via CIM）
+  ⇒ 读不到父 PID 的主机上**产品自己也是瞎的** ⇒ 那是坏环境，不是「本平台不适用」。
+* **修法**：负控改成拿不到父 PID 表就**响亮失败**；探针子进程的平台差异挪进
+  helper `startProbeChild`（测试函数体里不再有 `runtime.GOOS` 分支）；
+  新增前提判据 `TestParentPIDSourceIsAvailable`。
+* **审计判据自身仍有鉴别力**（改完专门验过）：临时塞一个
+  `runtime.GOOS` + `t.Skip` 的测试进去 ⇒ 审计**仍然 FAIL**；删掉后恢复 PASS
+  ⇒ 改的是真跳过，不是绕过审计。
+* 提交：`agent-companion` `e1cdb7d`（已推 main）。
+
+### 2.11 MCP 客户端：`initialize` 遇到 EOF 不重试 ⇒ 一次传输层掐断就让委派永久失效
+
+* **实测证据**（2026-10-26 22:09 真机夹具）：
+  `acc_create_task failed: MCP not initialized: initialize failed:
+   failed to send request: Post "http://100.106.67.198:4101/api/v2/mcp": EOF`
+  ⇒ 修这一条之后，同一台设备、同一份夹具，**委托当场成功**、待批项真的挂上来了。
+* **根因**：initialize 的重试集是「dial 失败 | 429/502/503/504 | 超时」，
+  **EOF / unexpected EOF / ECONNRESET / EPIPE 都不在里面**。
+  而 initialize 是**幂等**的（只是握手，重做一次没有副作用）⇒ 必须重试。
+* **写工具不跟着重试**：EOF 同样可能发生在「服务器已经建好任务、只是响应没回来」之后，
+  而 `acc_create_task` **没有幂等键**（§4.4.5）⇒ 重发会建出重复任务。
+* **判据**：新增 7 条（`backend/internal/mcp/client_eof_retry_test.go`），
+  含「写工具遇到 EOF 一律不许重试」「重试预算必须封顶」「分类器本身要被测」
+  「超时与 EOF 必须是两个独立的类」。
+  **先红后绿的诚实对照**：只回退行为（保留分类器）⇒ 4 条行为判据红；
+  恢复修复 ⇒ `go test ./internal/mcp/` 全绿。
+* 提交：`openpocket` `1756b77d`（已推 main）。
+
 ### 2.7 四个「只是声明一下」
 
 | 现象 | 真因 | 修法 |
@@ -334,13 +372,184 @@ cd /tmp/ac-e2e && go test ./... -count=1
 
 ## 4. 设备侧读数
 
-* flow 1 `.maestro/acc-approval.yaml`：✅ PASS（连答 2~3 张卡，最后任务进「已结束」区）
-* flow 2 `.maestro/acc-delegate-stop.yaml`：✅ PASS
-  （含新增判据：被停掉的任务以 **「已取消」** 出现在「已结束」区，
-  而不是「从任务区消失」）
-* 判据用的真值来源：daemon 的 `parking the request` / `permission answered locally` /
-  `permission denied` 三条日志 + Maestro 工件（`commands.json` 逐命令时间线、
-  `screen-hierarchy/*.json` 无障碍快照、`screenshots/*.png` 屏幕截图）。
+### 4.1 ★ a11y 修复的直接证据：**Maestro 点中了**（修复前是点不到）
+
+同一台设备、同一条流、同一套判据，只换 App 的构建：
+
+| | 修复前（attempt9，13:58） | 修复后（21:23 那轮） |
+|---|---|---|
+| 第 1 张卡 | `visible 允许一次` COMPLETED → tap COMPLETED | COMPLETED → tap COMPLETED |
+| 第 2 张卡 | COMPLETED → tap COMPLETED | COMPLETED → tap **COMPLETED** |
+| 第 3 张卡 | `visible` **WARNED ×6**、tap **SKIPPED ×6**（按钮**再没出现**） | ——（这一轮卡在租约，见 §4.2） |
+
+修复后那轮的 daemon 时间线（**两次应答都真的到了 daemon**）：
+
+```
+21:22:28  executing dispatch
+21:22:55  facade acp permission request received  request_id=0
+21:22:58  accbridge: acc permission endpoint not wired; parking the request in the local intervention queue
+21:24:19  accbridge permission answered locally    allow=true option_id=once      ← ★ App 的点按到了
+21:24:19  facade acp permission request received  request_id=1                    ← 第 2 个权限检查
+21:24:21  parking the request
+21:24:33  lease expired mid-execution ⇒ fail-closed                              ← ★ 卡点变成租约
+```
+
+⇒ **「卡片在屏幕上、无障碍树里却没有」这个缺陷已消除**：按钮重新可见、可点，
+且点按确实到达了 daemon（`permission answered locally`）。
+
+### 4.2 本轮**没拿到**整条流全绿的原因（不是产品回归，是环境 + ACC）
+
+1. **ACC 服务本身在抖**（对权威 ACC 的直连实测，22:02）：
+   `GET /api/v2/approvals` 三次分别 **200(3.8s) / 200(6.4s) / 连接被 reset**；
+   daemon 的心跳连续报 `context deadline exceeded` / `connection reset by peer`。
+   ⇒ 派单虽然被 ACC 受理（返回了 dispatch_id），但命令**送不到 daemon**
+   （夹具 120s 内看不到待批项 ⇒ 「前提没造出来」⇒ 夹具响亮失败、跳过该流 ——
+   这是 harness 的正确行为，不是假绿）。
+2. **ACC 的租约只有 120 秒**（实测：请求 30s，ACC 仍给 120s），
+   而「智能体启动 → 第一个审批请求 → 人作答 → 第二个审批请求」这条链在
+   本机负载下要 100 秒以上 ⇒ 租约在人在流程里就到期。
+   ⇒ 已修（§2.8 的续租重试；修完后 daemon 日志里能看到
+   `lease renewed` 每 18 秒一次、租约到期时间一直往后延 ⇒ 修复在生产里生效）。
+3. **宿主负载 36~110**（并行会话 + 模拟器软渲染）⇒ Maestro 的登录阶段
+   反复超时（`last hash=(超时)`）；设备端 `uiautomator dump` 一度被 **SIGKILL**
+   （无障碍服务整体卡死，重启模拟器后恢复）。
+4. **设备重启后 adb 连接掉了一次**：`Device emulator-5556 was requested,
+   but it is not connected.` ⇒ 整条流没跑就退出了（这一轮没有假绿）。
+
+### 4.3 判据用的真值来源
+
+daemon 的 `parking the request` / `permission answered locally` /
+`permission denied` / `lease renewed` 四条日志 + Maestro 工件
+（`commands.json` 逐命令时间线、`screen-hierarchy/*.json` 无障碍快照、
+`screenshots/*.png` 屏幕截图）+ ACC 命令面
+（`GET /api/v2/runtime/commands/{dispatch_id}`）。
+
+---
+
+## 4.4 ★★ 续（2026-10-27 00:40~01:30）：**上一轮「修好了」的结论被推翻**，而且是**自己的错**
+
+这一节是本轮的**核心产出**。上一轮（§4.1）写的是
+「a11y 修复的直接证据：Maestro 点中了 ⇒ 缺陷已消除」。
+**这个结论是错的**，而且错在一个很基础的地方：*修好的代码没装到设备上*。
+
+### 4.4.1 决定性证据：**设备上跑的是旧 APK**
+
+| | 大小 | 产出时间 | 内容 |
+|---|---|---|---|
+| 设备上装着的 | **165458754** | 2026-10-26 **12:50** | `section` 挂着 `v-if` ⇒ 列表空时**整段卸载** |
+| 本地重建的 | **165459013** | 2026-10-26 **20:56** | `section` 常驻 DOM + `aria-live` |
+
+差 **259 字节**。两边都验过：
+
+* 设备上的 App（CDP 读 DOM，空态）**根本没有** `acc-approval-card` 这个 section：
+  ```
+  sections: ["triage-card", "triage-card acc-eco-card",
+             "section running-section", "section sessions-section", "section completed-section"]
+  ```
+  —— 一个 `acc-approval-card` 都没有 ⇒ 它是被 `v-if` 卸载掉的。
+* 本地新包的 bundle（`unzip` 出 `assets/public/assets/*.js`）里
+  `acc-approval-card` **出现 2 次** ⇒ 修复确实在新包里。
+
+⇒ **上一轮 21:23 与 22:22 两次真机跑，用的都是 12:50 的旧包。**
+⇒ 上一轮 handoff 里「APK 重建成功（165459013 字节）并已装到 emulator-5556」
+这句**是假的**：包重建了，但**没装**（装的是 12:50 那个）。
+⇒ 教训（写下来给下一轮）：**「构建成功」和「设备上跑的是它」是两件事**，
+   判据只能是「设备上那个 APK 的字节数/哈希 == 我刚构建出来的那个」。
+
+### 4.4.2 22:23 那轮 flow1 为什么红（Maestro 自己的工件给出逐命令时间线）
+
+`~/.maestro/tests/2026-10-26_222242/acc-approval/commands.json`：
+
+```
+22:23:07 seq=8   COMPLETED  assertCondition(允许一次)          ← 第 1 张卡看得见
+22:23:08 seq=10  COMPLETED  tapOnElement(.*允许一次.*)         ← 点得中
+22:23:13 seq=12  WARNED     assertCondition(允许一次)          ← 第 2 张卡**看不见**了
+22:23:23 seq=13  SKIPPED    runFlow（“有点就点”）              ← 点不到
+…               (8 轮全是 SKIPPED)
+22:23:48 seq=40  FAILED     assertCondition(ACC 待批 清空)     ← 60s 超时
+```
+
+daemon 侧完全对上：
+
+```
+22:22:28  facade acp permission request received  request_id=0
+22:22:29  parking the request
+22:23:10  accbridge permission answered locally   allow=true option_id=once   ← App 的点按到了
+22:23:10  facade acp permission request received  request_id=1                 ← 第 2 个权限检查
+22:23:12  parking the request
+22:25:10  accbridge permission denied (fail-closed)  context deadline exceeded ← 没人答 ⇒ 120s 超时
+```
+
+⇒ **同一个 toolCallId 的第 2 个权限检查**（`request_id=1`）一直没人答
+⇒ 120s 后 fail-closed ⇒ 任务 `permission_denied` ⇒ 末尾断言「任务完成」必红。
+⇒ 而「第 2 张卡看不见」的直接证据是 **Maestro 自己存下的无障碍树**：
+`screen-hierarchy/step-013..037-assertCondition-允许一次.json` 里，
+`main` 的子节点是「下拉同步邮件」→「收起」→「疑似卡死 Maestro任务…」→「ACC 生态」，
+**中间整段 ACC 待批 section 不在树里**；同一时刻的截图上，卡片和「✓ 允许一次」
+**明明在屏幕上**。
+
+### 4.4.3 浏览器层隔离实验（把根因从「Vue」与「WebView」分开）
+
+用 CDP 把 ACC section **克隆**成一个脱离 Vue vnode 树的节点（Vue 的 5s 轮询重渲染
+碰不到它），再在克隆体上做纯 DOM 操作，然后 `uiautomator dump` 看它在不在树里。
+
+**新 APK（= 修复后的构建，01:01 装上）上的读数（01:05，宿主 load 200 上下）：**
+
+| 实验 | 做什么 | 无障碍树里有「允许一次」吗 |
+|---|---|---|
+| A | 克隆体清空 → 再填内容 | ✅ **有** |
+| B | 克隆体清空 → 留占位 → 再填 | ✅ 有（占位本身也在树里） |
+| C | 同 A，但去掉 `aria-live` | ✅ 有 |
+
+⇒ 在**修复后的构建**上，「空 → 非空」这个跳变**不会**让无障碍树丢子树
+⇒ 「section 常驻 DOM」这个修法是对的，**而且它本来就在源码里**（§1.3），
+   只是**没装到设备上**。
+
+**同一实验在 load 367 时的读数**：A/B/C/D 全 ❌ ——
+但那不是「树里没有」，是 **`uiautomator dump` 根本采不到树**（无障碍服务被 SIGKILL）。
+⚠ 这里暴露了**探针自身的一个假阴性**：把「dump 失败」当成「文本不存在」，
+就会把**环境故障**报成**产品缺陷**。已修（`/tmp/probe-a11y-repro.mjs`：
+dump 失败单独计数，判定只认采到了的树；一次都没采到 ⇒ 退出码 4 = 本轮读数无效）。
+
+### 4.4.4 ACC 的 MCP 面确实在抖（直连实测，01:07~01:12）
+
+按客户端的同一套协议（HS256 JWT + initialize + tools/call）直连
+`http://100.106.67.198:4101/api/v2/mcp`：
+
+```
+initialize → ERR (fetch failed, 5038ms)      ← 握手直接失败
+acc_get_tasks → 200 (3321ms)
+acc_get_tasks → ERR (fetch failed, 5074ms)
+acc_create_task → 200 (4255ms)               ← 写成功
+initialize → 200 (136ms) / notifications/initialized → 400 / acc_create_task → 20s 超时
+```
+
+⇒ EOF、超时、400 都会出现。**不是**客户端会话过期的问题
+（客户端 5min TTL 到点会重握手，01:04 的日志里能看到重握手发生过）。
+
+### 4.4.5 写请求失败**不能盲重试**（ACC 侧没有幂等键）
+
+ACC 侧源码（`agent-control-center/acc-go/internal/mcp/server.go` 的
+`acc_create_task` 分支）只吃 `payload` / `parent_task_id`，
+**没有 idempotency / source_ref** ⇒ 一次失败之后，服务器**可能已经建好任务**了
+⇒ 盲重试会建出重复任务。
+⇒ 所以夹具改成 **「失败先问 ACC 本尊，再决定要不要重试」**：
+`scripts/lib/acc-fixture-common.mjs` 新增 `accTaskList()`（直连 ACC 读任务）
+与 `delegateWithVerify()`（失败 → 按标题查 ACC → 查到了就算成功，查不到才重试）。
+⚠ 判定**不能**用本地 `/api/tasks`：本地列表由 tasksync 每 15s 拉一次，
+   有 15s 滞后 ⇒ 会把「其实建出来了」误判成「没建」⇒ 于是重复建单。
+
+### 4.4.6 夹具的残留清理一直是**假的**（诚实记录）
+
+`clearResidual()` 逐条 `DELETE /api/tasks/{id}`，对 **ACC 来源的任务**
+（`source=acc`，id 是 ACC 的 uuid）**一律 404** —— 本地行的 id 是 `task-xxx` 形式，
+两个 id 不是一回事，删不到。
+⇒ 上一轮日志里那一串「删除 xxx -> 404」**不是清理成功**，是**什么都没删**。
+⇒ 影响可控但要写清楚：残留的 ACC 任务停在 `status=queue`（没有派单，不会自己跑完），
+   所以不会落进「已结束」区，末尾断言（`finished-task-title-<status>` + 标题）
+   仍然只可能命中本轮那条；**但同名卡片可能不止一张**这件事要知道。
+⇒ 现在 `clearResidual()` 会分别统计「删掉几条 / 删不掉几条」并打印，
+   不再让一串 404 看起来像清理成功了。
 
 ---
 
@@ -382,13 +591,46 @@ cd /tmp/ac-e2e && go test ./... -count=1
    选项在 App 里**没有单独按钮**（UI 只有「允许一次」/「拒绝」，option 由智能体给出）。
 6. **写工具没有幂等键**：`acc_create_task` 的入参只有 `{kind,title,description}`
    ⇒ 写路径遇 EOF/超时不自动重试（**留在客户端，风险自担**）。
+   ⇒ 本轮只在**夹具层**补了「失败先问 ACC 再决定要不要重试」（§4.4.5），
+   **产品层的 `POST /api/tasks/delegate` 仍然是「失败即 502」**
+   ⇒ 用户在 ACC 抖动时点「委托 ACC」仍可能看到失败，而且**无法判断任务到底建没建出来**
+   ⇒ 这是**产品级待办**（要么让 ACC 支持幂等键，要么 delegate 失败时也回一个
+   「可能已建，请到任务列表确认」的诚实结果）。
 7. **高负载下智能体侧会被拖到超时**（§3.3）：宿主 load1 > 100 时，
    ACP 握手可能超过 ACC 的租约 ⇒ 派单以 `session_create_failed` 收场。
    daemon 侧目前报的是「agent did not answer session/new within Ns」，
    **没有把「租约先到期了」这件事说清楚** —— 可读性还能再修。
-8. **既有失败没修**：`tests/TestNoUnjustifiedPlatformSkips`（agent-companion，
-   与本轮无关）；`internal/acp/partial_outcome_code_test.go` 本身不是 gofmt 干净的
+8. **既有失败已修**：`tests/TestNoUnjustifiedPlatformSkips`（agent-companion）
+   本轮修掉（§2.10）⇒ agent-companion 的 `go test ./...` 现在**全绿**。
+   `internal/acp/partial_outcome_code_test.go` 本身不是 gofmt 干净的
    （与 origin/main 一致，属既有状态，**没有动别人的文件**）。
+9. ★ **修复后的 App 还没拿到整条流的全绿读数**：
+   修复后的构建（165459013 字节）已于 01:01 装到 emulator-5556，
+   浏览器层隔离实验在它上面读数正常（§4.4.3），
+   但**真机 flow1（acc-approval）与 flow2（acc-delegate-stop）都没能在修复后的 App 上重跑**
+   —— 宿主 load 飙到 455（10 核），设备端 `uiautomator dump` 采不到树
+   （无障碍服务被 SIGKILL），任何此刻的读数都是**失真的**。
+   ⇒ **这是本轮最大的未完成项**：修复后的整条流是否真的闭环，**还没有证据**。
+10. ★ **人工审批的等待窗口只有 120 秒**（`AC_PERMISSION_TIMEOUT_MS` 默认 120_000，
+    agent-companion `internal/config/config.go`）。
+    ⇒ 手机上看到卡片、人还没点完，任务就已经 `permission_denied` 死了
+    （22:25 与 22:23 两轮都是这个收场）。
+    ⇒ 租约续租已经修好（派单能一直活着），**审批窗口本身还没放宽**；
+    放宽前要先确认 ACC 侧派单自身的超时上限（否则窗口比派单还长就没意义）。
+11. **ACC 的 MCP 面在抖**（§4.4.4）：EOF / 超时 / 400 都会出现 ⇒ 委派成功率受影响。
+    ACC 侧不可改（本机无 SSH）⇒ 只能靠客户端的韧性 + 诚实报错。
+
+---
+
+## 6.1 ★★ 一条**纪律**（本轮踩得最贵，记在这里）
+
+**「构建成功」≠「设备上跑的是它」。**
+上一轮把「APK 重建成功（165459013 字节）并已装到 emulator-5556」写进了 handoff，
+**而设备上装的是 12:50 的 165458754 字节那个** ⇒ 两轮真机跑都在测**旧代码**，
+而结论却写成了「修复已生效」。
+⇒ 下一轮凡是「设备侧读数」，**第一条判据必须是**
+「设备上那个 APK 的字节数/哈希 == 我刚构建出来的那个」，
+再谈功能。判据要当判据测（判据本身也要被测）。
 
 ---
 
@@ -397,39 +639,61 @@ cd /tmp/ac-e2e && go test ./... -count=1
 ```
 请接取最新代码合并到本地，然后提交代码并推送。
 
-上一轮（round55）在真机上打通了 ACC 审批环：根因是「App 的 ACC 待批 <section>
-用 v-if 随列表空/非空被销毁重建 ⇒ Android WebView 的无障碍树丢一整段子树 ⇒
-卡片在屏幕上、树里没有 ⇒ Maestro 点不到、读屏用户也看不到」。
-已修：section 常驻 DOM + aria-live；decide 404/409 时清掉死卡片；
-failed/cancelled 进「已结束」区并带状态后缀 testid；MCP 客户端 sync.Once 毒化；
-诊断帧日志默认关（AC_DEBUG_ACP_FRAMES=1 才开）；harness 缺 driver APK 时自动解包。
-两条 Maestro 流（acc-approval / acc-delegate-stop）已全绿。
+上一轮（round55 续，2026-10-27）把 round55 自己的一处结论**推翻了**：
+「a11y 修复已在真机生效」是**假的** —— 修复后的 APK（165459013 字节）**根本没装到设备上**
+（设备上跑的是 12:50 的 165458754 字节那个，section 还挂着 v-if）。
+⇒ 所以 22:23 那轮 flow1 的「第 2 张卡在无障碍树里消失」不是产品缺陷没修好，
+   而是**在测旧代码**。修复后的构建已于 01:01 装上，浏览器层隔离实验在它上面读数正常
+   （空→非空后无障碍树能恢复），但**整条流的全绿读数还没拿到**。
+本轮另外修掉并已推 main 的：
+· openpocket 1756b77d —— MCP initialize 遇到 EOF/连接重置必须重试
+  （一次传输层掐断曾让委派永久失效）；写工具**不**重试（acc_create_task 无幂等键）。
+· agent-companion e1cdb7d —— R-5 负控不许跳过（main 上 go test ./... 一直是红的）。
+· 夹具：写请求失败先问 ACC 本尊再决定要不要重试（避免重复建单）；
+  残留清理开始如实统计「删掉几条 / 删不掉几条」（ACC 来源的任务本地删不掉）。
 
-这一轮请按批判式审计继续，重点是上一轮**明确没做到**的部分：
+这一轮请按批判式审计继续，重点是**明确没做到**的部分：
 
-1. ACC 侧缺的��个端点（GET /api/v2/runtime/permissions、
-   POST /api/v2/runtime/permissions/{id}/decision）—— acc-go 从未实现。
+1. ★★ 拿到**修复后 App** 的真机全绿读数（这是上一轮最贵的坑）：
+   · 第一条判据必须是「设备上那个 APK 的字节数/哈希 == 我刚构建出来的那个」
+     （别再拿旧包测新代码然后写成「已修复」）；
+   · flow1（acc-approval）与 flow2（acc-delegate-stop）都要在修复后的 App 上重跑；
+   · 读数前先看 load1（这台机器的经验阈值 <25；实测 200+ 时设备端
+     uiautomator dump 会被 SIGKILL ⇒ 任何读数都失真）。
+2. ★ 产品级的 delegate 韧性：ACC 的 MCP 面会 EOF/超时/400（无 SSH，改不了 ACC），
+   而 acc_create_task **没有幂等键** ⇒ 写失败后服务器可能已经建出任务。
+   现在只有**夹具层**做了「先问 ACC 再重试」，产品层 `POST /api/tasks/delegate`
+   仍然「失败即 502」，用户无法判断任务到底建没建出来。
+   ⇒ 要么让 ACC 支持幂等键（写契约/issue + 契约测试），要么让 delegate 失败时
+   回一个「可能已建，请到任务列表确认」的诚实结果，并给判据。
+3. ★ 人工审批窗口只有 120 秒（AC_PERMISSION_TIMEOUT_MS）⇒ 人还没点完任务就死了。
+   租约续租已修好（派单能一直活着），**审批窗口本身还没放宽**；
+   放宽前先确认 ACC 侧派单自身的超时上限，并给判据。
+4. ACC 侧仍缺的两个端点（GET /api/v2/runtime/permissions、
+   POST /api/v2/runtime/permissions/{id}/decision）—— acc-go 从未实现；
    本机到 ACC（100.106.67.198:4101 == 192.168.31.211:4101）无 SSH。
-   ⇒ 要么找到能改 ACC 的路径（仓库/部署方式），要么把「契约在、实现没有」
-   写成可执行的 issue 并给出可验收的契约测试；**不要用 daemon 本地队列
-   兜底就宣称「ACC 审批面已打通」**。
-2. ACC 派单的 run 不进 daemon run 历史（GET /api/v1/runs 恒空）⇒
+   ⇒ 要么找到能改 ACC 的路径，要么把「契约在、实现没有」写成可执行的 issue
+     并给出可验收的契约测试；**不要用 daemon 本地队列兜底就宣称
+     「ACC 审批面已打通」**。
+5. ACC 派单的 run 不进 daemon run 历史（GET /api/v1/runs 恒空）⇒
    「同步查看任务历史」在 ACC 派单上还是空的；生成文件也没有读面。
    ⇒ 设计并实现这两个读面，并给真机判据。
-3. /api/acc/approvals 未按 workspace 过滤 ⇒ 补过滤并补判据。
-4. 一次工具调用要人答 2~3 次审批 ⇒ 评估把同一 toolCallId 的多项检查聚合成
+6. /api/acc/approvals 未按 workspace 过滤 ⇒ 补过滤并补判据。
+7. 一次工具调用要人答 2~3 次审批 ⇒ 评估把同一 toolCallId 的多项检查聚合成
    一次点击（注意 fail-closed 与 opencode 的 allow_always 语义），并补判据。
-5. 高负载下派单以 session_create_failed 收场：ACP 握手可能超过 ACC 租约。
+8. 高负载下派单以 session_create_failed 收场：ACP 握手可能超过 ACC 租约。
    ⇒ 让 daemon 的报错能说清「租约先到期了」，并给一条判据（判据本身也要被测）。
 
 纪律（上一轮踩过的，别再踩）：
-· 设备读数前先看 load1（这台机器的经验阈值 <25；实测 110 时智能体侧会超时）。
+· 「构建成功」≠「设备上跑的是它」：设备侧读数前先核对 APK 字节数/哈希。
+· 设备读数前先看 load1（阈值 <25；实测 200+ 时设备端 uiautomator dump 被 SIGKILL）。
   负载高时先做文档/代码，别拿失真的读数当结论。
+· **dump 失败 ≠ 文本不存在**：探针/判据要把「采不到无障碍树」与「树里没有」
+  分开统计，否则会把环境故障报成产品缺陷（本轮踩过一次，已修探针）。
 · 同一台设备不能并行跑两条 Maestro 流；本会话用 emulator-5556。
 · Maestro 的 visible 是完整匹配（「ACC 待批」≠「ACC 待批（1）」⇒ 写「ACC 待批.*」）。
 · 断言前必须清同名残留，否则会命中别的行；瞬时 toast 只能等一次、不能连着 assert。
-· 判据要当判据测：恒真/恒假/假绿的判据必须清掉（上一轮就有一条 notVisible
-  在无障碍树失联期间是假绿）。
+· 判据要当判据测：恒真/恒假/假绿的判据必须清掉。
 · 提交走临时 worktree + git push origin HEAD:main，**不移动本地 main**。
 · 凭据只经环境变量/0600 env 文件传递，不打印、不入仓库。
 

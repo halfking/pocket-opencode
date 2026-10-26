@@ -19,7 +19,7 @@
  *   node scripts/acc-approval-fixture.mjs --induce
  *   node scripts/acc-approval-fixture.mjs --restore
  */
-import { makeApi, clearResidual } from './lib/acc-fixture-common.mjs'
+import { makeApi, clearResidual, delegateWithVerify } from './lib/acc-fixture-common.mjs'
 
 const TITLE = 'maestro-acc-approve'
 const { api, login } = makeApi()
@@ -31,16 +31,14 @@ async function induce() {
   const prompt =
     '请在 /tmp/maestro-acc-approve 目录下创建文件 hello.txt，内容写一行 hello，' +
     '然后读取该文件并把内容原样告诉我。'
-  const d = await api('POST', '/api/tasks/delegate', {
-    title: TITLE,
-    description: prompt,
-    prompt,
-  })
-  if (d.status !== 200) {
-    throw new Error(`委托失败 ${d.status}：${JSON.stringify(d.body).slice(0, 300)}`)
+  // ★ 2026-10-27：写请求失败时**先问 ACC 有没有建出来**再决定要不要重试
+  //   （acc_create_task 没有幂等键 ⇒ 盲重试会建出重复任务；
+  //     而 ACC 的 MCP 面确实会回 EOF/超时）。
+  const res = await delegateWithVerify(api, { title: TITLE, description: prompt, prompt })
+  if (!res.ok) {
+    throw new Error(`委托失败 ${res.status}：${JSON.stringify(res.body).slice(0, 300)}`)
   }
-  const data = (d.body && d.body.data) || d.body || {}
-  console.log(`[fixture] 已委托：task_id=${data.task_id} dispatch_id=${data.dispatch_id}`)
+  console.log(`[fixture] 已委托：task_id=${res.task_id} dispatch_id=${res.dispatch_id}${res.recovered ? '（失败后从 ACC 侧确认已建）' : ''}`)
 
   // 等 daemon 把待批项挂上（App 的卡片靠它出现）。
   const deadline = Date.now() + 120_000
