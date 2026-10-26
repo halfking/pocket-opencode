@@ -1495,7 +1495,18 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 		// 1. ACC 任务（经 MCP 客户端）
 		if (source == "" || source == "acc") && s.mcpClient != nil {
 			statusFilter := r.URL.Query().Get("status")
-			parsed, err := s.mcpClient.GetRemoteTasks(r.Context(), statusFilter, limit)
+			// ★ 2026-10-27：任务列表是 App 的**主屏**，不能被远端拖死。
+			//
+			// 实测事故（2026-10-27 02:23）：
+			//   ACC 的 MCP 面超时 ⇒ GET /api/tasks 耗时 **41 秒**
+			//   ⇒ 响应体写不出去（write tcp … i/o timeout）
+			//   ⇒ 客户端拿到 "other side closed" ⇒ 整个任务页都打不开。
+			// ⇒ 给这次远端调用一个**短**预算（对齐下面 OpenCode 源的既有做法
+			//   listSessionsTimeout）：超了就跳过 ACC 源，本地源照常返回，
+			//   ACC 的数据由后台 tasksync（15s 一跳）补齐。
+			accCtx, cancel := context.WithTimeout(r.Context(), accTasksListTimeout)
+			parsed, err := s.mcpClient.GetRemoteTasks(accCtx, statusFilter, limit)
+			cancel()
 			if err != nil {
 				log.Printf("[mcp] fetch ACC tasks failed: %v", err)
 				// 不阻断其他源
