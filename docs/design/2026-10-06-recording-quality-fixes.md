@@ -117100,6 +117100,8 @@ macOS 的 `time.Now()` 是**微秒对齐**的（§964 实测纳秒尾 2000/2000 
 
 #### §967.8.2 ⚠⚠⚠ **订正 §966.10.3 的红点口径**（本轮实测把那一条读错了）
 
+⇒ ⚠⚠⚠ **本小节的编号还有一处跨口径错误，已由 §968.9.1 / §968.9.2 订正**：**红点判定（`check:dead-api`）仍成立**，★ **但本小节用来对比的「第 31 项 `check:gofmt`」是【本机 50 项全量清单】的编号** ⇒ **在 CI 口径（`run-gates.mjs --ci` 的 39 项）下，`check:gofmt` 是【第 20 项】** ⇒ ⇒ ⇒ **凡引用「第 N 项」都必须带口径** ⇒ 详见 §968.9.1。
+
 §966.10.3 那张表把 `frontend` / `gates parity` 的红点写成 **「第 31 项 `check:gofmt`」**，并在「复跑确认」里写「连续两笔 CI 读数**逐字同形**」。
 
 ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ★ **本轮把那四笔 CI 的原始日志全取出来重查**（`gh run view --log-failed`）：
@@ -117124,7 +117126,8 @@ macOS 的 `time.Now()` 是**微秒对齐**的（§964 实测纳秒尾 2000/2000 
 | ① | frontend **4 个** ACC 登记表漂移文件（12 个 `test:fail`）| `frontend` 的 `typecheck+build+node tests` | ✅ 看得到 |
 | ② | `TestConcurrentMigrationsDoNotDeadlock`（30.05s，`internal/pgmigrate`）| `backend` ＋ `backend-pg` | ✅ 看得到 |
 | ③ | **NEW**：`check:dead-api` 新增死能力 `accTasks.ts:listAccSessions` / `listAccTasks` | `frontend` 的 `gates parity`（**第 14 项**）| ✅ 看得到（**这才是 `gates parity` 的实际红点**）|
-| ④ | `backend/internal/mcp/client.go` 的 **gofmt 真债** | `frontend` 的 `gates parity`（**第 31 项**）| ⛔ **看不到**（被 ③ 在第 14 项**串行截断**）⇒ 但**本机复跑是红的** |
+| ④ | `backend/internal/mcp/client.go` 的 **gofmt 真债** | `frontend` 的 `gates parity`（⚠ **本机全量口径第 31 项 ＝ CI 口径第 20 项**，见 §968.9.1）| ⛔ **看不到**（被 ③ 在第 14 项**串行截断**）⇒ 但**本机复跑是红的** |
+| ⑤ | **NEW（§968.9 实测）** | ⇒ **main 上的红已是【五类】不是四类**：③ `check:dead-api` **已修好**、① gofmt 真债 **1→4 个**、**NEW** `check:env-example`（2 个 `POCKET_ACC_DISPATCH_*`）、**NEW** `internal/opencode` 的 `TestEventStreamManager_Stats`（平台/负载相关 flaky）⇒ ⇒ 详见 §968.9.3 |
 
 ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ★ **四类全部归属并发会话的 ACC 线**（`467fa8b1 fix(acc)` / `d0807c74 feat(acc)` 等）⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **本会话一处理都没有代修** ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **已登记为简报第 192 条（并把「三类」更正为「四类」）**。
 
@@ -117454,3 +117457,69 @@ macOS 的 `time.Now()` 是**微秒对齐**的（§964 实测纳秒尾 2000/2000 
 ★ **「合并了别人的提交」之后，凡是基于清单的结论，都要【用同一个量具、在合并后的树上】重扫一遍** ——
 ★ **「无冲突」只说明文本没打架，不说明【清单】没过期**（别人加一个新文件就足以让清单过期，而 git 不会报冲突）。
 ⇒ ⇒ ⇒ ⇒ ⇒ **而且要用【同一个量具】** ⇒ 否则「重扫」本身就是个新读数、两个读数不可比。
+
+### §968.9 CI 权威读数（`ab258996`）—— 顺带**订正 §967.8.2 用错的那套编号**
+
+⇒ ⚠ **本节只碰 `docs/`** ⇒ ⇒ **三个 workflow 没被触发**：
+`backend-pg`（paths=`backend/**`）、`e2e-web`（paths=`e2e/web/**`+`frontend/src/**`+`backend/**`）、
+`docker-smoke` ⇒ ⇒ ⚠⚠ **「没跑」≠「绿」**（§967.8 纪律）⇒ **本节的读数只覆盖 `backend` 与 `frontend` 两个 job**。
+
+⇒ ⇒ ★★★ **本节最值钱的一条是一个【口径】问题，不是一条红**：
+**§967.8.2 那次订正，用错了编号体系** ⇒ ⇒ **它自己也是「结论对、依据错」**。
+
+#### §968.9.1 ⚠⚠⚠ 两套清单 ⇒ 「第 N 项」必须带口径（`gates.json` 的 `gates` 数组 vs `run-gates.mjs --ci`）
+
+⇒ `frontend/gates.json` 的 `gates` 数组有 **50 项**（本机 `npm run gates` 跑这 50 项），
+而 CI 的 `gates parity` job 跑的是 **`node scripts/run-gates.mjs --ci`** ⇒
+它按 `ciRuns` / `ciCoveredElsewhere` 筛出 **CI 负责的 39 项**（另有 11 项在 workflow 里手列）⇒
+⇒ ★ **两套清单的序号【不可互相引用】**。
+
+⇒ ⇒ **实测两份编号**（同一时刻、同一份 `gates.json`）：
+
+| 门 | **CI 口径（39 项）** | **本机全量（50 项）** |
+|---|---|---|
+| `check:dead-api` | **第 14 项** | 第 23 项 |
+| `check:gofmt` | ★ **第 20 项** | 第 31 项 |
+| `check:doc-encoding` | 第 32 项 | 第 43 项 |
+
+⇒ ⇒ ⇒ ⚠⚠⚠ **所以 §967.8.2 的订正是【半对】**：
+它把红点从「第 31 项 gofmt」改成「第 14 项 dead-api」⇒ **red-api 是对的**（CI 口径第 14 项 ✅），
+★ **但它用来对比的「第 31 项 gofmt」那个编号是【本机全量口径】的** ⇒ **在 CI 口径下 gofmt 是第 20 项**
+⇒ ⇒ ⇒ ⇒ ★★ **⇒ §967.8.2 自己的依据里还藏着一个跨口径的错误** ⇒ ⇒ ⇒ ⇒ ⇒ **本节把它订正掉**（§968.9.2）。
+
+⇒ ⇒ ⇒ ★ **通用式**：★ **凡是要报「第 N 项」，必须同时说清【是哪套清单的 N】** ——
+★ **门禁清单会分叉（本机全量 / CI 负责 / workflow 手列）⇒ 「第 N 项」在没带口径时是个**没有意义的引用**。
+★★ **而且这道题在 CI 上是【可自证的】**：`run-gates.mjs --list` 会直接打印「CI 分工：--ci 跑 39 条」
+⇒ ⇒ ★ **⇒ 下次报红点，先跑 `--list` 拿 CI 口径的编号，再看 CI 日志里的编号** ⇒ **两者对不上就是口径错了**。
+
+#### §968.9.2 §967.8.2 / §967.8.3 的编号订正（**只改指向，不改语义**）
+
+| 原记录 | 订正 |
+|---|---|
+| §967.8.2：「红点是**第 31 项 `check:gofmt`**（记错了，实际是**第 14 项 `check:dead-api`**）」 | **红点判定仍成立**（dead-api，CI 口径第 14 项 ✅）⇒ ★ **但「第 31 项」是本机全量口径** ⇒ **在 CI 口径下 `check:gofmt` 是第 20 项** ⇒ ⇒ **对比用的编号要改成「CI 口径第 20 项」** |
+| §967.8.3 表里「④ `backend/internal/mcp/client.go` 的 gofmt 真债 —— `frontend` 的 `gates parity`（**第 31 项**）」 | **同样订正为「CI 口径第 20 项」** ⇒ ⚠ **且本节实测：这条真债已从 1 个文件变成 4 个**（见 §968.9.3） |
+
+#### §968.9.3 本次 CI 权威读数（`ab258996`）与 main 上的完整红清单
+
+⇒ **CI 报的红点**：`frontend` / `gates parity` ⇒ **CI 口径第 20 项 `check:gofmt`** ⇒
+「已通过 19/39 项」⇒ ⇒ ⚠⚠ **第 21–39 项在 CI 上【根本没跑】**（串行截断，§967.8.1 纪律）
+⇒ ⇒ ★ **⇒ 要拿完整清单，必须「CI 截断点」＋「本机逐道复跑」合看**（本节照此做了）。
+
+| # | 红在哪 | 形态 | 归属 | 本机复跑 |
+|---|---|---|---|---|
+| ① | **`frontend` `gates parity` CI 口径第 20 项** `check:gofmt` | **4 个文件**：`backend/internal/mcp/client.go`、**`backend/internal/server/companion_approval_handler.go`**、**`backend/internal/server/companion_client.go`**、**`backend/internal/task/store.go`** | 前 1 个是既有的；★ **后 3 个是并发会话这次推的 ACC 审批环文件**（`d646ae3d` / `9f8da87f`）⇒ **归属并发会话那条线** | ✅ **本机逐字同形**（同样 4 个文件） |
+| ② | **NEW**：`frontend` CI 口径**第 23 项** `check:env-example` | 2 个 `POCKET_*` 被 backend 读取却没写进 `.env.example`：**`POCKET_ACC_DISPATCH_AGENT_ID`**、**`POCKET_ACC_DISPATCH_RUNTIME_ID`** | ★ **并发会话这次推的 ACC 派单审批环引入** ⇒ 归属那条线 | ✅ 红（CI 截断在第 20 项 ⇒ **CI 读数里看不到这一条**） |
+| ③ | **NEW**：`backend` / `test` ⇒ `internal/opencode` ⇒ `TestEventStreamManager_Stats` | CI 断言原文：**`event_stream_test.go:239: expected TotalEvents > 0, got 0`** ⇒ 而 CI 日志里紧邻着 `[event-stream] dropping event for subscriber 2 on instance inst-a (buffer full)` ⇒ ⇒ **buffer 满 ⇒ 事件被丢 ⇒ 计数 0** | ★ **既非本轮、也非并发会话**（`git diff 5b8eb3a7..2e9fa966 -- backend/internal/opencode/` = **空**；`opencode` 包不在并发会话那 7 笔的改动面里）⇒ **归属既有 `opencode` 包** | ★ **本机 8/8 绿、pristine worktree 8/8 绿** ⇒ **平台/负载相关的 flaky** |
+| ④ | **既有**：`backend` / `test` ⇒ `internal/pgmigrate` ⇒ `TestConcurrentMigrationsDoNotDeadlock`（30.09s） | 同 §967.8.3 ② | 并发会话那条线 | — |
+| ⑤ | **既有**：`frontend` CI 口径**第 35 项** `check:stt-refine-receipts` | 「24 处不一致」⇒ 但根因是**证据文件 `docs/design/data/stt-refine-receipts-377-378.json` 从未被任何提交跟踪**（`git log --all --diff-filter=A` 查无此文件）⇒ ⇒ **CI 上必然报「未测」** | ★ **既有**（与本轮无关：★ **本轮的 diff 只在主文档末尾**（`@@ -117130,3 +117130,327 @@`）⇒ **不可能触及 §384.2**；★ 且 pristine 与 HEAD 的 §384 段**行号逐字相同**） | 需在 CI 上才复现（本地有那份未跟踪的 JSON ⇒ 本机形态与 CI 不同） |
+
+⇒ ⇒ ⇒ ⇒ ★★ **所以 main 上现在的红是【五类】，不是 §967.8.3 记的「四类」**：
+★ **③ `check:dead-api` 已被并发会话修好**（本机 rc=0「棘轮通过，基线 8 条」⇒ 且 CI 这次**跑过了第 14 项**）
+★ **① gofmt 真债从 1 个涨到 4 个** ★ **② 新增 `check:env-example`（2 个 `POCKET_ACC_DISPATCH_*`）**
+★ **③ 新增 `internal/opencode` 那条 flaky** ⇒ ⇒ ⇒ ⇒ ⇒ **归属：①② 归并发会话 ACC 线；③ 归既有 `opencode` 包；⑤ 归既有的「收据未入 git」**
+⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ★ **本会话对这五类一处理都没代修** ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ★ **唯一登记在简报第 192 条**。
+
+⇒ ⇒ ⇒ ⇒ ⚠⚠ **③ 那条 flaky 值得单独说一句**：
+★ **它在本机复现不了**（本机 8/8 绿、pristine 8/8 绿）⇒ ⇒ **「本机绿」不能当「它没问题」的证据**
+⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **它需要「buffer 满」这个条件才炸** ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⚠ **⇒ 本节不代修它、也不把它登记成「已修」**
+⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **只如实登记形态与归属**（等属主指派；★ **要复现它需要能制造「订阅者 buffer 满」的夹具 —— 那是一个新任务，不是本节能顺手做掉的**）。
