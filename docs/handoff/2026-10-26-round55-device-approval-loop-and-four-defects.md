@@ -286,6 +286,53 @@ option id（业务细节 —— 而命令里可能有用户输入的任意内容
   恢复修复 ⇒ `go test ./internal/mcp/` 全绿。
 * 提交：`openpocket` `1756b77d`（已推 main）。
 
+### 2.12 产品级：`POST /api/tasks/delegate` 在「写请求结果未知」时**直接 502**，任务卡在 queue（**产品缺陷**）
+
+★ 现场（2026-10-27 01:32 真机夹具，逐字）：
+
+```
+[fixture] 委托返回 502，但 ACC 里已经有同标题任务（3e513bcd-…）⇒ 视作已建，不重发
+[fixture] 已委托：task_id=3e513bcd-… dispatch_id=null（失败后从 ACC 侧确认已建）
+Error: 120s 内没有待批项出现 ⇒ 前提没造出来（这条流必须响亮失败）
+```
+
+⇒ 委托在 **`acc_create_task` 的响应没回来**时就 502 了 ⇒ **派发根本没发生**
+⇒ 智能体没被派活 ⇒ 永远不会有待批项 ⇒ 整条流的前提造不出来。
+而 ACC 侧其实**已经建出任务**了（只是响应没回来）。
+
+* **为什么不能盲重试**：`acc_create_task` **没有幂等键**
+  （ACC 侧 `acc-go/internal/mcp/server.go` 只吃 `payload` / `parent_task_id`），
+  而 ACC 的 MCP 面实测会回 EOF/超时/400 ⇒ 重发会建出重复任务。
+* **为什么不能直接报失败**：服务器**可能已经建好了** ⇒ 对用户说「失败了」是错的，
+  任务就在那儿摆着（下次同步就会出现在任务列表里）。
+
+★ **修法**：写请求**结果未知**（EOF / 连接被重置 / 超时）时，
+**先问 ACC 本尊**：有没有「标题相同 **且** 创建时间不早于本次请求」的任务？
+  · 有 ⇒ 服务器其实建好了 ⇒ 用它**继续往下走**（派发 + 落库 + 绑定），
+    不重复建单；
+  · 没有 ⇒ 才是真失败，照实 502。
+
+★ **认领判据必须是两个条件同时成立**：
+  · 只按标题找 ⇒ 会认领**上一轮的同名残留**（ACC 里同名能堆 27 条）
+    ⇒ 夹具层已经踩过这个坑（先写成只按标题匹配，后补了时间下界）；
+  · 只按时间找 ⇒ 会认领**别人**的任务。
+
+★ **改动**：
+  · `backend/internal/mcp/client.go`：`ParsedTask` 增加 `CreatedAt`；
+    新增 `MatchTaskCreatedSince` / `FindTaskCreatedSince` / `IsAmbiguousWriteFailure`；
+  · `backend/internal/server/server_task_delegate_acc.go`：写请求结果未知 ⇒ 复查 ACC ⇒ 认领或如实失败。
+
+★ **判据**（先红后绿，诚实对照）：
+  · `backend/internal/mcp/client_find_task_test.go`（新，9 条）：标题不同不认领、
+    更早的不认领、**没有 created_at 不认领**、多个候选取最新、时钟偏差容忍、
+    空标题不认领、解析要真的带上 created_at、缺 created_at 不丢任务、
+    「结果未知」的分类（EOF/重置/超时 vs 业务错误）；
+  · `backend/internal/server/task_delegate_acc_ambiguous_test.go`（新，3 条）：
+    **认领后必须继续派发**（这是「任务卡在 queue」的根因所在）、
+    认不出来必须如实失败、**同名但更早的任务不得认领**；
+  · **只回退产品修复**（保留判据）⇒ `TestDelegateTask_AmbiguousCreateFailure_RecoversCreatedTask`
+    红：`status = 502, want 200`；恢复修复 ⇒ 3 条全绿。
+
 ### 2.7 四个「只是声明一下」
 
 | 现象 | 真因 | 修法 |

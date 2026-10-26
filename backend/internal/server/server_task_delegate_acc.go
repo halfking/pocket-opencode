@@ -35,8 +35,10 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/halfking/pocket-opencode/backend/internal/accruntime"
+	"github.com/halfking/pocket-opencode/backend/internal/mcp"
 	"github.com/halfking/pocket-opencode/backend/internal/task"
 )
 
@@ -138,17 +140,48 @@ func (s *Server) delegateCreateAndDispatch(ctx context.Context, w http.ResponseW
 	if req.Description != "" {
 		createArgs["description"] = req.Description
 	}
+	// 建任务的**时刻**先记下来：写请求失败后要判断「服务器到底建没建出来」，
+	// 判据必须是「标题相同 **且** 创建时间不早于这一刻」——
+	// 只按标题找会认错人（ACC 里同名残留能堆几十条）。
+	createStartedAt := time.Now()
 	raw, err := s.mcpClient.CreateTask(ctx, createArgs)
+	var accTaskID string
 	if err != nil {
-		log.Printf("[tasks/delegate] acc_create_task failed: %v", err)
-		http.Error(w, "ACC create task failed: "+err.Error(), http.StatusBadGateway)
-		return
-	}
-	accTaskID := accTaskIDFromCreate(raw)
-	if accTaskID == "" {
-		log.Printf("[tasks/delegate] acc_create_task returned no task id: %.400s", raw)
-		http.Error(w, "ACC create task returned no task id", http.StatusBadGateway)
-		return
+		// ★ 结果未知的失败（EOF / 连接被重置 / 超时）：
+		//   请求**可能**已经到了 ACC、只是响应没回来。
+		//   acc_create_task 没有幂等键 ⇒ 盲重试会建出重复任务；
+		//   但直接报 502 也可能是错的 —— 任务其实建出来了。
+		//   ⇒ 先问 ACC 本尊：有没有「标题相同、创建时间不早于 createStartedAt」的任务？
+		//     有 ⇒ 服务器其实建好了 ⇒ 用它继续往下走（派发 + 落库 + 绑定）；
+		//     没有 ⇒ 才是真失败，照实 502。
+		if !mcp.IsAmbiguousWriteFailure(err) {
+			log.Printf("[tasks/delegate] acc_create_task failed: %v", err)
+			http.Error(w, "ACC create task failed: "+err.Error(), http.StatusBadGateway)
+			return
+		}
+		log.Printf("[tasks/delegate] acc_create_task failed ambiguously (%v) ⇒ 问 ACC 是否已建", err)
+		found, ok, verr := s.mcpClient.FindTaskCreatedSince(ctx, req.Title, createStartedAt)
+		if verr != nil {
+			log.Printf("[tasks/delegate] 复查 ACC 任务列表失败（%v），无法判定是否已建 ⇒ 照实报错", verr)
+			http.Error(w, "ACC create task failed: "+err.Error(), http.StatusBadGateway)
+			return
+		}
+		if !ok {
+			log.Printf("[tasks/delegate] ACC 侧没有同标题的新任务 ⇒ 确认未建 ⇒ 照实报错")
+			http.Error(w, "ACC create task failed: "+err.Error(), http.StatusBadGateway)
+			return
+		}
+		log.Printf("[tasks/delegate] ACC 侧其实已建出任务 %s（title=%q created=%s）⇒ 继续派发，不重复建单",
+			found.ID, req.Title, found.CreatedAt.Format(time.RFC3339))
+		accTaskID = found.ID
+		raw = `{"id":"` + found.ID + `","recovered":"ambiguous-create"}`
+	} else {
+		accTaskID = accTaskIDFromCreate(raw)
+		if accTaskID == "" {
+			log.Printf("[tasks/delegate] acc_create_task returned no task id: %.400s", raw)
+			http.Error(w, "ACC create task returned no task id", http.StatusBadGateway)
+			return
+		}
 	}
 
 	// ③ 派发

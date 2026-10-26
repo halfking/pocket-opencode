@@ -184,6 +184,8 @@ export async function delegateWithVerify(api, { title, description, prompt }, op
   const waitMs = opts.waitMs ?? 8000
   let last = { status: 0, body: null }
   for (let i = 1; i <= attempts; i++) {
+    // ★ 记下请求发出的时刻：事后认领「ACC 侧其实建出来了」必须用它做时间下界。
+    const startedAt = new Date()
     const d = await api('POST', '/api/tasks/delegate', { title, description, prompt })
     last = { status: d.status, body: d.body }
     if (d.status === 200) {
@@ -192,13 +194,38 @@ export async function delegateWithVerify(api, { title, description, prompt }, op
     }
     // 写请求可能已经生效 ⇒ 先问 ACC 本尊
     const list = await accTaskList()
-    const hit = list.find((t) => String(t.title || '') === title)
+    const hit = pickCreatedSince(list, title, startedAt)
     if (hit) {
-      console.log(`[fixture] 委托返回 ${d.status}，但 ACC 里已经有同标题任务（${hit.id}）⇒ 视作已建，不重发`)
+      console.log(`[fixture] 委托返回 ${d.status}，但 ACC 里已经有同标题的新任务（${hit.id} created=${hit.created_at}）⇒ 视作已建，不重发`)
       return { ok: true, attempt: i, task_id: hit.id, dispatch_id: null, recovered: true }
     }
-    console.log(`[fixture] 委托第 ${i}/${attempts} 次失败（${d.status}），ACC 里也没有同标题任务 ⇒ 等 ${waitMs}ms 重试`)
+    console.log(`[fixture] 委托第 ${i}/${attempts} 次失败（${d.status}），ACC 里也没有同标题的新任务 ⇒ 等 ${waitMs}ms 重试`)
     if (i < attempts) await new Promise((r) => setTimeout(r, waitMs))
   }
   return { ok: false, status: last.status, body: last.body }
+}
+
+/**
+ * 从 ACC 的任务列表里挑出「标题相同、且创建时间不早于 startedAt」的那条。
+ *
+ * ★ 为什么要时间下界（不能只按标题）：
+ *   ACC 里同名残留能堆几十条（实测 27 条 maestro-acc-approve）
+ *   ⇒ 只按标题找会命中**上一轮的旧任务**，
+ *     于是夹具会报告「已建」而其实本次请求一条都没建出来
+ *     ⇒ 前提是假的，流会拿着一个不存在的任务去跑。
+ *   ⇒ 必须加「创建时间不早于本次请求」。
+ *
+ * ⚠ 多个候选时取**最新**的（本次请求是最后发出的那个）。
+ */
+export function pickCreatedSince(list, title, startedAt) {
+  const t0 = startedAt instanceof Date ? startedAt.getTime() : Date.parse(startedAt)
+  let best = null
+  for (const t of list || []) {
+    if (String(t.title || '') !== title) continue
+    const ts = Date.parse(t.created_at || '')
+    if (!Number.isFinite(ts)) continue
+    if (ts < t0 - 5000) continue // 5s 时钟偏差容忍
+    if (!best || Date.parse(t.created_at) > Date.parse(best.created_at)) best = t
+  }
+  return best
 }
