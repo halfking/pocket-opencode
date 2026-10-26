@@ -507,6 +507,86 @@ if (filesTestAllRuns() === null) {
   process.exit(3)
 }
 
+
+// ---- 4. 脸④ 编号口径自检（§969）--------------------------------------------
+//
+// 为什么要有这张脸
+// ----------------
+//   「第 N 项」有**两套编号**，两套**数目不同、位置不同**：
+//     · gates.json 全量（本机 `npm run gates` 跑它）—— 编号是全量里的位置；
+//     · ciRuns 名单（CI 跑 `run-gates.mjs --ci` 跑它）—— 编号是 ciRuns 里的位置。
+//   实测：全量 50 项 vs CI 39 项；`check:gofmt` 全量第 31 项 ＝ CI 口径第 20 项。
+//
+//   ⇒ 所以**报「第 N 项」而不说口径，就是一个没有意义的引用**。
+//   ⇒ §967.8.2 就这么错过一次（把本机全量的「第 31 项 gofmt」当成 CI 日志里的位置），
+//     而那次订正**自己也留着同一个错** ⇒ ⇒ 靠人记不住 ⇒ 必须有门禁。
+//
+// 这张脸量什么
+// ------------
+//   **真跑一次 `run-gates.mjs --list --json`**，核对它给出的两套编号**自洽**：
+//     ① 每个 CI 成员的 CI 编号 ＝ 它在 ciRuns 数组里的位置；
+//     ② 每个 CI 成员的全量编号 ＝ 它在 gates 数组里的位置；
+//     ③ 每个全量成员的编号 ＝ 它在全量数组里的位置；
+//     ④ 每个全量成员的 CI 编号 ＝ 它在 ciRuns 数组里的位置（不在 ciRuns 里则为空）；
+//     ⑤ 两份名单的**条数**与 gates.json 一致。
+//
+//   ⇒ 解析的是**机器可读的 JSON**，不是人读的文本 ⇒ 文本怎么排版都不影响这条判据。
+//   ⇒ 判据盯的是「会漂的那个值」（编号本身），不是「文件长什么样」。
+//
+// 不做什么
+// --------
+//   不判断「两套编号该不该一样」—— 分叉本身是设计（CI 只跑 ciRuns）⇒ 这里只查**自洽**。
+
+const numberingFacts = (() => {
+  const r = spawnSync(process.execPath, [join(here, 'run-gates.mjs'), '--list', '--json'], {
+    cwd: FRONTEND,
+    encoding: 'utf8',
+  })
+  if (r.error || r.status !== 0) {
+    return { ok: false, reason: `run-gates.mjs --list --json 跑不起来（exit ${r.status}）：${(r.stderr || r.error?.message || '').trim()}` }
+  }
+  let j
+  try {
+    j = JSON.parse(r.stdout)
+  } catch (e) {
+    return { ok: false, reason: `run-gates.mjs --list --json 的输出不是合法 JSON：${e.message}` }
+  }
+  const problems = []
+  const fullList = doc.gates || []
+  const ciList = doc.ciRuns || []
+
+  if (j.fullCount !== fullList.length) {
+    problems.push(`fullCount=${j.fullCount} 与 gates.json 的 gates 长度 ${fullList.length} 不一致`)
+  }
+  if (j.ciRunsCount !== ciList.length) {
+    problems.push(`ciRunsCount=${j.ciRunsCount} 与 gates.json 的 ciRuns 长度 ${ciList.length} 不一致`)
+  }
+  // ① ② CI 成员的两个编号
+  ;(j.ciRuns || []).forEach((e, i) => {
+    if (e.ciIndex !== i + 1) problems.push(`ciRuns[${i}]（${e.name}）的 ciIndex=${e.ciIndex}，应是 ${i + 1}`)
+    const wantFull = fullList.indexOf(e.name) + 1
+    if (e.fullIndex !== wantFull) {
+      problems.push(`ciRuns[${i}]（${e.name}）的 fullIndex=${e.fullIndex}，应是 ${wantFull}`)
+    }
+  })
+  // ③ ④ 全量成员的两个编号
+  ;(j.full || []).forEach((e, i) => {
+    if (e.fullIndex !== i + 1) problems.push(`full[${i}]（${e.name}）的 fullIndex=${e.fullIndex}，应是 ${i + 1}`)
+    const wantCi = ciList.indexOf(e.name)
+    const wantCiIdx = wantCi >= 0 ? wantCi + 1 : null
+    if (e.ciIndex !== wantCiIdx) {
+      problems.push(`full[${i}]（${e.name}）的 ciIndex=${e.ciIndex}，应是 ${wantCiIdx}`)
+    }
+  })
+  // ★ 两套编号**必须真的有分叉** —— 若某天它们变得完全相同，说明分叉逻辑坏了
+  //   （那时「带口径」这件事本身就没意义了，口径标签会误导人）。
+  const diverged = (j.full || []).filter((e) => e.ciIndex !== null && e.ciIndex !== e.fullIndex).length
+  if (j.ciRunsCount > 0 && j.fullCount > 0 && diverged === 0) {
+    problems.push('两套编号完全相同（全量与 ciRuns 没有任何位置差异）—— 分叉逻辑可能坏了')
+  }
+  return { ok: problems.length === 0, problems, diverged, j }
+})()
+
 if (added.length) {
   console.error()
   for (const a of added) {
@@ -533,5 +613,20 @@ if (removed.length) {
   // 措辞刻意不用「已修复」：触发面变宽也可能是误加，只说明差集变了。
   for (const r of removed) console.log(`⤵️ 基线里有、本次已覆盖：${r} —— 若是有意的，跑 --update-baseline 落盘。`)
 }
-console.log(`\n✅ CI 触发面未新增未覆盖面（棘轮通过，基线 ${baseSet.size} 条）`)
+if (!numberingFacts.ok) {
+  console.error('\n❌ 门禁编号口径不自洽（脸④）：')
+  if (numberingFacts.reason) {
+    console.error(`  ${numberingFacts.reason}`)
+  } else {
+    for (const pr of numberingFacts.problems) console.error(`  · ${pr}`)
+  }
+  console.error('  「第 N 项」有两套编号（gates.json 全量 / gates.json 的 ciRuns 名单），两套不可互相引用。')
+  console.error('  引用失败门禁的位置时必须带口径 —— 否则会照着另一套编号去修（§967.8.2 踩过这个坑）。')
+  process.exit(1)
+}
+console.log(
+  `\n✅ CI 触发面未新增未覆盖面（棘轮通过，基线 ${baseSet.size} 条）` +
+    `；编号口径自洽（全量 ${numberingFacts.j?.fullCount ?? '?'} 项 / CI ${numberingFacts.j?.ciRunsCount ?? '?'} 项，` +
+    `其中 ${numberingFacts.diverged ?? 0} 项两套编号不同）`,
+)
 process.exit(0)
