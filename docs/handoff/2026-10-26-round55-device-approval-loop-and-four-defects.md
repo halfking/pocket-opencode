@@ -17,8 +17,8 @@
 
 | 流 | 覆盖的东西 | 读数 |
 |---|---|---|
-| `.maestro/acc-approval.yaml` | 委托 ACC → 智能体要工具批准 → **手机上看得到并答得了** → 智能体跑完 → 任务进「已结束」区 | ❌ **仍未拿到整条流全绿**，但**红的性质变了**（2026-10-27 03:28~03:31 那轮，§4.5）：登录 ✅、夹具委派 ✅、待批项出现 ✅、**Maestro 的应答真的到了 daemon** ✅（daemon 日志 `permission answered locally`）、待批清空 ✅；**红在最后一条断言**（`"已完成" rightOf "maestro-acc-approve"`），而红因是**租约丢失 ⇒ 任务被判 cancelled/unknown**（不是 a11y、不是判据写错）。根因与修法见 §2.16（agent-companion `dce8a35`）。**该修复部署后尚未重跑**（04:00 之后 ACC 完全无响应，§4.5.4） |
-| `.maestro/acc-delegate-stop.yaml` | 委托 ACC → 长按卡片 → 「停止任务」→ 确认 → 任务被停 → **以「已取消」出现在已结束区** | ⚠️ **本轮仍未重跑**（上一轮的 ✅ PASS 是 50s 读数，来自**旧的** App 基线；§6 有记录） |
+| `.maestro/acc-approval.yaml` | 委托 ACC → 智能体要工具批准 → **手机上看得到并答得了** → 智能体跑完 → 任务进「已结束」区 | ✅ **全绿**（2026-10-27 05:43~05:45，**2/2 Flows Passed in 1m 57s**，新 APK 165459023 字节 + agent-companion `9863034`）。证据链见 §4.6 |
+| `.maestro/acc-delegate-stop.yaml` | 委托 ACC → 长按卡片 → 「停止任务」→ 确认 → 任务被停 → **以「已取消」出现在已结束区** | ✅ **全绿**（2026-10-27 05:56~05:57，**2/2 Flows Passed in 1m 9s**）。判据先修过一处恒真（§4.6.3） |
 
 后端全量：67 包全绿、0 FAIL（`internal/agent` 的 3 条超时红是宿主负载 100+ 时的 flaky，
 单跑绿，§3.3 有记录）。
@@ -918,6 +918,64 @@ curl -s http://127.0.0.1:11434/api/generate -d '{"model":"qwen2.5:7b","keep_aliv
 ⇒ **这条链路（隧道 utun4 / 前置代理）上有一个 5 秒的截止**，
    ACC 后端一慢，请求就被 5 秒后掐断。
 ⇒ ACC 主机本机**无 SSH** ⇒ 改不了、部署不了、验证不了 ⇒ 只能等它自己好。
+---
+
+## 4.6 ★★★ 续（2026-10-27 05:41~05:57）：**两条真机流都全绿了**
+
+### 4.6.1 最终读数
+
+| 流 | 读数 | 环境 |
+|---|---|---|
+| `.maestro/acc-approval.yaml` | ✅ **2/2 Flows Passed in 1m 57s** | 新 APK **165459023 字节**（设备上 `stat` 核对过）+ agent-companion `9863034`（`vcs.revision=9863034`、`vcs.modified=false`、pid 16503） |
+| `.maestro/acc-delegate-stop.yaml` | ✅ **2/2 Flows Passed in 1m 9s** | 同上（判据先修过一处恒真，见 §4.6.3） |
+
+flow1 的**完整证据链**（不是「看起来绿」）：
+
+```
+05:43:24 accbridge permission answered locally dispatch_id=dispatch_617dcb98-… allow=true option_id=once
+05:43:34 accbridge permission answered locally …（同一 toolCallId 的第 2 次）
+05:43:50 / 05:44:03 / 05:44:16 / 05:44:28 accbridge permission answered locally …（共 6 次，跨 3 个 toolCallId）
+05:44:38 dispatch execution finished dispatch_id=dispatch_617dcb98-… outcome=succeeded executor_success=true
+05:44:52 [tasksync] acc-bound task task-5f315d98… -> completed (dispatch=dispatch_617dcb98-… acc_status=succeeded)
+05:44:52 [tasksync] acc-bound task status backfilled: 1 row(s)
+⇒ 卡片状态回填到位 ⇒「已完成」+ rightOf 断言成立 ⇒ 末尾断言真绿
+```
+
+⇒ 也就是说：**App 看得到待批项 → 人答得完 → 智能体跑完 → 任务状态回填 →
+卡片进「已结束」区并带「已完成」标签**，这条链路**在真机上跑通了**。
+
+### 4.6.2 打通它靠的是这一轮的四笔修复（缺一不可）
+
+| # | 修复 | 仓库 / 提交 | 缺了会怎样 |
+|---|---|---|---|
+| ① | 取租约的重试打在 **daemon 真实路径**上 + 源码级守卫 | agent-companion `0ffe17c` | 派单在首次取租约被一次 EOF 打中时**判死** ⇒ 待批项根本不出现 |
+| ② | 续租请求有**超时上限** + 致命失败留痕 + **租约 TTL 覆盖审批窗口** | agent-companion `dce8a35` | 人还在答题，租约先到期 ⇒ 任务被判 cancelled ⇒ 卡片不是「已完成」 |
+| ③ | **终态上报**能重试 | agent-companion `9863034` | 派单成功了但 ACC 不知道 ⇒ 状态回填读不到终态 ⇒ **任务永远停在「进行中」** |
+| ④ | App 侧：已结束区的卡片**不丢无障碍树**（`role="list" aria-live="polite"`） | openpocket `df8df527` | 卡片在屏上、状态也对，但**无障碍树里没有它** ⇒ Maestro（和 TalkBack 用户）读不到 |
+
+### 4.6.3 flow2 的判据有一处**恒真**（已修）
+
+2026-10-27 05:46~05:48 那轮 flow2 红在「`.*停止任务.*` 不可见」，**红在错的地方**：
+
+* 后端：`GET /api/acc/agents` ⇒ ACC 的 `/runtimes/{id}/agents` 连着 502；
+  `POST /api/tasks/delegate` ⇒ `acc_create_task` 超时 ⇒ 复查 ACC 列表也 EOF
+  ⇒ **照实 502**；
+* App：「委托给 ACC」**弹窗还开着**，里面写着
+  「读不到智能体清单（可留空由服务端选）：操作失败，请稍后重试」；
+* Maestro：`visible: "maestro-acc-stop"` 命中的是**弹窗标题输入框里的那个字符串**
+  ⇒ **绿（恒真）**；接着 `longPressOn` 长按的是**输入框** ⇒ 没有上下文菜单。
+
+⇒ 修法：断言卡片出现**之前**先断言**弹窗关闭了**
+（`notVisible: "ACC 会接管后续会话与执行.*"`）⇒ 之后标题断言只可能命中任务卡片。
+⇒ ACC 恢复后重跑 ⇒ 全绿。
+
+### 4.6.4 这一轮踩到并已固化的两条纪律
+
+1. **「判据绿」≠「产品路径被修了」**（§2.15）：判据必须打在**产品真的会走的那个
+   函数**上，用 `go tool nm` 查二进制里有没有那个符号来确认，并加**源码级守卫**。
+2. **判据要打在「用户能操作的那个对象」上**：flow2 的标题断言命中了**输入框里的
+   文本** ⇒ 委托失败时照样绿。⇒ 先断言「承载输入的那个东西没了」，再断言目标。
+
 
 ---
 
@@ -986,15 +1044,10 @@ curl -s http://127.0.0.1:11434/api/generate -d '{"model":"qwen2.5:7b","keep_aliv
    本轮修掉（§2.10）⇒ agent-companion 的 `go test ./...` 现在**全绿**。
    `internal/acp/partial_outcome_code_test.go` 本身不是 gofmt 干净的
    （与 origin/main 一致，属既有状态，**没有动别人的文件**）。
-9. ★ **修复后的 App 还没拿到整条流的全绿读数**：
-   修复后的构建（165459013 字节）已于 01:01 装到 emulator-5556，
-   03:28~03:31 那轮**真的跑到了最后一条断言**（§4.5.1）：
-   登录 ✅、委派 ✅、待批出现 ✅、**应答到了 daemon** ✅、待批清空 ✅，
-   **红在「任务跑完并进已结束区」** ⇒ 红因是**租约丢失**（§2.16）。
-   ⇒ agent-companion `dce8a35`（续租超时上限 + 致命失败留痕 + 租约 TTL 覆盖审批窗口）
-     已推 main 且**已部署**（pid 42464，`vcs.revision=dce8a35`），
-     **但部署后还没重跑** —— 04:00 起 ACC 完全无响应（§4.5.4）。
-   ⇒ **这仍是本轮最大的未完成项**：带租约修复的 flow1 全绿读数**没有拿到**。
+9. ✅ **两条真机流都已拿到全绿读数**（2026-10-27 05:45 / 05:57，§4.6）：
+   flow1（acc-approval）与 flow2（acc-delegate-stop）都是 **2/2 Flows Passed**，
+   跑在**新 APK（165459023 字节）** + **agent-companion `9863034`** 上。
+   ⇒ 这条遗留**本轮关闭**。
 10. ★ **人工审批的等待窗口只有 120 秒**（`AC_PERMISSION_TIMEOUT_MS` 默认 120_000，
     agent-companion `internal/config/config.go`）。
     ⇒ 手机上看到卡片、人还没点完，任务就已经 `permission_denied` 死了
@@ -1028,82 +1081,75 @@ curl -s http://127.0.0.1:11434/api/generate -d '{"model":"qwen2.5:7b","keep_aliv
 ```
 请接取最新代码合并到本地，然后提交代码并推送。
 
-上一轮（round55 续二，2026-10-27 02:45~04:05）把「审批环到底通没通」这个问题
-**推进到了最后一步**，也推翻了自己两处结论。这一轮的经过是：
+上一轮（round55 续三，2026-10-27 05:41~05:57）**把两条真机流都跑绿了**：
+· `.maestro/acc-approval.yaml`      ✅ 2/2 Flows Passed in 1m 57s
+· `.maestro/acc-delegate-stop.yaml`  ✅ 2/2 Flows Passed in 1m 9s
+跑在**新 APK（165459023 字节，设备上 stat 核对过）** +
+**agent-companion `9863034`**（vcs.revision=9863034、vcs.modified=false）上。
 
-1. **flow1（acc-approval）第一次真的跑到了最后一条断言**（03:28~03:31，新 APK 165459013）：
-   登录 ✅、夹具委派 ✅、待批项出现 ✅、**Maestro 的应答真的到了 daemon** ✅
-   （daemon 日志 `permission answered locally allow=true`）、待批清空 ✅；
-   **红在「任务跑完并进已结束区」** ⇒ 红因不是 a11y、不是判据写错，
-   而是**租约丢了**（`execution stopped after lease loss; outcome unknown`）。
-2. **推翻自己的一处「修复」**：`75755d3` 把取租约的重试加在了
-   `AcquireOrRenew` 上，判据也只测它 —— 但 daemon 的真实路径是
-   `command_loop.go` → `client.AcquireLease` 直调，**`AcquireOrRenew` 根本不在二进制里**
-   ⇒ 那次修复**一次都没生效**，而判据是绿的（`0ffe17c` 已修，并加了源码级守卫）。
-3. **钉死了租约韧性的三个缺陷**（`dce8a35`）：续租请求**没有客户端超时上限**
-   （实测每次卡 5.2 秒才 EOF，一次卡死能吃掉整段余量）；
-   **致命的那次失败没有留痕**；**租约 TTL（30s）比审批窗口（120s）还短**
-   ⇒ ACC 连续抖 22 秒，「人还在答题、任务先被判死」。
-4. **一次基础设施事故**：Docker 的 Linux VM 在 02:51:59 被 poweroff
-   ⇒ Postgres 断 ⇒ 后端所有 DB 接口挂（登录 15~30 秒）⇒
-   **flow1 在 preflight 的登录处就红了**（App 报「登录失败…」，**那条文案是诚实的**）。
-   已按 §4.5.3 恢复（quit + pkill backend + open；顺带卸载 Ollama 已加载的模型腾内存）。
-
-已推 main 的：
-· agent-companion `0ffe17c` —— 取租约的重试打到 daemon **真实路径**上 + 源码级守卫；
-· agent-companion `dce8a35` —— 续租请求超时上限 + 致命失败留痕 + 租约 TTL 覆盖审批窗口
-  （跨包不变量由 `tests/lease_ttl_invariant_test.go` 钉住）。
+打通它靠的是这一轮的四笔修复，**缺一笔都跑不绿**（每一笔都有先红后绿的判据）：
+① agent-companion `0ffe17c` —— 取租约的重试打在 **daemon 真实路径**上
+   （上一版打在死路径 `AcquireOrRenew` 上，判据绿而生产没生效）+ 源码级守卫；
+② agent-companion `dce8a35` —— 续租请求有超时上限 + 致命失败留痕 +
+   **租约 TTL 覆盖审批窗口**（原来 30s < 审批窗口 120s ⇒ 人还在答题任务先死）；
+③ agent-companion `9863034` —— **终态上报**能重试（一次 EOF ⇒ ACC 不知道派单成功
+   ⇒ 状态回填读不到终态 ⇒ 任务永远停在「进行中」）；
+④ openpocket `df8df527` —— App 侧「已结束」区的卡片**不丢无障碍树**
+   （卡片跨 `v-for` 移动 ⇒ 新建节点不被 WebView 登记 ⇒ TalkBack/ Maestro 都读不到）。
 
 这一轮请按批判式审计继续，重点是**明确没做到**的部分：
 
-1. ★★★ **拿到带租约修复的 flow1 全绿读数**（`dce8a35` 已部署，pid 42464，
-   `vcs.revision=dce8a35`，但**部署后还没重跑**）：
-   · 先确认 ACC 恢复（直连 `POST http://100.106.67.198:4101/api/v2/runtime/heartbeat`
-     是否还回 401；04:00 起连续 `HTTP=000 time=5.00s`）⇒ ACC 不通就别硬跑，
-     先把其它事情做完；
-   · 第一条判据仍然是「设备上那个 APK 的字节数/哈希 == 我刚构建出来的那个」；
-   · **读数前先看 load1**（这台机器的经验阈值 <25；实测 200+ 时设备端 uiautomator dump
-     会被 SIGKILL ⇒ 任何读数都失真）。本轮 load 长期 200~400，模拟器都被打死了。
-2. ★★ flow2（acc-delegate-stop）**至今没有在新 App 上跑过**（上一轮的 ✅ PASS 来自旧基线）。
-3. ★★ **「人还在答题、任务先被判死」还差一半**：租约侧已对齐（TTL 覆盖审批窗口），
-   但 **审批窗口本身仍是 120 秒**（`AC_PERMISSION_TIMEOUT_MS`）⇒ 人没点完还是死。
-   ⇒ 放宽前先确认 ACC 侧派单自身的超时上限；并给判据。
-4. ★★ **一次工具调用要人答 2~3 次**（同一个 toolCallId 连发多轮审批）：
-   03:28 那轮第 1 轮答了，第 2 轮到达时租约正好到期 ⇒ fail-closed。
-   ⇒ 评估把同一 toolCallId 的多项检查聚合成一次点击（注意 fail-closed 与
-     opencode 的 allow_always 语义），并补判据。
-5. ★ 产品级的 delegate 韧性：`acc_create_task` **没有幂等键** ⇒ 写失败后服务器可能
-   已经建出任务。现在只有**夹具层**做了「先问 ACC 再重试」，
-   产品层 `POST /api/tasks/delegate` 仍然「失败即 502」，用户无法判断任务建没建出来。
+1. ★★ **一次工具调用要人答 2~3 次**（同一个 toolCallId 连发多轮审批）：
+   05:43 那轮实测 6 次应答、跨 3 个 toolCallId。⇒ 评估把同一 toolCallId 的
+   多项检查聚合成一次点击（注意 fail-closed 与 opencode 的 allow_always 语义），
+   并补判据。
+2. ★★ **审批窗口仍是 120 秒**（`AC_PERMISSION_TIMEOUT_MS`）：租约侧已对齐
+   （TTL 也 120 秒），但人没点完还是死。⇒ 放宽前先确认 ACC 侧派单自身的超时上限。
+3. ★ **ACC 侧仍缺两个端点**：`GET /api/v2/runtime/permissions`、
+   `POST /api/v2/runtime/permissions/{id}/decision` —— acc-go 从未实现；
+   本机到 ACC（100.106.67.198:4101 == 192.168.31.211:4101）**无 SSH**。
+   ⇒ 要么找到能改 ACC 的路径，要么把「契约在、实现没有」写成可执行的 issue
+   + 可验收的契约测试；**不要用 daemon 本地队列兜底就宣称「ACC 审批面已打通」**。
+4. ★ **ACC 派单的 run 不进 daemon run 历史**（`GET /api/v1/runs` 恒空）⇒
+   「同步查看任务历史」在 ACC 派单上还是空的；**生成文件也没有读面**。
+   ⇒ 设计并实现这两个读面，并给真机判据。
+5. ★ **产品层的 delegate 韧性**：`acc_create_task` **没有幂等键** ⇒ 写失败后服务器
+   可能已经建出任务。现在只有**夹具层**做了「先问 ACC 再重试」，产品层
+   `POST /api/tasks/delegate` 仍然「失败即 502」，用户无法判断任务建没建出来。
    ⇒ 要么让 ACC 支持幂等键（契约 + 契约测试），要么让 delegate 失败时回一个
    「可能已建，请到任务列表确认」的诚实结果，并给判据。
-6. ACC 侧仍缺的两个端点（`GET /api/v2/runtime/permissions`、
-   `POST /api/v2/runtime/permissions/{id}/decision`）—— acc-go 从未实现；
-   本机到 ACC 无 SSH。⇒ 要么找到能改 ACC 的路径，要么把「契约在、实现没有」
-   写成可执行的 issue + 可验收的契约测试；**不要用 daemon 本地队列兜底就宣称
-   「ACC 审批面已打通」**。
-7. ACC 派单的 run 不进 daemon run 历史（`GET /api/v1/runs` 恒空）⇒
-   「同步查看任务历史」在 ACC 派单上还是空的；生成文件也没有读面。
-   ⇒ 设计并实现这两个读面，并给真机判据。
-8. `/api/acc/approvals` 未按 workspace 过滤 ⇒ 补过滤并补判据。
-9. 高负载下派单以 session_create_failed 收场：ACP 握手可能超过 ACC 租约。
+6. ★ **`status=queue` 的任务在 UI 上无处可渲染**：任务列表三源拼接，
+   前端只收 active / blocked / completed|failed|cancelled
+   ⇒ ACC 同步来的 59 条 `queue` 任务**在手机上完全看不见**（数据在、界面没有）。
+   ⇒ 决定这些任务该进哪个分区（或哪个都不进），并给判据。
+   ⇒ 顺带：ACC 侧目前能堆出 **25 张同名 `maestro-acc-approve`**（每次夹具跑一张，
+   ACC 来源的任务本地删不掉）⇒ 要么给 ACC 来源的任务一个「本地副本」语义，
+   要么让夹具能清理它们（现在是**假的清理**，只统计不删）。
+7. ★ `/api/acc/approvals` 未按 workspace 过滤 ⇒ 补过滤并补判据。
+8. ★ **三套重试策略还没合并**：acquire（`acquireWithRetry`）、
+   续租（`leaseRenewRetryDelay`）、终态上报（`completeWithRetry`）
+   ⇒ 合并成同一套策略函数，并把「可重试性按幂等性分档」写成一张显式的表
+   （取租约/续租/终态 = 幂等 ⇒ 可重试；`acc_create_task` = 无幂等键 ⇒ 不可盲重试）。
+9. ★ **ACC 链路上的 5 秒固定截止**（实测：续租卡 5.2 秒才 EOF；
+   04:00 起 heartbeat 连续 `time=5.00s`）—— 隧道 utun4 / 前置代理上的超时，
+   本机改不了 ⇒ 客户端所有对 ACC 的调用都要有**比 5 秒更短**的预算；
+   当前续租尝试上限是 5 秒（卡在边界上）⇒ **建议收到 3 秒**并给判据。
+10. **App 侧只有「已结束」区验证过无障碍**：「进行中」区同样可能丢节点（未复现），
+   下轮若再遇到要一并处理；并给「卡片在屏上但不在无障碍树里」补一条**自动化探针**
+   （别再靠 Maestro 的树事后发现）。
+11. **高负载下派单以 session_create_failed 收场**：ACP 握手可能超过 ACC 租约。
    ⇒ 让 daemon 的报错能说清「租约先到期了」，并给一条判据（判据本身也要被测）。
-10. **租约重试的两套实现还没合并**：acquire 走 `acquireWithRetry`，
-    续租走 `leaseRenewRetryDelay` ⇒ 合并成同一套策略函数，并补判据。
-11. **ACC 链路上的 5 秒固定截止**（实测：续租卡 5.2 秒才 EOF；
-    04:00 起 heartbeat 连续 `time=5.00s`）—— 隧道 utun4 / 前置代理上的超时，
-    本机改不了 ⇒ 客户端所有对 ACC 的调用都要有**比 5 秒更短**的预算，否则
-    必然等到那个截止才失败（本轮已修的续租尝试上限 5 秒其实卡在边界上，
-    **建议把单次尝试上限收到 3 秒**并给判据）。
 
 纪律（踩过的，别再踩）：
-· 「构建成功」≠「设备上跑的是它」：设备侧读数前先核对 APK 字节数/哈希。
 · **「判据绿」≠「产品路径被修了」**：判据必须打在**产品真的会走的那个函数**上；
-  用 `go tool nm` 查二进制里有没有那个符号来确认；并加源码级守卫（见 §2.15）。
+  用 `go tool nm` 查二进制里有没有那个符号来确认；并加源码级守卫。
+· **判据要打在「用户能操作的那个对象」上**：flow2 的标题断言命中了**输入框里的
+  文本** ⇒ 委托失败时照样绿 ⇒ 先断言「承载输入的那个东西没了」，再断言目标。
+· 「构建成功」≠「设备上跑的是它」：设备侧读数前先核对 APK 字节数/哈希。
 · 设备读数前先看 load1（阈值 <25；实测 200+ 时 uiautomator dump 被 SIGKILL）。
-  负载高时先做文档/代码，别拿失真的读数当结论。
-· **环境故障要单独归类**：DB 挂 ⇒ 登录超时；ACC 挂 ⇒ 派单到不了 daemon。
-  别把它们报成产品缺陷（本轮两件都差点被误判）。
+  本轮 05:30 之后负载降到 20 左右，两条流才顺利跑绿。
+· **环境故障要单独归类**：DB 挂 ⇒ 登录超时；ACC 挂 ⇒ 派单到不了 daemon；
+  Docker VM 被 poweroff ⇒ 全站 500/超时。三件本轮都差点被误判成产品缺陷。
 · **dump 失败 ≠ 文本不存在**：探针/判据要把「采不到无障碍树」与「树里没有」分开统计。
 · 同一台设备不能并行跑两条 Maestro 流；本会话用 emulator-5556。
 · Maestro 的 visible 是完整匹配（「ACC 待批」≠「ACC 待批（1）」⇒ 写「ACC 待批.*」）。
