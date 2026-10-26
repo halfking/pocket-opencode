@@ -6,7 +6,7 @@
   L1. 需介入列表   — 审批卡片（内联 批准/拒绝/候选 chips）+ 疑似卡死任务
   A.  运行中       — 任务卡片第二行 = 健康信号 · 当前动作 · 距上次活动（§4.1 五态）
   B.  会话         — 最近会话纵列（长按：停止 / 归档）
-  C.  已完成       — collapsed expandable section
+  C.  已结束       — collapsed expandable section（completed / failed / cancelled）
   D.  Voice bar    — 默认隐藏；点「提问」才展开，dock tabbar 上沿
 -->
 <template>
@@ -125,39 +125,71 @@
     <!-- ACC 派单待批（2026-10-26）——
          ACC 上没有 command 级 permission 端点（实测 404），agent-companion
          把待批项停在自己的干预队列等人应答。这块就是那个队列在 App 里的面：
-         看得到、答得了；答完智能体继续跑。 -->
-    <section v-if="accApprovals.approvals.length > 0" class="triage-card acc-approval-card" data-testid="acc-approval-card">
-      <div class="triage-card-head">
-        <span>ACC 待批（{{ accApprovals.approvals.length }}）</span>
-        <button class="link-btn" @click="accApprovals.loadApprovals()">刷新</button>
-      </div>
-      <div v-for="item in accApprovals.approvals" :key="item.id" class="attention-card approval" data-testid="acc-approval-item">
-        <div class="attn-head">
-          <span class="attn-kind permission">等审批</span>
-          <span class="attn-title" data-testid="acc-approval-title">{{ accApprovalSummary(item) }}</span>
+         看得到、答得了；答完智能体继续跑。
+
+         ★ 2026-10-26 20:5x 修掉的**结构缺陷**（实测，见 handoff round55）：
+           ① 一次危险工具调用会让 opencode **连发 2~3 个审批请求**，而且是
+              **同一个 toolCallId**。daemon 帧日志实测：
+                id=0「写路径检查」(kind=other) → id=1「执行检查」(kind=execute)
+                → id=2「读检查」；
+              每个都要单独应答，漏一个就 120s 超时 fail-closed（attempt9 实测：
+              答了 2 个、第 3 个没人答 ⇒ 14:01:22 permission denied ⇒ 任务失败）。
+              ⇒ 「答一条 ⇒ 列表清空 ⇒ 下一条又来」是**常态**，不是异常。
+           ② 这个 <section> 原来挂着 v-if：列表空时**整段被卸载**，下一条待批
+              到达时又**重建**。而 Android WebView 的无障碍树（= Maestro 的
+              visible 判据、= TalkBack 读屏用户的唯一入口）在「节点被卸载后
+              同位置重建」时会**丢一整段子树**。attempt9 现场，同一时刻：
+                · 截图：卡片和「允许一次」按钮**明明在屏幕上**；
+                · uiautomator 快照：main 的子节点从「下拉同步邮件」直接跳到
+                  「ACC 生态」—— 中间整个 section 节点**不见了**。
+              ⇒ Maestro 点不到那张卡（visible 断言连 WARNED）⇒ 人被迫再等
+                120s ⇒ 任务被判失败。这**不是测试专属问题**：读屏用户同样
+                看不到待批卡片。
+           ⇒ 修法：**section 元素常驻 DOM**（只有里面的内容随列表进出）。
+             空的时候靠 .is-empty 去掉外观（**不用 display:none** —— 那会把
+             节点也从无障碍树里摘掉，等于换一种方式犯同样的错）。
+             再给列表容器加 aria-live="polite"：内容变化时强制发一次无障碍
+             事件，读屏软件也会播报新增的待批项。 -->
+    <section
+      class="triage-card acc-approval-card"
+      :class="{ 'is-empty': accApprovals.approvals.length === 0 }"
+      data-testid="acc-approval-card"
+    >
+      <template v-if="accApprovals.approvals.length > 0">
+        <div class="triage-card-head">
+          <span data-testid="acc-approval-count">ACC 待批（{{ accApprovals.approvals.length }}）</span>
+          <button class="link-btn" @click="accApprovals.loadApprovals()">刷新</button>
         </div>
-        <div class="attn-actions">
-          <!--
-            option id 必须取智能体给过的那一个：daemon 会逐个比对，
-            自造的 id 一律拒；而 daemon 又按 option 的 kind 决定允许/拒绝。
-            ⇒ 挑不到就不渲染那个按钮（渲染一个必然被拒的按钮是假动作）。
-          -->
-          <button
-            v-if="pickAccAllowOptionId(item)"
-            class="attn-btn primary"
-            data-testid="acc-approval-allow-once"
-            :disabled="accApprovals.decidingId !== null"
-            @click.stop="decideAccApproval(item, pickAccAllowOptionId(item)!)"
-          >✓ 允许一次</button>
-          <button
-            v-if="pickAccRejectOptionId(item)"
-            class="attn-btn ghost"
-            data-testid="acc-approval-reject"
-            :disabled="accApprovals.decidingId !== null"
-            @click.stop="decideAccApproval(item, pickAccRejectOptionId(item)!)"
-          >✕ 拒绝</button>
+        <div class="acc-approval-list" aria-live="polite">
+          <div v-for="item in accApprovals.approvals" :key="item.id" class="attention-card approval" data-testid="acc-approval-item">
+            <div class="attn-head">
+              <span class="attn-kind permission">等审批</span>
+              <span class="attn-title" data-testid="acc-approval-title">{{ accApprovalSummary(item) }}</span>
+            </div>
+            <div class="attn-actions">
+              <!--
+                option id 必须取智能体给过的那一个：daemon 会逐个比对，
+                自造的 id 一律拒；而 daemon 又按 option 的 kind 决定允许/拒绝。
+                ⇒ 挑不到就不渲染那个按钮（渲染一个必然被拒的按钮是假动作）。
+              -->
+              <button
+                v-if="pickAccAllowOptionId(item)"
+                class="attn-btn primary"
+                data-testid="acc-approval-allow-once"
+                :disabled="accApprovals.decidingId !== null"
+                @click.stop="decideAccApproval(item, pickAccAllowOptionId(item)!)"
+              >✓ 允许一次</button>
+              <button
+                v-if="pickAccRejectOptionId(item)"
+                class="attn-btn ghost"
+                data-testid="acc-approval-reject"
+                :disabled="accApprovals.decidingId !== null"
+                @click.stop="decideAccApproval(item, pickAccRejectOptionId(item)!)"
+              >✕ 拒绝</button>
+            </div>
+          </div>
         </div>
-      </div>
+      </template>
     </section>
 
     <!-- ACC 生态：当前任务与已上报的会话。
@@ -265,6 +297,7 @@
             @touchstart="onTaskTouchStart(task, $event)"
             @touchmove="onTouchMove"
             @touchend="onTouchEnd"
+            @touchcancel="onTouchCancel"
           >
             <div class="priority-bar" :class="task.priority" />
             <div class="task-body">
@@ -329,6 +362,7 @@
           @touchstart="onTaskTouchStart(task, $event)"
           @touchmove="onTouchMove"
           @touchend="onTouchEnd"
+            @touchcancel="onTouchCancel"
         >
           <div class="priority-bar" :class="task.priority" />
           <div class="task-body">
@@ -371,6 +405,7 @@
           @touchstart="onSessionTouchStart(s, $event)"
           @touchmove="onTouchMove"
           @touchend="onTouchEnd"
+            @touchcancel="onTouchCancel"
         >
           <span class="status-dot" :class="s.status" />
           <div class="session-body">
@@ -408,29 +443,44 @@
       </div>
     </section>
 
-    <!-- Section C: Completed (collapsed) -->
-    <section v-if="completedTasks.length > 0" class="section completed-section">
-      <div class="section-header" @click="showCompleted = !showCompleted">
+    <!-- Section C: 已结束（collapsed）——
+         ★ 2026-10-26 修：这一区原来只收 status==='completed'，
+           于是 **failed / cancelled 的任务在手机上彻底消失** ——
+           用户分不清「我停掉了」和「它不见了」，而需求里明写着
+           「识别它的状态」「同步查看任务历史」。
+           ⇒ 现在收 completed / failed / cancelled 三种终态，并逐条标出状态。
+           ⚠ 分区标题从「已完成」改成「已结束」：把失败的任务写进「已完成」
+             是把失败藏进成功桶（同一个坑 refine-outcome-notice 里已经踩过）。
+           ⚠ 标题的 testid 带状态后缀（finished-task-title-<status>）：
+             断言「某标题出现在**已完成**里」和「某标题出现在**失败**里」
+             是两件不同的事，共用一个 testid 就分不出来（会命中另一条）。 -->
+    <section v-if="finishedTasks.length > 0" class="section completed-section">
+      <div class="section-header" data-testid="completed-section-toggle" @click="showCompleted = !showCompleted">
         <h2>
-          <span class="dot done" />已完成
-          <span class="badge muted">{{ completedTasks.length }}</span>
+          <span class="dot done" />已结束
+          <span class="badge muted">{{ finishedTasks.length }}</span>
         </h2>
         <span class="expand-icon" :class="{ open: showCompleted }">›</span>
       </div>
 
       <div v-if="showCompleted" class="completed-list">
         <div
-          v-for="task in completedTasks"
+          v-for="task in finishedTasks"
           :key="task.id"
           class="task-card compact completed-card"
+          :class="`status-${task.status}`"
           @click="onTaskClick(task.id)"
           @touchstart="onTaskTouchStart(task, $event)"
           @touchmove="onTouchMove"
           @touchend="onTouchEnd"
+            @touchcancel="onTouchCancel"
         >
           <div class="task-body">
-            <div class="task-title done">{{ task.title }}</div>
+            <div class="task-title done" :data-testid="`finished-task-title-${task.status}`">{{ task.title }}</div>
             <span class="meta-muted time">{{ timeAgo(task.updatedAt) }}</span>
+            <span class="task-status-tag" :class="`tone-${task.status}`" data-testid="finished-task-status">
+              {{ finishedStatusLabel(task.status) }}
+            </span>
           </div>
         </div>
       </div>
@@ -990,11 +1040,31 @@ const blockedTasks = computed(() =>
   tasks.value.filter((t) => t.status === 'blocked')
 )
 
-const completedTasks = computed(() =>
+// ★ 2026-10-26：终态任务**不能只留 completed**。
+//   （原来这里有个只收 completed 的 completedTasks —— failed / cancelled
+//   的任务在手机上彻底消失，用户分不清「被拒/被停」和「任务不见了」。
+//   那个 computed 已删除，别再加回来。）
+//   ⇒ 终态三兄弟一起进「已结束」区，并逐条标出状态。
+const finishedTasks = computed(() =>
   tasks.value
-    .filter((t) => t.status === 'completed')
+    .filter((t) => t.status === 'completed' || t.status === 'failed' || t.status === 'cancelled')
     .sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''))
 )
+
+// 终态标签：与 TaskDetailView / TaskCollaborationPanel 的词汇一致
+// （「已完成 / 失败 / 已取消」），别自造第四套说法。
+function finishedStatusLabel(status: string): string {
+  switch (status) {
+    case 'completed':
+      return '已完成'
+    case 'failed':
+      return '失败'
+    case 'cancelled':
+      return '已取消'
+    default:
+      return status
+  }
+}
 
 // ── 工作=任务：类型分组 + 到期筛选（docs/学习muse/03-架构方案.md §1.2）──
 //
@@ -1362,6 +1432,21 @@ function onTouchMove(e: TouchEvent) {
 }
 
 function onTouchEnd() {
+  if (longPressTimer) {
+    clearTimeout(longPressTimer)
+    longPressTimer = null
+  }
+}
+
+/**
+ * touchcancel：系统接管手势时 WebView 派发的事件（不是 touchend）。
+ *
+ * ★ 2026-10-26：长按**文本**时 Android WebView 会先起文本选择
+ *   ⇒ 派发 touchcancel（并伴随一次 touchmove）⇒ 原实现只听 touchend，
+ *   计时器既没被清掉、也可能被 touchmove 误清 ⇒ 长按菜单不可靠。
+ *   ⇒ 显式处理 touchcancel：清掉计时器（用户已把手移开 / 系统接管了）。
+ */
+function onTouchCancel() {
   if (longPressTimer) {
     clearTimeout(longPressTimer)
     longPressTimer = null
@@ -1753,6 +1838,17 @@ function timeAgo(dateStr?: string): string {
   font-weight: var(--font-weight-semibold);
   color: var(--danger);
 }
+/* ACC 待批区块空的时候：section **常驻 DOM**（无障碍树的要求，见模板注释），
+   但屏幕上不能留下一个空边框框 ⇒ 只去掉外观。
+   ⚠ 不用 display:none —— 那会把节点从无障碍树里也摘掉，
+   等于把「v-if 卸载重建」那个老问题换个写法再犯一遍。 */
+.acc-approval-card.is-empty {
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: none;
+}
 .triage-card-head .link-btn { font-size: var(--text-2xs); }
 .triage-empty {
   font-size: var(--text-sm);
@@ -2010,6 +2106,18 @@ function timeAgo(dateStr?: string): string {
   padding: 8px 10px;
   cursor: pointer;
   transition: background 120ms;
+  /* ★ 2026-10-26：必须禁掉文本选择，否则 Android WebView 的长按**文本**
+     会先弹系统的文本选择菜单（Copy / Share / Select all / Read aloud），
+     把长按事件吃掉 ⇒ 本卡片的长按菜单（⏹ 停止任务 / ✅ 完成 / 🗑 删除）
+     在真机上**根本弹不出来**。
+     实测（emulator-5556，2026-10-26 12:30）：长按「maestro-acc-stop」
+     弹出来的是系统文本菜单，失败现场的无障碍树里只有
+     Copy | Share | Select all | Read aloud，没有「停止任务」。
+     ⚠ 桌面端/浏览器里选中标题文字是有用的，但**列表卡片上的长按菜单**
+       才是这个页面的主交互 ⇒ 卡片整体禁选（移动端列表的常规做法）。 */
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
 }
 .task-card.compact:active {
   background: var(--bg-subtle);
@@ -2265,6 +2373,11 @@ function timeAgo(dateStr?: string): string {
   border-radius: 8px;
   cursor: pointer;
   transition: background 120ms;
+  /* 同 .task-card.compact：长按文本会被 Android 的文本选择菜单抢走，
+     会话的长按菜单（⏹ 停止会话 / 归档）就弹不出来。 */
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
 }
 .session-item:active {
   background: var(--bg-subtle);
@@ -2339,6 +2452,25 @@ function timeAgo(dateStr?: string): string {
   display: flex;
   align-items: center;
   justify-content: space-between;
+}
+/* 终态标签（已完成 / 失败 / 已取消）——
+   失败与取消**必须**看得见：它们原来连卡片都不渲染（见 finishedTasks）。 */
+.task-status-tag {
+  flex: none;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: var(--text-2xs);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  background: var(--bg-subtle);
+}
+.task-status-tag.tone-failed {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 40%, var(--border));
+}
+.task-status-tag.tone-cancelled {
+  color: var(--text-muted);
 }
 
 /* ── Voice Bar：按需展开的停靠 footer（非 fixed）── */

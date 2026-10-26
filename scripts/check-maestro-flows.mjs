@@ -302,6 +302,11 @@ const SYSTEM_DIALOG_TEXTS = new Set([
   '我知道了',        // MIUI 首次启动弹窗
   '始终允许',
   '仅此一次',
+  // AOSP 系统 ANR 对话框（2026-10-26 13:07 实测：宿主负载高时弹出
+  // 「System UI isn't responding」，盖住整个 App ⇒ flow 第一条断言直接红在
+  // 一个本就不该红的地方）。按钮只有 Close app | Wait 两个，系统绘制。
+  "isn't responding",
+  'Wait',
 ])
 
 /**

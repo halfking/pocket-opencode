@@ -19,99 +19,32 @@
  *   node scripts/acc-approval-fixture.mjs --induce
  *   node scripts/acc-approval-fixture.mjs --restore
  */
-import { readFileSync, existsSync } from 'node:fs'
-import { homedir } from 'node:os'
-import { resolve } from 'node:path'
+import { makeApi, clearResidual, delegateWithVerify } from './lib/acc-fixture-common.mjs'
 
-const ROOT = resolve(new URL('..', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'))
-const BASE = process.env.POCKET_API_BASE || 'http://127.0.0.1:18099'
 const TITLE = 'maestro-acc-approve'
-const ENV_FILE = `${homedir()}/kaixuan/acp/logs/rerun-round52/pocketd-18099.env`
-
-function loadEnv() {
-  const out = {}
-  if (!existsSync(ENV_FILE)) return out
-  for (const raw of readFileSync(ENV_FILE, 'utf8').split('\n')) {
-    let line = raw.trim()
-    if (line.startsWith('export ')) line = line.slice(7)
-    if (!line || line.startsWith('#') || !line.includes('=')) continue
-    const i = line.indexOf('=')
-    out[line.slice(0, i).trim()] = line.slice(i + 1).trim().replace(/^["']|["']$/g, '')
-  }
-  return out
-}
-
-const env = loadEnv()
-
-async function api(method, path, body, token) {
-  const headers = { 'Content-Type': 'application/json' }
-  if (token) headers.Authorization = 'Bearer ' + token
-  const res = await fetch(BASE + path, {
-    method,
-    headers,
-    body: body === undefined ? undefined : JSON.stringify(body),
-  })
-  const text = await res.text()
-  let parsed = null
-  try { parsed = JSON.parse(text) } catch { parsed = text }
-  return { status: res.status, body: parsed }
-}
-
-async function login() {
-  const r = await api('POST', '/api/auth/login', {
-    username: env.POCKET_AUTH_USER || 'admin',
-    password: env.POCKET_AUTH_PASS || '',
-  })
-  if (r.status !== 200 || !r.body || !r.body.token) {
-    throw new Error(`登录失败 ${r.status}：${JSON.stringify(r.body).slice(0, 200)}`)
-  }
-  return r.body.token
-}
-
-function rows(body) {
-  if (!body) return []
-  if (Array.isArray(body)) return body
-  if (Array.isArray(body.tasks)) return body.tasks
-  if (Array.isArray(body.data)) return body.data
-  return []
-}
-
-/** 删掉同名残留 —— 不删的话 flow 断言会假绿（残留卡片也算「可见」）。 */
-async function clearResidual(token) {
-  const r = await api('GET', '/api/tasks', undefined, token)
-  // 清掉**整个 maestro-* 同族**的残留：flow 最后一步断言屏上的「已完成」，
-  // 别的 maestro-* 卡片若也是已完成，那一步会对错了行。
-  const hit = rows(r.body).filter((t) => String(t.title || '').startsWith('maestro-'))
-  console.log(`[fixture] maestro-* 残留任务 ${hit.length} 条`)
-  for (const t of hit) {
-    const d = await api('DELETE', `/api/tasks/${t.id}`, undefined, token)
-    console.log(`[fixture]   删除 ${t.id} -> ${d.status}`)
-  }
-}
+const { api, login } = makeApi()
 
 async function induce() {
-  const token = await login()
-  await clearResidual(token)
+  await login()
+  await clearResidual(api, 'maestro-')
 
   const prompt =
     '请在 /tmp/maestro-acc-approve 目录下创建文件 hello.txt，内容写一行 hello，' +
     '然后读取该文件并把内容原样告诉我。'
-  const d = await api('POST', '/api/tasks/delegate', {
-    title: TITLE,
-    description: prompt,
-    prompt,
-  }, token)
-  if (d.status !== 200) {
-    throw new Error(`委托失败 ${d.status}：${JSON.stringify(d.body).slice(0, 300)}`)
+  // ★ 2026-10-27：写请求失败时**先问 ACC 有没有建出来**再决定要不要重试
+  //   （acc_create_task 没有幂等键 ⇒ 盲重试会建出重复任务；
+  //     而 ACC 的 MCP 面确实会回 EOF/超时）。
+  const res = await delegateWithVerify(api, { title: TITLE, description: prompt, prompt })
+  if (!res.ok) {
+    throw new Error(`委托失败 ${res.status}：${JSON.stringify(res.body).slice(0, 300)}`)
   }
-  const data = (d.body && d.body.data) || d.body || {}
-  console.log(`[fixture] 已委托：task_id=${data.task_id} dispatch_id=${data.dispatch_id}`)
+  console.log(`[fixture] 已委托：task_id=${res.task_id} dispatch_id=${res.dispatch_id}${res.recovered ? '（失败后从 ACC 侧确认已建）' : ''}`)
 
   // 等 daemon 把待批项挂上（App 的卡片靠它出现）。
   const deadline = Date.now() + 120_000
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, 3000))
-    const a = await api('GET', '/api/acc/approvals?status=pending', undefined, token)
+    const a = await api('GET', '/api/acc/approvals?status=pending')
     const items = (a.body && a.body.approvals) || []
     if (items.length > 0) {
       console.log(`[fixture] ✅ 待批项已出现：${items[0].id} title=${JSON.stringify(items[0].title)}`)
@@ -123,8 +56,8 @@ async function induce() {
 
 async function restore() {
   try {
-    const token = await login()
-    await clearResidual(token)
+    await login()
+    await clearResidual(api, 'maestro-')
   } catch (e) {
     console.log(`[fixture] 还原跳过：${e.message}`)
   }

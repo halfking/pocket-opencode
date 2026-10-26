@@ -9,12 +9,14 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -25,6 +27,7 @@ import (
 // Client MCP 客户端
 type Client struct {
 	mu          sync.Mutex
+	initMu      sync.Mutex // 串行化 initialize 尝试；**不**缓存失败（见 ensureInitialized）
 	baseURL     string
 	secret      string   // HMAC 签名密钥（ACC 的 AUTH_TOKEN_SECRET / pocketd 侧 = POCKET_MCP_API_KEY）
 	tenantID    string   // 内部 JWT 的 tenant_id claim（POCKET_MCP_TENANT_ID）
@@ -34,8 +37,6 @@ type Client struct {
 	sessionID   string
 	initialized bool
 	initTime    time.Time
-	initOnce    sync.Once // 确保 initialize 只执行一次
-	initErr     error     // 缓存初始化错误
 }
 
 // ACC MCP tool 名常量。ACC 侧 acc-go/internal/mcp/server.go 的 toolSpecs
@@ -280,21 +281,149 @@ func (c *Client) doRawWithBearer(ctx context.Context, payload []byte, useJWT boo
 	return body, resp.Header, nil
 }
 
-// ensureInitialized 确保 MCP 会话已初始化（并发安全，使用 sync.Once 确保单次执行）
+// mcpSessionTTL 是 MCP 会话在客户端侧的有效期（过期后重新握手）。
+const mcpSessionTTL = 5 * time.Minute
+
+// mcpRetryAttempts 是瞬时故障的最大尝试次数（含首次）。
+const mcpRetryAttempts = 3
+
+// mcpRetryBackoff 是重试之间的基础退避（按尝试次数线性放大）。
+const mcpRetryBackoff = 300 * time.Millisecond
+
+// isDialFailure：连接**没建起来**（请求根本没到服务器）。
+// 这种失败重试绝对安全 —— 服务器不可能已经执行过这次写操作。
+func isDialFailure(err error) bool {
+	var opErr *net.OpError
+	if errors.As(err, &opErr) {
+		return opErr.Op == "dial"
+	}
+	return false
+}
+
+// isTransientStatus：网关类状态码（429/502/503/504）⇒ 值得重试。
+func isTransientStatus(err error) bool {
+	var se *httpStatusError
+	if errors.As(err, &se) {
+		switch se.Status {
+		case http.StatusTooManyRequests, http.StatusBadGateway,
+			http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+			return true
+		}
+	}
+	return false
+}
+
+// isTimeoutError：请求超时。
+//
+// ⚠ 超时**不能**用来重试写工具：超时只说明「我们没收到响应」，
+// 服务器可能已经执行了（acc_create_task 没有幂等键 ⇒ 重发会建出重复任务）。
+// 超时只在**幂等**步骤（initialize）上重试。
+func isTimeoutError(err error) bool {
+	var ne net.Error
+	return errors.As(err, &ne) && ne.Timeout()
+}
+
+// isTransportEOF：传输层被掐断（EOF / unexpected EOF / 连接被重置 / 管道断）。
+//
+// ★ 2026-10-26 补：ACC 的 MCP 面**就是用 EOF 把委派打死的** ——
+//   实测（两处独立证据）：
+//     ① 今日早些时候：ACC 的 MCP 面返回过一次 EOF（POST /api/v2/mcp），
+//        之后 pocketd 的委派全部 502；
+//     ② 本轮 22:09 真机夹具：委托直接 502，
+//        错误是 `acc_create_task failed: MCP not initialized: initialize failed:
+//        failed to send request: Post "http://100.106.67.198:4101/api/v2/mcp": EOF`。
+//   而 initialize 当时的重试集是「dial 失败 | 429/502/503/504 | 超时」——
+//   **EOF 不在里面** ⇒ 一次 EOF 就让整个进程在 ACC 恢复之后**再也初始化不了**。
+//   ⇒ initialize 是**幂等**的（握手而已，重做一次没有副作用）⇒ EOF 必须重试。
+//   ⚠ 写工具**不**因此重试：EOF 同样可能发生在「服务器已经建好任务之后」，
+//      而 acc_create_task 没有幂等键 ⇒ 重发会建出重复任务。
+func isTransportEOF(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	// 连接被对端重置 / 管道断开：同样是「传输层被掐断」。
+	if errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE) {
+		return true
+	}
+	return false
+}
+
+// doRawWithRetry 发请求并对**瞬时**故障重试。
+//
+// retryAmbiguous=false ⇒ 只重试「请求没到服务器」的失败（dial 失败）。
+// retryAmbiguous=true  ⇒ 还可以重试 429/502/503/504 与超时；
+// 只能用于幂等步骤（initialize）。
+func (c *Client) doRawWithRetry(ctx context.Context, payload []byte, retryAmbiguous bool) ([]byte, http.Header, error) {
+	var lastErr error
+	for attempt := 1; attempt <= mcpRetryAttempts; attempt++ {
+		if ctx.Err() != nil {
+			return nil, nil, ctx.Err()
+		}
+		body, headers, err := c.doRaw(ctx, payload)
+		if err == nil {
+			return body, headers, nil
+		}
+		lastErr = err
+		retryable := isDialFailure(err)
+		if retryAmbiguous {
+			// 幂等步骤（initialize）：可以重试「请求可能没被处理」的失败 ——
+			// 网关类状态码、超时、**传输层被掐断（EOF/连接重置）**。
+			// ⚠ 写工具走的是 retryAmbiguous=false ⇒ 这些一律不重试
+			//   （acc_create_task 没有幂等键，重发会建出重复任务）。
+			retryable = retryable || isTransientStatus(err) || isTimeoutError(err) || isTransportEOF(err)
+		}
+		if !retryable || attempt == mcpRetryAttempts {
+			return nil, nil, err
+		}
+		wait := mcpRetryBackoff * time.Duration(attempt)
+		log.Printf("[MCP] transient failure (attempt %d/%d): %v — retrying in %s",
+			attempt, mcpRetryAttempts, err, wait)
+		select {
+		case <-ctx.Done():
+			return nil, nil, ctx.Err()
+		case <-time.After(wait):
+		}
+	}
+	return nil, nil, lastErr
+}
+
+// ensureInitialized 确保 MCP 会话已初始化。
+//
+// ★ 2026-10-26：这里原来用 sync.Once + 缓存的 initErr，
+//
+//	那是**一次瞬时故障 = 进程生命周期内永久失效**：
+//	sync.Once 保证那段闭包一辈子只跑一次 ⇒ initialize 失败一次，
+//	initErr 被永久钉住 ⇒ 此后每次 CallTool 都返回
+//	「MCP not initialized: initialize failed: ...」，且**没有任何自愈**。
+//	实测（2026-10-26 12:00 前后）ACC 的 MCP 面返回过次 EOF，
+//	之后 pocketd 的委派全部失败，日志里再没有一次成功的 initialize。
+//
+// 现在：失败**不缓存**。用 initMu 串行化握手（避免并发重复握手），
+// 但失败后 initialized 仍为 false ⇒ 下一次调用会重新握手。
 func (c *Client) ensureInitialized(ctx context.Context) error {
 	c.mu.Lock()
-	if c.initialized && time.Since(c.initTime) < 5*time.Minute {
+	if c.initialized && time.Since(c.initTime) < mcpSessionTTL {
 		c.mu.Unlock()
 		return nil
 	}
 	c.mu.Unlock()
 
-	// 使用 sync.Once 确保多个并发调用只有一个执行初始化
-	c.initOnce.Do(func() {
-		c.initErr = c.doInitialize(ctx)
-	})
+	c.initMu.Lock()
+	defer c.initMu.Unlock()
 
-	return c.initErr
+	// 双重检查：等 initMu 期间可能已经被别的 goroutine 握手好了。
+	c.mu.Lock()
+	if c.initialized && time.Since(c.initTime) < mcpSessionTTL {
+		c.mu.Unlock()
+		return nil
+	}
+	c.mu.Unlock()
+
+	// ★ 失败不缓存：不写回任何「永久错误」状态。
+	return c.doInitialize(ctx)
 }
 
 // doInitialize 执行实际的初始化流程（由 sync.Once 保证单次执行）
@@ -314,7 +443,7 @@ func (c *Client) doInitialize(ctx context.Context) error {
 		ID: c.requestID.Add(1),
 	})
 
-	body, headers, err := c.doRaw(ctx, initPayload)
+	body, headers, err := c.doRawWithRetry(ctx, initPayload, true)
 	if err != nil {
 		return fmt.Errorf("initialize failed: %w", err)
 	}
@@ -375,7 +504,7 @@ func (c *Client) CallTool(ctx context.Context, toolName string, args map[string]
 		ID: c.requestID.Add(1),
 	})
 
-	body, _, err := c.doRaw(ctx, payload)
+	body, _, err := c.doRawWithRetry(ctx, payload, false)
 	if err != nil {
 		return "", fmt.Errorf("tools/call(%s) failed: %w", toolName, err)
 	}
@@ -508,12 +637,13 @@ func parseToolTasksJSON(text string) ([]ParsedTask, bool) {
 	// accTask 的字段映射按 ACC acc_get_tasks 实际返回（id/title/status/phase/
 	// owner/agent_id）；status 缺失时回退 phase（ACC 以 phase 驱动看板）。
 	type accTask struct {
-		ID      string `json:"id"`
-		Title   string `json:"title"`
-		Status  string `json:"status"`
-		Phase   string `json:"phase"`
-		Owner   string `json:"owner"`
-		AgentID string `json:"agent_id"`
+		ID        string `json:"id"`
+		Title     string `json:"title"`
+		Status    string `json:"status"`
+		Phase     string `json:"phase"`
+		Owner     string `json:"owner"`
+		AgentID   string `json:"agent_id"`
+		CreatedAt string `json:"created_at"`
 	}
 	// 任务判定契约：id 与 title 都非空才算任务对象。仅凭 id 非空会把
 	// {"id":"foo","message":"No tasks found"} 这类响应性 JSON 当成任务，
@@ -538,6 +668,10 @@ func parseToolTasksJSON(text string) ([]ParsedTask, bool) {
 				Title:  r.Title,
 				Status: status,
 				Owner:  owner,
+				// created_at 解析失败**不**丢弃这条任务，只是不带时间
+				// （零值 CreatedAt 会让「按时间窗认领」跳过它 —— 那正是
+				// 我们想要的保守行为：没有时间戳就不敢认领）。
+				CreatedAt: parseAccCreatedAt(r.CreatedAt),
 			})
 		}
 		return tasks
@@ -629,7 +763,100 @@ type ParsedTask struct {
 	Title  string
 	Status string
 	Owner  string
+	// CreatedAt 是 ACC 侧建任务的时刻（acc_get_tasks 返回 created_at）。
+	//
+	// ★ 为什么必须有它：委派写请求失败后要判断「服务器到底建没建出任务」，
+	//   而**只按标题找会认错人** —— 同名的残留任务在 ACC 里能堆几十条
+	//   （实测 27 条 maestro-acc-approve）⇒ 命中一条旧任务就等于
+	//   把本次委托绑到别人的任务上。⇒ 必须再加一道「创建时间不早于本次请求」，
+	//   才敢认领。
+	CreatedAt time.Time
 }
+
+// parseAccCreatedAt 解析 ACC 的 created_at（RFC3339，可能带小数秒）。
+// 解析不了就返回零值 —— 调用方据此**放弃认领**，而不是猜。
+func parseAccCreatedAt(s string) time.Time {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return time.Time{}
+	}
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339, "2006-01-02T15:04:05"} {
+		if ts, err := time.Parse(layout, s); err == nil {
+			return ts.UTC()
+		}
+	}
+	return time.Time{}
+}
+
+// createdAtSkewTolerance 是认领时的时钟偏差容忍度。
+//
+// ACC 的时钟与 pocketd 的时钟可能有几秒偏差 ⇒ 认领窗口往前放宽一点。
+// 5 秒足够覆盖时钟偏差，又不至于宽到能认领上一轮的陈年任务。
+const createdAtSkewTolerance = 5 * time.Second
+
+// MatchTaskCreatedSince 在 tasks 里找出「标题相同、且创建时间不早于 since」的那条任务。
+//
+// ★ 这是「写请求失败后确认服务器到底建没建出来」的核心判据：
+//   - 只按标题找会**认错人**（ACC 里同名残留能堆几十条）；
+//   - 只按时间找会**认错内容**（别人也在建任务）。
+//   两个条件都要。
+//
+// 多个候选时取**最新**的那条：本次请求是最后发出的那一个。
+// ⚠ 没有 created_at 的任务**不参与**匹配（零值 CreatedAt）——
+//   没有时间戳就不敢认领，这是保守方向。
+func MatchTaskCreatedSince(tasks []ParsedTask, title string, since time.Time) (ParsedTask, bool) {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return ParsedTask{}, false
+	}
+	cutoff := since.Add(-createdAtSkewTolerance)
+	var best ParsedTask
+	found := false
+	for _, t := range tasks {
+		if strings.TrimSpace(t.Title) != title {
+			continue
+		}
+		if t.CreatedAt.IsZero() || t.CreatedAt.Before(cutoff) {
+			continue
+		}
+		if !found || t.CreatedAt.After(best.CreatedAt) {
+			best, found = t, true
+		}
+	}
+	return best, found
+}
+
+// FindTaskCreatedSince 从 ACC 读任务列表并按 MatchTaskCreatedSince 认领。
+func (c *Client) FindTaskCreatedSince(ctx context.Context, title string, since time.Time) (ParsedTask, bool, error) {
+	if c == nil {
+		return ParsedTask{}, false, fmt.Errorf("mcp: MCP client not configured")
+	}
+	tasks, err := c.GetRemoteTasks(ctx, "", 200)
+	if err != nil {
+		return ParsedTask{}, false, err
+	}
+	t, ok := MatchTaskCreatedSince(tasks, title, since)
+	return t, ok, nil
+}
+
+// IsAmbiguousWriteFailure 判断一个**写**工具的失败是不是「结果未知」。
+//
+// ★ 含义：请求可能已经到了服务器、只是响应没回来（EOF / 连接被重置 / 超时）。
+//   ⇒ 这种失败**不能盲目重试**（acc_create_task 没有幂等键 ⇒ 重发会建出重复任务），
+//     但也**不能直接当成失败**（服务器可能已经建好了）⇒ 必须先「问服务器」。
+//
+// 与 isTransportEOF 的区别：那个只认传输层掐断，这个还认超时
+// （超时同样是「我们没收到响应」，语义上同样是不确定）。
+func IsAmbiguousWriteFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	if isTransportEOF(err) {
+		return true
+	}
+	return isTimeoutError(err)
+}
+
 
 // GetRemoteTasks 获取远程任务列表
 func (c *Client) GetRemoteTasks(ctx context.Context, status string, limit int) ([]ParsedTask, error) {
@@ -824,9 +1051,9 @@ type AccRunEvent struct {
 	// ActorID/ActorType identify who acted: for dispatch.leased and
 	// dispatch.started, ActorID is the **runtime-control lease holder**
 	// (the companion runtime id) — the other half of the holder fence.
-	ActorID   string `json:"actor_id,omitempty"`
-	ActorType string `json:"actor_type,omitempty"`
-	NewState  string `json:"new_state,omitempty"`
+	ActorID   string          `json:"actor_id,omitempty"`
+	ActorType string          `json:"actor_type,omitempty"`
+	NewState  string          `json:"new_state,omitempty"`
 	Payload   json.RawMessage `json:"payload,omitempty"`
 }
 

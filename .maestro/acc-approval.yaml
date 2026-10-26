@@ -1,4 +1,4 @@
-# Maestro 真机功能流 · ACC 派单的审批环（2026-10-26 审计轮新增）
+# Maestro 真机功能流 · ACC 派单的审批环（2026-10-26 审计轮新增 / 当日再修两次）
 #
 # 这条流守的是「委托给 ACC」这条链路**最后一跳**：智能体要工具批准时，
 # 人必须在手机上能看到并应答，否则任务永远 permission_denied。
@@ -10,13 +10,58 @@
 #   agent-companion 自己的 ACC_BRIDGE_SPEC.md 却写着这条 —— 契约在，实现没有）。
 #   ⇒ 修复：ACC 端点未接线时，待批项停进 daemon 自己的干预队列等人应答；
 #     没人应答仍然 fail-closed。
-#   ⇒ 本流验的就是「App 看得到待批项 ⇒ 点允许 ⇒ 智能体继续跑完 ⇒ 卡片变已完成」。
+#   ⇒ 本流验的就是「App 看得到待批项 ⇒ 点允许 ⇒ 智能体继续跑完 ⇒ 卡片进已结束区」。
 #
 # ★ 为什么前提由夹具造（scripts/acc-approval-fixture.mjs）：
 #   弹窗里的输入框在无障碍树里是 `[EditText] t="" cd=""` ⇒ 只能按坐标点，
-#   而弹窗内容一变坐标就位移（实测 sheet 顶部从 y≈1200 变成 y=0）。
+#   而弹窗内容一变坐标就位移（实测：sheet 顶部从 y≈1200 变成 y=0）。
 #   「委托给 ACC」的设备侧链路由 .maestro/acc-delegate-stop.yaml 覆盖；
 #   这条流只验审批面。
+#
+# ★ 2026-10-26 12:30 这一版修掉的三个**判据缺陷**（都是真问题，不是玄学）：
+#
+#   ① 「答一轮就够」是错的：智能体连问好几轮。
+#      实测（daemon 日志，同一次派单 dispatch_d83b0a39…）：
+#        12:26:28 parking "ls -d /tmp/maestro-acc-approve …"
+#        12:27:22 answered locally           ← 设备上点「允许一次」真的到了 daemon
+#        12:27:27 parking "mkdir -p /tmp/maestro-acc-approve && …"  ← 第二轮又来
+#        12:29:27 permission denied (fail-closed) ← 第二轮没人答 ⇒ 超时 ⇒ 任务死
+#      ⇒ 只答一轮 ⇒ 卡片不会消失（下一轮又挂上）⇒ `notVisible` 必红。
+#      ⇒ 现在**循环应答**，直到待批卡片不再出现。
+#
+#   ② `visible: "已完成"` 是**恒真**判据：
+#      「已完成」三个字只出现在**分区标题**里（<h2>已完成<span>1</span></h2>），
+#      任务卡片自己只写标题 + 相对时间（task-title done / timeAgo），
+#      压根不写「已完成」⇒ 那条断言在任何时刻都成立
+#      （实测失败现场的无障碍树里就有「已完成 1」—— 那是**别的**已完成任务）。
+#      ⇒ 现在断言改成**定位到本条卡片**：id=finished-task-title-completed + text=标题。
+#      （标题的 testid 带状态后缀：断言「这条任务已完成」和「这条任务失败」
+#        是两件事，共用一个 testid 就分不出来。）
+#
+#   ③ 「已结束」分区**默认折叠**（showCompleted = ref(false)）⇒ 卡片根本不渲染
+#      ⇒ 断言无从命中 ⇒ 必须先展开分区（data-testid="completed-section-toggle"）。
+#
+# ★ 2026-10-26 20:5x 这一版修掉的**真缺陷**（设备现场取证，不是猜的）：
+#
+#   ④ 一次危险工具调用会让 opencode **连发 2~3 个审批请求**，而且是**同一个
+#      toolCallId**。daemon 帧日志实测（一次派单）：
+#        id=0「写路径检查」(kind=other, rawInput 带 directories/patterns)
+#        id=1「执行检查」  (kind=execute, rawInput 只有 command)   ← 20ms 后
+#        id=2「读检查」    (kind=other, 读文件)
+#      每个都要单独应答；漏一个就 120s 超时 fail-closed。
+#      ⇒ 「答一条 ⇒ 列表清空 ⇒ 下一条又来」是**常态** ⇒ 必须循环应答，
+#        而且循环次数要够（这里 10 轮，实测最多 3 轮）。
+#
+#   ⑤ App 侧的 ACC 待批 <section> 原来挂着 v-if（列表空 ⇒ 整段被卸载，
+#      下一条待批到达 ⇒ 又重建）。Android WebView 的无障碍树在「节点被卸载后
+#      同位置重建」时会**丢一整段子树**：attempt9 现场，同一时刻
+#        · 截图：卡片和「允许一次」按钮**在屏幕上**；
+#        · uiautomator 快照：main 的子节点从「下拉同步邮件」直接跳到「ACC 生态」
+#          —— 中间整个 section 节点**不见了**。
+#      ⇒ Maestro 点不到那张卡（visible 断言连 WARNED）⇒ 人被迫再等 120s
+#        ⇒ 任务被判失败。这**不是测试专属问题**：TalkBack 用户同样看不到卡片。
+#      ⇒ 修法（App 侧）：section 元素常驻 DOM + 列表加 aria-live="polite"。
+#      ⇒ 本流就是它的判据：连答 2~3 张卡必须全绿。
 #
 # 运行：node scripts/maestro-run.mjs .maestro/acc-approval.yaml
 appId: com.kaixuan.opencode.pocket
@@ -28,6 +73,21 @@ appId: com.kaixuan.opencode.pocket
 - waitForAnimationToEnd:
     timeout: 15000
 
+# ---- 0.5 展开「已结束」分区（默认折叠 ⇒ 卡片不渲染 ⇒ 末尾断言无从命中）----
+# 只在「还没渲染出完成卡片」时点，避免把已经展开的分区点回折叠。
+- runFlow:
+    when:
+      visible:
+        id: "completed-section-toggle"
+    commands:
+      - runFlow:
+          when:
+            notVisible:
+              id: "finished-task-title-completed"
+          commands:
+            - tapOn:
+                id: "completed-section-toggle"
+
 # ---- 1. ★ 待批卡片必须出现 ----
 # 「ACC 待批（1）」里的括号数字会变 ⇒ 判据写正则（Maestro 的 visible 是
 # 完整匹配，「ACC 待批」匹配不上「ACC 待批（1）」——与 acc-delegate-stop.yaml
@@ -37,14 +97,37 @@ appId: com.kaixuan.opencode.pocket
     timeout: 90000
 - assertVisible: "ACC 待批.*"
 
-# ---- 2. ★ 必须能应答 ----
+# ---- 2. ★ 必须能应答（★ 循环应答：一次工具调用会连问 2~3 轮）----
 # option id 取智能体给过的那一个；找不到就没有这个按钮
 # （渲染一个必然被 daemon 拒的按钮是假动作）。
-- extendedWaitUntil:
-    visible: ".*允许一次.*"
-    timeout: 30000
-- assertVisible: ".*允许一次.*"
-- tapOn: ".*允许一次.*"
+#
+# 每轮：先**等**下一条待批项冒头（App 轮询 5s 一跳）→ 有点就点
+# → 再等它被划掉。
+# ⚠ 顺序不能反：把「点」放在前面、等待放在后面，而「等出现」在卡片
+#   **还没消失**时会立即返回 ⇒ 迭代在几秒内烧完（第一版的坑）。
+# ⚠ 「等消失」超时是**正常**的：下一条待批项顶上来时按钮并没有消失，
+#   只是换了一条 ⇒ 这一步只是节奏控制，不承担判定职责（optional: true）。
+#   真正的判定在第 4 步：任务必须真的跑完。
+- repeat:
+    times: 10
+    commands:
+      # ① **先等**下一条待批项冒头（App 轮询 5s 一跳 ⇒ 15s 窗口足够）。
+      - extendedWaitUntil:
+          visible: ".*允许一次.*"
+          timeout: 10000
+          optional: true
+      # ② 有点就点（没有就跳过，不算失败）
+      - runFlow:
+          when:
+            visible: ".*允许一次.*"
+          commands:
+            - tapOn: ".*允许一次.*"
+      # ③ 等这一条被划掉：store 在 POST 成功返回后立刻把它从列表里去掉
+      #    （frontend/src/stores/accApprovals.ts 的 decide()）。
+      - extendedWaitUntil:
+          notVisible: ".*允许一次.*"
+          timeout: 5000
+          optional: true
 
 # ---- 3. ★ 应答后待批卡片清空 ----
 # 这一条证明应答真的到了 daemon：App 只是把本地列表里那一条去掉，
@@ -53,19 +136,22 @@ appId: com.kaixuan.opencode.pocket
     notVisible: "ACC 待批.*"
     timeout: 60000
 
-# ---- 4. ★ 任务卡片变成「已完成」----
+# ---- 4. ★ 任务真的跑完并进了「已结束」区 ----
 # 依赖后端的状态回填（tasksync 的 ACC 派单状态回填，15s 一跳）：
 # 本地那一行的状态跟着 ACC 的命令面走，否则卡片永远停在「进行中」。
 #
 # ⚠ 这里**不**靠用户下拉刷新 —— 回填会广播 task_updated，卡片必须自己变。
 #    刷新一下就能看见的状态不算数（那是用户替产品做了事）。
 #
-# ⚠ 残留风险：这条断言是屏上文本匹配，若同时存在别的「已完成」任务，
-#    它可能对错了行。夹具已清掉全部 maestro-* 同族残留（见
-#    scripts/acc-approval-fixture.mjs），当前工作区没有别的已完成任务。
+# ⚠ 判据必须定位到**本条卡片**（见文件头 ②）：只写 "已完成" 会命中分区标题，
+#   那是恒真的、等于没验。
+# ⚠ testid 带状态后缀：若是任务其实**失败**了，failed 那一条不会命中
+#   completed 这一条 ⇒ 漏答一轮审批导致的 permission_denied 一定红。
 - extendedWaitUntil:
-    visible: "maestro-acc-approve"
-    timeout: 60000
-- extendedWaitUntil:
-    visible: "已完成"
-    timeout: 120000
+    visible:
+      id: "finished-task-title-completed"
+      text: "maestro-acc-approve"
+    timeout: 180000
+- assertVisible:
+    id: "finished-task-title-completed"
+    text: "maestro-acc-approve"
