@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -25,6 +26,7 @@ import (
 // Client MCP 客户端
 type Client struct {
 	mu          sync.Mutex
+	initMu      sync.Mutex // 串行化 initialize 尝试；**不**缓存失败（见 ensureInitialized）
 	baseURL     string
 	secret      string   // HMAC 签名密钥（ACC 的 AUTH_TOKEN_SECRET / pocketd 侧 = POCKET_MCP_API_KEY）
 	tenantID    string   // 内部 JWT 的 tenant_id claim（POCKET_MCP_TENANT_ID）
@@ -34,8 +36,6 @@ type Client struct {
 	sessionID   string
 	initialized bool
 	initTime    time.Time
-	initOnce    sync.Once // 确保 initialize 只执行一次
-	initErr     error     // 缓存初始化错误
 }
 
 // ACC MCP tool 名常量。ACC 侧 acc-go/internal/mcp/server.go 的 toolSpecs
@@ -280,21 +280,117 @@ func (c *Client) doRawWithBearer(ctx context.Context, payload []byte, useJWT boo
 	return body, resp.Header, nil
 }
 
-// ensureInitialized 确保 MCP 会话已初始化（并发安全，使用 sync.Once 确保单次执行）
+// mcpSessionTTL 是 MCP 会话在客户端侧的有效期（过期后重新握手）。
+const mcpSessionTTL = 5 * time.Minute
+
+// mcpRetryAttempts 是瞬时故障的最大尝试次数（含首次）。
+const mcpRetryAttempts = 3
+
+// mcpRetryBackoff 是重试之间的基础退避（按尝试次数线性放大）。
+const mcpRetryBackoff = 300 * time.Millisecond
+
+// isDialFailure：连接**没建起来**（请求根本没到服务器）。
+// 这种失败重试绝对安全 —— 服务器不可能已经执行过这次写操作。
+func isDialFailure(err error) bool {
+	var opErr *net.OpError
+	if errors.As(err, &opErr) {
+		return opErr.Op == "dial"
+	}
+	return false
+}
+
+// isTransientStatus：网关类状态码（429/502/503/504）⇒ 值得重试。
+func isTransientStatus(err error) bool {
+	var se *httpStatusError
+	if errors.As(err, &se) {
+		switch se.Status {
+		case http.StatusTooManyRequests, http.StatusBadGateway,
+			http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+			return true
+		}
+	}
+	return false
+}
+
+// isTimeoutError：请求超时。
+//
+// ⚠ 超时**不能**用来重试写工具：超时只说明「我们没收到响应」，
+// 服务器可能已经执行了（acc_create_task 没有幂等键 ⇒ 重发会建出重复任务）。
+// 超时只在**幂等**步骤（initialize）上重试。
+func isTimeoutError(err error) bool {
+	var ne net.Error
+	return errors.As(err, &ne) && ne.Timeout()
+}
+
+// doRawWithRetry 发请求并对**瞬时**故障重试。
+//
+// retryAmbiguous=false ⇒ 只重试「请求没到服务器」的失败（dial 失败）。
+// retryAmbiguous=true  ⇒ 还可以重试 429/502/503/504 与超时；
+// 只能用于幂等步骤（initialize）。
+func (c *Client) doRawWithRetry(ctx context.Context, payload []byte, retryAmbiguous bool) ([]byte, http.Header, error) {
+	var lastErr error
+	for attempt := 1; attempt <= mcpRetryAttempts; attempt++ {
+		if ctx.Err() != nil {
+			return nil, nil, ctx.Err()
+		}
+		body, headers, err := c.doRaw(ctx, payload)
+		if err == nil {
+			return body, headers, nil
+		}
+		lastErr = err
+		retryable := isDialFailure(err)
+		if retryAmbiguous {
+			retryable = retryable || isTransientStatus(err) || isTimeoutError(err)
+		}
+		if !retryable || attempt == mcpRetryAttempts {
+			return nil, nil, err
+		}
+		wait := mcpRetryBackoff * time.Duration(attempt)
+		log.Printf("[MCP] transient failure (attempt %d/%d): %v — retrying in %s",
+			attempt, mcpRetryAttempts, err, wait)
+		select {
+		case <-ctx.Done():
+			return nil, nil, ctx.Err()
+		case <-time.After(wait):
+		}
+	}
+	return nil, nil, lastErr
+}
+
+// ensureInitialized 确保 MCP 会话已初始化。
+//
+// ★ 2026-10-26：这里原来用 sync.Once + 缓存的 initErr，
+//
+//	那是**一次瞬时故障 = 进程生命周期内永久失效**：
+//	sync.Once 保证那段闭包一辈子只跑一次 ⇒ initialize 失败一次，
+//	initErr 被永久钉住 ⇒ 此后每次 CallTool 都返回
+//	「MCP not initialized: initialize failed: ...」，且**没有任何自愈**。
+//	实测（2026-10-26 12:00 前后）ACC 的 MCP 面返回过次 EOF，
+//	之后 pocketd 的委派全部失败，日志里再没有一次成功的 initialize。
+//
+// 现在：失败**不缓存**。用 initMu 串行化握手（避免并发重复握手），
+// 但失败后 initialized 仍为 false ⇒ 下一次调用会重新握手。
 func (c *Client) ensureInitialized(ctx context.Context) error {
 	c.mu.Lock()
-	if c.initialized && time.Since(c.initTime) < 5*time.Minute {
+	if c.initialized && time.Since(c.initTime) < mcpSessionTTL {
 		c.mu.Unlock()
 		return nil
 	}
 	c.mu.Unlock()
 
-	// 使用 sync.Once 确保多个并发调用只有一个执行初始化
-	c.initOnce.Do(func() {
-		c.initErr = c.doInitialize(ctx)
-	})
+	c.initMu.Lock()
+	defer c.initMu.Unlock()
 
-	return c.initErr
+	// 双重检查：等 initMu 期间可能已经被别的 goroutine 握手好了。
+	c.mu.Lock()
+	if c.initialized && time.Since(c.initTime) < mcpSessionTTL {
+		c.mu.Unlock()
+		return nil
+	}
+	c.mu.Unlock()
+
+	// ★ 失败不缓存：不写回任何「永久错误」状态。
+	return c.doInitialize(ctx)
 }
 
 // doInitialize 执行实际的初始化流程（由 sync.Once 保证单次执行）
@@ -314,7 +410,7 @@ func (c *Client) doInitialize(ctx context.Context) error {
 		ID: c.requestID.Add(1),
 	})
 
-	body, headers, err := c.doRaw(ctx, initPayload)
+	body, headers, err := c.doRawWithRetry(ctx, initPayload, true)
 	if err != nil {
 		return fmt.Errorf("initialize failed: %w", err)
 	}
@@ -375,7 +471,7 @@ func (c *Client) CallTool(ctx context.Context, toolName string, args map[string]
 		ID: c.requestID.Add(1),
 	})
 
-	body, _, err := c.doRaw(ctx, payload)
+	body, _, err := c.doRawWithRetry(ctx, payload, false)
 	if err != nil {
 		return "", fmt.Errorf("tools/call(%s) failed: %w", toolName, err)
 	}
@@ -824,9 +920,9 @@ type AccRunEvent struct {
 	// ActorID/ActorType identify who acted: for dispatch.leased and
 	// dispatch.started, ActorID is the **runtime-control lease holder**
 	// (the companion runtime id) — the other half of the holder fence.
-	ActorID   string `json:"actor_id,omitempty"`
-	ActorType string `json:"actor_type,omitempty"`
-	NewState  string `json:"new_state,omitempty"`
+	ActorID   string          `json:"actor_id,omitempty"`
+	ActorType string          `json:"actor_type,omitempty"`
+	NewState  string          `json:"new_state,omitempty"`
 	Payload   json.RawMessage `json:"payload,omitempty"`
 }
 

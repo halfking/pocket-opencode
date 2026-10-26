@@ -58,6 +58,7 @@
     },
     ".maestro/_connectivity.yaml",
     ".maestro/_dismiss-system-dialogs.yaml",
+    ".maestro/_dismiss-anr-dialog.yaml",
     ".maestro/_goto-pkm.yaml",
     ".maestro/_login.yaml",
     {
@@ -80,7 +81,10 @@
       "file": ".maestro/_set-master-password.yaml",
       "kind": "subflow"
     },
-    ".maestro/acc-delegate-stop.yaml",
+    {
+      "file": ".maestro/acc-delegate-stop.yaml",
+      "fixture": "acc-delegate-stop"
+    },
     {
       "file": ".maestro/acc-approval.yaml",
       "fixture": "acc-approval"

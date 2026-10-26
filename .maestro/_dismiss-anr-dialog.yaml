@@ -1,0 +1,37 @@
+# 子流程：清掉系统的 **ANR 对话框**（「xxx isn't responding」）
+#
+# ★ 为什么必须有（2026-10-26 13:07 实测，不是推测）：
+#   宿主负载高（load 30~70）时，AOSP 的 System UI 会被判 ANR，弹出
+#   「System UI isn't responding」系统对话框（按钮 [Close app | Wait]）。
+#   它是**系统窗口**，盖在整个 App 之上 ⇒ Maestro 的无障碍树里
+#   **只有**这个对话框，App 的页面一个字都读不到：
+#
+#     step-003-assertCondition-AI_工具.json
+#       → "System UI isn't responding | Close app | Wait | 1:08"
+#
+#   ⇒ flow 的**第一条**断言（"AI 工具" 可见）直接红在一个
+#     **本就不该红**的地方（结论会读成「App 首页坏了」）。
+#   ⇒ 定性：**环境问题**（宿主被并行会话压垮），不是产品缺陷。
+#
+# 为什么单独一个文件、而不是并进 _dismiss-system-dialogs.yaml：
+#   那个文件里的两条提示（「我知道了」「允许|Allow」）是 **Xiaomi 独有**的，
+#   在别的设备上**永远不出现** ⇒ 无条件跑要白等 ~10s（两条 5s 的
+#   extendedWaitUntil）。而 ANR 对话框是 **AOSP 原生**的，任何设备都可能出现。
+#   ⇒ 拆开：ANR 这段每条 flow 前都跑（~5s），Xiaomi 那段仍只在 MIUI 上跑。
+#
+# ⚠ 选择器写成**单条文案**（不是复合正则）：check-maestro-flows 的
+#   「系统弹窗文案豁免」是**精确匹配** SYSTEM_DIALOG_TEXTS，复合正则匹配不上
+#   ⇒ 会把这条流判成「选择器在源码里找不到出处」。
+#   ⇒ 「isn't responding」「Wait」已登记进该清单（系统绘制，不在 App 源码里）。
+#
+# 全部 optional：点不到就跳过，不会给别的 flow 添乱。
+appId: com.kaixuan.opencode.pocket
+---
+- extendedWaitUntil:
+    visible: "isn't responding"
+    timeout: 5000
+    optional: true
+# 「Wait」= 不杀进程，等它自己缓过来；「Close app」会把被测 App 杀掉 ⇒ 必须点 Wait。
+- tapOn:
+    text: "Wait"
+    optional: true

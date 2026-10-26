@@ -2074,7 +2074,14 @@ const isMiui = (() => {
     return false
   }
 })()
-const preFlows = isMiui ? [SYSTEM_DIALOG_FLOW] : []
+// ★ 2026-10-26：系统 ANR 对话框是 **AOSP 原生**的（不是 Xiaomi 独有），
+//   宿主负载高时就会弹「System UI isn't responding」，盖住整个 App
+//   ⇒ flow 的第一条断言直接红在一个本就不该红的地方
+//   （2026-10-26 13:07 实测：两条 flow 都红在 "AI 工具" 不可见，
+//    现场无障碍树里只有「System UI isn't responding | Close app | Wait」）。
+//   ⇒ ANR 清理**每条 flow 之前**都跑（它也可能中途出现）。
+const ANR_DIALOG_FLOW = '.maestro/_dismiss-anr-dialog.yaml'
+const preFlows = isMiui ? [SYSTEM_DIALOG_FLOW, ANR_DIALOG_FLOW] : [ANR_DIALOG_FLOW]
 if (!isMiui) {
   console.log('[preflight] 非 MIUI 设备：跳过 _dismiss-system-dialogs（那些弹窗是 Xiaomi 独有的）')
 }
@@ -2488,7 +2495,7 @@ const runOne = (flow) => {
  * ⇒ 判据必须自己长出这个分支：App 不在 → 拉回来 → 拉不起来就**响亮退出**。
  *   沉默崩掉比红更有害：它让「没跑」看起来像「跑过了」。
  */
-async function ensureAppAlive() {
+async function ensureAppAlive(remainingFlows = null) {
   const pid = () => {
     try { return adb(['shell', 'pidof', PKG], 15000).trim() } catch { return '' }
   }
@@ -2510,7 +2517,13 @@ async function ensureAppAlive() {
     if (pid()) { console.error(`[per-flow] ✅ ${PKG} 已重新拉起，继续跑后面的 flow`); return true }
   }
 
-  console.error(`[per-flow] ❌ 拉起 ${PKG} 失败，剩余 ${flows.length - i - 1} 条 flow 都不会跑。`)
+  // ⚠ 2026-10-26 修一个**错误路径上的崩溃**：
+  //   这行原来直接引用了外层 for 循环的 `i` ⇒ `i` 不在函数作用域里 ⇒
+  //   App 真的拉不起来时，这里抛的是 ReferenceError（未捕获），
+  //   **真正该报的那句话反而没机会打印**，报错现场是一坨栈。
+  //   ⇒ 改成由调用方把「还剩几条 flow」传进来。
+  const rest = remainingFlows === null ? '若干' : remainingFlows
+  console.error(`[per-flow] ❌ 拉起 ${PKG} 失败，剩余 ${rest} 条 flow 都不会跑。`)
   console.error('        典型成因（MIUI 真机实测）：flow 里的 launchApp 会先 force-stop，')
   console.error('        而随后的 start 被 com.miui.securitycenter 的 wakepath 确认框拦下，')
   console.error('        App 从此回不到前台。规避：flow 里不要写 launchApp（preflight 已经')
@@ -2532,7 +2545,7 @@ for (const [i, flow] of flows.entries()) {
     console.error('          要验它，请跑引用它的父流。')
     process.exit(1)
   }
-  if (!(await ensureAppAlive())) process.exit(1)
+  if (!(await ensureAppAlive(flows.length - i - 1))) process.exit(1)
   if (i > 0) await resetToStart()
   await gotoPreRoute()
   const fx = fixtureFor.get(flow)
@@ -2613,7 +2626,7 @@ for (const [i, flow] of flows.entries()) {
     console.error(
       `        重跑**同一条 flow、同样的断言**（第 ${attempt + 1}/${MAX_A11Y_RETRIES + 1} 次尝试）—— 不放宽任何断言。`,
     )
-    if (!(await ensureAppAlive())) break
+    if (!(await ensureAppAlive(flows.length - i - 1))) break
     await resetToStart()
     await gotoPreRoute()
   }

@@ -1,10 +1,28 @@
-# Maestro 真机功能流 · ACC 委派与「停止任务」（2026-10-25 审计轮新增）
+# Maestro 真机功能流 · ACC 委派与「停止任务」（2026-10-25 审计轮新增 / 26 日再修）
 #
 # 这条流守的是**上一轮从未存在过**的两件事：
 #   ① 移动端的「委托给 ACC」按钮**从来没有通过过**（每次点击都是 400
 #      "run_id is required for canonical task binding" ⇒ 契约错配，不是少传字段）；
 #   ② 任务菜单里**没有「停止任务」**（只有「完成/删除」，会话级才有「停止」）
 #      ⇒ 用户在手机上根本按不到那个能到达 ACC 的停止。
+#
+# ★ 2026-10-26 12:30 修掉的两个**真缺陷**（不是判据玄学）：
+#
+#   ① 长按弹出来的**不是 App 的菜单，是 Android 的文本选择菜单**
+#      （Copy | Share | Select all | Read aloud）⇒「⏹ 停止任务」在真机上
+#      **根本按不到**。
+#      根因：App 的长按用 touchstart + 500ms 计时器，而 Android WebView
+#      长按**文本**会先起文本选择（派发 touchcancel / touchmove）⇒
+#      计时器被清掉 ⇒ 事件被系统吃掉。
+#      修复（前端）：.task-card.compact / .session-item 加
+#        `user-select: none; -webkit-touch-callout: none`，
+#        并显式处理 @touchcancel。
+#      ⇒ 这条流现在真正验的是「长按卡片 ⇒ App 菜单里有『⏹ 停止任务』」。
+#
+#   ② 屏上**同时有两条**「maestro-acc-stop」卡片（上一轮残留 + 这一轮新建）
+#      ⇒ 长按选中的可能是**上一轮**那条 ⇒ 断言对错行。
+#      修复：给这条流挂上清场夹具（scripts/acc-delegate-stop-fixture.mjs），
+#      在 .maestro-flows.json 里登记 ⇒ 跑之前先把 maestro-* 清空。
 #
 # 坐标与文案的来源（**实测**，不是推测）：
 #   失败现场的无障碍树（~/.maestro/tests/2026-10-25_215223/…/step-008-*.json）
@@ -59,12 +77,15 @@ appId: com.kaixuan.opencode.pocket
 
 # ---- 5. ★ 长按卡片 → 菜单里必须出现「停止任务」----
 # （这是上一轮**没有**的按钮：菜单只有「完成/删除」）
+#
+# ⚠ 判据写成能容忍前缀的正则：按钮文本是「⏹ 停止任务」（带 ⏹ 前缀），
+#   而 Maestro 的 visible 是**完整匹配** ⇒ 写 "停止任务" 匹配不上。
+#   （与 tasks-crud.yaml 里 `visible: "Maestro任务.*"` 同一类坑。）
+#
+# ⚠ 这条断言同时**排除了** Android 的文本选择菜单：那条菜单里只有
+#   Copy / Share / Select all / Read aloud，没有「停止任务」⇒
+#   能命中本按钮 ⇒ 说明 App 自己的长按菜单真的弹出来了。
 - longPressOn: "maestro-acc-stop"
-# ⚠ 按钮文本是「⏹ 停止任务」（带 ⏹ 前缀），而 Maestro 的 visible 是
-#   **完整匹配** ⇒ 上一轮判 "停止任务" 判红，但失败现场的无障碍树里
-#   明明有 [Button] '⏹ 停止任务' [49,1617][1031,1740]。
-#   ⇒ 判据要写成能容忍前缀的正则。（与 tasks-crud.yaml 里
-#     `visible: "Maestro任务.*"` 同一类坑。）
 - extendedWaitUntil:
     visible: ".*停止任务.*"
     timeout: 20000
@@ -76,7 +97,48 @@ appId: com.kaixuan.opencode.pocket
     visible: "^停止$"
     timeout: 15000
 - tapOn: "^停止$"
+
+# ---- 7. ★ 停止真的生效：两个判据 ----
+# ① toast「已停止」：它只在 `await api.cancelTask(...)` **成功返回之后**才弹
+#    （TasksView.vue 的 stopTask）⇒ 看到它 ⇒ 后端接受了这次停止。
+#    ⚠ **不要**在后面再补一条 assertVisible：toast 是**瞬时**的（几秒），
+#    实测 extendedWaitUntil 等到了它、紧接着的 assertVisible 它已经消失
+#    ⇒ 那条 assert 是**竞态**（2026-10-26 13:28 实测：flow 就红在这一步，
+#    而屏上任务列表已经空了 ⇒ 停止其实成功了）。
+#    ⇒ extendedWaitUntil 本身就是判据；下面第 ② 条才是持久状态。
 - extendedWaitUntil:
     visible: "已停止"
-    timeout: 30000
-- assertVisible: "已停止"
+    timeout: 20000
+
+# ② 任务离开「运行中」列表：cancelled 不是 active ⇒ 它离开运行中区。
+#    ⚠ 这条**不能**用 "maestro-acc-stop" 的全文匹配来判「已停止」：
+#    ACC 生态面板里也会显示同名任务（那是 ACC 侧的任务列表）⇒ 恒假。
+#    现在的做法是：ACC 生态默认不加载（要用户点「读取任务与会话」），
+#    而「已结束」分区默认折叠 ⇒ 任务区里看不到标题就等于它离开了任务列表。
+#    ★ 2026-10-26 修：原来这里写的是「标题从任务区彻底消失」，
+#      而 App 侧原来**只**渲染 completed ⇒ failed/cancelled 的任务在手机上
+#      直接消失 ⇒ 用户分不清「我停掉了」和「它不见了」。
+#      现在终态三兄弟都进「已结束」区（默认折叠）⇒ 这条判据仍然成立。
+- extendedWaitUntil:
+    notVisible: "maestro-acc-stop"
+    timeout: 60000
+
+# ---- 8. ★ 它没有「消失」，而是被记进了历史（2026-10-26 新增）----
+# 展开「已结束」分区 ⇒ 被停掉的任务以「已取消」的状态出现。
+# 这一条把「任务不见了」和「任务被记进历史」区分开：
+# 只有状态标签能证明后端真的落定了 cancelled，而不是前端把行藏了。
+- runFlow:
+    when:
+      visible:
+        id: "completed-section-toggle"
+    commands:
+      - tapOn:
+          id: "completed-section-toggle"
+- extendedWaitUntil:
+    visible:
+      id: "finished-task-title-cancelled"
+      text: "maestro-acc-stop"
+    timeout: 60000
+- assertVisible:
+    id: "finished-task-status"
+    text: "已取消"
