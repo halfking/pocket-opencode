@@ -600,6 +600,33 @@ async function ensureDriver() {
   //     undefined = **查不动**（超时/异常）        ← 绝不能当成「没装」
   //   把「查不动」误判成「没装」会走一次没必要的重装，而重装在 MIUI 上
   //   正好是那条要过安装确认框的路径 ⇒ 判据一失手就把事情弄得更糟。
+  //
+  // ★ 2026-10-26 修：driver APK 缺失时**自己解出来**，而不是报一句
+  //   「APK 不存在」就退出。那个报错和「MIUI 拦截安装」同形（同一行日志、
+  //   同样非 0 退出），真因（解包目录被清空，比如 /tmp 被重启清过）被读成
+  //   设备策略问题 —— 实测 2026-10-26 21:05 因此白跑一轮：
+  //   日志里「装不上，MIUI 仍在拦截」，真因是 logs/maestro/driver-extracted
+  //   整个目录不存在。
+  //   解包脚本（scripts/extract-maestro-driver.mjs）会自己在 ~/.maestro/lib
+  //   下找 maestro-client.jar，跨平台。
+  const driverApk = (pkg) =>
+    `${DRIVER_APKS}/${pkg === 'dev.mobile.maestro' ? 'maestro-app' : 'maestro-server'}.apk`
+  const missing = DRIVER_PKGS.filter((pkg) => !existsSync(driverApk(pkg)))
+  if (missing.length) {
+    console.log(`[driver] driver APK 缺失（${missing.length} 个）⇒ 从 maestro-client.jar 解包`)
+    const r = spawnSync(process.execPath, [resolve(ROOT, 'scripts/extract-maestro-driver.mjs')],
+      { cwd: ROOT, encoding: 'utf8', timeout: 180000 })
+    if (r.stdout) process.stdout.write(r.stdout)
+    if (r.stderr) process.stderr.write(r.stderr)
+    const stillMissing = DRIVER_PKGS.filter((pkg) => !existsSync(driverApk(pkg)))
+    if (stillMissing.length) {
+      console.error(`[driver] 解包后仍缺：${stillMissing.map((p) => `${p} → ${driverApk(p)}`).join('、')}`)
+      console.error('           （这不是设备策略问题；请确认 ~/.maestro/lib/maestro-client.jar 存在，')
+      console.error('             或用 POCKET_MAESTRO_DRIVER_DIR 指向已解好的目录）')
+      return false
+    }
+    console.log('[driver] driver APK 解包完成')
+  }
   const query = (args) => {
     try { return adb(args, 30000) }
     catch {
@@ -1796,7 +1823,20 @@ if (process.env.POCKET_SKIP_CDP_LOGIN !== '1') {
   //      把一个**真实的功能修复**卡在门禁外。
   //   `ash` 本身还在用（下面收起键盘那次 keyevent 111）。
   let masterDialogHandled = false
-  for (let i = 0; i < 4; i++) {
+  // ★ 2026-10-26 修的真缺陷（实测 21:20 那轮）：
+  //   原逻辑把「此刻页面上没有『创建主密码』弹窗」直接当成「弹窗不需要处理」
+  //   （need==='no' ⇒ masterDialogHandled=true ⇒ break）。
+  //   但**登录是异步的**：填完表单点「登录」后，弹窗往往几百毫秒后才出现。
+  //   于是第一轮检查（sleep 800ms 后）常常正好落在「弹窗还没来」的窗口里
+  //   ⇒ 判定为 no ⇒ 后面没人点「确认」⇒ 弹窗后来弹出来，卡住登录
+  //   ⇒ 报「登录后仍停在登录页（30s）」。
+  //   实测两次读数：21:09 那轮同一段「confirmed → 登录成功」，
+  //   21:20 那轮「no-confirm → 仍停在登录页」——**纯粹是时序**。
+  //   ⇒ 修法：用 **hash 是否已离开 #/login** 来区分两种「弹窗不在」：
+  //      ① 已经离开登录页 ⇒ 账号本来就有主密码，弹窗确实不需要 ⇒ 收工；
+  //      ② 还停在登录页 ⇒ 弹窗可能马上来 ⇒ **继续等**，别急着 break。
+  let masterDialogSeen = false
+  for (let i = 0; i < 15; i++) {
     await sleep(800)
     const need = await cdpEval(`(function(){
       try {
@@ -1809,11 +1849,21 @@ if (process.env.POCKET_SKIP_CDP_LOGIN !== '1') {
         return 'present'
       } catch (e) { return 'err:' + String(e).slice(0, 80) }
     })()`)
-    if (need === 'no') { masterDialogHandled = true; break }
+    if (need === 'no') {
+      // 弹窗不在 —— 到底是「不需要」还是「还没出现」？看 hash。
+      const hNow = await cdpEval('location.hash')
+      if (!/#\/login/.test(String(hNow || ''))) {
+        masterDialogHandled = true
+        break
+      }
+      // 还在登录页 ⇒ 弹窗可能马上来 ⇒ 继续等（最多 15×800ms ≈ 12s）
+      continue
+    }
     if (need !== 'present') {
       console.log(`[preflight] ⚠️ 「创建主密码」弹窗在但处理不了：${need}`)
       break
     }
+    masterDialogSeen = true
     // 逐个框：CDP focus 选框（确定）→ adb input text 敲键盘（v-model 才收得到）
     //
     // ⚠️ 2026-10-05 修的真 bug：这里原来写的是
@@ -1952,15 +2002,27 @@ if (process.env.POCKET_SKIP_CDP_LOGIN !== '1') {
   if (masterDialogHandled) {
     try { ash('input keyevent 111') } catch { /* 收键盘失败不致命 */ }
     await sleep(500)
-    const ok = await cdpEval(`(function(){
-      try {
-        var b = Array.from(document.querySelectorAll('button'))
-                 .filter(function(x){ return /^(确认|确定|OK|Confirm)$/.test((x.textContent||'').trim()) })[0]
-        if (!b) return 'no-confirm'
-        b.click(); return 'confirmed'
-      } catch (e) { return 'err:' + String(e).slice(0,80) }
-    })()`)
-    console.log(`[preflight] 主密码弹窗确认：${ok}`)
+    // ★ 2026-10-26 修：确认按钮**可能是 disabled**（两个框没都拿到值时它是灰的），
+    //   而 disabled 按钮上的 b.click() 是**静默无效**的 —— 原实现照样报
+    //   'confirmed'，于是「点了确认」是个**假陈述**。
+    //   ⇒ 改成：重查按钮 + 读它的 disabled 状态 + 如实报告；
+    //     按钮还没出现/还禁用就再等一轮（最多 6 轮）。
+    let ok = 'no-confirm'
+    for (let k = 0; k < 6; k++) {
+      ok = await cdpEval(`(function(){
+        try {
+          var b = Array.from(document.querySelectorAll('button'))
+                   .filter(function(x){ return /^(确认|确定|OK|Confirm)$/.test((x.textContent||'').trim()) })[0]
+          if (!b) return 'no-confirm'
+          if (b.disabled) return 'confirm-disabled'
+          b.click(); return 'confirmed'
+        } catch (e) { return 'err:' + String(e).slice(0,80) }
+      })()`)
+      if (ok === 'confirmed') break
+      console.log(`[preflight] 主密码弹窗确认未生效（${ok}）⇒ 再等一轮`)
+      await sleep(1000)
+    }
+    console.log(`[preflight] 主密码弹窗确认：${ok}${masterDialogSeen ? '' : '（本轮未见弹窗：账号已有主密码）'}`)
     await sleep(2500)
   }
   // 等它真的离开登录页。点完立刻读会读到还没跳转的旧 hash。
