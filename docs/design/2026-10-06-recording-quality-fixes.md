@@ -118003,3 +118003,16 @@ channel 注册 ⇒ 「计数 > 0」**不蕴含**「channel 可收事件」⇒ �
 
 ⇒ ⇒ ⇒ ⚠ **`check:gofmt` 仍红**（4 个文件，属简报 192 第 ① 类）⇒ ⇒ **与本节无关**
 ⇒ ⇒ ⇒ **本节新增的红点 = 0**（本节只动了**测试夹具**与**一批变异脚本**，生产代码零改动）。
+### §972.8 本节的 CI 权威读数（`c36fc9c9`）
+
+| job | 读数 |
+|---|---|
+| `backend` | ❌ **只剩** `internal/pgmigrate`（`TestConcurrentMigrationsDoNotDeadlock` 30.04s，`lock_test.go:163: timed out waiting for instances to start`）⇒ ⇒ ⇒ **`internal/opencode` 已从失败包列表里消失** ⇒ ⇒ ⇒ ⇒ **本节修的那条间歇红，在 CI 上独立地不见了** |
+| `backend-pg` | ❌ 同一条（`internal/pgmigrate` 30.04s） |
+| `frontend` | ❌ `gates parity` 红在 **CI 口径第 20 项 `check:gofmt`**（**4 个既有文件**），**已通过 19/39 项** ⇒ ⇒ ⇒ 失败信息**自带「编号口径」那一行** ⇒ ⇒ ⇒ ⇒ **§969 沉进工具的那条在 CI 上真的生效了**；⇒ 且 **`[16/39] check:ci-trigger` 跑过且绿**（`编号口径自洽（全量 50 项 / CI 39 项，其中 39 项两套编号不同）`）⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **⇒ §969 的门④ 与 §970 的 push 那条腿，在 CI 上是被【真正执行】的**，不是「本机绿、CI 没跑到」 |
+| `e2e-web` | ✅ 绿 |
+
+⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **「间歇红」这一类，现在在 CI 读数里也归零了** ⇒ ⇒ ⇒ ⇒ ⇒ ⇒
+⚠ **但「归零」只对这一条成立**：那**四类稳定红**（gofmt 真债 / `check:env-example` /
+`TestConcurrentMigrationsDoNotDeadlock` / `check:stt-refine-receipts`）**本会话仍一处理
+都没代修** ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **仍等你指派归属**（简报第 192 条）⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒
