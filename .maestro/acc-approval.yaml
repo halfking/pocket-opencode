@@ -114,7 +114,7 @@ appId: com.kaixuan.opencode.pocket
       # ① **先等**下一条待批项冒头（App 轮询 5s 一跳 ⇒ 15s 窗口足够）。
       - extendedWaitUntil:
           visible: ".*允许一次.*"
-          timeout: 15000
+          timeout: 10000
           optional: true
       # ② 有点就点（没有就跳过，不算失败）
       - runFlow:
@@ -126,7 +126,7 @@ appId: com.kaixuan.opencode.pocket
       #    （frontend/src/stores/accApprovals.ts 的 decide()）。
       - extendedWaitUntil:
           notVisible: ".*允许一次.*"
-          timeout: 8000
+          timeout: 5000
           optional: true
 
 # ---- 3. ★ 应答后待批卡片清空 ----
