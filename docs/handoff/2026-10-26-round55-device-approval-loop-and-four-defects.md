@@ -969,6 +969,28 @@ flow1 的**完整证据链**（不是「看起来绿」）：
 （`notVisible: "ACC 会接管后续会话与执行.*"`）⇒ 之后标题断言只可能命中任务卡片。
 ⇒ ACC 恢复后重跑 ⇒ 全绿。
 
+### 4.6.5 最终校验读数（2026-10-27 06:05~06:08，干净环境）
+
+| 校验 | 命令 | 结果 |
+|---|---|---|
+| agent-companion 全量 | `cd /tmp/ac-e2e && go test ./... -count=1` | ✅ **EXIT 0**，56 包全绿 |
+| openpocket 后端全量 | `cd /tmp/op-ac-test/backend && env -i … POCKET_TEST_POSTGRES_DSN=… go test ./... -count=1` | ✅ **EXIT 0**，67 包全绿 |
+| 部署态 daemon | `go version -m $T` / `/healthz` | `vcs.revision=9863034`、`vcs.modified=false`、pid 16503、`command_loop_ready=true` |
+| 设备 APK | `adb shell stat -c %s`（读数前后都核对） | **165459023** 字节 == 本地构建 |
+
+> ⚠ 第一次跑这组全量时**出现过 4 条红**，全部是**我自己在跑测试的同时重启了
+> Docker/Postgres** 造成的噪音，不是产品缺陷：
+> `internal/sandbox` 的两条 Docker E2E 报
+> `write /var/lib/desktop-containerd/daemon/io.containerd.metadata.v1.bolt/meta.db: read-only file system`
+> （我在 §4.5.3 里用 `pkill -f com.docker.backend` 硬杀后端，把 containerd 的
+> 元数据库弄成了只读）；后端那批报
+> `the database system is shutting down`（Postgres 正在重启）。
+> ⇒ 处置：`docker desktop stop` + `docker desktop start`（**不再硬杀**）⇒
+>   `docker run` 恢复（`docker-run-ok`）；Postgres 恢复后再跑全量 ⇒ **两仓全绿**。
+> ⇒ **纪律**：**别在跑全量测试的同时动 Docker/Postgres**；而且
+>   `docker desktop start` 在「UI 活着、VM 死了」时**没用**，
+>   硬杀后端则会把 containerd 弄成只读 ⇒ 恢复要用 **stop + start**。
+
 ### 4.6.4 这一轮踩到并已固化的两条纪律
 
 1. **「判据绿」≠「产品路径被修了」**（§2.15）：判据必须打在**产品真的会走的那个
@@ -1006,7 +1028,14 @@ flow1 的**完整证据链**（不是「看起来绿」）：
    `docker desktop start` 在这个状态下**没用**，要 quit + pkill backend + open）。
    ⇒ VM 起不来的真因是**宿主内存被打光**（剩 58MB）⇒ 卸载 Ollama 已加载的模型
    （可逆）后 10 秒内恢复。
-6. ★★ **（2026-10-27 04:00 起）ACC 完全无响应**：直连连续三次 `HTTP=000 time=5.00s`
+6. ★★ **（我自己造成的）Docker containerd 元数据库被弄成只读**：
+   在 §4.5.3 恢复 Docker 时用了 `pkill -f com.docker.backend` 硬杀后端
+   ⇒ containerd 的 `meta.db` 变成只读 ⇒ `docker run` 全部失败
+   （`exit status 125`）⇒ `internal/sandbox` 的两条 Docker E2E 判据红。
+   ⇒ 已用 `docker desktop stop` + `docker desktop start`（**不再硬杀**）修好，
+   `docker run` 恢复（`docker-run-ok`），两仓全量重跑全绿。
+   ⇒ **这是我的操作失误，不是产品缺陷**，但它消耗了时间，记在这里。
+7. ★★ **（2026-10-27 04:00 起）ACC 完全无响应**：直连连续三次 `HTTP=000 time=5.00s`
    （03:22 时还是 1.56s 的 401）⇒ daemon 注册被 reset ⇒ `command_loop_ready` 起不来
    ⇒ **派单根本到不了 daemon** ⇒ 真机流无法进行（§4.5.4）。
    ⇒ 5 秒这个固定特征与 §2.16 的「续租卡 5.2 秒才 EOF」是同一件事。
