@@ -114,3 +114,99 @@ export async function listAccSessions(): Promise<any[]> {
   const res = await http<{ sessions?: any[]; data?: any[] }>('/api/acc/sessions')
   return res.sessions || res.data || []
 }
+
+/**
+ * 任务历史里的一条 run（agent-companion 的 GET /api/v1/runs）。
+ *
+ * ★ 2026-10-27 新增。此前**没有任何出口**：daemon 侧对 ACC 派单不留痕
+ *   （agent-companion 已修），pocketd 侧也没有路由用 CompanionClient.ListRuns
+ *   ⇒ 手机上「任务历史」始终是空的。
+ */
+export interface AccRun {
+  run_id: string
+  dispatch_id?: string
+  task_id?: string
+  agent_id?: string
+  kind?: string
+  state?: string
+  session_id?: string
+  updates?: number
+  last_event?: string
+  retained?: boolean
+  started_at?: string
+  ended_at?: string
+  answer?: string
+}
+
+/** 一条 run 产出的文件（= 「生成的文件」）。 */
+export interface AccRunFile {
+  name: string
+  size?: number
+  sha256?: string
+  read_path?: string
+}
+
+/** 一条 run 调用的工具及其输出。 */
+export interface AccRunArtifact {
+  tool_call_id?: string
+  tool_title?: string
+  tool_kind?: string
+  content?: string
+  at?: string
+}
+
+/** 一条 run 的产出全貌：工具 + 文件。 */
+export interface AccRunArtifacts {
+  run_id: string
+  artifacts: AccRunArtifact[]
+  count: number
+  dropped: number
+  truncated: boolean
+  files: AccRunFile[]
+  file_count: number
+}
+
+/** 读任务历史（agent-companion 的 run 列表）。 */
+export async function listAccRuns(limit = 50): Promise<AccRun[]> {
+  const res = await http<{ runs?: AccRun[]; data?: AccRun[] }>(`/api/acc/runs?limit=${limit}`)
+  return res.runs || res.data || []
+}
+
+/**
+ * 读一条 run 的产出：它调用的工具，以及它留下的文件。
+ *
+ * 一次请求拿全两面 —— 用户问「这次跑出了什么」时想要一个答案，不是两个。
+ */
+export async function listAccRunArtifacts(runId: string): Promise<AccRunArtifacts> {
+  const res = await http<Partial<AccRunArtifacts>>(
+    `/api/acc/runs/${encodeURIComponent(runId)}/artifacts`,
+  )
+  return {
+    run_id: res.run_id ?? runId,
+    artifacts: res.artifacts ?? [],
+    count: res.count ?? 0,
+    dropped: res.dropped ?? 0,
+    truncated: res.truncated ?? false,
+    files: res.files ?? [],
+    file_count: res.file_count ?? 0,
+  }
+}
+
+/**
+ * 读一个产出文件的内容。
+ *
+ * 后端把字节包成 JSON（{content, sha256, …}）—— 移动端的 http 客户端只解
+ * JSON，裸的 text/plain 会让它解不出来。
+ *
+ * sha256 是 daemon 侧给的摘要：完成包声明的是 content_hash，App 拿到字节
+ * 后能当场对账，而不是"看起来像那个文件"。
+ */
+export async function getAccArtifactContent(
+  dispatchId: string,
+  name: string,
+): Promise<{ content: string; sha256: string; size?: number }> {
+  const res = await http<{ content?: string; sha256?: string; size?: number }>(
+    `/api/acc/artifacts/${encodeURIComponent(dispatchId)}/${encodeURIComponent(name)}`,
+  )
+  return { content: res?.content ?? '', sha256: res?.sha256 ?? '', size: res?.size }
+}

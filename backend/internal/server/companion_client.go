@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -130,6 +131,38 @@ type companionRun struct {
 	// Retained marks a terminal run served from companion's short-lived
 	// in-memory history rather than the live run table.
 	Retained bool `json:"retained"`
+	// StartedAt / EndedAt are RFC3339 timestamps. They are what makes a
+	// history row sortable and ageable on the phone; without them every
+	// row looks equally recent.
+	StartedAt string `json:"started_at"`
+	EndedAt   string `json:"ended_at"`
+	// Answer is the agent's final reply for a run that produced one. It
+	// is empty for a run that produced none, which is a different fact
+	// from "not read yet".
+	Answer string `json:"answer"`
+}
+
+// companionArtifact is one artifact a run produced — the tools it
+// invoked and what they returned.
+type companionArtifact struct {
+	ToolCallID string `json:"tool_call_id"`
+	ToolTitle  string `json:"tool_title"`
+	ToolKind   string `json:"tool_kind"`
+	Content    string `json:"content"`
+	At         string `json:"at"`
+}
+
+// companionArtifactFile is one file in a dispatch's product area — the
+// "生成的文件" a user actually wants to look at.
+//
+// SHA256 is not decoration: the completion's product reference declares
+// a content_hash, and this is the number a consumer compares against to
+// know it got the bytes that were declared.
+type companionArtifactFile struct {
+	Name     string `json:"name"`
+	Size     int64  `json:"size"`
+	SHA256   string `json:"sha256"`
+	ReadPath string `json:"read_path"`
 }
 
 // companionRunReceipt is the POST /native/sessions/:id/operate response.
@@ -317,6 +350,104 @@ func (c *CompanionClient) GetRun(runID string) (companionRun, error) {
 	var out companionRun
 	err := c.get("/api/v1/runs/"+url.PathEscape(runID), nil, &out)
 	return out, err
+}
+
+// ListRunArtifacts reads what one run produced: the tools it invoked
+// and what they returned.
+//
+// This is the run-level half of "查看生成的文件". The dispatch-level
+// half is ListArtifactFiles below — the files the run left on disk.
+//
+// The daemon's answer carries `truncated` and `dropped`: a capped list
+// must never be rendered as "that was everything", so both fields are
+// kept.
+func (c *CompanionClient) ListRunArtifacts(runID string) ([]companionArtifact, int, bool, error) {
+	if c == nil {
+		return nil, 0, false, fmt.Errorf("companion not configured")
+	}
+	var out struct {
+		Artifacts []companionArtifact `json:"artifacts"`
+		Count     int                 `json:"count"`
+		Dropped   int                 `json:"dropped"`
+		Truncated bool                `json:"truncated"`
+	}
+	err := c.get("/api/v1/runs/"+url.PathEscape(runID)+"/artifacts", nil, &out)
+	if err != nil {
+		return nil, 0, false, err
+	}
+	return out.Artifacts, out.Dropped, out.Truncated, nil
+}
+
+// ListArtifactFiles reads the files a dispatch left behind — the
+// "生成的文件" the user wants to look at.
+//
+// dispatchID is the ACC dispatch id. For an ACC-dispatched run the
+// daemon's run id IS the dispatch id (the facade is started with
+// req.RunID = event.DispatchID), so a run row's run_id is the right
+// key here.
+//
+// The daemon answers 200 with exists=false when the dispatch produced
+// nothing — an empty list, not an error.
+func (c *CompanionClient) ListArtifactFiles(dispatchID string) ([]companionArtifactFile, bool, error) {
+	if c == nil {
+		return nil, false, fmt.Errorf("companion not configured")
+	}
+	var out struct {
+		Files  []companionArtifactFile `json:"files"`
+		Count  int                     `json:"count"`
+		Exists bool                    `json:"exists"`
+	}
+	err := c.get("/api/v1/artifacts/"+url.PathEscape(dispatchID), nil, &out)
+	if err != nil {
+		return nil, false, err
+	}
+	return out.Files, out.Exists, nil
+}
+
+// GetArtifactBytes reads the bytes of one produced file.
+//
+// The daemon serves it as text/plain. The digest rides along in the
+// X-Artifact-Sha256 header, and it is returned as-is so a caller can
+// compare it with the content_hash the completion declared — that
+// comparison is where "the file I got is the file that was declared"
+// becomes a checkable fact.
+//
+// ★ 带 ctx（不是 http.NewRequest）。
+//
+//	仓库的 §950 卡口把「不带 ctx 的 http.NewRequest」钉在台账里（目前
+//	3 条），而台账的每一条都要写清「上界由谁提供」。这一条**不需要**进
+//	台账：上界由**调用方的请求 ctx** 提供（App 断开 ⇒ 这次读立刻停），
+//	比「客户端 Timeout 兜底」更贴近真实语义。
+//	⇒ 所以这里用 http.NewRequestWithContext，不新增台账条目。
+func (c *CompanionClient) GetArtifactBytes(ctx context.Context, dispatchID, name string) ([]byte, string, error) {
+	if c == nil {
+		return nil, "", fmt.Errorf("companion not configured")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	u := c.baseURL + "/api/v1/artifacts/" + url.PathEscape(dispatchID) + "/" + url.PathEscape(name)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	if c.secret != "" {
+		req.Header.Set("Authorization", "Bearer "+c.secret)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, "", err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+	if err != nil {
+		return nil, "", err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, "", fmt.Errorf("companion artifact %s/%s: http %d: %s",
+			dispatchID, name, resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	return body, resp.Header.Get("X-Artifact-Sha256"), nil
 }
 
 // OperateSession dispatches a prompt into a native session and returns the

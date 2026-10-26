@@ -860,6 +860,15 @@ func (s *Server) Handler() http.Handler {
 	// 的干预队列等人应答。这条路由把那个队列接到 App：看得到、答得了。
 	mux.HandleFunc("/api/acc/approvals", s.requireAuth(s.handleACCApprovals))
 	mux.HandleFunc("/api/acc/approvals/", s.requireAuth(s.handleACCApprovalOps))
+	// ★ 任务历史 + 生成的文件的读面（2026-10-27）。
+	//
+	// daemon 侧此前对 ACC 派单不保留 run（accbridge 没走 operate 的留痕），
+	// pocketd 侧也**没有任何路由**用 CompanionClient.ListRuns ⇒ 手机上既
+	// 看不到任务历史，也看不到产出文件。两端都补上之后，这一组路由就是
+	// 最后一跳的出口。详见 companion_history.go。
+	mux.HandleFunc("/api/acc/runs", s.requireAuth(s.handleACCRuns))
+	mux.HandleFunc("/api/acc/runs/", s.requireAuth(s.handleACCRunOps))
+	mux.HandleFunc("/api/acc/artifacts/", s.requireAuth(s.handleACCArtifactOps))
 	// S0-E: Notification Center（inbox + rules）
 	mux.HandleFunc("/api/notifications", s.requireAuth(s.handleNotifications))
 	mux.HandleFunc("/api/notifications/", s.requireAuth(s.handleNotificationOps))

@@ -1,0 +1,205 @@
+# Maestro 真机功能流 · 任务历史 / 生成的文件 / 「继续」入口（2026-10-27）
+#
+# ★ 这条流守的是**此前整个不存在**的两个读面：
+#
+#   ① 任务历史：agent-companion 的 GET /api/v1/runs 此前对 **ACC 派单**
+#      恒返回 {"runs":null,"total":0}（根因：ACC 派单走 accbridge，不经过
+#      API 层的 operate ⇒ 终态 run 从不留痕）；pocketd 侧也**没有任何
+#      路由**用 CompanionClient.ListRuns ⇒ 手机上两头都空。
+#   ② 生成的文件：daemon 侧本来就有产出目录和字节路由，但 pocketd 既没有
+#      客户端方法也没有路由 ⇒ 手机上看不到任何产出。
+#
+#   现在两端都补上了（agent-companion a58aa73 / openpocket 本轮），
+#   这条流在**真机**上把它们串起来验一遍。
+#
+# ⚠ 判据纪律（三条，都是上一轮踩出来的）：
+#
+#   ① **先断言弹窗关掉了再断言卡片**。
+#      委托弹窗的标题输入框里就输入着 "maestro-acc-history" ⇒ 直接
+#      `visible: "maestro-acc-history"` 在委托失败、弹窗没关时**照样绿**
+#      （恒真）。判据：先 `notVisible: "ACC 会接管后续会话与执行.*"`。
+#   ② **id: 判据在真机上恒假**：Android WebView 不把 DOM 的 data-testid
+#      映射成无障碍节点的 view-id ⇒ 只能用**文本 + 空间关系**。
+#   ③ 状态标签用「成功 / 失败 / 取消」而不是「已完成 / 已失败 / 已取消」
+#      —— 后三个是 flow1 里 `notVisible: "已完成|已取消|已失败"` 的匹配
+#      目标，在同一屏上出现会让那条判据永远为假。
+#
+# 运行：node scripts/maestro-run.mjs .maestro/acc-history-files.yaml
+appId: com.kaixuan.opencode.pocket
+---
+# ---------- 0. 前置：harness 已真实登录，起点是 #/ai ----------
+- extendedWaitUntil:
+    visible: "AI 工具"
+    timeout: 60000
+- waitForAnimationToEnd:
+    timeout: 15000
+
+# ---- 1. 打开「委托给 ACC」面板，派一个任务 ----
+- extendedWaitUntil:
+    visible: "委托 ACC"
+    timeout: 40000
+- tapOn: "委托 ACC"
+- extendedWaitUntil:
+    visible: "^委托给 ACC$"
+    timeout: 20000
+
+# ---- 2. 填提示词并提交 ----
+# 输入框在无障碍树里是 [EditText]（placeholder 与 label 都不暴露）⇒ 只能按坐标点。
+# 标题 label 在 y=1254~1304 ⇒ 输入框取 y≈1350（56%）。
+#
+# ★★ 提示词**必须是一句明确的指令**，不能是「maestro-acc-history」这种
+#   夹具名。实测（2026-10-27 07:22~07:26）：
+#     标题="maestro-acc-history" ⇒ 智能体以为这是要找命令/技能 ⇒ 在工作区里
+#     翻（ls -la …）⇒ 4 分钟没跑完 ⇒ 5 分钟超时 ⇒ outcome_unknown，
+#     而且**它连终态历史都没进**（失败分支不产生产出）。
+#     标题="只回复HISTORYOK" ⇒ 85 秒跑完，答复正好 "HISTORYOK"，不需要审批。
+#   ⇒ 夹具名当提示词会把「读面」测成「超时」。
+- tapOn: { point: "50%,56%" }
+- inputText: "只回复HISTORYOK"
+- tapOn: { text: "^委托给 ACC$", enabled: true }
+
+# ---- 3. ★ 弹窗必须**关闭**（否则下面所有断言都可能命中输入框）----
+- extendedWaitUntil:
+    notVisible: "ACC 会接管后续会话与执行.*"
+    timeout: 90000
+
+# ---- 4. 委托出去的卡片出现 ----
+- extendedWaitUntil:
+    visible: "只回复HISTORYOK"
+    timeout: 60000
+- assertVisible: "只回复HISTORYOK"
+
+# ---- 4.5 ★ 把新派单要的工具批准答掉（否则它停在「进行中」）----
+#
+# ★ 为什么必须答：新派单会让智能体去列工作目录（实测要一条 ls 的批准），
+#   没人答 ⇒ 任务停在「进行中」⇒ **它不会进 daemon 的终态历史**。
+#   ⇒ 任务历史里就只有上一条已完成的那一行 ⇒ 这条流验的不是「刚跑的
+#   这次」，而是「之前那次」⇒ 读面验得不够真。
+#
+#   答完的判据：待批卡片清空（daemon 侧 pending 归零才是真话）。
+- extendedWaitUntil:
+    visible: "ACC 待批.*"
+    timeout: 45000
+    optional: true
+- repeat:
+    times: 6
+    commands:
+      - extendedWaitUntil:
+          visible: ".*允许一次.*"
+          timeout: 10000
+          optional: true
+      - runFlow:
+          when:
+            visible: ".*允许一次.*"
+          commands:
+            - tapOn: ".*允许一次.*"
+      - extendedWaitUntil:
+          notVisible: ".*允许一次.*"
+          timeout: 5000
+          optional: true
+- extendedWaitUntil:
+    notVisible: "ACC 待批.*"
+    timeout: 60000
+    optional: true
+
+# ---- 5. ★「继续」功能的入口存在且可点 ----
+# 长按卡片 ⇒ App 自己的菜单（不是 Android 的文本选择菜单）⇒ 里面有
+# 「▶ 继续跟进」。这是「继续 / 提示词修改」这条链路的**入口**。
+#
+# ⚠ 这条只验「入口在、点得动」，**不**声称「继续」已经能走到会话：
+#    本机实测 82 条任务**没有一条**有会话绑定（sessionCount 全为 0），
+#    ACC 派单的会话又不在 openpocket 的本地会话表里 ⇒ 「继续跟进」
+#    在本机落到「查看详情」兜底。真机上不存在可续的会话时，
+#    这一段能验的就只有入口本身。
+- longPressOn: "只回复HISTORYOK"
+- extendedWaitUntil:
+    visible: ".*继续跟进.*"
+    timeout: 20000
+- assertVisible: ".*继续跟进.*"
+# 关掉菜单（否则它盖住下面的卡片）
+- back
+
+# ---- 6. ★ 任务历史卡片在页面上 ----
+- extendedWaitUntil:
+    visible: "任务历史与产出"
+    timeout: 30000
+- assertVisible: "任务历史与产出"
+
+# ---- 7. 读任务历史 ----
+- tapOn: "读取任务历史"
+#
+# ⚠⚠ **历史是一次快照，不会自己刷新**（这是本条流第二版的判据缺陷）。
+#
+# 首版在这里等「opencode.*进行中.*」出现，120 秒等不到 —— 原因不是
+# 「读面没实现」，而是：
+#   · 卡片点一次「读取任务历史」就取回一份**当时的**列表，之后不再取；
+#   · 派单刚发出时，daemon 侧的 run 状态是 queued（标签「排队中」），
+#     跑起来才是 running（「进行中」）；
+#   · 于是要么这一行压根不在快照里，要么在快照里但状态还没到「进行中」。
+#
+# ⇒ 判据必须**反复重读**：每轮先等 15 秒，还看不到就再点一次
+#   「读取任务历史」重新取。
+- repeat:
+    times: 12
+    commands:
+      - extendedWaitUntil:
+          visible: "opencode.*成功.*"
+          timeout: 15000
+          optional: true
+      - runFlow:
+          when:
+            notVisible: "opencode.*成功.*"
+          commands:
+            - tapOn: "读取任务历史"
+- extendedWaitUntil:
+    visible: "opencode.*成功.*"
+    timeout: 60000
+- assertVisible: "opencode.*成功.*"
+
+# ---- 8. ★ 展开这一行 ⇒ 看到「生成的文件」 ----
+- tapOn: "opencode.*成功.*"
+- extendedWaitUntil:
+    visible: "产出文件.*"
+    timeout: 60000
+- assertVisible: "产出文件.*"
+# 产出目录里只有 output.txt（agent 的输出文档）
+- extendedWaitUntil:
+    visible: "output.txt"
+    timeout: 30000
+- assertVisible: "output.txt"
+
+# ---- 9. ★ 打开这个文件 ⇒ 看到内容 ----
+#
+# ⚠⚠ **必须先滚一下**（这一条是实测踩出来的，不是预防性写法）：
+#
+#   首版直接 `tapOn: "output.txt"`，结果失败在「文件内容」不可见。
+#   取证（Maestro 工件 step-029 的无障碍树）显示那一刻的屏上：
+#
+#     output.txt   bounds=[115,2149][309,2215]  clickable=true
+#     主导航       bounds=[0,2170][1080,2400]
+#
+#   ⇒ 那一行落在**底部导航栏的上沿之下**：按文本点会按元素的中心点
+#     （y≈2182）⇒ 命中的是**导航栏**，不是文件按钮 ⇒ 内容永远不加载。
+#     ⇒ 判据红在一个「看起来像后端没返回」的地方，其实是点歪了。
+#
+# 「文件内容」这个标签**只在真的读到了字节之后**才渲染 ⇒ 看得见它
+# = 这次真的把产出读回来了（不是「标签在、内容空」也能绿）。
+- scroll
+- extendedWaitUntil:
+    visible: "output.txt"
+    timeout: 30000
+- tapOn: "output.txt"
+- extendedWaitUntil:
+    visible: "文件内容"
+    timeout: 60000
+- assertVisible: "文件内容"
+
+# ---- 10. ★ 这一行的答复也被带出来了 ----
+# 「答复：」同样只在答复非空时渲染 ⇒ 看得见它 = 答复非空。
+# 「HISTORYOK」是这条提示词约定的答案（实测智能体逐字回它）。
+- assertVisible: "答复：.*HISTORYOK.*"
+
+# ---- 11. ★ 产出文件的内容就是智能体那段话 ----
+# output.txt 存的就是这次运行的输出（实测：答复 "HISTORYOK" ⇒ 文件 8 字节
+# "HISTORYOK"）。这里断言的是**文件的字节**，不是卡片上的标签。
+- assertVisible: "HISTORYOK"

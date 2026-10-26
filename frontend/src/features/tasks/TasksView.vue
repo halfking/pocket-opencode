@@ -230,6 +230,116 @@
       </div>
     </section>
 
+    <!-- ★ 任务历史与产出（2026-10-27）。
+         这一块此前**整个不存在**：daemon 侧对 ACC 派单不留 run（已修），
+         pocketd 侧也没有出口 ⇒ 手机上既看不到「任务历史」，也看不到
+         「生成的文件」。
+
+         ⚠⚠ 三条**判据纪律**（都是真机踩出来的，不是风格偏好）：
+
+         ① **默认收起**：只有用户点了「读取任务历史」才去加载。
+            否则本卡的行文本会被两条真机流的无障碍判据命中
+            （`notVisible: "maestro-acc-stop"`、
+              `notVisible: "已完成|已取消|已失败"`）⇒ 流会红在一个跟被测
+            功能无关的地方。
+
+         ② **不在行里渲染智能体的答复原文**：实测 maestro-acc-approve 的
+            答复就是「已完成」这三个字 ⇒ 渲染它就等于往屏上放一个
+            「已完成」节点。
+
+         ③ 状态标签用「成功 / 失败 / 取消」而**不是**「已完成 / 已失败 /
+            已取消」：Maestro 的 visible 是**完整匹配**，那三个词正是
+            flow1 里 `notVisible: "已完成|已取消|已失败"` 的目标。
+
+         ⚠ 展开状态在**离开页面时复位**：Maestro 的两条流可能复用一个还
+            在前台运行的 App ⇒ 上一次流展开的本卡会把文本留在无障碍树里，
+            污染下一次流的判据。 -->
+    <section class="triage-card acc-eco-card" data-testid="acc-history-card">
+      <div class="triage-card-head">
+        <span>任务历史与产出</span>
+        <button
+          class="link-btn"
+          data-testid="acc-history-toggle"
+          :disabled="accStore.runsLoading"
+          @click="accStore.loadRuns()"
+        >
+          {{ accStore.runsLoading ? '读取中…' : '读取任务历史' }}
+        </button>
+      </div>
+      <div v-if="accStore.runsError" class="acc-error">
+        读不到任务历史：{{ apiError(accStore.runsError, 'errors.operateFailed') }}
+      </div>
+      <div v-if="accStore.runs.length > 0" class="acc-eco-block" data-testid="acc-history-runs">
+        <div class="acc-eco-title">历史（{{ accStore.runs.length }}）</div>
+        <div v-for="r in accStore.runs.slice(0, 10)" :key="r.run_id" class="acc-eco-row acc-run-item">
+          <button class="acc-run-open" @click="toggleRunDetail(r.run_id)">
+            <span class="acc-eco-name">{{ runRowLabel(r) }}</span>
+          </button>
+          <div v-if="expandedRunId === r.run_id" class="acc-run-detail">
+            <div v-if="accStore.runDetailLoading === r.run_id" class="acc-eco-sub">
+              读取产出中…
+            </div>
+            <div v-else-if="accStore.runDetailError" class="acc-error">
+              读不到产出：{{ apiError(accStore.runDetailError, 'errors.operateFailed') }}
+            </div>
+            <template v-else-if="accStore.runDetails[r.run_id]">
+              <!--
+                ★ 「答复：」这一行**只在答复非空时**渲染。
+                这样「看得见『答复：』」就是「答复非空」的证据，而不是
+                「标签在、内容空」也能绿。标签本身带前缀，所以它的文本
+                节点是「答复：xxx」而不是「xxx」⇒ 不会和
+                「已完成|已取消|已失败」那条完整匹配的判据撞上。
+              -->
+              <div v-if="r.answer" class="acc-eco-sub">
+                答复：{{ r.answer }}
+              </div>
+              <div class="acc-eco-sub">
+                产出文件（{{ accStore.runDetails[r.run_id].files.length }}）
+              </div>
+              <div v-if="accStore.runDetails[r.run_id].files.length === 0" class="acc-eco-sub">
+                这次运行没有留下文件
+              </div>
+              <div
+                v-for="f in accStore.runDetails[r.run_id].files"
+                :key="f.name"
+                class="acc-file-row"
+              >
+                <button
+                  class="link-btn acc-file-name"
+                  @click="accStore.loadArtifactContent(r.run_id, f.name)"
+                >
+                  {{ f.name }}
+                </button>
+                <span class="acc-eco-time">{{ f.size }} 字节</span>
+                <!--
+                  ★ 同理：「文件内容」只在**真的读到了内容**时才渲染
+                  ⇒ 真机上「看得见『文件内容』」= 「这次真的拿到了字节」。
+                -->
+                <span
+                  v-if="accStore.artifactContents[`${r.run_id}/${f.name}`]"
+                  class="acc-eco-sub"
+                >文件内容</span>
+                <pre
+                  v-if="accStore.artifactContents[`${r.run_id}/${f.name}`]"
+                  class="acc-file-content"
+                >{{ accStore.artifactContents[`${r.run_id}/${f.name}`] }}</pre>
+              </div>
+              <div class="acc-eco-sub">
+                工具调用（{{ accStore.runDetails[r.run_id].artifacts.length }}）
+              </div>
+              <div
+                v-for="(a, i) in accStore.runDetails[r.run_id].artifacts"
+                :key="a.tool_call_id || i"
+                class="acc-eco-row acc-tool-row"
+              >
+                <span class="acc-eco-name">{{ toolRowLabel(a, i) }}</span>
+              </div>
+            </template>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <!-- Section A: Running Tasks -->
     <section class="section running-section">
       <div class="section-header">
@@ -697,7 +807,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, inject, nextTick, onMounted, onUnmounted, watch } from 'vue'
+import { ref, computed, inject, nextTick, onActivated, onMounted, onUnmounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { api, type Task, type TaskTypeGroup } from '../../api/client'
 import { readSelectedInstance } from '../../config/selected-instance'
@@ -988,6 +1098,97 @@ const accStore = useAccTasksStore()
 const showAccModal = ref(false)
 const accDraft = ref({ title: '', description: '', agentId: '' })
 
+/* ── 任务历史与产出（2026-10-27）────────────────────────────────────────
+ *
+ * ⚠ 展开状态必须在**离开页面时复位**。
+ *
+ * Maestro 的两条真机流可能复用同一个还活着的 App 进程 ⇒ 上一次流里
+ * 展开的本卡会把它的行文本留在无障碍树里，而 flow1 用
+ * `notVisible: "已完成|已取消|已失败"` 判「已结束分区是不是折叠着」、
+ * flow2 用 `notVisible: "maestro-acc-stop"` 判「任务是不是离开了列表」
+ * ⇒ 残留的文本会让下一次流红在一个跟被测功能无关的地方。
+ *
+ * 这不是洁癖：判据必须打在**它要判的那个对象**上，屏上多出来的同形
+ * 文本就是污染源。 */
+const expandedRunId = ref<string | null>(null)
+
+/**
+ * run 的状态标签。
+ *
+ * ★ 刻意用「成功 / 失败 / 取消」，**不是**「已完成 / 已失败 / 已取消」。
+ *   Maestro 的 visible 是**完整匹配**，那三个带「已」的词正是 flow1 里
+ *   `notVisible: "已完成|已取消|已失败"` 的匹配目标 ⇒ 一旦渲染出来，
+ *   「已结束分区是不是折叠着」这个判据永远为假。
+ */
+function runStateLabel(state?: string): string {
+  switch (state) {
+    case 'succeeded':
+      return '成功'
+    case 'failed':
+      return '失败'
+    case 'cancelled':
+      return '取消'
+    case 'running':
+      return '进行中'
+    case 'waiting_permission':
+      return '等待审批'
+    case 'cancelling':
+      return '取消中'
+    case 'queued':
+      return '排队中'
+    default:
+      return state || '未知'
+  }
+}
+
+/**
+ * 一行 run 的标题。
+ *
+ * ★ 单一插值 ⇒ 无障碍树里只有**一个**文本节点。
+ *   多个插值会被拆成多个文本节点，其中一个可能恰好是「已完成」。
+ *
+ * ★ 不渲染答复原文：实测智能体的答复可能就是「已完成」三个字 ⇒ 渲染它
+ *   等于往屏上放一个「已完成」节点（见上面的纪律 ②）。
+ */
+function runRowLabel(r: {
+  kind?: string
+  agent_id?: string
+  run_id: string
+  state?: string
+  started_at?: string
+}): string {
+  const who = r.kind || r.agent_id || r.run_id
+  return `${who} · ${runStateLabel(r.state)} · ${formatRunTime(r.started_at)}`
+}
+
+/** 一行工具调用的标题。同样是单一插值。 */
+function toolRowLabel(a: { tool_title?: string; tool_kind?: string }, i: number): string {
+  const title = a.tool_title || a.tool_kind || '工具调用'
+  return `${i + 1}. ${title}`
+}
+
+/** 把 RFC3339 时间压成「MM-DD HH:mm」。非法输入返回空串。 */
+function formatRunTime(ts?: string): string {
+  if (!ts) return ''
+  const d = new Date(ts)
+  if (Number.isNaN(d.getTime())) return ''
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+}
+
+/** 展开/收起一条 run 的产出；第一次展开时才去读。 */
+async function toggleRunDetail(runId: string) {
+  if (!runId) return
+  if (expandedRunId.value === runId) {
+    expandedRunId.value = null
+    return
+  }
+  expandedRunId.value = runId
+  if (!accStore.runDetails[runId]) {
+    await accStore.loadRunDetail(runId)
+  }
+}
+
 function openAccDelegate() {
   accDraft.value = { title: '', description: '', agentId: '' }
   accStore.reset()
@@ -1248,7 +1449,24 @@ onMounted(() => {
   wsClient.on('session_attached', handleSessionAttached)
 })
 
+// ★ 任务历史卡片的展开态在**视图重新激活**时复位。
+//
+// 本视图在 KeepAlive 名单里（进 /tasks/:id 只是失活，不会卸载）⇒ 复位点
+// 必须挂在 onActivated 上，不是 onMounted。
+//
+// 为什么必须复位：展开后的详情里会出现产出文件的内容和工具标题，而
+// Maestro 的判据是**整屏**的无障碍文本匹配 ⇒ 上一条流展开后留下的文本
+// 会让下一条流的 `notVisible: "已完成|已取消|已失败"` 永远为假。
+//
+// 只复位展开态，不清列表：折叠态的行文本是「智能体类型 · 状态 · 时间」，
+// 不可能是那三个词，也不可能是任务标题 ⇒ 不会污染判据，而用户从详情页
+// 回来还能看到历史。
+onActivated(() => {
+  expandedRunId.value = null
+})
+
 onUnmounted(() => {
+  expandedRunId.value = null
   approvals.stopLive()
   if (accApprovalTimer !== null) {
     clearInterval(accApprovalTimer)
@@ -2041,6 +2259,62 @@ function timeAgo(dateStr?: string): string {
   color: var(--text-secondary);
   font-size: 12px;
   flex-shrink: 0;
+}
+/* ── 任务历史与产出（2026-10-27） ── */
+.acc-run-item {
+  display: block;
+  flex-direction: column;
+  align-items: stretch;
+}
+.acc-run-open {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  padding: 2px 0;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.acc-run-detail {
+  padding: 4px 0 6px 10px;
+  border-left: 2px solid var(--surface-2);
+  margin: 2px 0 6px;
+}
+.acc-eco-sub {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin: 4px 0 2px;
+}
+.acc-eco-time {
+  color: var(--text-secondary);
+  font-size: 12px;
+  flex-shrink: 0;
+}
+.acc-file-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 13px;
+  padding: 2px 0;
+}
+.acc-file-name {
+  font-size: 13px;
+}
+.acc-file-content {
+  flex-basis: 100%;
+  margin: 4px 0 0;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: var(--surface-2);
+  font-size: 12px;
+  line-height: 1.4;
+  max-height: 220px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
 }
 
 .section-header .acc-delegate-btn {

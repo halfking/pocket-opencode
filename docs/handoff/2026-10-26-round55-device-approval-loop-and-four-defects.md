@@ -19,6 +19,7 @@
 |---|---|---|
 | `.maestro/acc-approval.yaml` | 委托 ACC → 智能体要工具批准 → **手机上看得到并答得了** → 智能体跑完 → 任务进「已结束」区 | ✅ **全绿**（2026-10-27 05:43~05:45，**2/2 Flows Passed in 1m 57s**，新 APK 165459023 字节 + agent-companion `9863034`）。证据链见 §4.6 |
 | `.maestro/acc-delegate-stop.yaml` | 委托 ACC → 长按卡片 → 「停止任务」→ 确认 → 任务被停 → **以「已取消」出现在已结束区** | ✅ **全绿**（2026-10-27 05:56~05:57，**2/2 Flows Passed in 1m 9s**）。判据先修过一处恒真（§4.6.3） |
+| `.maestro/acc-history-files.yaml`（**本轮新增**） | 委托 ACC → 智能体跑完 → **任务历史里看得到这次运行** → 展开 → **看得到产出的文件** → 打开文件 → **看得到内容**；顺带验「▶ 继续跟进」入口在 | ✅ **全绿**（2026-10-27 07:37~07:41，**2/2 Flows Passed in 2m 44s**，新 APK 165463351 字节 + agent-companion `a58aa73`）。改了四版才绿，**每一版红的原因都不是产品缺陷**（§4.7.6 有逐条取证） |
 
 后端全量：67 包全绿、0 FAIL（`internal/agent` 的 3 条超时红是宿主负载 100+ 时的 flaky，
 单跑绿，§3.3 有记录）。
@@ -1001,6 +1002,152 @@ flow1 的**完整证据链**（不是「看起来绿」）：
 
 ---
 
+---
+
+## 4.7 ★★★★ 续（2026-10-27 06:20~07:5x）：**「任务历史」与「生成的文件」两个读面从零到真机**
+
+### 4.7.1 ★ 根因一（agent-companion 侧）：ACC 派单**从不留痕** ⇒ run 列表恒空
+
+**现场**（2026-10-27 05:44，一次成功的 ACC 派单之后）：
+
+```
+GET /api/v1/runs                                  → {"runs":null,"total":0}
+GET /api/v1/artifacts/<dispatch>/output.txt       → 1607 字节（真实产出）
+```
+
+⇒ 主机**刚跑完一个任务**，任务历史却说「从来没跑过任何东西」。
+
+**根因**：ACC 派单走 `accbridge.FacadeExecutor.Execute`，而 API 层只在
+**自己**发起的 operate 上留痕（`internal/api/operate.go` 的 `retainRun`）
+⇒ 一个 ACC 派单跑完了、给 ACC 报了终态、写了产出文档，**daemon 自己的
+历史里一行都没有**。
+
+**修法**（agent-companion `a58aa73`）：新增 `accbridge.RunRecorder` 接缝 ——
+执行器在 run 结束时把终态 run 推回 daemon 自己的历史
+（`api.Server.RecordTerminalRun`）。依赖方向是「执行器 → API 层」：
+执行器不知道历史怎么存，API 层不需要知道 ACC 派单的存在。
+
+**判据打在产品真会走的路径上**（不是单测 recorder）：
+`internal/api/acc_run_history_test.go` 真的跑一次 ACC 派单
+（accbridge → facade → recorder → HTTP 读回 `/api/v1/runs`）。
+**回退接线后该用例真红**（`Total:0`），恢复后绿。
+
+**接线守卫**（`cmd/agent-companion/acc_run_history_wiring_test.go`）：
+`internal/api` 里那个用例是**手工接线**的 —— main.go 忘了接的话，单测照样绿、
+生产照样是空的（这正是上一轮「取租约重试修在死路径上」的同一种假绿）。
+守卫查三件事：调用点只允许在 `recordTerminalRun` 里、`Execute` 真的调它、
+main.go 真的把 apiServer 当 recorder 交出去。
+
+> ⚠ **守卫第一版是恒真的，自己抓出来了**：它用 `strings.Contains` 找
+> `RunRecorder: runRecorder` ⇒ 把那一行**注释掉**之后源码里仍然含有这个
+> 子串 ⇒ 守卫**照样绿**。实测确认（注释掉接线，守卫没红）⇒ 改成 **AST 判定**
+> （`CompositeLit` 里真的有那个 key、`AssignStmt` 真的是那条赋值）
+> ⇒ 再测，注释掉就红。**守卫自己也要被测。**
+
+### 4.7.2 ★ 根因二（agent-companion 侧）：产出**列不出来**
+
+daemon 只有 `GET /api/v1/artifacts/:dispatch_id/:name`（取字节），
+**没有清单面** ⇒ 调用方必须**已经知道**文件名才能拿到产出。
+补 `GET /api/v1/artifacts/:dispatch_id`：文件名 + 字节数 + sha256 + 可直接用的
+`read_path`。清单里的摘要不是装饰 —— 完成包声明的是 `content_hash`，
+这是让「拿到的就是声明的」变成**可核对事实**的唯一途径。
+
+### 4.7.3 ★ 根因三（agent-companion 侧，既有缺陷）：并发写配置的 TOCTOU
+
+`internal/toolmgr` 的 `atomicWrite` 先 `rename(path→backup)` 再
+`rename(staged→path)` ⇒ **两步之间文件在目录里根本不存在**。
+而 claude 的 agent surface 是靠**列目录**发现的 ⇒ 并发 Apply 时另一条
+goroutine 扫目录扫不到该 agent ⇒ 答
+`unknown tool: "claude:agent:implementer:WebFetch"`。
+
+**取证**（clean origin/main `9863034` 的独立 worktree）：
+
+```
+go test ./internal/toolmgr -count=20   → FAIL（unknown tool: claude:agent:implementer:WebFetch）
+```
+
+**修法**：备份改成**复制**（不是改名），然后一次原子 rename 替换目标
+⇒ `path` 从不缺席。修后同一条命令 ⇒ 绿。**回退修复 ⇒ 重新变红**（鉴别力自检）。
+
+### 4.7.4 ★ 根因四（openpocket 侧）：读面**根本没有出口**
+
+`CompanionClient.ListRuns` 早就在，但**没有任何路由用它**；
+产出文件连客户端方法都没有 ⇒ 手机上两头都空。
+本轮补三个路由（`backend/internal/server/companion_history.go`）：
+
+| 路由 | 作用 |
+|---|---|
+| `GET /api/acc/runs` | 任务历史（daemon 的 run 列表） |
+| `GET /api/acc/runs/{id}/artifacts` | 一次拿全：工具调用 + 产出文件 |
+| `GET /api/acc/artifacts/{dispatch}/{name}` | 产出文件的内容 + sha256 |
+
+### 4.7.5 ★ 活链路读数（真机前的 API 级取证）
+
+真机部署后，宿主上从 daemon 一路打到 pocketd：
+
+```
+daemon  GET /api/v1/runs
+        → {"run_id":"dispatch_230b4450-…","dispatch_id":"dispatch_230b4450-…",
+           "task_id":"acs-ac30-01:dfa987ac-…","agent_id":"opencode","kind":"opencode",
+           "state":"succeeded","session_id":"ses_e85903cd9…",
+           "answer":"好的","started_at":"…","ended_at":"…"}
+
+daemon  GET /api/v1/artifacts/dispatch_230b4450-…
+        → {"count":1,"exists":true,
+           "files":[{"name":"output.txt","size":6,
+                     "sha256":"sha256:536edaf7…",
+                     "read_path":"/api/v1/artifacts/…/output.txt"}]}
+
+pocketd GET /api/acc/runs
+        → {"count":1,"runs":[{…,"answer":"好的"}],"source":"companion"}
+
+pocketd GET /api/acc/runs/dispatch_230b4450-…/artifacts
+        → {"artifacts":[],"count":0,"file_count":1,
+           "files":[{"name":"output.txt","size":6,"sha256":"sha256:536edaf7…"}]}
+
+pocketd GET /api/acc/artifacts/dispatch_230b4450-…/output.txt
+        → {"content":"好的","sha256":"sha256:536edaf7…","size":6}
+```
+
+daemon 侧同一时刻的日志（**证明它真的走了新代码**，不是缓存）：
+
+```
+07:58:31.276 terminal run recorded in the daemon history
+              run_id=dispatch_230b4450-… task_id=acs-ac30-01:dfa987ac-… state=succeeded
+07:58:31.279 dispatch execution finished … outcome=succeeded executor_success=true elapsed_ms=8535
+```
+
+### 4.7.6 ★ 真机流 `acc-history-files.yaml`：三处**判据缺陷**（都是实测抓的）
+
+这条流改了四版才绿，**每一版红的原因都不是产品缺陷**：
+
+| 版 | 红在哪 | 真相 |
+|---|---|---|
+| v1 | 「文件内容」不可见 | **点歪了**：`output.txt` 那一行落在**底部导航栏的上沿之下**（实测 bounds `[115,2149][309,2215]`，导航栏从 2170 起）⇒ 按文本点按的是元素中心（y≈2182）⇒ 命中的是**导航栏**。⇒ 先滚一下再点。 |
+| v2 | 「opencode.*进行中.*」120 秒等不到 | **历史是一次快照**，点一次「读取任务历史」就不再取；而且派单刚发出时 run 状态是 `queued`（标签「排队中」），跑起来才是 running。⇒ 判据必须**反复重读**。 |
+| v3 | 同上，但派单 4 分钟没跑完 | **夹具名当提示词**：标题写 `maestro-acc-history`，智能体以为「这是要找命令/技能」⇒ 在工作区里翻（`ls -la …`）⇒ 5 分钟超时 `outcome_unknown`。改成 `只回复HISTORYOK` ⇒ 85 秒跑完、答复正好 `HISTORYOK`。 |
+| v4 | — | 全绿（见 §0 表） |
+
+> ★ **「派单超时」和「读面坏了」是两回事**：v3 那次红的时候，
+>   daemon 日志里清清楚楚写着 `dispatch execution finished … outcome_unknown`
+>   ⇒ 派单本身失败了 ⇒ 读面没有东西可显示是**正确的**行为。
+>   ⇒ 判据红的时候第一件事是去看 daemon 侧那条终态日志。
+
+### 4.7.7 ★ 前端的三条**判据纪律**（写在代码注释里，因为它们直接决定别的流会不会假绿）
+
+1. **卡片默认收起**：展开时屏上会出现 run 行文本，而 flow1/flow2 用的正是
+   `notVisible: "maestro-acc-stop"` 与 `notVisible: "已完成|已取消|已失败"`
+   ⇒ 展开会污染**别的**流的判据。
+2. **不在行里渲染智能体的答复原文**：实测 `maestro-acc-approve` 的答复就是
+   「已完成」这三个字 ⇒ 渲染它等于往屏上放一个「已完成」节点。
+3. **状态标签用「成功 / 失败 / 取消」**，而**不是**「已完成 / 已失败 / 已取消」：
+   Maestro 的 `visible` 是**完整匹配**，那三个带「已」的词正是 flow1 的匹配目标。
+4. **展开态在 `onActivated` 时复位**（TasksView 在 KeepAlive 名单里，
+   离开页面只是**失活**不卸载 ⇒ 复位点不能挂 `onMounted`）
+   ⇒ 否则上一条流展开后留下的文本会污染下一条流。
+
+---
+
 ## 5. 环境事故（**不是产品缺陷**，但让本轮多花了不少时间，如实记录）
 
 1. **Docker Desktop 被手动暂停** ⇒ PG「端口在监听但不回包」⇒ 委派 502 / tasksync 失败 /
@@ -1050,10 +1197,15 @@ flow1 的**完整证据链**（不是「看起来绿」）：
    ⇒ agent-companion 的审批转发路径**只能走 daemon 本地干预队列**兜底。
    本机到 ACC（`100.106.67.198:4101` == `192.168.31.211:4101`）**无 SSH** ⇒
    **未实现、未部署、未验证**。不要说成「已打通」。
-2. **ACC 派单的 run 不进 daemon 的 run 历史**：`GET /api/v1/runs` 对 ACC 派单**恒空**
-   ⇒ 任务历史这一面在 ACC 派单上仍是空的（终态权威是 ACC 命令面，不是 daemon run）。
-3. **生成文件 / 任务历史同步未做**：需求里的「同步查看其任务历史、生成的文件等信息」
-   目前只有 ACC 生态面板的**任务与会话**两个读面，**文件**没有读面。
+2. ✅ **ACC 派单的 run 现在进 daemon 的 run 历史了**（本轮关闭，§4.7.1）：
+   `GET /api/v1/runs` 对 ACC 派单**不再恒空**，真机上有读数（§4.7.5/§4.7.6）。
+   ⚠ 但历史是**内存态**（daemon 重启即失忆，保留期 1 小时）⇒ 需要跨重启的
+   历史就得落盘（operations 台账里已有终态行，可以从那里重建）。
+3. ✅ **生成文件 / 任务历史现在有读面了**（本轮关闭，§4.7.2/§4.7.4）：
+   daemon 侧有清单面，pocketd 侧有三个路由，App 上有「任务历史与产出」卡片，
+   真机流跑通。⚠ 但**「生成的文件」目前只有输出文档（output.txt）**——
+   智能体在**工作区里创建的那些文件**（这才是用户心里的「生成的文件」）
+   **仍然没有读面**：daemon 侧没有把它们登记成产物。
 4. **`/api/acc/approvals` 未按 workspace 过滤** ⇒ 多工作区部署时待批项会互相可见。
 5. **一次工具调用要人答 2~3 次**：这一轮只保证了「App 能答得完」，没有把它做成
    「一次点击答完同一个工具调用的全部检查」。opencode 的 `always`（allow_always）
@@ -1090,6 +1242,21 @@ flow1 的**完整证据链**（不是「看起来绿」）：
       ⇒ 第 2 轮仍要人再点（03:28 那轮的 `request_id=1` 就是它）。
 11. **ACC 的 MCP 面在抖**（§4.4.4）：EOF / 超时 / 400 都会出现 ⇒ 委派成功率受影响。
     ACC 侧不可改（本机无 SSH）⇒ 只能靠客户端的韧性 + 诚实报错。
+12. ★★★ **「继续」与「提示词的修改」仍然没有端到端跑通**（本轮只验到入口）。
+    App 里「▶ 继续跟进」⇒ 跳到任务最近的关联会话并预填「继续」草稿（可编辑再发送）。
+    flow3 只验到**入口在、点得动**（长按卡片 ⇒ 菜单里有它）。
+    ⇒ **没验到的**：跳到会话、预填提示词、改完发出去。
+    根因（已查清，不是猜测）：**ACC 派单的会话从来没被链到本地任务行** ——
+    实测 `GET /api/tasks/task-…/sessions` 对 ACC 任务返回 `{"sessions":[]}`；
+    会话本身在 companion 的 native store 里是有的（`ses_…`，`resumable:true`，
+    transcript 读得到），而且**这一轮的 run 历史里就带着 `session_id`** ⇒
+    链接的数据是现成的。
+    ⇒ 但**光有链接还不够**：全局会话面 `/api/sessions/:id` 只服务 registry 里
+    的实例会话（它要求 `instance_id` 并走 opencode 适配器）⇒ 读不了
+    companion 的 native 会话。任务域那条
+    `/api/tasks/{id}/sessions/{sid}/transcript` **已经是** companion 形状，
+    ⇒ 需要一条「companion-native 会话」的读取面，再把「继续跟进」指过去。
+    **这一轮没做，别当它做完了。**
 
 ---
 
@@ -1110,80 +1277,107 @@ flow1 的**完整证据链**（不是「看起来绿」）：
 ```
 请接取最新代码合并到本地，然后提交代码并推送。
 
-上一轮（round55 续三，2026-10-27 05:41~05:57）**把两条真机流都跑绿了**：
-· `.maestro/acc-approval.yaml`      ✅ 2/2 Flows Passed in 1m 57s
-· `.maestro/acc-delegate-stop.yaml`  ✅ 2/2 Flows Passed in 1m 9s
-跑在**新 APK（165459023 字节，设备上 stat 核对过）** +
-**agent-companion `9863034`**（vcs.revision=9863034、vcs.modified=false）上。
-
-打通它靠的是这一轮的四笔修复，**缺一笔都跑不绿**（每一笔都有先红后绿的判据）：
-① agent-companion `0ffe17c` —— 取租约的重试打在 **daemon 真实路径**上
-   （上一版打在死路径 `AcquireOrRenew` 上，判据绿而生产没生效）+ 源码级守卫；
-② agent-companion `dce8a35` —— 续租请求有超时上限 + 致命失败留痕 +
-   **租约 TTL 覆盖审批窗口**（原来 30s < 审批窗口 120s ⇒ 人还在答题任务先死）；
-③ agent-companion `9863034` —— **终态上报**能重试（一次 EOF ⇒ ACC 不知道派单成功
-   ⇒ 状态回填读不到终态 ⇒ 任务永远停在「进行中」）；
-④ openpocket `df8df527` —— App 侧「已结束」区的卡片**不丢无障碍树**
-   （卡片跨 `v-for` 移动 ⇒ 新建节点不被 WebView 登记 ⇒ TalkBack/ Maestro 都读不到）。
+上一轮（round55 续四，2026-10-27 06:20~07:5x）把**需求里点名、但两端都空**的
+两个读面从零做到了真机：
+· 「同步查看**任务历史**」—— agent-companion 侧 ACC 派单**从不留痕**
+  （`accbridge.FacadeExecutor` 不经过 API 层的 `retainRun`）⇒
+  `GET /api/v1/runs` 对 ACC 派单恒空（`a58aa73` 修：新增 `accbridge.RunRecorder`
+  接缝 + AST 级接线守卫）；pocketd 侧补 `/api/acc/runs` 等三个路由 + App 上的
+  「任务历史与产出」卡片。
+· 「**生成的文件**」—— daemon 侧补产出**清单**面（`/api/v1/artifacts/:dispatch_id`，
+  带 sha256 可对账），pocketd 侧接到 App。
+· 顺带修掉一个**既有**缺陷：`internal/toolmgr` 的 `atomicWrite` 先改名再替换 ⇒
+  两步之间文件在目录里消失 ⇒ 并发 Apply 报 `unknown tool`（clean origin/main
+  `-count=20` 复现）⇒ 改成「复制备份 + 一次原子替换」。
 
 这一轮请按批判式审计继续，重点是**明确没做到**的部分：
 
-1. ★★ **一次工具调用要人答 2~3 次**（同一个 toolCallId 连发多轮审批）：
+1. ★★★ **「继续」与「提示词的修改」在真机上仍然没有端到端跑通**。
+   App 里的入口是长按卡片 →「▶ 继续跟进」⇒ 跳到任务最近的关联会话并预填
+   「继续」草稿（可编辑再发送）。**本轮只验到「入口在、点得动」**
+   （flow3 的第 5 步），**没有**验到「跳到会话、预填提示词、改完发出去」。
+   ⇒ 根因（已查清）：**ACC 派单的会话从来没被链到本地任务行** ——
+   实测 `GET /api/tasks/task-…/sessions` 对 ACC 任务返回 `{"sessions":[]}`；
+   会话本身在 companion 的 native store 里是有的（`ses_…`，可续，transcript
+   读得到），且**这一轮的 run 历史里就带着 `session_id`** ⇒ 链接的数据是现成的。
+   ⇒ 但**光有链接还不够**：全局会话面 `/api/sessions/:id` 只服务 registry 里
+   的实例会话，读不了 companion 的 native 会话 ⇒ 需要一条
+   「companion-native 会话」的读取面（任务域的
+   `/api/tasks/{id}/sessions/{sid}/transcript` 已经是这个形状），
+   再把「继续跟进」指过去。**这一轮没做，别当它做完了。**
+2. ★★ **「生成的文件」目前只有输出文档**：智能体在**工作区里创建的文件**
+   （用户心里的「生成的文件」）**没有读面** —— daemon 只把**输出文本**存成
+   `output.txt`。⇒ 要不要把「本次运行改动/创建的文件」登记成产物（写集）？
+   产物清单的契约怎么定？（谁登记、怎么去重、怎么和 ACC 的
+   `orchestration_artifacts` 对账）
+3. ★★ **run 历史是内存态**：daemon 重启即失忆（保留 1 小时）。
+   ⇒ 需要跨重启的历史就从 operations 台账（已有终态行）重建，
+   并把「读面读到的是内存态还是落盘态」在响应里说清楚。
+4. ★★ **一次工具调用要人答 2~3 次**（同一个 toolCallId 连发多轮审批）：
    05:43 那轮实测 6 次应答、跨 3 个 toolCallId。⇒ 评估把同一 toolCallId 的
    多项检查聚合成一次点击（注意 fail-closed 与 opencode 的 allow_always 语义），
    并补判据。
-2. ★★ **审批窗口仍是 120 秒**（`AC_PERMISSION_TIMEOUT_MS`）：租约侧已对齐
+5. ★★ **审批窗口仍是 120 秒**（`AC_PERMISSION_TIMEOUT_MS`）：租约侧已对齐
    （TTL 也 120 秒），但人没点完还是死。⇒ 放宽前先确认 ACC 侧派单自身的超时上限。
-3. ★ **ACC 侧仍缺两个端点**：`GET /api/v2/runtime/permissions`、
+6. ★ **ACC 侧仍缺两个端点**：`GET /api/v2/runtime/permissions`、
    `POST /api/v2/runtime/permissions/{id}/decision` —— acc-go 从未实现；
    本机到 ACC（100.106.67.198:4101 == 192.168.31.211:4101）**无 SSH**。
    ⇒ 要么找到能改 ACC 的路径，要么把「契约在、实现没有」写成可执行的 issue
    + 可验收的契约测试；**不要用 daemon 本地队列兜底就宣称「ACC 审批面已打通」**。
-4. ★ **ACC 派单的 run 不进 daemon run 历史**（`GET /api/v1/runs` 恒空）⇒
-   「同步查看任务历史」在 ACC 派单上还是空的；**生成文件也没有读面**。
-   ⇒ 设计并实现这两个读面，并给真机判据。
-5. ★ **产品层的 delegate 韧性**：`acc_create_task` **没有幂等键** ⇒ 写失败后服务器
+7. ★ **产品层的 delegate 韧性**：`acc_create_task` **没有幂等键** ⇒ 写失败后服务器
    可能已经建出任务。现在只有**夹具层**做了「先问 ACC 再重试」，产品层
    `POST /api/tasks/delegate` 仍然「失败即 502」，用户无法判断任务建没建出来。
    ⇒ 要么让 ACC 支持幂等键（契约 + 契约测试），要么让 delegate 失败时回一个
    「可能已建，请到任务列表确认」的诚实结果，并给判据。
-6. ★ **`status=queue` 的任务在 UI 上无处可渲染**：任务列表三源拼接，
+8. ★ **`status=queue` 的任务在 UI 上无处可渲染**：任务列表三源拼接，
    前端只收 active / blocked / completed|failed|cancelled
-   ⇒ ACC 同步来的 59 条 `queue` 任务**在手机上完全看不见**（数据在、界面没有）。
+   ⇒ ACC 同步来的 `queue` 任务**在手机上完全看不见**（数据在、界面没有）。
    ⇒ 决定这些任务该进哪个分区（或哪个都不进），并给判据。
-   ⇒ 顺带：ACC 侧目前能堆出 **25 张同名 `maestro-acc-approve`**（每次夹具跑一张，
-   ACC 来源的任务本地删不掉）⇒ 要么给 ACC 来源的任务一个「本地副本」语义，
+   ⇒ 顺带：ACC 侧目前能堆出**同名 `maestro-acc-approve`** 卡片（ACC 来源的任务
+   本地删不掉）⇒ 要么给 ACC 来源的任务一个「本地副本」语义，
    要么让夹具能清理它们（现在是**假的清理**，只统计不删）。
-7. ★ `/api/acc/approvals` 未按 workspace 过滤 ⇒ 补过滤并补判据。
-8. ★ **三套重试策略还没合并**：acquire（`acquireWithRetry`）、
-   续租（`leaseRenewRetryDelay`）、终态上报（`completeWithRetry`）
-   ⇒ 合并成同一套策略函数，并把「可重试性按幂等性分档」写成一张显式的表
-   （取租约/续租/终态 = 幂等 ⇒ 可重试；`acc_create_task` = 无幂等键 ⇒ 不可盲重试）。
-9. ★ **ACC 链路上的 5 秒固定截止**（实测：续租卡 5.2 秒才 EOF；
-   04:00 起 heartbeat 连续 `time=5.00s`）—— 隧道 utun4 / 前置代理上的超时，
-   本机改不了 ⇒ 客户端所有对 ACC 的调用都要有**比 5 秒更短**的预算；
-   当前续租尝试上限是 5 秒（卡在边界上）⇒ **建议收到 3 秒**并给判据。
-10. **App 侧只有「已结束」区验证过无障碍**：「进行中」区同样可能丢节点（未复现），
-   下轮若再遇到要一并处理；并给「卡片在屏上但不在无障碍树里」补一条**自动化探针**
-   （别再靠 Maestro 的树事后发现）。
-11. **高负载下派单以 session_create_failed 收场**：ACP 握手可能超过 ACC 租约。
-   ⇒ 让 daemon 的报错能说清「租约先到期了」，并给一条判据（判据本身也要被测）。
+9. ★ `/api/acc/approvals` 未按 workspace 过滤 ⇒ 补过滤并补判据。
+10. ★ **三套重试策略还没合并**：acquire（`acquireWithRetry`）、
+    续租（`leaseRenewRetryDelay`）、终态上报（`completeWithRetry`）
+    ⇒ 合并成同一套策略函数，并把「可重试性按幂等性分档」写成一张显式的表。
+11. ★ **ACC 链路上的 5 秒固定截止**（实测：续租卡 5.2 秒才 EOF）
+    ⇒ 客户端所有对 ACC 的调用都要有**比 5 秒更短**的预算；
+    当前续租尝试上限是 5 秒（卡在边界上）⇒ **建议收到 3 秒**并给判据。
+12. ★ **判据守卫自己也可能是恒真的**：本轮踩到 —— 用 `strings.Contains`
+    找接线，**把那一行注释掉之后守卫照样绿**（子串还在）⇒ 改成 AST 判定才
+    真的变红。⇒ **任何源码级守卫都要做一次「回退实现 ⇒ 守卫必须变红」的自检**，
+    并在守卫文件里留一条自检用例。
+13. ★ **夹具名不能当提示词**：标题写 `maestro-acc-history`，智能体以为那是
+    「要找命令/技能」⇒ 在工作区里翻找 ⇒ 5 分钟超时 `outcome_unknown`，
+    派单本身失败。⇒ 真机流的提示词必须是一句**明确指令**
+    （例：`只回复HISTORYOK` ⇒ 85 秒跑完、答复逐字一致），
+    否则测的是「派单超时」，不是「读面」。
+14. **App 侧只有「已结束」区验证过无障碍**：「进行中」区同样可能丢节点（未复现）；
+    并给「卡片在屏上但不在无障碍树里」补一条**自动化探针**。
+15. **高负载下派单以 session_create_failed 收场** ⇒ 让 daemon 的报错能说清
+    「租约先到期了」，并给一条判据（判据本身也要被测）。
 
 纪律（踩过的，别再踩）：
 · **「判据绿」≠「产品路径被修了」**：判据必须打在**产品真的会走的那个函数**上；
   用 `go tool nm` 查二进制里有没有那个符号来确认；并加源码级守卫。
-· **判据要打在「用户能操作的那个对象」上**：flow2 的标题断言命中了**输入框里的
-  文本** ⇒ 委托失败时照样绿 ⇒ 先断言「承载输入的那个东西没了」，再断言目标。
+· **守卫自己也要被测**：源码级守卫若用子串匹配，注释掉实现它照样绿 ⇒ 用 AST，
+  并做「回退实现 ⇒ 守卫变红」的自检。
+· **判据要打在「用户能操作的那个对象」上**：先断言「承载输入的那个东西没了」，
+  再断言目标；否则命中输入框里的文本就是恒真。
+· **判据红的时候先看工件**（截图 + `screen-hierarchy/*.json`，文本在
+  `attributes.text`）：本轮有一次「红在『文件内容』不可见」，真相是
+  **点歪了**（那一行落在底部导航栏上沿之下，按文本点命中的是导航栏）。
 · 「构建成功」≠「设备上跑的是它」：设备侧读数前先核对 APK 字节数/哈希。
-· 设备读数前先看 load1（阈值 <25；实测 200+ 时 uiautomator dump 被 SIGKILL）。
-  本轮 05:30 之后负载降到 20 左右，两条流才顺利跑绿。
+· 设备读数前先看 load1（阈值 <25）。本轮宿主负载长期 60~130（**并行会话**在
+  编译），真机流是在这个负载下跑绿的 —— 但仍要记住高负载会让读数失真。
 · **环境故障要单独归类**：DB 挂 ⇒ 登录超时；ACC 挂 ⇒ 派单到不了 daemon；
-  Docker VM 被 poweroff ⇒ 全站 500/超时。三件本轮都差点被误判成产品缺陷。
+  Docker VM 被 poweroff ⇒ 全站 500/超时。
 · **dump 失败 ≠ 文本不存在**：探针/判据要把「采不到无障碍树」与「树里没有」分开统计。
 · 同一台设备不能并行跑两条 Maestro 流；本会话用 emulator-5556。
 · Maestro 的 visible 是完整匹配（「ACC 待批」≠「ACC 待批（1）」⇒ 写「ACC 待批.*」）。
 · 断言前必须清同名残留，否则会命中别的行；瞬时 toast 只能等一次。
-· 判据要当判据测：恒真/恒假/假绿的判据必须清掉；判据本身也要有前提判据。
+· **「读面」是一次快照**：点一次「读取」拿到的是**当时**的列表
+  ⇒ 判据要等「它变了」就得**反复重读**。
 · 提交走临时 worktree + git push origin HEAD:main，**不移动本地 main**。
 · 凭据只经环境变量/0600 env 文件传递，不打印、不入仓库。
 

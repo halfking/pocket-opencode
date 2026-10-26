@@ -13,11 +13,16 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import {
   createAccTask,
+  getAccArtifactContent,
   listAccAgents,
+  listAccRunArtifacts,
+  listAccRuns,
   listAccSessions,
   listAccTasks,
   type AccAgent,
   type AccDelegateResult,
+  type AccRun,
+  type AccRunArtifacts,
   type AccTask,
 } from '../api/accTasks'
 
@@ -40,6 +45,80 @@ export const useAccTasksStore = defineStore('accTasks', () => {
   const accSessions = ref<any[]>([])
   const ecosystemLoading = ref(false)
   const ecosystemError = ref<string | null>(null)
+
+  /**
+   * 任务历史与产出（2026-10-27 新增）。
+   *
+   * 这一块此前**整个不存在**：daemon 侧对 ACC 派单不留 run，pocketd 侧也
+   * 没有出口 ⇒ 手机上既看不到「任务历史」，也看不到「生成的文件」。
+   *
+   * ★ 三条纪律（都来自真机踩坑，不是风格偏好）：
+   *
+   *   ① **默认不加载**：卡片收起时屏上只有「读取任务历史」这个按钮。
+   *      否则 Maestro 那两条真机流的判据会被本卡的行文本命中
+   *      （`notVisible: "maestro-acc-stop"`、`notVisible: "已完成|已取消|已失败"`）
+   *      ⇒ 流会红在一个跟被测功能无关的地方。
+   *   ② **不把智能体的答复原文渲染在列表行里**：答复可能是「已完成」这三个字
+   *      （实测 maestro-acc-approve 的答复就是它）⇒ 会命中上面那条判据。
+   *      答复放在展开后的详情里。
+   *   ③ 状态标签用「成功 / 失败 / 取消」而不是「已完成 / 已失败 / 已取消」：
+   *      前三个是 Maestro `visible` 的**完整匹配**目标，后三个会让
+   *      `notVisible: "已完成|已取消|已失败"` 永远为假。
+   */
+  const runs = ref<AccRun[]>([])
+  const runsLoading = ref(false)
+  const runsError = ref<string | null>(null)
+  /** 已展开的 run 的产出详情（run_id → 详情）。 */
+  const runDetails = ref<Record<string, AccRunArtifacts>>({})
+  const runDetailLoading = ref<string | null>(null)
+  const runDetailError = ref<string | null>(null)
+  /** 已读取的产出文件内容（`${dispatchId}/${name}` → 内容）。 */
+  const artifactContents = ref<Record<string, string>>({})
+  const artifactLoading = ref<string | null>(null)
+
+  async function loadRuns() {
+    runsLoading.value = true
+    runsError.value = null
+    try {
+      runs.value = await listAccRuns()
+    } catch (err: any) {
+      runsError.value = err?.message || '读取任务历史失败'
+    } finally {
+      runsLoading.value = false
+    }
+  }
+
+  /**
+   * 读一条 run 的产出（工具 + 文件）。展开时才读，避免一次性打 N 个请求。
+   */
+  async function loadRunDetail(runId: string) {
+    if (!runId) return
+    runDetailLoading.value = runId
+    runDetailError.value = null
+    try {
+      const detail = await listAccRunArtifacts(runId)
+      runDetails.value = { ...runDetails.value, [runId]: detail }
+    } catch (err: any) {
+      runDetailError.value = err?.message || '读取产出失败'
+    } finally {
+      runDetailLoading.value = null
+    }
+  }
+
+  /** 读一个产出文件的内容（点文件名时才读）。 */
+  async function loadArtifactContent(dispatchId: string, name: string) {
+    if (!dispatchId || !name) return
+    const key = `${dispatchId}/${name}`
+    artifactLoading.value = key
+    try {
+      const res = await getAccArtifactContent(dispatchId, name)
+      artifactContents.value = { ...artifactContents.value, [key]: res.content }
+    } catch (err: any) {
+      runDetailError.value = err?.message || '读取文件失败'
+    } finally {
+      artifactLoading.value = null
+    }
+  }
 
   async function loadEcosystem() {
     ecosystemLoading.value = true
@@ -124,9 +203,20 @@ export const useAccTasksStore = defineStore('accTasks', () => {
     accSessions,
     ecosystemLoading,
     ecosystemError,
+    runs,
+    runsLoading,
+    runsError,
+    runDetails,
+    runDetailLoading,
+    runDetailError,
+    artifactContents,
+    artifactLoading,
     createTask,
     loadAgents,
     loadEcosystem,
+    loadRuns,
+    loadRunDetail,
+    loadArtifactContent,
     reset,
   }
 })
