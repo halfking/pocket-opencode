@@ -17,13 +17,14 @@
 
 | 流 | 覆盖的东西 | 读数 |
 |---|---|---|
-| `.maestro/acc-approval.yaml` | 委托 ACC → 智能体要工具批准 → **手机上看得到并答得了** → 智能体跑完 → 任务进「已结束」区 | ❌ **未拿到整条流全绿**（2026-10-27 01:0x 那轮：步骤 0~3 过，**步骤 4 红**）。根因已钉死：**上一轮的修复根本没装到设备上**（设备 165458754 字节 / 本地 165459013 字节，§4.4.1）⇒ 22:23 那轮的「第 2 张卡看不见」正是**旧包**的 `v-if` 卸载行为（Maestro 逐命令时间线 + 它自己存下的无障碍树工件，§4.4.2）。修复后的构建已在 01:01 装上，浏览器层隔离实验在它上面读数正常（§4.4.3），但**修复后 App 的整条流还没拿到全绿读数**（宿主 load 455，设备无障碍服务采不到树） |
-| `.maestro/acc-delegate-stop.yaml` | 委托 ACC → 长按卡片 → 「停止任务」→ 确认 → 任务被停 → **以「已取消」出现在已结束区** | ⚠️ **本轮未重跑**（上一轮的 ✅ PASS 是 50s 读数，来自**旧的** App 基线；§6 有记录） |
+| `.maestro/acc-approval.yaml` | 委托 ACC → 智能体要工具批准 → **手机上看得到并答得了** → 智能体跑完 → 任务进「已结束」区 | ❌ **仍未拿到整条流全绿**，但**红的性质变了**（2026-10-27 03:28~03:31 那轮，§4.5）：登录 ✅、夹具委派 ✅、待批项出现 ✅、**Maestro 的应答真的到了 daemon** ✅（daemon 日志 `permission answered locally`）、待批清空 ✅；**红在最后一条断言**（`"已完成" rightOf "maestro-acc-approve"`），而红因是**租约丢失 ⇒ 任务被判 cancelled/unknown**（不是 a11y、不是判据写错）。根因与修法见 §2.16（agent-companion `dce8a35`）。**该修复部署后尚未重跑**（04:00 之后 ACC 完全无响应，§4.5.4） |
+| `.maestro/acc-delegate-stop.yaml` | 委托 ACC → 长按卡片 → 「停止任务」→ 确认 → 任务被停 → **以「已取消」出现在已结束区** | ⚠️ **本轮仍未重跑**（上一轮的 ✅ PASS 是 50s 读数，来自**旧的** App 基线；§6 有记录） |
 
 后端全量：67 包全绿、0 FAIL（`internal/agent` 的 3 条超时红是宿主负载 100+ 时的 flaky，
 单跑绿，§3.3 有记录）。
-agent-companion 全量：**本轮全绿** —— 上一轮留下的既有失败
-`tests/TestNoUnjustifiedPlatformSkips` 已修（§2.10）。
+agent-companion 全量：**本轮全绿**（EXIT 0）—— 上一轮留下的既有失败
+`tests/TestNoUnjustifiedPlatformSkips` 已修（§2.10），
+本轮又修了两处**判据打偏/根因没钉死**的问题（§2.15、§2.16）。
 
 ---
 
@@ -425,6 +426,128 @@ Android 系统那几个（`com.kaixuan.opencode.pocket:id/action_bar_root`、
   · 只回退预算（保留判据）⇒ 红：`接口耗时 30.01s ⇒ 远端源没有预算`；
     恢复修复 ⇒ 绿（5.8s）。
 
+### 2.15 ★★ 「取租约的重试」修在了**死路径**上 —— 一次**假绿**（agent-companion `75755d3` → `0ffe17c`）
+
+★ 本轮最贵的教训，单独一节。
+
+**缺陷原型**（2026-10-27 02:38 真机夹具那轮的 daemon 日志，逐字）：
+
+```
+02:38:58 ERROR command lifecycle failed dispatch_id=dispatch_4e6338dd-…
+       error="Post \"http://100.106.67.198:4101/api/v2/runtime/lease\": EOF"
+⇒ 派单**已经到了 daemon**（SSE 收到了 dispatch.created），
+  但**首次取租约**被一次 EOF 打中 ⇒ 整个派单生命周期直接判死
+  ⇒ 智能体从没被启动 ⇒ 任务永远不会有审批请求
+  ⇒ 真机流的前提（待批项出现）根本造不出来。
+```
+
+**`75755d3` 的修法**：把重试加在 `internal/acc/lease.go` 的 `AcquireOrRenew` 上，
+判据也只测 `AcquireOrRenew`。
+
+**但 daemon 的真实路径是**：
+
+```
+command_loop.go:546 → client.AcquireLease(...)   ← 直调，绕过 AcquireOrRenew
+```
+
+**机械证据**（`go tool nm` 查 agent-companion 可执行文件）：
+
+```
+github.com/kaixuan/agent-companion/internal/acc.(*RuntimeControlClient).AcquireLease   ← 在
+github.com/kaixuan/agent-companion/internal/acc.AcquireOrRenew                        ← 不在
+```
+
+⇒ `75755d3` 的修复在生产路径上**一次都没生效**，而**判据是绿的**。
+⇒ **根因不是「重试逻辑写错了」，是「我测的函数不是产品用的那个函数」。**
+⇒ 误导来源：`internal/acc/lease_test.go` 里一句**假注释** ——
+   「AcquireOrRenew is the unified entry point the command loop uses」。假的。
+
+**修法**（`0ffe17c`）：
+
+* `command_loop.go` 的取租约改走 `acquireWithRetry`；
+* 新增 `internal/acc/acc_lease_path_guard_test.go`（**源码级守卫，防复发**）：
+  仓库里任何 `.AcquireLease(` 调用点都必须位于 `acquireWithRetry` 内，
+  出现别的直调点就判红；并断言「至少找到一个调用点」以免扫描规则失效导致守卫恒真；
+* 订正 `AcquireOrRenew` 的注释（它**不是** command loop 的入口，目前只有测试在用），
+  并要求它的 acquire 分支同样走 `acquireWithRetry`（两条路径不许分叉）。
+
+**判据**（先红后绿 + 鉴别力自检）：
+
+| 判据 | 层级 | 回退实现后 |
+|---|---|---|
+| `TestDriveCommand_LeaseAcquireRetriesAfterTransportEOF` | **真实路径** `driveCommand` | 红 |
+| `TestDriveCommand_LeaseAcquireDoesNotRetryBusinessRejection` | 真实路径 | 绿（业务拒绝本就不该重试） |
+| `TestDriveCommand_LeaseAcquireRetryBudgetIsBounded` | 真实路径 | 红 |
+| `TestLeaseAcquireCallSitesAllGoThroughRetry` | 源码级守卫 | 红 |
+| `TestLeasePathGuardStillSeesDriveCommand` | 守卫自身的**前提判据** | 红 |
+
+### 2.16 ★★ 租约韧性：续租请求**没有超时上限** + 租约 TTL **比审批窗口还短**（agent-companion `dce8a35`）
+
+★ 「人还在答题、派单先被判死」的真正根因。现场（2026-10-27 03:28 真机那轮，逐字）：
+
+```
+03:27:17 executing dispatch
+03:27:35 lease renewed  expires_at=03:28:04.785
+03:27:53 lease renewed  expires_at=03:28:22.393
+03:28:10 lease renewed  expires_at=03:28:40.168
+03:28:33 lease renewal failed attempt=1 remaining_ms=6255 error="Post \".../lease\": EOF"
+03:28:37 accbridge permission answered locally allow=true option_id=once   ← 人在手机上答了
+03:28:39 lease renewal failed attempt=2 remaining_ms=796  error="Post \".../lease\": EOF"
+03:28:41 lease expired mid-execution; flagging dispatch as unknown
+03:28:41 command lifecycle failed error="execution stopped after lease loss; outcome unknown"
+```
+
+**缺陷一：单次续租请求没有客户端超时上限。**
+两次失败之间隔了 **5.46 秒** ⇒ 每次续租请求都卡了约 **5.2 秒**才被掐断
+（EOF 不是立刻来的）。而那时的 deadline 就是**租约到期时刻**
+（`context.WithDeadline(ctx, expiresAt)`）⇒ **一次卡死的请求可以吃掉整段余量**，
+下面那段「短退避重试」策略（`leaseRenewRetryDelay` 的注释明写「永远不超过
+剩余租约的一半」）**形同虚设** —— 在请求返回之前，根本没机会去算那个退避。
+
+> ★ 顺带钉住一个事实：**5 秒是这条链路上的一个固定截止**。
+> 2026-10-27 04:00 之后直连 ACC，`POST /api/v2/runtime/heartbeat`
+> 连续三次都是 **5.00s** 超时（`HTTP=000 time=5.004s`）——
+> 与续租那次的 5.2s 是同一个特征 ⇒ 隧道/前置代理有一个 5s 截止。
+
+**缺陷二：致命的那次失败没有留痕。**
+原来的顺序是「先判 `IsExpired()`，再打日志」⇒ 租约在请求期间到期时，
+**致命的那一次失败不留下任何日志**，现场只剩一句「lease expired mid-execution」——
+分不清是「被 fence」「网络抖」还是「续租根本没发出去」。
+2026-10-27 03:29:43 那次正是这样：整个租约周期**一条**「lease renewal failed」都没有。
+
+**缺陷三：租约 TTL（30 秒）比审批窗口（120 秒）还短。**
+产品自己的两个时间常量互相打架：
+
+| 常量 | 值 | 含义 |
+|---|---|---|
+| `AC_PERMISSION_TIMEOUT_MS` | 120 秒 | 人可以用 120 秒回答一次审批 |
+| 租约 TTL | 30 秒（续租在 TTL 的 60% 处） | 一次续租失败只剩 **12 秒**余量 |
+
+⇒ ACC 连续抖 12 秒，「人还在答题、任务先被判死」。
+⇒ 实测 ACC 的租约端点 **03:28:27~03:28:49 连续 22 秒**不正常（EOF / connection reset）。
+
+**修法**（agent-companion `dce8a35`）：
+
+* 新增 `leaseRenewAttemptTimeout(remaining)`：单次续租尝试的上限
+  **永远不超过剩余租约的一半**（⇒ 至少还留得下一次重试的位置），
+  也不超过 5 秒（⇒ 卡死的端点吃不掉整段余量）；
+* 续租失败**先留痕再分支**（带 `fenced` / `expired_now`）；
+* 租约 TTL 默认 **30s → 120s**（`acc.DefaultLeaseTTLMS`），接成配置
+  `AC_LEASE_TTL_MS`；「租约 TTL 必须覆盖审批窗口」这条**产品不变量**
+  由 `tests/lease_ttl_invariant_test.go` 钉住（3 条，跨包）。
+
+**判据**（先红后绿 + 鉴别力自检）：
+
+| 判据 | 性质 | 回退实现后 |
+|---|---|---|
+| `TestLeaseRenewAttemptTimeout_NeverEatsMoreThanHalfTheLease` | 纯函数（上限 ≤ 剩余的一半） | 绿（常量本身没动） |
+| `TestLeaseState_HungRenewEndpointStillGetsRetried` | **行为**：租约到期前还能再试 | **红**（旧实现只有一次） |
+| `TestLeaseState_EveryRenewFailureIsLogged` | **行为**：每次失败都留痕 | **红**（旧实现致命那次没留痕） |
+| `TestHungRenewServerActuallyHangs` | 判据自身的**前提判据** | 绿 |
+| `tests/TestDefaultLeaseTTLCoversThePermissionWindow` | 跨包不变量（与环境无关） | 绿（默认常量没动） |
+| `tests/TestEffectiveLeaseTTLCoversTheEffectivePermissionWindow` | 跨包不变量（生效值） | 绿 |
+| `tests/TestCommandLoopConfigUsesTheSameDefaultLeaseTTL` | 单一事实来源 | **红** |
+
 ### 2.7 四个「只是声明一下」
 
 | 现象 | 真因 | 修法 |
@@ -692,6 +815,112 @@ ACC 侧源码（`agent-control-center/acc-go/internal/mcp/server.go` 的
 
 ---
 
+## 4.5 ★★ 续（2026-10-27 02:45~04:05）：**真机 flow1 第一次跑到最后一条断言**，红因从「a11y」换成了「租约」
+
+### 4.5.1 这一轮真正拿到了什么（**逐条，别当成「全绿」**）
+
+| 环节 | 读数 | 证据 |
+|---|---|---|
+| 登录 | ✅ | preflight 通过（此前 03:04 那轮卡在这里，见 §4.5.3） |
+| 夹具委派 | ✅ | `已委托：task_id=task-639ab88a9441a6c39c1b8e453ef47e6e dispatch_id=dispatch_83e03322-…` |
+| 待批项出现 | ✅ | `✅ 待批项已出现：int-b5d035d6-… title="mkdir -p /tmp/maestro-acc-approve && …"` |
+| **Maestro 的应答真的到了 daemon** | ✅ | daemon 日志 `03:28:37 accbridge permission answered locally dispatch_id=dispatch_83e03322-… tool_call_id=call_pWhJyFzGNm2bKe2omV2ZoyGb allow=true option_id=once` |
+| 待批清空 | ✅ | flow1 步骤 3（`notVisible: "ACC 待批.*"`）过 |
+| 任务跑完并进「已结束」区 | ❌ | flow1 步骤 4 红：`Assertion is false: "已完成", Right of "maestro-acc-approve" is visible` |
+
+⇒ **审批环（App 看得到 → 人答得 → daemon 收到了）在真机上是真的通了**，
+且这次读数是在**新 APK（165459013 字节，01:01 装的）**上拿的
+（读数前核对过设备上 APK 字节数 == 本地构建，见 §6.1 纪律）。
+⇒ **红在最后一步，而且红因是「租约丢了 ⇒ 任务被判 cancelled/unknown」**
+   ⇒ 卡片当然不是「已完成」—— 那是**如实**的状态。
+
+### 4.5.2 红因的完整时间线（daemon 日志，逐字）
+
+```
+03:27:17 executing dispatch dispatch_id=dispatch_83e03322-… fencing_token=1
+03:27:35 lease renewed  expires_at=03:28:04.785
+03:27:53 lease renewed  expires_at=03:28:22.393
+03:28:10 lease renewed  expires_at=03:28:40.168
+03:28:33 lease renewal failed attempt=1 remaining_ms=6255 error="Post \".../lease\": EOF"
+03:28:37 accbridge permission answered locally allow=true option_id=once
+03:28:39 facade acp permission request received request_id=1        ← 第 2 轮审批
+03:28:39 lease renewal failed attempt=2 remaining_ms=796  error="Post \".../lease\": EOF"
+03:28:41 lease expired mid-execution; flagging dispatch as unknown
+03:28:41 accbridge permission denied (fail-closed) reason="acc emit failed: … context canceled"
+03:28:41 command lifecycle failed error="execution stopped after lease loss; outcome unknown"
+```
+
+⇒ 第 1 轮审批**人已经答了**，第 2 轮审批到达时租约正好到期 ⇒ fail-closed。
+⇒ 根因与修法见 §2.16（agent-companion `dce8a35`，已推 main）。
+
+### 4.5.3 ★ 一次**基础设施事故**：Docker VM 被 poweroff ⇒ Postgres 断 ⇒ 登录超时 ⇒ flow 起步就红
+
+03:04 那轮 flow1 在 preflight 就红了：「登录后仍停在登录页（30s），last hash=(超时)」。
+**当时报的是登录失败，真因在三层之下**：
+
+1. `scripts/diag-preflight-login-stuck.mjs`（改成 macOS 的 adb 路径后）报
+   「情况 B：CDP 正常、hash 真的停在 #/login」，页面文案是
+   **「登录失败，请检查网络连接与后端地址后重试」**；
+2. 宿主直连 `POST /api/auth/login` ⇒ **HTTP=000 time=15.011s**（被 curl 掐断），
+   而 pocketd 日志里那条是 `POST /api/auth/login - 200 (29.98s)`
+   ⇒ 登录接口要 **15~30 秒**；
+3. 再往下：`GET /api/notifications - 500 (607ms)`、
+   `PUT /api/user-settings/app_prefs/default - 500 (13m58s)`、
+   `POST /api/v2/runtime/lease` 连续 EOF ⇒ **所有碰 DB 的接口都在挂**。
+
+**根因**：`~/Library/Containers/com.docker.docker/Data/log/host/com.docker.virtualization.log`
+里逐字 ——
+
+```
+[2026-10-26T18:51:59.767711000Z][com.docker.virtualization] Requesting VM termination
+[2026-10-26T19:08:39…] "stopReason":"service pl061 failed: poweroff requested"
+```
+
+⇒ **Docker 的 Linux VM 在 02:51:59 被 poweroff**，而 Postgres（`ac-audit-pg17`）
+   跑在容器里 ⇒ 数据库从 02:51 起就断了 ⇒ 后端全挂 ⇒ 登录超时 ⇒ App 报「网络错误」。
+⇒ 也就是说：**App 的报错是诚实的，是后端真的挂了**（这一点值得肯定 ——
+   它没有假装成功，也没有把 500 吞掉）。
+
+**恢复过程**（记录下来，下一轮可以直接照做）：
+
+1. `docker desktop status` ⇒ **stopped**（UI 进程在，但 VM 没起）；
+2. `docker desktop start` ⇒ 「already running」（**它只看 UI 进程，不看 VM**）
+   ⇒ 这条命令在「UI 活着、VM 死了」这个状态下**没有用**；
+3. `osascript -e 'quit app "Docker"'` + `pkill -f com.docker.backend` + `open -a Docker`
+   ⇒ **10 秒内** Docker 29.8.2 起来，容器自动恢复，`ac-audit-pg17` healthy；
+4. 恢复后 `POST /api/auth/login` ⇒ **8.9ms**（原先 15~30 秒）。
+
+**但当时 VM 起不来**，因为宿主内存被打光（64G 里只剩 **58MB** 空闲、swap 用掉 12.2/13.3G），
+而 Docker VM 配的是 **6144 MiB**（`settings-store.json` 的 `MemoryMiB`）。
+腾内存的办法（**可逆**）：
+
+```bash
+# 卸载 Ollama 里已加载的模型（模型留在磁盘，下次用会自动重新加载）
+curl -s http://127.0.0.1:11434/api/generate -d '{"model":"qwen3.8:27b-mlx","keep_alive":0}'
+curl -s http://127.0.0.1:11434/api/generate -d '{"model":"qwen2.5:7b","keep_alive":0}'
+# ⇒ 空闲页从 3636（≈58MB）涨到 1,464,690（≈23GB）
+```
+
+> ★ 为什么敢卸载 Ollama 的模型：派单智能体用的是**远端** provider
+> （`~/.config/opencode/opencode.json`：`kaixuan/minimax-m3`），
+> **不在 Ollama 链路上**；Ollama 当时加载的 `qwen2.5:7b` / `qwen3.8:27b-mlx` /
+> `qwen3-embedding:8b` 与本次验证无关。
+> ⇒ 顺带实测到：同一时刻**两个** Android 模拟器**都被内存风暴打死了**
+>   （`adb devices` 里 5556/5558 双双消失），重新起了 5556（`pocket-test` AVD，4 核）。
+
+### 4.5.4 ACC 在 04:00 之后**完全无响应**（本轮最后的阻塞）
+
+04:00~04:02 直连 `http://100.106.67.198:4101/api/v2/runtime/heartbeat`：
+**连续三次 `HTTP=000 time=5.00s`**（03:22 时还是 1.56s 的 401）。
+⇒ daemon 的注册请求也全部被 reset ⇒ `command_loop_ready` 起不来
+（`cannot acquire run_id (ACC unreachable); retrying`）⇒ 派单根本到不了 daemon。
+⇒ 与 §2.16 记的「续租请求卡 5.2 秒才 EOF」是**同一个 5 秒特征**
+⇒ **这条链路（隧道 utun4 / 前置代理）上有一个 5 秒的截止**，
+   ACC 后端一慢，请求就被 5 秒后掐断。
+⇒ ACC 主机本机**无 SSH** ⇒ 改不了、部署不了、验证不了 ⇒ 只能等它自己好。
+
+---
+
 ## 5. 环境事故（**不是产品缺陷**，但让本轮多花了不少时间，如实记录）
 
 1. **Docker Desktop 被手动暂停** ⇒ PG「端口在监听但不回包」⇒ 委派 502 / tasksync 失败 /
@@ -710,6 +939,20 @@ ACC 侧源码（`agent-control-center/acc-go/internal/mcp/server.go` 的
    `facade acp session/new failed` ⇒ `error_code=session_create_failed`、结局 unknown。
    **同一时刻单独复测握手：initialize 1.07s / session/new 1.03s** ⇒ 不是产品缺陷，是负载尖峰。
    ⇒ 教训（已写进下一轮提示词）：**设备读数前先看 load1**，并用握手耗时做交叉验证。
+5. ★★ **（2026-10-27 02:51~03:20）Docker 的 Linux VM 被 poweroff** ⇒ Postgres 断 ⇒
+   后端所有 DB 接口挂掉（登录 15~30 秒、`app_prefs` 500 挂 13 分钟）⇒
+   **真机 flow 在 preflight 的登录处就红了**，报错文案是
+   「登录失败，请检查网络连接与后端地址后重试」（**那条文案是诚实的** ——
+   后端真的挂了）。
+   ⇒ 判别与恢复见 §4.5.3（`docker desktop status` = stopped 而 UI 进程还在；
+   `docker desktop start` 在这个状态下**没用**，要 quit + pkill backend + open）。
+   ⇒ VM 起不来的真因是**宿主内存被打光**（剩 58MB）⇒ 卸载 Ollama 已加载的模型
+   （可逆）后 10 秒内恢复。
+6. ★★ **（2026-10-27 04:00 起）ACC 完全无响应**：直连连续三次 `HTTP=000 time=5.00s`
+   （03:22 时还是 1.56s 的 401）⇒ daemon 注册被 reset ⇒ `command_loop_ready` 起不来
+   ⇒ **派单根本到不了 daemon** ⇒ 真机流无法进行（§4.5.4）。
+   ⇒ 5 秒这个固定特征与 §2.16 的「续租卡 5.2 秒才 EOF」是同一件事。
+   ⇒ ACC 本机**无 SSH** ⇒ 只能等。
 
 ---
 
@@ -745,17 +988,24 @@ ACC 侧源码（`agent-control-center/acc-go/internal/mcp/server.go` 的
    （与 origin/main 一致，属既有状态，**没有动别人的文件**）。
 9. ★ **修复后的 App 还没拿到整条流的全绿读数**：
    修复后的构建（165459013 字节）已于 01:01 装到 emulator-5556，
-   浏览器层隔离实验在它上面读数正常（§4.4.3），
-   但**真机 flow1（acc-approval）与 flow2（acc-delegate-stop）都没能在修复后的 App 上重跑**
-   —— 宿主 load 飙到 455（10 核），设备端 `uiautomator dump` 采不到树
-   （无障碍服务被 SIGKILL），任何此刻的读数都是**失真的**。
-   ⇒ **这是本轮最大的未完成项**：修复后的整条流是否真的闭环，**还没有证据**。
+   03:28~03:31 那轮**真的跑到了最后一条断言**（§4.5.1）：
+   登录 ✅、委派 ✅、待批出现 ✅、**应答到了 daemon** ✅、待批清空 ✅，
+   **红在「任务跑完并进已结束区」** ⇒ 红因是**租约丢失**（§2.16）。
+   ⇒ agent-companion `dce8a35`（续租超时上限 + 致命失败留痕 + 租约 TTL 覆盖审批窗口）
+     已推 main 且**已部署**（pid 42464，`vcs.revision=dce8a35`），
+     **但部署后还没重跑** —— 04:00 起 ACC 完全无响应（§4.5.4）。
+   ⇒ **这仍是本轮最大的未完成项**：带租约修复的 flow1 全绿读数**没有拿到**。
 10. ★ **人工审批的等待窗口只有 120 秒**（`AC_PERMISSION_TIMEOUT_MS` 默认 120_000，
     agent-companion `internal/config/config.go`）。
     ⇒ 手机上看到卡片、人还没点完，任务就已经 `permission_denied` 死了
     （22:25 与 22:23 两轮都是这个收场）。
-    ⇒ 租约续租已经修好（派单能一直活着），**审批窗口本身还没放宽**；
+    ⇒ **租约侧已经对齐**（§2.16：租约 TTL 也改成 120 秒，覆盖整个审批窗口，
+      并由 `tests/lease_ttl_invariant_test.go` 钉住不变量）；
+      **审批窗口本身还没放宽**（仍是 120 秒）；
     放宽前要先确认 ACC 侧派单自身的超时上限（否则窗口比派单还长就没意义）。
+    ⇒ 另有一个未解的**交互缺陷**：一次危险工具调用会连发 2~3 个审批请求
+      （同一个 toolCallId），而 App 的「允许一次」只答了一轮
+      ⇒ 第 2 轮仍要人再点（03:28 那轮的 `request_id=1` 就是它）。
 11. **ACC 的 MCP 面在抖**（§4.4.4）：EOF / 超时 / 400 都会出现 ⇒ 委派成功率受影响。
     ACC 侧不可改（本机无 SSH）⇒ 只能靠客户端的韧性 + 诚实报错。
 
@@ -778,61 +1028,87 @@ ACC 侧源码（`agent-control-center/acc-go/internal/mcp/server.go` 的
 ```
 请接取最新代码合并到本地，然后提交代码并推送。
 
-上一轮（round55 续，2026-10-27）把 round55 自己的一处结论**推翻了**：
-「a11y 修复已在真机生效」是**假的** —— 修复后的 APK（165459013 字节）**根本没装到设备上**
-（设备上跑的是 12:50 的 165458754 字节那个，section 还挂着 v-if）。
-⇒ 所以 22:23 那轮 flow1 的「第 2 张卡在无障碍树里消失」不是产品缺陷没修好，
-   而是**在测旧代码**。修复后的构建已于 01:01 装上，浏览器层隔离实验在它上面读数正常
-   （空→非空后无障碍树能恢复），但**整条流的全绿读数还没拿到**。
-本轮另外修掉并已推 main 的：
-· openpocket 1756b77d —— MCP initialize 遇到 EOF/连接重置必须重试
-  （一次传输层掐断曾让委派永久失效）；写工具**不**重试（acc_create_task 无幂等键）。
-· agent-companion e1cdb7d —— R-5 负控不许跳过（main 上 go test ./... 一直是红的）。
-· 夹具：写请求失败先问 ACC 本尊再决定要不要重试（避免重复建单）；
-  残留清理开始如实统计「删掉几条 / 删不掉几条」（ACC 来源的任务本地删不掉）。
+上一轮（round55 续二，2026-10-27 02:45~04:05）把「审批环到底通没通」这个问题
+**推进到了最后一步**，也推翻了自己两处结论。这一轮的经过是：
+
+1. **flow1（acc-approval）第一次真的跑到了最后一条断言**（03:28~03:31，新 APK 165459013）：
+   登录 ✅、夹具委派 ✅、待批项出现 ✅、**Maestro 的应答真的到了 daemon** ✅
+   （daemon 日志 `permission answered locally allow=true`）、待批清空 ✅；
+   **红在「任务跑完并进已结束区」** ⇒ 红因不是 a11y、不是判据写错，
+   而是**租约丢了**（`execution stopped after lease loss; outcome unknown`）。
+2. **推翻自己的一处「修复」**：`75755d3` 把取租约的重试加在了
+   `AcquireOrRenew` 上，判据也只测它 —— 但 daemon 的真实路径是
+   `command_loop.go` → `client.AcquireLease` 直调，**`AcquireOrRenew` 根本不在二进制里**
+   ⇒ 那次修复**一次都没生效**，而判据是绿的（`0ffe17c` 已修，并加了源码级守卫）。
+3. **钉死了租约韧性的三个缺陷**（`dce8a35`）：续租请求**没有客户端超时上限**
+   （实测每次卡 5.2 秒才 EOF，一次卡死能吃掉整段余量）；
+   **致命的那次失败没有留痕**；**租约 TTL（30s）比审批窗口（120s）还短**
+   ⇒ ACC 连续抖 22 秒，「人还在答题、任务先被判死」。
+4. **一次基础设施事故**：Docker 的 Linux VM 在 02:51:59 被 poweroff
+   ⇒ Postgres 断 ⇒ 后端所有 DB 接口挂（登录 15~30 秒）⇒
+   **flow1 在 preflight 的登录处就红了**（App 报「登录失败…」，**那条文案是诚实的**）。
+   已按 §4.5.3 恢复（quit + pkill backend + open；顺带卸载 Ollama 已加载的模型腾内存）。
+
+已推 main 的：
+· agent-companion `0ffe17c` —— 取租约的重试打到 daemon **真实路径**上 + 源码级守卫；
+· agent-companion `dce8a35` —— 续租请求超时上限 + 致命失败留痕 + 租约 TTL 覆盖审批窗口
+  （跨包不变量由 `tests/lease_ttl_invariant_test.go` 钉住）。
 
 这一轮请按批判式审计继续，重点是**明确没做到**的部分：
 
-1. ★★ 拿到**修复后 App** 的真机全绿读数（这是上一轮最贵的坑）：
-   · 第一条判据必须是「设备上那个 APK 的字节数/哈希 == 我刚构建出来的那个」
-     （别再拿旧包测新代码然后写成「已修复」）；
-   · flow1（acc-approval）与 flow2（acc-delegate-stop）都要在修复后的 App 上重跑；
-   · 读数前先看 load1（这台机器的经验阈值 <25；实测 200+ 时设备端
-     uiautomator dump 会被 SIGKILL ⇒ 任何读数都失真）。
-2. ★ 产品级的 delegate 韧性：ACC 的 MCP 面会 EOF/超时/400（无 SSH，改不了 ACC），
-   而 acc_create_task **没有幂等键** ⇒ 写失败后服务器可能已经建出任务。
-   现在只有**夹具层**做了「先问 ACC 再重试」，产品层 `POST /api/tasks/delegate`
-   仍然「失败即 502」，用户无法判断任务到底建没建出来。
-   ⇒ 要么让 ACC 支持幂等键（写契约/issue + 契约测试），要么让 delegate 失败时
-   回一个「可能已建，请到任务列表确认」的诚实结果，并给判据。
-3. ★ 人工审批窗口只有 120 秒（AC_PERMISSION_TIMEOUT_MS）⇒ 人还没点完任务就死了。
-   租约续租已修好（派单能一直活着），**审批窗口本身还没放宽**；
-   放宽前先确认 ACC 侧派单自身的超时上限，并给判据。
-4. ACC 侧仍缺的两个端点（GET /api/v2/runtime/permissions、
-   POST /api/v2/runtime/permissions/{id}/decision）—— acc-go 从未实现；
-   本机到 ACC（100.106.67.198:4101 == 192.168.31.211:4101）无 SSH。
-   ⇒ 要么找到能改 ACC 的路径，要么把「契约在、实现没有」写成可执行的 issue
-     并给出可验收的契约测试；**不要用 daemon 本地队列兜底就宣称
-     「ACC 审批面已打通」**。
-5. ACC 派单的 run 不进 daemon run 历史（GET /api/v1/runs 恒空）⇒
+1. ★★★ **拿到带租约修复的 flow1 全绿读数**（`dce8a35` 已部署，pid 42464，
+   `vcs.revision=dce8a35`，但**部署后还没重跑**）：
+   · 先确认 ACC 恢复（直连 `POST http://100.106.67.198:4101/api/v2/runtime/heartbeat`
+     是否还回 401；04:00 起连续 `HTTP=000 time=5.00s`）⇒ ACC 不通就别硬跑，
+     先把其它事情做完；
+   · 第一条判据仍然是「设备上那个 APK 的字节数/哈希 == 我刚构建出来的那个」；
+   · **读数前先看 load1**（这台机器的经验阈值 <25；实测 200+ 时设备端 uiautomator dump
+     会被 SIGKILL ⇒ 任何读数都失真）。本轮 load 长期 200~400，模拟器都被打死了。
+2. ★★ flow2（acc-delegate-stop）**至今没有在新 App 上跑过**（上一轮的 ✅ PASS 来自旧基线）。
+3. ★★ **「人还在答题、任务先被判死」还差一半**：租约侧已对齐（TTL 覆盖审批窗口），
+   但 **审批窗口本身仍是 120 秒**（`AC_PERMISSION_TIMEOUT_MS`）⇒ 人没点完还是死。
+   ⇒ 放宽前先确认 ACC 侧派单自身的超时上限；并给判据。
+4. ★★ **一次工具调用要人答 2~3 次**（同一个 toolCallId 连发多轮审批）：
+   03:28 那轮第 1 轮答了，第 2 轮到达时租约正好到期 ⇒ fail-closed。
+   ⇒ 评估把同一 toolCallId 的多项检查聚合成一次点击（注意 fail-closed 与
+     opencode 的 allow_always 语义），并补判据。
+5. ★ 产品级的 delegate 韧性：`acc_create_task` **没有幂等键** ⇒ 写失败后服务器可能
+   已经建出任务。现在只有**夹具层**做了「先问 ACC 再重试」，
+   产品层 `POST /api/tasks/delegate` 仍然「失败即 502」，用户无法判断任务建没建出来。
+   ⇒ 要么让 ACC 支持幂等键（契约 + 契约测试），要么让 delegate 失败时回一个
+   「可能已建，请到任务列表确认」的诚实结果，并给判据。
+6. ACC 侧仍缺的两个端点（`GET /api/v2/runtime/permissions`、
+   `POST /api/v2/runtime/permissions/{id}/decision`）—— acc-go 从未实现；
+   本机到 ACC 无 SSH。⇒ 要么找到能改 ACC 的路径，要么把「契约在、实现没有」
+   写成可执行的 issue + 可验收的契约测试；**不要用 daemon 本地队列兜底就宣称
+   「ACC 审批面已打通」**。
+7. ACC 派单的 run 不进 daemon run 历史（`GET /api/v1/runs` 恒空）⇒
    「同步查看任务历史」在 ACC 派单上还是空的；生成文件也没有读面。
    ⇒ 设计并实现这两个读面，并给真机判据。
-6. /api/acc/approvals 未按 workspace 过滤 ⇒ 补过滤并补判据。
-7. 一次工具调用要人答 2~3 次审批 ⇒ 评估把同一 toolCallId 的多项检查聚合成
-   一次点击（注意 fail-closed 与 opencode 的 allow_always 语义），并补判据。
-8. 高负载下派单以 session_create_failed 收场：ACP 握手可能超过 ACC 租约。
+8. `/api/acc/approvals` 未按 workspace 过滤 ⇒ 补过滤并补判据。
+9. 高负载下派单以 session_create_failed 收场：ACP 握手可能超过 ACC 租约。
    ⇒ 让 daemon 的报错能说清「租约先到期了」，并给一条判据（判据本身也要被测）。
+10. **租约重试的两套实现还没合并**：acquire 走 `acquireWithRetry`，
+    续租走 `leaseRenewRetryDelay` ⇒ 合并成同一套策略函数，并补判据。
+11. **ACC 链路上的 5 秒固定截止**（实测：续租卡 5.2 秒才 EOF；
+    04:00 起 heartbeat 连续 `time=5.00s`）—— 隧道 utun4 / 前置代理上的超时，
+    本机改不了 ⇒ 客户端所有对 ACC 的调用都要有**比 5 秒更短**的预算，否则
+    必然等到那个截止才失败（本轮已修的续租尝试上限 5 秒其实卡在边界上，
+    **建议把单次尝试上限收到 3 秒**并给判据）。
 
-纪律（上一轮踩过的，别再踩）：
+纪律（踩过的，别再踩）：
 · 「构建成功」≠「设备上跑的是它」：设备侧读数前先核对 APK 字节数/哈希。
-· 设备读数前先看 load1（阈值 <25；实测 200+ 时设备端 uiautomator dump 被 SIGKILL）。
+· **「判据绿」≠「产品路径被修了」**：判据必须打在**产品真的会走的那个函数**上；
+  用 `go tool nm` 查二进制里有没有那个符号来确认；并加源码级守卫（见 §2.15）。
+· 设备读数前先看 load1（阈值 <25；实测 200+ 时 uiautomator dump 被 SIGKILL）。
   负载高时先做文档/代码，别拿失真的读数当结论。
-· **dump 失败 ≠ 文本不存在**：探针/判据要把「采不到无障碍树」与「树里没有」
-  分开统计，否则会把环境故障报成产品缺陷（本轮踩过一次，已修探针）。
+· **环境故障要单独归类**：DB 挂 ⇒ 登录超时；ACC 挂 ⇒ 派单到不了 daemon。
+  别把它们报成产品缺陷（本轮两件都差点被误判）。
+· **dump 失败 ≠ 文本不存在**：探针/判据要把「采不到无障碍树」与「树里没有」分开统计。
 · 同一台设备不能并行跑两条 Maestro 流；本会话用 emulator-5556。
 · Maestro 的 visible 是完整匹配（「ACC 待批」≠「ACC 待批（1）」⇒ 写「ACC 待批.*」）。
-· 断言前必须清同名残留，否则会命中别的行；瞬时 toast 只能等一次、不能连着 assert。
-· 判据要当判据测：恒真/恒假/假绿的判据必须清掉。
+· 断言前必须清同名残留，否则会命中别的行；瞬时 toast 只能等一次。
+· 判据要当判据测：恒真/恒假/假绿的判据必须清掉；判据本身也要有前提判据。
 · 提交走临时 worktree + git push origin HEAD:main，**不移动本地 main**。
 · 凭据只经环境变量/0600 env 文件传递，不打印、不入仓库。
 
