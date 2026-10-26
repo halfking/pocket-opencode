@@ -122,6 +122,82 @@
       </div>
     </section>
 
+    <!-- ACC 派单待批（2026-10-26）——
+         ACC 上没有 command 级 permission 端点（实测 404），agent-companion
+         把待批项停在自己的干预队列等人应答。这块就是那个队列在 App 里的面：
+         看得到、答得了；答完智能体继续跑。 -->
+    <section v-if="accApprovals.approvals.length > 0" class="triage-card acc-approval-card" data-testid="acc-approval-card">
+      <div class="triage-card-head">
+        <span>ACC 待批（{{ accApprovals.approvals.length }}）</span>
+        <button class="link-btn" @click="accApprovals.loadApprovals()">刷新</button>
+      </div>
+      <div v-for="item in accApprovals.approvals" :key="item.id" class="attention-card approval" data-testid="acc-approval-item">
+        <div class="attn-head">
+          <span class="attn-kind permission">等审批</span>
+          <span class="attn-title" data-testid="acc-approval-title">{{ accApprovalSummary(item) }}</span>
+        </div>
+        <div class="attn-actions">
+          <!--
+            option id 必须取智能体给过的那一个：daemon 会逐个比对，
+            自造的 id 一律拒；而 daemon 又按 option 的 kind 决定允许/拒绝。
+            ⇒ 挑不到就不渲染那个按钮（渲染一个必然被拒的按钮是假动作）。
+          -->
+          <button
+            v-if="pickAccAllowOptionId(item)"
+            class="attn-btn primary"
+            data-testid="acc-approval-allow-once"
+            :disabled="accApprovals.decidingId !== null"
+            @click.stop="decideAccApproval(item, pickAccAllowOptionId(item)!)"
+          >✓ 允许一次</button>
+          <button
+            v-if="pickAccRejectOptionId(item)"
+            class="attn-btn ghost"
+            data-testid="acc-approval-reject"
+            :disabled="accApprovals.decidingId !== null"
+            @click.stop="decideAccApproval(item, pickAccRejectOptionId(item)!)"
+          >✕ 拒绝</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ACC 生态：当前任务与已上报的会话。
+         这两个读面此前只有 API 没有调用方（前端门禁 check:dead-api 判为
+         「新增死能力」⇒ 红的），而它们正是需求里的「获取到当前的会话和
+         任务等信息」⇒ 接上来，而不是删导出。
+         ⚠ 它**不在**「委托给 ACC」弹窗里：弹窗里多一块内容会让 sheet
+         变高到顶满屏（实测：sheet 顶部从 y≈1200 变成 y=0），于是弹窗里
+         输入框的坐标全部位移 —— 而那些坐标是 Maestro 流的判据。 -->
+    <section class="triage-card acc-eco-card" data-testid="acc-eco-card">
+      <div class="triage-card-head">
+        <span>ACC 生态</span>
+        <button
+          class="link-btn"
+          data-testid="acc-eco-toggle"
+          :disabled="accStore.ecosystemLoading"
+          @click="accStore.loadEcosystem()"
+        >
+          {{ accStore.ecosystemLoading ? '读取中…' : '读取任务与会话' }}
+        </button>
+      </div>
+      <div v-if="accStore.ecosystemError" class="acc-error">
+        读不到 ACC 生态：{{ apiError(accStore.ecosystemError, 'errors.operateFailed') }}
+      </div>
+      <div v-if="accStore.accTasks.length > 0" class="acc-eco-block" data-testid="acc-eco-tasks">
+        <div class="acc-eco-title">任务（{{ accStore.accTasks.length }}）</div>
+        <div v-for="t in accStore.accTasks.slice(0, 5)" :key="t.id" class="acc-eco-row">
+          <span class="acc-eco-name">{{ t.title || t.id }}</span>
+          <span v-if="t.status" class="acc-eco-status">{{ t.status }}</span>
+        </div>
+      </div>
+      <div v-if="accStore.accSessions.length > 0" class="acc-eco-block" data-testid="acc-eco-sessions">
+        <div class="acc-eco-title">会话（{{ accStore.accSessions.length }}）</div>
+        <div v-for="s in accStore.accSessions.slice(0, 5)" :key="s.id" class="acc-eco-row">
+          <span class="acc-eco-name">{{ s.agentId || s.agentKind || s.id }}</span>
+          <span v-if="s.dispatchId" class="acc-eco-status">{{ s.dispatchId }}</span>
+        </div>
+      </div>
+    </section>
+
     <!-- Section A: Running Tasks -->
     <section class="section running-section">
       <div class="section-header">
@@ -583,6 +659,12 @@ import {
 } from '../../utils/list-load-state'
 import { useApprovalAlerts } from '../../composables/useApprovalAlerts'
 import { useAccTasksStore } from '../../stores/accTasks'
+import { useAccApprovalsStore } from '../../stores/accApprovals'
+import {
+  accApprovalSummary,
+  pickAccAllowOptionId,
+  pickAccRejectOptionId,
+} from './accApprovalLogic'
 import { useAuthStore } from '../../stores/auth'
 import { EmptyState, PullToRefresh, Skeleton, UnifiedComposer } from '../../components'
 import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue'
@@ -626,6 +708,17 @@ const auth = useAuthStore()
 
 // ── 健康度 / 分诊（设计方案 v2 §4.1/§4.2，P0 近似数据） ──
 const approvals = useInstanceApprovals(() => currentInstance.value?.id || '')
+// ACC 派单的待批项（另一个数据源：agent-companion 的干预队列）。
+const accApprovals = useAccApprovalsStore()
+let accApprovalTimer: ReturnType<typeof setInterval> | null = null
+
+async function decideAccApproval(item: { id: string }, optionId: string) {
+  const ok = await accApprovals.decide(item.id, optionId)
+  if (ok) {
+    // 应答后立刻再拉一次：智能体可能紧接着又问下一条。
+    await accApprovals.loadApprovals()
+  }
+}
 useApprovalAlerts(approvals.pending, { instanceId: () => currentInstance.value?.id || '' })
 const showTriage = ref(false)
 /** 驱动 "距上次活动" 周期刷新的时钟（30s 一跳，避免整页轮询）。 */
@@ -1073,6 +1166,11 @@ onMounted(() => {
   loadSessions()
   // L0/L1 数据源：实例级待审批实时流（WS 事件驱动 + 首拉）。
   approvals.startLive()
+  // ACC 派单的待批项：另一个数据源（agent-companion 的干预队列），没有 WS
+  // 事件可挂 ⇒ 轮询。5s 一跳：待批窗口（daemon 侧 120s）本来就短，
+  // 拉得太慢会让人来不及答。
+  accApprovals.loadApprovals()
+  accApprovalTimer = setInterval(() => { accApprovals.loadApprovals() }, 5_000)
   nowTimer = setInterval(() => { nowTick.value = Date.now() }, 30_000)
   wsClient.on('task_created', handleTaskUpdate)
   wsClient.on('task_updated', handleTaskUpdate)
@@ -1081,6 +1179,10 @@ onMounted(() => {
 
 onUnmounted(() => {
   approvals.stopLive()
+  if (accApprovalTimer !== null) {
+    clearInterval(accApprovalTimer)
+    accApprovalTimer = null
+  }
   if (nowTimer !== null) {
     clearInterval(nowTimer)
     nowTimer = null
@@ -1094,7 +1196,7 @@ onUnmounted(() => {
 
 // ── Data Loading ──
 async function handleRefresh() {
-  await Promise.all([loadTasks(), loadSessions(), approvals.refresh()])
+  await Promise.all([loadTasks(), loadSessions(), approvals.refresh(), accApprovals.loadApprovals()])
 }
 
 async function loadTasks() {
@@ -1429,7 +1531,8 @@ async function stopTask(task: Task): Promise<void> {
     void handleRefresh()
   } catch (e: any) {
     console.error('Failed to cancel task:', e)
-    toast.error(e?.message ? `停止失败：${e.message}` : '停止失败，请重试')
+    // 原始错误不许直接上屏（前端门禁 check:raw-error）：走已有的映射。
+    toast.error(apiError(e, 'errors.operateFailed'))
   } finally {
     stoppingTaskId.value = null
   }
@@ -1814,6 +1917,35 @@ function timeAgo(dateStr?: string): string {
 }
 
 /* ── Delegate to ACC ── */
+.acc-eco-block {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--surface-2);
+}
+.acc-eco-title {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-bottom: 4px;
+}
+.acc-eco-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 13px;
+  padding: 2px 0;
+}
+.acc-eco-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.acc-eco-status {
+  color: var(--text-secondary);
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
 .section-header .acc-delegate-btn {
   margin-left: 8px;
 }

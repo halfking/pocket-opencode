@@ -287,7 +287,7 @@ function eventText(e: WorkItemEvent): string {
 }
 
 function statusText(s?: string): string {
-  return { active: '进行中', blocked: '阻塞', completed: '已完成', accepted: '已验收' }[s ?? ''] ?? s ?? ''
+  return { active: '进行中', blocked: '阻塞', completed: '已完成', cancelled: '已取消', failed: '失败', accepted: '已验收' }[s ?? ''] ?? s ?? ''
 }
 
 function stateText(s?: string): string {

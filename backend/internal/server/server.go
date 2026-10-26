@@ -855,6 +855,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/acc/tasks", s.requireAuth(s.handleACCTasks))
 	mux.HandleFunc("/api/acc/projects", s.requireAuth(s.handleACCProjects))
 	mux.HandleFunc("/api/acc/sessions", s.requireAuth(s.handleACCSessions))
+	// ACC 派单的审批面（2026-10-26）：ACC 侧**没有** command 级 permission
+	// 端点（实测 GET/POST 都 404），agent-companion 已改为把待批项停在自己
+	// 的干预队列等人应答。这条路由把那个队列接到 App：看得到、答得了。
+	mux.HandleFunc("/api/acc/approvals", s.requireAuth(s.handleACCApprovals))
+	mux.HandleFunc("/api/acc/approvals/", s.requireAuth(s.handleACCApprovalOps))
 	// S0-E: Notification Center（inbox + rules）
 	mux.HandleFunc("/api/notifications", s.requireAuth(s.handleNotifications))
 	mux.HandleFunc("/api/notifications/", s.requireAuth(s.handleNotificationOps))
@@ -2152,6 +2157,12 @@ func (s *Server) pendingApprovalsForTask(ctx context.Context, taskID, workspaceI
 func isValidTaskStatus(status string) bool {
 	switch status {
 	case "active", "blocked", "completed", "cancelled":
+		return true
+	// "failed" 是 2026-10-26 新增的：ACC 派单失败时，任务**结束但没完成**。
+	// 在此之前它只能被写成 "cancelled"（用户主动取消的语义）或留在
+	// "active"（假的「还在跑」）。两种说法都是错的，所以把 failed
+	// 加进词汇，而不是把失败说成取消。
+	case "failed":
 		return true
 	default:
 		return false

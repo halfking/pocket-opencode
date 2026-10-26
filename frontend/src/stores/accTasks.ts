@@ -11,7 +11,15 @@
  */
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import { createAccTask, listAccAgents, type AccAgent, type AccDelegateResult, type AccTask } from '../api/accTasks'
+import {
+  createAccTask,
+  listAccAgents,
+  listAccSessions,
+  listAccTasks,
+  type AccAgent,
+  type AccDelegateResult,
+  type AccTask,
+} from '../api/accTasks'
 
 export const useAccTasksStore = defineStore('accTasks', () => {
   const lastTask = ref<AccTask | null>(null)
@@ -21,6 +29,31 @@ export const useAccTasksStore = defineStore('accTasks', () => {
   const agents = ref<AccAgent[]>([])
   const agentsLoading = ref(false)
   const agentsError = ref<string | null>(null)
+  /**
+   * ACC 生态：ACC 上的 canonical 任务与已上报的会话。
+   *
+   * 这两个读面此前只有 API、没有调用方（前端门禁 check:dead-api 判为
+   * 「新增死能力」⇒ 红的）。它们恰恰是需求里的「获取到当前的会话和任务
+   * 等信息」—— 所以按「接上去」修，而不是删导出。
+   */
+  const accTasks = ref<AccTask[]>([])
+  const accSessions = ref<any[]>([])
+  const ecosystemLoading = ref(false)
+  const ecosystemError = ref<string | null>(null)
+
+  async function loadEcosystem() {
+    ecosystemLoading.value = true
+    try {
+      const [t, s] = await Promise.all([listAccTasks(), listAccSessions()])
+      accTasks.value = t
+      accSessions.value = s
+      ecosystemError.value = null
+    } catch (err: any) {
+      ecosystemError.value = err?.message || '读取 ACC 生态失败'
+    } finally {
+      ecosystemLoading.value = false
+    }
+  }
 
   /**
    * 委托一个任务给 ACC。
@@ -87,8 +120,13 @@ export const useAccTasksStore = defineStore('accTasks', () => {
     agents,
     agentsLoading,
     agentsError,
+    accTasks,
+    accSessions,
+    ecosystemLoading,
+    ecosystemError,
     createTask,
     loadAgents,
+    loadEcosystem,
     reset,
   }
 })

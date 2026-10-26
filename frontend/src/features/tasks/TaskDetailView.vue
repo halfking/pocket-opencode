@@ -267,7 +267,7 @@ function priorityText(p?: string): string {
 }
 
 function statusText(s?: string): string {
-  return { active: '进行中', blocked: '已阻塞', completed: '已完成' }[s ?? ''] ?? s ?? ''
+  return { active: '进行中', blocked: '已阻塞', completed: '已完成', cancelled: '已取消', failed: '失败' }[s ?? ''] ?? s ?? ''
 }
 
 function formatDate(d?: string): string {
@@ -324,6 +324,8 @@ function formatDate(d?: string): string {
 .status-chip.active { background: var(--success-bg); color: var(--success); }
 .status-chip.blocked { background: var(--warning-bg); color: var(--warning); }
 .status-chip.completed { background: var(--brand-bg); color: var(--brand-primary); }
+.status-chip.cancelled { background: var(--surface-2); color: var(--text-secondary); }
+.status-chip.failed { background: var(--danger-bg); color: var(--danger); }
 
 .desc {
   font-size: var(--text-smd);
