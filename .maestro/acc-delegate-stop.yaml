@@ -136,8 +136,11 @@ appId: com.kaixuan.opencode.pocket
 #      `id: finished-task-title-cancelled` **永远不成立**。
 #   ⇒ 改成：等分区标题 → 只在「一个状态标签都看不见」时展开 →
 #     滚到本条 → 断言「状态标签在**本条标题的右边**」。
-- extendedWaitUntil:
-    visible: "已结束.*"
+# ⚠ 「已结束」分区在长页面底部 ⇒ 不滚过去就不在无障碍树里 ⇒ 先滚。
+- scrollUntilVisible:
+    element:
+      text: "已结束.*"
+    direction: DOWN
     timeout: 120000
 - runFlow:
     when:
@@ -152,7 +155,7 @@ appId: com.kaixuan.opencode.pocket
     element:
       text: "maestro-acc-stop"
     direction: DOWN
-    timeout: 60000
+    timeout: 120000
 - assertVisible:
     text: "已取消"
     rightOf:

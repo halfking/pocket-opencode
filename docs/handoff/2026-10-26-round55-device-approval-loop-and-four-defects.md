@@ -397,6 +397,34 @@ Android 系统那几个（`com.kaixuan.opencode.pocket:id/action_bar_root`、
   · `id:` 单独用 = 恒假（这个平台上没有 view id）；
   · ⇒ 要用**文本 + 空间关系**（rightOf / below）把「这条卡片的这个状态」绑死。
 
+### 2.14 任务列表接口**被远端拖死**：ACC 一抖，App 主屏整个打不开（**产品缺陷**）
+
+★ 现场（2026-10-27 02:23 真机夹具，逐字）：
+
+```
+2026/10/27 02:23:03 [WARN] writeJSON: 响应体写出失败（status=200）：
+                write tcp 127.0.0.1:18099->127.0.0.1:58394: i/o timeout
+2026/10/27 02:23:03 [SLOW] GET /api/tasks - 200 (41.239039542s)
+⇒ 客户端侧：TypeError: fetch failed / SocketError: other side closed
+⇒ 夹具的 clearResidual 直接崩掉 ⇒ 整条真机流白跑。
+```
+
+* **根因**：`GET /api/tasks` 是**三源聚合**（ACC + OpenCode + 本地 PG），
+  而 ACC 那一源是**同步**调 MCP 的、且**没有超时预算** ——
+  同一个函数里 OpenCode 那一源**反而有** `listSessionsTimeout` ⇒ 不一致。
+  ⇒ ACC 一抖（EOF / 超时 / 400 都会），列表接口就卡 41 秒、响应写不出去
+  ⇒ **App 主屏整个打不开**（不是「慢」，是打不开）。
+* **修法**：远端源一律**有预算**（`accTasksListTimeout = 5s`，
+  比 OpenCode 源的 3s 宽一点：ACC 一次往返实测 1.2~4.3s）；
+  超了就跳过该源，本地源照常返回，ACC 的数据由后台 `tasksync`（15s 一跳）补齐。
+* **判据**（先红后绿，诚实对照）：
+  · `backend/internal/server/task_list_acc_budget_test.go`（新，3 条）：
+    ACC 源挂住 ⇒ 列表接口**按时**返回 200（实测 **5.01s**）；
+    本地源数据**照常**返回（远端挂住不能把本地数据也拖没）；
+    预算常量本身被钉住（≤10s，别被悄悄改成 30s）。
+  · 只回退预算（保留判据）⇒ 红：`接口耗时 30.01s ⇒ 远端源没有预算`；
+    恢复修复 ⇒ 绿（5.8s）。
+
 ### 2.7 四个「只是声明一下」
 
 | 现象 | 真因 | 修法 |

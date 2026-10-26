@@ -172,9 +172,15 @@ appId: com.kaixuan.opencode.pocket
 #     · 「已完成」只证明**某张**卡片已完成（历史里已有别的已完成卡片）；
 #     · ⇒ 把两者**绑在一起**：状态标签必须是**本条标题的右边**那个
 #       （rightOf）⇒ 只有这一条卡片满足。
-- extendedWaitUntil:
-    visible: "已结束.*"
-    timeout: 180000
+# ⚠ 「已结束」分区在长页面的**最底部** ⇒ **不滚过去它就不在无障碍树里**
+#   （WebView 只暴露已渲染的部分）⇒ 2026-10-27 02:31 那轮实测：
+#   `Assertion is false: "已结束.*" is visible` ⇒ 等 180s 也等不到。
+#   ⇒ 先滚到它，再做后面的事。
+- scrollUntilVisible:
+    element:
+      text: "已结束.*"
+    direction: DOWN
+    timeout: 120000
 # 分区默认折叠 ⇒ 卡片不渲染 ⇒ 状态标签也不在树里。
 # ⇒ 只有在「一个状态标签都看不见」时（= 分区确实折叠着）才点标题展开；
 #   否则会把**已经展开**的分区点回折叠（这正是 flow2 之前栽的那一跤）。
@@ -192,7 +198,7 @@ appId: com.kaixuan.opencode.pocket
     element:
       text: "maestro-acc-approve"
     direction: DOWN
-    timeout: 90000
+    timeout: 120000
 - assertVisible: "maestro-acc-approve"
 - assertVisible:
     text: "已完成"
