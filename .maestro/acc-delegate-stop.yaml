@@ -127,10 +127,20 @@ appId: com.kaixuan.opencode.pocket
 # 展开「已结束」分区 ⇒ 被停掉的任务以「已取消」的状态出现。
 # 这一条把「任务不见了」和「任务被记进历史」区分开：
 # 只有状态标签能证明后端真的落定了 cancelled，而不是前端把行藏了。
+#
+# ★ 2026-10-27 修：原来这里是**无条件**点 toggle（`when: visible`）⇒
+#   分区**已经展开**时会被**点回折叠** ⇒ 末尾断言反而被自己搞红
+#   （flow1 那边栽过一次同样的坑，见 acc-approval.yaml 的说明）。
+#   ⇒ 现在先等分区出现，再**只在「没有任何已结束卡片」时**才展开
+#     （「有没有卡片」= 分区是不是展开着；「有没有这一张卡片」= 另一件事）。
+- extendedWaitUntil:
+    visible:
+      id: "completed-section-toggle"
+    timeout: 60000
 - runFlow:
     when:
-      visible:
-        id: "completed-section-toggle"
+      notVisible:
+        id: "finished-task-title-.*"
     commands:
       - tapOn:
           id: "completed-section-toggle"

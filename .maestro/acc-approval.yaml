@@ -73,20 +73,25 @@ appId: com.kaixuan.opencode.pocket
 - waitForAnimationToEnd:
     timeout: 15000
 
-# ---- 0.5 展开「已结束」分区（默认折叠 ⇒ 卡片不渲染 ⇒ 末尾断言无从命中）----
-# 只在「还没渲染出完成卡片」时点，避免把已经展开的分区点回折叠。
-- runFlow:
-    when:
-      visible:
-        id: "completed-section-toggle"
-    commands:
-      - runFlow:
-          when:
-            notVisible:
-              id: "finished-task-title-completed"
-          commands:
-            - tapOn:
-                id: "completed-section-toggle"
+# ---- 0.5 ~~展开「已结束」分区~~ ----
+#
+# ★ 2026-10-27 01:54 这一版**删掉**了原来放在开头的「展开已结束分区」块 ——
+#   它有三个缺陷，每一个都能让末尾断言**必然红**，而且红得看不出原因：
+#
+#   ① **不等待**：App 的任务列表是异步加载的。01:54 那轮实测：
+#      0.5 步在 01:54:00 判定 `completed-section-toggle` **不可见**
+#      ⇒ `when: visible` 不成立 ⇒ 整块 **SKIPPED**（commands.json seq=4）
+#      ⇒ 分区一直折叠 ⇒ 末尾断言「卡片可见」永远打不到。
+#      ⇒ 展开动作必须**放到末尾**、并且**先等分区出现**。
+#   ② **判据用错了对象**：原来用「有没有 `finished-task-title-completed`」
+#      判断要不要展开。但「这一张卡片还没完成」和「分区是折叠的」是两件事
+#      ⇒ 分区**已经展开**、只是本条还没完成时，它会判定为「折叠」
+#      ⇒ 一拍把分区**点回折叠** ⇒ 末尾断言反而被自己搞红。
+#   ③ 分区默认折叠（`showCompleted = ref(false)`）⇒ 卡片**根本不渲染**
+#      ⇒ 断言只能打在渲染出来的节点上。
+#
+# ⇒ 现在在末尾（步骤 4）做：先等分区出现 ⇒ 若「没有任何已结束卡片」就展开
+#   ⇒ 再断言本条卡片。
 
 # ---- 1. ★ 待批卡片必须出现 ----
 # 「ACC 待批（1）」里的括号数字会变 ⇒ 判据写正则（Maestro 的 visible 是
@@ -147,11 +152,26 @@ appId: com.kaixuan.opencode.pocket
 #   那是恒真的、等于没验。
 # ⚠ testid 带状态后缀：若是任务其实**失败**了，failed 那一条不会命中
 #   completed 这一条 ⇒ 漏答一轮审批导致的 permission_denied 一定红。
+#
+# ★ 2026-10-27：先确保「已结束」分区**是展开的**（卡片不渲染 ⇒ 断言无从命中），
+#   展开的判断用「有没有**任何**已结束的卡片」而不是「有没有这一张卡片」
+#   —— 后者会把「已展开、只是本条还没完成」误判成折叠 ⇒ 一拍点回折叠。
+- extendedWaitUntil:
+    visible:
+      id: "completed-section-toggle"
+    timeout: 180000
+- runFlow:
+    when:
+      notVisible:
+        id: "finished-task-title-.*"
+    commands:
+      - tapOn:
+          id: "completed-section-toggle"
 - extendedWaitUntil:
     visible:
       id: "finished-task-title-completed"
       text: "maestro-acc-approve"
-    timeout: 180000
+    timeout: 120000
 - assertVisible:
     id: "finished-task-title-completed"
     text: "maestro-acc-approve"
