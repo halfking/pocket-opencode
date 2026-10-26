@@ -52,12 +52,32 @@ PRE_FIX_COMMIT = '1f7d1688'
 _RUNNERS = {}
 
 
-def judge():
-    """判据：跑整个 EventStreamManager 用例组（含三个受影响的用例）。"""
+def _runner():
+    """判据的**运行器**（harness 的 `_go_runner` 闭包，带 `with_fresh_cache`）。"""
     if 'main' not in _RUNNERS:
         _RUNNERS['main'] = go_pkg_runner(
             './internal/opencode/', 'TestEventStreamManager')
     return _RUNNERS['main']
+
+
+def judge():
+    """判据：**跑**一遍 ⇒ 返回 (exit_code, 输出文本)。
+
+    ⚠ harness 要的是**这个二元组**，不是运行器本身 ⇒ ⇒⇒ 所以这里必须
+      **调用** `_runner()`，不能把它直接交给 `Batch` 当 runner。
+    """
+    return _runner()()
+
+
+def judge_fresh():
+    """换一份**全新**缓存再跑一遍（排除「变异没进二进制」）。"""
+    return _runner().with_fresh_cache()
+
+
+# ⚠ harness 的 `Batch.case` 在「该红却绿」时会调 `run.with_fresh_cache`
+#   ⇒ ⇒⇒ **包装过一层就必须把这条属性透出来** ⇒ 否则那条兜底会静默失效
+#   ⇒ ⇒⇒ 而它失效的后果是「把『门没牙』误判成『门没牙』」—— 方向反了。
+judge.with_fresh_cache = judge_fresh
 
 
 b = Batch('§972「竞态夹具」形态：同一个注入，修复前红 / 修复后绿',
