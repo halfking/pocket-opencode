@@ -117620,9 +117620,163 @@ macOS 的 `time.Now()` 是**微秒对齐**的（§964 实测纳秒尾 2000/2000 
 ### §969.5 门禁与 CI
 
 ⇒ 本节改的是 `frontend/scripts/**` ⇒ ⇒ **会触发 `frontend` job**（`frontend.yml` 的 paths 含 `frontend/**`）
-⇒ ⇒ ⚠ **不会触发 `backend` / `backend-pg` / `e2e-web` / `docker-smoke`**（`backend.yml` 的 paths 是
-`backend/**` + `scripts/check-smart-quotes.mjs`，**不含** `frontend/**`）⇒ ⇒ ⚠ **「没跑」≠「绿」**。
+⇒ ⇒ ⚠⚠⚠ **这段触发面记录有错，已由 §969.6 订正**：**`backend` 其实被触发了** ——
+`backend.yml` 与 `frontend.yml` 的 **`push` 事件没有 `paths` 限制**（只有 `branches`）⇒ **任何 push 到
+`main`/`feat/**` 都启动它们** ⇒ ⇒ 本节当时是**照着 `pull_request` 的 paths 写的** ⇒ ⇒
+⇒ 「触发面」本身也有口径（★ 详见 §970）⇒ ⇒ ⚠ **未触发的是** `backend-pg` / `e2e-web` / `docker-smoke`
+⇒ ⇒ ⚠ **「没跑」≠「绿」**。
 
 ⇒ 本节跑的门禁：`check:ci-trigger`（rc=0，**含新门④**）＋ `check:build-mobile-selftest`（rc=0）
 ＋ `check:device-matrix-selftest`（rc=0）＋ `typecheck`（rc=0）＋ **CI 口径 39 项全跑**（红在第 20 项 `check:gofmt`，
 ★ **与 CI 日志逐字同形** ⇒ ⇒ **该红点与本节无关** ⇒ ⇒ ⇒ ⇒ ⚠ **⇒ 本节自己的门④（CI 第 16 项）在本机已绿**）。
+
+### §969.6 ⚠⚠⚠ 订正 §969.5 的触发面记录 + 本笔的 CI 权威读数（`0f232674`）
+
+⇒ ⚠⚠⚠ **§969.5 那句「不会触发 `backend`」是错的** —— 实测：
+
+| workflow | `push` 的 paths 有无 | 本笔**实际**是否被触发 |
+|---|---|---|
+| `frontend.yml` | ★ **无 paths**（只有 `branches`）⇒ **任何 push 都启动** | ✅ **触发了**（`gates parity` ＋ `typecheck+build+node tests`） |
+| `backend.yml` | ★ **无 paths** ⇒ **任何 push 都启动** | ✅ **触发了**（`gh run list` 实测有 `backend` job） |
+| `backend-pg.yml` | 有（`backend/**`） | ⛔ 未触发 |
+| `e2e-web.yml` | 有（含 `frontend/src/**`；本节改的是 `frontend/scripts/**` ⇒ 不在其中） | ⛔ 未触发 |
+| `docker-smoke.yml` | 有 | ⛔ 未触发 |
+
+⇒ ⇒ ⇒ ⚠⚠ **错在哪**：`backend.yml` / `frontend.yml` 的 **`push` 事件没有 `paths` 限制**（只有 `branches`）
+⇒ ⇒ ⇒ **⇒ 凡是 push 到 `main` 或 `feat/**`，这两个 workflow 必跑** ⇒ ⇒ ⇒ ⇒
+★ **⇒ 而 §969.5 当时是照着 `pull_request` 的 paths 写的** ⇒ ⇒ ⇒ ⇒ ⇒ **⇒ 同一个 workflow 的两套触发面，
+其中一套有 paths、另一套没有** ⇒ ⇒ ⇒ ⇒ ⇒ ★ **⇒ 「触发面」这件事本身也有口径（§970 的主题）**。
+
+⇒ ⇒ ⇒ ⇒ ⚠⚠⚠ **⇒ 而这个错误是【自己踩的】**：§967.8 立过一条纪律「**CI 读数必须先写清『哪些 workflow
+被触发了』**」⇒ ⇒ ★ **本节在写这段时，又照着 PR 的 paths 写了一遍 push 的触发面**
+⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **⇒ 纪律写下来 ≠ 不会再犯** ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **⇒ 必须让工具/判据来兜**（§970 就是这个兜）。
+
+⇒ ⇒ ⇒ **本笔的 CI 权威读数**（`0f232674`）：`frontend` ❌ ｜ `backend` ❌ ｜（`backend-pg` / `e2e-web` /
+`docker-smoke` **未触发** ⇒ **「没跑」≠「绿」**）。
+
+⇒ ⇒ ⇒ ⇒ **红点仍与本节无关**（本节只改 `docs/` ＋ 两个前端脚本）⇒ ★ **`frontend` 仍红在
+CI 口径第 20 项 `check:gofmt`**（并发会话那 4 个 gofmt 真债）⇒ ⇒ ⇒ ⇒ ⇒ ★ **⇒ 但本节的两个成果在 CI 上被验证了**：
+⇒ ⇒ ⇒ ⇒ ⇒ ① **编号口径行确实出现在 CI 日志里**（⇒ 「抄「第 N 项」自带口径」这条在 CI 上生效）
+⇒ ⇒ ⇒ ⇒ ⇒ ② **新门④（`check:ci-trigger`，CI 口径第 16 项）在第 20 项之前跑过且绿**
+（⇒ ⇒ **⇒ 本节新增的判据在 CI 上被实际执行了**，不是「本机绿、CI 没跑到」）。
+
+⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ★★ **⇒ 这一条是本节最值钱的东西**：
+★★ **判据被放在「CI 口径第 16 项」这个位置 ⇒ 它在既有红点（第 20 项）之前 ⇒ ⇒ 于是「我这次的改动在 CI 上被验证了」
+这件事【不依赖别人先把那 4 个 gofmt 真债修掉】** ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ★ **⇒ 选落点时的这条考虑，值一整节**。
+
+
+## §970 「触发面」也有两套口径 —— 门禁只守了 **PR 那一半**，**push 那一半是「算了但没守」**
+
+### §970.0 起点：这一节是 §968.9 / §969 那条「口径」主线的**另一半**
+
+§969 把「**编号**有口径」沉进了工具。而 §968.9 记触发面时踩到了同一族问题的另一半：
+**「触发面」也有两套** —— `pull_request` 侧与 `push` 侧 —— 而本仓的 `check:ci-trigger` 门禁
+**只守了 PR 那一半**。
+
+⇒ ⇒ **这不是一个「文档写对就行」的问题** —— 它是**守卫自己有洞**。
+
+### §970.1 缺口：push 侧被**算了**，但**没进棘轮**
+
+⇒ `frontend/scripts/check-ci-trigger-surface.mjs` 的事实计算里**两条腿都算了**：
+
+```js
+const uncoveredPr   = files.filter((f) => !coveredByRunner(f, 'pull_request'))   // ← 算了
+const uncoveredPush = files.filter((f) => !coveredByRunner(f, 'push'))           // ← 也算了
+```
+
+⇒ ★ **但棘轮只收 PR 那条腿**：
+
+```js
+const key = (f) => `trigger :: ${f.gate} :: ${f.uncoveredPr.join(',')}`
+const curKeys = [ ...facts.filter((f) => f.uncoveredPr.length).map(key).sort(), ... ]   // ← 没有 push 那条
+```
+
+⇒ ⇒ ⇒ ⚠⚠⚠ **⇒ 「push 侧开洞」这件事，门禁【算了但从不报警】**。
+
+⇒ ⇒ ⇒ 而 push 侧开洞**是什么后果**？看本仓的事实：
+
+| workflow | `push` 的 paths | `pull_request` 的 paths |
+|---|---|---|
+| `backend.yml` | ★ **无 paths**（只有 `branches`）⇒ **任何 push 都启动** | `backend/**` + `scripts/check-smart-quotes.mjs` + 自身 |
+| `frontend.yml` | ★ **无 paths** ⇒ **任何 push 都启动**（⇒ **跑 gates-parity**） | `frontend/**` + `scripts/**` + 自身 + `test-evidence/PR11/**` |
+| `backend-pg.yml` | `backend/**` + 自身 | 同左 |
+| `e2e-web.yml` | `e2e/web/**` + `frontend/src/**` + `frontend/vite.config.ts` + `backend/**` + 自身 | **无 `pull_request` 事件** |
+| `docker-smoke.yml` | `deploy/acc-integration/**` + `backend/internal/db/**` + `Dockerfile*` + 自身 | 同左 |
+
+⇒ ⇒ ⇒ ★★ **所以两套会分叉**：
+**push 侧现在是「全触发」**（`backend.yml` / `frontend.yml` 的 push 无 paths）
+⇒ ⇒ ⇒ ★ **⇒ 若有人给 `frontend.yml` 的 push 收窄 paths**（看上去只是「省 CI 时间」）
+⇒ ⇒ ⇒ ⇒ ★★ **push 到 main 时，`gates-parity` 那个 job 里 39 条门禁就一次都不跑了**
+⇒ ⇒ ⇒ ⇒ ⇒ ★ **⇒ 而门禁不会报警**（push 那条腿没进棘轮）⇒ ⇒ ⇒ ⇒ ⇒
+★★ **⇒ 这正是这个门禁自己声称要防的那族事故（「守卫存在但没人执行」）**
+—— ★ **只不过发生在 push 那一侧，而它只看着 PR 那一侧。**
+
+### §970.2 三段式取证：**先证缺口 → 再修 → 再证修好了**
+
+⇒ ★ **不靠推理下结论**：先把缺口**造出来**看门禁的反应，修完再用**同一个注入**复跑。
+
+#### §970.2.1 第一段：证明缺口存在（修复前）
+
+⇒ **注入 M-A**：给 `frontend.yml` 的 `push` 段加 `paths: ["frontend/src/**"]`（收窄跑 gates 的那个 workflow）
+⇒ ⇒ **门禁的读数：rc=0（绿）** ⇒ ⇒ ⇒ ★ **这就是缺口** ⇒
+⇒ ★ **旁证**：门禁自己的 `--explain` 输出里，**push 侧那一列**显示 39 条门禁的实现文件
+全部 `push=未覆盖` ⇒ ⇒ **它算出来了，却不报警** ⇒ ⇒ ★ **「算了但没守」被逐字证实**。
+
+⇒ ⚠ **顺带纠正一个我自己的错误假设**：第一版注入打在 `backend.yml` 的 push 上 ⇒ **门禁仍绿、push 侧仍 ✅** ——
+⇒ 因为**跑 gates 的 workflow 是 `frontend.yml`**（`runnerWorkflows` 只含它）⇒
+⇒ ★ **「谁启动」与「谁跑这道门禁」是两个集合，混用会把洞读成没洞**（该门禁自己的注释里已写明这一点）。
+
+#### §970.2.2 第二段：修（**只加一条腿，不改语义**）
+
+⇒ **改动只有一处**（`check-ci-trigger-surface.mjs` 的棘轮部分）：
+
+```js
+const key     = (f) => `trigger-pr   :: ${f.gate} :: ${f.uncoveredPr.join(',')}`
+const pushKey = (f) => `trigger-push :: ${f.gate} :: ${f.uncoveredPush.join(',')}`
+const curKeys = [
+  ...facts.filter((f) => f.uncoveredPr.length).map(key).sort(),
+  ...facts.filter((f) => f.uncoveredPush.length).map(pushKey).sort(),   // ★ 新增的那条腿
+  ...
+]
+```
+
+⇒ ⇒ ⚠⚠ **两条腿的 key 必须分开**（`trigger-pr ::` / `trigger-push ::`）⇒
+若并成一条 ⇒ 「PR 侧修好了、push 侧还开着」会被算成「已覆盖」⇒ **洞被当成修好了**。
+
+⇒ ⇒ ⇒ ⭐ **基线影响 = 0**：现状 **PR 侧 0 条 + push 侧 0 条** ⇒ ⇒ **两条腿都不产生条目** ⇒
+⇒ ⇒ ⇒ **⇒ 基线仍是 0 条，不需要 `--update-baseline`** ⇒ ⇒ ⇒ ⇒ ★ **⇒ 零基线影响、零编号位移**。
+
+⇒ ⇒ ⇒ ⇒ 另加一条**专属错误消息**（push 侧那条腿有自己的措辞：说清「push 本来无 paths ⇒ 收窄它会让门禁在 push 上静默停跑」），
+⇒ 以及把基线 `note` 改成「两条腿分开记」。
+
+#### §970.2.3 第三段：再证修好了（**同一个注入**）
+
+| 臂 | 注入 | 修复前 | **修复后** | 红的理由对不对 |
+|---|---|---|---|---|
+| **M-A**（**正控 · push 腿**） | 给 `frontend.yml` 的 **push** 加 `paths` | ✅ **绿**（★ **缺口**） | ❌ **红**（rc=1）⇒ 报 `❌ 新增「CI 装了门禁但 **push** 上不会启动」：trigger-push :: check:vm-gaps :: …` | ✅ **正是「push 那条腿」** ⇒ 不是被顺带报红 |
+| **M-C**（**正控 · PR 腿**） | 给 `frontend.yml` 的 **pull_request** 收窄 paths | ❌ 红 | ❌ **红**（rc=1）⇒ 报 `❌ 新增「CI 装了门禁但 PR 上不会启动」：trigger-pr :: check:build-mobile-selftest :: …` | ✅ **PR 那条腿没被改坏** ⇒ 新加的那条腿没有吞掉旧的那条 |
+| **M-B**（**负控**） | 给 **`e2e-web.yml`** 的 push 收窄 paths（**它不是 runner** ⇒ 不跑 gates） | ✅ 绿 | ✅ **绿**（rc=0） | ✅ **该绿** ⇒ ★ **判据不误报**：收窄一个**不跑这些门禁**的 workflow 不是洞 |
+| **基线** | 恢复原样 | ✅ 绿 | ✅ **绿**（rc=0）⇒ `棘轮通过，基线 0 条` | — |
+
+⇒ ⇒ ⇒ ⭐ **三条臂各司其职**：**一条正证新腿有牙、一条正证旧腿没坏、一条负证不误报**。
+⇒ ⇒ ⇒ ⇒ ★ **⇒ 这是标准的「变异双向 + 负控」结构**，而不是「三条臂都红就算过」。
+
+### §970.3 本节**没有**做的（登记，不代拍）
+
+① **不给任何 workflow 的 `push` 段加 paths** ⇒ ★ **现状（push 无 paths ⇒ 全触发）是刻意的**，
+本节只是**把「它一旦被收窄」这件事变成会被报出来的** ⇒ ⇒ **不动现状，只加看门狗**。
+② **不改 `gates.json` / `package.json`** ⇒ ⇒ **CI 编号一位都没移**。
+③ **不把「push 与 PR 是两套触发面」立成仓规**（⇒ **属主决定**）⇒ ⇒ ★ **但本节已经把「收窄 push 触发面」
+变成【机器会红】的状态** ⇒ ⇒ ⇒ ⇒ **⇒ 这条纪律现在有牙，不需要等属主拍板就生效**。
+④ **不动 §969.5 里那句写错的触发面记录**（它说「不会触发 backend」，**错了**）⇒ ⇒ **已在 §969.6 订正**。
+
+### §970.4 门禁与 CI
+
+⇒ 本节只改 `frontend/scripts/check-ci-trigger-surface.mjs` ⇒ ⇒ **触发面同 §969**：
+`frontend` job 必触发（`frontend.yml` 的 push 无 paths）＋ `backend` job 必触发（`backend.yml` 的 push 无 paths）
+⇒ ⇒ ⚠ **未触发**：`backend-pg`（paths=`backend/**`）／`e2e-web`（paths 含 `frontend/src/**`，我改的是
+`frontend/scripts/**`）／`docker-smoke` ⇒ ⇒ ⚠ **「没跑」≠「绿」**。
+
+⇒ 本节跑的门禁：`check:ci-trigger`（rc=0，**含新增的 push 那条腿**）＋五道文档门禁（rc=0）＋ `typecheck`（rc=0）
+＋ CI 口径 39 项全跑（红在**第 20 项 `check:gofmt`**，★ **与 CI 日志逐字同形** ⇒ **该红点与本节无关**）
+⇒ ⇒ ⇒ ⇒ ⚠ **⇒ 而 `check:ci-trigger` 是 CI 口径第 16 项 ⇒ 它在第 20 项之前跑过 ⇒ ⇒ 本节的新腿在 CI 上被验证了**。

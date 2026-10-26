@@ -407,13 +407,34 @@ for (const [name, why] of Object.entries(doc.ciCoveredElsewhere || {})) {
 // 现状（未覆盖面）被钉成基线，只对**新增**报警。
 // 理由同上：把 backend/** 接进前端触发面会让每个后端 PR 多跑 25 条前端门禁，
 // 这是取舍不是 bug；本门不代拍，只保证它不会悄悄变大。
-const key = (f) => `trigger :: ${f.gate} :: ${f.uncoveredPr.join(',')}`
+// ---- 3. 棘轮 ---------------------------------------------------------------
+// 现状（未覆盖面）被钉成基线，只对**新增**报警。
+// 理由同上：把 backend/** 接进前端触发面会让每个后端 PR 多跑 25 条前端门禁，
+// 这是取舍不是 bug；本门不代拍，只保证它不会悄悄变大。
+//
+// ⚠⚠⚠ **PR 与 push 是两套触发面 ⇒ 两条腿各自成 key**（§970）：
+//
+//	· **pull_request** 侧：多数 workflow 有 paths ⇒ 改某处不一定启动；
+//	· **push** 侧：`backend.yml` 与 `frontend.yml` 的 push **没有 paths**
+//	  ⇒ **任何 push 到 main/feat/** 都会启动它们 ⇒ 现状是**全触发**。
+//
+// ⇒ ★ **两套会分叉**：若有人给 `frontend.yml` 的 push 收窄 paths（看上去只是优化 CI 时间），
+//   ⇒ **push 到 main 时 39 条前端门禁全部不再启动** —— 而那正是「守卫存在但没人执行」这族事故
+//   ⇒ ⇒ **⇒ 只守 PR 那条腿 ⇒ 「收窄 push 触发面」会静默通过** ⇒ ⇒ **两条腿都要守**。
+//
+// ⇒ ⚠ **两条腿的 key 必须分开**（`trigger-pr ::` / `trigger-push ::`）⇒
+//   否则「PR 侧修好了、push 侧还开着」会被算成「已覆盖」⇒ **洞被当成修好了**。
+const key = (f) => `trigger-pr :: ${f.gate} :: ${f.uncoveredPr.join(',')}`
+const pushKey = (f) => `trigger-push :: ${f.gate} :: ${f.uncoveredPush.join(',')}`
 const curKeys = [
   ...facts.filter((f) => f.uncoveredPr.length).map(key).sort(),
+  // ★ push 侧那条腿（原先**算了但没进棘轮** ⇒ 那一半的洞不会报警）。
+  ...facts.filter((f) => f.uncoveredPush.length).map(pushKey).sort(),
   // 脸②与脸③的现状也进同一份棘轮。当前二者都满足，因此不产生条目。
   ...(driverFacts.length ? [] : ['driver :: 无任何 workflow 执行 run-gates.mjs --ci']),
   ...exemptionFacts.filter((f) => !f.ok).map((f) => `exemption :: ${f.name}`).sort(),
 ]
+
 
 let baseline = { note: '', pr: [] }
 if (existsSync(BASELINE)) baseline = JSON.parse(readFileSync(BASELINE, 'utf8'))
@@ -423,7 +444,7 @@ if (process.argv.includes('--update-baseline')) {
     BASELINE,
     JSON.stringify(
       {
-        note: '每条 ciRuns 门禁的实现文件未被任何 workflow 的 pull_request paths 覆盖的现状；只许减少不许增加。',
+        note: '每条 ciRuns 门禁的实现文件未被任何 workflow 的 pull_request / push paths 覆盖的现状（两条腿分开记）；只许减少不许增加。',
         pr: curKeys,
       },
       null,
@@ -598,6 +619,14 @@ if (added.length) {
     } else if (a.startsWith('exemption ::')) {
       console.error(`❌ 新增：${a} —— 这条 ciCoveredElsewhere 豁免没有任何兑现路径`)
       console.error('  既没在 workflow 里手列，也不是 test:all 枚举的子集 ⇒ CI 上不执行。')
+    } else if (a.startsWith('trigger-push ::')) {
+      console.error(`❌ 新增「CI 装了门禁但 **push** 上不会启动」：${a}`)
+      console.error('  ★ push 与 pull_request 是**两套触发面**：`backend.yml` 与 `frontend.yml` 的 push')
+      console.error('    **本来没有 paths**（⇒ 任何 push 到 main/feat/** 都启动它们）。')
+      console.error('  ⇒ 若有人给 push 收窄 paths（看上去只是省 CI 时间），')
+      console.error('    **push 到 main 时这些门禁就一次都不跑了** —— 正是「守卫存在但没人执行」这族事故。')
+      console.error('  两种修法，选一种：① 把该路径接进 push 的 paths（保持覆盖）；')
+      console.error('  ② 确认这是有意取舍，把现状记进 gates.json 的理由里。')
     } else {
       console.error(`❌ 新增「CI 装了门禁但 PR 上不会启动」：${a}`)
       console.error('  这是「护栏存在但没人执行」的高层版本：gates.json 记了它属于 CI，')
