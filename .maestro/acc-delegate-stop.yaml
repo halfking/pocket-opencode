@@ -128,27 +128,32 @@ appId: com.kaixuan.opencode.pocket
 # 这一条把「任务不见了」和「任务被记进历史」区分开：
 # 只有状态标签能证明后端真的落定了 cancelled，而不是前端把行藏了。
 #
-# ★ 2026-10-27 修：原来这里是**无条件**点 toggle（`when: visible`）⇒
-#   分区**已经展开**时会被**点回折叠** ⇒ 末尾断言反而被自己搞红
-#   （flow1 那边栽过一次同样的坑，见 acc-approval.yaml 的说明）。
-#   ⇒ 现在先等分区出现，再**只在「没有任何已结束卡片」时**才展开
-#     （「有没有卡片」= 分区是不是展开着；「有没有这一张卡片」= 另一件事）。
+# ★ 2026-10-27 修（与 acc-approval.yaml 同一类问题）：
+#   ① 原来这里**无条件**点 toggle（when: visible）⇒ 分区**已经展开**时
+#      会被**点回折叠** ⇒ 末尾断言反而被自己搞红；
+#   ② 判据用 `id:` —— 而 Android WebView **不把 data-testid 映射成
+#      无障碍节点的 view id**（证据见 acc-approval.yaml 的说明）⇒
+#      `id: finished-task-title-cancelled` **永远不成立**。
+#   ⇒ 改成：等分区标题 → 只在「一个状态标签都看不见」时展开 →
+#     滚到本条 → 断言「状态标签在**本条标题的右边**」。
 - extendedWaitUntil:
-    visible:
-      id: "completed-section-toggle"
-    timeout: 60000
+    visible: "已结束.*"
+    timeout: 120000
 - runFlow:
     when:
-      notVisible:
-        id: "finished-task-title-.*"
+      notVisible: "已完成|已取消|已失败"
     commands:
-      - tapOn:
-          id: "completed-section-toggle"
+      - tapOn: "已结束.*"
 - extendedWaitUntil:
-    visible:
-      id: "finished-task-title-cancelled"
+    visible: "已取消"
+    timeout: 60000
+    optional: true
+- scrollUntilVisible:
+    element:
       text: "maestro-acc-stop"
+    direction: DOWN
     timeout: 60000
 - assertVisible:
-    id: "finished-task-status"
     text: "已取消"
+    rightOf:
+      text: "maestro-acc-stop"

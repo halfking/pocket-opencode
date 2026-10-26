@@ -333,6 +333,70 @@ Error: 120s 内没有待批项出现 ⇒ 前提没造出来（这条流必须响
   · **只回退产品修复**（保留判据）⇒ `TestDelegateTask_AmbiguousCreateFailure_RecoversCreatedTask`
     红：`status = 502, want 200`；恢复修复 ⇒ 3 条全绿。
 
+### 2.13 ★★ Maestro 的 `id:` 判据在这个平台上**结构性地永远不成立**（恒假判据）
+
+★ 这是本轮挖到的最深的一条，**影响所有真机流的写法**，必须写清楚。
+
+★ 证据（Maestro 自己存下的无障碍树，2026-10-26 12:28 那轮 acc-delegate-stop）：
+
+```
+text = maestro-acc-stop
+text = · 38 秒
+text = maestro-acc-approve
+text = 已完成 1
+```
+
+⇒ 树里**只有文本**；App 的 `data-testid`
+（`finished-task-title-cancelled` / `completed-section-toggle` / …）
+**一个都没有变成 resource-id** —— 同一棵树里的 resource-id 全是
+Android 系统那几个（`com.kaixuan.opencode.pocket:id/action_bar_root`、
+`android:id/content`、`status_bar_*` …）。
+
+★ 为什么：**Android WebView 不把 DOM 的 `data-testid` 映射成无障碍节点的 view id。**
+⇒ 于是 `visible: {id: "completed-section-toggle"}` 这种判据**不是「这次没赶上」，
+   是恒假** —— 它永远不成立。
+
+★ 这条为什么重要：上一轮为了修「`visible: "已完成"` 是**恒真**判据」
+（它命中的是分区标题），把判据换成了 id 判据 ⇒ **等于把恒真换成了恒假**，
+两种都验不到东西，而报告上看起来都像「判据更精确了」。
+⇒ 真机流的判据**只能靠文本**（外加空间关系 rightOf/below 把两个文本节点绑起来）。
+
+★ 2026-10-27 本轮改成的写法（两条流都改了）：
+
+```yaml
+# 等分区标题（文本节点「已结束 N」）
+- extendedWaitUntil:
+    visible: "已结束.*"
+    timeout: 180000
+# 只在「一个状态标签都看不见」时展开（= 分区确实折叠着）
+# ⚠ 不能用「有没有这一张卡片」判断 ⇒ 会把已展开的分区点回折叠
+- runFlow:
+    when:
+      notVisible: "已完成|已取消|已失败"
+    commands:
+      - tapOn: "已结束.*"
+# 滚到本条
+- scrollUntilVisible:
+    element:
+      text: "maestro-acc-approve"
+    direction: DOWN
+    timeout: 90000
+# 把状态标签与**本条标题**绑起来（rightOf）⇒ 不是恒真
+- assertVisible: "maestro-acc-approve"
+- assertVisible:
+    text: "已完成"
+    rightOf:
+      text: "maestro-acc-approve"
+```
+
+★ 顺带修掉的第二个同源缺陷：`acc-delegate-stop.yaml` 原来**无条件**点 toggle
+（`when: visible`）⇒ 分区**已经展开**时会被**点回折叠** ⇒ 末尾断言被自己搞红。
+
+★ 判据形态的教训（写给下一轮）：
+  · 「已完成」单独用 = 恒真（历史里别的已完成卡片也命中）；
+  · `id:` 单独用 = 恒假（这个平台上没有 view id）；
+  · ⇒ 要用**文本 + 空间关系**（rightOf / below）把「这条卡片的这个状态」绑死。
+
 ### 2.7 四个「只是声明一下」
 
 | 现象 | 真因 | 修法 |

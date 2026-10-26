@@ -148,30 +148,53 @@ appId: com.kaixuan.opencode.pocket
 # ⚠ 这里**不**靠用户下拉刷新 —— 回填会广播 task_updated，卡片必须自己变。
 #    刷新一下就能看见的状态不算数（那是用户替产品做了事）。
 #
-# ⚠ 判据必须定位到**本条卡片**（见文件头 ②）：只写 "已完成" 会命中分区标题，
-#   那是恒真的、等于没验。
-# ⚠ testid 带状态后缀：若是任务其实**失败**了，failed 那一条不会命中
-#   completed 这一条 ⇒ 漏答一轮审批导致的 permission_denied 一定红。
+# ★★ 2026-10-27：**判据只能靠文本，`id:` 在这个平台上根本不成立**。
 #
-# ★ 2026-10-27：先确保「已结束」分区**是展开的**（卡片不渲染 ⇒ 断言无从命中），
-#   展开的判断用「有没有**任何**已结束的卡片」而不是「有没有这一张卡片」
-#   —— 后者会把「已展开、只是本条还没完成」误判成折叠 ⇒ 一拍点回折叠。
+#   证据（Maestro 自己存下的无障碍树，2026-10-26 12:28 那轮）：
+#     text = maestro-acc-stop
+#     text = 已完成 1
+#     ⇒ 树里**只有文本**；App 的 data-testid（finished-task-title-completed、
+#        completed-section-toggle…）**没有**变成 resource-id
+#        （树里的 resource-id 全是 Android 系统那几个）。
+#   ⇒ 所以 `visible: {id: "completed-section-toggle"}` 这类判据**永远不成立**
+#      —— 它不是「这次没赶上」，是**结构性的**：
+#      Android WebView 不把 DOM 的 data-testid 映射成无障碍节点的 view id。
+#   ⇒ 上一轮把「已完成」这个**恒真**判据换成 id 判据，等于把恒真换成了
+#      **恒假** —— 两种都验不到东西。
+#
+#   现在全部改成**文本**判据：
+#     · 「已结束 N」是分区标题（一个文本节点，N = 已结束任务数）；
+#     · 每张已结束卡片带一个**状态标签**（已完成 / 已取消 / 已失败）；
+#     · 任务标题本身也是文本节点。
+#
+#   判据怎么才不是恒真：
+#     · 「已结束.*」只证明分区在，不证明本条在里面；
+#     · 「已完成」只证明**某张**卡片已完成（历史里已有别的已完成卡片）；
+#     · ⇒ 把两者**绑在一起**：状态标签必须是**本条标题的右边**那个
+#       （rightOf）⇒ 只有这一条卡片满足。
 - extendedWaitUntil:
-    visible:
-      id: "completed-section-toggle"
+    visible: "已结束.*"
     timeout: 180000
+# 分区默认折叠 ⇒ 卡片不渲染 ⇒ 状态标签也不在树里。
+# ⇒ 只有在「一个状态标签都看不见」时（= 分区确实折叠着）才点标题展开；
+#   否则会把**已经展开**的分区点回折叠（这正是 flow2 之前栽的那一跤）。
 - runFlow:
     when:
-      notVisible:
-        id: "finished-task-title-.*"
+      notVisible: "已完成|已取消|已失败"
     commands:
-      - tapOn:
-          id: "completed-section-toggle"
+      - tapOn: "已结束.*"
 - extendedWaitUntil:
-    visible:
-      id: "finished-task-title-completed"
+    visible: "已完成"
+    timeout: 60000
+    optional: true
+# 本条卡片可能已结束区底部 ⇒ 滚过去再断言。
+- scrollUntilVisible:
+    element:
       text: "maestro-acc-approve"
-    timeout: 120000
+    direction: DOWN
+    timeout: 90000
+- assertVisible: "maestro-acc-approve"
 - assertVisible:
-    id: "finished-task-title-completed"
-    text: "maestro-acc-approve"
+    text: "已完成"
+    rightOf:
+      text: "maestro-acc-approve"
