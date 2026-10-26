@@ -407,13 +407,34 @@ for (const [name, why] of Object.entries(doc.ciCoveredElsewhere || {})) {
 // 现状（未覆盖面）被钉成基线，只对**新增**报警。
 // 理由同上：把 backend/** 接进前端触发面会让每个后端 PR 多跑 25 条前端门禁，
 // 这是取舍不是 bug；本门不代拍，只保证它不会悄悄变大。
-const key = (f) => `trigger :: ${f.gate} :: ${f.uncoveredPr.join(',')}`
+// ---- 3. 棘轮 ---------------------------------------------------------------
+// 现状（未覆盖面）被钉成基线，只对**新增**报警。
+// 理由同上：把 backend/** 接进前端触发面会让每个后端 PR 多跑 25 条前端门禁，
+// 这是取舍不是 bug；本门不代拍，只保证它不会悄悄变大。
+//
+// ⚠⚠⚠ **PR 与 push 是两套触发面 ⇒ 两条腿各自成 key**（§970）：
+//
+//	· **pull_request** 侧：多数 workflow 有 paths ⇒ 改某处不一定启动；
+//	· **push** 侧：`backend.yml` 与 `frontend.yml` 的 push **没有 paths**
+//	  ⇒ **任何 push 到 main/feat/** 都会启动它们 ⇒ 现状是**全触发**。
+//
+// ⇒ ★ **两套会分叉**：若有人给 `frontend.yml` 的 push 收窄 paths（看上去只是优化 CI 时间），
+//   ⇒ **push 到 main 时 39 条前端门禁全部不再启动** —— 而那正是「守卫存在但没人执行」这族事故
+//   ⇒ ⇒ **⇒ 只守 PR 那条腿 ⇒ 「收窄 push 触发面」会静默通过** ⇒ ⇒ **两条腿都要守**。
+//
+// ⇒ ⚠ **两条腿的 key 必须分开**（`trigger-pr ::` / `trigger-push ::`）⇒
+//   否则「PR 侧修好了、push 侧还开着」会被算成「已覆盖」⇒ **洞被当成修好了**。
+const key = (f) => `trigger-pr :: ${f.gate} :: ${f.uncoveredPr.join(',')}`
+const pushKey = (f) => `trigger-push :: ${f.gate} :: ${f.uncoveredPush.join(',')}`
 const curKeys = [
   ...facts.filter((f) => f.uncoveredPr.length).map(key).sort(),
+  // ★ push 侧那条腿（原先**算了但没进棘轮** ⇒ 那一半的洞不会报警）。
+  ...facts.filter((f) => f.uncoveredPush.length).map(pushKey).sort(),
   // 脸②与脸③的现状也进同一份棘轮。当前二者都满足，因此不产生条目。
   ...(driverFacts.length ? [] : ['driver :: 无任何 workflow 执行 run-gates.mjs --ci']),
   ...exemptionFacts.filter((f) => !f.ok).map((f) => `exemption :: ${f.name}`).sort(),
 ]
+
 
 let baseline = { note: '', pr: [] }
 if (existsSync(BASELINE)) baseline = JSON.parse(readFileSync(BASELINE, 'utf8'))
@@ -423,7 +444,7 @@ if (process.argv.includes('--update-baseline')) {
     BASELINE,
     JSON.stringify(
       {
-        note: '每条 ciRuns 门禁的实现文件未被任何 workflow 的 pull_request paths 覆盖的现状；只许减少不许增加。',
+        note: '每条 ciRuns 门禁的实现文件未被任何 workflow 的 pull_request / push paths 覆盖的现状（两条腿分开记）；只许减少不许增加。',
         pr: curKeys,
       },
       null,
@@ -507,6 +528,86 @@ if (filesTestAllRuns() === null) {
   process.exit(3)
 }
 
+
+// ---- 4. 脸④ 编号口径自检（§969）--------------------------------------------
+//
+// 为什么要有这张脸
+// ----------------
+//   「第 N 项」有**两套编号**，两套**数目不同、位置不同**：
+//     · gates.json 全量（本机 `npm run gates` 跑它）—— 编号是全量里的位置；
+//     · ciRuns 名单（CI 跑 `run-gates.mjs --ci` 跑它）—— 编号是 ciRuns 里的位置。
+//   实测：全量 50 项 vs CI 39 项；`check:gofmt` 全量第 31 项 ＝ CI 口径第 20 项。
+//
+//   ⇒ 所以**报「第 N 项」而不说口径，就是一个没有意义的引用**。
+//   ⇒ §967.8.2 就这么错过一次（把本机全量的「第 31 项 gofmt」当成 CI 日志里的位置），
+//     而那次订正**自己也留着同一个错** ⇒ ⇒ 靠人记不住 ⇒ 必须有门禁。
+//
+// 这张脸量什么
+// ------------
+//   **真跑一次 `run-gates.mjs --list --json`**，核对它给出的两套编号**自洽**：
+//     ① 每个 CI 成员的 CI 编号 ＝ 它在 ciRuns 数组里的位置；
+//     ② 每个 CI 成员的全量编号 ＝ 它在 gates 数组里的位置；
+//     ③ 每个全量成员的编号 ＝ 它在全量数组里的位置；
+//     ④ 每个全量成员的 CI 编号 ＝ 它在 ciRuns 数组里的位置（不在 ciRuns 里则为空）；
+//     ⑤ 两份名单的**条数**与 gates.json 一致。
+//
+//   ⇒ 解析的是**机器可读的 JSON**，不是人读的文本 ⇒ 文本怎么排版都不影响这条判据。
+//   ⇒ 判据盯的是「会漂的那个值」（编号本身），不是「文件长什么样」。
+//
+// 不做什么
+// --------
+//   不判断「两套编号该不该一样」—— 分叉本身是设计（CI 只跑 ciRuns）⇒ 这里只查**自洽**。
+
+const numberingFacts = (() => {
+  const r = spawnSync(process.execPath, [join(here, 'run-gates.mjs'), '--list', '--json'], {
+    cwd: FRONTEND,
+    encoding: 'utf8',
+  })
+  if (r.error || r.status !== 0) {
+    return { ok: false, reason: `run-gates.mjs --list --json 跑不起来（exit ${r.status}）：${(r.stderr || r.error?.message || '').trim()}` }
+  }
+  let j
+  try {
+    j = JSON.parse(r.stdout)
+  } catch (e) {
+    return { ok: false, reason: `run-gates.mjs --list --json 的输出不是合法 JSON：${e.message}` }
+  }
+  const problems = []
+  const fullList = doc.gates || []
+  const ciList = doc.ciRuns || []
+
+  if (j.fullCount !== fullList.length) {
+    problems.push(`fullCount=${j.fullCount} 与 gates.json 的 gates 长度 ${fullList.length} 不一致`)
+  }
+  if (j.ciRunsCount !== ciList.length) {
+    problems.push(`ciRunsCount=${j.ciRunsCount} 与 gates.json 的 ciRuns 长度 ${ciList.length} 不一致`)
+  }
+  // ① ② CI 成员的两个编号
+  ;(j.ciRuns || []).forEach((e, i) => {
+    if (e.ciIndex !== i + 1) problems.push(`ciRuns[${i}]（${e.name}）的 ciIndex=${e.ciIndex}，应是 ${i + 1}`)
+    const wantFull = fullList.indexOf(e.name) + 1
+    if (e.fullIndex !== wantFull) {
+      problems.push(`ciRuns[${i}]（${e.name}）的 fullIndex=${e.fullIndex}，应是 ${wantFull}`)
+    }
+  })
+  // ③ ④ 全量成员的两个编号
+  ;(j.full || []).forEach((e, i) => {
+    if (e.fullIndex !== i + 1) problems.push(`full[${i}]（${e.name}）的 fullIndex=${e.fullIndex}，应是 ${i + 1}`)
+    const wantCi = ciList.indexOf(e.name)
+    const wantCiIdx = wantCi >= 0 ? wantCi + 1 : null
+    if (e.ciIndex !== wantCiIdx) {
+      problems.push(`full[${i}]（${e.name}）的 ciIndex=${e.ciIndex}，应是 ${wantCiIdx}`)
+    }
+  })
+  // ★ 两套编号**必须真的有分叉** —— 若某天它们变得完全相同，说明分叉逻辑坏了
+  //   （那时「带口径」这件事本身就没意义了，口径标签会误导人）。
+  const diverged = (j.full || []).filter((e) => e.ciIndex !== null && e.ciIndex !== e.fullIndex).length
+  if (j.ciRunsCount > 0 && j.fullCount > 0 && diverged === 0) {
+    problems.push('两套编号完全相同（全量与 ciRuns 没有任何位置差异）—— 分叉逻辑可能坏了')
+  }
+  return { ok: problems.length === 0, problems, diverged, j }
+})()
+
 if (added.length) {
   console.error()
   for (const a of added) {
@@ -518,6 +619,14 @@ if (added.length) {
     } else if (a.startsWith('exemption ::')) {
       console.error(`❌ 新增：${a} —— 这条 ciCoveredElsewhere 豁免没有任何兑现路径`)
       console.error('  既没在 workflow 里手列，也不是 test:all 枚举的子集 ⇒ CI 上不执行。')
+    } else if (a.startsWith('trigger-push ::')) {
+      console.error(`❌ 新增「CI 装了门禁但 **push** 上不会启动」：${a}`)
+      console.error('  ★ push 与 pull_request 是**两套触发面**：`backend.yml` 与 `frontend.yml` 的 push')
+      console.error('    **本来没有 paths**（⇒ 任何 push 到 main/feat/** 都启动它们）。')
+      console.error('  ⇒ 若有人给 push 收窄 paths（看上去只是省 CI 时间），')
+      console.error('    **push 到 main 时这些门禁就一次都不跑了** —— 正是「守卫存在但没人执行」这族事故。')
+      console.error('  两种修法，选一种：① 把该路径接进 push 的 paths（保持覆盖）；')
+      console.error('  ② 确认这是有意取舍，把现状记进 gates.json 的理由里。')
     } else {
       console.error(`❌ 新增「CI 装了门禁但 PR 上不会启动」：${a}`)
       console.error('  这是「护栏存在但没人执行」的高层版本：gates.json 记了它属于 CI，')
@@ -533,5 +642,20 @@ if (removed.length) {
   // 措辞刻意不用「已修复」：触发面变宽也可能是误加，只说明差集变了。
   for (const r of removed) console.log(`⤵️ 基线里有、本次已覆盖：${r} —— 若是有意的，跑 --update-baseline 落盘。`)
 }
-console.log(`\n✅ CI 触发面未新增未覆盖面（棘轮通过，基线 ${baseSet.size} 条）`)
+if (!numberingFacts.ok) {
+  console.error('\n❌ 门禁编号口径不自洽（脸④）：')
+  if (numberingFacts.reason) {
+    console.error(`  ${numberingFacts.reason}`)
+  } else {
+    for (const pr of numberingFacts.problems) console.error(`  · ${pr}`)
+  }
+  console.error('  「第 N 项」有两套编号（gates.json 全量 / gates.json 的 ciRuns 名单），两套不可互相引用。')
+  console.error('  引用失败门禁的位置时必须带口径 —— 否则会照着另一套编号去修（§967.8.2 踩过这个坑）。')
+  process.exit(1)
+}
+console.log(
+  `\n✅ CI 触发面未新增未覆盖面（棘轮通过，基线 ${baseSet.size} 条）` +
+    `；编号口径自洽（全量 ${numberingFacts.j?.fullCount ?? '?'} 项 / CI ${numberingFacts.j?.ciRunsCount ?? '?'} 项，` +
+    `其中 ${numberingFacts.diverged ?? 0} 项两套编号不同）`,
+)
 process.exit(0)

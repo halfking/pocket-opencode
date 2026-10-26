@@ -166,15 +166,67 @@ if (only.length) {
   if (unknown.length) die(`--only 给了不在 gates 里的名字：${unknown.join(', ')}`)
 }
 
+// ---- 编号口径（§969）------------------------------------------------------
+//
+// ⚠⚠⚠ **「第 N 项」有两套编号，两套不可互相引用**：
+//
+//	· **gates.json 全量**（`list`，本机 `npm run gates` 跑它）—— 编号是全量里的位置；
+//	· **CI 名单**（`ciRuns`，CI 跑 `run-gates.mjs --ci` 跑它）—— 编号是 ciRuns 里的位置。
+//
+// ⇒ 两者**数目不同、位置不同**（实测：全量 50 项 vs CI 39 项；`check:gofmt` 全量第 31 项
+//   ＝ CI 口径第 20 项）⇒ ⇒ **报「第 N 项」而不说口径，就是一个没有意义的引用**。
+// ⇒ ⇒ §967.8.2 就这么错过一次（它把本机全量的「第 31 项 gofmt」当成 CI 日志里的位置）。
+//
+// ⇒ 所以**每一次报编号都必须把口径一起报出去**：失败信息里带口径（见下），
+//   `--list` 里给两套编号做对照，`--list --json` 给机器可读的同一份对照。
+const scopeName = wantsCi
+  ? `CI 名单（gates.json 的 ciRuns，${ciRuns.length} 项）`
+  : only.length
+    ? `子集（--only 指定，${runList.length} 项）`
+    : `gates.json 全量（${list.length} 项）`
+
 // npm 在 Windows 上是 .cmd 包一层，直接 spawnSync('npm') 会 ENOENT。
 const NPM = process.platform === 'win32' ? 'npm.cmd' : 'npm'
 
 if (wantsList) {
+  // CI 名单在 ciRuns 数组里的位置（1-based）＝ CI 日志里「第 N 项」的 N。
+  const ciIndex = new Map(ciRuns.map((n, i) => [n, i + 1]))
+  if (argv.includes('--json')) {
+    // 机器可读的一份对照：判据（check:ci-trigger）解析它，不解析人读的文本。
+    console.log(
+      JSON.stringify(
+        {
+          ciRuns: ciRuns.map((name, i) => ({
+            name,
+            ciIndex: i + 1,
+            fullIndex: list.indexOf(name) + 1,
+          })),
+          full: list.map((name, i) => ({
+            name,
+            fullIndex: i + 1,
+            ciIndex: ciIndex.has(name) ? ciIndex.get(name) : null,
+          })),
+          ciRunsCount: ciRuns.length,
+          fullCount: list.length,
+          elsewhereCount: Object.keys(ciElsewhere).length,
+        },
+        null,
+        2,
+      ),
+    )
+    process.exit(0)
+  }
   console.log(`[gates] CI 分工：--ci 跑 ${ciRuns.length} 条，另有 ${Object.keys(ciElsewhere).length} 条在 workflow 里手列`)
-  for (const n of ciRuns) console.log(`  ci        ${n}`)
+  console.log('  ★ 下面两套编号不可互相引用：CI 编号是 ciRuns 里的位置，全量编号是 gates.json 里的位置。')
+  for (const [i, n] of ciRuns.entries()) {
+    console.log(`  ci        第 ${String(i + 1).padStart(2)} 项  ${n}   （全量第 ${list.indexOf(n) + 1} 项）`)
+  }
   for (const n of Object.keys(ciElsewhere)) console.log(`  elsewhere ${n} —— ${ciElsewhere[n]}`)
   console.log(`[gates] 名单 ${list.length} 项，接线核对通过（无重复 / 无悬空 / 无未接线的 check:*）`)
-  list.forEach((n, i) => console.log(`  ${String(i + 1).padStart(2)}. ${n}`))
+  list.forEach((n, i) => {
+    const ci = ciIndex.has(n) ? `   ← CI 口径第 ${ciIndex.get(n)} 项` : ''
+    console.log(`  ${String(i + 1).padStart(2)}. ${n}${ci}`)
+  })
   const excluded = Object.keys(notGates)
   if (excluded.length) {
     console.log(`\n[gates] 刻意不接进 gates 的 check:* ${excluded.length} 个：`)
@@ -199,6 +251,10 @@ for (const [i, name] of runList.entries()) {
       `\n[gates] ❌ 第 ${n} 项 ${name} 失败，退出码 ${code}；` +
         `已通过 ${passed.length}/${runList.length} 项，用时 ${((Date.now() - t0) / 1000).toFixed(1)}s`,
     )
+    // ★ 必须把口径一起报出来：这个「第 N 项」只在**本名单**内有意义
+    //   （CI 跑的是 ciRuns 名单、本机跑的是 gates.json 全量 ⇒ 两套编号不同）。
+    //   少了这一行，抄「第 N 项」的人会把两套编号当成同一个（§967.8.2 的错）。
+    console.error(`[gates]    编号口径：${scopeName} —— 引用这个「第 ${n} 项」时必须带这句话。`)
     if (code >= 3)
       console.error('[gates] 注意：退出码 ≥3 通常是护栏在「拒绝给结论」（没扫到被检查对象），不是普通断言失败。')
     process.exit(code)

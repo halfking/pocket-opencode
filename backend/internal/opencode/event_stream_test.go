@@ -30,12 +30,17 @@ func newFakeEventAdapter() *fakeEventAdapter {
 
 // SubscribeEvents satisfies EventSubscriber.
 func (f *fakeEventAdapter) SubscribeEvents(ctx context.Context, baseURL, directory, workspaceID string) (<-chan adapter.OpenCodeEvent, func(), error) {
-	atomic.AddInt32(&f.connectCount, 1)
-
 	f.mu.Lock()
 	ch := make(chan adapter.OpenCodeEvent, 64)
 	f.instanceEvents[baseURL] = ch
 	f.mu.Unlock()
+
+	// connectCount is bumped only AFTER the channel is registered, so that
+	// "connectCount > 0" means "the upstream channel exists and can receive
+	// events". Bumping it first leaves a window in which a test that waits for
+	// the counter can emit into the void: emit() silently drops events while
+	// the channel is not registered yet.
+	atomic.AddInt32(&f.connectCount, 1)
 
 	cancel := func() {}
 	return ch, cancel, nil
@@ -234,11 +239,19 @@ func TestEventStreamManager_Stats(t *testing.T) {
 		t.Fatalf("did not receive event")
 	}
 
-	stats := mgr.Stats()
-	if stats.TotalEvents == 0 {
-		t.Errorf("expected TotalEvents > 0, got %d", stats.TotalEvents)
+	// The manager increments TotalEvents AFTER it fans the event out to the
+	// subscribers, so receiving the event does not guarantee the metric has
+	// been bumped yet: on a loaded machine this goroutine can read Stats()
+	// before the upstream loop reaches incEvent(). Sample the metric once and
+	// the assertion turns into a coin flip. Wait for the counter itself
+	// instead — a counter that never advances still fails.
+	if !waitFor(2*time.Second, func() bool {
+		return mgr.Stats().TotalEvents > 0
+	}) {
+		t.Errorf("expected TotalEvents > 0, got %d", mgr.Stats().TotalEvents)
 	}
-	if stats.ActiveStreams != 1 {
+
+	if stats := mgr.Stats(); stats.ActiveStreams != 1 {
 		t.Errorf("expected ActiveStreams=1, got %d", stats.ActiveStreams)
 	}
 }
