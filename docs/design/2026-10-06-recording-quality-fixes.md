@@ -117419,3 +117419,38 @@ macOS 的 `time.Now()` 是**微秒对齐**的（§964 实测纳秒尾 2000/2000 
 ⇒ ⇒ ⇒ ⚠ **main 上并发会话 ACC 线的四类红仍然在**（简报 192）：① frontend 4 个 ACC 登记表漂移文件
 ② `TestConcurrentMigrationsDoNotDeadlock` ③ `check:dead-api` 新增死能力 ④ `backend/internal/mcp/client.go` gofmt 真债
 ⇒ ⇒ ⇒ ⇒ ★ **本节一处理都没代修**（归属在对方那条线，等属主指派）。
+
+### §968.8 推之前撞上远端前进 ⇒ 合并后**用同一量具重扫**（清单仍成立）
+
+⇒ ⚠ **推 main 前 `fetch` 发现远端已前进 7 笔**（并发会话的 ACC 审批环：
+`d646ae3d` → `2e9fa966`，含 `2e9fa966` 那笔 merge）⇒ ★ **`git merge-base --is-ancestor origin/main HEAD` 不通过 ⇒ 不是 FF ⇒ 按纪律先合并再推**。
+
+⇒ ⇒ 合并 `98d5b6c9`：**无冲突**（远端那 7 笔**没碰**本节改的两份文档）。
+
+⇒ ⇒ ⇒ ★★★ **但「无冲突」不等于「我的清单还成立」** ——
+远端新增了 Go 文件、改了 `task/store.go` ⇒ ⇒ **必须用【同一个量具】在合并后的树上重扫**，否则 §968.1.1 的新口径可能已经过期。
+
+⇒ ⇒ ⇒ **重扫读数**（量具：全仓 `time.Now()` 的 `time.Time` 形态调用点 × 该文件有 PG 落点；
+★ **本轮把量具又收紧了一处：剥掉注释行** —— 上一轮扫描把 `// platforms … time.Now() has no`、
+`// 不能只用纳秒时间戳：本机实测 1000 次 time.Now() …` 这类**注释**也算了进去）：
+
+| 项 | 合并前（`5b8eb3a7`） | **合并后（`98d5b6c9`）** |
+|---|---|---|
+| 有 PG 落点的 `time.Time` 形态调用点 | 27 处（含 4 处注释误计） | **27 处**（剥注释后口径不变） |
+| §968.1.1 的**新口径**（写点 11 / 边界参数 6 / 7 个包） | 成立 | ✅ **仍成立** |
+
+⇒ ⇒ ⇒ ⇒ ★ **三个最可疑的远端改动逐个核实**（不靠「大概率」）：
+
+| 远端改动 | 核实结果 | 是不是接触点 |
+|---|---|---|
+| `backend/internal/task/store.go`（+27 行） | 该 diff 里**没有任何 `time.` / `created_at` / `updated_at` 形态**（`git diff 5b8eb3a7..origin/main -- backend/internal/task/store.go` 的 `+` 行 grep 全空）⇒ 它的时间列仍是 epoch 整数 | ❌ 不是 |
+| **新文件** `backend/internal/tasksync/acc_status.go` | 里面的 `time.Now()` 是**日志节流**（`s.lastErrLog`）⇒ 不落任何列 | ❌ 不是 |
+| **新文件** `backend/internal/server/companion_approval_handler.go` | `CreatedAt` 字段类型是 **`string`**（`json:"created_at"`）⇒ 不是 `time.Time` | ❌ 不是 |
+
+⇒ ⇒ ⇒ ⇒ ⇒ **结论：并发会话的 ACC 线没有引入任何新的「`time.Time` 撞 `timestamptz`」接触点**
+⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ **§968.1.1 的新口径在合并后仍可直接引用**。
+
+⇒ ⇒ ⇒ ★ **这一小节本身是一条可复用的做法**：
+★ **「合并了别人的提交」之后，凡是基于清单的结论，都要【用同一个量具、在合并后的树上】重扫一遍** ——
+★ **「无冲突」只说明文本没打架，不说明【清单】没过期**（别人加一个新文件就足以让清单过期，而 git 不会报冲突）。
+⇒ ⇒ ⇒ ⇒ ⇒ **而且要用【同一个量具】** ⇒ 否则「重扫」本身就是个新读数、两个读数不可比。
