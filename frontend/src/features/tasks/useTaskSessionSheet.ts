@@ -17,7 +17,7 @@
  *  - row 为 null 时所有方法快速返回，避免空指针；
  *  - watch 用 { immediate: true, deep: false }，与原行为等价。
  */
-import { ref, watch, type Ref } from 'vue'
+import { onScopeDispose, ref, watch, type Ref } from 'vue'
 import { api, type TaskSessionBundleRow, type TaskSessionMessage } from '../../api/client'
 import type { SessionMsgKind } from './SessionKindFilter.vue'
 import { useApiError } from '../../composables/useApiError'
@@ -122,6 +122,53 @@ export function useTaskSessionSheet(args: UseTaskSessionSheetArgs): UseTaskSessi
     () => [rowRef.value?.id, kinds.value.join(',')],
     () => { void reload() },
   )
+
+  // ★★ 2026-10-27：原生会话的答复是**异步**落库的。
+  //
+  //   投一条提示词出去 ⇒ agent 要跑一会儿才回话 ⇒ 正文在那之前是**旧**的。
+  //   抽屉原来只在「打开时」和「切换 kind 时」重读 ⇒ 用户看到的是
+  //   **发出去之前的正文** ⇒ 真机 flow4 实测红在最后一条断言
+  //   （`visible: "RESUMEOK"` 不可见）—— 提示词**真的投出去了**（回执
+  //   「已发送」是绿的），只是回答没显示出来。
+  //
+  //   ⇒ 抽屉打开期间**定时重读**（5 秒一次），并在页面隐藏时停掉
+  //   （省电，也免得后台空转）。
+  const POLL_MS = 5000
+  let pollTimer: ReturnType<typeof setInterval> | null = null
+  let pollBusy = false
+
+  async function pollOnce(): Promise<void> {
+    if (pollBusy) return // 上一轮还没回来就跳过，别叠请求
+    pollBusy = true
+    try {
+      await reload()
+    } finally {
+      pollBusy = false
+    }
+  }
+
+  function stopPolling(): void {
+    if (pollTimer !== null) {
+      clearInterval(pollTimer)
+      pollTimer = null
+    }
+  }
+
+  function startPolling(): void {
+    if (pollTimer !== null) return
+    pollTimer = setInterval(() => {
+      if (typeof document !== 'undefined' && document.hidden) return
+      // reload() 自己吞错并写 error ⇒ 这里不会产生未处理的 rejection
+      pollOnce()
+    }, POLL_MS)
+  }
+
+  watch(rowRef, (row) => {
+    if (row) startPolling()
+    else stopPolling()
+  }, { immediate: true })
+
+  onScopeDispose(stopPolling)
 
   async function extractTitle(): Promise<void> {
     const row = rowRef.value
