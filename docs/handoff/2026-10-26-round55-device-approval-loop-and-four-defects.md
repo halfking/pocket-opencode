@@ -1133,6 +1133,30 @@ daemon 侧同一时刻的日志（**证明它真的走了新代码**，不是缓
 >   ⇒ 派单本身失败了 ⇒ 读面没有东西可显示是**正确的**行为。
 >   ⇒ 判据红的时候第一件事是去看 daemon 侧那条终态日志。
 
+### 4.7.6.1 ★ 回归：加了卡片之后，**前两条流必须重跑**
+
+本轮在任务页**新增了一张卡片**（「任务历史与产出」）⇒ 页面布局变了 ⇒
+前两轮拿到的全绿读数**不再自动成立** ⇒ 必须重跑（不是「应该没事」）。
+
+读数（同一台 emulator-5556、同一份新 APK 165463351 字节、agent-companion `a58aa73`）：
+
+| 流 | 读数 |
+|---|---|
+| `.maestro/acc-approval.yaml` | ✅ **2/2 Flows Passed in 1m 25s** |
+| `.maestro/acc-delegate-stop.yaml` | ✅ **2/2 Flows Passed in 1m 26s** |
+| `.maestro/acc-history-files.yaml`（新增） | ✅ **2/2 Flows Passed in 2m 44s** |
+
+flow3 的关键断言逐条 COMPLETED（取自 Maestro 工件
+`~/.maestro/tests/2026-10-27_073728/acc-history-files/commands.json`）：
+
+```
+visible "output.txt"                    COMPLETED
+tapOn  "output.txt"                     COMPLETED
+visible "文件内容"                        COMPLETED   ← 文件内容真的读回来了
+visible "答复：.*HISTORYOK.*"            COMPLETED   ← 这次运行的答复
+visible "HISTORYOK"                     COMPLETED   ← 产出文件的**字节**
+```
+
 ### 4.7.7 ★ 前端的三条**判据纪律**（写在代码注释里，因为它们直接决定别的流会不会假绿）
 
 1. **卡片默认收起**：展开时屏上会出现 run 行文本，而 flow1/flow2 用的正是
