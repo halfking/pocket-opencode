@@ -20,15 +20,19 @@
 frontend/src/
 ├── i18n/
 │   ├── index.ts          # i18n 配置文件
-│   └── locales/          # 语言文件目录
-│       ├── zh-CN.json
-│       ├── en-US.json
-│       ├── ja-JP.json
-│       ├── ko-KR.json
-│       ├── de-DE.json
-│       ├── fr-FR.json
-│       ├── es-ES.json
-│       └── pt-BR.json
+│   ├── locale-resolve.ts # 受支持语言表（SUPPORT_LOCALES）与首启动语言判定
+│   ├── types.ts          # 类型定义
+│   └── missing-key.ts    # 缺 key 的告警
+├── locales/              # 语言文件目录
+│   ├── zh-CN.json
+│   ├── zh-TW.json
+│   ├── en-US.json
+│   ├── ja-JP.json
+│   ├── ko-KR.json
+│   ├── de-DE.json
+│   ├── fr-FR.json
+│   ├── es-ES.json
+│   └── pt-BR.json
 ├── stores/
 │   └── locale.ts         # 语言管理 Store
 └── components/
@@ -260,10 +264,10 @@ const { t } = useI18n({
 项目已配置 TypeScript 类型支持，可以获得更好的类型提示：
 
 ```typescript
-import type { Locale } from '@/i18n'
+import type { LocaleType } from '@/i18n'
 
-const supportedLocales: Locale[] = [
-  'zh-CN', 'en-US', 'ja-JP', 'ko-KR',
+const supportedLocales: LocaleType[] = [
+  'zh-CN', 'zh-TW', 'en-US', 'ja-JP', 'ko-KR',
   'de-DE', 'fr-FR', 'es-ES', 'pt-BR'
 ]
 ```
@@ -272,9 +276,9 @@ const supportedLocales: Locale[] = [
 
 ### 1. 如何添加新语言？
 
-1. 在 `src/i18n/locales/` 目录下创建新的语言文件，如 `it-IT.json`
+1. 在 `src/locales/` 目录下创建新的语言文件，如 `it-IT.json`
 2. 在 `src/i18n/index.ts` 中导入并添加到 messages 对象
-3. 在 `src/i18n/index.ts` 的 LocaleType 类型和相关数组中添加新语言代码
+3. 在 `src/i18n/locale-resolve.ts` 的 `SUPPORT_LOCALES` 数组与 `LocaleType` 类型中添加新语言代码
 4. 更新 `LanguageSwitcher.vue` 组件的 availableLocales 列表
 5. 运行 `node scripts/verify-i18n.js` 验证键结构一致性
 
@@ -316,7 +320,7 @@ const message = t('common.welcome')
 ### 添加新翻译
 
 1. 在 `zh-CN.json` (主语言文件) 中添加新的键值对
-2. 使用翻译工具或人工翻译到其他 7 种语言
+2. 使用翻译工具或人工翻译到其他 8 种语言
 3. 确保所有语言文件的键结构保持一致
 
 ### 检查缺失翻译

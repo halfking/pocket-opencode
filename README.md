@@ -133,7 +133,7 @@ docker load -i ~/work/docker-base-images/lang-base/kx-base-go-vue-v2-alpine-slim
 
 ```bash
 # 克隆项目
-git clone https://github.com/your-org/opencode-pocket.git
+git clone https://github.com/halfking/pocket-opencode.git opencode-pocket
 cd opencode-pocket
 
 # 启动开发环境

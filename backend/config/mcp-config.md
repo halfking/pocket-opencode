@@ -24,22 +24,38 @@
 
 ### Production (184 Server)
 ```bash
-export POCKET_MCP_ENABLED=true
-export POCKET_MCP_URL=https://mcp.kxpms.cn/acc/mcp
+export POCKET_MCP_BASE_URL=https://mcp.kxpms.cn/acc/mcp
 export POCKET_MCP_API_KEY=sk-mcp-<REDACTED-ROTATE-ME>
+export POCKET_MCP_TENANT_ID=<tenant_id>
 ```
+
+> ⚠️ 开关是 `POCKET_MCP_BASE_URL`（**非空即启用**），不是 `POCKET_MCP_ENABLED`
+> / `POCKET_MCP_URL` —— 这两个名字**全仓没有任何代码读**，照着写等于没配。
+> 三项缺一不可（`backend/cmd/pocketd/main.go:599-607`）：
+> · `POCKET_MCP_BASE_URL` 空 ⇒ 不启用 ACC MCP client；
+> · `POCKET_MCP_TENANT_ID` 空 ⇒ 生产环境**启动即报错**
+>   （`backend/internal/config/config.go:498`）；
+> · `POCKET_MCP_API_KEY` 空 ⇒ 客户端不启用并打 WARN（不报错）。
 
 ### Local Development
 ```bash
-export POCKET_MCP_ENABLED=false  # Use HTTP adapter for local testing
+# 不设 POCKET_MCP_BASE_URL 即不启用 ACC MCP client（本地开发默认走 HTTP 适配）
 ```
 
 ## Usage
 
-Backend will automatically use MCP adapter when `POCKET_MCP_ENABLED=true`.
+Backend will automatically use MCP adapter when `POCKET_MCP_BASE_URL` is set
+（并配齐 `POCKET_MCP_TENANT_ID` 与 `POCKET_MCP_API_KEY`）。
 
 The MCP adapter connects to ACC server and provides:
-- session.search - Search sessions
-- session.create - Create new session
-- session.append - Add messages to session
-- session.get - Get session details
+- acc_get_tasks - List tasks
+- acc_list_sessions - List sessions
+- acc_create_task - Create a task
+- acc_task_claim - Claim a task
+- acc_task_complete - Complete a task
+- acc_report_session - Report a session
+
+> ⚠️ 上面这份 tool 名单取自 `backend/internal/mcp/client.go:45-50` 的常量
+> （`Capabilities()` 同源）。**不是** `session.search` / `session.create` /
+> `session.append` / `session.get` —— 那四个名字 ACC 侧没有注册，
+> 照着调只会拿到「unknown tool」。

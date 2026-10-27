@@ -76,8 +76,8 @@ node scripts/verify-i18n.js
 
 详细文档请参考：
 - **I18N_USAGE.md** - 完整使用指南
-- **I18N_VERIFICATION_REPORT.md** - 验证报告
-- **I18N_IMPLEMENTATION_SUMMARY.md** - 实施总结
+- **[I18N_VERIFICATION_REPORT.md](../docs/archive/2026-07/I18N_VERIFICATION_REPORT.md)** - 验证报告（已归档至 `docs/archive/2026-07/`）
+- **[I18N_IMPLEMENTATION_SUMMARY.md](../docs/archive/2026-07/I18N_IMPLEMENTATION_SUMMARY.md)** - 实施总结（已归档至 `docs/archive/2026-07/`）
 
 ---
 

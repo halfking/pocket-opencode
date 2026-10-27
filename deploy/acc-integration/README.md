@@ -292,7 +292,7 @@ cd ../本地方案
 
 - [AI Work Mess 主文档](../../README.md)
 - [运维指南](../../docs/guides/OPERATIONS_GUIDE.md)
-- [API 文档](../../docs/API.md)
+- [API 契约参考](../../docs/opencode-contract.md)
 - [本地方案文档](../本地方案/README.md)
 
 ---
