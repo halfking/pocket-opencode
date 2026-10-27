@@ -523,18 +523,19 @@ func (s *Store) ListTasksScoped(ctx context.Context, wsID string) ([]Task, error
 // dispatch and have not reached a terminal state yet.
 //
 // ★ Why this exists (measured 2026-10-26): the row 「委托给 ACC」creates
-//   (source='acc', acc_dispatch_id set) is the card the App shows. Its
-//   status has to follow the ACC dispatch's terminal status — otherwise
-//   the card stays 「进行中」 forever even though the agent finished.
 //
-//   The ACC task list (MCP acc_list_tasks) does NOT carry these rows: the
-//   delegated task is created with kind='agent_task/opencode' and does
-//   not appear in the kanban list, and the list does not even expose a
-//   status field for the rows it does have. The runtime-control face
-//   (GET /api/v2/runtime/commands/{dispatch_id}) is the authoritative
-//   terminal status, so the sync reads THAT.
+//	(source='acc', acc_dispatch_id set) is the card the App shows. Its
+//	status has to follow the ACC dispatch's terminal status — otherwise
+//	the card stays 「进行中」 forever even though the agent finished.
 //
-//   Terminal statuses are excluded so a finished task stops being polled.
+//	The ACC task list (MCP acc_list_tasks) does NOT carry these rows: the
+//	delegated task is created with kind='agent_task/opencode' and does
+//	not appear in the kanban list, and the list does not even expose a
+//	status field for the rows it does have. The runtime-control face
+//	(GET /api/v2/runtime/commands/{dispatch_id}) is the authoritative
+//	terminal status, so the sync reads THAT.
+//
+//	Terminal statuses are excluded so a finished task stops being polled.
 func (s *Store) ListACCBoundActiveTasks(ctx context.Context) ([]Task, error) {
 	return s.queryTasks(ctx, `
 		SELECT `+taskColumns+` FROM tasks

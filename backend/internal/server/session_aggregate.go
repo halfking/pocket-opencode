@@ -116,10 +116,11 @@ func (s *Server) listSessionsAcrossInstances(ctx context.Context, workspaceID st
 // accTasksListTimeout 是「列 ACC 任务」这次远端调用的**预算**。
 //
 // ★ 2026-10-27 新增：ACC 的 MCP 面会抖（实测 EOF / 超时 / 400 都出现过），
-//   而 GET /api/tasks 是 App 的主屏入口 —— 实测事故：ACC 超时让这个接口
-//   耗时 41 秒、响应体写不出去 ⇒ 客户端 "other side closed" ⇒ 任务页全废。
-//   ⇒ 远端源一律**有预算**：超了就跳过该源，本地源照常返回，
-//     ACC 的数据由后台 tasksync（15s 一跳）补齐。
+//
+//	而 GET /api/tasks 是 App 的主屏入口 —— 实测事故：ACC 超时让这个接口
+//	耗时 41 秒、响应体写不出去 ⇒ 客户端 "other side closed" ⇒ 任务页全废。
+//	⇒ 远端源一律**有预算**：超了就跳过该源，本地源照常返回，
+//	  ACC 的数据由后台 tasksync（15s 一跳）补齐。
 //
 // 为什么是 5s：比 OpenCode 源的 3s 宽一点（ACC 那边一次往返经常 1.3~4.2s，
 // 实测 200 的耗时在 1.2~4.3s 之间），但远小于会让请求写不出去��量级。

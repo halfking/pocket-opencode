@@ -190,22 +190,23 @@ type companionSessionLink struct {
 // queue (GET /api/v1/interventions).
 //
 // ★ The field names are **camelCase** on the wire: the daemon serves
-//   {id, runId, sessionId, agentKind, toolCallId, title, kind, status,
-//   createdAt, reason, decidedBy, options[{id,title,kind}]}. Decoding it
-//   into a snake_case struct would silently produce a zero-valued row —
-//   an approval the user cannot answer and does not know why.
+//
+//	{id, runId, sessionId, agentKind, toolCallId, title, kind, status,
+//	createdAt, reason, decidedBy, options[{id,title,kind}]}. Decoding it
+//	into a snake_case struct would silently produce a zero-valued row —
+//	an approval the user cannot answer and does not know why.
 type companionIntervention struct {
-	ID         string                       `json:"id"`
-	RunID      string                       `json:"runId"`
-	SessionID  string                       `json:"sessionId"`
-	AgentKind  string                       `json:"agentKind"`
-	ToolCallID string                       `json:"toolCallId"`
-	Title      string                       `json:"title"`
-	Kind       string                       `json:"kind"`
-	Status     string                       `json:"status"`
-	CreatedAt  string                       `json:"createdAt"`
-	Reason     string                       `json:"reason,omitempty"`
-	DecidedBy  string                       `json:"decidedBy,omitempty"`
+	ID         string                        `json:"id"`
+	RunID      string                        `json:"runId"`
+	SessionID  string                        `json:"sessionId"`
+	AgentKind  string                        `json:"agentKind"`
+	ToolCallID string                        `json:"toolCallId"`
+	Title      string                        `json:"title"`
+	Kind       string                        `json:"kind"`
+	Status     string                        `json:"status"`
+	CreatedAt  string                        `json:"createdAt"`
+	Reason     string                        `json:"reason,omitempty"`
+	DecidedBy  string                        `json:"decidedBy,omitempty"`
 	Options    []companionInterventionOption `json:"options"`
 }
 

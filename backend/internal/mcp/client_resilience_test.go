@@ -35,11 +35,12 @@ import (
 // mcpTestServer 造一个可控的 MCP 假服务器。
 //
 // ★ 2026-10-26 扩充：除了「第一次 initialize 被掐」，现在还能控制
-//   「连续掐前 N 次 initialize / 前 N 次 tools/call」以及
-//   「掐掉全部 initialize（模拟 ACC 持续不可用）」，
-//   并允许在测试中途把服务器改回健康 ——
-//   因为「EOF 也要重试」和「失败不缓存」是**两条不同的判据**，
-//   共用一个夹具才能同时测出「一次 EOF 就让整个进程永久失效」。
+//
+//	「连续掐前 N 次 initialize / 前 N 次 tools/call」以及
+//	「掐掉全部 initialize（模拟 ACC 持续不可用）」，
+//	并允许在测试中途把服务器改回健康 ——
+//	因为「EOF 也要重试」和「失败不缓存」是**两条不同的判据**，
+//	共用一个夹具才能同时测出「一次 EOF 就让整个进程永久失效」。
 type mcpTestServer struct {
 	*httptest.Server
 	mu            sync.Mutex
@@ -157,11 +158,12 @@ func (ts *mcpTestServer) counts() (int, int) {
 // ① 判据：initialize 失败**不能**被永久缓存。
 //
 // ⚠ 2026-10-26 改写：原来用 killFirst（掐**第一次** initialize），
-//   那时 initialize 不重试 ⇒ 第一次 CallTool 必然失败。
-//   现在 initialize 对 EOF **会重试**（见 client_eof_retry_test.go），
-//   所以「掐一次」的语义变了 —— 要测「失败不被缓存」，
-//   必须掐**每一次** initialize（模拟 ACC 持续不可用），
-//   再把服务器改回健康，看客户端能否自愈。
+//
+//	那时 initialize 不重试 ⇒ 第一次 CallTool 必然失败。
+//	现在 initialize 对 EOF **会重试**（见 client_eof_retry_test.go），
+//	所以「掐一次」的语义变了 —— 要测「失败不被缓存」，
+//	必须掐**每一次** initialize（模拟 ACC 持续不可用），
+//	再把服务器改回健康，看客户端能否自愈。
 func TestCallTool_InitializeFailureDoesNotPoisonClient(t *testing.T) {
 	srv := newMCPTestServer(t, func(s *mcpTestServer) { s.killAllInits = true })
 	c := NewClient(srv.URL, "acc-api-key", false)

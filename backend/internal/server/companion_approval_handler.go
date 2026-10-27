@@ -35,18 +35,18 @@ import (
 // frontend's types match the wire without a translation layer that could
 // quietly drop a field.
 type accApprovalItem struct {
-	ID         string                       `json:"id"`
-	RunID      string                       `json:"run_id"`
-	SessionID  string                       `json:"session_id"`
-	AgentKind  string                       `json:"agent_kind"`
-	ToolCallID string                       `json:"tool_call_id"`
-	Title      string                       `json:"title"`
-	Kind       string                       `json:"kind"`
-	Status     string                       `json:"status"`
-	CreatedAt  string                       `json:"created_at"`
-	Reason     string                       `json:"reason,omitempty"`
-	DecidedBy  string                       `json:"decided_by,omitempty"`
-	Options    []accApprovalOption         `json:"options"`
+	ID         string              `json:"id"`
+	RunID      string              `json:"run_id"`
+	SessionID  string              `json:"session_id"`
+	AgentKind  string              `json:"agent_kind"`
+	ToolCallID string              `json:"tool_call_id"`
+	Title      string              `json:"title"`
+	Kind       string              `json:"kind"`
+	Status     string              `json:"status"`
+	CreatedAt  string              `json:"created_at"`
+	Reason     string              `json:"reason,omitempty"`
+	DecidedBy  string              `json:"decided_by,omitempty"`
+	Options    []accApprovalOption `json:"options"`
 }
 
 type accApprovalOption struct {

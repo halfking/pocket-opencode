@@ -326,17 +326,18 @@ func isTimeoutError(err error) bool {
 // isTransportEOF：传输层被掐断（EOF / unexpected EOF / 连接被重置 / 管道断）。
 //
 // ★ 2026-10-26 补：ACC 的 MCP 面**就是用 EOF 把委派打死的** ——
-//   实测（两处独立证据）：
-//     ① 今日早些时候：ACC 的 MCP 面返回过一次 EOF（POST /api/v2/mcp），
-//        之后 pocketd 的委派全部 502；
-//     ② 本轮 22:09 真机夹具：委托直接 502，
-//        错误是 `acc_create_task failed: MCP not initialized: initialize failed:
-//        failed to send request: Post "http://100.106.67.198:4101/api/v2/mcp": EOF`。
-//   而 initialize 当时的重试集是「dial 失败 | 429/502/503/504 | 超时」——
-//   **EOF 不在里面** ⇒ 一次 EOF 就让整个进程在 ACC 恢复之后**再也初始化不了**。
-//   ⇒ initialize 是**幂等**的（握手而已，重做一次没有副作用）⇒ EOF 必须重试。
-//   ⚠ 写工具**不**因此重试：EOF 同样可能发生在「服务器已经建好任务之后」，
-//      而 acc_create_task 没有幂等键 ⇒ 重发会建出重复任务。
+//
+//	实测（两处独立证据）：
+//	  ① 今日早些时候：ACC 的 MCP 面返回过一次 EOF（POST /api/v2/mcp），
+//	     之后 pocketd 的委派全部 502；
+//	  ② 本轮 22:09 真机夹具：委托直接 502，
+//	     错误是 `acc_create_task failed: MCP not initialized: initialize failed:
+//	     failed to send request: Post "http://100.106.67.198:4101/api/v2/mcp": EOF`。
+//	而 initialize 当时的重试集是「dial 失败 | 429/502/503/504 | 超时」——
+//	**EOF 不在里面** ⇒ 一次 EOF 就让整个进程在 ACC 恢复之后**再也初始化不了**。
+//	⇒ initialize 是**幂等**的（握手而已，重做一次没有副作用）⇒ EOF 必须重试。
+//	⚠ 写工具**不**因此重试：EOF 同样可能发生在「服务器已经建好任务之后」，
+//	   而 acc_create_task 没有幂等键 ⇒ 重发会建出重复任务。
 func isTransportEOF(err error) bool {
 	if err == nil {
 		return false
@@ -799,11 +800,12 @@ const createdAtSkewTolerance = 5 * time.Second
 // ★ 这是「写请求失败后确认服务器到底建没建出来」的核心判据：
 //   - 只按标题找会**认错人**（ACC 里同名残留能堆几十条）；
 //   - 只按时间找会**认错内容**（别人也在建任务）。
-//   两个条件都要。
+//     两个条件都要。
 //
 // 多个候选时取**最新**的那条：本次请求是最后发出的那一个。
 // ⚠ 没有 created_at 的任务**不参与**匹配（零值 CreatedAt）——
-//   没有时间戳就不敢认领，这是保守方向。
+//
+//	没有时间戳就不敢认领，这是保守方向。
 func MatchTaskCreatedSince(tasks []ParsedTask, title string, since time.Time) (ParsedTask, bool) {
 	title = strings.TrimSpace(title)
 	if title == "" {
@@ -842,8 +844,9 @@ func (c *Client) FindTaskCreatedSince(ctx context.Context, title string, since t
 // IsAmbiguousWriteFailure 判断一个**写**工具的失败是不是「结果未知」。
 //
 // ★ 含义：请求可能已经到了服务器、只是响应没回来（EOF / 连接被重置 / 超时）。
-//   ⇒ 这种失败**不能盲目重试**（acc_create_task 没有幂等键 ⇒ 重发会建出重复任务），
-//     但也**不能直接当成失败**（服务器可能已经建好了）⇒ 必须先「问服务器」。
+//
+//	⇒ 这种失败**不能盲目重试**（acc_create_task 没有幂等键 ⇒ 重发会建出重复任务），
+//	  但也**不能直接当成失败**（服务器可能已经建好了）⇒ 必须先「问服务器」。
 //
 // 与 isTransportEOF 的区别：那个只认传输层掐断，这个还认超时
 // （超时同样是「我们没收到响应」，语义上同样是不确定）。
@@ -856,7 +859,6 @@ func IsAmbiguousWriteFailure(err error) bool {
 	}
 	return isTimeoutError(err)
 }
-
 
 // GetRemoteTasks 获取远程任务列表
 func (c *Client) GetRemoteTasks(ctx context.Context, status string, limit int) ([]ParsedTask, error) {
