@@ -34,9 +34,19 @@ export interface UseTaskSessionSheetReturn {
   title: Ref<string>
   loading: Ref<boolean>
   error: Ref<string>
+  /** 续写草稿（「继续」预填在这里，用户可改写再发）。 */
+  draft: Ref<string>
+  /** 投递中。 */
+  sending: Ref<boolean>
+  /** 投递失败的错误文案。 */
+  sendError: Ref<string>
+  /** 投递成功的回执提示（含 run id 与 state）。 */
+  sentHint: Ref<string>
   reload: () => Promise<void>
   extractTitle: () => Promise<void>
   summarize: () => Promise<void>
+  /** 往原生会话投一条提示词；成功返回 true。 */
+  send: (prompt?: string) => Promise<boolean>
 }
 
 export function useTaskSessionSheet(args: UseTaskSessionSheetArgs): UseTaskSessionSheetReturn {
@@ -61,6 +71,10 @@ export function useTaskSessionSheet(args: UseTaskSessionSheetArgs): UseTaskSessi
   const title = ref('')
   const loading = ref(false)
   const error = ref('')
+  const draft = ref('')
+  const sending = ref(false)
+  const sendError = ref('')
+  const sentHint = ref('')
 
   function sessionIdOf(row: TaskSessionBundleRow | null): string | null {
     if (!row) return null
@@ -76,6 +90,10 @@ export function useTaskSessionSheet(args: UseTaskSessionSheetArgs): UseTaskSessi
     title.value = row?.title || ''
     summary.value = ''
     messages.value = []
+    // 换会话 ⇒ 换草稿：上一个会话的半截提示词不能流到下一个会话去。
+    draft.value = ''
+    sendError.value = ''
+    sentHint.value = ''
   }, { immediate: true })
 
   async function reload(): Promise<void> {
@@ -121,6 +139,48 @@ export function useTaskSessionSheet(args: UseTaskSessionSheetArgs): UseTaskSessi
     summary.value = text
   }
 
+  /**
+   * 往**原生会话**投一条提示词 —— 「继续跟进」与「提示词的修改」的落点。
+   *
+   * ★ 2026-10-27：这条路径是必需的，不是多出来的：
+   *   App 的全局会话视图（stores/session.ts 的 sendPrompt）要求 instance_id，
+   *   而 ACC 派单出来的会话是 companion 原生会话（**没有** instance）
+   *   ⇒ 那条路根本发不出去 ⇒ 「继续」只能走任务域的 message 端点。
+   *
+   * 返回 true 表示**已经投出去了**（不是"看着像发出去了"）。
+   */
+  async function send(prompt?: string): Promise<boolean> {
+    const row = rowRef.value
+    const sid = sessionIdOf(row)
+    const text = (prompt ?? draft.value).trim()
+    if (!row || !sid || !taskIdRef.value) return false
+    if (!text) {
+      sendError.value = '提示词不能为空'
+      return false
+    }
+    sending.value = true
+    sendError.value = ''
+    sentHint.value = ''
+    try {
+      const receipt = await api.sendTaskSessionMessage(taskIdRef.value, sid, text)
+      draft.value = ''
+      sentHint.value = `已发送（run ${receipt.runId || '-'} · ${receipt.state || '-'}）`
+      // 新消息是**异步**落库的 ⇒ 立刻重读未必读得到。
+      // 但重读一次至少不会把旧正文留在屏幕上、让人以为"没发出去"。
+      await reload()
+      return true
+    } catch (e) {
+      // ★ 不能把原始错误直接上屏（check:raw-error 门禁第 26 项）：
+      //   原始 message 是英文技术标识，用户看不懂也不知道该做什么。
+      //   走 apiError 映射，原始信息仍然留在 console 里。
+      console.error('[task-session] send failed:', e)
+      sendError.value = apiError(e, '发送失败，请重试')
+      return false
+    } finally {
+      sending.value = false
+    }
+  }
+
   return {
     kinds,
     messages,
@@ -128,8 +188,13 @@ export function useTaskSessionSheet(args: UseTaskSessionSheetArgs): UseTaskSessi
     title,
     loading,
     error,
+    draft,
+    sending,
+    sendError,
+    sentHint,
     reload,
     extractTitle,
     summarize,
+    send,
   }
 }

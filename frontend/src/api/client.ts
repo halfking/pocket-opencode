@@ -211,6 +211,20 @@ export interface SessionLink {
   instanceId: string
   sessionId: string
   role: string
+  /**
+   * 原生智能体 kind（opencode / mmcode / claude …）。
+   *
+   * ★ 2026-10-27 补：ACC 派单出来的会话是 **companion 原生会话**，
+   *   它没有 instance，kind 决定用哪个智能体去驱动它。
+   */
+  kind?: string
+  /**
+   * true ⇒ 这是 companion 的**原生会话**（instanceId 为空）。
+   *
+   * ★ 2026-10-27 补：原生会话**不能**走 App 的全局会话视图发消息
+   *   （那条路要求 instance_id），只能走任务域的 message 端点。
+   */
+  native?: boolean
 }
 
 export interface TaskSessionBundle {
@@ -234,6 +248,13 @@ export interface TaskSessionBundleRow {
   tokensIn: number
   tokensOut: number
   tokensCache: number | null
+  /**
+   * true ⇒ 这是 companion 的**原生会话**（没有 instance）。
+   *
+   * ★ 2026-10-27 补：原生会话不能走全局会话视图发消息，只能走
+   *   任务域的 /api/tasks/{id}/sessions/{sid}/message 续写。
+   */
+  native?: boolean
 }
 
 export interface TaskSessionMessage {
@@ -361,6 +382,35 @@ export const api = {
     const res = await authFetch(`${resolveApiBase()}/api/tasks/${taskId}/sessions`)
     const data = await res.json()
     return data.sessions || []
+  },
+
+  /**
+   * 往任务的原生会话里投一条提示词 —— 「继续跟进」与「提示词的修改」的
+   * **唯一真实出口**。
+   *
+   * ★ 2026-10-27：App 的全局会话视图发不了消息给这类会话
+   *   （stores/session.ts 的 sendPrompt 要求 instance_id，
+   *   而 companion 原生会话没有 instance）⇒ 必须走这个任务域端点。
+   */
+  async sendTaskSessionMessage(
+    taskId: string,
+    sessionId: string,
+    prompt: string,
+    operationId?: string,
+  ): Promise<{ runId: string; state: string; agentKind: string; nativeSessionId: string }> {
+    const res = await authFetch(
+      `${resolveApiBase()}/api/tasks/${taskId}/sessions/${encodeURIComponent(sessionId)}/message`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt, operation_id: operationId || '' }),
+      },
+    )
+    if (!res.ok) {
+      const text = await res.text().catch(() => '')
+      throw new Error(`sendTaskSessionMessage failed: ${res.status} ${text.slice(0, 200)}`)
+    }
+    return res.json()
   },
 
   async getTaskSessionBundle(taskId: string): Promise<TaskSessionBundle> {

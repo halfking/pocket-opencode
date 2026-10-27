@@ -1913,6 +1913,11 @@ func (s *Server) handleTaskOperations(w http.ResponseWriter, r *http.Request) {
 			case r.Method == http.MethodPost && parts[3] == "summarize":
 				s.handleSessionSummarize(w, r, parts[0], parts[2])
 				return
+			case r.Method == http.MethodPost && parts[3] == "message":
+				// 「继续跟进」/「提示词的修改」的真实出口：往这次派单用到的
+				// 原生会话里投一条可改写的提示词。
+				s.handleTaskSessionMessage(w, r, parts[0], parts[2])
+				return
 			}
 		}
 		if r.Method == http.MethodPost && len(parts) == 2 && parts[1] == "cancel" {
@@ -2215,7 +2220,11 @@ func (s *Server) auditTaskStatusChange(r *http.Request, updated *task.Task, prev
 }
 
 func (s *Server) handleTaskSessions(w http.ResponseWriter, r *http.Request, taskID string) {
-	links, err := s.taskStore.ListSessionsForTaskScoped(r.Context(), taskID, s.workspaceIDFromRequest(r))
+	// ★ 2026-10-27：ACC 派单的任务行**从来没有**会话链接 ⇒ 这里补一次解析
+	//   （companion 的 run 历史 → 原生会话 → 挂到任务上），并把 kind/native
+	//   一起带出来，让 App 能判断「这条链接能不能续」。
+	//   详见 companion_task_session.go 的根因说明。
+	links, err := s.buildTaskSessionLinks(r.Context(), taskID, s.workspaceIDFromRequest(r))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

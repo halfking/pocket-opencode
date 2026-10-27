@@ -454,15 +454,27 @@ func (c *CompanionClient) GetArtifactBytes(ctx context.Context, dispatchID, name
 // OperateSession dispatches a prompt into a native session and returns the
 // run receipt. The response is camelCase (runId/nativeSessionId), unlike
 // the run reads above — see companionRunReceipt.
+//
+// ★ 2026-10-27：kind 必须放**查询参数**。
+//
+//	daemon 侧的 operateNativeSession 是 `s.native.Get(c.QueryParam("kind"), id)`
+//	—— 它**只读查询参数**，body 里的 kind 它不看。⇒ 只放 body 的话，kind
+//	会被静默丢掉（不报错，只是没生效），这正是那种"看起来对"的坑。
+//	kind 为空时 daemon 会跨 kind 扫（活链路实测：省掉 kind 也能唤醒会话），
+//	所以这里只在拿到确切 kind 时才带，省一次全扫。
 func (c *CompanionClient) OperateSession(kind, sessionID, prompt, operationID string) (companionRunReceipt, error) {
 	body := map[string]any{"prompt": prompt}
 	if operationID != "" {
 		body["operation_id"] = operationID
 	}
-	if kind != "" {
-		body["kind"] = nativeAgentKind(kind)
+	path := "/api/v1/native/sessions/" + url.PathEscape(sessionID) + "/operate"
+	if k := nativeAgentKind(kind); k != "" {
+		q := url.Values{}
+		q.Set("kind", k)
+		path += "?" + q.Encode()
+		body["kind"] = k
 	}
-	raw, err := c.post("/api/v1/native/sessions/"+url.PathEscape(sessionID)+"/operate", body)
+	raw, err := c.post(path, body)
 	if err != nil {
 		return companionRunReceipt{}, err
 	}

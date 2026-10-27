@@ -637,6 +637,17 @@
       </div>
     </BottomSheet>
 
+    <!-- 「继续跟进 / 提示词的修改」：ACC 派单任务的原生会话抽屉。
+         ★ 2026-10-27：原生会话没有 instance，全局会话视图发不了消息给它
+           （stores/session.ts 的 sendPrompt 要求 instance_id）
+           ⇒ 「继续」必须落在这里（任务域的 message 端点）。 -->
+    <TaskSessionSheet
+      :task-id="resumeSheetTaskId"
+      :row="resumeSheetRow"
+      :initial-prompt="resumePrompt"
+      @close="closeResumeSheet"
+    />
+
     <!-- Session Context Menu (long-press): 停止 / 归档 -->
     <BottomSheet
       :model-value="showSessionMenu && !!contextSession"
@@ -809,7 +820,7 @@
 <script setup lang="ts">
 import { ref, computed, inject, nextTick, onActivated, onMounted, onUnmounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { api, type Task, type TaskTypeGroup } from '../../api/client'
+import { api, type Task, type TaskTypeGroup, type SessionLink, type TaskSessionBundleRow } from '../../api/client'
 import { readSelectedInstance } from '../../config/selected-instance'
 import wsClient from '../../api/websocket'
 import { useToast } from '../../composables/useToast'
@@ -838,6 +849,7 @@ import {
 } from '../sessions/sessionArchive'
 import { useConfirm } from '../../composables/useConfirm'
 import BottomSheet from '../../components/base/BottomSheet.vue'
+import TaskSessionSheet from './TaskSessionSheet.vue'
 import { SCROLL_CHROME_KEY } from '../../composables/scroll-chrome'
 import { useApiError } from '../../composables/useApiError'
 import {
@@ -1020,6 +1032,11 @@ const visibleSessions = computed(() =>
 // ── Context menu (long-press) ──
 const showContextMenu = ref(false)
 const contextTask = ref<Task | null>(null)
+// 「继续跟进」打开的原生会话抽屉（ACC 派单的会话没有 instance，
+// 只能走任务域的会话抽屉 —— 见 ctxResume 的注释）。
+const resumeSheetRow = ref<TaskSessionBundleRow | null>(null)
+const resumeSheetTaskId = ref('')
+const resumePrompt = ref('继续')
 let longPressTimer: ReturnType<typeof setTimeout> | null = null
 let pressStart = { x: 0, y: 0 }
 let suppressClick = false
@@ -1856,6 +1873,15 @@ async function ctxResume() {
   closeContextMenu()
   try {
     const links = await api.getTaskSessions(task.id)
+    // ★ 2026-10-27：ACC 派单出来的会话是 **companion 原生会话**（没有 instance）。
+    //   它**不能**走 /sessions/:id —— App 的全局会话视图发消息要求 instance_id，
+    //   跳过去只会看到一个发不出消息的空会话。
+    //   ⇒ 原生会话走任务域的会话抽屉（那里有任务域的 message 端点）。
+    const native = links.find((l) => l.native === true)
+    if (native) {
+      openResumeSheet(task.id, native)
+      return
+    }
     if (links.length > 0) {
       const link = links[0]
       router.push({
@@ -1872,6 +1898,30 @@ async function ctxResume() {
     console.error('Failed to resume task:', e)
     viewTask(task.id)
   }
+}
+
+/** 打开原生会话抽屉（继续 / 改提示词）。 */
+function openResumeSheet(taskId: string, link: SessionLink) {
+  resumeSheetTaskId.value = taskId
+  resumePrompt.value = '继续'
+  resumeSheetRow.value = {
+    id: link.sessionId,
+    title: link.sessionId,
+    lane: 'current',
+    agentKind: link.kind || '',
+    agentSessionId: link.sessionId,
+    instanceId: link.instanceId || '',
+    role: link.role,
+    tokensIn: 0,
+    tokensOut: 0,
+    tokensCache: null,
+    native: true,
+  }
+}
+
+function closeResumeSheet() {
+  resumeSheetRow.value = null
+  resumeSheetTaskId.value = ''
 }
 
 function openSession(s: any) {

@@ -1,0 +1,149 @@
+# Maestro 真机功能流 · 「继续跟进 / 提示词的修改」（2026-10-27）
+#
+# ★ 这条流守的是原目标里最后两个没打通的字：「继续」与「提示词的修改」。
+#
+# ★ 根因（实测，不是推测）：
+#   · ACC 派单跑完后，**本地任务行从来没有关联过任何会话**
+#     （GET /api/tasks/{id}/sessions ⇒ {"sessions":[]}）
+#     ⇒ App 的「▶ 继续跟进」拿不到会话，只能落到「查看详情」兜底。
+#   · 而 App 的**全局会话视图也发不了消息**给这类会话：
+#     stores/session.ts 的 sendPrompt 要求 instance_id，
+#     打的是实例作用域端点 /api/mobile/sessions/{id}/prompt?instance_id=…
+#     ⇒ companion 原生会话没有 instance ⇒ 消息发不出去。
+#   ⇒ 「继续」必须走**任务域**的出口：
+#     GET  /api/tasks/{id}/sessions                    → 自动挂上原生会话链接
+#     POST /api/tasks/{id}/sessions/{sid}/message      → 投一条可改写的提示词
+#
+# ★ 判据纪律：
+#   ① 先断言弹窗关掉了再断言卡片（输入框里有夹具名 ⇒ visible 恒真）。
+#   ② id: 判据在真机上恒假（WebView 不把 data-testid 映射成 view-id）
+#      ⇒ 只能用**文本 + 空间关系**。
+#   ③ **「已发送」这个回执标签只在真的投出去之后才渲染** ⇒ 看得见它
+#      = 这次真的投了（不是"按钮点过了"也能绿）。
+#   ④ 投完要看**智能体的答复**（RESUMEOK），不是看按钮状态 ——
+#      「投出去了」和「智能体回话了」是两件事。
+#
+# 运行：node scripts/maestro-run.mjs .maestro/acc-resume-prompt.yaml
+appId: com.kaixuan.opencode.pocket
+---
+# ---------- 0. 前置：harness 已真实登录，起点是 #/ai ----------
+- extendedWaitUntil:
+    visible: "AI 工具"
+    timeout: 60000
+- waitForAnimationToEnd:
+    timeout: 15000
+
+# ---- 1. 打开「委托给 ACC」面板，派一个任务 ----
+- extendedWaitUntil:
+    visible: "委托 ACC"
+    timeout: 40000
+- tapOn: "委托 ACC"
+- extendedWaitUntil:
+    visible: "^委托给 ACC$"
+    timeout: 20000
+
+# ---- 2. 填提示词并提交 ----
+# ★ 提示词必须是一句**明确的指令**（实测：夹具名会让智能体去工作区里翻，
+#   5 分钟超时 outcome_unknown ⇒ 测到的是"派单超时"不是"续写"）。
+#   标题 label 在 y=1254~1304 ⇒ 输入框取 y≈1350（56%）。
+- tapOn: { point: "50%,56%" }
+- inputText: "只回复HISTORYOK"
+- tapOn: { text: "^委托给 ACC$", enabled: true }
+
+# ---- 3. ★ 弹窗必须关闭（否则下面所有断言都可能命中输入框）----
+- extendedWaitUntil:
+    notVisible: "ACC 会接管后续会话与执行.*"
+    timeout: 90000
+
+# ---- 4. 派出去的卡片出现 ----
+- extendedWaitUntil:
+    visible: "只回复HISTORYOK"
+    timeout: 60000
+- assertVisible: "只回复HISTORYOK"
+
+# ---- 5. ★ 把新派单要的工具批准答掉 ----
+- extendedWaitUntil:
+    visible: "ACC 待批.*"
+    timeout: 45000
+    optional: true
+- repeat:
+    times: 6
+    commands:
+      - extendedWaitUntil:
+          visible: ".*允许一次.*"
+          timeout: 10000
+          optional: true
+      - runFlow:
+          when:
+            visible: ".*允许一次.*"
+          commands:
+            - tapOn: ".*允许一次.*"
+      - extendedWaitUntil:
+          notVisible: ".*允许一次.*"
+          timeout: 5000
+          optional: true
+- extendedWaitUntil:
+    notVisible: "ACC 待批.*"
+    timeout: 60000
+    optional: true
+
+# ---- 6. ★ 长按卡片 ⇒ 「▶ 继续跟进」⇒ **真正打开会话抽屉** ----
+#
+# ★ 这一步与 flow3 的同名断言**不是一回事**：
+#   flow3 只验「入口在、点得动」（点完还 back 掉了）。
+#   这里点完**不回退**，而是要求**会话抽屉真的打开** ——
+#   抽屉里能看到这次派单的对话正文（"只回复HISTORYOK" → "HISTORYOK"）
+#   ⇒ 证明任务 ⇄ 原生会话的链接**真的建起来了**（后端自动挂链生效）。
+- longPressOn: "只回复HISTORYOK"
+- extendedWaitUntil:
+    visible: ".*继续跟进.*"
+    timeout: 20000
+- tapOn: ".*继续跟进.*"
+
+# ---- 7. ★ 会话抽屉打开 ⇒ 正文读得到 ----
+#
+# 正文里的 "HISTORYOK" 就是这次派单智能体的答复（实测逐字一致）。
+# 读得到它 ⇒ 三件事同时成立：
+#   ① 任务 ⇄ 会话链接建起来了；
+#   ② 原生会话的 transcript 能被任务域读到；
+#   ③ 「继续跟进」不再是"落到查看详情兜底"。
+- extendedWaitUntil:
+    visible: "只回复HISTORYOK"
+    timeout: 60000
+- assertVisible: "只回复HISTORYOK"
+- extendedWaitUntil:
+    visible: "HISTORYOK"
+    timeout: 30000
+- assertVisible: "HISTORYOK"
+
+# ---- 8. ★ 续写区在，且**预填了「继续」** ----
+#
+# 预填「继续」是「继续跟进」的语义本体；它必须**可编辑**，
+# 否则"提示词的修改"只是一句声明。
+- extendedWaitUntil:
+    visible: "继续，或改写提示词后发送"
+    timeout: 20000
+- assertVisible: "继续，或改写提示词后发送"
+
+# ---- 9. ★ 改写提示词 ⇒ 发送 ----
+#
+# ★ 预填的草稿是「继续」两个字符 ⇒ 改写时必须先擦掉，
+#   否则发出去的是「继续只回复RESUMEOK」，智能体未必逐字回 RESUMEOK。
+- tapOn: "继续，或改写提示词后发送"
+- eraseText: 2
+- inputText: "只回复RESUMEOK"
+- tapOn: "发送"
+# 「已发送」标签只在真的投出去之后才渲染 ⇒ 看得见它 = 真的投了。
+- extendedWaitUntil:
+    visible: "已发送.*"
+    timeout: 60000
+- assertVisible: "已发送.*"
+
+# ---- 10. ★★ 智能体**真的回话了**（不是"按钮点过了"）----
+#
+# 这是本条流的最后一环，也是唯一能区分「UI 上点了一下」与
+# 「提示词真的改写并投到了原生会话」的判据。
+- extendedWaitUntil:
+    visible: "RESUMEOK"
+    timeout: 120000
+- assertVisible: "RESUMEOK"
