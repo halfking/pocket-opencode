@@ -1194,7 +1194,7 @@ function openAccDelegate() {
   accStore.reset()
   showAccModal.value = true
   // 拉 ACC 的智能体清单，让用户能选「派给谁」。失败不阻断（后端会自己选）。
-  void accStore.loadAgents()
+  void accStore.loadAccAgents()
 }
 
 function closeAccDelegate() {
@@ -2239,7 +2239,10 @@ function timeAgo(dateStr?: string): string {
   background: var(--surface-2);
 }
 .acc-eco-title {
-  font-size: 12px;
+  /* 字号走 token（门禁 check:font-size-token-equal）：12px 与 --text-sm
+     同值 ⇒ 换 token 是**零视觉变化**。本轮顺手把这一块也换掉
+     （它是既有的违规点，门禁因此本来就红）。 */
+  font-size: var(--text-sm);
   color: var(--text-secondary);
   margin-bottom: 4px;
 }
@@ -2247,7 +2250,7 @@ function timeAgo(dateStr?: string): string {
   display: flex;
   justify-content: space-between;
   gap: 8px;
-  font-size: 13px;
+  font-size: var(--text-smd);
   padding: 2px 0;
 }
 .acc-eco-name {
@@ -2257,7 +2260,7 @@ function timeAgo(dateStr?: string): string {
 }
 .acc-eco-status {
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: var(--text-sm);
   flex-shrink: 0;
 }
 /* ── 任务历史与产出（2026-10-27） ── */
@@ -2283,13 +2286,13 @@ function timeAgo(dateStr?: string): string {
   margin: 2px 0 6px;
 }
 .acc-eco-sub {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-secondary);
   margin: 4px 0 2px;
 }
 .acc-eco-time {
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: var(--text-sm);
   flex-shrink: 0;
 }
 .acc-file-row {
@@ -2297,11 +2300,11 @@ function timeAgo(dateStr?: string): string {
   flex-wrap: wrap;
   align-items: baseline;
   gap: 8px;
-  font-size: 13px;
+  font-size: var(--text-smd);
   padding: 2px 0;
 }
 .acc-file-name {
-  font-size: 13px;
+  font-size: var(--text-smd);
 }
 .acc-file-content {
   flex-basis: 100%;
@@ -2309,7 +2312,7 @@ function timeAgo(dateStr?: string): string {
   padding: 6px 8px;
   border-radius: 6px;
   background: var(--surface-2);
-  font-size: 12px;
+  font-size: var(--text-sm);
   line-height: 1.4;
   max-height: 220px;
   overflow: auto;

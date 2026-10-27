@@ -14,6 +14,13 @@
   --bg-card: #ffffff;
   --bg-elevated: #ffffff;
   --bg-subtle: #f3f4f6;
+  /* --surface-2：卡片里的次级色块（.acc-eco-block 等）。
+     ★ 2026-10-27 补：它被 TasksView.vue / TaskDetailView.vue 引用了，
+       但**从来没定义过** ⇒ 那条 background 声明整条失效（不是"退回透明"，
+       是"这条声明不算数"）⇒ css-vars 门禁红（既有失败，本轮修掉）。
+       取值与 --bg-subtle 同一个来源 ⇒ 暗色主题自动跟随（暗色块里改的是
+       --bg-subtle 本身）。 */
+  --surface-2: var(--bg-subtle);
 
   /* Text - 增强对比度（Codex 风格） */
   --text-primary: #0a0a0a;    /* 更深黑（原 #111827） */

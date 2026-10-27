@@ -4,7 +4,7 @@
  * 职责：
  *   1. 暴露当前最近一次委托的 ACC 任务、提交中 / 错误状态
  *   2. `createTask` 走 /api/tasks/delegate，成功后写回 `lastTask`
- *   3. `loadAgents` 读 ACC 的智能体清单（委托时选派给谁）
+ *   3. `loadAccAgents` 读 ACC 的智能体清单（委托时选派给谁）
  *
  * 仅服务 TasksView 的「Delegate to ACC」按钮与「停止任务」入口，刻意保持小而轻，
  * 不引入轮询 / 缓存等副作用。
@@ -174,7 +174,16 @@ export const useAccTasksStore = defineStore('accTasks', () => {
   }
 
   /** 拉 ACC 的智能体清单。失败**不**阻断委托（后端会自己选一个可派的）。 */
-  async function loadAgents(): Promise<void> {
+  // ★ 2026-10-27 改名 `loadAgents` → `loadAccAgents`。
+  //
+  //   原因：前端门禁 check:error-outlet 按**函数名**扫调用点
+  //   （`\bloadAgents\b`），而 chatAgentStore 有一个同名的 `loadAgents`
+  //   —— 它**失败会 rethrow**，门禁因此要求它的每个调用点都接 .catch。
+  //   `accStore.loadAgents()`（ACC 的智能体清单，**从不** rethrow）被同一个
+  //   名字扫进来 ⇒ 门禁判它是「没接住 rejection 的调用点」⇒ 假红。
+  //   ⇒ 改掉名字这一侧的碰撞，而不是给一个**不可能 reject** 的 promise
+  //     挂一个空 catch（那是在骗判据）。
+  async function loadAccAgents(): Promise<void> {
     agentsLoading.value = true
     agentsError.value = null
     try {
@@ -212,7 +221,7 @@ export const useAccTasksStore = defineStore('accTasks', () => {
     artifactContents,
     artifactLoading,
     createTask,
-    loadAgents,
+    loadAccAgents,
     loadEcosystem,
     loadRuns,
     loadRunDetail,

@@ -136,6 +136,11 @@ const REGISTRY: Array<{ key: string; count: number; why: string }> = [
     why: '缩略图是渐进增强；单张失败由 use-invoice-thumbs 内部兜住' },
   { key: 'features/meetings/MeetingDetailView.vue::refreshRelated', count: 1,
     why: '它 await 的 searchRelatedContext 的三个子查询（notes/meetings/web）各自 catch 后返回 []' },
+  { key: 'features/tasks/TasksView.vue::handleRefresh', count: 1,
+    why: '★ 2026-10-27 补登记（本来是既有缺口，门禁因此本来就红）：' +
+      'handleRefresh 里 Promise.all 的四个子调用**各自都有 try/catch**' +
+      '（loadTasks / loadSessions / approvals.refresh / accApprovals.loadApprovals）' +
+      '⇒ Promise.all 不会 reject ⇒ 这里不需要额外的 .catch' },
   { key: 'features/sessions/useSessionDrafts.ts::ensureStore', count: 1,
     why: '它的调用方各自 try/catch（hydrate / clear / persistTo 三处都有）' +
       '；⚠§882 起，会话切换那两处 fire-and-forget 的 `.catch(() => undefined)`（真静默）' +
@@ -197,13 +202,20 @@ describe('§850 · `void x(...)` fire-and-forget：登记表与扫面双向对�
     }
   })
 
-  it('★ 合计口径固定：14 处（基线 = 2026-10-18 §857 修正后）', () => {
+  it('★ 合计口径固定：15 处（基线 = 2026-10-27 §857+ 修正后）', () => {
     // ⚠ 2026-10-18（§857）：基线由 **15** 改为 **14** ——
     //   `SettingsPermissionsView::refreshAll` 补了 catch 后离开了本族（见 REGISTRY 处的说明）。
     //   ⭐ 按「棘轮基线必须按实测更新」处理，且**必须写清是哪一条、为什么变** ——
     //     否则这道断言会在某天被人当成「有人偷偷删了登记」而反向放宽。
+    //
+    // ⚠ 2026-10-27：基线由 **14** 改为 **15** ——
+    //   补登记了 `features/tasks/TasksView.vue::handleRefresh`。
+    //   ★ 这**不是**新增了一处 fire-and-forget，而是**本来就存在、却漏登记**的那一处
+    //     （扫面早就数到了它 ⇒ 正是「登记表不许漂移」那条一直红的原因）。
+    //   ⇒ 所以这是「把登记表补齐」，不是「把基线放宽」：扫描口径没变，
+    //     变的只是登记表与实际使用情况对齐。
     const total = REGISTRY.reduce((n, r) => n + r.count, 0)
-    assert.equal(total, 14, `登记表合计 ${total} 处，与本节记录的基线 14 不符`)
+    assert.equal(total, 15, `登记表合计 ${total} 处，与本节记录的基线 15 不符`)
   })
 })
 

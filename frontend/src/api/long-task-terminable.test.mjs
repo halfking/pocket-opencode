@@ -58,6 +58,15 @@ const LONG_TASK_FLOOR_MS = 90_000
  *   by-design —— 刻意不接，必须在 reason 里写清为什么
  */
 const LONG_TASK_CALL_SITES = [
+  // ★ 2026-10-27 补登记：`/api/tasks/delegate`（委托给 ACC）本来就在扫描面里
+  //   （它打的是长任务路由），却一直没在册 ⇒ 「一一对应」这条判据长期红。
+  //   state=by-design：这条**刻意不接中止器** —— 它不是「可以中途取消」的动作，
+  //   而是「派一个任务出去，让 ACC 去跑」；中途取消会让「ACC 到底建没建出任务」
+  //   变成未知（服务器侧没有幂等键，见 handoff §6 第 7 条）。
+  //   界面上的诚实出口是：失败时提示去任务列表确认（那部分还没做，记在 handoff 里）。
+  { file: 'api/accTasks.ts', path: '/api/tasks/delegate', fn: 'createAccTask', state: 'by-design', surface: '委托任务给 ACC',
+    reason: '刻意不接中止器：中途取消会让「ACC 到底建没建出任务」不可知（acc_create_task 无幂等键）；' +
+      '客户端预算 120s > 服务端 90s（见 accTasks.ts 的 ACC_DELEGATE_TIMEOUT_MS 注释）' },
   { file: 'api/email.ts', path: '/api/email/backfill', fn: 'backfill', state: 'wired', surface: '邮件回填',
     reason: 'use-email-inbox 的 backfill controller，界面有「停止」' },
   { file: 'api/email.ts', path: '/api/emails/${encodeURIComponent(id)}/summarize', fn: 'summarizeEmail', state: 'wired', surface: '单封邮件摘要',
