@@ -789,15 +789,20 @@ func TestS952CensusCountsArePinned(t *testing.T) {
 	// 2026-10-27：+1 —— 产出文件的字节读取（io.LimitReader ⇒ 有界）：
 	//   agent-companion 的产出字节面此前在 pocketd 侧**没有出口**，这一处
 	//   是新增的那个出口（companion_client.go#GetArtifactBytes）。
-	if len(sites) != 266 {
-		t.Errorf("§952 普查到 %d 处「读进内存」的调用点（期望 266）\n"+
+	// 2026-10-27（续）：+1 —— 「继续跟进 / 提示词的修改」的请求体解码
+	//   （http.MaxBytesReader ⇒ 有界）：新增的
+	//   POST /api/tasks/{id}/sessions/{sid}/message
+	//   （companion_task_session.go#handleTaskSessionMessage）。
+	//   ⇒ 形态 decode +1、来源 req +1、有界 +1；**无界处仍然是台账里那 3 条**。
+	if len(sites) != 267 {
+		t.Errorf("§952 普查到 %d 处「读进内存」的调用点（期望 267）\n"+
 			"⇒ 绝对条数是**量具有牙**的证据：量具整个失效时这个数会变 ⇒⇒⇒ "+
 			"⇒ 若这一条变了，请先确认是「代码真的多了/少了读点」还是「量具瞎了」",
 			len(sites))
 	}
 	want := map[string]int{
 		s952FormReadAll:  53,
-		s952FormDecode:   142,
+		s952FormDecode:   143,
 		s952FormCopy:     3,
 		s952FormSizedAll: 16,
 		s952FormSizedSnp: 17,
@@ -810,7 +815,7 @@ func TestS952CensusCountsArePinned(t *testing.T) {
 	}
 	wantSrc := map[string]int{
 		s952SrcResp:  123,
-		s952SrcReq:   112,
+		s952SrcReq:   113,
 		s952SrcMem:   8,
 		s952SrcOther: 23,
 	}
@@ -819,8 +824,8 @@ func TestS952CensusCountsArePinned(t *testing.T) {
 			t.Errorf("来源 %s 扫到 %d 处（期望 %d）", src, bySrc[src], n)
 		}
 	}
-	if bounded != 263 {
-		t.Errorf("有界 %d 处（期望 263）⇒⇒⇒ 无界处应恰好是台账里的 3 条", bounded)
+	if bounded != 264 {
+		t.Errorf("有界 %d 处（期望 264）⇒⇒⇒ 无界处应恰好是台账里的 3 条", bounded)
 	}
 }
 

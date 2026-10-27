@@ -174,7 +174,9 @@ func (s *Server) handleTaskSessionMessage(w http.ResponseWriter, r *http.Request
 		Prompt      string `json:"prompt"`
 		OperationID string `json:"operation_id"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	// 请求体必须**有上界**（与 ACC 审批应答同款约定，§952 普查会判形态）：
+	// 无界的请求体读点会让「读进内存」这件事变成一个攻击面。
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&req); err != nil {
 		writeStructuredJSONError(w, http.StatusBadRequest, "bad_request", "请求体不是合法 JSON: "+err.Error())
 		return
 	}
