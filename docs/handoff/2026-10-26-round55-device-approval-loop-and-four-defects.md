@@ -1631,8 +1631,28 @@ GET  /api/v1/native/sessions/{sid}/transcript
     不是本轮改动引入的。
     ⇒ 修法仍然是第 6 条说的那条：要么 ACC 支持幂等键，要么 delegate 失败时
       也回一个「可能已建，请到任务列表确认」的**诚实结果**。
-14. ★ **「生成的文件」仍然只有输出文档**（第 3 条的延续）：智能体在**工作区里
-    创建的文件**（用户心里的「生成的文件」）daemon 侧仍没登记成产物。
+14. ★ **「生成的文件」目前是「两种东西」，不是一个完整的文件清单**（第 3 条的延续）。
+    ★ 2026-10-27 复核后**修正**上一轮的说法（上一轮写的是「仍没登记成产物」，
+      **不准确** —— 路径其实早就在读面上了）：
+    · **产出文件**区 = daemon 的**产物区**（`<artifactRoot>/<dispatch_id>/`），
+      目前只有运行答复写的 `output.txt`（名字 + 字节数 + sha256 + 可读字节）。
+    · **工具调用**区 = 这次运行碰过的东西，**工具标题里就带着智能体写的路径**。
+      实测（活 daemon，`GET /api/v1/runs/<dispatch>/artifacts`）：
+        kind= command_output | title= mkdir -p /tmp/maestro-acc-approve && ls -ld …
+        kind= file_edit       | title= tmp/maestro-acc-approve/hello.txt
+        kind= other           | title= tmp/maestro-acc-approve/hello.txt
+      ⇒ App 的「工具调用」行直接显示这个标题（`toolRowLabel`），所以
+        **智能体创建了哪些文件，在手机上看得见路径**。
+    ⇒ **还差的那一步**（不是「没有数据源」，是「没把它们升级成文件行」）：
+      把 file_edit 类工具的路径，在 daemon 侧解析成**带 size / sha256 / 可读字节**
+      的文件行（和 output.txt 同一套读面）。
+      ⚠ 这一步有**安全决策**没做，不能顺手就上：
+        · **哪些路径算**？工作区内的？`/tmp` 里的？（实测智能体写到了
+          `/tmp/maestro-acc-approve/hello.txt`，**不在**工作区里）
+        · **密钥怎么办**？`.env` / `*.pem` / credentials 这类文件一旦被复制进
+          产物区，就等于**被推到了手机上** ⇒ 需要一份明确的 denylist。
+        · 体积上限？路径穿越？（`..`、绝对路径）
+      ⇒ 下一轮做它时，这三条要先定下来（本轮**没做**，见 §7 第 3 条）。
 15. ★ **queue 状态的任务在 UI 无处渲染**、**ACC 侧同名卡片堆了几十张**
     （ACC 来源任务本地 DELETE 404，只统计不删）、**三套重试策略未合并**、
     **审批窗口仍是 120 秒**、**`/api/acc/approvals` 未按 workspace 过滤**
@@ -1714,8 +1734,14 @@ GET  /api/v1/native/sessions/{sid}/transcript
    acc_create_task 成功 + dispatch 502 ⇒ ACC 里留下一个**没人跑的孤儿任务**，
    而用户只看到失败。要么 ACC 支持幂等键，要么失败时也回
    「可能已建，请到任务列表确认」。
-3. **「生成的文件」的写集读面**：现在只有 output.txt（输出文档）；
-   智能体在**工作区里创建的文件**（用户心里的「生成的文件」）还没被登记成产物。
+3. **把「智能体写了哪些文件」升级成真正的文件行**（§6 第 14 条）：
+   路径**已经在读面上了**（工具调用标题里就有，实测 `file_edit` 的标题是
+   `tmp/maestro-acc-approve/hello.txt`），所以这不是「没有数据源」，
+   而是「没把它们变成带 size / sha256 / 可读字节的文件行」。
+   ⚠ 先定三条安全口径再动手：
+     · 哪些路径算（工作区内的？`/tmp` 里的？——实测智能体会写到工作区之外）
+     · 密钥 denylist（`.env` / `*.pem` / credentials：复制进产物区 = 推到手机上）
+     · 体积上限与路径穿越（`..` / 绝对路径）
 4. **queue 状态的任务在 UI 无处渲染**；ACC 侧同名卡片堆了几十张
    （ACC 来源任务本地 DELETE 404，只统计不删）。
 5. 审批窗口 120 秒放宽（先确认 ACC 侧派单自身的超时上限）；
