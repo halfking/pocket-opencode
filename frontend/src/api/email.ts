@@ -2,7 +2,7 @@
  * Email assistant API — multi-account IMAP aggregation, AI classification,
  * and daily summaries. See docs/2026-07-02-email-assistant-design.md.
  */
-import { http, LONG_REQUEST_TIMEOUT_MS, ApiError } from './http'
+import { http, LONG_REQUEST_TIMEOUT_MS, ApiError, type HttpOptions } from './http'
 import { assertNotHTML } from './jsonGuard'
 import { resolveRuntimeApiBase } from '../config/api-base'
 import { fetchWithTimeout } from './fetch-timeout.ts'
@@ -346,9 +346,9 @@ export interface EmailFilter {
 
 export const emailApi = {
   // Accounts
-  listAccounts(since = 0): Promise<{ accounts: EmailAccount[] }> {
+  listAccounts(since = 0, options: Pick<HttpOptions, 'syncModule'> = {}): Promise<{ accounts: EmailAccount[] }> {
     const qs = since > 0 ? `?since=${since}` : ''
-    return http(`/api/email/accounts${qs}`)
+    return http(`/api/email/accounts${qs}`, options)
   },
   addAccount(input: Omit<EmailAccount, 'id'> & EmailCredentialInput): Promise<EmailAccount> {
     return http('/api/email/accounts', { method: 'POST', body: JSON.stringify(input) })
@@ -416,7 +416,7 @@ export const emailApi = {
   // 客户端据此做无刷新差异合并。见 docs/2026-09-09-list-sync-rules.md §增量同步协议。
   // total 是**不受 limit 影响**的匹配总数，用来做缓存缺口判定（见 email-cache-heal）；
   // 老服务端不返回时为 undefined，调用方需退回 emails.length。
-  listEmails(filter: EmailFilter = {}): Promise<{ emails: Email[]; deletedIds?: string[]; serverTimeMs?: number; total?: number }> {
+  listEmails(filter: EmailFilter = {}, options: Pick<HttpOptions, 'syncModule'> = {}): Promise<{ emails: Email[]; deletedIds?: string[]; serverTimeMs?: number; total?: number }> {
     const qs = new URLSearchParams()
     if (filter.accountId) qs.set('account_id', filter.accountId)
     if (filter.category) qs.set('category', filter.category)
@@ -427,7 +427,7 @@ export const emailApi = {
     if (filter.folder === '__all__') qs.set('folder', '__all__')
     else if (filter.folder) qs.set('folder', filter.folder)
     const q = qs.toString()
-    return http(`/api/emails${q ? `?${q}` : ''}`)
+    return http(`/api/emails${q ? `?${q}` : ''}`, options)
   },
   getEmail(id: string): Promise<Email & { body: string }> {
     return http(`/api/emails/${id}`)

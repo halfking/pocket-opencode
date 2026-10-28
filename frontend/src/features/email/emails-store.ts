@@ -9,6 +9,7 @@ import { encryptString } from '../../native/crypto'
 import { buildMirrorAccountWrite } from './account-mirror-write'
 import { normalizeAccountStamp } from './account-lww'
 import { emailDateToMs } from './cleanup-filter'
+import { captureEmailSyncOperation, type EmailSyncOperation } from './email-sync-guard'
 
 export interface EmailAccount {
   id: string
@@ -72,8 +73,8 @@ export interface ListFilter {
 
 // ---- 账户 ----
 
-export async function listAccounts(): Promise<EmailAccount[]> {
-  const rows = await localDB.query<any>(
+export async function listAccounts(db: Pick<typeof localDB, 'query'> = localDB): Promise<EmailAccount[]> {
+  const rows = await db.query<any>(
     `SELECT id, display_name, email_address, imap_host, imap_port, auth_type,
             sync_interval_min, last_synced_uid, last_synced_at, enabled, created_at, updated_at
      FROM local_email_accounts ORDER BY created_at`,
@@ -102,8 +103,8 @@ export async function saveAccount(input: {
   return id
 }
 
-export async function deleteAccount(id: string): Promise<void> {
-  await localDB.run('DELETE FROM local_email_accounts WHERE id = ?', [id])
+export async function deleteAccount(id: string, db: Pick<typeof localDB, 'run'> = localDB): Promise<void> {
+  await db.run('DELETE FROM local_email_accounts WHERE id = ?', [id])
 }
 
 /** 按 ID 取单个账户（EmailAccountSetup 编辑模式依赖）。 */
@@ -161,16 +162,25 @@ export async function writeAccountIfNewer(acc: {
   syncIntervalMin: number
   enabled: boolean
   updatedAt: number
-}): Promise<boolean> {
-  const local = await getAccount(acc.id)
-  if (local && local.updatedAt >= acc.updatedAt) return false
-  const stmt = buildMirrorAccountWrite(
-    local ? { createdAt: local.createdAt } : null,
-    acc,
-    local?.createdAt ?? Date.now(),
+}, operation = captureEmailSyncOperation()): Promise<boolean> {
+  const { db } = operation
+  operation.assertCurrent()
+  const local = await db.queryOne<{ created_at: number; updated_at: number | null }>(
+    'SELECT created_at, updated_at FROM local_email_accounts WHERE id = ?', [acc.id],
   )
-  await localDB.run(stmt.sql, stmt.values)
-  return true
+  if (local && normalizeAccountStamp(local.updated_at) >= acc.updatedAt) return false
+  const stmt = buildMirrorAccountWrite(
+    local ? { createdAt: local.created_at } : null,
+    acc,
+    local?.created_at ?? Date.now(),
+  )
+  operation.assertCurrent()
+  // Compare the raw stamp read above so concurrent local edits win, including
+  // legacy millisecond stamps that the read path normalizes to seconds.
+  const changed = await db.run(local ? `${stmt.sql} AND updated_at IS ?` : stmt.sql,
+    local ? [...stmt.values, local.updated_at] : stmt.values)
+  operation.assertCurrent()
+  return changed > 0
 }
 
 // ---- 邮件 ----
@@ -196,11 +206,12 @@ export async function listEmails(filter: ListFilter = {}): Promise<LocalEmail[]>
 }
 
 /** 插入/更新邮件（IMAP 抓取后调用）。返回 true=新插入。 */
-export async function upsertEmail(e: Partial<LocalEmail> & { accountId: string; fromAddress: string; date: number }): Promise<boolean> {
+export async function upsertEmail(e: Partial<LocalEmail> & { accountId: string; fromAddress: string; date: number }, operation?: EmailSyncOperation): Promise<boolean> {
+  const db = operation?.db ?? localDB.bindOperation(localDB.captureOperation({ kind: 'local-edit' }))
   const id = e.id || `email-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
   const now = Date.now()
-  const updatedAt = e.updatedAt && e.updatedAt > 0 ? e.updatedAt : now
-  const existing = await localDB.queryOne<{ deleted_at: number | null; body_purged: number | null; folder: string | null }>(
+  const updatedAt = e.updatedAt && e.updatedAt > 0 ? e.updatedAt : operation ? 0 : now
+  const existing = await db.queryOne<{ deleted_at: number | null; body_purged: number | null; folder: string | null }>(
     'SELECT deleted_at, body_purged, folder FROM local_emails WHERE id = ?',
     [id],
   )
@@ -212,10 +223,11 @@ export async function upsertEmail(e: Partial<LocalEmail> & { accountId: string; 
   let folder = e.folder ?? null
   if (existing && existing.folder) {
     const { hasPendingOpsForEmail } = await import('./email-folders-store')
-    if (await hasPendingOpsForEmail(id)) folder = existing.folder
+    if (await hasPendingOpsForEmail(id, db)) folder = existing.folder
   }
+  operation?.assertCurrent()
   try {
-    await localDB.run(
+    const changed = await db.run(
       `INSERT INTO local_emails
          (id, account_id, message_id, uid, from_address, from_name, subject, snippet,
           date, is_read, is_starred, category, importance, ai_summary, suggested_action, action_reason,
@@ -241,15 +253,19 @@ export async function upsertEmail(e: Partial<LocalEmail> & { accountId: string; 
          uid=COALESCE(excluded.uid, local_emails.uid),
          message_id=COALESCE(excluded.message_id, local_emails.message_id),
          folder=COALESCE(excluded.folder, local_emails.folder),
-         updated_at=excluded.updated_at`,
+         updated_at=excluded.updated_at
+       WHERE IFNULL(local_emails.deleted_at, 0) = 0 AND IFNULL(local_emails.body_purged, 0) = 0
+         ${operation ? 'AND excluded.updated_at > IFNULL(local_emails.updated_at, 0)' : ''}`,
       [id, e.accountId, e.messageId ?? null, e.uid ?? null, e.fromAddress, e.fromName ?? null,
        e.subject ?? null, e.snippet ?? null, e.date, e.isRead ? 1 : 0, e.isStarred ? 1 : 0,
        e.category ?? null, e.importance ?? null, e.aiSummary ?? null, e.suggestedAction ?? null,
        e.actionReason ?? null,
        e.hasAttachments ? 1 : 0, now, updatedAt, folder],
     )
-    return true
+    operation?.assertCurrent()
+    return changed > 0
   } catch (err) {
+    operation?.assertCurrent()
     // 不能裸吞：任何 DB 错误都会被当成「不是新邮件」而静默丢弃。
     // 最典型的是 account_id 外键失败——对应账户没进 local_email_accounts
     // 时（account-sync 会按 isLocalTestAddress 跳过 *.local 账户），每一封
@@ -276,8 +292,8 @@ export async function deleteEmailsByIds(ids: string[]): Promise<void> {
   }
 }
 
-export async function maxEmailUpdatedAt(): Promise<number> {
-  const row = await localDB.queryOne<{ m: number | null }>(
+export async function maxEmailUpdatedAt(db: Pick<typeof localDB, 'queryOne'> = localDB): Promise<number> {
+  const row = await db.queryOne<{ m: number | null }>(
     'SELECT MAX(updated_at) AS m FROM local_emails',
   )
   return Number(row?.m) || 0
@@ -289,8 +305,8 @@ export async function maxEmailUpdatedAt(): Promise<number> {
  * 缓存自愈要用它和服务端行数比大小。直接用 listEmails({limit:1}).length
  * 只能拿到「有没有」而拿不到「有多少」，判定不出服务端是否领先。
  */
-export async function countLocalEmails(): Promise<number> {
-  const row = await localDB.queryOne<{ c: number | null }>(
+export async function countLocalEmails(db: Pick<typeof localDB, 'queryOne'> = localDB): Promise<number> {
+  const row = await db.queryOne<{ c: number | null }>(
     'SELECT COUNT(*) AS c FROM local_emails WHERE IFNULL(deleted_at, 0) = 0',
   )
   return Number(row?.c) || 0
@@ -303,8 +319,8 @@ export async function countLocalEmails(): Promise<number> {
  * 刷新，一封一年前的邮件重跑后 updated_at 也是今天，拿它判新鲜度会把
  * 陈旧缓存误判成「很新」，正好漏掉用户报的这类丢失。
  */
-export async function newestLocalEmailDate(): Promise<number> {
-  const row = await localDB.queryOne<{ m: number | null }>(
+export async function newestLocalEmailDate(db: Pick<typeof localDB, 'queryOne'> = localDB): Promise<number> {
+  const row = await db.queryOne<{ m: number | null }>(
     'SELECT MAX(date) AS m FROM local_emails WHERE IFNULL(deleted_at, 0) = 0',
   )
   return Number(row?.m) || 0
@@ -345,9 +361,13 @@ export interface SyncEmailsResult {
  * received/failed/tombstones 分开，避免「拉到了但一条没写进去」被
  * 当成同步成功。
  */
-export async function syncEmailsFromServerDetailed(limit = 200, since = 0): Promise<SyncEmailsResult> {
+export async function syncEmailsFromServerDetailed(limit = 200, since = 0, operation = captureEmailSyncOperation()): Promise<SyncEmailsResult> {
+  const assertCanApply = () => operation.assertCurrent()
+  assertCanApply()
   const { emailApi } = await import('../../api/email')
-  const res = await emailApi.listEmails({ limit, since: since > 0 ? since : undefined })
+  assertCanApply()
+  const res = await emailApi.listEmails({ limit, since: since > 0 ? since : undefined }, { syncModule: 'email' })
+  assertCanApply()
   const incoming = (res.emails ?? []).slice(0, limit)
   let n = 0
   // 「没写进去」和「本来就有」在返回值上无法区分，两者混在一起会让调用方
@@ -355,7 +375,7 @@ export async function syncEmailsFromServerDetailed(limit = 200, since = 0): Prom
   let failed = 0
   let oldestDateMs = 0
   for (const e of incoming) {
-    const dateMs = emailDateToMs(typeof e.date === 'number' ? e.date : Date.parse(String(e.date)) || 0) || Date.now()
+    const dateMs = emailDateToMs(typeof e.date === 'number' ? e.date : Date.parse(String(e.date)) || 0)
     if (oldestDateMs === 0 || dateMs < oldestDateMs) oldestDateMs = dateMs
     const ok = await upsertEmail({
       id: e.id,
@@ -374,9 +394,9 @@ export async function syncEmailsFromServerDetailed(limit = 200, since = 0): Prom
       aiSummary: e.aiSummary ?? null,
       suggestedAction: e.suggestedAction ?? null,
       hasAttachments: !!e.hasAttachments,
-      updatedAt: e.updatedAt && e.updatedAt > 0 ? e.updatedAt : dateMs,
+      updatedAt: e.updatedAt && e.updatedAt > 0 ? e.updatedAt : 0,
       folder: e.folderName ?? '',
-    })
+    }, operation)
     if (ok) n++
     else failed++
   }
@@ -391,8 +411,10 @@ export async function syncEmailsFromServerDetailed(limit = 200, since = 0): Prom
   if (tombstones.length > 0) {
     // 与本端软删除同一语义：保留标题/摘要、清正文缓存、deleted_at 阻止回填。
     const { purgeEmailsLocal } = await import('./email-soft-delete')
-    await purgeEmailsLocal(tombstones)
+    assertCanApply()
+    await purgeEmailsLocal(tombstones, Date.now(), operation)
   }
+  assertCanApply()
   return { inserted: n, received: incoming.length, tombstones: tombstones.length, failed, oldestDateMs }
 }
 

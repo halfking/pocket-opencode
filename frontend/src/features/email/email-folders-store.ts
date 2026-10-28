@@ -146,8 +146,8 @@ export async function countPendingOps(): Promise<number> {
 }
 
 /** 该邮件是否还有未同步到服务器的本地迁移操作（同步快照回写时的保护伞）。 */
-export async function hasPendingOpsForEmail(emailId: string): Promise<boolean> {
-  const row = await localDB.queryOne<{ cnt: number }>(
+export async function hasPendingOpsForEmail(emailId: string, db: Pick<typeof localDB, 'queryOne'> = localDB): Promise<boolean> {
+  const row = await db.queryOne<{ cnt: number }>(
     'SELECT COUNT(*) AS cnt FROM local_email_ops WHERE email_id = ? AND status IN (?, ?)',
     [emailId, 'pending', 'failed'],
   )

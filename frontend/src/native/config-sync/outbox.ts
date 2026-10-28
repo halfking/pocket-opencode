@@ -23,9 +23,9 @@ export async function enqueueConfigPush(input: {
   payload: unknown
   secret?: string
   updatedAt: number
-}): Promise<void> {
+}, db: Pick<typeof localDB, 'run'> = localDB): Promise<void> {
   if (!localDB.isReady()) return
-  await localDB.run(
+  await db.run(
     `INSERT INTO local_config_outbox
       (id, namespace, entity_id, payload, secret, updated_at, created_at, attempts, state)
      VALUES (?, ?, ?, ?, ?, ?, ?, 0, 'queued')`,
