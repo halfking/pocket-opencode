@@ -107,6 +107,7 @@ export async function summarizeMeeting(
     llmBffApi.streamChat(
       {
         kind: 'meeting_summary',
+        syncModule: 'meetings',
         messages: [
           { role: 'system', content: fitted.system },
           { role: 'user', content: fitted.transcript },
