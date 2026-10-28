@@ -99,6 +99,8 @@ export const LONG_REQUEST_TIMEOUT_MS = 120_000
 export const LLM_CHAT_TIMEOUT_MS = 120_000
 
 export interface HttpOptions extends RequestInit {
+  /** Retain the initiating business operation across refresh, parsing and replay. */
+  assertCurrent?: () => void
   /** 共享运算端点的业务归属，续期与重放后、实际发送前再次校验。 */
   syncModule?: SyncModule
   /** 覆盖本次请求的毫秒上限;传 0 表示不设上限(仅限长轮询等已知场景)。 */
@@ -119,6 +121,16 @@ export interface HttpOptions extends RequestInit {
  */
 export { isAbortError }
 
+function assertOperationCallback(callback?: () => void): void {
+  const result: unknown = callback?.()
+  if (result !== undefined) {
+    // A promise cannot provide a synchronous admission check. Consume an
+    // accidental rejection while refusing to dispatch the request.
+    void Promise.resolve(result).catch(() => {})
+    throw new TypeError('assertCurrent must be synchronous and return undefined')
+  }
+}
+
 /** 区分「超时」和「服务端返回 4xx/5xx」,让上层能给出可读提示。 */
 // ⚠§951：TimeoutError 的**类定义**在 ./fetch-timeout（上面已再导出）。
 //　 留这一行是为了让「这个文件里 TimeoutError 从哪来」有据可查。
@@ -126,7 +138,12 @@ export { isAbortError }
 async function httpOnce<T = any>(path: string, opts: HttpOptions, session: AuthSession, anonymous = false): Promise<T> {
   const auth = session.owner
   const checkSession = anonymous ? assertAuthAttempt : assertAuthSession
-  checkSession(auth, session)
+  const checkOperation = () => {
+    checkSession(auth, session)
+    assertOperationCallback(opts.assertCurrent)
+    checkSession(auth, session)
+  }
+  checkOperation()
   if (opts.body != null && !isEmailMetadataWrite(path, opts.body)) {
     throw new ApiError(409, 'email_credentials_local_only', { error: 'email_credentials_local_only' })
   }
@@ -135,7 +152,7 @@ async function httpOnce<T = any>(path: string, opts: HttpOptions, session: AuthS
     recordSyncReportEntry({ module: blocked, status: 'skipped' })
     throw new ApiError(409, 'module_policy_local', { error: 'module_policy_local', module: blocked })
   }
-  const { timeoutMs = DEFAULT_TIMEOUT_MS, signal: callerSignal, syncModule, ...init } = opts
+  const { timeoutMs = DEFAULT_TIMEOUT_MS, signal: callerSignal, syncModule, assertCurrent, ...init } = opts
   const headers: Record<string, string> = {
     ...(init.headers as Record<string, string> | undefined),
   }
@@ -150,6 +167,12 @@ async function httpOnce<T = any>(path: string, opts: HttpOptions, session: AuthS
   //　 · 超时 → TimeoutError（label 用 API 路径 ⇒ 提示文案与旧实现逐字一致）
   //　 · 调用方取消 → AbortError 原样透传（`name === 'AbortError'` ⇒ 上层当「不是失败」）
   // ⇒ 这里**不再**二次包装：fetch-timeout 抛的就是同一个类、同一组字段。
+  checkOperation()
+  const blockedBeforeFetch = blockedModuleWrite(path, opts.method, readCachedModuleMode)
+  if (blockedBeforeFetch) {
+    recordSyncReportEntry({ module: blockedBeforeFetch, status: 'skipped' })
+    throw new ApiError(409, 'module_policy_local', { error: 'module_policy_local', module: blockedBeforeFetch })
+  }
   if (syncModule && readCachedModuleMode(syncModule) === 'local') {
     recordSyncReportEntry({ module: syncModule, status: 'skipped' })
     throw new ApiError(409, 'module_policy_local', { error: 'module_policy_local', module: syncModule })
@@ -159,7 +182,7 @@ async function httpOnce<T = any>(path: string, opts: HttpOptions, session: AuthS
     { ...init, headers, signal: callerSignal },
     { timeoutMs, label: path },
   )
-  checkSession(auth, session)
+  checkOperation()
   if (!res.ok) {
     // 尝试解析响应 body，让调用方能拿到结构化错误（如 409 conflict 的 server_version）
     let parsedBody: any
@@ -169,7 +192,7 @@ async function httpOnce<T = any>(path: string, opts: HttpOptions, session: AuthS
     } catch {
       parsedBody = undefined
     }
-    checkSession(auth, session)
+    checkOperation()
     // 服务端结构化错误统一为 {error: "..."}：直接作为 message，
     // 让各视图既有 catch 的 e.message 展示可读原因而非 "Request failed: Internal Server Error"
     const serverMsg =
@@ -185,7 +208,7 @@ async function httpOnce<T = any>(path: string, opts: HttpOptions, session: AuthS
   // 204 No Content
   if (res.status === 204) return undefined as unknown as T
   const data = await assertNotHTML(res).json() as T
-  checkSession(auth, session)
+  checkOperation()
   return data
 }
 
@@ -202,18 +225,24 @@ export async function http<T = any>(path: string, opts: HttpOptions = {}): Promi
     return httpOnce<T>(path, opts, captureAuthAttempt(auth), true)
   }
   const session = captureAuthSession(auth)
+  const checkOperation = () => {
+    assertAuthSession(auth, session)
+    assertOperationCallback(opts.assertCurrent)
+    assertAuthSession(auth, session)
+  }
+  checkOperation()
   await maybeRefreshBeforeRequest(path)
-  assertAuthSession(auth, session)
+  checkOperation()
   try {
     return await httpOnce<T>(path, opts, session)
   } catch (e) {
-    assertAuthSession(auth, session)
+    checkOperation()
     if (e instanceof ApiError && e.status === 401 && path !== REFRESH_PATH) {
       if (auth.token && (await auth.refreshSession())) {
-        assertAuthSession(auth, session)
+        checkOperation()
         return httpOnce<T>(path, opts, session)
       }
-      assertAuthSession(auth, session)
+      checkOperation()
       // BUG-I (2026-09-30)：refresh 失败 = 会话不可恢复（token 已被吊销、
       // 过期且无法续期，或后端 POCKET_JWT_SECRET 变更导致旧 token 全部失效）。
       // 此前这里只是把 401 原样抛给调用方，而 auth.ts 注释里写的
