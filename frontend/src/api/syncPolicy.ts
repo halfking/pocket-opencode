@@ -19,13 +19,14 @@
  */
 
 import { resolveRedclawPortalBase } from '../config/redclaw-portal.ts'
-import { useAuthStore } from '../stores/auth'
+import { useAuthStore, captureAuthSession, assertAuthSession } from '../stores/auth'
 import { fetchWithTimeout } from './fetch-timeout.ts'
 import {
-  isSyncModule,
+  isPortalSyncModule,
   normalizeSyncPolicy,
   portalPolicyModules,
   type SyncMode,
+  type PortalSyncModule,
   type SyncModule,
   type SyncPolicy,
   type SyncPolicyPutBody,
@@ -62,10 +63,12 @@ async function portalFetch(path: string, init: RequestInit = {}): Promise<unknow
     ...(init.headers as Record<string, string> | undefined),
   }
   const auth = useAuthStore()
+  const session = captureAuthSession(auth)
   if (auth.token) headers['Authorization'] = `Bearer ${auth.token}`
 
   // 30s 上界：策略读取挂死不得拖住设置页（与 api/http.ts 同口径）。
   const res = await fetchWithTimeout(`${base}${path}`, { ...init, headers })
+  assertAuthSession(auth, session)
   if (!res.ok) {
     let message = res.statusText
     try {
@@ -74,10 +77,13 @@ async function portalFetch(path: string, init: RequestInit = {}): Promise<unknow
     } catch {
       /* 非 JSON body：用 statusText */
     }
+    assertAuthSession(auth, session)
     throw new SyncPolicyApiError(res.status, message)
   }
   if (res.status === 204) return undefined
-  return res.json()
+  const body = await res.json()
+  assertAuthSession(auth, session)
+  return body
 }
 
 /** GET /api/v1/portal/sync-policy */
@@ -101,13 +107,22 @@ export async function updateSyncPolicyModules(
 /** POST /api/v1/portal/cloud/purge — 清除模块的云端副本。 */
 export async function purgeCloudCopy(
   modules: SyncModule[],
-): Promise<{ purged: SyncModule[] }> {
+): Promise<{ purged: Partial<Record<PortalSyncModule, number>> }> {
+  if (!modules.length || !modules.every(isPortalSyncModule)) {
+    throw new SyncPolicyApiError(400, 'purge requires a supported portal module')
+  }
+  const requested = new Set(modules)
   const raw = (await portalFetch('/api/v1/portal/cloud/purge', {
     method: 'POST',
     body: JSON.stringify({ modules }),
   })) as { purged?: unknown } | undefined
-  const purged = Array.isArray(raw?.purged)
-    ? ((raw as { purged: unknown[] }).purged).filter(isSyncModule)
-    : modules
-  return { purged }
+  if (!raw?.purged || typeof raw.purged !== 'object' || Array.isArray(raw.purged)) {
+    throw new SyncPolicyApiError(502, 'invalid purge response')
+  }
+  const counts = Object.entries(raw.purged)
+  if (counts.length !== requested.size || counts.some(([module, count]) =>
+    !requested.has(module as PortalSyncModule) || !Number.isSafeInteger(count) || (count as number) < 0)) {
+    throw new SyncPolicyApiError(502, 'invalid purge response')
+  }
+  return { purged: Object.fromEntries(counts) as Partial<Record<PortalSyncModule, number>> }
 }
