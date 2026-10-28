@@ -12,7 +12,7 @@
  * Admin 签发、pocketd 透传 —— 见 stores/auth.ts 头注释）。
  *
  * 请求失败（未配置 / 不可达 / 401）由调用方（stores/syncPolicyStore.load）
- * 降级为本地默认 { 全部 cloud }，不阻塞 UI。
+ * 使用缓存；没有有效缓存时暂停上传，不阻塞 UI。
  *
  * 类型与纯解析在 ./syncPolicyContract.ts（零依赖，供 store / 同步引擎使用），
  * 本文件 re-export 以维持「契约从 api/syncPolicy 导入」的单一入口。
@@ -24,6 +24,7 @@ import { fetchWithTimeout } from './fetch-timeout.ts'
 import {
   isSyncModule,
   normalizeSyncPolicy,
+  portalPolicyModules,
   type SyncMode,
   type SyncModule,
   type SyncPolicy,
@@ -89,7 +90,7 @@ export async function fetchSyncPolicy(): Promise<SyncPolicy> {
 export async function updateSyncPolicyModules(
   modules: Record<SyncModule, SyncMode>,
 ): Promise<SyncPolicy> {
-  const body: SyncPolicyPutBody = { modules }
+  const body: SyncPolicyPutBody = { modules: portalPolicyModules(modules) }
   const raw = await portalFetch('/api/v1/portal/sync-policy', {
     method: 'PUT',
     body: JSON.stringify(body),

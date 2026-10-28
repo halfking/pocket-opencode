@@ -8,6 +8,10 @@ import { useAuthStore } from '../stores/auth'
 import { assertNotHTML } from './jsonGuard'
 import { isAbortError } from './abort'
 import { DEFAULT_TIMEOUT_MS, TimeoutError, fetchWithTimeout } from './fetch-timeout.ts'
+import { blockedModuleWrite } from './module-policy.ts'
+import { isEmailMetadataWrite } from './email-upload-policy.ts'
+import { readCachedModuleMode, recordSyncReportEntry } from '../stores/syncPolicyStore.ts'
+import type { SyncModule } from './syncPolicyContract.ts'
 
 // 再导出：client.ts 等既有调用方统一从 ./http 取守卫。
 export { assertNotHTML }
@@ -93,6 +97,8 @@ export const LONG_REQUEST_TIMEOUT_MS = 120_000
 export const LLM_CHAT_TIMEOUT_MS = 120_000
 
 export interface HttpOptions extends RequestInit {
+  /** 共享运算端点的业务归属，续期与重放后、实际发送前再次校验。 */
+  syncModule?: SyncModule
   /** 覆盖本次请求的毫秒上限;传 0 表示不设上限(仅限长轮询等已知场景)。 */
   timeoutMs?: number
 }
@@ -116,8 +122,16 @@ export { isAbortError }
 //　 留这一行是为了让「这个文件里 TimeoutError 从哪来」有据可查。
 
 async function httpOnce<T = any>(path: string, opts: HttpOptions = {}): Promise<T> {
+  if (opts.body != null && !isEmailMetadataWrite(path, opts.body)) {
+    throw new ApiError(409, 'email_credentials_local_only', { error: 'email_credentials_local_only' })
+  }
+  const blocked = blockedModuleWrite(path, opts.method, readCachedModuleMode)
+  if (blocked) {
+    recordSyncReportEntry({ module: blocked, status: 'skipped' })
+    throw new ApiError(409, 'module_policy_local', { error: 'module_policy_local', module: blocked })
+  }
   const auth = useAuthStore()
-  const { timeoutMs = DEFAULT_TIMEOUT_MS, signal: callerSignal, ...init } = opts
+  const { timeoutMs = DEFAULT_TIMEOUT_MS, signal: callerSignal, syncModule, ...init } = opts
   const headers: Record<string, string> = {
     ...(init.headers as Record<string, string> | undefined),
   }
@@ -130,6 +144,10 @@ async function httpOnce<T = any>(path: string, opts: HttpOptions = {}): Promise<
   //　 · 超时 → TimeoutError（label 用 API 路径 ⇒ 提示文案与旧实现逐字一致）
   //　 · 调用方取消 → AbortError 原样透传（`name === 'AbortError'` ⇒ 上层当「不是失败」）
   // ⇒ 这里**不再**二次包装：fetch-timeout 抛的就是同一个类、同一组字段。
+  if (syncModule && readCachedModuleMode(syncModule) === 'local') {
+    recordSyncReportEntry({ module: syncModule, status: 'skipped' })
+    throw new ApiError(409, 'module_policy_local', { error: 'module_policy_local', module: syncModule })
+  }
   const res = await fetchWithTimeout(
     `${resolveRuntimeApiBase()}${path}`,
     { ...init, headers, signal: callerSignal },

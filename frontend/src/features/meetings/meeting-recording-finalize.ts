@@ -44,6 +44,8 @@ import { ingestMeetingArtifacts } from './meeting-ingest'
 import { buildIngestNotice } from './meeting-ingest-notice'
 import { buildRefineNotice, refineStatusFor } from '../sessions/refine-outcome-notice'
 import { assessDurationDrift, createMeasuringToWav, finalizeFailureNotice, describeCoverageGap, describeDurationGuardSource, resolveDurationGuardInput, type NativeCaptureSnapshot } from './recording-duration-consistency'
+import { readCachedModuleMode, recordSyncReportEntry } from '../../stores/syncPolicyStore.ts'
+import { isModulePolicyLocalError } from '../../api/module-policy.ts'
 
 export interface FinalizeDeps {
   /** 一次全量重转。注入而非直接调 API，便于单测与换实现。 */
@@ -127,7 +129,7 @@ const defaultTranscribeFull = (blob: Blob, filename: string) =>
   //   `{ok:false, error:…}`（HTTP 仍是 200）⇒ text/failed 都是空
   //   ⇒ 丢掉 error 就分不清「整块纯静音」与「整块真失败」
   //   ⇒ 前者会被误报成「有 N 段没转出来」。
-  sttSettingsApi.transcribeFull(blob, filename).then((r) => ({
+  sttSettingsApi.transcribeFull(blob, filename, undefined, 'meetings').then((r) => ({
     text: r.text, failed: r.failed, segments: r.segments, error: r.error,
   }))
 
@@ -207,6 +209,11 @@ export async function finalizeRecording(
   }
   const notify = deps.notify
   if (!meetingId) return outcome
+  if (readCachedModuleMode('meetings') === 'local') {
+    recordSyncReportEntry({ module: 'meetings', status: 'skipped' })
+    notify('info', '仅本地模式：已跳过云端转写和精翻。')
+    return outcome
+  }
 
   const segs = segments ?? []
 
@@ -385,6 +392,10 @@ export async function finalizeRecording(
     })
     notify(notice.kind, notice.text + tail)
   } catch (e) {
+    if (isModulePolicyLocalError(e)) {
+      notify('info', '仅本地模式：已跳过云端转写和精翻。')
+      return outcome
+    }
     // 「已取消」和「失败」对用户是两件不同的事：前者不该被提示成「稍后重试」，
     // 否则会让人以为录音或会议出了什么问题。
     if (isAbortError(e)) {

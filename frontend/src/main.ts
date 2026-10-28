@@ -1,6 +1,9 @@
 import { createApp } from "vue"
 import { Capacitor } from "@capacitor/core"
 import { createPinia } from "pinia"
+import { watch } from "vue"
+import { useAuthStore } from "./stores/auth"
+import { installSyncPolicyScopeResolver, useSyncPolicyStore } from "./stores/syncPolicyStore"
 import App from "./app/App.vue"
 import router from "./app/router-mobile"
 import { initWsBus } from "./services/ws-bus"
@@ -79,6 +82,19 @@ if (Capacitor.isNativePlatform()) {
 
 // 离线同步接线（P1）：网络恢复 / App 回前台时自动 drain outbox + 同步会话
 // 与审批快照；全局状态条读取该 store。未登录 / 本地库未解锁时静默跳过。
+// 策略读取不能依赖用户打开设置页；身份切换时也不能沿用上一账号的 cloud 缓存。
+const syncAuth = useAuthStore(pinia)
+installSyncPolicyScopeResolver(() => syncAuth.user || syncAuth.workspaceId
+  ? JSON.stringify([syncAuth.user, syncAuth.workspaceId]) : '')
+const syncPolicy = useSyncPolicyStore(pinia)
+watch(() => [syncAuth.user, syncAuth.workspaceId, syncAuth.isAuthenticated], () => {
+  syncPolicy.$reset()
+  window.dispatchEvent(new Event('openpocket:sync-policy-changed'))
+  if (syncAuth.isAuthenticated) void syncPolicy.load()
+}, { immediate: true })
+window.addEventListener('online', () => {
+  if (syncAuth.isAuthenticated) void syncPolicy.load()
+})
 useConnectivityStore(pinia).init()
 startEmailConfigSync()
 startUserConfigSync()

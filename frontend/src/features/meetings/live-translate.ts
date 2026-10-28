@@ -1,7 +1,10 @@
 import { http, LLM_CHAT_TIMEOUT_MS } from '../../api/http'
 import { detectLang, translateTargetLang } from '../../native/detect-lang'
+import { assertCloudModule } from '../../api/data-policy.ts'
+import { isModulePolicyLocalError } from '../../api/module-policy.ts'
 
 export async function liveTranslate(text: string, sourceLang?: string): Promise<string> {
+  assertCloudModule('meetings')
   const src = sourceLang || detectLang(text)
   const target = translateTargetLang(src)
   const prompt = src === 'mixed'
@@ -9,6 +12,7 @@ export async function liveTranslate(text: string, sourceLang?: string): Promise<
     : `把下面文本翻译成${target === 'zh' ? '中文' : 'English'}。只输出译文。\n\n${text}`
   try {
     const res = await http<{ content: string }>('/api/llm/chat', {
+      syncModule: 'meetings',
       method: 'POST',
       body: JSON.stringify({
         kind: 'live_translate',
@@ -19,7 +23,8 @@ export async function liveTranslate(text: string, sourceLang?: string): Promise<
       timeoutMs: LLM_CHAT_TIMEOUT_MS,
     })
     return (res.content || '').trim()
-  } catch {
+  } catch (error) {
+    if (isModulePolicyLocalError(error)) throw error
     return ''
   }
 }

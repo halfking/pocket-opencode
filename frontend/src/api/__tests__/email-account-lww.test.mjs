@@ -31,6 +31,7 @@ import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, it } from 'node:test'
+import { isEmailStaleWrite } from '../email-upload-policy.ts'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const read = (rel) => readFileSync(join(HERE, rel), 'utf8')
@@ -137,12 +138,10 @@ describe('updateAccount 签名与请求体', () => {
 })
 
 describe('409 的消费方', () => {
-  it('isStaleWriteError 按 instanceof ApiError && status===409 判定', () => {
-    assert.match(
-      read('../email.ts'),
-      /export function isStaleWriteError\(e: unknown\): boolean \{\s*return e instanceof ApiError && e\.status === 409\s*\}/,
-      'isStaleWriteError 的实现变了：所有 409 处理点的行为都随之改变，本判据需重新评估。',
-    )
+  it('只有真实 LWW 冲突才按旧版本处理，隐私拒绝必须呈现给用户', () => {
+    assert.equal(isEmailStaleWrite({ error: 'stale write: server copy is newer', updatedAt: 123 }), true)
+    assert.equal(isEmailStaleWrite({ error: 'email_credentials_local_only' }), false)
+    assert.equal(isEmailStaleWrite({ error: 'module_policy_local', module: 'email' }), false)
   })
 
   // 服务端确实在 409 body 里回 updatedAt（server_assistant.go 的

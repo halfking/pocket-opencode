@@ -475,6 +475,8 @@ export async function awaitNoteMirror(noteId: string): Promise<void> {
 const EMBED_TEXT_CHAR_LIMIT = 16000
 
 async function embedAndStore(noteId: string, content: string): Promise<void> {
+  // 向量接口也会把正文发到云端，不能只拦镜像写入。
+  if (readCachedModuleMode('notes') === 'local') return
   // ⚠⚠ §898：超长文本**不再截断**，而是**按段分别嵌入**。
   //
   //   §896 的做法是「截到 16000 字就发」⇒ 长会议的后半段**永远进不了索引**
@@ -527,6 +529,7 @@ async function embedChunks(
   let apiModel: string | null = null
   let reused = 0
   for (let i = 0; i < chunks.length; i++) {
+    if (readCachedModuleMode('notes') === 'local') throw new Error('module_policy_local')
     const h = hashes[i]
     if (prev) {
       const idx = prev.hashes.indexOf(h)
@@ -537,6 +540,7 @@ async function embedChunks(
       }
     }
     const res = await http<{ embedding: number[]; model: string }>('/api/embed', {
+      syncModule: 'notes',
       method: 'POST',
       body: JSON.stringify({ text: chunks[i].text }),
     })
@@ -583,7 +587,7 @@ async function mirrorNoteToBackend(note: LocalNote): Promise<void> {
   // ── 存储与同步策略挂点（storage-sync）────────────────────────────────
   // notes=local ⇒ 笔记只留本机加密库，不上传后端（镜像跳过 ⇒ AI 分类/总结
   // 自然没有元数据源，这与「仅本地」的语义一致）。上报 skipped 供设置页
-  // 「上次同步」如实显示。缓存缺失时 readCachedModuleMode 回 'cloud'，行为不变。
+  // 「上次同步」如实显示。缓存缺失时也暂停上传，等待服务端策略确认。
   if (readCachedModuleMode('notes') === 'local') {
     recordSyncReportEntry({ module: 'notes', status: 'skipped' })
     return

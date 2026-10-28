@@ -10,6 +10,7 @@ import type { SpeakerDiarizer } from '../../native/speaker-diarization'
 import { renderTranscript, type TranscriptRenderer } from './meeting-dedup.ts'
 import { describeSegmentDrop } from './segment-drop-notice.ts'
 import type { MeetingSegment } from './meetings-store.ts'
+import { assertCloudModule } from '../../api/data-policy.ts'
 
 export async function ingestSpeechBlob(opts: {
   meetingId: MaybeRef<string>
@@ -31,6 +32,9 @@ export async function ingestSpeechBlob(opts: {
 }): Promise<MeetingSegment | null> {
   const meetingId = unref(opts.meetingId)
   if (!meetingId) return null
+  // Android 分片可能是唯一副本。隐私拒绝和任何 STT 失败之前先确认落盘。
+  await saveAudioPart(meetingId, opts.seq, opts.blob)
+  assertCloudModule('meetings')
   // signal 一路传到 sttApi.transcribe：会议录音时每个语音块都是一次独立转写
   // （各自 3 分钟预算），此前这一层是整条录音链上唯一**既跨页存活又完全无法
   // 终止**的环节——录音 runtime 的 cancelTranscription() 只能停录完后的兜底
@@ -40,7 +44,7 @@ export async function ingestSpeechBlob(opts: {
   // processSegment 判断「是取消」还是「真失败」——真失败要给用户可行动的原因，
   // 取消则一个字都不该显示。
   const [sttResult, embeddingResult] = await Promise.all([
-    sttApi.transcribe({ audioBlob: opts.blob }, opts.signal),
+    sttApi.transcribe({ audioBlob: opts.blob, module: 'meetings' }, opts.signal),
     // ⚠ 旧写法 `.catch(() => new Float32Array())` 把「提取失败」伪装成
     //   一个合法的空向量；而余弦相似度对零向量恒为 0 < 阈值
     //   ⇒ **每一次提取失败都被算成一个新说话人**，用户看到的是
@@ -56,11 +60,6 @@ export async function ingestSpeechBlob(opts: {
   //   恢复转写」—— 既然分片的用途就是**事后补救**，那它在补救之前就不能先被跳过。
   //   ⚠§826 让这件事在 Android 上变得不可逆：原生模式压根不产整段音频，
   //   分片是那段话的**唯一一份拷贝**。
-  void saveAudioPart(meetingId, opts.seq, opts.blob).catch((e) => {
-    // §818/§819 同一族：观测失败不得影响转写，但也不许完全无声 ——
-    // 这里是唯一一份音频拷贝，它没存下来就等于那段话永久找不回来了。
-    console.warn(`[ingest-speech] 第 ${opts.seq} 段音频分片落盘失败：`, e)
-  })
 
   if (!sttResult.text.trim()) {
     // 「转写成功但没出字」与「转写失败」在调用点**长得一样**（都不抛错），

@@ -15,6 +15,7 @@ import { http, LONG_REQUEST_TIMEOUT_MS } from './http'
 import { blobToBase64 } from '../utils/base64'
 import { ensureGatewayCompatible } from '../utils/wav-encode'
 import { filenameForMimeType } from './stt-filename'
+import { assertCloudModule } from './data-policy.ts'
 
 /**
  * 全量转写的客户端超时。
@@ -286,7 +287,8 @@ export const sttSettingsApi = {
    * fullTranscribeTimeout)`，客户端断开即中止——否则这段最长 10 分钟的兜底
    * 转写期间，用户只能干等。
    */
-  async transcribeFull(audioBlob: Blob, filename = 'meeting.wav', signal?: AbortSignal): Promise<SttFullResult> {
+  async transcribeFull(audioBlob: Blob, filename = 'meeting.wav', signal?: AbortSignal, module?: 'notes' | 'meetings'): Promise<SttFullResult> {
+    assertCloudModule(module)
     // ★ 与 `sttApi.transcribe` 对齐：容器适配放在**本方法内**，不指望调用方记得做。
     //
     //   §50 实测：录音产物是 webm/opus，而网关的 chat-audio bridge 只收 mp3/wav
@@ -304,7 +306,9 @@ export const sttSettingsApi = {
     //   发 webm 字节却报 .wav，会让后端「按扩展名判容器」的分支与实际不符。
     //   调用方的 filename 只在 blob 没有 type 时兜底（那才是它唯一有信息的时候）。
     const name = blob.type ? filenameForMimeType(blob.type, 'meeting') : filename
+    assertCloudModule(module)
     return http<SttFullResult>('/api/stt/transcribe-full', {
+      syncModule: module,
       method: 'POST',
       body: JSON.stringify({ audioBase64: base64, filename: name }),
       signal,
@@ -344,7 +348,8 @@ export const sttSettingsApi = {
     silenceCut?: boolean
     isFinal?: boolean
     reset?: boolean
-  }): Promise<SttIncrementalResult> {
+  }, module?: 'notes' | 'meetings'): Promise<SttIncrementalResult> {
+    assertCloudModule(module)
     // 两者都缺就是调用方写错了，静默传空 base64 会换来一个 502 empty transcript，
     // 报错形态与「音频是静音」完全一样 —— 必须在边界上炸掉。
     if (!body.audioBlob && !body.audioBase64) {
@@ -364,7 +369,9 @@ export const sttSettingsApi = {
     // 调用方给的 filename 是转码**前**的容器，已经是过期的（与 transcribeFull
     // 同一条纪律）。blob 为 null = 调用方自带 base64，容器由它自己声明。
     const name = blob?.type ? filenameForMimeType(blob.type, 'chunk') : (body.filename ?? 'chunk.wav')
+    assertCloudModule(module)
     return http<SttIncrementalResult>('/api/stt/transcribe-incremental', {
+      syncModule: module,
       method: 'POST',
       body: JSON.stringify({
         audioBase64,
