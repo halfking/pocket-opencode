@@ -385,13 +385,12 @@ func (s *Server) handleAuthMe(w http.ResponseWriter, r *http.Request) {
 
 // handleAuthRefresh — POST /api/auth/refresh（JWT 滑动续期，runbook §15.2 方案 c 落地）。
 //
-// 前端在 token 临期（剩余 <5min）主动调用、或在 401 后单飞重试一次；每次仍签发
-// 短 TTL token，撤销窗口不变长，与 349a14e 加固基线兼容。链路：
-//  1. requireAuth 已验证当前 token 签名与有效期（过期/伪造在此 401）；
-//  2. RedClaw 模式下经 Me 复检撤销状态——已撤销/会话失效 fail-closed 401；
-//     legacy 本地 token 无撤销表，跳过此步；
-//  3. issueTokenAndRespond 重签（EnsureDefaultWorkspace + SignWithWorkspace +
-//     RecordShadow），响应形状与 /api/auth/login 一致 {token,user,user_id,workspace_id}。
+// Without RedClaw, local dev/legacy credentials retain their renewal path.
+// With RedClaw, preserve the upstream revocation check but never substitute a
+// pocket JWT: Me cannot renew the upstream session. Historical buggy refreshes
+// also issued pocket JWTs, so issuer alone cannot exempt a token from this rule.
+// Return reauth_required without issuing or revoking a credential; a proactive
+// client may keep using the original token until it expires.
 func (s *Server) handleAuthRefresh(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "POST only")
@@ -402,28 +401,21 @@ func (s *Server) handleAuthRefresh(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "missing auth claims")
 		return
 	}
-	uid := claims.UserID
-	username := uid
-	email := ""
 	if s.redclawAdminClient != nil {
 		raw := extractBearerToken(r)
 		if raw == "" {
 			writeError(w, http.StatusUnauthorized, "missing bearer token")
 			return
 		}
-		me, err := s.redclawAdminClient.Me(r.Context(), raw)
-		if err != nil {
+		if _, err := s.redclawAdminClient.Me(r.Context(), raw); err != nil {
 			s.handleRedClawAuthError(w, err, "redclaw me failed")
 			return
 		}
-		if me != nil {
-			if name := strings.TrimSpace(me.Name); name != "" {
-				username = name
-			}
-			email = me.Email
-		}
+		s.writeStructuredError(w, r, http.StatusUnauthorized, "reauth_required",
+			"RedClaw session renewal requires signing in again")
+		return
 	}
-	s.issueTokenAndRespond(w, r, uid, username, email)
+	s.issueTokenAndRespond(w, r, claims.UserID, claims.UserID, "")
 }
 
 // handleAuthSsoStatus — GET /api/auth/sso/status
