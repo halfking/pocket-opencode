@@ -419,6 +419,7 @@
     }
   },
   "email": {
+    "localPrivacyNotice": "仅本地模式下不发送正文到云端翻译，不加载外部图片。",
     "dailySummary": "每日摘要",
     "fetchHintNetwork": "后台收信未完成，已显示已同步邮件",
     "fetchHintClassifierOff": "自动归类服务未启用，邮件已同步但未自动分类",

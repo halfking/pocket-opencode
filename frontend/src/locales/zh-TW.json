@@ -419,6 +419,7 @@
     }
   },
   "email": {
+    "localPrivacyNotice": "僅本機模式下不將內文傳送至雲端翻譯，也不載入外部圖片。",
     "dailySummary": "每日摘要",
     "fetchHintNetwork": "背景收信未完成，已顯示已同步郵件",
     "fetchHintClassifierOff": "自動歸類服務未啟用，郵件已同步但未自動分類",

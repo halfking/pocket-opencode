@@ -217,6 +217,7 @@
     "storageStatusSynced": "동기화됨",
     "storageStatusSkipped": "건너뜀 · 로컬 전용",
     "storageSyncedCount": "동기화됨 · {count}건",
+    "storageLocalCloudUnavailable": "클라우드 쓰기와 동기화를 사용할 수 없습니다. RSS와 이메일의 로컬 대체 기능은 아직 없습니다.",
     "storageOnlyLocalBadge": "로컬 전용 · 비동기",
     "storageLoadFailed": "정책 서비스에 연결할 수 없어 캐시 또는 기본 정책 표시 중",
     "storageManagedNoOverride": "관리자가 관리 중"
@@ -417,6 +418,7 @@
     }
   },
   "email": {
+    "localPrivacyNotice": "로컬 전용 모드에서는 본문을 클라우드 번역으로 보내거나 외부 이미지를 불러오지 않습니다.",
     "dailySummary": "일일 요약",
     "fetchHintNetwork": "백그라운드 수신이 완료되지 않아 동기화된 메일을 표시합니다",
     "fetchHintClassifierOff": "자동 분류가 꺼져 있어 메일은 동기화되었지만 분류되지 않았습니다",

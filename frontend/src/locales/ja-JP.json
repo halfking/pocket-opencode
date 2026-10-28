@@ -217,6 +217,7 @@
     "storageStatusSynced": "同期済み",
     "storageStatusSkipped": "スキップ · ローカルのみ",
     "storageSyncedCount": "同期済み · {count} 件",
+    "storageLocalCloudUnavailable": "クラウドへの書き込みと同期は利用できません。RSS とメールのローカル代替機能は未実装です。",
     "storageOnlyLocalBadge": "ローカルのみ · 非同期",
     "storageLoadFailed": "ポリシーサービスに接続できません。キャッシュまたは既定のポリシーを表示中",
     "storageManagedNoOverride": "管理者により管理中"
@@ -417,6 +418,7 @@
     }
   },
   "email": {
+    "localPrivacyNotice": "ローカル専用モードでは本文をクラウド翻訳に送信せず、外部画像も読み込みません。",
     "dailySummary": "デイリー要約",
     "fetchHintNetwork": "バックグラウンド取得が完了しませんでした。同期済みメールを表示しています",
     "fetchHintClassifierOff": "自動分類が無効です。メールは同期されましたが分類されていません",

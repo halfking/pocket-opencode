@@ -419,6 +419,7 @@
     }
   },
   "email": {
+    "localPrivacyNotice": "Im lokalen Modus werden Nachrichtentexte nicht zur Cloud-Übersetzung gesendet und externe Bilder nicht geladen.",
     "dailySummary": "Tägliche Zusammenfassung",
     "fetchHintNetwork": "Hintergrund-Abruf nicht abgeschlossen; synchronisierte Nachrichten werden angezeigt",
     "fetchHintClassifierOff": "Automatische Kategorisierung ist deaktiviert; Nachrichten synchronisiert, aber nicht kategorisiert",

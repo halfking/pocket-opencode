@@ -30,6 +30,14 @@ function panelTemplate(): string {
 
 const TRANSCRIPT = '张伟：下周三跟客户过一遍。\n李娜：预算按季度复核。'
 
+/** These cases exercise cloud fallback, so grant that permission explicitly. */
+function allowCloudMeetingRequests() {
+  const originalGet = globalThis.localStorage.getItem
+  globalThis.localStorage.getItem = (key: string) => key === 'op_sync_policy_v1'
+    ? JSON.stringify({ policy: { system_default: 'cloud', allow_override: true, modules: { meetings: 'cloud' } }, scope: '' })
+    : originalGet.call(globalThis.localStorage, key)
+}
+
 describe('§220 前端本地回落形状必须自带 summaryFallback', () => {
   it('emptySummary 置位 summaryFallback，且 summary 是截断后的转写', async () => {
     const mod = await loadBundle(join(FRONTEND_ROOT, 'src/api/meetings.ts'), 'summary-fallback-local')
@@ -200,6 +208,7 @@ describe('§916 摘要兜底必须打得进 /api/llm/chat 的 32000 字节硬闸
   /** 让主摘要端点失败 ⇒ 必然走兜底；再把兜底那次请求抓下来。 */
   async function runFallback(segments: unknown[], prev?: string) {
     stubBrowser()
+    allowCloudMeetingRequests()
     await activatePinia()
     const mod = await apiMod()
     const seen = captureRequests({})   // 一个路由都没配 ⇒ 全部 404
@@ -415,8 +424,8 @@ describe('§919 服务端字节闸的调用方登记簿（每个调用点都得�
     },
     {
       gate: '/api/llm/chat',
-      file: 'src/features/email/EmailDetailView.vue',
-      marker: 'async function llmChat(',
+      file: 'src/features/email/email-translation-client.ts',
+      marker: 'async function emailTranslationChat(',
       bound: '邮件翻译走 translateBodyPipeline ⇒ **切块**后逐块翻译。' +
         '实测最大块 6000 码元（中文 18000 字节）⇒ 余量 44%',
       retest: 'translate',
@@ -826,6 +835,7 @@ describe('§920 精校兜底超字节闸时必须出声（降级行为一行未�
 
   beforeEach(async () => {
     stubBrowser()
+    allowCloudMeetingRequests()
     await activatePinia()
   })
   afterEach(() => { restoreGlobals() })

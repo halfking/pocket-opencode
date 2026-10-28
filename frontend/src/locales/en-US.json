@@ -419,6 +419,7 @@
     }
   },
   "email": {
+    "localPrivacyNotice": "Local-only mode keeps body text out of cloud translation and blocks external images.",
     "dailySummary": "Daily digest",
     "fetchHintNetwork": "Background fetching did not finish; showing synced messages",
     "fetchHintClassifierOff": "Auto-categorization is off; messages synced but not categorized",

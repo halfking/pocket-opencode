@@ -37,6 +37,65 @@ export interface PreloadOptions {
   timeoutMs?: number
   maxImages?: number
   maxTotalBytes?: number
+  /** Checked before every external fetch and before returning renderable HTML. */
+  allowRemote?: () => boolean
+}
+
+const LOCAL_IMAGE_PLACEHOLDER = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'
+
+// These property grammars cannot load resources. A denylist of url()/protocols
+// misses image-set strings, CSS escapes and future resource functions. Keep
+// presentation through the browser's declaration parser, and omit resource-
+// bearing properties, custom properties and at-rules entirely in local mode.
+const LOCAL_STYLE_PROPERTIES = `
+  color background-color opacity display visibility box-sizing
+  width min-width max-width height min-height max-height
+  margin margin-top margin-right margin-bottom margin-left
+  padding padding-top padding-right padding-bottom padding-left
+  border border-top border-right border-bottom border-left
+  border-width border-style border-color border-radius border-collapse border-spacing
+  font font-family font-size font-weight font-style font-variant line-height
+  text-align text-indent text-transform text-decoration text-decoration-color
+  text-decoration-line text-decoration-style text-overflow text-shadow
+  white-space word-break word-spacing overflow-wrap letter-spacing vertical-align
+  overflow overflow-x overflow-y float clear table-layout caption-side empty-cells
+  list-style-type list-style-position direction unicode-bidi
+  flex flex-direction flex-wrap flex-grow flex-shrink flex-basis
+  align-items align-content align-self justify-content gap row-gap column-gap
+  grid-template-columns grid-template-rows grid-column grid-row order
+`.trim().split(/\s+/)
+
+/** Keep readable text, safe inline layout and embedded images, without requests. */
+export function hideRemoteImages(html: string): string {
+  if (typeof document === 'undefined') {
+    // No renderer/HTML parser (e.g. SSR): retain the source as inert text.
+    return html.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  }
+  // A template's contents have no browsing context: parsing cannot request an
+  // img/style resource before it has been removed. Never parse in a live div.
+  const template = document.createElement('template')
+  template.innerHTML = html
+  template.content.querySelectorAll('style, link').forEach(el => el.remove())
+  for (const el of template.content.querySelectorAll<HTMLElement>('*')) {
+    const inline = el.style
+    if (el.hasAttribute('style')) {
+      const safe = document.createElement('span').style
+      for (const property of LOCAL_STYLE_PROPERTIES) {
+        const value = inline.getPropertyValue(property)
+        if (value) safe.setProperty(property, value, inline.getPropertyPriority(property))
+      }
+      if (safe.cssText) el.setAttribute('style', safe.cssText)
+      else el.removeAttribute('style')
+    }
+    for (const attr of ['src', 'background', 'data-src', 'data-original', 'data-lazy-src']) {
+      const value = el.getAttribute(attr)
+      if (value && !/^data:image\/(?:png|jpe?g|gif|webp|bmp|avif|svg\+xml);base64,/i.test(value)) {
+        el.setAttribute(attr, LOCAL_IMAGE_PLACEHOLDER)
+      }
+    }
+    el.removeAttribute('srcset')
+  }
+  return template.innerHTML
 }
 
 /**
@@ -199,6 +258,7 @@ export async function preloadRemoteImages(
   options: PreloadOptions = {},
 ): Promise<string> {
   if (!html) return html
+  if (options.allowRemote && !options.allowRemote()) return hideRemoteImages(html)
   // 注意：**不能**用 `if (!/<img\b/i.test(html)) return html` 提前返回。
   // 排版型邮件（很多通知/营销邮件）整封只有表格 + CSS 背景图，一个 <img> 都没有；
   // 那样早退会让这批邮件的图**一张都进不了待抓列表**，而 WebView 基址是
@@ -215,7 +275,7 @@ export async function preloadRemoteImages(
 
   let budget = maxTotal
   const inlined = await mapWithConcurrency(refs, CONCURRENCY, async (ref) => {
-    if (budget <= 0) return null
+    if (budget <= 0 || (options.allowRemote && !options.allowRemote())) return null
     const dataUri = await fetchOne(ref.url, fetchImpl, timeoutMs, options.signal)
     if (!dataUri) return null
     // base64 长度 ≈ 原始字节 * 4/3
@@ -224,6 +284,8 @@ export async function preloadRemoteImages(
     budget -= approx
     return dataUri
   })
+
+  if (options.allowRemote && !options.allowRemote()) return hideRemoteImages(html)
 
   let out = html
   refs.forEach((ref, i) => {

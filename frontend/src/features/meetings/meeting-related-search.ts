@@ -6,13 +6,14 @@ import { mergeRecommendations } from './meeting-related'
 // ⚠ §926：第三方检索搬进可测核心（带**等待上界**）—— 原来这里是裸 `fetch`，
 //   是整条录音链上**唯一没有超时**的对外请求（App 自己的 `http()` 有 30 s 上限）。
 //   「主查 + 至多一次回落」的请求预算也钉在那个模块里。
-import { searchRelatedWeb } from './wikipedia-search.ts'
+import { searchRelatedWeb as searchWikipedia } from './wikipedia-search.ts'
+import { readCachedModuleMode, recordSyncReportEntry } from '../../stores/syncPolicyStore.ts'
 
 export async function searchRelatedNotes(query: string, limit = 3, workspaceId = 'default'): Promise<RecommendItem[]> {
   const q = query.trim()
   if (!q) return []
   try {
-    const hits = await searchHybrid(q, limit, workspaceId)
+    const hits = await searchHybrid(q, limit, workspaceId, 'meetings')
     return hits.slice(0, limit).map((hit) => ({
       type: 'note' as const,
       id: hit.note.id,
@@ -58,8 +59,14 @@ export async function searchRelatedMeetings(
 }
 
 // ⚠ §926：维基那一路现在住在 `wikipedia-search.ts`（带等待上界 + 请求预算的钉子）。
-//   这里原样再导出一次，**保持本模块的对外形状不变**。
-export { searchRelatedWeb } from './wikipedia-search.ts'
+//   请求前复查会议策略，主查询后切到 local 时也不能再发回落查询。
+export async function searchRelatedWeb(query: string): Promise<RecommendItem[]> {
+  return searchWikipedia(query, { canRequest: () => {
+    if (readCachedModuleMode('meetings') === 'cloud') return true
+    recordSyncReportEntry({ module: 'meetings', status: 'skipped' })
+    return false
+  } })
+}
 
 export async function searchRelatedContext(
   query: string,
