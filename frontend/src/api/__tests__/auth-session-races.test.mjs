@@ -27,7 +27,7 @@ async function withClient(run, browserWindow) {
     const { api } = await vite.ssrLoadModule('/src/api/client.ts')
     const auth = useAuthStore()
     const login = (name = 'a', store = auth) => store.setAuthWithWorkspace(`token-${name}`, `User ${name}`, `user-${name}`, `ws-${name}`)
-    login()
+    await login()
     await run({ auth, http, api, login, values, useAuthStore, captureAuthSession, isCurrentAuthSession })
   } finally {
     await vite.close()
@@ -49,12 +49,14 @@ for (const change of ['login', 'roundtrip', 'storage']) {
     await started.promise
     if (change === 'storage') {
       values.set('pocket_token', 'token-b'); values.set('pocket_user', 'User b'); values.set('pocket_workspace_id', 'ws-b')
-      auth.syncFromStorage()
+      values.delete('pocket_auth_snapshot_v1')
+      await auth.syncFromStorage()
       values.set('pocket_token', 'token-a'); values.set('pocket_user', 'User a'); values.set('pocket_workspace_id', 'ws-a')
-      auth.syncFromStorage()
+      values.delete('pocket_auth_snapshot_v1')
+      await auth.syncFromStorage()
     } else {
-      auth.clearLocal(); login('b')
-      if (change === 'roundtrip') { auth.clearLocal(); login('a') }
+      await auth.clearLocal(); await login('b')
+      if (change === 'roundtrip') { await auth.clearLocal(); await login('a') }
     }
     const expected = { token: auth.token, user: auth.user, userId: auth.userId, workspace: auth.workspaceId }
     response.resolve(json({ token: 'renewed-a', user_id: 'user-a', workspace_id: 'ws-a' }))
@@ -67,6 +69,7 @@ for (const change of ['login', 'roundtrip', 'storage']) {
 for (const change of ['storage', 'direct roundtrip']) {
   test(`session observation survives its first caller unmounting (${change})`, () => withClient(async ({ useAuthStore, values, captureAuthSession, isCurrentAuthSession }) => {
     const auth = useAuthStore(createPinia())
+    await auth.syncFromStorage()
     const started = deferred(), response = deferred()
     globalThis.fetch = async () => { started.resolve(); return response.promise }
     const scope = effectScope()
@@ -76,7 +79,8 @@ for (const change of ['storage', 'direct roundtrip']) {
     scope.stop()
     if (change === 'storage') {
       values.set('pocket_token', 'token-b'); values.set('pocket_user', 'User b'); values.set('pocket_workspace_id', 'ws-b')
-      auth.syncFromStorage()
+      values.delete('pocket_auth_snapshot_v1')
+      await auth.syncFromStorage()
     } else {
       auth.$patch({ token: 'token-b', user: 'User b', workspaceId: 'ws-b' })
       auth.$patch({ token: 'token-a', user: 'User a', workspaceId: 'ws-a' })
@@ -108,14 +112,14 @@ test('refresh single flight belongs to its store and session, and old finally do
   let calls = 0
   globalThis.fetch = async () => { const index = calls++; starts[index].resolve(); return [first, second, third][index].promise }
   const a = auth.refreshSession(); await starts[0].promise
-  auth.clearLocal(); login('b')
+  await auth.clearLocal(); await login('b')
   const b = auth.refreshSession()
   await Promise.race([starts[1].promise, new Promise((_, reject) => setTimeout(() => reject(new Error('new session joined old refresh')), 300))])
   first.resolve(json({ token: 'renewed-a', user_id: 'user-a', workspace_id: 'ws-a' }))
   assert.equal(await a, false)
   const bAgain = auth.refreshSession()
   setActivePinia(createPinia())
-  const other = useAuthStore(); login('c', other)
+  const other = useAuthStore(); await login('c', other)
   const c = other.refreshSession(); await starts[2].promise
   second.resolve(json({ token: 'renewed-b', user_id: 'user-b', workspace_id: 'ws-b' }))
   third.resolve(json({ token: 'renewed-c', user_id: 'user-c', workspace_id: 'ws-c' }))
@@ -128,7 +132,7 @@ test('late logout does not clear the next login', () => withClient(async ({ auth
   const started = deferred(), response = deferred()
   globalThis.fetch = async () => { started.resolve(); return response.promise }
   const pending = auth.logout(); await started.promise
-  login('b')
+  await login('b')
   response.resolve(json({ ok: true }))
   await pending
   assert.equal(auth.token, 'token-b'); assert.equal(auth.workspaceId, 'ws-b')
@@ -140,7 +144,7 @@ for (const status of [200, 401]) {
     const calls = []
     globalThis.fetch = async (url, init) => { calls.push({ url, auth: init.headers.Authorization }); started.resolve(); return response.promise }
     const pending = assert.rejects(http('/api/private', { method: 'POST', body: JSON.stringify({ text: 'private fixture' }) }), isSessionAbort)
-    await started.promise; login('b')
+    await started.promise; await login('b')
     response.resolve(json({ content: 'old private fixture' }, status))
     await pending
     assert.equal(calls.length, 1)
@@ -153,7 +157,7 @@ test('request waiting for proactive refresh cannot send as the next identity', (
   auth.maybeRefresh = async () => { started.resolve(); await release.promise }
   globalThis.fetch = async () => { calls++; return json({}) }
   const pending = assert.rejects(http('/api/private', { method: 'POST', body: '{}' }), isSessionAbort)
-  await started.promise; login('b'); release.resolve()
+  await started.promise; await login('b'); release.resolve()
   await pending; assert.equal(calls, 0); assert.equal(auth.token, 'token-b')
 }))
 
@@ -173,7 +177,7 @@ for (const status of [200, 401]) {
     const started = deferred(), response = deferred()
     globalThis.fetch = async () => { started.resolve(); return response.promise }
     const pending = assert.rejects(api.getTasks(), isSessionAbort)
-    await started.promise; login('b')
+    await started.promise; await login('b')
     response.resolve(json({ tasks: [{ id: 'old-private' }] }, status))
     await pending; assert.equal(auth.token, 'token-b')
   }))
@@ -198,20 +202,21 @@ for (const kind of ['body', 'network']) {
       return response
     }
     const pending = assert.rejects(api.getTasks(), isSessionAbort)
-    await started.promise; login('b'); release.resolve()
+    await started.promise; await login('b'); release.resolve()
     await pending; assert.equal(auth.token, 'token-b')
   }))
 }
 
 test('storage account switch clears unpersisted user metadata', () => withClient(async ({ auth, values }) => {
   values.set('pocket_token', 'token-b'); values.set('pocket_user', 'User b'); values.set('pocket_workspace_id', 'ws-b')
-  auth.syncFromStorage()
+  values.delete('pocket_auth_snapshot_v1')
+  await auth.syncFromStorage()
   assert.equal(auth.userId, '')
   assert.equal(auth.token, 'token-b'); assert.equal(auth.workspaceId, 'ws-b')
 }))
 
 test('new legacy login does not inherit the prior workspace or server user id', () => withClient(async ({ auth, values }) => {
-  auth.setAuth('token-b', 'User b')
+  await auth.setAuth('token-b', 'User b')
   assert.equal(auth.userId, ''); assert.equal(auth.workspaceId, '')
   assert.equal(values.get('pocket_workspace_id'), '')
 }))
@@ -224,7 +229,7 @@ test('a current irrecoverable 401 still clears its own session', () => withClien
 
 test('refresh and logout use their owning store even while another Pinia is active', () => withClient(async ({ auth, login, useAuthStore }) => {
   setActivePinia(createPinia())
-  const other = useAuthStore(); login('b', other)
+  const other = useAuthStore(); await login('b', other)
   const credentials = []
   globalThis.fetch = async (url, init) => {
     credentials.push(init.headers.Authorization)
@@ -244,7 +249,7 @@ test('an awaiting request keeps its originating store when the active Pinia chan
   globalThis.fetch = async (_url, init) => { authorization = init.headers.Authorization; return json({ ok: true }) }
   const pending = http('/api/private')
   await started.promise
-  setActivePinia(createPinia()); const other = useAuthStore(); login('b', other)
+  setActivePinia(createPinia()); const other = useAuthStore(); await login('b', other)
   release.resolve()
   assert.deepEqual(await pending, { ok: true })
   assert.equal(authorization, 'Bearer token-a'); assert.equal(other.token, 'token-b')
@@ -257,7 +262,7 @@ test('queued storage events invalidate a session even when the final values matc
     const started = deferred(), response = deferred()
     globalThis.fetch = async () => { started.resolve(); return response.promise }
     const pending = auth.refreshSession(); await started.promise
-    const event = new Event('storage'); Object.defineProperty(event, 'key', { value: 'pocket_token' })
+    const event = new Event('storage'); Object.defineProperty(event, 'key', { value: 'pocket_auth_snapshot_v1' })
     browserWindow.dispatchEvent(event)
     response.resolve(json({ token: 'renewed-a', user_id: 'user-a', workspace_id: 'ws-a' }))
     assert.equal(await pending, false); assert.equal(auth.token, 'token-a')

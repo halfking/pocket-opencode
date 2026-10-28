@@ -29,8 +29,10 @@ test('真实策略 API 客户端与四模块门户契约兼容', async () => {
     removeItem: (key) => values.delete(key),
   } })
   setActivePinia(createPinia())
-  const vite = await createViteServer({ configFile: false, server: { middlewareMode: true }, optimizeDeps: { noDiscovery: true } })
+  const vite = await createViteServer({ configFile: false, server: { middlewareMode: true, hmr: false }, optimizeDeps: { noDiscovery: true } })
   try {
+    const { useAuthStore } = await vite.ssrLoadModule('/src/stores/auth.ts')
+    await useAuthStore().syncFromStorage()
     const api = await vite.ssrLoadModule('/src/api/syncPolicy.ts')
     const result = await api.updateSyncPolicyModules({ 'ai-chat': 'local', tasks: 'local', rss: 'cloud', email: 'cloud', notes: 'local', meetings: 'cloud' })
     assert.deepEqual(Object.keys(observed.modules).sort(), ['email', 'meetings', 'notes', 'rss'])

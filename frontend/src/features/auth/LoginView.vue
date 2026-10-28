@@ -204,7 +204,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { useAuthStore } from '../../stores/auth'
+import { useAuthStore, captureAuthSession, assertAuthSession, isCurrentAuthSession, type AuthSession } from '../../stores/auth'
 import { http, ApiError } from '../../api/http'
 import { connectWs } from '../../api/websocket'
 import { initLobster, isLobsterReady } from '../../native/lobster-init'
@@ -237,6 +237,7 @@ import { resolveAppVersion } from '../../utils/version'
 
 const router = useRouter()
 const auth = useAuthStore()
+let completedSession: AuthSession | undefined
 const backendDisplay = displayApiBase()
 
 // 登录页底部的版本号（2026-10-03 从模板裸字面量 v1.2.0-mobile 改来）。
@@ -340,11 +341,13 @@ async function handleCodeLogin() {
  */
 async function completeAuth(token: string, user: string, userId?: string, workspaceId?: string) {
   if (userId && workspaceId) {
-    auth.setAuthWithWorkspace(token, user, userId, workspaceId)
+    await auth.setAuthWithWorkspace(token, user, userId, workspaceId)
   } else {
-    auth.setAuth(token, user)
+    await auth.setAuth(token, user)
   }
-  await connectWs()
+  completedSession = captureAuthSession(auth)
+  connectWs()
+  assertAuthSession(auth, completedSession)
   if (!cryptoConfig.cfg.hasMasterPassword) {
     showMasterPasswordDialog.value = true
     return
@@ -413,10 +416,12 @@ async function unlock() {
   loading.value = true
   error.value = ''
   try {
+    const session = captureAuthSession(auth)
     let secret = unlockPassword.value
     if (mode === 'biometric') {
       try {
         secret = (await getMasterSecret('使用指纹或人脸解锁本地数据')).password
+        assertAuthSession(auth, session)
       } catch (cause: unknown) {
         loading.value = false
         const message = cause instanceof Error ? cause.message : String(cause)
@@ -429,7 +434,9 @@ async function unlock() {
         return
       }
     }
+    assertAuthSession(auth, session)
     await initLobster(secret)
+    assertAuthSession(auth, session)
     if (mode === 'password') {
       void persistMasterSecretIfBound(secret)
     }
@@ -449,9 +456,12 @@ async function unlock() {
 // 退出重新登录：必须 await 服务端撤销 + 本地清理完成后才放行重新登录，
 // 否则在途的 logout 清理会与用户的新登录写入竞态（审计 P3）。
 async function logoutAndRelogin() {
-  await auth.logout()
-  needUnlock.value = false
-  error.value = ''
+  try {
+    await auth.logout()
+    if (auth.isAuthenticated || auth.activationStatus !== 'ready') return
+    needUnlock.value = false
+    error.value = ''
+  } catch { error.value = '本地会话清理未完成，请重试退出登录' }
 }
 
 // BUG-C 配套: 后端服务器按钮的显式 handler,避免行内表达式在
@@ -462,6 +472,7 @@ function goToServers() {
 }
 
 function onMasterPasswordCreated() {
+  if (!completedSession || !isCurrentAuthSession(auth, completedSession)) return
   showMasterPasswordDialog.value = false
   router.replace(unlockRedirectPath(router.currentRoute.value.query))
 }
@@ -516,20 +527,23 @@ async function doLogin(u: string, p: string, opts: { fromBiometric: boolean }) {
     })
     const method = res.auth_method || 'redclaw'
     if (res.user_id && res.workspace_id) {
-      auth.setAuthWithWorkspace(res.token, res.user, res.user_id, res.workspace_id, method)
+      await auth.setAuthWithWorkspace(res.token, res.user, res.user_id, res.workspace_id, method)
     } else {
-      auth.setAuth(res.token, res.user, method)
+      await auth.setAuth(res.token, res.user, method)
     }
     // 🦞 认证成功后才建立 WS（此前模块加载不会自动连）
-    await connectWs()
+    completedSession = captureAuthSession(auth)
+    connectWs()
+    assertAuthSession(auth, completedSession)
 
+    const loginSession = completedSession
     // 密码登录成功后绑定指纹：后台尽力而为，不阻塞进入应用
     // （凭据明文只在闭包内短暂持有；用户取消或失败则下次登录再试）
     if (!opts.fromBiometric && !bioReady.value) {
       void (async () => {
-        if (await isBiometricAvailable() && !(await hasBiometricCredential())) {
+        if (await isBiometricAvailable() && !(await hasBiometricCredential()) && loginSession && isCurrentAuthSession(auth, loginSession)) {
           const ok = await bindBiometricCredential(u, p)
-          bioReady.value = ok
+          if (isCurrentAuthSession(auth, loginSession)) bioReady.value = ok
         }
       })()
     }
@@ -556,8 +570,10 @@ async function doLogin(u: string, p: string, opts: { fromBiometric: boolean }) {
         if (u === 'admin' && p === 'admin') {
           const legacyUser = JSON.stringify({ username: 'admin', loginTime: new Date().toISOString() })
           const legacyToken = 'legacy-token-' + Date.now() // 临时 token 用于兼容性
-          auth.setAuth(legacyToken, legacyUser)
-          await connectWs()
+          await auth.setAuth(legacyToken, legacyUser)
+          completedSession = captureAuthSession(auth)
+          connectWs()
+          assertAuthSession(auth, completedSession)
           if (!cryptoConfig.cfg.hasMasterPassword) {
             showMasterPasswordDialog.value = true
             return

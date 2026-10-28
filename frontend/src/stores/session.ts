@@ -9,7 +9,8 @@
  */
 
 import { defineStore } from 'pinia'
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
+import { useAuthStore, captureAuthSession, isCurrentAuthSession, assertAuthSession, type AuthSession } from './auth'
 import { http } from '../api/http'
 import { SessionSSEClient, type SessionEvent } from '../api/sse'
 
@@ -65,8 +66,20 @@ export const useSessionStore = defineStore('session', () => {
   const lastMessage = computed(() =>
     messages.value.length ? messages.value[messages.value.length - 1] : null,
   )
+  const auth = useAuthStore()
+  let owner: AuthSession | undefined
+  let openingEpoch = {}
+  watch(() => [auth.activationStatus, auth.activationVersion], () => {
+    if (owner && !isCurrentAuthSession(auth, owner)) {
+      close()
+      messages.value = []
+      title.value = ''
+      errorMessage.value = null
+    }
+  }, { flush: 'sync' })
 
   async function open(sid: string, iid: string, initialTitle?: string) {
+    const session = captureAuthSession(auth)
     // M2（2026-09-09）：流所有权上移 — 同 sid+iid 已有活跃 SSE 时跳过 close()
     // 复用现有 SSE 连接；切回同一会话不会丢事件、不会重连风暴。
     const sameSession = sessionID.value === sid && instanceID.value === iid && sseClient.value
@@ -78,6 +91,9 @@ export const useSessionStore = defineStore('session', () => {
       currentAssistantId.value = null
       errorMessage.value = null
     }
+    owner = session
+    const opening = openingEpoch
+    const current = () => openingEpoch === opening && isCurrentAuthSession(auth, session)
     sessionID.value = sid
     instanceID.value = iid
     if (initialTitle) title.value = initialTitle
@@ -95,12 +111,14 @@ export const useSessionStore = defineStore('session', () => {
         const data = await http<{ messages: any[] }>(
           `/api/mobile/sessions/${encodeURIComponent(sid)}/messages?${qs}`,
         )
+        if (!current()) return
         // 转换消息格式
         for (const m of data.messages || []) {
           const msg = normalizeMessage(m)
           if (msg) messages.value.push(msg)
         }
       } catch (err: any) {
+        if (!current() || err?.name === 'AbortError') return
         errorMessage.value = `加载历史失败: ${err?.message || err}`
       }
     }
@@ -108,8 +126,9 @@ export const useSessionStore = defineStore('session', () => {
     // 2. 订阅 SSE（同 sid+iid 时跳过：sseClient 已在跑）
     if (sameSession) return
 
-    const token = localStorage.getItem('pocket_token')
-    sseClient.value = new SessionSSEClient(sid, iid, () => token, {
+    if (!current()) return
+    sseClient.value = new SessionSSEClient(sid, iid, () => current() ? auth.token : null, {
+      isCurrent: current,
       onOpen: () => {
         errorMessage.value = null
       },
@@ -270,6 +289,8 @@ export const useSessionStore = defineStore('session', () => {
   }
 
   async function sendPrompt(text: string, agent?: string, model?: any) {
+    const session = captureAuthSession(auth)
+    const opening = openingEpoch
     if (!sessionID.value || !instanceID.value) return
     // 立即显示用户消息
     messages.value.push({
@@ -288,9 +309,12 @@ export const useSessionStore = defineStore('session', () => {
           body: JSON.stringify({ text, agent, model }),
         },
       )
+      assertAuthSession(auth, session)
+      if (opening !== openingEpoch) return
       // SSE 会驱动后续 assistant 消息
       return resp
     } catch (err: any) {
+      if (!isCurrentAuthSession(auth, session) || opening !== openingEpoch) throw err
       status.value = 'error'
       errorMessage.value = `发送失败: ${err?.message || err}`
       throw err
@@ -298,6 +322,8 @@ export const useSessionStore = defineStore('session', () => {
   }
 
   async function interrupt() {
+    const session = captureAuthSession(auth)
+    const opening = openingEpoch
     if (!sessionID.value || !instanceID.value) return
     try {
       const qs = new URLSearchParams({ instance_id: instanceID.value })
@@ -305,9 +331,12 @@ export const useSessionStore = defineStore('session', () => {
         `/api/mobile/sessions/${encodeURIComponent(sessionID.value)}/interrupt?${qs}`,
         { method: 'POST' },
       )
+      assertAuthSession(auth, session)
+      if (opening !== openingEpoch) return
       finalizeCurrentAssistant()
       status.value = 'idle'
     } catch (err: any) {
+      if (!isCurrentAuthSession(auth, session) || opening !== openingEpoch) return
       errorMessage.value = `中断失败: ${err?.message || err}`
     }
   }
@@ -346,6 +375,8 @@ export const useSessionStore = defineStore('session', () => {
   }
 
   function close() {
+    openingEpoch = {}
+    owner = undefined
     if (sseClient.value) {
       sseClient.value.close()
       sseClient.value = null

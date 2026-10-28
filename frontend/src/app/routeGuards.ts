@@ -47,13 +47,16 @@ function safeReturnTo(to: RouteLocationNormalized): string {
   return raw
 }
 
-export function evaluateRoute(
+export async function evaluateRoute(
   to: RouteLocationNormalized,
-): GuardOutcome {
+): Promise<GuardOutcome> {
   const auth = useAuthStore()
   // Always reflect the latest persisted auth state before evaluating.
   if (typeof auth.syncFromStorage === 'function') {
-    auth.syncFromStorage()
+    try { await auth.syncFromStorage() } catch {
+      return to.path === '/login' || !to.meta?.requiresAuth
+        ? { kind: 'allow' } : { kind: 'redirectLogin', returnTo: safeReturnTo(to) }
+    }
   }
 
   const requiresAuth = Boolean((to.meta as Record<string, unknown>)?.requiresAuth)
@@ -137,9 +140,9 @@ export function applyOutcome(
 }
 
 /** Convenience: combines evaluate + apply. */
-export function runGuard(
+export async function runGuard(
   to: RouteLocationNormalized,
   next: NavigationGuardNext,
-): void {
-  applyOutcome(evaluateRoute(to), to, next)
+): Promise<void> {
+  applyOutcome(await evaluateRoute(to), to, next)
 }

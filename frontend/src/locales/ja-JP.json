@@ -1,5 +1,7 @@
 {
   "common": {
+    "sessionSwitching": "ローカルセッションを切り替えています…",
+    "sessionSwitchFailed": "ローカルセッションを切り替えられませんでした。再度ログインするか、ログアウトをやり直してください。",
     "confirm": "確認",
     "cancel": "キャンセル",
     "save": "保存",
@@ -117,6 +119,7 @@
     "notifications": "Notifications"
   },
   "settings": {
+    "storageUnsupportedPolicy": "この環境ではモジュール別の同期設定を利用できません。",
     "aiGateway": "AIゲートウェイ",
     "configured": "設定済み",
     "notConfigured": "未設定",
@@ -429,6 +432,8 @@
     "fetchHintHttpError": "バックグラウンド取得が不完全です（{code}）。メッセージは同期済み"
   },
   "errors": {
+    "emailCredentialsLocalOnly": "メールの認証情報は端末内にのみ保存できます。",
+    "moduleLocalOnly": "このモジュールは端末内のみの保存に設定されています。",
     "rssNotConfigured": "RSS フィードがまだ設定されていません。先にフィードを追加してください。",
     "rssSourceMissing": "そのフィードは見つかりません。削除された可能性があります。",
     "emailNotConfigured": "メールアカウントがまだ設定されていません。メール設定で追加してください。",

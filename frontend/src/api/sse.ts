@@ -22,6 +22,7 @@ export interface SessionEvent {
 }
 
 export interface SessionSSEHandlers {
+  isCurrent?: () => boolean
   onOpen?: () => void
   onMessage?: (evt: SessionEvent) => void
   onError?: (err: Event | Error) => void
@@ -45,6 +46,7 @@ export class SessionSSEClient {
   open() {
     this.closed = false
     this.connect()
+    if (this.closed) return
     // 兜底心跳：30s 无消息主动 ping 后端（实际上 server 已经每 15s 发 : ping）
     this.heartbeatTimer = window.setInterval(() => {
       if (!this.es || this.es.readyState === EventSource.CLOSED) {
@@ -67,6 +69,7 @@ export class SessionSSEClient {
 
   private connect() {
     if (this.closed) return
+    if (this.handlers.isCurrent && !this.handlers.isCurrent()) { this.close(); return }
 
     const params = new URLSearchParams({ instance_id: this.instanceID })
     if (this.lastSeq !== undefined) {
@@ -86,6 +89,7 @@ export class SessionSSEClient {
     this.es = new EventSource(finalUrl)
 
     this.es.onopen = () => {
+      if (this.handlers.isCurrent && !this.handlers.isCurrent()) { this.close(); return }
       this.handlers.onOpen?.()
     }
 
@@ -131,6 +135,7 @@ export class SessionSSEClient {
     }
 
     this.es.onerror = (e) => {
+      if (this.handlers.isCurrent && !this.handlers.isCurrent()) { this.close(); return }
       this.handlers.onError?.(e)
       if (!this.closed) {
         this.reconnect()
@@ -139,6 +144,7 @@ export class SessionSSEClient {
   }
 
   private handleMessage(type: string, dataStr: string | null) {
+    if (this.closed || (this.handlers.isCurrent && !this.handlers.isCurrent())) return
     if (!dataStr) return
     let parsed: any = null
     try {

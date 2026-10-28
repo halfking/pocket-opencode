@@ -1,5 +1,7 @@
 {
   "common": {
+    "sessionSwitching": "正在切換本機工作階段…",
+    "sessionSwitchFailed": "本機工作階段切換未完成，請重新登入或重試登出。",
     "confirm": "確認",
     "cancel": "取消",
     "save": "儲存",

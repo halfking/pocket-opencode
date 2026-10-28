@@ -29,6 +29,8 @@
       否则每个 view 都要自己实现顶栏/底栏，会出现重复 UI 或不一致（如之前的
       任务/会话/实例/设置 旧 4模块 Tab 遮住了设计的 5模块 BottomNav）。
     -->
+    <p v-if="auth.activationStatus === 'pending'" role="status" class="auth-activation-status">{{ t('common.sessionSwitching') }}</p>
+    <p v-else-if="auth.activationStatus === 'error'" role="alert" class="auth-activation-status">{{ t('common.sessionSwitchFailed') }}</p>
     <AppLayout>
       <!-- KeepAlive 白名单只缓存列表页（LIST_CACHE_NAMES）：列表→详情→返回时
            筛选/分类/状态保留原现场；详情页不在名单内，每次进入都重新挂载拉最新。 -->
@@ -57,6 +59,8 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+import { useAuthStore } from '../stores/auth'
+import { useI18n } from 'vue-i18n'
 import { useRoute } from 'vue-router'
 import AppLayout from './AppLayout.vue'
 import UpdateChecker from '../components/UpdateChecker.vue'
@@ -67,6 +71,8 @@ import { useStatusBar } from '../composables/useStatusBar'
 import { installKeyboardInset } from '../composables/useKeyboardInset'
 import { transitionState, consumeSwipeFromPx } from './routeTransition'
 
+const auth = useAuthStore()
+const { t } = useI18n()
 const updateChecker = ref<InstanceType<typeof UpdateChecker> | null>(null)
 
 // 全局软键盘避让（App 级单例）：键盘弹起时输入区贴键盘上沿 + 页面上滑对齐

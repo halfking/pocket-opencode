@@ -50,6 +50,8 @@ const pinia = createPinia()
 useThemeStore(pinia)
 const app = createApp(App)
 app.use(pinia)
+const syncAuth = useAuthStore(pinia)
+const initialActivation = syncAuth.syncFromStorage()
 app.use(router)
 app.use(i18n)
 app.mount("#app")
@@ -83,28 +85,33 @@ if (Capacitor.isNativePlatform()) {
 // 离线同步接线（P1）：网络恢复 / App 回前台时自动 drain outbox + 同步会话
 // 与审批快照；全局状态条读取该 store。未登录 / 本地库未解锁时静默跳过。
 // 策略读取不能依赖用户打开设置页；身份切换时也不能沿用上一账号的 cloud 缓存。
-const syncAuth = useAuthStore(pinia)
 installSyncPolicyScopeResolver(() => syncAuth.user || syncAuth.workspaceId
   ? JSON.stringify([syncAuth.user, syncAuth.workspaceId]) : '')
 const syncPolicy = useSyncPolicyStore(pinia)
-watch(() => [syncAuth.user, syncAuth.workspaceId, syncAuth.isAuthenticated], () => {
+let syncRuntimesStarted = false
+watch(() => [syncAuth.activationStatus, syncAuth.activationVersion, syncAuth.user, syncAuth.workspaceId], () => {
   syncPolicy.$reset()
   window.dispatchEvent(new Event('openpocket:sync-policy-changed'))
-  if (syncAuth.isAuthenticated) void syncPolicy.load()
-}, { immediate: true })
+  if (syncAuth.activationStatus === 'ready' && !syncRuntimesStarted) {
+    syncRuntimesStarted = true
+    useConnectivityStore(pinia).init()
+    startEmailConfigSync()
+    startUserConfigSync()
+  }
+  if (syncAuth.isAuthenticated) { void syncPolicy.load(); connectWs() }
+  else wsClient.disconnect()
+}, { immediate: true, flush: 'sync' })
 window.addEventListener('online', () => {
   if (syncAuth.isAuthenticated) void syncPolicy.load()
 })
-useConnectivityStore(pinia).init()
-startEmailConfigSync()
-startUserConfigSync()
+void initialActivation.catch(error => console.warn('[auth] 启动会话恢复失败：', error))
 
 // 🦞 启动 WS 事件集中路由层：把所有需要监听的服务端推送一次性订阅好，
 // 后续各 store / view 只跟 ws-bus 打交道。
 initWsBus()
 // 🦞 仅在已持久化 token 时建立 WS（未登录则 no-op）。
 // 登录流程（LoginView）在认证成功后会再次调用 connectWs。
-connectWs()
+// Connection starts only from the ready-state watcher above.
 
 // M1（2026-09-09）：AI 流所有权上移 — 启动 lifecycle hub（hidden/visible/frozen/resumed
 // 收口）+ 注入 llm-bff 流式运行时依赖（fetcher / apiBase / token）。

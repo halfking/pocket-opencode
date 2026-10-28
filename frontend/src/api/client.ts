@@ -66,7 +66,7 @@ async function authFetch(input: string, init: RequestInit = {}): Promise<AuthRes
     //   既不报错也不跳登录」，用户拿着死 token 卡死却看不出发生了什么。
     // 这正是 http.ts 里 BUG-I 描述的死法；那次修复只落在 http() 这条链上，
     // 而本文件整个面（任务/会话/实例…）都走 authFetch，全部绕过了兜底。
-    if (response.status === 401) forceReauth(session)
+    if (response.status === 401) await forceReauth(session)
     throw new ApiError(response.status, message)
   }
 

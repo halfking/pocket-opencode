@@ -123,7 +123,7 @@
 <script setup lang="ts">
 import { ref, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { useAuthStore } from '../../stores/auth'
+import { useAuthStore, captureAuthSession, assertAuthSession, isCurrentAuthSession, type AuthSession } from '../../stores/auth'
 import { connectWs } from '../../api/websocket'
 import { sendCode, registerUser } from '../../api/auth'
 import MasterPasswordDialog from './MasterPasswordDialog.vue'
@@ -131,6 +131,7 @@ import { useCryptoConfig } from '../../stores/crypto-config'
 
 const router = useRouter()
 const auth = useAuthStore()
+let completedSession: AuthSession | undefined
 const cryptoConfig = useCryptoConfig()
 
 const step = ref<1 | 2>(1)
@@ -226,11 +227,13 @@ async function submit() {
 /** 与 LoginView.completeAuth 一致的注册成功收尾链。 */
 async function completeAuth(token: string, user: string, userId?: string, workspaceId?: string) {
   if (userId && workspaceId) {
-    auth.setAuthWithWorkspace(token, user, userId, workspaceId)
+    await auth.setAuthWithWorkspace(token, user, userId, workspaceId)
   } else {
-    auth.setAuth(token, user)
+    await auth.setAuth(token, user)
   }
-  await connectWs()
+  completedSession = captureAuthSession(auth)
+  connectWs()
+  assertAuthSession(auth, completedSession)
   if (!cryptoConfig.cfg.hasMasterPassword) {
     showMasterPasswordDialog.value = true
     return
@@ -239,6 +242,7 @@ async function completeAuth(token: string, user: string, userId?: string, worksp
 }
 
 function onMasterPasswordCreated() {
+  if (!completedSession || !isCurrentAuthSession(auth, completedSession)) return
   showMasterPasswordDialog.value = false
   router.replace('/ai')
 }

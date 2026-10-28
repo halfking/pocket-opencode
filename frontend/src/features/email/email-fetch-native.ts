@@ -126,6 +126,7 @@ async function ensurePlugin(): Promise<EmailFetchBox | null> {
 
 export async function configureNativeEmailFetch(apiBase: string, token: string): Promise<boolean> {
   const auth = useAuthStore()
+  if (!auth.isAuthenticated) return false
   const session = captureAuthSession(auth)
   if (auth.token !== token) return false
   if (!currentGrant(session) || !apiBase) {

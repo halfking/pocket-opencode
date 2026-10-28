@@ -1,5 +1,7 @@
 {
   "common": {
+    "sessionSwitching": "Lokale Sitzung wird gewechselt…",
+    "sessionSwitchFailed": "Die lokale Sitzung konnte nicht gewechselt werden. Melden Sie sich erneut an oder versuchen Sie die Abmeldung erneut.",
     "confirm": "Bestätigen",
     "cancel": "Abbrechen",
     "save": "Speichern",

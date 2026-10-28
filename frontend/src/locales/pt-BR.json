@@ -1,5 +1,7 @@
 {
   "common": {
+    "sessionSwitching": "Alternando a sessão local…",
+    "sessionSwitchFailed": "Não foi possível alternar a sessão local. Entre novamente ou tente sair outra vez.",
     "confirm": "Confirmar",
     "cancel": "Cancelar",
     "save": "Salvar",
@@ -117,6 +119,7 @@
     "notifications": "Notifications"
   },
   "settings": {
+    "storageUnsupportedPolicy": "Este ambiente não oferece configurações de sincronização por módulo.",
     "aiGateway": "AI Gateway",
     "configured": "Configured",
     "notConfigured": "Not Configured",
@@ -429,6 +432,8 @@
     "fetchHintHttpError": "Busca em segundo plano incompleta ({code}); mensagens sincronizadas"
   },
   "errors": {
+    "emailCredentialsLocalOnly": "As credenciais de e-mail só podem ser salvas no dispositivo.",
+    "moduleLocalOnly": "Este módulo está configurado para salvar apenas no dispositivo.",
     "rssNotConfigured": "Nenhuma fonte RSS configurada ainda. Adicione uma para começar.",
     "rssSourceMissing": "Essa fonte não existe mais; ela pode ter sido removida.",
     "emailNotConfigured": "Nenhuma caixa de e-mail configurada ainda. Adicione uma conta nas Configurações de e-mail.",

@@ -93,9 +93,9 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import { useAuthStore } from '../../stores/auth'
+import { useAuthStore, captureAuthSession, isCurrentAuthSession, type AuthSession } from '../../stores/auth'
 import { GatewayLiveClient, type GatewayLiveHandlers } from '../../api/gateway-live'
 import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue'
 import type { LiveStreamLane, LiveStreamStats, LiveStreamTile } from '../../api/gateway-live'
@@ -113,10 +113,18 @@ const selected = ref<LiveStreamTile | null>(null)
 
 let client: GatewayLiveClient | null = null
 
-// M4（2026-09-09）：切走页面不关 SSE — client 按 nodeId 缓存在模块级（≈进程级），
-// 事件通过 setHandlers 重绑写到当前挂载组件的 ref；用户切走再回来不需要重连。
-// 观察用途的流，节点数有限，缓存上限可控。
-const liveClients = new Map<number, GatewayLiveClient>()
+// script-setup state belongs to this mounted view, not a process-wide node cache.
+let owner: AuthSession | undefined
+watch(() => [auth.activationStatus, auth.activationVersion], () => {
+  if (owner && !isCurrentAuthSession(auth, owner)) {
+    client?.close()
+    client = null
+    dimensions.value = {}
+    selected.value = null
+    summary.value = { total: 0, success: 0, failure: 0, rate_limited: 0, in_progress: 0 }
+    connected.value = false
+  }
+}, { flush: 'sync' })
 
 const dimensionKeys = computed(() => Object.keys(dimensions.value))
 
@@ -168,6 +176,9 @@ function mergeLanes(changed: Record<string, LiveStreamLane[]>) {
 }
 
 onMounted(() => {
+  if (!auth.isAuthenticated) return
+  owner = captureAuthSession(auth)
+  const session = owner
   const handlers: GatewayLiveHandlers = {
     onOpen: () => {
       connected.value = true
@@ -192,25 +203,15 @@ onMounted(() => {
     },
   }
 
-  // M4：同节点已有活连接 → 只重绑 handlers（不重连，无重连风暴）。
-  const cached = liveClients.get(nodeId)
-  if (cached) {
-    cached.setHandlers(handlers)
-    client = cached
-    // 若连接早已建立，补一次 connected 状态（避免回页面时误显"连接中断"）。
-    connected.value = true
-    error.value = ''
-    return
-  }
-
-  const created = new GatewayLiveClient(nodeId, () => auth.token, handlers)
-  liveClients.set(nodeId, created)
+  const created = new GatewayLiveClient(nodeId, () => auth.token, handlers,
+    () => isCurrentAuthSession(auth, session))
   client = created
   created.open()
 })
 
-// M4：切走只解绑本组件引用，**不** close —— 流在模块级缓存里继续跑。
+// A component-local stream must release its credential and timers when the view leaves.
 onUnmounted(() => {
+  client?.close()
   client = null
 })
 </script>

@@ -315,17 +315,25 @@ export function startUserConfigSync(): void {
   if (watcherStarted) return
   watcherStarted = true
   const auth = useAuthStore()
-  watch(
-    [lobsterReady, () => auth.isAuthenticated],
-    ([ready, authed]) => {
-      if (!ready || !authed) return
-      if (inflight) return
-      inflight = importLegacyPrefsIfMissing()
-        .then(() => syncUserSettings())
-        .finally(() => { inflight = null })
-    },
-    { immediate: true },
-  )
+  const kick = () => {
+    if (!lobsterReady.value || !auth.isAuthenticated || inflight) return
+    const version = auth.activationVersion
+    inflight = importLegacyPrefsIfMissing()
+      .then(() => {
+        if (!auth.isAuthenticated || auth.activationVersion !== version) return { pulled: 0, pushed: 0, queued: 0, online: false }
+        return syncUserSettings()
+      })
+      .catch((error: unknown) => {
+        if (!(error instanceof Error) || error.name !== 'AbortError') console.warn('[config-sync] 启动同步失败：', error)
+        return { pulled: 0, pushed: 0, queued: 0, online: false, error: error instanceof Error ? error.message : String(error) }
+      })
+      .finally(() => {
+        inflight = null
+        if (auth.activationVersion !== version) kick()
+      })
+  }
+  watch([lobsterReady, () => auth.activationStatus, () => auth.activationVersion], kick,
+    { immediate: true, flush: 'sync' })
   if (typeof window !== 'undefined') {
     window.addEventListener('online', () => {
       if (!auth.isAuthenticated || !lobsterReady.value) return

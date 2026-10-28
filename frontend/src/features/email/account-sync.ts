@@ -233,18 +233,19 @@ export function startEmailConfigSync(): void {
   if (watcherStarted) return
   watcherStarted = true
   const auth = useAuthStore()
-  watch(
-    [lobsterReady, () => auth.isAuthenticated],
-    ([ready, authed]) => {
-      if (!ready || !authed) return
-      if (inflight) return
-      inflight = syncAccountsBidirectional()
-        .catch((e: unknown) => ({
-          fetched: 0, applied: 0, skipped: 0, pushed: 0, online: false,
-          error: e instanceof Error ? e.message : String(e),
-        }))
-        .finally(() => { inflight = null })
-    },
-    { immediate: true },
-  )
+  const kick = () => {
+    if (!lobsterReady.value || !auth.isAuthenticated || inflight) return
+    const version = auth.activationVersion
+    inflight = syncAccountsBidirectional()
+      .catch((e: unknown) => ({
+        fetched: 0, applied: 0, skipped: 0, pushed: 0, online: false,
+        error: e instanceof Error ? e.message : String(e),
+      }))
+      .finally(() => {
+        inflight = null
+        if (auth.activationVersion !== version) kick()
+      })
+  }
+  watch([lobsterReady, () => auth.activationStatus, () => auth.activationVersion], kick,
+    { immediate: true, flush: 'sync' })
 }
