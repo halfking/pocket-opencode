@@ -3723,10 +3723,12 @@ func BenchmarkJWTVerification(b *testing.B) {
 
 #### 8.4.1 内部文档
 
-- **架构文档**：[ARCHITECTURE.md](/Users/xutaohuang/workspace/ai-native-tools/RedClaw/ARCHITECTURE.md)
-- **本地部署指南**：[LOCAL-DOCKER-STACK-2026-08.md](/Users/xutaohuang/workspace/ai-native-tools/RedClaw/docs/LOCAL-DOCKER-STACK-2026-08.md)
-- **Pocket 集成**：[pocket-integration-2026-08/03-需求矩阵与接口契约.md](/Users/xutaohuang/workspace/ai-native-tools/RedClaw/docs/pocket-integration-2026-08/03-需求矩阵与接口契约.md)
-- **ADR: JWKS 迁移**：[adr/2026-08-20-jwks-migration.md](/Users/xutaohuang/workspace/ai-native-tools/RedClaw/docs/adr/2026-08-20-jwks-migration.md)
+> 以下四份在 **RedClaw 仓库**（`halfking/RedClaw`）内，不在本仓；链接指向该仓 `main` 分支。
+
+- **架构文档**：[RedClaw · ARCHITECTURE.md](https://github.com/halfking/RedClaw/blob/main/ARCHITECTURE.md)
+- **本地部署指南**：[RedClaw · LOCAL-DOCKER-STACK-2026-08.md](https://github.com/halfking/RedClaw/blob/main/docs/LOCAL-DOCKER-STACK-2026-08.md)
+- **Pocket 集成**：[RedClaw · pocket-integration-2026-08/03-需求矩阵与接口契约.md](https://github.com/halfking/RedClaw/blob/main/docs/pocket-integration-2026-08/03-需求矩阵与接口契约.md)
+- **ADR: JWKS 迁移**：[RedClaw · adr/2026-08-20-jwks-migration.md](https://github.com/halfking/RedClaw/blob/main/docs/adr/2026-08-20-jwks-migration.md)
 
 #### 8.4.2 代码位置
 

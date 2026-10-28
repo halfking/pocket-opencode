@@ -1,6 +1,6 @@
 # T02 非空补流 + 产物恢复 — 真实 30 分钟离线窗口证据包
 
-日期：2026-09-12。**结果：真实 30 分钟 Pocket 进程离线窗口，期间任务被真实执行（独立 runner + checker + ACC 证据门），Pocket 重连后同一 task/run 绑定与游标持久，`after=2` 补流返回窗口内产生的全部 10 个事件，产物 SHA-256 在 runner receipt / checker verdict / ACC 事件载荷 / 磁盘字节四处一致。** 本文补齐 [W1 交接审计](../../../../../../ai-native-tools/docs/来自其他模块/openhands-buzz-integration/handoff-audit-2026-09-11.md) §3 中 T02 的两项残缺断言。
+日期：2026-09-12。**结果：真实 30 分钟 Pocket 进程离线窗口，期间任务被真实执行（独立 runner + checker + ACC 证据门），Pocket 重连后同一 task/run 绑定与游标持久，`after=2` 补流返回窗口内产生的全部 10 个事件，产物 SHA-256 在 runner receipt / checker verdict / ACC 事件载荷 / 磁盘字节四处一致。** 本文补齐 [W1 交接审计](../../../../docs/来自其他模块/openhands-buzz-integration/handoff-audit-2026-09-11.md) §3 中 T02 的两项残缺断言。
 
 ## 时间线（UTC，2026-09-11 晚）
 

@@ -238,7 +238,7 @@ adb shell am start -n com.kaixuan.opencode.pocket/.MainActivity
 
 - **文件**：`backend/scripts/test-redclaw-integration.sh`
 - **用途**：测试未来的 RedClaw 集成功能
-- **依赖**：`/Users/xutaohuang/workspace/FreshLab/RedClaw2/enterprise/gateway-go`
+- **依赖**：脚本内硬编码的本机绝对路径 `.../FreshLab/RedClaw2/enterprise/gateway-go` —— RedClaw 仓内已无 `enterprise/gateway-go`（网关现为 `enterprise/gateway/`），跑之前需先改脚本里的路径
 - **说明**：主应用在未配置 `POCKET_REDCLAW_BASE_URL` 时会优雅降级，RedClaw 端点返回 503
 - **影响**：不影响核心应用功能，仅用于集成测试
 
