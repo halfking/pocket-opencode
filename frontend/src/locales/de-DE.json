@@ -219,6 +219,8 @@
     "storageStatusSkipped": "Übersprungen · nur lokal",
     "storageSyncedCount": "Synchronisiert · {count} Einträge",
     "storageLocalCloudUnavailable": "Cloud-Schreiben und Synchronisieren sind deaktiviert; RSS und E-Mail haben noch keinen vollständigen lokalen Ersatz.",
+    "storageNativeEmailStopUnconfirmed": "Der Stopp der Hintergrund-E-Mails auf diesem Gerät konnte nicht bestätigt werden. Bestehende Aufgaben greifen möglicherweise weiter auf die Cloud zu. Die erneute Aktivierung ist gesperrt. Bitte erneut versuchen. Bei einer älteren Android-App bitte die App aktualisieren und erneut versuchen.",
+    "storageNativeEmailStopLimits": "Bereits gesendete Anfragen können nicht zurückgerufen werden. Bei einem Fehler des Gerätespeichers bleibt die Deaktivierung nach einem Neustart möglicherweise nicht erhalten.",
     "storageOnlyLocalBadge": "Nur lokal · kein Sync",
     "storageLoadFailed": "Richtliniendienst nicht erreichbar; der Cache wird verwendet. Ohne gültigen Cache werden Uploads pausiert.",
     "storageManagedNoOverride": "Durch Administrator verwaltet"

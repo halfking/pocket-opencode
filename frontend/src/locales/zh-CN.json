@@ -219,6 +219,8 @@
     "storageStatusSkipped": "已跳过 · 仅本地",
     "storageSyncedCount": "已同步 · {count} 条",
     "storageLocalCloudUnavailable": "云端写入与同步不可用，RSS 和邮件尚无完整本地替代。",
+    "storageNativeEmailStopUnconfirmed": "无法确认本机后台邮件已停止，旧任务可能仍访问云端。已阻止重新启用，请重试。 旧版 Android 应用请升级后重试。",
+    "storageNativeEmailStopLimits": "已发出的请求无法撤回。若设备存储故障，停用状态可能无法保存到重启后。",
     "storageOnlyLocalBadge": "仅本地 · 不同步",
     "storageLoadFailed": "策略服务不可达，继续使用缓存；没有有效缓存时暂停上传。",
     "storageManagedNoOverride": "由管理员统一管控"

@@ -219,6 +219,8 @@
     "storageStatusSkipped": "Skipped · local only",
     "storageSyncedCount": "Synced · {count} items",
     "storageLocalCloudUnavailable": "Cloud writes and sync are unavailable; RSS and email have no local replacement yet.",
+    "storageNativeEmailStopUnconfirmed": "Background email on this device could not be confirmed stopped. Existing tasks may still access the cloud. Re-enabling is blocked; please retry. If you use an older Android app, update it and retry.",
+    "storageNativeEmailStopLimits": "Requests already sent cannot be recalled. If device storage fails, the disabled state may not survive a restart.",
     "storageOnlyLocalBadge": "Local only · no sync",
     "storageLoadFailed": "Policy service unreachable; using cached policy. Uploads pause if no valid cache is available.",
     "storageManagedNoOverride": "Managed by administrator"

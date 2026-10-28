@@ -218,6 +218,8 @@
     "storageStatusSkipped": "Omitido · solo local",
     "storageSyncedCount": "Sincronizado · {count} elementos",
     "storageLocalCloudUnavailable": "La escritura y sincronización en la nube no están disponibles; RSS y correo aún no tienen una alternativa local.",
+    "storageNativeEmailStopUnconfirmed": "No se pudo confirmar la detención del correo en segundo plano de este dispositivo. Las tareas existentes aún pueden acceder a la nube. La reactivación está bloqueada; vuelve a intentarlo. Si usas una versión antigua de la aplicación Android, actualízala y vuelve a intentarlo.",
+    "storageNativeEmailStopLimits": "Las solicitudes ya enviadas no pueden retirarse. Si falla el almacenamiento del dispositivo, la desactivación podría no mantenerse tras reiniciar.",
     "storageOnlyLocalBadge": "Solo local · sin sincronización",
     "storageLoadFailed": "Servicio de políticas inaccesible; se muestra caché o política por defecto",
     "storageManagedNoOverride": "Gestionado por el administrador"

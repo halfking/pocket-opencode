@@ -2,9 +2,10 @@ import { Capacitor } from '@capacitor/core'
 import { emailApi } from '../../api/email'
 import { PRODUCTION_API_BASE, resolveApiBase } from '../../config/api-base'
 import i18n from '../../i18n'
-import { useAuthStore } from '../../stores/auth'
+import { assertAuthSession, captureAuthSession, useAuthStore } from '../../stores/auth'
+import { readCachedModuleMode, recordSyncReportEntry } from '../../stores/syncPolicyStore'
 import { formatFetchHint, resolveFetchApiBase, sanitizeFetchHint } from './email-fetch-plan'
-import { configureNativeEmailFetch, runNativeEmailFetch } from './email-fetch-native'
+import { cancelNativeEmailFetch, configureNativeEmailFetch, runNativeEmailFetch } from './email-fetch-native'
 import { pullInboxFromServer, syncInboxFromServer } from './email-inbox-page'
 
 export { formatFetchHint, sanitizeFetchHint, decideFetchKick } from './email-fetch-plan'
@@ -16,16 +17,31 @@ async function prepareNative(): Promise<boolean> {
 }
 
 export async function runDelegatedEmailFetch(opts?: { classify?: boolean }): Promise<{ hint: string; classified: number }> {
+  const auth = useAuthStore()
+  const session = captureAuthSession(auth)
+  const stopped = async () => {
+    assertAuthSession(useAuthStore(), session)
+    if (readCachedModuleMode('email') === 'cloud') return false
+    recordSyncReportEntry({ module: 'email', status: 'skipped' })
+    if (!await cancelNativeEmailFetch()) localResult.hint = i18n.global.t('settings.storageNativeEmailStopUnconfirmed') as string
+    return true
+  }
+  const localResult = { hint: i18n.global.t('settings.storageLocalCloudUnavailable') as string, classified: 0 }
+  if (await stopped()) return localResult
   await pullInboxFromServer()
+  if (await stopped()) return localResult
   // 原生 EmailFetch 插件未实现/配置失败时静默降级为仅服务端拉取；
   // reject 不能冒泡打断调用方 load() 里后续的 showLocal 刷新。
   let native: { used: boolean; synced: number; newCount: number; classified: number } | null = null
   if (await prepareNative().catch(() => false)) {
+      if (await stopped()) return localResult
       // 原生拉取失败 ⇒ 退回「仅服务端拉取」这条降级路（理由见上面那段注释）。
       native = await runNativeEmailFetch().catch(() => null)
   }
+  if (await stopped()) return localResult
   if (native?.used) {
     await pullInboxFromServer()
+    if (await stopped()) return localResult
     return {
       hint: sanitizeFetchHint(formatFetchHint(
         `已同步 ${native.synced} 个账户，新邮件 ${native.newCount}`,
@@ -39,6 +55,7 @@ export async function runDelegatedEmailFetch(opts?: { classify?: boolean }): Pro
     return { hint: '', classified: 0 }
   }
   const syncHint = await syncInboxFromServer()
+  if (await stopped()) return localResult
   let classified = 0
   if (opts?.classify !== false) {
     try {

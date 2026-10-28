@@ -34,25 +34,47 @@ public class EmailFetchReceiver extends BroadcastReceiver {
   }
 
   static void schedule(Context ctx, long intervalMs) {
-    long gap = Math.max(intervalMs, AlarmManager.INTERVAL_FIFTEEN_MINUTES);
-    Intent i = new Intent(ctx, EmailFetchReceiver.class);
-    PendingIntent pi = PendingIntent.getBroadcast(
-        ctx, REQ, i, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-    AlarmManager am = (AlarmManager) ctx.getSystemService(Context.ALARM_SERVICE);
-    if (am == null) return;
-    am.setInexactRepeating(
-        AlarmManager.ELAPSED_REALTIME_WAKEUP,
-        SystemClock.elapsedRealtime() + gap,
-        gap,
-        pi);
+    synchronized (EmailFetchRunner.POLICY_LOCK) {
+      if (!EmailFetchRunner.isEnabled(ctx)) {
+        cancel(ctx);
+        return;
+      }
+      long gap = Math.max(intervalMs, AlarmManager.INTERVAL_FIFTEEN_MINUTES);
+      Intent i = new Intent(ctx, EmailFetchReceiver.class);
+      PendingIntent pi = PendingIntent.getBroadcast(
+          ctx, REQ, i, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+      AlarmManager am = (AlarmManager) ctx.getSystemService(Context.ALARM_SERVICE);
+      if (am == null) return;
+      am.setInexactRepeating(
+          AlarmManager.ELAPSED_REALTIME_WAKEUP,
+          SystemClock.elapsedRealtime() + gap,
+          gap,
+          pi);
+    }
+  }
+
+  static void cancel(Context ctx) {
+    synchronized (EmailFetchRunner.POLICY_LOCK) {
+      PendingIntent pi = PendingIntent.getBroadcast(ctx, REQ, new Intent(ctx, EmailFetchReceiver.class),
+          PendingIntent.FLAG_NO_CREATE | PendingIntent.FLAG_IMMUTABLE);
+      if (pi == null) return;
+      AlarmManager am = (AlarmManager) ctx.getSystemService(Context.ALARM_SERVICE);
+      if (am != null) am.cancel(pi);
+      pi.cancel();
+    }
   }
 
   @Override
   public void onReceive(Context context, Intent intent) {
-    // 开机/升级后先重排，再顺手补一次（设备关着的那段时间收不到邮件）。
-    // setInexactRepeating 覆盖同 PendingIntent 的旧闹钟，不会堆叠。
-    if (shouldReschedule(intent == null ? null : intent.getAction())) {
-      schedule(context, DEFAULT_INTERVAL_MS);
+    synchronized (EmailFetchRunner.POLICY_LOCK) {
+      if (!EmailFetchRunner.isEnabled(context)) {
+        cancel(context);
+        return;
+      }
+      // 开机/升级后先重排，再顺手补一次。
+      if (shouldReschedule(intent == null ? null : intent.getAction())) {
+        schedule(context, DEFAULT_INTERVAL_MS);
+      }
     }
     new Thread(() -> {
       try {
