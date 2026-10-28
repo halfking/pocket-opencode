@@ -70,7 +70,7 @@ export interface OutboxStorage {
   get(id: string): Promise<OutboxRecord | null>
   delete(id: string): Promise<void>
   /** Return all queued records with nextAttemptAt <= now, ordered by createdAt. */
-  listReady(now: number, limit: number): Promise<OutboxRecord[]>
+  listReady(now: number, limit: number, excludeActions?: readonly string[]): Promise<OutboxRecord[]>
   /** Return the count of records in the given states. */
   countByState(states: OutboxState[]): Promise<number>
 }

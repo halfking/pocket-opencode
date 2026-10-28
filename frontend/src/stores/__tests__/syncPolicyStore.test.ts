@@ -2,7 +2,7 @@
 //
 // 覆盖（对应需求 6）：
 //   1. shouldSync / moduleMode 纯函数（显式值 > system_default > cloud 兜底）；
-//   2. load() 降级链：远端失败 → localStorage 缓存（op_sync_policy_v1）→ 默认全 cloud；
+//   2. load() 降级链：远端失败 → 有效缓存 → 暂停门户模块上传；
 //   3. setModule() 乐观更新 + PUT 失败回滚（含缓存回滚）；
 //   4. allow_override=false 时拒绝切换；
 //   5. recordSyncReportEntry 按模块覆盖合并 + readCachedModuleMode 免 Pinia 读；
@@ -17,9 +17,11 @@
 
 import { strict as assert } from 'node:assert'
 import { createPinia, setActivePinia } from 'pinia'
+import { normalizeSyncPolicy, isPortalSyncModule } from '../../api/syncPolicyContract.ts'
 
 import {
   installSyncPolicyStorage,
+  installSyncPolicyScopeResolver,
   moduleMode,
   readCachedModuleMode,
   readCachedSyncPolicy,
@@ -67,6 +69,145 @@ beforeEach(() => {
   setActivePinia(createPinia())
 })
 
+test('策略缺失模块必须继承 system_default=local', () => {
+  const policy = normalizeSyncPolicy({ system_default: 'local', allow_override: true, modules: { rss: 'cloud' } })
+  assert.equal(policy.modules.rss, 'cloud')
+  assert.equal(policy.modules.email, 'local')
+})
+
+test('缓存无法写入时同步引擎仍遵守已生效的 local 策略', () => {
+  installSyncPolicyStorage({ ...storage, setItem() { throw new Error('quota') } })
+  const store = useSyncPolicyStore()
+  store.applyPolicy(normalizeSyncPolicy({ system_default: 'cloud', modules: { notes: 'local' } }), 1)
+  assert.equal(readCachedModuleMode('notes'), 'local')
+})
+
+test('切回 cloud 必须等服务端确认后才允许上传', async () => {
+  const store = useSyncPolicyStore()
+  store.applyPolicy(normalizeSyncPolicy({ system_default: 'cloud', allow_override: true, modules: { notes: 'local' } }), 1)
+  const orig = syncPolicyTransport.putModules
+  let resolve!: (value: ReturnType<typeof normalizeSyncPolicy>) => void
+  syncPolicyTransport.putModules = (modules) => new Promise((done) => { resolve = () => done(normalizeSyncPolicy({ system_default: 'cloud', modules })) })
+  try {
+    const pending = store.setModule('notes', 'cloud')
+    assert.equal(readCachedModuleMode('notes'), 'local', '等待 PUT 期间不得上传')
+    resolve(normalizeSyncPolicy(undefined))
+    await pending
+    assert.equal(readCachedModuleMode('notes'), 'cloud')
+  } finally { syncPolicyTransport.putModules = orig }
+})
+
+test('切换账号后不得沿用上一账号的 cloud 缓存', () => {
+  storage.setItem('pocket_user', 'alice')
+  storage.setItem('pocket_workspace_id', 'ws-a')
+  const store = useSyncPolicyStore()
+  store.applyPolicy(normalizeSyncPolicy({ system_default: 'cloud' }), 1)
+  assert.equal(readCachedModuleMode('email'), 'cloud')
+  storage.setItem('pocket_user', 'bob')
+  assert.equal(readCachedModuleMode('email'), 'local')
+})
+
+test('身份切换期间返回的旧账号 PUT 不得污染新账号', async () => {
+  storage.setItem('pocket_user', 'alice')
+  const store = useSyncPolicyStore()
+  store.applyPolicy(normalizeSyncPolicy({ system_default: 'cloud', allow_override: true }), 1)
+  const orig = syncPolicyTransport.putModules
+  let finish!: () => void
+  syncPolicyTransport.putModules = (modules) => new Promise((done) => { finish = () => done(normalizeSyncPolicy({ system_default: 'cloud', modules })) })
+  try {
+    const pending = store.setModule('notes', 'local')
+    storage.setItem('pocket_user', 'bob')
+    store.$reset()
+    finish()
+    assert.equal(await pending, false)
+    assert.equal(store.modules.email, 'local')
+    assert.equal(readCachedModuleMode('email'), 'local')
+  } finally { syncPolicyTransport.putModules = orig }
+})
+
+test('A→B→A 后旧 PUT/GET 不得覆盖新会话或清除新保存状态', async () => {
+  storage.setItem('pocket_user', 'alice')
+  const store = useSyncPolicyStore()
+  store.applyPolicy(normalizeSyncPolicy({ system_default: 'cloud', allow_override: true }), 1)
+  const origGet = syncPolicyTransport.fetchPolicy
+  const origPut = syncPolicyTransport.putModules
+  let finishGet!: () => void
+  let finishPut!: () => void
+  syncPolicyTransport.fetchPolicy = () => new Promise((done) => { finishGet = () => done(normalizeSyncPolicy({ system_default: 'cloud' })) })
+  syncPolicyTransport.putModules = () => new Promise((done) => { finishPut = () => done(normalizeSyncPolicy({ system_default: 'cloud' })) })
+  try {
+    const get = store.load()
+    const put = store.setModule('notes', 'local')
+    storage.setItem('pocket_user', 'bob'); store.$reset()
+    storage.setItem('pocket_user', 'alice'); store.$reset()
+    store.applyPolicy(normalizeSyncPolicy({ system_default: 'local', allow_override: true }), 2)
+    store.saving = true
+    finishGet(); finishPut()
+    await get
+    assert.equal(await put, false)
+    assert.equal(store.modules.email, 'local')
+    assert.equal(store.saving, true)
+  } finally {
+    syncPolicyTransport.fetchPolicy = origGet
+    syncPolicyTransport.putModules = origPut
+  }
+})
+
+test('四模块响应保留未接入门户策略模块的既有 local 缓存', async () => {
+  storage.setItem(SYNC_POLICY_CACHE_KEY, JSON.stringify({ policy: normalizeSyncPolicy({ system_default: 'cloud', modules: { 'ai-chat': 'local', tasks: 'local' } }) }))
+  const store = useSyncPolicyStore()
+  store.applyPolicy(normalizeSyncPolicy({ system_default: 'cloud', modules: { notes: 'local' } }), 1)
+  assert.equal(store.modules['ai-chat'], 'local')
+  assert.equal(store.modules.tasks, 'local')
+  assert.equal(await store.setModule('ai-chat', 'cloud'), false)
+})
+
+test('local PUT 在途时新 GET 不得覆盖乐观 local', async () => {
+  const store = useSyncPolicyStore()
+  store.applyPolicy(normalizeSyncPolicy({ system_default: 'cloud', allow_override: true }), 1)
+  const origGet = syncPolicyTransport.fetchPolicy
+  const origPut = syncPolicyTransport.putModules
+  let finish!: () => void
+  let gets = 0
+  syncPolicyTransport.fetchPolicy = async () => { gets++; return normalizeSyncPolicy({ system_default: 'cloud' }) }
+  syncPolicyTransport.putModules = (modules) => new Promise((done) => { finish = () => done(normalizeSyncPolicy({ system_default: 'cloud', modules })) })
+  try {
+    const saving = store.setModule('notes', 'local')
+    await store.load()
+    assert.equal(gets, 0)
+    assert.equal(readCachedModuleMode('notes'), 'local')
+    finish(); await saving
+  } finally {
+    syncPolicyTransport.fetchPolicy = origGet
+    syncPolicyTransport.putModules = origPut
+  }
+})
+
+test('策略写入期间不并发提交，过期的 GET 不覆盖用户设置', async () => {
+  const store = useSyncPolicyStore()
+  store.applyPolicy(normalizeSyncPolicy({ system_default: 'cloud', allow_override: true }), 1)
+  const origGet = syncPolicyTransport.fetchPolicy
+  const origPut = syncPolicyTransport.putModules
+  let resolveGet!: () => void
+  let resolvePut!: () => void
+  syncPolicyTransport.fetchPolicy = () => new Promise((done) => { resolveGet = () => done(normalizeSyncPolicy({ system_default: 'cloud' })) })
+  syncPolicyTransport.putModules = (modules) => new Promise((done) => { resolvePut = () => done(normalizeSyncPolicy({ system_default: 'cloud', modules })) })
+  try {
+    const loading = store.load()
+    const saving = store.setModule('notes', 'local')
+    assert.equal(await store.setModule('rss', 'local'), false)
+    resolvePut()
+    await saving
+    resolveGet()
+    await loading
+    assert.equal(store.modules.notes, 'local')
+    assert.equal(store.saving, false)
+  } finally {
+    syncPolicyTransport.fetchPolicy = origGet
+    syncPolicyTransport.putModules = origPut
+  }
+})
+
 // ---------------------------------------------------------------------------
 // 1. 纯函数
 // ---------------------------------------------------------------------------
@@ -82,16 +223,25 @@ test('shouldSync：modules 缺项回退 system_default', () => {
   assert.equal(shouldSync({ system_default: 'cloud' }, 'rss'), true)
 })
 
-test('shouldSync：未知/残缺输入一律视为 cloud（不同步才需要显式声明）', () => {
+test('shouldSync：明确 cloud 默认时缺项可同步', () => {
   assert.equal(shouldSync({ system_default: 'cloud', modules: {} }, 'ai-chat'), true)
   assert.equal(moduleMode({ system_default: 'cloud', modules: { ai: 'bogus' as never } }, 'ai-chat'), 'cloud')
+})
+
+test('登录态写盘失败时也按内存身份隔离策略', () => {
+  let user = 'alice'
+  installSyncPolicyScopeResolver(() => user)
+  const store = useSyncPolicyStore()
+  store.applyPolicy(normalizeSyncPolicy({ system_default: 'cloud' }), 1)
+  user = 'bob'
+  assert.equal(readCachedModuleMode('email'), 'local')
 })
 
 // ---------------------------------------------------------------------------
 // 2. load() 降级链
 // ---------------------------------------------------------------------------
 
-test('load()：无缓存 + 远端失败 ⇒ 默认全 cloud，不抛错且留 loadError', async () => {
+test('load()：无缓存 + 远端失败 ⇒ 暂停上传，不抛错且留 loadError', async () => {
   const orig = syncPolicyTransport.fetchPolicy
   syncPolicyTransport.fetchPolicy = async () => {
     throw new Error('portal unreachable')
@@ -100,8 +250,8 @@ test('load()：无缓存 + 远端失败 ⇒ 默认全 cloud，不抛错且留 lo
     const store = useSyncPolicyStore()
     await store.load()
     for (const m of ['ai-chat', 'email', 'rss', 'notes', 'meetings', 'tasks'] as const) {
-      assert.equal(store.modules[m], 'cloud', `${m} 应为默认 cloud`)
-      assert.equal(readCachedModuleMode(m), 'cloud')
+      assert.equal(store.modules[m], isPortalSyncModule(m) ? 'local' : 'cloud', `${m} 未确认门户策略时只暂停受管模块上传`)
+      assert.equal(readCachedModuleMode(m), isPortalSyncModule(m) ? 'local' : 'cloud')
     }
     assert.ok(store.loadError.includes('portal unreachable'), '失败原因应写入 loadError')
     assert.equal(store.loaded, true)
@@ -176,7 +326,7 @@ test('load()：缓存损坏（非法 JSON）按「无缓存」处理，不抛错
   try {
     const store = useSyncPolicyStore()
     await store.load()
-    assert.equal(store.modules.meetings, 'cloud', '损坏缓存 ⇒ 默认 cloud')
+    assert.equal(store.modules.meetings, 'local', '损坏缓存不得自动开启上传')
   } finally {
     syncPolicyTransport.fetchPolicy = orig
   }
@@ -195,6 +345,7 @@ test('setModule()：成功路径 —— 乐观更新 + PUT 全量 modules + 缓�
   }
   try {
     const store = useSyncPolicyStore()
+    store.applyPolicy(normalizeSyncPolicy({ system_default: 'cloud', allow_override: true }), 1)
     const ok = await store.setModule('meetings', 'local')
     assert.equal(ok, true)
     assert.equal(store.modules.meetings, 'local')
@@ -310,8 +461,8 @@ test('报告缓存损坏按空处理，不抛错', () => {
 // 5. 本地默认（未配置任何东西时与旧行为一致）
 // ---------------------------------------------------------------------------
 
-test('零配置：readCachedModuleMode 一律 cloud（策略不改变既有同步）', () => {
+test('零配置：门户模块等待远端确认，未受管模块保留既有默认', () => {
   for (const m of ['ai-chat', 'email', 'rss', 'notes', 'meetings', 'tasks'] as const) {
-    assert.equal(readCachedModuleMode(m), 'cloud')
+    assert.equal(readCachedModuleMode(m), isPortalSyncModule(m) ? 'local' : 'cloud')
   }
 })

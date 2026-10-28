@@ -8,6 +8,8 @@ import { http, isAbortError, LLM_CHAT_TIMEOUT_MS } from './http'
 import type { ActionItem, LiveSummary, MeetingSegment, RecommendItem } from '../features/meetings/meetings-store'
 import { truncateCodeUnits, truncateUtf8BytesTail, utf8ByteLength } from '../utils/text.ts'
 import { assessRefineRetention } from './refine-retention-guard.ts'
+import { assertCloudModule } from './data-policy.ts'
+import { isModulePolicyLocalError } from './module-policy.ts'
 
 // ⚠ helper 的真身在中立层 `src/utils/text.ts`（§251.2 兄弟链：
 //   它也被 features/meetings/refined-ingest-writeback.ts 使用，
@@ -214,7 +216,7 @@ export const meetingsApi = {
     } catch (e) {
       // 中止不是「失败」：走到 fallback 会把用户主动取消，悄悄变成一份
       // 降级摘要写进会议里——那比不做还糟（用户以为取消了，库里却有内容）。
-      if (isAbortError(e)) throw e
+      if (isAbortError(e) || isModulePolicyLocalError(e)) throw e
       return fallbackSummarize(segments, prevSummary, signal)
     }
   },
@@ -245,7 +247,8 @@ export const meetingsApi = {
         },
       )
       return { items: res.items ?? [], fallback: res.fallback === true }
-    } catch {
+    } catch (error) {
+      if (isModulePolicyLocalError(error)) throw error
       // ⚠ 网络/超时失败同样是「没拿到」，不是「没有建议」。
       //   归成空数组会让用户的「参考资料与建议」无声消失。
       return { items: [], fallback: true }
@@ -275,7 +278,7 @@ export const meetingsApi = {
       })
       return normalizeRefine(raw, segments)
     } catch (e) {
-      if (isAbortError(e)) throw e
+      if (isAbortError(e) || isModulePolicyLocalError(e)) throw e
       // ★ meta 一起传下去（§54）：回落路径此前拿不到术语表，
       //   「林兰→林岚」「页百零一→CI」这类错误在这条高频路径上修不了。
       return fallbackRefine(segments, signal, meta)
@@ -567,6 +570,7 @@ async function fallbackSummarize(
   prevSummary?: string,
   signal?: AbortSignal,
 ): Promise<SummaryResult> {
+  assertCloudModule('meetings')
   const transcript = renderTranscript(segments)
 
   // ⚠ 2026-10-07（§66.4）：提示词本体移到 features/meetings/summary-prompt.ts。
@@ -588,6 +592,7 @@ async function fallbackSummarize(
 
   try {
     const res = await http<{ content: string }>('/api/llm/chat', {
+      syncModule: 'meetings',
       method: 'POST',
       body: JSON.stringify({
         kind: 'meeting_summary',
@@ -604,7 +609,7 @@ async function fallbackSummarize(
     // 降级链自己也可能撞上中止（用户在兜底重试期间点了取消）。这里如果照旧
     // 吞掉，就会把一次取消变成「转写前 200 字的摘要」——用户在界面上点了取消，
     // 会议里却多了一段内容。宁可让中止继续往外抛。
-    if (isAbortError(e)) throw e
+    if (isAbortError(e) || isModulePolicyLocalError(e)) throw e
     return {
       summary: truncateCodeUnits(transcript, 200) || '暂无摘要',
       keyPoints: [],
@@ -637,6 +642,7 @@ async function fallbackRefine(
   signal?: AbortSignal,
   meta?: { title?: string; participants?: string[]; location?: string },
 ): Promise<RefineResult> {
+  assertCloudModule('meetings')
   const transcript = renderTranscript(segments)
   const prompt = buildFallbackRefinePrompt(transcript, meta)
 
@@ -668,6 +674,7 @@ async function fallbackRefine(
 
   try {
     const res = await http<{ content: string }>('/api/llm/chat', {
+      syncModule: 'meetings',
       method: 'POST',
       body: JSON.stringify({
         kind: 'meeting_refine',
@@ -686,7 +693,7 @@ async function fallbackRefine(
   } catch (e) {
     // 同 fallbackSummarize：中止必须继续往外抛，不能落到下面那份
     // fromFallback 的拼装结果上。
-    if (isAbortError(e)) throw e
+    if (isAbortError(e) || isModulePolicyLocalError(e)) throw e
     return refineFromLlmContent('', transcript)
   }
 }

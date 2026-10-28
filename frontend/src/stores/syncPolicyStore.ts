@@ -4,8 +4,8 @@
  * 数据流（设计 03 §8 / 04 §4）：
  *   load()：远端 GET /api/v1/portal/sync-policy
  *     ├─ 成功 → 写 state + localStorage 缓存（op_sync_policy_v1）
- *     ├─ 失败（未配置/不可达/未登录）→ 读缓存 → 仍没有 → 本地默认 { 全部 cloud }
- *     └─ 任何失败都**不阻塞 UI**：设置页永远可以渲染（默认值即旧行为）。
+ *     ├─ 失败（未配置/不可达/未登录）→ 读缓存 → 仍没有 → 本地四个门户模块的安全默认 { local }
+ *     └─ 任何失败都**不阻塞 UI**：设置页永远可以渲染（未确认策略时暂停上传）。
  *   setModule(module, mode)：乐观更新 + 缓存 → PUT；失败回滚并抛错（组件 toast）。
  *   lastSyncReport：同步引擎按模块上报 {module,status:'synced'|'skipped',count}，
  *     内存（本 store，供设置页渲染）+ localStorage（op_sync_report_v1，冷启动恢复）。
@@ -14,7 +14,7 @@
  *
  * native/mobileSyncRuntime 等同步代码**不得 import Pinia 模块**（其头注释的
  * 既有约定）。因此引擎侧用的是本文件导出的两个免 Pinia 入口：
- *   - readCachedModuleMode(module)：直接读 localStorage 缓存（缺省 cloud）；
+ *   - readCachedModuleMode(module)：直接读当前策略缓存（缺省 local）；
  *   - recordSyncReportEntry(entry)：localStorage 为 SSOT 写报告；若当前有
  *     活动 Pinia（getActivePinia）则同步更新 store state，设置页实时可见。
  * 两个入口在 Node（node --test）下都可加载：localStorage 访问全部带守卫。
@@ -33,6 +33,7 @@ import { defineStore, getActivePinia } from 'pinia'
 import {
   isSyncModule as isKnownSyncModule,
   normalizeSyncPolicy,
+  isPortalSyncModule,
   SYNC_MODULES,
   type SyncMode,
   type SyncModule,
@@ -58,6 +59,7 @@ export interface SyncReportEntry {
 export interface SyncPolicyCache {
   policy: SyncPolicy
   lastFetchedAt: number
+  scope?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -92,10 +94,21 @@ interface StorageLike {
 }
 
 let injectedStorage: StorageLike | null = null
+let scopeResolver: (() => string) | null = null
+// 写入被浏览器拒绝时，过滤器仍须看到本进程已生效的策略。
+let volatileCache: SyncPolicyCache | null = null
+let nextPolicyGeneration = 0
 
 /** 测试注入内存存储；传 null 恢复默认（真实 localStorage 或不可用）。 */
 export function installSyncPolicyStorage(storage: StorageLike | null): void {
   injectedStorage = storage
+  volatileCache = null
+  scopeResolver = null
+}
+
+/** 宿主优先用内存登录态，避免登录态写盘失败时仍读取旧账号策略。 */
+export function installSyncPolicyScopeResolver(resolve: () => string): void {
+  scopeResolver = resolve
 }
 
 function policyStorage(): StorageLike | null {
@@ -108,6 +121,7 @@ function policyStorage(): StorageLike | null {
 }
 
 function readCache(): SyncPolicyCache | null {
+  if (volatileCache?.scope === policyScope()) return volatileCache
   const store = policyStorage()
   if (!store) return null
   try {
@@ -115,26 +129,48 @@ function readCache(): SyncPolicyCache | null {
     if (!raw) return null
     const parsed = JSON.parse(raw) as Partial<SyncPolicyCache> & { modules?: unknown }
     if (!parsed || typeof parsed !== 'object') return null
+    if ((parsed.scope ?? '') !== policyScope()) return null
     // 缓存损坏按「没有缓存」处理（策略可随时重新拉取，不值得修）。
     const policy =
       'policy' in parsed
         ? normalizeSyncPolicy(parsed.policy)
         : normalizeSyncPolicy(parsed) // 旧形状：顶层就是策略
     const lastFetchedAt = Number(parsed.lastFetchedAt) > 0 ? Number(parsed.lastFetchedAt) : 0
-    return { policy, lastFetchedAt }
+    return { policy, lastFetchedAt, scope: parsed.scope }
   } catch {
     return null
   }
 }
 
 function writeCache(cache: SyncPolicyCache): void {
+  cache = { ...cache, scope: policyScope() }
+  volatileCache = cache
   const store = policyStorage()
-  if (!store) return
+  if (!store) {
+    notifyPolicyChange()
+    return
+  }
   try {
     store.setItem(SYNC_POLICY_CACHE_KEY, JSON.stringify(cache))
+    volatileCache = null
   } catch {
     // 隐私模式等写不进：内存态仍有效，下次 load 走远端/默认链。
   }
+  notifyPolicyChange()
+}
+
+function notifyPolicyChange(): void {
+  if (typeof window !== 'undefined') window.dispatchEvent(new Event('openpocket:sync-policy-changed'))
+}
+
+function policyScope(): string {
+  try {
+    if (scopeResolver) return scopeResolver()
+    const storage = policyStorage()
+    const user = storage?.getItem('pocket_user') ?? ''
+    const workspace = storage?.getItem('pocket_workspace_id') ?? ''
+    return user || workspace ? JSON.stringify([user, workspace]) : ''
+  } catch { return 'unavailable' }
 }
 
 export function readCachedSyncPolicy(): SyncPolicyCache | null {
@@ -146,8 +182,7 @@ export function readCachedSyncPolicy(): SyncPolicyCache | null {
 // ---------------------------------------------------------------------------
 
 /**
- * 模块的生效模式：显式 modules 值优先，缺失回退 system_default，再回退 cloud。
- * 与「远端失败降级全 cloud」一致：任何未知状态都视为 cloud（不同步才需要显式声明）。
+ * 显式 modules 值优先，缺失回退 system_default；未知状态暂停上传。
  */
 export function moduleMode(
   policy: Pick<SyncPolicy, 'system_default'> & { modules?: Partial<Record<SyncModule, SyncMode>> },
@@ -155,7 +190,7 @@ export function moduleMode(
 ): SyncMode {
   const explicit = policy.modules?.[module]
   if (explicit === 'cloud' || explicit === 'local') return explicit
-  return policy.system_default === 'local' ? 'local' : 'cloud'
+  return policy.system_default === 'cloud' ? 'cloud' : 'local'
 }
 
 /**
@@ -171,11 +206,11 @@ export function shouldSync(
 
 /**
  * 免 Pinia 的同步引擎入口：读缓存里某模块的当前模式。
- * 缓存缺失/损坏一律 'cloud'（= 旧行为，策略未配置时绝不改变既有同步）。
+ * 门户模块缓存缺失/损坏时为 'local'；未受管模块保留既有同步默认。
  */
 export function readCachedModuleMode(module: SyncModule): SyncMode {
   const cached = readCache()
-  if (!cached) return 'cloud'
+  if (!cached) return isPortalSyncModule(module) ? 'local' : 'cloud'
   return moduleMode(cached.policy, module)
 }
 
@@ -265,6 +300,9 @@ export const useSyncPolicyStore = defineStore('syncPolicy', {
       loadError: '' as string,
       /** load() 是否已跑过（设置页只 load 一次）。 */
       loaded: false as boolean,
+      saving: false,
+      revision: 0,
+      generation: ++nextPolicyGeneration,
       lastSyncReport: readReport(),
     }
   },
@@ -286,26 +324,35 @@ export const useSyncPolicyStore = defineStore('syncPolicy', {
   },
   actions: {
     /**
-     * 拉取策略：远端 → 缓存 → 默认全 cloud。失败不抛（降级语义），
+     * 拉取策略：远端 → 缓存 → 暂停上传。失败不抛（降级语义），
      * 只把原因写进 loadError 供设置页如实提示。
      */
     async load(): Promise<void> {
+      if (this.saving) return
+      const scope = policyScope()
+      const revision = this.revision
+      const generation = this.generation
       try {
         const remote = await syncPolicyTransport.fetchPolicy()
+        if (scope !== policyScope() || generation !== this.generation || revision !== this.revision) return
         this.applyPolicy(remote, Date.now())
         this.loadError = ''
       } catch (err) {
+        if (scope !== policyScope() || generation !== this.generation || revision !== this.revision) return
         // 降级链：缓存已在 state 初始化时 hydrate；这里只确保即便 state 是
-        // 默认值也有一份缓存可回读（不写也行——默认值本身就是全 cloud）。
+        // 默认值也有一份缓存可回读（不写也行——默认值本身会暂停上传）。
         this.loadError = err instanceof Error ? err.message : String(err)
       } finally {
-        this.loaded = true
+        if (scope === policyScope() && generation === this.generation && revision === this.revision) this.loaded = true
       }
     },
 
     /** 内部：把一份策略落到 state + 缓存。 */
     applyPolicy(policy: SyncPolicy, fetchedAt: number): void {
       const normalized = normalizeSyncPolicy(policy)
+      // 门户未管理的两个模块保留本机既有选择，不因四模块响应被重置。
+      normalized.modules['ai-chat'] = this.modules['ai-chat']
+      normalized.modules.tasks = this.modules.tasks
       this.systemDefault = normalized.system_default
       this.allowOverride = normalized.allow_override
       this.modules = { ...normalized.modules }
@@ -318,10 +365,16 @@ export const useSyncPolicyStore = defineStore('syncPolicy', {
      * 平台关闭 allow_override 时直接拒绝（策略由管理员统一管控）。
      */
     async setModule(module: SyncModule, mode: SyncMode): Promise<boolean> {
-      if (!this.allowOverride) return false
+      if (!isPortalSyncModule(module) || !this.allowOverride || this.saving) return false
       const prev = this.modules[module]
       if (prev === mode) return true
-      this.modules = { ...this.modules, [module]: mode }
+      const scope = policyScope()
+      const generation = this.generation
+      this.saving = true
+      this.revision++
+      const requested = { ...this.modules, [module]: mode }
+      // 关闭上传立即生效；开启上传必须等服务端确认，不能让失败的 PUT 泄露数据。
+      if (mode === 'local') this.modules = requested
       // 乐观写缓存：同步引擎立刻按新模式过滤（不等 PUT 往返）。
       writeCache({
         policy: {
@@ -332,11 +385,13 @@ export const useSyncPolicyStore = defineStore('syncPolicy', {
         lastFetchedAt: this.lastFetchedAt,
       })
       try {
-        const remote = await syncPolicyTransport.putModules({ ...this.modules })
+        const remote = await syncPolicyTransport.putModules(requested)
+        if (scope !== policyScope() || generation !== this.generation) return false
         // 服务端是权威：以 PUT 响应为准回写（可能带服务端规整）。
         this.applyPolicy(remote, this.lastFetchedAt || Date.now())
         return true
       } catch (err) {
+        if (scope !== policyScope() || generation !== this.generation) return false
         // 回滚 state + 缓存。
         this.modules = { ...this.modules, [module]: prev }
         writeCache({
@@ -348,6 +403,8 @@ export const useSyncPolicyStore = defineStore('syncPolicy', {
           lastFetchedAt: this.lastFetchedAt,
         })
         throw err
+      } finally {
+        if (scope === policyScope() && generation === this.generation) this.saving = false
       }
     },
 

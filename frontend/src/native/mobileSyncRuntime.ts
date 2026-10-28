@@ -57,7 +57,7 @@ export interface RuntimeDeps {
   onEvent?(event: RuntimeEvent): void
   /**
    * 存储与同步策略挂点（storage-sync）：查询某模块当前的存储模式。
-   * 未注入/模块未配置 ⇒ 视为 'cloud'（策略不改变既有同步行为）。
+   * 未注入/策略未知 ⇒ 暂停会话上传，直到宿主确认 cloud。
    */
   moduleMode?(module: SyncModule): 'cloud' | 'local'
   /** 模块同步结果上报（{module,status:'skipped'} 或 {module,status:'synced',count}）。 */
@@ -194,7 +194,7 @@ export class MobileSyncRuntime {
       // ai-chat=local ⇒ 这两类动作整体跳过并上报 skipped；数据只留本机。
       // approval.reply / 审批回填是 agent 基础设施，**不在**六模块策略内，
       // 保持原行为（否则切 local 会把审批响应也扣在队列里）。
-      const aiChatLocal = this.deps.moduleMode?.('ai-chat') === 'local'
+      const aiChatLocal = this.deps.moduleMode?.('ai-chat') !== 'cloud'
 
       const drain = await drainOutbox(outbox, {
         workspaceId: auth.workspaceId,

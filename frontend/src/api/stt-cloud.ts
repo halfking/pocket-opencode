@@ -6,6 +6,8 @@
  */
 
 export interface SttOptions {
+  /** 业务归属只用于本机策略检查，不发送到 STT 服务。 */
+  module?: 'notes' | 'meetings'
   /** Audio blob from MediaRecorder (web). */
   audioBlob?: Blob
   /** File path for native sherpa-onnx (Capacitor Android). */

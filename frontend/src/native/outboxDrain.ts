@@ -73,7 +73,7 @@ export async function drainOutbox(
     deadLetteredNoSender: 0,
   }
 
-  const ready = await storage.listReady(now(), batchSize)
+  const ready = await storage.listReady(now(), batchSize, opts.skipActions)
   for (const record of ready) {
     // storage-sync：命中跳过清单的 action 整条留队（见 DrainOptions.skipActions）。
     if (opts.skipActions && opts.skipActions.includes(record.action)) continue

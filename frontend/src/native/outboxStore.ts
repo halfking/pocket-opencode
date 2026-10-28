@@ -141,12 +141,14 @@ export class SqliteOutboxStore implements OutboxStorage {
     await this.db.run('DELETE FROM local_outbox WHERE id = ?', [id])
   }
 
-  async listReady(now: number, limit: number): Promise<OutboxRecord[]> {
+  async listReady(now: number, limit: number, excludeActions: readonly string[] = []): Promise<OutboxRecord[]> {
+    // 必须在 LIMIT 前过滤暂停的模块，否则队首 local 会话会饿死后面的审批。
+    const exclusion = excludeActions.length ? ` AND action NOT IN (${excludeActions.map(() => '?').join(',')})` : ''
     const rows = await this.db.all(
       `SELECT ${OUTBOX_COLUMNS} FROM local_outbox
-       WHERE state = 'queued' AND next_attempt_at <= ?
+       WHERE state = 'queued' AND next_attempt_at <= ?${exclusion}
        ORDER BY created_at ASC LIMIT ?`,
-      [now, limit],
+      [now, ...excludeActions, limit],
     )
     // §878：逐行解码，损坏的跳过 ⇒ 同批的其它记录照常重放（不再整批堵死）。
     const out: OutboxRecord[] = []

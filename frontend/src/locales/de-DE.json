@@ -188,6 +188,7 @@
     "language": "Sprache",
     "apiAddressNotSaved": "Die Adresse konnte nicht gespeichert werden. Bitte prüfen, ob sie nicht leer und eine gültige URL ist.",
     "buildDefaultUnreachable": "Der Build-Standardwert {url} ist auf diesem Gerät nicht erreichbar (er verweist auf das Gerät selbst); stattdessen wird {fallback} verwendet. Für ein Backend auf dem eigenen Rechner gib es unter \"Benutzerdefinierte Adresse\" ein.",
+    "storageUnsupportedPolicy": "Portalrichtlinie noch nicht unterstützt; die bisherige Synchronisierungseinstellung bleibt erhalten.",
     "storageSection": "Speicherung & Sync",
     "storageIntro": "Cloud = Konfigurationen und Daten liegen zentral im RedClaw-Backend, geräteübergreifend konsistent. Nur lokal = verbleibt nur auf diesem Gerät und wird beim Sync übersprungen.",
     "storageModeCloud": "Cloud",
@@ -217,8 +218,9 @@
     "storageStatusSynced": "Synchronisiert",
     "storageStatusSkipped": "Übersprungen · nur lokal",
     "storageSyncedCount": "Synchronisiert · {count} Einträge",
+    "storageLocalCloudUnavailable": "Cloud-Schreiben und Synchronisieren sind deaktiviert; RSS und E-Mail haben noch keinen vollständigen lokalen Ersatz.",
     "storageOnlyLocalBadge": "Nur lokal · kein Sync",
-    "storageLoadFailed": "Richtliniendienst nicht erreichbar; Cache oder Standard wird angezeigt",
+    "storageLoadFailed": "Richtliniendienst nicht erreichbar; der Cache wird verwendet. Ohne gültigen Cache werden Uploads pausiert.",
     "storageManagedNoOverride": "Durch Administrator verwaltet"
   },
   "flashcards": {
@@ -425,6 +427,8 @@
     "fetchHintHttpError": "Hintergrund-Abruf unvollständig ({code}); Nachrichten synchronisiert"
   },
   "errors": {
+    "emailCredentialsLocalOnly": "E-Mail-Passwörter und OAuth-Token bleiben auf diesem Gerät. Cloud-Konten und Änderungen an Cloud-Zugangsdaten werden nicht unterstützt.",
+    "moduleLocalOnly": "Dieses Modul ist nur lokal. Cloud-Schreiben und Synchronisieren sind deaktiviert.",
     "rssNotConfigured": "Noch kein RSS-Feed eingerichtet. Füge einen Feed hinzu.",
     "rssSourceMissing": "Dieser Feed existiert nicht mehr; er wurde möglicherweise entfernt.",
     "emailNotConfigured": "Noch kein Postfach eingerichtet. Füge ein Konto in den Mail-Einstellungen hinzu.",

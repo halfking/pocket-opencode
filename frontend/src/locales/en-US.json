@@ -188,6 +188,7 @@
     "language": "Language",
     "apiAddressNotSaved": "The address could not be saved. Check that it is not empty and is a valid URL.",
     "buildDefaultUnreachable": "Build default {url} is unreachable on this device (it points at the device itself), so {fallback} is used instead. To reach a backend on your own machine, enter it under Custom address.",
+    "storageUnsupportedPolicy": "Portal policy is not supported for this module; this device keeps its existing sync choice.",
     "storageSection": "Storage & Sync",
     "storageIntro": "Cloud = configs and data are stored in the RedClaw backend, consistent across devices. Local only = kept on this device only and skipped during sync.",
     "storageModeCloud": "Cloud",
@@ -217,8 +218,9 @@
     "storageStatusSynced": "Synced",
     "storageStatusSkipped": "Skipped · local only",
     "storageSyncedCount": "Synced · {count} items",
+    "storageLocalCloudUnavailable": "Cloud writes and sync are unavailable; RSS and email have no local replacement yet.",
     "storageOnlyLocalBadge": "Local only · no sync",
-    "storageLoadFailed": "Policy service unreachable; showing cached or default policy",
+    "storageLoadFailed": "Policy service unreachable; using cached policy. Uploads pause if no valid cache is available.",
     "storageManagedNoOverride": "Managed by administrator"
   },
   "flashcards": {
@@ -425,6 +427,8 @@
     "fetchHintHttpError": "Background fetch incomplete ({code}); messages synced"
   },
   "errors": {
+    "emailCredentialsLocalOnly": "Mail passwords and OAuth tokens stay on this device. Creating cloud accounts or changing cloud credentials is unavailable.",
+    "moduleLocalOnly": "This module is local only. Cloud writes and sync are disabled.",
     "rssNotConfigured": "No RSS feed configured yet. Add a feed to get started.",
     "rssSourceMissing": "That feed no longer exists; it may have been removed.",
     "emailNotConfigured": "No mailbox configured yet. Add an account in Mail settings.",

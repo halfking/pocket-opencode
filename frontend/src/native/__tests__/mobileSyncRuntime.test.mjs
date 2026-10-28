@@ -112,6 +112,7 @@ function makeRuntime({ online, backend }) {
     db: () => db,
     fetchImpl: (...args) => backend.fetch(...args),
     apiBase: '',
+    moduleMode: () => 'cloud',
     onEvent: (e) => events.push(e),
   })
   return { db, runtime, events }
@@ -220,6 +221,21 @@ test('trigger is skipped when unauthenticated or db locked', async () => {
   })
   await runtime2.trigger('manual')
   assert.ok(events.some((e) => e.type === 'skipped' && e.reason.includes('db-locked')))
+})
+
+test('没有注入有效策略时会话留在本地，不默认放行上传', async () => {
+  const backend = makeFakeBackend()
+  const db = new NodeSqlDb()
+  const outbox = new SqliteOutboxStore(db)
+  await createSessionLocally({ store: new SqliteMobileSyncStore(db), outbox, workspaceId: WS, instanceId: INST, title: 'private' })
+  const runtime = new MobileSyncRuntime({
+    isOnline: () => true, isReady: () => true,
+    auth: () => ({ token: TOKEN, workspaceId: WS }), db: () => db,
+    fetchImpl: (...args) => backend.fetch(...args),
+  })
+  await runtime.trigger('manual')
+  assert.equal(backend.sessionCount(), 0)
+  assert.equal(await outbox.countByState(['queued']), 1)
 })
 
 test('approval reply drained through runtime marks local snapshot sent', async () => {

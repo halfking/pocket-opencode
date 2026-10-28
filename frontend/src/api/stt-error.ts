@@ -71,6 +71,7 @@ function rawText(err: unknown): string {
  */
 export function sttFailureText(err: unknown, fallback: string): string {
   const raw = rawText(err).trim()
+  if (raw === 'module_policy_local') return '当前模块为仅本地模式，云端转写已停用。'
   if (!raw) return fallback
   for (const code of SHOWABLE_STT_CODES) {
     const prefix = `${code}:`
