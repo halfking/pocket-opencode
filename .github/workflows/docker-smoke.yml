@@ -38,6 +38,21 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+        with:
+          # ⚠⚠ 必须用 **docker 驱动**，不能用默认的 docker-container 驱动（2026-10-28 §976）。
+          #
+          #	deploy/acc-integration/docker-compose.yml 的 pocketd build 段写着
+          #	`network: host` ⇒ 构建过程要**宿主网络**。
+          #	⇒ dockerd 内建的 buildkit **默认就授予** network.host 这个 entitlement；
+          #	  而 setup-buildx-action 默认建的 **docker-container** 驱动 builder
+          #	  **不授予** ⇒ 构建直接被拒：
+          #	    additional privileges requested: pass "--allow=network.host" …
+          #	  ⇒ 本机（用 docker 驱动）能构建、CI（用 docker-container 驱动）不能
+          #	  ⇒ 又一处「本地绿、CI 红」。
+          #
+          #	⇒ 改成 docker 驱动 = **让 CI 与本机用同一个 builder 语义**。
+          #	（这个 workflow 不需要多架构、也不导出 registry 缓存 ⇒ docker 驱动够用。）
+          driver: docker
 
       - name: Load kx-base image from cache
         id: kx-base-cache
@@ -183,6 +198,12 @@ jobs:
 
       - name: Cleanup
         if: always()
+        env:
+          # ⚠ `docker compose down` 也要**插值整个 compose 文件** ⇒ 缺 POCKET_POSTGRES_DSN
+          #   就会报「required variable ... is missing」⇒ 清理动作**根本没执行**
+          #   （虽然有 `|| true` 不会让 job 变红，但残留的容器/网络会留在 runner 上）。
+          #   ⇒ 同样给一个占位 DSN（清理阶段不连库）。
+          POCKET_POSTGRES_DSN: "postgresql://[REDACTED:secret]:5432/placeholder?sslmode=disable"
         run: |
           cd ./deploy/acc-integration
           docker compose down -v || true
