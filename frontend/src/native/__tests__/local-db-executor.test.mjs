@@ -656,6 +656,22 @@ test('a synchronously reentrant policy publisher cannot clear a newer local requ
 
 const completePolicy = overrides => ({ 'ai-chat': 'local', email: 'local', rss: 'local', notes: 'local', meetings: 'local', tasks: 'local', ...overrides })
 
+test('readonly operation checks expose no state and reject revoked policy and owner leases', () => withDatabase(async ({ db }) => {
+  await db.requestPolicyActivation('email', 'cloud', () => {})
+  const lease = db.captureOperation({ kind: 'cloud-sync', module: 'email' }), bound = db.bindOperation(lease)
+  assert.equal(db.assertOperationCurrent(lease), undefined)
+  assert.equal(bound.assertCurrent(), undefined)
+  const local = db.requestPolicyActivation('email', 'local', () => {})
+  assert.throws(() => bound.assertCurrent(), { name: 'AbortError' })
+  await local
+  const device = db.bindOperation(db.captureOperation({ kind: 'local-edit' }))
+  await db.requestOwnerActivation(null, () => {})
+  assert.throws(() => device.assertCurrent(), { name: 'AbortError' })
+  const current = db.bindOperation(db.captureOperation({ kind: 'local-edit' }))
+  await db.close()
+  assert.throws(() => current.assertCurrent(), { name: 'AbortError' })
+}))
+
 test('a complete policy snapshot synchronously revokes all changed modules and publishes once after queued SQL', () => withDatabase(async ({ db, platform }) => {
   for (const module of ['email', 'notes', 'rss']) await db.requestPolicyActivation(module, 'cloud', () => {})
   const email = db.bindOperation(db.captureOperation({ kind: 'cloud-sync', module: 'email' }))
