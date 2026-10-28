@@ -191,7 +191,7 @@ describe('负控：把行为改回去必须报红', () => {
     // 把清理块整体剪下来贴到写之前。剪贴后的两处各留一个空行占位，
     // 保证 persistNotePayload 的调用文本仍然存在、只是顺序反了。
     const mutated = updateNoteBody.replace(
-      /( *)if \(!bodyFileNeeded && existing\.bodyPath\) \{\s*\n\s*await deleteNoteBodyFile\(id, existing\.createdAt\)\s*\n\s*\}/,
+      /( *)if \(!bodyFileNeeded && existing\.bodyPath\) \{\s*\n\s*await deleteNoteBodyFile\(id, existing\.createdAt, db\)\s*\n\s*\}/,
       (_m, ind) => `${ind}// moved`,
     )
     assert.notEqual(mutated, updateNoteBody, '变异没生效：清理块结构与预期不符，先看源码再改门')
@@ -272,7 +272,7 @@ describe('§893 · D63：updateNote 的派生状态来源（内容没变时也�
 
   it('★ 量具自证：updateNote 的函数体抽得到、且确实在加载全文', () => {
     assert.ok(u.length > 0, '抽不到 updateNote() 函数体 ⇒ 下面几条会变成恒真')
-    assert.match(u, /patch\.content !== undefined\s*\?\s*patch\.content\s*:\s*await loadFullContent\(existing\)/,
+    assert.match(u, /patch\.content !== undefined\s*\?\s*patch\.content\s*:\s*await loadFullContent\(existing, db\)/,
       'updateNote 已不按「内容没变就沿用」处理 —— 请重新判断本节各条的结论是否还成立')
   })
 
@@ -281,7 +281,7 @@ describe('§893 · D63：updateNote 的派生状态来源（内容没变时也�
     //   两个真实调用点都落在这一支（已逐个核对）：
     //     NoteListView.vue:552  onMetaSave  → { ...data, status: 'saved' }（title/domain/tags）
     //     NoteListView.vue:460  摘要落库     → { summary }
-    assert.match(u, /await loadFullContent\(existing\)/,
+    assert.match(u, /await loadFullContent\(existing, db\)/,
       'updateNote 不再加载全文 ⇒ 本节记录的影响面已变，请重核')
   })
 
@@ -324,7 +324,7 @@ describe('§893 · D63：updateNote 的派生状态来源（内容没变时也�
     // 它是同一份 decided 里的「纯内容」投影，与 searchText 同源不同形）。
     // ⚠ 不变量没变：向量不得改用 existing.* / 旧值 / 别处重建的文本 ——
     //   旧值在 tier='file' 时是 ≤280 字摘要（§891/D61 同族，会让向量与索引分叉）。
-    assert.match(u, /embedAndStore\(id, decided\.embedText\)/,
+    assert.match(u, /embedAndStore\(id, decided\.embedText, operation\.cloud\)/,
       '向量写入不再用本次重建的 decided.embedText ⇒ 请重核派生链')
     assert.doesNotMatch(u, /embedAndStore\([^)]*existing\./,
       '向量改用了 existing.*（tier=file 时那是 ≤280 字摘要）⇒ 向量会与 FTS 索引分叉')
@@ -382,9 +382,9 @@ describe('§893 · D63：updateNote 的派生状态来源（内容没变时也�
 describe('§896 · D66：向量化用的文本不该是 FTS 文本，也不该无上限', () => {
   it('★★★ 向量必须用 decided.embedText（纯内容），不得用 decided.searchText', () => {
     const u = read(path.join(SRC, 'features', 'notes', 'notes-persist.ts'))
-    assert.match(u, /embedAndStore\(id, decided\.embedText\)/,
+    assert.match(u, /embedAndStore\(id, decided\.embedText, operation\.cloud\)/,
       '编辑保存路径的向量又改回 decided.searchText ⇒ 合成 gram 回到 embedding 输入里')
-    assert.match(u, /embedAndStore\(note\.id, decided\.embedText \|\| note\.content\)/,
+    assert.match(u, /embedAndStore\(note\.id, decided\.embedText \|\| note\.content, operation\.cloud\)/,
       '创建路径的向量没有走 decided.embedText')
     // 反向：searchText 只该出现在 UPDATE 的派生列里，不该再被送去做向量。
     // ⚠ 量具事故（已写进注释）：第一版正则要求实参是 `note.id`，

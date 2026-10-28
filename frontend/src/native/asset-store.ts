@@ -16,8 +16,11 @@
  * 保持不动。新业务一律走 Asset。后续 sprint 可写适配器把老表迁过来。
  */
 import { localDB } from './local-db'
+
 import { encryptString, decryptString } from './crypto'
 import { buildFtsQuery, likePattern, needsCjkLike } from './fts-query.ts'
+
+type AssetDb = Pick<typeof localDB, 'run' | 'queryOne'>
 
 /** Asset 的业务类型。开放枚举——调用方可自由扩展。 */
 export type AssetKind =
@@ -127,7 +130,7 @@ class AssetStore {
    * encryptBody=true 时，bodyText 会被 encryptString 加密后存库，
    * body_encrypted=1，FTS 触发器自动跳过加密 body（见 schema.ts 注释）。
    */
-  async upsert(input: AssetInput): Promise<Asset> {
+  async upsert(input: AssetInput, db: AssetDb = localDB): Promise<Asset> {
     const ts = now()
     const id = input.id ?? genId('ast')
     const wsId = input.workspaceId ?? 'default'
@@ -145,7 +148,7 @@ class AssetStore {
     // ⚠ §884：`deleted_at` 必须一起取出来 —— 下面的 UPDATE 语句里**没有**这一列，
     //   也就是说它既不会被清掉、也不会被看一眼就放行。修复前这里只取
     //   `client_rev, workspace_id`，于是一条已被软删的 asset 照样被静默改写。
-    const existing = await localDB.queryOne<{ client_rev: number; workspace_id: string; deleted_at: number | null }>(
+    const existing = await db.queryOne<{ client_rev: number; workspace_id: string; deleted_at: number | null }>(
       'SELECT client_rev, workspace_id, deleted_at FROM local_assets WHERE id = ?',
       [id],
     )
@@ -171,7 +174,7 @@ class AssetStore {
       if (existing.deleted_at !== null && existing.deleted_at !== undefined) {
         throw new AssetDeletedError(id)
       }
-      await localDB.run(
+      await db.run(
         `UPDATE local_assets
          SET kind=?, title=?, body_text=?, body_encrypted=?, meta_json=?, source=?, sync_mode=?,
              client_rev=?, dirty=1, updated_at=?
@@ -180,7 +183,7 @@ class AssetStore {
          input.source ?? null, syncMode, existing.client_rev + 1, ts, id, existing.workspace_id],
       )
     } else {
-      await localDB.run(
+      await db.run(
         `INSERT INTO local_assets
          (id, workspace_id, kind, title, body_text, body_encrypted, meta_json, source,
           sync_mode, client_rev, server_rev, dirty, created_at, updated_at)
@@ -190,12 +193,12 @@ class AssetStore {
       )
     }
 
-    return (await this.get(id))!
+    return (await this.get(id, db))!
   }
 
   /** 读取单个 Asset（含解密 body，如已加密）。 */
-  async get(id: string): Promise<Asset | null> {
-    const row = await localDB.queryOne<RawAssetRow>(
+  async get(id: string, db: AssetDb = localDB): Promise<Asset | null> {
+    const row = await db.queryOne<RawAssetRow>(
       `SELECT id, workspace_id, kind, title, body_text, body_encrypted, meta_json, source,
               sync_mode, client_rev, server_rev, dirty, created_at, updated_at, deleted_at
        FROM local_assets WHERE id = ?`,
@@ -205,8 +208,8 @@ class AssetStore {
   }
 
   /** 在明确 workspace 内读取 Asset，避免同一 id 跨租户误读。 */
-  async getForWorkspace(id: string, workspaceId: string): Promise<Asset | null> {
-    const row = await localDB.queryOne<RawAssetRow>(
+  async getForWorkspace(id: string, workspaceId: string, db: AssetDb = localDB): Promise<Asset | null> {
+    const row = await db.queryOne<RawAssetRow>(
       `SELECT id, workspace_id, kind, title, body_text, body_encrypted, meta_json, source,
               sync_mode, client_rev, server_rev, dirty, created_at, updated_at, deleted_at
        FROM local_assets WHERE id = ? AND workspace_id = ? AND deleted_at IS NULL`,
@@ -223,8 +226,8 @@ class AssetStore {
     )
   }
 
-  async softDeleteForWorkspace(id: string, workspaceId: string): Promise<void> {
-    await localDB.run(
+  async softDeleteForWorkspace(id: string, workspaceId: string, db: AssetDb = localDB): Promise<void> {
+    await db.run(
       `UPDATE local_assets SET deleted_at=?, dirty=1, client_rev=client_rev+1, updated_at=?
        WHERE id=? AND workspace_id=?`,
       [now(), now(), id, workspaceId],
