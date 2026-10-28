@@ -17,6 +17,7 @@ import { isWebFallbackRuntime } from './runtime-platform'
 import type { SqlDb, SqlRow } from './sqlDb'
 import { SCHEMA_SQL, splitSqlStatements, normalizeTriggerForPluginExecute } from './schema'
 import { localDbNeedsOpen } from './local-db-init'
+import { assertNoTransactionControl } from './local-db-sql-guard'
 
 const MEETINGS_V2_COLUMNS = [
   { table: 'local_meetings', column: 'location', sql: 'ALTER TABLE local_meetings ADD COLUMN location TEXT' },
@@ -123,6 +124,54 @@ class LocalDB {
   private sqlite: SQLiteConnection
   private conn: SQLiteDBConnection | null = null
   private initialized = false
+  private transactionUncertain = false
+  // One JS instance only: other tabs/WebViews and account ownership need their own boundary.
+  private pending: Promise<unknown> = Promise.resolve()
+
+  private enqueue<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.pending.then(operation)
+    this.pending = result.catch(() => {})
+    return result
+  }
+
+  // Called only inside the queue; no public callbacks can re-enter it.
+  private async inTransaction<T>(conn: SQLiteDBConnection, operation: () => Promise<T>): Promise<T> {
+    let result: T
+    let began = false
+    try {
+      await conn.beginTransaction()
+      began = true
+      result = await operation()
+      await conn.commitTransaction()
+    } catch (error) {
+      if (!began) {
+        // A rejected begin may refer to an already active transaction owned elsewhere.
+        this.transactionUncertain = true
+        this.initialized = false
+        throw error
+      }
+      try {
+        await conn.rollbackTransaction()
+      } catch (rollbackError) {
+        this.transactionUncertain = true
+        this.initialized = false
+        throw Object.assign(new Error('LocalDB 回滚失败，需关闭连接并重新初始化'), { cause: error, rollbackError })
+      }
+      throw error
+    }
+    // jeep's explicit commit omits its autoSave finally. An empty nontransactional
+    // execute runs that finally after commit, respecting the element's autoSave setting.
+    // A persistence failure occurs after commit and cannot be rolled back.
+    if (isWebFallbackRuntime()) {
+      try {
+        await conn.execute('', false)
+      } catch (error) {
+        this.initialized = false
+        throw error
+      }
+    }
+    return result
+  }
 
   constructor() {
     this.sqlite = new SQLiteConnection(CapacitorSQLite)
@@ -141,10 +190,12 @@ class LocalDB {
    * 正确性由随后的 setEncryptionSecret 建立。
    */
   async verifyMasterPassword(dbSecret: string): Promise<boolean> {
-    if (isWebFallbackRuntime()) return true
-    if (!dbSecret) return false
-    if (!(await this.isSecretStoredSafely())) return true
-    return this.checkEncryptionSecretSafely(dbSecret)
+    return this.enqueue(async () => {
+      if (isWebFallbackRuntime()) return true
+      if (!dbSecret) return false
+      if (!(await this.isSecretStoredSafely())) return true
+      return this.checkEncryptionSecretSafely(dbSecret)
+    })
   }
 
   /**
@@ -187,168 +238,165 @@ class LocalDB {
    * 幂等：重复调用安全。
    */
   async init(dbSecret: string): Promise<void> {
-    if (!localDbNeedsOpen(this.initialized, this.conn !== null)) return
-    this.initialized = false
-    if (this.conn) {
-      try {
-        await this.sqlite.closeConnection(DB_NAME, false)
-      } catch {
-        // 忽略关闭失败的错误（可能连接已经不存在）
+    return this.enqueue(async () => {
+      if (!localDbNeedsOpen(this.initialized, this.conn !== null)) return
+      this.initialized = false
+      if (this.conn) {
+        await this.closeConnection()
       }
-      this.conn = null
-    }
 
-    // Web（jeep-sqlite / sql.js）不支持 SQLCipher 加密库；HarmonyOS Phase A
-    // 同样固定走这条路径，直到 ArkTS RDB bridge 经真机验证后才可启用原生加密库。
-    // 原生 Android/iOS 保持 secret 模式。
-    const isWeb = isWebFallbackRuntime()
-    const encrypted = !isWeb && dbSecret.length > 0
-    if (isWeb) {
-      console.info('[localDB] web fallback runtime: no-encryption (browser/HarmonyOS Phase A)')
-      await initSqliteWeb()
-      // Web 端必须显式 initWebStore：插件的 jeepSqliteElement 引用只在
-      // initWebStore() 里捕获，漏掉这一步则后续所有操作都抛
-      // "The jeep-sqlite element is not present in the DOM!"，浏览器上
-      // 本地库永远无法建立（ISSUES #19 深度遍历排障中定位）。
-      await this.sqlite.initWebStore()
-    }
+      // Web（jeep-sqlite / sql.js）不支持 SQLCipher 加密库；HarmonyOS Phase A
+      // 同样固定走这条路径，直到 ArkTS RDB bridge 经真机验证后才可启用原生加密库。
+      // 原生 Android/iOS 保持 secret 模式。
+      const isWeb = isWebFallbackRuntime()
+      const encrypted = !isWeb && dbSecret.length > 0
+      if (isWeb) {
+        console.info('[localDB] web fallback runtime: no-encryption (browser/HarmonyOS Phase A)')
+        await initSqliteWeb()
+        // Web 端必须显式 initWebStore：插件的 jeepSqliteElement 引用只在
+        // initWebStore() 里捕获，漏掉这一步则后续所有操作都抛
+        // "The jeep-sqlite element is not present in the DOM!"，浏览器上
+        // 本地库永远无法建立（ISSUES #19 深度遍历排障中定位）。
+        await this.sqlite.initWebStore()
+      }
 
-    // ✅ 关键修复：在 createConnection 之前先调用 setEncryptionSecret
-    // 官方 API 文档：setEncryptionSecret "Only to be used once if you wish to encrypt database"
-    // open() 内部会从 secure store 取密码作为 SQLCipher PRAGMA key
-    // 如果在 open() 之后调用，SQLCipher 已经在未设 key 的情况下尝试读 db header，必然失败
-    // （"Open: No Passphrase stored"）。
-    if (encrypted) {
-      // 2026-10-06 安全修复（真机实锤，见 __tests__/unlock-secret-verification.test.mjs 头注）：
-      //
-      // 原形状是「setEncryptionSecret 抛不抛来判断」——catch 里只 console.warn 就继续往下。
-      // 但插件 Database.java:245 的 `password = _uSecret.getPassphrase()` 意味着
-      // **open() 用的是 secure store 里已存的那个 secret，不是本次传入的**。
-      // 加上 crypto.ts 的 initAppCrypto 只做 PBKDF2 派生、对任何字符串都成功，
-      // 三者合成 ⇒ 用户在解锁页输**任意非空错误口令**也会开库成功。
-      //
-      // 真机 A/B/C 三轮对照（emulator-5554）：
-      //   正确口令 → 离开解锁页；错误口令 → **同样**离开解锁页；
-      //   空口令 → 被 unlockSubmitMode 挡住（证明判据非恒真）。
-      //
-      // 为什么不能改成「抛错就 fail-fast」：第二次及以后启动时
-      // setEncryptionSecret **必然**抛 "a passphrase has already been set"（原生
-      // UtilsSecret.java:42），那是正常路径不是错误 ⇒ 直接抛会让所有老用户重启即崩。
-      // 正确做法是用插件提供的 checkEncryptionSecret 做**真正的比对**：
-      // 已存 → 比对，不一致就拒绝；未存 → 写入新 secret。
-      const stored = await this.isSecretStoredSafely()
-      if (stored) {
-        const ok = await this.checkEncryptionSecretSafely(dbSecret)
-        if (!ok) {
-          // 口令与库内 secret 不一致 ⇒ 绝不能用已存的 secret 继续开库，
-          // 否则就是「拿错密码开人家库」。抛给调用方，由 LoginView 显示失败。
-          throw new Error('主密码与本地加密库的密钥不一致')
+      // ✅ 关键修复：在 createConnection 之前先调用 setEncryptionSecret
+      // 官方 API 文档：setEncryptionSecret "Only to be used once if you wish to encrypt database"
+      // open() 内部会从 secure store 取密码作为 SQLCipher PRAGMA key
+      // 如果在 open() 之后调用，SQLCipher 已经在未设 key 的情况下尝试读 db header，必然失败
+      // （"Open: No Passphrase stored"）。
+      if (encrypted) {
+        // 2026-10-06 安全修复（真机实锤，见 __tests__/unlock-secret-verification.test.mjs 头注）：
+        //
+        // 原形状是「setEncryptionSecret 抛不抛来判断」——catch 里只 console.warn 就继续往下。
+        // 但插件 Database.java:245 的 `password = _uSecret.getPassphrase()` 意味着
+        // **open() 用的是 secure store 里已存的那个 secret，不是本次传入的**。
+        // 加上 crypto.ts 的 initAppCrypto 只做 PBKDF2 派生、对任何字符串都成功，
+        // 三者合成 ⇒ 用户在解锁页输**任意非空错误口令**也会开库成功。
+        //
+        // 真机 A/B/C 三轮对照（emulator-5554）：
+        //   正确口令 → 离开解锁页；错误口令 → **同样**离开解锁页；
+        //   空口令 → 被 unlockSubmitMode 挡住（证明判据非恒真）。
+        //
+        // 为什么不能改成「抛错就 fail-fast」：第二次及以后启动时
+        // setEncryptionSecret **必然**抛 "a passphrase has already been set"（原生
+        // UtilsSecret.java:42），那是正常路径不是错误 ⇒ 直接抛会让所有老用户重启即崩。
+        // 正确做法是用插件提供的 checkEncryptionSecret 做**真正的比对**：
+        // 已存 → 比对，不一致就拒绝；未存 → 写入新 secret。
+        const stored = await this.isSecretStoredSafely()
+        if (stored) {
+          const ok = await this.checkEncryptionSecretSafely(dbSecret)
+          if (!ok) {
+            // 口令与库内 secret 不一致 ⇒ 绝不能用已存的 secret 继续开库，
+            // 否则就是「拿错密码开人家库」。抛给调用方，由 LoginView 显示失败。
+            throw new Error('主密码与本地加密库的密钥不一致')
+          }
+        } else {
+          await this.sqlite.setEncryptionSecret(dbSecret)
         }
+      }
+
+      const mode = encrypted ? 'secret' : 'no-encryption'
+
+      // 官方推荐：先 checkConnectionsConsistency，再 isConnection / create
+      await this.sqlite.checkConnectionsConsistency()
+      const already = (await this.sqlite.isConnection(DB_NAME, false)).result === true
+      if (already) {
+        this.conn = await this.sqlite.retrieveConnection(DB_NAME, false)
       } else {
-        await this.sqlite.setEncryptionSecret(dbSecret)
+        this.conn = await this.sqlite.createConnection(
+          DB_NAME,
+          encrypted,
+          mode,
+          DB_VERSION,
+          false,
+        )
       }
-    }
+      await this.conn.open()
 
-    const mode = encrypted ? 'secret' : 'no-encryption'
+      // 建表（幂等 CREATE IF NOT EXISTS）。Web/sql.js 通常无 FTS5，先跳过 FTS 段。
+      //
+      // 必须用 splitSqlStatements 逐条执行（2026-08-27 真机验证实测）：Android 端
+      // 插件对整段 SQL 按 `;` 机械切分，FTS 触发体 BEGIN...END 内的分号会把语句
+      // 截断，原生批次在首个残缺片段处中止且不向 JS 抛错——SCHEMA_SQL 中位于
+      // FTS 段之后的表（local_outbox / local_drafts / local_todos 等）全部静默
+      // 缺失。schema.ts 的 splitSqlStatements 正是为此而写（触发体整体保留），
+      // 此前没有任何生产消费方。逐条执行 + 单条失败跳过告警，保证后续语句继续。
+      const schemaSql = isWeb ? stripFts5ForWeb(SCHEMA_SQL) : SCHEMA_SQL
+      const statements = splitSqlStatements(schemaSql)
+      let applied = 0
+      let failed = 0
+      for (const stmt of statements) {
+        // BUG-AH：切分正确还不够 —— 插件的 Android execute 会按字面量 `;\n` 再切一次，
+        // 触发体里的「分号 + 换行」会把 CREATE TRIGGER 截断成半条语句。
+        // 真机实测：三个 FTS 触发器一个都没建成，而 FTS 虚表建出来了
+        // （虚表体内没有分号，所以幸存）。详见 schema.ts 里
+        // normalizeTriggerForPluginExecute 的实验表。
+        const one = normalizeTriggerForPluginExecute(stmt)
+        const withSemi = one.endsWith(';') ? one : `${one};`
+        try {
+          await this.conn.execute(withSemi, false)
+          applied++
+        } catch (e) {
+          failed++
+          console.warn('[localDB] skip schema stmt:', withSemi.slice(0, 60), e)
+        }
+      }
+      if (failed > 0) {
+        console.warn(`[localDB] schema applied ${applied}/${statements.length} statements (${failed} skipped)`)
+      }
 
-    // 官方推荐：先 checkConnectionsConsistency，再 isConnection / create
-    await this.sqlite.checkConnectionsConsistency()
-    const already = (await this.sqlite.isConnection(DB_NAME, false)).result === true
-    if (already) {
-      this.conn = await this.sqlite.retrieveConnection(DB_NAME, false)
-    } else {
-      this.conn = await this.sqlite.createConnection(
-        DB_NAME,
-        encrypted,
-        mode,
-        DB_VERSION,
-        false,
-      )
-    }
-    await this.conn.open()
-
-    // 建表（幂等 CREATE IF NOT EXISTS）。Web/sql.js 通常无 FTS5，先跳过 FTS 段。
-    //
-    // 必须用 splitSqlStatements 逐条执行（2026-08-27 真机验证实测）：Android 端
-    // 插件对整段 SQL 按 `;` 机械切分，FTS 触发体 BEGIN...END 内的分号会把语句
-    // 截断，原生批次在首个残缺片段处中止且不向 JS 抛错——SCHEMA_SQL 中位于
-    // FTS 段之后的表（local_outbox / local_drafts / local_todos 等）全部静默
-    // 缺失。schema.ts 的 splitSqlStatements 正是为此而写（触发体整体保留），
-    // 此前没有任何生产消费方。逐条执行 + 单条失败跳过告警，保证后续语句继续。
-    const schemaSql = isWeb ? stripFts5ForWeb(SCHEMA_SQL) : SCHEMA_SQL
-    const statements = splitSqlStatements(schemaSql)
-    let applied = 0
-    let failed = 0
-    for (const stmt of statements) {
-      // BUG-AH：切分正确还不够 —— 插件的 Android execute 会按字面量 `;\n` 再切一次，
-      // 触发体里的「分号 + 换行」会把 CREATE TRIGGER 截断成半条语句。
-      // 真机实测：三个 FTS 触发器一个都没建成，而 FTS 虚表建出来了
-      // （虚表体内没有分号，所以幸存）。详见 schema.ts 里
-      // normalizeTriggerForPluginExecute 的实验表。
-      const one = normalizeTriggerForPluginExecute(stmt)
-      const withSemi = one.endsWith(';') ? one : `${one};`
+      // 增量迁移（已有库补列）— initialized 在全部迁移完成后才置位，
+      // 避免旧库在补列完成前被 requireReady() 放行、查询撞 no such column
       try {
-        await this.conn.execute(withSemi, false)
-        applied++
+        await this.runMeetingsV2Migration()
       } catch (e) {
-        failed++
-        console.warn('[localDB] skip schema stmt:', withSemi.slice(0, 60), e)
+        console.warn('[localDB] meetings v2 migration failed:', e)
       }
-    }
-    if (failed > 0) {
-      console.warn(`[localDB] schema applied ${applied}/${statements.length} statements (${failed} skipped)`)
-    }
-
-    // 增量迁移（已有库补列）— initialized 在全部迁移完成后才置位，
-    // 避免旧库在补列完成前被 requireReady() 放行、查询撞 no such column
-    try {
-      await this.runMeetingsV2Migration()
-    } catch (e) {
-      console.warn('[localDB] meetings v2 migration failed:', e)
-    }
-    try {
-      await this.runEmailSyncV1Migration()
-    } catch (e) {
-      console.warn('[localDB] email sync v1 migration failed:', e)
-    }
-    try {
-      await this.runLiveRecordV1Migration()
-    } catch (e) {
-      console.warn('[localDB] live record v1 migration failed:', e)
-    }
-    try {
-      await this.runNotesCaptureV1Migration()
-    } catch (e) {
-      console.warn('[localDB] notes capture v1 migration failed:', e)
-    }
-    try {
-      await this.runMeetingsStudioV1Migration()
-    } catch (e) {
-      console.warn('[localDB] meetings studio v1 migration failed:', e)
-    }
-    try {
-      // §898：向量表加 chunks 列。必须排在 `initialized` 置位之前 ——
-      //   `vectorIndex.load()` 会 SELECT chunks 列，列不存在就是一次查询失败。
-      await this.runNoteVectorsV1Migration()
-    } catch (e) {
-      console.warn('[localDB] note vectors v1 migration failed:', e)
-    }
-    try {
-      await this.runListSyncV1Migration()
-    } catch (e) {
-      console.warn('[localDB] list sync v1 migration failed:', e)
-    }
-    try {
-      await this.runEmailInboxV1Migration()
-    } catch (e) {
-      console.warn('[localDB] email inbox v1 migration failed:', e)
-    }
-    try {
-      await this.runEmailFoldersV1Migration()
-    } catch (e) {
-      console.warn('[localDB] email folders v1 migration failed:', e)
-    }
-    this.initialized = true
+      try {
+        await this.runEmailSyncV1Migration()
+      } catch (e) {
+        console.warn('[localDB] email sync v1 migration failed:', e)
+      }
+      try {
+        await this.runLiveRecordV1Migration()
+      } catch (e) {
+        console.warn('[localDB] live record v1 migration failed:', e)
+      }
+      try {
+        await this.runNotesCaptureV1Migration()
+      } catch (e) {
+        console.warn('[localDB] notes capture v1 migration failed:', e)
+      }
+      try {
+        await this.runMeetingsStudioV1Migration()
+      } catch (e) {
+        console.warn('[localDB] meetings studio v1 migration failed:', e)
+      }
+      try {
+        // §898：向量表加 chunks 列。必须排在 `initialized` 置位之前 ——
+        //   `vectorIndex.load()` 会 SELECT chunks 列，列不存在就是一次查询失败。
+        await this.runNoteVectorsV1Migration()
+      } catch (e) {
+        console.warn('[localDB] note vectors v1 migration failed:', e)
+      }
+      try {
+        await this.runListSyncV1Migration()
+      } catch (e) {
+        console.warn('[localDB] list sync v1 migration failed:', e)
+      }
+      try {
+        await this.runEmailInboxV1Migration()
+      } catch (e) {
+        console.warn('[localDB] email inbox v1 migration failed:', e)
+      }
+      try {
+        await this.runEmailFoldersV1Migration()
+      } catch (e) {
+        console.warn('[localDB] email folders v1 migration failed:', e)
+      }
+      this.initialized = true
+    })
   }
 
   /** 自定义邮件目录 + 本地迁移操作日志（2026-10-01）。 */
@@ -843,20 +891,24 @@ class LocalDB {
 
   /** 关闭并清理连接，允许重新初始化 */
   async close(): Promise<void> {
+    return this.enqueue(() => this.closeConnection())
+  }
+
+  private async closeConnection(): Promise<void> {
+    this.initialized = false
     if (this.conn) {
-      try {
-        await this.conn.close()
-      } catch {
-        // 忽略
+      if (this.transactionUncertain) {
+        // jeep close exports the database: never persist an unresolved transaction.
+        if ((await this.conn.isTransactionActive()).result !== false) {
+          await this.conn.rollbackTransaction()
+        }
+        this.transactionUncertain = false
       }
-      try {
-        await this.sqlite.closeConnection(DB_NAME, false)
-      } catch {
-        // 忽略
-      }
+      // The manager closes an open handle and removes an unopened/closed one.
+      // Calling conn.close first is not retry-safe: Android rejects closed handles.
+      await this.sqlite.closeConnection(DB_NAME, false)
       this.conn = null
     }
-    this.initialized = false
   }
 
   /** 是否已初始化 */
@@ -867,26 +919,38 @@ class LocalDB {
   /**
    * 执行写操作（DDL / 多语句）。返回受影响行数。
    * transaction=true 时整个 statements 作为一个事务提交。
+   * 不接受 BEGIN/COMMIT/SAVEPOINT 等事务控制；使用 runInTransaction 管理批次。
    */
   async execute(statements: string, transaction = false): Promise<number> {
-    this.requireReady()
-    const res = await this.conn!.execute(statements, transaction)
-    return res.changes?.changes ?? 0
+    return this.enqueue(async () => {
+      this.requireReady()
+      assertNoTransactionControl(statements)
+      const conn = this.conn!
+      const res = transaction
+        ? await this.inTransaction(conn, () => conn.execute(statements, false))
+        : await conn.execute(statements, false)
+      return res.changes?.changes ?? 0
+    })
   }
 
   /**
    * 执行单条参数化语句（INSERT/UPDATE/DELETE），values 用 ? 占位。
    */
   async run(sql: string, values: unknown[] = []): Promise<number> {
-    this.requireReady()
-    const res = await this.conn!.run(sql, values)
-    return res.changes?.changes ?? 0
+    const params = [...values]
+    return this.enqueue(async () => {
+      this.requireReady()
+      assertNoTransactionControl(sql)
+      const conn = this.conn!
+      const res = await this.inTransaction(conn, () => conn.run(sql, params, false))
+      return res.changes?.changes ?? 0
+    })
   }
 
   /**
    * 在单个事务中依次执行多条参数化语句（INSERT/UPDATE/DELETE）。
    *
-   * 底层走 conn.executeSet(set, transaction=true)：任意一条失败则整批回滚，
+   * 连接队列内显式管理事务：任意一条失败则整批回滚，
    * 保证原子性。每条语句用 `values` 数组对应 `?` 占位符，避免 SQL 注入。
    *
    * @param statements `{ statement, values }` 列表
@@ -895,20 +959,29 @@ class LocalDB {
   async runInTransaction(
     statements: { statement: string; values: unknown[] }[],
   ): Promise<number> {
-    this.requireReady()
-    if (statements.length === 0) return 0
-    const res = await this.conn!.executeSet(statements, true)
-    const changes = res.changes?.changes ?? 0
-    return typeof changes === 'number' ? changes : 0
+    const batch = statements.map(({ statement, values }) => ({ statement, values: [...values] }))
+    return this.enqueue(async () => {
+      this.requireReady()
+      for (const { statement } of batch) assertNoTransactionControl(statement)
+      if (batch.length === 0) return 0
+      const conn = this.conn!
+      const res = await this.inTransaction(conn, () => conn.executeSet(batch, false))
+      const changes = res.changes?.changes ?? 0
+      return typeof changes === 'number' ? changes : 0
+    })
   }
 
   /**
    * 查询返回多行。values 对应 ? 占位。
    */
   async query<T = Record<string, unknown>>(sql: string, values: unknown[] = []): Promise<T[]> {
-    this.requireReady()
-    const res = await this.conn!.query(sql, values)
-    return (res.values ?? []) as T[]
+    const params = [...values]
+    return this.enqueue(async () => {
+      this.requireReady()
+      assertNoTransactionControl(sql)
+      const res = await this.conn!.query(sql, params)
+      return (res.values ?? []) as T[]
+    })
   }
 
   /** 查询单行，无结果返回 null。 */
@@ -955,15 +1028,21 @@ class LocalDB {
    * 向量检索回退到 JS 余弦（见 vector.ts）。iOS 同理。
    */
   async tryLoadVecExtension(_soPath: string): Promise<boolean> {
-    try {
-      await this.conn?.loadExtension(_soPath)
-      return true
-    } catch {
-      return false
-    }
+    return this.enqueue(async () => {
+      try {
+        this.requireReady()
+        await this.conn!.loadExtension(_soPath)
+        return true
+      } catch {
+        return false
+      }
+    })
   }
 
   private requireReady() {
+    if (this.transactionUncertain) {
+      throw new Error('LocalDB 事务状态不确定，需关闭连接并重新初始化')
+    }
     if (!this.initialized || !this.conn) {
       throw new Error('LocalDB 未初始化，请先调用 init(dbSecret)')
     }
