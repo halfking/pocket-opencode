@@ -66,6 +66,7 @@ import {
 } from './background-mic'
 import { sttApi } from '../api/stt'
 import { sttSettingsApi, FULL_TRANSCRIBE_TIMEOUT_MS } from '../api/stt-settings'
+import { readCachedModuleMode } from '../stores/syncPolicyStore'
 import { filenameForMimeType } from '../api/stt-filename'
 import { sherpa } from './sherpa'
 import {
@@ -239,6 +240,12 @@ export class MeetingRecorderRuntime {
    */
   private backgroundMicReason = ref('')
   private stopCaption: (() => void) | null = null
+  private onSyncPolicyChanged = () => {
+    if (readCachedModuleMode('meetings') !== 'local') return
+    this.stopCaption?.()
+    this.stopCaption = null
+    this.interimCaption.value = ''
+  }
   private stopping = false
   /**
    * ★§825：本次保存的音频**从会议的哪一刻开始**（毫秒；0 = 从头覆盖）。
@@ -365,6 +372,7 @@ export class MeetingRecorderRuntime {
     this.nativeMode = false
     this.stopCaption?.()
     this.stopCaption = null
+    window.removeEventListener('openpocket:sync-policy-changed', this.onSyncPolicyChanged)
     this.interimCaption.value = ''
     document.removeEventListener('visibilitychange', this.onHidden)
     navigator.mediaDevices?.removeEventListener?.('devicechange', this.onDeviceChange)
@@ -698,6 +706,8 @@ export class MeetingRecorderRuntime {
   }
 
   private startLiveCaption() {
+    // Web Speech may use a remote recognizer, so only start it with cloud permission.
+    if (readCachedModuleMode('meetings') === 'local') return
     // BUG-AU 第二条触发路径：实时字幕走 Web Speech API（Android 上是
     // webkitSpeechRecognition），同样委托给系统 ASR → MIUI「系统语音引擎」会拉起
     // 授权页抢前台。隔离实测（scripts/diag-asr-trigger.mjs）：不碰录音、不碰播报，
@@ -734,7 +744,10 @@ export class MeetingRecorderRuntime {
         })
       },
     })
-    if (caption.start()) this.stopCaption = caption.stop
+    if (caption.start()) {
+      this.stopCaption = caption.stop
+      window.addEventListener('openpocket:sync-policy-changed', this.onSyncPolicyChanged)
+    }
   }
 
   async appendText(text: string): Promise<MeetingSegment | null> {
@@ -1555,7 +1568,7 @@ export class NoteRecorderRuntime {
         // 尾部有静音」——那会让它按静音边界做去重，反而吃掉真实的相邻文字。
         silenceCut: false,
         isFinal,
-      })
+      }, 'notes')
       if (isFinal) this.sttSessionId = ''
       // 清 error 的判据是「**这一片有没有出字**」，不是「这一片有没有报错」。
       //
@@ -1733,6 +1746,7 @@ export class NoteRecorderRuntime {
               uploadBlob,
               payload ? 'note.wav' : `note${filenameForMimeType(blobType)}`,
               controller.signal,
+              'notes',
             ),
             // ⚠⚠ §930：此前这里写的是 `10 * 60_000`，而服务端的
             //   `fullTranscribeTimeout` **也是 10 分钟** ⇒ **相等即错**：

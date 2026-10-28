@@ -35,6 +35,7 @@ import { sherpa } from '../native/sherpa'
 import { http } from './http'
 import { blobToBase64 } from '../utils/base64'
 import { utf8ByteLength } from '../utils/text'
+import { assertCloudModule } from './data-policy.ts'
 
 /**
  * 单段语音转写的客户端超时。
@@ -104,6 +105,7 @@ export const sttApi = {
       }
     }
 
+    assertCloudModule(opts.module)
     const audioBlob = await ensureGatewayCompatible(requireCloudAudioBlob(opts))
     const base64 = await blobToBase64(audioBlob)
     const body = JSON.stringify({
@@ -135,9 +137,10 @@ export const sttApi = {
     // 在页面离开后仍跑的同时**仍被中止**。http 的 HttpOptions.signal 早就是
     // 接好的，这里只是把它从这条长任务链上暴露出来——此前这条链是整条
     // stt 链里唯一没有中止入口的环节，而它恰恰是设计上要跨页存活的。
+    assertCloudModule(opts.module)
     const res = await http<{ text: string; confidence: number; costCents?: number }>(
       '/api/stt/transcribe',
-      { method: 'POST', body, timeoutMs: STT_TRANSCRIBE_TIMEOUT_MS, signal },
+      { method: 'POST', body, timeoutMs: STT_TRANSCRIBE_TIMEOUT_MS, signal, syncModule: opts.module },
     )
     return {
       text: res.text,

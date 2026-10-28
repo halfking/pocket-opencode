@@ -12,12 +12,13 @@
  * 服务端不可达时不抛错，继续用本地列表。
  */
 import { watch } from 'vue'
-import { emailApi, type AuthType, type EmailAccount as ServerAccount } from '../../api/email'
+import { emailApi, isStaleWriteError, type AuthType, type EmailAccount as ServerAccount } from '../../api/email'
 import { lobsterReady } from '../../native/lobster-init'
 import { useAuthStore } from '../../stores/auth'
 import { localDB } from '../../native/local-db'
 import { deleteAccount, listAccounts, writeAccountIfNewer } from './emails-store'
 import { isLocalTestAddress } from './providers'
+import { readCachedModuleMode, recordSyncReportEntry } from '../../stores/syncPolicyStore'
 
 export interface SyncReport {
   fetched: number
@@ -84,6 +85,10 @@ export async function syncAccountsFromServer(): Promise<SyncReport> {
 }
 
 export async function syncAccountsBidirectional(): Promise<SyncReport> {
+  if (readCachedModuleMode('email') === 'local') {
+    recordSyncReportEntry({ module: 'email', status: 'skipped' })
+    return emptyReport()
+  }
   try {
     const res = await emailApi.listAccounts()
     const remote = res.accounts ?? []
@@ -163,6 +168,10 @@ function narrowAuthType(raw: string | undefined | null): AuthType {
 }
 
 export async function pushAccountToServer(_a: ServerAccount): Promise<boolean> {
+  if (readCachedModuleMode('email') === 'local') {
+    recordSyncReportEntry({ module: 'email', status: 'skipped' })
+    return false
+  }
   // 带上本地基准版本：服务端据此做 LWW 守卫。若它手里的副本更新，会回 409
   // 而不是被我们的旧值静默覆盖（需求 8「以最后修改时间为准」）。
   //
@@ -191,8 +200,7 @@ export async function pushAccountToServer(_a: ServerAccount): Promise<boolean> {
     return true
   } catch (e: unknown) {
     // 409 = 服务端更新，本地下行覆盖即可（不是「推送失败」，别进 outbox 干等）。
-    const status = (e as { status?: number } | null)?.status
-    if (status === 409) {
+    if (isStaleWriteError(e)) {
       console.warn('[email] account push rejected as stale; server copy wins', _a.id)
       // 拉不到账号列表 ⇒ 跳过本地镜像下行（服务端已是最新，本地镜像等下次同步补上）。
       const res = await emailApi.listAccounts().catch(() => null)

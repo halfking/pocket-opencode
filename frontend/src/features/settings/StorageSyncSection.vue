@@ -10,7 +10,7 @@
     - 「上次同步」只读报告区：渲染 syncPolicyStore.lastSyncReport，
       无数据显示「尚未同步」。
     - 策略读写在 syncPolicyStore；远端不可达时 store 自动降级
-      本地缓存/默认全 cloud，本区块永远可渲染、可操作（不阻塞 UI）。
+      本地缓存/暂停上传，本区块永远可渲染、可操作（不阻塞 UI）。
   -->
   <div class="storage-sync-section" data-testid="storage-sync-section">
     <!-- 说明条 -->
@@ -31,7 +31,7 @@
       </div>
       <div class="module-content">
         <div class="module-name">{{ t(row.nameKey) }}</div>
-        <div class="module-desc">{{ t(row.descKey) }}</div>
+        <div class="module-desc">{{ t(isPortalSyncModule(row.module) ? row.descKey : 'settings.storageUnsupportedPolicy') }}</div>
       </div>
       <div class="segment" role="radiogroup" :aria-label="t(row.nameKey)">
         <button
@@ -41,7 +41,7 @@
           role="radio"
           :aria-checked="policy.modules[row.module] === mode"
           :class="['segment-item', `segment-${mode}`, { active: policy.modules[row.module] === mode }]"
-          :disabled="!policy.allowOverride"
+          :disabled="!isPortalSyncModule(row.module) || !policy.allowOverride || policy.saving || purging"
           :data-testid="`storage-mode-${row.module}-${mode}`"
           @click="onSegmentTap(row.module, mode)"
         >
@@ -86,18 +86,18 @@
     </div>
 
     <!-- 切「仅本地」确认框（含清除云端副本次级操作占位） -->
-    <div v-if="confirmFor" class="confirm-mask" @click.self="confirmFor = null">
+    <div v-if="confirmFor" class="confirm-mask" @click.self="!purging && (confirmFor = null)">
       <div class="confirm-card" role="alertdialog" :aria-label="t('settings.storageConfirmTitle')">
         <h3>{{ t('settings.storageConfirmTitle') }}</h3>
         <p>{{ t('settings.storageConfirmMessage', { module: moduleLabel(confirmFor) }) }}</p>
         <div class="confirm-actions">
-          <button type="button" class="confirm-btn secondary" @click="confirmFor = null">
+          <button type="button" class="confirm-btn secondary" :disabled="purging || policy.saving" @click="confirmFor = null">
             {{ t('common.cancel') }}
           </button>
           <button
             type="button"
             class="confirm-btn secondary danger"
-            :disabled="purging"
+            :disabled="purging || policy.saving"
             :data-testid="`storage-purge-${confirmFor}`"
             @click="confirmPurgeAndSwitch"
           >
@@ -107,6 +107,7 @@
             type="button"
             class="confirm-btn primary"
             data-testid="storage-confirm-switch"
+            :disabled="purging || policy.saving"
             @click="confirmSwitchOnly"
           >
             {{ t('settings.storageConfirmSwitch') }}
@@ -123,6 +124,7 @@ import { useI18n } from 'vue-i18n'
 import { useToast } from '../../composables/useToast'
 import { purgeCloudCopy } from '../../api/syncPolicy'
 import type { SyncMode, SyncModule } from '../../api/syncPolicyContract.ts'
+import { isPortalSyncModule } from '../../api/syncPolicyContract.ts'
 import { useSyncPolicyStore } from '../../stores/syncPolicyStore'
 import { ICON, type IconName } from '../../constants/icons'
 
@@ -154,7 +156,7 @@ const confirmFor = ref<SyncModule | null>(null)
 const purging = ref(false)
 
 onMounted(() => {
-  // 远端失败由 store 内部降级（缓存/默认全 cloud），这里不 catch 不阻塞。
+  // 远端失败由 store 内部降级（缓存/暂停上传），这里不 catch 不阻塞。
   if (!policy.loaded) void policy.load()
 })
 
@@ -181,6 +183,7 @@ function moduleLabel(module: SyncModule): string {
 
 /** 分段点击：cloud→local 先弹确认；其余直接走 store（乐观更新+失败回滚）。 */
 function onSegmentTap(module: SyncModule, mode: SyncMode): void {
+  if (!isPortalSyncModule(module)) return
   if (policy.modules[module] === mode) return
   if (!policy.allowOverride) {
     toast.warning(t('settings.storageManagedNoOverride'))
@@ -195,8 +198,7 @@ function onSegmentTap(module: SyncModule, mode: SyncMode): void {
 
 async function applySwitch(module: SyncModule, mode: SyncMode): Promise<boolean> {
   try {
-    await policy.setModule(module, mode)
-    return true
+    return await policy.setModule(module, mode)
   } catch (err) {
     // store 已回滚；这里只负责让用户看见。
     toast.error(
@@ -214,18 +216,18 @@ async function confirmSwitchOnly(): Promise<void> {
   await applySwitch(module, 'local')
 }
 
-/** 次级操作占位：先 POST /api/v1/portal/cloud/purge 清云端副本，再切换。 */
+/** 先停止上传再清除云端副本，避免清完后仍被同步引擎重新上传。 */
 async function confirmPurgeAndSwitch(): Promise<void> {
   const module = confirmFor.value
   if (!module) return
   purging.value = true
   try {
+    if (!(await applySwitch(module, 'local'))) return
     await purgeCloudCopy([module])
     toast.success(t('settings.storagePurgeDone'))
     confirmFor.value = null
-    await applySwitch(module, 'local')
   } catch (err) {
-    // 清除失败：不切换（云端副本状态未知，不能当「已清除」处理），toast 告知。
+    // 清除失败仍保留 local，阻止新数据上传；确认框保留以供重试。
     toast.error(
       t('settings.storagePurgeFailed', { reason: err instanceof Error ? err.message : String(err) }),
     )

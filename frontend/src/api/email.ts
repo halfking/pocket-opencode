@@ -8,6 +8,7 @@ import { resolveRuntimeApiBase } from '../config/api-base'
 import { fetchWithTimeout } from './fetch-timeout.ts'
 import { useAuthStore } from '../stores/auth'
 import { chunkByLimit } from '../utils/chunk'
+import { isEmailStaleWrite } from './email-upload-policy.ts'
 
 /**
  * isStaleWriteError 判断一次失败是不是「LWW 守卫拒绝」。
@@ -24,7 +25,7 @@ import { chunkByLimit } from '../utils/chunk'
  * 若将来出现只需要单值、不想重拉全量的场景，再从这里取。
  */
 export function isStaleWriteError(e: unknown): boolean {
-  return e instanceof ApiError && e.status === 409
+  return e instanceof ApiError && e.status === 409 && isEmailStaleWrite(e.body)
 }
 
 /**

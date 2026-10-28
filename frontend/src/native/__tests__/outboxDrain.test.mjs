@@ -12,6 +12,21 @@ import { enqueue } from '../../utils/outbox.ts'
 
 const WS = 'ws-a'
 
+test('长期暂停会话同步不会堵住排在后面的审批回复', async () => {
+  const outbox = newOutbox()
+  for (let i = 0; i < 20; i++) {
+    await outbox.put(enqueue({ workspaceId: WS, action: 'session.prompt', payload: {}, idempotencyKey: `held-${i}` }, 1000 + i))
+  }
+  await outbox.put(enqueue({ workspaceId: WS, action: 'approval.reply', payload: {}, idempotencyKey: 'approval' }, 1100))
+  const result = await drainOutbox(outbox, {
+    workspaceId: WS, now: () => 2000, batchSize: 16,
+    skipActions: ['session.prompt'],
+    senders: { 'approval.reply': async () => ({ ok: true }) },
+  })
+  assert.equal(result.succeeded, 1)
+  assert.equal(await outbox.countByState(['queued']), 20)
+})
+
 function newOutbox() {
   return new SqliteOutboxStore(new NodeSqlDb())
 }

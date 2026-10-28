@@ -188,6 +188,7 @@
     "language": "界面语言",
     "apiAddressNotSaved": "地址未能保存，请检查输入是否为空或格式不正确",
     "buildDefaultUnreachable": "构建默认值 {url} 在本设备上不可达（它指向设备自身），已改用 {fallback}。若要连本机后端，请在「自定义地址」里明确填写。",
+    "storageUnsupportedPolicy": "此模块尚未接入门户策略；保留本机既有同步选择。",
     "storageSection": "存储与同步",
     "storageIntro": "「云端」= 配置与数据统一保存在 RedClaw 后台，多端一致；「仅本地」= 只保留在本机，同步时自动跳过。",
     "storageModeCloud": "云端",
@@ -217,8 +218,9 @@
     "storageStatusSynced": "已同步",
     "storageStatusSkipped": "已跳过 · 仅本地",
     "storageSyncedCount": "已同步 · {count} 条",
+    "storageLocalCloudUnavailable": "云端写入与同步不可用，RSS 和邮件尚无完整本地替代。",
     "storageOnlyLocalBadge": "仅本地 · 不同步",
-    "storageLoadFailed": "策略服务不可达，当前显示本地缓存或默认策略",
+    "storageLoadFailed": "策略服务不可达，继续使用缓存；没有有效缓存时暂停上传。",
     "storageManagedNoOverride": "由管理员统一管控"
   },
   "flashcards": {
@@ -425,6 +427,8 @@
     "fetchHintHttpError": "后台收信未完成（{code}），已显示已同步邮件"
   },
   "errors": {
+    "emailCredentialsLocalOnly": "邮箱密码和 OAuth 令牌必须留在本机，暂不支持创建云端账号或修改云端凭据。",
+    "moduleLocalOnly": "此模块为仅本地模式，云端写入和同步已停用。",
     "rssNotConfigured": "RSS 订阅源尚未配置，请先添加一个订阅源",
     "rssSourceMissing": "找不到该订阅源，可能已被删除",
     "emailNotConfigured": "邮箱尚未配置，请先在邮箱设置中添加账户",

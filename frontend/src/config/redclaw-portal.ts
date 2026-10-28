@@ -15,7 +15,7 @@
  *      不阻塞 UI —— 见 stores/syncPolicyStore.ts 的 load() 回退链）。
  *
  * 空串/不可达**不是错误**：sync-policy 是增强能力，门户未部署时策略一律
- * 按「全部 cloud」的本地默认执行，与旧行为完全一致。
+ * 先暂停上传，直到取得有效的服务端策略。
  */
 
 import { resolveRuntimeApiBase, type StorageLike } from './api-base.ts'

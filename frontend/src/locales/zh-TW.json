@@ -188,6 +188,7 @@
     "language": "介面語言",
     "apiAddressNotSaved": "地址未能儲存，請檢查輸入是否為空或格式不正確",
     "buildDefaultUnreachable": "建置預設值 {url} 在本裝置上無法連線（它指向裝置本身），已改用 {fallback}。若要連本機後端，請在「自訂地址」明確填寫。",
+    "storageUnsupportedPolicy": "此模組尚未接入入口網站策略；保留本機既有同步選擇。",
     "storageSection": "儲存與同步",
     "storageIntro": "「雲端」= 設定與資料統一保存在 RedClaw 後台，多端一致；「僅本地」= 只保留在本機，同步時自動跳過。",
     "storageModeCloud": "雲端",
@@ -217,8 +218,9 @@
     "storageStatusSynced": "已同步",
     "storageStatusSkipped": "已跳過 · 僅本地",
     "storageSyncedCount": "已同步 · {count} 條",
+    "storageLocalCloudUnavailable": "雲端寫入與同步無法使用，RSS 和郵件尚無完整本機替代。",
     "storageOnlyLocalBadge": "僅本地 · 不同步",
-    "storageLoadFailed": "策略服務不可達，目前顯示本地快取或預設策略",
+    "storageLoadFailed": "策略服務無法連線，繼續使用快取；沒有有效快取時暫停上傳。",
     "storageManagedNoOverride": "由管理員統一管控"
   },
   "flashcards": {
@@ -425,6 +427,8 @@
     "fetchHintHttpError": "背景收信未完成（{code}），已顯示已同步郵件"
   },
   "errors": {
+    "emailCredentialsLocalOnly": "郵件密碼和 OAuth 權杖必須留在本機，暫不支援建立雲端帳號或修改雲端憑據。",
+    "moduleLocalOnly": "此模組為僅本機模式，雲端寫入和同步已停用。",
     "rssNotConfigured": "RSS 訂閱源尚未設定，請先新增一個訂閱源",
     "rssSourceMissing": "找不到該訂閱源，可能已被刪除",
     "emailNotConfigured": "信箱尚未設定，請先在信箱設定中新增帳號",

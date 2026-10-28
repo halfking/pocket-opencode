@@ -188,6 +188,7 @@
     "language": "Langue de l'interface",
     "apiAddressNotSaved": "L'adresse n'a pas pu être enregistrée. Vérifiez qu'elle n'est pas vide et qu'elle est une URL valide.",
     "buildDefaultUnreachable": "La valeur par défaut de build {url} est injoignable sur cet appareil (elle pointe vers l'appareil lui-même), donc {fallback} est utilisée. Pour joindre un backend de votre propre machine, saisissez-le sous Adresse personnalisée.",
+    "storageUnsupportedPolicy": "Stratégie du portail non prise en charge ; choix de synchronisation existant conservé.",
     "storageSection": "Stockage et synchronisation",
     "storageIntro": "Cloud = configurations et données centralisés dans le backend RedClaw, cohérents sur tous les appareils. Local uniquement = conservé uniquement sur cet appareil et ignoré lors de la synchronisation.",
     "storageModeCloud": "Cloud",
@@ -217,8 +218,9 @@
     "storageStatusSynced": "Synchronisé",
     "storageStatusSkipped": "Ignoré · local uniquement",
     "storageSyncedCount": "Synchronisé · {count} éléments",
+    "storageLocalCloudUnavailable": "Écriture et synchronisation cloud indisponibles ; RSS et e-mail sans remplacement local complet.",
     "storageOnlyLocalBadge": "Local uniquement · pas de sync",
-    "storageLoadFailed": "Service de stratégie injoignable ; cache ou stratégie par défaut affiché",
+    "storageLoadFailed": "Service de stratégie injoignable ; utilisation du cache. Sans cache valide, les envois sont suspendus.",
     "storageManagedNoOverride": "Géré par l’administrateur"
   },
   "flashcards": {
@@ -425,6 +427,8 @@
     "fetchHintHttpError": "Récupération en arrière-plan incomplète ({code}) ; messages synchronisés"
   },
   "errors": {
+    "emailCredentialsLocalOnly": "Les mots de passe et jetons OAuth restent sur cet appareil. Création de compte cloud et modification des identifiants indisponibles.",
+    "moduleLocalOnly": "Ce module est local uniquement. Écriture et synchronisation cloud désactivées.",
     "rssNotConfigured": "Aucun flux RSS configuré pour l'instant. Ajoutez un flux pour commencer.",
     "rssSourceMissing": "Ce flux n'existe plus ; il a peut-être été supprimé.",
     "emailNotConfigured": "Aucune boîte mail configurée. Ajoutez un compte dans les réglages Mail.",

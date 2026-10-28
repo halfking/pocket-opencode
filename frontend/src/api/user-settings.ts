@@ -33,7 +33,7 @@ export const userSettingsApi = {
         { method: 'PUT', body: JSON.stringify(input) },
       )
     } catch (err) {
-      if (err instanceof ApiError && err.status === 409 && err.body) {
+      if (err instanceof ApiError && err.status === 409 && err.body?.conflict === true && err.body.record) {
         return err.body as SettingPutResult
       }
       throw err

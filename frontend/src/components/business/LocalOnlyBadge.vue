@@ -7,6 +7,7 @@
   <span v-if="isLocal" class="local-only-badge" role="status">
     <span class="material-symbols-outlined" aria-hidden="true">smartphone</span>
     {{ t('settings.storageOnlyLocalBadge') }}
+    <span v-if="module === 'rss' || module === 'email'">{{ t('settings.storageLocalCloudUnavailable') }}</span>
   </span>
 </template>
 
@@ -39,7 +40,7 @@ const isLocal = computed(() => policy.modules[props.module] === 'local')
   font-size: var(--text-xs);
   font-weight: var(--font-weight-semibold);
   line-height: 1.4;
-  white-space: nowrap;
+  flex-wrap: wrap;
 }
 
 .local-only-badge .material-symbols-outlined {
