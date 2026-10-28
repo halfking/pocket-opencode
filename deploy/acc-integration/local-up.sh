@@ -42,18 +42,30 @@ if ! docker image inspect kx-base:go-vue-optimized >/dev/null 2>&1; then
   exit 1
 fi
 
-# PG 可达性（llm-gateway-pg，宿主端口 5432）
-if ! docker inspect llm-gateway-pg >/dev/null 2>&1; then
-  echo "[local-up] llm-gateway-pg container not found; start the shared PG before pocketd"
+# PG 容器/库/用户：默认是本机的共享 PG，CI 里换成一次性容器（2026-10-28 §976）。
+#
+# ⚠⚠ 为什么要参数化（这是 docker-smoke 从 2026-08-27 起就没跑过的原因之一）：
+#
+#	CI 一直是用 `sed -i 's/docker exec llm-gateway-pg/docker exec test-pg/g' local-up.sh`
+#	改脚本的 —— 但脚本里**还有** `docker inspect llm-gateway-pg`（下面第 46 行）
+#	**没有**被 sed 覆盖 ⇒ CI 在这一步直接 `exit 1` ⇒ 冒烟测试根本跑不起来。
+#	⇒ 改成用环境变量点名（而不是改脚本源码）：本地默认不变，CI 传 POCKET_PG_CONTAINER。
+PG_CONTAINER="${POCKET_PG_CONTAINER:-llm-gateway-pg}"
+PG_DB="${POCKET_PG_DB:-kaixuan}"
+PG_USER="llm_gateway"
+
+# PG 可达性（宿主端口 5432）
+if ! docker inspect "$PG_CONTAINER" >/dev/null 2>&1; then
+  echo "[local-up] $PG_CONTAINER container not found; start the shared PG before pocketd"
   exit 1
 fi
-if ! docker exec llm-gateway-pg pg_isready -U llm_gateway -d llm_gateway >/dev/null 2>&1; then
-  echo "[local-up] llm-gateway-pg is not ready; refusing to start pocketd against an unknown host service"
+if ! docker exec "$PG_CONTAINER" pg_isready -U "$PG_USER" -d "$PG_DB" >/dev/null 2>&1; then
+  echo "[local-up] $PG_CONTAINER is not ready; refusing to start pocketd against an unknown host service"
   exit 1
 fi
 
 # 数据库身份验证（防止误连到错误的 PG 实例）
-if ! docker exec llm-gateway-pg psql -U llm_gateway -d kaixuan -tAc "SELECT current_database(), current_user;" 2>/dev/null | grep -q "^kaixuan|llm_gateway$"; then
+if ! docker exec "$PG_CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -tAc "SELECT current_database(), current_user;" 2>/dev/null | grep -q "^${PG_DB}|${PG_USER}$"; then
   echo "[local-up] Database identity mismatch; refusing to start pocketd against wrong PG instance"
   exit 1
 fi

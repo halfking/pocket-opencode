@@ -51,9 +51,23 @@ jobs:
 
       - name: Build Docker images
         working-directory: .
+        env:
+          # ⚠ compose 在**任何**子命令前都会插值整个文件 ⇒ 连 `build` 也要求
+          # POCKET_POSTGRES_DSN 存在，否则 `docker compose build` 直接报
+          # 「required variable POCKET_POSTGRES_DSN is missing a value」。
+          # build 阶段**不连库** ⇒ 这里给一个占位 DSN 即可；
+          # 真凭据在下面「Start services」写进 .env、以及 local-up 那一步的 env。
+          POCKET_POSTGRES_DSN: "postgresql://[REDACTED:secret]:5432/placeholder?sslmode=disable"
         run: |
           cd deploy/acc-integration
-          docker compose -f docker-compose.yml build --pull=never
+          # ⚠⚠ 原来这里是 `--pull=never`：compose v2 的 `--pull` 是**布尔**开关
+          #   （只有 `--pull` / `--no-pull`），带值一律报
+          #   `invalid argument "never" for "--pull" flag: strconv.ParseBool`。
+          #   ⇒ 这道门从 2026-08-27 起每次都在 ~20 秒内死在**构建**这一步，
+          #   后面的 PG 启动、local-up、冒烟测试**一次都没跑过**。
+          # 「不拉镜像」的意图已经由 compose 文件里的 `pull_policy: never` 表达 ⇒
+          # 这里不需要（也不能）再加那个开关。
+          docker compose -f docker-compose.yml build
 
       - name: Start services
         working-directory: ./deploy/acc-integration
@@ -67,7 +81,7 @@ jobs:
           POCKET_AUTH_USER=admin
           POCKET_AUTH_PASS=admin1234
           POCKET_PG_SCHEMA=opencode_pocket
-          POCKET_POSTGRES_DSN=postgresql://test_user:test_pass@localhost:5432/test_db?sslmode=disable
+          POCKET_POSTGRES_DSN=postgresql://llm_gateway:test_pass@host.docker.internal:5432/kaixuan?sslmode=disable
           POCKET_OPENCODE_INSTANCES=[{"id":"local-opencode","displayName":"Local OpenCode","baseURL":"http://host.docker.internal:4096","environment":"development","capabilities":["session","summary","pty"]}]
           POCKET_EMAIL_FETCH_ENABLED=false
           POCKET_ALLOWED_ORIGINS=http://localhost:4175,http://127.0.0.1:4175
@@ -75,45 +89,58 @@ jobs:
 
       - name: Start test PostgreSQL
         run: |
+          # ⚠ POSTGRES_DB / POSTGRES_USER / POSTGRES_PASSWORD 已经由 pg 镜像的
+          #   入口脚本建好了。旧写法在这里**又** CREATE 了一遍同名的库和用户
+          #   ⇒ 「already exists」⇒ bash -e ⇒ **整步失败**
+          #   （所以这道门就算躲过了 --pull 那一关，也过不去这一关）。
+          # ⇒ 改成**断言**它们真的在（fail-closed：断言不过就红，而不是继续）。
           docker run -d \
             --name test-pg \
             -e POSTGRES_DB=kaixuan \
             -e POSTGRES_USER=llm_gateway \
             -e POSTGRES_PASSWORD=test_pass \
             -p 5432:5432 \
-            --health-cmd="pg_isready -U llm_gateway -d llm_gateway" \
+            --health-cmd="pg_isready -U llm_gateway -d kaixuan" \
             --health-interval=5s \
             --health-timeout=3s \
             --health-retries=10 \
             pgvector/pgvector:pg17
           # Wait for PG to be ready
           for i in {1..30}; do
-            if docker exec test-pg pg_isready -U llm_gateway -d llm_gateway >/dev/null 2>&1; then
+            if docker exec test-pg pg_isready -U llm_gateway -d kaixuan >/dev/null 2>&1; then
               break
             fi
             sleep 1
           done
-          # Create kaixuan database
-          docker exec test-pg psql -U llm_gateway -d postgres -c "CREATE DATABASE kaixuan;"
-          docker exec test-pg psql -U llm_gateway -d kaixuan -c "CREATE USER llm_gateway WITH PASSWORD 'test_pass';"
+          # 断言库在、用户在（而不是重建一遍）。
+          docker exec test-pg psql -U llm_gateway -d postgres -tAc \
+            "SELECT datname FROM pg_database WHERE datname='kaixuan'" | grep -q kaixuan
+          docker exec test-pg psql -U llm_gateway -d postgres -tAc \
+            "SELECT rolname FROM pg_roles WHERE rolname='llm_gateway'" | grep -q llm_gateway
+          # 授权：llm_gateway 能用 public schema
           docker exec test-pg psql -U llm_gateway -d kaixuan -c "GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO llm_gateway;"
 
       - name: Run local-up.sh
         working-directory: ./deploy/acc-integration
         env:
-          POCKET_POSTGRES_DSN: postgresql://llm_gateway:test_pass@host.docker.internal:5432/kaixuan?sslmode=disable
+          POCKET_POSTGRES_DSN: "postgresql://llm_gateway:test_pass@host.docker.internal:5432/kaixuan?sslmode=disable"
           POCKET_JWT_SECRET: local-test-jwt-secret-012345678901234567890
           POCKET_DEV_AUTH: "true"
           POCKET_AUTH_USER: admin
           POCKET_AUTH_PASS: admin1234
           POCKET_PG_SCHEMA: opencode_pocket
+          # 告诉 local-up.sh PG 容器叫什么（本地默认 llm-gateway-pg）。
+          POCKET_PG_CONTAINER: test-pg
+          POCKET_PG_DB: kaixuan
           POCKET_EMAIL_FETCH_ENABLED: "false"
           POCKET_OPENCODE_INSTANCES: '[{"id":"local-opencode","displayName":"Local OpenCode","baseURL":"http://host.docker.internal:4096","environment":"development","capabilities":["session","summary","pty"]}]'
           POCKET_ALLOWED_ORIGINS: "http://localhost:4175,http://127.0.0.1:4175"
         run: |
-          # Override the local-up.sh to use test DB
-          sed -i 's/docker exec llm-gateway-pg/docker exec test-pg/g' local-up.sh
-          sed -i 's/llm_gateway/llm_gateway/g' local-up.sh
+          # ⚠ 旧写法是 `sed -i 's/docker exec llm-gateway-pg/docker exec test-pg/g'`：
+          #   它只换掉了 `docker exec` 那几处，**没换** local-up.sh 里的
+          #   `docker inspect llm-gateway-pg` ⇒ CI 在那里直接 exit 1。
+          #   （第二行 sed 是 `s/llm_gateway/llm_gateway/g` —— 自己换自己，纯死代码。）
+          # ⇒ 改成用环境变量点名 PG 容器（local-up.sh 现在读 POCKET_PG_CONTAINER）。
           ./local-up.sh
 
       - name: Run smoke tests
