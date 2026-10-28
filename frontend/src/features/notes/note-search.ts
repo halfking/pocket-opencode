@@ -24,6 +24,7 @@ async function streamAssistant(kind: string, system: string, user: string): Prom
     llmBffApi.streamChat(
       {
         kind,
+        syncModule: 'notes',
         messages: [
           { role: 'system', content: system },
           { role: 'user', content: user },

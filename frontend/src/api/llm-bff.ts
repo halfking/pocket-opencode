@@ -15,7 +15,9 @@
  * 流式读取：fetch + ReadableStream 手动解析 SSE（EventSource 不支持 POST +
  * Authorization header）。每行 "data: {...}\n\n" 直到 "data: [DONE]"。
  */
-import { useAuthStore } from '../stores/auth'
+import { useAuthStore, captureAuthSession, assertAuthSession } from '../stores/auth'
+import { effectScope, watch } from 'vue'
+import { assertCloudModule } from './data-policy.ts'
 import { assertNotHTML } from './jsonGuard'
 import { fetchWithTimeout } from './fetch-timeout.ts'
 
@@ -81,46 +83,98 @@ export function installLlmBffStreamRuntime(): void {
   })
 }
 
-interface FetchResult {
-  status: number
-  statusText: string
-  contentType: string
-  body: ReadableStream<Uint8Array> | null
-}
-
 /**
  * 默认 fetcher：负责 401 单飞续期 + HTML 兜底识别。runtime 只关心 SSE 解析。
  * 与原 streamChat 同款的"401 重放一次"语义保留在 fetcher 内部，避免在 runtime
  * 反向依赖 auth store。
  */
-const defaultFetcher: SpawnFetcher = async (input, signal, base, token) => {
+const defaultFetcher: SpawnFetcher = async (input, signal, base, _token) => {
   const auth = useAuthStore()
-  // 流式路径不走共享 http()，滑动续期在此补齐
-  try {
-    await auth.maybeRefresh()
-  } catch {
-    // maybeRefresh 内部已吞错
+  const session = captureAuthSession(auth)
+  const { syncModule, ...body } = input
+  const controller = new AbortController()
+  const scope = effectScope(true)
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
+  let output: ReadableStreamDefaultController<Uint8Array> | undefined
+  let ended = false
+  let failure: Error | undefined
+  const assertCurrent = () => {
+    if (failure) throw failure
+    assertAuthSession(auth, session)
+    assertCloudModule(syncModule)
+    if (signal.aborted) {
+      const error = new Error('Stream cancelled')
+      error.name = 'AbortError'
+      throw error
+    }
   }
-  const doFetch = async (): Promise<Response> =>
-    fetch(`${base}/api/llm/stream`, {
+  const cleanup = () => {
+    scope.stop()
+    signal.removeEventListener('abort', check)
+    if (typeof window !== 'undefined') window.removeEventListener('openpocket:sync-policy-changed', check)
+  }
+  const stop = (error: unknown) => {
+    failure ??= error instanceof Error ? error : new Error(String(error))
+    controller.abort()
+    if (reader) void reader.cancel(failure).catch(() => {})
+    if (!ended && output) { ended = true; output.error(failure) }
+    cleanup()
+  }
+  const check = () => { try { assertCurrent() } catch (error) { stop(error) } }
+  assertCurrent()
+  scope.run(() => {
+    watch(() => [auth.token, auth.user, auth.userId, auth.workspaceId, auth.authMethod], check, { flush: 'sync' })
+  })
+  signal.addEventListener('abort', check, { once: true })
+  if (typeof window !== 'undefined') window.addEventListener('openpocket:sync-policy-changed', check)
+  const doFetch = async (): Promise<Response> => {
+    assertCurrent()
+    const response = await fetch(`${base}/api/llm/stream`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        ...(token || auth.token ? { Authorization: `Bearer ${token || auth.token}` } : {}),
+        ...(auth.token ? { Authorization: `Bearer ${auth.token}` } : {}),
       },
-      body: JSON.stringify(input),
-      signal,
+      body: JSON.stringify(body),
+      signal: controller.signal,
     })
-  let res = await doFetch()
-  if (res.status === 401 && (await auth.refreshSession())) {
-    res = await doFetch()
+    try { assertCurrent() } catch (error) { void response.body?.cancel().catch(() => {}); throw error }
+    return response
   }
-  return {
-    status: res.status,
-    statusText: res.statusText,
-    contentType: res.headers.get('content-type') || '',
-    body: res.body,
-  } as FetchResult
+  try {
+    await auth.maybeRefresh()
+    assertCurrent()
+    let res = await doFetch()
+    if (res.status === 401) {
+      void res.body?.cancel().catch(() => {})
+      const refreshed = await auth.refreshSession()
+      assertCurrent()
+      if (refreshed) res = await doFetch()
+    }
+    const contentType = res.headers.get('content-type') || ''
+    if (!res.ok || !res.body || contentType.toLowerCase().includes('text/html')) {
+      cleanup()
+      return { status: res.status, statusText: res.statusText, contentType, body: res.body, assertCurrent }
+    }
+    reader = res.body.getReader()
+    const guardedBody = new ReadableStream<Uint8Array>({
+      start(c) { output = c },
+      async pull(c) {
+        try {
+          assertCurrent()
+          const result = await reader!.read()
+          assertCurrent()
+          if (result.done) { ended = true; cleanup(); c.close() }
+          else c.enqueue(result.value)
+        } catch (error) { stop(error) }
+      },
+      async cancel(reason) { ended = true; cleanup(); controller.abort(); await reader!.cancel(reason) },
+    })
+    return { status: res.status, statusText: res.statusText, contentType, body: guardedBody, assertCurrent }
+  } catch (error) {
+    stop(error)
+    throw failure
+  }
 }
 
 export interface StreamHandlers {
@@ -151,13 +205,27 @@ export const llmBffApi = {
     handlers: StreamHandlers,
     streamId?: string,
   ): ChatStreamHandle {
+    const auth = useAuthStore()
+    const session = captureAuthSession(auth)
+    let settled = false
+    const fail = (error: Error) => {
+      if (settled) return
+      settled = true
+      handlers.onError?.(error)
+    }
+    const forward = (callback: () => void) => {
+      if (settled) return
+      try { assertAuthSession(auth, session); assertCloudModule(input.syncModule) }
+      catch (error) { fail(error instanceof Error ? error : new Error(String(error))); return }
+      callback()
+    }
     const id = streamId ?? `oneshot-${typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : Math.random().toString(36).slice(2)}`
     return aiStreamRuntime.spawnChat(id, input, {
-      onDelta: handlers.onDelta,
-      onDone: handlers.onDone,
-      onError: handlers.onError,
-      onRetry: handlers.onRetry,
-    })
+      onDelta: delta => forward(() => handlers.onDelta(delta)),
+      onDone: usage => forward(() => { settled = true; handlers.onDone?.(usage) }),
+      onError: fail,
+      onRetry: model => forward(() => handlers.onRetry?.(model)),
+    }, session.generation)
   },
 
   getUsage: (days = 7) =>

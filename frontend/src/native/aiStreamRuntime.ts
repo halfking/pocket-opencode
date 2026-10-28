@@ -16,6 +16,7 @@
  */
 
 import { appLifecycleHub, type LifecycleEvent } from './appLifecycleHub.ts'
+import type { SyncModule } from '../api/syncPolicyContract.ts'
 
 export type StreamStatus =
   | 'idle'      // 已注册但未起跑
@@ -42,6 +43,8 @@ export interface ChatStreamInput {
   temperature?: number
   max_tokens?: number
   kind?: string
+  /** Client-only ownership; the network client removes it from the request. */
+  syncModule?: SyncModule
 }
 
 export interface ChatStreamDelta {
@@ -92,6 +95,9 @@ interface StreamEntry {
   spawnAt: number
   /** replay buffer：subscribe 时回放给新订阅方（上限 MAX_REPLAY_FRAMES）。 */
   replay: ChatStreamDelta[]
+  requestScope?: object
+  syncModule?: SyncModule
+  assertCurrent?: () => void
 }
 
 interface Subscriber {
@@ -116,6 +122,8 @@ export type SpawnFetcher = (
   statusText: string
   contentType: string
   body: ReadableStream<Uint8Array> | null
+  /** Rechecked by the runtime before consuming or replaying private frames. */
+  assertCurrent?: () => void
 }>
 
 let _fetcher: SpawnFetcher | null = null
@@ -171,15 +179,17 @@ class AiStreamRuntime {
    * 启动一个 chat 流。同 id 重复调用：流在跑则返回旧 handle（同一引用）；
    * 流已结束则用新 handlers 起新流（典型场景：用户重发问题）。
    */
-  spawnChat(id: string, input: ChatStreamInput, handlers: ChatStreamHandlers): ChatStreamHandle {
+  spawnChat(id: string, input: ChatStreamInput, handlers: ChatStreamHandlers, requestScope?: object): ChatStreamHandle {
     this.start()
 
     const existing = this.streams.get(id)
-    if (existing && (existing.status === 'running' || existing.status === 'idle')) {
+    if (existing && (existing.status === 'running' || existing.status === 'idle') &&
+      existing.requestScope === requestScope && existing.syncModule === input.syncModule) {
       // 幂等：流在跑，新增订阅方；不动现有 fetch，返回原 handle 引用。
       existing.subs.add({ handlers })
       return existing.handle
     }
+    if (existing?.status === 'running' || existing?.status === 'idle') this.abort(id)
 
     // 流已结束 / 第一次起：建新条目
     const ctrl = new AbortController()
@@ -198,10 +208,12 @@ class AiStreamRuntime {
       watchdogPausedAt: null,
       spawnAt: Date.now(),
       replay: [],
+      requestScope,
+      syncModule: input.syncModule,
     }
     const handle: ChatStreamHandle = {
       id,
-      abort: () => this.abort(id),
+      abort: () => this.streams.get(id) === entry ? this.abort(id) : false,
       status: () => entry.status,
     }
     entry.handle = handle
@@ -222,9 +234,17 @@ class AiStreamRuntime {
     const entry = this.streams.get(id)
     if (!entry) return () => {}
     const sub: Subscriber = { handlers }
+    const permitted = () => {
+      try { entry.assertCurrent?.(); return true } catch (error) {
+        this.notifyError(entry, sub, error instanceof Error ? error : new Error(String(error)), 'network', 'replay onError')
+        return false
+      }
+    }
+    if (!permitted()) return () => {}
     entry.subs.add(sub)
     // replay 缓冲回放给新订阅方（最终态也回放一次，让晚到的 UI 拿到完整内容）
     for (const delta of entry.replay) {
+      if (!permitted()) { entry.subs.delete(sub); return () => {} }
       try {
         sub.handlers.onDelta?.(delta)
       } catch (err) {
@@ -233,6 +253,7 @@ class AiStreamRuntime {
       }
     }
     // 已结束的流：补发一次终态（onDone 或 onError）
+    if (!permitted()) { entry.subs.delete(sub); return () => {} }
     if (entry.status === 'done') {
       try {
         const last = entry.replay[entry.replay.length - 1]
@@ -273,16 +294,11 @@ class AiStreamRuntime {
     entry.abortReason = 'user'
     this.clearWatchdog(entry)
     this.activeCount = Math.max(0, this.activeCount - 1)
-    entry.ctrl.abort()
     const err = errorForReason('user')
     for (const sub of entry.subs) {
-      try {
-        sub.handlers.onError?.(err, 'user')
-      } catch (e) {
-        // eslint-disable-next-line no-console
-        console.error('[aiStreamRuntime] onError fanout error', e)
-      }
+      this.notifyError(entry, sub, err, 'user', 'onError fanout error')
     }
+    entry.ctrl.abort()
     // 终态：保留 entry 一段时间供迟到订阅方 replay，TTL 由后台 GC 兜底（M2）。
     return true
   }
@@ -363,16 +379,11 @@ class AiStreamRuntime {
     entry.abortReason = 'watchdog'
     this.clearWatchdog(entry)
     this.activeCount = Math.max(0, this.activeCount - 1)
-    entry.ctrl.abort()
     const err = errorForReason('watchdog')
     for (const sub of entry.subs) {
-      try {
-        sub.handlers.onError?.(err, 'watchdog')
-      } catch (e) {
-        // eslint-disable-next-line no-console
-        console.error('[aiStreamRuntime] onError watchdog fanout', e)
-      }
+      this.notifyError(entry, sub, err, 'watchdog', 'onError watchdog fanout')
     }
+    entry.ctrl.abort()
   }
 
   private async runChat(entry: StreamEntry, input: ChatStreamInput): Promise<void> {
@@ -383,9 +394,12 @@ class AiStreamRuntime {
       this.failEntry(entry, new Error('aiStreamRuntime 未注入 fetcher；请在 main.ts 调用 setStreamDeps'), 'network')
       return
     }
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
     try {
       // 401 单飞续期一次：runtime 不直接依赖 auth store，由 fetcher 内部处理（M1 暂沿用 llm-bff 同款）。
       const res = await fetcher(input, entry.ctrl.signal, base, token)
+      entry.assertCurrent = res?.assertCurrent
+      entry.assertCurrent?.()
       if (!res || res.status >= 400 || !res.body) {
         // 把 fetch-level HTTP 错误映射为 error frame，走 'server-error' 路径
         const err = new Error(`stream failed: ${res?.status ?? 0} ${res?.statusText ?? ''}`)
@@ -401,18 +415,21 @@ class AiStreamRuntime {
         )
         return
       }
-      const reader = res.body.getReader()
+      reader = res.body.getReader()
       const decoder = new TextDecoder()
       let buf = ''
       let sawContent = false
       let finalUsage: ChatStreamDelta['usage'] | undefined
 
       while (true) {
+        entry.assertCurrent?.()
         const { done, value } = await reader.read()
+        entry.assertCurrent?.()
         if (done) break
         buf += decoder.decode(value, { stream: true })
         let nl: number
         while ((nl = buf.indexOf('\n\n')) >= 0) {
+          entry.assertCurrent?.()
           const chunk = buf.slice(0, nl)
           buf = buf.slice(nl + 2)
           if (!chunk.startsWith('data: ')) continue
@@ -436,6 +453,7 @@ class AiStreamRuntime {
           if (delta.retry && !delta.content && !delta.done) {
             // 进度帧：单独通知 onRetry，但不计入 sawContent / 不计入 replay（仅终态帧值得 replay）
             for (const sub of entry.subs) {
+              entry.assertCurrent?.()
               try {
                 sub.handlers.onRetry?.(delta.retry!)
               } catch (e) {
@@ -458,6 +476,7 @@ class AiStreamRuntime {
             entry.replay.splice(0, entry.replay.length - MAX_REPLAY_FRAMES)
           }
           for (const sub of entry.subs) {
+            entry.assertCurrent?.()
             try {
               sub.handlers.onDelta?.(delta)
             } catch (e) {
@@ -474,11 +493,16 @@ class AiStreamRuntime {
         // 用户主动 abort 已由 abort() 处理；这里到的是 watchdog/network 触发的 abort
         // 若 entry.status 仍为 running，说明 abort 来源不在 runtime 自身——按 network 处理
         if (entry.status === 'running') {
-          this.failEntry(entry, new Error('流被中止'), 'network')
+          this.failEntry(entry, err instanceof Error ? err : new Error('流被中止'), 'network')
         }
         return
       }
       this.failEntry(entry, err instanceof Error ? err : new Error(String(err)), 'network')
+    } finally {
+      if (reader) {
+        await reader.cancel().catch(() => {})
+        reader.releaseLock()
+      }
     }
   }
 
@@ -493,6 +517,10 @@ class AiStreamRuntime {
     this.clearWatchdog(entry)
     this.activeCount = Math.max(0, this.activeCount - 1)
     for (const sub of entry.subs) {
+      try { entry.assertCurrent?.() } catch (error) {
+        this.notifyError(entry, sub, error instanceof Error ? error : new Error(String(error)), 'network', 'onDone invalidation')
+        continue
+      }
       try {
         sub.handlers.onDone?.(finalUsage)
       } catch (e) {
@@ -509,12 +537,21 @@ class AiStreamRuntime {
     this.clearWatchdog(entry)
     this.activeCount = Math.max(0, this.activeCount - 1)
     for (const sub of entry.subs) {
-      try {
-        sub.handlers.onError?.(err, reason)
-      } catch (e) {
-        // eslint-disable-next-line no-console
-        console.error('[aiStreamRuntime] onError failEntry fanout', e)
-      }
+      this.notifyError(entry, sub, err, reason, 'onError failEntry fanout')
+    }
+  }
+
+  private notifyError(entry: StreamEntry, sub: Subscriber, err: Error, reason: StreamAbortReason, context: string): void {
+    // An earlier subscriber may have changed identity/policy, even while handling an error.
+    try { entry.assertCurrent?.() } catch (error) {
+      err = error instanceof Error ? error : new Error(String(error))
+      reason = 'network'
+    }
+    try {
+      sub.handlers.onError?.(err, reason)
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.error(`[aiStreamRuntime] ${context}`, error)
     }
   }
 }
