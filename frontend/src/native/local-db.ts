@@ -19,9 +19,9 @@ import { SCHEMA_SQL, splitSqlStatements, normalizeTriggerForPluginExecute } from
 import { localDbNeedsOpen } from './local-db-init'
 import { assertNoTransactionControl, assertReadOnlyQuery } from './local-db-sql-guard'
 import type { SyncModule, SyncMode } from '../api/syncPolicyContract'
-import { LocalDbLeases, type OperationLease, type OperationOptions, type OwnerIdentity, type ActivationPublisher } from './local-db-leases'
+import { LocalDbLeases, type OperationLease, type OperationOptions, type OwnerIdentity, type ActivationPublisher, type PolicySnapshot, type PolicySnapshotPublisher } from './local-db-leases'
 
-export type { OperationLease, OperationOptions, OwnerIdentity, OwnerLease, ActivationPublisher } from './local-db-leases'
+export type { OperationLease, OperationOptions, OwnerIdentity, OwnerLease, ActivationPublisher, PolicySnapshot, PolicySnapshotPublisher } from './local-db-leases'
 
 const MEETINGS_V2_COLUMNS = [
   { table: 'local_meetings', column: 'location', sql: 'ALTER TABLE local_meetings ADD COLUMN location TEXT' },
@@ -168,6 +168,15 @@ class LocalDB {
     return this.enqueue(async () => {
       this.requireActivationHealthy()
       this.leases.activatePolicy(ticket, publish)
+    })
+  }
+
+  /** Complete snapshots publish once. Unchanged, nonpending modules retain their leases. */
+  async requestPolicySnapshotActivation(modes: PolicySnapshot, publish: PolicySnapshotPublisher): Promise<void> {
+    const ticket = this.leases.prepareSnapshot(modes)
+    return this.enqueue(async () => {
+      this.requireActivationHealthy()
+      this.leases.activateSnapshot(ticket, publish)
     })
   }
 
