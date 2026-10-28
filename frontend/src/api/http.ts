@@ -4,7 +4,7 @@
  * instead of calling fetch() directly, so auth headers stay consistent.
  */
 import { resolveRuntimeApiBase } from '../config/api-base'
-import { useAuthStore, captureAuthSession, assertAuthSession, isCurrentAuthSession, type AuthSession } from '../stores/auth'
+import { useAuthStore, captureAuthSession, captureAuthAttempt, assertAuthAttempt, assertAuthSession, isCurrentAuthSession, type AuthSession } from '../stores/auth'
 import { assertNotHTML } from './jsonGuard'
 import { isAbortError } from './abort'
 import { DEFAULT_TIMEOUT_MS, TimeoutError, fetchWithTimeout } from './fetch-timeout.ts'
@@ -27,6 +27,8 @@ export function getApiBase(): string {
 
 /** refresh 端点本身 401 时不得再触发续期重放（防自引用循环）。 */
 const REFRESH_PATH = '/api/auth/refresh'
+const PUBLIC_AUTH_PATHS = new Set(['/api/auth/login', '/api/auth/register', '/api/auth/send-code',
+  '/api/auth/code-login', '/api/auth/forgot-password', '/api/auth/sso/status', '/api/auth/sso/login', '/api/auth/sso/exchange'])
 
 export class ApiError extends Error {
   /** 响应 body 解析后的对象（若有）。让调用方能拿到 409 等结构化错误信息。 */
@@ -121,9 +123,10 @@ export { isAbortError }
 // ⚠§951：TimeoutError 的**类定义**在 ./fetch-timeout（上面已再导出）。
 //　 留这一行是为了让「这个文件里 TimeoutError 从哪来」有据可查。
 
-async function httpOnce<T = any>(path: string, opts: HttpOptions, session: AuthSession): Promise<T> {
+async function httpOnce<T = any>(path: string, opts: HttpOptions, session: AuthSession, anonymous = false): Promise<T> {
   const auth = session.owner
-  assertAuthSession(auth, session)
+  const checkSession = anonymous ? assertAuthAttempt : assertAuthSession
+  checkSession(auth, session)
   if (opts.body != null && !isEmailMetadataWrite(path, opts.body)) {
     throw new ApiError(409, 'email_credentials_local_only', { error: 'email_credentials_local_only' })
   }
@@ -136,7 +139,9 @@ async function httpOnce<T = any>(path: string, opts: HttpOptions, session: AuthS
   const headers: Record<string, string> = {
     ...(init.headers as Record<string, string> | undefined),
   }
-  if (auth.token) headers['Authorization'] = `Bearer ${auth.token}`
+  if (anonymous) {
+    for (const key of Object.keys(headers)) if (key.toLowerCase() === 'authorization') delete headers[key]
+  } else if (auth.token) headers['Authorization'] = `Bearer ${auth.token}`
   if (init.body && !headers['Content-Type']) {
     headers['Content-Type'] = 'application/json'
   }
@@ -154,7 +159,7 @@ async function httpOnce<T = any>(path: string, opts: HttpOptions, session: AuthS
     { ...init, headers, signal: callerSignal },
     { timeoutMs, label: path },
   )
-  assertAuthSession(auth, session)
+  checkSession(auth, session)
   if (!res.ok) {
     // 尝试解析响应 body，让调用方能拿到结构化错误（如 409 conflict 的 server_version）
     let parsedBody: any
@@ -164,7 +169,7 @@ async function httpOnce<T = any>(path: string, opts: HttpOptions, session: AuthS
     } catch {
       parsedBody = undefined
     }
-    assertAuthSession(auth, session)
+    checkSession(auth, session)
     // 服务端结构化错误统一为 {error: "..."}：直接作为 message，
     // 让各视图既有 catch 的 e.message 展示可读原因而非 "Request failed: Internal Server Error"
     const serverMsg =
@@ -180,7 +185,7 @@ async function httpOnce<T = any>(path: string, opts: HttpOptions, session: AuthS
   // 204 No Content
   if (res.status === 204) return undefined as unknown as T
   const data = await assertNotHTML(res).json() as T
-  assertAuthSession(auth, session)
+  checkSession(auth, session)
   return data
 }
 
@@ -193,6 +198,9 @@ async function httpOnce<T = any>(path: string, opts: HttpOptions, session: AuthS
  */
 export async function http<T = any>(path: string, opts: HttpOptions = {}): Promise<T> {
   const auth = useAuthStore()
+  if (PUBLIC_AUTH_PATHS.has(path.split('?')[0])) {
+    return httpOnce<T>(path, opts, captureAuthAttempt(auth), true)
+  }
   const session = captureAuthSession(auth)
   await maybeRefreshBeforeRequest(path)
   assertAuthSession(auth, session)
@@ -213,7 +221,7 @@ export async function http<T = any>(path: string, opts: HttpOptions = {}): Promi
       // 卡在各个模块里只看到 "invalid or expired token / 重试"，
       // **没有任何回到登录页的路径**（市场模块实测就是这个死胡同）。
       // 这里补上唯一的兜底：清登录态 + 跳回登录页。
-      forceReauth(session)
+      await forceReauth(session)
     }
     throw e
   }
@@ -233,7 +241,7 @@ export async function http<T = any>(path: string, opts: HttpOptions = {}): Promi
  * 也就是说 BUG-I 的修复只打了一半：兜底存在，但没覆盖真正被大量调用的那条路。
  */
 const reauthSessions = new WeakSet<object>()
-export function forceReauth(expectedSession?: AuthSession): void {
+export async function forceReauth(expectedSession?: AuthSession): Promise<void> {
   const auth = expectedSession?.owner ?? useAuthStore()
   const session = expectedSession ?? captureAuthSession(auth)
   if (!isCurrentAuthSession(auth, session) || reauthSessions.has(session.generation)) return
@@ -244,10 +252,12 @@ export function forceReauth(expectedSession?: AuthSession): void {
   try {
     // 不调 logout()：它会打 /api/auth/logout，而此刻后端必然拒绝，
     // 只会拖慢跳转。这里直接清本地态。
-    auth.clearLocal()
-  } catch {
-    /* 清理失败也要继续跳转，否则用户彻底卡死 */
+    await auth.clearLocal()
+  } catch (error) {
+    console.warn('[auth] 本地会话清理失败，请重试：', error)
+    return
   }
+  if (auth.activationStatus !== 'ready' || auth.token) return
   if (typeof location !== 'undefined') {
     location.hash = '#/login?reason=expired'
   }

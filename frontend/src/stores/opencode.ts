@@ -3,6 +3,8 @@
  * 负责管理 OpenCode 实例、会话列表、实时状态等
  */
 import { defineStore } from 'pinia'
+import { effectScope, watch } from 'vue'
+import { useAuthStore, captureAuthSession, isCurrentAuthSession, type AuthSession } from './auth'
 import { api } from '../api/client'
 import type { Instance, Session, Task } from '../api/client'
 import { getApiBase, http } from '../api/http'
@@ -12,6 +14,21 @@ import { buildWebSocketUrl } from '../api/websocket-url'
 // 此前每次 subscribeToRealTimeUpdates() 都新建连接且递归重连，导致连接堆积。
 let realtimeWs: WebSocket | null = null
 let realtimeReconnectTimer: ReturnType<typeof setTimeout> | null = null
+let realtimeSession: AuthSession | null = null
+let stopRealtimeWatch: (() => void) | undefined
+function stopRealtime(): void {
+  if (realtimeReconnectTimer !== null) clearTimeout(realtimeReconnectTimer)
+  realtimeReconnectTimer = null
+  const socket = realtimeWs
+  realtimeWs = null
+  realtimeSession = null
+  stopRealtimeWatch?.()
+  stopRealtimeWatch = undefined
+  if (socket) {
+    socket.onopen = socket.onmessage = socket.onerror = socket.onclose = null
+    socket.close()
+  }
+}
 
 export interface OpenCodeSession extends Session {
   instanceId: string
@@ -273,6 +290,9 @@ export const useOpenCodeStore = defineStore('opencode', {
      * 现在连接收口到模块级单例：已有连接（或正在重连）时直接复用。
      */
     subscribeToRealTimeUpdates() {
+      const auth = useAuthStore()
+      if (!auth.isAuthenticated) { stopRealtime(); return null }
+      if (realtimeSession && !isCurrentAuthSession(auth, realtimeSession)) stopRealtime()
       // 已有活跃连接 / 已有排期的重连 → 不再新建
       if (realtimeWs && (realtimeWs.readyState === WebSocket.OPEN || realtimeWs.readyState === WebSocket.CONNECTING)) {
         return realtimeWs
@@ -282,7 +302,8 @@ export const useOpenCodeStore = defineStore('opencode', {
       // WebSocket 连接：必须用配置后的 pocketd 基址，而不是 window.location。
       // Capacitor 里 window.location 是 WebView 自身（https://localhost），
       // 据此拼出的地址永远连不上真正的 pocketd（BUG-D/BUG-F 同源）。
-      const token = localStorage.getItem('pocket_token')
+      const session = captureAuthSession(auth)
+      const token = auth.token
       const wsUrl = buildWebSocketUrl(getApiBase(), token)
       if (!wsUrl) {
         console.warn('⚠️ 未订阅 OpenCode 实时更新：API 基址无法构造合法的 ws 地址')
@@ -294,12 +315,27 @@ export const useOpenCodeStore = defineStore('opencode', {
       }
       const ws = new WebSocket(wsUrl)
       realtimeWs = ws
+      realtimeSession = session
+      const current = () => realtimeWs === ws && isCurrentAuthSession(auth, session)
+      stopRealtimeWatch?.()
+      const scope = effectScope(true)
+      scope.run(() => watch(() => [auth.activationStatus, auth.activationVersion], () => {
+        if (!isCurrentAuthSession(auth, session)) {
+          stopRealtime()
+          this.clearSelection()
+          this.sessionHistory = {}
+          this.realTimeStatus = {}
+        }
+      }, { flush: 'sync' }))
+      stopRealtimeWatch = () => scope.stop()
 
       ws.onopen = () => {
+        if (!current()) return
         console.log('✅ WebSocket 已连接')
       }
 
       ws.onmessage = (event) => {
+        if (!current()) return
         try {
           const message = JSON.parse(event.data)
 
@@ -327,7 +363,7 @@ export const useOpenCodeStore = defineStore('opencode', {
       }
 
       ws.onclose = () => {
-        if (realtimeWs !== ws) return // 已被新连接取代，旧连接的 close 不再排期重连
+        if (!current()) return // 已被新连接取代，旧连接的 close 不再排期重连
         realtimeWs = null
         console.log('⚠️ WebSocket 已断开，5秒后重连...')
         realtimeReconnectTimer = window.setTimeout(() => {

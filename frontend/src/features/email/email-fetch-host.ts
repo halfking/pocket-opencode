@@ -22,7 +22,7 @@ let started = false
 
 async function bindNative(): Promise<void> {
   const auth = useAuthStore()
-  if (!auth.token) return
+  if (!auth.isAuthenticated) return
   const ok = await configureNativeEmailFetch(
     resolveFetchApiBase(resolveApiBase(), PRODUCTION_API_BASE),
     auth.token,
@@ -39,7 +39,7 @@ export function startEmailFetchHost(): void {
   const kick = () => {
     // 未登录时不要发起：runDelegatedEmailFetch 会打需要 token 的接口，
     // 白跑一趟还会把节流窗口记在这次注定失败的尝试上。
-    if (!useAuthStore().token) return
+    if (!auth.isAuthenticated) return
     if (useAuthStore() !== auth) return
     if (readCachedModuleMode('email') !== 'cloud') {
       void cancelNativeEmailFetch()
@@ -71,7 +71,7 @@ export function startEmailFetchHost(): void {
   }
   // Auth changes invalidate the native credential as well as the JS cache.
   effectScope(true).run(() => {
-    watch(() => [auth.token, auth.user, auth.userId, auth.workspaceId], reset, { flush: 'sync' })
+    watch(() => [auth.activationStatus, auth.activationVersion, auth.token, auth.user, auth.userId, auth.workspaceId], reset, { flush: 'sync' })
   })
   if (typeof window !== 'undefined') window.addEventListener('openpocket:sync-policy-changed', reset)
 

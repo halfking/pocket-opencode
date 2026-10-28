@@ -50,7 +50,7 @@ async function fixture(run, platform = 'android') {
     const store = policy.useSyncPolicyStore()
     const { useAuthStore } = await vite.ssrLoadModule('/src/stores/auth.ts')
     const auth = useAuthStore()
-    auth.setAuthWithWorkspace('account-a-token', 'Account A', 'account-a', 'workspace-a')
+    await auth.setAuthWithWorkspace('account-a-token', 'Account A', 'account-a', 'workspace-a')
     const mode = value => store.applyPolicy({ system_default: 'cloud', allow_override: true, modules: { email: value } }, Date.now())
     await run({ vite, native, calls, store, auth, mode, settle, release: () => { finishConfigure.splice(0).forEach(resolve => resolve()) } })
   } finally {
@@ -104,10 +104,10 @@ test('cloud host runs, cancels on logout, and needs the new account policy befor
   assert.equal(calls.filter(([kind]) => kind === 'run').length, 1)
   assert.equal(calls.filter(([kind]) => kind === 'schedule').length, 1)
   calls.length = 0
-  auth.clearLocal()
+  await auth.clearLocal()
   await settle()
   assert.ok(calls.some(([kind]) => kind === 'cancel'))
-  auth.setAuthWithWorkspace('account-b-token', 'Account B', 'account-b', 'workspace-b')
+  await auth.setAuthWithWorkspace('account-b-token', 'Account B', 'account-b', 'workspace-b')
   await settle()
   assert.equal(calls.filter(([kind]) => kind === 'run').length, 0)
   mode('cloud')
@@ -126,7 +126,7 @@ test('host still cancels native credentials after its starting component unmount
   await settle()
   component.stop()
   calls.length = 0
-  auth.clearLocal()
+  await auth.clearLocal()
   await settle()
   assert.ok(calls.some(([kind]) => kind === 'cancel'))
   assert.equal(calls.filter(([kind]) => ['run', 'schedule'].includes(kind)).length, 0)

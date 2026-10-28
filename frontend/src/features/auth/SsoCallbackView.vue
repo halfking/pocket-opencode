@@ -32,7 +32,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { useAuthStore } from '../../stores/auth'
+import { useAuthStore, captureAuthSession, assertAuthSession } from '../../stores/auth'
 import { fetchMe, exchangeSsoCode } from '../../api/auth'
 
 const router = useRouter()
@@ -81,18 +81,27 @@ onMounted(async () => {
     fail('登录凭据已过期或无效，请重新发起登录')
     return
   }
-  auth.setAuthWithWorkspace(handoff.token, handoff.user, handoff.user_id, handoff.workspace_id || 'default', 'redclaw-sso')
+  try {
+    await auth.setAuthWithWorkspace(handoff.token, handoff.user, handoff.user_id, handoff.workspace_id || '', 'redclaw-sso')
+  } catch (error) {
+    console.warn('SSO session activation failed:', error)
+    fail('本地会话切换未完成，请重试登录')
+    return
+  }
+  const session = captureAuthSession(auth)
 
   // 2. 拉取 employee 画像更新 UI（失败不阻塞：登入已成功）
   try {
     const me = await fetchMe()
     if (me.name || me.email) {
-      auth.setAuthWithWorkspace(handoff.token, me.name || handoff.user, me.id || handoff.user_id, handoff.workspace_id || 'default', 'redclaw-sso')
+      assertAuthSession(auth, session)
+      auth.updateDisplayUser(me.name || handoff.user)
     }
   } catch (e) {
     console.debug('fetchMe after SSO failed (non-fatal):', e)
   }
 
+  try { assertAuthSession(auth, session) } catch { fail('登录会话已变更，请重新登录'); return }
   status.value = '登录成功，正在进入…'
   router.replace('/ai')
 })

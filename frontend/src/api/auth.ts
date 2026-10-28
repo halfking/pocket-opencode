@@ -9,6 +9,8 @@
  *   POST /api/auth/reset-password（requireAuth）
  */
 import { http } from './http'
+import { resolveRuntimeApiBase } from '../config/api-base'
+import { fetchWithTimeout } from './fetch-timeout'
 
 export type CodePurpose = 'register' | 'reset' | 'login'
 
@@ -105,8 +107,14 @@ export interface EmployeeProfile {
 }
 
 /** 登出：调后端 /api/auth/logout 让 RedClaw 撤销 session。401 视作幂等成功。 */
-export async function logoutRemote(): Promise<OkResponse> {
-  return http<OkResponse>('/api/auth/logout', { method: 'POST' })
+export async function logoutRemote(token?: string): Promise<OkResponse> {
+  if (token === undefined) return http<OkResponse>('/api/auth/logout', { method: 'POST' })
+  // Revocation uses the captured credential once; it never refreshes/replays as a new login.
+  const response = await fetchWithTimeout(`${resolveRuntimeApiBase()}/api/auth/logout`, {
+    method: 'POST', headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!response.ok && response.status !== 401) throw new Error('Remote sign-out failed.')
+  return { ok: true }
 }
 
 /** 拉取当前 RedClaw employee 画像；用于 token 续期校验与 UI 头像。 */

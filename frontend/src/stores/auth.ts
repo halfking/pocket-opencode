@@ -13,11 +13,33 @@
 import { defineStore } from 'pinia'
 import { effectScope, watch } from 'vue'
 import { logoutRemote, refreshAuth } from '../api/auth.ts'
+import { localDB } from '../native/local-db'
 
 const TOKEN_KEY = 'pocket_token'
 const USER_KEY = 'pocket_user'
 const WS_KEY = 'pocket_workspace_id'
 const METHOD_KEY = 'pocket_auth_method'
+const SNAPSHOT_KEY = 'pocket_auth_snapshot_v1'
+
+interface AuthSnapshot { token: string; user: string; userId: string; workspaceId: string; authMethod: string }
+const emptySnapshot = (): AuthSnapshot => ({ token: '', user: '', userId: '', workspaceId: '', authMethod: '' })
+function readStoredSession(): AuthSnapshot {
+  const raw = localStorage.getItem(SNAPSHOT_KEY)
+  if (raw !== null) {
+    const value = JSON.parse(raw)
+    if (value?.version !== 1 || !['token', 'user', 'workspaceId', 'authMethod'].every(key => typeof value[key] === 'string')) {
+      throw new Error('Stored session is invalid; please sign in again.')
+    }
+    // Persisted metadata is not a verified owner assertion.
+    return { token: value.token, user: value.user, userId: '', workspaceId: value.workspaceId, authMethod: value.authMethod }
+  }
+  // Compatibility recovery only: legacy independent keys cannot establish ownership.
+  return { token: localStorage.getItem(TOKEN_KEY) || '', user: localStorage.getItem(USER_KEY) || '', userId: '',
+    workspaceId: localStorage.getItem(WS_KEY) || '', authMethod: localStorage.getItem(METHOD_KEY) || '' }
+}
+function sameStoredSession(a: AuthSnapshot, b: AuthSnapshot): boolean {
+  return a.token === b.token && a.user === b.user && a.workspaceId === b.workspaceId && a.authMethod === b.authMethod
+}
 
 /** token 剩余寿命低于该阈值（ms）时主动续期。 */
 const REFRESH_AHEAD_MS = 5 * 60 * 1000
@@ -35,7 +57,8 @@ interface AuthIdentity {
   authMethod: string
   maybeRefresh: () => Promise<void>
   refreshSession: () => Promise<boolean>
-  clearLocal: () => void
+  activationStatus: 'ready' | 'pending' | 'error'
+  clearLocal: () => Promise<void>
   $dispose: () => void
 }
 
@@ -49,6 +72,7 @@ interface SessionState {
   applyingRefresh: boolean
   disposed: boolean
   refresh?: { session: AuthSession; promise: Promise<boolean> }
+  activation?: { ticket: object; snapshot: AuthSnapshot; promise: Promise<void> }
 }
 
 const sessions = new WeakMap<AuthIdentity, SessionState>()
@@ -78,13 +102,23 @@ function sessionState(auth: AuthIdentity): SessionState {
   return state
 }
 
-export function captureAuthSession(auth: AuthIdentity): AuthSession {
+/** Public sign-in attempts have a cancellation generation but grant no session admission. */
+export function captureAuthAttempt(auth: AuthIdentity): AuthSession {
   return { owner: auth, generation: sessionState(auth).generation }
+}
+export function assertAuthAttempt(auth: AuthIdentity, session: AuthSession): void {
+  const state = sessionState(auth)
+  if (session.owner === auth && !state.disposed && state.generation === session.generation) return
+  throw Object.assign(new Error('Sign-in attempt was superseded.'), { name: 'AbortError' })
+}
+export function captureAuthSession(auth: AuthIdentity): AuthSession {
+  if (auth.activationStatus !== 'ready') throw Object.assign(new Error('Session activation is not ready.'), { name: 'AbortError' })
+  return captureAuthAttempt(auth)
 }
 
 export function isCurrentAuthSession(auth: AuthIdentity, session: AuthSession): boolean {
   const state = sessionState(auth)
-  return session.owner === auth && !state.disposed && state.generation === session.generation
+  return auth.activationStatus === 'ready' && session.owner === auth && !state.disposed && state.generation === session.generation
 }
 
 export function assertAuthSession(auth: AuthIdentity, session: AuthSession): void {
@@ -114,19 +148,22 @@ export function tokenExpiresAtMs(token: string): number | null {
 
 export const useAuthStore = defineStore('auth', {
   state: () => ({
-    token: localStorage.getItem(TOKEN_KEY) || '',
-    user: localStorage.getItem(USER_KEY) || '',
-    /** S0-A: 当前 workspace_id（登录后由后端 EnsureDefaultWorkspace 返回）。 */
-    workspaceId: localStorage.getItem(WS_KEY) || '',
+    token: '',
+    user: '',
+    /** Restored workspace metadata does not assert historical data ownership. */
+    workspaceId: '',
     /** S0-A: 服务端 user_id（JWT claim）。 */
     userId: '',
     /** Phase 1: 登录方式（password / sso / dev-bypass / legacy），仅用于埋点。 */
-    authMethod: localStorage.getItem(METHOD_KEY) || '',
+    authMethod: '',
     /**
      * ⚠§867/D33：会话**没能**写入本地存储。
      * 为 true 时，内存里是登录态而存储里没有 ⇒ 刷新/重启后会被静默登出。
      * 只置位 + warn，界面出口属产品口径（简报第 86 条）。
      */
+    activationStatus: 'ready' as 'ready' | 'pending' | 'error',
+    activationError: '',
+    activationVersion: 0,
     sessionPersistFailed: false,
     /**
      * ⚠§870/D39：**删除**失败与写入失败同样要可见。
@@ -137,66 +174,90 @@ export const useAuthStore = defineStore('auth', {
     sessionClearMissing: [] as string[],
   }),
   getters: {
-    isAuthenticated: (s) => Boolean(s.token) && Boolean(s.user),
+    isAuthenticated: (s) => s.activationStatus === 'ready' && Boolean(s.token) && Boolean(s.user),
   },
   actions: {
-    /** Store token after a successful login API call. */
-    setAuth(token: string, user: string, method = 'password', extra: [string, string][] = []) {
+    /** Revoke admission immediately; publish only after the old DB work has drained. */
+    activateSession(next: AuthSnapshot, persist: boolean, verifiedOwner = false, clear = false, failure?: unknown): Promise<void> {
+      const state = sessionState(this)
+      next = Object.freeze({ ...next })
+      const ticket = {}
       invalidateSession(this)
-      this.token = token
-      this.user = user
-      this.userId = ''
-      this.workspaceId = extra.find(([key]) => key === WS_KEY)?.[1] ?? ''
-      this.authMethod = method
-      this.writeSession([
-        [TOKEN_KEY, token],
-        [USER_KEY, user],
-        [METHOD_KEY, method],
-        [WS_KEY, this.workspaceId],
-        ...extra.filter(([key]) => key !== WS_KEY),
-      ])
+      const activation = { ticket, snapshot: next, promise: Promise.resolve() }
+      state.activation = activation
+      activation.promise = localDB.requestOwnerActivation(
+        verifiedOwner && next.userId && next.workspaceId ? { userId: next.userId, workspaceId: next.workspaceId } : null,
+        () => {
+          if (state.activation !== activation) throw Object.assign(new Error('Session activation superseded.'), { name: 'AbortError' })
+          if (failure) throw failure
+          if (persist && !this.writeSession([[TOKEN_KEY, next.token], [USER_KEY, next.user],
+            [METHOD_KEY, next.authMethod], [WS_KEY, next.workspaceId]])) throw new Error('Session could not be saved. Please retry.')
+          if (clear) {
+            const failed: string[] = []
+            for (const key of [TOKEN_KEY, USER_KEY, WS_KEY, METHOD_KEY]) {
+              try { localStorage.removeItem(key) } catch (error) {
+                failed.push(key)
+                console.warn(`[auth] 本地会话键 ${key} 未能删除：`, error)
+              }
+            }
+            this.sessionClearFailed = failed.length > 0
+            this.sessionClearMissing = failed
+            if (failed.length) throw new Error('Session cleanup failed. Please retry.')
+          }
+          state.applyingRefresh = true
+          try {
+            this.token = next.token
+            this.user = next.user
+            this.userId = next.userId
+            this.workspaceId = next.workspaceId
+            this.authMethod = next.authMethod
+          } finally { state.applyingRefresh = false }
+          return undefined
+        },
+      ).then(() => {
+        if (state.activation !== activation) throw Object.assign(new Error('Session activation superseded.'), { name: 'AbortError' })
+        this.activationVersion++
+        if (state.activation !== activation || state.disposed) throw Object.assign(new Error('Session activation superseded.'), { name: 'AbortError' })
+        this.activationStatus = 'ready'
+        if (state.activation !== activation || state.disposed) throw Object.assign(new Error('Session activation superseded.'), { name: 'AbortError' })
+        state.activation = undefined
+      }).catch(error => {
+        if (state.activation === activation) {
+          this.activationError = error instanceof Error ? error.message : 'Session activation failed.'
+          if (state.activation === activation) this.activationStatus = 'error'
+          if (state.activation === activation) state.activation = undefined
+        }
+        throw error
+      })
+      // The DB is revoked before reactive pending/error watchers can re-enter.
+      this.activationError = ''
+      if (state.activation === activation) this.activationStatus = 'pending'
+      return activation.promise
     },
-    /**
-     * ⚠⚠§867/D33：会话落盘原来是一条条裸 `setItem`。配额写不进去时
-     *   **内存已经改完、存储一个字没进**，而 `isAuthenticated` 只看内存
-     *   ⇒ 用户以为自己登录成功，**刷新/重启后被静默登出**（syncFromStorage
-     *   从存储读回空 token）。界面全程零提示。
-     *
-     * 姿态按 §866 的族规律选：丢的是「用户正在持有的会话」⇒ **必须说话**，
-     * 所以除 warn 外还置 `sessionPersistFailed`，让宿主有机会说实话
-     * （界面要不要挂横幅属产品口径，登记在简报第 86 条）。
-     *
-     * ⚠ 撕裂写：第 1 条成功、第 2 条抛错时，存储里会留下「有 token 没 user」。
-     *   这在 `isAuthenticated = Boolean(token) && Boolean(user)` 下**失败关闭**
-     *   （读回来判为未登录），不会造成越权，故不额外回滚——回滚反而可能
-     *   误删上一段本来完好的会话。
+    setAuth(token: string, user: string, method = 'password', extra: [string, string][] = []) {
+      return this.activateSession({ token, user, userId: '', workspaceId: extra.find(([key]) => key === WS_KEY)?.[1] ?? '', authMethod: method }, true)
+    },
+    /** Publish the complete authoritative record before legacy compatibility keys.
+     * A failed compatibility write remains visible, but cannot create a mixed snapshot.
      */
     writeSession(entries: [string, string][]) {
       try {
+        const values = new Map(entries)
+        localStorage.setItem(SNAPSHOT_KEY, JSON.stringify({ version: 1, revision: crypto.randomUUID(),
+          token: values.get(TOKEN_KEY) ?? this.token, user: values.get(USER_KEY) ?? this.user,
+          workspaceId: values.get(WS_KEY) ?? this.workspaceId, authMethod: values.get(METHOD_KEY) ?? this.authMethod }))
+        // The atomic record is authoritative before compatibility keys can become torn.
         for (const [k, v] of entries) localStorage.setItem(k, v)
         this.sessionPersistFailed = false
+        return true
       } catch (err) {
         this.sessionPersistFailed = true
-        console.warn('[auth] 会话未能写入本地存储，本次登录在刷新后会失效：', err)
+        console.warn('[auth] 会话未能写入本地存储：', err)
+        return false
       }
     },
-    /**
-     * ⚠⚠§872/D42：`workspaceId` 原先是**另一次** `writeSession` 调用
-     *   （setAuth 写 3 个键 → setAuthWithWorkspace 再写第 4 个）
-     *   ⇒ 两段各自 try/catch，第二次失败就是**撕裂态**：
-     *   磁盘上有 token/user/method、唯独缺 workspace_id。
-     *   内存里 workspaceId 有值 ⇒ 本次会话一切正常；
-     *   刷新后 `state.workspaceId = getItem(WS_KEY) || ''` ⇒ **永久为空**。
-     *
-     * 有消费者的后果（不是推测）：
-     *   `composables/usePendingApprovals.ts:80` 的**离线**分支 →
-     *     `enqueueApprovalReplyLocally({ workspaceId: auth.workspaceId || 'default' })`
-     *   ⇒ 用户离线回复的**审批决策**会被写进 outbox 并打上 `'default'` 这个
-     *     workspace ⇒ 决策被记到错误的 workspace 里，flush 之后再也纠不回来。
-     *   （路由守卫 `app/routeGuards.ts:87` 只 `console.debug` 不拦截，
-     *     所以这条链**不会**被守卫挡住 —— 恰好是最容易漏掉的那种。）
-     *
-     * 修法：一次 `writeSession` 写齐 5 个键 ⇒ 不存在「写了一半」的中间态。
+    /** Metadata comes from the successful login response, never a decoded client JWT.
+     * This lease identifies new operations; it does not assign historical database rows.
      */
     setAuthWithWorkspace(
       token: string,
@@ -205,63 +266,32 @@ export const useAuthStore = defineStore('auth', {
       workspaceId: string,
       method = 'password',
     ) {
-      this.setAuth(token, user, method, [[WS_KEY, workspaceId]])
-      this.userId = userId
-      this.workspaceId = workspaceId
+      return this.activateSession({ token, user, userId, workspaceId, authMethod: method }, true, true)
     },
-    /** Legacy compatibility: a session exists without a real token yet. */
+    /** Display-only changes preserve the verified owner and in-flight session. */
+    updateDisplayUser(user: string) {
+      const state = sessionState(this)
+      if (this.activationStatus !== 'ready') throw new Error('Session activation is not ready.')
+      state.applyingRefresh = true
+      try { this.user = user; this.writeSession([[USER_KEY, user]]) }
+      finally { state.applyingRefresh = false }
+    },
     setLegacyUser(user: string) {
-      this.user = user
-      this.writeSession([[USER_KEY, user]])
+      return this.activateSession({ token: this.token, user, userId: '', workspaceId: '', authMethod: 'legacy' }, true)
     },
-    /**
-     * Phase 7: Sync state from localStorage.
-     * Useful for:
-     * - Recovering state after page reload
-     * - Syncing when localStorage is modified externally (testing/automation)
-     * - Cross-tab synchronization
-     *
-     * ⚠⚠⚠§871/D41：原来这里只读 token + user 两个键。
-     * 而它**不是**只在 storage 事件里被调用 —— `app/routeGuards.ts:55-56`
-     * 在**每次导航**都会调它。也就是说，「从存储刷新会话」这条指定路径
-     * 系统性地漏掉了 `workspaceId` / `authMethod`。
-     *
-     * 有消费者的后果（不是推测）：
-     *   `composables/usePendingApprovals.ts:80` → `workspaceId: auth.workspaceId || 'default'`
-     *   `app/routeGuards.ts:87` → 缺 workspaceId 时要求补齐
-     * ⇒ 跨标签登录到**另一个** workspace 后，本标签仍按**旧 workspace** 取待审批。
-     *
-     * ⚠ `userId` 刻意**不在**这里：它从来就不落盘（`state` 里写死 `''`，
-     *   全仓没有 `pocket_user_id` 这个键）—— 见 §871.3 的登记。
-     * ⚠ 那个 `storage` 监听**也已同步补齐**（见文件末尾）：
-     *   它原先只认两个键，只修本函数在跨标签场景下**不会生效**；
-     *   同时补上了 `event.key === null`（规范里 `localStorage.clear()`
-     *   触发的事件 key 是 null）—— 全仓 `clear()` 目前 0 处，但既然条件表达式
-     *   本来就要改，把这个分支一并处理掉比留一个已知缺口更省事，
-     *   且语义正确（`null` 时重新读一遍全部键，正是 clear() 想要的）。
+    /** Restore one committed snapshot and wait for activation. Storage events force
+     * a new epoch even when queued A→B→A events already show identical final values.
      */
-    syncFromStorage() {
-      const storedToken = localStorage.getItem(TOKEN_KEY) || ''
-      const storedUser = localStorage.getItem(USER_KEY) || ''
-      const storedWorkspace = localStorage.getItem(WS_KEY) || ''
-      const storedMethod = localStorage.getItem(METHOD_KEY) || ''
-      if (this.token !== storedToken || this.user !== storedUser || this.workspaceId !== storedWorkspace) {
-        this.userId = ''
+    syncFromStorage(force = false): Promise<void> {
+      const state = sessionState(this)
+      if (state.activation && !force) return state.activation.promise
+      let next: AuthSnapshot
+      try { next = readStoredSession() }
+      catch (error) {
+        return this.activateSession(emptySnapshot(), false, false, false, error)
       }
-
-      // Only update if values actually changed
-      if (this.token !== storedToken) {
-        this.token = storedToken
-      }
-      if (this.user !== storedUser) {
-        this.user = storedUser
-      }
-      if (this.workspaceId !== storedWorkspace) {
-        this.workspaceId = storedWorkspace
-      }
-      if (this.authMethod !== storedMethod) {
-        this.authMethod = storedMethod
-      }
+      if (!force && this.activationStatus === 'ready' && sameStoredSession(this, next)) return Promise.resolve()
+      return this.activateSession(next, false)
     },
     /**
      * JWT 滑动续期（runbook §15.2）：单飞调 /api/auth/refresh 换新 token。
@@ -269,7 +299,7 @@ export const useAuthStore = defineStore('auth', {
      * 决定是否登出），不抛异常。
      */
     async refreshSession(): Promise<boolean> {
-      if (!this.token) return false
+      if (!this.token || this.activationStatus !== 'ready') return false
       const state = sessionState(this)
       const session = captureAuthSession(this)
       if (state.refresh && isCurrentAuthSession(this, state.refresh.session)) return state.refresh.promise
@@ -287,8 +317,8 @@ export const useAuthStore = defineStore('auth', {
           try {
             this.token = res.token
             this.user = displayUser
-            if (res.workspace_id) this.workspaceId = res.workspace_id
-            if (res.user_id) this.userId = res.user_id
+            // Renewal does not upgrade unverified restored metadata into an owner assertion.
+            // Missing identity/workspace requires an explicit activation, not a token refresh.
             this.writeSession([[TOKEN_KEY, this.token], [USER_KEY, this.user],
               [METHOD_KEY, this.authMethod], [WS_KEY, this.workspaceId]])
           } finally {
@@ -324,77 +354,39 @@ export const useAuthStore = defineStore('auth', {
      * 这种场景下后端必然拒绝 /api/auth/logout（token 已不可用），
      * 调它只会白等一轮网络超时，把用户卡在死胡同里。
      */
-    clearLocal() {
-      invalidateSession(this)
-      this.token = ''
-      this.user = ''
-      this.workspaceId = ''
-      this.userId = ''
-      this.authMethod = ''
-      // ⚠⚠⚠§870/D39：原来这里是四条裸 `removeItem`。失败链与 §867/D33
-      // **恰好相反但后果更重**：写失败 = 用户的会话被弄丢（只是丢东西），
-      // 而**删失败 = 会话被留在盘上** —— 用户明确点了「退出」，
-      // 而系统其实还在记着他。
-      //   内存态已经在上面清掉了 ⇒ 本次会话看起来登出成功；
-      //   但 `state: () => ({ token: localStorage.getItem(TOKEN_KEY) … })`
-      //   在下次启动会把**旧 token 读回来** ⇒ 共享设备上「退出登录」等于没退。
-      // 而且抛错会冒泡出本函数 —— `logout()` 没有包 try/catch。
-      //   ⚠ 对照：`api/http.ts` 的 401 路径**是**包了的（那里是正确的样板）。
-      const failed: string[] = []
-      for (const k of [TOKEN_KEY, USER_KEY, WS_KEY, METHOD_KEY]) {
-        try {
-          localStorage.removeItem(k)
-        } catch (err) {
-          failed.push(k)
-          console.warn(`[auth] 本地会话键 ${k} 未能删除（下次启动可能仍被视为已登录）：`, err)
-        }
-      }
-      this.sessionClearFailed = failed.length > 0
-      this.sessionClearMissing = failed
+    clearLocal(): Promise<void> {
+      // Keep an atomic anonymous snapshot: stale compatibility keys cannot resurrect a login.
+      return this.activateSession(emptySnapshot(), true, false, true)
     },
+
     /**
-     * Phase 1: 先调后端 /api/auth/logout 撤销 RedClaw session，再清本地。
-     * 失败（401/网络）视作幂等成功，因为本地状态反正要被清。
+     * Revoke local admission immediately while remote revocation uses its captured token.
+     * A remote failure cannot restore the old login; a local activation failure stays visible.
      */
     async logout() {
-      const session = captureAuthSession(this)
-      if (this.token) {
-        try {
-          await logoutRemote()
-        } catch (e) {
-          // 静默吞掉：登出路径不允许阻塞
-          if (isCurrentAuthSession(this, session)) console.debug('logoutRemote failed (ignored):', e)
-        }
+      const token = this.token
+      const remote = token ? logoutRemote(token).catch(error => { console.debug('logoutRemote failed (ignored):', error) }) : Promise.resolve()
+      const cleared = this.clearLocal()
+      try { await cleared } catch (error) {
+        if (!(error instanceof Error) || error.name !== 'AbortError') throw error
       }
-      if (isCurrentAuthSession(this, session)) this.clearLocal()
+      await remote
     },
   },
 })
 
-/**
- * Phase 7: Setup storage event listener for cross-tab sync
- * This allows the auth state to stay in sync across multiple tabs/windows
+/** Snapshot events revoke this runtime immediately. This does not coordinate
+ * independent SQLite snapshots or make legacy multi-key writers atomic.
  */
 if (typeof window !== 'undefined') {
   window.addEventListener('storage', (event) => {
-    // ⚠⚠⚠§871/D41：原来这里只认 TOKEN_KEY / USER_KEY 两个键，
-    // 而 syncFromStorage 现在会刷新四个键 —— 只修后者是**不完整**的：
-    // 别的标签改了 `pocket_workspace_id`，本标签连事件都不收，
-    // 同步函数压根不会被调用 ⇒ §871 的修复在跨标签场景下不会生效。
-    // ⇒ 触发条件必须与「被刷新的键集合」保持一致。
-    // `event.key === null` 对应 `localStorage.clear()`（规范：
-    //   clear() 触发的事件 key 为 null）：此时无法知道改了哪些键，
-    //   重新读一遍全部键正是它想要的行为。
-    if (event.key === null || event.key === TOKEN_KEY || event.key === USER_KEY
-      || event.key === WS_KEY || event.key === METHOD_KEY) {
-      // Only sync if the store is already initialized
+    if (event.key === null || event.key === SNAPSHOT_KEY ||
+      ((event.key === TOKEN_KEY || event.key === USER_KEY || event.key === WS_KEY || event.key === METHOD_KEY)
+        && localStorage.getItem(SNAPSHOT_KEY) === null)) {
       try {
         const authStore = useAuthStore()
-        // Queued A→B→A events may already have matching final storage values.
-        invalidateSession(authStore)
-        authStore.syncFromStorage()
-      } catch (e) {
-        // Store not initialized yet, will sync on first access
+        void authStore.syncFromStorage(true).catch(error => console.warn('[auth] 会话恢复失败：', error))
+      } catch (error) {
         console.debug('Auth store not initialized, skipping storage sync')
       }
     }

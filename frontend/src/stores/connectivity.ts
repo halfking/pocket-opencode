@@ -10,12 +10,12 @@
  */
 import { defineStore } from 'pinia'
 import { watch } from 'vue'
-import { useAuthStore } from './auth'
+import { useAuthStore, captureAuthSession, assertAuthSession } from './auth'
 import { resolveApiBase } from '../config/api-base'
 import { fetchWithTimeout } from '../api/fetch-timeout.ts'
 import { isLobsterReady, lobsterReady } from '../native/lobster-init'
-import { localDB, localDbAsSql } from '../native/local-db'
-import { MobileSyncRuntime, type RuntimeEvent } from '../native/mobileSyncRuntime'
+import { localDB } from '../native/local-db'
+import { MobileSyncRuntime, type RuntimeEvent, type RuntimeAuth } from '../native/mobileSyncRuntime'
 import { startEmailFetchHost } from '../features/email/email-fetch-host'
 // 存储与同步策略（storage-sync）：同步 runtime 的免 Pinia 判定/上报入口。
 import {
@@ -62,18 +62,51 @@ export const useConnectivityStore = defineStore('connectivity', {
       })
 
       const auth = useAuthStore()
+      watch(() => [auth.activationStatus, auth.activationVersion], () => {
+        this.syncing = false
+        this.pendingCount = 0
+        this.deadLetterCount = 0
+        this.lastSyncAt = 0
+        this.lastError = ''
+      }, { flush: 'sync' })
+      const runtimeDbs = new WeakMap<RuntimeAuth, import('../native/sqlDb').SqlDb>()
       this.runtime = new MobileSyncRuntime({
         isOnline: () => this.online,
         isReady: () => isLobsterReady(),
         auth: () => {
           if (!auth.isAuthenticated || auth.workspaceId === '' || auth.token === '') return null
-          return { token: auth.token, workspaceId: auth.workspaceId }
+          const session = captureAuthSession(auth)
+          const origin: RuntimeAuth = { token: auth.token, workspaceId: auth.workspaceId,
+            assertCurrent: () => assertAuthSession(auth, session) }
+          if (isLobsterReady()) {
+            const bound = localDB.bindOperation(localDB.captureOperation({ kind: 'local-edit' }))
+            runtimeDbs.set(origin, { run: bound.run, all: bound.query })
+          }
+          return origin
         },
-        db: () => (isLobsterReady() ? localDbAsSql(localDB) : null),
+        db: origin => {
+          if (!origin || !isLobsterReady()) return null
+          origin.assertCurrent?.()
+          return runtimeDbs.get(origin) ?? null
+        },
         // ⚠§951：原先是**裸 fetch 透传** ⇒ 移动端同步的每个请求都没有上界
         // ⇒ 离线队列会被一条挂死的请求卡住（outbox 永远排不空）。
         // ⇒ 收进唯一的那一层（../api/fetch-timeout，30s）。
-        fetchImpl: (...args: Parameters<typeof fetch>) => fetchWithTimeout(args[0], args[1]),
+        fetchImpl: async (input, init) => {
+          const session = captureAuthSession(auth)
+          const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined))
+          if (headers.get('Authorization') !== `Bearer ${auth.token}`) {
+            throw Object.assign(new Error('Sync request belongs to an old credential.'), { name: 'AbortError' })
+          }
+          const response = await fetchWithTimeout(input, init)
+          assertAuthSession(auth, session)
+          const json = response.json.bind(response)
+          response.json = async () => {
+            assertAuthSession(auth, session)
+            try { return await json() } finally { assertAuthSession(auth, session) }
+          }
+          return response
+        },
         apiBase: resolveApiBase(),
         onEvent: (event) => this.applyRuntimeEvent(event),
         // storage-sync 挂点：runtime 按模块读缓存策略（免 Pinia），
@@ -139,11 +172,19 @@ export const useConnectivityStore = defineStore('connectivity', {
     /** 入队离线操作后刷新计数（全局状态条立即反映）。 */
     async refreshCounts() {
       if (!isLobsterReady()) return
+      const auth = useAuthStore()
+      if (!auth.isAuthenticated) return
+      const session = captureAuthSession(auth)
+      const bound = localDB.bindOperation(localDB.captureOperation({ kind: 'local-edit' }))
       try {
         const { SqliteOutboxStore } = await import('../native/outboxStore.ts')
-        const outbox = new SqliteOutboxStore(localDbAsSql(localDB))
-        this.pendingCount = await outbox.countByState(['queued', 'inflight'])
-        this.deadLetterCount = await outbox.countByState(['dead_letter'])
+        assertAuthSession(auth, session)
+        const outbox = new SqliteOutboxStore({ run: bound.run, all: bound.query })
+        const pending = await outbox.countByState(['queued', 'inflight'])
+        const dead = await outbox.countByState(['dead_letter'])
+        assertAuthSession(auth, session)
+        this.pendingCount = pending
+        this.deadLetterCount = dead
       } catch {
         // 本地库不可用时保持旧计数
       }

@@ -732,7 +732,7 @@ import { beforeRouteTransition } from './routeTransition'
  */
 const HOME_ROOTS = new Set(['/ai', '/tasks', '/ai-chat', '/notes', '/messages', '/more', '/email', '/vault', '/pkm/today', '/instances', '/sessions', '/settings'])
 
-router.beforeEach((to, from, next) => {
+router.beforeEach(async (to, from, next) => {
   if (typeof sessionStorage !== 'undefined') {
     if (HOME_ROOTS.has(to.path)) {
       sessionStorage.removeItem('pocket:navigatedFromHome')
@@ -743,6 +743,6 @@ router.beforeEach((to, from, next) => {
   // 路由转场方向判定 + 滚动位置记忆（原生顺滑度审计 P0 #1 / P1 #9）；
   // 必须在守卫阶段同步写入——App.vue 渲染 <Transition> 时就要读方向。
   beforeRouteTransition(to.path, from.path, from.matched.length)
-  runGuard(to, next)
+  await runGuard(to, next)
 })
 export default router

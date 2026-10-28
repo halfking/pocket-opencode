@@ -1,5 +1,7 @@
 {
   "common": {
+    "sessionSwitching": "正在切换本地会话…",
+    "sessionSwitchFailed": "本地会话切换未完成，请重新登录或重试退出。",
     "confirm": "确认",
     "cancel": "取消",
     "save": "保存",

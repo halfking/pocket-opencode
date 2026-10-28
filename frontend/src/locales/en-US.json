@@ -1,5 +1,7 @@
 {
   "common": {
+    "sessionSwitching": "Switching the local session…",
+    "sessionSwitchFailed": "The local session could not be switched. Sign in again or retry signing out.",
     "confirm": "Confirm",
     "cancel": "Cancel",
     "save": "Save",

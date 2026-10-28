@@ -102,6 +102,7 @@ export class GatewayLiveClient {
     private nodeId: number,
     private getToken: () => string | null,
     private handlers: GatewayLiveHandlers = {},
+    private isCurrent: () => boolean = () => true,
   ) {}
 
   /**
@@ -115,6 +116,7 @@ export class GatewayLiveClient {
   open() {
     this.closed = false
     this.connect()
+    if (this.closed) return
     // 兜底：EventSource 自身的重连在某些 WebView 里不触发，
     // 这里每 30s 检查一次连接状态。
     this.watchdog = window.setInterval(() => {
@@ -138,6 +140,7 @@ export class GatewayLiveClient {
 
   private connect() {
     if (this.closed) return
+    if (!this.isCurrent()) { this.close(); return }
 
     const token = this.getToken()
     const params = new URLSearchParams()
@@ -147,6 +150,7 @@ export class GatewayLiveClient {
     this.es = new EventSource(url)
 
     this.es.onopen = () => {
+      if (this.closed || !this.isCurrent()) { this.close(); return }
       // 连上就把退避重置，避免一次抖动后长期停在 30s 间隔。
       this.retryDelay = 1500
       this.handlers.onOpen?.()
@@ -155,6 +159,7 @@ export class GatewayLiveClient {
     // 上游用默认事件（data: {...}），信封里的 type 字段区分变体，
     // 所以只需 onmessage，不必 addEventListener 逐类型注册。
     this.es.onmessage = (e: MessageEvent) => {
+      if (this.closed || !this.isCurrent()) { this.close(); return }
       if (!e.data) return
       let parsed: LiveStreamEnvelope
       try {
@@ -167,6 +172,7 @@ export class GatewayLiveClient {
     }
 
     this.es.onerror = (e) => {
+      if (this.closed || !this.isCurrent()) { this.close(); return }
       this.handlers.onError?.(e)
       if (!this.closed) this.reconnect()
     }

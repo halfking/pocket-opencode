@@ -1,5 +1,7 @@
 {
   "common": {
+    "sessionSwitching": "Cambiando la sesión local…",
+    "sessionSwitchFailed": "No se pudo cambiar la sesión local. Inicia sesión de nuevo o vuelve a intentar cerrarla.",
     "confirm": "Confirmar",
     "cancel": "Cancelar",
     "save": "Guardar",
@@ -117,6 +119,7 @@
     "notifications": "Notifications"
   },
   "settings": {
+    "storageUnsupportedPolicy": "Este entorno no admite la configuración de sincronización por módulo.",
     "aiGateway": "AI Gateway",
     "configured": "Configured",
     "notConfigured": "Not Configured",
@@ -429,6 +432,8 @@
     "fetchHintHttpError": "Recuperación en segundo plano incompleta ({code}); mensajes sincronizados"
   },
   "errors": {
+    "emailCredentialsLocalOnly": "Las credenciales de correo solo se pueden guardar en el dispositivo.",
+    "moduleLocalOnly": "Este módulo está configurado para guardarse solo en el dispositivo.",
     "rssNotConfigured": "Aún no hay ninguna fuente RSS configurada. Añade una para empezar.",
     "rssSourceMissing": "Esa fuente ya no existe; puede que se haya eliminado.",
     "emailNotConfigured": "Aún no hay ningún buzón configurado. Añade una cuenta en Ajustes de correo.",

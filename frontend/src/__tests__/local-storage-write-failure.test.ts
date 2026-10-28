@@ -222,7 +222,8 @@ function sessionWriteIsGrouped(src: string): { ok: boolean; why?: string } {
   // setAuth 不得再有裸 setItem（收拢到 writeSession 才是「成组」）
   const setAuth = fnBody(src, 'setAuth')
   if (/localStorage\s*\.\s*setItem/.test(setAuth)) return { ok: false, why: 'setAuth 仍有裸 setItem ⇒ 会话是撕裂写的' }
-  if (!/writeSession/.test(setAuth)) return { ok: false, why: 'setAuth 没有走 writeSession' }
+  const activation = fnBody(src, 'activateSession')
+  if (!/writeSession/.test(setAuth) && !(/activateSession/.test(setAuth) && /writeSession/.test(activation))) return { ok: false, why: '登录没有走统一会话快照写入' }
   return { ok: true }
 }
 

@@ -37,7 +37,7 @@ async function fixture(run) {
   try {
     const { useAuthStore } = await vite.ssrLoadModule('/src/stores/auth.ts')
     const auth = useAuthStore()
-    auth.setAuthWithWorkspace('A-token', 'Alice', 'a', 'wa')
+    await auth.setAuthWithWorkspace('A-token', 'Alice', 'a', 'wa')
     auth.maybeRefresh = async () => {}
     const policy = await vite.ssrLoadModule('/src/stores/syncPolicyStore.ts')
     policy.installSyncPolicyStorage(storage)
@@ -127,7 +127,7 @@ test('an old 401 cannot refresh or replay a stream under a new account', () => f
   f.setFetch(() => response.promise)
   const stream = f.start()
   await tick()
-  f.auth.setAuthWithWorkspace('B-token', 'Bob', 'b', 'wb')
+  await f.auth.setAuthWithWorkspace('B-token', 'Bob', 'b', 'wb')
   response.resolve(new Response('{}', { status: 401 }))
   await stream.settled
   assert.equal(f.requests.length, 1)
@@ -142,7 +142,7 @@ test('local and identity changes cancel a pending reader and suppress late frame
     f.setFetch(async () => new Response(new ReadableStream({ start(c) { controller = c }, cancel() { cancelled++ } }), { headers: { 'content-type': 'text/event-stream' } }))
     const stream = f.start({ syncModule: 'notes' })
     await tick()
-    change()
+    await change()
     await Promise.race([stream.settled, new Promise((_, reject) => setTimeout(() => reject(new Error('stream did not stop')), 500))])
     assert.equal(cancelled, 1)
     assert.deepEqual(stream.deltas, [])
@@ -154,7 +154,7 @@ test('local and identity changes cancel a pending reader and suppress late frame
 test('the same stream id is isolated between login generations and old replay is inaccessible', () => fixture(async f => {
   const first = f.start({}, 'shared-chat')
   await first.settled
-  f.auth.setAuthWithWorkspace('B-token', 'Bob', 'b', 'wb')
+  await f.auth.setAuthWithWorkspace('B-token', 'Bob', 'b', 'wb')
   const replay = []
   const replayErrors = []
   f.runtime.subscribe('shared-chat', { onDelta: d => replay.push(d), onError: e => replayErrors.push(e) })
@@ -210,7 +210,7 @@ test('an old handle cannot cancel a replacement stream with the same id in a new
   f.setFetch(async () => new Response(new ReadableStream({ start() {}, cancel() {} }), { headers: { 'content-type': 'text/event-stream' } }))
   const old = f.start({}, 'running-shared-chat')
   await tick()
-  f.auth.setAuthWithWorkspace('B-token', 'Bob', 'b', 'wb')
+  await f.auth.setAuthWithWorkspace('B-token', 'Bob', 'b', 'wb')
   const next = f.start({}, 'running-shared-chat')
   await tick()
   assert.notEqual(old.handle, next.handle)
@@ -274,7 +274,7 @@ test('subscriber exceptions remain isolated during live and rejected replay deli
   f.runtime.spawnChat('throwing-subscriber', input, { onDelta: d => seen.push(d.content), onDone: settle })
   await done
   assert.deepEqual(seen, ['answer'])
-  f.auth.setAuthWithWorkspace('B-token', 'Bob', 'b', 'wb')
+  await f.auth.setAuthWithWorkspace('B-token', 'Bob', 'b', 'wb')
   assert.doesNotThrow(() => f.runtime.subscribe('throwing-subscriber', { onError() { throw new Error('error handler failure') } }))
 }))
 

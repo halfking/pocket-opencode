@@ -1,6 +1,7 @@
 import { resolveRuntimeApiBase } from '../config/api-base'
 import { nextReconnectDelay } from './reconnectPolicy'
 import { buildWebSocketUrl } from './websocket-url'
+import { useAuthStore, captureAuthSession, isCurrentAuthSession } from '../stores/auth'
 
 // WebSocket 客户端管理
 class WebSocketClient {
@@ -34,9 +35,14 @@ class WebSocketClient {
     try {
       // 每次连接用当前 pocketd 基址 + 最新 token（设置里改基址后 reload 即可）
       this.url = nextUrl
-      this.ws = new WebSocket(this.url)
+      const auth = useAuthStore()
+      const session = captureAuthSession(auth)
+      const socket = new WebSocket(this.url)
+      this.ws = socket
+      const current = () => this.ws === socket && isCurrentAuthSession(auth, session)
 
       this.ws.onopen = () => {
+        if (!current()) return
         console.log('WebSocket connected')
         if (this.reconnectTimer) {
           clearTimeout(this.reconnectTimer)
@@ -49,6 +55,7 @@ class WebSocketClient {
       }
 
       this.ws.onmessage = (event) => {
+        if (!current()) return
         try {
           const message = JSON.parse(event.data)
           this.handleMessage(message)
@@ -62,6 +69,7 @@ class WebSocketClient {
       }
 
       this.ws.onclose = () => {
+        if (!current()) return
         console.log('WebSocket disconnected')
         this.scheduleReconnect()
       }
@@ -142,8 +150,10 @@ class WebSocketClient {
       this.reconnectTimer = null
     }
     if (this.ws) {
-      this.ws.close()
+      const socket = this.ws
       this.ws = null
+      socket.onopen = socket.onmessage = socket.onclose = socket.onerror = null
+      socket.close()
     }
   }
 
@@ -156,8 +166,6 @@ class WebSocketClient {
   }
 }
 
-const TOKEN_KEY = 'pocket_token'
-
 function wsHttpBase(): string {
   // 与 HTTP API 共用运行时解析：Capacitor 的 https://localhost 在缺少
   // build default 时必须回退到生产/配置后的真实 pocketd 地址，不能让 WS
@@ -167,13 +175,14 @@ function wsHttpBase(): string {
 
 /** 返回可用的 ws 地址；基址不可用时返回 null（= 不要连），而不是造一个非法 URL。 */
 function getWsUrl(): string | null {
-  return buildWebSocketUrl(wsHttpBase(), localStorage.getItem(TOKEN_KEY))
+  const auth = useAuthStore()
+  return auth.isAuthenticated ? buildWebSocketUrl(wsHttpBase(), auth.token) : null
 }
 
-export const wsClient = new WebSocketClient(getWsUrl() ?? '')
+export const wsClient = new WebSocketClient('')
 
 /**
- * 延迟建立 WS 连接：仅在已登录（localStorage 中存在 pocket_token）时才 connect。
+ * 延迟建立 WS 连接：仅在认证激活就绪时才 connect。
  *
  * 历史问题：模块加载即 wsClient.connect()，导致未登录也建立无认证的 WS。
  * 现在改为显式调用 —— 由 main.ts / LoginView 在认证成功后触发，
@@ -182,8 +191,8 @@ export const wsClient = new WebSocketClient(getWsUrl() ?? '')
  * 注意：handler 注册（ws-bus.initWsBus）与连接分离，互不影响。
  */
 export function connectWs(): void {
-  const token = localStorage.getItem(TOKEN_KEY)
-  if (!token) {
+  const auth = useAuthStore()
+  if (!auth.isAuthenticated) {
     // 未登录：不建立 WS，避免无认证连接
     return
   }

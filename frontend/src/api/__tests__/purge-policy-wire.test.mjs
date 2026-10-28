@@ -12,7 +12,11 @@ async function withApi(run) {
   } })
   setActivePinia(createPinia())
   const vite = await createServer({ configFile: false, server: { middlewareMode: true, hmr: false }, optimizeDeps: { noDiscovery: true } })
-  try { await run(await vite.ssrLoadModule('/src/api/syncPolicy.ts'), values, vite) }
+  try {
+    const { useAuthStore } = await vite.ssrLoadModule('/src/stores/auth.ts')
+    await useAuthStore().syncFromStorage()
+    await run(await vite.ssrLoadModule('/src/api/syncPolicy.ts'), values, vite)
+  }
   finally {
     await vite.close()
     globalThis.fetch = previousFetch
@@ -47,7 +51,7 @@ test('a purge response cannot complete under another login', () => withApi(async
   const { useAuthStore } = await vite.ssrLoadModule('/src/stores/auth.ts')
   const auth = useAuthStore()
   const pending = api.purgeCloudCopy(['notes'])
-  auth.setAuthWithWorkspace('other-token', 'Other user', 'other-user', 'other-workspace')
+  await auth.setAuthWithWorkspace('other-token', 'Other user', 'other-user', 'other-workspace')
   resolve(Response.json({ purged: { notes: 2 } }))
   await assert.rejects(pending, error => error.name === 'AbortError')
   assert.equal(values.get('pocket_token'), 'other-token')

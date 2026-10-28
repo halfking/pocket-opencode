@@ -1,5 +1,7 @@
 {
   "common": {
+    "sessionSwitching": "Changement de session locale…",
+    "sessionSwitchFailed": "Le changement de session locale a échoué. Reconnectez-vous ou réessayez de vous déconnecter.",
     "confirm": "Confirmer",
     "cancel": "Annuler",
     "save": "Enregistrer",

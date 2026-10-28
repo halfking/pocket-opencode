@@ -35,6 +35,8 @@ import type { SyncModule } from '../api/syncPolicyContract.ts'
 export interface RuntimeAuth {
   token: string
   workspaceId: string
+  /** Captured at trigger entry; token equality cannot detect A→B→A. */
+  assertCurrent?(): void
 }
 
 /** 模块同步上报条目（落点由宿主决定；App 里写进 syncPolicyStore.lastSyncReport）。 */
@@ -51,7 +53,7 @@ export interface RuntimeDeps {
   /** 未登录 / 无 workspace 时返回 null，本轮跳过。 */
   auth(): RuntimeAuth | null
   /** 返回底层 SQL 连接；不可用时 null。 */
-  db(): SqlDb | null
+  db(auth?: RuntimeAuth): SqlDb | null
   fetchImpl: typeof fetch
   apiBase?: string
   onEvent?(event: RuntimeEvent): void
@@ -175,7 +177,7 @@ export class MobileSyncRuntime {
       this.deps.onEvent?.({ type: 'skipped', reason: `${reason}:unauthenticated` })
       return
     }
-    const db = this.deps.db()
+    const db = this.deps.db(auth)
     if (db === null) {
       this.deps.onEvent?.({ type: 'skipped', reason: `${reason}:db-locked` })
       return
@@ -202,6 +204,7 @@ export class MobileSyncRuntime {
         // ai-chat=local：会话创建/消息重放留在队列（不进死信，见 skipActions 语义）。
         skipActions: aiChatLocal ? ['session.create', 'session.prompt'] : undefined,
       })
+      auth.assertCurrent?.()
       this.deps.onEvent?.({
         type: 'drained',
         succeeded: drain.succeeded,
@@ -213,6 +216,7 @@ export class MobileSyncRuntime {
       // 同步范围 = 本地已知实例（离线创建过会话的实例也会被覆盖）。
       // ⚠ 实例清单**不随 ai-chat=local 清空**：列表还承载下面的审批回填。
       const instanceIds = await listInstanceIds(db)
+      auth.assertCurrent?.()
       if (aiChatLocal) {
         this.deps.onModuleSyncReport?.({ module: 'ai-chat', status: 'skipped' })
       }
@@ -225,6 +229,7 @@ export class MobileSyncRuntime {
               workspaceId: auth.workspaceId,
               instanceId,
             })
+            auth.assertCurrent?.()
             aiChatMoved +=
               result.pushedCreates + result.pushedDeletes + result.pulledUpserts
             this.deps.onEvent?.({
@@ -237,6 +242,7 @@ export class MobileSyncRuntime {
               },
             })
           } catch (err) {
+            auth.assertCurrent?.()
             this.deps.onEvent?.({
               type: 'error',
               phase: `sync-sessions:${instanceId}`,
@@ -248,12 +254,14 @@ export class MobileSyncRuntime {
         // 审批 pending 快照回填（失败不阻断其余实例）。
         try {
           const server = await fetchPendingApprovals(doFetch, instanceId)
+          auth.assertCurrent?.()
           if (server !== null) {
             const backfill = await backfillApprovals(approvalStore, {
               workspaceId: auth.workspaceId,
               instanceId,
               server,
             })
+            auth.assertCurrent?.()
             this.deps.onEvent?.({
               type: 'approvals-backfilled',
               instanceId,
@@ -262,6 +270,7 @@ export class MobileSyncRuntime {
             })
           }
         } catch (err) {
+          auth.assertCurrent?.()
           this.deps.onEvent?.({
             type: 'error',
             phase: `backfill-approvals:${instanceId}`,
@@ -270,6 +279,7 @@ export class MobileSyncRuntime {
         }
       }
 
+      auth.assertCurrent?.()
       // storage-sync：本轮 ai-chat 数据在云端正常收敛 ⇒ 上报 synced（含条数）。
       if (!aiChatLocal) {
         this.deps.onModuleSyncReport?.({ module: 'ai-chat', status: 'synced', count: aiChatMoved })
@@ -278,6 +288,7 @@ export class MobileSyncRuntime {
       this.status.lastSyncAt = Date.now()
       this.status.lastError = ''
     } catch (err) {
+      try { auth.assertCurrent?.() } catch { return }
       this.status.lastError = err instanceof Error ? err.message : String(err)
       this.deps.onEvent?.({
         type: 'error',
@@ -286,7 +297,9 @@ export class MobileSyncRuntime {
       })
     } finally {
       this.syncing = false
-      const dbAfter = this.deps.db()
+      let current = true
+      try { auth.assertCurrent?.() } catch { current = false }
+      const dbAfter = current ? this.deps.db(auth) : null
       if (dbAfter !== null) {
         try {
           const outbox = new SqliteOutboxStore(dbAfter)
@@ -296,7 +309,8 @@ export class MobileSyncRuntime {
           // 计数失败不影响本轮结果
         }
       }
-      this.deps.onEvent?.({
+      try { auth.assertCurrent?.() } catch { current = false }
+      if (current) this.deps.onEvent?.({
         type: 'done',
         pendingCount: this.status.pendingCount,
         deadLetterCount: this.status.deadLetterCount,
@@ -317,6 +331,7 @@ async function listInstanceIds(db: SqlDb): Promise<string[]> {
 export function createRuntimeFetch(deps: RuntimeDeps, auth: RuntimeAuth): AuthorizedFetch {
   const base = deps.apiBase ?? ''
   return async (input, init) => {
+    auth.assertCurrent?.()
     const res = await deps.fetchImpl(`${base}${input}`, {
       method: init?.method ?? 'GET',
       headers: {
@@ -325,9 +340,11 @@ export function createRuntimeFetch(deps: RuntimeDeps, auth: RuntimeAuth): Author
       },
       body: init?.body,
     })
+    auth.assertCurrent?.()
     return {
       status: res.status,
-      json: () => {
+      json: async () => {
+        auth.assertCurrent?.()
         // 内联 HTML 守卫而非复用 api/jsonGuard：Node 测试用假 Response 实现，
         // headers 未必存在（可选链兜底）；本模块也不得 import Pinia 系模块。
         const ct = (res.headers?.get?.('content-type') || '').toLowerCase()
@@ -338,7 +355,9 @@ export function createRuntimeFetch(deps: RuntimeDeps, auth: RuntimeAuth): Author
             ),
           )
         }
-        return res.json() as Promise<unknown>
+        const body = await res.json() as unknown
+        auth.assertCurrent?.()
+        return body
       },
     }
   }
