@@ -1,33 +1,13 @@
 /**
- * syncPolicyStore — 「存储与同步」策略的 Pinia store。
- *
- * 数据流（设计 03 §8 / 04 §4）：
- *   load()：远端 GET /api/v1/portal/sync-policy
- *     ├─ 成功 → 写 state + localStorage 缓存（op_sync_policy_v1）
- *     ├─ 失败（未配置/不可达/未登录）→ 读缓存 → 仍没有 → 本地四个门户模块的安全默认 { local }
- *     └─ 任何失败都**不阻塞 UI**：设置页永远可以渲染（未确认策略时暂停上传）。
- *   setModule(module, mode)：乐观更新 + 缓存 → PUT；失败回滚并抛错（组件 toast）。
- *   lastSyncReport：同步引擎按模块上报 {module,status:'synced'|'skipped',count}，
- *     内存（本 store，供设置页渲染）+ localStorage（op_sync_report_v1，冷启动恢复）。
- *
- * ## 与同步引擎的边界（重要）
- *
- * native/mobileSyncRuntime 等同步代码**不得 import Pinia 模块**（其头注释的
- * 既有约定）。因此引擎侧用的是本文件导出的两个免 Pinia 入口：
- *   - readCachedModuleMode(module)：直接读当前策略缓存（缺省 local）；
- *   - recordSyncReportEntry(entry)：localStorage 为 SSOT 写报告；若当前有
- *     活动 Pinia（getActivePinia）则同步更新 store state，设置页实时可见。
- * 两个入口在 Node（node --test）下都可加载：localStorage 访问全部带守卫。
- *
- * ## 测试注入
- *
- * 传输层（transport）默认懒加载 ../api/syncPolicy.ts（运行期才 import，
- * 本文件静态依赖因此只有 pinia）。测试直接改写 syncPolicyTransport 的方法，
- * 并用 installSyncPolicyStorage 注入内存存储 —— 不需要网络，也不需要拉起
- * api 层的 import 链。
+ * Portal policy transport is separate from effective policy and upload admission.
+ * Disk cache is only a candidate: the owner and complete LocalDB policy barrier
+ * must confirm it before any cloud reader may use it. Local requests revoke
+ * admission synchronously; state/cache publish once old DB work has drained.
+ * Native and stream consumers use readCachedModuleMode plus the change event.
  */
 
 import { defineStore, getActivePinia } from 'pinia'
+import type { PolicySnapshot, PolicySnapshotPublisher } from '../native/local-db-leases'
 // ⚠ 运行时值只能从 syncPolicyContract（零依赖）取：api/syncPolicy 会拉进
 //   stores/auth → api/auth（无扩展名 import），Node 的 ESM 解析器解不开那条链。
 import {
@@ -45,6 +25,7 @@ import {
 // ---------------------------------------------------------------------------
 
 export const SYNC_POLICY_CACHE_KEY = 'op_sync_policy_v1'
+export const SYNC_POLICY_LOCAL_INTENTS_KEY = 'op_sync_policy_local_intents_v1'
 export const SYNC_REPORT_CACHE_KEY = 'op_sync_report_v1'
 
 export interface SyncReportEntry {
@@ -91,6 +72,9 @@ interface StorageLike {
   getItem(key: string): string | null
   setItem(key: string, value: string): void
   removeItem(key: string): void
+  readonly length?: number
+  key?(index: number): string | null
+  keys?(): Iterable<string>
 }
 
 let injectedStorage: StorageLike | null = null
@@ -98,12 +82,139 @@ let scopeResolver: (() => string) | null = null
 // 写入被浏览器拒绝时，过滤器仍须看到本进程已生效的策略。
 let volatileCache: SyncPolicyCache | null = null
 let nextPolicyGeneration = 0
+interface LocalIntent {
+  version: 1
+  scope: string
+  workspace?: string
+  module: SyncModule
+}
+const INTENT_PREFIX = `${SYNC_POLICY_LOCAL_INTENTS_KEY}:`
+const MAX_STORAGE_KEYS = 4096
+const volatileIntents = new Map<string, LocalIntent>()
+let intentSequence = 0
+
+function storageKeys(storage: StorageLike): string[] {
+  if (storage.keys) {
+    const keys: string[] = []
+    for (const key of storage.keys()) {
+      if (keys.length >= MAX_STORAGE_KEYS) throw new Error('Policy intent storage limit reached.')
+      keys.push(key)
+    }
+    return keys
+  }
+  if (typeof storage.length !== 'number' || !storage.key || storage.length > MAX_STORAGE_KEYS) throw new Error('Policy intent storage cannot be inspected safely.')
+  return Array.from({ length: storage.length }, (_, index) => storage.key!(index)).filter((key): key is string => key !== null)
+}
+function readLocalIntents(context: SyncPolicyContext): { modules: SyncModule[]; keys: Map<string, LocalIntent>; error: string; volatile: boolean } {
+  const found = new Map<string, LocalIntent>()
+  try {
+    const storage = policyStorage()
+    if (!storage) throw new Error('Local policy storage is unavailable.')
+    for (const key of storageKeys(storage)) {
+      if (!key.startsWith(INTENT_PREFIX)) continue
+      const raw = storage.getItem(key)
+      if (raw === null) continue // An exact intent may have been acknowledged in another tab.
+      if (raw.length > 8192) throw new Error('Invalid local policy intent.')
+      const value = JSON.parse(raw)
+      if (value?.version !== 1 || typeof value.scope !== 'string' || !isKnownSyncModule(value.module) ||
+        (value.workspace !== undefined && typeof value.workspace !== 'string')) throw new Error('Invalid local policy intent.')
+      found.set(key, value)
+    }
+    for (const [key, value] of volatileIntents) found.set(key, value)
+    const scope = context.intentScope ?? context.scope
+    for (const [key, value] of found) {
+      // Missing stable identity on cold auth restoration can only broaden denial.
+      const matches = scope && value.scope ? scope === value.scope
+        : context.workspace !== undefined ? context.workspace === value.workspace : scope === value.scope
+      if (!matches) found.delete(key)
+    }
+    return { modules: SYNC_MODULES.filter(module => [...found.values()].some(value => value.module === module)), keys: found, error: '', volatile: [...found.keys()].some(key => volatileIntents.has(key)) }
+  } catch (error) {
+    return { modules: [...SYNC_MODULES], keys: found, error: error instanceof Error ? error.message : String(error), volatile: true }
+  }
+}
+function addLocalIntent(module: SyncModule, context: SyncPolicyContext): { persisted: boolean; key: string; value: LocalIntent } {
+  const value: LocalIntent = { version: 1, scope: context.intentScope ?? context.scope, workspace: context.workspace, module }
+  const key = `${INTENT_PREFIX}${encodeURIComponent(value.scope).slice(0, 2048)}:${module}:${Date.now()}:${++intentSequence}:${Math.random().toString(36).slice(2)}`
+  volatileIntents.set(key, value)
+  try {
+    const storage = policyStorage()
+    if (!storage || value.scope.length > 2048 || storageKeys(storage).length >= MAX_STORAGE_KEYS) return { persisted: false, key, value }
+    storage.setItem(key, JSON.stringify(value))
+    volatileIntents.delete(key)
+    return { persisted: true, key, value }
+  } catch { return { persisted: false, key, value } }
+}
+function clearLocalIntents(keys: Map<string, LocalIntent>, module: SyncModule, context: SyncPolicyContext, ownedKey?: string): boolean {
+  try {
+    const storage = policyStorage()
+    if (!storage) return false
+    for (const [key, value] of keys) {
+      const scope = context.intentScope ?? context.scope
+      if (value.module !== module || (key !== ownedKey && (!scope || value.scope !== scope))) continue
+      // Broad workspace matches are refusal metadata, never authority to clear
+      // another principal's persisted choice when stable identity is unknown.
+      // Keys are immutable and unique per request: no read/modify/write CAS and
+      // no older response can remove a newer tab's local choice.
+      storage.removeItem(key)
+      volatileIntents.delete(key)
+    }
+    return true
+  } catch { return false }
+}
+function storageWritable(): boolean {
+  try {
+    const storage = policyStorage()
+    if (!storage) return false
+    // A cold start cannot trust a cloud candidate when privacy intent cannot be persisted.
+    storage.setItem('op_sync_policy_storage_probe', '1')
+    storage.removeItem('op_sync_policy_storage_probe')
+    return true
+  } catch { return false }
+}
+
+export interface SyncPolicyContext {
+  readonly scope: string
+  /** Stable identity for refusal metadata only; empty means identity is unavailable. */
+  readonly intentScope?: string
+  readonly workspace?: string
+  readonly isCurrent: () => boolean
+}
+export interface SyncPolicyActivationHost {
+  captureContext(): SyncPolicyContext | null
+  activate(modes: PolicySnapshot, publish: PolicySnapshotPublisher): Promise<void>
+}
+let activationHost: SyncPolicyActivationHost | null = null
+let livePolicy: { cache: SyncPolicyCache; context: SyncPolicyContext; persisted: boolean } | null = null
+let closedModules = new Set<SyncModule>(SYNC_MODULES)
+const publications = new WeakMap<object, object>()
+const reads = new WeakMap<object, object>()
+const restorations = new WeakMap<object, { generation: number; context: SyncPolicyContext; host: SyncPolicyActivationHost; promise: Promise<boolean> }>()
+class PolicyActivationError extends Error {
+  readonly cause?: unknown
+  constructor(message: string, cause?: unknown) { super(message); this.name = 'PolicyActivationError'; this.cause = cause }
+}
+function policyAbort(): Error { return Object.assign(new Error('Policy activation was superseded.'), { name: 'AbortError' }) }
+function contextCurrent(context: SyncPolicyContext): boolean {
+  try { return context.scope === policyScope() && context.isCurrent() } catch { return false }
+}
+function freezePolicy(policy: SyncPolicy): SyncPolicy { return Object.freeze({ ...policy, modules: Object.freeze({ ...policy.modules }) }) }
+function inactivePolicy(): SyncPolicy {
+  return freezePolicy({ system_default: 'local', allow_override: false, modules: Object.fromEntries(SYNC_MODULES.map(module => [module, 'local'])) as Record<SyncModule, SyncMode> })
+}
+export function installSyncPolicyActivationHost(host: SyncPolicyActivationHost | null): void {
+  activationHost = host
+  livePolicy = null
+  closedModules = new Set(SYNC_MODULES)
+}
 
 /** 测试注入内存存储；传 null 恢复默认（真实 localStorage 或不可用）。 */
 export function installSyncPolicyStorage(storage: StorageLike | null): void {
   injectedStorage = storage
   volatileCache = null
+  volatileIntents.clear()
   scopeResolver = null
+  installSyncPolicyActivationHost(null)
 }
 
 /** 宿主优先用内存登录态，避免登录态写盘失败时仍读取旧账号策略。 */
@@ -142,21 +253,18 @@ function readCache(): SyncPolicyCache | null {
   }
 }
 
-function writeCache(cache: SyncPolicyCache): void {
-  cache = { ...cache, scope: policyScope() }
+function writeCache(cache: SyncPolicyCache, scope: string): boolean {
+  cache = { ...cache, scope }
   volatileCache = cache
   const store = policyStorage()
-  if (!store) {
-    notifyPolicyChange()
-    return
-  }
+  if (!store) return false
   try {
     store.setItem(SYNC_POLICY_CACHE_KEY, JSON.stringify(cache))
     volatileCache = null
+    return true
   } catch {
-    // 隐私模式等写不进：内存态仍有效，下次 load 走远端/默认链。
+    return false
   }
-  notifyPolicyChange()
 }
 
 function notifyPolicyChange(): void {
@@ -174,7 +282,7 @@ function policyScope(): string {
 }
 
 export function readCachedSyncPolicy(): SyncPolicyCache | null {
-  return readCache()
+  return livePolicy && contextCurrent(livePolicy.context) ? livePolicy.cache : readCache()
 }
 
 // ---------------------------------------------------------------------------
@@ -205,13 +313,12 @@ export function shouldSync(
 }
 
 /**
- * 免 Pinia 的同步引擎入口：读缓存里某模块的当前模式。
- * 门户模块缓存缺失/损坏时为 'local'；未受管模块保留既有同步默认。
+ * 免 Pinia 的同步准入入口。未激活、已撤销或身份过期时一律 local；
+ * 不将磁盘上的 cloud 候选误当成当前权限。
  */
 export function readCachedModuleMode(module: SyncModule): SyncMode {
-  const cached = readCache()
-  if (!cached) return isPortalSyncModule(module) ? 'local' : 'cloud'
-  return moduleMode(cached.policy, module)
+  if (!livePolicy || !contextCurrent(livePolicy.context) || closedModules.has(module) || readLocalIntents(livePolicy.context).modules.includes(module)) return 'local'
+  return moduleMode(livePolicy.cache.policy, module)
 }
 
 // ---------------------------------------------------------------------------
@@ -288,129 +395,279 @@ export function recordSyncReportEntry(
 // ---------------------------------------------------------------------------
 
 export const useSyncPolicyStore = defineStore('syncPolicy', {
-  state: () => {
-    const cached = readCache()
-    const policy = cached?.policy ?? normalizeSyncPolicy(undefined)
-    return {
-      systemDefault: policy.system_default,
-      allowOverride: policy.allow_override,
-      modules: { ...policy.modules } as Record<SyncModule, SyncMode>,
-      lastFetchedAt: cached?.lastFetchedAt ?? 0,
-      /** 远端拉取失败的原因（展示用；空串 = 成功或尚未拉取）。 */
-      loadError: '' as string,
-      /** load() 是否已跑过（设置页只 load 一次）。 */
-      loaded: false as boolean,
-      saving: false,
-      revision: 0,
-      generation: ++nextPolicyGeneration,
-      lastSyncReport: readReport(),
-    }
-  },
+  state: () => ({
+    effective: { policy: inactivePolicy(), lastFetchedAt: 0 },
+    loadError: '', loaded: false, saving: false, saveError: '', identityRequired: false, intentReadError: false, persistenceWarning: false,
+    pendingLocal: [] as SyncModule[],
+    activation: { active: false, ready: false, error: '', pending: null as Record<SyncModule, SyncMode> | null },
+    revision: 0, generation: ++nextPolicyGeneration,
+    lastSyncReport: readReport(),
+  }),
   getters: {
-    /**
-     * 当前策略快照（纯函数 shouldSync 的入参形状）。
-     * modules 拷贝一份，避免调用方拿到 state 引用后误改。
-     */
-    policy(state): SyncPolicy {
-      return {
-        system_default: state.systemDefault,
-        allow_override: state.allowOverride,
-        modules: { ...state.modules },
-      }
-    },
-    moduleModes(state): Record<SyncModule, SyncMode> {
-      return state.modules
-    },
+    activating: state => state.activation.active,
+    activationReady: state => state.activation.ready,
+    activationError: state => state.activation.error,
+    pendingModules: state => state.activation.pending,
+    systemDefault: state => state.effective.policy.system_default,
+    allowOverride: state => state.effective.policy.allow_override,
+    modules: state => state.effective.policy.modules,
+    lastFetchedAt: state => state.effective.lastFetchedAt,
+    policy: state => ({ ...state.effective.policy, modules: { ...state.effective.policy.modules } }),
+    moduleModes: state => ({ ...state.effective.policy.modules }),
   },
   actions: {
-    /**
-     * 拉取策略：远端 → 缓存 → 暂停上传。失败不抛（降级语义），
-     * 只把原因写进 loadError 供设置页如实提示。
-     */
+    /** Revoke immediately. Owner-pending callers must not enqueue a policy activation. */
+    suspend(): void {
+      publications.delete(this); reads.delete(this); restorations.delete(this)
+      livePolicy = null; closedModules = new Set(SYNC_MODULES)
+      const generation = ++nextPolicyGeneration
+      this.generation = generation
+      if (this.generation !== generation) return
+      this.activation = { active: false, ready: false, error: '', pending: null }
+      if (this.generation !== generation) return
+      this.saving = false
+      if (this.generation !== generation) return
+      this.pendingLocal = []
+      if (this.generation !== generation) return
+      this.saveError = ''
+      if (this.generation !== generation) return
+      this.identityRequired = false
+      if (this.generation !== generation) return
+      this.intentReadError = false
+      if (this.generation !== generation) return
+      this.persistenceWarning = false
+      if (this.generation !== generation) return
+      this.loaded = false
+      if (this.generation !== generation) return
+      this.loadError = ''
+      notifyPolicyChange()
+    },
+    async $reset(): Promise<boolean> {
+      this.suspend()
+      try { return await this.restoreFromCache() } catch { return false }
+    },
+    async restoreFromCache(): Promise<boolean> {
+      const host = activationHost, context = host?.captureContext(), generation = this.generation
+      if (!host || !context) return false
+      const existing = restorations.get(this)
+      if (existing?.generation === generation && existing.host === host && contextCurrent(existing.context)) return existing.promise
+      let resolve!: (value: boolean) => void, reject!: (error: unknown) => void
+      const promise = new Promise<boolean>((done, fail) => { resolve = done; reject = fail })
+      const ticket = { generation, context, host, promise }
+      // Coalesce host bootstrap and a settings mount before any reactive callback
+      // can request another restoration and steal the host's activation ticket.
+      restorations.set(this, ticket)
+      const restore = async () => {
+        const current = () => this.generation === generation && activationHost === host && contextCurrent(context)
+        const cached = readCache(), intents = readLocalIntents(context), writable = storageWritable()
+        if (!current()) return false
+        this.pendingLocal = intents.modules
+        if (!current()) return false
+        this.identityRequired = context.intentScope === '' && intents.keys.size > 0
+        if (!current()) return false
+        this.intentReadError = Boolean(intents.error)
+        if (!current()) return false
+        this.persistenceWarning = !writable || intents.volatile
+        if (!current()) return false
+        this.saveError = intents.error || (!writable ? 'Local policy storage is unavailable.' : intents.modules.length ? 'Local choice is waiting to be saved.' : '')
+        if (!current()) return false
+        const candidate = normalizeSyncPolicy(cached?.policy)
+        if (!writable) candidate.modules = Object.fromEntries(SYNC_MODULES.map(module => [module, 'local'])) as Record<SyncModule, SyncMode>
+        return this.applyPolicy(candidate, cached?.lastFetchedAt ?? 0, false)
+      }
+      void restore().then(value => {
+        if (restorations.get(this) === ticket) restorations.delete(this)
+        resolve(value)
+      }, error => {
+        if (restorations.get(this) === ticket) restorations.delete(this)
+        reject(error)
+      })
+      return promise
+    },
     async load(): Promise<void> {
       if (this.saving) return
-      const scope = policyScope()
-      const revision = this.revision
-      const generation = this.generation
+      if (!this.activationReady) {
+        try { if (!await this.restoreFromCache()) return } catch { return }
+      }
+      if (this.saving) return
+      const context = activationHost?.captureContext()
+      if (!context) return
+      const generation = this.generation, revision = this.revision, ticket = {}
+      reads.set(this, ticket)
+      const current = () => reads.get(this) === ticket && this.generation === generation && this.revision === revision && contextCurrent(context)
       try {
         const remote = await syncPolicyTransport.fetchPolicy()
-        if (scope !== policyScope() || generation !== this.generation || revision !== this.revision) return
-        this.applyPolicy(remote, Date.now())
-        this.loadError = ''
-      } catch (err) {
-        if (scope !== policyScope() || generation !== this.generation || revision !== this.revision) return
-        // 降级链：缓存已在 state 初始化时 hydrate；这里只确保即便 state 是
-        // 默认值也有一份缓存可回读（不写也行——默认值本身会暂停上传）。
-        this.loadError = err instanceof Error ? err.message : String(err)
+        if (!current()) return
+        if (await this.applyPolicy(remote, Date.now()) && current()) this.loadError = ''
+      } catch (error) {
+        if (current() && !(error instanceof PolicyActivationError)) this.loadError = error instanceof Error ? error.message : String(error)
       } finally {
-        if (scope === policyScope() && generation === this.generation && revision === this.revision) this.loaded = true
+        if (current()) this.loaded = true
       }
     },
-
-    /** 内部：把一份策略落到 state + 缓存。 */
-    applyPolicy(policy: SyncPolicy, fetchedAt: number): void {
-      const normalized = normalizeSyncPolicy(policy)
-      // 门户未管理的两个模块保留本机既有选择，不因四模块响应被重置。
-      normalized.modules['ai-chat'] = this.modules['ai-chat']
-      normalized.modules.tasks = this.modules.tasks
-      this.systemDefault = normalized.system_default
-      this.allowOverride = normalized.allow_override
-      this.modules = { ...normalized.modules }
-      this.lastFetchedAt = fetchedAt
-      writeCache({ policy: normalized, lastFetchedAt: fetchedAt })
-    },
-
-    /**
-     * 切换单模块模式：乐观更新 + PUT，失败回滚并抛错（组件 toast）。
-     * 平台关闭 allow_override 时直接拒绝（策略由管理员统一管控）。
-     */
-    async setModule(module: SyncModule, mode: SyncMode): Promise<boolean> {
-      if (!isPortalSyncModule(module) || !this.allowOverride || this.saving) return false
-      const prev = this.modules[module]
-      if (prev === mode) return true
-      const scope = policyScope()
-      const generation = this.generation
-      this.saving = true
-      this.revision++
-      const requested = { ...this.modules, [module]: mode }
-      // 关闭上传立即生效；开启上传必须等服务端确认，不能让失败的 PUT 泄露数据。
-      if (mode === 'local') this.modules = requested
-      // 乐观写缓存：同步引擎立刻按新模式过滤（不等 PUT 往返）。
-      writeCache({
-        policy: {
-          system_default: this.systemDefault,
-          allow_override: this.allowOverride,
-          modules: { ...this.modules },
-        },
-        lastFetchedAt: this.lastFetchedAt,
-      })
+    /** Only the synchronous publisher changes the effective snapshot/cache. */
+    async applyPolicy(policy: SyncPolicy, fetchedAt: number, preserveUnmanaged = true): Promise<boolean> {
+      const host = activationHost, context = host?.captureContext()
+      if (!host || !context) throw new PolicyActivationError('Policy activation is not ready.')
+      const candidate = normalizeSyncPolicy(policy)
+      if (preserveUnmanaged) {
+        candidate.modules['ai-chat'] = this.modules['ai-chat']
+        candidate.modules.tasks = this.modules.tasks
+      }
+      const intents = readLocalIntents(context)
+      for (const module of intents.modules) candidate.modules[module] = 'local'
+      const generation = this.generation, revision = this.revision, ticket = {}
+      publications.set(this, ticket)
+      const current = () => publications.get(this) === ticket && this.generation === generation && this.revision === revision && activationHost === host && contextCurrent(context)
+      const previous = livePolicy && contextCurrent(livePolicy.context) ? livePolicy.cache.policy : null
+      closedModules = new Set([...closedModules, ...SYNC_MODULES.filter(module => !previous || candidate.modules[module] === 'local' || previous.modules[module] !== candidate.modules[module])])
+      let published = false, pending: Promise<void>
       try {
-        const remote = await syncPolicyTransport.putModules(requested)
-        if (scope !== policyScope() || generation !== this.generation) return false
-        // 服务端是权威：以 PUT 响应为准回写（可能带服务端规整）。
-        this.applyPolicy(remote, this.lastFetchedAt || Date.now())
-        return true
-      } catch (err) {
-        if (scope !== policyScope() || generation !== this.generation) return false
-        // 回滚 state + 缓存。
-        this.modules = { ...this.modules, [module]: prev }
-        writeCache({
-          policy: {
-            system_default: this.systemDefault,
-            allow_override: this.allowOverride,
-            modules: { ...this.modules },
-          },
-          lastFetchedAt: this.lastFetchedAt,
+        pending = host.activate(candidate.modules, modes => {
+          if (!current()) throw policyAbort()
+          const latestIntents = readLocalIntents(context)
+          if (latestIntents.modules.some(module => modes[module] === 'cloud')) throw policyAbort()
+          const complete = freezePolicy({ ...candidate, modules: { ...modes } })
+          const cache = { policy: complete, lastFetchedAt: fetchedAt, scope: context.scope }
+          const persisted = writeCache(cache, context.scope)
+          if (!current()) throw policyAbort()
+          if (!persisted && SYNC_MODULES.some(module => complete.modules[module] === 'cloud' && previous?.modules[module] !== 'cloud')) {
+            throw new Error('Cannot persist cloud policy safely.')
+          }
+          this.effective = { policy: complete, lastFetchedAt: fetchedAt }
+          if (!current()) throw policyAbort()
+          livePolicy = { cache, context, persisted }
+          published = true
+          return undefined
         })
-        throw err
-      } finally {
-        if (scope === policyScope() && generation === this.generation) this.saving = false
+      } catch (error) { pending = Promise.reject(error) }
+      if (current()) {
+        this.activation = { ...this.activation, active: true, pending: { ...candidate.modules } }
+      }
+      // Readers see denial now; old effective state/cache stay visible until the DB drains.
+      notifyPolicyChange()
+      try {
+        await pending
+        if (!current()) return false
+        if (!published) throw new Error('Policy publisher did not run.')
+        // Never open cloud admission before the kernel has confirmed the publisher.
+        closedModules = new Set()
+        this.activation = { active: false, ready: true, error: '', pending: null }
+        if (!current()) return false
+        notifyPolicyChange()
+        return current()
+      } catch (error) {
+        if (!current()) return false
+        const message = error instanceof Error ? error.message : String(error)
+        closedModules = new Set(SYNC_MODULES)
+        this.activation = { ...this.activation, active: false, ready: false, error: message }
+        if (!current()) return false
+        notifyPolicyChange()
+        // Retain denial after DB/publisher failures; only a new explicit activation may release it.
+        throw new PolicyActivationError(message, error)
       }
     },
-
-    /** 报告被外部（同步引擎）写过后手动同步内存态（一般无需调用）。 */
-    refreshReport(): void {
-      this.lastSyncReport = readReport()
+    async setModule(module: SyncModule, mode: SyncMode): Promise<boolean> {
+      if (!isPortalSyncModule(module) || !this.allowOverride || !this.activationReady || this.saving || this.activating) return false
+      if (this.modules[module] === mode && !closedModules.has(module) && !this.pendingLocal.includes(module)) return true
+      const context = activationHost?.captureContext()
+      if (!context) return false
+      const capturedIntents = readLocalIntents(context)
+      let ownedIntentKey: string | undefined
+      const previous = this.policy, fetchedAt = this.lastFetchedAt, generation = this.generation, revision = this.revision + 1
+      const requested = { ...previous.modules, [module]: mode }
+      const current = () => this.generation === generation && this.revision === revision && contextCurrent(context)
+      this.revision = revision
+      if (!current()) return false
+      this.saving = true
+      if (!current()) return false
+      const local = mode === 'local' ? this.applyPolicy({ ...previous, modules: requested }, fetchedAt, false) : Promise.resolve(true)
+      if (!current()) return false
+      if (mode === 'local') {
+        const intent = addLocalIntent(module, context)
+        // Persist a new immutable token before retiring captured older tokens.
+        // Retries stay bounded while an older cloud response cannot erase them.
+        if (intent.persisted && !capturedIntents.error) clearLocalIntents(capturedIntents.keys, module, context)
+        capturedIntents.keys.set(intent.key, intent.value)
+        ownedIntentKey = intent.key
+        if (!current()) return false
+        this.pendingLocal = readLocalIntents(context).modules
+        if (!current()) return false
+        this.persistenceWarning = !intent.persisted
+        if (!current()) return false
+        this.saveError = intent.persisted ? '' : 'Local choice could not be persisted. Retry before closing the app.'
+      } else this.saveError = ''
+      if (!current()) return false
+      this.activation = { ...this.activation, pending: { ...requested } }
+      const response = (async () => {
+        if (!current()) throw policyAbort()
+        return syncPolicyTransport.putModules(requested)
+      })().then(value => ({ ok: true as const, value }), error => ({ ok: false as const, error }))
+      try {
+        if (!await local || !current()) return false
+        const result = await response
+        if (!current()) return false
+        if (!result.ok) {
+          this.saveError = result.error instanceof Error ? result.error.message : String(result.error)
+          // Keep local effective and pending: a GET or restart must not silently
+          // undo the user's privacy choice after an offline/ambiguous PUT.
+          throw result.error
+        }
+        const remote = normalizeSyncPolicy(result.value)
+        if (mode === 'cloud' && remote.modules[module] === 'cloud' && !capturedIntents.error && !clearLocalIntents(capturedIntents.keys, module, context, ownedIntentKey)) {
+          this.persistenceWarning = true
+          if (!current()) return false
+          this.saveError = 'Local choice could not be persisted. Retry before closing the app.'
+          return false
+        }
+        if (!current()) return false
+        if (!await this.applyPolicy(result.value, fetchedAt || Date.now()) || !current()) return false
+        if (remote.modules[module] !== mode) {
+          this.saveError = 'The server did not confirm the requested policy.'
+          return false
+        }
+        if (!livePolicy?.persisted || capturedIntents.error || !clearLocalIntents(capturedIntents.keys, module, context, ownedIntentKey)) {
+          this.persistenceWarning = true
+          if (!current()) return false
+          this.saveError = 'Local choice could not be persisted. Retry before closing the app.'
+          return false
+        }
+        if (!current()) return false
+        this.pendingLocal = readLocalIntents(context).modules
+        if (!current()) return false
+        this.persistenceWarning = false
+        if (!current()) return false
+        this.saveError = this.pendingLocal.length ? 'Local choice is waiting to be saved.' : ''
+        return this.modules[module] === mode && !this.pendingLocal.includes(module)
+      } finally {
+        if (current()) {
+          this.saving = false
+          if (current() && !this.activating) this.activation = { ...this.activation, pending: null }
+        }
+      }
     },
+    async refreshLocalIntents(): Promise<boolean> {
+      const context = activationHost?.captureContext(), generation = this.generation
+      if (!context) return false
+      const intents = readLocalIntents(context)
+      // prepare the complete snapshot before any reactive status/event callback.
+      const activation = this.applyPolicy(this.policy, this.lastFetchedAt, false)
+      if (this.generation !== generation || !contextCurrent(context)) return false
+      this.pendingLocal = intents.modules
+      if (this.generation !== generation || !contextCurrent(context)) return false
+      this.identityRequired = context.intentScope === '' && intents.keys.size > 0
+      if (this.generation !== generation || !contextCurrent(context)) return false
+      this.intentReadError = Boolean(intents.error)
+      if (this.generation !== generation || !contextCurrent(context)) return false
+      this.persistenceWarning = intents.volatile
+      if (this.generation !== generation || !contextCurrent(context)) return false
+      this.saveError = intents.error || (intents.modules.length ? 'Local choice is waiting to be saved.' : '')
+      return activation
+    },
+    async retrySave(): Promise<boolean> {
+      const module = this.pendingLocal.find(isPortalSyncModule)
+      return module ? this.setModule(module, 'local') : false
+    },
+    refreshReport(): void { this.lastSyncReport = readReport() },
   },
 })

@@ -12,7 +12,8 @@
     - 策略读写在 syncPolicyStore；远端不可达时 store 自动降级
       本地缓存/暂停上传，本区块永远可渲染、可操作（不阻塞 UI）。
   -->
-  <div class="storage-sync-section" data-testid="storage-sync-section">
+  <div class="storage-sync-section" data-testid="storage-sync-section" :aria-busy="policy.activating || policy.saving">
+    <p v-if="policy.activating || policy.saving" role="status" aria-live="polite" data-testid="storage-policy-pending">{{ t('settings.saving') }}</p>
     <!-- 说明条 -->
     <div class="storage-intro">
       <span class="material-symbols-outlined" aria-hidden="true">privacy_tip</span>
@@ -41,7 +42,7 @@
           role="radio"
           :aria-checked="policy.modules[row.module] === mode"
           :class="['segment-item', `segment-${mode}`, { active: policy.modules[row.module] === mode }]"
-          :disabled="!isPortalSyncModule(row.module) || !policy.allowOverride || policy.saving || purging || (row.module === 'email' && mode === 'cloud' && nativeEmailStopState.unconfirmed)"
+          :disabled="!isPortalSyncModule(row.module) || !policy.allowOverride || policy.saving || policy.activating || !policy.activationReady || purging || (row.module === 'email' && mode === 'cloud' && nativeEmailStopState.unconfirmed)"
           :data-testid="`storage-mode-${row.module}-${mode}`"
           @click="onSegmentTap(row.module, mode)"
         >
@@ -89,8 +90,15 @@
       <div v-else class="report-empty">{{ t('settings.storageNeverSynced') }}</div>
     </div>
 
-    <div v-if="policy.loadError" class="storage-load-error">
+    <div v-if="policy.loadError || policy.activationError" class="storage-load-error">
       {{ t('settings.storageLoadFailed') }}
+    </div>
+
+    <div v-if="policy.saveError || policy.activationError" class="storage-load-error" role="alert" data-testid="storage-save-error">
+      <p>{{ t(policy.persistenceWarning ? 'settings.storageLocalNotSaved' : policy.intentReadError ? 'settings.storageIntentUnavailable' : policy.identityRequired ? 'settings.storageIdentityRequired' : 'settings.storagePendingSave') }}</p>
+      <button v-if="!policy.identityRequired" type="button" class="confirm-btn secondary" data-testid="storage-policy-retry" :disabled="policy.saving || policy.activating" @click="retryPolicy">
+        {{ t('common.retry') }}
+      </button>
     </div>
 
     <!-- 切「仅本地」确认框（含清除云端副本次级操作占位） -->
@@ -99,13 +107,13 @@
         <h3>{{ t('settings.storageConfirmTitle') }}</h3>
         <p>{{ t('settings.storageConfirmMessage', { module: moduleLabel(confirmFor) }) }}</p>
         <div class="confirm-actions">
-          <button type="button" class="confirm-btn secondary" :disabled="purging || policy.saving" @click="confirmFor = null">
+          <button type="button" class="confirm-btn secondary" :disabled="purging || policy.saving || policy.activating" @click="confirmFor = null">
             {{ t('common.cancel') }}
           </button>
           <button
             type="button"
             class="confirm-btn secondary danger"
-            :disabled="purging || policy.saving"
+            :disabled="purging || policy.saving || policy.activating || !policy.activationReady"
             :data-testid="`storage-purge-${confirmFor}`"
             @click="confirmPurgeAndSwitch"
           >
@@ -115,7 +123,7 @@
             type="button"
             class="confirm-btn primary"
             data-testid="storage-confirm-switch"
-            :disabled="purging || policy.saving"
+            :disabled="purging || policy.saving || policy.activating || !policy.activationReady"
             @click="confirmSwitchOnly"
           >
             {{ t('settings.storageConfirmSwitch') }}
@@ -127,7 +135,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useToast } from '../../composables/useToast'
 import { purgeCloudCopy } from '../../api/syncPolicy'
@@ -163,6 +171,15 @@ const rowByModule = new Map(moduleRows.map((r) => [r.module, r]))
 /** 待确认切换为 local 的模块（非空 = 确认框打开）。 */
 const confirmFor = ref<SyncModule | null>(null)
 const purging = ref(false)
+// A confirmation belongs to the session in which it was opened.
+watch(() => policy.generation, () => { confirmFor.value = null }, { flush: 'sync' })
+async function retryPolicy(): Promise<void> {
+  try {
+    if (policy.intentReadError) { await policy.refreshLocalIntents(); await policy.load() }
+    else if (policy.pendingLocal.length && policy.activationReady) await policy.retrySave()
+    else await policy.load()
+  } catch { /* The persistent banner remains until an explicit retry succeeds. */ }
+}
 
 onMounted(() => {
   // 远端失败由 store 内部降级（缓存/暂停上传），这里不 catch 不阻塞。
@@ -192,8 +209,8 @@ function moduleLabel(module: SyncModule): string {
 
 /** 分段点击：cloud→local 先弹确认；其余直接走 store（乐观更新+失败回滚）。 */
 function onSegmentTap(module: SyncModule, mode: SyncMode): void {
-  if (!isPortalSyncModule(module)) return
-  if (policy.modules[module] === mode) return
+  if (!isPortalSyncModule(module) || policy.activating || !policy.activationReady || policy.saving) return
+  if (policy.modules[module] === mode && !policy.pendingLocal.includes(module)) return
   if (!policy.allowOverride) {
     toast.warning(t('settings.storageManagedNoOverride'))
     return
@@ -230,7 +247,7 @@ async function confirmSwitchOnly(): Promise<void> {
 
 /** 先停止上传再清除云端副本，避免清完后仍被同步引擎重新上传。 */
 async function confirmPurgeAndSwitch(): Promise<void> {
-  const module = confirmFor.value
+  const module = confirmFor.value, generation = policy.generation
   if (!module) return
   purging.value = true
   try {
@@ -239,6 +256,7 @@ async function confirmPurgeAndSwitch(): Promise<void> {
       if (nativeEmailStopState.unconfirmed) confirmFor.value = null
       return
     }
+    if (policy.generation !== generation || !policy.activationReady || policy.activating || policy.modules[module] !== 'local') return
     await purgeCloudCopy([module])
     toast.success(t('settings.storagePurgeDone'))
     confirmFor.value = null
