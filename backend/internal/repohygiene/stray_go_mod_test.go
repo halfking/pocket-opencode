@@ -48,8 +48,19 @@ func TestNoCorruptGoMod(t *testing.T) {
 		}
 		if info.IsDir() {
 			base := info.Name()
-			if base == ".git" || base == "node_modules" || base == "vendor" ||
-				strings.HasPrefix(base, ".") && base != "." {
+			// ⚠⚠ 2026-10-28 §976：**walk 的根目录本身不能因为「名字以点开头」被跳过**。
+			//
+			//	仓库根在 git worktree 里是 `.wt-xxx`（本仓的提交纪律就是「走临时
+			//	worktree 提交」）⇒ 旧写法会把**整棵子树**跳过 ⇒ 这道卡口扫到
+			//	**0 个 go.mod** ⇒ 它自己那条「checked < 3」的失明检查把它救回来了
+			//	（fail-closed 确实起作用了，这点要记它一功），但代价是
+			//	**每个用临时 worktree 的会话都会看到这道门变红**，而红的原因与
+			//	被测行为（有没有损坏的 go.mod）毫无关系。
+			//
+			//	⇒ 改成：只跳过**根目录之下**的点目录（.git / .scratch / ...），
+			//	  根目录自己永远不跳。
+			if path != root && (base == ".git" || base == "node_modules" || base == "vendor" ||
+				strings.HasPrefix(base, ".") && base != ".") {
 				return filepath.SkipDir
 			}
 			return nil

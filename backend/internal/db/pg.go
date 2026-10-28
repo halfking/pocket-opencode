@@ -21,8 +21,49 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// defaultMaxConns 是助手负载的默认连接数上限。
+//
+// 选 10 的理由：迁移期 advisory lock 占 1 条 + 各 store 的 DDL 批次占 1 条
+// + 业务查询 ⇒ 留出足够余量，且在 2 核机器上不再被 max(4, NumCPU) 压到 4。
+const defaultMaxConns int32 = 10
+
+// dsnPinsMaxConns 判断 DSN 里是否**显式**写了 `pool_max_conns=`。
+//
+// pgxpool.ParseConfig 会把这个参数从 RuntimeParams 里**删掉**（它自己消费掉），
+// 所以解析完已经看不到了 ⇒ 只能重新解析一次原始 DSN 来问「用户是不是点名了」。
+//
+// 解析失败**不算**「用户点名了」⇒ 走默认值 ⇒ 保守。
+func dsnPinsMaxConns(dsn string) bool {
+	cfg, err := pgconn.ParseConfig(dsn)
+	if err != nil {
+		return false
+	}
+	_, ok := cfg.RuntimeParams["pool_max_conns"]
+	return ok
+}
+
+// resolveMaxConns 决定连接池的连接数上限。
+//
+// 规则（2026-10-28 §976）：
+//
+//	· DSN 里**显式**写了 `pool_max_conns=` ⇒ 以它为准（运维的显式配置不被覆盖）；
+//	· 否则**只升不降**：低于 10 抬到 10，高于 10 原样保留。
+//
+// 「只升不降」的理由：pgxpool 的默认是 max(4, NumCPU)，多核机器上本来就比 10 大，
+// 把它按回 10 反而是**减**连接；而 2 核机器上的 4 才是真正需要抬的那个。
+func resolveMaxConns(parsed int32, dsn string) int32 {
+	if dsnPinsMaxConns(dsn) {
+		return parsed
+	}
+	if parsed < defaultMaxConns {
+		return defaultMaxConns
+	}
+	return parsed
+}
 
 // New opens a connection pool against the given DSN, creates `schema` if it
 // does not exist, pins the pool's search_path to that schema, and pings it.
@@ -37,9 +78,18 @@ func New(ctx context.Context, dsn, schema string) (*pgxpool.Pool, error) {
 		return nil, fmt.Errorf("parse postgres DSN: %w", err)
 	}
 	// Sensible defaults for the assistant workload.
-	if cfg.MaxConns == 0 {
-		cfg.MaxConns = 10
-	}
+	//
+	// ⚠⚠ 这里原来写的是 `if cfg.MaxConns == 0`（2026-10-28 §976 修），
+	//	而那个条件**永远不成立**：pgxpool.ParseConfig 一定会把 MaxConns 设成
+	//	max(4, runtime.NumCPU()) ⇒ 解析完它至少是 4 ⇒ 于是注释里写的
+	//	「助手负载的合理默认 = 10」**从来没生效过**。
+	//	在 2 核的机器上（CI runner / 小规格生产容器）实际拿到的是 **4**。
+	//
+	//	为什么这件事要紧：迁移期的 advisory lock 会**占住一条连接**
+	//	（internal/pgmigrate），而各 store 的 DDL 批次要**再借一条**
+	//	⇒ 池至少要能同时借出 2 条，否则持锁方借不到连接 ⇒ 启动期死锁
+	//	（这条在 CI 上真的发生过，见 §976）。
+	cfg.MaxConns = resolveMaxConns(cfg.MaxConns, dsn)
 	cfg.MinConns = 1
 	cfg.MaxConnIdleTime = 30 * time.Minute
 

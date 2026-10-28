@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"os"
 	"strings"
 	"sync"
@@ -20,6 +21,21 @@ import (
 // 零配置的 `go test ./...` 打到生产库（与 internal/calendar/store_pg_test.go
 // 同款理由）。
 func newScopedPools(t *testing.T) (root *pgxpool.Pool, scoped *pgxpool.Pool, schema string) {
+	t.Helper()
+	return newScopedPoolsWithMaxConns(t, 0)
+}
+
+// newScopedPoolsWithMaxConns 与 newScopedPools 同上，但**显式指定连接数上限**
+// （maxConns <= 0 ⇒ 用 pgxpool 的默认值）。
+//
+// ⚠⚠ 为什么要显式指定（2026-10-28 §976）：
+//
+//	pgxpool 的默认上限是 **max(4, runtime.NumCPU())** ⇒ 同一份代码
+//	在 16 核的开发机上上限 16、在 2 核的 GitHub runner 上限 4。
+//	⇒ 「会不会死锁」取决于**跑在哪台机器上** ⇒ 量具依赖环境属性，不是被测行为变了。
+//	⇒ 并发那条判据必须**把上限钉死**，否则它在开发机上恒绿、在 CI 上偶发红，
+//	  变成一场靠 CPU 核数抽签的测试。
+func newScopedPoolsWithMaxConns(t *testing.T, maxConns int32) (root *pgxpool.Pool, scoped *pgxpool.Pool, schema string) {
 	t.Helper()
 	dsn := os.Getenv("POCKET_TEST_POSTGRES_DSN")
 	if dsn == "" {
@@ -45,6 +61,9 @@ func newScopedPools(t *testing.T) (root *pgxpool.Pool, scoped *pgxpool.Pool, sch
 		_, _ = root.Exec(ctx, "DROP SCHEMA IF EXISTS "+schema+" CASCADE")
 		root.Close()
 		t.Fatalf("parse dsn: %v", err)
+	}
+	if maxConns > 0 {
+		cfg.MaxConns = maxConns
 	}
 	cfg.ConnConfig.RuntimeParams["search_path"] = schema + ",public"
 	scoped, err = pgxpool.NewWithConfig(ctx, cfg)
@@ -123,11 +142,19 @@ func TestAcquireIsExclusive(t *testing.T) {
 
 // TestConcurrentMigrationsDoNotDeadlock 复现现场：多个实例并发对同一 schema
 // 跑迁移批次。持锁期间只有一方在跑 DDL ⇒ 不会有 40P01。
+//
+// ⚠⚠ 连接数上限**钉死成 instances**（2026-10-28 §976）：
+//
+//	这条判据要抓的正是「等待者把池容量吃光 ⇒ 持锁方的 DDL 借不到连接」。
+//	若上限随 CPU 核数浮动（pgxpool 默认 max(4, NumCPU)），
+//	它在 16 核开发机上**恒绿**、在 2 核 CI 上**恒红** ⇒ 变成靠核数抽签的测试。
+//	⇒ 上限钉成 4 之后：旧实现在**任何**机器上都必红（可复现的回归护栏），
+//	  新实现在任何机器上都必绿 ⇒ 这条判据从此与运行环境无关。
 func TestConcurrentMigrationsDoNotDeadlock(t *testing.T) {
-	root, pool, schema := newScopedPools(t)
+	const instances = 4
+	root, pool, schema := newScopedPoolsWithMaxConns(t, instances)
 	defer dropSchema(t, root, schema)
 
-	const instances = 4
 	var (
 		wg      sync.WaitGroup
 		mu      sync.Mutex
@@ -182,6 +209,131 @@ func TestConcurrentMigrationsDoNotDeadlock(t *testing.T) {
 		if n == 0 {
 			t.Fatalf("table %s was not created by the concurrent migrations", table)
 		}
+	}
+}
+
+// TestWaitingAcquireDoesNotStarveThePool 是上面那条死锁的**直接判据**
+// （2026-10-28 §976）。
+//
+// 形状：一个实例持着锁，另一个实例在等它。
+// 判据：**等锁期间，池子必须持续能服务别的查询**。
+//
+// 旧实现在整个等待期攥着借来的连接不放 ⇒ 上限 2 的池被「持锁方 1 条 +
+// 等待方 1 条」占满 ⇒ 下面这句 `pool.Exec` **借不到连接**（它会阻塞到超时）。
+// 新实现把连接还回池子 ⇒ 池里始终有空位 ⇒ 这句能借到连接并跑完。
+//
+// ⚠⚠ 这条判据**写错过两版**，两版都恒绿，如实记录（见 §996）：
+//
+//	第 1 版：等待方预算(2s) < 检查窗口(3s)
+//	  ⇒ 等待方在窗口结束前就还回连接 ⇒ 旧实现也能借到 ⇒ 恒绿（无鉴别力）。
+//	第 2 版：只查一次 Exec 成不成功
+//	  ⇒ 启动竞态：第一句 Exec 跑在等待方借到连接**之前** ⇒ 借到了 ⇒ 恒绿。
+//	第 3 版（当前）：**在整个等待窗口里连续查**，一次失败即红。
+//	  ⇒ 旧实现：B 借到 conn#2 之后**每一次** Exec 都借不到 ⇒ 必红。
+//	  ⇒ 新实现：B 每 250ms 还一次 conn#2 ⇒ 每次都借得到 ⇒ 必绿。
+func TestWaitingAcquireDoesNotStarveThePool(t *testing.T) {
+	const (
+		waiterBudget = 6 * time.Second // 等待方的预算：它必然等不到锁
+		checkWindow  = 4 * time.Second // 检查窗口：必须**小于**等待方预算，
+		//                              否则等待方先还连接，判据失去鉴别力
+	)
+	root, pool, schema := newScopedPoolsWithMaxConns(t, 2)
+	defer dropSchema(t, root, schema)
+
+	ctx := context.Background()
+	lockA, err := Acquire(ctx, pool, 5*time.Second)
+	if err != nil {
+		t.Fatalf("first acquire must succeed: %v", err)
+	}
+	defer lockA.Release()
+
+	// B 必然等不到锁（A 持着呢）⇒ 它会一路等到预算耗尽。
+	waitErrCh := make(chan error, 1)
+	go func() {
+		_, werr := Acquire(ctx, pool, waiterBudget)
+		waitErrCh <- werr
+	}()
+
+	// 判据本体：在整个检查窗口里，池子必须**一直**能干活。
+	// 一次失败就红 —— 因为旧实现下窗口内的**每一次**尝试都会失败。
+	deadline := time.Now().Add(checkWindow)
+	for {
+		execCtx, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
+		_, execErr := pool.Exec(execCtx, `SELECT 1`)
+		cancel()
+		if execErr != nil {
+			t.Fatalf("池子被等待中的 Acquire 饿死了（等锁期间连一条连接都借不到）：%v", execErr)
+		}
+		if time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	// B 必须是因为「锁被别人拿着」而失败，而不是因为别的原因。
+	select {
+	case werr := <-waitErrCh:
+		if werr == nil {
+			t.Fatal("等待中的 Acquire 竟然成功了：A 还持着锁")
+		}
+		if !strings.Contains(werr.Error(), "locked by another instance") {
+			t.Fatalf("等待中的 Acquire 应报「被别的实例锁着」，实际：%v", werr)
+		}
+	case <-time.After(waiterBudget + 5*time.Second):
+		t.Fatal("等待中的 Acquire 既没成功也没失败：它卡住了")
+	}
+}
+
+// TestAcquireRespectsContextCancellation 取消必须真的取消（2026-10-28 §976）。
+//
+// ⚠ **这条是「特性刻画」而不是本次修复的回归护栏**，如实标注：
+// 旧实现在取消上的表现**本来就基本正确**（它每次循环都发一条查询，
+// 而查询本身尊重 ctx ⇒ 取消最多让它多等一个 250ms 的睡眠）。
+// 它并不是「恒真」的判据 —— 取消后它**确实**返回、确实带 context.Canceled。
+//
+// 本次改动给它补上的是两件**旧实现没有**的事：
+//
+//	① 取消时**主动**报错，而不是「碰巧」因为下一条查询失败才报错；
+//	② 报的错是「acquire cancelled」，而**不是**「try advisory lock: …」
+//	   —— 后者会把一次取消说成一次锁失败，让调用方以为「再等等就好」。
+//
+// 所以这里断言的是**错误归因**：取消必须是取消，不能被说成锁问题。
+func TestAcquireRespectsContextCancellation(t *testing.T) {
+	root, pool, schema := newScopedPoolsWithMaxConns(t, 2)
+	defer dropSchema(t, root, schema)
+
+	ctx := context.Background()
+	lockA, err := Acquire(ctx, pool, 5*time.Second)
+	if err != nil {
+		t.Fatalf("first acquire must succeed: %v", err)
+	}
+	defer lockA.Release()
+
+	cancelCtx, cancel := context.WithCancel(ctx)
+	errCh := make(chan error, 1)
+	go func() {
+		_, werr := Acquire(cancelCtx, pool, 30*time.Second)
+		errCh <- werr
+	}()
+
+	// 等 B 真的进入等待（它必然等不到锁）。
+	time.Sleep(300 * time.Millisecond)
+	cancel()
+
+	select {
+	case werr := <-errCh:
+		if werr == nil {
+			t.Fatal("ctx 被取消后 Acquire 竟然成功了")
+		}
+		if !errors.Is(werr, context.Canceled) {
+			t.Fatalf("取消后应报 context.Canceled，实际：%v", werr)
+		}
+		// 归因：不能被说成「锁被别人拿着」（那会让调用方再等一个整轮预算）。
+		if strings.Contains(werr.Error(), "locked by another instance") {
+			t.Fatalf("取消被误报成「锁被别人拿着」：%v", werr)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("ctx 取消后 Acquire 没有立刻返回：它无视了取消")
 	}
 }
 

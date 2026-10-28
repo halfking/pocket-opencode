@@ -132,6 +132,7 @@ var s945Ledger = []s945LedgerRow{
 	{"backend/internal/notify/smtp.go", "Extension", 2},
 	{"backend/internal/notify/smtp.go", "Quit", 1},
 	{"backend/internal/opencode/config_merge.go", "Close", 5},
+	{"backend/internal/pgmigrate/lock.go", "Close", 1},
 	{"backend/internal/redclaw/auth_user.go", "Close", 1},
 	{"backend/internal/scheduledtask/executors/webhook.go", "Write", 1},
 	{"backend/internal/scheduledtask/store.go", "Write", 1},
@@ -577,10 +578,15 @@ func TestS945LedgerMatchesSource(t *testing.T) {
 	// 「自己拨号 + 每一个错误分支都显式关连接」⇒ 那 5 条新出现的 `_ = conn.Close()`
 	// 都是**放弃一条正在出错的连接**（错误本身已经是主信号，close 的错误无意义）
 	// ⇒ 与既有的 `Close` 登记同族 ⇒ 台账同步 +5。
-	if got, want := len(res.Discards), 91; got != want {
+	// ⚠ 91 → 92（§976）：internal/pgmigrate/lock.go 的 Release() 在**解锁失败**时
+	//	必须销毁那条连接（会话级 advisory lock 挂在连接上 ⇒ 归还给池子会让下一条
+	//	业务查询继承一把「没人知道谁持有的」锁 ⇒ 同 schema 的别的实例再也拿不到锁）。
+	//	销毁走 `raw := conn.Hijack(); _ = raw.Close(ctx)` ⇒ 多一处被丢弃的 Close
+	//	⇒ 与 internal/email/pipeline_lock.go 的同类做法同族 ⇒ 台账登记 +1。
+	if got, want := len(res.Discards), 92; got != want {
 		t.Errorf("被丢弃的调用总处数 = %d（台账登记的是 %d 处）⇒ 数量变了必须重新定性", got, want)
 	}
-	if got, want := len(s945Ledger), 39; got != want {
+	if got, want := len(s945Ledger), 40; got != want {
 		t.Errorf("台账行数 = %d（期望 %d）⇒ 台账行数变了必须重新定性", got, want)
 	}
 }
