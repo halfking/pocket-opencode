@@ -13,7 +13,7 @@
  * 保留本地名 `resolveApiBase` 以免改动全部调用点。
  */
 import { resolveRuntimeApiBase as resolveApiBase } from '../config/api-base'
-import { useAuthStore } from '../stores/auth'
+import { useAuthStore, captureAuthSession, assertAuthSession } from '../stores/auth'
 import { ApiError, assertNotHTML, forceReauth } from './http'
 import { fetchWithTimeout } from './fetch-timeout.ts'
 import { buildTasksUrl, type TaskListFilters } from './tasks-url.ts'
@@ -25,8 +25,11 @@ import { buildTasksUrl, type TaskListFilters } from './tasks-url.ts'
  * 第五轮修复：统一注入 token。
  * 第六轮优化：包装响应错误为 ApiError（与 http.ts 一致），便于调用方处理。
  */
-async function authFetch(input: string, init: RequestInit = {}): Promise<Response> {
+type AuthResponse = Pick<Response, 'ok' | 'status' | 'json' | 'text'>
+
+async function authFetch(input: string, init: RequestInit = {}): Promise<AuthResponse> {
   const auth = useAuthStore()
+  const session = captureAuthSession(auth)
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     ...(init.headers as Record<string, string> | undefined),
@@ -37,7 +40,14 @@ async function authFetch(input: string, init: RequestInit = {}): Promise<Respons
   //　 而 authFetch 是任务/会话/实例/网关配置**整个面**的入口（15+ 个模块在用）⇒
   //　 一挂就是一片「任务页空着、按钮点不动」。
   // ⇒ 收进唯一的那一层（./fetch-timeout，30s + AbortController + TimeoutError）。
-  const response = await fetchWithTimeout(input, { ...init, headers })
+  let response: Response
+  try {
+    response = await fetchWithTimeout(input, { ...init, headers })
+  } catch (error) {
+    assertAuthSession(auth, session)
+    throw error
+  }
+  assertAuthSession(auth, session)
   
   // 非 2xx 响应抛 ApiError（与 http.ts 行为一致）
   if (!response.ok) {
@@ -48,6 +58,7 @@ async function authFetch(input: string, init: RequestInit = {}): Promise<Respons
     } catch {
       // 响应不是 JSON，用 statusText
     }
+    assertAuthSession(auth, session)
     // BUG-AX（2026-10-01 13:05 真机实测）：401 必须走 forceReauth，
     // 否则调用方只会拿到一个 ApiError 并把它吞掉。实测后果是
     // 「后端换了 JWT secret → 设备上旧 token 全 401 → 任务页 catch 后
@@ -55,13 +66,33 @@ async function authFetch(input: string, init: RequestInit = {}): Promise<Respons
     //   既不报错也不跳登录」，用户拿着死 token 卡死却看不出发生了什么。
     // 这正是 http.ts 里 BUG-I 描述的死法；那次修复只落在 http() 这条链上，
     // 而本文件整个面（任务/会话/实例…）都走 authFetch，全部绕过了兜底。
-    if (response.status === 401) forceReauth()
+    if (response.status === 401) forceReauth(session)
     throw new ApiError(response.status, message)
   }
 
   // 2xx 但为 HTML（如移动端漏注入 API base 时 Capacitor 返回 index.html）
   // 也要拦下，否则调用方 res.json() 只会抛难懂的 "Unexpected token"。
-  return assertNotHTML(response)
+  assertNotHTML(response)
+  return {
+    ok: response.ok,
+    status: response.status,
+    async json() {
+      assertAuthSession(auth, session)
+      try {
+        return await response.json()
+      } finally {
+        assertAuthSession(auth, session)
+      }
+    },
+    async text() {
+      assertAuthSession(auth, session)
+      try {
+        return await response.text()
+      } finally {
+        assertAuthSession(auth, session)
+      }
+    },
+  }
 }
 
 /**

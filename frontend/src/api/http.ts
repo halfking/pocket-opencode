@@ -4,7 +4,7 @@
  * instead of calling fetch() directly, so auth headers stay consistent.
  */
 import { resolveRuntimeApiBase } from '../config/api-base'
-import { useAuthStore } from '../stores/auth'
+import { useAuthStore, captureAuthSession, assertAuthSession, isCurrentAuthSession, type AuthSession } from '../stores/auth'
 import { assertNotHTML } from './jsonGuard'
 import { isAbortError } from './abort'
 import { DEFAULT_TIMEOUT_MS, TimeoutError, fetchWithTimeout } from './fetch-timeout.ts'
@@ -121,7 +121,9 @@ export { isAbortError }
 // ⚠§951：TimeoutError 的**类定义**在 ./fetch-timeout（上面已再导出）。
 //　 留这一行是为了让「这个文件里 TimeoutError 从哪来」有据可查。
 
-async function httpOnce<T = any>(path: string, opts: HttpOptions = {}): Promise<T> {
+async function httpOnce<T = any>(path: string, opts: HttpOptions, session: AuthSession): Promise<T> {
+  const auth = session.owner
+  assertAuthSession(auth, session)
   if (opts.body != null && !isEmailMetadataWrite(path, opts.body)) {
     throw new ApiError(409, 'email_credentials_local_only', { error: 'email_credentials_local_only' })
   }
@@ -130,7 +132,6 @@ async function httpOnce<T = any>(path: string, opts: HttpOptions = {}): Promise<
     recordSyncReportEntry({ module: blocked, status: 'skipped' })
     throw new ApiError(409, 'module_policy_local', { error: 'module_policy_local', module: blocked })
   }
-  const auth = useAuthStore()
   const { timeoutMs = DEFAULT_TIMEOUT_MS, signal: callerSignal, syncModule, ...init } = opts
   const headers: Record<string, string> = {
     ...(init.headers as Record<string, string> | undefined),
@@ -153,6 +154,7 @@ async function httpOnce<T = any>(path: string, opts: HttpOptions = {}): Promise<
     { ...init, headers, signal: callerSignal },
     { timeoutMs, label: path },
   )
+  assertAuthSession(auth, session)
   if (!res.ok) {
     // 尝试解析响应 body，让调用方能拿到结构化错误（如 409 conflict 的 server_version）
     let parsedBody: any
@@ -162,6 +164,7 @@ async function httpOnce<T = any>(path: string, opts: HttpOptions = {}): Promise<
     } catch {
       parsedBody = undefined
     }
+    assertAuthSession(auth, session)
     // 服务端结构化错误统一为 {error: "..."}：直接作为 message，
     // 让各视图既有 catch 的 e.message 展示可读原因而非 "Request failed: Internal Server Error"
     const serverMsg =
@@ -176,7 +179,9 @@ async function httpOnce<T = any>(path: string, opts: HttpOptions = {}): Promise<
   }
   // 204 No Content
   if (res.status === 204) return undefined as unknown as T
-  return assertNotHTML(res).json() as Promise<T>
+  const data = await assertNotHTML(res).json() as T
+  assertAuthSession(auth, session)
+  return data
 }
 
 /**
@@ -187,15 +192,20 @@ async function httpOnce<T = any>(path: string, opts: HttpOptions = {}): Promise<
  * refresh 端点自身与未登录（无 token）请求不参与续期。
  */
 export async function http<T = any>(path: string, opts: HttpOptions = {}): Promise<T> {
+  const auth = useAuthStore()
+  const session = captureAuthSession(auth)
   await maybeRefreshBeforeRequest(path)
+  assertAuthSession(auth, session)
   try {
-    return await httpOnce<T>(path, opts)
+    return await httpOnce<T>(path, opts, session)
   } catch (e) {
+    assertAuthSession(auth, session)
     if (e instanceof ApiError && e.status === 401 && path !== REFRESH_PATH) {
-      const auth = useAuthStore()
       if (auth.token && (await auth.refreshSession())) {
-        return httpOnce<T>(path, opts)
+        assertAuthSession(auth, session)
+        return httpOnce<T>(path, opts, session)
       }
+      assertAuthSession(auth, session)
       // BUG-I (2026-09-30)：refresh 失败 = 会话不可恢复（token 已被吊销、
       // 过期且无法续期，或后端 POCKET_JWT_SECRET 变更导致旧 token 全部失效）。
       // 此前这里只是把 401 原样抛给调用方，而 auth.ts 注释里写的
@@ -203,7 +213,7 @@ export async function http<T = any>(path: string, opts: HttpOptions = {}): Promi
       // 卡在各个模块里只看到 "invalid or expired token / 重试"，
       // **没有任何回到登录页的路径**（市场模块实测就是这个死胡同）。
       // 这里补上唯一的兜底：清登录态 + 跳回登录页。
-      forceReauth()
+      forceReauth(session)
     }
     throw e
   }
@@ -222,28 +232,24 @@ export async function http<T = any>(path: string, opts: HttpOptions = {}): Promi
  *   · 用户拿着一枚死 token 卡在各个模块里，和 BUG-I 当初描述的死法一模一样
  * 也就是说 BUG-I 的修复只打了一半：兜底存在，但没覆盖真正被大量调用的那条路。
  */
-let reauthInFlight = false
-export function forceReauth(): void {
-  if (reauthInFlight) return
+const reauthSessions = new WeakSet<object>()
+export function forceReauth(expectedSession?: AuthSession): void {
+  const auth = expectedSession?.owner ?? useAuthStore()
+  const session = expectedSession ?? captureAuthSession(auth)
+  if (!isCurrentAuthSession(auth, session) || reauthSessions.has(session.generation)) return
   // 已在登录页/登录相关路径上就不再跳，避免重定向循环
   const hash = (typeof location !== 'undefined' ? location.hash : '') || ''
   if (/#\/login|\/forgot-password|\/register/.test(hash)) return
-  reauthInFlight = true
+  reauthSessions.add(session.generation)
   try {
-    const auth = useAuthStore()
     // 不调 logout()：它会打 /api/auth/logout，而此刻后端必然拒绝，
     // 只会拖慢跳转。这里直接清本地态。
     auth.clearLocal()
   } catch {
     /* 清理失败也要继续跳转，否则用户彻底卡死 */
   }
-  try {
-    if (typeof location !== 'undefined') {
-      location.hash = '#/login?reason=expired'
-    }
-  } finally {
-    // 下一轮导航后允许再次兜底
-    setTimeout(() => { reauthInFlight = false }, 1500)
+  if (typeof location !== 'undefined') {
+    location.hash = '#/login?reason=expired'
   }
 }
 
