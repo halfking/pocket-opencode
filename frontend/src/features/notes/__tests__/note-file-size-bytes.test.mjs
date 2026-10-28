@@ -307,7 +307,7 @@ const DEGRADE_REGISTRY = {
   'features/notes/note-search.ts::content::18e0a71a': '只读输入：喂给检索助手的候选目录',
   'features/notes/note-search.ts::summary::db6b8647': '同字段：助手摘要列写助手摘要',
   'features/notes/notes-fts-backfill.ts::content::39abfcd6': '只读输入：FTS 回填读行内容',
-  'features/notes/notes-persist.ts::content::794e4d8b': '只读输入：送 /api/embed 前按服务端 16000 字符上限截断（§896/D66）。截断结果只进 HTTP 请求体，不落库也不落文件 ⇒ 无持久化副作用；⚠ 取头部是技术默认值，「分段嵌入/先摘要」属产品口径（简报 119）',
+  'features/notes/notes-persist.ts::content::368464e7': '只读输入：纯内容用于分段云端嵌入，原始操作上下文限制后台任务的发起身份和策略代际；正文持久化走独立本地流程',
   'features/notes/notes-persist.ts::content::554774cc': '写入**条件**里的 ||，不是取值降级',
   'features/notes/notes-persist.ts::summary::19169f5a': '同字段：摘要列写摘要',
   'features/notes/notes-persist.ts::content::48f6f842': '★ §891 保留的安全降级：body_path 未回填时 content 仍是全文',

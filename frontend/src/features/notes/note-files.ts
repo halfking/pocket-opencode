@@ -1,9 +1,13 @@
 import { Capacitor } from '@capacitor/core'
 import { Filesystem, Directory } from '@capacitor/filesystem'
 import { localDB } from '../../native/local-db'
+import type { NoteDbOperation } from './note-operation'
+
 import { blobToBase64, utf8ToBase64, base64ToUtf8 } from '../../utils/base64'
 import { noteDir, noteFileRelPath, type NoteFileKind } from './note-paths'
 import type { NoteFileRecord, NoteMediaInput } from './notes-types'
+
+const captureFiles = () => localDB.bindOperation(localDB.captureOperation({ kind: 'local-edit' }))
 
 export interface PersistNotePayloadInput {
   noteId: string
@@ -36,22 +40,26 @@ function extFromMime(mime: string, fallback: string): string {
   return map[mime.split(';', 1)[0]] || fallback
 }
 
-async function writeRelPath(relPath: string, dataBase64: string): Promise<string> {
+async function writeRelPath(relPath: string, dataBase64: string, db: NoteDbOperation): Promise<string> {
+  db.assertCurrent()
   const parent = relPath.slice(0, relPath.lastIndexOf('/'))
   if (Capacitor.isNativePlatform()) {
     await Filesystem.mkdir({ path: parent, directory: Directory.Data, recursive: true }).catch(() => {
       // mkdir 失败不致命：紧接着的 writeFile 会自己抛出去（这里没有 catch），
       // 调用方会拿到这个错误 ⇒ 失败不会消失。
     })
+    db.assertCurrent()
     await Filesystem.writeFile({ path: relPath, data: dataBase64, directory: Directory.Data })
+    db.assertCurrent()
     const uri = await Filesystem.getUri({ path: relPath, directory: Directory.Data })
+    db.assertCurrent()
     return uri.uri
   }
   return `sqlite:${relPath}`
 }
 
-async function insertFileRow(row: NoteFileRecord, dataBase64: string, nativeUri: string | null): Promise<void> {
-  await localDB.run(
+async function insertFileRow(row: NoteFileRecord, dataBase64: string, nativeUri: string | null, db: NoteDbOperation): Promise<void> {
+  await db.run(
     `INSERT OR REPLACE INTO local_note_files
        (id, note_id, kind, rel_path, mime, size_bytes, duration_ms, data_base64, created_at)
      VALUES (?,?,?,?,?,?,?,?,?)`,
@@ -62,7 +70,8 @@ async function insertFileRow(row: NoteFileRecord, dataBase64: string, nativeUri:
   )
 }
 
-export async function persistNotePayload(input: PersistNotePayloadInput): Promise<PersistNotePayloadResult> {
+export async function persistNotePayload(input: PersistNotePayloadInput, db = captureFiles()): Promise<PersistNotePayloadResult> {
+  db.assertCurrent()
   const dir = noteDir(input.noteId, input.createdAt)
   const files: NoteFileRecord[] = []
   let bodyPath: string | null = null
@@ -72,7 +81,7 @@ export async function persistNotePayload(input: PersistNotePayloadInput): Promis
   if (input.persistBodyFile && input.body) {
     const rel = noteFileRelPath(dir, 'body')
     const dataBase64 = utf8ToBase64(input.body)
-    await writeRelPath(rel, dataBase64)
+    await writeRelPath(rel, dataBase64, db)
     bodyPath = Capacitor.isNativePlatform() ? rel : `sqlite:${rel}`
     const row: NoteFileRecord = {
       id: `${input.noteId}-body`,
@@ -89,7 +98,7 @@ export async function persistNotePayload(input: PersistNotePayloadInput): Promis
       durationMs: 0,
     }
     files.push(row)
-    await insertFileRow(row, dataBase64, Capacitor.isNativePlatform() ? rel : null)
+    await insertFileRow(row, dataBase64, Capacitor.isNativePlatform() ? rel : null, db)
   }
 
   for (const media of input.media) {
@@ -102,7 +111,7 @@ export async function persistNotePayload(input: PersistNotePayloadInput): Promis
     const ext = media.ext || extFromMime(mime, 'bin')
     const rel = noteFileRelPath(dir, media.kind as NoteFileKind, counters[media.kind], ext)
     const dataBase64 = await blobToBase64(media.blob)
-    const uri = await writeRelPath(rel, dataBase64)
+    const uri = await writeRelPath(rel, dataBase64, db)
     const row: NoteFileRecord = {
       id: `${input.noteId}-${media.kind}-${counters[media.kind]}`,
       noteId: input.noteId,
@@ -113,10 +122,11 @@ export async function persistNotePayload(input: PersistNotePayloadInput): Promis
       durationMs: media.durationMs ?? 0,
     }
     files.push(row)
-    await insertFileRow(row, dataBase64, Capacitor.isNativePlatform() ? rel : null)
+    await insertFileRow(row, dataBase64, Capacitor.isNativePlatform() ? rel : null, db)
     if (media.kind === 'audio' && !audioPath) audioPath = uri
   }
 
+  db.assertCurrent()
   return { bodyPath, files, audioPath }
 }
 
@@ -143,33 +153,39 @@ function decodeBody(base64: string, bodyPath: string): string | null {
   return text
 }
 
-export async function readNoteBody(bodyPath: string | null): Promise<string | null> {
+export async function readNoteBody(bodyPath: string | null, db = captureFiles()): Promise<string | null> {
+  db.assertCurrent()
   if (!bodyPath) return null
   if (bodyPath.startsWith('sqlite:')) {
     const rel = bodyPath.slice('sqlite:'.length)
-    const row = await localDB.queryOne<{ data_base64: string }>(
+    const row = await db.queryOne<{ data_base64: string }>(
       'SELECT data_base64 FROM local_note_files WHERE rel_path = ? OR rel_path = ?',
       [rel, bodyPath],
     )
     if (!row?.data_base64) return null
+    db.assertCurrent()
     return decodeBody(row.data_base64, bodyPath)
   }
   if (!Capacitor.isNativePlatform()) return null
   try {
     const res = await Filesystem.readFile({ path: bodyPath, directory: Directory.Data })
+    db.assertCurrent()
     const data = typeof res.data === 'string' ? res.data : ''
     return decodeBody(data, bodyPath)
   } catch {
-    const row = await localDB.queryOne<{ data_base64: string }>(
+    db.assertCurrent()
+    const row = await db.queryOne<{ data_base64: string }>(
       'SELECT data_base64 FROM local_note_files WHERE rel_path = ?',
       [bodyPath],
     )
     if (!row?.data_base64) return null
+    db.assertCurrent()
     return decodeBody(row.data_base64, bodyPath)
   }
 }
 
-export async function deleteNoteFiles(noteId: string, createdAt: number): Promise<void> {
+export async function deleteNoteFiles(noteId: string, createdAt: number, db = captureFiles()): Promise<void> {
+  db.assertCurrent()
   const dir = noteDir(noteId, createdAt)
   if (Capacitor.isNativePlatform()) {
     await Filesystem.rmdir({ path: dir, directory: Directory.Data, recursive: true }).catch((e) => {
@@ -178,7 +194,7 @@ export async function deleteNoteFiles(noteId: string, createdAt: number): Promis
       console.warn('[note-files] 笔记目录删除失败（磁盘上留下孤儿文件）：', e)
     })
   }
-  await localDB.run('DELETE FROM local_note_files WHERE note_id = ?', [noteId])
+  await db.run('DELETE FROM local_note_files WHERE note_id = ?', [noteId])
 }
 
 /**
@@ -193,7 +209,8 @@ export async function deleteNoteFiles(noteId: string, createdAt: number): Promis
  * 媒体文件名还带序号（audio/01.webm），本就不该因为改正文而失效。
  * 换成媒体时才该整体替换，那种情况走 deleteNoteFiles 仍然正确。
  */
-export async function deleteNoteBodyFile(noteId: string, createdAt: number): Promise<void> {
+export async function deleteNoteBodyFile(noteId: string, createdAt: number, db = captureFiles()): Promise<void> {
+  db.assertCurrent()
   const rel = noteFileRelPath(noteDir(noteId, createdAt), 'body')
   if (Capacitor.isNativePlatform()) {
     await Filesystem.deleteFile({ path: rel, directory: Directory.Data }).catch((e) => {
@@ -203,5 +220,5 @@ export async function deleteNoteBodyFile(noteId: string, createdAt: number): Pro
     })
   }
   // 只清 body 那一类子行；audio 等媒体行留着，播放与回填都依赖它们
-  await localDB.run('DELETE FROM local_note_files WHERE note_id = ? AND kind = ?', [noteId, 'body'])
+  await db.run('DELETE FROM local_note_files WHERE note_id = ? AND kind = ?', [noteId, 'body'])
 }

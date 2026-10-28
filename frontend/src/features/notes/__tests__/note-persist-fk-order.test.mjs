@@ -128,7 +128,7 @@ describe('负控：顺序改回 bug 版本后必须报红', () => {
     //   原来写的是 indexOf('await localDB.run(\n    `INSERT INTO local_notes')，
     //   而 Windows 检出是 CRLF ⇒ 那个 \n 匹配不上 ⇒ 恒「定位失败」。
     //   ⇒ 那不是「源码结构与预期不符」，是行尾形态不匹配（族 C 同根因）。
-    const insertStart = body.search(/await localDB\.run\(\r?\n\s*`INSERT INTO local_notes/)
+    const insertStart = body.search(/await db\.run\(\r?\n\s*`INSERT INTO local_notes/)
     assert.ok(blockStart >= 0, '定位失败：找不到 persistNotePayload 块，源码结构与预期不符')
     assert.ok(insertStart >= 0, '定位失败：找不到 INSERT INTO local_notes，源码结构与预期不符')
     assert.ok(insertStart < blockStart,
@@ -153,7 +153,7 @@ describe('负控：顺序改回 bug 版本后必须报红', () => {
     //   原来写的是 indexOf('await localDB.run(\n    `INSERT INTO local_notes')，
     //   CRLF 下匹配不上 ⇒ at = -1 ⇒ 变异把整块插到了**文件开头**，
     //   ⇒ 变异体不是「附件先于父行」的那个形态 ⇒ 门「有洞」的报错是假的。
-    const at = mutated.search(/await localDB\.run\(\r?\n\s*`INSERT INTO local_notes/)
+    const at = mutated.search(/await db\.run\(\r?\n\s*`INSERT INTO local_notes/)
     assert.ok(at >= 0, '定位失败：变异后找不到 INSERT INTO local_notes 的插入点')
     mutated = mutated.slice(0, at) + block + '\n\n  ' + mutated.slice(at)
 

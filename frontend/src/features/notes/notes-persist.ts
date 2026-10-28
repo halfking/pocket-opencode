@@ -10,9 +10,10 @@ import { needsFullRebuild } from './embed-reuse'
 import { deleteNoteBodyFile, deleteNoteFiles, persistNotePayload, readNoteBody } from './note-files'
 import { RECORD_MEDIA_CLEANUP_FAIL_TAG } from '../../utils/action-failure-notice'
 import { assetToNote, rowToNote, mergeImportedNotes } from './notes-row'
+import { captureNoteWriteOperation, type NoteWriteOperation, type NoteWriteOptions, type NoteCloudOperation, type NoteDbOperation } from './note-operation'
 import type { CreateNoteInput, LocalNote, NoteMediaInput, NoteRow } from './notes-types'
 // 存储与同步策略（storage-sync）：镜像上传前的 shouldSync 判定与结果上报。
-import { readCachedModuleMode, recordSyncReportEntry } from '../../stores/syncPolicyStore'
+import { recordSyncReportEntry } from '../../stores/syncPolicyStore'
 
 function newNoteId(): string {
   return `note-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
@@ -31,7 +32,9 @@ function collectMedia(input: CreateNoteInput): NoteMediaInput[] {
   return media
 }
 
-export async function createNote(input: CreateNoteInput): Promise<LocalNote> {
+export async function createNote(input: CreateNoteInput, options?: NoteWriteOptions): Promise<LocalNote> {
+  const operation = captureNoteWriteOperation(options)
+  const db = operation.db
   const now = Date.now()
   const workspaceId = input.workspaceId ?? 'default'
   const media = collectMedia(input)
@@ -89,7 +92,7 @@ export async function createNote(input: CreateNoteInput): Promise<LocalNote> {
   //   因为此时 content 是 `decideNoteStorage` 写进去的 ≤280 字**摘要**，
   //   退回它等于让摘要冒充全文，而本函数下方的 updateNote 会把它写回去覆盖全文。
   //   ⇒ 「附件写失败」是安全降级，「正文丢失」不是，两者不可混为一谈。
-  await localDB.run(
+  await db.run(
     `INSERT INTO local_notes
        (id, workspace_id, title, content, content_type, domain, category, tags,
         audio_path, audio_duration_ms, created_by_voice, encrypted_content, created_at, updated_at,
@@ -111,14 +114,14 @@ export async function createNote(input: CreateNoteInput): Promise<LocalNote> {
       body: input.content,
       persistBodyFile: decided.persistBodyFile,
       media,
-    })
+    }, db)
     bodyPath = written.bodyPath
     mediaJson = written.files.length ? JSON.stringify(written.files) : null
     if (written.audioPath) audioPath = written.audioPath
     note.bodyPath = bodyPath
     note.mediaJson = mediaJson
     note.audioPath = audioPath
-    await localDB.run(
+    await db.run(
       `UPDATE local_notes
          SET body_path = ?, media_json = ?, audio_path = ?, audio_duration_ms = ?
        WHERE id = ?`,
@@ -131,14 +134,15 @@ export async function createNote(input: CreateNoteInput): Promise<LocalNote> {
   //   这两个失败都是 fire-and-forget（正文已落 SQLite，不该让主链路等云端），
   //   所以**两条路径的失败必须同样出声**：此前一条 warn、一条完全吞掉，
   //   于是「保存一条长会议笔记」既没有向量、也没有任何痕迹。
-  embedAndStore(note.id, decided.embedText || note.content).catch((e) => {
+  embedAndStore(note.id, decided.embedText || note.content, operation.cloud).catch((e) => {
     console.warn('[lobster] 嵌入失败，笔记已存但暂无向量:', e)
   })
   // 记下这次镜像的 promise，让依赖后端行存在的调用方（录音后的 AI 总结）
   // 能 await 它。createNote 自己不等 —— 笔记正文已落 SQLite，主链路不该等云端。
-  noteMirrorReady.set(note.id, mirrorNoteToBackend(note).catch((e) => {
+  noteMirrorReady.set(note.id, mirrorNoteToBackend(note, operation.cloud).catch((e) => {
     console.warn('[notes] 镜像到后端失败，AI 总结/分类暂不可用:', e)
   }))
+  operation.assertCurrent()
   return note
 }
 
@@ -150,11 +154,14 @@ export async function updateNote(
     audioDurationMs?: number
   },
   workspaceId = 'default',
+  options?: NoteWriteOptions,
 ): Promise<void> {
-  const existing = await getNote(id, false, workspaceId)
+  const operation = captureNoteWriteOperation(options)
+  const db = operation.db
+  const existing = await getNote(id, false, workspaceId, operation)
   if (!existing) throw new Error('笔记不存在或不属于当前 workspace')
   if (existing.storage === 'asset') {
-    const asset = await assetStore.getForWorkspace(id, workspaceId)
+    const asset = await assetStore.getForWorkspace(id, workspaceId, db)
     if (!asset) throw new Error('笔记不存在或不属于当前 workspace')
     let meta: Record<string, unknown> = {}
     try { meta = JSON.parse(asset.metaJson || '{}') } catch { /* empty */ }
@@ -171,11 +178,12 @@ export async function updateNote(
       }),
       source: asset.source,
       syncMode: asset.syncMode,
-    })
+    }, db)
+    operation.assertCurrent()
     return
   }
 
-  const nextContent = patch.content !== undefined ? patch.content : await loadFullContent(existing)
+  const nextContent = patch.content !== undefined ? patch.content : await loadFullContent(existing, db)
   const nextTitle = patch.title !== undefined ? patch.title : existing.title
   const nextTags = patch.tags !== undefined ? patch.tags : existing.tags
   const nextSummary = patch.summary !== undefined ? patch.summary : undefined
@@ -236,7 +244,7 @@ export async function updateNote(
         body: nextContent,
         persistBodyFile: bodyFileNeeded,
         media,
-      })
+      }, db)
       bodyPath = written.bodyPath
       // 同类型的以本次写的为准，跨类型的从旧 mediaJson 合回来。
       const writtenKinds = new Set(written.files.map((f) => f.kind))
@@ -256,13 +264,13 @@ export async function updateNote(
     // ★ 清理排在**写成功之后**：只有确认正文文件不再需要时才删旧 body 文件。
     //   删除永远不能排在写之前 —— 写失败就没有回滚了。
     if (!bodyFileNeeded && existing.bodyPath) {
-      await deleteNoteBodyFile(id, existing.createdAt)
+      await deleteNoteBodyFile(id, existing.createdAt, db)
     }
   }
 
   const shouldEncrypt = useCryptoConfig().shouldEncryptField()
   const storedContent = shouldEncrypt ? await encryptString(decided.displayContent) : decided.displayContent
-  await localDB.run(
+  await db.run(
     `UPDATE local_notes SET
        title = ?, content = ?, encrypted_content = ?, domain = ?, tags = ?,
        status = ?, storage_tier = ?, summary = ?, search_text = ?, body_path = ?,
@@ -282,10 +290,11 @@ export async function updateNote(
   if (patch.content !== undefined) {
     // ⚠ §896/D66：此前是 `.catch(() => {})` —— 整条编辑保存路径的嵌入失败**零痕迹**，
     //   而它是长笔记**唯一**的重试机会（创建时已经失败过一次）。改为与创建路径对称。
-    embedAndStore(id, decided.embedText).catch((e) => {
+    embedAndStore(id, decided.embedText, operation.cloud).catch((e) => {
       console.warn('[notes] 正文已更新但向量写入失败，语义检索暂时搜不到这条:', e)
     })
   }
+  operation.assertCurrent()
 }
 
 /**
@@ -312,39 +321,49 @@ export async function deleteNote(
   id: string,
   workspaceId = 'default',
 ): Promise<{ mediaCleaned: boolean }> {
-  const existing = await getNote(id, true, workspaceId)
+  const operation = captureNoteWriteOperation({ backgroundCloud: false })
+  const db = operation.db
+  const existing = await getNote(id, true, workspaceId, operation)
   if (existing?.storage === 'asset') {
-    await assetStore.softDeleteForWorkspace(id, workspaceId)
+    await assetStore.softDeleteForWorkspace(id, workspaceId, db)
+    operation.assertCurrent()
     return { mediaCleaned: true }
   }
   // ① 软删先行：这一步失败 ⇒ 笔记仍在，调用方如实报「删除失败」（不假装）。
-  await localDB.run('UPDATE local_notes SET deleted_at = ? WHERE id = ? AND workspace_id = ?', [Date.now(), id, workspaceId])
+  await db.run('UPDATE local_notes SET deleted_at = ? WHERE id = ? AND workspace_id = ?', [Date.now(), id, workspaceId])
   // ② 附属清理：各自兜住，绝不因为它失败而让「删除没生效」。
   let mediaCleaned = true
   if (existing && (existing.bodyPath || existing.mediaJson)) {
     try {
-      await deleteNoteFiles(id, existing.createdAt)
+      await deleteNoteFiles(id, existing.createdAt, db)
     } catch (e) {
       mediaCleaned = false
       console.error(RECORD_MEDIA_CLEANUP_FAIL_TAG, '笔记正文/媒体文件', id, e)
     }
   }
   try {
-    await vectorIndex.remove(id)
+    await vectorIndex.remove(id, operation)
   } catch (e) {
     console.warn('[notes-persist] 向量索引清理失败（笔记已软删，检索可能仍命中）：', id, e)
   }
+  operation.assertCurrent()
   return { mediaCleaned }
 }
 
-export async function getNote(id: string, includeDeleted = false, workspaceId = 'default'): Promise<LocalNote | null> {
+export async function getNote(
+  id: string, includeDeleted = false, workspaceId = 'default', operation?: NoteWriteOperation,
+): Promise<LocalNote | null> {
+  operation ??= captureNoteWriteOperation({ backgroundCloud: false })
+  const db = operation.db
   const sql = includeDeleted
     ? 'SELECT * FROM local_notes WHERE id = ? AND workspace_id = ?'
     : 'SELECT * FROM local_notes WHERE id = ? AND workspace_id = ? AND deleted_at IS NULL'
-  const local = await rowToNote(await localDB.queryOne<NoteRow>(sql, [id, workspaceId]))
+  const local = await rowToNote(await db.queryOne<NoteRow>(sql, [id, workspaceId]))
+  operation.assertCurrent()
   if (local) return local
   if (includeDeleted) return null
-  const asset = await assetStore.getForWorkspace(id, workspaceId)
+  const asset = await assetStore.getForWorkspace(id, workspaceId, db)
+  operation.assertCurrent()
   return asset?.kind === 'note' && asset.source === 'enex_import' ? assetToNote(asset) : null
 }
 
@@ -373,9 +392,12 @@ export class NoteBodyUnavailableError extends Error {
   }
 }
 
-export async function loadFullContent(note: LocalNote): Promise<string> {
+export async function loadFullContent(note: LocalNote, db?: NoteDbOperation): Promise<string> {
+  db ??= captureNoteWriteOperation({ backgroundCloud: false }).db
+  db.assertCurrent()
   if (note.storageTier !== 'file' || !note.bodyPath) return note.content
-  const body = await readNoteBody(note.bodyPath)
+  const body = await readNoteBody(note.bodyPath, db)
+  db.assertCurrent()
   // ⚠⚠ §891/D61：原来这里是 `return body ?? note.content`。
   //   在 tier='file' 下 `note.content` 是摘要不是全文，而 updateNote 会把它写回去
   //   ⇒ **打开再保存就能销毁全文**。读不到就必须出声，不许静默降级。
@@ -474,9 +496,10 @@ export async function awaitNoteMirror(noteId: string): Promise<void> {
  */
 const EMBED_TEXT_CHAR_LIMIT = 16000
 
-async function embedAndStore(noteId: string, content: string): Promise<void> {
+async function embedAndStore(noteId: string, content: string, operation: NoteCloudOperation | null): Promise<void> {
   // 向量接口也会把正文发到云端，不能只拦镜像写入。
-  if (readCachedModuleMode('notes') === 'local') return
+  if (!operation) return
+  operation.assertCurrent()
   // ⚠⚠ §898：超长文本**不再截断**，而是**按段分别嵌入**。
   //
   //   §896 的做法是「截到 16000 字就发」⇒ 长会议的后半段**永远进不了索引**
@@ -500,17 +523,17 @@ async function embedAndStore(noteId: string, content: string): Promise<void> {
   //   ⚠ 复用成立的前提是**段边界稳定** —— 固定偏移切段时改一个字会让
   //     后面所有段都变（实测 0/22 段存活）；段落锚定切段时 20/21 段存活。
   //     ⇒ 切段方式必须是段落锚定的（见 `splitForEmbedding`）。
-  const prev = await vectorIndex.existingChunks(noteId)
-  const first = await embedChunks(chunks, prev)
+  const prev = await vectorIndex.existingChunks(noteId, operation)
+  const first = await embedChunks(chunks, prev, operation)
   // ⚠⚠ **换模型 ⇒ 旧向量不在同一个空间里** ⇒ 混用会让相似度失去意义
   //   ⇒ 一律全部重嵌（安全侧）。决策在纯函数里（`embed-reuse.ts`），
   //   判据直接验它的行为（源码门对同形改动无效，§95.3 的老教训）。
   if (needsFullRebuild(first.apiModel, prev?.model ?? null, first.reused)) {
-    const rebuilt = await embedChunks(chunks, null)
-    await vectorIndex.add(noteId, rebuilt.vectors, rebuilt.model, hashes)
+    const rebuilt = await embedChunks(chunks, null, operation)
+    await vectorIndex.add(noteId, rebuilt.vectors, rebuilt.model, hashes, operation)
     return
   }
-  await vectorIndex.add(noteId, first.vectors, first.model, hashes)
+  await vectorIndex.add(noteId, first.vectors, first.model, hashes, operation)
 }
 
 /**
@@ -522,6 +545,7 @@ async function embedAndStore(noteId: string, content: string): Promise<void> {
 async function embedChunks(
   chunks: { text: string }[],
   prev: { hashes: string[]; vectors: Float32Array[]; model: string } | null,
+  operation: NoteCloudOperation,
 ): Promise<{ vectors: Float32Array[]; model: string; reused: number; apiModel: string | null }> {
   const hashes = chunks.map((c) => sha1Hex(c.text))
   const vectors: Float32Array[] = []
@@ -529,7 +553,7 @@ async function embedChunks(
   let apiModel: string | null = null
   let reused = 0
   for (let i = 0; i < chunks.length; i++) {
-    if (readCachedModuleMode('notes') === 'local') throw new Error('module_policy_local')
+    operation.assertCurrent()
     const h = hashes[i]
     if (prev) {
       const idx = prev.hashes.indexOf(h)
@@ -541,14 +565,17 @@ async function embedChunks(
     }
     const res = await http<{ embedding: number[]; model: string }>('/api/embed', {
       syncModule: 'notes',
+      assertCurrent: operation.assertCurrent,
       method: 'POST',
       body: JSON.stringify({ text: chunks[i].text }),
     })
+    operation.assertCurrent()
     apiModel = res.model
     model = res.model
     vectors.push(Float32Array.from(res.embedding))
   }
   // ⚠ 全程没调 API（全部复用）⇒ apiModel 保持 null ⇒ 不会有换模型问题。
+  operation.assertCurrent()
   return { vectors, model, reused, apiModel }
 }
 
@@ -583,17 +610,20 @@ async function embedChunks(
  * 但 summarize 依赖它，所以它是 fire-and-forget 的**前置**，
  * 由 presentVoiceDraft 那一侧等它（见 note-ai-mirror.ts）。
  */
-async function mirrorNoteToBackend(note: LocalNote): Promise<void> {
+async function mirrorNoteToBackend(note: LocalNote, operation: NoteCloudOperation | null): Promise<void> {
   // ── 存储与同步策略挂点（storage-sync）────────────────────────────────
   // notes=local ⇒ 笔记只留本机加密库，不上传后端（镜像跳过 ⇒ AI 分类/总结
   // 自然没有元数据源，这与「仅本地」的语义一致）。上报 skipped 供设置页
   // 「上次同步」如实显示。缓存缺失时也暂停上传，等待服务端策略确认。
-  if (readCachedModuleMode('notes') === 'local') {
+  if (!operation) {
     recordSyncReportEntry({ module: 'notes', status: 'skipped' })
     return
   }
+  operation.assertCurrent()
   const res = await http<{ id?: string }>('/api/notes', {
     method: 'POST',
+    syncModule: 'notes',
+    assertCurrent: operation.assertCurrent,
     body: JSON.stringify({
       id: note.id,
       title: note.title ?? undefined,
@@ -613,11 +643,13 @@ async function mirrorNoteToBackend(note: LocalNote): Promise<void> {
       createdByVoice: note.createdByVoice,
     }),
   })
-  await http(`/api/notes/${note.id}/classify`, { method: 'POST' }).catch((e) => {
+  operation.assertCurrent()
+  await http(`/api/notes/${note.id}/classify`, { method: 'POST', syncModule: 'notes', assertCurrent: operation.assertCurrent }).catch((e) => {
     // 自动分类没上报成功 ⇒ 这条笔记不会被服务端归类（正文照常落库，主链路不受影响）。
     // 没有别处会提示 ⇒ 留痕。
     console.warn('[notes] 笔记自动分类未能上报：', e)
   })
+  operation.assertCurrent()
   // storage-sync：镜像上行成功 ⇒ 上报 synced（count=1 条笔记）。
   recordSyncReportEntry({ module: 'notes', status: 'synced', count: 1 })
   void res

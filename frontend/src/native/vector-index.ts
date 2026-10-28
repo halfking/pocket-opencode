@@ -65,6 +65,12 @@ export interface VectorDb {
   all(sql: string, params?: unknown[]): Promise<SqlRow[]>
 }
 
+/** A business operation can retain its original DB lease across embedding awaits. */
+export interface VectorOperation {
+  readonly db: { run(sql: string, params?: unknown[]): Promise<unknown>; query<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]> }
+  assertCurrent(): void
+}
+
 /** 向量索引：内存中持有全部 note 向量用于快速检索。 */
 export class VectorIndex {
   private readonly db: VectorDb
@@ -108,8 +114,9 @@ export class VectorIndex {
   }
 
   /** 从本地库加载全部向量到内存。App 启动后调用一次。 */
-  async load(): Promise<void> {
-    const p = this.loadFromDb()
+  async load(operation?: VectorOperation): Promise<void> {
+    operation?.assertCurrent()
+    const p = this.loadFromDb(operation)
     this.loading = p
     try {
       await p
@@ -140,8 +147,9 @@ export class VectorIndex {
     while (this.loading) await this.loading
   }
 
-  private async loadFromDb(): Promise<void> {
-    const rows = (await this.db.all(
+  private async loadFromDb(operation?: VectorOperation): Promise<void> {
+    const all = operation ? operation.db.query.bind(operation.db) : this.db.all.bind(this.db)
+    const rows = (await all(
       'SELECT note_id, embedding, dim, chunks, chunk_hashes FROM local_note_vectors',
     )) as unknown as {
       note_id: string
@@ -150,6 +158,7 @@ export class VectorIndex {
       chunks?: number | null
       chunk_hashes?: string | null
     }[]
+    operation?.assertCurrent()
     if (rows.length === 0) {
       this.ids = []
       this.matrix = new Float32Array(0)
@@ -231,8 +240,10 @@ export class VectorIndex {
    * ⚠ `model` 也会返回：换了 embedding 模型时**不能复用**旧向量
    *   （不同模型的向量不在同一个空间里，混用会让相似度失去意义）。
    */
-  async existingChunks(noteId: string): Promise<{ hashes: string[]; vectors: Float32Array[]; model: string } | null> {
-    const rows = (await this.db.all(
+  async existingChunks(noteId: string, operation?: VectorOperation): Promise<{ hashes: string[]; vectors: Float32Array[]; model: string } | null> {
+    operation?.assertCurrent()
+    const all = operation ? operation.db.query.bind(operation.db) : this.db.all.bind(this.db)
+    const rows = (await all(
       'SELECT embedding, dim, model, chunks, chunk_hashes FROM local_note_vectors WHERE note_id = ?',
       [noteId],
     )) as unknown as {
@@ -242,6 +253,7 @@ export class VectorIndex {
       chunks?: number | null
       chunk_hashes?: string | null
     }[]
+    operation?.assertCurrent()
     if (rows.length === 0) return null
     const r = rows[0]
     const raw = new Float32Array(r.embedding)
@@ -280,7 +292,9 @@ export class VectorIndex {
     embedding: Float32Array | Float32Array[],
     model: string,
     hashes?: string[],
+    operation?: VectorOperation,
   ): Promise<void> {
+    operation?.assertCurrent()
     const list = Array.isArray(embedding) ? embedding : [embedding]
     if (list.length === 0) return
     // ⚠⚠ §904/D73：**拒绝**把维度不对的向量写进库。
@@ -311,7 +325,7 @@ export class VectorIndex {
 
     // ⚠ §899：哈希与向量**一一对应**；长度对不上就写空串（⇒ 下次一律重嵌，安全侧）。
     const hashText = hashes && hashes.length === normalized.length ? hashes.join(',') : ''
-    await this.db.run(
+    await (operation?.db ?? this.db).run(
       `INSERT INTO local_note_vectors (note_id, embedding, dim, model, chunks, chunk_hashes, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(note_id) DO UPDATE SET embedding = EXCLUDED.embedding, dim = EXCLUDED.dim, model = EXCLUDED.model, chunks = EXCLUDED.chunks, chunk_hashes = EXCLUDED.chunk_hashes`,
@@ -321,6 +335,7 @@ export class VectorIndex {
     // ⚠ §905：落库**不等**（上面的 db.run 已经完成了），但内存变更必须等
     //   在途的 load() 落地 —— 否则会被它的旧快照整体覆盖掉。
     await this.settleLoad()
+    operation?.assertCurrent()
 
     // ⚠⚠§881：这条笔记**已经在内存索引里**时，必须**就地覆盖**那一行向量。
     //   修之前的形状是 `isInMemory = !已存在 && 未超上限` ⇒ 更新一条已有笔记时
@@ -340,7 +355,7 @@ export class VectorIndex {
       //   走一次全量重建（load）恢复不变式。
       //   ⇒ 频率：只在「段数变化」时发生（编辑让长度跨过 3800 字的倍数），
       //     而不是每次编辑。重建成本 O(总段数)，可接受但**必须记进文档**。
-      await this.load()
+      await this.load(operation)
       return
     }
 
@@ -406,12 +421,14 @@ export class VectorIndex {
   }
 
   /** 删除一条向量（笔记删除时）。 */
-  async remove(noteId: string): Promise<void> {
-    await this.db.run('DELETE FROM local_note_vectors WHERE note_id = ?', [noteId])
+  async remove(noteId: string, operation?: VectorOperation): Promise<void> {
+    operation?.assertCurrent()
+    await (operation?.db ?? this.db).run('DELETE FROM local_note_vectors WHERE note_id = ?', [noteId])
     await this.settleLoad()
+    operation?.assertCurrent()
     if (this.noteSpans.has(noteId)) {
       // 重建内存索引（删除不频繁，全量重建可接受）
-      await this.load()
+      await this.load(operation)
     }
   }
 
