@@ -218,6 +218,8 @@
     "storageStatusSkipped": "スキップ · ローカルのみ",
     "storageSyncedCount": "同期済み · {count} 件",
     "storageLocalCloudUnavailable": "クラウドへの書き込みと同期は利用できません。RSS とメールのローカル代替機能は未実装です。",
+    "storageNativeEmailStopUnconfirmed": "この端末のバックグラウンドメールの停止を確認できません。既存のタスクがクラウドにアクセスする可能性があります。再有効化はブロックされています。再試行してください。 古い Android アプリをお使いの場合は、更新してから再試行してください。",
+    "storageNativeEmailStopLimits": "送信済みのリクエストは取り消せません。端末のストレージに障害があると、再起動後に無効状態が保持されない場合があります。",
     "storageOnlyLocalBadge": "ローカルのみ · 非同期",
     "storageLoadFailed": "ポリシーサービスに接続できません。キャッシュまたは既定のポリシーを表示中",
     "storageManagedNoOverride": "管理者により管理中"

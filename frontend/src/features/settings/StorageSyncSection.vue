@@ -41,13 +41,21 @@
           role="radio"
           :aria-checked="policy.modules[row.module] === mode"
           :class="['segment-item', `segment-${mode}`, { active: policy.modules[row.module] === mode }]"
-          :disabled="!isPortalSyncModule(row.module) || !policy.allowOverride || policy.saving || purging"
+          :disabled="!isPortalSyncModule(row.module) || !policy.allowOverride || policy.saving || purging || (row.module === 'email' && mode === 'cloud' && nativeEmailStopState.unconfirmed)"
           :data-testid="`storage-mode-${row.module}-${mode}`"
           @click="onSegmentTap(row.module, mode)"
         >
           {{ mode === 'cloud' ? t('settings.storageModeCloud') : t('settings.storageModeLocal') }}
         </button>
       </div>
+    </div>
+
+    <div v-if="nativeEmailStopState.unconfirmed" class="native-email-stop-error" role="alert" data-testid="native-email-stop-error">
+      <p>{{ t('settings.storageNativeEmailStopUnconfirmed') }}</p>
+      <p>{{ t('settings.storageNativeEmailStopLimits') }}</p>
+      <button type="button" class="confirm-btn secondary" :disabled="nativeEmailStopState.retrying" data-testid="native-email-stop-retry" @click="retryNativeEmailFetchCancellation()">
+        {{ t('common.retry') }}
+      </button>
     </div>
 
     <!-- 上次同步（只读报告） -->
@@ -127,6 +135,7 @@ import type { SyncMode, SyncModule } from '../../api/syncPolicyContract.ts'
 import { isPortalSyncModule } from '../../api/syncPolicyContract.ts'
 import { useSyncPolicyStore } from '../../stores/syncPolicyStore'
 import { ICON, type IconName } from '../../constants/icons'
+import { cancelNativeEmailFetch, nativeEmailStopState, retryNativeEmailFetchCancellation } from '../email/email-fetch-native'
 
 const { t } = useI18n()
 const toast = useToast()
@@ -198,7 +207,10 @@ function onSegmentTap(module: SyncModule, mode: SyncMode): void {
 
 async function applySwitch(module: SyncModule, mode: SyncMode): Promise<boolean> {
   try {
-    return await policy.setModule(module, mode)
+    const saved = await policy.setModule(module, mode)
+    // Keep local selected on failure, but do not purge while an old native task may still upload.
+    if (saved && module === 'email' && mode === 'local') return await cancelNativeEmailFetch()
+    return saved
   } catch (err) {
     // store 已回滚；这里只负责让用户看见。
     toast.error(
@@ -222,7 +234,11 @@ async function confirmPurgeAndSwitch(): Promise<void> {
   if (!module) return
   purging.value = true
   try {
-    if (!(await applySwitch(module, 'local'))) return
+    if (!(await applySwitch(module, 'local'))) {
+      // Reveal the persistent stop warning instead of leaving it behind this dialog.
+      if (nativeEmailStopState.unconfirmed) confirmFor.value = null
+      return
+    }
     await purgeCloudCopy([module])
     toast.success(t('settings.storagePurgeDone'))
     confirmFor.value = null
@@ -443,6 +459,20 @@ async function confirmPurgeAndSwitch(): Promise<void> {
   background: var(--warning-bg);
   border-radius: var(--radius-sm);
   padding: var(--space-2);
+}
+
+.native-email-stop-error {
+  padding: var(--space-3);
+  border: 1px solid var(--warning);
+  border-radius: var(--radius-md);
+  background: var(--warning-bg);
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+}
+
+.native-email-stop-error p {
+  margin: 0 0 var(--space-2);
+  line-height: 1.7;
 }
 
 /* 确认框遮罩 + 卡片 */

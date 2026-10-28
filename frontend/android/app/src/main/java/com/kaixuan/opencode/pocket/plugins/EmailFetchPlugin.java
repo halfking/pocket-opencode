@@ -13,8 +13,22 @@ public class EmailFetchPlugin extends Plugin {
   public void configure(PluginCall call) {
     String api = call.getString("apiBase", "");
     String token = call.getString("token", "");
-    EmailFetchRunner.save(getContext(), api, token);
-    call.resolve();
+    try {
+      EmailFetchRunner.save(getContext(), api, token, Boolean.TRUE.equals(call.getBoolean("enabled", false)));
+      call.resolve();
+    } catch (Exception e) {
+      call.reject("email fetch permission could not be saved");
+    }
+  }
+
+  @PluginMethod
+  public void cancel(PluginCall call) {
+    try {
+      EmailFetchRunner.disable(getContext());
+      call.resolve();
+    } catch (Exception e) {
+      call.reject("email fetch denial could not be saved");
+    }
   }
 
   @PluginMethod

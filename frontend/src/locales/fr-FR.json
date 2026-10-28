@@ -219,6 +219,8 @@
     "storageStatusSkipped": "Ignoré · local uniquement",
     "storageSyncedCount": "Synchronisé · {count} éléments",
     "storageLocalCloudUnavailable": "Écriture et synchronisation cloud indisponibles ; RSS et e-mail sans remplacement local complet.",
+    "storageNativeEmailStopUnconfirmed": "L’arrêt des e-mails en arrière-plan sur cet appareil n’est pas confirmé. Les tâches existantes peuvent encore accéder au cloud. La réactivation est bloquée ; réessayez. Si vous utilisez une ancienne application Android, mettez-la à jour puis réessayez.",
+    "storageNativeEmailStopLimits": "Les requêtes déjà envoyées ne peuvent pas être rappelées. En cas de panne du stockage de l’appareil, la désactivation peut ne pas être conservée après un redémarrage.",
     "storageOnlyLocalBadge": "Local uniquement · pas de sync",
     "storageLoadFailed": "Service de stratégie injoignable ; utilisation du cache. Sans cache valide, les envois sont suspendus.",
     "storageManagedNoOverride": "Géré par l’administrateur"
