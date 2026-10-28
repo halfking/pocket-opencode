@@ -88,7 +88,7 @@ async function withDatabase(run, initialize = true, stored = new Map()) {
       await db.init('')
       await db.execute('CREATE TABLE executor_records (id INTEGER PRIMARY KEY, title TEXT); INSERT INTO executor_records VALUES(1,\'original\');')
     }
-    await run({ db, driver, raw, platform, lifecycle, UtilsSQLite, saved: () => stored.get('lobster'), SQL })
+    await run({ db, driver, raw, platform, lifecycle, UtilsSQLite, SQLiteDBConnection: definitions.SQLiteDBConnection, saved: () => stored.get('lobster'), SQL })
   } finally {
     if (db) await db.close().catch(() => {})
     try { raw?.close() } catch { /* already closed by the real driver */ }
@@ -386,4 +386,270 @@ test('migration scripts, comments, quoted keywords and trigger BEGIN/END remain 
     { end: 'SAVEPOINT' }, { end: 'BEGIN; COMMIT;' }, { end: "it's a ROLLBACK;" },
   ])
   await assert.rejects(db.execute('CREATE TRIGGER executor_noop AFTER INSERT ON executor_records BEGIN SELECT 1; END; COMMIT;'), /事务控制/)
+}))
+
+test('an owner activation requested inside a real write rolls back before COMMIT and then publishes', () => withDatabase(async ({ db, platform }) => {
+  let active = 'A', activation
+  await db.requestOwnerActivation({ userId: 'A', workspaceId: 'work' }, () => { active = 'A' })
+  const leased = db.bindOperation(db.captureOperation({ kind: 'local-edit' }))
+  const run = platform.run
+  platform.run = async options => {
+    const result = await run(options)
+    activation = db.requestOwnerActivation({ userId: 'B', workspaceId: 'work' }, () => { active = 'B' })
+    assert.equal(active, 'A')
+    return result
+  }
+  try {
+    await assert.rejects(leased.run('UPDATE executor_records SET title=? WHERE id=1', ['old A']), { name: 'AbortError' })
+    await activation
+    assert.equal(active, 'B')
+    assert.deepEqual(await db.queryOne('SELECT title FROM executor_records'), { title: 'original' })
+  } finally { platform.run = run }
+}))
+
+test('activation after COMMIT dispatch waits for the real proxy commit and Web persistence', () => withDatabase(async ({ db, platform, driver, raw, SQLiteDBConnection, saved, SQL }) => {
+  let active = 'A', activation, published = false
+  const events = []
+  await db.requestOwnerActivation({ userId: 'A', workspaceId: 'work' }, () => { active = 'A' })
+  const leased = db.bindOperation(db.captureOperation({ kind: 'local-edit' }))
+  const commitStarted = deferred(), commitRelease = deferred(), saveStarted = deferred(), saveRelease = deferred()
+  const dispatch = SQLiteDBConnection.prototype.commitTransaction
+  const commit = platform.commitTransaction, save = driver.saveToStore, exec = raw.exec
+  SQLiteDBConnection.prototype.commitTransaction = function (...args) {
+    queueMicrotask(() => {
+      activation = db.requestOwnerActivation({ userId: 'B', workspaceId: 'work' }, () => {
+        active = 'B'; published = true; events.push('publish:B')
+      })
+    })
+    return dispatch.apply(this, args)
+  }
+  platform.commitTransaction = async () => { commitStarted.resolve(); await commitRelease.promise; return commit() }
+  raw.exec = function (sql, ...args) {
+    if (sql === 'COMMIT TRANSACTION') events.push(`commit:${active}`)
+    return exec.call(this, sql, ...args)
+  }
+  driver.autoSave = true
+  driver.saveToStore = async (...args) => { saveStarted.resolve(); await saveRelease.promise; events.push(`save:${active}`); return save.apply(driver, args) }
+  const write = leased.run('UPDATE executor_records SET title=? WHERE id=1', ['committed A']).then(() => null, error => error)
+  try {
+    await commitStarted.promise
+    assert.equal(active, 'A')
+    assert.equal(published, false)
+    assert.throws(() => db.captureOperation({ kind: 'local-edit' }), { name: 'AbortError' })
+    commitRelease.resolve()
+    await saveStarted.promise
+    assert.equal(active, 'A')
+    assert.equal(published, false)
+    saveRelease.resolve()
+    const error = await write
+    await activation
+    assert.equal(error?.name, 'AbortError')
+    assert.equal(error?.outcome, 'committed', 'a committed operation must not be reported as rolled back')
+    assert.deepEqual(events, ['commit:A', 'save:A', 'publish:B'])
+    const persisted = new SQL.Database(saved())
+    try { assert.equal(persisted.exec('SELECT title FROM executor_records')[0].values[0][0], 'committed A') }
+    finally { persisted.close() }
+  } finally {
+    commitRelease.resolve(); saveRelease.resolve(); await write
+    SQLiteDBConnection.prototype.commitTransaction = dispatch
+    platform.commitTransaction = commit; driver.saveToStore = save; raw.exec = exec
+  }
+}))
+
+test('queued and late old-owner operations stay revoked across A→B→A', () => withDatabase(async ({ db, platform }) => {
+  const identity = userId => ({ userId, workspaceId: 'work' })
+  await db.requestOwnerActivation(identity('A'), () => {})
+  const lease = db.captureOperation({ kind: 'local-edit' }), old = db.bindOperation(lease)
+  let driverRuns = 0
+  const run = platform.run
+  platform.run = async options => { driverRuns++; return run(options) }
+  const queued = old.run('UPDATE executor_records SET title=? WHERE id=1', ['queued A']).then(() => null, error => error)
+  const b = db.requestOwnerActivation(identity('B'), () => { throw new Error('superseded B must not publish') }).catch(error => error)
+  assert.throws(() => db.captureOperation({ kind: 'local-edit' }), { name: 'AbortError' })
+  const a = db.requestOwnerActivation(identity('A'), () => {})
+  await a
+  assert.equal((await b).name, 'AbortError')
+  assert.equal((await queued).name, 'AbortError')
+  await assert.rejects(old.run('INSERT INTO executor_records VALUES(2,?)', ['late network response']), { name: 'AbortError' })
+  assert.notEqual(db.captureOperation({ kind: 'local-edit' }).owner.epoch, lease.owner.epoch)
+  assert.equal(driverRuns, 0)
+  await db.run('INSERT INTO executor_records VALUES(2,?)', ['new A'])
+  assert.deepEqual(await db.query('SELECT * FROM executor_records ORDER BY id'), [{ id: 1, title: 'original' }, { id: 2, title: 'new A' }])
+}))
+
+test('module epochs revoke old cloud operations without cancelling local edits', () => withDatabase(async ({ db }) => {
+  await db.requestPolicyActivation('email', 'cloud', () => {})
+  const cloud = db.bindOperation(db.captureOperation({ kind: 'cloud-sync', module: 'email' }))
+  const local = db.bindOperation(db.captureOperation({ kind: 'local-edit', module: 'email' }))
+  const disable = db.requestPolicyActivation('email', 'local', () => { throw new Error('superseded local must not publish') }).catch(error => error)
+  assert.throws(() => db.captureOperation({ kind: 'cloud-sync', module: 'email' }), { name: 'AbortError' })
+  await db.requestPolicyActivation('email', 'cloud', () => {})
+  assert.equal((await disable).name, 'AbortError')
+  await assert.rejects(cloud.run('UPDATE executor_records SET title=? WHERE id=1', ['stale cloud']), { name: 'AbortError' })
+  await local.run('UPDATE executor_records SET title=? WHERE id=1', ['local edit'])
+  await db.requestPolicyActivation('notes', 'local', () => {})
+  const freshCloud = db.bindOperation(db.captureOperation({ kind: 'cloud-sync', module: 'email' }))
+  await freshCloud.run('INSERT INTO executor_records VALUES(2,?)', ['fresh cloud'])
+  assert.deepEqual(await db.query('SELECT * FROM executor_records ORDER BY id'), [{ id: 1, title: 'local edit' }, { id: 2, title: 'fresh cloud' }])
+}))
+
+test('a local-policy request inside a real cloud write rolls it back while local edits remain usable', () => withDatabase(async ({ db, platform }) => {
+  await db.requestPolicyActivation('email', 'cloud', () => {})
+  const cloud = db.bindOperation(db.captureOperation({ kind: 'cloud-sync', module: 'email' }))
+  const local = db.bindOperation(db.captureOperation({ kind: 'local-edit', module: 'email' }))
+  let mode = 'cloud', activation
+  const run = platform.run
+  platform.run = async options => {
+    const result = await run(options)
+    activation = db.requestPolicyActivation('email', 'local', () => { mode = 'local' })
+    assert.equal(mode, 'cloud')
+    return result
+  }
+  try { await assert.rejects(cloud.run('UPDATE executor_records SET title=? WHERE id=1', ['revoked cloud']), { name: 'AbortError' }); await activation }
+  finally { platform.run = run }
+  assert.equal(mode, 'local')
+  assert.deepEqual(await local.queryOne('SELECT title FROM executor_records'), { title: 'original' })
+  await local.run('INSERT INTO executor_records VALUES(2,?)', ['local remains writable'])
+}))
+
+for (const fault of ['rollback', 'persistence']) {
+  test(`${fault} failure blocks owner activation until successful cleanup and an explicit retry`, () => withDatabase(async ({ db, platform, driver, UtilsSQLite }) => {
+    await db.requestOwnerActivation({ userId: 'A', workspaceId: 'work' }, () => {})
+    const old = db.bindOperation(db.captureOperation({ kind: 'local-edit' }))
+    let published = false, activation
+    const request = () => {
+      activation = db.requestOwnerActivation({ userId: 'B', workspaceId: 'work' }, () => { published = true }).then(() => null, error => error)
+    }
+    const run = platform.run, commit = platform.commitTransaction, rollback = UtilsSQLite.rollbackTransaction, save = driver.saveToStore
+    if (fault === 'rollback') {
+      platform.run = async options => { const result = await run(options); request(); return result }
+      UtilsSQLite.rollbackTransaction = async () => { throw new Error('injected rollback failure') }
+    } else {
+      platform.commitTransaction = async () => { const result = await commit(); request(); return result }
+      driver.autoSave = true
+      driver.saveToStore = async () => { throw new Error('injected persistence failure') }
+    }
+    try {
+      await assert.rejects(old.run('UPDATE executor_records SET title=? WHERE id=1', ['old write']))
+      assert.match(String(await activation), /状态不确定/)
+      assert.equal(published, false)
+      assert.equal(db.isReady(), false)
+      assert.throws(() => db.captureOperation({ kind: 'local-edit' }), { name: 'AbortError' })
+    } finally {
+      platform.run = run; platform.commitTransaction = commit
+      UtilsSQLite.rollbackTransaction = rollback; driver.saveToStore = save
+    }
+    await db.close()
+    await db.init('')
+    assert.equal(published, false, 'failed activation must not be replayed by init')
+    await db.requestOwnerActivation({ userId: 'B', workspaceId: 'work' }, () => { published = true })
+    assert.equal(published, true)
+    await assert.rejects(old.query('SELECT 1'), { name: 'AbortError' })
+    if (fault === 'rollback') assert.deepEqual(await db.queryOne('SELECT title FROM executor_records'), { title: 'original' })
+    // A failed persistence attempt does not promise durable committed contents.
+    else assert.deepEqual(await db.queryOne('SELECT 1 AS ok'), { ok: 1 })
+  }))
+}
+
+test('failed connection cleanup cannot publish a new owner', () => withDatabase(async ({ db, platform }) => {
+  const remove = platform.closeConnection
+  platform.closeConnection = async () => { throw new Error('injected cleanup failure') }
+  let published = false
+  try {
+    await assert.rejects(db.close(), /injected cleanup failure/)
+    await assert.rejects(db.requestOwnerActivation(null, () => { published = true }), /状态不确定/)
+    assert.equal(published, false)
+  } finally { platform.closeConnection = remove }
+  await db.close()
+  await db.requestOwnerActivation(null, () => { published = true })
+  assert.equal(published, true)
+}))
+
+test('owner activation works before unlock, clears cloud grants and rejects async publishers', () => withDatabase(async ({ db }) => {
+  let published = false
+  await db.requestOwnerActivation(null, () => { published = true })
+  assert.equal(published, true)
+  await db.requestPolicyActivation('email', 'cloud', () => {})
+  const old = db.bindOperation(db.captureOperation({ kind: 'cloud-sync', module: 'email' }))
+  await db.init('')
+  await db.requestOwnerActivation({ userId: '', workspaceId: '' }, () => {})
+  assert.throws(() => db.captureOperation({ kind: 'cloud-sync', module: 'email' }), { name: 'AbortError' })
+  await assert.rejects(old.query('SELECT 1'), { name: 'AbortError' })
+  let entered = false
+  await assert.rejects(db.requestOwnerActivation(null, async () => { entered = true; await db.query('SELECT 1') }), /synchronous/)
+  assert.equal(entered, false)
+  assert.throws(() => db.captureOperation({ kind: 'local-edit' }), { name: 'AbortError' })
+  await db.requestOwnerActivation(null, () => {})
+  const bound = db.bindOperation(db.captureOperation({ kind: 'local-edit' }))
+  await db.close(); await db.init('')
+  await assert.rejects(bound.query('SELECT 1'), { name: 'AbortError' })
+  assert.deepEqual(await db.queryOne('SELECT 1 AS ok'), { ok: 1 })
+}, false))
+
+for (const explicitLease of [false, true]) {
+  test(`public execute(false) cannot autocommit a revoked write (explicit lease: ${explicitLease})`, () => withDatabase(async ({ db, UtilsSQLite }) => {
+    const lease = db.captureOperation({ kind: 'local-edit' })
+    const execute = UtilsSQLite.execute
+    let activation
+    UtilsSQLite.execute = async (...args) => {
+      if (args[1].includes('UPDATE executor_records')) {
+        activation = db.requestOwnerActivation({ userId: 'B', workspaceId: 'work' }, () => {})
+      }
+      return execute.apply(UtilsSQLite, args)
+    }
+    try {
+      await assert.rejects(db.execute("UPDATE executor_records SET title='revoked'", false, explicitLease ? lease : undefined), { name: 'AbortError' })
+      await activation
+      assert.deepEqual(await db.queryOne('SELECT title FROM executor_records'), { title: 'original' })
+    } finally { UtilsSQLite.execute = execute }
+  }))
+}
+
+test('query and queryOne reject write SQL while WITH, EXPLAIN and read PRAGMAs work', () => withDatabase(async ({ db }) => {
+  const bound = db.bindOperation(db.captureOperation({ kind: 'local-edit' }))
+  for (const sql of [
+    "UPDATE executor_records SET title='bad' RETURNING title",
+    "WITH picked AS (SELECT 1) UPDATE executor_records SET title='bad' RETURNING title",
+    "SELECT 1; UPDATE executor_records SET title='bad' RETURNING title",
+    'PRAGMA user_version=7', 'PRAGMA user_version(7)', 'EXPLAIN PRAGMA foreign_keys=OFF',
+    "REPLACE INTO executor_records VALUES(1,'bad') RETURNING title",
+    "WITH picked AS (SELECT 1) REPLACE INTO executor_records VALUES(1,'bad') RETURNING title",
+  ]) {
+    await assert.rejects(bound.query(sql), /只读/)
+    await assert.rejects(db.queryOne(sql), /只读/)
+  }
+  assert.deepEqual(await bound.query('WITH picked AS (SELECT title FROM executor_records) SELECT * FROM picked'), [{ title: 'original' }])
+  assert.ok((await bound.query('PRAGMA table_info(executor_records)')).some(row => row.name === 'title'))
+  assert.deepEqual(await bound.query('PRAGMA user_version'), [{ user_version: 0 }])
+  assert.deepEqual(await bound.query("SELECT REPLACE('a','a','b') AS value"), [{ value: 'b' }])
+  assert.ok((await bound.query('EXPLAIN UPDATE executor_records SET title=\'explained only\'' )).length > 0)
+  assert.deepEqual(await bound.queryOne('SELECT title FROM executor_records'), { title: 'original' })
+}))
+
+test('a synchronously reentrant owner publisher preserves the newest ticket and never mints a mixed owner', () => withDatabase(async ({ db }) => {
+  let nested, active
+  const outer = db.requestOwnerActivation({ userId: 'A', workspaceId: 'work' }, () => {
+    active = 'A'
+    nested = db.requestOwnerActivation({ userId: 'B', workspaceId: 'work' }, () => { active = 'B' }).then(() => null, error => error)
+    assert.throws(() => db.captureOperation({ kind: 'local-edit' }), { name: 'AbortError' })
+  }).then(() => null, error => error)
+  assert.equal((await outer)?.name, 'AbortError')
+  assert.equal(await nested, null)
+  const lease = db.captureOperation({ kind: 'local-edit' })
+  assert.equal(active, 'B')
+  assert.equal(lease.owner.principal.userId, 'B')
+  await db.bindOperation(lease).run('INSERT INTO executor_records VALUES(2,?)', ['B'])
+}))
+
+test('a synchronously reentrant policy publisher cannot clear a newer local request', () => withDatabase(async ({ db }) => {
+  let nested, mode
+  const outer = db.requestPolicyActivation('email', 'cloud', () => {
+    mode = 'cloud'
+    nested = db.requestPolicyActivation('email', 'local', () => { mode = 'local' }).then(() => null, error => error)
+  }).then(() => null, error => error)
+  assert.equal((await outer)?.name, 'AbortError')
+  assert.equal(await nested, null)
+  assert.equal(mode, 'local')
+  assert.throws(() => db.captureOperation({ kind: 'cloud-sync', module: 'email' }), { name: 'AbortError' })
+  await db.bindOperation(db.captureOperation({ kind: 'local-edit' })).run('INSERT INTO executor_records VALUES(2,?)', ['local'])
 }))

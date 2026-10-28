@@ -17,7 +17,11 @@ import { isWebFallbackRuntime } from './runtime-platform'
 import type { SqlDb, SqlRow } from './sqlDb'
 import { SCHEMA_SQL, splitSqlStatements, normalizeTriggerForPluginExecute } from './schema'
 import { localDbNeedsOpen } from './local-db-init'
-import { assertNoTransactionControl } from './local-db-sql-guard'
+import { assertNoTransactionControl, assertReadOnlyQuery } from './local-db-sql-guard'
+import type { SyncModule, SyncMode } from '../api/syncPolicyContract'
+import { LocalDbLeases, type OperationLease, type OperationOptions, type OwnerIdentity, type ActivationPublisher } from './local-db-leases'
+
+export type { OperationLease, OperationOptions, OwnerIdentity, OwnerLease, ActivationPublisher } from './local-db-leases'
 
 const MEETINGS_V2_COLUMNS = [
   { table: 'local_meetings', column: 'location', sql: 'ALTER TABLE local_meetings ADD COLUMN location TEXT' },
@@ -125,6 +129,8 @@ class LocalDB {
   private conn: SQLiteDBConnection | null = null
   private initialized = false
   private transactionUncertain = false
+  private activationBlocked = false
+  private leases = new LocalDbLeases()
   // One JS instance only: other tabs/WebViews and account ownership need their own boundary.
   private pending: Promise<unknown> = Promise.resolve()
 
@@ -134,14 +140,53 @@ class LocalDB {
     return result
   }
 
+  captureOperation(options: OperationOptions): OperationLease {
+    return this.leases.capture(options)
+  }
+
+  bindOperation(lease: OperationLease) {
+    return Object.freeze({
+      run: (sql: string, values: unknown[] = []) => this.run(sql, values, lease),
+      query: <T = Record<string, unknown>>(sql: string, values: unknown[] = []) => this.query<T>(sql, values, lease),
+      queryOne: <T = Record<string, unknown>>(sql: string, values: unknown[] = []) => this.queryOne<T>(sql, values, lease),
+      execute: (sql: string) => this.execute(sql, true, lease),
+      runInTransaction: (statements: { statement: string; values: unknown[] }[]) => this.runInTransaction(statements, lease),
+    })
+  }
+
+  /** Additive kernel only: production auth/policy publishers are not wired here. */
+  async requestOwnerActivation(next: OwnerIdentity | null, publish: ActivationPublisher): Promise<void> {
+    const ticket = this.leases.prepareOwner(next)
+    return this.enqueue(async () => {
+      this.requireActivationHealthy()
+      this.leases.activateOwner(ticket, publish)
+    })
+  }
+
+  async requestPolicyActivation(module: SyncModule, mode: SyncMode, publish: ActivationPublisher): Promise<void> {
+    const ticket = this.leases.preparePolicy(module, mode)
+    return this.enqueue(async () => {
+      this.requireActivationHealthy()
+      this.leases.activatePolicy(ticket, publish)
+    })
+  }
+
+  private requireActivationHealthy(): void {
+    if (this.transactionUncertain || this.activationBlocked) throw new Error('LocalDB 状态不确定，需关闭连接并重新初始化')
+  }
+
   // Called only inside the queue; no public callbacks can re-enter it.
-  private async inTransaction<T>(conn: SQLiteDBConnection, operation: () => Promise<T>): Promise<T> {
+  private async inTransaction<T>(conn: SQLiteDBConnection, lease: OperationLease, operation: () => Promise<T>): Promise<T> {
     let result: T
     let began = false
     try {
       await conn.beginTransaction()
       began = true
+      this.leases.assertCurrent(lease)
       result = await operation()
+      // No await between this check and dispatch. Once commit is dispatched,
+      // activation stays queued until its reply and Web persistence settle.
+      this.leases.assertCurrent(lease)
       await conn.commitTransaction()
     } catch (error) {
       if (!began) {
@@ -167,9 +212,11 @@ class LocalDB {
         await conn.execute('', false)
       } catch (error) {
         this.initialized = false
-        throw error
+        this.activationBlocked = true
+        throw Object.assign(error instanceof Error ? error : new Error(String(error)), { outcome: 'committed' })
       }
     }
+    this.leases.assertCurrent(lease, 'committed')
     return result
   }
 
@@ -896,6 +943,8 @@ class LocalDB {
 
   private async closeConnection(): Promise<void> {
     this.initialized = false
+    this.activationBlocked = true
+    this.leases.invalidateConnection()
     if (this.conn) {
       if (this.transactionUncertain) {
         // jeep close exports the database: never persist an unresolved transaction.
@@ -909,6 +958,7 @@ class LocalDB {
       await this.sqlite.closeConnection(DB_NAME, false)
       this.conn = null
     }
+    this.activationBlocked = false
   }
 
   /** 是否已初始化 */
@@ -918,17 +968,18 @@ class LocalDB {
 
   /**
    * 执行写操作（DDL / 多语句）。返回受影响行数。
-   * transaction=true 时整个 statements 作为一个事务提交。
+   * 整个 statements 作为一个事务提交；旧 transaction 参数保留位置兼容。
    * 不接受 BEGIN/COMMIT/SAVEPOINT 等事务控制；使用 runInTransaction 管理批次。
    */
-  async execute(statements: string, transaction = false): Promise<number> {
+  async execute(statements: string, _transaction = false, lease?: OperationLease): Promise<number> {
+    lease ??= this.captureOperation({ kind: 'local-edit' })
     return this.enqueue(async () => {
+      this.leases.assertCurrent(lease)
       this.requireReady()
       assertNoTransactionControl(statements)
       const conn = this.conn!
-      const res = transaction
-        ? await this.inTransaction(conn, () => conn.execute(statements, false))
-        : await conn.execute(statements, false)
+      const res = await this.inTransaction(conn, lease, () => conn.execute(statements, false))
+      this.leases.assertCurrent(lease, 'committed')
       return res.changes?.changes ?? 0
     })
   }
@@ -936,13 +987,16 @@ class LocalDB {
   /**
    * 执行单条参数化语句（INSERT/UPDATE/DELETE），values 用 ? 占位。
    */
-  async run(sql: string, values: unknown[] = []): Promise<number> {
+  async run(sql: string, values: unknown[] = [], lease?: OperationLease): Promise<number> {
+    lease ??= this.captureOperation({ kind: 'local-edit' })
     const params = [...values]
     return this.enqueue(async () => {
+      this.leases.assertCurrent(lease)
       this.requireReady()
       assertNoTransactionControl(sql)
       const conn = this.conn!
-      const res = await this.inTransaction(conn, () => conn.run(sql, params, false))
+      const res = await this.inTransaction(conn, lease, () => conn.run(sql, params, false))
+      this.leases.assertCurrent(lease, 'committed')
       return res.changes?.changes ?? 0
     })
   }
@@ -958,14 +1012,18 @@ class LocalDB {
    */
   async runInTransaction(
     statements: { statement: string; values: unknown[] }[],
+    lease?: OperationLease,
   ): Promise<number> {
+    lease ??= this.captureOperation({ kind: 'local-edit' })
     const batch = statements.map(({ statement, values }) => ({ statement, values: [...values] }))
     return this.enqueue(async () => {
+      this.leases.assertCurrent(lease)
       this.requireReady()
       for (const { statement } of batch) assertNoTransactionControl(statement)
       if (batch.length === 0) return 0
       const conn = this.conn!
-      const res = await this.inTransaction(conn, () => conn.executeSet(batch, false))
+      const res = await this.inTransaction(conn, lease, () => conn.executeSet(batch, false))
+      this.leases.assertCurrent(lease, 'committed')
       const changes = res.changes?.changes ?? 0
       return typeof changes === 'number' ? changes : 0
     })
@@ -974,20 +1032,31 @@ class LocalDB {
   /**
    * 查询返回多行。values 对应 ? 占位。
    */
-  async query<T = Record<string, unknown>>(sql: string, values: unknown[] = []): Promise<T[]> {
+  async query<T = Record<string, unknown>>(sql: string, values: unknown[] = [], lease?: OperationLease): Promise<T[]> {
+    lease ??= this.captureOperation({ kind: 'local-edit' })
     const params = [...values]
-    return this.enqueue(async () => {
-      this.requireReady()
-      assertNoTransactionControl(sql)
-      const res = await this.conn!.query(sql, params)
-      return (res.values ?? []) as T[]
-    })
+    return this.enqueue(() => this.queryRows<T>(sql, params, lease))
+  }
+
+  private async queryRows<T>(sql: string, params: unknown[], lease: OperationLease): Promise<T[]> {
+    this.leases.assertCurrent(lease)
+    this.requireReady()
+    assertNoTransactionControl(sql)
+    assertReadOnlyQuery(sql)
+    const res = await this.conn!.query(sql, params)
+    this.leases.assertCurrent(lease)
+    return (res.values ?? []) as T[]
   }
 
   /** 查询单行，无结果返回 null。 */
-  async queryOne<T = Record<string, unknown>>(sql: string, values: unknown[] = []): Promise<T | null> {
-    const rows = await this.query<T>(sql, values)
-    return rows.length > 0 ? rows[0] : null
+  async queryOne<T = Record<string, unknown>>(sql: string, values: unknown[] = [], lease?: OperationLease): Promise<T | null> {
+    lease ??= this.captureOperation({ kind: 'local-edit' })
+    const params = [...values]
+    return this.enqueue(async () => {
+      const rows = await this.queryRows<T>(sql, params, lease)
+      this.leases.assertCurrent(lease)
+      return rows.length > 0 ? rows[0] : null
+    })
   }
 
   /**
