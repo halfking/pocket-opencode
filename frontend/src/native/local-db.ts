@@ -144,8 +144,14 @@ class LocalDB {
     return this.leases.capture(options)
   }
 
+  assertOperationCurrent(lease: OperationLease): void {
+    this.requireActivationHealthy()
+    this.leases.assertCurrent(lease)
+  }
+
   bindOperation(lease: OperationLease) {
     return Object.freeze({
+      assertCurrent: () => this.assertOperationCurrent(lease),
       run: (sql: string, values: unknown[] = []) => this.run(sql, values, lease),
       query: <T = Record<string, unknown>>(sql: string, values: unknown[] = []) => this.query<T>(sql, values, lease),
       queryOne: <T = Record<string, unknown>>(sql: string, values: unknown[] = []) => this.queryOne<T>(sql, values, lease),
