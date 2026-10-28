@@ -8,6 +8,12 @@ import { enqueueConfigPush, listQueuedConfigPushes, markConfigPushDone, markConf
 import { configKey, planConfigSync } from './planner'
 import { preserveCorruptRaw } from '../../utils/corrupt-preserve'
 import { getLocalSetting, listLocalSettings, markSettingClean, writeLocalIfNewer, writeLocalSetting } from './settings-store'
+// 存储与同步策略（storage-sync）：按 namespace 过滤模块owned配置的上行。
+import {
+  readCachedModuleMode,
+  recordSyncReportEntry,
+} from '../../stores/syncPolicyStore'
+import type { SyncModule } from '../../api/syncPolicyContract.ts'
 
 export interface ConfigSyncReport {
   pulled: number
@@ -17,9 +23,51 @@ export interface ConfigSyncReport {
   error?: string
 }
 
+/**
+ * storage-sync：settings namespace → 业务模块的归属映射。
+ * 只映射**整块属于某个策略模块**的 namespace；app_prefs / connection 是
+ * 应用级连接配置（切错了会把设备变成孤岛），不参与按模块过滤。
+ */
+const NAMESPACE_MODULE: Record<string, SyncModule> = {
+  email_account: 'email',
+  chat_settings: 'ai-chat',
+  chat_agent: 'ai-chat',
+  scheduled_task: 'tasks',
+}
+
+/** 该 namespace 是否被策略拦下（对应模块已切「仅本地」）。 */
+function namespaceHeldLocal(namespace: string): boolean {
+  const mod = NAMESPACE_MODULE[namespace]
+  if (!mod) return false
+  return readCachedModuleMode(mod) === 'local'
+}
+
+/**
+ * storage-sync：把本轮各模块的拦截/放行结果记入 lastSyncReport。
+ * held>0 ⇒ skipped；flowed>0 ⇒ synced（count=条数）。0 条不动旧报告
+ * （配置同步很多轮都是空转，空转不该刷新「上次同步」时间戳）。
+ */
+function reportModuleConfigFlow(held: Map<SyncModule, number>, flowed: Map<SyncModule, number>): void {
+  for (const [module, count] of held) {
+    if (count > 0) recordSyncReportEntry({ module, status: 'skipped', count })
+  }
+  for (const [module, count] of flowed) {
+    if (count > 0) recordSyncReportEntry({ module, status: 'synced', count })
+  }
+}
+
 async function pushOne(namespace: string, id: string): Promise<'ok' | 'queued' | 'conflict'> {
   const local = await getLocalSetting(namespace, id)
   if (!local) return 'ok'
+  // storage-sync 挂点：在线直存路径同样受策略约束 —— 模块切「仅本地」后，
+  // 配置改动静默入本地 outbox（与离线路径同款），不直发云端。
+  if (namespaceHeldLocal(namespace)) {
+    await enqueueConfigPush({
+      namespace, id, payload: local.payload,
+      secret: local.secretEncrypted, updatedAt: local.updatedAt,
+    })
+    return 'queued'
+  }
   try {
     const result = await userSettingsApi.put(namespace, id, {
       payload: local.payload,
@@ -50,7 +98,20 @@ async function pushOne(namespace: string, id: string): Promise<'ok' | 'queued' |
 export async function drainConfigOutbox(): Promise<number> {
   const queued = await listQueuedConfigPushes()
   let pushed = 0
+  // storage-sync：按模块统计本轮被拦下 / 正常放行的配置行数。
+  const held = new Map<SyncModule, number>()
+  const flowed = new Map<SyncModule, number>()
+  const bump = (m: Map<SyncModule, number>, k: SyncModule) => m.set(k, (m.get(k) ?? 0) + 1)
   for (const row of queued) {
+    // storage-sync 挂点：模块切「仅本地」后其配置行留在本地 outbox（不发送、
+    // 不计失败），切回「云端」下一轮 drain 自会重放 —— 与会话 outbox 的
+    // skipActions 同语义。
+    if (namespaceHeldLocal(row.namespace)) {
+      const mod = NAMESPACE_MODULE[row.namespace]!
+      bump(held, mod)
+      continue
+    }
+    const ownerModule = NAMESPACE_MODULE[row.namespace] ?? null
     try {
       if (row.namespace === 'email_account') {
         const { emailApi, isStaleWriteError } = await import('../../api/email')
@@ -76,6 +137,7 @@ export async function drainConfigOutbox(): Promise<number> {
           console.warn('[config-sync] email_account push rejected as stale; server copy wins', row.entityId)
         }
         await markConfigPushDone(row.id)
+        if (ownerModule) bump(flowed, ownerModule)
         pushed++
         continue
       }
@@ -88,6 +150,7 @@ export async function drainConfigOutbox(): Promise<number> {
           await scheduledTasksApi.create(p as never)
         }
         await markConfigPushDone(row.id)
+        if (ownerModule) bump(flowed, ownerModule)
         pushed++
         continue
       }
@@ -100,6 +163,7 @@ export async function drainConfigOutbox(): Promise<number> {
           await chatAgentApi.create({ id: row.entityId, ...p } as never)
         }
         await markConfigPushDone(row.id)
+        if (ownerModule) bump(flowed, ownerModule)
         pushed++
         continue
       }
@@ -117,11 +181,13 @@ export async function drainConfigOutbox(): Promise<number> {
       }
       await markConfigPushDone(row.id)
       await markSettingClean(row.namespace, row.entityId)
+      if (ownerModule) bump(flowed, ownerModule)
       pushed++
     } catch (err) {
       await markConfigPushFailed(row.id, err instanceof Error ? err.message : String(err))
     }
   }
+  reportModuleConfigFlow(held, flowed)
   return pushed
 }
 
@@ -143,6 +209,9 @@ export async function syncUserSettings(): Promise<ConfigSyncReport> {
     for (const key of plan.pullKeys) {
       const rec = remoteByKey.get(key)
       if (!rec) continue
+      // storage-sync 挂点：模块切「仅本地」后**双向**都跳过——pull 会用远端
+      // 副本覆盖本地（writeLocalIfNewer），对 local 模块等于悄悄改写本机数据。
+      if (namespaceHeldLocal(rec.namespace)) continue
       const won = await writeLocalIfNewer({
         namespace: rec.namespace, id: rec.id, payload: rec.payload, updatedAt: rec.updatedAt,
       })
@@ -159,6 +228,8 @@ export async function syncUserSettings(): Promise<ConfigSyncReport> {
     }
     for (const key of plan.pushKeys) {
       const [namespace, id] = key.split(':')
+      // storage-sync 挂点：同上，local 模块的配置不上行（留给本机）。
+      if (namespaceHeldLocal(namespace)) continue
       const status = await pushOne(namespace, id)
       if (status === 'ok') pushed++
       if (status === 'queued') queued++

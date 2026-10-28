@@ -5,6 +5,7 @@ import { useI18n } from 'vue-i18n'
 import { rssApi, type RSSSource, type RSSItem } from '../../api/rss'
 import { toUserMessage } from '../../api/error-message'
 import { useConfirm } from '../../composables/useConfirm'
+import LocalOnlyBadge from '../../components/business/LocalOnlyBadge.vue'
 
 const router = useRouter()
 const { t } = useI18n()
@@ -103,6 +104,8 @@ const totalUnread = computed(() => sources.value.reduce((acc, s) => acc + (s.unr
   <div class="rss-page">
     <header class="rss-header">
       <h2>RSS 订阅</h2>
+      <!-- storage-sync：模块切「仅本地」时的提示横条（其余情况不渲染） -->
+      <LocalOnlyBadge module="rss" />
       <span v-if="totalUnread > 0" class="badge">{{ totalUnread }} 未读</span>
       <div class="actions">
         <button class="btn-secondary" type="button" @click="openDigest">

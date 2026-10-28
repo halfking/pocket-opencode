@@ -34,6 +34,7 @@ export { default as AIThinkingIndicator } from './business/AIThinkingIndicator.v
 export { default as SessionCard } from './business/SessionCard.vue'
 export { default as WaveformVisualizer } from './business/WaveformVisualizer.vue'
 export { default as UnifiedComposer } from './business/UnifiedComposer.vue'
+export { default as LocalOnlyBadge } from './business/LocalOnlyBadge.vue'
 
 // 类型导出
 export type { ButtonProps } from './base/Button.vue'

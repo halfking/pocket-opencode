@@ -17,6 +17,11 @@ import { isLobsterReady, lobsterReady } from '../native/lobster-init'
 import { localDB, localDbAsSql } from '../native/local-db'
 import { MobileSyncRuntime, type RuntimeEvent } from '../native/mobileSyncRuntime'
 import { startEmailFetchHost } from '../features/email/email-fetch-host'
+// 存储与同步策略（storage-sync）：同步 runtime 的免 Pinia 判定/上报入口。
+import {
+  readCachedModuleMode,
+  recordSyncReportEntry,
+} from './syncPolicyStore'
 
 export const useConnectivityStore = defineStore('connectivity', {
   state: () => ({
@@ -71,6 +76,10 @@ export const useConnectivityStore = defineStore('connectivity', {
         fetchImpl: (...args: Parameters<typeof fetch>) => fetchWithTimeout(args[0], args[1]),
         apiBase: resolveApiBase(),
         onEvent: (event) => this.applyRuntimeEvent(event),
+        // storage-sync 挂点：runtime 按模块读缓存策略（免 Pinia），
+        // 结果写入 syncPolicyStore.lastSyncReport（设置页「上次同步」渲染）。
+        moduleMode: (m) => readCachedModuleMode(m),
+        onModuleSyncReport: (entry) => recordSyncReportEntry(entry),
       })
       this.runtime.start()
       // 2026-10-06 加门：邮件拉取要读写本地库，而本函数可能在 initLobster 完成**之前**

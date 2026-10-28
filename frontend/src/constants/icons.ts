@@ -152,6 +152,17 @@ export const ICON = {
 
   // ── features/ai-chat/AIChatView.vue：跨行插值，正则扫不到 ──
   chatAgent: 'person',
+
+  // ── features/settings/StorageSyncSection.vue：六模块行的数据表图标 ──
+  // 存储与同步策略（storage-sync）。名字全部取自**已登记**的图标
+  // （chat_bubble/studySourceChat、mail、rss_feed、sticky_note_2、mic/navMic、
+  // task_alt/calendarSourceTask），确保已在字体子集里成形。
+  storageSyncChat: 'chat_bubble',
+  storageSyncEmail: 'mail',
+  storageSyncRss: 'rss_feed',
+  storageSyncNotes: 'sticky_note_2',
+  storageSyncMeetings: 'mic',
+  storageSyncTasks: 'task_alt',
 } as const
 
 /**

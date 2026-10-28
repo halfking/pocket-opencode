@@ -11,6 +11,8 @@ import { deleteNoteBodyFile, deleteNoteFiles, persistNotePayload, readNoteBody }
 import { RECORD_MEDIA_CLEANUP_FAIL_TAG } from '../../utils/action-failure-notice'
 import { assetToNote, rowToNote, mergeImportedNotes } from './notes-row'
 import type { CreateNoteInput, LocalNote, NoteMediaInput, NoteRow } from './notes-types'
+// 存储与同步策略（storage-sync）：镜像上传前的 shouldSync 判定与结果上报。
+import { readCachedModuleMode, recordSyncReportEntry } from '../../stores/syncPolicyStore'
 
 function newNoteId(): string {
   return `note-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
@@ -578,6 +580,14 @@ async function embedChunks(
  * 由 presentVoiceDraft 那一侧等它（见 note-ai-mirror.ts）。
  */
 async function mirrorNoteToBackend(note: LocalNote): Promise<void> {
+  // ── 存储与同步策略挂点（storage-sync）────────────────────────────────
+  // notes=local ⇒ 笔记只留本机加密库，不上传后端（镜像跳过 ⇒ AI 分类/总结
+  // 自然没有元数据源，这与「仅本地」的语义一致）。上报 skipped 供设置页
+  // 「上次同步」如实显示。缓存缺失时 readCachedModuleMode 回 'cloud'，行为不变。
+  if (readCachedModuleMode('notes') === 'local') {
+    recordSyncReportEntry({ module: 'notes', status: 'skipped' })
+    return
+  }
   const res = await http<{ id?: string }>('/api/notes', {
     method: 'POST',
     body: JSON.stringify({
@@ -604,6 +614,8 @@ async function mirrorNoteToBackend(note: LocalNote): Promise<void> {
     // 没有别处会提示 ⇒ 留痕。
     console.warn('[notes] 笔记自动分类未能上报：', e)
   })
+  // storage-sync：镜像上行成功 ⇒ 上报 synced（count=1 条笔记）。
+  recordSyncReportEntry({ module: 'notes', status: 'synced', count: 1 })
   void res
 }
 

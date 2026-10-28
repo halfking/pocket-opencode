@@ -7,6 +7,8 @@
     />
 
     <template v-else>
+      <!-- storage-sync：模块切「仅本地」时的提示横条（其余情况不渲染） -->
+      <LocalOnlyBadge module="meetings" />
       <HeaderActionsPortal>
         <button
           v-for="f in filters"
@@ -110,6 +112,7 @@ import {
   Skeleton, EmptyState, DbLockedState, PullToRefresh, SwipeableListItem,
 } from '@/components'
 import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue'
+import LocalOnlyBadge from '../../components/business/LocalOnlyBadge.vue'
 import {
   listMeetings, createMeeting, deleteMeeting, archiveMeeting, unarchiveMeeting, updateMeeting,
   type LocalMeeting,

@@ -41,6 +41,13 @@ export interface DrainOptions {
   now?: () => number
   batchSize?: number
   maxAttempts?: number
+  /**
+   * 存储与同步策略挂点（storage-sync）：本轮要**跳过**的 action 名。
+   * 被跳过的记录原样留在队列里（不 claim、不重试、不进死信）——
+   * 对应模块切回「云端」后下一轮 drain 自会重放。
+   * 例：模块 ai-chat 为 local 时传 ['session.create','session.prompt']。
+   */
+  skipActions?: readonly string[]
 }
 
 export interface DrainResult {
@@ -68,6 +75,8 @@ export async function drainOutbox(
 
   const ready = await storage.listReady(now(), batchSize)
   for (const record of ready) {
+    // storage-sync：命中跳过清单的 action 整条留队（见 DrainOptions.skipActions）。
+    if (opts.skipActions && opts.skipActions.includes(record.action)) continue
     if (!matchesWorkspace(record, opts.workspaceId)) {
       await storage.delete(record.id)
       result.droppedWorkspaceMismatch++

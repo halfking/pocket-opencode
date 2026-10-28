@@ -27,10 +27,21 @@ import {
 } from './mobileSync.ts'
 import { SqliteOutboxStore } from './outboxStore.ts'
 import { SqliteApprovalStore, backfillApprovals, type ServerPendingApprovals } from './approvalStore.ts'
+// 存储与同步策略（storage-sync）：仅引入**类型**（import type 在运行期被剥除，
+// 本模块「不 import Pinia 系模块」的既有约定不受影响）。运行时的模式判定由
+// 宿主通过 RuntimeDeps.moduleMode 注入（App 侧接线见 stores/connectivity.ts）。
+import type { SyncModule } from '../api/syncPolicyContract.ts'
 
 export interface RuntimeAuth {
   token: string
   workspaceId: string
+}
+
+/** 模块同步上报条目（落点由宿主决定；App 里写进 syncPolicyStore.lastSyncReport）。 */
+export interface ModuleSyncReportEntry {
+  module: SyncModule
+  status: 'synced' | 'skipped'
+  count?: number
 }
 
 export interface RuntimeDeps {
@@ -44,6 +55,13 @@ export interface RuntimeDeps {
   fetchImpl: typeof fetch
   apiBase?: string
   onEvent?(event: RuntimeEvent): void
+  /**
+   * 存储与同步策略挂点（storage-sync）：查询某模块当前的存储模式。
+   * 未注入/模块未配置 ⇒ 视为 'cloud'（策略不改变既有同步行为）。
+   */
+  moduleMode?(module: SyncModule): 'cloud' | 'local'
+  /** 模块同步结果上报（{module,status:'skipped'} 或 {module,status:'synced',count}）。 */
+  onModuleSyncReport?(entry: ModuleSyncReportEntry): void
 }
 
 export type RuntimeEvent =
@@ -171,9 +189,18 @@ export class MobileSyncRuntime {
       const approvalStore = new SqliteApprovalStore(db)
       const doFetch = createRuntimeFetch(this.deps, auth)
 
+      // ── 存储与同步策略挂点（storage-sync）──────────────────────────────
+      // 本 runtime 承载的数据集 = ai-chat（会话 push/pull + 离线消息重放）。
+      // ai-chat=local ⇒ 这两类动作整体跳过并上报 skipped；数据只留本机。
+      // approval.reply / 审批回填是 agent 基础设施，**不在**六模块策略内，
+      // 保持原行为（否则切 local 会把审批响应也扣在队列里）。
+      const aiChatLocal = this.deps.moduleMode?.('ai-chat') === 'local'
+
       const drain = await drainOutbox(outbox, {
         workspaceId: auth.workspaceId,
         senders: createMobileOutboxSenders({ doFetch, syncStore, approvalStore }),
+        // ai-chat=local：会话创建/消息重放留在队列（不进死信，见 skipActions 语义）。
+        skipActions: aiChatLocal ? ['session.create', 'session.prompt'] : undefined,
       })
       this.deps.onEvent?.({
         type: 'drained',
@@ -184,29 +211,38 @@ export class MobileSyncRuntime {
       })
 
       // 同步范围 = 本地已知实例（离线创建过会话的实例也会被覆盖）。
+      // ⚠ 实例清单**不随 ai-chat=local 清空**：列表还承载下面的审批回填。
       const instanceIds = await listInstanceIds(db)
+      if (aiChatLocal) {
+        this.deps.onModuleSyncReport?.({ module: 'ai-chat', status: 'skipped' })
+      }
       const transport = createHttpSyncTransport(doFetch)
+      let aiChatMoved = 0
       for (const instanceId of instanceIds) {
-        try {
-          const result = await syncSessions(syncStore, transport, {
-            workspaceId: auth.workspaceId,
-            instanceId,
-          })
-          this.deps.onEvent?.({
-            type: 'sessions-synced',
-            instanceId,
-            result: {
-              pushedCreates: result.pushedCreates,
-              pushedDeletes: result.pushedDeletes,
-              pulledUpserts: result.pulledUpserts,
-            },
-          })
-        } catch (err) {
-          this.deps.onEvent?.({
-            type: 'error',
-            phase: `sync-sessions:${instanceId}`,
-            message: err instanceof Error ? err.message : String(err),
-          })
+        if (!aiChatLocal) {
+          try {
+            const result = await syncSessions(syncStore, transport, {
+              workspaceId: auth.workspaceId,
+              instanceId,
+            })
+            aiChatMoved +=
+              result.pushedCreates + result.pushedDeletes + result.pulledUpserts
+            this.deps.onEvent?.({
+              type: 'sessions-synced',
+              instanceId,
+              result: {
+                pushedCreates: result.pushedCreates,
+                pushedDeletes: result.pushedDeletes,
+                pulledUpserts: result.pulledUpserts,
+              },
+            })
+          } catch (err) {
+            this.deps.onEvent?.({
+              type: 'error',
+              phase: `sync-sessions:${instanceId}`,
+              message: err instanceof Error ? err.message : String(err),
+            })
+          }
         }
 
         // 审批 pending 快照回填（失败不阻断其余实例）。
@@ -232,6 +268,11 @@ export class MobileSyncRuntime {
             message: err instanceof Error ? err.message : String(err),
           })
         }
+      }
+
+      // storage-sync：本轮 ai-chat 数据在云端正常收敛 ⇒ 上报 synced（含条数）。
+      if (!aiChatLocal) {
+        this.deps.onModuleSyncReport?.({ module: 'ai-chat', status: 'synced', count: aiChatMoved })
       }
 
       this.status.lastSyncAt = Date.now()

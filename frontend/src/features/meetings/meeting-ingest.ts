@@ -20,6 +20,8 @@ import {
   type NextMeetingGate,
 } from './meeting-next-event'
 import { resolveIngestWriteback } from './refined-ingest-writeback'
+// 存储与同步策略（storage-sync）：云端上行前的 shouldSync 判定与结果上报。
+import { readCachedModuleMode, recordSyncReportEntry } from '../../stores/syncPolicyStore'
 
 export interface IngestResult {
   noteId: string | null
@@ -133,22 +135,31 @@ export async function ingestMeetingArtifacts(
   })
 
   let cloudSynced = false
-  try {
-    await meetingsApi.syncMeeting({
-      id: meeting.id,
-      title: meeting.title ?? undefined,
-      location: meeting.location ?? undefined,
-      participants: meeting.participants,
-      startedAt: meeting.startedAt,
-      durationMs: meeting.durationMs,
-      summary: meeting.summary ?? undefined,
-      refinedTranscript: refine.refinedTranscript,
-      noteId: noteId ?? undefined,
-      status: writeback.status,
-    })
-    cloudSynced = true
-  } catch {
-    // 离线或未配置 PG，本地已入库
+  // ── 存储与同步策略挂点（storage-sync）────────────────────────────────
+  // meetings=local ⇒ 转写/纪要只留本机，云端上行整段跳过并上报 skipped。
+  // （前面 createNote/createLocalTodos 的**本地**写入不受影响；notes 模块
+  // 若同为 local，笔记镜像那条路会各自再判一次。）
+  if (readCachedModuleMode('meetings') === 'local') {
+    recordSyncReportEntry({ module: 'meetings', status: 'skipped' })
+  } else {
+    try {
+      await meetingsApi.syncMeeting({
+        id: meeting.id,
+        title: meeting.title ?? undefined,
+        location: meeting.location ?? undefined,
+        participants: meeting.participants,
+        startedAt: meeting.startedAt,
+        durationMs: meeting.durationMs,
+        summary: meeting.summary ?? undefined,
+        refinedTranscript: refine.refinedTranscript,
+        noteId: noteId ?? undefined,
+        status: writeback.status,
+      })
+      cloudSynced = true
+      recordSyncReportEntry({ module: 'meetings', status: 'synced', count: 1 })
+    } catch {
+      // 离线或未配置 PG，本地已入库
+    }
   }
 
   return {
@@ -310,6 +321,11 @@ function mapPriority(item: ActionItem): string {
 
 /** 录音结束后同步元数据到云端（不含音频/转写全文） */
 export async function syncMeetingMetadata(meeting: LocalMeeting): Promise<boolean> {
+  // storage-sync 挂点：meetings=local ⇒ 元数据上行同样跳过（含 skipped 上报）。
+  if (readCachedModuleMode('meetings') === 'local') {
+    recordSyncReportEntry({ module: 'meetings', status: 'skipped' })
+    return false
+  }
   try {
     await meetingsApi.syncMeeting({
       id: meeting.id,
@@ -322,6 +338,7 @@ export async function syncMeetingMetadata(meeting: LocalMeeting): Promise<boolea
       status: meeting.status,
       noteId: meeting.noteId ?? undefined,
     })
+    recordSyncReportEntry({ module: 'meetings', status: 'synced', count: 1 })
     return true
   } catch {
     return false

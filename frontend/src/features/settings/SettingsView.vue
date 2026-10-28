@@ -183,6 +183,17 @@
         </div>
       </div>
 
+      <!-- 存储与同步（storage-sync：按模块选择云端/仅本地；策略存 RedClaw 门户） -->
+      <div class="settings-section">
+        <div class="section-head">
+          <h2>{{ t('settings.storageSection') }}</h2>
+          <span v-if="!policy.allowOverride" class="gateway-status off">
+            {{ t('settings.storageManagedNoOverride') }}
+          </span>
+        </div>
+        <StorageSyncSection />
+      </div>
+
       <!-- 权限与隐私 -->
       <div class="settings-section">
         <h2>{{ t('settings.privacy') }}</h2>
@@ -255,7 +266,9 @@ import { useConfirm } from '../../composables/useConfirm'
 import { useToast } from '../../composables/useToast'
 import { useAuthStore } from '../../stores/auth'
 import { useThemeStore, type ThemePreference } from '../../stores/theme'
+import { useSyncPolicyStore } from '../../stores/syncPolicyStore'
 import LanguageSwitcher from '../../components/LanguageSwitcher.vue'
+import StorageSyncSection from './StorageSyncSection.vue'
 
 const router = useRouter()
 const { confirm } = useConfirm()
@@ -264,6 +277,9 @@ const { t } = useI18n()
 const apiError = useApiError()
 const authStore = useAuthStore()
 const theme = useThemeStore()
+// 存储与同步策略（storage-sync）：本页只读 allowOverride 徽标，区块内容在
+// StorageSyncSection 里自管（load 由该组件 onMounted 触发）。
+const policy = useSyncPolicyStore()
 
 // 皮肤三选项（图标 + 词条），选中即调用 setPreference 全局生效
 const themeOptions: { value: ThemePreference; label: string; icon: IconName }[] = [

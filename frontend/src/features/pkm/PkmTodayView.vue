@@ -8,6 +8,8 @@
 -->
 <template>
       <div class="pkm-today">
+      <!-- storage-sync：模块切「仅本地」时的提示横条（其余情况不渲染） -->
+      <LocalOnlyBadge module="notes" />
       <!-- 今日 Daily Note -->
       <section class="daily-card" @click="openDaily">
         <div class="daily-date">
@@ -86,6 +88,7 @@ import {
 } from './pkm-store'
 import { useAuthStore } from '../../stores/auth'
 import { EmptyState, ErrorState, Loading } from '../../components'
+import LocalOnlyBadge from '../../components/business/LocalOnlyBadge.vue'
 import { useApiError } from '../../composables/useApiError'
 import { useListScene } from '../../composables/use-list-scene'
 

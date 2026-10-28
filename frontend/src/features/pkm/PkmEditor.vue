@@ -12,6 +12,8 @@
 -->
 <template>
   <div class="pkm-editor">
+    <!-- storage-sync：模块切「仅本地」时的提示横条（其余情况不渲染） -->
+    <LocalOnlyBadge module="notes" />
     <input
       v-model="title"
       class="pkm-title"
@@ -31,6 +33,7 @@ import StarterKit from '@tiptap/starter-kit'
 import { Wikilink } from './wikilink'
 import { getNote, saveNote, type PkmNote } from './pkm-store'
 import { useAuthStore } from '../../stores/auth'
+import LocalOnlyBadge from '../../components/business/LocalOnlyBadge.vue'
 
 const props = defineProps<{
   noteId: string
