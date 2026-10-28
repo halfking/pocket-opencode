@@ -3,7 +3,7 @@
  */
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { buildPurgePatch, shouldSkipSyncWrite } from './email-soft-delete.ts'
+import { buildPurgePatch, shouldSkipSyncWrite } from './email-purge-patch.ts'
 
 describe('soft delete patch', () => {
   it('keeps title and summary, clears body snippet', () => {

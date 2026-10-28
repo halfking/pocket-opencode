@@ -19,6 +19,7 @@ import { localDB } from '../../native/local-db'
 import { deleteAccount, listAccounts, writeAccountIfNewer } from './emails-store'
 import { isLocalTestAddress } from './providers'
 import { readCachedModuleMode, recordSyncReportEntry } from '../../stores/syncPolicyStore'
+import { captureEmailSyncOperation, type EmailSyncOperation } from './email-sync-guard'
 
 export interface SyncReport {
   fetched: number
@@ -46,10 +47,12 @@ const emptyReport = (): SyncReport => ({
  * 下行：把服务端账户按 LWW 写入本地镜像。返回 {applied, skipped}。
  * 单独抽出来是为了 409（服务端更新胜出）时只重跑下行，不重入整个双向同步。
  */
-async function pullAccountsToLocal(remote: ServerAccount[]): Promise<{ applied: number; skipped: number }> {
+async function pullAccountsToLocal(remote: ServerAccount[], operation: EmailSyncOperation): Promise<{ applied: number; skipped: number }> {
+  const assertCanApply = () => operation.assertCurrent()
   let applied = 0
   let skipped = 0
   for (const a of remote) {
+    assertCanApply()
     if (isLocalTestAddress(a.emailAddress)) {
       skipped++
       continue
@@ -66,10 +69,11 @@ async function pullAccountsToLocal(remote: ServerAccount[]): Promise<{ applied: 
         syncIntervalMin: a.syncIntervalMin ?? 15,
         enabled: !!a.enabled,
         updatedAt,
-      })
+      }, operation)
       if (won) applied++
       else skipped++
     } catch (e: unknown) {
+      assertCanApply()
       skipped++
       console.warn('[email] mirror account write skipped:', a.emailAddress, e)
     }
@@ -80,17 +84,21 @@ async function pullAccountsToLocal(remote: ServerAccount[]): Promise<{ applied: 
 /**
  * 拉服务端账户并按 LWW 写入本地；本地更新的已有账户再上行元数据。
  */
-export async function syncAccountsFromServer(): Promise<SyncReport> {
-  return syncAccountsBidirectional()
+export async function syncAccountsFromServer(operation?: EmailSyncOperation): Promise<SyncReport> {
+  return syncAccountsBidirectional(operation)
 }
 
-export async function syncAccountsBidirectional(): Promise<SyncReport> {
+export async function syncAccountsBidirectional(operation?: EmailSyncOperation): Promise<SyncReport> {
   if (readCachedModuleMode('email') === 'local') {
     recordSyncReportEntry({ module: 'email', status: 'skipped' })
     return emptyReport()
   }
+  const sync = operation ?? captureEmailSyncOperation()
+  const assertCanApply = () => sync.assertCurrent()
   try {
-    const res = await emailApi.listAccounts()
+    assertCanApply()
+    const res = await emailApi.listAccounts(0, { syncModule: 'email' })
+    assertCanApply()
     const remote = res.accounts ?? []
     let applied = 0
     let skipped = 0
@@ -101,14 +109,16 @@ export async function syncAccountsBidirectional(): Promise<SyncReport> {
       return { fetched: remote.length, applied, skipped, pushed, online: true }
     }
     try {
-      ;({ applied, skipped } = await pullAccountsToLocal(remote))
+      ;({ applied, skipped } = await pullAccountsToLocal(remote, sync))
 
-      for (const a of await listAccounts()) {
+      for (const a of await listAccounts(sync.db)) {
+        assertCanApply()
         if (isLocalTestAddress(a.emailAddress)) {
-          await deleteAccount(a.id)
+          await deleteAccount(a.id, sync.db)
         }
       }
-      const local = await listAccounts()
+      const local = await listAccounts(sync.db)
+      assertCanApply()
       const plan = planAccountSync(
         local.map((a) => ({ id: a.id, emailAddress: a.emailAddress, updatedAt: a.updatedAt })),
         remote.map((a) => ({
@@ -120,6 +130,7 @@ export async function syncAccountsBidirectional(): Promise<SyncReport> {
       const remoteById = new Map(remote.map((a) => [a.id, a]))
       const localById = new Map(local.map((a) => [a.id, a]))
       for (const id of plan.pushIds) {
+        assertCanApply()
         const l = localById.get(id)
         if (!l) continue
         const target = remoteById.get(id)
@@ -139,10 +150,11 @@ export async function syncAccountsBidirectional(): Promise<SyncReport> {
           // 基准版本取**本地**那一份：它才是我们这次改动的出发点。
           // 用 target（服务端）的 updatedAt 会让守卫永远放行，等于没有守卫。
           updatedAt: l.updatedAt,
-        })
+        }, sync)
         if (ok) pushed++
       }
     } catch (e: unknown) {
+      assertCanApply()
       // 本地镜像写入失败不否掉服务端结果；设置页仍以远程列表为准。
       return {
         fetched: remote.length, applied, skipped, pushed, online: true,
@@ -167,11 +179,13 @@ function narrowAuthType(raw: string | undefined | null): AuthType {
   return raw === 'oauth2' ? 'oauth2' : 'password'
 }
 
-export async function pushAccountToServer(_a: ServerAccount): Promise<boolean> {
+export async function pushAccountToServer(_a: ServerAccount, operation?: EmailSyncOperation): Promise<boolean> {
   if (readCachedModuleMode('email') === 'local') {
     recordSyncReportEntry({ module: 'email', status: 'skipped' })
     return false
   }
+  const sync = operation ?? captureEmailSyncOperation()
+  const assertCanApply = () => sync.assertCurrent()
   // 带上本地基准版本：服务端据此做 LWW 守卫。若它手里的副本更新，会回 409
   // 而不是被我们的旧值静默覆盖（需求 8「以最后修改时间为准」）。
   //
@@ -196,31 +210,36 @@ export async function pushAccountToServer(_a: ServerAccount): Promise<boolean> {
     authType: narrowAuthType(_a.authType),
   }
   try {
+    assertCanApply()
     await emailApi.updateAccount(_a.id, patch, _a.updatedAt ?? 0)
+    assertCanApply()
     return true
   } catch (e: unknown) {
+    assertCanApply()
     // 409 = 服务端更新，本地下行覆盖即可（不是「推送失败」，别进 outbox 干等）。
     if (isStaleWriteError(e)) {
       console.warn('[email] account push rejected as stale; server copy wins', _a.id)
       // 拉不到账号列表 ⇒ 跳过本地镜像下行（服务端已是最新，本地镜像等下次同步补上）。
-      const res = await emailApi.listAccounts().catch(() => null)
+      const res = await emailApi.listAccounts(0, { syncModule: 'email' }).catch(() => null)
+      assertCanApply()
       if (res?.accounts) {
-        await pullAccountsToLocal(res.accounts).catch((err) => {
+        await pullAccountsToLocal(res.accounts, sync).catch((err) => {
           // 服务端已是最新（409 ⇒ server copy wins），但本地镜像没拉回来
           // ⇒ 本地账号信息停在旧值。这条链路上没有别处会报 ⇒ 留痕。
           console.warn('[email] 账号列表未能拉回本地镜像：', err)
         })
       }
+      assertCanApply()
       return true
     }
-    void import('../../native/config-sync/outbox').then((m) =>
-      m.enqueueConfigPush({
-        namespace: 'email_account',
-        id: _a.id,
-        payload: patch,
-        updatedAt: _a.updatedAt ?? Math.floor(Date.now() / 1000),
-      }),
-    )
+    const { enqueueConfigPush } = await import('../../native/config-sync/outbox')
+    assertCanApply()
+    await enqueueConfigPush({
+      namespace: 'email_account',
+      id: _a.id,
+      payload: patch,
+      updatedAt: _a.updatedAt ?? Math.floor(Date.now() / 1000),
+    }, sync.db)
     return false
   }
 }
