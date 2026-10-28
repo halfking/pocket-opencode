@@ -11,6 +11,7 @@
  *  - authMethod records the login path (password / sso / dev-bypass / legacy)
  */
 import { defineStore } from 'pinia'
+import { effectScope, watch } from 'vue'
 import { logoutRemote, refreshAuth } from '../api/auth.ts'
 
 const TOKEN_KEY = 'pocket_token'
@@ -22,11 +23,81 @@ const METHOD_KEY = 'pocket_auth_method'
 const REFRESH_AHEAD_MS = 5 * 60 * 1000
 
 /**
- * JWT 滑动续期的单飞（single-flight）句柄：并发 401/临期只触发一次
- * POST /api/auth/refresh，其余调用共享同一 Promise。放在模块级避免进
- * Pinia state（不可序列化）。
+ * Session handles remain outside serializable Pinia state. Each store and
+ * login generation owns its refresh flight; a late response cannot replace
+ * another login, including A→B→A with identical credentials.
  */
-let refreshInFlight: Promise<boolean> | null = null
+interface AuthIdentity {
+  token: string
+  user: string
+  userId: string
+  workspaceId: string
+  authMethod: string
+  maybeRefresh: () => Promise<void>
+  refreshSession: () => Promise<boolean>
+  clearLocal: () => void
+  $dispose: () => void
+}
+
+export interface AuthSession {
+  readonly owner: AuthIdentity
+  readonly generation: object
+}
+
+interface SessionState {
+  generation: object
+  applyingRefresh: boolean
+  disposed: boolean
+  refresh?: { session: AuthSession; promise: Promise<boolean> }
+}
+
+const sessions = new WeakMap<AuthIdentity, SessionState>()
+
+function sessionState(auth: AuthIdentity): SessionState {
+  let state = sessions.get(auth)
+  if (!state) {
+    state = { generation: {}, applyingRefresh: false, disposed: false }
+    sessions.set(auth, state)
+    const current = state
+    // The first caller may be a component: its unmount must not stop this watch.
+    const scope = effectScope(true)
+    scope.run(() => {
+      // Synchronous observation also catches storage sync, $patch and A→B→A.
+      watch(() => [auth.token, auth.user, auth.userId, auth.workspaceId, auth.authMethod], () => {
+        if (!current.applyingRefresh) current.generation = {}
+      }, { flush: 'sync' })
+    })
+    const dispose = auth.$dispose.bind(auth)
+    auth.$dispose = () => {
+      current.disposed = true
+      current.generation = {}
+      scope.stop()
+      dispose()
+    }
+  }
+  return state
+}
+
+export function captureAuthSession(auth: AuthIdentity): AuthSession {
+  return { owner: auth, generation: sessionState(auth).generation }
+}
+
+export function isCurrentAuthSession(auth: AuthIdentity, session: AuthSession): boolean {
+  const state = sessionState(auth)
+  return session.owner === auth && !state.disposed && state.generation === session.generation
+}
+
+export function assertAuthSession(auth: AuthIdentity, session: AuthSession): void {
+  if (isCurrentAuthSession(auth, session)) return
+  // Existing request consumers already treat AbortError as cancellation.
+  const error = new Error('The session changed before the request completed.')
+  error.name = 'AbortError'
+  throw error
+}
+
+function invalidateSession(auth: AuthIdentity): void {
+  sessionState(auth).generation = {}
+}
 
 /** 解析 JWT payload 的 exp（秒→ms）；非 JWT / 无 exp 返回 null。 */
 export function tokenExpiresAtMs(token: string): number | null {
@@ -71,14 +142,18 @@ export const useAuthStore = defineStore('auth', {
   actions: {
     /** Store token after a successful login API call. */
     setAuth(token: string, user: string, method = 'password', extra: [string, string][] = []) {
+      invalidateSession(this)
       this.token = token
       this.user = user
+      this.userId = ''
+      this.workspaceId = extra.find(([key]) => key === WS_KEY)?.[1] ?? ''
       this.authMethod = method
       this.writeSession([
         [TOKEN_KEY, token],
         [USER_KEY, user],
         [METHOD_KEY, method],
-        ...extra,
+        [WS_KEY, this.workspaceId],
+        ...extra.filter(([key]) => key !== WS_KEY),
       ])
     },
     /**
@@ -170,6 +245,9 @@ export const useAuthStore = defineStore('auth', {
       const storedUser = localStorage.getItem(USER_KEY) || ''
       const storedWorkspace = localStorage.getItem(WS_KEY) || ''
       const storedMethod = localStorage.getItem(METHOD_KEY) || ''
+      if (this.token !== storedToken || this.user !== storedUser || this.workspaceId !== storedWorkspace) {
+        this.userId = ''
+      }
 
       // Only update if values actually changed
       if (this.token !== storedToken) {
@@ -192,29 +270,41 @@ export const useAuthStore = defineStore('auth', {
      */
     async refreshSession(): Promise<boolean> {
       if (!this.token) return false
-      if (refreshInFlight) return refreshInFlight
-      refreshInFlight = (async () => {
+      const state = sessionState(this)
+      const session = captureAuthSession(this)
+      if (state.refresh && isCurrentAuthSession(this, state.refresh.session)) return state.refresh.promise
+      const flight = { session, promise: Promise.resolve(false) }
+      flight.promise = (async () => {
         try {
           const res = await refreshAuth()
-          if (!res?.token) return false
+          if (!isCurrentAuthSession(this, session) || !res?.token) return false
+          if ((this.userId && res.user_id && this.userId !== res.user_id)
+            || (this.workspaceId && res.workspace_id && this.workspaceId !== res.workspace_id)) return false
           // 显示名保持不变：refresh 端点 legacy 路径只能从 claims 反推
           // user 字段（如 user-admin），覆盖会漂移 App 内的登录显示名。
           const displayUser = this.user || res.user || ''
-          this.setAuth(res.token, displayUser, this.authMethod)
-          if (res.workspace_id) {
-            this.workspaceId = res.workspace_id
-            localStorage.setItem(WS_KEY, res.workspace_id)
+          state.applyingRefresh = true
+          try {
+            this.token = res.token
+            this.user = displayUser
+            if (res.workspace_id) this.workspaceId = res.workspace_id
+            if (res.user_id) this.userId = res.user_id
+            this.writeSession([[TOKEN_KEY, this.token], [USER_KEY, this.user],
+              [METHOD_KEY, this.authMethod], [WS_KEY, this.workspaceId]])
+          } finally {
+            state.applyingRefresh = false
           }
-          if (res.user_id) this.userId = res.user_id
           return true
         } catch (e) {
+          if (!isCurrentAuthSession(this, session)) return false
           console.debug('auth refresh failed:', e)
           return false
         } finally {
-          refreshInFlight = null
+          if (state.refresh === flight) state.refresh = undefined
         }
       })()
-      return refreshInFlight
+      state.refresh = flight
+      return flight.promise
     },
     /**
      * 临期主动续期：token 剩余寿命 <5min 时触发 refreshSession。
@@ -235,6 +325,7 @@ export const useAuthStore = defineStore('auth', {
      * 调它只会白等一轮网络超时，把用户卡在死胡同里。
      */
     clearLocal() {
+      invalidateSession(this)
       this.token = ''
       this.user = ''
       this.workspaceId = ''
@@ -266,15 +357,16 @@ export const useAuthStore = defineStore('auth', {
      * 失败（401/网络）视作幂等成功，因为本地状态反正要被清。
      */
     async logout() {
+      const session = captureAuthSession(this)
       if (this.token) {
         try {
           await logoutRemote()
         } catch (e) {
           // 静默吞掉：登出路径不允许阻塞
-          console.debug('logoutRemote failed (ignored):', e)
+          if (isCurrentAuthSession(this, session)) console.debug('logoutRemote failed (ignored):', e)
         }
       }
-      this.clearLocal()
+      if (isCurrentAuthSession(this, session)) this.clearLocal()
     },
   },
 })
@@ -298,6 +390,8 @@ if (typeof window !== 'undefined') {
       // Only sync if the store is already initialized
       try {
         const authStore = useAuthStore()
+        // Queued A→B→A events may already have matching final storage values.
+        invalidateSession(authStore)
         authStore.syncFromStorage()
       } catch (e) {
         // Store not initialized yet, will sync on first access
