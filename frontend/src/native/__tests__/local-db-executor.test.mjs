@@ -653,3 +653,214 @@ test('a synchronously reentrant policy publisher cannot clear a newer local requ
   assert.throws(() => db.captureOperation({ kind: 'cloud-sync', module: 'email' }), { name: 'AbortError' })
   await db.bindOperation(db.captureOperation({ kind: 'local-edit' })).run('INSERT INTO executor_records VALUES(2,?)', ['local'])
 }))
+
+const completePolicy = overrides => ({ 'ai-chat': 'local', email: 'local', rss: 'local', notes: 'local', meetings: 'local', tasks: 'local', ...overrides })
+
+test('a complete policy snapshot synchronously revokes all changed modules and publishes once after queued SQL', () => withDatabase(async ({ db, platform }) => {
+  for (const module of ['email', 'notes', 'rss']) await db.requestPolicyActivation(module, 'cloud', () => {})
+  const email = db.bindOperation(db.captureOperation({ kind: 'cloud-sync', module: 'email' }))
+  const notes = db.bindOperation(db.captureOperation({ kind: 'cloud-sync', module: 'notes' }))
+  const rss = db.bindOperation(db.captureOperation({ kind: 'cloud-sync', module: 'rss' }))
+  const local = db.bindOperation(db.captureOperation({ kind: 'local-edit' }))
+  const entered = deferred(), release = deferred()
+  const run = platform.run
+  platform.run = async options => { const result = await run(options); entered.resolve(); await release.promise; return result }
+  const first = local.run('UPDATE executor_records SET title=? WHERE id=1', ['queued local'])
+  await entered.promise
+  const input = completePolicy({ rss: 'cloud' }), publications = []
+  let activation
+  try {
+    activation = db.requestPolicySnapshotActivation(input, snapshot => {
+      assert.equal(Object.isFrozen(snapshot), true)
+      publications.push({ ...snapshot })
+    })
+    input.notes = 'cloud' // The publisher must receive the validated copy, not caller-owned state.
+    for (const module of ['email', 'notes']) assert.throws(() => db.captureOperation({ kind: 'cloud-sync', module }), { name: 'AbortError' })
+    db.captureOperation({ kind: 'cloud-sync', module: 'rss' })
+    assert.deepEqual(publications, [])
+  } finally { release.resolve(); platform.run = run }
+  await first; await activation
+  assert.deepEqual(publications, [completePolicy({ rss: 'cloud' })])
+  await assert.rejects(email.run('UPDATE executor_records SET title=? WHERE id=1', ['old email']), { name: 'AbortError' })
+  await assert.rejects(notes.run('UPDATE executor_records SET title=? WHERE id=1', ['old notes']), { name: 'AbortError' })
+  await rss.run('INSERT INTO executor_records VALUES(2,?)', ['unaffected rss'])
+  await local.run('INSERT INTO executor_records VALUES(3,?)', ['local edit'])
+  assert.deepEqual(await db.queryOne('SELECT title FROM executor_records WHERE id=1'), { title: 'queued local' })
+}))
+
+test('equal snapshots preserve active leases while a pending A→B→A change never revives an old epoch', () => withDatabase(async ({ db }) => {
+  const a = completePolicy({ email: 'cloud', notes: 'cloud' })
+  await db.requestPolicySnapshotActivation(a, () => {})
+  const original = db.bindOperation(db.captureOperation({ kind: 'cloud-sync', module: 'email' }))
+  let calls = 0
+  const equalFirst = db.requestPolicySnapshotActivation(a, () => { throw new Error('superseded equal snapshot') }).catch(error => error)
+  await db.requestPolicySnapshotActivation({ ...a }, () => { calls++ })
+  assert.equal((await equalFirst).name, 'AbortError')
+  await original.run('UPDATE executor_records SET title=? WHERE id=1', ['equal snapshot remains valid'])
+  const b = db.requestPolicySnapshotActivation(completePolicy(), () => { throw new Error('superseded B must not publish') }).catch(error => error)
+  const restored = db.requestPolicySnapshotActivation(a, () => { calls++ })
+  for (const module of ['email', 'notes']) assert.throws(() => db.captureOperation({ kind: 'cloud-sync', module }), { name: 'AbortError' })
+  await restored
+  assert.equal((await b).name, 'AbortError')
+  assert.equal(calls, 2)
+  await assert.rejects(original.query('SELECT 1'), { name: 'AbortError' })
+  for (const module of ['email', 'notes']) {
+    const fresh = db.bindOperation(db.captureOperation({ kind: 'cloud-sync', module }))
+    assert.deepEqual(await fresh.queryOne('SELECT 1 AS ok'), { ok: 1 })
+  }
+}))
+
+test('a complete snapshot supersedes prior partial tickets and rejects partial takeover until it settles', () => withDatabase(async ({ db }) => {
+  await db.requestPolicyActivation('email', 'cloud', () => {})
+  const original = db.bindOperation(db.captureOperation({ kind: 'cloud-sync', module: 'email' }))
+  const partial = db.requestPolicyActivation('email', 'local', () => { throw new Error('superseded partial must not publish') }).catch(error => error)
+  const publications = []
+  const whole = db.requestPolicySnapshotActivation(completePolicy({ email: 'cloud', notes: 'cloud' }), snapshot => { publications.push({ ...snapshot }) })
+  await assert.rejects(db.requestPolicyActivation('email', 'local', () => { throw new Error('partial takeover') }), { name: 'AbortError' })
+  await whole
+  assert.equal((await partial).name, 'AbortError')
+  assert.equal(publications.length, 1)
+  await assert.rejects(original.query('SELECT 1'), { name: 'AbortError' })
+  await db.requestPolicyActivation('email', 'local', () => {})
+  assert.throws(() => db.captureOperation({ kind: 'cloud-sync', module: 'email' }), { name: 'AbortError' })
+  db.captureOperation({ kind: 'cloud-sync', module: 'notes' })
+}))
+
+test('snapshot publisher reentry confirms either all newer modules or none of the superseded snapshot', () => withDatabase(async ({ db }) => {
+  const start = completePolicy({ email: 'cloud', notes: 'cloud' })
+  await db.requestPolicySnapshotActivation(start, () => {})
+  const old = db.bindOperation(db.captureOperation({ kind: 'cloud-sync', module: 'email' }))
+  const publications = []
+  let nested, partial
+  const outer = db.requestPolicySnapshotActivation(completePolicy(), snapshot => {
+    publications.push({ ...snapshot })
+    partial = db.requestPolicyActivation('notes', 'cloud', () => { throw new Error('partial reentry') }).catch(error => error)
+    nested = db.requestPolicySnapshotActivation(start, next => { publications.push({ ...next }) }).then(() => null, error => error)
+    for (const module of ['email', 'notes']) assert.throws(() => db.captureOperation({ kind: 'cloud-sync', module }), { name: 'AbortError' })
+  }).then(() => null, error => error)
+  assert.equal((await outer).name, 'AbortError')
+  assert.equal((await partial).name, 'AbortError')
+  assert.equal(await nested, null)
+  assert.deepEqual(publications, [completePolicy(), start])
+  for (const module of ['email', 'notes']) db.captureOperation({ kind: 'cloud-sync', module })
+  await assert.rejects(old.query('SELECT 1'), { name: 'AbortError' })
+}))
+
+test('owner A→B→A cancels the whole old snapshot and a publisher owner switch cannot partially confirm it', () => withDatabase(async ({ db }) => {
+  const identity = userId => ({ userId, workspaceId: 'work' })
+  const cloud = completePolicy({ email: 'cloud', notes: 'cloud' })
+  await db.requestOwnerActivation(identity('A'), () => {})
+  await db.requestPolicySnapshotActivation(cloud, () => {})
+  const old = db.bindOperation(db.captureOperation({ kind: 'cloud-sync', module: 'email' }))
+  const stale = db.requestPolicySnapshotActivation(completePolicy(), () => { throw new Error('old A snapshot published') }).catch(error => error)
+  const b = db.requestOwnerActivation(identity('B'), () => {}).catch(error => error)
+  await db.requestOwnerActivation(identity('A'), () => {})
+  assert.equal((await b).name, 'AbortError'); assert.equal((await stale).name, 'AbortError')
+  await assert.rejects(old.query('SELECT 1'), { name: 'AbortError' })
+  await db.requestPolicySnapshotActivation(cloud, () => {})
+  let owner
+  const interrupted = db.requestPolicySnapshotActivation(completePolicy(), () => {
+    owner = db.requestOwnerActivation(identity('B'), () => {}).then(() => null, error => error)
+  }).then(() => null, error => error)
+  assert.equal((await interrupted).name, 'AbortError'); assert.equal(await owner, null)
+  for (const module of ['email', 'notes']) assert.throws(() => db.captureOperation({ kind: 'cloud-sync', module }), { name: 'AbortError' })
+  // Successful owner activation must also release the previous snapshot's partial-API lock.
+  await db.requestPolicyActivation('notes', 'cloud', () => {})
+  db.captureOperation({ kind: 'cloud-sync', module: 'notes' })
+}))
+
+test('invalid snapshots change no admission and throwing publishers keep every changed module closed until explicit retry', () => withDatabase(async ({ db }) => {
+  const cloud = completePolicy({ email: 'cloud', notes: 'cloud', rss: 'cloud' })
+  await db.requestPolicySnapshotActivation(cloud, () => {})
+  const original = db.bindOperation(db.captureOperation({ kind: 'cloud-sync', module: 'email' }))
+  const missing = { ...cloud }; delete missing.notes
+  for (const invalid of [missing, { ...cloud, email: 'invalid' }, { ...cloud, extra: 'local' }, null]) {
+    await assert.rejects(db.requestPolicySnapshotActivation(invalid, () => { throw new Error('invalid publication') }), /complete policy snapshot/)
+    assert.deepEqual(await original.queryOne('SELECT 1 AS ok'), { ok: 1 })
+  }
+  await assert.rejects(db.requestPolicySnapshotActivation(completePolicy({ rss: 'cloud' }), () => { throw new Error('publisher failed') }), /publisher failed/)
+  for (const module of ['email', 'notes']) assert.throws(() => db.captureOperation({ kind: 'cloud-sync', module }), { name: 'AbortError' })
+  db.captureOperation({ kind: 'cloud-sync', module: 'rss' })
+  await assert.rejects(db.requestPolicyActivation('email', 'cloud', () => {}), { name: 'AbortError' })
+  await db.requestPolicySnapshotActivation(cloud, () => {})
+  await assert.rejects(original.query('SELECT 1'), { name: 'AbortError' })
+  for (const module of ['email', 'notes']) db.captureOperation({ kind: 'cloud-sync', module })
+}))
+
+test('a snapshot requested inside a real cloud write rolls back before publishing all changed modules', () => withDatabase(async ({ db, platform }) => {
+  await db.requestPolicySnapshotActivation(completePolicy({ email: 'cloud', notes: 'cloud' }), () => {})
+  const email = db.bindOperation(db.captureOperation({ kind: 'cloud-sync', module: 'email' }))
+  const run = platform.run
+  let activation, published = false
+  platform.run = async options => {
+    const result = await run(options)
+    activation = db.requestPolicySnapshotActivation(completePolicy(), () => { published = true })
+    for (const module of ['email', 'notes']) assert.throws(() => db.captureOperation({ kind: 'cloud-sync', module }), { name: 'AbortError' })
+    assert.equal(published, false)
+    return result
+  }
+  try { await assert.rejects(email.run('UPDATE executor_records SET title=? WHERE id=1', ['revoked email']), { name: 'AbortError' }); await activation }
+  finally { platform.run = run }
+  assert.equal(published, true)
+  assert.deepEqual(await db.queryOne('SELECT title FROM executor_records'), { title: 'original' })
+}))
+
+test('a complete snapshot waits through dispatched COMMIT and real Web save before its single publication', () => withDatabase(async ({ db, platform, driver, raw, SQLiteDBConnection }) => {
+  let active = completePolicy({ email: 'cloud', notes: 'cloud' }), activation
+  await db.requestPolicySnapshotActivation(active, () => {})
+  const email = db.bindOperation(db.captureOperation({ kind: 'cloud-sync', module: 'email' }))
+  const commitStarted = deferred(), releaseCommit = deferred(), saveStarted = deferred(), releaseSave = deferred(), events = []
+  const dispatch = SQLiteDBConnection.prototype.commitTransaction, commit = platform.commitTransaction, save = driver.saveToStore, exec = raw.exec
+  SQLiteDBConnection.prototype.commitTransaction = function (...args) {
+    queueMicrotask(() => { activation = db.requestPolicySnapshotActivation(completePolicy(), snapshot => { active = snapshot; events.push('publish:local/local') }) })
+    return dispatch.apply(this, args)
+  }
+  platform.commitTransaction = async () => { commitStarted.resolve(); await releaseCommit.promise; return commit() }
+  raw.exec = function (sql, ...args) { if (sql === 'COMMIT TRANSACTION') events.push(`commit:${active.email}/${active.notes}`); return exec.call(this, sql, ...args) }
+  driver.autoSave = true
+  driver.saveToStore = async (...args) => { saveStarted.resolve(); await releaseSave.promise; events.push(`save:${active.email}/${active.notes}`); return save.apply(driver, args) }
+  const result = email.run('UPDATE executor_records SET title=? WHERE id=1', ['committed before snapshot']).then(() => null, error => error)
+  try {
+    await commitStarted.promise
+    assert.equal(active.email, 'cloud'); assert.equal(active.notes, 'cloud')
+    for (const module of ['email', 'notes']) assert.throws(() => db.captureOperation({ kind: 'cloud-sync', module }), { name: 'AbortError' })
+    releaseCommit.resolve(); await saveStarted.promise
+    assert.equal(active.email, 'cloud'); assert.equal(active.notes, 'cloud')
+    releaseSave.resolve()
+    assert.equal((await result).outcome, 'committed'); await activation
+    assert.deepEqual(events, ['commit:cloud/cloud', 'save:cloud/cloud', 'publish:local/local'])
+  } finally {
+    releaseCommit.resolve(); releaseSave.resolve(); await result
+    SQLiteDBConnection.prototype.commitTransaction = dispatch; platform.commitTransaction = commit; driver.saveToStore = save; raw.exec = exec
+  }
+}))
+
+for (const fault of ['rollback', 'persistence']) {
+  test(`snapshot activation stays wholly closed after ${fault} failure and never replays on cleanup`, () => withDatabase(async ({ db, platform, driver, UtilsSQLite }) => {
+    const cloud = completePolicy({ email: 'cloud', notes: 'cloud' })
+    await db.requestPolicySnapshotActivation(cloud, () => {})
+    const old = db.bindOperation(db.captureOperation({ kind: 'cloud-sync', module: 'email' }))
+    const run = platform.run, commit = platform.commitTransaction, rollback = UtilsSQLite.rollbackTransaction, save = driver.saveToStore
+    let activation, publications = 0
+    const request = () => { activation = db.requestPolicySnapshotActivation(completePolicy(), () => { publications++ }).then(() => null, error => error) }
+    if (fault === 'rollback') {
+      platform.run = async options => { const result = await run(options); request(); return result }
+      UtilsSQLite.rollbackTransaction = async () => { throw new Error('snapshot rollback failure') }
+    } else {
+      platform.commitTransaction = async () => { const result = await commit(); request(); return result }
+      driver.autoSave = true; driver.saveToStore = async () => { throw new Error('snapshot persistence failure') }
+    }
+    try {
+      await assert.rejects(old.run('UPDATE executor_records SET title=? WHERE id=1', ['uncertain snapshot']))
+      assert.match(String(await activation), /状态不确定/)
+      assert.equal(publications, 0)
+      for (const module of ['email', 'notes']) assert.throws(() => db.captureOperation({ kind: 'cloud-sync', module }), { name: 'AbortError' })
+    } finally { platform.run = run; platform.commitTransaction = commit; UtilsSQLite.rollbackTransaction = rollback; driver.saveToStore = save }
+    await db.close(); await db.init('')
+    assert.equal(publications, 0)
+    await db.requestPolicySnapshotActivation(cloud, () => { publications++ })
+    assert.equal(publications, 1)
+    await assert.rejects(old.query('SELECT 1'), { name: 'AbortError' })
+    for (const module of ['email', 'notes']) db.captureOperation({ kind: 'cloud-sync', module })
+  }))
+}
