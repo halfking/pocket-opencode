@@ -48,6 +48,13 @@ export type WikipediaFetch = (
   init?: { signal?: AbortSignal },
 ) => Promise<{ ok: boolean; json: () => Promise<unknown> }>
 
+export interface WikipediaSearchOptions {
+  fetchImpl?: WikipediaFetch
+  timeoutMs?: number
+  /** Rechecked immediately before each request, including fallback requests. */
+  canRequest?: () => boolean
+}
+
 /**
  * 查一次维基百科，拿到参考资料条目。
  *
@@ -59,8 +66,9 @@ export type WikipediaFetch = (
  */
 export async function fetchWikipediaItems(
   query: string,
-  opts?: { fetchImpl?: WikipediaFetch; timeoutMs?: number },
+  opts?: WikipediaSearchOptions,
 ): Promise<RecommendItem[]> {
+  if (opts?.canRequest && !opts.canRequest()) return []
   const url = wikipediaSearchUrl(query)
   if (!url) return []
   const timeoutMs = opts?.timeoutMs ?? WIKIPEDIA_TIMEOUT_MS
@@ -97,7 +105,7 @@ export async function fetchWikipediaItems(
  */
 export async function searchRelatedWeb(
   query: string,
-  opts?: { fetchImpl?: WikipediaFetch; timeoutMs?: number },
+  opts?: WikipediaSearchOptions,
 ): Promise<RecommendItem[]> {
   const primary = await fetchWikipediaItems(query, opts)
   if (primary.length) return primary

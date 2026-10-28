@@ -7,6 +7,8 @@ import type { LocalNote, NoteRow, SearchResult } from './notes-types'
 import { buildFtsQuery, mergeSearchHits, needsCjkLike } from './note-fts-query'
 import { ensureNotesSearchIndex } from './notes-fts-ready'
 import { likePattern } from '../../native/fts-query.ts'
+import type { SyncModule } from '../../api/syncPolicyContract.ts'
+import { readCachedModuleMode } from '../../stores/syncPolicyStore.ts'
 
 export function sanitizeFtsQuery(q: string): string {
   return buildFtsQuery(q)
@@ -60,9 +62,10 @@ export async function searchFullText(query: string, limit = 20, workspaceId = 'd
   return [...localResults, ...assetResults].sort((a, b) => b.score - a.score).slice(0, limit)
 }
 
-async function embedViaPocketd(text: string): Promise<Float32Array | null> {
+async function embedViaPocketd(text: string, syncModule: SyncModule): Promise<Float32Array | null> {
   try {
     const res = await http<{ embedding: number[]; model: string }>('/api/embed', {
+      syncModule,
       method: 'POST',
       body: JSON.stringify({ text }),
     })
@@ -72,13 +75,16 @@ async function embedViaPocketd(text: string): Promise<Float32Array | null> {
   }
 }
 
-export async function searchSemantic(queryText: string, topK = 10, workspaceId = 'default'): Promise<SearchResult[]> {
+export async function searchSemantic(queryText: string, topK = 10, workspaceId = 'default', syncModule: SyncModule = 'notes'): Promise<SearchResult[]> {
+  if (readCachedModuleMode(syncModule) === 'local') return searchFullText(queryText, topK, workspaceId)
   const assets = await assetStore.search({ workspaceId, kind: 'note', source: 'enex_import', fts: sanitizeFtsQuery(queryText), limit: topK })
   const assetResults = assets.map((asset, index) => ({ note: assetToNote(asset), score: 1 / (index + 1), source: 'vector' as const }))
   if (assetResults.length >= topK) return assetResults.slice(0, topK)
 
-  const qVec = await embedViaPocketd(queryText)
-  if (!qVec) return assetResults
+  const qVec = await embedViaPocketd(queryText, syncModule)
+  if (!qVec) return readCachedModuleMode(syncModule) === 'local'
+    ? searchFullText(queryText, topK, workspaceId)
+    : assetResults
   // ⚠⚠ §895/D65：必须用 **searchAsync**，不能用同步的 `search()`。
   //   `search()` 是全量暴力点积，单次耗时线性于索引条数
   //   （实测 n=20000 → 24.89ms，到 50000 上限外推约 62ms），
@@ -108,10 +114,11 @@ export async function searchSemantic(queryText: string, topK = 10, workspaceId =
   ].sort((a, b) => b.score - a.score).slice(0, topK)
 }
 
-export async function searchHybrid(queryText: string, topK = 10, workspaceId = 'default'): Promise<SearchResult[]> {
+export async function searchHybrid(queryText: string, topK = 10, workspaceId = 'default', syncModule: SyncModule = 'notes'): Promise<SearchResult[]> {
+  if (readCachedModuleMode(syncModule) === 'local') return searchFullText(queryText, topK, workspaceId)
   const [ftsResults, vecResults] = await Promise.all([
     searchFullText(queryText, topK * 2, workspaceId),
-    searchSemantic(queryText, topK * 2, workspaceId),
+    searchSemantic(queryText, topK * 2, workspaceId, syncModule),
   ])
   const rrf = new Map<string, { score: number; note: LocalNote }>()
   const addScore = (results: SearchResult[]) => {

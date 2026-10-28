@@ -217,6 +217,7 @@
     "storageStatusSynced": "Sincronizado",
     "storageStatusSkipped": "Omitido · solo local",
     "storageSyncedCount": "Sincronizado · {count} elementos",
+    "storageLocalCloudUnavailable": "La escritura y sincronización en la nube no están disponibles; RSS y correo aún no tienen una alternativa local.",
     "storageOnlyLocalBadge": "Solo local · sin sincronización",
     "storageLoadFailed": "Servicio de políticas inaccesible; se muestra caché o política por defecto",
     "storageManagedNoOverride": "Gestionado por el administrador"
@@ -417,6 +418,7 @@
     }
   },
   "email": {
+    "localPrivacyNotice": "El modo local evita enviar el texto a la traducción en la nube y bloquea las imágenes externas.",
     "dailySummary": "Resumen diario",
     "fetchHintNetwork": "La descarga en segundo plano no terminó; se muestran los mensajes sincronizados",
     "fetchHintClassifierOff": "La categorización automática está desactivada; mensajes sincronizados sin categoría",

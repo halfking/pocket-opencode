@@ -1,4 +1,5 @@
 /** 邮件正文语言切换：原文即时回切，其它语言走 AI 并缓存。 */
+import { isModulePolicyLocalError } from '../../api/module-policy.ts'
 export type EmailLang =
   | 'original'
   | 'zh-CN'
@@ -366,7 +367,10 @@ export async function translateBodyPipeline(
   const runChunk = async (chunk: string): Promise<string> => {
     try {
       return await translateWithProtection(chunk, target, chat)
-    } catch {
+    } catch (error) {
+      // A privacy refusal is not a failed translation: let the caller keep the
+      // original language and avoid caching original text as a translation.
+      if (isModulePolicyLocalError(error)) throw error
       // 单块失败：退回该块原文。
       return chunk
     }

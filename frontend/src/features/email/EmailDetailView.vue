@@ -69,6 +69,7 @@
     <div v-if="email.bodyPurged" class="state slim">正文已清除，仅保留标题和摘要。</div>
     <div v-else-if="bodyLoading && !displayBody" class="state slim">正在加载正文…</div>
     <template v-else>
+      <p v-if="emailIsLocal" class="privacy-notice" role="status">{{ t('email.localPrivacyNotice') }}</p>
       <!-- 译文/原文切换：默认展示中文译文，这里给一个显式回退入口 -->
       <div v-if="lang !== 'original'" class="lang-bar">
         <span>当前显示：{{ langShortLabel(lang) }}译文</span>
@@ -126,11 +127,12 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { api } from '../../api/client'
 import { emailApi } from '../../api/email'
-import { http, LLM_CHAT_TIMEOUT_MS } from '../../api/http'
+import { emailTranslationChat as llmChat } from './email-translation-client'
 import { useToast } from '../../composables/useToast'
 import AddToLearningButton from '../study/AddToLearningButton.vue'
 import { ErrorState } from '../../components'
@@ -146,7 +148,7 @@ import EmailDetailMenus from './EmailDetailMenus.vue'
 import { defaultForwardSubject, defaultReplySubject, todoFromDraft, toggleCompose, type ComposeKind } from './compose-mode'
 import { emailCatLabel, extractEmailBody, formatEmailDate, quotedForwardBody } from './email-body-format.ts'
 import { sanitizeEmailHtml } from './email-detail-format.ts'
-import { preloadRemoteImages } from './email-image-preload.ts'
+import { hideRemoteImages, preloadRemoteImages } from './email-image-preload.ts'
 import { isBodyPrefetching, prefetchEmailBody } from './email-body-prefetch.ts'
 import { shouldBlockScreen, shouldFetchRemoteBody } from './email-detail-load.ts'
 import {
@@ -167,12 +169,20 @@ import {
 import { markListDirty } from '../../composables/list-scene-store'
 import { useApiError } from '../../composables/useApiError'
 import { useAuthStore } from '../../stores/auth'
+import { readCachedModuleMode, useSyncPolicyStore } from '../../stores/syncPolicyStore'
 
 const apiError = useApiError()
 const route = useRoute()
 const router = useRouter()
 const toast = useToast()
 const auth = useAuthStore()
+const { t } = useI18n()
+const syncPolicy = useSyncPolicyStore()
+const emailIsLocal = computed(() => syncPolicy.modules.email === 'local')
+// The sync watcher runs before the store writes its cache. An in-memory local
+// decision must veto the old cloud cache during that same call stack.
+const canLoadRemoteImages = () => !emailIsLocal.value && readCachedModuleMode('email') === 'cloud'
+const privateHtml = (html: string) => canLoadRemoteImages() ? html : hideRemoteImages(html)
 
 function currentWorkspaceId(): string {
   return auth.workspaceId || 'default'
@@ -388,23 +398,6 @@ async function chooseLang(next: EmailLang) {
 }
 
 /**
- * 统一的 LLM 调用出口。
- *
- * 抽出来是因为翻译在详情页有两条入口（手动 chooseLang 与默认 applyDefaultLang），
- * 之前两条各写一遍 http 调用；一旦要加超时/重试/用量上报就得改两处，
- * 漏一处就是「手动翻译有超时、自动翻译没有」这种极难发现的不一致。
- */
-async function llmChat(prompt: string): Promise<string> {
-  const res = await http<{ content: string }>('/api/llm/chat', {
-    method: 'POST',
-    body: JSON.stringify({ messages: [{ role: 'user', content: prompt }] }),
-    // ⚠ §929：此前吃 30 s 默认，而服务端有效预算是 85 s ⇒ 客户端先放弃 55 s。
-    timeoutMs: LLM_CHAT_TIMEOUT_MS,
-  })
-  return res.content
-}
-
-/**
  * 渲染当前语言下的正文：净化 + 字体归一化 + 远程图预加载。
  *
  * 单独抽出来是因为它现在是**异步**的（要等图抓完），而 displayBody 是同步
@@ -457,9 +450,9 @@ async function renderBody() {
     return
   }
   // 先按净化后的 HTML 渲染（文字立即可见），再异步把图换上，避免白屏等待。
-  if (seq === preloadSeq) htmlBody.value = sanitized
+  if (seq === preloadSeq) htmlBody.value = privateHtml(sanitized)
   try {
-    const withImages = await preloadRemoteImages(sanitized)
+    const withImages = await preloadRemoteImages(sanitized, { allowRemote: canLoadRemoteImages })
     if (seq === preloadSeq) htmlBody.value = withImages
   } catch {
     // 预加载失败就用已净化的版本，不影响可读性。
@@ -491,10 +484,10 @@ function renderBodySections(raw: string, format: BodyFormat) {
   // 只是压到最末尾，不参与折叠。
   footerForRender.value = sections.footer
   quotedHtml.value = sections.quoted
-    ? sanitizeEmailHtml(renderBodyByFormat(stripQuoteMarkers(sections.quoted), format))
+    ? privateHtml(sanitizeEmailHtml(renderBodyByFormat(stripQuoteMarkers(sections.quoted), format)))
     : ''
   signatureHtml.value = sections.signature
-    ? sanitizeEmailHtml(renderBodyByFormat(sections.signature, format))
+    ? privateHtml(sanitizeEmailHtml(renderBodyByFormat(sections.signature, format)))
     : ''
 }
 
@@ -692,6 +685,25 @@ function goBack() {
 watch(() => route.params.id, load)
 onMounted(load)
 
+watch(emailIsLocal, (isLocal) => {
+  // Remove live image URLs immediately, and invalidate an older preload result.
+  ++preloadSeq
+  if (isLocal) {
+    htmlBody.value = hideRemoteImages(htmlBody.value)
+    quotedHtml.value = hideRemoteImages(quotedHtml.value)
+    signatureHtml.value = hideRemoteImages(signatureHtml.value)
+    return
+  }
+  // Cloud state is published before its confirmed cache. Render after both
+  // agree, and recheck in case another local decision wins before this tick.
+  void nextTick(() => {
+    if (!loadingBody && canLoadRemoteImages()) {
+      renderBodySections(displayBody.value, bodyFormat.value)
+      void renderBody()
+    }
+  })
+}, { flush: 'sync' })
+
 // 手动切语言后要重新走一遍净化 + 图片预加载（译文的 HTML 结构可能与原文不同）。
 // load() 自身负责首屏渲染，这里只响应「用户主动切换」。
 //
@@ -711,6 +723,7 @@ watch([lang, bodyText], () => {
 <style scoped>
 .state { text-align: center; color: var(--text-secondary); padding: var(--space-6); }
 .state.slim { padding: var(--space-4); }
+.privacy-notice { color: var(--text-secondary); font-size: var(--text-sm); }
 .link-btn { background: none; border: none; color: var(--brand-primary); cursor: pointer; }
 .detail { display: flex; flex-direction: column; gap: var(--space-3); padding-bottom: var(--space-6); }
 .meta { padding-bottom: var(--space-2); border-bottom: 1px solid var(--border); }

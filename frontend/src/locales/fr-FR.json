@@ -419,6 +419,7 @@
     }
   },
   "email": {
+    "localPrivacyNotice": "Le mode local bloque la traduction du texte dans le cloud et le chargement des images externes.",
     "dailySummary": "Résumé quotidien",
     "fetchHintNetwork": "Récupération en arrière-plan incomplète ; messages synchronisés affichés",
     "fetchHintClassifierOff": "Catégorisation automatique désactivée ; messages synchronisés mais non catégorisés",
