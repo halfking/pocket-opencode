@@ -8,7 +8,7 @@ test('仅本地的真实会议与 STT 客户端不触发网络降级，先可靠
   const originalFetch = globalThis.fetch
   const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
   const values = new Map()
-  const storage = { getItem: (key) => values.get(key) ?? null, setItem: (key, value) => values.set(key, value), removeItem: (key) => values.delete(key) }
+  const storage = { keys: () => values.keys(), getItem: (key) => values.get(key) ?? null, setItem: (key, value) => values.set(key, value), removeItem: (key) => values.delete(key) }
   Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: storage })
   let requests = 0
   globalThis.fetch = async () => { requests++; return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } }) }
@@ -28,6 +28,7 @@ test('仅本地的真实会议与 STT 客户端不触发网络降级，先可靠
   try {
     const policy = await vite.ssrLoadModule('/src/stores/syncPolicyStore.ts')
     policy.installSyncPolicyStorage(storage)
+    policy.installSyncPolicyActivationHost({ captureContext: () => ({ scope: '', isCurrent: () => true }), async activate(modes, publish) { publish(modes) } })
     storage.setItem(policy.SYNC_POLICY_CACHE_KEY, JSON.stringify({ policy: { system_default: 'local', allow_override: true, modules: { notes: 'local', meetings: 'local' } } }))
     const { meetingsApi } = await vite.ssrLoadModule('/src/api/meetings.ts')
     const { sttApi } = await vite.ssrLoadModule('/src/api/stt.ts')
@@ -46,16 +47,17 @@ test('仅本地的真实会议与 STT 客户端不触发网络降级，先可靠
     const currentPolicy = policy.useSyncPolicyStore()
     const { useAuthStore } = await vite.ssrLoadModule('/src/stores/auth.ts')
     const auth = useAuthStore()
+    await auth.syncFromStorage()
     const originalRefresh = auth.maybeRefresh
     for (const request of [
       () => sttSettingsApi.transcribeIncremental({ sessionId: 'n1', audioBase64: 'private' }, 'notes'),
       () => liveTranslate('private transcript'),
     ]) {
-      currentPolicy.applyPolicy({ system_default: 'cloud', allow_override: true, modules: {} }, 1)
+      await currentPolicy.applyPolicy({ system_default: 'cloud', allow_override: true, modules: {} }, 1)
       let finishRefresh
       auth.maybeRefresh = () => new Promise((resolve) => { finishRefresh = resolve })
       const pending = request()
-      currentPolicy.applyPolicy({ system_default: 'local', allow_override: true, modules: {} }, 2)
+      await currentPolicy.applyPolicy({ system_default: 'local', allow_override: true, modules: {} }, 2)
       finishRefresh()
       await assert.rejects(pending, localError)
       assert.equal(requests, 0)
@@ -96,10 +98,10 @@ test('仅本地的真实会议与 STT 客户端不触发网络降级，先可靠
     Object.defineProperty(globalThis, 'window', { configurable: true, value: events })
     const { MeetingRecorderRuntime } = await vite.ssrLoadModule('/src/native/recordingRuntime.ts')
     const recorder = new MeetingRecorderRuntime()
-    currentPolicy.applyPolicy({ system_default: 'cloud', allow_override: true, modules: { meetings: 'cloud' } }, 1)
+    await currentPolicy.applyPolicy({ system_default: 'cloud', allow_override: true, modules: { meetings: 'cloud' } }, 1)
     recorder.startLiveCaption()
     assert.equal(starts, 1)
-    currentPolicy.applyPolicy({ system_default: 'local', allow_override: true, modules: { meetings: 'local' } }, 2)
+    await currentPolicy.applyPolicy({ system_default: 'local', allow_override: true, modules: { meetings: 'local' } }, 2)
     assert.equal(stops, 1)
     recorder.startLiveCaption()
     assert.equal(starts, 1)

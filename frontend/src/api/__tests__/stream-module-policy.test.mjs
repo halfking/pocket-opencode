@@ -12,7 +12,7 @@ const sse = content => new Response(`data: ${JSON.stringify({ content, done: fal
 async function fixture(run) {
   const saved = new Map(['localStorage', 'window', 'fetch'].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]))
   const values = new Map()
-  const storage = { getItem: k => values.get(k) ?? null, setItem: (k, v) => values.set(k, v), removeItem: k => values.delete(k) }
+  const storage = { keys: () => values.keys(), getItem: k => values.get(k) ?? null, setItem: (k, v) => values.set(k, v), removeItem: k => values.delete(k) }
   Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: storage })
   const window = new EventTarget()
   window.location = { origin: 'http://localhost' }
@@ -41,6 +41,14 @@ async function fixture(run) {
     auth.maybeRefresh = async () => {}
     const policy = await vite.ssrLoadModule('/src/stores/syncPolicyStore.ts')
     policy.installSyncPolicyStorage(storage)
+    policy.installSyncPolicyActivationHost({
+      captureContext() {
+        const scope = storage.getItem('pocket_user') || storage.getItem('pocket_workspace_id')
+          ? JSON.stringify([storage.getItem('pocket_user') ?? '', storage.getItem('pocket_workspace_id') ?? '']) : ''
+        return { scope, isCurrent: () => true }
+      },
+      async activate(modes, publish) { publish(modes) },
+    })
     const mode = (module, value) => policy.useSyncPolicyStore().applyPolicy({ system_default: 'cloud', allow_override: true, modules: { [module]: value } }, 1)
     const bff = await vite.ssrLoadModule('/src/api/llm-bff.ts')
     const rt = await vite.ssrLoadModule('/src/native/aiStreamRuntime.ts')
@@ -71,25 +79,25 @@ async function fixture(run) {
 }
 
 test('actual note and meeting streams reject local mode without sending content; note search keeps its local fallback', () => fixture(async f => {
-  f.mode('notes', 'local')
+  await f.mode('notes', 'local')
   const notes = await f.vite.ssrLoadModule('/src/features/notes/note-search.ts')
   await assert.rejects(notes.extractTagsWithAi('private note'), error => error.body?.error === 'module_policy_local')
   const search = await notes.searchNotesWithIntent('private', 'wa')
   assert.equal(search.offline, true)
   assert.equal(search.results.length, 1)
-  f.mode('meetings', 'local')
+  await f.mode('meetings', 'local')
   const meetings = await f.vite.ssrLoadModule('/src/features/meetings/meetings-ai.ts')
   await assert.rejects(meetings.summarizeMeeting('private transcript'), error => error.body?.error === 'module_policy_local')
   assert.equal(f.requests.length, 0)
 }))
 
 test('ordinary chat remains usable and the client-only owner is absent from the network payload', () => fixture(async f => {
-  f.mode('notes', 'cloud')
+  await f.mode('notes', 'cloud')
   const owned = f.start({ syncModule: 'notes' })
   await owned.settled
   assert.deepEqual(owned.deltas, ['answer'])
   assert.equal('syncModule' in JSON.parse(f.requests[0].body), false)
-  f.mode('notes', 'local')
+  await f.mode('notes', 'local')
   const general = f.start()
   await general.settled
   assert.deepEqual(general.deltas, ['answer'])
@@ -97,11 +105,11 @@ test('ordinary chat remains usable and the client-only owner is absent from the 
 }))
 
 test('a local decision during refresh blocks the actual stream send', () => fixture(async f => {
-  f.mode('notes', 'cloud')
+  await f.mode('notes', 'cloud')
   const wait = deferred()
   f.auth.maybeRefresh = () => wait.promise
   const stream = f.start({ syncModule: 'notes' })
-  f.mode('notes', 'local')
+  await f.mode('notes', 'local')
   wait.resolve()
   await stream.settled
   assert.equal(f.requests.length, 0)
@@ -109,7 +117,7 @@ test('a local decision during refresh blocks the actual stream send', () => fixt
 }))
 
 test('a same-session 401 replay uses the renewed credential, never the captured old token', () => fixture(async f => {
-  f.mode('notes', 'cloud')
+  await f.mode('notes', 'cloud')
   let calls = 0
   f.setFetch(async url => {
     if (url.endsWith('/api/auth/refresh')) return new Response(JSON.stringify({ token: 'A-renewed', user: 'Alice', user_id: 'a', workspace_id: 'wa' }), { headers: { 'content-type': 'application/json' } })
@@ -137,7 +145,7 @@ test('an old 401 cannot refresh or replay a stream under a new account', () => f
 
 test('local and identity changes cancel a pending reader and suppress late frames', () => fixture(async f => {
   for (const change of [() => f.mode('notes', 'local'), () => f.auth.setAuthWithWorkspace('B-token', 'Bob', 'b', 'wb')]) {
-    f.mode('notes', 'cloud')
+    await f.mode('notes', 'cloud')
     let controller, cancelled = 0
     f.setFetch(async () => new Response(new ReadableStream({ start(c) { controller = c }, cancel() { cancelled++ } }), { headers: { 'content-type': 'text/event-stream' } }))
     const stream = f.start({ syncModule: 'notes' })
@@ -168,7 +176,7 @@ test('the same stream id is isolated between login generations and old replay is
 
 test('a pending response is rejected after local is selected, and a pending refresh cannot replay it', () => fixture(async f => {
   for (const firstStatus of [200, 401]) {
-    f.mode('notes', 'cloud')
+    await f.mode('notes', 'cloud')
     const response = deferred(), refresh = deferred()
     let refreshStarted = false
     f.setFetch(url => {
@@ -181,7 +189,7 @@ test('a pending response is rejected after local is selected, and a pending refr
       response.resolve(new Response('{}', { status: 401 }))
       while (!refreshStarted) await tick()
     }
-    f.mode('notes', 'local')
+    await f.mode('notes', 'local')
     if (firstStatus === 200) response.resolve(sse('private'))
     refresh.resolve(new Response(JSON.stringify({ token: 'A-renewed', user_id: 'a', workspace_id: 'wa' }), { headers: { 'content-type': 'application/json' } }))
     await stream.settled
@@ -192,7 +200,7 @@ test('a pending response is rejected after local is selected, and a pending refr
 }))
 
 test('a policy change in one frame suppresses later private frames in the same chunk', () => fixture(async f => {
-  f.mode('notes', 'cloud')
+  await f.mode('notes', 'cloud')
   f.setFetch(async () => new Response('data: {"content":"first","done":false}\n\ndata: {"content":"second","done":false}\n\ndata: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } }))
   const { llmBffApi } = await f.vite.ssrLoadModule('/src/api/llm-bff.ts')
   const chunks = [], errors = []
@@ -223,7 +231,7 @@ test('an old handle cannot cancel a replacement stream with the same id in a new
 for (const change of ['account', 'policy']) {
   for (const event of ['onDelta', 'onRetry', 'onDone', 'onError']) {
     test(`${event} fanout rechecks ${change} between raw runtime subscribers`, () => fixture(async f => {
-      f.mode('notes', 'cloud')
+      await f.mode('notes', 'cloud')
       const payload = event === 'onRetry' ? { retry: 'private-model', done: false }
         : event === 'onError' ? { error: 'private-error', done: false }
           : { content: 'private-answer', usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 }, done: false }
@@ -250,7 +258,7 @@ for (const change of ['account', 'policy']) {
     }))
   }
   test(`replay does not deliver final usage after its last delta changes ${change}`, () => fixture(async f => {
-    f.mode('notes', 'cloud')
+    await f.mode('notes', 'cloud')
     f.setFetch(async () => new Response('data: {"content":"answer","done":false,"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}\n\ndata: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } }))
     const first = f.start({ syncModule: 'notes' }, 'completed-with-usage')
     await first.settled
@@ -265,7 +273,7 @@ for (const change of ['account', 'policy']) {
 }
 
 test('subscriber exceptions remain isolated during live and rejected replay delivery', () => fixture(async f => {
-  f.mode('notes', 'cloud')
+  await f.mode('notes', 'cloud')
   const input = { syncModule: 'notes', messages: [] }
   const seen = []
   let settle
@@ -279,7 +287,7 @@ test('subscriber exceptions remain isolated during live and rejected replay deli
 }))
 
 test('user cancellation preserves its reason with the guarded production fetcher', () => fixture(async f => {
-  f.mode('notes', 'cloud')
+  await f.mode('notes', 'cloud')
   f.setFetch(async () => new Response(new ReadableStream({ start() {} }), { headers: { 'content-type': 'text/event-stream' } }))
   const errors = []
   const handle = f.runtime.spawnChat('user-stop', { syncModule: 'notes', messages: [] }, { onError: (error, reason) => errors.push({ error, reason }) })

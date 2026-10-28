@@ -9,7 +9,7 @@ test('automatic related searches keep private query text local and preserve loca
   const oldStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage')
   const oldFetch = globalThis.fetch
   const values = new Map()
-  const storage = { getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value), removeItem: key => values.delete(key) }
+  const storage = { keys: () => values.keys(), getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value), removeItem: key => values.delete(key) }
   Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: storage })
   const requests = []
   globalThis.fetch = async (url, init) => {
@@ -37,8 +37,9 @@ test('automatic related searches keep private query text local and preserve loca
   try {
     const policy = await vite.ssrLoadModule('/src/stores/syncPolicyStore.ts')
     policy.installSyncPolicyStorage(storage)
+    policy.installSyncPolicyActivationHost({ captureContext: () => ({ scope: '', isCurrent: () => true }), async activate(modes, publish) { publish(modes) } })
     const store = policy.useSyncPolicyStore()
-    store.applyPolicy({ system_default: 'cloud', allow_override: true, modules: { notes: 'local', meetings: 'local' } }, 1)
+    await store.applyPolicy({ system_default: 'cloud', allow_override: true, modules: { notes: 'local', meetings: 'local' } }, 1)
     const notes = await vite.ssrLoadModule('/src/features/notes/notes-search.ts')
     const meetings = await vite.ssrLoadModule('/src/features/meetings/meeting-related-search.ts')
     const direct = await notes.searchSemantic('PRIVATE_NOTE_FULL_TEXT', 5, 'w1')
@@ -46,14 +47,14 @@ test('automatic related searches keep private query text local and preserve loca
     const result = await notes.searchHybrid('PRIVATE_NOTE_FULL_TEXT', 5, 'w1')
     assert.equal(result[0]?.note.id, 'note-local')
     assert.equal(requests.length, 0, 'notes query must not reach embedding service')
-    store.applyPolicy({ system_default: 'cloud', allow_override: true, modules: { notes: 'cloud', meetings: 'local' } }, 2)
+    await store.applyPolicy({ system_default: 'cloud', allow_override: true, modules: { notes: 'cloud', meetings: 'local' } }, 2)
     const related = await meetings.searchRelatedContext('PRIVATE_MEETING_TOPIC', { workspaceId: 'w1' })
     assert.ok(related.some(item => item.id === 'note-local'))
     assert.equal(requests.length, 0, 'meeting topic must not reach embedding or Wikipedia')
-    store.applyPolicy({ system_default: 'cloud', allow_override: true, modules: { meetings: 'cloud' } }, 3)
+    await store.applyPolicy({ system_default: 'cloud', allow_override: true, modules: { meetings: 'cloud' } }, 3)
     globalThis.fetch = async (url) => {
       requests.push([String(url)])
-      store.applyPolicy({ system_default: 'cloud', allow_override: true, modules: { meetings: 'local' } }, 4)
+      await store.applyPolicy({ system_default: 'cloud', allow_override: true, modules: { meetings: 'local' } }, 4)
       return Response.json(['', [], [], []])
     }
     await meetings.searchRelatedWeb('PRIVATE MEETING')
@@ -61,12 +62,13 @@ test('automatic related searches keep private query text local and preserve loca
     requests.length = 0
     const { useAuthStore } = await vite.ssrLoadModule('/src/stores/auth.ts')
     const auth = useAuthStore()
+    await auth.syncFromStorage()
     let finishRefresh
     auth.maybeRefresh = () => new Promise(resolve => { finishRefresh = resolve })
-    store.applyPolicy({ system_default: 'cloud', allow_override: true, modules: { notes: 'cloud' } }, 3)
+    await store.applyPolicy({ system_default: 'cloud', allow_override: true, modules: { notes: 'cloud' } }, 3)
     const pending = notes.searchSemantic('PRIVATE_NOTE_DURING_REFRESH', 5, 'w1')
     for (let tries = 0; !finishRefresh && tries < 10; tries++) await Promise.resolve()
-    store.applyPolicy({ system_default: 'cloud', allow_override: true, modules: { notes: 'local' } }, 4)
+    await store.applyPolicy({ system_default: 'cloud', allow_override: true, modules: { notes: 'local' } }, 4)
     finishRefresh()
     await pending
     assert.equal(requests.length, 0, 'switching local during refresh must block the actual send')
@@ -83,7 +85,7 @@ test('email translation preserves policy rejection and does not send private bod
   const oldStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage')
   const oldFetch = globalThis.fetch
   const values = new Map()
-  const storage = { getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value), removeItem: key => values.delete(key) }
+  const storage = { keys: () => values.keys(), getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value), removeItem: key => values.delete(key) }
   Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: storage })
   setActivePinia(createPinia())
   let requests = 0
@@ -92,8 +94,9 @@ test('email translation preserves policy rejection and does not send private bod
   try {
     const policy = await vite.ssrLoadModule('/src/stores/syncPolicyStore.ts')
     policy.installSyncPolicyStorage(storage)
+    policy.installSyncPolicyActivationHost({ captureContext: () => ({ scope: '', isCurrent: () => true }), async activate(modes, publish) { publish(modes) } })
     const store = policy.useSyncPolicyStore()
-    store.applyPolicy({ system_default: 'cloud', allow_override: true, modules: { email: 'local' } }, 1)
+    await store.applyPolicy({ system_default: 'cloud', allow_override: true, modules: { email: 'local' } }, 1)
     const { translateBodyPipeline } = await vite.ssrLoadModule('/src/features/email/translate-email.ts')
     const { ModulePolicyLocalError } = await vite.ssrLoadModule('/src/api/module-policy.ts')
     const localError = error => error.body?.error === 'module_policy_local'
@@ -103,11 +106,12 @@ test('email translation preserves policy rejection and does not send private bod
     assert.equal(requests, 0)
     const { useAuthStore } = await vite.ssrLoadModule('/src/stores/auth.ts')
     const auth = useAuthStore()
+    await auth.syncFromStorage()
     let finishRefresh
     auth.maybeRefresh = () => new Promise(resolve => { finishRefresh = resolve })
-    store.applyPolicy({ system_default: 'cloud', allow_override: true, modules: { email: 'cloud' } }, 2)
+    await store.applyPolicy({ system_default: 'cloud', allow_override: true, modules: { email: 'cloud' } }, 2)
     const pending = emailTranslationChat('PRIVATE_EMAIL_DURING_REFRESH')
-    store.applyPolicy({ system_default: 'cloud', allow_override: true, modules: { email: 'local' } }, 3)
+    await store.applyPolicy({ system_default: 'cloud', allow_override: true, modules: { email: 'local' } }, 3)
     finishRefresh()
     await assert.rejects(pending, localError)
     assert.equal(requests, 0)

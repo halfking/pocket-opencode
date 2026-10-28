@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict'
 import { afterEach, beforeEach, describe, it } from 'node:test'
-import { readFileSync, readdirSync, statSync } from 'node:fs'
+import { readFileSync, readdirSync, statSync, writeFileSync, mkdirSync, unlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import {
-  FRONTEND_ROOT, activatePinia, captureRequests, loadBundle, restoreGlobals, stubBrowser,
+  FRONTEND_ROOT, CACHE, activatePinia, captureRequests, loadBundle, restoreGlobals, stubBrowser,
 } from './_wire-helpers.mjs'
 
 const PANEL = 'src/features/meetings/MeetingInsightPanel.vue'
@@ -30,12 +30,21 @@ function panelTemplate(): string {
 
 const TRANSCRIPT = '张伟：下周三跟客户过一遍。\n李娜：预算按季度复核。'
 
-/** These cases exercise cloud fallback, so grant that permission explicitly. */
-function allowCloudMeetingRequests() {
-  const originalGet = globalThis.localStorage.getItem
-  globalThis.localStorage.getItem = (key: string) => key === 'op_sync_policy_v1'
-    ? JSON.stringify({ policy: { system_default: 'cloud', allow_override: true, modules: { meetings: 'cloud' } }, scope: '' })
-    : originalGet.call(globalThis.localStorage, key)
+/** Cloud fallback tests explicitly activate the store embedded in the same bundle. */
+function prepareCloudMeetingFixture() {
+  globalThis.window.dispatchEvent = () => true
+}
+async function loadMeetingFixture(name: string) {
+  mkdirSync(CACHE, { recursive: true })
+  const entry = join(CACHE, `meeting-policy-fixture-${process.pid}-${name}.ts`)
+  writeFileSync(entry, `export * from ${JSON.stringify(join(FRONTEND_ROOT, 'src/api/meetings.ts'))};
+export { installSyncPolicyStorage as fixtureStorage, installSyncPolicyActivationHost as fixtureHost, useSyncPolicyStore as fixtureStore } from ${JSON.stringify(join(FRONTEND_ROOT, 'src/stores/syncPolicyStore.ts'))};`)
+  try { return await loadBundle(entry, name) } finally { unlinkSync(entry) }
+}
+async function allowCloudMeetingRequests(mod: any) {
+  mod.fixtureStorage(globalThis.localStorage)
+  mod.fixtureHost({ captureContext: () => ({ scope: '', isCurrent: () => true }), async activate(modes: unknown, publish: (modes: unknown) => undefined) { publish(modes) } })
+  await mod.fixtureStore().applyPolicy({ system_default: 'cloud', allow_override: true, modules: { meetings: 'cloud' } }, 1)
 }
 
 describe('§220 前端本地回落形状必须自带 summaryFallback', () => {
@@ -201,14 +210,18 @@ describe('§916 摘要兜底必须打得进 /api/llm/chat 的 32000 字节硬闸
   let _api: any = null
   let _prompt: any = null
   let _dedup: any = null
-  const apiMod = async () => (_api ??= await loadBundle(join(FRONTEND_ROOT, 'src/api/meetings.ts'), 's916-api'))
+  const apiMod = async () => {
+    const mod = _api ??= await loadMeetingFixture('s916-api')
+    await allowCloudMeetingRequests(mod)
+    return mod
+  }
   const promptMod = async () => (_prompt ??= await loadBundle(join(FRONTEND_ROOT, 'src/features/meetings/summary-prompt.ts'), 's916-prompt'))
   const dedupMod = async () => (_dedup ??= await loadBundle(join(FRONTEND_ROOT, 'src/features/meetings/meeting-dedup.ts'), 's916-dedup'))
 
   /** 让主摘要端点失败 ⇒ 必然走兜底；再把兜底那次请求抓下来。 */
   async function runFallback(segments: unknown[], prev?: string) {
     stubBrowser()
-    allowCloudMeetingRequests()
+    prepareCloudMeetingFixture()
     await activatePinia()
     const mod = await apiMod()
     const seen = captureRequests({})   // 一个路由都没配 ⇒ 全部 404
@@ -835,7 +848,7 @@ describe('§920 精校兜底超字节闸时必须出声（降级行为一行未�
 
   beforeEach(async () => {
     stubBrowser()
-    allowCloudMeetingRequests()
+    prepareCloudMeetingFixture()
     await activatePinia()
   })
   afterEach(() => { restoreGlobals() })
@@ -868,7 +881,8 @@ describe('§920 精校兜底超字节闸时必须出声（降级行为一行未�
 
   /** 跑一次 refine（后端 502 ⇒ 走前端兜底），抓 warn / 实际请求 / 产物。 */
   async function runRefine(minutes: number) {
-    const mod = await loadBundle(join(FRONTEND_ROOT, 'src/api/meetings.ts'), 's920-mod')
+    const mod = await loadMeetingFixture('s920-mod')
+    await allowCloudMeetingRequests(mod)
     const md = await loadBundle(join(FRONTEND_ROOT, 'src/features/meetings/meeting-dedup.ts'), 's920-md')
     const rp = await loadBundle(join(FRONTEND_ROOT, 'src/features/meetings/refine-prompt.ts'), 's920-rp')
     const segs = makeSegments(minutes)

@@ -7,7 +7,7 @@ import { effectScope } from 'vue'
 async function fixture(run, platform = 'android') {
   const originals = Object.fromEntries(['window', 'document', 'localStorage'].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]))
   const values = new Map()
-  const storage = { getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value), removeItem: key => values.delete(key) }
+  const storage = { keys: () => values.keys(), getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value), removeItem: key => values.delete(key) }
   Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: storage })
   const window = new EventTarget()
   window.localStorage = storage
@@ -47,6 +47,14 @@ async function fixture(run, platform = 'android') {
   try {
     const policy = await vite.ssrLoadModule('/src/stores/syncPolicyStore.ts')
     policy.installSyncPolicyStorage(storage)
+    policy.installSyncPolicyActivationHost({
+      captureContext() {
+        const scope = storage.getItem('pocket_user') || storage.getItem('pocket_workspace_id')
+          ? JSON.stringify([storage.getItem('pocket_user') ?? '', storage.getItem('pocket_workspace_id') ?? '']) : ''
+        return { scope, isCurrent: () => true }
+      },
+      async activate(modes, publish) { publish(modes) },
+    })
     const store = policy.useSyncPolicyStore()
     const { useAuthStore } = await vite.ssrLoadModule('/src/stores/auth.ts')
     const auth = useAuthStore()
@@ -67,14 +75,14 @@ async function fixture(run, platform = 'android') {
 }
 
 test('local manual refresh neither configures nor invokes native or server sync', () => fixture(async ({ vite, calls, mode }) => {
-  mode('local')
+  await mode('local')
   const { runDelegatedEmailFetch } = await vite.ssrLoadModule('/src/features/email/email-fetch-run.ts')
   await runDelegatedEmailFetch()
   assert.equal(calls.filter(([kind]) => ['configure', 'run', 'pull', 'sync', 'classify'].includes(kind)).length, 0)
 }))
 
 test('host startup cancels old native credentials instead of scheduling in local mode', () => fixture(async ({ vite, calls, mode, settle }) => {
-  mode('local')
+  await mode('local')
   const { startEmailFetchHost } = await vite.ssrLoadModule('/src/features/email/email-fetch-host.ts')
   startEmailFetchHost()
   await settle()
@@ -83,13 +91,13 @@ test('host startup cancels old native credentials instead of scheduling in local
 }))
 
 test('switching local during native configure prevents late run and schedule', () => fixture(async ({ vite, calls, mode, settle, release }) => {
-  mode('cloud')
+  await mode('cloud')
   globalThis.__delayEmailConfigure = true
   const { startEmailFetchHost } = await vite.ssrLoadModule('/src/features/email/email-fetch-host.ts')
   startEmailFetchHost()
   await settle()
   assert.ok(calls.some(([kind]) => kind === 'configure'), JSON.stringify(calls))
-  mode('local')
+  await mode('local')
   release()
   await settle()
   assert.ok(calls.some(([kind]) => kind === 'cancel'))
@@ -97,7 +105,7 @@ test('switching local during native configure prevents late run and schedule', (
 }))
 
 test('cloud host runs, cancels on logout, and needs the new account policy before resuming', () => fixture(async ({ vite, calls, mode, auth, settle }) => {
-  mode('cloud')
+  await mode('cloud')
   const { startEmailFetchHost } = await vite.ssrLoadModule('/src/features/email/email-fetch-host.ts')
   startEmailFetchHost()
   await settle()
@@ -110,7 +118,7 @@ test('cloud host runs, cancels on logout, and needs the new account policy befor
   await auth.setAuthWithWorkspace('account-b-token', 'Account B', 'account-b', 'workspace-b')
   await settle()
   assert.equal(calls.filter(([kind]) => kind === 'run').length, 0)
-  mode('cloud')
+  await mode('cloud')
   await settle()
   assert.equal(calls.filter(([kind]) => kind === 'run').length, 1)
   const configs = calls.filter(([kind]) => kind === 'configure')
@@ -119,7 +127,7 @@ test('cloud host runs, cancels on logout, and needs the new account policy befor
 }))
 
 test('host still cancels native credentials after its starting component unmounts', () => fixture(async ({ vite, calls, mode, auth, settle }) => {
-  mode('cloud')
+  await mode('cloud')
   const { startEmailFetchHost } = await vite.ssrLoadModule('/src/features/email/email-fetch-host.ts')
   const component = effectScope()
   component.run(() => startEmailFetchHost())
@@ -133,18 +141,18 @@ test('host still cancels native credentials after its starting component unmount
 }))
 
 test('unconfirmed native stop stays visible, retries within a bound, and blocks cloud reauthorization', t => fixture(async ({ vite, native, calls, mode, settle }) => {
-  mode('cloud')
+  await mode('cloud')
   const bridge = await vite.ssrLoadModule('/src/features/email/email-fetch-native.ts')
   assert.equal(await bridge.configureNativeEmailFetch('https://api.test', 'account-a-token'), true)
   native.cancel = async () => { calls.push(['cancel']); throw new Error('disk unavailable') }
   t.mock.timers.enable({ apis: ['setTimeout'] })
   try {
-    mode('local')
+    await mode('local')
     await settle()
     assert.equal(bridge.nativeEmailStopState.unconfirmed, true)
     assert.equal(bridge.nativeEmailStopState.retrying, false)
     const configurations = calls.filter(([kind]) => kind === 'configure').length
-    mode('cloud')
+    await mode('cloud')
     assert.equal(await bridge.configureNativeEmailFetch('https://api.test', 'account-a-token'), false)
     assert.equal(await bridge.scheduleNativeEmailFetch(1000), false)
     assert.equal((await bridge.runNativeEmailFetch()).used, false)
@@ -169,14 +177,14 @@ test('unconfirmed native stop stays visible, retries within a bound, and blocks 
 }))
 
 test('a successful automatic stop retry clears the warning without granting a native account', t => fixture(async ({ vite, native, calls, mode, settle }) => {
-  mode('cloud')
+  await mode('cloud')
   const bridge = await vite.ssrLoadModule('/src/features/email/email-fetch-native.ts')
   assert.equal(await bridge.configureNativeEmailFetch('https://api.test', 'account-a-token'), true)
   let failures = 1
   native.cancel = async () => { calls.push(['cancel']); if (failures-- > 0) throw new Error('bridge temporarily disconnected') }
   t.mock.timers.enable({ apis: ['setTimeout'] })
   try {
-    mode('local')
+    await mode('local')
     await settle()
     assert.equal(bridge.nativeEmailStopState.unconfirmed, true)
     t.mock.timers.tick(1000)
@@ -191,10 +199,10 @@ test('a successful automatic stop retry clears the warning without granting a na
 
 test('iOS has no Android email grant to stop and never reports an unsupported-plugin failure', () => fixture(async ({ vite, native, calls, mode, settle }) => {
   native.cancel = async () => { throw new Error('EmailFetch.cancel is not implemented on ios') }
-  mode('cloud')
+  await mode('cloud')
   const bridge = await vite.ssrLoadModule('/src/features/email/email-fetch-native.ts')
   assert.equal(await bridge.configureNativeEmailFetch('https://api.test', 'account-a-token'), false)
-  mode('local')
+  await mode('local')
   await settle()
   assert.equal(await bridge.cancelNativeEmailFetch(), true)
   assert.equal(bridge.nativeEmailStopState.unconfirmed, false)
@@ -203,7 +211,7 @@ test('iOS has no Android email grant to stop and never reports an unsupported-pl
 }, 'ios'))
 
 test('Android without the cancel method remains unconfirmed until an actual stop succeeds', () => fixture(async ({ vite, native, mode }) => {
-  mode('cloud')
+  await mode('cloud')
   const bridge = await vite.ssrLoadModule('/src/features/email/email-fetch-native.ts')
   assert.equal(await bridge.configureNativeEmailFetch('https://api.test', 'account-a-token'), true)
   native.cancel = undefined

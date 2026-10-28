@@ -15,7 +15,7 @@ async function fixture(run) {
   const previousStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage')
   const previousFetch = globalThis.fetch
   const values = new Map(), stored = new Map(), pending = []
-  const storage = { getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, String(value)), removeItem: key => values.delete(key) }
+  const storage = { keys: () => values.keys(), getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, String(value)), removeItem: key => values.delete(key) }
   Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: storage })
   setActivePinia(createPinia())
   let afterQuery = () => {}, afterRun = () => {}, db, raw, driver, UtilsSQLite, originalDriverRun
@@ -81,14 +81,21 @@ async function fixture(run) {
     const policy = await vite.ssrLoadModule('/src/stores/syncPolicyStore.ts')
     policy.installSyncPolicyStorage(storage)
     const policyStore = policy.useSyncPolicyStore()
-    const setMode = mode => {
-      const activation = db.requestPolicyActivation('email', mode, () => undefined)
-      const publication = policyStore.applyPolicy({ system_default: 'cloud', allow_override: true, modules: { email: mode } }, Date.now())
-      return track(Promise.all([activation, publication]))
-    }
-    const { useAuthStore } = await vite.ssrLoadModule('/src/stores/auth.ts')
+    const { useAuthStore, captureAuthSession, isCurrentAuthSession } = await vite.ssrLoadModule('/src/stores/auth.ts')
     const auth = useAuthStore()
     await auth.setAuthWithWorkspace('fixture-token', 'Fixture', 'fixture-user', 'fixture-workspace')
+    const scope = () => JSON.stringify([auth.user, auth.workspaceId])
+    policy.installSyncPolicyScopeResolver(scope)
+    policy.installSyncPolicyActivationHost({
+      captureContext() {
+        if (auth.activationStatus !== 'ready') return null
+        const session = captureAuthSession(auth), version = auth.activationVersion, captured = scope()
+        return { scope: captured, intentScope: auth.userId ? JSON.stringify([auth.userId, auth.workspaceId]) : '', workspace: auth.workspaceId,
+          isCurrent: () => scope() === captured && auth.activationVersion === version && isCurrentAuthSession(auth, session) }
+      },
+      activate: (modes, publish) => db.requestPolicySnapshotActivation(modes, publish),
+    })
+    const setMode = mode => track(policyStore.applyPolicy({ system_default: 'cloud', allow_override: true, modules: { email: mode } }, Date.now()))
     await setMode('cloud')
     const emails = await vite.ssrLoadModule('/src/features/email/emails-store.ts')
     const cache = await vite.ssrLoadModule('/src/features/email/email-body-cache.ts')
