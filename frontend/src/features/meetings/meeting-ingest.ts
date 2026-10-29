@@ -3,9 +3,9 @@
  */
 import { refineStatusFor } from '../sessions/refine-outcome-notice'
 import { createNote } from '../notes/notes-store'
-import { localDB } from '../../native/local-db'
 import { meetingsApi } from '../../api/meetings'
-import { useAuthStore } from '../../stores/auth'
+import { captureRecordingOperation, type RecordingOperation } from './recording-operation'
+import { isAbortError } from '../../api/http'
 import { calendarApi } from '../calendar/api'
 import {
   updateMeeting, type ActionItem, type LocalMeeting,
@@ -60,7 +60,11 @@ export interface IngestResult {
 export async function ingestMeetingArtifacts(
   meeting: LocalMeeting,
   refine: RefineResult,
+  operation: RecordingOperation = captureRecordingOperation('meetings'),
 ): Promise<IngestResult> {
+  const db = operation.cloudDb ?? operation.localDb
+  const assertCurrent = operation.cloudLease ? operation.assertCloud : operation.assertLocal
+  assertCurrent()
   let noteId = refine.noteId ?? meeting.noteId
   let todosCreated = 0
   let reminderPlanned = 0
@@ -80,8 +84,9 @@ export async function ingestMeetingArtifacts(
       // 默认值 'default'，而用户自己的笔记在 auth.workspaceId（真机实测
       // ws_user-admin）——两边不 intersect，会议自动生成的手记在笔记列表里
       // 永远看不见，且不报任何错。
-      workspaceId: useAuthStore().workspaceId || 'default',
-    })
+      workspaceId: operation.workspaceId,
+    }, { lease: operation.cloudLease ?? operation.localLease, backgroundCloud: false })
+    assertCurrent()
     noteId = note.id
   }
 
@@ -89,7 +94,7 @@ export async function ingestMeetingArtifacts(
     ...refine.todos,
     ...(meeting.liveSummary?.actionItems ?? []),
   ]
-  const created = await createLocalTodos(todos, noteId, meeting.id, meeting.title ?? '')
+  const created = await createLocalTodos(todos, noteId, meeting.id, meeting.title ?? '', operation)
   todosCreated = created.count
   reminderPlanned = created.reminderPlanned
   reminders = created.reminders
@@ -101,7 +106,7 @@ export async function ingestMeetingArtifacts(
   // ⚠§229.1：try/catch 从这里**移进了** ensureNextMeetingEvent 内部。
   //   原来它挂在调用点，catch 之后 `eventsCreated` 保持 0 且**不留任何痕迹**
   //   —— 「离线导致没建成日程」与「这场会没定下次会议」在返回值上完全同形。
-  const eventOutcome = await ensureNextMeetingEvent(meeting, refine.structuredMinutes?.nextMeeting ?? null)
+  const eventOutcome = await ensureNextMeetingEvent(meeting, refine.structuredMinutes?.nextMeeting ?? null, operation)
   const eventsCreated = eventOutcome.state === 'created' ? 1 : 0
   const eventUnresolved = eventOutcome.state === 'unresolved' ? 1 : 0
   const eventFailed = eventOutcome.state === 'failed'
@@ -132,7 +137,7 @@ export async function ingestMeetingArtifacts(
     ...(writeback.summary === null ? {} : { summary: writeback.summary }),
     noteId,
     status: writeback.status,
-  })
+  }, db)
 
   let cloudSynced = false
   // ── 存储与同步策略挂点（storage-sync）────────────────────────────────
@@ -143,6 +148,7 @@ export async function ingestMeetingArtifacts(
     recordSyncReportEntry({ module: 'meetings', status: 'skipped' })
   } else {
     try {
+      operation.assertCloud()
       await meetingsApi.syncMeeting({
         id: meeting.id,
         title: meeting.title ?? undefined,
@@ -154,10 +160,11 @@ export async function ingestMeetingArtifacts(
         refinedTranscript: refine.refinedTranscript,
         noteId: noteId ?? undefined,
         status: writeback.status,
-      })
+      }, operation.assertCloud)
       cloudSynced = true
       recordSyncReportEntry({ module: 'meetings', status: 'synced', count: 1 })
-    } catch {
+    } catch (error) {
+      if (isAbortError(error)) throw error
       // 离线或未配置 PG，本地已入库
     }
   }
@@ -189,6 +196,7 @@ export interface NextMeetingOutcome {
 async function ensureNextMeetingEvent(
   meeting: Pick<LocalMeeting, 'title' | 'location'>,
   nextMeeting: string | null,
+  operation: RecordingOperation,
 ): Promise<NextMeetingOutcome> {
   const gate = classifyNextMeeting(nextMeeting)
   if (gate !== 'ready') return { state: gate }
@@ -205,11 +213,15 @@ async function ensureNextMeetingEvent(
   //   而 event 是唯一失败就整体 503 的那一路（BuildFeed 里 ListRange 出错
   //   直接 return nil, err）⇒ partial 只可能来自 task / scheduled 两路。
   try {
-    const existing = (await calendarApi.feed(from, to)).entries
+    operation.assertCloud()
+    const existing = (await calendarApi.feed(from, to, operation.assertCloud)).entries
+    operation.assertCloud()
     if (isDuplicateNextMeetingEvent(existing, input)) return { state: 'duplicate' }
-    await calendarApi.create(input)
+    await calendarApi.create(input, operation.assertCloud)
     return { state: 'created' }
-  } catch {
+  } catch (error) {
+    if (isAbortError(error) && operation.cloudLease) throw error
+    operation.assertLocal()
     // 离线 / 日历未配置 / 建了被拒 —— **仍然算失败并上报**（§229.1）。
     // 早于此处的处置是静默降级，用户永远不知道自己要的日程没建成。
     return { state: 'failed' }
@@ -225,8 +237,8 @@ async function ensureNextMeetingEvent(
  * 用 `IS ?` 而不是 `= ?`：`meeting_id` 在随手记那条链上是 NULL，
  * 而 SQLite 的 `=` 对 NULL 恒不成立 ⇒ 用 `=` 会让「没有会议 id」的那批永远查不到重复。
  */
-async function alreadyIngestedTodo(meetingId: string | null, title: string): Promise<boolean> {
-  const hit = await localDB.queryOne(
+async function alreadyIngestedTodo(meetingId: string | null, title: string, operation: RecordingOperation): Promise<boolean> {
+  const hit = await (operation.cloudDb ?? operation.localDb).queryOne(
     `SELECT id FROM local_todos
      WHERE meeting_id IS ? AND title = ? AND extracted_from_voice = 1`,
     [meetingId, title],
@@ -237,9 +249,12 @@ async function alreadyIngestedTodo(meetingId: string | null, title: string): Pro
 async function createLocalTodos(
   items: ActionItem[],
   noteId: string | null,
-  meetingId?: string,
-  meetingTitle = '',
+  meetingId: string | undefined,
+  meetingTitle: string,
+  operation: RecordingOperation,
 ): Promise<{ count: number; reminderPlanned: number; reminders: number; dueUnresolved: number }> {
+  const db = operation.cloudDb ?? operation.localDb
+  const assertCurrent = operation.cloudLease ? operation.assertCloud : operation.assertLocal
   const unique = dedupeTodos(items)
   let count = 0
   let reminderPlanned = 0
@@ -263,11 +278,13 @@ async function createLocalTodos(
     //   ⚠ 同文件里 `next_meeting` 那条日历**有**去重（`isDuplicateNextMeetingEvent`），
     //   而待办与提醒没有 —— 同一个函数里两种口径，这个不对称本身就是缺陷。
     try {
-      if (await alreadyIngestedTodo(meetingId ?? null, item.text)) continue
-    } catch {
+      if (await alreadyIngestedTodo(meetingId ?? null, item.text, operation)) continue
+    } catch (error) {
+      if (isAbortError(error)) throw error
       // 查重失败**不挡写入**：查重是防重复，不是准入门槛（随手记侧同款处置）。
       // 把它当门槛 ⇒ 一次 DB 抖动就让「时间点自动进日程」静默失效。
     }
+    assertCurrent()
     const id = `todo-${now}-${Math.random().toString(36).slice(2, 6)}`
     // 与会中总结路径同一套期限解析口径（ISO 优先、中文兜底）。
     const dueAt = resolveTodoDue(item.due, now)
@@ -275,7 +292,7 @@ async function createLocalTodos(
     // 放在 INSERT **之前**、且不看 INSERT 成不成功：
     // 「没听懂期限」与「待办没写进库」是两件事，混起来会互相掩盖。
     if (item.due && item.due.trim() !== '' && dueAt === null) dueUnresolved++
-    await localDB.run(
+    await db.run(
       `INSERT INTO local_todos
        (id, note_id, title, description, status, priority, due_at, extracted_from_voice, meeting_id, created_at, updated_at)
        VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
@@ -295,7 +312,7 @@ async function createLocalTodos(
         meetingTitle,
         at: dueAt.at,
         source: 'meeting-ingest',
-      })
+      }, operation.assertCloud)
       if (ok) reminders++
     }
   }
@@ -320,13 +337,14 @@ function mapPriority(item: ActionItem): string {
 }
 
 /** 录音结束后同步元数据到云端（不含音频/转写全文） */
-export async function syncMeetingMetadata(meeting: LocalMeeting): Promise<boolean> {
+export async function syncMeetingMetadata(meeting: LocalMeeting, operation: RecordingOperation = captureRecordingOperation('meetings')): Promise<boolean> {
   // storage-sync 挂点：meetings=local ⇒ 元数据上行同样跳过（含 skipped 上报）。
   if (readCachedModuleMode('meetings') === 'local') {
     recordSyncReportEntry({ module: 'meetings', status: 'skipped' })
     return false
   }
   try {
+    operation.assertCloud()
     await meetingsApi.syncMeeting({
       id: meeting.id,
       title: meeting.title ?? undefined,
@@ -337,10 +355,11 @@ export async function syncMeetingMetadata(meeting: LocalMeeting): Promise<boolea
       summary: meeting.summary ?? undefined,
       status: meeting.status,
       noteId: meeting.noteId ?? undefined,
-    })
+    }, operation.assertCloud)
     recordSyncReportEntry({ module: 'meetings', status: 'synced', count: 1 })
     return true
-  } catch {
+  } catch (error) {
+    if (isAbortError(error)) throw error
     return false
   }
 }

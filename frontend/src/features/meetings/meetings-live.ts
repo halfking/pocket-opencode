@@ -1,4 +1,5 @@
 import { localDB } from '../../native/local-db'
+import { captureRecordingDb, type RecordingDb } from './recording-operation'
 import type { LocalMeeting, MeetingSegment } from './meetings-store'
 
 function parseJson<T>(raw: string | null | undefined, fallback: T): T {
@@ -43,8 +44,8 @@ export async function getRecordingBySession(sessionId: string): Promise<LocalMee
   return row ? rowToMeeting(row) : null
 }
 
-export async function updateSegmentTranslation(segmentId: string, translation: string): Promise<void> {
-  await localDB.run(
+export async function updateSegmentTranslation(segmentId: string, translation: string, db: RecordingDb = captureRecordingDb()): Promise<void> {
+  await db.run(
     'UPDATE local_meeting_segments SET translation = ? WHERE id = ?',
     [translation, segmentId],
   )

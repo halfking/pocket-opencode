@@ -19,9 +19,10 @@ export type { ReminderInputArgs } from './meeting-due-plan'
  *
  * @returns 是否成功创建（失败为 false，调用方仅用于统计/日志）
  */
-export async function ensureTodoReminder(args: ReminderInputArgs): Promise<boolean> {
+export async function ensureTodoReminder(args: ReminderInputArgs, assertCurrent?: () => void): Promise<boolean> {
   try {
-    await scheduledTasksApi.create(buildReminderInput(args))
+    assertCurrent?.()
+    await scheduledTasksApi.create(buildReminderInput(args), { assertCurrent })
     return true
   } catch {
     return false

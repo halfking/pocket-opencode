@@ -44,14 +44,14 @@ export const calendarApi = {
    * 返回形状在 §118 变了：以前是裸数组，现在是 `{entries, partial}`。
    * 全仓只有一个调用方（store.ts 的 load），已同步。
    */
-  async feed(from: number, to: number): Promise<{ entries: CalendarEntry[]; partial: boolean }> {
+  async feed(from: number, to: number, assertCurrent?: () => void): Promise<{ entries: CalendarEntry[]; partial: boolean }> {
     const params = new URLSearchParams({ from: String(from), to: String(to) })
-    const body = await http<unknown>(`${base}?${params.toString()}`)
+    const body = await http<unknown>(`${base}?${params.toString()}`, { assertCurrent })
     return unwrapFeed(body)
   },
 
-  async create(input: CalendarEventInput): Promise<CalendarEvent> {
-    return http<CalendarEvent>(base, { method: 'POST', body: JSON.stringify(input) })
+  async create(input: CalendarEventInput, assertCurrent?: () => void): Promise<CalendarEvent> {
+    return http<CalendarEvent>(base, { method: 'POST', body: JSON.stringify(input), assertCurrent })
   },
 
   async update(id: string, input: CalendarEventInput): Promise<CalendarEvent> {

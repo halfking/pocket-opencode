@@ -6,7 +6,7 @@
 //
 // 随手记落库正文来自哪里，由 `recordingRuntime.ts` 里一个**裸 if** 决定：
 //
-//     if (!this.transcript.value.trim() && audioBlob.size > 0) { … transcribeFull( … }
+//     if (cloudAllowed && !this.transcript.value.trim() && audioBlob.size > 0) { … transcribeFull( … }
 //
 // 实测形态（§463 逐条核过行号）：
 //   · 正常路径是 **3 秒定长硬切**（NOTE_CHUNK_MS = 3000）逐片送 transcribeIncremental；
@@ -222,9 +222,11 @@ describe('L 组 · 随手记兜底全量转写的触发条件（§463）', () =>
     )
     assert.equal(
       g.condition.replace(/\s+/g, ' ').trim(),
-      '!this.transcript.value.trim() && audioBlob.size > 0',
+      'cloudAllowed && !this.transcript.value.trim() && audioBlob.size > 0',
       `触发条件变了：${g.condition}\n` +
-        '  若这是有意的行为变更 ⇒ 先更新决策简报 #15 的 B 格，再回来改这条登记。',
+        '  若这是有意的行为变更 ⇒ 先更新决策简报 #15 的 B 格，再回来改这条登记。\n' +
+        '  ⚠ 2026-10-29：条件前多了 `cloudAllowed &&` —— 兜底全量转写是**云端**调用，\n' +
+        '    账号切换或云端权限被撤销后不该再发起。这是有意的行为变更（会议/录音租约切片）。',
     )
   })
 
@@ -245,7 +247,7 @@ describe('L 组 · 随手记兜底全量转写的触发条件（§463）', () =>
   // ── 变异实测 ───────────────────────────────────────────────────────
   it('变异：放宽成「只要有音频就跑」⇒ 判据必须转红', () => {
     const mutated = runtime.replace(
-      /if \(!this\.transcript\.value\.trim\(\) && audioBlob\.size > 0\) \{/,
+      /if \(cloudAllowed && !this\.transcript\.value\.trim\(\) && audioBlob\.size > 0\) \{/,
       'if (audioBlob.size > 0) {',
     )
     assert.notEqual(mutated, runtime, '变异没命中（源码形态已变，先确认负控样本还成立）')
@@ -260,7 +262,7 @@ describe('L 组 · 随手记兜底全量转写的触发条件（§463）', () =>
 
   it('变异：换成恒真 if (true) ⇒ 判据必须转红', () => {
     const mutated = runtime.replace(
-      /if \(!this\.transcript\.value\.trim\(\) && audioBlob\.size > 0\) \{/,
+      /if \(cloudAllowed && !this\.transcript\.value\.trim\(\) && audioBlob\.size > 0\) \{/,
       'if (true) {',
     )
     assert.notEqual(mutated, runtime, '变异没命中')
@@ -278,7 +280,7 @@ describe('L 组 · 随手记兜底全量转写的触发条件（§463）', () =>
     // `if (this.nativeListening) { … }`，而 transcribeFull **不在** 那个块里。
     // 只按「向上最近的行首 if」扫描的实现会在这里捞错对象并误判为「有守卫」。
     const mutated = runtime.replace(
-      /if \(!this\.transcript\.value\.trim\(\) && audioBlob\.size > 0\) \{/,
+      /if \(cloudAllowed && !this\.transcript\.value\.trim\(\) && audioBlob\.size > 0\) \{/,
       '// 守卫被删掉了（模拟一次「优化」：直接重转，别管切片有没有出字）',
     )
     assert.notEqual(mutated, runtime, '变异没命中')
@@ -292,7 +294,7 @@ describe('L 组 · 随手记兜底全量转写的触发条件（§463）', () =>
 
   it('变异：把条件改挂到时长上 ⇒ 判据必须转红', () => {
     const mutated = runtime.replace(
-      /if \(!this\.transcript\.value\.trim\(\) && audioBlob\.size > 0\) \{/,
+      /if \(cloudAllowed && !this\.transcript\.value\.trim\(\) && audioBlob\.size > 0\) \{/,
       'if (this.elapsedMs.value > 30000) {',
     )
     assert.notEqual(mutated, runtime, '变异没命中')
@@ -308,11 +310,11 @@ describe('L 组 · 随手记兜底全量转写的触发条件（§463）', () =>
   // ── 负控：证明剥注释与行首锚定真的在起作用（否则门可能整体静音）──
   it('★ 负控：注释里出现同形 if 行，判据必须仍然只认那一个真触发条件', () => {
     const decoy = `
-      // if (!this.transcript.value.trim() && audioBlob.size > 0) {
+      // if (cloudAllowed && !this.transcript.value.trim() && audioBlob.size > 0) {
       //   说明文字里的同形条件，不是触发条件
       // }
       /*
-      if (!this.transcript.value.trim() && audioBlob.size > 0) {
+      if (cloudAllowed && !this.transcript.value.trim() && audioBlob.size > 0) {
       */
     `
     const injected = runtime.replace('private async runStop()', `private async runStop()\n${decoy}`)
@@ -321,7 +323,7 @@ describe('L 组 · 随手记兜底全量转写的触发条件（§463）', () =>
     assert.ok(g.found, `负控下量具失效：${g.reason}`)
     assert.equal(
       g.condition.replace(/\s+/g, ' ').trim(),
-      '!this.transcript.value.trim() && audioBlob.size > 0',
+      'cloudAllowed && !this.transcript.value.trim() && audioBlob.size > 0',
       '注释里的同形条件被当成了触发条件 ⇒ 剥注释没生效（§462 同族）',
     )
   })
@@ -336,7 +338,7 @@ describe('L 组 · 随手记兜底全量转写的触发条件（§463）', () =>
     assert.ok(g.found, `负控下量具失效：${g.reason}`)
     assert.equal(
       g.condition.replace(/\s+/g, ' ').trim(),
-      '!this.transcript.value.trim() && audioBlob.size > 0',
+      'cloudAllowed && !this.transcript.value.trim() && audioBlob.size > 0',
       '块注释里的同形条件被当成了触发条件 ⇒ 块注释没剥干净',
     )
   })
@@ -353,7 +355,7 @@ describe('L 组 · 随手记兜底全量转写的触发条件（§463）', () =>
     assert.ok(g.found, `负控下量具失效：${g.reason}`)
     assert.equal(
       g.condition.replace(/\s+/g, ' ').trim(),
-      '!this.transcript.value.trim() && audioBlob.size > 0',
+      'cloudAllowed && !this.transcript.value.trim() && audioBlob.size > 0',
       '字符串里的花括号把配平带偏了 ⇒ 掩码没有覆盖字符串内容',
     )
   })

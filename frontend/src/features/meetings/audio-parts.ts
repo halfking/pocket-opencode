@@ -5,6 +5,7 @@
 import { Capacitor } from '@capacitor/core'
 import { Filesystem, Directory } from '@capacitor/filesystem'
 import { localDB } from '../../native/local-db'
+import { captureRecordingDb, type RecordingDb } from './recording-operation'
 // §888：原来这里自己有一份 blobToBase64，而它的失败路径是
 //   `String(reader.result || '')` → `''` → `i < 0` → **resolve('空串')**（而不是 reject）
 // ⇒ 原生平台会写出一个 **0 字节的 webm**、库里 data_base64 存空串、
@@ -39,9 +40,11 @@ export async function saveAudioPart(
   seq: number,
   blob: Blob,
   mimeType = blob.type || 'audio/webm',
+  db: RecordingDb = captureRecordingDb(),
 ): Promise<string> {
   const id = `part-${meetingId}-${seq}`
   const dataBase64 = await blobToBase64(blob)
+  db.assertCurrent()
   let filePath: string | null = null
   if (Capacitor.isNativePlatform()) {
     try {
@@ -62,7 +65,7 @@ export async function saveAudioPart(
       filePath = null
     }
   }
-  await localDB.run(
+  await db.run(
     `INSERT OR REPLACE INTO local_meeting_audio_parts
      (id, meeting_id, seq, mime_type, data_base64, file_path, created_at)
      VALUES (?,?,?,?,?,?,?)`,

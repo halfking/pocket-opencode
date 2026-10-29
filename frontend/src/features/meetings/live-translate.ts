@@ -1,9 +1,10 @@
-import { http, LLM_CHAT_TIMEOUT_MS } from '../../api/http'
+import { http, LLM_CHAT_TIMEOUT_MS, isAbortError } from '../../api/http'
 import { detectLang, translateTargetLang } from '../../native/detect-lang'
 import { assertCloudModule } from '../../api/data-policy.ts'
 import { isModulePolicyLocalError } from '../../api/module-policy.ts'
 
-export async function liveTranslate(text: string, sourceLang?: string): Promise<string> {
+export async function liveTranslate(text: string, sourceLang?: string, assertCurrent?: () => void): Promise<string> {
+  assertCurrent?.()
   assertCloudModule('meetings')
   const src = sourceLang || detectLang(text)
   const target = translateTargetLang(src)
@@ -13,6 +14,7 @@ export async function liveTranslate(text: string, sourceLang?: string): Promise<
   try {
     const res = await http<{ content: string }>('/api/llm/chat', {
       syncModule: 'meetings',
+      assertCurrent,
       method: 'POST',
       body: JSON.stringify({
         kind: 'live_translate',
@@ -24,7 +26,7 @@ export async function liveTranslate(text: string, sourceLang?: string): Promise<
     })
     return (res.content || '').trim()
   } catch (error) {
-    if (isModulePolicyLocalError(error)) throw error
+    if (isModulePolicyLocalError(error) || isAbortError(error)) throw error
     return ''
   }
 }

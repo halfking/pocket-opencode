@@ -287,7 +287,8 @@ export const sttSettingsApi = {
    * fullTranscribeTimeout)`，客户端断开即中止——否则这段最长 10 分钟的兜底
    * 转写期间，用户只能干等。
    */
-  async transcribeFull(audioBlob: Blob, filename = 'meeting.wav', signal?: AbortSignal, module?: 'notes' | 'meetings'): Promise<SttFullResult> {
+  async transcribeFull(audioBlob: Blob, filename = 'meeting.wav', signal?: AbortSignal, module?: 'notes' | 'meetings', assertCurrent?: () => void): Promise<SttFullResult> {
+    assertCurrent?.()
     assertCloudModule(module)
     // ★ 与 `sttApi.transcribe` 对齐：容器适配放在**本方法内**，不指望调用方记得做。
     //
@@ -309,6 +310,7 @@ export const sttSettingsApi = {
     assertCloudModule(module)
     return http<SttFullResult>('/api/stt/transcribe-full', {
       syncModule: module,
+      assertCurrent,
       method: 'POST',
       body: JSON.stringify({ audioBase64: base64, filename: name }),
       signal,
@@ -348,7 +350,8 @@ export const sttSettingsApi = {
     silenceCut?: boolean
     isFinal?: boolean
     reset?: boolean
-  }, module?: 'notes' | 'meetings'): Promise<SttIncrementalResult> {
+  }, module?: 'notes' | 'meetings', assertCurrent?: () => void, signal?: AbortSignal): Promise<SttIncrementalResult> {
+    assertCurrent?.()
     assertCloudModule(module)
     // 两者都缺就是调用方写错了，静默传空 base64 会换来一个 502 empty transcript，
     // 报错形态与「音频是静音」完全一样 —— 必须在边界上炸掉。
@@ -372,6 +375,8 @@ export const sttSettingsApi = {
     assertCloudModule(module)
     return http<SttIncrementalResult>('/api/stt/transcribe-incremental', {
       syncModule: module,
+      assertCurrent,
+      signal,
       method: 'POST',
       body: JSON.stringify({
         audioBase64,

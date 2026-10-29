@@ -22,6 +22,7 @@
  *
  * 这两条都由调用方保证，本模块只做纯编排 + 三处外部调用，便于单测。
  */
+import { captureRecordingOperation, type RecordingOperation } from './recording-operation'
 import { sttSettingsApi } from '../../api/stt-settings'
 import { Capacitor } from '@capacitor/core'
 import { isAbortError } from '../../api/http'
@@ -48,6 +49,7 @@ import { readCachedModuleMode, recordSyncReportEntry } from '../../stores/syncPo
 import { isModulePolicyLocalError } from '../../api/module-policy.ts'
 
 export interface FinalizeDeps {
+  operation?: RecordingOperation
   /** 一次全量重转。注入而非直接调 API，便于单测与换实现。 */
   transcribeFull?: (blob: Blob, filename: string) => Promise<FullTranscribeOutcome>
   /**
@@ -207,14 +209,18 @@ export async function finalizeRecording(
     todosCreated: 0, reminderPlanned: 0, reminders: 0, dueUnresolved: 0,
     eventsCreated: 0, eventUnresolved: 0, eventFailed: false, ingestFailed: false,
   }
-  const notify = deps.notify
   if (!meetingId) return outcome
+  const operation = deps.operation ?? captureRecordingOperation('meetings')
+  operation.assertLocal()
+  const notify: FinalizeDeps['notify'] = (kind, text) => { operation.assertLocal(); deps.notify(kind, text) }
   if (readCachedModuleMode('meetings') === 'local') {
     recordSyncReportEntry({ module: 'meetings', status: 'skipped' })
     notify('info', '仅本地模式：已跳过云端转写和精翻。')
     return outcome
   }
 
+  operation.assertCloud()
+  const db = operation.cloudDb!
   const segs = segments ?? []
 
   // ★ §803/§804：把「墙钟说有 62 秒」和「音频真的有 62 秒」放在同一处比一次。
@@ -231,7 +237,14 @@ export async function finalizeRecording(
 
   const finalText = await refetchFullTranscript(
     meetingId,
-    deps.transcribeFull ?? defaultTranscribeFull,
+    async (blob, filename) => {
+      operation.assertCloud()
+      const result = deps.transcribeFull
+        ? await deps.transcribeFull(blob, filename)
+        : await sttSettingsApi.transcribeFull(blob, filename, undefined, 'meetings', operation.assertCloud)
+      operation.assertCloud()
+      return result
+    },
     // ★★★ 不传这一项，整段重转在真机上是死的（§50）。
     //   录音产物是 webm/opus，网关只收 wav/mp3 ⇒ 重转直接失败；
     //   且 `stt.SplitWAV` 对 webm 不可切（实测 splittable=false）
@@ -241,6 +254,7 @@ export async function finalizeRecording(
     //   （`loadMeetingAudio` 恒 null，§826）⇒ 不给它，整段重转在 Android 上永不发生。
     { toWav, loadAudioChunks: deps.loadAudioChunks ?? defaultLoadAudioChunks },
   )
+  operation.assertCloud()
   // ⚠ §954：走分块音频源时 `toWav` 不会被调用（没有整场音频可转）
   //   ⇒ §805 的时长护栏在原生链上原本恒判 `no-ground-truth`
   //   ⇒ 现在用各块时长之和补上 ⇒ **护栏在原生链上复活**。
@@ -299,7 +313,7 @@ export async function finalizeRecording(
   // ★ 决策全部在纯函数里（§52）：采纳什么、用哪些分段、名单是谁、改哪几个同音字。
   //   这一段此前散在本函数体内，而本函数在 node 里跑不到 ⇒ 那些决策
   //   **一行行为门都没有**（§45/§48/§49/§50 四轮 bug 全在这里面）。
-  const meeting = await getMeeting(meetingId)
+  const meeting = await getMeeting(meetingId, db)
   const plan = planRefine({
     meetingId,
     segments: segs,
@@ -327,23 +341,23 @@ export async function finalizeRecording(
       //   而专有名词正是 ASR 错得最多、也最该被精校纠正的那一类
       //   （实测：mimo 对 / minimax 把「悬界芯片」写成「玄介芯片」）。
       topic: meeting?.topic ?? undefined,
-    })
+    }, undefined, operation.assertCloud)
     outcome.refined = true
     // 先落精校结果与状态：**无论后面的入库成不成，用户至少拿得到精校文本**。
     await updateMeeting(meetingId, {
       refinedTranscript: result.refinedTranscript,
       // ⚠ 与 meeting-ingest 同一判定，单一来源在 refine-outcome-notice。
       status: refineStatusFor({ fromFallback: result.fromFallback, rejected: result.rejected }),
-    })
+    }, db)
     // ★ 这一步之前**根本不存在**，于是用户需求「时间点自动加进计划日程」
     //   在随手记录音上从未生效（§48）。事实链：服务端 `finalizeKxRefine` 返回
     //   `"todos": resp.Todos`（server_meeting_ingest.go:328）→ 前端 normalizeRefine
     //   解析进 result.todos → 而调用点只读了 3 个字段，**带 due 的行动项被丢弃**。
     //   失败必须单独兜：入库抛错不能让已经成功的精校被说成「未生效」。
     try {
-      const fresh = await getMeeting(meetingId)
+      const fresh = await getMeeting(meetingId, db)
       if (fresh) {
-        const ingested = await ingestMeetingArtifacts(fresh, result)
+        const ingested = await ingestMeetingArtifacts(fresh, result, operation)
         outcome.todosCreated = ingested.todosCreated
         outcome.reminderPlanned = ingested.reminderPlanned
         outcome.reminders = ingested.reminders
@@ -354,7 +368,8 @@ export async function finalizeRecording(
         outcome.eventUnresolved = ingested.eventUnresolved
         outcome.eventFailed = ingested.eventFailed
       }
-    } catch {
+    } catch (error) {
+      if (isAbortError(error)) throw error
       outcome.ingestFailed = true
     }
     // ⚠ 降级或被拦下时**不能**再报「精翻完成」。服务端有两条不同的回落路径，
