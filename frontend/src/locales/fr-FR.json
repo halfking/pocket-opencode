@@ -431,6 +431,22 @@
     }
   },
   "email": {
+    "portalMetadata": "Résumés de courriels synchronisés",
+    "portalMetadataHint": "Seuls les métadonnées des comptes et les résumés sont partagés ici. Aucun compte de réception n’est créé ; les corps, mots de passe et pièces jointes restent sur cet appareil.",
+    "portalMetadataPending": "Certaines métadonnées restent sur cet appareil et nécessitent une synchronisation ou votre attention.",
+    "portalMetadataEmpty": "Aucune métadonnée de courriel synchronisée.",
+    "portalMetadataTitle": "Titre",
+    "portalMetadataDelete": "Supprimer uniquement ces métadonnées partagées ? Les courriels locaux et identifiants seront conservés.",
+    "portalMetadataMore": "Afficher plus",
+    "portalMetadataField": {
+      "address": "Adresse électronique",
+      "display_name": "Nom affiché",
+      "last_sync_at": "Dernière synchronisation",
+      "from": "Expéditeur",
+      "subject": "Objet",
+      "snippet": "Résumé",
+      "received_at": "Heure de réception"
+    },
     "localPrivacyNotice": "Le mode local bloque la traduction du texte dans le cloud et le chargement des images externes.",
     "dailySummary": "Résumé quotidien",
     "fetchHintNetwork": "Récupération en arrière-plan incomplète ; messages synchronisés affichés",

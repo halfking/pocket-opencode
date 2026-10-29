@@ -9,6 +9,7 @@
     <template v-else>
       <!-- storage-sync：模块切「仅本地」时的提示横条（其余情况不渲染） -->
       <LocalOnlyBadge module="email" />
+      <PortalMailMetadata />
       <HeaderActionsPortal>
         <template v-if="inbox.selectMode.value">
           <button class="chat-icon-btn" type="button" aria-label="取消选择" @click="inbox.exitSelect()">
@@ -260,6 +261,7 @@ import { Skeleton, EmptyState, PullToRefresh, DbLockedState } from '../../compon
 import ScrollChromePortal from '@/components/layout/ScrollChromePortal.vue'
 import HeaderActionsPortal from '@/components/layout/HeaderActionsPortal.vue'
 import LocalOnlyBadge from '@/components/business/LocalOnlyBadge.vue'
+import PortalMailMetadata from './PortalMailMetadata.vue'
 import * as emailsStore from './emails-store'
 import { emailApi } from '../../api/email'
 import type { LocalEmail } from './emails-store'

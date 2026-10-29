@@ -92,11 +92,11 @@ test('rowToAccount 不得把 last_synced_at / created_at 一起归一', () => {
 })
 
 test('saveAccount 写侧落的是秒而不是毫秒', () => {
-  // 写侧已经改成 Math.floor(Date.now()/1000)。若哪天改回 Date.now()，
+  // 原始修改时间在业务入口捕获（毫秒），账户镜像仍以秒落盘。
   // 库里又会开始混单位；读侧归一只救存量，救不了新写进去的行。
   assert.match(
     saveAccount,
-    /Math\.floor\(\s*Date\.now\(\)\s*\/\s*1000\s*\)/,
+    /Math\.floor\(\s*operation\.modifiedAt\s*\/\s*1000\s*\)/,
     'saveAccount 写 updated_at 时必须落 Unix 秒',
   )
 })

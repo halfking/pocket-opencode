@@ -431,6 +431,22 @@
     }
   },
   "email": {
+    "portalMetadata": "跨端郵件摘要",
+    "portalMetadataHint": "此處只同步帳戶資訊和摘要，不會建立收信帳戶，也不包含內文、密碼或附件。",
+    "portalMetadataPending": "部分中繼資料仍保留在本機，等待同步或明確處理。",
+    "portalMetadataEmpty": "尚無跨端郵件中繼資料。",
+    "portalMetadataTitle": "標題",
+    "portalMetadataDelete": "只刪除此跨端中繼資料；本機郵件和憑證保留。",
+    "portalMetadataMore": "顯示更多",
+    "portalMetadataField": {
+      "address": "郵箱地址",
+      "display_name": "顯示名稱",
+      "last_sync_at": "上次同步時間",
+      "from": "寄件人",
+      "subject": "主旨",
+      "snippet": "摘要",
+      "received_at": "收件時間"
+    },
     "localPrivacyNotice": "僅本機模式下不將內文傳送至雲端翻譯，也不載入外部圖片。",
     "dailySummary": "每日摘要",
     "fetchHintNetwork": "背景收信未完成，已顯示已同步郵件",

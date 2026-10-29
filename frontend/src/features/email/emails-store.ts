@@ -11,6 +11,8 @@ import { buildMirrorAccountWrite } from './account-mirror-write'
 import { normalizeAccountStamp } from './account-lww'
 import { emailDateToMs } from './cleanup-filter'
 import { captureEmailSyncOperation, type EmailSyncOperation } from './email-sync-guard'
+import { capturePortalMailWrite, commitPortalMail, commitPortalMailBatch, mailAccountPayload, mailSummaryPayload, mailRecordId, portalMailStore } from './portal-mail-store'
+import { beginMailAccountEdit, finishMailAccountEdit, hasPendingMailAccountEdit, mailAccountEditVersion } from './mail-edit-intents'
 
 export interface EmailAccount {
   id: string
@@ -88,27 +90,55 @@ export async function saveAccount(input: {
   displayName: string; emailAddress: string; imapHost: string; imapPort?: number
   password: string; authType?: string; syncIntervalMin?: number
 }): Promise<string> {
-  const { db, ownerValues } = captureEmailOwnership()
+  const operation = capturePortalMailWrite()
+  const { ownerValues } = operation
   const id = `acct-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
   const encrypted = await encryptCredential(input.password)
   // created_at / updated_at 用**秒**：updated_at 是 LWW 的基准，必须与服务端
   // 同单位（服务端 email_accounts.updated_at 是 Unix 秒）。此前这里写
   // Date.now()（毫秒），而读侧又不归一，导致同一列混着两种单位。
-  const now = Math.floor(Date.now() / 1000)
-  await db.run(
-    `INSERT INTO local_email_accounts
+  const now = Math.floor(operation.modifiedAt / 1000)
+  await commitPortalMail(operation, [{ statement: `INSERT INTO local_email_accounts
        (id, display_name, email_address, imap_host, imap_port, auth_type, credential_encrypted,
         sync_interval_min, enabled, created_at, updated_at, owner_user_id, owner_workspace_id)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`, values:
     [id, input.displayName, input.emailAddress, input.imapHost, input.imapPort ?? 993,
      input.authType ?? 'password', encrypted, input.syncIntervalMin ?? 15, 1, now, now, ...ownerValues],
-  )
+  }], { kind: 'account', id, title: input.displayName,
+    payload: { address: input.emailAddress, display_name: input.displayName, last_sync_at: '' }, created: true })
   return id
 }
 
 export async function deleteAccount(id: string, database: Pick<typeof localDB, 'run'> = localDB): Promise<void> {
-  const { db, scope } = captureEmailOwnership(database)
-  await db.run(`DELETE FROM local_email_accounts WHERE id = ? AND ${scope.clause}`, [id, ...scope.params])
+  const operation = capturePortalMailWrite(database)
+  const { db, scope } = operation
+  const intent = beginMailAccountEdit(operation.owner, id)
+  try {
+    const account = await db.queryOne<Record<string, unknown> & { display_name: string }>(`SELECT * FROM local_email_accounts WHERE id=? AND ${scope.clause}`, [id, ...scope.params])
+    if (!account) return
+    const summaries = await db.query<Record<string, unknown> & { id: string; subject: string | null }>(`SELECT * FROM local_emails WHERE account_id=? AND ${scope.clause}`, [id, ...scope.params])
+    const guard = { clause: `NOT EXISTS(SELECT 1 FROM local_email_accounts WHERE id=? AND ${scope.clause})`, values: [id, ...scope.params] }
+    await commitPortalMailBatch(operation, [
+      // The cascade and tombstones must cover exactly the child set observed.
+      // Check full source rows too: read flags/classification may be unversioned.
+      sourceSnapshotAssertion('local_email_accounts', account),
+      { statement: `INSERT INTO local_portal_record_write_guards(allowed) SELECT 0 WHERE
+          (SELECT COUNT(*) FROM local_emails WHERE account_id=? AND ${scope.clause})<>?`, values: [id, ...scope.params, summaries.length] },
+      ...summaries.map(row => sourceSnapshotAssertion('local_emails', row)),
+      { statement: `DELETE FROM local_email_accounts WHERE id = ? AND ${scope.clause}`, values: [id, ...scope.params] },
+    ], [
+      { kind: 'account', id, title: account.display_name, payload: {}, deleted: true, guard },
+      ...summaries.map(row => ({ kind: 'summary' as const, id: row.id, title: row.subject ?? '', payload: {}, deleted: true, guard })),
+    ])
+    if (!await db.queryOne(`SELECT 1 AS applied WHERE ${guard.clause}`, guard.values)) throw new Error('Mailbox changed while deleting; retry with the current version')
+  } finally { finishMailAccountEdit(operation.owner, id, intent) }
+}
+
+function sourceSnapshotAssertion(table: 'local_email_accounts' | 'local_emails', row: Record<string, unknown>) {
+  const columns = Object.keys(row)
+  if (!columns.length || columns.some(column => !/^[a-z_][a-z0-9_]*$/.test(column))) throw new Error('Mailbox schema changed; original retained')
+  return { statement: `INSERT INTO local_portal_record_write_guards(allowed) SELECT 0 WHERE NOT EXISTS
+      (SELECT 1 FROM ${table} WHERE ${columns.map(column => `"${column}" IS ?`).join(' AND ')})`, values: columns.map(column => row[column]) }
 }
 
 /** 按 ID 取单个账户（EmailAccountSetup 编辑模式依赖）。 */
@@ -133,23 +163,51 @@ export async function getAccount(id: string): Promise<EmailAccount | null> {
  * 注意：不更新 credential_encrypted —— 改密码请走专用接口。
  */
 export async function updateAccount(id: string, patch: Partial<EmailAccount>): Promise<void> {
-  const { db, scope } = captureEmailOwnership()
-  const sets: string[] = []
-  const vals: unknown[] = []
-  if (patch.displayName !== undefined) { sets.push('display_name = ?'); vals.push(patch.displayName) }
-  if (patch.emailAddress !== undefined) { sets.push('email_address = ?'); vals.push(patch.emailAddress) }
-  if (patch.imapHost !== undefined) { sets.push('imap_host = ?'); vals.push(patch.imapHost) }
-  if (patch.imapPort !== undefined) { sets.push('imap_port = ?'); vals.push(patch.imapPort) }
-  if (patch.authType !== undefined) { sets.push('auth_type = ?'); vals.push(patch.authType) }
-  if (patch.syncIntervalMin !== undefined) { sets.push('sync_interval_min = ?'); vals.push(patch.syncIntervalMin) }
-  if (patch.enabled !== undefined) { sets.push('enabled = ?'); vals.push(patch.enabled ? 1 : 0) }
-  if (sets.length === 0) return
-  // 任何本地编辑都刷新 updated_at（服务端 SSOT 视角下的"已修改"）。
-  const now = Math.floor(Date.now() / 1000)
-  sets.push('updated_at = ?')
-  vals.push(patch.updatedAt ?? now)
-  vals.push(id)
-  await db.run(`UPDATE local_email_accounts SET ${sets.join(', ')} WHERE id = ? AND ${scope.clause}`, [...vals, ...scope.params])
+  const operation = capturePortalMailWrite()
+  const { db, scope } = operation
+  const intent = beginMailAccountEdit(operation.owner, id)
+  try {
+    const sets: string[] = []
+    const vals: unknown[] = []
+    if (patch.displayName !== undefined) { sets.push('display_name = ?'); vals.push(patch.displayName) }
+    if (patch.emailAddress !== undefined) { sets.push('email_address = ?'); vals.push(patch.emailAddress) }
+    if (patch.imapHost !== undefined) { sets.push('imap_host = ?'); vals.push(patch.imapHost) }
+    if (patch.imapPort !== undefined) { sets.push('imap_port = ?'); vals.push(patch.imapPort) }
+    if (patch.authType !== undefined) { sets.push('auth_type = ?'); vals.push(patch.authType) }
+    if (patch.syncIntervalMin !== undefined) { sets.push('sync_interval_min = ?'); vals.push(patch.syncIntervalMin) }
+    if (patch.enabled !== undefined) { sets.push('enabled = ?'); vals.push(patch.enabled ? 1 : 0) }
+    if (sets.length === 0) return
+    const original = await db.queryOne<{ display_name: string; email_address: string; last_synced_at: number | null; updated_at: number | null }>(
+      `SELECT display_name,email_address,last_synced_at,updated_at FROM local_email_accounts WHERE id=? AND ${scope.clause}`, [id, ...scope.params])
+    if (!original) return
+    if (mailAccountEditVersion(operation.owner, id) !== intent) throw new DOMException('Mailbox edit was superseded', 'AbortError')
+    // 任何本地编辑都刷新 updated_at（服务端 SSOT 视角下的"已修改"）。
+    const now = Math.floor(operation.modifiedAt / 1000)
+    sets.push('updated_at = ?')
+    vals.push(patch.updatedAt ?? now)
+    vals.push(id)
+    const after = { ...original, display_name: patch.displayName ?? original.display_name, email_address: patch.emailAddress ?? original.email_address }
+    const stamp = patch.updatedAt ?? now
+    const guard = { clause: `EXISTS(SELECT 1 FROM local_email_accounts WHERE id=? AND ${scope.clause} AND display_name IS ? AND email_address IS ? AND updated_at IS ? AND last_synced_at IS ?)`,
+      values: [id, ...scope.params, after.display_name, after.email_address, stamp, original.last_synced_at] }
+    const statements = [{ statement: `UPDATE local_email_accounts SET ${sets.join(', ')} WHERE id = ? AND ${scope.clause}
+        AND display_name IS ? AND email_address IS ? AND updated_at IS ? AND last_synced_at IS ?`,
+      values: [...vals, ...scope.params, original.display_name, original.email_address, original.updated_at, original.last_synced_at] }]
+    if (patch.displayName !== undefined || patch.emailAddress !== undefined) {
+      const store = portalMailStore(db), row = await store.byExternalId(mailRecordId('account', id), 'account')
+      const current = row ? await store.decode(row.item_json) : null
+      // Native connection settings and portable metadata have independent edits.
+      // Carry forward the current projection, changing only explicit shared fields.
+      const payload = { ...(current?.payload ?? mailAccountPayload(after)),
+        ...(patch.displayName !== undefined ? { display_name: patch.displayName } : {}),
+        ...(patch.emailAddress !== undefined ? { address: patch.emailAddress } : {}),
+      }
+      await commitPortalMail(operation, statements, {
+        kind: 'account', id, title: patch.displayName ?? current?.title ?? after.display_name, payload, guard,
+      })
+    } else await db.runInTransaction(statements)
+    if (!await db.queryOne(`SELECT 1 AS applied WHERE ${guard.clause}`, guard.values)) throw new Error('Mailbox changed while editing; retry with the current account metadata')
+  } finally { finishMailAccountEdit(operation.owner, id, intent) }
 }
 
 /**
@@ -169,11 +227,15 @@ export async function writeAccountIfNewer(acc: {
   enabled: boolean
   updatedAt: number
 }, operation = captureEmailSyncOperation()): Promise<boolean> {
-  const { db, scope } = captureEmailOwnership(operation?.db)
+  const write = capturePortalMailWrite(operation?.db)
+  const { db, scope } = write
   operation.assertCurrent()
-  const local = await db.queryOne<{ created_at: number; updated_at: number | null }>(
-    `SELECT created_at, updated_at FROM local_email_accounts WHERE id = ? AND ${scope.clause}`, [acc.id, ...scope.params],
+  if (hasPendingMailAccountEdit(operation.owner, acc.id)) return false
+  const localIntent = mailAccountEditVersion(operation.owner, acc.id)
+  const local = await db.queryOne<{ created_at: number; updated_at: number | null; display_name: string; email_address: string }>(
+    `SELECT created_at, updated_at, display_name, email_address FROM local_email_accounts WHERE id = ? AND ${scope.clause}`, [acc.id, ...scope.params],
   )
+  if (mailAccountEditVersion(operation.owner, acc.id) !== localIntent || hasPendingMailAccountEdit(operation.owner, acc.id)) return false
   if (local && normalizeAccountStamp(local.updated_at) >= acc.updatedAt) return false
   const stmt = buildMirrorAccountWrite(
     local ? { createdAt: local.created_at } : null,
@@ -184,10 +246,26 @@ export async function writeAccountIfNewer(acc: {
   operation.assertCurrent()
   // Compare the raw stamp read above so concurrent local edits win, including
   // legacy millisecond stamps that the read path normalizes to seconds.
-  const changed = await db.run(local ? `${stmt.sql} AND updated_at IS ?` : stmt.sql,
-    local ? [...stmt.values, local.updated_at] : stmt.values)
+  const statement = local ? `${stmt.sql} AND updated_at IS ?` : stmt.sql
+  const values = local ? [...stmt.values, local.updated_at] : stmt.values
+  const displayChanged = !local || local.display_name !== acc.displayName
+  const addressChanged = !local || local.email_address !== acc.emailAddress
+  if (!write.owner || (!displayChanged && !addressChanged)) {
+    const changed = await db.run(statement, values)
+    operation.assertCurrent()
+    return changed > 0
+  }
+  const guard = { clause: `EXISTS(SELECT 1 FROM local_email_accounts WHERE id=? AND ${scope.clause} AND display_name IS ? AND email_address IS ? AND updated_at IS ?)`,
+    values: [acc.id, ...scope.params, acc.displayName, acc.emailAddress, acc.updatedAt] }
+  const store = portalMailStore(db), projection = await store.byExternalId(mailRecordId('account', acc.id), 'account')
+  const current = projection ? await store.decode(projection.item_json) : null
+  await commitPortalMail(write, [{ statement, values }], { kind: 'account', id: acc.id, title: displayChanged ? acc.displayName : current?.title ?? acc.displayName,
+    payload: { ...(current?.payload ?? mailAccountPayload({ display_name: acc.displayName, email_address: acc.emailAddress })),
+      ...(displayChanged ? { display_name: acc.displayName } : {}), ...(addressChanged ? { address: acc.emailAddress } : {}),
+    }, modifiedAt: acc.updatedAt > 0 ? acc.updatedAt * 1000 : 0,
+    created: !local, guard, syncError: acc.updatedAt > 0 ? undefined : 'source_timestamp_unknown' })
   operation.assertCurrent()
-  return changed > 0
+  return Boolean(await db.queryOne(`SELECT 1 AS applied WHERE ${guard.clause}`, guard.values))
 }
 
 // ---- 邮件 ----
@@ -215,17 +293,19 @@ export async function listEmails(filter: ListFilter = {}, database?: object): Pr
 
 /** 插入/更新邮件（IMAP 抓取后调用）。返回 true=新插入。 */
 export async function upsertEmail(e: Partial<LocalEmail> & { accountId: string; fromAddress: string; date: number }, operation?: EmailSyncOperation): Promise<boolean> {
-  const { db, scope, ownerValues } = captureEmailOwnership(operation?.db)
+  const write = capturePortalMailWrite(operation?.db)
+  const { db, scope, ownerValues } = write
   const id = e.id || `email-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-  const now = Date.now()
+  const now = write.modifiedAt
   const updatedAt = e.updatedAt && e.updatedAt > 0 ? e.updatedAt : operation ? 0 : now
-  const existing = await db.queryOne<{ deleted_at: number | null; body_purged: number | null; folder: string | null }>(
-    `SELECT deleted_at, body_purged, folder FROM local_emails WHERE id = ? AND ${scope.clause}`,
+  const existing = await db.queryOne<{ deleted_at: number | null; body_purged: number | null; folder: string | null; from_address: string; date: number; updated_at: number }>(
+    `SELECT deleted_at, body_purged, folder, from_address,date,updated_at FROM local_emails WHERE id = ? AND ${scope.clause}`,
     [id, ...scope.params],
   )
   if (existing && (Number(existing.deleted_at) > 0 || Number(existing.body_purged) === 1)) {
     return false
   }
+  if (operation && existing && updatedAt <= Number(existing.updated_at)) return false
   // 待同步的本地移动不能被服务端快照打回：本地已在某目录（且还有 pending 的
   // 迁移操作）时保留本地 folder，等「同步到服务器」完成后再随服务端收敛。
   let folder = e.folder ?? null
@@ -235,8 +315,7 @@ export async function upsertEmail(e: Partial<LocalEmail> & { accountId: string; 
   }
   operation?.assertCurrent()
   try {
-    const changed = await db.run(
-      `INSERT INTO local_emails
+    const statement = `INSERT INTO local_emails
          (id, account_id, message_id, uid, from_address, from_name, subject, snippet,
           date, is_read, is_starred, category, importance, ai_summary, suggested_action, action_reason,
           has_attachments, created_at, updated_at, folder, owner_user_id, owner_workspace_id)
@@ -263,15 +342,27 @@ export async function upsertEmail(e: Partial<LocalEmail> & { accountId: string; 
          folder=COALESCE(excluded.folder, local_emails.folder),
          updated_at=excluded.updated_at
        WHERE IFNULL(local_emails.deleted_at, 0) = 0 AND IFNULL(local_emails.body_purged, 0) = 0
-         ${operation ? 'AND excluded.updated_at > IFNULL(local_emails.updated_at, 0)' : ''}`,
-      [id, e.accountId, e.messageId ?? null, e.uid ?? null, e.fromAddress, e.fromName ?? null,
+         ${operation ? 'AND excluded.updated_at > IFNULL(local_emails.updated_at, 0)' : ''}`
+    const values = [id, e.accountId, e.messageId ?? null, e.uid ?? null, e.fromAddress, e.fromName ?? null,
        e.subject ?? null, e.snippet ?? null, e.date, e.isRead ? 1 : 0, e.isStarred ? 1 : 0,
        e.category ?? null, e.importance ?? null, e.aiSummary ?? null, e.suggestedAction ?? null,
        e.actionReason ?? null,
-       e.hasAttachments ? 1 : 0, now, updatedAt, folder, ...ownerValues],
-    )
+       e.hasAttachments ? 1 : 0, now, updatedAt, folder, ...ownerValues]
+    const projected = { from_address: existing?.from_address ?? e.fromAddress, date: existing?.date ?? e.date,
+      subject: e.subject ?? null, snippet: e.snippet ?? null, ai_summary: e.aiSummary ?? null }
+    const guard = { clause: `EXISTS(SELECT 1 FROM local_emails WHERE id=? AND ${scope.clause}
+      AND updated_at IS ? AND from_address IS ? AND subject IS ? AND snippet IS ? AND ai_summary IS ? AND date IS ? AND IFNULL(deleted_at,0)=0)`,
+      values: [id, ...scope.params, updatedAt, projected.from_address, projected.subject, projected.snippet, projected.ai_summary, projected.date] }
+    if (!write.owner) {
+      const changed = await db.run(statement, values)
+      operation?.assertCurrent()
+      return changed > 0
+    }
+    await commitPortalMail(write, [{ statement, values }], { kind: 'summary', id, title: projected.subject ?? '', payload: mailSummaryPayload(projected),
+      modifiedAt: e.updatedAt && e.updatedAt > 0 ? e.updatedAt : 0, created: !existing, guard,
+      syncError: e.updatedAt && e.updatedAt > 0 ? undefined : 'source_timestamp_unknown' })
     operation?.assertCurrent()
-    return changed > 0
+    return Boolean(await db.queryOne(`SELECT 1 AS applied WHERE ${guard.clause}`, guard.values))
   } catch (err) {
     operation?.assertCurrent()
     // 不能裸吞：任何 DB 错误都会被当成「不是新邮件」而静默丢弃。
@@ -294,11 +385,18 @@ export async function upsertEmail(e: Partial<LocalEmail> & { accountId: string; 
  * 而本地镜像不会收到任何通知。详见 handoff round24 §25。
  */
 export async function deleteEmailsByIds(ids: string[]): Promise<void> {
-  const { db, scope } = captureEmailOwnership()
-  for (const id of ids) {
-    if (!id) continue
-    await db.run(`DELETE FROM local_emails WHERE id = ? AND ${scope.clause}`, [id, ...scope.params])
+  const operation = capturePortalMailWrite()
+  const { db, scope } = operation
+  const entries = []
+  const statements = []
+  for (const id of new Set(ids.filter(Boolean))) {
+    const row = await db.queryOne<{ subject: string | null }>(`SELECT subject FROM local_emails WHERE id=? AND ${scope.clause}`, [id, ...scope.params])
+    if (!row) continue
+    statements.push({ statement: `DELETE FROM local_emails WHERE id = ? AND ${scope.clause}`, values: [id, ...scope.params] })
+    entries.push({ kind: 'summary' as const, id, title: row.subject ?? '', payload: {}, deleted: true,
+      guard: { clause: `NOT EXISTS(SELECT 1 FROM local_emails WHERE id=? AND ${scope.clause})`, values: [id, ...scope.params] } })
   }
+  await commitPortalMailBatch(operation, statements, entries)
 }
 
 export async function maxEmailUpdatedAt(database: Pick<typeof localDB, 'queryOne'> = localDB): Promise<number> {
@@ -447,11 +545,7 @@ export async function setFolder(id: string, folder: string, database?: object): 
 }
 
 export async function setAiClassification(id: string, category: string, importance: string, summary: string, action: string, database?: object): Promise<void> {
-  const { db, scope } = captureEmailOwnership(database)
-  await db.run(
-    `UPDATE local_emails SET category = ?, importance = ?, ai_summary = ?, suggested_action = ? WHERE id = ? AND ${scope.clause}`,
-    [category, importance, summary, action, id, ...scope.params],
-  )
+  await updateLocalSummary(id, summary, { category, importance, action }, database)
 }
 
 /**
@@ -461,19 +555,40 @@ export async function setAiClassification(id: string, category: string, importan
  * 就得把现有分类原样写回，容易与并发的自动分类互相覆盖。
  */
 export async function setAiSummary(id: string, summary: string, database?: object): Promise<void> {
-  const { db, scope } = captureEmailOwnership(database)
-  await db.run(
-    `UPDATE local_emails SET ai_summary = ? WHERE id = ? AND ${scope.clause}`,
-    [summary, id, ...scope.params],
-  )
+  await updateLocalSummary(id, summary, undefined, database)
+}
+
+async function updateLocalSummary(id: string, summary: string, classification?: { category: string; importance: string; action: string }, database?: object): Promise<void> {
+  const operation = capturePortalMailWrite(database)
+  const { db, scope } = operation
+  const original = await db.queryOne<{ from_address: string; subject: string | null; snippet: string | null; ai_summary: string | null; date: number; updated_at: number }>(
+    `SELECT from_address,subject,snippet,ai_summary,date,updated_at FROM local_emails WHERE id=? AND ${scope.clause} AND IFNULL(deleted_at,0)=0`, [id, ...scope.params])
+  if (!original) return
+  const after = { ...original, ai_summary: summary }
+  const guard = { clause: `EXISTS(SELECT 1 FROM local_emails WHERE id=? AND ${scope.clause} AND ai_summary IS ? AND updated_at IS ? AND IFNULL(deleted_at,0)=0)`,
+    values: [id, ...scope.params, summary, operation.modifiedAt] }
+  const sets = classification ? 'category=?,importance=?,suggested_action=?,ai_summary=?,updated_at=?' : 'ai_summary=?,updated_at=?'
+  const values = classification ? [classification.category, classification.importance, classification.action, summary, operation.modifiedAt] : [summary, operation.modifiedAt]
+  await commitPortalMail(operation, [{ statement: `UPDATE local_emails SET ${sets} WHERE id=? AND ${scope.clause} AND updated_at IS ? AND ai_summary IS ? AND IFNULL(deleted_at,0)=0`,
+    values: [...values, id, ...scope.params, original.updated_at, original.ai_summary] }], {
+    kind: 'summary', id, title: original.subject ?? '', payload: mailSummaryPayload(after), guard,
+  })
+  if (!await db.queryOne(`SELECT 1 AS applied WHERE ${guard.clause}`, guard.values)) throw new Error('Mail summary changed while editing; retry with the current version')
 }
 
 export async function updateSyncState(accountId: string, lastUid: number): Promise<void> {
-  const { db, scope } = captureEmailOwnership()
-  await db.run(
-    `UPDATE local_email_accounts SET last_synced_uid = ?, last_synced_at = ? WHERE id = ? AND ${scope.clause}`,
-    [lastUid, Date.now(), accountId, ...scope.params],
-  )
+  const operation = capturePortalMailWrite()
+  const { db, scope } = operation
+  const account = await db.queryOne<{ display_name: string; email_address: string }>(`SELECT display_name,email_address FROM local_email_accounts WHERE id=? AND ${scope.clause}`, [accountId, ...scope.params])
+  if (!account) return
+  const store = portalMailStore(db), row = await store.byExternalId(mailRecordId('account', accountId), 'account')
+  const current = row ? await store.decode(row.item_json) : null
+  await commitPortalMail(operation, [{ statement: `UPDATE local_email_accounts SET last_synced_uid=?,last_synced_at=? WHERE id=? AND ${scope.clause}`,
+    values: [lastUid, operation.modifiedAt, accountId, ...scope.params] }], {
+    kind: 'account', id: accountId, title: current?.title ?? account.display_name,
+    payload: { ...(current?.payload ?? mailAccountPayload(account)), last_sync_at: new Date(operation.modifiedAt).toISOString() },
+    guard: { clause: `EXISTS(SELECT 1 FROM local_email_accounts WHERE id=? AND ${scope.clause} AND last_synced_at IS ?)`, values: [accountId, ...scope.params, operation.modifiedAt] },
+  })
 }
 
 /** 按 ID 取单封邮件（EmailDetailView 依赖）。 */
@@ -550,20 +665,29 @@ export async function handleClassifiedEvent(payload: EmailClassifiedPayload): Pr
   // 用 COALESCE：服务器字段为 null 时保留本地原值，避免覆盖用户手动设置的字段。
   // action_reason 同口径：这一轮没带理由不代表判定变了，抹掉会让已判为重要的
   // 邮件突然失去「为什么」——那正是这个字段存在的理由。
-  await db.run(
-    `UPDATE local_emails
+  await portalMailStore(db).init()
+  await db.runInTransaction([
+    { statement: `UPDATE local_emails
        SET category = COALESCE(?, category),
            importance = COALESCE(?, importance),
            ai_summary = COALESCE(?, ai_summary),
            action_reason = COALESCE(?, action_reason)
-     WHERE id = ? AND ${scope.clause}`,
-    [category, importance, summary, payload.actionReason ?? null, payload.email_id, ...scope.params],
-  )
+     WHERE id = ? AND ${scope.clause}`, values: [category, importance, summary, payload.actionReason ?? null, payload.email_id, ...scope.params] },
+    // This event has no source modification timestamp. Keep the new local
+    // classification, but never upload a superseded snapshot as if it were new.
+    { statement: `UPDATE local_portal_record_outbox SET last_error='source_timestamp_unknown'
+       WHERE owner_user_id=? AND owner_workspace_id=? AND module='email' AND kind='summary' AND ext_id=?`, values: [...ownerValuesFor(db), mailRecordId('summary', payload.email_id)] },
+  ])
+  if (typeof window !== 'undefined') window.dispatchEvent(new Event('openpocket:portal-email-outbox-changed'))
 
   emailClassifiedHandlers.forEach((cb) => {
     try { cb(payload.email_id, { category, importance, summary }) }
     catch (e) { console.warn('[emails-store] classified handler threw:', e) }
   })
+}
+
+function ownerValuesFor(db: ReturnType<typeof localDB.bindOperation>): string[] {
+  return db.owner ? [db.owner.userId, db.owner.workspaceId] : ['', '']
 }
 
 // ---- 辅助 ----

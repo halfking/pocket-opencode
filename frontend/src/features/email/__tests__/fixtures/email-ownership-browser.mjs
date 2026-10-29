@@ -3,17 +3,19 @@ import { fileURLToPath } from 'node:url'
 import vue from '@vitejs/plugin-vue'
 
 /** Real mail store SQL and lease implementation; SQL.js supplies the isolated storage driver. */
-export async function createEmailOwnershipBrowserFixture() {
-  const entry = `
+export async function createEmailOwnershipBrowserFixture(options = {}) {
+  const entry = options.entry ?? `
     import {createApp, h, KeepAlive, defineComponent, reactive, ref, onMounted, nextTick} from 'vue';
     import {createRouter,createMemoryHistory} from 'vue-router';
     import {createI18n} from 'vue-i18n';
+    import {createPinia,setActivePinia} from 'pinia';
     import App from '/src/app/App.vue';
     import {fixtureDb,activate} from 'virtual:email-owned-db';
     import * as emails from '/src/features/email/emails-store.ts';
     import * as folders from '/src/features/email/email-folders-store.ts';
     import * as invoices from '/src/features/email/invoices-store.ts';
     import * as cache from '/src/features/email/email-body-cache.ts';
+    const pinia=createPinia();setActivePinia(pinia);
     const auth=reactive({activationStatus:'ready',activationVersion:0,userId:'alice',workspaceId:'one'});
     window.__mailFixtureAuth=auth;
     const mailView=(name,read)=>defineComponent({name,setup(){
@@ -30,7 +32,7 @@ export async function createEmailOwnershipBrowserFixture() {
     const Other=defineComponent({name:'MeetingListView',setup(){const draft=ref('');return()=>h('input',{id:'other-draft',value:draft.value,onInput:e=>draft.value=e.target.value})}});
     const router=createRouter({history:createMemoryHistory(),routes:[{path:'/email',component:Inbox},{path:'/email/invoices',component:Invoices},{path:'/other',component:Other}]});
     let routesApp;
-    async function mountRoutes(){if(routesApp)return;routesApp=createApp(App);await router.push('/email');await router.isReady();routesApp.use(router).use(createI18n({legacy:false,locale:'en',messages:{en:{}}})).mount('#routes')}
+    async function mountRoutes(){if(routesApp)return;routesApp=createApp(App);await router.push('/email');await router.isReady();routesApp.use(pinia).use(router).use(createI18n({legacy:false,locale:'en',messages:{en:{}}})).mount('#routes')}
     document.querySelector('#route-mail').onclick=()=>router.push('/email');
     document.querySelector('#route-invoice').onclick=()=>router.push('/email/invoices');
     document.querySelector('#route-other').onclick=()=>router.push('/other');
@@ -61,12 +63,13 @@ export async function createEmailOwnershipBrowserFixture() {
     fixtureDb.run(SCHEMA_SQL.replace(/CREATE VIRTUAL TABLE[^;]+;/g,'').replace(/CREATE TRIGGER[^]*?END;/g,''));
     function query(sql,values=[]){const stmt=fixtureDb.prepare(sql);try{stmt.bind(values);const rows=[];while(stmt.step())rows.push(stmt.getAsObject());return rows}finally{stmt.free()}}
     export const activate=owner=>leases.activateOwner(leases.prepareOwner(owner),()=>undefined);
-    export const localDB={captureOperation:options=>leases.capture(options),bindOperation:lease=>({owner:lease.owner.principal,assertCurrent:()=>leases.assertCurrent(lease),
-      query:async(...args)=>{leases.assertCurrent(lease);return query(...args)},queryOne:async(...args)=>{leases.assertCurrent(lease);return query(...args)[0]??null},run:async(sql,values=[])=>{leases.assertCurrent(lease);fixtureDb.run(sql,values);return fixtureDb.getRowsModified()}})};
+    export const localDB={captureOperation:options=>leases.capture(options),bindOperation:lease=>({owner:lease.owner.principal,schemaConnection:fixtureDb,assertCurrent:()=>leases.assertCurrent(lease),
+      query:async(...args)=>{leases.assertCurrent(lease);return query(...args)},queryOne:async(...args)=>{leases.assertCurrent(lease);return query(...args)[0]??null},run:async(sql,values=[])=>{leases.assertCurrent(lease);fixtureDb.run(sql,values);return fixtureDb.getRowsModified()},
+      runInTransaction:async rows=>{leases.assertCurrent(lease);fixtureDb.run('BEGIN');try{for(const row of rows){leases.assertCurrent(lease);fixtureDb.run(row.statement,row.values)}leases.assertCurrent(lease);fixtureDb.run('COMMIT')}catch(error){fixtureDb.run('ROLLBACK');throw error}}})};
   `
   const server = await createServer({ root: fileURLToPath(new URL('../../../../../', import.meta.url)), configFile: false,
     optimizeDeps: { noDiscovery: true, include: ['sql.js', 'vue', 'pinia', 'vue-router', 'vue-i18n'] },
-    plugins: [vue(), { name: 'email-ownership-browser', enforce: 'pre',
+    plugins: [...(options.plugins ?? []), vue(), { name: 'email-ownership-browser', enforce: 'pre',
       resolveId(source, importer) {
         if (importer?.endsWith('/app/App.vue')) {
           if (source === '../stores/auth') return '\0mail-app-auth'
@@ -93,7 +96,7 @@ export async function createEmailOwnershipBrowserFixture() {
         server.middlewares.use((req,res,next)=>{
           if(!req.url.startsWith('/__email_ownership__')) return next()
           res.setHeader('Content-Type','text/html; charset=utf-8')
-          res.end('<h1>Mail ownership verification</h1><div id="owner"></div><button id="alice">Alice</button><button id="bob">Bob</button><button id="workspace">Alice workspace two</button><button id="seed">Create Alice mail</button><pre id="result">Loading</pre><button id="route-mail">Email route</button><button id="route-invoice">Invoice route</button><button id="route-other">Other route</button><div id="routes"></div><script type="module" src="/@id/__x00__email-owned-entry"></script>')
+          res.end((options.html ?? '<h1>Mail ownership verification</h1><div id="owner"></div><button id="alice">Alice</button><button id="bob">Bob</button><button id="workspace">Alice workspace two</button><button id="seed">Create Alice mail</button><pre id="result">Loading</pre><button id="route-mail">Email route</button><button id="route-invoice">Invoice route</button><button id="route-other">Other route</button><div id="routes"></div>')+'<script type="module" src="/@id/__x00__email-owned-entry"></script>')
         })
       },
     }], server: {host:'127.0.0.1',port:0,hmr:false} })
