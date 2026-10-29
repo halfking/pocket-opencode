@@ -1,4 +1,4 @@
-import { http } from '../../api/http'
+import { http, type HttpOptions } from '../../api/http'
 import type {
   SchedulePreview,
   ScheduledTask,
@@ -43,17 +43,17 @@ export const scheduledTasksApi = {
     }
     return { tasks: unwrapTasks(body) }
   },
-  async get(id: string): Promise<ScheduledTask> {
-    return http<ScheduledTask>(`${base}/${encodeURIComponent(id)}`)
+  async get(id: string, options: HttpOptions = {}): Promise<ScheduledTask> {
+    return http<ScheduledTask>(`${base}/${encodeURIComponent(id)}`, options)
   },
-  async create(input: ScheduledTaskInput): Promise<ScheduledTask> {
-    return http<ScheduledTask>(base, { method: 'POST', body: JSON.stringify(input) })
+  async create(input: ScheduledTaskInput, options: HttpOptions = {}): Promise<ScheduledTask> {
+    return http<ScheduledTask>(base, { ...options, method: 'POST', body: JSON.stringify(input) })
   },
-  async update(id: string, input: Partial<ScheduledTaskInput>): Promise<ScheduledTask> {
+  async update(id: string, input: Partial<ScheduledTaskInput>, options: HttpOptions = {}): Promise<ScheduledTask> {
     // The v1 server validates a complete TaskInput before merging its patch.
     // Fill omitted fields from the current resource so small actions (toggle)
     // remain compatible with that contract.
-    const current = await this.get(id)
+    const current = await this.get(id, options)
     const body: ScheduledTaskInput = {
       name: input.name ?? current.name,
       description: input.description ?? current.description ?? '',
@@ -68,7 +68,7 @@ export const scheduledTasksApi = {
       timeoutSec: input.timeoutSec ?? current.timeoutSec,
     }
     return http<ScheduledTask>(`${base}/${encodeURIComponent(id)}`, {
-      method: 'PATCH', body: JSON.stringify(body),
+      ...options, method: 'PATCH', body: JSON.stringify(body),
     })
   },
   async run(id: string): Promise<{ triggered: boolean; taskId: string }> {

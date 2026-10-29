@@ -616,10 +616,23 @@ CREATE TABLE IF NOT EXISTS local_user_settings (
     secret_encrypted TEXT NOT NULL DEFAULT '',
     updated_at INTEGER NOT NULL,
     dirty INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY (namespace, id)
+    -- ⚠ 归属列（2026-10-29）。缺这两列的行 = **归属未知**：
+    --   既不属于任何账号，也不得被任何账号认领或上传（见 config-sync/ownership.ts）。
+    --   新写入行必须带当前已验证的 userId/workspaceId；存量行保持 NULL = 未认领。
+    owner_user_id TEXT,
+    owner_workspace_id TEXT,
+    -- ⚠ 主键**必须带归属**：服务端 user_settings 的主键是
+    --   (user_id, workspace_id, namespace, id)（见 backend/internal/usersetting/store.go）。
+    --   本地表若只用 (namespace, id)，两个账号的同一项配置会互相覆盖
+    --   —— 既是数据丢失，也是跨账号串号。
+    --   ⚠ SQLite 的 NULL 不参与主键唯一性 ⇒ 归属未知的行可以有多行，
+    --     这正好：未认领的行彼此不冲突，也不会被认领。
+    PRIMARY KEY (namespace, id, owner_user_id, owner_workspace_id)
 );
 CREATE INDEX IF NOT EXISTS idx_local_user_settings_dirty
     ON local_user_settings(dirty) WHERE dirty = 1;
+CREATE INDEX IF NOT EXISTS idx_local_user_settings_owner
+    ON local_user_settings(owner_workspace_id, owner_user_id);
 
 CREATE TABLE IF NOT EXISTS local_config_outbox (
     id TEXT PRIMARY KEY,
@@ -631,10 +644,16 @@ CREATE TABLE IF NOT EXISTS local_config_outbox (
     created_at INTEGER NOT NULL,
     attempts INTEGER NOT NULL DEFAULT 0,
     last_error TEXT,
-    state TEXT NOT NULL DEFAULT 'queued'
+    state TEXT NOT NULL DEFAULT 'queued',
+    -- ⚠ 归属列（2026-10-29）：入队时所属账号。NULL = 归属未知（历史行），
+    --   这类行**永远不上传**，也不因切换账号而被认领。
+    owner_user_id TEXT,
+    owner_workspace_id TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_config_outbox_ready
     ON local_config_outbox(state, created_at) WHERE state = 'queued';
+CREATE INDEX IF NOT EXISTS idx_config_outbox_owner
+    ON local_config_outbox(owner_workspace_id, owner_user_id, state);
 
 -- ============================================================
 -- 会话输入草稿（P1 输入系统，设计 v2 §4.4-5 / 契约 §4）

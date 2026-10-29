@@ -1,4 +1,4 @@
-import { http } from './http'
+import { http, type HttpOptions } from './http'
 import type {
   ChatAgent,
   ChatAgentListResponse,
@@ -30,8 +30,9 @@ export const chatAgentApi = {
   /**
    * 创建自定义角色
    */
-  async create(req: ChatAgentCreateRequest): Promise<ChatAgent> {
+  async create(req: ChatAgentCreateRequest, options: HttpOptions = {}): Promise<ChatAgent> {
     return http<ChatAgent>('/api/chat-agents', {
+      ...options,
       method: 'POST',
       body: JSON.stringify(req),
     })
@@ -40,8 +41,9 @@ export const chatAgentApi = {
   /**
    * 更新自定义角色（仅 isBuiltin=false）
    */
-  async update(id: string, req: ChatAgentUpdateRequest): Promise<ChatAgent> {
+  async update(id: string, req: ChatAgentUpdateRequest, options: HttpOptions = {}): Promise<ChatAgent> {
     return http<ChatAgent>(`/api/chat-agents/${id}`, {
+      ...options,
       method: 'PUT',
       body: JSON.stringify(req),
     })
