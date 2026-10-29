@@ -883,15 +883,35 @@ class LocalDB {
       throw new Error(`[localDB] FTS trigger DDL split into ${ftsTriggerStmts.length} statements, expected 3`)
     }
 
-    try {
-      await this.conn.execute('DROP TRIGGER IF EXISTS local_notes_ai;', false)
-      await this.conn.execute('DROP TRIGGER IF EXISTS local_notes_ad;', false)
-      await this.conn.execute('DROP TRIGGER IF EXISTS local_notes_au;', false)
-      for (const one of ftsTriggerStmts) {
-        await this.conn.execute(normalizeTriggerForPluginExecute(one), false)
+    // ⚠⚠ Web / sql.js 回退没有 FTS5 ⇒ `local_notes_fts` 虚表**不存在**。
+    //   但上面这段 DDL 会**重建三个触发器**（触发器体引用该虚表）。
+    //   ⇒ 触发器在、虚表不在 ⇒ 之后任何一条 `INSERT INTO local_notes`
+    //     都会报 `no such table: main.local_notes_fts`（实测 Web 全新建库）。
+    //   ⇒ 这里必须**先确认虚表存在**，否则一个触发器都不建。
+    //   旧触发器也要删：它们可能是在「虚表还在」的旧库里留下的，
+    //   留着会让同样的 INSERT 继续失败。
+    const notesFtsExists = await this.queryForMigration<{ cnt: number }>(
+      "SELECT COUNT(*) AS cnt FROM sqlite_master WHERE type = 'table' AND name = 'local_notes_fts'",
+    )
+    if (!notesFtsExists || notesFtsExists.cnt === 0) {
+      try {
+        await this.conn.execute('DROP TRIGGER IF EXISTS local_notes_ai;', false)
+        await this.conn.execute('DROP TRIGGER IF EXISTS local_notes_ad;', false)
+        await this.conn.execute('DROP TRIGGER IF EXISTS local_notes_au;', false)
+      } catch (e) {
+        console.warn('[localDB] notes FTS trigger cleanup skipped:', e)
       }
-    } catch (e) {
-      console.warn('[localDB] notes FTS trigger rebuild skipped:', e)
+    } else {
+      try {
+        await this.conn.execute('DROP TRIGGER IF EXISTS local_notes_ai;', false)
+        await this.conn.execute('DROP TRIGGER IF EXISTS local_notes_ad;', false)
+        await this.conn.execute('DROP TRIGGER IF EXISTS local_notes_au;', false)
+        for (const one of ftsTriggerStmts) {
+          await this.conn.execute(normalizeTriggerForPluginExecute(one), false)
+        }
+      } catch (e) {
+        console.warn('[localDB] notes FTS trigger rebuild skipped:', e)
+      }
     }
 
     await this.conn.execute(
@@ -1136,11 +1156,20 @@ class LocalDB {
   // 同样会截断 FTS 触发体；建表统一走 open() 里的 splitSqlStatements 逐条执行。
 }
 
-/** Web/sql.js 不含 FTS5：去掉虚拟表与相关触发器，避免整段 schema 失败 */
+/**
+ * Web/sql.js 不含 FTS5：去掉虚拟表与相关触发器，避免整段 schema 失败。
+ *
+ * ⚠⚠ 审计修复（2026-10-29）：原来的正则只去掉 `local_notes_a[idu]` 三个触发器，
+ *   **assets 的三个触发器留在了库里** ⇒ 触发器引用不存在的 `local_assets_fts`
+ *   ⇒ Web 上任何一条 `INSERT INTO local_assets` 都报 `no such table: main.local_assets_fts`
+ *   （实测：全新 Web 建库后插入资产直接失败）。
+ *   ⇒ 现在按「FTS 触发器」整体去掉：凡是触发器体引用某个 `*_fts` 虚表的，
+ *   一并去掉——留下任何一个都会让对应表的普通 INSERT 失败。
+ */
 function stripFts5ForWeb(sql: string): string {
   return sql
     .replace(/CREATE VIRTUAL TABLE[\s\S]*?;/gi, '-- FTS5 skipped on web\n')
-    .replace(/CREATE TRIGGER IF NOT EXISTS local_notes_a[idu][\s\S]*?END;/gi, '-- FTS trigger skipped\n')
+    .replace(/CREATE TRIGGER IF NOT EXISTS \w+_a[idu][\s\S]*?END;/gi, '-- FTS trigger skipped on web\n')
 }
 
 /**
