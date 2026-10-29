@@ -12,7 +12,7 @@
  */
 import { defineStore } from 'pinia'
 import { effectScope, watch } from 'vue'
-import { logoutRemote, refreshAuth } from '../api/auth.ts'
+import { fetchAuthIdentity, logoutRemote, refreshAuth } from '../api/auth.ts'
 import { localDB } from '../native/local-db'
 
 const TOKEN_KEY = 'pocket_token'
@@ -59,6 +59,8 @@ interface AuthIdentity {
   refreshSession: () => Promise<boolean>
   activationStatus: 'ready' | 'pending' | 'error'
   clearLocal: () => Promise<void>
+  /** 等待「归属已确认」；恢复会话后由服务端确认归属，未确认前归属未知。 */
+  whenOwnerReady: () => Promise<void>
   $dispose: () => void
 }
 
@@ -73,6 +75,8 @@ interface SessionState {
   disposed: boolean
   refresh?: { session: AuthSession; promise: Promise<boolean> }
   activation?: { ticket: object; snapshot: AuthSnapshot; promise: Promise<void> }
+  /** 恢复会话后向服务端确认归属的在途任务（供调用方等待）。 */
+  ownerUpgrade?: Promise<void>
 }
 
 const sessions = new WeakMap<AuthIdentity, SessionState>()
@@ -291,7 +295,76 @@ export const useAuthStore = defineStore('auth', {
         return this.activateSession(emptySnapshot(), false, false, false, error)
       }
       if (!force && this.activationStatus === 'ready' && sameStoredSession(this, next)) return Promise.resolve()
-      return this.activateSession(next, false)
+      // 恢复出来的会话没有**已验证**的归属（持久化的 workspaceId 是客户端自报的）。
+      // ⇒ 先用服务端确认过的身份把它重新确立为已验证归属，再激活。
+      //    服务端确认失败（离线 / 401）⇒ 仍按「归属未知」激活：宁可不上传，
+      //    也不把行挂到可能错误的账号名下。
+      return this.restoreWithVerifiedIdentity(next)
+    },
+    /**
+     * 用**服务端确认过的身份**恢复会话（2026-10-29）。
+     *
+     * ⚠ 为什么要这一步：恢复出来的会话只有客户端自报的工作区，没有已验证的
+     *   userId ⇒ 它没有归属 ⇒ 本地配置行会被判成「归属未知」而永不上传。
+     *   那样每次重启应用都会丢掉本该同步的配置。
+     *
+     * ⚠ 归属只认服务端签发过的东西：这里的 userId/workspaceId 来自
+     *   /api/auth/identity（服务端从**已验证的 JWT** 推导），
+     *   不是客户端自报，也不是从 token 里解出来的。
+     */
+    async restoreWithVerifiedIdentity(next: AuthSnapshot): Promise<void> {
+      if (!next.token) {
+        await this.activateSession(next, false)
+        return
+      }
+      // ⚠ **先**按「归属未知」激活：会话必须立刻可用，不能等网络。
+      //   归属可以在激活之后再补 —— 但**不能**反过来（先等网络再激活）：
+      //   那会让启动卡在一次 HTTP 上（离线时就是无限期等待）。
+      await this.activateSession(next, false)
+      // 随后异步向服务端确认归属；确认成功才把归属**升级**为已验证。
+      // ⚠ **不 await**：会话必须立刻可用（见上）。但把 promise 记在 session
+      //   state 上 —— 需要「归属已就绪」的调用方（同步路径）可以 await 它，
+      //   否则会以为「归属未知」而跳过本该上传的行。
+      const state = sessionState(this)
+      state.ownerUpgrade = this.upgradeOwnerFromServer(next)
+      state.ownerUpgrade.catch(() => { /* 归属确认失败不是错误：保持未知即可 */ })
+    },
+
+    /**
+     * 等待归属确认完成（恢复会话后调用方可用它确保归属已就绪）。
+     */
+    async whenOwnerReady(): Promise<void> {
+      const state = sessionState(this)
+      if (state.ownerUpgrade) await state.ownerUpgrade.catch(() => { /* 保持归属未知 */ })
+    },
+
+    /**
+     * 用**服务端确认过的身份**升级归属（2026-10-29）。
+     *
+     * ⚠ 归属只认服务端签发过的东西：这里的 userId/workspaceId 来自
+     *   /api/auth/identity（服务端从**已验证的 JWT** 推导），
+     *   不是客户端自报，也不是从 token 里解出来的。
+     *
+     * ⚠ 确认失败（离线 / 401 / 端点不存在）⇒ 归属保持未知：
+     *   宁可不上传，也不把行挂到可能错误的账号名下。
+     */
+    async upgradeOwnerFromServer(next: AuthSnapshot): Promise<void> {
+      if (!next.token) return
+      let verified: { userId: string; workspaceId: string } | null = null
+      try {
+        verified = await fetchAuthIdentity(next.token)
+      } catch {
+        // 服务端不可达 / token 失效 ⇒ 归属保持未知。
+        return
+      }
+      if (!verified) return
+      // 期间会话可能已经变了（切账号 / 登出）⇒ 不得覆盖新会话的归属。
+      if (this.token !== next.token) return
+      await this.activateSession(
+        { ...next, userId: verified.userId, workspaceId: verified.workspaceId },
+        false,
+        true,
+      )
     },
     /**
      * JWT 滑动续期（runbook §15.2）：单飞调 /api/auth/refresh 换新 token。
