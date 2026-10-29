@@ -39,6 +39,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -152,6 +153,8 @@ type rssCreateSourceBody struct {
 	Language      string `json:"language"`
 	Enabled       *bool  `json:"enabled"`
 	FetchInterval string `json:"fetchInterval"` // 接收 "30m" / "1h"
+	PortalSync    bool   `json:"portalSync"`
+	PortalEpoch   *int64 `json:"portalEpoch"`
 }
 
 func parseRSSInterval(s string, def time.Duration) time.Duration {
@@ -204,6 +207,17 @@ func (s *Server) handleRSSSources(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "invalid json")
 			return
 		}
+		if !validRSSPortableEpoch(body.PortalEpoch) {
+			writeError(w, http.StatusBadRequest, "invalid portable epoch")
+			return
+		}
+		if body.PortalSync {
+			var ok bool
+			sc, ok = s.rssPortableScope(w, r)
+			if !ok {
+				return
+			}
+		}
 		enabled := true
 		if body.Enabled != nil {
 			enabled = *body.Enabled
@@ -216,6 +230,7 @@ func (s *Server) handleRSSSources(w http.ResponseWriter, r *http.Request) {
 			Language:      body.Language,
 			Enabled:       enabled,
 			FetchInterval: parseRSSInterval(body.FetchInterval, 30*time.Minute),
+			PortalSync:    body.PortalSync, PortalEpoch: body.PortalEpoch,
 		}, sc)
 		if err != nil {
 			writeRSSError(w, err)
@@ -308,6 +323,8 @@ type rssImportStarterBody struct {
 	Categories     []string `json:"categories"`
 	MaxPerCategory int      `json:"maxPerCategory"`
 	Enabled        *bool    `json:"enabled"`
+	PortalSync     bool     `json:"portalSync"`
+	PortalEpoch    *int64   `json:"portalEpoch"`
 }
 
 // handleRSSImportStarter 把内置推荐源加入当前用户的订阅列表（幂等）。
@@ -330,10 +347,23 @@ func (s *Server) handleRSSImportStarter(w http.ResponseWriter, r *http.Request) 
 	if body.Enabled != nil {
 		enabled = *body.Enabled
 	}
-	result, err := st.ImportStarterSources(r.Context(), s.rssScopeFromClaims(r), rss.StarterImportOptions{
+	if !validRSSPortableEpoch(body.PortalEpoch) {
+		writeError(w, http.StatusBadRequest, "invalid portable epoch")
+		return
+	}
+	sc := s.rssScopeFromClaims(r)
+	if body.PortalSync {
+		var ok bool
+		sc, ok = s.rssPortableScope(w, r)
+		if !ok {
+			return
+		}
+	}
+	result, err := st.ImportStarterSources(r.Context(), sc, rss.StarterImportOptions{
 		Categories:     body.Categories,
 		MaxPerCategory: body.MaxPerCategory,
 		Enabled:        enabled,
+		PortalSync:     body.PortalSync, PortalEpoch: body.PortalEpoch,
 	})
 	if err != nil {
 		writeRSSError(w, err)
@@ -516,13 +546,17 @@ func (s *Server) handleRSSSourceItem(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodPatch:
 		var body struct {
-			Title         *string           `json:"title"`
-			Description   *string           `json:"description"`
-			SiteURL       *string           `json:"siteUrl"`
-			Language      *string           `json:"language"`
-			Enabled       *bool             `json:"enabled"`
-			FetchInterval *time.Duration    `json:"fetchInterval"`
-			Status        *rss.SourceStatus `json:"status"`
+			Title            *string           `json:"title"`
+			Description      *string           `json:"description"`
+			SiteURL          *string           `json:"siteUrl"`
+			Language         *string           `json:"language"`
+			Enabled          *bool             `json:"enabled"`
+			FetchInterval    *time.Duration    `json:"fetchInterval"`
+			Status           *rss.SourceStatus `json:"status"`
+			URL              *string           `json:"url"`
+			Category         *string           `json:"category"`
+			PortalEpoch      *int64            `json:"portalEpoch"`
+			PortableMutation bool              `json:"portableMutation"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid json")
@@ -536,6 +570,23 @@ func (s *Server) handleRSSSourceItem(w http.ResponseWriter, r *http.Request) {
 			Enabled:       body.Enabled,
 			FetchInterval: body.FetchInterval,
 			Status:        body.Status,
+			URL:           body.URL, Category: body.Category, PortalEpoch: body.PortalEpoch,
+		}
+		if !validRSSPortableEpoch(body.PortalEpoch) {
+			writeError(w, http.StatusBadRequest, "invalid portable epoch")
+			return
+		}
+		managed, err := st.IsPortableSource(r.Context(), id, sc)
+		if err != nil {
+			writeRSSError(w, err)
+			return
+		}
+		if managed || body.PortableMutation {
+			var ok bool
+			sc, ok = s.rssPortableScope(w, r)
+			if !ok {
+				return
+			}
 		}
 		src, err := st.UpdateSource(r.Context(), id, upd, sc)
 		if err != nil {
@@ -544,7 +595,39 @@ func (s *Server) handleRSSSourceItem(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, toSourceDTO(*src, 0))
 	case http.MethodDelete:
-		if err := st.DeleteSource(r.Context(), id, sc); err != nil {
+		var body struct {
+			PortableMutation bool   `json:"portableMutation"`
+			PortalEpoch      *int64 `json:"portalEpoch"`
+		}
+		if r.Body != nil && r.ContentLength != 0 {
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil && err != io.EOF {
+				writeError(w, http.StatusBadRequest, "invalid json")
+				return
+			}
+		}
+		var err error
+		managed, lookupErr := st.IsPortableSource(r.Context(), id, sc)
+		if lookupErr != nil {
+			writeRSSError(w, lookupErr)
+			return
+		}
+		if managed || body.PortableMutation {
+			var ok bool
+			sc, ok = s.rssPortableScope(w, r)
+			if !ok {
+				return
+			}
+		}
+		if !validRSSPortableEpoch(body.PortalEpoch) {
+			writeError(w, http.StatusBadRequest, "invalid portable epoch")
+			return
+		}
+		if body.PortableMutation {
+			err = st.DeleteSourcePortable(r.Context(), id, sc, body.PortalEpoch)
+		} else {
+			err = st.DeleteSource(r.Context(), id, sc)
+		}
+		if err != nil {
 			writeRSSError(w, err)
 			return
 		}
@@ -559,6 +642,18 @@ func (s *Server) handleRSSSourceRefresh(w http.ResponseWriter, r *http.Request, 
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "POST only")
 		return
+	}
+	if st := s.rssStoreSafe(); st != nil {
+		managed, err := st.IsPortableSource(r.Context(), sourceID, s.rssScopeFromClaims(r))
+		if err != nil {
+			writeRSSError(w, err)
+			return
+		}
+		if managed {
+			if _, ok := s.rssPortableScope(w, r); !ok {
+				return
+			}
+		}
 	}
 	sched := s.rssSchedulerSafe()
 	if sched == nil {
@@ -1069,6 +1164,12 @@ func (s *Server) handleRSSRouter(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch parts[0] {
+	case "portable":
+		if len(parts) != 2 || parts[1] != "changes" {
+			writeError(w, http.StatusNotFound, "unknown rss portable path")
+			return
+		}
+		s.handleRSSPortableChanges(w, r)
 	case "sources":
 		// /sources, /sources/seeds, /sources/starter, /sources/import-starter,
 		// /sources/{id}[/refresh], /sources/discover
