@@ -93,19 +93,19 @@ import (
 //	⚠ 代价必须记住：**「源码里有跳过调用」不等于「这次真的跳了」**。
 //	要看真实跳过数请跑：`go test ./internal/stt/ -v | grep -c '^--- SKIP'`。
 var knownSkips = []skipaudit.Entry{
-	skipaudit.E("TestLiveGatewayASR", skipaudit.CatCredential, "真网关 ASR 基础探针",
+	skipaudit.EP("TestLiveGatewayASR", skipaudit.CatCredential, "真网关 ASR 基础探针", 1,
 		"POCKET_LIVE_GATEWAY=1", "POCKET_LLM_GATEWAY_URL", "POCKET_LLM_GATEWAY_API_KEY",
 		"POCKET_LIVE_ASR_AUDIO（仓内无音频文件，需自备 16k WAV）", "POCKET_LIVE_ASR_MODEL"),
-	skipaudit.E("TestLiveGatewayASRCer", skipaudit.CatCredential, "真网关 CER 实测（用户最关心的「转写准不准」）",
+	skipaudit.EP("TestLiveGatewayASRCer", skipaudit.CatCredential, "真网关 CER 实测（用户最关心的「转写准不准」）", 1,
 		"POCKET_LIVE_GATEWAY=1", "POCKET_LLM_GATEWAY_URL", "POCKET_LLM_GATEWAY_API_KEY",
 		"POCKET_LIVE_ASR_AUDIO", "POCKET_LIVE_ASR_MODEL"),
-	skipaudit.E("TestLiveGatewayASRMergeOverlappingChunks", skipaudit.CatCredential, "切片重叠去重的真网关实测",
+	skipaudit.EP("TestLiveGatewayASRMergeOverlappingChunks", skipaudit.CatCredential, "切片重叠去重的真网关实测", 1,
 		"POCKET_LIVE_GATEWAY=1", "POCKET_LLM_GATEWAY_URL", "POCKET_LLM_GATEWAY_API_KEY",
 		"POCKET_LIVE_ASR_AUDIO", "POCKET_LIVE_ASR_MODEL"),
-	skipaudit.E("TestLiveGatewayFullVsChunked", skipaudit.CatCredential, "整段转写 vs 切块转写的真网关对比",
+	skipaudit.EP("TestLiveGatewayFullVsChunked", skipaudit.CatCredential, "整段转写 vs 切块转写的真网关对比", 1,
 		"POCKET_LIVE_GATEWAY=1", "POCKET_LLM_GATEWAY_URL", "POCKET_LLM_GATEWAY_API_KEY",
 		"POCKET_LIVE_ASR_AUDIO", "POCKET_LIVE_ASR_MODEL"),
-	skipaudit.E("TestLiveGatewayOverlapTimingVsText", skipaudit.CatCredential, "重叠时序 vs 重叠文本（语速锚点）",
+	skipaudit.EP("TestLiveGatewayOverlapTimingVsText", skipaudit.CatCredential, "重叠时序 vs 重叠文本（语速锚点）", 1,
 		"POCKET_LIVE_GATEWAY=1", "POCKET_LLM_GATEWAY_URL", "POCKET_LLM_GATEWAY_API_KEY",
 		"POCKET_LIVE_ASR_AUDIO", "POCKET_LIVE_ASR_MODEL"),
 	// ⚠ 这一条有 **2 个**跳过调用（不是 1 个），Points 必须照实写 2。
@@ -114,35 +114,46 @@ var knownSkips = []skipaudit.Entry{
 	//	「台账点数 == 实际点数」这条交叉校验恒真 —— 那就白设了。
 	//	（§467 的手写扫描器时代没有这条校验；加它当场就抓到了本条。）
 	{
-		Test:   "TestLiveGatewayOneASRModel",
+		Owner:  "TestLiveGatewayOneASRModel",
 		Cat:    skipaudit.CatCredential,
 		Reason: "指定单一 ASR 模型的定点验证",
 		Unlock: []string{"POCKET_LIVE_GATEWAY=1", "POCKET_LIVE_ASR_MODEL"},
 		Points: 2,
 	},
-	skipaudit.E("TestLiveGatewayASRCandidateSupply", skipaudit.CatCredential, "网关实际供应了哪些 ASR 模型",
+	skipaudit.EP("TestLiveGatewayASRCandidateSupply", skipaudit.CatCredential, "网关实际供应了哪些 ASR 模型", 1,
 		"POCKET_LIVE_GATEWAY=1", "POCKET_LLM_GATEWAY_URL", "POCKET_LLM_GATEWAY_API_KEY"),
-	skipaudit.E("TestLiveASRCandidateCoverage", skipaudit.CatCredential, "目标清单里的候选是否真被网关覆盖",
+	skipaudit.EP("TestLiveASRCandidateCoverage", skipaudit.CatCredential, "目标清单里的候选是否真被网关覆盖", 1,
 		"POCKET_LIVE_GATEWAY=1", "POCKET_LLM_GATEWAY_URL", "POCKET_LLM_GATEWAY_API_KEY"),
-	skipaudit.E("TestLiveGatewayProdSegment", skipaudit.CatCredential, "生产整段切分形态 vs 整段单发（含跨段合并对照）",
+	skipaudit.EP("TestLiveGatewayProdSegment", skipaudit.CatCredential, "生产整段切分形态 vs 整段单发（含跨段合并对照）", 1,
 		"POCKET_LIVE_GATEWAY=1", "POCKET_LLM_GATEWAY_URL", "POCKET_LLM_GATEWAY_API_KEY",
 		"POCKET_LIVE_ASR_AUDIO", "POCKET_LIVE_ASR_MODEL"),
-	skipaudit.E("TestDumpSplitSegments", skipaudit.CatDiagProbe, "切分结果的人工取证转储（开发工具，非断言）",
+	skipaudit.EP("TestDumpSplitSegments", skipaudit.CatDiagProbe, "切分结果的人工取证转储（开发工具，非断言）", 1,
 		"POCKET_DIAG_DATA_DIR 或显式运行（属转储工具而非门）"),
 	// ↓ 2026-10-17 补登：§467 漏掉的第 11 条（用的是 t.Skipf）
-	skipaudit.E("TestLiveASRModelFallsBackToGlobalDefault", skipaudit.CatPremiseFailed,
+	skipaudit.EP("TestLiveASRModelFallsBackToGlobalDefault", skipaudit.CatDefensiveGuard,
 		"断言「线上真正在用的 mimo-v2.5-asr 未登记 MaxSeconds ⇒ 回落全局默认 25s」。"+
 			"一旦该模型被登记 MaxSeconds，本用例的前提就不成立 ⇒ 跳过并要求更新 §481.5 的结论。"+
 			"⚠ 正因为它是 CatPremiseFailed，它**永远不会失败**："+
-			"模型被登记的那天，这里静默跳过，而绿色读数与「跑过并通过」无法区分。",
+			"模型被登记的那天，这里静默跳过，而绿色读数与「跑过并通过」无法区分。", 1,
 		"无需 env；解锁方式是给本用例换一个仍满足「未登记 MaxSeconds」的模型，"+
 			"或当 mimo-v2.5-asr 真的被登记后重写判据（此时它应转为一条真正的断言）"),
+
+	skipaudit.EP("liveAudio", skipaudit.CatCredential,
+		"真音频探针的夹具：没有真实语音 wav 就跳过（3 个测试受影响）。", 1,
+		"POCKET_STT_LIVE_AUDIO=<真实语音 wav 的路径>"),
+	skipaudit.EP("liveKey", skipaudit.CatCredential,
+		"真 MiniMax 探针的夹具：没有 key 就跳过（2 个测试受影响）。⚠ 跑它会消耗真实额度。", 1,
+		"STT_LIVE_MINIMAX_KEY=<MiniMax API key>"),
+	skipaudit.EP("readTSDedup", skipaudit.CatHostCapability,
+		"跨实现去重阈值比对要读前端 TS 实现；读不到就跳过（3 个测试受影响）。", 1,
+		"在含前端源码的仓库里运行（夹具按相对路径读 frontend 的去重实现）",
+		"或让该夹具能定位到 frontend 目录"),
 }
 
 var sttLedger = skipaudit.Ledger{
 	Pkg:      "./internal/stt",
 	Entries:  knownSkips,
-	MinFuncs: 10, // 实测 11 个
+	MinFuncs: 14, // 实测 14 个 owner
 }
 
 func sttDir(t *testing.T) string {
@@ -187,17 +198,30 @@ func TestSkipLedgerIsCompleteAndNotStale(t *testing.T) {
 }
 
 // 类别分布显式钉住。
-func TestSkipLedger_前提不成立类计数被钉住(t *testing.T) {
-	const wantPremiseFailed = 1
+//
+// ⚠ 这一类的语义在 2026-10-21 被**实测推翻**过一次：
+//
+//	它曾经叫 CatPremiseFailed（「前提不成立 ⇒ 永远不会失败」）。
+//	实测结果是：那批守卫**全部没有触发** ⇒ 那些测试今天**是在断言的**，
+//	不是「永远失败」。名字写错 ⇒ 下一个会话会按错的前提去处理它
+//	（去「修好那个永远失败的测试」，而它其实一直是绿的）。
+//
+// ⇒ 现在叫 CatDefensiveGuard（哑弹守卫），说的是真话：
+//
+//	守卫的前提**当前恒成立** ⇒ 这条测试今天在跑、在断言；
+//	而一旦前提成立，它会**静默退出门外** ——
+//	那时绿色读数与「跑过并通过」完全无法区分。
+func TestSkipLedger_哑弹守卫计数被钉住(t *testing.T) {
+	const wantDefensiveGuard = 1
 	got := 0
 	for _, e := range knownSkips {
-		if e.Cat == skipaudit.CatPremiseFailed {
+		if e.Cat == skipaudit.CatDefensiveGuard {
 			got++
 		}
 	}
-	if got != wantPremiseFailed {
-		t.Errorf("「前提不成立就跳过」类实际 %d 条，钉住值是 %d。"+
-			"⇒ 新增一条要有意识地改这个常量并写明理由。", got, wantPremiseFailed)
+	if got != wantDefensiveGuard {
+		t.Errorf("哑弹守卫类实际 %d 条，钉住值是 %d。"+
+			"⇒ 新增一条要有意识地改这个常量并写明理由。", got, wantDefensiveGuard)
 	}
 }
 

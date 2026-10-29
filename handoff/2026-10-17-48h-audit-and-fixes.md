@@ -620,11 +620,19 @@ npm run test:all→ 3579 用例 / 3577 通过 / 0 失败 / 338 文件全执行
 
 ## 7. 本轮遗留 / 已知限制
 
+###7.1 后续审计订正（2026-10-30）
+
+1. helper 内 `t.Skip*` 曾导致运行时跳过而静态不可见；现用 Go AST 调用图传递归因，台账按直接 owner 登记。基线：**30 包 /276 点 /204 owner /813 静态可跳过测试**。
+2. 上游回退的手写正则普查已撤销，`skip_census_test.go` 与 `skipaudit` 共用 `go/parser`口径；helper 增点、删除 `Skipf` 两类可逆变异均转红。
+3. 已新增静态/运行时交叉门：`scripts/audit-skip-runtime.mjs`解析 `go test -json`，子测试归一到父测试；运行时跳过而静态不可见即失败，量具坏则 exit2。实测：**736**运行时 skip、**813** 静态可跳过、危险方向 **0**。
+4. 修复纯 HEAD 的 §952计数漂移：workspace binding 新增有界 JSON 解码未更新钉值；现为总计 **268**、decode **144**、req **114**、有界 **265**，移除该调用的变异会转红。
+
+
 | 项 | 状态 | 说明 |
 |---|---|---|
-| `third_party/identity-go` 无任何 CI 跑它 | **未解决** | 它是独立 module，本轮只是把它从主 module 的普查分母里剔除。**它本身仍然没有任何 CI 覆盖**——这是另一个「绿色的读数覆盖不到的地方」 |
+| `third_party/identity-go` 无任何 CI 跑它 | **已修** | 它是独立 module；backend CI现显式在 `backend/third_party/identity-go` 跑 `go test ./... -count=1` |
 | 34 个 `t.Skipf` 此前完全不被普查看见 | 已修 | 但这说明**任何新语言写法/新封装**都会让抽取器再次失明。`skipaudit` 换成 AST 后这类风险已大幅降低，不过 `isSkipCall` 仍是**白名单**（`Skip`/`Skipf`/`SkipNow`），若将来出现 `t.SkipContext` 之类仍会漏 |
-| 「前提不成立就跳过」类共 **24 条**（email 11 / server 12 / stt 1） | **只登记，未修** | 这一类的代价不是「暂时没跑」，而是「**永远不会失败**」。本轮按纪律不删测试、登记解锁条件，但它们仍然是**空转的断言**，需要逐条重写判据或补夹具 |
+| 原称「前提不成立就跳过」的 **27 条**（email11 / server12 / config1 / agent1 / task1 / stt1） | **分类已推翻并改名** | 实测27/27 条守卫均未触发，测试当前实际会断言；改为 `CatDefensiveGuard`：环境/构造变化后可能静默 skip 的哑弹守卫 |
 | healthcheck 判定延迟 ≈ 2 分钟 | 已记录 | `retries: 12 × interval: 10s`。想让故障更快暴露可调低，但会更容易被抖动误判 |
 | `auto_explain` 在 `postgres:17-alpine` 里不存在 | 未解决 | 沿用上一轮结论 |
 | `POSTGRES_DB` 数据位置因拍板而改变 | **需运维知悉** | 默认改成命名卷 ⇒ 宿主上的旧目录变成**孤儿**（数据还在，但不是新库在用）。切之前先 `pg_dump` |

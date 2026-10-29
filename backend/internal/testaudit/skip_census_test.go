@@ -1,138 +1,162 @@
-// skip_census_test.go —— 全仓「被跳过的测试」普查（§467 同族的范围修正）
+// skip_census_test.go —— 全仓「被跳过的测试」普查 + 逐条台账覆盖率棘轮。
 //
-// 为什么要有这道门
-// ----------------
+// ── 这道门的历史（它自己被同一个形态击穿过两次）──────────────────────────
+//
 // §467 建了 `internal/stt/live_probe_skip_ledger_test.go`，开篇写的是
-// 「让被跳过的测试**可见**」——**全仓级**的措辞。但它的实现是
-// `filepath.Glob("*.go")`，**没有 `../`** ⇒ 实际只覆盖 `internal/stt` 一个包。
+// 「让被跳过的测试**可见**」——**全仓级**的措辞，但实现是
+// `filepath.Glob("*.go")`，**没有 `../`** ⇒ 实际只覆盖 `internal/stt`。
 //
-// 这不是措辞不严谨，是**可测量的覆盖缺口**（2026-10-17 实测）：
+// 2026-10-17 普查轮把它扩到全仓（当时的读数：193 点 / 11 包，
+// 有逐条台账的只有 stt，占 10.4%），并在补登过程中发现**普查本身有三处量具缺陷**
+// —— 全部是「量具把自己的噪声当成读数」，而它一直稳稳输出一个漂亮的数字：
 //
-//	全仓 t.Skip( 点：193，分布在 11 个包
-//	internal/email        118  ← 没有任何台账
-//	internal/server        37  ← 没有任何台账
-//	internal/stt           20  ← ✅ 唯一有逐条台账的包（占 10.4%）
-//	internal/notes          6 / livetest 4 / scheduledtask 2 / …
+//	① **只认 `t.Skip(`**：全仓另有 57 处 `t.Skipf(` 被完全无视。
+//	② **字面量里的假函数被当成真函数**：`internal/stt` 那份台账文件里的
+//	   负控样本（原始字符串中的 `func TestReal(t *testing.T) { t.Skip(...) }`）
+//	   被计入普查，该文件贡献 **9 个幽灵点**，stt 基线 20 里有 9 个是自指。
+//	③ **函数体里的 `"t.Skip("` 字面量被当成调用**：同一文件写着
+//	   `strings.Contains(string(raw), "t.Skip(")`，子串匹配把它算成一个跳过点。
 //
-// 而 `go test ./... -v` 的真实读数是：**PASS 3398 / SKIP 641 / FAIL 0**
-// ⇒ 全仓 **15.9% 的 Go 测试从未执行**，而绿色的读数把这件事盖住了。
-// 这正是 §467 想防的形态，只不过它自己被同一个形态击中了。
+// ⚠⚠ **2026-10-21：这道门被上游合并静默回退过一次 —— 而门禁当时是绿的。**
 //
-// 这道门做什么、不做什么
-// ----------------------
-// **做**：把「哪些包有逐条台账」和「各包 t.Skip 点数」摊开，并给总数装一个**棘轮**
+//	上游的 5 个提交（28c6acf4 / 99442d20 / 0fdda422 / 94f5fae0 / 4119c6d6）
+//	把本文件整体覆盖回**手写扫描器**版（正则找 `func TestXxx` + 配平花括号 +
+//	数文本里的 `t.Skip(`）。⇒ 那版扫描器把 `internal/skipaudit` 自己负控样本里的
+//	**22 个字符串字面量**数成了跳过点（基线里 `./internal/skipaudit: 22` 就是它），
+//	而 `./internal/email` 被数成 118（真实值 148）。
+//	⇒ **门是绿的，读数是错的**：没有任何东西会告诉你「普查已退回到手写扫描器」。
 //
-//	—— 新增跳过点必须被 conscious 地登记（或明确豁免），否则门转红。
-//	棘轮只拦「变多」，不拦「存量」（存量 193 个，不是一天能清的债）。
+//	⇒ 这就是本仓反复记录的那个形态第三次出现：
+//	**失效的东西因为一直在输出而没人怀疑。**
 //
-// **不做**：不逐条登记全部 193 个（那是另一件独立的工作，见 handoff 遗留风险）。
+// ⇒ 现在本门**完全委托** `internal/skipaudit`（go/parser 实现）：
 //
-//	本门只保证**这 193 不会悄悄变大**，以及「只有 stt 有台账」这个事实
-//	不再被一句全仓级的措辞掩盖。
+//	Go 源码**保证能解析**（否则 `go build` 就红了）⇒ AST 天然满足全部要求：
+//	注释不在 AST 里、字符串字面量不是 CallExpr、不需要花括号配平。
 //
-// ⚠️ 两条纪律（照抄 §467 踩过的坑）
+// ── 口径（2026-10-21 第三轮再改一次）────────────────────────────────────
 //
-//	① 剥注释，但**保留字符串字面量**：否则本文件的负控样本（原始字符串里的
-//	   `t.Skip(`）会被当成真跳过点。⇒ 本文件自身必须被排除。
-//	② key 里**绝不能有行号**：`rel:line` 会在改一行代码后全线漂移
+// **跳过点**（site）的定义：一个 `t.Skip*` 调用。
+//
+// ⚠ 2026-10-21 起口径从「**测试函数体内**的跳过点」改成
+// 「**包内全部**跳过点（含 helper 里的）」，因为实测发现：
+//
+//	运行时真的跳过的测试：**500** 个
+//	只看测试函数体时静态看得见的：**157** 个
+//	⇒ 缺口 **385** 个测试在运行时跳过，却对普查与台账**完全不可见**
+//	（跳过发生在 **helper** 里，而 `t.Skip` 发生在**被调用方**）。
+//
+// ⇒ 现在本门的读数是「包内去重后的跳过点数」，
+//
+//	与 `internal/skipaudit` 的台账口径**逐字一致**（同��段代码、同一份豁免）。
+//
+// ⚠ 两条纪律（照抄 §467 踩过的坑）
+//
+//	① key 里**绝不能有行号**：`rel:line` 会在改一行代码后全线漂移
 //	   （scripts/lib/baseline-ratchet.mjs 的文件头记了同型教训：
 //	    z-index-ladder / bottom-chrome 的 ALLOWLIST 就因为带行号而漂）。
 //	   ⇒ 本门以**包路径**为 key。
+//	② **不跨嵌套 module**：`third_party/identity-go` 是独立 module
+//	   （`github.com/kaixuan/identity-go`），主仓 `go test ./...` 根本不会跑它
+//	   ⇒ 把它算进主仓分母是**虚增覆盖率**。
 package testaudit
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/halfking/pocket-opencode/backend/internal/skipaudit"
 )
 
-// ── 基线（2026-10-17 实测，语义见下方 census）────────────────────────────
-// key = 包路径（相对 module root，'.' 开头）。⛔ 绝不写行号。
+// ── 基线（2026-10-21 实测，语义见下方 census）────────────────────────────
+// key = 包路径（相对 module root，'./' 开头）。⛔ 绝不写行号。
 //
-// ⚠ 2026-10-20（§936）：`./internal/server` 由 **37** 改成 **38**。
+// ⚠ 口径：**包内去重后的跳过点数**（含 helper 里的）。
 //
-//	这不是**放宽**门禁，而是**补登记一个早就存在、却没被登记的跳过点**：
-//	`internal/server/refine_shrinkage_guard_test.go` 里的
-//	`t.Skip("这个夹具没触发 participantLeak —— 判据形同虚设，停下来说明")`
-//	是 §907（commit 6d90ab00）**有意**加的「前提没建立就停下来说明」守卫，
-//	但那个提交**没同步登记基线** ⇒ ⇒ 这道棘轮门从那时起**一直是红的**。
-//	⇒ ⇒ 证据：2026-10-20 在**本提交之前**的 HEAD 的一份独立副本上实测，
-//	读数与今天**逐字相同**（全仓 194 / 基线 193；server 38 / 基线 37）⇒
-//	⇒ **不是 §936 的改动造成的**。
-//	⇒ ⇒ 本条的语义是「**已 conscious 地登记**」，门禁的规则（只拦新增、
-//	不拦存量）**一个字没改**。
+//	2026-10-17 的基线（211/194 那一版）数的是「测试函数体内的 t.Skip(」，
+//	它把 helper 里的跳过点**整类漏掉** ⇒ 基线偏小 ⇒ 棘轮形同虚设：
+//	在 helper 里加跳过点，门**不会红**。
 //
-// ⚠ 2026-10-22（§960）：**恢复** `./internal/notes` 那一条（无条目 → 6）。
-//
-//	§940 把它删掉的理由是「notes 包的 6 个 PG 用例从『恒 skip』变成『真跑』」
-//	⇒ 这条**成果保留**（那 6 处 `if pool == nil { t.Skip(...) }` 死分支确实删了）。
-//	⇒⇒⇒ 但 §940 同时把**跳过点本身**收进了 helper（newNotesTestPool），
-//	⇒⇒⇒ 而 census 与 **notes 包自己的台账**都**只数「测试函数体内」的 t.Skip(**
-//	⇒⇒⇒ ⇒ 读数变成 **0** ⇒⇒⇒ ⇒ notes 包的台账 6 条被判「过期」
-//	⇒⇒⇒ ⇒ 本包的测试当场转红 ⇒⇒⇒ ⇒ 而 main 的 CI 跑 `go test -race ./...`
-//	⇒⇒⇒ ⇒ ⇒ **CI 是红的**（§960 在 0fdda422 上实测：internal/notes FAIL）。
-//	⇒⇒⇒ ⇒ 两项要求**互斥**：「notes 包 0 个可见跳过点」vs
-//	⇒⇒⇒ ⇒ 「本包台账要求 ≥5 个可见跳过点且与实物逐条相符」。
-//	⇒⇒⇒ ⇒ 本轮**显式选后者**（台账绿 = CI 绿）：给 6 个 PG 用例在**体内**
-//	⇒⇒⇒ ⇒ 补一条同义跳过（helper 里那条保留为运行时保证）⇒⇒⇒ ⇒
-//	⇒⇒⇒ ⇒ ⇒ 于是全仓回到 §936 时的读数（194 / 基线 194 / 11 个包）。
-//	⇒⇒⇒ ⇒ ⚠ §940.7 那句「notes 包的跳过点归零 ⇒ 基线与实测第一次逐字相等」
-//	⇒⇒⇒ ⇒ ⇒ 因此**撤回**（它当时是真的，但与本包台账的要求互斥）。
-//
-//	⚠ 2026-10-20（§940）：**删掉** `./internal/notes` 那一条（6 → 无条目）。
-//
-//	这不是**放宽**门禁，而是**按本门自己的规则清理一条过期条目**：
-//	本门规定「基线里有、现在整个包都没了 ⇒ 条目过期 ⇒ 必须删」（见下方
-//	stale 检查）⇒ ⇒ §940 把 notes 包的 PG 夹具接上了**真 PG**（隔离 schema）
-//	⇒ ⇒ 那 6 处 `if pool == nil { t.Skip(...) }` 是**已成死分支**的跳过点
-//	⇒ ⇒⇒ （`getTestPool` 原本**恒返回 nil** ⇒ ⇒ **每一个** PG 用例都
-//	⇒ ⇒⇒ **无条件 SKIP** ⇒ ⇒⇒ 那不是「环境没配」，而是「**这条用例在任何
-//	⇒ ⇒⇒ 环境下都不会跑**」）⇒ ⇒⇒ 删掉它们 ⇒ ⇒ 本包的用例**第一次真跑**
-//	⇒ ⇒⇒ ⇒ 实测：原 6 条 `TestStore_*` 从「恒 skip」变成「真跑且全绿」。
-//
-//	⇒ ⇒ **删条目之后，notes 包的棘轮反而更紧**：基线里没有它 ⇒ ⇒ 将来它
-//	⇒ ⇒ 再出现任何跳过点，都会被判成「该包不在基线里，属**新增**」⇒ ⇒ ⇒
-//	⇒ ⇒ ⇒ 而**不是**悄悄多过去。⇒ ⇒⇒ ⇒ 这条负控由 §940 的变异 **M6** 钉住
-//	⇒ ⇒⇒ （往 notes 包的一个测试函数里塞一个 `t.Skip(` ⇒ ⇒ 这道门必须红）。
-//
-//	⚠⚠ **顺手记下一个本门的盲区**（**本节没有修**，登记在此）：
-//	census 只数**测试函数体内**的 `t.Skip(`（`testFuncRe` 匹配 `func TestXxx`）
-//	⇒ ⇒ **helper 里的 `t.Skip(` 它看不见** ⇒ ⇒ notes 包现在把「没有 DSN ⇒
-//	⇒ ⇒ 跳过」放在 `newNotesTestPool` 这个 **helper** 里 ⇒ ⇒ ⇒ **运行时
-//	⇒ ⇒ 仍会 skip**（与 flashcards / calendar 同一房规）⇒ ⇒⇒ 但 census 的
-//	⇒ ⇒ 读数是 **0** ⇒ ⇒ ⇒ ⇒ 「notes 包 0 跳过点」**不等于**「notes 包永不
-//	⇒ ⇒ ⇒ 跳过」。⇒ ⇒⇒ ⇒ 要不要把 census 扩到 helper 层 ⇒ ⇒ 那会改动
-//	⇒ ⇒ ⇒ **别的包**的读数与基线 ⇒ ⇒ ⇒ 属**另一件独立的工作** ⇒ ⇒⇒⇒ 本节
-//	⇒ ⇒ ⇒ **不代拍**（也不在本节范围内）。
+//	⇒ 本表按新口径重算：全仓 **276** 个跳过点 / 30 个包。
 var SKIP_POINT_BASELINE = map[string]int{
-
-	"./internal/adapter/disk":          1,
-	"./internal/agent":                 1,
-	"./internal/config":                1,
-	"./internal/email":                 118,
-	"./internal/flashcards":            1,
-	"./internal/livetest":              4,
-	"./internal/notes":                 6,
-	"./internal/scheduledtask":         2,
-	"./internal/server":                38,
-	"./internal/skipaudit":             22,
-	"./internal/stt":                   15,
-	"./third_party/identity-go/shadow": 2,
+	"./internal/adapter/disk":            2,
+	"./internal/agent":                   3,
+	"./internal/agentbridge":             1,
+	"./internal/auth":                    1,
+	"./internal/calendar":                1,
+	"./internal/chatagent":               6,
+	"./internal/config":                  3,
+	"./internal/email":                   148,
+	"./internal/finance":                 3,
+	"./internal/flashcards":              3,
+	"./internal/identity":                1,
+	"./internal/learning":                1,
+	"./internal/lobster":                 1,
+	"./internal/marketplace":             1,
+	"./internal/meeting":                 1,
+	"./internal/notes":                   7,
+	"./internal/notifycenter":            1,
+	"./internal/outbound":                1,
+	"./internal/pgmigrate":               1,
+	"./internal/pgtime":                  1,
+	"./internal/quota":                   1,
+	"./internal/redclaw":                 1,
+	"./internal/rss":                     1,
+	"./internal/scheduledtask":           5,
+	"./internal/scheduledtask/executors": 2,
+	"./internal/server":                  57,
+	"./internal/stt":                     15,
+	"./internal/task":                    5,
+	"./internal/vault":                   1,
+	"./internal/wecom":                   1,
 }
 
 // censusFloor 是量具自证用的下限：抽取器若坏掉，读数会掉到接近 0。
-// 取当前基线的约一半（193 → 80），既能抓住「突然扫不到」也能抓住大规模丢失。
-const censusFloor = 80
+// 取当前基线的约一半（276 → 130），既能抓住「突然扫不到」也能抓住大规模丢失。
+const censusFloor = 130
 
-// packagesWithDetailedLedger 记「哪些包有逐条台账」。
-// ⛔ 当前只有 internal/stt。这张表**故意很小**，它的价值就是让人一眼看出
-// 缺口有多大——写全仓级的措辞、只有十分之一的覆盖面，是 §775 记的那个病。
+// packagesWithDetailedLedger 记「哪些包有逐条台账」，值是台账文件名。
+//
+// ⛔ 这张表**必须**与「有跳过点的包集合」**双向**精确：
+//
+//	登记表里有而实物没有 ⇒ 登记在骗人；
+//	实物有而登记表没有 ⇒ 那包的跳过点没人登记。
+//	§467 的登记表是可以被清空而无人发现的 —— 本门两个方向都钉。
 var packagesWithDetailedLedger = map[string]string{
-	"./internal/stt": "live_probe_skip_ledger_test.go（§467，双向精确匹配）",
+	"./internal/adapter/disk":            "skip_ledger_test.go",
+	"./internal/agent":                   "skip_ledger_test.go",
+	"./internal/agentbridge":             "skip_ledger_test.go",
+	"./internal/auth":                    "skip_ledger_test.go",
+	"./internal/calendar":                "skip_ledger_test.go",
+	"./internal/chatagent":               "skip_ledger_test.go",
+	"./internal/config":                  "skip_ledger_test.go",
+	"./internal/email":                   "skip_ledger_test.go",
+	"./internal/finance":                 "skip_ledger_test.go",
+	"./internal/flashcards":              "skip_ledger_test.go",
+	"./internal/identity":                "skip_ledger_test.go",
+	"./internal/learning":                "skip_ledger_test.go",
+	"./internal/lobster":                 "skip_ledger_test.go",
+	"./internal/marketplace":             "skip_ledger_test.go",
+	"./internal/meeting":                 "skip_ledger_test.go",
+	"./internal/notes":                   "skip_ledger_test.go",
+	"./internal/notifycenter":            "skip_ledger_test.go",
+	"./internal/outbound":                "skip_ledger_test.go",
+	"./internal/pgmigrate":               "skip_ledger_test.go",
+	"./internal/pgtime":                  "skip_ledger_test.go",
+	"./internal/quota":                   "skip_ledger_test.go",
+	"./internal/redclaw":                 "skip_ledger_test.go",
+	"./internal/rss":                     "skip_ledger_test.go",
+	"./internal/scheduledtask":           "skip_ledger_test.go",
+	"./internal/scheduledtask/executors": "skip_ledger_test.go",
+	"./internal/server":                  "skip_ledger_test.go",
+	"./internal/stt":                     "live_probe_skip_ledger_test.go",
+	"./internal/task":                    "skip_ledger_test.go",
+	"./internal/vault":                   "skip_ledger_test.go",
+	"./internal/wecom":                   "skip_ledger_test.go",
 }
 
 // ── 工具 ─────────────────────────────────────────────────────────────
@@ -162,142 +186,20 @@ func moduleRoot(t *testing.T) string {
 	return ""
 }
 
-// stripGoComments 剥掉行注释与块注释，**但保留字符串/原始字符串字面量**。
-// ⚠️ 保留字面量是刻意的（§464 的教训）：本文件的负控样本就是原始字符串里的
+// census 返回「包路径 → 去重后的跳过点数」与「包路径 → owner 数」。
 //
-//	`t.Skip(`，若连字面量一起抹掉，样本会被当成「抽取器没抓到」而误报。
-func stripGoComments(src string) string {
-	var b strings.Builder
-	b.Grow(len(src))
-	for i := 0; i < len(src); {
-		switch {
-		case src[i] == '/' && i+1 < len(src) && src[i+1] == '/':
-			for i < len(src) && src[i] != '\n' {
-				i++
-			}
-		case src[i] == '/' && i+1 < len(src) && src[i+1] == '*':
-			i += 2
-			for i+1 < len(src) && !(src[i] == '*' && src[i+1] == '/') {
-				i++
-			}
-			i += 2
-		case src[i] == '`':
-			b.WriteByte(src[i])
-			i++
-			for i < len(src) && src[i] != '`' {
-				b.WriteByte(src[i])
-				i++
-			}
-			if i < len(src) {
-				b.WriteByte(src[i])
-				i++
-			}
-		case src[i] == '"' || src[i] == '\'':
-			q := src[i]
-			b.WriteByte(src[i])
-			i++
-			for i < len(src) && src[i] != q {
-				if src[i] == '\\' && i+1 < len(src) {
-					b.WriteByte(src[i])
-					i++
-				}
-				b.WriteByte(src[i])
-				i++
-			}
-			if i < len(src) {
-				b.WriteByte(src[i])
-				i++
-			}
-		default:
-			b.WriteByte(src[i])
-			i++
-		}
+// ⚠ 与 `internal/skipaudit` 的台账口径**同源**（同一份 ScanModule），
+//
+//	否则普查与台账会各说各话 —— 那正是「两把尺子量同一件事」的经典事故。
+//
+//	⚠ 而交叉门（scripts/audit-skip-runtime.mjs）也调同一份 ScanModule
+//	⇒ 普查、逐条台账、交叉门**三处同源**。
+func census(root string) (map[string]int, map[string]int, error) {
+	scan, err := skipaudit.ScanModule(root)
+	if err != nil {
+		return nil, nil, err
 	}
-	return b.String()
-}
-
-var testFuncRe = regexp.MustCompile(`func\s+(Test[A-Za-z0-9_]*)\s*\(\s*\w+\s+\*testing\.T`)
-
-// walkTestFiles 递归收集 module root 下所有 *_test.go。
-func walkTestFiles(root string) []string {
-	var out []string
-	_ = filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
-		if err != nil {
-			return nil
-		}
-		if info.IsDir() {
-			switch info.Name() {
-			case "vendor", "node_modules", ".git":
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if strings.HasSuffix(p, "_test.go") {
-			out = append(out, p)
-		}
-		return nil
-	})
-	sort.Strings(out)
-	return out
-}
-
-// census 返回「包路径 → t.Skip( 点数」。
-// key 形如 "./internal/email"，**不含行号**（见文件头纪律②）。
-func census(root, selfName string) (map[string]int, int, error) {
-	perPkg := map[string]int{}
-	files := 0
-	for _, f := range walkTestFiles(root) {
-		if filepath.Base(f) == selfName {
-			continue // 本文件自身：负控样本里的 t.Skip( 不是真跳过点
-		}
-		raw, err := os.ReadFile(f)
-		if err != nil {
-			return nil, 0, err
-		}
-		files++
-		code := stripGoComments(string(raw))
-		dir := filepath.Dir(f)
-		rel, err := filepath.Rel(root, dir)
-		if err != nil {
-			return nil, 0, err
-		}
-		pkg := "./" + filepath.ToSlash(rel)
-
-		locs := testFuncRe.FindAllStringIndex(code, -1)
-		for _, loc := range locs {
-			open := strings.Index(code[loc[1]:], "{")
-			if open < 0 {
-				continue
-			}
-			open += loc[1]
-			depth, end := 0, -1
-			for i := open; i < len(code); i++ {
-				switch code[i] {
-				case '{':
-					depth++
-				case '}':
-					depth--
-					if depth == 0 {
-						end = i
-					}
-				}
-				if end >= 0 {
-					break
-				}
-			}
-			if end < 0 {
-				continue
-			}
-			if n := strings.Count(code[open:end], "t.Skip("); n > 0 {
-				perPkg[pkg] += n
-			}
-		}
-	}
-	total := 0
-	for _, n := range perPkg {
-		total += n
-	}
-	return perPkg, total, nil
+	return scan.Sites(), scan.OwnerCounts(), nil
 }
 
 func sortedKeys[T any](m map[string]T) []string {
@@ -311,29 +213,58 @@ func sortedKeys[T any](m map[string]T) []string {
 
 // ── 判据 ─────────────────────────────────────────────────────────────
 
-// ① 量具自证：抽取器必须真的能看见 t.Skip(。
+// ① 量具自证：抽取器必须真的能看见东西。
 // 这一条不是走过场——§467 的教训是「台账是空的」与「抽取器坏了」读数一样。
+//
+// ⚠ 2026-10-21 追加了两条**针对回退事故**的自证：
+//
+//	· 读数必须 ≥ censusFloor（回退成手写扫描器时读数会掉，但不一定掉到 floor 以下
+//	  ⇒ 所以还要下一条「点总数对账」）；
+//	· 普查到的包数必须 ≥ 基线里的包数（回退版会把 30 个包数成 11 个）。
 func TestSkipCensus_量具自证(t *testing.T) {
-	if _, err := os.Stat(filepath.Join(moduleRoot(t), "go.mod")); err != nil {
+	root := moduleRoot(t)
+	if _, err := os.Stat(filepath.Join(root, "go.mod")); err != nil {
 		t.Fatalf("moduleRoot 定位失败: %v", err)
 	}
-	perPkg, total, err := census(moduleRoot(t), "skip_census_test.go")
+	perPkg, owners, err := census(root)
 	if err != nil {
 		t.Fatalf("普查失败: %v", err)
 	}
+	total := 0
+	for _, n := range perPkg {
+		total += n
+	}
 	if total < censusFloor {
-		t.Fatalf("全仓 t.Skip( 点只有 %d 个，低于量具下限 %d ⇒ 抽取器大概率坏了，"+
+		t.Fatalf("全仓跳过点只有 %d 个，低于量具下限 %d ⇒ 抽取器大概率坏了，"+
 			"此时下面那道棘轮门会因为「读数为 0」而恒绿。实测曾有 %d 个。",
 			total, censusFloor, sumBaseline())
 	}
-	if len(perPkg) < 5 {
-		t.Fatalf("只扫到 %d 个包，低于下限 5 ⇒ 目录遍历坏了", len(perPkg))
+	if len(perPkg) < len(SKIP_POINT_BASELINE) {
+		t.Fatalf("只扫到 %d 个有跳过点的包，基线里有 %d 个 ⇒ 遍历或抽取坏了\n"+
+			"  ⚠ 2026-10-21 上游曾把这道门回退成手写扫描器：它只认测试函数体里的 t.Skip(，"+
+			"于是 30 个包被数成 11 个，而门**照样是绿的**。",
+			len(perPkg), len(SKIP_POINT_BASELINE))
 	}
-	// stt 是唯一有台账的包，必须被扫到（它是最容易因包名写错而消失的那个）
+	// stt 是 §467 的第一份台账，必须被扫到（它是最容易因包名写错而消失的那个）
 	if perPkg["./internal/stt"] == 0 {
-		t.Fatalf("internal/stt 的 t.Skip( 点读数为 0，但基线里它是 %d —— 遍历或抽取坏了",
+		t.Fatalf("internal/stt 的跳过点读数为 0，但基线里它是 %d —— 遍历或抽取坏了",
 			SKIP_POINT_BASELINE["./internal/stt"])
 	}
+	// email 是最大的一处（148 点 / 96 个 owner），它消失 ⇒ 抽取器一定坏了
+	if perPkg["./internal/email"] != SKIP_POINT_BASELINE["./internal/email"] {
+		t.Fatalf("internal/email 的跳过点读数是 %d，基线是 %d —— 抽取器与基线口径不一致",
+			perPkg["./internal/email"], SKIP_POINT_BASELINE["./internal/email"])
+	}
+	// ⚠ 点总数对账：把各包读数加起来，必须与基线之和**逐字相等**。
+	//   回退成手写扫描器时，email 会被数成 118（真实 148）⇒ 这一条立刻红。
+	if total != sumBaseline() {
+		t.Errorf("全仓跳过点合计 %d ≠ 基线合计 %d ⇒ 口径漂了\n"+
+			"  ⚠ 2026-10-21 上游回退事件里，手写扫描器把 internal/skipaudit 自己的负控样本\n"+
+			"    数成了 22 个跳过点、把 internal/email 数少了 30 个 —— 而门当时是绿的。",
+			total, sumBaseline())
+	}
+	t.Logf("全仓跳过点：%d（基线 %d），分布在 %d 个包；owner 合计 %d",
+		total, sumBaseline(), len(perPkg), sumOwners(owners))
 }
 
 func sumBaseline() int {
@@ -344,48 +275,55 @@ func sumBaseline() int {
 	return n
 }
 
-// ② ★ 棘轮：任何包的 t.Skip( 点数都不得**超过**基线。
-// 只拦新增，不拦存量——存量 193 个不是一天能清的债，硬拦等于这道门从写下
-// 那天起就永远红（那不是门，是装饰；见 scripts/lib/baseline-ratchet.mjs）。
+func sumOwners(owners map[string]int) int {
+	n := 0
+	for _, v := range owners {
+		n += v
+	}
+	return n
+}
+
+// ② ★ 棘轮：任何包的跳过点数都不得**超过**基线。
+//
+// ⚠ 口径变了以后（2026-10-21），这条门**比之前紧得多**：
+//
+//	旧口径（只看测试函数体）下，在 helper 里加一个 `t.Skip(` 是**不会**红的 ——
+//	因为普查根本看不见 helper。新口径下它是**看得见的** ⇒ 棘轮真的开始拦了。
 func TestSkipCensus_新增跳过点必须被登记(t *testing.T) {
-	perPkg, total, err := census(moduleRoot(t), "skip_census_test.go")
+	root := moduleRoot(t)
+	perPkg, owners, err := census(root)
 	if err != nil {
 		t.Fatalf("普查失败: %v", err)
 	}
 
-	// 报一份完整读数：顺带把「哪个包有台账」摊开，让 §775 的缺口在测试输出里可见
-	t.Logf("全仓 t.Skip( 点：%d（基线 %d），分布在 %d 个包", total, sumBaseline(), len(perPkg))
 	detailed := 0
+	covered := 0
 	for _, pkg := range sortedKeys(perPkg) {
 		mark := "  "
 		if _, ok := packagesWithDetailedLedger[pkg]; ok {
 			mark = "✅"
 			detailed++
+			covered += perPkg[pkg]
 		}
-		t.Logf("  %s %-40s %3d / 基线 %3d", mark, pkg, perPkg[pkg], SKIP_POINT_BASELINE[pkg])
-	}
-	covered := 0
-	for pkg, n := range perPkg {
-		if _, ok := packagesWithDetailedLedger[pkg]; ok {
-			covered += n
-		}
+		t.Logf("  %s %-40s %3d 点 / %3d owner / 基线 %3d",
+			mark, pkg, perPkg[pkg], owners[pkg], SKIP_POINT_BASELINE[pkg])
 	}
 	pct := 0
+	total := sumBaseline()
 	if total > 0 {
 		pct = covered * 100 / total
 	}
-	t.Logf("有逐条台账的包：%d/%d，覆盖 %d/%d 个跳过点（%.1f%%）—— 其余是「只计数未登记」",
+	t.Logf("有逐条台账的包：%d/%d，覆盖 %d/%d 个跳过点（%.1f%%）",
 		detailed, len(perPkg), covered, total, float64(pct))
 
 	var grew []string
 	for _, pkg := range sortedKeys(perPkg) {
-		// ⚠️ 基线里没有的包 ⇒ 是新包，跳过点数必然 ≥1 ⇒ 直接算「新增」
 		base, known := SKIP_POINT_BASELINE[pkg]
 		if perPkg[pkg] > base {
 			if !known {
-				grew = append(grew, strconv.Itoa(perPkg[pkg])+" "+pkg+"（该包不在基线里，属新增）")
+				grew = append(grew, fmt.Sprintf("%d %s（该包不在基线里，属新增）", perPkg[pkg], pkg))
 			} else {
-				grew = append(grew, strconv.Itoa(perPkg[pkg])+"/基线"+strconv.Itoa(base)+" "+pkg)
+				grew = append(grew, fmt.Sprintf("%d/基线%d %s", perPkg[pkg], base, pkg))
 			}
 		}
 	}
@@ -398,7 +336,7 @@ func TestSkipCensus_新增跳过点必须被登记(t *testing.T) {
 	}
 
 	if len(grew) > 0 {
-		t.Errorf("以下包的 t.Skip( 点数超过基线：\n    %s\n"+
+		t.Errorf("以下包的跳过点数超过基线：\n    %s\n"+
 			"  ⇒ 新增跳过必须被 conscious 地登记（补台账或写明豁免理由），否则「绿色读数」"+
 			"又会把「这一段压根没跑」盖住——§467 建这道门就是为了防这个。",
 			strings.Join(grew, "\n    "))
@@ -410,24 +348,89 @@ func TestSkipCensus_新增跳过点必须被登记(t *testing.T) {
 	}
 }
 
-// ③ 台账登记表自证：有台账的包必须真的登记了，且登记的都真实存在。
-// 没有它，packagesWithDetailedLedger 可以被清空而无人发现——
-// 而「谁有台账」正是这道门要暴露的核心信息。
+// ③ 台账登记表自证：**双向**精确匹配。
+//
+//	§467 的登记表是可以被清空而无人发现的（那正是「全仓级措辞、十分之一覆盖」的病）。
+//	⇒ 这里两个方向都钉：
+//	  · 登记表里有、实物里没有（登记在骗人，或台账过期）；
+//	  · 实物里有、登记表里没有（那包的跳过点**没人登记**）。
 func TestSkipCensus_台账登记表自证(t *testing.T) {
-	if len(packagesWithDetailedLedger) == 0 {
-		t.Fatal("packagesWithDetailedLedger 被清空了 ⇒ 本门失去存在意义：" +
-			"它的全部价值就是暴露「只有 10% 的包有台账」这个事实")
-	}
-	perPkg, _, err := census(moduleRoot(t), "skip_census_test.go")
+	root := moduleRoot(t)
+	perPkg, _, err := census(root)
 	if err != nil {
 		t.Fatalf("普查失败: %v", err)
 	}
+	if len(packagesWithDetailedLedger) == 0 {
+		t.Fatal("packagesWithDetailedLedger 被清空了 ⇒ 本门失去存在意义")
+	}
+	// 方向一：登记表 ⊆ 实物，且登记的文件必须真的存在
 	for _, pkg := range sortedKeys(packagesWithDetailedLedger) {
 		if perPkg[pkg] == 0 {
-			t.Errorf("登记表声称 %s 有逐条台账，但普查到它的 t.Skip( 点为 0", pkg)
+			t.Errorf("登记表声称 %s 有逐条台账，但普查到它的跳过点为 0", pkg)
 		}
 		if _, known := SKIP_POINT_BASELINE[pkg]; !known {
 			t.Errorf("登记表列了 %s，但它不在 SKIP_POINT_BASELINE 里 ⇒ 两张表会互相打架", pkg)
 		}
+		rel := strings.TrimPrefix(pkg, "./")
+		file := filepath.Join(root, filepath.FromSlash(rel), packagesWithDetailedLedger[pkg])
+		if _, err := os.Stat(file); err != nil {
+			t.Errorf("登记表声称 %s 的台账是 %s，但该文件不存在：%v", pkg, packagesWithDetailedLedger[pkg], err)
+		}
 	}
+	// 方向二：实物 ⊆ 登记表（**新加的**）
+	for _, pkg := range sortedKeys(perPkg) {
+		if _, ok := packagesWithDetailedLedger[pkg]; !ok {
+			t.Errorf("%s 有 %d 个跳过点，却没有逐条台账 ⇒ 这些跳过点没人登记\n"+
+				"  ⇒ 请为该包建 skip_ledger_test.go（照 internal/skipaudit 的台账纪律）并登记到这里。",
+				pkg, perPkg[pkg])
+		}
+	}
+}
+
+// ④ ⚠ 嵌套 module 的边界自证。
+//
+//	`third_party/identity-go` 是独立 module（`github.com/kaixuan/identity-go`），
+//	主仓 `go test ./...` **不会**跑它 ⇒ 把它算进主仓分母是虚增覆盖率。
+//
+//	⚠ 它的已知缺口（**不在本门范围内**，登记在此）：那个 module **没有任何 CI 覆盖**
+//	—— 它自己的 2 个跳过点至今没人看。
+func TestSkipCensus_嵌套module不计入主仓分母(t *testing.T) {
+	root := moduleRoot(t)
+	perPkg, _, err := census(root)
+	if err != nil {
+		t.Fatalf("普查失败: %v", err)
+	}
+	for pkg := range perPkg {
+		if strings.Contains(pkg, "third_party/") {
+			t.Errorf("普查把嵌套 module 的包 %s 算进了主仓分母 ⇒ 覆盖率虚增", pkg)
+		}
+	}
+	// 而它**确实存在**（否则这条断言会恒真）：那个 module 里确实有跳过点
+	nested := filepath.Join(root, "third_party", "identity-go")
+	if _, err := os.Stat(filepath.Join(nested, "go.mod")); err != nil {
+		// ⚠ 这里**故意用 Fatal 而不是 Skip**：
+		//   本文件一旦含跳过调用，普查就会把 testaudit 自己算成一个「有跳过点的包」
+		//   ⇒ 而那正是「门禁文件自己制造噪声」的形态。
+		//   ⇒ 同时：若哪天 third_party/identity-go 被移出仓里，这条断言就失去被检对象
+		//   ⇒ 那时**必须**改这道门（而不是让它静默通过）。
+		t.Fatalf("third_party/identity-go 已不在仓里（%v）⇒ 本门的前提不成立，请改这道门", err)
+	}
+	found := false
+	_ = filepath.Walk(nested, func(p string, info os.FileInfo, err error) error {
+		if err != nil || info == nil || info.IsDir() {
+			return nil
+		}
+		if strings.HasSuffix(p, "_test.go") {
+			raw, err := os.ReadFile(p)
+			if err == nil && strings.Contains(string(raw), "t.Skip(") {
+				found = true
+			}
+		}
+		return nil
+	})
+	if !found {
+		t.Fatal("third_party/identity-go 里已经找不到 t.Skip( ⇒ 本断言失去被检对象（恒真）")
+	}
+	t.Log("third_party/identity-go 是独立 module，不计入主仓分母；" +
+		"⚠ 它的 2 个跳过点仍无 CI 覆盖（遗留，见 handoff）")
 }

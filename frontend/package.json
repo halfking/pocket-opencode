@@ -75,7 +75,8 @@
     "check:no-hardcoded-paths": "node ../scripts/check-no-hardcoded-abs-paths.mjs --selftest && node ../scripts/check-no-hardcoded-abs-paths.mjs",
     "check:marketplace-fix": "node ../scripts/verify-marketplace-fix.mjs",
     "check:card-deck-labels": "node ../scripts/verify-card-deck-labels.mjs",
-    "check:router-parity": "node ../scripts/check-router-runtime-parity.mjs --selftest && node ../scripts/check-router-runtime-parity.mjs"
+    "check:router-parity": "node ../scripts/check-router-runtime-parity.mjs --selftest && node ../scripts/check-router-runtime-parity.mjs",
+ "check:skip-runtime": "node ../scripts/audit-skip-runtime.mjs --selftest && node ../scripts/audit-skip-runtime.mjs"
   },
   "dependencies": {
     "@capacitor-community/sqlite": "^8.1.0",

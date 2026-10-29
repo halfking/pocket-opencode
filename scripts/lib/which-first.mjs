@@ -79,3 +79,31 @@ export function gofmtCandidates() {
     process.platform === 'win32' ? 'C:/Program Files/Go/bin/gofmt.exe' : null,
   ]
 }
+
+/**
+ * `go` 命令的候选位置。
+ *
+ * ⚠ 为什么要单独一份（而不是复用 gofmtCandidates）：
+ *   `go` 与 `gofmt` 的版本**必须**一致（CI 是 setup-go + go-version-file:
+ *   backend/go.mod），而两者的安装位置通常同源但**候选顺序不同**：
+ *   `go` 要的是**可执行文件**，不是 gofmt。
+ *
+ * 顺序说明：`GO` → `POCKET_GO`（与本仓 `POCKET_*` 覆盖惯例一致）
+ * → PATH → GOROOT → `$HOME/go/bin` → `$HOME/sdk/go/bin` → 系统安装位置。
+ * 最后保留裸命令名，使 PATH 上有 go 时行为与从前完全一致。
+ */
+export function goCandidates() {
+  const exe = process.platform === 'win32' ? 'go.exe' : 'go'
+  const goroot = process.env.GOROOT
+  return [
+    process.env.GO,
+    process.env.POCKET_GO,
+    exe,
+    goroot && `${goroot}/bin/${exe}`,
+    `${homedir()}/go/bin/${exe}`,
+    `${homedir()}/sdk/go/bin/${exe}`,
+    '/usr/local/go/bin/' + exe,
+    '/opt/homebrew/bin/' + exe,
+    process.platform === 'win32' ? 'C:/Program Files/Go/bin/go.exe' : null,
+  ]
+}

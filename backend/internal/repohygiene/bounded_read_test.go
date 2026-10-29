@@ -793,16 +793,18 @@ func TestS952CensusCountsArePinned(t *testing.T) {
 	//   （http.MaxBytesReader ⇒ 有界）：新增的
 	//   POST /api/tasks/{id}/sessions/{sid}/message
 	//   （companion_task_session.go#handleTaskSessionMessage）。
+	//2026-10-30：+1 —— workspace membership binding 的签发请求体解码。
+	// （http.MaxBytesReader ⇒ 有界，server_workspace_binding.go#handleWorkspaceBindingIssue）。
 	//   ⇒ 形态 decode +1、来源 req +1、有界 +1；**无界处仍然是台账里那 3 条**。
-	if len(sites) != 267 {
-		t.Errorf("§952 普查到 %d 处「读进内存」的调用点（期望 267）\n"+
+	if len(sites) != 268 {
+		t.Errorf("§952 普查到 %d 处「读进内存」的调用点（期望268）\n"+
 			"⇒ 绝对条数是**量具有牙**的证据：量具整个失效时这个数会变 ⇒⇒⇒ "+
 			"⇒ 若这一条变了，请先确认是「代码真的多了/少了读点」还是「量具瞎了」",
 			len(sites))
 	}
 	want := map[string]int{
 		s952FormReadAll:  53,
-		s952FormDecode:   143,
+		s952FormDecode:   144,
 		s952FormCopy:     3,
 		s952FormSizedAll: 16,
 		s952FormSizedSnp: 17,
@@ -815,7 +817,7 @@ func TestS952CensusCountsArePinned(t *testing.T) {
 	}
 	wantSrc := map[string]int{
 		s952SrcResp:  123,
-		s952SrcReq:   113,
+		s952SrcReq:   114,
 		s952SrcMem:   8,
 		s952SrcOther: 23,
 	}
@@ -824,8 +826,8 @@ func TestS952CensusCountsArePinned(t *testing.T) {
 			t.Errorf("来源 %s 扫到 %d 处（期望 %d）", src, bySrc[src], n)
 		}
 	}
-	if bounded != 264 {
-		t.Errorf("有界 %d 处（期望 264）⇒⇒⇒ 无界处应恰好是台账里的 3 条", bounded)
+	if bounded != 265 {
+		t.Errorf("有界 %d 处（期望265）⇒⇒⇒ 无界处应恰好是台账里的 3 条", bounded)
 	}
 }
 
