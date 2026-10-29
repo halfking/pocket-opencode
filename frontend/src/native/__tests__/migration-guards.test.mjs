@@ -65,9 +65,11 @@ function columnLoops(src) {
 // §898：新增 runNoteVectorsV1Migration（向量表加 chunks 列）⇒ 8 → 9。
 // 2026-10-29：新增 runConfigOwnershipV1Migration + runConfigOwnershipV1Rebuild
 //   （配置表归属列 + 带归属主键重建）⇒ 9 → 10。
+// 2026-10-29（会议归属切片）：新增 runMeetingOwnershipV1Migration
+//   （会议/录音/待办/声纹四张表的归属列 + 带归属主键重建）⇒ 10 → 11。
 // ⚠ 这条是「前提自证」：它保证下面的扫描**扫到了全部**迁移方法，
 //   数字必须与源码同步 —— 少写一个数 ⇒ 下面的判据可能全在「没扫到」上假绿。
-const EXPECTED_METHODS = 10
+const EXPECTED_METHODS = 11
 
 test('前提自证·扫到的方法数与源码一致（否则下面几条可能全在「没扫到」上假绿）', () => {
   const methods = migrationMethods(SRC)
@@ -80,7 +82,8 @@ test('前提自证·扫到的方法数与源码一致（否则下面几条可能
   const arrays = [...new Set(columnLoops(SRC).map((l) => l.array))]
   // §898：新增 NOTE_VECTORS_V1_COLUMNS（向量表加 chunks 列）⇒ 8 → 9。
   // 2026-10-29：新增 CONFIG_OWNERSHIP_V1_COLUMNS（配置表归属列）⇒ 9 → 10。
-  assert.equal(arrays.length, 10, `扫到 ${arrays.length} 个 *_COLUMNS 数组，期望 10 个：${arrays.join(', ')}`)
+  // 2026-10-29（会议归属切片）：新增 MEETING_OWNERSHIP_V1_COLUMNS ⇒ 10 → 11。
+  assert.equal(arrays.length, 11, `扫到 ${arrays.length} 个 *_COLUMNS 数组，期望 11 个：${arrays.join(', ')}`)
 })
 
 test('前提自证·分类器能区分「有守卫」与「无守卫」（在**合成输入**上自证，不依赖仓里还有缺陷）', () => {

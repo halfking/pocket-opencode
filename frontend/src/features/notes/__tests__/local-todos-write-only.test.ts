@@ -29,7 +29,14 @@ function collect(dir: string, out: string[] = []): string[] {
     const p = path.join(dir, e.name)
     if (e.isDirectory()) {
       collect(p, out)
-    } else if (/\.(ts|vue)$/.test(e.name) && !/\.(test|spec)\./.test(e.name) && !e.name.endsWith('.d.ts')) {
+    } else if (
+      /\.(ts|vue)$/.test(e.name) && !/\.(test|spec)\./.test(e.name) && !e.name.endsWith('.d.ts') &&
+      // ⚠ 2026-10-29：排除 `native/local-db.ts` —— 它的「INSERT INTO local_todos」
+      //   是**归属迁移的一次性搬运语句**（旧行搬进带归属的新表），
+      //   不是**业务写入方**。本门要数的是「谁往 local_todos 写业务数据」，
+      //   把迁移算进去会让门永远多计一处 ⇒ 门失效。
+      !(path.relative(SRC, p) === path.join('native', 'local-db.ts'))
+    ) {
       out.push(p)
     }
   }
