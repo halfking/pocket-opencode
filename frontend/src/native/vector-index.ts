@@ -179,7 +179,7 @@ export class VectorIndex {
     const unusable: string[] = []
     let droppedSegments = 0
     for (const r of rows) {
-      const raw = new Float32Array(r.embedding)
+      const raw = blobToFloat32(r.embedding)
       const why = unusableRow(raw.length, r.dim)
       if (why) {
         unusable.push(`${r.note_id}(${why})`)
@@ -256,7 +256,7 @@ export class VectorIndex {
     operation?.assertCurrent()
     if (rows.length === 0) return null
     const r = rows[0]
-    const raw = new Float32Array(r.embedding)
+    const raw = blobToFloat32(r.embedding)
     // ⚠⚠ §904/D73：维度对不上的行**绝不能拿来做「复用」** ——
     //   它要么切不出段（复用 0 条），要么切出**错位**的一段（复用错向量）。
     //   按本函数既有的「没有可复用的」形态返回 ⇒ 调用方全部重嵌。
@@ -321,7 +321,14 @@ export class VectorIndex {
     const total = normalized.length * DIM
     const flat = new Float32Array(total)
     normalized.forEach((v, i) => flat.set(v.subarray(0, DIM), i * DIM))
-    const blob = new Uint8Array(flat.buffer, flat.byteOffset, flat.byteLength)
+    // ⚠⚠ 审计修复（2026-10-29）：这里原来传的是 `blob.buffer`（ArrayBuffer）。
+    //   Web 的 SQLite 驱动只接受 TypedArray 一类的**视图**，遇到 ArrayBuffer
+    //   直接报 `Wrong API use : tried to bind a value of an unknown type
+    //   ([object ArrayBuffer])` ⇒ Web 上语义索引**永远写不进去**。
+    //   原生驱动两者都收，但统一传视图最安全：
+    //   `new Uint8Array(flat.buffer)` 会复制一份（与 flat.byteOffset 无关），
+    //   字节内容与原 BLOB **逐字节相同** ⇒ 旧数据不需要迁移。
+    const blob = new Uint8Array(flat.buffer.slice(0))
 
     // ⚠ §899：哈希与向量**一一对应**；长度对不上就写空串（⇒ 下次一律重嵌，安全侧）。
     const hashText = hashes && hashes.length === normalized.length ? hashes.join(',') : ''
@@ -329,7 +336,7 @@ export class VectorIndex {
       `INSERT INTO local_note_vectors (note_id, embedding, dim, model, chunks, chunk_hashes, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(note_id) DO UPDATE SET embedding = EXCLUDED.embedding, dim = EXCLUDED.dim, model = EXCLUDED.model, chunks = EXCLUDED.chunks, chunk_hashes = EXCLUDED.chunk_hashes`,
-      [noteId, blob.buffer, DIM, model, normalized.length, hashText, Date.now()],
+      [noteId, blob, DIM, model, normalized.length, hashText, Date.now()],
     )
 
     // ⚠ §905：落库**不等**（上面的 db.run 已经完成了），但内存变更必须等
@@ -620,9 +627,23 @@ export function normalize(v: Float32Array): Float32Array {
 }
 
 /**
- * 把 ArrayBuffer（从 SQLite BLOB 读出）转 Float32Array。
+ * 把 SQLite BLOB 读出的字节转 Float32Array。
+ *
+ * ⚠⚠ 审计修复（2026-10-29）：不同驱动回读 BLOB 的形状**不一样** ——
+ *   原生 Capacitor 插件回 `ArrayBuffer`，Web 的 jeep-sqlite/SQL.js 回
+ *   `Uint8Array`。原实现直接 `new Float32Array(buf)`：传 `Uint8Array` 时
+ *   会被当成「类数组」逐元素拷贝，**字节数被砍成 4 倍**
+ *   （1536 维 ⇒ 读回来 384 维）⇒ 维度对不上 ⇒ 那一行被判不可用而
+ *   **静默丢弃**。
+ *   ⇒ 现在按「字节视图」统一处理：对齐到 4 字节边界后按小端 float32 读。
+ *
  * 处理字节序：SQLite BLOB 按 native（小端）存，TypedArray 直接读即可。
  */
-export function blobToFloat32(buf: ArrayBuffer): Float32Array {
-  return new Float32Array(buf)
+export function blobToFloat32(buf: ArrayBuffer | ArrayBufferView): Float32Array {
+  const bytes = ArrayBuffer.isView(buf)
+    ? new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength)
+    : new Uint8Array(buf)
+  const aligned = bytes.byteLength - (bytes.byteLength % 4)
+  // 复制一份，保证 Float32Array 的 4 字节对齐要求成立。
+  return new Float32Array(bytes.slice(0, aligned).buffer)
 }
