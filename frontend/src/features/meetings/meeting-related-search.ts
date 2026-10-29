@@ -8,6 +8,7 @@ import { mergeRecommendations } from './meeting-related'
 //   「主查 + 至多一次回落」的请求预算也钉在那个模块里。
 import { searchRelatedWeb as searchWikipedia } from './wikipedia-search.ts'
 import { readCachedModuleMode, recordSyncReportEntry } from '../../stores/syncPolicyStore.ts'
+import { captureMeetingOwnership, ownerScopeSql } from '../../native/meeting-ownership'
 
 export async function searchRelatedNotes(query: string, limit = 3, workspaceId = 'default'): Promise<RecommendItem[]> {
   const q = query.trim()
@@ -38,13 +39,16 @@ export async function searchRelatedMeetings(
   // 显式参数而不是隐式差异（§886 之后的第三份副本已并入此处）。
   const like = likePattern(q, 40)
   try {
-    const rows = await localDB.query<{ id: string; title: string | null; summary: string | null; topic: string | null }>(
+    const { db, owner } = captureMeetingOwnership(localDB)
+    const scope = ownerScopeSql(owner)
+    const rows = await db.query<{ id: string; title: string | null; summary: string | null; topic: string | null }>(
       `SELECT id, title, summary, topic FROM local_meetings
        WHERE deleted_at IS NULL AND IFNULL(archived_at, 0) = 0
          AND id != ?
+         AND ${scope.clause}
          AND (IFNULL(title,'') LIKE ? OR IFNULL(summary,'') LIKE ? OR IFNULL(topic,'') LIKE ?)
        ORDER BY started_at DESC LIMIT ?`,
-      [excludeId || '', like, like, like, limit],
+      [excludeId || '', ...scope.params, like, like, like, limit],
     )
     return rows.map((row, i) => ({
       type: 'knowledge' as const,

@@ -15,7 +15,7 @@
  *  3. **归属必须精确匹配**：userId 与 workspaceId 都要相同才算同一归属。
  */
 
-import { localDB } from './local-db'
+import type { localDB } from './local-db'
 
 /** 一行的归属。`null` 表示**归属未知**（历史行），不是「任何账号」。 */
 export interface MeetingOwner {
@@ -99,15 +99,36 @@ export function ownerFromColumns(userId: unknown, workspaceId: unknown): Meeting
  *
  * ⚠ 与 `captureRecordingDb()` 的区别：那个只给句柄；这里**同时**给出归属，
  *   因为会议表的写入必须把归属**写进行里**（不是过滤读）。
+ *
+ * ⚠ 为什么 `database` 是**参数**而不是本模块直接 import：
+ *   本模块是**纯模块**（零运行时依赖），与 `config-sync/ownership.ts` 同款。
+ *   若这里 `import { localDB } from './local-db'`，则每个用 esbuild 桩
+ *   测 `native/local-db` 的行为门都会**顺着这条链把 capacitor 真件拖进来**
+ *   （桩按 import 说明匹配，`'./local-db'` 与 `'../../native/local-db'`
+ *   是两个不同的说明 ⇒ 桩拦不住）⇒ 那些门在 `Could not resolve
+ *   "@capacitor-community/sqlite"` 上整体崩掉（实测：§87/§147/§153/§393
+ *   四组共 20 余条用例被 `cancelledByParent` 连带取消）。
+ *   ⇒ 由调用方把它自己那份（可被桩替换的）`localDB` 传进来。
  */
-export function captureMeetingOwnership(): {
+export function captureMeetingOwnership(database: typeof localDB): {
   db: ReturnType<typeof localDB.bindOperation>
   owner: MeetingOwner | null
 } {
-  const lease = localDB.captureOperation({ kind: 'local-edit' })
+  const lease = database.captureOperation({ kind: 'local-edit' })
   const principal = lease.owner.principal
   return {
-    db: localDB.bindOperation(lease),
+    db: database.bindOperation(lease),
     owner: principal ? { userId: principal.userId, workspaceId: principal.workspaceId } : null,
   }
+}
+
+/**
+ * 从**已绑定的操作句柄**取归属。
+ *
+ * ⚠ 为什么从句柄取而不是重新捕获租约：调用方已经持有句柄（它授权了这次写入）
+ *   ⇒ 归属必须与这**同一个**租约一致。若这里重新捕获，就可能出现
+ *   「句柄是 A 的、归属是 B 的」（切账号瞬间）。
+ */
+export function ownerOf(db: { readonly owner: MeetingOwner | null }): MeetingOwner | null {
+  return db.owner
 }

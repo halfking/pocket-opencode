@@ -5,6 +5,7 @@ import { meetingAccDispatchInput } from './meeting-page-actions'
 import { accHandoffInput, draftsFromActionItems, personShareText, type MeetingTodoDraft } from './meeting-todos'
 import { ensureTodoReminder, resolveTodoDue } from './meeting-due-reminder'
 import { dayKey, deviceTimeZone } from '../calendar/calendar-math.ts'
+import { captureMeetingOwnership, ownerColumnValues, ownerScopeSql } from '../../native/meeting-ownership'
 
 /**
  * 写入会议行动项。
@@ -26,10 +27,12 @@ import { dayKey, deviceTimeZone } from '../calendar/calendar-math.ts'
  * ⇒ 用 `=` 会让「没有会议 id」的那批永远查不到重复。
  */
 async function alreadyCreatedTodo(meetingId: string, title: string): Promise<boolean> {
-  const hit = await localDB.queryOne(
+  const { db, owner } = captureMeetingOwnership(localDB)
+  const scope = ownerScopeSql(owner)
+  const hit = await db.queryOne(
     `SELECT id FROM local_todos
-     WHERE meeting_id IS ? AND title = ? AND extracted_from_voice = 1`,
-    [meetingId, title],
+     WHERE meeting_id IS ? AND title = ? AND extracted_from_voice = 1 AND ${scope.clause}`,
+    [meetingId, title, ...scope.params],
   )
   return hit !== null && hit !== undefined
 }
@@ -52,6 +55,9 @@ export async function createMeetingTodos(
   //   §65 实测 glm-5.2 会把 due 填成「那之前」⇒ 解析失败 ⇒ 正好命中这一格。
   let unresolved = 0
   const now = Date.now()
+  // ⚠ 归属取自**同一个**操作租约 ⇒ 这条待办属于哪一代会话是原子的。
+  const { db, owner } = captureMeetingOwnership(localDB)
+  const [ownerUserId, ownerWorkspaceId] = ownerColumnValues(owner)
   for (const draft of drafts) {
     // ★§153 幂等：这个按钮**可以重复点**（会议详情页的「总结」），
     //   而旧实现每次新 id + 裸 INSERT ⇒ 同一条行动项与同一个时间点会被建两遍。
@@ -69,13 +75,15 @@ export async function createMeetingTodos(
     // 顺序在 INSERT 之前、且**不看** INSERT 是否成功 —— 用户听不清期限
     // 与这条待办能不能写进库是两件事，混起来会互相掩盖。
     if (draft.due && draft.due.trim() !== '' && dueAt === null) unresolved++
-    await localDB.run(
+    await db.run(
       `INSERT INTO local_todos
-       (id, note_id, title, description, status, priority, due_at, extracted_from_voice, meeting_id, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+       (id, note_id, title, description, status, priority, due_at, extracted_from_voice, meeting_id, created_at, updated_at,
+        owner_user_id, owner_workspace_id)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       [
         id, noteId, draft.text, draft.assignee ? `负责人：${draft.assignee}` : null,
         'pending', 'medium', dueAt ? dueAt.at : null, 1, meetingId, now, now,
+        ownerUserId, ownerWorkspaceId,
       ],
     )
     count++
@@ -97,9 +105,11 @@ export async function createMeetingTodos(
 }
 
 export async function listMeetingTodos(meetingId: string): Promise<MeetingTodoDraft[]> {
-  const rows = await localDB.query<{ title: string; description: string | null; due_at: number | null }>(
-    `SELECT title, description, due_at FROM local_todos WHERE meeting_id = ? ORDER BY created_at DESC`,
-    [meetingId],
+  const { db, owner } = captureMeetingOwnership(localDB)
+  const scope = ownerScopeSql(owner)
+  const rows = await db.query<{ title: string; description: string | null; due_at: number | null }>(
+    `SELECT title, description, due_at FROM local_todos WHERE meeting_id = ? AND ${scope.clause} ORDER BY created_at DESC`,
+    [meetingId, ...scope.params],
   )
   return rows.map((r) => ({
     text: r.title,

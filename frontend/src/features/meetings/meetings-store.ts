@@ -5,6 +5,7 @@ import { localDB } from '../../native/local-db'
 import { captureRecordingDb, type RecordingDb } from './recording-operation'
 import { utf8ByteLength } from '../../utils/text'
 import { shouldPersistTranscript, meetingListSql } from './meeting-transcript-cache.ts'
+import { captureMeetingOwnership, ownerColumnValues, ownerOf, ownerScopeSql } from '../../native/meeting-ownership'
 
 // 'refine-failed' = 精校**降级或被拦下**，显示的是原始转写（§17/§35）。
 // 它不能并进 'completed'：那会让「正常完成」与「精校失败」共用一个桶。
@@ -132,6 +133,11 @@ export async function createMeeting(input: {
   summarySkill?: string
 }): Promise<LocalMeeting> {
   const now = Date.now()
+  // ⚠ 归属取自**同一个**操作租约 ⇒ 这一行属于哪一代会话是原子的。
+  //   没有已验证会话（恢复出来的会话）⇒ 归属未知 ⇒ 这一行保持未认领：
+  //   任何账号都读不到，也永不上传（用户已确认的边界）。
+  const { db, owner } = captureMeetingOwnership(localDB)
+  const [ownerUserId, ownerWorkspaceId] = ownerColumnValues(owner)
   const m: LocalMeeting = {
     id: `meeting-${now}-${Math.random().toString(36).slice(2, 8)}`,
     title: input.title ?? null,
@@ -155,16 +161,16 @@ export async function createMeeting(input: {
     topic: input.topic ?? null,
     summarySkill: input.summarySkill ?? 'meeting-minutes',
   }
-  await localDB.run(
+  await db.run(
     `INSERT INTO local_meetings
      (id, title, location, participants, audio_path, duration_ms, transcript, summary,
       live_summary, refined_transcript, recommendations, note_id, status, started_at, created_at, session_id,
-      archived_at, tags, topic, summary_skill)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      archived_at, tags, topic, summary_skill, owner_user_id, owner_workspace_id)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     [
       m.id, m.title, m.location, JSON.stringify(m.participants), m.audioPath,
       m.durationMs, null, null, null, null, null, null, m.status, m.startedAt, m.createdAt, m.sessionId,
-      null, JSON.stringify(m.tags), m.topic, m.summarySkill,
+      null, JSON.stringify(m.tags), m.topic, m.summarySkill, ownerUserId, ownerWorkspaceId,
     ],
   )
   return m
@@ -176,26 +182,32 @@ export async function listMeetings(
 ): Promise<LocalMeeting[]> {
   const archived = opts?.archived === true
   const offset = opts?.offset ?? 0
+  const { db, owner } = captureMeetingOwnership(localDB)
+  const scope = ownerScopeSql(owner)
   // ⚠ §925：此前是 `SELECT *` ⇒ 每次列表都把每场会的**整场转写 + 整场精校稿**读出来
   //   （本地 SQLite 的一行本来就可能几百 KB ⇒ 30 场会议 = 1.45 MB，
   //     而这两列的唯一消费者只要 120 字的预览 ⇒ 界面要 ≈10.5 KB）。
   //   ⇒ 现在只取**有界片段**（`meetingListSql`），预览逐字不变。
   //   ⚠ 详情页走 `getMeeting`（`SELECT *`）⇒ 那里拿到的**仍是全文** ⇒ 不受影响。
-  const rows = await localDB.query<any>(meetingListSql(archived), [limit, offset])
+  // ⚠ 参数顺序：作用域条件排在 WHERE 里、LIMIT/OFFSET 之前 ⇒ 归属参数在前。
+  const rows = await db.query<any>(meetingListSql(archived, scope.clause), [...scope.params, limit, offset])
   return rows.map(rowToMeeting)
 }
 
 export async function getMeeting(id: string, db: RecordingDb = captureRecordingDb()): Promise<LocalMeeting | null> {
+  const scope = ownerScopeSql(ownerOf(db))
   const row = await db.queryOne<any>(
-    'SELECT * FROM local_meetings WHERE id = ? AND deleted_at IS NULL', [id],
+    'SELECT * FROM local_meetings WHERE id = ? AND deleted_at IS NULL AND ' + scope.clause,
+    [id, ...scope.params],
   )
   return row ? rowToMeeting(row) : null
 }
 
 export async function updateSegmentSpeaker(segmentId: string, speakerLabel: string, db: RecordingDb = captureRecordingDb()): Promise<void> {
+  const scope = ownerScopeSql(ownerOf(db))
   await db.run(
-    'UPDATE local_meeting_segments SET speaker_label = ? WHERE id = ?',
-    [speakerLabel, segmentId],
+    'UPDATE local_meeting_segments SET speaker_label = ? WHERE id = ? AND ' + scope.clause,
+    [speakerLabel, segmentId, ...scope.params],
   )
 }
 
@@ -214,9 +226,11 @@ export async function updateSegmentSpeaker(segmentId: string, speakerLabel: stri
  *   真要同步派生列，正确入口是 runtime（见 `editSegmentInMemory`）。
  */
 export async function updateSegmentText(segmentId: string, text: string): Promise<void> {
-  await localDB.run(
-    `UPDATE local_meeting_segments SET text = ?, origin = 'manual' WHERE id = ?`,
-    [text, segmentId],
+  const { db, owner } = captureMeetingOwnership(localDB)
+  const scope = ownerScopeSql(owner)
+  await db.run(
+    `UPDATE local_meeting_segments SET text = ?, origin = 'manual' WHERE id = ? AND ` + scope.clause,
+    [text, segmentId, ...scope.params],
   )
 }
 
@@ -253,8 +267,9 @@ export async function updateMeeting(
     if (val !== undefined) { sets.push(`${col} = ?`); vals.push(val) }
   }
   if (sets.length === 0) return
+  const scope = ownerScopeSql(ownerOf(db))
   vals.push(id)
-  await db.run(`UPDATE local_meetings SET ${sets.join(', ')} WHERE id = ?`, vals)
+  await db.run(`UPDATE local_meetings SET ${sets.join(', ')} WHERE id = ? AND ${scope.clause}`, [...vals, ...scope.params])
 }
 
 /**
@@ -352,7 +367,9 @@ export async function updateSummary(id: string, summary: string): Promise<void> 
 }
 
 export async function deleteMeeting(id: string): Promise<void> {
-  await localDB.run('UPDATE local_meetings SET deleted_at = ? WHERE id = ?', [Date.now(), id])
+  const { db, owner } = captureMeetingOwnership(localDB)
+  const scope = ownerScopeSql(owner)
+  await db.run('UPDATE local_meetings SET deleted_at = ? WHERE id = ? AND ' + scope.clause, [Date.now(), id, ...scope.params])
 }
 
 export async function archiveMeeting(id: string): Promise<void> {
@@ -365,20 +382,22 @@ export async function unarchiveMeeting(id: string): Promise<void> {
 
 export async function saveSegment(seg: Omit<MeetingSegment, 'id'>, db: RecordingDb = captureRecordingDb()): Promise<string> {
   const id = `seg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+  const [ownerUserId, ownerWorkspaceId] = ownerColumnValues(ownerOf(db))
   await db.run(
     `INSERT INTO local_meeting_segments
-     (id, meeting_id, speaker_label, lang, confidence, start_ms, end_ms, text, translation, origin)
-     VALUES (?,?,?,?,?,?,?,?,?,?)`,
+     (id, meeting_id, speaker_label, lang, confidence, start_ms, end_ms, text, translation, origin, owner_user_id, owner_workspace_id)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
     [id, seg.meetingId, seg.speakerLabel, seg.lang, seg.confidence,
-      seg.startMs, seg.endMs, seg.text, seg.translation ?? null, seg.origin],
+      seg.startMs, seg.endMs, seg.text, seg.translation ?? null, seg.origin, ownerUserId, ownerWorkspaceId],
   )
   return id
 }
 
 export async function getSegments(meetingId: string, db: RecordingDb = captureRecordingDb()): Promise<MeetingSegment[]> {
+  const scope = ownerScopeSql(ownerOf(db))
   const rows = await db.query<any>(
-    'SELECT * FROM local_meeting_segments WHERE meeting_id = ? ORDER BY start_ms',
-    [meetingId],
+    'SELECT * FROM local_meeting_segments WHERE meeting_id = ? AND ' + scope.clause + ' ORDER BY start_ms',
+    [meetingId, ...scope.params],
   )
   return rows.map(rowToSegment)
 }

@@ -8,9 +8,11 @@ import {
 } from '../../native/speaker-embedding'
 import type { SpeakerProfile } from '../../native/speaker-diarization'
 import {
-  nextSampleCount, planVoiceprintWrite, SQL_DELETE_ALL, SQL_DELETE_ONE,
-  SQL_ENROLL_AGAIN, SQL_EXISTS, SQL_INSERT, SQL_LIST, SQL_RENAME,
+  nextSampleCount, planVoiceprintWrite,
+  SQL_DELETE_ALL_SCOPED, SQL_DELETE_ONE_SCOPED, SQL_ENROLL_AGAIN_SCOPED,
+  SQL_EXISTS_SCOPED, SQL_INSERT_SCOPED, SQL_LIST_SCOPED, SQL_RENAME_SCOPED,
 } from './voiceprint-writes'
+import { captureMeetingOwnership, ownerColumnValues, ownerOf, ownerScopeSql } from '../../native/meeting-ownership'
 
 export interface LocalVoiceprint {
   id: string
@@ -27,7 +29,9 @@ export interface LocalVoiceprint {
 // 把它当「样本数」显示给用户是一个**可被证伪的假数字**，故不取。
 
 export async function listVoiceprints(): Promise<LocalVoiceprint[]> {
-  const rows = await localDB.query<any>(SQL_LIST)
+  const { db, owner } = captureMeetingOwnership(localDB)
+  const scope = ownerScopeSql(owner)
+  const rows = await db.query<any>(SQL_LIST_SCOPED, scope.params)
   return rows.map((r) => ({
     id: r.id,
     displayName: r.display_name,
@@ -36,7 +40,11 @@ export async function listVoiceprints(): Promise<LocalVoiceprint[]> {
 }
 
 export async function loadSpeakerProfiles(db: RecordingDb = captureRecordingDb()): Promise<SpeakerProfile[]> {
-  const rows = await db.query<any>('SELECT * FROM local_voiceprints')
+  const scope = ownerScopeSql(ownerOf(db))
+  const rows = await db.query<any>(
+    'SELECT * FROM local_voiceprints WHERE ' + scope.clause,
+    scope.params,
+  )
   return rows.map((r) => ({
     id: r.id,
     label: r.display_name,
@@ -52,16 +60,22 @@ export async function saveVoiceprint(input: {
 }): Promise<string> {
   const id = input.id ?? `vp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
   const now = Date.now()
-  const existing = await localDB.queryOne<any>(
-    'SELECT id, sample_count FROM local_voiceprints WHERE id = ?', [id],
+  const { db, owner } = captureMeetingOwnership(localDB)
+  const [ownerUserId, ownerWorkspaceId] = ownerColumnValues(owner)
+  const existing = await db.queryOne<any>(
+    'SELECT id, sample_count FROM local_voiceprints WHERE id = ? AND owner_user_id = ? AND owner_workspace_id = ?',
+    [id, ownerUserId, ownerWorkspaceId],
   )
   if (planVoiceprintWrite(!!existing).op === 'rename') {
-    await localDB.run(SQL_ENROLL_AGAIN, [
+    await db.run(SQL_ENROLL_AGAIN_SCOPED, [
       input.displayName, embeddingToBlob(input.embedding),
-      nextSampleCount(existing?.sample_count), id,
+      nextSampleCount(existing?.sample_count), id, ownerUserId, ownerWorkspaceId,
     ])
   } else {
-    await localDB.run(SQL_INSERT, [id, input.displayName, embeddingToBlob(input.embedding), 1, now])
+    await db.run(SQL_INSERT_SCOPED, [
+      id, input.displayName, embeddingToBlob(input.embedding), 1, now,
+      ownerUserId, ownerWorkspaceId,
+    ])
   }
   return id
 }
@@ -85,12 +99,16 @@ export async function enrollFromAudio(
 }
 
 export async function deleteVoiceprint(id: string): Promise<void> {
-  await localDB.run(SQL_DELETE_ONE, [id])
+  const { db, owner } = captureMeetingOwnership(localDB)
+  const [ownerUserId, ownerWorkspaceId] = ownerColumnValues(owner)
+  await db.run(SQL_DELETE_ONE_SCOPED, [id, ownerUserId, ownerWorkspaceId])
 }
 
 /** 清空整个声纹库。⚠ 不可撤销，调用方必须先让用户确认。 */
 export async function clearVoiceprints(): Promise<void> {
-  await localDB.run(SQL_DELETE_ALL)
+  const { db, owner } = captureMeetingOwnership(localDB)
+  const [ownerUserId, ownerWorkspaceId] = ownerColumnValues(owner)
+  await db.run(SQL_DELETE_ALL_SCOPED, [ownerUserId, ownerWorkspaceId])
 }
 
 /**
@@ -101,7 +119,8 @@ export async function clearVoiceprints(): Promise<void> {
  * 改一次名字多一个样本，是把两个无关的量绑在一起。
  */
 export async function renameVoiceprint(id: string, displayName: string, db: RecordingDb = captureRecordingDb()): Promise<void> {
-  await db.run(SQL_RENAME, [displayName, id])
+  const [ownerUserId, ownerWorkspaceId] = ownerColumnValues(ownerOf(db))
+  await db.run(SQL_RENAME_SCOPED, [displayName, id, ownerUserId, ownerWorkspaceId])
 }
 
 /**
@@ -116,12 +135,14 @@ export async function upsertVoiceprintLabel(input: {
   displayName: string
   embedding: Float32Array
 }, db: RecordingDb = captureRecordingDb()): Promise<void> {
-  const existing = await db.queryOne<any>(SQL_EXISTS, [input.id])
+  const [ownerUserId, ownerWorkspaceId] = ownerColumnValues(ownerOf(db))
+  const existing = await db.queryOne<any>(SQL_EXISTS_SCOPED, [input.id, ownerUserId, ownerWorkspaceId])
   if (planVoiceprintWrite(!!existing).op === 'rename') {
     await renameVoiceprint(input.id, input.displayName, db)
     return
   }
-  await db.run(SQL_INSERT, [
+  await db.run(SQL_INSERT_SCOPED, [
     input.id, input.displayName, embeddingToBlob(input.embedding), 1, Date.now(),
+    ownerUserId, ownerWorkspaceId,
   ])
 }
