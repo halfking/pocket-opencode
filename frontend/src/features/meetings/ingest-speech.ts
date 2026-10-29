@@ -12,6 +12,7 @@ import { renderTranscript, type TranscriptRenderer } from './meeting-dedup.ts'
 import { describeSegmentDrop } from './segment-drop-notice.ts'
 import type { MeetingSegment } from './meetings-store.ts'
 import { assertCloudModule } from '../../api/data-policy.ts'
+import { isAbortError } from '../../api/abort.ts'
 
 export async function ingestSpeechBlob(opts: {
   meetingId: MaybeRef<string>
@@ -37,7 +38,22 @@ export async function ingestSpeechBlob(opts: {
   const operation = opts.operation ?? captureRecordingOperation('meetings')
   operation.assertLocal()
   // Android 分片可能是唯一副本。隐私拒绝和任何 STT 失败之前先确认落盘。
-  await saveAudioPart(meetingId, opts.seq, opts.blob, opts.blob.type || 'audio/webm', operation.localDb)
+  //
+  // ⚠ 2026-10-29（审计发现）：这一行此前被改成**裸 await**，两个后果：
+  //   ① 分片落盘失败 ⇒ 整个 ingestSpeechBlob 抛出去 ⇒ **转写整段丢失**，
+  //      而失败原因（磁盘满 / 权限 / 库写不进去）**一个字都没留下**；
+  //   ② 取消（AbortError）也会被当成普通失败一起吞掉 ⇒ 用户点了停止，
+  //      而录音 runtime 还在等一个永远不会回来的 promise。
+  //   ⇒ 恢复「失败要出声」的语义（§818/§819 同一族），但**取消不许被就地消化**：
+  //     AbortError 原样抛出，由调用方 processSegment 判断「是取消」还是「真失败」。
+  try {
+    await saveAudioPart(meetingId, opts.seq, opts.blob, opts.blob.type || 'audio/webm', operation.localDb)
+  } catch (error) {
+    if (isAbortError(error)) throw error
+    // 观测失败不得影响转写，但也不许完全无声 ——
+    // 这里是唯一一份音频拷贝，它没存下来就等于那段话永久找不回来了。
+    console.warn(`[ingest-speech] 第 ${opts.seq} 段音频分片落盘失败：`, error)
+  }
   operation.assertCloud()
   assertCloudModule('meetings')
   // signal 一路传到 sttApi.transcribe：会议录音时每个语音块都是一次独立转写
