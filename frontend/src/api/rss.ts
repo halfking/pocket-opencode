@@ -3,7 +3,7 @@
  *
  * 全部走 http() 统一鉴权 + 错误归一化。
  */
-import { http } from './http'
+import { http, type HttpOptions } from './http'
 
 export interface RSSSource {
   id: string
@@ -200,8 +200,8 @@ export const rssApi = {
     })
   },
 
-  async deleteSource(id: string): Promise<void> {
-    await http(`/api/rss/sources/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  async deleteSource(id: string, options: HttpOptions = {}): Promise<void> {
+    await http(`/api/rss/sources/${encodeURIComponent(id)}`, { ...options, method: 'DELETE' })
   },
 
   async refreshSource(id: string): Promise<{ fetched: boolean; newItems: number; duplicates: number; notModified: boolean }> {

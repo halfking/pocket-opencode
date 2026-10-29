@@ -6,6 +6,7 @@ import { rssApi, type RSSSource, type RSSItem } from '../../api/rss'
 import { toUserMessage } from '../../api/error-message'
 import { useConfirm } from '../../composables/useConfirm'
 import LocalOnlyBadge from '../../components/business/LocalOnlyBadge.vue'
+import { deleteRssSource } from './rss-operation'
 
 const router = useRouter()
 const { t } = useI18n()
@@ -88,12 +89,17 @@ async function toggleSource(src: RSSSource) {
 }
 async function deleteSource(src: RSSSource) {
   // BUG-AQ：原为裸 confirm()（同步阻塞），在 Android WebView 里会卡死渲染进程。
-  const ok = await confirm({ title: '删除订阅源', message: `确定删除订阅源「${src.title}」？所有 item 也会被删除。`, confirmText: '删除', danger: true })
-  if (!ok) return
+  //
+  // ⚠ 会话绑定（审计发现）：会话必须在**打开确认框之前**捕获。
+  //   确认框是一个可等待的交互 —— 用户停留期间若发生 A→B 账号切换，
+  //   之后发出的 DELETE 会带上新账号的凭据 ⇒ A 的订阅源被 B 删掉。
   try {
-    await rssApi.deleteSource(src.id)
+    const outcome = await deleteRssSource(src, confirm, (id, options) => rssApi.deleteSource(id, options))
+    if (outcome === 'cancelled' || outcome === 'stale-session') return
     await refresh()
   } catch (e: any) {
+    // 会话在确认框期间失效 ⇒ 操作被取消，不是失败。
+    if (e?.name === 'AbortError') return
     errorMsg.value = toUserMessage(e, t, t('errors.operateFailed'))
   }
 }
