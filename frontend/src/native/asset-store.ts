@@ -16,6 +16,9 @@
  * 保持不动。新业务一律走 Asset。后续 sprint 可写适配器把老表迁过来。
  */
 import { localDB } from './local-db'
+import { portalNotesStore, canReadPortalNote, portalNoteReadScope } from './portal-sync/storage'
+import { notePayload, type SyncDb } from './portal-sync/contract'
+import { captureNotesEpoch } from './portal-sync/epochs'
 
 import { encryptString, decryptString } from './crypto'
 import { buildFtsQuery, likePattern, needsCjkLike } from './fts-query.ts'
@@ -131,9 +134,13 @@ class AssetStore {
    * body_encrypted=1，FTS 触发器自动跳过加密 body（见 schema.ts 注释）。
    */
   async upsert(input: AssetInput, db: AssetDb = localDB): Promise<Asset> {
+    if (db === localDB) db = localDB.bindOperation(localDB.captureOperation({ kind: 'local-edit' }))
     const ts = now()
     const id = input.id ?? genId('ast')
-    const wsId = input.workspaceId ?? 'default'
+    const owner = 'owner' in db ? (db as SyncDb).owner : null
+    const operationEpoch = captureNotesEpoch(owner)
+    const wsId = input.workspaceId ?? owner?.workspaceId ?? 'default'
+    if (owner && wsId !== owner.workspaceId) throw new Error('Asset workspace differs from the verified owner')
     const syncMode = input.syncMode ?? 'e2ee_local_first'
     const encrypt = input.encryptBody ?? false
 
@@ -148,12 +155,29 @@ class AssetStore {
     // ⚠ §884：`deleted_at` 必须一起取出来 —— 下面的 UPDATE 语句里**没有**这一列，
     //   也就是说它既不会被清掉、也不会被看一眼就放行。修复前这里只取
     //   `client_rev, workspace_id`，于是一条已被软删的 asset 照样被静默改写。
-    const existing = await db.queryOne<{ client_rev: number; workspace_id: string; deleted_at: number | null }>(
-      'SELECT client_rev, workspace_id, deleted_at FROM local_assets WHERE id = ?',
+    const existing = await db.queryOne<{ client_rev: number; workspace_id: string; deleted_at: number | null; source: string | null }>(
+      'SELECT client_rev, workspace_id, deleted_at, source FROM local_assets WHERE id = ?',
       [id],
     )
 
+    const write = async (statement: string, values: unknown[], created: boolean) => {
+      if (input.kind !== 'note' || !('owner' in db) || !('runInTransaction' in db)) {
+        await db.run(statement, values)
+        return
+      }
+      let meta: Record<string, unknown> = {}
+      try { meta = JSON.parse(input.metaJson || '{}') } catch { /* Invalid metadata carries no sync fields. */ }
+      const importedMarkdown = (input.source ?? existing?.source) === 'enex_import'
+      await portalNotesStore(db as SyncDb).commit([{ statement, values }], {
+        source: 'asset', epoch: operationEpoch, id, title: input.title ?? '', modifiedAt: ts,
+        syncError: importedMarkdown ? 'ENEX Markdown sync is not supported yet; the complete original remains on this device' : undefined,
+        payload: notePayload({ format: importedMarkdown ? 'text' : 'html', content: input.bodyText ?? '', tags: meta.tags,
+          links: meta.links, daily_date: meta.dailyDate, summary: meta.summary, created_at: ts }),
+      }, created)
+    }
+
     if (existing) {
+      if (owner && existing.workspace_id !== owner.workspaceId) throw new Error('Asset workspace differs from the verified owner')
       if (input.workspaceId && existing.workspace_id !== input.workspaceId) {
         throw new Error('Asset 不属于当前 workspace')
       }
@@ -174,22 +198,22 @@ class AssetStore {
       if (existing.deleted_at !== null && existing.deleted_at !== undefined) {
         throw new AssetDeletedError(id)
       }
-      await db.run(
+      await write(
         `UPDATE local_assets
          SET kind=?, title=?, body_text=?, body_encrypted=?, meta_json=?, source=?, sync_mode=?,
              client_rev=?, dirty=1, updated_at=?
          WHERE id=? AND workspace_id=?`,
         [input.kind, input.title ?? '', bodyText, bodyEncrypted, input.metaJson ?? '{}',
-         input.source ?? null, syncMode, existing.client_rev + 1, ts, id, existing.workspace_id],
+         input.source ?? existing.source ?? null, syncMode, existing.client_rev + 1, ts, id, existing.workspace_id], false,
       )
     } else {
-      await db.run(
+      await write(
         `INSERT INTO local_assets
          (id, workspace_id, kind, title, body_text, body_encrypted, meta_json, source,
           sync_mode, client_rev, server_rev, dirty, created_at, updated_at)
          VALUES (?,?,?,?,?,?,?,?,?,1,0,1,?,?)`,
         [id, wsId, input.kind, input.title ?? '', bodyText, bodyEncrypted, input.metaJson ?? '{}',
-         input.source ?? null, syncMode, ts, ts],
+         input.source ?? null, syncMode, ts, ts], true,
       )
     }
 
@@ -204,7 +228,7 @@ class AssetStore {
        FROM local_assets WHERE id = ?`,
       [id],
     )
-    return row ? this.fromRow(row) : null
+    return row && (row.kind !== 'note' || await canReadPortalNote('asset', row.id)) ? this.fromRow(row) : null
   }
 
   /** 在明确 workspace 内读取 Asset，避免同一 id 跨租户误读。 */
@@ -215,7 +239,7 @@ class AssetStore {
        FROM local_assets WHERE id = ? AND workspace_id = ? AND deleted_at IS NULL`,
       [id, workspaceId],
     )
-    return row ? this.fromRow(row) : null
+    return row && (row.kind !== 'note' || await canReadPortalNote('asset', row.id)) ? this.fromRow(row) : null
   }
 
   /** 软删除（标记 deleted_at + dirty，保留墓碑供同步）。 */
@@ -227,15 +251,26 @@ class AssetStore {
   }
 
   async softDeleteForWorkspace(id: string, workspaceId: string, db: AssetDb = localDB): Promise<void> {
-    await db.run(
-      `UPDATE local_assets SET deleted_at=?, dirty=1, client_rev=client_rev+1, updated_at=?
-       WHERE id=? AND workspace_id=?`,
-      [now(), now(), id, workspaceId],
-    )
+    if (db === localDB) db = localDB.bindOperation(localDB.captureOperation({ kind: 'local-edit' }))
+    if ('owner' in db && (db as SyncDb).owner && (db as SyncDb).owner!.workspaceId !== workspaceId) throw new Error('Asset workspace differs from the verified owner')
+    const operationEpoch = captureNotesEpoch('owner' in db ? (db as SyncDb).owner : null)
+    const ts = now()
+    const statement = `UPDATE local_assets SET deleted_at=?, dirty=1, client_rev=client_rev+1, updated_at=?
+       WHERE id=? AND workspace_id=?`
+    const values = [ts, ts, id, workspaceId]
+    const asset = await db.queryOne<{ kind: string; title: string; source: string | null }>('SELECT kind,title,source FROM local_assets WHERE id=? AND workspace_id=?', [id, workspaceId])
+    if (asset?.kind === 'note' && 'owner' in db && 'runInTransaction' in db) {
+      await portalNotesStore(db as SyncDb).commit([{ statement, values }], {
+        source: 'asset', epoch: operationEpoch, id, title: asset.title ?? '', modifiedAt: ts, deleted: true,
+        syncError: asset.source === 'enex_import' ? 'ENEX Markdown sync is not supported yet; the original stays local' : undefined,
+        payload: notePayload({ format: 'html', content: '' }),
+      }, false)
+    } else await db.run(statement, values)
   }
 
   /** 列出/搜索 Asset。支持 kind/source 过滤 + FTS 全文检索。 */
   async search(q: AssetSearchQuery = {}): Promise<Asset[]> {
+    const scope = await portalNoteReadScope('asset', 'a')
     const wsId = q.workspaceId ?? 'default'
     const limit = Math.min(q.limit ?? 50, 200)
     const kind = kindFilter(q.kind)
@@ -256,20 +291,20 @@ class AssetStore {
       const ftsQuery = buildFtsQuery(raw)
       let ftsHits: Asset[] = []
       try {
-        const ftsRows = await localDB.query<RawAssetRow & { rank: number }>(
+        const ftsRows = await scope.db.query<RawAssetRow & { rank: number }>(
           `SELECT a.*, rank
            FROM local_assets_fts f
            JOIN local_assets a ON a.rowid = f.rowid
            WHERE local_assets_fts MATCH ?
-             AND a.workspace_id = ?
+             AND a.workspace_id = ? AND (a.kind <> 'note' OR ${scope.clause})
              ${q.includeDeleted ? '' : 'AND a.deleted_at IS NULL'}
              ${kind.sql}
              ${source.sql}
            ORDER BY rank
            LIMIT ?`,
-          [ftsQuery, wsId, ...kind.args, ...source.args, limit],
+          [ftsQuery, wsId, ...scope.values, ...kind.args, ...source.args, limit],
         )
-        for (const r of ftsRows) ftsHits.push(await this.fromRow(r))
+        for (const r of ftsRows) if (r.kind !== 'note' || await canReadPortalNote('asset', r.id)) ftsHits.push(await this.fromRow(r))
       } catch {
         // ⚠ 构造器对纯符号输入可能产出空串（`MATCH ''` 必抛），Web 端也可能
         //   压根没有 FTS5 ⇒ 两种都落到降级，而不是把错误抛给用户。
@@ -283,26 +318,26 @@ class AssetStore {
       //   ⇒ 中文查询在 FTS 上**必然 0 行**且不报错。
       //   这不是推测：实测「数据库」「数据」「索引」全部 0 行。
       if (ftsHits.length > 0 && !needsCjkLike(raw)) return ftsHits
-      const likeHits = await this.searchLike(raw, wsId, limit, q, kind, source)
+      const likeHits = await this.searchLike(raw, wsId, limit, q, kind, source, scope)
       const seen = new Set(ftsHits.map((a) => a.id))
       return [...ftsHits, ...likeHits.filter((a) => !seen.has(a.id))].slice(0, limit)
     }
 
     // 非 FTS 路径
-    const rows = await localDB.query<RawAssetRow>(
+    const rows = await scope.db.query<RawAssetRow>(
       `SELECT a.id, a.workspace_id, a.kind, a.title, a.body_text, a.body_encrypted, a.meta_json, a.source,
               a.sync_mode, a.client_rev, a.server_rev, a.dirty, a.created_at, a.updated_at, a.deleted_at
        FROM local_assets a
-       WHERE a.workspace_id = ?
+       WHERE a.workspace_id = ? AND (a.kind <> 'note' OR ${scope.clause})
          ${q.includeDeleted ? '' : 'AND a.deleted_at IS NULL'}
          ${kind.sql}
          ${source.sql}
        ORDER BY a.updated_at DESC
        LIMIT ?`,
-      [wsId, ...kind.args, ...source.args, limit],
+      [wsId, ...scope.values, ...kind.args, ...source.args, limit],
     )
     const out: Asset[] = []
-    for (const r of rows) out.push(await this.fromRow(r))
+    for (const r of rows) if (r.kind !== 'note' || await canReadPortalNote('asset', r.id)) out.push(await this.fromRow(r))
     return out
   }
 
@@ -320,23 +355,24 @@ class AssetStore {
     q: AssetSearchQuery,
     kind: { sql: string; args: unknown[] },
     source: { sql: string; args: unknown[] },
+    scope: Awaited<ReturnType<typeof portalNoteReadScope>>,
   ): Promise<Asset[]> {
     const pat = likePattern(raw)
-    const rows = await localDB.query<RawAssetRow>(
+    const rows = await scope.db.query<RawAssetRow>(
       `SELECT a.id, a.workspace_id, a.kind, a.title, a.body_text, a.body_encrypted, a.meta_json, a.source,
               a.sync_mode, a.client_rev, a.server_rev, a.dirty, a.created_at, a.updated_at, a.deleted_at
        FROM local_assets a
-       WHERE a.workspace_id = ?
+       WHERE a.workspace_id = ? AND (a.kind <> 'note' OR ${scope.clause})
          AND (a.title LIKE ? OR a.body_text LIKE ?)
          ${q.includeDeleted ? '' : 'AND a.deleted_at IS NULL'}
          ${kind.sql}
          ${source.sql}
        ORDER BY a.updated_at DESC
        LIMIT ?`,
-      [wsId, pat, pat, ...kind.args, ...source.args, limit],
+      [wsId, ...scope.values, pat, pat, ...kind.args, ...source.args, limit],
     )
     const out: Asset[] = []
-    for (const r of rows) out.push(await this.fromRow(r))
+    for (const r of rows) if (r.kind !== 'note' || await canReadPortalNote('asset', r.id)) out.push(await this.fromRow(r))
     return out
   }
 
@@ -348,32 +384,34 @@ class AssetStore {
     key: string
     value: string
   }): Promise<Asset | null> {
-    const row = await localDB.queryOne<RawAssetRow>(
+    const scope = await portalNoteReadScope('asset', 'local_assets')
+    const row = await scope.db.queryOne<RawAssetRow>(
       `SELECT id, workspace_id, kind, title, body_text, body_encrypted, meta_json, source,
               sync_mode, client_rev, server_rev, dirty, created_at, updated_at, deleted_at
        FROM local_assets
        WHERE workspace_id = ? AND kind = ?
-         AND deleted_at IS NULL
+         AND deleted_at IS NULL AND (kind <> 'note' OR ${scope.clause})
          AND json_extract(meta_json, ?) = ?
          ${opts.source ? 'AND source = ?' : ''}
        LIMIT 1`,
       opts.source
-        ? [opts.workspaceId, opts.kind, `$.${opts.key}`, opts.value, opts.source]
-        : [opts.workspaceId, opts.kind, `$.${opts.key}`, opts.value],
+        ? [opts.workspaceId, opts.kind, ...scope.values, `$.${opts.key}`, opts.value, opts.source]
+        : [opts.workspaceId, opts.kind, ...scope.values, `$.${opts.key}`, opts.value],
     )
-    return row ? this.fromRow(row) : null
+    return row && (row.kind !== 'note' || await canReadPortalNote('asset', row.id)) ? this.fromRow(row) : null
   }
 
   /** 列出所有 dirty=1 的 Asset（同步引擎用）。 */
   async listDirty(limit = 100): Promise<Asset[]> {
-    const rows = await localDB.query<RawAssetRow>(
+    const scope = await portalNoteReadScope('asset', 'local_assets')
+    const rows = await scope.db.query<RawAssetRow>(
       `SELECT id, workspace_id, kind, title, body_text, body_encrypted, meta_json, source,
               sync_mode, client_rev, server_rev, dirty, created_at, updated_at, deleted_at
-       FROM local_assets WHERE dirty = 1 ORDER BY updated_at ASC LIMIT ?`,
-      [limit],
+       FROM local_assets WHERE dirty = 1 AND (kind <> 'note' OR ${scope.clause}) ORDER BY updated_at ASC LIMIT ?`,
+      [...scope.values, limit],
     )
     const out: Asset[] = []
-    for (const r of rows) out.push(await this.fromRow(r))
+    for (const r of rows) if (r.kind !== 'note' || await canReadPortalNote('asset', r.id)) out.push(await this.fromRow(r))
     return out
   }
 

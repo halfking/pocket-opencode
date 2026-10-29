@@ -144,6 +144,7 @@ import { useApiError } from '../../composables/useApiError'
 import { createNoteTodos } from './note-todo-persist'
 import { buildNoteTodoNotice } from './note-todo-notice.ts'
 import { awaitNoteMirror } from './notes-persist'
+import { useNotesOwnerView } from './note-view-owner'
 import type { NoteActionItem } from '../../api/notes'
 
 const apiError = useApiError()
@@ -160,6 +161,11 @@ const reclassifyError = ref('')
 // §838：删除失败需要一句人话（此前删除失败是完全静默的）。
 const toast = useToast()
 const loadError = ref('')
+const ownerView = useNotesOwnerView(() => {
+  note.value = null; related.value = []; loadError.value = ''; loading.value = false
+  summary.value = ''; summaryTxs.value = []; bookkeeping.value = ''; bookkeepingMismatch.value = false
+  summaryError.value = ''; todoNotice.value = ''; summarizing.value = false; reclassifying.value = false; reclassifyError.value = ''
+}, () => router.replace('/notes'), undefined, load)
 
 const displayTitle = computed(() => {
   if (!note.value) return ''
@@ -195,31 +201,35 @@ const renderedMarkdown = computed(() => {
 onMounted(() => load())
 
 async function load() {
+  const stamp = ownerView.capture()
   const id = route.params.id as string
   loading.value = true
   loadError.value = ''
   try {
     const fetched = await notesStore.getNote(id, false, currentWorkspaceId())
     if (fetched) fetched.content = await notesStore.loadFullContent(fetched)
+    if (!ownerView.isCurrent(stamp)) return
     note.value = fetched
     if (fetched) await loadRelated(fetched)
   } catch (e: any) {
-    loadError.value = apiError(e, 'errors.loadNotesFailed')
+    if (ownerView.isCurrent(stamp)) loadError.value = apiError(e, 'errors.loadNotesFailed')
   } finally {
-    loading.value = false
+    if (ownerView.isCurrent(stamp)) loading.value = false
   }
 }
 
 async function loadRelated(target: LocalNote) {
+  const stamp = ownerView.capture()
   try {
     // 取 5 条以便排除自身后还能剩 4 条
     const results = await notesStore.searchSemantic(target.content, 5, currentWorkspaceId())
+    if (!ownerView.isCurrent(stamp)) return
     related.value = results
       .map((r) => r.note)
       .filter((n) => n.id !== target.id)
       .slice(0, 4)
   } catch {
-    related.value = []
+    if (ownerView.isCurrent(stamp)) related.value = []
   }
 }
 
@@ -259,21 +269,25 @@ async function onDelete() {
 }
 
 async function reclassify() {
+  const stamp = ownerView.capture()
   if (!note.value || reclassifying.value) return
   reclassifying.value = true
   reclassifyError.value = ''
   try {
     await http(`/api/notes/${note.value.id}/classify`, { method: 'POST' })
+    if (!ownerView.isCurrent(stamp)) return
     // 后端当前 stub；刷新本地数据以拿最新分类
     const refreshed = await notesStore.getNote(note.value.id, false, currentWorkspaceId())
+    if (!ownerView.isCurrent(stamp)) return
     if (refreshed) note.value = refreshed
     markListDirty('notes')
     reclassifyError.value = ''
   } catch (e: any) {
+    if (!ownerView.isCurrent(stamp)) return
     console.warn('[note] 重新分类失败:', e)
     reclassifyError.value = apiError(e, 'errors.operateFailed')
   } finally {
-    reclassifying.value = false
+    if (ownerView.isCurrent(stamp)) reclassifying.value = false
   }
 }
 
@@ -315,6 +329,7 @@ interface NoteSummarizeResp {
 }
 
 async function summarize() {
+  const stamp = ownerView.capture()
   if (!note.value || summarizing.value) return
   summarizing.value = true
   summaryError.value = ''
@@ -336,7 +351,9 @@ async function summarize() {
     // 本页此前漏了。awaitNoteMirror 永不抛异常，且没有在途镜像时立即返回，
     // 所以这条对「从云端进来的老笔记」零成本、行为不变。
     await awaitNoteMirror(noteId)
+    if (!ownerView.isCurrent(stamp)) return
     const res = await http<NoteSummarizeResp>(`/api/notes/${noteId}/summarize`, { method: 'POST' })
+    if (!ownerView.isCurrent(stamp)) return
     summary.value = res.summary || ''
     summaryTxs.value = res.transactions ?? []
     bookkeeping.value = res.bookkeeping ?? ''
@@ -358,6 +375,7 @@ async function summarize() {
       res.action_items,
       noteTitle,
     )
+    if (!ownerView.isCurrent(stamp)) return
     // §127：记账三键也传进去。`created === 0` 时早退只看「什么都没做」，
     // 而本页的记账卡片挂在 `v-if="summary"` **里面** —— 模型给出记账却没给出
     // summary 时那张卡片整块不显示，两者叠加就是纯记账场景全静默。
@@ -367,9 +385,9 @@ async function summarize() {
       { transactions: summaryTxs.value, bookkeeping: bookkeeping.value, bookkeepingMismatch: bookkeepingMismatch.value },
     )
   } catch (e: any) {
-    summaryError.value = apiError(e, 'errors.summaryFailed')
+    if (ownerView.isCurrent(stamp)) summaryError.value = apiError(e, 'errors.summaryFailed')
   } finally {
-    summarizing.value = false
+    if (ownerView.isCurrent(stamp)) summarizing.value = false
   }
 }
 

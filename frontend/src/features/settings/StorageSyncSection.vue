@@ -6,7 +6,7 @@
     - 六个模块行：图标容器 + 名称 + 说明 + 「云端 | 仅本地」分段选择器。
       全部圆角矩形（设计约束：禁圆形按钮 / 圆点单选）。
     - 切「仅本地」时弹确认；确认框内含「清除云端副本」次级操作占位
-      （POST /api/v1/portal/cloud/purge），失败 toast。
+      （可信工作区 v2 purge），失败 toast，并保留同一 reset_id 重试。
     - 「上次同步」只读报告区：渲染 syncPolicyStore.lastSyncReport，
       无数据显示「尚未同步」。
     - 策略读写在 syncPolicyStore；远端不可达时 store 自动降级
@@ -59,6 +59,7 @@
       </button>
     </div>
 
+    <PortalNotesSyncNotice />
     <!-- 上次同步（只读报告） -->
     <div class="sync-report">
       <div class="report-head">
@@ -136,6 +137,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
+import PortalNotesSyncNotice from './PortalNotesSyncNotice.vue'
 import { useI18n } from 'vue-i18n'
 import { useToast } from '../../composables/useToast'
 import { purgeCloudCopy } from '../../api/syncPolicy'
@@ -210,7 +212,7 @@ function moduleLabel(module: SyncModule): string {
 /** 分段点击：cloud→local 先弹确认；其余直接走 store（乐观更新+失败回滚）。 */
 function onSegmentTap(module: SyncModule, mode: SyncMode): void {
   if (!isPortalSyncModule(module) || policy.activating || !policy.activationReady || policy.saving) return
-  if (policy.modules[module] === mode && !policy.pendingLocal.includes(module)) return
+  if (mode !== 'local' && policy.modules[module] === mode && !policy.pendingLocal.includes(module)) return
   if (!policy.allowOverride) {
     toast.warning(t('settings.storageManagedNoOverride'))
     return

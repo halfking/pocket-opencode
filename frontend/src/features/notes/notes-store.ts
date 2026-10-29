@@ -8,6 +8,8 @@ import { getNote, listNotes as listNotesRaw } from './notes-persist'
 import { ensureNotesSearchIndex } from './notes-fts-ready'
 import { buildSearchText } from './note-storage-policy'
 import type { LocalNote } from './notes-types'
+import { captureNoteWriteOperation } from './note-operation'
+import { portalNotesStore } from '../../native/portal-sync/storage'
 
 export type { LocalNote, SearchResult, CreateNoteInput, NoteMediaInput } from './notes-types'
 export { createNote, updateNote, deleteNote, getNote, listDraftNotes, loadFullContent } from './notes-persist'
@@ -30,8 +32,13 @@ export function registerNoteServerHandler(cb: (note: LocalNote) => void): () => 
 
 export async function handleServerEvent(note: LocalNote): Promise<void> {
   if (!note || !note.id) return
+  const operation = captureNoteWriteOperation({ backgroundCloud: false })
+  const db = operation.db
+  // Legacy pocketd events carry no portal operation/version; they cannot overwrite
+  // a note already governed by the portal LWW protocol.
+  if (await portalNotesStore(db).find('note', note.id)) return
   const workspaceId = note.workspaceId ?? 'default'
-  const existing = await getNote(note.id, true, workspaceId)
+  const existing = await getNote(note.id, true, workspaceId, operation)
   const merged: LocalNote = existing
     ? {
         ...existing,
@@ -49,7 +56,7 @@ export async function handleServerEvent(note: LocalNote): Promise<void> {
   const shouldEncrypt = useCryptoConfig().shouldEncryptField()
   const storedContent = shouldEncrypt ? await encryptString(merged.content) : merged.content
   if (existing) {
-    await localDB.run(
+    await db.run(
       `UPDATE local_notes
          SET title = ?, content = ?, encrypted_content = ?, content_type = ?, domain = ?,
              category = ?, tags = ?, search_text = ?, updated_at = ?
@@ -62,7 +69,7 @@ export async function handleServerEvent(note: LocalNote): Promise<void> {
       ],
     )
   } else {
-    await localDB.run(
+    await db.run(
       `INSERT INTO local_notes
          (id, workspace_id, title, content, content_type, domain, category, tags,
           audio_path, audio_duration_ms, created_by_voice, encrypted_content, created_at, updated_at,
@@ -78,6 +85,7 @@ export async function handleServerEvent(note: LocalNote): Promise<void> {
     )
   }
 
+  operation.assertCurrent()
   noteServerHandlers.forEach((cb) => {
     try { cb(merged) }
     catch (e) { console.warn('[notes-store] server handler threw:', e) }

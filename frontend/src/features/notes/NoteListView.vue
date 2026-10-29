@@ -194,6 +194,7 @@ import { DEFAULT_LIST_PAGE_SIZE, pageHasMore } from '../../native/list-sync/page
 import * as notesStore from './notes-store'
 import type { LocalNote } from './notes-store'
 import { useListScene } from '../../composables/use-list-scene'
+import { useNotesOwnerView } from './note-view-owner'
 import { useAuthStore } from '../../stores/auth'
 import { useApiError } from '../../composables/useApiError'
 import { useToast } from '../../composables/useToast'
@@ -318,11 +319,14 @@ const {
   needsManualLoad,
   sentinelRef,
   resetQuery,
+  invalidateScope,
   retry,
   loadMore,
 } = useContinuousList<LocalNote>({
   pageSize: DEFAULT_LIST_PAGE_SIZE,
   fetchPage: async ({ page }) => {
+    const stamp = ownerView.capture()
+    if (!ownerView.isCurrent(stamp)) return { rows: [], total: 0, hasMore: false }
     try {
       const res = await notesStore.listNotes({
         limit: DEFAULT_LIST_PAGE_SIZE,
@@ -331,6 +335,7 @@ const {
         domain: domain.value === 'all' ? undefined : domain.value,
         workspaceId: currentWorkspaceId(),
       })
+      if (!ownerView.isCurrent(stamp)) throw Object.assign(new Error('Notes view owner changed'), { name: 'AbortError' })
       return {
         rows: res,
         total: Number.MAX_SAFE_INTEGER,
@@ -350,6 +355,21 @@ const {
 
 /** 搜索结果；null = 不在搜索态，展示分页数据。 */
 const searchResults = ref<LocalNote[] | null>(null)
+const ownerView = useNotesOwnerView(() => {
+  pagedNotes.value = []
+  searchResults.value = null
+  draftBanner.value = null
+  metaNote.value = null
+  metaOpen.value = false
+  summarizing.value = false
+  summarizeError.value = ''
+  todoNotice.value = ''
+  draftSaveError.value = ''
+  briefing.value = null
+  query.value = ''
+  showSearch.value = false
+  invalidateScope()
+}, () => query.value.trim() ? onSearch() : load(), 'notes')
 
 /** 模板统一读它：搜索态优先，否则读分页数据。 */
 const notes = computed<LocalNote[]>(() => searchResults.value ?? pagedNotes.value)
@@ -368,6 +388,8 @@ const loading = computed(
 const loadingMore = computed(() => listStatus.value === 'loadingNext' || listStatus.value === 'refreshing')
 
 async function load() {
+  const stamp = ownerView.capture()
+  if (!ownerView.isCurrent(stamp)) return
   dbNotReady.value = false
   // 离开搜索态，回到分页
   searchResults.value = null
@@ -381,25 +403,31 @@ async function load() {
   // 草稿横幅与分页无关，单独取
   try {
     const drafts = await notesStore.listDraftNotes(currentWorkspaceId())
+    if (!ownerView.isCurrent(stamp)) return
     draftBanner.value = drafts[0] ?? null
   } catch {
-    draftBanner.value = null
+    if (ownerView.isCurrent(stamp)) draftBanner.value = null
   }
 }
 
 async function onSearch() {
+  const stamp = ownerView.capture()
   const q = query.value.trim()
   if (!q) { briefing.value = null; await load(); return }
   try {
-    briefing.value = await searchNotesWithIntent(q, currentWorkspaceId())
+    const result = await searchNotesWithIntent(q, currentWorkspaceId())
+    if (!ownerView.isCurrent(stamp)) return
+    briefing.value = result
     searchResults.value = briefing.value.results.map((r) => r.note)
   } catch {
-    searchResults.value = null
+    if (ownerView.isCurrent(stamp)) searchResults.value = null
   }
 }
 
 async function onMicToggle() {
+  const stamp = ownerView.capture()
   const stopped = await toggleRecording()
+  if (!ownerView.isCurrent(stamp)) return
   if (!stopped) return
   // ⚠⚠ §832：此前这里**没有** try/catch，而前端也没有 unhandledrejection 兜底
   //   ⇒ 存储写失败时整条链一路抛出去，用户只看到「点完没反应」，
@@ -425,9 +453,11 @@ async function onMicToggle() {
  * 「自己建的」和「运行时提前落库的」两条路径都必须走它，否则总结、元信息面板
  * 这套后续动作会在早落库那条路径上整个消失。 */
 async function presentVoiceDraft(note: LocalNote, text: string) {
+  const stamp = ownerView.capture()
   metaNote.value = note
   metaOpen.value = true
   await load()
+  if (!ownerView.isCurrent(stamp)) return
   if (!text || !text.trim()) return
   summarizing.value = true
   summarizeError.value = ''
@@ -445,8 +475,10 @@ async function presentVoiceDraft(note: LocalNote, text: string) {
     // 这是「录音后即时总结从来没成功过」的直接成因（见 notes-persist 的
     // mirrorNoteToBackend 注释）。createNote 刻意不等云端，所以等在这里。
     await awaitNoteMirror(noteId)
+    if (!ownerView.isCurrent(stamp)) return
     const { summary, action_items: actionItems, transactions, bookkeeping, bookkeeping_mismatch: bkMismatch, summary_fallback: summaryFellBack } =
       await notesApi.summarize(noteId)
+    if (!ownerView.isCurrent(stamp)) return
     if (summary && metaNote.value) {
       metaNote.value = { ...metaNote.value, summary }
       // ⚠ §222：summaryFellBack 时这段是**模型原文**，不是解析出来的摘要。
@@ -462,6 +494,7 @@ async function presentVoiceDraft(note: LocalNote, text: string) {
         summarizeError.value = '模型没有按约定返回结构化摘要，上面显示的是它的原文（未保存），可在笔记详情页重试'
       }
       await load()
+      if (!ownerView.isCurrent(stamp)) return
     } else {
       // 第二种静默失败：api/notes.ts 的 summarize 注释写明「失败时返回空
       // summary，前端不阻塞流程」——也就是 200 + {summary:''}，**不抛异常**。
@@ -484,6 +517,7 @@ async function presentVoiceDraft(note: LocalNote, text: string) {
       actionItems,
       noteTitle,
     )
+    if (!ownerView.isCurrent(stamp)) return
     // 文案本身在纯模块里（note-todo-notice.ts）：这道门要能直接断言
     // 「用户实际看到的那句话」，写在组件里就只能源码扫描，而源码扫描
     // 分不清代码和注释里引述的同一句话（本会话已被骗三次）。
@@ -499,9 +533,9 @@ async function presentVoiceDraft(note: LocalNote, text: string) {
     //   永远看不到实参（同 §127.4 的教训：判据的匹配边界必须与真实写法对齐）。
     todoNotice.value = buildNoteTodoNotice({ created, reminders, reminderPlanned, unresolved }, { transactions, bookkeeping, bookkeepingMismatch: bkMismatch })
   } catch (e: unknown) {
-    summarizeError.value = apiError(e, '总结失败，可稍后在笔记详情页重试')
+    if (ownerView.isCurrent(stamp)) summarizeError.value = apiError(e, '总结失败，可稍后在笔记详情页重试')
   } finally {
-    summarizing.value = false
+    if (ownerView.isCurrent(stamp)) summarizing.value = false
   }
 }
 
@@ -511,6 +545,7 @@ async function presentVoiceDraft(note: LocalNote, text: string) {
  * 草稿长得一样（正文占位、createdByVoice、附件）。
  */
 async function createVoiceDraft(text: string, audioBlob: Blob, durationMs: number) {
+  const stamp = ownerView.capture()
   const note = await notesStore.createNote({
     content: text || '（语音草稿）',
     contentType: 'voice',
@@ -520,6 +555,7 @@ async function createVoiceDraft(text: string, audioBlob: Blob, durationMs: numbe
     audioDurationMs: durationMs,
     workspaceId: currentWorkspaceId(),
   })
+  if (!ownerView.isCurrent(stamp)) return
   await presentVoiceDraft(note, text)
 }
 
@@ -532,7 +568,9 @@ async function createVoiceDraft(text: string, audioBlob: Blob, durationMs: numbe
  * 所以判据只有一条：**draftId 非空 ⇒ 草稿已经存在，只接管，不重建。**
  */
 async function adoptVoiceDraft(draftId: string, text: string) {
+  const stamp = ownerView.capture()
   const note = await notesStore.getNote(draftId, false, currentWorkspaceId())
+  if (!ownerView.isCurrent(stamp)) return
   // 落库之后又被删掉（用户手动删 / 工作区切换）⇒ 不重建、不抛错，走完即止。
   if (!note) return
   await presentVoiceDraft(note, text)

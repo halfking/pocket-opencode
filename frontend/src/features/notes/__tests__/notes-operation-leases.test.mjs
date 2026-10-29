@@ -1,136 +1,6 @@
 import assert from 'node:assert/strict'
-import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
-import { createServer } from 'vite'
-import initSqlJs from 'sql.js'
-import { createPinia, setActivePinia } from 'pinia'
-
-const SQL = await initSqlJs()
-function gate() {
-  let release, entered
-  const waiting = new Promise(resolve => { release = resolve })
-  const started = new Promise(resolve => { entered = resolve })
-  return { started, release, pause: async () => { entered(); await waiting } }
-}
-async function until(predicate) {
-  for (let i = 0; i < 100; i++) {
-    if (predicate()) return
-    await new Promise(resolve => setImmediate(resolve))
-  }
-  assert.fail('operation did not settle')
-}
-
-/** Actual LocalDB, plugin Promise bridge and jeep SQL engine; only platform I/O is isolated. */
-async function fixture(run) {
-  const oldStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage')
-  const oldFetch = globalThis.fetch, oldReader = globalThis.FileReader, oldWarn = console.warn
-  const values = new Map(), stored = new Map(), warnings = [], requests = []
-  const storage = { keys: () => values.keys(), getItem: key => values.get(key) ?? null,
-    setItem: (key, value) => values.set(key, String(value)), removeItem: key => values.delete(key) }
-  Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: storage })
-  setActivePinia(createPinia())
-  let afterQuery = async () => {}, afterRun = async () => {}, beforeEncrypt = async () => {}, beforeDecrypt = async () => {}, beforeRead = async () => {}
-  let respond = async () => ({}), db, driver, raw
-  const key = `__noteSQLite_${Math.random().toString(36).slice(2)}`
-  console.warn = (...args) => { warnings.push(args); oldWarn(...args) }
-  globalThis.FileReader = class {
-    readAsDataURL(blob) {
-      Promise.resolve().then(() => beforeRead()).then(() => blob.arrayBuffer()).then(buffer => {
-        this.result = `data:${blob.type};base64,${Buffer.from(buffer).toString('base64')}`
-        this.onloadend?.()
-      }).catch(error => { this.error = error; this.onerror?.() })
-    }
-  }
-  globalThis.fetch = async (url, options) => {
-    requests.push({ url: String(url), options })
-    return Response.json(await respond(String(url), options))
-  }
-  const vite = await createServer({ root: fileURLToPath(new URL('../../../../', import.meta.url)), configFile: false,
-    server: { middlewareMode: true, hmr: false }, ssr: { noExternal: ['@capacitor-community/sqlite'] },
-    optimizeDeps: { noDiscovery: true }, plugins: [{ name: 'notes-real-driver', enforce: 'pre',
-      resolveId(source, importer) {
-        if (source === '@capacitor-community/sqlite' && importer?.endsWith('/local-db.ts')) return '\0notes-sqlite'
-        if (importer?.endsWith('/local-db.ts') && source === './sqlite-web-init') return '\0notes-web'
-        if (importer?.endsWith('/local-db.ts') && source === './runtime-platform') return '\0notes-platform'
-        if (importer?.endsWith('/notes-persist.ts') && source === '../../native/crypto') return '\0notes-crypto'
-        if (importer?.endsWith('/notes-row.ts') && source === '../../native/crypto') return '\0notes-crypto'
-        if (importer?.endsWith('/asset-store.ts') && source === './crypto') return '\0notes-crypto'
-      },
-      load(id) {
-        if (id === '\0notes-sqlite') return `export const { SQLiteConnection, SQLiteDBConnection, CapacitorSQLite } = globalThis[${JSON.stringify(key)}]`
-        if (id === '\0notes-web') return 'export async function initSqliteWeb() {}'
-        if (id === '\0notes-platform') return 'export const isWebFallbackRuntime = () => true'
-        if (id === '\0notes-crypto') return `import { encryptString as encrypt, decryptString as decrypt } from '/src/native/crypto.ts'; export async function encryptString(value) { await globalThis[${JSON.stringify(key)}].beforeEncrypt(); return encrypt(value) }; export async function decryptString(value) { await globalThis[${JSON.stringify(key)}].beforeDecrypt(); return decrypt(value) }`
-      },
-    }] })
-  try {
-    const { Database } = await vite.ssrLoadModule('/node_modules/jeep-sqlite/dist/collection/utils/database.js')
-    const definitions = await vite.ssrLoadModule('/node_modules/@capacitor-community/sqlite/dist/esm/definitions.js')
-    const { registerPlugin } = await vite.ssrLoadModule('/node_modules/@capacitor/core/dist/index.js')
-    raw = new SQL.Database()
-    const store = { getItem: async key => stored.get(key), setItem: async (key, value) => stored.set(key, value), removeItem: async key => stored.delete(key) }
-    driver = new Database('lobster', 1, {}, store, false, '')
-    driver.mDb = raw
-    const platform = {
-      initWebStore: async () => {}, checkConnectionsConsistency: async () => ({ result: true }), createConnection: async () => {},
-      open: async () => { driver._isDBOpen = true }, close: async () => driver.close(), closeConnection: async () => {},
-      saveToStore: async () => driver.saveToStore(), loadExtension: async () => {},
-      execute: async o => ({ changes: { changes: await driver.executeSQL(o.statements, o.transaction) } }),
-      executeSet: async o => ({ changes: await driver.execSet(o.set, o.transaction, o.returnMode) }),
-      run: async o => { const changes = await driver.runSQL(o.statement, o.values, o.transaction, o.returnMode); await afterRun(o.statement); return { changes } },
-      query: async o => { const rows = await driver.selectSQL(o.statement, o.values); await afterQuery(o.statement); return { values: rows } },
-      beginTransaction: async () => ({ changes: { changes: await driver.beginTransaction() } }),
-      commitTransaction: async () => ({ changes: { changes: await driver.commitTransaction() } }),
-      rollbackTransaction: async () => ({ changes: { changes: await driver.rollbackTransaction() } }),
-      isTransactionActive: async () => ({ result: driver.isTransActive() }),
-    }
-    globalThis[key] = { ...definitions, CapacitorSQLite: registerPlugin(key, { web: async () => platform }), beforeEncrypt: () => beforeEncrypt(), beforeDecrypt: () => beforeDecrypt() }
-    ;({ localDB: db } = await vite.ssrLoadModule('/src/native/local-db.ts'))
-    await db.init('')
-    // SQL.js omits FTS5. This fixture exercises transaction ownership, not FTS.
-    raw.run('DROP TRIGGER IF EXISTS local_notes_ai; DROP TRIGGER IF EXISTS local_notes_ad; DROP TRIGGER IF EXISTS local_notes_au; DROP TRIGGER IF EXISTS local_assets_ai; DROP TRIGGER IF EXISTS local_assets_ad; DROP TRIGGER IF EXISTS local_assets_au;')
-    const policy = await vite.ssrLoadModule('/src/stores/syncPolicyStore.ts')
-    policy.installSyncPolicyStorage(storage)
-    const policyStore = policy.useSyncPolicyStore()
-    const { useAuthStore, captureAuthSession, isCurrentAuthSession } = await vite.ssrLoadModule('/src/stores/auth.ts')
-    const auth = useAuthStore()
-    const scope = () => JSON.stringify([auth.user, auth.workspaceId])
-    policy.installSyncPolicyScopeResolver(scope)
-    policy.installSyncPolicyActivationHost({ captureContext() {
-      if (auth.activationStatus !== 'ready') return null
-      const session = captureAuthSession(auth), version = auth.activationVersion, captured = scope()
-      return { scope: captured, intentScope: auth.userId ? JSON.stringify([auth.userId, auth.workspaceId]) : '', workspace: auth.workspaceId,
-        isCurrent: () => scope() === captured && auth.activationVersion === version && isCurrentAuthSession(auth, session) }
-    }, activate: (modes, publish) => db.requestPolicySnapshotActivation(modes, publish) })
-    const setMode = mode => policyStore.applyPolicy({ system_default: 'cloud', allow_override: true, modules: { notes: mode } }, Date.now())
-    const login = async (user = 'A') => {
-      await auth.setAuthWithWorkspace(`token-${user}`, user, `user-${user}`, 'workspace')
-      await setMode('cloud')
-    }
-    await login()
-    const notes = await vite.ssrLoadModule('/src/features/notes/notes-persist.ts')
-    const { vectorIndex } = await vite.ssrLoadModule('/src/native/vector.ts')
-    const crypto = await vite.ssrLoadModule('/src/native/crypto.ts')
-    const { useCryptoConfig } = await vite.ssrLoadModule('/src/stores/crypto-config.ts')
-    await crypto.initAppCrypto('fixture-password')
-    const count = table => Number(raw.exec(`SELECT count(*) FROM ${table}`)[0].values[0][0])
-    respond = async url => url.endsWith('/api/embed') ? { embedding: Array(1536).fill(1), model: 'fixture-model' } : {}
-    await run({ notes, db, raw, auth, requests, warnings, vectorIndex, setMode, login, count, crypto, cryptoConfig: useCryptoConfig(),
-      onEncrypt: fn => { beforeEncrypt = fn }, onRead: fn => { beforeRead = fn }, onQuery: fn => { afterQuery = fn },
-      onDecrypt: fn => { beforeDecrypt = fn },
-      onRun: fn => { afterRun = fn }, respond: fn => { respond = fn } })
-  } finally {
-    afterQuery = afterRun = beforeEncrypt = beforeDecrypt = beforeRead = async () => {}
-    await db?.close().catch(() => {})
-    await vite.close()
-    delete globalThis[key]
-    globalThis.fetch = oldFetch
-    globalThis.FileReader = oldReader
-    console.warn = oldWarn
-    if (oldStorage) Object.defineProperty(globalThis, 'localStorage', oldStorage)
-    else delete globalThis.localStorage
-  }
-}
+import { fixture, gate, until } from '../../../test-support/notes-sqlite-fixture.mjs'
 
 for (const roundtrip of [false, true]) test(`create keeps its original owner across encryption${roundtrip ? ' ABA' : ''}`, async () => fixture(async f => {
   f.cryptoConfig.setFieldEncryption('enabled')
@@ -263,4 +133,107 @@ test('policy ABA during proactive refresh cancels background requests before the
   await until(() => f.warnings.some(w => String(w[0]).includes('嵌入失败')))
   assert.equal(f.requests.length, 0)
   assert.equal(f.count('local_note_vectors'), 0)
+}))
+
+test('real notes CRUD queues full content and tombstones, with exact owner isolation', async () => fixture(async f => {
+  await f.setMode('local')
+  const note = await f.notes.createNote({content:'private complete body',workspaceId:'workspace'})
+  const bind = () => f.db.bindOperation(f.db.captureOperation({kind:'local-edit'}))
+  const store = () => f.portalNotesStore(bind())
+  assert.equal((await store().pending())[0].payload.content,'private complete body')
+  await f.notes.updateNote(note.id,{content:'updated full body'},'workspace')
+  const writes = await store().pending()
+  assert.equal(writes.length,2)
+  assert.equal(writes[1].payload.content,'updated full body')
+  await f.login('B')
+  assert.equal(await f.notes.getNote(note.id,false,'workspace'),null)
+  assert.equal((await store().pending()).length,0)
+  await f.login('A')
+  await f.setMode('local')
+  await f.notes.deleteNote(note.id,'workspace')
+  assert.equal((await store().pending()).at(-1).deleted,true)
+  assert.equal(f.requests.length,0)
+}))
+
+test('real PKM assets queue HTML and preserve unclaimed history and encrypted outbox', async () => fixture(async f => {
+  await f.setMode('local')
+  f.cryptoConfig.setFieldEncryption('enabled')
+  const a = await f.assetStore.upsert({kind:'note',title:'PKM',bodyText:'<p>完整正文</p>',metaJson:JSON.stringify({links:['link'],tags:['tag'],password:'never send'}),workspaceId:'workspace'})
+  const store = f.portalNotesStore(f.db.bindOperation(f.db.captureOperation({kind:'local-edit'})))
+  const [item] = await store.pending()
+  assert.equal(item.payload.content,'<p>完整正文</p>')
+  assert.equal(item.payload.format,'html')
+  assert.equal('password' in item.payload,false)
+  assert.match((await f.db.queryOne('SELECT item_json FROM local_portal_outbox')).item_json,/^e1:/)
+  await f.assetStore.softDeleteForWorkspace(a.id,'workspace')
+  assert.equal((await store.pending()).at(-1).deleted,true)
+  await f.db.run("INSERT INTO local_assets(id,workspace_id,kind,title,body_text,sync_mode,created_at,updated_at) VALUES ('historic','workspace','note','Old','unknown','e2ee_local_first',1,1)")
+  await f.assetStore.upsert({id:'historic',kind:'note',title:'edited old',bodyText:'edited',workspaceId:'workspace'})
+  assert.equal((await store.pending()).length,2,'editing historical data does not assign it to the current account')
+}))
+
+test('notes and PKM reject an explicit workspace that differs from the captured verified owner', async () => fixture(async f => {
+  await assert.rejects(f.notes.createNote({content:'wrong scope',workspaceId:'other'}),/归属不一致/)
+  await assert.rejects(f.assetStore.upsert({kind:'note',bodyText:'wrong scope',workspaceId:'other'}),/verified owner/)
+  assert.equal(f.count('local_notes'),0)
+  assert.equal(f.count('local_assets'),0)
+  const note = await f.notes.createNote({content:'trusted workspace default'})
+  assert.equal(note.workspaceId,'workspace')
+  await assert.rejects(f.notes.updateNote(note.id,{content:'wrong edit'},'other'),/归属不一致/)
+  await assert.rejects(f.notes.deleteNote(note.id,'other'),/归属不一致/)
+}))
+
+
+test('SQL ownership precedes pagination, same-title and daily-note lookup', async () => fixture(async f => {
+  await f.setMode('local')
+  const a = await f.notes.createNote({title:'A own',content:'A',workspaceId:'workspace'})
+  const assetA = await f.assetStore.upsert({kind:'note',title:'Same',bodyText:'A',workspaceId:'workspace',metaJson:JSON.stringify({dailyDate:'2026-10-30',same:'key'})})
+  await f.login('B'); await f.setMode('local')
+  for(let i=0;i<3;i++) {
+    await f.notes.createNote({title:'B newer '+i,content:'B',workspaceId:'workspace'})
+    await f.assetStore.upsert({kind:'note',title:'Same',bodyText:'B',workspaceId:'workspace',metaJson:JSON.stringify({dailyDate:'2026-10-30',same:'key'})})
+  }
+  await f.login('A'); await f.setMode('local')
+  assert.equal((await f.notes.listNotes({workspaceId:'workspace',limit:1}))[0].id,a.id)
+  assert.equal((await f.assetStore.search({kind:'note',workspaceId:'workspace',limit:1}))[0].id,assetA.id)
+  assert.equal((await f.pkm.findByTitle('Same','workspace')).id,assetA.id)
+  assert.equal((await f.pkm.getDailyNote('2026-10-30','workspace')).id,assetA.id)
+  assert.equal((await f.assetStore.findByMeta({workspaceId:'workspace',kind:'note',key:'same',value:'key'})).id,assetA.id)
+}))
+
+test('new ENEX Markdown remains fully local and visibly blocked rather than masquerading as HTML', async () => fixture(async f => {
+  await f.setMode('local')
+  const asset = await f.assetStore.upsert({kind:'note',title:'Imported',bodyText:'# Markdown\nComplete **original**',source:'enex_import',workspaceId:'workspace'})
+  const store=f.portalNotesStore(f.db.bindOperation(f.db.captureOperation({kind:'local-edit'})))
+  assert.equal((await store.pending()).length,0)
+  const failed=await f.db.queryOne('SELECT item_json,last_error FROM local_portal_outbox')
+  assert.match(failed.last_error,/ENEX Markdown/)
+  assert.equal(JSON.parse(failed.item_json).payload.format,'text')
+  assert.equal((await f.assetStore.getForWorkspace(asset.id,'workspace')).bodyText,'# Markdown\nComplete **original**')
+}))
+
+test('business save captures reset epoch before encryption and does not adopt a later reset',async()=>fixture(async f=>{
+  await f.setMode('local');f.cryptoConfig.setFieldEncryption('enabled')
+  const paused=gate();f.onEncrypt(paused.pause)
+  const saving=f.notes.createNote({content:'private original during reset',workspaceId:'workspace'})
+  await paused.started
+  const store=f.portalNotesStore(f.db.bindOperation(f.db.captureOperation({kind:'local-edit'})))
+  await store.observeEpoch(1);paused.release();const note=await saving
+  const row=await f.db.queryOne('SELECT item_json,last_error FROM local_portal_outbox')
+  const item=await store.decode(row.item_json)
+  assert.equal(item.epoch,0);assert.equal(row.last_error,'reset_epoch_mismatch')
+  assert.equal((await store.pending()).length,0)
+  assert.equal((await f.notes.getNote(note.id,false,'workspace')).content,'private original during reset')
+}))
+
+test('fresh verified device saves locally until epoch is known, with no automatic queue upgrade',async()=>fixture(async f=>{
+  await f.auth.setAuthWithWorkspace('fresh-token','Fresh','fresh-user','fresh-workspace');await f.setMode('local')
+  const note=await f.notes.createNote({content:'first offline original',workspaceId:'fresh-workspace'})
+  const store=f.portalNotesStore(f.db.bindOperation(f.db.captureOperation({kind:'local-edit'})))
+  const before=await f.db.queryOne('SELECT item_json FROM local_portal_outbox')
+  assert.equal((await store.decode(before.item_json)).epoch,null)
+  await store.observeEpoch(0)
+  assert.equal((await store.pending()).length,0)
+  assert.equal((await f.db.queryOne('SELECT item_json FROM local_portal_outbox')).item_json,before.item_json)
+  assert.equal((await f.notes.getNote(note.id,false,'fresh-workspace')).content,'first offline original')
 }))

@@ -2,6 +2,7 @@ import { localDB, type OperationLease } from '../../native/local-db'
 import { assertCloudModule } from '../../api/data-policy'
 import { assertAuthSession, captureAuthSession, useAuthStore } from '../../stores/auth'
 import { readCachedModuleMode } from '../../stores/syncPolicyStore'
+import { captureNotesEpoch } from '../../native/portal-sync/epochs'
 
 export interface NoteWriteOptions {
   /** A caller with an earlier async entry must retain that original lease. */
@@ -18,6 +19,7 @@ export interface NoteCloudOperation {
 export interface NoteWriteOperation {
   readonly db: NoteDbOperation
   readonly cloud: NoteCloudOperation | null
+  readonly syncEpoch: number | null
   assertCurrent(): void
 }
 
@@ -40,5 +42,5 @@ export function captureNoteWriteOperation(options: NoteWriteOptions = {}): NoteW
       } })
     }
   }
-  return Object.freeze({ db, cloud, assertCurrent: () => db.assertCurrent() })
+  return Object.freeze({ db, cloud, syncEpoch: captureNotesEpoch(db.owner), assertCurrent: () => db.assertCurrent() })
 }
