@@ -26,7 +26,9 @@ type StarterImportOptions struct {
 	// DefaultInterval 是目录里没有自带间隔时的兜底值。
 	DefaultInterval time.Duration
 	// Now 可注入，便于测试。
-	Now func() time.Time
+	Now         func() time.Time
+	PortalSync  bool
+	PortalEpoch *int64
 }
 
 // StarterImportResult 报告一次导入的真实结果。
@@ -50,6 +52,9 @@ func (o StarterImportOptions) now() time.Time {
 // （用户连点两次、或多个实例同时启动自举）时后者会插出重复行。
 func (s *Store) ImportStarterSources(ctx context.Context, sc Scope, opt StarterImportOptions) (*StarterImportResult, error) {
 	if err := requireScope(sc); err != nil {
+		return nil, err
+	}
+	if err := validPortableEpoch(opt.PortalEpoch); err != nil {
 		return nil, err
 	}
 	feeds := StarterFeedsByCategory(opt.Categories...)
@@ -87,11 +92,16 @@ func (s *Store) ImportStarterSources(ctx context.Context, sc Scope, opt StarterI
 		if !opt.Enabled {
 			status = SourceDisabled
 		}
-		row, err := scanSource(s.pool.QueryRow(ctx, `
-			INSERT INTO rss_sources(id,user_id,workspace_id,url,title,description,site_url,language,category,status,enabled,fetch_interval,next_fetch_at,created_at,updated_at)
-			VALUES($1,$2,$3,$4,$5,'',$6,$7,$8,$9,$10,$11,$12,$13,$13)
+		var row *Source
+		err := s.portableWrite(ctx, sc, func(tx pgx.Tx) error {
+			var err error
+			row, err = scanSource(tx.QueryRow(ctx, `
+			INSERT INTO rss_sources(id,user_id,workspace_id,url,title,description,site_url,language,category,status,enabled,fetch_interval,next_fetch_at,created_at,updated_at,portal_managed,portal_epoch)
+			VALUES($1,$2,$3,$4,$5,'',$6,$7,$8,$9,$10,$11,$12,$13,$13,$14,$15)
 			ON CONFLICT (user_id,workspace_id,url) DO NOTHING
-			RETURNING `+sourceCols, id("src"), sc.UserID, sc.WorkspaceID, f.URL, f.Title, f.SiteURL, f.Language, cat, status, opt.Enabled, int64(fetchEvery/time.Second), now, now))
+			RETURNING `+sourceCols, id("src"), sc.UserID, sc.WorkspaceID, f.URL, f.Title, f.SiteURL, f.Language, cat, status, opt.Enabled, int64(fetchEvery/time.Second), now, now, opt.PortalSync, opt.PortalEpoch))
+			return err
+		})
 		if err != nil {
 			// ErrNoRows = ON CONFLICT 命中 = 这一条早就订阅过了。
 			if errors.Is(err, pgx.ErrNoRows) {

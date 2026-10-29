@@ -1,9 +1,11 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted,watch,onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import { rssApi, type RSSStarterFeed, type RSSCandidate } from '../../api/rss'
 import { useI18n } from 'vue-i18n'
 import { toUserMessage } from '../../api/error-message'
+import { useAuthStore } from '../../stores/auth'
+import {captureRssPortalOperation} from './rss-sync-store'
 
 const router = useRouter()
 const step = ref<'catalog' | 'discover'>('catalog')
@@ -18,6 +20,10 @@ const busy = ref(false)
 const interval = ref('30m')
 const enabled = ref(true)
 const { t } = useI18n()
+const auth=useAuthStore();let generation=0
+const current=(stamp:number)=>stamp===generation&&auth.activationStatus==='ready'
+watch(()=>[auth.activationVersion,auth.userId,auth.workspaceId,auth.activationStatus],()=>{generation++;step.value='catalog';inputUrl.value='';candidates.value=[];starters.value=[];allCategories.value=[];activeCategory.value='';importResult.value=errorMsg.value='';busy.value=false;if(auth.activationStatus==='ready')void loadCatalog()},{flush:'sync'})
+onBeforeUnmount(()=>{generation++})
 
 const label = (cat: string) => starters.value.find(f => f.category === cat)?.categoryLabel || cat
 
@@ -38,82 +44,98 @@ const grouped = computed(() => {
 })
 
 async function loadCatalog() {
+  const stamp=generation
   try {
-    const res = await rssApi.listStarter()
+    const operation=captureRssPortalOperation(),res = await rssApi.listStarter(undefined,{assertCurrent:operation.assertCurrent})
+    operation.assertCurrent();if(!current(stamp))return
     starters.value = res.feeds ?? []
     allCategories.value = res.categories ?? []
   } catch (e: any) {
-    errorMsg.value = `目录加载失败：${e?.message ?? e}`
+    if(current(stamp)&&e?.name!=='AbortError')errorMsg.value = `目录加载失败：${e?.message ?? e}`
   }
 }
 
 async function start() {
+  const stamp=generation
   const url = inputUrl.value.trim()
   if (!url) return
   busy.value = true
   errorMsg.value = ''
   try {
-    candidates.value = await rssApi.discover(url)
+    const operation=captureRssPortalOperation(),found=await rssApi.discover(url,{assertCurrent:operation.assertCurrent})
+    operation.assertCurrent();if(!current(stamp))return
+    candidates.value = found
     if (candidates.value.length === 0) {
       candidates.value = [{ url, title: '' }]
     }
     step.value = 'discover'
   } catch (e: any) {
-    errorMsg.value = `发现失败：${e?.message ?? e}`
+    if(current(stamp)&&e?.name!=='AbortError')errorMsg.value = `发现失败：${e?.message ?? e}`
   } finally {
-    busy.value = false
+    if(current(stamp))busy.value = false
   }
 }
 
 async function useCatalogFeed(s: RSSStarterFeed) {
+  if(!starters.value.includes(s))return
   inputUrl.value = s.url
   await start()
 }
 
 /** 一键订阅整个分类（幂等：已订阅的自动跳过）。 */
 async function importCategory(cat: string) {
+  if(!allCategories.value.includes(cat))return
+  const stamp=generation
   busy.value = true
   errorMsg.value = ''
   importResult.value = ''
   try {
-    const res = await rssApi.importStarter({ categories: [cat], enabled: true })
+    const operation=captureRssPortalOperation(),res = await rssApi.importStarter({ categories: [cat], enabled: true },{assertCurrent:operation.assertCurrent})
+    operation.assertCurrent();if(!current(stamp))return
     importResult.value = `已订阅 ${res.created} 个源` + (res.skipped > 0 ? `（${res.skipped} 个此前已订阅）` : '')
   } catch (e: any) {
-    errorMsg.value = toUserMessage(e, t, t('errors.operateFailed'))
+    if(current(stamp)&&e?.name!=='AbortError')errorMsg.value = toUserMessage(e, t, t('errors.operateFailed'))
   } finally {
-    busy.value = false
+    if(current(stamp))busy.value = false
   }
 }
 
 async function pickCandidate(c: RSSCandidate) {
+  const stamp=generation
   busy.value = true
   errorMsg.value = ''
   try {
+    if(!candidates.value.includes(c))throw new DOMException('Former RSS discovery result','AbortError')
+    const operation=captureRssPortalOperation()
     await rssApi.addSource({
       url: c.url,
       title: c.title || '',
       enabled: enabled.value,
       fetchInterval: interval.value,
-    })
+    },{assertCurrent:operation.assertCurrent})
+    operation.assertCurrent();if(!current(stamp))return
     router.replace({ name: 'rss' })
   } catch (e: any) {
-    errorMsg.value = `保存失败：${e?.message ?? e}`
+    if(current(stamp)&&e?.name!=='AbortError')errorMsg.value = `保存失败：${e?.message ?? e}`
   } finally {
-    busy.value = false
+    if(current(stamp))busy.value = false
   }
 }
 
 async function addDirect() {
+  const stamp=generation
   // 没找到候选但用户直接给了 URL
   busy.value = true
   errorMsg.value = ''
   try {
-    await rssApi.addSource({ url: inputUrl.value.trim(), enabled: enabled.value, fetchInterval: interval.value })
+    const operation=captureRssPortalOperation()
+    await rssApi.addSource({ url: inputUrl.value.trim(), enabled: enabled.value, fetchInterval: interval.value },{assertCurrent:operation.assertCurrent})
+    operation.assertCurrent();if(!current(stamp))return
     router.replace({ name: 'rss' })
   } catch (e: any) {
-    errorMsg.value = toUserMessage(e, t, t('errors.operateFailed'))
+    if(current(stamp)&&e?.name!=='AbortError')errorMsg.value = toUserMessage(e, t, t('errors.operateFailed'))
   } finally {
-    busy.value = false
+    if(current(stamp))busy.value = false
   }
 }
 
@@ -140,7 +162,7 @@ function back() {
     <!-- Step 1: 分类目录 + 手动 URL -->
     <section v-if="step === 'catalog'" class="step">
       <label>粘贴网站或 feed URL</label>
-      <input v-model="inputUrl" placeholder="https://example.com 或 https://example.com/feed" @keydown.enter="start" />
+      <input id="rss-add-url" v-model="inputUrl" placeholder="https://example.com 或 https://example.com/feed" @keydown.enter="start" />
       <button class="btn btn-primary" :disabled="!inputUrl.trim() || busy" @click="start">
         {{ busy ? '发现中…' : '发现候选' }}
       </button>
@@ -198,7 +220,7 @@ function back() {
 
       <div class="divider">或者手动指定 URL</div>
       <div class="manual">
-        <input v-model="inputUrl" />
+        <input id="rss-add-url" v-model="inputUrl" />
         <button class="btn" :disabled="busy" @click="addDirect">添加</button>
       </div>
 

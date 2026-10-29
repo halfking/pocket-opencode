@@ -6,9 +6,11 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -59,6 +61,26 @@ func newPGStore(t *testing.T) (*Store, func()) {
 		rootPool.Close()
 	}
 	return s, drop
+}
+
+// Additional tracing connections inherit the isolated helper's search_path.
+// Refuse to clone a pool unless PostgreSQL confirms that schema first.
+func cloneScopedRSSPool(t *testing.T, store *Store, tracer pgx.QueryTracer) *pgxpool.Pool {
+	t.Helper()
+	var schema string
+	if err := store.pool.QueryRow(context.Background(), `SELECT current_schema()`).Scan(&schema); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(schema, "rss_test_") {
+		t.Fatalf("RSS test pool is not isolated: %q", schema)
+	}
+	cfg := store.pool.Config()
+	cfg.ConnConfig.Tracer = tracer
+	pool, err := pgxpool.NewWithConfig(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pool
 }
 
 func testScope() Scope { return Scope{UserID: "u1", WorkspaceID: "ws1"} }

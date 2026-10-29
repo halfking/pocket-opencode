@@ -101,6 +101,9 @@ type CreateSourceRequest struct {
 	Category                                   string
 	Enabled                                    bool
 	FetchInterval                              time.Duration
+	// Only an explicit new-source request may opt into portable journaling.
+	PortalSync  bool
+	PortalEpoch *int64
 }
 type UpdateSourceRequest struct {
 	URL, Title, Description, SiteURL, Language *string
@@ -108,6 +111,7 @@ type UpdateSourceRequest struct {
 	Enabled                                    *bool
 	FetchInterval                              *time.Duration
 	Status                                     *SourceStatus
+	PortalEpoch                                *int64
 }
 type ListItemsOptions struct {
 	Limit, Offset int

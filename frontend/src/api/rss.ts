@@ -4,6 +4,15 @@
  * 全部走 http() 统一鉴权 + 错误归一化。
  */
 import { http, type HttpOptions } from './http'
+import { captureRssPortalOperation } from '../features/rss/rss-sync-store'
+
+function nativeMutation(options:HttpOptions={}) {
+  const operation=captureRssPortalOperation()
+  const assertCurrent=()=>{operation.assertCurrent();options.assertCurrent?.();operation.assertCurrent()}
+  assertCurrent()
+  return {operation,options:{...options,assertCurrent}}
+}
+function nativeChanged(){if(typeof window!=='undefined')window.dispatchEvent(new Event('openpocket:rss-native-changed'))}
 
 export interface RSSSource {
   id: string
@@ -135,11 +144,11 @@ export const rssApi = {
   },
 
   /** 内置推荐源目录（it / ai / finance / product / deals / news 六类，可按分类过滤）。 */
-  async listStarter(category?: string): Promise<{ feeds: RSSStarterFeed[]; categories: string[] }> {
+  async listStarter(category?: string,options:HttpOptions={}): Promise<{ feeds: RSSStarterFeed[]; categories: string[] }> {
     const qs = new URLSearchParams()
     if (category) qs.set('category', category)
     const suffix = qs.toString() ? `?${qs.toString()}` : ''
-    return http(`/api/rss/sources/starter${suffix}`)
+    return http(`/api/rss/sources/starter${suffix}`,options)
   },
 
   /**
@@ -152,11 +161,13 @@ export const rssApi = {
     total: number
     sources: RSSSource[]
   }> {
-    return http('/api/rss/sources/import-starter', {
-      ...options,
+    const captured=nativeMutation(options)
+    const result=await http<{created:number;skipped:number;total:number;sources:RSSSource[]}>('/api/rss/sources/import-starter', {
+      ...captured.options,
       method: 'POST',
-      body: JSON.stringify(input),
+      body: JSON.stringify({...input,portalSync:true,portalEpoch:captured.operation.epoch}),
     })
+    captured.options.assertCurrent();nativeChanged();return result
   },
 
   /** 取某天的全部信息摘要（缺省今天；当天还没有时后端会按需生成）。 */
@@ -179,31 +190,39 @@ export const rssApi = {
     return res.digests ?? []
   },
 
-  async discover(url: string): Promise<RSSCandidate[]> {
+  async discover(url: string,options:HttpOptions={}): Promise<RSSCandidate[]> {
     const res = await http<{ candidates: RSSCandidate[] }>('/api/rss/sources/discover', {
+      ...options,
       method: 'POST',
       body: JSON.stringify({ url }),
     })
     return res.candidates ?? []
   },
 
-  async addSource(input: { url: string; title?: string; language?: string; enabled?: boolean; fetchInterval?: string }): Promise<RSSSource> {
-    return http<RSSSource>('/api/rss/sources', {
+  async addSource(input: { url: string; title?: string; language?: string; enabled?: boolean; fetchInterval?: string },options:HttpOptions={}): Promise<RSSSource> {
+    const captured=nativeMutation(options)
+    const result=await http<RSSSource>('/api/rss/sources', {
+      ...captured.options,
       method: 'POST',
-      body: JSON.stringify(input),
+      body: JSON.stringify({...input,portalSync:true,portalEpoch:captured.operation.epoch}),
     })
+    captured.options.assertCurrent();nativeChanged();return result
   },
 
   async patchSource(id: string, patch: Partial<RSSSource> & { fetchInterval?: string }, options: HttpOptions = {}): Promise<RSSSource> {
-    return http<RSSSource>(`/api/rss/sources/${encodeURIComponent(id)}`, {
-      ...options,
+    const captured=nativeMutation(options)
+    const result=await http<RSSSource>(`/api/rss/sources/${encodeURIComponent(id)}`, {
+      ...captured.options,
       method: 'PATCH',
-      body: JSON.stringify(patch),
+      body: JSON.stringify({...patch,portableMutation:true,portalEpoch:captured.operation.epoch}),
     })
+    captured.options.assertCurrent();nativeChanged();return result
   },
 
   async deleteSource(id: string, options: HttpOptions = {}): Promise<void> {
-    await http(`/api/rss/sources/${encodeURIComponent(id)}`, { ...options, method: 'DELETE' })
+    const captured=nativeMutation(options)
+    await http(`/api/rss/sources/${encodeURIComponent(id)}`, { ...captured.options, method: 'DELETE',body:JSON.stringify({portableMutation:true,portalEpoch:captured.operation.epoch}) })
+    captured.options.assertCurrent();nativeChanged()
   },
 
   async refreshSource(id: string, options: HttpOptions = {}): Promise<{ fetched: boolean; newItems: number; duplicates: number; notModified: boolean }> {

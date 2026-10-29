@@ -26,6 +26,9 @@ func NewStore(ctx context.Context, pool *pgxpool.Pool) (*Store, error) {
 	if err := s.migrate(ctx); err != nil {
 		return nil, fmt.Errorf("rss migration: %w", err)
 	}
+	if err := s.migratePortable(ctx); err != nil {
+		return nil, fmt.Errorf("rss portable migration: %w", err)
+	}
 	return s, nil
 }
 func (s *Store) Available() bool { return s != nil && s.pool != nil }
@@ -81,6 +84,9 @@ func (s *Store) CreateSource(ctx context.Context, req CreateSourceRequest, sc Sc
 	if err := ValidateURL(req.URL); err != nil {
 		return nil, err
 	}
+	if err := validPortableEpoch(req.PortalEpoch); err != nil {
+		return nil, err
+	}
 	if req.FetchInterval <= 0 {
 		req.FetchInterval = time.Hour
 	}
@@ -90,7 +96,10 @@ func (s *Store) CreateSource(ctx context.Context, req CreateSourceRequest, sc Sc
 		x.Status = SourceDisabled
 	}
 	x.NextFetchAt = &now
-	_, err := s.pool.Exec(ctx, `INSERT INTO rss_sources(id,user_id,workspace_id,url,title,description,site_url,language,category,status,enabled,fetch_interval,next_fetch_at,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$14)`, x.ID, x.UserID, x.WorkspaceID, x.URL, x.Title, x.Description, x.SiteURL, x.Language, x.Category, x.Status, x.Enabled, int64(x.FetchInterval/time.Second), x.NextFetchAt, x.CreatedAt)
+	err := s.portableWrite(ctx, sc, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `INSERT INTO rss_sources(id,user_id,workspace_id,url,title,description,site_url,language,category,status,enabled,fetch_interval,next_fetch_at,created_at,updated_at,portal_managed,portal_epoch) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$14,$15,$16)`, x.ID, x.UserID, x.WorkspaceID, x.URL, x.Title, x.Description, x.SiteURL, x.Language, x.Category, x.Status, x.Enabled, int64(x.FetchInterval/time.Second), x.NextFetchAt, x.CreatedAt, req.PortalSync, req.PortalEpoch)
+		return err
+	})
 	if err != nil {
 		return nil, fmt.Errorf("create source: %w", err)
 	}
@@ -149,7 +158,13 @@ func (s *Store) UpdateSource(ctx context.Context, id string, req UpdateSourceReq
 			return nil, err
 		}
 	}
-	_, e := s.pool.Exec(ctx, `UPDATE rss_sources SET url=COALESCE($1,url),title=COALESCE($2,title),description=COALESCE($3,description),site_url=COALESCE($4,site_url),language=COALESCE($5,language),category=COALESCE($6,category),enabled=COALESCE($7,enabled),fetch_interval=COALESCE($8,fetch_interval),status=COALESCE($9,status),updated_at=NOW() WHERE id=$10 AND user_id=$11 AND workspace_id=$12`, req.URL, req.Title, req.Description, req.SiteURL, req.Language, req.Category, req.Enabled, durationSec(req.FetchInterval), req.Status, id, sc.UserID, sc.WorkspaceID)
+	if err := validPortableEpoch(req.PortalEpoch); err != nil {
+		return nil, err
+	}
+	e := s.portableWrite(ctx, sc, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `UPDATE rss_sources SET url=COALESCE($1,url),title=COALESCE($2,title),description=COALESCE($3,description),site_url=COALESCE($4,site_url),language=COALESCE($5,language),category=COALESCE($6,category),enabled=COALESCE($7,enabled),fetch_interval=COALESCE($8,fetch_interval),status=COALESCE($9,status),updated_at=NOW(),portal_epoch=CASE WHEN portal_managed AND ($1::text IS NOT NULL OR $2::text IS NOT NULL OR $6::text IS NOT NULL) THEN $13 ELSE portal_epoch END WHERE id=$10 AND user_id=$11 AND workspace_id=$12`, req.URL, req.Title, req.Description, req.SiteURL, req.Language, req.Category, req.Enabled, durationSec(req.FetchInterval), req.Status, id, sc.UserID, sc.WorkspaceID, req.PortalEpoch)
+		return err
+	})
 	if e != nil {
 		return nil, e
 	}
@@ -165,14 +180,33 @@ func durationSec(v *time.Duration) any {
 	return int64(v.Seconds())
 }
 func (s *Store) DeleteSource(ctx context.Context, id string, sc Scope) error {
+	return s.deleteSource(ctx, id, sc, nil, false)
+}
+
+// A new deletion intention carries the epoch captured by its original client;
+// never look up a newer cloud epoch on behalf of a delayed request.
+func (s *Store) DeleteSourcePortable(ctx context.Context, id string, sc Scope, epoch *int64) error {
+	if err := validPortableEpoch(epoch); err != nil {
+		return err
+	}
+	return s.deleteSource(ctx, id, sc, epoch, true)
+}
+func (s *Store) deleteSource(ctx context.Context, id string, sc Scope, epoch *int64, explicit bool) error {
 	if err := requireScope(sc); err != nil {
 		return err
 	}
-	tag, e := s.pool.Exec(ctx, `DELETE FROM rss_sources WHERE id=$1 AND user_id=$2 AND workspace_id=$3`, id, sc.UserID, sc.WorkspaceID)
-	if e == nil && tag.RowsAffected() == 0 {
-		return ErrNotFound
-	}
-	return e
+	return s.portableWrite(ctx, sc, func(tx pgx.Tx) error {
+		if explicit {
+			if _, err := tx.Exec(ctx, `UPDATE rss_sources SET portal_epoch=$1 WHERE id=$2 AND user_id=$3 AND workspace_id=$4 AND portal_managed`, epoch, id, sc.UserID, sc.WorkspaceID); err != nil {
+				return err
+			}
+		}
+		tag, e := tx.Exec(ctx, `DELETE FROM rss_sources WHERE id=$1 AND user_id=$2 AND workspace_id=$3`, id, sc.UserID, sc.WorkspaceID)
+		if e == nil && tag.RowsAffected() == 0 {
+			return ErrNotFound
+		}
+		return e
+	})
 }
 
 func (s *Store) ClaimDueSources(ctx context.Context, sc Scope, now time.Time, limit int) ([]Source, error) {
