@@ -1,4 +1,26 @@
 {
+  "rssPortal": {
+    "copy": "保存为跨端资料",
+    "title": "跨端 RSS 资料",
+    "description": "这里的源与条目资料可按策略同步；不会自动启用抓取。原有订阅和正文不会被自动导入。",
+    "source": "源资料",
+    "item": "条目资料",
+    "titleLabel": "标题",
+    "url": "网址",
+    "category": "分类",
+    "sourceLabel": "来源",
+    "summary": "摘要",
+    "new": "新建资料",
+    "save": "保存",
+    "empty": "还没有跨端资料",
+    "confirmDelete": "删除这条跨端资料？本机已抓取的正文不会删除。",
+    "failed": "资料保留在本机，同步暂未完成。",
+    "unknown": "同步初始化尚未完成；这次修改会留在本机，初始化后请重新编辑保存以同步。",
+    "blocked": "清云前的修改仍保留在本机；如需重新上传，请明确编辑并保存。",
+    "loading": "加载中…",
+    "search": "搜索资料",
+    "localSaved": "已保存在本机"
+  },
   "common": {
     "sessionSwitching": "正在切换本地会话…",
     "sessionSwitchFailed": "本地会话切换未完成，请重新登录或重试退出。",

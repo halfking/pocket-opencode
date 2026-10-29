@@ -1,4 +1,26 @@
 {
+  "rssPortal": {
+    "copy": "Save a shared record",
+    "title": "RSS across devices",
+    "description": "These source and article records sync according to your policy. They do not enable fetching or automatically import existing subscriptions or article bodies.",
+    "source": "Source record",
+    "item": "Article record",
+    "titleLabel": "Title",
+    "url": "URL",
+    "category": "Category",
+    "sourceLabel": "Source",
+    "summary": "Summary",
+    "new": "New record",
+    "save": "Save",
+    "empty": "No shared RSS records yet",
+    "confirmDelete": "Delete this shared record? Downloaded article bodies on this device will remain.",
+    "failed": "The record remains on this device; synchronization has not completed.",
+    "unknown": "Sync has not initialized. This change stays on this device; edit and save it again after initialization to sync.",
+    "blocked": "Changes from before the cloud reset remain on this device. Edit and save explicitly to upload again.",
+    "loading": "Loading…",
+    "search": "Search records",
+    "localSaved": "Saved on this device"
+  },
   "common": {
     "sessionSwitching": "Switching the local session…",
     "sessionSwitchFailed": "The local session could not be switched. Sign in again or retry signing out.",

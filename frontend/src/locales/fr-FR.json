@@ -1,4 +1,26 @@
 {
+  "rssPortal": {
+    "copy": "Enregistrer une fiche partagée",
+    "title": "RSS sur plusieurs appareils",
+    "description": "Ces données de sources et d’articles suivent votre règle de synchronisation. Elles n’activent pas la collecte et n’importent pas automatiquement les abonnements ni les textes existants.",
+    "source": "Fiche de source",
+    "item": "Fiche d’article",
+    "titleLabel": "Titre",
+    "url": "Adresse web",
+    "category": "Catégorie",
+    "sourceLabel": "Origine",
+    "summary": "Résumé",
+    "new": "Nouvelle fiche",
+    "save": "Enregistrer",
+    "empty": "Aucune fiche RSS partagée",
+    "confirmDelete": "Supprimer cette fiche partagée ? Les textes téléchargés sur cet appareil seront conservés.",
+    "failed": "La fiche reste sur cet appareil ; la synchronisation n’est pas terminée.",
+    "unknown": "La synchronisation n’est pas initialisée. Cette modification reste locale ; modifiez-la puis enregistrez-la après l’initialisation.",
+    "blocked": "Les modifications antérieures à la réinitialisation du cloud restent locales. Modifiez et enregistrez explicitement pour les renvoyer.",
+    "loading": "Chargement…",
+    "search": "Rechercher des fiches",
+    "localSaved": "Enregistré sur cet appareil"
+  },
   "common": {
     "sessionSwitching": "Changement de session locale…",
     "sessionSwitchFailed": "Le changement de session locale a échoué. Reconnectez-vous ou réessayez de vous déconnecter.",
@@ -46,7 +68,7 @@
     "aiChat": "Chat",
     "notes": "Notes",
     "meetings": "Réunions",
-    "rss": "RSS",
+    "rss": "Flux RSS",
     "email": "E-mail",
     "more": "Plus",
     "moreFeatures": "Plus de fonctionnalités",
@@ -199,7 +221,7 @@
     "storageModuleAiChatDesc": "Conversations et contexte",
     "storageModuleEmail": "E-mail",
     "storageModuleEmailDesc": "Comptes, corps et pièces jointes",
-    "storageModuleRss": "RSS",
+    "storageModuleRss": "Flux RSS",
     "storageModuleRssDesc": "Flux, statuts de lecture et résumés",
     "storageModuleNotes": "Notes · PKM",
     "storageModuleNotesDesc": "Les notes et liens restent dans le coffre local chiffré",
@@ -428,7 +450,7 @@
     "source": {
       "note": "Note",
       "email": "E-mail",
-      "rss": "RSS",
+      "rss": "Flux RSS",
       "meeting": "Réunion",
       "chat": "Discussion",
       "manual": "Manuel"
