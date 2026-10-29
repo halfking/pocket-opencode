@@ -96,9 +96,15 @@ describe('§223 参考资料与建议：没拿到必须说得出来', () => {
     const fn = t.slice(t.indexOf('async recommend('), t.indexOf('async recommend(') + 1400)
     assert.ok(fn, '找不到 recommend 方法')
     assert.match(fn, /fallback:\s*res\.fallback === true/, '没有透出服务端标志')
+    // ⚠ 2026-10-29：catch 必须写成**带参数**的形态才匹配得上。
+    //   生产侧是 `catch (error) { … if (isModulePolicyLocalError(error)) throw error; … }`
+    //   —— 旧判据 `/catch\s*\{/` 只认**光秃秃**的 `catch {` ⇒
+    //   生产早就改对了（fallback: true 就在那儿），判据却因为
+    //   「多了一个 error 参数」而报红 ⇒ 这道门是**误报**，不是产品有缺陷。
+    //   ⇒ 判据改成认 `catch (error)` / `catch (e)` / `catch {` 三种形态。
     assert.match(
       fn,
-      /catch\s*\{[\s\S]{0,300}?fallback:\s*true/,
+      /catch\s*(\([^)]*\))?\s*\{[\s\S]{0,300}?fallback:\s*true/,
       'catch 分支没置 fallback=true：网络/超时失败会被读成「模型没有建议」',
     )
   })
