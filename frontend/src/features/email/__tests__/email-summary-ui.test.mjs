@@ -77,8 +77,8 @@ test('总结成功后写回本地库，保证重进详情不必再请求', () =>
   assert.ok(setAiSummaryBody, '应能找到 setAiSummary 函数体')
   assert.match(
     setAiSummaryBody,
-    /UPDATE local_emails SET ai_summary = \? WHERE id = \?/,
-    'setAiSummary 只能更新 ai_summary',
+    /updateLocalSummary\(id, summary, undefined, database\)/,
+    'setAiSummary 必须走不含分类参数的摘要事务',
   )
   assert.doesNotMatch(
     setAiSummaryBody,

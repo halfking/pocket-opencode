@@ -457,6 +457,22 @@
     }
   },
   "email": {
+    "portalMetadata": "同期したメール要約",
+    "portalMetadataHint": "ここではアカウント情報と要約のみを共有します。受信用アカウントは作成されず、本文、パスワード、添付ファイルは端末に残ります。",
+    "portalMetadataPending": "一部のメタデータは端末に保持され、同期または確認が必要です。",
+    "portalMetadataEmpty": "同期したメール情報はまだありません。",
+    "portalMetadataTitle": "タイトル",
+    "portalMetadataDelete": "この共有メタデータのみを削除しますか？端末のメールと認証情報は保持されます。",
+    "portalMetadataMore": "さらに表示",
+    "portalMetadataField": {
+      "address": "メールアドレス",
+      "display_name": "表示名",
+      "last_sync_at": "最終同期時刻",
+      "from": "送信者",
+      "subject": "件名",
+      "snippet": "要約",
+      "received_at": "受信時刻"
+    },
     "localPrivacyNotice": "ローカル専用モードでは本文をクラウド翻訳に送信せず、外部画像も読み込みません。",
     "dailySummary": "デイリー要約",
     "fetchHintNetwork": "バックグラウンド取得が完了しませんでした。同期済みメールを表示しています",

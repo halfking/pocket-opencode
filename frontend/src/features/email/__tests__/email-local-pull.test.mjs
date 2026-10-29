@@ -65,7 +65,7 @@ async function fixture(run) {
       open: async () => { driver._isDBOpen = true }, close: async () => driver.close(), closeConnection: async () => {},
       saveToStore: async () => driver.saveToStore(), loadExtension: async () => {},
       execute: async o => ({ changes: { changes: await driver.executeSQL(o.statements, o.transaction) } }),
-      executeSet: async o => ({ changes: await driver.execSet(o.set, o.transaction, o.returnMode) }),
+      executeSet: async o => { const changes = await driver.execSet(o.set, o.transaction, o.returnMode); for (const row of o.set) await afterRun(row.statement); return { changes } },
       run: async o => { const changes = await driver.runSQL(o.statement, o.values, o.transaction, o.returnMode); await afterRun(o.statement); return { changes } },
       query: async o => { const rows = await driver.selectSQL(o.statement, o.values); await afterQuery(o.statement); return { values: rows } },
       beginTransaction: async () => ({ changes: { changes: await driver.beginTransaction() } }),

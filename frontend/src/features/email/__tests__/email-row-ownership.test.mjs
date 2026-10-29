@@ -3,8 +3,10 @@ import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { createServer } from 'vite'
 import initSqlJs from 'sql.js'
+import { createPinia, setActivePinia } from 'pinia'
 
 async function fixture(run) {
+  setActivePinia(createPinia())
   const SQL = await initSqlJs(), raw = new SQL.Database()
   const originalStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage')
   const stored = new Map()
@@ -20,10 +22,11 @@ async function fixture(run) {
     captureOperation() { return { owner: { principal: owner }, epoch } },
     bindOperation(lease) {
       const assertCurrent = () => { if (lease.epoch !== epoch) throw new DOMException('expired', 'AbortError') }
-      return { owner: lease.owner.principal, assertCurrent,
+      return { owner: lease.owner.principal, schemaConnection: raw, assertCurrent,
         query: async (...args) => { assertCurrent(); return query(...args) },
         queryOne: async (...args) => { assertCurrent(); return (await query(...args))[0] ?? null },
-        run: async (sql, values = []) => { assertCurrent(); raw.run(sql, values); return raw.getRowsModified() } }
+        run: async (sql, values = []) => { assertCurrent(); raw.run(sql, values); return raw.getRowsModified() },
+        runInTransaction: async statements => { assertCurrent(); raw.run('BEGIN'); try { for (const row of statements) { assertCurrent(); raw.run(row.statement, row.values) }; assertCurrent(); raw.run('COMMIT') } catch (cause) { raw.run('ROLLBACK'); throw cause } } }
     },
   }
   Object.assign(database, {
@@ -39,7 +42,7 @@ async function fixture(run) {
         if (source.endsWith('/native/crypto')) return '\0ownership-crypto'
       }, load(id) {
         if (id === '\0ownership-db') return `export const localDB = globalThis[${JSON.stringify(key)}]`
-        if (id === '\0ownership-crypto') return 'export async function encryptString(s) { return s }'
+        if (id === '\0ownership-crypto') return 'export async function encryptString(s) { return s }; export async function decryptString(s) { return s }'
       } }] })
   try {
     const { SCHEMA_SQL } = await vite.ssrLoadModule('/src/native/schema.ts')

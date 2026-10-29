@@ -457,6 +457,22 @@
     }
   },
   "email": {
+    "portalMetadata": "Synced email summaries",
+    "portalMetadataHint": "Only account metadata and summaries are shared here. Receiving accounts are not created; bodies, passwords and attachments stay on this device.",
+    "portalMetadataPending": "Some metadata remains on this device and needs synchronization or your attention.",
+    "portalMetadataEmpty": "No synced email metadata yet.",
+    "portalMetadataTitle": "Title",
+    "portalMetadataDelete": "Delete this shared metadata only? Local mail and credentials will remain.",
+    "portalMetadataMore": "Show more",
+    "portalMetadataField": {
+      "address": "Email address",
+      "display_name": "Display name",
+      "last_sync_at": "Last sync time",
+      "from": "Sender",
+      "subject": "Subject",
+      "snippet": "Summary",
+      "received_at": "Received time"
+    },
     "localPrivacyNotice": "Local-only mode keeps body text out of cloud translation and blocks external images.",
     "dailySummary": "Daily digest",
     "fetchHintNetwork": "Background fetching did not finish; showing synced messages",

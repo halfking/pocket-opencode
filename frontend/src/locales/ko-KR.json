@@ -457,6 +457,22 @@
     }
   },
   "email": {
+    "portalMetadata": "동기화된 메일 요약",
+    "portalMetadataHint": "여기에서는 계정 정보와 요약만 공유합니다. 수신 계정을 만들지 않으며 본문, 암호, 첨부 파일은 이 기기에 남습니다.",
+    "portalMetadataPending": "일부 메타데이터가 이 기기에 보관되어 동기화 또는 확인이 필요합니다.",
+    "portalMetadataEmpty": "동기화된 메일 메타데이터가 없습니다.",
+    "portalMetadataTitle": "제목",
+    "portalMetadataDelete": "이 공유 메타데이터만 삭제할까요? 로컬 메일과 자격 증명은 유지됩니다.",
+    "portalMetadataMore": "더 보기",
+    "portalMetadataField": {
+      "address": "메일 주소",
+      "display_name": "표시 이름",
+      "last_sync_at": "마지막 동기화 시간",
+      "from": "보낸 사람",
+      "subject": "메일 제목",
+      "snippet": "요약",
+      "received_at": "수신 시간"
+    },
     "localPrivacyNotice": "로컬 전용 모드에서는 본문을 클라우드 번역으로 보내거나 외부 이미지를 불러오지 않습니다.",
     "dailySummary": "일일 요약",
     "fetchHintNetwork": "백그라운드 수신이 완료되지 않아 동기화된 메일을 표시합니다",

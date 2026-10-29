@@ -457,6 +457,22 @@
     }
   },
   "email": {
+    "portalMetadata": "Synchronisierte E-Mail-Zusammenfassungen",
+    "portalMetadataHint": "Hier werden nur Kontoinformationen und Zusammenfassungen geteilt. Es werden keine Empfangskonten angelegt; Inhalte, Passwörter und Anhänge bleiben auf diesem Gerät.",
+    "portalMetadataPending": "Einige Metadaten bleiben auf diesem Gerät und warten auf Synchronisierung oder Ihre Entscheidung.",
+    "portalMetadataEmpty": "Noch keine synchronisierten E-Mail-Metadaten.",
+    "portalMetadataTitle": "Titel",
+    "portalMetadataDelete": "Nur diese geteilten Metadaten löschen? Lokale E-Mails und Zugangsdaten bleiben erhalten.",
+    "portalMetadataMore": "Mehr anzeigen",
+    "portalMetadataField": {
+      "address": "E-Mail-Adresse",
+      "display_name": "Anzeigename",
+      "last_sync_at": "Letzte Synchronisierung",
+      "from": "Absender",
+      "subject": "Betreff",
+      "snippet": "Zusammenfassung",
+      "received_at": "Empfangszeit"
+    },
     "localPrivacyNotice": "Im lokalen Modus werden Nachrichtentexte nicht zur Cloud-Übersetzung gesendet und externe Bilder nicht geladen.",
     "dailySummary": "Tägliche Zusammenfassung",
     "fetchHintNetwork": "Hintergrund-Abruf nicht abgeschlossen; synchronisierte Nachrichten werden angezeigt",

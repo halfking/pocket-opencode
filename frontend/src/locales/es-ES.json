@@ -457,6 +457,22 @@
     }
   },
   "email": {
+    "portalMetadata": "Resúmenes de correo sincronizados",
+    "portalMetadataHint": "Aquí solo se comparten metadatos de cuentas y resúmenes. No se crean cuentas de recepción; los cuerpos, contraseñas y adjuntos permanecen en este dispositivo.",
+    "portalMetadataPending": "Algunos metadatos permanecen en este dispositivo y requieren sincronización o su atención.",
+    "portalMetadataEmpty": "Todavía no hay metadatos de correo sincronizados.",
+    "portalMetadataTitle": "Título",
+    "portalMetadataDelete": "¿Eliminar solo estos metadatos compartidos? El correo local y las credenciales se conservarán.",
+    "portalMetadataMore": "Mostrar más",
+    "portalMetadataField": {
+      "address": "Dirección de correo",
+      "display_name": "Nombre visible",
+      "last_sync_at": "Última sincronización",
+      "from": "Remitente",
+      "subject": "Asunto",
+      "snippet": "Resumen",
+      "received_at": "Hora de recepción"
+    },
     "localPrivacyNotice": "El modo local evita enviar el texto a la traducción en la nube y bloquea las imágenes externas.",
     "dailySummary": "Resumen diario",
     "fetchHintNetwork": "La descarga en segundo plano no terminó; se muestran los mensajes sincronizados",
