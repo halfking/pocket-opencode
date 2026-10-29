@@ -39,6 +39,12 @@ type ChatSettingsPayload = {
   modelByModality?: Record<string, string>
 }
 
+export interface SettingProjectionContext {
+  readonly workspaceId: string
+  readonly user: string
+  assertCurrent(): void
+}
+
 /**
  * ⚠⚠§869/D37/D38：以前返回 void，调用方**无从知道**远端下发有没有落地 ——
  * 而它紧接着就会 `markSettingClean`，把这条设置标记成「已是最新」
@@ -46,22 +52,24 @@ type ChatSettingsPayload = {
  * 两套存储的结果是：**DB 说干净、localStorage 投影写失败 ⇒ 永不重试**。
  * 现在返回失败字段名（成功时是空数组），让调用方至少有地方挂日志。
  */
-export function applyRemoteSetting(rec: RemoteSetting): string[] {
+export function applyRemoteSetting(rec: RemoteSetting, context?: SettingProjectionContext): string[] {
+  context?.assertCurrent()
   const payload = (rec.payload && typeof rec.payload === 'object') ? rec.payload as Record<string, unknown> : {}
   if (rec.namespace === 'app_prefs' && rec.id === 'default') {
-    return applyAppPrefs(payload as AppPrefs)
+    return applyAppPrefs(payload as AppPrefs, context)
   }
   if (rec.namespace === 'chat_settings' && rec.id === 'default') {
-    return applyChatSettings(payload as ChatSettingsPayload) ? [] : ['AI 对话设置']
+    return applyChatSettings(payload as ChatSettingsPayload, context) ? [] : ['AI 对话设置']
   }
   if (rec.namespace === 'connection' && rec.id === 'default') {
     const inst = payload as Partial<SelectedInstance>
+    context?.assertCurrent()
     if (inst.id) writeSelectedInstance(inst as SelectedInstance)
   }
   return []
 }
 
-function applyAppPrefs(prefs: AppPrefs): string[] {
+function applyAppPrefs(prefs: AppPrefs, context?: SettingProjectionContext): string[] {
   // ⚠⚠§869/D38：这里原来是一个**大 try 包住全部字段**加一个空 catch。
   // 两个后果：
   //  ① **连坐**：第 64 行 `app_theme` 一旦抛错，第 66/67 行的两个写入
@@ -76,6 +84,7 @@ function applyAppPrefs(prefs: AppPrefs): string[] {
   const sttPref = prefs.sttPref && APP_STT_PREFS.has(prefs.sttPref) ? prefs.sttPref : ''
 
   const persist = (key: string, value: string, label: string) => {
+    context?.assertCurrent()
     try {
       localStorage.setItem(key, value)
     } catch (err) {
@@ -85,13 +94,14 @@ function applyAppPrefs(prefs: AppPrefs): string[] {
   }
 
   if (theme) persist('app_theme', theme, '主题')
-  if (prefs.locale) applyRemoteLocale(prefs.locale)
+  if (prefs.locale) applyRemoteLocale(prefs.locale, context)
   if (deviceTier) persist('pocket_device_tier', deviceTier, '设备档位')
   if (sttPref) persist('pocket_stt_pref', sttPref, '语音识别偏好')
 
   // ⭐ DOM 更新**移出**写入路径：即使落盘失败也要把已经拿到的皮肤应用上去，
   //   否则会出现「存储与界面各说各话」的半生效状态。
   if (theme && typeof document !== 'undefined') {
+    context?.assertCurrent()
     try {
       const root = document.documentElement
       if (theme === 'system') root.removeAttribute('data-theme')
@@ -115,12 +125,15 @@ function applyAppPrefs(prefs: AppPrefs): string[] {
  * 现在：只在能匹配到受支持语言时才落盘并切换，匹配不到则完全忽略。
  * 用动态 import 避免 stores → native → stores 的静态环。
  */
-function applyRemoteLocale(rawLocale: string): void {
+function applyRemoteLocale(rawLocale: string, context?: SettingProjectionContext): void {
+  context?.assertCurrent()
   void import('../../i18n')
     .then(async ({ matchLocale, applyLocale }) => {
+      context?.assertCurrent()
       const matched = matchLocale([rawLocale])
       if (!matched) return
       const { useLocaleStore } = await import('../../stores/locale')
+      context?.assertCurrent()
       try {
         useLocaleStore().setLocale(matched)
       } catch {
@@ -133,10 +146,11 @@ function applyRemoteLocale(rawLocale: string): void {
     })
 }
 
-function applyChatSettings(settings: ChatSettingsPayload): boolean {
+function applyChatSettings(settings: ChatSettingsPayload, context?: SettingProjectionContext): boolean {
+  context?.assertCurrent()
   try {
-    const workspace = localStorage.getItem('pocket_workspace_id') || ''
-    const user = localStorage.getItem('pocket_user') || ''
+    const workspace = context?.workspaceId ?? localStorage.getItem('pocket_workspace_id') ?? ''
+    const user = context?.user ?? localStorage.getItem('pocket_user') ?? ''
     const scope = encodeURIComponent(workspace || user || 'local')
     const key = `pocket:ai-chat:settings:v2:${scope}`
     const raw = localStorage.getItem(key)

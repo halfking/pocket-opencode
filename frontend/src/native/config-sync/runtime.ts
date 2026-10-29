@@ -1,4 +1,6 @@
 import { watch } from 'vue'
+import { ApiError } from '../../api/http'
+import { isAbortError } from '../../api/abort'
 import { userSettingsApi, type RemoteSetting } from '../../api/user-settings'
 import { lobsterReady } from '../lobster-init'
 import { localDB } from '../local-db'
@@ -7,13 +9,10 @@ import { applyRemoteSetting } from './apply'
 import { enqueueConfigPush, listQueuedConfigPushes, markConfigPushDone, markConfigPushFailed } from './outbox'
 import { configKey, planConfigSync } from './planner'
 import { preserveCorruptRaw } from '../../utils/corrupt-preserve'
-import { getLocalSetting, listLocalSettings, markSettingClean, writeLocalIfNewer, writeLocalSetting } from './settings-store'
-// 存储与同步策略（storage-sync）：按 namespace 过滤模块owned配置的上行。
-import {
-  readCachedModuleMode,
-  recordSyncReportEntry,
-} from '../../stores/syncPolicyStore'
-import type { SyncModule } from '../../api/syncPolicyContract.ts'
+import { getLocalSetting, listLocalSettings, markSettingClean, writeLocalIfNewer, writeLocalSetting, type LocalSetting } from './settings-store'
+import { readCachedModuleMode, recordSyncReportEntry } from '../../stores/syncPolicyStore'
+import { captureConfigOperation, captureConfigOperationReady, CONFIG_MODULE, type ConfigOperation } from './operation'
+import type { SyncModule } from '../../api/syncPolicyContract'
 
 export interface ConfigSyncReport {
   pulled: number
@@ -23,269 +22,221 @@ export interface ConfigSyncReport {
   error?: string
 }
 
-/**
- * storage-sync：settings namespace → 业务模块的归属映射。
- * 只映射**整块属于某个策略模块**的 namespace；app_prefs / connection 是
- * 应用级连接配置（切错了会把设备变成孤岛），不参与按模块过滤。
- */
-const NAMESPACE_MODULE: Record<string, SyncModule> = {
-  email_account: 'email',
-  chat_settings: 'ai-chat',
-  chat_agent: 'ai-chat',
-  scheduled_task: 'tasks',
+function isCancelled(error: unknown): boolean {
+  return isAbortError(error) || (error instanceof ApiError && error.body?.error === 'module_policy_local')
 }
-
-/** 该 namespace 是否被策略拦下（对应模块已切「仅本地」）。 */
-function namespaceHeldLocal(namespace: string): boolean {
-  const mod = NAMESPACE_MODULE[namespace]
-  if (!mod) return false
-  return readCachedModuleMode(mod) === 'local'
-}
-
-/**
- * storage-sync：把本轮各模块的拦截/放行结果记入 lastSyncReport。
- * held>0 ⇒ skipped；flowed>0 ⇒ synced（count=条数）。0 条不动旧报告
- * （配置同步很多轮都是空转，空转不该刷新「上次同步」时间戳）。
- */
-function reportModuleConfigFlow(held: Map<SyncModule, number>, flowed: Map<SyncModule, number>): void {
-  for (const [module, count] of held) {
-    if (count > 0) recordSyncReportEntry({ module, status: 'skipped', count })
+function assertRecord(record: RemoteSetting, operation: ConfigOperation, namespace: string, id: string): void {
+  operation.assertCurrent()
+  if (record.namespace !== namespace || record.id !== id ||
+      (record.workspaceId && record.workspaceId !== operation.workspaceId)) {
+    throw new Error('Remote setting identity does not match the requested setting.')
   }
-  for (const [module, count] of flowed) {
-    if (count > 0) recordSyncReportEntry({ module, status: 'synced', count })
+}
+async function applyRecord(record: RemoteSetting, operation: ConfigOperation): Promise<void> {
+  operation.assertCurrent()
+  const won = await writeLocalIfNewer({ namespace: record.namespace, id: record.id,
+    payload: record.payload, updatedAt: record.updatedAt }, operation.owner, operation.db)
+  operation.assertCurrent()
+  if (won) {
+    const failed = applyRemoteSetting(record, operation)
+    if (failed.length > 0) console.warn(`[config-sync] 远端设置 ${record.namespace}/${record.id} 未能完全落地：${failed.join('、')}`)
   }
 }
 
-async function pushOne(namespace: string, id: string): Promise<'ok' | 'queued' | 'conflict'> {
-  const local = await getLocalSetting(namespace, id)
+async function pushOne(namespace: string, id: string, operation: ConfigOperation): Promise<'ok' | 'queued' | 'conflict'> {
+  const local = await getLocalSetting(namespace, id, operation.owner, operation.db)
+  operation.assertCurrent()
   if (!local) return 'ok'
-  // storage-sync 挂点：在线直存路径同样受策略约束 —— 模块切「仅本地」后，
-  // 配置改动静默入本地 outbox（与离线路径同款），不直发云端。
-  if (namespaceHeldLocal(namespace)) {
-    await enqueueConfigPush({
-      namespace, id, payload: local.payload,
-      secret: local.secretEncrypted, updatedAt: local.updatedAt,
-    })
+  if (!operation.canSync(namespace)) {
+    await enqueueConfigPush({ namespace, id, payload: local.payload, secret: local.secretEncrypted,
+      updatedAt: local.updatedAt }, operation.owner, operation.db)
     return 'queued'
   }
+  const cloud = operation.forNamespace(namespace)
   try {
-    const result = await userSettingsApi.put(namespace, id, {
-      payload: local.payload,
-      updatedAt: local.updatedAt,
-      secret: local.secretEncrypted || undefined,
-    })
+    const result = await userSettingsApi.put(namespace, id, { payload: local.payload,
+      updatedAt: local.updatedAt, secret: local.secretEncrypted || undefined }, cloud.requestOptions())
+    cloud.assertCurrent()
     if (result.conflict && result.record) {
-      await writeLocalIfNewer({
-        namespace: result.record.namespace,
-        id: result.record.id,
-        payload: result.record.payload,
-        updatedAt: result.record.updatedAt,
-      })
-      await applyRemoteSetting(result.record)
+      assertRecord(result.record, cloud, namespace, id)
+      await applyRecord(result.record, cloud)
       return 'conflict'
     }
-    await markSettingClean(namespace, id)
+    await markSettingClean(namespace, id, local, cloud.owner, cloud.db)
     return 'ok'
-  } catch (err) {
-    await enqueueConfigPush({
-      namespace, id, payload: local.payload,
-      secret: local.secretEncrypted, updatedAt: local.updatedAt,
-    })
+  } catch (error) {
+    cloud.assertCurrent()
+    if (isCancelled(error)) throw error
+    await enqueueConfigPush({ namespace, id, payload: local.payload, secret: local.secretEncrypted,
+      updatedAt: local.updatedAt }, cloud.owner, cloud.db)
     return 'queued'
   }
 }
 
-export async function drainConfigOutbox(): Promise<number> {
-  const queued = await listQueuedConfigPushes()
+export async function drainConfigOutbox(operation?: ConfigOperation): Promise<number> {
+  // ⚠ 归属未确认前捕获的操作会没有归属 ⇒ 它的行永不上传。
+  //   ⇒ 同步路径必须等归属就绪（见 captureConfigOperationReady）。
+  operation ??= await captureConfigOperationReady()
+  const queued = await listQueuedConfigPushes(operation.owner, operation.db)
+  operation.assertCurrent()
   let pushed = 0
-  // storage-sync：按模块统计本轮被拦下 / 正常放行的配置行数。
-  const held = new Map<SyncModule, number>()
-  const flowed = new Map<SyncModule, number>()
-  const bump = (m: Map<SyncModule, number>, k: SyncModule) => m.set(k, (m.get(k) ?? 0) + 1)
+  const held = new Map<SyncModule, number>(), flowed = new Map<SyncModule, number>()
+  const bump = (map: Map<SyncModule, number>, module: SyncModule) => map.set(module, (map.get(module) ?? 0) + 1)
   for (const row of queued) {
-    // storage-sync 挂点：模块切「仅本地」后其配置行留在本地 outbox（不发送、
-    // 不计失败），切回「云端」下一轮 drain 自会重放 —— 与会话 outbox 的
-    // skipActions 同语义。
-    if (namespaceHeldLocal(row.namespace)) {
-      const mod = NAMESPACE_MODULE[row.namespace]!
-      bump(held, mod)
+    operation.assertCurrent()
+    const ownerModule = CONFIG_MODULE[row.namespace]
+    if (!operation.canSync(row.namespace)) {
+      if (ownerModule) bump(held, ownerModule)
       continue
     }
-    const ownerModule = NAMESPACE_MODULE[row.namespace] ?? null
+    const cloud = operation.forNamespace(row.namespace)
     try {
       if (row.namespace === 'email_account') {
         const { emailApi, isStaleWriteError } = await import('../../api/email')
-        // payload 是 enqueueConfigPush 存下来的 patch，字段集见
-        // account-sync.ts 的 pushAccountToServer（displayName /
-        // syncIntervalMin / enabled / imapHost / imapPort / authType）。
-        // 下面这个类型只声明了其中三个字段，属于**收窄**：其余字段运行时照样
-        // 带着走，只是类型上看不见。若日后要按字段分支，先把它对齐。
-        const p = row.payload as { displayName?: string; syncIntervalMin?: number; enabled?: boolean }
-        // 基准取行上的 updatedAt：它就是入队那一刻客户端据以编辑的那一版
-        // （enqueueConfigPush 收到的 _a.updatedAt 原样落在这里）。
-        // 传 0 会让服务端按 store.go 的 baseUpdatedAt<=0 分支退化成无条件
-        // 覆盖，守卫等于不存在 —— 所以这里**不能**用 `?? 0` 兜底。
+        cloud.assertCurrent()
         try {
-          await emailApi.updateAccount(row.entityId, p, row.updatedAt)
-        } catch (err) {
-          // 409 = 服务端那份更新，按需求「新的胜出」就该让服务端赢，不重试。
-          // 必须在分支内消化：外层 catch 只会 markConfigPushFailed，而它只加
-          // attempts、**不改 state**，这一行仍是 'queued'，于是每轮 online 事件
-          // 和每轮 syncUserSettings 都会重放同一行，永远推不进去。
-          // 本地值随后由下行 syncUserSettings 的 writeLocalIfNewer 覆盖。
-          if (!isStaleWriteError(err)) throw err
+          await emailApi.updateAccount(row.entityId, row.payload as never, row.updatedAt, cloud.requestOptions())
+        } catch (error) {
+          cloud.assertCurrent()
+          if (isCancelled(error) || !isStaleWriteError(error)) throw error
           console.warn('[config-sync] email_account push rejected as stale; server copy wins', row.entityId)
         }
-        await markConfigPushDone(row.id)
-        if (ownerModule) bump(flowed, ownerModule)
-        pushed++
-        continue
-      }
-      if (row.namespace === 'scheduled_task') {
+      } else if (row.namespace === 'scheduled_task') {
         const { scheduledTasksApi } = await import('../../features/scheduled-tasks/api')
-        const p = row.payload as Record<string, unknown>
+        cloud.assertCurrent()
         try {
-          await scheduledTasksApi.update(row.entityId, p as never)
-        } catch {
-          await scheduledTasksApi.create(p as never)
+          await scheduledTasksApi.update(row.entityId, row.payload as never, cloud.requestOptions())
+        } catch (error) {
+          cloud.assertCurrent()
+          // Only a confirmed missing resource permits creation. Cancellation,
+          // validation and transport errors must not duplicate an old entity.
+          if (!(error instanceof ApiError) || error.status !== 404) throw error
+          await scheduledTasksApi.create(row.payload as never, cloud.requestOptions())
         }
-        await markConfigPushDone(row.id)
-        if (ownerModule) bump(flowed, ownerModule)
-        pushed++
-        continue
-      }
-      if (row.namespace === 'chat_agent') {
+      } else if (row.namespace === 'chat_agent') {
         const { chatAgentApi } = await import('../../api/chatAgent')
-        const p = row.payload as Record<string, unknown>
+        cloud.assertCurrent()
         try {
-          await chatAgentApi.update(row.entityId, p as never)
-        } catch {
-          await chatAgentApi.create({ id: row.entityId, ...p } as never)
+          await chatAgentApi.update(row.entityId, row.payload as never, cloud.requestOptions())
+        } catch (error) {
+          cloud.assertCurrent()
+          if (!(error instanceof ApiError) || error.status !== 404) throw error
+          await chatAgentApi.create({ ...row.payload as object, id: row.entityId } as never, cloud.requestOptions())
         }
-        await markConfigPushDone(row.id)
-        if (ownerModule) bump(flowed, ownerModule)
-        pushed++
-        continue
+      } else {
+        const result = await userSettingsApi.put(row.namespace, row.entityId, { payload: row.payload,
+          updatedAt: row.updatedAt, secret: row.secret || undefined }, cloud.requestOptions())
+        cloud.assertCurrent()
+        if (result.conflict && result.record) {
+          assertRecord(result.record, cloud, row.namespace, row.entityId)
+          await applyRecord(result.record, cloud)
+        }
+        const expected: LocalSetting = { namespace: row.namespace, id: row.entityId, payload: row.payload,
+          updatedAt: row.updatedAt, secretEncrypted: row.secret || '', dirty: 1, owner: cloud.owner }
+        await markSettingClean(row.namespace, row.entityId, expected, cloud.owner, cloud.db)
       }
-      const result = await userSettingsApi.put(row.namespace, row.entityId, {
-        payload: row.payload, updatedAt: row.updatedAt, secret: row.secret || undefined,
-      })
-      if (result.conflict && result.record) {
-        await writeLocalIfNewer({
-          namespace: result.record.namespace,
-          id: result.record.id,
-          payload: result.record.payload,
-          updatedAt: result.record.updatedAt,
-        })
-        await applyRemoteSetting(result.record)
-      }
-      await markConfigPushDone(row.id)
-      await markSettingClean(row.namespace, row.entityId)
+      cloud.assertCurrent()
+      await markConfigPushDone(row.id, cloud.db)
       if (ownerModule) bump(flowed, ownerModule)
       pushed++
-    } catch (err) {
-      await markConfigPushFailed(row.id, err instanceof Error ? err.message : String(err))
+    } catch (error) {
+      cloud.assertCurrent()
+      if (isCancelled(error)) throw error
+      await markConfigPushFailed(row.id, error instanceof Error ? error.message : String(error), cloud.db)
     }
   }
-  reportModuleConfigFlow(held, flowed)
+  operation.assertCurrent()
+  for (const [module, count] of held) {
+    if (readCachedModuleMode(module) === 'local') recordSyncReportEntry({ module, status: 'skipped', count })
+  }
+  for (const [module, count] of flowed) {
+    const namespace = Object.keys(CONFIG_MODULE).find(key => CONFIG_MODULE[key] === module)!
+    operation.forNamespace(namespace).assertCurrent()
+    recordSyncReportEntry({ module, status: 'synced', count })
+  }
   return pushed
 }
 
-export async function syncUserSettings(): Promise<ConfigSyncReport> {
+export async function syncUserSettings(operation?: ConfigOperation): Promise<ConfigSyncReport> {
+  operation ??= await captureConfigOperationReady()
   try {
-    const remote = await userSettingsApi.list()
-    if (!localDB.isReady()) {
-      return { pulled: 0, pushed: 0, queued: 0, online: true }
-    }
-    const local = await listLocalSettings()
-    const plan = planConfigSync(
-      local.map((s) => ({ namespace: s.namespace, id: s.id, updatedAt: s.updatedAt })),
-      remote.map((s) => ({ namespace: s.namespace, id: s.id, updatedAt: s.updatedAt })),
-    )
-    const remoteByKey = new Map(remote.map((s) => [configKey(s.namespace, s.id), s]))
-    let pulled = 0
-    let pushed = 0
-    let queued = 0
+    const remote = await userSettingsApi.list(operation.requestOptions())
+    operation.assertCurrent()
+    if (!localDB.isReady()) return { pulled: 0, pushed: 0, queued: 0, online: true }
+    const local = await listLocalSettings(operation.owner, operation.db)
+    operation.assertCurrent()
+    const plan = planConfigSync(local, remote)
+    const remoteByKey = new Map(remote.map(record => [configKey(record.namespace, record.id), record]))
+    let pulled = 0, pushed = 0, queued = 0
     for (const key of plan.pullKeys) {
-      const rec = remoteByKey.get(key)
-      if (!rec) continue
-      // storage-sync 挂点：模块切「仅本地」后**双向**都跳过——pull 会用远端
-      // 副本覆盖本地（writeLocalIfNewer），对 local 模块等于悄悄改写本机数据。
-      if (namespaceHeldLocal(rec.namespace)) continue
-      const won = await writeLocalIfNewer({
-        namespace: rec.namespace, id: rec.id, payload: rec.payload, updatedAt: rec.updatedAt,
-      })
+      const record = remoteByKey.get(key)
+      if (!record || !operation.canSync(record.namespace)) continue
+      const cloud = operation.forNamespace(record.namespace)
+      assertRecord(record, cloud, record.namespace, record.id)
+      const won = await writeLocalIfNewer({ namespace: record.namespace, id: record.id,
+        payload: record.payload, updatedAt: record.updatedAt }, cloud.owner, cloud.db)
+      cloud.assertCurrent()
       if (won) {
-        const failed = await applyRemoteSetting(rec)
-        // ⚠⚠§869/D37/D38：writeLocalIfNewer 已把这条设置在 **DB** 里标记为
-        // 「已是最新」（dirty = 0），而 localStorage 投影可能刚写失败
-        // ⇒ 两者会永久分叉且**不会重试**。这里至少留一条可检索的日志。
-        if (failed.length > 0) {
-          console.warn(`[config-sync] 远端设置 ${rec.namespace}/${rec.id} 未能完全落地：${failed.join('、')}`)
-        }
+        const failed = applyRemoteSetting(record, cloud)
+        if (failed.length > 0) console.warn(`[config-sync] 远端设置 ${record.namespace}/${record.id} 未能完全落地：${failed.join('、')}`)
         pulled++
       }
     }
     for (const key of plan.pushKeys) {
-      const [namespace, id] = key.split(':')
-      // storage-sync 挂点：同上，local 模块的配置不上行（留给本机）。
-      if (namespaceHeldLocal(namespace)) continue
-      const status = await pushOne(namespace, id)
+      const record = local.find(item => configKey(item.namespace, item.id) === key)!
+      if (!operation.canSync(record.namespace)) continue
+      const status = await pushOne(record.namespace, record.id, operation)
       if (status === 'ok') pushed++
       if (status === 'queued') queued++
     }
-    queued += await drainConfigOutbox()
+    queued += await drainConfigOutbox(operation)
+    operation.assertCurrent()
     return { pulled, pushed, queued, online: true }
-  } catch (err) {
-    return {
-      pulled: 0, pushed: 0, queued: 0, online: false,
-      error: err instanceof Error ? err.message : String(err),
-    }
+  } catch (error) {
+    operation.assertCurrent()
+    if (isCancelled(error)) throw error
+    return { pulled: 0, pushed: 0, queued: 0, online: false,
+      error: error instanceof Error ? error.message : String(error) }
   }
 }
 
-export async function saveSettingLocalFirst(
-  namespace: string,
-  id: string,
-  payload: unknown,
-  secret?: string,
-): Promise<void> {
+export async function saveSettingLocalFirst(namespace: string, id: string, payload: unknown, secret?: string): Promise<void> {
   if (!localDB.isReady()) return
-  const row = await writeLocalSetting({
-    namespace, id, payload, secretEncrypted: secret, dirty: 1,
-  })
-  await applyRemoteSetting({
-    userId: '', workspaceId: '', namespace, id, payload, updatedAt: row.updatedAt,
-  } as RemoteSetting)
+  const operation = captureConfigOperation()
+  const row = await writeLocalSetting({ namespace, id, payload, secretEncrypted: secret, dirty: 1 }, operation.owner, operation.db)
+  operation.assertCurrent()
+  applyRemoteSetting({ userId: '', workspaceId: operation.workspaceId, namespace, id, payload,
+    updatedAt: row.updatedAt } as RemoteSetting, operation)
   if (typeof navigator !== 'undefined' && !navigator.onLine) {
-    await enqueueConfigPush({
-      namespace, id, payload, secret, updatedAt: row.updatedAt,
-    })
+    await enqueueConfigPush({ namespace, id, payload, secret, updatedAt: row.updatedAt }, operation.owner, operation.db)
     return
   }
-  const status = await pushOne(namespace, id)
-  if (status === 'queued') return
+  await pushOne(namespace, id, operation)
 }
 
 let watcherStarted = false
 let inflight: Promise<ConfigSyncReport> | null = null
 
-async function importLegacyPrefsIfMissing(): Promise<void> {
+async function importLegacyPrefsIfMissing(operation?: ConfigOperation): Promise<void> {
+  operation ??= await captureConfigOperationReady()
   const { currentAppPrefs } = await import('./prefs')
+  operation.assertCurrent()
   const { readSelectedInstance } = await import('../../config/selected-instance')
-  if (!(await getLocalSetting('app_prefs', 'default'))) {
-    await writeLocalSetting({ namespace: 'app_prefs', id: 'default', payload: currentAppPrefs(), dirty: 1 })
+  operation.assertCurrent()
+  if (!(await getLocalSetting('app_prefs', 'default', operation.owner, operation.db))) {
+    await writeLocalSetting({ namespace: 'app_prefs', id: 'default', payload: currentAppPrefs(), dirty: 1 }, operation.owner, operation.db)
   }
-  if (!(await getLocalSetting('connection', 'default'))) {
+  if (!(await getLocalSetting('connection', 'default', operation.owner, operation.db))) {
     const inst = readSelectedInstance()
-    if (inst) await writeLocalSetting({ namespace: 'connection', id: 'default', payload: inst, dirty: 1 })
+    if (inst) await writeLocalSetting({ namespace: 'connection', id: 'default', payload: inst, dirty: 1 }, operation.owner, operation.db)
   }
   try {
-    const workspace = localStorage.getItem('pocket_workspace_id') || ''
-    const user = localStorage.getItem('pocket_user') || ''
+    operation.assertCurrent()
+    const workspace = operation.workspaceId
+    const user = operation.user
     const scope = encodeURIComponent(workspace || user || 'local')
     const raw = localStorage.getItem(`pocket:ai-chat:settings:v2:${scope}`)
-    if (raw && !(await getLocalSetting('chat_settings', 'default'))) {
+    if (raw && !(await getLocalSetting('chat_settings', 'default', operation.owner, operation.db))) {
       let payload: unknown
       try {
         payload = JSON.parse(raw)
@@ -304,10 +255,12 @@ async function importLegacyPrefsIfMissing(): Promise<void> {
         console.warn('[config-sync] 旧 AI 聊天设置损坏，已留证并跳过迁移')
         return
       }
-      await writeLocalSetting({ namespace: 'chat_settings', id: 'default', payload, dirty: 1 })
+      await writeLocalSetting({ namespace: 'chat_settings', id: 'default', payload, dirty: 1 }, operation.owner, operation.db)
     }
-  } catch {
-    // ignore
+  } catch (error) {
+    operation.assertCurrent()
+    if (isCancelled(error)) throw error
+    console.warn('[config-sync] 旧偏好迁移失败：', error)
   }
 }
 
@@ -318,10 +271,12 @@ export function startUserConfigSync(): void {
   const kick = () => {
     if (!lobsterReady.value || !auth.isAuthenticated || inflight) return
     const version = auth.activationVersion
-    inflight = importLegacyPrefsIfMissing()
+    let operation: ConfigOperation
+    try { operation = captureConfigOperation() } catch { return }
+    inflight = importLegacyPrefsIfMissing(operation)
       .then(() => {
         if (!auth.isAuthenticated || auth.activationVersion !== version) return { pulled: 0, pushed: 0, queued: 0, online: false }
-        return syncUserSettings()
+        return syncUserSettings(operation)
       })
       .catch((error: unknown) => {
         if (!(error instanceof Error) || error.name !== 'AbortError') console.warn('[config-sync] 启动同步失败：', error)
@@ -337,8 +292,9 @@ export function startUserConfigSync(): void {
   if (typeof window !== 'undefined') {
     window.addEventListener('online', () => {
       if (!auth.isAuthenticated || !lobsterReady.value) return
-      void drainConfigOutbox()
-      void syncUserSettings()
+      void syncUserSettings().catch(error => {
+        if (!isCancelled(error)) console.warn('[config-sync] 联网同步失败：', error)
+      })
     })
   }
 }
