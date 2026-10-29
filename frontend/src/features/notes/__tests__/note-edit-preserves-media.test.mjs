@@ -155,7 +155,8 @@ export function findMediaLossRisks(updateNoteBody, deleteBodyFileBody) {
   // ── 判据 6：deleteNoteBodyFile 自身的删除范围 ───────────────────────────────
   if (/rmdir/.test(d)) risks.push('deleteNoteBodyFile 里有 rmdir —— 递归删整个目录会连带删掉媒体')
   if (!/deleteFile/.test(d)) risks.push('deleteNoteBodyFile 没有 deleteFile：正文文件删不掉，重复保存会留陈旧 body.md')
-  if (!/DELETE FROM local_note_files[^;]*kind\s*=/.test(d)) {
+  const childDeletes = [...d.matchAll(/['"]DELETE FROM local_note_files[^'"]*['"]/g)].map(match => match[0])
+  if (!childDeletes.length || childDeletes.some(sql => !/\bkind\s*=/.test(sql))) {
     risks.push('deleteNoteBodyFile 的 DELETE 没有限定 kind = body，会把音频子行一起删掉')
   }
   return risks
@@ -191,7 +192,7 @@ describe('负控：把行为改回去必须报红', () => {
     // 把清理块整体剪下来贴到写之前。剪贴后的两处各留一个空行占位，
     // 保证 persistNotePayload 的调用文本仍然存在、只是顺序反了。
     const mutated = updateNoteBody.replace(
-      /( *)if \(!bodyFileNeeded && existing\.bodyPath\) \{\s*\n\s*await deleteNoteBodyFile\(id, existing\.createdAt, db\)\s*\n\s*\}/,
+      /( *)if \(!bodyPath && existing\.bodyPath\) await deleteNoteBodyFile\(id, existing\.createdAt, db, existing\.bodyPath\)/,
       (_m, ind) => `${ind}// moved`,
     )
     assert.notEqual(mutated, updateNoteBody, '变异没生效：清理块结构与预期不符，先看源码再改门')

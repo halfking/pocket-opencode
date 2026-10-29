@@ -15,7 +15,7 @@ import type { CreateNoteInput, LocalNote, NoteMediaInput, NoteRow } from './note
 // 存储与同步策略（storage-sync）：镜像上传前的 shouldSync 判定与结果上报。
 import { recordSyncReportEntry } from '../../stores/syncPolicyStore'
 import { portalNotesStore, portalNoteReadScope } from '../../native/portal-sync/storage'
-import { notePayload } from '../../native/portal-sync/contract'
+import { notePayload, newOperationId, type Statement } from '../../native/portal-sync/contract'
 
 function newNoteId(): string {
   return `note-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
@@ -78,6 +78,8 @@ export async function createNote(input: CreateNoteInput, options?: NoteWriteOpti
 
   const shouldEncrypt = useCryptoConfig().shouldEncryptField()
   const storedContent = shouldEncrypt ? await encryptString(note.content) : note.content
+  const hasPayload = decided.persistBodyFile || media.length > 0
+  const initialContent = hasPayload ? (shouldEncrypt ? await encryptString(input.content) : input.content) : storedContent
 
   // 写入顺序是外键决定的，不是风格问题：schema.ts 里
   // `local_note_files.note_id REFERENCES local_notes(id)`，而
@@ -101,26 +103,31 @@ export async function createNote(input: CreateNoteInput, options?: NoteWriteOpti
         status, storage_tier, summary, search_text, body_path, media_json)
      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
   const insertNoteValues = [
-      note.id, note.workspaceId, note.title, storedContent, note.contentType,
+      note.id, note.workspaceId, note.title, initialContent, note.contentType,
       note.domain, note.category, note.tags ? JSON.stringify(note.tags) : null,
       note.audioPath, note.audioDurationMs, note.createdByVoice ? 1 : 0,
       shouldEncrypt ? 1 : 0, note.createdAt, note.updatedAt,
-      note.status, note.storageTier, note.summary, note.searchText, note.bodyPath, note.mediaJson,
+      note.status, hasPayload ? 'inline' : note.storageTier, note.summary, note.searchText, note.bodyPath, note.mediaJson,
     ]
+  const syncStore = portalNotesStore(db)
+  let initialVersion: Awaited<ReturnType<typeof syncStore.commit>> = null
   if (options?.backgroundCloud === false) await db.run(insertNoteSql, insertNoteValues)
-  else await portalNotesStore(db).commit([{ statement: insertNoteSql, values: insertNoteValues }], {
+  else initialVersion = await syncStore.commit([{ statement: insertNoteSql, values: insertNoteValues }], {
     source: 'note', epoch: operation.syncEpoch, id, title: note.title ?? '', modifiedAt: now,
     payload: notePayload({ format: 'text', content: input.content, tags: note.tags, domain: note.domain,
       summary: note.summary, content_type: note.contentType, status: note.status, created_at: now }),
+    syncError: hasPayload ? 'Local attachments are not yet committed; complete original retained' : undefined,
   }, true)
 
-  if (decided.persistBodyFile || media.length > 0) {
+  if (hasPayload) {
     const written = await persistNotePayload({
       noteId: id,
       createdAt: now,
       body: input.content,
       persistBodyFile: decided.persistBodyFile,
       media,
+      revision: newOperationId(),
+      deferRows: true,
     }, db)
     bodyPath = written.bodyPath
     mediaJson = written.files.length ? JSON.stringify(written.files) : null
@@ -128,12 +135,16 @@ export async function createNote(input: CreateNoteInput, options?: NoteWriteOpti
     note.bodyPath = bodyPath
     note.mediaJson = mediaJson
     note.audioPath = audioPath
-    await db.run(
-      `UPDATE local_notes
-         SET body_path = ?, media_json = ?, audio_path = ?, audio_duration_ms = ?
-       WHERE id = ?`,
-      [bodyPath, mediaJson, audioPath, note.audioDurationMs, id],
-    )
+    const pointer = { statement: `UPDATE local_notes
+         SET body_path = ?, media_json = ?, audio_path = ?, audio_duration_ms = ?, content=?,storage_tier=?
+       WHERE id = ?`, values: [bodyPath,mediaJson,audioPath,note.audioDurationMs,storedContent,note.storageTier,id] }
+    const rows = [...written.statements,pointer]
+    if (options?.backgroundCloud === false) await db.runInTransaction(rows)
+    else await syncStore.commit(rows, {
+      source:'note',epoch:operation.syncEpoch,id,title:note.title??'',modifiedAt:now,expectedVersion:initialVersion??undefined,
+      payload: notePayload({ format:'text',content:input.content,tags:note.tags,domain:note.domain,
+        summary:note.summary,content_type:note.contentType,status:note.status,created_at:now }),
+    }, false)
   }
 
   // ⚠⚠ §896/D66：喂给 embedding 的是 `embedText`（纯内容）**不是** `searchText`
@@ -164,8 +175,11 @@ export async function updateNote(
   options?: NoteWriteOptions,
 ): Promise<void> {
   const operation = captureNoteWriteOperation(options)
+  const modifiedAt = Date.now()
   const db = operation.db
   if (db.owner && workspaceId !== db.owner.workspaceId) throw new Error('笔记 workspace 与已验证归属不一致')
+  const syncStore = portalNotesStore(db)
+  const expectedVersion = await syncStore.find('note',id) ?? await syncStore.find('asset',id)
   const existing = await getNote(id, false, workspaceId, operation)
   if (!existing) throw new Error('笔记不存在或不属于当前 workspace')
   if (existing.storage === 'asset') {
@@ -186,10 +200,14 @@ export async function updateNote(
       }),
       source: asset.source,
       syncMode: asset.syncMode,
+      syncEpoch: operation.syncEpoch,
+      modifiedAt,
+      expectedVersion,
     }, db)
     operation.assertCurrent()
     return
   }
+
 
   const nextContent = patch.content !== undefined ? patch.content : await loadFullContent(existing, db)
   const nextTitle = patch.title !== undefined ? patch.title : existing.title
@@ -212,6 +230,7 @@ export async function updateNote(
   let bodyPath = existing.bodyPath ?? null
   let mediaJson = existing.mediaJson ?? null
   let audioPath = existing.audioPath
+  let fileStatements: Statement[] = []
   // 旧 mediaJson 里的非 body 条目要留到最后合并回去：persistNotePayload 的 files
   // 里只有本次写的正文与新媒体，旧的媒体条目会被这次覆盖抹掉。
   //
@@ -252,7 +271,10 @@ export async function updateNote(
         body: nextContent,
         persistBodyFile: bodyFileNeeded,
         media,
+        revision: newOperationId(),
+        deferRows: true,
       }, db)
+      fileStatements = written.statements
       bodyPath = written.bodyPath
       // 同类型的以本次写的为准，跨类型的从旧 mediaJson 合回来。
       const writtenKinds = new Set(written.files.map((f) => f.kind))
@@ -271,14 +293,10 @@ export async function updateNote(
     }
     // ★ 清理排在**写成功之后**：只有确认正文文件不再需要时才删旧 body 文件。
     //   删除永远不能排在写之前 —— 写失败就没有回滚了。
-    if (!bodyFileNeeded && existing.bodyPath) {
-      await deleteNoteBodyFile(id, existing.createdAt, db)
-    }
   }
 
   const shouldEncrypt = useCryptoConfig().shouldEncryptField()
   const storedContent = shouldEncrypt ? await encryptString(decided.displayContent) : decided.displayContent
-  const modifiedAt = Date.now()
   const updateNoteSql = `UPDATE local_notes SET
        title = ?, content = ?, encrypted_content = ?, domain = ?, tags = ?,
        status = ?, storage_tier = ?, summary = ?, search_text = ?, body_path = ?,
@@ -294,12 +312,15 @@ export async function updateNote(
       modifiedAt,
       id, workspaceId,
     ]
-  await portalNotesStore(db).commit([{ statement: updateNoteSql, values: updateNoteValues }], {
+  await portalNotesStore(db).commit([...fileStatements, { statement: updateNoteSql, values: updateNoteValues }], {
     source: 'note', epoch: operation.syncEpoch, id, title: nextTitle ?? '', modifiedAt,
+    expectedVersion,
     payload: notePayload({ format: 'text', content: nextContent, tags: nextTags,
       domain: patch.domain ?? existing.domain, summary: nextSummary ?? decided.summary,
       status: patch.status ?? existing.status, content_type: existing.contentType, created_at: existing.createdAt }),
   }, false)
+  // Delete only the superseded body after the pointer/outbox commit succeeds.
+  if (!bodyPath && existing.bodyPath) await deleteNoteBodyFile(id, existing.createdAt, db, existing.bodyPath)
   if (patch.content !== undefined) {
     // ⚠ §896/D66：此前是 `.catch(() => {})` —— 整条编辑保存路径的嵌入失败**零痕迹**，
     //   而它是长笔记**唯一**的重试机会（创建时已经失败过一次）。改为与创建路径对称。
@@ -335,18 +356,21 @@ export async function deleteNote(
   workspaceId = 'default',
 ): Promise<{ mediaCleaned: boolean }> {
   const operation = captureNoteWriteOperation({ backgroundCloud: false })
+  const deletedAt = Date.now()
   const db = operation.db
   if (db.owner && workspaceId !== db.owner.workspaceId) throw new Error('笔记 workspace 与已验证归属不一致')
+  const syncStore = portalNotesStore(db)
+  const expectedVersion = await syncStore.find('note',id) ?? await syncStore.find('asset',id)
   const existing = await getNote(id, true, workspaceId, operation)
   if (existing?.storage === 'asset') {
-    await assetStore.softDeleteForWorkspace(id, workspaceId, db)
+    await assetStore.softDeleteForWorkspace(id, workspaceId, db, operation.syncEpoch, deletedAt, expectedVersion)
     operation.assertCurrent()
     return { mediaCleaned: true }
   }
   // ① 软删先行：这一步失败 ⇒ 笔记仍在，调用方如实报「删除失败」（不假装）。
-  const deletedAt = Date.now()
   await portalNotesStore(db).commit([{ statement: 'UPDATE local_notes SET deleted_at = ?, updated_at = ? WHERE id = ? AND workspace_id = ?', values: [deletedAt, deletedAt, id, workspaceId] }], {
     source: 'note', epoch: operation.syncEpoch, id, title: existing?.title ?? '', modifiedAt: deletedAt, deleted: true,
+    expectedVersion,
     payload: notePayload({ format: 'text', content: '' }),
   }, false)
   // ② 附属清理：各自兜住，绝不因为它失败而让「删除没生效」。

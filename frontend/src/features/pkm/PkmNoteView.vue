@@ -14,6 +14,7 @@
           :note-id="noteId"
           @navigate="onNavigate"
           @saved="onSaved"
+          @markdown="openMarkdown"
         />
         <BacklinksPanel
           :target-title="currentTitle"
@@ -82,6 +83,10 @@ async function loadOrCreate(id: string) {
       router.replace('/pkm/today')
       return
     }
+    if (note.format === 'markdown') {
+      openMarkdown(note.id)
+      return
+    }
     noteId.value = note.id
     currentTitle.value = note.title
   }
@@ -100,6 +105,11 @@ async function onNavigate(target: string) {
 
 function openNote(id: string) {
   router.push(`/pkm/n/${id}`)
+}
+
+function openMarkdown(id: string) {
+  noteId.value = ''
+  router.replace(`/notes/${encodeURIComponent(id)}`)
 }
 
 watch(rawId, (id) => {

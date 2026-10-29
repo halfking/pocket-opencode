@@ -18,7 +18,12 @@ export async function applyPage(store: PortalNotesStore, page: ChangePage, encod
     validateItem(item, true)
     const existing = await store.byExternalId(item.ext_id)
     const payload = item.deleted ? null : remoteNotePayload(item.payload)
-    const source = existing?.source ?? (payload?.format === 'html' || (item.deleted && item.ext_id.startsWith('asset:')) ? 'asset' : 'note')
+    if (existing && payload) {
+      const asset = existing.source === 'asset' ? await store.db.queryOne<{ source: string }>('SELECT source FROM local_assets WHERE id=? AND workspace_id=?', [existing.source_id, store.db.owner.workspaceId]) : null
+      const expectedFormat = existing.source === 'note' ? 'text' : asset?.source === 'enex_import' ? 'markdown' : 'html'
+      if (payload.format !== expectedFormat) throw new Error('Note format changed; original content and cursor retained')
+    }
+    const source = existing?.source ?? (payload?.format === 'html' || payload?.format === 'markdown' || (item.deleted && item.ext_id.startsWith('asset:')) ? 'asset' : 'note')
     const id = existing?.source_id ?? `portal-${newOperationId()}`
     const modified = Date.parse(item.client_updated_at)
     const key = versionKey(item.client_updated_at)
@@ -55,12 +60,15 @@ export async function applyPage(store: PortalNotesStore, page: ChangePage, encod
     } else {
       statements.push({ statement: `INSERT INTO local_assets
         (id,workspace_id,kind,title,body_text,body_encrypted,meta_json,source,sync_mode,created_at,updated_at,dirty)
-        SELECT ?,?,'note',?,?,?,?, 'portal_sync','e2ee_local_first',?,?,0 WHERE ${guard}
+        SELECT ?,?,'note',?,?,?,?,?,'e2ee_local_first',?,?,0 WHERE ${guard}
         ON CONFLICT(id) DO UPDATE SET title=excluded.title,body_text=excluded.body_text,body_encrypted=excluded.body_encrypted,
-          meta_json=json_patch(COALESCE(local_assets.meta_json,'{}'),excluded.meta_json),updated_at=excluded.updated_at,deleted_at=NULL
+          meta_json=json_patch(COALESCE(local_assets.meta_json,'{}'),excluded.meta_json),source=excluded.source,updated_at=excluded.updated_at,deleted_at=NULL
         WHERE local_assets.workspace_id=excluded.workspace_id`,
         values: [id, store.db.owner.workspaceId, item.title, encoded.content, encoded.encrypted,
-          JSON.stringify({ tags: payload!.tags, links: payload!.links, dailyDate: payload!.daily_date, summary: payload!.summary }), created, modified, ...guardValues] })
+          JSON.stringify({ tags: payload!.tags, links: payload!.links, dailyDate: payload!.daily_date, summary: payload!.summary,
+            ...(payload!.format === 'markdown' ? { originalCreated: created, originalUpdated: modified,
+              ...(payload!.import_id ? { enexId: payload!.import_id } : {}) } : {}) }),
+          payload!.format === 'markdown' ? 'enex_import' : 'portal_sync', created, modified, ...guardValues] })
     }
   }
   // A failed materialization rolls back both the versions and the cursor.
