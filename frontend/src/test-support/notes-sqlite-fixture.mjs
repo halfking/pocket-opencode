@@ -54,6 +54,7 @@ export async function fixture(run) {
         if (importer?.endsWith('/notes-persist.ts') && source === '../../native/crypto') return '\0notes-crypto'
         if (importer?.endsWith('/notes-row.ts') && source === '../../native/crypto') return '\0notes-crypto'
         if (importer?.endsWith('/asset-store.ts') && source === './crypto') return '\0notes-crypto'
+        if (importer?.endsWith('/record-storage.ts') && source === '../crypto') return '\0notes-crypto'
       },
       load(id) {
         if (id === '\0notes-sqlite') return `export const { SQLiteConnection, SQLiteDBConnection, CapacitorSQLite } = globalThis[${JSON.stringify(key)}]`

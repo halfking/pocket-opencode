@@ -25,6 +25,7 @@ function rowToMeeting(r: Record<string, unknown>): LocalMeeting {
     status: (r.status as LocalMeeting['status']) ?? 'completed',
     startedAt: r.started_at as number,
     createdAt: r.created_at as number,
+    updatedAt: (r.updated_at as number) ?? 0,
     deletedAt: (r.deleted_at as number) ?? null,
     sessionId: (r.session_id as string) ?? null,
     archivedAt: (r.archived_at as number) ?? null,

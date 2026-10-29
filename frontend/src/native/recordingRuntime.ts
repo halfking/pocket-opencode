@@ -1028,6 +1028,7 @@ export class MeetingRecorderRuntime {
     if (!this.isRecording.value || this.stopping) return null
     this.stopping = true
     const meetingId = this.activeMeetingId.value
+    const audioOperation = this.operation
     // §834/D1：每次 stop 从 false 重新开始。放在**开头**而不是只写在
     // `if (meetingId)` 分支里：没有会议归属时那个分支不执行，
     // 而返回值仍然会把这个字段交出去 ⇒ 不清零就会把上一轮的失败带进这一轮。
@@ -1073,7 +1074,8 @@ export class MeetingRecorderRuntime {
         audioPath = URL.createObjectURL(fullBlob)
         if (meetingId) {
           try {
-            await saveMeetingAudio(meetingId, fullBlob)
+            if (!audioOperation) throw new Error('Recording owner operation is unavailable; audio was not assigned to another account')
+            await saveMeetingAudio(meetingId, fullBlob, audioOperation.localDb)
             audioPersisted = true
           } catch (e) {
             audioSaveError = e

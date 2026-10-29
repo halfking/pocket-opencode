@@ -3,6 +3,7 @@ import { encryptString, decryptString } from '../crypto'
 import { useCryptoConfig } from '../../stores/crypto-config'
 import { PortalNotesStore } from './store.ts'
 import type { PortalItem, SyncDb } from './contract.ts'
+export { portalRecordStore } from './record-storage.ts'
 
 export function portalNotesStore(db: SyncDb): PortalNotesStore {
   return new PortalNotesStore(db, {

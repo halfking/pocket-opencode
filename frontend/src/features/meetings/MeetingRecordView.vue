@@ -8,18 +8,21 @@ import { useRouter } from 'vue-router'
 import { Skeleton } from '@/components'
 import { createMeeting } from './meetings-store'
 import { captureDeviceLocation, formatCapturedTitle } from './meeting-meta'
+import { captureRecordingDb } from './recording-operation.ts'
 
 const router = useRouter()
 
 onMounted(async () => {
   try {
+    const db = captureRecordingDb()
     const startedAt = Date.now()
     const location = await captureDeviceLocation()
     const meeting = await createMeeting({
       startedAt,
       location: location ?? undefined,
       title: formatCapturedTitle({ startedAt, location }),
-    })
+    }, db)
+    db.assertCurrent()
     await router.replace({
       name: 'meeting-detail',
       params: { id: meeting.id },

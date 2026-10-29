@@ -154,6 +154,8 @@ import { useMeetingRecorder } from '../../composables/useMeetingRecorder'
 import { safeExternalUrl } from '../../utils/safe-url'
 import { useLiveSummary } from '../../composables/useLiveSummary'
 import { useToast } from '../../composables/useToast'
+import { useNotesOwnerView } from '../notes/note-view-owner.ts'
+import { captureRecordingDb } from './recording-operation.ts'
 import { finalizeRecording } from './meeting-recording-finalize'
 import {
   getMeetingWithSegments, updateMeeting, updateSegmentText, saveSegment, updateTranscript,
@@ -322,12 +324,25 @@ const statusLine = computed(() => {
   return ''
 })
 
+const ownerView = useNotesOwnerView(() => {
+  meeting.value = null
+  storedSegments.value = []
+  agentRecs.value = []
+  noteRecs.value = []
+  refinedModeOverride.value = null
+  loadError.value = ''
+}, load, undefined, load, 'openpocket:portal-meetings-applied')
+
 async function load() {
+  const stamp = ownerView.capture()
+  if (!ownerView.isCurrent(stamp)) return
   loading.value = true
   let data: Awaited<ReturnType<typeof getMeetingWithSegments>> = null
   try {
     data = await getMeetingWithSegments(meetingId.value)
+    if (!ownerView.isCurrent(stamp)) return
   } catch (e) {
+    if (!ownerView.isCurrent(stamp)) return
     // ⚠⚠ §837/D1：抛错时**不清空**已显示的 meeting/storedSegments ——
     //   一次刷新失败不该把用户正在看的正文清掉（list-error-failpath 的两档契约）。
     loadError.value = describeMeetingLoadFailure({ error: e })
@@ -336,7 +351,7 @@ async function load() {
   } finally {
     // ⚠ 放在 finally：这一行此前排在 await 之后，抛错时**永远到不了**
     //   ⇒ 那正是「永久骨架屏」的直接成因。
-    loading.value = false
+    if (ownerView.isCurrent(stamp)) loading.value = false
   }
   loadError.value = ''
   meeting.value = data?.meeting ?? null
@@ -372,13 +387,17 @@ async function onMenuAction(id: MeetingStudioAction) {
  *   ⇒ 富化失败不该挡住录音：记日志、继续。
  */
 async function captureContext(m: LocalMeeting) {
+  const db = captureRecordingDb()
+  const stamp = ownerView.capture()
   try {
     const loc = m.location || await captureDeviceLocation()
+    if (!ownerView.isCurrent(stamp)) return
     const title = m.title || formatCapturedTitle({
       startedAt: m.startedAt, location: loc, topic: m.topic,
     })
     if (loc !== m.location || title !== m.title) {
-      await updateMeeting(m.id, { location: loc, title })
+      await updateMeeting(m.id, { location: loc, title }, db)
+      if (!ownerView.isCurrent(stamp)) return
       meeting.value = { ...m, location: loc, title }
     }
   } catch (e) {
@@ -659,6 +678,7 @@ function onOpenRelated(item: RecommendItem) {
 }
 
 async function refreshRelated() {
+  const stamp = ownerView.capture()
   // ⚠ §926：走并发闸 —— 至多一个在途；期间到达的段合并成一次补跑。
   // ⚠ 注意这里**不能**加 catch：`fire-and-forget-audit` 门按「函数体内有无 catch」
   //   决定 `void refreshRelated()` 要不要登记（`src/__tests__/fire-and-forget-audit.test.ts`
@@ -667,15 +687,18 @@ async function refreshRelated() {
   await relatedGate.run(async () => {
     const q = relatedQueryFromTranscript(displaySegments.value.map((s) => s.text))
     // 笔记按 workspace_id 分区，不传会落到 'default'、关联笔记永远为空
-    noteRecs.value = await searchRelatedContext(q, {
+    const related = await searchRelatedContext(q, {
       excludeMeetingId: meetingId.value,
       workspaceId: auth.workspaceId || 'default',
     })
+    if (ownerView.isCurrent(stamp)) noteRecs.value = related
   })
 }
 
 onMounted(async () => {
+  const stamp = ownerView.capture()
   await load()
+  if (!ownerView.isCurrent(stamp)) return
   const m = meeting.value
   if (!m) return
   // ⚠ §411：原来这里有一行 `noteRecs.value = m.recommendations`，已被删除。

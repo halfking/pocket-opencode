@@ -4,16 +4,26 @@
  * blob URL 在 App 重启后失效；完整录音存入 IndexedDB 以便回放。
  * Sprint 4 可迁移至 @capacitor/filesystem。
  */
+export interface MeetingAudioOperation {
+  readonly owner: { readonly userId: string; readonly workspaceId: string } | null
+  assertCurrent(): void
+}
+const recordingKey = (meetingId: string, operation: MeetingAudioOperation): string =>
+  JSON.stringify(['owned-v1', operation.owner?.userId ?? '', operation.owner?.workspaceId ?? '', meetingId])
 
 const DB_NAME = 'pocket-meeting-audio'
-const STORE = 'recordings'
-const DB_VERSION = 1
+const LEGACY_STORE = 'recordings'
+const STORE = 'owned-recordings'
+const DB_VERSION = 2
 
 function openDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, DB_VERSION)
     req.onupgradeneeded = () => {
       const db = req.result
+      // Old unscoped audio stays in its own store and is never interpreted as
+      // an owner key, even if a historical meeting id resembles our new key.
+      if (!db.objectStoreNames.contains(LEGACY_STORE)) db.createObjectStore(LEGACY_STORE)
       if (!db.objectStoreNames.contains(STORE)) {
         db.createObjectStore(STORE)
       }
@@ -24,17 +34,21 @@ function openDB(): Promise<IDBDatabase> {
 }
 
 /** 保存会议完整录音 */
-export async function saveMeetingAudio(meetingId: string, blob: Blob): Promise<void> {
+export async function saveMeetingAudio(meetingId: string, blob: Blob, operation: MeetingAudioOperation): Promise<void> {
+  operation.assertCurrent()
+  const key = recordingKey(meetingId, operation)
   const db = await openDB()
   try {
+    operation.assertCurrent()
     await new Promise<void>((resolve, reject) => {
       const tx = db.transaction(STORE, 'readwrite')
-      tx.objectStore(STORE).put(blob, meetingId)
+      tx.objectStore(STORE).put(blob, key)
       // ⚠ 必须等 `tx.oncomplete`：`put` 的 request 成功**不代表已落库**（见 §877 D46）。
       tx.oncomplete = () => resolve()
       tx.onerror = () => reject(tx.error)
       tx.onabort = () => reject(tx.error ?? new Error('IndexedDB 事务被中止：录音未落盘'))
     })
+    operation.assertCurrent()
   } finally {
     // §877 D48：失败路径也必须关连接 —— 旧代码 close() 写在 await 之后，
     // 一旦这里 reject，连接就永久留着。
@@ -43,34 +57,45 @@ export async function saveMeetingAudio(meetingId: string, blob: Blob): Promise<v
 }
 
 /** 读取录音并返回 blob URL（调用方负责 revokeObjectURL） */
-export async function loadMeetingAudio(meetingId: string): Promise<string | null> {
+export async function loadMeetingAudio(meetingId: string, operation: MeetingAudioOperation): Promise<string | null> {
+  operation.assertCurrent()
+  // Legacy meetingId-only keys have unknown provenance and are never claimed.
+  if (!operation.owner) return null
+  const key = recordingKey(meetingId, operation)
   const db = await openDB()
   let blob: Blob | null
   try {
+    operation.assertCurrent()
     blob = await new Promise<Blob | null>((resolve, reject) => {
       const tx = db.transaction(STORE, 'readonly')
-      const req = tx.objectStore(STORE).get(meetingId)
+      const req = tx.objectStore(STORE).get(key)
       req.onsuccess = () => resolve((req.result as Blob) ?? null)
       req.onerror = () => reject(req.error)
     })
   } finally {
     db.close()
   }
+  operation.assertCurrent()
   if (!blob) return null
   return URL.createObjectURL(blob)
 }
 
 /** 删除会议录音 */
-export async function deleteMeetingAudio(meetingId: string): Promise<void> {
+export async function deleteMeetingAudio(meetingId: string, operation: MeetingAudioOperation): Promise<void> {
+  operation.assertCurrent()
+  if (!operation.owner) return
+  const key = recordingKey(meetingId, operation)
   const db = await openDB()
   try {
+    operation.assertCurrent()
     await new Promise<void>((resolve, reject) => {
       const tx = db.transaction(STORE, 'readwrite')
-      tx.objectStore(STORE).delete(meetingId)
+      tx.objectStore(STORE).delete(key)
       tx.oncomplete = () => resolve()
       tx.onerror = () => reject(tx.error)
       tx.onabort = () => reject(tx.error ?? new Error('IndexedDB 事务被中止：录音未被删除'))
     })
+    operation.assertCurrent()
   } finally {
     db.close()
   }

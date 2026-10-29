@@ -3,6 +3,8 @@ import { newOperationId, type Statement } from './contract.ts'
 import { markNotesResetPending, rememberNotesEpoch, validEpoch } from './epochs.ts'
 import { currentNotesEpoch, notesEpochStatements } from './epoch-state.ts'
 import { PortalNotesStore } from './store.ts'
+import { markModuleResetPending, rememberModuleEpoch } from './epochs.ts'
+import { currentRecordEpoch, recordEpochStatements } from './record-epoch.ts'
 
 export interface ResetIntent { reset_id: string; modules: PortalSyncModule[] }
 export interface ResetResult {
@@ -38,10 +40,12 @@ export class PortalResetStore {
     await db.runInTransaction([
       { statement: `INSERT OR IGNORE INTO local_portal_resets(owner_user_id,owner_workspace_id,reset_id,modules_json,blocks_notes) VALUES(?,?,?,?,?)`, values: [...store.scope, newOperationId(), json, blocksNotes ? 1 : 0] },
       ...(blocksNotes ? [{ statement: `UPDATE local_portal_outbox SET last_error='reset_pending' WHERE owner_user_id=? AND owner_workspace_id=?`, values: store.scope }] : []),
+      ...sorted.filter(module => module !== 'notes').map(module => ({ statement: `UPDATE local_portal_record_outbox SET last_error='reset_pending' WHERE owner_user_id=? AND owner_workspace_id=? AND module=?`, values: [...store.scope, module] })),
     ])
     const pending = await db.queryOne<{ reset_id: string }>(`SELECT reset_id FROM local_portal_resets WHERE owner_user_id=? AND owner_workspace_id=? AND modules_json=? AND completed=0`, [...store.scope, json])
     if (!pending) throw new Error('Cloud reset intent was not persisted')
     if (blocksNotes) markNotesResetPending(db.owner, true)
+    for (const module of sorted) if (module !== 'notes') markModuleResetPending(db.owner, module, true)
     return { reset_id: pending.reset_id, modules: sorted }
   }
   async complete(intent: ResetIntent, raw: unknown): Promise<ResetResult> {
@@ -53,12 +57,17 @@ export class PortalResetStore {
     for (const module of intent.modules) {
       const epoch = result.epochs[module]!
       if (module === 'notes') statements.push(...notesEpochStatements(db, epoch))
-      else statements.push({ statement: `INSERT INTO local_portal_sync_epochs(owner_user_id,owner_workspace_id,module,epoch) VALUES(?,?,?,?)
-        ON CONFLICT(owner_user_id,owner_workspace_id,module) DO UPDATE SET epoch=MAX(local_portal_sync_epochs.epoch,excluded.epoch)`, values: [...store.scope, module, epoch] })
+      else statements.push(...recordEpochStatements(db, module, epoch))
     }
     statements.push({ statement: `UPDATE local_portal_resets SET completed=1,response_json=? WHERE owner_user_id=? AND owner_workspace_id=? AND reset_id=? AND modules_json=?`,
       values: [JSON.stringify(result), ...store.scope, intent.reset_id, JSON.stringify(intent.modules)] })
     await db.runInTransaction(statements)
+    for (const module of intent.modules) if (module !== 'notes') {
+      const epoch = await currentRecordEpoch(db, module)
+      const remaining = await db.queryOne(`SELECT reset_id FROM local_portal_resets WHERE owner_user_id=? AND owner_workspace_id=? AND completed=0 AND instr(modules_json,?)>0`, [...store.scope, JSON.stringify(module)])
+      markModuleResetPending(db.owner, module, Boolean(remaining))
+      if (epoch !== null) rememberModuleEpoch(db.owner, module, epoch)
+    }
     if (intent.modules.includes('notes')) {
       const current = await currentNotesEpoch(db)
       const remaining = await db.queryOne(`SELECT reset_id FROM local_portal_resets WHERE owner_user_id=? AND owner_workspace_id=? AND blocks_notes=1 AND completed=0`, store.scope)

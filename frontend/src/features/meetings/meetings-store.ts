@@ -6,6 +6,8 @@ import { captureRecordingDb, type RecordingDb } from './recording-operation'
 import { utf8ByteLength } from '../../utils/text'
 import { shouldPersistTranscript, meetingListSql } from './meeting-transcript-cache.ts'
 import { captureMeetingOwnership, ownerColumnValues, ownerOf, ownerScopeSql } from '../../native/meeting-ownership'
+import { captureModuleEpoch } from '../../native/portal-sync/epochs.ts'
+import { meetingPayload, meetingPortalStore } from './meeting-sync-adapter.ts'
 
 // 'refine-failed' = 精校**降级或被拦下**，显示的是原始转写（§17/§35）。
 // 它不能并进 'completed'：那会让「正常完成」与「精校失败」共用一个桶。
@@ -28,6 +30,7 @@ export interface LocalMeeting {
   status: MeetingStatus
   startedAt: number
   createdAt: number
+  updatedAt: number
   deletedAt: number | null
   archivedAt: number | null
   tags: string[]
@@ -131,12 +134,13 @@ export async function createMeeting(input: {
   topic?: string
   tags?: string[]
   summarySkill?: string
-}): Promise<LocalMeeting> {
+}, db: RecordingDb = captureRecordingDb()): Promise<LocalMeeting> {
   const now = Date.now()
   // ⚠ 归属取自**同一个**操作租约 ⇒ 这一行属于哪一代会话是原子的。
   //   没有已验证会话（恢复出来的会话）⇒ 归属未知 ⇒ 这一行保持未认领：
   //   任何账号都读不到，也永不上传（用户已确认的边界）。
-  const { db, owner } = captureMeetingOwnership(localDB)
+  const owner = ownerOf(db)
+  const epoch = captureModuleEpoch(owner, 'meetings')
   const [ownerUserId, ownerWorkspaceId] = ownerColumnValues(owner)
   const m: LocalMeeting = {
     id: `meeting-${now}-${Math.random().toString(36).slice(2, 8)}`,
@@ -155,24 +159,26 @@ export async function createMeeting(input: {
     status: 'recording',
     startedAt: input.startedAt ?? now,
     createdAt: now,
+    updatedAt: now,
     deletedAt: null,
     archivedAt: null,
     tags: input.tags ?? [],
     topic: input.topic ?? null,
     summarySkill: input.summarySkill ?? 'meeting-minutes',
   }
-  await db.run(
-    `INSERT INTO local_meetings
+  const statement = `INSERT INTO local_meetings
      (id, title, location, participants, audio_path, duration_ms, transcript, summary,
       live_summary, refined_transcript, recommendations, note_id, status, started_at, created_at, session_id,
-      archived_at, tags, topic, summary_skill, owner_user_id, owner_workspace_id)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-    [
+      archived_at, tags, topic, summary_skill, owner_user_id, owner_workspace_id, updated_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+  const values = [
       m.id, m.title, m.location, JSON.stringify(m.participants), m.audioPath,
       m.durationMs, null, null, null, null, null, null, m.status, m.startedAt, m.createdAt, m.sessionId,
-      null, JSON.stringify(m.tags), m.topic, m.summarySkill, ownerUserId, ownerWorkspaceId,
-    ],
-  )
+      null, JSON.stringify(m.tags), m.topic, m.summarySkill, ownerUserId, ownerWorkspaceId, now,
+    ]
+  await meetingPortalStore(db).commit([{statement, values}], {
+    id:m.id,extId:`meeting:${m.id}`,title:m.title??'',payload:meetingPayload(m),modifiedAt:now,epoch,
+  }, true)
   return m
 }
 
@@ -243,6 +249,8 @@ export async function updateMeeting(
   >>,
   db: RecordingDb = captureRecordingDb(),
 ): Promise<void> {
+  const modifiedAt = Date.now()
+  const epoch = captureModuleEpoch(ownerOf(db), 'meetings')
   const sets: string[] = []
   const vals: unknown[] = []
   const map: Record<string, unknown> = {
@@ -268,6 +276,20 @@ export async function updateMeeting(
   }
   if (sets.length === 0) return
   const scope = ownerScopeSql(ownerOf(db))
+  const portable = patch.title !== undefined || patch.participants !== undefined || patch.summary !== undefined
+  if (portable) {
+    const existing = await getMeeting(id, db)
+    if (!existing) return
+    const next = {...existing,...patch,updatedAt:modifiedAt}
+    const guard = {
+      clause:`EXISTS(SELECT 1 FROM local_meetings WHERE id=? AND ${scope.clause} AND updated_at=? AND title IS ? AND COALESCE(participants,'[]')=? AND summary IS ? AND deleted_at IS NULL)`,
+      values:[id,...scope.params,modifiedAt,next.title,JSON.stringify(next.participants),next.summary],
+    }
+    await meetingPortalStore(db).commit([{statement:`UPDATE local_meetings SET ${sets.join(', ')},updated_at=? WHERE id=? AND ${scope.clause} AND updated_at=? AND deleted_at IS NULL`,values:[...vals,modifiedAt,id,...scope.params,existing.updatedAt]}],
+      {id,title:next.title??'',payload:meetingPayload(next),modifiedAt,epoch,guard},false)
+    if (!await db.queryOne(`SELECT 1 WHERE ${guard.clause}`,guard.values)) throw new Error('Meeting changed during this edit; local original retained, retry the edit')
+    return
+  }
   vals.push(id)
   await db.run(`UPDATE local_meetings SET ${sets.join(', ')} WHERE id = ? AND ${scope.clause}`, [...vals, ...scope.params])
 }
@@ -366,18 +388,25 @@ export async function updateSummary(id: string, summary: string): Promise<void> 
   await updateMeeting(id, { summary })
 }
 
-export async function deleteMeeting(id: string): Promise<void> {
-  const { db, owner } = captureMeetingOwnership(localDB)
+export async function deleteMeeting(id: string, db: RecordingDb = captureRecordingDb()): Promise<void> {
+  const now = Date.now()
+  const owner = ownerOf(db)
+  const epoch = captureModuleEpoch(owner, 'meetings')
   const scope = ownerScopeSql(owner)
-  await db.run('UPDATE local_meetings SET deleted_at = ? WHERE id = ? AND ' + scope.clause, [Date.now(), id, ...scope.params])
+  const existing = await getMeeting(id,db)
+  if(!existing)return
+  const guard={clause:`EXISTS(SELECT 1 FROM local_meetings WHERE id=? AND ${scope.clause} AND updated_at=? AND deleted_at=?)`,values:[id,...scope.params,now,now]}
+  await meetingPortalStore(db).commit([{statement:`UPDATE local_meetings SET deleted_at=?,updated_at=? WHERE id=? AND ${scope.clause} AND updated_at=? AND deleted_at IS NULL`,values:[now,now,id,...scope.params,existing.updatedAt]}],
+    {id,title:existing.title??'',payload:{},modifiedAt:now,epoch,deleted:true,guard},false)
+  if(!await db.queryOne(`SELECT 1 WHERE ${guard.clause}`,guard.values))throw new Error('Meeting changed during deletion; local original retained, retry deletion')
 }
 
-export async function archiveMeeting(id: string): Promise<void> {
-  await updateMeeting(id, { archivedAt: Date.now() })
+export async function archiveMeeting(id: string, db: RecordingDb = captureRecordingDb()): Promise<void> {
+  await updateMeeting(id, { archivedAt: Date.now() }, db)
 }
 
-export async function unarchiveMeeting(id: string): Promise<void> {
-  await updateMeeting(id, { archivedAt: 0 })
+export async function unarchiveMeeting(id: string, db: RecordingDb = captureRecordingDb()): Promise<void> {
+  await updateMeeting(id, { archivedAt: 0 }, db)
 }
 
 export async function saveSegment(seg: Omit<MeetingSegment, 'id'>, db: RecordingDb = captureRecordingDb()): Promise<string> {
@@ -430,6 +459,7 @@ function rowToMeeting(r: Record<string, unknown>): LocalMeeting {
     status: (r.status as MeetingStatus) ?? 'completed',
     startedAt: r.started_at as number,
     createdAt: r.created_at as number,
+    updatedAt: (r.updated_at as number) ?? 0,
     deletedAt: (r.deleted_at as number) ?? null,
     archivedAt: (r.archived_at as number) ?? null,
     tags: parseJson(r.tags as string, []),

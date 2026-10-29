@@ -1,6 +1,7 @@
 import { validateItem, versionKey, newOperationId, type NotePayload, type PortalAck, type PortalItem, type Statement, type SyncDb } from './contract.ts'
 import { epochTables, currentNotesEpoch, epochGuard, observeNotesEpoch } from './epoch-state.ts'
 import { validEpoch } from './epochs.ts'
+import { recordTables } from './record-tables.ts'
 
 export interface NoteSnapshot {
   source: 'note' | 'asset'
@@ -38,6 +39,7 @@ const tables = [
     module TEXT NOT NULL, cursor TEXT NOT NULL,
     PRIMARY KEY(owner_user_id,owner_workspace_id,module))`,
   ...epochTables,
+  ...recordTables,
 ]
 const schemaReady = new WeakMap<object, Promise<void>>()
 

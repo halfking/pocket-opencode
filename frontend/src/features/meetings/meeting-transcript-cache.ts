@@ -108,7 +108,7 @@ const MEETING_LIST_COLUMNS = [
   //   （详情页走 `getMeeting` = `SELECT *` ⇒ 那里拿到的仍是**全文**。）
   `substr(refined_transcript, 1, ${TRANSCRIPT_LIST_PREVIEW_CHARS}) AS refined_transcript`,
   'recommendations',
-  'note_id', 'session_id', 'status', 'started_at', 'created_at',
+  'note_id', 'session_id', 'status', 'started_at', 'created_at', 'updated_at',
   'deleted_at', 'archived_at', 'tags', 'topic', 'summary_skill',
 ].join(', ')
 
