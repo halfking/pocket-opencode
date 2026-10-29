@@ -4,7 +4,7 @@
  * 端点族（platform-go 提供，见设计 03 §8 / 04 §4）：
  *   GET  /api/v1/portal/sync-policy   读策略
  *   PUT  /api/v1/portal/sync-policy   只改 modules（body: { modules: {...} }）
- *   POST /api/v1/portal/cloud/purge   清除模块的云端副本（body: { modules: [...] }）
+ *   POST /api/v1/portal/sync/v2/purge 清除可信工作区副本（持久 reset_id + epoch 栅栏）
  *
  * 与 api/http.ts 的差别：门户 API 的 base 是 **redclawPortalBase**
  * （config/redclaw-portal.ts），不是 pocketd 的 resolveRuntimeApiBase()。
@@ -21,6 +21,7 @@
 import { resolveRedclawPortalBase } from '../config/redclaw-portal.ts'
 import { useAuthStore, captureAuthSession, assertAuthSession } from '../stores/auth'
 import { fetchWithTimeout } from './fetch-timeout.ts'
+import { capturePortalPurgeOperation } from '../native/portal-sync/purge-operation'
 import {
   isPortalSyncModule,
   normalizeSyncPolicy,
@@ -104,25 +105,17 @@ export async function updateSyncPolicyModules(
   return normalizeSyncPolicy(raw)
 }
 
-/** POST /api/v1/portal/cloud/purge — 清除模块的云端副本。 */
+/** Trusted v2 purge; uncertain retries retain their persisted reset_id. */
 export async function purgeCloudCopy(
   modules: SyncModule[],
 ): Promise<{ purged: Partial<Record<PortalSyncModule, number>> }> {
   if (!modules.length || !modules.every(isPortalSyncModule)) {
     throw new SyncPolicyApiError(400, 'purge requires a supported portal module')
   }
-  const requested = new Set(modules)
-  const raw = (await portalFetch('/api/v1/portal/cloud/purge', {
-    method: 'POST',
-    body: JSON.stringify({ modules }),
-  })) as { purged?: unknown } | undefined
-  if (!raw?.purged || typeof raw.purged !== 'object' || Array.isArray(raw.purged)) {
-    throw new SyncPolicyApiError(502, 'invalid purge response')
-  }
-  const counts = Object.entries(raw.purged)
-  if (counts.length !== requested.size || counts.some(([module, count]) =>
-    !requested.has(module as PortalSyncModule) || !Number.isSafeInteger(count) || (count as number) < 0)) {
-    throw new SyncPolicyApiError(502, 'invalid purge response')
-  }
-  return { purged: Object.fromEntries(counts) as Partial<Record<PortalSyncModule, number>> }
+  const operation = capturePortalPurgeOperation(modules as PortalSyncModule[])
+  try {
+    const { purgePortalCloudCopy } = await import('../native/portal-sync/purge.ts')
+    operation.assertCurrent()
+    return await purgePortalCloudCopy(operation)
+  } finally { operation.dispose() }
 }

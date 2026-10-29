@@ -310,6 +310,7 @@ const DEGRADE_REGISTRY = {
   'features/notes/notes-persist.ts::content::368464e7': '只读输入：纯内容用于分段云端嵌入，原始操作上下文限制后台任务的发起身份和策略代际；正文持久化走独立本地流程',
   'features/notes/notes-persist.ts::content::554774cc': '写入**条件**里的 ||，不是取值降级',
   'features/notes/notes-persist.ts::summary::19169f5a': '同字段：摘要列写摘要',
+  'features/notes/notes-persist.ts::summary::06f7f058': '同字段：门户同步投影的 summary 写摘要，content 独立取完整 nextContent，不用摘要替代正文',
   'features/notes/notes-persist.ts::content::48f6f842': '★ §891 保留的安全降级：body_path 未回填时 content 仍是全文',
   'features/notes/notes-row.ts::summary::9be89342': '同字段：行映射归一',
   'features/notes/notes-store.ts::content::7303abbd': '保守合并：来值为空时保留原值',

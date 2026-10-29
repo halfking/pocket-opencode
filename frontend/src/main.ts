@@ -12,6 +12,7 @@ import { useConnectivityStore } from "./stores/connectivity"
 import { useThemeStore } from "./stores/theme"
 import { startEmailConfigSync } from "./features/email/account-sync"
 import { startUserConfigSync } from "./native/config-sync/runtime"
+import { startPortalNotesSync } from "./native/portal-sync/runtime"
 import { appLifecycleHub } from "./native/appLifecycleHub.ts"
 import { installLlmBffStreamRuntime } from "./api/llm-bff"
 import { startAiStreamKeepalive } from "./native/aiStreamKeepalive.ts"
@@ -58,6 +59,7 @@ startSyncPolicyRuntime(syncAuth, useSyncPolicyStore(pinia), {
     useConnectivityStore(pinia).init()
     startEmailConfigSync()
     startUserConfigSync()
+    startPortalNotesSync()
   },
   connect: connectWs,
   disconnect: () => wsClient.disconnect(),

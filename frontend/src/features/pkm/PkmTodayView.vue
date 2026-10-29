@@ -91,19 +91,23 @@ import { EmptyState, ErrorState, Loading } from '../../components'
 import LocalOnlyBadge from '../../components/business/LocalOnlyBadge.vue'
 import { useApiError } from '../../composables/useApiError'
 import { useListScene } from '../../composables/use-list-scene'
+import { useNotesOwnerView } from '../notes/note-view-owner'
 
 defineOptions({ name: 'PkmTodayView' })
 
 const apiError = useApiError()
 const router = useRouter()
 const auth = useAuthStore()
-const workspaceId = auth.workspaceId || 'default'
+const currentWorkspaceId = () => auth.workspaceId || 'default'
 
 const query = ref('')
 const notes = ref<PkmNote[]>([])
 const loading = ref(false)
 const dailyExists = ref(false)
 const loadError = ref('')
+const ownerView = useNotesOwnerView(() => {
+  notes.value = []; query.value = ''; dailyExists.value = false; loadError.value = ''; loading.value = false
+}, loadRecent, 'pkm-today', () => query.value.trim() ? onSearch() : loadRecent())
 
 const todayKey = dailyKey()
 const now = new Date()
@@ -111,20 +115,26 @@ const dayNum = String(now.getDate())
 const yearMonth = `${now.getFullYear()}/${now.getMonth() + 1}`
 
 async function loadRecent() {
+  const stamp = ownerView.capture()
+  if (!ownerView.isCurrent(stamp)) return
   loading.value = true
   loadError.value = ''
   query.value = ''
   try {
-    notes.value = await listNotes({ workspaceId, limit: 50 })
-    dailyExists.value = !!(await getDailyNote(todayKey, workspaceId))
+    const workspaceId = currentWorkspaceId()
+    const [loaded, daily] = await Promise.all([listNotes({ workspaceId, limit: 50 }), getDailyNote(todayKey, workspaceId)])
+    if (!ownerView.isCurrent(stamp)) return
+    notes.value = loaded
+    dailyExists.value = !!daily
   } catch (e: any) {
-    loadError.value = apiError(e, 'errors.loadNotesFailed')
+    if (ownerView.isCurrent(stamp)) loadError.value = apiError(e, 'errors.loadNotesFailed')
   } finally {
-    loading.value = false
+    if (ownerView.isCurrent(stamp)) loading.value = false
   }
 }
 
 async function onSearch() {
+  const stamp = ownerView.capture()
   if (!query.value.trim()) {
     await loadRecent()
     return
@@ -132,11 +142,13 @@ async function onSearch() {
   loading.value = true
   loadError.value = ''
   try {
-    notes.value = await searchNotes(query.value, { workspaceId })
+    const loaded = await searchNotes(query.value, { workspaceId: currentWorkspaceId() })
+    if (!ownerView.isCurrent(stamp)) return
+    notes.value = loaded
   } catch (e: any) {
-    loadError.value = apiError(e, 'errors.operateFailed')
+    if (ownerView.isCurrent(stamp)) loadError.value = apiError(e, 'errors.operateFailed')
   } finally {
-    loading.value = false
+    if (ownerView.isCurrent(stamp)) loading.value = false
   }
 }
 
@@ -157,7 +169,9 @@ function newNote() {
 }
 
 async function openDaily() {
-  const daily = await getOrCreateDailyNote(todayKey, workspaceId)
+  const stamp = ownerView.capture()
+  const daily = await getOrCreateDailyNote(todayKey, currentWorkspaceId())
+  if (!ownerView.isCurrent(stamp)) return
   router.push(`/pkm/n/${daily.id}`)
 }
 

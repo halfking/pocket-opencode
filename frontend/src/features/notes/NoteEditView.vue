@@ -13,6 +13,7 @@
         <div class="form-group">
           <label for="note-title">标题</label>
           <UnifiedComposer
+            :key="`title-${auth.activationVersion}`"
             v-model="form.title"
             single-line
             placeholder="一句话概括…"
@@ -29,6 +30,7 @@
             <span class="hint">支持 Markdown · 可全屏编辑 · 语音录入自动填入</span>
           </label>
           <UnifiedComposer
+            :key="`content-${auth.activationVersion}`"
             ref="composerRef"
             v-model="form.content"
             placeholder="点击 ⛶ 全屏编辑，🎙 语音录入，或直接输入文本…"
@@ -93,6 +95,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import * as notesStore from './notes-store'
+import { useNotesOwnerView } from './note-view-owner'
 import type { LocalNote, NoteMediaInput } from './notes-store'
 import { ErrorState, UnifiedComposer } from '../../components'
 import { useAuthStore } from '../../stores/auth'
@@ -146,6 +149,10 @@ const form = reactive<FormState>({
   audioPath: null,
   audioDurationMs: 0,
 })
+const ownerView = useNotesOwnerView(() => {
+  form.title = ''; form.content = ''; form.tagsInput = ''; form.audioPath = null; form.audioDurationMs = 0
+  pendingMedia.value = []; saving.value = false; loadError.value = ''; saveError.value = ''
+}, () => router.replace('/notes'))
 
 const routeId = computed(() => (route.params.id as string) ?? '')
 const isNew = computed(
@@ -170,19 +177,22 @@ function onPickVideo(e: Event) {
 }
 
 async function onExtractTags() {
+  const stamp = ownerView.capture()
   extracting.value = true
   try {
     const extracted = await extractTagsForForm(form.content, form.tagsInput)
+    if (!ownerView.isCurrent(stamp)) return
     form.tagsInput = extracted.tagsInput
     if (!form.title) form.title = extracted.title
   } finally {
-    extracting.value = false
+    if (ownerView.isCurrent(stamp)) extracting.value = false
   }
 }
 
 onMounted(() => load())
 
 async function load() {
+  const stamp = ownerView.capture()
   if (isNew.value) {
     loading.value = false
     return
@@ -195,12 +205,13 @@ async function load() {
     const existing = await notesStore.getNote(routeId.value, false, currentWorkspaceId())
     if (existing) {
       existing.content = await notesStore.loadFullContent(existing)
+      if (!ownerView.isCurrent(stamp)) return
       hydrate(existing)
     }
   } catch (e: any) {
-    loadError.value = apiError(e, 'errors.loadNotesFailed')
+    if (ownerView.isCurrent(stamp)) loadError.value = apiError(e, 'errors.loadNotesFailed')
   } finally {
-    loading.value = false
+    if (ownerView.isCurrent(stamp)) loading.value = false
   }
 }
 
@@ -218,6 +229,7 @@ function currentWorkspaceId(): string {
 }
 
 async function onSave() {
+  const stamp = ownerView.capture()
   if (!canSave.value || saving.value) return
   saving.value = true
   saveError.value = ''
@@ -253,9 +265,11 @@ async function onSave() {
         media,
       }, currentWorkspaceId())
     }
+    if (!ownerView.isCurrent(stamp)) return
     markListDirty('notes')
     router.replace('/notes')
   } catch (e: any) {
+    if (!ownerView.isCurrent(stamp)) return
     console.warn('[note] 保存失败:', e)
     saving.value = false
     saveError.value = apiError(e, 'errors.saveFailed')

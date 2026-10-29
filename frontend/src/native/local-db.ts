@@ -609,6 +609,7 @@ class LocalDB {
 
   bindOperation(lease: OperationLease) {
     return Object.freeze({
+      schemaConnection: this.conn ?? this,
       assertCurrent: () => this.assertOperationCurrent(lease),
       /**
        * 这个句柄所属的**归属**（`null` = 归属未知）。

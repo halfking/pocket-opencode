@@ -34,6 +34,7 @@ import { Wikilink } from './wikilink'
 import { getNote, saveNote, type PkmNote } from './pkm-store'
 import { useAuthStore } from '../../stores/auth'
 import LocalOnlyBadge from '../../components/business/LocalOnlyBadge.vue'
+import { useNotesOwnerView } from '../notes/note-view-owner'
 
 const props = defineProps<{
   noteId: string
@@ -64,11 +65,19 @@ const lastSaved = ref(false)
 const editor = shallowRef<Editor | null>(null)
 const currentNote = shallowRef<PkmNote | null>(null)
 let saveTimer: ReturnType<typeof setTimeout> | null = null
+const ownerView = useNotesOwnerView(() => {
+  if (saveTimer) clearTimeout(saveTimer)
+  saveTimer = null
+  currentNote.value = null; title.value = ''; saving.value = false; lastSaved.value = false
+  editor.value?.destroy(); editor.value = null
+}, () => {})
 
 /** 加载笔记并初始化编辑器。 */
 async function load(id: string) {
+  const stamp = ownerView.capture()
   // ⚠ §884：同 PkmNoteView —— getNote 走 getForWorkspace，workspace 必须传。
   const note = await getNote(id, currentWorkspaceId())
+  if (!ownerView.isCurrent(stamp)) return
   currentNote.value = note
   title.value = note?.title ?? ''
   // 销毁旧编辑器（noteId 变化时）
@@ -101,6 +110,7 @@ function scheduleSave() {
 }
 
 async function doSave() {
+  const stamp = ownerView.capture()
   if (!editor.value) return
   try {
     const html = editor.value.getHTML()
@@ -111,13 +121,14 @@ async function doSave() {
       dailyDate: props.dailyDate,
       workspaceId: currentWorkspaceId(),
     })
+    if (!ownerView.isCurrent(stamp)) return
     currentNote.value = saved
     lastSaved.value = true
     emit('saved', saved)
   } catch (e) {
     console.error('[pkm-editor] save failed:', e)
   } finally {
-    saving.value = false
+    if (ownerView.isCurrent(stamp)) saving.value = false
   }
 }
 

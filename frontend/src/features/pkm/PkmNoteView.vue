@@ -34,6 +34,7 @@ import { getNote, saveNote, type PkmNote } from './pkm-store'
 import { useWikilinkNav } from './use-wikilink-nav'
 import { markListDirty } from '../../composables/list-scene-store'
 import { useAuthStore } from '../../stores/auth'
+import { useNotesOwnerView } from '../notes/note-view-owner'
 
 const route = useRoute()
 const router = useRouter()
@@ -54,14 +55,19 @@ const loading = ref(true)
 const noteId = ref('')
 const currentTitle = ref('')
 const refreshTick = ref(0) // 保存后递增，触发 BacklinksPanel 重查
+const ownerView = useNotesOwnerView(() => {
+  noteId.value = ''; currentTitle.value = ''; loading.value = false
+}, () => router.replace('/pkm/today'))
 
 const rawId = computed(() => route.params.id as string)
 
 async function loadOrCreate(id: string) {
+  const stamp = ownerView.capture()
   loading.value = true
   if (id === 'new' || !id) {
     // 新建空笔记
     const created = await saveNote({ title: '无标题', html: '', workspaceId: currentWorkspaceId() })
+    if (!ownerView.isCurrent(stamp)) return
     router.replace(`/pkm/n/${created.id}`)
     noteId.value = created.id
     currentTitle.value = created.title
@@ -70,6 +76,7 @@ async function loadOrCreate(id: string) {
     //   （同时校验 workspace_id 与 deleted_at）。不传就退回 'default'，
     //   真机 `ws_user-admin` 分区的笔记会读不到。
     const note = await getNote(id, currentWorkspaceId())
+    if (!ownerView.isCurrent(stamp)) return
     if (!note) {
       // 不存在 → 回 Today
       router.replace('/pkm/today')

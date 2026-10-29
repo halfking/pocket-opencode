@@ -18,6 +18,7 @@
  */
 import { assetStore } from '../../native/asset-store'
 import { localDB } from '../../native/local-db'
+import { portalNoteReadScope } from '../../native/portal-sync/storage'
 
 /** PKM 笔记的业务元数据（存进 Asset.meta_json）。 */
 export interface PkmMeta {
@@ -171,16 +172,17 @@ export async function findByTitle(
   title: string,
   workspaceId = 'default',
 ): Promise<PkmNote | null> {
-  const rows = await localDB.query<{ id: string; body_text: string; meta_json: string; created_at: number; updated_at: number }>(
+  const scope = await portalNoteReadScope('asset', 'local_assets')
+  const rows = await scope.db.query<{ id: string; body_text: string; meta_json: string; created_at: number; updated_at: number }>(
     `SELECT id, body_text, meta_json, created_at, updated_at
      FROM local_assets
-     WHERE workspace_id = ? AND kind = ? AND title = ? AND deleted_at IS NULL
+     WHERE workspace_id = ? AND kind = ? AND title = ? AND deleted_at IS NULL AND ${scope.clause}
      LIMIT 1`,
-    [workspaceId, NOTE_KIND, title],
+    [workspaceId, NOTE_KIND, title, ...scope.values],
   )
   if (rows.length === 0) return null
   const r = rows[0]
-  return toNote(r.id, title, r.body_text, r.meta_json, r.created_at, r.updated_at)
+  return getNote(r.id, workspaceId)
 }
 
 /** 全文搜索（复用 assetStore FTS）。 */
@@ -209,20 +211,20 @@ export async function getBacklinks(
   targetTitle: string,
   workspaceId = 'default',
 ): Promise<PkmNote[]> {
-  const rows = await localDB.query<{ id: string; title: string; body_text: string; meta_json: string; created_at: number; updated_at: number }>(
+  const scope = await portalNoteReadScope('asset', 'a')
+  const rows = await scope.db.query<{ id: string; title: string; body_text: string; meta_json: string; created_at: number; updated_at: number }>(
     `SELECT id, title, body_text, meta_json, created_at, updated_at
      FROM local_assets a
-     WHERE a.workspace_id = ? AND a.kind = ? AND a.deleted_at IS NULL
+     WHERE a.workspace_id = ? AND a.kind = ? AND a.deleted_at IS NULL AND ${scope.clause}
        AND EXISTS (
          SELECT 1 FROM json_each(a.meta_json, '$.links')
          WHERE json_each.value = ?
        )
      ORDER BY a.updated_at DESC`,
-    [workspaceId, NOTE_KIND, targetTitle],
+    [workspaceId, NOTE_KIND, ...scope.values, targetTitle],
   )
-  return rows.map((r) =>
-    toNote(r.id, r.title, r.body_text, r.meta_json, r.created_at, r.updated_at),
-  )
+  const notes = await Promise.all(rows.map(r => getNote(r.id, workspaceId)))
+  return notes.filter((note): note is PkmNote => note !== null)
 }
 
 // ---- Daily Note ----
@@ -232,17 +234,18 @@ export async function getDailyNote(
   dateKey = dailyKey(),
   workspaceId = 'default',
 ): Promise<PkmNote | null> {
-  const rows = await localDB.query<{ id: string; title: string; body_text: string; meta_json: string; created_at: number; updated_at: number }>(
+  const scope = await portalNoteReadScope('asset', 'local_assets')
+  const rows = await scope.db.query<{ id: string; title: string; body_text: string; meta_json: string; created_at: number; updated_at: number }>(
     `SELECT id, title, body_text, meta_json, created_at, updated_at
      FROM local_assets
-     WHERE workspace_id = ? AND kind = ? AND deleted_at IS NULL
+     WHERE workspace_id = ? AND kind = ? AND deleted_at IS NULL AND ${scope.clause}
        AND json_extract(meta_json, '$.dailyDate') = ?
      LIMIT 1`,
-    [workspaceId, NOTE_KIND, dateKey],
+    [workspaceId, NOTE_KIND, ...scope.values, dateKey],
   )
   if (rows.length === 0) return null
   const r = rows[0]
-  return toNote(r.id, r.title, r.body_text, r.meta_json, r.created_at, r.updated_at)
+  return getNote(r.id, workspaceId)
 }
 
 /**

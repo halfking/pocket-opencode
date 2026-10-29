@@ -487,7 +487,7 @@ export class VectorIndex {
    *   20000 条 / chunk 512 ⇒ 39 片 × 约 0.64ms，每片都远低于一帧预算
    *   ⇒ 界面在检索期间仍可滚动、可响应输入。
    */
-  async searchAsync(query: Float32Array, topK = 10, chunkSize = SCAN_CHUNK): Promise<VectorMatch[]> {
+  async searchAsync(query: Float32Array, topK = 10, chunkSize = SCAN_CHUNK, eligible?: ReadonlySet<string>): Promise<VectorMatch[]> {
     const prep = this.prepare(query, topK)
     if (!prep) return []
     const out: VectorMatch[] = []
@@ -495,7 +495,7 @@ export class VectorIndex {
     const n = this.ids.length
     const step = Math.max(1, chunkSize)
     for (let i = 0; i < n; i++) {
-      considerNoteInto(out, index, this.ids[i], this.dotAt(i, prep.q), prep.k)
+      if (!eligible || eligible.has(this.ids[i]!)) considerNoteInto(out, index, this.ids[i], this.dotAt(i, prep.q), prep.k)
       if ((i + 1) % step === 0) await yieldToEventLoop()
     }
     return out

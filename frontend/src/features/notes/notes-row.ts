@@ -1,5 +1,6 @@
 import { decryptString } from '../../native/crypto'
 import { assetStore, type Asset } from '../../native/asset-store'
+import { canReadPortalNote } from '../../native/portal-sync/storage'
 import type { LocalNote, NoteRow, NoteStatus, NoteStorageTier } from './notes-types'
 
 export function parseTags(value: string | string[] | null | undefined, depth = 0): string[] | null {
@@ -54,6 +55,7 @@ export function assetToNote(asset: Asset): LocalNote {
 
 export async function rowToNote(r: NoteRow | null): Promise<LocalNote | null> {
   if (!r) return null
+  if (!await canReadPortalNote('note', r.id)) return null
   let decryptedContent = r.content
   if (r.encrypted_content === 1) {
     try {

@@ -1,4 +1,5 @@
 import { localDB } from '../../native/local-db'
+import { portalNoteReadScope } from '../../native/portal-sync/storage'
 import { vectorIndex, type VectorMatch } from '../../native/vector'
 import { http } from '../../api/http'
 import { assetStore } from '../../native/asset-store'
@@ -18,12 +19,13 @@ export function sanitizeFtsQuery(q: string): string {
 // `likePattern` 逐字相同 ⇒ 删掉改 import。行为等价，无可观察变化。
 
 async function searchLike(query: string, limit: number, workspaceId: string): Promise<SearchResult[]> {
-  const rows = await localDB.query<NoteRow>(
+  const scope = await portalNoteReadScope('note','local_notes')
+  const rows = await scope.db.query<NoteRow>(
     `SELECT * FROM local_notes
      WHERE workspace_id = ? AND deleted_at IS NULL AND (status IS NULL OR status = 'saved')
-       AND (title LIKE ? OR content LIKE ? OR IFNULL(search_text, '') LIKE ?)
+       AND ${scope.clause} AND (title LIKE ? OR content LIKE ? OR IFNULL(search_text, '') LIKE ?)
      ORDER BY updated_at DESC LIMIT ?`,
-    [workspaceId, likePattern(query), likePattern(query), likePattern(query), limit],
+    [workspaceId, ...scope.values, likePattern(query), likePattern(query), likePattern(query), limit],
   )
   const notes = (await Promise.all(rows.map(rowToNote))).filter((n): n is LocalNote => n !== null)
   return notes.map((note, i) => ({ note, score: 1 / (i + 1), source: 'fts' as const }))
@@ -31,17 +33,18 @@ async function searchLike(query: string, limit: number, workspaceId: string): Pr
 
 export async function searchFullText(query: string, limit = 20, workspaceId = 'default'): Promise<SearchResult[]> {
   await ensureNotesSearchIndex()
+  const scope = await portalNoteReadScope('note','n')
   const ftsQuery = buildFtsQuery(query)
   let localResults: SearchResult[] = []
   try {
-    const rows = await localDB.query<NoteRow & { score: number }>(
+    const rows = await scope.db.query<NoteRow & { score: number }>(
       `SELECT n.*, -bm25(local_notes_fts) AS score
        FROM local_notes_fts
        JOIN local_notes n ON n.rowid = local_notes_fts.rowid
        WHERE local_notes_fts MATCH ? AND n.workspace_id = ? AND n.deleted_at IS NULL
-         AND (n.status IS NULL OR n.status = 'saved')
+         AND (n.status IS NULL OR n.status = 'saved') AND ${scope.clause}
        ORDER BY score DESC LIMIT ?`,
-      [ftsQuery, workspaceId, limit],
+      [ftsQuery, workspaceId, ...scope.values, limit],
     )
     const mapped: SearchResult[] = []
     for (const r of rows) {
@@ -62,10 +65,11 @@ export async function searchFullText(query: string, limit = 20, workspaceId = 'd
   return [...localResults, ...assetResults].sort((a, b) => b.score - a.score).slice(0, limit)
 }
 
-async function embedViaPocketd(text: string, syncModule: SyncModule): Promise<Float32Array | null> {
+async function embedViaPocketd(text: string, syncModule: SyncModule, assertCurrent?: () => void): Promise<Float32Array | null> {
   try {
     const res = await http<{ embedding: number[]; model: string }>('/api/embed', {
       syncModule,
+      assertCurrent,
       method: 'POST',
       body: JSON.stringify({ text }),
     })
@@ -77,11 +81,13 @@ async function embedViaPocketd(text: string, syncModule: SyncModule): Promise<Fl
 
 export async function searchSemantic(queryText: string, topK = 10, workspaceId = 'default', syncModule: SyncModule = 'notes'): Promise<SearchResult[]> {
   if (readCachedModuleMode(syncModule) === 'local') return searchFullText(queryText, topK, workspaceId)
+  const scope = await portalNoteReadScope('note', 'local_notes')
   const assets = await assetStore.search({ workspaceId, kind: 'note', source: 'enex_import', fts: sanitizeFtsQuery(queryText), limit: topK })
   const assetResults = assets.map((asset, index) => ({ note: assetToNote(asset), score: 1 / (index + 1), source: 'vector' as const }))
   if (assetResults.length >= topK) return assetResults.slice(0, topK)
 
-  const qVec = await embedViaPocketd(queryText, syncModule)
+  const eligibleRows = await scope.db.query<{ id: string }>(`SELECT id FROM local_notes WHERE workspace_id=? AND deleted_at IS NULL AND (status IS NULL OR status='saved') AND ${scope.clause}`, [workspaceId, ...scope.values])
+  const qVec = await embedViaPocketd(queryText, syncModule, scope.db.assertCurrent)
   if (!qVec) return readCachedModuleMode(syncModule) === 'local'
     ? searchFullText(queryText, topK, workspaceId)
     : assetResults
@@ -91,12 +97,12 @@ export async function searchSemantic(queryText: string, topK = 10, workspaceId =
   //   而本函数在 **UI 线程**上被调用 ——
   //   最硬的一条调用点是 `NoteDetailView.loadRelated`：**每次打开笔记详情**都会跑一次。
   //   `searchAsync` 结果与之逐字相同，只是每 512 条让出一次事件循环。
-  const matches: VectorMatch[] = await vectorIndex.searchAsync(qVec, topK)
+  const matches: VectorMatch[] = await vectorIndex.searchAsync(qVec, topK, undefined, new Set(eligibleRows.map(row => row.id)))
   if (matches.length === 0) return assetResults
 
   const ids = matches.map((m) => m.noteId)
   const placeholders = ids.map(() => '?').join(',')
-  const rows = await localDB.query<NoteRow>(
+  const rows = await scope.db.query<NoteRow>(
     `SELECT * FROM local_notes WHERE id IN (${placeholders}) AND workspace_id = ? AND deleted_at IS NULL
        AND (status IS NULL OR status = 'saved')`,
     [...ids, workspaceId],

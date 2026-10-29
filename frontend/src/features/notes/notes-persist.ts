@@ -14,6 +14,8 @@ import { captureNoteWriteOperation, type NoteWriteOperation, type NoteWriteOptio
 import type { CreateNoteInput, LocalNote, NoteMediaInput, NoteRow } from './notes-types'
 // 存储与同步策略（storage-sync）：镜像上传前的 shouldSync 判定与结果上报。
 import { recordSyncReportEntry } from '../../stores/syncPolicyStore'
+import { portalNotesStore, portalNoteReadScope } from '../../native/portal-sync/storage'
+import { notePayload } from '../../native/portal-sync/contract'
 
 function newNoteId(): string {
   return `note-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
@@ -36,7 +38,8 @@ export async function createNote(input: CreateNoteInput, options?: NoteWriteOpti
   const operation = captureNoteWriteOperation(options)
   const db = operation.db
   const now = Date.now()
-  const workspaceId = input.workspaceId ?? 'default'
+  const workspaceId = input.workspaceId ?? db.owner?.workspaceId ?? 'default'
+  if (db.owner && workspaceId !== db.owner.workspaceId) throw new Error('笔记 workspace 与已验证归属不一致')
   const media = collectMedia(input)
   const hasMedia = media.length > 0 || Boolean(input.audioPath)
   const decided = decideNoteStorage({
@@ -92,20 +95,24 @@ export async function createNote(input: CreateNoteInput, options?: NoteWriteOpti
   //   因为此时 content 是 `decideNoteStorage` 写进去的 ≤280 字**摘要**，
   //   退回它等于让摘要冒充全文，而本函数下方的 updateNote 会把它写回去覆盖全文。
   //   ⇒ 「附件写失败」是安全降级，「正文丢失」不是，两者不可混为一谈。
-  await db.run(
-    `INSERT INTO local_notes
+  const insertNoteSql = `INSERT INTO local_notes
        (id, workspace_id, title, content, content_type, domain, category, tags,
         audio_path, audio_duration_ms, created_by_voice, encrypted_content, created_at, updated_at,
         status, storage_tier, summary, search_text, body_path, media_json)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-    [
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+  const insertNoteValues = [
       note.id, note.workspaceId, note.title, storedContent, note.contentType,
       note.domain, note.category, note.tags ? JSON.stringify(note.tags) : null,
       note.audioPath, note.audioDurationMs, note.createdByVoice ? 1 : 0,
       shouldEncrypt ? 1 : 0, note.createdAt, note.updatedAt,
       note.status, note.storageTier, note.summary, note.searchText, note.bodyPath, note.mediaJson,
-    ],
-  )
+    ]
+  if (options?.backgroundCloud === false) await db.run(insertNoteSql, insertNoteValues)
+  else await portalNotesStore(db).commit([{ statement: insertNoteSql, values: insertNoteValues }], {
+    source: 'note', epoch: operation.syncEpoch, id, title: note.title ?? '', modifiedAt: now,
+    payload: notePayload({ format: 'text', content: input.content, tags: note.tags, domain: note.domain,
+      summary: note.summary, content_type: note.contentType, status: note.status, created_at: now }),
+  }, true)
 
   if (decided.persistBodyFile || media.length > 0) {
     const written = await persistNotePayload({
@@ -158,6 +165,7 @@ export async function updateNote(
 ): Promise<void> {
   const operation = captureNoteWriteOperation(options)
   const db = operation.db
+  if (db.owner && workspaceId !== db.owner.workspaceId) throw new Error('笔记 workspace 与已验证归属不一致')
   const existing = await getNote(id, false, workspaceId, operation)
   if (!existing) throw new Error('笔记不存在或不属于当前 workspace')
   if (existing.storage === 'asset') {
@@ -270,23 +278,28 @@ export async function updateNote(
 
   const shouldEncrypt = useCryptoConfig().shouldEncryptField()
   const storedContent = shouldEncrypt ? await encryptString(decided.displayContent) : decided.displayContent
-  await db.run(
-    `UPDATE local_notes SET
+  const modifiedAt = Date.now()
+  const updateNoteSql = `UPDATE local_notes SET
        title = ?, content = ?, encrypted_content = ?, domain = ?, tags = ?,
        status = ?, storage_tier = ?, summary = ?, search_text = ?, body_path = ?,
        media_json = ?, audio_path = ?, audio_duration_ms = ?, updated_at = ?
-     WHERE id = ? AND workspace_id = ?`,
-    [
+     WHERE id = ? AND workspace_id = ?`
+  const updateNoteValues = [
       nextTitle, storedContent, shouldEncrypt ? 1 : 0,
       patch.domain !== undefined ? patch.domain : existing.domain,
       nextTags ? JSON.stringify(nextTags) : null,
       patch.status ?? existing.status ?? 'saved',
       decided.tier, nextSummary ?? decided.summary, decided.searchText, bodyPath, mediaJson,
       audioPath, audioPath ? (patch.audioDurationMs ?? existing.audioDurationMs) : (patch.audioDurationMs ?? 0),
-      Date.now(),
+      modifiedAt,
       id, workspaceId,
-    ],
-  )
+    ]
+  await portalNotesStore(db).commit([{ statement: updateNoteSql, values: updateNoteValues }], {
+    source: 'note', epoch: operation.syncEpoch, id, title: nextTitle ?? '', modifiedAt,
+    payload: notePayload({ format: 'text', content: nextContent, tags: nextTags,
+      domain: patch.domain ?? existing.domain, summary: nextSummary ?? decided.summary,
+      status: patch.status ?? existing.status, content_type: existing.contentType, created_at: existing.createdAt }),
+  }, false)
   if (patch.content !== undefined) {
     // ⚠ §896/D66：此前是 `.catch(() => {})` —— 整条编辑保存路径的嵌入失败**零痕迹**，
     //   而它是长笔记**唯一**的重试机会（创建时已经失败过一次）。改为与创建路径对称。
@@ -323,6 +336,7 @@ export async function deleteNote(
 ): Promise<{ mediaCleaned: boolean }> {
   const operation = captureNoteWriteOperation({ backgroundCloud: false })
   const db = operation.db
+  if (db.owner && workspaceId !== db.owner.workspaceId) throw new Error('笔记 workspace 与已验证归属不一致')
   const existing = await getNote(id, true, workspaceId, operation)
   if (existing?.storage === 'asset') {
     await assetStore.softDeleteForWorkspace(id, workspaceId, db)
@@ -330,7 +344,11 @@ export async function deleteNote(
     return { mediaCleaned: true }
   }
   // ① 软删先行：这一步失败 ⇒ 笔记仍在，调用方如实报「删除失败」（不假装）。
-  await db.run('UPDATE local_notes SET deleted_at = ? WHERE id = ? AND workspace_id = ?', [Date.now(), id, workspaceId])
+  const deletedAt = Date.now()
+  await portalNotesStore(db).commit([{ statement: 'UPDATE local_notes SET deleted_at = ?, updated_at = ? WHERE id = ? AND workspace_id = ?', values: [deletedAt, deletedAt, id, workspaceId] }], {
+    source: 'note', epoch: operation.syncEpoch, id, title: existing?.title ?? '', modifiedAt: deletedAt, deleted: true,
+    payload: notePayload({ format: 'text', content: '' }),
+  }, false)
   // ② 附属清理：各自兜住，绝不因为它失败而让「删除没生效」。
   let mediaCleaned = true
   if (existing && (existing.bodyPath || existing.mediaJson)) {
@@ -421,26 +439,28 @@ export async function listNotes(opts: {
   workspaceId?: string
   includeDrafts?: boolean
 } = {}): Promise<LocalNote[]> {
+  const scope = await portalNoteReadScope('note', 'local_notes')
   const limit = opts.limit ?? 30
   const offset = opts.offset ?? 0
-  let sql = 'SELECT * FROM local_notes WHERE workspace_id = ? AND deleted_at IS NULL'
-  const vals: unknown[] = [opts.workspaceId ?? 'default']
+  let sql = `SELECT * FROM local_notes WHERE workspace_id = ? AND deleted_at IS NULL AND ${scope.clause}`
+  const vals: unknown[] = [opts.workspaceId ?? 'default', ...scope.values]
   if (!opts.includeDrafts) sql += " AND (status IS NULL OR status = 'saved')"
   if (opts.domain) { sql += ' AND domain = ?'; vals.push(opts.domain) }
   sql += ' ORDER BY updated_at DESC LIMIT ? OFFSET ?'
   vals.push(limit, offset)
-  const rows = await localDB.query<NoteRow>(sql, vals)
+  const rows = await scope.db.query<NoteRow>(sql, vals)
   const localNotes = (await Promise.all(rows.map(rowToNote))).filter((n): n is LocalNote => n !== null)
   if (offset > 0) return localNotes
   return mergeImportedNotes(localNotes, opts.workspaceId ?? 'default', limit)
 }
 
 export async function listDraftNotes(workspaceId = 'default'): Promise<LocalNote[]> {
-  const rows = await localDB.query<NoteRow>(
+  const scope = await portalNoteReadScope('note', 'local_notes')
+  const rows = await scope.db.query<NoteRow>(
     `SELECT * FROM local_notes
-     WHERE workspace_id = ? AND deleted_at IS NULL AND status = 'draft'
+     WHERE workspace_id = ? AND deleted_at IS NULL AND status = 'draft' AND ${scope.clause}
      ORDER BY updated_at DESC LIMIT 5`,
-    [workspaceId],
+    [workspaceId, ...scope.values],
   )
   return (await Promise.all(rows.map(rowToNote))).filter((n): n is LocalNote => n !== null)
 }
