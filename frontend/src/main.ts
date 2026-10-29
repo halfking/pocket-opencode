@@ -15,6 +15,7 @@ import { startUserConfigSync } from "./native/config-sync/runtime"
 import { startPortalNotesSync } from "./native/portal-sync/runtime"
 import { startPortalMeetingsSync } from "./features/meetings/meeting-sync-runtime"
 import { startRssPortalSync } from "./features/rss/rss-sync-runtime"
+import { startPortalEmailSync } from "./features/email/portal-mail-runtime"
 import { appLifecycleHub } from "./native/appLifecycleHub.ts"
 import { installLlmBffStreamRuntime } from "./api/llm-bff"
 import { startAiStreamKeepalive } from "./native/aiStreamKeepalive.ts"
@@ -64,6 +65,7 @@ startSyncPolicyRuntime(syncAuth, useSyncPolicyStore(pinia), {
     startPortalNotesSync()
     startPortalMeetingsSync()
     startRssPortalSync()
+    startPortalEmailSync()
   },
   connect: connectWs,
   disconnect: () => wsClient.disconnect(),
