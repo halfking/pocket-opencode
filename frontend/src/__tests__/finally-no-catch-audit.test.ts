@@ -185,7 +185,11 @@ describe('§857 · D18 清空全部声纹失败必须有出口', () => {
   it('★ clearVoiceprints 必须真的不吞错（本条判据的前提）', () => {
     const body = fnBody(STORE, 'clearVoiceprints')
     assert.ok(body, '找不到 clearVoiceprints')
-    assert.match(body, /localDB\.run\(/, 'clearVoiceprints 不再写库 ⇒ 前提失效')
+    // ⚠ 2026-10-29（会议归属切片）：写库句柄从 `localDB.run(...)` 换成了
+    //   **绑定了操作租约**的 `db.run(...)` —— 归属与这次写入必须原子一致
+    //   （租约的 principal 就是行的归属）⇒ 不能再走未绑定的 localDB。
+    //   ⇒ 判据要同时认这两种形态，否则「前提失效」会误报。
+    assert.match(body, /(?:\bdb|\blocalDB)\.run\(/, 'clearVoiceprints 不再写库 ⇒ 前提失效')
     assert.equal(/\btry\s*\{/.test(body), false,
       'clearVoiceprints 开始自己吞错误 ⇒ onClearAll 的 catch 将永不触发')
   })
@@ -230,7 +234,8 @@ describe('§857 · D19 新建会议失败必须有出口（§838 同族漏网）
     const store = read('features/meetings/meetings-store.ts')
     const body = fnBody(store, 'createMeeting')
     assert.ok(body, '找不到 createMeeting')
-    assert.match(body, /localDB\.run\(/, 'createMeeting 不再写库 ⇒ 前提失效')
+    // ⚠ 2026-10-29（会议归属切片）：同上，写库句柄换成了绑定租约的 `db.run(...)`。
+    assert.match(body, /(?:\bdb|\blocalDB)\.run\(/, 'createMeeting 不再写库 ⇒ 前提失效')
   })
 })
 

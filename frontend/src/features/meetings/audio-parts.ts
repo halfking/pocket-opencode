@@ -6,6 +6,7 @@ import { Capacitor } from '@capacitor/core'
 import { Filesystem, Directory } from '@capacitor/filesystem'
 import { localDB } from '../../native/local-db'
 import { captureRecordingDb, type RecordingDb } from './recording-operation'
+import { captureMeetingOwnership, ownerColumnValues, ownerOf } from '../../native/meeting-ownership'
 // §888：原来这里自己有一份 blobToBase64，而它的失败路径是
 //   `String(reader.result || '')` → `''` → `i < 0` → **resolve('空串')**（而不是 reject）
 // ⇒ 原生平台会写出一个 **0 字节的 webm**、库里 data_base64 存空串、
@@ -45,6 +46,9 @@ export async function saveAudioPart(
   const id = `part-${meetingId}-${seq}`
   const dataBase64 = await blobToBase64(blob)
   db.assertCurrent()
+  // ⚠ 录音分片是**原始音频** ⇒ 归属必须写进行里（不写 = 该分片归属未知，
+  //   任何账号都读不到，也永不上传）。
+  const [ownerUserId, ownerWorkspaceId] = ownerColumnValues(ownerOf(db))
   let filePath: string | null = null
   if (Capacitor.isNativePlatform()) {
     try {
@@ -67,17 +71,18 @@ export async function saveAudioPart(
   }
   await db.run(
     `INSERT OR REPLACE INTO local_meeting_audio_parts
-     (id, meeting_id, seq, mime_type, data_base64, file_path, created_at)
-     VALUES (?,?,?,?,?,?,?)`,
-    [id, meetingId, seq, mimeType, filePath ? '' : dataBase64, filePath, Date.now()],
+     (id, meeting_id, seq, mime_type, data_base64, file_path, created_at, owner_user_id, owner_workspace_id)
+     VALUES (?,?,?,?,?,?,?,?,?)`,
+    [id, meetingId, seq, mimeType, filePath ? '' : dataBase64, filePath, Date.now(), ownerUserId, ownerWorkspaceId],
   )
   return id
 }
 
 export async function listAudioParts(meetingId: string): Promise<AudioPartRow[]> {
-  const rows = await localDB.query<Record<string, unknown>>(
-    'SELECT * FROM local_meeting_audio_parts WHERE meeting_id = ? ORDER BY seq',
-    [meetingId],
+  const { db, owner } = captureMeetingOwnership(localDB)
+  const rows = await db.query<Record<string, unknown>>(
+    'SELECT * FROM local_meeting_audio_parts WHERE meeting_id = ? AND owner_user_id = ? AND owner_workspace_id = ? ORDER BY seq',
+    [meetingId, ...ownerColumnValues(owner)],
   )
   return rows.map((r) => ({
     id: r.id as string,
@@ -112,9 +117,10 @@ export interface AudioPartFile {
  *   会整列读音频的地方，而且**没有调用方**（§828 登记：「崩溃后恢复转写」尚无实现）。
  */
 export async function listAudioPartFiles(meetingId: string): Promise<AudioPartFile[]> {
-  const rows = await localDB.query<Record<string, unknown>>(
-    'SELECT seq, mime_type, file_path FROM local_meeting_audio_parts WHERE meeting_id = ? ORDER BY seq',
-    [meetingId],
+  const { db, owner } = captureMeetingOwnership(localDB)
+  const rows = await db.query<Record<string, unknown>>(
+    'SELECT seq, mime_type, file_path FROM local_meeting_audio_parts WHERE meeting_id = ? AND owner_user_id = ? AND owner_workspace_id = ? ORDER BY seq',
+    [meetingId, ...ownerColumnValues(owner)],
   )
   return rows.map((r) => ({
     seq: Number(r.seq ?? 0),

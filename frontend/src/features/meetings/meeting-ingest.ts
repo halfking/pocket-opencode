@@ -22,6 +22,7 @@ import {
 import { resolveIngestWriteback } from './refined-ingest-writeback'
 // 存储与同步策略（storage-sync）：云端上行前的 shouldSync 判定与结果上报。
 import { readCachedModuleMode, recordSyncReportEntry } from '../../stores/syncPolicyStore'
+import { ownerColumnValues, ownerOf, ownerScopeSql } from '../../native/meeting-ownership'
 
 export interface IngestResult {
   noteId: string | null
@@ -238,10 +239,12 @@ async function ensureNextMeetingEvent(
  * 而 SQLite 的 `=` 对 NULL 恒不成立 ⇒ 用 `=` 会让「没有会议 id」的那批永远查不到重复。
  */
 async function alreadyIngestedTodo(meetingId: string | null, title: string, operation: RecordingOperation): Promise<boolean> {
-  const hit = await (operation.cloudDb ?? operation.localDb).queryOne(
+  const db = operation.cloudDb ?? operation.localDb
+  const scope = ownerScopeSql(ownerOf(db))
+  const hit = await db.queryOne(
     `SELECT id FROM local_todos
-     WHERE meeting_id IS ? AND title = ? AND extracted_from_voice = 1`,
-    [meetingId, title],
+     WHERE meeting_id IS ? AND title = ? AND extracted_from_voice = 1 AND ${scope.clause}`,
+    [meetingId, title, ...scope.params],
   )
   return hit !== null && hit !== undefined
 }
@@ -292,13 +295,18 @@ async function createLocalTodos(
     // 放在 INSERT **之前**、且不看 INSERT 成不成功：
     // 「没听懂期限」与「待办没写进库」是两件事，混起来会互相掩盖。
     if (item.due && item.due.trim() !== '' && dueAt === null) dueUnresolved++
+    // ⚠ 归属取自**这条操作链自己的租约**（db 是绑定了 lease 的句柄）
+    //   ⇒ 待办属于哪一代会话与这次写入是原子的。
+    const [ownerUserId, ownerWorkspaceId] = ownerColumnValues(ownerOf(db))
     await db.run(
       `INSERT INTO local_todos
-       (id, note_id, title, description, status, priority, due_at, extracted_from_voice, meeting_id, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+       (id, note_id, title, description, status, priority, due_at, extracted_from_voice, meeting_id, created_at, updated_at,
+        owner_user_id, owner_workspace_id)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       [
         id, noteId, item.text, item.assignee ? `负责人：${item.assignee}` : null,
         'pending', mapPriority(item), dueAt ? dueAt.at : null, 1, meetingId ?? null, now, now,
+        ownerUserId, ownerWorkspaceId,
       ],
     )
     count++

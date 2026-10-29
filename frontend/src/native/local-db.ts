@@ -83,6 +83,411 @@ const CONFIG_OWNERSHIP_V1_COLUMNS = [
 ]
 
 /**
+ * 会议/录音/待办表的归属列与**带归属的主键**（2026-10-29）。
+ *
+ * ⚠ 与配置表（CONFIG_OWNERSHIP_V1_*）的**关键差异**：这里**必须保留旧行**。
+ *
+ *   配置表是**云端镜像** —— 归属不明的旧行可以重新拉回来，丢掉不算数据损失。
+ *   会议/录音**不可从云端恢复**：录音分片是原始音频、转写是本地 ASR 结果、
+ *   声纹是本地采的 embedding ⇒ 丢掉就是**真的丢了用户的原始数据**。
+ *
+ *   ⇒ 旧行迁移到新表，归属列置为**空串**（= 归属未知 = 未认领）：
+ *     数据保住，但**任何账号都读不到、也永远不会被上传**。
+ *   这正是用户确认的边界：「未知归属的历史数据保持未认领」。
+ *
+ * ⚠ 为什么用空串而不是 NULL：SQLite 的 NULL 不参与主键唯一性 ⇒
+ *   用 NULL 会让同一个 id 无限插新行。空串是普通的键分量。
+ */
+const MEETING_OWNERSHIP_V1_COLUMNS = [
+  { table: 'local_todos', column: 'owner_user_id', sql: 'ALTER TABLE local_todos ADD COLUMN owner_user_id TEXT' },
+  { table: 'local_todos', column: 'owner_workspace_id', sql: 'ALTER TABLE local_todos ADD COLUMN owner_workspace_id TEXT' },
+  { table: 'local_meetings', column: 'owner_user_id', sql: 'ALTER TABLE local_meetings ADD COLUMN owner_user_id TEXT' },
+  { table: 'local_meetings', column: 'owner_workspace_id', sql: 'ALTER TABLE local_meetings ADD COLUMN owner_workspace_id TEXT' },
+  { table: 'local_meeting_segments', column: 'owner_user_id', sql: 'ALTER TABLE local_meeting_segments ADD COLUMN owner_user_id TEXT' },
+  { table: 'local_meeting_segments', column: 'owner_workspace_id', sql: 'ALTER TABLE local_meeting_segments ADD COLUMN owner_workspace_id TEXT' },
+  { table: 'local_voiceprints', column: 'owner_user_id', sql: 'ALTER TABLE local_voiceprints ADD COLUMN owner_user_id TEXT' },
+  { table: 'local_voiceprints', column: 'owner_workspace_id', sql: 'ALTER TABLE local_voiceprints ADD COLUMN owner_workspace_id TEXT' },
+  { table: 'local_meeting_audio_parts', column: 'owner_user_id', sql: 'ALTER TABLE local_meeting_audio_parts ADD COLUMN owner_user_id TEXT' },
+  { table: 'local_meeting_audio_parts', column: 'owner_workspace_id', sql: 'ALTER TABLE local_meeting_audio_parts ADD COLUMN owner_workspace_id TEXT' },
+]
+
+/**
+ * 会议/录音/待办表重建为带归属的主键（2026-10-29）。
+ *
+ * ⚠ 重建时**搬运旧行**，但归属列置空串（未认领）—— 见上面的说明。
+ *
+ * ⚠⚠ 三条 SQLite 硬约束（都是**实测**出来的，不是推测）：
+ *
+ *  1. **子表外键必须与父表主键同形**。父表主键是
+ *     `(id, owner_user_id, owner_workspace_id)` 三列 ⇒ 子表外键也必须三列。
+ *     写成单列 `REFERENCES local_meetings(id)` 时，SQLite 报
+ *     「foreign key mismatch」⇒ **每一次插入段落/分片都会失败**
+ *     （Android 端 `setForeignKeyConstraintsEnabled(true)` ⇒ 外键真的生效）。
+ *
+ *  2. **`ALTER TABLE ... RENAME` 会改写子表的外键子句**。把父表改名成
+ *     `*_legacy_v1` 时，仍在的子表外键会被改写成指向 `local_meetings_legacy_v1`
+ *     ⇒ 重建后子表的外键指向一张**已被删掉的表** ⇒ 级联删除静默失效。
+ *     ⇒ 顺序必须是：**先删旧子表 → 再改父表名 → 再让 v2 表改名到位**。
+ *
+ *  3. **`INSERT OR IGNORE` 会把外键违规**静默吞掉**。重建期必须用普通
+ *     `INSERT`（违规即抛错）—— 否则子表整批搬运会「零行成功、零报错」。
+ */
+interface MeetingOwnershipRebuildSpec {
+  readonly table: string
+  readonly create: string
+  readonly copy: string
+  readonly drop: string
+  readonly rename: string
+  /**
+   * 新表的**完整列清单**（顺序与 create 一致）。
+   *
+   * ⚠ 为什么需要它：历史库的表形状**各不相同**（有的库没有 `location`、
+   *   有的没有 `session_id` —— 它们是历次迁移陆续补上去的）。
+   *   搬运语句直接 SELECT 全部列 ⇒ 在缺列的旧库上会报
+   *   「no such column」⇒ 迁移**整张表失败**，行留在旧表里没搬过来。
+   *   ⇒ 搬运前先把旧表缺的列**补齐**（缺列补 NULL/默认值），再搬。
+   */
+  readonly columns: readonly { readonly name: string; readonly ddl: string }[]
+  /**
+   * 旧表**缺这些列**时，搬运要填的占位值。
+   *
+   * ⚠ 为什么需要：历史库的表形状各不相同 —— 有的旧库根本没有 `start_ms`
+   *   （它是后来的迁移补上去的）⇒ 搬运时该列是 NULL，而新表那一列是
+   *   `NOT NULL` ⇒ 搬运**整批失败**（报「NOT NULL constraint failed」），
+   *   行留在旧表里没搬过来。
+   *   ⇒ 缺列用占位值（0 / ''）补齐，**不是** NULL。
+   */
+  readonly defaults?: Readonly<Record<string, string>>
+  /** 本表是**父表**（有子表引用它）⇒ 改名让位必须排在子表之后。 */
+  readonly parent?: boolean
+  /** 本表是**子表**（引用 parent 表）⇒ 改名让位必须排在父表之前。 */
+  readonly childOf?: string
+  /** 本表没有父子关系 ⇒ 改名让位顺序无所谓。 */
+  readonly standalone?: boolean
+}
+
+const MEETING_OWNERSHIP_V1_REBUILD: readonly MeetingOwnershipRebuildSpec[] = [
+  {
+    table: 'local_todos',
+    create: `CREATE TABLE IF NOT EXISTS local_todos_ownership_v1 (
+      id TEXT NOT NULL,
+      note_id TEXT,
+      title TEXT NOT NULL,
+      description TEXT,
+      status TEXT DEFAULT 'pending',
+      priority TEXT DEFAULT 'medium',
+      due_at INTEGER,
+      completed_at INTEGER,
+      tags TEXT,
+      extracted_from_voice INTEGER DEFAULT 0,
+      meeting_id TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      owner_user_id TEXT NOT NULL DEFAULT '',
+      owner_workspace_id TEXT NOT NULL DEFAULT '',
+      PRIMARY KEY (id, owner_user_id, owner_workspace_id),
+      FOREIGN KEY (note_id) REFERENCES local_notes(id) ON DELETE SET NULL
+    )`,
+    copy: `INSERT INTO local_todos_ownership_v1 (
+      id, note_id, title, description, status, priority, due_at, completed_at,
+      tags, extracted_from_voice, meeting_id, created_at, updated_at,
+      owner_user_id, owner_workspace_id
+    )
+    SELECT id,
+      note_id,
+      COALESCE(title, ''),
+      description,
+      COALESCE(status, 'pending'),
+      COALESCE(priority, 'medium'),
+      due_at,
+      completed_at,
+      tags,
+      extracted_from_voice,
+      meeting_id,
+      COALESCE(created_at, 0),
+      COALESCE(updated_at, 0),
+      '',
+      ''
+    FROM local_todos_legacy_v1`,
+    drop: 'DROP TABLE IF EXISTS local_todos_ownership_v1',
+    rename: 'ALTER TABLE local_todos_ownership_v1 RENAME TO local_todos',
+    columns: [
+      { name: 'id', ddl: 'TEXT' },
+      { name: 'note_id', ddl: 'TEXT' },
+      { name: 'title', ddl: 'TEXT NOT NULL' },
+      { name: 'description', ddl: 'TEXT' },
+      { name: 'status', ddl: "TEXT DEFAULT 'pending'" },
+      { name: 'priority', ddl: "TEXT DEFAULT 'medium'" },
+      { name: 'due_at', ddl: 'INTEGER' },
+      { name: 'completed_at', ddl: 'INTEGER' },
+      { name: 'tags', ddl: 'TEXT' },
+      { name: 'extracted_from_voice', ddl: 'INTEGER DEFAULT 0' },
+      { name: 'meeting_id', ddl: 'TEXT' },
+      { name: 'created_at', ddl: 'INTEGER NOT NULL' },
+      { name: 'updated_at', ddl: 'INTEGER NOT NULL' },
+    ],
+    defaults: {
+      title: '',
+      created_at: '0',
+      updated_at: '0',
+      status: 'pending',
+      priority: 'medium',
+    },
+    /** 本表没有子表 ⇒ 不需要处理「先删子表再改父表名」的顺序。 */
+    standalone: true,
+  },
+  {
+    table: 'local_meetings',
+    create: `CREATE TABLE IF NOT EXISTS local_meetings_ownership_v1 (
+      id TEXT NOT NULL,
+      title TEXT,
+      location TEXT,
+      participants TEXT,
+      audio_path TEXT,
+      duration_ms INTEGER DEFAULT 0,
+      transcript TEXT,
+      summary TEXT,
+      live_summary TEXT,
+      refined_transcript TEXT,
+      recommendations TEXT,
+      note_id TEXT,
+      session_id TEXT,
+      status TEXT DEFAULT 'recording',
+      started_at INTEGER NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL DEFAULT 0,
+      deleted_at INTEGER,
+      archived_at INTEGER,
+      tags TEXT,
+      topic TEXT,
+      summary_skill TEXT DEFAULT 'meeting-minutes',
+      owner_user_id TEXT NOT NULL DEFAULT '',
+      owner_workspace_id TEXT NOT NULL DEFAULT '',
+      PRIMARY KEY (id, owner_user_id, owner_workspace_id)
+    )`,
+    copy: `INSERT INTO local_meetings_ownership_v1 (
+      id, title, location, participants, audio_path, duration_ms, transcript, summary,
+      live_summary, refined_transcript, recommendations, note_id, session_id, status,
+      started_at, created_at, updated_at, deleted_at, archived_at, tags, topic,
+      summary_skill, owner_user_id, owner_workspace_id
+    )
+    SELECT id,
+      COALESCE(title, ''),
+      location,
+      participants,
+      audio_path,
+      duration_ms,
+      transcript,
+      summary,
+      live_summary,
+      refined_transcript,
+      recommendations,
+      note_id,
+      session_id,
+      COALESCE(status, 'recording'),
+      COALESCE(started_at, 0),
+      COALESCE(created_at, 0),
+      COALESCE(updated_at, 0),
+      deleted_at,
+      archived_at,
+      tags,
+      topic,
+      summary_skill,
+      '',
+      ''
+    FROM local_meetings_legacy_v1`,
+    drop: 'DROP TABLE IF EXISTS local_meetings_ownership_v1',
+    rename: 'ALTER TABLE local_meetings_ownership_v1 RENAME TO local_meetings',
+    columns: [
+      { name: 'id', ddl: 'TEXT' },
+      { name: 'title', ddl: 'TEXT' },
+      { name: 'location', ddl: 'TEXT' },
+      { name: 'participants', ddl: 'TEXT' },
+      { name: 'audio_path', ddl: 'TEXT' },
+      { name: 'duration_ms', ddl: 'INTEGER DEFAULT 0' },
+      { name: 'transcript', ddl: 'TEXT' },
+      { name: 'summary', ddl: 'TEXT' },
+      { name: 'live_summary', ddl: 'TEXT' },
+      { name: 'refined_transcript', ddl: 'TEXT' },
+      { name: 'recommendations', ddl: 'TEXT' },
+      { name: 'note_id', ddl: 'TEXT' },
+      { name: 'session_id', ddl: 'TEXT' },
+      { name: 'status', ddl: "TEXT DEFAULT 'recording'" },
+      { name: 'started_at', ddl: 'INTEGER NOT NULL' },
+      { name: 'created_at', ddl: 'INTEGER NOT NULL' },
+      { name: 'updated_at', ddl: 'INTEGER NOT NULL DEFAULT 0' },
+      { name: 'deleted_at', ddl: 'INTEGER' },
+      { name: 'archived_at', ddl: 'INTEGER' },
+      { name: 'tags', ddl: 'TEXT' },
+      { name: 'topic', ddl: 'TEXT' },
+      { name: 'summary_skill', ddl: "TEXT DEFAULT 'meeting-minutes'" },
+    ],
+    defaults: {
+      started_at: '0',
+      created_at: '0',
+      updated_at: '0',
+      title: '',
+      status: 'recording',
+    },
+    /**
+     * ⚠ 本表是**父表** ⇒ 必须先处理子表（见 MEETING_OWNERSHIP_V1_REBUILD 的头注
+     *   第 2 条：`ALTER TABLE RENAME` 会改写子表外键子句）。
+     */
+    parent: true,
+  },
+  {
+    table: 'local_meeting_segments',
+    create: `CREATE TABLE IF NOT EXISTS local_meeting_segments_ownership_v1 (
+      id TEXT NOT NULL,
+      meeting_id TEXT NOT NULL,
+      speaker_label TEXT,
+      lang TEXT DEFAULT 'zh',
+      confidence REAL DEFAULT 1.0,
+      start_ms INTEGER NOT NULL,
+      end_ms INTEGER NOT NULL,
+      text TEXT NOT NULL,
+      translation TEXT,
+      origin TEXT DEFAULT 'asr',
+      owner_user_id TEXT NOT NULL DEFAULT '',
+      owner_workspace_id TEXT NOT NULL DEFAULT '',
+      PRIMARY KEY (id, owner_user_id, owner_workspace_id),
+      FOREIGN KEY (meeting_id, owner_user_id, owner_workspace_id)
+        REFERENCES local_meetings_ownership_v1(id, owner_user_id, owner_workspace_id) ON DELETE CASCADE
+    )`,
+    copy: `INSERT INTO local_meeting_segments_ownership_v1 (
+      id, meeting_id, speaker_label, lang, confidence, start_ms, end_ms, text,
+      translation, origin, owner_user_id, owner_workspace_id
+    )
+    SELECT id,
+      COALESCE(meeting_id, ''),
+      speaker_label,
+      COALESCE(lang, 'zh'),
+      COALESCE(confidence, 1.0),
+      COALESCE(start_ms, 0),
+      COALESCE(end_ms, 0),
+      COALESCE(text, ''),
+      translation,
+      COALESCE(origin, 'asr'),
+      '',
+      ''
+    FROM local_meeting_segments_legacy_v1`,
+    drop: 'DROP TABLE IF EXISTS local_meeting_segments_ownership_v1',
+    rename: 'ALTER TABLE local_meeting_segments_ownership_v1 RENAME TO local_meeting_segments',
+    columns: [
+      { name: 'id', ddl: 'TEXT' },
+      { name: 'meeting_id', ddl: 'TEXT NOT NULL' },
+      { name: 'speaker_label', ddl: 'TEXT' },
+      { name: 'lang', ddl: "TEXT DEFAULT 'zh'" },
+      { name: 'confidence', ddl: 'REAL DEFAULT 1.0' },
+      { name: 'start_ms', ddl: 'INTEGER NOT NULL' },
+      { name: 'end_ms', ddl: 'INTEGER NOT NULL' },
+      { name: 'text', ddl: 'TEXT NOT NULL' },
+      { name: 'translation', ddl: 'TEXT' },
+      { name: 'origin', ddl: "TEXT DEFAULT 'asr'" },
+    ],
+    defaults: {
+      meeting_id: '',
+      start_ms: '0',
+      end_ms: '0',
+      text: '',
+      lang: 'zh',
+      confidence: '1.0',
+      origin: 'asr',
+    },
+    /** 子表：外键指向**最终名**的父表。 */
+    childOf: 'local_meetings',
+  },
+  {
+    table: 'local_voiceprints',
+    create: `CREATE TABLE IF NOT EXISTS local_voiceprints_ownership_v1 (
+      id TEXT NOT NULL,
+      display_name TEXT,
+      embedding BLOB,
+      sample_count INTEGER DEFAULT 1,
+      created_at INTEGER NOT NULL,
+      owner_user_id TEXT NOT NULL DEFAULT '',
+      owner_workspace_id TEXT NOT NULL DEFAULT '',
+      PRIMARY KEY (id, owner_user_id, owner_workspace_id)
+    )`,
+    copy: `INSERT INTO local_voiceprints_ownership_v1 (
+      id, display_name, embedding, sample_count, created_at, owner_user_id, owner_workspace_id
+    )
+    SELECT id,
+      display_name,
+      embedding,
+      COALESCE(sample_count, 1),
+      COALESCE(created_at, 0),
+      '',
+      ''
+    FROM local_voiceprints_legacy_v1`,
+    drop: 'DROP TABLE IF EXISTS local_voiceprints_ownership_v1',
+    rename: 'ALTER TABLE local_voiceprints_ownership_v1 RENAME TO local_voiceprints',
+    columns: [
+      { name: 'id', ddl: 'TEXT' },
+      { name: 'display_name', ddl: 'TEXT' },
+      { name: 'embedding', ddl: 'BLOB' },
+      { name: 'sample_count', ddl: 'INTEGER DEFAULT 1' },
+      { name: 'created_at', ddl: 'INTEGER NOT NULL' },
+    ],
+    defaults: {
+      created_at: '0',
+      sample_count: '1',
+    },
+    standalone: true,
+  },
+  {
+    table: 'local_meeting_audio_parts',
+    create: `CREATE TABLE IF NOT EXISTS local_meeting_audio_parts_ownership_v1 (
+      id TEXT NOT NULL,
+      meeting_id TEXT NOT NULL,
+      seq INTEGER NOT NULL,
+      mime_type TEXT NOT NULL,
+      data_base64 TEXT NOT NULL,
+      file_path TEXT,
+      created_at INTEGER NOT NULL,
+      owner_user_id TEXT NOT NULL DEFAULT '',
+      owner_workspace_id TEXT NOT NULL DEFAULT '',
+      PRIMARY KEY (id, owner_user_id, owner_workspace_id),
+      FOREIGN KEY (meeting_id, owner_user_id, owner_workspace_id)
+        REFERENCES local_meetings_ownership_v1(id, owner_user_id, owner_workspace_id) ON DELETE CASCADE
+    )`,
+    copy: `INSERT INTO local_meeting_audio_parts_ownership_v1 (
+      id, meeting_id, seq, mime_type, data_base64, file_path, created_at,
+      owner_user_id, owner_workspace_id
+    )
+    SELECT id,
+      COALESCE(meeting_id, ''),
+      COALESCE(seq, 0),
+      COALESCE(mime_type, ''),
+      COALESCE(data_base64, ''),
+      file_path,
+      COALESCE(created_at, 0),
+      '',
+      ''
+    FROM local_meeting_audio_parts_legacy_v1`,
+    drop: 'DROP TABLE IF EXISTS local_meeting_audio_parts_ownership_v1',
+    rename: 'ALTER TABLE local_meeting_audio_parts_ownership_v1 RENAME TO local_meeting_audio_parts',
+    columns: [
+      { name: 'id', ddl: 'TEXT' },
+      { name: 'meeting_id', ddl: 'TEXT NOT NULL' },
+      { name: 'seq', ddl: 'INTEGER NOT NULL' },
+      { name: 'mime_type', ddl: 'TEXT NOT NULL' },
+      { name: 'data_base64', ddl: 'TEXT NOT NULL' },
+      { name: 'file_path', ddl: 'TEXT' },
+      { name: 'created_at', ddl: 'INTEGER NOT NULL' },
+    ],
+    defaults: {
+      meeting_id: '',
+      seq: '0',
+      mime_type: '',
+      data_base64: '',
+      created_at: '0',
+    },
+    childOf: 'local_meetings',
+  },
+]
+
+/**
  * 配置表重建为**带归属的主键**（2026-10-29）。
  *
  * ⚠ 为什么必须重建表（而不是只加列）：旧主键是 (namespace, id)，两个账号的
@@ -204,6 +609,17 @@ class LocalDB {
   bindOperation(lease: OperationLease) {
     return Object.freeze({
       assertCurrent: () => this.assertOperationCurrent(lease),
+      /**
+       * 这个句柄所属的**归属**（`null` = 归属未知）。
+       *
+       * ⚠ 为什么挂在句柄上：写入方需要「用**哪个归属**写这一行」，而这个归属
+       *   必须与**授权这次写入的租约**是同一代会话 —— 否则会出现
+       *   「租约是 A 的、归属却是 B 的」的撕裂（切账号瞬间）。
+       *   ⇒ 归属只能从租约上取，不能另行读 auth store。
+       */
+      owner: lease.owner.principal
+        ? Object.freeze({ userId: lease.owner.principal.userId, workspaceId: lease.owner.principal.workspaceId })
+        : null,
       run: (sql: string, values: unknown[] = []) => this.run(sql, values, lease),
       query: <T = Record<string, unknown>>(sql: string, values: unknown[] = []) => this.query<T>(sql, values, lease),
       queryOne: <T = Record<string, unknown>>(sql: string, values: unknown[] = []) => this.queryOne<T>(sql, values, lease),
@@ -506,6 +922,19 @@ class LocalDB {
         await this.runConfigOwnershipV1Rebuild()
       } catch (e) {
         console.warn('[localDB] config ownership v1 rebuild failed:', e)
+      }
+      try {
+        // 会议/录音/待办/声纹表补归属列。必须在 initialized 之前 ——
+        //   会议链路按归属列过滤读写，列不存在就是一次查询失败。
+        await this.runMeetingOwnershipV1Migration()
+      } catch (e) {
+        console.warn('[localDB] meeting ownership v1 migration failed:', e)
+      }
+      try {
+        // 会议/录音/待办/声纹表重建为带归属的主键。必须在补列之后、initialized 之前。
+        await this.runMeetingOwnershipV1Rebuild()
+      } catch (e) {
+        console.warn('[localDB] meeting ownership v1 rebuild failed:', e)
       }
       try {
         await this.runListSyncV1Migration()
@@ -1066,6 +1495,148 @@ class LocalDB {
       } catch (error) {
         // 重建失败 ⇒ 旧表仍在（还没被改名），功能退回旧行为，不丢数据。
         console.warn(`[local-db] ${spec.table} 归属重建失败：`, error)
+      }
+    }
+  }
+
+  /**
+   * 会议/录音/待办/声纹表补归属列（2026-10-29）。
+   *
+   * ⚠ 与 §898 的向量列迁移同样**不用版本标记**、每次开库都核对：
+   *   加列是幂等的，而归属列直接决定「哪些行允许被读出/上传」⇒ 缺列就必须补。
+   */
+  private async runMeetingOwnershipV1Migration(): Promise<void> {
+    if (!this.conn) return
+    for (const col of MEETING_OWNERSHIP_V1_COLUMNS) {
+      const exists = await this.queryForMigration<{ cnt: number }>(
+        `SELECT COUNT(*) AS cnt FROM pragma_table_info('${col.table}') WHERE name = ?`,
+        [col.column],
+      )
+      if (exists && exists.cnt > 0) continue
+      try {
+        await this.conn.execute(col.sql, false)
+      } catch {
+        // 列可能已存在（并发开库），忽略
+      }
+    }
+  }
+
+  /**
+   * 把会议/录音/待办/声纹表重建成带归属的主键（2026-10-29）。
+   *
+   * ⚠ 与 config 重建的**关键差异**：这里**搬运旧行**（归属置空串 = 未认领），
+     而不是丢弃 —— 会议录音不可从云端恢复（见 MEETING_OWNERSHIP_V1_COLUMNS 的说明）。
+   *
+   * ⚠ 顺序是**硬约束**（实测 SQLite 3.51 得到）：
+   *   1. **先改子表名**（segments / audio_parts）—— 它们是叶子表，没人引用它们；
+   *   2. **再改父表名**（meetings）；
+   *   3. 建最终名的新表、搬运、丢旧表。
+   *
+   *   为什么不能反过来：`ALTER TABLE ... RENAME` 会**改写子表的外键子句** ⇒
+   *   先改父表名会让子表外键指向 `local_meetings_legacy_v1`（一张即将被删的表）
+   *   ⇒ 级联删除静默失效。
+   *
+   * ⚠ 搬运用普通 `INSERT`（不是 `INSERT OR IGNORE`）：`OR IGNORE` 会把外键违规
+   *   **静默吞掉** ⇒ 子表整批搬运会「零行成功、零报错」，看起来迁移成功、数据却没了。
+   */
+  private async runMeetingOwnershipV1Rebuild(): Promise<void> {
+    if (!this.conn) return
+    const specs = MEETING_OWNERSHIP_V1_REBUILD
+    // 只处理**还没重建**的表（主键已含归属列 ⇒ 跳过）。
+    const pending: MeetingOwnershipRebuildSpec[] = []
+    for (const spec of specs) {
+      const columns = await this.queryAllForMigration<{ name: string; pk: number }>(
+        `SELECT name, pk FROM pragma_table_info('${spec.table}')`,
+      )
+      if (!columns || columns.length === 0) continue
+      const primaryKey = columns.filter(c => c.pk > 0).map(c => c.name).sort().join(',')
+      const wanted = 'id,owner_user_id,owner_workspace_id'
+      if (primaryKey === wanted) continue
+      pending.push(spec)
+    }
+    if (pending.length === 0) return
+
+    // ⚠ 第 1 步：先把**子表**改名让位（叶子表）。
+    for (const spec of pending) {
+      if (!spec.childOf) continue
+      await this.conn.execute(`ALTER TABLE ${spec.table} RENAME TO ${spec.table}_legacy_v1`, false)
+    }
+    // ⚠ 第 2 步：再把**父表**改名让位。
+    for (const spec of pending) {
+      if (!spec.parent) continue
+      await this.conn.execute(`ALTER TABLE ${spec.table} RENAME TO ${spec.table}_legacy_v1`, false)
+    }
+    // ⚠ 第 2b 步：**独立表**（没有父子关系）也要改名让位 —— 否则第 3 步的
+    //   建表会撞上同名（CREATE TABLE IF NOT EXISTS 静默跳过 ⇒ 新表根本没建）
+    //   而搬运语句却从**旧表**读（数据搬完看起来对，但旧表的行永远还在）。
+    for (const spec of pending) {
+      if (!spec.standalone) continue
+      await this.conn.execute(`ALTER TABLE ${spec.table} RENAME TO ${spec.table}_legacy_v1`, false)
+    }
+    // ⚠ 第 2c 步：把**旧表缺的列补齐**。
+    //   历史库的表形状**各不相同**（有的没有 `location`、有的没有 `session_id` ——
+    //   它们是历次迁移陆续补上去的）⇒ 搬运语句 SELECT 全部列时会在缺列的库上
+    //   报「no such column」⇒ **整张表迁移失败**，行留在旧表里没搬过来。
+    //   ⇒ 先给旧表补上缺的列（补 NULL / 默认值），再搬。
+    for (const spec of pending) {
+      const present = new Set((await this.queryAllForMigration<{ name: string }>(
+        `SELECT name FROM pragma_table_info('${spec.table}_legacy_v1')`,
+      )).map(c => c.name))
+      for (const column of spec.columns) {
+        if (present.has(column.name)) continue
+        try {
+          await this.conn.execute(
+            // ⚠ 补列一律用**可空**类型：SQLite 不允许给 NOT NULL 且无默认值的
+            //   列加到**已有行**的表上（报「NOT NULL constraint failed」）⇒
+            //   用 NOT NULL 的 DDL 补列，旧库一有行就会失败。
+            //   新表那一侧才是带约束的形状（create 语句里写死）。
+            `ALTER TABLE ${spec.table}_legacy_v1 ADD COLUMN ${column.name} ${column.ddl.replace(/ NOT NULL/i, '')}`, false,
+          )
+        } catch {
+          // 列可能已被并发补上，忽略
+        }
+      }
+    }
+    // ⚠ 第 3 步：**先建**所有新表（父表要先于子表 —— 子表的外键指向父表的
+    //   最终名，父表还没就位时子表建不出来）。
+    //   ⚠ 表名用临时的 `*_ownership_v1` ⇒ 父表建好之后**子表的外键才指向
+    //   一个存在的表** ⇒ 不会留下「外键指向不存在表」的隐患。
+    for (const spec of pending) {
+      try {
+        await this.conn.execute(spec.drop, false)
+        await this.conn.execute(spec.create, false)
+      } catch (error) {
+        console.warn(`[local-db] ${spec.table} 新表创建失败：`, error)
+      }
+    }
+    // ⚠ 第 4 步：搬运旧行（父表先搬 —— 子表的外键要求父行**已经存在**）。
+    //   ⚠ 顺序不能反：先搬子表会因外键失败（父行还没搬过去）。
+    for (const spec of pending) {
+      try {
+        await this.conn.execute(spec.copy, false)
+      } catch (error) {
+        console.warn(`[local-db] ${spec.table} 归属搬运失败：`, error)
+      }
+    }
+    // ⚠ 第 5 步：把新表**改名到位**（**父表先**，子表后），再丢旧表。
+    //   ⚠ 父表先改名是关键：子表的外键此刻指向 `local_meetings_ownership_v1`
+    //   ⇒ 父表改名时 SQLite 会**自动改写**子表的外键子句 ⇒ 指向最终名。
+    //   ⚠ 顺序反了（先子表后父表）也一样能work，但父表先更安全：
+    //   子表改名到位时父表已是最终名，外键引用保持有效。
+    //   ⚠ 改名到位前旧表已改名为 `*_legacy_v1` ⇒ 最终名是空的 ⇒ 不会撞名。
+    for (const spec of pending) {
+      try {
+        await this.conn.execute(spec.rename, false)
+      } catch (error) {
+        console.warn(`[local-db] ${spec.table} 归属改名失败：`, error)
+      }
+    }
+    for (const spec of pending) {
+      try {
+        await this.conn.execute(`DROP TABLE IF EXISTS ${spec.table}_legacy_v1`, false)
+      } catch (error) {
+        // 丢旧表失败 ⇒ 数据在新表里，旧表是冗余副本；下次开库会再试一次。
+        console.warn(`[local-db] ${spec.table} 旧表清理失败：`, error)
       }
     }
   }

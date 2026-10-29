@@ -119,8 +119,16 @@ const MEETING_LIST_COLUMNS = [
  * ⚠ 为什么不留 `SELECT *`：`*` 会把 `transcript` 这一列**整列**读进内存，
  *   而本地 SQLite 的一行本来就可能是几百 KB ⇒ 30 场会议 = 11.8 MB（界面只要 3.6 KB）。
  */
-export function meetingListSql(archived: boolean): string {
+export function meetingListSql(archived: boolean, scopeClause?: string): string {
+  // ⚠ `scopeClause` 省略时输出与改动前**逐字节相同** —— 这个函数的形状
+  //   本身是行为门的判据（见 meeting-dedup.test.ts「列表 SQL 的列与
+   //   rowToMeeting 读的字段对不上」），改它会让既有判据的锚点失配。
+  //   归属过滤是**增量**的（2026-10-29）：不传就是老行为，传了才按归属收窄。
+  //
+  // ⚠ 归属未知的行**永远不入选**（scopeClause 为 `1 = 0`）：
+  //   未认领 ≠ 属于当前账号 ⇒ 跨账号的历史行不该出现在列表里。
+  const scope = scopeClause ? ` AND ${scopeClause}` : ''
   return `SELECT ${MEETING_LIST_COLUMNS} FROM local_meetings
-     WHERE deleted_at IS NULL AND IFNULL(archived_at, 0) ${archived ? '>' : '='} 0
+     WHERE deleted_at IS NULL AND IFNULL(archived_at, 0) ${archived ? '>' : '='} 0${scope}
      ORDER BY started_at DESC LIMIT ? OFFSET ?`
 }

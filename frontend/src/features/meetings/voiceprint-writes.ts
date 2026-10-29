@@ -39,6 +39,46 @@ export const SQL_INSERT =
 /** 再 enroll 一个音频样本：向量覆盖、样本数 +1。 */
 export const SQL_ENROLL_AGAIN = 'UPDATE local_voiceprints SET display_name = ?, embedding = ?, sample_count = ? WHERE id = ?'
 
+// ---------------------------------------------------------------------------
+// 归属作用域版本（2026-10-29）
+//
+// ⚠ 为什么单独一组而不直接改上面那几条：`SQL_LIST` / `SQL_INSERT` 等是
+//   **被行为门断言的纯字符串**（见 voiceprints-store.ts 的文件头），改掉它们
+//   会让既有的判据锚点失配 ⇒ 判据「恒绿」而缺陷看不出来。
+//   ⇒ 这里**新增**一组带归属条件的等价语句，旧的那组保留给无归属场景
+//     （归属未知的行永不被读出/删改）。
+//
+// ⚠ 声纹是**生物特征**（embedding）⇒ 归属错一次就是把 A 的声纹特征交给 B 用。
+// ---------------------------------------------------------------------------
+
+/** 归属作用域的列声纹：只列属于该归属的。 */
+export const SQL_LIST_SCOPED =
+  'SELECT id, display_name, created_at FROM local_voiceprints WHERE owner_user_id = ? AND owner_workspace_id = ? ORDER BY created_at DESC'
+
+/** 归属作用域的查存在。 */
+export const SQL_EXISTS_SCOPED =
+  'SELECT id FROM local_voiceprints WHERE id = ? AND owner_user_id = ? AND owner_workspace_id = ?'
+
+/** 归属作用域的改名。 */
+export const SQL_RENAME_SCOPED =
+  'UPDATE local_voiceprints SET display_name = ? WHERE id = ? AND owner_user_id = ? AND owner_workspace_id = ?'
+
+/** 归属作用域的删除单条。 */
+export const SQL_DELETE_ONE_SCOPED =
+  'DELETE FROM local_voiceprints WHERE id = ? AND owner_user_id = ? AND owner_workspace_id = ?'
+
+/** 归属作用域的清空全部。 */
+export const SQL_DELETE_ALL_SCOPED =
+  'DELETE FROM local_voiceprints WHERE owner_user_id = ? AND owner_workspace_id = ?'
+
+/** 归属作用域的首次注册：带归属列。 */
+export const SQL_INSERT_SCOPED =
+  'INSERT INTO local_voiceprints (id, display_name, embedding, sample_count, created_at, owner_user_id, owner_workspace_id) VALUES (?,?,?,?,?,?,?)'
+
+/** 归属作用域的再 enroll。 */
+export const SQL_ENROLL_AGAIN_SCOPED =
+  'UPDATE local_voiceprints SET display_name = ?, embedding = ?, sample_count = ? WHERE id = ? AND owner_user_id = ? AND owner_workspace_id = ?'
+
 export type VoiceprintWritePlan =
   | { op: 'insert' }
   | { op: 'rename' }

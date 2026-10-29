@@ -1,6 +1,7 @@
 import { localDB } from '../../native/local-db'
 import { captureRecordingDb, type RecordingDb } from './recording-operation'
 import type { LocalMeeting, MeetingSegment } from './meetings-store'
+import { captureMeetingOwnership, ownerOf, ownerScopeSql } from '../../native/meeting-ownership'
 
 function parseJson<T>(raw: string | null | undefined, fallback: T): T {
   if (!raw) return fallback
@@ -35,19 +36,22 @@ function rowToMeeting(r: Record<string, unknown>): LocalMeeting {
 
 /** 同一会话未完成的录音（杀进程后提示恢复，不自动重开采集）。 */
 export async function getRecordingBySession(sessionId: string): Promise<LocalMeeting | null> {
-  const row = await localDB.queryOne<Record<string, unknown>>(
+  const { db, owner } = captureMeetingOwnership(localDB)
+  const scope = ownerScopeSql(owner)
+  const row = await db.queryOne<Record<string, unknown>>(
     `SELECT * FROM local_meetings
-     WHERE session_id = ? AND deleted_at IS NULL AND status = 'recording'
+     WHERE session_id = ? AND deleted_at IS NULL AND status = 'recording' AND ${scope.clause}
      ORDER BY started_at DESC LIMIT 1`,
-    [sessionId],
+    [sessionId, ...scope.params],
   )
   return row ? rowToMeeting(row) : null
 }
 
 export async function updateSegmentTranslation(segmentId: string, translation: string, db: RecordingDb = captureRecordingDb()): Promise<void> {
+  const scope = ownerScopeSql(ownerOf(db))
   await db.run(
-    'UPDATE local_meeting_segments SET translation = ? WHERE id = ?',
-    [translation, segmentId],
+    'UPDATE local_meeting_segments SET translation = ? WHERE id = ? AND ' + scope.clause,
+    [translation, segmentId, ...scope.params],
   )
 }
 

@@ -88,7 +88,13 @@ describe('§828 · 接线（扫描层，零牙已如实标注）', () => {
   })
 
   it('★ 分片落盘失败也不许完全无声（唯一一份音频拷贝丢了）', () => {
-    const save = INGEST.indexOf('saveAudioPart(')
+    // ⚠ 2026-10-29：窗口必须盖住 **saveAudioPart 之后**那一段，
+    //   而 saveAudioPart 的调用点现在带 db 实参（c172804f 起）：
+    //   `saveAudioPart(meetingId, opts.seq, opts.blob, opts.blob.type || 'audio/webm', operation.localDb)`。
+    //   ⚠ 旧写法按 `'saveAudioPart('` 定位 ⇒ 命中的是 **import 那一行**
+    //   （`import { saveAudioPart } from './audio-parts'`）⇒ 窗口落在
+    //   文件头 ⇒ 永远看不到 warn ⇒ 这道门从此变成恒绿。
+    const save = INGEST.indexOf('saveAudioPart(meetingId, opts.seq, opts.blob')
     const window = INGEST.slice(save, save + 400)
     assert.doesNotMatch(window, /\.catch\(\(\) => \{\}\)/,
       '分片落盘失败又被吞掉 ⇒ 那段话永久找不回来且无人知情')
@@ -96,7 +102,11 @@ describe('§828 · 接线（扫描层，零牙已如实标注）', () => {
   })
 
   it('⚠ 前提登记：成功路径仍然要建行、仍然按 startMs 有序插入（别把本节修成回归）', () => {
-    assert.match(INGEST, /const id = await saveSegment\(seg\)/, '成功路径的落库不见了')
+    // ⚠ 2026-10-29：saveSegment 现在带 db 实参（c172804f 起）。
+    //   判据要**认这个形状**，否则「落库不见了」这句话永远说不出口
+    //   ⇒ 前提登记静默失效 ⇒ 有人把 saveSegment 删了也没人知道。
+    assert.match(INGEST, /const id = await saveSegment\(seg,\s*operation\.cloudDb!\)/,
+      '成功路径的落库不见了')
     assert.match(INGEST, /opts\.segments\.splice\(at, 0, saved\)/,
       '有序插入不见了 —— 并发转写完成顺序 ≠ 说话顺序，会让 transcript 乱序')
   })

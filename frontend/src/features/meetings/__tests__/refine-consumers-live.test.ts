@@ -528,7 +528,13 @@ describe('§89 · 接线值：ingest 的两个实参与四个上报值', () => {
   it('★ 两个实参必须是 fresh 与 result（不是被裁剪过的副本）', () => {
     const args = callArgs(code)
     assert.ok(args !== null, '解析不出 ingestMeetingArtifacts 的实参 —— 判据失效，先修判据')
-    assert.deepEqual(args.map((a) => a.trim()), ['fresh', 'result'],
+    // ⚠ 2026-10-29：第三个实参 `operation` 是 c172804f 加的
+    //   （把整条 ingest 绑到**发起这次操作的那一代会话**上）。
+    //   ⇒ 判据要认它，但**前两个实参的位置不能动** ——
+    //     「fresh 与 result 被裁剪过」这件事才是这道门要抓的。
+    const trimmed = args.map((a) => a.trim())
+    assert.equal(trimmed.length, 3, `实参个数变了：${JSON.stringify(trimmed)}`)
+    assert.deepEqual(trimmed.slice(0, 2), ['fresh', 'result'],
       `实参是 ${JSON.stringify(args.map((a) => a.trim()))} ⇒ refine 的 todos/nextMeeting 到不了入库层`)
   })
 
@@ -561,11 +567,11 @@ describe('§89 · 接线值：ingest 的两个实参与四个上报值', () => {
   })
 
   it('负控：实参被换掉时上面那条必须报红（防止判据恒真）', () => {
-    const mutated = code.replace('ingestMeetingArtifacts(fresh, result)', 'ingestMeetingArtifacts(fresh, {})')
+    const mutated = code.replace('ingestMeetingArtifacts(fresh, result', 'ingestMeetingArtifacts(fresh, {}')
     assert.notEqual(mutated, code, '样本构造失败：锚点没命中')
     const args = callArgs(mutated)
     assert.ok(args !== null)
-    assert.notDeepEqual(args.map((a) => a.trim()), ['fresh', 'result'],
+    assert.notDeepEqual(args.map((a) => a.trim()).slice(0, 2), ['fresh', 'result'],
       '判据没咬住：实参已换成 {} 却仍判定通过')
   })
 })

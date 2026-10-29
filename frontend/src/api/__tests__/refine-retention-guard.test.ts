@@ -210,6 +210,15 @@ describe('§911 · D80：产出 refinedTranscript 的点只能是受守卫的透
     )
     assert.equal(sqlWrite.length, 1,
       `蛇形 SQL 写入没有判红（${JSON.stringify(sqlWrite)}）⇒ 白名单把「写入」也放过了`)
+    // ④ ⛔ 也不许放过：**独立成行的**蛇形列名（迁移搬运语句的那一条）。
+    //   新放的那条白名单是 `/^\s*refined_transcript,$/`（要求**只有列名 + 逗号**），
+    //   而真写入一定带赋值符或冒号 ⇒ 命不中 ⇒ 仍然判红。
+    const columnWrite = findRefinedTranscriptOffenders(
+      "await localDB.run('UPDATE local_meetings SET refined_transcript = ?', [x])",
+      'sample-column-write.ts',
+    )
+    assert.equal(columnWrite.length, 1,
+      `带赋值符的列名写入没有判红（${JSON.stringify(columnWrite)}）⇒ 新放的白名单把「写入」也放过了`)
   })
 })
 
@@ -245,6 +254,17 @@ const SAFE = [
   /const raw = parsed\.refined_transcript/,          // ← 读，喂给守卫
   // SQL 列名清单（没有 `:` 赋值 ⇒ 不是写入）
   /^[\w, ]+refined_transcript,[\w, ]*$/,
+  // ⚠ 2026-10-29（会议归属切片）：迁移搬运语句里的 **SELECT 源列**。
+  //   形如
+  //     copy: `INSERT INTO local_meetings_ownership_v1 (
+  //       id, title, …, refined_transcript, …
+  //     ) SELECT id, …, refined_transcript, … FROM local_meetings_legacy_v1`
+  //   ⇒ `refined_transcript,` 出现在 **SELECT 列表**里 ⇒ 它是**原样搬运**，
+  //     不是「把被截断的正文写进去」。
+  //   ⇒ 但**必须钉死成独立一行**：真写入是 `refined_transcript = ?`
+  //     （带 `=`）或 `refined_transcript:` （带冒号）⇒ 命不中这一条。
+  //   ⇒ 负控见下面第 ③ 条（蛇形 SQL 的赋值形态必须仍然判红）。
+  /^\s*refined_transcript,$/,
   // ★ 两个**受守卫的产出**本身（守卫就在这两行里）
   /refinedTranscript: retention\.ok \? String\(serverRefined/,
   /refinedTranscript: hasRefined && retention\.ok/,

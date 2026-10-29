@@ -170,7 +170,13 @@ describe('§229.1 C · 接线（源码断言，局限见注）', () => {
     // ⚠ 这是 §229.1 那个洞的原样：旧写法是调用点 `catch {}`，eventsCreated
     //   停在 0 且不留痕迹。变异 S2 把 `return { state: 'failed' }` 换成
     //   `return { state: 'none' }`，下面这条必须转红。
-    assert.ok(/catch\s*\{[^}]*return\s*\{\s*state:\s*'failed'\s*\}/s.test(ingest),
+    // ⚠ 2026-10-29：catch 允许**带参数**（生产侧是 `catch (error) {`），
+    //   而且 catch 体里有别的语句（`if (isAbortError...) throw` 与
+    //   `operation.assertLocal()`）⇒ `[^}]*` 会在第一个 `}` 处断掉，
+    //   永远看不到后面的 `return { state: 'failed' }` ⇒ 这道门恒红。
+    //   ⇒ 判据放宽成「catch 体里出现 failed 态」，但**必须仍是 failed**：
+    //     把它换成 'none' 依然要转红（变异 S2 的牙不许掉）。
+    assert.ok(/catch\s*(\([^)]*\))?\s*\{[\s\S]{0,400}?return\s*\{\s*state:\s*'failed'\s*\}/s.test(ingest),
       '日程建失败没有落成 state=\'failed\' ⇒ 离线时用户永远不知道自己要的日程没建成')
   })
 

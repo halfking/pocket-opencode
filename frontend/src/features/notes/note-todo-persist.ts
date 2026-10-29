@@ -18,6 +18,7 @@
 import { localDB } from '../../native/local-db'
 import type { NoteActionItem } from '../../api/notes'
 import { ensureTodoReminder } from '../meetings/meeting-due-reminder'
+import { captureMeetingOwnership, ownerColumnValues, ownerScopeSql } from '../../native/meeting-ownership'
 import { planNoteTodos } from './note-todo-plan.ts'
 
 export interface NoteTodoResult {
@@ -68,10 +69,12 @@ export interface NoteTodoResult {
  *   仍未拍板，见 docs §147；**不在这里代拍**。
  */
 async function alreadyExists(noteId: string, title: string): Promise<boolean> {
-  const hit = await localDB.queryOne(
+  const { db, owner } = captureMeetingOwnership(localDB)
+  const scope = ownerScopeSql(owner)
+  const hit = await db.queryOne(
     `SELECT id FROM local_todos
-     WHERE note_id = ? AND title = ? AND extracted_from_voice = 1`,
-    [noteId, title],
+     WHERE note_id = ? AND title = ? AND extracted_from_voice = 1 AND ${scope.clause}`,
+    [noteId, title, ...scope.params],
   )
   return hit !== null && hit !== undefined
 }
@@ -83,6 +86,9 @@ export async function createNoteTodos(
 ): Promise<NoteTodoResult> {
   const result: NoteTodoResult = { created: 0, reminders: 0, reminderPlanned: 0, unresolved: 0 }
   const now = Date.now()
+  // ⚠ 归属取自**同一个**操作租约 ⇒ 这条待办属于哪一代会话是原子的。
+  const { db, owner } = captureMeetingOwnership(localDB)
+  const [ownerUserId, ownerWorkspaceId] = ownerColumnValues(owner)
   const plans = planNoteTodos({
     items,
     now,
@@ -102,13 +108,15 @@ export async function createNoteTodos(
       // 查不动就退化成旧行为（可能重复），好过一条待办都建不出来。
     }
     try {
-      await localDB.run(
+      await db.run(
         `INSERT INTO local_todos
-         (id, note_id, title, description, status, priority, due_at, extracted_from_voice, meeting_id, created_at, updated_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+         (id, note_id, title, description, status, priority, due_at, extracted_from_voice, meeting_id, created_at, updated_at,
+          owner_user_id, owner_workspace_id)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         [
           plan.id, noteId, plan.text, plan.assignee ? `负责人：${plan.assignee}` : null,
           'pending', 'medium', plan.dueAt, 1, null, now, now,
+          ownerUserId, ownerWorkspaceId,
         ],
       )
       result.created++
