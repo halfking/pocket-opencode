@@ -129,6 +129,7 @@ const STUB_SOURCES = {
     export const meetingsApi = {
       async syncMeeting(input) { globalThis.__ingestSeen.synced.push(input) },
     }`,
+  './meeting-sync-runtime.ts': `export async function syncPortalMeetingsNow() { return 0 }`,
   './meetings-store': `
     export async function updateMeeting(id, patch) {
       globalThis.__ingestSeen.update = { id, patch }

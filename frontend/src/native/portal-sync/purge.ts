@@ -25,7 +25,7 @@ export async function purgePortalCloudCopy(operation: PortalPurgeOperation) {
     portalNotesSyncStatus.resetBlocked = true
     portalNotesSyncStatus.blocked = blocked?.count ?? 0
   }
-  if (typeof window !== 'undefined') window.dispatchEvent(new Event('openpocket:portal-notes-outbox-changed'))
+  if (typeof window !== 'undefined') for(const module of modules) window.dispatchEvent(new Event(`openpocket:portal-${module}-outbox-changed`))
   context.assertCurrent()
   return result
 }

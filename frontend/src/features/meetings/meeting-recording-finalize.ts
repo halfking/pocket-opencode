@@ -252,7 +252,7 @@ export async function finalizeRecording(
     //
     // ⚠ §954：`loadAudioChunks` 是**原生链**那条路 —— 那里压根没有「整场音频」可取
     //   （`loadMeetingAudio` 恒 null，§826）⇒ 不给它，整段重转在 Android 上永不发生。
-    { toWav, loadAudioChunks: deps.loadAudioChunks ?? defaultLoadAudioChunks },
+    { toWav, loadAudioChunks: deps.loadAudioChunks ?? defaultLoadAudioChunks, audioOperation: operation.localDb },
   )
   operation.assertCloud()
   // ⚠ §954：走分块音频源时 `toWav` 不会被调用（没有整场音频可转）

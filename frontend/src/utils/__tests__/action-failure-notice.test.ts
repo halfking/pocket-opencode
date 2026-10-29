@@ -187,7 +187,7 @@ describe('§838 D2/D3 · 媒体清理与软删顺序（扫描层）', () => {
     const studio = codeOnly(STUDIO)
     // ⚠ 锚点必须是**调用点之后**的那次出现：文件开头还有一条同名 import，
     //   用 indexOf 会落在 import 上（第一版阳性对照就是这么翻的）。
-    const atDel = studio.indexOf('await deleteMeetingAudio(m.id)')
+    const atDel = studio.indexOf('await deleteMeetingAudio(m.id, db)')
     assert.ok(atDel > 0, '★ 阳性对照失败：找不到音频清理的调用点')
     const tagAt = studio.indexOf('RECORD_MEDIA_CLEANUP_FAIL_TAG', atDel)
     assert.ok(tagAt > atDel, '会议菜单侧的音频清理失败仍被吞掉（调用点之后没有诊断）')

@@ -60,6 +60,7 @@
     </div>
 
     <PortalNotesSyncNotice />
+    <PortalRecordSyncNotice :runtime="meetingSyncRuntime" module="meetings" name-key="settings.storageModuleMeetings" />
     <!-- 上次同步（只读报告） -->
     <div class="sync-report">
       <div class="report-head">
@@ -138,6 +139,8 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import PortalNotesSyncNotice from './PortalNotesSyncNotice.vue'
+import PortalRecordSyncNotice from './PortalRecordSyncNotice.vue'
+import { meetingSyncRuntime } from '../meetings/meeting-sync-runtime.ts'
 import { useI18n } from 'vue-i18n'
 import { useToast } from '../../composables/useToast'
 import { purgeCloudCopy } from '../../api/syncPolicy'

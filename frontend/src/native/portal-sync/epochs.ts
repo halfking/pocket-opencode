@@ -1,9 +1,11 @@
 import type { SyncDb } from './contract.ts'
 
 type Owner = SyncDb['owner']
+export type RecordModule = 'meetings' | 'email' | 'rss'
 const known = new Map<string, number>()
 const resetting = new Set<string>()
 const key = (owner: NonNullable<Owner>) => JSON.stringify([owner.userId, owner.workspaceId])
+const moduleKey = (owner: NonNullable<Owner>, module: RecordModule) => JSON.stringify([owner.userId, owner.workspaceId, module])
 
 export function validEpoch(value: unknown): value is number {
   return Number.isSafeInteger(value) && Number(value) >= 0
@@ -24,4 +26,19 @@ export function markNotesResetPending(owner: Owner, pending: boolean): void {
   if (!owner) return
   if (pending) resetting.add(key(owner))
   else resetting.delete(key(owner))
+}
+
+/** Module adapters capture a version before asynchronous preparation, never at upload time. */
+export function captureModuleEpoch(owner: Owner, module: RecordModule): number | null {
+  if (!owner || resetting.has(moduleKey(owner, module))) return null
+  return known.get(moduleKey(owner, module)) ?? null
+}
+export function rememberModuleEpoch(owner: Owner, module: RecordModule, epoch: number): void {
+  if (!owner || !validEpoch(epoch)) throw new Error('Verified module epoch required')
+  known.set(moduleKey(owner, module), Math.max(epoch, known.get(moduleKey(owner, module)) ?? 0))
+}
+export function markModuleResetPending(owner: Owner, module: RecordModule, pending: boolean): void {
+  if (!owner) return
+  if (pending) resetting.add(moduleKey(owner, module))
+  else resetting.delete(moduleKey(owner, module))
 }

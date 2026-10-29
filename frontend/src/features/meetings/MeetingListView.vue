@@ -130,6 +130,8 @@ import {
   RECORD_MEDIA_CLEANUP_FAIL_TAG,
 } from '../../utils/action-failure-notice'
 import { useListScene } from '../../composables/use-list-scene'
+import { useNotesOwnerView } from '../notes/note-view-owner.ts'
+import { captureRecordingDb } from './recording-operation.ts'
 import {
   isListReadError,
   isListSkeleton,
@@ -176,12 +178,15 @@ const {
 } = useContinuousList<LocalMeeting>({
   pageSize: DEFAULT_LIST_PAGE_SIZE,
   fetchPage: async ({ page }) => {
+    const stamp = ownerView.capture()
+    if (!ownerView.isCurrent(stamp)) return { rows: [], total: 0, hasMore: false }
     try {
       const res = await listMeetings(DEFAULT_LIST_PAGE_SIZE, {
         archived: filter.value === 'archived',
         // 后端是 offset 型，控制器是 page 型（从 1 起）。
         offset: (page - 1) * DEFAULT_LIST_PAGE_SIZE,
       })
+      if (!ownerView.isCurrent(stamp)) throw Object.assign(new Error('Meeting list owner changed'), { name: 'AbortError' })
       return {
         rows: res,
         // 本地库不提供 total，用「本页是否满」推导，与原 pageHasMore 语义一致。
@@ -202,6 +207,7 @@ const {
     }
   },
 })
+const ownerView = useNotesOwnerView(() => { meetings.value = []; starting.value = false }, load, 'meetings', load, 'openpocket:portal-meetings-applied')
 
 const readFailure = listReadFailureNotice('会议记录')
 /** 无行 + 读取失败 ⇒ 整页失败态（`.length` 守卫在模板里，门禁读的是那一行）。 */
@@ -210,6 +216,7 @@ const loading = computed(() => isListSkeleton(listStatus.value, meetings.value.l
 const loadingMore = computed(() => listStatus.value === 'loadingNext' || listStatus.value === 'refreshing')
 
 async function load() {
+  if (!ownerView.isCurrent(ownerView.capture())) return
   dbNotReady.value = false
   try {
     resetQuery()
@@ -229,6 +236,8 @@ async function onFilter(next: MeetingListFilter) {
 
 async function startNewMeeting() {
   if (starting.value) return
+  const db = captureRecordingDb()
+  const stamp = ownerView.capture()
   starting.value = true
   // ⚠⚠ §857/D19：本函数是 **§838 修复的同族漏网**。
   //   同文件紧接着的 onArchive / onRestore / onDelete 三个都补了
@@ -244,20 +253,21 @@ async function startNewMeeting() {
     const m = await createMeeting({
       startedAt,
       title: formatCapturedTitle({ startedAt }),
-    })
+    }, db)
+    if (!ownerView.isCurrent(stamp)) return
     void captureDeviceLocation().then(async (location) => {
       if (!location) return
       await updateMeeting(m.id, {
         location,
         title: formatCapturedTitle({ startedAt, location }),
-      })
-    })
+      }, db)
+    }).catch(error => { if (ownerView.isCurrent(stamp)) { console.error(RECORD_ACTION_FAIL_TAG, 'location', error); toast.error(describeRecordActionFailure('start', {error})) } })
     await router.push({ name: 'meeting-detail', params: { id: m.id }, query: { record: '1' } })
   } catch (e) {
     console.error(RECORD_ACTION_FAIL_TAG, 'start', e)
     toast.error(describeRecordActionFailure('start', { error: e }))
   } finally {
-    starting.value = false
+    if (ownerView.isCurrent(stamp)) starting.value = false
   }
 }
 
@@ -269,6 +279,7 @@ function openMeeting(m: LocalMeeting) {
 //   （不能假装成功，这点是对的），但**零反馈** —— 用户点了归档，列表没变，
 //   界面上一个字都没有。
 async function onArchive(id: string) {
+  const stamp = ownerView.capture()
   try {
     await archiveMeeting(id)
   } catch (e) {
@@ -276,10 +287,12 @@ async function onArchive(id: string) {
     toast.error(describeRecordActionFailure('archive', { error: e }))
     return
   }
+  if (!ownerView.isCurrent(stamp)) return
   meetings.value = meetings.value.filter((m) => m.id !== id)
 }
 
 async function onRestore(id: string) {
+  const stamp = ownerView.capture()
   try {
     await unarchiveMeeting(id)
   } catch (e) {
@@ -287,29 +300,34 @@ async function onRestore(id: string) {
     toast.error(describeRecordActionFailure('restore', { error: e }))
     return
   }
+  if (!ownerView.isCurrent(stamp)) return
   meetings.value = meetings.value.filter((m) => m.id !== id)
 }
 
 async function onDelete(id: string) {
+  const db = captureRecordingDb()
+  const stamp = ownerView.capture()
   // ⚠ 音频清理此前是 `catch { /* ok */ }` —— 而 deleteMeetingAudio 写的是
   //   IndexedDB（openDB + 事务），失败时音频 blob **永久残留**且零痕迹
   //   ⇒ 那是静默的存储泄漏，注释里的「ok」与事实不符（§838）。
   //   ⇒ 现在失败要说出来：主体已删除不必重试，但残留会占空间。
   let mediaCleaned = true
   try {
-    await deleteMeeting(id)
+    await deleteMeeting(id, db)
   } catch (e) {
     console.error(RECORD_ACTION_FAIL_TAG, 'delete', e)
     toast.error(describeRecordActionFailure('delete', { error: e }))
     return
   }
+  if (!ownerView.isCurrent(stamp)) return
   try {
-    await deleteMeetingAudio(id)
+    await deleteMeetingAudio(id, db)
   } catch (e) {
     mediaCleaned = false
     console.error(RECORD_MEDIA_CLEANUP_FAIL_TAG, e)
     toast.error(describeRecordActionFailure('delete', { error: e, mediaCleaned: false }))
   }
+  if (!ownerView.isCurrent(stamp)) return
   meetings.value = meetings.value.filter((m) => m.id !== id)
 }
 

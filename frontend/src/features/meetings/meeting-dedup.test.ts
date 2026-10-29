@@ -1446,7 +1446,7 @@ describe('L · §925 转写列是派生缓存：写入节流 + 列表只取有�
   it('★★ 接线：store 必须真的用上这两个决策', () => {
     const upd = functionBody(STORE_SRC, 'updateTranscript')
     assert.ok(upd.includes('shouldPersistTranscript('), 'updateTranscript 没有走节流决策')
-    assert.ok(upd.includes('updateMeeting(id, { transcript })'), 'updateTranscript 不再写 transcript 列')
+    assert.ok(upd.includes('updateMeeting(id, { transcript }, db)'), 'updateTranscript 不再沿用发起租约写 transcript 列')
     const list = functionBody(STORE_SRC, 'listMeetings')
     assert.ok(list.includes('meetingListSql('), 'listMeetings 没有用会议列表 SQL')
     // ⚠⚠ 扫描前必须**剥注释**（本节自己踩过）：`listMeetings` 的注释里写着
@@ -1920,12 +1920,18 @@ function loadStoreModule() {
   storeBundle = (async () => {
     const work = mkdtempSync(join(tmpdir(), 'pocket-s925-'))
     const stub = join(work, 'local-db-stub.mjs')
+    const recordingStub = join(work, 'recording-operation-stub.mjs')
+    const syncStub = join(work, 'meeting-sync-stub.mjs')
     writeFileSync(stub, `
       export const localDB = {
+        owner: {userId:'fixture',workspaceId:'fixture'}, assertCurrent() {},
+        captureOperation() { return {owner:{principal:this.owner}} }, bindOperation() { return this },
         async run(sql, params) { globalThis.__s925Writes.push({ sql: String(sql), params }) },
         async query(sql, params) { globalThis.__s925Queries.push({ sql: String(sql), params }); return [] },
         async queryOne(sql, params) { globalThis.__s925Queries.push({ sql: String(sql), params }); return null },
       }`, 'utf8')
+    writeFileSync(recordingStub, `import {localDB} from ${JSON.stringify(stub)};export const captureRecordingDb=()=>localDB`, 'utf8')
+    writeFileSync(syncStub, `export const meetingPayload=()=>({});export const meetingPortalStore=()=>({commit(){throw Error('portable sync is outside this transcript-only seam')}})`, 'utf8')
     const entry = join(work, 'entry.ts')
     writeFileSync(entry, `export { updateTranscript, listMeetings } from ${asModulePath(join(HERE, 'meetings-store.ts'))}\n`, 'utf8')
     const outfile = join(work, 'out.mjs')
@@ -1940,6 +1946,8 @@ function loadStoreModule() {
         name: 'stub-io',
         setup(b) {
           b.onResolve({ filter: /^\.\.\/\.\.\/native\/local-db$/ }, () => ({ path: stub }))
+          b.onResolve({ filter: /^\.\/recording-operation$/ }, () => ({ path: recordingStub }))
+          b.onResolve({ filter: /^\.\/meeting-sync-adapter\.ts$/ }, () => ({ path: syncStub }))
         },
       }],
     })
@@ -2148,8 +2156,8 @@ describe('M · §931 逐段追加那条路径不得每段整场重渲染', () =>
     const ingest = read('ingest-speech.ts')
     // 同形变异 ①：只把**增量渲染器**换回整场渲染，其余一律不动。
     const mutatedRuntime = runtime.replace(
-      'await updateTranscript(meetingId, this.transcriptRenderer.source(), { throttled: true })',
-      'await updateTranscript(meetingId, renderTranscript(this.segments.value), { throttled: true })',
+      'await updateTranscript(meetingId, this.transcriptRenderer.source(), { throttled: true, db: this.operation?.localDb })',
+      'await updateTranscript(meetingId, renderTranscript(this.segments.value), { throttled: true, db: this.operation?.localDb })',
     )
     assert.notEqual(mutatedRuntime, runtime, '变异没落盘 ⇒ 这条负控不算数')
     assert.ok(

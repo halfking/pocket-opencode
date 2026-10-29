@@ -5,8 +5,10 @@ import { fetchWithTimeout } from '../../api/fetch-timeout'
 import { resolveRedclawPortalBase } from '../../config/redclaw-portal'
 import type { SyncDb, PortalAck } from './contract.ts'
 import type { PortalTransport } from './engine.ts'
+import type { PortalSyncModule } from '../../api/syncPolicyContract.ts'
 
-export async function portalTransport(db: SyncDb, options: { cloud?: boolean; admit?: () => void } = {}) {
+export async function portalTransport(db: SyncDb, options: { cloud?: boolean; admit?: () => void; module?: PortalSyncModule } = {}) {
+  const module = options.module ?? 'notes'
   const auth = useAuthStore()
   const session = captureAuthSession(auth)
   const owner = db.owner
@@ -16,7 +18,7 @@ export async function portalTransport(db: SyncDb, options: { cloud?: boolean; ad
     db.assertCurrent()
     assertAuthSession(auth, session)
     options.admit?.()
-    if (!owner || !token || auth.userId !== owner.userId || auth.workspaceId !== owner.workspaceId || (options.cloud !== false && readCachedModuleMode('notes') !== 'cloud')) {
+    if (!owner || !token || auth.userId !== owner.userId || auth.workspaceId !== owner.workspaceId || (options.cloud !== false && readCachedModuleMode(module) !== 'cloud')) {
       throw Object.assign(new Error('Portal notes sync admission changed'), { name: 'AbortError' })
     }
   }
@@ -43,7 +45,7 @@ export async function portalTransport(db: SyncDb, options: { cloud?: boolean; ad
     changes: cursor => request(`changes?workspace_id=${workspace}&module=notes&limit=50&cursor=${encodeURIComponent(cursor)}`),
     push: items => request(`push?workspace_id=${workspace}`, { method: 'POST', body: JSON.stringify({ items }) }) as Promise<{ results: PortalAck[] }>,
   }
-  return { assertCurrent, transport, purge: (modules: string[], resetId: string) => request(`purge?workspace_id=${workspace}`, {
+  return { assertCurrent, transport, request, purge: (modules: string[], resetId: string) => request(`purge?workspace_id=${workspace}`, {
     method: 'POST', body: JSON.stringify({ modules, reset_id: resetId }),
   }) }
 }

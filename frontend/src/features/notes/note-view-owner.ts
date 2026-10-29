@@ -3,7 +3,7 @@ import { useAuthStore } from '../../stores/auth'
 import { markListDirty } from '../../composables/list-scene-store'
 
 /** Revoke view results synchronously, including cached KeepAlive views and A→B→A. */
-export function useNotesOwnerView(clear: () => void, reload: () => unknown, listScope?: string, remoteReload?: () => unknown) {
+export function useNotesOwnerView(clear: () => void, reload: () => unknown, listScope?: string, remoteReload?: () => unknown, eventName = 'openpocket:portal-notes-applied') {
   const auth = useAuthStore()
   let epoch = {}
   const capture = () => epoch
@@ -28,7 +28,7 @@ export function useNotesOwnerView(clear: () => void, reload: () => unknown, list
     if (listScope) markListDirty(listScope)
     refresh(remoteReload ?? reload)
   }
-  if (typeof window !== 'undefined') window.addEventListener('openpocket:portal-notes-applied', remote)
-  onBeforeUnmount(() => { epoch = {}; if (typeof window !== 'undefined') window.removeEventListener('openpocket:portal-notes-applied', remote) })
+  if (typeof window !== 'undefined') window.addEventListener(eventName, remote)
+  onBeforeUnmount(() => { epoch = {}; if (typeof window !== 'undefined') window.removeEventListener(eventName, remote) })
   return { capture, isCurrent }
 }

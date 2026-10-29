@@ -12,6 +12,7 @@ import {
 import { canDispatchMeeting, type MeetingStudioAction } from './meeting-page-actions'
 import { archiveMeeting, deleteMeeting, unarchiveMeeting, type LocalMeeting } from './meetings-store'
 import { handoffMeetingToAcc } from './meeting-todo-persist'
+import { captureRecordingDb } from './recording-operation.ts'
 
 export function useMeetingStudio(
   meeting: Ref<LocalMeeting | null>,
@@ -24,6 +25,7 @@ export function useMeetingStudio(
   const canDispatch = computed(() => meeting.value ? canDispatchMeeting(meeting.value) : false)
 
   async function onStudioAction(id: MeetingStudioAction): Promise<'classify' | void> {
+    const db = captureRecordingDb()
     const m = meeting.value
     if (!m) return
     if (id === 'classify') return 'classify'
@@ -31,7 +33,8 @@ export function useMeetingStudio(
     //   不出现（它排在 await 之后）⇒ 用户只看到菜单点了没反应，零说明。
     if (id === 'archive') {
       try {
-        await archiveMeeting(m.id)
+        await archiveMeeting(m.id, db)
+        db.assertCurrent()
         await load()
         toast.success('已归档')
       } catch (e) {
@@ -42,7 +45,8 @@ export function useMeetingStudio(
     }
     if (id === 'restore') {
       try {
-        await unarchiveMeeting(m.id)
+        await unarchiveMeeting(m.id, db)
+        db.assertCurrent()
         await load()
         toast.success('已恢复')
       } catch (e) {
@@ -73,21 +77,23 @@ export function useMeetingStudio(
         danger: true,
       })
       if (!ok) return
+      db.assertCurrent()
       // ⚠ §838：音频清理失败此前是 `catch { /* ok */ }` ⇒ blob 永久残留、零痕迹。
       //   主体已删除不必重试，但残留占空间，必须说出来。
       try {
-        await deleteMeeting(m.id)
+        await deleteMeeting(m.id, db)
       } catch (e) {
         console.error(RECORD_ACTION_FAIL_TAG, 'delete', e)
         toast.error(describeRecordActionFailure('delete', { error: e }))
         return
       }
       try {
-        await deleteMeetingAudio(m.id)
+        await deleteMeetingAudio(m.id, db)
       } catch (e) {
         console.error(RECORD_MEDIA_CLEANUP_FAIL_TAG, e)
         toast.error(describeRecordActionFailure('delete', { error: e, mediaCleaned: false }))
       }
+      db.assertCurrent()
       toast.success('已删除')
       await router.replace('/meetings')
     }

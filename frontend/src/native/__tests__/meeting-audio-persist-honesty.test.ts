@@ -76,7 +76,7 @@ describe('resolvePersistedAudio —— 落盘结果怎么反映到会议记录�
     assert.match(src, /audioPath:\s*audioDecision\.audioPath/,
       '写库时没有用决策结果 —— 又在写自己的 audioPath 口径')
     // ⛔ 关键防线：绝不能再出现「catch 里吞掉 + 照样写 objectURL」的组合
-    const stopIdx = src.indexOf('saveMeetingAudio(meetingId, fullBlob)')
+    const stopIdx = src.indexOf('saveMeetingAudio(meetingId, fullBlob, audioOperation.localDb)')
     assert.ok(stopIdx > 0, 'saveMeetingAudio 调用点不见了')
     const after = src.slice(stopIdx, stopIdx + 400)
     assert.match(after, /audioPersisted\s*=\s*true/,

@@ -39,7 +39,7 @@
  * 全量重转是**增强**而非必需：失败时保留分段文本，录音照常结束。
  * 绝不能让「精校」把用户的录音结果搞丢。
  */
-import { loadMeetingAudio } from '../../native/meeting-audio.ts'
+import { loadMeetingAudio, type MeetingAudioOperation } from '../../native/meeting-audio.ts'
 import { filenameForMimeType } from '../../api/stt-filename.ts'
 import {
   mergeChunkedOutcomes, planWavChunks, sliceWavChunk, type ChunkedTranscribePart,
@@ -181,6 +181,7 @@ export async function refetchFullTranscript(
   meetingId: string,
   transcribeFull: (blob: Blob, filename: string) => Promise<FullTranscribeOutcome>,
   opts?: {
+    audioOperation?: MeetingAudioOperation
     toWav?: (blob: Blob) => Promise<ArrayBuffer | null>
     /**
      * 测试注入：直接给出音频 blob，绕过 `loadMeetingAudio`（IndexedDB +
@@ -265,7 +266,7 @@ export async function refetchFullTranscript(
   let injected: Blob | null = null
   try {
     if (opts?.loadAudio) injected = await opts.loadAudio(meetingId)
-    else audioUrl = await loadMeetingAudio(meetingId)
+    else if (opts?.audioOperation) audioUrl = await loadMeetingAudio(meetingId, opts.audioOperation)
   } catch (e) {
     return { text: null, applied: false, reason: `audio-load-failed: ${msg(e)}` }
   }

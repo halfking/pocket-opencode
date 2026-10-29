@@ -3,9 +3,9 @@
  */
 import { refineStatusFor } from '../sessions/refine-outcome-notice'
 import { createNote } from '../notes/notes-store'
-import { meetingsApi } from '../../api/meetings'
+import { syncPortalMeetingsNow } from './meeting-sync-runtime.ts'
 import { captureRecordingOperation, type RecordingOperation } from './recording-operation'
-import { isAbortError } from '../../api/http'
+import { isAbortError } from '../../api/abort'
 import { calendarApi } from '../calendar/api'
 import {
   updateMeeting, type ActionItem, type LocalMeeting,
@@ -150,20 +150,10 @@ export async function ingestMeetingArtifacts(
   } else {
     try {
       operation.assertCloud()
-      await meetingsApi.syncMeeting({
-        id: meeting.id,
-        title: meeting.title ?? undefined,
-        location: meeting.location ?? undefined,
-        participants: meeting.participants,
-        startedAt: meeting.startedAt,
-        durationMs: meeting.durationMs,
-        summary: meeting.summary ?? undefined,
-        refinedTranscript: refine.refinedTranscript,
-        noteId: noteId ?? undefined,
-        status: writeback.status,
-      }, operation.assertCloud)
-      cloudSynced = true
-      recordSyncReportEntry({ module: 'meetings', status: 'synced', count: 1 })
+      // The local update above already committed the permitted projection and
+      // immutable version together. Never mirror refined transcript to pocketd.
+      cloudSynced = (await syncPortalMeetingsNow()) > 0
+      operation.assertCloud()
     } catch (error) {
       if (isAbortError(error)) throw error
       // 离线或未配置 PG，本地已入库
@@ -345,7 +335,7 @@ function mapPriority(item: ActionItem): string {
 }
 
 /** 录音结束后同步元数据到云端（不含音频/转写全文） */
-export async function syncMeetingMetadata(meeting: LocalMeeting, operation: RecordingOperation = captureRecordingOperation('meetings')): Promise<boolean> {
+export async function syncMeetingMetadata(_meeting: LocalMeeting, operation: RecordingOperation = captureRecordingOperation('meetings')): Promise<boolean> {
   // storage-sync 挂点：meetings=local ⇒ 元数据上行同样跳过（含 skipped 上报）。
   if (readCachedModuleMode('meetings') === 'local') {
     recordSyncReportEntry({ module: 'meetings', status: 'skipped' })
@@ -353,19 +343,9 @@ export async function syncMeetingMetadata(meeting: LocalMeeting, operation: Reco
   }
   try {
     operation.assertCloud()
-    await meetingsApi.syncMeeting({
-      id: meeting.id,
-      title: meeting.title ?? undefined,
-      location: meeting.location ?? undefined,
-      participants: meeting.participants,
-      startedAt: meeting.startedAt,
-      durationMs: meeting.durationMs,
-      summary: meeting.summary ?? undefined,
-      status: meeting.status,
-      noteId: meeting.noteId ?? undefined,
-    }, operation.assertCloud)
-    recordSyncReportEntry({ module: 'meetings', status: 'synced', count: 1 })
-    return true
+    const count = await syncPortalMeetingsNow()
+    operation.assertCloud()
+    return count > 0
   } catch (error) {
     if (isAbortError(error)) throw error
     return false
