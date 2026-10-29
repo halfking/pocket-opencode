@@ -730,6 +730,7 @@ func (s *Server) Handler() http.Handler {
 	// 服务端确认过的归属（user_id + workspace_id）。客户端恢复会话时用它
 	// 重新确立归属：归属只认服务端签发过的东西。
 	mux.HandleFunc("/api/auth/identity", s.requireAuth(s.handleAuthIdentity))
+	mux.HandleFunc("/api/auth/workspace-binding", s.requireAuth(s.handleAuthWorkspaceBinding))
 	// JWT 滑动续期（runbook §15.2）：验当前 token → RedClaw 模式复检撤销 → 重签短 TTL
 	mux.HandleFunc("/api/auth/refresh", s.requireAuth(s.handleAuthRefresh))
 	mux.HandleFunc("/api/auth/sso/status", s.handleAuthSsoStatus)

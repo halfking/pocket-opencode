@@ -143,6 +143,13 @@ func (s *Server) handleWorkspaceOps(w http.ResponseWriter, r *http.Request) {
 		s.handleMembers(w, r, wsID, parts[2:])
 	case "devices":
 		s.handleDevices(w, r, wsID, parts[2:])
+	case "binding":
+		// ⚠ 上面的 isMember 门禁只判「members 表里有没有这一行」，
+		//   分不出「有效 / 已过期」（过期行的 expires_at 非 0，行还在）。
+		//   签发需要区分「有效 / 已过期 / 已撤销」三种状态 ⇒ 由
+		//   IssueBinding 自己查库判定，撤销已被门禁挡住（403），
+		//   过期则由这里返回 403 + 明确原因。
+		s.handleWorkspaceBinding(w, r)
 	default:
 		writeError(w, http.StatusNotFound, "unknown subpath: "+sub)
 	}
