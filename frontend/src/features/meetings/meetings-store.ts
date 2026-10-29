@@ -2,6 +2,7 @@
  * meetings-store.ts — 🦞 龙虾钳子：会议/声纹本地存储
  */
 import { localDB } from '../../native/local-db'
+import { captureRecordingDb, type RecordingDb } from './recording-operation'
 import { utf8ByteLength } from '../../utils/text'
 import { shouldPersistTranscript, meetingListSql } from './meeting-transcript-cache.ts'
 
@@ -184,15 +185,15 @@ export async function listMeetings(
   return rows.map(rowToMeeting)
 }
 
-export async function getMeeting(id: string): Promise<LocalMeeting | null> {
-  const row = await localDB.queryOne<any>(
+export async function getMeeting(id: string, db: RecordingDb = captureRecordingDb()): Promise<LocalMeeting | null> {
+  const row = await db.queryOne<any>(
     'SELECT * FROM local_meetings WHERE id = ? AND deleted_at IS NULL', [id],
   )
   return row ? rowToMeeting(row) : null
 }
 
-export async function updateSegmentSpeaker(segmentId: string, speakerLabel: string): Promise<void> {
-  await localDB.run(
+export async function updateSegmentSpeaker(segmentId: string, speakerLabel: string, db: RecordingDb = captureRecordingDb()): Promise<void> {
+  await db.run(
     'UPDATE local_meeting_segments SET speaker_label = ? WHERE id = ?',
     [speakerLabel, segmentId],
   )
@@ -226,6 +227,7 @@ export async function updateMeeting(
     'transcript' | 'summary' | 'liveSummary' | 'refinedTranscript' |
     'recommendations' | 'status' | 'noteId' | 'archivedAt' | 'tags' | 'topic' | 'summarySkill'
   >>,
+  db: RecordingDb = captureRecordingDb(),
 ): Promise<void> {
   const sets: string[] = []
   const vals: unknown[] = []
@@ -252,7 +254,7 @@ export async function updateMeeting(
   }
   if (sets.length === 0) return
   vals.push(id)
-  await localDB.run(`UPDATE local_meetings SET ${sets.join(', ')} WHERE id = ?`, vals)
+  await db.run(`UPDATE local_meetings SET ${sets.join(', ')} WHERE id = ?`, vals)
 }
 
 /**
@@ -330,8 +332,10 @@ export type TranscriptSource =
 export async function updateTranscript(
   id: string,
   source: TranscriptSource,
-  opts?: { throttled?: boolean },
+  opts?: { throttled?: boolean; db?: RecordingDb },
 ): Promise<void> {
+  const db = opts?.db ?? captureRecordingDb()
+  db.assertCurrent()
   const bytes = typeof source === 'string' ? utf8ByteLength(source) : source.byteLength
   const last = lastPersistedTranscriptBytes.get(id) ?? 0
   if (!shouldPersistTranscript({ lastPersistedBytes: last, nextBytes: bytes, throttled: opts?.throttled })) {
@@ -340,7 +344,7 @@ export async function updateTranscript(
   lastPersistedTranscriptBytes.set(id, bytes)
   // ⚠ 惰性源：**到这里才渲染** ⇒ 节流说不写时，那次 O(n) 渲染根本不会发生。
   const transcript = typeof source === 'string' ? source : source.text()
-  await updateMeeting(id, { transcript })
+  await updateMeeting(id, { transcript }, db)
 }
 
 export async function updateSummary(id: string, summary: string): Promise<void> {
@@ -359,9 +363,9 @@ export async function unarchiveMeeting(id: string): Promise<void> {
   await updateMeeting(id, { archivedAt: 0 })
 }
 
-export async function saveSegment(seg: Omit<MeetingSegment, 'id'>): Promise<string> {
+export async function saveSegment(seg: Omit<MeetingSegment, 'id'>, db: RecordingDb = captureRecordingDb()): Promise<string> {
   const id = `seg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-  await localDB.run(
+  await db.run(
     `INSERT INTO local_meeting_segments
      (id, meeting_id, speaker_label, lang, confidence, start_ms, end_ms, text, translation, origin)
      VALUES (?,?,?,?,?,?,?,?,?,?)`,
@@ -371,8 +375,8 @@ export async function saveSegment(seg: Omit<MeetingSegment, 'id'>): Promise<stri
   return id
 }
 
-export async function getSegments(meetingId: string): Promise<MeetingSegment[]> {
-  const rows = await localDB.query<any>(
+export async function getSegments(meetingId: string, db: RecordingDb = captureRecordingDb()): Promise<MeetingSegment[]> {
+  const rows = await db.query<any>(
     'SELECT * FROM local_meeting_segments WHERE meeting_id = ? ORDER BY start_ms',
     [meetingId],
   )
@@ -381,10 +385,11 @@ export async function getSegments(meetingId: string): Promise<MeetingSegment[]> 
 
 export async function getMeetingWithSegments(
   meetingId: string,
+  db: RecordingDb = captureRecordingDb(),
 ): Promise<{ meeting: LocalMeeting; segments: MeetingSegment[] } | null> {
-  const meeting = await getMeeting(meetingId)
+  const meeting = await getMeeting(meetingId, db)
   if (!meeting) return null
-  const segments = await getSegments(meetingId)
+  const segments = await getSegments(meetingId, db)
   return { meeting, segments }
 }
 

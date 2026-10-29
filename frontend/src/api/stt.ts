@@ -86,13 +86,15 @@ export const sttApi = {
    * Transcribe recorded audio with automatic fallback.
    * Pass `audioBlob` for web recordings, `audioPath` for native file paths.
    */
-  async transcribe(opts: SttOptions, signal?: AbortSignal): Promise<SttResult> {
+  async transcribe(opts: SttOptions, signal?: AbortSignal, assertCurrent?: () => void): Promise<SttResult> {
+    assertCurrent?.()
     const minConf = opts.minConfidence ?? 0.7
 
     // Try local sherpa-onnx first (native only, needs file path).
     if (opts.forceEngine !== 'cloud' && opts.audioPath) {
       try {
         const local = await sherpa.transcribe(opts.audioPath)
+        assertCurrent?.()
         if (local.confidence >= minConf) {
           return {
             text: local.text,
@@ -140,7 +142,7 @@ export const sttApi = {
     assertCloudModule(opts.module)
     const res = await http<{ text: string; confidence: number; costCents?: number }>(
       '/api/stt/transcribe',
-      { method: 'POST', body, timeoutMs: STT_TRANSCRIBE_TIMEOUT_MS, signal, syncModule: opts.module },
+      { method: 'POST', body, timeoutMs: STT_TRANSCRIBE_TIMEOUT_MS, signal, syncModule: opts.module, assertCurrent },
     )
     return {
       text: res.text,

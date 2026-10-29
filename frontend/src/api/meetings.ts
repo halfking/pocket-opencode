@@ -264,6 +264,7 @@ export const meetingsApi = {
     //   ⇒ 主题里的专有名词永远到不了精校。两侧必须同时有，只改一侧等于白改。
     meta?: { title?: string; participants?: string[]; location?: string; topic?: string },
     signal?: AbortSignal,
+    assertCurrent?: () => void,
   ): Promise<RefineResult> {
     try {
       const raw = await http<Record<string, unknown>>(`/api/meetings/${meetingId}/refine`, {
@@ -275,13 +276,14 @@ export const meetingsApi = {
         }),
         timeoutMs: MEETING_REFINE_TIMEOUT_MS,
         signal,
+        assertCurrent,
       })
       return normalizeRefine(raw, segments)
     } catch (e) {
       if (isAbortError(e) || isModulePolicyLocalError(e)) throw e
       // ★ meta 一起传下去（§54）：回落路径此前拿不到术语表，
       //   「林兰→林岚」「页百零一→CI」这类错误在这条高频路径上修不了。
-      return fallbackRefine(segments, signal, meta)
+      return fallbackRefine(segments, signal, meta, assertCurrent)
     }
   },
 
@@ -296,9 +298,10 @@ export const meetingsApi = {
    * 是**产品口径**（服务端存储形态 + 仓外移动端兼容）⇒ 登记待拍板
    * （简报第 160 条 ②），不在技术层自决。
    */
-  async syncMeeting(payload: MeetingSyncPayload): Promise<void> {
+  async syncMeeting(payload: MeetingSyncPayload, assertCurrent?: () => void): Promise<void> {
     await http('/api/meetings', {
       method: 'POST',
+      assertCurrent,
       body: JSON.stringify({
         id: payload.id,
         title: payload.title,
@@ -641,6 +644,7 @@ async function fallbackRefine(
   segments: MeetingSegment[],
   signal?: AbortSignal,
   meta?: { title?: string; participants?: string[]; location?: string },
+  assertCurrent?: () => void,
 ): Promise<RefineResult> {
   assertCloudModule('meetings')
   const transcript = renderTranscript(segments)
@@ -675,6 +679,7 @@ async function fallbackRefine(
   try {
     const res = await http<{ content: string }>('/api/llm/chat', {
       syncModule: 'meetings',
+      assertCurrent,
       method: 'POST',
       body: JSON.stringify({
         kind: 'meeting_refine',

@@ -2,6 +2,7 @@
  * voiceprints-store.ts — 本地声纹库 CRUD
  */
 import { localDB } from '../../native/local-db'
+import { captureRecordingDb, type RecordingDb } from './recording-operation'
 import {
   blobToEmbedding, embeddingToBlob, extractEmbeddingResult,
 } from '../../native/speaker-embedding'
@@ -34,8 +35,8 @@ export async function listVoiceprints(): Promise<LocalVoiceprint[]> {
   }))
 }
 
-export async function loadSpeakerProfiles(): Promise<SpeakerProfile[]> {
-  const rows = await localDB.query<any>('SELECT * FROM local_voiceprints')
+export async function loadSpeakerProfiles(db: RecordingDb = captureRecordingDb()): Promise<SpeakerProfile[]> {
+  const rows = await db.query<any>('SELECT * FROM local_voiceprints')
   return rows.map((r) => ({
     id: r.id,
     label: r.display_name,
@@ -99,8 +100,8 @@ export async function clearVoiceprints(): Promise<void> {
  * `sample_count = existing + 1`，那是「多了一个音频样本」的语义。
  * 改一次名字多一个样本，是把两个无关的量绑在一起。
  */
-export async function renameVoiceprint(id: string, displayName: string): Promise<void> {
-  await localDB.run(SQL_RENAME, [displayName, id])
+export async function renameVoiceprint(id: string, displayName: string, db: RecordingDb = captureRecordingDb()): Promise<void> {
+  await db.run(SQL_RENAME, [displayName, id])
 }
 
 /**
@@ -114,13 +115,13 @@ export async function upsertVoiceprintLabel(input: {
   id: string
   displayName: string
   embedding: Float32Array
-}): Promise<void> {
-  const existing = await localDB.queryOne<any>(SQL_EXISTS, [input.id])
+}, db: RecordingDb = captureRecordingDb()): Promise<void> {
+  const existing = await db.queryOne<any>(SQL_EXISTS, [input.id])
   if (planVoiceprintWrite(!!existing).op === 'rename') {
-    await renameVoiceprint(input.id, input.displayName)
+    await renameVoiceprint(input.id, input.displayName, db)
     return
   }
-  await localDB.run(SQL_INSERT, [
+  await db.run(SQL_INSERT, [
     input.id, input.displayName, embeddingToBlob(input.embedding), 1, Date.now(),
   ])
 }

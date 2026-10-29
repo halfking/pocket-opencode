@@ -1,3 +1,4 @@
+import { captureRecordingOperation, type RecordingOperation } from './recording-operation'
 import { unref, type MaybeRef } from 'vue'
 import { sttApi } from '../../api/stt'
 import { extractEmbeddingResult } from '../../native/speaker-embedding'
@@ -29,11 +30,15 @@ export async function ingestSpeechBlob(opts: {
   transcriptRenderer?: TranscriptRenderer
   segmentProfiles: Map<string, string>
   signal?: AbortSignal
+  operation?: RecordingOperation
 }): Promise<MeetingSegment | null> {
   const meetingId = unref(opts.meetingId)
   if (!meetingId) return null
+  const operation = opts.operation ?? captureRecordingOperation('meetings')
+  operation.assertLocal()
   // Android 分片可能是唯一副本。隐私拒绝和任何 STT 失败之前先确认落盘。
-  await saveAudioPart(meetingId, opts.seq, opts.blob)
+  await saveAudioPart(meetingId, opts.seq, opts.blob, opts.blob.type || 'audio/webm', operation.localDb)
+  operation.assertCloud()
   assertCloudModule('meetings')
   // signal 一路传到 sttApi.transcribe：会议录音时每个语音块都是一次独立转写
   // （各自 3 分钟预算），此前这一层是整条录音链上唯一**既跨页存活又完全无法
@@ -44,7 +49,7 @@ export async function ingestSpeechBlob(opts: {
   // processSegment 判断「是取消」还是「真失败」——真失败要给用户可行动的原因，
   // 取消则一个字都不该显示。
   const [sttResult, embeddingResult] = await Promise.all([
-    sttApi.transcribe({ audioBlob: opts.blob, module: 'meetings' }, opts.signal),
+    sttApi.transcribe({ audioBlob: opts.blob, module: 'meetings' }, opts.signal, operation.assertCloud),
     // ⚠ 旧写法 `.catch(() => new Float32Array())` 把「提取失败」伪装成
     //   一个合法的空向量；而余弦相似度对零向量恒为 0 < 阈值
     //   ⇒ **每一次提取失败都被算成一个新说话人**，用户看到的是
@@ -61,6 +66,7 @@ export async function ingestSpeechBlob(opts: {
   //   ⚠§826 让这件事在 Android 上变得不可逆：原生模式压根不产整段音频，
   //   分片是那段话的**唯一一份拷贝**。
 
+  operation.assertCloud()
   if (!sttResult.text.trim()) {
     // 「转写成功但没出字」与「转写失败」在调用点**长得一样**（都不抛错），
     // 而前者更隐蔽：它连 sttError 都不会触发。不留痕 ⇒ 这段话凭空消失。
@@ -86,7 +92,8 @@ export async function ingestSpeechBlob(opts: {
     // 显式写出来而不是留空 —— `origin` 是必填字段，缺了编译器会指到这里。
     origin: 'asr',
   }
-  const id = await saveSegment(seg)
+  const id = await saveSegment(seg, operation.cloudDb!)
+  operation.assertCloud()
   opts.segmentProfiles.set(id, profileId)
   const saved: MeetingSegment = { id, ...seg }
   // 按 startMs 有序插入：分段并发转写，完成顺序 ≠ 说话顺序，
@@ -112,13 +119,14 @@ export async function ingestSpeechBlob(opts: {
   //   以前这里是 `renderTranscript(opts.segments)`（当场整场渲染）⇒ 每段一次 O(n)，
   //   而那次结果绝大多数被节流直接丢弃（8 小时真正落库 13 次）⇒ 纯浪费。
   // ⚠ 这一句**必须写在一行** ⇒ 门禁 J（§442）按**行**扫 updateTranscript 的调用点。
-  await updateTranscript(meetingId, renderer ? renderer.source() : renderTranscript(opts.segments), { throttled: true })
+  await updateTranscript(meetingId, renderer ? renderer.source() : renderTranscript(opts.segments), { throttled: true, db: operation.cloudDb! })
 
-  void liveTranslate(saved.text, lang)
+  void liveTranslate(saved.text, lang, operation.assertCloud)
     .then((translation) => {
+      operation.assertCloud()
       if (!translation) return
       saved.translation = translation
-      return updateSegmentTranslation(id, translation)
+      return updateSegmentTranslation(id, translation, operation.cloudDb!)
     })
     .catch((e) => {
       // 翻译没回来（或译文写库失败）⇒ 这一段没有译文，用户侧只表现为「没翻译」。

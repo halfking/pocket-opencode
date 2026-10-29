@@ -18,6 +18,9 @@
  * 进程死亡即结束 —— 已知边界,见设计文档 §2.1)。
  */
 import { ref } from 'vue'
+import { captureRecordingOperation, watchRecordingOperation, type RecordingOperation } from '../features/meetings/recording-operation'
+import { isAbortError } from '../api/http'
+import type { NoteWriteOptions } from '../features/notes/note-operation'
 import { Capacitor } from '@capacitor/core'
 import { pickSupportedRecorderMime } from './recorderMime'
 import { RollingWebmDecoder, arrayBufferToBase64 } from './recording-audio-transcode'
@@ -210,6 +213,10 @@ function voicePrompt(): RecordingVoicePrompt {
 // ---------------------------------------------------------------------------
 
 export class MeetingRecorderRuntime {
+  private operation: RecordingOperation | null = null
+  private operationStop: (() => void) | null = null
+  get recordingOperation(): RecordingOperation | null { return this.operation }
+
   /** 全局「有录音在跑」——RecordingPill 与互斥判断用。 */
   readonly isRecording = ref(false)
   readonly isPaused = ref(false)
@@ -241,7 +248,8 @@ export class MeetingRecorderRuntime {
   private backgroundMicReason = ref('')
   private stopCaption: (() => void) | null = null
   private onSyncPolicyChanged = () => {
-    if (readCachedModuleMode('meetings') !== 'local') return
+    try { this.operation?.assertCloud(); if (this.operation?.cloudLease) return } catch { /* revoked */ }
+    this.segmentAbort?.abort()
     this.stopCaption?.()
     this.stopCaption = null
     this.interimCaption.value = ''
@@ -447,8 +455,23 @@ export class MeetingRecorderRuntime {
       }
       return false
     }
+    // ⚠ `noop-attached` = 已经在录同一场会议（页面重进）⇒ **不接管任何操作**。
+    //   它必须排在捕获操作**之前**：捕获会失败于「会话未就绪」，
+    //   而已在录的会议并不因此失效 —— 先捕获会把一次正常的重进误报成错误。
     if (decision.action === 'noop-attached') return true
+    let operation: RecordingOperation
+    try {
+      operation = decision.freshSession || !this.operation ? captureRecordingOperation('meetings') : this.operation
+      operation.assertLocal()
+    } catch {
+      this.sttError.value = '账号正在切换或原录音会话已失效，请先结束当前录音'
+      return false
+    }
     if (decision.action === 'replace-other') await this.stop()
+    operation.assertLocal()
+    this.operationStop?.()
+    this.operation = operation
+    this.operationStop = watchRecordingOperation(operation, () => this.onSyncPolicyChanged())
 
     this.sttError.value = ''
     const freshSession = decision.freshSession
@@ -490,7 +513,8 @@ export class MeetingRecorderRuntime {
       // 与 SAME_SPEAKER_MIN 同源，改一处即可。
       this.diarizer = new SpeakerDiarizer()
       try {
-        const profiles = await loadSpeakerProfiles()
+        const profiles = await loadSpeakerProfiles(operation.localDb)
+        operation.assertLocal()
         // ★ 带上历史库里**已经有人名**的 profile：用户改过的名字是合并锚点，
         //   自动聚类不能把他并掉（见 SpeakerProfile.pinned）。
         //   判据放在这里而不是 speaker-diarization.ts，是为了保住那个文件
@@ -503,6 +527,7 @@ export class MeetingRecorderRuntime {
 
     const mic = useMicPermission()
     const ok = await mic.ensure()
+    operation.assertLocal()
     if (!ok) {
       this.sttError.value = mic.deniedLabel.value || '麦克风权限被拒绝，请在系统设置中授权后重试'
       return false
@@ -514,7 +539,9 @@ export class MeetingRecorderRuntime {
       if (isBackgroundMicSupported()) {
         const nativeInputs = await listNativeMicInputs()
         if (nativeInputs.length) this.inputs.value = nativeInputs
+        operation.assertLocal()
         const started = await startBackgroundMic({ meetingId, deviceId: opts?.deviceId })
+        operation.assertLocal()
         this.nativeMode = started.ok
         if (!started.ok) this.backgroundMicReason.value = started.reason || '未知原因'
         if (this.nativeMode) {
@@ -570,6 +597,7 @@ export class MeetingRecorderRuntime {
       }
       if (!this.nativeMode) {
         const opened = await openPreferredMicStream(opts?.deviceId)
+        operation.assertLocal()
         this.mediaStream = opened.stream
         this.inputs.value = opened.inputs
         this.selectedInput.value = opened.selected
@@ -591,6 +619,7 @@ export class MeetingRecorderRuntime {
         document.addEventListener('visibilitychange', this.onHidden)
       }
 
+      operation.assertLocal()
       this.startLiveCaption()
       this.startTime = Date.now()
       this.activeMeetingId.value = meetingId
@@ -707,7 +736,7 @@ export class MeetingRecorderRuntime {
 
   private startLiveCaption() {
     // Web Speech may use a remote recognizer, so only start it with cloud permission.
-    if (readCachedModuleMode('meetings') === 'local') return
+    try { this.operation?.assertCloud(); if (!this.operation?.cloudLease) return } catch { return }
     // BUG-AU 第二条触发路径：实时字幕走 Web Speech API（Android 上是
     // webkitSpeechRecognition），同样委托给系统 ASR → MIUI「系统语音引擎」会拉起
     // 授权页抢前台。隔离实测（scripts/diag-asr-trigger.mjs）：不碰录音、不碰播报，
@@ -726,6 +755,7 @@ export class MeetingRecorderRuntime {
     const caption = createLiveCaption({
       recognition: new Rec(),
       onResult: (result) => {
+        try { this.operation?.assertCloud() } catch { return }
         applyCaptionResult(result, {
           setInterim: (text) => { this.interimCaption.value = text },
           commit: (text) => {
@@ -757,7 +787,11 @@ export class MeetingRecorderRuntime {
     const lastEnd = last?.endMs ?? this.elapsedMs.value
     const draft = buildUtteranceSegment({ meetingId, text, startMs: lastEnd })
     if (!draft) return null
-    const id = await saveSegment(draft)
+    const operation = this.operation
+    if (!operation) return null
+    operation.assertLocal()
+    const id = await saveSegment(draft, operation.localDb)
+    operation.assertLocal()
     const saved: MeetingSegment = { id, ...draft }
     this.segments.value.push(saved)
     // 去重渲染：与 ingest-speech.ts 同一口径（相邻段重叠消解）。
@@ -771,7 +805,7 @@ export class MeetingRecorderRuntime {
     //   而那次结果绝大多数被节流直接丢弃（8 小时真正落库 13 次）⇒ 纯浪费。
     //   ⚠ 正文**惰性** ⇒ 只有真要落库时才渲染。
     this.transcriptRenderer.appendAt(this.segments.value, this.segments.value.length - 1)
-    await updateTranscript(meetingId, this.transcriptRenderer.source(), { throttled: true })
+    await updateTranscript(meetingId, this.transcriptRenderer.source(), { throttled: true, db: this.operation?.localDb })
     return saved
   }
 
@@ -809,29 +843,33 @@ export class MeetingRecorderRuntime {
     //   ⇒ ⇒ 用户看到的摘要是旧内容 ⇒ 静默的错误。
     //   ⇒ 代价：O(n) 一次 —— 而这一处**本来就是 O(n)**（此前整场渲染）⇒ 无额外成本。
     this.transcriptRenderer.refresh(this.segments.value)
-    await updateTranscript(meetingId, this.transcriptRenderer.source())
+    await updateTranscript(meetingId, this.transcriptRenderer.source(), { db: this.operation?.localDb })
     return true
   }
 
   private async processSegment(blob: Blob, startMs: number, endMs: number) {
-    if (!this.diarizer) return
+    if (!this.diarizer || !this.operation) return
+    const operation = this.operation
+    const meetingId = this.activeMeetingId.value
     this.processingCount.value++
     const task = (async () => {
       try {
         this.partSeq += 1
         await ingestSpeechBlob({
-          meetingId: this.activeMeetingId.value, blob, startMs, endMs, seq: this.partSeq, diarizer: this.diarizer!,
+          meetingId, blob, startMs, endMs, seq: this.partSeq, diarizer: this.diarizer!,
           segments: this.segments.value, segmentProfiles: this.segmentProfiles,
           // ⚠ §931：把增量渲染器交给它 ⇒ ASR 段那条路径不再每段整场重渲染。
           transcriptRenderer: this.transcriptRenderer,
           signal: this.segmentAbort?.signal,
+          operation,
         })
+        operation.assertLocal()
         this.syncSpeakers()
       } catch (e) {
         // 用户中止不是失败：显示「转写失败，将在下一段重试」会让他以为录音坏了，
         // 实际上是他自己刚点的停止。判据取 signal.aborted 而不是错误对象——
         // 这里 abort 传下去后 fetch 抛什么由运行时决定，signal 才是稳定可读的那个。
-        if (this.segmentAbort?.signal.aborted) return
+        if (isAbortError(e) || this.segmentAbort?.signal.aborted) return
         // 2026-10-01：原来这里写死「转写失败，将在下一段重试」，真实原因只进
         // console.warn。结果「网关列了 ASR 模型但没开通 provider」和「网络断了」
         // 在用户眼里完全一样，而这两种要采取的动作完全不同（前者去设置里换模型，
@@ -912,14 +950,14 @@ export class MeetingRecorderRuntime {
       const seg = byId.get(u.segId)
       if (seg) seg.speakerLabel = u.label
     }
-    await Promise.all(ownUpdates.map((u) => updateSegmentSpeaker(u.segId, u.label)))
+    await Promise.all(ownUpdates.map((u) => updateSegmentSpeaker(u.segId, u.label, this.operation?.localDb)))
     // 转写正文里也带着说话人前缀，不重渲染的话用户看到的是「标签改了、正文没改」。
     // ⚠ §925：**不声明** `throttled` ⇒ 立刻落库 —— 改说话人名是**用户可见**的改动。
     // ⚠⚠ §931/§932：说话人标签被**就地改写** ⇒ 增量渲染器状态过期
     //   ⇒ **整场重算**（refresh）—— 理由同 `editSegmentInMemory`：
     //   摘要链会读这份「去重后段」，只标脏会让它拿到**改写前**的说话人。
     this.transcriptRenderer.refresh(this.segments.value)
-    await updateTranscript(meetingId, this.transcriptRenderer.source())
+    await updateTranscript(meetingId, this.transcriptRenderer.source(), { db: this.operation?.localDb })
     this.syncSpeakers()
   }
 
@@ -949,7 +987,7 @@ export class MeetingRecorderRuntime {
     // ⚠§835：失败只记账，不再往上抛 —— 它曾把整个分段循环一起带走。
     if (profile) {
       try {
-        await upsertVoiceprintLabel({ id: profileId, displayName, embedding: profile.embedding })
+        await upsertVoiceprintLabel({ id: profileId, displayName, embedding: profile.embedding }, this.operation?.localDb)
       } catch {
         outcome.profileFailed = true
       }
@@ -958,7 +996,7 @@ export class MeetingRecorderRuntime {
       [...this.segmentProfiles.entries()],
       profileId,
       displayName,
-      updateSegmentSpeaker,
+      (id, label) => updateSegmentSpeaker(id, label, this.operation?.localDb),
     )
     outcome.renamed = applied.renamed
     outcome.failed = applied.failed
@@ -1118,7 +1156,7 @@ export class MeetingRecorderRuntime {
             //   ⇒ 增量渲染器就算有偏差，也不会污染会议结束后的这一列。
             //   （代价：O(n) 一次 —— 8 小时会议实测 31 ms，可以接受。）
             this.transcriptRenderer.invalidate()
-            await updateTranscript(meetingId, renderTranscript(this.segments.value))
+            await updateTranscript(meetingId, renderTranscript(this.segments.value), { db: this.operation?.localDb })
           } catch (e) {
             console.warn('[meeting-recorder] transcript persist failed, 收尾继续:', e)
           }
@@ -1142,7 +1180,7 @@ export class MeetingRecorderRuntime {
             audioPath: audioDecision.audioPath,
             durationMs,
             status: 'completed',
-          })
+          }, this.operation?.localDb)
         } catch (e) {
           this.lastFinalizePersistFailed = true
           console.error(MEETING_FINALIZE_PERSIST_FAIL_TAG, e)
@@ -1154,8 +1192,10 @@ export class MeetingRecorderRuntime {
         }
         // 收尾后的元数据同步是 best-effort：失败不得冒泡成未处理拒绝（见 best-effort.ts）。
         void runBestEffort('meeting-recorder/metadata-sync', async () => {
-          const m = await getMeeting(meetingId)
-          if (m) await syncMeetingMetadata(m)
+          const operation = this.operation
+          if (!operation) return
+          const m = await getMeeting(meetingId, operation.localDb)
+          if (m) await syncMeetingMetadata(m, operation)
         })
       }
       this.activeMeetingId.value = ''
@@ -1264,6 +1304,12 @@ export interface VoiceDraftSink {
  * pendingResult,NoteListView 重进后可消费(draftBanner 流程)。
  */
 export class NoteRecorderRuntime {
+  private operation: RecordingOperation | null = null
+  private operationStop: (() => void) | null = null
+  private cloudAbort: AbortController | null = null
+  private pendingOperation: RecordingOperation | null = null
+  get recordingOperation(): RecordingOperation | null { return this.operation }
+
   readonly phase = ref<RecordingPhase>('idle')
   readonly elapsedMs = ref(0)
   readonly transcript = ref('')
@@ -1404,9 +1450,23 @@ export class NoteRecorderRuntime {
       }
       return false
     }
+    let operation: RecordingOperation
+    try { operation = captureRecordingOperation('notes') } catch {
+      this.error.value = '账号正在切换，请稍后开始录音'
+      return false
+    }
+    this.operationStop?.()
+    this.operation = operation
+    this.cloudAbort = new AbortController()
+    this.operationStop = watchRecordingOperation(operation, ownerChanged => {
+      this.cloudAbort?.abort()
+      this.transcribeAbort?.abort()
+      if (ownerChanged) this.error.value = '账号已切换，录音保留在原会话，已停止上云'
+    })
     this.error.value = ''
     const mic = useMicPermission()
     const ok = await mic.ensure()
+    operation.assertLocal()
     if (!ok) {
       this.error.value = mic.deniedLabel.value || '麦克风权限被拒绝'
       return false
@@ -1415,6 +1475,7 @@ export class NoteRecorderRuntime {
       this.mediaStream = await navigator.mediaDevices.getUserMedia({
         audio: { channelCount: 1, sampleRate: 16000 },
       })
+      operation.assertLocal()
       this.chunks = []
       // 旧解码器在上一场 stop() 的兜底全量转写里还会用到，所以**不能**在
       // cleanupMedia() 里 dispose（实测调用顺序：cleanupMedia 先于兜底转写）。
@@ -1481,6 +1542,7 @@ export class NoteRecorderRuntime {
   private async startLiveStt() {
     try {
       this.unlisten = await sherpa.addListener('partialResult', (result) => {
+        try { this.operation?.assertLocal() } catch { return }
         const next = result.isFinal
           ? appendTranscript(this.committed, this.transcript.value, '', result.text)
           : appendTranscript(this.committed, this.transcript.value, result.text)
@@ -1530,7 +1592,9 @@ export class NoteRecorderRuntime {
   }
 
   private async sendSlice(blob: Blob, isFinal: boolean) {
-    if (!this.sttSessionId) return
+    if (!this.sttSessionId || !this.operation) return
+    const operation = this.operation
+    try { operation.assertCloud() } catch { return }
     // 网关只收 mp3/wav，而真机录出来的是 webm（recording-audio-transcode.ts
     // 头注释有完整实测）。这里把**新增**的时间窗转成 16k WAV 再发。
     //
@@ -1568,7 +1632,8 @@ export class NoteRecorderRuntime {
         // 尾部有静音」——那会让它按静音边界做去重，反而吃掉真实的相邻文字。
         silenceCut: false,
         isFinal,
-      }, 'notes')
+      }, 'notes', operation.assertCloud, this.cloudAbort?.signal)
+      operation.assertCloud()
       if (isFinal) this.sttSessionId = ''
       // 清 error 的判据是「**这一片有没有出字**」，不是「这一片有没有报错」。
       //
@@ -1594,7 +1659,7 @@ export class NoteRecorderRuntime {
       }
     } catch (e) {
       if (isFinal) this.sttSessionId = ''
-      this.error.value = sttFailureText(e, '转写失败，将在下一段重试')
+      if (!isAbortError(e)) this.error.value = sttFailureText(e, '转写失败，将在下一段重试')
     }
   }
 
@@ -1721,7 +1786,9 @@ export class NoteRecorderRuntime {
       //
       // ⛔ 决策简报曾把随手记写成「整段一次性转写 ⇒ 结构上不存在切片问题」——
       //    那是错的（见设计文档 §463）。本注释是那处错误的就地更正。
-      if (!this.transcript.value.trim() && audioBlob.size > 0) {
+      let cloudAllowed = false
+      try { this.operation?.assertCloud(); cloudAllowed = !!this.operation?.cloudLease } catch { /* local audio remains */ }
+      if (cloudAllowed && !this.transcript.value.trim() && audioBlob.size > 0) {
         // 这段兜底转写最长 10 分钟，是整条录音链路上唯一一段**用户既看不见
         // 进度、又完全没有中止手段**的等待（需求「后台执行的 api 可以强行
         // 终止」在这里是空的）。加上中止器：服务端 handleSttTranscribeFull
@@ -1747,6 +1814,7 @@ export class NoteRecorderRuntime {
               payload ? 'note.wav' : `note${filenameForMimeType(blobType)}`,
               controller.signal,
               'notes',
+              this.operation!.assertCloud,
             ),
             // ⚠⚠ §930：此前这里写的是 `10 * 60_000`，而服务端的
             //   `fullTranscribeTimeout` **也是 10 分钟** ⇒ **相等即错**：
@@ -1757,6 +1825,7 @@ export class NoteRecorderRuntime {
             //   两处再也不会各自写死一个数。
             FULL_TRANSCRIBE_TIMEOUT_MS,
           )
+          this.operation!.assertCloud()
           this.transcript.value = result.text
           // 部分段失败时整体仍成功（保住成功段内容），但必须告诉用户
           // 「有 N 段没转出来」——否则用户会以为记录是完整的。
