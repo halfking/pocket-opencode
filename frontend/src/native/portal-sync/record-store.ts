@@ -1,4 +1,4 @@
-import { compareVersions, newOperationId, versionKey, type PortalAck, type Statement, type SyncDb } from './contract.ts'
+import { localVersionOperationId, newOperationId, versionKey, type PortalAck, type Statement, type SyncDb } from './contract.ts'
 import { PortalNotesStore } from './store.ts'
 import { currentRecordEpoch, observeRecordEpoch, recordEpochGuard } from './record-epoch.ts'
 import { validateRecordItem, type RecordAdapter, type RecordItem } from './record-contract.ts'
@@ -30,22 +30,6 @@ interface PreparedRecord {
 }
 const conflictMessage = 'Module changed during this edit; original retained, keep your changes and retry the edit'
 
-function localOperationId(timestamp: string, existing: RecordProjection | null): string {
-  let op = newOperationId()
-  if (!existing) return op
-  const current = { client_updated_at: timestamp, op_id: op }
-  const previous = { client_updated_at: timestamp, op_id: existing.op_id }
-  const key = versionKey(timestamp)
-  if (key < existing.version_key) throw new Error(conflictMessage)
-  if (key === existing.version_key && compareVersions(current, previous) <= 0) {
-    // A later local intention at the same real timestamp sorts after the
-    // observed version. A prefix extension has the same UTF-8/BINARY order
-    // as the server; never invent extra timestamp precision or loop for ids.
-    op = `${existing.op_id}~${op}`
-    if (new TextEncoder().encode(op).length > 200) throw new Error(conflictMessage)
-  }
-  return op
-}
 export class PortalRecordStore {
   constructor(
     readonly db: SyncDb,
@@ -119,7 +103,7 @@ export class PortalRecordStore {
       title: snapshot.title,
       payload: snapshot.deleted ? {} : snapshot.payload,
       client_updated_at: timestamp,
-      op_id: localOperationId(timestamp, existing),
+      op_id: localVersionOperationId(timestamp, existing, conflictMessage),
       deleted: snapshot.deleted === true,
       epoch: snapshot.epoch,
     }

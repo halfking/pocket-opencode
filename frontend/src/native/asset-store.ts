@@ -19,11 +19,12 @@ import { localDB } from './local-db'
 import { portalNotesStore, canReadPortalNote, portalNoteReadScope } from './portal-sync/storage'
 import { notePayload, type SyncDb } from './portal-sync/contract'
 import { captureNotesEpoch } from './portal-sync/epochs'
+import type { ProjectionRow } from './portal-sync/store'
 
 import { encryptString, decryptString } from './crypto'
 import { buildFtsQuery, likePattern, needsCjkLike } from './fts-query.ts'
 
-type AssetDb = Pick<typeof localDB, 'run' | 'queryOne'>
+type AssetDb = Pick<SyncDb, 'run' | 'queryOne'>
 
 /** Asset 的业务类型。开放枚举——调用方可自由扩展。 */
 export type AssetKind =
@@ -101,6 +102,11 @@ export interface AssetInput {
   metaJson?: string // 默认 '{}'
   source?: string
   syncMode?: SyncMode // 默认 'e2ee_local_first'
+  /** Internal initiating epoch for multi-step imports; never refreshed after awaits. */
+  syncEpoch?: number | null
+  /** Timestamp captured by an earlier business entry before its asynchronous reads. */
+  modifiedAt?: number
+  expectedVersion?: ProjectionRow | null
 }
 
 /** 搜索参数。 */
@@ -135,14 +141,16 @@ class AssetStore {
    */
   async upsert(input: AssetInput, db: AssetDb = localDB): Promise<Asset> {
     if (db === localDB) db = localDB.bindOperation(localDB.captureOperation({ kind: 'local-edit' }))
-    const ts = now()
+    const ts = input.modifiedAt ?? now()
     const id = input.id ?? genId('ast')
     const owner = 'owner' in db ? (db as SyncDb).owner : null
-    const operationEpoch = captureNotesEpoch(owner)
+    const operationEpoch = input.syncEpoch === undefined ? captureNotesEpoch(owner) : input.syncEpoch
     const wsId = input.workspaceId ?? owner?.workspaceId ?? 'default'
     if (owner && wsId !== owner.workspaceId) throw new Error('Asset workspace differs from the verified owner')
     const syncMode = input.syncMode ?? 'e2ee_local_first'
     const encrypt = input.encryptBody ?? false
+    const expectedVersion = 'expectedVersion' in input ? input.expectedVersion ?? null : input.kind === 'note' && 'owner' in db
+      ? await portalNotesStore(db as SyncDb).find('asset', id) : null
 
     let bodyText = input.bodyText ?? ''
     let bodyEncrypted = 0
@@ -155,24 +163,40 @@ class AssetStore {
     // ⚠ §884：`deleted_at` 必须一起取出来 —— 下面的 UPDATE 语句里**没有**这一列，
     //   也就是说它既不会被清掉、也不会被看一眼就放行。修复前这里只取
     //   `client_rev, workspace_id`，于是一条已被软删的 asset 照样被静默改写。
-    const existing = await db.queryOne<{ client_rev: number; workspace_id: string; deleted_at: number | null; source: string | null }>(
-      'SELECT client_rev, workspace_id, deleted_at, source FROM local_assets WHERE id = ?',
+    const existing = await db.queryOne<{ client_rev: number; workspace_id: string; deleted_at: number | null; source: string | null; created_at: number }>(
+      'SELECT client_rev, workspace_id, deleted_at, source, created_at FROM local_assets WHERE id = ?',
       [id],
     )
+
+    let meta: Record<string, unknown> = {}
+    let validMeta = true
+    try {
+      const parsed: unknown = JSON.parse(input.metaJson || '{}')
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) meta = parsed as Record<string, unknown>
+      else validMeta = false
+    } catch { validMeta = false }
+    const importedMarkdown = (input.source ?? existing?.source) === 'enex_import'
+    if (importedMarkdown && !validMeta) throw new Error('Imported notes metadata is invalid; original retained')
+    // An HTML editor must not normalize a Markdown original through TipTap.
+    if (existing?.source === 'enex_import' && input.source !== 'enex_import') throw new Error('Markdown notes must be edited in the notes editor')
+    const originalTime = (value: unknown): number | null => typeof value === 'number' && Number.isSafeInteger(value) && value > 0 && Number.isFinite(new Date(value).getTime()) ? value : null
+    const importedUpdated = importedMarkdown && !existing ? originalTime(meta.originalUpdated) : null
+    const createdAt = existing?.created_at ?? (importedMarkdown ? originalTime(meta.originalCreated) ?? importedUpdated ?? ts : ts)
+    const modifiedAt = importedUpdated ?? ts
+    if (importedMarkdown && existing) meta.originalUpdated = ts
+    const metaJson = importedMarkdown ? JSON.stringify(meta) : input.metaJson ?? '{}'
 
     const write = async (statement: string, values: unknown[], created: boolean) => {
       if (input.kind !== 'note' || !('owner' in db) || !('runInTransaction' in db)) {
         await db.run(statement, values)
         return
       }
-      let meta: Record<string, unknown> = {}
-      try { meta = JSON.parse(input.metaJson || '{}') } catch { /* Invalid metadata carries no sync fields. */ }
-      const importedMarkdown = (input.source ?? existing?.source) === 'enex_import'
       await portalNotesStore(db as SyncDb).commit([{ statement, values }], {
-        source: 'asset', epoch: operationEpoch, id, title: input.title ?? '', modifiedAt: ts,
-        syncError: importedMarkdown ? 'ENEX Markdown sync is not supported yet; the complete original remains on this device' : undefined,
-        payload: notePayload({ format: importedMarkdown ? 'text' : 'html', content: input.bodyText ?? '', tags: meta.tags,
-          links: meta.links, daily_date: meta.dailyDate, summary: meta.summary, created_at: ts }),
+        source: 'asset', epoch: operationEpoch, id, title: input.title ?? '', modifiedAt,
+        expectedVersion,
+        syncError: importedMarkdown && created && importedUpdated === null ? 'ENEX modification time is unknown; the complete original remains on this device' : undefined,
+        payload: notePayload({ format: importedMarkdown ? 'markdown' : 'html', content: input.bodyText ?? '', tags: meta.tags,
+          links: meta.links, daily_date: meta.dailyDate, summary: meta.summary, created_at: createdAt, import_id: meta.enexId }),
       }, created)
     }
 
@@ -203,7 +227,7 @@ class AssetStore {
          SET kind=?, title=?, body_text=?, body_encrypted=?, meta_json=?, source=?, sync_mode=?,
              client_rev=?, dirty=1, updated_at=?
          WHERE id=? AND workspace_id=?`,
-        [input.kind, input.title ?? '', bodyText, bodyEncrypted, input.metaJson ?? '{}',
+        [input.kind, input.title ?? '', bodyText, bodyEncrypted, metaJson,
          input.source ?? existing.source ?? null, syncMode, existing.client_rev + 1, ts, id, existing.workspace_id], false,
       )
     } else {
@@ -212,8 +236,8 @@ class AssetStore {
          (id, workspace_id, kind, title, body_text, body_encrypted, meta_json, source,
           sync_mode, client_rev, server_rev, dirty, created_at, updated_at)
          VALUES (?,?,?,?,?,?,?,?,?,1,0,1,?,?)`,
-        [id, wsId, input.kind, input.title ?? '', bodyText, bodyEncrypted, input.metaJson ?? '{}',
-         input.source ?? null, syncMode, ts, ts], true,
+        [id, wsId, input.kind, input.title ?? '', bodyText, bodyEncrypted, metaJson,
+         input.source ?? null, syncMode, createdAt, modifiedAt], true,
       )
     }
 
@@ -222,24 +246,32 @@ class AssetStore {
 
   /** 读取单个 Asset（含解密 body，如已加密）。 */
   async get(id: string, db: AssetDb = localDB): Promise<Asset | null> {
+    if (db === localDB) db = localDB.bindOperation(localDB.captureOperation({ kind: 'local-edit' }))
     const row = await db.queryOne<RawAssetRow>(
       `SELECT id, workspace_id, kind, title, body_text, body_encrypted, meta_json, source,
               sync_mode, client_rev, server_rev, dirty, created_at, updated_at, deleted_at
        FROM local_assets WHERE id = ?`,
       [id],
     )
-    return row && (row.kind !== 'note' || await canReadPortalNote('asset', row.id)) ? this.fromRow(row) : null
+    if (!row || (row.kind === 'note' && !await canReadPortalNote('asset', row.id, 'owner' in db ? db as SyncDb : undefined))) return null
+    const asset = await this.fromRow(row)
+    if ('assertCurrent' in db) (db as SyncDb).assertCurrent()
+    return asset
   }
 
   /** 在明确 workspace 内读取 Asset，避免同一 id 跨租户误读。 */
   async getForWorkspace(id: string, workspaceId: string, db: AssetDb = localDB): Promise<Asset | null> {
+    if (db === localDB) db = localDB.bindOperation(localDB.captureOperation({ kind: 'local-edit' }))
     const row = await db.queryOne<RawAssetRow>(
       `SELECT id, workspace_id, kind, title, body_text, body_encrypted, meta_json, source,
               sync_mode, client_rev, server_rev, dirty, created_at, updated_at, deleted_at
        FROM local_assets WHERE id = ? AND workspace_id = ? AND deleted_at IS NULL`,
       [id, workspaceId],
     )
-    return row && (row.kind !== 'note' || await canReadPortalNote('asset', row.id)) ? this.fromRow(row) : null
+    if (!row || (row.kind === 'note' && !await canReadPortalNote('asset', row.id, 'owner' in db ? db as SyncDb : undefined))) return null
+    const asset = await this.fromRow(row)
+    if ('assertCurrent' in db) (db as SyncDb).assertCurrent()
+    return asset
   }
 
   /** 软删除（标记 deleted_at + dirty，保留墓碑供同步）。 */
@@ -250,11 +282,12 @@ class AssetStore {
     )
   }
 
-  async softDeleteForWorkspace(id: string, workspaceId: string, db: AssetDb = localDB): Promise<void> {
+  async softDeleteForWorkspace(id: string, workspaceId: string, db: AssetDb = localDB, syncEpoch?: number | null, modifiedAt?: number, expectedVersion?: ProjectionRow | null): Promise<void> {
     if (db === localDB) db = localDB.bindOperation(localDB.captureOperation({ kind: 'local-edit' }))
     if ('owner' in db && (db as SyncDb).owner && (db as SyncDb).owner!.workspaceId !== workspaceId) throw new Error('Asset workspace differs from the verified owner')
-    const operationEpoch = captureNotesEpoch('owner' in db ? (db as SyncDb).owner : null)
-    const ts = now()
+    const operationEpoch = syncEpoch === undefined ? captureNotesEpoch('owner' in db ? (db as SyncDb).owner : null) : syncEpoch
+    const ts = modifiedAt ?? now()
+    const version = expectedVersion === undefined && 'owner' in db ? await portalNotesStore(db as SyncDb).find('asset',id) : expectedVersion ?? null
     const statement = `UPDATE local_assets SET deleted_at=?, dirty=1, client_rev=client_rev+1, updated_at=?
        WHERE id=? AND workspace_id=?`
     const values = [ts, ts, id, workspaceId]
@@ -262,8 +295,8 @@ class AssetStore {
     if (asset?.kind === 'note' && 'owner' in db && 'runInTransaction' in db) {
       await portalNotesStore(db as SyncDb).commit([{ statement, values }], {
         source: 'asset', epoch: operationEpoch, id, title: asset.title ?? '', modifiedAt: ts, deleted: true,
-        syncError: asset.source === 'enex_import' ? 'ENEX Markdown sync is not supported yet; the original stays local' : undefined,
-        payload: notePayload({ format: 'html', content: '' }),
+        expectedVersion: version,
+        payload: notePayload({ format: asset.source === 'enex_import' ? 'markdown' : 'html', content: '' }),
       }, false)
     } else await db.run(statement, values)
   }
@@ -383,8 +416,8 @@ class AssetStore {
     source?: string
     key: string
     value: string
-  }): Promise<Asset | null> {
-    const scope = await portalNoteReadScope('asset', 'local_assets')
+  }, db?: SyncDb): Promise<Asset | null> {
+    const scope = await portalNoteReadScope('asset', 'local_assets', db)
     const row = await scope.db.queryOne<RawAssetRow>(
       `SELECT id, workspace_id, kind, title, body_text, body_encrypted, meta_json, source,
               sync_mode, client_rev, server_rev, dirty, created_at, updated_at, deleted_at
@@ -398,7 +431,10 @@ class AssetStore {
         ? [opts.workspaceId, opts.kind, ...scope.values, `$.${opts.key}`, opts.value, opts.source]
         : [opts.workspaceId, opts.kind, ...scope.values, `$.${opts.key}`, opts.value],
     )
-    return row && (row.kind !== 'note' || await canReadPortalNote('asset', row.id)) ? this.fromRow(row) : null
+    if (!row || (row.kind === 'note' && !await canReadPortalNote('asset', row.id, scope.db))) return null
+    const asset = await this.fromRow(row)
+    scope.db.assertCurrent()
+    return asset
   }
 
   /** 列出所有 dirty=1 的 Asset（同步引擎用）。 */
@@ -426,13 +462,16 @@ class AssetStore {
   // ---- Blob 管理 ----
 
   /** 给一个 Asset 追加加密 blob（小文件直存）。 */
-  async addBlob(assetId: string, plainContent: string, opts: { kind?: string; hash?: string } = {}): Promise<AssetBlob> {
+  async addBlob(assetId: string, plainContent: string, opts: { kind?: string; hash?: string } = {}, db: AssetDb = localDB): Promise<AssetBlob> {
+    if (db === localDB) db = localDB.bindOperation(localDB.captureOperation({ kind: 'local-edit' }))
+    const asset = await this.get(assetId, db)
+    if (!asset || asset.deletedAt != null) throw new Error('Asset is unavailable for this account or workspace')
     const id = genId('blb')
     const ts = now()
-    const idx = await nextBlobIdx(assetId)
+    const idx = await nextBlobIdx(assetId, db)
     const cipher = await encryptString(plainContent)
     const sizeBytes = new Blob([plainContent]).size
-    await localDB.run(
+    await db.run(
       `INSERT INTO local_asset_blobs (id, asset_id, idx, kind, cipher_text, size_bytes, hash, created_at)
        VALUES (?,?,?,?,?,?,?,?)`,
       [id, assetId, idx, opts.kind ?? null, cipher, sizeBytes, opts.hash ?? null, ts],
@@ -442,19 +481,25 @@ class AssetStore {
 
   /** 读取并解密一个 blob。 */
   async getBlob(id: string): Promise<string | null> {
-    const row = await localDB.queryOne<{ cipher_text: string | null; file_path: string | null }>(
-      'SELECT cipher_text, file_path FROM local_asset_blobs WHERE id = ?',
+    const db = localDB.bindOperation(localDB.captureOperation({ kind: 'local-edit' }))
+    const row = await db.queryOne<{ asset_id: string; cipher_text: string | null; file_path: string | null }>(
+      'SELECT asset_id, cipher_text, file_path FROM local_asset_blobs WHERE id = ?',
       [id],
     )
-    if (!row) return null
-    if (row.cipher_text) return await decryptString(row.cipher_text)
+    if (!row || !await this.get(row.asset_id, db)) return null
+    if (row.cipher_text) {
+      const content = await decryptString(row.cipher_text)
+      db.assertCurrent()
+      return content
+    }
     // 大文件路径暂不实现（后续 sprint 加文件系统读写）
     return null
   }
 
   /** 列出某 Asset 的所有 blob（不解密）。 */
-  async listBlobs(assetId: string): Promise<AssetBlob[]> {
-    const rows = await localDB.query<{
+  async listBlobs(assetId: string, db: SyncDb = localDB.bindOperation(localDB.captureOperation({ kind: 'local-edit' }))): Promise<AssetBlob[]> {
+    if (!await this.get(assetId, db)) return []
+    const rows = await db.query<{
       id: string; asset_id: string; idx: number; kind: string | null; cipher_text: string | null;
       file_path: string | null; size_bytes: number; hash: string | null; created_at: number
     }>(
@@ -552,8 +597,8 @@ function kindFilter(kind?: AssetKind | AssetKind[]): { sql: string; args: unknow
   }
 }
 
-async function nextBlobIdx(assetId: string): Promise<number> {
-  const row = await localDB.queryOne<{ max_idx: number | null }>(
+async function nextBlobIdx(assetId: string, db: AssetDb): Promise<number> {
+  const row = await db.queryOne<{ max_idx: number | null }>(
     'SELECT MAX(idx) AS max_idx FROM local_asset_blobs WHERE asset_id = ?',
     [assetId],
   )

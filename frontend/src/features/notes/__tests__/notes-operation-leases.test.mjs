@@ -201,14 +201,14 @@ test('SQL ownership precedes pagination, same-title and daily-note lookup', asyn
   assert.equal((await f.assetStore.findByMeta({workspaceId:'workspace',kind:'note',key:'same',value:'key'})).id,assetA.id)
 }))
 
-test('new ENEX Markdown remains fully local and visibly blocked rather than masquerading as HTML', async () => fixture(async f => {
+test('ENEX without a source modification time stays local instead of inventing one', async () => fixture(async f => {
   await f.setMode('local')
   const asset = await f.assetStore.upsert({kind:'note',title:'Imported',bodyText:'# Markdown\nComplete **original**',source:'enex_import',workspaceId:'workspace'})
   const store=f.portalNotesStore(f.db.bindOperation(f.db.captureOperation({kind:'local-edit'})))
   assert.equal((await store.pending()).length,0)
   const failed=await f.db.queryOne('SELECT item_json,last_error FROM local_portal_outbox')
-  assert.match(failed.last_error,/ENEX Markdown/)
-  assert.equal(JSON.parse(failed.item_json).payload.format,'text')
+  assert.match(failed.last_error,/modification time is unknown/)
+  assert.equal(JSON.parse(failed.item_json).payload.format,'markdown')
   assert.equal((await f.assetStore.getForWorkspace(asset.id,'workspace')).bodyText,'# Markdown\nComplete **original**')
 }))
 

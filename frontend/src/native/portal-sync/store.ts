@@ -1,4 +1,4 @@
-import { validateItem, versionKey, newOperationId, type NotePayload, type PortalAck, type PortalItem, type Statement, type SyncDb } from './contract.ts'
+import { validateItem, versionKey, newOperationId, localVersionOperationId, type NotePayload, type PortalAck, type PortalItem, type Statement, type SyncDb } from './contract.ts'
 import { epochTables, currentNotesEpoch, epochGuard, observeNotesEpoch } from './epoch-state.ts'
 import { validEpoch } from './epochs.ts'
 import { recordTables } from './record-tables.ts'
@@ -12,6 +12,8 @@ export interface NoteSnapshot {
   deleted?: boolean
   syncError?: string
   epoch?: number | null
+  /** Earlier business read used to prepare this source edit; do not adopt a later winner. */
+  expectedVersion?: ProjectionRow | null
 }
 export interface ProjectionRow {
   ext_id: string
@@ -24,6 +26,8 @@ export interface ProjectionRow {
   reset_epoch: number | null
 }
 const tables = [
+  `CREATE TABLE IF NOT EXISTS local_portal_note_write_guards (
+    allowed INTEGER NOT NULL CONSTRAINT portal_notes_write_conflict CHECK(allowed=1))`,
   `CREATE TABLE IF NOT EXISTS local_portal_notes (
     owner_user_id TEXT NOT NULL, owner_workspace_id TEXT NOT NULL,
     ext_id TEXT NOT NULL, source TEXT NOT NULL, source_id TEXT NOT NULL,
@@ -81,29 +85,44 @@ export class PortalNotesStore {
     await this.init()
     return this.db.queryOne<ProjectionRow>(`SELECT * FROM local_portal_notes WHERE owner_user_id=? AND owner_workspace_id=? AND ext_id=?`, [...this.scope, id])
   }
-  async commit(statements: Statement[], snapshot: NoteSnapshot, created: boolean): Promise<void> {
+  async commit(statements: Statement[], snapshot: NoteSnapshot, created: boolean): Promise<ProjectionRow | null> {
     const epoch = validEpoch(snapshot.epoch) ? snapshot.epoch : null
     await this.init()
-    const existing = await this.find(snapshot.source, snapshot.id)
+    const existing = 'expectedVersion' in snapshot ? snapshot.expectedVersion ?? null : await this.find(snapshot.source, snapshot.id)
+    if (existing && (existing.source !== snapshot.source || existing.source_id !== snapshot.id)) throw new Error('Note version does not match its source')
     const assigned = await this.db.queryOne<{ owner_user_id: string; owner_workspace_id: string }>(
       `SELECT owner_user_id,owner_workspace_id FROM local_portal_notes WHERE source=? AND source_id=?`, [snapshot.source, snapshot.id])
     if (assigned && (!this.db.owner || assigned.owner_user_id !== this.db.owner.userId || assigned.owner_workspace_id !== this.db.owner.workspaceId)) throw new Error('Note belongs to a different account or workspace')
     // Editing an old unclaimed note does not establish its provenance.
     if (!this.db.owner || (!created && !existing)) {
-      await this.db.runInTransaction(statements)
-      return
+      await this.db.runInTransaction([
+        {statement:'INSERT INTO local_portal_note_write_guards(allowed) SELECT 0 WHERE EXISTS(SELECT 1 FROM local_portal_notes WHERE source=? AND source_id=?)',values:[snapshot.source,snapshot.id]},
+        ...statements,
+      ])
+      return null
     }
+    const timestamp = new Date(snapshot.modifiedAt).toISOString()
+    const conflictMessage = 'Note changed during this edit; original retained, keep your changes and retry the edit'
     const item: PortalItem = {
       module: 'notes', kind: 'note', ext_id: existing?.ext_id ?? `${snapshot.source}:${snapshot.id}`,
       title: snapshot.title, payload: snapshot.deleted ? {} : snapshot.payload,
-      client_updated_at: new Date(snapshot.modifiedAt).toISOString(),
-      op_id: newOperationId(), deleted: snapshot.deleted === true, epoch,
+      client_updated_at: timestamp,
+      op_id: localVersionOperationId(timestamp, existing, conflictMessage), deleted: snapshot.deleted === true, epoch,
     }
     let error = snapshot.syncError ?? ''
     try { validateItem(item) } catch (cause) { error = cause instanceof Error ? cause.message : String(cause) }
     const json = await this.encode(item)
     const admitted = epochGuard(this.db, epoch ?? -1)
-    await this.db.runInTransaction([...statements,
+    const observed = existing ? {
+      clause: `EXISTS(SELECT 1 FROM local_portal_notes WHERE owner_user_id=? AND owner_workspace_id=? AND ext_id=? AND source=? AND source_id=? AND version_key=? AND op_id=? AND reset_epoch IS ?)`,
+      values: [...this.scope, existing.ext_id, existing.source, existing.source_id, existing.version_key, existing.op_id, existing.reset_epoch],
+    } : {
+      clause: `NOT EXISTS(SELECT 1 FROM local_portal_notes WHERE source=? AND source_id=?)`,
+      values: [snapshot.source, snapshot.id],
+    }
+    try { await this.db.runInTransaction([
+      { statement: `INSERT INTO local_portal_note_write_guards(allowed) SELECT 0 WHERE NOT (${observed.clause})`, values: observed.values },
+      ...statements,
       { statement: `INSERT INTO local_portal_notes
           (owner_user_id,owner_workspace_id,ext_id,source,source_id,item_json,version_ms,version_key,op_id,reset_epoch)
         VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(owner_user_id,owner_workspace_id,ext_id)
@@ -113,9 +132,13 @@ export class PortalNotesStore {
       { statement: `INSERT INTO local_portal_outbox (owner_user_id,owner_workspace_id,op_id,ext_id,item_json,reset_epoch,last_error)
           VALUES (?,?,?,?,?,?,CASE WHEN ? IS NULL THEN 'epoch_unknown' WHEN ${admitted.clause} THEN ? ELSE 'reset_epoch_mismatch' END)`,
         values: [...this.scope, item.op_id, item.ext_id, json, epoch, epoch, ...admitted.values, error] },
-    ])
+    ]) } catch (cause) {
+      if (String(cause).includes('portal_notes_write_conflict')) throw Object.assign(new Error(conflictMessage), { cause })
+      throw cause
+    }
     if (error) console.warn('[portal-sync] 本地笔记已保存，同步受阻：', error)
     if (typeof window !== 'undefined') window.dispatchEvent(new Event('openpocket:portal-notes-outbox-changed'))
+    return {ext_id:item.ext_id,source:snapshot.source,source_id:snapshot.id,item_json:json,version_ms:snapshot.modifiedAt,version_key:versionKey(timestamp),op_id:item.op_id,reset_epoch:epoch}
   }
   async pending(): Promise<PortalItem[]> {
     if (!this.db.owner) return []

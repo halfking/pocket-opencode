@@ -57,6 +57,7 @@ function currentWorkspaceId(): string {
 const emit = defineEmits<{
   (e: 'navigate', target: string): void
   (e: 'saved', note: PkmNote): void
+  (e: 'markdown', id: string): void
 }>()
 
 const title = ref('')
@@ -78,6 +79,14 @@ async function load(id: string) {
   // ⚠ §884：同 PkmNoteView —— getNote 走 getForWorkspace，workspace 必须传。
   const note = await getNote(id, currentWorkspaceId())
   if (!ownerView.isCurrent(stamp)) return
+  if (note?.format === 'markdown') {
+    if (saveTimer) clearTimeout(saveTimer)
+    saveTimer = null
+    editor.value?.destroy(); editor.value = null
+    currentNote.value = null
+    emit('markdown', note.id)
+    return
+  }
   currentNote.value = note
   title.value = note?.title ?? ''
   // 销毁旧编辑器（noteId 变化时）

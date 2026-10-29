@@ -34,6 +34,7 @@ export interface PkmNote {
   id: string
   title: string
   html: string
+  format: 'html' | 'markdown'
   links: string[]
   dailyDate?: string
   tags?: string[]
@@ -65,6 +66,7 @@ function toNote(
   metaJson: string,
   createdAt: number,
   updatedAt: number,
+  source?: string,
 ): PkmNote {
   let meta: PkmMeta = { links: [] }
   try {
@@ -76,6 +78,7 @@ function toNote(
     id,
     title,
     html: bodyText,
+    format: source === 'enex_import' ? 'markdown' : 'html',
     links: meta.links ?? [],
     dailyDate: meta.dailyDate,
     tags: meta.tags,
@@ -114,7 +117,7 @@ export async function saveNote(input: {
   })
   return toNote(
     asset.id, asset.title, asset.bodyText, asset.metaJson,
-    asset.createdAt, asset.updatedAt,
+    asset.createdAt, asset.updatedAt, asset.source,
   )
 }
 
@@ -138,7 +141,7 @@ export async function saveNote(input: {
 export async function getNote(id: string, workspaceId = 'default'): Promise<PkmNote | null> {
   const a = await assetStore.getForWorkspace(id, workspaceId)
   if (!a) return null
-  return toNote(a.id, a.title, a.bodyText, a.metaJson, a.createdAt, a.updatedAt)
+  return toNote(a.id, a.title, a.bodyText, a.metaJson, a.createdAt, a.updatedAt, a.source)
 }
 
 /**
@@ -163,7 +166,7 @@ export async function listNotes(
     limit: opts.limit ?? 200,
   })
   return assets.map((a) =>
-    toNote(a.id, a.title, a.bodyText, a.metaJson, a.createdAt, a.updatedAt),
+    toNote(a.id, a.title, a.bodyText, a.metaJson, a.createdAt, a.updatedAt, a.source),
   )
 }
 
@@ -197,7 +200,7 @@ export async function searchNotes(
     limit: opts.limit ?? 50,
   })
   return assets.map((a) =>
-    toNote(a.id, a.title, a.bodyText, a.metaJson, a.createdAt, a.updatedAt),
+    toNote(a.id, a.title, a.bodyText, a.metaJson, a.createdAt, a.updatedAt, a.source),
   )
 }
 

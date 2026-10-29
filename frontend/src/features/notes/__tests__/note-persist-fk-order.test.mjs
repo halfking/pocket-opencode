@@ -126,7 +126,7 @@ describe('负控：顺序改回 bug 版本后必须报红', () => {
 
   it('变异体（附件先于父行）被判为违规', () => {
     assert.ok(body, '拿不到 createNote() 函数体，负控无法执行')
-    const blockStart = body.indexOf('if (decided.persistBodyFile || media.length > 0) {')
+    const blockStart = body.indexOf('if (hasPayload) {')
     // ★ 用正则定位而不是 indexOf 写死 \n（2026-10-22 Windows 实测修掉）：
     //   原来写的是 indexOf('await localDB.run(\n    `INSERT INTO local_notes')，
     //   而 Windows 检出是 CRLF ⇒ 那个 \n 匹配不上 ⇒ 恒「定位失败」。

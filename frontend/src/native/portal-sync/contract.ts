@@ -2,7 +2,7 @@ import { validEpoch } from './epochs.ts'
 /** The portable notes projection deliberately contains no local media or credentials. */
 export interface NotePayload extends Record<string, unknown> {
   schema_version: 1
-  format: 'text' | 'html'
+  format: 'text' | 'html' | 'markdown'
   content: string
   tags: string[]
   links: string[]
@@ -12,6 +12,7 @@ export interface NotePayload extends Record<string, unknown> {
   status: 'saved' | 'draft'
   daily_date: string
   created_at: number
+  import_id?: string
 }
 export interface PortalItem {
   module: 'notes'
@@ -59,13 +60,14 @@ function strings(value: unknown): string[] {
 function string(value: unknown): string { return typeof value === 'string' ? value : '' }
 
 export function notePayload(input: Record<string, unknown>): NotePayload {
-  if (typeof input.content !== 'string' || !['text', 'html'].includes(String(input.format))) throw new Error('Invalid notes projection')
+  if (typeof input.content !== 'string' || !['text', 'html', 'markdown'].includes(String(input.format))) throw new Error('Invalid notes projection')
   return {
-    schema_version: 1, format: input.format as 'text' | 'html', content: input.content,
+    schema_version: 1, format: input.format as NotePayload['format'], content: input.content,
     tags: strings(input.tags), links: strings(input.links), domain: string(input.domain),
     summary: string(input.summary), content_type: string(input.content_type),
     status: input.status === 'draft' ? 'draft' : 'saved', daily_date: string(input.daily_date),
     created_at: Number.isSafeInteger(input.created_at) && Number(input.created_at) >= 0 ? Number(input.created_at) : 0,
+    ...(input.format === 'markdown' && typeof input.import_id === 'string' && input.import_id ? { import_id: input.import_id } : {}),
   }
 }
 
@@ -74,7 +76,8 @@ export function remoteNotePayload(input: Record<string, unknown>): NotePayload {
     return notePayload({ ...input, format: 'text' })
   }
   if (input.schema_version !== 1) throw new Error('Unsupported notes projection version')
-  const allowed = ['schema_version','format','content','tags','links','domain','summary','content_type','status','daily_date','created_at']
+  if (input.import_id !== undefined && (input.format !== 'markdown' || typeof input.import_id !== 'string' || !input.import_id || new TextEncoder().encode(input.import_id).length > 512)) throw new Error('Invalid imported notes identity')
+  const allowed = ['schema_version','format','content','tags','links','domain','summary','content_type','status','daily_date','created_at','import_id']
   if (Object.keys(input).some(key => !allowed.includes(key))) throw new Error('Unknown notes projection field; change cursor retained')
   return notePayload(input)
 }
@@ -101,6 +104,19 @@ export function compareVersions(a: Pick<PortalItem, 'client_updated_at' | 'op_id
     if (aOp[index] !== bOp[index]) return aOp[index]! > bOp[index]! ? 1 : -1
   }
   return aOp.length === bOp.length ? 0 : aOp.length > bOp.length ? 1 : -1
+}
+
+/** Preserve real clock time while ordering a later local intention after its observed version. */
+export function localVersionOperationId(timestamp: string, existing: { version_key: string; op_id: string } | null, conflictMessage: string): string {
+  let op = newOperationId()
+  if (!existing) return op
+  const key = versionKey(timestamp)
+  if (key < existing.version_key) throw new Error(conflictMessage)
+  if (key === existing.version_key && compareVersions({ client_updated_at: timestamp, op_id: op }, { client_updated_at: timestamp, op_id: existing.op_id }) <= 0) {
+    op = `${existing.op_id}~${op}`
+    if (new TextEncoder().encode(op).length > 200) throw new Error(conflictMessage)
+  }
+  return op
 }
 
 /** Fixed-width sortable nanoseconds retain RFC3339 precision beyond JS Date. */

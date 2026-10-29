@@ -1,6 +1,6 @@
 # Portal notes client (R6 slice)
 
-This slice connects ordinary local notes and PKM HTML notes to the portal v2
+This slice connects ordinary local notes, ENEX Markdown and PKM HTML notes to the portal v2
 protocol. `main.ts` starts the runtime only after the policy runtime starts;
 the runtime also waits for LocalDB readiness and a verified owner.
 
@@ -23,14 +23,15 @@ server `skipped_local` operation while retaining its original content/time.
 
 Scope limits:
 
-- RSS, email and meetings do not yet have portal v2 client adapters.
-- ENEX Markdown imports are explicitly blocked in the outbox and remain local;
-  they are never mislabeled or uploaded as PKM HTML.
+- RSS, mail metadata and meetings have separate adapters in their feature directories.
+- New ENEX Markdown imports use an explicit format discriminator and stay in the
+  Markdown editor. Unknown source times and oversized payloads remain blocked;
+  attachment bytes stay local. See `docs/portal-enex-sync.md` for the boundaries.
 - Native device/background-process survival and a deployed pocketd↔RedClaw
   environment were not exercised in this slice. The service binding is covered
   by separate backend tests; browser fixtures isolate account/data boundaries.
-- Portal workspace-aware CRUD and the RSS/email/meeting client adapters remain
-  separate work. This slice does not claim the complete four-module R6 result.
+- Portal workspace-aware CRUD is a separate server/UI implementation. Local code
+  validation does not establish the complete deployed four-module R6 result.
 - Trusted v2 purge now has client wiring for all four portal module entries.
   Client API fixtures isolate network responses and backend PG/handler tests run
   separately; no deployed admin↔DAL↔pocketd end-to-end environment was available.

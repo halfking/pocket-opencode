@@ -6,6 +6,7 @@ import type { NoteDbOperation } from './note-operation'
 import { blobToBase64, utf8ToBase64, base64ToUtf8 } from '../../utils/base64'
 import { noteDir, noteFileRelPath, type NoteFileKind } from './note-paths'
 import type { NoteFileRecord, NoteMediaInput } from './notes-types'
+import type { Statement } from '../../native/portal-sync/contract'
 
 const captureFiles = () => localDB.bindOperation(localDB.captureOperation({ kind: 'local-edit' }))
 
@@ -15,12 +16,16 @@ export interface PersistNotePayloadInput {
   body: string
   persistBodyFile: boolean
   media: NoteMediaInput[]
+  /** Updates stage immutable files; child rows publish with the source pointer transaction. */
+  revision?: string
+  deferRows?: boolean
 }
 
 export interface PersistNotePayloadResult {
   bodyPath: string | null
   files: NoteFileRecord[]
   audioPath: string | null
+  statements: Statement[]
 }
 
 /** 单个附件入库上限：base64 后膨胀约 1/3，整块读进内存再写 SQLite。 */
@@ -72,8 +77,11 @@ async function insertFileRow(row: NoteFileRecord, dataBase64: string, nativeUri:
 
 export async function persistNotePayload(input: PersistNotePayloadInput, db = captureFiles()): Promise<PersistNotePayloadResult> {
   db.assertCurrent()
-  const dir = noteDir(input.noteId, input.createdAt)
+  if (input.deferRows && (!input.revision || !/^[a-zA-Z0-9-]{1,80}$/.test(input.revision))) throw new Error('An immutable file revision is required')
+  const baseDir = noteDir(input.noteId, input.createdAt)
+  const dir = input.deferRows ? `${baseDir}/versions/${input.revision}` : baseDir
   const files: NoteFileRecord[] = []
+  const statements: Statement[] = []
   let bodyPath: string | null = null
   let audioPath: string | null = null
   const counters: Record<string, number> = { audio: 0, image: 0, video: 0, file: 0 }
@@ -84,7 +92,7 @@ export async function persistNotePayload(input: PersistNotePayloadInput, db = ca
     await writeRelPath(rel, dataBase64, db)
     bodyPath = Capacitor.isNativePlatform() ? rel : `sqlite:${rel}`
     const row: NoteFileRecord = {
-      id: `${input.noteId}-body`,
+      id: input.deferRows ? `${input.noteId}-${input.revision}-body` : `${input.noteId}-body`,
       noteId: input.noteId,
       kind: 'body',
       relPath: rel,
@@ -98,7 +106,8 @@ export async function persistNotePayload(input: PersistNotePayloadInput, db = ca
       durationMs: 0,
     }
     files.push(row)
-    await insertFileRow(row, dataBase64, Capacitor.isNativePlatform() ? rel : null, db)
+    if (input.deferRows) statements.push(stagedFileRow(row, dataBase64, Capacitor.isNativePlatform() ? rel : null))
+    else await insertFileRow(row, dataBase64, Capacitor.isNativePlatform() ? rel : null, db)
   }
 
   for (const media of input.media) {
@@ -113,7 +122,7 @@ export async function persistNotePayload(input: PersistNotePayloadInput, db = ca
     const dataBase64 = await blobToBase64(media.blob)
     const uri = await writeRelPath(rel, dataBase64, db)
     const row: NoteFileRecord = {
-      id: `${input.noteId}-${media.kind}-${counters[media.kind]}`,
+      id: input.deferRows ? `${input.noteId}-${input.revision}-${media.kind}-${counters[media.kind]}` : `${input.noteId}-${media.kind}-${counters[media.kind]}`,
       noteId: input.noteId,
       kind: media.kind,
       relPath: rel,
@@ -122,12 +131,20 @@ export async function persistNotePayload(input: PersistNotePayloadInput, db = ca
       durationMs: media.durationMs ?? 0,
     }
     files.push(row)
-    await insertFileRow(row, dataBase64, Capacitor.isNativePlatform() ? rel : null, db)
+    if (input.deferRows) statements.push(stagedFileRow(row, dataBase64, Capacitor.isNativePlatform() ? rel : null))
+    else await insertFileRow(row, dataBase64, Capacitor.isNativePlatform() ? rel : null, db)
     if (media.kind === 'audio' && !audioPath) audioPath = uri
   }
 
   db.assertCurrent()
-  return { bodyPath, files, audioPath }
+  return { bodyPath, files, audioPath, statements }
+}
+
+function stagedFileRow(row: NoteFileRecord, dataBase64: string, nativePath: string | null): Statement {
+  return { statement: `INSERT INTO local_note_files
+    (id,note_id,kind,rel_path,mime,size_bytes,duration_ms,data_base64,created_at)
+    VALUES(?,?,?,?,?,?,?,?,?)`,
+    values: [row.id,row.noteId,row.kind,nativePath ?? row.relPath,row.mime,row.sizeBytes,row.durationMs,nativePath ? '' : dataBase64,Date.now()] }
 }
 
 /**
@@ -209,9 +226,10 @@ export async function deleteNoteFiles(noteId: string, createdAt: number, db = ca
  * 媒体文件名还带序号（audio/01.webm），本就不该因为改正文而失效。
  * 换成媒体时才该整体替换，那种情况走 deleteNoteFiles 仍然正确。
  */
-export async function deleteNoteBodyFile(noteId: string, createdAt: number, db = captureFiles()): Promise<void> {
+export async function deleteNoteBodyFile(noteId: string, createdAt: number, db = captureFiles(), previousPath?: string): Promise<void> {
   db.assertCurrent()
-  const rel = noteFileRelPath(noteDir(noteId, createdAt), 'body')
+  const rel = previousPath?.replace(/^sqlite:/,'') ?? noteFileRelPath(noteDir(noteId, createdAt), 'body')
+  if (previousPath && await db.queryOne('SELECT 1 FROM local_notes WHERE id=? AND body_path=?',[noteId,previousPath])) return
   if (Capacitor.isNativePlatform()) {
     await Filesystem.deleteFile({ path: rel, directory: Directory.Data }).catch((e) => {
       // 正文文件删不掉 ⇒ 磁盘上留着一份孤儿文件（下次编辑会重新覆盖它）。
@@ -220,5 +238,6 @@ export async function deleteNoteBodyFile(noteId: string, createdAt: number, db =
     })
   }
   // 只清 body 那一类子行；audio 等媒体行留着，播放与回填都依赖它们
-  await db.run('DELETE FROM local_note_files WHERE note_id = ? AND kind = ?', [noteId, 'body'])
+  if (previousPath) await db.run('DELETE FROM local_note_files WHERE note_id=? AND kind=? AND (rel_path=? OR rel_path=?) AND NOT EXISTS(SELECT 1 FROM local_notes WHERE id=? AND body_path=?)', [noteId,'body',rel,previousPath,noteId,previousPath])
+  else await db.run('DELETE FROM local_note_files WHERE note_id = ? AND kind = ?', [noteId, 'body'])
 }
