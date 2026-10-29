@@ -43,14 +43,14 @@ ${DEPLOY_BASE_DIR}/
 | `OPP_DEPLOY_REDIS=true`        | `${BASE_DIR}/redis/`     | 全部默认 false（Redis 在 252） |
 | `OPP_DEPLOY_MYSQL=true`        | `${BASE_DIR}/mysql/`     | 全部默认 false |
 
-## 三个入口脚本
+## 入口脚本（4 个）
 
 | 脚本                | 目标                   | DEPLOY_ENV | OPP_SERVER_NAME | 端口                            | 默认 PG |
 |---------------------|------------------------|------------|------------------|----------------------------------|---------|
 | `deploy-local.sh`   | macOS 开发 / Win        | local      | （空）           | 8090 / 4175                      | 容器化  |
 | `deploy-154.sh`     | 154 Linux 生产          | server     | 154              | 8090 / 4175 @ 172.16.2.154       | 远端 252 |
 | `deploy-245.sh`     | 245 Linux 生产          | server     | 245              | 8091 / 4176 @ 172.16.2.245       | 远端 252 |
-| `deploy-252.sh`     | 252 Linux 生产          | server     | 252              | 8092 / 4177 @ 172.16.2.252       | 本机内网 |
+| `deploy-252.sh`     | 252 Linux 生产          | server     | 252              | 8090 / 4175 @ 172.16.2.210       | 本机内网 |
 
 每个入口都 source `deploy/bin/env.sh`（自动派生 base dir + 端口 + 项目名 + DB 拓扑），然后依次执行：
 
@@ -274,7 +274,7 @@ bash tests/deploy-integration-test.sh
 
 ## 与旧版（deploy-252.sh）的兼容
 
-- 仓库根已新增 `./deploy-252.sh`（与 `deploy-154.sh` / `deploy-245.sh` 同款、同 `OPP_SERVER_NAME=252` 风格），绑定 eth0 IP `172.16.2.252`、端口 8092 / 4177、env 文件 `.env.252`。
+- 仓库根已新增 `./deploy-252.sh`（与 `deploy-154.sh` / `deploy-245.sh` 同款、同 `OPP_SERVER_NAME=252` 风格），绑定 eth0 IP `172.16.2.210`、端口 8090 / 4175、env 文件 `.env.252`（端口与绑 IP 以 `deploy/bin/env.sh` 的 252 分支为准：`deploy-252.sh` 只导出 `OPP_SERVER_NAME=252`，端口/绑 IP 由 env.sh 给出）。
 - `deploy/bin/deploy-252.sh`（旧路径，文件未删）已加 deprecated 注释，仍可向后兼容运行（不设置 OPP_SERVER_NAME，env.sh 走 172.16.2.210 默认分支）。
 - 生产请优先用根级 `./deploy-{154,245,252}.sh`。
 - `~/Downloads/kaixuan/opp` 与 `/opt/kaixuan/opp` 旧路径仍可通过 `DEPLOY_BASE_DIR` 显式覆盖使用。
