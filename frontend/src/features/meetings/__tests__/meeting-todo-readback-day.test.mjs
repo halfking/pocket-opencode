@@ -56,11 +56,20 @@ const WORK = fs.mkdtempSync(path.join(os.tmpdir(), 'pocket-todo-readback-'))
 
 const seen = { rows: [], reminders: [] }
 globalThis.__todoSeen = seen
+// 归属（租约的 principal）。默认给一个**已验证**的账号 ——
+// 真件里没有已验证会话 ⇒ principal 为 null ⇒ 待办保持未认领。
+globalThis.__todoOwner = { userId: 'meeting-user', workspaceId: 'meeting-workspace' }
 
 const STUB_SOURCES = {
   '../../native/local-db': `
     const rows = globalThis.__todoSeen.rows
-    export const localDB = {
+    // ⚠ 归属（owner）必须与真 localDB **同形**（2026-10-29 实测踩到）：
+    //   真件的归属来自**操作租约的 principal**，而生产侧的查重 SQL 现在带
+    //   owner_user_id / owner_workspace_id 两个参数。
+    //   ⇒ 桩若不认归属，这条门要么「查重恒不命中」、要么「恒命中」，
+    //     而门照样显示绿 —— 这正是「负控必须与真源码同形」那条纪律的代价。
+    const owner = () => globalThis.__todoOwner
+    const stub = {
       async run(sql, params) {
         if (!String(sql).includes('INSERT INTO local_todos')) return
         // 列序照抄生产：id, note_id, title, description, status, priority,
@@ -68,22 +77,41 @@ const STUB_SOURCES = {
         rows.push({
           id: params[0], note_id: params[1], title: params[2], description: params[3],
           due_at: params[6], meeting_id: params[8],
+          owner_user_id: params[11], owner_workspace_id: params[12],
         })
       },
       // 幂等查重：同 (meeting_id, title) 命中即已存在。
       async queryOne(sql, params) {
-        const [meetingId, title] = params
-        const dup = rows.find((r) => r.meeting_id === meetingId && r.title === title)
+        const [meetingId, title, ownerUserId, ownerWorkspaceId] = params
+        const dup = rows.find((r) => r.meeting_id === meetingId && r.title === title
+          && r.owner_user_id === ownerUserId && r.owner_workspace_id === ownerWorkspaceId)
         return dup ? { id: dup.id } : null
       },
       async query(sql, params) {
         if (!String(sql).includes('SELECT title, description, due_at')) return []
-        const [meetingId] = params
+        const [meetingId, ownerUserId, ownerWorkspaceId] = params
         return rows
-          .filter((r) => r.meeting_id === meetingId)
+          .filter((r) => r.meeting_id === meetingId
+            && r.owner_user_id === ownerUserId && r.owner_workspace_id === ownerWorkspaceId)
           .map((r) => ({ title: r.title, description: r.description, due_at: r.due_at }))
       },
-    }`,
+      // ⚠ 租约：真件的 captureOperation 返回一个带 owner.principal 的租约，
+      //   bindOperation 把它绑成可读写句柄（句柄上带 owner）。
+      captureOperation() {
+        const principal = { ...owner() }
+        return { kind: 'local-edit', owner: { principal } }
+      },
+      bindOperation(lease) {
+        const principal = lease.owner.principal
+        return {
+          owner: principal ? { ...principal } : null,
+          run: (...args) => stub.run(...args),
+          query: (...args) => stub.query(...args),
+          queryOne: (...args) => stub.queryOne(...args),
+        }
+      },
+    }
+    export const localDB = stub`,
   '../scheduled-tasks/api': `
     export const scheduledTasksApi = {
       async create(input) {

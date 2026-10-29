@@ -61,11 +61,20 @@ const DUE_PLAN_REAL = path.resolve(SRC, 'meeting-due-plan.ts')
 // 拿不到本文件的闭包变量。
 const seen = { todoInserts: [], events: [], notes: [], synced: [], reminders: [], update: null, lookups: [], neuterLookup: false, queryThrows: false }
 globalThis.__ingestSeen = seen
+// 归属（租约的 principal）。默认给一个**已验证**的账号 ——
+// 真件里没有已验证会话 ⇒ principal 为 null ⇒ 待办保持未认领。
+globalThis.__ingestOwner = { userId: 'ingest-user', workspaceId: 'ingest-workspace' }
 
 /** import 说明 → 假件源码。 */
 const STUB_SOURCES = {
   '../../native/local-db': `
-    export const localDB = {
+    // ⚠ 归属（owner）必须与真 localDB **同形**（2026-10-29 实测踩到）：
+    //   真件的归属来自**操作租约的 principal**，而生产侧的查重 SQL 现在带
+    //   owner_user_id / owner_workspace_id 两个参数。
+    //   ⇒ 桩若不认归属，这条门要么「查重恒不命中」、要么「恒命中」，
+    //     而门照样显示绿 —— 这正是「负控必须与真源码同形」那条纪律的代价。
+    const owner = () => globalThis.__ingestOwner
+    const stub = {
       async run(sql, params) {
         if (String(sql).includes('INSERT INTO local_todos')) globalThis.__ingestSeen.todoInserts.push(params)
       },
@@ -77,13 +86,32 @@ const STUB_SOURCES = {
         globalThis.__ingestSeen.lookups.push({ sql: String(sql), params })
         if (globalThis.__ingestSeen.neuterLookup) return null
         if (globalThis.__ingestSeen.queryThrows) throw new Error('模拟查重失败')
-        const [meetingId, title] = params
+        const [meetingId, title, ownerUserId, ownerWorkspaceId] = params
         const dup = globalThis.__ingestSeen.todoInserts.some(
-          (r) => r[8] === meetingId && r[2] === title,
+          (r) => r[8] === meetingId && r[2] === title
+            && r[11] === ownerUserId && r[12] === ownerWorkspaceId,
         )
         return dup ? { id: 'existing' } : null
       },
-    }`,
+      async query() { return [] },
+      // ⚠ 租约：真件的 captureOperation 返回一个带 owner.principal 的租约，
+      //   bindOperation 把它绑成可读写句柄（句柄上带 owner）。
+      captureOperation() {
+        const principal = { ...owner() }
+        return { kind: 'local-edit', owner: { principal } }
+      },
+      bindOperation(lease) {
+        const principal = lease.owner.principal
+        return {
+          owner: principal ? { ...principal } : null,
+          assertCurrent() {},
+          run: (...args) => stub.run(...args),
+          query: (...args) => stub.query(...args),
+          queryOne: (...args) => stub.queryOne(...args),
+        }
+      },
+    }
+    export const localDB = stub`,
   '../calendar/api': `
     // ⚠ §118：feed 的返回形状是 {entries, partial}。桩若继续回 []，
     // 生产已经改了而这里还绿 —— 桩的形状必须与生产同形，
@@ -115,7 +143,30 @@ const STUB_SOURCES = {
   //   ⚠ 不要改成 `external: ['pinia','vue']`（`_wire-helpers.mjs` 的做法）：
   //   那会把真 auth store 与它的网络依赖一起请进来，桩的隔离就没了。
   '../../stores/auth': `
-    export function useAuthStore() { return { workspaceId: 'ws_ingest_test' } }`,
+    // ⚠ 2026-10-29：桩必须与真模块**同形**（导出集要对得上）。
+    //   recording-operation.ts 从这里 import { assertAuthSession,
+    //   captureAuthSession, useAuthStore } —— 桩少导一个，
+    //   esbuild 就报「No matching export ... for import assertAuthSession」
+    //   ⇒ 构建失败 ⇒ 整组用例 cancelledByParent。
+    export function useAuthStore() { return { workspaceId: 'ws_ingest_test' } }
+    export function captureAuthSession() { return { token: 'ingest-stub-token' } }
+    export function assertAuthSession() {}
+    export function isCurrentAuthSession() { return true }`,
+  // ⚠ 2026-10-29：同步策略也必须被替掉。
+  //   `next_meeting` 那条要建**日历日程** ⇒ 走的是**云**路径
+  //   （ensureNextMeetingEvent → operation.assertCloud()），而 assertCloud
+  //   要求当前模块的同步模式是 'cloud'。
+  //   真 `readCachedModuleMode` 在没装策略存储（localStorage 为 SSOT）的
+  //   夹具里**恒返回 'local'** ⇒ 云租约永远拿不到 ⇒ assertCloud 抛
+  //   AbortError ⇒ 落进 catch ⇒ 状态变成 'failed' ⇒ 日程一条都建不出来。
+  //   ⇒ 桩把 meetings 说成 'cloud'，让这条门真的能验「日程建出来了」。
+  '../../stores/syncPolicyStore': `
+    export function readCachedModuleMode(module) { return 'cloud' }
+    export function recordSyncReportEntry() {}`,
+  // ⚠ 同款：assertCloudModule 会按上面的模式再判一次，
+  //   模式既然是 'cloud'，它就放行 ⇒ 桩保持与真件同形。
+  '../../api/data-policy': `
+    export function assertCloudModule() {}`,
   // resolveTodoDue 是**真逻辑**，不能一起替掉 —— 它正是期限能不能落地的关键。
   './meeting-due-reminder': `
     import { resolveTodoDue as real } from ${asModulePath(DUE_PLAN_REAL)}
@@ -143,6 +194,17 @@ before(async () => {
     bundle: true,
     format: 'esm',
     platform: 'neutral',
+    // ⚠ 2026-10-29：必须显式指定 mainFields。
+    //   `platform: 'neutral'` 的默认 mainFields 是 ['main']，而
+    //   `@capacitor/core` / `@capacitor-community/sqlite` / `@capacitor/filesystem`
+    //   与 `pinia` 的 package.json 都只给了 `main`（esm 在 `module`）⇒
+    //   neutral 平台下 esbuild 直接报「The "main" field here was ignored」
+    //   ⇒ **构建失败** ⇒ 12 个子用例全部 cancelledByParent，
+    //   §86/§150 这道承重行为门**整体瘫掉且不报任何有用信息**。
+    //   （2026-10-29 实测：`mainFields: ['module','main']` ⇒ BUILD OK。）
+    //   ⚠ 这不是「把门放宽」：解析到的是**同一个包的 esm 入口**，
+    //   桩仍然替换掉所有 I/O，断言口径一个字没动。
+    mainFields: ['module', 'main'],
     outfile: path.join(WORK, 'out.mjs'),
     logLevel: 'error',
     plugins: [{
@@ -182,6 +244,7 @@ function reset() {
   seen.synced.length = 0
   seen.reminders.length = 0
   seen.update = null
+  globalThis.__ingestOwner = { userId: 'ingest-user', workspaceId: 'ingest-workspace' }
 }
 
 describe('§86 · ingest 行为门：值必须真的流到待办 / 日程 / 提醒', () => {

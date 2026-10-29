@@ -50,10 +50,20 @@ const WORK = fs.mkdtempSync(path.join(os.tmpdir(), 'pocket-note-todo-'))
 
 const seen = { inserts: [], reminders: [], failNext: 0, lookups: [], neuterLookup: false, queryThrows: false }
 globalThis.__noteSeen = seen
+// 归属（租约的 principal）。默认给一个**已验证**的账号 ——
+// 真件里没有已验证会话 ⇒ principal 为 null ⇒ 待办保持未认领。
+globalThis.__todoOwner = { userId: 'note-user', workspaceId: 'note-workspace' }
 
 const STUB_SOURCES = {
   '../../native/local-db': `
-    export const localDB = {
+    // ⚠ 归属（owner）必须与真 localDB **同形**（2026-10-29 实测踩到）：
+    //   真件的归属来自**操作租约的 principal**，而生产侧的查重 SQL 现在带
+    //   owner_user_id / owner_workspace_id 两个参数。
+    //   ⇒ 桩若不认归属，这条门要么「查重恒不命中」、要么「恒命中」，
+    //     而门照样显示绿 —— 这正是「负控必须与真源码同形」那条纪律的代价。
+    //   ⇒ 归属做成**可切换**的，好让门能断言「别的账号的同一条待办不算重复」。
+    const owner = () => globalThis.__todoOwner
+    const stub = {
       async run(sql, params) {
         if (!String(sql).includes('INSERT INTO local_todos')) return
         if (globalThis.__noteSeen.failNext > 0) {
@@ -71,13 +81,31 @@ const STUB_SOURCES = {
         // ★ 负控开关：把查重**拆掉**，用来证明上面那条幂等断言真的有牙。
         if (globalThis.__noteSeen.neuterLookup) return null
         if (globalThis.__noteSeen.queryThrows) throw new Error('模拟查重失败')
-        const [noteId, title] = params
+        const [noteId, title, ownerUserId, ownerWorkspaceId] = params
         const dup = globalThis.__noteSeen.inserts.some(
-          (r) => r[1] === noteId && r[2] === title,
+          (r) => r[1] === noteId && r[2] === title
+            && r[11] === ownerUserId && r[12] === ownerWorkspaceId,
         )
         return dup ? { id: 'existing' } : null
       },
-    }`,
+      async query() { return [] },
+      // ⚠ 租约：真件的 captureOperation 返回一个带 owner.principal 的租约，
+      //   bindOperation 把它绑成可读写句柄（句柄上带 owner）。
+      captureOperation() {
+        const principal = { ...owner() }
+        return { kind: 'local-edit', owner: { principal } }
+      },
+      bindOperation(lease) {
+        const principal = lease.owner.principal
+        return {
+          owner: principal ? { ...principal } : null,
+          run: (...args) => stub.run(...args),
+          query: (...args) => stub.query(...args),
+          queryOne: (...args) => stub.queryOne(...args),
+        }
+      },
+    }
+    export const localDB = stub`,
   '../meetings/meeting-due-reminder': `
     export async function ensureTodoReminder(input) {
       globalThis.__noteSeen.reminders.push(input)
@@ -124,6 +152,7 @@ function reset() {
   seen.failNext = 0
   seen.neuterLookup = false
   seen.queryThrows = false
+  globalThis.__todoOwner = { userId: 'note-user', workspaceId: 'note-workspace' }
 }
 
 const item = (text, due, assignee = '') => ({ text, due, assignee })
