@@ -146,6 +146,14 @@ CREATE TABLE IF NOT EXISTS devices (
 );
 CREATE INDEX IF NOT EXISTS idx_devices_user ON devices(user_id);
 CREATE INDEX IF NOT EXISTS idx_devices_ws   ON devices(workspace_id);
+
+CREATE TABLE IF NOT EXISTS workspace_delegation_nonces (
+	issuer TEXT NOT NULL,
+	jti TEXT NOT NULL,
+	expires_at BIGINT NOT NULL,
+	PRIMARY KEY (issuer, jti)
+);
+CREATE INDEX IF NOT EXISTS idx_workspace_delegation_expiry ON workspace_delegation_nonces(expires_at);
 `)
 	return err
 }

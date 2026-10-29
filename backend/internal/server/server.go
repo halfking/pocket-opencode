@@ -747,6 +747,8 @@ func (s *Server) Handler() http.Handler {
 	// S0-A: Identity Core（工作空间 / 成员 / 设备）
 	mux.HandleFunc("/api/workspaces", s.requireAuth(s.handleWorkspaces))
 	mux.HandleFunc("/api/workspaces/", s.requireAuth(s.handleWorkspaceOps))
+	mux.HandleFunc("/internal/workspace-authority/workspaces", s.handleWorkspaceAuthority)
+	mux.HandleFunc("/internal/workspace-authority/workspaces/", s.handleWorkspaceAuthority)
 	// 语音笔记
 	mux.HandleFunc("/api/notes", s.requireAuth(s.handleNotes))
 	mux.HandleFunc("/api/notes/", s.requireAuth(s.handleNoteOperations))
