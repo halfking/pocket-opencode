@@ -134,7 +134,7 @@ CREATE INDEX IF NOT EXISTS idx_links_target ON local_smart_links(target_note_id)
 -- 待办（从笔记提取或手动创建）
 -- ============================================================
 CREATE TABLE IF NOT EXISTS local_todos (
-    id TEXT PRIMARY KEY,
+    id TEXT NOT NULL,
     note_id TEXT,
     title TEXT NOT NULL,
     description TEXT,
@@ -147,9 +147,21 @@ CREATE TABLE IF NOT EXISTS local_todos (
     meeting_id TEXT,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
+    -- ⚠ 归属列（2026-10-29）：这一行属于哪个账号/工作区。
+    --   缺这两列 = **归属未知**（历史行）：不上传、不被任何账号捡走、不删除。
+    --   新写入行必须带当前**已验证**会话的 userId/workspaceId。
+    owner_user_id TEXT NOT NULL DEFAULT '',
+    owner_workspace_id TEXT NOT NULL DEFAULT '',
+    -- ⚠ 主键**必须带归属**：两个账号用同一 todo id 会互相覆盖 ——
+    --   既是数据丢失，也是跨账号串号。
+    --   SQLite 的 NULL 不参与主键唯一性 ⇒ 归属未知的行用**空串**标记，
+    --   彼此仍按 id 唯一，但永远不匹配任何真实归属。
+    PRIMARY KEY (id, owner_user_id, owner_workspace_id),
+    -- ⚠ local_notes 的主键**不带**归属（笔记切片未做归属）⇒ 这条外键保持单列。
     FOREIGN KEY (note_id) REFERENCES local_notes(id) ON DELETE SET NULL
 );
 CREATE INDEX IF NOT EXISTS idx_todos_status ON local_todos(status);
+CREATE INDEX IF NOT EXISTS idx_todos_owner ON local_todos(owner_workspace_id, owner_user_id);
 CREATE INDEX IF NOT EXISTS idx_todos_due ON local_todos(due_at) WHERE due_at IS NOT NULL;
 
 -- ============================================================
@@ -301,7 +313,7 @@ CREATE TABLE IF NOT EXISTS local_vault_entries (
 -- 会议（Phase 6A）
 -- ============================================================
 CREATE TABLE IF NOT EXISTS local_meetings (
-    id TEXT PRIMARY KEY,
+    id TEXT NOT NULL,
     title TEXT,
     location TEXT,
     participants TEXT,               -- JSON array
@@ -322,16 +334,25 @@ CREATE TABLE IF NOT EXISTS local_meetings (
     archived_at INTEGER,             -- 非 NULL/非 0 = 已归档
     tags TEXT,                       -- JSON string[]
     topic TEXT,                      -- 会议主题（可与标题不同）
-    summary_skill TEXT DEFAULT 'meeting-minutes'
+    summary_skill TEXT DEFAULT 'meeting-minutes',
+    -- ⚠ 归属列（2026-10-29）：这一场会议属于哪个账号/工作区。
+    --   ⚠ 这一表装的是**整场转写 + 整场精校稿 + 录音分片** ⇒ 归属错一次
+    --     就是把 A 的私密会议内容摆到 B 的界面上。
+    --   缺这两列 = **归属未知**（历史行）：不上传、不被任何账号捡走、不删除。
+    owner_user_id TEXT NOT NULL DEFAULT '',
+    owner_workspace_id TEXT NOT NULL DEFAULT '',
+    -- ⚠ 主键**必须带归属**（同 id 覆盖 + 跨账号串号，见 local_todos 的说明）。
+    PRIMARY KEY (id, owner_user_id, owner_workspace_id)
 );
 CREATE INDEX IF NOT EXISTS idx_meetings_session ON local_meetings(session_id);
+CREATE INDEX IF NOT EXISTS idx_meetings_owner ON local_meetings(owner_workspace_id, owner_user_id);
 CREATE INDEX IF NOT EXISTS idx_meetings_updated ON local_meetings(updated_at DESC) WHERE deleted_at IS NULL;
 
 -- ============================================================
 -- 会议分段（声纹 + 时间戳）
 -- ============================================================
 CREATE TABLE IF NOT EXISTS local_meeting_segments (
-    id TEXT PRIMARY KEY,
+    id TEXT NOT NULL,
     meeting_id TEXT NOT NULL,
     speaker_label TEXT,              -- 说话人（声纹聚类后）
     lang TEXT DEFAULT 'zh',          -- 语种 ISO 639-1
@@ -344,32 +365,63 @@ CREATE TABLE IF NOT EXISTS local_meeting_segments (
     -- 默认 'asr' 是**保守**取值：历史行与未标注的行都按 ASR 处理，
     -- 即去重照常生效 —— 只有明确标成 'manual' 的行才豁免（见 meeting-dedup.ts）。
     origin TEXT DEFAULT 'asr',
-    FOREIGN KEY (meeting_id) REFERENCES local_meetings(id) ON DELETE CASCADE
+    -- ⚠ 归属列（2026-10-29）：段落在归属上**跟随它所属的会议**。
+    --   这里**冗余**存一份，而不是只靠 join 父表过滤 ——
+    --   理由：读段落的路径有多条（去重、渲染、搜索、导出），
+    --   每条都记得 join + 带归属条件，一次漏写就是一次越权读取。
+    --   冗余列让「过滤归属」在段表上可以**独立**成立，不依赖调用方记得带父表条件。
+    owner_user_id TEXT NOT NULL DEFAULT '',
+    owner_workspace_id TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (id, owner_user_id, owner_workspace_id),
+    -- ⚠⚠ 外键**必须与父表主键同形**（三列复合）。
+    --   父表主键已是 (id, owner_user_id, owner_workspace_id)，而 SQLite 要求
+    --   子表外键列**恰好对应父表的唯一索引列** ⇒ 单列外键
+    --   REFERENCES local_meetings(id) 会让每次插入报
+    --   「foreign key mismatch」（Android 端 setForeignKeyConstraintsEnabled(true)
+    --   ⇒ 外键**真的生效**，不是纸面约束）。
+    --   复合外键还有一层好处：跨归属的段落**插不进去**（父行不在同一归属里）。
+    FOREIGN KEY (meeting_id, owner_user_id, owner_workspace_id)
+        REFERENCES local_meetings(id, owner_user_id, owner_workspace_id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_segments_meeting ON local_meeting_segments(meeting_id, start_ms);
+CREATE INDEX IF NOT EXISTS idx_segments_owner ON local_meeting_segments(owner_workspace_id, owner_user_id);
 
 -- 声纹库（Phase 6A Sprint 3）
 CREATE TABLE IF NOT EXISTS local_voiceprints (
-    id TEXT PRIMARY KEY,
+    id TEXT NOT NULL,
     display_name TEXT,
     embedding BLOB,
     sample_count INTEGER DEFAULT 1,
-    created_at INTEGER NOT NULL
+    created_at INTEGER NOT NULL,
+    -- ⚠ 归属列（2026-10-29）：声纹库是**生物特征**（embedding）⇒ 归属错一次
+    --   是把 A 的声纹特征交给 B 用。缺列 = 归属未知（历史行），不被捡走。
+    owner_user_id TEXT NOT NULL DEFAULT '',
+    owner_workspace_id TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (id, owner_user_id, owner_workspace_id)
 );
+CREATE INDEX IF NOT EXISTS idx_voiceprints_owner ON local_voiceprints(owner_workspace_id, owner_user_id);
 
 -- 会议录音音频分片（E5-S2 崩溃安全：录音期间按 timescale 落盘，
 -- 应用异常退出后可凭分片恢复转写；转写成功后清理）
 CREATE TABLE IF NOT EXISTS local_meeting_audio_parts (
-    id TEXT PRIMARY KEY,
+    id TEXT NOT NULL,
     meeting_id TEXT NOT NULL,
     seq INTEGER NOT NULL,            -- 分片序号（拼接顺序）
     mime_type TEXT NOT NULL,
     data_base64 TEXT NOT NULL,
     file_path TEXT,                  -- 原生落盘路径；Web 可空，靠 data_base64
     created_at INTEGER NOT NULL,
-    FOREIGN KEY (meeting_id) REFERENCES local_meetings(id) ON DELETE CASCADE
+    -- ⚠ 归属列（2026-10-29）：录音分片是**原始音频** ⇒ 归属错一次就是把 A 的
+    --   录音交给 B。冗余存一份（同 local_meeting_segments 的理由：过滤要能独立成立）。
+    owner_user_id TEXT NOT NULL DEFAULT '',
+    owner_workspace_id TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (id, owner_user_id, owner_workspace_id),
+    -- ⚠ 与 local_meeting_segments 同款：复合外键，必须与父表主键同形。
+    FOREIGN KEY (meeting_id, owner_user_id, owner_workspace_id)
+        REFERENCES local_meetings(id, owner_user_id, owner_workspace_id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_audio_parts_meeting ON local_meeting_audio_parts(meeting_id, seq);
+CREATE INDEX IF NOT EXISTS idx_audio_parts_owner ON local_meeting_audio_parts(owner_workspace_id, owner_user_id);
 
 -- ============================================================
 -- 聊天消息（Phase 6B，三路抓取后本地存）
