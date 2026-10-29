@@ -1,8 +1,8 @@
+import { captureEmailOwnership } from './email-ownership'
 /**
  * invoices-store — 发票本地镜像。服务端是 SSOT；本地供首屏与离线。
  * 同步只 upsert，禁止整表 DELETE。
  */
-import { localDB } from '../../native/local-db'
 import type { EmailInvoice, EmailInvoiceStatus } from '../../api/email'
 import { pageHasMore } from '../../native/list-sync/page'
 import { INVOICE_PAGE_SIZE } from './invoice-list'
@@ -44,11 +44,6 @@ function rowToInvoice(r: Record<string, unknown>): LocalInvoice {
   }
 }
 
-function statusClause(status?: EmailInvoiceStatus | ''): { sql: string; vals: unknown[] } {
-  if (!status) return { sql: '', vals: [] }
-  return { sql: ' WHERE i.status = ?', vals: [status] }
-}
-
 export async function listLocal(status?: EmailInvoiceStatus | ''): Promise<LocalInvoice[]> {
   const page = await listLocalPage({ status, limit: 500, offset: 0 })
   return page.rows
@@ -58,14 +53,16 @@ export async function listLocalPage(opts: {
   status?: EmailInvoiceStatus | ''
   limit?: number
   offset?: number
-}): Promise<{ rows: LocalInvoice[]; hasMore: boolean }> {
+}, database?: object): Promise<{ rows: LocalInvoice[]; hasMore: boolean }> {
+  const { db, scope } = captureEmailOwnership(database)
   const limit = opts.limit ?? INVOICE_PAGE_SIZE
   const offset = opts.offset ?? 0
-  const { sql: where, vals } = statusClause(opts.status)
-  const rows = await localDB.query<Record<string, unknown>>(
+  const where = `WHERE ${scope.clause.replace(/owner_/g, 'i.owner_')}${opts.status ? ' AND i.status = ?' : ''}`
+  const vals = [...scope.params, ...(opts.status ? [opts.status] : [])]
+  const rows = await db.query<Record<string, unknown>>(
     `SELECT ${INVOICE_COLS}
      FROM local_email_invoices i
-     LEFT JOIN local_emails e ON e.id = i.email_id
+     LEFT JOIN local_emails e ON e.id = i.email_id AND e.owner_user_id = i.owner_user_id AND e.owner_workspace_id = i.owner_workspace_id
      ${where}
      ORDER BY COALESCE(i.email_date, e.date, i.created_at) DESC, i.id DESC
      LIMIT ? OFFSET ?`,
@@ -88,22 +85,23 @@ function upsertValues(inv: EmailInvoice, dirty: number): unknown[] {
 const UPSERT_SQL = `INSERT OR REPLACE INTO local_email_invoices
   (id, email_id, account_id, kind, category, title, seller, amount, currency,
    invoice_no, invoice_date, subject, status, extracted_by, created_at, updated_at,
-   file_name, file_source, attempts, last_error, feishu_sent_at, email_date, dirty, client_id)
-  VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+   file_name, file_source, attempts, last_error, feishu_sent_at, email_date, dirty, client_id, owner_user_id, owner_workspace_id)
+  VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
 
 /** 按页 upsert。本地 dirty 且更新不早于服务端时跳过，避免冲掉未回推改动。 */
-export async function upsertFromServer(invoices: EmailInvoice[]): Promise<number> {
+export async function upsertFromServer(invoices: EmailInvoice[], database?: object): Promise<number> {
+  const { db, scope, ownerValues } = captureEmailOwnership(database)
   let n = 0
   for (const inv of invoices) {
     if (!inv.id) continue
-    const local = await localDB.queryOne<{ dirty: number; updated_at: number }>(
-      'SELECT dirty, updated_at FROM local_email_invoices WHERE id = ?',
-      [inv.id],
+    const local = await db.queryOne<{ dirty: number; updated_at: number }>(
+      `SELECT dirty, updated_at FROM local_email_invoices WHERE id = ? AND ${scope.clause}`,
+      [inv.id, ...scope.params],
     )
     if (local && Number(local.dirty) === 1 && Number(local.updated_at) >= (inv.updatedAt || 0)) {
       continue
     }
-    await localDB.run(UPSERT_SQL, upsertValues(inv, 0))
+    await db.run(UPSERT_SQL, [...upsertValues(inv, 0), ...ownerValues])
     n++
   }
   return n
@@ -115,43 +113,48 @@ export async function syncFromServer(invoices?: EmailInvoice[]): Promise<number>
   return upsertFromServer(invoices)
 }
 
-export async function setLocalStatus(id: string, status: EmailInvoiceStatus): Promise<void> {
-  await localDB.run(
-    'UPDATE local_email_invoices SET status = ?, updated_at = ?, dirty = 1 WHERE id = ?',
-    [status, Math.floor(Date.now() / 1000), id],
+export async function setLocalStatus(id: string, status: EmailInvoiceStatus, database?: object): Promise<void> {
+  const { db, scope } = captureEmailOwnership(database)
+  await db.run(
+    `UPDATE local_email_invoices SET status = ?, updated_at = ?, dirty = 1 WHERE id = ? AND ${scope.clause}`,
+    [status, Math.floor(Date.now() / 1000), id, ...scope.params],
   )
 }
 
-export async function clearDirty(id: string): Promise<void> {
-  await localDB.run('UPDATE local_email_invoices SET dirty = 0 WHERE id = ?', [id])
+export async function clearDirty(id: string, database?: object): Promise<void> {
+  const { db, scope } = captureEmailOwnership(database)
+  await db.run(`UPDATE local_email_invoices SET dirty = 0 WHERE id = ? AND ${scope.clause}`, [id, ...scope.params])
 }
 
-export async function listDirty(): Promise<LocalInvoice[]> {
-  const rows = await localDB.query<Record<string, unknown>>(
+export async function listDirty(database?: object): Promise<LocalInvoice[]> {
+  const { db, scope } = captureEmailOwnership(database)
+  const rows = await db.query<Record<string, unknown>>(
     `SELECT ${INVOICE_COLS}
      FROM local_email_invoices i
-     LEFT JOIN local_emails e ON e.id = i.email_id
-     WHERE i.dirty = 1`,
+     LEFT JOIN local_emails e ON e.id = i.email_id AND e.owner_user_id = i.owner_user_id AND e.owner_workspace_id = i.owner_workspace_id
+     WHERE i.dirty = 1 AND ${scope.clause.replace(/owner_/g, 'i.owner_')}`, scope.params,
   )
   return rows.map(rowToInvoice)
 }
 
-export async function remapLocalId(localId: string, serverId: string): Promise<void> {
+export async function remapLocalId(localId: string, serverId: string, database?: object): Promise<void> {
+  const { db, scope } = captureEmailOwnership(database)
   if (!localId || !serverId || localId === serverId) return
-  const existing = await localDB.queryOne<{ id: string }>(
-    'SELECT id FROM local_email_invoices WHERE id = ?',
-    [serverId],
+  const existing = await db.queryOne<{ id: string }>(
+    `SELECT id FROM local_email_invoices WHERE id = ? AND ${scope.clause}`,
+    [serverId, ...scope.params],
   )
   if (existing) {
-    await localDB.run('DELETE FROM local_email_invoices WHERE id = ?', [localId])
+    await db.run(`DELETE FROM local_email_invoices WHERE id = ? AND ${scope.clause}`, [localId, ...scope.params])
     return
   }
-  await localDB.run(
-    'UPDATE local_email_invoices SET id = ?, client_id = ?, dirty = 0 WHERE id = ?',
-    [serverId, localId, localId],
+  await db.run(
+    `UPDATE local_email_invoices SET id = ?, client_id = ?, dirty = 0 WHERE id = ? AND ${scope.clause}`,
+    [serverId, localId, localId, ...scope.params],
   )
 }
 
-export async function removeLocal(id: string): Promise<void> {
-  await localDB.run('DELETE FROM local_email_invoices WHERE id = ?', [id])
+export async function removeLocal(id: string, database?: object): Promise<void> {
+  const { db, scope } = captureEmailOwnership(database)
+  await db.run(`DELETE FROM local_email_invoices WHERE id = ? AND ${scope.clause}`, [id, ...scope.params])
 }

@@ -127,6 +127,10 @@
 </template>
 
 <script setup lang="ts">
+import { captureEmailOwnership } from './email-ownership'
+
+import { bindEmailRequests } from './email-request-owner'
+
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
@@ -138,7 +142,8 @@ import AddToLearningButton from '../study/AddToLearningButton.vue'
 import { ErrorState } from '../../components'
 import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue'
 import { findContactByEmail } from '../contact/contacts-store'
-import { pickEmailDetailBody, readEmailBodyLocal, writeEmailBodyLocal } from './email-body-cache'
+import { captureEmailBodyContext, pickEmailDetailBody, readEmailBodyLocal, writeEmailBodyLocal, type BodyContext } from './email-body-cache'
+import { restoreEmailTranslations, translateEmailForOwner } from './email-translation-cache'
 import * as emailsStore from './emails-store'
 import type { LocalEmail } from './emails-store'
 import { recordOpsEntry } from './email-folders-store'
@@ -195,6 +200,7 @@ const bodyText = ref('')
 const bodyError = ref('')
 const lang = ref<EmailLang>('original')
 const langCache = ref<Record<string, string>>({})
+let loadedBodyContext: BodyContext | null = null
 const translating = ref(false)
 const langOpen = ref(false)
 const moreOpen = ref(false)
@@ -211,6 +217,7 @@ const sourceBody = computed(() => bodyText.value || email.value?.snippet || '')
  * 也让在途去重真正生效（否则两个模块各写一套，去重形同虚设）。
  */
 const bodyPrefetchDeps = {
+  captureScope: captureEmailBodyContext,
   fetchBody: (id: string) => emailApi.getEmailBody(id),
   readCache: (id: string) => readEmailBodyLocal(id),
   writeCache: (id: string, body: string) => writeEmailBodyLocal(id, body),
@@ -225,6 +232,8 @@ const displayBody = computed(() => resolveDisplayBody(sourceBody.value, langCach
 const htmlBody = ref('')
 
 async function load() {
+  const bodyContext = captureEmailBodyContext()
+  loadedBodyContext = null
   loading.value = true
   loadError.value = ''
   bodyText.value = ''
@@ -240,9 +249,11 @@ async function load() {
   loadingBody = true
   try {
     const found = await emailsStore.getEmail(route.params.id as string)
+    bodyContext.assertCurrent()
+    loadedBodyContext = found ? bodyContext : null
     email.value = found
     summary.value = (found?.aiSummary || '').trim()
-    langCache.value = found ? restoreTranslations(found.id) : {}
+    langCache.value = found ? restoreEmailTranslations(found.id, bodyContext) : {}
 
     // ★ 首屏分水岭：拿到本地记录就立刻解除整屏 loading。
     // 原实现要等「正文网络 → LLM 翻译 → 远程图」整条串行链跑完才解除，
@@ -267,7 +278,7 @@ async function load() {
     if (!found) return
 
     // ── P2 正文：后台推进，绝不阻塞首屏 ──
-    void loadBodyInBackground(found)
+    void loadBodyInBackground(found, bodyContext)
   } catch (e: any) {
     loadError.value = apiError(e, 'errors.loadEmailFailed')
     loading.value = shouldBlockScreen({ hasLocalRecord: false, failed: true })
@@ -283,11 +294,11 @@ async function load() {
  * 这样正文区几乎立刻就有东西可读，而网络请求（真机上最慢的一环，可能还要
  * 服务端回 IMAP）退到后台，拿到后再无缝替换。
  */
-async function loadBodyInBackground(found: NonNullable<typeof email.value>) {
+async function loadBodyInBackground(found: NonNullable<typeof email.value>, bodyContext: BodyContext) {
   bodyLoading.value = true
   let cached = ''
   try {
-    cached = await readEmailBodyLocal(found.id)
+    cached = await readEmailBodyLocal(found.id, bodyContext)
     if (cached) {
       bodyText.value = cached
     } else if (found.snippet) {
@@ -301,14 +312,14 @@ async function loadBodyInBackground(found: NonNullable<typeof email.value>) {
       hasCache: !!cached,
       bodyPurged: false,
       // 已在途说明点击时预取的请求正在进行，直接复用它而不是再发一次。
-      alreadyFetching: isBodyPrefetching(found.id),
+      alreadyFetching: isBodyPrefetching(found.id, bodyPrefetchDeps),
     })) {
       return
     }
 
     // 复用点击预取的在途 Promise（弱网下第二次并发请求正是拖垮首屏的元凶）。
     let remote = ''
-    if (isBodyPrefetching(found.id)) {
+    if (isBodyPrefetching(found.id, bodyPrefetchDeps)) {
       const r = await prefetchEmailBody(found.id, bodyPrefetchDeps)
       if (r.ok) {
         // purged 是合法答案（正文被清除了），不该报错。
@@ -324,9 +335,10 @@ async function loadBodyInBackground(found: NonNullable<typeof email.value>) {
       remote = extractEmailBody((await emailApi.getEmailBody(found.id)).body)
     }
 
+    bodyContext.assertCurrent()
     if (remote) {
       bodyText.value = pickEmailDetailBody(cached, remote)
-      void writeEmailBodyLocal(found.id, remote)
+      void writeEmailBodyLocal(found.id, remote, bodyContext)
     }
   } catch (e: any) {
     if (!bodyText.value) bodyError.value = apiError(e, 'errors.loadEmailBodyFailed')
@@ -339,7 +351,9 @@ async function loadBodyInBackground(found: NonNullable<typeof email.value>) {
   // 渲染路径会与原文不一致。
   const detected = detectBodyFormat(bodyText.value || found.snippet || '')
   renderBodySections(displayBody.value, detected)
-  void applyDefaultLang()
+  try { bodyContext.assertCurrent() } catch { return }
+  if (loadedBodyContext !== bodyContext) return
+  void applyDefaultLang(bodyContext, found.id)
   void renderBody()
 }
 
@@ -355,11 +369,12 @@ const summarizing = ref(false)
 const summary = ref('')
 
 async function runSummarize() {
+  const { db } = captureEmailOwnership()
   const mail = email.value
   if (!mail || summarizing.value) return
   summarizing.value = true
   try {
-    const res = await emailApi.summarizeEmail(mail.id)
+    const res = await bindEmailRequests(emailApi, db).summarizeEmail(mail.id)
     const text = (res.summary || '').trim()
     if (!text) {
       toast.error('未能生成总结，请稍后重试')
@@ -368,7 +383,7 @@ async function runSummarize() {
     summary.value = text
     // 同步进 email 对象与本地库：跨页面/重进详情时直接命中，不必再请求。
     mail.aiSummary = text
-    try { await emailsStore.setAiSummary(mail.id, text) } catch { /* 本地库失败不影响本次展示 */ }
+    try { await emailsStore.setAiSummary(mail.id, text, db) } catch { /* 本地库失败不影响本次展示 */ }
     markListDirty('email')
     toast.success(res.cached ? '已显示已有总结' : '总结已生成')
   } catch (e: any) {
@@ -379,6 +394,11 @@ async function runSummarize() {
 }
 
 async function chooseLang(next: EmailLang) {
+  const context = loadedBodyContext
+  const id = email.value?.id
+  if (!context || !id) return
+  try { context.assertCurrent() } catch { return }
+  const body = sourceBody.value
   langOpen.value = false
   if (next === 'original' || langCache.value[next] || !sourceBody.value) {
     lang.value = next
@@ -386,14 +406,14 @@ async function chooseLang(next: EmailLang) {
   }
   translating.value = true
   try {
-    const out = await translateBodyPipeline(sourceBody.value, next, llmChat)
+    const out = await translateEmailForOwner(id, next, () => translateBodyPipeline(body, next, llmChat), context)
+    if (loadedBodyContext !== context || email.value?.id !== id || sourceBody.value !== body) return
     langCache.value = { ...langCache.value, [next]: out }
-    persistTranslation(next, out)
     lang.value = next
   } catch (e: any) {
-    toast.error(apiError(e, 'errors.operateFailed'))
+    if (e?.name !== 'AbortError' && loadedBodyContext === context) toast.error(apiError(e, 'errors.operateFailed'))
   } finally {
-    translating.value = false
+    if (loadedBodyContext === context) translating.value = false
   }
 }
 
@@ -501,7 +521,9 @@ function renderBodySections(raw: string, format: BodyFormat) {
  * 译文是**整封正文**的翻译结果，引用/签名也一并翻了。逐段翻会让段落顺序、
  * 术语一致性都难以保证，收益远小于复杂度；引用折叠在渲染层做，与翻译解耦。
  */
-async function applyDefaultLang() {
+async function applyDefaultLang(context: BodyContext, id: string) {
+  try { context.assertCurrent() } catch { return }
+  if (loadedBodyContext !== context || email.value?.id !== id) return
   const body = sourceBody.value
   if (!body) return
   const target = DEFAULT_EMAIL_LANG
@@ -519,37 +541,19 @@ async function applyDefaultLang() {
   // 正文已经先渲染了，这里只是后台把原文换成译文。
   translating.value = true
   try {
-    const out = await translateBodyPipeline(body, target, llmChat)
+    const out = await translateEmailForOwner(id, target, () => translateBodyPipeline(body, target, llmChat), context)
+    if (loadedBodyContext !== context || email.value?.id !== id || sourceBody.value !== body) return
     langCache.value = { ...langCache.value, [target]: out }
-    persistTranslation(target, out)
     lang.value = target
     await renderBody()
   } catch {
+    if (loadedBodyContext !== context) return
+    try { context.assertCurrent() } catch { return }
     // 翻译不可用（没配 LLM / 网络问题）时静默退回原文，正文照常显示。
     lang.value = 'original'
   } finally {
-    translating.value = false
+    if (loadedBodyContext === context) translating.value = false
   }
-}
-
-// 翻译结果持久化(P0/G6):离开详情页即丢组件缓存会浪费已花的 token;
-// 以邮件 id 为键落 localStorage,重进(甚至重装前的同库)直接命中。
-function translationKey(id: string): string {
-  return `email_translations:${id}`
-}
-function restoreTranslations(id: string): Record<string, string> {
-  try {
-    const raw = localStorage.getItem(translationKey(id))
-    return raw ? (JSON.parse(raw) as Record<string, string>) : {}
-  } catch { return {} }
-}
-function persistTranslation(lang: EmailLang, text: string): void {
-  const id = email.value?.id
-  if (!id) return
-  try {
-    const merged = { ...restoreTranslations(id), [lang]: text }
-    localStorage.setItem(translationKey(id), JSON.stringify(merged))
-  } catch { /* 配额满等场景静默,仅退化为不缓存 */ }
 }
 
 function openCompose(kind: ComposeKind) {
@@ -571,6 +575,7 @@ function openCompose(kind: ComposeKind) {
 }
 
 async function onComposeSubmit(payload: { text: string; to: string[] }) {
+  const { db } = captureEmailOwnership()
   const mail = email.value
   if (!mail || sending.value) return
   const text = payload.text.trim()
@@ -584,7 +589,7 @@ async function onComposeSubmit(payload: { text: string; to: string[] }) {
   composeError.value = ''
   try {
     const reply = composeKind.value === 'reply'
-    await emailApi.sendEmail({
+    await bindEmailRequests(emailApi, db).sendEmail({
       accountId: mail.accountId,
       to: reply ? [mail.fromAddress] : payload.to,
       subject: reply ? defaultReplySubject(mail.subject || '') : defaultForwardSubject(mail.subject || ''),
@@ -600,6 +605,7 @@ async function onComposeSubmit(payload: { text: string; to: string[] }) {
 }
 
 async function createTodo(text: string) {
+  const { db } = captureEmailOwnership()
   if (!email.value || converting.value) return
   converting.value = true
   sending.value = true
@@ -636,18 +642,19 @@ const moveOpen = ref(false)
 
 /** 本地立即生效 + 记操作日志；服务端 move 尽力即时 IMAP MOVE，失败留待同步按钮。 */
 async function onMoveToFolder(folderName: string) {
+  const { db } = captureEmailOwnership()
   const mail = email.value
   if (!mail) return
   try {
     await recordOpsEntry({
       accountId: mail.accountId, emailId: mail.id, uid: mail.uid ?? 0,
       action: 'move', targetFolder: folderName, subject: mail.subject || '',
-    })
-    await emailsStore.setFolder(mail.id, folderName)
+    }, db)
+    await emailsStore.setFolder(mail.id, folderName, db)
     mail.folder = folderName
     markListDirty('email')
     try {
-      const rep = await emailApi.moveEmails([mail.id], folderName)
+      const rep = await bindEmailRequests(emailApi, db).moveEmails([mail.id], folderName)
       toast.success(rep.pending > 0 ? `已移入「${folderName || '收件箱'}」（待同步到服务器）` : `已移入「${folderName || '收件箱'}」`)
     } catch {
       toast.info(`已本地移入「${folderName || '收件箱'}」，稍后可在「邮件目录」同步到服务器`)
@@ -685,17 +692,17 @@ function goBack() {
 watch(() => route.params.id, load)
 onMounted(load)
 
-watch(emailIsLocal, (isLocal) => {
+watch([emailIsLocal, () => syncPolicy.activationReady, () => syncPolicy.activating], ([isLocal]) => {
   // Remove live image URLs immediately, and invalidate an older preload result.
   ++preloadSeq
-  if (isLocal) {
+  if (isLocal || !canLoadRemoteImages()) {
     htmlBody.value = hideRemoteImages(htmlBody.value)
     quotedHtml.value = hideRemoteImages(quotedHtml.value)
     signatureHtml.value = hideRemoteImages(signatureHtml.value)
     return
   }
-  // Cloud state is published before its confirmed cache. Render after both
-  // agree, and recheck in case another local decision wins before this tick.
+  // Effective mode precedes kernel admission. Retry when activation completes,
+  // then recheck in case another local decision wins before this tick.
   void nextTick(() => {
     if (!loadingBody && canLoadRemoteImages()) {
       renderBodySections(displayBody.value, bodyFormat.value)

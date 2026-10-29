@@ -1,3 +1,6 @@
+
+import { bindEmailRequests } from './email-request-owner'
+import { captureEmailOwnership } from './email-ownership'
 import { computed, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { emailApi, type EmailInvoice, type EmailInvoiceStatus } from '../../api/email'
@@ -151,9 +154,10 @@ export function useInvoiceList() {
     preview.value = null
   }
   async function openPreview(inv: EmailInvoice) {
+    const { db } = captureEmailOwnership()
     if (!invoiceHasFile(inv)) return
     try {
-      const blob = await emailApi.fetchInvoiceFile(inv.id)
+      const blob = await bindEmailRequests(emailApi, db).fetchInvoiceFile(inv.id)
       closePreview()
       // blob 一并留着：Android 上 PDF 由原生 PdfRenderer 渲染，src(blob:) 只给
       // 图片附件和 web/iOS 的 iframe 用（WebView 内核不渲染 PDF，iframe 会全白）。
@@ -170,12 +174,15 @@ export function useInvoiceList() {
       selected.value = selected.value.map((id) => (id === remap.localId ? remap.serverId : id))
     }
   }
-  async function pullServerPage(offset: number) {
+  async function pullServerPage(offset: number, database?: object) {
+    const { db } = captureEmailOwnership(database)
+    db.assertCurrent()
     const pulled = await pullInvoiceServerPage({
       status: filter.value || undefined,
       offset,
       current: all.value,
     })
+    db.assertCurrent()
     applyRemaps(pulled.remaps)
     all.value = pulled.rows
     nextOffset.value = pulled.rows.length
@@ -184,6 +191,7 @@ export function useInvoiceList() {
     void loadThumbs(pulled.rows)
   }
   async function load() {
+    const { db } = captureEmailOwnership()
     loading.value = true
     error.value = ''
     nextOffset.value = 0
@@ -193,7 +201,7 @@ export function useInvoiceList() {
         status: filter.value || undefined,
         limit: INVOICE_PAGE_SIZE,
         offset: 0,
-      })
+      }, db)
       all.value = sortInvoicesByReceived(page.rows)
       nextOffset.value = page.rows.length
       hasMore.value = page.hasMore
@@ -203,12 +211,14 @@ export function useInvoiceList() {
       if (page.rows.length) loading.value = false
     } catch { /* 本地库未就绪时仍拉服务端 */ }
     try {
-      await pullServerPage(0)
+      db.assertCurrent()
+      await pullServerPage(0, db)
     } catch (e: any) {
       if (all.value.length === 0) error.value = apiError(e, 'errors.loadInvoicesFailed')
     } finally {
       loading.value = false
     }
+    try { db.assertCurrent() } catch { return }
     void pushDirtyInvoices().catch((err) => {
       // 脏发票没能推上服务端 ⇒ 状态仍停在本地，下次拉列表会再推一次。
       // 这条链路上没有别处会报 ⇒ 留痕。
@@ -216,6 +226,7 @@ export function useInvoiceList() {
     })
   }
   async function loadMore() {
+    const { db } = captureEmailOwnership()
     if (loading.value || loadingMore.value || !hasMore.value) return
     loadingMore.value = true
     const offset = nextOffset.value
@@ -224,14 +235,14 @@ export function useInvoiceList() {
         status: filter.value || undefined,
         limit: INVOICE_PAGE_SIZE,
         offset,
-      })
+      }, db)
       if (local.rows.length) {
         all.value = mergeInvoicePages(all.value, local.rows)
         nextOffset.value = all.value.length
         hasMore.value = local.hasMore
         void loadThumbs(local.rows)
       }
-      await pullServerPage(offset)
+      await pullServerPage(offset, db)
     } catch (e: any) {
       toast.error(apiError(e, 'errors.loadEmailFailed'))
     } finally {
@@ -248,9 +259,10 @@ export function useInvoiceList() {
    *     服务端 handler 派生自 r.Context()，所以这是真终止。
    */
   async function runPipeline() {
+    const { db } = captureEmailOwnership()
     const controller = startPipelineRun()
     try {
-      const rep = await emailApi.runPipeline(controller.signal)
+      const rep = await bindEmailRequests(emailApi, db).runPipeline(controller.signal)
       // 判据在纯函数 pipelineToast 里（invoice-list.ts），这里只负责弹。
       // 流水线是会失败的：5 个账户全部 IMAP 超时、垃圾箱 MOVE 被服务器拒绝、
       // 发票下载失败……这些都会进 rep.errors，而原先这里无条件 toast.success，
@@ -272,9 +284,10 @@ export function useInvoiceList() {
     cancelPipelineRun()
   }
   async function syncAndReload() {
+    const { db } = captureEmailOwnership()
     syncing.value = true
     try {
-      await emailApi.syncNow()
+      await bindEmailRequests(emailApi, db).syncNow()
       toast.success('邮箱同步完成，正在提取发票…')
       await load()
     } catch (e: any) {
@@ -284,12 +297,13 @@ export function useInvoiceList() {
     }
   }
   async function exportGrid(grid: 2 | 3) {
+    const { db } = captureEmailOwnership()
     const ids = downloadableSelection()
     if (ids.length === 0) return
     exporting.value = true
     try {
-      const res = await emailApi.exportInvoicesGrid(ids, grid)
-      const saved = await downloadFile(res.file, await emailApi.fetchInvoiceExport(res.file), 'application/pdf')
+      const res = await bindEmailRequests(emailApi, db).exportInvoicesGrid(ids, grid)
+      const saved = await downloadFile(res.file, await bindEmailRequests(emailApi, db).fetchInvoiceExport(res.file), 'application/pdf')
       toast.success(`已导出 ${res.count} 张发票 · ${saved}`)
       await load()
     } catch (e: any) {
@@ -299,9 +313,10 @@ export function useInvoiceList() {
     }
   }
   async function pushFeishu() {
+    const { db } = captureEmailOwnership()
     pushing.value = true
     try {
-      const res = await emailApi.pushInvoicesToFeishu(selected.value.length ? selected.value : undefined)
+      const res = await bindEmailRequests(emailApi, db).pushInvoicesToFeishu(selected.value.length ? selected.value : undefined)
       // 推不出去时服务端会兜底建共享台账（飞书电子表格）。把链接留住给用户点，
       // 只弹一句 toast 的话，链接一闪而过等于没做。
       if (res.shareDocUrl) shareDocUrl.value = res.shareDocUrl
@@ -315,22 +330,25 @@ export function useInvoiceList() {
     }
   }
   async function downloadInvoice(inv: EmailInvoice) {
+    const { db } = captureEmailOwnership()
     try {
       const name = inv.fileName || `invoice-${inv.id}.pdf`
-      const saved = await downloadFile(name, await emailApi.fetchInvoiceFile(inv.id), 'application/pdf')
+      const saved = await downloadFile(name, await bindEmailRequests(emailApi, db).fetchInvoiceFile(inv.id), 'application/pdf')
       toast.success(saved)
     } catch (e: any) {
       toast.error(e instanceof DownloadUnsupportedError ? e.message : apiError(e, 'errors.operateFailed'))
     }
   }
   async function markFiled(inv: EmailInvoice) {
+    const { db } = captureEmailOwnership()
     inv.status = 'filed'
     applySummary(all.value)
     try {
-      await invoiceStore.setLocalStatus(inv.id, 'filed')
+      await invoiceStore.setLocalStatus(inv.id, 'filed', db)
       if (!isLocalOnlyId(inv.id)) {
-        await emailApi.setInvoiceStatus(inv.id, 'filed')
-        await invoiceStore.clearDirty(inv.id)
+        db.assertCurrent()
+        await bindEmailRequests(emailApi, db).setInvoiceStatus(inv.id, 'filed')
+        await invoiceStore.clearDirty(inv.id, db)
       }
       toast.success('已归档')
     } catch (e: any) {
@@ -338,19 +356,22 @@ export function useInvoiceList() {
     }
   }
   async function markNew(inv: EmailInvoice) {
+    const { db } = captureEmailOwnership()
     inv.status = 'new'
     applySummary(all.value)
     try {
-      await invoiceStore.setLocalStatus(inv.id, 'new')
+      await invoiceStore.setLocalStatus(inv.id, 'new', db)
       if (!isLocalOnlyId(inv.id)) {
-        await emailApi.setInvoiceStatus(inv.id, 'new')
-        await invoiceStore.clearDirty(inv.id)
+        db.assertCurrent()
+        await bindEmailRequests(emailApi, db).setInvoiceStatus(inv.id, 'new')
+        await invoiceStore.clearDirty(inv.id, db)
       }
     } catch (e: any) {
       toast.error(apiError(e, 'errors.operateFailed'))
     }
   }
   async function book(inv: EmailInvoice) {
+    const { db } = captureEmailOwnership()
     if (bookingId.value) return
     // 兜底：按钮已禁用，但 book() 也可能被直接调用（快捷键 / 将来复用）。
     // 财务账本没有 currency 概念，外币金额进去就是错账。
@@ -361,12 +382,12 @@ export function useInvoiceList() {
     }
     bookingId.value = inv.id
     try {
-      const res = await financeApi.create({
+      const res = await bindEmailRequests(financeApi, db).create({
         type: 'expense', amount: Number(inv.amount) || 0, category: inv.category || '其他',
         note: `[发票] ${inv.seller || inv.subject || '未知销售方'}`, source: 'invoice', note_ref: `invoice:${inv.id}`,
       })
       if (inv.status !== 'filed') {
-        try { await emailApi.setInvoiceStatus(inv.id, 'filed'); inv.status = 'filed'; applySummary(all.value) } catch { /* ignore */ }
+        try { await bindEmailRequests(emailApi, db).setInvoiceStatus(inv.id, 'filed'); inv.status = 'filed'; applySummary(all.value) } catch { /* ignore */ }
       }
       toast.success(`${res.created ? '已入账' : '该发票已入账'} ${invoiceMoney(inv)}`)
     } catch (e: any) {
@@ -398,11 +419,12 @@ export function useInvoiceList() {
     }
   }
   async function remove(inv: EmailInvoice) {
+    const { db } = captureEmailOwnership()
     try {
-      await invoiceStore.removeLocal(inv.id)
+      await invoiceStore.removeLocal(inv.id, db)
       all.value = all.value.filter((i) => i.id !== inv.id)
       applySummary(all.value)
-      if (!isLocalOnlyId(inv.id)) await emailApi.deleteInvoice(inv.id)
+      if (!isLocalOnlyId(inv.id)) await bindEmailRequests(emailApi, db).deleteInvoice(inv.id)
       toast.success('已删除')
     } catch (e: any) {
       toast.error(apiError(e, 'errors.operateFailed'))

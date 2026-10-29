@@ -52,6 +52,7 @@ export type PrefetchResult =
 const inflight = new Map<string, Promise<PrefetchResult>>()
 
 export interface PrefetchDeps {
+  captureScope?: () => { key: string; assertCurrent(): void }
   /** 取远端正文（通常是 emailApi.getEmailBody）。 */
   fetchBody: (id: string) => Promise<{ body: string; purged?: boolean; source?: string }>
   /** 读本地缓存。 */
@@ -63,8 +64,8 @@ export interface PrefetchDeps {
 }
 
 /** 某封邮件是否正在预取。 */
-export function isBodyPrefetching(id: string): boolean {
-  return inflight.has(id)
+export function isBodyPrefetching(id: string, deps?: PrefetchDeps): boolean {
+  return inflight.has(JSON.stringify([deps?.captureScope?.().key ?? '', id]))
 }
 
 /** 当前在途的预取数（测试与调试用）。 */
@@ -85,15 +86,21 @@ export function inflightBodyCount(): number {
 export function prefetchEmailBody(id: string, deps: PrefetchDeps): Promise<PrefetchResult> {
   if (!id) return Promise.resolve({ ok: false, error: new Error('邮件 id 为空') })
 
-  const existing = inflight.get(id)
+  const scope = deps.captureScope?.()
+  const key = JSON.stringify([scope?.key ?? '', id])
+  const existing = inflight.get(key)
   if (existing) return existing
 
   const task = (async (): Promise<PrefetchResult> => {
     // 先看缓存：命中就没必要联网（正文本就在本地）。
+    scope?.assertCurrent()
     const cached = await deps.readCache(id).catch(() => '')
+    scope?.assertCurrent()
     if (cached) return { ok: true, body: cached, purged: false }
 
+    scope?.assertCurrent()
     const remote = await deps.fetchBody(id)
+    scope?.assertCurrent()
     if (remote?.purged || remote?.source === 'purged') {
       return { ok: true, body: '', purged: true }
     }
@@ -108,10 +115,10 @@ export function prefetchEmailBody(id: string, deps: PrefetchDeps): Promise<Prefe
   })()
     .catch((error): PrefetchResult => ({ ok: false, error }))
     .finally(() => {
-      inflight.delete(id)
+      inflight.delete(key)
     })
 
-  inflight.set(id, task)
+  inflight.set(key, task)
   return task
 }
 
@@ -129,7 +136,9 @@ export async function prefetchEmailBodySeries(
   deps: PrefetchDeps,
   limit = 3,
 ): Promise<void> {
+  const scope = deps.captureScope?.()
   for (const id of ids.slice(0, limit)) {
+    scope?.assertCurrent()
     if (!id) continue
     await prefetchEmailBody(id, deps)
   }

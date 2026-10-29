@@ -21,11 +21,21 @@ export async function createPrivacyBrowserFixture() {
     import {createRouter,createMemoryHistory} from 'vue-router';
     import {createI18n} from 'vue-i18n';
     import View from '/src/features/email/EmailDetailView.vue';
-    import {useSyncPolicyStore,syncPolicyTransport} from '/src/stores/syncPolicyStore.ts';
+    import {useSyncPolicyStore,syncPolicyTransport,installSyncPolicyScopeResolver,installSyncPolicyActivationHost} from '/src/stores/syncPolicyStore.ts';
+    import {LocalDbLeases} from '/src/native/local-db-leases.ts';
     const pinia=createPinia();setActivePinia(pinia);
+    const principal={userId:'privacy-fixture',workspaceId:'privacy-workspace'};
+    const scope=JSON.stringify([principal.userId,principal.workspaceId]);
+    const leases=new LocalDbLeases();
+    leases.activateOwner(leases.prepareOwner(principal),()=>undefined);
+    installSyncPolicyScopeResolver(()=>scope);
+    installSyncPolicyActivationHost({
+      captureContext:()=>({scope,intentScope:scope,workspace:principal.workspaceId,isCurrent:()=>true}),
+      activate:async(modes,publish)=>{leases.activateSnapshot(leases.prepareSnapshot(modes),publish)},
+    });
     const policy=useSyncPolicyStore();
     const modules={...policy.modules,email:new URL(location.href).searchParams.get('mode')||'local'};
-    policy.applyPolicy({system_default:'local',allow_override:true,modules},Date.now());
+    await policy.applyPolicy({system_default:'local',allow_override:true,modules},Date.now());
     syncPolicyTransport.putModules=async modules=>({system_default:'local',allow_override:true,modules});
     const calls=[];const originalFetch=window.fetch.bind(window);
     window.fetch=(url,options)=>{if(String(url).includes('__privacy_resource__'))calls.push({url:String(url),mode:policy.modules.email});return originalFetch(url,options)};
@@ -55,7 +65,7 @@ export async function createPrivacyBrowserFixture() {
       load(id) {
         if (id === '\0privacy-entry') return entry
         if (id === '\0mail-store') return `export const getEmail=async()=>({id:'fixture',fromAddress:'fixture@example.invalid',subject:'Privacy fixture',isRead:true,date:0,aiSummary:'本地摘要'});export const markRead=async()=>{};export const setAiSummary=async()=>{}`
-        if (id === '\0body-cache') return `export const pickEmailDetailBody=(cached,remote)=>remote||cached;export const readEmailBodyLocal=async()=>${JSON.stringify(fixtureBody)};export const writeEmailBodyLocal=async()=>{}`
+        if (id === '\0body-cache') return `export const captureEmailBodyContext=()=>({key:'fixture',assertCurrent(){}});export const pickEmailDetailBody=(cached,remote)=>remote||cached;export const readEmailBodyLocal=async()=>${JSON.stringify(fixtureBody)};export const writeEmailBodyLocal=async()=>{}`
         if (id === '\0mail-api') return `export const emailApi={getEmailBody:async()=>({body:${JSON.stringify(fixtureBody)}})}`
         if (id === '\0api') return 'export const api={}'
         if (id === '\0contacts') return 'export const findContactByEmail=async()=>null'

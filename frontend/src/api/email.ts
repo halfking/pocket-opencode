@@ -6,7 +6,7 @@ import { http, LONG_REQUEST_TIMEOUT_MS, ApiError, type HttpOptions } from './htt
 import { assertNotHTML } from './jsonGuard'
 import { resolveRuntimeApiBase } from '../config/api-base'
 import { fetchWithTimeout } from './fetch-timeout.ts'
-import { useAuthStore } from '../stores/auth'
+import { useAuthStore, captureAuthSession, assertAuthSession } from '../stores/auth'
 import { chunkByLimit } from '../utils/chunk'
 import { isEmailStaleWrite } from './email-upload-policy.ts'
 
@@ -560,12 +560,17 @@ export const emailApi = {
    *   ⇒ 这里按服务端上限**分批**发 ⇒ 选多少封都能真的清干净。
    */
   async purgeEmails(ids: string[]): Promise<{ purged: number }> {
+    const session = captureAuthSession(useAuthStore())
+    const assertCurrent = () => assertAuthSession(session.owner, session)
     let purged = 0
     for (const chunk of chunkByLimit(ids, PURGE_MAX_IDS_PER_REQUEST)) {
+      assertCurrent()
       const r = await http<{ purged: number }>('/api/emails/purge', {
         method: 'POST',
         body: JSON.stringify({ ids: chunk }),
+        assertCurrent,
       })
+      assertCurrent()
       purged += r?.purged ?? 0
     }
     return { purged }

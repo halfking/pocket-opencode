@@ -96,8 +96,8 @@ describe('后台收信的触发条件', () => {
 
   it('未登录时不发起，也不占用节流窗口', () => {
     assert.match(
-      hostCode,
-      /if\s*\(!useAuthStore\(\)\.token\)\s*return/,
+      fnBody(hostCode, 'const kick = () => {'),
+      /if\s*\(!auth\.isAuthenticated\)\s*return/,
       '未登录时仍会发起收信：白打一趟需要 token 的接口，' +
       '还会把节流窗口记在这次注定失败的尝试上',
     )
@@ -194,10 +194,11 @@ describe('判据自检：负控必须转红', () => {
   })
 
   it('未登录门禁去掉 → 转红', () => {
-    const broken = hostCode.replace(/if\s*\(!useAuthStore\(\)\.token\)\s*return/, 'void 0')
-    assert.notEqual(broken, hostCode, '负控样本没有真的去掉门禁（替换没命中）')
+    const original = kickBody()
+    const broken = original.replace(/if\s*\(!auth\.isAuthenticated\)\s*return/, 'void 0')
+    assert.notEqual(broken, original, '负控样本没有真的去掉门禁（替换没命中）')
     assert.equal(
-      /if\s*\(!useAuthStore\(\)\.token\)\s*return/.test(broken),
+      /if\s*\(!auth\.isAuthenticated\)\s*return/.test(broken),
       false,
       '负控本该转红却判成了通过',
     )

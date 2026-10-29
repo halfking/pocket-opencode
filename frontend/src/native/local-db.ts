@@ -17,6 +17,7 @@ import { isWebFallbackRuntime } from './runtime-platform'
 import type { SqlDb, SqlRow } from './sqlDb'
 import { SCHEMA_SQL, splitSqlStatements, normalizeTriggerForPluginExecute } from './schema'
 import { localDbNeedsOpen } from './local-db-init'
+import { migrateEmailOwnership } from './email-ownership-migration'
 import { assertNoTransactionControl, assertReadOnlyQuery } from './local-db-sql-guard'
 import type { SyncModule, SyncMode } from '../api/syncPolicyContract'
 import { LocalDbLeases, type OperationLease, type OperationOptions, type OwnerIdentity, type ActivationPublisher, type PolicySnapshot, type PolicySnapshotPublisher } from './local-db-leases'
@@ -951,6 +952,8 @@ class LocalDB {
       } catch (e) {
         console.warn('[localDB] email folders v1 migration failed:', e)
       }
+      // Fail closed: continuing with an unscoped schema would expose another account's mail.
+      await migrateEmailOwnership(this.conn)
       this.initialized = true
     })
   }

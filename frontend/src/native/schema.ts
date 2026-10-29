@@ -168,7 +168,7 @@ CREATE INDEX IF NOT EXISTS idx_todos_due ON local_todos(due_at) WHERE due_at IS 
 -- 邮箱账户（凭证本地加密）
 -- ============================================================
 CREATE TABLE IF NOT EXISTS local_email_accounts (
-    id TEXT PRIMARY KEY,
+    id TEXT NOT NULL,
     display_name TEXT NOT NULL,
     email_address TEXT NOT NULL,
     imap_host TEXT NOT NULL,
@@ -181,14 +181,17 @@ CREATE TABLE IF NOT EXISTS local_email_accounts (
     rules TEXT,                      -- JSON: {whitelist, keywords, blacklist}
     enabled INTEGER DEFAULT 1,
     created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL DEFAULT 0
+    updated_at INTEGER NOT NULL DEFAULT 0,
+    owner_user_id TEXT NOT NULL DEFAULT '',
+    owner_workspace_id TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (id, owner_user_id, owner_workspace_id)
 );
 
 -- ============================================================
 -- 邮件（抓取后本地存）
 -- ============================================================
 CREATE TABLE IF NOT EXISTS local_emails (
-    id TEXT PRIMARY KEY,
+    id TEXT NOT NULL,
     account_id TEXT NOT NULL,
     message_id TEXT,                 -- IMAP Message-ID，去重用
     uid INTEGER,
@@ -210,8 +213,11 @@ CREATE TABLE IF NOT EXISTS local_emails (
     deleted_at INTEGER NOT NULL DEFAULT 0,
     body_purged INTEGER NOT NULL DEFAULT 0,
     folder TEXT DEFAULT '',          -- 所在目录（IMAP 信箱名，空 = INBOX；2026-10-01）
-    UNIQUE(account_id, message_id),
-    FOREIGN KEY (account_id) REFERENCES local_email_accounts(id) ON DELETE CASCADE
+    owner_user_id TEXT NOT NULL DEFAULT '',
+    owner_workspace_id TEXT NOT NULL DEFAULT '',
+    UNIQUE(account_id, message_id, owner_user_id, owner_workspace_id),
+    FOREIGN KEY (account_id, owner_user_id, owner_workspace_id) REFERENCES local_email_accounts(id, owner_user_id, owner_workspace_id) ON DELETE CASCADE,
+    PRIMARY KEY (id, owner_user_id, owner_workspace_id)
 );
 CREATE INDEX IF NOT EXISTS idx_emails_date ON local_emails(date DESC);
 CREATE INDEX IF NOT EXISTS idx_emails_updated ON local_emails(updated_at DESC);
@@ -223,7 +229,7 @@ CREATE INDEX IF NOT EXISTS idx_emails_unread ON local_emails(is_read) WHERE is_r
 -- 列已内联在 local_emails 的 CREATE TABLE 里（旧库由 local-db 迁移补列）。
 -- ============================================================
 CREATE TABLE IF NOT EXISTS local_email_folders (
-    id TEXT PRIMARY KEY,
+    id TEXT NOT NULL,
     account_id TEXT NOT NULL,
     name TEXT NOT NULL,              -- 完整 IMAP 信箱名
     display_name TEXT NOT NULL DEFAULT '',
@@ -233,7 +239,10 @@ CREATE TABLE IF NOT EXISTS local_email_folders (
     email_count INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
-    UNIQUE(account_id, name)
+    owner_user_id TEXT NOT NULL DEFAULT '',
+    owner_workspace_id TEXT NOT NULL DEFAULT '',
+    UNIQUE(account_id, name, owner_user_id, owner_workspace_id),
+    PRIMARY KEY (id, owner_user_id, owner_workspace_id)
 );
 
 -- ============================================================
@@ -241,7 +250,7 @@ CREATE TABLE IF NOT EXISTS local_email_folders (
 -- 服务端 /api/emails/ops（幂等键去重），由服务端经 IMAP 真正迁移/删除。
 -- ============================================================
 CREATE TABLE IF NOT EXISTS local_email_ops (
-    id TEXT PRIMARY KEY,
+    id TEXT NOT NULL,
     account_id TEXT NOT NULL,
     email_id TEXT NOT NULL,
     uid INTEGER NOT NULL DEFAULT 0,
@@ -251,7 +260,10 @@ CREATE TABLE IF NOT EXISTS local_email_ops (
     status TEXT NOT NULL DEFAULT 'pending', -- pending | pushed | applied | failed
     error TEXT NOT NULL DEFAULT '',
     created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL
+    updated_at INTEGER NOT NULL,
+    owner_user_id TEXT NOT NULL DEFAULT '',
+    owner_workspace_id TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (id, owner_user_id, owner_workspace_id)
 );
 CREATE INDEX IF NOT EXISTS idx_email_ops_status ON local_email_ops(status);
 
@@ -261,7 +273,7 @@ CREATE INDEX IF NOT EXISTS idx_email_ops_status ON local_email_ops(status);
 -- 正文遵循本地库零知识原则仍留在服务端加密缓存里。
 -- ============================================================
 CREATE TABLE IF NOT EXISTS local_email_invoices (
-    id TEXT PRIMARY KEY,             -- 服务端 invoice id
+    id TEXT NOT NULL,             -- 服务端 invoice id
     email_id TEXT NOT NULL,          -- 来源邮件
     account_id TEXT,
     kind TEXT,                       -- e-invoice / vat-special / paper / receipt / bill
@@ -284,7 +296,10 @@ CREATE TABLE IF NOT EXISTS local_email_invoices (
     feishu_sent_at INTEGER DEFAULT 0,
     email_date INTEGER DEFAULT 0,
     dirty INTEGER DEFAULT 0,
-    client_id TEXT DEFAULT ''
+    client_id TEXT DEFAULT '',
+    owner_user_id TEXT NOT NULL DEFAULT '',
+    owner_workspace_id TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (id, owner_user_id, owner_workspace_id)
 );
 CREATE INDEX IF NOT EXISTS idx_email_invoices_status ON local_email_invoices(status);
 CREATE INDEX IF NOT EXISTS idx_email_invoices_date ON local_email_invoices(invoice_date DESC);

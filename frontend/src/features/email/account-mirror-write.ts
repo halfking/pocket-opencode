@@ -6,6 +6,7 @@
  *   - 新行 INSERT 写非空占位符，不能绑 '' / null
  *   - 已有行只 UPDATE 元数据，绝不走 UPSERT（UPSERT 会先按 INSERT 做 NOT NULL）
  */
+import { ownerColumnValues, ownerScopeSql, type MeetingOwner } from '../../native/meeting-ownership.ts'
 export const REMOTE_MIRROR_CREDENTIAL = '[remote-mirror]'
 
 export interface MirrorAccountInput {
@@ -24,29 +25,31 @@ export function buildMirrorAccountWrite(
   local: { createdAt: number } | null,
   acc: MirrorAccountInput,
   createdAt: number,
+  owner: MeetingOwner | null = null,
 ): { sql: string; values: unknown[] } {
+  const scope = ownerScopeSql(owner)
   if (local) {
     return {
       sql: `UPDATE local_email_accounts SET
         display_name=?, email_address=?, imap_host=?, imap_port=?,
         auth_type=?, sync_interval_min=?, enabled=?, updated_at=?
-      WHERE id=?`,
+      WHERE id=? AND ${scope.clause}`,
       values: [
         acc.displayName, acc.emailAddress, acc.imapHost, acc.imapPort,
         acc.authType ?? 'password', acc.syncIntervalMin, acc.enabled ? 1 : 0,
-        acc.updatedAt, acc.id,
+        acc.updatedAt, acc.id, ...scope.params,
       ],
     }
   }
   return {
     sql: `INSERT INTO local_email_accounts
        (id, display_name, email_address, imap_host, imap_port, auth_type, credential_encrypted,
-        sync_interval_min, enabled, created_at, updated_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+        sync_interval_min, enabled, created_at, updated_at, owner_user_id, owner_workspace_id)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     values: [
       acc.id, acc.displayName, acc.emailAddress, acc.imapHost, acc.imapPort,
       acc.authType ?? 'password', REMOTE_MIRROR_CREDENTIAL,
-      acc.syncIntervalMin, acc.enabled ? 1 : 0, createdAt, acc.updatedAt,
+      acc.syncIntervalMin, acc.enabled ? 1 : 0, createdAt, acc.updatedAt, ...ownerColumnValues(owner),
     ],
   }
 }

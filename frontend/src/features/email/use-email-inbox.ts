@@ -1,3 +1,7 @@
+
+import { captureEmailOwnership } from './email-ownership'
+
+import { bindEmailRequests } from './email-request-owner'
 import { computed, ref } from 'vue'
 import { emailApi, type EmailClassifyReport } from '../../api/email'
 // 合并说明：main 侧还有一个 TimeoutError 的 import，解冲突时取了本分支这一侧
@@ -66,22 +70,23 @@ export function useEmailInbox() {
     searchOpen.value = false
   }
 
-  async function confirmPurge(): Promise<string[]> {
+  async function confirmPurge(database?: object): Promise<string[]> {
+  const { db } = captureEmailOwnership(database)
     const ids = selectedIdList(selected.value)
     if (!ids.length) return []
     purgeBusy.value = true
     try {
-      await purgeEmailsLocal(ids)
+      await purgeEmailsLocal(ids, Date.now(), undefined, db)
       // ⚠ §922：服务端那步失败**不能静默**。
       //   旧实现是空 catch，注释写着「本地已删，服务端稍后重试」——
       //   但**根本没有任何重试机制**（`emails-store.ts` 那条是服务端→本地的
       //   反向同步，不是重试队列）⇒ 那句注释是**说谎的**。
       //   ⇒ 旧实现的具体后果：选中超过 100 封时服务端 400 被吞 ⇒
       //   **本地已清、服务端没清**（正文其实没清掉），界面却毫无提示。
-      //   ⇒ 现在 `emailApi.purgeEmails` 已按服务端上限分批，不再撞那道闸；
+      //   ⇒ 现在 `bindEmailRequests(emailApi, db).purgeEmails` 已按服务端上限分批，不再撞那道闸；
       //   这里仍保留 catch，但**必须出声** ——「本地清成功」与「服务端清成功」是两件事。
       try {
-        await emailApi.purgeEmails(ids)
+        await bindEmailRequests(emailApi, db).purgeEmails(ids)
       } catch (e) {
         console.warn(
           `[email] 已清空本地 ${ids.length} 封的正文，但服务端清理失败 ⇒ 服务端正文未清，需重试。`,
@@ -108,6 +113,7 @@ export function useEmailInbox() {
   }
 
   async function runClassify(list: LocalEmail[]): Promise<LocalEmail[]> {
+    const { db } = captureEmailOwnership()
     if (classifying.value) return list
     classifyHint.value = '正在归类…'
     const controller = startClassifyRun()
@@ -126,7 +132,7 @@ export function useEmailInbox() {
       // 「判据存在、循环没接」。而 runClassifyLoop 额外覆盖一种 main 侧测不到的
       // 零进展形态（claimed>0 但 remaining 不降，见其 no-progress 分支 (b)）。
       const loop = await runClassifyLoop<EmailClassifyReport>({
-        fetchBatch: () => emailApi.classifyInbox(20, controller.signal),
+        fetchBatch: () => bindEmailRequests(emailApi, db).classifyInbox(20, controller.signal),
         onBatch: async (report) => {
           const done = report.classified ?? 0
           const remain = report.remaining ?? 0
@@ -136,7 +142,7 @@ export function useEmailInbox() {
             const category = normalizeEmailCategory(row.category)
             if (row.emailId && category && !row.error) {
               await emailsStore.setAiClassification(
-                row.emailId, category, row.importance || '', row.summary || '', '',
+                row.emailId, category, row.importance || '', row.summary || '', '', db,
               )
             }
           }

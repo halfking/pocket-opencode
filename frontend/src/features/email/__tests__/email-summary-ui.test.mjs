@@ -68,7 +68,7 @@ test('总结请求有进行中状态保护，避免重复点击并发触发', ()
 })
 
 test('总结成功后写回本地库，保证重进详情不必再请求', () => {
-  assert.match(view, /emailsStore\.setAiSummary\(mail\.id, text\)/, '应落本地库')
+  assert.match(view, /emailsStore\.setAiSummary\(mail\.id, text, db\)/, '应落本地库')
   assert.match(view, /mail\.aiSummary = text/, '应同步进内存对象')
   // 落库必须是「只写摘要」，不能连带覆盖分类字段。
   // 注意把范围限定在 setAiSummary 函数体内：若用整文件正则，
