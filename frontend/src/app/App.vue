@@ -41,12 +41,13 @@
       <router-view v-slot="{ Component, route: viewRoute }">
         <Transition
           :name="transitionName"
+          :css="emailViewBoundary.canRender(viewRoute.path)"
           @enter="onTransitionEnter"
           @leave="onTransitionLeave"
           @after-leave="onAfterTransitionLeave"
         >
-          <KeepAlive :include="LIST_CACHE_NAMES">
-            <component :is="Component" :key="viewRoute.path" />
+          <KeepAlive :include="emailViewBoundary.cacheNames.value">
+            <component v-if="emailViewBoundary.canRender(viewRoute.path)" :is="Component" :key="emailViewBoundary.viewKey(viewRoute.path)" />
           </KeepAlive>
         </Transition>
       </router-view>
@@ -66,12 +67,14 @@ import AppLayout from './AppLayout.vue'
 import UpdateChecker from '../components/UpdateChecker.vue'
 import ConfirmDialog from '../components/base/ConfirmDialog.vue'
 import { LIST_CACHE_NAMES } from '../composables/use-list-scene'
+import { useEmailViewBoundary } from '../features/email/email-view-boundary'
 import { useSwipeBack } from '../composables/useSwipeBack'
 import { useStatusBar } from '../composables/useStatusBar'
 import { installKeyboardInset } from '../composables/useKeyboardInset'
 import { transitionState, consumeSwipeFromPx } from './routeTransition'
 
 const auth = useAuthStore()
+const emailViewBoundary = useEmailViewBoundary(auth, LIST_CACHE_NAMES)
 const { t } = useI18n()
 const updateChecker = ref<InstanceType<typeof UpdateChecker> | null>(null)
 

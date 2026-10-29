@@ -249,6 +249,10 @@
 </template>
 
 <script setup lang="ts">
+import { captureEmailOwnership } from './email-ownership'
+
+import { bindEmailRequests } from './email-request-owner'
+
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
@@ -261,7 +265,7 @@ import { emailApi } from '../../api/email'
 import type { LocalEmail } from './emails-store'
 import { pullInboxFromServer, readInboxPage } from './email-inbox-page'
 import { prefetchEmailBody, prefetchEmailBodySeries } from './email-body-prefetch.ts'
-import { readEmailBodyLocal, writeEmailBodyLocal } from './email-body-cache.ts'
+import { captureEmailBodyContext, readEmailBodyLocal, writeEmailBodyLocal } from './email-body-cache.ts'
 import { extractEmailBody } from './email-body-format.ts'
 import { recordOpsEntry } from './email-folders-store'
 import EmailFolderPickerSheet from './EmailFolderPickerSheet.vue'
@@ -407,6 +411,7 @@ const refreshing = ref(false)
  *  - 在途去重真正生效（否则两个模块各写一套，重复请求照旧）。
  */
 const bodyPrefetchDeps = {
+  captureScope: captureEmailBodyContext,
   fetchBody: (id: string) => emailApi.getEmailBody(id),
   readCache: (id: string) => readEmailBodyLocal(id),
   writeCache: (id: string, body: string) => writeEmailBodyLocal(id, body),
@@ -440,6 +445,7 @@ async function onClassify() {
 }
 
 async function onPurge() {
+  const { db } = captureEmailOwnership()
   if (!inbox.selectedCount.value) return
   // §854：原为 `window.confirm(...)`。项目已确立 ConfirmDialog 为**全局唯一**确认弹窗
   // （components/base/ConfirmDialog.vue:2 原文），并在 5 处改过（ScheduledTaskListView /
@@ -461,9 +467,9 @@ async function onPurge() {
     await recordOpsEntry({
       accountId: m.accountId, emailId: m.id, uid: m.uid ?? 0,
       action: 'delete', targetFolder: '', subject: m.subject || '',
-    })
+    }, db)
   }
-  await inbox.confirmPurge()
+  await inbox.confirmPurge(db)
   await load()
 }
 
@@ -494,6 +500,7 @@ async function showLocal(replace = true) {
  * 目录页的「同步到服务器」按钮收口。
  */
 async function onMoveToFolder(folderName: string) {
+  const { db } = captureEmailOwnership()
   const ids = [...inbox.selected.value]
   if (!ids.length || moveBusy.value) return
   moveBusy.value = true
@@ -503,14 +510,14 @@ async function onMoveToFolder(folderName: string) {
       await recordOpsEntry({
         accountId: m.accountId, emailId: m.id, uid: m.uid ?? 0,
         action: 'move', targetFolder: folderName, subject: m.subject || '',
-      })
-      await emailsStore.setFolder(m.id, folderName)
+      }, db)
+      await emailsStore.setFolder(m.id, folderName, db)
       m.folder = folderName
     }
     inbox.exitSelect()
     if (activeFolder.value) await load()
     try {
-      const rep = await emailApi.moveEmails(ids, folderName)
+      const rep = await bindEmailRequests(emailApi, db).moveEmails(ids, folderName)
       syncHint.value = rep.pending > 0
         ? `已移动 ${rep.moved} 封（${rep.pending} 封待同步到服务器）`
         : `已移动 ${rep.moved} 封到${folderName || '收件箱'}`
@@ -527,11 +534,12 @@ async function onMoveToFolder(folderName: string) {
  * dryRun 预览数量，确认后整批移入「通知」目录。
  */
 async function onOrganize() {
+  const { db } = captureEmailOwnership()
   if (organizing.value) return
   organizing.value = true
   inbox.moreOpen.value = false
   try {
-    const preview = await emailApi.organizeInbox({ dryRun: true })
+    const preview = await bindEmailRequests(emailApi, db).organizeInbox({ dryRun: true })
     const count = preview.count ?? 0
     if (count === 0) {
       syncHint.value = '没有识别到系统通知类邮件'
@@ -543,7 +551,7 @@ async function onOrganize() {
       message: `识别到 ${count} 封系统通知类邮件，移入目录「${folder}」？`,
       confirmText: '整理',
     })) return
-    const rep = await emailApi.organizeInbox({ folder })
+    const rep = await bindEmailRequests(emailApi, db).organizeInbox({ folder })
     const moved = rep.moved ?? 0
     syncHint.value = rep.pending && rep.pending > 0
       ? `已整理 ${moved} 封进「${folder}」（${rep.pending} 封待同步到服务器）`

@@ -76,8 +76,8 @@ async function fixture(run) {
     globalThis[key] = { ...definitions, CapacitorSQLite: registerPlugin(key, { web: async () => platform }) }
     ;({ localDB: db } = await vite.ssrLoadModule('/src/native/local-db.ts'))
     await db.init('')
-    await db.run("INSERT INTO local_email_accounts (id,display_name,email_address,imap_host,credential_encrypted,created_at,updated_at) VALUES ('account-1','Local account','reader@example.com','imap.localhost','ENCRYPTED',1,1)")
-    await db.run("INSERT INTO local_emails (id,account_id,from_address,subject,snippet,date,created_at,updated_at) VALUES ('email-1','account-1','sender@example.com','Local subject','PRIVATE_LOCAL_SNIPPET',1,1,1)")
+    await db.run("INSERT INTO local_email_accounts (id,display_name,email_address,imap_host,credential_encrypted,created_at,updated_at,owner_user_id,owner_workspace_id) VALUES ('account-1','Local account','reader@example.com','imap.localhost','ENCRYPTED',1,1,'fixture-user','fixture-workspace')")
+    await db.run("INSERT INTO local_emails (id,account_id,from_address,subject,snippet,date,created_at,updated_at,owner_user_id,owner_workspace_id) VALUES ('email-1','account-1','sender@example.com','Local subject','PRIVATE_LOCAL_SNIPPET',1,1,1,'fixture-user','fixture-workspace')")
     const policy = await vite.ssrLoadModule('/src/stores/syncPolicyStore.ts')
     policy.installSyncPolicyStorage(storage)
     const policyStore = policy.useSyncPolicyStore()
@@ -105,11 +105,20 @@ async function fixture(run) {
     const search = await vite.ssrLoadModule('/src/features/email/email-inbox-search.ts')
     const intact = async () => {
       await settled()
+      const original = await db.queryOne("SELECT subject,snippet FROM local_emails WHERE owner_user_id='fixture-user'")
+      assert.equal(original.subject, 'Local subject')
+      assert.equal(original.snippet, 'PRIVATE_LOCAL_SNIPPET')
       const rows = await page.readInboxPage('')
-      assert.equal(rows[0]?.subject, 'Local subject')
-      assert.equal(search.matchInboxSearch(rows[0], { q: 'PRIVATE_LOCAL_SNIPPET' }), true)
-      assert.equal(await cache.readEmailBodyLocal('email-1'), 'PRIVATE_ORIGINAL_BODY')
-      assert.equal((await emails.listAccounts())[0]?.displayName, 'Local account')
+      if (auth.userId === 'fixture-user') {
+        assert.equal(rows[0]?.subject, 'Local subject')
+        assert.equal(search.matchInboxSearch(rows[0], { q: 'PRIVATE_LOCAL_SNIPPET' }), true)
+        assert.equal(await cache.readEmailBodyLocal('email-1'), 'PRIVATE_ORIGINAL_BODY')
+        assert.equal((await emails.listAccounts())[0]?.displayName, 'Local account')
+      } else {
+        assert.deepEqual(rows, [])
+        assert.deepEqual(await emails.listAccounts(), [])
+        assert.equal(await cache.readEmailBodyLocal('email-1'), '')
+      }
     }
     await run({ emails, page, accounts, cache, setMode, requests, intact, db, sqlite: raw, driver, UtilsSQLite, auth, track, settled,
       setResponse: fn => { respond = fn }, onQuery: fn => { afterQuery = fn }, onRun: fn => { afterRun = fn }, vite })
@@ -205,7 +214,7 @@ test('local user deletion remains available in local mode', () => fixture(async 
 
 for (const transition of ['A→B', 'A→B→A']) {
   async function switcher(f) {
-    const login = id => f.auth.setAuthWithWorkspace(`${id}-token`, id, `user-${id}`, `ws-${id}`)
+    const login = id => f.auth.setAuthWithWorkspace(`${id}-token`, id, id === 'A' ? 'fixture-user' : `user-${id}`, id === 'A' ? 'fixture-workspace' : `ws-${id}`)
     await login('A')
     await f.setMode('cloud')
     let switched = false
@@ -241,16 +250,16 @@ for (const transition of ['A→B', 'A→B→A']) {
     const switchIdentity = await switcher(f)
     f.onRun(sql => { if (sql.startsWith('UPDATE local_emails SET snippet')) switchIdentity() })
     await assert.rejects(f.emails.syncEmailsFromServerDetailed(), { name: 'AbortError' })
-    assert.equal(await f.cache.readEmailBodyLocal('email-1'), 'PRIVATE_ORIGINAL_BODY')
+    assert.equal(await f.cache.readEmailBodyLocal('email-1'), f.auth.userId === 'fixture-user' ? 'PRIVATE_ORIGINAL_BODY' : '')
   }))
 
   test(`${transition} during account cleanup cannot delete local accounts or continue the old refresh`, () => fixture(async f => {
     const switchIdentity = await switcher(f)
     await f.emails.updateAccount('account-1', { emailAddress: 'reader@test.local' })
     f.setResponse(() => ({ accounts: [] }))
-    f.onQuery(query => { if (query.includes('FROM local_email_accounts ORDER BY')) switchIdentity() })
+    f.onQuery(query => { if (query.includes('FROM local_email_accounts WHERE') && query.includes('ORDER BY')) switchIdentity() })
     await f.page.pullInboxFromServer()
-    assert.equal((await f.emails.listAccounts()).length, 1)
+    assert.equal((await f.emails.listAccounts()).length, f.auth.userId === 'fixture-user' ? 1 : 0)
     assert.equal(f.requests.length, 1)
     await f.intact()
   }))

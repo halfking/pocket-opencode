@@ -1,3 +1,5 @@
+import { captureEmailBodyContext } from './email-body-cache'
+import { useAuthStore } from '../../stores/auth'
 /**
  * 发票卡片缩略图（2026-10-01 真机审计 P0：标题图必须是 PDF 内容的缩略图）。
  *
@@ -16,7 +18,7 @@
  * 策略：先并发请求后端 thumb（命中就是零延迟，且服务端可缓存）；
  * 没命中再走原生渲染。这样扫描件发票不受影响，文字型发票被补齐。
  */
-import { ref, type Ref } from 'vue'
+import { ref, watch, type Ref } from 'vue'
 // §888：收编到公共实现（这一份原本会 reject，行为等价）。
 import { blobToBase64 } from '../../utils/base64.ts'
 import { Directory, Filesystem } from '@capacitor/filesystem'
@@ -47,30 +49,38 @@ export async function loadInvoiceThumb(
   inv: InvoiceThumbSource,
   options: { width?: number } = {},
 ): Promise<string> {
+  const context = captureEmailBodyContext()
+  if (!context.key) return ''
   // 1) 先试后端 thumb：图片类发票直接命中，扫描件 PDF 也命中。
   try {
     const blob = await emailApi.fetchInvoiceThumb(inv.id)
+    context.assertCurrent()
     return URL.createObjectURL(blob)
   } catch {
     // 404 = 后端抽不出位图，继续走原生渲染。
   }
 
   // 2) 原生 PdfRenderer 渲染第 1 页（仅文字型 PDF 走这里，决策见 invoice-thumb-plan）。
+  context.assertCurrent()
   if (planThumbStrategy(inv.fileName, hasNativeDocumentSupport()) !== 'native-render') return ''
 
-  const cacheName = thumbCacheFileName(inv.id)
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify([context.key, inv.id])))
+  const cacheName = thumbCacheFileName(Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join(''))
   try {
     const file = await emailApi.fetchInvoiceFile(inv.id)
+    context.assertCurrent()
     await Filesystem.writeFile({
       path: cacheName,
       data: await blobToBase64(file),
       directory: Directory.Cache,
     })
+    context.assertCurrent()
     const rendered = await documentNative.renderPdfPage({
       path: cacheName,
       page: 0,
       width: renderWidthForViewport(options.width ?? THUMB_CSS_WIDTH),
     })
+    context.assertCurrent()
     return rendered.image || ''
   } catch {
     return ''
@@ -126,6 +136,7 @@ export function useInvoiceThumbs() {
 
   async function loadThumbs(list: InvoiceThumbSource[]): Promise<void> {
     // 空字符串是「已尝试且没有图」的终态，不该每翻一页就重试一轮。
+    const context = captureEmailBodyContext()
     const pending = list.filter((inv) => inv.id && !(inv.id in thumbs.value))
     if (!pending.length) return
 
@@ -136,7 +147,12 @@ export function useInvoiceThumbs() {
         const i = cursor++
         if (i >= pending.length) return
         const inv = pending[i]
+        context.assertCurrent()
         const url = await loadInvoiceThumb(inv)
+        try { context.assertCurrent() } catch (error) {
+          if (url.startsWith('blob:')) URL.revokeObjectURL(url)
+          throw error
+        }
         const next = { ...thumbs.value }
         // 失败也记空串，标记为终态，避免对必然失败的条目反复重试。
         next[inv.id] = url
@@ -157,5 +173,7 @@ export function useInvoiceThumbs() {
     return loading.value.has(id)
   }
 
+  const auth = useAuthStore()
+  watch(() => auth.activationVersion, () => { revokeAll(); loading.value = new Set() }, { flush: 'sync' })
   return { thumbs, loading, thumbFor, isLoading, loadThumbs, revokeAll, applyRemaps }
 }

@@ -37,7 +37,9 @@ function openMirrorDb() {
       sync_interval_min INTEGER,
       enabled INTEGER,
       created_at INTEGER NOT NULL,
-      updated_at INTEGER
+      updated_at INTEGER,
+      owner_user_id TEXT NOT NULL DEFAULT 'alice',
+      owner_workspace_id TEXT NOT NULL DEFAULT 'one'
     )
   `)
   return db
@@ -66,7 +68,7 @@ test('upsert with NULL credential fails NOT NULL even when the row exists', () =
 })
 
 test('new remote account inserts a non-empty placeholder credential', () => {
-  const stmt = buildMirrorAccountWrite(null, acc, 123)
+  const stmt = buildMirrorAccountWrite(null, acc, 123, { userId: 'alice', workspaceId: 'one' })
   assert.match(stmt.sql, /INSERT INTO local_email_accounts/)
   assert.match(stmt.sql, /credential_encrypted/)
   assert.equal(stmt.values.includes(''), false)
@@ -81,7 +83,7 @@ test('new remote account inserts a non-empty placeholder credential', () => {
 })
 
 test('existing account updates metadata and never touches credential_encrypted', () => {
-  const stmt = buildMirrorAccountWrite({ createdAt: 1 }, { ...acc, displayName: 'Renamed' }, 1)
+  const stmt = buildMirrorAccountWrite({ createdAt: 1 }, { ...acc, displayName: 'Renamed' }, 1, { userId: 'alice', workspaceId: 'one' })
   assert.match(stmt.sql, /^UPDATE local_email_accounts/)
   assert.equal(stmt.sql.includes('credential_encrypted'), false)
 

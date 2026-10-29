@@ -99,7 +99,7 @@ test('导出结果要真的落到用户手上：调 API 之后必须下载文件
   const src = readSrc(path.join(FEAT, 'use-invoice-list.ts'))
   assert.match(
     src,
-    /emailApi\.exportInvoicesGrid\(/,
+    /bindEmailRequests\(emailApi, db\)\.exportInvoicesGrid\(/,
     'use-invoice-list 没有调用 exportInvoicesGrid —— 按钮点了不会产生任何 PDF',
   )
   // 这一条是整个文件里最要紧的：只拿一个文件名、不把字节交给用户，
@@ -107,7 +107,7 @@ test('导出结果要真的落到用户手上：调 API 之后必须下载文件
   // 用户手上什么都没有。同构事故已经在 PipelineReport.ShareDocCSV 上发生过一次。
   assert.match(
     src,
-    /emailApi\.fetchInvoiceExport\(/,
+    /bindEmailRequests\(emailApi, db\)\.fetchInvoiceExport\(/,
     'use-invoice-list 调完 API 却没有 fetchInvoiceExport —— PDF 留在服务端，' +
       '用户点了「导出」什么也拿不到，而界面上什么异常都没有',
   )

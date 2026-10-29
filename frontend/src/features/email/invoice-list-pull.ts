@@ -1,3 +1,4 @@
+import { captureEmailSyncOperation } from './email-sync-guard'
 import { emailApi, type EmailInvoice, type EmailInvoiceStatus } from '../../api/email'
 import { isLocalOnlyId } from '../../native/list-sync/planner'
 import { INVOICE_PAGE_SIZE, sortInvoicesByReceived } from './invoice-list'
@@ -17,20 +18,22 @@ export async function pullInvoiceServerPage(input: {
   remaps: IdRemap[]
   totals: InvoiceTotals
 }> {
+  const operation = captureEmailSyncOperation()
   const pageSize = input.pageSize ?? INVOICE_PAGE_SIZE
   const res = await emailApi.listInvoices(input.status, pageSize, input.offset)
+  operation.assertCurrent()
   const page = res.invoices ?? []
   const remaps = matchInvoiceForAlign(input.current, page)
   for (const remap of remaps) {
-    await invoiceStore.remapLocalId(remap.localId, remap.serverId)
+    await invoiceStore.remapLocalId(remap.localId, remap.serverId, operation.db)
   }
-  await invoiceStore.upsertFromServer(page)
+  await invoiceStore.upsertFromServer(page, operation.db)
   const window = Math.max(pageSize, input.current.length, input.offset + page.length)
   const local = await invoiceStore.listLocalPage({
     status: input.status,
     limit: window,
     offset: 0,
-  })
+  }, operation.db)
   return {
     rows: sortInvoicesByReceived(local.rows),
     hasMore: res.hasMore ?? local.hasMore,
@@ -42,10 +45,13 @@ export async function pullInvoiceServerPage(input: {
 }
 
 export async function pushDirtyInvoices(): Promise<void> {
-  const dirty = await invoiceStore.listDirty()
+  const operation = captureEmailSyncOperation()
+  const dirty = await invoiceStore.listDirty(operation.db)
   for (const inv of dirty) {
     if (isLocalOnlyId(inv.id)) continue
+    operation.assertCurrent()
     await emailApi.setInvoiceStatus(inv.id, inv.status)
-    await invoiceStore.clearDirty(inv.id)
+    operation.assertCurrent()
+    await invoiceStore.clearDirty(inv.id, operation.db)
   }
 }

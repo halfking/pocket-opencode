@@ -1,3 +1,4 @@
+import { captureEmailOwnership } from './email-ownership'
 /**
  * emails-store.ts — 🦞 龙虾钳子：邮箱助手本地存储
  *
@@ -73,11 +74,12 @@ export interface ListFilter {
 
 // ---- 账户 ----
 
-export async function listAccounts(db: Pick<typeof localDB, 'query'> = localDB): Promise<EmailAccount[]> {
+export async function listAccounts(database: Pick<typeof localDB, 'query'> = localDB): Promise<EmailAccount[]> {
+  const { db, scope } = captureEmailOwnership(database)
   const rows = await db.query<any>(
     `SELECT id, display_name, email_address, imap_host, imap_port, auth_type,
             sync_interval_min, last_synced_uid, last_synced_at, enabled, created_at, updated_at
-     FROM local_email_accounts ORDER BY created_at`,
+     FROM local_email_accounts WHERE ${scope.clause} ORDER BY created_at`, scope.params,
   )
   return rows.map(rowToAccount)
 }
@@ -86,30 +88,33 @@ export async function saveAccount(input: {
   displayName: string; emailAddress: string; imapHost: string; imapPort?: number
   password: string; authType?: string; syncIntervalMin?: number
 }): Promise<string> {
+  const { db, ownerValues } = captureEmailOwnership()
   const id = `acct-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
   const encrypted = await encryptCredential(input.password)
   // created_at / updated_at 用**秒**：updated_at 是 LWW 的基准，必须与服务端
   // 同单位（服务端 email_accounts.updated_at 是 Unix 秒）。此前这里写
   // Date.now()（毫秒），而读侧又不归一，导致同一列混着两种单位。
   const now = Math.floor(Date.now() / 1000)
-  await localDB.run(
+  await db.run(
     `INSERT INTO local_email_accounts
        (id, display_name, email_address, imap_host, imap_port, auth_type, credential_encrypted,
-        sync_interval_min, enabled, created_at, updated_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+        sync_interval_min, enabled, created_at, updated_at, owner_user_id, owner_workspace_id)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     [id, input.displayName, input.emailAddress, input.imapHost, input.imapPort ?? 993,
-     input.authType ?? 'password', encrypted, input.syncIntervalMin ?? 15, 1, now, now],
+     input.authType ?? 'password', encrypted, input.syncIntervalMin ?? 15, 1, now, now, ...ownerValues],
   )
   return id
 }
 
-export async function deleteAccount(id: string, db: Pick<typeof localDB, 'run'> = localDB): Promise<void> {
-  await db.run('DELETE FROM local_email_accounts WHERE id = ?', [id])
+export async function deleteAccount(id: string, database: Pick<typeof localDB, 'run'> = localDB): Promise<void> {
+  const { db, scope } = captureEmailOwnership(database)
+  await db.run(`DELETE FROM local_email_accounts WHERE id = ? AND ${scope.clause}`, [id, ...scope.params])
 }
 
 /** 按 ID 取单个账户（EmailAccountSetup 编辑模式依赖）。 */
 export async function getAccount(id: string): Promise<EmailAccount | null> {
-  const row = await localDB.queryOne<{
+  const { db, scope } = captureEmailOwnership()
+  const row = await db.queryOne<{
     id: string; display_name: string; email_address: string; imap_host: string;
     imap_port: number; auth_type: string; sync_interval_min: number;
     last_synced_uid: number | null; last_synced_at: number | null;
@@ -117,8 +122,8 @@ export async function getAccount(id: string): Promise<EmailAccount | null> {
   }>(
     `SELECT id, display_name, email_address, imap_host, imap_port, auth_type,
             sync_interval_min, last_synced_uid, last_synced_at, enabled, created_at, updated_at
-     FROM local_email_accounts WHERE id = ?`,
-    [id],
+     FROM local_email_accounts WHERE id = ? AND ${scope.clause}`,
+    [id, ...scope.params],
   )
   return row ? rowToAccount(row) : null
 }
@@ -128,6 +133,7 @@ export async function getAccount(id: string): Promise<EmailAccount | null> {
  * 注意：不更新 credential_encrypted —— 改密码请走专用接口。
  */
 export async function updateAccount(id: string, patch: Partial<EmailAccount>): Promise<void> {
+  const { db, scope } = captureEmailOwnership()
   const sets: string[] = []
   const vals: unknown[] = []
   if (patch.displayName !== undefined) { sets.push('display_name = ?'); vals.push(patch.displayName) }
@@ -143,7 +149,7 @@ export async function updateAccount(id: string, patch: Partial<EmailAccount>): P
   sets.push('updated_at = ?')
   vals.push(patch.updatedAt ?? now)
   vals.push(id)
-  await localDB.run(`UPDATE local_email_accounts SET ${sets.join(', ')} WHERE id = ?`, vals)
+  await db.run(`UPDATE local_email_accounts SET ${sets.join(', ')} WHERE id = ? AND ${scope.clause}`, [...vals, ...scope.params])
 }
 
 /**
@@ -163,16 +169,17 @@ export async function writeAccountIfNewer(acc: {
   enabled: boolean
   updatedAt: number
 }, operation = captureEmailSyncOperation()): Promise<boolean> {
-  const { db } = operation
+  const { db, scope } = captureEmailOwnership(operation?.db)
   operation.assertCurrent()
   const local = await db.queryOne<{ created_at: number; updated_at: number | null }>(
-    'SELECT created_at, updated_at FROM local_email_accounts WHERE id = ?', [acc.id],
+    `SELECT created_at, updated_at FROM local_email_accounts WHERE id = ? AND ${scope.clause}`, [acc.id, ...scope.params],
   )
   if (local && normalizeAccountStamp(local.updated_at) >= acc.updatedAt) return false
   const stmt = buildMirrorAccountWrite(
     local ? { createdAt: local.created_at } : null,
     acc,
     local?.created_at ?? Date.now(),
+    operation.owner,
   )
   operation.assertCurrent()
   // Compare the raw stamp read above so concurrent local edits win, including
@@ -185,9 +192,10 @@ export async function writeAccountIfNewer(acc: {
 
 // ---- 邮件 ----
 
-export async function listEmails(filter: ListFilter = {}): Promise<LocalEmail[]> {
-  let sql = 'SELECT * FROM local_emails WHERE 1=1'
-  const vals: unknown[] = []
+export async function listEmails(filter: ListFilter = {}, database?: object): Promise<LocalEmail[]> {
+  const { db, scope } = captureEmailOwnership(database)
+  let sql = `SELECT * FROM local_emails WHERE ${scope.clause}`
+  const vals: unknown[] = [...scope.params]
   if (filter.accountId) { sql += ' AND account_id = ?'; vals.push(filter.accountId) }
   if (filter.category) { sql += ' AND category = ?'; vals.push(filter.category) }
   if (filter.importance) { sql += ' AND importance = ?'; vals.push(filter.importance) }
@@ -201,19 +209,19 @@ export async function listEmails(filter: ListFilter = {}): Promise<LocalEmail[]>
   sql += ' AND IFNULL(deleted_at, 0) = 0'
   sql += ' ORDER BY date DESC LIMIT ? OFFSET ?'
   vals.push(filter.limit ?? 200, filter.offset ?? 0)
-  const rows = await localDB.query<any>(sql, vals)
+  const rows = await db.query<any>(sql, vals)
   return rows.map(rowToEmail)
 }
 
 /** 插入/更新邮件（IMAP 抓取后调用）。返回 true=新插入。 */
 export async function upsertEmail(e: Partial<LocalEmail> & { accountId: string; fromAddress: string; date: number }, operation?: EmailSyncOperation): Promise<boolean> {
-  const db = operation?.db ?? localDB.bindOperation(localDB.captureOperation({ kind: 'local-edit' }))
+  const { db, scope, ownerValues } = captureEmailOwnership(operation?.db)
   const id = e.id || `email-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
   const now = Date.now()
   const updatedAt = e.updatedAt && e.updatedAt > 0 ? e.updatedAt : operation ? 0 : now
   const existing = await db.queryOne<{ deleted_at: number | null; body_purged: number | null; folder: string | null }>(
-    'SELECT deleted_at, body_purged, folder FROM local_emails WHERE id = ?',
-    [id],
+    `SELECT deleted_at, body_purged, folder FROM local_emails WHERE id = ? AND ${scope.clause}`,
+    [id, ...scope.params],
   )
   if (existing && (Number(existing.deleted_at) > 0 || Number(existing.body_purged) === 1)) {
     return false
@@ -231,9 +239,9 @@ export async function upsertEmail(e: Partial<LocalEmail> & { accountId: string; 
       `INSERT INTO local_emails
          (id, account_id, message_id, uid, from_address, from_name, subject, snippet,
           date, is_read, is_starred, category, importance, ai_summary, suggested_action, action_reason,
-          has_attachments, created_at, updated_at, folder)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-       ON CONFLICT(id) DO UPDATE SET
+          has_attachments, created_at, updated_at, folder, owner_user_id, owner_workspace_id)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+       ON CONFLICT(id, owner_user_id, owner_workspace_id) DO UPDATE SET
          subject=excluded.subject,
          snippet=excluded.snippet,
          from_name=excluded.from_name,
@@ -260,7 +268,7 @@ export async function upsertEmail(e: Partial<LocalEmail> & { accountId: string; 
        e.subject ?? null, e.snippet ?? null, e.date, e.isRead ? 1 : 0, e.isStarred ? 1 : 0,
        e.category ?? null, e.importance ?? null, e.aiSummary ?? null, e.suggestedAction ?? null,
        e.actionReason ?? null,
-       e.hasAttachments ? 1 : 0, now, updatedAt, folder],
+       e.hasAttachments ? 1 : 0, now, updatedAt, folder, ...ownerValues],
     )
     operation?.assertCurrent()
     return changed > 0
@@ -286,15 +294,17 @@ export async function upsertEmail(e: Partial<LocalEmail> & { accountId: string; 
  * 而本地镜像不会收到任何通知。详见 handoff round24 §25。
  */
 export async function deleteEmailsByIds(ids: string[]): Promise<void> {
+  const { db, scope } = captureEmailOwnership()
   for (const id of ids) {
     if (!id) continue
-    await localDB.run('DELETE FROM local_emails WHERE id = ?', [id])
+    await db.run(`DELETE FROM local_emails WHERE id = ? AND ${scope.clause}`, [id, ...scope.params])
   }
 }
 
-export async function maxEmailUpdatedAt(db: Pick<typeof localDB, 'queryOne'> = localDB): Promise<number> {
+export async function maxEmailUpdatedAt(database: Pick<typeof localDB, 'queryOne'> = localDB): Promise<number> {
+  const { db, scope } = captureEmailOwnership(database)
   const row = await db.queryOne<{ m: number | null }>(
-    'SELECT MAX(updated_at) AS m FROM local_emails',
+    `SELECT MAX(updated_at) AS m FROM local_emails WHERE ${scope.clause}`, scope.params,
   )
   return Number(row?.m) || 0
 }
@@ -305,9 +315,10 @@ export async function maxEmailUpdatedAt(db: Pick<typeof localDB, 'queryOne'> = l
  * 缓存自愈要用它和服务端行数比大小。直接用 listEmails({limit:1}).length
  * 只能拿到「有没有」而拿不到「有多少」，判定不出服务端是否领先。
  */
-export async function countLocalEmails(db: Pick<typeof localDB, 'queryOne'> = localDB): Promise<number> {
+export async function countLocalEmails(database: Pick<typeof localDB, 'queryOne'> = localDB): Promise<number> {
+  const { db, scope } = captureEmailOwnership(database)
   const row = await db.queryOne<{ c: number | null }>(
-    'SELECT COUNT(*) AS c FROM local_emails WHERE IFNULL(deleted_at, 0) = 0',
+    `SELECT COUNT(*) AS c FROM local_emails WHERE IFNULL(deleted_at, 0) = 0 AND ${scope.clause}`, scope.params,
   )
   return Number(row?.c) || 0
 }
@@ -319,9 +330,10 @@ export async function countLocalEmails(db: Pick<typeof localDB, 'queryOne'> = lo
  * 刷新，一封一年前的邮件重跑后 updated_at 也是今天，拿它判新鲜度会把
  * 陈旧缓存误判成「很新」，正好漏掉用户报的这类丢失。
  */
-export async function newestLocalEmailDate(db: Pick<typeof localDB, 'queryOne'> = localDB): Promise<number> {
+export async function newestLocalEmailDate(database: Pick<typeof localDB, 'queryOne'> = localDB): Promise<number> {
+  const { db, scope } = captureEmailOwnership(database)
   const row = await db.queryOne<{ m: number | null }>(
-    'SELECT MAX(date) AS m FROM local_emails WHERE IFNULL(deleted_at, 0) = 0',
+    `SELECT MAX(date) AS m FROM local_emails WHERE IFNULL(deleted_at, 0) = 0 AND ${scope.clause}`, scope.params,
   )
   return Number(row?.m) || 0
 }
@@ -418,23 +430,27 @@ export async function syncEmailsFromServerDetailed(limit = 200, since = 0, opera
   return { inserted: n, received: incoming.length, tombstones: tombstones.length, failed, oldestDateMs }
 }
 
-export async function markRead(id: string, read: boolean): Promise<void> {
-  await localDB.run('UPDATE local_emails SET is_read = ? WHERE id = ?', [read ? 1 : 0, id])
+export async function markRead(id: string, read: boolean, database?: object): Promise<void> {
+  const { db, scope } = captureEmailOwnership(database)
+  await db.run(`UPDATE local_emails SET is_read = ? WHERE id = ? AND ${scope.clause}`, [read ? 1 : 0, id, ...scope.params])
 }
 
-export async function setStarred(id: string, starred: boolean): Promise<void> {
-  await localDB.run('UPDATE local_emails SET is_starred = ? WHERE id = ?', [starred ? 1 : 0, id])
+export async function setStarred(id: string, starred: boolean, database?: object): Promise<void> {
+  const { db, scope } = captureEmailOwnership(database)
+  await db.run(`UPDATE local_emails SET is_starred = ? WHERE id = ? AND ${scope.clause}`, [starred ? 1 : 0, id, ...scope.params])
 }
 
 /** 本地记录邮件目录变更（服务端 move API 成功后调用，保持两端一致）。 */
-export async function setFolder(id: string, folder: string): Promise<void> {
-  await localDB.run('UPDATE local_emails SET folder = ? WHERE id = ?', [folder || '', id])
+export async function setFolder(id: string, folder: string, database?: object): Promise<void> {
+  const { db, scope } = captureEmailOwnership(database)
+  await db.run(`UPDATE local_emails SET folder = ? WHERE id = ? AND ${scope.clause}`, [folder || '', id, ...scope.params])
 }
 
-export async function setAiClassification(id: string, category: string, importance: string, summary: string, action: string): Promise<void> {
-  await localDB.run(
-    'UPDATE local_emails SET category = ?, importance = ?, ai_summary = ?, suggested_action = ? WHERE id = ?',
-    [category, importance, summary, action, id],
+export async function setAiClassification(id: string, category: string, importance: string, summary: string, action: string, database?: object): Promise<void> {
+  const { db, scope } = captureEmailOwnership(database)
+  await db.run(
+    `UPDATE local_emails SET category = ?, importance = ?, ai_summary = ?, suggested_action = ? WHERE id = ? AND ${scope.clause}`,
+    [category, importance, summary, action, id, ...scope.params],
   )
 }
 
@@ -444,37 +460,41 @@ export async function setAiClassification(id: string, category: string, importan
  * 手动总结（详情页「总结」按钮）只需要补 ai_summary。若复用 setAiClassification
  * 就得把现有分类原样写回，容易与并发的自动分类互相覆盖。
  */
-export async function setAiSummary(id: string, summary: string): Promise<void> {
-  await localDB.run(
-    'UPDATE local_emails SET ai_summary = ? WHERE id = ?',
-    [summary, id],
+export async function setAiSummary(id: string, summary: string, database?: object): Promise<void> {
+  const { db, scope } = captureEmailOwnership(database)
+  await db.run(
+    `UPDATE local_emails SET ai_summary = ? WHERE id = ? AND ${scope.clause}`,
+    [summary, id, ...scope.params],
   )
 }
 
 export async function updateSyncState(accountId: string, lastUid: number): Promise<void> {
-  await localDB.run(
-    'UPDATE local_email_accounts SET last_synced_uid = ?, last_synced_at = ? WHERE id = ?',
-    [lastUid, Date.now(), accountId],
+  const { db, scope } = captureEmailOwnership()
+  await db.run(
+    `UPDATE local_email_accounts SET last_synced_uid = ?, last_synced_at = ? WHERE id = ? AND ${scope.clause}`,
+    [lastUid, Date.now(), accountId, ...scope.params],
   )
 }
 
 /** 按 ID 取单封邮件（EmailDetailView 依赖）。 */
 export async function getEmail(id: string): Promise<LocalEmail | null> {
-  const row = await localDB.queryOne<{
+  const { db, scope } = captureEmailOwnership()
+  const row = await db.queryOne<{
     id: string; account_id: string; message_id: string | null; uid: number | null;
     from_address: string; from_name: string | null; subject: string | null;
     snippet: string | null; date: number; is_read: number; is_starred: number;
     category: string | null; importance: string | null; ai_summary: string | null;
     suggested_action: string | null; action_reason: string | null; has_attachments: number; created_at: number
-  }>('SELECT * FROM local_emails WHERE id = ?', [id])
+  }>(`SELECT * FROM local_emails WHERE id = ? AND ${scope.clause}`, [id, ...scope.params])
   return row ? rowToEmail(row) : null
 }
 
 export async function getUnreadCount(accountId?: string): Promise<number> {
-  let sql = 'SELECT COUNT(*) as cnt FROM local_emails WHERE is_read = 0'
-  const vals: unknown[] = []
+  const { db, scope } = captureEmailOwnership()
+  let sql = `SELECT COUNT(*) as cnt FROM local_emails WHERE is_read = 0 AND ${scope.clause}`
+  const vals: unknown[] = [...scope.params]
   if (accountId) { sql += ' AND account_id = ?'; vals.push(accountId) }
-  const row = await localDB.queryOne<{ cnt: number }>(sql, vals)
+  const row = await db.queryOne<{ cnt: number }>(sql, vals)
   return row?.cnt ?? 0
 }
 
@@ -520,6 +540,7 @@ export function registerEmailClassifiedHandler(
  * 幂等：相同 email_id 重复调用，结果一致（最后一份服务器字段生效）。
  */
 export async function handleClassifiedEvent(payload: EmailClassifiedPayload): Promise<void> {
+  const { db, scope } = captureEmailOwnership()
   if (!payload || !payload.email_id) return
 
   const category = payload.category ?? null
@@ -529,14 +550,14 @@ export async function handleClassifiedEvent(payload: EmailClassifiedPayload): Pr
   // 用 COALESCE：服务器字段为 null 时保留本地原值，避免覆盖用户手动设置的字段。
   // action_reason 同口径：这一轮没带理由不代表判定变了，抹掉会让已判为重要的
   // 邮件突然失去「为什么」——那正是这个字段存在的理由。
-  await localDB.run(
+  await db.run(
     `UPDATE local_emails
        SET category = COALESCE(?, category),
            importance = COALESCE(?, importance),
            ai_summary = COALESCE(?, ai_summary),
            action_reason = COALESCE(?, action_reason)
-     WHERE id = ?`,
-    [category, importance, summary, payload.actionReason ?? null, payload.email_id],
+     WHERE id = ? AND ${scope.clause}`,
+    [category, importance, summary, payload.actionReason ?? null, payload.email_id, ...scope.params],
   )
 
   emailClassifiedHandlers.forEach((cb) => {
