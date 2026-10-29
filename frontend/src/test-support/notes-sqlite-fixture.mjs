@@ -134,4 +134,3 @@ export async function fixture(run) {
     else delete globalThis.localStorage
   }
 }
-
