@@ -57,6 +57,16 @@ const sttApi = fs.readFileSync(STT_API, 'utf8')
 const view = fs.readFileSync(VIEW, 'utf8')
 const goStream = fs.readFileSync(GO_STREAM, 'utf8')
 
+/**
+ * 兜底转写分支的锚点。
+ *
+ * ⚠ 只能锚在**稳定的后半段**上（`!this.transcript.value.trim() && ...`）：
+ *   这条分支前面可能被加上别的守卫（例如「云端权限已确认」），
+ *   若把整个 `if (...)` 条件写死，源码一改锚点就失配 ⇒ 判据变成
+ *   「找不到分支」而**恒红**，看着像源码坏了，实际是判据自身失效。
+ */
+const FALLBACK_TRANSCRIBE_ANCHOR = '!this.transcript.value.trim() && audioBlob.size > 0) {'
+
 describe('兜底转写可强制终止（需求：后台 api 可以强行终止）', () => {
   it('cancelTranscription 在 cancelTranscription 函数体内真的 abort', () => {
     const body = fnBody(runtime, 'cancelTranscription(): boolean {')
@@ -78,7 +88,7 @@ describe('兜底转写可强制终止（需求：后台 api 可以强行终止�
   })
 
   it('兜底转写那条请求真的带上了 signal', () => {
-    const body = fnBody(runtime, 'if (!this.transcript.value.trim() && audioBlob.size > 0) {')
+    const body = fnBody(runtime, FALLBACK_TRANSCRIBE_ANCHOR)
     assert.notEqual(body, null, '找不到兜底转写分支（判据可能已失效）')
     assert.match(body, /controller\.signal/, 'transcribeFull 没有收到 signal，abort 传不到 HTTP 层')
     assert.match(body, /this\.transcribeAbort = controller/, '中止器没挂到实例上，切页/重入就找不到它')
@@ -96,7 +106,7 @@ describe('兜底转写可强制终止（需求：后台 api 可以强行终止�
   })
 
   it('中止不是被当成转写失败弹给用户', () => {
-    const body = fnBody(runtime, 'if (!this.transcript.value.trim() && audioBlob.size > 0) {')
+    const body = fnBody(runtime, FALLBACK_TRANSCRIBE_ANCHOR)
     assert.match(
       body,
       /if \(controller\.signal\.aborted\)/,
@@ -147,8 +157,12 @@ describe('判据自检：负控必须转红', () => {
   })
 
   it('transcribeFull 不接 signal → 接线判据转红', () => {
+    // ⚠ 锚点只匹配 `signal` 之前的那一段参数表：`transcribeFull` 的签名后来
+    //   又追加过 `module` / `assertCurrent` 形参，若把整个参数表写死，
+    //   这条负控就会**替换不命中**而恒绿 —— 判据自证反而变成判据失效。
+    //   ⇒ 只锚定 `signal` 之前的前缀，删掉它即可让接线判据转红。
     const broken = sttApi.replace(
-      /async transcribeFull\(audioBlob: Blob, filename = 'meeting\.wav', signal\?: AbortSignal\)/,
+      /async transcribeFull\(audioBlob: Blob, filename = 'meeting\.wav', signal\?: AbortSignal/,
       "async transcribeFull(audioBlob: Blob, filename = 'meeting.wav')",
     )
     assert.notEqual(broken, sttApi, '负控样本没有真的删掉 signal 形参（替换没命中）')
