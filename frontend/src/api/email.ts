@@ -382,8 +382,10 @@ export const emailApi = {
     id: string,
     patch: Partial<EmailAccount> & EmailCredentialInput,
     baseUpdatedAt: number,
+    options: HttpOptions = {},
   ): Promise<EmailAccount> {
     return http(`/api/email/accounts/${id}`, {
+      ...options,
       method: 'PUT',
       body: JSON.stringify({ ...patch, updatedAt: baseUpdatedAt }),
     })

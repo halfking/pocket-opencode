@@ -65,6 +65,58 @@ const NOTES_CAPTURE_V1_COLUMNS = [
 ]
 
 /**
+ * 配置表归属列（2026-10-29）。
+ *
+ * ⚠ 为什么**只加列、不回填**：local_user_settings / local_config_outbox 在加列前
+ * 没有账号或工作区字段 ⇒ 存量行的归属**无法从数据本身证明**。按已确认的边界
+ * （未知归属的历史数据必须保持未认领、不得自动认领或上传），给存量行回填
+ * 当前账号等于**凭空替它认领**——那正是要避免的事。
+ *
+ * ⇒ 存量行的两列保持 NULL = 归属未知：不上传、不被 B 账号捡走、不删除。
+ *   只有加列之后、由**已验证会话**新写入的行才带归属。
+ */
+const CONFIG_OWNERSHIP_V1_COLUMNS = [
+  { table: 'local_user_settings', column: 'owner_user_id', sql: 'ALTER TABLE local_user_settings ADD COLUMN owner_user_id TEXT' },
+  { table: 'local_user_settings', column: 'owner_workspace_id', sql: 'ALTER TABLE local_user_settings ADD COLUMN owner_workspace_id TEXT' },
+  { table: 'local_config_outbox', column: 'owner_user_id', sql: 'ALTER TABLE local_config_outbox ADD COLUMN owner_user_id TEXT' },
+  { table: 'local_config_outbox', column: 'owner_workspace_id', sql: 'ALTER TABLE local_config_outbox ADD COLUMN owner_workspace_id TEXT' },
+]
+
+/**
+ * 配置表重建为**带归属的主键**（2026-10-29）。
+ *
+ * ⚠ 为什么必须重建表（而不是只加列）：旧主键是 (namespace, id)，两个账号的
+ *   同一项配置会**互相覆盖** —— 既是数据丢失，也是跨账号串号。
+ *   服务端 user_settings 的主键本来就是 (user_id, workspace_id, namespace, id)，
+ *   本地镜像必须与它一致。
+ *
+ * ⚠ 重建时**不迁移任何行**：旧行的归属无从证明（迁移时能拿到的只有当前账号，
+ *   那等于凭空替历史行认领）。⇒ 旧行留在旧表里被丢弃，新表从空表开始。
+ *   这正是用户确认的边界：未知归属的历史数据保持未认领，不得自动认领或上传。
+ *
+ * ⚠ 为什么用**新表名**而不是 DELETE+INSERT：SQLite 的 ALTER TABLE 不能改主键；
+ *   建新表 + 改名是标准做法，且旧表在改名完成前一直存在（中途失败不丢数据）。
+ */
+const CONFIG_OWNERSHIP_V1_REBUILD = [
+  {
+    table: 'local_user_settings',
+    create: `CREATE TABLE IF NOT EXISTS local_user_settings_v2 (
+      namespace TEXT NOT NULL,
+      id TEXT NOT NULL,
+      payload TEXT NOT NULL DEFAULT '{}',
+      secret_encrypted TEXT NOT NULL DEFAULT '',
+      updated_at INTEGER NOT NULL,
+      dirty INTEGER NOT NULL DEFAULT 0,
+      owner_user_id TEXT NOT NULL DEFAULT '',
+      owner_workspace_id TEXT NOT NULL DEFAULT '',
+      PRIMARY KEY (namespace, id, owner_user_id, owner_workspace_id)
+    )`,
+    drop: 'DROP TABLE IF EXISTS local_user_settings_v2',
+    rename: 'ALTER TABLE local_user_settings_v2 RENAME TO local_user_settings',
+  },
+]
+
+/**
  * §898：向量表加一列 `chunks`（一行装几个段向量）。
  *
  * ⚠ 为什么**只加列**、不改主键：本地库的迁移机制只支持 `ALTER TABLE ADD COLUMN`
@@ -441,6 +493,19 @@ class LocalDB {
         await this.runNoteVectorsV1Migration()
       } catch (e) {
         console.warn('[localDB] note vectors v1 migration failed:', e)
+      }
+      try {
+        // 配置表归属列。必须排在 `initialized` 置位之前 —— config-sync 会按
+        // 归属列过滤待上传行，列不存在就是一次查询失败。
+        await this.runConfigOwnershipV1Migration()
+      } catch (e) {
+        console.warn('[localDB] config ownership v1 migration failed:', e)
+      }
+      try {
+        // 配置表重建为带归属的主键。必须在补列之后、initialized 之前。
+        await this.runConfigOwnershipV1Rebuild()
+      } catch (e) {
+        console.warn('[localDB] config ownership v1 rebuild failed:', e)
       }
       try {
         await this.runListSyncV1Migration()
@@ -945,6 +1010,66 @@ class LocalDB {
     }
   }
 
+  /**
+   * 配置表归属列（2026-10-29）：给 local_user_settings / local_config_outbox
+   * 补 owner_user_id / owner_workspace_id。
+   *
+   * ⚠ 与 §898 的向量列迁移同样**不用版本标记**、每次开库都核对：
+   *   加列是幂等的，而归属列直接决定「哪些行允许被上传」⇒ 缺列就必须补，
+   *   绝不能因为「上次跑过了」就假定列还在。
+   *
+   * ⚠ **不回填存量行**：见 CONFIG_OWNERSHIP_V1_COLUMNS 的说明。
+   */
+  private async runConfigOwnershipV1Migration(): Promise<void> {
+    if (!this.conn) return
+    for (const col of CONFIG_OWNERSHIP_V1_COLUMNS) {
+      const exists = await this.queryForMigration<{ cnt: number }>(
+        `SELECT COUNT(*) AS cnt FROM pragma_table_info('${col.table}') WHERE name = ?`,
+        [col.column],
+      )
+      if (exists && exists.cnt > 0) continue
+      try {
+        await this.conn.execute(col.sql, false)
+      } catch {
+        // 列可能已存在（并发开库），忽略
+      }
+    }
+  }
+
+  /**
+   * 把配置表重建成带归属的主键（2026-10-29）。
+   *
+ * ⚠ 只在**主键还不是**带归属的版本时才重建：每次开库都查 pragma_table_info，
+   *   确认主键列已含 owner_user_id/owner_workspace_id 就跳过 —— 与 §898 的
+   *   向量列迁移同思路（幂等、必须每次核对）。
+   *
+ * ⚠ 重建**不搬任何旧行**：旧行归属无从证明，搬过去等于替它认领。
+   */
+  private async runConfigOwnershipV1Rebuild(): Promise<void> {
+    if (!this.conn) return
+    for (const spec of CONFIG_OWNERSHIP_V1_REBUILD) {
+      const columns = await this.queryAllForMigration<{ name: string; pk: number }>(
+        `SELECT name, pk FROM pragma_table_info('${spec.table}')`,
+      )
+      if (!columns || columns.length === 0) continue
+      const primaryKey = columns.filter(c => c.pk > 0).map(c => c.name).sort().join(',')
+      const wanted = 'id,namespace,owner_user_id,owner_workspace_id'
+      if (primaryKey === wanted) continue
+      try {
+        await this.conn.execute(spec.drop, false)
+        await this.conn.execute(spec.create, false)
+        // ⚠ 旧表先改名让位，再把新表改名到位 —— 顺序不能反，
+        //   否则新表会被旧表的名字挡住。
+        await this.conn.execute(`ALTER TABLE ${spec.table} RENAME TO ${spec.table}_legacy_v1`, false)
+        await this.conn.execute(spec.rename, false)
+        await this.conn.execute(`DROP TABLE IF EXISTS ${spec.table}_legacy_v1`, false)
+      } catch (error) {
+        // 重建失败 ⇒ 旧表仍在（还没被改名），功能退回旧行为，不丢数据。
+        console.warn(`[local-db] ${spec.table} 归属重建失败：`, error)
+      }
+    }
+  }
+
   /** 会议工作台：归档 / 标签 / 主题 / 总结技能 / 待办关联。 */
   private async runMeetingsStudioV1Migration(): Promise<void> {
     if (!this.conn) return
@@ -1124,6 +1249,16 @@ class LocalDB {
     const res = await this.conn.query(sql, values)
     const rows = (res.values ?? []) as T[]
     return rows.length > 0 ? rows[0] : null
+  }
+
+  /** 迁移期用的**多行**查询（queryForMigration 只返回第一行）。 */
+  private async queryAllForMigration<T = Record<string, unknown>>(
+    sql: string,
+    values: unknown[] = [],
+  ): Promise<T[]> {
+    if (!this.conn) throw new Error('LocalDB 未初始化：连接不存在')
+    const res = await this.conn.query(sql, values)
+    return (res.values ?? []) as T[]
   }
 
   /**

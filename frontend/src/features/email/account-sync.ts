@@ -239,7 +239,7 @@ export async function pushAccountToServer(_a: ServerAccount, operation?: EmailSy
       id: _a.id,
       payload: patch,
       updatedAt: _a.updatedAt ?? Math.floor(Date.now() / 1000),
-    }, sync.db)
+    }, sync.owner, sync.db)
     return false
   }
 }

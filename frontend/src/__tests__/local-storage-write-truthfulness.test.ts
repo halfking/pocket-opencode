@@ -281,7 +281,7 @@ function applyReportsFailures(src: string, runtimeSrc: string) {
   if (!body) return { ok: false, why: '找不到 applyAppPrefs' }
   if (!/failed\.push/.test(body)) return { ok: false, why: 'applyAppPrefs 没有收集失败的字段名' }
   // 调用方必须消费返回值并留痕
-  if (!/const failed = await applyRemoteSetting/.test(runtimeSrc)) {
+  if (!/const failed = (?:await )?applyRemoteSetting/.test(runtimeSrc)) {
     return { ok: false, why: 'runtime 的 pull 路径没有接住返回值' }
   }
   if (!/failed\.length > 0/.test(runtimeSrc) || !/console\.warn/.test(runtimeSrc)) {

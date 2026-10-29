@@ -122,6 +122,35 @@ export async function fetchMe(): Promise<EmployeeProfile> {
   return http<EmployeeProfile>('/api/auth/me', { method: 'GET' })
 }
 
+/**
+ * 拉取**服务端确认过的归属**（2026-10-29）。
+ *
+ * ⚠ 为什么需要它：应用重启后从 localStorage 恢复会话时，持久化的
+ *   workspaceId 是**客户端自报**的，未经服务端确认。客户端自报的身份
+ *   不能当作归属依据 —— 否则跨账号/跨工作区的归属判错无法被发现，
+ *   本地数据可能被挂到错误的账号名下。
+ *
+ * ⇒ 归属只认服务端签发过的东西：恢复会话时调本端点，用服务端确认过的
+ *   (user_id, workspace_id) 重新确立归属。
+ */
+export async function fetchAuthIdentity(bearer: string): Promise<{ userId: string; workspaceId: string }> {
+  // ⚠ **不走 http()**：http() 在不可恢复的 401 上会调 forceReauth() ⇒ clearLocal()
+  //   ⇒ 把会话清掉。而这里的 401 只意味着「服务端没有给出归属证明」，
+  //   不等于「会话已死」—— 两者混在一起会误伤正常的恢复流程。
+  //   ⇒ 这里用裸 fetch，自己处理状态码。
+  const response = await fetchWithTimeout(`${resolveRuntimeApiBase()}/api/auth/identity`, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${bearer}` },
+  })
+  if (!response.ok) throw new Error('Server did not attest an account identity.')
+  const body = await response.json() as { user_id?: string; workspace_id?: string }
+  const userId = body?.user_id ?? ''
+  const workspaceId = body?.workspace_id ?? ''
+  // 两个标识缺一不可：只有 userId 不足以定位工作区，只有 workspaceId 不足以定位账号。
+  if (!userId || !workspaceId) throw new Error('Server did not attest an account identity.')
+  return { userId, workspaceId }
+}
+
 /** SSO 启用探测（无副作用）：不铸 nonce、不落 cookie，登录页每次加载调用。 */
 export async function fetchSsoStatus(): Promise<boolean> {
   try {

@@ -1,4 +1,4 @@
-import { ApiError, http } from './http'
+import { ApiError, http, type HttpOptions } from './http'
 
 export interface RemoteSetting {
   userId: string
@@ -17,8 +17,8 @@ export interface SettingPutResult {
 }
 
 export const userSettingsApi = {
-  async list(): Promise<RemoteSetting[]> {
-    const body = await http<{ settings?: RemoteSetting[] }>('/api/user-settings')
+  async list(options: HttpOptions = {}): Promise<RemoteSetting[]> {
+    const body = await http<{ settings?: RemoteSetting[] }>('/api/user-settings', options)
     return body.settings ?? []
   },
 
@@ -26,11 +26,11 @@ export const userSettingsApi = {
     payload: unknown
     updatedAt: number
     secret?: string
-  }): Promise<SettingPutResult> {
+  }, options: HttpOptions = {}): Promise<SettingPutResult> {
     try {
       return await http<SettingPutResult>(
         `/api/user-settings/${encodeURIComponent(namespace)}/${encodeURIComponent(id)}`,
-        { method: 'PUT', body: JSON.stringify(input) },
+        { ...options, method: 'PUT', body: JSON.stringify(input) },
       )
     } catch (err) {
       if (err instanceof ApiError && err.status === 409 && err.body?.conflict === true && err.body.record) {
