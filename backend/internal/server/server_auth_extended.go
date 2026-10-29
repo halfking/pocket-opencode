@@ -383,6 +383,46 @@ func (s *Server) handleAuthMe(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, res)
 }
 
+// handleAuthIdentity — GET /api/auth/identity（2026-10-29）
+//
+// 返回**服务端从已验证 JWT 推导**的归属：{user_id, workspace_id}。
+//
+// ⚠ 为什么单独开这个端点（而不用 /api/auth/me）：
+//   /api/auth/me 返回的是 RedClaw employee 画像（id/name/role/email），
+//   **没有 workspace_id**。而本地配置表的归属键是 (user_id, workspace_id)，
+//   缺一不可。
+//
+// ⚠ 为什么客户端需要它：应用重启后从 localStorage 恢复会话时，持久化的
+//   workspaceId 是**客户端自报**的，未经服务端确认（auth.ts：
+//   「Persisted metadata is not a verified owner assertion」）。
+//   若客户端就用它当归属，跨账号/跨工作区的归属判错就无法被发现。
+//   ⇒ 恢复会话时调本端点，用服务端确认过的值**重新确立归属**，
+//     这就是「服务间可信验证」：归属只认服务端签发过的东西。
+//
+// ⚠ 401 的语义：token 无效/过期 ⇒ 调用方不得把任何行挂到这个身份上。
+func (s *Server) handleAuthIdentity(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "GET only")
+		return
+	}
+	claims := s.claimsFromContext(r)
+	if claims == nil || strings.TrimSpace(claims.UserID) == "" {
+		writeError(w, http.StatusUnauthorized, "missing auth claims")
+		return
+	}
+	// workspace_id 直接取自已验证 JWT 的 claim；没有则回退 "default"
+	// —— 与 workspaceIDFromRequest 的口径完全一致（否则本地归属与服务端
+	// 作用域会算出两个不同的 workspace，同一条数据写两遍）。
+	wsID := claims.WorkspaceID
+	if strings.TrimSpace(wsID) == "" {
+		wsID = "default"
+	}
+	writeJSON(w, http.StatusOK, map[string]string{
+		"user_id":      claims.UserID,
+		"workspace_id": wsID,
+	})
+}
+
 // handleAuthRefresh — POST /api/auth/refresh（JWT 滑动续期，runbook §15.2 方案 c 落地）。
 //
 // Without RedClaw, local dev/legacy credentials retain their renewal path.

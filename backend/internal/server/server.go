@@ -727,6 +727,9 @@ func (s *Server) Handler() http.Handler {
 	// 一期新增:登出 / 当前用户 / SSO 入口
 	mux.HandleFunc("/api/auth/logout", s.handleAuthLogout)
 	mux.HandleFunc("/api/auth/me", s.requireAuth(s.handleAuthMe))
+	// 服务端确认过的归属（user_id + workspace_id）。客户端恢复会话时用它
+	// 重新确立归属：归属只认服务端签发过的东西。
+	mux.HandleFunc("/api/auth/identity", s.requireAuth(s.handleAuthIdentity))
 	// JWT 滑动续期（runbook §15.2）：验当前 token → RedClaw 模式复检撤销 → 重签短 TTL
 	mux.HandleFunc("/api/auth/refresh", s.requireAuth(s.handleAuthRefresh))
 	mux.HandleFunc("/api/auth/sso/status", s.handleAuthSsoStatus)
