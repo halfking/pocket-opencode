@@ -103,11 +103,8 @@ describe('emailApi.updateAccount 调用点必须携带 LWW 基准', () => {
       )
       for (const a of args) {
         const parts = splitArgs(a)
-        assert.equal(
-          parts.length,
-          3,
-          `实参个数应为 3（id, patch, baseUpdatedAt），实际 ${parts.length}：${a}`,
-        )
+        assert.ok(parts.length === 3 || parts.length === 4,
+          `实参必须包含 id, patch, baseUpdatedAt，可追加请求上下文；实际 ${parts.length}：${a}`)
         assert.notEqual(
           parts[2],
           '0',
@@ -123,7 +120,7 @@ describe('updateAccount 签名与请求体', () => {
   it('第三参是必填 number（退回可选就会重新静默漏传）', () => {
     assert.match(
       read('../email.ts'),
-      /updateAccount\(\s*id: string,\s*patch: Partial<EmailAccount> & EmailCredentialInput,\s*baseUpdatedAt: number,\s*\)/,
+      /updateAccount\(\s*id: string,\s*patch: Partial<EmailAccount> & EmailCredentialInput,\s*baseUpdatedAt: number,\s*(?:options: HttpOptions = \{\},\s*)?\)/,
       'baseUpdatedAt 不再是必填参数：以后新增调用点会重新静默漏传，守卫失效且无编译错误。',
     )
   })
@@ -170,8 +167,8 @@ describe('409 的消费方', () => {
   it('runtime.ts：outbox 回放就地消化 409，不许掉进外层 catch', () => {
     const src = read('../../native/config-sync/runtime.ts')
     const branch = src.slice(src.indexOf("row.namespace === 'email_account'"), src.indexOf("row.namespace === 'scheduled_task'"))
-    assert.match(branch, /isStaleWriteError\(err\)/, 'outbox 的 email_account 分支没有识别 409')
-    assert.match(branch, /if \(!isStaleWriteError\(err\)\) throw err/, '非 409 的错误必须继续上抛')
-    assert.match(branch, /markConfigPushDone\(row\.id\)/, '409 也必须 markConfigPushDone，否则该行永远留在 queued')
+    assert.match(branch, /isStaleWriteError\(error\)/, 'outbox 的 email_account 分支没有识别 409')
+    assert.match(branch, /if \(isCancelled\(error\) \|\| !isStaleWriteError\(error\)\) throw error/, '取消及非 LWW 的错误必须继续上抛')
+    assert.match(src, /markConfigPushDone\(row\.id, cloud\.db\)/, '409 也必须由同一租约 markConfigPushDone，否则该行永远留在 queued')
   })
 })
