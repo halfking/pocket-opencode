@@ -123,8 +123,8 @@ export interface RSSDigestListItem {
 }
 
 export const rssApi = {
-  async listSources(): Promise<RSSSource[]> {
-    const res = await http<{ sources: RSSSource[] }>('/api/rss/sources')
+  async listSources(options: HttpOptions = {}): Promise<RSSSource[]> {
+    const res = await http<{ sources: RSSSource[] }>('/api/rss/sources', options)
     return res.sources ?? []
   },
 
@@ -146,13 +146,14 @@ export const rssApi = {
    * 一键把推荐源加入订阅列表（幂等）：已订阅的会被跳过。
    * 返回 { created, skipped, total, sources }。
    */
-  async importStarter(input: { categories?: string[]; maxPerCategory?: number; enabled?: boolean } = {}): Promise<{
+  async importStarter(input: { categories?: string[]; maxPerCategory?: number; enabled?: boolean } = {}, options: HttpOptions = {}): Promise<{
     created: number
     skipped: number
     total: number
     sources: RSSSource[]
   }> {
     return http('/api/rss/sources/import-starter', {
+      ...options,
       method: 'POST',
       body: JSON.stringify(input),
     })
@@ -193,8 +194,9 @@ export const rssApi = {
     })
   },
 
-  async patchSource(id: string, patch: Partial<RSSSource> & { fetchInterval?: string }): Promise<RSSSource> {
+  async patchSource(id: string, patch: Partial<RSSSource> & { fetchInterval?: string }, options: HttpOptions = {}): Promise<RSSSource> {
     return http<RSSSource>(`/api/rss/sources/${encodeURIComponent(id)}`, {
+      ...options,
       method: 'PATCH',
       body: JSON.stringify(patch),
     })
@@ -204,11 +206,11 @@ export const rssApi = {
     await http(`/api/rss/sources/${encodeURIComponent(id)}`, { ...options, method: 'DELETE' })
   },
 
-  async refreshSource(id: string): Promise<{ fetched: boolean; newItems: number; duplicates: number; notModified: boolean }> {
-    return http(`/api/rss/sources/${encodeURIComponent(id)}/refresh`, { method: 'POST' })
+  async refreshSource(id: string, options: HttpOptions = {}): Promise<{ fetched: boolean; newItems: number; duplicates: number; notModified: boolean }> {
+    return http(`/api/rss/sources/${encodeURIComponent(id)}/refresh`, { ...options, method: 'POST' })
   },
 
-  async listItems(opts: { sourceId?: string; status?: string; q?: string; limit?: number; offset?: number } = {}): Promise<RSSItem[]> {
+  async listItems(opts: { sourceId?: string; status?: string; q?: string; limit?: number; offset?: number } = {}, options: HttpOptions = {}): Promise<RSSItem[]> {
     const qs = new URLSearchParams()
     if (opts.sourceId) qs.set('sourceId', opts.sourceId)
     if (opts.status) qs.set('status', opts.status)
@@ -216,16 +218,16 @@ export const rssApi = {
     if (opts.limit) qs.set('limit', String(opts.limit))
     if (opts.offset) qs.set('offset', String(opts.offset))
     const path = qs.toString() ? `/api/rss/items?${qs.toString()}` : '/api/rss/items'
-    const res = await http<{ items: RSSItem[]; count: number }>(path)
+    const res = await http<{ items: RSSItem[]; count: number }>(path, options)
     return res.items ?? []
   },
 
-  async getItem(id: string): Promise<RSSItem> {
-    return http<RSSItem>(`/api/rss/items/${encodeURIComponent(id)}`)
+  async getItem(id: string, options: HttpOptions = {}): Promise<RSSItem> {
+    return http<RSSItem>(`/api/rss/items/${encodeURIComponent(id)}`, options)
   },
 
-  async markRead(id: string): Promise<RSSItem> {
-    return http<RSSItem>(`/api/rss/items/${encodeURIComponent(id)}/read`, { method: 'POST' })
+  async markRead(id: string, options: HttpOptions = {}): Promise<RSSItem> {
+    return http<RSSItem>(`/api/rss/items/${encodeURIComponent(id)}/read`, { ...options, method: 'POST' })
   },
 
   async bulkRead(ids: string[]): Promise<{ updated: number }> {
@@ -235,8 +237,9 @@ export const rssApi = {
     })
   },
 
-  async setStarred(id: string, starred: boolean): Promise<RSSItem> {
+  async setStarred(id: string, starred: boolean, options: HttpOptions = {}): Promise<RSSItem> {
     return http<RSSItem>(`/api/rss/items/${encodeURIComponent(id)}/star`, {
+      ...options,
       method: 'POST',
       body: JSON.stringify({ starred }),
     })
@@ -260,8 +263,9 @@ export const rssApi = {
     return `/api/rss/items/${encodeURIComponent(id)}/share-card?theme=light`
   },
 
-  async share(id: string, dest: 'wechat' | 'weibo' | 'clipboard' | 'download', caption?: string): Promise<RSSShareResponse> {
+  async share(id: string, dest: 'wechat' | 'weibo' | 'clipboard' | 'download', caption?: string, options: HttpOptions = {}): Promise<RSSShareResponse> {
     return http<RSSShareResponse>(`/api/rss/items/${encodeURIComponent(id)}/share`, {
+      ...options,
       method: 'POST',
       body: JSON.stringify({ dest, caption }),
     })

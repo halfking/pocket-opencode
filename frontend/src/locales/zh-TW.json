@@ -1,4 +1,26 @@
 {
+  "rssPortal": {
+    "copy": "儲存為跨端資料",
+    "title": "跨端 RSS 資料",
+    "description": "這裡的來源與條目資料可依策略同步；不會自動啟用擷取。原有訂閱與正文不會自動匯入。",
+    "source": "來源資料",
+    "item": "條目資料",
+    "titleLabel": "標題",
+    "url": "網址",
+    "category": "分類",
+    "sourceLabel": "來源",
+    "summary": "摘要",
+    "new": "新增資料",
+    "save": "儲存",
+    "empty": "尚無跨端資料",
+    "confirmDelete": "刪除這筆跨端資料？本機已擷取的正文不會刪除。",
+    "failed": "資料保留在本機，同步尚未完成。",
+    "unknown": "同步初始化尚未完成；這次修改會留在本機，初始化後請重新編輯儲存以同步。",
+    "blocked": "清雲前的修改仍留在本機；若要重新上傳，請明確編輯並儲存。",
+    "loading": "載入中…",
+    "search": "搜尋資料",
+    "localSaved": "已儲存於本機"
+  },
   "common": {
     "sessionSwitching": "正在切換本機工作階段…",
     "sessionSwitchFailed": "本機工作階段切換未完成，請重新登入或重試登出。",

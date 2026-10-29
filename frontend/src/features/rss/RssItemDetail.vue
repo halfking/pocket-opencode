@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, computed, watch, onBeforeUnmount } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { rssApi, type RSSItem } from '../../api/rss'
 import { useI18n } from 'vue-i18n'
@@ -7,10 +7,15 @@ import { toUserMessage } from '../../api/error-message'
 import AddToLearningButton from '../study/AddToLearningButton.vue'
 import { sanitizeHtml } from '../../utils/markdown'
 import { safeExternalUrl } from '../../utils/safe-url'
+import { useAuthStore } from '../../stores/auth'
+import { captureRssPortalOperation, copyRssItemToPortal, type RssPortalOperation } from './rss-sync-store'
+import { rssSyncRuntime } from './rss-sync-runtime'
 
 const route = useRoute()
 const router = useRouter()
 const item = ref<RSSItem | null>(null)
+const auth=useAuthStore(),portalBusy=ref(false),portalNotice=ref('')
+let generation=0,loadedOperation:RssPortalOperation|null=null
 
 /**
  * §851：RSS 正文是**订阅源作者完全可控**的 HTML，而这里原来直接 `v-html` 渲染。
@@ -47,24 +52,45 @@ const shareNotice = ref('')
 const { t } = useI18n()
 
 async function load() {
+  const stamp=generation
   loading.value = true
   errorMsg.value = ''
   try {
     const id = String(route.params.id)
-    item.value = await rssApi.getItem(id)
-    if (item.value.status === 'unread') {
+    const operation=captureRssPortalOperation(),options={assertCurrent:operation.assertCurrent}
+    let result = await rssApi.getItem(id,options)
+    operation.assertCurrent()
+    if (result.status === 'unread') {
       try {
-        item.value = await rssApi.markRead(id)
-      } catch { /* ignore */ }
+        result = await rssApi.markRead(id,options)
+      } catch(error) { operation.assertCurrent();console.warn('[rss] 已加载正文，但已读状态未保存：',error) }
     }
+    operation.assertCurrent();if(stamp!==generation)return
+    item.value=result;loadedOperation=operation
   } catch (e: any) {
-    errorMsg.value = toUserMessage(e, t, t('errors.loadRssFailed'))
+    if(stamp===generation&&e?.name!=='AbortError')errorMsg.value = toUserMessage(e, t, t('errors.loadRssFailed'))
   } finally {
-    loading.value = false
+    if(stamp===generation)loading.value = false
   }
 }
 
 onMounted(load)
+function invalidate(){generation++;item.value=null;loadedOperation=null;shareOpen.value=false;shareBusy.value=false;shareResult.value=null;shareCaption.value='';shareNotice.value='';portalBusy.value=false;portalNotice.value='';errorMsg.value='';if(auth.activationStatus==='ready')void load()}
+watch(()=>[auth.activationVersion,auth.userId,auth.workspaceId,auth.activationStatus,route.params.id],invalidate,{flush:'sync'})
+onBeforeUnmount(()=>{generation++;loadedOperation=null})
+
+async function savePortableCopy(){
+  const stamp=generation,original=item.value
+  if(!original||!loadedOperation)return
+  portalBusy.value=true;portalNotice.value=''
+  try{
+    loadedOperation.assertCurrent()
+    const operation=captureRssPortalOperation()
+    await copyRssItemToPortal({...original},operation);operation.assertCurrent()
+    if(stamp===generation){portalNotice.value=t('rssPortal.localSaved');void rssSyncRuntime.syncNow()}
+  }catch(error){if(stamp===generation&&!(error instanceof Error&&error.name==='AbortError'))portalNotice.value=toUserMessage(error,t,t('errors.operateFailed'))}
+  finally{if(stamp===generation)portalBusy.value=false}
+}
 
 function openShare() {
   if (!item.value) return
@@ -75,12 +101,15 @@ function openShare() {
 }
 
 async function doShare(dest: 'wechat' | 'weibo' | 'clipboard' | 'download') {
-  if (!item.value) return
+  if (!item.value||!loadedOperation) return
+  const stamp=generation,operation=loadedOperation
   shareBusy.value = true
   shareResult.value = null
   shareNotice.value = ''
   try {
-    const r = await rssApi.share(item.value.id, dest, shareCaption.value)
+    operation.assertCurrent()
+    const r = await rssApi.share(item.value.id, dest, shareCaption.value,{assertCurrent:operation.assertCurrent})
+    operation.assertCurrent();if(stamp!==generation)return
     shareResult.value = r
     if (dest === 'clipboard' && r.copyText) {
       try {
@@ -91,26 +120,29 @@ async function doShare(dest: 'wechat' | 'weibo' | 'clipboard' | 'download') {
         // 原来这里是静默 catch ⇒ 用户看到复制内容、以为复制好了，
         // 粘贴出来却是空的上一次内容。
         // ⇒ 失败要在这个弹窗里说出来，并说清「内容已生成、没进剪贴板」。
-        shareNotice.value = '未能写入剪贴板，内容已显示在下方，请长按手动复制'
+        if(stamp===generation)shareNotice.value = '未能写入剪贴板，内容已显示在下方，请长按手动复制'
       }
     }
     if (dest === 'weibo' && safeExternalUrl(r.deepLink)) {
       window.open(safeExternalUrl(r.deepLink), '_blank', 'noopener')
     }
   } catch (e: any) {
-    errorMsg.value = `分享失败：${e?.message ?? e}`
+    if(stamp===generation&&e?.name!=='AbortError')errorMsg.value = `分享失败：${e?.message ?? e}`
   } finally {
-    shareBusy.value = false
+    if(stamp===generation)shareBusy.value = false
   }
 }
 
 async function toggleStar() {
-  if (!item.value) return
+  if (!item.value||!loadedOperation) return
+  const stamp=generation,operation=loadedOperation
   const newStar = item.value.status !== 'starred'
   try {
-    item.value = await rssApi.setStarred(item.value.id, newStar)
+    operation.assertCurrent()
+    const result = await rssApi.setStarred(item.value.id, newStar,{assertCurrent:operation.assertCurrent})
+    operation.assertCurrent();if(stamp===generation)item.value=result
   } catch (e: any) {
-    errorMsg.value = toUserMessage(e, t, t('errors.operateFailed'))
+    if(stamp===generation&&e?.name!=='AbortError')errorMsg.value = toUserMessage(e, t, t('errors.operateFailed'))
   }
 }
 
@@ -148,6 +180,7 @@ function back() {
     </article>
 
     <footer v-if="item" class="actions-bar">
+      <button class="btn" type="button" :disabled="portalBusy" @click="savePortableCopy">{{t('rssPortal.copy')}}</button>
       <button class="btn" type="button" @click="toggleStar">
         <span class="material-symbols-outlined">{{ item.status === 'starred' ? 'star' : 'star_border' }}</span>
         {{ item.status === 'starred' ? '已收藏' : '收藏' }}
@@ -157,6 +190,7 @@ function back() {
         一键分享
       </button>
     </footer>
+    <p v-if="portalNotice" role="status">{{portalNotice}}</p>
 
     <!-- 分享 modal -->
     <div v-if="shareOpen" class="modal-mask" @click.self="shareOpen = false">

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, computed, watch, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { rssApi, type RSSSource, type RSSItem } from '../../api/rss'
@@ -7,6 +7,9 @@ import { toUserMessage } from '../../api/error-message'
 import { useConfirm } from '../../composables/useConfirm'
 import LocalOnlyBadge from '../../components/business/LocalOnlyBadge.vue'
 import { deleteRssSource } from './rss-operation'
+import RssPortalPanel from './RssPortalPanel.vue'
+import { useAuthStore } from '../../stores/auth'
+import { captureRssPortalOperation, type RssPortalOperation } from './rss-sync-store'
 
 const router = useRouter()
 const { t } = useI18n()
@@ -20,23 +23,32 @@ const statusFilter = ref<'unread' | 'read' | 'starred' | 'archived' | ''>('unrea
 const search = ref('')
 const importing = ref(false)
 const importMsg = ref('')
+const auth=useAuthStore()
+let generation=0,readVersion=0,sourcesOperation:RssPortalOperation|null=null
+const current=(stamp:number)=>stamp===generation&&auth.activationStatus==='ready'
+function sourceOperation(src:RSSSource){
+  if(!sourcesOperation||!sources.value.includes(src))throw new DOMException('Former RSS source view','AbortError')
+  sourcesOperation.assertCurrent();return captureRssPortalOperation()
+}
 
 /** 一键把内置推荐源（IT / 财经 / 时事）加入订阅列表。幂等：已订阅的会跳过。 */
 async function importStarter() {
+  const stamp=generation
   importing.value = true
   importMsg.value = ''
   errorMsg.value = ''
   try {
-    const r = await rssApi.importStarter({})
+    const operation=captureRssPortalOperation(),r = await rssApi.importStarter({},{assertCurrent:operation.assertCurrent})
+    operation.assertCurrent();if(!current(stamp))return
     importMsg.value = r.created > 0
       ? `已导入 ${r.created} 个推荐源${r.skipped > 0 ? `（${r.skipped} 个已存在，跳过）` : ''}`
       : `推荐源都已经在订阅列表里了（共 ${r.total} 个）`
     tab.value = 'sources'
     await refresh()
   } catch (e: any) {
-    errorMsg.value = toUserMessage(e, t, t('errors.operateFailed'))
+    if(current(stamp)&&e?.name!=='AbortError')errorMsg.value = toUserMessage(e, t, t('errors.operateFailed'))
   } finally {
-    importing.value = false
+    if(current(stamp))importing.value = false
   }
 }
 
@@ -45,25 +57,32 @@ function openDigest() {
 }
 
 async function refresh() {
+  const stamp=generation,read=++readVersion
   loading.value = true
   errorMsg.value = ''
   try {
-    sources.value = await rssApi.listSources()
-    items.value = await rssApi.listItems({
+    const operation=captureRssPortalOperation(),options={assertCurrent:operation.assertCurrent}
+    const nextSources = await rssApi.listSources(options)
+    operation.assertCurrent()
+    const nextItems = await rssApi.listItems({
       status: statusFilter.value || undefined,
       q: search.value || undefined,
       limit: 50,
-    })
+    },options)
+    operation.assertCurrent();if(!current(stamp)||read!==readVersion)return
+    sources.value=nextSources;items.value=nextItems;sourcesOperation=operation
   } catch (e: any) {
     // 真机实测：原先直接渲染 e.message，屏幕上出现
     // 「rss_unavailable: store not configured」——英文技术标识且未本地化。
-    errorMsg.value = toUserMessage(e, t, t('errors.loadRssFailed'))
+    if(current(stamp)&&read===readVersion&&e?.name!=='AbortError')errorMsg.value = toUserMessage(e, t, t('errors.loadRssFailed'))
   } finally {
-    loading.value = false
+    if(current(stamp)&&read===readVersion)loading.value = false
   }
 }
 
 onMounted(refresh)
+watch(()=>[auth.activationVersion,auth.userId,auth.workspaceId,auth.activationStatus],()=>{generation++;readVersion++;sourcesOperation=null;sources.value=[];items.value=[];search.value='';errorMsg.value=importMsg.value='';loading.value=importing.value=false;if(auth.activationStatus==='ready')void refresh()},{flush:'sync'})
+onBeforeUnmount(()=>{generation++;sourcesOperation=null})
 
 function openItem(id: string) {
   router.push({ name: 'rss-item', params: { id } })
@@ -72,19 +91,25 @@ function openAdd() {
   router.push({ name: 'rss-add' })
 }
 async function refreshSource(src: RSSSource) {
+  const stamp=generation
   try {
-    await rssApi.refreshSource(src.id)
+    const operation=sourceOperation(src)
+    await rssApi.refreshSource(src.id,{assertCurrent:operation.assertCurrent})
+    operation.assertCurrent()
     await refresh()
   } catch (e: any) {
-    errorMsg.value = `刷新 ${src.title} 失败：${e?.message ?? e}`
+    if(current(stamp)&&e?.name!=='AbortError')errorMsg.value = `刷新 ${src.title} 失败：${e?.message ?? e}`
   }
 }
 async function toggleSource(src: RSSSource) {
+  const stamp=generation
   try {
-    await rssApi.patchSource(src.id, { enabled: !src.enabled })
+    const operation=sourceOperation(src)
+    await rssApi.patchSource(src.id, { enabled: !src.enabled },{assertCurrent:operation.assertCurrent})
+    operation.assertCurrent()
     await refresh()
   } catch (e: any) {
-    errorMsg.value = toUserMessage(e, t, t('errors.operateFailed'))
+    if(current(stamp)&&e?.name!=='AbortError')errorMsg.value = toUserMessage(e, t, t('errors.operateFailed'))
   }
 }
 async function deleteSource(src: RSSSource) {
@@ -94,6 +119,7 @@ async function deleteSource(src: RSSSource) {
   //   确认框是一个可等待的交互 —— 用户停留期间若发生 A→B 账号切换，
   //   之后发出的 DELETE 会带上新账号的凭据 ⇒ A 的订阅源被 B 删掉。
   try {
+    sourceOperation(src).assertCurrent()
     const outcome = await deleteRssSource(src, confirm, (id, options) => rssApi.deleteSource(id, options))
     if (outcome === 'cancelled' || outcome === 'stale-session') return
     await refresh()
@@ -108,6 +134,7 @@ const totalUnread = computed(() => sources.value.reduce((acc, s) => acc + (s.unr
 
 <template>
   <div class="rss-page">
+    <RssPortalPanel />
     <header class="rss-header">
       <h2>RSS 订阅</h2>
       <!-- storage-sync：模块切「仅本地」时的提示横条（其余情况不渲染） -->
@@ -123,7 +150,7 @@ const totalUnread = computed(() => sources.value.reduce((acc, s) => acc + (s.unr
           <span class="material-symbols-outlined">subject</span>
           今日摘要
         </button>
-        <button class="btn-secondary" type="button" @click="refresh" :disabled="loading">
+        <button id="rss-refresh" class="btn-secondary" type="button" @click="refresh" :disabled="loading">
           <span class="material-symbols-outlined">refresh</span>
           刷新
         </button>
