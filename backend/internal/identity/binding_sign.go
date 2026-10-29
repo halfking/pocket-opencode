@@ -84,6 +84,13 @@ func (s *BindingSigner) Mint(member Member, tenantID string, ttl time.Duration) 
 		role = BindingRoleInvitee
 	}
 	now := time.Now()
+	expiresAt := now.Add(ttl).Unix()
+	if member.ExpiresAt > 0 && member.ExpiresAt < expiresAt {
+		expiresAt = member.ExpiresAt
+	}
+	if expiresAt <= now.Unix() {
+		return "", nil, ErrBindingExpired
+	}
 	assertion := &BindingAssertion{
 		UserID:      userID,
 		TenantID:    strings.TrimSpace(tenantID),
@@ -91,7 +98,7 @@ func (s *BindingSigner) Mint(member Member, tenantID string, ttl time.Duration) 
 		Role:        role,
 		IssuedAt:    now.Unix(),
 		NotBefore:   now.Unix(),
-		ExpiresAt:   now.Add(ttl).Unix(),
+		ExpiresAt:   expiresAt,
 		Issuer:      BindingIssuer,
 		Audience:    BindingAudience,
 	}
