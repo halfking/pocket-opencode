@@ -153,7 +153,7 @@ export async function listOpsEntries(status?: LocalOpsEntry['status'], database?
 
 export async function countPendingOps(database?: object): Promise<number> {
   const { db, scope } = captureEmailOwnership(database)
-  const row = await db.queryOne<{ cnt: number }>(`SELECT COUNT(*) AS cnt FROM local_email_ops WHERE status IN (?, ?) AND ${scope.clause}`, ['pending', 'failed', ...scope.params])
+  const row = await db.queryOne<{ cnt: number }>(`SELECT COUNT(*) AS cnt FROM local_email_ops WHERE status IN ('pending','failed','pushed') AND ${scope.clause}`, scope.params)
   return row?.cnt ?? 0
 }
 
@@ -161,8 +161,8 @@ export async function countPendingOps(database?: object): Promise<number> {
 export async function hasPendingOpsForEmail(emailId: string, database: Pick<typeof localDB, 'queryOne'> = localDB): Promise<boolean> {
   const { db, scope } = captureEmailOwnership(database)
   const row = await db.queryOne<{ cnt: number }>(
-    `SELECT COUNT(*) AS cnt FROM local_email_ops WHERE email_id = ? AND status IN (?, ?) AND ${scope.clause}`,
-    [emailId, 'pending', 'failed', ...scope.params],
+    `SELECT COUNT(*) AS cnt FROM local_email_ops WHERE email_id = ? AND status IN ('pending','failed','pushed') AND ${scope.clause}`,
+    [emailId, ...scope.params],
   )
   return (row?.cnt ?? 0) > 0
 }
@@ -182,16 +182,23 @@ export interface FlushOpsReport {
 export async function flushEmailOps(opts: { ids?: string[] } = {}): Promise<FlushOpsReport> {
   const { db, scope } = captureEmailOwnership()
   const report: FlushOpsReport = { pushed: 0, applied: 0, failed: 0, remaining: 0, errors: [] }
-  const all = await listOpsEntries(undefined, db)
-  let batch = all.filter((o) => o.status === 'pending' || o.status === 'failed')
-  if (opts.ids?.length) {
-    const want = new Set(opts.ids)
-    batch = batch.filter((o) => want.has(o.id))
-  }
+  const ids = [...new Set(opts.ids ?? [])]
+  // Filter unfinished work before bounding the batch; completed history must
+  // not hide old intents. A lost execution response leaves its intent pushed.
+  const rows = await db.query<any>(`SELECT * FROM local_email_ops
+    WHERE status IN ('pending','failed','pushed') AND ${scope.clause}
+    ${ids.length ? `AND id IN (${ids.map(() => '?').join(',')})` : ''}
+    ORDER BY created_at,id LIMIT 200`, [...scope.params, ...ids])
+  const batch = rows.map(rowToOps)
   if (batch.length === 0) {
     report.remaining = await countPendingOps(db)
     return report
   }
+  const unchanged = `id=? AND ${scope.clause} AND account_id=? AND email_id=?
+    AND COALESCE(uid,0)=? AND action=? AND COALESCE(target_folder,'')=?
+    AND COALESCE(subject,'')=? AND updated_at=?`
+  const snapshotValues = (o: LocalOpsEntry, stamp: number) =>
+    [o.id, ...scope.params, o.accountId, o.emailId, o.uid, o.action, o.targetFolder, o.subject, stamp]
   // 1) 推服务端日志（幂等；重复推送只是被去重）。
   try {
     db.assertCurrent()
@@ -202,12 +209,14 @@ export async function flushEmailOps(opts: { ids?: string[] } = {}): Promise<Flus
     })))
   } catch (e: any) {
     report.errors.push(String(e?.message || e))
-    report.remaining = batch.length
+    report.remaining = await countPendingOps(db)
     return report // 网络不通：全部保持 pending
   }
   const now = Date.now()
   for (const o of batch) {
-    await db.run(`UPDATE local_email_ops SET status = ?, updated_at = ? WHERE id = ? AND ${scope.clause}`, ['pushed', now, o.id, ...scope.params])
+    // A queued move may have changed while the original HTTP request waited.
+    await db.run(`UPDATE local_email_ops SET status = ?, updated_at = ? WHERE ${unchanged}`,
+      ['pushed', now, ...snapshotValues(o, o.updatedAt)])
   }
   report.pushed = batch.length
   // 2) 服务端执行（可选：只执行刚推的这一批）。
@@ -220,16 +229,18 @@ export async function flushEmailOps(opts: { ids?: string[] } = {}): Promise<Flus
     report.remaining = rep.remaining ?? 0
   } catch (e: any) {
     report.errors.push(String(e?.message || e))
-    report.remaining += batch.length
+    report.remaining = await countPendingOps(db)
     return report
   }
-  // 3) 本地回写：服务端 applied/failed 的统计按批次聚合，逐条无法对应时以
-  // 「批次成功与否」近似——全无错误则全部 applied，否则保持 pushed 等下次对账。
-  const done = report.failed === 0 && report.errors.length === 0
+  // Aggregate success proves completion only when it covers the entire batch.
+  // A duplicate/empty response cannot confirm a previously failed server row.
+  const done = report.failed === 0 && report.errors.length === 0 && report.applied === batch.length
+  if (!done && report.errors.length === 0) report.errors.push('Mail execution is unconfirmed; original operations retained for reconciliation')
   for (const o of batch) {
-    await db.run(`UPDATE local_email_ops SET status = ?, error = ?, updated_at = ? WHERE id = ? AND ${scope.clause}`,
-      [done ? 'applied' : 'pushed', done ? '' : (report.errors[0] || ''), Date.now(), o.id, ...scope.params])
+    await db.run(`UPDATE local_email_ops SET status = ?, error = ?, updated_at = ? WHERE status='pushed' AND ${unchanged}`,
+      [done ? 'applied' : 'pushed', done ? '' : (report.errors[0] || ''), Date.now(), ...snapshotValues(o, now)])
   }
+  report.remaining = await countPendingOps(db)
   return report
 }
 
