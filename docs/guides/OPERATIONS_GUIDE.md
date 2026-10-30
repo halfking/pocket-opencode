@@ -48,7 +48,7 @@ cd /path/to/opencode-pocket
 
 | 组件 | 版本要求 | 备注 |
 |------|---------|------|
-| Go | 1.22+ | Backend编译和运行 |
+| Go | 1.27+ | Backend编译和运行 |
 | PostgreSQL | 14+ | 生产环境必需 |
 | 内存 | 512MB+ | 推荐1GB+ |
 | CPU | 1核+ | 推荐2核+ |
@@ -57,7 +57,7 @@ cd /path/to/opencode-pocket
 
 | 组件 | 版本要求 | 备注 |
 |------|---------|------|
-| Node.js | 18+ | 前端构建 |
+| Node.js | 22+ | 前端构建 |
 | npm | 9+ | 包管理 |
 
 ### Android开发
@@ -80,7 +80,7 @@ cd /path/to/opencode-pocket
 cd backend
 
 # 设置环境变量
-export JWT_SECRET="your-secret-key"
+export POCKET_JWT_SECRET="your-secret-key"
 export POCKET_DEV_AUTH=true
 export POCKET_HTTP_PORT=8088
 
@@ -93,7 +93,7 @@ export POCKET_HTTP_PORT=8088
 ```bash
 # 1. 配置环境变量
 cat > /etc/opencode-pocket/backend.env << EOF
-JWT_SECRET=your-production-secret-key
+POCKET_JWT_SECRET=your-production-secret-key
 POCKET_POSTGRES_DSN=postgres://user:pass@localhost:5432/pocket
 POCKET_HTTP_PORT=8088
 POCKET_DEV_AUTH=false
@@ -164,6 +164,8 @@ echo "POCKET_RELEASE_KEY_PASSWORD=your_password" >> gradle.properties
 # 3. 构建签名版本
 ./gradlew assembleRelease
 ```
+
+⚠️ 当前 `frontend/android/app/build.gradle` **没有 `signingConfigs` 段**，全仓也不读 `POCKET_RELEASE_*` 这 4 个属性 ⇒ 第 2 步写进 `gradle.properties` 目前不生效，`assembleRelease` 产出的是**未签名** APK（签名配置待补）。
 
 ---
 
@@ -300,7 +302,7 @@ psql -h localhost -U pocket -d pocket
 - 确保端口8088未被占用
 - 检查环境变量配置
 - 确认PostgreSQL服务运行
-- 验证JWT_SECRET已设置
+- 验证POCKET_JWT_SECRET已设置
 
 #### 2. WebSocket连接失败
 

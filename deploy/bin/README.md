@@ -223,8 +223,10 @@ sudo ./deploy-245.sh
 | `test_os_detect.sh`       | 20 个 case：macOS / Linux / WSL / Windows / 未知 OS 的 base dir 派生 |
 | `test_init_dirs.sh`       | 38 个 case：9 个 always-create 目录 + 3 个条件 DB 目录 + .gitkeep/.gitignore + 154 server 模式 + 幂等性 |
 | `test_blue_green.sh`      | 12 个 case：bg_init / compute_id / stage / switch / current / rollback / prune / 重复 stage 拒绝 |
-| `test_database_detect.sh` | 7 个 case：docker / systemd / port-reachable / not-found / PG/Redis/MySQL 形态 |
-| `deploy-integration-test.sh` | 27 个 case：deploy-local dry-run + 154/245 派生 + OPP_DEPLOY_PG=true |
+| `test_database_detect.sh` | 9 个 case：configured protocol / local-port / remote / 容器名与裸端口不可为证 / Redis PONG / MySQL 认证 |
+| `test_database_preflight.sh` | 24 个 case：schema / 权限 / DSN / URL 形态 / Redis / 端口占用 / compose 运行时环境 |
+| `test_frontend_stop.py` | 5 个 case：scoped stop 协议（只停前端 / 漂移拒绝 / 缺 id 拒绝 / 多余参数拒绝 / 远端目标拒绝）；不在 `run-all.sh` 内 |
+| `deploy-integration-test.sh` | 15 个 case：deploy-local dry-run + 154/245 派生 + OPP_DEPLOY_PG=true |
 | `run-all.sh`              | 一键跑全部测试 |
 
 ## 环境变量
@@ -262,7 +264,7 @@ sudo ./deploy-245.sh
 ## 测试
 
 ```bash
-# 单元 + 集成（77 unit + 27 integration = 104 tests）
+# 单元 + 集成（103 unit + 15 integration = 118 tests）
 bash deploy/bin/tests/run-all.sh
 
 # 仅单元

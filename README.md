@@ -355,9 +355,9 @@ cd frontend
 npm run typecheck
 ```
 
-PostgreSQL 集成测试会为每个测试创建独立 schema，并在清理阶段删除。`make test-pg` 会运行
-审计存储和审计写入的 PostgreSQL 集成测试；`backend.yml` 运行完整 backend 测试集，
-`backend-pg.yml` 运行这组专项 PostgreSQL 测试。两个 GitHub Actions 工作流都会启动临时
+PostgreSQL 集成测试会为每个测试创建独立 schema，并在清理阶段删除。`make test-pg` 运行的是
+完整 backend 测试集（`go test ./... -race -count=1`），与 `backend.yml` 同一套；
+`backend-pg.yml` 走 `make test-pg`，跑的也是同一套。两个 GitHub Actions 工作流都会启动临时
 PostgreSQL 服务并设置 `POCKET_TEST_POSTGRES_DSN`，因此 CI 会实际执行这些测试；本地没有
 DSN 时则明确跳过。
 

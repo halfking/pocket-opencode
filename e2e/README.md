@@ -9,7 +9,7 @@ e2e/
 ├── web/                    # Playwright 套件（本目录）
 │   ├── playwright.config.ts
 │   ├── helpers/            # 登录 / 会话复用
-│   └── specs/              # auth · chat-stream · approvals · rss-smoke
+│   └── specs/              # approvals · auth · authenticated-shell · chat-stream · email-continuous-list · modal-scroll-lock · responsive-shell · rss-digest · rss-smoke
 └── android/                # Android CDP 驱动脚本（keepalive 全链路验证）
 ```
 
