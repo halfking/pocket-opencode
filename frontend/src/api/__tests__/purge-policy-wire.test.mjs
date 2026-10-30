@@ -67,7 +67,8 @@ test('purge response cannot complete under another login or bind that account',(
 test('a binding for another workspace prevents purge before intent or network mutation',()=>fixture(async f=>{
   const {api,binding}=await prepare(f)
   f.respond(async url=>({...binding(),workspace_id:'untrusted-workspace'}))
-  await assert.rejects(api.purgeCloudCopy(['notes']),/authority did not confirm/)
+  await assert.rejects(api.purgeCloudCopy(['notes']),/did not issue a current workspace binding/)
+  assert.equal((await f.db.queryOne('SELECT COUNT(*) AS n FROM local_portal_resets')).n,0)
   assert.equal(f.requests.some(request=>request.url.includes('/sync/v2/purge')),false)
 }))
 
