@@ -61,6 +61,9 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 			s.writeStructuredError(w, r, http.StatusInternalServerError, CodeUpstreamUnavailable, "JWT signer not configured")
 			return
 		}
+		if s.tryResourceAuth(w, r, raw, next) {
+			return
+		}
 
 		claims, err := auth.VerifyToken(s.jwtSigner, raw)
 		if err != nil || claims == nil || strings.TrimSpace(claims.UserID) == "" {

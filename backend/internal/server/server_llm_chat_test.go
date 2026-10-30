@@ -245,6 +245,8 @@ func TestLLMChatLengthGateConstantMatchesFrontend(t *testing.T) {
 var lengthLimitRegistry = []struct {
 	file, expr, kind, note string
 }{
+	{"auth/resource.go", "len(in) > 3", "A", "资源凭据scope条数上限3，拒绝不截断；可达性：不可达（客户端交换端点实际仅接受1个scope，合法签发路径不会触及此防御上限）"},
+	{"server/server_resource_auth.go", "len(body) > 16384", "O", "可信服务内省响应16KiB字节上限，超限503；不是客户端业务字段，不截断后放行"},
 	{"adapter/disk/codex.go", "len(rest) > 20", "O", ""},
 	{"adapter/disk/parse.go", "len(tag) > 60", "O", ""},
 	{"agentbridge/store.go", "len(s) >= 2", "O", ""},
@@ -328,6 +330,7 @@ var lengthLimitRegistry = []struct {
 //	保证不了「事实**正确**」⇒ 本节已实证人工分类会错（4 处），所以每条 A 类的
 //	note 都写成了**带证据**的形式（来源 + 是拒绝还是截断 + 单位），好让下一个人能复核。
 var lengthLimitRegistryAKeys = []lengthLimitGateKey{
+	{"auth/resource.go", "len(in) > 3"},
 	{"auth/email_codes.go", "len(s) > 254"},
 	{"server/flashcards_handler.go", "len([]rune(name)) > 80"},
 	{"server/server_assistant.go", "len(audioData) > 25 << 20"},
@@ -536,8 +539,8 @@ func TestLengthLimitRegistryCoversEveryLengthGate(t *testing.T) {
 			t.Errorf("lengthLimitRegistryAKeys 里的 %s %q 在清单里不是 A 类 ⇒ 两份清单不一致", k.file, k.expr)
 		}
 	}
-	if len(aSet) != 13 {
-		t.Errorf("A 类（客户端可提交字段上的限制）实际 %d 条，期望 13 条 ⇒ "+
+	if len(aSet) != 14 {
+		t.Errorf("A 类（客户端可提交字段上的限制）实际 %d 条，期望 14 条 ⇒ "+
 			"要么有人把 A 类改成了 O 类，要么新增了一处客户端可提交的限制没分类", len(aSet))
 	}
 
