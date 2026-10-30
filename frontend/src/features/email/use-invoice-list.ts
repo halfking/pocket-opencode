@@ -344,11 +344,11 @@ export function useInvoiceList() {
     inv.status = 'filed'
     applySummary(all.value)
     try {
-      await invoiceStore.setLocalStatus(inv.id, 'filed', db)
+      const sent = await invoiceStore.setLocalStatus(inv.id, 'filed', db)
       if (!isLocalOnlyId(inv.id)) {
         db.assertCurrent()
         await bindEmailRequests(emailApi, db).setInvoiceStatus(inv.id, 'filed')
-        await invoiceStore.clearDirty(inv.id, db)
+        await invoiceStore.clearDirty(inv.id, sent, db)
       }
       toast.success('已归档')
     } catch (e: any) {
@@ -360,11 +360,11 @@ export function useInvoiceList() {
     inv.status = 'new'
     applySummary(all.value)
     try {
-      await invoiceStore.setLocalStatus(inv.id, 'new', db)
+      const sent = await invoiceStore.setLocalStatus(inv.id, 'new', db)
       if (!isLocalOnlyId(inv.id)) {
         db.assertCurrent()
         await bindEmailRequests(emailApi, db).setInvoiceStatus(inv.id, 'new')
-        await invoiceStore.clearDirty(inv.id, db)
+        await invoiceStore.clearDirty(inv.id, sent, db)
       }
     } catch (e: any) {
       toast.error(apiError(e, 'errors.operateFailed'))

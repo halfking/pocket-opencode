@@ -113,17 +113,21 @@ export async function syncFromServer(invoices?: EmailInvoice[]): Promise<number>
   return upsertFromServer(invoices)
 }
 
-export async function setLocalStatus(id: string, status: EmailInvoiceStatus, database?: object): Promise<void> {
+export async function setLocalStatus(id: string, status: EmailInvoiceStatus, database?: object): Promise<Pick<LocalInvoice, 'status' | 'updatedAt'>> {
   const { db, scope } = captureEmailOwnership(database)
+  const updatedAt = Math.floor(Date.now() / 1000)
   await db.run(
     `UPDATE local_email_invoices SET status = ?, updated_at = ?, dirty = 1 WHERE id = ? AND ${scope.clause}`,
-    [status, Math.floor(Date.now() / 1000), id, ...scope.params],
+    [status, updatedAt, id, ...scope.params],
   )
+  return { status, updatedAt }
 }
 
-export async function clearDirty(id: string, database?: object): Promise<void> {
+export async function clearDirty(id: string, sent: Pick<LocalInvoice, 'status' | 'updatedAt'>, database?: object): Promise<void> {
   const { db, scope } = captureEmailOwnership(database)
-  await db.run(`UPDATE local_email_invoices SET dirty = 0 WHERE id = ? AND ${scope.clause}`, [id, ...scope.params])
+  // Acknowledging one request cannot clear a status edited while it waited.
+  await db.run(`UPDATE local_email_invoices SET dirty = 0 WHERE id = ? AND ${scope.clause} AND status=? AND updated_at=?`,
+    [id, ...scope.params, sent.status, sent.updatedAt])
 }
 
 export async function listDirty(database?: object): Promise<LocalInvoice[]> {
