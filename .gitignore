@@ -265,3 +265,7 @@ backend/cmd/wasmbaseline/*.wasm
 # 登录口令提交进 git 历史（不可撤回）。
 # ⇒ 这里显式兜住。真正要提交的是 .maestro/ 下的**源** flow，不是这个临时件。
 .maestro/.maestro-tmp-*.yaml
+
+# Playwright test artifacts
+test-results/
+playwright-report/
