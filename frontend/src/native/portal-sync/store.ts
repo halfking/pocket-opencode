@@ -2,6 +2,7 @@ import { validateItem, versionKey, newOperationId, localVersionOperationId, type
 import { epochTables, currentNotesEpoch, epochGuard, observeNotesEpoch } from './epoch-state.ts'
 import { validEpoch } from './epochs.ts'
 import { recordTables } from './record-tables.ts'
+import { acknowledgeClock, resumeClockCorrections } from './clock-retry.ts'
 
 export interface NoteSnapshot {
   source: 'note' | 'asset'
@@ -148,8 +149,9 @@ export class PortalNotesStore {
     const epoch = await currentNotesEpoch(this.db)
     if (epoch === null) return []
     const admitted = epochGuard(this.db, epoch)
+    await resumeClockCorrections(this.db, 'notes', this)
     const rows = await this.db.query<{ item_json: string }>(`SELECT item_json FROM local_portal_outbox
-      WHERE owner_user_id=? AND owner_workspace_id=? AND last_error='' AND reset_epoch=? AND ${admitted.clause} ORDER BY rowid LIMIT 50`, [...this.scope, epoch, ...admitted.values])
+      WHERE owner_user_id=? AND owner_workspace_id=? AND last_error IN ('','clock_retry') AND reset_epoch=? AND ${admitted.clause} ORDER BY rowid LIMIT 50`, [...this.scope, epoch, ...admitted.values])
     return Promise.all(rows.map(row => this.decode(row.item_json)))
   }
   async acknowledge(item: PortalItem, ack: PortalAck): Promise<boolean> {
@@ -161,8 +163,12 @@ export class PortalNotesStore {
     }
     if (!validEpoch(ack.current_epoch) || ack.current_epoch !== item.epoch) { await this.block(item, 'invalid_epoch_ack'); return false }
     if (ack.outcome === 'skipped_local') { await this.block(item, 'policy_local'); return false }
-    if (ack.clock_skew || ack.outcome === 'rejected' || ack.outcome === 'duplicate') {
-      await this.block(item, ack.clock_skew ? 'Client clock is ahead; original timestamp retained' : `Portal sync outcome requires attention: ${ack.outcome}`)
+    if (ack.clock_skew || (ack.outcome === 'rejected' && ack.reason === 'clock_skew')) {
+      await acknowledgeClock(this.db, item, ack, this)
+      return false
+    }
+    if (ack.outcome === 'rejected' || ack.outcome === 'duplicate') {
+      await this.block(item, `Portal sync outcome requires attention: ${ack.reason ?? ack.outcome}`)
       return false
     }
     if (ack.outcome !== 'applied' && ack.outcome !== 'kept_existing') return false

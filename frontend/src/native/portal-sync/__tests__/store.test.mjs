@@ -74,6 +74,40 @@ test('clock skew and ambiguous duplicate keep the local data and failed immutabl
   }
 })
 
+test('clock skew replaces an immutable operation once using the authoritative acknowledgement time', async () => {
+  const a = fixture(); noteTables(a.raw)
+  await a.store.commit([], {source:'note',id:'skew',title:'N',payload:notePayload({content:'keep me',format:'text'}),epoch:0,modifiedAt:3600000},true)
+  const [original] = await a.store.pending()
+  const ack = {...original,current_epoch:0,outcome:'rejected',reason:'clock_skew',clock_skew:true,client_updated_at:'1970-01-01T00:00:01.000000001Z'}
+  await a.store.acknowledge(original, ack)
+  const [retry] = await a.store.pending()
+  assert.ok(retry)
+  assert.notEqual(retry.op_id, original.op_id)
+  assert.equal(retry.client_updated_at, '1970-01-01T00:00:01.001Z')
+  assert.deepEqual(retry.payload, original.payload)
+  await a.store.acknowledge(original, ack)
+  assert.deepEqual(await a.store.pending(), [retry])
+  const transport = {changes:async()=>({changes:[],epochs:{notes:0},next_cursor:''}),push:async items=>({results:items.map(item=>({...item,current_epoch:0,outcome:'applied'}))})}
+  assert.equal(await syncNotesOnce(a.store,transport,()=>a.db.assertCurrent()), 1)
+  assert.deepEqual(await a.store.pending(), [])
+  assert.equal((await a.store.find('note','skew')).op_id, retry.op_id)
+})
+
+test('a second clock rejection stays explicit and does not create an endless retry', async () => {
+  const a = fixture()
+  await a.store.commit([], {source:'note',id:'skew',title:'N',payload:notePayload({content:'keep me',format:'text'}),epoch:0,modifiedAt:3600000},true)
+  const [original] = await a.store.pending()
+  await a.store.acknowledge(original, {...original,current_epoch:0,outcome:'rejected',clock_skew:true,client_updated_at:new Date(1000).toISOString()})
+  const [retry] = await a.store.pending()
+  assert.ok(retry)
+  await a.store.acknowledge(retry, {...retry,current_epoch:0,outcome:'rejected',clock_skew:true,client_updated_at:new Date(500).toISOString()})
+  assert.deepEqual(await a.store.pending(), [])
+  const row = await a.db.queryOne('SELECT item_json,last_error FROM local_portal_outbox')
+  assert.equal(row.last_error, 'clock_skew_failed')
+  assert.equal(JSON.parse(row.item_json).op_id, retry.op_id)
+  assert.deepEqual(JSON.parse(row.item_json).payload, original.payload)
+})
+
 test('an explicit cloud re-enable creates a fresh upload intent for skipped-local operations', async () => {
   const a = fixture()
   await a.store.commit([], {source:'note',id:'n',title:'N',payload:notePayload({content:'saved offline',format:'text'}),epoch:0, modifiedAt:1000},true)

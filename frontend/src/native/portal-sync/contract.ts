@@ -32,6 +32,7 @@ export interface PortalAck {
   op_id: string
   outcome: 'applied' | 'kept_existing' | 'duplicate' | 'rejected' | 'skipped_local'
   clock_skew?: boolean
+  client_updated_at?: string
   reason?: string
   current_epoch?: number
 }
