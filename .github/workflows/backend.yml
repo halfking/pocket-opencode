@@ -114,6 +114,17 @@ jobs:
           cache: true
           cache-dependency-path: backend/go.sum
 
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # meeting_sync_idempotency_test.go 会以 frontend/ 为工作目录跑 node，
+      # require('./node_modules/typescript') —— 没有 frontend 依赖就没法解析。
+      - name: Install frontend dependencies
+        run: npm ci --no-audit --no-fund
+        working-directory: frontend
+
       - name: Run tests
         run: go test -race ./... -count=1
 

@@ -60,6 +60,17 @@ export function makeEmails(count: number, base = Date.now()): SeedEmailSpec[] {
 export async function seedEmails(page: Page, emails: SeedEmailSpec[]): Promise<number> {
   return page.evaluate(
     async (payload: { accountId: string; rows: SeedEmailSpec[] }) => {
+      // ⚠ 2026-10-30：8b34e1c3 起 `writeAccountIfNewer` 等生产写路径都会先过
+      //   assertCloudModule('email')；全新浏览器没有策略缓存 ⇒ readCachedModuleMode
+      //   恒 'local' ⇒ 播种直接被 409 拦下（e2e-web 连续 20+ 次全红的根因之一）。
+      //   与浏览器单元夹具同款：装激活宿主 + applyPolicy 成 cloud。
+      const policy = (await import(/* @vite-ignore */ '/src/stores/syncPolicyStore.ts')) as any
+      policy.installSyncPolicyActivationHost({
+        captureContext: () => ({ scope: '', isCurrent: () => true }),
+        async activate(modes: unknown, publish: (m: unknown) => undefined) { publish(modes) },
+      })
+      await policy.useSyncPolicyStore().applyPolicy(
+        { system_default: 'cloud', allow_override: true, modules: { email: 'cloud' } }, Date.now())
       const store = (await import(/* @vite-ignore */ '/src/features/email/emails-store.ts')) as {
         writeAccountIfNewer: (a: unknown) => Promise<boolean>
         upsertEmail: (e: unknown) => Promise<boolean>
