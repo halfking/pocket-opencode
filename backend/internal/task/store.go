@@ -737,6 +737,65 @@ func (s *Store) ListSessionsForTaskScoped(ctx context.Context, taskID, wsID stri
 	return s.listSessionsForTask(ctx, taskID, normalizeWorkspace(wsID))
 }
 
+// TaskSessionLinkRow 是「一个任务 + 一条会话链接」的行。
+//
+// ⚠ 没有会话链接的任务**也有一行**（InstanceID/SessionID/Role 为空串）——
+//
+//	这是 LEFT JOIN 的直接结果，也是下面 ListAllSessionLinks 的契约。
+type TaskSessionLinkRow struct {
+	TaskID      string
+	WorkspaceID string
+	InstanceID  string
+	SessionID   string
+	Role        string
+}
+
+// ListAllSessionLinks 一次查出**全部**任务的会话链接（**1 条查询**）。
+//
+// ⚠⚠ 为什么不能「逐个任务查」（N+1，2026-10-28 §976）：
+//
+//	旧实现是 ListTasks() 拿到全部任务，再对**每个任务**调一次
+//	ListSessionsForTask() ⇒ 查询数 = 1 + N。
+//	而它被 **每 5 秒**调一次（session_event_broadcaster 的 taskHealthTick，
+//	见 internal/opencode/session_event_broadcaster.go 的 taskHealthInterval），
+//	外加每次 /api/mobile/events/snapshot 请求也调一次
+//	⇒ 实测（2026-10-28，12 个任务）：44 次任务列表请求 ⇒ **528 次**链接查询
+//	  （= 44 × 12，正好每个任务一条）⇒ 每 5 秒 13 条、每分钟 150+ 条，
+//	  全是**同一个形状**的小查询，把连接池白白占住。
+//	⇒ 而且它**随任务数线性增长**：100 个任务 ⇒ 每 5 秒 101 条查询。
+//
+//	⇒ 改成一条 LEFT JOIN（tasks 左连接 task_session_links）：
+//	  每个 (任务, 链接) 一行；没有链接的任务得到一行（链接列为空串）。
+//	⇒ 查询数从 1+N 变成 **1**，与任务数**无关**。
+//
+//	⚠ 语义与旧实现**逐条等价**（判据见 store_session_links_batch_test.go）：
+//	  · 有链接的任务 ⇒ 每个链接一行；
+//	  · 没有链接的任务 ⇒ 一行，InstanceID/SessionID 为空；
+//	  · **不按 workspace 过滤**（与旧的 ListSessionsForTask 一致：它是
+//	    跨 workspace 的全量枚举，调用方按每行自带的 workspace 定向）。
+func (s *Store) ListAllSessionLinks(ctx context.Context) ([]TaskSessionLinkRow, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT t.id, t.workspace_id,
+		       COALESCE(l.instance_id, ''), COALESCE(l.session_id, ''), COALESCE(l.role, '')
+		FROM tasks t
+		LEFT JOIN task_session_links l ON l.task_id = t.id
+		ORDER BY t.updated_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []TaskSessionLinkRow{}
+	for rows.Next() {
+		var r TaskSessionLinkRow
+		if err := rows.Scan(&r.TaskID, &r.WorkspaceID, &r.InstanceID, &r.SessionID, &r.Role); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // FindTaskIDBySessionID returns the most recently attached task for a session.
 func (s *Store) FindTaskIDBySessionID(ctx context.Context, sessionID string) (string, error) {
 	if s == nil || strings.TrimSpace(sessionID) == "" {

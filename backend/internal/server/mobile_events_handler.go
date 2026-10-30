@@ -12,7 +12,6 @@ package server
 
 import (
 	"context"
-	"log"
 	"net/http"
 	"sync/atomic"
 
@@ -68,30 +67,30 @@ func NewTaskSessionIndex(store *task.Store) opencode.TaskSessionIndex {
 
 // SessionLinks 枚举全部任务及其会话链接（跨 workspace；每行带任务归属
 // workspace，广播器按它定向，不越租户）。
+//
+// ⚠⚠ **一条查询**取完（2026-10-28 §976）：旧实现是「ListTasks + 每个任务再查
+// 一遍链接」的 **N+1**，而它**每 5 秒**被调一次（广播器的 taskHealthTick）
+// 外加每次快照请求 ⇒ 实测 44 次任务列表请求带来 **528 次**链接查询
+// ⇒ 查询数随任务数线性增长。现在一次 LEFT JOIN 取完（见
+// task.Store.ListAllSessionLinks），与任务数无关。
+//
+// ⚠ 语义与旧实现**逐条等价**（判据见 server_session_links_batch_test.go）：
+//
+//	· 有链接的任务 ⇒ 每个链接一行；
+//	· 没有链接的任务 ⇒ 一行，InstanceID/SessionID 为空（广播器对它发 idle）。
 func (i taskStoreSessionIndex) SessionLinks(ctx context.Context) ([]opencode.TaskSessionLink, error) {
-	tasks, err := i.store.ListTasks(ctx)
+	rows, err := i.store.ListAllSessionLinks(ctx)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]opencode.TaskSessionLink, 0, len(tasks))
-	for _, t := range tasks {
-		links, err := i.store.ListSessionsForTask(ctx, t.ID)
-		if err != nil {
-			log.Printf("[mobile-events] task %s sessions: %v", t.ID, err)
-			continue
-		}
-		if len(links) == 0 {
-			out = append(out, opencode.TaskSessionLink{TaskID: t.ID, WorkspaceID: t.WorkspaceID})
-			continue
-		}
-		for _, l := range links {
-			out = append(out, opencode.TaskSessionLink{
-				TaskID:      t.ID,
-				WorkspaceID: t.WorkspaceID,
-				InstanceID:  l.InstanceID,
-				SessionID:   l.SessionID,
-			})
-		}
+	out := make([]opencode.TaskSessionLink, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, opencode.TaskSessionLink{
+			TaskID:      r.TaskID,
+			WorkspaceID: r.WorkspaceID,
+			InstanceID:  r.InstanceID,
+			SessionID:   r.SessionID,
+		})
 	}
 	return out, nil
 }
