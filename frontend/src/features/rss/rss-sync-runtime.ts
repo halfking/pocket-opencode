@@ -5,6 +5,7 @@ import { lobsterReady } from '../../native/lobster-init'
 import { useAuthStore } from '../../stores/auth'
 import { readCachedModuleMode } from '../../stores/syncPolicyStore'
 import { captureNativeRssOperation,ingestNativeRssChanges,nativeRssBlockedCount } from './rss-native-ingest'
+import { reconcileRssItemStates } from './rss-item-state'
 
 const portable=createRecordRuntime(rssSyncAdapter),nativeFailed=ref(false),nativeBlocked=ref(0),nativeRunning=ref(false)
 const status=reactive({...portable.status})
@@ -22,6 +23,8 @@ async function syncNow():Promise<number>{
     // Learn the verified module epoch before consuming events. Their recorded
     // epoch remains immutable and is never replaced by this snapshot.
     await portable.syncNow()
+    operation.assertCurrent();await ingestNativeRssChanges(operation)
+    operation.assertCurrent();await reconcileRssItemStates(operation)
     operation.assertCurrent();await ingestNativeRssChanges(operation)
     const db=operation.db
     const blocked=await nativeRssBlockedCount(db);db.assertCurrent()

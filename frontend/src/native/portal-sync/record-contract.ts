@@ -26,6 +26,7 @@ export interface RecordAdapter {
   kind: string
   kinds?: string[]
   payload(input: Record<string, unknown>, kind?: string): Record<string, unknown>
+  validate?(item: RecordItem): void
   materialize(
     item: RecordItem,
     sourceId: string,
@@ -62,6 +63,7 @@ export function validateRecordItem(adapter: RecordAdapter, item: RecordItem, rem
   )
     throw new Error('Invalid or oversized module sync projection; original retained')
   if (!item.deleted) adapter.payload(item.payload, item.kind)
+  adapter.validate?.(item)
 }
 export function parseRecordPage(adapter: RecordAdapter, raw: unknown): RecordPage {
   const page = raw as { changes?: unknown; next_cursor?: unknown; epochs?: Record<string, unknown> }

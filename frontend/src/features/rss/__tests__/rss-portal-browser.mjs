@@ -36,6 +36,7 @@ export async function createRssPortalBrowserFixture(){
     name:'rss-portable-browser',enforce:'pre',resolveId(source){
       if(source==='virtual:rss-db'||/\/native\/local-db(?:\.ts)?$/.test(source)||/\/stores\/auth(?:\.ts)?$/.test(source)||source==='./rss-sync-runtime')return '\0rss-db'
       if(source==='virtual:rss-entry')return '\0rss-entry'
+      if(/\/api\/http(?:\.ts)?$/.test(source))return '\0rss-http'
       if(/\/stores\/crypto-config(?:\.ts)?$/.test(source))return '\0rss-crypto-config'
       if(source.endsWith('AddToLearningButton.vue'))return '\0rss-learning'
       if(source==='virtual:rss-api'||/\/api\/rss(?:\.ts)?$/.test(source))return '\0rss-api'
@@ -43,6 +44,7 @@ export async function createRssPortalBrowserFixture(){
     },load(id){
       if(id==='\0rss-db')return db+`;export const useAuthStore=()=>auth;export const captureAuthSession=()=>auth.activationVersion;export function assertAuthSession(_auth,stamp){if(stamp!==auth.activationVersion||auth.activationStatus!=='ready')throw new DOMException('Former fixture session','AbortError')}`
       if(id==='\0rss-entry')return entry
+      if(id==='\0rss-http')return "export async function http(){throw new Error('Unexpected HTTP request in portable-only RSS fixture')}"
       if(id==='\0rss-crypto-config')return 'export const useCryptoConfig=()=>({shouldEncryptField:()=>false})'
       if(id==='\0rss-learning')return "export default{render:()=>null}"
       if(id==='\0rss-api')return `import{auth}from'virtual:rss-db';let nextPause=null,release;export function pauseNextSourceRead(){window.__rssReadStarted=false;nextPause=new Promise(resolve=>release=resolve)};export const releaseSourceRead=()=>release?.();const read=(id,options)=>{options?.assertCurrent?.();return{id,title:'Fetched '+auth.userId,summary:'Chosen summary',sourceId:'feed-source',url:'https://example.test/article',content:'FULL ARTICLE BODY MUST NOT ENTER PORTAL',status:'read',categories:[]}};export const rssApi={listSources:async options=>{const user=auth.userId;options?.assertCurrent?.();if(nextPause){const wait=nextPause;nextPause=null;window.__rssReadStarted=true;await wait}options?.assertCurrent?.();return[{id:user,title:'Backend '+user+' source',url:'https://example.test/rss',enabled:true}]},listItems:async(_opts,options)=>{options?.assertCurrent?.();return[{id:'backend-'+auth.userId,title:'Backend '+auth.userId+' article',status:'read',categories:[]}]},getItem:async(...args)=>read(...args),markRead:async(...args)=>read(...args),setStarred:async(id,_star,options)=>read(id,options),shareCardUrl:()=>'',share:async()=>({})}`

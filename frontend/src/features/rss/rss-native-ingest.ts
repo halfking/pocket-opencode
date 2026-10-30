@@ -9,9 +9,9 @@ import { rssPortalStore } from './rss-sync-store'
 import { rssSyncAdapter } from './rss-sync-adapter'
 
 interface NativeChange {
-  sequence: number; kind: 'source'|'item'; ext_id: string; title: string; payload: Record<string,unknown>
+  sequence: number; kind: 'source'|'item'|'item-state'; ext_id: string; title: string; payload: Record<string,unknown>
   client_updated_at: string|null; op_id: string; epoch: number|null; deleted: boolean
-  intent: 'insert'|'update'|'delete'|'feed'; fields: string[]; sync_error: string
+  intent: 'insert'|'update'|'delete'|'feed'|'status'; fields: string[]; sync_error: string
 }
 interface NativePage {user_id:string;workspace_id:string;changes:NativeChange[];next_cursor:number}
 const tables = [
@@ -38,7 +38,7 @@ function parsePage(raw:unknown,db:SyncDb,cursor:number):NativePage{
   if(!page||page.user_id!==db.owner?.userId||page.workspace_id!==db.owner?.workspaceId||!Array.isArray(page.changes)||page.changes.length>100||!Number.isSafeInteger(page.next_cursor)||page.next_cursor<cursor)throw new Error('Invalid RSS source change scope')
   let last=cursor
   for(const change of page.changes){
-    if(!change||!Number.isSafeInteger(change.sequence)||change.sequence<=last||!['source','item'].includes(change.kind)||typeof change.ext_id!=='string'||!change.ext_id.startsWith(`pocketd-${change.kind}:`)||typeof change.title!=='string'||typeof change.op_id!=='string'||!/^pocketd-rss:[0-9a-f-]{36}$/.test(change.op_id)||typeof change.deleted!=='boolean'||!['insert','update','delete','feed'].includes(change.intent)||!Array.isArray(change.fields)||change.fields.some(field=>!['title','url','category','source','summary'].includes(field))||typeof change.sync_error!=='string'||!change.payload||typeof change.payload!=='object'||Array.isArray(change.payload)||(change.epoch!==null&&!validEpoch(change.epoch))||(change.client_updated_at!==null&&typeof change.client_updated_at!=='string'))throw new Error('Invalid RSS source change')
+    if(!change||!Number.isSafeInteger(change.sequence)||change.sequence<=last||!['source','item','item-state'].includes(change.kind)||typeof change.ext_id!=='string'||!change.ext_id.startsWith(`pocketd-${change.kind==='item-state'?'item':change.kind}:`)||typeof change.title!=='string'||typeof change.op_id!=='string'||(change.kind==='item-state'?(!change.op_id||change.op_id!==change.op_id.trim()||new TextEncoder().encode(change.op_id).length>200):!/^pocketd-rss:[0-9a-f-]{36}$/.test(change.op_id))||typeof change.deleted!=='boolean'||!['insert','update','delete','feed','status'].includes(change.intent)||!Array.isArray(change.fields)||change.fields.some(field=>!['title','url','category','source','summary','status'].includes(field))||typeof change.sync_error!=='string'||!change.payload||typeof change.payload!=='object'||Array.isArray(change.payload)||(change.epoch!==null&&!validEpoch(change.epoch))||(change.client_updated_at!==null&&typeof change.client_updated_at!=='string'))throw new Error('Invalid RSS source change')
     if(change.client_updated_at!==null)versionKey(change.client_updated_at)
     last=change.sequence
   }
@@ -54,6 +54,7 @@ async function applyChange(db:SyncDb,change:NativeChange,cursor:number):Promise<
   const currentEpoch=await store.currentEpoch()
   if(!validEpoch(currentEpoch))throw new Error('RSS native snapshot awaits a verified reset epoch')
   let payload=change.payload,title=change.title,reason=change.sync_error
+  if(change.client_updated_at&&/\.\d{7,}(?:Z|[+-]\d{2}:\d{2})$/.test(change.client_updated_at))reason||='source_precision_unsupported'
   if(change.epoch!==currentEpoch)reason||=change.epoch===null?'epoch_unknown':'reset_epoch_mismatch'
   const prior=existing?await store.decode(existing.item_json):null
   if(change.intent==='update'&&prior&&!prior.deleted&&!change.deleted){
@@ -71,7 +72,7 @@ async function applyChange(db:SyncDb,change:NativeChange,cursor:number):Promise<
   // Portal metadata edits are independent user intentions. A later fetch cannot
   // overwrite one merely because its source updated a timestamp.
   if(!reason&&change.intent==='feed'&&prior&&!/^pocketd-rss:[0-9a-f-]{36}$/.test(prior.op_id))reason='portal_edit_preserved'
-  if(!reason&&prior&&prior.op_id!==item.op_id&&compareVersions(item,prior)<=0)reason='portable_version_conflict'
+  if(!reason&&prior&&prior.epoch===item.epoch&&prior.op_id!==item.op_id&&compareVersions(item,prior)<=0)reason='portable_version_conflict'
   const json=await store.encode(item),statements:Statement[]=[]
   const snapshotGuard=recordEpochGuard(db,'rss',currentEpoch)
   statements.push({statement:`INSERT INTO local_portal_record_write_guards(allowed) SELECT 0 WHERE NOT (${snapshotGuard.clause})`,values:snapshotGuard.values})
@@ -79,7 +80,7 @@ async function applyChange(db:SyncDb,change:NativeChange,cursor:number):Promise<
   statements.push({statement:`INSERT INTO local_portal_record_write_guards(allowed) SELECT 0 WHERE NOT (${observed.clause})`,values:observed.values})
   if(!reason&&prior?.op_id!==item.op_id){
     const key=versionKey(item.client_updated_at),admitted=recordEpochGuard(db,'rss',item.epoch!)
-    statements.push({statement:`INSERT INTO local_portal_records(owner_user_id,owner_workspace_id,module,kind,ext_id,source_id,item_json,version_key,op_id,reset_epoch) VALUES(?,?,'rss',?,?,?,?,?,?,?) ON CONFLICT(owner_user_id,owner_workspace_id,module,kind,ext_id) DO UPDATE SET item_json=excluded.item_json,version_key=excluded.version_key,op_id=excluded.op_id,reset_epoch=excluded.reset_epoch`,values:[...owner,item.kind,item.ext_id,existing?.source_id??`native:${item.ext_id}`,json,key,item.op_id,item.epoch]})
+    statements.push({statement:`INSERT INTO local_portal_records(owner_user_id,owner_workspace_id,module,kind,ext_id,source_id,item_json,version_key,op_id,reset_epoch) VALUES(?,?,'rss',?,?,?,?,?,?,?) ON CONFLICT(owner_user_id,owner_workspace_id,module,kind,ext_id) DO UPDATE SET item_json=excluded.item_json,version_key=excluded.version_key,op_id=excluded.op_id,reset_epoch=excluded.reset_epoch`,values:[...owner,item.kind,item.ext_id,existing?.source_id??`native:${item.kind}:${item.ext_id}`,json,key,item.op_id,item.epoch]})
     statements.push({statement:`INSERT INTO local_portal_record_outbox(owner_user_id,owner_workspace_id,module,kind,op_id,ext_id,item_json,reset_epoch,last_error) VALUES(?,?,'rss',?,?,?,?,?,CASE WHEN ${admitted.clause} THEN '' ELSE 'reset_epoch_mismatch' END) ON CONFLICT(owner_user_id,owner_workspace_id,module,op_id) DO NOTHING`,values:[...owner,item.kind,item.op_id,item.ext_id,json,item.epoch,...admitted.values]})
   }
   statements.push({statement:`INSERT INTO local_rss_native_events(owner_user_id,owner_workspace_id,sequence,item_json,reason) VALUES(?,?,?,?,?) ON CONFLICT(owner_user_id,owner_workspace_id,sequence) DO NOTHING`,values:[...owner,change.sequence,json,reason]})

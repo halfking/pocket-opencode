@@ -16,7 +16,11 @@ That new intent has its own modification time; it is not presented as the
 article's source modification time. Repeating this action updates the same
 portable copy. Full article content and unrelated fetch metadata are excluded.
 
-Only source `url/category` and article `source/summary/url` fields are accepted.
+Portable metadata accepts source `url/category` and article `source/summary/url`.
+The independent `item-state` kind accepts exactly `item_ext_id/status`; its
+external ID must equal its target article's external ID. Status is a strict
+string enum (`unread`, `read`, `starred`, `archived`), with an empty payload for a
+tombstone. New local status operations carry no article title or full body.
 Unknown fields, nested data, non-HTTP(S) URLs and URL user/password credentials
 are rejected. Oversized records remain local and blocked through the shared
 outbox; content is never truncated to report success. Local encryption preferences
@@ -43,7 +47,16 @@ It exercises offline creation, cached account/workspace changes, remote updates
 and deletions, draft clearing and retry. This is not deployed pocketd/RedClaw or
 Android/iOS acceptance.
 
-Full automatic synchronization of background-fetched feeds remains separate.
-It needs versioned source/item DTOs, mutation times for read/star changes,
-source/item tombstones and a reliable local ingestion contract. This slice does
-not claim those capabilities or complete four-module R6 acceptance.
+New explicitly managed pocketd sources and their feed metadata now use the
+[native portable journal](rss-native-portable-journal.md), including original
+source timestamps, tombstones and owner-scoped atomic ingestion. Their new
+read/star actions save locally before network access, with immutable user action
+time, operation ID and epoch. Native replay only updates an existing explicitly
+managed article's status. The article, feed list and messages hub use the same
+status projection; loaded message rows support offline single/bulk read.
+
+Historical subscriptions remain unclaimed, feeds without compatible original
+timestamps remain blocked, and initial article/subscription loading still
+requires pocketd. A device-local fetcher and offline executable subscription
+creation are outside this implementation. Production pocketd/RedClaw and mobile
+acceptance are separate validation stages.

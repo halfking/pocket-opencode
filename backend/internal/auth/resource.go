@@ -127,7 +127,7 @@ func ResourceScope(method, path, rawPath string) string {
 		}
 	case http.MethodPost:
 		switch path {
-		case "/api/rss/sources", "/api/rss/sources/import-starter", "/api/rss/sources/discover", "/api/rss/items/bulk-read", "/api/rss/digest/run":
+		case "/api/rss/sources", "/api/rss/sources/import-starter", "/api/rss/sources/discover", "/api/rss/items/bulk-read", "/api/rss/digest/run", "/api/rss/portable/item-states":
 			return "rss"
 		}
 		if len(parts) == 5 && ((parts[2] == "sources" && parts[4] == "refresh") || (parts[2] == "items" && (parts[4] == "read" || parts[4] == "star"))) {

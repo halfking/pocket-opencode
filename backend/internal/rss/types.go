@@ -72,6 +72,7 @@ type Item struct {
 	Relevance                                                  float64
 	MatchReasons                                               []string
 	Status                                                     ItemStatus
+	PortalManaged                                              bool
 }
 
 type FilterRule struct {
@@ -118,6 +119,8 @@ type ListItemsOptions struct {
 	Status        ItemStatus
 	Since, Until  *time.Time
 	Query         string
+	SourceID      string
+	IDs           []string
 	Unmatched     bool
 }
 type UpsertDraftRequest struct {

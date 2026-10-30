@@ -212,7 +212,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, defineAsyncComponent, onMounted, ref } from 'vue'
+import { computed, defineAsyncComponent, onMounted, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { EmptyState, Skeleton } from '../../components'
@@ -221,7 +221,10 @@ import ViewSegmentBar from '../../components/interactive/ViewSegmentBar.vue'
 import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue'
 import ScrollChromePortal from '../../components/layout/ScrollChromePortal.vue'
 import { ICON, type IconName } from '../../constants/icons'
-import { rssApi } from '../../api/rss'
+import { rssApi, type RSSItem } from '../../api/rss'
+import {notificationsApi,type Notification} from '../../api/notifications'
+import {assertAuthSession,captureAuthSession,useAuthStore} from '../../stores/auth'
+import {overlayRssItemStates} from '../rss/rss-item-state'
 import { useNotificationStore } from '../../stores/notification'
 import { listEmails, markRead as markEmailRead, type LocalEmail } from '../email/emails-store'
 import { notificationSourceLabel } from './sourceLabels'
@@ -234,6 +237,9 @@ const { t } = useI18n()
 const router = useRouter()
 const route = useRoute()
 const notifications = useNotificationStore()
+const auth=useAuthStore()
+let generation=0,readVersion=0,loadedSession:ReturnType<typeof captureAuthSession>|null=null
+let rssStatusRead=0,rssRefreshQueued=false
 
 /**
  * 日历是「消息」这一 tab 的第二档看法，异步挂载。
@@ -377,13 +383,22 @@ const rssRows = computed<HubRow[]>(() =>
     // 塞进 f(i)，因为它是**产品决定**（多高才算值得打断用户）。
     important: it.relevance >= 0.8,
     to: `/rss/items/${encodeURIComponent(it.id)}`,
-    onOpen: () => (it.status === 'unread' ? rssApi.markRead(it.id).catch((e) => {
+    onOpen: () => (it.status === 'unread' ? markRssRead(it).catch((e) => {
       // 服务端已读回写失败 ⇒ 下次拉列表这一条又变回未读。
       // 没有别处会提示 ⇒ 留痕。
       console.warn('[messages] RSS 已读回写失败：', e)
     }) : Promise.resolve()),
   })),
 )
+
+function currentHubSession(){
+  if(loadedSession===null)throw new DOMException('Former messages view','AbortError')
+  const session=loadedSession;assertAuthSession(auth,session);return ()=>assertAuthSession(auth,session)
+}
+async function markRssRead(item:RSSItem){
+  const assertCurrent=currentHubSession(),updated=await rssApi.markRead(item,{assertCurrent})
+  assertCurrent();if(rssItems.value.includes(item))item.status=updated.status
+}
 
 const taskRows = computed<HubRow[]>(() =>
   taskItems.value.map((n) => ({
@@ -469,6 +484,7 @@ function go(to: string) {
 }
 
 function open(row: HubRow) {
+  try{currentHubSession()()}catch{return}
   // 顺序很重要：先置已读再跳。倒过来的话用户返回列表时这一行还是「未读」，
   // 会以为刚才那次点击没生效。
   row.onOpen?.()
@@ -488,56 +504,64 @@ function open(row: HubRow) {
  */
 async function markAllRead() {
   if (!visibleUnread.value) return
+  let assertCurrent:()=>void
+  try{assertCurrent=currentHubSession()}catch{return}
   const jobs: Promise<unknown>[] = []
+  const rssIDs=new Set(rows.value.filter(row=>row.kind==='rss'&&row.unread).map(row=>row.id)),rss=rssItems.value.filter(item=>rssIDs.has(item.id))
+  if(rss.length)jobs.push(rssApi.bulkRead(rss,{assertCurrent}).then(()=>{assertCurrent();for(const item of rss)if(rssItems.value.includes(item))item.status='read'}))
   for (const row of rows.value) {
-    if (!row.unread) continue
+    if (!row.unread||row.kind==='rss') continue
     const done = row.onOpen?.()
     if (done) jobs.push(done)
   }
   await Promise.allSettled(jobs)
 }
 
-onMounted(load)
+async function refreshRssStatuses(){
+  const read=++rssStatusRead
+  if(loading.value||loadedSession===null){rssRefreshQueued=true;return}
+  const stamp=generation,items=rssItems.value
+  try{const assertCurrent=currentHubSession(),updated=await overlayRssItemStates(items);assertCurrent();if(stamp===generation&&read===rssStatusRead&&rssItems.value===items)rssItems.value=updated}
+  catch(error){if(!(error instanceof Error&&error.name==='AbortError'))console.warn('[messages] RSS status refresh failed:',error)}
+}
+onMounted(()=>{void load();window.addEventListener('openpocket:portal-rss-applied',refreshRssStatuses)})
+watch(()=>[auth.activationVersion,auth.userId,auth.workspaceId,auth.activationStatus],()=>{generation++;readVersion++;rssRefreshQueued=false;loadedSession=null;emails.value=[];rssItems.value=[];taskItems.value=[];failedSources.value=[];loading.value=false;if(auth.activationStatus==='ready')void load()},{flush:'sync'})
+onBeforeUnmount(()=>{generation++;loadedSession=null;window.removeEventListener('openpocket:portal-rss-applied',refreshRssStatuses)})
 
 /**
  * 三个来源并发拉、互不阻塞。**任何一个失败都不会让另外两个消失**——
  * 这是本页与 NotesHubView 最关键的差别（那边三个源同库，必须一起降级）。
  *
- * 通知这一路的取值方式与另外两路不同，踩过一个真实的坑：
- * `notifications.loadInbox()` 的返回类型是 **Promise<void>**（它把结果写进
- * store 自身，不返回数据）。早先这里写的是
- *   `taskItems.value = tasks.value as Notification[]`
- * 而 inbox 为空时走的正是 loadInbox 分支，tasks.value 是 undefined，
- * 于是 taskRows computed 里的 `.map` 抛
- * 「Cannot read properties of undefined (reading 'map')」，
- * **整个「消息」tab 白屏**——而且只在「首次进入、收件箱还是空的」这一种
- * 最常见的情况下发生，已有数据的老用户完全看不到。
- *
- * 现在统一从 store 读最终状态，不再碰 promise 的返回值。
+ * 全局通知 store 的增量缓存可能混有其他 owner，不能用它的最大时间作为
+ * 当前 owner 的起点；无当前 owner 缓存时直接读取 since=0 的可信范围响应。
  */
 async function load() {
+  if(auth.activationStatus!=='ready'){loading.value=false;return}
+  const stamp=generation,read=++readVersion,session=captureAuthSession(auth)
   loading.value = true
-  // 有缓存就不重复拉：store 内部本就按 since 增量，重复调用只是白跑一次网络。
-  const needInbox = notifications.inbox.length === 0
-  // 第三个结果刻意不解构：它的值无意义（见上），要的是 await 之后 store 的状态。
+  const owned=(items:Notification[])=>items.filter(item=>item.user_id===auth.userId&&item.workspace_id===auth.workspaceId)
+  const cached=owned(notifications.inbox)
   const [mail, feeds, tasks] = await Promise.allSettled([
     listEmails({ limit: PAGE, folder: '__all__' }),
-    rssApi.listItems({ status: 'unread', limit: PAGE }),
-    needInbox ? notifications.loadInbox() : Promise.resolve(),
+    rssApi.listItems({ status: 'unread', limit: PAGE },{assertCurrent:()=>assertAuthSession(auth,session)}),
+    cached.length?Promise.resolve(cached):notificationsApi.list({limit:200,since:0}).then(response=>response.notifications??[]),
   ])
+
+  try{assertAuthSession(auth,session)}catch{return}
+  if(stamp!==generation||read!==readVersion)return
+  loadedSession=session
 
   const failed: string[] = []
   if (mail.status === 'fulfilled') emails.value = mail.value
   else failed.push(t('messagesHub.filter.email'))
   if (feeds.status === 'fulfilled') rssItems.value = feeds.value
   else failed.push(t('messagesHub.filter.rss'))
-  // 无论 loadInbox 成功还是失败，都回落到 store 当前值——它在 state 里
-  // 初始化为 []，所以失败时 taskRows 拿到空数组而不是 undefined。
-  taskItems.value = Array.isArray(notifications.inbox) ? notifications.inbox : []
+  taskItems.value = tasks.status==='fulfilled'?owned(tasks.value):cached
   if (tasks.status === 'rejected') failed.push(t('messagesHub.filter.task'))
 
   failedSources.value = failed
   loading.value = false
+  if(rssRefreshQueued){rssRefreshQueued=false;void refreshRssStatuses()}
 }
 </script>
 

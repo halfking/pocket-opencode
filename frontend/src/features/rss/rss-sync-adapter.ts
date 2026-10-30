@@ -17,8 +17,15 @@ function address(value: string, required: boolean): string {
 
 /** Portable metadata is a separate read model, never an executable feed subscription. */
 export const rssSyncAdapter: RecordAdapter = {
-  module: 'rss', kind: 'source', kinds: ['source', 'item'],
+  module: 'rss', kind: 'source', kinds: ['source', 'item', 'item-state'],
+  validate(item) {
+    if (item.kind === 'item-state' && (item.deleted ? Object.keys(item.payload).length !== 0 : item.payload.item_ext_id !== item.ext_id)) throw new Error('RSS state target must match its identity')
+  },
   payload(input, kind = 'source') {
+    if (kind === 'item-state') {
+      if (Object.keys(input).some(key => !['item_ext_id','status'].includes(key)) || typeof input.item_ext_id !== 'string' || !input.item_ext_id.trim() || new TextEncoder().encode(input.item_ext_id).length > 512 || typeof input.status!=='string' || !['unread','read','starred','archived'].includes(input.status)) throw new Error('Invalid RSS item state')
+      return {item_ext_id:input.item_ext_id,status:input.status}
+    }
     const allowed = kind === 'source' ? ['url', 'category'] : ['source', 'summary', 'url']
     if (Object.keys(input).some(key => !allowed.includes(key))) throw new Error('Unknown RSS projection field; original retained')
     if (kind === 'source') return { url: address(text(input, 'url'), true), category: text(input, 'category') }

@@ -38,7 +38,7 @@ func TestResourceTokenTrustDomainAndRoutes(t *testing.T) {
 			t.Fatalf("overbroad route %s %s: %s", tc.method, tc.path, got)
 		}
 	}
-	for _, tc := range []struct{ method, path, want string }{{"GET", "/api/email/accounts", "email-metadata"}, {"GET", "/api/emails", "email-metadata"}, {"POST", "/api/embed", "embedding"}, {"GET", "/api/rss/sources", "rss"}, {"DELETE", "/api/rss/sources/abc", "rss"}} {
+	for _, tc := range []struct{ method, path, want string }{{"GET", "/api/email/accounts", "email-metadata"}, {"GET", "/api/emails", "email-metadata"}, {"POST", "/api/embed", "embedding"}, {"GET", "/api/rss/sources", "rss"}, {"DELETE", "/api/rss/sources/abc", "rss"}, {"POST", "/api/rss/portable/item-states", "rss"}} {
 		if got := ResourceScope(tc.method, tc.path, ""); got != tc.want {
 			t.Fatalf("route %s %s=%s", tc.method, tc.path, got)
 		}

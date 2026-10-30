@@ -68,7 +68,23 @@ type PortableChange struct {
 	Intent          string         `json:"intent"`
 	Fields          []string       `json:"fields"`
 	SyncError       string         `json:"sync_error"`
+	OriginalTime    *string        `json:"-"`
 }
+
+// Preserve the original wire timestamp of a state operation, including its
+// offset and trailing zeros, when another device imports the native journal.
+func (c PortableChange) MarshalJSON() ([]byte, error) {
+	type plain PortableChange
+	var at any = c.ClientUpdatedAt
+	if c.OriginalTime != nil {
+		at = *c.OriginalTime
+	}
+	return json.Marshal(struct {
+		plain
+		Time any `json:"client_updated_at"`
+	}{plain: plain(c), Time: at})
+}
+
 type PortablePage struct {
 	Changes    []PortableChange `json:"changes"`
 	NextCursor int64            `json:"next_cursor"`
@@ -85,7 +101,7 @@ func (s *Store) ListPortableChanges(ctx context.Context, sc Scope, cursor int64,
 		return out, fmt.Errorf("rss: invalid portable limit")
 	}
 	err := s.portableWrite(ctx, sc, func(tx pgx.Tx) error {
-		rows, err := tx.Query(ctx, `SELECT sequence,kind,ext_id,title,payload,client_updated_at,op_id,epoch,deleted,intent,changed_fields,sync_error FROM rss_portable_changes WHERE user_id=$1 AND workspace_id=$2 AND sequence>$3 ORDER BY sequence ASC LIMIT $4`, sc.UserID, sc.WorkspaceID, cursor, limit)
+		rows, err := tx.Query(ctx, `SELECT sequence,kind,ext_id,title,payload,client_updated_at,op_id,epoch,deleted,intent,changed_fields,sync_error,client_updated_at_exact FROM rss_portable_changes WHERE user_id=$1 AND workspace_id=$2 AND sequence>$3 ORDER BY sequence ASC LIMIT $4`, sc.UserID, sc.WorkspaceID, cursor, limit)
 		if err != nil {
 			return err
 		}
@@ -93,8 +109,17 @@ func (s *Store) ListPortableChanges(ctx context.Context, sc Scope, cursor int64,
 		for rows.Next() {
 			var change PortableChange
 			var payload, fields []byte
-			if err := rows.Scan(&change.Sequence, &change.Kind, &change.ExtID, &change.Title, &payload, &change.ClientUpdatedAt, &change.OpID, &change.Epoch, &change.Deleted, &change.Intent, &fields, &change.SyncError); err != nil {
+			var exact *string
+			if err := rows.Scan(&change.Sequence, &change.Kind, &change.ExtID, &change.Title, &payload, &change.ClientUpdatedAt, &change.OpID, &change.Epoch, &change.Deleted, &change.Intent, &fields, &change.SyncError, &exact); err != nil {
 				return err
+			}
+			if exact != nil {
+				at, err := time.Parse(time.RFC3339Nano, *exact)
+				if err != nil {
+					return err
+				}
+				change.ClientUpdatedAt = &at
+				change.OriginalTime = exact
 			}
 			if err := json.Unmarshal(payload, &change.Payload); err != nil {
 				return err

@@ -78,6 +78,10 @@ func (s *Server) rssScopeFromClaims(r *http.Request) rss.Scope {
 
 // writeRSSError 把 rss 包错误翻译为标准 JSON 响应。
 func writeRSSError(w http.ResponseWriter, err error) {
+	if errors.Is(err, rss.ErrPortableStateConflict) || errors.Is(err, rss.ErrPortableStateRequired) {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
 	switch {
 	case errors.Is(err, rss.ErrNotFound):
 		writeError(w, http.StatusNotFound, "not found")
@@ -678,44 +682,46 @@ func (s *Server) handleRSSSourceRefresh(w http.ResponseWriter, r *http.Request, 
 // ===== /items =====
 
 type rssItemDTO struct {
-	ID           string   `json:"id"`
-	SourceID     string   `json:"sourceId"`
-	GUID         string   `json:"guid"`
-	Title        string   `json:"title"`
-	Author       string   `json:"author"`
-	URL          string   `json:"url"`
-	Summary      string   `json:"summary"`
-	Content      string   `json:"content,omitempty"`
-	Language     string   `json:"language"`
-	Categories   []string `json:"categories"`
-	PublishedAt  *string  `json:"publishedAt,omitempty"`
-	FetchedAt    string   `json:"fetchedAt"`
-	Relevance    float64  `json:"relevance"`
-	MatchReasons []string `json:"matchReasons"`
-	Status       string   `json:"status"`
+	ID            string   `json:"id"`
+	SourceID      string   `json:"sourceId"`
+	GUID          string   `json:"guid"`
+	Title         string   `json:"title"`
+	Author        string   `json:"author"`
+	URL           string   `json:"url"`
+	Summary       string   `json:"summary"`
+	Content       string   `json:"content,omitempty"`
+	Language      string   `json:"language"`
+	Categories    []string `json:"categories"`
+	PublishedAt   *string  `json:"publishedAt,omitempty"`
+	FetchedAt     string   `json:"fetchedAt"`
+	Relevance     float64  `json:"relevance"`
+	MatchReasons  []string `json:"matchReasons"`
+	Status        string   `json:"status"`
+	PortalManaged bool     `json:"portalManaged"`
 }
 
 func toItemDTO(it rss.Item) rssItemDTO {
 	out := rssItemDTO{
-		ID:           it.ID,
-		SourceID:     it.SourceID,
-		GUID:         it.GUID,
-		Title:        it.Title,
-		Author:       it.Author,
-		URL:          it.URL,
-		Summary:      it.Summary,
-		Content:      it.Content,
-		Language:     it.Language,
-		Categories:   it.Categories,
-		Relevance:    it.Relevance,
-		MatchReasons: it.MatchReasons,
-		Status:       string(it.Status),
+		ID:            it.ID,
+		SourceID:      it.SourceID,
+		GUID:          it.GUID,
+		Title:         it.Title,
+		Author:        it.Author,
+		URL:           it.URL,
+		Summary:       it.Summary,
+		Content:       it.Content,
+		Language:      it.Language,
+		Categories:    it.Categories,
+		Relevance:     it.Relevance,
+		MatchReasons:  it.MatchReasons,
+		Status:        string(it.Status),
+		PortalManaged: it.PortalManaged,
 	}
 	if it.FetchedAt != nil {
-		out.FetchedAt = it.FetchedAt.UTC().Format(time.RFC3339)
+		out.FetchedAt = it.FetchedAt.UTC().Format(time.RFC3339Nano)
 	}
 	if it.PublishedAt != nil {
-		s := it.PublishedAt.UTC().Format(time.RFC3339)
+		s := it.PublishedAt.UTC().Format(time.RFC3339Nano)
 		out.PublishedAt = &s
 	}
 	return out
@@ -767,8 +773,12 @@ func (s *Server) handleRSSItems(w http.ResponseWriter, r *http.Request) {
 			opt.Until = &t
 		}
 	}
-	sourceID := q.Get("sourceId")
-	// ListItems 内部已经过滤 status/q/since/until；sourceId 在内存中二次过滤。
+	opt.SourceID = q.Get("sourceId")
+	opt.IDs = q["id"]
+	if len(opt.IDs) > 100 {
+		writeError(w, 400, "at most 100 item IDs required")
+		return
+	}
 	items, err := st.ListItems(r.Context(), sc, opt)
 	if err != nil {
 		writeRSSError(w, err)
@@ -776,9 +786,6 @@ func (s *Server) handleRSSItems(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]rssItemDTO, 0, len(items))
 	for _, it := range items {
-		if sourceID != "" && it.SourceID != sourceID {
-			continue
-		}
 		out = append(out, toItemDTO(it))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": out, "count": len(out)})
@@ -845,16 +852,15 @@ func (s *Server) handleRSSBulkRead(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
-	updated := 0
-	for _, id := range body.IDs {
-		if id == "" {
-			continue
-		}
-		if err := st.MarkItem(r.Context(), id, rss.ItemRead, sc); err == nil {
-			updated++
-		}
+	if len(body.IDs) < 1 || len(body.IDs) > 100 {
+		writeError(w, 400, "1 to 100 item IDs required")
+		return
 	}
-	writeJSON(w, http.StatusOK, map[string]int{"updated": updated})
+	if err := st.MarkItems(r.Context(), body.IDs, rss.ItemRead, sc); err != nil {
+		writeRSSError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"updated": len(body.IDs)})
 }
 
 func (s *Server) handleRSSItemRead(w http.ResponseWriter, r *http.Request, id string) {
@@ -1165,6 +1171,10 @@ func (s *Server) handleRSSRouter(w http.ResponseWriter, r *http.Request) {
 	}
 	switch parts[0] {
 	case "portable":
+		if len(parts) == 2 && parts[1] == "item-states" {
+			s.handleRSSPortableItemStates(w, r)
+			return
+		}
 		if len(parts) != 2 || parts[1] != "changes" {
 			writeError(w, http.StatusNotFound, "unknown rss portable path")
 			return

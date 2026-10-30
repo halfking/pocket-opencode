@@ -9,6 +9,21 @@ CREATE TABLE IF NOT EXISTS rss_portable_changes (
  intent TEXT NOT NULL,changed_fields JSONB NOT NULL,sync_error TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_rss_portable_scope_cursor ON rss_portable_changes(user_id,workspace_id,sequence);
+ALTER TABLE rss_portable_changes DROP CONSTRAINT IF EXISTS rss_portable_changes_kind_check;
+ALTER TABLE rss_portable_changes ADD CONSTRAINT rss_portable_changes_kind_check CHECK(kind IN ('source','item','item-state'));
+ALTER TABLE rss_portable_changes ADD COLUMN IF NOT EXISTS client_updated_at_exact TEXT;
+ALTER TABLE rss_portable_changes DROP CONSTRAINT IF EXISTS rss_portable_changes_op_id_key;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_rss_portable_scope_op ON rss_portable_changes(user_id,workspace_id,op_id);
+-- No foreign key cascade on the receipt ledger: a retry after source deletion
+-- must retain its identity and can never recreate that source.
+CREATE TABLE IF NOT EXISTS rss_portable_state_ops (
+ user_id TEXT NOT NULL,workspace_id TEXT NOT NULL,op_id TEXT NOT NULL,operation JSONB NOT NULL,
+ PRIMARY KEY(user_id,workspace_id,op_id)
+);
+CREATE TABLE IF NOT EXISTS rss_portable_item_states (
+ user_id TEXT NOT NULL,workspace_id TEXT NOT NULL,ext_id TEXT NOT NULL,operation JSONB NOT NULL,
+ PRIMARY KEY(user_id,workspace_id,ext_id)
+);
 CREATE OR REPLACE FUNCTION rss_portable_source_change() RETURNS trigger LANGUAGE plpgsql SET search_path FROM CURRENT AS $$
 DECLARE src rss_sources%ROWTYPE; changed JSONB; at TIMESTAMPTZ;
 BEGIN
@@ -33,6 +48,11 @@ BEGIN
   INSERT INTO rss_portable_changes(user_id,workspace_id,kind,ext_id,title,payload,client_updated_at,op_id,epoch,deleted,intent,changed_fields)
   SELECT src.user_id,src.workspace_id,'item','pocketd-item:'||id,title,'{}'::jsonb,at,'pocketd-rss:'||gen_random_uuid()::text,src.portal_epoch,TRUE,'delete','[]'::jsonb
   FROM rss_items WHERE source_id=src.id AND user_id=src.user_id AND workspace_id=src.workspace_id;
+  INSERT INTO rss_portable_changes(user_id,workspace_id,kind,ext_id,title,payload,client_updated_at,op_id,epoch,deleted,intent,changed_fields)
+  SELECT src.user_id,src.workspace_id,'item-state','pocketd-item:'||i.id,'','{}'::jsonb,at,'pocketd-rss:'||gen_random_uuid()::text,
+   src.portal_epoch,TRUE,'delete','[]'::jsonb
+  FROM rss_items i JOIN rss_portable_item_states st ON st.ext_id='pocketd-item:'||i.id AND st.user_id=i.user_id AND st.workspace_id=i.workspace_id
+  WHERE i.source_id=src.id AND i.user_id=src.user_id AND i.workspace_id=src.workspace_id;
   RETURN OLD;
  END IF;
  RETURN NEW;

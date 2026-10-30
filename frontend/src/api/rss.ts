@@ -5,6 +5,8 @@
  */
 import { http, type HttpOptions } from './http'
 import { captureRssPortalOperation } from '../features/rss/rss-sync-store'
+import { overlayRssItemStates,saveRssItemStatuses } from '../features/rss/rss-item-state'
+import { listRssItemsWithState } from '../features/rss/rss-item-list'
 
 function nativeMutation(options:HttpOptions={}) {
   const operation=captureRssPortalOperation()
@@ -46,6 +48,7 @@ export interface RSSItem {
   relevance: number
   matchReasons: string[]
   status: 'unread' | 'read' | 'starred' | 'archived'
+  portalManaged?: boolean
 }
 
 export interface RSSFilter {
@@ -230,35 +233,40 @@ export const rssApi = {
   },
 
   async listItems(opts: { sourceId?: string; status?: string; q?: string; limit?: number; offset?: number } = {}, options: HttpOptions = {}): Promise<RSSItem[]> {
-    const qs = new URLSearchParams()
-    if (opts.sourceId) qs.set('sourceId', opts.sourceId)
-    if (opts.status) qs.set('status', opts.status)
-    if (opts.q) qs.set('q', opts.q)
-    if (opts.limit) qs.set('limit', String(opts.limit))
-    if (opts.offset) qs.set('offset', String(opts.offset))
-    const path = qs.toString() ? `/api/rss/items?${qs.toString()}` : '/api/rss/items'
-    const res = await http<{ items: RSSItem[]; count: number }>(path, options)
-    return res.items ?? []
+    const captured=nativeMutation(options)
+    return listRssItemsWithState(opts,captured.options,captured.operation)
   },
 
   async getItem(id: string, options: HttpOptions = {}): Promise<RSSItem> {
-    return http<RSSItem>(`/api/rss/items/${encodeURIComponent(id)}`, options)
+    const captured=nativeMutation(options),item=await http<RSSItem>(`/api/rss/items/${encodeURIComponent(id)}`,captured.options)
+    return (await overlayRssItemStates([item],captured.operation))[0]!
   },
 
-  async markRead(id: string, options: HttpOptions = {}): Promise<RSSItem> {
-    return http<RSSItem>(`/api/rss/items/${encodeURIComponent(id)}/read`, { ...options, method: 'POST' })
+  async markRead(input: string|RSSItem, options: HttpOptions = {}): Promise<RSSItem> {
+    const captured=nativeMutation(options),item=typeof input==='string'?await rssApi.getItem(input,captured.options):{...input}
+    captured.options.assertCurrent()
+    if(item.portalManaged)return (await saveRssItemStatuses([item],'read',captured.operation))[0]!
+    return http<RSSItem>(`/api/rss/items/${encodeURIComponent(item.id)}/read`, { ...captured.options, method: 'POST' })
   },
 
-  async bulkRead(ids: string[]): Promise<{ updated: number }> {
-    return http<{ updated: number }>('/api/rss/items/bulk-read', {
-      method: 'POST',
-      body: JSON.stringify({ ids }),
-    })
+  async bulkRead(input: readonly (string|RSSItem)[],options:HttpOptions={}): Promise<{ updated: number }> {
+    if(!input.length||input.length>100)throw new Error('1 to 100 RSS items required')
+    const captured=nativeMutation(options),snapshots=input.map(item=>typeof item==='string'?item:{...item})
+    const unique=[...new Map(snapshots.map(item=>[typeof item==='string'?item:item.id,item])).values()]
+    const items=await Promise.all(unique.map(item=>typeof item==='string'?rssApi.getItem(item,captured.options):item))
+    captured.options.assertCurrent()
+    const managed=items.filter(item=>item.portalManaged),legacy=items.filter(item=>!item.portalManaged)
+    if(managed.length)await saveRssItemStatuses(managed,'read',captured.operation)
+    const result=legacy.length?await http<{updated:number}>('/api/rss/items/bulk-read',{...captured.options,method:'POST',body:JSON.stringify({ids:legacy.map(item=>item.id)})}):{updated:0}
+    return {updated:managed.length+result.updated}
   },
 
-  async setStarred(id: string, starred: boolean, options: HttpOptions = {}): Promise<RSSItem> {
-    return http<RSSItem>(`/api/rss/items/${encodeURIComponent(id)}/star`, {
-      ...options,
+  async setStarred(input: string|RSSItem, starred: boolean, options: HttpOptions = {}): Promise<RSSItem> {
+    const captured=nativeMutation(options),item=typeof input==='string'?await rssApi.getItem(input,captured.options):{...input}
+    captured.options.assertCurrent()
+    if(item.portalManaged)return (await saveRssItemStatuses([item],starred?'starred':'read',captured.operation))[0]!
+    return http<RSSItem>(`/api/rss/items/${encodeURIComponent(item.id)}/star`, {
+      ...captured.options,
       method: 'POST',
       body: JSON.stringify({ starred }),
     })
