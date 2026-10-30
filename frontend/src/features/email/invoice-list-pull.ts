@@ -52,6 +52,6 @@ export async function pushDirtyInvoices(): Promise<void> {
     operation.assertCurrent()
     await emailApi.setInvoiceStatus(inv.id, inv.status)
     operation.assertCurrent()
-    await invoiceStore.clearDirty(inv.id, operation.db)
+    await invoiceStore.clearDirty(inv.id, inv, operation.db)
   }
 }
