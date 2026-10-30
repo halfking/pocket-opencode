@@ -171,7 +171,7 @@ export function findTodoInsertSites(base = SRC) {
   const hits = []
   for (const p of walk(base)) {
     const code = stripComments(readFileSync(p, 'utf8'))
-    if (!code.includes('INSERT INTO local_todos')) continue
+    if (!/INSERT INTO local_todos(?![_0-9A-Za-z])/.test(code)) continue
     const rel = relative(base, p).split(sep).join('/')
     hits.push({ rel, code })
   }
@@ -255,7 +255,7 @@ export function reminderFollowsDedupe(code) {
   // ⚠ 本函数是**导出的**，调用方未必经过 stripComments ⇒ 自己再归一行尾。
   //   （`at` 在归一后的串上算 ⇒ 偏移量与串始终自洽，不会串位。）
   const norm = normalizeEol(code)
-  const at = norm.indexOf('INSERT INTO local_todos')
+  const at = norm.search(/INSERT INTO local_todos(?![_0-9A-Za-z])/)
   if (at < 0) return { ok: false, why: '找不到 INSERT（调用方不应这么用）' }
   const body = enclosingLoopBody(norm, at)
   if (!body) return { ok: false, why: '定位不到包含 INSERT 的循环（抽取器可能失效）' }
