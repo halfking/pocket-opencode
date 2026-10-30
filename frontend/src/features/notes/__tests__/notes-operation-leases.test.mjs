@@ -56,7 +56,7 @@ test('a delayed embedding response cannot persist after policy local/cloud ABA',
   await f.setMode('local')
   await f.setMode('cloud')
   paused.release()
-  await f.notes.awaitNoteMirror(note.id)
+  await assert.rejects(f.notes.awaitNoteMirror(note.id), /note_ai_metadata_unavailable/)
   await until(() => f.warnings.some(w => String(w[0]).includes('嵌入失败')) || f.count('local_note_vectors') > 0)
   assert.equal(f.warnings.find(w => String(w[0]).includes('嵌入失败'))?.at(-1)?.name, 'AbortError')
   assert.equal(f.count('local_note_vectors'), 0)
@@ -72,7 +72,7 @@ test('local policy changes do not cancel local encryption/save or start new clou
   await f.setMode('local')
   paused.release()
   const note = await saving
-  await f.notes.awaitNoteMirror(note.id)
+  await assert.rejects(f.notes.awaitNoteMirror(note.id), /note_ai_metadata_unavailable/)
   assert.equal(f.count('local_notes'), 1)
   assert.equal(f.requests.length, 0)
 }))
@@ -105,11 +105,10 @@ for (const deleting of [false, true]) test(`${deleting ? 'local note deletion' :
   assert.equal(f.raw.exec(`SELECT deleted_at FROM ${table} WHERE id='asset-1'`)[0].values[0][0], null)
 }))
 
-test('mirror classify cannot start after a local/cloud policy ABA while upload was in flight', async () => fixture(async f => {
+test('legacy mirror and classify never bypass the versioned outbox after policy changes', async () => fixture(async f => {
   const paused = gate()
   f.respond(async url => {
-    if (url.endsWith('/api/notes')) { await paused.pause(); return {} }
-    if (url.endsWith('/api/embed')) return { embedding: [], model: 'fixture-model' }
+    if (url.endsWith('/api/embed')) { await paused.pause(); return { embedding: Array(1536).fill(1), model: 'fixture-model' } }
     return {}
   })
   const note = await f.notes.createNote({ content: 'cloud note', workspaceId: 'workspace' })
@@ -117,8 +116,8 @@ test('mirror classify cannot start after a local/cloud policy ABA while upload w
   await f.setMode('local')
   await f.setMode('cloud')
   paused.release()
-  await f.notes.awaitNoteMirror(note.id)
-  assert.equal(f.requests.some(r => r.url.endsWith('/classify')), false)
+  await assert.rejects(f.notes.awaitNoteMirror(note.id), /note_ai_metadata_unavailable/)
+  assert.equal(f.requests.some(r => /\/api\/notes(?:\/|$)/.test(r.url)), false)
 }))
 
 test('policy ABA during proactive refresh cancels background requests before their first send', async () => fixture(async f => {
@@ -129,7 +128,7 @@ test('policy ABA during proactive refresh cancels background requests before the
   await f.setMode('local')
   await f.setMode('cloud')
   paused.release()
-  await f.notes.awaitNoteMirror(note.id)
+  await assert.rejects(f.notes.awaitNoteMirror(note.id), /note_ai_metadata_unavailable/)
   await until(() => f.warnings.some(w => String(w[0]).includes('嵌入失败')))
   assert.equal(f.requests.length, 0)
   assert.equal(f.count('local_note_vectors'), 0)

@@ -167,6 +167,7 @@ export const useAuthStore = defineStore('auth', {
      */
     activationStatus: 'ready' as 'ready' | 'pending' | 'error',
     activationError: '',
+    ownerVerificationFailed: false,
     activationVersion: 0,
     sessionPersistFailed: false,
     /**
@@ -235,6 +236,7 @@ export const useAuthStore = defineStore('auth', {
       })
       // The DB is revoked before reactive pending/error watchers can re-enter.
       this.activationError = ''
+      this.ownerVerificationFailed = false
       if (state.activation === activation) this.activationStatus = 'pending'
       return activation.promise
     },
@@ -309,7 +311,7 @@ export const useAuthStore = defineStore('auth', {
      *   那样每次重启应用都会丢掉本该同步的配置。
      *
      * ⚠ 归属只认服务端签发过的东西：这里的 userId/workspaceId 来自
-     *   /api/auth/identity（服务端从**已验证的 JWT** 推导），
+     *   RedClaw 已验证身份及 openpocket 有效成员绑定，
      *   不是客户端自报，也不是从 token 里解出来的。
      */
     async restoreWithVerifiedIdentity(next: AuthSnapshot): Promise<void> {
@@ -342,7 +344,7 @@ export const useAuthStore = defineStore('auth', {
      * 用**服务端确认过的身份**升级归属（2026-10-29）。
      *
      * ⚠ 归属只认服务端签发过的东西：这里的 userId/workspaceId 来自
-     *   /api/auth/identity（服务端从**已验证的 JWT** 推导），
+     *   RedClaw 已验证身份及 openpocket 有效成员绑定，
      *   不是客户端自报，也不是从 token 里解出来的。
      *
      * ⚠ 确认失败（离线 / 401 / 端点不存在）⇒ 归属保持未知：
@@ -351,15 +353,23 @@ export const useAuthStore = defineStore('auth', {
     async upgradeOwnerFromServer(next: AuthSnapshot): Promise<void> {
       if (!next.token) return
       let verified: { userId: string; workspaceId: string } | null = null
+      const session = captureAuthSession(this)
+      const assertCurrent = () => {
+        assertAuthSession(this, session)
+        if (this.token !== next.token || this.workspaceId !== next.workspaceId) {
+          throw Object.assign(new Error('The restored credential changed.'), { name: 'AbortError' })
+        }
+      }
       try {
-        verified = await fetchAuthIdentity(next.token)
+        verified = await fetchAuthIdentity(next.token, next.workspaceId, assertCurrent, next.authMethod)
       } catch {
         // 服务端不可达 / token 失效 ⇒ 归属保持未知。
+        if (isCurrentAuthSession(this, session) && this.token === next.token && this.workspaceId === next.workspaceId) this.ownerVerificationFailed = true
         return
       }
       if (!verified) return
       // 期间会话可能已经变了（切账号 / 登出）⇒ 不得覆盖新会话的归属。
-      if (this.token !== next.token) return
+      if (!isCurrentAuthSession(this, session) || this.token !== next.token || this.workspaceId !== next.workspaceId) return
       await this.activateSession(
         { ...next, userId: verified.userId, workspaceId: verified.workspaceId },
         false,

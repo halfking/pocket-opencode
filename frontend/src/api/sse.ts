@@ -13,6 +13,8 @@
  *   - error / upstream.closed
  */
 import { resolveApiBase } from '../config/api-base'
+import { useAuthStore } from '../stores/auth'
+import { assertDirectPocketRequest } from './pocket-resource'
 
 export interface SessionEvent {
   type: string
@@ -70,6 +72,8 @@ export class SessionSSEClient {
   private connect() {
     if (this.closed) return
     if (this.handlers.isCurrent && !this.handlers.isCurrent()) { this.close(); return }
+    try { assertDirectPocketRequest(useAuthStore()) }
+    catch (error) { this.close(); this.handlers.onError?.(error as Error); return }
 
     const params = new URLSearchParams({ instance_id: this.instanceID })
     if (this.lastSeq !== undefined) {

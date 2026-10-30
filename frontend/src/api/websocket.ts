@@ -2,6 +2,7 @@ import { resolveRuntimeApiBase } from '../config/api-base'
 import { nextReconnectDelay } from './reconnectPolicy'
 import { buildWebSocketUrl } from './websocket-url'
 import { useAuthStore, captureAuthSession, isCurrentAuthSession } from '../stores/auth'
+import { usesPocketResourceCredentials } from './pocket-resource'
 
 // WebSocket 客户端管理
 class WebSocketClient {
@@ -19,6 +20,11 @@ class WebSocketClient {
   }
 
   connect() {
+    if (usesPocketResourceCredentials(useAuthStore())) {
+      this.disconnect()
+      console.warn('[ws] pocket_resource_unavailable')
+      return
+    }
     if (this.ws?.readyState === WebSocket.OPEN) {
       return
     }

@@ -259,6 +259,8 @@
     "storageNativeEmailStopLimits": "Les requêtes déjà envoyées ne peuvent pas être rappelées. En cas de panne du stockage de l’appareil, la désactivation peut ne pas être conservée après un redémarrage.",
     "storageOnlyLocalBadge": "Local uniquement · pas de sync",
     "storageLoadFailed": "Service de stratégie injoignable ; utilisation du cache. Sans cache valide, les envois sont suspendus.",
+    "storageOwnerUnverified": "L’accès à l’espace de travail n’a pas pu être confirmé. La synchronisation cloud est suspendue, la modification locale reste disponible. Reconnectez-vous.",
+    "storageConfigUnavailable": "La synchronisation des réglages est indisponible avec cette connexion. Les réglages en attente et le contenu local sont conservés.",
     "storageManagedNoOverride": "Géré par l’administrateur"
   },
   "flashcards": {
@@ -482,6 +484,9 @@
     "fetchHintHttpError": "Récupération en arrière-plan incomplète ({code}) ; messages synchronisés"
   },
   "errors": {
+    "noteAiMetadataUnavailable": "Le résumé et le classement par IA sont indisponibles pour cette note. Le contenu est conservé et la synchronisation continue.",
+    "resourceCapabilityUnavailable": "Cette fonction est indisponible pour le moment. Votre contenu local est conservé.",
+    "resourceAccessUnverified": "L’accès à cette fonction n’a pas pu être vérifié. Réessayez. Votre contenu local est conservé.",
     "emailCredentialsLocalOnly": "Les mots de passe et jetons OAuth restent sur cet appareil. Création de compte cloud et modification des identifiants indisponibles.",
     "moduleLocalOnly": "Ce module est local uniquement. Écriture et synchronisation cloud désactivées.",
     "rssNotConfigured": "Aucun flux RSS configuré pour l'instant. Ajoutez un flux pour commencer.",

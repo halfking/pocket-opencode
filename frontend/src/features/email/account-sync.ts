@@ -20,6 +20,7 @@ import { deleteAccount, listAccounts, writeAccountIfNewer } from './emails-store
 import { isLocalTestAddress } from './providers'
 import { readCachedModuleMode, recordSyncReportEntry } from '../../stores/syncPolicyStore'
 import { captureEmailSyncOperation, type EmailSyncOperation } from './email-sync-guard'
+import { usesPocketResourceCredentials, PocketResourceUnavailableError } from '../../api/pocket-resource'
 
 export interface SyncReport {
   fetched: number
@@ -49,6 +50,7 @@ const emptyReport = (): SyncReport => ({
  */
 async function pullAccountsToLocal(remote: ServerAccount[], operation: EmailSyncOperation): Promise<{ applied: number; skipped: number }> {
   const assertCanApply = () => operation.assertCurrent()
+  const metadataOnly = usesPocketResourceCredentials(useAuthStore())
   let applied = 0
   let skipped = 0
   for (const a of remote) {
@@ -69,6 +71,7 @@ async function pullAccountsToLocal(remote: ServerAccount[], operation: EmailSync
         syncIntervalMin: a.syncIntervalMin ?? 15,
         enabled: !!a.enabled,
         updatedAt,
+        metadataOnly,
       }, operation)
       if (won) applied++
       else skipped++
@@ -110,6 +113,10 @@ export async function syncAccountsBidirectional(operation?: EmailSyncOperation):
     }
     try {
       ;({ applied, skipped } = await pullAccountsToLocal(remote, sync))
+
+      // Shared account metadata is written through the versioned mail outbox.
+      // The scoped resource API cannot accept device connection configuration.
+      if (usesPocketResourceCredentials(useAuthStore())) return { fetched: remote.length, applied, skipped, pushed, online: true }
 
       for (const a of await listAccounts(sync.db)) {
         assertCanApply()
@@ -184,6 +191,7 @@ export async function pushAccountToServer(_a: ServerAccount, operation?: EmailSy
     recordSyncReportEntry({ module: 'email', status: 'skipped' })
     return false
   }
+  if (usesPocketResourceCredentials(useAuthStore())) throw new PocketResourceUnavailableError()
   const sync = operation ?? captureEmailSyncOperation()
   const assertCanApply = () => sync.assertCurrent()
   // 带上本地基准版本：服务端据此做 LWW 守卫。若它手里的副本更新，会回 409

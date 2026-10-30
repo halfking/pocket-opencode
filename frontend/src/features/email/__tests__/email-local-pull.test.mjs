@@ -182,6 +182,29 @@ test('account sync rechecks policy after waiting for the local account', () => f
   await f.intact()
 }))
 
+test('RedClaw metadata account pull preserves local connection settings and never pushes the legacy account', () => fixture(async f => {
+  f.auth.authMethod='redclaw'
+  await f.setMode('cloud')
+  localStorage.setItem('op_redclaw_portal_base','https://portal.example')
+  await f.db.run("UPDATE local_email_accounts SET imap_port=1993,auth_type='oauth2',sync_interval_min=42,enabled=1 WHERE id='account-1'")
+  const before=await f.db.queryOne("SELECT imap_host,imap_port,auth_type,credential_encrypted,sync_interval_min,enabled FROM local_email_accounts WHERE id='account-1'")
+  f.setResponse(url => url.endsWith('/resource-token') ? {token:'resource',user_id:f.auth.userId,workspace_id:f.auth.workspaceId,
+    tenant_id:'tenant',scopes:['email-metadata'],issued_at:Math.floor(Date.now()/1000),expires_at:Math.floor(Date.now()/1000)+30}
+    : {accounts:[{id:account.id,displayName:'Shared name',emailAddress:account.emailAddress,updatedAt:100},
+      {id:'new-account',displayName:'New mailbox',emailAddress:'new@example.com',updatedAt:100}]})
+  const report=await f.accounts.syncAccountsFromServer()
+  assert.equal(report.applied,2,JSON.stringify(report))
+  assert.equal(report.pushed,0)
+  assert.equal(report.error,undefined)
+  assert.equal((await f.emails.listAccounts()).find(a => a.id===account.id)?.displayName,'Shared name')
+  assert.deepEqual(await f.db.queryOne("SELECT imap_host,imap_port,auth_type,credential_encrypted,sync_interval_min,enabled FROM local_email_accounts WHERE id='account-1'"),before)
+  const added=await f.db.queryOne("SELECT imap_host,credential_encrypted,enabled FROM local_email_accounts WHERE id='new-account'")
+  assert.equal(added.enabled,0)
+  assert.equal(added.credential_encrypted,'[remote-mirror]')
+  assert.equal(f.requests.some(url => /\/accounts\//.test(url)),false)
+  assert.equal(f.auth.userId,'fixture-user')
+}))
+
 test('switching local during auth refresh prevents sync GETs from being sent', () => fixture(async f => {
   const { useAuthStore } = await f.vite.ssrLoadModule('/src/stores/auth.ts')
   useAuthStore().maybeRefresh = async () => { f.setMode('local') }
@@ -412,6 +435,9 @@ test('a restored session retains authorized cloud reads without claiming histori
   const operation = captureEmailSyncOperation()
   assert.equal(operation.lease.owner.principal, null)
   f.setResponse(() => ({ emails: [remote] }))
-  assert.equal((await f.emails.syncEmailsFromServerDetailed(200, 0, operation)).inserted, 1)
+  const report=await f.emails.syncEmailsFromServerDetailed(200, 0, operation)
+  assert.equal(report.inserted,0)
+  assert.equal(report.failed,1,'unknown ownership cannot attach mail to another owner’s account')
+  assert.ok(f.requests.some(url=>url.includes('/api/emails')),'the direct credential can still perform an authorized read')
   assert.equal((await f.db.queryOne('SELECT credential_encrypted FROM local_email_accounts')).credential_encrypted, 'ENCRYPTED')
 }))

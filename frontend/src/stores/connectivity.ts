@@ -13,6 +13,7 @@ import { watch } from 'vue'
 import { useAuthStore, captureAuthSession, assertAuthSession } from './auth'
 import { resolveApiBase } from '../config/api-base'
 import { fetchWithTimeout } from '../api/fetch-timeout.ts'
+import { assertDirectPocketRequest } from '../api/pocket-resource'
 import { isLobsterReady, lobsterReady } from '../native/lobster-init'
 import { localDB } from '../native/local-db'
 import { MobileSyncRuntime, type RuntimeEvent, type RuntimeAuth } from '../native/mobileSyncRuntime'
@@ -98,6 +99,7 @@ export const useConnectivityStore = defineStore('connectivity', {
           if (headers.get('Authorization') !== `Bearer ${auth.token}`) {
             throw Object.assign(new Error('Sync request belongs to an old credential.'), { name: 'AbortError' })
           }
+          assertDirectPocketRequest(auth)
           const response = await fetchWithTimeout(input, init)
           assertAuthSession(auth, session)
           const json = response.json.bind(response)

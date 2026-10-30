@@ -12,10 +12,10 @@ import { RECORD_MEDIA_CLEANUP_FAIL_TAG } from '../../utils/action-failure-notice
 import { assetToNote, rowToNote, mergeImportedNotes } from './notes-row'
 import { captureNoteWriteOperation, type NoteWriteOperation, type NoteWriteOptions, type NoteCloudOperation, type NoteDbOperation } from './note-operation'
 import type { CreateNoteInput, LocalNote, NoteMediaInput, NoteRow } from './notes-types'
-// 存储与同步策略（storage-sync）：镜像上传前的 shouldSync 判定与结果上报。
-import { recordSyncReportEntry } from '../../stores/syncPolicyStore'
 import { portalNotesStore, portalNoteReadScope } from '../../native/portal-sync/storage'
 import { notePayload, newOperationId, type Statement } from '../../native/portal-sync/contract'
+import { usesDirectPocketAuthority } from '../../api/authentication-mode'
+import { useAuthStore } from '../../stores/auth'
 
 function newNoteId(): string {
   return `note-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
@@ -155,11 +155,8 @@ export async function createNote(input: CreateNoteInput, options?: NoteWriteOpti
   embedAndStore(note.id, decided.embedText || note.content, operation.cloud).catch((e) => {
     console.warn('[lobster] 嵌入失败，笔记已存但暂无向量:', e)
   })
-  // 记下这次镜像的 promise，让依赖后端行存在的调用方（录音后的 AI 总结）
-  // 能 await 它。createNote 自己不等 —— 笔记正文已落 SQLite，主链路不该等云端。
-  noteMirrorReady.set(note.id, mirrorNoteToBackend(note, operation.cloud).catch((e) => {
-    console.warn('[notes] 镜像到后端失败，AI 总结/分类暂不可用:', e)
-  }))
+  // The versioned portal outbox is the only cloud copy; never bypass it with
+  // the legacy unversioned pocket notes mirror.
   operation.assertCurrent()
   return note
 }
@@ -489,35 +486,19 @@ export async function listDraftNotes(workspaceId = 'default'): Promise<LocalNote
   return (await Promise.all(rows.map(rowToNote))).filter((n): n is LocalNote => n !== null)
 }
 
-/**
- * 记录「本地笔记 → 后端镜像」的 in-flight promise。
- *
- * 为什么需要它：`createNote` 为了不让云端拖慢主链路，**不 await** 镜像；
- * 但紧随其后的 /summarize 需要后端已经有这行（否则 404）。
- * ⇒ 产出方登记、消费者 await，两边都拿到同一个 promise，不会各发一次。
- *
- * 用 Map 而不是模块级单变量：一次录音只涉及一条笔记，但同页可能连续录多条，
- * 单变量会让第二条覆盖第一条的 promise。
- *
- * 条目在 settle 后删掉：避免长会话里无限增长（录音是用户主动行为，
- * 频率低，但仍不该留）。
- */
-const noteMirrorReady = new Map<string, Promise<void>>()
-
-/**
- * 等某条笔记在后端落行。**永不抛异常** —— 镜像失败时 summarize 照常尝试，
- * 让服务端自己回 404 / 报错，错误信息更贴近真实原因。
- */
+/** Legacy direct logins may still use their existing backend note rows. A v2
+ * projection (including tombstones and other owners) forbids the old endpoint.
+ * Never recreate a legacy mirror or assign historical content to a new owner. */
 export async function awaitNoteMirror(noteId: string): Promise<void> {
-  const p = noteMirrorReady.get(noteId)
-  if (!p) return
-  try {
-    await p
-  } catch {
-    // 已在 mirrorNoteToBackend 的 catch 里记过日志，这里不重复。
-  } finally {
-    noteMirrorReady.delete(noteId)
+  const operation = captureNoteWriteOperation()
+  if (!usesDirectPocketAuthority(useAuthStore().authMethod) || !operation.cloud || !operation.db.owner) {
+    throw new Error('note_ai_metadata_unavailable')
   }
+  operation.cloud.assertCurrent()
+  await portalNotesStore(operation.db).init()
+  const managed = await operation.db.queryOne('SELECT 1 FROM local_portal_notes WHERE source_id=? LIMIT 1', [noteId])
+  operation.cloud.assertCurrent()
+  if (managed) throw new Error('note_ai_metadata_unavailable')
 }
 
 /**
@@ -622,106 +603,3 @@ async function embedChunks(
   operation.assertCurrent()
   return { vectors, model, reused, apiModel }
 }
-
-/**
- * 把本地笔记镜像到后端，然后才触发分类。
- *
- * ## 2026-10-06：这里修的是一条**整条链路恒 404** 的缺陷
- *
- * 改动前是 `http('/api/notes/${id}/classify', {method:'POST'}).catch(()=>{})`，
- * 直接对一条**后端从不知道的**笔记调 classify。而后端
- * handleNoteClassify / handleNoteSummarize 都是先
- * `notesStore.GetByIDScoped(id)` 再 `404 note not found`。
- *
- * 笔记是**纯本地**的：`createNote` 只写 SQLite（localDB），
- * `newNoteId()` 在本地生成 id，全仓**没有任何一处** POST /api/notes
- * （`notesApi.create/update/list/...` 的真实调用方数量是 0），
- * 后端 notes 表因此永远没有这条行。
- *
- * 后果分两层，第二层才致命：
- *   1. `.catch(() => {})` 把 404 吞掉 ⇒ classify 静默失效，无人察觉；
- *   2. **录音停止后的 AI 总结因此也从来没成功过** ——
- *      NoteListView.presentVoiceDraft 调 /api/notes/{id}/summarize，
- *      同样 404，走 catch 显示「总结失败」。
- *      需求「录音时即时总结」在随手记侧从来只是界面上的一个动作。
- *
- * ⇒ 必须先把笔记镜像上去，classify 与 summarize 才有得可查。
- *   顺序有依赖：先 POST /api/notes 落行，再调 classify。
- *
- * 为什么镜像**不阻塞** createNote 的返回：笔记正文已落 SQLite，
- * 后端只是 AI 能力的元数据源。云端不可达时笔记照常可用，
- * 只是没有 AI 总结/分类 —— 不能让主链路跟着炸。
- * 但 summarize 依赖它，所以它是 fire-and-forget 的**前置**，
- * 由 presentVoiceDraft 那一侧等它（见 note-ai-mirror.ts）。
- */
-async function mirrorNoteToBackend(note: LocalNote, operation: NoteCloudOperation | null): Promise<void> {
-  // ── 存储与同步策略挂点（storage-sync）────────────────────────────────
-  // notes=local ⇒ 笔记只留本机加密库，不上传后端（镜像跳过 ⇒ AI 分类/总结
-  // 自然没有元数据源，这与「仅本地」的语义一致）。上报 skipped 供设置页
-  // 「上次同步」如实显示。缓存缺失时也暂停上传，等待服务端策略确认。
-  if (!operation) {
-    recordSyncReportEntry({ module: 'notes', status: 'skipped' })
-    return
-  }
-  operation.assertCurrent()
-  const res = await http<{ id?: string }>('/api/notes', {
-    method: 'POST',
-    syncModule: 'notes',
-    assertCurrent: operation.assertCurrent,
-    body: JSON.stringify({
-      id: note.id,
-      title: note.title ?? undefined,
-      // 2026-10-06：后端 Note 有了独立的 content 字段（DB 的 content 列
-      // 一直是 TEXT 无长度上限，此前是**读出来就被丢弃**，见
-      // notes/note.go 的 Content 注释）。把完整正文传过去，
-      // 长语音笔记的行动项抽取与 agent 检索才拿得到后半段。
-      content: note.content,
-      // snippet 仍然只传前 200 字：它是列表渲染用的摘要，
-      // 不是正文（DB 里两者是**两列**，不是同一份数据的两个读法）。
-      snippet: note.content.slice(0, NOTE_MIRROR_SNIPPET_RUNES),
-      contentType: note.contentType,
-      domain: note.domain ?? undefined,
-      tags: note.tags ?? undefined,
-      audioPath: note.audioPath ?? undefined,
-      audioDuration: note.audioDurationMs ?? 0,
-      createdByVoice: note.createdByVoice,
-    }),
-  })
-  operation.assertCurrent()
-  await http(`/api/notes/${note.id}/classify`, { method: 'POST', syncModule: 'notes', assertCurrent: operation.assertCurrent }).catch((e) => {
-    // 自动分类没上报成功 ⇒ 这条笔记不会被服务端归类（正文照常落库，主链路不受影响）。
-    // 没有别处会提示 ⇒ 留痕。
-    console.warn('[notes] 笔记自动分类未能上报：', e)
-  })
-  operation.assertCurrent()
-  // storage-sync：镜像上行成功 ⇒ 上报 synced（count=1 条笔记）。
-  recordSyncReportEntry({ module: 'notes', status: 'synced', count: 1 })
-  void res
-}
-
-/**
- * 镜像给后端的 `snippet` 长度（**只**用于 snippet，不是正文长度）。
- *
- * ⚠ 2026-10-07（§168）**就地更正**：本段此前写的是
- *   「后端 notes 表的 `content` NOT NULL 存的就是 Snippet（store.go 的
- *   `content := n.Snippet`），服务端没有更长的字段可存」。
- *   **那段描述的是 2026-10-06 之前的行为，早已不成立**：
- *
- *   · `backend/internal/notes/store.go:107` 实际是 `content := n.Content`，
- *     而**不是** `n.Snippet`；上面还有一句回落：`content` 为空才用 `Snippet`
- *     （为了让只填 Snippet 的旧调用方不撞 NOT NULL）。
- *   · `content` 与 `snippet` 在 DB 里是**两列**（`store.go:259`
- *     「正文与 snippet 是两列（2026-10-06）」），不是同一份数据的两个读法。
- *   · `Note.BodyForLLM` **优先读 `Content`**，只有空才回落 `Snippet`
- *     ⇒ 长语音笔记的行动项抽取与 agent 检索拿得到后半段。
- *
- * ⇒ 所以「这里截断不是缺陷」这个**结论**仍然成立，但**理由变了**：
- *   截断的从来只是 `snippet`（列表渲染缓存，服务端 `snippetRunes = 200`
- *   明写「the snippet length the local cache uses for list rendering」），
- *   而**正文 `content` 原样送达、不截断**。
- *
- * ★ 为什么值得专门写这段：紧邻上方 `mirrorNoteToBackend` 载荷里那段注释
- *   描述的是**修好后**的正确语义，两段正面相邻却互相矛盾
- *   ⇒ 只落到下面这段的人会拿到完全错的模型。
- */
-const NOTE_MIRROR_SNIPPET_RUNES = 200

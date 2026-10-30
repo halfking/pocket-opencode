@@ -13,6 +13,8 @@ import { ref, computed, watch } from 'vue'
 import { useAuthStore, captureAuthSession, isCurrentAuthSession, assertAuthSession, type AuthSession } from './auth'
 import { http } from '../api/http'
 import { SessionSSEClient, type SessionEvent } from '../api/sse'
+import { PocketResourceUnavailableError } from '../api/pocket-resource'
+import i18n from '../i18n'
 
 export interface TextContent {
   type: 'text'
@@ -134,7 +136,8 @@ export const useSessionStore = defineStore('session', () => {
       },
       onMessage: (evt) => handleEvent(evt),
       onError: (e) => {
-        errorMessage.value = 'SSE 连接错误，自动重连中…'
+        errorMessage.value = e instanceof PocketResourceUnavailableError
+          ? i18n.global.t('errors.resourceCapabilityUnavailable') : 'SSE 连接错误，自动重连中…'
       },
     })
     sseClient.value.open()

@@ -20,6 +20,7 @@ import { effectScope, watch } from 'vue'
 import { assertCloudModule } from './data-policy.ts'
 import { assertNotHTML } from './jsonGuard'
 import { fetchWithTimeout } from './fetch-timeout.ts'
+import { assertDirectPocketRequest } from './pocket-resource'
 
 import { resolveApiBase } from '../config/api-base'
 import {
@@ -91,6 +92,7 @@ export function installLlmBffStreamRuntime(): void {
 const defaultFetcher: SpawnFetcher = async (input, signal, base, _token) => {
   const auth = useAuthStore()
   const session = captureAuthSession(auth)
+  assertDirectPocketRequest(auth)
   const { syncModule, ...body } = input
   const controller = new AbortController()
   const scope = effectScope(true)
@@ -259,6 +261,7 @@ export const llmBffApi = {
 // 局部 http 引用，避免循环依赖（与 ./http.ts 同款）。
 async function http<T>(path: string): Promise<T> {
   const auth = useAuthStore()
+  assertDirectPocketRequest(auth)
   // ⚠§951：原先是裸 fetch ⇒ 无上界。
   // ⚠ 这个局部 http 仍然保留（它是为了避开 import 环），
   //   但**超时原语**可以安全 import：./fetch-timeout 是零依赖的。

@@ -274,6 +274,8 @@ async function reclassify() {
   reclassifying.value = true
   reclassifyError.value = ''
   try {
+    await awaitNoteMirror(note.value.id)
+    if (!ownerView.isCurrent(stamp)) return
     await http(`/api/notes/${note.value.id}/classify`, { method: 'POST' })
     if (!ownerView.isCurrent(stamp)) return
     // 后端当前 stub；刷新本地数据以拿最新分类
@@ -343,13 +345,7 @@ async function summarize() {
     // 「总结失败」，实际总结已经拿到了。
     const noteId = note.value.id
     const noteTitle = note.value.title || ''
-    // §125.8：必须先等笔记在后端落行，否则 summarize 拿到的是 404。
-    // createNote 刻意不等云端（notes-persist.ts:122 只把镜像 promise 登记进
-    // noteMirrorReady），而本页 load() 读的是**本地** store，所以刚录完的笔记
-    // 在镜像落地前就能被打开 —— 这段时间里按「生成总结」必然 404。
-    // 列表页那边早有同样的 await（见 NoteListView 的 presentVoiceDraft），
-    // 本页此前漏了。awaitNoteMirror 永不抛异常，且没有在途镜像时立即返回，
-    // 所以这条对「从云端进来的老笔记」零成本、行为不变。
+    // Stop before the legacy AI endpoint when its backend metadata is unavailable.
     await awaitNoteMirror(noteId)
     if (!ownerView.isCurrent(stamp)) return
     const res = await http<NoteSummarizeResp>(`/api/notes/${noteId}/summarize`, { method: 'POST' })

@@ -259,6 +259,8 @@
     "storageNativeEmailStopLimits": "已发出的请求无法撤回。若设备存储故障，停用状态可能无法保存到重启后。",
     "storageOnlyLocalBadge": "仅本地 · 不同步",
     "storageLoadFailed": "策略服务不可达，继续使用缓存；没有有效缓存时暂停上传。",
+    "storageOwnerUnverified": "暂时无法确认工作区访问权限，云同步已暂停。本地仍可编辑，请联网后重试登录。",
+    "storageConfigUnavailable": "此登录方式暂不支持配置同步。待同步设置和本机内容已保留。",
     "storageManagedNoOverride": "由管理员统一管控"
   },
   "flashcards": {
@@ -482,6 +484,9 @@
     "fetchHintHttpError": "后台收信未完成（{code}），已显示已同步邮件"
   },
   "errors": {
+    "noteAiMetadataUnavailable": "此笔记暂不支持 AI 总结和分类。内容已保留，跨端同步不受影响。",
+    "resourceCapabilityUnavailable": "此功能暂不可用，本地内容已保留。",
+    "resourceAccessUnverified": "暂时无法验证此功能的访问权限。请重试，本地内容已保留。",
     "emailCredentialsLocalOnly": "邮箱密码和 OAuth 令牌必须留在本机，暂不支持创建云端账号或修改云端凭据。",
     "moduleLocalOnly": "此模块为仅本地模式，云端写入和同步已停用。",
     "rssNotConfigured": "RSS 订阅源尚未配置，请先添加一个订阅源",

@@ -689,12 +689,12 @@ class LocalDB {
       }
       throw error
     }
-    // jeep's explicit commit omits its autoSave finally. An empty nontransactional
-    // execute runs that finally after commit, respecting the element's autoSave setting.
+    // jeep's explicit commit omits persistence. Its public execute API rejects
+    // empty SQL, so use the supported Web store export before publishing success.
     // A persistence failure occurs after commit and cannot be rolled back.
     if (isWebFallbackRuntime()) {
       try {
-        await conn.execute('', false)
+        await this.sqlite.saveToStore(DB_NAME)
       } catch (error) {
         this.initialized = false
         this.activationBlocked = true

@@ -259,6 +259,8 @@
     "storageNativeEmailStopLimits": "Requests already sent cannot be recalled. If device storage fails, the disabled state may not survive a restart.",
     "storageOnlyLocalBadge": "Local only · no sync",
     "storageLoadFailed": "Policy service unreachable; using cached policy. Uploads pause if no valid cache is available.",
+    "storageOwnerUnverified": "Workspace access could not be confirmed. Cloud sync is paused and local editing remains available. Reconnect and sign in again.",
+    "storageConfigUnavailable": "Configuration sync is unavailable for this sign-in method. Pending settings and local content are retained.",
     "storageManagedNoOverride": "Managed by administrator"
   },
   "flashcards": {
@@ -482,6 +484,9 @@
     "fetchHintHttpError": "Background fetch incomplete ({code}); messages synced"
   },
   "errors": {
+    "noteAiMetadataUnavailable": "AI summaries and classification are unavailable for this note. Your content is retained and sync is unaffected.",
+    "resourceCapabilityUnavailable": "This feature is currently unavailable. Your local content is retained.",
+    "resourceAccessUnverified": "Access to this feature could not be verified. Please retry. Your local content is retained.",
     "emailCredentialsLocalOnly": "Mail passwords and OAuth tokens stay on this device. Creating cloud accounts or changing cloud credentials is unavailable.",
     "moduleLocalOnly": "This module is local only. Cloud writes and sync are disabled.",
     "rssNotConfigured": "No RSS feed configured yet. Add a feed to get started.",

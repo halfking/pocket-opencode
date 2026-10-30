@@ -98,6 +98,14 @@
       {{ t('settings.storageLoadFailed') }}
     </div>
 
+    <div v-if="auth.ownerVerificationFailed" class="storage-load-error" role="alert" data-testid="storage-owner-unverified">
+      {{ t('settings.storageOwnerUnverified') }}
+    </div>
+
+    <div v-if="userConfigSyncStatus.capabilityUnavailable && userConfigSyncStatus.activationVersion === auth.activationVersion" class="storage-load-error" role="alert" data-testid="storage-config-unavailable">
+      {{ t('settings.storageConfigUnavailable') }}
+    </div>
+
     <div v-if="policy.saveError || policy.activationError" class="storage-load-error" role="alert" data-testid="storage-save-error">
       <p>{{ t(policy.persistenceWarning ? 'settings.storageLocalNotSaved' : policy.intentReadError ? 'settings.storageIntentUnavailable' : policy.identityRequired ? 'settings.storageIdentityRequired' : 'settings.storagePendingSave') }}</p>
       <button v-if="!policy.identityRequired" type="button" class="confirm-btn secondary" data-testid="storage-policy-retry" :disabled="policy.saving || policy.activating" @click="retryPolicy">
@@ -151,12 +159,15 @@ import { purgeCloudCopy } from '../../api/syncPolicy'
 import type { SyncMode, SyncModule } from '../../api/syncPolicyContract.ts'
 import { isPortalSyncModule } from '../../api/syncPolicyContract.ts'
 import { useSyncPolicyStore } from '../../stores/syncPolicyStore'
+import { useAuthStore } from '../../stores/auth'
+import { userConfigSyncStatus } from '../../native/config-sync/status'
 import { ICON, type IconName } from '../../constants/icons'
 import { cancelNativeEmailFetch, nativeEmailStopState, retryNativeEmailFetchCancellation } from '../email/email-fetch-native'
 
 const { t } = useI18n()
 const toast = useToast()
 const policy = useSyncPolicyStore()
+const auth = useAuthStore()
 
 interface ModuleRow {
   module: SyncModule

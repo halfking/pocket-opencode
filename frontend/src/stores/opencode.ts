@@ -9,6 +9,7 @@ import { api } from '../api/client'
 import type { Instance, Session, Task } from '../api/client'
 import { getApiBase, http } from '../api/http'
 import { buildWebSocketUrl } from '../api/websocket-url'
+import { usesPocketResourceCredentials } from '../api/pocket-resource'
 
 // M4（2026-09-09）：实时更新 WS 的进程级单例引用 + 重连排期句柄。
 // 此前每次 subscribeToRealTimeUpdates() 都新建连接且递归重连，导致连接堆积。
@@ -292,6 +293,7 @@ export const useOpenCodeStore = defineStore('opencode', {
     subscribeToRealTimeUpdates() {
       const auth = useAuthStore()
       if (!auth.isAuthenticated) { stopRealtime(); return null }
+      if (usesPocketResourceCredentials(auth)) { stopRealtime(); console.warn('[opencode] pocket_resource_unavailable'); return null }
       if (realtimeSession && !isCurrentAuthSession(auth, realtimeSession)) stopRealtime()
       // 已有活跃连接 / 已有排期的重连 → 不再新建
       if (realtimeWs && (realtimeWs.readyState === WebSocket.OPEN || realtimeWs.readyState === WebSocket.CONNECTING)) {

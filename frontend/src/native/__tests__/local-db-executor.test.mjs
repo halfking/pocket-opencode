@@ -72,7 +72,12 @@ async function withDatabase(run, initialize = true, stored = new Map()) {
         closed = true
       },
       saveToStore: async () => driver.saveToStore(),
-      execute: async o => ({ changes: { changes: await driver.executeSQL(o.statements, o.transaction) } }),
+      execute: async o => {
+        // Match the real jeep element's public boundary, which rejects empty SQL
+        // before it reaches Database.executeSQL (the lower-level driver accepts it).
+        if (!o.statements?.length) throw new Error('Must provide raw SQL statements')
+        return { changes: { changes: await driver.executeSQL(o.statements, o.transaction) } }
+      },
       executeSet: async o => ({ changes: await driver.execSet(o.set, o.transaction, o.returnMode) }),
       run: async o => ({ changes: await driver.runSQL(o.statement, o.values, o.transaction, o.returnMode) }),
       query: async o => ({ values: await driver.selectSQL(o.statement, o.values) }),
@@ -349,8 +354,8 @@ test('failed rollback blocks all access and refuses to persist an unresolved tra
   assert.deepEqual(await db.query('SELECT * FROM executor_records'), [{ id: 1, title: 'original' }])
 }))
 
-test('web transactional writes remain persisted when jeep autoSave is enabled', () => withDatabase(async ({ db, driver, saved, SQL }) => {
-  driver.autoSave = true
+for (const autoSave of [false, true]) test(`web transactional writes are durable with jeep autoSave=${autoSave}`, () => withDatabase(async ({ db, driver, saved, SQL }) => {
+  driver.autoSave = autoSave
   await db.runInTransaction([{ statement: 'UPDATE executor_records SET title=? WHERE id=1', values: ['durable'] }])
   const reopened = new SQL.Database(saved())
   try { assert.equal(reopened.exec('SELECT title FROM executor_records')[0].values[0][0], 'durable') }
@@ -380,8 +385,10 @@ test('migration scripts, comments, quoted keywords and trigger BEGIN/END remain 
     END;
     -- BEGIN;
     INSERT INTO executor_log VALUES ('SAVEPOINT');
+    UPDATE executor_records SET title='migrated' WHERE id=1;
   `, true)
-  await db.run('UPDATE executor_records SET title=? WHERE id=1', ['migrated'])
+  // TEMP objects only live until SQL.js exports the database to IndexedDB.
+  // Exercise the trigger's quoted control words in that same migration batch.
   assert.deepEqual(await db.query('SELECT "end" FROM executor_log'), [
     { end: 'SAVEPOINT' }, { end: 'BEGIN; COMMIT;' }, { end: "it's a ROLLBACK;" },
   ])
@@ -530,7 +537,7 @@ for (const fault of ['rollback', 'persistence']) {
       driver.saveToStore = async () => { throw new Error('injected persistence failure') }
     }
     try {
-      await assert.rejects(old.run('UPDATE executor_records SET title=? WHERE id=1', ['old write']))
+      await assert.rejects(old.run('UPDATE executor_records SET title=? WHERE id=1', ['old write']), error => fault !== 'persistence' || error.outcome === 'committed')
       assert.match(String(await activation), /状态不确定/)
       assert.equal(published, false)
       assert.equal(db.isReady(), false)
