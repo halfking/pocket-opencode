@@ -67,6 +67,16 @@ export async function seedEmails(page: Page, emails: SeedEmailSpec[]): Promise<n
       //   按 [user, workspace] 定 scope）：自己另装一个宿主会把真实宿主顶掉，
       //   且 scope 对不上 ⇒ contextCurrent 恒 false ⇒ 读了还是 'local'。
       //   unlockLobster 之后 activationStatus='ready'，宿主 captureContext 合法。
+      // ⚠ 2026-10-30（续）：恢复出来的会话 userId 恒空（auth.ts 的
+      //   「Persisted metadata is not a verified owner assertion」），而行归属
+      //   （15cd8a09）只认 verified owner ⇒ 不补这一步，播下的行全部无归属，
+      //   owner 域的 listEmails 一封都读不到（seeded=0 的第二个根因）。
+      //   ⚠ 顺序必须**先激活身份再激活策略**：setAuthWithWorkspace 会作废
+      //     策略的 generation ⇒ 后激活策略才能让 captureContext 拿到新代。
+      const authMod = (await import(/* @vite-ignore */ '/src/stores/auth.ts')) as any
+      const auth = authMod.useAuthStore()
+      await auth.setAuthWithWorkspace(
+        localStorage.getItem('pocket_token') ?? '', auth.user, 'e2e-user', 'e2e-ws', 'e2e-token')
       const policy = (await import(/* @vite-ignore */ '/src/stores/syncPolicyStore.ts')) as any
       const ok = await policy.useSyncPolicyStore().applyPolicy(
         { system_default: 'cloud', allow_override: true, modules: { email: 'cloud' } }, Date.now())
@@ -85,7 +95,10 @@ export async function seedEmails(page: Page, emails: SeedEmailSpec[]): Promise<n
         authType: 'password',
         syncIntervalMin: 30,
         enabled: false,
-        updatedAt: Date.now(),
+        // ⚠ 生产契约是**秒**（writeAccountIfNewer 内部 *1000 转毫秒）；传毫秒会被
+        //   new Date(μs).toISOString() 变成 5 位年份 ⇒ versionKey 的 \d{4} 不匹配
+        //   ⇒ 'Invalid portal notes timestamp'（verified owner 打开了 portal 提交链路才暴露）。
+        updatedAt: Math.floor(Date.now() / 1000),
       })
       let inserted = 0
       for (const r of payload.rows) {
