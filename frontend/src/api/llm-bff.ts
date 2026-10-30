@@ -118,6 +118,7 @@ const defaultFetcher: SpawnFetcher = async (input, signal, base, _token) => {
   const stop = (error: unknown) => {
     failure ??= error instanceof Error ? error : new Error(String(error))
     controller.abort()
+    // §948：cancel 的拒绝无处可去也无需去——本条流的出口就是上面的 output.error(failure)。
     if (reader) void reader.cancel(failure).catch(() => {})
     if (!ended && output) { ended = true; output.error(failure) }
     cleanup()
@@ -140,6 +141,7 @@ const defaultFetcher: SpawnFetcher = async (input, signal, base, _token) => {
       body: JSON.stringify(body),
       signal: controller.signal,
     })
+    // §948：会话已变 ⇒ cancel 的拒绝无意义（错误经 throw 走主出口），就地消化只防 unhandled rejection。
     try { assertCurrent() } catch (error) { void response.body?.cancel().catch(() => {}); throw error }
     return response
   }
@@ -148,6 +150,7 @@ const defaultFetcher: SpawnFetcher = async (input, signal, base, _token) => {
     assertCurrent()
     let res = await doFetch()
     if (res.status === 401) {
+      // §948：401 后换发重试，旧响应体 cancel 的拒绝无消费方，就地消化防 unhandled rejection。
       void res.body?.cancel().catch(() => {})
       const refreshed = await auth.refreshSession()
       assertCurrent()

@@ -156,8 +156,11 @@ describe('§849 · 全仓空 catch 扫面（登记口径，不是禁令）', () 
     //   第一版写 20，而实测基线就是 21 ⇒ 提交当天就红，报的还是「新增空 catch」，
     //   会把人引去查一个并不存在的回归。基线 = 2026-10-18 实测（.vue 口径）。
     //   只钉上界：新增会被抓住，减少不会误报（与 check:raw-error 同一做法）。
-    assert.ok(empties.length <= 21,
-      `.vue 里的空 catch 有 ${empties.length} 个（>21）：\n  ${empties.join('\n  ')}\n` +
+    // ⚠ 2026-10-29：基线 21 → 22 —— 67c4d645 给 StorageSyncSection 的
+    //   syncPolicy 刷新加了一处带理由的刻意静默（「横幅持续显示直到显式重试
+    //   成功」，见该文件 :181 的行内注释）。属「有人看一眼后放行」的口径内。
+    assert.ok(empties.length <= 22,
+      `.vue 里的空 catch 有 ${empties.length} 个（>22）：\n  ${empties.join('\n  ')}\n` +
       '⇒ 新增的每一个都必须说明「为什么这里可以静默」，' +
       '否则把它改成有出口，或把它登记进例外清单')
   })

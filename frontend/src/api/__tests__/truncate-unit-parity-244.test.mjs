@@ -45,6 +45,8 @@ import { join } from 'node:path'
 import {
   FRONTEND_ROOT, REPO_ROOT,
   activatePinia, assertHit, captureRequests, loadBundle, restoreGlobals, stubBrowser,
+  ALWAYS_CLOUD_SYNC_POLICY_STUB,
+  ALWAYS_DIRECT_AUTH_STUB,
 } from './_wire-helpers.mjs'
 
 // ④ 那条要打桩 fetch / window / pinia ⇒ 必须还原，否则污染同进程内其它用例。
@@ -169,7 +171,7 @@ describe('§244 截断单位：前端码元 vs 后端字节', () => {
   })
 
   it('① 同一个数字 500，两端给用户的字符数不相等', async (t) => {
-    const mod = await loadBundle(join(FRONTEND_ROOT, 'src/api/meetings.ts'), 'trunc-244-a')
+    const mod = await loadBundle(join(FRONTEND_ROOT, 'src/api/meetings.ts'), 'trunc-244-a', { '../stores/syncPolicyStore.ts': ALWAYS_CLOUD_SYNC_POLICY_STUB, '../stores/auth': ALWAYS_DIRECT_AUTH_STUB })
 
     // ⚠ 用**真值向量**逐条比，不用 JS 复刻算后端那一侧。
     for (const v of VECTORS) {
@@ -185,7 +187,7 @@ describe('§244 截断单位：前端码元 vs 后端字节', () => {
   })
 
   it('② 前端切点不能落在代理对中间（落单代理对过 JSON 到 Go 会静默变 U+FFFD）', async (t) => {
-    const mod = await loadBundle(join(FRONTEND_ROOT, 'src/api/meetings.ts'), 'trunc-244-b')
+    const mod = await loadBundle(join(FRONTEND_ROOT, 'src/api/meetings.ts'), 'trunc-244-b', { '../stores/syncPolicyStore.ts': ALWAYS_CLOUD_SYNC_POLICY_STUB, '../stores/auth': ALWAYS_DIRECT_AUTH_STUB })
 
     // ⚠ 必须**扫一个偏移区间**，不能只测一个偏移。
     //   第一版只钉「高位码元位 = 499」这一个点，负控变异 N1（500→501，
@@ -239,7 +241,7 @@ describe('§244 截断单位：前端码元 vs 后端字节', () => {
     //   让 /api/llm/chat 也失败 ⇒ meetingsApi.summarize 真的落到那条 catch。
     stubBrowser()
     activatePinia()
-    const mod = await loadBundle(join(FRONTEND_ROOT, 'src/api/meetings.ts'), 'trunc-244-d')
+    const mod = await loadBundle(join(FRONTEND_ROOT, 'src/api/meetings.ts'), 'trunc-244-d', { '../stores/syncPolicyStore.ts': ALWAYS_CLOUD_SYNC_POLICY_STUB, '../stores/auth': ALWAYS_DIRECT_AUTH_STUB })
 
     const segments = [{
       id: 's1',

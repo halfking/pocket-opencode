@@ -44,6 +44,6 @@ const isLocal = computed(() => policy.modules[props.module] === 'local')
 }
 
 .local-only-badge .material-symbols-outlined {
-  font-size: 14px;
+  font-size: var(--text-base);
 }
 </style>

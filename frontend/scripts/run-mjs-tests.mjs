@@ -129,37 +129,59 @@ const censusPath = join(tmpdir(), `pocket-test-census-${process.pid}.json`)
 //   ③ 传列表让"枚举 ⊆ 实际执行"这条断言变得没有解释空间。
 // reporter 同样必须传相对路径：绝对路径在 Windows 上带盘符，node 会当成 URL scheme
 // （ERR_UNSUPPORTED_ESM_URL_SCHEME）直接拒绝加载。cwd 固定为 ROOT。
-const argv = ['--test', '--test-reporter', './' + reporterPath, ...discovered]
-const argvLen = argv.reduce((a, s) => a + s.length + 1, 0)
-if (argvLen > 20000) {
-  // Windows CreateProcess 命令行上限 32767；留足余量。超了就该修那个无扩展名 import，
-  // 而不是把兜底逻辑继续堆在这儿。
-  console.error(
-    `❌ 测试文件列表长度 ${argvLen} 超过 20000 字符上限（Windows 命令行 32767 的安全余量）。\n` +
-      `   文件数已经到 ${discovered.length}。这时最该做的是修掉 unrunnable 清单里的源码 import，\n` +
-      `   让全部测试都能用 glob 跑；请勿在此处加兜底分支。`,
-  )
-  process.exit(2)
+//
+// ⚠ 2026-10-29：测试文件涨到 396 个后，整份列表一次 spawn 会撞 Windows
+//   CreateProcess 的命令行上限（本 runner 自留 20000 字符余量，实测 21036 超限）。
+//   修法不是换 glob（那会把 ① 的 unrunnable 隔离整个废掉），而是**分批 spawn**：
+//   每批命令行都留在余量内，批间用 census 逐批合并——reporter 每次运行都会
+//   完整落盘一份新 census，合并语义与单批完全一致。枚举 ⊆ 实际执行的对账
+//   仍以**全量** discovered 为准，分批不会放宽这道门。
+const argvPrefix = ['--test', '--test-reporter', './' + reporterPath]
+const batches = []
+let current = []
+let currentLen = argvPrefix.reduce((a, s) => a + s.length + 1, 0)
+for (const f of discovered) {
+  const cost = f.length + 1
+  if (current.length && currentLen + cost > 20000) {
+    batches.push(current)
+    current = []
+    currentLen = argvPrefix.reduce((a, s) => a + s.length + 1, 0)
+  }
+  current.push(f)
+  currentLen += cost
 }
-const res = spawnSync(process.execPath, argv, {
-  cwd: ROOT,
-  stdio: 'inherit',
-  env: { ...process.env, POCKET_TEST_CENSUS: censusPath },
-})
+if (current.length) batches.push(current)
 
-let census = {}
-if (existsSync(censusPath)) {
+const census = {}
+let lastStatus = 0
+for (const [bi, batch] of batches.entries()) {
+  if (batches.length > 1) {
+    console.log(`[run-mjs-tests] 第 ${bi + 1}/${batches.length} 批：${batch.length} 个文件`)
+  }
+  const res = spawnSync(process.execPath, [...argvPrefix, ...batch], {
+    cwd: ROOT,
+    stdio: 'inherit',
+    env: { ...process.env, POCKET_TEST_CENSUS: censusPath },
+  })
+  lastStatus = res.status ?? 1
+  if (!existsSync(censusPath)) {
+    console.error(`\n❌ 第 ${bi + 1} 批没拿到测试普查结果 —— reporter 没落盘，不能声称覆盖完整。`)
+    process.exit(1)
+  }
   try {
-    census = JSON.parse(readFileSync(censusPath, 'utf8'))
+    const part = JSON.parse(readFileSync(censusPath, 'utf8'))
+    for (const [abs, rec] of Object.entries(part)) {
+      const acc = (census[abs] ??= { cases: 0, failures: 0 })
+      acc.cases += rec.cases ?? 0
+      acc.failures += rec.failures ?? 0
+    }
   } catch (e) {
     console.error(`❌ 测试普查结果无法解析：${e.message}`)
     process.exit(1)
   }
   rmSync(censusPath, { force: true })
-} else {
-  console.error('\n❌ 没拿到测试普查结果 —— reporter 没落盘，不能声称覆盖完整。')
-  process.exit(1)
 }
+const res = { status: lastStatus }
 
 // 事件里的 file 是绝对路径；统一成相对 ROOT 的 posix 路径再比对
 const executed = new Map()

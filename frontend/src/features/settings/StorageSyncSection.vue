@@ -312,7 +312,7 @@ async function confirmPurgeAndSwitch(): Promise<void> {
 }
 
 .storage-intro .material-symbols-outlined {
-  font-size: 16px;
+  font-size: var(--text-lg);
   color: var(--brand-primary);
   flex-shrink: 0;
   margin-top: 2px;
@@ -521,7 +521,7 @@ async function confirmPurgeAndSwitch(): Promise<void> {
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 1000;
+  z-index: var(--z-dialog);
   padding: var(--space-4);
 }
 

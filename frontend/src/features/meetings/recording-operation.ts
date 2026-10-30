@@ -37,8 +37,14 @@ export function captureRecordingOperation(module: RecordingModule): RecordingOpe
     workspaceId, localLease, localDb, cloudLease, cloudDb, assertLocal,
     assertCloud() {
       assertLocal()
-      if (!cloudDb) throw new DOMException('Recording has no initiating cloud permission', 'AbortError')
-      cloudDb.assertCurrent()
+      // ⚠ 2026-10-29（module-privacy-wire 门禁对齐）：「capture 时模块就已
+      //   是 local」 ⇒ 这里没有 cloud lease 可用，正确语义是**策略拒绝**
+      //   （ModulePolicyLocalError 409，与 assertCloudModule 同一形态），
+      //   不是「操作被中止」（AbortError）。AbortError 只用于
+      //   「capture 时有权限、之后被撤销」的竞态——那种场景 cloudDb
+      //   存在但 assertCurrent/assertCloudModule 会抛。
+      if (!cloudDb) assertCloudModule(module)
+      cloudDb?.assertCurrent()
       assertCloudModule(module)
     },
   })

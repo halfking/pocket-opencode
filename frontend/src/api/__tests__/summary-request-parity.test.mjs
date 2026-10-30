@@ -35,6 +35,8 @@ import { afterEach, describe, it } from 'node:test'
 
 import {
   FRONTEND_ROOT, activatePinia, assertHit, captureRequests, loadBundle, restoreGlobals, stubBrowser,
+  ALWAYS_CLOUD_SYNC_POLICY_STUB,
+  ALWAYS_DIRECT_AUTH_STUB,
 } from './_wire-helpers.mjs'
 
 const MEETINGS_API = path.join(FRONTEND_ROOT, 'src', 'api', 'meetings.ts')
@@ -109,7 +111,7 @@ describe('§92：会议两个端点的请求字段（真跑一遍抓请求体）
     stubBrowser()
     await activatePinia()
     const seen = captureRequests(OK_ROUTES)
-    const mod = await loadBundle(MEETINGS_API, 'meetings-api-sum')
+    const mod = await loadBundle(MEETINGS_API, 'meetings-api-sum', { '../stores/syncPolicyStore.ts': ALWAYS_CLOUD_SYNC_POLICY_STUB, '../stores/auth': ALWAYS_DIRECT_AUTH_STUB })
 
     await mod.meetingsApi.summarize('m1', SEGMENTS, '上一轮已对齐接口联调进度。', META)
 
@@ -130,7 +132,7 @@ describe('§92：会议两个端点的请求字段（真跑一遍抓请求体）
     stubBrowser()
     await activatePinia()
     const seen = captureRequests(OK_ROUTES)
-    const mod = await loadBundle(MEETINGS_API, 'meetings-api-ref')
+    const mod = await loadBundle(MEETINGS_API, 'meetings-api-ref', { '../stores/syncPolicyStore.ts': ALWAYS_CLOUD_SYNC_POLICY_STUB, '../stores/auth': ALWAYS_DIRECT_AUTH_STUB })
 
     // ⚠ 先打一次摘要端点，好让下面「不串味」那条断言**有前提可查**。
     //   第一版只调 refine，然后去 seen 里找摘要请求 —— 根本不存在，
@@ -154,7 +156,7 @@ describe('§92：会议两个端点的请求字段（真跑一遍抓请求体）
     stubBrowser()
     await activatePinia()
     const seen = captureRequests(OK_ROUTES)
-    const mod = await loadBundle(MEETINGS_API, 'meetings-api-nometa')
+    const mod = await loadBundle(MEETINGS_API, 'meetings-api-nometa', { '../stores/syncPolicyStore.ts': ALWAYS_CLOUD_SYNC_POLICY_STUB, '../stores/auth': ALWAYS_DIRECT_AUTH_STUB })
 
     await mod.meetingsApi.summarize('m1', SEGMENTS)
 

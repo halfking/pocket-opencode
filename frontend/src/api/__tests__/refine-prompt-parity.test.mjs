@@ -107,16 +107,101 @@ const CACHE = path.join(ROOT, 'node_modules', '.cache')
 const requireFrom = createRequire(path.join(ROOT, 'package.json'))
 const ESBUILD = requireFrom.resolve('esbuild')
 
+
+/** 恒 cloud 的 syncPolicyStore 桩（与 _wire-helpers.ALWAYS_CLOUD_SYNC_POLICY_STUB 同源语义）。 */
+const ALWAYS_CLOUD_SYNC_POLICY_STUB = `
+export const SYNC_POLICY_CACHE_KEY = 'op_sync_policy_v1'
+export const SYNC_POLICY_LOCAL_INTENTS_KEY = 'op_sync_policy_local_intents_v1'
+export const SYNC_REPORT_CACHE_KEY = 'op_sync_report_v1'
+export function readCachedModuleMode() { return 'cloud' }
+export function recordSyncReportEntry() {}
+export function readCachedSyncReport() { return [] }
+export function shouldSync() { return true }
+export function moduleMode() { return 'cloud' }
+export function readCachedSyncPolicy() { return null }
+export function installSyncPolicyActivationHost() {}
+export function installSyncPolicyStorage() {}
+export function installSyncPolicyScopeResolver() {}
+export function useSyncPolicyStore() { return {} }
+export const SYNC_MODULES = []
+export function isSyncModule() { return false }
+export function normalizeSyncPolicy(p) { return p }
+export function isPortalSyncModule() { return false }
+`
+
+const ALWAYS_DIRECT_AUTH_STUB = `
+import { defineStore } from 'pinia'
+const sessions = new WeakMap()
+export function sessionState(auth) {
+  let state = sessions.get(auth)
+  if (!state) { state = { generation: {}, applyingRefresh: false, disposed: false }; sessions.set(auth, state) }
+  return state
+}
+export function captureAuthAttempt(auth) { return { owner: auth, generation: sessionState(auth).generation } }
+export function assertAuthAttempt(auth, session) {
+  const state = sessionState(auth)
+  if (session.owner === auth && !state.disposed && state.generation === session.generation) return
+  throw Object.assign(new Error('Sign-in attempt was superseded.'), { name: 'AbortError' })
+}
+export function captureAuthSession(auth) {
+  if (auth.activationStatus !== 'ready') throw Object.assign(new Error('Session activation is not ready.'), { name: 'AbortError' })
+  return captureAuthAttempt(auth)
+}
+export function isCurrentAuthSession(auth, session) {
+  const state = sessionState(auth)
+  return auth.activationStatus === 'ready' && session.owner === auth && !state.disposed && state.generation === session.generation
+}
+export function assertAuthSession(auth, session) {
+  if (isCurrentAuthSession(auth, session)) return
+  const error = new Error('The session changed before the request completed.')
+  error.name = 'AbortError'
+  throw error
+}
+export const useAuthStore = defineStore('auth', {
+  state: () => ({ token: '[REDACTED:secret]', user: '[REDACTED:account]', userId: 'stub-user', workspaceId: 'stub-workspace', authMethod: 'password', activationStatus: 'ready' }),
+  actions: {
+    maybeRefresh() { return Promise.resolve() },
+    refreshSession() { return Promise.resolve() },
+  },
+})
+`
+
 /** 预打包再 import：src/api/* 内部用无扩展名 import，Node 的 ESM 解析器要显式扩展名。 */
-async function loadBundle(entry, name) {
+async function loadBundle(entry, name, stubs = {}) {
   const out = path.join(CACHE, `opk-${name}-${process.pid}.mjs`)
   fs.mkdirSync(CACHE, { recursive: true })
+  // ⚠ 2026-10-29：与 _wire-helpers.loadBundle 同款 stubs 参数 ——
+  //   8b34e1c3 的 blockedModuleWrite 会在无激活策略的环境里把 meetings POST
+  //   判成 module_policy_local，B/D 组判据需要把策略层替成恒 cloud。
+  const stubDir = path.join(CACHE, 'stubs')
+  const stubManifest = []
+  for (const [spec, code] of Object.entries(stubs)) {
+    fs.mkdirSync(stubDir, { recursive: true })
+    const f = path.join(stubDir, `${name}-${spec.replace(/[^a-zA-Z0-9]/g, '_')}.mjs`)
+    fs.writeFileSync(f, code, 'utf8')
+    stubManifest.push([spec, f])
+  }
+  const pluginSrc = stubManifest.length
+    ? `
+  const stubManifest = ${JSON.stringify(stubManifest)};
+  const escapeRe = (s) => s.replace(/[.*+?^'"'"'{}()|[\\]\\\\]/g, String.fromCharCode(92) + '$&');
+  const stubPlugin = {
+    name: 'refine-parity-stubs',
+    setup(b) {
+      for (const [spec, file] of stubManifest) {
+        b.onResolve({ filter: new RegExp(escapeRe(spec) + '$') }, () => ({ path: file }));
+      }
+    },
+  };`
+    : ''
+  const pluginArg = stubManifest.length ? ',\n      plugins: [stubPlugin]' : ''
   execFileSync(process.execPath, ['-e', `
     const esbuild = require(${JSON.stringify(ESBUILD)});
+    ${pluginSrc}
     esbuild.build({
       entryPoints: [${JSON.stringify(entry)}],
       bundle: true, format: 'esm', platform: 'browser', write: false,
-      external: ['pinia', 'vue'],
+      external: ['pinia', 'vue']${pluginArg},
       outfile: ${JSON.stringify(out)}, logLevel: 'silent',
     }).then(r => require('fs').writeFileSync(${JSON.stringify(out)}, r.outputFiles[0].contents))
       .catch(e => { console.error(e.message); process.exit(1) })
@@ -308,7 +393,7 @@ describe('§54 发现 C：前端回落精校提示词', () => {
     stubBrowser()
     const { createPinia, setActivePinia } = await import('pinia')
     setActivePinia(createPinia())
-    const mod = await loadBundle(MEETINGS_API, 'meetings-api')
+    const mod = await loadBundle(MEETINGS_API, 'meetings-api', { '../stores/syncPolicyStore.ts': ALWAYS_CLOUD_SYNC_POLICY_STUB, '../stores/auth': ALWAYS_DIRECT_AUTH_STUB })
     const seen = captureFallbackPrompt()
 
     const result = await mod.meetingsApi.refine(
@@ -436,7 +521,7 @@ describe('负控：还原 §54 发现 C 的原始形态，判据必须转红', (
     stubBrowser()
     const { createPinia, setActivePinia } = await import('pinia')
     setActivePinia(createPinia())
-    const mod = await loadBundle(MEETINGS_API, 'meetings-api')
+    const mod = await loadBundle(MEETINGS_API, 'meetings-api', { '../stores/syncPolicyStore.ts': ALWAYS_CLOUD_SYNC_POLICY_STUB, '../stores/auth': ALWAYS_DIRECT_AUTH_STUB })
     const seen = captureFallbackPrompt()
     // ★ 旧实现的真实调用形状：第三个实参只给 signal，meta 被丢掉。
     await mod.meetingsApi.refine('m1', SEGMENTS, ['en'], undefined, undefined)

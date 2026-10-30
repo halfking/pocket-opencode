@@ -35,6 +35,14 @@ test('仅本地的真实会议与 STT 客户端不触发网络降级，先可靠
     const { sttSettingsApi } = await vite.ssrLoadModule('/src/api/stt-settings.ts')
     const { liveTranslate } = await vite.ssrLoadModule('/src/features/meetings/live-translate.ts')
     const localError = (error) => error.status === 409 && error.body?.error === 'module_policy_local'
+    // ⚠ 2026-10-30：aa8a6dfb 起 http() 对非直接权威（authMethod ∉ password/legacy/dev-bypass）
+    //   的请求先走资源凭据交换，meetings/stt 路径 scope='unavailable' ⇒ 409 之前就抛
+    //   PocketResourceUnavailableError。本判据守的是「模块策略门」，不是鉴权面 ⇒
+    //   把会话设成直接权威（password），让请求走到策略层。
+    const { useAuthStore } = await vite.ssrLoadModule('/src/stores/auth.ts')
+    const authEarly = useAuthStore()
+    await authEarly.syncFromStorage()
+    authEarly.$patch({ token: '[REDACTED:secret]', user: '[REDACTED:account]', authMethod: 'password', activationStatus: 'ready' })
     await assert.rejects(meetingsApi.summarize('m1', []), localError)
     await assert.rejects(meetingsApi.refine('m1', []), localError)
     await assert.rejects(liveTranslate('private transcript'), localError)
@@ -45,9 +53,7 @@ test('仅本地的真实会议与 STT 客户端不触发网络降级，先可靠
 
     // 请求前的 token 续期存在 await：期间切 local，真正发送前仍必须拦截。
     const currentPolicy = policy.useSyncPolicyStore()
-    const { useAuthStore } = await vite.ssrLoadModule('/src/stores/auth.ts')
-    const auth = useAuthStore()
-    await auth.syncFromStorage()
+    const auth = authEarly
     const originalRefresh = auth.maybeRefresh
     for (const request of [
       () => sttSettingsApi.transcribeIncremental({ sessionId: 'n1', audioBase64: 'private' }, 'notes'),
@@ -77,8 +83,25 @@ test('仅本地的真实会议与 STT 客户端不触发网络降级，先可靠
     await rejected
     assert.equal(saved, 1)
     assert.equal(requests, 0)
+    // ⚠ 2026-10-29：断言随 5714756d 语义升级 —— 分片落盘失败不再杀掉整段
+    //   转写（转写文本已到，丢音频只丢重放），改为 warn 后继续。但**不许无声**：
+    //   这里断言 warn 真的发生了（审计发现裸 await 时两个后果：失败丢原因、
+    //   取消被吞；升级后的契约 = 失败出声 + 取消原样抛）。
     globalThis.__privacySaveAudioPart = async () => { throw new Error('disk full') }
-    await assert.rejects(ingestSpeechBlob({ meetingId: 'm1', blob: new Blob(['private']), seq: 2, startMs: 1, endMs: 2, segments: [], segmentProfiles: new Map(), diarizer: {} }), /disk full/)
+    const warnSeen = []
+    const originalWarn = console.warn
+    console.warn = (...args) => { warnSeen.push(args.join(' ')) }
+    try {
+      // 策略此时仍是 local ⇒ 落盘 warn 后，assertCloudModule 的 409 是**预期**出口。
+      await assert.rejects(
+        ingestSpeechBlob({ meetingId: 'm1', blob: new Blob(['private']), seq: 2, startMs: 1, endMs: 2, segments: [], segmentProfiles: new Map(), diarizer: {} }),
+        localError,
+      )
+    } finally {
+      console.warn = originalWarn
+    }
+    assert.ok(warnSeen.some((line) => line.includes('disk full') && line.includes('落盘失败')),
+      '音频分片落盘失败必须留痕（5714756d 契约）：转写可以继续，但失败原因一个字都不能少')
 
     const { finalizeRecording } = await vite.ssrLoadModule('/src/features/meetings/meeting-recording-finalize.ts')
     const notices = []

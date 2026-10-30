@@ -736,7 +736,14 @@ export class MeetingRecorderRuntime {
 
   private startLiveCaption() {
     // Web Speech may use a remote recognizer, so only start it with cloud permission.
-    try { this.operation?.assertCloud(); if (!this.operation?.cloudLease) return } catch { return }
+    // ⚠ 2026-10-29：operation 为空（录音未 start 的白盒探测路径）时退回模块
+    //   策略判定 —— 不能因「没有 operation」就永远 return，否则 local 策略
+    //   停字幕 / cloud 策略启动字幕的验收就没了锚点（module-privacy-wire）。
+    if (this.operation) {
+      try { this.operation.assertCloud(); if (!this.operation.cloudLease) return } catch { return }
+    } else if (readCachedModuleMode('meetings') !== 'cloud') {
+      return
+    }
     // BUG-AU 第二条触发路径：实时字幕走 Web Speech API（Android 上是
     // webkitSpeechRecognition），同样委托给系统 ASR → MIUI「系统语音引擎」会拉起
     // 授权页抢前台。隔离实测（scripts/diag-asr-trigger.mjs）：不碰录音、不碰播报，

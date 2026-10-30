@@ -500,6 +500,8 @@ class AiStreamRuntime {
       this.failEntry(entry, err instanceof Error ? err : new Error(String(err)), 'network')
     } finally {
       if (reader) {
+        // §948：finally 里的 reader.cancel 已无消费通道（成败都在上面走完），
+        // 拒绝就地消化只防 unhandled rejection；流级错误已由 failEntry 落账。
         await reader.cancel().catch(() => {})
         reader.releaseLock()
       }

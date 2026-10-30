@@ -130,8 +130,17 @@ const REGISTRY: Array<{ key: string; count: number; why: string }> = [
     why: '它 await 的 store.load() 自己 catch 并设 error；视图 :52 渲染该 error 且空态带 !store.error 守卫（§840 正确形态）' },
   { key: 'features/email/EmailInboxView.vue::recheckSentinel', count: 1,
     why: '哨兵几何重算，同步失败无外部可观测面' },
-  { key: 'features/email/email-fetch-host.ts::bindNative', count: 1,
-    why: '原生事件绑定，失败在邮件页表现为读失败横幅（已在 §841/§842 覆盖）' },
+  // ⚠ 2026-10-29 撤销登记：`bindNative` 的唯一调用点是
+  //   `void bindNative().then(…).then(…).finally(…)`（带完整链）⇒ 扫描器按行
+  //   hasChain 判「作者已处理」根本不会把它计入 ⇒ 本条从写进登记表那天起
+  //   就是 stale（test:all 因 argv 超限没跑过，登记漂移无从暴露）。
+  //   ⚠ count=2 只数 email-fetch-native.ts 本文件（email-fetch-host.ts:45 那处
+  //     因 bodyOf 在该文件找不到函数体而不计入扫描——跨文件 callee 另有判据口径）。
+  { key: 'features/email/email-fetch-native.ts::cancelNativeEmailFetch', count: 2,
+    why: '★ 2026-10-29 补登记（62aa8012 引入）：cancel 自身' +
+      '永不 reject —— attemptCancellation 的 IIFE 全体 try/catch，失败置 ' +
+      'stopState.unconfirmed 并按 STOP_RETRY_DELAYS 自动重试 + console.warn，' +
+      '耗尽后由用户手动 retryNativeEmailFetchCancellation 兜底 ⇒ 无静默失败' },
   { key: 'features/email/use-invoice-list.ts::loadThumbs', count: 3,
     why: '缩略图是渐进增强；单张失败由 use-invoice-thumbs 内部兜住' },
   { key: 'features/meetings/MeetingDetailView.vue::refreshRelated', count: 1,
@@ -202,7 +211,7 @@ describe('§850 · `void x(...)` fire-and-forget：登记表与扫面双向对�
     }
   })
 
-  it('★ 合计口径固定：15 处（基线 = 2026-10-27 §857+ 修正后）', () => {
+  it('★ 合计口径固定：16 处（基线 = 2026-10-29 修正后）', () => {
     // ⚠ 2026-10-18（§857）：基线由 **15** 改为 **14** ——
     //   `SettingsPermissionsView::refreshAll` 补了 catch 后离开了本族（见 REGISTRY 处的说明）。
     //   ⭐ 按「棘轮基线必须按实测更新」处理，且**必须写清是哪一条、为什么变** ——
@@ -214,8 +223,15 @@ describe('§850 · `void x(...)` fire-and-forget：登记表与扫面双向对�
     //     （扫面早就数到了它 ⇒ 正是「登记表不许漂移」那条一直红的原因）。
     //   ⇒ 所以这是「把登记表补齐」，不是「把基线放宽」：扫描口径没变，
     //     变的只是登记表与实际使用情况对齐。
+    //
+    // ⚠ 2026-10-29：基线由 **15** 改为 **16** ——
+    //   ① 补登记 `email-fetch-native::cancelNativeEmailFetch`（3 处，
+    //     62aa8012 引入而登记表没收；cancel 自身全 try/catch 不 reject）。
+    //   ② 撤销 stale 条目 `email-fetch-host::bindNative`（-1：唯一调用点带
+    //     .then().finally() 链，扫描器从未计入 ⇒ 登记漂移因 test:all 长期
+    //     没跑过而无从暴露，本轮补齐对账）。
     const total = REGISTRY.reduce((n, r) => n + r.count, 0)
-    assert.equal(total, 15, `登记表合计 ${total} 处，与本节记录的基线 15 不符`)
+    assert.equal(total, 16, `登记表合计 ${total} 处，与本节记录的基线 16 不符`)
   })
 })
 

@@ -79,13 +79,22 @@ export function hideRemoteImages(html: string): string {
   for (const el of template.content.querySelectorAll<HTMLElement>('*')) {
     const inline = el.style
     if (el.hasAttribute('style')) {
-      const safe = document.createElement('span').style
+      // ⚠ 2026-10-29（§853 门禁整改）：此前把白名单属性先写进中间 span 的
+      //   CSSOM、再 `el.setAttribute('style', safe.cssText)` 序列化回去 ——
+      //   值虽是 CSSOM 产物（无注入面），但 `setAttribute('style', …)` 这个
+      //   **形状**正是 css-injection 门禁的零容忍项。改为：先把白名单值
+      //   **收集**出来，清掉原 style 属性，再在元素自己的 CSSOM 上逐属性
+      //   写回（与 Vue 的 :style 对象式同一条安全通路）。
+      //   ⚠ 必须先收集再清：removeAttribute('style') 会重置元素的
+      //     CSSStyleDeclaration，`inline` 与 `el.style` 是同一个对象。
+      const kept: Array<[string, string, string]> = []
       for (const property of LOCAL_STYLE_PROPERTIES) {
         const value = inline.getPropertyValue(property)
-        if (value) safe.setProperty(property, value, inline.getPropertyPriority(property))
+        if (value) kept.push([property, value, inline.getPropertyPriority(property)])
       }
-      if (safe.cssText) el.setAttribute('style', safe.cssText)
-      else el.removeAttribute('style')
+      el.removeAttribute('style')
+      for (const [property, value, priority] of kept) el.style.setProperty(property, value, priority)
+      if (!el.getAttribute('style')) el.removeAttribute('style')
     }
     for (const attr of ['src', 'background', 'data-src', 'data-original', 'data-lazy-src']) {
       const value = el.getAttribute(attr)

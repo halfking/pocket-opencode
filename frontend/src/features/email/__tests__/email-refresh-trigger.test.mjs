@@ -95,8 +95,14 @@ describe('后台收信的触发条件', () => {
   })
 
   it('未登录时不发起，也不占用节流窗口', () => {
+    // ⚠ 2026-10-29：判据随 4e3c1043 演化 —— 宿主守卫已从 `!useAuthStore().token`
+    //   升级为 `!auth.isAuthenticated`（= activationStatus ready + token + user
+    //   三者齐备，恢复出来的会话不再误判为已登录）。判据追的是语义：
+    //   kick 函数体必须有一个「未认证就 return」的前置门禁，不管形状。
+    const body = fnBody(hostCode, 'const kick = () => {')
+    assert.notEqual(body, null, '找不到 kick 的函数体（判据可能已失效）')
     assert.match(
-      fnBody(hostCode, 'const kick = () => {'),
+      body,
       /if\s*\(!auth\.isAuthenticated\)\s*return/,
       '未登录时仍会发起收信：白打一趟需要 token 的接口，' +
       '还会把节流窗口记在这次注定失败的尝试上',
@@ -194,11 +200,13 @@ describe('判据自检：负控必须转红', () => {
   })
 
   it('未登录门禁去掉 → 转红', () => {
-    const original = kickBody()
-    const broken = original.replace(/if\s*\(!auth\.isAuthenticated\)\s*return/, 'void 0')
-    assert.notEqual(broken, original, '负控样本没有真的去掉门禁（替换没命中）')
+    // ⚠ 2026-10-29：负控针同步升级为 isAuthenticated 守卫（见上方判据说明）。
+    //   宿主有两处守卫（bindNative 一处、kick 一处）；负控把**全部**守卫替换掉，
+    //   再确认源里已经搜不到守卫形状。
+    const fullyBroken = hostCode.replace(/if\s*\(!auth\.isAuthenticated\)\s*return/g, 'void 0')
+    assert.notEqual(fullyBroken, hostCode, '负控样本没有真的去掉门禁（替换没命中）')
     assert.equal(
-      /if\s*\(!auth\.isAuthenticated\)\s*return/.test(broken),
+      /if\s*\(!auth\.isAuthenticated\)\s*return/.test(fullyBroken),
       false,
       '负控本该转红却判成了通过',
     )

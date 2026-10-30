@@ -42,22 +42,131 @@ const ESBUILD = requireFrom.resolve('esbuild')
  *
  * ⚠ outfile 带 pid：两个判据文件在同一进程里各打一次，
  *   同名会互相覆盖，且 import 有缓存 ⇒ 后一个读到前一个的模块。
+ *
+ * ⚠ 2026-10-29：`stubs` 参数 —— module→源码 的替换表（esbuild onResolve 精确
+ *   匹配 import 说明符结尾）。背景：8b34e1c3 给 http/meetings 链加了
+ *   blockedModuleWrite（模块级同步策略门），而 syncPolicyStore 在「无激活宿主」
+ *   的测试环境里恒判 'local' ⇒ 所有走 meetings POST 的打包判据全体被 409 拦下。
+ *   这些判据守的是「请求体形状/提示词契约」，不是策略 ⇒ 用
+ *   `stubAlwaysCloudSyncPolicy` 把策略层替成恒 cloud（与 vite.ssrLoadModule +
+ *   installSyncPolicyActivationHost 的既有手法等价，只是发生在打包期）。
  */
-export async function loadBundle(entry, name) {
+export async function loadBundle(entry, name, stubs = {}) {
   const out = path.join(CACHE, `opk-${name}-${process.pid}.mjs`)
   fs.mkdirSync(CACHE, { recursive: true })
+  const stubDir = path.join(CACHE, 'stubs')
+  const stubManifest = []
+  for (const [spec, code] of Object.entries(stubs)) {
+    fs.mkdirSync(stubDir, { recursive: true })
+    const f = path.join(stubDir, `${name}-${spec.replace(/[^a-zA-Z0-9]/g, '_')}.mjs`)
+    fs.writeFileSync(f, code, 'utf8')
+    stubManifest.push([spec, f])
+  }
+  // 桩插件整体序列化进子进程脚本：plugin 逻辑在**子进程**里跑，
+  // filter 正则按真实 import 说明符转义（锚定结尾）。注意在模板串里
+  // 写正则字面量需要双反斜杠 ⇒ 干脆用字符串形式 new RegExp。
+  const pluginSrc = stubManifest.length
+    ? `
+  const stubManifest = ${JSON.stringify(stubManifest)};
+  const escapeRe = (s) => s.replace(/[.*+?^'"'"'{}()|[\\]\\\\]/g, String.fromCharCode(92) + '$&');
+  const stubPlugin = {
+    name: 'wire-helper-stubs',
+    setup(b) {
+      for (const [spec, file] of stubManifest) {
+        const filter = new RegExp(escapeRe(spec) + '$');
+        b.onResolve({ filter }, () => ({ path: file }));
+      }
+    },
+  };`
+    : ''
+  const pluginArg = stubManifest.length ? ',\n      plugins: [stubPlugin]' : ''
   execFileSync(process.execPath, ['-e', `
     const esbuild = require(${JSON.stringify(ESBUILD)});
+    ${pluginSrc}
     esbuild.build({
       entryPoints: [${JSON.stringify(entry)}],
       bundle: true, format: 'esm', platform: 'browser', write: false,
-      external: ['pinia', 'vue'],
+      external: ['pinia', 'vue']${pluginArg},
       outfile: ${JSON.stringify(out)}, logLevel: 'silent',
     }).then(r => require('fs').writeFileSync(${JSON.stringify(out)}, r.outputFiles[0].contents))
       .catch(e => { console.error(e.message); process.exit(1) })
   `], { cwd: FRONTEND_ROOT, stdio: ['ignore', 'inherit', 'inherit'] })
   return import('file://' + out + `?t=${fs.statSync(out).mtimeMs}`)
 }
+
+/**
+ * 恒 cloud 的 syncPolicyStore 桩（打包期替换用）。
+ * 只保真 parity 判据会碰到的那几个面：模块模式恒 'cloud'、同步报告为空、
+ * 其余导出成可辨识的 no-op（谁用到未覆盖的导出，测试会当场报 undefined）。
+ */
+export const ALWAYS_CLOUD_SYNC_POLICY_STUB = `
+export const SYNC_POLICY_CACHE_KEY = 'op_sync_policy_v1'
+export const SYNC_POLICY_LOCAL_INTENTS_KEY = 'op_sync_policy_local_intents_v1'
+export const SYNC_REPORT_CACHE_KEY = 'op_sync_report_v1'
+export function readCachedModuleMode() { return 'cloud' }
+export function recordSyncReportEntry() {}
+export function readCachedSyncReport() { return [] }
+export function shouldSync() { return true }
+export function moduleMode() { return 'cloud' }
+export function readCachedSyncPolicy() { return null }
+export function installSyncPolicyActivationHost() {}
+export function installSyncPolicyStorage() {}
+export function installSyncPolicyScopeResolver() {}
+export function useSyncPolicyStore() { return {} }
+export const SYNC_MODULES = []
+export function isSyncModule() { return false }
+export function normalizeSyncPolicy(p) { return p }
+export function isPortalSyncModule() { return false }
+`
+
+/**
+ * 恒「直接权威」的 auth 桩（打包期替换用）。
+ *
+ * ⚠ 2026-10-30：aa8a6dfb 起 http() 对**非直接权威**（authMethod 不在
+ *   password/legacy/dev-bypass 里）的请求走资源凭据交换，而 meetings/notes/llm
+ *   路径的 scope 是 'unavailable' ⇒ 打包判据里那个「没登录态的裸 store」
+ *   （authMethod=''）一进 summarize/refine 就吃 PocketResourceUnavailableError。
+ *   这些判据守的是「请求体形状/提示词契约」，不是鉴权面 ⇒ 桩成**直接权威**，
+ *   让请求走到 fetch 打桩层。会话函数（capture/assert）从 stores/auth.ts 原样
+ *   抄语义：WeakMap 代际 + 「字段变了代际作废」——只是没有 vue watch，
+ *   代际不会被动作废，单发请求的判据用不到。
+ */
+export const ALWAYS_DIRECT_AUTH_STUB = `
+import { defineStore } from 'pinia'
+const sessions = new WeakMap()
+export function sessionState(auth) {
+  let state = sessions.get(auth)
+  if (!state) { state = { generation: {}, applyingRefresh: false, disposed: false }; sessions.set(auth, state) }
+  return state
+}
+export function captureAuthAttempt(auth) { return { owner: auth, generation: sessionState(auth).generation } }
+export function assertAuthAttempt(auth, session) {
+  const state = sessionState(auth)
+  if (session.owner === auth && !state.disposed && state.generation === session.generation) return
+  throw Object.assign(new Error('Sign-in attempt was superseded.'), { name: 'AbortError' })
+}
+export function captureAuthSession(auth) {
+  if (auth.activationStatus !== 'ready') throw Object.assign(new Error('Session activation is not ready.'), { name: 'AbortError' })
+  return captureAuthAttempt(auth)
+}
+export function isCurrentAuthSession(auth, session) {
+  const state = sessionState(auth)
+  return auth.activationStatus === 'ready' && session.owner === auth && !state.disposed && state.generation === session.generation
+}
+export function assertAuthSession(auth, session) {
+  if (isCurrentAuthSession(auth, session)) return
+  const error = new Error('The session changed before the request completed.')
+  error.name = 'AbortError'
+  throw error
+}
+export const useAuthStore = defineStore('auth', {
+  state: () => ({ token: 'stub-direct-token', user: 'stub-user', userId: 'stub-user', workspaceId: 'stub-workspace', authMethod: 'password', activationStatus: 'ready' }),
+  actions: {
+    maybeRefresh() { return Promise.resolve() },
+    refreshSession() { return Promise.resolve() },
+  },
+})
+`
 
 /** ★ 剥注释用**等长空白替换**，不是删除 —— 删掉会让行号/偏移错位。 */
 export const blank = (m) => m.replace(/[^\n]/g, ' ')

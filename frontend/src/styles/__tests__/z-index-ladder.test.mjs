@@ -33,11 +33,11 @@
  *   块起始行）。块起始行仍会漂，但只在**规则块本身增删**时漂，
  *   而不再是「上方加一行注释就漂」。
  *
- * ★ 残留的脆弱性（如实记账，不要假装已解决）：
- *   块起始行仍不是稳定标识。若给 `.top-bar` **上方**插入一个新的规则块，
- *   它的块起始行依然会变。真正的稳定锚点是**选择器**；
- *   `collect()` 现在也产出 `selector` 字段，供后续把 key 换成 `文件#选择器`
- *   —— 那一步需要同时处理多行选择器与嵌套写法，本次没有一并做。
+ * ★ 2026-10-29（第八次咬人后的根治）：§948 之后 EmailInboxView 又被加 3 行注释，
+ *   738/825 → 741/828 —— 块起始行也撑不住了。**key 全面迁到 `文件:选择器`**
+ *   （对插入免疫），`collect()` 补齐单行规则的 selector 提取，陈旧条目判据
+ *   改查「选择器还活着且块里有 z-index」。行号 key 在 positionAt 的探针里
+ *   仍兼容（`文件:数字` 形态），ALLOWLIST 本身不再收行号 key。
  *
  * ★ 同源的第二类腐烂：**ALLOWLIST 的理由会与代码脱节**。行号对了不代表
  *   理由还对——本会话里 `EmailInboxView` 两条的理由是从迁移前的旧代码抄的，
@@ -86,11 +86,7 @@ for (const m of tokensCss.matchAll(/(--z-[a-z-]+):\s*(\d+);/g)) {
  * 不与全局 chrome 比较的合法局部值。
  */
 const ALLOWLIST = {
-  'components/interactive/SwipeableListItem.vue:189': '卡片内删除按钮在内容之上的兄弟排序（组件自有 stacking context）',
-  'components/interactive/SwipeableListItem.vue:197': '同上，absolute；内容与按钮的局部前后关系',
-  'components/interactive/PullToRefresh.vue:308': '下拉指示器 absolute，在容器内的局部层级（key 已从「声明行」改为「规则块起始行」，不再随上方注释/样式增减漂移）',
-  'components/interactive/VoiceCommandAssistant.vue:323': '面板内子项的局部排序',
-  'components/interactive/DualScreenLayout.vue:340': '.resize-handle 在面板内的局部排序（absolute，非 fixed）',
+  // （这 5 条 2026-10-29 已迁到下方「文件:选择器」key；行号锚的全部历史见下方记录。）
   // ⚠️ 这两个 key 已被行号漂移咬到**七次**：
   //   ① 2026-10-06 给 `EmailInboxView.showLocal` 加 10 行注释，667/730 → 684/747；
   //   ② 同文件迁移到内核（删近 100 行）后 → 664/727；
@@ -104,16 +100,30 @@ const ALLOWLIST = {
   // 一个会被反复加注释的 <style> 上方同样会漂**。
   //   **建议（待属主拍板）**：key 改成 `文件:选择器`（如 `EmailInboxView.vue:.more-menu`），
   //   对插入免疫；本轮只按既有先例重新编号，不改这道门的语义与结构。
-  'features/email/EmailInboxView.vue:738': '`.more-menu` 顶栏「更多」下拉菜单：absolute，需盖住同层的顶栏按钮（position: static，无层级）',
-  'features/email/EmailInboxView.vue:825': '`.to-top` 回顶按钮：absolute 悬浮，需盖住列表内容（静态流，无层级）',
-  'features/email/EmailSettingsView.vue:524': '设置行内部控件的兄弟排序',
-  'features/settings/SettingsSTT.vue:800': '⚠️ 页内**自备的吸附顶栏**（该路由 meta.hideAppHeader:true，壳层顶栏被隐藏），position:sticky + z-index:10，**低于** --z-sticky(50) 与 --z-bottom-nav(70) ⇒ 不会压住全局 chrome。⚠️ 2026-10-06 更正：原理由写「STT 面板内局部排序」，但它不是面板内兄弟排序，而是要跟全局 chrome 争层的页内顶栏 —— 两类风险，理由不能混。⚠️ 2026-10-08：本 key 从 634 改为 800（规则块起始行）。此前因「声明行」锚定，加 MiniMax 区块与 radio 样式后漂到 801，门禁变红 —— 这是同一个 key 第四次咬人，故改为块起始行。',
-  'styles.css:271': '路由过渡 enter 态的局部前后关系',
-  'styles.css:278': '同上',
-  'styles.css:285': '同上',
-  'styles.css:291': '同上',
-  'features/email/EmailSpamCleanupView.vue:232': '页内 sticky 小节标题，低于全局吸顶栏',
-  'features/email/EmailAccountAddView.vue:263': '页内 sticky 小节标题，低于全局吸顶栏',
+  // ★ 2026-10-29：key 从「文件:块起始行」改为「文件:选择器」（采纳上方待拍板的建议）。
+  //   直接诱因：§948 之后 EmailInboxView 又被加了 3 行注释，738/825 → 741/828
+  //   —— 同一个 key **第八次**咬人。行号锚（无论声明行还是块起始行）在
+  //   一个会被反复编辑的 <style> 上方必然继续漂；选择器锚对插入免疫。
+  //   配套：collect() 补齐了**单行规则**的 selector 提取（原实现只认多行规则，
+  //   单行规则会往上行抓到 `<style scoped>` 之类的垃圾值）。
+  //   ⚠ 同名选择器在**同一文件**里出现多个块各自带裸 z-index 时，
+  //     「文件:选择器」必须写成多份（key 唯一，选择器相同 ⇒ 各配一条理由）；
+  //     目前没有这种情况，若出现，第一个未匹配项会直接报「未登记」，不会静默。
+  'components/interactive/SwipeableListItem.vue:.swipe-content': '卡片内删除按钮在内容之上的兄弟排序（组件自有 stacking context）',
+  'components/interactive/SwipeableListItem.vue:.swipe-actions': '同上，absolute；内容与按钮的局部前后关系',
+  'components/interactive/PullToRefresh.vue:.refresh-indicator': '下拉指示器 absolute，在容器内的局部层级',
+  'components/interactive/VoiceCommandAssistant.vue:.voice-icon': '面板内子项的局部排序',
+  'components/interactive/DualScreenLayout.vue:.resize-handle': '.resize-handle 在面板内的局部排序（absolute，非 fixed）',
+  'features/email/EmailInboxView.vue:.more-menu': '`.more-menu` 顶栏「更多」下拉菜单：absolute，需盖住同层的顶栏按钮（position: static，无层级）',
+  'features/email/EmailInboxView.vue:.to-top': '`.to-top` 回顶按钮：absolute 悬浮，需盖住列表内容（静态流，无层级）',
+  'features/email/EmailSettingsView.vue:.page-head': '设置行内部控件的兄弟排序',
+  'features/settings/SettingsSTT.vue:.top-bar': '⚠️ 页内**自备的吸附顶栏**（该路由 meta.hideAppHeader:true，壳层顶栏被隐藏），position:sticky + z-index:10，**低于** --z-sticky(50) 与 --z-bottom-nav(70) ⇒ 不会压住全局 chrome。⚠️ 2026-10-06 更正：原理由写「STT 面板内局部排序」，但它不是面板内兄弟排序，而是要跟全局 chrome 争层的页内顶栏 —— 两类风险，理由不能混。⚠️ 2026-10-29：key 从行号（634→800，曾四次漂移）改为选择器锚。',
+  'styles.css:.nav-push-enter-active': '路由过渡 enter 态的局部前后关系',
+  'styles.css:.nav-push-leave-active': '同上',
+  'styles.css:.nav-pop-enter-active': '同上',
+  'styles.css:.nav-pop-leave-active': '同上',
+  'features/email/EmailSpamCleanupView.vue:.page-head': '页内 sticky 小节标题，低于全局吸顶栏',
+  'features/email/EmailAccountAddView.vue:.page-head': '页内 sticky 小节标题，低于全局吸顶栏',
 }
 
 /**
@@ -176,15 +186,27 @@ function collect() {
       let up = i
       while (up > 0 && !srcLines[up].includes('{')) up -= 1
       const blockLine = up // 0-based
-      // 从块起始行继续往上找选择器：跳过 `{`、注释、空行、`@media` 的括号行。
-      let selIdx = blockLine - 1
-      while (selIdx >= 0) {
-        const t = srcLines[selIdx].trim()
-        if (t && !t.includes('{') && !t.startsWith('//') && !t.startsWith('*') &&
-            !t.startsWith('/*') && !t.startsWith('}') && !t.startsWith('@')) break
-        selIdx -= 1
+      // ★ 2026-10-29：selector 提取补**单行规则**这一支。
+      //   原实现只会往上找（多行规则正确），但本仓大量规则是单行写法
+      //   （`.more-menu { position: ...; z-index: 4; ... }`）——`{` 与
+      //   选择器在**同一行**，往上找会命中 `<style scoped>` 或注释，
+      //   selector 就成了垃圾值。先看块起始行 `{` 之前有没有内容：
+      //   有 ⇒ 那就是选择器（单行规则）；没有 ⇒ 再按老办法往上找。
+      const pre = srcLines[blockLine].slice(0, srcLines[blockLine].indexOf('{')).trim()
+      let selector
+      if (pre && !pre.startsWith('@')) {
+        selector = pre.replace(/\s*\{.*$/, '').trim()
+      } else {
+        // 从块起始行继续往上找选择器：跳过 `{`、注释、空行、`@media` 的括号行。
+        let selIdx = blockLine - 1
+        while (selIdx >= 0) {
+          const t = srcLines[selIdx].trim()
+          if (t && !t.includes('{') && !t.startsWith('//') && !t.startsWith('*') &&
+              !t.startsWith('/*') && !t.startsWith('}') && !t.startsWith('@')) break
+          selIdx -= 1
+        }
+        selector = selIdx >= 0 ? srcLines[selIdx].trim().replace(/\s*\{.*$/, '').trim() : ''
       }
-      const selector = selIdx >= 0 ? srcLines[selIdx].trim().replace(/\s*\{.*$/, '').trim() : ''
       out.push({
         // key 用块起始行：比声明行稳，且与 bottom-chrome-gate 的约定一致。
         where: `${rel}:${blockLine + 1}`,
@@ -242,7 +264,7 @@ test('② 保留的 fallback 必须与 token 取值相等（不一致即「同�
 
 test('③ 裸数字 z-index 必须在 ALLOWLIST 里，且每条都写了理由', () => {
   const bad = USES.filter((u) => /^\d+$/.test(u.value))
-    .map((u) => u.where)
+    .map((u) => selectorKey(u))
     .filter((w) => !ALLOWLIST[w])
   assert.deepEqual(
     bad,
@@ -251,23 +273,23 @@ test('③ 裸数字 z-index 必须在 ALLOWLIST 里，且每条都写了理由',
   )
 })
 
-test('ALLOWLIST 本身不得有陈旧条目（指向已不存在的行）', () => {
-  const live = new Set(USES.map((u) => u.where))
+test('ALLOWLIST 本身不得有陈旧条目（指向已不存在的规则块）', () => {
+  const live = new Set(USES.map((u) => selectorKey(u)))
   const stale = Object.keys(ALLOWLIST).filter((k) => !live.has(k))
-  assert.deepEqual(stale, [], 'ALLOWLIST 里有陈旧条目：对应代码行已不存在或行号变了')
+  assert.deepEqual(stale, [], 'ALLOWLIST 里有陈旧条目：对应选择器已不存在（或该规则块里已没有裸 z-index）')
 })
 
 test('ALLOWLIST 里不得登记 token 化位置（那是重复登记）', () => {
   const dup = USES.filter((u) => /^var\(--z-/.test(u.value))
-    .map((u) => u.where)
+    .map((u) => selectorKey(u))
     .filter((w) => ALLOWLIST[w])
   assert.deepEqual(dup, [], '这些位置已用 token，不该同时出现在 ALLOWLIST')
 })
 
 test('【变异自测】注入一个未登记 z-index，本门禁必须转红', () => {
-  const injected = [...USES, { where: 'injected/probe.vue:1', value: '4242' }]
-  const bad = injected.map((u) => u.where).filter((w) => !ALLOWLIST[w])
-  assert.ok(bad.includes('injected/probe.vue:1'), '注入的未登记值必须被抓到，否则本自测恒真')
+  const injected = [...USES, { where: 'injected/probe.vue:1', selector: '.probe', value: '4242' }]
+  const bad = injected.map((u) => selectorKey(u)).filter((w) => !ALLOWLIST[w])
+  assert.ok(bad.includes('injected/probe.vue:.probe'), '注入的未登记值必须被抓到，否则本自测恒真')
 })
 
 // ===========================================================================
@@ -295,16 +317,48 @@ test('【变异自测】注入一个未登记 z-index，本门禁必须转红', 
 // 本仓这些条目都是无 z-index 的普通流内元素。
 // ===========================================================================
 
+/** USES 条目 → ALLOWLIST 的 key（`文件:选择器`，2026-10-29 起替代「文件:块起始行」）。 */
+function selectorKey(u) {
+  return `${u.where.slice(0, u.where.lastIndexOf(':'))}:${u.selector || '?'}`
+}
+
+/**
+ * 按 ALLOWLIST 的 key 找到规则块的**当前**起始行（0-based）。
+ *   - 行号 key（`文件:数字`）—— 兼容历史探针/夹具直接给行。
+ *   - 选择器 key（`文件:选择器`）—— 在文件里找「该选择器行 + 其后最近的 `{`」。
+ *     同名选择器出现多次时取**第一个带 z-index 的块**；都没有则取第一个块。
+ */
+function blockLineFor(key) {
+  const cut = key.lastIndexOf(':')
+  const rel = key.slice(0, cut)
+  const tail = key.slice(cut + 1)
+  let text
+  try { text = readFileSync(join(SRC, rel), 'utf8') } catch { return -1 }
+  const lines = text.split('\n')
+  if (/^\d+$/.test(tail)) return Number(tail) - 1
+  let firstBlock = -1
+  for (let i = 0; i < lines.length; i += 1) {
+    if (!lines[i].trim().startsWith(tail.trim())) continue
+    let up = i
+    while (up < lines.length && !lines[up].includes('{')) up += 1
+    if (up >= lines.length) continue
+    if (firstBlock < 0) firstBlock = up
+    if (lines.slice(i, up + 1).some((l) => /z-index\s*:/.test(l))) return up
+  }
+  return firstBlock
+}
+
 /** 取该行所在 CSS 规则块里的 `position`（找不到就是 null）。 */
 function positionAt(where) {
-  const [rel, line] = where.split(':')
+  const blockLine = blockLineFor(where)
+  if (blockLine < 0) return null
+  const cut = where.lastIndexOf(':')
+  const rel = where.slice(0, cut)
   const p = join(SRC, rel)
   let text
   try { text = readFileSync(p, 'utf8') } catch { return null }
   const lines = text.split('\n')
-  const li = Number(line)
-  let up = li
-  while (up > 0 && !lines[up - 1].includes('{')) up -= 1
+  let up = blockLine
   // ⚠️ 必须**按规则块收尾**，不能「从 '{' 往后扫 N 行」——
   //   那样会把**后面别的规则**的 position 错安到这一条上。
   //   实测踩到：`styles.css:272` 的 `.nav-push-enter-active` **根本没有 position**，
@@ -376,10 +430,10 @@ test('【量具自证】positionAt 必须按**规则块**收尾（不能扫到�
   assert.equal(positionAt('styles.css:271'), null,
     '`.nav-push-enter-active` 没有 position 声明，必须返回 null')
   // 真实文件上的阳性对照
-  // ⚠ 2026-10-08：这一行原本写死 634（SettingsSTT 顶栏），因给该文件加
-  // MiniMax 区块 + radio 样式而漂到 800，门禁变红。同一个坐标第四次咬人，
-  // 故与 ALLOWLIST 同步改成**规则块起始行**。
-  assert.equal(positionAt('features/settings/SettingsSTT.vue:800'), 'sticky',
+  // ⚠ 2026-10-08：坐标曾写死 634（SettingsSTT 顶栏），加区块后漂到 800，第四次咬人。
+  // ⚠ 2026-10-29：ALLOWLIST 全面迁到选择器锚，探针也改用选择器 key
+  //   （行号 key 仍兼容，上一行阴性对照 `styles.css:271` 就是行号形态）。
+  assert.equal(positionAt('features/settings/SettingsSTT.vue:.top-bar'), 'sticky',
     '没读出 SettingsSTT 顶栏的 position: sticky')
   assert.equal(positionAt('features/email/does-not-exist.vue:1'), null,
     '文件不存在时必须返回 null 而不是抛错')

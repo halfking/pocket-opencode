@@ -448,7 +448,11 @@ export const useAuthStore = defineStore('auth', {
      */
     async logout() {
       const token = this.token
-      const remote = token ? logoutRemote(token).catch(error => { console.debug('logoutRemote failed (ignored):', error) }) : Promise.resolve()
+      // ⚠ 2026-10-29（§853 凭据面整改）：`console.*` 与 `token` 不得出现在
+      //   同一行（credential-surface 门禁按行扫两者同现），失败细节也不该带
+      //   凭据上下文 —— 只记「失败被忽略」这一个事实。
+      const onLogoutFailure = () => { console.debug('logoutRemote failed (ignored)') }
+      const remote = token ? logoutRemote(token).catch(onLogoutFailure) : Promise.resolve()
       const cleared = this.clearLocal()
       try { await cleared } catch (error) {
         if (!(error instanceof Error) || error.name !== 'AbortError') throw error

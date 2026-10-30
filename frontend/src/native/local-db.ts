@@ -594,6 +594,8 @@ class LocalDB {
 
   private enqueue<T>(operation: () => Promise<T>): Promise<T> {
     const result = this.pending.then(operation)
+    // §948：这条 catch 只为防止串行链因前一个操作失败而断裂（链要继续接
+    // 后续操作）；真实拒绝原样经 `result` 交给调用方，所以就地消化是安全的。
     this.pending = result.catch(() => {})
     return result
   }

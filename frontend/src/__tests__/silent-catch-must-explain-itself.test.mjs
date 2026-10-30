@@ -314,6 +314,8 @@ function censusPromiseSites() {
  * 钉序列则连「哪一处是 A、哪一处是 B」都被钉住 ⇒ 改分类必须显式改台账。
  */
 const PROMISE_LEDGER = {
+  'src/api/http.ts': 'B',
+  'src/api/llm-bff.ts': 'BBB',
   'src/app/AppLayout.vue': 'A',
   'src/composables/useApprovalAlerts.ts': 'A',
   'src/composables/useDetailFlow.ts': 'BBB',
@@ -333,6 +335,7 @@ const PROMISE_LEDGER = {
   'src/features/email/email-fetch-run.ts': 'B',
   'src/features/email/use-invoice-list.ts': 'A',
   'src/features/finance/FinanceView.vue': 'B',
+  'src/features/imports/enex-portal-sync.test.mjs': 'B',
   'src/features/flashcards/CardBrowserView.vue': 'B',
   'src/features/flashcards/DeckOptionsView.vue': 'B',
   'src/features/flashcards/FlashcardDeckView.vue': 'B',
@@ -344,10 +347,10 @@ const PROMISE_LEDGER = {
   'src/features/marketplace/SkillMarketView.vue': 'BB',
   'src/features/marketplace/WorkbuddyView.vue': 'BB',
   'src/features/meetings/audio-parts.ts': 'B',
-  'src/features/meetings/ingest-speech.ts': 'AA',
+  'src/features/meetings/ingest-speech.ts': 'A',
   'src/features/messages/MessagesHubView.vue': 'AAA',
   'src/features/notes/note-files.ts': 'BAA',
-  'src/features/notes/notes-persist.ts': 'AAAA',
+  'src/features/notes/notes-persist.ts': 'AA',
   'src/features/notifications/NotificationsView.vue': 'B',
   'src/features/scheduled-tasks/ScheduledTaskDetailView.vue': 'B',
   'src/features/scheduled-tasks/ScheduledTaskListView.vue': 'B',
@@ -355,20 +358,24 @@ const PROMISE_LEDGER = {
   'src/features/study/StudyHubView.vue': 'BA',
   'src/features/vault/VaultEntryView.vue': 'BB',
   'src/main.ts': 'AA',
+  'src/native/aiStreamRuntime.ts': 'B',
   'src/native/config-sync/apply.ts': 'B',
-  'src/native/local-db.ts': 'AAAAAAAAAA',
+  'src/native/local-db.ts': 'BAAAAAAAAAA',
   'src/native/localNotifications.ts': 'B',
   'src/native/recording-voice-prompt.ts': 'BB',
   'src/native/recordingRuntime.ts': 'BB',
   'src/services/notificationDispatcher.ts': 'BB',
   'src/services/websocket-hub.ts': 'A',
+  'src/stores/auth.ts': 'BB',
   'src/stores/device.ts': 'AA',
   'src/stores/locale.ts': 'A',
+  'src/stores/sync-policy-runtime.ts': 'BB',
   'src/stores/theme.ts': 'A',
+  'src/test-support/notes-sqlite-fixture.mjs': 'B',
 }
 
 /** 台账钉住的绝对条数（§947 的同一条纪律：须钉住绝对条数）。 */
-const PROMISE_TOTAL = 92
+const PROMISE_TOTAL = 101
 
 describe('§948 · promise 形态的拒绝被就地消化', () => {
   it('★ 尺子自检：认得出静默 / 留痕 / 非本节口径，认得出理由，认不出假注释', () => {

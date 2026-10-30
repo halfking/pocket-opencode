@@ -74,6 +74,8 @@ import { fileURLToPath } from 'node:url'
 
 import {
   activatePinia, captureRequests, loadBundle, restoreGlobals, stubBrowser, stripGoComments,
+  ALWAYS_CLOUD_SYNC_POLICY_STUB,
+  ALWAYS_DIRECT_AUTH_STUB,
 } from './_wire-helpers.mjs'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -215,7 +217,7 @@ describe('§66.4：摘要链的两份提示词', () => {
   it('B. summarize() 失败后，发给 /api/llm/chat 的**就是**这份提示词', async () => {
     stubBrowser()
     await activatePinia()
-    const mod = await loadBundle(MEETINGS_API, 'meetings-api')
+    const mod = await loadBundle(MEETINGS_API, 'meetings-api', { '../stores/syncPolicyStore.ts': ALWAYS_CLOUD_SYNC_POLICY_STUB, '../stores/auth': ALWAYS_DIRECT_AUTH_STUB })
     const seen = captureFallbackPrompt()
 
     await mod.meetingsApi.summarize('m1', SEGMENTS, PREV)

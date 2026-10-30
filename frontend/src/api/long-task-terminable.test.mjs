@@ -274,15 +274,47 @@ const NOT_A_FN = new Set(['if', 'for', 'while', 'switch', 'catch', 'return', 'aw
  *   ⇒ §929 把两个兜底调用点的预算放宽到 120 s，它们**第一次**落进
  *   `async function` 声明里 ⇒ 盲区当场暴露。
  *
+/**
+ * 调用点所在函数的「签名 + 参数表」，用于查 signal 形参。
+ *
+ * ⚠⚠ §929 更正：原来的正则**认不出 `function` 声明** ——
+ *   `async function fallbackSummarize(` 这类形态里，`(\w+)` 会先吃掉
+ *   `function` 这个词，后面要求 `(` 时遇到的是函数名 ⇒ 整条不匹配
+ *   ⇒ ⇒ `best` 只能退到**上一个**匹配（本例是 `syncMeeting`）
+ *   ⇒ ⇒ **查的是错的函数**：signal 断言会拿着别人的参数表做判。
+ *
+ *   之前 17 个在册调用点恰好全是**对象字面量方法 / 类方法**形态
+ *   （`  backfill(…) {`、`  summarize(…) {`）⇒ 一个都没踩到 ⇒ 门禁一直绿着。
+ *   ⇒ §929 把两个兜底调用点的预算放宽到 120 s，它们**第一次**落进
+ *   `async function` 声明里 ⇒ 盲区当场暴露。
+ *
  * ⇒ 修法：把 `export` / `default` / `async` / `function` 都认成**可选前缀**，
  *   名字只取真正的标识符。⚠ `function (`（匿名）仍会被 `NOT_A_FN` 滤掉。
+ *
+ * ⚠⚠ 2026-10-29 更正二：8b34e1c3 在 fallbackSummarize/fallbackRefine 的
+ *   `http('/api/llm/chat')` **之前**插入了一句 `assertCloudModule('meetings')`
+ *   —— 这也是个 `\w+(` 形态，旧实现把它当成了最近的「函数声明」
+ *   ⇒ 两个兜底调用点的所属函数全被解析成 `assertCloudModule`
+ *   ⇒ 在册性对账（键是 @fallbackSummarize/@fallbackRefine）对不上 ⇒ 门禁红。
+ *   修法：**声明形态校验**——从 `(` 起做括号配平，配平后跳过空白，下一个
+ *   字符必须是 `{`（函数体）或 `:`（返回类型注解）。纯调用语句
+ *   `assertCloudModule('meetings')` 配平后是换行/`;` ⇒ 不算声明，
+ *   继续往前找。对象方法（`  backfill(…) {`）与 function 声明都满足。
  */
 export function enclosingFn(src, callStart) {
   const re = /(?:^|\n)[ \t]*(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:function\s+)?(\w+)\s*(?:<[^<>()]*>)?\s*\(/g
+  const isDeclAt = (open) => {
+    const close = matchBracket(src, open, '(', ')')
+    if (close < 0) return false
+    const after = src.slice(close + 1).match(/^\s*[:{]/)
+    return !!after
+  }
   let best = null
   for (let m = re.exec(src); m && m.index < callStart; m = re.exec(src)) {
     if (NOT_A_FN.has(m[1])) continue
-    best = { name: m[1], declIndex: m.index, paramOpen: m.index + m[0].length - 1 }
+    const paramOpen = m.index + m[0].length - 1
+    if (!isDeclAt(paramOpen)) continue
+    best = { name: m[1], declIndex: m.index, paramOpen }
   }
   if (!best) return null
   const paramClose = matchBracket(src, best.paramOpen, '(', ')')
@@ -461,7 +493,7 @@ describe('中止不得被降级链吞成「假成功」', () => {
       const body = meetings.slice(at, meetings.indexOf('\n  },', at))
       assert.match(
         body,
-        /catch\s*\(e\)[\s\S]*if \(isAbortError\(e\)\) throw e/,
+        /catch\s*\(e\)[\s\S]*if \(isAbortError\(e\)(?: \|\| isModulePolicyLocalError\(e\))?(?: \|\| e instanceof PocketResourceUnavailableError)?(?: \|\| e instanceof PocketResourceAuthorityError)?\) throw e/,
         `${decl} 的 catch 没有放行中止：用户取消会被换成一份降级结果写进会议`,
       )
     })
@@ -475,7 +507,7 @@ describe('中止不得被降级链吞成「假成功」', () => {
       const _span = balancedSpan(meetings, decl, '{')
       assert.ok(_span, `${decl} 取不到函数体`)
       const body = _span.span
-      assert.match(body, /if \(isAbortError\(e\)\) throw e/, `${decl} 会把中止吞掉并返回拼装内容`)
+      assert.match(body, /if \(isAbortError\(e\)(?: \|\| isModulePolicyLocalError\(e\))?(?: \|\| e instanceof PocketResourceUnavailableError)?(?: \|\| e instanceof PocketResourceAuthorityError)?\) throw e/, `${decl} 会把中止吞掉并返回拼装内容`)
       assert.match(body, /\bsignal\b/, `${decl} 的兜底请求没有接 signal，中止传不进去`)
     })
   }
@@ -509,7 +541,7 @@ describe('会议分片转写：此前这一层完全停不掉', () => {
     assert.match(ingest, /signal\?:\s*AbortSignal/, 'ingestSpeechBlob 的入参没有 signal')
     assert.match(
       ingest,
-      /sttApi\.transcribe\(\{ audioBlob: opts\.blob \}, opts\.signal\)/,
+      /sttApi\.transcribe\(\{ audioBlob: opts\.blob[^}]*\}, opts\.signal/,
       'signal 没有传到 sttApi.transcribe —— 分片转写仍然是停不掉的那一环',
     )
   })
@@ -542,7 +574,7 @@ describe('会议分片转写：此前这一层完全停不掉', () => {
     assert.notEqual(at, -1, '找不到 processSegment 里的 ingestSpeechBlob 调用')
     assert.match(
       runtime.slice(at, at + 1200),
-      /if \(this\.segmentAbort\?\.signal\.aborted\) return/,
+      /(?:isAbortError\(e\) \|\| )?this\.segmentAbort\?\.signal\.aborted/,
       '用户中止被当成转写失败提示，会让他以为录音坏了',
     )
   })
@@ -735,10 +767,15 @@ describe('判据自检：负控必须转红', () => {
     const meetings = readSrc('api/meetings.ts')
     const at = meetings.indexOf('async summarize(')
     const body = meetings.slice(at, meetings.indexOf('\n  },', at))
-    const broken = body.replace('if (isAbortError(e)) throw e', 'void e')
+    // ⚠ 2026-10-29：生产形态升级为 `if (isAbortError(e) || isModulePolicyLocalError(e)) throw e`
+    //   （8b34e1c3 加了策略拒绝的放行）。负控针同步用正则摘掉**整条放行**。
+    const broken = body.replace(
+      /if \(isAbortError\(e\)(?: \|\| isModulePolicyLocalError\(e\))?(?: \|\| e instanceof PocketResourceUnavailableError)?(?: \|\| e instanceof PocketResourceAuthorityError)?\) throw e/,
+      'void e',
+    )
     assert.notEqual(broken, body, '负控样本没有真的摘掉放行（替换没命中）')
     assert.equal(
-      /catch\s*\(e\)[\s\S]*if \(isAbortError\(e\)\) throw e/.test(broken),
+      /catch\s*\(e\)[\s\S]*if \(isAbortError\(e\)(?: \|\| isModulePolicyLocalError\(e\))?(?: \|\| e instanceof PocketResourceUnavailableError)?(?: \|\| e instanceof PocketResourceAuthorityError)?\) throw e/.test(broken),
       false,
       '负控本该转红却判成了通过',
     )
