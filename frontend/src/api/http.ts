@@ -12,6 +12,8 @@ import { blockedModuleWrite } from './module-policy.ts'
 import { isEmailMetadataWrite } from './email-upload-policy.ts'
 import { readCachedModuleMode, recordSyncReportEntry } from '../stores/syncPolicyStore.ts'
 import type { SyncModule } from './syncPolicyContract.ts'
+import { usesPocketResourceCredentials, pocketResourceScope, pocketResourceCredential, PocketResourceAuthorityError,
+  PocketResourceUnavailableError, type PocketResourceCredential } from './pocket-resource'
 
 // 再导出：client.ts 等既有调用方统一从 ./http 取守卫。
 export { assertNotHTML }
@@ -135,12 +137,13 @@ function assertOperationCallback(callback?: () => void): void {
 // ⚠§951：TimeoutError 的**类定义**在 ./fetch-timeout（上面已再导出）。
 //　 留这一行是为了让「这个文件里 TimeoutError 从哪来」有据可查。
 
-async function httpOnce<T = any>(path: string, opts: HttpOptions, session: AuthSession, anonymous = false): Promise<T> {
+async function httpOnce<T = any>(path: string, opts: HttpOptions, session: AuthSession, anonymous = false, resource?: PocketResourceCredential): Promise<T> {
   const auth = session.owner
   const checkSession = anonymous ? assertAuthAttempt : assertAuthSession
   const checkOperation = () => {
     checkSession(auth, session)
     assertOperationCallback(opts.assertCurrent)
+    resource?.assertCurrent()
     checkSession(auth, session)
   }
   checkOperation()
@@ -158,6 +161,9 @@ async function httpOnce<T = any>(path: string, opts: HttpOptions, session: AuthS
   }
   if (anonymous) {
     for (const key of Object.keys(headers)) if (key.toLowerCase() === 'authorization') delete headers[key]
+  } else if (resource) {
+    for (const key of Object.keys(headers)) if (key.toLowerCase() === 'authorization') delete headers[key]
+    headers.Authorization = `Bearer ${resource.token}`
   } else if (auth.token) headers['Authorization'] = `Bearer ${auth.token}`
   if (init.body && !headers['Content-Type']) {
     headers['Content-Type'] = 'application/json'
@@ -178,8 +184,8 @@ async function httpOnce<T = any>(path: string, opts: HttpOptions, session: AuthS
     throw new ApiError(409, 'module_policy_local', { error: 'module_policy_local', module: syncModule })
   }
   const res = await fetchWithTimeout(
-    `${resolveRuntimeApiBase()}${path}`,
-    { ...init, headers, signal: callerSignal },
+    `${resource?.base ?? resolveRuntimeApiBase()}${path}`,
+    { ...init, headers, signal: callerSignal, ...(resource ? { redirect: 'error' as const, credentials: 'omit' as const } : {}) },
     { timeoutMs, label: path },
   )
   checkOperation()
@@ -231,6 +237,38 @@ export async function http<T = any>(path: string, opts: HttpOptions = {}): Promi
     assertAuthSession(auth, session)
   }
   checkOperation()
+  const resourceScope = pocketResourceScope(path, opts.method)
+  if (usesPocketResourceCredentials(auth) && resourceScope !== null) {
+    if (resourceScope === 'unavailable') throw new PocketResourceUnavailableError()
+    const checkResourceOperation = () => {
+      checkOperation()
+      const blocked = blockedModuleWrite(path, opts.method, readCachedModuleMode)
+        ?? (opts.syncModule && readCachedModuleMode(opts.syncModule) === 'local' ? opts.syncModule : null)
+      if (blocked) {
+        recordSyncReportEntry({ module: blocked, status: 'skipped' })
+        throw new ApiError(409, 'module_policy_local', { error: 'module_policy_local', module: blocked })
+      }
+    }
+    checkResourceOperation()
+    let resource: PocketResourceCredential | undefined
+    try {
+      resource = await pocketResourceCredential(auth, session, resourceScope, checkResourceOperation)
+      checkResourceOperation()
+      try { return await httpOnce<T>(path, opts, session, false, resource) }
+      catch (error) {
+        checkOperation()
+        if (!(error instanceof ApiError) || error.status !== 401) throw error
+        resource.invalidate()
+        resource = await pocketResourceCredential(auth, session, resourceScope, checkResourceOperation)
+        checkResourceOperation()
+        return await httpOnce<T>(path, opts, session, false, resource)
+      }
+    } catch (error) {
+      checkOperation()
+      if (error instanceof PocketResourceAuthorityError && error.status === 401 && error.code === 'parent_session_invalid') await forceReauth(session)
+      throw error
+    }
+  }
   await maybeRefreshBeforeRequest(path)
   checkOperation()
   try {

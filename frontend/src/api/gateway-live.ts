@@ -16,6 +16,8 @@
  */
 
 import { resolveApiBase } from '../config/api-base'
+import { useAuthStore } from '../stores/auth'
+import { assertDirectPocketRequest } from './pocket-resource'
 
 export interface LiveStreamStats {
   total: number
@@ -141,6 +143,8 @@ export class GatewayLiveClient {
   private connect() {
     if (this.closed) return
     if (!this.isCurrent()) { this.close(); return }
+    try { assertDirectPocketRequest(useAuthStore()) }
+    catch (error) { this.close(); this.handlers.onError?.(error as Error); return }
 
     const token = this.getToken()
     const params = new URLSearchParams()

@@ -19,6 +19,8 @@ export interface MirrorAccountInput {
   syncIntervalMin: number
   enabled: boolean
   updatedAt: number
+  /** Scoped metadata responses must never replace device connection settings. */
+  metadataOnly?: boolean
 }
 
 export function buildMirrorAccountWrite(
@@ -29,6 +31,10 @@ export function buildMirrorAccountWrite(
 ): { sql: string; values: unknown[] } {
   const scope = ownerScopeSql(owner)
   if (local) {
+    if (acc.metadataOnly) return {
+      sql: `UPDATE local_email_accounts SET display_name=?, email_address=?, updated_at=? WHERE id=? AND ${scope.clause}`,
+      values: [acc.displayName, acc.emailAddress, acc.updatedAt, acc.id, ...scope.params],
+    }
     return {
       sql: `UPDATE local_email_accounts SET
         display_name=?, email_address=?, imap_host=?, imap_port=?,
@@ -47,9 +53,9 @@ export function buildMirrorAccountWrite(
         sync_interval_min, enabled, created_at, updated_at, owner_user_id, owner_workspace_id)
      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     values: [
-      acc.id, acc.displayName, acc.emailAddress, acc.imapHost, acc.imapPort,
-      acc.authType ?? 'password', REMOTE_MIRROR_CREDENTIAL,
-      acc.syncIntervalMin, acc.enabled ? 1 : 0, createdAt, acc.updatedAt, ...ownerColumnValues(owner),
+      acc.id, acc.displayName, acc.emailAddress, acc.metadataOnly ? '[remote-metadata]' : acc.imapHost, acc.metadataOnly ? 993 : acc.imapPort,
+      acc.metadataOnly ? 'password' : acc.authType ?? 'password', REMOTE_MIRROR_CREDENTIAL,
+      acc.metadataOnly ? 15 : acc.syncIntervalMin, !acc.metadataOnly && acc.enabled ? 1 : 0, createdAt, acc.updatedAt, ...ownerColumnValues(owner),
     ],
   }
 }

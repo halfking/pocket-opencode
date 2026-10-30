@@ -11,6 +11,9 @@
 import { http } from './http'
 import { resolveRuntimeApiBase } from '../config/api-base'
 import { fetchWithTimeout } from './fetch-timeout'
+import { fetchPortalWorkspaceBinding, fetchPocketWorkspaceBinding } from './workspaceBinding'
+import { resolveRedclawPortalBase } from '../config/redclaw-portal'
+import { usesDirectPocketAuthority } from './authentication-mode'
 
 export type CodePurpose = 'register' | 'reset' | 'login'
 
@@ -133,22 +136,29 @@ export async function fetchMe(): Promise<EmployeeProfile> {
  * ⇒ 归属只认服务端签发过的东西：恢复会话时调本端点，用服务端确认过的
  *   (user_id, workspace_id) 重新确立归属。
  */
-export async function fetchAuthIdentity(bearer: string): Promise<{ userId: string; workspaceId: string }> {
-  // ⚠ **不走 http()**：http() 在不可恢复的 401 上会调 forceReauth() ⇒ clearLocal()
-  //   ⇒ 把会话清掉。而这里的 401 只意味着「服务端没有给出归属证明」，
-  //   不等于「会话已死」—— 两者混在一起会误伤正常的恢复流程。
-  //   ⇒ 这里用裸 fetch，自己处理状态码。
-  const response = await fetchWithTimeout(`${resolveRuntimeApiBase()}/api/auth/identity`, {
-    method: 'GET',
-    headers: { Authorization: `Bearer ${bearer}` },
-  })
-  if (!response.ok) throw new Error('Server did not attest an account identity.')
-  const body = await response.json() as { user_id?: string; workspace_id?: string }
-  const userId = body?.user_id ?? ''
-  const workspaceId = body?.workspace_id ?? ''
-  // 两个标识缺一不可：只有 userId 不足以定位工作区，只有 workspaceId 不足以定位账号。
-  if (!userId || !workspaceId) throw new Error('Server did not attest an account identity.')
-  return { userId, workspaceId }
+export async function fetchAuthIdentity(
+  bearer: string,
+  workspaceCandidate: string,
+  assertCurrent: () => void,
+  loginMethod = 'redclaw',
+): Promise<{ userId: string; workspaceId: string }> {
+  // The stored workspace is only a candidate. RedClaw authenticates the bearer
+  // and delegates to pocketd to check live membership before returning its scope.
+  // An absent/invalid candidate stays unowned; there is no default fallback.
+  // The mode returned by login selects one authority, without decoding a JWT or
+  // trying another authority after failure. Persisted mode/candidate grant no
+  // ownership: both routes still require the service's live membership proof.
+  const direct = usesDirectPocketAuthority(loginMethod)
+  const resolveAuthority = direct ? resolveRuntimeApiBase : resolveRedclawPortalBase
+  const base = resolveAuthority()
+  const admit = () => {
+    assertCurrent()
+    if (resolveAuthority() !== base) throw Object.assign(new Error('Workspace authority changed.'), { name: 'AbortError' })
+  }
+  const fetchBinding = direct ? fetchPocketWorkspaceBinding : fetchPortalWorkspaceBinding
+  const binding = await fetchBinding(workspaceCandidate, { token: bearer, base, assertCurrent: admit })
+  admit()
+  return { userId: binding.userId, workspaceId: binding.workspaceId }
 }
 
 /** SSO 启用探测（无副作用）：不铸 nonce、不落 cookie，登录页每次加载调用。 */

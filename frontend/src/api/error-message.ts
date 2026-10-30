@@ -24,6 +24,10 @@
 export const ERROR_CODE_I18N_KEYS: Record<string, string> = {
   email_credentials_local_only: 'errors.emailCredentialsLocalOnly',
   module_policy_local: 'errors.moduleLocalOnly',
+  note_ai_metadata_unavailable: 'errors.noteAiMetadataUnavailable',
+  pocket_resource_unavailable: 'errors.resourceCapabilityUnavailable',
+  pocket_resource_authority_rejected: 'errors.resourceAccessUnverified',
+  resource_authorization_changed: 'errors.resourceAccessUnverified',
   rss_unavailable: 'errors.rssNotConfigured',
   rss_source_missing: 'errors.rssSourceMissing',
   email_unavailable: 'errors.emailNotConfigured',

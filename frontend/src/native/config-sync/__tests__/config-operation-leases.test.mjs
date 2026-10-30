@@ -7,6 +7,31 @@ import { createPinia, setActivePinia } from 'pinia'
 
 const SQL = await initSqlJs()
 
+test('startup refuses unsupported configuration sync visibly while preserving login, dirty settings and the original outbox', () => fixture(async f => {
+  f.auth.authMethod='redclaw';await f.setMode('cloud')
+  const operation=f.operation.captureConfigOperation()
+  await f.settings.writeLocalSetting({namespace:'app_prefs',id:'default',payload:{private:'retained'},updatedAt:100,dirty:1},operation.owner,operation.db)
+  await f.outbox.enqueueConfigPush({namespace:'app_prefs',id:'default',payload:{private:'queued'},updatedAt:100},operation.owner,operation.db)
+  const before=await f.db.query('SELECT * FROM local_config_outbox')
+  f.setResponse(()=>Response.json({error:'unauthorized'},{status:401}))
+  f.runtime.startUserConfigSync()
+  const {userConfigSyncStatus}=await f.vite.ssrLoadModule('/src/native/config-sync/status.ts')
+  for(let i=0;i<100 && !userConfigSyncStatus.capabilityUnavailable;i++) await new Promise(resolve=>setTimeout(resolve,5))
+  assert.equal(userConfigSyncStatus.capabilityUnavailable,true)
+  assert.equal(userConfigSyncStatus.activationVersion,f.auth.activationVersion)
+  assert.equal(f.auth.userId,'fixture-user');assert.equal(f.auth.token,'fixture-token')
+  assert.deepEqual(f.requests,[])
+  assert.deepEqual(await f.db.query('SELECT * FROM local_config_outbox'),before)
+  const local=await f.settings.getLocalSetting('app_prefs','default',operation.owner,operation.db)
+  assert.equal(local.dirty,1);assert.deepEqual(local.payload,{private:'retained'})
+  const report=await f.runtime.syncUserSettings()
+  assert.equal(report.online,false);assert.equal(report.pushed,0);assert.equal(report.error,'pocket_resource_unavailable')
+  assert.equal(await f.runtime.drainConfigOutbox(),0)
+  const [queued]=await f.db.query('SELECT state,last_error FROM local_config_outbox')
+  assert.equal(queued.state,'queued');assert.equal(queued.last_error,'pocket_resource_unavailable')
+  assert.deepEqual(f.requests,[])
+}))
+
 async function fixture(run) {
   const previousStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage')
   const previousFetch = globalThis.fetch
@@ -37,7 +62,7 @@ async function fixture(run) {
         if (source === '@capacitor-community/sqlite' && importer?.endsWith('/local-db.ts')) return '\0config-sqlite'
         if (importer?.endsWith('/local-db.ts') && source === './sqlite-web-init') return '\0config-web'
         if (importer?.endsWith('/local-db.ts') && source === './runtime-platform') return '\0config-platform'
-        if (source.endsWith('/native/lobster-init')) return '\0config-ready'
+        if (source.endsWith('/native/lobster-init') || (importer?.endsWith('/config-sync/runtime.ts') && source === '../lobster-init')) return '\0config-ready'
         if (importer?.endsWith('/config-sync/apply.ts') && source === '../../i18n') return '\0config-i18n'
         if (importer?.endsWith('/config-sync/apply.ts') && source === '../../stores/locale') return '\0config-locale'
       },
@@ -311,10 +336,10 @@ test('restored sessions with unknown principal retain opaque operation protectio
 }))
 
 test('a restored session re-earns its owner from the server attestation', () => fixture(async f => {
-  // 服务端确认过的身份（/api/auth/identity 从已验证 JWT 推导）。
+  // 直接 pocket 模式只采用服务端实时成员绑定，不采用 identity 的 default 回退。
   f.setResponse((url) => {
-    if (String(url).includes('/api/auth/identity')) {
-      return { user_id: 'fixture-user', workspace_id: 'fixture-workspace' }
+    if (String(url).endsWith('/api/workspaces/fixture-workspace/binding')) {
+      return { binding:'signed-member-binding',user_id: 'fixture-user', workspace_id: 'fixture-workspace',tenant_id:'tenant',expires_at:Math.floor(Date.now()/1000)+300 }
     }
     return {}
   })

@@ -17,6 +17,7 @@ import { useAuthStore, captureAuthSession, assertAuthSession } from '../stores/a
 import { ApiError, assertNotHTML, forceReauth } from './http'
 import { fetchWithTimeout } from './fetch-timeout.ts'
 import { buildTasksUrl, type TaskListFilters } from './tasks-url.ts'
+import { assertDirectPocketRequest } from './pocket-resource'
 
 /**
  * fetch 包装：注入 Bearer token + 统一错误处理。
@@ -30,6 +31,7 @@ type AuthResponse = Pick<Response, 'ok' | 'status' | 'json' | 'text'>
 async function authFetch(input: string, init: RequestInit = {}): Promise<AuthResponse> {
   const auth = useAuthStore()
   const session = captureAuthSession(auth)
+  assertDirectPocketRequest(auth)
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     ...(init.headers as Record<string, string> | undefined),

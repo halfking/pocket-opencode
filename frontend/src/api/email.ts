@@ -9,6 +9,7 @@ import { fetchWithTimeout } from './fetch-timeout.ts'
 import { useAuthStore, captureAuthSession, assertAuthSession } from '../stores/auth'
 import { chunkByLimit } from '../utils/chunk'
 import { isEmailStaleWrite } from './email-upload-policy.ts'
+import { usesPocketResourceCredentials, PocketResourceUnavailableError } from './pocket-resource'
 
 /**
  * isStaleWriteError 判断一次失败是不是「LWW 守卫拒绝」。
@@ -697,6 +698,7 @@ export const emailApi = {
    */
   async fetchInvoiceFile(id: string): Promise<Blob> {
     const auth = useAuthStore()
+    if (usesPocketResourceCredentials(auth)) throw new PocketResourceUnavailableError()
     // ⚠§951：原先是裸 fetch ⇒ 无上界；发票 PDF 可能几百 KB ⇒ 慢下载更要有界。
     const res = await fetchWithTimeout(`${resolveRuntimeApiBase()}/api/emails/invoices/${encodeURIComponent(id)}/file`, {
       headers: auth.token ? { Authorization: `Bearer ${auth.token}` } : undefined,
@@ -707,6 +709,7 @@ export const emailApi = {
   },
   async fetchInvoiceThumb(id: string): Promise<Blob> {
     const auth = useAuthStore()
+    if (usesPocketResourceCredentials(auth)) throw new PocketResourceUnavailableError()
     // ⚠§951：原先是裸 fetch ⇒ 无上界。
     const res = await fetchWithTimeout(`${resolveRuntimeApiBase()}/api/emails/invoices/${encodeURIComponent(id)}/thumb`, {
       headers: auth.token ? { Authorization: `Bearer ${auth.token}` } : undefined,
@@ -724,6 +727,7 @@ export const emailApi = {
   },
   async fetchInvoiceExport(file: string): Promise<Blob> {
     const auth = useAuthStore()
+    if (usesPocketResourceCredentials(auth)) throw new PocketResourceUnavailableError()
     // ⚠§951：原先是裸 fetch ⇒ 无上界；导出网格 PDF 是整批发票 ⇒ 慢是常态，更要有界。
     const res = await fetchWithTimeout(
       `${resolveRuntimeApiBase()}/api/emails/invoices/export/download?file=${encodeURIComponent(file)}`,

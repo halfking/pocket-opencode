@@ -226,6 +226,7 @@ export async function writeAccountIfNewer(acc: {
   syncIntervalMin: number
   enabled: boolean
   updatedAt: number
+  metadataOnly?: boolean
 }, operation = captureEmailSyncOperation()): Promise<boolean> {
   const write = capturePortalMailWrite(operation?.db)
   const { db, scope } = write

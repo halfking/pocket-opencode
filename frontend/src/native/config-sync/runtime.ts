@@ -13,6 +13,13 @@ import { getLocalSetting, listLocalSettings, markSettingClean, writeLocalIfNewer
 import { readCachedModuleMode, recordSyncReportEntry } from '../../stores/syncPolicyStore'
 import { captureConfigOperation, captureConfigOperationReady, CONFIG_MODULE, type ConfigOperation } from './operation'
 import type { SyncModule } from '../../api/syncPolicyContract'
+import { PocketResourceUnavailableError } from '../../api/pocket-resource'
+import { userConfigSyncStatus } from './status'
+
+function recordCapability(error?: unknown): void {
+  userConfigSyncStatus.activationVersion = useAuthStore().activationVersion
+  userConfigSyncStatus.capabilityUnavailable = error instanceof PocketResourceUnavailableError
+}
 
 export interface ConfigSyncReport {
   pulled: number
@@ -67,6 +74,7 @@ async function pushOne(namespace: string, id: string, operation: ConfigOperation
   } catch (error) {
     cloud.assertCurrent()
     if (isCancelled(error)) throw error
+    if (error instanceof PocketResourceUnavailableError) recordCapability(error)
     await enqueueConfigPush({ namespace, id, payload: local.payload, secret: local.secretEncrypted,
       updatedAt: local.updatedAt }, cloud.owner, cloud.db)
     return 'queued'
@@ -142,6 +150,7 @@ export async function drainConfigOutbox(operation?: ConfigOperation): Promise<nu
     } catch (error) {
       cloud.assertCurrent()
       if (isCancelled(error)) throw error
+      if (error instanceof PocketResourceUnavailableError) recordCapability(error)
       await markConfigPushFailed(row.id, error instanceof Error ? error.message : String(error), cloud.db)
     }
   }
@@ -191,10 +200,12 @@ export async function syncUserSettings(operation?: ConfigOperation): Promise<Con
     }
     queued += await drainConfigOutbox(operation)
     operation.assertCurrent()
+    recordCapability()
     return { pulled, pushed, queued, online: true }
   } catch (error) {
     operation.assertCurrent()
     if (isCancelled(error)) throw error
+    if (error instanceof PocketResourceUnavailableError) recordCapability(error)
     return { pulled: 0, pushed: 0, queued: 0, online: false,
       error: error instanceof Error ? error.message : String(error) }
   }

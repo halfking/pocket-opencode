@@ -19,7 +19,7 @@ async function fixture(run) {
     const authModule = await vite.ssrLoadModule('/src/stores/auth.ts')
     const { localDB } = await vite.ssrLoadModule('/src/native/local-db.ts')
     const auth = authModule.useAuthStore()
-    const login = name => auth.setAuthWithWorkspace(`token-${name}`, `User ${name}`, `user-${name}`, `ws-${name}`)
+    const login = (name, method = 'password') => auth.setAuthWithWorkspace(`token-${name}`, `User ${name}`, `user-${name}`, `ws-${name}`, method)
     await login('a')
     await run({ auth, localDB, login, values, storage, browser, vite, ...authModule })
   } finally {
@@ -83,6 +83,105 @@ test('atomic snapshot wins over torn compatibility keys and restore has no asser
   assert.equal(f.auth.workspaceId, 'ws-a')
   assert.equal(f.auth.userId, '')
   assert.equal(f.localDB.captureOperation({ kind: 'local-edit' }).owner.principal, null)
+}))
+
+const authorityBinding = (user = 'user-a', workspace = 'ws-a') => ({ binding: 'trusted-signed-binding', user_id: user,
+  workspace_id: workspace, tenant_id: 'tenant-a', expires_at: Math.floor(Date.now() / 1000) + 300 })
+
+test('restoring a RedClaw session confirms the candidate workspace through the membership bridge', () => fixture(async f => {
+  await f.login('a', 'redclaw')
+  const calls = []
+  globalThis.fetch = async (url, options) => {
+    calls.push({ url: String(url), options })
+    if (!String(url).endsWith('/api/v1/portal/workspaces/ws-a/binding')) return new Response('{}', { status: 401 })
+    return Response.json(authorityBinding())
+  }
+  await f.auth.syncFromStorage(true)
+  await f.auth.whenOwnerReady()
+  assert.equal(f.auth.userId, 'user-a')
+  assert.equal(f.localDB.captureOperation({ kind: 'local-edit' }).owner.principal.workspaceId, 'ws-a')
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].options.headers.Authorization, 'Bearer token-a')
+}))
+
+test('a direct pocket login restores only after its own live member binding, without identity defaults', () => fixture(async f => {
+  await f.auth.setAuthWithWorkspace('pocket-token', 'User a', 'user-a', 'ws-a', 'legacy')
+  const calls=[]
+  globalThis.fetch=async url => {calls.push(String(url)); return Response.json(authorityBinding())}
+  await f.auth.syncFromStorage(true); await f.auth.whenOwnerReady()
+  assert.equal(f.auth.userId,'user-a')
+  assert.equal(f.auth.ownerVerificationFailed,false)
+  assert.equal(calls.length,1); assert.ok(calls[0].endsWith('/api/workspaces/ws-a/binding'))
+}))
+
+for (const mode of ['redclaw','legacy','unknown']) test(`a ${mode} restore fails visibly when its selected authority rejects, without trying another`, () => fixture(async f => {
+  await f.auth.setAuthWithWorkspace('invalid-token', 'User a', 'user-a', 'ws-a', mode)
+  const calls=[]
+  globalThis.fetch=async url => {calls.push(String(url)); return new Response('{}',{status:503})}
+  await f.auth.syncFromStorage(true); await f.auth.whenOwnerReady()
+  assert.equal(f.auth.userId,'')
+  assert.equal(f.auth.token,'invalid-token')
+  assert.equal(f.auth.ownerVerificationFailed,true)
+  assert.equal(f.localDB.captureOperation({kind:'local-edit'}).owner.principal,null)
+  assert.equal(calls.length,1)
+  assert.ok(calls[0].endsWith(mode==='legacy'?'/api/workspaces/ws-a/binding':'/api/v1/portal/workspaces/ws-a/binding'))
+}))
+
+test('editing the saved login mode or workspace cannot turn a rejected credential into an owner', () => fixture(async f => {
+  const snapshot=JSON.parse(f.values.get('pocket_auth_snapshot_v1'))
+  f.values.set('pocket_auth_snapshot_v1',JSON.stringify({...snapshot,authMethod:'legacy',workspaceId:'forged-workspace'}))
+  const calls=[]
+  globalThis.fetch=async url => {calls.push(String(url)); return new Response('{}',{status:401})}
+  await f.auth.syncFromStorage(true); await f.auth.whenOwnerReady()
+  assert.equal(f.auth.userId,''); assert.equal(f.auth.ownerVerificationFailed,true)
+  assert.equal(calls.length,1); assert.ok(calls[0].endsWith('/api/workspaces/forged-workspace/binding'))
+}))
+
+test('restore refuses an unproven candidate or missing workspace without default ownership', () => fixture(async f => {
+  await f.login('a', 'redclaw')
+  const calls = []
+  globalThis.fetch = async url => { calls.push(String(url)); return Response.json(authorityBinding('user-a', 'another-workspace')) }
+  await f.auth.syncFromStorage(true); await f.auth.whenOwnerReady()
+  assert.equal(f.auth.userId, '')
+  assert.equal(f.auth.token, 'token-a')
+  assert.equal(f.auth.ownerVerificationFailed,true)
+  const stored = JSON.parse(f.values.get('pocket_auth_snapshot_v1'))
+  f.values.set('pocket_auth_snapshot_v1', JSON.stringify({ ...stored, workspaceId: '' }))
+  calls.length = 0
+  await f.auth.syncFromStorage(true); await f.auth.whenOwnerReady()
+  assert.equal(f.auth.userId, '')
+  assert.equal(f.localDB.captureOperation({ kind: 'local-edit' }).owner.principal, null)
+  assert.equal(calls.length, 0)
+}))
+
+test('a former restore cannot reassert an owner after A to B to A with the same token', () => fixture(async f => {
+  await f.login('a', 'redclaw')
+  const body = deferred(), entered = deferred()
+  globalThis.fetch = async () => { entered.resolve(); return body.promise }
+  await f.auth.syncFromStorage(true)
+  const former = f.auth.whenOwnerReady()
+  await entered.promise
+  await f.login('b'); await f.login('a')
+  const version = f.auth.activationVersion
+  body.resolve(Response.json(authorityBinding()))
+  await former
+  assert.equal(f.auth.activationVersion, version)
+  assert.equal(f.auth.userId, 'user-a')
+}))
+
+test('an owner response for the pre-renewal token cannot roll the restored credential back', () => fixture(async f => {
+  await f.login('a', 'legacy')
+  const body = deferred(), entered = deferred()
+  globalThis.fetch = async () => { entered.resolve(); return body.promise }
+  await f.auth.syncFromStorage(true)
+  const former = f.auth.whenOwnerReady()
+  await entered.promise
+  globalThis.fetch = async () => Response.json({ token: 'renewed-a', user_id: 'user-a', workspace_id: 'ws-a' })
+  assert.equal(await f.auth.refreshSession(), true)
+  body.resolve(Response.json(authorityBinding()))
+  await former
+  assert.equal(f.auth.token, 'renewed-a')
+  assert.equal(f.auth.userId, '')
 }))
 
 test('display-only update and token renewal preserve the operation owner', () => fixture(async f => {

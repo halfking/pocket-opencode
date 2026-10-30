@@ -259,6 +259,8 @@
     "storageNativeEmailStopLimits": "As solicitações já enviadas não podem ser retiradas. Se o armazenamento do dispositivo falhar, a desativação poderá não ser mantida após reiniciar.",
     "storageOnlyLocalBadge": "Somente local · sem sincronização",
     "storageLoadFailed": "Serviço de política inacessível; exibindo cache ou política padrão",
+    "storageOwnerUnverified": "Não foi possível confirmar o acesso ao espaço de trabalho. A sincronização está pausada e a edição local continua disponível. Conecte-se e entre novamente.",
+    "storageConfigUnavailable": "A sincronização de configurações não está disponível com este acesso. As configurações pendentes e o conteúdo local são mantidos.",
     "storageManagedNoOverride": "Gerenciado pelo administrador"
   },
   "flashcards": {
@@ -482,6 +484,9 @@
     "fetchHintHttpError": "Busca em segundo plano incompleta ({code}); mensagens sincronizadas"
   },
   "errors": {
+    "noteAiMetadataUnavailable": "O resumo e a classificação por IA não estão disponíveis para esta nota. O conteúdo é mantido e a sincronização continua.",
+    "resourceCapabilityUnavailable": "Este recurso está indisponível no momento. Seu conteúdo local é mantido.",
+    "resourceAccessUnverified": "Não foi possível verificar o acesso a este recurso. Tente novamente. Seu conteúdo local é mantido.",
     "emailCredentialsLocalOnly": "As credenciais de e-mail só podem ser salvas no dispositivo.",
     "moduleLocalOnly": "Este módulo está configurado para salvar apenas no dispositivo.",
     "rssNotConfigured": "Nenhuma fonte RSS configurada ainda. Adicione uma para começar.",

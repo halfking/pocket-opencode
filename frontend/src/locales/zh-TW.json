@@ -259,6 +259,8 @@
     "storageNativeEmailStopLimits": "已發出的請求無法撤回。若裝置儲存故障，停用狀態可能無法保留至重新啟動後。",
     "storageOnlyLocalBadge": "僅本地 · 不同步",
     "storageLoadFailed": "策略服務無法連線，繼續使用快取；沒有有效快取時暫停上傳。",
+    "storageOwnerUnverified": "暫時無法確認工作區存取權限，雲端同步已暫停。本機仍可編輯，請連線後重試登入。",
+    "storageConfigUnavailable": "此登入方式暫不支援設定同步。待同步設定和本機內容已保留。",
     "storageManagedNoOverride": "由管理員統一管控"
   },
   "flashcards": {
@@ -482,6 +484,9 @@
     "fetchHintHttpError": "背景收信未完成（{code}），已顯示已同步郵件"
   },
   "errors": {
+    "noteAiMetadataUnavailable": "此筆記暫不支援 AI 摘要與分類。內容已保留，跨端同步不受影響。",
+    "resourceCapabilityUnavailable": "此功能暫時無法使用，本機內容已保留。",
+    "resourceAccessUnverified": "暫時無法驗證此功能的存取權限。請重試，本機內容已保留。",
     "emailCredentialsLocalOnly": "郵件密碼和 OAuth 權杖必須留在本機，暫不支援建立雲端帳號或修改雲端憑據。",
     "moduleLocalOnly": "此模組為僅本機模式，雲端寫入和同步已停用。",
     "rssNotConfigured": "RSS 訂閱源尚未設定，請先新增一個訂閱源",

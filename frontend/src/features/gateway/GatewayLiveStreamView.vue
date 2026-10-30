@@ -99,9 +99,12 @@ import { useAuthStore, captureAuthSession, isCurrentAuthSession, type AuthSessio
 import { GatewayLiveClient, type GatewayLiveHandlers } from '../../api/gateway-live'
 import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue'
 import type { LiveStreamLane, LiveStreamStats, LiveStreamTile } from '../../api/gateway-live'
+import { PocketResourceUnavailableError } from '../../api/pocket-resource'
+import { useApiError } from '../../composables/useApiError'
 
 const route = useRoute()
 const auth = useAuthStore()
+const apiError = useApiError()
 const nodeId = Number(route.params.nodeId)
 
 const connected = ref(false)
@@ -197,9 +200,10 @@ onMounted(() => {
         if (env.delta.summary) summary.value = env.delta.summary
       }
     },
-    onError: () => {
+    onError: (cause) => {
       connected.value = false
-      error.value = '连接中断，正在重试…'
+      error.value = cause instanceof PocketResourceUnavailableError
+        ? apiError(cause, 'errors.resourceCapabilityUnavailable') : '连接中断，正在重试…'
     },
   }
 

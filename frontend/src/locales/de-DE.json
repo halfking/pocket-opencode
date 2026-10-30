@@ -259,6 +259,8 @@
     "storageNativeEmailStopLimits": "Bereits gesendete Anfragen können nicht zurückgerufen werden. Bei einem Fehler des Gerätespeichers bleibt die Deaktivierung nach einem Neustart möglicherweise nicht erhalten.",
     "storageOnlyLocalBadge": "Nur lokal · kein Sync",
     "storageLoadFailed": "Richtliniendienst nicht erreichbar; der Cache wird verwendet. Ohne gültigen Cache werden Uploads pausiert.",
+    "storageOwnerUnverified": "Der Arbeitsbereichszugriff konnte nicht bestätigt werden. Cloud-Sync pausiert, lokale Bearbeitung bleibt möglich. Stellen Sie die Verbindung her und melden Sie sich erneut an.",
+    "storageConfigUnavailable": "Die Konfigurationssynchronisierung ist mit dieser Anmeldung nicht verfügbar. Ausstehende Einstellungen und lokale Inhalte bleiben erhalten.",
     "storageManagedNoOverride": "Durch Administrator verwaltet"
   },
   "flashcards": {
@@ -482,6 +484,9 @@
     "fetchHintHttpError": "Hintergrund-Abruf unvollständig ({code}); Nachrichten synchronisiert"
   },
   "errors": {
+    "noteAiMetadataUnavailable": "KI-Zusammenfassung und Klassifizierung sind für diese Notiz nicht verfügbar. Inhalt und Synchronisierung bleiben erhalten.",
+    "resourceCapabilityUnavailable": "Diese Funktion ist derzeit nicht verfügbar. Ihre lokalen Inhalte bleiben erhalten.",
+    "resourceAccessUnverified": "Der Zugriff auf diese Funktion konnte nicht geprüft werden. Bitte erneut versuchen. Ihre lokalen Inhalte bleiben erhalten.",
     "emailCredentialsLocalOnly": "E-Mail-Passwörter und OAuth-Token bleiben auf diesem Gerät. Cloud-Konten und Änderungen an Cloud-Zugangsdaten werden nicht unterstützt.",
     "moduleLocalOnly": "Dieses Modul ist nur lokal. Cloud-Schreiben und Synchronisieren sind deaktiviert.",
     "rssNotConfigured": "Noch kein RSS-Feed eingerichtet. Füge einen Feed hinzu.",

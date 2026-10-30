@@ -471,9 +471,7 @@ async function presentVoiceDraft(note: LocalNote, text: string) {
     // catch 归类成「总结失败」，实际总结已经拿到了。
     const noteId = metaNote.value.id
     const noteTitle = metaNote.value.title || ''
-    // 必须先等笔记在后端落行，否则 /summarize 拿到的是 404 ——
-    // 这是「录音后即时总结从来没成功过」的直接成因（见 notes-persist 的
-    // mirrorNoteToBackend 注释）。createNote 刻意不等云端，所以等在这里。
+    // This legacy AI capability must explicitly confirm its backend dependency.
     await awaitNoteMirror(noteId)
     if (!ownerView.isCurrent(stamp)) return
     const { summary, action_items: actionItems, transactions, bookkeeping, bookkeeping_mismatch: bkMismatch, summary_fallback: summaryFellBack } =
