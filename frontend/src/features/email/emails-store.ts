@@ -11,7 +11,7 @@ import { buildMirrorAccountWrite } from './account-mirror-write'
 import { normalizeAccountStamp } from './account-lww'
 import { emailDateToMs } from './cleanup-filter'
 import { captureEmailSyncOperation, type EmailSyncOperation } from './email-sync-guard'
-import { capturePortalMailWrite, commitPortalMail, commitPortalMailBatch, mailAccountPayload, mailSummaryPayload, mailRecordId, portalMailStore } from './portal-mail-store'
+import { capturePortalMailWrite, commitPortalMail, commitPortalMailBatch, mailAccountPayload, mailSummaryPayload, mailRecordId, portalMailStore, findPortalMailRecord } from './portal-mail-store'
 import { beginMailAccountEdit, finishMailAccountEdit, hasPendingMailAccountEdit, mailAccountEditVersion } from './mail-edit-intents'
 
 export interface EmailAccount {
@@ -194,7 +194,7 @@ export async function updateAccount(id: string, patch: Partial<EmailAccount>): P
         AND display_name IS ? AND email_address IS ? AND updated_at IS ? AND last_synced_at IS ?`,
       values: [...vals, ...scope.params, original.display_name, original.email_address, original.updated_at, original.last_synced_at] }]
     if (patch.displayName !== undefined || patch.emailAddress !== undefined) {
-      const store = portalMailStore(db), row = await store.byExternalId(mailRecordId('account', id), 'account')
+      const store = portalMailStore(db), row = await findPortalMailRecord(store, 'account', id)
       const current = row ? await store.decode(row.item_json) : null
       // Native connection settings and portable metadata have independent edits.
       // Carry forward the current projection, changing only explicit shared fields.
@@ -258,7 +258,7 @@ export async function writeAccountIfNewer(acc: {
   }
   const guard = { clause: `EXISTS(SELECT 1 FROM local_email_accounts WHERE id=? AND ${scope.clause} AND display_name IS ? AND email_address IS ? AND updated_at IS ?)`,
     values: [acc.id, ...scope.params, acc.displayName, acc.emailAddress, acc.updatedAt] }
-  const store = portalMailStore(db), projection = await store.byExternalId(mailRecordId('account', acc.id), 'account')
+  const store = portalMailStore(db), projection = await findPortalMailRecord(store, 'account', acc.id)
   const current = projection ? await store.decode(projection.item_json) : null
   await commitPortalMail(write, [{ statement, values }], { kind: 'account', id: acc.id, title: displayChanged ? acc.displayName : current?.title ?? acc.displayName,
     payload: { ...(current?.payload ?? mailAccountPayload({ display_name: acc.displayName, email_address: acc.emailAddress })),
@@ -582,7 +582,7 @@ export async function updateSyncState(accountId: string, lastUid: number): Promi
   const { db, scope } = operation
   const account = await db.queryOne<{ display_name: string; email_address: string }>(`SELECT display_name,email_address FROM local_email_accounts WHERE id=? AND ${scope.clause}`, [accountId, ...scope.params])
   if (!account) return
-  const store = portalMailStore(db), row = await store.byExternalId(mailRecordId('account', accountId), 'account')
+  const store = portalMailStore(db), row = await findPortalMailRecord(store, 'account', accountId)
   const current = row ? await store.decode(row.item_json) : null
   await commitPortalMail(operation, [{ statement: `UPDATE local_email_accounts SET last_synced_uid=?,last_synced_at=? WHERE id=? AND ${scope.clause}`,
     values: [lastUid, operation.modifiedAt, accountId, ...scope.params] }], {
@@ -666,7 +666,8 @@ export async function handleClassifiedEvent(payload: EmailClassifiedPayload): Pr
   // 用 COALESCE：服务器字段为 null 时保留本地原值，避免覆盖用户手动设置的字段。
   // action_reason 同口径：这一轮没带理由不代表判定变了，抹掉会让已判为重要的
   // 邮件突然失去「为什么」——那正是这个字段存在的理由。
-  await portalMailStore(db).init()
+  const store = portalMailStore(db), projection = await findPortalMailRecord(store,'summary',payload.email_id)
+  const extId = projection ? (await store.decode(projection.item_json)).ext_id : mailRecordId('summary',payload.email_id)
   await db.runInTransaction([
     { statement: `UPDATE local_emails
        SET category = COALESCE(?, category),
@@ -677,7 +678,7 @@ export async function handleClassifiedEvent(payload: EmailClassifiedPayload): Pr
     // This event has no source modification timestamp. Keep the new local
     // classification, but never upload a superseded snapshot as if it were new.
     { statement: `UPDATE local_portal_record_outbox SET last_error='source_timestamp_unknown'
-       WHERE owner_user_id=? AND owner_workspace_id=? AND module='email' AND kind='summary' AND ext_id=?`, values: [...ownerValuesFor(db), mailRecordId('summary', payload.email_id)] },
+       WHERE owner_user_id=? AND owner_workspace_id=? AND module='email' AND kind='summary' AND ext_id=?`, values: [...ownerValuesFor(db), extId] },
   ])
   if (typeof window !== 'undefined') window.dispatchEvent(new Event('openpocket:portal-email-outbox-changed'))
 

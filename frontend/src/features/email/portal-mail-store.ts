@@ -3,10 +3,25 @@ import { portalRecordStore } from '../../native/portal-sync/record-storage.ts'
 import { captureModuleEpoch } from '../../native/portal-sync/epochs.ts'
 import { versionKey, type Statement, type SyncDb } from '../../native/portal-sync/contract.ts'
 import { portalMailAdapter, type PortalMailKind } from './portal-mail-adapter.ts'
-import type { RecordSnapshot } from '../../native/portal-sync/record-store.ts'
+import type { PortalRecordStore, RecordProjection, RecordSnapshot } from '../../native/portal-sync/record-store.ts'
 
 export const mailRecordId = (kind: PortalMailKind, id: string) => `${kind}:${id}`
 export const portalMailStore = (db: SyncDb) => portalRecordStore(db, portalMailAdapter)
+
+function mailIdentity(kind: PortalMailKind, id: string) {
+  const canonical = mailRecordId(kind, id)
+  return {clause:'kind=? AND (ext_id IN (?,?,?) OR source_id IN (?,?))',
+    values:[kind,canonical,`email:${id}`,`email:${canonical}`,id,canonical]}
+}
+/** Reuse a managed legacy mapping; never rekey a cloud identity or scan native history. */
+export async function findPortalMailRecord(store: PortalRecordStore, kind: PortalMailKind, id: string) {
+  await store.init()
+  const identity = mailIdentity(kind,id)
+  const rows = await store.db.query<RecordProjection>(`SELECT * FROM local_portal_records
+    WHERE owner_user_id=? AND owner_workspace_id=? AND module='email' AND ${identity.clause}`, [...store.scope,...identity.values])
+  if (rows.length > 1) throw new Error('Email metadata identity requires explicit resolution; original records retained')
+  return rows[0] ?? null
+}
 
 export function mailAccountPayload(row: { email_address: string; display_name: string; last_synced_at?: number | null }) {
   const stamp = Number(row.last_synced_at)
@@ -28,9 +43,10 @@ export type PortalMailWrite = ReturnType<typeof capturePortalMailWrite>
 
 /** Older source snapshots cannot overwrite a newer portal projection. */
 export function portalMailVersionGuard(operation: PortalMailWrite, kind: PortalMailKind, id: string, modifiedAt: number) {
+  const identity = mailIdentity(kind,id)
   return {
-    clause: `NOT EXISTS(SELECT 1 FROM local_portal_records WHERE owner_user_id=? AND owner_workspace_id=? AND module='email' AND ext_id=? AND version_key>?)`,
-    values: [...operation.ownerValues, mailRecordId(kind, id), versionKey(new Date(modifiedAt).toISOString())],
+    clause: `NOT EXISTS(SELECT 1 FROM local_portal_records WHERE owner_user_id=? AND owner_workspace_id=? AND module='email' AND ${identity.clause} AND version_key>?)`,
+    values: [...operation.ownerValues, ...identity.values, versionKey(new Date(modifiedAt).toISOString())],
   }
 }
 
@@ -44,10 +60,14 @@ export async function commitPortalMailBatch(operation: PortalMailWrite, statemen
   const entries: { snapshot: RecordSnapshot; created: boolean }[] = []
   for (const input of inputs) {
     const extId = mailRecordId(input.kind, input.id)
-    const existing = await store.byExternalId(extId, input.kind)
-    entries.push({ snapshot: { id: existing?.source_id ?? extId, extId, kind: input.kind,
+    const existing = await findPortalMailRecord(store, input.kind, input.id), sourceId = existing?.source_id ?? extId
+    const identity = mailIdentity(input.kind,input.id), sourceGuard = input.guard ?? {clause:'1=1',values:[]}
+    const guard = {clause:`${sourceGuard.clause} AND NOT EXISTS(SELECT 1 FROM local_portal_records
+      WHERE owner_user_id=? AND owner_workspace_id=? AND module='email' AND ${identity.clause} AND source_id<>?)`,
+      values:[...sourceGuard.values,...store.scope,...identity.values,sourceId]}
+    entries.push({ snapshot: { id: sourceId, extId, kind: input.kind,
       title: input.title, payload: input.payload, modifiedAt: input.modifiedAt ?? operation.modifiedAt,
-      epoch: operation.epoch, deleted: input.deleted, guard: input.guard, syncError: input.syncError }, created: input.created === true })
+      epoch: operation.epoch, deleted: input.deleted, guard, syncError: input.syncError }, created: input.created === true })
   }
   await store.commitMany(statements, entries)
 }

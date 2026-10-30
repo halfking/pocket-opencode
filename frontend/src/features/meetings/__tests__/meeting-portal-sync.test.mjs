@@ -72,6 +72,19 @@ test('meeting portable edits and deletion atomically retain immutable owned oper
   })
 })
 
+test('a projected legacy meetings identity survives native edit and deletion without a second cloud identity', () => fixture(async f => {
+  const s = await setup(f)
+  await s.applyRecordPage(s.store,{epoch:0,next_cursor:'1',changes:[remote('meetings:legacy',Date.now()-1000)]})
+  const row = await s.store.byExternalId('meetings:legacy')
+  await s.meetings.updateMeeting(row.source_id,{summary:'Explicit minutes'})
+  await s.meetings.deleteMeeting(row.source_id)
+  const pending = await s.store.pending()
+  assert.equal(pending.length,2)
+  assert.ok(pending.every(item=>item.ext_id==='meetings:legacy'))
+  assert.equal(pending[1].deleted,true)
+  assert.equal(await s.store.byExternalId(`meeting:${row.source_id}`),null)
+}))
+
 test('remote meeting versions update only the portable projection and tombstones retain recordings and segments', async () => {
   await fixture(async (f) => {
     const s = await setup(f),
