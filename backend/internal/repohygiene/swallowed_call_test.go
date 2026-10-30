@@ -124,6 +124,7 @@ var s945Ledger = []s945LedgerRow{
 	{"backend/internal/email/pipeline_lock.go", "Close", 1},
 	{"backend/internal/email/pop3_fetcher.go", "SetDeadline", 9},
 	{"backend/internal/email/store.go", "Rollback", 4},
+	{"backend/internal/identity/delegation.go", "Write", 1},
 	{"backend/internal/llmgateway/audio_transform.go", "Close", 1},
 	{"backend/internal/marketplace/blob.go", "Rollback", 1},
 	{"backend/internal/meeting/pg_store.go", "Rollback", 1},
@@ -137,6 +138,9 @@ var s945Ledger = []s945LedgerRow{
 	{"backend/internal/scheduledtask/executors/webhook.go", "Write", 1},
 	{"backend/internal/scheduledtask/store.go", "Write", 1},
 	{"backend/internal/server/server.go", "SetWriteDeadline", 1},
+	{"backend/internal/auth/resource.go", "Write", 1},
+	{"backend/internal/server/resource_middleware.go", "Write", 2},
+	{"backend/internal/server/resource_middleware.go", "resourceCurrent", 2},
 	{"backend/internal/server/server_assistant.go", "Close", 3},
 	{"backend/internal/server/server_audit_export.go", "Write", 2},
 	{"backend/internal/server/server_llmbff.go", "SetWriteDeadline", 1},
@@ -163,9 +167,12 @@ var s945Ledger = []s945LedgerRow{
 var s945MethodReasons = map[string]string{
 	"Close": "关闭句柄/连接/文件。失败之后**没有可执行的后续动作**（句柄已经不可用），" +
 		"且不影响任何持久化状态 ⇒ 登记不修。",
-	"Write": "写出。⚠ §946 之后仓里**剩下**三类：① CSV 编码器（`cw.Write`，审计导出）② 哈希（`h.Write`）" +
-		"③ HMAC（`sig.Write`）。三类**都不是持久化** ⇒ 登记不修。" +
-		"⚠⚠ 第四类「HTTP 响应体（`w.Write`）」**已在 §946 修掉**（写失败必须留痕）⇒ 不再登记在这里。",
+	"Write": "写出。⚠ §946 之后仓里**剩下**四类：① CSV 编码器（`cw.Write`，审计导出）② 哈希（`h.Write`）" +
+		"③ HMAC（`sig.Write` / `mac.Write`，签名摘要喂入）④ 冲突兜底响应体（`w.ResponseWriter.Write`，" +
+		"原响应已被判废 409，写出失败无从补救）。都**不是持久化** ⇒ 登记不修。" +
+		"⚠⚠ 「正常的 HTTP 响应体写出」**已在 §946 修掉**（写失败必须留痕）⇒ 不再登记在这里。",
+	"resourceCurrent": "授权探针。返回 (code, role)，判定只消费 code；role 在这条分支里" +
+		"没有下游（真正的角色解析在另一处拿）⇒ 丢弃不改变行为。",
 	"WriteString": "往本地临时文件写一行（PID）。同一个文件后面还有 `f.Close()`，" +
 		"真写坏了会在关闭/后续读取时暴露 ⇒ 登记不修。",
 	"WriteField": "multipart 表单字段写出（stt 转发到上游）。底层 writer 已坏时后续字段也写不出去，" +
@@ -583,10 +590,14 @@ func TestS945LedgerMatchesSource(t *testing.T) {
 	//	业务查询继承一把「没人知道谁持有的」锁 ⇒ 同 schema 的别的实例再也拿不到锁）。
 	//	销毁走 `raw := conn.Hijack(); _ = raw.Close(ctx)` ⇒ 多一处被丢弃的 Close
 	//	⇒ 与 internal/email/pipeline_lock.go 的同类做法同族 ⇒ 台账登记 +1。
-	if got, want := len(res.Discards), 92; got != want {
+	// ⚠ 92 → 98（资源委托 2026-10-30）：resource_middleware 的两处 `_, _ = w.ResponseWriter.Write`
+	//	是 409 冲突兜底响应（原响应已被判废，写出失败无从补救）；auth/resource.go 的一处是
+	//	审计上下文写出（m 是内存 buffer，错误随后随 marshal 一并暴露）；
+	//	两处 `code, _ := resourceCurrent` 丢的是 role（授权判定只看 code）。
+	if got, want := len(res.Discards), 98; got != want {
 		t.Errorf("被丢弃的调用总处数 = %d（台账登记的是 %d 处）⇒ 数量变了必须重新定性", got, want)
 	}
-	if got, want := len(s945Ledger), 40; got != want {
+	if got, want := len(s945Ledger), 44; got != want {
 		t.Errorf("台账行数 = %d（期望 %d）⇒ 台账行数变了必须重新定性", got, want)
 	}
 }

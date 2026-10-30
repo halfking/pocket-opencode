@@ -81,7 +81,7 @@ import (
 //	它把 helper 里的跳过点**整类漏掉** ⇒ 基线偏小 ⇒ 棘轮形同虚设：
 //	在 helper 里加跳过点，门**不会红**。
 //
-//	⇒ 本表按新口径重算：全仓 **276** 个跳过点 / 30 个包。
+//	⇒ 本表按新口径重算：全仓 **277** 个跳过点 / 30 个包。（2026-10-30：+1 —— 资源委托的 PG 夹具 authorityDelegationPG）
 var SKIP_POINT_BASELINE = map[string]int{
 	"./internal/adapter/disk":            2,
 	"./internal/agent":                   3,
@@ -108,7 +108,7 @@ var SKIP_POINT_BASELINE = map[string]int{
 	"./internal/rss":                     1,
 	"./internal/scheduledtask":           5,
 	"./internal/scheduledtask/executors": 2,
-	"./internal/server":                  57,
+	"./internal/server":                  58,
 	"./internal/stt":                     15,
 	"./internal/task":                    5,
 	"./internal/vault":                   1,
@@ -116,7 +116,7 @@ var SKIP_POINT_BASELINE = map[string]int{
 }
 
 // censusFloor 是量具自证用的下限：抽取器若坏掉，读数会掉到接近 0。
-// 取当前基线的约一半（276 → 130），既能抓住「突然扫不到」也能抓住大规模丢失。
+// 取当前基线的约一半（277 → 130），既能抓住「突然扫不到」也能抓住大规模丢失。
 const censusFloor = 130
 
 // packagesWithDetailedLedger 记「哪些包有逐条台账」，值是台账文件名。

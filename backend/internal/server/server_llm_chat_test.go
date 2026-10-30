@@ -273,6 +273,11 @@ var lengthLimitRegistry = []struct {
 	{"migration/service.go", "len(last) > 200", "O", ""},
 	{"migration/service.go", "len(text) > 500", "O", "从 **adapter 消息派生**的状态摘要（**截断** 500 字节，不是拒绝）"},
 	{"orchestrator/acc_dispatcher.go", "len(prompt) > 64", "O", ""},
+	{"rss/item_states.go", "len(items) > 100", "A", "客户端提交的**状态操作批条数**（计数）：1~100 条；400「rss: 1 to 100 status operations required」。**可达性：不可达**（前端 rss-item-state.ts 预检 ≤100 且按 100 分批）"},
+	{"rss/item_states.go", "len(x.ExtID) > 512", "A", "客户端提交的**条目外部 ID**：512 字节；整批 400（PortableItemState.validate）。**可达性：不可达**（ext_id 由前端从本地库 `pocketd-item:` 前缀键派生，键长受本地 schema 约束）"},
+	{"rss/item_states.go", "len(x.OpID) > 200", "A", "客户端提交的**操作 ID**：200 字节；整批 400（PortableItemState.validate）。**可达性：不可达**（op_id 由本地 outbox 的 newOperationId 生成，固定短格式）"},
+	{"rss/item_states.go", "len(x.Title) > 4096", "A", "客户端提交的**条目标题**：4096 字节；整批 400（PortableItemState.validate）。**可达性：不可达**（标题来自本地库的服务端镜像，入库时已受同款上界）"},
+	{"rss/store_entities.go", "len(ids) > 100", "A", "客户端提交的**实体批量查询 ID 数**（计数）：1~100；400（store_entities 批量入口）。**可达性：不可达**（前端按 100 分批，见 rss-item-state.ts:68）"},
 	{"rss/sharecard.go", "len(lines) > 4", "O", ""},
 	{"rss/sharecard.go", "len(summaryLines) > 6", "O", ""},
 	{"server/flashcards_handler.go", "len([]rune(name)) > 80", "A", "客户端提交的**卡片名**；`[]rune` ⇒ **码元**闸（80 码元，不是 80 字节）；400「name too long (max 80)」。**可达性：可达·可区分**（⚠ 但**错误信息没写单位**：80 码元 ≠ 80 字节）⇒ 用户可改短重试 ⇒ 只登记不修"},
@@ -281,6 +286,8 @@ var lengthLimitRegistry = []struct {
 	{"server/flashcards_handler.go", "len(parts) >= 3", "O", ""},
 	{"server/llm_gateway_admin_client.go", "len(trimmed) > 200", "O", "**网关错误体**截断（服务端派生，不是客户端提交的字段）"},
 	{"server/llm_gateway_nodes_proxy.go", "len(s) > 64", "O", ""},
+	{"server/server_rss.go", "len(body.IDs) > 100", "A", "客户端提交的**条目状态同步 ID 数**（计数）：1~100；400（/api/rss/item-states）。**可达性：不可达**（同上：前端预检 + 分批）"},
+	{"server/server_rss.go", "len(opt.IDs) > 100", "A", "客户端提交的**实体批量查询 ID 数**（计数）：≤100；400（/api/rss/entities 批量入口）。**可达性：不可达**（同上：前端按 100 分批）"},
 	{"server/mobile_api.go", "len(tokenString) > 7", "O", ""},
 	{"server/mobile_idempotency.go", "len(c.entries) > 4096", "O", ""},
 	{"server/mobile_idempotency.go", "len(c.entries) > 4096", "O", ""},
@@ -332,7 +339,14 @@ var lengthLimitRegistry = []struct {
 var lengthLimitRegistryAKeys = []lengthLimitGateKey{
 	{"auth/resource.go", "len(in) > 3"},
 	{"auth/email_codes.go", "len(s) > 254"},
+	{"rss/item_states.go", "len(items) > 100"},
+	{"rss/item_states.go", "len(x.ExtID) > 512"},
+	{"rss/item_states.go", "len(x.OpID) > 200"},
+	{"rss/item_states.go", "len(x.Title) > 4096"},
+	{"rss/store_entities.go", "len(ids) > 100"},
 	{"server/flashcards_handler.go", "len([]rune(name)) > 80"},
+	{"server/server_rss.go", "len(body.IDs) > 100"},
+	{"server/server_rss.go", "len(opt.IDs) > 100"},
 	{"server/server_assistant.go", "len(audioData) > 25 << 20"},
 	{"server/server_assistant.go", "len(body.Messages) > 50"},
 	{"server/server_assistant.go", "len(body.Subject) > 500"},
@@ -539,8 +553,8 @@ func TestLengthLimitRegistryCoversEveryLengthGate(t *testing.T) {
 			t.Errorf("lengthLimitRegistryAKeys 里的 %s %q 在清单里不是 A 类 ⇒ 两份清单不一致", k.file, k.expr)
 		}
 	}
-	if len(aSet) != 14 {
-		t.Errorf("A 类（客户端可提交字段上的限制）实际 %d 条，期望 14 条 ⇒ "+
+	if len(aSet) != 21 {
+		t.Errorf("A 类（客户端可提交字段上的限制）实际 %d 条，期望 21 条 ⇒ "+
 			"要么有人把 A 类改成了 O 类，要么新增了一处客户端可提交的限制没分类", len(aSet))
 	}
 

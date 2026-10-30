@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"github.com/halfking/pocket-opencode/backend/internal/auth"
+	"github.com/halfking/pocket-opencode/backend/internal/background"
 	"net/http"
 	"time"
 )
@@ -35,21 +36,22 @@ func (s *Server) tryResourceAuth(w http.ResponseWriter, r *http.Request, raw str
 	defer cancel()
 	// Long-running nonstreaming calls are cancelled on expiry/revocation. No
 	// streaming route belongs to the allowlist, and response writes are fenced.
-	go func(validationCtx context.Context) {
+	// §949：走 background.Go —— 裸 go 语句里的 panic 会终止整个进程。
+	background.Go("resource-auth/revalidate", func() {
 		ticker := time.NewTicker(time.Second)
 		defer ticker.Stop()
 		for {
 			select {
-			case <-validationCtx.Done():
+			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				if code, _ := s.resourceCurrent(validationCtx, claims, scope); code != 200 {
+				if code, _ := s.resourceCurrent(ctx, claims, scope); code != 200 {
 					cancel()
 					return
 				}
 			}
 		}
-	}(ctx)
+	})
 	ctx = context.WithValue(ctx, authClaimsContextKey{}, &authClaims{UserID: claims.Subject, TenantID: claims.TenantID, WorkspaceID: claims.WorkspaceID, Role: role})
 	r = r.Clone(ctx)
 	r.Header.Set("X-User-ID", claims.Subject)

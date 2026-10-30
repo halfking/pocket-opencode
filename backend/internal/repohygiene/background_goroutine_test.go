@@ -159,6 +159,7 @@ var s949Ledger = []s949LedgerRow{
 	{"opencode/session-idle-recheck", "backend/internal/opencode/manager.go"},
 	{"opencode/upstream-loop", "backend/internal/opencode/event_stream.go"},
 	{"plugin-ws/read-pump", "backend/internal/server/server_plugin_ws.go"},
+	{"resource-auth/revalidate", "backend/internal/server/resource_middleware.go"},
 	{"plugin-ws/write-pump", "backend/internal/server/server_plugin_ws.go"},
 	{"redclaw/health-loop", "backend/internal/redclaw/bridge.go"},
 	{"registry/auto-discovery", "backend/cmd/pocketd/main.go"},
@@ -438,7 +439,7 @@ func TestS949AbsoluteCounts(t *testing.T) {
 			"⇒ 期望的那 1 处是 internal/background 自己的兜底实现 ⇒⇒⇒ 其余任何新增的 `go` 都要改走 background.Go",
 			got, want)
 	}
-	if got, want := len(res.Calls), 79; got != want {
+	if got, want := len(res.Calls), 80; got != want {
 		t.Errorf("background.Go* 调用点总数 = %d（期望 %d）⇒ 数量变了必须重新定性", got, want)
 	}
 }
@@ -500,7 +501,7 @@ func TestS949LedgerMatchesSource(t *testing.T) {
 				"⇒ 要么任务被删了（删了要重新定性），要么台账过期了", name, file)
 		}
 	}
-	if got, want := len(s949Ledger), 79; got != want {
+	if got, want := len(s949Ledger), 80; got != want {
 		t.Errorf("台账行数 = %d（期望 %d）⇒ 台账行数变了必须重新定性", got, want)
 	}
 }

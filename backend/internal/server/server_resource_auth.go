@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/halfking/pocket-opencode/backend/internal/auth"
 	"github.com/halfking/pocket-opencode/backend/internal/identity"
+	"github.com/halfking/pocket-opencode/backend/internal/outbound"
 	"github.com/kaixuan/identity-go/token"
 )
 
@@ -114,10 +115,15 @@ func (s *Server) handleResourceAuthority(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, 200, map[string]any{"token": issued, "user_id": metadata.Subject, "tenant_id": metadata.TenantID, "workspace_id": metadata.WorkspaceID, "scopes": metadata.Scopes, "issued_at": metadata.IssuedAt.Unix(), "expires_at": metadata.ExpiresAt.Unix()})
 }
 
+// §950：客户端构造统一走 outbound.NewClient（Timeout 恒非零）。
+// Transport 是 DefaultTransport 的克隆并禁掉代理（会话权威是内网直连）；
+// 重定向一律不跟随（authority URL 已白名单校验，跟随重定向会绕过它）。
 var resourceSessionHTTP = func() *http.Client {
 	t := http.DefaultTransport.(*http.Transport).Clone()
 	t.Proxy = nil
-	return &http.Client{Transport: t, Timeout: 2 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	return outbound.NewClient(2*time.Second,
+		outbound.WithTransport(t),
+		outbound.WithCheckRedirect(func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }))
 }()
 
 func resourceSessionURL() (*url.URL, error) {
