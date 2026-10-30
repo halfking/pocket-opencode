@@ -52,5 +52,16 @@ jobs:
           cache: true
           cache-dependency-path: backend/go.sum
 
+      # make test-pg 会跑全部包（含 server），其中 meeting_sync_idempotency_test
+      # 以 frontend/ 为工作目录跑 node + require('./node_modules/typescript')。
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install frontend dependencies
+        run: npm ci --no-audit --no-fund
+        working-directory: frontend
+
       - name: Run PostgreSQL integration tests
         run: make test-pg
