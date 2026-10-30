@@ -17,9 +17,30 @@ Unknown historical rows are never assigned or uploaded. Known owner filters
 run in SQL before pagination, same-title lookups and vector top-K selection.
 
 The settings notice reports pending failures. Oversized content is retained
-without truncation; clock skew and rejected operations remain pending until
-the user corrects and saves the note. A fresh cloud-enable intent rekeys a
+without truncation. A clock-skew acknowledgement with a valid authoritative
+`client_updated_at` persists a resumable correction, then atomically replaces
+the current operation with a new ID and that time plus 1 ms. Its content and
+identity stay intact. A second clock rejection, missing server time, or an
+ordinary rejection requires an explicit edit. Owner, epoch and projection
+guards prevent an old acknowledgement from correcting a newer intention.
+A fresh cloud-enable intent rekeys a
 server `skipped_local` operation while retaining its original content/time.
+
+New module identities use `meeting:<id>`, `account:<id>`, `summary:<id>`,
+`rss-source:<id>` and `rss-item:<id>`; RSS item state uses its target item ID.
+Notes use `note:<id>` or `asset:<id>`. Existing managed identities are reused
+through edits and tombstones. Known legacy email mappings remain under their
+original identity; conflicting mappings require explicit resolution. No native
+history scan establishes ownership or silently rekeys an existing cloud row.
+
+Each owner/module queue admits at most 500 operations. The source transaction
+evicts the oldest non-retryable failures and increments a persistent
+`local_portal_outbox_retention.evicted_count`. Successful browser writes publish
+`openpocket:portal-outbox-retention` with owner, module and cumulative count.
+Pending, policy-local, reset/unknown-epoch and all clock-state operations are
+protected. If protection prevents admission, the complete save rolls back with
+an explicit queue-full error. Inherited protected queues over the bound are
+retained and may drain through sync; new writes cannot increase them.
 
 Scope limits:
 

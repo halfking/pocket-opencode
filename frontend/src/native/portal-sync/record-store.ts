@@ -4,6 +4,7 @@ import { currentRecordEpoch, observeRecordEpoch, recordEpochGuard } from './reco
 import { validateRecordItem, type RecordAdapter, type RecordItem } from './record-contract.ts'
 import { validEpoch } from './epochs.ts'
 import { acknowledgeClock, resumeClockCorrections } from './clock-retry.ts'
+import { outboxCapacityStatements, capacityFailure, publishOutboxRetention } from './outbox-capacity.ts'
 
 export interface RecordProjection {
   source_id: string
@@ -81,12 +82,15 @@ export class PortalRecordStore {
         ...prepared.map((record) => record.assertion),
         ...statements,
         ...prepared.flatMap((record) => record.statements),
+        ...(prepared.length ? outboxCapacityStatements(this.db, this.adapter.module) : []),
       ])
     } catch (cause) {
+      capacityFailure(cause)
       if (String(cause).includes('portal_record_write_conflict'))
         throw Object.assign(new Error(conflictMessage), { cause })
       throw cause
     }
+    if (prepared.length) await publishOutboxRetention(this.db, this.adapter.module)
     if (prepared.length && typeof window !== 'undefined')
       window.dispatchEvent(new Event(`openpocket:portal-${this.adapter.module}-outbox-changed`))
   }

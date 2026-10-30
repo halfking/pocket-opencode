@@ -3,6 +3,7 @@ import { epochTables, currentNotesEpoch, epochGuard, observeNotesEpoch } from '.
 import { validEpoch } from './epochs.ts'
 import { recordTables } from './record-tables.ts'
 import { acknowledgeClock, resumeClockCorrections } from './clock-retry.ts'
+import { capacityTables, outboxCapacityStatements, capacityFailure, publishOutboxRetention } from './outbox-capacity.ts'
 
 export interface NoteSnapshot {
   source: 'note' | 'asset'
@@ -45,6 +46,7 @@ const tables = [
     PRIMARY KEY(owner_user_id,owner_workspace_id,module))`,
   ...epochTables,
   ...recordTables,
+  ...capacityTables,
 ]
 const schemaReady = new WeakMap<object, Promise<void>>()
 
@@ -133,11 +135,14 @@ export class PortalNotesStore {
       { statement: `INSERT INTO local_portal_outbox (owner_user_id,owner_workspace_id,op_id,ext_id,item_json,reset_epoch,last_error)
           VALUES (?,?,?,?,?,?,CASE WHEN ? IS NULL THEN 'epoch_unknown' WHEN ${admitted.clause} THEN ? ELSE 'reset_epoch_mismatch' END)`,
         values: [...this.scope, item.op_id, item.ext_id, json, epoch, epoch, ...admitted.values, error] },
+      ...outboxCapacityStatements(this.db, 'notes'),
     ]) } catch (cause) {
+      capacityFailure(cause)
       if (String(cause).includes('portal_notes_write_conflict')) throw Object.assign(new Error(conflictMessage), { cause })
       throw cause
     }
     if (error) console.warn('[portal-sync] 本地笔记已保存，同步受阻：', error)
+    await publishOutboxRetention(this.db, 'notes')
     if (typeof window !== 'undefined') window.dispatchEvent(new Event('openpocket:portal-notes-outbox-changed'))
     return {ext_id:item.ext_id,source:snapshot.source,source_id:snapshot.id,item_json:json,version_ms:snapshot.modifiedAt,version_key:versionKey(timestamp),op_id:item.op_id,reset_epoch:epoch}
   }
