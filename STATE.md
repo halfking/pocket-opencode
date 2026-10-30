@@ -18,13 +18,13 @@
 ```
 project: pocket-opencode
 branch: main
-last commit: 347f975
+last commit: 612d4437（2026-10-31）
 commits this session: 59
 docs: 37 + 6 handoff
-scripts: 95（本轮删除 14 个一次性脚本，净增 31 个审计/探针工具）
-build:    vue-tsc 全清 / gates 全绿（typecheck + build:gate + 36 native + vm-gaps 0）
-tests:    118 / 118 native green（test:native:all）；gates 内 test:native 36/36
-ViewModel 命中: 0 / 120 (hard gate 阈值 0)
+scripts: 453（2026-10-31 实测；本轮删除 14 个一次性脚本，净增 31 个审计/探针工具）
+build:    vue-tsc 全清 / gates 未全绿（2026-10-31 实跑；第 17 项 check:edge-route-reach 失败：/internal/* 三条路由未进边缘反代前缀。编号口径：gates.json 全量 51 项）
+tests:    426 / 426 native green（test:native:all）；gates 内 test:native 66/66（2026-10-31 实测）
+ViewModel 缺口: 22 / 136 视图（棘轮门禁：新增缺口为 0）（2026-10-31 实测）
 APK:      29.0 MB app-debug.apk (v2 signature OK + .so 4 ABI + edge-to-edge background)
 emulator: ✅ **WHPX 加速启动 2 min boot_completed=1 + topResumedActivity + WebView Bind OK**（commit #31 / 2026-09-20 12:30）
 UI 视觉技法 3 件套: ✅ AnimatedNumber + ProgressRing + StaggerList（#34）+ RecordingPill / SettingsMenuDrawer 已接入（#35 / #36）

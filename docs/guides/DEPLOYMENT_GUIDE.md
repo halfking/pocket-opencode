@@ -45,9 +45,9 @@ curl http://localhost:8088/api/tasks -H "Authorization: Bearer $TOKEN"
 
 ### 软件要求
 - OS: Ubuntu 20.04+ / Debian 11+
-- Go: 1.21+
+- Go: 1.27+
 - PostgreSQL: 14+
-- Node.js: 18+ (仅构建时需要)
+- Node.js: 22+ (仅构建时需要)
 
 ## 部署步骤
 
@@ -64,8 +64,8 @@ sudo apt update && sudo apt upgrade -y
 sudo apt install -y git postgresql postgresql-contrib golang-go nodejs npm
 
 # 验证安装
-go version      # 应显示 >= 1.21
-node --version  # 应显示 >= 18
+go version      # 应显示 >= 1.27
+node --version  # 应显示 >= 22
 psql --version  # 应显示 >= 14
 ```
 
@@ -84,26 +84,17 @@ GRANT ALL PRIVILEGES ON DATABASE pocket_db TO pocket_user;
 \q
 EOF
 
-# 创建 tasks 表
-sudo -u postgres psql -U pocket_user -d pocket_db << 'EOF'
-CREATE TABLE IF NOT EXISTS tasks (
-  id VARCHAR(255) PRIMARY KEY,
-  title VARCHAR(500) NOT NULL,
-  description TEXT,
-  status VARCHAR(50) DEFAULT 'active',
-  priority VARCHAR(50) DEFAULT 'normal',
-  workstream_id VARCHAR(255),
-  source VARCHAR(50) DEFAULT 'local',
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
+# tasks 表不用手工建：后端启动时由 backend/internal/task/store.go 的 migrate()
+# 自动 CREATE TABLE + ALTER 迁移。权威 DDL 就在那个文件里。
+# ⚠️ 2026-10-31：不要手工 CREATE TABLE。实际 schema 的 INSERT 列有 28 列
+#    （workspace_id / pending_approvals / session_count / accepted_at / type /
+#    owner_id / due_at / remind_at / tags / visibility / acc_* 等），
+#    且 created_at / updated_at 是 BIGINT（Unix 秒，代码写入 time.Now().Unix()）。
+#    手工建出的 VARCHAR + TIMESTAMP 版本会被 migrate() 的
+#    CREATE TABLE IF NOT EXISTS 跳过（它只 ADD COLUMN，不改类型），
+#    之后建任务会直接报类型不匹配。
 
-CREATE INDEX idx_tasks_status ON tasks(status);
-CREATE INDEX idx_tasks_source ON tasks(source);
-CREATE INDEX idx_tasks_workstream ON tasks(workstream_id);
-EOF
-
-# 验证表创建
+# 验证表创建（后端启动过一次之后）
 sudo -u postgres psql -U pocket_user -d pocket_db -c "\dt"
 ```
 
@@ -135,19 +126,18 @@ git log --oneline -1
 cp .env.example .env
 
 # 生成 JWT_SECRET
-JWT_SECRET=$(openssl rand -base64 32)
+POCKET_JWT_SECRET=$(openssl rand -base64 32)
 
 # 编辑配置
 nano .env
 
 # 设置以下变量:
-JWT_SECRET=$JWT_SECRET  # 上面生成的值
-DB_HOST=localhost
-DB_PORT=5432
-DB_NAME=pocket_db
-DB_USER=pocket_user
-DB_PASSWORD=your_secure_password_here
-DB_SSLMODE=disable
+# ⚠️ 2026-10-31：后端只读 POCKET_* 前缀的键（backend/internal/config/config.go）。
+#    旧文档里的 JWT_SECRET / DB_HOST / DB_PORT / DB_NAME / DB_USER / DB_PASSWORD /
+#    DB_SSLMODE 全仓无人读取，写进 .env 也不生效；生产启动时缺 POCKET_JWT_SECRET /
+#    POCKET_POSTGRES_DSN 会直接报错退出。
+POCKET_JWT_SECRET=$POCKET_JWT_SECRET  # 上面生成的值
+POCKET_POSTGRES_DSN=postgres://pocket_user:your_secure_password_here@localhost:5432/pocket_db?sslmode=disable
 
 # 验证配置
 cat .env | grep -v PASSWORD
@@ -166,8 +156,8 @@ go mod download
 go build -o pocketd ./cmd/pocketd
 
 # 验证构建
-./pocketd --help
 ls -lh pocketd
+# （pocketd 不解析命令行 flag：没有 --version / --help，直接跑会起服务并占用 8088）
 ```
 
 ### 6. 构建 Frontend (可选)
@@ -400,7 +390,7 @@ sudo journalctl -u pocketd -n 100
 
 ```bash
 # 1. 检查 JWT_SECRET
-cat /opt/opencode-pocket/.env | grep JWT_SECRET
+cat /opt/opencode-pocket/.env | grep POCKET_JWT_SECRET
 
 # 2. 重新获取 token
 curl -X POST http://localhost:8088/api/auth/login \

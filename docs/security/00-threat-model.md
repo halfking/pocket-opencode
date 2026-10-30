@@ -13,6 +13,17 @@
 > **Trust domains**: see `docs/新架构v1/01-architecture/安全模型.md` for
 > the canonical trust-domain diagram.
 >
+> ⚠️ **2026-10-31 复核 —— 下表 Evidence 列的证据指针大多尚未落地**：本仓
+> `backend/security/` 实际只有 `cross_tenant_test.go` 一个文件（13 个用例，
+> `go test -tags=security` 全绿）。下表引用的另外 8 个文件
+> （`token_test.go` / `idempotency_test.go` / `path_traversal_test.go` /
+> `ssrf_test.go` / `sse_ws_reliability_test.go` / `audit_outbox_test.go` /
+> `reconcile_test.go` / `failover_test.go`）从未入库
+> （`git log --all --diff-filter=A -- backend/security/` 无记录），其中被引用的
+> 测试函数全仓也不存在 —— 83 条证据指针里只有 13 条对得上现有用例。
+> ⇒ **Evidence 列记录的是「应当由哪条测试覆盖」，不是「已有测试在此」**；
+> 威胁与缓解描述本身仍按设计意图成立。
+>
 > **Date / owner**: 2026-08-23 / ZAG security working group.
 
 ---
