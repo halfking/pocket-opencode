@@ -61,16 +61,16 @@ export async function seedEmails(page: Page, emails: SeedEmailSpec[]): Promise<n
   return page.evaluate(
     async (payload: { accountId: string; rows: SeedEmailSpec[] }) => {
       // ⚠ 2026-10-30：8b34e1c3 起 `writeAccountIfNewer` 等生产写路径都会先过
-      //   assertCloudModule('email')；全新浏览器没有策略缓存 ⇒ readCachedModuleMode
-      //   恒 'local' ⇒ 播种直接被 409 拦下（e2e-web 连续 20+ 次全红的根因之一）。
-      //   与浏览器单元夹具同款：装激活宿主 + applyPolicy 成 cloud。
+      //   assertCloudModule('email')；默认策略是全 local ⇒ 播种直接被 409 拦下
+      //   （e2e-web 连续 20+ 次全红的根因）。
+      //   ⚠ 必须**复用 App 已装好的**激活宿主与 scope 解析器（sync-policy-runtime
+      //   按 [user, workspace] 定 scope）：自己另装一个宿主会把真实宿主顶掉，
+      //   且 scope 对不上 ⇒ contextCurrent 恒 false ⇒ 读了还是 'local'。
+      //   unlockLobster 之后 activationStatus='ready'，宿主 captureContext 合法。
       const policy = (await import(/* @vite-ignore */ '/src/stores/syncPolicyStore.ts')) as any
-      policy.installSyncPolicyActivationHost({
-        captureContext: () => ({ scope: '', isCurrent: () => true }),
-        async activate(modes: unknown, publish: (m: unknown) => undefined) { publish(modes) },
-      })
-      await policy.useSyncPolicyStore().applyPolicy(
+      const ok = await policy.useSyncPolicyStore().applyPolicy(
         { system_default: 'cloud', allow_override: true, modules: { email: 'cloud' } }, Date.now())
+      if (!ok) throw new Error('e2e seed: cloud policy activation failed')
       const store = (await import(/* @vite-ignore */ '/src/features/email/emails-store.ts')) as {
         writeAccountIfNewer: (a: unknown) => Promise<boolean>
         upsertEmail: (e: unknown) => Promise<boolean>
