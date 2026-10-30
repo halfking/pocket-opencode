@@ -1,6 +1,9 @@
 import {createServer} from 'vite'
 import vue from '@vitejs/plugin-vue'
 import {fileURLToPath} from 'node:url'
+import {mkdtemp} from 'node:fs/promises'
+import {tmpdir} from 'node:os'
+import {join} from 'node:path'
 
 export async function createRssStateBrowserFixture(){
  const state=`
@@ -38,7 +41,8 @@ export async function createRssStateBrowserFixture(){
  window.rssStateFixture={auth,localDB,requests,snapshot,pauseHubEmail,releaseHubEmail};
  `
  const root=fileURLToPath(new URL('../../../../',import.meta.url))
- const server=await createServer({root,configFile:false,optimizeDeps:{noDiscovery:true,include:['sql.js','vue','vue-i18n','vue-router','dompurify','marked']},plugins:[vue(),{name:'rss-state-fixture',enforce:'pre',resolveId(source,importer){
+ const cacheDir=await mkdtemp(join(tmpdir(),'rss-state-vite-'))
+ const server=await createServer({root,configFile:false,cacheDir,optimizeDeps:{noDiscovery:true,include:['sql.js','vue','vue-i18n','vue-router','dompurify','marked']},plugins:[vue(),{name:'rss-state-fixture',enforce:'pre',resolveId(source,importer){
   if(source==='./http'&&(importer?.endsWith('/api/rss.ts')||importer?.endsWith('/api/notifications.ts')))return'\0rss-state';
   if(source==='virtual:rss-state'||/\/native\/local-db(?:\.ts)?$/.test(source)||/\/stores\/auth(?:\.ts)?$/.test(source)||/\/api\/http(?:\.ts)?$/.test(source))return'\0rss-state';
   if(source==='virtual:rss-state-entry')return'\0rss-state-entry';if(source==='./rss-sync-runtime')return'\0rss-state-runtime';

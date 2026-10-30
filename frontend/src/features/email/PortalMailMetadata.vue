@@ -31,13 +31,15 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { useConfirm } from '../../composables/useConfirm'
 import { useI18n } from 'vue-i18n'
 import { useAuthStore } from '../../stores/auth'
 import { captureEmailOwnership } from './email-ownership'
 import { deletePortalMailMetadata, editPortalMailMetadata, listPortalMailMetadata } from './portal-mail-store'
 import { portalEmailRuntime as runtime, syncPortalMailNow } from './portal-mail-runtime'
 
-const { t } = useI18n(), auth = useAuthStore()
+const { t } = useI18n()
+const { confirm } = useConfirm(), auth = useAuthStore()
 type Metadata = Awaited<ReturnType<typeof listPortalMailMetadata>>[number]
 const rows = ref<Metadata[]>([]), editing = ref<Metadata | null>(null), busy = ref(false), error = ref(''), visible = ref(20)
 const draft = reactive({ title: '', payload: {} as Record<string, string> })
@@ -81,10 +83,11 @@ async function save() {
 }
 async function remove(row: Metadata) {
   if (busy.value) return
+  // §854/BUG-AQ：裸 window.confirm 在 Android WebView 里同步阻塞渲染进程，改走全局 ConfirmDialog。
+  if (!await confirm({ message: t('email.portalMetadataDelete'), danger: true })) return
   const owner = ownerGeneration
   try {
     const { db } = captureEmailOwnership()
-    if (!window.confirm(t('email.portalMetadataDelete'))) return
     busy.value = true
     await deletePortalMailMetadata(row.id, db)
     db.assertCurrent()

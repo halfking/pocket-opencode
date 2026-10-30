@@ -1,6 +1,9 @@
 import {createServer} from 'vite'
 import vue from '@vitejs/plugin-vue'
 import {fileURLToPath} from 'node:url'
+import {mkdtemp} from 'node:fs/promises'
+import {tmpdir} from 'node:os'
+import {join} from 'node:path'
 
 /** Production panel, adapter, record SQL and leases; only account/platform/network boundaries are isolated. */
 export async function createRssPortalBrowserFixture(){
@@ -32,7 +35,8 @@ export async function createRssPortalBrowserFixture(){
     window.rssFixture={auth,localDB,remote,pauseNextSourceRead,releaseSourceRead};
   `
   const root=fileURLToPath(new URL('../../../../',import.meta.url))
-  const server=await createServer({root,configFile:false,optimizeDeps:{noDiscovery:true,include:['sql.js','vue','pinia','vue-i18n']},plugins:[vue(),{
+  const cacheDir=await mkdtemp(join(tmpdir(),'rss-portal-vite-'))
+  const server=await createServer({root,configFile:false,cacheDir,optimizeDeps:{noDiscovery:true,include:['sql.js','vue','pinia','vue-i18n']},plugins:[vue(),{
     name:'rss-portable-browser',enforce:'pre',resolveId(source){
       if(source==='virtual:rss-db'||/\/native\/local-db(?:\.ts)?$/.test(source)||/\/stores\/auth(?:\.ts)?$/.test(source)||source==='./rss-sync-runtime')return '\0rss-db'
       if(source==='virtual:rss-entry')return '\0rss-entry'

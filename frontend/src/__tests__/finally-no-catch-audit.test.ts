@@ -234,8 +234,10 @@ describe('§857 · D19 新建会议失败必须有出口（§838 同族漏网）
     const store = read('features/meetings/meetings-store.ts')
     const body = fnBody(store, 'createMeeting')
     assert.ok(body, '找不到 createMeeting')
-    // ⚠ 2026-10-29（会议归属切片）：同上，写库句柄换成了绑定租约的 `db.run(...)`。
-    assert.match(body, /(?:\bdb|\blocalDB)\.run\(/, 'createMeeting 不再写库 ⇒ 前提失效')
+    // ⚠ 2026-10-30（portal-store 收口）：写库句柄进一步收进
+    //   meetingPortalStore(db).commit(...)（租约绑定的语句批），
+    //   判据随语义演化：只要还走这条 commit 写库，前提就成立。
+    assert.match(body, /meetingPortalStore\(db\)\.commit\(/, 'createMeeting 不再写库 ⇒ 前提失效')
   })
 })
 

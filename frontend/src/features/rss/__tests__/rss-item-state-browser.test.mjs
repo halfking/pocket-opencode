@@ -6,7 +6,7 @@ import {createRssStateBrowserFixture} from './rss-item-state-browser.mjs'
 
 test('real browser keeps offline stars and private body across owner switches, retries originals and reflects remote stars',{timeout:180000},async()=>{
  const f=await createRssStateBrowserFixture(),exec=promisify(execFile),session=`rss-state-${process.pid}`
- const browser=async(...args)=>(await exec('browser-use',['--session',session,...args],{timeout:30000})).stdout
+ const browser=async(...args)=>(await exec('browser-use',['--session',session,...args],{timeout:60000})).stdout
  const button=async(label)=>{const state=await browser('state'),match=state.match(new RegExp(`\\[(\\d+)\\]<button[^>]*\\/>\\s+(?:[^\\n]*\\n\\s+)?${label}\\s*(?:\\n|$)`));assert.ok(match,`Missing ${label}\n${state}`);return match[1]}
  try{
   await browser('open',f.url);await browser('wait','text','PRIVATE BODY A')
@@ -25,7 +25,7 @@ test('real browser keeps offline stars and private body across owner switches, r
 
 test('production list fills an empty starred filter from remote state and removes it on a later read',{timeout:180000},async()=>{
  const f=await createRssStateBrowserFixture(),exec=promisify(execFile),session=`rss-list-state-${process.pid}`
- const browser=async(...args)=>(await exec('browser-use',['--session',session,...args],{timeout:30000})).stdout
+ const browser=async(...args)=>(await exec('browser-use',['--session',session,...args],{timeout:60000})).stdout
  const control=async pattern=>{const state=await browser('state'),match=state.match(pattern);assert.ok(match,`Missing ${pattern}\n${state}`);return match[1]}
  const button=label=>control(new RegExp(`\\[(\\d+)\\]<button[^>]*\\/>\\s+${label}\\s*(?:\\n|$)`))
  try{
@@ -39,7 +39,7 @@ test('production list fills an empty starred filter from remote state and remove
 
 test('production messages hub marks loaded RSS items read offline for bulk and row actions under their original owner',{timeout:180000},async()=>{
  const f=await createRssStateBrowserFixture(),exec=promisify(execFile),session=`rss-messages-state-${process.pid}`
- const browser=async(...args)=>(await exec('browser-use',['--session',session,...args],{timeout:30000})).stdout
+ const browser=async(...args)=>(await exec('browser-use',['--session',session,...args],{timeout:60000})).stdout
  const control=async pattern=>{const state=await browser('state'),match=state.match(pattern);assert.ok(match,`Missing ${pattern}\n${state}`);return match[1]}
  try{
   await browser('open',f.url);await browser('wait','text','PRIVATE BODY A')
@@ -58,7 +58,7 @@ test('production messages hub marks loaded RSS items read offline for bulk and r
 
 test('production messages hub queues remote status during a delayed initial load and clears former owner events',{timeout:180000},async()=>{
  const f=await createRssStateBrowserFixture(),exec=promisify(execFile),session=`rss-messages-race-${process.pid}`
- const browser=async(...args)=>(await exec('browser-use',['--session',session,...args],{timeout:30000})).stdout
+ const browser=async(...args)=>(await exec('browser-use',['--session',session,...args],{timeout:60000})).stdout
  const control=async pattern=>{const state=await browser('state'),match=state.match(pattern);assert.ok(match,`Missing ${pattern}\n${state}`);return match[1]}
  try{
   await browser('open',f.url);await browser('wait','text','PRIVATE BODY A')

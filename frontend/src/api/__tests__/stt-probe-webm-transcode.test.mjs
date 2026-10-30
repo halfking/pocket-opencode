@@ -52,6 +52,44 @@ const requireFrom = createRequire(path.resolve(API_DIR, '..', '..', 'package.jso
 const ESBUILD = requireFrom.resolve('esbuild')
 
 /** 现打一个 bundle 并 import（绕过无扩展名 import 的 ESM 解析限制）。 */
+/** 与 _wire-helpers.ALWAYS_DIRECT_AUTH_STUB 同源语义（打包期替换 stores/auth）。 */
+const AUTH_DIRECT_STUB = `
+import { defineStore } from 'pinia'
+const sessions = new WeakMap()
+export function sessionState(auth) {
+  let state = sessions.get(auth)
+  if (!state) { state = { generation: {}, applyingRefresh: false, disposed: false }; sessions.set(auth, state) }
+  return state
+}
+export function captureAuthAttempt(auth) { return { owner: auth, generation: sessionState(auth).generation } }
+export function assertAuthAttempt(auth, session) {
+  const state = sessionState(auth)
+  if (session.owner === auth && !state.disposed && state.generation === session.generation) return
+  throw Object.assign(new Error('Sign-in attempt was superseded.'), { name: 'AbortError' })
+}
+export function captureAuthSession(auth) {
+  if (auth.activationStatus !== 'ready') throw Object.assign(new Error('Session activation is not ready.'), { name: 'AbortError' })
+  return captureAuthAttempt(auth)
+}
+export function isCurrentAuthSession(auth, session) {
+  const state = sessionState(auth)
+  return auth.activationStatus === 'ready' && session.owner === auth && !state.disposed && state.generation === session.generation
+}
+export function assertAuthSession(auth, session) {
+  if (isCurrentAuthSession(auth, session)) return
+  const error = new Error('The session changed before the request completed.')
+  error.name = 'AbortError'
+  throw error
+}
+export const useAuthStore = defineStore('auth', {
+  state: () => ({ token: '[REDACTED:secret]', user: '[REDACTED:account]', userId: 'stub-user', workspaceId: 'stub-workspace', authMethod: 'password', activationStatus: 'ready' }),
+  actions: {
+    maybeRefresh() { return Promise.resolve() },
+    refreshSession() { return Promise.resolve() },
+  },
+})
+`
+
 async function loadSttSettings() {
   // 必须在 import 之前激活：api 链上 stores/connectivity 是模块级 store。
   // ★ 必须用 ESM 的 import()，不能用 requireFrom('pinia')：require 走 CJS、
@@ -60,8 +98,18 @@ async function loadSttSettings() {
   const { createPinia, setActivePinia } = await import('pinia')
   setActivePinia(createPinia())
   fs.mkdirSync(path.dirname(TMP_BUNDLE), { recursive: true })
+  // ⚠ 2026-10-30：aa8a6dfb 起 http() 对非直接权威的请求走资源凭据交换，
+  //   stt 探针路径 scope='unavailable' ⇒ 裸 store 一进来就吃 PocketResourceUnavailableError。
+  //   本判据守的是「webm→WAV 转码与请求体形状」，不是鉴权面 ⇒ 桩成直接权威。
+  const authStub = path.join(path.dirname(TMP_BUNDLE), 'stt-auth-direct-stub.mjs')
+  fs.writeFileSync(authStub, AUTH_DIRECT_STUB, 'utf8')
   execFileSync(process.execPath, ['-e', `
     const esbuild = require(${JSON.stringify(ESBUILD)});
+    const authStub = ${JSON.stringify(authStub)};
+    const stubPlugin = {
+      name: 'stt-auth-stub',
+      setup(b) { b.onResolve({ filter: new RegExp('stores/auth' + '$') }, () => ({ path: authStub })) },
+    };
     esbuild.build({
       entryPoints: [${JSON.stringify(STT_SETTINGS)}],
       bundle: true, format: 'esm', platform: 'browser', write: false,
@@ -69,6 +117,7 @@ async function loadSttSettings() {
       // 测试里 setActivePinia() 激活的是另一个实例，
       // 症状是 import 阶段就 getActivePinia() 抛「no active Pinia」。
       external: ['pinia', 'vue'],
+      plugins: [stubPlugin],
       outfile: ${JSON.stringify(TMP_BUNDLE)}, logLevel: 'silent',
     }).then(r => require('fs').writeFileSync(${JSON.stringify(TMP_BUNDLE)}, r.outputFiles[0].contents))
       .catch(e => { console.error(e.message); process.exit(1) })

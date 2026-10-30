@@ -4,6 +4,10 @@ export { pickEmailDetailBody } from './email-body-pick'
 const PREFIX = 'pocket:email_body:v2:'
 const MAX_ENTRIES = 60
 const MAX_TOTAL_CHARS = 1_000_000
+// ⚠ §873/D43 诚实记账：§871 的注释曾断言「不再有「整体超配额」的悬崖」——
+//   那是错的：只限条数挡不住「几封超长正文」吃光 localStorage 额度。
+//   本文件的 while 循环同时钉住 MAX_ENTRIES 与 MAX_TOTAL_CHARS 两个维度，
+//   且淘汰真的 removeItem 正文（不只是截短索引），悬崖才真正闭合。
 
 /** Legacy keys have no proven owner and are deliberately neither read nor claimed. */
 export function captureEmailBodyContext() {

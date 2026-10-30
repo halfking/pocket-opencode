@@ -1,6 +1,9 @@
 import{createServer}from'vite'
 import vue from'@vitejs/plugin-vue'
 import{fileURLToPath}from'node:url'
+import{mkdtemp}from'node:fs/promises'
+import{tmpdir}from'node:os'
+import{join}from'node:path'
 
 export async function createNativeRssBrowserFixture(){
  const state=`
@@ -28,7 +31,7 @@ export async function createNativeRssBrowserFixture(){
  document.getElementById('pull').onclick=ingest;document.getElementById('alice').onclick=async()=>{activate('A');await epoch()};document.getElementById('bob').onclick=async()=>{activate('B');await epoch()};document.getElementById('pause').onclick=pauseDiscovery;document.getElementById('release').onclick=releaseDiscovery;
  window.nativeRssFixture={auth,requests,localDB,ingest};
  `
- const root=fileURLToPath(new URL('../../../../',import.meta.url));const server=await createServer({root,configFile:false,optimizeDeps:{noDiscovery:true,include:['sql.js','vue','pinia','vue-i18n']},plugins:[vue(),{name:'native-rss-fixture',enforce:'pre',resolveId(source,importer){
+ const root=fileURLToPath(new URL('../../../../',import.meta.url));const cacheDir=await mkdtemp(join(tmpdir(),'rss-native-vite-'));const server=await createServer({root,configFile:false,cacheDir,optimizeDeps:{noDiscovery:true,include:['sql.js','vue','pinia','vue-i18n']},plugins:[vue(),{name:'native-rss-fixture',enforce:'pre',resolveId(source,importer){
  if(source==='./http'&&importer?.endsWith('/api/rss.ts'))return'\0native-rss-state';
  if(source==='virtual:native-rss'||/\/native\/local-db(?:\.ts)?$/.test(source)||/\/stores\/auth(?:\.ts)?$/.test(source)||/\/api\/http(?:\.ts)?$/.test(source))return'\0native-rss-state';
  if(source==='virtual:native-entry')return'\0native-rss-entry';if(source==='./rss-sync-runtime')return'\0native-rss-runtime';if(/\/stores\/crypto-config(?:\.ts)?$/.test(source))return'\0native-rss-crypto';

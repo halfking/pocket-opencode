@@ -22,6 +22,10 @@ test('automatic related searches keep private query text local and preserve loca
     name: 'local-search-storage-boundaries', enforce: 'pre',
     resolveId(source, importer) {
       if (source.endsWith('/native/local-db') || source.endsWith('/native/local-db.ts')) return 'virtual:private-local-db'
+      // ⚠ 2026-10-30：f5c8b0cd 起 notes-search 经 portal-sync/storage 拿读取作用域，
+      //   该模块 import 真实 local-db（'../local-db' 不落在上面的 /native/local-db 桩里）
+      //   ⇒ 一进来就吃「LocalDB 未初始化」。这里整桩掉：作用域恒「未认领」，db 复用虚拟 localDB。
+      if (source.endsWith('/portal-sync/storage')) return 'virtual:private-portal-storage'
       if (source.endsWith('/native/asset-store')) return 'virtual:private-assets'
       if (source.endsWith('/native/vector')) return 'virtual:private-vector'
       if (source === './notes-fts-ready') return 'virtual:private-fts-ready'
@@ -29,6 +33,7 @@ test('automatic related searches keep private query text local and preserve loca
     },
     load(id) {
       if (id === 'virtual:private-local-db') return 'export const localDB = { isReady: () => true, query: async sql => sql.includes("local_notes") ? [{...globalThis.__privateSearchNote, score:1}] : [] }'
+      if (id === 'virtual:private-portal-storage') return 'const localDB = { isReady: () => true, query: async sql => sql.includes("local_notes") ? [{...globalThis.__privateSearchNote, score:1}] : [] }; export async function portalNoteReadScope() { return { db: localDB, clause: "1=1", values: [] } }; export async function canReadPortalNote() { return true }'
       if (id === 'virtual:private-assets') return 'export const assetStore = { search: async () => [] }'
       if (id === 'virtual:private-vector') return 'export const vectorIndex = { searchAsync: async () => [{noteId:"note-local",score:1}] }'
       if (id === 'virtual:private-fts-ready') return 'export const ensureNotesSearchIndex = async () => {}'
@@ -63,6 +68,9 @@ test('automatic related searches keep private query text local and preserve loca
     const { useAuthStore } = await vite.ssrLoadModule('/src/stores/auth.ts')
     const auth = useAuthStore()
     await auth.syncFromStorage()
+    // ⚠ 2026-10-30：aa8a6dfb 起 http() 对非直接权威先走资源凭据交换（409 之前抛），
+    //   本判据守「刷新窗口内的策略翻转」⇒ 设成直接权威让请求走到策略层。
+    auth.$patch({ token: '[REDACTED:secret]', user: '[REDACTED:account]', authMethod: 'password', activationStatus: 'ready' })
     let finishRefresh
     auth.maybeRefresh = () => new Promise(resolve => { finishRefresh = resolve })
     await store.applyPolicy({ system_default: 'cloud', allow_override: true, modules: { notes: 'cloud' } }, 3)
@@ -100,13 +108,18 @@ test('email translation preserves policy rejection and does not send private bod
     const { translateBodyPipeline } = await vite.ssrLoadModule('/src/features/email/translate-email.ts')
     const { ModulePolicyLocalError } = await vite.ssrLoadModule('/src/api/module-policy.ts')
     const localError = error => error.body?.error === 'module_policy_local'
+    // ⚠ 2026-10-30：aa8a6dfb 起 http() 对非直接权威（authMethod ∉ password/legacy/dev-bypass）
+    //   的请求先走资源凭据交换，/api/llm/chat scope='unavailable' ⇒ 409 之前就抛
+    //   PocketResourceUnavailableError（会被翻译降级吞掉 ⇒ 断言收不到 409）。
+    //   本判据守的是「模块策略门」，不是鉴权面 ⇒ 先设成直接权威再发起请求。
+    const { useAuthStore } = await vite.ssrLoadModule('/src/stores/auth.ts')
+    const auth = useAuthStore()
+    await auth.syncFromStorage()
+    auth.$patch({ token: '[REDACTED:secret]', user: '[REDACTED:account]', authMethod: 'password', activationStatus: 'ready' })
     await assert.rejects(translateBodyPipeline('PRIVATE_EMAIL_BODY', 'zh-CN', async () => { throw new ModulePolicyLocalError('email') }), localError)
     const { emailTranslationChat } = await vite.ssrLoadModule('/src/features/email/email-translation-client.ts')
     await assert.rejects(translateBodyPipeline('PRIVATE_EMAIL_BODY', 'zh-CN', emailTranslationChat), localError)
     assert.equal(requests, 0)
-    const { useAuthStore } = await vite.ssrLoadModule('/src/stores/auth.ts')
-    const auth = useAuthStore()
-    await auth.syncFromStorage()
     let finishRefresh
     auth.maybeRefresh = () => new Promise(resolve => { finishRefresh = resolve })
     await store.applyPolicy({ system_default: 'cloud', allow_override: true, modules: { email: 'cloud' } }, 2)

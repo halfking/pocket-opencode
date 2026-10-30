@@ -625,10 +625,11 @@ describe('§880 · 一次操作里的多次写（普查门）', () => {
    */
   const ALLOW = new Map<string, { why: string; runs: number }>([
     ['native/outboxStore.ts::put', { runs: 2, why: 'INSERT 撞幂等键才走 UPDATE，两条互斥（不是一次调用写两次）' }],
-    ['native/asset-store.ts::upsert', { runs: 2, why: '先查存在性再 INSERT 或 UPDATE，两条互斥' }],
+    ['native/portal-sync/store.ts::init', { runs: 2, why: '建表循环 + reset_epoch 列迁移（PRAGMA 探测后才 ALTER），两条互不重叠且幂等' }],
     ['native/approvalStore.ts::upsertSnapshot', { runs: 2, why: 'if/else 二选一，两条互斥' }],
     ['features/notes/notes-store.ts::handleServerEvent', { runs: 2, why: 'if(existing) UPDATE else INSERT，两条互斥' }],
-    ['features/notes/notes-persist.ts::createNote', { runs: 2, why: 'INSERT + 回填 UPDATE，顺序由外键约束固定（见 note-persist-fk-order 门）' }],
+
+    ['features/notes/note-files.ts::deleteNoteBodyFile', { runs: 2, why: 'previousPath 有无二选一的 DELETE，两条互斥' }],
     ['features/notes/notes-fts-backfill.ts::runNotesIndexBackfill', { runs: 2, why: '两条是 UPDATE search_text 与 INSERT _schema_migrations；FTS 那两条是 execute 不计入，合事务与否见简报 100' }],
     ['features/email/invoices-store.ts::remapLocalId', { runs: 2, why: 'if(existing) DELETE else UPDATE，两条互斥' }],
     ['features/email/email-folders-store.ts::recordOpsEntry', { runs: 2, why: 'UPDATE 分支与 INSERT 分支互斥' }],

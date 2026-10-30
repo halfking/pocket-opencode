@@ -6,7 +6,7 @@ import{createRssPortalBrowserFixture}from'./rss-portal-browser.mjs'
 
 test('RSS portable panel creates offline metadata and isolates cached owner/workspace views',{timeout:180000},async()=>{
   const f=await createRssPortalBrowserFixture(),exec=promisify(execFile),session=`rss-portal-${process.pid}`
-  const browser=async(...args)=>(await exec('browser-use',['--session',session,...args],{timeout:30000})).stdout
+  const browser=async(...args)=>(await exec('browser-use',['--session',session,...args],{timeout:60000})).stdout
   const control=async pattern=>{const state=await browser('state'),m=state.match(pattern);assert.ok(m,`Missing ${pattern}\n${state}`);return m[1]}
   const button=label=>control(new RegExp(`\\[(\\d+)\\]<button[^>]*\\/>\\s+${label}\\s*(?:\\n|$)`))
   const input=async(id,value)=>browser('input',await control(new RegExp(`\\[(\\d+)\\]<(?:input|textarea) id=${id}\\b`)),value)

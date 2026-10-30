@@ -4,6 +4,7 @@ import { readFileSync, readdirSync, statSync, writeFileSync, mkdirSync, unlinkSy
 import { join } from 'node:path'
 import {
   FRONTEND_ROOT, CACHE, activatePinia, captureRequests, loadBundle, restoreGlobals, stubBrowser,
+  ALWAYS_DIRECT_AUTH_STUB,
 } from './_wire-helpers.mjs'
 
 const PANEL = 'src/features/meetings/MeetingInsightPanel.vue'
@@ -39,7 +40,10 @@ async function loadMeetingFixture(name: string) {
   const entry = join(CACHE, `meeting-policy-fixture-${process.pid}-${name}.ts`)
   writeFileSync(entry, `export * from ${JSON.stringify(join(FRONTEND_ROOT, 'src/api/meetings.ts'))};
 export { installSyncPolicyStorage as fixtureStorage, installSyncPolicyActivationHost as fixtureHost, useSyncPolicyStore as fixtureStore } from ${JSON.stringify(join(FRONTEND_ROOT, 'src/stores/syncPolicyStore.ts'))};`)
-  try { return await loadBundle(entry, name) } finally { unlinkSync(entry) }
+  // ⚠ 2026-10-30：aa8a6dfb 起 http() 对非直接权威的请求走资源凭据交换，
+  //   meetings 路径 scope='unavailable' ⇒ 裸 store 一进来就吃 PocketResourceUnavailableError。
+  //   本判据守的是「回落形状/字节闸」，不是鉴权面 ⇒ 桩成直接权威。
+  try { return await loadBundle(entry, name, { '../stores/auth': ALWAYS_DIRECT_AUTH_STUB }) } finally { unlinkSync(entry) }
 }
 async function allowCloudMeetingRequests(mod: any) {
   mod.fixtureStorage(globalThis.localStorage)

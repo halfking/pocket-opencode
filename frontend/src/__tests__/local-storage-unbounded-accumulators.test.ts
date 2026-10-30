@@ -63,7 +63,8 @@ function fnBody(rawCode: string, name: string): string {
 describe('§874 · 尺子自证', () => {
   it('★★ 文件读到了', () => {
     assert.ok(PRESERVE.includes('preserveCorruptRaw'), '没读到 preserveCorruptRaw')
-    assert.ok(CACHE.includes('evictOverBudget'), '没读到 §873 的淘汰函数')
+    // ⚠ 2026-10-30：淘汰已内联进 writeEmailBodyLocal（15cd8a09），不再有独立函数。
+    assert.ok(CACHE.includes('writeEmailBodyLocal'), '没读到 writeEmailBodyLocal（§873 的写入+淘汰入口）')
   })
 })
 
@@ -306,27 +307,35 @@ describe('§873 · D43 正文缓存必须有上限、有淘汰', () => {
     const body = fnBody(CACHE, 'writeEmailBodyLocal')
     assert.ok(body, '找不到 writeEmailBodyLocal')
     assert.match(body, /readIndex/, '写入后没有读索引 ⇒ 无法知道缓存里有什么')
-    assert.match(body, /writeIndex/, '写入后没有更新索引 ⇒ 淘汰无从下手')
-    assert.match(body, /evictOverBudget/, '写入后没有触发淘汰 ⇒ 缓存仍会无上限增长（§873/D43）')
+    // ⚠ 2026-10-30：15cd8a09 把「写索引 + 淘汰」内联回 writeEmailBodyLocal
+    //   （index 经 store.setItem(key.index, …) 落盘，淘汰内联成 while victim 循环），
+    //   判据随语义演化：记账 = 索引落盘；淘汰 = while 循环里的 victim removeItem。
+    assert.match(body, /setItem\(key\.index/, '写入后没有更新索引 ⇒ 淘汰无从下手')
+    assert.match(body, /while\s*\(ids\.length\s*>\s*MAX_ENTRIES\s*\|\|\s*total\s*>\s*MAX_TOTAL_CHARS\)/,
+      '写入后没有触发淘汰 ⇒ 缓存仍会无上限增长（§873/D43）')
   })
 
   it('★★★ 淘汰必须真的删正文（不只是把索引截短）', () => {
-    const body = fnBody(CACHE, 'evictOverBudget')
-    assert.ok(body, '找不到 evictOverBudget')
-    assert.match(body, /removeItem/, '淘汰只改了索引、没删正文 ⇒ 额度一点没释放')
+    const body = fnBody(CACHE, 'writeEmailBodyLocal')
+    assert.ok(body, '找不到 writeEmailBodyLocal（淘汰已内联在此）')
+    assert.match(body, /removeItem\(victimKey\)/, '淘汰只改了索引、没删正文 ⇒ 额度一点没释放')
   })
 
   it('★★ 删除单封时必须同步删索引', () => {
     const body = fnBody(CACHE, 'clearEmailBodyLocal')
     assert.ok(body, '找不到 clearEmailBodyLocal')
     assert.match(body, /readIndex/, '删除单封没有读索引')
-    assert.match(body, /splice/, '删除单封没有把它从索引里摘掉 ⇒ 白占淘汰名额')
+    assert.match(body, /filter\(row => row !== id\)/, '删除单封没有把它从索引里摘掉 ⇒ 白占淘汰名额')
   })
 
-  it('★★ 索引本身写失败要说清后果（此后不再淘汰）', () => {
-    const body = fnBody(CACHE, 'writeIndex')
-    assert.ok(body, '找不到 writeIndex')
-    assert.match(body, /console\.warn/, '索引写失败没有任何日志 ⇒ 会静默退化成「无上限增长」')
+  it('★★ 缓存写失败必须说清后果（留痕，不静默退化成无上限）', () => {
+    // ⚠ 2026-10-30：15cd8a09 之后索引不再有独立的 writeIndex 函数 ——
+    //   整个写入（含索引落盘）包在同一个 try 里，失败走 catch：
+    //   摘掉正文键 + console.warn，防止「索引坏了还占着正文额度」。
+    const body = fnBody(CACHE, 'writeEmailBodyLocal')
+    assert.ok(body, '找不到 writeEmailBodyLocal')
+    assert.match(body, /console\.warn/, '缓存写失败没有任何日志 ⇒ 会静默退化成「无上限增长」')
+    assert.match(body, /removeItem\(key\.body\)/, '写失败没有摘掉正文键 ⇒ 坏索引下正文白占额度')
   })
 
   it('★★★ 那句「不再有超配额的悬崖」只允许出现在纠正它的注释里', () => {
@@ -355,21 +364,24 @@ describe('§873 · D43 正文缓存必须有上限、有淘汰', () => {
 })
 
 describe('§873 · 变异负控', () => {
-  it('把淘汰调用删掉 ⇒ D43 立刻红', () => {
+  it('把淘汰循环删掉 ⇒ D43 立刻红', () => {
     const body = fnBody(CACHE, 'writeEmailBodyLocal')
     assert.ok(body, '取不到 writeEmailBodyLocal 的函数体')
-    const defective = body.replace(/evictOverBudget\(store, ids\)/, 'void 0')
+    const defective = body.replace(
+      /while\s*\(ids\.length\s*>\s*MAX_ENTRIES\s*\|\|\s*total\s*>\s*MAX_TOTAL_CHARS\)/,
+      'while (false)',
+    )
     assert.notEqual(defective, body, '变异没生效（锚点与真源码不匹配）')
-    assert.doesNotMatch(defective, /evictOverBudget/,
-      '尺子坏了：删掉淘汰调用后判据仍判绿')
+    assert.doesNotMatch(defective, /while\s*\(ids\.length/,
+      '尺子坏了：删掉淘汰循环后判据仍判绿')
   })
 
   it('把淘汰改成「只截索引不删正文」⇒ D43 立刻红', () => {
-    const body = fnBody(CACHE, 'evictOverBudget')
-    assert.ok(body, '取不到 evictOverBudget 的函数体')
-    const defective = body.replace(/store\.removeItem\(PREFIX \+ victim\)/, 'void victim')
+    const body = fnBody(CACHE, 'writeEmailBodyLocal')
+    assert.ok(body, '取不到 writeEmailBodyLocal 的函数体')
+    const defective = body.replace(/store\.removeItem\(victimKey\)/, 'void victimKey')
     assert.notEqual(defective, body, '变异没生效（锚点与真源码不匹配）')
-    assert.doesNotMatch(defective, /removeItem/,
+    assert.doesNotMatch(defective, /removeItem\(victimKey\)/,
       '尺子坏了：淘汰不再删正文后判据仍判绿')
   })
 })

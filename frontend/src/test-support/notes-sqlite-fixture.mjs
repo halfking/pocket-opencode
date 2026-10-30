@@ -125,6 +125,7 @@ export async function fixture(run) {
       onRun: fn => { afterRun = fn }, respond: fn => { respond = fn } })
   } finally {
     afterQuery = afterRun = beforeEncrypt = beforeDecrypt = beforeRead = async () => {}
+    // 清理路径的关闭失败无可补救（测试已结束），吞掉只为防 unhandled rejection。
     await db?.close().catch(() => {})
     await vite.close()
     delete globalThis[key]

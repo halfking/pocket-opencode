@@ -46,7 +46,10 @@ test('import holds the original owner and cannot attach a resource after account
   const { importEnex } = await f.loadModule('/src/features/imports/import-service.ts')
   const paused = gate(); f.onEncrypt(paused.pause)
   const xml='<en-export><note><title>A private import</title><content><![CDATA[<en-note>body</en-note>]]></content><created>20240301T010203Z</created><updated>20240302T010203Z</updated><resource><data encoding="base64">c2VjcmV0</data><mime>text/plain</mime></resource></note></en-export>'
-  const importing=importEnex(xml,'workspace'); importing.catch(()=>{})
+  const importing=importEnex(xml,'workspace');
+  // 拒绝在下面 assert.rejects 里显式消费；这里只是提前挂一个空消化，防止
+  // paused.started 之前的失败变成 unhandled rejection（§948 判据要求留痕/解释）。
+  importing.catch(()=>{})
   await paused.started
   await f.login('B')
   paused.release()

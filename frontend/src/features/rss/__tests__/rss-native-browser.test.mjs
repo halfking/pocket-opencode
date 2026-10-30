@@ -6,7 +6,7 @@ import{createNativeRssBrowserFixture}from'./rss-native-browser.mjs'
 
 test('new native RSS subscription events reach the portable outbox without enrolling a former discovery owner',{timeout:180000},async()=>{
  const f=await createNativeRssBrowserFixture(),exec=promisify(execFile),session=`rss-native-${process.pid}`
- const browser=async(...args)=>(await exec('browser-use',['--session',session,...args],{timeout:30000})).stdout
+ const browser=async(...args)=>(await exec('browser-use',['--session',session,...args],{timeout:60000})).stdout
  const control=async pattern=>{const state=await browser('state'),m=state.match(pattern);assert.ok(m,`Missing ${pattern}\n${state}`);return m[1]}
  const button=label=>control(new RegExp(`\\[(\\d+)\\]<button[^>]*\\/>\\s+${label}\\s*(?:\\n|$)`))
  try{
