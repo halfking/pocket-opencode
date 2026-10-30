@@ -37,15 +37,19 @@ func (s *Server) tryResourceAuth(w http.ResponseWriter, r *http.Request, raw str
 	// Long-running nonstreaming calls are cancelled on expiry/revocation. No
 	// streaming route belongs to the allowlist, and response writes are fenced.
 	// §949：走 background.Go —— 裸 go 语句里的 panic 会终止整个进程。
+	// ⚠ validationCtx 必须在下面 ctx 被重赋值（WithValue）**之前**捕获：
+	//   goroutine 读的是这份不可变的验证上下文；重赋值后继续共享同一个变量
+	//   就是 data race（-race 实测）。
+	validationCtx := ctx
 	background.Go("resource-auth/revalidate", func() {
 		ticker := time.NewTicker(time.Second)
 		defer ticker.Stop()
 		for {
 			select {
-			case <-ctx.Done():
+			case <-validationCtx.Done():
 				return
 			case <-ticker.C:
-				if code, _ := s.resourceCurrent(ctx, claims, scope); code != 200 {
+				if code, _ := s.resourceCurrent(validationCtx, claims, scope); code != 200 {
 					cancel()
 					return
 				}
