@@ -10,11 +10,14 @@ import { safeExternalUrl } from '../../utils/safe-url'
 import { useAuthStore } from '../../stores/auth'
 import { captureRssPortalOperation, copyRssItemToPortal, type RssPortalOperation } from './rss-sync-store'
 import { rssSyncRuntime } from './rss-sync-runtime'
+import { overlayRssItemStates } from './rss-item-state'
 
 const route = useRoute()
 const router = useRouter()
 const item = ref<RSSItem | null>(null)
 const auth=useAuthStore(),portalBusy=ref(false),portalNotice=ref('')
+const statusBusy=ref(false)
+let stateRead=0
 let generation=0,loadedOperation:RssPortalOperation|null=null
 
 /**
@@ -62,7 +65,7 @@ async function load() {
     operation.assertCurrent()
     if (result.status === 'unread') {
       try {
-        result = await rssApi.markRead(id,options)
+        result = await rssApi.markRead(result,options)
       } catch(error) { operation.assertCurrent();console.warn('[rss] 已加载正文，但已读状态未保存：',error) }
     }
     operation.assertCurrent();if(stamp!==generation)return
@@ -74,10 +77,16 @@ async function load() {
   }
 }
 
-onMounted(load)
-function invalidate(){generation++;item.value=null;loadedOperation=null;shareOpen.value=false;shareBusy.value=false;shareResult.value=null;shareCaption.value='';shareNotice.value='';portalBusy.value=false;portalNotice.value='';errorMsg.value='';if(auth.activationStatus==='ready')void load()}
+async function refreshStatus(){
+  const original=item.value,stamp=generation,read=++stateRead
+  if(!original||!loadedOperation)return
+  try{loadedOperation.assertCurrent();const result=(await overlayRssItemStates([original]))[0];if(stamp===generation&&read===stateRead&&item.value?.id===original.id&&result)item.value={...item.value,status:result.status}}
+  catch(error){if(!(error instanceof Error&&error.name==='AbortError'))console.warn('[rss] Status refresh retained current article:',error)}
+}
+onMounted(()=>{void load();window.addEventListener('openpocket:portal-rss-applied',refreshStatus)})
+function invalidate(){generation++;item.value=null;loadedOperation=null;statusBusy.value=false;shareOpen.value=false;shareBusy.value=false;shareResult.value=null;shareCaption.value='';shareNotice.value='';portalBusy.value=false;portalNotice.value='';errorMsg.value='';if(auth.activationStatus==='ready')void load()}
 watch(()=>[auth.activationVersion,auth.userId,auth.workspaceId,auth.activationStatus,route.params.id],invalidate,{flush:'sync'})
-onBeforeUnmount(()=>{generation++;loadedOperation=null})
+onBeforeUnmount(()=>{generation++;loadedOperation=null;window.removeEventListener('openpocket:portal-rss-applied',refreshStatus)})
 
 async function savePortableCopy(){
   const stamp=generation,original=item.value
@@ -134,16 +143,17 @@ async function doShare(dest: 'wechat' | 'weibo' | 'clipboard' | 'download') {
 }
 
 async function toggleStar() {
-  if (!item.value||!loadedOperation) return
+  if (!item.value||!loadedOperation||statusBusy.value) return
   const stamp=generation,operation=loadedOperation
   const newStar = item.value.status !== 'starred'
+  statusBusy.value=true
   try {
     operation.assertCurrent()
-    const result = await rssApi.setStarred(item.value.id, newStar,{assertCurrent:operation.assertCurrent})
+    const result = await rssApi.setStarred(item.value, newStar,{assertCurrent:operation.assertCurrent})
     operation.assertCurrent();if(stamp===generation)item.value=result
   } catch (e: any) {
     if(stamp===generation&&e?.name!=='AbortError')errorMsg.value = toUserMessage(e, t, t('errors.operateFailed'))
-  }
+  } finally {if(stamp===generation)statusBusy.value=false}
 }
 
 const shareCardSrc = computed(() => item.value ? rssApi.shareCardUrl(item.value.id) : '')
@@ -181,7 +191,7 @@ function back() {
 
     <footer v-if="item" class="actions-bar">
       <button class="btn" type="button" :disabled="portalBusy" @click="savePortableCopy">{{t('rssPortal.copy')}}</button>
-      <button class="btn" type="button" @click="toggleStar">
+      <button class="btn" type="button" :disabled="statusBusy" @click="toggleStar">
         <span class="material-symbols-outlined">{{ item.status === 'starred' ? 'star' : 'star_border' }}</span>
         {{ item.status === 'starred' ? '已收藏' : '收藏' }}
       </button>

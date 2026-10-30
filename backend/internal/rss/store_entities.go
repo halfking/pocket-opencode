@@ -10,12 +10,12 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-const itemCols = `id,source_id,user_id,workspace_id,guid,hash,url,title,author,summary,content,language,categories,published_at,updated_at,fetched_at,relevance,match_reasons,status`
+const itemCols = `id,source_id,user_id,workspace_id,guid,hash,url,title,author,summary,content,language,categories,published_at,updated_at,fetched_at,relevance,match_reasons,status,EXISTS(SELECT 1 FROM rss_sources s WHERE s.id=rss_items.source_id AND s.user_id=rss_items.user_id AND s.workspace_id=rss_items.workspace_id AND s.portal_managed)`
 
 func scanItem(r pgx.Row) (*Item, error) {
 	var x Item
 	var cats, reasons []byte
-	err := r.Scan(&x.ID, &x.SourceID, &x.UserID, &x.WorkspaceID, &x.GUID, &x.Hash, &x.URL, &x.Title, &x.Author, &x.Summary, &x.Content, &x.Language, &cats, &x.PublishedAt, &x.UpdatedAt, &x.FetchedAt, &x.Relevance, &reasons, &x.Status)
+	err := r.Scan(&x.ID, &x.SourceID, &x.UserID, &x.WorkspaceID, &x.GUID, &x.Hash, &x.URL, &x.Title, &x.Author, &x.Summary, &x.Content, &x.Language, &cats, &x.PublishedAt, &x.UpdatedAt, &x.FetchedAt, &x.Relevance, &reasons, &x.Status, &x.PortalManaged)
 	if err == nil {
 		_ = json.Unmarshal(cats, &x.Categories)
 		_ = json.Unmarshal(reasons, &x.MatchReasons)
@@ -76,7 +76,7 @@ func (s *Store) ListItems(ctx context.Context, sc Scope, opt ListItemsOptions) (
 	if opt.Limit > 200 {
 		opt.Limit = 200
 	}
-	rows, e := s.pool.Query(ctx, `SELECT `+itemCols+` FROM rss_items WHERE user_id=$1 AND workspace_id=$2 AND ($3='' OR status=$3) AND ($4::timestamptz IS NULL OR published_at >= $4) AND ($5::timestamptz IS NULL OR published_at <= $5) AND ($6='' OR title ILIKE '%'||$6||'%' OR summary ILIKE '%'||$6||'%') ORDER BY published_at DESC NULLS LAST,fetched_at DESC LIMIT $7 OFFSET $8`, sc.UserID, sc.WorkspaceID, opt.Status, opt.Since, opt.Until, opt.Query, opt.Limit, opt.Offset)
+	rows, e := s.pool.Query(ctx, `SELECT `+itemCols+` FROM rss_items WHERE user_id=$1 AND workspace_id=$2 AND ($3='' OR status=$3) AND ($4::timestamptz IS NULL OR published_at >= $4) AND ($5::timestamptz IS NULL OR published_at <= $5) AND ($6='' OR title ILIKE '%'||$6||'%' OR summary ILIKE '%'||$6||'%') AND ($9='' OR source_id=$9) AND ($10::text[] IS NULL OR id=ANY($10)) ORDER BY published_at DESC NULLS LAST,fetched_at DESC,id ASC LIMIT $7 OFFSET $8`, sc.UserID, sc.WorkspaceID, opt.Status, opt.Since, opt.Until, opt.Query, opt.Limit, opt.Offset, opt.SourceID, opt.IDs)
 	if e != nil {
 		return nil, e
 	}
@@ -92,6 +92,13 @@ func (s *Store) ListItems(ctx context.Context, sc Scope, opt ListItemsOptions) (
 	return out, rows.Err()
 }
 func (s *Store) MarkItem(ctx context.Context, id string, status ItemStatus, sc Scope) error {
+	return s.MarkItems(ctx, []string{id}, status, sc)
+}
+
+func (s *Store) MarkItems(ctx context.Context, ids []string, status ItemStatus, sc Scope) error {
+	if len(ids) < 1 || len(ids) > 100 {
+		return fmt.Errorf("rss: 1 to 100 items required")
+	}
 	if err := requireScope(sc); err != nil {
 		return err
 	}
@@ -100,11 +107,26 @@ func (s *Store) MarkItem(ctx context.Context, id string, status ItemStatus, sc S
 	default:
 		return fmt.Errorf("rss: invalid item status %q", status)
 	}
-	tag, e := s.pool.Exec(ctx, `UPDATE rss_items SET status=$1 WHERE id=$2 AND user_id=$3 AND workspace_id=$4`, status, id, sc.UserID, sc.WorkspaceID)
-	if e == nil && tag.RowsAffected() == 0 {
-		return ErrNotFound
-	}
-	return e
+	return s.portableWrite(ctx, sc, func(tx pgx.Tx) error {
+		for _, id := range ids {
+			var managed bool
+			err := tx.QueryRow(ctx, `SELECT s.portal_managed FROM rss_items i JOIN rss_sources s ON s.id=i.source_id AND s.user_id=i.user_id AND s.workspace_id=i.workspace_id WHERE i.id=$1 AND i.user_id=$2 AND i.workspace_id=$3 FOR UPDATE OF i,s`, id, sc.UserID, sc.WorkspaceID).Scan(&managed)
+			if err == pgx.ErrNoRows {
+				return ErrNotFound
+			}
+			if err != nil {
+				return err
+			}
+			if managed {
+				return ErrPortableStateRequired
+			}
+			_, err = tx.Exec(ctx, `UPDATE rss_items SET status=$1 WHERE id=$2 AND user_id=$3 AND workspace_id=$4`, status, id, sc.UserID, sc.WorkspaceID)
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 const ruleCols = `id,user_id,workspace_id,name,enabled,include_keywords,exclude_keywords,languages,since_at,until_at,min_relevance,created_at,updated_at`

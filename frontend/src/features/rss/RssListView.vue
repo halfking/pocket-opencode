@@ -10,6 +10,7 @@ import { deleteRssSource } from './rss-operation'
 import RssPortalPanel from './RssPortalPanel.vue'
 import { useAuthStore } from '../../stores/auth'
 import { captureRssPortalOperation, type RssPortalOperation } from './rss-sync-store'
+import { overlayRssItemStates } from './rss-item-state'
 
 const router = useRouter()
 const { t } = useI18n()
@@ -24,7 +25,8 @@ const search = ref('')
 const importing = ref(false)
 const importMsg = ref('')
 const auth=useAuthStore()
-let generation=0,readVersion=0,sourcesOperation:RssPortalOperation|null=null
+let generation=0,readVersion=0,stateRead=0,sourcesOperation:RssPortalOperation|null=null
+let statusRefreshQueued=false
 const current=(stamp:number)=>stamp===generation&&auth.activationStatus==='ready'
 function sourceOperation(src:RSSSource){
   if(!sourcesOperation||!sources.value.includes(src))throw new DOMException('Former RSS source view','AbortError')
@@ -76,13 +78,23 @@ async function refresh() {
     // 「rss_unavailable: store not configured」——英文技术标识且未本地化。
     if(current(stamp)&&read===readVersion&&e?.name!=='AbortError')errorMsg.value = toUserMessage(e, t, t('errors.loadRssFailed'))
   } finally {
-    if(current(stamp)&&read===readVersion)loading.value = false
+    if(current(stamp)&&read===readVersion){loading.value=false;if(statusRefreshQueued){statusRefreshQueued=false;void refreshStatuses()}}
   }
 }
 
-onMounted(refresh)
-watch(()=>[auth.activationVersion,auth.userId,auth.workspaceId,auth.activationStatus],()=>{generation++;readVersion++;sourcesOperation=null;sources.value=[];items.value=[];search.value='';errorMsg.value=importMsg.value='';loading.value=importing.value=false;if(auth.activationStatus==='ready')void refresh()},{flush:'sync'})
-onBeforeUnmount(()=>{generation++;sourcesOperation=null})
+async function refreshStatuses(){
+  if(loading.value){statusRefreshQueued=true;return}
+  const stamp=generation,read=++stateRead,original=items.value
+  try{
+    const next=await overlayRssItemStates(original)
+    if(current(stamp)&&read===stateRead&&!loading.value){items.value=next.filter(item=>!statusFilter.value||item.status===statusFilter.value);await refresh()}
+  }
+  catch(error){if(!(error instanceof Error&&error.name==='AbortError'))console.warn('[rss] Status refresh retained current list:',error)}
+}
+onMounted(()=>{void refresh();window.addEventListener('openpocket:portal-rss-applied',refreshStatuses)})
+watch(statusFilter,()=>{void refresh()})
+watch(()=>[auth.activationVersion,auth.userId,auth.workspaceId,auth.activationStatus],()=>{generation++;readVersion++;statusRefreshQueued=false;sourcesOperation=null;sources.value=[];items.value=[];search.value='';errorMsg.value=importMsg.value='';loading.value=importing.value=false;if(auth.activationStatus==='ready')void refresh()},{flush:'sync'})
+onBeforeUnmount(()=>{generation++;sourcesOperation=null;window.removeEventListener('openpocket:portal-rss-applied',refreshStatuses)})
 
 function openItem(id: string) {
   router.push({ name: 'rss-item', params: { id } })
@@ -180,7 +192,7 @@ const totalUnread = computed(() => sources.value.reduce((acc, s) => acc + (s.unr
     <!-- 信息流 -->
     <section v-if="tab === 'items'" class="items">
       <div class="filters">
-        <select v-model="statusFilter">
+        <select id="rss-status-filter" v-model="statusFilter" aria-label="订阅条目状态">
           <option value="">全部</option>
           <option value="unread">未读</option>
           <option value="read">已读</option>

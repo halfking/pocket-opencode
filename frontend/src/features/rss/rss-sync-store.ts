@@ -35,7 +35,7 @@ export async function listRssPortalRecords(options: {kind?: 'source' | 'item'; q
   const decoded = await Promise.all(rows.map(async row => ({id: row.source_id, owner: {...operation.owner}, item: await store.decode(row.item_json)})))
   operation.assertCurrent()
   const query = (options.query ?? '').toLocaleLowerCase()
-  return decoded.filter(row => !row.item.deleted && (!options.kind || row.item.kind === options.kind) && (!query || `${row.item.title}\n${JSON.stringify(row.item.payload)}`.toLocaleLowerCase().includes(query)))
+  return decoded.filter(row => !row.item.deleted && ['source','item'].includes(row.item.kind) && (!options.kind || row.item.kind === options.kind) && (!query || `${row.item.title}\n${JSON.stringify(row.item.payload)}`.toLocaleLowerCase().includes(query)))
     .slice(Math.max(0,options.offset ?? 0),Math.max(0,options.offset ?? 0)+Math.max(1,Math.min(options.limit ?? 100,500)))
 }
 
