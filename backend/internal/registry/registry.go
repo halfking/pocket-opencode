@@ -38,6 +38,9 @@ type InstanceConfig struct {
 	Origin   string            `json:"origin,omitempty"`   // discovered/registered/static/acc
 	// Capabilities 留空时由 Registry 用默认值兜底；探测成功后由 capabilities 探测覆盖
 	Capabilities []string `json:"capabilities,omitempty"`
+
+	// candidate 是这次探测命中的 (host, port)，仅供发现日志去重使用（不序列化）。
+	candidate hostPort `json:"-"`
 }
 
 // Registry 实例注册表（增强版）
@@ -50,6 +53,9 @@ type Registry struct {
 	discoveryEnabled  bool
 	heartbeatInterval time.Duration
 	discoveryFunc     DiscoveryFunc
+	// lastLoggedOffline 记录「离线日志已打过」的实例，离线日志只在转变时打一次
+	// （防周期性发现循环把同一批死端点每 30s 重复刷屏）。
+	lastLoggedOffline map[string]bool
 }
 
 // DiscoveryFunc 实例发现函数类型
@@ -61,6 +67,7 @@ func NewRegistry() *Registry {
 		apiURLMap:         make(map[string]string),
 		discoveryEnabled:  false,
 		heartbeatInterval: 30 * time.Second,
+		lastLoggedOffline: make(map[string]bool),
 	}
 }
 
@@ -159,7 +166,16 @@ func (r *Registry) discoverAndUpdate(ctx context.Context) {
 				continue
 			}
 			instance.Health = "offline"
-			log.Printf("⚠️ 实例离线: %s (%s)", instance.DisplayName, id)
+			// 只在 online→offline 的**转变**时打日志：这台 dev 机常驻 9 个已死的
+			// 发现端点，按周期重复打「实例离线」一天就是 8000+ 行纯噪声
+			// （2026-10-30 实测 /tmp/pocketd-r56.log），把真错误淹没。
+			if previous, ok := r.lastLoggedOffline[id]; !ok || !previous {
+				log.Printf("⚠️ 实例离线: %s (%s)", instance.DisplayName, id)
+				r.lastLoggedOffline[id] = true
+			}
+		} else if instance.Health == "offline" {
+			// 恢复上线时清掉记忆，下次再离线才会再报一次。
+			delete(r.lastLoggedOffline, id)
 		}
 	}
 }

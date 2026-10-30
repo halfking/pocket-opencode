@@ -76,9 +76,34 @@ func NetworkDiscovery(opts ...DiscoveryOption) DiscoveryFunc {
 	for _, opt := range opts {
 		opt(&o)
 	}
+	// 「已打过 found 日志」的 host:port —— 发现循环每 30s 重扫一遍同一批候选，
+	// 常驻的活实例会每轮重复打一行 found（dev 机实测 10 行/30s = 纯噪声）。
+	// 只在「上一轮没探到、这一轮探到了」时打。
+	foundLogged := make(map[hostPort]bool)
+	var foundMu sync.Mutex
 	return func(ctx context.Context) ([]InstanceConfig, error) {
 		candidates := buildCandidates(o)
-		return probeCandidates(ctx, candidates)
+		configs, err := probeCandidates(ctx, candidates)
+		if err != nil {
+			return nil, err
+		}
+		foundMu.Lock()
+		defer foundMu.Unlock()
+		seen := make(map[hostPort]bool, len(configs))
+		for _, cfg := range configs {
+			seen[cfg.candidate] = true
+			if !foundLogged[cfg.candidate] {
+				log.Printf("[discovery] found OpenCode instance: %s:%d (%s)", cfg.candidate.Host, cfg.candidate.Port, cfg.ID)
+				foundLogged[cfg.candidate] = true
+			}
+		}
+		// 探不到的候选清掉记忆，等它复活时才会再报一次。
+		for hp := range foundLogged {
+			if !seen[hp] {
+				delete(foundLogged, hp)
+			}
+		}
+		return configs, nil
 	}
 }
 
@@ -174,10 +199,10 @@ func probeCandidates(ctx context.Context, candidates []hostPort) ([]InstanceConf
 
 			cfg, ok := probeOne(ctx, client, hp.Host, hp.Port)
 			if ok {
+				cfg.candidate = hp
 				mu.Lock()
 				configs = append(configs, cfg)
 				mu.Unlock()
-				log.Printf("[discovery] found OpenCode instance: %s:%d (%s)", hp.Host, hp.Port, cfg.ID)
 			}
 		}, c)
 	}
