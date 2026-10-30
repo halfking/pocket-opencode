@@ -25,6 +25,7 @@ export interface RecordAdapter {
   module: RecordModule
   kind: string
   kinds?: string[]
+  externalId?(sourceId: string, kind: string): string
   payload(input: Record<string, unknown>, kind?: string): Record<string, unknown>
   validate?(item: RecordItem): void
   materialize(

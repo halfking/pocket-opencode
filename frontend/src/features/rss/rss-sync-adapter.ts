@@ -18,6 +18,7 @@ function address(value: string, required: boolean): string {
 /** Portable metadata is a separate read model, never an executable feed subscription. */
 export const rssSyncAdapter: RecordAdapter = {
   module: 'rss', kind: 'source', kinds: ['source', 'item', 'item-state'],
+  externalId: (id, kind) => kind === 'item-state' ? id.replace(/^state:/, '') : `rss-${kind}:${id}`,
   validate(item) {
     if (item.kind === 'item-state' && (item.deleted ? Object.keys(item.payload).length !== 0 : item.payload.item_ext_id !== item.ext_id)) throw new Error('RSS state target must match its identity')
   },

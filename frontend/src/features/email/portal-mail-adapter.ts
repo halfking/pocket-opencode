@@ -20,6 +20,7 @@ export function portalMailPayload(input: Record<string, unknown>, kind?: string)
 
 export const portalMailAdapter: RecordAdapter = {
   module: 'email', kind: 'summary', kinds: ['account', 'summary'], payload: portalMailPayload,
+  externalId: (id, kind) => id.startsWith(`${kind}:`) ? id : `${kind}:${id}`,
   // The encrypted projection is the read model. No guessed local account FK or
   // credential is created, and a remote tombstone cannot delete native mail.
   materialize: () => [],

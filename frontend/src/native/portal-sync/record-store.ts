@@ -100,7 +100,7 @@ export class PortalRecordStore {
       kind: snapshot.kind ?? this.adapter.kind,
       ext_id: existing
         ? (await this.decode(existing.item_json)).ext_id
-        : (snapshot.extId ?? `${this.adapter.module}:${snapshot.id}`),
+        : (snapshot.extId ?? this.adapter.externalId?.(snapshot.id, snapshot.kind ?? this.adapter.kind) ?? `${this.adapter.module}:${snapshot.id}`),
       title: snapshot.title,
       payload: snapshot.deleted ? {} : snapshot.payload,
       client_updated_at: timestamp,

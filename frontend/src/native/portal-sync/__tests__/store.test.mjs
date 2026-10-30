@@ -27,6 +27,14 @@ function fixture(owner = { userId: 'A', workspaceId: 'ws' }, raw = new SQL.Datab
 const change = (id, content, time, op = 'remote') => ({ module: 'notes', kind: 'note', ext_id: id, title: id,
   payload: notePayload({ content, format: 'text' }), client_updated_at: new Date(time).toISOString(), op_id: op, deleted: false, change_seq: 1 })
 
+for (const source of ['note','asset']) test(`${source} retains its external identity through create edit and delete`, async () => {
+  const a = fixture(), input = {source,id:'same',title:'Original',payload:notePayload({content:'keep me',format:'text'}),modifiedAt:1000,epoch:0}
+  await a.store.commit([],input,true)
+  await a.store.commit([],{...input,title:'Edited',modifiedAt:2000},false)
+  await a.store.commit([],{...input,payload:{},deleted:true,modifiedAt:3000},false)
+  assert.deepEqual((await a.store.pending()).map(item=>item.ext_id),[`${source}:same`,`${source}:same`,`${source}:same`])
+})
+
 test('immutable outbox survives reopen, does not claim old data, and isolates account/workspace', async () => {
   const a = fixture()
   await a.store.commit([], { source: 'note', id: 'fresh', title: 'N', payload: notePayload({content:'one',format:'text'}), epoch:0, modifiedAt: 1000 }, true)

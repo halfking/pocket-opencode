@@ -6,6 +6,7 @@ import { portalRecordStore } from '../../native/portal-sync/record-storage.ts'
 export const meetingSyncAdapter: RecordAdapter = {
   module: 'meetings',
   kind: 'record',
+  externalId: (id) => `meeting:${id}`,
   payload(input) {
     if (Object.keys(input).some((key) => !['held_at', 'attendees', 'minutes'].includes(key)))
       throw new Error('Unknown meeting sync field; local original retained')
