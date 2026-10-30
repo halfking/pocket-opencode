@@ -3,6 +3,7 @@ import { PortalNotesStore } from './store.ts'
 import { currentRecordEpoch, observeRecordEpoch, recordEpochGuard } from './record-epoch.ts'
 import { validateRecordItem, type RecordAdapter, type RecordItem } from './record-contract.ts'
 import { validEpoch } from './epochs.ts'
+import { acknowledgeClock, resumeClockCorrections } from './clock-retry.ts'
 
 export interface RecordProjection {
   source_id: string
@@ -201,8 +202,9 @@ export class PortalRecordStore {
     )
     if (epoch === null) return []
     const admitted = recordEpochGuard(this.db, this.adapter.module, epoch)
+    await resumeClockCorrections(this.db, this.adapter.module, this)
     const rows = await this.db.query<{ item_json: string }>(
-      `SELECT item_json FROM local_portal_record_outbox WHERE owner_user_id=? AND owner_workspace_id=? AND module=? AND reset_epoch=? AND last_error='' AND ${admitted.clause} ORDER BY rowid LIMIT 50`,
+      `SELECT item_json FROM local_portal_record_outbox WHERE owner_user_id=? AND owner_workspace_id=? AND module=? AND reset_epoch=? AND last_error IN ('','clock_retry') AND ${admitted.clause} ORDER BY rowid LIMIT 50`,
       [...this.scope, this.adapter.module, epoch, ...admitted.values],
     )
     return Promise.all(rows.map((row) => this.decode(row.item_json)))
@@ -222,7 +224,11 @@ export class PortalRecordStore {
       await this.block(item, 'policy_local')
       return false
     }
-    if (ack.clock_skew || !['applied', 'kept_existing'].includes(ack.outcome)) {
+    if (ack.clock_skew || (ack.outcome === 'rejected' && ack.reason === 'clock_skew')) {
+      await acknowledgeClock(this.db, item, ack, this)
+      return false
+    }
+    if (!['applied', 'kept_existing'].includes(ack.outcome)) {
       await this.block(item, ack.reason ?? ack.outcome)
       return false
     }

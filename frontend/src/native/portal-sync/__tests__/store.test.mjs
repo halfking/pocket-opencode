@@ -108,6 +108,30 @@ test('a second clock rejection stays explicit and does not create an endless ret
   assert.deepEqual(JSON.parse(row.item_json).payload, original.payload)
 })
 
+for (const transition of ['edit', 'reset', 'owner']) test(`a notes clock correction is fenced by a concurrent ${transition}`, async () => {
+  const a = fixture()
+  const input = {source:'note',id:'skew',title:'Original',payload:notePayload({content:'keep me',format:'text'}),epoch:0,modifiedAt:3600000}
+  await a.store.commit([],input,true)
+  const [old] = await a.store.pending()
+  let release, started
+  const wait = new Promise(resolve=>{release=resolve}), entered = new Promise(resolve=>{started=resolve})
+  const correcting = new PortalNotesStore(a.db,{encode:async item=>{started();await wait;return JSON.stringify(item)},decode:async json=>JSON.parse(json)})
+  const response = correcting.acknowledge(old,{...old,current_epoch:0,outcome:'rejected',clock_skew:true,client_updated_at:new Date(1000).toISOString()})
+  await entered
+  if (transition === 'edit') await a.store.commit([],{...input,title:'Concurrent intent',modifiedAt:3600001},false)
+  else if (transition === 'reset') {
+    const resets = new PortalResetStore(a.store), intent = await resets.begin(['notes'])
+    await resets.complete(intent,{reset_id:intent.reset_id,purged:{notes:0},epochs:{notes:1}})
+  } else a.expire()
+  release()
+  if (transition === 'owner') await assert.rejects(response,/expired/)
+  else await response
+  const reopened = fixture(a.db.owner,new SQL.Database(a.raw.export()))
+  if (transition === 'edit') assert.equal((await reopened.store.pending())[0].title,'Concurrent intent')
+  else if (transition === 'reset') assert.deepEqual(await reopened.store.pending(),[])
+  else assert.equal((await a.raw.exec('SELECT COUNT(*) FROM local_portal_outbox'))[0].values[0][0],1)
+})
+
 test('an explicit cloud re-enable creates a fresh upload intent for skipped-local operations', async () => {
   const a = fixture()
   await a.store.commit([], {source:'note',id:'n',title:'N',payload:notePayload({content:'saved offline',format:'text'}),epoch:0, modifiedAt:1000},true)
