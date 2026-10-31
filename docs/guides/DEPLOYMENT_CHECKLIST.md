@@ -98,7 +98,7 @@ nano .env
 POCKET_JWT_SECRET=your_generated_secret_key_here
 POCKET_POSTGRES_DSN=postgres://pocket_user:your_secure_password@localhost:5432/pocket_db?sslmode=disable
 
-# 3. 生成 JWT_SECRET (推荐)
+# 3. 生成 POCKET_JWT_SECRET (推荐)
 openssl rand -base64 32
 ```
 
@@ -250,7 +250,7 @@ sudo tail -f /var/log/postgresql/postgresql-*.log
 
 ### API 返回 401/403
 ```bash
-# 检查 JWT_SECRET 是否一致
+# 检查 POCKET_JWT_SECRET 是否一致
 grep POCKET_JWT_SECRET .env
 
 # 重新生成 token

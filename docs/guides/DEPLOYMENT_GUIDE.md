@@ -125,7 +125,7 @@ git log --oneline -1
 # 复制模板
 cp .env.example .env
 
-# 生成 JWT_SECRET
+# 生成 POCKET_JWT_SECRET
 POCKET_JWT_SECRET=$(openssl rand -base64 32)
 
 # 编辑配置
@@ -389,7 +389,7 @@ sudo journalctl -u pocketd -n 100
 ### API 返回 401/403
 
 ```bash
-# 1. 检查 JWT_SECRET
+# 1. 检查 POCKET_JWT_SECRET
 cat /opt/opencode-pocket/.env | grep POCKET_JWT_SECRET
 
 # 2. 重新获取 token
