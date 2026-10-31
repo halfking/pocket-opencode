@@ -8,10 +8,9 @@ import (
 // DefaultLLMGatewayBaseURL 默认 LLM Gateway 端点（OpenAI 兼容 /v1/...）。
 // 用户可在 SettingsView 修改后通过 POST /api/llm-gateway/config 热更新。
 //
-// 2026-09-30 切回 https://llm.kxpms.cn/v1（用户指定的正式网关，实测 /v1/models
-// 200、608 个模型、流式首字节 ~300ms）；此前 2026-09-21 曾切到 llmgo.kxpms.cn，
-// 并把 llm.kxpms.cn 列入 obsolete 强制改写——两处已一并回退，否则设置页
-// 填 llm.kxpms.cn 会被 rewriteObsoleteGateway 打回 llmgo，配置形同虚设。
+// 2026-11-01 切到 https://llm.itestu.cn/v1（用户指定的正式网关）；此前
+// 2026-09-30 切回过 https://llm.kxpms.cn/v1，2026-09-21 曾切到 llmgo.kxpms.cn
+// ——那两处已一并回退。
 // POCKET_LLM_GATEWAY_URL 仍可覆盖。reset 后首次启动 pocketd 会自动写 seed。
 const DefaultLLMGatewayBaseURL = "https://llm.itestu.cn/v1"
 
@@ -29,7 +28,8 @@ const DefaultLLMGatewayBaseURL = "https://llm.itestu.cn/v1"
 // DefaultLLMGatewayPreferredModels 默认「常用模型」列表，写入 seed 的
 // preferredModels。catalog models 仍由「测试连接」拉取后写入。
 //
-// 2026-09-30 用户指定：设置页默认勾选下列 9 个（按用户给出的顺序写死），
+// 2026-09-30 用户指定：设置页默认勾选下列 9 个（按用户给出的顺序写死；
+// 当前列表已按 2026-11-01 口径重排为 8 个，见本块末尾），
 // 前面的 claude-opus-4-8 / claude-sonnet-4-6 / gpt-5.6 / gpt-5.5 / gpt-5.4 /
 // deepseek-v4-pro / mimo-v2.5-pro 已从默认勾选里移除（仍可在设置页手动加回，
 // 目录来自网关 /v1/models）。

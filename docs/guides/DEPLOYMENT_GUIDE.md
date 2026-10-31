@@ -374,7 +374,7 @@ sudo journalctl -u pocketd -n 100
 
 # 常见问题:
 # 1. 数据库连接失败
-#    → 检查 .env 中的 DB_* 变量
+#    → 检查 .env 中的 POCKET_POSTGRES_DSN 变量
 #    → 确认 PostgreSQL 运行: sudo systemctl status postgresql
 
 # 2. 端口被占用
@@ -607,8 +607,7 @@ healthcheck 现在会真的把连接建起来（库/角色/密码任一不对即
 # 调整环境变量
 # 在 .env 中添加:
 GOMAXPROCS=4              # 根据 CPU 核心数
-DB_MAX_OPEN_CONNS=25      # 数据库连接池大小
-DB_MAX_IDLE_CONNS=5
+POCKET_POSTGRES_DSN=postgres://pocket_user:...@localhost:5432/pocket_db?sslmode=disable&pool_max_conns=25   # 连接池上限（只有 DSN 里显式写 pool_max_conns= 才生效）
 ```
 
 ## 技术支持
