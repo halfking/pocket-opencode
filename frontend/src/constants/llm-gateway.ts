@@ -14,7 +14,7 @@
  */
 
 /** 自家网关（OpenAI 兼容，含 /v1 后缀）。 */
-export const DEFAULT_GATEWAY_BASE_URL = 'https://llm.kxpms.cn/v1'
+export const DEFAULT_GATEWAY_BASE_URL = 'https://llm.itestu.cn/v1'
 
 /** 消息格式：当前对话链路唯一实现的是 openai-chat。 */
 export const DEFAULT_GATEWAY_FORMAT = 'openai-chat'
@@ -25,13 +25,12 @@ export const DEFAULT_GATEWAY_FORMAT = 'openai-chat'
  * 顺序与后端常量一致（auto 模式按此顺序降级）。
  */
 export const DEFAULT_GATEWAY_PREFERRED_MODELS: readonly string[] = [
-  'glm-5.3',
   'minimax-m3',
-  'kimi-k3',
   'claude-sonnet-5',
+  'glm-5.3-flash',
+  'glm-5.3',
   'gpt-5.6-terra',
-  'claude-opus-5',
-  'claude-fable-5',
   'gpt-5.6-sol',
-  'gemini-3.5-flash',
+  'claude-opus-5-5',
+  'claude-fable-5-1',
 ]

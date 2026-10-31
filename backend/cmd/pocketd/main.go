@@ -612,7 +612,7 @@ func main() {
 	var embedder aigate.Embedder
 	var llm aigate.LLMClient
 
-	// 网关 base：显式配置优先，否则回退到默认网关（https://llm.kxpms.cn/v1）。
+	// 网关 base：显式配置优先，否则回退到默认网关（https://llm.itestu.cn/v1，2026-11-01 切换）。
 	// 注意 NewClient 会自动剥离结尾的 /v1，因此无论写不带还是带 /v1 都能正确拼接。
 	// key 同理：只有 env 有值才算配置，**不回落到任何内置密钥**。
 	// 曾经这里注释写的是「env 优先，未注入时用内置的自家网关默认 key」，
@@ -1064,7 +1064,7 @@ func main() {
 	// （启动环境变量 POCKET_LLM_GATEWAY_URL/_API_KEY 的默认值 + 运行时
 	// /api/llm-gateway/config 保存的配置），因此用户在「设置 → AI 模型」里修改网关
 	// 后，对话功能无需重启 pocketd 即可生效。网关地址/密钥缺省时回落到内置默认
-	// （https://llm.kxpms.cn/v1 + POCKET_LLM_GATEWAY_API_KEY），
+	// （https://llm.itestu.cn/v1 + POCKET_LLM_GATEWAY_API_KEY），
 	// POCKET_LLM_GATEWAY_URL/_API_KEY 仍可用于换成别的租户网关。
 	{
 		provider := server.NewDynamicLLMGatewayBFFProvider(func(wsID, userID string) server.GatewayConfig {

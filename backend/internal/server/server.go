@@ -35,6 +35,7 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/flashcards"
 	"github.com/halfking/pocket-opencode/backend/internal/identity"
 	"github.com/halfking/pocket-opencode/backend/internal/kxmemory"
+	"github.com/halfking/pocket-opencode/backend/internal/memora"
 	"github.com/halfking/pocket-opencode/backend/internal/learning"
 	"github.com/halfking/pocket-opencode/backend/internal/learning/sources"
 	"github.com/halfking/pocket-opencode/backend/internal/llmbff"
@@ -90,6 +91,7 @@ type Server struct {
 	pluginHub              *ws.PluginHub // Plugin/Manager WebSocket Hub
 	upgrader               websocket.Upgrader
 	// Phase 0: 个人助理模块 store 与依赖
+	memora           *memora.HTTPClient // memora 记忆库客户端；nil = 未配置（路由 503）
 	notesStore       *notes.Store
 	emailStore       *email.Store
 	vaultStore       vaultSyncStorer
@@ -282,6 +284,7 @@ func newServer(cfg config.Config, nps adapter.NPSAdapter, opencode adapter.OpenC
 		snippetStore:     snippet.NewStore(),
 		meetingStore:     meeting.NewStore(),
 		chatSummaryStore: cs.NewStore(),
+		memora:           memora.NewClient(cfg.MemoraBaseURL, cfg.MemoraAPIKey, cfg.MemoraJWTSecret, cfg.MemoraTenantID, cfg.MemoraProjectID, cfg.MemoraUserID, 10*time.Second),
 		flashcardStore:   flashcardStore,
 		transcriber:      transcriber,
 		mcpClient:        mcpClient,
@@ -753,6 +756,13 @@ func (s *Server) Handler() http.Handler {
 	// 语音笔记
 	mux.HandleFunc("/api/notes", s.requireAuth(s.handleNotes))
 	mux.HandleFunc("/api/notes/", s.requireAuth(s.handleNoteOperations))
+	// memora 记忆库桥（笔记/知识库检索与推送；未配置 POCKET_MEMORA_BASE_URL 时 503）
+	mux.HandleFunc("/api/memora/status", s.requireAuth(s.handleMemoraStatus))
+	mux.HandleFunc("/api/memora/search", s.requireAuth(s.handleMemoraSearch))
+	mux.HandleFunc("/api/memora/notes/push", s.requireAuth(s.handleMemoraNotePush))
+	// RedClaw 门户同步策略兜底实现（前端 redclaw-portal.ts 的 base 兜底链最后一跳；
+	// 此前 404 ⇒ 前端降级 local-only，本地 rig 收件箱读不到服务端邮件）
+	mux.HandleFunc("/api/v1/portal/sync-policy", s.requireAuth(s.handlePortalSyncPolicy))
 	// v1 闪卡模块：/api/flashcards 与 /api/flashcards/。handlers 在 store
 	// 未注入时返回 503（pgxpool 为 nil 的 remote-only 模式下自然降级）。
 	mux.HandleFunc("/api/flashcards", s.requireAuth(s.handleFlashcardsCollection))

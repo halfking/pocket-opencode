@@ -14,8 +14,10 @@
 #   setting-value           = gateway.baseURL，或 models 前 3 个 chip + 「+N」
 #
 # 断言的判别力（别只看「AI 网关」四个字，它在未配置时也渲染）：
-#   · 网关地址必须出现 **llm.kxpms.cn** —— 这一条才是「配置真的到位了」。
+#   · 网关地址必须出现 **llm.itestu.cn** —— 这一条才是「配置真的到位了」。
 #     未配置时该位置渲染的是「未配置」三字，域名不会出现。
+#     （2026-11-01 切网关：默认网关从 llm.kxpms.cn 换成 llm.itestu.cn，
+#      与 backend/internal/opencode/config_writer.go DefaultLLMGatewayBaseURL 同步。）
 #   · 状态徽标必须为「已配置」而不是「未配置」。
 #   · 可用模型区域要么出现模型 chip，要么出现明确的「未获取」——
 #     **两者都算通过**，因为网关可达性取决于后端当时能不能拉到列表；
@@ -101,7 +103,7 @@ appId: com.kaixuan.opencode.pocket
 # 这是本 flow 唯一有判别力的部分。前面两条只是「页面到了」。
 - assertVisible: "AI 网关|AI Gateway"
 # 网关地址里必须出现目标域名。未配置时这一格显示的是「未配置」。
-- assertVisible: ".*llm\\.kxpms\\.cn.*"
+- assertVisible: ".*llm\\.itestu\\.cn.*"
 - assertVisible: "网关地址|Gateway Address"
 - assertVisible: "API 密钥|API Key"
 - assertVisible: "可用模型|Available Models"

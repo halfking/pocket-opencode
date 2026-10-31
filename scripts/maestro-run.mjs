@@ -117,7 +117,17 @@ const DRIVER_APKS = (process.env.POCKET_MAESTRO_DRIVER_DIR
   || `${ROOT}/logs/maestro/driver-extracted`)
 const DEVICE = process.env.POCKET_SERIAL || '192.168.31.19:5555'
 
-const flows = process.argv.slice(2)
+const flows = process.argv.slice(2).map((f) => {
+  // ★ 2026-11-01 修：fixture/subflow 清单的键是**相对 ROOT** 的路径
+  //   （scripts/.maestro-flows.json），而 maestro-run-all.sh 用绝对路径调用
+  //   （`node maestro-run.mjs "$ROOT/$f"`）。键对不上 ⇒ 夹具与子流判定
+  //   **静默失效**：acc-approval 在没有「待批项」前提时照跑 ⇒ 恒红在
+  //   「ACC 待批不可见」（4c308e2e 真机实测：log 里一行 [fixture] 都没有）。
+  //   统一归一化成相对 ROOT 的路径再参与查找。
+  const abs = resolve(f)
+  if (abs.startsWith(ROOT + '/')) return abs.slice(ROOT.length + 1)
+  return f
+})
 if (!flows.length) {
   console.error('用法: node scripts/maestro-run.mjs <flow.yaml> [...]')
   process.exit(2)
@@ -1158,7 +1168,13 @@ async function resetAppAuth() {
     const info = await cdpEval(`(function(){
       try {
         var before = (localStorage.getItem('pocket_token')||'').length;
-        ['pocket_token','pocket_user','pocket_workspace_id','pocket_auth_method'].forEach(function(k){localStorage.removeItem(k)});
+        // ★ 2026-11-01 修：必须连同 pocket_auth_snapshot_v1 一起清。
+        //   凭据面整改后 SNAPSHOT_KEY（pocket_auth_snapshot_v1）是权威会话
+        //   记录（stores/auth.ts readStoredSession 优先读它），只清 4 个旧键时
+        //   路由守卫 syncFromStorage 会从快照恢复会话 ⇒ App 停在 #/ai 不落登录页
+        //   （4c308e2e 真机实测：清 283 字符 token 后守卫仍判已登录）。
+        //   App 自己的登出（clearLocal）是「先写空快照再清旧键」，此处等价对齐。
+        ['pocket_token','pocket_user','pocket_workspace_id','pocket_auth_method','pocket_auth_snapshot_v1'].forEach(function(k){localStorage.removeItem(k)});
         return JSON.stringify({removedTokenLen: before, after: (localStorage.getItem('pocket_token')||'').length});
       } catch (e) { return JSON.stringify({err: String(e && e.message || e)}) }
     })()`)

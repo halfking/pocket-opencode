@@ -233,13 +233,33 @@ appId: com.kaixuan.opencode.pocket
 - pressKey: Back
 # 键盘关掉后，**底部那个** submit 才会回到可视区（输入法开着时它在可视区之外），
 # 所以这条断言同时证明「键盘确实关了、布局确实回来了」。
-- extendedWaitUntil:
-    visible: { text: "保存|Save", index: 1, enabled: true }
-    timeout: 20000
-- tapOn:
-    text: "保存|Save"
-    index: 1
-    enabled: true
+#
+# ★ 2026-11-01 修（4c308e2e 真机实测）：「保存」节点数是**布局相关**的——
+#   AVD 上顶栏 save-link + 底部 submit 同时在树上（index 0/1）；
+#   Redmi 720x1640 上顶栏在滚动容器外被推离可视区，a11y 树里**只剩一个**「保存」
+#   ⇒ `index: 1` 恒不存在 ⇒ 断言 20s 必红（失败现场截图：表单填好、底部保存
+#   可见可用，仅节点数不同）。改为自适应：有两个节点取 index 1（底部），
+#   只有一个时 index 0 就是底部那颗（顶栏已离屏）。
+- runFlow:
+    when:
+      visible: { text: "保存|Save", index: 1, enabled: true }
+    commands:
+      - tapOn:
+          text: "保存|Save"
+          index: 1
+          enabled: true
+- runFlow:
+    when:
+      notVisible: { text: "保存|Save", index: 1 }
+      visible: { text: "保存|Save", index: 0, enabled: true }
+    commands:
+      - tapOn:
+          text: "保存|Save"
+          index: 0
+          enabled: true
+# ⚠️ 不要在这里加「保存仍可见」的收尾断言：保存**成功**的表现恰恰是编辑页
+#    关闭（hash 回卡组页）、按钮消失 —— 2026-11-01 实测加了必红。
+#    真判据是下一步：卡组页必须看得到刚建的卡片。
 
 # ---------- 6. BUG-O 核心断言：回到卡组页必须看得到刚建的卡片 ----------
 # 修前：POST 201、PG 有数据，但客户端 cards 数组里自始至终没有这张卡，

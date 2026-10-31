@@ -13,7 +13,7 @@ import (
 // 并把 llm.kxpms.cn 列入 obsolete 强制改写——两处已一并回退，否则设置页
 // 填 llm.kxpms.cn 会被 rewriteObsoleteGateway 打回 llmgo，配置形同虚设。
 // POCKET_LLM_GATEWAY_URL 仍可覆盖。reset 后首次启动 pocketd 会自动写 seed。
-const DefaultLLMGatewayBaseURL = "https://llm.kxpms.cn/v1"
+const DefaultLLMGatewayBaseURL = "https://llm.itestu.cn/v1"
 
 // 租户密钥**不从这里出**。
 //
@@ -67,16 +67,25 @@ const DefaultLLMGatewayBaseURL = "https://llm.kxpms.cn/v1"
 // kimi-k3 长 prompt 首 token 实测 >20s，调低会误杀慢而可用的模型。
 // 网关侧模型可用性治理由网关负责，应用侧保持"链式降级 + 进度帧"这一既有设计。
 // 注意：本列表同时是 auto 模式的降级链顺序，改动会同时改变默认首选模型。
+//
+// 2026-11-01 切网关 llm.itestu.cn 并按用户口径重排（8 个模型全部对准网关
+// /v1/models 的真实 id，实测当日 key 可用）：
+//
+//   - 用户点名的 kimi-k3 / gemini-3.5-flash 在该网关目录里**不存在**，已剔除；
+//     claude-opus-5 / claude-fable-5 的真实 id 是 claude-opus-5-5 / claude-fable-5-1。
+//   - 排序依据 2026-11-01 实测 chat completions：minimax-m3 与 claude-sonnet-5
+//     秒级可用；glm-5.3 / glm-5.3-flash 目录在但上游 provider 全挂（transient），
+//     gpt-5.6-terra 40s 未回首字节。glm 仍保留在列表里（用户点名 + auto 链会
+//     降级），但排到实测可用模型之后，避免 auto 模式首问吃满 20s 尝试窗。
 var DefaultLLMGatewayPreferredModels = []string{
-	"glm-5.3",
 	"minimax-m3",
-	"kimi-k3",
 	"claude-sonnet-5",
+	"glm-5.3-flash",
+	"glm-5.3",
 	"gpt-5.6-terra",
-	"claude-opus-5",
-	"claude-fable-5",
 	"gpt-5.6-sol",
-	"gemini-3.5-flash",
+	"claude-opus-5-5",
+	"claude-fable-5-1",
 }
 
 // LLMGatewayConfig 描述注入到 OpenCode 的 LLM Gateway 配置。

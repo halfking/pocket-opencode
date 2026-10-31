@@ -15,16 +15,18 @@ import (
 // 模型，9 个 id 全部命中。2026-10-02 用户把首选从 glm-5.2 改为 glm-5.3，
 // 复测：GET → 200 / **606** 个模型，glm-5.3 在目录里，且
 // POST /v1/chat/completions 非流式返回 content="OK"。
+// 2026-11-01 随 DefaultLLMGatewayPreferredModels 切网关 llm.itestu.cn 同步更新：
+// 8 个模型全部对准网关 /v1/models 的真实 id（kimi-k3 / gemini-3.5-flash 在该
+// 网关不存在；claude-opus-5 / claude-fable-5 的真实 id 带 -5-5 / -5-1 后缀）。
 var wantDefaultPreferredModels = []string{
-	"glm-5.3",
 	"minimax-m3",
-	"kimi-k3",
 	"claude-sonnet-5",
+	"glm-5.3-flash",
+	"glm-5.3",
 	"gpt-5.6-terra",
-	"claude-opus-5",
-	"claude-fable-5",
 	"gpt-5.6-sol",
-	"gemini-3.5-flash",
+	"claude-opus-5-5",
+	"claude-fable-5-1",
 }
 
 // 不配任何 env 时，defaultLLMGatewayState 必须预置地址与模型，
@@ -45,7 +47,7 @@ func TestDefaultLLMGatewayStateHasNoBuiltinKey(t *testing.T) {
 	t.Setenv("POCKET_LLM_GATEWAY_API_KEY", "")
 
 	st := defaultLLMGatewayState()
-	if st.BaseURL != "https://llm.kxpms.cn/v1" {
+	if st.BaseURL != "https://llm.itestu.cn/v1" {
 		t.Fatalf("default baseURL must be the self-hosted gateway, got %q", st.BaseURL)
 	}
 	if st.APIKey != "" {

@@ -111,6 +111,15 @@ type Config struct {
 	KxMemoryNoteClassifyPath  string // POCKET_KXMEMORY_NOTE_CLASSIFY_PATH（默认 /v1/notes/classify）
 	KxMemoryEmailClassifyPath string // POCKET_KXMEMORY_EMAIL_CLASSIFY_PATH（默认 /v1/emails/classify）
 	KxMemoryDailySummaryPath  string // POCKET_KXMEMORY_DAILY_SUMMARY_PATH（默认 /v1/emails/daily-summary）
+	// memora 记忆库（ai-platform/memora，module kxmemory-go）——「笔记与知识库
+	// 打通 memora」的对接配置（2026-11-01）。与 KxMemory*（AI 编排 FastAPI）是
+	// 两个服务：memora 存记忆条目并做语义/混合检索。
+	MemoraBaseURL   string // POCKET_MEMORA_BASE_URL：memora 地址（空 = 未启用，路由 503）
+	MemoraAPIKey    string // POCKET_MEMORA_API_KEY：静态 Bearer（与 JWTSecret 二选一）
+	MemoraJWTSecret string // POCKET_MEMORA_JWT_SECRET：memora JWT_SECRET，HS256 服务身份
+	MemoraTenantID  string // POCKET_MEMORA_TENANT_ID（默认 default）
+	MemoraProjectID string // POCKET_MEMORA_PROJECT_ID（默认 default）
+	MemoraUserID    string // POCKET_MEMORA_USER_ID（默认 pocketd）
 	// 邮箱模块
 	EmailMasterKey string // POCKET_EMAIL_MASTER_KEY：AES-GCM 加密 IMAP 凭证
 	// 任务系统整合（Phase 5）
@@ -335,6 +344,12 @@ func Load() Config {
 		PostgresSchema:              pgSchema,
 		GroqAPIKey:                  getEnv("POCKET_GROQ_API_KEY", ""),
 		KxMemoryBaseURL:             getEnv("POCKET_KXMEMORY_BASE_URL", ""),
+		MemoraBaseURL:               getEnv("POCKET_MEMORA_BASE_URL", ""),
+		MemoraAPIKey:                getEnv("POCKET_MEMORA_API_KEY", ""),
+		MemoraJWTSecret:             getEnv("POCKET_MEMORA_JWT_SECRET", ""),
+		MemoraTenantID:              getEnv("POCKET_MEMORA_TENANT_ID", ""),
+		MemoraProjectID:             getEnv("POCKET_MEMORA_PROJECT_ID", ""),
+		MemoraUserID:                getEnv("POCKET_MEMORA_USER_ID", ""),
 		KxMemoryNoteClassifyPath:    getEnv("POCKET_KXMEMORY_NOTE_CLASSIFY_PATH", "/v1/notes/classify"),
 		KxMemoryEmailClassifyPath:   getEnv("POCKET_KXMEMORY_EMAIL_CLASSIFY_PATH", "/v1/emails/classify"),
 		KxMemoryDailySummaryPath:    getEnv("POCKET_KXMEMORY_DAILY_SUMMARY_PATH", "/v1/emails/daily-summary"),
