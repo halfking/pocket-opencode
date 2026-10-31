@@ -118213,3 +118213,145 @@ CI 的真实命令（`.github/workflows/backend.yml` 的 `test` job）：
 
 ★ **归因实验没有落进仓**（它是注入型变异）⇒ 复现办法见 §973.4 的四个变体定义：
 夹具顺序（计数先置位 / 注册后置位）× 断言时机（单次采样 / 等被测事实），四者**同一个 50ms 注入点**。
+### §973.8 本节的 CI 权威读数
+
+★ **本节的产出是两份文档**（主文档 ＋ 简报），**生产代码与测试代码零改动** ⇒ ⇒ ⇒ 本节的 CI 读数因此只有一个用途：**确认「改了文档不会把 CI 弄红」**，以及**把 §973.3 的推断再核一次**。
+
+★ **本笔提交** `50624b09`，**两个 workflow 都被触发了**（不是只跑了一个）：
+
+| workflow | run id | 结论 |
+|---|---|---|
+| `backend` | `41177035832` | ✅ **success** |
+| `frontend` | `41177035831` | ❌ **failure**（见本节后半） |
+
+⚠ **「没跑」≠「绿」**：这里两个都跑了，所以下面每一条读数都有对应的 run id 可以回查。
+
+#### 后端（run `41177035832`）：✅ 全绿，且包行数与本机完全对齐
+
+| 读数 | 值 | 口径 |
+|---|---|---|
+| workflow 结论 | **success** | `gh run view 41177035832` |
+| job `build gate (go build ./...)` | ✅ success | 同上 |
+| job `test` | ✅ success | 同上 |
+| backend 包行总数 | **85** | 日志里 `github.com/halfking/pocket-opencode/backend` 的 `ok` ＋ `[no test files]` |
+| 其中有测试且通过 | **67** | `ok github.com/halfking/pocket-opencode/backend/...` |
+| 其中无测试文件 | **18** | `[no test files]` |
+| 本机 `go list ./...` | **85** | `darwin/arm64` 与 `linux/amd64` 两口径都是 85，**无 GOOS 差异** |
+| `FAIL` / `DATA RACE` / `panic` | **0 / 0 / 0** | 全日志 grep |
+
+★ **`internal/opencode` 在 CI 里确实跑了**，不是「没被触发」：
+
+```
+ok  github.com/halfking/pocket-opencode/backend/internal/opencode  2.045s
+```
+
+⇒ ⇒ ⇒ 这行是**正面证据**（包被覆盖到了，且通过）⇒ 与 §973.7 的本机读数（整包 `-count=1` 绿 1.12s）方向一致。
+
+⚠ **但它不是「这一族在 CI 上没问题」的证据** —— CI 的真实命令是 `go test -race ./... -count=1` ⇒ **样本量仍然 = 1** ⇒ ⇒ ⇒ §973.3 的推断（~1/300 的概率在 CI 上几乎撞不上）本笔**依然成立**⇒ ⇒ ⇒ ⇒ **⇒ CI 后端这次全绿，恰恰是「样本量 = 1」的预期表现，而不是「缺陷不存在」的证据** ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒
+
+#### 前端（run `41177035831`）：❌ 红在 **gates parity**，与本节无关
+
+| job | 结论 |
+|---|---|
+| `gates parity (every check:* declared in gates.json)` | ❌ **failure** |
+| `typecheck + build + node tests` | ⚠ **cancelled**（**不是绿**，见下） |
+| `android assembleDebug (frontend/android)` | ✅ success |
+
+★ **编号口径必须一起引用**（门禁自己也在日志里提醒了这句话）：
+
+| 说法 | 值 |
+|---|---|
+| **CI 名单**（`gates.json` 的 `ciRuns`，**40** 项）里 `check:edge-route-reach` 是 | **第 8 项** |
+| **全量**（`gates.json` 的 `gates`，**51** 项）里它是 | **第 17 项** |
+| CI 名单里 `check:gofmt` 是 | **第 20 项** |
+| 全量里 `check:gofmt` 是 | **第 31 项** |
+
+⚠ **「第 8 项」单写出来是歧义的** ⇒ 门禁日志自己带这句提醒：
+「编号口径：CI 名单（gates.json 的 ciRuns，40 项）—— 引用这个『第 8 项』时必须带这句话。」
+
+★ **本笔的门禁失败原文**（`41177035831`）：
+
+```
+[gates] ❌ 第 8 项 check:edge-route-reach 失败，退出码 1；已通过 7/40 项，用时 16.5s
+```
+
+失败内容是 **3 条路由 × 3 个 vhost 反代配置**：
+
+```
+✗ /internal/resource-authority/workspaces/
+✗ /internal/workspace-authority/workspaces
+✗ /internal/workspace-authority/workspaces/
+```
+
+⚠ **红点迁移过**（把最近 12 笔前端 run 的失败行逐笔取出来）：
+
+| run | 红在哪 | 已通过 |
+|---|---|---|
+| 最早的 3 笔（`41049235427` 等） | CI 第 **6** 项 `check:local-todo-dedupe`（退出码 **2**，原因：「✗ ② 真实仓当前无裸 INSERT（问题 2 条）」） | 5/40 |
+| 其余 9 笔（含本笔） | CI 第 **8** 项 `check:edge-route-reach`（退出码 **1**） | 7/40 |
+
+⇒ ⇒ ⇒ **⇒ 红点清单会随并发提交漂移**（§973.7 已为 `check:gofmt` 记过一次，这里是**第二次**同族实证）
+⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒
+
+⚠⚠⚠ **而 `typecheck + build + node tests` 这个 job 的结论是 `cancelled`，不是 `success`** ——
+这是本节读到**最要紧**的一条：
+
+| 观测 | 值 | 口径 |
+|---|---|---|
+| 最近 **12** 笔前端 run 的整体结论 | **12/12 = failure** | `gh run list --workflow=frontend.yml --limit 12` |
+| 其中 `gates parity` = failure | **12/12** | 逐笔 `gh run view <id> --json jobs` |
+| 其中 `typecheck + build + node tests` = **cancelled** | **12/12** | 同上 |
+| 其中 `android assembleDebug` = success | **12/12** | 同上 |
+
+★★ **⇒ 「CI 上前端 node 测试全绿」这件事，在这 12 笔上从来没有发生过** ⇒ ⇒ ⇒
+⇒ ⇒ ⇒ **门禁一红，GitHub 就把在跑的兄弟 job 取消掉**（本仓 `frontend.yml` 里两个 job **没有 `needs:`**）
+⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒
+
+★★ **⇒ 这是「『没跑』≠『绿』」在 job 粒度上的实例** —— 不是「测试跑失败了」，是「**根本没跑完**」
+⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒
+
+★ **而 CI 上唯一跑完并且有结论的前端 job 是 `android assembleDebug`**（12/12 success）
+⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒
+
+#### ⚠ **两套口径对不上，而且**对不上**是结构性的**
+
+| 口径 | 读到的红 |
+|---|---|
+| **本机**（§973.7 当时跑的 `node scripts/check-gofmt.mjs`） | `check:gofmt` 红，**2 个文件** |
+| **CI**（本笔 `41177035831`） | 红在 **`check:edge-route-reach`**（CI 名单第 8 项 ＝ 全量第 17 项） |
+
+★★ **⇒ 两边说的不是同一件事，而且这件事有确定的原因**：
+**CI 的 gates 是串行的、失败即停**（日志原文：「开始执行 40 项门禁（顺序见 gates.json，失败即停）」）
+⇒ ⇒ ⇒ 它红在**第 8 项** ⇒ ⇒ ⇒ **后面的第 20 项 `check:gofmt` 根本没被执行到**
+⇒ ⇒ ⇒ ⇒ ⇒ **⇒ 「CI 只报了 1 处红」≠「只有 1 处红」** ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒
+
+⚠ **本机这次复跑 `check:gofmt`，读数与 §973.7 完全一致**：仍是**同样那 2 个文件**
+（`backend/internal/server/server_auth_extended.go`、`backend/internal/server/server_auth_identity_test.go`）⇒ ⇒ ⇒
+⇒ **红点清单在本次观测窗口内没有漂移**（上一节记的是「会随并发提交漂移」⇒ 本次窗口内未发生漂移 ⇒ ★ **清单仍必须带观测时刻**）。
+
+⚠ **而 CI 的这个红，本节不代修**：它红在**边缘反代前缀**上
+（`/internal/resource-authority/workspaces`、`/internal/workspace-authority/workspaces` 两组路由 × 3 个 vhost）
+⇒ ⇒ **与本节改的两份 markdown 无关** ⇒ ⇒ ⇒ **归属在并发会话那条线** ⇒ ⇒ ⇒ **已登记进简报第 192 条的稳定红清单**（待属主指派）。
+
+#### 本节 CI 读数的四条结论（**只说量到的那四条**）
+
+1. ★ **改两份 markdown 没有把后端 CI 弄红** —— run `41177035832` ✅ success，85 个 backend 包全部通过，`internal/opencode` 实测 `ok 2.045s`。
+2. ★★ **但这条绿不能当「这一族在 CI 上没问题」的证据** —— CI 真实命令是 `go test -race ./... -count=1`，**样本量仍然是 1** ⇒ ⇒ ⇒ §973.3 的推断依然成立 ⇒ ⇒ ⇒ ⇒ **⇒ 这次绿，正是「样本量 = 1」的预期表现** ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒
+3. ★ **前端红与本节无关**，红点归属在并发会话那条线 ⇒ 本节**新增红点 = 0**。
+4. ⚠★ **「CI 全绿/全红」这句话在 job 粒度上根本不成立** —— 最近 12 笔前端 run 里，唯一跑完并给出结论的前端 job 只有 `android assembleDebug` ⇒ ⇒ ⇒ **报 CI 状态时必须逐 job 说，不能只报 workflow 结论** ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒
+
+⚠ **本节边界重申**：**零实现改动、零判据改动**，只动两份 markdown；
+所有归因实验都跑在隔离 worktree 里，且**没有落进仓**（复现办法见 §973.4）。
+
+★ **本节写完 §973.8 时，本机复跑的门禁读数**（作为收口自证）：
+
+| 检查 | rc |
+|---|---|
+| `check:doc-encoding` | 0 |
+| `check:doc-ref-integrity` | 0 |
+| `check:doc-section-number-uniqueness` | 0 |
+| `check:doc-empty-string-literal` | 0 |
+| `check:crlf-needles` | 0 |
+| `check:ci-trigger` | 0 |
+| `npm run typecheck` | 0 |
+| `node scripts/check-gofmt.mjs` | **1**（预期红：2 个文件，与 §973.7 同） |

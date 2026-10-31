@@ -62,6 +62,8 @@ backend/agent_echo
 backend/pocketd
 backend/pocketd-*
 backend/bin/
+# Binary accidentally built to repo root (same artifact as backend/pocketd)
+/pocketd
 
 # SQLite database files (local testing / runtime data)
 *.sqlite
