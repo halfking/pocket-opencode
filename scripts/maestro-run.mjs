@@ -1375,6 +1375,13 @@ async function preflight() {
   try {
     const dump = adb(['shell', 'dumpsys', 'package', PKG], 30000)
     for (const m of dump.matchAll(/([A-Za-z0-9_.$]+)\s+filter[^\n]*\n(?:[^\n]*\n)?[^\n]*android\.intent\.category\.LAUNCHER/g)) {
+      // ★ 2026-11-01 修：并存包（applicationIdSuffix=.sttdev）的 Activity 类
+      //   仍挂在**基础包**名下（com.kaixuan.opencode.pocket.MainActivity），
+      //   只按最后一段拼 `.MainActivity` 会再次命中同一个错误候选
+      //   （4c308e2e 实测：am start sttdev/.MainActivity 报 class does not
+      //   exist，候选集合里没有别的可试 ⇒ preflight 一条 flow 都没跑）。
+      //   dumpsys 给出的是**绝对类名**，原样作为候选参与尝试。
+      if (m[1] && !cands.includes(m[1])) cands.push(m[1])
       if (m[1] && !cands.includes(`.${m[1].split('.').pop()}`)) cands.push(`.${m[1].split('.').pop()}`)
     }
   } catch { /* dumpsys 都失败就只剩 MainActivity 可试 */ }
