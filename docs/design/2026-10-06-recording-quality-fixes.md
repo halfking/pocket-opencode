@@ -118187,3 +118187,29 @@ CI 的真实命令（`.github/workflows/backend.yml` 的 `test` job）：
 
 ⇒ ⇒ ⇒ ⇒ ★ **本节新增的红点 = 0**（只动文档；测量全在隔离 worktree 里做，主仓源码零改动）。
 
+### §973.7 门禁与本节边界
+
+| 检查 | 结果 |
+|---|---|
+| `go test ./internal/opencode/ -run 'TestEventStreamManager' -count=200`（无 `-race`） | ✅ 绿（9.42s） |
+| 同上 `-count=200 -race`（**CI 的口径**） | ✅ 绿（10.02s） |
+| `go test ./internal/opencode/ -count=1`（整包） | ✅ 绿（1.12s） |
+| 五道文档门禁 ＋ `check:ci-trigger` | ✅ 六道全绿 rc=0 |
+| `npm run typecheck` | ✅ rc=0 |
+
+⚠ **`check:gofmt` 仍红**，但**只剩 2 个文件**：`backend/internal/server/server_auth_extended.go`
+与 `backend/internal/server/server_auth_identity_test.go`。
+
+★★ **而且它们与简报第 192 条记的「4 个文件」不是同一批**（旧的 4 个已被并发会话收掉，这 2 个是后落的）
+⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ★★ **⇒ 「红点清单」本身会随并发提交漂移 ⇒ 清单必须带观测时刻，否则读数即过期**
+⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒ ⇒
+
+⚠ **本节的改动范围**：**只动了两份文档**（主文档 ＋ 简报），**生产代码与测试代码零改动**。
+
+★ **本节新增的红点 = 0**（`check:gofmt` 那 2 个文件是并发会话落的，与本节无关）。
+
+★ **所有测量都在隔离 worktree**（`.wt-973`，`git worktree add --detach`）里做：
+主仓源码**从未被变异过**，`git status` 里除这两份文档外无任何改动。
+
+★ **归因实验没有落进仓**（它是注入型变异）⇒ 复现办法见 §973.4 的四个变体定义：
+夹具顺序（计数先置位 / 注册后置位）× 断言时机（单次采样 / 等被测事实），四者**同一个 50ms 注入点**。
