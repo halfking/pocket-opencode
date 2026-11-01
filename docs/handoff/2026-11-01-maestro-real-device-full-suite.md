@@ -1,7 +1,7 @@
 # 2026-11-01 真机 Maestro 全量回归（4c308e2e）—— 环境、结果、修复、遗留
 
 > 本轮目标：以 Maestro 方式把整个项目部署到真机并完整测试，修正发现的问题，打通所有功能点。
-> 结论：**可跑套件 15/15 全绿**（含 sttdev 专流外的全部主包流），2 处 harness 缺陷修复、
+> 结论：**可跑套件 14/14 全绿**（含 sttdev 专流外的全部主包可跑流），3 处 harness 缺陷修复、
 > 1 处产品级流程断言修复、2 个后端能力新增（memora 桥 / portal sync-policy）、
 > 默认网关切 llm.itestu.cn。全部已提交 main（3b3fa14b + bc840bd3）。
 
@@ -20,7 +20,7 @@
 
 ## 2. Maestro 结果（LOGDIR=/tmp/opp-maestro）
 
-**主包（com.kaixuan.opencode.pocket）—— 13/13 绿**：
+**主包（com.kaixuan.opencode.pocket）—— 14/14 绿**：
 
 _connectivity · smoke-login · 2026-10-02-real-login · login-gesture · tasks-crud · notes-crud ·
 flashcards-write · email-accounts · email-browse · meetings-entry · messages-hub ·
