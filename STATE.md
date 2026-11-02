@@ -22,7 +22,7 @@ last commit: 612d4437（2026-10-31）
 commits this session: 59
 docs: 37 + 6 handoff
 scripts: 453（2026-10-31 实测；本轮删除 14 个一次性脚本，净增 31 个审计/探针工具）
-build:    vue-tsc 全清 / gates 未全绿（2026-10-31 实跑；第 17 项 check:edge-route-reach 失败：/internal/* 三条路由未进边缘反代前缀。编号口径：gates.json 全量 51 项）
+build:    vue-tsc 全清 / gates 未全绿（2026-10-31 实跑；第 17 项 check:edge-route-reach 失败：/internal/* 三条路由未进边缘反代前缀。编号口径：gates.json 全量 51 项）。★ 2026-11-03 销账：641422c0 已补三个公网 vhost 的 /internal/ 前缀（deploy/edge/*.conf），verify-edge-route-reach.mjs 实跑 exit 0，此项已绿
 tests:    426 / 426 native green（test:native:all）；gates 内 test:native 66/66（2026-10-31 实测）
 ViewModel 缺口: 22 / 136 视图（棘轮门禁：新增缺口为 0）（2026-10-31 实测）
 APK:      29.0 MB app-debug.apk (v2 signature OK + .so 4 ABI + edge-to-edge background)

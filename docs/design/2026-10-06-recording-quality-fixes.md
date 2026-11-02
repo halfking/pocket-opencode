@@ -51553,6 +51553,17 @@ sessionID.slice(0, 8)   // ses_edac25254ffe… → "ses_edac2"
 | ④ | 没有任何地方以 `?title=` 进入该路由 | `TasksView.vue:674/1291/1309/1362`、`useApprovalAlerts.ts:140`、`SessionListView.vue:153` | 全是 `path + query:{instance_id, …}` |
 | ⑤ | 也没有任何组件内嵌该视图并传 `:title` | 全仓 `grep SessionConversationView` | 只有注释引用 |
 
+★ **2026-11-03 勘误（第四十八轮审计；原文保留，读数以本注记为准）**：上表 ①②④ 的原文读数在
+0a44e86a（2026-11-03，A5 臂计数口径收窄到 open() 体内）之后已与 HEAD 源码不符 ——
+① `title` 全仓赋值点实为 **2 处**（`stores/session.ts:78` 归属 watch 的 `title.value = ''`、
+`:101` open() 体内 `if (initialTitle) title.value = initialTitle`）；原锚点 `:83` 现为
+`async function open(` 声明行。② 「无 `title.value =`」按**全函数**口径已不成立（open() 体内
+恰有 1 处，`:101`，来自调用方传入）；判据已收窄为 **open() 体内** 口径，`open()` 不自己去取标题的
+结论仍成立。④ 「没有任何地方以 `?title=` 进入该路由」**部分不成立**：`TasksView.vue:1931/1986`、
+`SessionWorkspaceView.vue:56` 已带 `?title=`；`useApprovalAlerts.ts:170`（approvals 深链）与
+`TasksView.vue:1007/1888` 仍不带 ⇒ **缺陷未修、本登记项仍成立**，但复核时应按带 `?title=` 与否
+分入口核查。以上即 0a44e86a 提交说明所载观察的正式落档（原先只活在 git log 里）。
+
 ⇒ `store.title` 与 `initialTitle` **都是空** ⇒ `sessionTitle()` 落到第三档
 `sessionID.value.slice(0, 8)`（`.vue:147`）⇒
 `createMeeting({ title: sessionTitle() || '会话录音' })`（`useSessionLiveRecord.ts:33`）
@@ -118332,6 +118343,11 @@ ok  github.com/halfking/pocket-opencode/backend/internal/opencode  2.045s
 ⚠ **而 CI 的这个红，本节不代修**：它红在**边缘反代前缀**上
 （`/internal/resource-authority/workspaces`、`/internal/workspace-authority/workspaces` 两组路由 × 3 个 vhost）
 ⇒ ⇒ **与本节改的两份 markdown 无关** ⇒ ⇒ ⇒ **归属在并发会话那条线** ⇒ ⇒ ⇒ **已登记进简报第 192 条的稳定红清单**（待属主指派）。
+★ **2026-11-03 销账（第四十八轮审计）**：641422c0 已给三个公网 vhost 补 `/internal/` 反代前缀
+（`deploy/edge/openpocket-web.kxpms.cn.conf` / `pocket.itestu.cn.conf` / `pocket.kxpms-cn-9443.conf`），
+`node scripts/verify-edge-route-reach.mjs` 实跑 exit 0 ⇒ **本红已修**；另核实简报第 192 条现行
+稳定红清单（gofmt 真债 / check:env-example / pgmigrate 死锁 / stt-refine-receipts）本就不含此项，
+上句「已登记进第 192 条」的指针当时即有误，以本注记为准。
 
 #### 本节 CI 读数的四条结论（**只说量到的那四条**）
 
