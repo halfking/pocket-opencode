@@ -36,6 +36,30 @@ services:
       # 后端把 POCKET_HTTP_PORT 当监听端口读；compose environment 优先级
       # 高于 env_file，固定容器内监听 8088，宿主端口只由 ports 映射决定。
       POCKET_HTTP_PORT: "8088"
+
+      # ── goacos 实例注册面（本进程自注册）─────────────────────────────
+      #
+      # 默认**关**：GOACOS_ENABLED 不给就是关。「默认改开」是 D5，
+      # 未获 owner 确认 ⇒ 这里保持关。
+      #
+      # 打开需要同时给两样，缺一不可：
+      #   GOACOS_SERVER_ADDR —— 注册中心地址（如 252 的 goacos）
+      #   GOACOS_IP          —— **宿主对外可拨**的地址（netbird 虚拟局域网地址）。
+      #     容器里自动探测到的是容器网段地址，跨机拨不通。
+      #
+      # ⚠ GOACOS_PORT 必须取**宿主侧**的 POCKET_HTTP_PORT，而不是容器内那个：
+      #   上面已经把容器内的 POCKET_HTTP_PORT 钉成 8088（内部监听端口），
+      #   而宿主发布出去的是 8090（252/154）或 8091（245）。
+      #   发布 8088 ⇒ 实例在注册面里显示 healthy，跨机却拨不通。
+      #   compose 的 ${...} 取的是**宿主环境**（env.sh 按主机设 8090/8091），
+      #   与 ports 那一行同源 ⇒ 每台机各自是多少就是多少。
+      GOACOS_ENABLED: ${GOACOS_ENABLED:-false}
+      GOACOS_SERVER_ADDR: ${GOACOS_SERVER_ADDR:-}
+      GOACOS_IP: ${GOACOS_IP:-}
+      GOACOS_PORT: ${POCKET_HTTP_PORT:-8090}
+      GOACOS_NAMESPACE: ${GOACOS_NAMESPACE:-public}
+      GOACOS_CLUSTER: ${GOACOS_CLUSTER:-}
+      GOACOS_GROUP: ${GOACOS_GROUP:-}
     # 宿主端口绑定（POCKET_PORT_BIND_IP 由 env.sh 注入；252 上绑 eth0 IP
     # 规避 kxpms-cert-manager 对 127.0.0.1:8090 的占用）。
     ports:
@@ -91,6 +115,44 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
+
+  # ===========================================================================
+  # registrar-openpocket-web —— 前端静态站的 goacos 代注册（默认关）
+  # ===========================================================================
+  # openpocket-web 的运行物是**纯 nginx 静态站**（Dockerfile.frontend 的运行段
+  # 是 nginx:1.24-alpine，/usr/share/nginx/html 只有构建好的 dist/）
+  # ⇒ 结构上装不了 SDK 客户端 ⇒ 由注册代理替它登记同一个端口。
+  #
+  # 端口口径：REGISTRAR_PORT = **宿主发布端口**（4175），不是容器内的 80；
+  # REGISTRAR_TARGET = **同一台主机、同一个端口**上的探活地址（探的就是
+  # peer 要拨的那个地址:端口 ⇒ 端口映射坏了就不注册，不会出幽灵实例）。
+  # 三处（ports: 宿主侧 / REGISTRAR_PORT / REGISTRAR_TARGET 的端口）**同源**
+  # 于同一个变量 ⇒ 三个数不可能漂。
+  #
+  # 广播地址必须显式给（GOACOS_IP = 本机 netbird 地址）：容器内自动探测到的
+  # 是 172.18.x，网关永远连不到。sidecar 自己也有这道闸门（不给就 exit 2）。
+  #
+  # 默认关（GOACOS_ENABLED 不给就是关）。禁用时**空转存活**而不是退出：
+  # restart: unless-stopped 对退出码 0 也重启 ⇒ 退出就是空转重启循环。
+  registrar-openpocket-web:
+    image: "${GOACOS_REGISTRAR_IMAGE:-goacos-registrar-sidecar:1.0.0}"
+    container_name: "goacos-registrar-openpocket-web"
+    restart: unless-stopped
+    depends_on:
+      frontend:
+        condition: service_healthy
+    environment:
+      REGISTRAR_ENABLED: "${GOACOS_ENABLED:-false}"
+      REGISTRAR_IDLE_WHEN_DISABLED: "true"
+      REGISTRAR_SERVICE_NAME: "openpocket-web"
+      REGISTRAR_TARGET: "http://${GOACOS_IP:-}:${POCKET_FRONTEND_PORT:-4175}/"
+      REGISTRAR_PORT: "${POCKET_FRONTEND_PORT:-4175}"
+      REGISTRAR_IP: "${GOACOS_IP:-}"
+      GOACOS_SERVER_ADDR: "${GOACOS_SERVER_ADDR:-}"
+      GOACOS_NAMESPACE: "public"
+      GOACOS_METADATA: "app=openpocket,component=web,env=itestu"
+    networks:
+      - opp_net
 
 networks:
   opp_net:

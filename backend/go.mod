@@ -10,6 +10,7 @@ require (
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
+	github.com/halfking/goacos v0.0.0-00010101000000-000000000000
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/kaixuan/identity-go v0.0.0-00010101000000-000000000000
 	github.com/labstack/echo/v4 v4.15.4
@@ -66,3 +67,28 @@ require (
 )
 
 replace github.com/kaixuan/identity-go => ./third_party/identity-go
+
+// github.com/halfking/goacos 用**仓内副本**，不是已发布版本。
+//
+// 理由：goacos 仓里「把跨仓共享的注册策略收进 SDK」的那一版（ConfigFromEnv /
+// Announce，也就是注册时机、端口口径、地址口径、注销时机这五个决定）
+// **不在任何已发布 tag 里** —— v1.2.0 的 sdk/registry 只有 client.go /
+// discover.go / doc.go，没有 service.go。
+//
+// 代价要说清楚：这份副本是**未发布**代码，goacos 发下一个 tag 之前它只存在于
+// 本仓。好处是逐字节来自某个 commit（可复现）、离线可构建、漂移可被自动检出；
+// 代价是 goacos 的修复不会自动流到这里。
+//
+// 版本号写成 v0.0.0-… 是**占位**：它表示「本地路径替换」，不表示任何一个
+// 已发布版本。副本来自哪个 commit、逐文件 sha256、owner 发 tag 之后的收尾步骤，
+// 都记在 third_party/goacos/PROVENANCE.md。
+//
+// ⚠ 这条 replace 是有先例的例外，不是惯例：acc-go 那边明确要求只用已发布 tag
+// （见 acc-go/go.mod 的注释与 myvpn/scripts/tests/test_acc_vendor_matches_tag.py）。
+// openpocket 之所以能例外，是因为它要的那个 API 压根还没发布；一旦发了 tag，
+// 这里就该换回 go mod vendor。
+//
+// ⚠ 嵌套模块的 go 指令取**本仓**的（1.27.1），不取上游的（1.27.2）：
+//   依赖要求更高版本时 GOTOOLCHAIN=auto **不会**自动切换工具链，
+//   构建会直接失败（go: module ./dep requires go >= 1.27.2 (running go 1.27.1)）。
+replace github.com/halfking/goacos => ./third_party/goacos

@@ -4,11 +4,15 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"log/slog"
+	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/halfking/pocket-opencode/backend/internal/acchttp"
@@ -48,6 +52,7 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/pgmigrate"
 	"github.com/halfking/pocket-opencode/backend/internal/quota"
 	"github.com/halfking/pocket-opencode/backend/internal/redclaw"
+	"github.com/halfking/pocket-opencode/backend/internal/registration"
 	"github.com/halfking/pocket-opencode/backend/internal/registry"
 	"github.com/halfking/pocket-opencode/backend/internal/rss"
 	"github.com/halfking/pocket-opencode/backend/internal/scheduledtask"
@@ -1558,10 +1563,67 @@ func main() {
 		WriteTimeout:      30 * time.Second,  // 写响应超时（注意：对 SSE/WebSocket 长连接需特殊处理）
 		IdleTimeout:       120 * time.Second, // Keep-Alive 连接空闲超时
 	}
-	log.Printf("pocketd listening on %s", addr)
-	if err := server.ListenAndServe(); err != nil {
+	// ── 监听器先起来，再注册 ────────────────────────────────────────────
+	//
+	// 注册必须发生在监听器起来**之后**：先注册再监听，注册面上会短暂出现
+	// 一个没人应答的实例；网关可能挑中它，请求打过去就是 502 —— 而 502 在
+	// 监控上看起来像「后端有问题」，实际上后端连监听都没开始。
+	//
+	// 所以这里自己 net.Listen，而不是交给 server.ListenAndServe()：后者把
+	// 「建监听器」和「开始服务」揉在一个调用里，中间插不进注册这一步。
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		log.Fatalf("listen on %s: %v", addr, err)
+	}
+
+	// ── 注册进 goacos（实例注册面）──────────────────────────────────────
+	//
+	// 默认关：GOACOS_ENABLED 不给就是关。注册失败不阻塞服务。
+	// 对外端口取「宿主发布端口」（GOACOS_PORT）、地址必须显式给、
+	// 名字跟应用模型走 —— 这三条口径和它们的理由都在 internal/registration 里。
+	//
+	// ⚠ 本仓另有一个 internal/registry，那是**OpenCode 实例发现**
+	//   （扫局域网找 OpenCode 进程），与 goacos 的服务注册面不是一回事。
+	stopRegistry := registration.Announce(context.Background(), registration.Options{
+		ListenAddr: ln.Addr().String(),
+		Logger: slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+			Level: slog.LevelInfo,
+		})),
+	})
+
+	// ── 停止信号：先摘注册，再退出 ─────────────────────────────────────
+	//
+	// 顺序有讲究：注册面还留着这个实例的那几秒里，网关会继续往一个已经
+	// 不再接请求的进程上打 ⇒ 先摘注册，再退出。
+	//
+	// ⚠ 本服务此前**没有**信号处理（SIGTERM 由默认处置直接终止进程）。
+	//   加了这一段之后，进程会多活至多 5 秒（注销的等待上限）再退出 ——
+	//   摘不掉也没关系：ephemeral 实例停止心跳 15 秒后标不健康、30 秒后被清掉。
+	//   退出码沿用惯例 128+信号号。
+	stopSignals := make(chan os.Signal, 1)
+	signal.Notify(stopSignals, syscall.SIGINT, syscall.SIGTERM)
+	background.Go("registry/signal-deregister", func() {
+		sig := <-stopSignals
+		log.Printf("received %v; deregistering from goacos before exit", sig)
+		stopRegistry()
+		log.Printf("deregistered from goacos; exiting")
+		os.Exit(128 + signalNumber(sig))
+	})
+
+	log.Printf("pocketd listening on %s", ln.Addr().String())
+	if err := server.Serve(ln); err != nil {
 		log.Fatal(err)
 	}
+}
+
+// signalNumber 把停止信号换算成退出码（128+信号号，惯例）。
+//
+// 断言失败时返回 1 —— 不是 0：那会把「被信号停掉」说成「正常退出」。
+func signalNumber(sig os.Signal) int {
+	if s, ok := sig.(syscall.Signal); ok {
+		return int(s)
+	}
+	return 1
 }
 
 // resolveGatewayBootstrap 返回 Phase C（`/api/embed`、`/api/llm/chat`）实际使用的
