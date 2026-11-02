@@ -12,6 +12,13 @@
 //
 // ⚠ 列解析器必须自证：若 setColumns 对任何语句都返回同一个值，
 // 下面所有断言都会安静地恒真。所以第 1 条就拿一条**写三列**的语句验它。
+//
+// ⚠ 2026-11-03：锚点从「未归属那组」迁到 **scoped 那组**。
+//   原先断言的是 SQL_LIST / SQL_RENAME / SQL_ENROLL_AGAIN（owner scoping 改造前
+//   的遗留），而 App 真正在跑的是 SQL_*_SCOPED ⇒ 门守着的是没人跑的 SQL，
+//   活着的 SQL 反而没人守（列形状漂移不会被抓到）。
+//   ⇒ 现在断言直接指到 scoped 组：**判据只多不少**，且那 7 个未归属常量
+//     作为死导出被删掉（不必给死能力基线加豁免）。
 
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
@@ -20,7 +27,7 @@ import { dirname, join } from 'node:path'
 import { describe, it } from 'node:test'
 import {
   nextSampleCount, planVoiceprintWrite,
-  SQL_ENROLL_AGAIN, SQL_LIST, SQL_RENAME,
+  SQL_ENROLL_AGAIN_SCOPED, SQL_LIST_SCOPED, SQL_RENAME_SCOPED,
 } from './voiceprint-writes.ts'
 
 /** 解析一条 UPDATE 的 SET 子句，返回它会写入的列名。 */
@@ -35,19 +42,19 @@ function setColumns(sql: string): string[] {
 
 describe('voiceprint-writes', () => {
   it('setColumns 解析器自证：会数出多条语句的不同列数', () => {
-    assert.equal(setColumns(SQL_ENROLL_AGAIN).length, 3)
-    assert.deepEqual(setColumns(SQL_ENROLL_AGAIN).sort(), ['display_name', 'embedding', 'sample_count'])
-    assert.deepEqual(setColumns(SQL_RENAME).sort(), ['display_name'])
+    assert.equal(setColumns(SQL_ENROLL_AGAIN_SCOPED).length, 3)
+    assert.deepEqual(setColumns(SQL_ENROLL_AGAIN_SCOPED).sort(), ['display_name', 'embedding', 'sample_count'])
+    assert.deepEqual(setColumns(SQL_RENAME_SCOPED).sort(), ['display_name'])
     // 反向对照：解析器不是恒定的
-    assert.notDeepEqual(setColumns(SQL_ENROLL_AGAIN), setColumns(SQL_RENAME))
+    assert.notDeepEqual(setColumns(SQL_ENROLL_AGAIN_SCOPED), setColumns(SQL_RENAME_SCOPED))
   })
 
   it('改名只写 display_name 一列 —— 不动样本数、不动声纹向量', () => {
-    assert.deepEqual(setColumns(SQL_RENAME), ['display_name'])
+    assert.deepEqual(setColumns(SQL_RENAME_SCOPED), ['display_name'])
   })
 
   it('列表查询不取 sample_count（避免把「改过几次名」当成「几个样本」展示）', () => {
-    assert.ok(!/\bsample_count\b/.test(SQL_LIST), `SQL_LIST 不该取 sample_count：${SQL_LIST}`)
+    assert.ok(!/\bsample_count\b/.test(SQL_LIST_SCOPED), `SQL_LIST_SCOPED 不该取 sample_count：${SQL_LIST_SCOPED}`)
   })
 
   it('已存在 → 只改名；不存在 → 带向量插入', () => {
@@ -68,9 +75,9 @@ describe('voiceprint-writes', () => {
 
   it('负控：把改名的 SQL 换成 enroll 那条，本门必须抓到样本数被写', () => {
     // 复现原始 bug 的等价形状 —— 只换掉语句，其余不变。
-    assert.ok(setColumns(SQL_ENROLL_AGAIN).includes('sample_count'))
+    assert.ok(setColumns(SQL_ENROLL_AGAIN_SCOPED).includes('sample_count'))
     // 而改名那条不该含它：这一条断言就是本门真正的牙齿。
-    assert.ok(!setColumns(SQL_RENAME).includes('sample_count'))
+    assert.ok(!setColumns(SQL_RENAME_SCOPED).includes('sample_count'))
   })
 })
 
