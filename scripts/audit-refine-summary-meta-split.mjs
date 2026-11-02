@@ -25,7 +25,8 @@
 //   A4 `MeetingDetailView` 调 `useLiveSummary` 时**传** meta
 //      ⇒ 这是「两条路径不一致」的对照臂；两条一起钉，才不会退化成同一条实验。
 //   A5（§387）会话录音送进**精校**的 `Title` 现状是 `ses_edac2` 这样的 ID 前缀，
-//      且 `stores/session.ts` 的 `title.value` 恰好只有一处赋值（`open()` 不回填）
+//      且 `stores/session.ts` 的 **open() 体内**给 `title.value` 的赋值恰好只有一处
+//      （`if (initialTitle) …` ⇒ **由调用方给**标题，open() 自己不去取）
 //      ⇒ 两者任一被修，本闸都改报 STALE 登记项。
 //      与 A3 不同源：A3 问的是**总结**路径收不收 meta，A5 问的是**精校**路径收到的是什么。
 //      同属「会话录音到底把什么证据送给了模型」，故并进本闸而非另开一道。
@@ -160,6 +161,28 @@ function termHintCallSites(goSrc) {
   }));
 }
 
+/**
+ * 取某个函数体的文本（按**大括号配平**）。
+ *
+ * ⚠ 为什么要配平而不是「截到下一个空行为止」：open() 里嵌着
+ *   watch / if / try 等块，粗截断会把块**之外**的赋值一起算进来
+ *   （又一次「断言量得太粗」）。
+ * ⚠ 找不到 / 不配平 ⇒ 返回 null，调用方必须**拒绝给结论**，
+ *   不许拿 0 当读数（0 与 1 在这道闸里含义完全不同）。
+ */
+function functionBody(src, decl) {
+  const i = src.indexOf(decl);
+  if (i < 0) return null;
+  const open = src.indexOf('{', i);
+  if (open < 0) return null;
+  let depth = 0;
+  for (let j = open; j < src.length; j++) {
+    if (src[j] === '{') depth++;
+    else if (src[j] === '}' && --depth === 0) return src.slice(open, j + 1);
+  }
+  return null; // 不配平 ⇒ 不给结论
+}
+
 function audit(root = REPO_ROOT) {
   const findings = [];
   const notes = [];
@@ -271,20 +294,39 @@ function audit(root = REPO_ROOT) {
         '请撤下该登记项，并**顺带确认接进来的是真标题而不是 `New session - <时间戳>` 这类占位符**。',
     });
   }
-  const storeAssignments = (storeSrc.match(/\btitle\.value\s*=/g) || []).length;
-  if (storeAssignments > 1) {
-    notes.push({
-      kind: 'STALE 登记项',
-      msg: `stores/session.ts 现在有 ${storeAssignments} 处给 title.value 赋值（原先恰好 1 处）⇒ ` +
-        '§387.1②「open() 不回填标题」已不成立，结论需按新链路重核。',
+  // ⚠⚠ 2026-11-03：计数口径从「stores/session.ts **全文件**里有几处 title.value=」
+  //   收窄到「**open() 函数体内**有几处」。
+  //   原口径把「open() 自己回填标题」与「**别处**清空标题」混成了一件事
+  //   ⇒ 产生**假 STALE**：归属切换的 watch 里那句 `title.value = ''`
+  //   （切归属时清空）把计数顶到 2，于是闸说「§387.1② 已不成立」——
+  //   而 §387.1② 问的是「open() 加载会话时**自己**去不回填标题」：
+  //   open() 里那句至今仍是 `if (initialTitle) title.value = initialTitle`
+  //   （**由调用方给**标题），它自己去取标题这件事**根本没被修**
+  //   ⇒ 登记项仍然成立，闸不该诱导人去撤。
+  //   ⇒ 这与本文件头「第五型：变异改对了地方，断言却量得太粗」是同一族病。
+  const openBody = functionBody(storeSrc, 'async function open(');
+  let storeAssignments = -1; // -1 = 读数没取到（**不许**当 0 用）
+  if (openBody === null) {
+    findings.push({
+      kind: 'A5',
+      msg: 'stores/session.ts 里找不到 open() 函数体 ⇒ §387.1② 的读数取不到（不许拿 0 或 1 顶替）',
     });
-  }
-  if (!hexFallback && storeAssignments <= 1) {
-    // 两处都已修但互相矛盾 —— 说明只是换了写法，登记项仍需人工确认
-    notes.push({
-      kind: 'STALE 登记项',
-      msg: 'A5 两处读数不一致（兜底已改但 store 仍不回填）⇒ 请人工确认 §387 的结论是否还成立。',
-    });
+  } else {
+    storeAssignments = (openBody.match(/\btitle\.value\s*=/g) || []).length;
+    if (storeAssignments > 1) {
+      notes.push({
+        kind: 'STALE 登记项',
+        msg: `stores/session.ts 的 open() 体内现在有 ${storeAssignments} 处给 title.value 赋值（登记时恰好 1 处）⇒ ` +
+          '§387.1②「open() 不回填标题」已不成立，结论需按新链路重核。',
+      });
+    }
+    if (!hexFallback && storeAssignments <= 1) {
+      // 两处都已修但互相矛盾 —— 说明只是换了写法，登记项仍需人工确认
+      notes.push({
+        kind: 'STALE 登记项',
+        msg: 'A5 两处读数不一致（兜底已改但 store 仍不回填）⇒ 请人工确认 §387 的结论是否还成立。',
+      });
+    }
   }
 
   // ---- A6（§388）：`createMeeting` 的 title 实参**不得裸用** `sessionTitle()`
