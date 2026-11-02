@@ -250,6 +250,16 @@ sudo ./deploy-245.sh
 | `OPP_PG_HOST` / `OPP_PG_PORT` | local=host.docker.internal:15432 / server=172.16.2.210:5432 | PG 目标 |
 | `OPP_PG_PASSWORD` | （空） | 生成 `.env.local` 时注入 DSN 密码（不入库） |
 | `POCKET_ENV_DEBUG` / `OPP_DEBUG` | `0` | `1` 时 env.sh 打印全部生效路径 |
+| `GOACOS_ENABLED` | `false` | goacos 实例注册总开关（2026-11-02 接入）；默认**关**，注册失败不挡服务 |
+| `GOACOS_SERVER_ADDR` | （空） | 注册中心地址；不给则注册失败（进程照常服务） |
+| `GOACOS_IP` | （空） | 宿主**对外可拨**的地址（netbird）；不给则**不注册** |
+| `GOACOS_NAMESPACE` | `public` | 注册面命名空间 |
+
+> **goacos 注册口径（2026-11-02 接入，`docker-compose.opp.yml` 接线）**：注册面发布的端口取
+> **宿主侧 `POCKET_HTTP_PORT`**（compose 里 `GOACOS_PORT: ${POCKET_HTTP_PORT:-8090}` ⇒ local/252/154 = 8090、245 = 8091），
+> **不是容器内监听的那个 8088**（compose 的 `environment:` 把容器内 `POCKET_HTTP_PORT` 钉成 8088）——
+> 发布错端口时实例在注册面显示 healthy、跨机拨不通（502）。`GOACOS_IP` 必须给宿主对外可拨的地址；
+> 不给则**宁可不注册**，也不发布一个拨不通的实例。
 
 ### 派生输出（env.sh 自动导出）
 

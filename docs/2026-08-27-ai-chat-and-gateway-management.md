@@ -36,14 +36,15 @@
 ## 2. 配置
 
 ```bash
-# 数据面（对话）：默认地址即 https://llm.kxpms.cn/v1，写不写 /v1 均可（自动归一化）
-# 2026-09-30 起**默认地址**内置在 opencode.DefaultLLMGatewayBaseURL；
+# 数据面（对话）：默认地址即 https://llm.itestu.cn/v1，写不写 /v1 均可（自动归一化）
+# **默认地址**内置在 opencode.DefaultLLMGatewayBaseURL（2026-09-30 起内置；
+# 2026-11-01 由 llm.kxpms.cn 切到 llm.itestu.cn）；
 # 但**默认密钥没有内置值**——常量 opencode.DefaultLLMGatewayAPIKey 已删除
 # （那是一把能计费的真实租户密钥：写进源码就等于所有部署共用一把 key，
 # 且会进 git 历史）。因此**全新实例不配 key 就是「未配置」**：
 # 设置页显示「未配置」、对话/邮件分类不可用，而不是"开箱即用"。
 # 下面两个 env 仍可覆盖：
-POCKET_LLM_GATEWAY_URL=https://llm.kxpms.cn/v1    # 可选，覆盖内置默认地址
+POCKET_LLM_GATEWAY_URL=https://llm.itestu.cn/v1    # 可选，覆盖内置默认地址
 POCKET_LLM_GATEWAY_API_KEY=<data_key>            # 必填（无内置默认）：租户密钥，只能经 env 注入
 
 # 控制面（管理页）：需在 App「网关节点」配置 admin 用户名/密码（super_admin 角色）
