@@ -29,6 +29,8 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+
+	"github.com/halfking/pocket-opencode/backend/internal/outbound"
 )
 
 // Result 是 /api/search/hybrid 单条命中（memora HybridSearch 的 scored 行）。
@@ -111,13 +113,17 @@ func NewClient(baseURL, apiKey, jwtSecret, tenantID, projectID, userID string, t
 		timeout = 10 * time.Second
 	}
 	return &HTTPClient{
-		BaseURL:    baseURL,
-		APIKey:     strings.TrimSpace(apiKey),
-		JWTSecret:  strings.TrimSpace(jwtSecret),
-		TenantID:   tenantID,
-		ProjectID:  projectID,
-		UserID:     userID,
-		HTTPClient: &http.Client{Timeout: timeout},
+		BaseURL:   baseURL,
+		APIKey:    strings.TrimSpace(apiKey),
+		JWTSecret: strings.TrimSpace(jwtSecret),
+		TenantID:  tenantID,
+		ProjectID: projectID,
+		UserID:    userID,
+		// §950：出站客户端只能由 internal/outbound 构造 —— 它保证
+		// 「timeout <= 0 回落默认值」+「Timeout 恒为正」⇒ 请求恒有上界。
+		// 这里自己写 `&http.Client{Timeout: timeout}` 会绕过那个兜底
+		// （且被 §950 卡口的「不许有裸字面量」判据当场抓住）。
+		HTTPClient: outbound.NewClient(timeout),
 	}
 }
 

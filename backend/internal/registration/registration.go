@@ -11,16 +11,17 @@
 //
 // 三个必须记住的口径
 // ------------------
+//
 //  1. **对外端口不是进程监听端口，而且进程自己读不到它。**
 //
 //     仓内编排（deploy/bin/docker-compose.opp.yml）的写法是：
 //
 //     environment:
-//       # 后端把 POCKET_HTTP_PORT 当监听端口读；compose environment 优先级
-//       # 高于 env_file，固定容器内监听 8088，宿主端口只由 ports 映射决定。
-//       POCKET_HTTP_PORT: "8088"
+//     # 后端把 POCKET_HTTP_PORT 当监听端口读；compose environment 优先级
+//     # 高于 env_file，固定容器内监听 8088，宿主端口只由 ports 映射决定。
+//     POCKET_HTTP_PORT: "8088"
 //     ports:
-//       - "${POCKET_PORT_BIND_IP:-0.0.0.0}:${POCKET_HTTP_PORT:-8090}:8088"
+//     - "${POCKET_PORT_BIND_IP:-0.0.0.0}:${POCKET_HTTP_PORT:-8090}:8088"
 //
 //     即：**容器内固定听 8088**，而**宿主发布出去的端口**由宿主侧的
 //     POCKET_HTTP_PORT 决定（252/154 = 8090，245 = 8091）。
@@ -51,6 +52,7 @@
 //
 // 环境变量
 // --------
+//
 //	GOACOS_ENABLED     总开关。**默认关**（SDK 自身也是默认关；「默认改开」
 //	                    是 D5，未获 owner 确认 ⇒ 仓内取保守值）。
 //	GOACOS_SERVER_ADDR 注册中心地址，如 http://100.106.190.139:8848。

@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-// 用户指定的默认设置页配置：自家网关地址 + 9 个常用模型。
+// 用户指定的默认设置页配置：自家网关地址 + 8 个常用模型。
 //
 // 2026-09-30 首次落地时实测 GET https://llm.kxpms.cn/v1/models → 200 / 603 个
 // 模型，9 个 id 全部命中。2026-10-02 用户把首选从 glm-5.2 改为 glm-5.3，
@@ -78,7 +78,7 @@ func TestDefaultLLMGatewayStateEnvOverridesBuiltinDefaults(t *testing.T) {
 	}
 }
 
-// 设置页 GET 出口：首次访问（无任何已存配置）返回预置地址与 9 个默认常用模型，
+// 设置页 GET 出口：首次访问（无任何已存配置）返回预置地址与 8 个默认常用模型，
 // 但 `apiKeySet` 必须为 **false** —— 前端据此提示用户去填 key，
 // 而不是显示一个实际调不通的「已配置」。
 func TestGatewayConfigGETReturnsInitializedDefaults(t *testing.T) {
@@ -108,7 +108,10 @@ func TestGatewayConfigGETReturnsInitializedDefaults(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if body.BaseURL != "https://llm.kxpms.cn/v1" {
+	// 2026-11-02 订正：默认网关已随 DefaultLLMGatewayPreferredModels 切到
+	// llm.itestu.cn（3b3fa14b），本行的旧期望值 kxpms.cn 是**漏改的残留**
+	// ⇒ 与同文件 TestDefaultLLMGatewayStateHasNoBuiltinKey 的期望保持一致。
+	if body.BaseURL != "https://llm.itestu.cn/v1" {
 		t.Fatalf("GET baseURL = %q", body.BaseURL)
 	}
 	if body.APIKeySet {

@@ -388,16 +388,18 @@ func (s *Server) handleAuthMe(w http.ResponseWriter, r *http.Request) {
 // 返回**服务端从已验证 JWT 推导**的归属：{user_id, workspace_id}。
 //
 // ⚠ 为什么单独开这个端点（而不用 /api/auth/me）：
-//   /api/auth/me 返回的是 RedClaw employee 画像（id/name/role/email），
-//   **没有 workspace_id**。而本地配置表的归属键是 (user_id, workspace_id)，
-//   缺一不可。
+//
+//	/api/auth/me 返回的是 RedClaw employee 画像（id/name/role/email），
+//	**没有 workspace_id**。而本地配置表的归属键是 (user_id, workspace_id)，
+//	缺一不可。
 //
 // ⚠ 为什么客户端需要它：应用重启后从 localStorage 恢复会话时，持久化的
-//   workspaceId 是**客户端自报**的，未经服务端确认（auth.ts：
-//   「Persisted metadata is not a verified owner assertion」）。
-//   若客户端就用它当归属，跨账号/跨工作区的归属判错就无法被发现。
-//   ⇒ 恢复会话时调本端点，用服务端确认过的值**重新确立归属**，
-//     这就是「服务间可信验证」：归属只认服务端签发过的东西。
+//
+//	workspaceId 是**客户端自报**的，未经服务端确认（auth.ts：
+//	「Persisted metadata is not a verified owner assertion」）。
+//	若客户端就用它当归属，跨账号/跨工作区的归属判错就无法被发现。
+//	⇒ 恢复会话时调本端点，用服务端确认过的值**重新确立归属**，
+//	  这就是「服务间可信验证」：归属只认服务端签发过的东西。
 //
 // ⚠ 401 的语义：token 无效/过期 ⇒ 调用方不得把任何行挂到这个身份上。
 func (s *Server) handleAuthIdentity(w http.ResponseWriter, r *http.Request) {

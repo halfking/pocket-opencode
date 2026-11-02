@@ -29,7 +29,7 @@ func TestAuthIdentityReturnsServerDerivedOwnership(t *testing.T) {
 		name  string
 		token string
 		want  want
-}{
+	}{
 		{
 			name:  "workspace from verified jwt",
 			token: tokens["ws-a"],
