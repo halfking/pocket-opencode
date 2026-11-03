@@ -2203,8 +2203,15 @@ if (!isMiui) {
 // 只读第一条 mCurrentFocus=，在 OriginOS 上读到 "null"，永远看不见弹窗）。
 //
 // ⇒ 两个机型都不重装 driver，区别只在「怎么拿一个干净的设备服务器」：
-//   MIUI    ：不重装、也不 force-stop（卸载重装会毁掉 driver，见上）
-//   非 MIUI ：不重装、但每轮 force-stop driver 进程（包还在，Maestro 会重新拉起）
+//   两台都每轮 force-stop driver 进程（包还在，Maestro 会重新拉起）。
+//   MIUI 最初被排除在外（2026-10-03），但 2026-11-03 在 Xiaomi 2411DRN47C
+//   （HyperOS OS3.0.303）真机上实测出**同族反例**：--no-reinstall-driver 下
+//   复用跨轮设备服务器，前一条 PASS 后紧接着的下一条在 deviceInfo 上
+//   69~91ms 秒死（DeviceServerDiedException/UNAVAILABLE，dadb 侧
+//   "Command failed: closed"）—— A/B 实测两对：force-stop 后重跑必绿，
+//   复用上一轮服务器必红。force-stop 只杀进程、不卸载包，不碰那条
+//   MIUI 安装确认框的路径；「MIUI 不能动 driver」的正确边界是**不卸载**，
+//   不是「连进程都不能杀」。
 const reinstallDriver = process.env.POCKET_REINSTALL_DRIVER === '1'
 const driverFlag = reinstallDriver ? [] : ['--no-reinstall-driver']
 if (reinstallDriver) {
@@ -2225,19 +2232,19 @@ if (reinstallDriver) {
 // 把 instrumentation 重新拉起来，既拿到干净连接，又不碰那条会被 vivo 安装框
 // 拦死的 install 路径。
 //
-// 为什么放在 preflight（只对非 MIUI）：MIUI 上卸载重装 driver 就是那个
-// 「装不回来」的破坏性循环（见上面 --no-reinstall-driver 的注释），那边反而不
-// 能动它，靠 ensureDriver() 的 pm enable + 重试来救。
-if (!isMiui) {
-  for (const p of DRIVER_PKGS) {
-    try {
-      adb(['shell', 'am', 'force-stop', p], 30000)
-      console.log(`[preflight] 已 force-stop ${p}（避免复用上一轮已劣化的设备服务器）`)
-    } catch { /* 没装或已经不在 */ }
-  }
-  // 给系统一点时间回收，再让 Maestro 重新装
-  await sleep(1200)
+// 为什么放在 preflight：2026-10-03 起 vivo 上每轮 force-stop；2026-11-03 起
+// MIUI（Xiaomi 2411DRN47C / HyperOS）也必须每轮 force-stop —— 实测跨轮复用
+// 设备服务器时，上一条 PASS 后下一条在 deviceInfo 秒死（见上方注释）。
+// MIUI 上的边界线始终是「不卸载不重装」（ensureDriver 的 pm enable + 重试
+// 才是那条路径的救场），force-stop 不越线。
+for (const p of DRIVER_PKGS) {
+  try {
+    adb(['shell', 'am', 'force-stop', p], 30000)
+    console.log(`[preflight] 已 force-stop ${p}（避免复用上一轮已劣化的设备服务器）`)
+  } catch { /* 没装或已经不在 */ }
 }
+// 给系统一点时间回收，再让 Maestro 重新拉起
+await sleep(1200)
 
 // ⚠️ 多 flow 必须**逐条跑**，每条之前用 CDP 把 App 复位到起点路由。
 //
