@@ -18,8 +18,8 @@
 ```
 project: pocket-opencode
 branch: main
-last commit: 612d4437（2026-10-31）
-commits this session: 59
+last commit: 8842bb81（2026-11-04）
+commits this session: 59（+21 至 8842bb81，2026-11-04 审计补记）
 docs: 37 + 6 handoff
 scripts: 453（2026-10-31 实测；本轮删除 14 个一次性脚本，净增 31 个审计/探针工具）
 build:    vue-tsc 全清 / gates 未全绿（2026-10-31 实跑；第 17 项 check:edge-route-reach 失败：/internal/* 三条路由未进边缘反代前缀。编号口径：gates.json 全量 51 项）。★ 2026-11-03 销账：641422c0 已补三个公网 vhost 的 /internal/ 前缀（deploy/edge/*.conf），verify-edge-route-reach.mjs 实跑 exit 0，此项已绿
