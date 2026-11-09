@@ -44,7 +44,7 @@
 package background
 
 import (
-	"log"
+	"github.com/halfking/pocket-opencode/backend/internal/logging"
 	"runtime/debug"
 )
 
@@ -55,7 +55,7 @@ func Go(name string, fn func()) {
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				log.Printf("[PANIC] background goroutine %q panicked: %v\n%s", name, r, debug.Stack())
+				logging.Errorf("[PANIC] background goroutine %q panicked: %v\n%s", name, r, debug.Stack())
 			}
 		}()
 		fn()

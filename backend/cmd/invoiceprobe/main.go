@@ -93,6 +93,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/halfking/pocket-opencode/backend/internal/email"
+	"github.com/halfking/pocket-opencode/backend/internal/logging"
 )
 
 type row struct {
@@ -127,7 +128,7 @@ func main() {
 
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
-		log.Fatalf("parse dsn: %v", err)
+		logging.Fatalf("parse dsn: %v", err)
 	}
 	cfg.ConnConfig.RuntimeParams["search_path"] = schema
 	cfg.ConnConfig.RuntimeParams["default_transaction_read_only"] = "on"
@@ -135,7 +136,7 @@ func main() {
 
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
-		log.Fatalf("connect: %v", err)
+		logging.Fatalf("connect: %v", err)
 	}
 	defer pool.Close()
 
@@ -145,7 +146,7 @@ func main() {
 
 	rows, err := load(ctx, pool)
 	if err != nil {
-		log.Fatalf("load: %v", err)
+		logging.Fatalf("load: %v", err)
 	}
 	if len(rows) == 0 {
 		fmt.Printf("[probe] schema=%s 没有邮件行\n", schema)

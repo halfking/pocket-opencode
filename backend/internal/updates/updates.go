@@ -2,7 +2,7 @@ package updates
 
 import (
 	"encoding/json"
-	"log"
+	"github.com/halfking/pocket-opencode/backend/internal/logging"
 	"net/http"
 	"time"
 )
@@ -128,13 +128,13 @@ func (h *UpdateHandler) HandleCheckUpdate(w http.ResponseWriter, r *http.Request
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	body, err := json.Marshal(v)
 	if err != nil {
-		log.Printf("[ERROR] 版本检查应答编码失败（原状态码 %d）：%v", status, err)
+		logging.Errorf("[ERROR] 版本检查应答编码失败（原状态码 %d）：%v", status, err)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
 		// ⚠ 用**常量字节**：编码失败的原因可能就是值本身不可编码 ⇒
 		//　 兜底体必须**保证**写得出去。
 		if _, werr := w.Write([]byte(`{"error":"response_encode_failed: failed to encode JSON response body"}` + "\n")); werr != nil {
-			log.Printf("[WARN] 版本检查应答兜底体写出失败：%v", werr)
+			logging.Warnf("[WARN] 版本检查应答兜底体写出失败：%v", werr)
 		}
 		return
 	}
@@ -142,7 +142,7 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	if _, err := w.Write(body); err != nil {
-		log.Printf("[WARN] 版本检查应答写出失败：%v", err)
+		logging.Warnf("[WARN] 版本检查应答写出失败：%v", err)
 	}
 }
 

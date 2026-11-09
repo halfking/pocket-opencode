@@ -4,12 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"net/mail"
 	"strings"
 	"time"
 
 	"github.com/halfking/pocket-opencode/backend/internal/email"
+	"github.com/halfking/pocket-opencode/backend/internal/logging"
 )
 
 // intentExecutor 消费 email_action_intents 里 route-folder / trigger-autoreply 意图。
@@ -87,7 +87,7 @@ func (e *intentExecutor) executeRouteFolder(ctx context.Context, intent email.Ac
 		//	⇒ ⇒⇒⇒ ⇒ 而「下次 sync 会收敛」这句话**没有任何证据支撑**
 		//	⇒ ⇒⇒⇒ ⇒ （sync 会不会覆盖、什么时候覆盖，都不在这一行里）
 		//	⇒ ⇒⇒⇒ ⇒ ⇒ 而日志是**唯一**能让人回头查这件事的东西。
-		log.Printf("ERROR: route-folder: 更新本地邮件归属失败（IMAP 已移到 %s，本地视图可能仍显示在原文件夹）email=%s: %v",
+		logging.Errorf("ERROR: route-folder: 更新本地邮件归属失败（IMAP 已移到 %s，本地视图可能仍显示在原文件夹）email=%s: %v",
 			folder, em.ID, err)
 	}
 	return nil

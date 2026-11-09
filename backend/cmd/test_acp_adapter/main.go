@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/halfking/pocket-opencode/backend/internal/agent"
+	"github.com/halfking/pocket-opencode/backend/internal/logging"
 )
 
 func main() {
@@ -31,7 +32,7 @@ func main() {
 
 	ref := agent.AgentRef{Type: "acp-mock", Target: "test"}
 	if err := reg.Register(ref, mockAdapter); err != nil {
-		log.Fatalf("Register failed: %v", err)
+		logging.Fatalf("Register failed: %v", err)
 	}
 	log.Printf("✅ Registered agent: %s", ref.String())
 
@@ -39,7 +40,7 @@ func main() {
 	log.Println("\n=== 步骤 3: 从 Registry 获取 Adapter ===")
 	regAdapter, ok := reg.Get(ref)
 	if !ok {
-		log.Fatalf("Get adapter failed: not found")
+		logging.Fatalf("Get adapter failed: not found")
 	}
 	log.Printf("✅ Got adapter: %s", regAdapter.AdapterType())
 
@@ -47,7 +48,7 @@ func main() {
 	log.Println("\n=== 步骤 4: 查询 Capabilities ===")
 	caps, err := regAdapter.Capabilities(ctx, ref)
 	if err != nil {
-		log.Fatalf("Capabilities failed: %v", err)
+		logging.Fatalf("Capabilities failed: %v", err)
 	}
 	capsJSON, _ := json.MarshalIndent(caps, "", "  ")
 	log.Printf("✅ Capabilities:\n%s", capsJSON)
@@ -59,7 +60,7 @@ func main() {
 		WorkingDir: "/tmp",
 	})
 	if err != nil {
-		log.Fatalf("CreateSession failed: %v", err)
+		logging.Fatalf("CreateSession failed: %v", err)
 	}
 	log.Printf("✅ Session created: %s (status: %s)", sess.ID, sess.Status)
 
@@ -69,7 +70,7 @@ func main() {
 		Text: "Hello, ACP agent! Please echo this message.",
 	})
 	if err != nil {
-		log.Fatalf("SendPrompt failed: %v", err)
+		logging.Fatalf("SendPrompt failed: %v", err)
 	}
 	log.Printf("✅ Prompt sent, messageID: %s", result.MessageID)
 
@@ -77,7 +78,7 @@ func main() {
 	log.Println("\n=== 步骤 7: 获取 Session Messages ===")
 	messages, err := regAdapter.GetMessages(ctx, ref, sess.ID, agent.ListOptions{})
 	if err != nil {
-		log.Fatalf("GetMessages failed: %v", err)
+		logging.Fatalf("GetMessages failed: %v", err)
 	}
 	log.Printf("✅ Got %d messages", len(messages))
 
@@ -85,7 +86,7 @@ func main() {
 	log.Println("\n=== 步骤 8: 列出所有 Sessions ===")
 	sessions, err := regAdapter.ListSessions(ctx, ref, agent.ListOptions{})
 	if err != nil {
-		log.Fatalf("ListSessions failed: %v", err)
+		logging.Fatalf("ListSessions failed: %v", err)
 	}
 	log.Printf("✅ Found %d session(s)", len(sessions))
 	for i, s := range sessions {
@@ -95,14 +96,14 @@ func main() {
 	// 9. Health check
 	log.Println("\n=== 步骤 9: Health Check ===")
 	if err := regAdapter.HealthCheck(ctx, ref); err != nil {
-		log.Fatalf("HealthCheck failed: %v", err)
+		logging.Fatalf("HealthCheck failed: %v", err)
 	}
 	log.Println("✅ Health check passed")
 
 	// 10. 删除 session
 	log.Println("\n=== 步骤 10: 删除 Session ===")
 	if err := regAdapter.DeleteSession(ctx, ref, sess.ID); err != nil {
-		log.Fatalf("DeleteSession failed: %v", err)
+		logging.Fatalf("DeleteSession failed: %v", err)
 	}
 	log.Println("✅ Session deleted")
 

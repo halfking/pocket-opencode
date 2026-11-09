@@ -40,13 +40,13 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"log"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/halfking/pocket-opencode/backend/internal/logging"
 	"github.com/halfking/pocket-opencode/backend/internal/rss"
 )
 
@@ -1091,7 +1091,7 @@ func (s *Server) handleRSSShareCard(w http.ResponseWriter, r *http.Request, id s
 	w.Header().Set("Cache-Control", "private, max-age=300")
 	// ⚠ §946：写失败原来被 `_, _ =` 整个吞掉 ⇒ 服务端**零记录** ⇒ 只能留痕。
 	if _, err := w.Write(png); err != nil {
-		log.Printf("[WARN] RSS 分享卡响应体写出失败：%v", err)
+		logging.Warnf("[WARN] RSS 分享卡响应体写出失败：%v", err)
 	}
 }
 

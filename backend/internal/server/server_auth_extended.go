@@ -13,6 +13,7 @@ import (
 
 	"github.com/halfking/pocket-opencode/backend/internal/auth"
 	"github.com/halfking/pocket-opencode/backend/internal/background"
+	"github.com/halfking/pocket-opencode/backend/internal/logging"
 	"github.com/halfking/pocket-opencode/backend/internal/notify"
 	"github.com/halfking/pocket-opencode/backend/internal/redclaw"
 )
@@ -78,7 +79,7 @@ func (s *Server) handleAuthSendCode(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "ttl_sec": 0, "delivery": delivery})
 			return
 		}
-		log.Printf("WARN: send-code generate: %v", err)
+		logging.Warnf("WARN: send-code generate: %v", err)
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "ttl_sec": 0, "delivery": delivery})
 		return
 	}
@@ -103,7 +104,7 @@ func (s *Server) sendCodeEmail(code string, ttlSec int, to string, purpose auth.
 	ctx, cancel := withTimeout(10 * time.Second)
 	defer cancel()
 	if err := s.smtpClient.Send(ctx, notify.Message{To: to, Subject: subject, Text: body}); err != nil {
-		log.Printf("WARN: [send-code] smtp send to=%s: %v", to, err)
+		logging.Warnf("WARN: [send-code] smtp send to=%s: %v", to, err)
 	}
 }
 
@@ -162,7 +163,7 @@ func (s *Server) handleAuthRegister(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "用户名已被占用")
 			return
 		}
-		log.Printf("WARN: register insert user: %v", err)
+		logging.Warnf("WARN: register insert user: %v", err)
 		writeError(w, http.StatusInternalServerError, "failed to create user")
 		return
 	}
@@ -246,7 +247,7 @@ func (s *Server) handleAuthForgotPassword(w http.ResponseWriter, r *http.Request
 			writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 			return
 		}
-		log.Printf("WARN: forgot-password update: %v", err)
+		logging.Warnf("WARN: forgot-password update: %v", err)
 		writeError(w, http.StatusInternalServerError, "failed to update password")
 		return
 	}
@@ -316,7 +317,7 @@ func (s *Server) handleAuthResetPassword(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if err := s.userStore.UpdatePasswordByEmail(r.Context(), body.Email, body.NewPassword); err != nil {
-		log.Printf("WARN: reset-password update: %v", err)
+		logging.Warnf("WARN: reset-password update: %v", err)
 		writeError(w, http.StatusInternalServerError, "failed to update password")
 		return
 	}
@@ -505,7 +506,7 @@ func (s *Server) handleAuthSsoLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	nonce, err := s.ssoTxns.Issue(clientIP(r))
 	if err != nil {
-		log.Printf("WARN: sso login issue nonce: %v", err)
+		logging.Warnf("WARN: sso login issue nonce: %v", err)
 		writeError(w, http.StatusInternalServerError, "failed to start sso login")
 		return
 	}
@@ -556,7 +557,7 @@ func (s *Server) handleAuthSsoCallback(w http.ResponseWriter, r *http.Request) {
 	// 2. IdP 侧错误（如 casdoor 回传 error=...）原样转成 SPA 可展示的错误码。
 	if e := r.URL.Query().Get("error"); e != "" {
 		// IdP error 值用户可控，进日志/审计前必须清洗（防控制字符注入）。
-		log.Printf("WARN: sso callback: IdP returned error=%s", sanitizeAuditDetail(e))
+		logging.Warnf("WARN: sso callback: IdP returned error=%s", sanitizeAuditDetail(e))
 		s.auditGateway(r, "auth.sso.callback", "-", "reason=idp_error:"+sanitizeAuditDetail(e), false)
 		s.ssoRedirectError(w, r, "sso_idp")
 		return
@@ -575,7 +576,7 @@ func (s *Server) handleAuthSsoCallback(w http.ResponseWriter, r *http.Request) {
 	//    不进重定向 URL。
 	res, err := s.redclawAdminClient.SsoCallback(r.Context(), code, state)
 	if err != nil {
-		log.Printf("WARN: redclaw sso callback failed: %v", err)
+		logging.Warnf("WARN: redclaw sso callback failed: %v", err)
 		s.auditGateway(r, "auth.sso.callback", "-", "reason=upstream_rejected", false)
 		s.ssoRedirectError(w, r, "sso_upstream")
 		return
@@ -584,7 +585,7 @@ func (s *Server) handleAuthSsoCallback(w http.ResponseWriter, r *http.Request) {
 	//     login 时我方传入的 external_state。旧版 auth-agent 无回显（空串）
 	//     或值不符一律 fail-closed——部署上要求 RedClaw auth-agent 同版本。
 	if subtle.ConstantTimeCompare([]byte(res.ExternalState), []byte(nonce)) != 1 {
-		log.Printf("WARN: sso callback external_state mismatch (len=%d)", len(res.ExternalState))
+		logging.Warnf("WARN: sso callback external_state mismatch (len=%d)", len(res.ExternalState))
 		s.auditGateway(r, "auth.sso.callback", "-", "reason=external_state_mismatch", false)
 		s.ssoRedirectError(w, r, "sso_state")
 		return
@@ -592,7 +593,7 @@ func (s *Server) handleAuthSsoCallback(w http.ResponseWriter, r *http.Request) {
 	if res.Claims.Sub == "" {
 		// 不允许空 user_id:所有 SSO 用户若共用一个 sentinel id 会互相冒充。
 		//（SsoCallback 客户端已拒绝空 sub，这里是语义兜底。）
-		log.Printf("WARN: redclaw sso callback returned empty subject")
+		logging.Warnf("WARN: redclaw sso callback returned empty subject")
 		s.auditGateway(r, "auth.sso.callback", "-", "reason=empty_employee_id", false)
 		s.ssoRedirectError(w, r, "sso_no_user")
 		return
@@ -609,7 +610,7 @@ func (s *Server) handleAuthSsoCallback(w http.ResponseWriter, r *http.Request) {
 		WorkspaceID: wsID,
 	})
 	if err != nil {
-		log.Printf("WARN: sso issue exchange code: %v", err)
+		logging.Warnf("WARN: sso issue exchange code: %v", err)
 		s.ssoRedirectError(w, r, "sso_upstream")
 		return
 	}
@@ -698,7 +699,7 @@ func (s *Server) issueTokenAndRespond(w http.ResponseWriter, r *http.Request, us
 	if s.identityStore != nil {
 		ws, err := s.identityStore.EnsureDefaultWorkspace(r.Context(), userID)
 		if err != nil {
-			log.Printf("WARN: EnsureDefaultWorkspace for %s failed: %v (falling back to 'default')", userID, err)
+			logging.Warnf("WARN: EnsureDefaultWorkspace for %s failed: %v (falling back to 'default')", userID, err)
 		} else if ws != nil {
 			wsID = ws.ID
 		}
@@ -815,7 +816,7 @@ func intStr(n int) string {
 func (s *Server) mirrorRegisterToRedClaw(u *auth.User, _ string) {
 	defer func() {
 		if rec := recover(); rec != nil {
-			log.Printf("WARN: redclaw mirror panic: %v", rec)
+			logging.Warnf("WARN: redclaw mirror panic: %v", rec)
 		}
 	}()
 	if s.redclawAuthClient == nil || u == nil {

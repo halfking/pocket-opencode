@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/halfking/pocket-opencode/backend/internal/llmbff"
+	"github.com/halfking/pocket-opencode/backend/internal/logging"
 	"github.com/halfking/pocket-opencode/backend/internal/quota"
 )
 
@@ -207,7 +208,7 @@ func (s *Server) handleLLMBFFStream(w http.ResponseWriter, r *http.Request) {
 		if mErr != nil {
 			// ⚠ §946：SSE 事件的 JSON 编码失败 ⇒ 客户端会收到一条**空 data**
 			//　 的事件（看起来像「上游没说话」）⇒ ⇒⇒ 停下并留痕。
-			log.Printf("[ERROR] LLM SSE 事件编码失败（中止流）：%v", mErr)
+			logging.Errorf("[ERROR] LLM SSE 事件编码失败（中止流）：%v", mErr)
 			abort = true
 			return false
 		}
@@ -231,7 +232,7 @@ func (s *Server) handleLLMBFFStream(w http.ResponseWriter, r *http.Request) {
 		errDelta := llmbff.Delta{Done: true, FinishReason: "error"}
 		payload, mErr := json.Marshal(map[string]any{"error": err.Error(), "delta": errDelta})
 		if mErr != nil {
-			log.Printf("[ERROR] LLM SSE 错误事件编码失败：%v", mErr)
+			logging.Errorf("[ERROR] LLM SSE 错误事件编码失败：%v", mErr)
 			return
 		}
 		if wErr := s946SSEWritef(w, "data: %s\n\n", payload); wErr != nil {

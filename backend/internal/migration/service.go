@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/halfking/pocket-opencode/backend/internal/adapter"
+	"github.com/halfking/pocket-opencode/backend/internal/logging"
 	"github.com/halfking/pocket-opencode/backend/internal/model"
 	"github.com/halfking/pocket-opencode/backend/internal/registry"
 	"github.com/halfking/pocket-opencode/backend/internal/task"
@@ -295,12 +296,12 @@ func (s *Service) recordMigrationLink(taskID, fromInst, fromSession, toInst, new
 	now := time.Now().Unix()
 	// 旧会话标记为 migrated_from
 	if err := s.execLink(ctx, taskID, fromInst, fromSession, "migrated_from", now); err != nil {
-		log.Printf("ERROR: 迁移链写入失败 task=%s from=%s/%s role=migrated_from —— 会话链上看不到这次迁移: %v",
+		logging.Errorf("ERROR: 迁移链写入失败 task=%s from=%s/%s role=migrated_from —— 会话链上看不到这次迁移: %v",
 			taskID, fromInst, fromSession, err)
 	}
 	// 新会话标记为 migrated_to
 	if err := s.execLink(ctx, taskID, toInst, newSession, "migrated_to", now); err != nil {
-		log.Printf("ERROR: 迁移链写入失败 task=%s to=%s/%s role=migrated_to —— 会话链上看不到这次迁移（可能只剩半条链）: %v",
+		logging.Errorf("ERROR: 迁移链写入失败 task=%s to=%s/%s role=migrated_to —— 会话链上看不到这次迁移（可能只剩半条链）: %v",
 			taskID, toInst, newSession, err)
 	}
 }

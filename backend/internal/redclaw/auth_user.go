@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/halfking/pocket-opencode/backend/internal/logging"
 	"github.com/halfking/pocket-opencode/backend/internal/outbound"
 )
 
@@ -81,7 +82,7 @@ func (c *AuthClient) RegisterUser(ctx context.Context, req RegisterUserRequest) 
 		return
 	}
 	if req.Email == "" || req.UserID == "" {
-		log.Printf("WARN: [RedClaw auth mirror] RegisterUser missing email/user_id, skip")
+		logging.Warnf("WARN: [RedClaw auth mirror] RegisterUser missing email/user_id, skip")
 		return
 	}
 	if req.TenantID == "" {
@@ -105,7 +106,7 @@ func (c *AuthClient) ResetPassword(ctx context.Context, req ResetPasswordRequest
 		return
 	}
 	if req.Email == "" || req.UserID == "" {
-		log.Printf("WARN: [RedClaw auth mirror] ResetPassword missing email/user_id, skip")
+		logging.Warnf("WARN: [RedClaw auth mirror] ResetPassword missing email/user_id, skip")
 		return
 	}
 	if req.TenantID == "" {
@@ -129,7 +130,7 @@ func (c *AuthClient) VerifyCodeLogin(ctx context.Context, req VerifyCodeLoginReq
 		return
 	}
 	if req.Email == "" || req.UserID == "" {
-		log.Printf("WARN: [RedClaw auth mirror] VerifyCodeLogin missing email/user_id, skip")
+		logging.Warnf("WARN: [RedClaw auth mirror] VerifyCodeLogin missing email/user_id, skip")
 		return
 	}
 	if req.TenantID == "" {
@@ -143,13 +144,13 @@ func (c *AuthClient) VerifyCodeLogin(ctx context.Context, req VerifyCodeLoginReq
 func (c *AuthClient) fire(ctx context.Context, path string, payload any, opName string) {
 	body, err := json.Marshal(payload)
 	if err != nil {
-		log.Printf("WARN: [RedClaw auth mirror] %s marshal: %v", opName, err)
+		logging.Warnf("WARN: [RedClaw auth mirror] %s marshal: %v", opName, err)
 		return
 	}
 	url := c.cfg.BaseURL + path
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
-		log.Printf("WARN: [RedClaw auth mirror] %s request: %v", opName, err)
+		logging.Warnf("WARN: [RedClaw auth mirror] %s request: %v", opName, err)
 		return
 	}
 	if c.cfg.Secret != "" {
@@ -160,7 +161,7 @@ func (c *AuthClient) fire(ctx context.Context, path string, payload any, opName 
 
 	resp, err := c.httpDo.Do(req)
 	if err != nil {
-		log.Printf("WARN: [RedClaw auth mirror] %s POST %s: %v", opName, url, err)
+		logging.Warnf("WARN: [RedClaw auth mirror] %s POST %s: %v", opName, url, err)
 		return
 	}
 	defer func() { _, _ = io.Copy(io.Discard, resp.Body); _ = resp.Body.Close() }()
@@ -169,5 +170,5 @@ func (c *AuthClient) fire(ctx context.Context, path string, payload any, opName 
 		log.Printf("INFO: [RedClaw auth mirror] %s ok (%d)", opName, resp.StatusCode)
 		return
 	}
-	log.Printf("WARN: [RedClaw auth mirror] %s POST %s -> HTTP %d (RedClaw auth-agent unavailable; ignored)", opName, url, resp.StatusCode)
+	logging.Warnf("WARN: [RedClaw auth mirror] %s POST %s -> HTTP %d (RedClaw auth-agent unavailable; ignored)", opName, url, resp.StatusCode)
 }

@@ -23,7 +23,7 @@ package server
 
 import (
 	"fmt"
-	"log"
+	"github.com/halfking/pocket-opencode/backend/internal/logging"
 	"net/http"
 )
 
@@ -34,7 +34,7 @@ import (
 // ⚠ 失败时**已经记了日志** ⇒ 调用方不必再记一遍（也不该记两遍）。
 func s946SSEWritef(w http.ResponseWriter, format string, args ...any) error {
 	if _, err := fmt.Fprintf(w, format, args...); err != nil {
-		log.Printf("[WARN] SSE 事件写出失败（客户端可能已断开）：%v", err)
+		logging.Warnf("[WARN] SSE 事件写出失败（客户端可能已断开）：%v", err)
 		return err
 	}
 	return nil

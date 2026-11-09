@@ -34,6 +34,7 @@ import (
 	"time"
 
 	"github.com/halfking/pocket-opencode/backend/internal/config"
+	"github.com/halfking/pocket-opencode/backend/internal/logging"
 )
 
 // PublicEntry 暴露给 server 调用的 handler 入口（避免循环引用）。
@@ -453,13 +454,13 @@ func handleDocEvent(ev struct {
 func writeJSON(w http.ResponseWriter, status int, body any) {
 	raw, err := json.Marshal(body)
 	if err != nil {
-		log.Printf("[ERROR] 飞书应答编码失败（原状态码 %d）：%v", status, err)
+		logging.Errorf("[ERROR] 飞书应答编码失败（原状态码 %d）：%v", status, err)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
 		// ⚠ 用**常量字节**：编码失败的原因可能就是值本身不可编码 ⇒
 		//　 兜底体必须**保证**写得出去。
 		if _, werr := w.Write([]byte(`{"code":-1,"msg":"response encode failed"}` + "\n")); werr != nil {
-			log.Printf("[WARN] 飞书应答兜底体写出失败：%v", werr)
+			logging.Warnf("[WARN] 飞书应答兜底体写出失败：%v", werr)
 		}
 		return
 	}
@@ -468,6 +469,6 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	if _, err := w.Write(raw); err != nil {
-		log.Printf("[WARN] 飞书应答写出失败：%v", err)
+		logging.Warnf("[WARN] 飞书应答写出失败：%v", err)
 	}
 }

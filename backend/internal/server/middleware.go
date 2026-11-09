@@ -3,6 +3,7 @@ package server
 import (
 	"bufio"
 	"fmt"
+	"github.com/halfking/pocket-opencode/backend/internal/logging"
 	"log"
 	"net"
 	"net/http"
@@ -83,7 +84,7 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 
 		// 服务端错误优先判定并返回：又慢又 5xx 只记一条，避免同一请求两行。
 		if rw.statusCode >= http.StatusInternalServerError {
-			log.Printf("[ERROR] %s %s - %d (%v) req=%s",
+			logging.Errorf("[ERROR] %s %s - %d (%v) req=%s",
 				r.Method, r.URL.Path, rw.statusCode, duration, reqID)
 			return
 		}
@@ -122,7 +123,7 @@ func (s *Server) slowRequestThreshold() time.Duration {
 	if err != nil || ms <= 0 {
 		// 配错了就回默认，并把配错这件事说出来 —— 静默回落到一个
 		// 没人知道的阈值，正是本次审计在修的那类「悄悄生效的默认值」。
-		log.Printf("[WARN] POCKET_SLOW_REQUEST_MS=%q 非法（需正整数毫秒），沿用 %v", raw, defaultSlowRequestThreshold)
+		logging.Warnf("[WARN] POCKET_SLOW_REQUEST_MS=%q 非法（需正整数毫秒），沿用 %v", raw, defaultSlowRequestThreshold)
 		return defaultSlowRequestThreshold
 	}
 	return time.Duration(ms) * time.Millisecond
@@ -133,7 +134,7 @@ func recoveryMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if err := recover(); err != nil {
-				log.Printf("[PANIC] %s %s: %v", r.Method, r.URL.Path, err)
+				logging.Errorf("[PANIC] %s %s: %v", r.Method, r.URL.Path, err)
 				http.Error(w, "internal server error", http.StatusInternalServerError)
 			}
 		}()

@@ -35,11 +35,11 @@ package server
 import (
 	"encoding/json"
 	"errors"
-	"log"
 	"net/http"
 	"strconv"
 
 	"github.com/halfking/pocket-opencode/backend/internal/lobster"
+	"github.com/halfking/pocket-opencode/backend/internal/logging"
 )
 
 // assetSyncRequest 是 /api/assets/sync 的请求体。
@@ -96,7 +96,7 @@ func (s *Server) handleAssetSync(w http.ResponseWriter, r *http.Request) {
 			//	⇒ 客户端能区分「撞号」与「一般失败」⇒ 可以提示用户。
 			//	⚠ 一般错误**不回传内部细节**（可能带 SQL 文本）⇒ 只回
 			//	一句通用文本，真实原因记服务端日志。
-			log.Printf("WARN: asset push failed: asset_id=%s err=%v", m.ID, err)
+			logging.Warnf("WARN: asset push failed: asset_id=%s err=%v", m.ID, err)
 			text := "push failed"
 			if errors.Is(err, lobster.ErrAssetScopeConflict) {
 				text = "asset_id 已属于其他租户"

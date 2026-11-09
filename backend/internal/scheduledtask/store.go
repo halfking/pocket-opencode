@@ -8,11 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
-	"log"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/halfking/pocket-opencode/backend/internal/logging"
 )
 
 // Store wraps the shared pgxpool with scheduled-task-specific CRUD. It is
@@ -301,7 +302,7 @@ func (s *Store) DeleteTaskScoped(ctx context.Context, id, userID, workspaceID st
 		VALUES ($1, $2, $3, $4)
 		ON CONFLICT (id) DO UPDATE SET deleted_at = EXCLUDED.deleted_at`,
 		id, userID, workspaceID, time.Now().Unix()); err != nil {
-		log.Printf("ERROR: 定时任务删除墓碑写入失败（任务已删除，但**别的设备不会知道**）id=%s: %v", id, err)
+		logging.Errorf("ERROR: 定时任务删除墓碑写入失败（任务已删除，但**别的设备不会知道**）id=%s: %v", id, err)
 	}
 	return nil
 }

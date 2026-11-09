@@ -30,6 +30,7 @@ import (
 
 	"github.com/halfking/pocket-opencode/backend/internal/email"
 	"github.com/halfking/pocket-opencode/backend/internal/feishu"
+	"github.com/halfking/pocket-opencode/backend/internal/logging"
 	"github.com/halfking/pocket-opencode/backend/internal/notifycenter"
 	"github.com/halfking/pocket-opencode/backend/internal/outbound"
 	"github.com/halfking/pocket-opencode/backend/internal/sizedread"
@@ -508,7 +509,7 @@ func (s *Server) handleEmailInvoiceExport(w http.ResponseWriter, r *http.Request
 			continue
 		}
 		if err := s.emailStore.MarkInvoiceExported(r.Context(), exportedIDs[i], uid, wsID, now); err != nil {
-			log.Printf("ERROR: 发票 %s 标记已导出失败（下一轮会重导同一张票）: %v", exportedIDs[i], err)
+			logging.Errorf("ERROR: 发票 %s 标记已导出失败（下一轮会重导同一张票）: %v", exportedIDs[i], err)
 			unmarked = append(unmarked, exportedIDs[i])
 			continue
 		}
