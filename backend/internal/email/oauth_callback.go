@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/halfking/pocket-opencode/backend/internal/logging"
 	"github.com/halfking/pocket-opencode/backend/internal/outbound"
 	"github.com/halfking/pocket-opencode/backend/internal/sizedread"
 )
@@ -234,7 +235,7 @@ func HandleOAuthCallback(cfg OAuthCallbackConfig) http.HandlerFunc {
 		//   （`HandleOAuthCallback` 返回的 handler）⇒ §947 用类型信息重扫时
 		//   才把它捞出来。
 		if _, err := fmt.Fprintf(w, `<html><body><h2>✅ OAuth 授权成功</h2><p>账户 %s 已连接，请返回应用。</p></body></html>`, entry.EmailAddress); err != nil {
-			log.Printf("WARN: oauth callback html write failed: %v", err)
+			logging.Warnf("WARN: oauth callback html write failed: %v", err)
 		}
 	}
 }

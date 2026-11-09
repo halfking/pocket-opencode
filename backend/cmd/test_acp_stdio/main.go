@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/halfking/pocket-opencode/backend/internal/agent"
+	"github.com/halfking/pocket-opencode/backend/internal/logging"
 )
 
 func main() {
@@ -28,7 +29,7 @@ func main() {
 	// 2. 启动 transport
 	log.Println("启动 StdioTransport...")
 	if err := tr.Start(ctx); err != nil {
-		log.Fatalf("Start failed: %v", err)
+		logging.Fatalf("Start failed: %v", err)
 	}
 	defer tr.Close()
 	log.Println("✅ StdioTransport started")
@@ -42,7 +43,7 @@ func main() {
 	}, &result)
 
 	if err != nil {
-		log.Fatalf("Call failed: %v", err)
+		logging.Fatalf("Call failed: %v", err)
 	}
 
 	resultJSON, _ := json.MarshalIndent(result, "", "  ")
@@ -55,7 +56,7 @@ func main() {
 		"message": "test notification from StdioTransport",
 	})
 	if err != nil {
-		log.Fatalf("Notify failed: %v", err)
+		logging.Fatalf("Notify failed: %v", err)
 	}
 	log.Println("✅ Notify succeeded")
 
@@ -64,7 +65,7 @@ func main() {
 	var pingResult map[string]any
 	err = tr.Call(ctx, "ping", nil, &pingResult)
 	if err != nil {
-		log.Fatalf("Ping failed: %v", err)
+		logging.Fatalf("Ping failed: %v", err)
 	}
 	log.Printf("✅ Ping succeeded: %+v", pingResult)
 

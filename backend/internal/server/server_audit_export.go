@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/halfking/pocket-opencode/backend/internal/logging"
 	"github.com/halfking/pocket-opencode/backend/internal/redclaw"
 )
 
@@ -145,7 +146,7 @@ func writeAuditPage(w http.ResponseWriter, page *redclaw.AuditPage, format audit
 		enc := json.NewEncoder(w)
 		for i, e := range page.Entries {
 			if err := enc.Encode(e); err != nil {
-				log.Printf("[ERROR] 审计导出 JSONL 写出失败（已写出 %d/%d 条）：%v", i, len(page.Entries), err)
+				logging.Errorf("[ERROR] 审计导出 JSONL 写出失败（已写出 %d/%d 条）：%v", i, len(page.Entries), err)
 				break
 			}
 		}

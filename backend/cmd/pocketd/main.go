@@ -40,6 +40,7 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/llmbff"
 	"github.com/halfking/pocket-opencode/backend/internal/llmgateway"
 	"github.com/halfking/pocket-opencode/backend/internal/lobster"
+	"github.com/halfking/pocket-opencode/backend/internal/logging"
 	"github.com/halfking/pocket-opencode/backend/internal/marketplace"
 	"github.com/halfking/pocket-opencode/backend/internal/mcp"
 	"github.com/halfking/pocket-opencode/backend/internal/meeting"
@@ -63,13 +64,35 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/tasksync"
 	"github.com/halfking/pocket-opencode/backend/internal/usersetting"
 	"github.com/halfking/pocket-opencode/backend/internal/vault"
+	"github.com/halfking/pocket-opencode/backend/internal/version"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func main() {
 	cfg := config.Load()
+
+	// ── rule 71 统一日志标准 ──
+	//
+	// 必须装在任何日志产生之前：装晚了，之前打的日志就是旧格式。
+	//
+	// Init 内部会 slog.SetDefault —— Go 1.21+ 的 slog.SetDefault 会把标准库
+	// log 包的输出也指到 slog handler 上，因此本仓 800+ 处 log.Printf
+	// 会一并变成带 8 个必填字段的 JSONL，不需要逐处改调用点。
+	//
+	// Env 用 cfg.Environment（POCKET_ENV，默认 development），
+	// 规范层会归一成 dev/local/prod…（rule 71 §4.1）。
+	if err := logging.Init(logging.Options{
+		Service: "openpocket-api",
+		Version: version.BuildVersion,
+		Env:     cfg.Environment,
+		Level:   slog.LevelInfo,
+	}); err != nil {
+		logging.Fatalf("init logging: %v", err)
+	}
+	defer func() { _ = logging.Shutdown() }()
+
 	if err := cfg.Validate(); err != nil {
-		log.Fatalf("invalid configuration: %v", err)
+		logging.Fatalf("invalid configuration: %v", err)
 	}
 
 	// Ensure data directory exists (still used for version.json, APK cache, etc.)
@@ -83,10 +106,10 @@ func main() {
 	// 详见 config.ResolveDataDir 的注释。
 	dataDir, err := config.ResolveDataDir(cfg.DBPath, cfg.DataDir)
 	if err != nil {
-		log.Fatalf("Failed to resolve data directory: %v", err)
+		logging.Fatalf("Failed to resolve data directory: %v", err)
 	}
 	if err := os.MkdirAll(dataDir, 0755); err != nil {
-		log.Fatalf("Failed to create data directory: %v", err)
+		logging.Fatalf("Failed to create data directory: %v", err)
 	}
 	log.Printf("data dir = %s", dataDir)
 
@@ -96,13 +119,13 @@ func main() {
 	if cfg.PostgresDSN != "" {
 		p, err := db.New(context.Background(), cfg.PostgresDSN, cfg.PostgresSchema)
 		if err != nil {
-			log.Fatalf("Failed to connect to Postgres: %v", err)
+			logging.Fatalf("Failed to connect to Postgres: %v", err)
 		}
 		pool = p
 		log.Printf("Postgres pool initialized (schema=%q)", cfg.PostgresSchema)
 		defer pool.Close()
 	} else {
-		log.Println("WARN: POCKET_POSTGRES_DSN not set, running in remote-only mode (no local task cache)")
+		logging.Warnf("WARN: POCKET_POSTGRES_DSN not set, running in remote-only mode (no local task cache)")
 	}
 
 	// ---- Cross-process migration serialization ----
@@ -126,7 +149,7 @@ func main() {
 			// Degraded, not fatal: booting without the lock risks a 40P01
 			// deadlock against a peer, but refusing to boot guarantees an
 			// outage. Log loudly so the failure is visible if it happens.
-			log.Printf("WARN: migration lock unavailable (%v); booting without cross-process migration serialization", lerr)
+			logging.Warnf("WARN: migration lock unavailable (%v); booting without cross-process migration serialization", lerr)
 		} else {
 			migLock = l
 			log.Printf("Postgres migration lock acquired (schema=%q)", cfg.PostgresSchema)
@@ -172,27 +195,27 @@ func main() {
 	if pool != nil {
 		ts, err := task.NewStore(pool)
 		if err != nil {
-			log.Fatalf("task store: %v", err)
+			logging.Fatalf("task store: %v", err)
 		}
 		taskStore = ts
 		ns, err := notes.NewStore(pool)
 		if err != nil {
-			log.Fatalf("notes store: %v", err)
+			logging.Fatalf("notes store: %v", err)
 		}
 		notesStore = ns
 		es, err := email.NewStore(pool)
 		if err != nil {
-			log.Fatalf("email store: %v", err)
+			logging.Fatalf("email store: %v", err)
 		}
 		emailStore = es
 		vs, err := vault.NewStore(pool)
 		if err != nil {
-			log.Fatalf("vault store: %v", err)
+			logging.Fatalf("vault store: %v", err)
 		}
 		vaultStore = vs
 		sts, err := scheduledtask.NewStore(context.Background(), pool)
 		if err != nil {
-			log.Fatalf("scheduled task store: %v", err)
+			logging.Fatalf("scheduled task store: %v", err)
 		}
 		scheduledTaskStore = sts
 		// 日历服务：日程事件表 + 跨域 feed。这里必须接**真实的 PG 源**而不是
@@ -200,12 +223,12 @@ func main() {
 		// 任务截止与定时任务会静默消失，而这正是本功能要解决的事。
 		calSvc, err := calendar.NewService(pool, calendar.PGBridges{Pool: pool})
 		if err != nil {
-			log.Fatalf("calendar service: %v", err)
+			logging.Fatalf("calendar service: %v", err)
 		}
 		calendarService = calSvc
 		fs, err := finance.NewPGStore(context.Background(), pool)
 		if err != nil {
-			log.Fatalf("finance store: %v", err)
+			logging.Fatalf("finance store: %v", err)
 		}
 		financeStore = fs
 		// 会议存储同款：内存版重启即清空，会议逐字稿/摘要/待办会全丢。
@@ -214,12 +237,12 @@ func main() {
 		mts, err := meeting.NewPGStore(mtgCtx, pool)
 		mtgCancel()
 		if err != nil {
-			log.Fatalf("meeting store: %v", err)
+			logging.Fatalf("meeting store: %v", err)
 		}
 		meetingStore = mts
 		ms, err := initMarketplaceStore(context.Background(), pool)
 		if err != nil {
-			log.Fatalf("marketplace store: %v", err)
+			logging.Fatalf("marketplace store: %v", err)
 		}
 		marketplaceStore = ms
 		// RSS 订阅持久化（自管 schema migrations）。
@@ -229,7 +252,7 @@ func main() {
 		rs, err := rss.NewStore(rssCtx, pool)
 		rssCancel()
 		if err != nil {
-			log.Fatalf("rss store: %v", err)
+			logging.Fatalf("rss store: %v", err)
 		}
 		rssStore = rs
 		// v1 闪卡：构造 + EnsureSchema。fail-fast 因为 4 张表是新引入的，
@@ -238,11 +261,11 @@ func main() {
 		fcs, err := flashcards.NewStore(fcCtx, pool)
 		if err != nil {
 			fcCancel()
-			log.Fatalf("flashcards store: %v", err)
+			logging.Fatalf("flashcards store: %v", err)
 		}
 		if err := fcs.EnsureSchema(fcCtx); err != nil {
 			fcCancel()
-			log.Fatalf("flashcards schema: %v", err)
+			logging.Fatalf("flashcards schema: %v", err)
 		}
 		fcCancel()
 		flashcardStore = fcs
@@ -251,7 +274,7 @@ func main() {
 		// 启动期没有请求可取消。
 		ls, err := learning.NewStore(pool)
 		if err != nil {
-			log.Fatalf("learning store: %v", err)
+			logging.Fatalf("learning store: %v", err)
 		}
 		// taskStore 已在上面构造完成（104 行），因此这里可以把它作为到期工作项
 		// 计数器接进学习摘要；两者共享同一 pool 与同一 workspace 语义。
@@ -280,7 +303,7 @@ func main() {
 	// 配置了但解析失败 = fatal，拒绝带错误信任锚启动。
 	if marketplaceStore != nil && cfg.MarketplaceRootPubKey != "" {
 		if err := marketplaceStore.SetRootPublicKey(cfg.MarketplaceRootPubKey); err != nil {
-			log.Fatalf("marketplace root public key: %v", err)
+			logging.Fatalf("marketplace root public key: %v", err)
 		}
 	}
 	if marketplaceStore != nil && marketplaceStore.RootKeyConfigured() {
@@ -296,11 +319,11 @@ func main() {
 	)
 	if pool != nil {
 		if err := auth.EnsureSchema(context.Background(), pool); err != nil {
-			log.Fatalf("auth schema: %v", err)
+			logging.Fatalf("auth schema: %v", err)
 		}
 		us, err := auth.NewUserStore(pool)
 		if err != nil {
-			log.Fatalf("user store: %v", err)
+			logging.Fatalf("user store: %v", err)
 		}
 		userStore = us
 		// ⚠⚠ §945：原来这里是 `if n, _ := us.CountUsers(ctx); n == 0 {`
@@ -317,15 +340,15 @@ func main() {
 		//	⚠ 修法：**读失败 ⇒ 不 bootstrap**（对未知状态不做动作，fail-closed）
 		//	  ⇒ ⇒⇒ 而不是「当成空库」。
 		if n, err := us.CountUsers(context.Background()); err != nil {
-			log.Printf("ERROR: 统计用户数失败（**不**执行 first-user bootstrap，以免在未知状态下多插一个 admin）: %v", err)
+			logging.Errorf("ERROR: 统计用户数失败（**不**执行 first-user bootstrap，以免在未知状态下多插一个 admin）: %v", err)
 		} else if n == 0 {
 			create, user, pass, note := bootstrapDecision(cfg.DevAuthUser, cfg.DevAuthPass)
 			switch {
 			case note != "":
-				log.Printf("WARN: %s", note)
+				logging.Warnf("WARN: %s", note)
 			case create:
 				if err := us.InsertUser(context.Background(), &auth.User{ID: "user-" + user, Username: user, Role: "admin"}, pass, ""); err != nil {
-					log.Printf("WARN: bootstrap first user %q: %v", user, err)
+					logging.Warnf("WARN: bootstrap first user %q: %v", user, err)
 				} else {
 					log.Printf("Bootstrap: created first admin user %q", user)
 				}
@@ -333,7 +356,7 @@ func main() {
 		}
 		signer, err := auth.NewSigner(cfg.JWTSecret, 24*time.Hour)
 		if err != nil {
-			log.Fatalf("JWT signer init: %v", err)
+			logging.Fatalf("JWT signer init: %v", err)
 		}
 		jwtSigner = signer
 		log.Println("Auth: user store + JWT signer initialized")
@@ -342,7 +365,7 @@ func main() {
 		// userStore 仍 nil，所以 /api/auth/login 会 503；但其它 requireAuth 路由可用。
 		signer, err := auth.NewSigner(cfg.JWTSecret, 24*time.Hour)
 		if err != nil {
-			log.Fatalf("JWT signer init: %v", err)
+			logging.Fatalf("JWT signer init: %v", err)
 		}
 		jwtSigner = signer
 		log.Println("Dev mode: JWT signer initialized without user store (login disabled)")
@@ -353,7 +376,7 @@ func main() {
 		// 本地签发 token（dev 旁路 / legacy 登录 / 生物识别）不受 RedClaw
 		// 会话撤销覆盖，logout 也无法使其失效（AUTH_REDCLAW.md L3 缺口）。
 		// RedClaw 集成部署必须设置，与 RedClaw ADMIN_JWT_SIGNING_KEY 同源。
-		log.Println("WARN: IDENTITY_SHARED_SECRET not set — JWT verification is local-key only; " +
+		logging.Warnf("WARN: IDENTITY_SHARED_SECRET not set — JWT verification is local-key only; " +
 			"locally-issued tokens are NOT covered by RedClaw session revocation. " +
 			"Set IDENTITY_SHARED_SECRET for RedClaw-integrated deployments.")
 	}
@@ -366,7 +389,7 @@ func main() {
 	if pool != nil {
 		cs, err := auth.NewCodeStore(pool)
 		if err != nil {
-			log.Fatalf("code store: %v", err)
+			logging.Fatalf("code store: %v", err)
 		}
 		codeStore = cs
 		smtpClient = notify.NewClient(notify.Config{
@@ -398,7 +421,7 @@ func main() {
 			TimeoutSec: timeout,
 		})
 		if err != nil {
-			log.Printf("WARN: redclaw auth client: %v — mirror disabled", err)
+			logging.Warnf("WARN: redclaw auth client: %v — mirror disabled", err)
 		} else {
 			redclawAuthClient = ac
 			log.Printf("RedClaw auth mirror: enabled url=%s timeout=%ds", cfg.RedClawAuthURL, timeout)
@@ -409,10 +432,10 @@ func main() {
 	var redclawAdminClient *redclaw.AdminAuthClient
 	if !cfg.AuthLegacyOnly {
 		if cfg.RedClawAdminURL == "" {
-			log.Fatalf("POCKET_REDCLAW_ADMIN_URL must be set (or set POCKET_AUTH_LEGACY_ONLY=true for dev-only fallback)")
+			logging.Fatalf("POCKET_REDCLAW_ADMIN_URL must be set (or set POCKET_AUTH_LEGACY_ONLY=true for dev-only fallback)")
 		}
 		if len(cfg.RedClawAdminSecret) < 32 {
-			log.Fatalf("POCKET_REDCLAW_ADMIN_SECRET must be at least 32 bytes when RedClaw auth is enabled")
+			logging.Fatalf("POCKET_REDCLAW_ADMIN_SECRET must be at least 32 bytes when RedClaw auth is enabled")
 		}
 		ac, err := redclaw.NewAdminAuthClient(redclaw.AdminAuthClientConfig{
 			AdminURL:     cfg.RedClawAdminURL,
@@ -422,13 +445,13 @@ func main() {
 			TimeoutSec:   cfg.RedClawAdminTimeoutSec,
 		})
 		if err != nil {
-			log.Fatalf("RedClaw admin client init failed: %v", err)
+			logging.Fatalf("RedClaw admin client init failed: %v", err)
 		}
 		redclawAdminClient = ac
 		log.Printf("RedClaw auth PRIMARY: enabled admin=%s auth_agent=%s sso=%v",
 			cfg.RedClawAdminURL, cfg.RedClawAuthAgentURL, cfg.RedClawSsoEnabled)
 	} else {
-		log.Println("WARN: POCKET_AUTH_LEGACY_ONLY=true — using local JWT legacy path (not for production)")
+		logging.Warnf("WARN: POCKET_AUTH_LEGACY_ONLY=true — using local JWT legacy path (not for production)")
 	}
 
 	// ---- Biometric authentication (PG-backed credentials/challenges) ----
@@ -437,7 +460,7 @@ func main() {
 	if pool != nil {
 		biometricStore = auth.NewBiometricStore(pool)
 		if err := biometricStore.Init(context.Background()); err != nil {
-			log.Printf("WARN: biometric store init: %v — biometric auth disabled", err)
+			logging.Warnf("WARN: biometric store init: %v — biometric auth disabled", err)
 			biometricStore = nil
 		}
 	}
@@ -447,11 +470,11 @@ func main() {
 	var webAuthnVerifier *auth.WebAuthnVerifier
 	if cfg.WebAuthnRPID != "" && cfg.WebAuthnRPOrigin != "" && cfg.WebAuthnRPDisplayName != "" {
 		if biometricStore == nil {
-			log.Println("WARN: WebAuthn RP configured but biometricStore is nil (no PG) — verifier disabled")
+			logging.Warnf("WARN: WebAuthn RP configured but biometricStore is nil (no PG) — verifier disabled")
 		} else {
 			verifier, err := auth.NewWebAuthnVerifier(cfg.WebAuthnRPDisplayName, cfg.WebAuthnRPID, cfg.WebAuthnRPOrigin)
 			if err != nil {
-				log.Printf("WARN: WebAuthn verifier init: %v — biometric login degraded to P0 stub", err)
+				logging.Warnf("WARN: WebAuthn verifier init: %v — biometric login degraded to P0 stub", err)
 			} else {
 				webAuthnVerifier = verifier
 				log.Printf("WebAuthn verifier enabled (RP=%s origin=%s)", cfg.WebAuthnRPID, cfg.WebAuthnRPOrigin)
@@ -490,18 +513,18 @@ func main() {
 	if pool != nil {
 		key, err := email.EnsureMasterKey(cfg.EmailMasterKey, dataDir)
 		if err != nil {
-			log.Printf("WARN: email master key: %v — email fetcher disabled", err)
+			logging.Warnf("WARN: email master key: %v — email fetcher disabled", err)
 		} else {
 			if cfg.EmailMasterKey == "" {
 				// 这里不再单独 Abs：dataDir 在 main 开头已由 ResolveDataDir 解析成绝对路径。
 				// 原来这处补丁只护住了这行日志输出，护不住真正写文件的 EnsureMasterKey /
 				// NewFileBodyCache —— 那才是出事的地方，所以两次故障都还会发生。
-				log.Printf("WARN: POCKET_EMAIL_MASTER_KEY not set; using auto-generated key at %s",
+				logging.Warnf("WARN: POCKET_EMAIL_MASTER_KEY not set; using auto-generated key at %s",
 					filepath.Join(dataDir, "email_master.key"))
 			}
 			ec, err := email.NewCrypto(key)
 			if err != nil {
-				log.Printf("WARN: email crypto init: %v — fetcher disabled", err)
+				logging.Warnf("WARN: email crypto init: %v — fetcher disabled", err)
 			} else {
 				emailCrypto = ec
 				// 启动自检：config.Validate 只保证 POCKET_EMAIL_MASTER_KEY「非空」，
@@ -513,10 +536,10 @@ func main() {
 				// 这里把「key 拿错了」从静默变成启动日志里的一行。
 				if emailStore != nil {
 					if chk, cerr := email.CheckCredentials(context.Background(), emailStore, emailCrypto); cerr != nil {
-						log.Printf("WARN: email credential self-check failed to run: %v", cerr)
+						logging.Warnf("WARN: email credential self-check failed to run: %v", cerr)
 					} else if chk.AllFailed() {
-						log.Printf("ERROR: %s", chk.Summary())
-						log.Printf("ERROR:   凭据是用 POCKET_EMAIL_MASTER_KEY（或 <dataDir>/email_master.key）加密的，" +
+						logging.Errorf("ERROR: %s", chk.Summary())
+						logging.Errorf("ERROR:   凭据是用 POCKET_EMAIL_MASTER_KEY（或 <dataDir>/email_master.key）加密的，" +
 							"当前这把它一把都解不开。请确认这个环境的 key 与写入凭据时用的是同一把；" +
 							"改 key 前不要直接重启，否则所有邮箱都会停止同步。")
 						// 同一把 key 还封着 **LLM 网关的 API key**
@@ -527,11 +550,11 @@ func main() {
 						// 另开一轮排查。2026-10-02 本机实测：18100 那个实例同时命中
 						// 邮件 0/5 与 `[llm-gateway] decrypt api key: cipher: message
 						// authentication failed`，两边同一个根因。
-						log.Printf("ERROR:   同一把 key 也封着 LLM 网关的 API key。" +
+						logging.Errorf("ERROR:   同一把 key 也封着 LLM 网关的 API key。" +
 							"如果启动日志里有 `[llm-gateway] … decrypt api key: cipher: message authentication failed`、" +
 							"或网关显示未配置/调用全失败，**根因就是这一条**，不必另查。")
 					} else if !chk.AllDecryptable() {
-						log.Printf("WARN: %s", chk.Summary())
+						logging.Warnf("WARN: %s", chk.Summary())
 					} else {
 						log.Printf("Email credential self-check: %s", chk.Summary())
 					}
@@ -592,7 +615,7 @@ func main() {
 		transcriber = stt.NewTranscriber(cfg.GroqAPIKey, "", "")
 		log.Println("STT cloud fallback enabled (Groq Whisper Large v3 Turbo)")
 	} else {
-		log.Println("WARNING: POCKET_GROQ_API_KEY not set; STT cloud fallback disabled")
+		logging.Warnf("WARNING: POCKET_GROQ_API_KEY not set; STT cloud fallback disabled")
 	}
 
 	// ---- ACC task integration (Phase 5; construct now if configured) ----
@@ -603,9 +626,9 @@ func main() {
 	var mcpClient *mcp.Client
 	if cfg.MCPBaseURL != "" {
 		if cfg.MCPTenantID == "" {
-			log.Printf("WARN: POCKET_MCP_TENANT_ID empty; ACC MCP client disabled (Phase 4 cloud dispatcher will not activate)")
+			logging.Warnf("WARN: POCKET_MCP_TENANT_ID empty; ACC MCP client disabled (Phase 4 cloud dispatcher will not activate)")
 		} else if cfg.MCPAPIKey == "" {
-			log.Printf("WARN: POCKET_MCP_API_KEY empty; ACC MCP client disabled (Phase 4 cloud dispatcher will not activate)")
+			logging.Warnf("WARN: POCKET_MCP_API_KEY empty; ACC MCP client disabled (Phase 4 cloud dispatcher will not activate)")
 		} else {
 			mcpClient = mcp.NewClientWithAuth(cfg.MCPBaseURL, cfg.MCPAPIKey, cfg.MCPTenantID, mcpScopes, cfg.MCPInsecureTLS)
 			log.Printf("ACC MCP client configured: %s (tenant=%q scopes=%v)", cfg.MCPBaseURL, cfg.MCPTenantID, mcpScopes)
@@ -638,13 +661,13 @@ func main() {
 			embedder = aigate.NewEmbedder(cfg.EmbedBaseURL, cfg.EmbedAPIKey, cfg.EmbedModel)
 			log.Printf("Embed gateway enabled (direct): model=%s", cfg.EmbedModel)
 		} else {
-			log.Println("WARNING: POCKET_EMBED_API_KEY not set; /api/embed disabled")
+			logging.Warnf("WARNING: POCKET_EMBED_API_KEY not set; /api/embed disabled")
 		}
 		if cfg.LLMAPIKey != "" {
 			llm = aigate.NewLLM(cfg.LLMBaseURL, cfg.LLMAPIKey)
 			log.Printf("LLM gateway enabled (direct): base=%s model=%s", cfg.LLMBaseURL, cfg.LLMModel)
 		} else {
-			log.Println("WARNING: POCKET_LLM_API_KEY not set; /api/llm/chat disabled")
+			logging.Warnf("WARNING: POCKET_LLM_API_KEY not set; /api/llm/chat disabled")
 		}
 	}
 
@@ -704,7 +727,7 @@ func main() {
 		diskAdapter := disk.NewWithHome(home)
 		ids, err := diskAdapter.Register(reg, cfg.DiskSessionsWorkspace)
 		if err != nil {
-			log.Printf("WARN: disk session adapter registration: %v", err)
+			logging.Warnf("WARN: disk session adapter registration: %v", err)
 		}
 		if len(ids) == 0 {
 			log.Println("Disk session adapter enabled but no agent data directory detected (claude/codex/cursor/zcode/opencode)")
@@ -788,7 +811,7 @@ func main() {
 			MaxRetries: 4,
 		})
 		if err != nil {
-			log.Printf("WARN: ACC runtime client not wired: %v", err)
+			logging.Warnf("WARN: ACC runtime client not wired: %v", err)
 		} else {
 			accClientRuntime = accClient
 			srv.SetACCRuntime(accClient)
@@ -834,7 +857,7 @@ func main() {
 		// ⇒ 失败时调度器**根本没起来** ⇒ ⇒⇒ 若还照旧打「started」就是一句
 		// 假话 ⇒ 失败不许无声：把真实状态打进日志。
 		if err := rssSched.Start(context.Background()); err != nil {
-			log.Printf("WARN: RSS scheduler NOT started: %v", err)
+			logging.Warnf("WARN: RSS scheduler NOT started: %v", err)
 		} else {
 			log.Printf("RSS scheduler started (enabled=%v, tick=%s, max_parallel=%d, source_interval=%s)",
 				cfg.RSS.Enabled, cfg.RSS.FetchInterval, cfg.RSS.MaxConcurrency, cfg.RSS.DefaultSourceInterval)
@@ -863,7 +886,7 @@ func main() {
 	var userSettingsRepo usersetting.Repository
 	if pool != nil {
 		if us, err := usersetting.NewStore(pool); err != nil {
-			log.Printf("WARN: user settings store: %v", err)
+			logging.Warnf("WARN: user settings store: %v", err)
 		} else {
 			srv.SetUserSettingsStore(us)
 			userSettingsRepo = us
@@ -881,7 +904,7 @@ func main() {
 			if parsed, err := strconv.ParseInt(raw, 10, 64); err == nil {
 				quota = parsed
 			} else {
-				log.Printf("WARN: POCKET_MARKETPLACE_BLOB_QUOTA_BYTES %q is not an integer; using default %d", raw, quota)
+				logging.Warnf("WARN: POCKET_MARKETPLACE_BLOB_QUOTA_BYTES %q is not an integer; using default %d", raw, quota)
 			}
 		}
 		srv.SetMarketplaceBlobQuota(quota)
@@ -942,7 +965,7 @@ func main() {
 	if pool != nil {
 		lgStore, err := server.NewLLMGatewayStore(pool, emailCrypto)
 		if err != nil {
-			log.Printf("WARN: LLM gateway store init failed: %v", err)
+			logging.Warnf("WARN: LLM gateway store init failed: %v", err)
 		} else {
 			srv.SetLLMGatewayStore(lgStore)
 			log.Println("LLM gateway store initialized (PG)")
@@ -958,7 +981,7 @@ func main() {
 		cipher := server.NewGatewayCipher(cfg.JWTSecret)
 		lgStore, err := server.NewLLMGatewaySQLiteConfigStore(gwDBPath, cipher)
 		if err != nil {
-			log.Printf("WARN: LLM gateway SQLite store init failed: %v", err)
+			logging.Warnf("WARN: LLM gateway SQLite store init failed: %v", err)
 		} else {
 			srv.SetLLMGatewayStore(lgStore)
 			log.Printf("LLM gateway store initialized (SQLite fallback at %s)", gwDBPath)
@@ -970,7 +993,7 @@ func main() {
 	if pool != nil {
 		is, err := identity.New(pool)
 		if err != nil {
-			log.Printf("WARN: identity store init failed: %v", err)
+			logging.Warnf("WARN: identity store init failed: %v", err)
 		} else {
 			srv.SetIdentityStore(is)
 			identStore = is
@@ -1010,7 +1033,7 @@ func main() {
 			if list, lerr := identStore.ListAllWorkspaceIDs(context.Background()); lerr == nil {
 				workspaces = append(workspaces, list...)
 			} else {
-				log.Printf("WARN: identity list workspaces failed: %v", lerr)
+				logging.Warnf("WARN: identity list workspaces failed: %v", lerr)
 			}
 		}
 		srv.LoadLLMGatewayFromDB(workspaces...)
@@ -1028,7 +1051,7 @@ func main() {
 	if pool != nil && emailCrypto != nil {
 		gwNodes, err := server.NewGatewayNodeStore(pool, emailCrypto)
 		if err != nil {
-			log.Printf("WARN: gateway node store init failed: %v", err)
+			logging.Warnf("WARN: gateway node store init failed: %v", err)
 		} else {
 			srv.SetGatewayNodeStore(gwNodes)
 
@@ -1044,7 +1067,7 @@ func main() {
 			for _, ws := range gwWorkspaces {
 				imported, ierr := gwNodes.ImportLegacyConfig(context.Background(), ws)
 				if ierr != nil {
-					log.Printf("WARN: gateway node legacy import failed (workspace=%s): %v", ws, ierr)
+					logging.Warnf("WARN: gateway node legacy import failed (workspace=%s): %v", ws, ierr)
 				} else if imported {
 					log.Printf("Imported legacy LLM gateway config as node (workspace=%s); admin credentials still required", ws)
 				}
@@ -1082,14 +1105,14 @@ func main() {
 				provider = server.NewFallbackBFFProvider(provider, rcProvider)
 				log.Println("LLM BFF: RedClaw fallback provider enabled (POCKET_REDCLAW_LLM_FALLBACK=true)")
 			} else {
-				log.Println("WARN: POCKET_REDCLAW_LLM_FALLBACK=true but RedClaw bridge not configured; fallback disabled")
+				logging.Warnf("WARN: POCKET_REDCLAW_LLM_FALLBACK=true but RedClaw bridge not configured; fallback disabled")
 			}
 		}
 		var recorder llmbff.Recorder = llmbff.NoopRecorder{}
 		var summarizer llmbff.Summarizer
 		if pool != nil {
 			if usageStore, err := llmbff.NewUsageStore(pool); err != nil {
-				log.Printf("WARN: llm usage store init failed: %v", err)
+				logging.Warnf("WARN: llm usage store init failed: %v", err)
 			} else {
 				recorder = usageStore
 				summarizer = usageStore
@@ -1105,7 +1128,7 @@ func main() {
 	// 硬拒绝模式，env 开关 QUOTA_ENFORCE_MODE=true 即可触发。
 	if pool != nil {
 		if pgBudgets, err := quota.NewPGStore(pool); err != nil {
-			log.Printf("WARN: quota PG store init failed, falling back to memory: %v", err)
+			logging.Warnf("WARN: quota PG store init failed, falling back to memory: %v", err)
 			srv.SetQuotaEnforcer(quota.NewEnforcer(quota.NewMemoryStore(), nil))
 		} else {
 			srv.SetQuotaEnforcer(quota.NewEnforcer(pgBudgets, nil))
@@ -1125,7 +1148,7 @@ func main() {
 	// ---- S0-C: Lobster Vault 加密镜像同步 ----
 	if pool != nil {
 		if ls, err := lobster.NewSyncStore(pool); err != nil {
-			log.Printf("WARN: lobster sync store init failed: %v", err)
+			logging.Warnf("WARN: lobster sync store init failed: %v", err)
 		} else {
 			srv.SetLobsterSync(ls)
 			log.Println("Lobster Vault sync enabled (e2ee asset mirror)")
@@ -1135,7 +1158,7 @@ func main() {
 	// ---- S0-D: Agent Bridge（统一远端 opencode 实例为 Agent 抽象）----
 	if pool != nil {
 		if abStore, err := agentbridge.New(pool); err != nil {
-			log.Printf("WARN: agent bridge store init failed: %v", err)
+			logging.Warnf("WARN: agent bridge store init failed: %v", err)
 		} else {
 			creator, resolver, attacher := server.NewAgentBridgeAdapters(opencodeAdapter, reg, taskStore)
 			bridge := agentbridge.NewBridge(abStore, creator, resolver, attacher)
@@ -1157,47 +1180,47 @@ func main() {
 		registered := 0
 		if bridge := srv.RedClawBridge(); bridge != nil {
 			if err := sched.Register(scheduledexecutors.NewRedClawChatExecutor(bridge)); err != nil {
-				log.Printf("WARN: register RedClaw chat scheduled executor: %v", err)
+				logging.Warnf("WARN: register RedClaw chat scheduled executor: %v", err)
 			} else {
 				registered++
 			}
 			if err := sched.Register(scheduledexecutors.NewRedClawKnowledgeExecutor(bridge)); err != nil {
-				log.Printf("WARN: register RedClaw knowledge scheduled executor: %v", err)
+				logging.Warnf("WARN: register RedClaw knowledge scheduled executor: %v", err)
 			} else {
 				registered++
 			}
 		}
 		if bridge := srv.AgentBridge(); bridge != nil {
 			if err := sched.Register(scheduledexecutors.NewAgentBridgeExecutor(bridge)); err != nil {
-				log.Printf("WARN: register Agent Bridge scheduled executor: %v", err)
+				logging.Warnf("WARN: register Agent Bridge scheduled executor: %v", err)
 			} else {
 				registered++
 			}
 		}
 		if svc := srv.LLMBFF(); svc != nil {
 			if err := sched.Register(scheduledexecutors.NewLLMBFFExecutor(svc)); err != nil {
-				log.Printf("WARN: register LLM BFF scheduled executor: %v", err)
+				logging.Warnf("WARN: register LLM BFF scheduled executor: %v", err)
 			} else {
 				registered++
 			}
 		}
 		if client := srv.KxmemoryClient(); client != nil {
 			if err := sched.Register(scheduledexecutors.NewKxmemoryExecutor(client)); err != nil {
-				log.Printf("WARN: register kxmemory scheduled executor: %v", err)
+				logging.Warnf("WARN: register kxmemory scheduled executor: %v", err)
 			} else {
 				registered++
 			}
 		}
 		if mcpClient != nil && mcpClient.TenantID() != "" {
 			if err := sched.Register(scheduledexecutors.NewACCMCPExecutor(mcpClient)); err != nil {
-				log.Printf("WARN: register ACC MCP scheduled executor: %v", err)
+				logging.Warnf("WARN: register ACC MCP scheduled executor: %v", err)
 			} else {
 				registered++
 			}
 		}
 		phase4Registered := false
 		if err := registerPhase4Executors(sched, phase4Orchestrator); err != nil {
-			log.Printf("WARN: register Phase 4 cloud dispatch scheduled executor: %v", err)
+			logging.Warnf("WARN: register Phase 4 cloud dispatch scheduled executor: %v", err)
 		} else if phase4Orchestrator != nil && phase4Orchestrator.Cloud() != nil && phase4Orchestrator.Cloud().IsAvailable() {
 			phase4Registered = true
 			registered++
@@ -1205,14 +1228,14 @@ func main() {
 		_ = phase4Registered
 		allowPrivateWebhook := strings.EqualFold(strings.TrimSpace(os.Getenv("POCKET_SCHEDULER_WEBHOOK_ALLOW_PRIVATE")), "true")
 		if err := sched.Register(scheduledexecutors.NewSafeHTTPWebhookExecutor(cfg.SchedulerWebhookTimeout, allowPrivateWebhook)); err != nil {
-			log.Printf("WARN: register webhook scheduled executor: %v", err)
+			logging.Warnf("WARN: register webhook scheduled executor: %v", err)
 		} else {
 			registered++
 		}
 		if flashcardStore != nil {
 			flashcardExec = scheduledexecutors.NewFlashcardReviewExecutor(flashcardStore, nil)
 			if err := sched.Register(flashcardExec); err != nil {
-				log.Printf("WARN: register flashcard review scheduled executor: %v", err)
+				logging.Warnf("WARN: register flashcard review scheduled executor: %v", err)
 			} else {
 				registered++
 			}
@@ -1221,7 +1244,7 @@ func main() {
 		if learningService != nil {
 			learningExec = scheduledexecutors.NewLearningDigestExecutor(learningService, nil)
 			if err := sched.Register(learningExec); err != nil {
-				log.Printf("WARN: register learning digest scheduled executor: %v", err)
+				logging.Warnf("WARN: register learning digest scheduled executor: %v", err)
 			} else {
 				registered++
 			}
@@ -1235,7 +1258,7 @@ func main() {
 			// everybody and a 23:50 reminder would push at 23:50 UTC.
 			workItemExec.SetQuietPreferences(scheduledexecutors.NewSettingsQuietPreferences(userSettingsRepo))
 			if err := sched.Register(workItemExec); err != nil {
-				log.Printf("WARN: register work item reminder scheduled executor: %v", err)
+				logging.Warnf("WARN: register work item reminder scheduled executor: %v", err)
 			} else {
 				registered++
 			}
@@ -1250,7 +1273,7 @@ func main() {
 	// ---- S0-E: Notification Center（inbox + 前台 WS 推送）----
 	if pool != nil {
 		if ncStore, err := notifycenter.New(pool); err != nil {
-			log.Printf("WARN: notify center store init failed: %v", err)
+			logging.Warnf("WARN: notify center store init failed: %v", err)
 		} else {
 			// 前台 WS sender 复用现有 wsHub；后台 APNs/FCM 留 Noop（部署期接证书）。
 			wsSender := notifycenter.NewWebsocketSender(srv.WSHub())
@@ -1291,7 +1314,7 @@ func main() {
 					StartupRunOnStart: cfg.RSS.DigestStartupRun,
 				})
 				if err := digestSvc.Start(context.Background()); err != nil {
-					log.Printf("WARN: rss digest service start failed: %v", err)
+					logging.Warnf("WARN: rss digest service start failed: %v", err)
 				} else {
 					defer digestSvc.Stop()
 					log.Printf("RSS daily digest started (at=%02d:%02d, max_per_section=%d, startup_run=%v)",
@@ -1316,7 +1339,7 @@ func main() {
 		log.Println("Postgres migration lock released")
 	}
 	if chatAgentStore == nil {
-		log.Println("WARN: chat agent store not initialized")
+		logging.Warnf("WARN: chat agent store not initialized")
 	} else {
 		srv.SetChatAgentStore(chatAgentStore)
 		if chatAgentSync != nil {
@@ -1330,7 +1353,7 @@ func main() {
 		// POCKET_AGENTS_REPO_PATH 时优先从本地仓库目录导入最新角色，
 		// 失败自动回落内嵌种子。
 		if err := chatagent.EnsureBuiltinAgents(context.Background(), chatAgentStore, os.Getenv("POCKET_AGENTS_REPO_PATH")); err != nil {
-			log.Printf("WARN: ensure builtin agents failed: %v", err)
+			logging.Warnf("WARN: ensure builtin agents failed: %v", err)
 		}
 	}
 
@@ -1431,7 +1454,7 @@ func main() {
 	//	⚠ 注册失败**不该**让整个进程退出（其余 adapter 仍可用）⇒ ⇒⇒⇒ ⇒
 	//	⇒ ⇒⇒⇒ ⇒ 正确处置是「留痕」。
 	if err := agentReg.Register(agent.AgentRef{Type: "opencode", Target: ""}, opencodeAgentAdapter); err != nil {
-		log.Printf("ERROR: 注册 opencode agent adapter 失败（该 agent 类型将不可用）: %v", err)
+		logging.Errorf("ERROR: 注册 opencode agent adapter 失败（该 agent 类型将不可用）: %v", err)
 	}
 	// 用 instanceMap 把 instance_id 也映射到 opencode adapter（兼容旧 query）
 	for _, ref := range reg.ListInstances() {
@@ -1445,7 +1468,7 @@ func main() {
 			opencodeAgentAdapter,
 			ref.ID,
 		); err != nil {
-			log.Printf("ERROR: 注册 opencode agent adapter 失败（instance=%s 将不可用）: %v", ref.ID, err)
+			logging.Errorf("ERROR: 注册 opencode agent adapter 失败（instance=%s 将不可用）: %v", ref.ID, err)
 		}
 	}
 
@@ -1459,7 +1482,7 @@ func main() {
 			acpStdioAdapter,
 			"agent-echo-1", // instance_id for legacy query
 		); err != nil {
-			log.Printf("ERROR: 注册 ACP stdio agent（agent-echo）失败: %v", err)
+			logging.Errorf("ERROR: 注册 ACP stdio agent（agent-echo）失败: %v", err)
 		}
 		log.Printf("Registered ACP stdio agent: agent_echo at %s", agentEchoPath)
 	}
@@ -1471,7 +1494,7 @@ func main() {
 			acpStdioAdapter,
 			"claude-1", // instance_id
 		); err != nil {
-			log.Printf("ERROR: 注册 ACP stdio agent（claude-1）失败: %v", err)
+			logging.Errorf("ERROR: 注册 ACP stdio agent（claude-1）失败: %v", err)
 		}
 		log.Printf("Registered ACP stdio agent: Claude CLI at %s", claudePath)
 	}
@@ -1487,7 +1510,7 @@ func main() {
 			piAdapter,
 			"pi-1", // instance_id
 		); err != nil {
-			log.Printf("ERROR: 注册 pi agent adapter 失败: %v", err)
+			logging.Errorf("ERROR: 注册 pi agent adapter 失败: %v", err)
 		}
 		log.Printf("Registered pi coding agent at %s", piPath)
 	}
@@ -1530,7 +1553,7 @@ func main() {
 		if raw := os.Getenv("AUDIT_EXPORT_INTERVAL"); raw != "" {
 			v, err := time.ParseDuration(raw)
 			if err != nil || v <= 0 {
-				log.Printf("WARN: AUDIT_EXPORT_INTERVAL=%q invalid, using default %s", raw, interval)
+				logging.Warnf("WARN: AUDIT_EXPORT_INTERVAL=%q invalid, using default %s", raw, interval)
 			} else {
 				interval = v
 			}
@@ -1539,14 +1562,14 @@ func main() {
 		if raw := os.Getenv("AUDIT_EXPORT_RETENTION_DAYS"); raw != "" {
 			v, err := strconv.Atoi(raw)
 			if err != nil || v <= 0 {
-				log.Printf("WARN: AUDIT_EXPORT_RETENTION_DAYS=%q invalid, using default %d", raw, retain)
+				logging.Warnf("WARN: AUDIT_EXPORT_RETENTION_DAYS=%q invalid, using default %d", raw, retain)
 			} else {
 				retain = v
 			}
 		}
 		// 启动期立即验证导出目录可写，避免第一次 tick（最长 1 分钟）才暴雷。
 		if err := os.MkdirAll(auditDir, 0o700); err != nil {
-			log.Fatalf("AUDIT_EXPORT_DIR mkdir %q: %v", auditDir, err)
+			logging.Fatalf("AUDIT_EXPORT_DIR mkdir %q: %v", auditDir, err)
 		}
 		if exporterCancel, started := startAuditFileExporter(srv.AuditStore(), auditDir, interval, retain); started {
 			defer exporterCancel()
@@ -1573,7 +1596,7 @@ func main() {
 	// 「建监听器」和「开始服务」揉在一个调用里，中间插不进注册这一步。
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		log.Fatalf("listen on %s: %v", addr, err)
+		logging.Fatalf("listen on %s: %v", addr, err)
 	}
 
 	// ── 注册进 goacos（实例注册面）──────────────────────────────────────
@@ -1586,9 +1609,10 @@ func main() {
 	//   （扫局域网找 OpenCode 进程），与 goacos 的服务注册面不是一回事。
 	stopRegistry := registration.Announce(context.Background(), registration.Options{
 		ListenAddr: ln.Addr().String(),
-		Logger: slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
-			Level: slog.LevelInfo,
-		})),
+		// 用 slog.Default().Handler()（即规范层的 handler），
+		// 而不是另起一个 TextHandler——后者打出来的行缺必填字段，
+		// 同一进程会出现两种格式的日志。
+		Logger: slog.New(slog.Default().Handler()),
 	})
 
 	// ── 停止信号：先摘注册，再退出 ─────────────────────────────────────
@@ -1667,7 +1691,7 @@ type auditRangeStore = redclaw.RangeStore
 
 func startAuditFileExporter(store auditRangeStore, dir string, interval time.Duration, retainDays int) (context.CancelFunc, bool) {
 	if store == nil {
-		log.Printf("WARN: AUDIT_EXPORT_DIR configured but audit storage is unavailable; file export disabled")
+		logging.Warnf("WARN: AUDIT_EXPORT_DIR configured but audit storage is unavailable; file export disabled")
 		return nil, false
 	}
 	exporter := redclaw.NewFileExporter(store, redclaw.FileExporterConfig{
@@ -1798,14 +1822,14 @@ func initChatAgentStores(pool *pgxpool.Pool, dataDir string) (chatagent.StoreIfa
 	if pool != nil {
 		pgStore := chatagent.NewStore(pool)
 		if err := pgStore.Init(context.Background()); err != nil {
-			log.Fatalf("chat agent store: %v", err)
+			logging.Fatalf("chat agent store: %v", err)
 		}
 		if err := chatagent.RunMarketplaceMigration(context.Background(), pool); err != nil {
-			log.Printf("WARN: chatagent marketplace migration skipped: %v", err)
+			logging.Warnf("WARN: chatagent marketplace migration skipped: %v", err)
 		}
 		syncStore := chatagent.NewSyncStore(pool)
 		if err := syncStore.Init(context.Background()); err != nil {
-			log.Printf("WARN: chatagent sync init failed: %v (running without cloud sync)", err)
+			logging.Warnf("WARN: chatagent sync init failed: %v (running without cloud sync)", err)
 			return pgStore, nil
 		}
 		return pgStore, syncStore
@@ -1815,11 +1839,11 @@ func initChatAgentStores(pool *pgxpool.Pool, dataDir string) (chatagent.StoreIfa
 	dbPath := filepath.Join(dataDir, "chat_agents.sqlite")
 	store, err := chatagent.NewSQLiteStore(dbPath)
 	if err != nil {
-		log.Printf("WARN: chatagent SQLite store init failed: %v", err)
+		logging.Warnf("WARN: chatagent SQLite store init failed: %v", err)
 		return nil, nil
 	}
 	if err := store.Init(context.Background()); err != nil {
-		log.Printf("WARN: chatagent SQLite schema init failed: %v", err)
+		logging.Warnf("WARN: chatagent SQLite schema init failed: %v", err)
 		store.Close()
 		return nil, nil
 	}

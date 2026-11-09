@@ -28,8 +28,9 @@ package llmbff
 
 import (
 	"context"
-	"log"
 	"time"
+
+	"github.com/halfking/pocket-opencode/backend/internal/logging"
 )
 
 // Role identifies a chat message author (OpenAI convention).
@@ -219,7 +220,7 @@ func (s *Service) Chat(ctx context.Context, req ChatRequest, kind string) (*Chat
 //	出现在 N 处）：Chat / Stream / Embed 三条路径的处置必须一致。
 func (s *Service) recordUsage(ctx context.Context, wsID, model, userID string, u Usage, kind string) {
 	if err := s.recorder.RecordUsage(ctx, wsID, model, userID, u, kind); err != nil {
-		log.Printf("ERROR: llmbff: usage 记录写入失败（ws=%s model=%s kind=%s tokens=%d）—— 这一笔用量不会出现在账上: %v",
+		logging.Errorf("ERROR: llmbff: usage 记录写入失败（ws=%s model=%s kind=%s tokens=%d）—— 这一笔用量不会出现在账上: %v",
 			wsID, model, kind, u.TotalTokens, err)
 	}
 }

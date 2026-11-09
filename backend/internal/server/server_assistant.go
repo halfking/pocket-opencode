@@ -36,6 +36,7 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/finance"
 	"github.com/halfking/pocket-opencode/backend/internal/kxmemory"
 	"github.com/halfking/pocket-opencode/backend/internal/llmbff"
+	"github.com/halfking/pocket-opencode/backend/internal/logging"
 	"github.com/halfking/pocket-opencode/backend/internal/notes"
 	"github.com/halfking/pocket-opencode/backend/internal/redclaw"
 	"github.com/halfking/pocket-opencode/backend/internal/sizedread"
@@ -95,7 +96,7 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 		// ⚠ 写失败（客户端断开 / 连接被重置）**没法再改状态行**了 ⇒
 		//　 只能留痕。旧实现把这个错误**整个吞掉** ⇒ 「客户端收到截断响应」
 		//　 而服务端**没有任何记录**。
-		log.Printf("[WARN] writeJSON: 响应体写出失败（status=%d）：%v", status, err)
+		logging.Warnf("[WARN] writeJSON: 响应体写出失败（status=%d）：%v", status, err)
 	}
 }
 
@@ -121,13 +122,13 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 //
 // 　⇒ ⇒⇒ ⇒ **保证**写得出去 ⇒ ⇒⇒ ⇒ 不能让它自己再失败一次。
 func writeJSONEncodeFailure(w http.ResponseWriter, originStatus int, err error) {
-	log.Printf("[ERROR] writeJSON: 响应体编码失败（原状态码 %d）：%v", originStatus, err)
+	logging.Errorf("[ERROR] writeJSON: 响应体编码失败（原状态码 %d）：%v", originStatus, err)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusInternalServerError)
 	body := `{"error":"response_encode_failed: failed to encode JSON response body",` +
 		`"code":"response_encode_failed","retryable":false}` + "\n"
 	if _, werr := w.Write([]byte(body)); werr != nil {
-		log.Printf("[WARN] writeJSON: 编码失败兜底体写出也失败：%v", werr)
+		logging.Warnf("[WARN] writeJSON: 编码失败兜底体写出也失败：%v", werr)
 	}
 }
 
@@ -207,7 +208,7 @@ func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 			// dev 登录，保证 RedClaw 故障时开发/故障恢复环境不被锁死。
 			// 401/403（凭据错误）不降级——那是真实的认证失败。
 			if errors.Is(err, redclaw.ErrRedClawUnavailable) && s.cfg.DevAuth {
-				log.Printf("WARN: redclaw unavailable (%v); falling back to dev bypass", err)
+				logging.Warnf("WARN: redclaw unavailable (%v); falling back to dev bypass", err)
 				if u, ok := s.devBypassCredentials(body.Username, body.Password); ok {
 					s.devPathIssueToken(w, r, u.id, u.role, u.username, u.email)
 					return
@@ -303,7 +304,7 @@ func (s *Server) devBypassCredentials(username, password string) (devCreds, bool
 	devPass := s.cfg.DevAuthPass
 	if devPass == "" {
 		// 不再回退到任何内置口令。缺配置 = 不提供旁路。
-		log.Printf("WARN: POCKET_AUTH_PASS not set; dev auth bypass disabled. " +
+		logging.Warnf("WARN: POCKET_AUTH_PASS not set; dev auth bypass disabled. " +
 			"Set POCKET_AUTH_PASS explicitly to use the dev bypass.")
 		return devCreds{}, false
 	}
@@ -322,7 +323,7 @@ func (s *Server) ensureWorkspaceForRedClawUser(ctx context.Context, userID strin
 	}
 	ws, err := s.identityStore.EnsureDefaultWorkspace(ctx, userID)
 	if err != nil {
-		log.Printf("WARN: EnsureDefaultWorkspace for %s failed: %v (falling back to 'default')", userID, err)
+		logging.Warnf("WARN: EnsureDefaultWorkspace for %s failed: %v (falling back to 'default')", userID, err)
 		return "default"
 	}
 	if ws != nil && ws.ID != "" {
@@ -387,10 +388,10 @@ func (s *Server) handleRedClawAuthError(w http.ResponseWriter, err error, fallba
 	case errors.Is(err, redclaw.ErrTenantMismatch):
 		writeError(w, http.StatusForbidden, "tenant mismatch")
 	case errors.Is(err, redclaw.ErrRedClawUnavailable):
-		log.Printf("WARN: %s: %v (redclaw unavailable)", fallback, err)
+		logging.Warnf("WARN: %s: %v (redclaw unavailable)", fallback, err)
 		writeError(w, http.StatusServiceUnavailable, "redclaw auth unavailable, please retry")
 	default:
-		log.Printf("WARN: %s: %v", fallback, err)
+		logging.Warnf("WARN: %s: %v", fallback, err)
 		writeError(w, http.StatusBadGateway, err.Error())
 	}
 }
@@ -1971,7 +1972,7 @@ func (s *Server) handleEmailBody(w http.ResponseWriter, r *http.Request, emailID
 		//	⇒ ⇒⇒⇒ ⇒ ⇒ 属可接受降级 ⇒ ⇒⇒⇒ ⇒ 但「为什么慢」必须看得见。
 		cached, cacheErr := s.readCachedEmailBody(ctx, emailID, em.UID)
 		if cacheErr != nil {
-			log.Printf("WARN: 读缓存邮件正文失败（将回源抓取，会多一次 IMAP 往返）email=%s: %v", emailID, cacheErr)
+			logging.Warnf("WARN: 读缓存邮件正文失败（将回源抓取，会多一次 IMAP 往返）email=%s: %v", emailID, cacheErr)
 		}
 		if cached != nil {
 			writeJSON(w, http.StatusOK, s.emailBodyResponse(emailID, "cache", cached))

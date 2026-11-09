@@ -10,8 +10,9 @@ package agentbridge
 import (
 	"context"
 	"fmt"
-	"log"
 	"time"
+
+	"github.com/halfking/pocket-opencode/backend/internal/logging"
 )
 
 // SessionCreator is the subset of the opencode adapter the Bridge needs.
@@ -122,7 +123,7 @@ type SendResult struct {
 //	  同一个缺陷必然出现在 N 处 ⇒ ⇒⇒⇒ 这里 5 处的处置必须一致。
 func (b *Bridge) updateStatus(ctx context.Context, agentID string, st Status) {
 	if err := b.store.UpdateStatus(ctx, agentID, st); err != nil {
-		log.Printf("ERROR: agentbridge: agent %s 状态写 %q 失败（库里状态未更新，健康探测仍按旧状态判断）: %v",
+		logging.Errorf("ERROR: agentbridge: agent %s 状态写 %q 失败（库里状态未更新，健康探测仍按旧状态判断）: %v",
 			agentID, st, err)
 	}
 }

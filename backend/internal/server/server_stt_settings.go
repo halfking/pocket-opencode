@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/halfking/pocket-opencode/backend/internal/logging"
 	"github.com/halfking/pocket-opencode/backend/internal/sizedread"
 	"github.com/halfking/pocket-opencode/backend/internal/stt"
 	"github.com/halfking/pocket-opencode/backend/internal/usersetting"
@@ -152,7 +153,7 @@ func (s *Server) loadSTTSettings(userID, workspaceID string) (sttSettingsPayload
 		//	⇒ ⇒⇒⇒ ⇒ 用户改了设置却「没生效」，而且**没有任何一条日志**。
 		//	⇒ ⇒⇒⇒ ⇒ ★ 所以这里必须**把两种情况分开**：没有记录是正常的（不记日志），
 		//	⇒ ⇒⇒⇒ ⇒ 读失败是异常（必须留痕）。
-		log.Printf("ERROR: 读 STT 设置失败（会回落到默认配置，与「用户未设置」无法区分）user=%s ws=%s: %v",
+		logging.Errorf("ERROR: 读 STT 设置失败（会回落到默认配置，与「用户未设置」无法区分）user=%s ws=%s: %v",
 			userID, workspaceID, err)
 		return p, false
 	}
@@ -162,7 +163,7 @@ func (s *Server) loadSTTSettings(userID, workspaceID string) (sttSettingsPayload
 	}
 	if err := json.Unmarshal(rec.Payload, &p); err != nil {
 		// ⚠ §945：同样要把「载荷坏了」与「未设置」分开（否则设置**静默不生效**）。
-		log.Printf("ERROR: 解析 STT 设置载荷失败（会回落到默认配置）user=%s ws=%s: %v",
+		logging.Errorf("ERROR: 解析 STT 设置载荷失败（会回落到默认配置）user=%s ws=%s: %v",
 			userID, workspaceID, err)
 		return p, false
 	}

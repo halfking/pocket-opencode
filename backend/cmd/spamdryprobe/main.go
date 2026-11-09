@@ -41,6 +41,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/halfking/pocket-opencode/backend/internal/email"
+	"github.com/halfking/pocket-opencode/backend/internal/logging"
 )
 
 type row struct {
@@ -83,7 +84,7 @@ func main() {
 
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
-		log.Fatalf("parse dsn: %v", err)
+		logging.Fatalf("parse dsn: %v", err)
 	}
 	cfg.ConnConfig.RuntimeParams["search_path"] = schema
 	// 只读保证：这一行是本程序「不会动生产数据」的硬凭据，不是承诺。
@@ -92,18 +93,18 @@ func main() {
 
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
-		log.Fatalf("connect: %v", err)
+		logging.Fatalf("connect: %v", err)
 	}
 	defer pool.Close()
 
 	// 主动验证只读真的生效，而不是假设它生效。
 	if err := assertReadOnly(ctx, pool); err != nil {
-		log.Fatalf("read-only guard: %v", err)
+		logging.Fatalf("read-only guard: %v", err)
 	}
 
 	rows, err := load(ctx, pool)
 	if err != nil {
-		log.Fatalf("load emails: %v", err)
+		logging.Fatalf("load emails: %v", err)
 	}
 	if len(rows) == 0 {
 		fmt.Printf("[probe] schema=%s 里没有邮件行（deleted_at=0）。先跑一次同步或客户端推送。\n", schema)

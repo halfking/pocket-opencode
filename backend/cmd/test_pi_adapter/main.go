@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/halfking/pocket-opencode/backend/internal/agent"
+	"github.com/halfking/pocket-opencode/backend/internal/logging"
 )
 
 func main() {
@@ -48,16 +49,16 @@ func main() {
 		// 离线自检：生成一个回放 fixture 的假可执行脚本。
 		dir, err := os.MkdirTemp("", "fake-pi-*")
 		if err != nil {
-			log.Fatalf("MkdirTemp: %v", err)
+			logging.Fatalf("MkdirTemp: %v", err)
 		}
 		defer os.RemoveAll(dir)
 		script := filepath.Join(dir, "fake-pi.sh")
 		body := "#!/bin/sh\ncat \"$FAKE_PI_OUTPUT\"\n"
 		if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
-			log.Fatalf("write fake script: %v", err)
+			logging.Fatalf("write fake script: %v", err)
 		}
 		if err := os.Setenv("FAKE_PI_OUTPUT", *fake); err != nil {
-			log.Fatalf("setenv: %v", err)
+			logging.Fatalf("setenv: %v", err)
 		}
 		piPath = script
 		log.Printf("离线自检模式：fake pi = %s, fixture = %s", script, *fake)
@@ -71,7 +72,7 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout+30*time.Second)
 	defer cancel()
 	if err := a.HealthCheck(ctx, ref); err != nil {
-		log.Fatalf("HealthCheck failed: %v", err)
+		logging.Fatalf("HealthCheck failed: %v", err)
 	}
 	log.Println("HealthCheck passed")
 
@@ -79,7 +80,7 @@ func main() {
 	log.Println("=== 步骤 3: Capabilities ===")
 	caps, err := a.Capabilities(ctx, ref)
 	if err != nil {
-		log.Fatalf("Capabilities: %v", err)
+		logging.Fatalf("Capabilities: %v", err)
 	}
 	capsJSON, _ := json.MarshalIndent(caps, "", "  ")
 	log.Printf("Capabilities:\n%s", capsJSON)
@@ -88,7 +89,7 @@ func main() {
 	log.Println("=== 步骤 4: SubscribeEvents ===")
 	ch, cleanup, err := a.SubscribeEvents(ctx, ref)
 	if err != nil {
-		log.Fatalf("SubscribeEvents: %v", err)
+		logging.Fatalf("SubscribeEvents: %v", err)
 	}
 	defer cleanup()
 
@@ -113,13 +114,13 @@ func main() {
 	}
 	if err != nil {
 		log.Printf("SendPrompt failed after %s: %v", time.Since(start).Round(time.Millisecond), err)
-		log.Fatalf("=== 冒烟测试未通过（SendPrompt 失败）===")
+		logging.Fatalf("=== 冒烟测试未通过（SendPrompt 失败）===")
 	}
 	log.Printf("SendPrompt done in %s: stopReason=%q", time.Since(start).Round(time.Millisecond), result.StopReason)
 
 	for _, line := range assertions {
 		if len(line) > 5 && line[:5] == "FAIL:" {
-			log.Fatalf("=== 冒烟测试未通过 ===")
+			logging.Fatalf("=== 冒烟测试未通过 ===")
 		}
 	}
 	log.Println("=== 冒烟测试通过 ===")

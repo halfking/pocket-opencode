@@ -12,11 +12,11 @@ package server
 
 import (
 	"encoding/json"
-	"log"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/halfking/pocket-opencode/backend/internal/logging"
 	"github.com/halfking/pocket-opencode/backend/internal/meeting"
 	"github.com/halfking/pocket-opencode/backend/internal/task"
 )
@@ -229,7 +229,7 @@ func (s *Server) recordOriginEvent(r *http.Request, wsID, userID string, t *task
 		//	⇒ ⇒⇒⇒ 会把这次成功**变成一次失败**⇒ ⇒⇒⇒ ⇒ 那是拿一个
 		//	⇒ ⇒⇒⇒ 次要副作用去否定**主要结果**。
 		//	⇒ ⇒⇒ 所以：**不改响应**，但必须**留痕**（⇒ 「纯静音」不算失败处理）。
-		log.Printf("ERROR: task %s: 溯源活动条目写入失败（originKind=%s originRef=%s）—— 溯源将只存在于 origin_kind/origin_ref 两列里，审计链里看不到: %v",
+		logging.Errorf("ERROR: task %s: 溯源活动条目写入失败（originKind=%s originRef=%s）—— 溯源将只存在于 origin_kind/origin_ref 两列里，审计链里看不到: %v",
 			t.ID, t.OriginKind, t.OriginRef, err)
 	}
 }

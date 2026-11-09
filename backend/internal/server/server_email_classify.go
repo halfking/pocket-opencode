@@ -9,6 +9,7 @@ import (
 
 	"github.com/halfking/pocket-opencode/backend/internal/email"
 	"github.com/halfking/pocket-opencode/backend/internal/kxmemory"
+	"github.com/halfking/pocket-opencode/backend/internal/logging"
 )
 
 type classifyEmailsBody struct {
@@ -86,7 +87,7 @@ func (s *Server) handleEmailClassify(w http.ResponseWriter, r *http.Request) {
 	//	⇒ ⇒⇒⇒ ⇒ 这里只做「让失败看得见」。
 	remaining, err := s.emailStore.CountUnclassifiedScoped(r.Context(), userID, wsID)
 	if err != nil {
-		log.Printf("ERROR: 统计未分类邮件数失败（响应里的 remaining=0 是**假值**，库里可能仍有未分类邮件）: %v", err)
+		logging.Errorf("ERROR: 统计未分类邮件数失败（响应里的 remaining=0 是**假值**，库里可能仍有未分类邮件）: %v", err)
 	}
 	classified := 0
 	for _, row := range results {

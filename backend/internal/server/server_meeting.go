@@ -15,6 +15,7 @@ import (
 
 	"github.com/halfking/pocket-opencode/backend/internal/aigate"
 	"github.com/halfking/pocket-opencode/backend/internal/kxmemory"
+	"github.com/halfking/pocket-opencode/backend/internal/logging"
 	"github.com/halfking/pocket-opencode/backend/internal/meeting"
 	"github.com/halfking/pocket-opencode/backend/internal/meetingagent"
 	"github.com/halfking/pocket-opencode/backend/internal/stt"
@@ -118,7 +119,7 @@ func (s *Server) handleMeetingRouter(w http.ResponseWriter, r *http.Request) {
 func (s *Server) markMeetingProgress(m *meeting.Meeting, status, ownerID, workspaceID string) {
 	m.Status = status
 	if err := s.meetingStore.UpdateScoped(m, ownerID, workspaceID); err != nil {
-		log.Printf("WARN: meeting %s: 进度状态 %q 写入失败（不阻断本次请求；后续终态写会覆盖它）: %v",
+		logging.Warnf("WARN: meeting %s: 进度状态 %q 写入失败（不阻断本次请求；后续终态写会覆盖它）: %v",
 			m.ID, status, err)
 	}
 }
@@ -130,7 +131,7 @@ func (s *Server) markMeetingProgress(m *meeting.Meeting, status, ownerID, worksp
 func (s *Server) setMeetingStatus(m *meeting.Meeting, status, ownerID, workspaceID string) error {
 	m.Status = status
 	if err := s.meetingStore.UpdateScoped(m, ownerID, workspaceID); err != nil {
-		log.Printf("ERROR: meeting %s: 状态 %q 写入失败: %v", m.ID, status, err)
+		logging.Errorf("ERROR: meeting %s: 状态 %q 写入失败: %v", m.ID, status, err)
 		return err
 	}
 	return nil
@@ -267,7 +268,7 @@ func (s *Server) handleSummarizeMeeting(w http.ResponseWriter, r *http.Request, 
 			//   ⇒ ⇒⇒⇒ 而下面那句 500「summarization failed」只说了「摘要失败」
 			//   ⇒ ⇒⇒⇒ ⇒ 库里的状态与 HTTP 说的**互相矛盾** ⇒ ⇒⇒⇒
 			//   ⇒ 「失败必须可区分」：这里要说清**真正卡住的地方**。
-			log.Printf("ERROR: meeting %s: 摘要失败且状态未能写回（会议将停在 summarizing）: %v", m.ID, err)
+			logging.Errorf("ERROR: meeting %s: 摘要失败且状态未能写回（会议将停在 summarizing）: %v", m.ID, err)
 			writeError(w, http.StatusInternalServerError,
 				"summarization failed, and the meeting status could not be persisted (it may stay in progress)")
 			return

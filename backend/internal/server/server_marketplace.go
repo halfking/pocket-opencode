@@ -41,12 +41,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"regexp"
 	"strconv"
 	"strings"
 
+	"github.com/halfking/pocket-opencode/backend/internal/logging"
 	"github.com/halfking/pocket-opencode/backend/internal/marketplace"
 )
 
@@ -572,7 +572,7 @@ func (s *Server) handleMarketplaceReleaseBlob(w http.ResponseWriter, r *http.Req
 	w.Header().Set("X-Digest", meta.Digest)
 	// ⚠ §946：写失败原来被 `_, _ =` 整个吞掉 ⇒ 服务端**零记录** ⇒ 只能留痕。
 	if _, err := w.Write(content); err != nil {
-		log.Printf("[WARN] 市场发布包响应体写出失败：%v", err)
+		logging.Warnf("[WARN] 市场发布包响应体写出失败：%v", err)
 	}
 }
 
@@ -708,7 +708,7 @@ func (s *Server) handleMarketplaceBlobDownload(w http.ResponseWriter, r *http.Re
 	w.Header().Set("X-Digest", meta.Digest)
 	// ⚠ §946：写失败原来被 `_, _ =` 整个吞掉 ⇒ 服务端**零记录** ⇒ 只能留痕。
 	if _, err := w.Write(content); err != nil {
-		log.Printf("[WARN] 市场素材下载响应体写出失败：%v", err)
+		logging.Warnf("[WARN] 市场素材下载响应体写出失败：%v", err)
 	}
 }
 

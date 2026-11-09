@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/halfking/pocket-opencode/backend/internal/agent"
+	"github.com/halfking/pocket-opencode/backend/internal/logging"
 )
 
 func main() {
@@ -34,7 +35,7 @@ func main() {
 	// 3. 健康检查（会调用 initialize）
 	log.Println("\n=== 步骤 2: HealthCheck (initialize) ===")
 	if err := acpAdapter.HealthCheck(ctx, ref); err != nil {
-		log.Fatalf("HealthCheck failed: %v", err)
+		logging.Fatalf("HealthCheck failed: %v", err)
 	}
 	log.Println("✅ HealthCheck passed")
 
@@ -42,7 +43,7 @@ func main() {
 	log.Println("\n=== 步骤 3: Capabilities ===")
 	caps, err := acpAdapter.Capabilities(ctx, ref)
 	if err != nil {
-		log.Fatalf("Capabilities failed: %v", err)
+		logging.Fatalf("Capabilities failed: %v", err)
 	}
 	capsJSON, _ := json.MarshalIndent(caps, "", "  ")
 	log.Printf("✅ Capabilities:\n%s", capsJSON)
@@ -54,7 +55,7 @@ func main() {
 		Agent: "default",
 	})
 	if err != nil {
-		log.Fatalf("CreateSession failed: %v", err)
+		logging.Fatalf("CreateSession failed: %v", err)
 	}
 	log.Printf("✅ Session created: %s (%s)", sess.ID, sess.Title)
 
@@ -64,7 +65,7 @@ func main() {
 		Text: "Hello from ACPStdioAdapter test!",
 	})
 	if err != nil {
-		log.Fatalf("SendPrompt failed: %v", err)
+		logging.Fatalf("SendPrompt failed: %v", err)
 	}
 	log.Printf("✅ Prompt sent, messageID: %s", result.MessageID)
 
@@ -72,7 +73,7 @@ func main() {
 	log.Println("\n=== 步骤 6: ListSessions (session/list) ===")
 	sessions, err := acpAdapter.ListSessions(ctx, ref, agent.ListOptions{})
 	if err != nil {
-		log.Fatalf("ListSessions failed: %v", err)
+		logging.Fatalf("ListSessions failed: %v", err)
 	}
 	log.Printf("✅ Found %d session(s)", len(sessions))
 	for i, s := range sessions {
@@ -82,7 +83,7 @@ func main() {
 	// 8. 删除 session
 	log.Println("\n=== 步骤 7: DeleteSession (session/delete) ===")
 	if err := acpAdapter.DeleteSession(ctx, ref, sess.ID); err != nil {
-		log.Fatalf("DeleteSession failed: %v", err)
+		logging.Fatalf("DeleteSession failed: %v", err)
 	}
 	log.Println("✅ Session deleted")
 

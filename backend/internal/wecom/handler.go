@@ -10,6 +10,7 @@ import (
 
 	"github.com/halfking/pocket-opencode/backend/internal/background"
 	"github.com/halfking/pocket-opencode/backend/internal/config"
+	"github.com/halfking/pocket-opencode/backend/internal/logging"
 )
 
 // PublicEntry 暴露给 server 调用的 handler 入口（避免 server 反向引用本包）。
@@ -95,7 +96,7 @@ func writePlain(w http.ResponseWriter, s string) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	if _, err := w.Write([]byte(s)); err != nil {
-		log.Printf("[WARN] 企业微信响应体写出失败：%v", err)
+		logging.Warnf("[WARN] 企业微信响应体写出失败：%v", err)
 	}
 }
 
@@ -207,7 +208,7 @@ func writeSuccess(w http.ResponseWriter, code int) {
 	w.WriteHeader(code)
 	// ⚠ §946：写失败原来被 `_, _ =` 整个吞掉 ⇒ 服务端**零记录** ⇒ 只能留痕。
 	if _, err := w.Write([]byte("success")); err != nil {
-		log.Printf("[WARN] 企业微信响应体写出失败：%v", err)
+		logging.Warnf("[WARN] 企业微信响应体写出失败：%v", err)
 	}
 }
 

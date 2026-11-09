@@ -4,13 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/halfking/pocket-opencode/backend/internal/logging"
 )
 
 // RangeStore is the minimal interface FileExporter needs to drive incremental
@@ -117,7 +118,7 @@ func (f *FileExporter) Run(ctx context.Context) {
 			return
 		case <-ticker.C:
 			if _, err := f.ExportOnce(ctx); err != nil {
-				log.Printf("ERROR: redclaw: 审计导出本轮失败（审计条目未落盘，游标未推进，下一轮重试）: %v", err)
+				logging.Errorf("ERROR: redclaw: 审计导出本轮失败（审计条目未落盘，游标未推进，下一轮重试）: %v", err)
 			}
 		}
 	}

@@ -39,6 +39,7 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/learning/sources"
 	"github.com/halfking/pocket-opencode/backend/internal/llmbff"
 	"github.com/halfking/pocket-opencode/backend/internal/lobster"
+	"github.com/halfking/pocket-opencode/backend/internal/logging"
 	"github.com/halfking/pocket-opencode/backend/internal/marketplace"
 	"github.com/halfking/pocket-opencode/backend/internal/mcp"
 	"github.com/halfking/pocket-opencode/backend/internal/meeting"
@@ -1309,7 +1310,7 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	// ⚠ §946：写失败（客户端断开 / 连接被重置）原来被 `_, _ =` 整个吞掉
 	//　⇒ 服务端**零记录** ⇒ 只能留痕（状态行早已提交 ⇒ 改不了状态码）。
 	if _, err := w.Write([]byte("ok")); err != nil {
-		log.Printf("[WARN] 健康检查响应体写出失败：%v", err)
+		logging.Warnf("[WARN] 健康检查响应体写出失败：%v", err)
 	}
 }
 
@@ -2126,7 +2127,7 @@ func (s *Server) handleAttachSession(w http.ResponseWriter, r *http.Request, tas
 	w.WriteHeader(http.StatusOK)
 	// ⚠ §946：写失败原来被 `_, _ =` 整个吞掉 ⇒ 服务端**零记录** ⇒ 只能留痕。
 	if _, err := w.Write([]byte(`{"success":true}`)); err != nil {
-		log.Printf("[WARN] 附加会话响应体写出失败：%v", err)
+		logging.Warnf("[WARN] 附加会话响应体写出失败：%v", err)
 	}
 }
 
@@ -2678,7 +2679,7 @@ func (s *Server) handleCheckUpdate(w http.ResponseWriter, r *http.Request) {
 			// 503 而不是 500：这是**部署配置**没配对，不是服务端内部错误。
 			// 而且必须把试过的路径原样回给客户端——App 侧的报错文案里
 			// 唯一的线索就是它。
-			log.Printf("ERROR: %v", err)
+			logging.Errorf("ERROR: %v", err)
 			w.Header().Set("Content-Type", "application/json")
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{
 				"error":   "version_config_not_found",
