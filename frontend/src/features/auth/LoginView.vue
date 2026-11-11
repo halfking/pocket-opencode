@@ -13,12 +13,24 @@
         <p class="unlock-hint">{{ unlockHint(bioReady) }}</p>
         <div class="form-group">
           <label>主密码</label>
-          <input
-            v-model="unlockPassword"
-            type="password"
-            :placeholder="unlockPasswordPlaceholder(bioReady)"
-            @keyup.enter="unlock"
-          />
+          <div class="input-wrap">
+            <input
+              v-model="unlockPassword"
+              :type="showUnlockPassword ? 'text' : 'password'"
+              :placeholder="unlockPasswordPlaceholder(bioReady)"
+              autocomplete="current-password"
+              @keyup.enter="unlock"
+            />
+            <button
+              type="button"
+              class="eye-btn"
+              :aria-label="showUnlockPassword ? '隐藏主密码' : '显示主密码'"
+              tabindex="-1"
+              @click.stop="showUnlockPassword = !showUnlockPassword"
+            >
+              <span class="material-symbols-outlined" aria-hidden="true">{{ showUnlockPassword ? 'visibility_off' : 'visibility' }}</span>
+            </button>
+          </div>
         </div>
         <button
           class="login-btn"
@@ -75,12 +87,24 @@
 
           <div class="form-group">
             <label>密码</label>
-            <input
-              v-model="password"
-              type="password"
-              placeholder="输入密码"
-              @keyup.enter="handleLogin"
-            />
+            <div class="input-wrap">
+              <input
+                v-model="password"
+                :type="showLoginPassword ? 'text' : 'password'"
+                placeholder="输入密码"
+                autocomplete="current-password"
+                @keyup.enter="handleLogin"
+              />
+              <button
+                type="button"
+                class="eye-btn"
+                :aria-label="showLoginPassword ? '隐藏密码' : '显示密码'"
+                tabindex="-1"
+                @click.stop="showLoginPassword = !showLoginPassword"
+              >
+                <span class="material-symbols-outlined" aria-hidden="true">{{ showLoginPassword ? 'visibility_off' : 'visibility' }}</span>
+              </button>
+            </div>
           </div>
 
           <button
@@ -250,6 +274,9 @@ onMounted(async () => {
 
 const username = ref('admin')
 const password = ref('')
+// 密码明文切换（眼睛按钮）：登录密码与主密码解锁框各自独立记忆
+const showLoginPassword = ref(false)
+const showUnlockPassword = ref(false)
 const loading = ref(false)
 const error = ref('')
 
@@ -690,6 +717,48 @@ async function doLogin(u: string, p: string, opts: { fromBiometric: boolean }) {
   outline: none;
   border-color: var(--brand-primary);
   background: var(--bg-card);
+}
+
+/* 密码框 + 眼睛按钮（明文切换）容器 */
+.input-wrap {
+  position: relative;
+}
+
+.input-wrap input {
+  /* 右侧留出眼睛按钮的空间，避免文字压在图标下 */
+  padding-right: calc(var(--space-3) * 2 + 40px);
+}
+
+.eye-btn {
+  position: absolute;
+  right: var(--space-2);
+  top: 50%;
+  transform: translateY(-50%);
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  /* 圆角矩形 —— 与输入框圆角一致，不使用圆形 */
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background 150ms, color 150ms;
+}
+
+.eye-btn:hover {
+  background: var(--bg-card);
+  color: var(--text-primary);
+}
+
+.eye-btn:active {
+  background: var(--bg-subtle);
+}
+
+.eye-btn .material-symbols-outlined {
+  font-size: 22px;
 }
 
 .login-btn {
