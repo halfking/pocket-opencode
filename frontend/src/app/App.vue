@@ -55,6 +55,8 @@
     <UpdateChecker ref="updateChecker" />
     <!-- 全局确认弹窗：useConfirm().confirm() 的唯一渲染挂载点 -->
     <ConfirmDialog />
+    <!-- Cicada 启发：实时字幕悬浮窗（Phase A）-->
+    <LiveSubtitleOverlay />
   </div>
 </template>
 
@@ -66,12 +68,14 @@ import { useRoute } from 'vue-router'
 import AppLayout from './AppLayout.vue'
 import UpdateChecker from '../components/UpdateChecker.vue'
 import ConfirmDialog from '../components/base/ConfirmDialog.vue'
+import LiveSubtitleOverlay from '../components/LiveSubtitleOverlay.vue'
 import { LIST_CACHE_NAMES } from '../composables/use-list-scene'
 import { useEmailViewBoundary } from '../features/email/email-view-boundary'
 import { useSwipeBack } from '../composables/useSwipeBack'
 import { useStatusBar } from '../composables/useStatusBar'
 import { installKeyboardInset } from '../composables/useKeyboardInset'
 import { transitionState, consumeSwipeFromPx } from './routeTransition'
+import { initLiveSubtitleIntegration } from '../features/meetings/liveSubtitleIntegration'
 
 const auth = useAuthStore()
 const emailViewBoundary = useEmailViewBoundary(auth, LIST_CACHE_NAMES)
@@ -90,6 +94,8 @@ useSwipeBack({ edgeWidth: 24, thresholdRatio: 0.3, velocityThreshold: 0.4 })
 const statusBar = useStatusBar()
 onMounted(() => {
   statusBar.start()
+  // Cicada Phase A: 初始化实时字幕集成（自动监听会议录音）
+  initLiveSubtitleIntegration()
   console.log('AI Work Mess Mobile Started')
 })
 onBeforeUnmount(() => {

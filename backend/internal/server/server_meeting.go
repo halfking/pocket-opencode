@@ -83,6 +83,12 @@ func (s *Server) handleMeetingRouter(w http.ResponseWriter, r *http.Request) {
 		// 2026-10-07 轮：录制中的实时 LLM 分析（滚动摘要 + hints），只读
 		// 不落库；正式纪要仍走 summarize。见 server_meeting_analyze.go。
 		s.handleMeetingLiveAnalyze(w, r, meetingID)
+	case "translate":
+		// Cicada Phase A: 实时字幕翻译（无状态，不需要 meetingID）
+		s.handleMeetingTranslate(w, r)
+	case "translate-batch":
+		// Cicada Phase A: 批量翻译（开启翻译时用）
+		s.handleMeetingTranslateBatch(w, r)
 	default:
 		writeError(w, http.StatusNotFound, "unknown meeting action: "+action)
 	}

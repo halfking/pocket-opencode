@@ -37,6 +37,7 @@
 | [2026-09-23-hybrid-tabbar-and-anki-integration.md](design/2026-09-23-hybrid-tabbar-and-anki-integration.md) | 融合重构方案：原生 + H5 混合架构 + TabBar 重组 + Anki 功能注入（Phase 1-7 路线图） |
 | [2026-09-23-ios-parity-runbook.md](design/2026-09-23-ios-parity-runbook.md) | iOS Plugin 镜像 runbook（Phase 7） |
 | [2026-09-24-phase-9-pocket-native-complete.md](design/2026-09-24-phase-9-pocket-native-complete.md) | pocket-native 跨端抽象完整化 + Capacitor 直依赖收编（Phase 9.1-9.4 路线图） |
+| [2026-11-09-cicada-inspired-meeting-enhancement.md](design/2026-11-09-cicada-inspired-meeting-enhancement.md) | Cicada 启发的会议增强方案：实时字幕、翻译、系统音频捕获（5 个 Phase，Phase A 已完成） |
 | [2026-09-08-master-password-biometric-unlock.md](2026-09-08-master-password-biometric-unlock.md) | 主密码与生物认证解锁 |
 | [2026-09-08-task-session-detail/](2026-09-08-task-session-detail/) | 任务/会话详情（[PLAN.md](2026-09-08-task-session-detail/PLAN.md)） |
 | [2026-09-09-list-sync-rules.md](2026-09-09-list-sync-rules.md) | 列表数据拉取与更新同步规则（规范 v1） |
