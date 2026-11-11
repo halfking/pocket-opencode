@@ -764,6 +764,9 @@ func (s *Server) Handler() http.Handler {
 	// RedClaw 门户同步策略兜底实现（前端 redclaw-portal.ts 的 base 兜底链最后一跳；
 	// 此前 404 ⇒ 前端降级 local-only，本地 rig 收件箱读不到服务端邮件）
 	mux.HandleFunc("/api/v1/portal/sync-policy", s.requireAuth(s.handlePortalSyncPolicy))
+	// 资源凭证交换端点（前端 pocket-resource.ts）：登录 JWT 换 ≤30s 作用域凭证。
+	// 此前 404 ⇒ RSS/邮件元数据/embedding 全部报 pocket_resource_authority_rejected。
+	mux.HandleFunc("/api/v1/portal/workspaces/", s.requireAuth(s.handlePortalResourceToken))
 	// v1 闪卡模块：/api/flashcards 与 /api/flashcards/。handlers 在 store
 	// 未注入时返回 503（pgxpool 为 nil 的 remote-only 模式下自然降级）。
 	mux.HandleFunc("/api/flashcards", s.requireAuth(s.handleFlashcardsCollection))

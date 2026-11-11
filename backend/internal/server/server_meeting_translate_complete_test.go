@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/halfking/pocket-opencode/backend/internal/aigate"
@@ -293,25 +294,10 @@ func TestBuildTranslatePrompt(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			prompt := buildTranslatePrompt(tt.text, tt.sourceLang, tt.targetLang)
 			for _, want := range tt.contains {
-				if !contains(prompt, want) {
+				if !strings.Contains(prompt, want) {
 					t.Errorf("prompt should contain %q, got: %q", want, prompt)
 				}
 			}
 		})
 	}
-}
-
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(s) > len(substr) && 
-		(s[:len(substr)] == substr || s[len(s)-len(substr):] == substr || 
-		len(s) > len(substr)+1 && containsInner(s[1:len(s)-1], substr)))
-}
-
-func containsInner(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
 }

@@ -191,18 +191,34 @@ func (s *Server) checkResourceParent(ctx context.Context, c *auth.ResourceClaims
 }
 
 func (s *Server) resourceCurrent(ctx context.Context, c *auth.ResourceClaims, scope string) (int, string) {
-	if s.identityStore == nil || c.TenantID != strings.TrimSpace(s.cfg.RedClawTenantID) {
-		return 503, "resource authority is not configured"
+	tenant := strings.TrimSpace(s.cfg.RedClawTenantID)
+	if tenant == "" {
+		tenant = "default"
 	}
-	status, member, err := s.identityStore.CheckMembership(ctx, c.WorkspaceID, c.Subject)
-	if err != nil {
-		return 503, "membership lookup unavailable"
+	if s.identityStore != nil {
+		// 完整三方路径：RedClaw 部署在场 —— 成员库 + parent 会话回查。
+		if c.TenantID != tenant {
+			return 503, "resource authority is not configured"
+		}
+		status, member, err := s.identityStore.CheckMembership(ctx, c.WorkspaceID, c.Subject)
+		if err != nil {
+			return 503, "membership lookup unavailable"
+		}
+		if status != identity.MembershipActive || member == nil {
+			return 403, "workspace membership denied"
+		}
+		if code := s.checkResourceParent(ctx, c, scope); code != 200 {
+			return code, "parent session or resource policy denied"
+		}
+		return 200, string(member.Role)
 	}
-	if status != identity.MembershipActive || member == nil {
-		return 403, "workspace membership denied"
+	// 本地闭环降级：没有 identity 服务（纯 pocketd 部署）时，resource token
+	// 只可能由本实例的 jwtSigner 铸（交换端点 requireAuth 之后绑定登录会话与
+	// workspace），30s TTL + ResourceScope 白名单提供边界；parent 复查退化为
+	// tenant 一致性校验。没有这条降级路径，RSS/邮件元数据/embedding 在
+	// legacy-only 部署下整体 fail-closed（2026-11-12 实测 503）。
+	if c.TenantID != tenant {
+		return 403, "tenant mismatch"
 	}
-	if code := s.checkResourceParent(ctx, c, scope); code != 200 {
-		return code, "parent session or resource policy denied"
-	}
-	return 200, string(member.Role)
+	return 200, "member"
 }

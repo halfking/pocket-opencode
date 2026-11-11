@@ -288,6 +288,8 @@ var lengthLimitRegistry = []struct {
 	{"server/llm_gateway_nodes_proxy.go", "len(s) > 64", "O", ""},
 	{"server/server_rss.go", "len(body.IDs) > 100", "A", "客户端提交的**条目状态同步 ID 数**（计数）：1~100；400（/api/rss/item-states）。**可达性：不可达**（同上：前端预检 + 分批）"},
 	{"server/server_rss.go", "len(opt.IDs) > 100", "A", "客户端提交的**实体批量查询 ID 数**（计数）：≤100；400（/api/rss/entities 批量入口）。**可达性：不可达**（同上：前端按 100 分批）"},
+	{"server/server_meeting_translate.go", "len(req.Text) > 5000", "A", "客户端提交的**会议字幕单次翻译文本**（`len` ⇒ 字节闸，5000 字节 ≈ 1600+ 汉字）；400「text too long (max 5000 chars)」（/api/meetings/translate）。**可达性：可达·可区分**（错误信息写明上限）⇒ 用户可删减重试"},
+	{"server/server_meeting_translate.go", "len(req.Texts) > 50", "A", "客户端提交的**批量翻译条数**（计数）：1~50；400「texts must have 1-50 items」（/api/meetings/translate-batch）。**可达性：可达·可区分** ⇒ 用户可分批重试"},
 	{"server/mobile_api.go", "len(tokenString) > 7", "O", ""},
 	{"server/mobile_idempotency.go", "len(c.entries) > 4096", "O", ""},
 	{"server/mobile_idempotency.go", "len(c.entries) > 4096", "O", ""},
@@ -347,6 +349,8 @@ var lengthLimitRegistryAKeys = []lengthLimitGateKey{
 	{"server/flashcards_handler.go", "len([]rune(name)) > 80"},
 	{"server/server_rss.go", "len(body.IDs) > 100"},
 	{"server/server_rss.go", "len(opt.IDs) > 100"},
+	{"server/server_meeting_translate.go", "len(req.Text) > 5000"},
+	{"server/server_meeting_translate.go", "len(req.Texts) > 50"},
 	{"server/server_assistant.go", "len(audioData) > 25 << 20"},
 	{"server/server_assistant.go", "len(body.Messages) > 50"},
 	{"server/server_assistant.go", "len(body.Subject) > 500"},
@@ -553,8 +557,9 @@ func TestLengthLimitRegistryCoversEveryLengthGate(t *testing.T) {
 			t.Errorf("lengthLimitRegistryAKeys 里的 %s %q 在清单里不是 A 类 ⇒ 两份清单不一致", k.file, k.expr)
 		}
 	}
-	if len(aSet) != 21 {
-		t.Errorf("A 类（客户端可提交字段上的限制）实际 %d 条，期望 21 条 ⇒ "+
+	// 2026-11-12：+2（server_meeting_translate.go 的单次文本 5000 字节 / 批量条数 50）
+	if len(aSet) != 23 {
+		t.Errorf("A 类（客户端可提交字段上的限制）实际 %d 条，期望 23 条 ⇒ "+
 			"要么有人把 A 类改成了 O 类，要么新增了一处客户端可提交的限制没分类", len(aSet))
 	}
 

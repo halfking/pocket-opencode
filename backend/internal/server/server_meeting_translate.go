@@ -210,7 +210,9 @@ func detectLanguage(text string) string {
 		}
 	}
 
-	if cjkCount > latinCount {
+	// 混合文本按语义量加权：一个汉字约等于两个英文字母的信息量，
+	// "你好Hello世界"（4 汉字 5 字母）应判 zh 而不是 en。
+	if cjkCount*2 > latinCount {
 		return "zh"
 	}
 	if latinCount > 0 {
