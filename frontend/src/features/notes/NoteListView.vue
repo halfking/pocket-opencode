@@ -18,6 +18,20 @@
         <span class="material-symbols-outlined" aria-hidden="true">{{ showSearch ? 'search_off' : 'search' }}</span>
         <span class="sr-only">{{ showSearch ? '关闭搜索' : '搜索笔记' }}</span>
       </button>
+      <!-- memora 记忆库同步入口（A5 薄集成）：把当前筛选下的手记批量推送到
+           memora notebook。幂等（同内容重推 skipped / 变化 updated），进度
+           分块回报；未配置 memora 时后端 503，toast 如实转述原因。 -->
+      <button
+        class="notes-action"
+        type="button"
+        :disabled="syncBusy"
+        aria-label="同步到记忆库"
+        data-testid="notes-sync-memora"
+        @click="syncToMemora"
+      >
+        <span class="material-symbols-outlined" aria-hidden="true">cloud_upload</span>
+        <span class="sr-only">同步到记忆库</span>
+      </button>
       <button class="notes-action" type="button" aria-label="新建笔记" @click="goCreate">
         <span class="material-symbols-outlined" aria-hidden="true">add</span>
         <span class="sr-only">新建笔记</span>
@@ -82,7 +96,14 @@
         </div>
         <div v-if="showSearch" class="search-bar">
           <input v-model="query" placeholder="问笔记… 或搜关键词" @keyup.enter="onSearch" />
+          <!-- 云端记忆库搜索开关：打开后回车检索同时打 memora notebook 面，
+               命中在本地结果之下单独成段（带 memora 来源标注）。 -->
+          <label class="cloud-toggle">
+            <input v-model="cloudSearch" type="checkbox" data-testid="notes-cloud-search-toggle" />
+            <span>云端记忆库</span>
+          </label>
         </div>
+        <p v-if="syncProgress" class="sync-progress" role="status">{{ syncProgress }}</p>
         <NoteSearchBrief v-if="briefing" :summary="briefing.summary" :offline="briefing.offline" />
         <div v-if="loading" class="state"><Skeleton :count="3" /></div>
         <!--
@@ -139,6 +160,39 @@
             <span v-else>没有更多了</span>
           </div>
         </div>
+        <!--
+          云端记忆库命中段（memora 来源）。与本地结果**分开渲染**而不是塞进
+          同一数组：LocalNote 是本地加密库的完整行（详情路由、domain 着色都
+          绑在它身上），memora 命中只有列表头部字段，强行合并要么伪造字段、
+          要么点进去 404。分段的「memora」角标就是来源标注——合并展示（同一
+          检索流里看得到两路结果）与可辨识来源（不会误当本地笔记点开）两个
+          需求同时满足。
+        -->
+        <div v-if="showSearch && cloudSearch && query.trim()" class="memora-hits" data-testid="notes-memora-hits">
+          <p class="memora-hits-title">云端记忆库（memora）</p>
+          <p v-if="memoraState === 'loading'" class="memora-hits-state">云端搜索中…</p>
+          <p v-else-if="memoraState === 'unconfigured'" class="memora-hits-state">记忆库未配置（POCKET_MEMORA_BASE_URL）</p>
+          <p v-else-if="memoraState === 'error'" class="memora-hits-state">云端搜索失败，可稍后重试</p>
+          <template v-else-if="memoraState === 'ok'">
+            <p v-if="memoraHits.length === 0" class="memora-hits-state">云端没有匹配的笔记</p>
+            <div v-else class="memora-list">
+              <button
+                v-for="hit in memoraHits"
+                :key="hit.id"
+                type="button"
+                class="memora-card"
+                @click="toggleMemoraHit(hit.id)"
+              >
+                <span class="memora-card-title">
+                  <span class="memora-badge">memora</span>
+                  {{ hit.title || '（无标题）' }}
+                </span>
+                <span v-if="memoraExpanded === hit.id" class="memora-card-body">{{ memoraBody(hit.id) }}</span>
+                <span v-else class="memora-card-hint">点开查看正文</span>
+              </button>
+            </div>
+          </template>
+        </div>
       </template>
 
       <VoiceRecorderWidget :recording="isRecording" :busy="recorderUi.busy" @toggle="onMicToggle" />
@@ -176,6 +230,7 @@ import NoteRecordingStudio from './NoteRecordingStudio.vue'
 import NoteMetaSheet from './NoteMetaSheet.vue'
 import NoteSearchBrief from './NoteSearchBrief.vue'
 import { notesApi } from '../../api/notes'
+import { memoraNotesApi, type MemoraNoteItem } from '../../api/memora-notes'
 import { createNoteTodos } from './note-todo-persist'
 import { buildNoteTodoNotice } from './note-todo-notice.ts'
 import { describeVoiceDraftSaveFailure } from './voice-draft-save-notice.ts'
@@ -214,6 +269,22 @@ const query = ref('')
 const dbNotReady = ref(false)
 const showSearch = ref(false)
 const briefing = ref<NoteSearchBriefing | null>(null)
+// ── memora 记忆库（A5 薄集成）─────────────────────────────────────────────
+/** 云端记忆库搜索开关：打开后 onSearch 并行打 memora notebook 面。 */
+const cloudSearch = ref(false)
+const memoraHits = ref<MemoraNoteItem[]>([])
+type MemoraSearchState = 'idle' | 'loading' | 'ok' | 'error' | 'unconfigured'
+const memoraState = ref<MemoraSearchState>('idle')
+/** 当前展开正文的 memora 命中 id（正文来自 detail 的 plain_text）。 */
+const memoraExpanded = ref('')
+const memoraBodies = ref<Record<string, string>>({})
+/** 同步进行中的进度文案（'' = 不显示）。 */
+const syncBusy = ref(false)
+const syncProgress = ref('')
+/** 分块大小：每块一次请求，进度条按块推进；单块失败不拖垮其余块。 */
+const MEMORA_SYNC_CHUNK = 5
+/** 与服务端 memoraSyncBatchLimit 对齐的单次同步总量上限。 */
+const MEMORA_SYNC_MAX = 100
 const domain = ref<'all' | 'work' | 'study' | 'life' | 'idea'>('all')
 const draftBanner = ref<LocalNote | null>(null)
 const metaOpen = ref(false)
@@ -413,7 +484,14 @@ async function load() {
 async function onSearch() {
   const stamp = ownerView.capture()
   const q = query.value.trim()
-  if (!q) { briefing.value = null; await load(); return }
+  if (!q) {
+    briefing.value = null
+    memoraHits.value = []
+    memoraState.value = 'idle'
+    memoraExpanded.value = ''
+    await load()
+    return
+  }
   try {
     const result = await searchNotesWithIntent(q, currentWorkspaceId())
     if (!ownerView.isCurrent(stamp)) return
@@ -421,6 +499,108 @@ async function onSearch() {
     searchResults.value = briefing.value.results.map((r) => r.note)
   } catch {
     if (ownerView.isCurrent(stamp)) searchResults.value = null
+  }
+  // 云端记忆库一路**并行于本地检索之后**独立成段：本地失败不影响云端、
+  // 云端失败（未配置/网络）也不改写本地结果——两路结果各自如实出声。
+  void searchMemora(q, stamp)
+}
+
+/** 云端记忆库检索（memora notebook 面）。 */
+async function searchMemora(q: string, stamp: object) {
+  memoraHits.value = []
+  memoraExpanded.value = ''
+  memoraState.value = 'loading'
+  try {
+    const res = await memoraNotesApi.search({ q, limit: 10 })
+    if (!ownerView.isCurrent(stamp)) return
+    memoraHits.value = res.items
+    memoraState.value = 'ok'
+  } catch (e) {
+    if (!ownerView.isCurrent(stamp)) return
+    const msg = e instanceof Error ? e.message : String(e)
+    // 未配置 memora 是部署形态而非故障，提示语要区别于网络失败。
+    memoraState.value = msg.includes('memora 未配置') ? 'unconfigured' : 'error'
+  }
+}
+
+/** 展开/收起一条云端命中的正文（lazy 拉 detail，列表行没有正文）。 */
+async function toggleMemoraHit(id: string) {
+  if (memoraExpanded.value === id) {
+    memoraExpanded.value = ''
+    return
+  }
+  memoraExpanded.value = id
+  if (memoraBodies.value[id]) return
+  try {
+    const detail = await memoraNotesApi.detail(id)
+    memoraBodies.value = { ...memoraBodies.value, [id]: detail.plain_text || '（无正文）' }
+  } catch {
+    memoraBodies.value = { ...memoraBodies.value, [id]: '正文加载失败' }
+  }
+}
+
+function memoraBody(id: string): string {
+  return memoraBodies.value[id] || '正文加载中…'
+}
+
+/**
+ * 「同步到记忆库」：把当前筛选下的手记批量推送到 memora notebook。
+ *
+ * - 先打 /api/memora/status 做已配置检查：503（未配置）如实 toast 原因，
+ *   不把「没配置」演成「同步了 0 条」。
+ * - 分块（每块 5 条）推送，进度逐块推进；块与块串行——并行会把放大系数
+ *   全部压给 memora（每条笔记 1-3 个上游请求）。
+ * - 幂等由服务端保证（同内容 skipped / 变化 updated），重复点击安全。
+ */
+async function syncToMemora() {
+  if (syncBusy.value) return
+  syncBusy.value = true
+  syncProgress.value = '检查记忆库…'
+  try {
+    let status: Awaited<ReturnType<typeof memoraNotesApi.status>>
+    try {
+      status = await memoraNotesApi.status()
+    } catch (e) {
+      toast.error(apiError(e, '记忆库状态检查失败'))
+      return
+    }
+    if (!status.configured) {
+      toast.warning(status.error || '记忆库未配置，请先在服务端配置 POCKET_MEMORA_BASE_URL')
+      return
+    }
+    const ids = filteredNotes.value.map((n) => n.id).slice(0, MEMORA_SYNC_MAX)
+    if (ids.length === 0) {
+      toast.info('当前分类下没有可同步的笔记')
+      return
+    }
+    let failed = 0
+    let created = 0
+    let updated = 0
+    let skipped = 0
+    for (let i = 0; i < ids.length; i += MEMORA_SYNC_CHUNK) {
+      const chunk = ids.slice(i, i + MEMORA_SYNC_CHUNK)
+      syncProgress.value = `正在同步 ${i + 1}/${ids.length} …`
+      const res = await memoraNotesApi.sync({ noteIds: chunk })
+      failed += res.failed
+      created += res.created
+      updated += res.updated
+      skipped += res.skipped
+    }
+    syncProgress.value = ''
+    const changed = created + updated
+    if (failed === 0) {
+      const detail = changed === 0
+        ? '，内容无变化'
+        : `，新增 ${created} 条、更新 ${updated} 条`
+      toast.success(`已同步 ${ids.length} 条到记忆库${detail}（跳过 ${skipped}）`)
+    } else {
+      toast.warning(`同步完成：成功 ${ids.length - failed} 条，失败 ${failed} 条（可重试，重推不会产生重复）`)
+    }
+  } catch (e) {
+    toast.error(apiError(e, '同步到记忆库失败'))
+  } finally {
+    syncBusy.value = false
+    syncProgress.value = ''
   }
 }
 
@@ -719,10 +899,50 @@ useListScene('notes', load)
   background: var(--bg-base); color: var(--text-secondary); font-size: var(--text-sm); flex-shrink: 0;
 }
 .chip.active { background: var(--brand-bg); color: var(--text-primary); border-color: var(--brand-primary); }
-.search-bar { padding: 8px var(--space-3); }
-.search-bar input {
+.search-bar { padding: 8px var(--space-3); display: flex; flex-direction: column; gap: 6px; }
+.search-bar input[type='text'], .search-bar > input {
   width: 100%; padding: 10px 12px; border-radius: var(--radius-full);
   border: 1px solid var(--border); background: var(--bg-card); color: var(--text-primary);
+}
+/* 云端记忆库开关：44px 触控热区（与 chips 同一过滤按钮规范）。 */
+.cloud-toggle {
+  display: inline-flex; align-items: center; gap: 8px; align-self: flex-start;
+  min-height: 44px; padding: 0 12px; border-radius: var(--radius-md);
+  border: 1px solid var(--border); background: var(--bg-base);
+  color: var(--text-secondary); font-size: var(--text-sm); cursor: pointer;
+}
+.cloud-toggle:has(input:checked) { background: var(--brand-bg); color: var(--brand-primary); border-color: var(--brand-primary); }
+.cloud-toggle input { accent-color: var(--brand-primary); }
+/* 同步进行中的进度行：role=status 让读屏播报；语义是「进行中」非错误。 */
+.sync-progress {
+  margin: 0 0 var(--space-2); padding: 0 var(--space-3);
+  color: var(--text-secondary); font-size: var(--text-smd);
+}
+/* 云端记忆库命中段：与本地结果分段渲染，标题行明示来源。 */
+.memora-hits { padding: 0 var(--space-3) 8px; }
+.memora-hits-title {
+  margin: 0 0 6px; font-size: var(--text-sm); font-weight: 600;
+  color: var(--text-secondary);
+}
+.memora-hits-state { margin: 0 0 6px; font-size: var(--text-smd); color: var(--text-muted); }
+.memora-list { display: flex; flex-direction: column; gap: 8px; }
+.memora-card {
+  display: flex; flex-direction: column; gap: 4px; width: 100%; text-align: left;
+  padding: 10px 12px; border-radius: 8px; border: 1px dashed var(--border);
+  background: var(--bg-card); color: var(--text-primary); cursor: pointer;
+}
+.memora-card:active { opacity: 0.7; }
+.memora-card-title { display: flex; align-items: center; gap: 6px; font-weight: 600; font-size: var(--text-base); overflow-wrap: anywhere; }
+/* memora 来源角标：与语音笔记的 🎙 徽标同族——一眼可辨「这不是本地笔记」。 */
+.memora-badge {
+  flex-shrink: 0; padding: 0 6px; border-radius: var(--radius-sm);
+  background: var(--brand-bg); color: var(--brand-primary);
+  font-size: var(--text-2xs); font-weight: 600; line-height: 16px;
+}
+.memora-card-hint { font-size: var(--text-xs); color: var(--text-muted); }
+.memora-card-body {
+  font-size: var(--text-smd); color: var(--text-secondary); line-height: 1.5;
+  white-space: pre-wrap; overflow-wrap: anywhere;
 }
 .draft-banner {
   width: 100%; border: none; text-align: left; padding: 10px var(--space-3);

@@ -285,21 +285,23 @@ func newServer(cfg config.Config, nps adapter.NPSAdapter, opencode adapter.OpenC
 		snippetStore:     snippet.NewStore(),
 		meetingStore:     meeting.NewStore(),
 		chatSummaryStore: cs.NewStore(),
-		memora:           memora.NewClient(cfg.MemoraBaseURL, cfg.MemoraAPIKey, cfg.MemoraJWTSecret, cfg.MemoraTenantID, cfg.MemoraProjectID, cfg.MemoraUserID, 10*time.Second),
-		flashcardStore:   flashcardStore,
-		transcriber:      transcriber,
-		mcpClient:        mcpClient,
-		embedder:         embedder,
-		llm:              llm,
-		kxmemory:         kxmem,
-		opencodeManager:  opencodeManager,
-		userStore:        userStore,
-		jwtSigner:        jwtSigner,
-		emailCrypto:      emailCrypto,
-		emailPending:     emailPending,
-		emailScheduler:   emailScheduler,
-		emailFetcher:     emailFetcher,
-		dataDir:          dataDir,
+		memora: memora.NewClientV2(cfg.MemoraBaseURL, cfg.MemoraAPIKey, cfg.MemoraJWTSecret,
+			cfg.MemoraTenantID, cfg.MemoraProjectID, cfg.MemoraUserID,
+			cfg.MemoraV2Issuer, cfg.MemoraV2Audience, cfg.MemoraV2Scope, 10*time.Second),
+		flashcardStore:  flashcardStore,
+		transcriber:     transcriber,
+		mcpClient:       mcpClient,
+		embedder:        embedder,
+		llm:             llm,
+		kxmemory:        kxmem,
+		opencodeManager: opencodeManager,
+		userStore:       userStore,
+		jwtSigner:       jwtSigner,
+		emailCrypto:     emailCrypto,
+		emailPending:    emailPending,
+		emailScheduler:  emailScheduler,
+		emailFetcher:    emailFetcher,
+		dataDir:         dataDir,
 		// 默认内存版记账存储；main.go 在 PG 就绪时经 SetFinanceStore 换成 PG 版。
 		financeStore: finance.NewStore(),
 		auditStore: func() redclaw.AuditStoreFull {
@@ -761,6 +763,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/memora/status", s.requireAuth(s.handleMemoraStatus))
 	mux.HandleFunc("/api/memora/search", s.requireAuth(s.handleMemoraSearch))
 	mux.HandleFunc("/api/memora/notes/push", s.requireAuth(s.handleMemoraNotePush))
+	// notebook 面（2026-11-13，A5 thin integration）：/api/v2/notebook/* 的转发
+	mux.HandleFunc("/api/memora/notes/sync", s.requireAuth(s.handleMemoraNoteSync))
+	mux.HandleFunc("/api/memora/notes/search", s.requireAuth(s.handleMemoraNoteSearch))
+	mux.HandleFunc("/api/memora/notes/", s.requireAuth(s.handleMemoraNoteItem))
 	// RedClaw 门户同步策略兜底实现（前端 redclaw-portal.ts 的 base 兜底链最后一跳；
 	// 此前 404 ⇒ 前端降级 local-only，本地 rig 收件箱读不到服务端邮件）
 	mux.HandleFunc("/api/v1/portal/sync-policy", s.requireAuth(s.handlePortalSyncPolicy))

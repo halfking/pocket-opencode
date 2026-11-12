@@ -285,6 +285,7 @@ var lengthLimitRegistry = []struct {
 	{"server/flashcards_handler.go", "len(parts) >= 2", "O", ""},
 	{"server/flashcards_handler.go", "len(parts) >= 3", "O", ""},
 	{"server/llm_gateway_admin_client.go", "len(trimmed) > 200", "O", "**网关错误体**截断（服务端派生，不是客户端提交的字段）"},
+	{"server/server_memora.go", "len(hash) > 16", "O", "memora 同步内容指纹取 16 hex（64 bit）**截断**进 sync:openpocket:hash:* tag——sha256 hex 是服务端对笔记内容自算的内部派生值，不是客户端可提交字段；只影响 tag 长度，不拒绝任何请求"},
 	{"server/llm_gateway_nodes_proxy.go", "len(s) > 64", "O", ""},
 	{"server/server_rss.go", "len(body.IDs) > 100", "A", "客户端提交的**条目状态同步 ID 数**（计数）：1~100；400（/api/rss/item-states）。**可达性：不可达**（同上：前端预检 + 分批）"},
 	{"server/server_rss.go", "len(opt.IDs) > 100", "A", "客户端提交的**实体批量查询 ID 数**（计数）：≤100；400（/api/rss/entities 批量入口）。**可达性：不可达**（同上：前端按 100 分批）"},

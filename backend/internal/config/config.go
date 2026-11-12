@@ -120,6 +120,13 @@ type Config struct {
 	MemoraTenantID  string // POCKET_MEMORA_TENANT_ID（默认 default）
 	MemoraProjectID string // POCKET_MEMORA_PROJECT_ID（默认 default）
 	MemoraUserID    string // POCKET_MEMORA_USER_ID（默认 pocketd）
+	// notebook 面（/api/v2/notebook/*）的 V2 JWT 可调项（2026-11-13）。V2JWT
+	// fail-closed 要求 iss/aud/sub/tenant_id/scope/exp；aud 必须与 memora 的
+	// MEMORA_V2_JWT_AUDIENCE 精确一致。空值由 client 回落默认（pocketd /
+	// memora-api / notebook.read notebook.write），仅 aud 被部署改过时需要配。
+	MemoraV2Issuer   string // POCKET_MEMORA_V2_JWT_ISSUER（默认 pocketd）
+	MemoraV2Audience string // POCKET_MEMORA_V2_JWT_AUDIENCE（默认 memora-api）
+	MemoraV2Scope    string // POCKET_MEMORA_V2_JWT_SCOPE（默认 notebook.read notebook.write）
 	// 邮箱模块
 	EmailMasterKey string // POCKET_EMAIL_MASTER_KEY：AES-GCM 加密 IMAP 凭证
 	// 任务系统整合（Phase 5）
@@ -350,6 +357,9 @@ func Load() Config {
 		MemoraTenantID:              getEnv("POCKET_MEMORA_TENANT_ID", ""),
 		MemoraProjectID:             getEnv("POCKET_MEMORA_PROJECT_ID", ""),
 		MemoraUserID:                getEnv("POCKET_MEMORA_USER_ID", ""),
+		MemoraV2Issuer:              getEnv("POCKET_MEMORA_V2_JWT_ISSUER", ""),
+		MemoraV2Audience:            getEnv("POCKET_MEMORA_V2_JWT_AUDIENCE", ""),
+		MemoraV2Scope:               getEnv("POCKET_MEMORA_V2_JWT_SCOPE", ""),
 		KxMemoryNoteClassifyPath:    getEnv("POCKET_KXMEMORY_NOTE_CLASSIFY_PATH", "/v1/notes/classify"),
 		KxMemoryEmailClassifyPath:   getEnv("POCKET_KXMEMORY_EMAIL_CLASSIFY_PATH", "/v1/emails/classify"),
 		KxMemoryDailySummaryPath:    getEnv("POCKET_KXMEMORY_DAILY_SUMMARY_PATH", "/v1/emails/daily-summary"),
