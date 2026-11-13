@@ -490,6 +490,16 @@ func (s *Server) handleNoteOperations(w http.ResponseWriter, r *http.Request) {
 		s.handleNoteSummarize(w, r, realID)
 		return
 	}
+	// /api/notes/{id}/links — create note link (POST).
+	if strings.HasSuffix(id, "/links") {
+		s.handleNoteLinkCreate(w, r)
+		return
+	}
+	// /api/notes/{id}/related — get related notes (GET).
+	if strings.HasSuffix(id, "/related") {
+		s.handleNoteRelated(w, r)
+		return
+	}
 
 	// Get authenticated user identity
 	uid := s.userIDFromRequest(r)

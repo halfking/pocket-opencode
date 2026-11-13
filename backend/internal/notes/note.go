@@ -16,6 +16,7 @@ type Note struct {
 	ID          string `json:"id"`
 	UserID      string `json:"userId"`
 	WorkspaceID string `json:"workspaceId,omitempty"`
+	NotebookID  string `json:"notebookId,omitempty"` // 2026-11-14: 笔记本归属
 	Title       string `json:"title,omitempty"`
 	Snippet     string `json:"snippet"` // 列表渲染用的前 ~200 字
 	// Content 是**完整正文**（2026-10-06 新增）。

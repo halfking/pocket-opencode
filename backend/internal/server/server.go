@@ -46,6 +46,8 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/memora"
 	"github.com/halfking/pocket-opencode/backend/internal/migration"
 	"github.com/halfking/pocket-opencode/backend/internal/model"
+	"github.com/halfking/pocket-opencode/backend/internal/notebooks"
+	"github.com/halfking/pocket-opencode/backend/internal/notelinks"
 	"github.com/halfking/pocket-opencode/backend/internal/notes"
 	"github.com/halfking/pocket-opencode/backend/internal/notify"
 	"github.com/halfking/pocket-opencode/backend/internal/notifycenter"
@@ -104,6 +106,13 @@ type Server struct {
 	// 503. SetFlashcardStore() is the public injection point used by
 	// cmd/pocketd/main.go.
 	flashcardStore *flashcards.Store
+	// notebookStore backs /api/notebooks* (docs/2026-11-14-knowledge-base-integration-plan.md §5.1.2).
+	// nil → those routes return 503. SetNotebookStore() is the injection point.
+	notebookStore *notebooks.Store
+	// noteLinksStore backs /api/notes/:id/links and /api/note-links/:id
+	// (docs/2026-11-14-knowledge-base-integration-plan.md §5.1.2 / §7.3).
+	// nil → those routes return 503. SetNoteLinksStore() is the injection point.
+	noteLinksStore *notelinks.Store
 	// learningService backs /api/learning/*: the Learning Core that turns
 	// notes/email/RSS into spaced-repetition material with scheduled reminders
 	// (docs/学习muse/03-架构方案.md §2). nil → those routes return 503, exactly
@@ -514,6 +523,16 @@ func (s *Server) FlashcardStore() *flashcards.Store {
 	return s.flashcardStore
 }
 
+// SetNotebookStore wires the notebooks persistence (docs/2026-11-14 §5.1.2).
+func (s *Server) SetNotebookStore(store *notebooks.Store) {
+	s.notebookStore = store
+}
+
+// SetNoteLinksStore wires the note links store (phase 1 knowledge base integration).
+func (s *Server) SetNoteLinksStore(store *notelinks.Store) {
+	s.noteLinksStore = store
+}
+
 // SetLearningService wires the Learning Core (docs/学习muse/03-架构方案.md §2).
 // The scheduled-task executor gets the same service instance, so the digest
 // notification and the /api/learning/items/due response can never disagree.
@@ -756,9 +775,15 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/workspaces/", s.requireAuth(s.handleWorkspaceOps))
 	mux.HandleFunc("/internal/workspace-authority/workspaces", s.handleWorkspaceAuthority)
 	mux.HandleFunc("/internal/workspace-authority/workspaces/", s.handleWorkspaceAuthority)
+	// 笔记本（docs/2026-11-14-knowledge-base-integration-plan.md §5.1.2 / §7.2）
+	mux.HandleFunc("/api/notebooks", s.requireAuth(s.handleNotebooks))
+	mux.HandleFunc("/api/notebooks/", s.requireAuth(s.handleNotebookOperations))
 	// 语音笔记
 	mux.HandleFunc("/api/notes", s.requireAuth(s.handleNotes))
 	mux.HandleFunc("/api/notes/", s.requireAuth(s.handleNoteOperations))
+	// 笔记关联（docs/2026-11-14-knowledge-base-integration-plan.md §5.1.2 / §7.3）
+	// 须在 /api/notes/ 之前注册，避免 /links 和 /related 被当作 note ID
+	mux.HandleFunc("/api/note-links/", s.requireAuth(s.handleNoteLinkDelete))
 	// memora 记忆库桥（笔记/知识库检索与推送；未配置 POCKET_MEMORA_BASE_URL 时 503）
 	mux.HandleFunc("/api/memora/status", s.requireAuth(s.handleMemoraStatus))
 	mux.HandleFunc("/api/memora/search", s.requireAuth(s.handleMemoraSearch))

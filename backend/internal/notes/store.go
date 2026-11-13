@@ -358,6 +358,15 @@ func (s *Store) Upsert(ctx context.Context, n *Note) error {
 	}
 	var contentTypeVal any = contentType
 
+	// notebook_id: optional reference to notebooks table (2026-11-14).
+	// Empty string means "no notebook", stored as NULL.
+	var notebookIDVal any
+	if n.NotebookID != "" {
+		notebookIDVal = n.NotebookID
+	} else {
+		notebookIDVal = nil
+	}
+
 	// ⚠ §939：ON CONFLICT 的两个变化，缺一不可。
 	//
 	//	① WHERE notes.user_id = $2 —— **归属守卫**。
@@ -404,8 +413,8 @@ func (s *Store) Upsert(ctx context.Context, n *Note) error {
 	//	  ⇒ ⇒ ⇒ 同一行可能被搬到**另一个租户** ⇒ ⇒ ⇒ ⇒ 这是 §939 的
 	//	  既有口径（「同一个用户的行可以被搬回来」），**不是**新增行为。
 	tag, err := s.pool.Exec(ctx, `
-		INSERT INTO notes (id, user_id, workspace_id, title, content, snippet, content_type, domain, tags, audio_path, audio_duration, created_by_voice, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, COALESCE($13, CURRENT_TIMESTAMP), COALESCE($14, CURRENT_TIMESTAMP))
+		INSERT INTO notes (id, user_id, workspace_id, title, content, snippet, content_type, domain, tags, audio_path, audio_duration, created_by_voice, notebook_id, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, COALESCE($14, CURRENT_TIMESTAMP), COALESCE($15, CURRENT_TIMESTAMP))
 		ON CONFLICT (id) DO UPDATE SET
 			title         = EXCLUDED.title,
 			content       = EXCLUDED.content,
@@ -414,11 +423,12 @@ func (s *Store) Upsert(ctx context.Context, n *Note) error {
 			domain        = EXCLUDED.domain,
 			tags          = EXCLUDED.tags,
 			workspace_id  = EXCLUDED.workspace_id,
-			updated_at    = COALESCE($14, CURRENT_TIMESTAMP),
+			notebook_id   = EXCLUDED.notebook_id,
+			updated_at    = COALESCE($15, CURRENT_TIMESTAMP),
 			deleted_at    = NULL
 		WHERE notes.user_id = $2
 	`,
-		n.ID, n.UserID, n.WorkspaceID, n.Title, content, n.Snippet, contentTypeVal, domainVal, tagsVal, n.AudioPath, n.AudioDuration, n.CreatedByVoice, createdAt, updatedAt)
+		n.ID, n.UserID, n.WorkspaceID, n.Title, content, n.Snippet, contentTypeVal, domainVal, tagsVal, n.AudioPath, n.AudioDuration, n.CreatedByVoice, notebookIDVal, createdAt, updatedAt)
 	if err != nil {
 		return fmt.Errorf("upsert note %s: %w", n.ID, err)
 	}
@@ -440,7 +450,7 @@ func (s *Store) ListScoped(ctx context.Context, userID, workspaceID, domain stri
 	q := `
 		SELECT id, user_id, workspace_id, title, content, snippet,
 		       content_type, domain, tags, audio_path, audio_duration,
-		       created_by_voice, created_at, updated_at
+		       created_by_voice, notebook_id, created_at, updated_at
 		FROM notes WHERE user_id = $1 AND workspace_id = $2 AND deleted_at IS NULL`
 	args := []any{userID, workspaceID}
 	if domain != "" {
@@ -457,6 +467,27 @@ func (s *Store) ListScoped(ctx context.Context, userID, workspaceID, domain stri
 	return scanNoteRows(rows)
 }
 
+// ListByNotebook returns the latest notes filed under one notebook, scoped
+// to the authenticated (user, workspace) pair. Backs GET /api/notebooks/:id/notes.
+func (s *Store) ListByNotebook(ctx context.Context, userID, workspaceID, notebookID string) ([]Note, error) {
+	if workspaceID == "" {
+		workspaceID = "default"
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, user_id, workspace_id, title, content, snippet,
+		       content_type, domain, tags, audio_path, audio_duration,
+		       created_by_voice, notebook_id, created_at, updated_at
+		FROM notes
+		WHERE user_id = $1 AND workspace_id = $2 AND notebook_id = $3 AND deleted_at IS NULL
+		ORDER BY updated_at DESC LIMIT `+fmt.Sprintf("%d", maxListResults),
+		userID, workspaceID, notebookID)
+	if err != nil {
+		return nil, fmt.Errorf("query notes for notebook %s: %w", notebookID, err)
+	}
+	defer rows.Close()
+	return scanNoteRows(rows)
+}
+
 // Deprecated: List ignores workspace_id. Use ListScoped on any path that serves
 // an authenticated request.
 func (s *Store) List(ctx context.Context, userID, domain string) ([]Note, error) {
@@ -466,7 +497,7 @@ func (s *Store) List(ctx context.Context, userID, domain string) ([]Note, error)
 	q := `
 		SELECT id, user_id, workspace_id, title, content, snippet,
 		       content_type, domain, tags, audio_path, audio_duration,
-		       created_by_voice, created_at, updated_at
+		       created_by_voice, notebook_id, created_at, updated_at
 		FROM notes WHERE user_id = $1 AND deleted_at IS NULL`
 	args := []any{userID}
 	if domain != "" {
@@ -497,12 +528,13 @@ func scanNoteRows(rows pgx.Rows) ([]Note, error) {
 			domain      sql.NullString
 			tags        []byte // raw jsonb
 			audioPath   sql.NullString
+			notebookID  sql.NullString
 			createdAt   sql.NullTime
 			updatedAt   sql.NullTime
 		)
 		if err := rows.Scan(&n.ID, &n.UserID, &workspaceID, &title, &content, &snippet,
 			&n.ContentType, &domain, &tags, &audioPath, &n.AudioDuration, &n.CreatedByVoice,
-			&createdAt, &updatedAt); err != nil {
+			&notebookID, &createdAt, &updatedAt); err != nil {
 			return nil, fmt.Errorf("scan note row: %w", err)
 		}
 		if workspaceID.Valid {
@@ -522,6 +554,9 @@ func scanNoteRows(rows pgx.Rows) ([]Note, error) {
 		}
 		if audioPath.Valid {
 			n.AudioPath = audioPath.String
+		}
+		if notebookID.Valid {
+			n.NotebookID = notebookID.String
 		}
 		if createdAt.Valid {
 			n.CreatedAt = createdAt.Time.Unix()
@@ -563,18 +598,19 @@ func (s *Store) GetByID(ctx context.Context, id string) (*Note, error) {
 		domain      sql.NullString
 		tags        []byte
 		audioPath   sql.NullString
+		notebookID  sql.NullString
 		createdAt   sql.NullTime
 		updatedAt   sql.NullTime
 	)
 	err := s.pool.QueryRow(ctx, `
 		SELECT id, user_id, workspace_id, title, content, snippet,
 		       content_type, domain, tags, audio_path, audio_duration,
-		       created_by_voice, created_at, updated_at
+		       created_by_voice, notebook_id, created_at, updated_at
 		FROM notes WHERE id = $1 AND deleted_at IS NULL
 	`, id).Scan(
 		&n.ID, &n.UserID, &workspaceID, &title, &content, &snippet,
 		&n.ContentType, &domain, &tags, &audioPath, &n.AudioDuration, &n.CreatedByVoice,
-		&createdAt, &updatedAt,
+		&notebookID, &createdAt, &updatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
@@ -599,6 +635,9 @@ func (s *Store) GetByID(ctx context.Context, id string) (*Note, error) {
 	}
 	if audioPath.Valid {
 		n.AudioPath = audioPath.String
+	}
+	if notebookID.Valid {
+		n.NotebookID = notebookID.String
 	}
 	if createdAt.Valid {
 		n.CreatedAt = createdAt.Time.Unix()
