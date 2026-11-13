@@ -199,8 +199,6 @@
             {{ loading ? '登录中...' : '登录' }}
           </button>
         </template>
-
-        </template>
         </template><!-- /v-else 非纯 OIDC 模式 -->
 
         <div v-if="error" class="error-message">
