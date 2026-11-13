@@ -658,26 +658,27 @@ func (s *Store) GetByID(ctx context.Context, id string) (*Note, error) {
 // GetByIDScoped 按 ID 和 workspace 查找单条笔记（不含软删除）。
 func (s *Store) GetByIDScoped(ctx context.Context, id, userID, workspaceID string) (*Note, error) {
 	var (
-		n         Note
-		wsID      sql.NullString
-		title     sql.NullString
-		content   sql.NullString
-		snippet   sql.NullString
-		domain    sql.NullString
-		tags      []byte
-		audioPath sql.NullString
-		createdAt sql.NullTime
-		updatedAt sql.NullTime
+		n          Note
+		wsID       sql.NullString
+		title      sql.NullString
+		content    sql.NullString
+		snippet    sql.NullString
+		domain     sql.NullString
+		tags       []byte
+		audioPath  sql.NullString
+		notebookID sql.NullString
+		createdAt  sql.NullTime
+		updatedAt  sql.NullTime
 	)
 	err := s.pool.QueryRow(ctx, `
 		SELECT id, user_id, workspace_id, title, content, snippet,
 		       content_type, domain, tags, audio_path, audio_duration,
-		       created_by_voice, created_at, updated_at
+		       created_by_voice, notebook_id, created_at, updated_at
 		FROM notes WHERE id = $1 AND user_id = $2 AND workspace_id = $3 AND deleted_at IS NULL
 	`, id, userID, workspaceID).Scan(
 		&n.ID, &n.UserID, &wsID, &title, &content, &snippet,
 		&n.ContentType, &domain, &tags, &audioPath, &n.AudioDuration, &n.CreatedByVoice,
-		&createdAt, &updatedAt,
+		&notebookID, &createdAt, &updatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
@@ -706,6 +707,9 @@ func (s *Store) GetByIDScoped(ctx context.Context, id, userID, workspaceID strin
 	if audioPath.Valid {
 		n.AudioPath = audioPath.String
 	}
+	if notebookID.Valid {
+		n.NotebookID = notebookID.String
+	}
 	if createdAt.Valid {
 		n.CreatedAt = createdAt.Time.Unix()
 	}
@@ -733,6 +737,7 @@ type NotePatch struct {
 	Tags          *string // JSON array string
 	AudioPath     *string
 	AudioDuration *int
+	NotebookID    *string // 2026-11-14: 笔记本归属（空字符串 = 清除归属）
 }
 
 // ErrNoteNotFound is returned by UpdateNoteScoped and DeleteScoped when no
@@ -822,6 +827,14 @@ func (s *Store) UpdateNoteScoped(ctx context.Context, id, userID, workspaceID st
 	}
 	if patch.AudioDuration != nil {
 		add("audio_duration", *patch.AudioDuration)
+	}
+	if patch.NotebookID != nil {
+		// Empty string means "remove from notebook", stored as NULL
+		if *patch.NotebookID == "" {
+			add("notebook_id", nil)
+		} else {
+			add("notebook_id", *patch.NotebookID)
+		}
 	}
 
 	if len(sets) == 0 {

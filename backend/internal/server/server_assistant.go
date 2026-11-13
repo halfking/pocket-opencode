@@ -410,7 +410,18 @@ func (s *Server) handleNotes(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		domain := r.URL.Query().Get("domain")
-		list, err := s.notesStore.ListScoped(r.Context(), uid, wsID, domain)
+		notebookID := r.URL.Query().Get("notebook_id")
+		
+		var list []notes.Note
+		var err error
+		
+		// 2026-11-14: 支持按 notebook_id 过滤
+		if notebookID != "" {
+			list, err = s.notesStore.ListByNotebook(r.Context(), uid, wsID, notebookID)
+		} else {
+			list, err = s.notesStore.ListScoped(r.Context(), uid, wsID, domain)
+		}
+		
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -573,6 +584,7 @@ func (s *Server) handleNoteUpdate(w http.ResponseWriter, r *http.Request, id, ui
 		Tags          *string `json:"tags"`
 		AudioPath     *string `json:"audioPath"`
 		AudioDuration *int    `json:"audioDuration"`
+		NotebookID    *string `json:"notebookId"` // 2026-11-14: 笔记本归属
 	}
 	if len(bytes.TrimSpace(body)) > 0 {
 		if err := json.Unmarshal(body, &in); err != nil {
@@ -599,6 +611,7 @@ func (s *Server) handleNoteUpdate(w http.ResponseWriter, r *http.Request, id, ui
 		Tags:          in.Tags,
 		AudioPath:     in.AudioPath,
 		AudioDuration: in.AudioDuration,
+		NotebookID:    in.NotebookID,
 	})
 	if err != nil {
 		if errors.Is(err, notes.ErrNoteNotFound) {
