@@ -305,6 +305,17 @@ type Config struct {
 	// —— RedClaw SSO（OIDC）配置 ——
 	RedClawSsoEnabled bool // POCKET_REDCLAW_SSO_ENABLED=true 时 LoginView 多出 SSO Tab
 
+	// —— Casdoor 直连 OIDC（2026-11-14 认证收敛）——
+	// 与 RedClaw 镜像 SSO 平行的第一方 OIDC 客户端：三项齐备即启用，
+	// 复用 /api/auth/sso/* 全套管道（绑定 cookie + 一次性 exchange code）。
+	// 启用且未配置 RedClaw admin 时，本地凭据面（口令登录/注册/验证码/
+	// 忘记密码）整体退役为 410 Gone —— 全部用户认证收敛到 Casdoor。
+	OIDCEndpoint      string // POCKET_CASDOOR_ENDPOINT：如 https://auth.itestu.cn
+	OIDCClientID      string // POCKET_CASDOOR_CLIENT_ID
+	OIDCClientSecret  string // POCKET_CASDOOR_CLIENT_SECRET
+	OIDCRedirectURIOv string // POCKET_CASDOOR_REDIRECT_URI：显式 redirect_uri（缺省从 browser-return 基址推导 /api/auth/sso/callback）
+	OIDCBrowserReturn string // POCKET_CASDOOR_BROWSER_RETURN_URL：回调后 302 的 SPA 绝对基址（如 https://openpocket.itestu.cn）
+
 	// —— RedClaw LLM 兜底 ——
 	// 企业网关（POCKET_LLM_GATEWAY_URL / 运行时网关配置）请求失败时，
 	// 自动切换 RedClaw /api/v1/pocket/llm/chat 作为兜底对话通道。
@@ -482,6 +493,13 @@ func Load() Config {
 		// SSO
 		RedClawSsoEnabled:  getEnv("POCKET_REDCLAW_SSO_ENABLED", "") == "true",
 		RedClawLLMFallback: getEnv("POCKET_REDCLAW_LLM_FALLBACK", "") == "true",
+
+		// Casdoor 直连 OIDC（认证收敛）
+		OIDCEndpoint:      strings.TrimSpace(getEnv("POCKET_CASDOOR_ENDPOINT", "")),
+		OIDCClientID:      strings.TrimSpace(getEnv("POCKET_CASDOOR_CLIENT_ID", "")),
+		OIDCClientSecret:  strings.TrimSpace(getEnv("POCKET_CASDOOR_CLIENT_SECRET", "")),
+		OIDCRedirectURIOv: strings.TrimSpace(getEnv("POCKET_CASDOOR_REDIRECT_URI", "")),
+		OIDCBrowserReturn: strings.TrimSpace(getEnv("POCKET_CASDOOR_BROWSER_RETURN_URL", "")),
 	}
 }
 
@@ -538,14 +556,21 @@ func (c Config) Validate() error {
 		return fmt.Errorf("POCKET_POSTGRES_DSN must be configured in production")
 	}
 
-	// RedClaw 认证权威源：POCKET_AUTH_LEGACY_ONLY=false 时必须配齐
-	if !c.AuthLegacyOnly {
+	// RedClaw 认证权威源：POCKET_AUTH_LEGACY_ONLY=false 且未启用 Casdoor
+	// 直连 OIDC 时必须配齐（OIDC-only 部署不依赖 RedClaw admin）。
+	if !c.AuthLegacyOnly && !c.OIDCEnabled() {
 		if strings.TrimSpace(c.RedClawAdminURL) == "" {
-			return fmt.Errorf("POCKET_REDCLAW_ADMIN_URL must be configured in production (or set POCKET_AUTH_LEGACY_ONLY=true for dev-only fallback)")
+			return fmt.Errorf("POCKET_REDCLAW_ADMIN_URL must be configured in production (or set POCKET_AUTH_LEGACY_ONLY=true for dev-only fallback, or configure POCKET_CASDOOR_* for direct OIDC)")
 		}
 		if len([]byte(c.RedClawAdminSecret)) < 32 {
 			return fmt.Errorf("POCKET_REDCLAW_ADMIN_SECRET must be at least 32 bytes when RedClaw auth is enabled")
 		}
+	}
+
+	// Casdoor 直连 OIDC：启用时必须能解出回调后 302 的 SPA 绝对基址
+	//（显式 browser-return 或从 redirect_uri 覆盖值推导），否则回调链断裂。
+	if c.OIDCEnabled() && strings.TrimSpace(c.OIDCBrowserReturnURL()) == "" {
+		return fmt.Errorf("POCKET_CASDOOR_BROWSER_RETURN_URL (or POCKET_CASDOOR_REDIRECT_URI) must be configured when POCKET_CASDOOR_* OIDC is enabled")
 	}
 
 	// Security: CORS origins must be explicitly configured
@@ -769,6 +794,34 @@ func parseStringList(s string) []string {
 func (c Config) IsProduction() bool {
 	value := strings.ToLower(strings.TrimSpace(c.Environment))
 	return value == "production" || value == "prod"
+}
+
+// OIDCEnabled reports whether the direct-Casdoor OIDC client is fully
+// configured（endpoint + client_id + client_secret 三项齐备）。
+func (c Config) OIDCEnabled() bool {
+	return c.OIDCEndpoint != "" && c.OIDCClientID != "" && c.OIDCClientSecret != ""
+}
+
+// OIDCBrowserReturnURL returns the absolute SPA base the OIDC callback 302s
+// to: explicit POCKET_CASDOOR_BROWSER_RETURN_URL, or the origin derived from
+// the redirect_uri override. Empty when neither can produce an absolute URL.
+func (c Config) OIDCBrowserReturnURL() string {
+	if v := strings.TrimSpace(c.OIDCBrowserReturn); v != "" {
+		return strings.TrimRight(v, "/")
+	}
+	if u, err := url.Parse(c.OIDCRedirectURIOv); err == nil && u.Scheme != "" && u.Host != "" {
+		return u.Scheme + "://" + u.Host
+	}
+	return ""
+}
+
+// OIDCRedirectURI returns the casdoor redirect_uri: explicit override, or
+// {browser-return base}/api/auth/sso/callback（复用既有 SSO 回调路由）。
+func (c Config) OIDCRedirectURI() string {
+	if v := strings.TrimSpace(c.OIDCRedirectURIOv); v != "" {
+		return v
+	}
+	return strings.TrimRight(c.OIDCBrowserReturnURL(), "/") + "/api/auth/sso/callback"
 }
 
 // ResolveDataDir 决定后端的数据目录（发票文件、master key、正文缓存、chat_agents

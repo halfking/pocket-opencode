@@ -163,11 +163,21 @@ export async function fetchAuthIdentity(
 
 /** SSO 启用探测（无副作用）：不铸 nonce、不落 cookie，登录页每次加载调用。 */
 export async function fetchSsoStatus(): Promise<boolean> {
+  return (await fetchSsoStatusDetailed()) !== null
+}
+
+/**
+ * SSO 启用探测（带 mode）。mode="oidc" 表示 Casdoor 直连 OIDC（本地凭据面
+ * 已退役，登录页只留 SSO 入口）；mode="redclaw" 为 RedClaw 镜像道（双 lane
+ * 并存）；null = 未启用 / 网络错误。
+ */
+export async function fetchSsoStatusDetailed(): Promise<{ enabled: boolean; mode: 'oidc' | 'redclaw' } | null> {
   try {
-    await http<{ enabled: boolean }>('/api/auth/sso/status', { method: 'GET' })
-    return true
+    const r = await http<{ enabled: boolean; mode?: string }>('/api/auth/sso/status', { method: 'GET' })
+    if (!r.enabled) return null
+    return { enabled: true, mode: r.mode === 'oidc' ? 'oidc' : 'redclaw' }
   } catch {
-    return false
+    return null
   }
 }
 
