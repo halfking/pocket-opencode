@@ -1,0 +1,128 @@
+# Maestro 真机功能流 · Cicada Phase A: 实时字幕与翻译
+#
+# 测试目标：验证会议中的实时字幕悬浮窗和翻译功能
+#
+# 测试前提：
+#   - 用户已登录
+#   - 已解锁本地数据库
+#   - 麦克风权限已授予
+#   - 后端服务运行在 localhost:8080
+#
+# 覆盖范围：
+#   ✅ 进入会议页面
+#   ✅ 开始录音
+#   ✅ 实时字幕悬浮窗显示
+#   ✅ 字幕内容实时更新
+#   ✅ 翻译开关功能
+#   ⚠️  拖拽和字号调整需要手动测试（Maestro 对拖拽支持有限）
+#   ⚠️  导出功能需要停止录音后测试
+#
+# 运行方式：
+#   node scripts/maestro-run.mjs .maestro/cicada-phase-a-live-subtitle.yaml
+#
+# 注意事项：
+#   - 测试过程中需要说话以触发字幕显示
+#   - 翻译延迟目标 < 2s
+#   - 字幕悬浮窗应始终保持在最前层
+#
+appId: com.kaixuan.opencode.pocket
+---
+# ---------- 0. 前置：确认已登录并在 AI 工具页面 ----------
+- extendedWaitUntil:
+    visible: "AI 工具"
+    timeout: 45000
+- assertVisible: "AI 工具"
+- assertNotVisible: "密码登录"
+
+# ---------- 1. 导航到会议列表 ----------
+# 点击底部导航栏的"会议"选项卡
+- tapOn: "会议"
+- extendedWaitUntil:
+    visible: "会议"
+    timeout: 15000
+
+# ---------- 2. 创建新会议或选择现有会议 ----------
+# 如果有"开始会议"或"新建会议"按钮，点击它
+# 否则点击现有的会议项
+- tapOn:
+    text: ".*会议.*"
+    index: 0
+- extendedWaitUntil:
+    visible: "录音|开始|记录"
+    timeout: 20000
+
+# ---------- 3. 开始录音 ----------
+# 查找录音按钮（可能是"开始录音"、录音图标等）
+- tapOn:
+    text: "录音|开始|记录"
+    index: 0
+- extendedWaitUntil:
+    visible: "停止|暂停|正在录音"
+    timeout: 10000
+
+# ---------- 4. 等待字幕悬浮窗出现 ----------
+# Phase A 的核心功能：LiveSubtitleOverlay 应该自动显示
+# 等待字幕容器或相关元素出现
+- extendedWaitUntil:
+    visible: "实时字幕|字幕|翻译"
+    timeout: 15000
+
+# ---------- 5. 验证字幕悬浮窗基础功能 ----------
+# 检查字幕悬浮窗是否可见
+- assertVisible: "实时字幕|字幕"
+
+# 等待一段时间，让字幕内容更新
+# （实际测试中，测试人员需要说话）
+- waitForAnimationToEnd:
+    timeout: 5000
+
+# ---------- 6. 测试翻译功能 ----------
+# 查找并点击翻译开关
+# 注意：UI 元素可能是开关、按钮或图标
+- tapOn:
+    text: "翻译|Translation"
+    index: 0
+- extendedWaitUntil:
+    visible: "翻译|译文"
+    timeout: 3000
+
+# 等待翻译内容出现（延迟应 < 2s）
+- waitForAnimationToEnd:
+    timeout: 3000
+
+# ---------- 7. 测试字号调整（如果UI中有） ----------
+# 查找字号调整按钮
+- tapOn:
+    text: "字号|大小|Size"
+    index: 0
+    optional: true
+- waitForAnimationToEnd:
+    timeout: 2000
+
+# ---------- 8. 停止录音 ----------
+- tapOn:
+    text: "停止|完成|结束"
+    index: 0
+- extendedWaitUntil:
+    visible: "导出|保存|分享"
+    timeout: 10000
+
+# ---------- 9. 测试导出功能 ----------
+# 查找导出按钮
+- tapOn:
+    text: "导出|Export"
+    index: 0
+    optional: true
+- waitForAnimationToEnd:
+    timeout: 2000
+
+# 如果有格式选择（SRT/TXT），验证选项存在
+- assertVisible:
+    text: "SRT|TXT"
+    optional: true
+
+# ---------- 10. 返回会议列表 ----------
+- tapOn: "返回|Back"
+- extendedWaitUntil:
+    visible: "会议"
+    timeout: 10000

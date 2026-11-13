@@ -2,6 +2,10 @@
 
 > 本目录为 openpocket（pocket-opencode）文档中心。现行文档在本文件与各子目录 README 中索引；历史过程文档统一归档于 `archive/`，只归档不删除。
 
+## 🆕 最新文档
+
+- **[个人知识库集成方案与实施规划](2026-11-14-knowledge-base-integration-plan.md)** (2026-11-14) - 完整的知识库集成设计方案，包含业界最佳实践分析（Joplin/Trilium/Logseq/AppFlowy）、技术架构设计、API 设计和 6 周实施路线图
+
 ## 现行总览（2026-09-08 三件套）
 
 | 文档 | 说明 |
