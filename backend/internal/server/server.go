@@ -784,6 +784,9 @@ func (s *Server) Handler() http.Handler {
 	// 笔记关联（docs/2026-11-14-knowledge-base-integration-plan.md §5.1.2 / §7.3）
 	// 须在 /api/notes/ 之前注册，避免 /links 和 /related 被当作 note ID
 	mux.HandleFunc("/api/note-links/", s.requireAuth(s.handleNoteLinkDelete))
+	// 统一知识搜索 API（docs/2026-11-14-knowledge-base-integration-plan.md §5.1.2 / §7.1）
+	// 跨源搜索：notes + memora + emails + meetings
+	mux.HandleFunc("/api/knowledge/search", s.requireAuth(s.handleKnowledgeSearch))
 	// memora 记忆库桥（笔记/知识库检索与推送；未配置 POCKET_MEMORA_BASE_URL 时 503）
 	mux.HandleFunc("/api/memora/status", s.requireAuth(s.handleMemoraStatus))
 	mux.HandleFunc("/api/memora/search", s.requireAuth(s.handleMemoraSearch))
