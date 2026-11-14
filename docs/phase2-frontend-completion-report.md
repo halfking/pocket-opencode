@@ -76,9 +76,9 @@ Phase 2 Frontend 实施已完成所有核心功能，成功创建了完整的知
    - 显示更多/更少
 
 #### Phase 2.4: KnowledgeHub 主页（100%）
-**1个页面，790行代码**
+**1个页面，816行代码**
 
-- **KnowledgeHubPage.vue** (790行)
+- **KnowledgeHubPage.vue** (816行)
   - 三栏响应式布局
   - 集成所有组件
   - 完整状态管理
@@ -98,10 +98,10 @@ Phase 2 Frontend 实施已完成所有核心功能，成功创建了完整的知
 Stores (3个):          692 行
 API Client:            251 行
 Components (5个):    2,585 行
-Pages (1个):          790 行
-Types & Routes:       ~250 行
+Pages (1个):          816 行
+Types & Routes:        232 行
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
-Total:              ~4,568 行
+Total:              ~4,576 行
 ```
 
 ### 文件清单
