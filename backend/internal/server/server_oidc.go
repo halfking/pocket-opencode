@@ -257,6 +257,17 @@ func (s *Server) handleAuthOidcCallback(w http.ResponseWriter, r *http.Request) 
 	if displayName == "" {
 		displayName = ui.PreferredUsername
 	}
+	// 2026-11-14 真机验收缺陷修复：userinfo 缺 name/preferred_username claim
+	// （如 SQL 播种用户 name 列为空）时 displayName 为空 → 前端 store.user 空
+	// → isAuthenticated=false → 路由守卫把已登录用户弹回 /login（token 本身
+	// 有效）。OIDC 规范保证 sub 必在，email/sub 兜底后必非空。
+	if displayName == "" {
+		displayName = ui.Email
+	}
+	if displayName == "" {
+		logging.Warnf("WARN: oidc userinfo has no name/preferred_username/email claims, falling back to sub=%s", ui.Sub)
+		displayName = ui.Sub
+	}
 
 	// 4. 签发 pocketd 会话 JWT（与 issueTokenAndRespond 同链路）。
 	token, wsID, err := s.mintSessionToken(r.Context(), "casdoor", userID, displayName, ui.Email)

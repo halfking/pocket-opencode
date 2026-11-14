@@ -34,6 +34,7 @@ type fakeCasdoorRecorder struct {
 	tokenCalled, userinfoCalled                 bool
 	failTokenWith                               int
 	emptySub                                    bool
+	noNameClaims                                bool
 }
 
 func fakeCasdoor(t *testing.T, rec *fakeCasdoorRecorder) *httptest.Server {
@@ -66,6 +67,15 @@ func fakeCasdoor(t *testing.T, rec *fakeCasdoorRecorder) *httptest.Server {
 			if rec.emptySub {
 				w.Header().Set("Content-Type", "application/json")
 				_ = json.NewEncoder(w).Encode(map[string]any{"sub": ""})
+				return
+			}
+			if rec.noNameClaims {
+				// 2026-11-14 真机验收缺陷场景：casdoor 用户 name 列为空时
+				// userinfo 只有 sub/email（SQL 播种用户实测）。
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"sub": "casdoor-sub-42", "email": "alice@itestu.cn",
+				})
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
@@ -318,5 +328,73 @@ func TestOIDC_DisabledWhenConfigIncomplete(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode == http.StatusGone {
 		t.Errorf("incomplete oidc must not retire local credential plane")
+	}
+}
+
+// TestOIDC_EmptyNameClaimsFallback：userinfo 缺 name/preferred_username claim
+// 时（SQL 播种用户 name 列为空），exchange 的 user 必须兜底非空——否则前端
+// store.user 空 → isAuthenticated=false → 路由守卫把已登录用户弹回 /login
+// （2026-11-14 真机验收缺陷的回归钉）。
+func TestOIDC_EmptyNameClaimsFallback(t *testing.T) {
+	rec := &fakeCasdoorRecorder{secret: "test-client-secret", noNameClaims: true}
+	casdoor := fakeCasdoor(t, rec)
+	defer casdoor.Close()
+	srv := newOidcTestServer(t, casdoor.URL, nil)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	client := newOidcClient(t)
+
+	resp, err := client.Get(ts.URL + "/api/auth/sso/login")
+	if err != nil {
+		t.Fatalf("login: %v", err)
+	}
+	var body struct {
+		URL string `json:"url"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+	resp.Body.Close()
+	u, err := url.Parse(body.URL)
+	if err != nil {
+		t.Fatalf("parse authorize url: %v", err)
+	}
+	nonce := u.Query().Get("state")
+
+	resp, err = client.Get(ts.URL + "/api/auth/sso/callback?code=fake-code&state=" + url.QueryEscape(nonce))
+	if err != nil {
+		t.Fatalf("callback: %v", err)
+	}
+	resp.Body.Close()
+	loc := resp.Header.Get("Location")
+	lu, err := url.Parse(loc)
+	if err != nil {
+		t.Fatalf("parse location: %v", err)
+	}
+	ssoCode := lu.Query().Get("sso_code")
+	if ssoCode == "" {
+		t.Fatalf("sso_code missing in location: %q", loc)
+	}
+
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/auth/sso/exchange",
+		strings.NewReader(fmt.Sprintf(`{"code":%q}`, ssoCode)))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err = client.Do(req)
+	if err != nil {
+		t.Fatalf("exchange: %v", err)
+	}
+	var ex struct {
+		Token  string `json:"token"`
+		User   string `json:"user"`
+		UserID string `json:"user_id"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&ex)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || ex.Token == "" || ex.UserID != "casdoor-sub-42" {
+		t.Fatalf("exchange = %d %v", resp.StatusCode, ex)
+	}
+	if ex.User == "" {
+		t.Fatal("exchange user empty: guard would bounce a logged-in user back to /login")
+	}
+	if ex.User != "alice@itestu.cn" {
+		t.Errorf("exchange user = %q, want email fallback alice@itestu.cn", ex.User)
 	}
 }

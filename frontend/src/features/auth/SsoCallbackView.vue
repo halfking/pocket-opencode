@@ -81,8 +81,25 @@ onMounted(async () => {
     fail('登录凭据已过期或无效，请重新发起登录')
     return
   }
+  // 1.5 确保显示用户名非空（2026-11-14 真机验收缺陷）：OIDC exchange 的
+  // user 可能为空（casdoor userinfo 缺 name claim），且回调时序下 fetchMe
+  // 可能瞬时 401 —— user 为空会让 isAuthenticated=false，路由守卫把已登录
+  // 用户弹回 /login。激活前带退避重试拉 me，仍失败则退回 user_id。
+  let displayUser = handoff.user || ''
+  if (!displayUser) {
+    for (let attempt = 0; attempt < 3 && !displayUser; attempt++) {
+      if (attempt > 0) await new Promise(resolve => setTimeout(resolve, 500))
+      try {
+        const me = await fetchMe()
+        displayUser = me.name || me.email || ''
+      } catch (e) {
+        console.debug(`fetchMe during sso activation failed (attempt ${attempt + 1}):`, e)
+      }
+    }
+    if (!displayUser) displayUser = handoff.user_id || ''
+  }
   try {
-    await auth.setAuthWithWorkspace(handoff.token, handoff.user, handoff.user_id, handoff.workspace_id || '', 'redclaw-sso')
+    await auth.setAuthWithWorkspace(handoff.token, displayUser, handoff.user_id, handoff.workspace_id || '', 'redclaw-sso')
   } catch (error) {
     console.warn('SSO session activation failed:', error)
     fail('本地会话切换未完成，请重试登录')
@@ -95,7 +112,7 @@ onMounted(async () => {
     const me = await fetchMe()
     if (me.name || me.email) {
       assertAuthSession(auth, session)
-      auth.updateDisplayUser(me.name || handoff.user)
+      auth.updateDisplayUser(me.name || displayUser)
     }
   } catch (e) {
     console.debug('fetchMe after SSO failed (non-fatal):', e)
