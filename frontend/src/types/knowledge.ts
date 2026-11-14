@@ -112,6 +112,15 @@ export interface Note {
   isLatest: boolean;
   createdAt: number;
   updatedAt: number;
+  summary?: string;
+  source?: string;
+  isPinned?: boolean;
+}
+
+export interface Tag {
+  name: string;
+  count: number;
+  color?: string;
 }
 
 export interface SyncState {
