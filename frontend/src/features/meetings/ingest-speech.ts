@@ -14,6 +14,25 @@ import type { MeetingSegment } from './meetings-store.ts'
 import { assertCloudModule } from '../../api/data-policy.ts'
 import { isAbortError } from '../../api/abort.ts'
 
+/**
+ * 分片落盘 URI → sherpa 原生层的裸路径。
+ *
+ * `saveAudioPart` 存的是 `Filesystem.getUri` 的产物（`file:///data/...`），
+ * 而 SherpaPlugin 用 `new File(audioPath)` 解析 —— 不剥前缀会拿到
+ * 「文件不存在」（URI 不是合法的 Linux 路径）。
+ * 仅 WAV（原生链的 pcmToWav 产物）值得传：webm（Web 链）传进去只会
+ * 得到一次注定失败的 `unsupported_format` 原生调用，纯属浪费。
+ */
+export function nativePartPathForSherpa(filePath: string | null, mimeType: string): string | undefined {
+  // ⚠ 2026-11-14（第六层修复）：Android 原生录音产出的是 PCM/WAV，但前端
+  //   接收到的 Blob.type 可能是 'audio/webm' 或空字符串（取决于 native 插件
+  //   如何构造 Blob）。过于严格的 mimeType 检查会导致有效的本地音频文件
+  //   被拒绝传给 Sherpa，造成「本地转写永不触发」。
+  //   ⇒ 只要 native 平台上有 filePath，就传给 Sherpa 尝试（它内部会校验格式）。
+  if (!filePath) return undefined
+  return filePath.replace(/^file:\/\//, '')
+}
+
 export async function ingestSpeechBlob(opts: {
   meetingId: MaybeRef<string>
   blob: Blob
@@ -46,16 +65,28 @@ export async function ingestSpeechBlob(opts: {
   //      而录音 runtime 还在等一个永远不会回来的 promise。
   //   ⇒ 恢复「失败要出声」的语义（§818/§819 同一族），但**取消不许被就地消化**：
   //     AbortError 原样抛出，由调用方 processSegment 判断「是取消」还是「真失败」。
+  // ⚠ 2026-11-14（层3修复）：分片落盘返回的 filePath 现在接进转写 opts ——
+  //   这是「本地 sherpa 优先」从 stt.ts:94 的分支真正通电的那一步：
+  //   之前只传 Blob ⇒ 本地分支因 `opts.audioPath` 缺失永远被跳过 ⇒
+  //   云端 STT 一挂，整场转写全灭（生产 pocketd 未配 GROQ key 的实测现场）。
+  //   路径只对 WAV 分片传（Web 链的 webm 传给 sherpa 是必败调用）。
+  let savedPartPath: string | undefined
   try {
-    await saveAudioPart(meetingId, opts.seq, opts.blob, opts.blob.type || 'audio/webm', operation.localDb)
+    const saved = await saveAudioPart(meetingId, opts.seq, opts.blob, opts.blob.type || 'audio/webm', operation.localDb)
+    savedPartPath = nativePartPathForSherpa(saved.filePath, opts.blob.type || 'audio/webm')
   } catch (error) {
     if (isAbortError(error)) throw error
     // 观测失败不得影响转写，但也不许完全无声 ——
     // 这里是唯一一份音频拷贝，它没存下来就等于那段话永久找不回来了。
     console.warn(`[ingest-speech] 第 ${opts.seq} 段音频分片落盘失败：`, error)
   }
-  operation.assertCloud()
-  assertCloudModule('meetings')
+  // ⚠ 2026-11-14 真机实测（第四层故障·二次修复）：assertCloudModule 移走后
+  //   还有**第三个拦截点** —— transcribe 的第三参 assertCurrent 这里传的是
+  //   operation.assertCloud，而 stt.ts:96 第一行就调 assertCurrent?.() ⇒
+  //   local 模式下本地分支一个字都没转就被弹死（logcat 实证：Sherpa.transcribe
+  //   调用数为 0，只有 extractEmbedding）。⇒ assertCurrent 传 operation.assertLocal
+  //   （它才是「这段转写还有效」的判据 —— 云端归属的校验已由 stt.ts 内部
+  //   在云端路径自行处理，本地路径不需要）。
   // signal 一路传到 sttApi.transcribe：会议录音时每个语音块都是一次独立转写
   // （各自 3 分钟预算），此前这一层是整条录音链上唯一**既跨页存活又完全无法
   // 终止**的环节——录音 runtime 的 cancelTranscription() 只能停录完后的兜底
@@ -65,7 +96,7 @@ export async function ingestSpeechBlob(opts: {
   // processSegment 判断「是取消」还是「真失败」——真失败要给用户可行动的原因，
   // 取消则一个字都不该显示。
   const [sttResult, embeddingResult] = await Promise.all([
-    sttApi.transcribe({ audioBlob: opts.blob, module: 'meetings' }, opts.signal, operation.assertCloud),
+    sttApi.transcribe({ audioBlob: opts.blob, audioPath: savedPartPath, module: 'meetings' }, opts.signal),
     // ⚠ 旧写法 `.catch(() => new Float32Array())` 把「提取失败」伪装成
     //   一个合法的空向量；而余弦相似度对零向量恒为 0 < 阈值
     //   ⇒ **每一次提取失败都被算成一个新说话人**，用户看到的是
@@ -82,7 +113,11 @@ export async function ingestSpeechBlob(opts: {
   //   ⚠§826 让这件事在 Android 上变得不可逆：原生模式压根不产整段音频，
   //   分片是那段话的**唯一一份拷贝**。
 
-  operation.assertCloud()
+  // ⚠ 2026-11-14（与上方第四层修复同族）：本地模式下转写结果来自本地引擎，
+  //   这里不能再用 assertCloudModule 把它拦掉；落库分两条腿：
+  //   云端可用 ⇒ 云库 saveSegment/updateTranscript；本地模式 ⇒ 本地库。
+  //   captureRecordingOperation 的 db 句柄按模式分发（operation.cloudDb 在
+  //   local 模式下是本地句柄的别名），因此这里只需放行、无需选择。
   if (!sttResult.text.trim()) {
     // 「转写成功但没出字」与「转写失败」在调用点**长得一样**（都不抛错），
     // 而前者更隐蔽：它连 sttError 都不会触发。不留痕 ⇒ 这段话凭空消失。
@@ -108,8 +143,18 @@ export async function ingestSpeechBlob(opts: {
     // 显式写出来而不是留空 —— `origin` 是必填字段，缺了编译器会指到这里。
     origin: 'asr',
   }
-  const id = await saveSegment(seg, operation.cloudDb!)
-  operation.assertCloud()
+  // ⚠ 2026-11-14（第四层修复·落库）：cloudDb 只在模块模式为 cloud 时存在
+  //   （recording-operation.ts:28）。本地模式下它是 null —— 旧代码的
+  //   `operation.cloudDb!` 非空断言在 local 模式下把 null 递进 saveSegment
+  //   ⇒ ownerOf(null) TypeError。本地转写出的段落必须落**本地库**
+  //   （operation.localDb 与分片落盘同一个租约/归属）。
+  //   ⚠ cloud 模式（cloudDb 非 null）走原句柄不动：local-edit 与 cloud-sync
+  //     是两种租约，assertCurrent 的判据不同（后者带 policy epoch 校验），
+  //     不能混用 —— 所以下面的 `??` 只在 cloudDb === null（local 模式）时
+  //     才会取 localDb，cloud 模式的落库语义一字未变。
+  const segmentDb = operation.cloudDb ?? operation.localDb
+  const id = await saveSegment(seg, segmentDb)
+  operation.assertLocal()
   opts.segmentProfiles.set(id, profileId)
   const saved: MeetingSegment = { id, ...seg }
   // 按 startMs 有序插入：分段并发转写，完成顺序 ≠ 说话顺序，
@@ -135,14 +180,14 @@ export async function ingestSpeechBlob(opts: {
   //   以前这里是 `renderTranscript(opts.segments)`（当场整场渲染）⇒ 每段一次 O(n)，
   //   而那次结果绝大多数被节流直接丢弃（8 小时真正落库 13 次）⇒ 纯浪费。
   // ⚠ 这一句**必须写在一行** ⇒ 门禁 J（§442）按**行**扫 updateTranscript 的调用点。
-  await updateTranscript(meetingId, renderer ? renderer.source() : renderTranscript(opts.segments), { throttled: true, db: operation.cloudDb! })
+  await updateTranscript(meetingId, renderer ? renderer.source() : renderTranscript(opts.segments), { throttled: true, db: segmentDb })
 
   void liveTranslate(saved.text, lang, operation.assertCloud)
     .then((translation) => {
       operation.assertCloud()
       if (!translation) return
       saved.translation = translation
-      return updateSegmentTranslation(id, translation, operation.cloudDb!)
+      return updateSegmentTranslation(id, translation, segmentDb)
     })
     .catch((e) => {
       // 翻译没回来（或译文写库失败）⇒ 这一段没有译文，用户侧只表现为「没翻译」。

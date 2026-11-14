@@ -1,6 +1,8 @@
 /**
  * speaker-embedding.ts — 声纹 embedding 提取（**I/O 层**）
  *
+ * Phase 2: 完整实现 ECAPA-TDNN 说话人嵌入提取
+ * 
  * 原生：cap-sherpa ECAPA-TDNN（Android）
  * Web 兜底：log-mel 频谱特征（48 维，见 speaker-features.ts）
  *
@@ -30,20 +32,35 @@ export type EmbeddingResult =
   | { ok: true; embedding: Float32Array; source: 'native' | 'spectral' }
   | { ok: false; reason: 'sherpa-failed' | 'decode-failed' | 'audio-empty' }
 
-/** 从音频 blob 提取 embedding，优先原生 ECAPA。 */
+/** 
+ * 从音频 blob 提取 embedding，优先原生 ECAPA。
+ * Phase 2: 完整实现原生ECAPA-TDNN调用
+ */
 export async function extractEmbeddingResult(blob: Blob): Promise<EmbeddingResult> {
   try {
+    // Phase 2: 优先尝试原生 ECAPA-TDNN (192维高质量向量)
     const path = URL.createObjectURL(blob)
     try {
-      const result = await sherpa.extractEmbedding(path)
-      if (isUsableEmbedding(result.embedding)) {
+      const result = await sherpa.extractEmbedding({ audioPath: path })
+      // 将base64编码的嵌入向量解码为Float32Array
+      if (typeof result.embedding === 'string') {
+        const base64 = result.embedding
+        const bytes = Uint8Array.from(atob(base64), c => c.charCodeAt(0))
+        const embedding = new Float32Array(bytes.buffer)
+        if (isUsableEmbedding(embedding)) {
+          return { ok: true, embedding, source: 'native' }
+        }
+      } else if (isUsableEmbedding(result.embedding)) {
         return { ok: true, embedding: result.embedding, source: 'native' }
       }
+    } catch (e) {
+      console.warn('[speaker-embedding] Native ECAPA-TDNN failed, falling back to spectral:', e)
     } finally {
       URL.revokeObjectURL(path)
     }
   } catch { /* 原生不可用，走 Web 兜底 */ }
 
+  // Web 兜底：使用频谱特征（48维）
   let pcm: Float32Array
   try {
     pcm = await decodeToPcm(blob)
@@ -55,6 +72,34 @@ export async function extractEmbeddingResult(blob: Blob): Promise<EmbeddingResul
   // 短于一帧 ⇒ logMelEmbedding 返回零向量 ⇒ 同样是「没有特征」。
   if (!isUsableEmbedding(embedding)) return { ok: false, reason: 'audio-empty' }
   return { ok: true, embedding, source: 'spectral' }
+}
+
+/**
+ * Phase 2 新增：从音频文件路径直接提取嵌入向量
+ * 用于已保存到文件系统的音频（ingest-speech.ts中使用）
+ */
+export async function extractEmbeddingFromPath(audioPath: string): Promise<EmbeddingResult> {
+  try {
+    const result = await sherpa.extractEmbedding({ audioPath })
+    
+    // 处理base64编码的返回值
+    let embedding: Float32Array
+    if (typeof result.embedding === 'string') {
+      const base64 = result.embedding
+      const bytes = Uint8Array.from(atob(base64), c => c.charCodeAt(0))
+      embedding = new Float32Array(bytes.buffer)
+    } else {
+      embedding = result.embedding
+    }
+    
+    if (isUsableEmbedding(embedding)) {
+      return { ok: true, embedding, source: 'native' }
+    }
+    return { ok: false, reason: 'audio-empty' }
+  } catch (e) {
+    console.warn('[speaker-embedding] extractEmbeddingFromPath failed:', e)
+    return { ok: false, reason: 'sherpa-failed' }
+  }
 }
 
 /**

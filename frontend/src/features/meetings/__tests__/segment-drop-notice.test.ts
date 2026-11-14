@@ -105,7 +105,15 @@ describe('§828 · 接线（扫描层，零牙已如实标注）', () => {
     // ⚠ 2026-10-29：saveSegment 现在带 db 实参（c172804f 起）。
     //   判据要**认这个形状**，否则「落库不见了」这句话永远说不出口
     //   ⇒ 前提登记静默失效 ⇒ 有人把 saveSegment 删了也没人知道。
-    assert.match(INGEST, /const id = await saveSegment\(seg,\s*operation\.cloudDb!\)/,
+    // ⚠ 2026-11-14（层3/第四层修复）：db 实参从 `operation.cloudDb!` 改为
+    //   `segmentDb`（= cloudDb ?? localDb）—— 本地模式下 cloudDb 是 null，
+    //   旧非空断言会把 null 递进 saveSegment（ownerOf TypeError）；
+    //   本地引擎转出的段落落本地库，cloud 模式语义不变。
+    //   判据跟着认新形状，并**钉住**「segmentDb 先于 saveSegment 定义」
+    //   （防止有人把兜底句柄删了又退回裸 cloudDb!）。
+    assert.match(INGEST, /const segmentDb = operation\.cloudDb \?\? operation\.localDb/,
+      '本地模式落库句柄的兜底不见了 ⇒ local 模式 cloudDb=null 会 TypeError')
+    assert.match(INGEST, /const id = await saveSegment\(seg,\s*segmentDb\)/,
       '成功路径的落库不见了')
     assert.match(INGEST, /opts\.segments\.splice\(at, 0, saved\)/,
       '有序插入不见了 —— 并发转写完成顺序 ≠ 说话顺序，会让 transcript 乱序')

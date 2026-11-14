@@ -36,13 +36,24 @@ export interface AudioPartRow {
 /** 音频分片在应用数据目录下的**相对目录**（写入与读回共用同一处 ⇒ 不会写一处读另一处）。 */
 export { audioPartDir, audioPartRelativePath, audioPartExtForMime } from './native-audio-parts.ts'
 
+export interface SavedAudioPart {
+  id: string
+  /**
+   * 落盘文件的 `file://` URI（原生链），Web 链或落盘失败时为 null。
+   * ⚠ 这是 Filesystem.getUri 的产物，sherpa 原生层吃的是裸路径 ——
+   *   调用方传给 `sttApi.transcribe({ audioPath })` 前要剥掉 `file://` 前缀
+   *   （见 ingest-speech.ts 的 `nativePartPathForSherpa`）。
+   */
+  filePath: string | null
+}
+
 export async function saveAudioPart(
   meetingId: string,
   seq: number,
   blob: Blob,
   mimeType = blob.type || 'audio/webm',
   db: RecordingDb = captureRecordingDb(),
-): Promise<string> {
+): Promise<SavedAudioPart> {
   const id = `part-${meetingId}-${seq}`
   const dataBase64 = await blobToBase64(blob)
   db.assertCurrent()
@@ -75,7 +86,9 @@ export async function saveAudioPart(
      VALUES (?,?,?,?,?,?,?,?,?)`,
     [id, meetingId, seq, mimeType, filePath ? '' : dataBase64, filePath, Date.now(), ownerUserId, ownerWorkspaceId],
   )
-  return id
+  // filePath 一并返回：它是本地转写（sherpa）的输入 —— 分片刚落完盘，
+  // 这一个返回点是转写调用拿得到路径的唯一时机（§828 的「崩溃后恢复」是另一条事后路径）。
+  return { id, filePath }
 }
 
 export async function listAudioParts(meetingId: string): Promise<AudioPartRow[]> {

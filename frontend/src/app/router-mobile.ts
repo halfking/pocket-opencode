@@ -5,6 +5,9 @@ import { createRouter, createWebHashHistory } from 'vue-router'
 // 未登录落点）、/servers（首启未配服务器落点）。其余 21 个视图全部路由级懒加载，
 // 主包从 ~900KB 降到首屏所需（flashcards/pkm/marketplace 等本已懒加载）。
 
+// Knowledge Base Routes（知识库路由）
+import { knowledgeRoutes } from '../features/knowledge/routes'
+
 // 登录页（未登录冷启动落点）
 import LoginView from '../features/auth/LoginView.vue'
 
@@ -283,6 +286,8 @@ const router = createRouter({
       component: PkmNoteView,
       meta: { requiresAuth: true, requiresLobster: true, title: '笔记', bottomNav: false, canGoBack: true }
     },
+    // Knowledge Base Routes (知识库路由，2026-11-14)
+    ...knowledgeRoutes,
     // 2026-09-23 Phase 2：「学习」tab 聚合页 —— 合并 Flashcards + 笔记入口。
     //
     // 2026-10-03 全局 IA 重组：学习**降级为「更多」里的一个入口**（/study），

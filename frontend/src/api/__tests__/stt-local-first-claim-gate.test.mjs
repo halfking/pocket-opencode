@@ -40,9 +40,18 @@ const CAPS = read('lib', 'shell', 'capabilities.ts')
 
 /** `capabilities.ts` 把 Sherpa 登记进 NOT_IMPLEMENTED_PLUGINS 了没有。 */
 function sherpaRegisteredUnimplemented(src) {
-  const at = src.indexOf('NOT_IMPLEMENTED_PLUGINS')
-  if (at < 0) return false
-  return /\bSherpa\b/.test(src.slice(at))
+  // ⚠ 2026-11-14 订正：旧写法 `src.indexOf('NOT_IMPLEMENTED_PLUGINS')` 命中的是
+  //   **注释里的首次出现**（capabilities.ts:43 那段 2026-10-17 的订正注释），
+  //   从那里 slice 到文件尾会把注释里的 `Sherpa` 字样全扫进去 ⇒ 恒 true。
+  //   （Sherpa 的 Java 实现早在 2026-10-06 Phase 4 落地，表已清空。）
+  //   改成只扫 `export const` 声明那一行起的对象字面量区域。
+  const decl = src.indexOf('export const NOT_IMPLEMENTED_PLUGINS')
+  if (decl < 0) return false
+  const tail = src.slice(decl)
+  const open = tail.indexOf('{')
+  const close = tail.indexOf('}', open)
+  if (open < 0 || close < 0) return false
+  return /\bSherpa\b/.test(tail.slice(open, close + 1))
 }
 
 /** 文件头 = 第一个块注释。⚠ 不能按 `\nimport ` 切：`stt.ts` 的 import 并不在文件顶部。 */
@@ -91,14 +100,21 @@ function sttHeaderIsHonest(header, sherpaIsSkeleton) {
 }
 
 describe('§415 · 行为层：文件头是否与能力表一致', () => {
-  it('★ 能力表把 Sherpa 登记为未实现 ⇒ 文件头不得再声称 local-first 可用', () => {
-    assert.ok(sherpaRegisteredUnimplemented(CAPS),
-      'capabilities.ts 里找不到 NOT_IMPLEMENTED_PLUGINS 里的 Sherpa —— ' +
-      '要么骨架真的接上了（那请把本门改成另一条形状），要么能力表被改坏了，先查清再动这条门')
+  // ⚠ 2026-11-14 形状切换：Sherpa 的 Java 实现已落地（Phase 4，2026-10-06），
+  //   且会议分片链路真正接上了 audioPath（层3修复）——
+  //   「本地优先可用」从伪命题变成了真命题，本门从「禁声称本地可用」
+  //   切换到「不许把云端模型写死」+「不许重新声称已失效的云端型号」。
+  //   旧的「必须写『实际 100% 走云端』」判据随骨架接上而撤销
+  //   （门文件自己声明过：骨架接上时请把本门改成另一条形状）。
+  it('前提自证：能力表不再把 Sherpa 登记为未实现（骨架已接上，本门按新形状运行）', () => {
+    assert.equal(sherpaRegisteredUnimplemented(CAPS), false,
+      'capabilities.ts 的 NOT_IMPLEMENTED_PLUGINS 里又出现了 Sherpa —— ' +
+      '要么实现被回退了（那本门必须换回旧形状），要么表被改坏了，先查清再动这条门')
+    // 文件头仍不得把云端写死成某一个型号（§406 判据在新形状下继续有效）
+    assert.ok(!headerOf(STT).includes(STALE_CLOUD_CLAIM),
+      '文件头仍把云端写死成某一个托管 Whisper 型号 —— §406 起云端模型由「用户 STT 设置 + 网关探测」解析')
     assert.ok(!headerOf(STT).includes(STALE_LOCAL_CLAIM),
-      'api/stt.ts 的文件头仍断言本地优先可用 —— 而 Sherpa 在能力表里是骨架，实际 100% 走云端')
-    assert.match(headerOf(STT), /实际\s*100%\s*走云端/,
-      '文件头没有如实说明「当前实际 100% 走云端」⇒ 读者仍会以为有本地优先这一层')
+      '文件头又回到了逐字的旧主张（含写死的 Paraformer）—— §406 的云端判据与本地现状都对不上，先查 git log')
   })
 
   it('★ 文件头不得把云端模型写死成某一个', () => {
@@ -106,17 +122,20 @@ describe('§415 · 行为层：文件头是否与能力表一致', () => {
       '文件头仍把云端写死成某一个托管 Whisper 型号 —— §406 起云端模型由「用户 STT 设置 + 网关探测」解析')
   })
 
-  it('★★ 换措辞的「本地优先」也必须红（不能只钉旧原句）', () => {
-    const leftover = affirmativeLocalClaimLines(headerOf(STT))
-    assert.deepEqual(leftover, [],
-      `当前头里这几行仍是「本地可用」的主张：\n${leftover.join('\n')}`)
-    // 只换措辞、保留「100% 走云端」那句 ⇒ 必须仍然被抓住。
+  it('★★ 负控：骨架回退时（表里重新出现 Sherpa），「本地优先」判据必须重新长牙（不许单向门）', () => {
+    // 形状切换是**可逆的**：实现回退 ⇒ 「本地优先可用」重新变成伪命题 ⇒
+    // 旧判据（不许声称本地可用 + 必须如实写「走云端」）必须能重新咬人。
+    // ⇒ 用合成夹具证明 sttHeaderIsHonest 在 skeleton regime 下仍在咬，
+    //   而不是依赖仓里恰好是哪个 regime（§capabilities-stub-gate 同族纪律）。
     const reworded = `/**\n` +
       ` * 实现「设备端优先」策略：\n` +
       ` *   1. 先试 on-device sherpa 权重 —— native only，已支持。\n` +
       ` *   ⚠ 与此同时，实际 100% 走云端。\n */\nimport x from 'y'\n`
     assert.equal(sttHeaderIsHonest(headerOf(reworded), true), false,
-      '只钉旧原句的话，把同一句主张换个措辞就能绕过这道门')
+      '骨架 regime 下，声称本地可用（哪怕补了「走云端」句）必须判不诚实 ⇒ 判据失效')
+    const claimNoHonesty = `/**\n * 本地优先，云端兜底。\n */\nimport x from 'y'\n`
+    assert.equal(sttHeaderIsHonest(headerOf(claimNoHonesty), true), false,
+      '骨架 regime 下，声称本地可用却不说「实际 100% 走云端」必须判不诚实')
   })
 
   it('★★ 负控：把旧头放回去，判定必须立刻翻脸', () => {
@@ -124,10 +143,11 @@ describe('§415 · 行为层：文件头是否与能力表一致', () => {
       ` *   1. ${STALE_LOCAL_CLAIM} — native only.\n` +
       ` *   2. ${'If unavailable or low-confidence, ' + STALE_CLOUD_CLAIM}\n */\n` +
       `import { sherpa } from '../native/sherpa'\n`
-    assert.equal(sherpaRegisteredUnimplemented(CAPS), true, '负控前提失效：能力表里已没有 Sherpa 登记')
-    assert.equal(sttHeaderIsHonest(headerOf(stale), true), false,
-      '负控本身写错了：旧头本该被判为不诚实')
-    assert.equal(sttHeaderIsHonest(headerOf(STT), true), true,
+    assert.equal(sherpaRegisteredUnimplemented(CAPS), false, '负控前提失效：能力表里居然还有 Sherpa 登记')
+    // 旧头里的云端型号写死句子在任何形状下都必须红 —— 这是本门保底判据
+    assert.equal(sttHeaderIsHonest(headerOf(stale), sherpaRegisteredUnimplemented(CAPS)), false,
+      '负控本身写错了：写死云端型号的旧头本该被判为不诚实')
+    assert.equal(sttHeaderIsHonest(headerOf(STT), sherpaRegisteredUnimplemented(CAPS)), true,
       '负控本身写错了：当前头本该被判为诚实')
   })
 
@@ -195,19 +215,25 @@ const STALE_ECAPA_CLAIM =
 const WITH_STALE_ECAPA = 'export const X = 1\n' + STALE_ECAPA_CLAIM
 
 describe('§589 · 声纹侧：不得声称原生 ECAPA 可用', () => {
-  it('前提自证：能力表仍把 Sherpa 登记为「已注册但未实现」', () => {
-    assert.ok(sherpaRegisteredUnimplemented(CAPS),
-      '能力表里已没有 NOT_IMPLEMENTED_PLUGINS 的 Sherpa —— ' +
-      '要么骨架真接上了（请把本门改成另一条形状），要么能力表被改坏了，先查清再动')
+  // ⚠ 2026-11-14 形状切换：Sherpa 表登记已清空（Phase 4 实现落地），
+  //   本门按 `diarizationClaimIsHonest(src, sherpaIsSkeleton=false)` 的
+  //   「骨架接上」形状运行 —— 负控仍用合成夹具证明判据在 skeleton regime
+  //   下会咬（不许单向门）。
+  it('前提自证：能力表不再登记 Sherpa 为未实现（ECAPA 侧判据按接上形状运行）', () => {
+    assert.equal(sherpaRegisteredUnimplemented(CAPS), false,
+      '能力表的 NOT_IMPLEMENTED_PLUGINS 里出现了 Sherpa —— ' +
+      '要么实现被回退（本门须换回 skeleton 形状重查 diarization 文件头），要么表被改坏了，先查清再动')
   })
 
-  it('★ 当前文件是诚实的（正向）', () => {
+  it('★ 当前文件是诚实的（正向；骨架接上 ⇒ 任何提法都不构成谎言）', () => {
     const bad = ecapaClaimLines(DIAR)
     assert.deepEqual(bad, [],
       `speaker-diarization.ts 里这几行把原生 ECAPA 说成了可用：\n${bad.join('\n')}`)
     assert.match(DIAR, /NOT_IMPLEMENTED_PLUGINS/,
       '文件里找不到 NOT_IMPLEMENTED_PLUGINS ⇒ 它没告诉读者权威登记在哪，' +
       '下一个人还是会顺着「ECAPA」去找 AAR 集成步骤')
+    assert.equal(diarizationClaimIsHonest(DIAR, sherpaRegisteredUnimplemented(CAPS)), true,
+      '负控本身写错了：实现落地后当前文件（哪怕有「已具备」字样的订正注释）本该被判为诚实')
   })
 
   it('★★ 负控：把缺陷现场那句谎放回去，判定必须立刻翻脸', () => {

@@ -89,6 +89,15 @@ func (s *Server) handleMeetingRouter(w http.ResponseWriter, r *http.Request) {
 	case "translate-batch":
 		// Cicada Phase A: 批量翻译（开启翻译时用）
 		s.handleMeetingTranslateBatch(w, r)
+	case "advisor":
+		// Phase 2: 动态参谋（实时知识检索建议）
+		s.handleMeetingAdvisor(w, r)
+	case "diarize":
+		// Phase 2: 说话人分离
+		s.handleMeetingDiarize(w, r)
+	case "multilingual":
+		// Phase 2: 多语言并行转写
+		s.handleMultilingualTranscribe(w, r)
 	default:
 		writeError(w, http.StatusNotFound, "unknown meeting action: "+action)
 	}

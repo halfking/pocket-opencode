@@ -221,6 +221,11 @@ type Config struct {
 	LLMGatewayURL    string // POCKET_LLM_GATEWAY_URL：llm-gateway-go 地址
 	LLMGatewayAPIKey string // POCKET_LLM_GATEWAY_API_KEY：llm-gateway 租户 key
 
+	// ---- 说话人分离服务 ----
+	DiarizationBaseURL string        // POCKET_DIARIZATION_BASE_URL
+	DiarizationAPIKey  string        // POCKET_DIARIZATION_API_KEY
+	DiarizationTimeout time.Duration // 超时（从MS解析）
+
 	// WebSocket 安全
 	AllowedOrigins string // POCKET_ALLOWED_ORIGINS：逗号分隔的允许 origin 列表（空=dev 模式允许 localhost）
 
@@ -397,6 +402,11 @@ func Load() Config {
 		// 飞书出站（发票推送）
 		FeishuInvoiceChatID:      getEnv("POCKET_FEISHU_INVOICE_CHAT_ID", ""),
 		FeishuInvoiceFolderToken: getEnv("POCKET_FEISHU_INVOICE_FOLDER_TOKEN", ""),
+		
+		// 说话人分离
+		DiarizationBaseURL: getEnv("POCKET_DIARIZATION_BASE_URL", ""),
+		DiarizationAPIKey:  getEnv("POCKET_DIARIZATION_API_KEY", ""),
+		DiarizationTimeout: time.Duration(getEnvInt("POCKET_DIARIZATION_TIMEOUT_MS", 300000)) * time.Millisecond,
 		// Phase C 无状态 AI 网关
 		EmbedBaseURL: getEnv("POCKET_EMBED_BASE_URL", ""),
 		EmbedAPIKey:  getFirstEnv([]string{"POCKET_EMBED_API_KEY", "POCKET_OPENAI_API_KEY"}, ""),

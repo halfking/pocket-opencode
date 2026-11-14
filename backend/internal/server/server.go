@@ -28,6 +28,8 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/calendar"
 	cs "github.com/halfking/pocket-opencode/backend/internal/chat_summary"
 	"github.com/halfking/pocket-opencode/backend/internal/chatagent"
+	"github.com/halfking/pocket-opencode/backend/internal/advisor"
+	"github.com/halfking/pocket-opencode/backend/internal/diarization"
 	"github.com/halfking/pocket-opencode/backend/internal/config"
 	"github.com/halfking/pocket-opencode/backend/internal/email"
 	"github.com/halfking/pocket-opencode/backend/internal/feishu"
@@ -127,6 +129,11 @@ type Server struct {
 	sttDiscovery *stt.DiscoveryCache
 	// sttHTTPClient 是 STT 自动发现/试转的出网客户端。默认走 gatewayHTTPClient
 	// （带 SSRF 防护）；测试注入一个拒绝出网的实现，保证单测不打真实网关。
+	
+	// diarizationClient 说话人分离服务客户端；nil = 未配置
+	diarizationClient *diarization.Client
+	// advisorClient 动态参谋客户端；nil = 未配置
+	advisorClient *advisor.Advisor
 	sttHTTPClient *http.Client
 	mcpClient     *mcp.Client // nil = ACC 任务整合未配置（Phase 5 才激活）
 	// RSS 订阅与分享（PG store + 后台 scheduler）。nil = 关闭模块。
@@ -1000,6 +1007,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/redclaw/health", s.requireAuth(s.handleRedClawHealth))
 	mux.HandleFunc("/api/redclaw/chat", s.requireAuth(s.handleRedClawChat))
 	mux.HandleFunc("/api/redclaw/knowledge/search", s.requireAuth(s.handleRedClawKnowledgeSearch))
+
+	// Phase 2: 录音转写优化功能 - 健康检查端点
+	mux.HandleFunc("/api/advisor/health", s.requireAuth(s.handleAdvisorHealth))
+	mux.HandleFunc("/api/diarize/health", s.requireAuth(s.handleDiarizeHealth))
 
 	// Audit 审计日志
 	mux.HandleFunc("/api/audit/logs", s.requireAuth(s.handleAuditLogs))

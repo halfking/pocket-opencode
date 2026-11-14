@@ -25,17 +25,23 @@
  *   网关侧又补了 glm-asr / minimax-asr-1.0。
  *   ⇒ 在这里写死某个模型名，会让人以为换模型要改这个文件。
  *
- * **当前真实形态**：单段转写 = 一律云端；中文质量完全由 `stt/target.go`
- * 那份候选清单决定（⚠ 见 §414：那份清单此前**全文没有中文精度维度**）。
- * 本地 sherpa 分支与 `startStreaming`/`stopStreaming` **保留**——
- * 调用点（`recordingRuntime`）已经做了能力缺失兜底（try/catch + 5s 超时），
- * 骨架接上后无需再改调用方；云端 3s 分片是它的兜底替代。
+ * **③ 当前真实形态（2026-11-14 层3修复后）**：
+ *   传 `audioPath`（Android 原生链，WAV 分片）时**先试本地 sherpa**，
+ *   高置信直接返回；低置信/本地不可用落云端；**云端失败时返回留存的
+ *   本地低置信结果**（engine: 'local'）而不是向上抛 —— 会议录音不能
+ *   因为云端挂了就整段丢字（2026-11-13 生产未配 GROQ key 的实测现场）。
+ *   不传 audioPath（Web 链 / blob-only 调用方）行为不变：一律云端。
+ *   中文云端质量仍由 `stt/target.go` 那份候选清单决定（⚠ 见 §414）。
+ *   本地 sherpa 分支与 `startStreaming`/`stopStreaming` **保留**——
+ *   调用点（`recordingRuntime`）已经做了能力缺失兜底（try/catch + 5s 超时），
+ *   骨架接上后无需再改调用方；云端 3s 分片是它的兜底替代。
  */
 import { sherpa } from '../native/sherpa'
 import { http } from './http'
 import { blobToBase64 } from '../utils/base64'
 import { utf8ByteLength } from '../utils/text'
 import { assertCloudModule } from './data-policy.ts'
+import { isAbortError } from './abort.ts'
 
 /**
  * 单段语音转写的客户端超时。
@@ -91,64 +97,86 @@ export const sttApi = {
     const minConf = opts.minConfidence ?? 0.7
 
     // Try local sherpa-onnx first (native only, needs file path).
+    // ⚠ 2026-11-14（层3修复）：低置信结果要**留下来**——云端失败时它就是兜底。
+    //   之前本地结果不够格直接丢掉 ⇒ 云端一挂整段全灭（生产未配 GROQ key 实测）。
+    let localBest: SttResult | null = null
     if (opts.forceEngine !== 'cloud' && opts.audioPath) {
       try {
-        const local = await sherpa.transcribe(opts.audioPath)
+        const local = await sherpa.transcribe({ audioPath: opts.audioPath })
         assertCurrent?.()
-        if (local.confidence >= minConf) {
-          return {
+        if (local.text.trim()) {
+          localBest = {
             text: local.text,
             confidence: local.confidence,
             engine: 'local',
           }
+          if (local.confidence >= minConf) return localBest
         }
       } catch {
         // Local engine not available: fall through to cloud.
       }
     }
 
-    assertCloudModule(opts.module)
-    const audioBlob = await ensureGatewayCompatible(requireCloudAudioBlob(opts))
-    const base64 = await blobToBase64(audioBlob)
-    const body = JSON.stringify({
-      audioBase64: base64,
-      filename: filenameForMimeType(audioBlob.type || 'audio/webm'),
-    })
+    // ⚠ 2026-11-14 真机实测（第四层故障）：模块策略 local ⇒ assertCloudModule
+    //   在这里就抛 ModulePolicyLocalError，云端路径整段没跑。而「策略禁用云」
+    //   恰恰是**最该用本地结果**的场景（用户明确选了仅本地）。⇒ 整条云端路径
+    //   （断言+转码+上传）包进同一个 try，任何一步失败都让 localBest 兜底。
+    try {
+      assertCloudModule(opts.module)
+      const audioBlob = await ensureGatewayCompatible(requireCloudAudioBlob(opts))
+      const base64 = await blobToBase64(audioBlob)
+      const body = JSON.stringify({
+        audioBase64: base64,
+        filename: filenameForMimeType(audioBlob.type || 'audio/webm'),
+      })
 
-    // ⚠ §922：超限就在**本地**拦，不要发出去。
-    //   发了会被服务端截断成半截 JSON ⇒ 400 "invalid body" ⇒ 用户无从判断是「太大」。
-    //   ⇒ 抛的错误与服务端 413 用**同一个错误码** ⇒ extractErrorCode 取得到
-    //   ⇒ 界面上是一句「音频太大」，而不是「操作失败」。
-    //   ⚠ 用 utf8ByteLength（§916/§917 那两道字节闸用的同一个 helper）而不是
-    //   `body.length`：后者是 UTF-16 code units，不是字节。
-    const bodyBytes = utf8ByteLength(body)
-    if (bodyBytes > STT_TRANSCRIBE_MAX_BODY_BYTES) {
-      throw new Error(
-        `stt_audio_too_large: audio too large (max ${STT_TRANSCRIBE_MAX_BODY_BYTES} bytes per upload, got ${bodyBytes})`,
+      // ⚠ §922：超限就在**本地**拦，不要发出去。
+      //   发了会被服务端截断成半截 JSON ⇒ 400 "invalid body" ⇒ 用户无从判断是「太大」。
+      //   ⇒ 抛的错误与服务端 413 用**同一个错误码** ⇒ extractErrorCode 取得到
+      //   ⇒ 界面上是一句「音频太大」，而不是「操作失败」。
+      //   ⚠ 用 utf8ByteLength（§916/§917 那两道字节闸用的同一个 helper）而不是
+      //     `body.length`：后者是 UTF-16 code units，不是字节。
+      const bodyBytes = utf8ByteLength(body)
+      if (bodyBytes > STT_TRANSCRIBE_MAX_BODY_BYTES) {
+        throw new Error(
+          `stt_audio_too_large: audio too large (max ${STT_TRANSCRIBE_MAX_BODY_BYTES} bytes per upload, got ${bodyBytes})`,
+        )
+      }
+
+      // 音频转写比普通 CRUD 慢一个量级（整段 base64 上传 + 推理）。
+      //
+      // 2026-10-03：原先用的是通用的 LONG_REQUEST_TIMEOUT_MS，正好 120 秒，
+      // 而服务端 Transcriber 自己就 120 秒（server.go 的 longLivedPaths
+      // 注释里记着）。**相等即错**：客户端计时从请求发出开始，服务端的从
+      // handler 进来开始，中间还隔着网络与鉴权，所以客户端实际总是先到点，
+      // 于是「刚好用满预算」的那一档必然失败。取 3 分钟。
+      // signal 透传给 http：调用方（如 useVoiceInput 的孤儿转写）据此可以
+      // 在页面离开后仍跑的同时**仍被中止**。http 的 HttpOptions.signal 早就是
+      // 接好的，这里只是把它从这条长任务链上暴露出来——此前这条链是整条
+      // stt 链里唯一没有中止入口的环节，而它恰恰是设计上要跨页存活的。
+      const res = await http<{ text: string; confidence: number; costCents?: number }>(
+        '/api/stt/transcribe',
+        { method: 'POST', body, timeoutMs: STT_TRANSCRIBE_TIMEOUT_MS, signal, syncModule: opts.module, assertCurrent },
       )
-    }
-
-    // 音频转写比普通 CRUD 慢一个量级（整段 base64 上传 + 推理）。
-    //
-    // 2026-10-03：原先用的是通用的 LONG_REQUEST_TIMEOUT_MS，正好 120 秒，
-    // 而服务端 Transcriber 自己就 120 秒（server.go 的 longLivedPaths
-    // 注释里记着）。**相等即错**：客户端计时从请求发出开始，服务端的从
-    // handler 进来开始，中间还隔着网络与鉴权，所以客户端实际总是先到点，
-    // 于是「刚好用满预算」的那一档必然失败。取 3 分钟。
-    // signal 透传给 http：调用方（如 useVoiceInput 的孤儿转写）据此可以
-    // 在页面离开后仍跑的同时**仍被中止**。http 的 HttpOptions.signal 早就是
-    // 接好的，这里只是把它从这条长任务链上暴露出来——此前这条链是整条
-    // stt 链里唯一没有中止入口的环节，而它恰恰是设计上要跨页存活的。
-    assertCloudModule(opts.module)
-    const res = await http<{ text: string; confidence: number; costCents?: number }>(
-      '/api/stt/transcribe',
-      { method: 'POST', body, timeoutMs: STT_TRANSCRIBE_TIMEOUT_MS, signal, syncModule: opts.module, assertCurrent },
-    )
-    return {
-      text: res.text,
-      confidence: res.confidence,
-      engine: 'cloud',
-      costCents: res.costCents,
+      return {
+        text: res.text,
+        confidence: res.confidence,
+        engine: 'cloud',
+        costCents: res.costCents,
+      }
+    } catch (error) {
+      // 云端失败且本地有可用文本 ⇒ 降级返回本地低置信结果，不向上抛。
+      //   这是「会议录音不能因为云端挂了就整段丢字」的最后一道闸：
+      //   字还出着（engine: 'local' 标记降级来源），调用方不需要改任何逻辑。
+      //   覆盖两类云端侧失败：① 网络/服务端错误（生产未配 GROQ key 实测）；
+      //   ② ModulePolicyLocalError——策略禁云时 assertCloudModule 在 try 开头
+      //      就抛，「仅本地」模式下本地引擎是唯一合法出口（真机 16:39 实测）。
+      //   中止（AbortError）不属于「云端失败」，原样抛出——那不是降级时机。
+      if (localBest && !isAbortError(error)) {
+        console.warn('[stt] 云端转写失败，降级返回本地低置信结果：', error)
+        return localBest
+      }
+      throw error
     }
   },
 
