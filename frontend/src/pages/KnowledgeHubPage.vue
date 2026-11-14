@@ -27,6 +27,18 @@
       />
     </div>
 
+    <!-- 错误出口（2026-11-14 审计补：notebooks/search/links 读失败必须可见，
+         error-outlet-audit 门禁登记见 stores/__tests__/error-outlet-audit.test.ts） -->
+    <div
+      v-if="notebooksStore.error || searchStore.error || noteLinksStore.error"
+      class="hub-errors"
+      role="alert"
+    >
+      <p v-if="notebooksStore.error">{{ notebooksStore.error }}</p>
+      <p v-if="searchStore.error">{{ searchStore.error }}</p>
+      <p v-if="noteLinksStore.error">{{ noteLinksStore.error }}</p>
+    </div>
+
     <!-- 主内容区域 - 三栏布局 -->
     <div class="hub-content">
       <!-- 左侧栏：笔记本树 + 标签云 -->
@@ -492,13 +504,27 @@ export default {
   overflow: hidden;
 }
 
+/* 错误出口横幅 */
+.hub-errors {
+  flex-shrink: 0;
+  padding: var(--space-2) var(--space-4);
+  background: var(--danger-bg);
+  border-bottom: 1px solid var(--danger);
+}
+
+.hub-errors p {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--danger);
+}
+
 /* 顶部搜索栏 */
 .hub-header {
   flex-shrink: 0;
   padding: var(--space-3) var(--space-4);
   background: var(--bg-base);
   border-bottom: 1px solid var(--border);
-  z-index: 100;
+  z-index: var(--z-hub-float);
 }
 
 /* 主内容区域 */
@@ -630,14 +656,14 @@ export default {
 .hub-bottom-nav {
   display: none;
   position: fixed;
-  bottom: 0;
+  bottom: var(--bottom-chrome-height);
   left: 0;
   right: 0;
   height: 64px;
   background: var(--bg-card);
   border-top: 1px solid var(--border);
   padding: var(--space-2) var(--space-4);
-  z-index: 100;
+  z-index: var(--z-hub-float);
 }
 
 .nav-item {
@@ -664,7 +690,7 @@ export default {
 }
 
 .nav-label {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   font-weight: var(--font-weight-medium);
 }
 
@@ -679,7 +705,7 @@ export default {
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 1000;
+  z-index: var(--z-menu);
 }
 
 .loading-spinner {
@@ -728,7 +754,7 @@ export default {
     max-width: 320px;
     transform: translateX(-100%);
     transition: transform var(--duration-normal) var(--ease-out);
-    z-index: 200;
+    z-index: var(--z-hub-drawer);
     box-shadow: var(--shadow-lg);
   }
 
@@ -743,7 +769,7 @@ export default {
     right: 0;
     bottom: 0;
     background: rgba(0, 0, 0, 0.5);
-    z-index: 199;
+    z-index: var(--z-hub-drawer-overlay);
   }
 
   .hub-sidebar-right {

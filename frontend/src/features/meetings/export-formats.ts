@@ -25,8 +25,8 @@ export function exportToText(
     .map(seg => {
       const parts: string[] = []
       
-      if (options.includeSpeakers && seg.speaker) {
-        parts.push(`[${seg.speaker}]`)
+      if (options.includeSpeakers && seg.speakerLabel) {
+        parts.push(`[${seg.speakerLabel}]`)
       }
       
       if (options.includeTimestamps) {
@@ -68,8 +68,8 @@ export function exportToHtml(
     .map(seg => {
       let html = '<div class="segment">'
       
-      if (options.includeSpeakers && seg.speaker) {
-        html += `<span class="speaker">[${seg.speaker}]</span> `
+      if (options.includeSpeakers && seg.speakerLabel) {
+        html += `<span class="speaker">[${seg.speakerLabel}]</span> `
       }
       
       if (options.includeTimestamps) {
@@ -109,7 +109,7 @@ export function exportToSrt(segments: MeetingSegment[]): string {
     .map((seg, index) => {
       const start = formatSrtTime(seg.startMs)
       const end = formatSrtTime(seg.endMs)
-      const text = seg.speaker ? `[${seg.speaker}] ${seg.text}` : seg.text
+      const text = seg.speakerLabel ? `[${seg.speakerLabel}] ${seg.text}` : seg.text
       
       return `${index + 1}\n${start} --> ${end}\n${text}\n`
     })
@@ -124,8 +124,8 @@ export function exportToBilingual(segments: MeetingSegment[]): string {
     .map(seg => {
       const parts = []
       
-      if (seg.speaker) {
-        parts.push(`[${seg.speaker}] ${formatTimestamp(seg.startMs)}`)
+      if (seg.speakerLabel) {
+        parts.push(`[${seg.speakerLabel}] ${formatTimestamp(seg.startMs)}`)
       }
       
       parts.push(`原文: ${seg.text}`)

@@ -210,7 +210,7 @@ async function handleEdit() {
       },
       {
         text: t('common.save'),
-        handler: async (data) => {
+        handler: async (data: { name?: string }) => {
           if (data.name && data.name.trim()) {
             try {
               await notebooksStore.updateNotebook(notebookId.value, {

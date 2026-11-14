@@ -501,7 +501,7 @@ export default {
   border-radius: var(--radius-full);
   background: var(--brand-primary);
   color: white;
-  font-size: 10px;
+  font-size: var(--text-xs);
   line-height: 16px;
   text-align: center;
   font-variant-numeric: tabular-nums;
@@ -528,7 +528,7 @@ export default {
   border-radius: var(--radius-xs);
   background: var(--bg-card);
   border: 1px solid var(--border);
-  font-size: 11px;
+  font-size: var(--text-2xs);
   font-family: var(--font-mono);
   color: var(--text-muted);
   line-height: 1;
@@ -606,7 +606,7 @@ export default {
 }
 
 .filter-chip .material-symbols-outlined {
-  font-size: 16px;
+  font-size: var(--text-lg);
 }
 
 .filter-select {
@@ -674,7 +674,7 @@ export default {
 }
 
 .remove-tag .material-symbols-outlined {
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 
 .tag-input {

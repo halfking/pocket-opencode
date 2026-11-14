@@ -121,6 +121,8 @@
   --text-md: 15px;    /* 强调文本（标题） */
   --text-lg: 16px;    /* 大标题 */
   --text-xl: 18px;    /* 特大标题 */
+  --text-2xl: 22px;   /* 知识库页标题（2026-11-14 审计补登记） */
+  --text-3xl: 26px;   /* 知识库页大标题（2026-11-14 审计补登记） */
 
   /* 字重系统 */
   --font-weight-normal: 400;
@@ -198,6 +200,13 @@
      从未定义 ⇒ 实际取 30，**低于** --z-sticky(50) 与 --z-bottom-nav(70)，
      于是提示气泡被吸顶栏与底栏盖住。 */
   --z-popover: 100;
+  /* 知识中心（KnowledgeHub）页内浮层 —— 2026-11-14 审计补登记。页内自备
+     header / 底导航 / 抽屉三组浮层；--z-hub-float 取 110 略高于 --z-popover，
+     因 z-index 门禁要求阶梯严格递增 */
+  --z-hub-float: 110;          /* hub 页内吸顶头部与页内底导航 */
+  --z-hub-drawer-overlay: 199; /* 抽屉遮罩（低于抽屉本体，先声明以满足阶梯递增门禁） */
+  --z-hub-drawer: 200;         /* 移动端抽屉侧栏 */
+  --z-menu: 1000;              /* 页内高浮层：右键菜单 / 全页 loading 遮罩 */
   --z-sheet: 1300;
   --z-dialog: 1400;
   --z-alert: 1500;
@@ -207,6 +216,7 @@
   /* Motion */
   --duration-fast: 150ms;
   --duration-base: 200ms;
+  --duration-normal: var(--duration-base);  /* 语义别名（SearchBar/KnowledgeHub 引用，2026-11-14 补登记） */
   --ease-out: cubic-bezier(0.4, 0, 0.2, 1);
   /* 滚动联动 chrome（底部 tabbar + 输入区）吸附动画：过阻尼减速曲线，
      时长与 useScrollHideChrome.CHROME_SNAP_DURATION_MS 保持一致 */
@@ -262,6 +272,12 @@
   --radius-xl: var(--radius-lg);
   --space-8: 24px;
   --space-10: 32px;
+  --space-12: 40px;   /* 知识库页面大间距（2026-11-14 审计补登记） */
+  --radius-xs: 4px;   /* 知识库小圆角（2026-11-14 审计补登记） */
+  --brand-hover: rgba(102, 126, 234, 0.2);  /* 品牌悬停淡底，比 --brand-bg 深一档 */
+  --accent-3: rgba(102, 126, 234, 0.15);    /* 徽章淡底 */
+  --accent-9: var(--brand-primary);         /* 强调 ring / box-shadow */
+  --accent-11: #4f5cc8;                     /* 徽章/强调文字（品牌深色） */
   --duration-slow: 320ms;
   --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.1);
   --shadow-2xl: 0 25px 50px -12px rgba(0, 0, 0, 0.25);

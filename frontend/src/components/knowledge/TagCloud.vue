@@ -222,7 +222,7 @@ export default {
   background: var(--bg-card);
   position: sticky;
   top: 0;
-  z-index: 10;
+  z-index: var(--z-base);
 }
 
 .cloud-title {
@@ -251,7 +251,7 @@ export default {
 }
 
 .btn-clear-selection .material-symbols-outlined {
-  font-size: 14px;
+  font-size: var(--text-base);
 }
 
 .cloud-content {
@@ -364,27 +364,27 @@ export default {
 
 /* 标签大小变化 */
 .tag-item.size-xs {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   padding: 2px 8px;
 }
 
 .tag-item.size-sm {
-  font-size: 12px;
+  font-size: var(--text-sm);
   padding: 3px 10px;
 }
 
 .tag-item.size-md {
-  font-size: 14px;
+  font-size: var(--text-base);
   padding: 4px 12px;
 }
 
 .tag-item.size-lg {
-  font-size: 16px;
+  font-size: var(--text-lg);
   padding: 5px 14px;
 }
 
 .tag-item.size-xl {
-  font-size: 18px;
+  font-size: var(--text-xl);
   padding: 6px 16px;
 }
 
@@ -428,7 +428,7 @@ export default {
 }
 
 .btn-show-more .material-symbols-outlined {
-  font-size: 18px;
+  font-size: var(--text-xl);
 }
 
 /* 响应式 */
@@ -438,11 +438,11 @@ export default {
   }
   
   .tag-item.size-xl {
-    font-size: 16px;
+    font-size: var(--text-lg);
   }
   
   .tag-item.size-lg {
-    font-size: 14px;
+    font-size: var(--text-base);
   }
 }
 </style>

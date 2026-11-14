@@ -76,7 +76,7 @@
     "check:marketplace-fix": "node ../scripts/verify-marketplace-fix.mjs",
     "check:card-deck-labels": "node ../scripts/verify-card-deck-labels.mjs",
     "check:router-parity": "node ../scripts/check-router-runtime-parity.mjs --selftest && node ../scripts/check-router-runtime-parity.mjs",
- "check:skip-runtime": "node ../scripts/audit-skip-runtime.mjs --selftest && node ../scripts/audit-skip-runtime.mjs"
+    "check:skip-runtime": "node ../scripts/audit-skip-runtime.mjs --selftest && node ../scripts/audit-skip-runtime.mjs"
   },
   "dependencies": {
     "@capacitor-community/sqlite": "^8.1.0",
@@ -93,6 +93,8 @@
     "@capacitor/share": "^8.0.1",
     "@capacitor/splash-screen": "^8.0.2",
     "@capacitor/status-bar": "^8.0.3",
+    "@ionic/vue": "^9.0.11",
+    "@ionic/vue-router": "^9.0.11",
     "@tiptap/core": "3.31.3",
     "@tiptap/starter-kit": "3.31.3",
     "@tiptap/vue-3": "3.31.3",

@@ -472,7 +472,7 @@ export default {
 }
 
 .meta-item .material-symbols-outlined {
-  font-size: 16px;
+  font-size: var(--text-lg);
 }
 
 .meta-item.source,
@@ -629,7 +629,7 @@ export default {
 }
 
 .link-item .material-symbols-outlined {
-  font-size: 18px;
+  font-size: var(--text-xl);
   color: var(--text-secondary);
   flex-shrink: 0;
 }

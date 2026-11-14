@@ -242,7 +242,7 @@ watch(() => store.segments.length, async () => {
 }
 
 .overlay-title {
-  font-size: 13px;
+  font-size: var(--text-smd);
   font-weight: 600;
   color: rgba(255, 255, 255, 0.9);
 }
@@ -314,7 +314,7 @@ watch(() => store.segments.length, async () => {
 
 .subtitle-speaker {
   display: inline-block;
-  font-size: 11px;
+  font-size: var(--text-2xs);
   font-weight: 600;
   color: var(--accent-11);
   background: var(--accent-3);
@@ -328,14 +328,14 @@ watch(() => store.segments.length, async () => {
 }
 
 .subtitle-text-primary {
-  font-size: 15px;
+  font-size: var(--text-md);
   line-height: 1.5;
   color: rgba(255, 255, 255, 0.95);
   margin: 0 0 6px 0;
 }
 
 .subtitle-text-secondary {
-  font-size: 13px;
+  font-size: var(--text-smd);
   line-height: 1.4;
   color: rgba(255, 255, 255, 0.65);
   font-style: italic;
@@ -343,7 +343,7 @@ watch(() => store.segments.length, async () => {
 }
 
 .subtitle-translating {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: rgba(255, 255, 255, 0.45);
 }
 
@@ -351,18 +351,18 @@ watch(() => store.segments.length, async () => {
   text-align: center;
   padding: 40px 20px;
   color: rgba(255, 255, 255, 0.4);
-  font-size: 14px;
+  font-size: var(--text-base);
 }
 
 /* 字号变体 */
-.font-small .subtitle-text-primary { font-size: 13px; }
-.font-small .subtitle-text-secondary { font-size: 11px; }
+.font-small .subtitle-text-primary { font-size: var(--text-smd); }
+.font-small .subtitle-text-secondary { font-size: var(--text-2xs); }
 
-.font-medium .subtitle-text-primary { font-size: 15px; }
-.font-medium .subtitle-text-secondary { font-size: 13px; }
+.font-medium .subtitle-text-primary { font-size: var(--text-md); }
+.font-medium .subtitle-text-secondary { font-size: var(--text-smd); }
 
-.font-large .subtitle-text-primary { font-size: 18px; }
-.font-large .subtitle-text-secondary { font-size: 15px; }
+.font-large .subtitle-text-primary { font-size: var(--text-xl); }
+.font-large .subtitle-text-secondary { font-size: var(--text-md); }
 
 .overlay-footer {
   padding: 8px 12px;
@@ -370,7 +370,7 @@ watch(() => store.segments.length, async () => {
 }
 
 .status-text {
-  font-size: 11px;
+  font-size: var(--text-2xs);
   color: rgba(255, 255, 255, 0.5);
 }
 

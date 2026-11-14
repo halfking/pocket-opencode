@@ -171,7 +171,7 @@ export default {
 }
 
 .expand-btn .material-symbols-outlined {
-  font-size: 18px;
+  font-size: var(--text-xl);
 }
 
 .expand-placeholder {

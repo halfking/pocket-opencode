@@ -243,7 +243,7 @@ export default {
   background: var(--bg-card);
   position: sticky;
   top: 0;
-  z-index: 10;
+  z-index: var(--z-base);
 }
 
 .tree-title {
@@ -362,7 +362,7 @@ export default {
   border-radius: var(--radius-md);
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
   padding: var(--space-1);
-  z-index: 1000;
+  z-index: var(--z-menu);
   animation: context-menu-in var(--duration-fast) var(--ease-out);
 }
 
@@ -402,7 +402,7 @@ export default {
 }
 
 .menu-item .material-symbols-outlined {
-  font-size: 18px;
+  font-size: var(--text-xl);
 }
 
 .menu-divider {

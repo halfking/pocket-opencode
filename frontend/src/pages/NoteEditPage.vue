@@ -124,7 +124,7 @@
                 :placeholder="t('knowledge.enterContent')"
                 :auto-grow="true"
                 class="content-textarea"
-                rows="20"
+                :rows="20"
               ></ion-textarea>
 
               <!-- Markdown 快捷工具栏 -->
@@ -236,7 +236,7 @@ const renderedContent = computed(() => {
   
   // 列表
   html = html.replace(/^- (.*$)/gim, '<li>$1</li>')
-  html = html.replace(/(<li>.*<\/li>)/s, '<ul>$1</ul>')
+  html = html.replace(/(<li>[\s\S]*<\/li>)/m, '<ul>$1</ul>')
   
   // 段落
   html = html.split('\n\n').map(para => {
@@ -536,7 +536,7 @@ export default {
 }
 
 .tag-remove .material-symbols-outlined {
-  font-size: 14px;
+  font-size: var(--text-base);
 }
 
 .content-editor {
@@ -555,7 +555,7 @@ export default {
   --padding-end: var(--space-4);
   --padding-top: var(--space-4);
   --padding-bottom: 60px;
-  font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+  font-family: var(--font-mono);
   font-size: var(--text-base);
   line-height: 1.8;
   --placeholder-color: var(--text-tertiary);
@@ -654,7 +654,7 @@ export default {
   border-radius: var(--radius-sm);
   background: var(--bg-secondary);
   color: var(--brand-primary);
-  font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+  font-family: var(--font-mono);
   font-size: 0.9em;
 }
 

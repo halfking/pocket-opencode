@@ -154,6 +154,12 @@ const REGISTRY = [
     why: '阴性对照：`InvoicePreviewSheet.vue:15` 已渲染' },
   { file: 'composables/usePronounce.ts', flag: 'errorMsg', outlet: true,
     why: '阴性对照：`FlashcardReviewView.vue:89` 以别名 `pronounceError` 渲染（**别名也要算数**）' },
+  { file: 'stores/notebooks.ts', flag: 'error', outlet: true,
+    why: '★ 2026-11-14 审计补（知识库 Phase 2）：`KnowledgeHubPage.vue` 的 `.hub-errors` 横幅以 `notebooksStore.error` 渲染' },
+  { file: 'stores/knowledgeSearch.ts', flag: 'error', outlet: true,
+    why: '★ 2026-11-14 审计补（知识库 Phase 2）：`KnowledgeHubPage.vue` 的 `.hub-errors` 横幅以 `searchStore.error` 渲染' },
+  { file: 'stores/noteLinks.ts', flag: 'error', outlet: true,
+    why: '★ 2026-11-14 审计补（知识库 Phase 2）：`KnowledgeHubPage.vue` 的 `.hub-errors` 横幅以 `noteLinksStore.error` 渲染（relatedNotes 读失败可见）' },
 ] as const
 
 /** 枚举用的正则，与登记表一一对应。改这里必须同步改 REGISTRY。 */

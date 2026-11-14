@@ -323,7 +323,7 @@ export default {
   background: var(--bg-card);
   position: sticky;
   top: 0;
-  z-index: 10;
+  z-index: var(--z-base);
 }
 
 .header-top {
@@ -397,7 +397,7 @@ export default {
 }
 
 .btn-sort .material-symbols-outlined {
-  font-size: 18px;
+  font-size: var(--text-xl);
 }
 
 .sort-label {
@@ -420,7 +420,7 @@ export default {
   border-radius: var(--radius-md);
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
   padding: var(--space-1);
-  z-index: 100;
+  z-index: var(--z-popover);
   animation: menu-in var(--duration-fast) var(--ease-out);
 }
 
@@ -461,7 +461,7 @@ export default {
 }
 
 .sort-option .material-symbols-outlined {
-  font-size: 18px;
+  font-size: var(--text-xl);
 }
 
 .view-control {
@@ -678,7 +678,7 @@ export default {
 }
 
 .pin-icon .material-symbols-outlined {
-  font-size: 18px;
+  font-size: var(--text-xl);
 }
 
 .note-summary {
@@ -738,7 +738,7 @@ export default {
 }
 
 .note-source .material-symbols-outlined {
-  font-size: 14px;
+  font-size: var(--text-base);
 }
 
 .source-label {

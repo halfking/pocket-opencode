@@ -283,7 +283,7 @@ export default {
   border-bottom: 1px solid var(--border);
   position: sticky;
   top: 0;
-  z-index: 10;
+  z-index: var(--z-base);
 }
 
 .search-stats {
@@ -321,7 +321,7 @@ export default {
 }
 
 .btn-clear-filters .material-symbols-outlined {
-  font-size: 18px;
+  font-size: var(--text-xl);
 }
 
 .search-results {
