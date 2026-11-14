@@ -36,6 +36,7 @@ require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/emersion/go-message v0.18.2 // indirect
 	github.com/fxamacker/cbor/v2 v2.7.0 // indirect
+	github.com/go-chi/chi/v5 v5.5.0 // indirect
 	github.com/go-webauthn/x v0.1.14 // indirect
 	github.com/google/go-tpm v0.9.1 // indirect
 	github.com/hhrutter/lzw v1.0.0 // indirect
