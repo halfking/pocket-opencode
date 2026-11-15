@@ -55,6 +55,9 @@ type ssoTxnStore struct {
 type ssoTxnEntry struct {
 	ip  string
 	exp time.Time
+	// verifier 仅 Casdoor 直连 OIDC 分支使用（IssueOIDC 落入，ConsumeOIDC
+	// 取回，换取 token 时作 PKCE code_verifier）。RedClaw 分支为空。
+	verifier string
 }
 
 func newSSOTxnStore(ttl time.Duration, cap int) *ssoTxnStore {
@@ -93,6 +96,44 @@ func (st *ssoTxnStore) Consume(nonce string) bool {
 	}
 	delete(st.m, nonce) // 无论是否过期都移除：过期 nonce 没有复活的价值
 	return !time.Now().After(e.exp)
+}
+
+// IssueOIDC 签发带 PKCE verifier 的 OIDC 登录事务。nonce 语义与 Issue
+// 完全一致（同一张表、同一 TTL/cap），额外携带 verifier 供 callback 换
+// token 时回传 code_verifier。
+func (st *ssoTxnStore) IssueOIDC(ip, verifier string) (string, error) {
+	nonce, err := randomHex(32)
+	if err != nil {
+		return "", err
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if len(st.m) >= st.cap || st.countByIPLocked(ip) >= st.perIPCap {
+		st.sweepLocked()
+		if len(st.m) >= st.cap || st.countByIPLocked(ip) >= st.perIPCap {
+			return "", errSSOStoreFull
+		}
+	}
+	st.m[nonce] = ssoTxnEntry{ip: ip, exp: time.Now().Add(st.ttl), verifier: verifier}
+	return nonce, nil
+}
+
+// ConsumeOIDC 单次校验并删除 nonce，返回其 PKCE verifier。
+func (st *ssoTxnStore) ConsumeOIDC(nonce string) (string, bool) {
+	if nonce == "" {
+		return "", false
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	e, ok := st.m[nonce]
+	if !ok {
+		return "", false
+	}
+	delete(st.m, nonce)
+	if time.Now().After(e.exp) || e.verifier == "" {
+		return "", false
+	}
+	return e.verifier, true
 }
 
 // ssoHandoff 一次性 code 换回的登录结果（等价旧 302 query 载荷）。

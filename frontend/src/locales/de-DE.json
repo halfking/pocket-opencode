@@ -87,7 +87,8 @@
     "study": "Study",
     "flashcards": "Karteikarten",
     "messages": "Nachrichten",
-    "calendar": "Kalender"
+    "calendar": "Kalender",
+    "accBoard": "ACC-Board"
   },
   "routes": {
     "login": "Anmelden",

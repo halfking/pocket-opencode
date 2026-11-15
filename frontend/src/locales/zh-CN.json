@@ -87,7 +87,8 @@
     "study": "学习",
     "flashcards": "闪卡",
     "messages": "消息",
-    "calendar": "日历"
+    "calendar": "日历",
+    "accBoard": "ACC 看板"
   },
   "routes": {
     "login": "登录",

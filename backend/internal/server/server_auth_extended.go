@@ -38,6 +38,9 @@ import (
 // delivery = "none" 表示本部署未配置 SMTP，验证码只入库、根本不会发出邮件。
 // debug_code 仅当 POCKET_SMTP_DEBUG_ECHO=true 且 SMTP 未配置时出现。
 func (s *Server) handleAuthSendCode(w http.ResponseWriter, r *http.Request) {
+	if s.oidcRetiredLocalCredential(w, r) {
+		return
+	}
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "POST only")
 		return
@@ -113,6 +116,9 @@ func (s *Server) sendCodeEmail(code string, ttlSec int, to string, purpose auth.
 // Body: {"email":"...", "code":"123456", "username":"...", "password":"..."}
 // 成功：200 {"token":"...", "user":"...", "user_id":"...", "workspace_id":"..."}
 func (s *Server) handleAuthRegister(w http.ResponseWriter, r *http.Request) {
+	if s.oidcRetiredLocalCredential(w, r) {
+		return
+	}
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "POST only")
 		return
@@ -183,6 +189,9 @@ func (s *Server) handleAuthRegister(w http.ResponseWriter, r *http.Request) {
 // Body: {"email":"...", "code":"123456"}
 // 成功：200 同 register
 func (s *Server) handleAuthCodeLogin(w http.ResponseWriter, r *http.Request) {
+	if s.oidcRetiredLocalCredential(w, r) {
+		return
+	}
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "POST only")
 		return
@@ -216,6 +225,9 @@ func (s *Server) handleAuthCodeLogin(w http.ResponseWriter, r *http.Request) {
 // Body: {"email":"...", "code":"123456", "new_password":"..."}
 // 成功：200 {"ok": true}（不返回 token，强制重新登录）
 func (s *Server) handleAuthForgotPassword(w http.ResponseWriter, r *http.Request) {
+	if s.oidcRetiredLocalCredential(w, r) {
+		return
+	}
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "POST only")
 		return
@@ -262,6 +274,9 @@ func (s *Server) handleAuthForgotPassword(w http.ResponseWriter, r *http.Request
 //
 // Body: {"email":"...", "old_password":"...", "new_password":"..."}
 func (s *Server) handleAuthResetPassword(w http.ResponseWriter, r *http.Request) {
+	if s.oidcRetiredLocalCredential(w, r) {
+		return
+	}
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "POST only")
 		return
@@ -471,11 +486,15 @@ func (s *Server) handleAuthSsoStatus(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "GET only")
 		return
 	}
-	if s.redclawAdminClient == nil || !s.cfg.RedClawSsoEnabled {
+	if !s.ssoEnabled() {
 		writeError(w, http.StatusNotFound, "sso not enabled")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]bool{"enabled": true})
+	mode := "redclaw"
+	if s.oidcEnabled() {
+		mode = "oidc"
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"enabled": true, "mode": mode})
 }
 
 // handleAuthSsoLogin — GET /api/auth/sso/login
@@ -500,8 +519,18 @@ func (s *Server) handleAuthSsoLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "GET only")
 		return
 	}
-	if s.redclawAdminClient == nil || !s.cfg.RedClawSsoEnabled {
+	if !s.ssoEnabled() {
 		writeError(w, http.StatusNotFound, "sso not enabled")
+		return
+	}
+	// Casdoor 直连 OIDC 分支：直接发 authorize URL（PKCE + state=nonce）。
+	if s.oidcEnabled() {
+		authorizeURL, err := s.oidcLogin(w, r)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to start sso login")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"url": authorizeURL})
 		return
 	}
 	nonce, err := s.ssoTxns.Issue(clientIP(r))
@@ -539,8 +568,13 @@ func (s *Server) handleAuthSsoCallback(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "GET only")
 		return
 	}
-	if s.redclawAdminClient == nil || !s.cfg.RedClawSsoEnabled {
+	if !s.ssoEnabled() {
 		writeError(w, http.StatusNotFound, "sso not enabled")
+		return
+	}
+	// Casdoor 直连 OIDC 分支：callback 主体在 server_oidc.go。
+	if s.oidcEnabled() {
+		s.handleAuthOidcCallback(w, r)
 		return
 	}
 	// 1. 绑定 cookie：缺失 / 未知 / 已消费 / 已过期一律拒绝。
@@ -628,7 +662,7 @@ func (s *Server) handleAuthSsoExchange(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "POST only")
 		return
 	}
-	if s.redclawAdminClient == nil || !s.cfg.RedClawSsoEnabled {
+	if !s.ssoEnabled() {
 		writeError(w, http.StatusNotFound, "sso not enabled")
 		return
 	}
@@ -695,21 +729,11 @@ func extractBearerToken(r *http.Request) string {
 // issueTokenAndRespond 走与 handleAuthLogin 完全一致的 JWT 签发链路：
 // EnsureDefaultWorkspace + SignWithWorkspace + RecordShadow
 func (s *Server) issueTokenAndRespond(w http.ResponseWriter, r *http.Request, userID, username, email string) {
-	wsID := "default"
-	if s.identityStore != nil {
-		ws, err := s.identityStore.EnsureDefaultWorkspace(r.Context(), userID)
-		if err != nil {
-			logging.Warnf("WARN: EnsureDefaultWorkspace for %s failed: %v (falling back to 'default')", userID, err)
-		} else if ws != nil {
-			wsID = ws.ID
-		}
-	}
-	token, err := s.jwtSigner.SignWithWorkspace(userID, "user", wsID)
+	token, wsID, err := s.mintSessionToken(r.Context(), "pocket", userID, username, email)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to sign JWT")
 		return
 	}
-	auth.RecordShadow("pocket", userID, wsID, username, email)
 	writeJSON(w, http.StatusOK, map[string]string{
 		"token":        token,
 		"user":         username,
