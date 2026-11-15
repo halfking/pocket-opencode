@@ -806,15 +806,25 @@ func TestS952CensusCountsArePinned(t *testing.T) {
 	//   ⇒ 形态 readall +1、decode +1、来源 resp +2、有界 +2；
 	//   ⇒⇒⇒ **无界处仍然是台账里那 3 条**（两个读点都带 LimitReader ⇒ 不是新缺陷，
 	//   是「代码真的多了读点」而不是「量具瞎了」—— 这正是绝对条数要钉住的原因）。
-	if len(sites) != 273 {
-		t.Errorf("§952 普查到 %d 处「读进内存」的调用点（期望273）\n"+
+	// 2026-11-15 codeup/580 census reconciliation: +6 against the pinned 273.
+	// memora/client.go#do: bounded error snippet + JSON response (resp +2;
+	// readall +1, decode +1); meeting translation's two request decoders and
+	// portal resource-token's request decoder: req/decode +3, guarded by middleware.
+	// This repair replaces OIDC's two unbounded response decoders with one
+	// decodeOIDCResponse capped reader: resp/readall +1, maxOIDCResponseBytes+1.
+	// Observed totals: 279 = 57 readall + 151 decode + 3 copy + 16 sizedall +
+	// 17 sizedsnp + 35 sizedlim; 276 bounded. The three unbounded ledger entries
+	// remain unchanged; NoUnboundedReadsExceptLedger/AllCapsArePositiveConstants
+	// independently enforce that this reconciliation cannot admit a new exception.
+	if len(sites) != 279 {
+		t.Errorf("§952 普查到 %d 处「读进内存」的调用点（期望279）\n"+
 			"⇒ 绝对条数是**量具有牙**的证据：量具整个失效时这个数会变 ⇒⇒⇒ "+
 			"⇒ 若这一条变了，请先确认是「代码真的多了/少了读点」还是「量具瞎了」",
 			len(sites))
 	}
 	want := map[string]int{
-		s952FormReadAll:  55,
-		s952FormDecode:   147,
+		s952FormReadAll:  57,
+		s952FormDecode:   151,
 		s952FormCopy:     3,
 		s952FormSizedAll: 16,
 		s952FormSizedSnp: 17,
@@ -826,8 +836,8 @@ func TestS952CensusCountsArePinned(t *testing.T) {
 		}
 	}
 	wantSrc := map[string]int{
-		s952SrcResp:  126,
-		s952SrcReq:   116,
+		s952SrcResp:  129,
+		s952SrcReq:   119,
 		s952SrcMem:   8,
 		s952SrcOther: 23,
 	}
@@ -836,8 +846,8 @@ func TestS952CensusCountsArePinned(t *testing.T) {
 			t.Errorf("来源 %s 扫到 %d 处（期望 %d）", src, bySrc[src], n)
 		}
 	}
-	if bounded != 270 {
-		t.Errorf("有界 %d 处（期望270）⇒⇒⇒ 无界处应恰好是台账里的 3 条", bounded)
+	if bounded != 276 {
+		t.Errorf("有界 %d 处（期望276）⇒⇒⇒ 无界处应恰好是台账里的 3 条", bounded)
 	}
 }
 
