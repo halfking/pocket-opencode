@@ -5,7 +5,8 @@
 //  2. 云端API：第三方说话人分离服务（备选）
 //
 // 数据流：
-//  音频 -> VAD分段 -> ASR转写 -> 说话人标签对齐 -> 带speaker的segments
+//
+//	音频 -> VAD分段 -> ASR转写 -> 说话人标签对齐 -> 带speaker的segments
 package diarization
 
 import (
@@ -17,6 +18,8 @@ import (
 	"mime/multipart"
 	"net/http"
 	"time"
+
+	"github.com/halfking/pocket-opencode/backend/internal/outbound"
 )
 
 // Config 说话人分离服务配置
@@ -42,7 +45,7 @@ func NewClient(cfg Config) *Client {
 	}
 	return &Client{
 		config: cfg,
-		http:   &http.Client{Timeout: cfg.Timeout},
+		http:   outbound.NewClient(cfg.Timeout),
 	}
 }
 

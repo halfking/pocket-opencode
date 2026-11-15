@@ -267,7 +267,7 @@ func (s *Server) handleNoteRelated(w http.ResponseWriter, r *http.Request) {
 		defer cancel()
 
 		// Use memora's search to find similar notes
-		searchResp, err := s.memora.SearchHybrid(ctx, note.Content[:min(500, len(note.Content))], 5, nil)
+		searchResp, err := s.memora.SearchHybrid(ctx, note.Content[:minInt(500, len(note.Content))], 5, nil)
 		if err == nil && searchResp != nil {
 			for _, hit := range searchResp.Results {
 				// Skip if already manually linked or is the note itself
@@ -313,8 +313,8 @@ func isAlreadyLinked(targetID string, links []notelinks.NoteLink) bool {
 	return false
 }
 
-// min returns the minimum of two integers.
-func min(a, b int) int {
+// minInt returns the minimum of two integers.
+func minInt(a, b int) int {
 	if a < b {
 		return a
 	}

@@ -5,9 +5,13 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/halfking/pocket-opencode/backend/internal/background"
+	"github.com/halfking/pocket-opencode/backend/internal/notes"
 )
 
 // =====================================================================
@@ -16,10 +20,10 @@ import (
 
 // GraphNode represents a node in the knowledge graph (note, notebook, or tag).
 type GraphNode struct {
-	ID    string  `json:"id"`
-	Label string  `json:"label"`
-	Type  string  `json:"type"` // "note" | "notebook" | "tag"
-	Size  int     `json:"size"` // Link count (degree)
+	ID    string    `json:"id"`
+	Label string    `json:"label"`
+	Type  string    `json:"type"` // "note" | "notebook" | "tag"
+	Size  int       `json:"size"` // Link count (degree)
 	Data  *NodeData `json:"data,omitempty"`
 }
 
@@ -167,7 +171,7 @@ func (s *Server) buildKnowledgeGraph(ctx context.Context, userID, workspaceID, n
 	}
 
 	// Use appropriate query based on filters
-	var allNotes []interface{}
+	var allNotes []notes.Note
 	var err error
 
 	if notebookFilter != "" {
@@ -183,16 +187,10 @@ func (s *Server) buildKnowledgeGraph(ctx context.Context, userID, workspaceID, n
 	}
 
 	// Convert to our structure (simplified for graph)
-	for i, noteRaw := range allNotes {
+	for i, note := range allNotes {
 		if i >= limit {
 			break
 		}
-		// Type assertion - the actual type depends on your notes.Store implementation
-		// Assuming it returns notes.Note objects
-		noteMap := make(map[string]interface{})
-		noteJSON, _ := json.Marshal(noteRaw)
-		_ = json.Unmarshal(noteJSON, &noteMap)
-
 		notesList = append(notesList, struct {
 			ID         string
 			Title      string
@@ -203,14 +201,14 @@ func (s *Server) buildKnowledgeGraph(ctx context.Context, userID, workspaceID, n
 			CreatedAt  int64
 			UpdatedAt  int64
 		}{
-			ID:         getString(noteMap, "id"),
-			Title:      getString(noteMap, "title"),
-			Snippet:    getString(noteMap, "snippet"),
-			Tags:       getString(noteMap, "tags"),
-			Domain:     getString(noteMap, "domain"),
-			NotebookID: getString(noteMap, "notebookId"),
-			CreatedAt:  getInt64(noteMap, "createdAt"),
-			UpdatedAt:  getInt64(noteMap, "updatedAt"),
+			ID:         note.ID,
+			Title:      note.Title,
+			Snippet:    note.Snippet,
+			Tags:       note.Tags,
+			Domain:     note.Domain,
+			NotebookID: note.NotebookID,
+			CreatedAt:  note.CreatedAt,
+			UpdatedAt:  note.UpdatedAt,
 		})
 	}
 
@@ -258,7 +256,7 @@ func (s *Server) buildKnowledgeGraph(ctx context.Context, userID, workspaceID, n
 	// Fetch note links
 	if s.noteLinksStore != nil {
 		wg.Add(1)
-		go func() {
+		background.Go("knowledge-graph-fetch-links", func() {
 			defer wg.Done()
 			noteIDs := make([]string, 0, len(notesList))
 			for _, n := range notesList {
@@ -297,7 +295,7 @@ func (s *Server) buildKnowledgeGraph(ctx context.Context, userID, workspaceID, n
 				}
 				mu.Unlock()
 			}
-		}()
+		})
 	}
 
 	wg.Wait()
@@ -554,22 +552,6 @@ func getString(m map[string]interface{}, key string) string {
 	return ""
 }
 
-func getInt64(m map[string]interface{}, key string) int64 {
-	if v, ok := m[key]; ok {
-		switch val := v.(type) {
-		case int64:
-			return val
-		case float64:
-			return int64(val)
-		case int:
-			return int64(val)
-		}
-	}
-	return 0
-}
-
 func parseIntSafe(s string) (int, error) {
-	var i int
-	_, err := json.Unmarshal([]byte(s), &i)
-	return i, err
+	return strconv.Atoi(s)
 }

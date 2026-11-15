@@ -181,7 +181,7 @@ func TestSensitiveValuePatternIsRedacted(t *testing.T) {
 // TestMsgIsRedacted 验证 msg 字段也走脱敏（不能绕过）。
 func TestMsgIsRedacted(t *testing.T) {
 	last := captureInit(t, Options{})
-	slog.Info("AKIAIOSFODNN7EXAMPLE in message")
+	slog.Info("AKIAIOSFODNN7EXAMPLE in message") // secret-scan-ok: 测试假值
 
 	obj := last()
 	if got := obj["msg"]; got != redactedPlaceholder {

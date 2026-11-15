@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/halfking/pocket-opencode/backend/internal/background"
 )
 
 // Config 多语言转写配置
@@ -24,13 +26,13 @@ type Config struct {
 
 // TranscriptSegment 转写片段（带语言标识）
 type TranscriptSegment struct {
-	Language    string  `json:"language"`     // 检测到的语言
-	Text        string  `json:"text"`         // 原文
-	Translation string  `json:"translation"`  // 译文（如果启用）
-	Start       float64 `json:"start"`        // 开始时间（秒）
-	End         float64 `json:"end"`          // 结束时间（秒）
-	Confidence  float64 `json:"confidence"`   // 置信度
-	Speaker     string  `json:"speaker"`      // 说话人（如果有）
+	Language    string  `json:"language"`    // 检测到的语言
+	Text        string  `json:"text"`        // 原文
+	Translation string  `json:"translation"` // 译文（如果启用）
+	Start       float64 `json:"start"`       // 开始时间（秒）
+	End         float64 `json:"end"`         // 结束时间（秒）
+	Confidence  float64 `json:"confidence"`  // 置信度
+	Speaker     string  `json:"speaker"`     // 说话人（如果有）
 }
 
 // MultilingualTranscriber 多语言转写器
@@ -78,7 +80,7 @@ type TranscribeResult struct {
 // 4. 如果启用翻译，并行翻译所有片段
 func (m *MultilingualTranscriber) Transcribe(ctx context.Context, req TranscribeRequest) (*TranscribeResult, error) {
 	t0 := time.Now()
-	
+
 	// 1. 确定要转写的语言
 	targetLangs := req.SourceLangs
 	if len(targetLangs) == 0 && m.config.EnableAutoDetect {
@@ -89,19 +91,19 @@ func (m *MultilingualTranscriber) Transcribe(ctx context.Context, req Transcribe
 		}
 		targetLangs = detected
 	}
-	
+
 	if len(targetLangs) == 0 {
 		targetLangs = []string{"zh"} // 默认中文
 	}
-	
+
 	// 2. 并行转写每种语言
 	var wg sync.WaitGroup
 	resultChan := make(chan []TranscriptSegment, len(targetLangs))
 	errChan := make(chan error, len(targetLangs))
-	
+
 	for _, lang := range targetLangs {
 		wg.Add(1)
-		go func(language string) {
+		background.Go1("multilingual-transcribe-language", func(language string) {
 			defer wg.Done()
 			segments, err := m.transcribeLanguage(ctx, req.AudioData, language)
 			if err != nil {
@@ -109,31 +111,31 @@ func (m *MultilingualTranscriber) Transcribe(ctx context.Context, req Transcribe
 				return
 			}
 			resultChan <- segments
-		}(lang)
+		}, lang)
 	}
-	
+
 	// 等待所有转写完成
-	go func() {
+	background.Go("multilingual-transcribe-wait", func() {
 		wg.Wait()
 		close(resultChan)
 		close(errChan)
-	}()
-	
+	})
+
 	// 收集结果
 	var allSegments []TranscriptSegment
 	for segments := range resultChan {
 		allSegments = append(allSegments, segments...)
 	}
-	
+
 	// 检查错误
 	for err := range errChan {
 		// 记录错误但不中断（部分语言失败不影响其他）
 		fmt.Printf("transcription error: %v\n", err)
 	}
-	
+
 	// 3. 按时间排序片段
 	sortSegmentsByTime(allSegments)
-	
+
 	// 4. 如果启用翻译，并行翻译
 	if req.EnableTrans || m.config.EnableTranslation {
 		targetLang := req.TargetLang
@@ -145,7 +147,7 @@ func (m *MultilingualTranscriber) Transcribe(ctx context.Context, req Transcribe
 			fmt.Printf("translation error: %v\n", err)
 		}
 	}
-	
+
 	// 5. 构建结果
 	result := &TranscribeResult{
 		Segments:       allSegments,
@@ -153,12 +155,12 @@ func (m *MultilingualTranscriber) Transcribe(ctx context.Context, req Transcribe
 		ProcessTimeMS:  time.Since(t0).Milliseconds(),
 		TranslationMap: make(map[string]string),
 	}
-	
+
 	// 构建语言对照表
 	for _, lang := range targetLangs {
 		result.TranslationMap[lang] = getLanguageName(lang)
 	}
-	
+
 	return result, nil
 }
 
@@ -187,21 +189,21 @@ func (m *MultilingualTranscriber) transcribeLanguage(ctx context.Context, audio 
 // translateSegments 并行翻译所有片段
 func (m *MultilingualTranscriber) translateSegments(ctx context.Context, segments []TranscriptSegment, targetLang string) error {
 	var wg sync.WaitGroup
-	
+
 	for i := range segments {
 		// 跳过已经是目标语言的片段
 		if segments[i].Language == targetLang {
 			continue
 		}
-		
+
 		wg.Add(1)
-		go func(idx int) {
+		background.Go1("multilingual-translate-segment", func(idx int) {
 			defer wg.Done()
 			// TODO: 实际实现需要调用翻译服务
 			segments[idx].Translation = fmt.Sprintf("[Translated to %s] %s", targetLang, segments[idx].Text)
-		}(i)
+		}, i)
 	}
-	
+
 	wg.Wait()
 	return nil
 }

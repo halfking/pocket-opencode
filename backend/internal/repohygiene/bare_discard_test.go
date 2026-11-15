@@ -717,11 +717,12 @@ var s947Ledger = []s947LedgerEntry{
 		Reason: "版本冲突分支上的**显式**回滚（为了尽早释放连接）⇒ 同一函数上方有 `defer tx.Rollback(ctx)` 兜底（由断言 ③ 机器判定）。",
 	},
 	{
-		Callee: "Sscanf", Recv: "", Count: 1,
+		Callee: "Sscanf", Recv: "", Count: 2,
 		Files: []string{
 			"backend/cmd/gwdbg/main.go",
+			"backend/internal/recommendations/handler.go",
 		},
-		Reason: "调试工具里的一次性解析：解析失败不影响后续流程（工具只打印）。",
+		Reason: "一次性解析：调试工具解析失败只打印；推荐接口失败时保留默认 limit=10，语义不变。",
 	},
 	{
 		Callee: "applyParsedBodyDate", Recv: "", Count: 1,

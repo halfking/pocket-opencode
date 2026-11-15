@@ -502,8 +502,8 @@ func memoraSyncNoteTag(noteID string) string { return "sync:openpocket:note:" + 
 // memoraSyncHashTag 只取 16 hex（64 bit）——tag 是给 memora 侧 exact-match 过滤
 // 与碰撞概率「够低」用的，不是防攻击指纹，不需要整串 64 字符塞进 tags。
 func memoraSyncHashTag(hash string) string {
-	if len(hash) > 16 {
-		hash = hash[:16]
+	if runes := []rune(hash); len(runes) > 16 {
+		hash = string(runes[:16])
 	}
 	return "sync:openpocket:hash:" + hash
 }

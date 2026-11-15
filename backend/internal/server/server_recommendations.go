@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 
-	"github.com/go-chi/chi/v5"
 	"github.com/halfking/pocket-opencode/backend/internal/recommendations"
 )
 
@@ -14,18 +14,15 @@ import (
 // GET /api/notes/:id/recommendations?limit=10
 func (s *Server) handleGetNoteRecommendations(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	noteID := chi.URLParam(r, "id")
+	noteID := noteIDFromNotePath(r.URL.Path)
 	if noteID == "" {
 		writeError(w, http.StatusBadRequest, "note ID required")
 		return
 	}
 
 	// Extract authenticated user and workspace from context
-	userID, workspaceID, ok := s.extractAuth(r)
-	if !ok {
-		writeError(w, http.StatusUnauthorized, "unauthorized")
-		return
-	}
+	userID := s.userIDFromRequest(r)
+	workspaceID := s.workspaceIDFromRequest(r)
 
 	// Check if recommendations are available
 	if s.pool == nil {
@@ -69,18 +66,15 @@ type suggestTagsRequest struct {
 // Body: { "content": "optional override" }
 func (s *Server) handleSuggestNoteTags(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	noteID := chi.URLParam(r, "id")
+	noteID := noteIDFromNotePath(r.URL.Path)
 	if noteID == "" {
 		writeError(w, http.StatusBadRequest, "note ID required")
 		return
 	}
 
 	// Extract authenticated user and workspace
-	userID, workspaceID, ok := s.extractAuth(r)
-	if !ok {
-		writeError(w, http.StatusUnauthorized, "unauthorized")
-		return
-	}
+	userID := s.userIDFromRequest(r)
+	workspaceID := s.workspaceIDFromRequest(r)
 
 	// Check if notes store is available
 	if s.notesStore == nil {
@@ -131,4 +125,19 @@ func (s *Server) handleSuggestNoteTags(w http.ResponseWriter, r *http.Request) {
 		"existingTags": existingTags,
 		"count":        len(suggestions),
 	})
+}
+
+// noteIDFromNotePath parses IDs from routes mounted under /api/notes/.
+// The standard ServeMux does not expose URL parameters, so operation suffixes
+// are stripped here in the same order used by handleNoteOperations.
+func noteIDFromNotePath(path string) string {
+	path = strings.TrimPrefix(path, "/api/notes/")
+	path = strings.TrimSuffix(path, "/")
+	for _, operation := range []string{"recommendations", "suggest-tags"} {
+		if suffix := "/" + operation; strings.HasSuffix(path, suffix) {
+			path = strings.TrimSuffix(path, suffix)
+			break
+		}
+	}
+	return path
 }
