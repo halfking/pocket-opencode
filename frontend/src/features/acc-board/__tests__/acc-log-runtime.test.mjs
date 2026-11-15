@@ -178,3 +178,155 @@ test('run isolation and replay count/size bounds are enforced on actual SSE fram
   assert.equal(snapshot.events.at(-1).seq, 8)
   assert.ok(snapshot.events.every(e => e.payload.text !== 'wrong-run'))
 })
+
+test('EOF falls back to owned polling with the SSE cursor; overlap and late responses are discarded', async t => {
+  const { runtime, streams, polls, poll } = await fixture(t, { pollMs: 10 })
+  let pending
+  const body = [event(2, 'same-event', { event_id: 'event-1' }), event(3, 'from-poll')]
+  let count = 0
+  let respond
+  const ready = new Promise(resolve => { respond = resolve })
+  poll((_req, res) => {
+    count++
+    if (count === 1) {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ events: body }))
+    } else { pending = res; respond() }
+  })
+  let snapshot
+  runtime.subscribe('run-1', value => { snapshot = value })
+  await until(() => streams.length === 1)
+  send(streams[0], event(1))
+  await until(() => snapshot.lastSeq === 1)
+  streams[0].res.end()
+  await ready
+  assert.match(polls[0].url, /after=1/)
+  assert.equal(polls[0].headers.authorization, 'Bearer acc-a')
+  assert.deepEqual(snapshot.events.map(e => e.seq), [1, 3])
+  runtime.setAuthority(null)
+  pending.end(JSON.stringify({ events: [event(4, 'late-private')] }))
+  await delay(30)
+  assert.equal(snapshot.events.length, 0)
+  assert.equal(polls.length, 2)
+})
+
+test('oversized unterminated SSE frames are bounded and close before fallback', async t => {
+  const { runtime, streams, polls } = await fixture(t, { maxFrameChars: 200 })
+  let snapshot
+  runtime.subscribe('run-1', value => { snapshot = value })
+  await until(() => streams.length === 1)
+  streams[0].res.write(`data: ${'x'.repeat(500)}`)
+  await until(() => streams[0].closed && snapshot.mode === 'unavailable')
+  assert.equal(snapshot.events.length, 0)
+  assert.equal(polls.length, 1)
+})
+
+test('silence has a finite network budget even with an attached view', async t => {
+  const { runtime, streams, polls } = await fixture(t, { networkIdleMs: 50 })
+  let snapshot
+  runtime.subscribe('run-1', value => { snapshot = value })
+  await until(() => streams.length === 1)
+  await until(() => streams[0].closed && snapshot.mode === 'unavailable')
+  assert.equal(polls.length, 1)
+})
+
+test('a slow-drip poll body cannot renew the request deadline indefinitely', async t => {
+  const { runtime, streams, polls, poll } = await fixture(t, { networkIdleMs: 50, pollMs: 10 })
+  const timers = []
+  t.after(() => timers.forEach(clearInterval))
+  poll((_req, res) => {
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.write('[')
+    const timer = setInterval(() => res.write(' '), 10)
+    timers.push(timer)
+    res.on('close', () => clearInterval(timer))
+  })
+  let snapshot
+  runtime.subscribe('run-1', value => { snapshot = value })
+  await until(() => streams.length === 1)
+  streams[0].res.end()
+  await until(() => snapshot.mode === 'unavailable', 'slow polling must exhaust a finite request budget')
+  assert.equal(polls.length, 3)
+  assert.equal(snapshot.events.length, 0)
+})
+
+test('an oversized terminal cannot be silently dropped while the connection stays live', async t => {
+  const { runtime, streams } = await fixture(t, { maxReplayChars: 250 })
+  let snapshot
+  runtime.subscribe('run-1', value => { snapshot = value })
+  await until(() => streams.length === 1)
+  send(streams[0], event(1, 'x'.repeat(500), { event_type: 'run.terminal' }))
+  await until(() => streams[0].closed, 'oversized events must fail closed rather than advancing a hidden cursor')
+  assert.equal(snapshot.mode, 'unavailable')
+  assert.equal(snapshot.events.length, 0)
+  assert.equal(snapshot.lastSeq, 0)
+})
+
+test('process entry capacity never evicts attached readers, but reclaims an unobserved run', async t => {
+  const { runtime, streams } = await fixture(t, { maxRuns: 2 })
+  const detach = runtime.subscribe('run-1', () => {})
+  runtime.subscribe('run-2', () => {})
+  await until(() => streams.length === 2)
+  let full
+  runtime.subscribe('run-3', value => { full = value })
+  assert.equal(full.mode, 'unavailable')
+  assert.equal(streams.length, 2)
+  detach()
+  runtime.subscribe('run-3', () => {})
+  await until(() => streams.length === 3 && streams[0].closed)
+  assert.equal(streams[1].closed, false)
+})
+
+test('a projection gap resumes polling from the last delivered sequence, not the synthetic gap ID', async t => {
+  const { runtime, streams, polls, poll } = await fixture(t)
+  poll((_req, res) => {
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ events: [event(2), event(3, 'done', { event_type: 'run.terminal' })] }))
+  })
+  let snapshot
+  runtime.subscribe('run-1', value => { snapshot = value })
+  await until(() => streams.length === 1)
+  send(streams[0], event(1))
+  await until(() => snapshot.lastSeq === 1)
+  send(streams[0], event(99, 'gap', { event_type: 'projection.gap' }))
+  await until(() => snapshot.reason === 'terminal' && streams[0].closed)
+  assert.match(polls[0].url, /after=1/)
+  assert.deepEqual(snapshot.events.map(e => e.seq), [1, 2, 3])
+})
+
+test('oversized poll bodies fail within the byte cap without ingesting partial private data', async t => {
+  const { runtime, streams, polls, poll } = await fixture(t, { maxPollBytes: 80, pollMs: 10 })
+  poll((_req, res) => {
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ events: [event(2, 'oversized'.repeat(50))] }))
+  })
+  let snapshot
+  runtime.subscribe('run-1', value => { snapshot = value })
+  await until(() => streams.length === 1)
+  send(streams[0], event(1))
+  await until(() => snapshot.lastSeq === 1)
+  streams[0].res.end()
+  await until(() => snapshot.mode === 'unavailable')
+  assert.equal(polls.length, 3)
+  assert.deepEqual(snapshot.events.map(e => e.seq), [1])
+  assert.equal(snapshot.lastSeq, 1)
+})
+
+test('CRLF delimiters and a multi-byte UTF-8 character may span separate network chunks', async t => {
+  const { runtime, streams } = await fixture(t)
+  let snapshot
+  runtime.subscribe('run-1', value => { snapshot = value })
+  await until(() => streams.length === 1)
+  const value = event(1, '🦞中文')
+  const bytes = Buffer.from(`id: 1\r\nevent: agent.log_line\r\ndata: ${JSON.stringify(value)}\r\n\r\n`)
+  const emoji = bytes.indexOf(Buffer.from('🦞'))
+  const ends = [5, 6, emoji + 1, emoji + 3, bytes.length - 1, bytes.length]
+  let start = 0
+  for (const end of ends) {
+    streams[0].res.write(bytes.subarray(start, end))
+    start = end
+    await delay(5)
+  }
+  await until(() => snapshot.events.length === 1)
+  assert.equal(snapshot.events[0].payload.text, '🦞中文')
+})
