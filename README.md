@@ -87,8 +87,8 @@ AI Work Mess 提供两种部署模式，根据你的使用场景选择：
 
 **特点**：
 - ✅ 复用宿主上由 `llm-gateway-go` 启动的 `r112_postgres` PostgreSQL 容器（宿主端口 `15432`，不接管其生命周期）
-- ✅ 使用内网 `kx-base:go-vue-optimized` 基础镜像（由 `Dockerfile.kx-base` 构建）
-- ✅ 自动加入 `r112_net` 共享网络
+- ✅ 使用公共镜像构建（`Dockerfile.runtime` = alpine:latest；`Dockerfile.frontend` = node:22-bookworm-slim + nginx）；离线 `kx-base` 镜像仅 ACC Integration 需要
+- ✅ 自动加入 `opencode_pocket_local` 与外部 `shared-infra` 网络
 - ✅ 最小化配置
 
 **快速启动**：
@@ -122,8 +122,8 @@ docker load -i ~/work/docker-base-images/lang-base/kx-base-go-vue-v2-alpine-slim
 
 | 对比项 | 本地方案 | ACC Integration |
 |--------|---------|-----------------|
-| **PostgreSQL** | 独立容器 | 共享 llm-gateway-pg |
-| **Docker 网络** | r112_net | acc-local-net + shared-infra |
+| **PostgreSQL** | 复用宿主 `r112_postgres`（:15432，不接管生命周期） | 共享 llm-gateway-pg |
+| **Docker 网络** | opencode_pocket_local + shared-infra | acc-local-net + shared-infra |
 | **基础镜像** | 公共镜像 | 离线 kx-base 镜像 |
 | **外部依赖** | 无 | 需要共享 PG 和镜像 |
 | **启动速度** | 快 | 稍慢（构建优化） |
@@ -304,7 +304,7 @@ adb shell am start -n com.kaixuan.opencode.pocket/.MainActivity
 ### 认证机制
 
 - **JWT Token**: 24小时有效期
-- **Token传递**: 支持Header和Query参数
+- **Token传递**: 仅 `Authorization: Bearer <JWT>`；Query 参数 `?token=` 只用于 WebSocket 握手（`/ws`、`/plugin/ws`、`/event*`），其它 HTTP 路由不接受 URL 中的 token
 - **密钥管理**: 环境变量配置
 - **HTTPS**: 生产环境强制使用
 
