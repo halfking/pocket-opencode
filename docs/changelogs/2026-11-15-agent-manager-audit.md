@@ -23,6 +23,7 @@
 - 最终 Android dev 并存包 165698657 字节，SHA-256 为 `c71146fd765ea08bcb4fc981fa0dee751c7dcca50de251f14ff53b6aedffb188`；正式包数据保留。
 - 共享 Docker PG 超时后，另建本轮独占 PG17（15439）与候选后端（18099），实际 health、login 和成员绑定签发均返回 200。未重启或改动共享服务。
 - 最终原生批次详情见根仓 `docs/agent-manager-plan/results/validation-2026-11-15.json`；新增看板 Mock 已通过，真实 ACC/SOP 不由此代替。
+- 最终相同 APK 的 17 条注册业务流中，13 个场景通过（含独立登录、Mock 看板、五账户种子变体）；4 条受 ACC/LLM 或不安全 STT 夹具前提阻挡，未验收。两个系统弹窗准备 flow 不计为业务覆盖。
 
 ## 未验收
 
