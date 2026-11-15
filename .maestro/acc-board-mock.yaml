@@ -1,0 +1,70 @@
+# Isolated UI acceptance only. The visible Mock banner must remain throughout;
+# this flow does not establish real ACC/SOP/backend acceptance.
+appId: com.kaixuan.opencode.pocket
+---
+- extendedWaitUntil:
+    visible: "AI 工具"
+    timeout: 45000
+- tapOn: "更多"
+- scrollUntilVisible:
+    element: { text: "ACC.*看板" }
+    direction: DOWN
+    timeout: 20000
+    centerElement: true
+- waitForAnimationToEnd:
+    timeout: 2000
+- tapOn: { text: "ACC.*看板" }
+- extendedWaitUntil:
+    visible: "ACC 连接设置"
+    timeout: 20000
+- runFlow:
+    when:
+      notVisible: "Mock 演示模式 — 数据为内置样例.*"
+    commands:
+      - tapOn: "ACC 连接设置"
+      - tapOn: "Mock 演示模式（不请求 ACC）"
+      - tapOn: "保存并刷新"
+- extendedWaitUntil:
+    visible: "Mock 演示模式 — 数据为内置样例.*"
+    timeout: 30000
+- extendedWaitUntil:
+    visible: "run-mock-7c1a.*"
+    timeout: 20000
+- tapOn: "run-mock-7c1a.*"
+- extendedWaitUntil:
+    visible: "2/5 节点完成"
+    timeout: 20000
+- assertVisible: "Mock 演示模式 — 数据为内置样例.*"
+- scrollUntilVisible:
+    element: { text: "事件日志" }
+    direction: DOWN
+    timeout: 15000
+- assertVisible: "事件日志"
+- scrollUntilVisible:
+    element: { text: "^审批$" }
+    direction: UP
+    timeout: 15000
+- tapOn: { text: "^审批$" }
+- extendedWaitUntil:
+    visible: "审批：实现"
+    timeout: 10000
+- tapOn: "提交"
+- scrollUntilVisible:
+    element: { text: "3/5 节点完成" }
+    direction: UP
+    timeout: 15000
+- extendedWaitUntil:
+    visible: "3/5 节点完成"
+    timeout: 20000
+- scrollUntilVisible:
+    element: { text: "审批已通过.*" }
+    direction: DOWN
+    timeout: 15000
+- assertVisible: "审批已通过.*"
+- assertNotVisible: "审批：实现"
+- tapOn: "返回"
+- extendedWaitUntil:
+    visible: "ACC.*看板"
+    timeout: 15000
+- assertVisible: "3/5 节点完成.*"
+- assertVisible: "Mock 演示模式 — 数据为内置样例.*"

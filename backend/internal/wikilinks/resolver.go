@@ -5,7 +5,9 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // NoteStore defines the interface for note storage operations needed by the resolver.
@@ -66,8 +68,9 @@ func NewResolver(noteStore NoteStore, linkStore LinkStore) *Resolver {
 //  4. Skips links to non-existent notes (user can see them as unresolved in UI)
 //
 // Example:
-//   content := "See [[Q3 Budget]] and [[Process]]"
-//   links, err := resolver.ResolveLinks(ctx, "note-123", content, "user-1", "ws-1")
+//
+//	content := "See [[Q3 Budget]] and [[Process]]"
+//	links, err := resolver.ResolveLinks(ctx, "note-123", content, "user-1", "ws-1")
 func (r *Resolver) ResolveLinks(ctx context.Context, noteID, content, userID, workspaceID string) ([]NoteLink, error) {
 	// Extract wiki link targets from content
 	targets := ExtractTargets(content)
@@ -155,7 +158,9 @@ func (r *Resolver) BuildNoteTitleMap(ctx context.Context, userID, workspaceID st
 // randomLinkID generates a random link ID.
 func randomLinkID() string {
 	b := make([]byte, 8)
-	rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		return "link-" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	}
 	return "link-" + hex.EncodeToString(b)
 }
 

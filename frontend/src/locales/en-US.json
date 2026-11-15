@@ -87,7 +87,8 @@
     "study": "Study",
     "flashcards": "Flashcards",
     "messages": "Messages",
-    "calendar": "Calendar"
+    "calendar": "Calendar",
+    "accBoard": "ACC Board"
   },
   "routes": {
     "login": "Sign in",

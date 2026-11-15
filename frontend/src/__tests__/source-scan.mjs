@@ -267,11 +267,31 @@ function lastUnclosedBrace(code, before) {
  * 这是 LoginView 那个缺陷的通用形状：模板里直接写死 v1.2.0-mobile，
  * 连变量都不是。它不会出现在任何 import 里，所以「谁 import 了常量」
  * 那类判据看不见它 —— 必须单独扫字面量。
+ *
+ * ★★ 2026-11-16 修正（实测误伤，守卫自己也要被审计）：
+ *   原正则 `/\bv?\d+\.\d+\.\d+\b/` 会把 **IPv4 地址**里的前三段当成版本号：
+ *     `http://127.0.0.1:4101` ⇒ 命中 "127.0.0"
+ *   ⇒ 任何写了 ACC/网关地址占位符的 .vue 都会被判「写死版本号」⇒ **假红**。
+ *
+ *   ★ 修法为什么不是「加个负向后顾」：
+ *     用 `(?!\.\d)` 会被**回溯**绕开 —— 正则在 "127.0.0.1" 上匹配失败后，
+ *     会从更靠后的起点再试，命中 "0.0.1"（三段、后面没有 ".数字"）⇒ 照样误报。
+ *   ⇒ 正确做法：**先把整个点分数字串整体吃掉**（2~3 段点号），
+ *     再按**段数**分类：
+ *       3 段（v1.2.0 / 1.2.3 / 2024.10.15）⇒ 版本号 ⇒ 报
+ *       4 段（127.0.0.1）⇒ IPv4 ⇒ 跳过
+ *   ⇒ 保留原有能力：真正的版本字面量照常命中。
+ *   ⇒ 边界：四段式如 "1.2.3.4" 现在**不**判为版本号（它更像 IPv4 或 build 号）；
+ *     若日后确需拦住四段版本号，应另加判据，不要把这条放宽回去。
  */
+const VERSION_TOKEN_RE = /\bv?\d+(?:\.\d+){2,3}\b/g
+
 export function findVersionLiterals(code) {
   const out = []
   code.split('\n').forEach((line, idx) => {
-    for (const m of line.matchAll(/\bv?\d+\.\d+\.\d+\b/g)) {
+    for (const m of line.matchAll(VERSION_TOKEN_RE)) {
+      // 4 段 = IPv4（形如 127.0.0.1）⇒ 不是版本号，跳过
+      if ((m[0].match(/\./g) || []).length >= 3) continue
       out.push({ line: idx + 1, text: m[0] })
     }
   })

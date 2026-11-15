@@ -15,7 +15,7 @@
       ref="overlayRef"
       class="live-subtitle-overlay"
       :class="{ pinned: store.pinned, dragging: isDragging }"
-      :style="overlayStyle"
+      :style="{ ...overlayStyle }"
       @touchstart="onDragStart"
       @touchmove="onDragMove"
       @touchend="onDragEnd"

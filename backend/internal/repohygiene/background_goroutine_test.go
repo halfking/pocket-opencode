@@ -118,6 +118,12 @@ var s949Ledger = []s949LedgerRow{
 	{"auth/send-code-email", "backend/internal/server/server_auth_extended.go"},
 	{"client-ws/read-pump", "backend/internal/server/server_plugin_ws.go"},
 	{"client-ws/write-pump", "backend/internal/server/server_plugin_ws.go"},
+	{"knowledge-graph-fetch-links", "backend/internal/server/server_graph.go"},
+	{"knowledge-search-local-notes", "backend/internal/server/server_knowledge_search.go"},
+	{"knowledge-search-memora", "backend/internal/server/server_knowledge_search.go"},
+	{"multilingual-transcribe-language", "backend/internal/multilang/transcriber.go"},
+	{"multilingual-transcribe-wait", "backend/internal/multilang/transcriber.go"},
+	{"multilingual-translate-segment", "backend/internal/multilang/transcriber.go"},
 	{"email-pending/gc-loop", "backend/cmd/pocketd/main.go"},
 	{"email/account-sync", "backend/internal/email/pipeline.go"},
 	{"email/account-sync-run", "backend/internal/email/pipeline.go"},
@@ -430,7 +436,7 @@ func TestS949NoBareGoroutine(t *testing.T) {
 //	「扫描范围没塌缩」和「数字对得上」是两件事。
 //	⇒⇒⇒ 例如有人把 backend/ 换成 backend/i ⇒ 扫不到东西 ⇒ 门照样绿。
 //	⇒⇒⇒ 所以要钉：整个后端（含 internal/background）的 `go` 语句总数 = 1，
-//	　　　background.Go* 调用点总数 = 79。
+//	　　　background.Go* 调用点总数 = 87。
 func TestS949AbsoluteCounts(t *testing.T) {
 	root := repoRoot(t)
 	res := s949ScanAll(t, root)
@@ -440,7 +446,7 @@ func TestS949AbsoluteCounts(t *testing.T) {
 			"⇒ 期望的那 1 处是 internal/background 自己的兜底实现 ⇒⇒⇒ 其余任何新增的 `go` 都要改走 background.Go",
 			got, want)
 	}
-	if got, want := len(res.Calls), 81; got != want {
+	if got, want := len(res.Calls), 87; got != want {
 		t.Errorf("background.Go* 调用点总数 = %d（期望 %d）⇒ 数量变了必须重新定性", got, want)
 	}
 }
@@ -502,7 +508,7 @@ func TestS949LedgerMatchesSource(t *testing.T) {
 				"⇒ 要么任务被删了（删了要重新定性），要么台账过期了", name, file)
 		}
 	}
-	if got, want := len(s949Ledger), 81; got != want {
+	if got, want := len(s949Ledger), 87; got != want {
 		t.Errorf("台账行数 = %d（期望 %d）⇒ 台账行数变了必须重新定性", got, want)
 	}
 }

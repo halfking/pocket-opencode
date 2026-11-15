@@ -66,11 +66,6 @@
         />
       </ScrollChromePortal>
 
-      <div v-if="loading" class="state">
-        <Skeleton :count="4" />
-      </div>
-
-      <template v-else>
         <!-- PKM 工作台入口：**常驻，且排在列表之前**。
              2026-10-03 真机实测改了两次位置，两次都有现场证据：
              ① 它原来和「全部笔记/全部会议」一起挂在列表**之后**的
@@ -118,6 +113,11 @@
           </button>
         </nav>
 
+      <div v-if="loading" class="state">
+        <Skeleton :count="4" />
+      </div>
+
+      <template v-else>
         <!-- 概览条：只统计「加载成功」的来源，三个计数与下面的列表是同一份数据，
              避免出现「数字说 12 条、列表只有 5 条」这种自相矛盾的界面。 -->
         <!-- 概览只列手记与会议：PKM 的量级通常与前两者不同量纲，

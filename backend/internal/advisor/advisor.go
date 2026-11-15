@@ -7,9 +7,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/halfking/pocket-opencode/backend/internal/outbound"
 )
 
 // Config 动态参谋配置
@@ -134,7 +137,7 @@ func (a *Advisor) extractKeywords(text string) []string {
 // 并行查询多个源：笔记、memora、网络搜索
 func (a *Advisor) queryKnowledge(ctx context.Context, query string) ([]Suggestion, error) {
 	suggestions := make([]Suggestion, 0, a.config.MaxSuggestions)
-	
+
 	// 1. 查询kxmemory（如果配置了）
 	if a.config.KxmemoryBaseURL != "" {
 		kxSuggestions, err := a.queryKxmemory(ctx, query)
@@ -142,7 +145,7 @@ func (a *Advisor) queryKnowledge(ctx context.Context, query string) ([]Suggestio
 			suggestions = append(suggestions, kxSuggestions...)
 		}
 	}
-	
+
 	// 2. 本地笔记查询（TODO: 集成notes store）
 	// 3. 网络搜索（TODO: 可选集成）
 
@@ -150,7 +153,7 @@ func (a *Advisor) queryKnowledge(ctx context.Context, query string) ([]Suggestio
 	if len(suggestions) > a.config.MaxSuggestions {
 		suggestions = suggestions[:a.config.MaxSuggestions]
 	}
-	
+
 	// 如果没有结果，返回提示
 	if len(suggestions) == 0 {
 		suggestions = []Suggestion{
@@ -173,35 +176,35 @@ func (a *Advisor) queryKxmemory(ctx context.Context, query string) ([]Suggestion
 		"query": query,
 		"top_k": a.config.MaxSuggestions,
 	}
-	
+
 	body, err := json.Marshal(reqBody)
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
-	
+
 	// 发送请求（简化实现，生产环境需要更完善的HTTP客户端）
 	url := a.config.KxmemoryBaseURL + "/v1/search"
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
-	
+
 	req.Header.Set("Content-Type", "application/json")
 	if a.config.KxmemoryAPIKey != "" {
 		req.Header.Set("Authorization", "Bearer "+a.config.KxmemoryAPIKey)
 	}
-	
-	client := &http.Client{Timeout: 5 * time.Second}
+
+	client := outbound.NewClient(5 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
 	defer resp.Body.Close()
-	
+
 	if resp.StatusCode != 200 {
 		return nil, fmt.Errorf("kxmemory returned %d", resp.StatusCode)
 	}
-	
+
 	// 解析响应
 	var result struct {
 		Results []struct {
@@ -211,11 +214,11 @@ func (a *Advisor) queryKxmemory(ctx context.Context, query string) ([]Suggestion
 			URL     string  `json:"url"`
 		} `json:"results"`
 	}
-	
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&result); err != nil {
 		return nil, fmt.Errorf("decode response: %w", err)
 	}
-	
+
 	// 转换为Suggestion格式
 	suggestions := make([]Suggestion, 0, len(result.Results))
 	for _, r := range result.Results {
@@ -227,7 +230,7 @@ func (a *Advisor) queryKxmemory(ctx context.Context, query string) ([]Suggestion
 			Score:   r.Score,
 		})
 	}
-	
+
 	return suggestions, nil
 }
 

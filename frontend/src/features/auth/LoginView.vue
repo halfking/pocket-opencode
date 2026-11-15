@@ -58,6 +58,20 @@
 
       <!-- 登录表单 -->
       <div v-else class="login-form">
+        <!-- Casdoor 直连 OIDC 模式（mode=oidc）：本地凭据面整体退役，
+             只留 SSO 入口 —— 全部用户认证收敛到 Casdoor（2026-11-14）。 -->
+        <template v-if="oidcOnly">
+          <button
+            class="login-btn sso-btn"
+            :disabled="loading"
+            @click="ssoLogin"
+          >
+            <span class="material-symbols-outlined" aria-hidden="true">shield</span>
+            {{ loading ? '跳转中...' : '企业账号登录（Casdoor）' }}
+          </button>
+        </template>
+
+        <template v-else>
         <!-- 模式切换 Tab（注册走独立页 /register，见 RegisterView） -->
         <div class="tab-bar" role="tablist">
           <button
@@ -185,6 +199,7 @@
             {{ loading ? '登录中...' : '登录' }}
           </button>
         </template>
+        </template><!-- /v-else 非纯 OIDC 模式 -->
 
         <div v-if="error" class="error-message">
           {{ error }}
@@ -226,7 +241,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore, captureAuthSession, assertAuthSession, isCurrentAuthSession, type AuthSession } from '../../stores/auth'
 import { http, ApiError } from '../../api/http'
@@ -255,7 +270,7 @@ import {
 } from './unlock-auth'
 import MasterPasswordDialog from './MasterPasswordDialog.vue'
 import { useCryptoConfig } from '../../stores/crypto-config'
-import { sendCode, codeLogin, fetchSsoLoginUrl, fetchSsoStatus } from '../../api/auth'
+import { sendCode, codeLogin, fetchSsoLoginUrl, fetchSsoStatusDetailed } from '../../api/auth'
 import { displayApiBase } from '../../config/api-base'
 import { resolveAppVersion } from '../../utils/version'
 
@@ -299,7 +314,11 @@ const activeTab = ref<TabId>('password')
 
 // Phase 1: RedClaw SSO 入口开关。生产由后端 /api/auth/sso/status 探测
 // （404 即视为未启用，零副作用）；开发可在 onMounted 期间 force-on 调试。
+// 2026-11-14 认证收敛：status 响应带 mode —— "oidc"（Casdoor 直连）时
+// 本地凭据面退役，登录页只留 SSO 入口；"redclaw" 保持双 lane 并存。
 const ssoEnabled = ref(false)
+const ssoMode = ref<'' | 'oidc' | 'redclaw'>('')
+const oidcOnly = computed(() => ssoMode.value === 'oidc')
 
 const codeEmail = ref('')
 const codeValue = ref('')
@@ -391,12 +410,15 @@ onMounted(async () => {
     }
   } catch { /* 生物识别不可用时静默降级为密码登录 */ }
 
-  // Phase 1: 探测 RedClaw SSO 是否启用。走专用 /api/auth/sso/status
-  // （零副作用）；404/网络错误时静默关闭按钮。
+  // Phase 1: 探测 SSO 是否启用。走专用 /api/auth/sso/status（零副作用）；
+  // 404/网络错误时静默关闭按钮。mode=oidc 时本地凭据面整体退役。
   try {
-    ssoEnabled.value = await fetchSsoStatus()
+    const status = await fetchSsoStatusDetailed()
+    ssoEnabled.value = status !== null
+    ssoMode.value = status?.mode ?? ''
   } catch {
     ssoEnabled.value = false
+    ssoMode.value = ''
   }
 
   if (auth.isAuthenticated && !isLobsterReady()) {

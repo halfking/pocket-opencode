@@ -249,6 +249,7 @@ var lengthLimitRegistry = []struct {
 	{"server/server_resource_auth.go", "len(body) > 16384", "O", "可信服务内省响应16KiB字节上限，超限503；不是客户端业务字段，不截断后放行"},
 	{"adapter/disk/codex.go", "len(rest) > 20", "O", ""},
 	{"adapter/disk/parse.go", "len(tag) > 60", "O", ""},
+	{"attachments/helpers.go", "len(filename) > 255", "O", "捐献代码中的文件名校验器当前无生产调用方；保留 API 防御闸：文件名 255 字节，拒绝不截断"},
 	{"agentbridge/store.go", "len(s) >= 2", "O", ""},
 	{"agentbridge/store.go", "len(s) >= 2", "O", ""},
 	{"auth/email_codes.go", "len(s) > 254", "A", "客户端提交的**邮箱地址**（发送验证码路径 email_codes.go:73 ⇒ ErrEmailInvalid）；`len(s)`=**字节** ⇒ 254 字节。**可达性：可达·不可区分**（超长邮箱与「格式不对」回**同一个**错误 ⇒ 用户看不出是「太长」）⇒ 用户可改短重试 ⇒ 只登记不修"},
@@ -273,6 +274,9 @@ var lengthLimitRegistry = []struct {
 	{"migration/service.go", "len(last) > 200", "O", ""},
 	{"migration/service.go", "len(text) > 500", "O", "从 **adapter 消息派生**的状态摘要（**截断** 500 字节，不是拒绝）"},
 	{"orchestrator/acc_dispatcher.go", "len(prompt) > 64", "O", ""},
+	{"notebooks/notebook.go", "len(input.Name) > 200", "A", "客户端提交的笔记本名：200 字节；400「name too long (max 200 characters)」（POST/PUT /api/notebooks）。可达性：可达·可区分 ⇒ 用户可改短重试"},
+	{"recommendations/tags.go", "len(term) > 8", "A", "客户端提交的笔记内容派生出的候选标签长度加权阈值：超过 8 字节加 1.5 倍分；不拒绝，只影响排序。可达性：不可达"},
+	{"recommendations/tags.go", "len(term) > 4", "A", "客户端提交的笔记内容派生出的候选标签长度加权阈值：超过 4 字节加 1.2 倍分；不拒绝，只影响排序。可达性：不可达"},
 	{"rss/item_states.go", "len(items) > 100", "A", "客户端提交的**状态操作批条数**（计数）：1~100 条；400「rss: 1 to 100 status operations required」。**可达性：不可达**（前端 rss-item-state.ts 预检 ≤100 且按 100 分批）"},
 	{"rss/item_states.go", "len(x.ExtID) > 512", "A", "客户端提交的**条目外部 ID**：512 字节；整批 400（PortableItemState.validate）。**可达性：不可达**（ext_id 由前端从本地库 `pocketd-item:` 前缀键派生，键长受本地 schema 约束）"},
 	{"rss/item_states.go", "len(x.OpID) > 200", "A", "客户端提交的**操作 ID**：200 字节；整批 400（PortableItemState.validate）。**可达性：不可达**（op_id 由本地 outbox 的 newOperationId 生成，固定短格式）"},
@@ -285,7 +289,7 @@ var lengthLimitRegistry = []struct {
 	{"server/flashcards_handler.go", "len(parts) >= 2", "O", ""},
 	{"server/flashcards_handler.go", "len(parts) >= 3", "O", ""},
 	{"server/llm_gateway_admin_client.go", "len(trimmed) > 200", "O", "**网关错误体**截断（服务端派生，不是客户端提交的字段）"},
-	{"server/server_memora.go", "len(hash) > 16", "O", "memora 同步内容指纹取 16 hex（64 bit）**截断**进 sync:openpocket:hash:* tag——sha256 hex 是服务端对笔记内容自算的内部派生值，不是客户端可提交字段；只影响 tag 长度，不拒绝任何请求"},
+	{"server/server_memora.go", "len(runes) > 16", "O", "memora 同步内容指纹仍取 16 hex（64 bit）截断进 sync:openpocket:hash:* tag；改为 rune 切片避免任意字符串参数产生非法 UTF-8，长度上限和 O 类内部派生值定性不变，不拒绝客户端请求"},
 	{"server/llm_gateway_nodes_proxy.go", "len(s) > 64", "O", ""},
 	{"server/server_rss.go", "len(body.IDs) > 100", "A", "客户端提交的**条目状态同步 ID 数**（计数）：1~100；400（/api/rss/item-states）。**可达性：不可达**（同上：前端预检 + 分批）"},
 	{"server/server_rss.go", "len(opt.IDs) > 100", "A", "客户端提交的**实体批量查询 ID 数**（计数）：≤100；400（/api/rss/entities 批量入口）。**可达性：不可达**（同上：前端按 100 分批）"},
@@ -294,6 +298,13 @@ var lengthLimitRegistry = []struct {
 	{"server/mobile_api.go", "len(tokenString) > 7", "O", ""},
 	{"server/mobile_idempotency.go", "len(c.entries) > 4096", "O", ""},
 	{"server/mobile_idempotency.go", "len(c.entries) > 4096", "O", ""},
+	{"server/server_advisor.go", "len(pathParts) >= 3", "O", "路径分段解析 /api/{api}/{meetings}/{id}：前两段为约定常量，第三段 meeting ID 非空即有效，不设字段长度上界"},
+	{"server/server_diarization.go", "len(pathParts) >= 3", "O", "路径分段解析 /api/{api}/{meetings}/{id}/diarize：前两段为约定常量，第三段 meeting ID 非空即有效，不设字段长度上界"},
+	{"server/server_knowledge_search.go", "len([]rune(memory)) > 50", "O", "Memora 内容派生标题：取前 50 rune 并追加省略号；不拒绝请求，只截断派生展示字段"},
+	{"server/server_knowledge_search.go", "len([]rune(title)) > 50", "O", "Memora 首行标题：取前 50 rune 并追加省略号；不拒绝请求，只截断派生展示字段"},
+	{"server/server_taskgen.go", "len(pathParts) >= 3", "O", "路径分段解析 /api/{api}/{meetings}/{id} 与 /api/{api}/{tasks}/{id}（3 处）：前两段为约定常量，第三段资源 ID 非空即有效，不设字段长度上界"},
+	{"server/server_taskgen.go", "len(pathParts) >= 3", "O", "同上，路径分段解析 /api/{api}/{tasks}/{id}"},
+	{"server/server_taskgen.go", "len(pathParts) >= 3", "O", "同上，路径分段解析 /api/{api}/{tasks}/{id}"},
 	{"server/server.go", "len(path) > 6", "O", ""},
 	{"server/server.go", "len(path) > 8", "O", ""},
 	{"server/server.go", "len(path) > 8", "O", ""},
@@ -322,6 +333,9 @@ var lengthLimitRegistry = []struct {
 	{"stt/sniff.go", "len(data) >= 4", "O", ""},
 	{"stt/sniff.go", "len(data) >= 4", "O", ""},
 	{"stt/sniff.go", "len(data) >= 4", "O", ""},
+	{"taskgen/generator.go", "len(followUp) > 5", "A", "客户端提交的会议内容派生后续跟进：超过 5 字节才保留；不拒绝请求，只过滤过短派生项。可达性：不可达"},
+	{"taskgen/generator.go", "len(decision) > 5", "A", "客户端提交的会议内容派生决策：超过 5 字节才保留；不拒绝请求，只过滤过短派生项。可达性：不可达"},
+	{"taskgen/generator.go", "len(item) > 5", "A", "客户端提交的会议内容派生行动项：超过 5 字节才保留；不拒绝请求，只过滤过短派生项。可达性：不可达"},
 }
 
 // lengthLimitRegistryAKeys = 清单里**必须**是 A 类的那些键（文件 + 表达式文本）。
@@ -363,6 +377,12 @@ var lengthLimitRegistryAKeys = []lengthLimitGateKey{
 	{"server/server_llmbff.go", "len(body.Tools) > 20"},
 	{"server/server_llmbff.go", "len(m.Content) > 32000"},
 	{"server/task_collaboration_handler.go", "len(clientEventID) > 80"},
+	{"notebooks/notebook.go", "len(input.Name) > 200"},
+	{"recommendations/tags.go", "len(term) > 8"},
+	{"recommendations/tags.go", "len(term) > 4"},
+	{"taskgen/generator.go", "len(followUp) > 5"},
+	{"taskgen/generator.go", "len(decision) > 5"},
+	{"taskgen/generator.go", "len(item) > 5"},
 }
 
 // lengthLimitGateKey 是清单/扫描共用的键。
@@ -558,9 +578,9 @@ func TestLengthLimitRegistryCoversEveryLengthGate(t *testing.T) {
 			t.Errorf("lengthLimitRegistryAKeys 里的 %s %q 在清单里不是 A 类 ⇒ 两份清单不一致", k.file, k.expr)
 		}
 	}
-	// 2026-11-12：+2（server_meeting_translate.go 的单次文本 5000 字节 / 批量条数 50）
-	if len(aSet) != 23 {
-		t.Errorf("A 类（客户端可提交字段上的限制）实际 %d 条，期望 23 条 ⇒ "+
+	// 2026-11-15：+6（笔记本名、推荐标签加权、任务生成派生项过滤）
+	if len(aSet) != 29 {
+		t.Errorf("A 类（客户端可提交字段上的限制）实际 %d 条，期望 29 条 ⇒ "+
 			"要么有人把 A 类改成了 O 类，要么新增了一处客户端可提交的限制没分类", len(aSet))
 	}
 
