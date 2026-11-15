@@ -223,4 +223,33 @@ describe('source-scan: 剥注释底座', () => {
     assert.equal(hits[0].line, 3, '行号不对：' + JSON.stringify(hits[0]))
     assert.equal(hits[0].text, 'v1.2.0')
   })
+
+  it('⑥ findVersionLiterals 不得把 IPv4 地址当成版本号（2026-11-16 实测误伤）', () => {
+    // 背景：ACC 地址占位符 `http://127.0.0.1:4101` 里的 "127.0.0" 曾被判成
+    //       版本号 ⇒ 任何写了本机地址的 .vue 都假红 ⇒ 门形同虚设。
+    const code = [
+      '<template>',
+      '  <input placeholder="http://127.0.0.1:4101" />',
+      '  <input placeholder="http://0.0.0.0:8080" />',
+      '</template>',
+    ].join('\n')
+    const hits = findVersionLiterals(code)
+    assert.equal(hits.length, 0, 'IPv4 被误判成版本号：' + JSON.stringify(hits))
+  })
+
+  it('⑦ findVersionLiterals 放宽 IPv4 后仍要抓到真版本号（尺子有牙）', () => {
+    const code = [
+      '<template>',
+      '  <p>v1.2.0-mobile</p>',
+      '  <p>1.2.3</p>',
+      '  <p>2024.10.15</p>',
+      '</template>',
+    ].join('\n')
+    const hits = findVersionLiterals(code)
+    assert.equal(hits.length, 3, '真版本号漏抓了：' + JSON.stringify(hits))
+    const texts = hits.map((h) => h.text)
+    assert.ok(texts.includes('v1.2.0'), '漏抓 v1.2.0：' + JSON.stringify(texts))
+    assert.ok(texts.includes('1.2.3'), '漏抓 1.2.3：' + JSON.stringify(texts))
+    assert.ok(texts.includes('2024.10.15'), '漏抓 2024.10.15：' + JSON.stringify(texts))
+  })
 })

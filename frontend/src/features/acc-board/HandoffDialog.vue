@@ -175,12 +175,17 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey))
 <style scoped>
 .hd-overlay {
   position: fixed;
-  inset: 0;
+  /* 键盘在场时浮层收在键盘上沿之下，弹层内的输入框与确认按钮不会被盖住。
+     同 BottomSheet.vue / marketplace 的 confirm-overlay。 */
+  inset: 0 0 var(--kb-inset, 0px) 0;
   background: rgba(0, 0, 0, 0.45);
   display: flex;
   align-items: flex-end;
   justify-content: center;
-  z-index: 1000;
+  /* z-index 门禁：裸数字必须走 token。
+     审批/移交是**模态**（遮罩 + 底部弹出卡片），与项目里其它模态
+     （ConfirmDialog / AgentMarketView.confirm-overlay）同层级 ⇒ 用 --z-dialog。 */
+  z-index: var(--z-dialog);
 }
 .hd-card {
   width: 100%;

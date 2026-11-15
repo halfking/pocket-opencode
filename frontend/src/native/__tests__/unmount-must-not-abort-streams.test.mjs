@@ -63,6 +63,23 @@ const ALLOW = new Map([
     '与「切页后仍能执行」要保护的对象不同——那类对象是流与长任务，' +
     '归属 aiStreamRuntime / 用户显式发起的批处理。',
   ],
+  [
+    'src/features/acc-board/LogStream.vue',
+    '★ 2026-11-16 加入（合并 codeup/main 的 ACC 看板后触发本门）：' +
+    'abort 的是**本页对远端 ACC 的 SSE 订阅**，不是本地后台作业。' +
+    '① 被 abort 的 URL 由 props.runId 拼出（/api/v2/orchestration/runs/<id>/events/stream），' +
+    '指向**ACC 服务端**（默认 http://127.0.0.1:4101），' +
+    '**run 本身在 ACC 侧继续执行** ⇒ 断开客户端订阅不会杀掉任何用户工作；' +
+    '② 组件是 run 详情页的**观察者**，不是工作的**所有者** —— ' +
+    '观察者被销毁时留着一条 SSE 长连接 = 资源泄漏（连接与 reader 都悬着）；' +
+    '③ 所有写入路径都已用 disposed 标志守卫（startStream 的 catch 分支、' +
+    'degradeToPoll、以及读循环的 `if (done || disposed) break`）⇒ ' +
+    '「响应回来写进已卸载组件的 ref」这个风险已被覆盖，' +
+    '与 CostQuotaView 那条豁免是**同一类**（本页读取/订阅的收尾）；' +
+    '④ 用户若要中止，界面另有显式入口（降级轮询时 stopStream），' +
+    '不靠卸载钩子。' +
+    '★ 若日后 ACC 侧改成「客户端断开即取消 run」，本豁免必须撤回。',
+  ],
 ])
 
 function collectVue(dir, out = []) {

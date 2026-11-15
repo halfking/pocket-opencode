@@ -474,7 +474,10 @@ onBeforeUnmount(() => {
   overscroll-behavior: contain;
   background: #0f172a;
   padding: 8px 10px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  /* §css-vars：等宽字体走 --font-mono token，不写死字体栈。
+     写死 `ui-monospace, SFMono-Regular, …` 会让中文掉回默认字体（与正文不一致），
+     且违反「外观只有一处真相（token）」的纪律。 */
+  font-family: var(--font-mono);
   font-size: 12px;
   line-height: 1.6;
 }
