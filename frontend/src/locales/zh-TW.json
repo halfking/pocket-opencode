@@ -87,7 +87,8 @@
     "study": "Study",
     "flashcards": "閃卡",
     "messages": "訊息",
-    "calendar": "行事曆"
+    "calendar": "行事曆",
+    "accBoard": "ACC 看板"
   },
   "routes": {
     "login": "登入",
