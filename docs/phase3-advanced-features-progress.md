@@ -2,9 +2,15 @@
 
 **更新时间**: 2026-11-14 23:35
 
+> **状态订正（2026-11-16）**：Phase 3.2–3.4 的**代码已入库**（Backend/Frontend 均已提交），
+> 但**尚未接线**——Backend `server_graph.go` / `server_recommendations.go` 未在 `server.go`
+> 注册路由，Frontend `stores/graph.ts` / `stores/recommendations.ts` / `utils/wikilinks.ts`
+> 尚无任何组件引用，`RecommendationsPanel` / `GraphView` / `KnowledgeGraphPage` **未开发**。
+> 完成度口径见 [FINAL-PROJECT-COMPLETION-REPORT](FINAL-PROJECT-COMPLETION-REPORT.md)。
+
 ## 🔄 当前进度
 
-### Phase 3.2: 双向链接解析（进行中）
+### Phase 3.2: 双向链接解析（代码入库，未接线）
 **Agent 1** 正在实现：
 - Backend wikilinks parser
 - Backend resolver
@@ -12,9 +18,9 @@
 - NoteEditor 自动补全
 - NoteDetailPage wiki links 渲染
 
-**预计完成**: 等待代理通知
+**当前状态**: 代码入库，未接线（2026-11-16 订正）
 
-### Phase 3.3: AI 智能推荐（进行中）
+### Phase 3.3: AI 智能推荐（代码入库，未接线）
 **Agent 2** 正在实现：
 - Backend similarity 算法（TF-IDF + 余弦相似度）
 - Backend tags suggestion
@@ -22,9 +28,9 @@
 - recommendations store
 - NoteDetailPage 推荐集成
 
-**预计完成**: 等待代理通知
+**当前状态**: 代码入库，未接线（2026-11-16 订正）
 
-### Phase 3.4: 关系图谱（进行中）
+### Phase 3.4: 关系图谱（代码入库，未接线）
 **Agent 3** 正在实现：
 - Backend graph API
 - Frontend GraphView 组件（D3.js）
@@ -32,7 +38,7 @@
 - graph store
 - 力导向布局
 
-**预计完成**: 等待代理通知
+**当前状态**: 代码入库，未接线（2026-11-16 订正）
 
 ---
 

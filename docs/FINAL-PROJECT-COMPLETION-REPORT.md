@@ -40,7 +40,7 @@
 - ✅ NoteEditPage（670行）
 - **代码量**: ~2,336行
 
-### Phase 3.2: 双向链接解析（100%）
+### Phase 3.2: 双向链接解析（代码入库 100%，未接线）
 **Backend (694行)**:
 - ✅ wikilinks/parser.go（167行）
 - ✅ wikilinks/resolver.go（232行）
@@ -51,7 +51,7 @@
 - ✅ utils/wikilinks.ts
 - ✅ 解析和渲染工具函数
 
-### Phase 3.3: AI 智能推荐（100%）
+### Phase 3.3: AI 智能推荐（代码入库 100%，未接线）
 **Backend (601行)**:
 - ✅ recommendations/similarity.go（281行）- TF-IDF算法
 - ✅ recommendations/tags.go（150行）- 标签建议
@@ -61,7 +61,7 @@
 - ✅ stores/recommendations.ts
 - ✅ 推荐和标签状态管理
 
-### Phase 3.4: 关系图谱（100%）
+### Phase 3.4: 关系图谱（代码入库 100%，未接线）
 **Backend**:
 - ✅ server/server_graph.go（14KB）
 - ✅ Graph API 数据结构
@@ -161,6 +161,13 @@ Phase 3: 3次
 - [x] 双向链接解析（Backend + Frontend）
 - [x] AI智能推荐（Backend + Frontend）
 - [x] 关系图谱（Backend API + Frontend Store）
+
+> ⚠️ **完成度口径**：Phase 3.1（4 个页面 + `knowledgeRoutes` 路由注册）**已接线可用**；
+> Phase 3.2–3.4 为**代码入库**但**尚未接线**——Backend `server_graph.go` /
+> `server_recommendations.go` 未在 `server.go` 注册路由，Frontend `stores/graph.ts` /
+> `stores/recommendations.ts` / `utils/wikilinks.ts` 尚无任何组件引用，
+> `RecommendationsPanel` / `GraphView` 组件未开发（见「已知限制」）。
+> 按「已入库」计 100%，按「用户可用」计 Phase 3.2–3.4 未完成。
 
 ---
 

@@ -3,6 +3,14 @@
 **完成时间**: 2026-11-14  
 **项目状态**: ✅ **Phase 1, Phase 2, Phase 2.5, Phase 3.1 全部完成**
 
+> **已被取代 / 口径对账（2026-11-16 订正）**：本文 Phase 3.2–3.4 的「0%」读数指
+> **用户可用度**（未接线＝不可用），**代码本身已入库**（Backend `6ea85edf` /
+> Frontend `cf5af2f6`）——但 Backend `server_graph.go` / `server_recommendations.go`
+> 未在 `server.go` 注册路由，Frontend `stores/graph.ts` / `stores/recommendations.ts` /
+> `utils/wikilinks.ts` 尚无组件引用，`RecommendationsPanel` / `GraphView` /
+> `KnowledgeGraphPage` 未开发。最新（按「已入库」计）口径见
+> [FINAL-PROJECT-COMPLETION-REPORT](FINAL-PROJECT-COMPLETION-REPORT.md)。
+
 ---
 
 ## 🎉 项目总结
