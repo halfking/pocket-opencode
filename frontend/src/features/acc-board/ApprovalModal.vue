@@ -72,6 +72,7 @@
 </template>
 
 <script setup lang="ts">
+import { useApiError } from '../../composables/useApiError'
 /**
  * HumanGate 审批弹窗（M1 任务9）。
  *
@@ -115,6 +116,7 @@ const comment = ref('')
 const approver = ref(getAccApprover())
 const submitting = ref(false)
 const error = ref('')
+const apiError = useApiError()
 
 async function submit(): Promise<void> {
   error.value = ''
@@ -139,7 +141,8 @@ async function submit(): Promise<void> {
     emit('submitted', decision.value)
     emit('close')
   } catch (e) {
-    error.value = e instanceof Error ? e.message : String(e)
+    console.warn('[acc-board] gate approval failed', e)
+    error.value = apiError(e, '审批提交失败，请稍后重试')
   } finally {
     submitting.value = false
   }
@@ -156,14 +159,16 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey))
 <style scoped>
 .am-overlay {
   position: fixed;
-  inset: 0;
+  inset: 0 0 var(--kb-inset, 0px) 0;
   background: rgba(0, 0, 0, 0.45);
   display: flex;
   align-items: flex-end;
   justify-content: center;
-  z-index: 1000;
+  z-index: var(--z-dialog);
 }
 .am-card {
+  max-height: 100%;
+  overflow-y: auto;
   width: 100%;
   max-width: 560px;
   background: var(--bg-card, #fff);

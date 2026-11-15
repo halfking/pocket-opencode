@@ -16,7 +16,7 @@
 # ⚠️ 匹配语义（2026-10-01 踩坑后修正，务必别改回纯字符串）：
 #   Maestro 的 `visible` 是**整串全匹配**，不是子串包含。而 WebView 会把
 #   `<li class="note-item">` 里的三个 span（n-title / n-snippet / n-date）**合并成
-#   一个可访问性 TextView**，实测节点文本是 `MaestroPKM笔记空笔记10/1`。
+#   一个可访问性 TextView**，实测节点文本是 `MaestroPKMNote空笔记10/1`。
 #   所以列表断言必须用正则 `标题.*`，写纯字符串会永远失败——
 #   2026-10-01 就因为这个误判了一轮「修复后仍看不到笔记」，而实际上 DB 与 DOM 都已正确。
 #   编辑页的 input 是独立节点，值为「无标题」/新标题本身，纯字符串可匹配。
@@ -32,6 +32,8 @@
 # 运行：
 #   node scripts/maestro-run.mjs .maestro/notes-crud.yaml
 #   务必走启动器：裸调 maestro 会触发 driver 重装，MIUI 拦下安装就把 driver 卸了。
+# Android inputText 只支持 ASCII；Unicode 输入需另行验证。
+# https://docs.maestro.dev/reference/commands-available/inputtext
 appId: com.kaixuan.opencode.pocket
 ---
 # ---------- 0. 前置：harness 已登录 + 已解锁本地库，起点在 #/ai ----------
@@ -77,25 +79,25 @@ appId: com.kaixuan.opencode.pocket
 # ---- 改名（标题输入框初值就是「无标题」，先清后写）----
 - tapOn: { text: "^无标题$" }
 - eraseText
-- inputText: "MaestroPKM笔记"
+- inputText: "MaestroPKMNote"
 # ⚠️⚠️ 这里**故意不加 hideKeyboard**（2026-10-22 实测踩到）：
 #   Android 上 Maestro 的 hideKeyboard 是**按返回键**实现的 ⇒ 它会顺带**导航回退**。
 #   实测：软键盘还没起来（模拟器刚重启、输入法首启很慢）时，这一步的返回键
-#   直接把页面从**编辑页带回列表页**；于是下一条 `^MaestroPKM笔记$` 必然红，
+#   直接把页面从**编辑页带回列表页**；于是下一条 `^MaestroPKMNote$` 必然红，
 #   而失败现场的树里那条笔记**明明建好了**（列表项文本是
-#   「MaestroPKM笔记空笔记10/22」——标题+摘要+日期被 WebView 合并成一个节点）。
+#   「MaestroPKMNote空笔记10/22」——标题+摘要+日期被 WebView 合并成一个节点）。
 #   ⇒ 报错指向「判据写错」，真因却是上一行自己加的 hideKeyboard。
 #   与 flashcards-write.yaml 是同一条纪律：**能不收键盘就不收**。
 #   标题输入框在页面顶部，本来就不在键盘遮挡区；下一步点的「返回」箭头也在顶部。
 - extendedWaitUntil:
-    visible: { text: "^MaestroPKM笔记$" }
+    visible: { text: "^MaestroPKMNote$" }
     timeout: 15000
-- assertVisible: { text: "^MaestroPKM笔记$" }
+- assertVisible: { text: "^MaestroPKMNote$" }
 
 # ---- 回列表：必须能看到新标题，否则「写进去但读不到」也算失败 ----
 # 用正则而不是纯字符串：列表项三个 span 被 WebView 合并成「标题+摘要+日期」一个节点。
 - tapOn: "返回"
 - extendedWaitUntil:
-    visible: { text: "MaestroPKM笔记.*" }
+    visible: { text: "MaestroPKMNote.*" }
     timeout: 25000
-- assertVisible: { text: "MaestroPKM笔记.*" }
+- assertVisible: { text: "MaestroPKMNote.*" }

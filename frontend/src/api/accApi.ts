@@ -19,10 +19,8 @@
  *         SOP run 级终止端点尚未实现；UI 预留按钮，调用失败时降级提示。
  *
  * 超时：全部走 `fetchWithTimeout`（§951 前端卡口：每个出站 fetch 必须有上界）。
- * SSE（GET /api/v2/orchestration/runs/:id/events/stream）在 M2 任务13 由
- * LogStream.vue 接管：EventSource 不能带 Authorization 头 ⇒ try-SSE（无 token
- * 时）失败即降级为轮询 GET /api/v2/orchestration/runs/:id/events?after=<seq>
- * （acc-go orchestration_native.go 已实现该端点）；本模块只提供轮询实现。
+ * SSE 与降级轮询由 acc-log-runtime.ts 进程持有；fetch 可携带 Authorization，
+ * LogStream.vue 只订阅/退订，切页不取消。下方轮询函数保留给普通调用方。
  *
  * M2 任务13 新增契约（docs/api/M0_API_REFERENCE.md §1/§4/§6）：
  *   GET  /api/v2/runtime/agents          → 机器池列表（主机选择器数据源）
@@ -52,6 +50,18 @@ export const ACC_DEFAULT_BASE = 'http://127.0.0.1:4101'
 /** ACC 请求超时预算：ACC 为本地服务，15s 足够覆盖 run 创建这类聚合操作。 */
 export const ACC_TIMEOUT_MS = 15_000
 
+const configListeners = new Set<() => void>()
+
+/** Same-tab settings writes must revoke streams even when no log view is mounted. */
+export function onAccConfigChange(listener: () => void): () => void {
+  configListeners.add(listener)
+  return () => { configListeners.delete(listener) }
+}
+
+function notifyAccConfigChange(): void {
+  for (const listener of configListeners) listener()
+}
+
 export function getAccBase(): string {
   try {
     return localStorage.getItem(ACC_BASE_KEY) || ACC_DEFAULT_BASE
@@ -68,6 +78,7 @@ export function setAccBase(base: string): void {
   } catch {
     /* 私有模式等场景下写入失败可忽略（下次回退默认值） */
   }
+  notifyAccConfigChange()
 }
 
 export function getAccToken(): string {
@@ -85,6 +96,7 @@ export function setAccToken(token: string): void {
   } catch {
     /* 同上 */
   }
+  notifyAccConfigChange()
 }
 
 export function getAccApprover(): string {
@@ -122,7 +134,7 @@ export function isAccUnreachable(e: unknown): boolean {
 }
 
 /** 底层请求：JSON 解析 + Bearer 注入 + 统一错误。 */
-async function accRequest<T>(path: string, init?: { method?: string; body?: unknown }): Promise<T> {
+async function accRequest<T>(path: string, init?: { method?: string; body?: unknown; cache?: RequestCache }): Promise<T> {
   const base = getAccBase()
   const token = getAccToken()
   const headers: Record<string, string> = { Accept: 'application/json' }
@@ -135,6 +147,7 @@ async function accRequest<T>(path: string, init?: { method?: string; body?: unkn
       `${base}${path}`,
       {
         method: init?.method ?? 'GET',
+        cache: init?.cache,
         headers,
         body: init?.body !== undefined ? JSON.stringify(init.body) : undefined,
       },
@@ -452,10 +465,14 @@ export async function createAccSopRun(input: {
 }
 
 /** GET /api/v2/sop/runs/:run_id —— run 详情（节点级聚合）。 */
-export async function getAccSopRun(runId: string): Promise<AccSopRun> {
+export async function getAccSopRun(runId: string, assertCurrent?: () => void): Promise<AccSopRun> {
+  assertCurrent?.()
   const res = await accRequest<Record<string, unknown>>(
     `/api/v2/sop/runs/${encodeURIComponent(runId)}`,
+    // Private live detail must not share an old in-flight/cache response across ABA.
+    { cache: 'no-store' },
   )
+  assertCurrent?.() // Also fence the registry side effect below, before exposing a result.
   const run = normalizeRun(res)
   if (!run.runId) run.runId = runId
   // 拿到详情顺手登记（下次看板列表就能看到它）。

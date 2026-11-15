@@ -34,39 +34,14 @@
 
 <script setup lang="ts">
 /**
- * 编排事件日志流（M2 任务13 · 功能1）。
- *
- * 数据源策略（try-SSE → 降级轮询，全部容错）：
- *   1. mock 模式 → 轮询 mockGetRunEvents（mock.ts 内存事件，含实时 feed）；
- *   2. 真 ACC 且未配置 token → fetch 流式读 SSE
- *      GET /api/v2/orchestration/runs/:run_id/events/stream
- *      （acc-go orchestration_events_stream.go：`id: <seq>` / `event: <type>` /
- *      `data: <Event JSON>` 帧 + `: keepalive` 注释 + `projection.gap` 合成事件；
- *      支持 ?after=<seq> 续传）。
- *      ⚠ 不用 EventSource：ACC 给每个事件都带 `event:` 名，EventSource 对没有
- *      监听器的命名事件**静默丢弃** ⇒ 无法满足「容错未知事件类型」；fetch 流
- *      逐帧解析才不漏。Authorization 头 fetch 能带，配了 token 也能走。
- *      ⚠ 上界口径（§951）：这条流**天生没有固定长度** ⇒ timeoutMs: 0，真正的
- *      上界是组件卸载/降级时 abort 的 AbortController（L2 同构，见 llm-bff 台账先例）。
- *   3. 其余（配置了 token 但想省流 / SSE 握手失败 / 流中断）→ 轮询
- *      GET /api/v2/orchestration/runs/:run_id/events?after=<seq>
- *      （acc-go orchestration_native.go listEvents；404/405 = 该 ACC 未实现，
- *      显示占位说明，不报错——节点状态仍由详情页 5s 轮询兜底）。
- *
- * 渲染：颜色编码 info=蓝 / warn=黄 / error=红；自动滚动到底部，可暂停/继续
- * （手动按钮 + 用户向上滚动自动暂停、回到底部自动恢复）；无事件时占位说明。
+ * ACC event projection only. The process-owned runtime retains transport, cursor
+ * and bounded replay across route changes; this view subscribes and detaches.
  */
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
-import {
-  AccApiError,
-  getAccBase,
-  getAccToken,
-  listAccRunEvents,
-  normalizeOrchestrationEvent,
-  type AccOrchestrationEvent,
-} from '../../api/accApi'
-import { fetchWithTimeout } from '../../api/fetch-timeout.ts'
-import { isMockActive, mockGetRunEvents, mockStartEventFeed, mockStopEventFeed } from './mock'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import type { AccOrchestrationEvent } from '../../api/accApi'
+import type { AccLogSnapshot } from './acc-log-runtime.ts'
+import { getAccLogSession } from './acc-log-session.ts'
+import { isMockActive } from './mock'
 
 defineOptions({ name: 'AccLogStream' })
 
@@ -84,16 +59,12 @@ interface LogLine {
   transition: string
 }
 
-type Mode = 'connecting' | 'sse' | 'poll' | 'mock' | 'unavailable'
-
-const MAX_LINES = 500
-const POLL_INTERVAL_MS = 3_000
-const MOCK_POLL_INTERVAL_MS = 2_000
-const MAX_POLL_FAILS = 3
+type Mode = AccLogSnapshot['mode']
 
 const lines = ref<LogLine[]>([])
 const mode = ref<Mode>(isMockActive() ? 'mock' : 'connecting')
 const notice = ref('')
+const logSession = getAccLogSession()
 const paused = ref(false)
 const bodyEl = ref<HTMLElement | null>(null)
 
@@ -104,6 +75,7 @@ const modeLabel = computed(() => {
     case 'poll': return '轮询 (3s)'
     case 'mock': return 'Mock 演示'
     case 'unavailable': return '事件接口不可用'
+    case 'ended': return '已结束'
   }
   return ''
 })
@@ -172,12 +144,12 @@ function formatClock(iso: string | undefined): string {
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
 }
 
-function appendEvent(e: AccOrchestrationEvent): void {
+function projectEvent(e: AccOrchestrationEvent): LogLine {
   const level = classifyLevel(e)
   const oldS = e.oldState ?? ''
   const newS = e.newState ?? ''
   const transition = oldS && newS ? `${oldS} → ${newS}` : ''
-  lines.value.push({
+  return {
     key: `${e.seq}-${e.eventId || e.eventType}`,
     seq: e.seq,
     time: formatClock(e.occurredAt),
@@ -186,9 +158,7 @@ function appendEvent(e: AccOrchestrationEvent): void {
     eventType: e.eventType || 'message',
     text: describeEvent(e),
     transition,
-  })
-  if (lines.value.length > MAX_LINES) lines.value.splice(0, lines.value.length - MAX_LINES)
-  scrollIfAuto()
+  }
 }
 
 function scrollIfAuto(): void {
@@ -215,214 +185,24 @@ function togglePause(): void {
 }
 
 // ---------------------------------------------------------------------------
-// 数据源 1：mock
+// 视图订阅（真实流与演示流均由 runtime 持有）
 // ---------------------------------------------------------------------------
 
-let mockTimer: ReturnType<typeof setInterval> | null = null
-let pollTimer: ReturnType<typeof setInterval> | null = null
-let lastSeq = 0
-let pollFails = 0
-let disposed = false
-let streamAbort: AbortController | null = null
+let detach = () => {}
+watch([() => props.runId, logSession.authority], ([runId]) => {
+  detach()
+  paused.value = false
+  detach = logSession.runtime.subscribe(runId, snapshot => {
+    lines.value = snapshot.events.map(projectEvent)
+    mode.value = snapshot.mode
+    notice.value = snapshot.notice
+    scrollIfAuto()
+  }, isMockActive() ? 'mock' : 'live')
+}, { immediate: true, flush: 'sync' })
 
-function startMock(): void {
-  mode.value = 'mock'
-  mockStartEventFeed(props.runId)
-  const pollMock = (): void => {
-    void mockGetRunEvents(props.runId, lastSeq)
-      .then((res) => {
-        if (disposed) return
-        for (const e of res.events) appendEvent(e)
-        lastSeq = Math.max(lastSeq, res.lastSeq)
-      })
-      .catch(() => {
-        /* mock run 不存在：静默（详情页会先报错） */
-      })
-  }
-  pollMock() // 种子事件立即渲染，不等第一个间隔
-  mockTimer = setInterval(pollMock, MOCK_POLL_INTERVAL_MS)
-}
+// Leaving a route releases only this subscriber, never the process-owned IO.
+onBeforeUnmount(() => detach())
 
-// ---------------------------------------------------------------------------
-// 数据源 2：SSE（fetch 流式读，容忍未知事件类型）
-// ---------------------------------------------------------------------------
-
-async function startStream(): Promise<void> {
-  mode.value = 'connecting'
-  streamAbort = new AbortController()
-  const base = getAccBase()
-  const token = getAccToken()
-  const headers: Record<string, string> = { Accept: 'text/event-stream' }
-  if (token) headers.Authorization = `Bearer ${token}`
-  const after = lastSeq > 0 ? `?after=${encodeURIComponent(String(lastSeq))}` : ''
-  const url = `${base}/api/v2/orchestration/runs/${encodeURIComponent(props.runId)}/events/stream${after}`
-
-  let res: Response
-  try {
-    // §951 例外口径：SSE 长连接**天生没有固定长度** ⇒ timeoutMs: 0；
-    // 真正的上界是 streamAbort（组件卸载/降级轮询时 abort），与 llm-bff 的
-    // SSE 台账先例同构（L2：signal 由本组件持有并在离开页面时触发）。
-    res = await fetchWithTimeout(
-      url,
-      { headers, signal: streamAbort.signal },
-      { timeoutMs: 0, label: 'acc-run-events-stream' },
-    )
-  } catch (e) {
-    if (disposed || streamAbort?.signal.aborted) return
-    degradeToPoll(`实时流连接失败（${e instanceof Error ? e.message : String(e)}），已切换为轮询`)
-    return
-  }
-
-  if (!res.ok || !res.body) {
-    if (disposed) return
-    degradeToPoll(`实时流不可用（HTTP ${res.status}），已切换为轮询`)
-    return
-  }
-
-  mode.value = 'sse'
-  notice.value = ''
-
-  const reader = res.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-  try {
-    for (;;) {
-      const { done, value } = await reader.read()
-      if (done || disposed) break
-      buffer += decoder.decode(value, { stream: true })
-      let idx = buffer.indexOf('\n\n')
-      while (idx >= 0) {
-        handleSseFrame(buffer.slice(0, idx))
-        buffer = buffer.slice(idx + 2)
-        idx = buffer.indexOf('\n\n')
-      }
-    }
-  } catch {
-    /* 读中断：网络抖动或 abort —— 走下面的收尾判断 */
-  }
-  if (disposed) return
-  // 流被服务端正常关闭（run 终结/服务重启）→ 降级轮询补齐增量，不丢尾事件。
-  degradeToPoll('实时流已结束，切换为轮询以补齐剩余事件')
-}
-
-/** 解析一帧 SSE（id/event/data 三行 + keepalive 注释行）。 */
-function handleSseFrame(frame: string): void {
-  let id = ''
-  let eventType = ''
-  let data = ''
-  for (const rawLine of frame.split('\n')) {
-    if (rawLine.startsWith(':')) continue // keepalive 注释
-    const colon = rawLine.indexOf(':')
-    if (colon < 0) continue
-    const field = rawLine.slice(0, colon).trim()
-    const value = rawLine.slice(colon + 1).replace(/^ /, '')
-    if (field === 'id') id = value
-    else if (field === 'event') eventType = value
-    else if (field === 'data') data += (data ? '\n' : '') + value
-  }
-  if (!data) return
-  let event: AccOrchestrationEvent
-  try {
-    event = normalizeOrchestrationEvent(JSON.parse(data) as Record<string, unknown>)
-  } catch {
-    event = { seq: 0, eventId: '', eventType: eventType || 'message' }
-  }
-  if (!event.eventType) event.eventType = eventType || 'message'
-  const seq = Number(id) || event.seq || lastSeq + 1
-  event.seq = seq
-  lastSeq = Math.max(lastSeq, seq)
-  appendEvent(event)
-}
-
-// ---------------------------------------------------------------------------
-// 数据源 3：轮询（降级路径 / 配置了 token 的默认路径）
-// ---------------------------------------------------------------------------
-
-function startPolling(reason?: string): void {
-  mode.value = 'poll'
-  if (reason) notice.value = reason
-  void pollOnce()
-  pollTimer = setInterval(() => void pollOnce(), POLL_INTERVAL_MS)
-}
-
-function degradeToPoll(reason: string): void {
-  if (disposed) return
-  stopStream()
-  startPolling(reason)
-}
-
-async function pollOnce(): Promise<void> {
-  if (disposed) return
-  try {
-    const events = await listAccRunEvents(props.runId, lastSeq)
-    pollFails = 0
-    if (mode.value !== 'poll') mode.value = 'poll'
-    for (const e of events) {
-      if (e.seq > lastSeq) lastSeq = e.seq
-      appendEvent(e)
-    }
-    if (notice.value.startsWith('轮询暂时失败')) notice.value = ''
-  } catch (e) {
-    if (disposed) return
-    // 该 ACC 没实现事件接口（或 run 不存在）→ 占位说明，不再空转。
-    if (e instanceof AccApiError && (e.status === 404 || e.status === 405 || e.status === 400)) {
-      stopPolling()
-      mode.value = 'unavailable'
-      notice.value = ''
-      return
-    }
-    pollFails += 1
-    if (pollFails >= MAX_POLL_FAILS) {
-      stopPolling()
-      mode.value = 'unavailable'
-      notice.value = ''
-      return
-    }
-    notice.value = `轮询暂时失败（${pollFails}/${MAX_POLL_FAILS}）：${e instanceof Error ? e.message : String(e)}`
-  }
-}
-
-function stopPolling(): void {
-  if (pollTimer !== null) {
-    clearInterval(pollTimer)
-    pollTimer = null
-  }
-}
-
-function stopStream(): void {
-  if (streamAbort) {
-    streamAbort.abort()
-    streamAbort = null
-  }
-}
-
-function stopMock(): void {
-  if (mockTimer !== null) {
-    clearInterval(mockTimer)
-    mockTimer = null
-  }
-  mockStopEventFeed(props.runId)
-}
-
-// ---------------------------------------------------------------------------
-// 生命周期
-// ---------------------------------------------------------------------------
-
-onMounted(() => {
-  if (isMockActive()) {
-    startMock()
-    return
-  }
-  // 有 token 时直接轮询（fetch 流能带 Authorization，仍先试 SSE —— 失败自动降级）。
-  void startStream().catch(() => degradeToPoll('实时流异常，已切换为轮询'))
-})
-
-onBeforeUnmount(() => {
-  disposed = true
-  stopMock()
-  stopPolling()
-  stopStream()
-})
 </script>
 
 <style scoped>
@@ -444,7 +224,7 @@ onBeforeUnmount(() => {
 .ls-mode {
   padding: 1px 8px;
   border-radius: 999px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: #fff;
   background: #94a3b8;
   white-space: nowrap;
@@ -454,7 +234,7 @@ onBeforeUnmount(() => {
 .ls-mode.mode-mock { background: #d97706; }
 .ls-mode.mode-connecting { background: #94a3b8; }
 .ls-mode.mode-unavailable { background: #64748b; }
-.ls-count { font-size: 12px; color: var(--text-tertiary, #888); }
+.ls-count { font-size: var(--text-sm); color: var(--text-tertiary, #888); }
 .ls-pause {
   margin-left: auto;
   border: 1px solid var(--border, #ddd);
@@ -462,7 +242,7 @@ onBeforeUnmount(() => {
   background: transparent;
   color: var(--text-secondary, #555);
   padding: 4px 10px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   cursor: pointer;
   white-space: nowrap;
 }
@@ -474,8 +254,8 @@ onBeforeUnmount(() => {
   overscroll-behavior: contain;
   background: #0f172a;
   padding: 8px 10px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 12px;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
   line-height: 1.6;
 }
 .ls-empty {
@@ -503,7 +283,7 @@ onBeforeUnmount(() => {
   padding: 8px 12px;
   border-top: 1px solid var(--border, #e5e7eb);
   color: var(--text-tertiary, #888);
-  font-size: 12px;
+  font-size: var(--text-sm);
   word-break: break-all;
 }
 </style>

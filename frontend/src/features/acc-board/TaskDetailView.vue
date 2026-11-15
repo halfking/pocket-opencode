@@ -11,7 +11,7 @@
           v-if="run && canHandoff"
           type="button"
           class="tool"
-          @click="handoffMode = 'reassign'"
+          @click="openHandoff('reassign')"
         >
           重派
         </button>
@@ -19,7 +19,7 @@
           v-if="run && canHandoff"
           type="button"
           class="tool handoff"
-          @click="handoffMode = 'delegate'"
+          @click="openHandoff('delegate')"
         >
           移交
         </button>
@@ -124,8 +124,8 @@
       :run-id="run.runId"
       :node="approvalNode"
       :rollback-candidates="rollbackCandidates"
-      @close="approvalNode = null"
-      @submitted="onApproved"
+      @close="approvalClosed"
+      @submitted="approvalSubmitted"
     />
 
     <!-- M2 任务13：重派 / 移交对话框（主机选择器 + Auto balance + 原因） -->
@@ -133,8 +133,8 @@
       v-if="handoffMode && run"
       :run-id="run.runId"
       :mode="handoffMode"
-      @close="handoffMode = null"
-      @submitted="onHandoffSubmitted"
+      @close="handoffClosed"
+      @submitted="handoffSubmitted"
     />
   </div>
 </template>
@@ -145,12 +145,14 @@
  *
  * - 节点状态颜色编码（绿/黄/红/灰/⏸）映射见 ./statusMeta.ts；
  * - 等待审批的节点直接给出「审批」入口 → ApprovalModal；
- * - 实时面：ACC 的 SSE（/api/v2/orchestration/runs/:id/events/stream）本期不接，
- *   用 5s 轮询替代（仅 run 活跃且开关打开时），页面卸载即停。
+ * - LogStream 订阅进程持有的 ACC SSE/降级轮询；此处 5s 轮询只刷新 run/节点详情，
+ *   同一 view context 复用在途读取，切页只停止详情轮询与本页结果接纳。
  */
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, shallowRef, watch } from 'vue'
+import { useApiError } from '../../composables/useApiError'
 import { useRoute } from 'vue-router'
 import {
+  AccApiError,
   cancelAccSopRun,
   getAccSopRun,
   isAccUnreachable,
@@ -170,6 +172,7 @@ import { adoptMockQuery, isMockActive, mockCancelRun, mockGetRun } from './mock'
 import ApprovalModal from './ApprovalModal.vue'
 import HandoffDialog from './HandoffDialog.vue'
 import LogStream from './LogStream.vue'
+import { getAccLogSession } from './acc-log-session.ts'
 
 defineOptions({ name: 'AccTaskDetailView' })
 
@@ -179,14 +182,42 @@ const runId = computed(() => String(route.params.runId ?? ''))
 const run = ref<AccSopRun | null>(null)
 const loading = ref(false)
 const error = ref('')
+const apiError = useApiError()
 const cancelling = ref(false)
 const autoRefresh = ref(true)
 const approvalNode = ref<AccSopNode | null>(null)
 const approvalNote = ref('')
 /** M2 任务13：当前打开的移交对话框（null = 关闭）。 */
 const handoffMode = ref<'reassign' | 'delegate' | null>(null)
+type HandoffSubmission = AccHandoffResult & { mode: 'reassign' | 'delegate' }
+const approvalSubmitted = shallowRef<(decision: string) => Promise<void>>()
+const approvalClosed = shallowRef<() => void>()
+const handoffSubmitted = shallowRef<(result: HandoffSubmission) => Promise<void>>()
+const handoffClosed = shallowRef<() => void>()
 
 const mockActive = isMockActive()
+const logSession = getAccLogSession()
+let disposed = false
+let viewVersion = 0
+let readVersion = 0
+let cancelVersion = 0
+interface ViewTicket { owner: object; runId: string; version: number }
+let loadFlight: { ticket: ViewTicket; promise: Promise<void> } | null = null
+
+function captureView(): ViewTicket | null {
+  const owner = logSession.runtime.captureAuthority()
+  if (disposed || !runId.value || !logSession.runtime.isCurrentAuthority(owner)) return null
+  return { owner: owner!, runId: runId.value, version: viewVersion }
+}
+
+function currentView(ticket: ViewTicket): boolean {
+  return !disposed && ticket.version === viewVersion && ticket.runId === runId.value &&
+    logSession.runtime.isCurrentAuthority(ticket.owner)
+}
+
+function denied(e: unknown): boolean {
+  return e instanceof AccApiError && (e.status === 401 || e.status === 403)
+}
 
 // 深链直达详情页也带 ?mock=1 时保持 mock（与看板共用会话级标记）。
 adoptMockQuery()
@@ -200,7 +231,8 @@ const canHandoff = computed(() =>
 )
 
 /** M2 任务13：重派/移交成功回调 —— 展示 envelope 信息并刷新节点状态。 */
-async function onHandoffSubmitted(result: AccHandoffResult & { mode: 'reassign' | 'delegate' }): Promise<void> {
+async function onHandoffSubmitted(result: HandoffSubmission, ticket: ViewTicket): Promise<void> {
+  if (!currentView(ticket)) return
   const kind = result.mode === 'reassign' ? '重派' : '移交'
   const target = result.targetHost ?? 'Auto balance'
   approvalNote.value = `${kind}请求已提交：envelope_id=${result.envelopeId} · status=${result.status} · 目标=${target}，正在刷新节点状态…`
@@ -215,50 +247,96 @@ const rollbackCandidates = computed<AccSopNode[]>(() => {
   return idx > 0 ? nodes.slice(0, idx) : nodes
 })
 
-async function load(): Promise<void> {
-  if (!runId.value) return
+function load(): Promise<void> {
+  const ticket = captureView()
+  if (!ticket) return Promise.resolve()
+  // Coalesce ticks for this context. A skipped tick must not supersede a slow read.
+  if (loadFlight && loadFlight.ticket.version === ticket.version &&
+    loadFlight.ticket.owner === ticket.owner && loadFlight.ticket.runId === ticket.runId) return loadFlight.promise
+  const version = ++readVersion
+  const current = () => currentView(ticket) && version === readVersion
+  const flight = { ticket, promise: Promise.resolve() }
+  loadFlight = flight
   loading.value = true
   error.value = ''
-  try {
-    run.value = mockActive ? await mockGetRun(runId.value) : await getAccSopRun(runId.value)
-  } catch (e) {
-    error.value =
-      (isAccUnreachable(e) ? '无法连接 ACC，请检查「更多 → ACC 看板」设置里的地址与 token。' : '') +
-      (e instanceof Error ? e.message : String(e))
-  } finally {
-    loading.value = false
-  }
+  flight.promise = (async () => {
+    try {
+      const result = mockActive ? await mockGetRun(ticket.runId) : await getAccSopRun(ticket.runId, () => {
+        if (!current()) throw Object.assign(new Error('Run detail context changed'), { name: 'AbortError' })
+      })
+      if (current()) run.value = result
+    } catch (e) {
+      if (!current()) return
+      if (denied(e)) { logSession.runtime.setAuthority(null); return }
+      console.warn('[acc-board] run detail failed', e)
+      error.value = isAccUnreachable(e)
+        ? '无法连接 ACC，请检查「更多 → ACC 看板」设置里的地址与 token。'
+        : apiError(e, '任务详情加载失败，请稍后重试')
+    } finally {
+      if (current()) loading.value = false
+      if (loadFlight === flight) loadFlight = null
+    }
+  })()
+  return flight.promise
 }
 
 async function cancelRun(): Promise<void> {
-  if (!run.value) return
+  const ticket = captureView()
+  if (!ticket || !run.value || run.value.runId !== ticket.runId || cancelling.value) return
+  const version = ++cancelVersion
+  const current = () => currentView(ticket) && version === cancelVersion
   cancelling.value = true
   approvalNote.value = ''
   try {
-    if (mockActive) await mockCancelRun(run.value.runId)
-    else await cancelAccSopRun(run.value.runId)
+    if (mockActive) await mockCancelRun(ticket.runId)
+    else await cancelAccSopRun(ticket.runId)
+    if (!current()) return
+    logSession.runtime.cancel(ticket.runId, ticket.owner)
+    // An earlier read may describe the pre-cancel state. Fence its result, but
+    // wait for its flight to settle before starting the post-cancel refresh.
+    readVersion++
     approvalNote.value = '已请求终止'
+    await loadFlight?.promise
+    if (!current()) return
     await load()
   } catch (e) {
+    if (!current()) return
+    if (denied(e)) { logSession.runtime.setAuthority(null); return }
     // 预期路径：ACC 未实现 SOP run 终止端点 → 明确告知而不是静默失败。
-    approvalNote.value = `终止请求未成功：${e instanceof Error ? e.message : String(e)}。（预留功能：ACC 目前没有 SOP run 级终止端点，TODO M1 任务7+）`
+    console.warn('[acc-board] run cancellation failed', e)
+    approvalNote.value = apiError(e, '终止请求未成功：ACC 当前未提供 SOP run 级终止端点')
   } finally {
-    cancelling.value = false
+    if (current()) cancelling.value = false
   }
 }
 
 function openApproval(node: AccSopNode): void {
+  const ticket = captureView()
+  if (!ticket) return
+  // Each child receives a closure over the ticket at opening, never a lookup of
+  // the latest modal/owner when a late asynchronous submitted/close event arrives.
+  approvalSubmitted.value = decision => onApproved(decision, ticket)
+  approvalClosed.value = () => { if (currentView(ticket)) approvalNode.value = null }
   approvalNote.value = ''
   approvalNode.value = node
 }
 
-async function onApproved(decision: string): Promise<void> {
+function openHandoff(mode: 'reassign' | 'delegate'): void {
+  const ticket = captureView()
+  if (!ticket) return
+  handoffSubmitted.value = result => onHandoffSubmitted(result, ticket)
+  handoffClosed.value = () => { if (currentView(ticket)) handoffMode.value = null }
+  handoffMode.value = mode
+}
+
+async function onApproved(decision: string, ticket: ViewTicket): Promise<void> {
+  if (!currentView(ticket)) return
   const label = decision === 'approve' ? '已通过' : decision === 'reject' ? '已驳回' : '已退回'
   approvalNote.value = `审批${label}，正在刷新状态…`
   await load()
 }
 
-// 5s 轮询（仅 run 活跃 + 开关打开 + 无弹窗时）。SSE 未接的替代面。
+// 5s 详情轮询（仅 run 活跃 + 开关打开 + 无审批/取消操作时）。日志流独立归 runtime。
 let timer: ReturnType<typeof setInterval> | null = null
 function stopTimer(): void {
   if (timer !== null) {
@@ -267,18 +345,37 @@ function stopTimer(): void {
   }
 }
 function syncTimer(): void {
-  const active = autoRefresh.value && !approvalNode.value && isRunActive(run.value?.status ?? 'unknown') && !mockActive
+  const active = autoRefresh.value && !cancelling.value && !approvalNode.value && isRunActive(run.value?.status ?? 'unknown') && !mockActive
   if (active && timer === null) timer = setInterval(load, 5000)
   if (!active && timer !== null) stopTimer()
 }
 
-watch([autoRefresh, () => run.value?.status, approvalNode], syncTimer, { immediate: true })
-watch(runId, load, { immediate: true })
-onBeforeUnmount(stopTimer)
+watch([autoRefresh, cancelling, () => run.value?.status, approvalNode], syncTimer, { immediate: true })
+watch([runId, logSession.authority], () => {
+  viewVersion++; readVersion++; cancelVersion++
+  loadFlight = null
+  run.value = null
+  error.value = approvalNote.value = ''
+  loading.value = cancelling.value = false
+  approvalNode.value = null
+  handoffMode.value = null
+  approvalSubmitted.value = handoffSubmitted.value = undefined
+  approvalClosed.value = handoffClosed.value = undefined
+  stopTimer()
+  const ticket = captureView()
+  // A synchronous address/credential or A→B→A update admits only the final owner.
+  if (ticket) queueMicrotask(() => { if (currentView(ticket)) void load() })
+}, { immediate: true, flush: 'sync' })
+onBeforeUnmount(() => {
+  disposed = true
+  viewVersion++; readVersion++; cancelVersion++
+  loadFlight = null
+  stopTimer()
+})
 </script>
 
 <style scoped>
-.page { min-height: 100%; background: var(--bg-base); }
+.page { height: 100%; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; background: var(--bg-base); }
 .toolbar {
   display: flex;
   justify-content: space-between;
@@ -384,7 +481,7 @@ onBeforeUnmount(stopTimer)
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  font-size: 14px;
+  font-size: var(--text-base);
   line-height: 1;
 }
 .dot { width: 10px; height: 10px; border-radius: 50%; display: block; }
@@ -421,7 +518,7 @@ onBeforeUnmount(stopTimer)
   font-weight: 600;
   color: #fff;
 }
-.badge.sm { padding: 1px 8px; font-weight: 500; font-size: 12px; }
+.badge.sm { padding: 1px 8px; font-weight: 500; font-size: var(--text-sm); }
 .badge.tone-done { background: #16a34a; }
 .badge.tone-run { background: #eab308; }
 .badge.tone-fail { background: #dc2626; }
@@ -438,7 +535,7 @@ onBeforeUnmount(stopTimer)
   border-radius: 999px;
   border: 1px solid var(--border, #e5e7eb);
   color: var(--text-secondary, #555);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .chip.warn { color: #d97706; border-color: #fcd34d; }
 .chip.dep { color: var(--text-tertiary, #888); }

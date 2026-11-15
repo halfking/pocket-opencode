@@ -45,6 +45,9 @@
   --danger-bg: rgba(239, 68, 68, 0.12);
   --info-bg: rgba(59, 130, 246, 0.12);
   --brand-bg: rgba(102, 126, 234, 0.1);
+  --accent-3: rgba(102, 126, 234, 0.15);
+  --accent-9: var(--brand-primary);
+  --accent-11: #4f5cc8;
 
   /* Overlays */
   --overlay: rgba(0, 0, 0, 0.5);

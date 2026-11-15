@@ -314,6 +314,10 @@ function censusPromiseSites() {
  * 钉序列则连「哪一处是 A、哪一处是 B」都被钉住 ⇒ 改分类必须显式改台账。
  */
 const PROMISE_LEDGER = {
+  // LogStream's old startMock promise handler was removed with view-owned IO.
+  // acc-log-runtime now handles mock/live failures in stateful try/catch paths.
+  // registerOfflineSw: optional offline cache failure keeps the live board usable and warns (A).
+  'src/features/acc-board/TaskBoardView.vue': 'A',
   'src/api/http.ts': 'B',
   'src/api/llm-bff.ts': 'BBB',
   'src/app/AppLayout.vue': 'A',
@@ -375,7 +379,7 @@ const PROMISE_LEDGER = {
 }
 
 /** 台账钉住的绝对条数（§947 的同一条纪律：须钉住绝对条数）。 */
-const PROMISE_TOTAL = 101
+const PROMISE_TOTAL = 102
 
 describe('§948 · promise 形态的拒绝被就地消化', () => {
   it('★ 尺子自检：认得出静默 / 留痕 / 非本节口径，认得出理由，认不出假注释', () => {
