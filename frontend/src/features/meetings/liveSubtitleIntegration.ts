@@ -9,6 +9,7 @@
 import { watch } from 'vue'
 import { useLiveSubtitleStore } from '../../stores/liveSubtitle'
 import { meetingRecorderRuntime } from '../../native/recordingRuntime'
+import { blobToBase64 } from '../../utils/base64'
 
 /**
  * 初始化会议录音与实时字幕的集成
@@ -100,19 +101,5 @@ export async function exportMeetingSubtitle(format: 'srt' | 'txt' = 'srt') {
     text: `共 ${store.segments.length} 条字幕`,
     url: uri,
     dialogTitle: '导出字幕',
-  })
-}
-
-async function blobToBase64(blob: Blob): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onloadend = () => {
-      const result = reader.result as string
-      // 移除 data:*;base64, 前缀
-      const base64 = result.split(',')[1]
-      resolve(base64)
-    }
-    reader.onerror = reject
-    reader.readAsDataURL(blob)
   })
 }
