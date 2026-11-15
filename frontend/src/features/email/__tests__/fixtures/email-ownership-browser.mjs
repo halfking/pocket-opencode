@@ -68,6 +68,7 @@ export async function createEmailOwnershipBrowserFixture(options = {}) {
       runInTransaction:async rows=>{leases.assertCurrent(lease);fixtureDb.run('BEGIN');try{for(const row of rows){leases.assertCurrent(lease);fixtureDb.run(row.statement,row.values)}leases.assertCurrent(lease);fixtureDb.run('COMMIT')}catch(error){fixtureDb.run('ROLLBACK');throw error}}})};
   `
   const server = await createServer({ root: fileURLToPath(new URL('../../../../../', import.meta.url)), configFile: false,
+    resolve: { alias: { '@': fileURLToPath(new URL('../../../../', import.meta.url)) } },
     optimizeDeps: { noDiscovery: true, include: ['sql.js', 'vue', 'pinia', 'vue-router', 'vue-i18n'] },
     plugins: [...(options.plugins ?? []), vue(), { name: 'email-ownership-browser', enforce: 'pre',
       resolveId(source, importer) {
@@ -91,7 +92,7 @@ export async function createEmailOwnershipBrowserFixture(options = {}) {
         if (id === '\0mail-keyboard') return 'export const installKeyboardInset=()=>{}'
         if (id === '\0email-owned-entry') return entry
         if (id === '\0email-owned-db') return db
-        if (id === '\0email-owned-crypto') return 'export const encryptString=async s=>s'
+        if (id === '\0email-owned-crypto') return 'export const encryptString=async s=>s; export const decryptString=async s=>s'
       }, configureServer(server) {
         server.middlewares.use((req,res,next)=>{
           if(!req.url.startsWith('/__email_ownership__')) return next()

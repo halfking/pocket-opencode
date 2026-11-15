@@ -16,7 +16,7 @@
       <h2>ACC 连接设置</h2>
       <label class="field">
         <span>ACC 地址</span>
-        <input v-model="draftBase" class="input" type="text" placeholder="http://127.0.0.1:4101" />
+        <input v-model="draftBase" class="input" type="text" placeholder="填写 ACC 服务地址" />
       </label>
       <label class="field">
         <span>Bearer Token（ACC JWT）</span>
@@ -67,7 +67,8 @@
       <button type="button" class="tool" :disabled="loading" @click="load">刷新</button>
     </div>
 
-    <div v-if="error" class="error" role="alert">
+    <p v-if="error && listSource === 'snapshot'" class="error" role="status">{{ error }}</p>
+    <div v-if="error && listSource !== 'snapshot'" class="error" role="alert">
       <p>{{ error }}</p>
       <button type="button" @click="load">重试</button>
     </div>
@@ -110,6 +111,7 @@
 </template>
 
 <script setup lang="ts">
+import { useApiError } from '../../composables/useApiError'
 /**
  * ACC 任务看板（M1 任务9 · 操作1）：SOP runs 列表 + 连接设置 + 启动入口。
  *
@@ -118,7 +120,7 @@
  *   2. GET /api/v2/sop/runs（若 ACC 已实现列表端点）；
  *   3. 兜底：本地 run 登记表逐个单查（M0 契约只有单查）。
  */
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue'
 import {
@@ -129,20 +131,28 @@ import {
   getAccToken,
   setAccToken,
   isAccUnreachable,
-  listAccSopRuns,
+  AccApiError,
   registerAccRun,
   type AccSopRun,
   type AccSopTemplate,
 } from '../../api/accApi'
 import { formatTime, progressPercent, runVisual, summarizeProgress } from './statusMeta'
 import { adoptMockQuery, isMockActive, mockCreateRun, mockGetTemplates, mockListRuns, setMockFlag } from './mock'
+import { getAccLogSession } from './acc-log-session.ts'
+import { boardOwnerCurrent, clearBoardSnapshot, discardLegacyBoardSnapshot, loadBoardRuns,
+  readBoardSnapshot, saveBoardSnapshot } from './board-snapshot.ts'
 
 defineOptions({ name: 'AccTaskBoardView' })
 
 const router = useRouter()
+const boardSession = getAccLogSession()
+let mounted = false
+let loadVersion = 0
+let createVersion = 0
 
 const loading = ref(false)
 const error = ref('')
+const apiError = useApiError()
 const creating = ref(false)
 const launcherError = ref('')
 const runs = ref<{ run: AccSopRun | null; error?: string }[]>([])
@@ -172,92 +182,98 @@ const listNote = computed(() => {
 })
 
 // ---------------------------------------------------------------------------
-// 离线缓存（M2 任务13 可选加分）：任务列表 localStorage 快照。
+// 离线缓存：只在当前进程、已验证 session/workspace/ACC authority 内保留。
 // ACC 暂不可达时回放上次成功加载的列表并明确标注「离线缓存」；配合
 // public/acc-offline-sw.js（静态资源 SWR + 应用壳 network-first）使用。
 // ---------------------------------------------------------------------------
 
-const ACC_LAST_RUNS_KEY = 'acc_board_last_runs'
-
-interface SnapshotPayload {
-  savedAt: string
-  items: { run: AccSopRun | null; error?: string }[]
-}
-
-function saveSnapshot(items: { run: AccSopRun | null; error?: string }[]): void {
-  try {
-    const payload: SnapshotPayload = { savedAt: new Date().toISOString(), items }
-    localStorage.setItem(ACC_LAST_RUNS_KEY, JSON.stringify(payload))
-  } catch {
-    /* 私有模式等写入失败可忽略 */
-  }
-}
-
-function readSnapshot(): SnapshotPayload | null {
-  try {
-    const raw = localStorage.getItem(ACC_LAST_RUNS_KEY)
-    if (!raw) return null
-    const parsed = JSON.parse(raw) as SnapshotPayload
-    if (!parsed || !Array.isArray(parsed.items)) return null
-    return parsed
-  } catch {
-    return null
-  }
-}
+discardLegacyBoardSnapshot()
+const currentOwner = () => boardSession.runtime.captureAuthority()
+watch(boardSession.authority, () => {
+  loadVersion++; createVersion++
+  runs.value = []; templates.value = []
+  listSource.value = 'registry'
+  loading.value = creating.value = false
+  error.value = launcherError.value = ''
+  showLauncher.value = showSettings.value = false
+  draftProject.value = draftVariables.value = draftRunId.value = draftTemplate.value = ''
+  // Defer new IO until a synchronous base+credential update has fully settled.
+  const owner = currentOwner()
+  queueMicrotask(() => { if (mounted && owner && owner === currentOwner()) void load() })
+}, { flush: 'sync' })
 
 /** 注册离线缓存 SW（仅看板页触发；不支持 SW 的环境静默跳过）。 */
 function registerOfflineSw(): void {
   if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return
   // vite base 默认 '/'；生产与 dev 均从根取 sw 文件。
   navigator.serviceWorker.register('/acc-offline-sw.js').catch(() => {
-    /* SW 注册失败不影响功能（离线缓存是加分项） */
+    // Optional offline enhancement: report registration failure without hiding the live board.
+    console.warn('[acc-board] offline cache registration failed')
   })
 }
 
 function saveSettings(): void {
-  setAccBase(draftBase.value)
-  setAccToken(draftToken.value)
+  const base = draftBase.value, token = draftToken.value
+  setAccBase(base)
+  setAccToken(token)
   setMockFlag(draftMock.value)
   // mock 开关影响整页行为，直接刷新以保持 query/hash 与状态一致。
   window.location.reload()
 }
 
 async function load(): Promise<void> {
+  const owner = currentOwner(), version = ++loadVersion
+  const current = () => mounted && version === loadVersion &&
+    (mockActive || boardOwnerCurrent(owner, currentOwner()))
+  if (!mockActive && !owner) return
   loading.value = true
   error.value = ''
   try {
     if (mockActive) {
       const res = await mockListRuns()
+      if (!current()) return
       runs.value = res.items
       listSource.value = 'mock'
     } else {
-      const res = await listAccSopRuns(20)
+      const res = await loadBoardRuns(owner!)
+      if (!current()) return
       runs.value = res.items
       listSource.value = res.source
-      saveSnapshot(res.items)
+      saveBoardSnapshot(owner!, res.items)
     }
     if (templates.value.length === 0) {
-      templates.value = mockActive ? await mockGetTemplates() : await getAccTemplates().catch(() => [])
+      const result = mockActive ? await mockGetTemplates() : await getAccTemplates().catch(() => [])
+      if (current()) templates.value = result
     }
   } catch (e) {
+    if (!current()) return
+    console.warn('[acc-board] run list failed', e)
     const rawError =
-      (isAccUnreachable(e) ? '无法连接 ACC，请点右上角设置检查地址与 token。' : '') +
-      (e instanceof Error ? e.message : String(e))
+      isAccUnreachable(e) ? '无法连接 ACC，请点右上角设置检查地址与 token。' :
+        apiError(e, '任务列表加载失败，请稍后重试')
     // 离线兜底：上次成功加载的快照仍可看（明确标注，不冒充实时数据）。
-    const snap = mockActive ? null : readSnapshot()
+    const denied = e instanceof AccApiError && (e.status === 401 || e.status === 403)
+    if (denied && owner) clearBoardSnapshot(owner)
+    const snap = mockActive || !owner || denied ? null : readBoardSnapshot(owner)
     if (snap) {
       runs.value = snap.items
       listSource.value = 'snapshot'
       error.value = `离线模式 — ${rawError}（以下为 ${formatTime(snap.savedAt)} 缓存的任务列表）`
     } else {
+      runs.value = []
+      listSource.value = 'registry'
       error.value = rawError
     }
   } finally {
-    loading.value = false
+    if (current()) loading.value = false
   }
 }
 
 async function createRun(): Promise<void> {
+  const owner = currentOwner(), version = ++createVersion
+  const current = () => mounted && version === createVersion &&
+    (mockActive || boardOwnerCurrent(owner, currentOwner()))
+  if (!mockActive && !owner) return
   launcherError.value = ''
   let variables: Record<string, unknown> | undefined
   const rawVars = draftVariables.value.trim()
@@ -278,15 +294,18 @@ async function createRun(): Promise<void> {
           projectId: draftProject.value.trim(),
           variables,
         })
+    if (!current()) return
     showLauncher.value = false
     draftProject.value = ''
     draftVariables.value = ''
     await load()
-    router.push(`/acc/runs/${encodeURIComponent(res.runId)}`)
+    if (current()) router.push(`/acc/runs/${encodeURIComponent(res.runId)}`)
   } catch (e) {
-    launcherError.value = e instanceof Error ? e.message : String(e)
+    if (!current()) return
+    console.warn('[acc-board] run creation failed', e)
+    launcherError.value = apiError(e, '任务启动失败，请稍后重试')
   } finally {
-    creating.value = false
+    if (current()) creating.value = false
   }
 }
 
@@ -335,13 +354,15 @@ function errorOf(item: { run: AccSopRun | null; error?: string }): string {
 }
 
 onMounted(() => {
+  mounted = true
   void load()
   registerOfflineSw()
 })
+onBeforeUnmount(() => { mounted = false; loadVersion++; createVersion++ })
 </script>
 
 <style scoped>
-.page { min-height: 100%; background: var(--bg-base); padding-bottom: 16px; }
+.page { height: 100%; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; background: var(--bg-base); padding-bottom: 16px; }
 .header-action { color: var(--brand-primary, #2563eb); background: transparent; border: none; cursor: pointer; padding: 4px; }
 
 .mock-banner {
@@ -387,7 +408,7 @@ textarea.input { resize: vertical; }
 }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .btn.primary { background: var(--brand-primary, #2563eb); border-color: var(--brand-primary, #2563eb); color: #fff; }
-.settings-hint { margin: 10px 0 0; font-size: 12px; color: var(--text-tertiary, #888); }
+.settings-hint { margin: 10px 0 0; font-size: var(--text-sm); color: var(--text-tertiary, #888); }
 
 .launcher-toggle {
   display: inline-flex;
@@ -409,7 +430,7 @@ textarea.input { resize: vertical; }
   align-items: center;
   padding: 0 var(--space-3, 12px) var(--space-2, 8px);
 }
-.source-note { font-size: 12px; color: var(--text-tertiary, #888); }
+.source-note { font-size: var(--text-sm); color: var(--text-tertiary, #888); }
 .tool {
   border: 1px solid var(--border, #ddd);
   border-radius: var(--radius-sm, 8px);
@@ -445,7 +466,7 @@ textarea.input { resize: vertical; }
   white-space: nowrap;
 }
 .state { padding: 32px 16px; text-align: center; color: var(--text-tertiary, #888); font-size: var(--text-smd, 13px); }
-.state-sub { margin: 6px 0 0; font-size: 12px; }
+.state-sub { margin: 6px 0 0; font-size: var(--text-sm); }
 
 .list { display: flex; flex-direction: column; gap: var(--space-2, 8px); padding: 0 var(--space-3, 12px); }
 .card {
@@ -457,7 +478,7 @@ textarea.input { resize: vertical; }
 }
 .card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .run-id { font-size: var(--text-smd, 13px); color: var(--text-primary, #111); font-weight: 600; word-break: break-all; }
-.meta { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 6px; font-size: 12px; color: var(--text-tertiary, #888); }
+.meta { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 6px; font-size: var(--text-sm); color: var(--text-tertiary, #888); }
 .meta.unreachable { color: #dc2626; word-break: break-all; }
 
 /* M2 任务13：卡片进度条 */

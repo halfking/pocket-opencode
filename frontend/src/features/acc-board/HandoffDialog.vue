@@ -65,6 +65,7 @@
 </template>
 
 <script setup lang="ts">
+import { useApiError } from '../../composables/useApiError'
 /**
  * 重派 / 移交对话框（M2 任务13 · 功能2/3）。
  *
@@ -109,6 +110,7 @@ const targetHost = ref('')
 const reason = ref('')
 const submitting = ref(false)
 const error = ref('')
+const apiError = useApiError()
 
 const dialogTitle = computed(() => (props.mode === 'reassign' ? '重派到指定主机' : '移交到其他主机'))
 
@@ -118,7 +120,8 @@ async function loadHosts(): Promise<void> {
   try {
     hosts.value = isMockActive() ? await mockListHosts() : await listAccAgents()
   } catch (e) {
-    hostError.value = `主机列表加载失败：${e instanceof Error ? e.message : String(e)}`
+    console.warn('[acc-board] host list failed', e)
+    hostError.value = apiError(e, '主机列表加载失败，请稍后重试')
   } finally {
     loadingHosts.value = false
   }
@@ -152,10 +155,11 @@ async function submit(): Promise<void> {
     emit('submitted', { ...result, mode: props.mode })
     emit('close')
   } catch (e) {
+    console.warn('[acc-board] handoff failed', e)
     if (e instanceof AccApiError && e.status === 409) {
-      error.value = `移交冲突（409）：${e.message}。请等待当前移交包被接受（或失败）后再试。`
+      error.value = '移交冲突（409）：请等待当前移交包被接受（或失败）后再试。'
     } else {
-      error.value = e instanceof Error ? e.message : String(e)
+      error.value = apiError(e, '移交提交失败，请稍后重试')
     }
   } finally {
     submitting.value = false
@@ -175,19 +179,16 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey))
 <style scoped>
 .hd-overlay {
   position: fixed;
-  /* 键盘在场时浮层收在键盘上沿之下，弹层内的输入框与确认按钮不会被盖住。
-     同 BottomSheet.vue / marketplace 的 confirm-overlay。 */
   inset: 0 0 var(--kb-inset, 0px) 0;
   background: rgba(0, 0, 0, 0.45);
   display: flex;
   align-items: flex-end;
   justify-content: center;
-  /* z-index 门禁：裸数字必须走 token。
-     审批/移交是**模态**（遮罩 + 底部弹出卡片），与项目里其它模态
-     （ConfirmDialog / AgentMarketView.confirm-overlay）同层级 ⇒ 用 --z-dialog。 */
   z-index: var(--z-dialog);
 }
 .hd-card {
+  max-height: 100%;
+  overflow-y: auto;
   width: 100%;
   max-width: 560px;
   background: var(--bg-card, #fff);
@@ -217,7 +218,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey))
   font-family: inherit;
 }
 .hd-textarea { resize: vertical; }
-.hd-hint { margin: 0; color: var(--text-tertiary, #888); font-size: 12px; }
+.hd-hint { margin: 0; color: var(--text-tertiary, #888); font-size: var(--text-sm); }
 .hd-error { margin: 0; color: #dc2626; font-size: var(--text-smd, 13px); word-break: break-all; }
 .hd-retry {
   border: 1px solid #fca5a5;
@@ -226,7 +227,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey))
   color: #dc2626;
   padding: 4px 10px;
   cursor: pointer;
-  font-size: 12px;
+  font-size: var(--text-sm);
   margin-left: 6px;
 }
 

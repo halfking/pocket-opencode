@@ -314,21 +314,16 @@ function censusPromiseSites() {
  * 钉序列则连「哪一处是 A、哪一处是 B」都被钉住 ⇒ 改分类必须显式改台账。
  */
 const PROMISE_LEDGER = {
+  // LogStream's old startMock promise handler was removed with view-owned IO.
+  // acc-log-runtime now handles mock/live failures in stateful try/catch paths.
+  // registerOfflineSw: optional offline cache failure keeps the live board usable and warns (A).
+  'src/features/acc-board/TaskBoardView.vue': 'A',
   'src/api/http.ts': 'B',
   'src/api/llm-bff.ts': 'BBB',
   'src/app/AppLayout.vue': 'A',
   'src/composables/useApprovalAlerts.ts': 'A',
   'src/composables/useDetailFlow.ts': 'BBB',
   'src/composables/useHaptics.ts': 'B',
-  // 2026-11-16：合并 codeup/main 的 ACC 看板后新增的两条登记。
-  // 两处都是**已解释**的静默 catch（B 类：handler 体里没有 console 留痕，
-  // 但块内有注释说明为什么可以吞）：
-  //   · LogStream.vue  —— SSE 读中断（网络抖动 / abort）；中断后的收尾
-  //     在 catch 之后（degradeToPoll）统一处理，不需要在 catch 里再留痕。
-  //   · TaskBoardView.vue —— localStorage 写入失败（隐私模式/配额）；
-  //     快照只是缓存，写不进去不影响看板从 ACC 拉数据。
-  'src/features/acc-board/LogStream.vue': 'B',
-  'src/features/acc-board/TaskBoardView.vue': 'B',
   'src/features/agents/AgentDetailView.vue': 'B',
   'src/features/agents/AgentEditView.vue': 'B',
   'src/features/agents/AgentLibraryView.vue': 'BB',
@@ -384,7 +379,7 @@ const PROMISE_LEDGER = {
 }
 
 /** 台账钉住的绝对条数（§947 的同一条纪律：须钉住绝对条数）。 */
-const PROMISE_TOTAL = 103
+const PROMISE_TOTAL = 102
 
 describe('§948 · promise 形态的拒绝被就地消化', () => {
   it('★ 尺子自检：认得出静默 / 留痕 / 非本节口径，认得出理由，认不出假注释', () => {

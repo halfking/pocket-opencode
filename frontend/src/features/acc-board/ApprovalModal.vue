@@ -72,6 +72,7 @@
 </template>
 
 <script setup lang="ts">
+import { useApiError } from '../../composables/useApiError'
 /**
  * HumanGate 审批弹窗（M1 任务9）。
  *
@@ -88,7 +89,6 @@ import {
   type AccGateDecisionValue,
   type AccSopNode,
 } from '../../api/accApi'
-import { useApiError } from '../../composables/useApiError'
 import { mockApproveGate, isMockActive } from './mock'
 
 const props = defineProps<{
@@ -116,8 +116,6 @@ const comment = ref('')
 const approver = ref(getAccApprover())
 const submitting = ref(false)
 const error = ref('')
-// 原始错误文本不得直接上屏（raw-error-ui 门禁）：统一归一为用户可读文案，
-// 原始信息留在 console 里供排查。
 const apiError = useApiError()
 
 async function submit(): Promise<void> {
@@ -143,9 +141,8 @@ async function submit(): Promise<void> {
     emit('submitted', decision.value)
     emit('close')
   } catch (e) {
-    // 原始信息留档（不删：排查要用），上屏走归一文案。
-    console.warn('[acc-board] approve gate failed:', e)
-    error.value = apiError(e, '错误：审批提交失败')
+    console.warn('[acc-board] gate approval failed', e)
+    error.value = apiError(e, '审批提交失败，请稍后重试')
   } finally {
     submitting.value = false
   }
@@ -162,19 +159,16 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey))
 <style scoped>
 .am-overlay {
   position: fixed;
-  /* 键盘在场时浮层收在键盘上沿之下，弹层内的输入框与确认按钮不会被盖住。
-     同 BottomSheet.vue / marketplace 的 confirm-overlay。 */
   inset: 0 0 var(--kb-inset, 0px) 0;
   background: rgba(0, 0, 0, 0.45);
   display: flex;
   align-items: flex-end;
   justify-content: center;
-  /* z-index 门禁：裸数字必须走 token。
-     审批/移交是**模态**（遮罩 + 底部弹出卡片），与项目里其它模态
-     （ConfirmDialog / AgentMarketView.confirm-overlay）同层级 ⇒ 用 --z-dialog。 */
   z-index: var(--z-dialog);
 }
 .am-card {
+  max-height: 100%;
+  overflow-y: auto;
   width: 100%;
   max-width: 560px;
   background: var(--bg-card, #fff);

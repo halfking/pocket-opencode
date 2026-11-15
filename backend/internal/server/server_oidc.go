@@ -122,15 +122,23 @@ type oidcTokenResponse struct {
 	ExpiresIn   int    `json:"expires_in"`
 }
 
-// oidcMaxResponseBytes 出站 OIDC 响应体的**大小上界**。
-//
-// §952：出站响应体没有天然上界 ⇒ 直接 json.Decode(resp.Body) 会让
-// 「上游返回多少就吃多少」⇒ 异常/恶意上游可把 pocketd 的内存吃光。
-// Casdoor 的 token / userinfo 响应都是**小 JSON**（< 4KB）⇒ 给一个宽松但有界的上界。
-const oidcMaxResponseBytes = 64 << 10 // 64 KiB
+const maxOIDCResponseBytes = 1 << 20
+
+// Both identity-provider endpoints return small JSON documents. Read one extra
+// byte to reject oversized responses instead of accepting a truncated prefix.
+func decodeOIDCResponse(resp *http.Response, target any) error {
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxOIDCResponseBytes+1))
+	if err != nil {
+		return err
+	}
+	if len(body) > maxOIDCResponseBytes {
+		return fmt.Errorf("OIDC response exceeds %d bytes", maxOIDCResponseBytes)
+	}
+	return json.Unmarshal(body, target)
+}
 
 // oidcExchangeToken 用 code + PKCE verifier 换 access token
-//（Casdoor /api/login/oauth/access_token，form 编码）。
+// （Casdoor /api/login/oauth/access_token，form 编码）。
 func (s *Server) oidcExchangeToken(ctx context.Context, code, verifier string) (*oidcTokenResponse, error) {
 	form := url.Values{}
 	form.Set("grant_type", "authorization_code")
@@ -146,8 +154,6 @@ func (s *Server) oidcExchangeToken(ctx context.Context, code, verifier string) (
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	// §950：客户端构造统一走 outbound.NewClient（Timeout 恒非零 ⇒ 出站请求有**时间上界**）。
-	// 直接写 `&http.Client{Timeout: ...}` 字面量会被门禁判红，也漏掉了默认传输层的其它约束。
 	client := outbound.NewClient(10 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
@@ -158,8 +164,7 @@ func (s *Server) oidcExchangeToken(ctx context.Context, code, verifier string) (
 		return nil, fmt.Errorf("token endpoint status %d", resp.StatusCode)
 	}
 	var tok oidcTokenResponse
-	// §952：响应体走 LimitReader ⇒ 上游返回多大都吃不下超过上界的部分。
-	if err := json.NewDecoder(io.LimitReader(resp.Body, oidcMaxResponseBytes)).Decode(&tok); err != nil {
+	if err := decodeOIDCResponse(resp, &tok); err != nil {
 		return nil, err
 	}
 	if tok.AccessToken == "" {
@@ -184,7 +189,6 @@ func (s *Server) oidcFetchUserinfo(ctx context.Context, accessToken string) (*oi
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+accessToken)
-	// §950：同 oidcExchangeToken，统一走 outbound.NewClient。
 	client := outbound.NewClient(10 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
@@ -195,8 +199,7 @@ func (s *Server) oidcFetchUserinfo(ctx context.Context, accessToken string) (*oi
 		return nil, fmt.Errorf("userinfo endpoint status %d", resp.StatusCode)
 	}
 	var ui oidcUserInfo
-	// §952：同上，响应体有大小上界。
-	if err := json.NewDecoder(io.LimitReader(resp.Body, oidcMaxResponseBytes)).Decode(&ui); err != nil {
+	if err := decodeOIDCResponse(resp, &ui); err != nil {
 		return nil, err
 	}
 	if ui.Sub == "" {

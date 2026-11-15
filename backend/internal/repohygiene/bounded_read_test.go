@@ -806,22 +806,31 @@ func TestS952CensusCountsArePinned(t *testing.T) {
 	//   ⇒ 形态 readall +1、decode +1、来源 resp +2、有界 +2；
 	//   ⇒⇒⇒ **无界处仍然是台账里那 3 条**（两个读点都带 LimitReader ⇒ 不是新缺陷，
 	//   是「代码真的多了读点」而不是「量具瞎了」—— 这正是绝对条数要钉住的原因）。
-	// 2026-11-16：+2 —— 合并 codeup/main 的 **Casdoor 直连 OIDC**（server_oidc.go）带来
-	//   两个出站响应体解码点：oidcExchangeToken 的 token 响应、
-	//   oidcFetchUserinfo 的 userinfo 响应。
-	//   ⇒ 形态 decode +2、来源 resp +2、有界 +2；
-	//   ⇒⇒⇒ **无界处仍然是台账里那 3 条**（两处都走 io.LimitReader(oidcMaxResponseBytes)
-	//   ⇒ 不是新缺陷，是「代码真的多了读点」而不是「量具瞎了」——
-	//   这正是绝对条数要钉住的原因）。
-	if len(sites) != 293 {
-		t.Errorf("§952 普查到 %d 处「读进内存」的调用点（期望293）\n"+
+	// 2026-11-15 codeup/580 census reconciliation: +6 against the pinned 273.
+	// memora/client.go#do: bounded error snippet + JSON response (resp +2;
+	// readall +1, decode +1); meeting translation's two request decoders and
+	// portal resource-token's request decoder: req/decode +3, guarded by middleware.
+	// This repair replaces OIDC's two unbounded response decoders with one
+	// decodeOIDCResponse capped reader: resp/readall +1, maxOIDCResponseBytes+1.
+	// Observed totals: 279 = 57 readall + 151 decode + 3 copy + 16 sizedall +
+	// 17 sizedsnp + 35 sizedlim; 276 bounded. The three unbounded ledger entries
+	// remain unchanged; NoUnboundedReadsExceptLedger/AllCapsArePositiveConstants
+	// independently enforce that this reconciliation cannot admit a new exception.
+	// 2026-11-16：+13 —— 合并后的实际读点数（把 codeup/main 的 Casdoor 直连 OIDC
+	//   与知识库 Phase3 的后端改动一并计入）。
+	//   ⇒ 形态 readall +3、decode +10；来源 resp +2、req +9、other +2；总计 +13。
+	//   ⇒⇒⇒ **无界处仍然恰好是台账里那 3 条**（OIDC 两处已带
+	//     decodeOIDCResponse 的 maxOIDCResponseBytes 上界）⇒ 是「代码真的多了读点」
+	//     而不是「量具瞎了」—— 这正是绝对条数要钉住的原因。
+	if len(sites) != 292 {
+		t.Errorf("§952 普查到 %d 处「读进内存」的调用点（期望292）\n"+
 			"⇒ 绝对条数是**量具有牙**的证据：量具整个失效时这个数会变 ⇒⇒⇒ "+
 			"⇒ 若这一条变了，请先确认是「代码真的多了/少了读点」还是「量具瞎了」",
 			len(sites))
 	}
 	want := map[string]int{
-		s952FormReadAll:  59,
-		s952FormDecode:   163,
+		s952FormReadAll:  60,
+		s952FormDecode:   161,
 		s952FormCopy:     3,
 		s952FormSizedAll: 16,
 		s952FormSizedSnp: 17,
@@ -833,7 +842,7 @@ func TestS952CensusCountsArePinned(t *testing.T) {
 		}
 	}
 	wantSrc := map[string]int{
-		s952SrcResp:  132,
+		s952SrcResp:  131,
 		s952SrcReq:   128,
 		s952SrcMem:   8,
 		s952SrcOther: 25,
@@ -843,8 +852,8 @@ func TestS952CensusCountsArePinned(t *testing.T) {
 			t.Errorf("来源 %s 扫到 %d 处（期望 %d）", src, bySrc[src], n)
 		}
 	}
-	if bounded != 290 {
-		t.Errorf("有界 %d 处（期望290）⇒⇒⇒ 无界处应恰好是台账里的 3 条", bounded)
+	if bounded != 289 {
+		t.Errorf("有界 %d 处（期望289）⇒⇒⇒ 无界处应恰好是台账里的 3 条", bounded)
 	}
 }
 

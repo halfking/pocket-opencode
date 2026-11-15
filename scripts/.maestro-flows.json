@@ -10,7 +10,9 @@
     "kimmy.huang@163.com": "同上",
     "回归卡组": "flashcards-write.yaml 自己 inputText 打出来的卡组名（该文件第 91 行）",
     "回归正面": "同上（第 159 行）",
-    "MaestroPKM笔记": "notes-crud.yaml 自己 inputText 打出来的笔记标题（该文件第 72 行）"
+    "MaestroPKMNote": "notes-crud.yaml 自己 inputText 打出来的笔记标题（该文件第 72 行）",
+    "审批：实现": "acc-board-mock 专属：ApprovalModal 的审批标题插值 mock 节点 label=实现；整句不是源码字面量",
+    "审批已通过": "acc-board-mock 专属：TaskDetailView.onApproved 插值 approve 对应的已通过标签；整句不是源码字面量"
   },
   "_runtimeAnchorsRule": "2026-10-04 实测：以上 9 条在 frontend/src 全量语料里零命中（用 node 独立扫 .vue/.ts/.json 确认），即它们确实是数据不是代码。新增条目前请同样先验证它不在源码里；匹配时按剥掉正则修饰后的子串比较，所以 `.*kimmy\\.huang@163\\.com.*` 能命中裸字面量声明。",
   "defaultAppId": "com.kaixuan.opencode.pocket",
@@ -23,7 +25,7 @@
     "kimmy.huang@163.com",
     "回归卡组",
     "回归正面",
-    "MaestroPKM笔记",
+    "MaestroPKMNote",
     "maestro-acc-stop",
     "maestro-acc-approve"
   ],
@@ -88,6 +90,10 @@
     {
       "file": ".maestro/acc-approval.yaml",
       "fixture": "acc-approval"
+    },
+    {
+      "file": ".maestro/acc-board-mock.yaml",
+      "runtimeAnchors": ["审批：实现", "审批已通过"]
     }
   ]
 }
