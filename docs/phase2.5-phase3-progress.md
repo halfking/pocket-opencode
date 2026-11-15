@@ -94,11 +94,14 @@
 ## ⏳ Phase 3.2-3.4: 高级功能（代码入库，未接线）
 
 > **状态订正（2026-11-16）**：Phase 3.2–3.4 的 Backend/Frontend **代码已入库**
-> （`6ea85edf` Backend、`cf5af2f6` Frontend），但**尚未接线**——Backend
-> `server_graph.go` / `server_recommendations.go` 未在 `server.go` 注册路由，
-> Frontend `stores/graph.ts` / `stores/recommendations.ts` / `utils/wikilinks.ts`
-> 尚无任何组件引用，`RecommendationsPanel` / `GraphView` / `KnowledgeGraphPage`
-> **未开发**。口径见 [FINAL-PROJECT-COMPLETION-REPORT](FINAL-PROJECT-COMPLETION-REPORT.md)。
+> （`6ea85edf` Backend、`cf5af2f6` Frontend）。接线状态：**Phase 3.4 Backend 已接线**
+> （`server.go:801-802` 注册 `/api/knowledge/graph` 与 `/api/knowledge/graph/note/`）；
+> **Phase 3.2 / 3.3 Backend 未接线**（`internal/wikilinks` 包无任何 Go 导入方；
+> `server_recommendations.go` 的 `handleGetNoteRecommendations` / `handleSuggestNoteTags`
+> 未在 `server.go` 注册路由）；三者 Frontend（`stores/graph.ts` /
+> `stores/recommendations.ts` / `utils/wikilinks.ts`）尚无任何组件引用，
+> `RecommendationsPanel` / `GraphView` / `KnowledgeGraphPage` **未开发**。
+> 口径见 [FINAL-PROJECT-COMPLETION-REPORT](FINAL-PROJECT-COMPLETION-REPORT.md)。
 
 ### Phase 3.2: 双向链接解析
 - 解析 `[[keyword]]` 语法

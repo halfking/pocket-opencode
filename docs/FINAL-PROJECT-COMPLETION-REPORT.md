@@ -61,7 +61,7 @@
 - ✅ stores/recommendations.ts
 - ✅ 推荐和标签状态管理
 
-### Phase 3.4: 关系图谱（代码入库 100%，未接线）
+### Phase 3.4: 关系图谱（Backend 已接线，Frontend 未接线）
 **Backend**:
 - ✅ server/server_graph.go（14KB）
 - ✅ Graph API 数据结构
@@ -163,11 +163,15 @@ Phase 3: 3次
 - [x] 关系图谱（Backend API + Frontend Store）
 
 > ⚠️ **完成度口径**：Phase 3.1（4 个页面 + `knowledgeRoutes` 路由注册）**已接线可用**；
-> Phase 3.2–3.4 为**代码入库**但**尚未接线**——Backend `server_graph.go` /
-> `server_recommendations.go` 未在 `server.go` 注册路由，Frontend `stores/graph.ts` /
-> `stores/recommendations.ts` / `utils/wikilinks.ts` 尚无任何组件引用，
-> `RecommendationsPanel` / `GraphView` 组件未开发（见「已知限制」）。
-> 按「已入库」计 100%，按「用户可用」计 Phase 3.2–3.4 未完成。
+> Phase 3.4 关系图谱的 **Backend 已接线**（`server.go:801-802` 注册
+> `/api/knowledge/graph` 与 `/api/knowledge/graph/note/`）；Phase 3.2 双向链接
+> （`internal/wikilinks` 包无任何 Go 导入方）、Phase 3.3 AI 推荐
+> （`server_recommendations.go` 的 `handleGetNoteRecommendations` /
+> `handleSuggestNoteTags` 未在 `server.go` 注册路由）**Backend 尚未接线**；
+> 三者的 Frontend（`stores/graph.ts` / `stores/recommendations.ts` /
+> `utils/wikilinks.ts`）**无任何组件引用**，`RecommendationsPanel` / `GraphView`
+> 组件未开发（见「已知限制」）。
+> 按「已入库」计 100%，按「用户可用」计 Phase 3.2–3.3 未完成、Phase 3.4 仅 Backend 可用。
 
 ---
 

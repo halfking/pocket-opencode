@@ -2,9 +2,12 @@
 
 **更新时间**: 2026-11-14 23:35
 
-> **状态订正（2026-11-16）**：Phase 3.2–3.4 的**代码已入库**（Backend/Frontend 均已提交），
-> 但**尚未接线**——Backend `server_graph.go` / `server_recommendations.go` 未在 `server.go`
-> 注册路由，Frontend `stores/graph.ts` / `stores/recommendations.ts` / `utils/wikilinks.ts`
+> **状态订正（2026-11-16）**：Phase 3.2–3.4 的**代码已入库**（Backend/Frontend 均已提交）。
+> 接线状态：**Phase 3.4 Backend 已接线**（`server.go:801-802` 注册 `/api/knowledge/graph`
+> 与 `/api/knowledge/graph/note/`）；**Phase 3.2 / 3.3 Backend 未接线**——
+> `internal/wikilinks` 包无任何 Go 导入方，`server_recommendations.go` 的
+> `handleGetNoteRecommendations` / `handleSuggestNoteTags` 未在 `server.go` 注册路由；
+> 三者 Frontend（`stores/graph.ts` / `stores/recommendations.ts` / `utils/wikilinks.ts`）
 > 尚无任何组件引用，`RecommendationsPanel` / `GraphView` / `KnowledgeGraphPage` **未开发**。
 > 完成度口径见 [FINAL-PROJECT-COMPLETION-REPORT](FINAL-PROJECT-COMPLETION-REPORT.md)。
 
@@ -30,7 +33,7 @@
 
 **当前状态**: 代码入库，未接线（2026-11-16 订正）
 
-### Phase 3.4: 关系图谱（代码入库，未接线）
+### Phase 3.4: 关系图谱（Backend 已接线，Frontend 未接线）
 **Agent 3** 正在实现：
 - Backend graph API
 - Frontend GraphView 组件（D3.js）
