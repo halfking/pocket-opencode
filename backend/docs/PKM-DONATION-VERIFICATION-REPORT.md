@@ -109,24 +109,24 @@ PASS: 8/8 tests
 ## Files Created
 
 ### OpenPocket Backend
-1. **migrations/20261114_pkm_donation_enhancements.sql** (358 lines)
+1. **migrations/20261114_pkm_donation_enhancements.sql** (344 lines)
    - Vector search setup
    - Attachments & shares tables
    - FORCE RLS on 6 tables
    - 3 search functions
 
-2. **internal/attachments/helpers.go** (158 lines)
+2. **internal/attachments/helpers.go** (140 lines)
    - 6 helper functions
    - S3 key generation
    - Security sanitization
    - File validation
 
-3. **internal/attachments/helpers_test.go** (273 lines)
+3. **internal/attachments/helpers_test.go** (320 lines)
    - 8 test functions
    - 100% coverage
    - Security test cases
 
-4. **scripts/verify-pkm-donation-local.sh** (195 lines)
+4. **scripts/verify-pkm-donation-local.sh** (240 lines)
    - 10-step verification
    - No database required
    - Automated testing

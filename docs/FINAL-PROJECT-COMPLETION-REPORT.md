@@ -24,8 +24,9 @@
 - ✅ 3个 Pinia Stores（692行）
 - ✅ 5个核心组件（2,585行）
 - ✅ 1个 API 客户端（251行）
-- ✅ 1个主页面（790行）
-- **代码量**: ~6,904行
+- ✅ 1个主页面（816行）
+- ✅ Types & Routes（2个文件，232行）
+- **代码量**: ~4,576行
 
 ### Phase 2.5: 路由集成（100%）
 - ✅ 路由注册到主应用
@@ -40,13 +41,13 @@
 - **代码量**: ~2,336行
 
 ### Phase 3.2: 双向链接解析（100%）
-**Backend (564行)**:
+**Backend (694行)**:
 - ✅ wikilinks/parser.go（167行）
 - ✅ wikilinks/resolver.go（232行）
 - ✅ wikilinks/parser_test.go（295行）
 - ✅ 支持 `[[keyword]]` 和 `[[keyword|display]]` 语法
 
-**Frontend (71行)**:
+**Frontend (72行)**:
 - ✅ utils/wikilinks.ts
 - ✅ 解析和渲染工具函数
 
@@ -56,7 +57,7 @@
 - ✅ recommendations/tags.go（150行）- 标签建议
 - ✅ recommendations/handler.go（170行）- API端点
 
-**Frontend (99行)**:
+**Frontend (93行)**:
 - ✅ stores/recommendations.ts
 - ✅ 推荐和标签状态管理
 
@@ -65,7 +66,7 @@
 - ✅ server/server_graph.go（14KB）
 - ✅ Graph API 数据结构
 
-**Frontend (82行)**:
+**Frontend (79行)**:
 - ✅ stores/graph.ts
 - ✅ 图谱数据状态管理
 
@@ -77,16 +78,16 @@
 ```
 Backend:
 - Phase 1: 3,200行
-- Phase 3 (3.2-3.4): 2,007行
-- 小计: 5,207行
+- Phase 3 (3.2-3.4): 2,004行
+- 小计: 5,204行
 
 Frontend:
-- Phase 2: 6,904行
+- Phase 2: 4,576行
 - Phase 3.1: 2,336行
-- Phase 3 (3.2-3.4): 252行
-- 小计: 9,492行
+- Phase 3 (3.2-3.4): 244行
+- 小计: 7,156行
 
-项目总计: ~14,699行代码
+项目总计: ~12,360行代码
 ```
 
 ### 文件统计
@@ -99,12 +100,13 @@ Backend: 27个文件
 - 其他: 11个
 
 Frontend: 20个文件
-- Stores: 6个
+- Stores: 5个
 - API: 1个
 - Components: 5个
 - Pages: 5个
 - Utils: 1个
 - Types/Routes: 2个
+- 文档: 1个
 
 总计: 47个文件
 ```
@@ -236,7 +238,7 @@ Phase 3: 3次
 
 ### Git 仓库
 - 分支: main
-- 最新提交: 待推送
+- 最新提交: 453ccfee
 - 推送状态: ✅ 完成
 
 ---
@@ -287,7 +289,7 @@ Phase 3: 3次
 ✅ **Phase 2.5**: 路由集成、编译验证、基本测试  
 ✅ **Phase 3**: 页面实现、WikiLinks、AI推荐、知识图谱  
 
-**总代码量**: ~14,699行  
+**总代码量**: ~12,360行  
 **总文件数**: 47个  
 **总提交数**: 23次  
 **文档数量**: 10份  
@@ -306,4 +308,4 @@ Phase 3: 3次
 
 *报告生成时间: 2026-11-15 00:05*  
 *项目状态: ✅ 完成*  
-*最终提交: 待推送*
+*最终提交: 453ccfee*

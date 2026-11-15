@@ -50,27 +50,27 @@
 
 ### 代码量
 ```
-总计：约 3,200 行代码
+总计：约 3,502 行代码
 
 数据模型：
-  - notebooks.go: 280行
-  - notelink.go: 240行
-  - 单元测试: 720行
+  - notebooks.go: 256行
+  - notelink.go: 215行
+  - 单元测试: 748行
   
 Backend API：
   - server_notebooks.go: 270行
   - server_notelinks.go: 322行
-  - server_knowledge_search.go: 465行 ⭐ NEW
+  - server_knowledge_search.go: 517行 ⭐ NEW
   - Notes 增强: 57行
   
 数据库：
-  - SQLite 迁移: 300行
-  - PostgreSQL 迁移: 376行
+  - SQLite 迁移: 266行
+  - PostgreSQL 迁移: 237行
   
 测试与工具：
-  - 集成测试框架: 100行
-  - 验证脚本: 400行
-  - API 测试脚本: 200行
+  - 集成测试框架: 152行
+  - 验证脚本: 274行（2个验证脚本）
+  - API 测试脚本: 188行
 ```
 
 ### Git 提交历史（10次提交）
@@ -186,7 +186,7 @@ b8c87c89 docs(knowledge): 添加知识库集成实施总结文档
 
 ### 质量保证
 - 📋 **完整文档**: 4份文档，200+ 页
-- 🧪 **测试驱动**: 720行测试代码
+- 🧪 **测试驱动**: 748行测试代码
 - 🔍 **代码审查**: 每次提交都经过验证
 - 📊 **进度跟踪**: Todo 实时更新
 
