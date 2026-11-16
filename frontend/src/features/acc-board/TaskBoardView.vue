@@ -137,7 +137,7 @@ import {
   type AccSopTemplate,
 } from '../../api/accApi'
 import { formatTime, progressPercent, runVisual, summarizeProgress } from './statusMeta'
-import { adoptMockQuery, isMockActive, mockCreateRun, mockGetTemplates, mockListRuns, setMockFlag } from './mock'
+import { adoptMockQuery, isMockActive, isMockFlagSet, mockCreateRun, mockGetTemplates, mockListRuns, resetMockState, setMockFlag } from './mock'
 import { getAccLogSession } from './acc-log-session.ts'
 import { boardOwnerCurrent, clearBoardSnapshot, discardLegacyBoardSnapshot, loadBoardRuns,
   readBoardSnapshot, saveBoardSnapshot } from './board-snapshot.ts'
@@ -216,9 +216,26 @@ function saveSettings(): void {
   const base = draftBase.value, token = draftToken.value
   setAccBase(base)
   setAccToken(token)
+  // mock 开关的**前后值**决定要不要整页刷新：
+  //   - 变了 ⇒ 整页行为都换了（数据源、事件源），必须整页刷新，
+  //     才能保持 query/hash 与状态一致（原来的行为，保留）。
+  //   - 没变 ⇒ 整页刷新是多余的，而且**有害**：这会把登录态一起打掉
+  //     （后端验不了 app 持有的 RedClaw token 时，reload 后 app 自己登出），
+  //     而「保存并刷新」这个按钮名承诺的恰恰是"刷新出**新的**东西"。
+  //     ⇒ 进程内复位演示状态 + 刷新本页数据。
+  const wasMock = isMockFlagSet()
   setMockFlag(draftMock.value)
-  // mock 开关影响整页行为，直接刷新以保持 query/hash 与状态一致。
-  window.location.reload()
+  const nowMock = isMockFlagSet()
+  // 保存完就收起面板：两条路径（整页刷新 / 进程内刷新）收尾一致，
+  // 否则「保存并刷新」之后设置面板还盖在看板列表上面。
+  showSettings.value = false
+  if (wasMock !== nowMock) {
+    // mock 开关影响整页行为，直接刷新以保持 query/hash 与状态一致。
+    window.location.reload()
+    return
+  }
+  if (nowMock) resetMockState()
+  void load()
 }
 
 async function load(): Promise<void> {

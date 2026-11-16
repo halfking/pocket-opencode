@@ -201,18 +201,32 @@ let disposed = false
 let viewVersion = 0
 let readVersion = 0
 let cancelVersion = 0
-interface ViewTicket { owner: object; runId: string; version: number }
+interface ViewTicket { owner: object | null; runId: string; version: number }
 let loadFlight: { ticket: ViewTicket; promise: Promise<void> } | null = null
 
 function captureView(): ViewTicket | null {
   const owner = logSession.runtime.captureAuthority()
-  if (disposed || !runId.value || !logSession.runtime.isCurrentAuthority(owner)) return null
-  return { owner: owner!, runId: runId.value, version: viewVersion }
+  // Mock mode reads built-in sample data and never talks to ACC, so there
+  // is no ACC connection whose staleness has to be fenced. The LIST view
+  // already bypasses the owner check in mock mode (TaskBoardView:
+  // `mockActive || boardOwnerCurrent(...)`); the detail view did not.
+  //
+  // The consequence was that a mock run could be LISTED but never OPENED:
+  // captureView() returned null, load() returned before fetching, and the
+  // page rendered "未找到该 Run" with no error — the mock data (5-node
+  // runs, the approval walk-through) was unreachable in the very mode
+  // that exists to show it.
+  if (disposed || !runId.value) return null
+  if (!mockActive && !logSession.runtime.isCurrentAuthority(owner)) return null
+  return { owner: owner ?? null, runId: runId.value, version: viewVersion }
 }
 
 function currentView(ticket: ViewTicket): boolean {
-  return !disposed && ticket.version === viewVersion && ticket.runId === runId.value &&
-    logSession.runtime.isCurrentAuthority(ticket.owner)
+  if (disposed || ticket.version !== viewVersion || ticket.runId !== runId.value) return false
+  // Same reasoning as captureView: in mock mode there is no ACC authority
+  // to have gone stale.
+  if (mockActive) return true
+  return logSession.runtime.isCurrentAuthority(ticket.owner)
 }
 
 function denied(e: unknown): boolean {

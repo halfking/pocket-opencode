@@ -1,7 +1,66 @@
 # Isolated UI acceptance only. The visible Mock banner must remain throughout;
 # this flow does not establish real ACC/SOP/backend acceptance.
+#
+# ⚠️ 启动前置（必读）：本 flow **不含 launchApp**，启动交给 .maestro/run-acc-board-mock.sh。
+#   原因（实测 2026-11-16，设备 4c308e2e / Redmi 2411DRN47C / MIUI + Android 16）：
+#   ① Maestro 的 launchApp 先 force-stop 被测包；
+#   ② 随后 driver 发起的 activity 启动被 MIUI 安全中心拦掉：
+#      "Abort background activity starts from 10347"（uid 10347 =
+#      dev.devicelab.driver.android）+ START ... result code=102
+#      ⇒ app 被杀掉、拉不起来 ⇒ flow 的第一个等待必然 60s 超时。
+#      实测：launchApp 前 pid=26494，launchApp 后 pid 为空，焦点回到 launcher。
+#   ③ 有 shell 权限的调用（monkey / am start）不受该拦截影响，能正常拉起。
+#
+# ⭐ 演示状态复位：mock 的演示状态在**模块内存**里（mock.ts 的 state.runs），
+#    审批一次就把它从 2/5 推进到 3/5 ⇒ 不复位则本 flow 不可重放（实测第二次跑必红）。
+#    复位**不再靠重启 App**：重启 = 整页重载，本机 legacy 后端不认 app 持有的
+#    RedClaw token ⇒ app 会自己 clearLocal() 登出 ⇒ 流程起点变成登录页。
+#    现在靠看板页里的「保存并刷新」：**mock 开关没变时只做进程内复位**
+#    （resetMockState）＋ 刷新本页数据，不整页 reload ⇒ 登录态与演示状态兼得。
+#    mock 开关本身在 localStorage ⇒ 重启后仍是开的，下面「开 mock」那段
+#    runFlow 会被 when 跳过（也就不会误把 mock 关掉）。
+#
+# ① 回到首页：app 启动后可能停在**上次路由**（实测落在「笔记」页），
+#    而本 flow 跑完后 App 停在 **ACC 看板页**，看板页**没有底部导航**
+#    （route meta: bottomNav:false）⇒ 只补一个 tapOn「首页」复位不了：
+#    连着跑第二次时，第一条断言照样红（实测：AI 工具 45s 超时）。
+#    ⇒ 底栏不在 ⇒ 用 `back` 退回去；底栏在 ⇒ 点「首页」。
+#    `back` 不依赖任何文本（底栏「首页」可能与**用户笔记标题**撞名），
+#    是本仓既有的惯用法（见 _goto-pkm.yaml 的同一处理）。
+#    `runFlow when` 的条件判断本身不算失败，失败的等待统一放在最后一条。
+#
+# ⓪ **停掉同机上的 STT 调试包**：本机同时装着 com.kaixuan.opencode.pocket.sttdev
+#    （2026-11-03 装的旧构建，**没有 ACC 看板入口**）。它带前台服务，会重新盖到
+#    屏幕前面 ⇒ 被测的其实变成那个旧包：「更多」页里根本没有 ACC 看板条目，
+#    scrollUntilVisible 必然红。（实测 2026-11-16：版本行显示 v1.2.0-openpocket-sttdev。）
+#    这一步与 flow 的 appId 无关，是清理**同机干扰**。
+#    ⚠ 只停 sttdev，**不停被测包**（见上面「复位不再靠重启 App」）。
 appId: com.kaixuan.opencode.pocket
 ---
+# ⓪ 停掉抢前台的旧调试包
+- stopApp: com.kaixuan.opencode.pocket.sttdev
+# ⏳ 等 App **渲染完**再复位：WebView 起来之前底部导航**还不存在**，
+#    此时 `notVisible: "首页"` 为真 ⇒ 会误触发 back（实测 2026-11-16：
+#    启动后立刻探测 → 两次 back → tapOn「首页」红 17.9s）。
+#    所以先等一个「页面内容已经渲染出来」的信号，再探测底部导航。
+- extendedWaitUntil:
+    visible: "首页|AI 工具|ACC 看板|Mock 演示模式|更多功能"
+    timeout: 60000
+- runFlow:
+    when:
+      notVisible: "首页"
+    commands:
+      - back
+      - waitForAnimationToEnd:
+          timeout: 3000
+- runFlow:
+    when:
+      notVisible: "首页"
+    commands:
+      - back
+      - waitForAnimationToEnd:
+          timeout: 3000
+- tapOn: "首页"
 - extendedWaitUntil:
     visible: "AI 工具"
     timeout: 45000
@@ -17,13 +76,18 @@ appId: com.kaixuan.opencode.pocket
 - extendedWaitUntil:
     visible: "ACC 连接设置"
     timeout: 20000
+# 打开设置面板（每次都开）：「保存并刷新」会把演示状态复位到种子态
+# （审批一次就推进到 3/5，不复位则这条 flow 不可重放）。
+- tapOn: "ACC 连接设置"
+# 只在 mock **没开**时才去勾它：已经开着还去点那个勾，会把它**关掉**。
 - runFlow:
     when:
       notVisible: "Mock 演示模式 — 数据为内置样例.*"
     commands:
-      - tapOn: "ACC 连接设置"
       - tapOn: "Mock 演示模式（不请求 ACC）"
-      - tapOn: "保存并刷新"
+# 总是保存：保存 = 复位演示状态 + 刷新本页数据（mock 开关没变时不整页 reload，
+# 免得把登录态一起打掉）。
+- tapOn: "保存并刷新"
 - extendedWaitUntil:
     visible: "Mock 演示模式 — 数据为内置样例.*"
     timeout: 30000
