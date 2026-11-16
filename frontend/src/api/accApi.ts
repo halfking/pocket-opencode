@@ -578,30 +578,130 @@ export interface AccRuntimeHost {
 }
 
 /**
- * GET /api/v2/runtime/agents —— 机器池列表（主机选择器数据源）。
+ * 机器池列表（主机选择器数据源）—— 重派/移交对话框的候选目标主机。
  *
- * 实现字段口径未知 ⇒ 宽容归一化：接受裸数组或 {agents|hosts|data|items} 包装，
- * 行内 host_id/hostId/agent_id/id 任一为主机标识。
+ * ★ 端点回退（实测 2026-11-17）：ACC **没有** `/api/v2/runtime/agents` 这个端点。
+ *   后端把 AgentDiscovery 挂在 `/api/v2/discovery` 组，TaskAssigner 的 `/agents`
+ *   是另一个前缀、另一种语义（agent 池，不是主机池）；真实的主机池读面是
+ *   `GET /api/v2/runtime/runtimes`（RuntimeControlHandler 的 fleet inventory）。
+ *   M0 E2E 脚本同样在 agents 取不到后回退到 runtimes
+ *   （tests/e2e/m0_handoff_test.sh 的 m0_count_hosts_in_list）。
+ *   ⇒ 先试契约口径的 agents，取不到主机就回退 runtimes。
+ *   ★ 只调 agents 的旧实现 ⇒ 目标主机下拉在真实 ACC 上永远是空的
+ *   （这就是 acc-board 剩下的最后一环孤岛）。
+ *
+ * 行字段两种形态都要收：
+ *   ① runtimes 的 fleet inventory 行：
+ *      `{runtime_id, host_id, api_endpoint, last_heartbeat_at, agent_inventory:[…]}`
+ *      —— **不带 status**，也**不带 drivers** ⇒ 在线按心跳新鲜度粗判，
+ *      驱动清单从 agent_inventory 取；
+ *   ② agents 形态的行：`{host_id|agent_id, status, drivers:[…]}`。
+ *
+ * 主机标识：`host_id` 优先（delegate 的 target_host 就是 host_id）；
+ * 后端允许注册时省略 host_id，此时用 runtime_id 兜底，保证列表不为空。
  */
 export async function listAccAgents(): Promise<AccRuntimeHost[]> {
-  const res = await accRequest<unknown>('/api/v2/runtime/agents')
-  const arr = Array.isArray(res) ? res : extractArrayField(res, ['agents', 'hosts', 'data', 'items'])
-  return arr
-    .filter((r): r is Record<string, unknown> => !!r && typeof r === 'object')
-    .map((r) => {
-      const hostId = String(r.host_id ?? r.hostId ?? r.id ?? r.agent_id ?? r.agentId ?? '')
-      const rawStatus = typeof r.status === 'string' ? r.status : ''
-      const drivers = Array.isArray(r.drivers) ? r.drivers.map((d) => String(d)) : []
-      return {
+  let firstError: unknown = null
+  let reachable = false
+  for (const path of RUNTIME_HOST_LIST_PATHS) {
+    try {
+      const hosts = await listRuntimeHosts(path)
+      reachable = true
+      if (hosts.length > 0) return hosts
+    } catch (e) {
+      // 记**第一个**错误：契约口径的端点先失败，它的错误才是根因
+      // （agents 401 = 鉴权失败，比回退端点的 404 更可执行）。
+      if (firstError === null) firstError = e
+    }
+  }
+  // 至少一个端点连上了（只是没数据）⇒「ACC 上还没注册主机」，不是加载失败；
+  // 两个端点都连不上 ⇒ 抛真实错误，让 UI 给出可执行的原因而不是空列表。
+  if (!reachable && firstError) throw firstError
+  return []
+}
+
+/** 主机池读面：契约口径优先，实现口径兜底。 */
+const RUNTIME_HOST_LIST_PATHS = ['/api/v2/runtime/agents', '/api/v2/runtime/runtimes'] as const
+
+/** 心跳新鲜度阈值（ms）：runtime 行不带 status，只能按 last_heartbeat_at 粗判在线。
+ *  90s 与 ACC 侧 hosts 离线清理用的 cutoff 同量级（runtimecontrol/hosts.go 的 90s 用例）。 */
+const RUNTIME_HEARTBEAT_FRESH_MS = 90_000
+
+function runtimeHeartbeatFresh(value: unknown): boolean {
+  if (typeof value !== 'string' || value.trim() === '') return false
+  const ts = Date.parse(value)
+  if (Number.isNaN(ts)) return false
+  return Date.now() - ts <= RUNTIME_HEARTBEAT_FRESH_MS
+}
+
+/** 第一个非空字符串：后端会把缺省字段序列化成 ""，`??` 取不到下一个候选。 */
+function firstNonEmpty(...values: unknown[]): string {
+  for (const v of values) {
+    if (typeof v === 'string' && v.trim() !== '') return v.trim()
+  }
+  return ''
+}
+
+/** 一个端点的响应 → 主机行（按 hostId 去重合并）。 */
+async function listRuntimeHosts(path: string): Promise<AccRuntimeHost[]> {
+  const res = await accRequest<unknown>(path)
+  const arr = Array.isArray(res)
+    ? res
+    : extractArrayField(res, ['agents', 'hosts', 'runtimes', 'data', 'items'])
+  const merged = new Map<string, AccRuntimeHost>()
+  for (const raw of arr) {
+    if (!raw || typeof raw !== 'object') continue
+    const r = raw as Record<string, unknown>
+    const hostId = firstNonEmpty(
+      r.host_id,
+      r.hostId,
+      r.runtime_id,
+      r.runtimeId,
+      r.id,
+      r.agent_id,
+      r.agentId,
+    )
+    if (!hostId) continue
+    const rawStatus = typeof r.status === 'string' ? r.status : ''
+    const drivers = Array.isArray(r.drivers)
+      ? r.drivers.map((d) => String(d)).filter((d) => d !== '')
+      : Array.isArray(r.agent_inventory)
+        ? r.agent_inventory
+            .map((a) => {
+              if (!a || typeof a !== 'object') return String(a)
+              const row = a as Record<string, unknown>
+              return firstNonEmpty(row.agent_id, row.agentId, row.agent_type)
+            })
+            .filter((d) => d !== '')
+        : []
+    const heartbeat = firstNonEmpty(r.last_heartbeat_at, r.lastHeartbeatAt)
+    const fresh = runtimeHeartbeatFresh(heartbeat)
+    const status = rawStatus
+      ? normalizeHostStatus(rawStatus)
+      : fresh
+        ? 'online'
+        : heartbeat
+          ? 'stale'
+          : 'registered'
+    const online = rawStatus ? HOST_ONLINE.has(status) : fresh
+    const existing = merged.get(hostId)
+    if (!existing) {
+      merged.set(hostId, {
         hostId,
-        name: String(r.hostname ?? r.name ?? r.label ?? hostId),
-        status: normalizeHostStatus(rawStatus),
-        online: HOST_ONLINE.has(normalizeHostStatus(rawStatus)),
+        name: firstNonEmpty(r.hostname, r.name, r.label, r.host_id, r.hostId, hostId),
+        status,
+        online,
         drivers,
         rawStatus,
-      }
-    })
-    .filter((h) => h.hostId !== '')
+      })
+      continue
+    }
+    // 同一主机上的多个 runtime 合成一行：在线取并集，驱动清单取并集。
+    existing.online = existing.online || online
+    if (online && !HOST_ONLINE.has(existing.status)) existing.status = 'online'
+    existing.drivers = [...new Set([...existing.drivers, ...drivers])]
+  }
+  return [...merged.values()]
 }
 
 const HOST_ONLINE = new Set(['online', 'running', 'idle', 'healthy', 'ready', 'active'])
