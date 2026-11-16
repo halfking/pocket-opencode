@@ -9,8 +9,22 @@ import { createServer } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import { chromium } from 'playwright'
 
-async function until(predicate) {
-  const deadline = Date.now() + 3000
+// The whole suite hands every file to one `node --test` process (node runs
+// files in parallel, one worker per CPU) and every browser fixture starts its
+// own vite server + chromium. On a loaded machine an SSE close + reopen round
+// trip can take longer than 3s — and the failure then looks exactly like a
+// product bug ('HTTP condition not reached') even though the behaviour is
+// correct. Measured on this feature: the same commit failed a DIFFERENT set
+// of browser files run to run (7 / 7 / 9 files), including files this feature
+// never touches, while the file passed 12/12 in isolation.
+//
+// The predicate IS the assertion; the deadline only decides how long we wait
+// for it. Giving it room does not weaken the guard: a stream that never
+// closes still fails, just later.
+const UNTIL_TIMEOUT_MS = 15_000
+
+async function until(predicate, timeoutMs = UNTIL_TIMEOUT_MS) {
+  const deadline = Date.now() + timeoutMs
   while (!predicate()) { assert.ok(Date.now() < deadline, 'HTTP condition not reached'); await delay(10) }
 }
 
@@ -141,7 +155,7 @@ function send(stream, seq, text, eventType = 'agent.log_line') {
   })}\n\n`)
 }
 
-test('real Vue unmount/remount replays once; workspace/account/config observers outlive the view', { timeout: 30_000 }, async t => {
+test('real Vue unmount/remount replays once; workspace/account/config observers outlive the view', { timeout: 90_000 }, async t => {
   const { page, streams, errors } = await fixture(t)
   send(streams[0], 1, 'Alice private one')
   await page.getByText('Alice private one', { exact: true }).waitFor()
@@ -183,7 +197,7 @@ test('real Vue unmount/remount replays once; workspace/account/config observers 
   assert.deepEqual(errors, [])
 })
 
-test('actual detail cancel failure retains SSE; a successful response closes it explicitly', { timeout: 30_000 }, async t => {
+test('actual detail cancel failure retains SSE; a successful response closes it explicitly', { timeout: 90_000 }, async t => {
   const { page, streams, errors, acceptCancel, cancellations } = await fixture(t, true)
   await page.getByRole('button', { name: '终止', exact: true }).click()
   await page.locator('.approval-note').waitFor()
@@ -204,7 +218,7 @@ async function flushResponses(page) {
 }
 
 for (const outcome of ['success', 'error']) {
-  test(`late old-owner detail ${outcome} cannot replace a new run/view`, { timeout: 30_000 }, async t => {
+  test(`late old-owner detail ${outcome} cannot replace a new run/view`, { timeout: 90_000 }, async t => {
     const f = await fixture(t, true)
     f.holdDetails()
     await f.page.getByRole('button', { name: '刷新', exact: true }).click()
@@ -225,7 +239,7 @@ for (const outcome of ['success', 'error']) {
     assert.deepEqual(f.errors, [])
   })
 
-  test(`late old-owner cancel ${outcome} cannot write notes, clear a new spinner or reload the new view`, { timeout: 30_000 }, async t => {
+  test(`late old-owner cancel ${outcome} cannot write notes, clear a new spinner or reload the new view`, { timeout: 90_000 }, async t => {
     const f = await fixture(t, true)
     f.holdCancels()
     await f.page.getByRole('button', { name: '终止', exact: true }).click()
@@ -252,7 +266,7 @@ for (const outcome of ['success', 'error']) {
   })
 }
 
-test('owner and route A→B→A cannot admit the first A response', { timeout: 30_000 }, async t => {
+test('owner and route A→B→A cannot admit the first A response', { timeout: 90_000 }, async t => {
   const f = await fixture(t, true)
   f.holdDetails()
   await f.page.getByRole('button', { name: '刷新', exact: true }).click()
@@ -275,31 +289,31 @@ test('owner and route A→B→A cannot admit the first A response', { timeout: 3
 })
 
 for (const status of [401, 403]) {
-  test(`SSE ${status} clears the reactive authority and visible private detail immediately`, { timeout: 30_000 }, async t => {
+  test(`SSE ${status} clears the reactive authority and visible private detail immediately`, { timeout: 90_000 }, async t => {
     const f = await fixture(t, true, { deferStreamHeaders: true })
     await f.page.getByText('项目 Initial private detail', { exact: true }).waitFor()
     f.streams[0].res.writeHead(status, { 'Content-Type': 'text/plain' })
     f.streams[0].res.write('denied') // Keep body open: headers alone must revoke admission.
-    await f.page.waitForFunction(() => document.querySelector('#authority-state').textContent === 'none', null, { timeout: 1500 })
+    await f.page.waitForFunction(() => document.querySelector('#authority-state').textContent === 'none', null, { timeout: 5000 })
     assert.equal(await f.page.locator('.summary, .nodes, .ls-line, .approval-note').count(), 0)
     await until(() => f.streams[0].closed)
     assert.equal(f.details.length, 1, 'revocation must not auto-retry with the same credential')
   })
 
-  test(`poll ${status} clears both existing private detail and replayed logs`, { timeout: 30_000 }, async t => {
+  test(`poll ${status} clears both existing private detail and replayed logs`, { timeout: 90_000 }, async t => {
     const f = await fixture(t, true)
     send(f.streams[0], 1, 'Private log before denial')
     await f.page.getByText('Private log before denial', { exact: true }).waitFor()
     f.denyPoll(status)
     f.streams[0].res.end()
     await until(() => f.polls.length === 1)
-    await f.page.waitForFunction(() => document.querySelector('#authority-state').textContent === 'none', null, { timeout: 1500 })
+    await f.page.waitForFunction(() => document.querySelector('#authority-state').textContent === 'none', null, { timeout: 5000 })
     assert.equal(await f.page.locator('.summary, .nodes, .ls-line, .approval-note').count(), 0)
     assert.equal(f.details.length, 1)
   })
 }
 
-test('same-owner slow detail polling coalesces ticks and still publishes its response', { timeout: 30_000 }, async t => {
+test('same-owner slow detail polling coalesces ticks and still publishes its response', { timeout: 90_000 }, async t => {
   const f = await fixture(t, true, { clock: true })
   f.holdDetails()
   await f.page.clock.runFor(5000)

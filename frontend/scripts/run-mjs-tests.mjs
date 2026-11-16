@@ -137,33 +137,72 @@ const censusPath = join(tmpdir(), `pocket-test-census-${process.pid}.json`)
 //   完整落盘一份新 census，合并语义与单批完全一致。枚举 ⊆ 实际执行的对账
 //   仍以**全量** discovered 为准，分批不会放宽这道门。
 const argvPrefix = ['--test', '--test-reporter', './' + reporterPath]
-const batches = []
-let current = []
-let currentLen = argvPrefix.reduce((a, s) => a + s.length + 1, 0)
-for (const f of discovered) {
-  const cost = f.length + 1
-  if (current.length && currentLen + cost > 20000) {
-    batches.push(current)
-    current = []
-    currentLen = argvPrefix.reduce((a, s) => a + s.length + 1, 0)
+
+// ★ 浏览器 fixture 单独成批 + 限并发（2026-11-17）。
+// 起因：13 个浏览器 fixture 各自起 vite + chromium，混在 430+ 普通文件里同批并发
+//（node --test 默认并发 = CPU 数）⇒ CPU 争抢 ⇒ SSE 往返类断言偶发超时，
+// 失败现场（'HTTP condition not reached'）与产品缺陷几乎无法区分。
+// 实测（同一台机、串行、10 份同文件并行）：基线 3 秒预算 4/10 失败，
+// 放宽到 15 秒后 2/10 失败 ⇒ 失败模式是**负载**，不是行为；放宽预算只是减轻，
+// 真正的修法在 runner 层限并发（不在各个测试里各自放宽断言）。
+const BROWSER_CONCURRENCY = 2
+const BROWSER_MARKER = /from\s+['"]playwright['"]/
+
+function isBrowserFile(file) {
+  try {
+    return BROWSER_MARKER.test(readFileSync(join(ROOT, file), 'utf8'))
+  } catch {
+    return false
   }
-  current.push(f)
-  currentLen += cost
 }
-if (current.length) batches.push(current)
+
+function batchByLength(files) {
+  const out = []
+  let current = []
+  let currentLen = argvPrefix.reduce((a, s) => a + s.length + 1, 0)
+  for (const f of files) {
+    const cost = f.length + 1
+    if (current.length && currentLen + cost > 20000) {
+      out.push(current)
+      current = []
+      currentLen = argvPrefix.reduce((a, s) => a + s.length + 1, 0)
+    }
+    current.push(f)
+    currentLen += cost
+  }
+  if (current.length) out.push(current)
+  return out
+}
+
+const browserSet = new Set(discovered.filter(isBrowserFile))
+const plainFiles = discovered.filter((f) => !browserSet.has(f))
+const browserFiles = discovered.filter((f) => browserSet.has(f))
+// 浏览器批次排在最后：它的退出码要能代表"最后一批跑过"，而失败判定本身
+// 走的是逐文件 census（见文末），任何一批红了都会判红。
+const batches = [
+  ...batchByLength(plainFiles).map((files) => ({ files, concurrency: 0 })),
+  ...batchByLength(browserFiles).map((files) => ({ files, concurrency: BROWSER_CONCURRENCY })),
+]
 
 const census = {}
 let lastStatus = 0
 for (const [bi, batch] of batches.entries()) {
   if (batches.length > 1) {
-    console.log(`[run-mjs-tests] 第 ${bi + 1}/${batches.length} 批：${batch.length} 个文件`)
+    const kind = batch.concurrency ? `（浏览器 fixture，并发限 ${batch.concurrency}）` : ''
+    console.log(`[run-mjs-tests] 第 ${bi + 1}/${batches.length} 批：${batch.files.length} 个文件${kind}`)
   }
-  const res = spawnSync(process.execPath, [...argvPrefix, ...batch], {
+  const res = spawnSync(process.execPath, [
+    ...argvPrefix,
+    ...(batch.concurrency ? [`--test-concurrency=${batch.concurrency}`] : []),
+    ...batch.files,
+  ], {
     cwd: ROOT,
     stdio: 'inherit',
     env: { ...process.env, POCKET_TEST_CENSUS: censusPath },
   })
-  lastStatus = res.status ?? 1
+  // ★ 任一批失败都要留住退出码：分批变多之后，"只看最后一批"会掩盖前面批次的
+  // 非用例级失败（worker 崩溃 / OOM 这类不会进 census）。
+  if (res.status !== 0 && lastStatus === 0) lastStatus = res.status ?? 1
   if (!existsSync(censusPath)) {
     console.error(`\n❌ 第 ${bi + 1} 批没拿到测试普查结果 —— reporter 没落盘，不能声称覆盖完整。`)
     process.exit(1)
