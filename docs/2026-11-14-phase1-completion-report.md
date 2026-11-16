@@ -34,7 +34,7 @@
 
 ### 5. 测试基础设施（100%）
 - [x] **数据模型单元测试**（16个，100%通过）✅
-- [x] **集成测试框架**✅
+- [x] **集成测试框架** ⚠️ 已被 `89ae9c3e` 删除（原 152 行内容全为 `t.Skip` 占位用例）
 - [x] **验证脚本**（3个）✅
 - [x] **API 测试脚本**✅
 
@@ -50,7 +50,7 @@
 
 ### 代码量
 ```
-总计：约 3,502 行代码
+总计：约 3,351 行代码
 
 数据模型：
   - notebooks.go: 256行
@@ -60,7 +60,7 @@
 Backend API：
   - server_notebooks.go: 270行
   - server_notelinks.go: 322行
-  - server_knowledge_search.go: 517行 ⭐ NEW
+  - server_knowledge_search.go: 518行 ⭐ NEW
   - Notes 增强: 57行
   
 数据库：
@@ -68,7 +68,7 @@ Backend API：
   - PostgreSQL 迁移: 237行
   
 测试与工具：
-  - 集成测试框架: 152行
+  - 集成测试框架: 已删除（原 152 行，见下「交付物清单」第 8 项）
   - 验证脚本: 274行（2个验证脚本）
   - API 测试脚本: 188行
 ```
@@ -91,7 +91,7 @@ b8c87c89 docs(knowledge): 添加知识库集成实施总结文档
 ### 测试结果
 - ✅ **单元测试**: 16/16 通过（100%）
 - ✅ **编译测试**: 全部通过
-- ✅ **集成测试**: 框架已就绪
+- ⚠️ **集成测试**: 框架已被 `89ae9c3e` 删除（原 152 行占位用例）
 
 ---
 
@@ -202,7 +202,7 @@ b8c87c89 docs(knowledge): 添加知识库集成实施总结文档
 5. `backend/internal/server/server_notebooks.go` - Notebooks API
 6. `backend/internal/server/server_notelinks.go` - Note Links API
 7. `backend/internal/server/server_knowledge_search.go` - **Unified Search API** ⭐
-8. `backend/internal/server/knowledge_integration_test.go` - 集成测试框架
+8. `backend/internal/server/knowledge_integration_test.go` - 集成测试框架（已删除：`89ae9c3e` 删除了该文件，原 152 行内容全部为 `t.Skip` 占位用例）
 9. `backend/internal/notes/note.go` - Notes 增强
 10. `backend/internal/notes/store.go` - Notes Store 增强
 

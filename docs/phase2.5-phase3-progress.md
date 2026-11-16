@@ -67,7 +67,7 @@
 
 ---
 
-## ✅ Phase 2.5.3: 基本功能测试（脚本已入库）
+## ⏳ Phase 2.5.3: 基本功能测试（脚本已入库，功能测试待执行）
 
 > 测试脚本：`scripts/test-knowledge-basic-functionality.sh`（`a70fe197`）
 
@@ -91,15 +91,17 @@
 
 ---
 
-## ⏳ Phase 3.2-3.4: 高级功能（代码入库，未接线）
+## ⏳ Phase 3.2-3.4: 高级功能（代码入库，Backend 接线状态见下方订正）
 
 > **状态订正（2026-11-16）**：Phase 3.2–3.4 的 Backend/Frontend **代码已入库**
-> （`6ea85edf` Backend、`cf5af2f6` Frontend）。接线状态：**Phase 3.4 Backend 已接线**
-> （`server.go:801-802` 注册 `/api/knowledge/graph` 与 `/api/knowledge/graph/note/`）；
-> **Phase 3.2 / 3.3 Backend 未接线**（`internal/wikilinks` 包无任何 Go 导入方；
-> `server_recommendations.go` 的 `handleGetNoteRecommendations` / `handleSuggestNoteTags`
-> 未在 `server.go` 注册路由）；三者 Frontend（`stores/graph.ts` /
-> `stores/recommendations.ts` / `utils/wikilinks.ts`）尚无任何组件引用，
+> （`6ea85edf` Backend、`cf5af2f6` Frontend）。接线状态：**Phase 3.3 / 3.4 Backend
+> 已接线**——`server.go:792` 注册 `/api/notes/`，`server_assistant.go:524-533`
+> 在该路由下分派 `/recommendations` 与 `/suggest-tags` 到
+> `handleGetNoteRecommendations` / `handleSuggestNoteTags`（`89ae9c3e` 落地），
+> `server.go:801-802` 注册 `/api/knowledge/graph` 与 `/api/knowledge/graph/note/`；
+> **Phase 3.2 Backend 未接线**（`internal/wikilinks` 包无任何 Go 导入方）；
+> 三者 Frontend（`stores/graph.ts` / `stores/recommendations.ts` / `utils/wikilinks.ts`）
+> 尚无任何组件引用，
 > `RecommendationsPanel` / `GraphView` / `KnowledgeGraphPage` **未开发**。
 > 口径见 [FINAL-PROJECT-COMPLETION-REPORT](FINAL-PROJECT-COMPLETION-REPORT.md)。
 
@@ -122,16 +124,19 @@
 
 ## 📊 总体进度
 
+> 表中 Phase 3.2–3.4 的「0%」是**用户可用度**读数（Frontend 未接线 ⇒ 用户不可用），
+> 与上文「Backend 已接线」不矛盾。
+
 ```
 Phase 2.5.1: 路由注册        ██████████ 100% ✅
-Phase 3.1:   页面实现        ████░░░░░░  40% 🔄
-Phase 2.5.2: 编译验证        ░░░░░░░░░░   0% ⏳
+Phase 3.1:   页面实现        ██████████ 100% ✅
+Phase 2.5.2: 编译验证        ██████████ 100% ✅
 Phase 2.5.3: 功能测试        ░░░░░░░░░░   0% ⏳
 Phase 3.2:   双向链接        ░░░░░░░░░░   0% ⏳
 Phase 3.3:   AI推荐          ░░░░░░░░░░   0% ⏳
 Phase 3.4:   关系图谱        ░░░░░░░░░░   0% ⏳
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Overall:                     ██░░░░░░░░  20%
+Overall:                     ████░░░░░░  43%
 ```
 
 ---
