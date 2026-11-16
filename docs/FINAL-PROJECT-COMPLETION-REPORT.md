@@ -18,7 +18,7 @@
 - ✅ 15个 API 端点
 - ✅ 双数据库支持（PostgreSQL + SQLite）
 - ✅ 16个单元测试（100%通过）
-- **代码量**: ~3,200行
+- **代码量**: ~3,351行
 
 ### Phase 2: Frontend 核心功能（100%）
 - ✅ 3个 Pinia Stores（692行）
@@ -41,9 +41,9 @@
 - **代码量**: ~2,336行
 
 ### Phase 3.2: 双向链接解析（代码入库 100%，未接线）
-**Backend (694行)**:
+**Backend (699行)**:
 - ✅ wikilinks/parser.go（167行）
-- ✅ wikilinks/resolver.go（232行）
+- ✅ wikilinks/resolver.go（237行）
 - ✅ wikilinks/parser_test.go（295行）
 - ✅ 支持 `[[keyword]]` 和 `[[keyword|display]]` 语法
 
@@ -51,11 +51,11 @@
 - ✅ utils/wikilinks.ts
 - ✅ 解析和渲染工具函数
 
-### Phase 3.3: AI 智能推荐（代码入库 100%，未接线）
-**Backend (601行)**:
+### Phase 3.3: AI 智能推荐（代码入库 100%，Backend 已接线，Frontend 未接线）
+**Backend (610行)**:
 - ✅ recommendations/similarity.go（281行）- TF-IDF算法
 - ✅ recommendations/tags.go（150行）- 标签建议
-- ✅ recommendations/handler.go（170行）- API端点
+- ✅ recommendations/handler.go（179行）- API端点
 
 **Frontend (93行)**:
 - ✅ stores/recommendations.ts
@@ -77,9 +77,9 @@
 ### 总代码量
 ```
 Backend:
-- Phase 1: 3,200行
-- Phase 3 (3.2-3.4): 2,004行
-- 小计: 5,204行
+- Phase 1: 3,351行
+- Phase 3 (3.2-3.4): 2,009行
+- 小计: 5,360行
 
 Frontend:
 - Phase 2: 4,576行
@@ -87,7 +87,7 @@ Frontend:
 - Phase 3 (3.2-3.4): 244行
 - 小计: 7,156行
 
-项目总计: ~12,360行代码
+项目总计: ~12,516行代码
 ```
 
 ### 文件统计
@@ -164,14 +164,16 @@ Phase 3: 3次
 
 > ⚠️ **完成度口径**：Phase 3.1（4 个页面 + `knowledgeRoutes` 路由注册）**已接线可用**；
 > Phase 3.4 关系图谱的 **Backend 已接线**（`server.go:801-802` 注册
-> `/api/knowledge/graph` 与 `/api/knowledge/graph/note/`）；Phase 3.2 双向链接
-> （`internal/wikilinks` 包无任何 Go 导入方）、Phase 3.3 AI 推荐
-> （`server_recommendations.go` 的 `handleGetNoteRecommendations` /
-> `handleSuggestNoteTags` 未在 `server.go` 注册路由）**Backend 尚未接线**；
+> `/api/knowledge/graph` 与 `/api/knowledge/graph/note/`）；Phase 3.3 AI 推荐的
+> **Backend 也已接线**——`server.go:792` 注册 `/api/notes/`，
+> `server_assistant.go:524-533` 在该路由下分派 `/recommendations` 与
+> `/suggest-tags` 到 `handleGetNoteRecommendations` / `handleSuggestNoteTags`
+> （`89ae9c3e` 落地）；Phase 3.2 双向链接
+> （`internal/wikilinks` 包无任何 Go 导入方）**Backend 尚未接线**；
 > 三者的 Frontend（`stores/graph.ts` / `stores/recommendations.ts` /
 > `utils/wikilinks.ts`）**无任何组件引用**，`RecommendationsPanel` / `GraphView`
 > 组件未开发（见「已知限制」）。
-> 按「已入库」计 100%，按「用户可用」计 Phase 3.2–3.3 未完成、Phase 3.4 仅 Backend 可用。
+> 按「已入库」计 100%，按「用户可用」计 Phase 3.2 未完成、Phase 3.3 / 3.4 仅 Backend 可用。
 
 ---
 
@@ -300,7 +302,7 @@ Phase 3: 3次
 ✅ **Phase 2.5**: 路由集成、编译验证、基本测试  
 ✅ **Phase 3**: 页面实现、WikiLinks、AI推荐、知识图谱  
 
-**总代码量**: ~12,360行  
+**总代码量**: ~12,516行  
 **总文件数**: 47个  
 **总提交数**: 23次  
 **文档数量**: 10份  

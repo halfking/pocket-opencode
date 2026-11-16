@@ -5,11 +5,13 @@
 
 > **已被取代 / 口径对账（2026-11-16 订正）**：本文 Phase 3.2–3.4 的「0%」读数指
 > **用户可用度**（未接线＝不可用），**代码本身已入库**（Backend `6ea85edf` /
-> Frontend `cf5af2f6`）——但 Phase 3.2 / 3.3 的 Backend **尚未接线**
-> （`internal/wikilinks` 包无任何 Go 导入方；`server_recommendations.go` 的
-> `handleGetNoteRecommendations` / `handleSuggestNoteTags` 未在 `server.go` 注册路由），
-> Phase 3.4 的 **Backend 已接线**（`server.go:801-802` 注册 `/api/knowledge/graph`
-> 与 `/api/knowledge/graph/note/`）；三者 Frontend（`stores/graph.ts` /
+> Frontend `cf5af2f6`）——Phase 3.2 的 Backend **尚未接线**
+> （`internal/wikilinks` 包无任何 Go 导入方）；Phase 3.3 / 3.4 的
+> **Backend 已接线**——`server.go:792` 注册 `/api/notes/`，
+> `server_assistant.go:524-533` 在该路由下分派 `/recommendations` 与
+> `/suggest-tags` 到 `handleGetNoteRecommendations` / `handleSuggestNoteTags`，
+> `server.go:801-802` 注册 `/api/knowledge/graph`
+> 与 `/api/knowledge/graph/note/`；三者 Frontend（`stores/graph.ts` /
 > `stores/recommendations.ts` / `utils/wikilinks.ts`）均无组件引用，
 > `RecommendationsPanel` / `GraphView` / `KnowledgeGraphPage` 未开发。
 > 最新（按「已入库」计）口径见
@@ -54,10 +56,10 @@
 ```
 Backend:
 - 数据模型: 471行
-- API Handlers: 1,166行
+- API Handlers: 1,167行
 - 数据库迁移: 503行
 - 测试: 748行
-- 总计: ~3,502行
+- 总计: ~3,351行
 
 Frontend:
 - Stores: 692行
@@ -67,7 +69,7 @@ Frontend:
 - Types & Routes: 232行
 - 总计: ~6,912行
 
-项目总计: ~10,414行代码
+项目总计: ~10,263行代码
 ```
 
 ### 文件统计

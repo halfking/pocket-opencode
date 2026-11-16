@@ -3,10 +3,12 @@
 **更新时间**: 2026-11-14 23:35
 
 > **状态订正（2026-11-16）**：Phase 3.2–3.4 的**代码已入库**（Backend/Frontend 均已提交）。
-> 接线状态：**Phase 3.4 Backend 已接线**（`server.go:801-802` 注册 `/api/knowledge/graph`
-> 与 `/api/knowledge/graph/note/`）；**Phase 3.2 / 3.3 Backend 未接线**——
-> `internal/wikilinks` 包无任何 Go 导入方，`server_recommendations.go` 的
-> `handleGetNoteRecommendations` / `handleSuggestNoteTags` 未在 `server.go` 注册路由；
+> 接线状态：**Phase 3.3 / 3.4 Backend 已接线**——`server.go:792` 注册 `/api/notes/`，
+> `server_assistant.go:524-533` 在该路由下分派 `/recommendations` 与 `/suggest-tags`
+> 到 `handleGetNoteRecommendations` / `handleSuggestNoteTags`（`89ae9c3e` 落地），
+> `server.go:801-802` 注册 `/api/knowledge/graph` 与 `/api/knowledge/graph/note/`；
+> **Phase 3.2 Backend 未接线**——
+> `internal/wikilinks` 包无任何 Go 导入方；
 > 三者 Frontend（`stores/graph.ts` / `stores/recommendations.ts` / `utils/wikilinks.ts`）
 > 尚无任何组件引用，`RecommendationsPanel` / `GraphView` / `KnowledgeGraphPage` **未开发**。
 > 完成度口径见 [FINAL-PROJECT-COMPLETION-REPORT](FINAL-PROJECT-COMPLETION-REPORT.md)。
@@ -23,7 +25,7 @@
 
 **当前状态**: 代码入库，未接线（2026-11-16 订正）
 
-### Phase 3.3: AI 智能推荐（代码入库，未接线）
+### Phase 3.3: AI 智能推荐（Backend 已接线，Frontend 未接线）
 **Agent 2** 正在实现：
 - Backend similarity 算法（TF-IDF + 余弦相似度）
 - Backend tags suggestion
@@ -31,7 +33,8 @@
 - recommendations store
 - NoteDetailPage 推荐集成
 
-**当前状态**: 代码入库，未接线（2026-11-16 订正）
+**当前状态**: 代码入库，Backend 已接线（`/api/notes/{id}/recommendations` 与
+`/api/notes/{id}/suggest-tags`），Frontend 未接线（2026-11-16 订正）
 
 ### Phase 3.4: 关系图谱（Backend 已接线，Frontend 未接线）
 **Agent 3** 正在实现：
@@ -41,7 +44,8 @@
 - graph store
 - 力导向布局
 
-**当前状态**: 代码入库，未接线（2026-11-16 订正）
+**当前状态**: 代码入库，Backend 已接线（`/api/knowledge/graph` 与
+`/api/knowledge/graph/note/`），Frontend 未接线（2026-11-16 订正）
 
 ---
 

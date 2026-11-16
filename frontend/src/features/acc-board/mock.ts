@@ -208,6 +208,29 @@ function seed(): void {
   ]
 }
 
+/**
+ * 把演示状态复位到种子态。
+ *
+ * 演示状态活在**模块内存**里（state.runs）：审批一次就把某个 run 从 2/5
+ * 推进到 3/5 ⇒ 不复位的话，「保存并刷新」刷出来的还是上一次审批后的状态，
+ * 演示就不可重放了。
+ *
+ * 以前唯一的复位手段是**整页 reload**（重新执行 bundle ⇒ seed() 重跑）。
+ * 但整页 reload 会把登录态一起打掉：这台机的后端验不了 app 持有的
+ * RedClaw token，reload 后 app 自己就登出了 ⇒ 「保存」反而把人踢出登录。
+ * 所以这里给出一个**进程内**的复位口子：复位 + 清掉 feed/accept 定时器。
+ */
+export function resetMockState(): void {
+  for (const run of state.runs) {
+    if (run.feedTimer) clearInterval(run.feedTimer)
+    if (run.acceptTimer) clearTimeout(run.acceptTimer)
+  }
+  state.runs = []
+  state.seq = 0
+  state.envSeq = 0
+  seed()
+}
+
 /** 种子事件构造辅助（occurredAt 由相对偏移生成）。 */
 function seedEvents(runId: string, baseMs: number, list: AccOrchestrationEvent[]): AccOrchestrationEvent[] {
   return list.map((e, i) => ({
