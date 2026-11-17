@@ -210,7 +210,7 @@ onMounted(() => {
   padding: var(--space-3);
   text-align: center;
 }
-.metric-num { display: block; font-size: 22px; font-weight: 600; color: var(--text-primary); }
+.metric-num { display: block; font-size: var(--text-2xl); font-weight: 600; color: var(--text-primary); }
 .metric-label { font-size: var(--text-2xs); color: var(--text-secondary); }
 
 .actions { display: flex; gap: var(--space-3); padding: var(--space-4); }

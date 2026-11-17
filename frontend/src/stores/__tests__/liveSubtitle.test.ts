@@ -1,42 +1,55 @@
 /**
  * liveSubtitle Store 单元测试
  */
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { strict as assert } from 'node:assert'
+import { describe, it, beforeEach } from 'node:test'
 import { setActivePinia, createPinia } from 'pinia'
-import { useLiveSubtitleStore } from '../liveSubtitle'
+import { installLiveSubtitleStorage, useLiveSubtitleStore } from '../liveSubtitle.ts'
+
+function memoryStorage() {
+  const map = new Map<string, string>()
+  return {
+    getItem: (key: string) => map.get(key) ?? null,
+    setItem: (key: string, value: string) => { map.set(key, value) },
+    removeItem: (key: string) => { map.delete(key) },
+    dump: () => map,
+  }
+}
+
+let storage = memoryStorage()
 
 describe('useLiveSubtitleStore', () => {
   beforeEach(() => {
+    storage = memoryStorage()
+    installLiveSubtitleStorage(storage)
     setActivePinia(createPinia())
-    // Mock fetch
-    global.fetch = vi.fn()
   })
 
   describe('基础状态', () => {
     it('初始状态正确', () => {
       const store = useLiveSubtitleStore()
-      expect(store.segments).toEqual([])
-      expect(store.visible).toBe(false)
-      expect(store.pinned).toBe(false)
-      expect(store.translationEnabled).toBe(false)
-      expect(store.targetLang).toBe('zh')
-      expect(store.activeMeetingId).toBeNull()
+      assert.deepEqual(store.segments, [])
+      assert.equal(store.visible, false)
+      assert.equal(store.pinned, false)
+      assert.equal(store.translationEnabled, false)
+      assert.equal(store.targetLang, 'zh')
+      assert.equal(store.activeMeetingId, null)
     })
 
     it('segmentCount 计算属性正确', () => {
       const store = useLiveSubtitleStore()
-      expect(store.segmentCount).toBe(0)
+      assert.equal(store.segmentCount, 0)
       
       store.addSegment({ meetingId: 'm1', speaker: 'A', text: 'Hello', timestamp: 0 })
-      expect(store.segmentCount).toBe(1)
+      assert.equal(store.segmentCount, 1)
     })
 
     it('hasSegments 计算属性正确', () => {
       const store = useLiveSubtitleStore()
-      expect(store.hasSegments).toBe(false)
+      assert.equal(store.hasSegments, false)
       
       store.addSegment({ meetingId: 'm1', speaker: 'A', text: 'Hello', timestamp: 0 })
-      expect(store.hasSegments).toBe(true)
+      assert.equal(store.hasSegments, true)
     })
   })
 
@@ -47,9 +60,9 @@ describe('useLiveSubtitleStore', () => {
       
       store.startSession('m2')
       
-      expect(store.activeMeetingId).toBe('m2')
-      expect(store.segments).toEqual([])
-      expect(store.visible).toBe(true)
+      assert.equal(store.activeMeetingId, 'm2')
+      assert.deepEqual(store.segments, [])
+      assert.equal(store.visible, true)
     })
 
     it('endSession 隐藏窗口但保留片段', () => {
@@ -59,9 +72,9 @@ describe('useLiveSubtitleStore', () => {
       
       store.endSession()
       
-      expect(store.activeMeetingId).toBeNull()
-      expect(store.visible).toBe(false)
-      expect(store.segments.length).toBe(1) // 保留片段
+      assert.equal(store.activeMeetingId, null)
+      assert.equal(store.visible, false)
+      assert.equal(store.segments.length, 1) // 保留片段
     })
   })
 
@@ -70,14 +83,19 @@ describe('useLiveSubtitleStore', () => {
       const store = useLiveSubtitleStore()
       store.addSegment({ meetingId: 'm1', speaker: 'A', text: 'Hello', timestamp: 1000 })
       
-      expect(store.segments).toHaveLength(1)
-      expect(store.segments[0]).toMatchObject({
+      assert.equal(store.segments.length, 1)
+      assert.deepEqual({
         meetingId: 'm1',
         speaker: 'A',
         text: 'Hello',
         timestamp: 1000
+      }, {
+        meetingId: store.segments[0].meetingId,
+        speaker: store.segments[0].speaker,
+        text: store.segments[0].text,
+        timestamp: store.segments[0].timestamp,
       })
-      expect(store.segments[0].id).toMatch(/^seg-/)
+      assert.match(store.segments[0].id, /^seg-/)
     })
 
     it('addSegment 超过1000条自动裁剪', () => {
@@ -87,7 +105,7 @@ describe('useLiveSubtitleStore', () => {
         store.addSegment({ meetingId: 'm1', speaker: 'A', text: `text${i}`, timestamp: i })
       }
       
-      expect(store.segments.length).toBe(550) // 裁剪到 550 条
+      assert.equal(store.segments.length, 550) // 裁剪到 550 条
     })
 
     it('updateSegment 更新指定片段', () => {
@@ -97,8 +115,8 @@ describe('useLiveSubtitleStore', () => {
       
       store.updateSegment(id, { text: 'Hi', speaker: 'B' })
       
-      expect(store.segments[0].text).toBe('Hi')
-      expect(store.segments[0].speaker).toBe('B')
+      assert.equal(store.segments[0].text, 'Hi')
+      assert.equal(store.segments[0].speaker, 'B')
     })
 
     it('clearSegments 清空所有片段', () => {
@@ -108,20 +126,20 @@ describe('useLiveSubtitleStore', () => {
       
       store.clearSegments()
       
-      expect(store.segments).toEqual([])
+      assert.deepEqual(store.segments, [])
     })
   })
 
   describe('翻译功能', () => {
     it('toggleTranslation 切换翻译状态', () => {
       const store = useLiveSubtitleStore()
-      expect(store.translationEnabled).toBe(false)
+      assert.equal(store.translationEnabled, false)
       
       store.toggleTranslation()
-      expect(store.translationEnabled).toBe(true)
+      assert.equal(store.translationEnabled, true)
       
       store.toggleTranslation()
-      expect(store.translationEnabled).toBe(false)
+      assert.equal(store.translationEnabled, false)
     })
 
     it('setTargetLang 切换目标语言并清除翻译', () => {
@@ -131,8 +149,8 @@ describe('useLiveSubtitleStore', () => {
       
       store.setTargetLang('ja')
       
-      expect(store.targetLang).toBe('ja')
-      expect(store.segments[0].translation).toBeUndefined()
+      assert.equal(store.targetLang, 'ja')
+      assert.equal(store.segments[0].translation, undefined)
     })
 
     it('setTargetLang 相同语言不清除翻译', () => {
@@ -142,7 +160,7 @@ describe('useLiveSubtitleStore', () => {
       
       store.setTargetLang('zh')
       
-      expect(store.segments[0].translation).toBe('你好')
+      assert.equal(store.segments[0].translation, '你好')
     })
   })
 
@@ -155,12 +173,12 @@ describe('useLiveSubtitleStore', () => {
       
       const srt = store.exportSRT()
       
-      expect(srt).toContain('1\n')
-      expect(srt).toContain('00:00:00,000 --> 00:00:03,000')
-      expect(srt).toContain('[A] Hello')
-      expect(srt).toContain('你好')
-      expect(srt).toContain('2\n')
-      expect(srt).toContain('[B] Hi')
+      assert.ok(srt.includes('1\n'))
+      assert.ok(srt.includes('00:00:00,000 --> 00:00:03,000'))
+      assert.ok(srt.includes('[A] Hello'))
+      assert.ok(srt.includes('你好'))
+      assert.ok(srt.includes('2\n'))
+      assert.ok(srt.includes('[B] Hi'))
     })
 
     it('exportText 生成纯文本格式', () => {
@@ -171,9 +189,9 @@ describe('useLiveSubtitleStore', () => {
       
       const text = store.exportText()
       
-      expect(text).toContain('[A] Hello')
-      expect(text).toContain('→ 你好')
-      expect(text).toContain('[B] Hi')
+      assert.ok(text.includes('[A] Hello'))
+      assert.ok(text.includes('→ 你好'))
+      assert.ok(text.includes('[B] Hi'))
     })
 
     it('exportText 无说话人时不显示标签', () => {
@@ -182,8 +200,8 @@ describe('useLiveSubtitleStore', () => {
       
       const text = store.exportText()
       
-      expect(text).toBe('Hello')
-      expect(text).not.toContain('[')
+      assert.equal(text, 'Hello')
+      assert.ok(!text.includes('['))
     })
   })
 
@@ -194,26 +212,26 @@ describe('useLiveSubtitleStore', () => {
       
       store.savePosition()
       
-      const saved = localStorage.getItem('liveSubtitle.position')
-      expect(saved).toBe(JSON.stringify({ x: 100, y: 200 }))
+      const saved = storage.getItem('liveSubtitle.position')
+      assert.equal(saved, JSON.stringify({ x: 100, y: 200 }))
     })
 
     it('loadPosition 从 localStorage 加载', () => {
-      localStorage.setItem('liveSubtitle.position', JSON.stringify({ x: 150, y: 250 }))
+      storage.setItem('liveSubtitle.position', JSON.stringify({ x: 150, y: 250 }))
       
       const store = useLiveSubtitleStore()
       store.loadPosition()
       
-      expect(store.position).toEqual({ x: 150, y: 250 })
+      assert.deepEqual(store.position, { x: 150, y: 250 })
     })
 
     it('loadPosition 无保存数据时使用默认值', () => {
-      localStorage.removeItem('liveSubtitle.position')
+      storage.removeItem('liveSubtitle.position')
       
       const store = useLiveSubtitleStore()
       store.loadPosition()
       
-      expect(store.position).toEqual({ x: 20, y: 100 })
+      assert.deepEqual(store.position, { x: 20, y: 100 })
     })
   })
 })

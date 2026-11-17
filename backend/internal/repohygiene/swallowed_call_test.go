@@ -117,6 +117,7 @@ var s945Ledger = []s945LedgerRow{
 	{"backend/internal/agent/transport_ws.go", "WriteControl", 1},
 	{"backend/internal/email/crypto.go", "Close", 1},
 	{"backend/internal/email/crypto.go", "WriteString", 1},
+	{"backend/internal/diarization/client.go", "WriteField", 3},
 	{"backend/internal/email/fetcher.go", "Close", 2},
 	{"backend/internal/email/fetcher.go", "SetDeadline", 6},
 	{"backend/internal/email/invoice_store.go", "Rollback", 1},
@@ -594,10 +595,12 @@ func TestS945LedgerMatchesSource(t *testing.T) {
 	//	是 409 冲突兜底响应（原响应已被判废，写出失败无从补救）；auth/resource.go 的一处是
 	//	审计上下文写出（m 是内存 buffer，错误随后随 marshal 一并暴露）；
 	//	两处 `code, _ := resourceCurrent` 丢的是 role（授权判定只看 code）。
-	if got, want := len(res.Discards), 98; got != want {
+	// ⚠ 98 → 101（2026-11-15）：diarization client 新增 3 处 multipart
+	//	`WriteField`，与既有 STT 上游转发同族；底层 writer 已坏时上游请求会失败。
+	if got, want := len(res.Discards), 101; got != want {
 		t.Errorf("被丢弃的调用总处数 = %d（台账登记的是 %d 处）⇒ 数量变了必须重新定性", got, want)
 	}
-	if got, want := len(s945Ledger), 44; got != want {
+	if got, want := len(s945Ledger), 45; got != want {
 		t.Errorf("台账行数 = %d（期望 %d）⇒ 台账行数变了必须重新定性", got, want)
 	}
 }

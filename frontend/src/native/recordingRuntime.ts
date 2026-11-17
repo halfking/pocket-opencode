@@ -26,7 +26,7 @@ import { pickSupportedRecorderMime } from './recorderMime'
 import { RollingWebmDecoder, arrayBufferToBase64 } from './recording-audio-transcode'
 import { sttFailureText } from '../api/stt-error'
 import { saveMeetingAudio, resolvePersistedAudio } from './meeting-audio'
-import { VadSegmenter } from './vad-segmenter'
+import { createVad, getDefaultVadConfig, type VadInstance } from './vad-factory'
 import { SpeakerDiarizer } from './speaker-diarization'
 import { loadSpeakerProfiles, upsertVoiceprintLabel } from '../features/meetings/voiceprints-store'
 import {
@@ -232,7 +232,7 @@ export class MeetingRecorderRuntime {
   readonly activeMeetingId = ref('')
 
   private mediaStream: MediaStream | null = null
-  private vadSegmenter: VadSegmenter | null = null
+  private vadSegmenter: VadInstance | null = null
   private diarizer: SpeakerDiarizer | null = null
   private startTime = 0
   private elapsedTimer: ReturnType<typeof setInterval> | null = null
@@ -601,20 +601,28 @@ export class MeetingRecorderRuntime {
         this.mediaStream = opened.stream
         this.inputs.value = opened.inputs
         this.selectedInput.value = opened.selected
-        this.vadSegmenter = new VadSegmenter({
-          silenceMs: 1500,
-          minSpeechMs: 400,
-          energyThreshold: 0.012,
-          // ⚠ §536：这组参数的真实行为已实测（设计文档 §536.2–§536.5）。
-          //   energyThreshold 0.012 的有效值是 0.0118（−38.6 dBFS），
-          //   跨过它段数会**阶跃**塌陷成 1 段；单段一旦超过 60s，
-          //   sliceBuffer 保留窗口会让段**静默丢掉前面的音频**。
-          //   底噪是否真的高于该值仍⛔未测（需真人录音），但丢失机制与触发无关。
-          // maxSpeechMs 是为此加的封顶（§536.8 甲）：显式写出来而不吃默认值，
-          // 是为了让「20s < 上游最紧上限 30s」这个约束在代码里可见。
-          maxSpeechMs: 20_000,
-          onSegment: (seg) => { void this.processSegment(seg.blob, seg.startMs, seg.endMs) },
-        })
+        
+        // 使用 VAD 工厂创建实例（支持能量检测和 Silero VAD 两种方案）
+        const vadConfig = getDefaultVadConfig()
+        console.log(`[recordingRuntime] Creating VAD with type: ${vadConfig.type}`)
+        
+        this.vadSegmenter = await createVad(
+          {
+            ...vadConfig,
+            // ⚠ §536：这组参数的真实行为已实测（设计文档 §536.2–§536.5）。
+            //   energyThreshold 0.012 的有效值是 0.0118（−38.6 dBFS），
+            //   跨过它段数会**阶跃**塌陷成 1 段；单段一旦超过 60s，
+            //   sliceBuffer 保留窗口会让段**静默丢掉前面的音频**。
+            //   底噪是否真的高于该值仍⛔未测（需真人录音），但丢失机制与触发无关。
+            // maxSpeechMs 是为此加的封顶（§536.8 甲）：显式写出来而不吃默认值，
+            // 是为了让「20s < 上游最紧上限 30s」这个约束在代码里可见。
+            energyThreshold: 0.012,
+            maxSpeechMs: 20_000,
+          },
+          (seg) => { void this.processSegment(seg.blob, seg.startMs, seg.endMs) }
+        )
+        
+        console.log(`[recordingRuntime] VAD created successfully: ${this.vadSegmenter.type}`)
         await this.vadSegmenter.start(this.mediaStream)
         document.addEventListener('visibilitychange', this.onHidden)
       }

@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/halfking/pocket-opencode/backend/internal/notes"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // Handler provides HTTP endpoints for AI recommendations.
@@ -72,8 +74,7 @@ func (h *Handler) handleGetRecommendations(w http.ResponseWriter, r *http.Reques
 	}
 
 	// Return results
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"recommendations": similar,
 		"count":           len(similar),
 	})
@@ -108,7 +109,7 @@ func (h *Handler) handleSuggestTags(w http.ResponseWriter, r *http.Request) {
 
 	// Parse request body
 	var req SuggestTagsRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
 		// Empty body is OK, we'll use the note's existing content
 		req.Content = ""
 	}
@@ -143,12 +144,20 @@ func (h *Handler) handleSuggestTags(w http.ResponseWriter, r *http.Request) {
 	suggestions := h.suggester.SuggestTagsFromNote(note.Title, content, note.Domain, note.Tags)
 
 	// Return results
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"suggestions":  suggestions,
 		"existingTags": existingTags,
 		"count":        len(suggestions),
 	})
+}
+
+// writeJSON writes a JSON response and reports write failures.
+func writeJSON(w http.ResponseWriter, status int, body any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	if err := json.NewEncoder(w).Encode(body); err != nil {
+		slog.Warn("writeJSON: 响应体写出失败", "status", status, "error", err)
+	}
 }
 
 // getNote retrieves a note with ownership checks.

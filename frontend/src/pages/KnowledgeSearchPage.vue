@@ -238,11 +238,17 @@ function getSourceLabel(source: string): string {
 }
 
 function highlightText(text: string): string {
-  if (!searchQuery.value.trim()) return text
-  
+  const escapedText = text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
   const query = searchQuery.value.trim()
-  const regex = new RegExp(`(${query})`, 'gi')
-  return text.replace(regex, '<mark>$1</mark>')
+  if (!query) return escapedText
+  const escapedQuery = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const regex = new RegExp(`(${escapedQuery})`, 'gi')
+  return escapedText.replace(regex, '<mark>$1</mark>')
 }
 
 function formatDate(dateStr: string): string {

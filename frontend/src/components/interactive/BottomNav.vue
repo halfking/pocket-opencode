@@ -129,7 +129,7 @@ defineExpose({
 }
 
 .nav-icon {
-  font-size: 22px;                 /* 修改：24px → 22px */
+  font-size: var(--text-2xl);                 /* 修改：24px → 22px */
   line-height: 1;
   transition: transform var(--duration-base) var(--ease-spring);
 }

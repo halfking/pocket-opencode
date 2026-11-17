@@ -338,7 +338,7 @@ const handleTouchEnd = async () => {
 
 .refresh-icon {
   position: relative;
-  font-size: 22px;
+  font-size: var(--text-2xl);
   line-height: 1;
   color: var(--text-tertiary, var(--text-muted));
   transition: color var(--duration-fast) var(--ease-out);

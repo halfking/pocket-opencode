@@ -333,7 +333,7 @@ onUnmounted(() => {
 }
 .metric-value.cost {
   color: var(--brand-primary);
-  font-size: 22px;
+  font-size: var(--text-2xl);
 }
 
 .metric-label {

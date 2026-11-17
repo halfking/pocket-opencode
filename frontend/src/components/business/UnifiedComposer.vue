@@ -680,7 +680,7 @@ onBeforeUnmount(() => {
   0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.35); }
   50% { box-shadow: 0 0 0 8px rgba(239, 68, 68, 0); }
 }
-.uc-tool .material-symbols-outlined { font-size: 22px; }
+.uc-tool .material-symbols-outlined { font-size: var(--text-2xl); }
 
 .uc-hint {
   font-size: var(--text-sm);

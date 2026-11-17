@@ -204,6 +204,7 @@ import {
 } from '@ionic/vue'
 import { useNoteLinksStore } from '../stores/noteLinks'
 import type { Note, RelatedNotesResponse } from '../types/knowledge'
+import { renderMarkdown } from '../utils/markdown'
 
 const router = useRouter()
 const route = useRoute()
@@ -229,28 +230,8 @@ const hasAnyLinks = computed(() => {
 
 const renderedContent = computed(() => {
   if (!note.value?.content) return ''
-  
-  // 简单的 Markdown 渲染（实际项目中应使用 marked 或 markdown-it）
-  let html = note.value.content
-  
-  // 标题
-  html = html.replace(/^### (.*$)/gim, '<h3>$1</h3>')
-  html = html.replace(/^## (.*$)/gim, '<h2>$1</h2>')
-  html = html.replace(/^# (.*$)/gim, '<h1>$1</h1>')
-  
-  // 粗体
-  html = html.replace(/\*\*(.*?)\*\*/gim, '<strong>$1</strong>')
-  
-  // 斜体
-  html = html.replace(/\*(.*?)\*/gim, '<em>$1</em>')
-  
-  // 链接
-  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/gim, '<a href="$2" target="_blank">$1</a>')
-  
-  // 换行
-  html = html.replace(/\n/gim, '<br>')
-  
-  return html
+
+  return renderMarkdown(note.value.content)
 })
 
 async function loadNote() {

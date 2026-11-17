@@ -265,10 +265,12 @@ describe('§589 · 声纹侧：不得声称原生 ECAPA 可用', () => {
 
   it('★ 扫描面说明：另外两处 ECAPA 提法已逐个核过，不在判据范围内', () => {
     // `speaker-embedding.ts` 的「优先原生 ECAPA」——代码确实先试原生再兜底，
-    //   描述的是**尝试顺序**而不是可用性；`speaker-features.ts` 的是
+    //   2026-11-15 实核：当前命中共 2 处（第 36/41 行），分别位于 JSDoc
+    //   与执行注释；代码确实先尝试原生再兜底，描述的是**尝试顺序**
+    //   而不是可用性；`speaker-features.ts` 的是
     //   「若曾在支持 ECAPA 的设备上录过声纹」——反事实条件句。
     // ⛔ 若哪天要把这两处也纳入，先想清楚它们与本判据要禁的不是同一类句子。
-    assert.equal(ecapaClaimLines(read('native', 'speaker-embedding.ts')).length, 1,
+    assert.equal(ecapaClaimLines(read('native', 'speaker-embedding.ts')).length, 2,
       'speaker-embedding.ts 的命中数变了 ⇒ 它已被改动，先核过再决定要不要纳入判据')
   })
 })

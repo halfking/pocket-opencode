@@ -20,15 +20,12 @@ import { isAbortError } from '../../api/abort.ts'
  * `saveAudioPart` 存的是 `Filesystem.getUri` 的产物（`file:///data/...`），
  * 而 SherpaPlugin 用 `new File(audioPath)` 解析 —— 不剥前缀会拿到
  * 「文件不存在」（URI 不是合法的 Linux 路径）。
- * 仅 WAV（原生链的 pcmToWav 产物）值得传：webm（Web 链）传进去只会
- * 得到一次注定失败的 `unsupported_format` 原生调用，纯属浪费。
+ * mimeType 只用于注释追踪：Android 插件构造 Blob 时可能丢失 MIME，
+ * 因此原生落盘路径统一交给 Sherpa 自校验。
  */
 export function nativePartPathForSherpa(filePath: string | null, mimeType: string): string | undefined {
-  // ⚠ 2026-11-14（第六层修复）：Android 原生录音产出的是 PCM/WAV，但前端
-  //   接收到的 Blob.type 可能是 'audio/webm' 或空字符串（取决于 native 插件
-  //   如何构造 Blob）。过于严格的 mimeType 检查会导致有效的本地音频文件
-  //   被拒绝传给 Sherpa，造成「本地转写永不触发」。
-  //   ⇒ 只要 native 平台上有 filePath，就传给 Sherpa 尝试（它内部会校验格式）。
+  // 2026-11-14（第六层修复）：Android 原生录音产出 PCM/WAV，但 Blob.type 可能
+  //   是 'audio/webm' 或空字符串；只要存在原生 filePath 就交给 Sherpa 自校验。
   if (!filePath) return undefined
   return filePath.replace(/^file:\/\//, '')
 }

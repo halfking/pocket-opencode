@@ -11,14 +11,15 @@ import (
 	"sync"
 	"time"
 
+	"github.com/halfking/pocket-opencode/backend/internal/background"
 	"github.com/halfking/pocket-opencode/backend/internal/notes"
 )
 
 // KnowledgeSearchResult 是统一搜索结果的单条记录（docs/2026-11-14 §7.1）。
 type KnowledgeSearchResult struct {
 	ID         string            `json:"id"`
-	Type       string            `json:"type"`       // "note" | "memory" | "email" | "meeting"
-	Source     string            `json:"source"`     // "local" | "memora" | "email" | "meeting"
+	Type       string            `json:"type"`   // "note" | "memory" | "email" | "meeting"
+	Source     string            `json:"source"` // "local" | "memora" | "email" | "meeting"
 	Title      string            `json:"title"`
 	Snippet    string            `json:"snippet"`
 	Highlights []string          `json:"highlights,omitempty"`
@@ -60,10 +61,10 @@ type KnowledgeSearchResponse struct {
 //   - offset: 分页偏移（默认 0）
 //
 // 实现策略：
-//   1. 并发搜索多个源（notes + memora，emails/meetings 预留）
-//   2. 结果合并、按相关性排序、去重
-//   3. 应用过滤条件（notebook/tags/domain/dateRange）
-//   4. 分页返回
+//  1. 并发搜索多个源（notes + memora，emails/meetings 预留）
+//  2. 结果合并、按相关性排序、去重
+//  3. 应用过滤条件（notebook/tags/domain/dateRange）
+//  4. 分页返回
 func (s *Server) handleKnowledgeSearch(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -139,25 +140,25 @@ func (s *Server) handleKnowledgeSearch(w http.ResponseWriter, r *http.Request) {
 	// 1. 搜索本地笔记
 	if (source == "all" || source == "notes") && s.notesStore != nil {
 		wg.Add(1)
-		go func() {
+		background.Go("knowledge-search-local-notes", func() {
 			defer wg.Done()
 			results := s.searchLocalNotes(ctx, userID, workspaceID, query, domain, notebookID, tags, limit*2)
 			mu.Lock()
 			allResults = append(allResults, results...)
 			mu.Unlock()
-		}()
+		})
 	}
 
 	// 2. 搜索 Memora 记忆库
 	if (source == "all" || source == "memora") && s.memora != nil {
 		wg.Add(1)
-		go func() {
+		background.Go("knowledge-search-memora", func() {
 			defer wg.Done()
 			results := s.searchMemora(ctx, query, tags, limit*2)
 			mu.Lock()
 			allResults = append(allResults, results...)
 			mu.Unlock()
-		}()
+		})
 	}
 
 	// 3. 搜索邮件（预留）
@@ -475,14 +476,14 @@ func (s *Server) extractTitle(memory string) string {
 	lines := strings.Split(memory, "\n")
 	if len(lines) > 0 && lines[0] != "" {
 		title := lines[0]
-		if len(title) > 50 {
-			return title[:50] + "..."
+		if len([]rune(title)) > 50 {
+			return string([]rune(title)[:50]) + "..."
 		}
 		return title
 	}
 
-	if len(memory) > 50 {
-		return memory[:50] + "..."
+	if len([]rune(memory)) > 50 {
+		return string([]rune(memory)[:50]) + "..."
 	}
 	return memory
 }

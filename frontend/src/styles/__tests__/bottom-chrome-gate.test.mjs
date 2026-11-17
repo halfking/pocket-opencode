@@ -78,11 +78,11 @@ for (const m of tokensCss.matchAll(/(--space-[a-z0-9]+):\s*(\d+(?:\.\d+)?)px/g))
  *                     时这条会转红，逼人重新决策，而不是悄悄穿帮。
  */
 const ALLOWLIST = {
-  'pages/KnowledgeHubPage.vue:698': {
+  'pages/KnowledgeHubPage.vue:706': {
     isChrome: true,
     reason: '★ 2026-11-14 审计登记：全页 loading 遮罩（top/left/right/bottom 全 0 覆盖），z=var(--z-menu)(1000) 高于底栏(70)，语义是「覆盖」而非「贴边让位」——被底栏压住反而是缺陷',
   },
-  'pages/KnowledgeHubPage.vue:743': {
+  'pages/KnowledgeHubPage.vue:751': {
     isChrome: true,
     reason: '★ 2026-11-14 审计登记：移动端全高抽屉（top:0 bottom:0，@media ≤767px），z=var(--z-hub-drawer)(200) 高于底栏(70)，同上覆盖语义',
   },

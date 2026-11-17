@@ -212,6 +212,12 @@ appId: com.kaixuan.opencode.pocket
     when:
       visible: ".*打开邮箱.*|.*Open mail.*"
     commands:
+      - scrollUntilVisible:
+          element:
+            text: ".*打开邮箱.*|.*Open mail.*"
+          direction: DOWN
+          centerElement: true
+          timeout: 20000
       - tapOn:
           text: ".*打开邮箱.*|.*Open mail.*"
           retryTapIfNoChange: true

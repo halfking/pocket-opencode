@@ -197,5 +197,5 @@ async function onStop() {
   background: transparent;
   color: var(--danger, #e5484d);
 }
-.rec-stop .material-symbols-outlined { font-size: 22px; }
+.rec-stop .material-symbols-outlined { font-size: var(--text-2xl); }
 </style>

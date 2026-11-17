@@ -592,7 +592,7 @@ function focusMain() {
 }
 
 .back-btn .material-symbols-outlined {
-  font-size: 22px;
+  font-size: var(--text-2xl);
 }
 
 .back-btn:active {
@@ -620,7 +620,7 @@ function focusMain() {
 }
 
 .menu-btn .material-symbols-outlined {
-  font-size: 22px;
+  font-size: var(--text-2xl);
 }
 
 .title {
@@ -707,7 +707,7 @@ function focusMain() {
 }
 
 :deep(.header-actions .material-symbols-outlined) {
-  font-size: 22px;
+  font-size: var(--text-2xl);
   line-height: 1;
 }
 

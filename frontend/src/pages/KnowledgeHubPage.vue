@@ -30,13 +30,15 @@
     <!-- 错误出口（2026-11-14 审计补：notebooks/search/links 读失败必须可见，
          error-outlet-audit 门禁登记见 stores/__tests__/error-outlet-audit.test.ts） -->
     <div
-      v-if="notebooksStore.error || searchStore.error || noteLinksStore.error"
+      v-if="notebooksStore.error || searchStore.error || noteLinksStore.error || graphStore.error || recommendationsStore.error"
       class="hub-errors"
       role="alert"
     >
-      <p v-if="notebooksStore.error">{{ notebooksStore.error }}</p>
-      <p v-if="searchStore.error">{{ searchStore.error }}</p>
-      <p v-if="noteLinksStore.error">{{ noteLinksStore.error }}</p>
+      <p v-if="notebooksStore.error">{{ apiError(notebooksStore.error, "errors.loadNotesFailed") }}</p>
+      <p v-if="searchStore.error">{{ apiError(searchStore.error, "errors.loadNotesFailed") }}</p>
+      <p v-if="noteLinksStore.error">{{ apiError(noteLinksStore.error, "errors.loadNotesFailed") }}</p>
+      <p v-if="graphStore.error">{{ apiError(graphStore.error, "errors.loadNotesFailed") }}</p>
+      <p v-if="recommendationsStore.error">{{ apiError(recommendationsStore.error, "errors.loadNotesFailed") }}</p>
     </div>
 
     <!-- 主内容区域 - 三栏布局 -->
@@ -164,15 +166,21 @@ import NoteList from '../components/knowledge/NoteList.vue'
 import { useNotebooksStore } from '../stores/notebooks'
 import { useKnowledgeSearchStore } from '../stores/knowledgeSearch'
 import { useNoteLinksStore } from '../stores/noteLinks'
+import { useGraphStore } from '../stores/graph'
+import { useRecommendationsStore } from '../stores/recommendations'
+import { useApiError } from '../composables/useApiError'
 import type { Note, SearchFilters, Notebook, Tag } from '../types/knowledge'
 
 const router = useRouter()
 const { t } = useI18n()
+const apiError = useApiError()
 
 // Stores
 const notebooksStore = useNotebooksStore()
 const searchStore = useKnowledgeSearchStore()
 const noteLinksStore = useNoteLinksStore()
+const graphStore = useGraphStore()
+const recommendationsStore = useRecommendationsStore()
 
 // 响应式状态
 const searchQuery = ref('')

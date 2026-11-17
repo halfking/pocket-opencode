@@ -1,0 +1,51 @@
+appId: com.kaixuan.opencode.pocket
+name: auto-recording-test
+---
+# 全自动录音测试 Maestro Flow
+# 配合 scripts/test-recording-auto.sh 使用
+# 负责 UI 操作部分：启动应用 → 进入录音页 → 开始录音
+
+- launchApp
+
+# 等待应用启动完成
+- extendedWaitUntil:
+    visible: "更多"
+    timeout: 20000
+
+# 进入「更多」tab
+- tapOn: "更多"
+- extendedWaitUntil:
+    visible: "会议"
+    timeout: 10000
+
+# 点击「会议」宫格
+- tapOn: "会议"
+- extendedWaitUntil:
+    visible:
+      id: "开始会议录音"
+    timeout: 10000
+
+# 点击 FAB 进入录音页
+- tapOn:
+    id: "开始会议录音"
+
+# 等待录音页加载
+- extendedWaitUntil:
+    visible:
+      id: "开始录音"
+    timeout: 15000
+
+# 开始录音
+- tapOn:
+    id: "开始录音"
+
+# 等待录音状态稳定（VAD 初始化）
+- waitForAnimationToEnd:
+    timeout: 2000
+
+# 验证录音状态指示器
+- assertVisible:
+    id: "停止录音"
+
+# 截图记录
+- takeScreenshot: logs/maestro/auto-recording-started.png

@@ -348,7 +348,7 @@ function go(to: string) {
 }
 
 .cell-icon .material-symbols-outlined {
-  font-size: 22px;
+  font-size: var(--text-2xl);
 }
 
 .cell-label {

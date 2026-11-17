@@ -382,7 +382,7 @@ onMounted(() => {
 }
 
 .stat .num {
-  font-size: 22px;
+  font-size: var(--text-2xl);
   font-weight: var(--font-weight-bold);
   color: var(--text-primary);
   line-height: 1;

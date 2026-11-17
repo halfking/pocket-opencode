@@ -20,6 +20,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/halfking/pocket-opencode/backend/internal/accruntime"
 	"github.com/halfking/pocket-opencode/backend/internal/adapter"
+	"github.com/halfking/pocket-opencode/backend/internal/advisor"
 	"github.com/halfking/pocket-opencode/backend/internal/agent"
 	"github.com/halfking/pocket-opencode/backend/internal/agentbridge"
 	"github.com/halfking/pocket-opencode/backend/internal/aigate"
@@ -28,9 +29,8 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/calendar"
 	cs "github.com/halfking/pocket-opencode/backend/internal/chat_summary"
 	"github.com/halfking/pocket-opencode/backend/internal/chatagent"
-	"github.com/halfking/pocket-opencode/backend/internal/advisor"
-	"github.com/halfking/pocket-opencode/backend/internal/diarization"
 	"github.com/halfking/pocket-opencode/backend/internal/config"
+	"github.com/halfking/pocket-opencode/backend/internal/diarization"
 	"github.com/halfking/pocket-opencode/backend/internal/email"
 	"github.com/halfking/pocket-opencode/backend/internal/feishu"
 	"github.com/halfking/pocket-opencode/backend/internal/finance"
@@ -62,6 +62,7 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/scheduledtask"
 	"github.com/halfking/pocket-opencode/backend/internal/snippet"
 	"github.com/halfking/pocket-opencode/backend/internal/stt"
+	syncsvc "github.com/halfking/pocket-opencode/backend/internal/sync"
 	"github.com/halfking/pocket-opencode/backend/internal/task"
 	"github.com/halfking/pocket-opencode/backend/internal/usersetting"
 	ws "github.com/halfking/pocket-opencode/backend/internal/websocket"
@@ -98,6 +99,7 @@ type Server struct {
 	// Phase 0: 个人助理模块 store 与依赖
 	memora           *memora.HTTPClient // memora 记忆库客户端；nil = 未配置（路由 503）
 	notesStore       *notes.Store
+	pool             *pgxpool.Pool
 	emailStore       *email.Store
 	vaultStore       vaultSyncStorer
 	snippetStore     *snippet.Store
@@ -115,6 +117,14 @@ type Server struct {
 	// (docs/2026-11-14-knowledge-base-integration-plan.md §5.1.2 / §7.3).
 	// nil → those routes return 503. SetNoteLinksStore() is the injection point.
 	noteLinksStore *notelinks.Store
+	// syncOrchestrator backs bidirectional sync between local and memora
+	// (docs/2026-11-14-knowledge-base-integration-plan.md §5.1.3).
+	// nil → sync routes return 503.
+	syncOrchestrator *syncsvc.Orchestrator
+	// savedSearchStore backs /api/knowledge/search/saved
+	// (docs/2026-11-14-knowledge-base-integration-plan.md §5.1.2).
+	// nil → saved search routes return 503.
+	savedSearchStore *syncsvc.SavedSearchStore
 	// learningService backs /api/learning/*: the Learning Core that turns
 	// notes/email/RSS into spaced-repetition material with scheduled reminders
 	// (docs/学习muse/03-架构方案.md §2). nil → those routes return 503, exactly
@@ -129,7 +139,7 @@ type Server struct {
 	sttDiscovery *stt.DiscoveryCache
 	// sttHTTPClient 是 STT 自动发现/试转的出网客户端。默认走 gatewayHTTPClient
 	// （带 SSRF 防护）；测试注入一个拒绝出网的实现，保证单测不打真实网关。
-	
+
 	// diarizationClient 说话人分离服务客户端；nil = 未配置
 	diarizationClient *diarization.Client
 	// advisorClient 动态参谋客户端；nil = 未配置
@@ -295,6 +305,7 @@ func newServer(cfg config.Config, nps adapter.NPSAdapter, opencode adapter.OpenC
 		configAdapter:    configAdapter,
 		wsHub:            hub,
 		pluginHub:        pluginHub,
+		pool:             pool,
 		notesStore:       notesStore,
 		emailStore:       emailStore,
 		vaultStore:       vaultStore,
@@ -794,6 +805,17 @@ func (s *Server) Handler() http.Handler {
 	// 统一知识搜索 API（docs/2026-11-14-knowledge-base-integration-plan.md §5.1.2 / §7.1）
 	// 跨源搜索：notes + memora + emails + meetings
 	mux.HandleFunc("/api/knowledge/search", s.requireAuth(s.handleKnowledgeSearch))
+	// 保存的搜索（docs/2026-11-14-knowledge-base-integration-plan.md §5.1.2）
+	mux.HandleFunc("/api/knowledge/search/saved", s.requireAuth(s.handleSavedSearches))
+	mux.HandleFunc("/api/knowledge/search/saved/", s.requireAuth(s.handleSavedSearchItem))
+	// 同步 API（docs/2026-11-14-knowledge-base-integration-plan.md §5.1.2 / §5.1.3）
+	mux.HandleFunc("/api/sync/pull", s.requireAuth(s.handleSyncPull))
+	mux.HandleFunc("/api/sync/status", s.requireAuth(s.handleSyncStatus))
+	mux.HandleFunc("/api/sync/resolve/", s.requireAuth(s.handleSyncResolve))
+	// 知识图谱 API（docs/2026-11-14-knowledge-base-integration-plan.md §3.4）
+	// 关系图谱可视化：完整图谱与局部图谱
+	mux.HandleFunc("/api/knowledge/graph/note/", s.requireAuth(s.handleKnowledgeGraphForNote))
+	mux.HandleFunc("/api/knowledge/graph", s.requireAuth(s.handleKnowledgeGraph))
 	// memora 记忆库桥（笔记/知识库检索与推送；未配置 POCKET_MEMORA_BASE_URL 时 503）
 	mux.HandleFunc("/api/memora/status", s.requireAuth(s.handleMemoraStatus))
 	mux.HandleFunc("/api/memora/search", s.requireAuth(s.handleMemoraSearch))
@@ -1243,6 +1265,11 @@ var longLivedPatterns = []string{
 	//   ⇒ 用**精确模式**而不是 "/api/meetings/" 前缀（理由见上）。
 	//   ⚠ 前端目前**没有**调用方（可能是移动端在用）⇒ 已登记，见简报 154。
 	"/api/meetings/*/analyze",
+	// Phase 2 说话人分离与多语言并行转写都同步等待外部服务，
+	// handler 自身预算是 5 分钟（server_diarization.go / server_multilang.go）。
+	// 同会议链一样使用精确动作豁免，避免放宽整个 /api/meetings/ 子树。
+	"/api/meetings/*/diarize",
+	"/api/meetings/*/multilingual",
 }
 
 // matchPathPattern 逐段比较；`*` 匹配恰好一个非空段。

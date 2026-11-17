@@ -1,0 +1,38 @@
+appId: com.kaixuan.opencode.pocket
+---
+# Phase 1 VAD 自动化录音测试
+# 目标: 验证VAD动态端点检测，首字延迟<1秒
+
+- launchApp
+- assertVisible: "会议详情"
+
+# 等待页面加载完成
+- waitForAnimationToEnd:
+    timeout: 3000
+
+# 点击"开始录音"按钮
+- tapOn: "开始录音"
+- assertVisible: 
+    text: ".*录音.*|.*停止.*"
+    
+# 等待5秒，让VAD初始化并开始工作
+- waitForAnimationToEnd:
+    timeout: 5000
+
+# 模拟语音输入（通过麦克风）
+# 注意：Maestro无法直接模拟音频，但会触发录音功能
+# 此时应该在logcat中看到VAD初始化日志
+
+# 继续等待10秒观察VAD行为
+- waitForAnimationToEnd:
+    timeout: 10000
+
+# 点击停止录音
+- tapOn:
+    text: ".*停止.*|开始录音"
+    
+# 截图保存结果
+- takeScreenshot: screenshots/vad-test-complete.png
+
+# 验证：应该看到转写结果（如果有音频输入）
+- assertVisible: "会议详情"

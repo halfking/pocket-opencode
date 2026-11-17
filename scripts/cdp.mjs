@@ -37,7 +37,11 @@ const ADB = (process.env.POCKET_ADB_BIN
     ].find((p) => p && existsSync(p))
   || 'adb')
 const SERIAL = process.env.POCKET_SERIAL || '4c308e2e'
-const PKG = 'com.kaixuan.opencode.pocket'
+const PKG = (process.env.POCKET_APP_ID || 'com.kaixuan.opencode.pocket').trim()
+if (!/^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$/.test(PKG)) {
+  console.error('POCKET_APP_ID must be a valid Android applicationId')
+  process.exit(2)
+}
 const PORT = process.env.POCKET_CDP_PORT || '9222'
 
 function adb(args, timeout = 60000) {
@@ -104,38 +108,46 @@ async function evaluate(wsUrl, expression, { awaitPromise = true, returnByValue 
   ws.addEventListener('message', (ev) => {
     const msg = JSON.parse(ev.data)
     if (msg.id && pending.has(msg.id)) {
-      const { resolve, reject } = pending.get(msg.id)
+      const { resolve, reject, timer } = pending.get(msg.id)
+      clearTimeout(timer)
       pending.delete(msg.id)
       if (msg.error) reject(new Error(msg.error.message))
       else resolve(msg.result)
     }
   })
   await new Promise((resolve, reject) => {
-    ws.addEventListener('open', resolve, { once: true })
-    ws.addEventListener('error', () => reject(new Error('ws error')), { once: true })
-    setTimeout(() => reject(new Error('ws open timeout')), 15000)
+    const timer = setTimeout(() => {
+      ws.close()
+      reject(new Error('ws open timeout'))
+    }, 15000)
+    ws.addEventListener('open', () => { clearTimeout(timer); resolve() }, { once: true })
+    ws.addEventListener('error', () => { clearTimeout(timer); reject(new Error('ws error')) }, { once: true })
   })
   const send = (method, params = {}) =>
     new Promise((resolve, reject) => {
       const id = ++msgId
-      pending.set(id, { resolve, reject })
-      ws.send(JSON.stringify({ id, method, params }))
-      setTimeout(() => {
+      const timer = setTimeout(() => {
         if (pending.has(id)) { pending.delete(id); reject(new Error(`${method} timeout`)) }
       }, 45000)
+      pending.set(id, { resolve, reject, timer })
+      ws.send(JSON.stringify({ id, method, params }))
     })
 
-  const res = await send('Runtime.evaluate', {
-    expression,
-    awaitPromise,
-    returnByValue,
-    allowUnsafeEvalBlocklistedAPI: true,
-  })
-  ws.close()
-  if (res.exceptionDetails) {
-    throw new Error(res.exceptionDetails.exception?.description || res.exceptionDetails.text)
+  try {
+    const res = await send('Runtime.evaluate', {
+      expression,
+      awaitPromise,
+      returnByValue,
+      allowUnsafeEvalBlocklistedAPI: true,
+    })
+    if (res.exceptionDetails) {
+      throw new Error(res.exceptionDetails.exception?.description || res.exceptionDetails.text)
+    }
+    return res.result?.value
+  } finally {
+    for (const request of pending.values()) clearTimeout(request.timer)
+    ws.close()
   }
-  return res.result?.value
 }
 
 const cmd = process.argv[2]

@@ -22,6 +22,7 @@ import com.k2fsa.sherpa.onnx.OfflineRecognizer;
 import com.k2fsa.sherpa.onnx.OfflineRecognizerConfig;
 import com.k2fsa.sherpa.onnx.OfflineModelConfig;
 import com.k2fsa.sherpa.onnx.OfflineSenseVoiceModelConfig;
+import com.k2fsa.sherpa.onnx.OfflineParaformerModelConfig;
 import com.k2fsa.sherpa.onnx.OfflineStream;
 import com.k2fsa.sherpa.onnx.OnlineCtcFstDecoderConfig;
 import com.k2fsa.sherpa.onnx.OnlineLMConfig;
@@ -81,6 +82,7 @@ public class SherpaPlugin extends Plugin {
   // ── 模型注册表 ──────────────────────────────────────────────────────
   private static final String MODEL_ZIPFORMER = "zipformer";
   private static final String MODEL_SENSEVOICE = "sensevoice";
+  private static final String MODEL_PARAFORMER = "paraformer";  // Phase 2: 高精度模型
 
   private static final String ZIPFORMER_DIR =
       "sherpa-onnx-streaming-zipformer-small-bilingual-zh-en-2023-02-16-mobile";
@@ -97,6 +99,14 @@ public class SherpaPlugin extends Plugin {
       "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/"
           + SENSEVOICE_DIR + ".tar.bz2";
   private static final String SENSEVOICE_MODEL = "model.int8.onnx";
+
+  // Phase 2: Paraformer 高精度中文识别（字准率95%+，带标点）
+  private static final String PARAFORMER_DIR =
+      "sherpa-onnx-paraformer-zh-2023-03-28";
+  private static final String PARAFORMER_URL =
+      "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/"
+          + PARAFORMER_DIR + ".tar.bz2";
+  private static final String PARAFORMER_MODEL = "model.int8.onnx";
 
   private static final int SAMPLE_RATE = 16000;
 
@@ -156,8 +166,20 @@ public class SherpaPlugin extends Plugin {
         String engine;
         String text;
         float confidence;
-        // 有 SenseVoice 模型走本地高精档；否则流式模型整段过（zipformer-only 用户）。
-        if (modelPresent(MODEL_SENSEVOICE)) {
+        // Phase 2: 优先使用 Paraformer（字准率95%+，带标点）
+        if (modelPresent(MODEL_PARAFORMER)) {
+          ensureModel(MODEL_PARAFORMER);
+          initRecognizer(MODEL_PARAFORMER);
+          synchronized (recognizerLock) {
+            OfflineStream stream = offlineRecognizer.createStream();
+            stream.acceptWaveform(samples, SAMPLE_RATE);
+            offlineRecognizer.decode(stream);
+            text = offlineRecognizer.getResult(stream).getText();
+            stream.release();
+          }
+          confidence = 0.95f;  // Paraformer 高精度档位
+          engine = "paraformer";
+        } else if (modelPresent(MODEL_SENSEVOICE)) {
           ensureModel(MODEL_SENSEVOICE);
           initRecognizer(MODEL_SENSEVOICE);
           synchronized (recognizerLock) {
@@ -281,6 +303,25 @@ public class SherpaPlugin extends Plugin {
         OfflineRecognizerConfig cfg = new OfflineRecognizerConfig();
         cfg.setFeatConfig(new FeatureConfig(SAMPLE_RATE, 80, 0.0f));
         cfg.setModelConfig(mc);
+        offlineRecognizer = new OfflineRecognizer(null, cfg);
+      } else if (MODEL_PARAFORMER.equals(model)) {
+        // Phase 2: Paraformer 高精度中文识别（字准率95%+，带标点）
+        if (offlineRecognizer != null) return;
+        File dir = modelDir(MODEL_PARAFORMER);
+        OfflineModelConfig mc = new OfflineModelConfig();
+        mc.setParaformer(new OfflineParaformerModelConfig(
+            new File(dir, PARAFORMER_MODEL).getAbsolutePath(),
+            new QnnConfig("", "", "")));
+        mc.setTokens(new File(dir, "tokens.txt").getAbsolutePath());
+        mc.setNumThreads(2);
+        mc.setDebug(false);
+        mc.setProvider("cpu");
+        mc.setModelType("paraformer");
+        OfflineRecognizerConfig cfg = new OfflineRecognizerConfig();
+        cfg.setFeatConfig(new FeatureConfig(SAMPLE_RATE, 80, 0.0f));
+        cfg.setModelConfig(mc);
+        cfg.setDecodingMethod("greedy_search");
+        cfg.setMaxActivePaths(4);
         offlineRecognizer = new OfflineRecognizer(null, cfg);
       } else {
         if (onlineRecognizer != null) return;
@@ -483,9 +524,9 @@ public class SherpaPlugin extends Plugin {
 
   private static String modelName(PluginCall call) {
     String m = call.getString("model");
-    if (m == null || m.isEmpty()) return MODEL_ZIPFORMER;
-    if (m.equals(MODEL_ZIPFORMER) || m.equals(MODEL_SENSEVOICE)) return m;
-    throw new IllegalArgumentException("unknown model: " + m + " (zipformer|sensevoice)");
+    if (m == null || m.isEmpty()) return MODEL_PARAFORMER;  // Phase 2: 默认使用Paraformer
+    if (m.equals(MODEL_ZIPFORMER) || m.equals(MODEL_SENSEVOICE) || m.equals(MODEL_PARAFORMER)) return m;
+    throw new IllegalArgumentException("unknown model: " + m + " (zipformer|sensevoice|paraformer)");
   }
 
   private File modelsRoot() {
@@ -493,7 +534,14 @@ public class SherpaPlugin extends Plugin {
   }
 
   private File modelDir(String model) {
-    String dir = MODEL_SENSEVOICE.equals(model) ? SENSEVOICE_DIR : ZIPFORMER_DIR;
+    String dir;
+    if (MODEL_SENSEVOICE.equals(model)) {
+      dir = SENSEVOICE_DIR;
+    } else if (MODEL_PARAFORMER.equals(model)) {
+      dir = PARAFORMER_DIR;
+    } else {
+      dir = ZIPFORMER_DIR;
+    }
     return new File(modelsRoot(), dir);
   }
 
@@ -502,6 +550,9 @@ public class SherpaPlugin extends Plugin {
     if (MODEL_SENSEVOICE.equals(model)) {
       return new File(dir, SENSEVOICE_MODEL).isFile()
           && new File(dir, "tokens.txt").isFile();
+    } else if (MODEL_PARAFORMER.equals(model)) {
+      return new File(dir, PARAFORMER_MODEL).isFile()
+          && new File(dir, "tokens.txt").isFile();
     }
     return new File(dir, ZIPFORMER_ENCODER).isFile()
         && new File(dir, ZIPFORMER_DECODER).isFile()
@@ -509,13 +560,31 @@ public class SherpaPlugin extends Plugin {
         && new File(dir, "tokens.txt").isFile();
   }
 
-  /** 确保模型在位；缺则下载 tar.bz2 并解包（zip-slip 防护）。进度走 downloadProgress 事件。 */
+  /** 确保模型在位；优先从assets复制，缺则下载 tar.bz2 并解包（zip-slip 防护）。进度走 downloadProgress 事件。 */
   private void ensureModel(String model) throws IOException {
     if (modelPresent(model)) return;
-    String url = MODEL_SENSEVOICE.equals(model) ? SENSEVOICE_URL : ZIPFORMER_URL;
-    String topDir = MODEL_SENSEVOICE.equals(model) ? SENSEVOICE_DIR : ZIPFORMER_DIR;
+    
+    String url;
+    String topDir;
+    if (MODEL_SENSEVOICE.equals(model)) {
+      url = SENSEVOICE_URL;
+      topDir = SENSEVOICE_DIR;
+    } else if (MODEL_PARAFORMER.equals(model)) {
+      url = PARAFORMER_URL;
+      topDir = PARAFORMER_DIR;
+    } else {
+      url = ZIPFORMER_URL;
+      topDir = ZIPFORMER_DIR;
+    }
+    
     File root = modelsRoot();
     if (!root.exists() && !root.mkdirs()) throw new IOException("cannot mkdir " + root);
+    
+    // Phase 2 修复: 优先从assets复制模型（避免1GB下载）
+    if (copyModelFromAssets(topDir)) {
+      android.util.Log.i("SherpaPlugin", "Model copied from assets: " + topDir);
+      if (modelPresent(model)) return;
+    }
     File tarFile = new File(root, topDir + ".tar.bz2.part");
     download(url, tarFile, model);
     File finalTar = new File(root, topDir + ".tar.bz2");
@@ -524,6 +593,73 @@ public class SherpaPlugin extends Plugin {
     if (!finalTar.delete()) finalTar.deleteOnExit();
     if (!modelPresent(model)) {
       throw new IOException("model extracted but files missing: " + modelDir(model));
+    }
+  }
+
+  /** Phase 2 修复: 从assets复制模型到运行时目录 */
+  private boolean copyModelFromAssets(String modelDirName) {
+    try {
+      android.content.res.AssetManager assetManager = getContext().getAssets();
+      String assetsPath = modelDirName;  // 例如: sherpa-onnx-paraformer-zh-2023-03-28
+      
+      // 检查assets中是否存在该模型目录
+      try {
+        String[] files = assetManager.list(assetsPath);
+        if (files == null || files.length == 0) {
+          android.util.Log.w("SherpaPlugin", "Model not found in assets: " + assetsPath);
+          return false;
+        }
+      } catch (IOException e) {
+        android.util.Log.w("SherpaPlugin", "Assets check failed for: " + assetsPath, e);
+        return false;
+      }
+      
+      // 创建目标目录
+      File targetDir = new File(modelsRoot(), modelDirName);
+      if (!targetDir.exists() && !targetDir.mkdirs()) {
+        android.util.Log.e("SherpaPlugin", "Failed to create target dir: " + targetDir);
+        return false;
+      }
+      
+      // 递归复制所有文件
+      copyAssetFolder(assetManager, assetsPath, targetDir);
+      android.util.Log.i("SherpaPlugin", "Successfully copied model from assets: " + modelDirName);
+      return true;
+      
+    } catch (IOException e) {
+      android.util.Log.e("SherpaPlugin", "Failed to copy model from assets: " + modelDirName, e);
+      return false;
+    }
+  }
+
+  /** 递归复制assets文件夹 */
+  private void copyAssetFolder(android.content.res.AssetManager assetManager, String srcPath, File dstDir) throws IOException {
+    String[] files = assetManager.list(srcPath);
+    if (files == null) return;
+    
+    for (String filename : files) {
+      String assetPath = srcPath + "/" + filename;
+      File outFile = new File(dstDir, filename);
+      
+      // 检查是否是目录
+      String[] subFiles = assetManager.list(assetPath);
+      if (subFiles != null && subFiles.length > 0) {
+        // 是目录，递归复制
+        if (!outFile.exists() && !outFile.mkdirs()) {
+          throw new IOException("Failed to create dir: " + outFile);
+        }
+        copyAssetFolder(assetManager, assetPath, outFile);
+      } else {
+        // 是文件，直接复制
+        try (java.io.InputStream in = assetManager.open(assetPath);
+             java.io.FileOutputStream out = new java.io.FileOutputStream(outFile)) {
+          byte[] buffer = new byte[8192];
+          int read;
+          while ((read = in.read(buffer)) != -1) {
+            out.write(buffer, 0, read);
+          }
+        }
+      }
     }
   }
 

@@ -1,0 +1,25 @@
+appId: com.kaixuan.opencode.pocket
+---
+# Phase 1 VAD 录音功能测试
+
+- launchApp
+- assertVisible: "会议详情"
+
+# 等待页面完全加载
+- extendedWaitUntil:
+    visible: "开始录音"
+    timeout: 5000
+
+# 点击开始录音按钮
+- tapOn: "开始录音"
+
+# 录音15秒（期间手动对手机说话或使用外部音频注入）
+- extendedWaitUntil:
+    visible: ".*"
+    timeout: 15000
+
+# 停止录音
+- tapOn: "开始录音"
+
+# 截图保存结果
+- takeScreenshot: vad-test-complete.png

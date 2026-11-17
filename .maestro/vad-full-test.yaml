@@ -1,0 +1,74 @@
+appId: com.kaixuan.opencode.pocket
+---
+# Phase 1 VAD 完整测试流程
+# 结合adb shell input实现音频模拟
+
+- launchApp
+- assertVisible: "会议详情"
+
+- runScript: |
+    # 启动后台logcat监控
+    adb logcat -c
+    adb logcat | grep -E "VAD|MeetingRecordService" > /tmp/maestro-vad-log.txt &
+    LOGCAT_PID=$!
+    echo "Logcat monitoring started: $LOGCAT_PID"
+    echo $LOGCAT_PID > /tmp/maestro-logcat.pid
+
+- waitForAnimationToEnd:
+    timeout: 2000
+
+# 1. 点击开始录音
+- tapOn: "开始录音"
+
+- runScript: |
+    echo "[$(date +%H:%M:%S)] 录音已开始，等待VAD初始化..."
+    sleep 3
+    
+    # 检查VAD初始化日志
+    if grep -q "VAD enabled" /tmp/maestro-vad-log.txt; then
+        echo "✅ VAD初始化成功"
+    elif grep -q "VAD initialization failed" /tmp/maestro-vad-log.txt; then
+        echo "❌ VAD初始化失败，已回退到固定切片"
+    else
+        echo "⚠️  等待VAD初始化日志..."
+    fi
+
+# 等待15秒录音（期间需要手动对手机说话）
+- waitForAnimationToEnd:
+    timeout: 15000
+
+- runScript: |
+    echo "[$(date +%H:%M:%S)] 录音时间已到，分析日志..."
+    
+    # 统计VAD端点检测次数
+    VAD_COUNT=$(grep -c "VAD detected speech end" /tmp/maestro-vad-log.txt 2>/dev/null || echo 0)
+    echo "VAD端点检测次数: $VAD_COUNT"
+    
+    if [ "$VAD_COUNT" -gt 0 ]; then
+        echo "✅ VAD动态端点检测工作正常"
+        grep "VAD detected speech end" /tmp/maestro-vad-log.txt | tail -3
+    else
+        echo "⚠️  未检测到VAD端点（可能无音频输入或使用固定切片）"
+    fi
+
+# 2. 停止录音
+- tapOn:
+    text: ".*停止.*|开始录音"
+
+- runScript: |
+    # 停止logcat监控
+    if [ -f /tmp/maestro-logcat.pid ]; then
+        kill $(cat /tmp/maestro-logcat.pid) 2>/dev/null
+        rm /tmp/maestro-logcat.pid
+    fi
+    
+    echo "========================================="
+    echo "Phase 1 VAD 测试完成"
+    echo "========================================="
+    echo ""
+    echo "完整日志: /tmp/maestro-vad-log.txt"
+    echo ""
+    echo "关键指标:"
+    grep -E "VAD enabled|VAD initialization failed|VAD detected speech end" /tmp/maestro-vad-log.txt | head -10
+
+- takeScreenshot: screenshots/vad-test-final.png

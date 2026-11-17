@@ -694,6 +694,47 @@ export const api = {
     const body = await res.json()
     return Array.isArray(body?.credentials) ? body.credentials : []
   },
+
+  // ---- Generic HTTP methods for Phase 3 components ----
+  /** Generic GET request */
+  async get<T = any>(url: string, config?: { params?: Record<string, any> }): Promise<{ data: T }> {
+    let fullUrl = url.startsWith('http') ? url : `${resolveApiBase()}${url}`
+    if (config?.params) {
+      const params = new URLSearchParams(
+        Object.entries(config.params).map(([k, v]) => [k, String(v)])
+      )
+      fullUrl += `?${params.toString()}`
+    }
+    const res = await authFetch(fullUrl)
+    const data = await res.json()
+    return { data }
+  },
+
+  /** Generic POST request */
+  async post<T = any>(url: string, body?: any): Promise<{ data: T }> {
+    const fullUrl = url.startsWith('http') ? url : `${resolveApiBase()}${url}`
+    const res = await authFetch(fullUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: body ? JSON.stringify(body) : undefined,
+    })
+    const data = await res.json()
+    return { data }
+  },
+
+  /** Generic DELETE request */
+  async delete<T = any>(url: string): Promise<{ data: T }> {
+    const fullUrl = url.startsWith('http') ? url : `${resolveApiBase()}${url}`
+    const res = await authFetch(fullUrl, {
+      method: 'DELETE',
+    })
+    // DELETE might return 204 No Content
+    if (res.status === 204) {
+      return { data: undefined as any }
+    }
+    const data = await res.json()
+    return { data }
+  },
 }
 
 // ---- Phase 5: LLM Gateway 类型 ----

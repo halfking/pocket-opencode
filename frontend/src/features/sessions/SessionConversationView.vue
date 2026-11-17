@@ -930,7 +930,7 @@ function goBack() {
   transform: scale(0.92);
 }
 .composer-fab .material-symbols-outlined {
-  font-size: 26px;
+  font-size: var(--text-3xl);
 }
 .fab-enter-active,
 .fab-leave-active {

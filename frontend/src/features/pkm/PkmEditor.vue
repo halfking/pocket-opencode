@@ -168,7 +168,7 @@ onBeforeUnmount(() => {
 .pkm-title {
   border: none;
   outline: none;
-  font-size: 22px;
+  font-size: var(--text-2xl);
   font-weight: 700;
   padding: 16px 16px 8px;
   background: transparent;

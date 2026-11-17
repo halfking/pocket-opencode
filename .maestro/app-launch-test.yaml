@@ -1,0 +1,21 @@
+appId: com.kaixuan.opencode.pocket
+---
+# 基础测试：应用启动与主界面检查
+
+- launchApp
+- assertVisible: ".*"  # 确保应用启动成功，有可见元素
+- takeScreenshot: screenshots/app-launch.png
+
+# 检查应用权限（麦克风、存储等）
+- runFlow:
+    when:
+      visible: "允许"
+    commands:
+      - tapOn: "允许"
+
+# 等待3秒让应用完全加载
+- extendedWaitUntil:
+    visible: ".*"
+    timeout: 3000
+
+- takeScreenshot: screenshots/app-main-screen.png

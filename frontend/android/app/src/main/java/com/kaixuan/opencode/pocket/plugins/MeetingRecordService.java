@@ -26,8 +26,10 @@ import java.nio.ByteOrder;
 /**
  * 前台麦克风服务：切后台/熄屏继续采音，约 8s 一片 WAV 回调 JS。
  * 多麦：setPreferredDevice + VOICE_RECOGNITION + AEC/NS/AGC。
+ * Phase 1: VAD动态端点检测实现（2026-11-14）
  */
 public class MeetingRecordService extends Service {
+  private static final String TAG = "MeetingRecordService";
   public static final String ACTION_START = "com.kaixuan.opencode.pocket.MIC_START";
   public static final String ACTION_STOP = "com.kaixuan.opencode.pocket.MIC_STOP";
   public static final String EXTRA_MEETING = "meetingId";
@@ -152,6 +154,24 @@ public class MeetingRecordService extends Service {
     int frame = SAMPLE_RATE / 10 * channels;
     short[] buf = new short[frame];
     ByteArrayOutputStream pcm = new ByteArrayOutputStream();
+    
+    // Phase 1 VAD 延迟优化：初始化动态端点检测
+    VadManager.VadConfig vadConfig = new VadManager.VadConfig();
+    vadConfig.sampleRate = SAMPLE_RATE;
+    vadConfig.minSilenceDuration = 0.5f;  // 500ms静音判定端点
+    vadConfig.minSpeechDuration = 0.5f;   // 最短语音500ms
+    vadConfig.maxSpeechDuration = 10.0f;  // 最长语音10秒兜底
+    
+    VadManager vadManager = null;
+    try {
+      vadManager = new VadManager(getAssets(), vadConfig);
+      android.util.Log.i(TAG, "VAD enabled: dynamic endpoint detection active");
+    } catch (Exception e) {
+      // VAD初始化失败，回退到固定8秒切片模式
+      android.util.Log.w(TAG, "VAD initialization failed, falling back to fixed 8s chunks: " + e.getMessage());
+      vadManager = null;
+    }
+    
     // ⚠⚠ §956：这是**本轮**的采集原点。
     //
     //   原生服务每启动一轮（中途切设备就会重启一轮）它就**重取一次**
@@ -167,17 +187,58 @@ public class MeetingRecordService extends Service {
     long captureStart = System.currentTimeMillis();
     long partStartRel = 0;
     int seq = 0;
+    boolean lastWasSpeech = false;  // 上一帧是否检测到语音
+    
     try {
       while (running) {
         int n = rec.read(buf, 0, buf.length);
         if (n <= 0) continue;
         short[] out = louderMono(buf, n, channels);
+        
+        // 转换为float samples供VAD处理
+        if (vadManager != null && vadManager.isInitialized()) {
+          float[] samples = new float[out.length];
+          for (int i = 0; i < out.length; i++) {
+            samples[i] = out[i] / 32768.0f;  // 归一化到[-1, 1]
+          }
+          vadManager.processAudio(samples);
+        }
+        
+        // 写入PCM缓冲
         for (short s : out) {
           pcm.write(s & 0xff);
           pcm.write((s >> 8) & 0xff);
         }
+        
         long nowRel = System.currentTimeMillis() - captureStart;
-        if (nowRel - partStartRel >= PART_MS && pcm.size() > 0) {
+        boolean shouldEmit = false;
+        
+        // Phase 1: VAD动态端点检测
+        if (vadManager != null && vadManager.isInitialized()) {
+          boolean isSpeech = vadManager.isSpeechDetected();
+          
+          // 检测到语音结束（从说话变为静音）且积累了足够音频
+          if (lastWasSpeech && !isSpeech && pcm.size() >= SAMPLE_RATE * 2 * vadConfig.minSpeechDuration) {
+            shouldEmit = true;
+            android.util.Log.d(TAG, String.format("VAD detected speech end: %.2fs", (nowRel - partStartRel) / 1000.0));
+          }
+          
+          // 兜底1：超过最大时长强制切片
+          if (nowRel - partStartRel >= vadConfig.maxSpeechDuration * 1000 && pcm.size() > 0) {
+            shouldEmit = true;
+            android.util.Log.d(TAG, "VAD max duration reached, forced emit");
+          }
+          
+          lastWasSpeech = isSpeech;
+        } else {
+          // 回退：固定8秒切片（VAD不可用时）
+          if (nowRel - partStartRel >= PART_MS && pcm.size() > 0) {
+            shouldEmit = true;
+          }
+        }
+        
+        // 发送音频分片
+        if (shouldEmit) {
           seq++;
           byte[] wav = pcmToWav(pcm.toByteArray(), SAMPLE_RATE, 1);
           // §956：连同**本轮**的采集原点一起报（轮内相对量 + 原点 = 完整事实）。
@@ -186,6 +247,12 @@ public class MeetingRecordService extends Service {
           partStartRel = nowRel;
         }
       }
+      
+      // 录音结束：刷新VAD并发送最后一片
+      if (vadManager != null && vadManager.isInitialized()) {
+        vadManager.flush();
+      }
+      
       if (pcm.size() > 0) {
         seq++;
         long nowRel = System.currentTimeMillis() - captureStart;
@@ -195,6 +262,10 @@ public class MeetingRecordService extends Service {
     } catch (Exception e) {
       BackgroundMicPlugin.emitError(e.getMessage() != null ? e.getMessage() : "录音中断");
     } finally {
+      // 清理资源
+      if (vadManager != null) {
+        vadManager.release();
+      }
       try { rec.stop(); } catch (Exception ignored) {}
       rec.release();
       recorder = null;

@@ -1,0 +1,67 @@
+/**
+ * WikiLinks 样式
+ * 用于 Markdown 预览中的 [[keyword]] 链接
+ */
+
+/* 存在的链接 - 蓝色可点击 */
+.wiki-link-exists {
+  color: #3b82f6;
+  text-decoration: none;
+  border-bottom: 1px solid #93c5fd;
+  padding: 0 2px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.wiki-link-exists:hover {
+  background-color: #eff6ff;
+  border-bottom-color: #3b82f6;
+}
+
+.wiki-link-exists:active {
+  color: #2563eb;
+}
+
+/* 不存在的链接 - 灰色 + 创建按钮 */
+.wiki-link-missing {
+  color: #9ca3af;
+  border-bottom: 1px dashed #d1d5db;
+  padding: 0 2px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.wiki-link-create {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  background-color: #f3f4f6;
+  color: #6b7280;
+  border: 1px solid #d1d5db;
+  border-radius: 3px;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  transition: all 0.2s;
+  padding: 0;
+}
+
+.wiki-link-create:hover {
+  background-color: #3b82f6;
+  color: white;
+  border-color: #3b82f6;
+}
+
+/* 编辑器中的语法高亮 */
+.wiki-link-syntax {
+  color: #9ca3af;
+  font-weight: 500;
+}
+
+.wiki-link-keyword {
+  color: #3b82f6;
+  font-weight: 500;
+}

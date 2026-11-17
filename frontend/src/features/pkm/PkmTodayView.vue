@@ -292,7 +292,7 @@ useListScene('pkm-today', loadRecent)
   border-radius: 50%;
   background: var(--accent, #2563eb);
   color: var(--text-inverse);
-  font-size: 26px;
+  font-size: var(--text-3xl);
   border: none;
   box-shadow: 0 4px 14px rgba(37, 99, 235, 0.4);
   cursor: pointer;

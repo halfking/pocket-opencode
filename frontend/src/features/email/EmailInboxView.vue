@@ -844,7 +844,7 @@ onUnmounted(() => setHeaderTitle(null))
   cursor: pointer; padding: 0;
 }
 .to-top:active { background: var(--bg-hover); }
-.to-top .material-symbols-outlined { font-size: 22px; }
+.to-top .material-symbols-outlined { font-size: var(--text-2xl); }
 /* 浮现/隐去：上移 + 淡入，像从列表里「浮起来」。 */
 .totop-enter-active { transition: opacity .24s var(--ease-out), transform .24s var(--ease-out); }
 .totop-leave-active { transition: opacity .18s var(--ease-out), transform .18s var(--ease-out); }

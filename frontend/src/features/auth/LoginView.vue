@@ -758,7 +758,7 @@ async function doLogin(u: string, p: string, opts: { fromBiometric: boolean }) {
 }
 
 .eye-btn .material-symbols-outlined {
-  font-size: 22px;
+  font-size: var(--text-2xl);
 }
 
 .login-btn {
@@ -792,7 +792,7 @@ async function doLogin(u: string, p: string, opts: { fromBiometric: boolean }) {
 }
 
 .bio-btn .material-symbols-outlined {
-  font-size: 22px;
+  font-size: var(--text-2xl);
 }
 
 .bio-divider {

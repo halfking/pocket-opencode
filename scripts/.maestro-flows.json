@@ -10,7 +10,7 @@
     "kimmy.huang@163.com": "同上",
     "回归卡组": "flashcards-write.yaml 自己 inputText 打出来的卡组名（该文件第 91 行）",
     "回归正面": "同上（第 159 行）",
-    "MaestroPKM笔记": "notes-crud.yaml 自己 inputText 打出来的笔记标题（该文件第 72 行）"
+    "MaestroPKMNote": "notes-crud.yaml 自己 inputText 打出来的笔记标题（该文件第 72 行）"
   },
   "_runtimeAnchorsRule": "2026-10-04 实测：以上 9 条在 frontend/src 全量语料里零命中（用 node 独立扫 .vue/.ts/.json 确认），即它们确实是数据不是代码。新增条目前请同样先验证它不在源码里；匹配时按剥掉正则修饰后的子串比较，所以 `.*kimmy\\.huang@163\\.com.*` 能命中裸字面量声明。",
   "defaultAppId": "com.kaixuan.opencode.pocket",
@@ -23,7 +23,7 @@
     "kimmy.huang@163.com",
     "回归卡组",
     "回归正面",
-    "MaestroPKM笔记",
+    "MaestroPKMNote",
     "maestro-acc-stop",
     "maestro-acc-approve"
   ],

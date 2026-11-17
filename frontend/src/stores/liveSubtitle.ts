@@ -24,6 +24,25 @@ export interface SubtitleSegment {
 
 export type FontSize = 'small' | 'medium' | 'large'
 
+type SubtitleStorageLike = {
+  getItem(key: string): string | null
+  setItem(key: string, value: string): void
+  removeItem(key: string): void
+}
+
+let injectedStorage: SubtitleStorageLike | null = null
+
+/** 测试注入内存存储；传 null 恢复默认真实 localStorage。 */
+export function installLiveSubtitleStorage(storage: SubtitleStorageLike | null): void {
+  injectedStorage = storage
+}
+
+function subtitleStorage(): SubtitleStorageLike | null {
+  if (injectedStorage) return injectedStorage
+  if (typeof window === 'undefined') return null
+  return window.localStorage
+}
+
 // 简单的防抖函数实现
 function debounce<T extends (...args: any[]) => any>(fn: T, delay: number): T {
   let timeoutId: ReturnType<typeof setTimeout> | null = null
@@ -188,7 +207,7 @@ export const useLiveSubtitleStore = defineStore('liveSubtitle', () => {
    */
   function savePosition() {
     try {
-      localStorage.setItem('liveSubtitle.position', JSON.stringify(position.value))
+      subtitleStorage()?.setItem('liveSubtitle.position', JSON.stringify(position.value))
     } catch (e) {
       console.warn('[liveSubtitle] Failed to save position:', e)
     }
@@ -199,7 +218,7 @@ export const useLiveSubtitleStore = defineStore('liveSubtitle', () => {
    */
   function loadPosition() {
     try {
-      const saved = localStorage.getItem('liveSubtitle.position')
+      const saved = subtitleStorage()?.getItem('liveSubtitle.position')
       if (saved) {
         const parsed = JSON.parse(saved)
         position.value = { x: parsed.x || 20, y: parsed.y || 100 }

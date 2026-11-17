@@ -248,4 +248,69 @@ export const knowledgeApi = {
 
     return http<SearchResponse>(`/api/knowledge/search?${qs.toString()}`)
   },
+
+  // --------------------------------------------------------------------------
+  // Knowledge Graph API
+  // --------------------------------------------------------------------------
+
+  /**
+   * 获取完整知识图谱
+   *
+   * 支持过滤条件：
+   * - notebook: 笔记本 ID 过滤
+   * - domain: 领域过滤（work/study/life/idea）
+   * - limit: 最大节点数（默认 200，最大 500）
+   */
+  fetchGraph(params?: { notebook?: string; domain?: NoteDomain; limit?: number }): Promise<GraphData> {
+    const qs = new URLSearchParams()
+    
+    if (params?.notebook) qs.set('notebook', params.notebook)
+    if (params?.domain) qs.set('domain', params.domain)
+    if (params?.limit !== undefined) qs.set('limit', String(params.limit))
+
+    const query = qs.toString()
+    return http<GraphData>(`/api/knowledge/graph${query ? '?' + query : ''}`)
+  },
+
+  /**
+   * 获取笔记的局部图谱（以指定笔记为中心的 1-hop 邻居）
+   */
+  fetchNoteGraph(noteId: string): Promise<GraphData> {
+    return http<GraphData>(`/api/knowledge/graph/note/${encodeURIComponent(noteId)}`)
+  },
+}
+
+// ============================================================================
+// Graph API Types
+// ============================================================================
+
+export type NodeType = 'note' | 'notebook' | 'tag'
+export type EdgeType = 'link' | 'reference' | 'tag' | 'notebook'
+
+export interface NodeData {
+  domain?: NoteDomain
+  tags?: string[]
+  createdAt?: string
+  updatedAt?: string
+  snippet?: string
+}
+
+export interface GraphNode {
+  id: string
+  label: string
+  type: NodeType
+  size: number
+  data?: NodeData
+}
+
+export interface GraphEdge {
+  source: string
+  target: string
+  type: EdgeType
+  weight: number
+}
+
+export interface GraphData {
+  nodes: GraphNode[]
+  edges: GraphEdge[]
 }

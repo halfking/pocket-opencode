@@ -83,8 +83,8 @@ onMounted(load)
 <style scoped>
 .detail-page { padding: 20px 16px 96px; }
 .profile { text-align: center; margin-bottom: 20px; }
-.avatar { width: 68px; height: 68px; margin: 0 auto 10px; display: grid; place-items: center; border-radius: 50%; background: var(--brand-primary); color: var(--text-inverse); font-size: 22px; font-weight: 700; }
-h1 { margin: 0; font-size: 22px; }
+.avatar { width: 68px; height: 68px; margin: 0 auto 10px; display: grid; place-items: center; border-radius: 50%; background: var(--brand-primary); color: var(--text-inverse); font-size: var(--text-2xl); font-weight: 700; }
+h1 { margin: 0; font-size: var(--text-2xl); }
 .profile p { margin: 4px 0; color: var(--text-secondary); font-size: var(--text-sm); }
 .card { padding: 14px; background: var(--bg-card); border-radius: var(--radius-lg); box-shadow: var(--shadow-sm); }
 h2 { margin: 0 0 10px; font-size: var(--text-lg); }

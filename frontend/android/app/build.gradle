@@ -72,17 +72,18 @@ repositories {
     }
 }
 
-// cap-sherpa（本地 ASR，Phase 4）：sherpa-onnx 官方 Android AAR（全 ABI，
+// cap-sherpa（本地 ASR，Phase 4 → Phase 1 VAD 延迟优化）：sherpa-onnx 官方 Android AAR（全 ABI，
 // 含 com.k2fsa.sherpa.onnx JNI 绑定）。AAR 不进 git（android/.gitignore 的
 // *.aar 是仓库既有约定），构建前自动就位——已存在则跳过，离线增量构建
 // 不受影响。升级版本 = 改下面 URL 与依赖行里的版本号。
-def sherpaAar = file('libs/sherpa-onnx-1.13.8.aar')
+// v2.0.1 新增完整 VAD 支持（Vad/VadModelConfig/SileroVadModelConfig），实现动态端点检测。
+def sherpaAar = file('libs/sherpa-onnx-2.0.1.aar')
 tasks.register('downloadSherpaAar') {
     onlyIf { !sherpaAar.exists() }
     doLast {
         sherpaAar.parentFile.mkdirs()
         def tmp = new File(sherpaAar.path + '.part')
-        def conn = new URL('https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-1.13.8.aar').openConnection()
+        def conn = new URL('https://github.com/k2-fsa/sherpa-onnx/releases/download/v2.0.1/sherpa-onnx-2.0.1.aar').openConnection()
         conn.setRequestProperty('User-Agent', 'openpocket-gradle/1.0')
         conn.setConnectTimeout(30000)
         conn.setReadTimeout(120000)
@@ -105,11 +106,45 @@ tasks.register('downloadSherpaAar') {
         println "sherpa-onnx AAR downloaded: ${sherpaAar.length()} bytes"
     }
 }
-tasks.named('preBuild') { dependsOn 'downloadSherpaAar' }
+
+// Phase 1 VAD 延迟优化：Silero VAD 模型自动下载
+// 模型文件放在 assets/ 目录，运行时加载，不进 git（.gitignore 已覆盖）
+def sileroVadModel = file('src/main/assets/silero_vad.onnx')
+tasks.register('downloadSileroVad') {
+    onlyIf { !sileroVadModel.exists() }
+    doLast {
+        sileroVadModel.parentFile.mkdirs()
+        def tmp = new File(sileroVadModel.path + '.part')
+        // Silero VAD v4 模型 (~1MB)，来自官方 GitHub 仓库
+        def conn = new URL('https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.onnx').openConnection()
+        conn.setRequestProperty('User-Agent', 'openpocket-gradle/1.0')
+        conn.setConnectTimeout(30000)
+        conn.setReadTimeout(60000)
+        conn.setInstanceFollowRedirects(true)
+        if (conn.getResponseCode() < 200 || conn.getResponseCode() >= 300) {
+            throw new GradleException("Silero VAD model download HTTP ${conn.getResponseCode()}")
+        }
+        byte[] buf = new byte[1 << 16]
+        InputStream ins = conn.getInputStream()
+        FileOutputStream outs = new FileOutputStream(tmp)
+        try {
+            int n
+            while ((n = ins.read(buf)) > 0) outs.write(buf, 0, n)
+        } finally {
+            ins.close()
+            outs.close()
+            conn.disconnect()
+        }
+        if (!tmp.renameTo(sileroVadModel)) throw new GradleException('cannot finalize Silero VAD model download')
+        println "Silero VAD model downloaded: ${sileroVadModel.length()} bytes"
+    }
+}
+
+tasks.named('preBuild') { dependsOn 'downloadSherpaAar', 'downloadSileroVad' }
 
 dependencies {
     implementation fileTree(include: ['*.jar'], dir: 'libs')
-    implementation files('libs/sherpa-onnx-1.13.8.aar')
+    implementation files('libs/sherpa-onnx-2.0.1.aar')
     // 模型分发包是 tar.bz2：tar + bzip2 解包（SherpaPlugin.extractTarBz2）。
     // commons-io/commons-lang3 由 commons-compress 1.26 传递引入。
     implementation 'org.apache.commons:commons-compress:1.26.2'

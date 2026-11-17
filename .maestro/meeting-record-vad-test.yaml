@@ -1,0 +1,30 @@
+appId: com.kaixuan.opencode.pocket
+---
+# Phase 1 VAD 延迟优化真机测试
+# 目标：验证首字延迟从≥8秒降至<1秒
+
+- launchApp
+- tapOn: "开始会议"  # 假设这是开始会议按钮
+- assertVisible: "会议"
+- tapOn: "开始录音"  # 假设这是开始录音按钮
+- assertVisible: "录音中"
+
+# 等待20秒，让用户说话并观察转写延迟
+- runFlow:
+    when:
+      visible: "录音中"
+    commands:
+      - inputText: "Phase 1 VAD testing - please speak naturally"
+      - extendedWaitUntil:
+          visible: ".*"
+          timeout: 20000
+
+# 停止录音
+- tapOn: "停止录音"
+- assertVisible: "已停止"
+
+# 验收标准（通过日志检查）：
+# 1. VAD初始化成功 (logcat: "VAD enabled")
+# 2. 检测到语音端点 (logcat: "VAD detected speech end")
+# 3. 分片大小在500ms-10秒之间
+# 4. 首字延迟<1秒（需人工观察）

@@ -1,0 +1,74 @@
+appId: com.kaixuan.opencode.pocket
+
+commands:
+  # 1. 应用启动和初始化
+  - launchApp:
+      clearState: true
+  
+  - wait:
+      ms: 3000
+
+  # 2. 导航到笔记tab
+  - tapOn:
+      text: 笔记
+      timeoutMs: 5000
+  
+  - wait:
+      ms: 2000
+
+  # 3. 创建新会议
+  - tapOn:
+      text: "+"
+      timeoutMs: 3000
+  
+  - wait:
+      ms: 1000
+
+  # 4. 输入会议名称
+  - inputText:
+      text: "Phase_1_2_Test"
+  
+  - wait:
+      ms: 1000
+
+  # 5. 确认
+  - tapOn:
+      text: 确认
+      timeoutMs: 3000
+  
+  - wait:
+      ms: 3000
+
+  # 6. 开始录音
+  - tapOn:
+      text: 开始录音
+      timeoutMs: 5000
+  
+  - wait:
+      ms: 2000
+
+  # 7. 验证录音已开始
+  - assertVisible:
+      text: 停止录音
+      timeoutMs: 3000
+
+  # 8. 等待期间，期望VAD检测语音
+  - wait:
+      ms: 15000
+
+  # 9. 停止录音
+  - tapOn:
+      text: 停止录音
+      timeoutMs: 5000
+  
+  - wait:
+      ms: 3000
+
+  # 10. 验证转写完成
+  - assertVisible:
+      text: 笔记
+      timeoutMs: 10000
+
+  # 11. 保存结果截图
+  - takeScreenshot:
+      fileName: phase-1-2-complete

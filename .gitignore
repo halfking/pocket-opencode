@@ -271,3 +271,12 @@ backend/cmd/wasmbaseline/*.wasm
 # Playwright test artifacts
 test-results/
 playwright-report/
+
+#⚠️2026-11-16：sherpa-onnx STT模型（paraformer1GB + 多语言模型1GB）
+# 属于大体积二进制，不入库——构建时由本地脚本/手动放置。
+frontend/android/app/src/main/assets/sherpa-onnx-paraformer-zh-2023-03-28/
+frontend/android/app/src/main/assets/models/
+# VAD 小模型（2.2MB）也走构建产物路径，保持仓库干净；如需版本化再单独放开。
+frontend/android/app/src/main/assets/silero_vad.onnx
+#临时真机测试截图
+android_screenshots/

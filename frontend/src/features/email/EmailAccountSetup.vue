@@ -615,7 +615,7 @@ onMounted(loadList)
   display: flex; flex-direction: column; align-items: center; gap: 2px;
 }
 .tpl-btn.selected { border-color: var(--brand-primary); background: var(--brand-bg); }
-.tpl-icon { font-size: 22px; }
+.tpl-icon { font-size: var(--text-2xl); }
 .tpl-name { font-size: var(--text-smd); font-weight: 600; color: var(--text-primary); }
 .tpl-host { font-size: var(--text-2xs); color: var(--text-muted); }
 

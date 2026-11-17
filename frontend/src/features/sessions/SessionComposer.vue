@@ -326,7 +326,7 @@ const { confirm } = useConfirm()
   color: var(--text-secondary);
 }
 .handle-icon {
-  font-size: 22px;
+  font-size: var(--text-2xl);
 }
 
 /* ── targets 模式目标 chip（契约保留；固定目标模式不渲染） ── */
@@ -399,7 +399,7 @@ const { confirm } = useConfirm()
     border-color var(--duration-fast) var(--ease-out);
 }
 .qc-btn .material-symbols-outlined {
-  font-size: 22px;
+  font-size: var(--text-2xl);
 }
 .qc-btn:not(:disabled):active {
   transform: scale(0.9);
@@ -463,7 +463,7 @@ const { confirm } = useConfirm()
 }
 .item-icon {
   flex: 0 0 auto;
-  font-size: 22px;
+  font-size: var(--text-2xl);
   color: var(--text-secondary);
 }
 .quick-item.danger .item-icon {

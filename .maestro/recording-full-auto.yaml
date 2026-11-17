@@ -1,0 +1,105 @@
+appId: com.kaixuan.opencode.pocket
+name: recording-full-auto
+---
+# 完整自动化录音测试流程
+# 包含: 启动 → 录音 → 音频注入 → 停止 → 验证
+
+- launchApp
+
+# ============================================================
+# Phase 1: 导航到录音页
+# ============================================================
+
+- extendedWaitUntil:
+    visible: "更多"
+    timeout: 20000
+
+- tapOn: "更多"
+  retryTapIfNoChange: true
+
+- extendedWaitUntil:
+    visible: "会议"
+    timeout: 10000
+
+- tapOn: "会议"
+
+- extendedWaitUntil:
+    visible:
+      id: "开始会议录音"
+    timeout: 10000
+
+- tapOn:
+    id: "开始会议录音"
+
+- extendedWaitUntil:
+    visible:
+      id: "开始录音"
+    timeout: 15000
+
+- takeScreenshot: logs/maestro/recording-page-ready.png
+
+# ============================================================
+# Phase 2: 开始录音
+# ============================================================
+
+- tapOn:
+    id: "开始录音"
+
+# 等待 VAD 初始化（2秒）
+- waitForAnimationToEnd:
+    timeout: 2000
+
+- assertVisible:
+    id: "停止录音"
+
+- takeScreenshot: logs/maestro/recording-started.png
+
+# ============================================================
+# Phase 3: 音频注入（外部脚本执行）
+# ============================================================
+# 注意: Maestro 无法直接注入音频
+# 此步骤由外部 Shell 脚本 inject-audio-during-recording.sh 完成
+# 
+# 我们在这里等待足够的时间让外部脚本完成音频注入
+
+# 等待 10 秒（5秒音频 + 5秒处理）
+- waitForAnimationToEnd:
+    timeout: 10000
+
+# ============================================================
+# Phase 4: 停止录音
+# ============================================================
+
+- tapOn:
+    id: "停止录音"
+
+- waitForAnimationToEnd:
+    timeout: 3000
+
+- takeScreenshot: logs/maestro/recording-stopped.png
+
+# ============================================================
+# Phase 5: 验证转写结果
+# ============================================================
+
+# 检查是否有转写文本出现（如果有音频输入）
+# 注意: 这是可选验证，因为无音频输入时不会有文本
+- runFlow:
+    when:
+      visible: ".*test.*|.*audio.*|.*recording.*"
+    commands:
+      - takeScreenshot: logs/maestro/transcription-found.png
+      - scroll
+
+# 验证页面没有崩溃
+- assertNotVisible: ".*crashed.*|.*stopped.*|.*error.*"
+
+# 返回会议列表
+- tapOn: "返回"
+
+- extendedWaitUntil:
+    visible:
+      id: "开始会议录音"
+    timeout: 10000
+
+- takeScreenshot: logs/maestro/test-complete.png

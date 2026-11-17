@@ -176,6 +176,7 @@ import {
 } from '@ionic/vue'
 import { useNotebooksStore } from '../stores/notebooks'
 import type { Note } from '../types/knowledge'
+import { renderMarkdown } from '../utils/markdown'
 
 const router = useRouter()
 const route = useRoute()
@@ -213,38 +214,8 @@ const markdownTools = [
 
 const renderedContent = computed(() => {
   if (!formData.value.content) return '<p class="empty-preview">' + t('knowledge.noContent') + '</p>'
-  
-  // 简单的 Markdown 渲染
-  let html = formData.value.content
-  
-  // 标题
-  html = html.replace(/^### (.*$)/gim, '<h3>$1</h3>')
-  html = html.replace(/^## (.*$)/gim, '<h2>$1</h2>')
-  html = html.replace(/^# (.*$)/gim, '<h1>$1</h1>')
-  
-  // 粗体
-  html = html.replace(/\*\*(.*?)\*\*/gim, '<strong>$1</strong>')
-  
-  // 斜体
-  html = html.replace(/\*(.*?)\*/gim, '<em>$1</em>')
-  
-  // 代码
-  html = html.replace(/`(.*?)`/gim, '<code>$1</code>')
-  
-  // 链接
-  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/gim, '<a href="$2" target="_blank">$1</a>')
-  
-  // 列表
-  html = html.replace(/^- (.*$)/gim, '<li>$1</li>')
-  html = html.replace(/(<li>[\s\S]*<\/li>)/m, '<ul>$1</ul>')
-  
-  // 段落
-  html = html.split('\n\n').map(para => {
-    if (para.match(/^<[h|u|o]/)) return para
-    return '<p>' + para.replace(/\n/g, '<br>') + '</p>'
-  }).join('\n')
-  
-  return html
+
+  return renderMarkdown(formData.value.content)
 })
 
 async function loadNote() {

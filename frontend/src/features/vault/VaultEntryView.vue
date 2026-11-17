@@ -542,7 +542,7 @@ onBeforeUnmount(() => {
 }
 
 .totp-field .field-row { background: var(--bg-subtle); padding: var(--space-3); border-radius: var(--radius-sm); }
-.totp-code { font-size: 22px; letter-spacing: 4px; font-weight: 700; color: var(--brand-primary); }
+.totp-code { font-size: var(--text-2xl); letter-spacing: 4px; font-weight: 700; color: var(--brand-primary); }
 .totp-remaining {
   font-size: var(--text-sm);
   color: var(--text-muted);

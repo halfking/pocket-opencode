@@ -69,15 +69,32 @@
             >{{ refinedMode === 'refined' ? '看原文' : '看精校版' }}</button>
           </div>
           <div v-if="refinedMode === 'refined'" class="refined-body">{{ meeting?.refinedTranscript }}</div>
-          <TranscriptSegmentList
+          <!-- Phase 3: Three-layer transcript with real-time rendering -->
+          <ThreeLayerTranscript
             v-else
-            :segments="displaySegments"
+            ref="transcriptRef"
             :is-recording="micOn"
-            :interim-text="interimCaption"
-            :editable="true"
-            @append="onAppendUtterance"
-            @edit="onEditSegment"
+            @edit="(segmentId: string, newText: string) => onEditSegment({ id: segmentId, text: newText })"
           />
+          <!-- Transcript toolbar -->
+          <div v-if="!refinedMode" class="transcript-toolbar">
+            <button 
+              type="button" 
+              class="toolbar-btn"
+              @click="showExportSheet = true"
+              :disabled="!displaySegments.length"
+            >
+              📤 导出
+            </button>
+            <button 
+              type="button" 
+              class="toolbar-btn"
+              @click="showSpeakerManagement = true"
+              :disabled="!displaySegments.length"
+            >
+              👥 说话人管理
+            </button>
+          </div>
         </section>
         <div class="meeting-learning">
           <!--
@@ -142,6 +159,20 @@
         @close="showSettings = false"
         @save="onMetaSave"
       />
+      <!-- Phase 3: Export and Speaker Management Sheets -->
+      <ExportTranscriptSheet
+        v-model="showExportSheet"
+        :segments="displaySegments"
+        :title="meeting?.title || undefined"
+      />
+      <SpeakerManagementSheet
+        v-model="showSpeakerManagement"
+        :speakers="speakerDiarizer.getAllProfiles()"
+        @rename="onRenameSpeaker"
+        @change-color="onChangeSpeakerColor"
+        @merge="onMergeSpeakers"
+        @delete="onDeleteSpeaker"
+      />
     </template>
   </div>
 </template>
@@ -202,6 +233,11 @@ import MeetingSettingsSheet from './MeetingSettingsSheet.vue'
 import MeetingStudioMenu from './MeetingStudioMenu.vue'
 import SpeakerLabelSheet from './SpeakerLabelSheet.vue'
 import VoiceprintSheet from './VoiceprintSheet.vue'
+// Phase 3 UX Optimization
+import ThreeLayerTranscript from './ThreeLayerTranscript.vue'
+import ExportTranscriptSheet from './ExportTranscriptSheet.vue'
+import SpeakerManagementSheet from './SpeakerManagementSheet.vue'
+import { SpeakerDiarizer } from '@/native/speaker-diarizer'
 import { useApiError } from '../../composables/useApiError'
 import { useAuthStore } from '../../stores/auth'
 
@@ -219,6 +255,11 @@ const storedSegments = ref<MeetingSegment[]>([])
 const showSettings = ref(false)
 const showSpeakers = ref(false)
 const showVoiceprints = ref(false)
+// Phase 3 UI state
+const showExportSheet = ref(false)
+const showSpeakerManagement = ref(false)
+const transcriptRef = ref<InstanceType<typeof ThreeLayerTranscript>>()
+const speakerDiarizer = new SpeakerDiarizer()
 const summarizing = ref(false)
 /** §836/D1：追加失败的**位置**，决定文案（什么都没存 vs 只存了一半）。 */
 const appendStage = ref<AppendStage>('runtime')
@@ -739,6 +780,79 @@ onUnmounted(() => {
   if (relatedTimer) clearTimeout(relatedTimer)
 })
 
+// Phase 3: Speaker management handlers
+function onRenameSpeaker(profileId: string, customName: string) {
+  speakerDiarizer.renameSpeaker(profileId, customName)
+  toast.success('说话人已重命名')
+}
+
+function onChangeSpeakerColor(profileId: string, color: string) {
+  const profiles = speakerDiarizer.getAllProfiles()
+  const profile = profiles.find(p => p.profileId === profileId)
+  if (profile) {
+    profile.color = color
+  }
+}
+
+function onMergeSpeakers(sourceId: string, targetId: string) {
+  speakerDiarizer.mergeSpeakers(sourceId, targetId)
+  toast.success('说话人已合并')
+}
+
+function onDeleteSpeaker(profileId: string) {
+  toast.info('说话人已删除')
+}
+
+// Phase 3: Wire STT events to three-layer renderer
+watch(() => interimCaption.value, (text) => {
+  if (text && transcriptRef.value) {
+    transcriptRef.value.addInterim(text, 0.5)
+  }
+})
+
+watch(() => segments.value.length, (newLength, oldLength) => {
+  // When new segments arrive, confirm them as partial (Layer 2)
+  if (transcriptRef.value && newLength > oldLength && segments.value.length > 0) {
+    const newSegment = segments.value[segments.value.length - 1]
+    if (newSegment) {
+      transcriptRef.value.confirmPartial({
+        id: newSegment.id,
+        text: newSegment.text,
+        confidence: newSegment.confidence || 0.9,
+        startMs: newSegment.startMs,
+        endMs: newSegment.endMs,
+        speaker: newSegment.speakerLabel ? {
+          profileId: newSegment.id, // Use segment id as fallback
+          label: newSegment.speakerLabel,
+          color: '#6B7280'
+        } : undefined
+      })
+    }
+  }
+})
+
+// When recording stops and refined transcript is available, upgrade to Layer 3
+watch(() => meeting.value?.refinedTranscript, (refined) => {
+  if (refined && transcriptRef.value && !micOn.value) {
+    const finalSegments = displaySegments.value.map(seg => ({
+      id: seg.id,
+      text: seg.text,
+      confidence: 0.98,
+      startMs: seg.startMs,
+      endMs: seg.endMs,
+      speaker: seg.speakerLabel ? {
+        profileId: seg.id, // Use segment id as fallback
+        label: seg.speakerLabel,
+        color: '#6B7280'
+      } : undefined
+    }))
+    if (finalSegments.length > 0) {
+      transcriptRef.value.upgradeToFinal(finalSegments)
+    }
+  }
+})
+
+
 </script>
 
 <style scoped>
@@ -780,6 +894,38 @@ onUnmounted(() => {
   height: 40px; padding: 0 12px; border-radius: 999px; border: 1px solid var(--border);
   background: var(--bg-card); z-index: var(--z-fab); font-size: var(--text-smd);
 }
+
+/* Phase 3: Transcript toolbar styles */
+.transcript-toolbar {
+  display: flex;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-subtle);
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.toolbar-btn {
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.toolbar-btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.toolbar-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 @media (max-width: 720px) {
   .split { grid-template-columns: 1fr; grid-template-rows: minmax(0, 7fr) minmax(140px, 3fr); }
   .insight-border { border-left: none; }

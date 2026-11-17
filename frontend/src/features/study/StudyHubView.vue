@@ -969,7 +969,7 @@ async function setDailyDigest(time: string) {
 }
 
 .notes-icon .material-symbols-outlined {
-  font-size: 22px;
+  font-size: var(--text-2xl);
 }
 
 .notes-info {

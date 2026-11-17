@@ -1,0 +1,14 @@
+appId: com.kaixuan.opencode.pocket
+
+commands:
+  - launchApp
+  - wait: 3000
+  - tapOn: "笔记"
+  - wait: 2000
+  - tapOn: "+"
+  - wait: 1000
+  - tapOn: "开始录音"
+  - wait: 20000
+  - tapOn: "停止录音"
+  - wait: 3000
+  - takeScreenshot: phase-test-result

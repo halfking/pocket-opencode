@@ -74,11 +74,14 @@ export async function createEmailOwnershipBrowserFixture(options = {}) {
         if (importer?.endsWith('/app/App.vue')) {
           if (source === '../stores/auth') return '\0mail-app-auth'
           if (source === './AppLayout.vue') return '\0mail-app-layout'
+          if (source === '@/components/base/Toast.vue') return '\0mail-empty-view'
           if (source.endsWith('.vue')) return '\0mail-empty-view'
           if (source.endsWith('/useSwipeBack')) return '\0mail-swipe'
           if (source.endsWith('/useStatusBar')) return '\0mail-status'
           if (source.endsWith('/useKeyboardInset')) return '\0mail-keyboard'
         }
+        if (source === '@/components/base/Toast.vue' || source.endsWith('/components/base/Toast.vue')) return '\0mail-empty-view'
+        if (source === '@/composables/useHaptics' || source.endsWith('/composables/useHaptics')) return '\0mail-haptics'
         if (source === 'virtual:email-owned-entry') return '\0email-owned-entry'
         if (source === 'virtual:email-owned-db' || source.endsWith('/native/local-db')) return '\0email-owned-db'
         if (source.endsWith('/native/crypto')) return '\0email-owned-crypto'
@@ -87,11 +90,12 @@ export async function createEmailOwnershipBrowserFixture(options = {}) {
         if (id === '\0mail-app-layout') return "import{h}from'vue';export default{setup(_,{slots}){return()=>h('main',{id:'main'},slots.default?.())}}"
         if (id === '\0mail-empty-view') return "import{h}from'vue';export default{setup(){return()=>h('span')}}"
         if (id === '\0mail-swipe') return 'export const useSwipeBack=()=>{}'
+        if (id === '\0mail-haptics') return 'export const haptic=()=>{}'
         if (id === '\0mail-status') return 'export const useStatusBar=()=>({start(){},stop(){}})'
         if (id === '\0mail-keyboard') return 'export const installKeyboardInset=()=>{}'
         if (id === '\0email-owned-entry') return entry
         if (id === '\0email-owned-db') return db
-        if (id === '\0email-owned-crypto') return 'export const encryptString=async s=>s'
+        if (id === '\0email-owned-crypto') return 'export const encryptString=async s=>s; export const decryptString=async s=>s'
       }, configureServer(server) {
         server.middlewares.use((req,res,next)=>{
           if(!req.url.startsWith('/__email_ownership__')) return next()

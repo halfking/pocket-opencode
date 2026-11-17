@@ -759,7 +759,7 @@ async function assertFetchIntact() {
  *     不要让 flow 去跑一个注定失败的场景。
  */
 async function assertBackendUp() {
-  const base = process.env.POCKET_API_BASE || 'http://127.0.0.1:18099'
+  const base = process.env.POCKET_API_BASE || 'http://127.0.0.1:8088'
   try {
     const r = await fetch(`${base}/healthz`, { signal: AbortSignal.timeout(6000) })
     if (r.ok) { console.log(`[preflight] 后端可达 ${base} ✅`); return true }
@@ -787,7 +787,7 @@ async function assertBackendUp() {
  *   这是那种「所有健康检查都绿、功能却是空的」陷阱，只能靠显式断言挡住。
  */
 async function assertDeviceReachesBackend() {
-  const base = process.env.POCKET_API_BASE || 'http://127.0.0.1:18099'
+  const base = process.env.POCKET_API_BASE || 'http://127.0.0.1:8088'
   const port = (base.match(/:(\d+)/) || [])[1]
   if (!port) { console.log('[preflight] 解析不出端口，跳过设备侧检查'); return true }
   // 设备侧端口 = App 里烧进去的 API 基址端口（通常 18099）
@@ -988,7 +988,7 @@ async function assertDeviceReachesBackend() {
  * POCKET_API_BASE_OVERRIDE=0 可关闭（只在你确实想测构建期那个 LAN 基址时）。
  */
 async function assertAppUsesReverseBase() {
-  const hostBase = process.env.POCKET_API_BASE || 'http://127.0.0.1:18099'
+  const hostBase = process.env.POCKET_API_BASE || 'http://127.0.0.1:8088'
   const hostPort = (hostBase.match(/:(\d+)/) || [])[1]
   if (!hostPort) { console.error('[preflight] POCKET_API_BASE 里解析不出端口，无法推导设备侧基址'); return false }
   const dev = process.env.POCKET_DEVICE_PORT || hostPort
@@ -1190,7 +1190,7 @@ async function resetAppAuth() {
 
 async function ensureBackend() {
   if (await assertBackendUp()) return true
-  const base = process.env.POCKET_API_BASE || 'http://127.0.0.1:18099'
+  const base = process.env.POCKET_API_BASE || 'http://127.0.0.1:8088'
   // 只有本地后端才自动拉起；指向远端时拉起本机 pocketd 是错的。
   if (!/127\.0\.0\.1|localhost/.test(base)) return false
   if (process.env.POCKET_AUTOSTART_BACKEND === '0') return false

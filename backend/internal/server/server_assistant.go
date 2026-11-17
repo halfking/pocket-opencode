@@ -511,6 +511,16 @@ func (s *Server) handleNoteOperations(w http.ResponseWriter, r *http.Request) {
 		s.handleNoteRelated(w, r)
 		return
 	}
+	// /api/notes/{id}/recommendations — content-based similar notes (GET).
+	if strings.HasSuffix(id, "/recommendations") {
+		s.handleGetNoteRecommendations(w, r)
+		return
+	}
+	// /api/notes/{id}/suggest-tags — AI tag suggestions (POST).
+	if strings.HasSuffix(id, "/suggest-tags") {
+		s.handleSuggestNoteTags(w, r)
+		return
+	}
 
 	// Get authenticated user identity
 	uid := s.userIDFromRequest(r)

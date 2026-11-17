@@ -80,6 +80,7 @@ describe('§853 · CSS 注入面：没有整体声明块的口子', () => {
     const KNOWN = new Set([
       'chromeVars', 'splitVars', 'panelStyle',
       'mainScreenStyle', 'secondaryScreenStyle', 'chromeShellStyle',
+      'overlayStyle', // LiveSubtitleOverlay：本地坐标对象式 computed，无外部内容
     ])
     const stringForm: string[] = []
     for (const f of VUE_FILES) {

@@ -198,13 +198,13 @@ describe('层3修复 · ingestSpeechBlob 的 audioPath 接线行为', () => {
     assert.equal(opts.module, 'meetings')
   })
 
-  it('★ webm 分片（Web 链）⇒ 不传 audioPath（sherpa 不吃 webm，必败调用别发起）', async () => {
+  it('★ webm 分片且原生落盘存在 ⇒ 仍传裸路径，交给 Sherpa 自校验（Blob MIME 可能丢失）', async () => {
     reset()
     seen.saveAudioPartReturn = { id: 'part-2', filePath: 'file:///data/recordings/m-wire/part-2.webm' }
     const blob = new Blob(['stub'], { type: 'audio/webm' })
     await ingest(blob)
-    assert.equal(seen.transcribeCalls[0].opts.audioPath, undefined,
-      'webm 也传了 audioPath ⇒ 每段一次注定 unsupported_format 的原生调用')
+    assert.equal(seen.transcribeCalls[0].opts.audioPath, '/data/recordings/m-wire/part-2.webm',
+      '原生 filePath 存在时不应依赖 Blob MIME 过滤，否则 Android 空 MIME 会让本地转写失效')
   })
 
   it('★ 落盘失败（filePath=null）⇒ 不传 audioPath，云端路径照常工作', async () => {
@@ -238,10 +238,10 @@ describe('层3修复 · ingestSpeechBlob 的 audioPath 接线行为', () => {
     assert.equal(saved.text, '桩转写结果')
   })
 
-  it('★ nativePartPathForSherpa 纯函数：非 wav / null / 无前缀三种输入', () => {
+  it('★ nativePartPathForSherpa 纯函数：null 与前缀剥离', () => {
     assert.equal(mod.nativePartPathForSherpa('file:///a/b.wav', 'audio/wav'), '/a/b.wav')
     assert.equal(mod.nativePartPathForSherpa(null, 'audio/wav'), undefined)
-    assert.equal(mod.nativePartPathForSherpa('file:///a/b.webm', 'audio/webm'), undefined)
+    assert.equal(mod.nativePartPathForSherpa('file:///a/b.webm', 'audio/webm'), '/a/b.webm')
     // 已是裸路径（理论形态）⇒ 原样透传，不损坏
     assert.equal(mod.nativePartPathForSherpa('/a/b.wav', 'audio/wav'), '/a/b.wav')
   })

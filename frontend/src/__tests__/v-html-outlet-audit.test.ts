@@ -72,7 +72,7 @@ describe('§851 · `v-html` 必须经过净化', () => {
   it('★ 扫到 10 处绑定（基线，口径变化时这里会先红）', () => {
     // 棘轮：**只钉住数量上界**，新增 v-html 会被这条抓住并逼你判断。
     const n = bindings().length
-    assert.ok(n > 0 && n <= 10, `扫到 ${n} 处 v-html，超出本节记录的基线 10`)
+    assert.ok(n > 0 && n <= 13, `扫到 ${n} 处 v-html，超出本节记录的基线 13`)
   })
 
   it('★★★ RssItemDetail 的正文必须走 sanitizeHtml', () => {
@@ -91,7 +91,10 @@ describe('§851 · `v-html` 必须经过净化', () => {
     const ALLOWED_EXPR: Record<string, RegExp> = {
       'features/rss/RssItemDetail.vue': /^safeContent$/,              // ← sanitizeHtml
       'features/agents/AgentDetailView.vue': /^promptPreview$/,      // ← renderMarkdown
+      'pages/NoteDetailPage.vue': /^renderedContent$/,               // ← renderMarkdown
+      'pages/NoteEditPage.vue': /^renderedContent$/,                 // ← renderMarkdown
       'features/ai-chat/AIChatView.vue': /^rendered\(/,             // error 分支还显式 escapeHtml
+      'pages/KnowledgeSearchPage.vue': /^highlightText\(/,           // 先全量 HTML escape，再仅包裹转义后的查询
       'features/email/EmailSummaryView.vue': /^renderedMarkdown$/,
       'features/notes/NoteDetailView.vue': /^renderedMarkdown$/,
       'features/sessions/RoundTimeline.vue': /^renderedHtml\(/,     // ← renderMarkdown

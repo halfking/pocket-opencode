@@ -1,72 +1,112 @@
-// WikiLinks Utility Functions
-// 解析和渲染 Wiki 风格的双向链接
+/**
+ * wikilinks.ts - WikiLinks 解析和渲染工具
+ * 
+ * 功能:
+ * 1. 解析 [[keyword]] 语法
+ * 2. 转换为可点击的链接
+ * 3. 支持笔记标题到 ID 的映射
+ * 4. 处理不存在的链接
+ */
 
 export interface WikiLink {
-  raw: string;
-  target: string;
-  displayText?: string;
-  start: number;
-  end: number;
+  raw: string          // 原始文本，如 "[[Q3 预算]]"
+  keyword: string      // 关键词，如 "Q3 预算"
+  noteId?: string      // 对应的笔记 ID
+  exists: boolean      // 是否存在对应笔记
+  startIndex: number   // 在原文中的起始位置
+  endIndex: number     // 在原文中的结束位置
 }
 
-const WIKI_LINK_PATTERN = /\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g;
+export interface NoteMap {
+  [title: string]: string  // title -> noteId
+}
 
 /**
- * 从文本中解析所有 wiki links
- * @param text Markdown 文本
- * @returns 解析出的 wiki links 数组
+ * 解析文本中的所有 WikiLinks
  */
-export function parseWikiLinks(text: string): WikiLink[] {
-  const links: WikiLink[] = [];
-  let match: RegExpExecArray | null;
+export function parseWikiLinks(content: string): WikiLink[] {
+  const wikiLinkRegex = /\[\[([^\]]+)\]\]/g
+  const links: WikiLink[] = []
+  let match: RegExpExecArray | null
 
-  while ((match = WIKI_LINK_PATTERN.exec(text)) !== null) {
+  while ((match = wikiLinkRegex.exec(content)) !== null) {
     links.push({
       raw: match[0],
-      target: match[1].trim(),
-      displayText: match[2]?.trim(),
-      start: match.index,
-      end: match.index + match[0].length,
-    });
+      keyword: match[1].trim(),
+      startIndex: match.index,
+      endIndex: match.index + match[0].length,
+      exists: false
+    })
   }
 
-  return links;
+  return links
 }
 
 /**
- * 渲染 wiki links 为 HTML 链接
- * @param text Markdown 文本
- * @param onLinkClick 点击回调函数
- * @returns 渲染后的 HTML
+ * 检查链接是否存在对应笔记
  */
-export function renderWikiLinks(
-  text: string,
-  onLinkClick?: (target: string) => void
-): string {
-  return text.replace(WIKI_LINK_PATTERN, (match, target, displayText) => {
-    const linkText = displayText || target;
-    const clickHandler = onLinkClick
-      ? ` onclick="handleWikiLinkClick('${target.replace(/'/g, "\\'")}')"`
-      : '';
-    return `<a href="#/knowledge/search?q=${encodeURIComponent(target)}" class="wiki-link"${clickHandler}>${linkText}</a>`;
-  });
+export function resolveWikiLinks(links: WikiLink[], noteMap: NoteMap): WikiLink[] {
+  return links.map(link => {
+    const noteId = noteMap[link.keyword.toLowerCase()]
+    return {
+      ...link,
+      noteId,
+      exists: !!noteId
+    }
+  })
 }
 
 /**
- * 提取所有 wiki link 目标
- * @param text Markdown 文本
- * @returns 目标标题数组
+ * 将 WikiLinks 渲染为 HTML
  */
-export function extractWikiLinkTargets(text: string): string[] {
-  const links = parseWikiLinks(text);
-  return links.map(link => link.target);
+export function renderWikiLinksToHTML(content: string, noteMap: NoteMap = {}): string {
+  const links = parseWikiLinks(content)
+  const resolvedLinks = resolveWikiLinks(links, noteMap)
+
+  if (resolvedLinks.length === 0) {
+    return content
+  }
+
+  let result = content
+  for (let i = resolvedLinks.length - 1; i >= 0; i--) {
+    const link = resolvedLinks[i]
+    const before = result.substring(0, link.startIndex)
+    const after = result.substring(link.endIndex)
+    
+    let replacement: string
+    if (link.exists && link.noteId) {
+      replacement = `<a href="#/knowledge/notes/${link.noteId}" class="wiki-link wiki-link-exists" data-note-id="${link.noteId}">${escapeHTML(link.keyword)}</a>`
+    } else {
+      replacement = `<span class="wiki-link wiki-link-missing">${escapeHTML(link.keyword)}<button class="wiki-link-create" title="创建笔记">+</button></span>`
+    }
+    
+    result = before + replacement + after
+  }
+
+  return result
 }
 
-/**
- * 检查文本是否包含 wiki links
- * @param text Markdown 文本
- * @returns 是否包含 wiki links
- */
-export function hasWikiLinks(text: string): boolean {
-  return WIKI_LINK_PATTERN.test(text);
+function escapeHTML(text: string): string {
+  const div = document.createElement('div')
+  div.textContent = text
+  return div.innerHTML
+}
+
+export function extractWikiLinkKeywords(content: string): string[] {
+  const links = parseWikiLinks(content)
+  return links.map(link => link.keyword)
+}
+
+export function hasWikiLinks(content: string): boolean {
+  return /\[\[([^\]]+)\]\]/.test(content)
+}
+
+export function buildNoteMap(notes: Array<{ id: string; title: string }>): NoteMap {
+  const map: NoteMap = {}
+  for (const note of notes) {
+    if (note.title) {
+      map[note.title.toLowerCase()] = note.id
+    }
+  }
+  return map
 }

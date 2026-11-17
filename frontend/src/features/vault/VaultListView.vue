@@ -336,7 +336,7 @@ input {
   min-height: 52px;
   max-height: 66px;
 }
-.entry-icon { font-size: 22px; }
+.entry-icon { font-size: var(--text-2xl); }
 .entry-body { flex: 1; }
 .entry-title { font-weight: 600; font-size: var(--text-base); }
 .entry-user { color: var(--text-secondary); font-size: var(--text-sm); }

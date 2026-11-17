@@ -1,0 +1,52 @@
+appId: com.kaixuan.opencode.pocket
+name: phase1-vad-deploy-test
+---
+# Phase 1 VAD 部署验证测试（修正版）
+# 真实 UI 路径：更多(底栏) → 会议(宫格) → 🎙FAB(开始会议录音) → 录音页 → 录音按钮
+
+- launchApp
+- extendedWaitUntil:
+    visible: "更多"
+    timeout: 15000
+
+# 1. 进入「更多」页
+- tapOn: "更多"
+- extendedWaitUntil:
+    visible: "会议"
+    timeout: 10000
+
+# 2. 点击「会议」宫格进入会议列表
+- tapOn: "会议"
+- extendedWaitUntil:
+    visible:
+      id: "开始会议录音"
+    timeout: 10000
+
+# 3. 点击 🎙 FAB 新建会议并进入录音页（aria-label: 开始会议录音）
+- tapOn:
+    id: "开始会议录音"
+
+# 4. 等待录音页加载，出现麦克风按钮（aria-label: 开始录音）
+- extendedWaitUntil:
+    visible:
+      id: "开始录音"
+    timeout: 15000
+
+# 5. 开始录音（触发 MeetingRecordService → VadManager 初始化）
+- tapOn:
+    id: "开始录音"
+
+# 6. 保持录音 20 秒（采集 VAD 初始化与切片日志）
+- waitForAnimationToEnd:
+    timeout: 20000
+
+# 7. 停止录音
+- tapOn:
+    id: "停止录音"
+
+- waitForAnimationToEnd:
+    timeout: 5000
+
+# 验收说明（日志验证由外部脚本完成）：
+# Test 1: logcat 应含 "VAD enabled: dynamic endpoint detection active"
+# Test 5: 若含 "VAD initialization failed, falling back to fixed 8s chunks" 则回退生效

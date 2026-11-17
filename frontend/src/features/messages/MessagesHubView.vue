@@ -569,6 +569,10 @@ async function load() {
 .msg-hub {
   display: flex;
   flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
   gap: var(--space-3);
   padding: 0 var(--space-3) var(--space-6);
 }
@@ -802,6 +806,7 @@ async function load() {
 .see-all {
   display: flex;
   flex-direction: column;
+  flex-shrink: 0;
   margin-top: var(--space-2);
   background: var(--bg-card);
   border: 1px solid var(--border);

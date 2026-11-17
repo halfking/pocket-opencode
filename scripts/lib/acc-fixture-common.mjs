@@ -17,8 +17,8 @@ import { readFileSync, existsSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { createHmac } from 'node:crypto'
 
-export const DEFAULT_BASE = process.env.POCKET_API_BASE || 'http://127.0.0.1:18099'
-export const ENV_FILE = `${homedir()}/kaixuan/acp/logs/rerun-round52/pocketd-18099.env`
+export const DEFAULT_BASE = process.env.POCKET_API_BASE || 'http://127.0.0.1:8088'
+export const ENV_FILE = `${homedir()}/kaixuan/acp/logs/openpocket-8088/pocketd-8088.env`
 
 export function loadEnv(path = ENV_FILE) {
   const out = {}
