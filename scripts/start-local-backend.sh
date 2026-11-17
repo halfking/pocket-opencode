@@ -176,7 +176,14 @@ errlog="$ROOT/logs/pocketd-$PORT-$stamp.err.log"
 # run of this script stayed alive for minutes after the backend was already
 # serving /healthz 200, so every caller that shells out to it (maestro-run.mjs
 # ensureBackend) blocks on a launcher that has nothing left to do.
-( cd "$ROOT/backend" && exec setsid "$BIN" >"$out" 2>"$errlog" </dev/null ) &
+# setsid 在 macOS 上不存在（实测 2026-11-18：子 shell 直接退出，
+# pocketd 根本没起来，而 18099 上应答 healthz 的是别的容器 ⇒ 量具误报）。
+# 可用则用 setsid；否则用 nohup 提供同等的 HUP 免疫与全脱离。
+if command -v setsid >/dev/null 2>&1; then
+  ( cd "$ROOT/backend" && exec setsid "$BIN" >"$out" 2>"$errlog" </dev/null ) &
+else
+  ( cd "$ROOT/backend" && exec nohup "$BIN" >"$out" 2>"$errlog" </dev/null ) &
+fi
 pid=$!
 disown "$pid" 2>/dev/null || true
 echo "$pid" > "$ROOT/logs/pocketd-$PORT.pid"

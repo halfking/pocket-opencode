@@ -18,7 +18,12 @@ import { homedir } from 'node:os'
 import { createHmac } from 'node:crypto'
 
 export const DEFAULT_BASE = process.env.POCKET_API_BASE || 'http://127.0.0.1:8088'
-export const ENV_FILE = `${homedir()}/kaixuan/acp/logs/openpocket-8088/pocketd-8088.env`
+// 2026-11-18：路径此前硬绑 8088 部署的 env 文件 —— 在「自起 18100 实例 +
+// 模拟器」的夹具环境里读到的是**没有 dev 口令的旧部署 env** ⇒ 登录 401，
+// fixture 被整体跳过（不是产品回归，是量具绑死了部署拓扑）。
+// ⇒ 允许用 POCKET_FIXTURE_ENV_FILE 覆盖；缺省保持原路径（老 rig 不变）。
+export const ENV_FILE = process.env.POCKET_FIXTURE_ENV_FILE
+  || `${homedir()}/kaixuan/acp/logs/openpocket-8088/pocketd-8088.env`
 
 export function loadEnv(path = ENV_FILE) {
   const out = {}
