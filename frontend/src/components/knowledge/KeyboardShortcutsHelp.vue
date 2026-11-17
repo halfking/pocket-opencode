@@ -191,7 +191,7 @@ onUnmounted(() => {
 }
 
 .shortcut-keys {
-  font-family: 'Monaco', 'Menlo', monospace;
+  font-family: var(--font-mono);
   font-size: 0.875rem;
   color: #374151;
   background-color: white;
@@ -216,7 +216,7 @@ onUnmounted(() => {
 }
 
 .footer-hint kbd {
-  font-family: 'Monaco', 'Menlo', monospace;
+  font-family: var(--font-mono);
   font-size: 0.75rem;
   background-color: white;
   border: 1px solid #d1d5db;

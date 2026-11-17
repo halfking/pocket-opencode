@@ -71,8 +71,11 @@ describe('§851 · `v-html` 必须经过净化', () => {
 
   it('★ 扫到 10 处绑定（基线，口径变化时这里会先红）', () => {
     // 棘轮：**只钉住数量上界**，新增 v-html 会被这条抓住并逼你判断。
+    // 13 → 15：ConflictResolver.vue 新增本地/远端两栏 Markdown 预览（2026-11-17
+    // VAD 批量提交带入）。两处表达式已登记进下方 ALLOWED_EXPR，且其值来自
+    // utils/markdown.ts 的共享净化 renderMarkdown（DOMPurify 收口）。
     const n = bindings().length
-    assert.ok(n > 0 && n <= 13, `扫到 ${n} 处 v-html，超出本节记录的基线 13`)
+    assert.ok(n > 0 && n <= 15, `扫到 ${n} 处 v-html，超出本节记录的基线 15`)
   })
 
   it('★★★ RssItemDetail 的正文必须走 sanitizeHtml', () => {
@@ -99,6 +102,9 @@ describe('§851 · `v-html` 必须经过净化', () => {
       'features/notes/NoteDetailView.vue': /^renderedMarkdown$/,
       'features/sessions/RoundTimeline.vue': /^renderedHtml\(/,     // ← renderMarkdown
       'features/email/EmailDetailView.vue': /^(htmlBody|quotedHtml|signatureHtml)$/, // ← sanitizeEmailHtml
+      // 2026-11-18：冲突解决弹窗的本地/远端两栏预览。其组件内的 renderMarkdown
+      // 已改为直接复用 utils/markdown.ts 的共享净化版（本地那份裸 marked() 是真 XSS 面，已删）。
+      'components/knowledge/ConflictResolver.vue': /^renderMarkdown\(/, // ← renderMarkdown(共享净化)
     }
     const bad = bindings()
       .filter((b) => !(ALLOWED_EXPR[b.file]?.test(b.expr)))

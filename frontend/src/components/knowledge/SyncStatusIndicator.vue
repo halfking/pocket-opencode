@@ -242,7 +242,7 @@ watch(() => props.noteId, (newId) => {
   background: white;
   border-radius: 0.5rem;
   box-shadow: 0 10px 25px rgba(0, 0, 0, 0.15);
-  z-index: 50;
+  z-index: var(--z-sticky);
   overflow: hidden;
 }
 

@@ -98,6 +98,26 @@ const ALLOWLIST = {
     minBottom: NAV_HEIGHT,
     reason: '转写浮层刻意远离底栏（150px），是浮在页面中上部的读数面板，不是贴边控件',
   },
+  // ── 2026-11-18（§851 批量裁决登记）：VAD 批量提交带入的 4 个全屏弹层遮罩。
+  //   语义与 KnowledgeHubPage 两条先例相同：top/left/right/bottom 全 0 的
+  //   **覆盖型**遮罩，z=1000/2000 均高于 --z-bottom-nav(70)，语义是「盖住
+  //   整屏（含底栏）」而非「贴边让位」——弹层期间底栏本就不该可点。
+  'components/knowledge/ConflictResolver.vue:257': {
+    isChrome: true,
+    reason: '冲突解决弹窗全屏遮罩（Teleport to body），z=var(--z-menu)(1000) 高于底栏(70)，覆盖语义',
+  },
+  'components/knowledge/KeyboardShortcutsHelp.vue:82': {
+    isChrome: true,
+    reason: '快捷键帮助弹窗全屏遮罩，z=2000 高于底栏(70)，覆盖语义',
+  },
+  'components/knowledge/NoteLinksPanel.vue:651': {
+    isChrome: true,
+    reason: '反向链接删除确认弹窗全屏遮罩，z=var(--z-menu)(1000) 高于底栏(70)，覆盖语义',
+  },
+  'features/meetings/SpeakerManagementSheet.vue:312': {
+    isChrome: true,
+    reason: '说话人管理页内的选色/合并弹窗全屏遮罩，z=var(--z-menu)(1000) 高于底栏(70)，覆盖语义',
+  },
 }
 
 /**

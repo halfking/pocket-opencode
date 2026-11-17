@@ -255,7 +255,7 @@ async function exportFile() {
 }
 
 .section h3 {
-  font-size: 16px;
+  font-size: var(--text-lg);
   font-weight: 600;
   color: #1f2937;
   margin-bottom: 12px;
@@ -304,7 +304,7 @@ async function exportFile() {
 }
 
 .format-desc {
-  font-size: 13px;
+  font-size: var(--text-smd);
   color: #6b7280;
 }
 
@@ -327,7 +327,7 @@ async function exportFile() {
   padding: 10px 12px;
   border: 2px solid #e5e7eb;
   border-radius: 8px;
-  font-size: 15px;
+  font-size: var(--text-md);
   transition: border-color 0.2s;
 }
 
@@ -348,7 +348,7 @@ async function exportFile() {
   padding: 12px;
   border: none;
   border-radius: 8px;
-  font-size: 15px;
+  font-size: var(--text-md);
   font-weight: 600;
   cursor: pointer;
   transition: all 0.2s;

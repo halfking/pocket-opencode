@@ -123,6 +123,9 @@ const ALLOWLIST = {
   'styles.css:.nav-pop-enter-active': '同上',
   'styles.css:.nav-pop-leave-active': '同上',
   'features/email/EmailSpamCleanupView.vue:.page-head': '页内 sticky 小节标题，低于全局吸顶栏',
+  // 2026-11-18（§851 批量裁决登记）：VAD 批量提交带入的弹层。
+  'components/knowledge/KeyboardShortcutsHelp.vue:.modal-overlay': '快捷键帮助弹窗遮罩：fixed 全屏 z=2000，需盖住页内其它弹层（高于 --z-menu(1000)/--z-dialog(1400)）；阶梯上无对应档位（--z-update=1600 / --z-toast=9999 之间），登记保留原值',
+
   'features/email/EmailAccountAddView.vue:.page-head': '页内 sticky 小节标题，低于全局吸顶栏',
 }
 

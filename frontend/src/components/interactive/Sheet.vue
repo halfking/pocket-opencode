@@ -40,7 +40,7 @@ function close() {
   position: fixed;
   inset: 0;
   background: rgba(0, 0, 0, 0.5);
-  z-index: 1000;
+  z-index: var(--z-menu);
   display: flex;
   align-items: flex-end;
 }
@@ -73,7 +73,7 @@ function close() {
 }
 
 .sheet-header h2 {
-  font-size: 18px;
+  font-size: var(--text-xl);
   font-weight: 600;
   margin: 0;
   color: #1f2937;
@@ -86,7 +86,7 @@ function close() {
   background: #f3f4f6;
   border-radius: 50%;
   cursor: pointer;
-  font-size: 18px;
+  font-size: var(--text-xl);
   color: #6b7280;
   transition: all 0.2s;
   display: flex;

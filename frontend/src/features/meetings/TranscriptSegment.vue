@@ -168,7 +168,7 @@ watch(() => props.segment.id, () => {
   justify-content: center;
   color: white;
   font-weight: bold;
-  font-size: 14px;
+  font-size: var(--text-base);
 }
 
 .speaker-name {
@@ -207,7 +207,7 @@ watch(() => props.segment.id, () => {
 .segment-text {
   color: #1f2937;
   line-height: 1.6;
-  font-size: 15px;
+  font-size: var(--text-md);
   cursor: text;
   min-height: 24px;
   outline: none;
@@ -232,7 +232,7 @@ watch(() => props.segment.id, () => {
   padding: 6px 12px;
   border: none;
   border-radius: 6px;
-  font-size: 14px;
+  font-size: var(--text-base);
   font-weight: 500;
   cursor: pointer;
   transition: all 0.2s;

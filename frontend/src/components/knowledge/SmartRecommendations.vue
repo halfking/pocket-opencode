@@ -95,6 +95,7 @@
 import { ref, computed, watch, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { api } from '@/api/client'
+import { useApiError } from '@/composables/useApiError'
 
 interface Note {
   id: string
@@ -128,6 +129,7 @@ const emit = defineEmits<{
 const router = useRouter()
 
 // 状态
+const apiError = useApiError()
 const loading = ref(false)
 const error = ref<string | null>(null)
 const recommendations = ref<Recommendation[]>([])
@@ -170,8 +172,9 @@ const loadRecommendations = async (append = false) => {
     currentOffset.value = offset + newRecommendations.length
 
   } catch (err: any) {
-    error.value = err.message || '加载推荐失败'
+    // 原始 err.message 不上屏：走共享归一文案，原始信息 console 留档。
     console.error('Failed to load recommendations:', err)
+    error.value = apiError(err, '加载推荐失败')
   } finally {
     loading.value = false
   }

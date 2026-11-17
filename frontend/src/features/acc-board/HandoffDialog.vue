@@ -200,7 +200,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey))
   gap: var(--space-3, 12px);
 }
 .hd-head { display: flex; align-items: center; gap: var(--space-2, 8px); }
-.hd-glyph { font-size: 22px; }
+.hd-glyph { font-size: var(--text-2xl); }
 .hd-title { flex: 1; min-width: 0; }
 .hd-title h2 { margin: 0; font-size: var(--text-md, 16px); color: var(--text-primary, #111); }
 .hd-sub { margin: 2px 0 0; font-size: var(--text-smd, 13px); color: var(--text-tertiary, #888); word-break: break-all; }

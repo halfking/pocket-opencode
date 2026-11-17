@@ -180,7 +180,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey))
   gap: var(--space-3, 12px);
 }
 .am-head { display: flex; align-items: center; gap: var(--space-2, 8px); }
-.am-glyph { font-size: 22px; }
+.am-glyph { font-size: var(--text-2xl); }
 .am-title { flex: 1; min-width: 0; }
 .am-title h2 { margin: 0; font-size: var(--text-md, 16px); color: var(--text-primary, #111); }
 .am-sub { margin: 2px 0 0; font-size: var(--text-smd, 13px); color: var(--text-tertiary, #888); word-break: break-all; }
