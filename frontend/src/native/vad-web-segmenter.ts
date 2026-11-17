@@ -8,7 +8,13 @@
  * 3. 更准确的语音/静音边界检测
  */
 
-import { MicVAD } from '@ricky0123/vad-web'
+// ⚠ 该包只发 CJS（命名导出经 Object.defineProperty(exports, …, {get}) 提供）。
+// vite dev 的 esbuild 预打包识别不出 `MicVAD` 这个命名导出
+//（实测：SyntaxError: … does not provide an export named 'MicVAD'），
+// 会让整条 app 图谱在浏览器里加载失败（email fixture 的 12 个浏览器用例只剩 1 个红即此因）。
+// ⇒ 改用 namespace 导入 + 类型侧引用，dev/build 两端都稳。
+import * as vadWeb from '@ricky0123/vad-web'
+type MicVAD = import('@ricky0123/vad-web').MicVAD
 
 export interface VadSegment {
   blob: Blob
@@ -96,7 +102,7 @@ export class VadWebSegmenter {
     try {
       console.log('[vad-web-segmenter] Initializing Silero VAD...')
       
-      this.vad = await MicVAD.new({
+      this.vad = await vadWeb.MicVAD.new({
         // 提供 stream 的 getter
         getStream: async () => stream,
         onSpeechStart: () => {

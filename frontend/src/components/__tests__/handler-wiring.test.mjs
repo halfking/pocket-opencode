@@ -48,6 +48,9 @@ const BASELINE = {
   'components/business/WaveformVisualizer.vue :: handleClick': {
     reason: '可拖动波形的旧设计残留。现役两处用法（NoteListView / MeetingStudioMenu）都把它当**录音电平条**（is-recording、120×28、show-time=false），且该函数在 props.duration<=0 时直接 return，绑上也不会有行为。⚠️ 附带一个待属主拍板的小缺陷：该元素 CSS 上有 cursor:pointer（UI 在暗示可点）但点了没反应——是改成可跳转还是去掉 pointer，属产品取舍。',
   },
+  'features/meetings/MeetingDetailView.vue :: onAppendUtterance': {
+    reason: '⚠️ 待属主拍板（2026-11-18 全量测试裁决登记）。§131/§836/D1 写入路径的实现是完整的（appendText 落库 + appendStage 三段失败文案），但事件源已不存在：详情页 Phase 3 改用 ThreeLayerTranscript（只有 @edit，无 composer），带「补一句转写」composer 的 TranscriptSegmentList 现役唯一宿主是 SessionLiveRecordPanel（由 SessionConversationView 使用），且该宿主没有接 @append ⇒ 追加链路两头都够不着。接线需把失败文案链（appendStage/describeAppendFailure）随事件源一起搬进现役宿主，属产品取舍（在哪个页面开放「补一句转写」）。登记以保棘轮可见，防止误以为它已接线。',
+  },
 }
 
 /**

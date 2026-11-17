@@ -166,7 +166,7 @@ defineExpose({
 
 .setting-header h3 {
   margin: 0;
-  font-size: 18px;
+  font-size: var(--text-xl);
   font-weight: 600;
 }
 
@@ -174,7 +174,7 @@ defineExpose({
   padding: 4px 8px;
   background: #fef3c7;
   color: #92400e;
-  font-size: 12px;
+  font-size: var(--text-sm);
   border-radius: 4px;
   font-weight: 500;
 }
@@ -223,7 +223,7 @@ defineExpose({
   gap: 8px;
   margin-bottom: 8px;
   font-weight: 600;
-  font-size: 16px;
+  font-size: var(--text-lg);
 }
 
 .option-title .icon {
@@ -234,7 +234,7 @@ defineExpose({
   padding: 2px 8px;
   background: #3b82f6;
   color: white;
-  font-size: 11px;
+  font-size: var(--text-2xs);
   border-radius: 4px;
   font-weight: 500;
 }
@@ -243,14 +243,14 @@ defineExpose({
   padding: 2px 8px;
   background: #10b981;
   color: white;
-  font-size: 11px;
+  font-size: var(--text-2xs);
   border-radius: 4px;
   font-weight: 500;
 }
 
 .option-desc {
   color: #6b7280;
-  font-size: 14px;
+  font-size: var(--text-base);
   margin-bottom: 8px;
   line-height: 1.4;
 }
@@ -265,7 +265,7 @@ defineExpose({
   padding: 4px 8px;
   background: #f3f4f6;
   border-radius: 4px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: #374151;
 }
 
@@ -307,7 +307,7 @@ defineExpose({
 
 .note-content li {
   margin-bottom: 4px;
-  font-size: 14px;
+  font-size: var(--text-base);
 }
 
 .vad-stats {
@@ -318,7 +318,7 @@ defineExpose({
 
 .vad-stats h4 {
   margin: 0 0 12px 0;
-  font-size: 16px;
+  font-size: var(--text-lg);
   font-weight: 600;
 }
 
@@ -335,12 +335,12 @@ defineExpose({
 }
 
 .stat-label {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: #6b7280;
 }
 
 .stat-value {
-  font-size: 18px;
+  font-size: var(--text-xl);
   font-weight: 600;
   color: #111827;
 }

@@ -210,6 +210,23 @@ function segmentListTags(tpl) {
   return [...tpl.matchAll(/<TranscriptSegmentList\b([^>]*?)\/?>/g)].map((m) => m[1])
 }
 
+/**
+ * 模板里所有 `<ThreeLayerTranscript …/>` 标签的属性串（Phase 3 三层转写宿主）。
+ *
+ * ⚠ 该组件内部对 TranscriptSegment **恒开** `:editable="true"`（组件级硬编码，
+ *   不经 prop），更正经它自己的 `edit` emit 透传给宿主 ⇒ 对宿主而言，
+ *   「更正入口已打开」是无条件的，唯一契约是宿主必须接 `@edit`。
+ */
+function threeLayerTags(tpl) {
+  return [...tpl.matchAll(/<ThreeLayerTranscript\b([^>]*?)\/?>/g)].map((m) => m[1])
+}
+
+/** ThreeLayerTranscript 宿主的未接线判定：没接 @edit 就是把更正静默丢弃。 */
+function threeLayerUnwiredReason(attrs) {
+  if (/@edit\s*=/.test(attrs)) return ''
+  return 'ThreeLayerTranscript 内部恒开逐段更正（:editable=true 硬编码），宿主必须接 @edit ⇒ 否则用户的更正会被静默丢弃'
+}
+
 /** 该标签是否把更正入口打开（`editable` / `:editable="true"`）。 */
 function editableOpened(attrs) {
   const m = attrs.match(/(?:^|\s):?editable(?:\s*=\s*"([^"]*)")?/)
@@ -242,8 +259,13 @@ function editUnwiredReason(attrs) {
 function unhandledEdits() {
   const bad = []
   for (const full of vueFiles(SRC)) {
-    for (const attrs of segmentListTags(templateOf(readFileSync(full, 'utf8')))) {
+    const tpl = templateOf(readFileSync(full, 'utf8'))
+    for (const attrs of segmentListTags(tpl)) {
       if (editUnwiredReason(attrs)) bad.push(`${path.relative(SRC, full)}：${editUnwiredReason(attrs)}`)
+    }
+    // Phase 3 宿主：内部恒开编辑 ⇒ 只查 @edit 是否接上。
+    for (const attrs of threeLayerTags(tpl)) {
+      if (threeLayerUnwiredReason(attrs)) bad.push(`${path.relative(SRC, full)}：${threeLayerUnwiredReason(attrs)}`)
     }
   }
   return bad
@@ -442,14 +464,27 @@ describe('§131 · 落库层', () => {
 
 describe('§131 · 接线层', () => {
   it('量具自证：扫得到已开更正入口的渲染方，且清单不是空的', () => {
+    // ⚠ 2026-11-18（Phase 3 三层转写）：详情页的逐段更正入口已从
+    //   TranscriptSegmentList 迁到 ThreeLayerTranscript —— 后者内部对
+    //   TranscriptSegment 固定 `:editable="true"` 并把更正经 @edit 透传给宿主。
+    //   ⇒ 「渲染方」的定义必须同时覆盖两个组件，否则量具只认旧宿主，
+    //     会把 Phase 3 的真实宿主误报成「抽取器坏了」。
+    //   宿主判定不改两组件各自的接线契约：TranscriptSegmentList 仍是
+    //   「开了 editable 必须接 @edit」，ThreeLayerTranscript 是「宿主必须接 @edit」
+    //   （它内部恒开编辑，宿主不接 = 用户的更正被静默丢弃）。
     const hosts = vueFiles(SRC)
-      .filter((f) => segmentListTags(templateOf(readFileSync(f, 'utf8'))).length > 0)
+      .filter((f) => {
+        const tpl = templateOf(readFileSync(f, 'utf8'))
+        return segmentListTags(tpl).length > 0 || threeLayerTags(tpl).length > 0
+      })
       .map((f) => path.relative(SRC, f))
     assert.ok(hosts.length >= 2, `只扫到 ${hosts.length} 个渲染方（${hosts}）⇒ 抽取器大概率坏了`)
     assert.ok(hosts.includes(path.join('features', 'meetings', 'MeetingDetailView.vue')),
       `详情页没被扫出来 ⇒ 抽取器有盲区（${hosts}）`)
-    const opened = vueFiles(SRC).filter((f) =>
-      segmentListTags(templateOf(readFileSync(f, 'utf8'))).some(editableOpened))
+    const opened = vueFiles(SRC).filter((f) => {
+      const tpl = templateOf(readFileSync(f, 'utf8'))
+      return segmentListTags(tpl).some(editableOpened) || threeLayerTags(tpl).length > 0
+    })
     assert.ok(opened.length >= 1,
       '没有任何一处打开更正入口 ⇒ 整道接线判据是恒真的（能力不可达却全绿）')
   })

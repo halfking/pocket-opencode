@@ -256,7 +256,7 @@ function close() {
 .speaker-avatar.small {
   width: 32px;
   height: 32px;
-  font-size: 16px;
+  font-size: var(--text-lg);
 }
 
 .speaker-info {
@@ -269,7 +269,7 @@ function close() {
   padding: 6px 8px;
   border: 1px solid #e5e7eb;
   border-radius: 4px;
-  font-size: 15px;
+  font-size: var(--text-md);
   font-weight: 600;
   margin-bottom: 4px;
 }
@@ -280,7 +280,7 @@ function close() {
 }
 
 .speaker-stats {
-  font-size: 13px;
+  font-size: var(--text-smd);
   color: #6b7280;
 }
 
@@ -297,7 +297,7 @@ function close() {
   border-radius: 6px;
   cursor: pointer;
   transition: all 0.2s;
-  font-size: 18px;
+  font-size: var(--text-xl);
 }
 
 .btn-icon:hover {
@@ -319,7 +319,7 @@ function close() {
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 1000;
+  z-index: var(--z-menu);
 }
 
 .color-picker-dialog,
@@ -335,7 +335,7 @@ function close() {
 .color-picker-dialog h3,
 .merge-dialog h3 {
   margin: 0 0 16px;
-  font-size: 18px;
+  font-size: var(--text-xl);
   font-weight: 600;
 }
 
@@ -398,7 +398,7 @@ function close() {
   background: #f3f4f6;
   color: #374151;
   border-radius: 8px;
-  font-size: 15px;
+  font-size: var(--text-md);
   font-weight: 600;
   cursor: pointer;
   transition: background 0.2s;
@@ -419,7 +419,7 @@ function close() {
   background: #3b82f6;
   color: white;
   border-radius: 8px;
-  font-size: 15px;
+  font-size: var(--text-md);
   font-weight: 600;
   cursor: pointer;
   transition: background 0.2s;

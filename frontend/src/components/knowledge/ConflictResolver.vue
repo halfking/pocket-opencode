@@ -135,7 +135,11 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import { useSyncStateStore } from '@/stores/syncState'
-import { marked } from 'marked'
+// §851：v-html 的内容必须来自净化链。这里预览的是笔记正文（用户/远端可控），
+// 本地那份裸 marked() 会把 <script>/<img onerror> 原样塞进 v-html ⇒ 改用
+// utils/markdown.ts 的共享 renderMarkdown（内部 DOMPurify.sanitize，FORBID style/script）。
+import { renderMarkdown as sharedRenderMarkdown } from '@/utils/markdown'
+import { useApiError } from '@/composables/useApiError'
 
 interface Version {
   content: string
@@ -156,6 +160,8 @@ const emit = defineEmits<{
 }>()
 
 const syncStateStore = useSyncStateStore()
+// 错误文案走共享归一（原始 err.message 不上屏；原始信息 console.warn 留档）。
+const apiError = useApiError()
 
 // 状态
 const showPreview = ref(true)
@@ -176,15 +182,9 @@ const formatTime = (timestamp: number) => {
   })
 }
 
-// 渲染 Markdown
-const renderMarkdown = (content: string) => {
-  try {
-    return marked(content)
-  } catch (err) {
-    console.error('Markdown render error:', err)
-    return content
-  }
-}
+// 渲染 Markdown —— 共享净化版（utils/markdown.ts，DOMPurify 收口）。
+// ⚠ 本组件此前本地包了一份裸 marked() ⇒ §851 的 v-html 净化门转红（真 XSS 面）。
+const renderMarkdown = (content: string) => sharedRenderMarkdown(content)
 
 // 进入合并模式
 const enterMergeMode = () => {
@@ -221,7 +221,8 @@ const handleResolve = async (resolution: 'local' | 'remote') => {
     emit('resolved')
     close()
   } catch (err: any) {
-    error.value = err.message || '解决冲突失败，请重试'
+    console.warn('[conflict-resolve] 原始错误留档:', err)
+    error.value = apiError(err, '解决冲突失败，请重试')
   } finally {
     resolving.value = false
   }
@@ -243,7 +244,8 @@ const handleMerge = async () => {
     emit('resolved')
     close()
   } catch (err: any) {
-    error.value = err.message || '应用合并失败，请重试'
+    console.warn('[conflict-merge] 原始错误留档:', err)
+    error.value = apiError(err, '应用合并失败，请重试')
   } finally {
     resolving.value = false
   }
@@ -262,7 +264,7 @@ const handleMerge = async () => {
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 1000;
+  z-index: var(--z-menu);
   padding: 1rem;
 }
 
@@ -405,7 +407,7 @@ const handleMerge = async () => {
 
 .raw-content {
   margin: 0;
-  font-family: 'Monaco', 'Menlo', monospace;
+  font-family: var(--font-mono);
   font-size: 0.8125rem;
   line-height: 1.5;
   color: #374151;
@@ -490,7 +492,7 @@ const handleMerge = async () => {
   width: 100%;
   padding: 1rem;
   border: none;
-  font-family: 'Monaco', 'Menlo', monospace;
+  font-family: var(--font-mono);
   font-size: 0.875rem;
   line-height: 1.6;
   resize: vertical;

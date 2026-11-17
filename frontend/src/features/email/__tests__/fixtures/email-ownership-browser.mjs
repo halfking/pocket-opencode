@@ -69,7 +69,7 @@ export async function createEmailOwnershipBrowserFixture(options = {}) {
   `
   const server = await createServer({ root: fileURLToPath(new URL('../../../../../', import.meta.url)), configFile: false,
     resolve: { alias: { '@': fileURLToPath(new URL('../../../../', import.meta.url)) } },
-    optimizeDeps: { noDiscovery: true, include: ['sql.js', 'vue', 'pinia', 'vue-router', 'vue-i18n'] },
+    optimizeDeps: { noDiscovery: true, include: ['sql.js', 'vue', 'pinia', 'vue-router', 'vue-i18n', '@ricky0123/vad-web'] },  // ⚠ vad-web 是 CJS 包：noDiscovery 下不加 include 会被当 ESM 原样服务 ⇒ ReferenceError: exports is not defined（2026-11-18 email-owner-routes 挂死根因之一）
     plugins: [...(options.plugins ?? []), vue(), { name: 'email-ownership-browser', enforce: 'pre',
       resolveId(source, importer) {
         if (importer?.endsWith('/app/App.vue')) {

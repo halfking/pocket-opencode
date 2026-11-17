@@ -184,7 +184,7 @@ defineExpose({
   top: 16px;
   left: 50%;
   transform: translateX(-50%);
-  z-index: 10;
+  z-index: var(--z-base);
   background: #3b82f6;
   color: white;
   padding: 8px 16px;
@@ -280,6 +280,6 @@ defineExpose({
 }
 
 .empty-state p {
-  font-size: 16px;
+  font-size: var(--text-lg);
 }
 </style>

@@ -42,7 +42,7 @@
   color: #6b7280;
   border: 1px solid #d1d5db;
   border-radius: 3px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   line-height: 1;
   cursor: pointer;
   transition: all 0.2s;

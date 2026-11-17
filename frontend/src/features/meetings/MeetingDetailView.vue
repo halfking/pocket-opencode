@@ -908,7 +908,7 @@ watch(() => meeting.value?.refinedTranscript, (refined) => {
 .toolbar-btn {
   padding: 6px 12px;
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: var(--radius-sm);
   background: var(--bg-card);
   color: var(--text-secondary);
   font-size: var(--text-sm);

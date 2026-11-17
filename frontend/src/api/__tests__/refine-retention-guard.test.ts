@@ -285,6 +285,14 @@ const SAFE = [
   //   ⇒ 真写入（`refined_transcript:` / `refinedTranscript:`）**命中不了**这一条
   //   ⇒ 负控见下面那条用例（「被截断的写入」必须仍然判红）。
   /substr\(refined_transcript, 1, [^)]*\) AS refined_transcript/,
+  // ★ 2026-11-18（§911 补登记）：MeetingDetailView.vue 的**纯读者** watch 源 ——
+  //   `watch(() => meeting.value?.refinedTranscript, (refined) => { … })`。
+  //   语义：录音停止且精校正文就绪时，把三层转写视图升级成 final 展示 ——
+  //   只**读**字段决定展示形态，不产出/不写回任何 refinedTranscript 值，
+  //   与白名单既有的「⑤ MeetingDetailView.vue:272 读进 view 入参（纯读者）」同族。
+  //   ⚠ 形态钉死在 watch 源签名上：真写入（`refinedTranscript:` / `=` 赋值）
+  //   命不中这一条 ⇒ 负控（「被截断的写入必须判红」）不受影响。
+  /watch\(\(\) => meeting\.value\?\.refinedTranscript, \(refined\) =>/,
 ]
 
 /**

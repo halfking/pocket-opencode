@@ -95,6 +95,10 @@ const BASELINE = {
     '剥注释后逐文件核对：三个列表页的真实消费者是 `useContinuousList`（3/3 已迁，迁移落在 2026-10-04 / 10-06），' +
     '这三页里残留的 `useListSentinel` 字样全是**迁移注释**，不是接线。' +
     '本文件剩 20 行（17 行有效代码）：继续挂在棘轮里即可，清不清是属主对一段 20 行墓碑的决定，不影响本卡口。',
+  'composables/useWikiLinks.ts :: useWikiLinks':
+    '118 行。WikiLinks 解析/悬停预览 composable（2026-11-17 VAD 批量提交带入），' +
+    '生产侧 0 消费者、0 单测；同目录 utils/wikilinks.ts 的纯函数族同样是新能力，尚无接线方。' +
+    '是接上笔记详情的 [[双链]] 渲染还是删除，属产品取舍（2026-11-18 全量测试裁决登记）。',
   'composables/useSessionState.ts :: useSessionState':
     'typed mobile session state surface（注释标注「optimization v4 的 PR7」）。' +
     '⚠️ 它的**唯一**另一处出现是单测里的一句注释 `// … (matches aggregate() in useSessionState)`，' +
