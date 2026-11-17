@@ -3,6 +3,20 @@
 **完成时间**: 2026-11-14  
 **项目状态**: ✅ **Phase 1, Phase 2, Phase 2.5, Phase 3.1 全部完成**
 
+> **已被取代 / 口径对账（2026-11-16 订正）**：本文 Phase 3.2–3.4 的「0%」读数指
+> **用户可用度**（未接线＝不可用），**代码本身已入库**（Backend `6ea85edf` /
+> Frontend `cf5af2f6`）——Phase 3.2 的 Backend **尚未接线**
+> （`internal/wikilinks` 包无任何 Go 导入方）；Phase 3.3 / 3.4 的
+> **Backend 已接线**——`server.go:792` 注册 `/api/notes/`，
+> `server_assistant.go:524-533` 在该路由下分派 `/recommendations` 与
+> `/suggest-tags` 到 `handleGetNoteRecommendations` / `handleSuggestNoteTags`，
+> `server.go:801-802` 注册 `/api/knowledge/graph`
+> 与 `/api/knowledge/graph/note/`；三者 Frontend（`stores/graph.ts` /
+> `stores/recommendations.ts` / `utils/wikilinks.ts`）均无组件引用，
+> `RecommendationsPanel` / `GraphView` / `KnowledgeGraphPage` 未开发。
+> 最新（按「已入库」计）口径见
+> [FINAL-PROJECT-COMPLETION-REPORT](FINAL-PROJECT-COMPLETION-REPORT.md)。
+
 ---
 
 ## 🎉 项目总结
@@ -20,7 +34,7 @@
 - ✅ 3个 Pinia Stores（692行）
 - ✅ 1个 API 客户端（251行）
 - ✅ 5个核心组件（2,585行）
-- ✅ 1个主页面（790行）
+- ✅ 1个主页面（816行）
 - ✅ 类型定义和路由配置
 
 #### Phase 2.5: 路由集成（100%）
@@ -41,21 +55,21 @@
 ### 代码量
 ```
 Backend:
-- 数据模型: 520行
-- API Handlers: 1,114行
-- 数据库迁移: 676行
-- 测试: 720行
-- 总计: ~3,200行
+- 数据模型: 471行
+- API Handlers: 1,167行
+- 数据库迁移: 503行
+- 测试: 748行
+- 总计: ~3,351行
 
 Frontend:
 - Stores: 692行
 - API Client: 251行
 - Components: 2,585行
-- Pages: 3,126行 (KnowledgeHub + 4个新页面)
-- Types & Routes: ~250行
-- 总计: ~6,904行
+- Pages: 3,152行 (KnowledgeHub + 4个新页面)
+- Types & Routes: 232行
+- 总计: ~6,912行
 
-项目总计: ~10,104行代码
+项目总计: ~10,263行代码
 ```
 
 ### 文件统计

@@ -9,6 +9,8 @@ test('inactive mail views expire on identity changes while another cached draft 
   try {
     const page = await browser.newPage()
     await page.goto(fixture.url)
+    // SQL.js/module bootstrap must finish before the seed button has its handler.
+    await page.locator('#owner').filter({ hasText: 'alice/one' }).waitFor()
     await page.getByRole('button', { name: 'Create Alice mail', exact: true }).click()
     await page.locator('#cached-mail-rows').filter({ hasText: 'Alice private mail' }).waitFor()
     await page.locator('#select-preview').click()

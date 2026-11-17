@@ -87,7 +87,8 @@
     "study": "Study",
     "flashcards": "フラッシュカード",
     "messages": "メッセージ",
-    "calendar": "カレンダー"
+    "calendar": "カレンダー",
+    "accBoard": "ACC ボード"
   },
   "routes": {
     "login": "ログイン",

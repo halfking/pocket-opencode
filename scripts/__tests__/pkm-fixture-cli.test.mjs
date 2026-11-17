@@ -109,15 +109,6 @@ test('PKM fixture refuses an unknown workspace without deleting rows', async () 
   assert.equal(ids.length, seed.length)
 })
 
-for (const boundary of ['db', 'select']) {
-  test(`PKM fixture refuses a revoked session after ${boundary} without deleting rows`, async () => {
-    const { result, ids } = await probe({ revokeAfter: boundary })
-    assert.equal(result.code, 1)
-    assert.match(result.stdout, /STALE_AUTH_SESSION/)
-    assert.equal(ids.length, seed.length)
-  })
-}
-
 test('PKM fixture rejects an invalid package before opening CDP', async () => {
   const { result, ids, pkg } = await probe({ appId: 'com.example; invalid' })
   assert.equal(result.code, 2)
@@ -131,3 +122,12 @@ test('PKM fixture refuses a missing runtime auth lease without deleting rows', a
   assert.match(result.stdout, /WORKSPACE_NOT_READY/)
   assert.equal(ids.length, seed.length)
 })
+
+for (const boundary of ['db', 'select']) {
+  test(`PKM fixture refuses a revoked session after ${boundary} without deleting rows`, async () => {
+    const { result, ids } = await probe({ revokeAfter: boundary })
+    assert.equal(result.code, 1)
+    assert.match(result.stdout, /STALE_AUTH_SESSION/)
+    assert.equal(ids.length, seed.length)
+  })
+}

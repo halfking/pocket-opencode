@@ -242,24 +242,24 @@ cd openpocket/backend/scripts
 
 ### Created Files
 
-1. **`migrations/20261114_pkm_donation_enhancements.sql`** (358 lines)
+1. **`migrations/20261114_pkm_donation_enhancements.sql`** (344 lines)
    - Vector search setup
    - Attachments + Shares tables
    - RLS policies (FORCE RLS on 6 tables)
    - Search functions (3 functions)
    - User stats function
 
-2. **`internal/attachments/helpers.go`** (158 lines)
+2. **`internal/attachments/helpers.go`** (140 lines)
    - 6 core functions
    - S3 key generation
    - File sanitization & validation
    - MIME type detection
 
-3. **`internal/attachments/helpers_test.go`** (273 lines)
+3. **`internal/attachments/helpers_test.go`** (320 lines)
    - 8 test functions
    - 100% coverage of donated helpers
 
-4. **`scripts/verify-pkm-donation.sh`** (195 lines)
+4. **`scripts/verify-pkm-donation.sh`** (222 lines)
    - 10-step verification
    - RLS isolation test
    - Database schema validation
@@ -316,8 +316,8 @@ CREATE POLICY notes_shared_read_access ON notes
 ### Source Files (RedClaw)
 - `migrations/000066_pkm_schema.up.sql` (476 lines)
 - `migrations/000067_pkm_force_rls.up.sql` (13 lines)
-- `services/platform-go/internal/pkm/helpers.go` (169 lines)
-- `services/platform-go/internal/pkm/helpers_test.go` (109 lines)
+- `services/platform-go/internal/pkm/helpers.go` (168 lines)
+- `services/platform-go/internal/pkm/helpers_test.go` (108 lines)
 
 ### Decision Documents
 - `docs/PKM-PAUSE-AND-MERGE-DECISION.md` - Authoritative decision

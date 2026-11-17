@@ -693,6 +693,24 @@ const router = createRouter({
       name: 'gateway-live',
       component: () => import('../features/gateway/GatewayLiveStreamView.vue'),
       meta: { requiresAuth: true, title: '实时请求', bottomNav: false, canGoBack: true }
+    },
+
+    // ── ACC 任务看板（融合方案 M1 任务9：移动端 MVP）──
+    // 直连 ACC（默认 http://127.0.0.1:4101），鉴权用 ACC 自己的 Bearer JWT
+    // （页面内设置面板手工粘贴，localStorage 持久化）—— 与 pocketd 登录态无关，
+    // 所以 **requiresAuth: false**：没有 pocketd 后端也能打开评审/演示
+    // （?mock=1 为纯前端 mock 路径）。
+    {
+      path: '/acc/board',
+      name: 'acc-board',
+      component: () => import('../features/acc-board/TaskBoardView.vue'),
+      meta: { title: 'ACC 看板', bottomNav: false, canGoBack: true, scrollMode: 'self' }
+    },
+    {
+      path: '/acc/runs/:runId',
+      name: 'acc-run-detail',
+      component: () => import('../features/acc-board/TaskDetailView.vue'),
+      meta: { title: '任务详情', bottomNav: false, canGoBack: true, scrollMode: 'self' }
     }
   ]
 })

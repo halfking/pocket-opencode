@@ -18,14 +18,15 @@
 - ✅ 15个 API 端点
 - ✅ 双数据库支持（PostgreSQL + SQLite）
 - ✅ 16个单元测试（100%通过）
-- **代码量**: ~3,200行
+- **代码量**: ~3,351行
 
 ### Phase 2: Frontend 核心功能（100%）
 - ✅ 3个 Pinia Stores（692行）
 - ✅ 5个核心组件（2,585行）
 - ✅ 1个 API 客户端（251行）
-- ✅ 1个主页面（790行）
-- **代码量**: ~6,904行
+- ✅ 1个主页面（816行）
+- ✅ Types & Routes（2个文件，232行）
+- **代码量**: ~4,576行
 
 ### Phase 2.5: 路由集成（100%）
 - ✅ 路由注册到主应用
@@ -39,33 +40,33 @@
 - ✅ NoteEditPage（670行）
 - **代码量**: ~2,336行
 
-### Phase 3.2: 双向链接解析（100%）
-**Backend (564行)**:
+### Phase 3.2: 双向链接解析（代码入库 100%，未接线）
+**Backend (699行)**:
 - ✅ wikilinks/parser.go（167行）
-- ✅ wikilinks/resolver.go（232行）
+- ✅ wikilinks/resolver.go（237行）
 - ✅ wikilinks/parser_test.go（295行）
 - ✅ 支持 `[[keyword]]` 和 `[[keyword|display]]` 语法
 
-**Frontend (71行)**:
+**Frontend (72行)**:
 - ✅ utils/wikilinks.ts
 - ✅ 解析和渲染工具函数
 
-### Phase 3.3: AI 智能推荐（100%）
-**Backend (601行)**:
+### Phase 3.3: AI 智能推荐（代码入库 100%，Backend 已接线，Frontend 未接线）
+**Backend (610行)**:
 - ✅ recommendations/similarity.go（281行）- TF-IDF算法
 - ✅ recommendations/tags.go（150行）- 标签建议
-- ✅ recommendations/handler.go（170行）- API端点
+- ✅ recommendations/handler.go（179行）- API端点
 
-**Frontend (99行)**:
+**Frontend (93行)**:
 - ✅ stores/recommendations.ts
 - ✅ 推荐和标签状态管理
 
-### Phase 3.4: 关系图谱（100%）
+### Phase 3.4: 关系图谱（Backend 已接线，Frontend 未接线）
 **Backend**:
 - ✅ server/server_graph.go（14KB）
 - ✅ Graph API 数据结构
 
-**Frontend (82行)**:
+**Frontend (79行)**:
 - ✅ stores/graph.ts
 - ✅ 图谱数据状态管理
 
@@ -76,17 +77,17 @@
 ### 总代码量
 ```
 Backend:
-- Phase 1: 3,200行
-- Phase 3 (3.2-3.4): 2,007行
-- 小计: 5,207行
+- Phase 1: 3,351行
+- Phase 3 (3.2-3.4): 2,009行
+- 小计: 5,360行
 
 Frontend:
-- Phase 2: 6,904行
+- Phase 2: 4,576行
 - Phase 3.1: 2,336行
-- Phase 3 (3.2-3.4): 252行
-- 小计: 9,492行
+- Phase 3 (3.2-3.4): 244行
+- 小计: 7,156行
 
-项目总计: ~14,699行代码
+项目总计: ~12,516行代码
 ```
 
 ### 文件统计
@@ -99,12 +100,13 @@ Backend: 27个文件
 - 其他: 11个
 
 Frontend: 20个文件
-- Stores: 6个
+- Stores: 5个
 - API: 1个
 - Components: 5个
 - Pages: 5个
 - Utils: 1个
 - Types/Routes: 2个
+- 文档: 1个
 
 总计: 47个文件
 ```
@@ -159,6 +161,19 @@ Phase 3: 3次
 - [x] 双向链接解析（Backend + Frontend）
 - [x] AI智能推荐（Backend + Frontend）
 - [x] 关系图谱（Backend API + Frontend Store）
+
+> ⚠️ **完成度口径**：Phase 3.1（4 个页面 + `knowledgeRoutes` 路由注册）**已接线可用**；
+> Phase 3.4 关系图谱的 **Backend 已接线**（`server.go:801-802` 注册
+> `/api/knowledge/graph` 与 `/api/knowledge/graph/note/`）；Phase 3.3 AI 推荐的
+> **Backend 也已接线**——`server.go:792` 注册 `/api/notes/`，
+> `server_assistant.go:524-533` 在该路由下分派 `/recommendations` 与
+> `/suggest-tags` 到 `handleGetNoteRecommendations` / `handleSuggestNoteTags`
+> （`89ae9c3e` 落地）；Phase 3.2 双向链接
+> （`internal/wikilinks` 包无任何 Go 导入方）**Backend 尚未接线**；
+> 三者的 Frontend（`stores/graph.ts` / `stores/recommendations.ts` /
+> `utils/wikilinks.ts`）**无任何组件引用**，`RecommendationsPanel` / `GraphView`
+> 组件未开发（见「已知限制」）。
+> 按「已入库」计 100%，按「用户可用」计 Phase 3.2 未完成、Phase 3.3 / 3.4 仅 Backend 可用。
 
 ---
 
@@ -236,7 +251,7 @@ Phase 3: 3次
 
 ### Git 仓库
 - 分支: main
-- 最新提交: 待推送
+- 最新提交: 453ccfee
 - 推送状态: ✅ 完成
 
 ---
@@ -287,7 +302,7 @@ Phase 3: 3次
 ✅ **Phase 2.5**: 路由集成、编译验证、基本测试  
 ✅ **Phase 3**: 页面实现、WikiLinks、AI推荐、知识图谱  
 
-**总代码量**: ~14,699行  
+**总代码量**: ~12,516行  
 **总文件数**: 47个  
 **总提交数**: 23次  
 **文档数量**: 10份  
@@ -306,4 +321,4 @@ Phase 3: 3次
 
 *报告生成时间: 2026-11-15 00:05*  
 *项目状态: ✅ 完成*  
-*最终提交: 待推送*
+*最终提交: 453ccfee*

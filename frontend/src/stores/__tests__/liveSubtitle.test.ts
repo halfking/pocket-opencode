@@ -2,9 +2,12 @@
  * liveSubtitle Store 单元测试
  */
 import { strict as assert } from 'node:assert'
-import { describe, it, beforeEach } from 'node:test'
+import { describe, it, beforeEach, afterEach, after } from 'node:test'
 import { setActivePinia, createPinia } from 'pinia'
-import { installLiveSubtitleStorage, useLiveSubtitleStore } from '../liveSubtitle.ts'
+import { loadSubtitleModules } from './subtitle-fixture.mjs'
+const modules = await loadSubtitleModules()
+const { installLiveSubtitleStorage, useLiveSubtitleStore, useAuthStore } = modules
+after(() => modules.close())
 
 function memoryStorage() {
   const map = new Map<string, string>()
@@ -23,7 +26,9 @@ describe('useLiveSubtitleStore', () => {
     storage = memoryStorage()
     installLiveSubtitleStorage(storage)
     setActivePinia(createPinia())
+    useAuthStore().$patch({ token: 'fixture', userId: 'alice', workspaceId: 'one', activationStatus: 'ready' })
   })
+  afterEach(() => { useLiveSubtitleStore().$dispose(); useAuthStore().$dispose() })
 
   describe('基础状态', () => {
     it('初始状态正确', () => {

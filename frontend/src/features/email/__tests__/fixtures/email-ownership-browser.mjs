@@ -68,6 +68,7 @@ export async function createEmailOwnershipBrowserFixture(options = {}) {
       runInTransaction:async rows=>{leases.assertCurrent(lease);fixtureDb.run('BEGIN');try{for(const row of rows){leases.assertCurrent(lease);fixtureDb.run(row.statement,row.values)}leases.assertCurrent(lease);fixtureDb.run('COMMIT')}catch(error){fixtureDb.run('ROLLBACK');throw error}}})};
   `
   const server = await createServer({ root: fileURLToPath(new URL('../../../../../', import.meta.url)), configFile: false,
+    resolve: { alias: { '@': fileURLToPath(new URL('../../../../', import.meta.url)) } },
     optimizeDeps: { noDiscovery: true, include: ['sql.js', 'vue', 'pinia', 'vue-router', 'vue-i18n'] },
     plugins: [...(options.plugins ?? []), vue(), { name: 'email-ownership-browser', enforce: 'pre',
       resolveId(source, importer) {

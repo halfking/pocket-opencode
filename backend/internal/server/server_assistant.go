@@ -191,6 +191,11 @@ func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "POST only")
 		return
 	}
+	// 认证收敛（2026-11-14）：纯 OIDC 模式（Casdoor 直连且无 RedClaw admin）
+	// 下本地口令登录退役为 410 —— 全部用户认证收敛到 Casdoor SSO。
+	if s.oidcRetiredLocalCredential(w, r) {
+		return
+	}
 	var body struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
@@ -297,6 +302,11 @@ type devCreds struct {
 // 现在：没有显式配置口令就**拒绝旁路**，并告警。要用 dev 旁路就必须显式给
 // POCKET_AUTH_PASS——那属于本机开发者的显式选择，不会随仓库扩散。
 func (s *Server) devBypassCredentials(username, password string) (devCreds, bool) {
+	// 认证收敛（2026-11-14）：Casdoor 直连 OIDC 启用时 dev 旁路整体失效
+	//（无论 POCKET_DEV_AUTH 是否误配）——凭据权威必须只有 Casdoor。
+	if s.cfg.OIDCEnabled() {
+		return devCreds{}, false
+	}
 	devUser := s.cfg.DevAuthUser
 	if devUser == "" {
 		devUser = "admin"

@@ -22,7 +22,7 @@
 
 ---
 
-## 🔄 Phase 3.1: 更多页面实现（进行中）
+## ✅ Phase 3.1: 更多页面实现（已完成）
 
 ### 进行中的工作
 后台代理正在创建4个缺失的页面：
@@ -47,27 +47,29 @@
    - 实时预览
    - 保存和取消按钮
 
-**预计完成**: 等待后台代理通知
+**完成情况**: 4 个页面已创建于 `frontend/src/pages/`（KnowledgeSearchPage / NotebookDetailPage / NoteDetailPage / NoteEditPage），`knowledgeRoutes` 已注册到 `frontend/src/app/router-mobile.ts`
 
 ---
 
-## ⏳ Phase 2.5.2: 编译验证（待完成）
+## ✅ Phase 2.5.2: 编译验证（已完成）
 
-### 待执行的任务
-1. 等待页面创建完成
-2. 运行 `npm run typecheck` 验证 TypeScript
-3. 修复任何类型错误
-4. 运行 `npm run build` 验证前端编译
-5. 验证后端编译（✅ 已通过）
+### 完成的工作
+1. ✅ 页面创建完成
+2. ✅ `npm run typecheck`（vue-tsc --noEmit）通过
+3. ✅ 类型错误已修复（`391e6584`：seg.speaker→speakerLabel 等 8 处）
+4. ✅ `npm run build` 通过
+5. ✅ 后端编译验证（✅ 已通过）
 
 ### 当前状态
 - ✅ Backend 编译通过
 - ✅ Backend 测试通过（16/16）
-- ⏳ Frontend TypeScript 检查（等待页面创建）
+- ✅ Frontend TypeScript 检查通过（页面创建后）
 
 ---
 
-## ⏳ Phase 2.5.3: 基本功能测试（待完成）
+## ⏳ Phase 2.5.3: 基本功能测试（脚本已入库，功能测试待执行）
+
+> 测试脚本：`scripts/test-knowledge-basic-functionality.sh`（`a70fe197`）
 
 ### 测试计划
 1. **路由导航测试**
@@ -89,7 +91,19 @@
 
 ---
 
-## ⏳ Phase 3.2-3.4: 高级功能（待完成）
+## ⏳ Phase 3.2-3.4: 高级功能（代码入库，Backend 接线状态见下方订正）
+
+> **状态订正（2026-11-16）**：Phase 3.2–3.4 的 Backend/Frontend **代码已入库**
+> （`6ea85edf` Backend、`cf5af2f6` Frontend）。接线状态：**Phase 3.3 / 3.4 Backend
+> 已接线**——`server.go:792` 注册 `/api/notes/`，`server_assistant.go:524-533`
+> 在该路由下分派 `/recommendations` 与 `/suggest-tags` 到
+> `handleGetNoteRecommendations` / `handleSuggestNoteTags`（`89ae9c3e` 落地），
+> `server.go:801-802` 注册 `/api/knowledge/graph` 与 `/api/knowledge/graph/note/`；
+> **Phase 3.2 Backend 未接线**（`internal/wikilinks` 包无任何 Go 导入方）；
+> 三者 Frontend（`stores/graph.ts` / `stores/recommendations.ts` / `utils/wikilinks.ts`）
+> 尚无任何组件引用，
+> `RecommendationsPanel` / `GraphView` / `KnowledgeGraphPage` **未开发**。
+> 口径见 [FINAL-PROJECT-COMPLETION-REPORT](FINAL-PROJECT-COMPLETION-REPORT.md)。
 
 ### Phase 3.2: 双向链接解析
 - 解析 `[[keyword]]` 语法
@@ -110,16 +124,19 @@
 
 ## 📊 总体进度
 
+> 表中 Phase 3.2–3.4 的「0%」是**用户可用度**读数（Frontend 未接线 ⇒ 用户不可用），
+> 与上文「Backend 已接线」不矛盾。
+
 ```
 Phase 2.5.1: 路由注册        ██████████ 100% ✅
-Phase 3.1:   页面实现        ████░░░░░░  40% 🔄
-Phase 2.5.2: 编译验证        ░░░░░░░░░░   0% ⏳
+Phase 3.1:   页面实现        ██████████ 100% ✅
+Phase 2.5.2: 编译验证        ██████████ 100% ✅
 Phase 2.5.3: 功能测试        ░░░░░░░░░░   0% ⏳
 Phase 3.2:   双向链接        ░░░░░░░░░░   0% ⏳
 Phase 3.3:   AI推荐          ░░░░░░░░░░   0% ⏳
 Phase 3.4:   关系图谱        ░░░░░░░░░░   0% ⏳
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Overall:                     ██░░░░░░░░  20%
+Overall:                     ████░░░░░░  43%
 ```
 
 ---

@@ -171,6 +171,9 @@ const opsFeatures = computed<HubItem[]>(() => [
   { to: '/cost', icon: 'payments', label: t('routes.costQuota') },
   { to: '/gateway', icon: 'dns', label: t('routes.gatewayNodes') },
   { to: '/servers', icon: 'dns', label: t('routes.selectServer') },
+  // ACC 任务看板（融合方案 M1 任务9）：SOP runs 列表 / 详情 / HumanGate 审批。
+  // 直连 ACC、自带 token 设置，与 pocketd 登录态无关。
+  { to: '/acc/board', icon: 'checklist', label: t('nav.accBoard') },
   { to: '/flashcards/io', icon: 'import_export', label: t('flashcards.io.title') },
 ])
 

@@ -429,27 +429,33 @@ func main() {
 	}
 
 	// ---- 一期切换:RedClaw Admin 认证主权威源（必配,除非 legacy 模式）----
+	// 2026-11-14 认证收敛：Casdoor 直连 OIDC（POCKET_CASDOOR_* 三项齐备）是
+	// 平行的权威面 —— OIDC-only 部署不再强制要求 RedClaw admin；
+	// 该模式下本地凭据面在 handler 层整体退役为 410（见 server_oidc.go）。
 	var redclawAdminClient *redclaw.AdminAuthClient
 	if !cfg.AuthLegacyOnly {
-		if cfg.RedClawAdminURL == "" {
-			logging.Fatalf("POCKET_REDCLAW_ADMIN_URL must be set (or set POCKET_AUTH_LEGACY_ONLY=true for dev-only fallback)")
+		if cfg.RedClawAdminURL != "" {
+			if len(cfg.RedClawAdminSecret) < 32 {
+				logging.Fatalf("POCKET_REDCLAW_ADMIN_SECRET must be at least 32 bytes when RedClaw auth is enabled")
+			}
+			ac, err := redclaw.NewAdminAuthClient(redclaw.AdminAuthClientConfig{
+				AdminURL:     cfg.RedClawAdminURL,
+				AuthAgentURL: cfg.RedClawAuthAgentURL,
+				Secret:       cfg.RedClawAdminSecret,
+				TenantID:     cfg.RedClawTenantID,
+				TimeoutSec:   cfg.RedClawAdminTimeoutSec,
+			})
+			if err != nil {
+				logging.Fatalf("RedClaw admin client init failed: %v", err)
+			}
+			redclawAdminClient = ac
+			log.Printf("RedClaw auth PRIMARY: enabled admin=%s auth_agent=%s sso=%v",
+				cfg.RedClawAdminURL, cfg.RedClawAuthAgentURL, cfg.RedClawSsoEnabled)
+		} else if cfg.OIDCEnabled() {
+			log.Printf("RedClaw auth PRIMARY: disabled — direct Casdoor OIDC mode (local credential plane retired)")
+		} else {
+			logging.Fatalf("POCKET_REDCLAW_ADMIN_URL must be set (or set POCKET_AUTH_LEGACY_ONLY=true for dev-only fallback, or configure POCKET_CASDOOR_* for direct OIDC)")
 		}
-		if len(cfg.RedClawAdminSecret) < 32 {
-			logging.Fatalf("POCKET_REDCLAW_ADMIN_SECRET must be at least 32 bytes when RedClaw auth is enabled")
-		}
-		ac, err := redclaw.NewAdminAuthClient(redclaw.AdminAuthClientConfig{
-			AdminURL:     cfg.RedClawAdminURL,
-			AuthAgentURL: cfg.RedClawAuthAgentURL,
-			Secret:       cfg.RedClawAdminSecret,
-			TenantID:     cfg.RedClawTenantID,
-			TimeoutSec:   cfg.RedClawAdminTimeoutSec,
-		})
-		if err != nil {
-			logging.Fatalf("RedClaw admin client init failed: %v", err)
-		}
-		redclawAdminClient = ac
-		log.Printf("RedClaw auth PRIMARY: enabled admin=%s auth_agent=%s sso=%v",
-			cfg.RedClawAdminURL, cfg.RedClawAuthAgentURL, cfg.RedClawSsoEnabled)
 	} else {
 		logging.Warnf("WARN: POCKET_AUTH_LEGACY_ONLY=true — using local JWT legacy path (not for production)")
 	}
