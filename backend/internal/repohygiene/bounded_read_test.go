@@ -822,15 +822,19 @@ func TestS952CensusCountsArePinned(t *testing.T) {
 	//   ⇒⇒⇒ **无界处仍然恰好是台账里那 3 条**（OIDC 两处已带
 	//     decodeOIDCResponse 的 maxOIDCResponseBytes 上界）⇒ 是「代码真的多了读点」
 	//     而不是「量具瞎了」—— 这正是绝对条数要钉住的原因。
-	if len(sites) != 292 {
-		t.Errorf("§952 普查到 %d 处「读进内存」的调用点（期望292）\n"+
+	// 2026-11-17：+2 —— 本地知识库同步包（backend/internal/sync）并入主干后的实态。
+	//   ⇒ 形态 decode +2；来源 req +2；总计 +2（读点 292→294、有界 289→291）。
+	//   ⇒⇒⇒ **无界处仍然恰好是台账里那 3 条** ⇒ 是「代码真的多了读点」
+	//     而不是「量具瞎了」（本地在途 sync 包的 2 处 req 解码点，此前不在上游台账里）。
+	if len(sites) != 294 {
+		t.Errorf("§952 普查到 %d 处「读进内存」的调用点（期望294）\n"+
 			"⇒ 绝对条数是**量具有牙**的证据：量具整个失效时这个数会变 ⇒⇒⇒ "+
 			"⇒ 若这一条变了，请先确认是「代码真的多了/少了读点」还是「量具瞎了」",
 			len(sites))
 	}
 	want := map[string]int{
 		s952FormReadAll:  60,
-		s952FormDecode:   161,
+		s952FormDecode:   163,
 		s952FormCopy:     3,
 		s952FormSizedAll: 16,
 		s952FormSizedSnp: 17,
@@ -843,7 +847,7 @@ func TestS952CensusCountsArePinned(t *testing.T) {
 	}
 	wantSrc := map[string]int{
 		s952SrcResp:  131,
-		s952SrcReq:   128,
+		s952SrcReq:   130,
 		s952SrcMem:   8,
 		s952SrcOther: 25,
 	}
@@ -852,8 +856,8 @@ func TestS952CensusCountsArePinned(t *testing.T) {
 			t.Errorf("来源 %s 扫到 %d 处（期望 %d）", src, bySrc[src], n)
 		}
 	}
-	if bounded != 289 {
-		t.Errorf("有界 %d 处（期望289）⇒⇒⇒ 无界处应恰好是台账里的 3 条", bounded)
+	if bounded != 291 {
+		t.Errorf("有界 %d 处（期望291）⇒⇒⇒ 无界处应恰好是台账里的 3 条", bounded)
 	}
 }
 
