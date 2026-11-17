@@ -95,12 +95,12 @@ Core rendering logic with `ThreeLayerRenderer` and `SmartScroller` classes.
 #### export-formats.ts
 Export functions for all 5 formats with proper formatting and HTML escaping.
 
-#### speaker-diarizer.ts
+#### native/speaker-diarizer.ts
 Speaker identification with ECAPA-TDNN embeddings and cosine similarity clustering.
 
 ### Tests
 
-**File**: `frontend/src/features/meetings/phase3-ux-optimization.test.ts`
+**File**: `frontend/src/features/meetings/__tests__/phase3-ux-optimization.test.mjs`
 
 Coverage:
 - ✅ Three-layer rendering (interim, partial, final)
@@ -108,6 +108,10 @@ Coverage:
 - ✅ Segment editing (Layer 2 & 3 only)
 - ✅ Smart scrolling (auto-follow behavior)
 - ✅ Export to all formats
+
+> ⚠ **2026-11-18 订正（第八十四轮审计）**：上面是**功能面**清单，不是用例覆盖清单。
+> 实测该文件只有 **5 条用例**，实覆盖的是**三层渲染**（interim / partial / 全文本）
+> 与**导出**（TXT、SRT）；节流、片段编辑、智能滚动**没有对应用例**。
 - ✅ HTML escaping for XSS prevention
 - ✅ Timestamp formatting (mm:ss and SRT format)
 
@@ -381,10 +385,10 @@ function close() {
 
 ```bash
 cd frontend
-npm test features/meetings/phase3-ux-optimization.test.ts
+node --test src/features/meetings/__tests__/phase3-ux-optimization.test.mjs
 ```
 
-Expected: All tests pass (15 tests)
+Expected: All tests pass (5 tests)
 
 ## 🐛 Known Issues & Mitigations
 
@@ -452,10 +456,10 @@ Then update export-formats.ts to use the full docx API.
 - [x] TranscriptSegment.vue with inline editing
 - [x] ExportTranscriptSheet.vue with 5 formats
 - [x] SpeakerManagementSheet.vue with rename/merge/delete
-- [x] Comprehensive test suite (15 tests)
+- [x] Comprehensive test suite (5 tests)
 - [x] Integration guide documented
-- [ ] Sheet.vue base component (to be created if missing)
-- [ ] MeetingDetailView.vue integration (in progress)
+- [x] Sheet.vue base component
+- [x] MeetingDetailView.vue integration
 - [ ] E2E tests written
 - [ ] Performance benchmarks run
 - [ ] User acceptance testing completed
@@ -463,5 +467,5 @@ Then update export-formats.ts to use the full docx API.
 ---
 
 **Implementation Time**: ~2 hours  
-**Lines of Code**: ~800 (components) + ~400 (tests)  
+**Lines of Code**: ~1,499 (components) + ~108 (tests)  
 **Dependencies**: None new (uses existing Vue, TypeScript)

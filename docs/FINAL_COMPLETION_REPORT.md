@@ -85,7 +85,7 @@ APK: app-debug.apk (158MB)
    
 2. **TESTING_INSTRUCTIONS.md** - 3步快速指南
 3. **PHASE1_AUDIT_AND_TESTING_COMPLETE.md** - 审计报告
-4. **PHASE1_COMPLETION_REPORT.md** - Phase 1完成报告
+4. **PHASE1-COMPLETION-REPORT.md** - Phase 1完成报告
 
 ### 4. Phase 2 Paraformer准备度评估 (100% ✅)
 
@@ -223,7 +223,7 @@ D/MeetingRecordService: VAD detected speech end: 0.72s
 
 ### 文档
 1. `docs/PHASE1_AUDIT_AND_TESTING_COMPLETE.md`
-2. `docs/PHASE1_COMPLETION_REPORT.md`
+2. `docs/optimization/PHASE1-COMPLETION-REPORT.md`
 3. `docs/optimization/PHASE2-PARAFORMER-IMPLEMENTATION-PLAN.md`
 4. `docs/optimization/PHASE3-INTEGRATION-GUIDE.md`
 5. `.maestro/manual-test-guide.md`

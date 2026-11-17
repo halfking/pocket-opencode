@@ -235,7 +235,7 @@ adb shell cat /proc/$(adb shell pidof com.kaixuan.opencode.pocket)/maps | grep s
 - [Phase 1 实施计划](docs/optimization/PHASE1-COMPLETION-REPORT.md)
 - [Phase 2 实施计划](docs/optimization/PHASE2-PARAFORMER-IMPLEMENTATION-PLAN.md)
 - [手动测试指南](.maestro/manual-test-guide.md)
-- [优化方案总览](openpocket-stt-optimization-2026-11-14.md)
+- [优化方案总览](docs/optimization/SUMMARY-OPTIMIZATION-PLAN.md)
 
 ---
 

@@ -260,7 +260,7 @@ frontend/src/features/meetings/
 ├── SpeakerManagementSheet.vue     (new, created earlier)
 ├── three-layer-renderer.ts        (existing, reused)
 ├── export-formats.ts              (existing, reused)
-└── phase3-ux-optimization.test.ts (new, created earlier)
+└── __tests__/phase3-ux-optimization.test.mjs (new, created earlier)
 
 frontend/src/components/interactive/
 └── Sheet.vue                      (new, created earlier)
