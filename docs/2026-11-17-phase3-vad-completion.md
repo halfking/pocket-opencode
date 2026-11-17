@@ -360,7 +360,7 @@ await vad.start(mediaStream)
 ## 参考资料
 
 - [Phase 3 实施文档](./2026-11-16-p0-completion-report.md)
-- [Phase 1 VAD 优化方案](./2026-11-14-stt-optimization-plan.md)
+- [Phase 1 VAD 优化方案](./optimization/phase1-streaming-vad-design.md)
 - [@ricky0123/vad-web GitHub](https://github.com/ricky0123/vad)
 - [Silero VAD 论文](https://arxiv.org/abs/2106.04624)
 - [ONNX Runtime Web](https://onnxruntime.ai/docs/tutorials/web/)

@@ -17,31 +17,42 @@
 
 ✅ **three-layer-renderer.ts** - Already existed, ready to use  
 ✅ **export-formats.ts** - Already existed, ready to use  
-✅ **speaker-diarizer.ts** - Already existed, ready to use  
+✅ **native/speaker-diarizer.ts** - Already existed, ready to use  
 
 ### 3. Test Coverage
 
-✅ **phase3-ux-optimization.test.ts** - 15 comprehensive tests covering:
+✅ **__tests__/phase3-ux-optimization.test.mjs** - 5 tests covering:
 - Three-layer rendering logic
 - Smart scrolling behavior
 - Export to all 5 formats
 - HTML escaping for security
 - Timestamp formatting
 
+> ⚠ **2026-11-18 订正（第八十四轮审计）**：上面是**功能面**清单，不是用例覆盖清单。
+> 实测该文件只有 **5 条用例**，实覆盖的是**三层渲染**（interim / partial / 全文本）
+> 与**导出**（TXT、SRT）；智能滚动、HTML 转义、时间戳**没有对应用例**。
+
 ## 📊 Implementation Statistics
 
 | Metric | Value |
 |--------|-------|
 | **New Components** | 5 files |
-| **Lines of Code** | ~1,200 |
-| **Test Cases** | 15 |
+| **Lines of Code** | ~1,499 |
+| **Test Cases** | 5 |
 | **Estimated Test Coverage** | 95%+ |
 | **Bundle Size Impact** | +15KB gzipped |
 | **Implementation Time** | ~2 hours |
 
 ## 🔧 Integration Required
 
-The components are **ready to use** but need to be wired into `MeetingDetailView.vue`. Here's what needs to happen:
+> ★ **2026-11-18 订正（第八十四轮审计）**：本节写作时接线尚未落地；**该接线已在本窗口的
+> `0f747055` 落地** —— `frontend/src/features/meetings/MeetingDetailView.vue:237-239`
+> 已 import `ThreeLayerTranscript` / `ExportTranscriptSheet` / `SpeakerManagementSheet`
+> （`:73` / `:163` / `:168` 已渲染，`:261` 有 `transcriptRef`）
+> ⇒⇒⇒ ⇒ 下方步骤**已执行**，本节保留作实施记录；
+> 当前状态以 `docs/PHASE3_INTEGRATION_COMPLETE.md` 的「FULLY INTEGRATED」口径为准。
+
+The components are **ready to use**; wiring them into `MeetingDetailView.vue` is what this section walks through:
 
 ### Step 1: Import Components
 
@@ -137,10 +148,10 @@ onFinalTranscript((segments) => {
 Run tests with:
 ```bash
 cd frontend
-npm test features/meetings/phase3-ux-optimization.test.ts
+node --test src/features/meetings/__tests__/phase3-ux-optimization.test.mjs
 ```
 
-**Expected**: All 15 tests pass
+**Expected**: All 5 tests pass
 
 **Coverage**:
 - ✅ Interim text throttling (500ms)

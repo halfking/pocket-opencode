@@ -18,19 +18,19 @@ Phase 3 UX optimization has been **fully implemented**. All components are code-
 
 | Component | Lines | Status | Description |
 |-----------|-------|--------|-------------|
-| **ThreeLayerTranscript.vue** | ~200 | ✅ Complete | Main transcript with 3-layer rendering & smart scrolling |
-| **TranscriptSegment.vue** | ~150 | ✅ Complete | Individual segment with inline editing |
-| **ExportTranscriptSheet.vue** | ~250 | ✅ Complete | Export dialog with 5 format options |
-| **SpeakerManagementSheet.vue** | ~280 | ✅ Complete | Speaker rename/merge/color management |
-| **Sheet.vue** | ~90 | ✅ Complete | Base bottom sheet modal component |
+| **ThreeLayerTranscript.vue** | 285 | ✅ Complete | Main transcript with 3-layer rendering & smart scrolling |
+| **TranscriptSegment.vue** | 258 | ✅ Complete | Individual segment with inline editing |
+| **ExportTranscriptSheet.vue** | 397 | ✅ Complete | Export dialog with 5 format options |
+| **SpeakerManagementSheet.vue** | 431 | ✅ Complete | Speaker rename/merge/color management |
+| **Sheet.vue** | 128 | ✅ Complete | Base bottom sheet modal component |
 
-**Total**: ~970 lines of production code
+**Total**: ~1,499 lines of production code
 
 ### 2. Test Suite
 
 | File | Tests | Status |
 |------|-------|--------|
-| **phase3-ux-optimization.test.ts** | 15 | ✅ Complete |
+| **__tests__/phase3-ux-optimization.test.mjs** | 5 | ✅ Complete |
 
 **Coverage Areas**:
 - Three-layer rendering (interim → partial → final)
@@ -38,6 +38,10 @@ Phase 3 UX optimization has been **fully implemented**. All components are code-
 - Segment editing (Layer 2/3 only)
 - Smart scroll auto-follow behavior
 - Export to TXT, HTML, SRT, Bilingual formats
+
+> ⚠ **2026-11-18 订正（第八十四轮审计）**：上面是**功能面**清单，不是用例覆盖清单。
+> 实测该测试文件只有 **5 条用例**，实覆盖的是**三层渲染**（interim / partial / 全文本）
+> 与**导出**（TXT、SRT）；节流、片段编辑、智能滚动、HTML/SRT 之外的格式**没有对应用例**。
 - HTML XSS prevention (entity escaping)
 - Timestamp formatting (mm:ss and SRT)
 
@@ -170,7 +174,7 @@ frontend/
 │           ├── TranscriptSegment.vue ✅
 │           ├── ExportTranscriptSheet.vue ✅
 │           ├── SpeakerManagementSheet.vue ✅
-│           ├── phase3-ux-optimization.test.ts ✅
+│           ├── __tests__/phase3-ux-optimization.test.mjs ✅
 │           ├── three-layer-renderer.ts (existed)
 │           ├── export-formats.ts (existed)
 │           └── speaker-diarizer.ts (existed)
@@ -351,11 +355,11 @@ All details are preserved in:
 - [x] ExportTranscriptSheet.vue created and tested
 - [x] SpeakerManagementSheet.vue created and tested
 - [x] Sheet.vue base component created
-- [x] Comprehensive test suite written (15 tests)
+- [x] Comprehensive test suite written (5 tests)
 - [x] TypeScript compilation passes
 - [x] Integration documentation complete
 - [x] Project memory updated
-- [ ] Integration into MeetingDetailView (next session)
+- [x] Integration into MeetingDetailView（已在本窗口的 `0f747055` 落地：`MeetingDetailView.vue:237-239` 已 import 三个组件）
 - [ ] Manual testing with real device (next session)
 - [ ] E2E tests (next session)
 
