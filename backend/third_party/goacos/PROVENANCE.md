@@ -7,29 +7,30 @@
 
 | 项 | 值 |
 | --- | --- |
-| goacos 仓 | `/Users/niuer/workspace/ai-native-tools/goacos` |
-| 消费方仓 | `/Users/niuer/workspace/ai-native-tools/openpocket/backend` |
-| ref | `4db8a14d35ed86a34e97def58435834815085a18` |
-| commit | `4db8a14d35ed86a34e97def58435834815085a18` |
-| 提交时间 | 2026-10-29T01:56:44+08:00 |
-| 提交标题 | docs: 2 处订正 —— 环境变量表 ADMIN_PASSWORD → GOACOS_ADMIN_PASSWORD（裸名不生效） |
-| 发布状态 | **未发布**（该 commit 上没有任何 tag；它比最新 tag `v1.2.0` 新 67 个提交） |
+| goacos 仓 | `/Users/niuer/workspace/ai-native-tools/tools/goacos` |
+| 消费方仓 | `/Users/niuer/workspace/ai-native-tools/client/openpocket/backend` |
+| ref | `14d5f75` |
+| commit | `14d5f7504dd8b60807c9749665ed35f4f4484b98` |
+| 提交时间 | 2026-11-17T17:14:46+08:00 |
+| 提交标题 | Merge remote-tracking branch 'origin/main' |
+| 发布状态 | **未发布**（该 commit 上没有任何 tag；它比最新 tag `v1.2.0` 新 76 个提交） |
 | 嵌套模块 go 指令 | `1.27.1`（取自**消费方** go.mod；上游是 `1.27.2`） |
 
 ## 逐文件 sha256
 
 | 文件 | sha256 |
 | --- | --- |
-| `sdk/registry/README.md` | `10cc9a810f86a28d39e891a1ceca52896d13e7af4a4ed1ae1d5dbffbeab0ca87` |
-| `sdk/registry/client.go` | `5c385c88f3344670e1d57d97074d0ca0eff4e6345c234d38f4f012a2e8aca8d4` |
+| `sdk/registry/README.md` | `83620d69a45e145b9a8b40555349f915eeeb8080ea2400b2edc2df37c6bfeda6` |
+| `sdk/registry/app.go` | `c9dc420d77c931cbdc55191b21a0f48ed6c21dd54c9b82f280b3c4713bf5a053` |
+| `sdk/registry/client.go` | `5c918cce93e5449db0180fb7d7eee21cace46ab4eed36e9f922c53a37ab94112` |
 | `sdk/registry/discover.go` | `7dc8136cf03f9cecd891a387d47bedd941d9de873b7616eb6ed722317719f2af` |
-| `sdk/registry/doc.go` | `fef4270a4729d589689f41410b5684b0bd3b67af10b30c29df759788d1713278` |
-| `sdk/registry/service.go` | `430d67d82402d588c056689a7ba0acae72854686949ebebce2a6ad62e528452d` |
+| `sdk/registry/doc.go` | `ad3dff0b0942ef59139cecd87ae9c3f081a80667e2536b50b32725da9f8c8858` |
+| `sdk/registry/service.go` | `3c1715c47bed11d0c0cc4119b026d65a866f2699fb23578a7d36fc91790f844f` |
 
 ## 重新生成
 
 ```bash
-cd /Users/niuer/workspace/ai-native-tools/goacos && scripts/vendor-sdk-copy.sh /Users/niuer/workspace/ai-native-tools/openpocket/backend 4db8a14d35ed86a34e97def58435834815085a18
+cd /Users/niuer/workspace/ai-native-tools/tools/goacos && scripts/vendor-sdk-copy.sh /Users/niuer/workspace/ai-native-tools/client/openpocket/backend 14d5f7504dd8b60807c9749665ed35f4f4484b98
 ```
 
 ref 必须**显式**给出：默认取 HEAD 会让这份副本在没人注意的时候跟着上游走，
