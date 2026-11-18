@@ -69,19 +69,47 @@
               <input
                 id="sso-direct-username"
                 v-model="username"
-                autocomplete="username"
+                autocomplete="off"
                 placeholder="用户名"
+                @keyup.enter="ssoDirectLogin"
               />
             </div>
             <div class="form-group">
               <label for="sso-direct-password">密码</label>
-              <input
-                id="sso-direct-password"
-                v-model="password"
-                type="password"
-                autocomplete="current-password"
-                placeholder="Casdoor 企业账号密码"
-              />
+              <!-- autocomplete=new-password：压掉 vivo 密码保险箱/自动填充弹层，
+                   登录是纯 POST 不受该提示影响。 -->
+              <div class="input-wrap dual-action">
+                <input
+                  id="sso-direct-password"
+                  ref="directPasswordInput"
+                  v-model="password"
+                  :type="showDirectPassword ? 'text' : 'password'"
+                  autocomplete="new-password"
+                  placeholder="Casdoor 企业账号密码"
+                  @keyup.enter="ssoDirectLogin"
+                />
+                <!-- 清空（叉叉）：有内容才出现， vivo 保险箱弹层挡住修改时最省事。
+                     清空后焦点还给输入框 —— 用户清空的目的几乎总是重新输入。 -->
+                <button
+                  v-if="password"
+                  type="button"
+                  class="clear-btn"
+                  aria-label="清空密码"
+                  tabindex="-1"
+                  @click.stop="clearDirectPassword"
+                >
+                  <span class="material-symbols-outlined clear-icon" aria-hidden="true">close</span>
+                </button>
+                <button
+                  type="button"
+                  class="eye-btn"
+                  :aria-label="showDirectPassword ? '隐藏密码' : '显示密码'"
+                  tabindex="-1"
+                  @click.stop="showDirectPassword = !showDirectPassword"
+                >
+                  <span class="material-symbols-outlined" aria-hidden="true">{{ showDirectPassword ? 'visibility_off' : 'visibility' }}</span>
+                </button>
+              </div>
             </div>
             <button
               class="login-btn sso-btn"
@@ -325,6 +353,15 @@ const username = ref('admin')
 const password = ref('')
 // 密码明文切换（眼睛按钮）：登录密码与主密码解锁框各自独立记忆
 const showLoginPassword = ref(false)
+// App 直连登录密码框的明文切换（与解锁框独立记忆）
+const showDirectPassword = ref(false)
+const directPasswordInput = ref<HTMLInputElement | null>(null)
+/** 叉叉清空：清值 + 复位明文态，并把焦点还给密码框（清空后紧接着就要重新输入）。 */
+function clearDirectPassword() {
+  password.value = ''
+  showDirectPassword.value = false
+  directPasswordInput.value?.focus()
+}
 const showUnlockPassword = ref(false)
 const loading = ref(false)
 const error = ref('')
@@ -512,7 +549,15 @@ async function ssoDirectLogin() {
     password.value = ''
   } catch (e: any) {
     console.warn('[login] direct sso 登录失败（原始信息）:', e?.message || e)
-    error.value = e?.message || '企业账号登录失败，请检查用户名与密码后重试'
+    // 网络层失败（WebView 偶发 fetch 抖动/断网）不直出英文技术码，
+    // 给可行动文案；服务端结构化错误（ApiError）原样透出。
+    if (e?.name === 'TimeoutError') {
+      error.value = '登录请求超时，请检查网络后重试'
+    } else if (e instanceof TypeError) {
+      error.value = '登录失败，请检查网络连接与后端地址后重试'
+    } else {
+      error.value = e?.message || '企业账号登录失败，请检查用户名与密码后重试'
+    }
     loading.value = false
   }
 }
@@ -813,6 +858,39 @@ async function doLogin(u: string, p: string, opts: { fromBiometric: boolean }) {
 .input-wrap input {
   /* 右侧留出眼睛按钮的空间，避免文字压在图标下 */
   padding-right: calc(var(--space-3) * 2 + 40px);
+}
+
+/* 密码框同时带 清空(叉叉) + 眼睛 双按钮时的布局 */
+.input-wrap.dual-action input {
+  padding-right: calc(var(--space-3) * 2 + 80px);
+}
+
+/* 清空按钮：贴在眼睛左侧，仅在有输入内容时渲染（v-if）。
+   刻意低调 —— 比眼睛小一号、三级文字色，避免与主操作争夺注意力。 */
+.clear-btn {
+  position: absolute;
+  right: calc(var(--space-2) + 42px);
+  top: 50%;
+  transform: translateY(-50%);
+  width: 30px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  transition: background 150ms, color 150ms;
+}
+
+.clear-btn .clear-icon {
+  font-size: 16px;
+}
+
+.clear-btn:hover {
+  color: var(--text-secondary);
 }
 
 .eye-btn {
