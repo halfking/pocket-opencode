@@ -632,3 +632,31 @@ func TestEnvTrimInconsistencyAcrossSiblings(t *testing.T) {
 			"若本条转红，说明 getEnvInt 已补 TrimSpace ⇒ 请同步更新上面两条 ⭐ 用例", got)
 	}
 }
+
+// ★ 2026-11-18 m0 栈实测根因：ACC 的 runtime 清单按服务 JWT 的 tenant_id
+// 作用域 —— 同密钥同 URL，tenant_id=acc_app 能看到 host-A 的
+// agent_inventory，tenant_id=tenant-a 只看到 {"data":[],"total":0}。
+// 此前 pocketd 把 ACC 面租户硬编码成 "tenant-a"，而 M0 栈的 AC 以
+// AC_TENANT_ID=acc_app 注册 ⇒ delegate 恒 502 no dispatchable agent。
+// 回落链三层，逐层断言。
+func TestResolveACCTenantID(t *testing.T) {
+	cases := []struct {
+		name            string
+		runtimeTenantID string
+		mcpTenantID     string
+		want            string
+	}{
+		{"显式 POCKET_ACC_RUNTIME_TENANT_ID 优先", "tenant-explicit", "tenant-mcp", "tenant-explicit"},
+		{"缺省回落 MCP 面租户（两个面同属一个 ACC 租户）", "", "acc_app", "acc_app"},
+		{"两者皆空保持既有部署行为（tenant-a）", "", "", "tenant-a"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &Config{ACCRuntimeTenantID: tc.runtimeTenantID, MCPTenantID: tc.mcpTenantID}
+			if got := cfg.ResolveACCTenantID(); got != tc.want {
+				t.Fatalf("ResolveACCTenantID(runtime=%q, mcp=%q) = %q, want %q",
+					tc.runtimeTenantID, tc.mcpTenantID, got, tc.want)
+			}
+		})
+	}
+}

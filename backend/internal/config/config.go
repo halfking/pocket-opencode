@@ -245,6 +245,15 @@ type Config struct {
 	// 不是现成的 token。
 	ACCRuntimeURL    string // POCKET_ACC_RUNTIME_URL：ACC Runtime Control 基址（如 http://127.0.0.1:4101）
 	ACCRuntimeSecret string // POCKET_ACC_CONTROL_SECRET：HS256 签名密钥（ACC 的 control secret）
+	// ACCRuntimeTenantID：POCKET_ACC_RUNTIME_TENANT_ID —— 签给 ACC 服务 JWT 的
+	// tenant_id claim。★ ACC 的 runtime 清单**按租户作用域**：同密钥、同 URL，
+	// tenant_id=acc_app 能看到 host-A 的 agent_inventory，tenant_id=tenant-a
+	// 看到的是 {"data":[],"total":0}（2026-11-18 实测 m0 栈）。此前 main.go
+	// 硬编码 "tenant-a"，而 M0 栈的 AC 以 AC_TENANT_ID=acc_app 注册 ⇒
+	// pocketd 永远查空清单，delegate 恒 502 no dispatchable agent。
+	// 缺省回落 MCP 面的 POCKET_MCP_TENANT_ID（两个面同属一个 ACC 租户），
+	// 再缺省 "tenant-a" 保持既有部署行为不变。
+	ACCRuntimeTenantID string
 	// 派单目标（可选）：POCKET_ACC_DISPATCH_RUNTIME_ID / POCKET_ACC_DISPATCH_AGENT_ID。
 	//
 	// 不配时会去 ACC 的 runtime 清单里现查（需要一个往返）。而 ACC 的
@@ -325,6 +334,20 @@ type Config struct {
 	// 企业网关（POCKET_LLM_GATEWAY_URL / 运行时网关配置）请求失败时，
 	// 自动切换 RedClaw /api/v1/pocket/llm/chat 作为兜底对话通道。
 	RedClawLLMFallback bool // POCKET_REDCLAW_LLM_FALLBACK=true 启用
+}
+
+// ResolveACCTenantID 解析 ACC 服务 JWT 的租户作用域。
+// 取值顺序：POCKET_ACC_RUNTIME_TENANT_ID → POCKET_MCP_TENANT_ID（两个面同属
+// 一个 ACC 租户）→ "tenant-a"（既有部署行为不变）。
+// 根因见 ACCRuntimeTenantID 字段注释（2026-11-18 m0 栈实测）。
+func (c *Config) ResolveACCTenantID() string {
+	if c.ACCRuntimeTenantID != "" {
+		return c.ACCRuntimeTenantID
+	}
+	if c.MCPTenantID != "" {
+		return c.MCPTenantID
+	}
+	return "tenant-a"
 }
 
 // Load reads all configuration from environment variables and returns a Config instance.
@@ -438,6 +461,7 @@ func Load() Config {
 		CompanionSecret:       getEnv("POCKET_COMPANION_SECRET", ""),
 		ACCRuntimeURL:         getEnv("POCKET_ACC_RUNTIME_URL", ""),
 		ACCRuntimeSecret:      getEnv("POCKET_ACC_CONTROL_SECRET", ""),
+		ACCRuntimeTenantID:    getEnv("POCKET_ACC_RUNTIME_TENANT_ID", ""),
 		ACCDispatchRuntimeID:  getEnv("POCKET_ACC_DISPATCH_RUNTIME_ID", ""),
 		ACCDispatchAgentID:    getEnv("POCKET_ACC_DISPATCH_AGENT_ID", ""),
 		// 会话迁移方案：实例感知增强

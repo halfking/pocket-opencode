@@ -797,11 +797,19 @@ func main() {
 	// delegated task's card must leave 「进行中」 when the run is over).
 	var accClientRuntime *accruntime.Client
 	if cfg.ACCRuntimeURL != "" && cfg.ACCRuntimeSecret != "" {
+		// ★ 租户口径（2026-11-18 实测 m0 栈）：ACC 的 runtime 清单按服务 JWT 的
+		//   tenant_id 作用域。此前硬编码 "tenant-a"，而 M0 栈的 AC 以
+		//   AC_TENANT_ID=acc_app 注册 ⇒ pocketd 恒查到空清单，delegate 恒
+		//   502 no dispatchable agent（实测：同密钥同 URL，tenant_id=acc_app
+		//   可见 host-A 的 agent_inventory，tenant-a 见 {"data":[]}）。
+		//   回落链与测试见 config.ResolveACCTenantID。
+		accTenant := cfg.ResolveACCTenantID()
+		log.Printf("ACC runtime client tenant: %q", accTenant)
 		signer := accjwt.NewSigner(accjwt.Options{
 			Secret:          cfg.ACCRuntimeSecret,
 			Subject:         "pocketd:" + cfg.ACCRuntimeURL,
 			Username:        "pocketd",
-			TenantID:        "tenant-a",
+			TenantID:        accTenant,
 			ServiceIdentity: true,
 			TTL:             time.Hour,
 		})
