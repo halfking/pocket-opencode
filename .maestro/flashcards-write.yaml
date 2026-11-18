@@ -116,7 +116,12 @@ appId: com.kaixuan.opencode.pocket
 - tapOn: { point: "36%,26%" }
 - eraseText
 - hideKeyboard
-- assertVisible: { text: "新建卡组|New deck", enabled: false }
+# ★ 2026-11-19：瞬时 assert 改有界等待 —— 本机（Android 14 模拟器）实测
+#   导航过渡期页面白屏，瞬时断言必红（连续 3 轮同一步）；页面本身零态
+#   渲染正常（CDP 探针实证）。与步骤2「select option 惰性」同类。
+- extendedWaitUntil:
+    visible: { text: "新建卡组|New deck", enabled: false }
+    timeout: 15000
 - tapOn: { point: "36%,26%" }
 - inputText: "回归卡组"
 - extendedWaitUntil:
