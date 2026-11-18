@@ -781,6 +781,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/auth/sso/login", s.handleAuthSsoLogin)
 	mux.HandleFunc("/api/auth/sso/callback", s.handleAuthSsoCallback)
 	mux.HandleFunc("/api/auth/sso/exchange", s.handleAuthSsoExchange)
+	// App 端（Capacitor APK）无跳转登录：pocketd 服务端代办 Casdoor
+	// 密码登录 + authorize 抓 code + token 兑换（2026-11-19）。
+	mux.HandleFunc("/api/auth/sso/direct-login", s.handleAuthSsoDirectLogin)
 	// 生物认证（server_biometric.go；webAuthnVerifier 未配置时降级为 P0 stub）
 	mux.HandleFunc("/api/auth/biometric/register/begin", s.requireAuth(s.handleBiometricRegisterBegin))
 	mux.HandleFunc("/api/auth/biometric/register/finish", s.requireAuth(s.handleBiometricRegisterFinish))

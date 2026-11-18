@@ -186,6 +186,22 @@ export async function fetchSsoStatusDetailed(): Promise<{ enabled: boolean; mode
  * CSRF 绑定由后端在响应里落 HttpOnly cookie（pocket_sso_txn），前端不再
  * 生成/比对 state（见 docs/handoff/2026-09-05-sso-state-contract-mismatch.md）。
  */
+/**
+ * App 端（Capacitor APK）无跳转企业登录：账密直接 POST 给 pocketd，
+ * 由 pocketd 服务端代办 Casdoor /api/login → authorize 抓 code → token
+ * 兑换 → 签发 pocketd 会话 JWT。响应与 SSO exchange 同形。
+ * 背景：APK WebView 里 OIDC 顶层导航会被交给系统浏览器，回调落不到
+ * 本地包 —— 直连 Casdoor JS API 又被 CORS/HttpOnly/不透明 302 三堵墙挡死，
+ * 故走服务端代办（2026-11-19）。
+ */
+export async function fetchSsoDirectLogin(username: string, password: string): Promise<SsoExchangeResponse> {
+  return http<SsoExchangeResponse>('/api/auth/sso/direct-login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password }),
+  })
+}
+
 export async function fetchSsoLoginUrl(redirectUrl?: string): Promise<string> {
   const q = new URLSearchParams()
   if (redirectUrl) q.set('redirect_url', redirectUrl)

@@ -329,6 +329,14 @@ type Config struct {
 	OIDCClientSecret  string // POCKET_CASDOOR_CLIENT_SECRET
 	OIDCRedirectURIOv string // POCKET_CASDOOR_REDIRECT_URI：显式 redirect_uri（缺省从 browser-return 基址推导 /api/auth/sso/callback）
 	OIDCBrowserReturn string // POCKET_CASDOOR_BROWSER_RETURN_URL：回调后 302 的 SPA 绝对基址（如 https://openpocket.itestu.cn）
+	// —— App 端无跳转登录（2026-11-19）——
+	// Capacitor APK 的登录窗口直接调 POST /api/auth/sso/direct-login，
+	// pocketd 服务端代办 Casdoor 密码登录 + authorize 抓 code + token 兑换
+	//（App→Casdoor 直连不可行：无 CORS、HttpOnly 会话 cookie 不可转发、
+	// authorize 的 302 Location 在 JS 里不可读）。这两项是 Casdoor /api/login
+	// 必需的 application/organization 名（get-app 非公开，只能显式配置）。
+	OIDCOrganization string // POCKET_CASDOOR_ORGANIZATION：如 redclaw
+	OIDCApplication  string // POCKET_CASDOOR_APPLICATION：如 openpocket
 
 	// —— RedClaw LLM 兜底 ——
 	// 企业网关（POCKET_LLM_GATEWAY_URL / 运行时网关配置）请求失败时，
@@ -534,6 +542,8 @@ func Load() Config {
 		OIDCClientSecret:  strings.TrimSpace(getEnv("POCKET_CASDOOR_CLIENT_SECRET", "")),
 		OIDCRedirectURIOv: strings.TrimSpace(getEnv("POCKET_CASDOOR_REDIRECT_URI", "")),
 		OIDCBrowserReturn: strings.TrimSpace(getEnv("POCKET_CASDOOR_BROWSER_RETURN_URL", "")),
+		OIDCOrganization:  strings.TrimSpace(getEnv("POCKET_CASDOOR_ORGANIZATION", "")),
+		OIDCApplication:   strings.TrimSpace(getEnv("POCKET_CASDOOR_APPLICATION", "")),
 	}
 }
 
@@ -834,6 +844,13 @@ func (c Config) IsProduction() bool {
 // configured（endpoint + client_id + client_secret 三项齐备）。
 func (c Config) OIDCEnabled() bool {
 	return c.OIDCEndpoint != "" && c.OIDCClientID != "" && c.OIDCClientSecret != ""
+}
+
+// OIDCDirectLoginEnabled reports whether the App 端无跳转登录代办链路
+// （POST /api/auth/sso/direct-login）可用：OIDC 三项齐备 + Casdoor
+// /api/login 所需的 application/organization 名已显式配置。
+func (c Config) OIDCDirectLoginEnabled() bool {
+	return c.OIDCEnabled() && c.OIDCOrganization != "" && c.OIDCApplication != ""
 }
 
 // OIDCBrowserReturnURL returns the absolute SPA base the OIDC callback 302s

@@ -30,7 +30,7 @@ export function getApiBase(): string {
 /** refresh 端点本身 401 时不得再触发续期重放（防自引用循环）。 */
 const REFRESH_PATH = '/api/auth/refresh'
 const PUBLIC_AUTH_PATHS = new Set(['/api/auth/login', '/api/auth/register', '/api/auth/send-code',
-  '/api/auth/code-login', '/api/auth/forgot-password', '/api/auth/sso/status', '/api/auth/sso/login', '/api/auth/sso/exchange'])
+  '/api/auth/code-login', '/api/auth/forgot-password', '/api/auth/sso/status', '/api/auth/sso/login', '/api/auth/sso/exchange', '/api/auth/sso/direct-login'])
 
 export class ApiError extends Error {
   /** 响应 body 解析后的对象（若有）。让调用方能拿到 409 等结构化错误信息。 */

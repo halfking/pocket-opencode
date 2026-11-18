@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/cookiejar"
 	"net/url"
 	"strings"
 	"time"
@@ -351,4 +352,205 @@ func (s *Server) mintSessionToken(ctx context.Context, source, userID, username,
 	}
 	auth.RecordShadow(source, userID, wsID, username, email)
 	return token, wsID, nil
+}
+
+// ============================================================================
+// App 端无跳转登录（2026-11-19）：POST /api/auth/sso/direct-login
+//
+// 背景：Capacitor APK 的 WebView 里，/api/auth/sso/login 的 OIDC 顶层导航
+// 会被 Capacitor 默认交给系统浏览器（外部域导航不做页内加载），登录完成后
+// 回调落在浏览器里的托管 SPA，App 本地包永远拿不到会话。App 端 JS 直连
+// Casdoor API 也不可行：跨源无 CORS、Casdoor 会话 cookie HttpOnly 不可
+// 转发、authorize 的 302 Location（含 code）在 JS 里不可读。
+//
+// 因此由 pocketd 服务端代办：/api/login（密码校验，Casdoor 侧自带错误
+// 计数与锁定）→ 持会话 cookie 请求 authorize 抓 302 里的 code（服务端
+// 无 CORS 墙、可读 Location）→ 校验 state → PKCE 换 token → userinfo →
+// 签发 pocketd 会话 JWT。身份链与 OIDC 回调完全同源（sub/name/email +
+// mintSessionToken("casdoor")），App 一次请求拿到 {token,user,...}。
+// Web 端跳转流程不受影响（两条道并行，绑定 cookie 只在跳转道使用）。
+//
+// 安全边界：这是无认证的密码校验端点 —— 密码在 Casdoor 侧校验，错误计数、
+// 冻结策略由 Casdoor 维护（本端点不缓存、不旁路）；仅 OIDC 三项 +
+// ORGANIZATION/APPLICATION 全部齐备时启用。
+// ============================================================================
+
+// oidcCasdoorWebLogin 用独立 cookie-jar 客户端调 Casdoor /api/login（JSON
+// web 登录端点）。成功后该客户端的 jar 持有 Casdoor 会话 cookie，返回的
+// client 供 authorize 抓 code 使用；失败返回 Casdoor 的稳定错误码
+//（wrong-password / frozen 等），调用方据此映射响应。
+func (s *Server) oidcCasdoorWebLogin(ctx context.Context, username, password string) (*http.Client, string, error) {
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		return nil, "", fmt.Errorf("cookie jar: %w", err)
+	}
+	client := &http.Client{
+		Timeout: 15 * time.Second,
+		Jar:     jar,
+	}
+	endpoint := strings.TrimRight(s.cfg.OIDCEndpoint, "/") + "/api/login"
+	body, _ := json.Marshal(map[string]any{
+		"type":         "login",
+		"username":     username,
+		"password":     password,
+		"organization": s.cfg.OIDCOrganization,
+		"application":  s.cfg.OIDCApplication,
+		"autoSignin":   true,
+	})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(string(body)))
+	if err != nil {
+		return nil, "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, "", fmt.Errorf("casdoor login request: %w", err)
+	}
+	defer resp.Body.Close()
+	var lr struct {
+		Status string `json:"status"`
+		Code   string `json:"code"`
+		Msg    string `json:"msg"`
+		Data   string `json:"data"`
+	}
+	if err := decodeOIDCResponse(resp, &lr); err != nil {
+		return nil, "", fmt.Errorf("casdoor login response: %w", err)
+	}
+	if lr.Status != "ok" {
+		if lr.Code == "" {
+			lr.Code = "login_rejected"
+		}
+		return nil, lr.Code, fmt.Errorf("casdoor rejected login: %s", lr.Msg)
+	}
+	return client, lr.Data, nil
+}
+
+// oidcCaptureAuthorizeCode 持登录会话 cookie 请求 authorize 端点，用
+// ErrUseLastResponse 截住 302 并解析其中的 code+state。 Casdoor 匿名
+// authorize 会回 200 登录页 HTML（无会话），此处表现为无 Location 错误。
+func (s *Server) oidcCaptureAuthorizeCode(ctx context.Context, client *http.Client, state string) (code, verifier string, err error) {
+	var challenge string
+	verifier, challenge, err = newPKCEPair()
+	if err != nil {
+		return "", "", err
+	}
+	authorizeURL := s.oidcAuthorizeURL(challenge, state)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, authorizeURL, nil)
+	if err != nil {
+		return "", "", err
+	}
+	capture := &http.Client{
+		Timeout: client.Timeout,
+		Jar:     client.Jar,
+		Transport: client.Transport,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	resp, err := capture.Do(req)
+	if err != nil {
+		return "", "", fmt.Errorf("authorize request: %w", err)
+	}
+	defer resp.Body.Close()
+	loc := resp.Header.Get("Location")
+	if resp.StatusCode != http.StatusFound || loc == "" {
+		return "", "", fmt.Errorf("authorize did not issue a code redirect (status %d)", resp.StatusCode)
+	}
+	u, err := url.Parse(loc)
+	if err != nil {
+		return "", "", fmt.Errorf("authorize location parse: %w", err)
+	}
+	q := u.Query()
+	if e := q.Get("error"); e != "" {
+		return "", "", fmt.Errorf("authorize error: %s", e)
+	}
+	if subtle.ConstantTimeCompare([]byte(q.Get("state")), []byte(state)) != 1 {
+		return "", "", fmt.Errorf("authorize state mismatch")
+	}
+	code = q.Get("code")
+	if code == "" {
+		return "", "", fmt.Errorf("authorize redirect missing code")
+	}
+	return code, verifier, nil
+}
+
+// handleAuthSsoDirectLogin POST /api/auth/sso/direct-login
+// 请求体 {"username":"...","password":"..."}；响应与本地凭据登录同形：
+// {"token","user","user_id","workspace_id"}（issueTokenAndRespond）。
+func (s *Server) handleAuthSsoDirectLogin(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "POST only")
+		return
+	}
+	if !s.cfg.OIDCDirectLoginEnabled() {
+		writeError(w, http.StatusNotFound, "sso direct login not configured")
+		return
+	}
+	var body struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 16<<10)).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	body.Username = strings.TrimSpace(body.Username)
+	if body.Username == "" || body.Password == "" {
+		writeError(w, http.StatusBadRequest, "username and password are required")
+		return
+	}
+
+	client, _, err := s.oidcCasdoorWebLogin(r.Context(), body.Username, body.Password)
+	if err != nil {
+		s.auditGateway(r, "auth.sso.direct_login", body.Username, "reason=casdoor_login_rejected", false)
+		// 用户可读但不回传上游细节；Casdoor 侧错误计数/冻结照常生效。
+		writeError(w, http.StatusUnauthorized,
+			"casdoor_credentials_rejected: 用户名或密码错误（或账号已被临时锁定），请重试或联系管理员")
+		return
+	}
+
+	state, err := randomHex(16)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to start sso login")
+		return
+	}
+	code, verifier, err := s.oidcCaptureAuthorizeCode(r.Context(), client, state)
+	if err != nil {
+		logging.Warnf("WARN: sso direct login authorize capture: %v", err)
+		s.auditGateway(r, "auth.sso.direct_login", body.Username, "reason=authorize_capture_failed", false)
+		writeError(w, http.StatusBadGateway, "sso_upstream: Casdoor authorize 兑换失败，请稍后重试")
+		return
+	}
+
+	tok, err := s.oidcExchangeToken(r.Context(), code, verifier)
+	if err != nil {
+		logging.Warnf("WARN: sso direct login token exchange: %v", err)
+		s.auditGateway(r, "auth.sso.direct_login", body.Username, "reason=token_exchange_rejected", false)
+		writeError(w, http.StatusBadGateway, "sso_upstream: Casdoor token 兑换失败，请稍后重试")
+		return
+	}
+	ui, err := s.oidcFetchUserinfo(r.Context(), tok.AccessToken)
+	if err != nil {
+		logging.Warnf("WARN: sso direct login userinfo: %v", err)
+		s.auditGateway(r, "auth.sso.direct_login", body.Username, "reason=userinfo_failed", false)
+		writeError(w, http.StatusBadGateway, "sso_upstream: Casdoor 未返回有效用户身份，请稍后重试")
+		return
+	}
+	// 身份映射与 OIDC 回调同款：sub 必在；name → preferred_username →
+	// email → sub 逐级兜底（2026-11-14 真机验收缺陷的同款修复）。
+	userID := ui.Sub
+	displayName := ui.Name
+	if displayName == "" {
+		displayName = ui.PreferredUsername
+	}
+	if displayName == "" {
+		displayName = ui.Email
+	}
+	if displayName == "" {
+		logging.Warnf("WARN: sso direct login userinfo has no name claims, falling back to sub=%s", ui.Sub)
+		displayName = ui.Sub
+	}
+	s.auditGateway(r, "auth.sso.direct_login", userID, "direct login completed", true)
+	s.issueTokenAndRespond(w, r, userID, displayName, ui.Email)
 }
