@@ -10,7 +10,7 @@
 
 | 文档 | 说明 |
 |---|---|
-| [2026-09-08-feature-inventory.md](2026-09-08-feature-inventory.md) | 全功能特性大盘：前端 25 域 + 后端 47 模块 + 原生 35+ 能力位（文档为 2026-09-08 盘点快照，现计数 32 域 / 65 模块，2026-11-03 复核） |
+| [2026-09-08-feature-inventory.md](2026-09-08-feature-inventory.md) | 全功能特性大盘：前端 25 域 + 后端 47 模块 + 原生 35+ 能力位（文档为 2026-09-08 盘点快照，现计数 34 域 / 77 模块，2026-11-19 复核） |
 | [2026-09-08-requirements-design.md](2026-09-08-requirements-design.md) | 反向整理的需求与设计（As-built 现行方案） |
 | [2026-09-08-native-and-cross-platform.md](2026-09-08-native-and-cross-platform.md) | 原生效果分析 + iOS / Android / HarmonyOS 跨平台路线图 |
 
@@ -84,6 +84,7 @@
 | [governance/](governance/) | 文档治理：[SUPERSEDED.md](governance/SUPERSEDED.md)（被取代文档索引）、[STATUS-MATRIX.md](governance/STATUS-MATRIX.md)、[EVIDENCE-LEDGER.md](governance/EVIDENCE-LEDGER.md) |
 | [redclaw-mapping/](redclaw-mapping/) | RedClaw 映射分析 |
 | [audits/](audits/) · [handoff/](handoff/) | 近期审计与交接 |
+| [testing/](testing/) | 集成与真机测试报告（ACC 集成链路验证、录音端到端全自动化测试、VAD 真机验证等，2026-11-14 起） |
 | `2026-MM-DD-*` 目录/文件 | 按日期的专题设计与执行记录（最新工作区） |
 | [test-evidence/](../test-evidence/) | 按日期的测试证据（仓库根） |
 
