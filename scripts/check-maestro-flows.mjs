@@ -272,6 +272,24 @@ function loadCorpus() {
     }
   }
   if (existsSync(root)) walkDirs(root)
+  // ★ 2026-11-19：把 scripts/*.mjs 也纳入语料。夹具脚本（*-fixture.mjs /
+  //   lib/acc-fixture-common.mjs）是**受版本控制的源**，flow 的运行时探针
+  //   标题（如 acc-delegate-stop 的 maestroAccStop）以常量形式定义在夹具里、
+  //   与 flow 的 inputText 构成显式契约——它们不在 App 源码里是**设计使然**
+  //   （运行时键入的探针串，不是 UI 文案），不该被判「找不到出处」。
+  //   此前 acc-approval 的 maestro-acc-approve 能过纯属巧合（mock.ts 恰有同串）。
+  const scriptsDir = join(ROOT, 'scripts')
+  if (existsSync(scriptsDir)) {
+    for (const e of readdirSync(scriptsDir, { withFileTypes: true })) {
+      if (e.isFile() && /\.mjs$/.test(e.name)) files.push(join(scriptsDir, e.name))
+    }
+    const libDir = join(scriptsDir, 'lib')
+    if (existsSync(libDir)) {
+      for (const e of readdirSync(libDir, { withFileTypes: true })) {
+        if (e.isFile() && /\.mjs$/.test(e.name)) files.push(join(libDir, e.name))
+      }
+    }
+  }
   return files.map((f) => readFileSync(f, 'utf8')).join('\n')
 }
 

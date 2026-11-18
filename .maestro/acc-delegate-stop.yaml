@@ -19,7 +19,7 @@
 #        并显式处理 @touchcancel。
 #      ⇒ 这条流现在真正验的是「长按卡片 ⇒ App 菜单里有『⏹ 停止任务』」。
 #
-#   ② 屏上**同时有两条**「maestro-acc-stop」卡片（上一轮残留 + 这一轮新建）
+#   ② 屏上**同时有两条**「maestroAccStop」卡片（上一轮残留 + 这一轮新建）
 #      ⇒ 长按选中的可能是**上一轮**那条 ⇒ 断言对错行。
 #      修复：给这条流挂上清场夹具（scripts/acc-delegate-stop-fixture.mjs），
 #      在 .maestro-flows.json 里登记 ⇒ 跑之前先把 maestro-* 清空。
@@ -59,21 +59,51 @@ appId: com.kaixuan.opencode.pocket
     timeout: 20000
 
 # ---- 2. ★ 本轮新增：能选「派给哪个智能体」，且清单来自 ACC 的实时读面 ----
-- assertVisible: "派给哪个智能体（可选）"
-- assertVisible: "自动选择当前可派的智能体"
+# ★ 2026-11-19：assertVisible 是**瞬时**断言 —— WebView a11y 树对 <select>
+#   option 的暴露有惰性（实测同一构建两轮一发过一发 3m46s 超时红）。
+#   ⇒ 改 extendedWaitUntil 有界等待，给 a11y 树刷新留窗口。
+- extendedWaitUntil:
+    visible: "派给哪个智能体（可选）"
+    timeout: 15000
+- extendedWaitUntil:
+    visible: "自动选择当前可派的智能体"
+    timeout: 15000
 
 # ---- 3. 填标题并提交 ----
-# 输入框在无障碍树里是 [EditText] t="" cd=""（placeholder 与 label 都不暴露）
-# ⇒ 只能按坐标点。标题 label 在 y=1254~1304 ⇒ 输入框取 y≈1350（56%）。
-- tapOn: { point: "50%,56%" }
-- inputText: "maestro-acc-stop"
+# 2026-11-19 起不再按坐标点（见下面 ★ 注释）——点 label 聚焦输入框。
+#
+# ★ 标题必须是**无连字符**的 ASCII（2026-11-18 实测定案）：
+#   GBoard（zh-CN locale 下）对 inputText 键入路径的 ASCII 做「自动改写」——
+#   连字符转全角「－」、未知词被词典词替换。实测键入 "maestro-acc-stop"
+#   落库为「马estrogen－ACC－」（服务端 /api/tasks 与卡片标题一致 ⇒
+#   改写发生在 IME 组合窗，App/后端如实保存），literal 断言必红。
+#   纯 ASCII 无连字符（notes-crud 的 "MaestroPKMNote"）不受影响 ⇒ 驼峰。
+#   夹具前缀随之统一为 'maestro'（见 scripts/*-fixture.mjs）。
+# ★ 点 label 文本而非坐标（2026-11-19）：弹窗高度随键盘状态位移，
+#   同一坐标两轮一发中一发空（标题空 ⇒ 按钮禁用 ⇒ 弹窗不关 ⇒ 必红）。
+#   前端已给标题 label 加 for/输入框加 id（TasksView.vue，真实无障碍改进）⇒
+#   点 label 即聚焦输入框，与布局无关。
+#
+# ★ 且「点 label ⇒ 键入」包进重试环（2026-11-19 实测：run2/run6 同构建
+#   同步骤一发空——a11y ACTION_CLICK 对 label[for] 的焦点转发不保证落）。
+#   字段里有文本（a11y 可见）才跳出；3 次仍空则按既有语义红在可见处。
+#   键入后收键盘：底部按钮不被 GBoard 遮挡，且 sheet 回到基准布局。
+- repeat:
+    while:
+      notVisible: "maestroAccStop"
+    commands:
+      - tapOn: ".*标题.*"
+      - inputText: "maestroAccStop"
+      - hideKeyboard
+    times: 3
+- assertVisible: "maestroAccStop"
 - tapOn: { text: "^委托给 ACC$", enabled: true }
 
 # ---- 3.5 ★★ 弹窗必须**关闭**（2026-10-27 05:48 现场取证）----
 #
 # ★ 这一步是**判据缺陷的修复**，不是产品缺陷。
 #
-# 上一版这里直接 `extendedWaitUntil: visible: "maestro-acc-stop"`，
+# 上一版这里直接 `extendedWaitUntil: visible: "maestroAccStop"`，
 # 而**弹窗的标题输入框里正好输入着这个字符串** ⇒
 # 委托**失败**、弹窗**根本没关**时，那条断言**照样绿**（恒真）。
 # 实测（2026-10-27 05:46~05:48 那轮）：
@@ -82,8 +112,8 @@ appId: com.kaixuan.opencode.pocket
 #     ⇒ 照实 502；
 #   · App：弹窗里显示「读不到智能体清单（可留空由服务端选）：操作失败，请稍后重试」
 #     ⇒ **弹窗还开着**；
-#   · Maestro：`visible: "maestro-acc-stop"` 命中了**输入框** ⇒ 绿；
-#     接着 `longPressOn: "maestro-acc-stop"` 长按的是**输入框**
+#   · Maestro：`visible: "maestroAccStop"` 命中了**输入框** ⇒ 绿；
+#     接着 `longPressOn: "maestroAccStop"` 长按的是**输入框**
 #     ⇒ 没有上下文菜单 ⇒ 「停止任务」永远不出现 ⇒ 判红在错的地方。
 #
 # ⇒ 所以必须**先断言弹窗关掉了**，再断言卡片出现了。
@@ -94,9 +124,9 @@ appId: com.kaixuan.opencode.pocket
 
 # ---- 4. 新卡片出现（source=acc 的任务进了本地列表）----
 - extendedWaitUntil:
-    visible: "maestro-acc-stop"
+    visible: "maestroAccStop"
     timeout: 40000
-- assertVisible: "maestro-acc-stop"
+- assertVisible: "maestroAccStop"
 
 # ---- 5. ★ 长按卡片 → 菜单里必须出现「停止任务」----
 # （这是上一轮**没有**的按钮：菜单只有「完成/删除」）
@@ -108,7 +138,7 @@ appId: com.kaixuan.opencode.pocket
 # ⚠ 这条断言同时**排除了** Android 的文本选择菜单：那条菜单里只有
 #   Copy / Share / Select all / Read aloud，没有「停止任务」⇒
 #   能命中本按钮 ⇒ 说明 App 自己的长按菜单真的弹出来了。
-- longPressOn: "maestro-acc-stop"
+- longPressOn: "maestroAccStop"
 - extendedWaitUntil:
     visible: ".*停止任务.*"
     timeout: 20000
@@ -134,7 +164,7 @@ appId: com.kaixuan.opencode.pocket
     timeout: 20000
 
 # ② 任务离开「运行中」列表：cancelled 不是 active ⇒ 它离开运行中区。
-#    ⚠ 这条**不能**用 "maestro-acc-stop" 的全文匹配来判「已停止」：
+#    ⚠ 这条**不能**用 "maestroAccStop" 的全文匹配来判「已停止」：
 #    ACC 生态面板里也会显示同名任务（那是 ACC 侧的任务列表）⇒ 恒假。
 #    现在的做法是：ACC 生态默认不加载（要用户点「读取任务与会话」），
 #    而「已结束」分区默认折叠 ⇒ 任务区里看不到标题就等于它离开了任务列表。
@@ -143,7 +173,7 @@ appId: com.kaixuan.opencode.pocket
 #      直接消失 ⇒ 用户分不清「我停掉了」和「它不见了」。
 #      现在终态三兄弟都进「已结束」区（默认折叠）⇒ 这条判据仍然成立。
 - extendedWaitUntil:
-    notVisible: "maestro-acc-stop"
+    notVisible: "maestroAccStop"
     timeout: 60000
 
 # ---- 8. ★ 它没有「消失」，而是被记进了历史（2026-10-26 新增）----
@@ -176,10 +206,10 @@ appId: com.kaixuan.opencode.pocket
     optional: true
 - scrollUntilVisible:
     element:
-      text: "maestro-acc-stop"
+      text: "maestroAccStop"
     direction: DOWN
     timeout: 120000
 - assertVisible:
     text: "已取消"
     rightOf:
-      text: "maestro-acc-stop"
+      text: "maestroAccStop"

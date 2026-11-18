@@ -61,7 +61,40 @@
         <!-- Casdoor 直连 OIDC 模式（mode=oidc）：本地凭据面整体退役，
              只留 SSO 入口 —— 全部用户认证收敛到 Casdoor（2026-11-14）。 -->
         <template v-if="oidcOnly">
+          <!-- App 原生壳（Capacitor APK）：无跳转直连 —— 账密 POST pocketd，
+               服务端代办 Casdoor 登录并直接签发会话（2026-11-19）。 -->
+          <template v-if="isNativeRuntime">
+            <div class="form-group">
+              <label for="sso-direct-username">用户名</label>
+              <input
+                id="sso-direct-username"
+                v-model="username"
+                autocomplete="username"
+                placeholder="用户名"
+              />
+            </div>
+            <div class="form-group">
+              <label for="sso-direct-password">密码</label>
+              <input
+                id="sso-direct-password"
+                v-model="password"
+                type="password"
+                autocomplete="current-password"
+                placeholder="Casdoor 企业账号密码"
+              />
+            </div>
+            <button
+              class="login-btn sso-btn"
+              :disabled="loading"
+              @click="ssoDirectLogin"
+            >
+              <span class="material-symbols-outlined" aria-hidden="true">shield</span>
+              {{ loading ? '登录中…' : '企业账号登录（Casdoor）' }}
+            </button>
+          </template>
+          <!-- Web 端保留 OIDC 跳转流（同源场景绑定 cookie 可用）。 -->
           <button
+            v-else
             class="login-btn sso-btn"
             :disabled="loading"
             @click="ssoLogin"
@@ -270,7 +303,8 @@ import {
 } from './unlock-auth'
 import MasterPasswordDialog from './MasterPasswordDialog.vue'
 import { useCryptoConfig } from '../../stores/crypto-config'
-import { sendCode, codeLogin, fetchSsoLoginUrl, fetchSsoStatusDetailed } from '../../api/auth'
+import { sendCode, codeLogin, fetchSsoLoginUrl, fetchSsoStatusDetailed, fetchSsoDirectLogin } from '../../api/auth'
+import { runtimePlatform } from '../../native/runtime-platform'
 import { displayApiBase } from '../../config/api-base'
 import { resolveAppVersion } from '../../utils/version'
 
@@ -319,6 +353,9 @@ const activeTab = ref<TabId>('password')
 const ssoEnabled = ref(false)
 const ssoMode = ref<'' | 'oidc' | 'redclaw'>('')
 const oidcOnly = computed(() => ssoMode.value === 'oidc')
+// App 原生壳（Capacitor APK）：OIDC 跳转在 WebView 里会被交给系统浏览器，
+// 回调落不回本地包 —— 原生运行时改走 direct-login 无跳转链路。
+const isNativeRuntime = runtimePlatform() !== 'web'
 
 const codeEmail = ref('')
 const codeValue = ref('')
@@ -385,9 +422,9 @@ async function handleCodeLogin() {
 /**
  * 登录/注册成功后统一收尾：setAuth → connectWs → 指纹绑定 → 主密码弹窗 → 跳转。
  */
-async function completeAuth(token: string, user: string, userId?: string, workspaceId?: string) {
+async function completeAuth(token: string, user: string, userId?: string, workspaceId?: string, method?: string) {
   if (userId && workspaceId) {
-    await auth.setAuthWithWorkspace(token, user, userId, workspaceId)
+    await auth.setAuthWithWorkspace(token, user, userId, workspaceId, method)
   } else {
     await auth.setAuth(token, user)
   }
@@ -449,6 +486,33 @@ async function ssoLogin() {
   } catch (e: any) {
     console.warn('[login] SSO 登录失败（原始信息）:', e?.message || e)
     error.value = 'SSO 登录失败，请稍后重试或改用密码登录'
+    loading.value = false
+  }
+}
+
+/**
+ * App 端无跳转企业登录（2026-11-19）：账密 POST /api/auth/sso/direct-login，
+ * pocketd 服务端代办 Casdoor 登录 + OIDC 兑换，一次请求换回会话。
+ * 成功收尾与本地登录完全同路径（completeAuth：connectWs / 主密码弹窗 / 跳转）。
+ */
+async function ssoDirectLogin() {
+  const name = username.value.trim()
+  if (!name || !password.value) {
+    error.value = '请输入企业账号用户名与密码'
+    return
+  }
+  loading.value = true
+  error.value = ''
+  try {
+    const handoff = await fetchSsoDirectLogin(name, password.value)
+    // OIDC userinfo 可能缺 name claim（同 exchange 兜底）：user 为空会让
+    // 路由守卫把已登录用户弹回 /login，这里直接退回 user_id。
+    const displayUser = handoff.user || handoff.user_id || name
+    await completeAuth(handoff.token, displayUser, handoff.user_id, handoff.workspace_id, 'redclaw-sso')
+    password.value = ''
+  } catch (e: any) {
+    console.warn('[login] direct sso 登录失败（原始信息）:', e?.message || e)
+    error.value = e?.message || '企业账号登录失败，请检查用户名与密码后重试'
     loading.value = false
   }
 }

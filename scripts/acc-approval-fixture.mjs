@@ -26,7 +26,7 @@ const { api, login } = makeApi()
 
 async function induce() {
   await login()
-  await clearResidual(api, 'maestro-')
+  await clearResidual(api, 'maestro')
 
   const prompt =
     '请在 /tmp/maestro-acc-approve 目录下创建文件 hello.txt，内容写一行 hello，' +
@@ -57,7 +57,7 @@ async function induce() {
 async function restore() {
   try {
     await login()
-    await clearResidual(api, 'maestro-')
+    await clearResidual(api, 'maestro')
   } catch (e) {
     console.log(`[fixture] 还原跳过：${e.message}`)
   }

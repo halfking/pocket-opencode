@@ -10,6 +10,15 @@ const config: CapacitorConfig = {
     // VITE_API_BASE（构建期注入 http://192.168.31.45:8088）决定。
     cleartext: true,
 
+    // Casdoor SSO 留在 App 内 WebView（2026-11-19 真机验证）：
+    // Capacitor 默认把外部域名的顶层导航交给系统浏览器 —— SSO 按钮一点，
+    // Casdoor 就被踢到 vivo/系统浏览器里，登录完成后回调落在浏览器里的
+    // 托管 SPA，App 本身永远收不到会话（真机表现为登录页卡"跳转中…"）。
+    // allowNavigation 放行 IdP 与回调两域后，authorize → 登录 → 回调 →
+    // 换 sso_code 的全链路都在 App 内完成。注意：回调成功后 WebView 停在
+    // 托管 SPA（browser-return 基址），本地包要等下次冷启动。
+    allowNavigation: ['auth.itestu.cn', 'openpocket.itestu.cn'],
+
     // BUG-F 修复 (2026-09-30)：WebView 本地页面的 scheme。
     //
     // 默认 'https' 时页面 origin = https://localhost。此时 http:// 的 XHR 由

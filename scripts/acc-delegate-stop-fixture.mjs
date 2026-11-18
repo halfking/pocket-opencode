@@ -20,11 +20,18 @@
  */
 import { makeApi, clearResidual } from './lib/acc-fixture-common.mjs'
 
+// ★ 探针标题必须与 .maestro/acc-delegate-stop.yaml 的 inputText 逐字节一致
+//   （flow 靠它长按选卡、断言卡片消失；这里靠它清残留）。
+//   命名约束：**无连字符的驼峰** —— zh-CN locale 下 GBoard 会把带连字符的
+//   ASCII 改写（实测 "maestro-acc-stop" 落库为「马estrogen－ACC－」），
+//   literal 断言必红；纯字母驼峰不受影响（2026-11-19 实测定案）。
+export const PROBE_TITLE = 'maestroAccStop'
+
 const { api, login } = makeApi()
 
 async function main() {
   await login()
-  await clearResidual(api, 'maestro-')
+  await clearResidual(api, 'maestro')
 }
 
 try {
