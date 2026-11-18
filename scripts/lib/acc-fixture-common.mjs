@@ -187,11 +187,19 @@ export async function accTaskList() {
 export async function delegateWithVerify(api, { title, description, prompt }, opts = {}) {
   const attempts = opts.attempts ?? 4
   const waitMs = opts.waitMs ?? 8000
+  // ★ 派单目标（2026-11-19）：审批面的前提是**真实 agent 跑到权限门**——
+  //   mock 槽位只模拟 8s 后完成，永远不产生待批项（实测 120s 无待批项）。
+  //   ⇒ 用 POCKET_DISPATCH_RUNTIME_ID / POCKET_DISPATCH_AGENT_ID 指向真实
+  //     槽位（本机装配：host-R 的 opencode，acp_stdio，ACC 门禁全开）；
+  //     不设则维持原自动解析（首个可派槽位，通常是 mock）。
+  const target = {}
+  if (process.env.POCKET_DISPATCH_RUNTIME_ID) target.runtime_id = process.env.POCKET_DISPATCH_RUNTIME_ID
+  if (process.env.POCKET_DISPATCH_AGENT_ID) target.agent_id = process.env.POCKET_DISPATCH_AGENT_ID
   let last = { status: 0, body: null }
   for (let i = 1; i <= attempts; i++) {
     // ★ 记下请求发出的时刻：事后认领「ACC 侧其实建出来了」必须用它做时间下界。
     const startedAt = new Date()
-    const d = await api('POST', '/api/tasks/delegate', { title, description, prompt })
+    const d = await api('POST', '/api/tasks/delegate', { title, description, prompt, ...target })
     last = { status: d.status, body: d.body }
     if (d.status === 200) {
       const data = (d.body && d.body.data) || d.body || {}

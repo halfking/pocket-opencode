@@ -743,8 +743,13 @@
       <div class="create-task-form">
         <p class="acc-hint">ACC 会接管后续会话与执行，无需在手机上跟进。</p>
         <div class="form-group">
-          <label>标题 *</label>
+          <!-- ★ label[for]/input[id]（2026-11-19）：弹窗高度随键盘/数据状态位移，
+               流按坐标点输入框必抖（实测同一坐标两轮一发中一发空）。label[for]
+               让「点 label ⇒ 聚焦输入框」，Maestro 按 label 文本点击即与布局无关；
+               同时也是真实用户的无障碍改进（点标签聚焦）。 -->
+          <label for="acc-delegate-title">标题 *</label>
           <input
+            id="acc-delegate-title"
             v-model="accDraft.title"
             type="text"
             placeholder="例如：实现登录页面"
@@ -752,8 +757,9 @@
           />
         </div>
         <div class="form-group">
-          <label>描述（可选）</label>
+          <label for="acc-delegate-description">描述（可选）</label>
           <textarea
+            id="acc-delegate-description"
             v-model="accDraft.description"
             placeholder="补充背景、目标或验收标准"
             rows="3"
@@ -762,6 +768,10 @@
           <div class="char-counter">{{ accDraft.description.length }} / 500</div>
         </div>
         <div class="form-group">
+          <!-- ⚠ 这里**不能**给 label 加 for / select 加 id（2026-11-19 实测）：
+               Chromium 会用关联 label 的文本当 select 的 a11y 名称，
+               顶掉原先暴露的「选中 option 文本」，砸掉
+               acc-delegate-stop 步骤2 的「自动选择当前可派的智能体」断言。 -->
           <label>派给哪个智能体（可选）</label>
           <select v-model="accDraft.agentId" class="acc-agent-select">
             <option value="">自动选择当前可派的智能体</option>
