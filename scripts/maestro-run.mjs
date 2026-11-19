@@ -790,6 +790,13 @@ async function assertDeviceReachesBackend() {
   const base = process.env.POCKET_API_BASE || 'http://127.0.0.1:8088'
   const port = (base.match(/:(\d+)/) || [])[1]
   if (!port) { console.log('[preflight] 解析不出端口，跳过设备侧检查'); return true }
+  // ★ 2026-11-19：生产域名（https）走设备自己的网络直达 211，adb reverse
+  //   既无意义（443 特权端口非 root reverse 不出去）也不该建 —— reverse 通道
+  //   是本地 dev 后端专用。POCKET_FORCE_REVERSE=1 可强制走老路径。
+  if (base.startsWith('https://') && process.env.POCKET_FORCE_REVERSE !== '1') {
+    console.log('[preflight] https 生产基址：设备直连，跳过 adb reverse 守卫')
+    return true
+  }
   // 设备侧端口 = App 里烧进去的 API 基址端口（通常 18099）
   // 宿主侧端口 = 这个 worktree 的后端实际监听在哪
   // 两者不同时映射是 tcp:<dev> -> tcp:<host>，守卫核对的目标必须跟着变。
@@ -1772,21 +1779,38 @@ if (process.env.POCKET_SKIP_CDP_LOGIN !== '1') {
   // 就会填到错误的框里，而**填错框看起来和填对一样**。
   // 定位不到时把页面上真实的 placeholder 全部打出来，
   // 让报错指向「界面不是登录表单」而不是一句没信息量的「0 个输入框」。
+  //
+  // ★ 2026-11-19 增补：App 原生壳（Capacitor）+ 生产后端（Casdoor SSO）时，
+  //   登录页是**无跳转直连表单**（#sso-direct-username / #sso-direct-password，
+  //   按钮「企业账号登录（Casdoor）」，POST /api/auth/sso/direct-login）——
+  //   legacy「输入用户名/输入密码 + 登录」面在 oidcOnly 模式下整体退役。
+  //   先探测 SSO 表单，命中就走同一条 CDP 填表/提交逻辑（身份链与 web 端一致）。
   const filled = await cdpEval(`(function(){
     var ins = Array.prototype.slice.call(document.querySelectorAll('input'));
+    var set = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+    function put(el, v) { set.call(el, v); el.dispatchEvent(new Event('input', { bubbles: true })); }
+    // —— 新：原生壳 SSO 直连表单（id 优先，placeholder 兜底）——
+    var su = document.getElementById('sso-direct-username')
+      || ins.filter(function (e) { return (e.placeholder || '') === '用户名'; })[0];
+    var sp = document.getElementById('sso-direct-password')
+      || ins.filter(function (e) { return (e.placeholder || '') === 'Casdoor 企业账号密码'; })[0];
+    if (su && sp) {
+      put(su, ${userJson});
+      put(sp, ${passJson});
+      return 'ok sso user=' + su.value.length + '字符 pass=' + sp.value.length + '字符';
+    }
+    // —— 旧：本地凭据面（dev 旁路）——
     function byPh(p) {
       return ins.filter(function (e) { return (e.placeholder || '') === p; })[0];
     }
     var u = byPh('输入用户名'), pw = byPh('输入密码');
     if (!u || !pw) {
-      return '页面上没有「输入用户名/输入密码」；实际有 ' + ins.length + ' 个输入框：'
+      return '页面上没有「输入用户名/输入密码」也没有 SSO 直连表单；实际有 ' + ins.length + ' 个输入框：'
         + (ins.map(function (e) { return e.placeholder || e.type || '?'; }).join(' / ') || '(无)')
         + '；当前路由 ' + location.hash;
     }
     // Vue 的受控 input 必须用原型上的 value setter 再派发 input 事件，
     // 直接写 el.value 不触发 v-model 更新（写进去了但状态没变，提交仍是空）。
-    var set = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-    function put(el, v) { set.call(el, v); el.dispatchEvent(new Event('input', { bubbles: true })); }
     put(u, ${userJson});
     put(pw, ${passJson});
     return 'ok user=' + u.value.length + '字符 pass=' + pw.value.length + '字符';
@@ -1797,11 +1821,16 @@ if (process.env.POCKET_SKIP_CDP_LOGIN !== '1') {
   }
   console.log(`[preflight] 已填登录表单（${filled.slice(3)}，用户 ${userJson}）`)
   // 提交：点文本为「登录」的按钮。用精确相等，避开「指纹登录」/「密码登录」。
+  // ★ 2026-11-19：SSO 直连表单的按钮文案是「企业账号登录（Casdoor）」，先找它。
   const clicked = await cdpEval(`(function(){
     var els = Array.prototype.slice.call(document.querySelectorAll('button, [role=button], input[type=submit]'));
-    var texts = els.map(function (e) { return (e.innerText || e.value || '').trim(); });
-    var hit = els.filter(function (e) { return (e.innerText || e.value || '').trim() === '登录'; })[0];
-    if (!hit) return '页面上没有文本为「登录」的按钮；实际按钮：' + texts.join(' / ');
+    var norm = function (e) { return ((e.innerText || e.value || '')).replace(/\\s+/g, ' ').trim(); };
+    var texts = els.map(norm);
+    // material-symbols 图标 span 的 ligature 文本会混进 innerText（实测
+    // 「shield\\n企业账号登录（Casdoor）」），所以归一化空白后用 includes。
+    var hit = els.filter(function (e) { return norm(e).indexOf('企业账号登录') !== -1; })[0];
+    if (!hit) hit = els.filter(function (e) { return norm(e) === '登录'; })[0];
+    if (!hit) return '页面上没有「企业账号登录」也没有「登录」按钮；实际按钮：' + texts.join(' / ');
     hit.click();
     return 'ok clicked';
   })()`)
