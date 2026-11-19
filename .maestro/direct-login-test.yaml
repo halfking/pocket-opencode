@@ -1,0 +1,35 @@
+appId: com.kaixuan.opencode.pocket
+---
+# Test SSO direct-login form on native app with production backend
+
+- launchApp:
+    clearState: true
+
+- extendedWaitUntil:
+    visible: "AI Work Mess"
+    timeout: 15000
+
+# Should show SSO direct-login form (username + password, no OIDC redirect)
+- assertVisible: "用户名"
+- assertVisible: "企业账号登录"
+
+# Fill credentials  
+- tapOn:
+    id: "sso-direct-username"
+- inputText: "admin"
+
+- tapOn:
+    id: "sso-direct-password"  
+- inputText: "${POCKET_DEV_PASS}"
+
+# Click login button
+- tapOn: "企业账号登录"
+
+# Should show master password dialog
+- extendedWaitUntil:
+    visible: "创建主密码"
+    timeout: 15000
+
+- assertVisible: "创建主密码"
+
+- takeScreenshot: "logs/maestro/direct-login-success"
