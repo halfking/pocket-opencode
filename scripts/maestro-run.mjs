@@ -996,6 +996,13 @@ async function assertDeviceReachesBackend() {
  */
 async function assertAppUsesReverseBase() {
   const hostBase = process.env.POCKET_API_BASE || 'http://127.0.0.1:8088'
+  // ★ 2026-11-19：https 生产基址（如 https://openpocket.itestu.cn）设备直连，
+  //   不走 adb reverse，也不需要改 localStorage.pocket_api_base。
+  //   App 构建期已烧进该 URL，直接用即可。POCKET_FORCE_REVERSE=1 可强制旧路径。
+  if (hostBase.startsWith('https://') && process.env.POCKET_FORCE_REVERSE !== '1') {
+    console.log('[preflight] https 生产基址：App 构建期已配置，设备直连，跳过 reverse base 守卫')
+    return true
+  }
   const hostPort = (hostBase.match(/:(\d+)/) || [])[1]
   if (!hostPort) { console.error('[preflight] POCKET_API_BASE 里解析不出端口，无法推导设备侧基址'); return false }
   const dev = process.env.POCKET_DEVICE_PORT || hostPort
