@@ -1,0 +1,107 @@
+appId: com.kaixuan.opencode.pocket
+---
+# Comprehensive feature test for OpenPocket
+# Tests: Login -> Navigation -> Email -> Notes -> Recording -> Sessions -> ACC
+
+- launchApp:
+    clearState: true
+
+# === LOGIN TEST ===
+- extendedWaitUntil:
+    visible: "AI Work Mess"
+    timeout: 15000
+
+- tapOn: "密码登录"
+- inputText: "admin"
+- tapOn:
+    text: "输入 密码"
+- inputText: "Veritrans&9527"
+- tapOn: "登录"
+
+# Wait for main screen
+- wait: 5000
+
+# If master password dialog appears, set it (optional flow)
+- runFlow:
+    when:
+      visible: "创建主密码"
+    commands:
+      - inputText: "12345678"
+      - tapOn: "下一步"
+      - inputText: "12345678"
+      - tapOn: "完成"
+      - wait: 2000
+
+- takeScreenshot: "01-login-success"
+
+# === NAVIGATION TEST ===
+- extendedWaitUntil:
+    visible: "首页"
+    timeout: 10000
+
+- tapOn: "笔记"
+- wait: 2000
+- takeScreenshot: "02-notes-tab"
+
+- tapOn: "消息"
+- wait: 2000
+- takeScreenshot: "03-messages-tab"
+
+- tapOn: "更多"
+- wait: 2000
+- takeScreenshot: "04-more-tab"
+
+# === EMAIL TEST (from More tab) ===
+- tapOn: "邮箱"
+- wait: 3000
+- takeScreenshot: "05-email-view"
+
+# Go back to More
+- tapOn:
+    point: "5%,5%"
+- wait: 1000
+
+# === NOTES TEST ===
+- tapOn: "首页"
+- wait: 1000
+- tapOn: "笔记"
+- wait: 2000
+
+# Try to create a new note
+- tapOn: "+"
+- wait: 2000
+- takeScreenshot: "06-note-create"
+
+# === RECORDING TEST ===
+- tapOn: "开始录音"
+- wait: 5000
+- tapOn: "停止录音"
+- wait: 3000
+- takeScreenshot: "07-recording-complete"
+
+# Go back
+- tapOn:
+    point: "5%,5%"
+- wait: 1000
+
+# === SESSION/AI TEST ===
+- tapOn: "首页"
+- wait: 2000
+- takeScreenshot: "08-home-sessions"
+
+# === ACC TEST (from More tab) ===
+- tapOn: "更多"
+- wait: 2000
+- scroll:
+    direction: DOWN
+- takeScreenshot: "09-more-expanded"
+
+# Look for ACC entry
+- tapOn: "任务看板"
+- wait: 3000
+- takeScreenshot: "10-acc-view"
+
+# Final screenshot
+- tapOn: "首页"
+- wait: 2000
+- takeScreenshot: "11-final-home"
