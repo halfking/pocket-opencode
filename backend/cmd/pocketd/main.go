@@ -781,6 +781,15 @@ func main() {
 	} else {
 		log.Println("Companion client: not configured (set POCKET_COMPANION_URL to enable)")
 	}
+	// 按 runtime 的 companion 映射（POCKET_COMPANION_URLS/SECRETS）：
+	// 派单会话的正文在执行 runtime 的 companion 里（2026-11-20 实测：
+	// runtime-211-docker 的会话在 companion-211 容器），不配映射的话
+	// dispatch 形态的会话进不了 session-bundle 的 current 段（PLAN.md §1
+	// 「ACC 行能被 companion 打开 → 当前」）。
+	if rtClients := server.ParseCompanionRuntimeMap(cfg.CompanionRuntimeURLs, cfg.CompanionRuntimeSecrets); len(rtClients) > 0 {
+		srv.SetCompanionClients(rtClients)
+		log.Printf("Companion runtime map: %d entr(y/ies) (%s)", len(rtClients), cfg.CompanionRuntimeURLs)
+	}
 	// ACC Runtime Control 客户端（/api/v2/runtime/*、/api/v2/approvals）。
 	//
 	// 之前这里**根本没有装配**：accruntime 包存在、SetACCRuntime 存在、

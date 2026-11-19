@@ -1,12 +1,15 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"os"
 	"strings"
 
 	"github.com/halfking/pocket-opencode/backend/internal/mcp"
+	"github.com/halfking/pocket-opencode/backend/internal/task"
 )
 
 // sessionBundleRow is one session on the task-detail page.
@@ -58,17 +61,28 @@ func (s *Server) handleTaskSessionBundle(w http.ResponseWriter, r *http.Request,
 
 	seen := map[string]struct{}{}
 	if s.mcpClient != nil {
-		rows, err := s.mcpClient.ListSessions(r.Context(), taskID, 100)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadGateway)
-			return
-		}
+		rows := s.accSessionsForTask(r.Context(), s.accTaskCandidates(r, taskID))
+		probes := 0
 		for _, row := range rows {
 			item := accSessionToRow(row)
 			if item.AgentSession != "" {
 				seen[item.AgentSession] = struct{}{}
 			}
 			seen[item.ID] = struct{}{}
+			// PLAN.md §1 的分层语义：ACC 行能被 companion 打开（native 文件
+			// 或内存 SessionState）→ **当前**；否则 gw_session_id → 网关。
+			// fileExistsRemapped 只覆盖 pocketd 本机文件这一种形态；派单会话
+			// 的正文在执行 runtime 的 companion 里（2026-11-20 实测），要问
+			// companion 而不是 stat 本机路径。探测有上限（会话多的大任务不
+			// 因此变慢），且只对已判成 historical 的行补探。
+			if item.Lane != "current" && item.AgentSession != "" && probes < accSessionProbeCap {
+				if c := s.companionForSessionRow(row); c != nil {
+					probes++
+					if _, err := c.GetSession(item.AgentKind, item.AgentSession); err == nil {
+						item.Lane = "current"
+					}
+				}
+			}
 			if item.Lane == "current" {
 				out.Current = append(out.Current, item)
 			} else {
@@ -192,6 +206,11 @@ func remapDiskHome(p string) string {
 	return ""
 }
 
+// accSessionProbeCap 是一次 bundle 请求里 companion 打开性探测的上限。
+// 探测是每行一个 GET；大任务（会话几十条）不能被它拖慢 —— 超出上限的行
+// 维持 fileExists/gwSession 的判定（PLAN.md 语义的近似），首屏不受影响。
+const accSessionProbeCap = 20
+
 func firstNonEmpty(vals ...string) string {
 	for _, v := range vals {
 		if strings.TrimSpace(v) != "" {
@@ -199,4 +218,108 @@ func firstNonEmpty(vals ...string) string {
 		}
 	}
 	return ""
+}
+
+// accTaskCandidates 计算「这个本地任务在 ACC 侧可能叫什么」：
+//  1. 本地 id 本身 —— companion 自建档的任务（acc_link）本地 id 就是
+//     ACC canonical id（实测 0ced2eda… 任务）；
+//  2. 绑定里的 acc_task_id —— pocketd 委派链路建的任务本地 id 是
+//     task-<hex>（2026-11-20 实测 task-ed77f89b → ACC 43cb68b8），不解析
+//     绑定的话 ACC 会话永远查不到（bundle 三段全空的另一半根因）。
+func (s *Server) accTaskCandidates(r *http.Request, taskID string) []string {
+	candidates := []string{taskID}
+	if s.taskStore == nil {
+		return candidates
+	}
+	t, err := s.taskStore.GetTaskScoped(r.Context(), taskID, s.workspaceIDFromRequest(r))
+	if err != nil || t == nil {
+		return candidates
+	}
+	if b := task.ACCBinding(t); b.TaskID != "" && b.TaskID != taskID {
+		candidates = append(candidates, b.TaskID)
+	}
+	return candidates
+}
+
+// accSessionsForTask 取「挂在任一候选 ACC 任务 id 上的全部会话行」。
+//
+// ★ 2026-11-20 实测（211 生产，PhaseB-dispatch-probe 派单）：
+// ACC 的 dispatch frame 里 task_id 本身带 **runtime 前缀**
+// （companion 收到的就是 `runtime-211-docker:43cb68b8…`），companion 照实
+// 上报 ⇒ ACC ledger 里派单会话的 task_id 是「runtime_id:canonical_id」；
+// 而本地 companion 自建任务的会话（acc_link 链路）用**裸** canonical id
+// 上报。只查裸 id 会漏掉全部派单会话。
+//
+// 三级取数（每个候选 id）：
+//  1. 裸 id —— acc_link 链路（companion 自建档）的形态；
+//  2. `<配置的派单 runtime>:id` —— dispatch 链路（ACC 派发时加前缀）；
+//  3. 全部为空时，拉全量（≤200）按 `":" + id` 后缀匹配兜底 —— 覆盖
+//     handoff 到其它 runtime 的会话（那些 runtime 不在配置里）。
+//
+// 合并按行 id 去重，保持 ACC 返回顺序。
+func (s *Server) accSessionsForTask(ctx context.Context, candidates []string) []mcp.AccSession {
+	if s.mcpClient == nil || len(candidates) == 0 {
+		return nil
+	}
+	fetch := func(id string) []mcp.AccSession {
+		rows, err := s.mcpClient.ListSessions(ctx, id, 100)
+		if err != nil {
+			log.Printf("[session-bundle] acc_list_sessions(%q) failed: %v", id, err)
+			return nil
+		}
+		return rows
+	}
+	byID := map[string]struct{}{}
+	var out []mcp.AccSession
+	merge := func(rows []mcp.AccSession) {
+		for _, row := range rows {
+			if row.ID == "" {
+				continue
+			}
+			if _, ok := byID[row.ID]; ok {
+				continue
+			}
+			byID[row.ID] = struct{}{}
+			out = append(out, row)
+		}
+	}
+	suffixes := make([]string, 0, len(candidates))
+	for _, id := range candidates {
+		if strings.TrimSpace(id) == "" {
+			continue
+		}
+		merge(fetch(id))
+		if rt := strings.TrimSpace(s.cfg.ACCDispatchRuntimeID); rt != "" {
+			merge(fetch(rt + ":" + id))
+		}
+		suffixes = append(suffixes, ":"+id)
+	}
+	if len(out) == 0 {
+		all, err := s.mcpClient.ListAllSessions(ctx, 200)
+		if err != nil {
+			log.Printf("[session-bundle] acc_list_sessions(all) failed: %v", err)
+			return out
+		}
+		for _, row := range all {
+			if row.ID == "" {
+				continue
+			}
+			matched := false
+			for _, suf := range suffixes {
+				if strings.HasSuffix(row.TaskID, suf) {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				continue
+			}
+			if _, ok := byID[row.ID]; ok {
+				continue
+			}
+			byID[row.ID] = struct{}{}
+			out = append(out, row)
+		}
+	}
+	return out
 }

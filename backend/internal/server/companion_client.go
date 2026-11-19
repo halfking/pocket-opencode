@@ -8,10 +8,12 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/halfking/pocket-opencode/backend/internal/mcp"
 	"github.com/halfking/pocket-opencode/backend/internal/outbound"
 )
 
@@ -56,6 +58,107 @@ func (s *Server) SetCompanionClient(c *CompanionClient) {
 	if s != nil && c != nil {
 		s.companion = c
 	}
+}
+
+// ParseCompanionRuntimeMap 解析 POCKET_COMPANION_URLS / POCKET_COMPANION_SECRETS
+// （逗号分隔的 `runtime_id=value` 对）为 per-runtime 客户端。
+// 缺 secret 的条目照样建（companion 未开鉴权时可用）；URL/键为空的条目跳过。
+func ParseCompanionRuntimeMap(urlsSpec, secretsSpec string) map[string]*CompanionClient {
+	urls := parseKVSpec(urlsSpec)
+	if len(urls) == 0 {
+		return nil
+	}
+	secrets := parseKVSpec(secretsSpec)
+	out := map[string]*CompanionClient{}
+	for rt, u := range urls {
+		c := NewCompanionClient(u, secrets[rt])
+		if c != nil {
+			out[rt] = c
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// parseKVSpec 把 "k1=v1,k2=v2" 拆成 map；键或值为空的条目跳过。
+func parseKVSpec(spec string) map[string]string {
+	out := map[string]string{}
+	for _, part := range strings.Split(spec, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		k, v, ok := strings.Cut(part, "=")
+		if !ok || strings.TrimSpace(k) == "" || strings.TrimSpace(v) == "" {
+			continue
+		}
+		out[strings.TrimSpace(k)] = strings.TrimSpace(v)
+	}
+	return out
+}
+
+// SetCompanionClients 注入**按 runtime 的 companion 映射**（POCKET_COMPANION_URLS）。
+// 派单会话的正文在执行 runtime 的 companion 里（2026-11-20 实测：runtime-
+// 211-docker 的会话在 companion-211 容器），本机 companion 只有 acc_link
+// 自建档的会话。映射让会话正文按 runtime 解析；nil/空映射 = 未配置，
+// 回落默认 companion（原行为）。
+func (s *Server) SetCompanionClients(byRuntime map[string]*CompanionClient) {
+	if s != nil && len(byRuntime) > 0 {
+		if s.companionByRuntime == nil {
+			s.companionByRuntime = map[string]*CompanionClient{}
+		}
+		for k, v := range byRuntime {
+			if k != "" && v != nil {
+				s.companionByRuntime[k] = v
+			}
+		}
+	}
+}
+
+// companionForSessionRow 解析「这条 ACC 会话行的正文在哪个 companion」。
+//
+// dispatch 链路的行 task_id 带 runtime 前缀（ACC 派发时给 task_id 加
+// runtime_id:，companion 照实上报 —— 2026-11-20 实测
+// `runtime-211-docker:43cb68b8…`）；acc_link 行（companion 自建档）用裸
+// canonical id → 默认 companion（本机）。前缀 runtime 在映射里找不到时
+// 回落默认 companion —— 宁可试错也不静默丢行。
+func (s *Server) companionForSessionRow(row mcp.AccSession) *CompanionClient {
+	if s == nil {
+		return nil
+	}
+	if i := strings.IndexByte(row.TaskID, ':'); i > 0 && len(s.companionByRuntime) > 0 {
+		if c, ok := s.companionByRuntime[row.TaskID[:i]]; ok && c != nil {
+			return c
+		}
+	}
+	return s.companion
+}
+
+// companionCandidates 返回所有可用的 companion 客户端（默认在前）。
+// transcript/摘要/标题这类「只有 session id、没有行上下文」的端点按序
+// 试错 —— 会话 id 只在持有它的 companion 上命中。
+func (s *Server) companionCandidates() []*CompanionClient {
+	if s == nil {
+		return nil
+	}
+	var out []*CompanionClient
+	if s.companion != nil {
+		out = append(out, s.companion)
+	}
+	// map 迭代序不稳定 —— 按 key 排序保证试错顺序确定（可复现行为）。
+	keys := make([]string, 0, len(s.companionByRuntime))
+	for k := range s.companionByRuntime {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		if c := s.companionByRuntime[k]; c != nil {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 type companionSession struct {

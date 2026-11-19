@@ -91,6 +91,10 @@ type Server struct {
 	calendarService        *calendar.Service
 	userSettings           usersetting.Repository
 	companion              *CompanionClient
+	// 按 runtime 的 companion 映射（POCKET_COMPANION_URLS）：派单会话的
+	// 正文在执行 runtime 的 companion 里，见 companion_client.go 的
+	// SetCompanionClients / companionForSessionRow。
+	companionByRuntime     map[string]*CompanionClient
 	registry               *registry.Registry
 	configAdapter          adapter.OpenCodeConfigAdapter
 	wsHub                  *ws.Hub
@@ -167,6 +171,11 @@ type Server struct {
 	// 非 nil 时，绑定到 ACC dispatch 的任务其移动端权限回复必须先取得 ACC
 	// 裁决，失败一律 fail-closed deny（见 mobile_approval_handler.go）。
 	accRuntime *accruntime.Client
+
+	// ACC agents 清单的进程内缓存（见 acc_ecosystem.go 的 accAgentsCache）。
+	// 指针独立放 Server 上、实现放 acc_ecosystem.go：字段跟着装配走，语义
+	// 跟着生态读取面走。
+	accAgentsCache *accAgentsCache
 
 	// Auth
 	userStore        *auth.UserStore

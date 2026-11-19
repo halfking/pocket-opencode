@@ -12,9 +12,10 @@ func (s *Server) handleTaskSessionDetail(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	title := sessionID
-	if s.companion != nil {
-		if sess, err := s.companion.GetSession("", sessionID); err == nil && sess.Title != "" {
+	for _, c := range s.companionCandidates() {
+		if sess, err := c.GetSession("", sessionID); err == nil && sess.Title != "" {
 			title = sess.Title
+			break
 		}
 	}
 	writeSessionJSON(w, map[string]any{
@@ -28,7 +29,7 @@ func (s *Server) handleTaskSessionTranscript(w http.ResponseWriter, r *http.Requ
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if s.companion == nil {
+	if len(s.companionCandidates()) == 0 {
 		http.Error(w, "companion not configured", http.StatusServiceUnavailable)
 		return
 	}
@@ -39,9 +40,21 @@ func (s *Server) handleTaskSessionTranscript(w http.ResponseWriter, r *http.Requ
 	// 行为与旧契约完全一致（全量、companion 默认 limit）。
 	afterSeq, _ := strconv.Atoi(r.URL.Query().Get("after_seq"))
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	sess, msgs, err := s.companion.GetTranscriptPage(kind, sessionID, types, afterSeq, limit)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadGateway)
+	// 会话 id 只在持有它的 companion 上命中（dispatch 会话在执行 runtime 的
+	// companion，本机 companion 只有 acc_link 自建档）—— 按序试错。
+	var sess any
+	var msgs any
+	var lastErr error
+	for _, c := range s.companionCandidates() {
+		gotSess, gotMsgs, err := c.GetTranscriptPage(kind, sessionID, types, afterSeq, limit)
+		if err == nil {
+			sess, msgs = gotSess, gotMsgs
+			break
+		}
+		lastErr = err
+	}
+	if lastErr != nil && sess == nil {
+		http.Error(w, lastErr.Error(), http.StatusBadGateway)
 		return
 	}
 	_ = taskID
@@ -54,19 +67,23 @@ func (s *Server) handleExtractTitle(w http.ResponseWriter, r *http.Request, task
 		return
 	}
 	title := sessionID
-	if s.companion != nil {
-		_, msgs, err := s.companion.GetTranscript("", sessionID, "user")
-		if err == nil {
-			for _, m := range msgs {
-				if t := strings.TrimSpace(m.Text); t != "" {
-					runes := []rune(t)
-					if len(runes) > 80 {
-						t = string(runes[:80])
-					}
-					title = t
-					break
+	for _, c := range s.companionCandidates() {
+		_, msgs, err := c.GetTranscript("", sessionID, "user")
+		if err != nil {
+			continue
+		}
+		for _, m := range msgs {
+			if t := strings.TrimSpace(m.Text); t != "" {
+				runes := []rune(t)
+				if len(runes) > 80 {
+					t = string(runes[:80])
 				}
+				title = t
+				break
 			}
+		}
+		if title != sessionID {
+			break
 		}
 	}
 	_ = taskID
@@ -79,29 +96,31 @@ func (s *Server) handleSessionSummarize(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	summary := ""
-	if s.companion != nil {
-		_, msgs, err := s.companion.GetTranscript("", sessionID, "user,assistant")
-		if err == nil {
-			var b strings.Builder
-			for _, m := range msgs {
-				if m.Text == "" {
-					continue
-				}
-				if b.Len() > 0 {
-					b.WriteByte('\n')
-				}
-				b.WriteString(m.Type)
-				b.WriteString(": ")
-				b.WriteString(m.Text)
-				if b.Len() > 1500 {
-					break
-				}
+	for _, c := range s.companionCandidates() {
+		_, msgs, err := c.GetTranscript("", sessionID, "user,assistant")
+		if err != nil {
+			continue
+		}
+		var b strings.Builder
+		for _, m := range msgs {
+			if m.Text == "" {
+				continue
 			}
-			summary = b.String()
-			if len([]rune(summary)) > 400 {
-				summary = string([]rune(summary)[:400]) + "…"
+			if b.Len() > 0 {
+				b.WriteByte('\n')
+			}
+			b.WriteString(m.Type)
+			b.WriteString(": ")
+			b.WriteString(m.Text)
+			if b.Len() > 1500 {
+				break
 			}
 		}
+		summary = b.String()
+		if len([]rune(summary)) > 400 {
+			summary = string([]rune(summary)[:400]) + "…"
+		}
+		break
 	}
 	if summary == "" {
 		summary = "暂无摘要"

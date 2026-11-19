@@ -237,6 +237,21 @@ type Config struct {
 	DiskHome              string // POCKET_DISK_HOME：agent 数据根（容器内挂载的宿主 home）；空则用进程 HOME
 	CompanionURL          string // POCKET_COMPANION_URL：本机 agent-companion
 	CompanionSecret       string // POCKET_COMPANION_SECRET：companion inbound API secret
+	// CompanionRuntimeURLs / CompanionRuntimeSecrets（POCKET_COMPANION_URLS /
+	// POCKET_COMPANION_SECRETS）：**按 runtime 的 companion 映射**。
+	//
+	// ★ 2026-11-20 实测（211 生产）：派单会话的正文在**执行 runtime 的
+	// companion** 里（runtime-211-docker 的会话在 companion-211 容器），
+	// 而本机 companion（POCKET_COMPANION_URL，Mac）只有 acc_link 自建档的
+	// 会话。PLAN.md（docs/2026-09-08-task-session-detail）§1 的分层语义：
+	// 「ACC 行能被 companion 打开 → 当前」—— 不认识执行 runtime 的
+	// companion，dispatch 形态的会话就永远进不了 current 段。
+	//
+	// 形态：逗号分隔的 `runtime_id=value` 对，如
+	//   POCKET_COMPANION_URLS="runtime-211-docker=http://companion-211:18095"
+	//   POCKET_COMPANION_SECRETS="runtime-211-docker=<inbound api secret>"
+	CompanionRuntimeURLs    string
+	CompanionRuntimeSecrets string
 
 	// —— ACC Runtime Control（/api/v2/*）——
 	// 该面**只认 HS256 签名的服务 JWT**：静态 Bearer 会被 401 拒掉
@@ -467,6 +482,8 @@ func Load() Config {
 		DiskHome:              getEnv("POCKET_DISK_HOME", ""),
 		CompanionURL:          getEnv("POCKET_COMPANION_URL", ""),
 		CompanionSecret:       getEnv("POCKET_COMPANION_SECRET", ""),
+		CompanionRuntimeURLs:    getEnv("POCKET_COMPANION_URLS", ""),
+		CompanionRuntimeSecrets: getEnv("POCKET_COMPANION_SECRETS", ""),
 		ACCRuntimeURL:         getEnv("POCKET_ACC_RUNTIME_URL", ""),
 		ACCRuntimeSecret:      getEnv("POCKET_ACC_CONTROL_SECRET", ""),
 		ACCRuntimeTenantID:    getEnv("POCKET_ACC_RUNTIME_TENANT_ID", ""),
