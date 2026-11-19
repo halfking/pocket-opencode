@@ -486,13 +486,25 @@ onMounted(async () => {
 
   // Phase 1: 探测 SSO 是否启用。走专用 /api/auth/sso/status（零副作用）；
   // 404/网络错误时静默关闭按钮。mode=oidc 时本地凭据面整体退役。
+  // ★ 2026-11-19 增补：生产环境（https）+ Capacitor 时，fetch 失败回退到
+  //   假设 SSO 已启用（openpocket.itestu.cn 部署时后端已切 Casdoor-only）。
   try {
     const status = await fetchSsoStatusDetailed()
     ssoEnabled.value = status !== null
     ssoMode.value = status?.mode ?? ''
-  } catch {
-    ssoEnabled.value = false
-    ssoMode.value = ''
+    console.log('[LoginView] SSO status loaded:', status)
+  } catch (e) {
+    console.error('[LoginView] Failed to fetch SSO status:', e)
+    // 生产环境 fallback：https 基址 + Capacitor 原生壳，假设 SSO 启用
+    const apiBase = import.meta.env.VITE_API_BASE || ''
+    if (isNativeRuntime && apiBase.startsWith('https://')) {
+      console.log('[LoginView] Production fallback: assuming SSO mode=oidc')
+      ssoEnabled.value = true
+      ssoMode.value = 'oidc'
+    } else {
+      ssoEnabled.value = false
+      ssoMode.value = ''
+    }
   }
 
   if (auth.isAuthenticated && !isLobsterReady()) {
