@@ -411,6 +411,46 @@ export const api = {
     }
   },
 
+  /**
+   * 移效（移交）：POST /api/tasks/{id}/transfer。
+   *
+   * 把 ACC 绑定任务的派单**转派**到另一个 runtime/agent：后端组合事务
+   * （取消旧 dispatch → 同一 ACC 任务重派 → 换绑 → activity 记录）。
+   * runtime_id / agent_id 缺省时后端用配置的派单目标。
+   *
+   * 失败时带出状态码：502 acc_transfer_unavailable（fail-closed，旧派单
+   * 没取消成）与 404/409 是不同的故障，不能混成一个「失败」。
+   */
+  async transferTask(
+    id: string,
+    runtimeId?: string,
+    agentId?: string,
+    reason?: string,
+  ): Promise<{ taskId: string; accTaskId?: string; dispatchId?: string; runId?: string; runtimeId?: string; agentId?: string }> {
+    const res = await authFetch(`${resolveApiBase()}/api/tasks/${id}/transfer`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        runtime_id: runtimeId || undefined,
+        agent_id: agentId || undefined,
+        reason: reason || "user_transfer",
+      }),
+    })
+    if (!res.ok) {
+      const text = await res.text().catch(() => "")
+      throw new Error(`transferTask failed: ${res.status} ${text.slice(0, 200)}`)
+    }
+    const data = await res.json()
+    return {
+      taskId: data.task_id ?? id,
+      accTaskId: data.acc_task_id,
+      dispatchId: data.dispatch_id,
+      runId: data.run_id,
+      runtimeId: data.runtime_id,
+      agentId: data.agent_id,
+    }
+  },
+
   async getTaskSessions(taskId: string): Promise<SessionLink[]> {
     const res = await authFetch(`${resolveApiBase()}/api/tasks/${taskId}/sessions`)
     const data = await res.json()

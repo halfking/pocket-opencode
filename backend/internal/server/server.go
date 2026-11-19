@@ -2029,6 +2029,13 @@ func (s *Server) handleTaskOperations(w http.ResponseWriter, r *http.Request) {
 			s.handleCancelTask(w, r, parts[0])
 			return
 		}
+		// 移效：同一 ACC 任务转派到另一个 runtime/agent（组合事务，
+		// 见 task_transfer.go）。放在 cancel 旁边 —— 两者共享「ACC 是
+		// 派单唯一权威」的门禁哲学。
+		if r.Method == http.MethodPost && len(parts) == 2 && parts[1] == "transfer" {
+			s.handleTransferTask(w, r, parts[0])
+			return
+		}
 		if r.Method == http.MethodPost && len(parts) == 2 && parts[1] == "accept" {
 			s.handleAcceptTask(w, r, parts[0])
 			return

@@ -617,6 +617,14 @@
           :disabled="stoppingTaskId === contextTask?.id"
           @click="ctxStopTask"
         >⏹ 停止任务</button>
+        <!-- 移效（移交）：ACC 绑定任务转派到另一个 runtime/agent。
+             组合事务在后端（task_transfer.go）；这里只收集目标。 -->
+        <button
+          v-if="contextTask?.status === 'active'"
+          class="ctx-btn"
+          :disabled="transferringTaskId === contextTask?.id"
+          @click="ctxOpenTransfer"
+        >🔀 移交到其他智能体</button>
         <button class="ctx-btn" @click="ctxResume">▶ 继续跟进</button>
         <button
           v-if="contextTask?.status !== 'active'"
@@ -634,6 +642,40 @@
           @click="ctxUpdateStatus('completed')"
         >✅ 完成</button>
         <button class="ctx-btn danger" @click="ctxDelete">🗑 删除</button>
+      </div>
+    </BottomSheet>
+
+    <!-- 移效（移交）目标收集。提交后后端组合事务：取消旧派单 → 同一 ACC
+         任务重派 → 换绑 → activity 记录；失败 fail-closed（502）。 -->
+    <BottomSheet
+      :model-value="showTransferSheet && !!transferTaskRef"
+      :title="`移交「${transferTaskRef?.title ?? ''}」`"
+      close-on-overlay
+      @update:model-value="(v) => { if (!v) closeTransferSheet() }"
+    >
+      <div class="transfer-form">
+        <label class="transfer-field">
+          <span>目标 runtime</span>
+          <input
+            v-model="transferRuntimeId"
+            type="text"
+            placeholder="如 runtime-211-docker（留空 = 系统默认）"
+          />
+        </label>
+        <label class="transfer-field">
+          <span>目标 agent</span>
+          <input
+            v-model="transferAgentId"
+            type="text"
+            placeholder="如 opencode（留空 = 系统默认）"
+          />
+        </label>
+        <p class="transfer-hint">移交会取消旧派单并重新派发同一任务；进行中的执行会被终止。</p>
+        <button
+          class="ctx-btn primary"
+          :disabled="transferringTaskId === transferTaskRef?.id || !transferRuntimeId.trim()"
+          @click="submitTransfer"
+        >{{ transferringTaskId === transferTaskRef?.id ? '移交中…' : '确认移交' }}</button>
       </div>
     </BottomSheet>
 
@@ -1876,6 +1918,52 @@ function ctxStopTask() {
   void stopTask(task)
 }
 
+/**
+ * 移效（移交）：ACC 绑定任务转派到另一个 runtime/agent。
+ * 见 task_transfer.go —— 后端组合事务（取消旧派单 → 同一 ACC 任务重派 →
+ * 换绑 → activity 记录），前端只收集目标。502 = fail-closed（旧派单没取消
+ * 成），与本地 404 是不同的故障。
+ */
+const showTransferSheet = ref(false)
+const transferTaskRef = ref<Task | null>(null)
+const transferRuntimeId = ref('runtime-211-docker')
+const transferAgentId = ref('opencode')
+const transferringTaskId = ref<string | null>(null)
+
+function ctxOpenTransfer() {
+  const task = contextTask.value
+  if (!task) return
+  closeContextMenu()
+  transferTaskRef.value = task
+  transferRuntimeId.value = 'runtime-211-docker'
+  transferAgentId.value = 'opencode'
+  showTransferSheet.value = true
+}
+
+function closeTransferSheet() {
+  showTransferSheet.value = false
+  transferTaskRef.value = null
+}
+
+async function submitTransfer(): Promise<void> {
+  const task = transferTaskRef.value
+  if (!task || transferringTaskId.value === task.id) return
+  const runtimeId = transferRuntimeId.value.trim()
+  if (!runtimeId) return
+  transferringTaskId.value = task.id
+  try {
+    const res = await api.transferTask(task.id, runtimeId, transferAgentId.value.trim() || undefined, 'user_transfer')
+    toast.success(`已移交到 ${res.runtimeId || runtimeId}/${res.agentId || transferAgentId.value || '默认'}`)
+    closeTransferSheet()
+    void handleRefresh()
+  } catch (e: any) {
+    console.error('Failed to transfer task:', e)
+    toast.error(apiError(e, 'errors.operateFailed'))
+  } finally {
+    transferringTaskId.value = null
+  }
+}
+
 /** 继续跟进：跳到任务最近的关联会话并预填「继续」草稿（可编辑再发送）。 */
 async function ctxResume() {
   const task = contextTask.value
@@ -3042,6 +3130,39 @@ function timeAgo(dateStr?: string): string {
 .ctx-btn.danger {
   color: var(--danger);
   border-color: var(--danger-bg);
+}
+/* 移效（移交）表单：BottomSheet 里的两个目标输入 + 提交。 */
+.transfer-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-2) 0;
+}
+.transfer-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+.transfer-field input {
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-base);
+  color: var(--text-primary);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.transfer-hint {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+}
+.ctx-btn.primary {
+  background: var(--primary-bg, var(--bg-elevated));
+  color: var(--text-primary);
+  text-align: center;
 }
 /* 只给读屏/自动化看的文字节点。见模板里那段注释：aria-label 在
    aria-pressed 按钮上会被 Android 桥接丢掉，必须有一个真实的文字子节点。

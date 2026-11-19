@@ -58,13 +58,19 @@ const (
 	// can label it correctly and a future "who added this" audit does not have
 	// to string-match a message.
 	EventChildAdded = "child_added"
+	// EventTransferred records a dispatch transfer (POST /api/tasks/{id}/transfer):
+	// the same ACC task re-dispatched to another runtime/agent. Silent in the
+	// notification mapping on purpose — the operator who initiated it sees the
+	// activity entry, and a per-participant ping for a routing change is noise.
+	EventTransferred = "transferred"
 )
 
 // ValidEventType reports whether t is an accepted event type.
 func ValidEventType(t string) bool {
 	switch t {
 	case EventCreated, EventAssigned, EventStatusChanged, EventDueChanged,
-		EventComment, EventCompleted, EventReminded, EventChildAdded:
+		EventComment, EventCompleted, EventReminded, EventChildAdded,
+		EventTransferred:
 		return true
 	default:
 		return false
