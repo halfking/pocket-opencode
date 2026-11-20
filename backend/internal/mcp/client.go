@@ -1061,6 +1061,10 @@ type AccRunEvent struct {
 
 // ListRunEvents reads canonical ACC orchestration history. The endpoint is
 // intentionally HTTP, because ACC's durable event stream is not an MCP tool.
+// accRunEventsMaxBytes 是 run 事件流（成功载荷）的专用上限。通用 JSON 档
+// sizedread.MaxJSONBodyBytes（8MiB）不够：长驻 run 的事件流实测已 10MB+。
+const accRunEventsMaxBytes int64 = 64 << 20
+
 func (c *Client) ListRunEvents(ctx context.Context, runID string, after uint64) ([]AccRunEvent, error) {
 	if c == nil || strings.TrimSpace(c.baseURL) == "" {
 		return nil, fmt.Errorf("ACC event client not configured")
@@ -1087,24 +1091,27 @@ func (c *Client) ListRunEvents(ctx context.Context, runID string, after uint64) 
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		return nil, fmt.Errorf("ACC events HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
 	// ★ 2026-11-20 实测（211 生产）：长驻 run（run_144dc29f 自 2026-10-13
-	// 存活至今）的事件流已 3795 条 / 10.2MB —— 旧上限 1MB 把响应**截断**，
-	// JSON 解析必然失败 ⇒ resolveACCDispatch 解不出 holder ⇒ 真机「停止
-	// 任务」永远 fail-closed 502（取消到不了 ACC）。放开到 64MB 并在截断
-	// 时显式报错（宁可失败也不要拿半截 JSON 静默出错）。
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
+	// 存活至今）的事件流已 3800+ 条 / 10.4MB —— 通用 JSON 档
+	// sizedread.MaxJSONBodyBytes（8MiB）把成功响应掐死 ⇒ Decode 报错 ⇒
+	// resolveACCDispatch 解不出 holder ⇒ 真机「停止任务」永远 fail-closed
+	// 502（取消到不了 ACC）。事件流是本客户端唯一已知超 8MiB 的载荷，
+	// 这里单独放开到 64MB，并在超限时显式报错（宁可失败也不要拿半截
+	// JSON 静默出错）。根治（按需 tail/分页）待 ACC 提供尾部查询参数。
+	raw, err := io.ReadAll(sizedread.Limit(resp.Body, accRunEventsMaxBytes))
 	if err != nil {
 		return nil, fmt.Errorf("ACC events read: %w", err)
 	}
-	if len(raw) >= 64<<20 {
-		return nil, fmt.Errorf("ACC events response exceeds 64MB cap (run %s)", runID)
-	}
-		return nil, fmt.Errorf("ACC events HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+	if int64(len(raw)) >= accRunEventsMaxBytes {
+		return nil, fmt.Errorf("ACC events response exceeds %dMB cap (run %s)", accRunEventsMaxBytes>>20, runID)
 	}
 	var envelope struct {
 		Events []AccRunEvent `json:"events"`
 	}
-	if err := json.NewDecoder(sizedread.Limit(resp.Body, sizedread.MaxJSONBodyBytes)).Decode(&envelope); err != nil {
+	if err := json.Unmarshal(raw, &envelope); err != nil {
 		return nil, fmt.Errorf("ACC events decode: %w", err)
 	}
 	return envelope.Events, nil

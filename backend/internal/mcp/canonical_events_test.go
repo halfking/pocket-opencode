@@ -43,12 +43,15 @@ func TestListRunEventsUsesMCPRootAndCursor(t *testing.T) {
 	}
 }
 
-// ★ 2026-11-20（Phase D 前置修复验收）：长驻 run 的事件流已 10.2MB，旧 1MB
-// LimitReader 把响应截断 ⇒ JSON 解析失败 ⇒ resolveACCDispatch 解不出 holder
-// ⇒ 真机「停止任务」永远 fail-closed 502。这两个判据锁住 64MB 新上限行为：
-// 正常回读要全量过，超限时**显式报错**而不是拿半截 JSON 静默出错。
+// ★ 2026-11-20（Phase D 前置修复验收）：长驻 run 的事件流实测 10.4MB——
+// 通用 JSON 档 sizedread.MaxJSONBodyBytes（8MiB）把成功响应掐死 ⇒
+// resolveACCDispatch 解不出 holder ⇒ 真机「停止任务」永远 fail-closed 502。
+// 判据锁住 64MB 事件流专用上限：10MB（>8MiB 旧限）必须全量过，
+// 超 64MB 时显式报错而不是静默截断。
+// ⚠ 第一版修复把上限改在了 >=400 错误分支、单测 payload 只用 3MB——
+// 假绿。两个坑都被这一版修掉：payload 必须 >8MiB 才能触达真限制。
 func TestListRunEventsLargeResponseOK(t *testing.T) {
-	big := make([]byte, 3<<20) // 3MB —— 旧 1MB 上限必截断，新 64MB 上限畅通
+	big := make([]byte, 10<<20) // 10MB —— >8MiB 通用档（旧限必失败），<64MB 新档畅通
 	for i := range big {
 		big[i] = 'x'
 	}
