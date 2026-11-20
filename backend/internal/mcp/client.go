@@ -1087,7 +1087,18 @@ func (c *Client) ListRunEvents(ctx context.Context, runID string, after uint64) 
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
-		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	// ★ 2026-11-20 实测（211 生产）：长驻 run（run_144dc29f 自 2026-10-13
+	// 存活至今）的事件流已 3795 条 / 10.2MB —— 旧上限 1MB 把响应**截断**，
+	// JSON 解析必然失败 ⇒ resolveACCDispatch 解不出 holder ⇒ 真机「停止
+	// 任务」永远 fail-closed 502（取消到不了 ACC）。放开到 64MB 并在截断
+	// 时显式报错（宁可失败也不要拿半截 JSON 静默出错）。
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
+	if err != nil {
+		return nil, fmt.Errorf("ACC events read: %w", err)
+	}
+	if len(raw) >= 64<<20 {
+		return nil, fmt.Errorf("ACC events response exceeds 64MB cap (run %s)", runID)
+	}
 		return nil, fmt.Errorf("ACC events HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
 	}
 	var envelope struct {

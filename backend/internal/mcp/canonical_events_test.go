@@ -42,3 +42,47 @@ func TestListRunEventsUsesMCPRootAndCursor(t *testing.T) {
 		t.Fatalf("events=%#v", events)
 	}
 }
+
+// ★ 2026-11-20（Phase D 前置修复验收）：长驻 run 的事件流已 10.2MB，旧 1MB
+// LimitReader 把响应截断 ⇒ JSON 解析失败 ⇒ resolveACCDispatch 解不出 holder
+// ⇒ 真机「停止任务」永远 fail-closed 502。这两个判据锁住 64MB 新上限行为：
+// 正常回读要全量过，超限时**显式报错**而不是拿半截 JSON 静默出错。
+func TestListRunEventsLargeResponseOK(t *testing.T) {
+	big := make([]byte, 3<<20) // 3MB —— 旧 1MB 上限必截断，新 64MB 上限畅通
+	for i := range big {
+		big[i] = 'x'
+	}
+	payload := `{"events":[{"event_id":"e1","event_type":"run.created","run_id":"run-1","sequence":1,"data":"` + string(big) + `"}]}`
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(payload))
+	}))
+	defer ts.Close()
+	client := NewClientWithAuth(ts.URL+"/api/v2/mcp", "secret", "tenant", nil, false)
+	events, err := client.ListRunEvents(t.Context(), "run-1", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) == 0 {
+		t.Fatal("expected 1 event")
+	}
+	if len(events[0].EventID) == 0 {
+		t.Fatalf("response truncated / unusable: %#v", events[0])
+	}
+}
+
+func TestListRunEventsOverCapFailsExplicitly(t *testing.T) {
+	if testing.Short() {
+		t.Skip("64MB payload")
+	}
+	payload := `{"events":[{"event_id":"e1","event_type":"run.created","run_id":"run-1","sequence":1,"data":"` + string(make([]byte, 64<<20)) + `"}]}`
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(payload))
+	}))
+	defer ts.Close()
+	client := NewClientWithAuth(ts.URL+"/api/v2/mcp", "secret", "tenant", nil, false)
+	if _, err := client.ListRunEvents(t.Context(), "run-1", 0); err == nil {
+		t.Fatal("over-cap response must fail explicitly, not silently truncate")
+	}
+}
