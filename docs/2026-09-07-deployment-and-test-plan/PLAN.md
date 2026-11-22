@@ -69,7 +69,7 @@ Loaded automatically by `scripts/start-dev.sh`. **For repeatable runs, prefer `s
 | `POCKET_DB_PATH` | `./data/pocket.sqlite` | SQLite (legacy; data dir locator only) | repo-root `.env:2` |
 | `POCKET_DEV_AUTH` | `true` | Auto-seed `admin/admin` | repo-root `.env` |
 | `POCKET_AUTH_USER` | `admin` | Dev user | repo-root `.env` |
-| `POCKET_AUTH_PASS` | `admin123` (or `admin` per `backend/.env.test`) | Dev password | repo-root `.env` / `backend/.env.test:5` |
+| `POCKET_AUTH_PASS` | **无默认值，必须显式设置（≥8 字符）** | Dev password；不设则 dev 旁路与首次 bootstrap 均拒绝 | 本地自备（`.env` / `backend/.env.test` 均不入库） |
 | `POCKET_AUTH_LEGACY_ONLY` | `true` | Force local JWT, ignore RedClaw Admin | repo-root `.env` |
 | `POCKET_OPENCODE_INSTANCES` | JSON catalog of writable instances | Required for session create / prompt / interrupt (writable) | `deploy-local.sh:148-152` |
 | `POCKET_OPENCODE_TIMEOUT_MS` | `10000` | Upstream timeout | `backend/.env.test:8` |
@@ -81,7 +81,7 @@ Loaded automatically by `scripts/start-dev.sh`. **For repeatable runs, prefer `s
 
 ### 2.4 Test data setup
 
-- A seeded dev user `admin` / `admin123` is created on first `pocketd` boot when `POCKET_DEV_AUTH=true`. No seed script is required.
+- A first admin is bootstrapped on first `pocketd` boot **only when `POCKET_AUTH_PASS` is set**（≥8 字符）and the users table is empty. Without it, no user is created and every login returns 401 (`backend/cmd/pocketd/bootstrap_first_user.go`). No seed script is required.
 - A fake "demo-main" `instance_id` is seeded via `POCKET_OPENCODE_INSTANCES` (see `scripts/start-dev.sh`). Writes (`POST /api/mobile/sessions`, `/prompt`, `/interrupt`) will hit a fake `apiBaseURL` and return 502 unless a real OpenCode is reachable.
 
 ---
@@ -152,7 +152,7 @@ npm run dev   # Vite serves http://localhost:5173 by default; configure per .env
 | URL | Expected |
 |---|---|
 | `http://localhost:8088/healthz` | `ok` |
-| `curl -X POST http://localhost:8088/api/auth/login -H 'Content-Type: application/json' -d '{"username":"admin","password":"admin123"}'` | JSON with `token` (and `refreshToken`) |
+| `curl -X POST http://localhost:8088/api/auth/login -H 'Content-Type: application/json' -d '{"username":"admin","password":"$POCKET_AUTH_PASS"}'` | JSON with `token`, `user`, `user_id`, `workspace_id`, `role`, `auth_method`（**无 `refreshToken` 字段**） |
 | `http://localhost:8089/v1/models` | JSON array |
 
 ---
@@ -161,7 +161,7 @@ npm run dev   # Vite serves http://localhost:5173 by default; configure per .env
 
 ### 4.1 Auth scheme (verified from code)
 - **Header:** `Authorization: Bearer <JWT>` — see `backend/internal/server/auth_helper.go:45-87`.
-- **Token issuance:** `POST /api/auth/login` returns `{ token, refreshToken, ... }`. Verified handler at `backend/internal/server/server_auth_extended.go`.
+- **Token issuance:** `POST /api/auth/login` returns `{ token, user, user_id, workspace_id, role, auth_method }`（**无 `refreshToken` 字段**；刷新走独立的 `POST /api/auth/refresh`）。Verified handler at `backend/internal/server/server_assistant.go`（`handleAuthLogin`）。
 - **WebSocket / SSE note:** `/api/mobile/sessions/.../event` accepts `?token=...` query string **only if** `Authorization` header is empty (`auth_helper.go:53-55`). For our flows we always use the `Authorization` header.
 - **Workspace scoping:** every mobile handler calls `requireMobileWorkspace` (`backend/internal/server/mobile_endpoint_scope.go:236-249`), which fails closed (`401`) if claims are missing or `WorkspaceID` is empty (`400`).
 
@@ -181,7 +181,7 @@ If the response includes `workspaceId`, capture it as `WORKSPACE_ID` (it becomes
 curl -s -X POST http://localhost:8088/api/auth/refresh \
   -H "Authorization: Bearer $TOKEN" | jq -r .token
 ```
-Endpoint registered at `server.go:598`.
+Endpoint registered at `backend/internal/server/server.go:790`.
 
 ### 4.4 Auth header format used throughout the plan
 ```bash

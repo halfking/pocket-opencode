@@ -46,7 +46,7 @@ Tick each box as it completes. Group by phase. Companion to `PLAN.md`.
   WORKSPACE_ID=$(echo "$LOGIN" | jq -r .workspaceId // echo "$LOGIN" | jq -r .workspace_id // echo default)
   echo "TOKEN=${TOKEN:0:20}…"
   ```
-- [ ] `echo "$LOGIN" | jq .` — token, refreshToken, user fields all present
+- [ ] `echo "$LOGIN" | jq .` — token, user, user_id, workspace_id, role, auth_method 字段齐备（**无 refreshToken**）
 - [ ] `AUTH="Authorization: Bearer $TOKEN"` exported in shell
 - [ ] Negative test: `curl -s -o /dev/null -w "%{http_code}\n" http://localhost:8088/api/instances` → `401` (no header)
 - [ ] Positive test: `curl -s http://localhost:8088/api/instances -H "$AUTH" | jq 'length'` → `>= 1`
