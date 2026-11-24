@@ -180,6 +180,10 @@ type Server struct {
 	// Auth
 	userStore        *auth.UserStore
 	jwtSigner        *auth.Signer
+	// casdoorVerifier verifies the tokens Casdoor issues (RS256 + JWKS).
+	// nil = the JWKS endpoint is not configured, so a Casdoor token is
+	// refused rather than half-trusted.
+	casdoorVerifier  *auth.CasdoorVerifier
 	biometricStore   *auth.BiometricStore
 	webAuthnVerifier auth.WebAuthnVerifierIface // nil = WebAuthn 签名验证未启用（降级到 P0 stub）
 	parseAssertionFn assertionParser            // 测试可替换的 WebAuthn assertion 解析器；生产为 nil（走默认）
@@ -333,6 +337,7 @@ func newServer(cfg config.Config, nps adapter.NPSAdapter, opencode adapter.OpenC
 		opencodeManager: opencodeManager,
 		userStore:       userStore,
 		jwtSigner:       jwtSigner,
+		casdoorVerifier: newCasdoorVerifier(cfg),
 		emailCrypto:     emailCrypto,
 		emailPending:    emailPending,
 		emailScheduler:  emailScheduler,

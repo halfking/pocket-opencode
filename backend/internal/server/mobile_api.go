@@ -24,6 +24,9 @@ type MobileAPI struct {
 	questionMgr *opencode.QuestionManager
 	wsHub       *mobilews.MobileWSHub
 	jwtSigner   *auth.Signer
+	// casdoorVerifier verifies the tokens Casdoor issues. nil = the JWKS
+	// endpoint is not configured.
+	casdoorVerifier *auth.CasdoorVerifier
 }
 
 // MobileSessionListItem is a lightweight session representation for mobile.
@@ -80,14 +83,16 @@ func newMobileAPI(
 	questionMgr *opencode.QuestionManager,
 	wsHub *mobilews.MobileWSHub,
 	jwtSigner *auth.Signer,
+	casdoorVerifier *auth.CasdoorVerifier,
 ) *MobileAPI {
 	return &MobileAPI{
-		httpAdapter: httpAdapter,
-		eventMgr:    eventMgr,
-		permMgr:     permMgr,
-		questionMgr: questionMgr,
-		wsHub:       wsHub,
-		jwtSigner:   jwtSigner,
+		httpAdapter:     httpAdapter,
+		eventMgr:        eventMgr,
+		permMgr:         permMgr,
+		questionMgr:     questionMgr,
+		wsHub:           wsHub,
+		jwtSigner:       jwtSigner,
+		casdoorVerifier: casdoorVerifier,
 	}
 }
 
@@ -549,7 +554,7 @@ func (api *MobileAPI) HandleWebSocket(c echo.Context) error {
 		// (signed by pocket / memora / redclaw / acc / llm-gateway with
 		// aud=pocket-api) are accepted here too, matching the HTTP
 		// requireAuth path.
-		claims, err := auth.VerifyToken(api.jwtSigner, tokenString)
+		claims, err := auth.VerifyTokenWithCasdoor(api.casdoorVerifier, api.jwtSigner, tokenString)
 		if err != nil || claims == nil || strings.TrimSpace(claims.UserID) == "" {
 			log.Printf("WebSocket token validation failed: %v", err)
 			return echo.NewHTTPError(http.StatusUnauthorized, "Invalid token")

@@ -69,13 +69,41 @@ type sentinelError string
 func (e sentinelError) Error() string { return string(e) }
 
 // VerifyToken tries, in order:
-//  1. Multi-issuer verification via identity-go (if shared secret configured)
-//  2. Legacy single-key verification via signer.Parse (always available)
+//  1. Casdoor verification via JWKS (if a verifier is configured)
+//  2. Multi-issuer verification via identity-go (if shared secret configured)
+//  3. Legacy single-key verification via signer.Parse (always available)
 //
-// Returns ErrTokenInvalid when both paths reject.
+// Returns ErrTokenInvalid when every path rejects.
+//
+// The order matters. The Casdoor path is tried first because it is the
+// only path that can verify a token this service did not issue: the other
+// two both need a shared HS256 secret. A token that Casdoor issued is
+// RS256 and carries Casdoor's `iss`, so neither shared-secret path can
+// accept it, and trying them first would only cost a failed parse.
 func VerifyToken(legacy *Signer, raw string) (*IdentityVerifierResult, error) {
+	return VerifyTokenWithCasdoor(nil, legacy, raw)
+}
+
+// VerifyTokenWithCasdoor is VerifyToken with the Casdoor verifier wired
+// in.
+//
+// The verifier is a parameter rather than a package global because it
+// holds a cache and a configuration, and a test needs to supply its own.
+// A nil verifier means "Casdoor tokens are not accepted", which is the
+// state of a deployment that has not configured the JWKS endpoint.
+func VerifyTokenWithCasdoor(
+	casdoor *CasdoorVerifier,
+	legacy *Signer,
+	raw string,
+) (*IdentityVerifierResult, error) {
 	if raw == "" {
 		return nil, ErrTokenInvalid
+	}
+
+	if casdoor != nil && casdoor.Enabled() {
+		if res, err := VerifyCasdoorToken(casdoor, raw); err == nil {
+			return res, nil
+		}
 	}
 
 	if issuers, _, ok := loadMultiIssuerConfig(); ok {

@@ -81,7 +81,7 @@ func (s *Server) handlePortalResourceToken(w http.ResponseWriter, r *http.Reques
 	// 用 user id 兜底，只满足 ResourceClaims 的 canonical 非空要求。
 	now := time.Now()
 	raw := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
-	parent, err := auth.VerifyToken(s.jwtSigner, raw)
+	parent, err := auth.VerifyTokenWithCasdoor(s.casdoorVerifier, s.jwtSigner, raw)
 	if err != nil || parent == nil || parent.ExpiresAt.IsZero() || !parent.ExpiresAt.After(now) {
 		writeError(w, http.StatusUnauthorized, "invalid or expired token")
 		return

@@ -65,7 +65,7 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		claims, err := auth.VerifyToken(s.jwtSigner, raw)
+		claims, err := auth.VerifyTokenWithCasdoor(s.casdoorVerifier, s.jwtSigner, raw)
 		if err != nil || claims == nil || strings.TrimSpace(claims.UserID) == "" {
 			s.writeStructuredError(w, r, http.StatusUnauthorized, CodeUnauthenticated, "invalid or expired token")
 			return

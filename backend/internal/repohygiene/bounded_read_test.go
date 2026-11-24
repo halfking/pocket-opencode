@@ -826,15 +826,28 @@ func TestS952CensusCountsArePinned(t *testing.T) {
 	//   ⇒ 形态 decode +2；来源 req +2；总计 +2（读点 292→294、有界 289→291）。
 	//   ⇒⇒⇒ **无界处仍然恰好是台账里那 3 条** ⇒ 是「代码真的多了读点」
 	//     而不是「量具瞎了」（本地在途 sync 包的 2 处 req 解码点，此前不在上游台账里）。
-	if len(sites) != 294 {
-		t.Errorf("§952 普查到 %d 处「读进内存」的调用点（期望294）\n"+
+	// 2026-11-25：+1 —— Casdoor JWKS 证书集的响应体读取
+	//   （backend/internal/auth/casdoor_verifier.go#refreshLocked，
+	//   io.ReadAll(io.LimitReader(resp.Body, 1<<20))）。
+	//   ⇒ 形态 readall +1、来源 resp +1、有界 +1。
+	// 2026-11-25（续）：+3 —— 密码重置 / 邮箱验证码两条链路的请求体解码
+	//   （backend/internal/server/server_auth_extended.go）。
+	//   ⇒ 形态 decode +3、来源 req +3。
+	// 2026-11-25（续）：+1 —— 上条的另一处请求体解码（同文件）。
+	//   ⇒ 形态 decode +1、来源 req +1。
+	// ⇒⇒⇒ **无界处仍然恰好是台账里那 3 条**
+	//   （TestS952NoUnboundedReadsExceptLedger 独立卡着这一条：
+	//   新增的读点都带上限或被中间件兜住 ⇒ 是「代码真的多了读点」
+	//   而不是「量具瞎了」—— 这正是绝对条数要钉住的原因）。
+	if len(sites) != 299 {
+		t.Errorf("§952 普查到 %d 处「读进内存」的调用点（期望299）\n"+
 			"⇒ 绝对条数是**量具有牙**的证据：量具整个失效时这个数会变 ⇒⇒⇒ "+
 			"⇒ 若这一条变了，请先确认是「代码真的多了/少了读点」还是「量具瞎了」",
 			len(sites))
 	}
 	want := map[string]int{
-		s952FormReadAll:  60,
-		s952FormDecode:   163,
+		s952FormReadAll:  62,
+		s952FormDecode:   166,
 		s952FormCopy:     3,
 		s952FormSizedAll: 16,
 		s952FormSizedSnp: 17,
@@ -846,8 +859,8 @@ func TestS952CensusCountsArePinned(t *testing.T) {
 		}
 	}
 	wantSrc := map[string]int{
-		s952SrcResp:  131,
-		s952SrcReq:   130,
+		s952SrcResp:  132,
+		s952SrcReq:   134,
 		s952SrcMem:   8,
 		s952SrcOther: 25,
 	}
@@ -856,8 +869,8 @@ func TestS952CensusCountsArePinned(t *testing.T) {
 			t.Errorf("来源 %s 扫到 %d 处（期望 %d）", src, bySrc[src], n)
 		}
 	}
-	if bounded != 291 {
-		t.Errorf("有界 %d 处（期望291）⇒⇒⇒ 无界处应恰好是台账里的 3 条", bounded)
+	if bounded != 296 {
+		t.Errorf("有界 %d 处（期望296）⇒⇒⇒ 无界处应恰好是台账里的 3 条", bounded)
 	}
 }
 

@@ -352,6 +352,14 @@ type Config struct {
 	// 必需的 application/organization 名（get-app 非公开，只能显式配置）。
 	OIDCOrganization string // POCKET_CASDOOR_ORGANIZATION：如 redclaw
 	OIDCApplication  string // POCKET_CASDOOR_APPLICATION：如 openpocket
+	// —— Casdoor 签发的 token 的验证（认证孤岛收口）——
+	// OpenPocket 登录走 Casdoor，但它自己签发的会话 token 是本地 HS256
+	// 自签；Casdoor 签发的 token 是 RS256、只能靠 JWKS 验证。这三项让
+	// OpenPocket 能接受 Casdoor 签发的 bearer token（族内任一服务登录过
+	// 的调用方在这里同样被认证）。
+	OIDCJWKSURL  string // POCKET_CASDOOR_JWKS_URL：如 https://auth.itestu.cn/.well-known/jwks
+	OIDCIssuer   string // POCKET_CASDOOR_ISSUER：token 的 iss（缺省取 OIDCEndpoint）
+	OIDCAudience string // POCKET_CASDOOR_AUDIENCE：token 的 aud（缺省取 OIDCClientID）
 
 	// —— RedClaw LLM 兜底 ——
 	// 企业网关（POCKET_LLM_GATEWAY_URL / 运行时网关配置）请求失败时，
@@ -561,6 +569,9 @@ func Load() Config {
 		OIDCBrowserReturn: strings.TrimSpace(getEnv("POCKET_CASDOOR_BROWSER_RETURN_URL", "")),
 		OIDCOrganization:  strings.TrimSpace(getEnv("POCKET_CASDOOR_ORGANIZATION", "")),
 		OIDCApplication:   strings.TrimSpace(getEnv("POCKET_CASDOOR_APPLICATION", "")),
+		OIDCJWKSURL:       strings.TrimSpace(getEnv("POCKET_CASDOOR_JWKS_URL", "")),
+		OIDCIssuer:        strings.TrimSpace(getEnv("POCKET_CASDOOR_ISSUER", "")),
+		OIDCAudience:      strings.TrimSpace(getEnv("POCKET_CASDOOR_AUDIENCE", "")),
 	}
 }
 
@@ -868,6 +879,51 @@ func (c Config) OIDCEnabled() bool {
 // /api/login 所需的 application/organization 名已显式配置。
 func (c Config) OIDCDirectLoginEnabled() bool {
 	return c.OIDCEnabled() && c.OIDCOrganization != "" && c.OIDCApplication != ""
+}
+
+// CasdoorJWKSURL 返回验证 Casdoor token 的 JWKS 端点。
+//
+// 显式配置的优先；未配置时从 Casdoor 端点推导 —— Casdoor 把证书发布在
+// <endpoint>/.well-known/jwks，所以多数部署不需要单独配这一项。
+func (c Config) CasdoorJWKSURL() string {
+	if u := strings.TrimSpace(c.OIDCJWKSURL); u != "" {
+		return u
+	}
+	endpoint := strings.TrimRight(strings.TrimSpace(c.OIDCEndpoint), "/")
+	if endpoint == "" {
+		return ""
+	}
+	return endpoint + "/.well-known/jwks"
+}
+
+// CasdoorIssuer 返回 token 的期望 iss。
+//
+// 缺省取 Casdoor 端点：Casdoor 签发的 token 的 iss 就是它的端点地址。
+func (c Config) CasdoorIssuer() string {
+	if i := strings.TrimSpace(c.OIDCIssuer); i != "" {
+		return strings.TrimRight(i, "/")
+	}
+	return strings.TrimRight(strings.TrimSpace(c.OIDCEndpoint), "/")
+}
+
+// CasdoorAudience 返回 token 的期望 aud。
+//
+// 缺省取 client id：Casdoor 按应用签发 token，同一个 Casdoor 实例里的
+// 不同应用互相不通用，audience 正是这个边界。
+func (c Config) CasdoorAudience() string {
+	if a := strings.TrimSpace(c.OIDCAudience); a != "" {
+		return a
+	}
+	return strings.TrimSpace(c.OIDCClientID)
+}
+
+// CasdoorTokenVerificationEnabled reports whether Casdoor-issued tokens
+// are accepted as bearer tokens.
+//
+// JWKS 端点是开关：没有它就没有可验证的证书来源，此时 Casdoor token 一律
+// 拒绝而不是「先放行再说」。
+func (c Config) CasdoorTokenVerificationEnabled() bool {
+	return strings.TrimSpace(c.CasdoorJWKSURL()) != ""
 }
 
 // OIDCBrowserReturnURL returns the absolute SPA base the OIDC callback 302s

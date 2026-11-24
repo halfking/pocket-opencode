@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/halfking/pocket-opencode/backend/internal/auth"
+	"github.com/halfking/pocket-opencode/backend/internal/config"
 	"github.com/halfking/pocket-opencode/backend/internal/logging"
 	"github.com/halfking/pocket-opencode/backend/internal/outbound"
 )
@@ -378,16 +379,18 @@ func (s *Server) mintSessionToken(ctx context.Context, source, userID, username,
 // oidcCasdoorWebLogin 用独立 cookie-jar 客户端调 Casdoor /api/login（JSON
 // web 登录端点）。成功后该客户端的 jar 持有 Casdoor 会话 cookie，返回的
 // client 供 authorize 抓 code 使用；失败返回 Casdoor 的稳定错误码
-//（wrong-password / frozen 等），调用方据此映射响应。
+// （wrong-password / frozen 等），调用方据此映射响应。
 func (s *Server) oidcCasdoorWebLogin(ctx context.Context, username, password string) (*http.Client, string, error) {
 	jar, err := cookiejar.New(nil)
 	if err != nil {
 		return nil, "", fmt.Errorf("cookie jar: %w", err)
 	}
-	client := &http.Client{
-		Timeout: 15 * time.Second,
-		Jar:     jar,
-	}
+	// The client carries an explicit timeout: this call is a password
+	// check against a remote IdP, and an IdP that never answers must not
+	// hold the request open forever. The jar is set afterwards because
+	// the outbound package has no jar option.
+	client := outbound.NewClient(15 * time.Second)
+	client.Jar = jar
 	endpoint := strings.TrimRight(s.cfg.OIDCEndpoint, "/") + "/api/login"
 	body, _ := json.Marshal(map[string]any{
 		"type":         "login",
@@ -440,14 +443,17 @@ func (s *Server) oidcCaptureAuthorizeCode(ctx context.Context, client *http.Clie
 	if err != nil {
 		return "", "", err
 	}
-	capture := &http.Client{
-		Timeout: client.Timeout,
-		Jar:     client.Jar,
-		Transport: client.Transport,
-		CheckRedirect: func(*http.Request, []*http.Request) error {
+	// The capture client intercepts the redirect instead of following it,
+	// so the code can be read out of the Location header. It keeps the
+	// session jar of the login client, and it keeps that client's
+	// timeout: an authorize call that never answers must not hang.
+	capture := outbound.NewClient(client.Timeout,
+		outbound.WithTransport(client.Transport),
+		outbound.WithCheckRedirect(func(*http.Request, []*http.Request) error {
 			return http.ErrUseLastResponse
-		},
-	}
+		}),
+	)
+	capture.Jar = client.Jar
 	resp, err := capture.Do(req)
 	if err != nil {
 		return "", "", fmt.Errorf("authorize request: %w", err)
@@ -553,4 +559,25 @@ func (s *Server) handleAuthSsoDirectLogin(w http.ResponseWriter, r *http.Request
 	}
 	s.auditGateway(r, "auth.sso.direct_login", userID, "direct login completed", true)
 	s.issueTokenAndRespond(w, r, userID, displayName, ui.Email)
+}
+
+// newCasdoorVerifier builds the verifier for the tokens Casdoor issues.
+//
+// It returns nil when the JWKS endpoint is not configured: without a
+// source of Casdoor's certificates there is nothing to verify against,
+// and a verifier that refuses everything would only add a failed parse to
+// every request. The local session token keeps working either way.
+func newCasdoorVerifier(cfg config.Config) *auth.CasdoorVerifier {
+	if !cfg.CasdoorTokenVerificationEnabled() {
+		return nil
+	}
+	v := auth.NewCasdoorVerifier(
+		cfg.CasdoorJWKSURL(),
+		cfg.CasdoorIssuer(),
+		cfg.CasdoorAudience(),
+	)
+	if !v.Enabled() {
+		return nil
+	}
+	return v
 }
