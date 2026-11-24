@@ -304,7 +304,7 @@ adb shell am start -n com.kaixuan.opencode.pocket/.MainActivity
 ### 认证机制
 
 - **JWT Token**: 24小时有效期
-- **Token传递**: 仅 `Authorization: Bearer <JWT>`；Query 参数 `?token=` 只用于 WebSocket 握手（`/ws`、`/plugin/ws`、`/event*`），其它 HTTP 路由不接受 URL 中的 token
+- **Token传递**: 仅 `Authorization: Bearer <JWT>`；Query 参数 `?token=` 只用于 `/ws`、`/plugin/ws` 与**路径含** `/event` 的请求（`backend/internal/server/auth_helper.go:53` 用的是 `strings.Contains` **包含匹配**，不是前缀匹配 ⇒ `/api/calendar/events`、`/api/mobile/events/snapshot` 这类普通 HTTP 路由也在内），其它 HTTP 路由不接受 URL 中的 token
 - **密钥管理**: 环境变量配置
 - **HTTPS**: 生产环境强制使用
 
@@ -414,9 +414,9 @@ DSN 时则明确跳过。
 
 ### v1.2 (进行中) 📅
 
-- [ ] Email OAuth 完整集成
-- [ ] IMAP 同步优化
-- [ ] kxmemory AI 编排完善
+- [x] Email OAuth 完整集成（e5777fc0、350ba3b5、e211ebd8）
+- [x] IMAP 同步优化（3796a863、fa8078f7）
+- [x] kxmemory AI 编排完善（e211ebd8）
 - [x] 邮件发票提取与入账闭环（20d3d14、87c8b55）
 - [x] 财务 PG 记账与统计时区化（87c8b55）
 
@@ -518,7 +518,7 @@ MIT License - 详见 [LICENSE](LICENSE) 文件
 
 ## 📊 项目统计
 
-- **代码行数**: ~364,000行（backend 非测试 `.go` 127,461 + `frontend/src` TS/Vue/.mjs 236,867，2026-11-04 实测）
+- **代码行数**: ~398,000行（backend 非测试 `.go` 138,046 + `frontend/src` TS/Vue/.mjs 259,616，2026-11-25 实测）
 - **提交次数**: 详见Git历史
 - **开发时间**: 2026年初至今
 - **测试覆盖**: 100% (E2E测试)
