@@ -44,6 +44,14 @@
     </ScrollChromePortal>
 
     <PullToRefresh :on-refresh="handleRefresh" class="list-scroll">
+      <!--
+        「共享给我的」会话与「申请接手」入口。
+        放在列表**之上**：同事共享的会话不是本机 OpenCode 的会话，它属于
+        RedClaw 平台，混进下面那份列表会让人以为两者是同一份数据。
+        面板在门户不可达时不渲染（见 SharedConversationsPanel 的注释）。
+      -->
+      <SharedConversationsPanel />
+
       <!-- 加载状态 -->
       <div v-if="loading" class="state-wrap">
         <Skeleton :count="4" :rows="2" />
@@ -135,6 +143,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useApiError } from '@/composables/useApiError'
 import { Skeleton, EmptyState, PullToRefresh, SwipeableListItem, type SwipeAction } from '@/components'
 import ScrollChromePortal from '@/components/layout/ScrollChromePortal.vue'
+import SharedConversationsPanel from './SharedConversationsPanel.vue'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
 import { useListScene } from '@/composables/use-list-scene'
