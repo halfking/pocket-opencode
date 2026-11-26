@@ -7,6 +7,7 @@ import { REDCLAW_OIDC_AUTH_METHOD } from '../../api/authentication-mode'
 import { readPortalErrorCode } from '../../api/portal-error'
 import { resolveRedclawPortalBase } from '../../config/redclaw-portal'
 import type { SyncDb, PortalAck } from './contract.ts'
+import { PortalCursorExpired, portalChangePageSize } from './snapshot-recovery.ts'
 import type { PortalTransport } from './engine.ts'
 import type { PortalSyncModule } from '../../api/syncPolicyContract.ts'
 
@@ -59,6 +60,10 @@ export async function portalTransport(db: SyncDb, options: { cloud?: boolean; ad
     assertCurrent()
     if (!response.ok) {
       if (response.status === 401) await reauth(response.status, await readPortalErrorCode(response))
+      if (response.status === 410 && path.startsWith('changes?') && await readPortalErrorCode(response) === 'reset_required') {
+        assertCurrent()
+        throw new PortalCursorExpired()
+      }
       throw new Error(`Portal notes sync request failed (${response.status})`)
     }
     const body = await response.json()
@@ -67,7 +72,7 @@ export async function portalTransport(db: SyncDb, options: { cloud?: boolean; ad
   }
   const workspace = encodeURIComponent(owner!.workspaceId)
   const transport: PortalTransport = {
-    changes: cursor => request(`changes?workspace_id=${workspace}&module=notes&limit=50&cursor=${encodeURIComponent(cursor)}`),
+    changes: cursor => request(`changes?workspace_id=${workspace}&module=notes&limit=${portalChangePageSize}&cursor=${encodeURIComponent(cursor)}`),
     push: items => request(`push?workspace_id=${workspace}`, { method: 'POST', body: JSON.stringify({ items }) }) as Promise<{ results: PortalAck[] }>,
   }
   return { assertCurrent, transport, request, purge: (modules: string[], resetId: string) => request(`purge?workspace_id=${workspace}`, {

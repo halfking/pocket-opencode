@@ -13,7 +13,7 @@ async function setup(module, failures = 2) {
   const store = module === 'notes' ? f.store : new PortalRecordStore(f.db,{module,kind:'record',payload:v=>v,materialize:()=>[]})
   await store.init(); await store.observeEpoch(0)
   const table = module === 'notes' ? 'local_portal_outbox' : 'local_portal_record_outbox'
-  const protectedErrors = ['', 'reset_pending', 'reset_epoch_mismatch', 'epoch_unknown', 'policy_local', 'clock_skew:1970-01-01T00:00:01.001Z', 'clock_retry', 'clock_skew_failed']
+  const protectedErrors = ['', 'reset_pending', 'reset_epoch_mismatch', 'epoch_unknown', 'snapshot_missing', 'policy_local', 'clock_skew:1970-01-01T00:00:01.001Z', 'clock_retry', 'clock_skew_failed']
   const insert = (id,error,epoch=0,owner='A',mod=module) => ({
     statement:`INSERT INTO ${table}(owner_user_id,owner_workspace_id,${module==='notes'?'':'module,kind,'}op_id,ext_id,item_json,reset_epoch,last_error${module==='notes'?'':',source_checked'}) VALUES (${module==='notes'?'?,?,?,?,?,?,?':'?,?,?,?,?,?,?,?,?,1'})`,
     values:[owner,'ws',...(module==='notes'?[]:[mod,'record']),id,id,'{}',epoch,error],

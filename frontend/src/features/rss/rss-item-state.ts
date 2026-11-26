@@ -54,8 +54,14 @@ export async function reconcileRssItemStates(operation=captureNativeRssOperation
   operation.assertCurrent();const {db}=operation,store=rssPortalStore(db)
   await store.init();await db.run(receipts)
   const epoch=await store.currentEpoch();if(epoch===null)return 0
+  const recoveryInProgress=()=>db.queryOne(
+    "SELECT cursor FROM local_portal_recovery WHERE owner_user_id=? AND owner_workspace_id=? AND module='rss'",store.scope)
+  if(await recoveryInProgress())return 0
   await store.requireEpoch(epoch)
-  const rows=await db.query<{item_json:string}>(`SELECT r.item_json FROM local_portal_records r WHERE r.owner_user_id=? AND r.owner_workspace_id=? AND r.module='rss' AND r.kind='item-state' AND r.ext_id LIKE 'pocketd-item:%' AND r.reset_epoch=? AND NOT EXISTS(SELECT 1 FROM local_rss_state_receipts a WHERE a.owner_user_id=r.owner_user_id AND a.owner_workspace_id=r.owner_workspace_id AND a.op_id=r.op_id) ORDER BY r.rowid`,[...store.scope,epoch])
+  const rows=await db.query<{item_json:string}>(`SELECT r.item_json FROM local_portal_records r WHERE r.owner_user_id=? AND r.owner_workspace_id=? AND r.module='rss' AND r.kind='item-state' AND r.ext_id LIKE 'pocketd-item:%' AND r.reset_epoch=?
+    AND NOT EXISTS(SELECT 1 FROM local_portal_record_outbox o WHERE o.owner_user_id=r.owner_user_id
+      AND o.owner_workspace_id=r.owner_workspace_id AND o.module=r.module AND o.kind=r.kind AND o.ext_id=r.ext_id AND o.last_error='snapshot_missing')
+    AND NOT EXISTS(SELECT 1 FROM local_rss_state_receipts a WHERE a.owner_user_id=r.owner_user_id AND a.owner_workspace_id=r.owner_workspace_id AND a.op_id=r.op_id) ORDER BY r.rowid`,[...store.scope,epoch])
   const pending=[]
   for(const row of rows){
     const item=await store.decode(row.item_json)

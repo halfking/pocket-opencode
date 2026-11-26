@@ -132,3 +132,17 @@ test('clear-cloud and source deletion do not restore old status operations into 
   const sent=JSON.parse(f.requests.at(-1).options.body).items;assert.equal(sent.length,1);assert.equal(sent[0].deleted,true);assert.equal(sent[0].epoch,1)
  })
 })
+
+test('native RSS status reconciliation waits through recovery and retains a held edit', () => fixture(async f => {
+  const {state,store,db} = await setup(f)
+  await state.saveRssItemStatuses([article()], 'starred')
+  const [edit] = await store.pending()
+  await db.run("INSERT INTO local_portal_recovery VALUES(?,?,'rss','snapshot:100:3',0)", store.scope)
+  acknowledge(f)
+  assert.equal(await state.reconcileRssItemStates(), 0)
+  await db.run("DELETE FROM local_portal_recovery WHERE owner_user_id=? AND owner_workspace_id=? AND module='rss'", store.scope)
+  await store.block(edit, 'snapshot_missing')
+  assert.equal(await state.reconcileRssItemStates(), 0)
+  assert.equal(f.requests.length, 0)
+  assert.equal((await state.overlayRssItemStates([article()]))[0].status, 'starred')
+}))

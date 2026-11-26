@@ -6,7 +6,7 @@ type EncodeBody = (content: string) => Promise<{ content: string; encrypted: num
 const plaintext: EncodeBody = async content => ({ content, encrypted: 0 })
 
 /** Apply the sync projection only. Audio, attachment references and files are retained. */
-export async function applyPage(store: PortalNotesStore, page: ChangePage, encodeBody: EncodeBody = plaintext): Promise<void> {
+export async function applyPage(store: PortalNotesStore, page: ChangePage, encodeBody: EncodeBody = plaintext, checkpoint?: Statement[]): Promise<void> {
   if (!store.db.owner) throw new Error('Verified notes owner is required')
   await store.init()
   const epoch = page.epochs.notes
@@ -72,7 +72,7 @@ export async function applyPage(store: PortalNotesStore, page: ChangePage, encod
     }
   }
   // A failed materialization rolls back both the versions and the cursor.
-  statements.push(store.cursorStatement(page.next_cursor, epoch))
+  statements.push(...(checkpoint ?? [store.cursorStatement(page.next_cursor, epoch)]))
   await store.db.runInTransaction(statements)
   await store.requireEpoch(epoch)
 }

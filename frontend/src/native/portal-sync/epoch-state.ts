@@ -5,6 +5,12 @@ export const epochTables = [
   `CREATE TABLE IF NOT EXISTS local_portal_sync_epochs (
     owner_user_id TEXT NOT NULL,owner_workspace_id TEXT NOT NULL,module TEXT NOT NULL,epoch INTEGER NOT NULL,
     PRIMARY KEY(owner_user_id,owner_workspace_id,module))`,
+  `CREATE TABLE IF NOT EXISTS local_portal_recovery (
+    owner_user_id TEXT NOT NULL,owner_workspace_id TEXT NOT NULL,module TEXT NOT NULL,cursor TEXT NOT NULL,epoch INTEGER,
+    PRIMARY KEY(owner_user_id,owner_workspace_id,module))`,
+  `CREATE TABLE IF NOT EXISTS local_portal_recovery_seen (
+    owner_user_id TEXT NOT NULL,owner_workspace_id TEXT NOT NULL,module TEXT NOT NULL,kind TEXT NOT NULL,ext_id TEXT NOT NULL,
+    PRIMARY KEY(owner_user_id,owner_workspace_id,module,kind,ext_id))`,
   `CREATE TABLE IF NOT EXISTS local_portal_resets (
     owner_user_id TEXT NOT NULL,owner_workspace_id TEXT NOT NULL,reset_id TEXT NOT NULL,
     modules_json TEXT NOT NULL,blocks_notes INTEGER NOT NULL,completed INTEGER NOT NULL DEFAULT 0,response_json TEXT,

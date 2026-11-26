@@ -625,7 +625,7 @@ describe('§880 · 一次操作里的多次写（普查门）', () => {
    */
   const ALLOW = new Map<string, { why: string; runs: number }>([
     ['native/outboxStore.ts::put', { runs: 2, why: 'INSERT 撞幂等键才走 UPDATE，两条互斥（不是一次调用写两次）' }],
-    ['native/portal-sync/store.ts::init', { runs: 2, why: '建表循环 + reset_epoch 列迁移（PRAGMA 探测后才 ALTER），两条互不重叠且幂等' }],
+    ['native/portal-sync/store.ts::init', { runs: 3, why: '建表循环及 reset_epoch、source_checked 两种旧库列迁移；ALTER 前均按 PRAGMA 探测' }],
     ['native/approvalStore.ts::upsertSnapshot', { runs: 2, why: 'if/else 二选一，两条互斥' }],
     ['features/notes/notes-store.ts::handleServerEvent', { runs: 2, why: 'if(existing) UPDATE else INSERT，两条互斥' }],
 
@@ -635,6 +635,7 @@ describe('§880 · 一次操作里的多次写（普查门）', () => {
     ['features/email/email-folders-store.ts::recordOpsEntry', { runs: 2, why: 'UPDATE 分支与 INSERT 分支互斥' }],
     ['features/chat/chat-store.ts::saveMessage', { runs: 2, why: '⚠ 真的连写两次，但整个模块零引用（audit-dead-features 已报）——死代码，不装修' }],
     ['features/meetings/voiceprints-store.ts::saveVoiceprint', { runs: 2, why: 'planVoiceprintWrite 分成 rename/insert 两条互斥分支（多行签名，曾被 v2 解析器漏掉）' }],
+    ['features/rss/rss-source-outbox.ts::flushQueuedRssSources', { runs: 2, why: '每条操作只走一个分支：拒绝时保留并记录原因，收到且核对回执后才删除；重放由服务端操作 ID 去重' }],
     ['features/email/email-folders-store.ts::flushEmailOps', { runs: 2, why: '逐行标 pushed；中途失败 ⇒ 部分行仍 pending ⇒ 下轮重推，但 pushOps 带幂等键，重复推送会被去重（有意为之）' }],
   ])
 

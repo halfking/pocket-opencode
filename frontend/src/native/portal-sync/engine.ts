@@ -1,5 +1,6 @@
 import { parsePage, validateItem, type PortalAck, type PortalItem } from './contract.ts'
 import { applyPage } from './apply.ts'
+import { pullPortalChanges } from './snapshot-recovery.ts'
 import { PortalNotesStore } from './store.ts'
 
 export interface PortalTransport {
@@ -10,20 +11,11 @@ export interface PortalTransport {
 /** One bounded cycle; failures retain immutable operations and the last committed cursor. */
 export async function syncNotesOnce(store: PortalNotesStore, transport: PortalTransport, assertCurrent: () => void,
   encodeBody?: Parameters<typeof applyPage>[2], onRemoteApplied?: (count: number) => void): Promise<number> {
-  const pull = async () => {
-    for (let pageNumber = 0; pageNumber < 10; pageNumber++) {
-      assertCurrent()
-      const cursor = await store.cursor()
-      const page = parsePage(await transport.changes(cursor))
-      assertCurrent()
-      if (await store.observeEpoch(page.epochs.notes)) continue // Reset cursor before reading this generation.
-      if (page.changes.length && page.next_cursor === cursor) throw new Error('Portal change cursor did not advance')
-      await applyPage(store, page, encodeBody)
-      if (page.changes.length) onRemoteApplied?.(page.changes.length)
-      if (!page.changes.length) break
-    }
-  }
-  await pull()
+  await store.init()
+  const pull = () => pullPortalChanges(store, 'notes', cursor => transport.changes(cursor),
+    parsePage, page => page.epochs.notes,
+    assertCurrent, (page, checkpoint) => applyPage(store, page, encodeBody, checkpoint), onRemoteApplied)
+  if (!await pull()) return 0
   const pending = await store.pending()
   for (const item of pending) validateItem(item)
   let acknowledged = 0

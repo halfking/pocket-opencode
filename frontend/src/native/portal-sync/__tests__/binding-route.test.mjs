@@ -214,3 +214,18 @@ test('OIDC renewal rejects mismatched scope and keeps the current bearer after a
   }
   assert.equal(f.requests.filter(x => x.url.endsWith('/api/auth/sso/refresh')).length, 5)
 }))
+
+test('only a 410 reset_required on the change feed requests snapshot recovery', () => fixture(async f => {
+  const { portalTransport } = await f.loadModule('/src/native/portal-sync/transport.ts')
+  const { PortalCursorExpired } = await f.loadModule('/src/native/portal-sync/snapshot-recovery.ts')
+  const db = f.db.bindOperation(f.db.captureOperation({ kind: 'cloud-sync', module: 'notes' }))
+  let code = 'reset_required'
+  f.respond(async url => url.endsWith('/binding') ? binding(f) :
+    Response.json({error: {code}}, {status: 410}))
+  const { transport } = await portalTransport(db)
+  await assert.rejects(transport.changes('123'), PortalCursorExpired)
+  await assert.rejects(transport.push([]), error => !(error instanceof PortalCursorExpired) && /410/.test(error.message))
+  code = 'gone'
+  await assert.rejects(transport.changes('123'), error => !(error instanceof PortalCursorExpired) && /410/.test(error.message))
+  assert.equal(f.auth.token, 'token-A')
+}))

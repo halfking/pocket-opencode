@@ -1,9 +1,10 @@
 import { newOperationId, versionKey, type PortalAck, type Statement } from './contract.ts'
 import { recordEpochGuard } from './record-epoch.ts'
 import { parseRecordPage, validateRecordItem, type RecordItem, type RecordPage } from './record-contract.ts'
+import { pullPortalChanges } from './snapshot-recovery.ts'
 import { PortalRecordStore } from './record-store.ts'
 
-export async function applyRecordPage(store: PortalRecordStore, page: RecordPage): Promise<void> {
+export async function applyRecordPage(store: PortalRecordStore, page: RecordPage, checkpoint?: Statement[]): Promise<void> {
   if (!store.db.owner) throw new Error('Verified module owner required')
   await store.init()
   await store.observeEpoch(page.epoch)
@@ -54,7 +55,7 @@ export async function applyRecordPage(store: PortalRecordStore, page: RecordPage
     }
     statements.push(...store.adapter.materialize(item, id, guard, store.db.owner))
   }
-  statements.push(store.cursorStatement(page.next_cursor, page.epoch))
+  statements.push(...(checkpoint ?? [store.cursorStatement(page.next_cursor, page.epoch)]))
   await store.db.runInTransaction(statements)
   await store.requireEpoch(page.epoch)
 }
@@ -67,20 +68,11 @@ export async function syncRecordsOnce(
   assertCurrent: () => void,
   onApplied?: (count: number) => void,
 ): Promise<number> {
-  const pull = async () => {
-    for (let n = 0; n < 10; n++) {
-      assertCurrent()
-      const cursor = await store.cursor(),
-        page = parseRecordPage(store.adapter, await transport.changes(cursor))
-      assertCurrent()
-      if (await store.observeEpoch(page.epoch)) continue
-      if (page.changes.length && page.next_cursor === cursor) throw new Error('Module change cursor did not advance')
-      await applyRecordPage(store, page)
-      if (page.changes.length) onApplied?.(page.changes.length)
-      if (!page.changes.length) break
-    }
-  }
-  await pull()
+  await store.init()
+  const pull = () => pullPortalChanges(store, store.adapter.module, cursor => transport.changes(cursor),
+    raw => parseRecordPage(store.adapter, raw), page => page.epoch,
+    assertCurrent, (page, checkpoint) => applyRecordPage(store, page, checkpoint), onApplied)
+  if (!await pull()) return 0
   const pending = await store.pending()
   for (const item of pending) validateRecordItem(store.adapter, item)
   let count = 0

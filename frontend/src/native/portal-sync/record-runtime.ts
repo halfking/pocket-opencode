@@ -4,6 +4,7 @@ import { lobsterReady } from '../lobster-init'
 import { useAuthStore } from '../../stores/auth'
 import { readCachedModuleMode, recordSyncReportEntry } from '../../stores/syncPolicyStore'
 import { portalRecordStore } from './record-storage.ts'
+import { portalChangePageSize } from './snapshot-recovery.ts'
 import { portalTransport } from './transport.ts'
 import { syncRecordsOnce } from './record-engine.ts'
 import { markModuleResetPending, rememberModuleEpoch, type RecordModule } from './epochs.ts'
@@ -102,7 +103,7 @@ export function createRecordRuntime(adapter: RecordAdapter) {
           {
             changes: (cursor) =>
               context.request(
-                `changes?workspace_id=${encodeURIComponent(db.owner!.workspaceId)}&module=${module}&limit=50&cursor=${encodeURIComponent(cursor)}`,
+                `changes?workspace_id=${encodeURIComponent(db.owner!.workspaceId)}&module=${module}&limit=${portalChangePageSize}&cursor=${encodeURIComponent(cursor)}`,
               ),
             push: (items) =>
               context.request(`push?workspace_id=${encodeURIComponent(db.owner!.workspaceId)}`, {

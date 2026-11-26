@@ -20,7 +20,7 @@ export function outboxCapacityStatements(db: SyncDb, module: Module): Statement[
   const scope = `owner_user_id=? AND owner_workspace_id=?${notes?'':' AND module=?'}`
   const values = notes ? owner : [...owner,module]
   const victims = `SELECT rowid FROM ${table} WHERE ${scope}
-    AND last_error<>'' AND last_error NOT IN ('policy_local','reset_pending','reset_epoch_mismatch','epoch_unknown')
+    AND last_error<>'' AND last_error NOT IN ('policy_local','reset_pending','reset_epoch_mismatch','epoch_unknown','snapshot_missing')
     AND substr(last_error,1,6)<>'clock_'
     ${notes ? '' : `AND ${recordSourceAdmitted}`}
     AND reset_epoch=(SELECT epoch FROM local_portal_sync_epochs WHERE owner_user_id=? AND owner_workspace_id=? AND module=?)
