@@ -15,7 +15,7 @@ async function setup(module, failures = 2) {
   const table = module === 'notes' ? 'local_portal_outbox' : 'local_portal_record_outbox'
   const protectedErrors = ['', 'reset_pending', 'reset_epoch_mismatch', 'epoch_unknown', 'policy_local', 'clock_skew:1970-01-01T00:00:01.001Z', 'clock_retry', 'clock_skew_failed']
   const insert = (id,error,epoch=0,owner='A',mod=module) => ({
-    statement:`INSERT INTO ${table}(owner_user_id,owner_workspace_id,${module==='notes'?'':'module,kind,'}op_id,ext_id,item_json,reset_epoch,last_error) VALUES (${module==='notes'?'?,?,?,?,?,?,?':'?,?,?,?,?,?,?,?,?'})`,
+    statement:`INSERT INTO ${table}(owner_user_id,owner_workspace_id,${module==='notes'?'':'module,kind,'}op_id,ext_id,item_json,reset_epoch,last_error${module==='notes'?'':',source_checked'}) VALUES (${module==='notes'?'?,?,?,?,?,?,?':'?,?,?,?,?,?,?,?,?,1'})`,
     values:[owner,'ws',...(module==='notes'?[]:[mod,'record']),id,id,'{}',epoch,error],
   })
   await f.db.runInTransaction(Array.from({length:500},(_,i)=>insert(`old-${i}`,i<failures?'rejected':protectedErrors[(i-failures)%protectedErrors.length])))
@@ -54,6 +54,15 @@ test('capacity refusal rolls back attempted eviction counters and retains inheri
   assert.ok(await f.db.queryOne(`SELECT op_id FROM ${f.table} WHERE op_id='terminal-overflow'`))
   assert.equal((await f.db.queryOne("SELECT evicted_count FROM local_portal_outbox_retention WHERE module='notes'"))?.evicted_count??0,0)
   assert.equal((await f.db.queryOne('SELECT COUNT(*) AS count FROM local_capacity_proof')).count,0)
+  f.raw.close()
+})
+
+test('email retention keeps an unchecked old operation ahead of a checked terminal failure', async () => {
+  const f = await setup('email')
+  await f.db.run("UPDATE local_portal_record_outbox SET source_checked=0 WHERE op_id='old-0'")
+  await f.commit('new-1')
+  assert.ok(await f.db.queryOne("SELECT 1 FROM local_portal_record_outbox WHERE op_id='old-0'"))
+  assert.equal(await f.db.queryOne("SELECT 1 FROM local_portal_record_outbox WHERE op_id='old-1'"), null)
   f.raw.close()
 })
 

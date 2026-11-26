@@ -5,6 +5,7 @@ import { validateRecordItem, type RecordAdapter, type RecordItem } from './recor
 import { validEpoch } from './epochs.ts'
 import { acknowledgeClock, clockRetryReady, reaffirmClockOperations } from './clock-retry.ts'
 import { outboxCapacityStatements, capacityFailure, publishOutboxRetention } from './outbox-capacity.ts'
+import { recordSourceAdmitted } from './record-tables.ts'
 
 export interface RecordProjection {
   source_id: string
@@ -172,12 +173,14 @@ export class PortalRecordStore {
           ],
         },
         {
-          statement: `DELETE FROM local_portal_record_outbox WHERE owner_user_id=? AND owner_workspace_id=? AND module=? AND kind=? AND ext_id=? AND last_error<>'' AND ${projectionGuard.clause}`,
-          values: [...this.scope, item.module, item.kind, item.ext_id, ...projectionGuard.values],
+          statement: `DELETE FROM local_portal_record_outbox WHERE owner_user_id=? AND owner_workspace_id=? AND module=? AND kind=? AND ext_id=?
+          AND ((last_error<>'' AND ${recordSourceAdmitted}) OR (NOT ${recordSourceAdmitted} AND ?=''))
+          AND ${projectionGuard.clause}`,
+          values: [...this.scope, item.module, item.kind, item.ext_id, error, ...projectionGuard.values],
         },
         {
-          statement: `INSERT INTO local_portal_record_outbox(owner_user_id,owner_workspace_id,module,kind,op_id,ext_id,item_json,reset_epoch,last_error)
-          SELECT ?,?,?,?,?,?,?,?,CASE WHEN ? IS NULL THEN 'epoch_unknown' WHEN ${admitted.clause} THEN ? ELSE 'reset_epoch_mismatch' END WHERE ${projectionGuard.clause}`,
+          statement: `INSERT INTO local_portal_record_outbox(owner_user_id,owner_workspace_id,module,kind,op_id,ext_id,item_json,reset_epoch,last_error,source_checked)
+          SELECT ?,?,?,?,?,?,?,?,CASE WHEN ? IS NULL THEN 'epoch_unknown' WHEN ${admitted.clause} THEN ? ELSE 'reset_epoch_mismatch' END,1 WHERE ${projectionGuard.clause}`,
           values: [
             ...this.scope,
             item.module,
@@ -207,7 +210,7 @@ export class PortalRecordStore {
     if (epoch === null) return []
     const admitted = recordEpochGuard(this.db, this.adapter.module, epoch)
     const rows = await this.db.query<{ item_json: string }>(
-      `SELECT item_json FROM local_portal_record_outbox WHERE owner_user_id=? AND owner_workspace_id=? AND module=? AND reset_epoch=? AND last_error IN ('',?) AND ${admitted.clause} ORDER BY rowid LIMIT 50`,
+      `SELECT item_json FROM local_portal_record_outbox WHERE owner_user_id=? AND owner_workspace_id=? AND module=? AND reset_epoch=? AND last_error IN ('',?) AND ${recordSourceAdmitted} AND ${admitted.clause} ORDER BY rowid LIMIT 50`,
       [...this.scope, this.adapter.module, epoch, clockRetryReady, ...admitted.values],
     )
     return Promise.all(rows.map((row) => this.decode(row.item_json)))
@@ -260,7 +263,7 @@ export class PortalRecordStore {
   async resumeSkipped(): Promise<void> {
     await this.init()
     const rows = await this.db.query<{ item_json: string }>(
-      `SELECT item_json FROM local_portal_record_outbox WHERE owner_user_id=? AND owner_workspace_id=? AND module=? AND last_error='policy_local'`,
+      `SELECT item_json FROM local_portal_record_outbox WHERE owner_user_id=? AND owner_workspace_id=? AND module=? AND last_error='policy_local' AND ${recordSourceAdmitted}`,
       [...this.scope, this.adapter.module],
     )
     for (const row of rows) {
@@ -271,7 +274,7 @@ export class PortalRecordStore {
       const guard = recordEpochGuard(this.db, this.adapter.module, item.epoch!)
       await this.db.runInTransaction([
         {
-          statement: `INSERT INTO local_portal_record_outbox(owner_user_id,owner_workspace_id,module,kind,op_id,ext_id,item_json,reset_epoch) SELECT ?,?,?,?,?,?,?,? WHERE ${guard.clause}`,
+          statement: `INSERT INTO local_portal_record_outbox(owner_user_id,owner_workspace_id,module,kind,op_id,ext_id,item_json,reset_epoch,source_checked) SELECT ?,?,?,?,?,?,?,?,1 WHERE ${guard.clause}`,
           values: [...this.scope, item.module, item.kind, item.op_id, item.ext_id, json, item.epoch, ...guard.values],
         },
         {

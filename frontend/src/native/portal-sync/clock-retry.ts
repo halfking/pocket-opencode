@@ -3,6 +3,7 @@ import type { RecordItem } from './record-contract.ts'
 import { epochGuard } from './epoch-state.ts'
 import { recordEpochGuard } from './record-epoch.ts'
 import { validEpoch, type RecordModule } from './epochs.ts'
+import { recordSourceAdmitted } from './record-tables.ts'
 
 type Item = PortalItem | RecordItem
 type SyncModule = 'notes' | RecordModule
@@ -38,7 +39,7 @@ export async function reaffirmClockOperations<T extends Item>(db: SyncDb, module
   const correctedVersion = versionKey(timestamp)
   const t = tables(db, module)
   const rows = await db.query<{ item_json: string; last_error: string }>(
-    `SELECT item_json,last_error FROM ${t.outbox} WHERE ${t.scope} AND ${clockRetryRequired} ORDER BY rowid`, t.values)
+    `SELECT item_json,last_error FROM ${t.outbox} WHERE ${t.scope} AND ${clockRetryRequired}${t.notes ? '' : ` AND ${recordSourceAdmitted}`} ORDER BY rowid`, t.values)
   for (const row of rows) {
     const old = await codec.decode(row.item_json)
     if (!validEpoch(old.epoch)) continue
@@ -50,8 +51,8 @@ export async function reaffirmClockOperations<T extends Item>(db: SyncDb, module
       AND EXISTS(SELECT 1 FROM ${t.outbox} WHERE ${t.scope} AND op_id=? AND last_error=? AND reset_epoch=?) AND ${guard.clause}`
     const values = [...identityValues, ...t.values, old.op_id, row.last_error, old.epoch, ...guard.values]
     await db.runInTransaction([
-      { statement: `INSERT INTO ${t.outbox}(owner_user_id,owner_workspace_id,${t.notes ? '' : 'module,kind,'}op_id,ext_id,item_json,reset_epoch,last_error)
-          SELECT ${t.notes ? '?,?,?,?,?,?,?' : '?,?,?,?,?,?,?,?,?'} WHERE ${admitted}`,
+      { statement: `INSERT INTO ${t.outbox}(owner_user_id,owner_workspace_id,${t.notes ? '' : 'module,kind,'}op_id,ext_id,item_json,reset_epoch,last_error${t.notes ? '' : ',source_checked'})
+          SELECT ${t.notes ? '?,?,?,?,?,?,?' : '?,?,?,?,?,?,?,?,?,1'} WHERE ${admitted}`,
         values: [...t.values, ...(t.notes ? [] : [old.kind]), item.op_id, item.ext_id, json, item.epoch, clockRetryReady, ...values] },
       { statement: `UPDATE ${t.projection} SET item_json=?,op_id=?,version_key=?${t.notes ? ',version_ms=?' : ''}
           WHERE ${identity} AND EXISTS(SELECT 1 FROM ${t.outbox} WHERE ${t.scope} AND op_id=?) AND ${guard.clause}`,

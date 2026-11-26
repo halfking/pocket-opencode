@@ -462,6 +462,7 @@
   "email": {
     "portalMetadata": "Synchronisierte E-Mail-Zusammenfassungen",
     "portalMetadataHint": "Hier werden nur Kontoinformationen und Zusammenfassungen geteilt. Es werden keine Empfangskonten angelegt; Inhalte, Passwörter und Anhänge bleiben auf diesem Gerät.",
+    "portalMetadataLegacyReview": "Ältere E-Mail-Vorgänge bleiben auf diesem Gerät. Prüfen Sie die Metadaten unten und speichern Sie die Version, die Sie teilen möchten.",
     "portalMetadataPending": "Einige Metadaten bleiben auf diesem Gerät und warten auf Synchronisierung oder Ihre Entscheidung.",
     "portalMetadataEmpty": "Noch keine synchronisierten E-Mail-Metadaten.",
     "portalMetadataTitle": "Titel",

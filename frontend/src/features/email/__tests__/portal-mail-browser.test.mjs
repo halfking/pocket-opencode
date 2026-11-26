@@ -64,3 +64,35 @@ test('legacy native mail edits and authoritative clock correction keep one ident
     assert.match(await page.locator('#source').innerText(),/PRIVATE BODY/)
   } finally { await browser.close(); await fixture.server.close() }
 })
+
+test('the current owner can review a held mail operation in the metadata editor', async () => {
+  const fixture = await createPortalMailBrowserFixture(), browser = await chromium.launch()
+  try {
+    const page = await browser.newPage()
+    await page.goto(fixture.url)
+    await page.locator('summary').click()
+    await page.getByRole('button', { name: 'Create local mail', exact: true }).click()
+    const summary = page.locator('.portal-mail li').filter({ hasText: 'Original mail' })
+    await summary.getByText('Original summary', { exact: true }).waitFor()
+    await page.evaluate(() => {
+      window.portalMailFixture.fixtureDb.run("UPDATE local_portal_record_outbox SET source_checked=0 WHERE ext_id='summary:mail'")
+      window.dispatchEvent(new Event('openpocket:portal-email-applied'))
+    })
+    const notice = page.getByText('Older mail operations are kept on this device.', { exact: false })
+    await notice.waitFor()
+    await page.getByRole('button', { name: 'Bob', exact: true }).click()
+    await summary.waitFor({ state: 'hidden' })
+    await notice.waitFor({ state: 'hidden' })
+    await page.getByRole('button', { name: 'Alice', exact: true }).click()
+    await notice.waitFor()
+    await summary.getByRole('button', { name: 'Edit', exact: true }).click()
+    await page.getByLabel('Summary', { exact: true }).fill('Reviewed summary')
+    await page.getByRole('button', { name: 'Save', exact: true }).click()
+    await summary.getByText('Reviewed summary', { exact: true }).waitFor()
+    await notice.waitFor({ state: 'hidden' })
+    assert.deepEqual(await page.evaluate(() => window.portalMailFixture.fixtureDb.exec(
+      "SELECT source_checked FROM local_portal_record_outbox WHERE ext_id='summary:mail'",
+    )[0].values), [[1]])
+    assert.match(await page.locator('#source').innerText(), /PRIVATE BODY/)
+  } finally { await browser.close(); await fixture.server.close() }
+})

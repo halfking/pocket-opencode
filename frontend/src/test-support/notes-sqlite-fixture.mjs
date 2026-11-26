@@ -20,7 +20,7 @@ export async function until(predicate) {
 }
 
 /** Actual LocalDB, plugin Promise bridge and jeep SQL engine; only platform I/O is isolated. */
-export async function fixture(run) {
+export async function fixture(run, { prepareDatabase } = {}) {
   const oldStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage')
   const oldFetch = globalThis.fetch, oldReader = globalThis.FileReader, oldWarn = console.warn
   const values = new Map(), stored = new Map(), warnings = [], requests = []
@@ -69,6 +69,7 @@ export async function fixture(run) {
     const definitions = await vite.ssrLoadModule('/node_modules/@capacitor-community/sqlite/dist/esm/definitions.js')
     const { registerPlugin } = await vite.ssrLoadModule('/node_modules/@capacitor/core/dist/index.js')
     raw = new SQL.Database()
+    await prepareDatabase?.(raw)
     const store = { getItem: async key => stored.get(key), setItem: async (key, value) => stored.set(key, value), removeItem: async key => stored.delete(key) }
     driver = new Database('lobster', 1, {}, store, false, '')
     driver.mDb = raw

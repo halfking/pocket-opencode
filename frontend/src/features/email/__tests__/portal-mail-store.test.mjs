@@ -348,6 +348,96 @@ test('remote mail mirrors enqueue only metadata with a confirmed source version'
   assert.equal((await emails.getEmail(message.id)).fromAddress, updated.fromAddress)
 }))
 
+test('upgrading holds legacy uploads and retries until the same owner reviews the metadata', () => {
+  const timestamp = '2025-06-15T15:06:40.000Z'
+  const account = { module: 'email', kind: 'account', ext_id: 'account:legacy', title: 'Legacy mailbox',
+    payload: { address: 'legacy@example.com', display_name: 'Legacy mailbox', last_sync_at: '' },
+    client_updated_at: timestamp, op_id: 'legacy-account', deleted: false, epoch: 0 }
+  const summary = { ...account, kind: 'summary', ext_id: 'summary:legacy', title: 'Legacy mail',
+    payload: { from: 'sender@example.com', subject: 'Legacy mail', snippet: 'Saved locally', received_at: timestamp } }
+  const tombstone = { ...summary, ext_id: 'summary:legacy-deleted', op_id: 'legacy-delete', payload: {}, deleted: true }
+  const rows = [
+    ['user-A', account, ''],
+    ['user-A', { ...summary, op_id: 'legacy-policy' }, 'policy_local'],
+    ['user-A', { ...summary, op_id: 'legacy-clock' }, 'clock_skew_pending'],
+    ['user-A', { ...summary, op_id: 'legacy-confirmed' }, 'clock_retry_confirmed'],
+    ['user-A', tombstone, ''],
+    ['user-B', account, ''],
+  ]
+  return fixture(async ({ loadModule, db, login, setModules }) => {
+    const emails = await loadModule('/src/features/email/emails-store.ts')
+    const { versionKey } = await loadModule('/src/native/portal-sync/contract.ts')
+    const { syncRecordsOnce } = await loadModule('/src/native/portal-sync/record-engine.ts')
+    const { portalMailStore, editPortalMailMetadata, deletePortalMailMetadata, listPortalMailMetadata } = await loadModule('/src/features/email/portal-mail-store.ts')
+    const scopedStore = () => portalMailStore(db.bindOperation(db.captureOperation({ kind: 'local-edit' })))
+    const store = scopedStore()
+    await store.observeEpoch(0)
+    await db.run(`INSERT INTO local_email_accounts(id,display_name,email_address,imap_host,credential_encrypted,created_at,updated_at,owner_user_id,owner_workspace_id)
+      VALUES ('legacy','Legacy mailbox','legacy@example.com','imap.example.com','SAVED',1,1750000000,'user-A','workspace')`)
+    for (const item of [account, tombstone]) {
+      await db.run(`INSERT INTO local_portal_records(owner_user_id,owner_workspace_id,module,kind,ext_id,source_id,item_json,version_key,op_id,reset_epoch)
+        VALUES ('user-A','workspace','email',?,?,?,?,?,?,0)`,
+      [item.kind, item.ext_id, item.ext_id, JSON.stringify(item), versionKey(timestamp), item.op_id])
+    }
+
+    await store.resumeSkipped()
+    await store.reaffirmClock('2026-11-26T04:00:00.000Z')
+    await emails.updateSyncState('legacy', 12)
+    assert.equal((await emails.getAccount('legacy')).lastSyncedUid, 12)
+    for (const [owner, item, error] of rows) {
+      assert.deepEqual(await db.queryOne('SELECT item_json,last_error,source_checked FROM local_portal_record_outbox WHERE owner_user_id=? AND op_id=?',
+        [owner, item.op_id]), { item_json: JSON.stringify(item), last_error: error, source_checked: 0 })
+    }
+
+    let pushed = []
+    const transport = { changes: async () => ({ epochs: { email: 0 }, changes: [], next_cursor: '' }),
+      push: async items => { pushed = items; return { results: [] } } }
+    await syncRecordsOnce(store, transport, () => {})
+    assert.deepEqual(pushed, [])
+    await setModules({ email: 'local' })
+    const { lobsterReady } = await loadModule('/src/native/lobster-init.ts')
+    lobsterReady.value = true
+    const { portalEmailRuntime } = await loadModule('/src/features/email/portal-mail-runtime.ts')
+    await portalEmailRuntime.syncNow()
+    assert.equal(portalEmailRuntime.status.sourceUnchecked, 5)
+    assert.equal(portalEmailRuntime.status.clockPending, 0)
+    await setModules({ email: 'cloud' })
+
+    await editPortalMailMetadata(account.ext_id, { title: 'Reviewed', payload: account.payload })
+    await syncRecordsOnce(store, transport, () => {})
+    assert.equal(pushed.length, 1)
+    assert.equal(pushed[0].ext_id, account.ext_id)
+    assert.equal(pushed[0].title, 'Reviewed')
+    assert.notEqual(pushed[0].op_id, account.op_id)
+    assert.equal(await db.queryOne("SELECT 1 FROM local_portal_record_outbox WHERE owner_user_id='user-A' AND op_id=?", [account.op_id]), null)
+
+    assert.ok((await listPortalMailMetadata()).some(row => row.id === tombstone.ext_id && row.unchecked && row.item.deleted))
+    await deletePortalMailMetadata(tombstone.ext_id)
+    const reviewedDelete = (await store.pending()).find(item => item.ext_id === tombstone.ext_id)
+    assert.ok(reviewedDelete?.deleted)
+    assert.notEqual(reviewedDelete.op_id, tombstone.op_id)
+    assert.equal((await listPortalMailMetadata()).some(row => row.id === tombstone.ext_id), false)
+
+    await login('B')
+    const b = scopedStore()
+    await b.observeEpoch(0)
+    assert.deepEqual(await b.pending(), [])
+    assert.equal(await b.byExternalId(account.ext_id, 'account'), null)
+    assert.equal(await emails.getAccount('legacy'), null)
+    assert.equal((await db.queryOne("SELECT source_checked FROM local_portal_record_outbox WHERE owner_user_id='user-B' AND op_id=?", [account.op_id])).source_checked, 0)
+  }, { prepareDatabase: raw => {
+    // The table and queued rows use the released schema without source metadata.
+    raw.run(`CREATE TABLE local_portal_record_outbox (
+      owner_user_id TEXT NOT NULL,owner_workspace_id TEXT NOT NULL,module TEXT NOT NULL,kind TEXT NOT NULL,op_id TEXT NOT NULL,ext_id TEXT NOT NULL,
+      item_json TEXT NOT NULL,reset_epoch INTEGER,last_error TEXT NOT NULL DEFAULT '',
+      PRIMARY KEY(owner_user_id,owner_workspace_id,module,op_id))`)
+    for (const [owner, item, error] of rows) {
+      raw.run("INSERT INTO local_portal_record_outbox VALUES (?, 'workspace', 'email', ?, ?, ?, ?, 0, ?)",
+        [owner, item.kind, item.op_id, item.ext_id, JSON.stringify(item), error])
+    }
+  } })
+})
+
 test('encrypted email metadata and old reset operations stay local until a new explicit intent', () => fixture(async ({ loadModule, db, cryptoConfig }) => {
   const emails = await loadModule('/src/features/email/emails-store.ts')
   const { portalMailStore, editPortalMailMetadata } = await loadModule('/src/features/email/portal-mail-store.ts')

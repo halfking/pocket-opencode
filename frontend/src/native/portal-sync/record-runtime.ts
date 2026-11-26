@@ -10,6 +10,7 @@ import { markModuleResetPending, rememberModuleEpoch, type RecordModule } from '
 import type { RecordAdapter } from './record-contract.ts'
 import type { SyncDb } from './contract.ts'
 import { clockRetryReady, clockRetryRequired } from './clock-retry.ts'
+import { recordSourceAdmitted } from './record-tables.ts'
 
 export function createRecordRuntime(adapter: RecordAdapter) {
   const module = adapter.module
@@ -17,6 +18,7 @@ export function createRecordRuntime(adapter: RecordAdapter) {
     failed: false,
     running: false,
     blocked: 0,
+    sourceUnchecked: 0,
     clockPending: 0,
     resetPending: false,
     resetBlocked: false,
@@ -29,10 +31,13 @@ export function createRecordRuntime(adapter: RecordAdapter) {
   const refresh = async (db: SyncDb, cloud = true) => {
     const stamp = version,
       owner = [db.owner!.userId, db.owner!.workspaceId]
-    const row = await db.queryOne<{ count: number; unknown_epoch: number; reset_epoch: number; clock_pending: number }>(
+    const row = await db.queryOne<{ count: number; unknown_epoch: number; reset_epoch: number; clock_pending: number; source_unchecked: number }>(
       `SELECT COUNT(*) AS count,COALESCE(SUM(last_error='epoch_unknown'),0) AS unknown_epoch,
-      COALESCE(SUM(${clockRetryRequired}),0) AS clock_pending,
-      COALESCE(SUM(last_error IN ('reset_epoch_mismatch','reset_pending')),0) AS reset_epoch FROM local_portal_record_outbox WHERE owner_user_id=? AND owner_workspace_id=? AND module=? AND last_error NOT IN ('',?)`,
+      COALESCE(SUM(${clockRetryRequired} AND ${recordSourceAdmitted}),0) AS clock_pending,
+      COALESCE(SUM(NOT ${recordSourceAdmitted}),0) AS source_unchecked,
+      COALESCE(SUM(last_error IN ('reset_epoch_mismatch','reset_pending')),0) AS reset_epoch
+      FROM local_portal_record_outbox WHERE owner_user_id=? AND owner_workspace_id=? AND module=?
+      AND (last_error NOT IN ('',?) OR NOT ${recordSourceAdmitted})`,
       [...owner, module, clockRetryReady],
     )
     const reset = await db.queryOne(
@@ -43,6 +48,7 @@ export function createRecordRuntime(adapter: RecordAdapter) {
     if (stamp !== version) return
     Object.assign(status, {
       blocked: row?.count ?? 0,
+      sourceUnchecked: row?.source_unchecked ?? 0,
       clockPending: cloud ? row?.clock_pending ?? 0 : 0,
       epochUnknown: Boolean(row?.unknown_epoch),
       resetBlocked: Boolean(row?.reset_epoch),
@@ -149,6 +155,7 @@ export function createRecordRuntime(adapter: RecordAdapter) {
           failed: false,
           running: false,
           blocked: 0,
+          sourceUnchecked: 0,
           clockPending: 0,
           resetPending: false,
           resetBlocked: false,

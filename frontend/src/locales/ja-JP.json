@@ -462,6 +462,7 @@
   "email": {
     "portalMetadata": "同期したメール要約",
     "portalMetadataHint": "ここではアカウント情報と要約のみを共有します。受信用アカウントは作成されず、本文、パスワード、添付ファイルは端末に残ります。",
+    "portalMetadataLegacyReview": "旧バージョンのメール操作はこの端末に保持されています。下のメタデータを確認し、共有する内容を保存してください。",
     "portalMetadataPending": "一部のメタデータは端末に保持され、同期または確認が必要です。",
     "portalMetadataEmpty": "同期したメール情報はまだありません。",
     "portalMetadataTitle": "タイトル",

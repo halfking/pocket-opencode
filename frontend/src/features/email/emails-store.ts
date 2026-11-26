@@ -583,14 +583,22 @@ async function updateLocalSummary(id: string, summary: string, classification?: 
 export async function updateSyncState(accountId: string, lastUid: number): Promise<void> {
   const operation = capturePortalMailWrite()
   const { db, scope } = operation
-  const account = await db.queryOne<{ display_name: string; email_address: string }>(`SELECT display_name,email_address FROM local_email_accounts WHERE id=? AND ${scope.clause}`, [accountId, ...scope.params])
+  const account = await db.queryOne<{ updated_at: number }>(`SELECT updated_at FROM local_email_accounts WHERE id=? AND ${scope.clause}`, [accountId, ...scope.params])
   if (!account) return
   const store = portalMailStore(db), row = await findPortalMailRecord(store, 'account', accountId)
-  const current = row ? await store.decode(row.item_json) : null
-  await commitPortalMail(operation, [{ statement: `UPDATE local_email_accounts SET last_synced_uid=?,last_synced_at=? WHERE id=? AND ${scope.clause}`,
-    values: [lastUid, operation.modifiedAt, accountId, ...scope.params] }], {
-    kind: 'account', id: accountId, title: current?.title ?? account.display_name,
-    payload: { ...(current?.payload ?? mailAccountPayload(account)), last_sync_at: new Date(operation.modifiedAt).toISOString() },
+  const statement = `UPDATE local_email_accounts SET last_synced_uid=?,last_synced_at=? WHERE id=? AND ${scope.clause}`
+  const values = [lastUid, operation.modifiedAt, accountId, ...scope.params]
+  if (!row || normalizeAccountStamp(account.updated_at) === 0 || await db.queryOne(
+    `SELECT 1 FROM local_portal_record_outbox WHERE owner_user_id=? AND owner_workspace_id=?
+     AND module='email' AND kind='account' AND op_id=? AND source_checked=0`, [...store.scope, row.op_id],
+  )) {
+    await db.run(statement, values)
+    return
+  }
+  const current = await store.decode(row.item_json)
+  await commitPortalMail(operation, [{ statement, values }], {
+    kind: 'account', id: accountId, title: current.title,
+    payload: { ...current.payload, last_sync_at: new Date(operation.modifiedAt).toISOString() },
     guard: { clause: `EXISTS(SELECT 1 FROM local_email_accounts WHERE id=? AND ${scope.clause} AND last_synced_at IS ?)`, values: [accountId, ...scope.params, operation.modifiedAt] },
   })
 }

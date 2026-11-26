@@ -1,5 +1,6 @@
 import type { Statement, SyncDb } from './contract.ts'
 import type { RecordModule } from './epochs.ts'
+import { recordSourceAdmitted } from './record-tables.ts'
 
 type Module = 'notes' | RecordModule
 export const OUTBOX_LIMIT = 500
@@ -21,6 +22,7 @@ export function outboxCapacityStatements(db: SyncDb, module: Module): Statement[
   const victims = `SELECT rowid FROM ${table} WHERE ${scope}
     AND last_error<>'' AND last_error NOT IN ('policy_local','reset_pending','reset_epoch_mismatch','epoch_unknown')
     AND substr(last_error,1,6)<>'clock_'
+    ${notes ? '' : `AND ${recordSourceAdmitted}`}
     AND reset_epoch=(SELECT epoch FROM local_portal_sync_epochs WHERE owner_user_id=? AND owner_workspace_id=? AND module=?)
     AND NOT EXISTS(SELECT 1 FROM local_portal_resets WHERE owner_user_id=? AND owner_workspace_id=? AND completed=0 AND instr(modules_json,?)>0)
     ORDER BY rowid LIMIT MAX(0,(SELECT COUNT(*) FROM ${table} WHERE ${scope})-${OUTBOX_LIMIT})`

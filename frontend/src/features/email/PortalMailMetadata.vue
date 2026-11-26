@@ -2,7 +2,10 @@
   <details class="portal-mail" @toggle="onToggle">
     <summary>{{ t('email.portalMetadata') }} <span aria-hidden="true">({{ rows.length }})</span></summary>
     <p>{{ t('email.portalMetadataHint') }}</p>
-    <div v-if="runtime.status.failed || runtime.status.blocked || runtime.status.resetPending" role="alert">
+    <p v-if="hasLegacyOperations" role="alert">
+      {{ t('email.portalMetadataLegacyReview') }}
+    </p>
+    <div v-if="runtime.status.failed || runtime.status.blocked > runtime.status.sourceUnchecked || runtime.status.resetPending" role="alert">
       {{ t('email.portalMetadataPending') }}
     </div>
     <p v-if="error" role="alert">{{ error }}</p>
@@ -10,9 +13,11 @@
     <ul v-if="rows.length">
       <li v-for="row in rows.slice(0, visible)" :key="row.id">
         <strong>{{ row.item.title }}</strong>
-        <p v-if="row.item.kind === 'account'">{{ row.item.payload.address }}</p>
-        <template v-else><p>{{ row.item.payload.from }}</p><p class="snippet">{{ row.item.payload.snippet }}</p></template>
-        <button type="button" :disabled="busy" @click="openEditor(row)">{{ t('common.edit') }}</button>
+        <template v-if="!row.item.deleted">
+          <p v-if="row.item.kind === 'account'">{{ row.item.payload.address }}</p>
+          <template v-else><p>{{ row.item.payload.from }}</p><p class="snippet">{{ row.item.payload.snippet }}</p></template>
+          <button type="button" :disabled="busy" @click="openEditor(row)">{{ t('common.edit') }}</button>
+        </template>
         <button type="button" :disabled="busy" @click="remove(row)">{{ t('common.delete') }}</button>
       </li>
     </ul>
@@ -43,6 +48,7 @@ const { confirm } = useConfirm(), auth = useAuthStore()
 type Metadata = Awaited<ReturnType<typeof listPortalMailMetadata>>[number]
 const rows = ref<Metadata[]>([]), editing = ref<Metadata | null>(null), busy = ref(false), error = ref(''), visible = ref(20)
 const draft = reactive({ title: '', payload: {} as Record<string, string> })
+const hasLegacyOperations = computed(() => runtime.status.sourceUnchecked > 0 || rows.value.some(row => row.unchecked))
 let ownerGeneration = 0, loadGeneration = 0, editorDb: ReturnType<typeof captureEmailOwnership>['db'] | null = null
 const fields = computed(() => editing.value?.item.kind === 'account' ? ['address', 'display_name', 'last_sync_at'] : ['from', 'subject', 'snippet', 'received_at'])
 async function load() {

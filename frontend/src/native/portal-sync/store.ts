@@ -72,6 +72,10 @@ export class PortalNotesStore {
           const columns = await this.db.query<{ name: string }>(`PRAGMA table_info(${table})`)
           if (!columns.some(column => column.name === 'reset_epoch')) await this.db.run(`ALTER TABLE ${table} ADD COLUMN reset_epoch INTEGER`)
         }
+        const records = await this.db.query<{ name: string }>('PRAGMA table_info(local_portal_record_outbox)')
+        if (!records.some(column => column.name === 'source_checked')) {
+          await this.db.run('ALTER TABLE local_portal_record_outbox ADD COLUMN source_checked INTEGER NOT NULL DEFAULT 0')
+        }
       })()
       schemaReady.set(key, ready)
       void ready.catch(() => { if (schemaReady.get(key) === ready) schemaReady.delete(key) })

@@ -10,7 +10,7 @@ export async function createPortalMailBrowserFixture() {
         if (source.endsWith('/portal-mail-runtime')) return '\0portal-mail-runtime'
       }, load(id) {
         if (id === '\0portal-mail-auth') return 'export const useAuthStore=()=>window.__mailFixtureAuth'
-        if (id === '\0portal-mail-runtime') return "import{reactive}from'vue';export const portalEmailRuntime={status:reactive({failed:false,running:false,blocked:0,resetPending:false})};export const syncPortalMailNow=async()=>0"
+        if (id === '\0portal-mail-runtime') return "import{reactive}from'vue';export const portalEmailRuntime={status:reactive({failed:false,running:false,blocked:0,sourceUnchecked:0,resetPending:false})};export const syncPortalMailNow=async()=>0"
       } }],
     entry: `
       import {createApp,reactive,nextTick} from 'vue';

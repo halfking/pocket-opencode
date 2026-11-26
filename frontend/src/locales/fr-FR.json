@@ -462,6 +462,7 @@
   "email": {
     "portalMetadata": "Résumés de courriels synchronisés",
     "portalMetadataHint": "Seuls les métadonnées des comptes et les résumés sont partagés ici. Aucun compte de réception n’est créé ; les corps, mots de passe et pièces jointes restent sur cet appareil.",
+    "portalMetadataLegacyReview": "Les anciennes opérations de messagerie restent sur cet appareil. Vérifiez les métadonnées ci-dessous et enregistrez la version à partager.",
     "portalMetadataPending": "Certaines métadonnées restent sur cet appareil et nécessitent une synchronisation ou votre attention.",
     "portalMetadataEmpty": "Aucune métadonnée de courriel synchronisée.",
     "portalMetadataTitle": "Titre",

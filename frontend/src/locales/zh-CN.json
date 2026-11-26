@@ -486,6 +486,7 @@
   "email": {
     "portalMetadata": "跨端邮件摘要",
     "portalMetadataHint": "这里仅同步账户信息和摘要，不会创建收信账户，也不包含正文、密码或附件。",
+    "portalMetadataLegacyReview": "旧版邮件操作保留在本机。请核对下方元数据，并保存你希望同步的版本。",
     "portalMetadataPending": "部分元数据仍保留在本机，等待同步或明确处理。",
     "portalMetadataEmpty": "暂无跨端邮件元数据。",
     "portalMetadataTitle": "标题",

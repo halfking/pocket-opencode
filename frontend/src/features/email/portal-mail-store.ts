@@ -80,11 +80,16 @@ export async function listPortalMailMetadata(database?: object) {
   const { db, ownerValues } = captureEmailOwnership(database)
   const store = portalMailStore(db)
   await store.init()
-  const rows = await db.query<{ source_id: string; item_json: string }>(`SELECT source_id,item_json FROM local_portal_records
-    WHERE owner_user_id=? AND owner_workspace_id=? AND module='email' ORDER BY version_key DESC`, ownerValues)
-  const items = await Promise.all(rows.map(async row => ({ id: row.source_id, item: await store.decode(row.item_json) })))
+  const rows = await db.query<{ source_id: string; item_json: string; unchecked: number }>(`SELECT p.source_id,p.item_json,
+    EXISTS(SELECT 1 FROM local_portal_record_outbox o WHERE o.owner_user_id=p.owner_user_id
+      AND o.owner_workspace_id=p.owner_workspace_id AND o.module=p.module AND o.op_id=p.op_id AND o.source_checked=0) AS unchecked
+    FROM local_portal_records p WHERE p.owner_user_id=? AND p.owner_workspace_id=? AND p.module='email'
+    ORDER BY unchecked DESC,p.version_key DESC`, ownerValues)
+  const items = await Promise.all(rows.map(async row => ({
+    id: row.source_id, item: await store.decode(row.item_json), unchecked: Boolean(row.unchecked),
+  })))
   db.assertCurrent()
-  return items.filter(row => !row.item.deleted)
+  return items.filter(row => !row.item.deleted || row.unchecked)
 }
 
 export async function editPortalMailMetadata(id: string, patch: { title: string; payload: Record<string, unknown> }, database?: object): Promise<void> {

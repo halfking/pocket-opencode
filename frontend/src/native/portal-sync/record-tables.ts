@@ -1,3 +1,6 @@
+/** Rows written before source validation have no durable mail provenance. */
+export const recordSourceAdmitted = "(module<>'email' OR source_checked=1)"
+
 export const recordTables = [
   // A failed assertion aborts the whole source/projection/outbox transaction.
   // Successful assertions insert nothing, so this table remains empty.
@@ -9,6 +12,6 @@ export const recordTables = [
     PRIMARY KEY(owner_user_id,owner_workspace_id,module,kind,ext_id),UNIQUE(owner_user_id,owner_workspace_id,module,source_id))`,
   `CREATE TABLE IF NOT EXISTS local_portal_record_outbox (
     owner_user_id TEXT NOT NULL,owner_workspace_id TEXT NOT NULL,module TEXT NOT NULL,kind TEXT NOT NULL,op_id TEXT NOT NULL,ext_id TEXT NOT NULL,
-    item_json TEXT NOT NULL,reset_epoch INTEGER,last_error TEXT NOT NULL DEFAULT '',
+    item_json TEXT NOT NULL,reset_epoch INTEGER,last_error TEXT NOT NULL DEFAULT '',source_checked INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY(owner_user_id,owner_workspace_id,module,op_id))`,
 ]

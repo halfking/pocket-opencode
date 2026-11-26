@@ -462,6 +462,7 @@
   "email": {
     "portalMetadata": "Resúmenes de correo sincronizados",
     "portalMetadataHint": "Aquí solo se comparten metadatos de cuentas y resúmenes. No se crean cuentas de recepción; los cuerpos, contraseñas y adjuntos permanecen en este dispositivo.",
+    "portalMetadataLegacyReview": "Las operaciones de correo anteriores se conservan en este dispositivo. Revisa los metadatos y guarda la versión que quieras compartir.",
     "portalMetadataPending": "Algunos metadatos permanecen en este dispositivo y requieren sincronización o su atención.",
     "portalMetadataEmpty": "Todavía no hay metadatos de correo sincronizados.",
     "portalMetadataTitle": "Título",

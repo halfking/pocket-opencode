@@ -462,6 +462,7 @@
   "email": {
     "portalMetadata": "동기화된 메일 요약",
     "portalMetadataHint": "여기에서는 계정 정보와 요약만 공유합니다. 수신 계정을 만들지 않으며 본문, 암호, 첨부 파일은 이 기기에 남습니다.",
+    "portalMetadataLegacyReview": "이전 버전의 메일 작업이 이 기기에 보관됩니다. 아래 메타데이터를 확인하고 공유할 버전을 저장하세요.",
     "portalMetadataPending": "일부 메타데이터가 이 기기에 보관되어 동기화 또는 확인이 필요합니다.",
     "portalMetadataEmpty": "동기화된 메일 메타데이터가 없습니다.",
     "portalMetadataTitle": "제목",

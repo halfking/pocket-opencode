@@ -486,6 +486,7 @@
   "email": {
     "portalMetadata": "Synced email summaries",
     "portalMetadataHint": "Only account metadata and summaries are shared here. Receiving accounts are not created; bodies, passwords and attachments stay on this device.",
+    "portalMetadataLegacyReview": "Older mail operations are kept on this device. Review the metadata below and save the version you want to share.",
     "portalMetadataPending": "Some metadata remains on this device and needs synchronization or your attention.",
     "portalMetadataEmpty": "No synced email metadata yet.",
     "portalMetadataTitle": "Title",
