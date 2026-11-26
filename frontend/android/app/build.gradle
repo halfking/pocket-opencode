@@ -7,6 +7,28 @@ if (ssoAppLink.scheme != 'https' || !ssoAppLink.host || ssoAppOrigin != "https:/
     throw new GradleException('VITE_SSO_APP_LINK_ORIGIN must be an HTTPS origin without a port')
 }
 
+def releaseSigningKeys = [
+    'POCKET_RELEASE_STORE_FILE',
+    'POCKET_RELEASE_STORE_PASSWORD',
+    'POCKET_RELEASE_KEY_ALIAS',
+    'POCKET_RELEASE_KEY_PASSWORD'
+]
+def releaseSigning = releaseSigningKeys.collectEntries { key ->
+    [(key): providers.environmentVariable(key).orElse(providers.gradleProperty(key)).getOrNull()]
+}
+def hasReleaseSigning = releaseSigning.values().any { it != null }
+File releaseStore = null
+if (hasReleaseSigning) {
+    def missing = releaseSigningKeys.findAll { !releaseSigning[it]?.trim() }
+    if (missing) {
+        throw new GradleException("Incomplete Android release signing configuration: set ${missing.join(', ')}")
+    }
+    releaseStore = rootProject.file(releaseSigning.POCKET_RELEASE_STORE_FILE)
+    if (!releaseStore.isFile()) {
+        throw new GradleException('POCKET_RELEASE_STORE_FILE must point to an existing Android keystore')
+    }
+}
+
 android {
     namespace = "com.kaixuan.opencode.pocket"
     compileSdk = rootProject.ext.compileSdkVersion
@@ -22,6 +44,16 @@ android {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
              // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
+        }
+    }
+    signingConfigs {
+        if (hasReleaseSigning) {
+            pocketRelease {
+                storeFile = releaseStore
+                storePassword = releaseSigning.POCKET_RELEASE_STORE_PASSWORD
+                keyAlias = releaseSigning.POCKET_RELEASE_KEY_ALIAS
+                keyPassword = releaseSigning.POCKET_RELEASE_KEY_PASSWORD
+            }
         }
     }
     buildTypes {
@@ -62,6 +94,9 @@ android {
             }
         }
         release {
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.pocketRelease
+            }
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }

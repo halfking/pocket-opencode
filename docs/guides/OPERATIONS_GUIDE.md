@@ -150,22 +150,23 @@ JAVA_HOME=/Library/Java/JavaVirtualMachines/jdk-21.jdk/Contents/Home \
 
 #### APK签名（生产环境）
 
-```bash
-# 1. 生成密钥库
-keytool -genkey -v -keystore pocket-release-key.keystore \
-  -alias pocket -keyalg RSA -keysize 2048 -validity 10000
+使用发行渠道批准的现有密钥库。通过 CI 的凭据注入或用户级 `~/.gradle/gradle.properties` 提供以下四项，环境变量优先。
 
-# 2. 配置gradle.properties
-echo "POCKET_RELEASE_STORE_FILE=pocket-release-key.keystore" >> gradle.properties
-echo "POCKET_RELEASE_STORE_PASSWORD=your_password" >> gradle.properties
-echo "POCKET_RELEASE_KEY_ALIAS=pocket" >> gradle.properties
-echo "POCKET_RELEASE_KEY_PASSWORD=your_password" >> gradle.properties
-
-# 3. 构建签名版本
-./gradlew assembleRelease
+```properties
+POCKET_RELEASE_STORE_FILE=/absolute/path/to/release-keystore.p12
+POCKET_RELEASE_STORE_PASSWORD=<store-password>
+POCKET_RELEASE_KEY_ALIAS=<release-key-alias>
+POCKET_RELEASE_KEY_PASSWORD=<key-password>
 ```
 
-⚠️ 当前 `frontend/android/app/build.gradle` **没有 `signingConfigs` 段**，全仓也不读 `POCKET_RELEASE_*` 这 4 个属性 ⇒ 第 2 步写进 `gradle.properties` 目前不生效，`assembleRelease` 产出的是**未签名** APK（签名配置待补）。
+四项齐备时 `assembleRelease` 生成 `app-release.apk`。四项均未配置时生成 `app-release-unsigned.apk`，可交给独立签名流程。只提供部分配置会让构建失败。
+
+```bash
+./gradlew assembleRelease
+apksigner verify --print-certs app/build/outputs/apk/release/app-release.apk
+```
+
+核对输出的证书 SHA-256 是否与发行渠道一致。通过 Google Play App Signing 发行时，从最终分发的 APK 核验 App Links 对应的证书。[Android 发行签名](https://developer.android.com/studio/publish/app-signing)
 
 ---
 
