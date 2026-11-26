@@ -9,6 +9,7 @@
       <div class="pkm-note-view">
       <div v-if="loading" class="state">加载中…</div>
       <template v-else-if="noteId">
+        <LegacyNoteClaim source="asset" :note-id="noteId" />
         <PkmEditor
           :key="noteId"
           :note-id="noteId"
@@ -36,6 +37,7 @@ import { useWikilinkNav } from './use-wikilink-nav'
 import { markListDirty } from '../../composables/list-scene-store'
 import { useAuthStore } from '../../stores/auth'
 import { useNotesOwnerView } from '../notes/note-view-owner'
+import LegacyNoteClaim from '../notes/LegacyNoteClaim.vue'
 
 const route = useRoute()
 const router = useRouter()

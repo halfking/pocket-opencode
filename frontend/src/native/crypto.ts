@@ -12,6 +12,8 @@
  * - 自动检测旧静态 salt 加密的数据，尝试用旧 key 解密
  * - 成功解密后控制台警告，提示用户可选迁移
  */
+import { arrayBufferToBase64 } from '../utils/base64.ts'
+
 let cryptoKey: CryptoKey | null = null
 let legacyCryptoKey: CryptoKey | null = null  // 用于解密旧数据
 
@@ -117,7 +119,7 @@ export async function encryptString(plain: string): Promise<string> {
   const combined = new Uint8Array(iv.length + cipher.byteLength)
   combined.set(iv, 0)
   combined.set(new Uint8Array(cipher), iv.length)
-  return btoa(String.fromCharCode(...combined))
+  return arrayBufferToBase64(combined.buffer)
 }
 
 /** 

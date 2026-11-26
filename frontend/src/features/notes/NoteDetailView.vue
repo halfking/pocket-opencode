@@ -112,6 +112,7 @@
         <!-- 操作按钮 -->
         <div class="actions">
           <button class="action-btn primary" @click="goEdit">✎ 编辑</button>
+          <LegacyNoteClaim :source="note.storage === 'asset' ? 'asset' : 'note'" :note-id="note.id" />
           <button class="action-btn ghost" :disabled="reclassifying" @click="reclassify">
             {{ reclassifying ? '分类中…' : '🏷 重新分类' }}
           </button>
@@ -129,6 +130,7 @@ import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import * as notesStore from './notes-store'
 import type { LocalNote } from './notes-store'
+import LegacyNoteClaim from './LegacyNoteClaim.vue'
 import AddToLearningButton from '../study/AddToLearningButton.vue'
 import { http } from '../../api/http'
 import { ErrorState } from '../../components'

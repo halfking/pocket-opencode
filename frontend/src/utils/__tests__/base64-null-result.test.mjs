@@ -396,9 +396,8 @@ describe('§889 · D59：bytes→base64 的实现收编到一处（形态无关�
    *   名字可以改、形态可以换，形状改不掉 —— 字节变 base64 只能靠
    *   「把字节摊成 binary string」+「btoa」这两步。
    *
-   * ⚠ 但形状**不能拿来做全仓唯一性**判定：`native/crypto.ts` 里把 salt/密钥
-   *   存进 localStorage 时用的就是 `btoa(String.fromCharCode(...))` ——
-   *   形状相同，但那是业务流程里顺手的一步，不是可复用工具，收编过去反而别扭。
+   * ⚠ 形状不能用于全仓唯一性判定。`native/crypto.ts` 对固定 16 字节的 salt
+   *   单独编码，可变长度的密文走公共分块实现。
    *   ⇒ **形状只在这 4 个「收编落点」上判**（它们本来就该只剩公共实现），
    *   全仓不做唯一性断言。
    */
@@ -522,15 +521,9 @@ describe('§889 · D59：bytes→base64 的实现收编到一处（形态无关�
     assert.match(src, /latin1PartToBytes\(part\.body\)/, '调用点必须跟着改名')
   })
 
-  it('★★ 边界登记：crypto.ts 的**内联**编码不在收编范围（形状相同但不是工具函数）', () => {
-    // 这条不是「必须成立」而是**量具边界的记录**：
-    // `native/crypto.ts` 把 salt / 密钥材料编码成字符串存 localStorage，
-    // 用的也是 `btoa(String.fromCharCode(...))` —— 形状与公共实现相同，
-    // 但它**不是可复用工具**，收编过去反而别扭。
-    // ⇒ 「bytes→base64」这个形状天然会在多处出现，所以形状不是**全仓**判据。
+  it('★★ crypto.ts 的可变长度密文使用分块编码', () => {
     const cryptoSrc = strip(readFileSync(resolve(SRC_ROOT, 'native/crypto.ts'), 'utf8'))
-    assert.match(cryptoSrc, /btoa\(String\.fromCharCode\(/,
-      'crypto.ts 的内联编码不见了 ⇒ 若它被改成了别的形态，请重新评估「形状不是全仓判据」这个前提')
+    assert.match(cryptoSrc, /function encryptString[\s\S]*?return arrayBufferToBase64\(combined\.buffer\)/)
   })
 
   it('★★ 边界登记：这道门**只覆盖那 4 个落点**，不是全仓唯一性断言', () => {
