@@ -1,30 +1,51 @@
-import test from'node:test'
-import assert from'node:assert/strict'
-import{execFile}from'node:child_process'
-import{promisify}from'node:util'
-import{createNativeRssBrowserFixture}from'./rss-native-browser.mjs'
+import assert from 'node:assert/strict'
+import { test } from 'node:test'
+import { chromium } from 'playwright'
+import { createNativeRssBrowserFixture } from './rss-native-browser.mjs'
 
-test('new native RSS subscription events reach the portable outbox without enrolling a former discovery owner',{timeout:180000},async()=>{
- const f=await createNativeRssBrowserFixture(),exec=promisify(execFile),session=`rss-native-${process.pid}`
- const browser=async(...args)=>(await exec('browser-use',['--session',session,...args],{timeout:60000})).stdout
- const control=async pattern=>{const state=await browser('state'),m=state.match(pattern);assert.ok(m,`Missing ${pattern}\n${state}`);return m[1]}
- const button=label=>control(new RegExp(`\\[(\\d+)\\]<button[^>]*\\/>\\s+${label}\\s*(?:\\n|$)`))
- try{
-  await browser('open',f.url);await browser('wait','text','RSS across devices')
-  await browser('input',await control(/\[(\d+)\]<input id=rss-add-url\b/),'https://example.test/native')
-  await browser('click',await button('发现候选'));await browser('wait','text','Native A feed')
-  await browser('click',await control(/\[(\d+)\]<li\b/));await browser('click',await button('Pull native changes'))
-  await browser('wait','selector','.portal-records li strong')
-  const snapshot=await browser('eval',`JSON.stringify(window.nativeSnapshot)`)
-  assert.match(snapshot,/pocketd-source:A-1/);assert.match(snapshot,/\\"epoch\\":0/)
-  await browser('click',await button('Bob'));await browser('wait','text','No shared RSS records yet');assert.doesNotMatch(await browser('state'),/Native A feed/)
-  await browser('click',await button('Alice'));await browser('click',await button('Pause discovery'))
-  await browser('input',await control(/\[(\d+)\]<input id=rss-add-url\b/),'https://example.test/private-A')
-  await browser('click',await button('发现候选'));await browser('eval','new Promise(resolve=>{const tick=()=>window.nativeDiscoveryStarted?resolve(true):setTimeout(tick,10);tick()})')
-  await browser('click',await button('Bob'));await browser('click',await button('Release discovery'))
-  await browser('wait','text','No shared RSS records yet')
-  assert.doesNotMatch(await browser('state'),/private-A|Native A feed/)
-  const sent=await browser('eval',`JSON.stringify(window.nativeRssFixture.requests.filter(r=>r.path==='/api/rss/sources'))`)
-  assert.doesNotMatch(sent,/owner":"B/)
- }finally{await browser('close').catch(()=>{});await f.server.close()}
+test('new native RSS subscription events reach the portable outbox without enrolling a former discovery owner', async () => {
+  const { server, url } = await createNativeRssBrowserFixture()
+  let browser
+  try {
+    browser = await chromium.launch()
+    const page = await browser.newPage()
+    await page.goto(url)
+    const button = name => page.getByRole('button', { name, exact: true })
+    const address = page.locator('#rss-add-url')
+    const portable = page.locator('.portal-records')
+
+    await address.fill('https://example.test/native')
+    await button('发现候选').click()
+    await page.locator('.candidates li').filter({ hasText: 'Native A feed' }).click()
+    await page.waitForFunction(() => document.querySelector('.manual button')?.disabled === false)
+    await button('Pull native changes').click()
+    await portable.getByText('Native A feed', { exact: true }).waitFor()
+    await page.waitForFunction(() => window.nativeSnapshot?.length === 1)
+    const [queued] = await page.evaluate(() => window.nativeSnapshot)
+    const item = JSON.parse(queued.item_json)
+    assert.equal(item.ext_id, 'pocketd-source:A-1')
+    assert.equal(item.epoch, 0)
+
+    await button('Bob').click()
+    await page.getByText('No shared RSS records yet', { exact: true }).waitFor()
+    assert.doesNotMatch(await page.locator('body').innerText(), /Native A feed/)
+    await button('Alice').click()
+    await button('Pause discovery').click()
+    await address.fill('https://example.test/private-A')
+    await button('发现候选').click()
+    await page.waitForFunction(() => window.nativeDiscoveryStarted)
+    await button('Bob').click()
+    await button('Release discovery').click()
+    await page.getByText('No shared RSS records yet', { exact: true }).waitFor()
+    assert.doesNotMatch(await page.locator('body').innerText(), /private-A|Native A feed/)
+    const sent = await page.evaluate(async () => {
+      await window.nativeRssFixture.ingest()
+      return window.nativeRssFixture.requests.filter(request => request.path === '/api/rss/sources/queued')
+        .map(request => request.owner)
+    })
+    assert.deepEqual(sent, ['A'])
+  } finally {
+    await browser?.close()
+    await server.close()
+  }
 })
