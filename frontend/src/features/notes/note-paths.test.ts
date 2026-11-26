@@ -5,6 +5,7 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import {
+  noteAudioRelativePath,
   noteDir,
   noteFileRelPath,
   noteIdPrefix,
@@ -33,5 +34,26 @@ describe('noteFileRelPath', () => {
     assert.equal(noteFileRelPath(dir, 'audio', 1, 'webm'), `${dir}/audio/01.webm`)
     assert.equal(noteFileRelPath(dir, 'image', 2, 'jpg'), `${dir}/images/02.jpg`)
     assert.equal(noteFileRelPath(dir, 'video', 1, 'mp4'), `${dir}/videos/01.mp4`)
+  })
+})
+
+describe('noteAudioRelativePath', () => {
+  const id = 'note-r6'
+  const createdAt = Date.UTC(2026, 0, 2)
+  const root = noteDir(id, createdAt)
+  const audio = `${root}/versions/r-42/audio/01.webm`
+
+  it('pairs relative and old sandbox references with the same recording', () => {
+    assert.equal(noteAudioRelativePath(audio, id, createdAt), audio)
+    assert.equal(noteAudioRelativePath(`file:///old-container/Documents/${audio}`, id, createdAt), audio)
+    assert.equal(noteAudioRelativePath(`${root}/audio/42.m4a`, id, createdAt), `${root}/audio/42.m4a`)
+  })
+
+  it('leaves externally linked and unrelated media outside managed resolution', () => {
+    for (const path of [
+      'blob:recorded-meeting', `https://example.test/${audio}`, `sqlite:${audio}`,
+      `file:///old-container/Documents/${audio.replace(id, 'note-other')}`,
+      `${root}/versions/r-42/audio/../02.webm`, `${root}/audio/01.webm?other`,
+    ]) assert.equal(noteAudioRelativePath(path, id, createdAt), null, path)
   })
 })

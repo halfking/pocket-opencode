@@ -26,3 +26,18 @@ export function noteFileRelPath(
   const seq = String(index).padStart(2, '0')
   return `${dir}/${folder}/${seq}.${ext.replace(/^\./, '')}`
 }
+
+/** Resolve only an audio file under this note's managed directory. */
+export function noteAudioRelativePath(path: string | null, noteId: string, createdAt: number): string | null {
+  if (!path || !/^[a-zA-Z0-9_-]+$/.test(noteId) || !Number.isFinite(createdAt)) return null
+  const directory = `${noteDir(noteId, createdAt)}/`
+  let relative = path
+  if (path.startsWith('file:///')) {
+    const start = path.lastIndexOf(`/${directory}`)
+    if (start < 0) return null
+    relative = path.slice(start + 1)
+  }
+  if (!relative.startsWith(directory)) return null
+  const filename = relative.slice(directory.length)
+  return /^(?:versions\/[a-zA-Z0-9-]{1,80}\/)?audio\/\d+\.[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(filename) ? relative : null
+}

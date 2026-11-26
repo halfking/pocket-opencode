@@ -7,7 +7,8 @@ import { assetStore } from '../../native/asset-store'
 import { decideNoteStorage, splitForEmbedding } from './note-storage-policy'
 import { sha1Hex } from '../../utils/text-hash'
 import { needsFullRebuild } from './embed-reuse'
-import { deleteNoteBodyFile, deleteNoteFiles, persistNotePayload, readNoteBody } from './note-files'
+import { deleteNoteBodyFile, deleteNoteFiles, persistNotePayload, readNoteBody, resolveNoteAudioPath } from './note-files'
+import { noteAudioRelativePath } from './note-paths'
 import { RECORD_MEDIA_CLEANUP_FAIL_TAG } from '../../utils/action-failure-notice'
 import { assetToNote, rowToNote, mergeImportedNotes } from './notes-row'
 import { captureNoteWriteOperation, type NoteWriteOperation, type NoteWriteOptions, type NoteCloudOperation, type NoteDbOperation } from './note-operation'
@@ -157,6 +158,7 @@ export async function createNote(input: CreateNoteInput, options?: NoteWriteOpti
   })
   // The versioned portal outbox is the only cloud copy; never bypass it with
   // the legacy unversioned pocket notes mirror.
+  note.audioPath = await resolveNoteAudioPath(note.audioPath, note.id, note.createdAt)
   operation.assertCurrent()
   return note
 }
@@ -299,13 +301,14 @@ export async function updateNote(
        status = ?, storage_tier = ?, summary = ?, search_text = ?, body_path = ?,
        media_json = ?, audio_path = ?, audio_duration_ms = ?, updated_at = ?
      WHERE id = ? AND workspace_id = ?`
+  const storedAudioPath = noteAudioRelativePath(audioPath, id, existing.createdAt) ?? audioPath
   const updateNoteValues = [
       nextTitle, storedContent, shouldEncrypt ? 1 : 0,
       patch.domain !== undefined ? patch.domain : existing.domain,
       nextTags ? JSON.stringify(nextTags) : null,
       patch.status ?? existing.status ?? 'saved',
       decided.tier, nextSummary ?? decided.summary, decided.searchText, bodyPath, mediaJson,
-      audioPath, audioPath ? (patch.audioDurationMs ?? existing.audioDurationMs) : (patch.audioDurationMs ?? 0),
+      storedAudioPath, audioPath ? (patch.audioDurationMs ?? existing.audioDurationMs) : (patch.audioDurationMs ?? 0),
       modifiedAt,
       id, workspaceId,
     ]

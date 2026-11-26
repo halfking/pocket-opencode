@@ -4,7 +4,7 @@ import { localDB } from '../../native/local-db'
 import type { NoteDbOperation } from './note-operation'
 
 import { blobToBase64, utf8ToBase64, base64ToUtf8 } from '../../utils/base64'
-import { noteDir, noteFileRelPath, type NoteFileKind } from './note-paths'
+import { noteAudioRelativePath, noteDir, noteFileRelPath, type NoteFileKind } from './note-paths'
 import type { NoteFileRecord, NoteMediaInput } from './notes-types'
 import type { Statement } from '../../native/portal-sync/contract'
 
@@ -56,21 +56,30 @@ async function writeRelPath(relPath: string, dataBase64: string, db: NoteDbOpera
     db.assertCurrent()
     await Filesystem.writeFile({ path: relPath, data: dataBase64, directory: Directory.Data })
     db.assertCurrent()
-    const uri = await Filesystem.getUri({ path: relPath, directory: Directory.Data })
-    db.assertCurrent()
-    return uri.uri
+    return relPath
   }
   return `sqlite:${relPath}`
 }
 
-async function insertFileRow(row: NoteFileRecord, dataBase64: string, nativeUri: string | null, db: NoteDbOperation): Promise<void> {
+export async function resolveNoteAudioPath(path: string | null, noteId: string, createdAt: number): Promise<string | null> {
+  if (!Capacitor.isNativePlatform()) return path
+  const relative = noteAudioRelativePath(path, noteId, createdAt)
+  if (!relative) return path
+  try {
+    return (await Filesystem.getUri({ path: relative, directory: Directory.Data })).uri
+  } catch {
+    return path
+  }
+}
+
+async function insertFileRow(row: NoteFileRecord, dataBase64: string, nativePath: string | null, db: NoteDbOperation): Promise<void> {
   await db.run(
     `INSERT OR REPLACE INTO local_note_files
        (id, note_id, kind, rel_path, mime, size_bytes, duration_ms, data_base64, created_at)
      VALUES (?,?,?,?,?,?,?,?,?)`,
     [
-      row.id, row.noteId, row.kind, nativeUri || row.relPath, row.mime,
-      row.sizeBytes, row.durationMs, nativeUri ? '' : dataBase64, Date.now(),
+      row.id, row.noteId, row.kind, nativePath || row.relPath, row.mime,
+      row.sizeBytes, row.durationMs, nativePath ? '' : dataBase64, Date.now(),
     ],
   )
 }
@@ -120,7 +129,7 @@ export async function persistNotePayload(input: PersistNotePayloadInput, db = ca
     const ext = media.ext || extFromMime(mime, 'bin')
     const rel = noteFileRelPath(dir, media.kind as NoteFileKind, counters[media.kind], ext)
     const dataBase64 = await blobToBase64(media.blob)
-    const uri = await writeRelPath(rel, dataBase64, db)
+    const storedPath = await writeRelPath(rel, dataBase64, db)
     const row: NoteFileRecord = {
       id: input.deferRows ? `${input.noteId}-${input.revision}-${media.kind}-${counters[media.kind]}` : `${input.noteId}-${media.kind}-${counters[media.kind]}`,
       noteId: input.noteId,
@@ -133,7 +142,7 @@ export async function persistNotePayload(input: PersistNotePayloadInput, db = ca
     files.push(row)
     if (input.deferRows) statements.push(stagedFileRow(row, dataBase64, Capacitor.isNativePlatform() ? rel : null))
     else await insertFileRow(row, dataBase64, Capacitor.isNativePlatform() ? rel : null, db)
-    if (media.kind === 'audio' && !audioPath) audioPath = uri
+    if (media.kind === 'audio' && !audioPath) audioPath = storedPath
   }
 
   db.assertCurrent()

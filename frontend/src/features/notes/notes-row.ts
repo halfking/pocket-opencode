@@ -1,6 +1,7 @@
 import { decryptString } from '../../native/crypto'
 import { assetStore, type Asset } from '../../native/asset-store'
 import { canReadPortalNote } from '../../native/portal-sync/storage'
+import { resolveNoteAudioPath } from './note-files'
 import type { LocalNote, NoteRow, NoteStatus, NoteStorageTier } from './notes-types'
 
 export function parseTags(value: string | string[] | null | undefined, depth = 0): string[] | null {
@@ -74,7 +75,7 @@ export async function rowToNote(r: NoteRow | null): Promise<LocalNote | null> {
     domain: r.domain,
     category: r.category,
     tags: parseTags(r.tags),
-    audioPath: r.audio_path,
+    audioPath: await resolveNoteAudioPath(r.audio_path, r.id, r.created_at),
     audioDurationMs: r.audio_duration_ms,
     createdByVoice: r.created_by_voice === 1,
     createdAt: r.created_at,
