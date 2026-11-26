@@ -51,6 +51,7 @@
           </ul>
         </details>
       </div>
+      <AccRunCommands :key="detail.runId" :run-id="detail.runId" :authority="detailAccess" />
       <h3>任务图</h3>
       <p v-if="!detail.nodes.length">暂无任务节点</p>
       <ul v-else>
@@ -76,6 +77,7 @@ import { useAuthStore } from '../../stores/auth'
 import { getAccLogSession } from './acc-log-session'
 import { verifyAccTaskAuthority } from './acc-task-authority'
 import LogStream from './LogStream.vue'
+import AccRunCommands from './AccRunCommands.vue'
 import { isMockActive } from './mock'
 
 const auth = useAuthStore()

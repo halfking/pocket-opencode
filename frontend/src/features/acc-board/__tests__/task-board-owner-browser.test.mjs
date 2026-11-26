@@ -14,6 +14,8 @@ async function fixture(t, legacy = false) {
   const requests = [], held = [], errors = [], taskReads = [], eventCursors = []
   const delayedTasks = []
   const eventReplies = []
+  const commandWrites = []
+  let receipt
   let delayTaskPage = false, holdEventReplay = false
   let bindingStatus = 200
   let status = 200, hold = false, server, browser
@@ -108,6 +110,15 @@ async function fixture(t, legacy = false) {
           else if (path.endsWith('/billing')) {
             json({ run_id: task.run_id, state: 'partial', totals: { requests: 4, debited_credits: 6255, net_credits: 6255 },
               attempts: [{ task_id: task.task_id, revision_id: 'rev-' + user, attempt: 1, state: 'unobserved' }] })
+          } else if (path.endsWith('/commands')) {
+            json({run_id:task.run_id, commands:[{dispatch_id:'dispatch_'+user, task_id:task.task_id, attempt:2,
+              status:receipt ? 'cancelled' : 'running', can_cancel:!receipt, cancel_state:receipt, verified_executor:true}]})
+          } else if (path.endsWith('/commands/dispatch_'+user+'/cancel') && req.method === 'POST') {
+            commandWrites.push([user, path])
+            receipt = 'requested'
+            res.statusCode = 202
+            json({run_id:task.run_id, command:{dispatch_id:'dispatch_'+user, task_id:task.task_id, attempt:2,
+              status:'cancelled', can_cancel:false, cancel_state:receipt, verified_executor:true}})
           } else if (path.endsWith('/events/stream')) {
             res.setHeader('Content-Type', 'text/event-stream')
             res.end(`id: 1\ndata: ${JSON.stringify({ sequence: 1, event_type: 'run.terminal', event_id: 'evt-1', run_id: task.run_id, payload: { text: '已读取派发回执' } })}\n\n`)
@@ -140,6 +151,7 @@ async function fixture(t, legacy = false) {
   await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/__board_owner__`)
   await page.waitForFunction(() => window.boardReady)
   return { page, requests, errors, held, reply, taskReads, eventCursors, delayedTasks, eventReplies,
+    commandWrites, setReceipt(stage) { receipt = stage },
     holdTaskPage() { delayTaskPage = true },
     holdEventReplay() { holdEventReplay = true },
     denyBinding() { bindingStatus = 403 },
@@ -246,6 +258,29 @@ test('expiring the verified binding clears the task view and cancels an in-fligh
   assert.equal(f.eventCursors.length, 1)
   assert.ok(!(await f.text()).includes('联跑任务 alice'))
   assert.ok(!(await f.text()).includes('已读取派发回执'))
+  assert.deepEqual(f.errors, [])
+})
+
+test('the task view confirms the exact dispatch and waits for cancellation evidence', { timeout: 30_000 }, async t => {
+  const f = await fixture(t)
+  await f.page.clock.install()
+  await f.page.getByRole('link', {name:'统一任务', exact:true}).click()
+  await f.page.getByRole('button', {name:/联跑任务 alice/}).click()
+  const controls = f.page.getByRole('region', {name:'派发与取消回执', exact:true})
+  await controls.getByRole('button', {name:'取消派发', exact:true}).click()
+  assert.deepEqual(f.commandWrites, [])
+  await controls.getByRole('button', {name:'确认取消', exact:true}).click()
+  await controls.getByText('取消已请求', {exact:true}).waitFor()
+  assert.equal(await controls.getByText('取消已生效', {exact:true}).count(), 0)
+  assert.deepEqual(f.commandWrites, [['alice', '/api/v2/orchestration/runs/run-alice/commands/dispatch_alice/cancel']])
+  f.setReceipt('delivered')
+  await f.page.clock.fastForward(2100)
+  await controls.getByText('取消已送达', {exact:true}).waitFor()
+  f.setReceipt('effective')
+  await f.page.clock.fastForward(2100)
+  await controls.getByText('取消已生效', {exact:true}).waitFor()
+  await f.action('account')
+  await controls.waitFor({state:'detached'})
   assert.deepEqual(f.errors, [])
 })
 

@@ -1,4 +1,4 @@
-import { readAcc, type AccRequestAuthority } from './accApi'
+import { postAcc, readAcc, type AccRequestAuthority } from './accApi'
 
 interface UnifiedTask {
   task_id: string
@@ -40,6 +40,16 @@ export interface RunBilling {
   attempts: {
     task_id: string; revision_id: string; attempt: number; dispatch_id?: string; state: string; totals?: BillingTotals
   }[]
+}
+
+export interface RunCommandReceipt {
+  dispatch_id: string
+  task_id: string
+  attempt: number
+  status: string
+  can_cancel: boolean
+  cancel_state?: 'requested' | 'delivered' | 'effective'
+  verified_executor: boolean
 }
 
 interface TaskTrajectory {
@@ -103,6 +113,25 @@ export async function readRunBilling(authority: AccRequestAuthority, runId: stri
   if (report?.run_id !== runId || !['pending', 'reconciled', 'partial', 'unobserved'].includes(report.state)
     || !Array.isArray(report.attempts)) throw new Error('Invalid ACC run billing')
   return report
+}
+
+export async function readRunCommands(authority: AccRequestAuthority, runId: string, signal: AbortSignal) {
+  const result = await readAcc<{ run_id: string; commands: RunCommandReceipt[] }>(
+    authority, `${runPath(runId)}/commands`, signal,
+  )
+  if (result?.run_id !== runId || !Array.isArray(result.commands)) throw new Error('Invalid ACC run commands')
+  return result.commands
+}
+
+export async function cancelRunCommand(authority: AccRequestAuthority, runId: string, dispatchId: string, signal: AbortSignal) {
+  if (!/^dispatch_[a-zA-Z0-9_-]{1,160}$/.test(dispatchId)) throw new Error('Invalid ACC dispatch ID')
+  const result = await postAcc<{ run_id: string; command: RunCommandReceipt }>(
+    authority, `${runPath(runId)}/commands/${encodeURIComponent(dispatchId)}/cancel`, signal,
+  )
+  if (result?.run_id !== runId || result.command?.dispatch_id !== dispatchId || !result.command.cancel_state) {
+    throw new Error('Invalid ACC cancellation receipt')
+  }
+  return result.command
 }
 
 async function readRunGraph(authority: AccRequestAuthority, runId: string, signal?: AbortSignal) {

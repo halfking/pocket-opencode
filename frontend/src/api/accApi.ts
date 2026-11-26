@@ -198,6 +198,10 @@ export function readAcc<T>(authority: AccRequestAuthority, path: string, signal?
   return accRequest<T>(path, { authority, signal, cache: 'no-store' })
 }
 
+export function postAcc<T>(authority: AccRequestAuthority, path: string, signal?: AbortSignal): Promise<T> {
+  return accRequest<T>(path, { method: 'POST', authority, signal, cache: 'no-store' })
+}
+
 // ---------------------------------------------------------------------------
 // 数据模型（字段对齐 M0 契约；对实现的额外字段保持宽容 —— 见各 normalize）
 // ---------------------------------------------------------------------------
