@@ -243,6 +243,81 @@ func TestAdminAuthClient_SsoLoginURL(t *testing.T) {
 	}
 }
 
+func TestAdminAuthClient_SeparatesBrowserLoginFromServiceRequests(t *testing.T) {
+	const secret = "fixture-secret"
+	agent := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/sso/callback":
+			if r.Method != http.MethodGet || r.Header.Get("Authorization") != "Bearer "+secret {
+				t.Error("callback must use the service credential")
+			}
+			_ = json.NewEncoder(w).Encode(SsoCallbackResult{
+				JWT: "platform-token", Claims: SsoCallbackClaims{Sub: "subject"}, ExternalState: "nonce",
+			})
+		case "/api/v1/sso/refresh":
+			if r.Method != http.MethodPost || r.Header.Get("Authorization") != "Bearer platform-token" {
+				t.Error("refresh must use the current session credential")
+			}
+			_ = json.NewEncoder(w).Encode(map[string]string{"jwt": "renewed-platform-token"})
+		default:
+			t.Errorf("unexpected internal request to %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer agent.Close()
+
+	cfg := AdminAuthClientConfig{
+		AdminURL: agent.URL, AuthAgentURL: agent.URL, AuthAgentPublicURL: "https://sso-canary.example.com:9443/", Secret: secret,
+	}
+	client, err := NewAdminAuthClient(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "https://sso-canary.example.com:9443/api/v1/sso/login?external_state=nonce"
+	if got := client.SsoLoginURL("nonce", "https://untrusted.example.com/"); got != want {
+		t.Fatalf("login URL = %q, want %q", got, want)
+	}
+	ctx := context.Background()
+	callback, err := client.SsoCallback(ctx, "code", "state")
+	if err != nil || callback.JWT != "platform-token" || callback.ExternalState != "nonce" {
+		t.Fatalf("internal callback = %+v, err = %v", callback, err)
+	}
+	token, err := client.SsoRefresh(ctx, callback.JWT)
+	if err != nil || token != "renewed-platform-token" {
+		t.Fatalf("internal refresh = %q, err = %v", token, err)
+	}
+
+	cfg.AuthAgentPublicURL = ""
+	for _, internalURL := range []string{agent.URL + "/internal", ""} {
+		cfg.AuthAgentURL = internalURL
+		client, err := NewAdminAuthClient(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		base := internalURL
+		if base == "" {
+			base = cfg.AdminURL
+		}
+		if got := client.SsoLoginURL("nonce", ""); got != base+"/api/v1/sso/login?external_state=nonce" {
+			t.Fatalf("fallback login URL = %q for AuthAgentURL %q", got, internalURL)
+		}
+	}
+}
+
+func TestNewAdminAuthClient_RejectsInvalidPublicLoginOrigin(t *testing.T) {
+	for _, origin := range []string{
+		"http://example.com", "//example.com", "https:///login", "https://user:secret@example.com",
+		"https://example.com/api", "https://example.com?query=1", "https://example.com#fragment",
+	} {
+		_, err := NewAdminAuthClient(AdminAuthClientConfig{
+			AdminURL: "http://admin", Secret: "fixture-secret", AuthAgentPublicURL: origin,
+		})
+		if err == nil || !strings.Contains(err.Error(), "POCKET_REDCLAW_AUTH_AGENT_PUBLIC_URL") {
+			t.Errorf("origin %q: expected configuration error, got %v", origin, err)
+		}
+	}
+}
+
 func TestAdminAuthClient_SsoCallback_Success(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasPrefix(r.URL.Path, "/api/v1/sso/callback") {

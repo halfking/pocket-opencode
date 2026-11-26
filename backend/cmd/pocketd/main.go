@@ -439,11 +439,12 @@ func main() {
 				logging.Fatalf("POCKET_REDCLAW_ADMIN_SECRET must be at least 32 bytes when RedClaw auth is enabled")
 			}
 			ac, err := redclaw.NewAdminAuthClient(redclaw.AdminAuthClientConfig{
-				AdminURL:     cfg.RedClawAdminURL,
-				AuthAgentURL: cfg.RedClawAuthAgentURL,
-				Secret:       cfg.RedClawAdminSecret,
-				TenantID:     cfg.RedClawTenantID,
-				TimeoutSec:   cfg.RedClawAdminTimeoutSec,
+				AdminURL:           cfg.RedClawAdminURL,
+				AuthAgentURL:       cfg.RedClawAuthAgentURL,
+				AuthAgentPublicURL: cfg.RedClawAuthAgentPublicURL,
+				Secret:             cfg.RedClawAdminSecret,
+				TenantID:           cfg.RedClawTenantID,
+				TimeoutSec:         cfg.RedClawAdminTimeoutSec,
 			})
 			if err != nil {
 				logging.Fatalf("RedClaw admin client init failed: %v", err)

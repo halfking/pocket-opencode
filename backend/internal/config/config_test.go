@@ -48,6 +48,7 @@ func TestLoadProductionAlias(t *testing.T) {
 	// RedClaw auth authority: production requires it unless legacy-only.
 	t.Setenv("POCKET_REDCLAW_ADMIN_URL", "http://redclaw-admin.internal:28081")
 	t.Setenv("POCKET_REDCLAW_ADMIN_SECRET", "0123456789abcdef0123456789abcdef-redclaw")
+	t.Setenv("POCKET_REDCLAW_AUTH_AGENT_PUBLIC_URL", "https://sso-canary.example.com")
 	// PK-3.1: direct LLM env must be cleared so this test does not depend on
 	// the host machine's environment.
 	t.Setenv("POCKET_LLM_BASE_URL", "")
@@ -57,6 +58,9 @@ func TestLoadProductionAlias(t *testing.T) {
 	cfg := Load()
 	if cfg.Environment != "production" {
 		t.Fatalf("expected prod to normalize to production, got %q", cfg.Environment)
+	}
+	if cfg.RedClawAuthAgentPublicURL != "https://sso-canary.example.com" {
+		t.Fatalf("unexpected browser SSO origin %q", cfg.RedClawAuthAgentPublicURL)
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("expected valid production config, got %v", err)

@@ -322,10 +322,11 @@ type Config struct {
 	// —— RedClaw 认证主权威源（一期切换）——
 	// 改造后 openpocket 不再自签 JWT；密码登录、SSO、token 撤销都走 RedClaw。
 	// 留空时：若 POCKET_DEV_AUTH=true 走本地 dev 旁路；否则启动失败。
-	RedClawAdminURL        string // POCKET_REDCLAW_ADMIN_URL：RedClaw Admin 后端（如 http://host:28081）
-	RedClawAdminSecret     string // POCKET_REDCLAW_ADMIN_SECRET：HS256 共享密钥（必填，≥32 字节）
-	RedClawAuthAgentURL    string // POCKET_REDCLAW_AUTH_AGENT_URL：Auth Agent（SSO 入口；空 = 与 Admin 同址）
-	RedClawAdminTimeoutSec int    // POCKET_REDCLAW_ADMIN_TIMEOUT_SEC（默认 10）
+	RedClawAdminURL           string // POCKET_REDCLAW_ADMIN_URL：RedClaw Admin 后端（如 http://host:28081）
+	RedClawAdminSecret        string // POCKET_REDCLAW_ADMIN_SECRET：HS256 共享密钥（必填，≥32 字节）
+	RedClawAuthAgentURL       string // POCKET_REDCLAW_AUTH_AGENT_URL：Auth Agent 服务间地址（空 = 与 Admin 同址）
+	RedClawAuthAgentPublicURL string // POCKET_REDCLAW_AUTH_AGENT_PUBLIC_URL：浏览器 SSO 登录的 HTTPS origin
+	RedClawAdminTimeoutSec    int    // POCKET_REDCLAW_ADMIN_TIMEOUT_SEC（默认 10）
 
 	// —— 一键回滚开关 ——
 	// 紧急回滚到原本地 JWT 流程（不走 RedClaw），用于故障恢复。
@@ -467,7 +468,7 @@ func Load() Config {
 		// 飞书出站（发票推送）
 		FeishuInvoiceChatID:      getEnv("POCKET_FEISHU_INVOICE_CHAT_ID", ""),
 		FeishuInvoiceFolderToken: getEnv("POCKET_FEISHU_INVOICE_FOLDER_TOKEN", ""),
-		
+
 		// 说话人分离
 		DiarizationBaseURL: getEnv("POCKET_DIARIZATION_BASE_URL", ""),
 		DiarizationAPIKey:  getEnv("POCKET_DIARIZATION_API_KEY", ""),
@@ -485,18 +486,18 @@ func Load() Config {
 		// WebSocket 安全
 		AllowedOrigins: getEnv("POCKET_ALLOWED_ORIGINS", ""),
 		// 磁盘会话聚合（只读）
-		DiskSessionsEnabled:   getEnv("POCKET_DISK_SESSIONS_ENABLED", "") == "true",
-		DiskSessionsWorkspace: getEnv("POCKET_DISK_SESSIONS_WORKSPACE", ""),
-		DiskHome:              getEnv("POCKET_DISK_HOME", ""),
-		CompanionURL:          getEnv("POCKET_COMPANION_URL", ""),
-		CompanionSecret:       getEnv("POCKET_COMPANION_SECRET", ""),
+		DiskSessionsEnabled:     getEnv("POCKET_DISK_SESSIONS_ENABLED", "") == "true",
+		DiskSessionsWorkspace:   getEnv("POCKET_DISK_SESSIONS_WORKSPACE", ""),
+		DiskHome:                getEnv("POCKET_DISK_HOME", ""),
+		CompanionURL:            getEnv("POCKET_COMPANION_URL", ""),
+		CompanionSecret:         getEnv("POCKET_COMPANION_SECRET", ""),
 		CompanionRuntimeURLs:    getEnv("POCKET_COMPANION_URLS", ""),
 		CompanionRuntimeSecrets: getEnv("POCKET_COMPANION_SECRETS", ""),
-		ACCRuntimeURL:         getEnv("POCKET_ACC_RUNTIME_URL", ""),
-		ACCRuntimeSecret:      getEnv("POCKET_ACC_CONTROL_SECRET", ""),
-		ACCRuntimeTenantID:    getEnv("POCKET_ACC_RUNTIME_TENANT_ID", ""),
-		ACCDispatchRuntimeID:  getEnv("POCKET_ACC_DISPATCH_RUNTIME_ID", ""),
-		ACCDispatchAgentID:    getEnv("POCKET_ACC_DISPATCH_AGENT_ID", ""),
+		ACCRuntimeURL:           getEnv("POCKET_ACC_RUNTIME_URL", ""),
+		ACCRuntimeSecret:        getEnv("POCKET_ACC_CONTROL_SECRET", ""),
+		ACCRuntimeTenantID:      getEnv("POCKET_ACC_RUNTIME_TENANT_ID", ""),
+		ACCDispatchRuntimeID:    getEnv("POCKET_ACC_DISPATCH_RUNTIME_ID", ""),
+		ACCDispatchAgentID:      getEnv("POCKET_ACC_DISPATCH_AGENT_ID", ""),
 		// 会话迁移方案：实例感知增强
 		DiscoveryFullSubnet: getEnv("POCKET_DISCOVERY_FULL_SUBNET", "") == "true",
 		DiscoveryPorts:      parseIntList(getEnv("POCKET_DISCOVERY_PORTS", "")),
@@ -551,10 +552,11 @@ func Load() Config {
 		RedClawAuthSecret:     getEnv("POCKET_REDCLAW_AUTH_SECRET", ""),
 		RedClawAuthTimeoutSec: getEnvInt("POCKET_REDCLAW_AUTH_TIMEOUT_SEC", 5),
 		// RedClaw 认证主权威源
-		RedClawAdminURL:        getEnv("POCKET_REDCLAW_ADMIN_URL", ""),
-		RedClawAdminSecret:     getEnv("POCKET_REDCLAW_ADMIN_SECRET", ""),
-		RedClawAuthAgentURL:    getEnv("POCKET_REDCLAW_AUTH_AGENT_URL", ""),
-		RedClawAdminTimeoutSec: getEnvInt("POCKET_REDCLAW_ADMIN_TIMEOUT_SEC", 10),
+		RedClawAdminURL:           getEnv("POCKET_REDCLAW_ADMIN_URL", ""),
+		RedClawAdminSecret:        getEnv("POCKET_REDCLAW_ADMIN_SECRET", ""),
+		RedClawAuthAgentURL:       getEnv("POCKET_REDCLAW_AUTH_AGENT_URL", ""),
+		RedClawAuthAgentPublicURL: getEnv("POCKET_REDCLAW_AUTH_AGENT_PUBLIC_URL", ""),
+		RedClawAdminTimeoutSec:    getEnvInt("POCKET_REDCLAW_ADMIN_TIMEOUT_SEC", 10),
 		// 一键回滚
 		AuthLegacyOnly: getEnv("POCKET_AUTH_LEGACY_ONLY", "") == "true",
 		// SSO

@@ -28,15 +28,17 @@ import (
 //
 // 与 ClientConfig 的差别：
 //   - AdminURL 指向 RedClaw Admin 后端（默认 :8081），用于 /api/v1/auth/*。
-//   - AuthAgentURL 指向 RedClaw Auth Agent（默认 :8082），用于 /api/v1/sso/*。
+//   - AuthAgentURL 指向 RedClaw Auth Agent（默认 :8082），用于服务间 SSO 请求。
+//   - AuthAgentPublicURL 是浏览器 SSO 登录入口的 HTTPS origin，留空时兼容 AuthAgentURL。
 //   - Secret 是这两个端口共用的 POCKET_REDCLAW_ADMIN_SECRET（HS256 共享密钥）。
 //   - 若 AdminURL == AuthAgentURL（单进程部署），AuthAgentURL 留空。
 type AdminAuthClientConfig struct {
-	AdminURL     string
-	AuthAgentURL string
-	Secret       string
-	TenantID     string
-	TimeoutSec   int
+	AdminURL           string
+	AuthAgentURL       string
+	AuthAgentPublicURL string
+	Secret             string
+	TenantID           string
+	TimeoutSec         int
 }
 
 // AdminAuthClient 调用 RedClaw Admin / Auth Agent 的客户端。
@@ -45,13 +47,11 @@ type AdminAuthClientConfig struct {
 // 向上返回 error——因为登录路径必须明确告诉调用方"成功/失败"，不能像
 // 镜像那样静默吞掉。
 type AdminAuthClient struct {
-	cfg       AdminAuthClientConfig
-	adminHTTP *http.Client
-	authHTTP  *http.Client
-	// authBase 解析后的 Auth Agent 基址（AuthAgentURL 为空时回落 AdminURL，
-	// 单进程部署场景）。SsoLoginURL / SsoCallback 必须共用同一解析结果，
-	// 否则 login 带了 fallback 而 callback 拿空 base 拼出相对 URL。
-	authBase string
+	cfg         AdminAuthClientConfig
+	adminHTTP   *http.Client
+	authHTTP    *http.Client
+	authBase    string // Auth Agent 服务间基址，用于回调和续期
+	browserBase string // 浏览器可访问的 Auth Agent 登录基址
 }
 
 // NewAdminAuthClient 构造 AdminAuthClient。
@@ -69,15 +69,27 @@ func NewAdminAuthClient(cfg AdminAuthClientConfig) (*AdminAuthClient, error) {
 	if authBase == "" {
 		authBase = strings.TrimRight(cfg.AdminURL, "/")
 	}
+	browserBase := authBase
+	if publicURL := strings.TrimSpace(cfg.AuthAgentPublicURL); publicURL != "" {
+		origin, err := url.Parse(publicURL)
+		if err != nil || origin.Scheme != "https" || origin.Hostname() == "" ||
+			origin.User != nil || origin.ForceQuery || origin.RawQuery != "" ||
+			strings.Contains(publicURL, "#") || (origin.Path != "" && origin.Path != "/") ||
+			origin.RawPath != "" {
+			return nil, fmt.Errorf("POCKET_REDCLAW_AUTH_AGENT_PUBLIC_URL must be an HTTPS origin")
+		}
+		browserBase = origin.Scheme + "://" + origin.Host
+	}
 	timeout := cfg.TimeoutSec
 	if timeout <= 0 {
 		timeout = 10
 	}
 	return &AdminAuthClient{
-		cfg:       cfg,
-		adminHTTP: outbound.NewClient(time.Duration(timeout) * time.Second),
-		authHTTP:  outbound.NewClient(time.Duration(timeout) * time.Second),
-		authBase:  authBase,
+		cfg:         cfg,
+		adminHTTP:   outbound.NewClient(time.Duration(timeout) * time.Second),
+		authHTTP:    outbound.NewClient(time.Duration(timeout) * time.Second),
+		authBase:    authBase,
+		browserBase: browserBase,
 	}, nil
 }
 
@@ -335,7 +347,7 @@ func (c *AdminAuthClient) Logout(ctx context.Context, token string) error {
 // 必须由 auth-agent 的服务端 OIDC_REDIRECT_URL 固定，避免用户输入形成
 // 开放重定向或劫持 OAuth 授权码。
 func (c *AdminAuthClient) SsoLoginURL(state, redirectURL string) string {
-	u, err := url.Parse(c.authBase + "/api/v1/sso/login")
+	u, err := url.Parse(c.browserBase + "/api/v1/sso/login")
 	if err != nil {
 		return ""
 	}
