@@ -40,9 +40,8 @@ for (const [module, path, name, payload] of specs) {
     const [originalCorrected, nextCorrected] = await store.pending()
     assert.equal(originalCorrected.ext_id,old.ext_id)
     assert.equal(nextCorrected.ext_id,next.ext_id)
-    for (const item of [originalCorrected, nextCorrected]) {
-      assert.equal(await store.acknowledge(item,{...item,current_epoch:0,outcome:'applied'}),true)
-    }
+    assert.equal(await store.acknowledge(originalCorrected,{...originalCorrected,current_epoch:0,outcome:'applied'}),true)
+    assert.equal(await store.acknowledge(nextCorrected,{...nextCorrected,current_epoch:0,outcome:'kept_existing',clock_skew:true}),true)
     assert.deepEqual(await store.pending(),[])
   }))
 

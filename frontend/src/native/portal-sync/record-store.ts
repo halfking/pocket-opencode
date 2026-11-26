@@ -231,7 +231,7 @@ export class PortalRecordStore {
       await this.block(item, 'policy_local')
       return false
     }
-    if (ack.clock_skew || (ack.outcome === 'rejected' && ack.reason === 'clock_skew')) {
+    if (ack.outcome === 'rejected' && (ack.clock_skew || ack.reason === 'clock_skew')) {
       await acknowledgeClock(this.db, item)
       return false
     }

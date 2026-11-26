@@ -137,6 +137,16 @@ test('legacy automatic clock replacements stay blocked until confirmed', async (
   assert.equal(confirmed.client_updated_at, timestamp)
 })
 
+test('a kept cloud version with legacy skew is not a clock rejection of this operation', async () => {
+  const a = fixture()
+  await a.store.commit([], {source:'note',id:'kept',title:'N',payload:notePayload({content:'local',format:'text'}),epoch:0,modifiedAt:3500},true)
+  const [item] = await a.store.pending()
+  const received = await a.store.acknowledge(item,{...item,current_epoch:0,outcome:'kept_existing',clock_skew:true})
+  assert.equal(received,true)
+  assert.equal((await a.db.queryOne('SELECT count(*) AS total FROM local_portal_outbox')).total,0)
+  assert.equal((await a.store.find('note','kept')).op_id,item.op_id)
+})
+
 for (const transition of ['edit', 'reset', 'owner']) test(`a notes clock correction is fenced by a concurrent ${transition}`, async () => {
   const a = fixture()
   const input = {source:'note',id:'skew',title:'Original',payload:notePayload({content:'keep me',format:'text'}),epoch:0,modifiedAt:3600000}

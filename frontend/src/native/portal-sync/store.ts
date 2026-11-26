@@ -171,7 +171,7 @@ export class PortalNotesStore {
     }
     if (!validEpoch(ack.current_epoch) || ack.current_epoch !== item.epoch) { await this.block(item, 'invalid_epoch_ack'); return false }
     if (ack.outcome === 'skipped_local') { await this.block(item, 'policy_local'); return false }
-    if (ack.clock_skew || (ack.outcome === 'rejected' && ack.reason === 'clock_skew')) {
+    if (ack.outcome === 'rejected' && (ack.clock_skew || ack.reason === 'clock_skew')) {
       await acknowledgeClock(this.db, item)
       return false
     }
