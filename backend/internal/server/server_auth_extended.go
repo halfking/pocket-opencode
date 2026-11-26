@@ -494,7 +494,12 @@ func (s *Server) handleAuthSsoStatus(w http.ResponseWriter, r *http.Request) {
 	if s.oidcEnabled() {
 		mode = "oidc"
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"enabled": true, "mode": mode})
+	status := map[string]any{"enabled": true, "mode": mode}
+	if mode == "redclaw" && s.cfg.RedClawSsoAppOrigin != "" {
+		status["app_origin"] = s.cfg.RedClawSsoAppOrigin
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, status)
 }
 
 // handleAuthSsoLogin — GET /api/auth/sso/login
@@ -533,12 +538,29 @@ func (s *Server) handleAuthSsoLogin(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"url": authorizeURL})
 		return
 	}
-	nonce, err := s.ssoTxns.Issue(clientIP(r))
+	authorizeURL, err := s.startRedClawSSO(w, r, "")
 	if err != nil {
 		logging.Warnf("WARN: sso login issue nonce: %v", err)
 		writeError(w, http.StatusInternalServerError, "failed to start sso login")
 		return
 	}
+	writeJSON(w, http.StatusOK, map[string]string{"url": authorizeURL})
+}
+
+func (s *Server) startRedClawSSO(w http.ResponseWriter, r *http.Request, appChallenge string) (string, error) {
+	nonce, err := s.ssoTxns.issue(clientIP(r), ssoTxnEntry{appChallenge: appChallenge})
+	if err != nil {
+		return "", err
+	}
+	authorizeURL := s.redclawAdminClient.SsoLoginURL(nonce, "")
+	if appChallenge != "" {
+		destination, err := url.Parse(authorizeURL)
+		if err != nil || destination.Scheme != "https" || destination.Hostname() == "" || destination.User != nil {
+			s.ssoTxns.consume(nonce)
+			return "", errors.New("native SSO requires an HTTPS login entry")
+		}
+	}
+	w.Header().Set("Cache-Control", "no-store")
 	http.SetCookie(w, &http.Cookie{
 		Name:     ssoTxnCookie,
 		Value:    nonce,
@@ -548,9 +570,7 @@ func (s *Server) handleAuthSsoLogin(w http.ResponseWriter, r *http.Request) {
 		SameSite: http.SameSiteLaxMode,
 		Secure:   requestIsHTTPS(r),
 	})
-	writeJSON(w, http.StatusOK, map[string]string{
-		"url": s.redclawAdminClient.SsoLoginURL(nonce, ""),
-	})
+	return authorizeURL, nil
 }
 
 // handleAuthSsoCallback — GET /api/auth/sso/callback
@@ -578,8 +598,15 @@ func (s *Server) handleAuthSsoCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// 1. 绑定 cookie：缺失 / 未知 / 已消费 / 已过期一律拒绝。
-	ck, err := r.Cookie(ssoTxnCookie)
-	if err != nil || !s.ssoTxns.Consume(ck.Value) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	ck, _ := r.Cookie(ssoTxnCookie)
+	var txn ssoTxnEntry
+	var active bool
+	if ck != nil {
+		txn, active = s.ssoTxns.consume(ck.Value)
+	}
+	if !active || txn.verifier != "" {
 		s.auditGateway(r, "auth.sso.callback", "-", "reason=invalid_binding_cookie", false)
 		s.clearSsoTxnCookie(w, r)
 		s.ssoRedirectError(w, r, "sso_session")
@@ -658,13 +685,17 @@ func (s *Server) handleAuthSsoCallback(w http.ResponseWriter, r *http.Request) {
 		UserID:      userID,
 		WorkspaceID: wsID,
 		AuthMethod:  redClawOIDCMethod,
-	})
+	}, txn.appChallenge)
 	if err != nil {
 		logging.Warnf("WARN: sso issue exchange code: %v", err)
 		s.ssoRedirectError(w, r, "sso_upstream")
 		return
 	}
 	s.auditGateway(r, "auth.sso.callback", userID, "sso login completed", true)
+	if txn.appChallenge != "" {
+		writeNativeSSOReturn(w, s.cfg.RedClawSsoAppOrigin, ssoCode, txn.appChallenge)
+		return
+	}
 	http.Redirect(w, r, "/auth/sso/callback?"+url.Values{"sso_code": {ssoCode}}.Encode()+"#/auth/sso/callback", http.StatusFound)
 }
 
@@ -683,20 +714,29 @@ func (s *Server) handleAuthSsoExchange(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Code string `json:"code"`
+		Code     string `json:"code"`
+		Verifier string `json:"code_verifier"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	w.Header().Set("Cache-Control", "no-store")
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
 		return
 	}
-	h, ok := s.ssoXchg.Take(body.Code)
+	var challenge string
+	if body.Verifier != "" {
+		if !requestIsHTTPS(r) || !validNativeSSOProof(body.Verifier) {
+			writeError(w, http.StatusBadRequest, "invalid app proof")
+			return
+		}
+		challenge = nativeSSOChallenge(body.Verifier)
+	}
+	h, ok := s.ssoXchg.Take(body.Code, challenge)
 	if !ok {
 		s.auditGateway(r, "auth.sso.exchange", "-", "reason=invalid_or_expired_code", false)
 		writeError(w, http.StatusUnauthorized, "invalid or expired sso code")
 		return
 	}
 	s.auditGateway(r, "auth.sso.exchange", h.UserID, "sso token exchanged", true)
-	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, h)
 }
 

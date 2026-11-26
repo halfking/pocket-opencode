@@ -2,6 +2,7 @@ package server
 
 import (
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"errors"
 	"sync"
@@ -58,6 +59,8 @@ type ssoTxnEntry struct {
 	// verifier 仅 Casdoor 直连 OIDC 分支使用（IssueOIDC 落入，ConsumeOIDC
 	// 取回，换取 token 时作 PKCE code_verifier）。RedClaw 分支为空。
 	verifier string
+	// appChallenge binds a RedClaw result to the initiating native app.
+	appChallenge string
 }
 
 func newSSOTxnStore(ttl time.Duration, cap int) *ssoTxnStore {
@@ -66,7 +69,7 @@ func newSSOTxnStore(ttl time.Duration, cap int) *ssoTxnStore {
 
 // Issue 签发新 nonce。全局表满或单来源 pending 超 perIPCap 时先清一遍
 // 过期项，仍超则报错（正常流量下不可达）。
-func (st *ssoTxnStore) Issue(ip string) (string, error) {
+func (st *ssoTxnStore) issue(ip string, entry ssoTxnEntry) (string, error) {
 	nonce, err := randomHex(32)
 	if err != nil {
 		return "", err
@@ -79,58 +82,38 @@ func (st *ssoTxnStore) Issue(ip string) (string, error) {
 			return "", errSSOStoreFull
 		}
 	}
-	st.m[nonce] = ssoTxnEntry{ip: ip, exp: time.Now().Add(st.ttl)}
+	entry.ip = ip
+	entry.exp = time.Now().Add(st.ttl)
+	st.m[nonce] = entry
 	return nonce, nil
 }
 
 // Consume 单次校验并删除 nonce：不存在或已过期都返回 false。
-func (st *ssoTxnStore) Consume(nonce string) bool {
+func (st *ssoTxnStore) consume(nonce string) (ssoTxnEntry, bool) {
 	if nonce == "" {
-		return false
+		return ssoTxnEntry{}, false
 	}
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	e, ok := st.m[nonce]
 	if !ok {
-		return false
+		return ssoTxnEntry{}, false
 	}
 	delete(st.m, nonce) // 无论是否过期都移除：过期 nonce 没有复活的价值
-	return !time.Now().After(e.exp)
+	return e, !time.Now().After(e.exp)
 }
 
 // IssueOIDC 签发带 PKCE verifier 的 OIDC 登录事务。nonce 语义与 Issue
 // 完全一致（同一张表、同一 TTL/cap），额外携带 verifier 供 callback 换
 // token 时回传 code_verifier。
 func (st *ssoTxnStore) IssueOIDC(ip, verifier string) (string, error) {
-	nonce, err := randomHex(32)
-	if err != nil {
-		return "", err
-	}
-	st.mu.Lock()
-	defer st.mu.Unlock()
-	if len(st.m) >= st.cap || st.countByIPLocked(ip) >= st.perIPCap {
-		st.sweepLocked()
-		if len(st.m) >= st.cap || st.countByIPLocked(ip) >= st.perIPCap {
-			return "", errSSOStoreFull
-		}
-	}
-	st.m[nonce] = ssoTxnEntry{ip: ip, exp: time.Now().Add(st.ttl), verifier: verifier}
-	return nonce, nil
+	return st.issue(ip, ssoTxnEntry{verifier: verifier})
 }
 
 // ConsumeOIDC 单次校验并删除 nonce，返回其 PKCE verifier。
 func (st *ssoTxnStore) ConsumeOIDC(nonce string) (string, bool) {
-	if nonce == "" {
-		return "", false
-	}
-	st.mu.Lock()
-	defer st.mu.Unlock()
-	e, ok := st.m[nonce]
-	if !ok {
-		return "", false
-	}
-	delete(st.m, nonce)
-	if time.Now().After(e.exp) || e.verifier == "" {
+	e, ok := st.consume(nonce)
+	if !ok || e.verifier == "" {
 		return "", false
 	}
 	return e.verifier, true
@@ -148,8 +131,9 @@ type ssoHandoff struct {
 const authMethodCasdoorOIDC = "casdoor-oidc"
 
 type ssoExchangeEntry struct {
-	h   ssoHandoff
-	exp time.Time
+	h            ssoHandoff
+	exp          time.Time
+	appChallenge string
 }
 
 // ssoExchangeStore 保存待交换的一次性 code（callback 签发 → exchange 单次消费）。
@@ -165,7 +149,7 @@ func newSSOExchangeStore(ttl time.Duration, cap int) *ssoExchangeStore {
 }
 
 // Put 登记登录结果并返回一次性 code。
-func (st *ssoExchangeStore) Put(h ssoHandoff) (string, error) {
+func (st *ssoExchangeStore) Put(h ssoHandoff, appChallenge string) (string, error) {
 	code, err := randomHex(32)
 	if err != nil {
 		return "", err
@@ -178,12 +162,12 @@ func (st *ssoExchangeStore) Put(h ssoHandoff) (string, error) {
 			return "", errSSOStoreFull
 		}
 	}
-	st.m[code] = ssoExchangeEntry{h: h, exp: time.Now().Add(st.ttl)}
+	st.m[code] = ssoExchangeEntry{h: h, exp: time.Now().Add(st.ttl), appChallenge: appChallenge}
 	return code, nil
 }
 
-// Take 单次取出：命中即删除，二次使用同一 code 返回 false。
-func (st *ssoExchangeStore) Take(code string) (ssoHandoff, bool) {
+// Take consumes a live code only after its app binding matches.
+func (st *ssoExchangeStore) Take(code, appChallenge string) (ssoHandoff, bool) {
 	if code == "" {
 		return ssoHandoff{}, false
 	}
@@ -193,10 +177,14 @@ func (st *ssoExchangeStore) Take(code string) (ssoHandoff, bool) {
 	if !ok {
 		return ssoHandoff{}, false
 	}
-	delete(st.m, code)
 	if time.Now().After(e.exp) {
+		delete(st.m, code)
 		return ssoHandoff{}, false
 	}
+	if subtle.ConstantTimeCompare([]byte(e.appChallenge), []byte(appChallenge)) != 1 {
+		return ssoHandoff{}, false
+	}
+	delete(st.m, code)
 	return e.h, true
 }
 

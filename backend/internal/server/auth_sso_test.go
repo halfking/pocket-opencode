@@ -2,9 +2,11 @@ package server
 
 import (
 	"encoding/json"
+	"html"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -19,26 +21,26 @@ import (
 
 func TestSSOTxnStore_SingleUseAndExpiry(t *testing.T) {
 	st := newSSOTxnStore(time.Minute, 16)
-	nonce, err := st.Issue("1.2.3.4")
+	nonce, err := st.issue("1.2.3.4", ssoTxnEntry{})
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
 	if len(nonce) != 64 { // 32 字节 hex
 		t.Fatalf("nonce should be 64 hex chars, got %d", len(nonce))
 	}
-	if !st.Consume(nonce) {
+	if _, ok := st.consume(nonce); !ok {
 		t.Fatal("first consume should succeed")
 	}
-	if st.Consume(nonce) {
+	if _, ok := st.consume(nonce); ok {
 		t.Fatal("replay consume must fail (single use)")
 	}
-	if st.Consume("garbage") {
+	if _, ok := st.consume("garbage"); ok {
 		t.Fatal("unknown nonce must fail")
 	}
 
 	expired := newSSOTxnStore(-time.Second, 16) // 已过期
-	n2, _ := expired.Issue("1.2.3.4")
-	if expired.Consume(n2) {
+	n2, _ := expired.issue("1.2.3.4", ssoTxnEntry{})
+	if _, ok := expired.consume(n2); ok {
 		t.Fatal("expired nonce must fail")
 	}
 }
@@ -46,11 +48,11 @@ func TestSSOTxnStore_SingleUseAndExpiry(t *testing.T) {
 func TestSSOTxnStore_Cap(t *testing.T) {
 	st := newSSOTxnStore(time.Minute, 2)
 	for i := 0; i < 2; i++ {
-		if _, err := st.Issue("1.2.3.4"); err != nil {
+		if _, err := st.issue("1.2.3.4", ssoTxnEntry{}); err != nil {
 			t.Fatalf("Issue #%d: %v", i, err)
 		}
 	}
-	if _, err := st.Issue("1.2.3.4"); err == nil {
+	if _, err := st.issue("1.2.3.4", ssoTxnEntry{}); err == nil {
 		t.Fatal("issue beyond cap must fail")
 	}
 }
@@ -59,41 +61,41 @@ func TestSSOTxnStore_PerIPCap(t *testing.T) {
 	st := newSSOTxnStore(time.Minute, 4096)
 	// 同一来源灌到 per-IP 上限后必须拒绝，且不影响其他来源。
 	for i := 0; i < ssoTxnPerIPCap; i++ {
-		if _, err := st.Issue("10.0.0.1"); err != nil {
+		if _, err := st.issue("10.0.0.1", ssoTxnEntry{}); err != nil {
 			t.Fatalf("Issue #%d for 10.0.0.1: %v", i, err)
 		}
 	}
-	if _, err := st.Issue("10.0.0.1"); err == nil {
+	if _, err := st.issue("10.0.0.1", ssoTxnEntry{}); err == nil {
 		t.Fatal("per-IP cap must reject same source")
 	}
-	if _, err := st.Issue("10.0.0.2"); err != nil {
+	if _, err := st.issue("10.0.0.2", ssoTxnEntry{}); err != nil {
 		t.Fatalf("other source must be unaffected: %v", err)
 	}
 	// 消费后额度立即释放。
-	nonce, _ := st.Issue("10.0.0.3")
-	st.Consume(nonce)
+	nonce, _ := st.issue("10.0.0.3", ssoTxnEntry{})
+	st.consume(nonce)
 }
 
 func TestSSOExchangeStore_SingleUseAndExpiry(t *testing.T) {
 	st := newSSOExchangeStore(time.Minute, 16)
-	code, err := st.Put(ssoHandoff{Token: "tok", User: "u", UserID: "id", WorkspaceID: "ws"})
+	code, err := st.Put(ssoHandoff{Token: "tok", User: "u", UserID: "id", WorkspaceID: "ws"}, "")
 	if err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	h, ok := st.Take(code)
+	h, ok := st.Take(code, "")
 	if !ok || h.Token != "tok" || h.UserID != "id" {
 		t.Fatalf("first take mismatch: ok=%v h=%+v", ok, h)
 	}
-	if _, ok := st.Take(code); ok {
+	if _, ok := st.Take(code, ""); ok {
 		t.Fatal("replay take must fail (single use)")
 	}
 
 	expired := newSSOExchangeStore(-time.Second, 16)
-	c2, _ := expired.Put(ssoHandoff{Token: "t2"})
-	if _, ok := expired.Take(c2); ok {
+	c2, _ := expired.Put(ssoHandoff{Token: "t2"}, "")
+	if _, ok := expired.Take(c2, ""); ok {
 		t.Fatal("expired code must fail")
 	}
-	if _, ok := st.Take(""); ok {
+	if _, ok := st.Take("", ""); ok {
 		t.Fatal("empty code must fail")
 	}
 }
@@ -371,6 +373,113 @@ func TestSSO_CallbackRequiresProvisionedProfile(t *testing.T) {
 				t.Fatalf("callback did not require provisioned profile: %d %v", w.Code, loc)
 			}
 		})
+	}
+}
+
+func TestNativeSSOAppProofBindsCallbackAndExchange(t *testing.T) {
+	rec := &fakeAgentRecorder{}
+	fake := fakeAuthAgent(t, rec)
+	defer fake.Close()
+	browserAgent := httptest.NewTLSServer(fake.Config.Handler)
+	defer browserAgent.Close()
+	srv := newSSOTestServer(t, fake, true)
+	client, err := redclaw.NewAdminAuthClient(redclaw.AdminAuthClientConfig{
+		AdminURL: fake.URL, AuthAgentURL: fake.URL, AuthAgentPublicURL: browserAgent.URL,
+		Secret: "test-secret-32-bytes-long-aaaaaaaaaa", TenantID: "default",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.SetRedClawAdmin(client)
+	srv.cfg.RedClawSsoAppOrigin = "https://app-link.example.org"
+
+	const verifier = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	challenge := nativeSSOChallenge(verifier)
+	start := func(address string) *httptest.ResponseRecorder {
+		rr := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, address, nil))
+		return rr
+	}
+	status := start("https://pocket.example.org/api/auth/sso/status")
+	if status.Code != http.StatusOK || !strings.Contains(status.Body.String(), srv.cfg.RedClawSsoAppOrigin) {
+		t.Fatalf("missing native capability: %d %s", status.Code, status.Body.String())
+	}
+	for _, address := range []string{
+		"http://pocket.example.org/api/auth/sso/native/start?challenge=" + challenge,
+		"https://app-link.example.org/api/auth/sso/native/start?challenge=" + challenge,
+		"https://pocket.example.org/api/auth/sso/native/start?challenge=malformed",
+		"https://pocket.example.org/api/auth/sso/native/start?challenge=" + challenge + "&challenge=" + challenge,
+	} {
+		rr := start(address)
+		if rr.Code != http.StatusBadRequest || rr.Header().Get("Set-Cookie") != "" {
+			t.Fatalf("unsafe start %s returned %d, cookies=%v", address, rr.Code, rr.Result().Cookies())
+		}
+	}
+
+	initial := start("https://pocket.example.org/api/auth/sso/native/start?challenge=" + challenge + "&redirect_url=https://untrusted.example.org/")
+	if initial.Code != http.StatusFound || initial.Header().Get("Referrer-Policy") != "no-referrer" {
+		t.Fatalf("native start returned %d: %s", initial.Code, initial.Body.String())
+	}
+	cookies := initial.Result().Cookies()
+	if len(cookies) != 1 || !cookies[0].Secure || !cookies[0].HttpOnly || cookies[0].SameSite != http.SameSiteLaxMode {
+		t.Fatalf("unexpected browser binding cookie: %#v", cookies)
+	}
+	destination := initial.Header().Get("Location")
+	if strings.Contains(destination, challenge) || strings.Contains(destination, "untrusted") {
+		t.Fatal("provider URL must contain only the normal login transaction state")
+	}
+	resp, err := browserAgent.Client().Get(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("agent browser entry returned %d", resp.StatusCode)
+	}
+
+	callback := httptest.NewRequest(http.MethodGet, "https://pocket.example.org/api/auth/sso/callback?code=authz-code&state=fake-idp-state", nil)
+	callback.AddCookie(cookies[0])
+	landing := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(landing, callback)
+	if landing.Code != http.StatusOK || landing.Header().Get("Cache-Control") != "no-store" ||
+		landing.Header().Get("Referrer-Policy") != "no-referrer" || landing.Header().Get("Content-Security-Policy") == "" {
+		t.Fatalf("unexpected native return: %d %s", landing.Code, landing.Body.String())
+	}
+	link := regexp.MustCompile(`href="([^"]+)"`).FindStringSubmatch(landing.Body.String())
+	if len(link) != 2 || strings.Contains(landing.Body.String(), "fake-platform-jwt") {
+		t.Fatal("native return needs an app link and must not contain a bearer")
+	}
+	u, err := url.Parse(html.UnescapeString(link[1]))
+	if err != nil || u.Scheme != "https" || u.Host != "app-link.example.org" || u.Path != nativeSSOReturnPath || u.RawQuery != "" {
+		t.Fatalf("unexpected app return link %q: %v", link[1], err)
+	}
+	fallback := start(u.Scheme + "://" + u.Host + u.Path)
+	if fallback.Code != http.StatusOK || !strings.Contains(fallback.Body.String(), "未能打开 OpenPocket") {
+		t.Fatalf("missing browser fallback: %d %s", fallback.Code, fallback.Body.String())
+	}
+	result, err := url.ParseQuery(u.Fragment)
+	code := result.Get("code")
+	if err != nil || code == "" || result.Get("challenge") != challenge {
+		t.Fatalf("unexpected bound app return parameters: %v", err)
+	}
+	exchange := func(proof string) *httptest.ResponseRecorder {
+		body, _ := json.Marshal(map[string]string{"code": code, "code_verifier": proof})
+		rr := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "https://pocket.example.org/api/auth/sso/exchange", strings.NewReader(string(body))))
+		return rr
+	}
+	for _, proof := range []string{"", "BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"} {
+		if rr := exchange(proof); rr.Code != http.StatusUnauthorized || strings.Contains(rr.Body.String(), "fake-platform-jwt") {
+			t.Fatalf("missing or wrong proof released a session: %d", rr.Code)
+		}
+	}
+	if rr := exchange(verifier); rr.Code != http.StatusOK ||
+		!strings.Contains(rr.Body.String(), `"auth_method":"redclaw-oidc"`) ||
+		!strings.Contains(rr.Body.String(), `"user_id":"emp-mapped-42"`) {
+		t.Fatalf("initiating app exchange returned %d: %s", rr.Code, rr.Body.String())
+	}
+	if rr := exchange(verifier); rr.Code != http.StatusUnauthorized {
+		t.Fatalf("native exchange replay returned %d", rr.Code)
 	}
 }
 

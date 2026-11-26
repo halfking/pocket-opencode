@@ -793,6 +793,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/auth/refresh", s.requireAuth(s.handleAuthRefresh))
 	mux.HandleFunc("/api/auth/sso/status", s.handleAuthSsoStatus)
 	mux.HandleFunc("/api/auth/sso/login", s.handleAuthSsoLogin)
+	mux.HandleFunc("/api/auth/sso/native/start", s.handleNativeSSOStart)
+	mux.HandleFunc(nativeSSOReturnPath, s.handleNativeSSOReturnFallback)
 	mux.HandleFunc("/api/auth/sso/callback", s.handleAuthSsoCallback)
 	mux.HandleFunc("/api/auth/sso/exchange", s.handleAuthSsoExchange)
 	mux.HandleFunc("/api/auth/sso/refresh", s.handleAuthSsoRefresh)

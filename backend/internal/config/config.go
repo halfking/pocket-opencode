@@ -333,7 +333,8 @@ type Config struct {
 	AuthLegacyOnly bool // POCKET_AUTH_LEGACY_ONLY=true 时强制走本地 auth.Signer
 
 	// —— RedClaw SSO（OIDC）配置 ——
-	RedClawSsoEnabled bool // POCKET_REDCLAW_SSO_ENABLED=true 时 LoginView 多出 SSO Tab
+	RedClawSsoEnabled   bool   // POCKET_REDCLAW_SSO_ENABLED=true 时 LoginView 多出 SSO Tab
+	RedClawSsoAppOrigin string // POCKET_REDCLAW_SSO_APP_ORIGIN：原生 HTTPS App Links/Universal Links origin
 
 	// —— Casdoor 直连 OIDC（2026-11-14 认证收敛）——
 	// 与 RedClaw 镜像 SSO 平行的第一方 OIDC 客户端：三项齐备即启用，
@@ -560,8 +561,9 @@ func Load() Config {
 		// 一键回滚
 		AuthLegacyOnly: getEnv("POCKET_AUTH_LEGACY_ONLY", "") == "true",
 		// SSO
-		RedClawSsoEnabled:  getEnv("POCKET_REDCLAW_SSO_ENABLED", "") == "true",
-		RedClawLLMFallback: getEnv("POCKET_REDCLAW_LLM_FALLBACK", "") == "true",
+		RedClawSsoEnabled:   getEnv("POCKET_REDCLAW_SSO_ENABLED", "") == "true",
+		RedClawSsoAppOrigin: strings.TrimRight(strings.TrimSpace(getEnv("POCKET_REDCLAW_SSO_APP_ORIGIN", "")), "/"),
+		RedClawLLMFallback:  getEnv("POCKET_REDCLAW_LLM_FALLBACK", "") == "true",
 
 		// Casdoor 直连 OIDC（认证收敛）
 		OIDCEndpoint:      strings.TrimSpace(getEnv("POCKET_CASDOOR_ENDPOINT", "")),
@@ -581,6 +583,13 @@ func Load() Config {
 // It enforces security requirements like strong JWT secrets, disabled development flags,
 // and proper TLS configuration. Returns an error if any validation fails.
 func (c Config) Validate() error {
+	if c.RedClawSsoAppOrigin != "" {
+		u, err := url.Parse(c.RedClawSsoAppOrigin)
+		if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.Host != u.Hostname() ||
+			u.User != nil || u.Path != "" || u.ForceQuery || u.RawQuery != "" || strings.Contains(c.RedClawSsoAppOrigin, "#") {
+			return fmt.Errorf("POCKET_REDCLAW_SSO_APP_ORIGIN must be an HTTPS origin without a port")
+		}
+	}
 	if !c.IsProduction() {
 		return nil
 	}

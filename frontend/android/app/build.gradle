@@ -1,5 +1,12 @@
 apply plugin: 'com.android.application'
 
+// Use the same exported origin for the Vite bundle and Android manifest.
+def ssoAppOrigin = System.getenv('VITE_SSO_APP_LINK_ORIGIN') ?: 'https://openpocket-app-link.invalid'
+def ssoAppLink = new URI(ssoAppOrigin)
+if (ssoAppLink.scheme != 'https' || !ssoAppLink.host || ssoAppOrigin != "https://${ssoAppLink.host}") {
+    throw new GradleException('VITE_SSO_APP_LINK_ORIGIN must be an HTTPS origin without a port')
+}
+
 android {
     namespace = "com.kaixuan.opencode.pocket"
     compileSdk = rootProject.ext.compileSdkVersion
@@ -10,6 +17,7 @@ android {
         versionCode 3
         versionName "1.2.0-openpocket"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        manifestPlaceholders = [ssoAppLinkHost: ssoAppLink.host]
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
              // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61

@@ -172,11 +172,13 @@ export async function fetchSsoStatus(): Promise<boolean> {
  * 已退役，登录页只留 SSO 入口）；mode="redclaw" 为 RedClaw 镜像道（双 lane
  * 并存）；null = 未启用 / 网络错误。
  */
-export async function fetchSsoStatusDetailed(): Promise<{ enabled: boolean; mode: 'oidc' | 'redclaw' } | null> {
+export async function fetchSsoStatusDetailed(): Promise<{ enabled: boolean; mode: 'oidc' | 'redclaw'; app_origin?: string } | null> {
   try {
-    const r = await http<{ enabled: boolean; mode?: string }>('/api/auth/sso/status', { method: 'GET' })
+    const r = await http<{ enabled: boolean; mode?: string; app_origin?: string }>('/api/auth/sso/status', { method: 'GET' })
     if (!r.enabled) return null
-    return { enabled: true, mode: r.mode === 'oidc' ? 'oidc' : 'redclaw' }
+    if (r.mode === 'oidc') return { enabled: true, mode: 'oidc' }
+    if (typeof r.app_origin === 'string' && r.app_origin) return { enabled: true, mode: 'redclaw', app_origin: r.app_origin }
+    return { enabled: true, mode: 'redclaw' }
   } catch {
     return null
   }
@@ -228,10 +230,13 @@ export interface SsoExchangeResponse {
  * 一次性 code 换登录结果（token 不走 URL，P1-2 修复）。
  * code 由后端 /api/auth/sso/callback 302 注入 SPA 回调页，90s TTL、单次有效。
  */
-export async function exchangeSsoCode(code: string): Promise<SsoExchangeResponse> {
+export async function exchangeSsoCode(
+  code: string, app?: { verifier: string; assertCurrent: () => void },
+): Promise<SsoExchangeResponse> {
   const result = await http<SsoExchangeResponse>('/api/auth/sso/exchange', {
     method: 'POST',
-    body: JSON.stringify({ code }),
+    body: JSON.stringify({ code, code_verifier: app?.verifier }),
+    ...(app && { assertCurrent: app.assertCurrent, credentials: 'omit', redirect: 'error' }),
   })
   if (result.auth_method !== 'redclaw' && result.auth_method !== REDCLAW_OIDC_AUTH_METHOD && result.auth_method !== 'casdoor-oidc') {
     throw new Error('登录服务未确认会话来源，请重新发起企业登录')

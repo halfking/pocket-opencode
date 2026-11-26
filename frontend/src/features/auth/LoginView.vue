@@ -302,9 +302,10 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { useAuthStore, captureAuthSession, assertAuthSession, isCurrentAuthSession, type AuthSession } from '../../stores/auth'
+import type { PluginListenerHandle } from '@capacitor/core'
+import { useAuthStore, captureAuthAttempt, assertAuthAttempt, captureAuthSession, assertAuthSession, isCurrentAuthSession, type AuthSession } from '../../stores/auth'
 import { http, ApiError } from '../../api/http'
 import { connectWs } from '../../api/websocket'
 import { initLobster, isLobsterReady } from '../../native/lobster-init'
@@ -332,9 +333,10 @@ import {
 } from './unlock-auth'
 import MasterPasswordDialog from './MasterPasswordDialog.vue'
 import { useCryptoConfig } from '../../stores/crypto-config'
-import { sendCode, codeLogin, fetchSsoLoginUrl, fetchSsoStatusDetailed, fetchSsoDirectLogin } from '../../api/auth'
+import { sendCode, codeLogin, exchangeSsoCode, fetchSsoLoginUrl, fetchSsoStatusDetailed, fetchSsoDirectLogin } from '../../api/auth'
 import { runtimePlatform } from '../../native/runtime-platform'
-import { displayApiBase } from '../../config/api-base'
+import { displayApiBase, resolveRuntimeApiBase } from '../../config/api-base'
+import { createNativeSSOProof, readNativeSSOReturn, type NativeSSOProof } from './native-sso'
 import { resolveAppVersion } from '../../utils/version'
 
 const router = useRouter()
@@ -396,10 +398,24 @@ const activeTab = ref<TabId>('password')
 // 本地凭据面退役，登录页只留 SSO 入口；"redclaw" 保持双 lane 并存。
 const ssoEnabled = ref(false)
 const ssoMode = ref<'' | 'oidc' | 'redclaw'>('')
+const ssoAppOrigin = ref('')
 const oidcOnly = computed(() => ssoMode.value === 'oidc')
 // App 原生壳（Capacitor APK）：OIDC 跳转在 WebView 里会被交给系统浏览器，
 // 回调落不回本地包 —— 原生运行时改走 direct-login 无跳转链路。
-const isNativeRuntime = runtimePlatform() !== 'web'
+const platform = runtimePlatform()
+const isNativeRuntime = platform !== 'web'
+const supportsNativeSSO = platform === 'android' || platform === 'ios'
+const bundledSSOAppOrigin: string = import.meta.env.VITE_SSO_APP_LINK_ORIGIN || ''
+let pendingSSO: { proof: NativeSSOProof; attempt: AuthSession } | undefined
+let nativeSSOListeners: PluginListenerHandle[] = []
+let finishingNativeSSO = false
+let loginViewDisposed = false
+
+onUnmounted(() => {
+  loginViewDisposed = true
+  pendingSSO = undefined
+  for (const handle of nativeSSOListeners) void handle.remove().catch(() => undefined)
+})
 
 const codeEmail = ref('')
 const codeValue = ref('')
@@ -446,6 +462,7 @@ async function requestCode() {
 }
 
 async function handleCodeLogin() {
+  pendingSSO = undefined
   if (!codeEmail.value || !codeValue.value) {
     error.value = '请输入邮箱和验证码'
     return
@@ -499,6 +516,7 @@ onMounted(async () => {
     const status = await fetchSsoStatusDetailed()
     ssoEnabled.value = status !== null
     ssoMode.value = status?.mode ?? ''
+    ssoAppOrigin.value = status?.app_origin ?? ''
     console.log('[LoginView] SSO status loaded:', status)
   } catch (e) {
     console.error('[LoginView] Failed to fetch SSO status:', e)
@@ -531,9 +549,14 @@ onMounted(async () => {
  * SsoCallbackView 用 code 换 token 后落 store + 跳首页。
  */
 async function ssoLogin() {
+  pendingSSO = undefined
   loading.value = true
   error.value = ''
   try {
+    if (supportsNativeSSO && ssoMode.value === 'redclaw' && (ssoAppOrigin.value || bundledSSOAppOrigin)) {
+      await startNativeSSO()
+      return
+    }
     // redirect_url 必须是后端路径，IdP/auth-agent 完成认证后跳到这里，
     // 后端再 302 到 SPA 路径 /auth/sso/callback。
     const redirectUrl = window.location.origin + '/api/auth/sso/callback'
@@ -546,12 +569,75 @@ async function ssoLogin() {
   }
 }
 
+async function startNativeSSO() {
+  const attempt = captureAuthAttempt(auth)
+  const proof = await createNativeSSOProof(resolveRuntimeApiBase(), ssoAppOrigin.value, bundledSSOAppOrigin)
+  const [{ App }, { Browser }] = await Promise.all([import('@capacitor/app'), import('@capacitor/browser')])
+  if (nativeSSOListeners.length === 0) {
+    const link = await App.addListener('appUrlOpen', ({ url }) => void finishNativeSSO(url))
+    try {
+      const closed = await Browser.addListener('browserFinished', () => {
+        if (pendingSSO && !finishingNativeSSO) loading.value = false
+      })
+      nativeSSOListeners = [link, closed]
+    } catch (error) {
+      await link.remove().catch(() => undefined)
+      throw error
+    }
+  }
+  if (loginViewDisposed) {
+    for (const handle of nativeSSOListeners) void handle.remove().catch(() => undefined)
+    return
+  }
+  assertAuthAttempt(auth, attempt)
+  if (resolveRuntimeApiBase() !== proof.apiBase) throw new Error('企业登录服务器已切换')
+  pendingSSO = { proof, attempt }
+  try {
+    await Browser.open({ url: proof.startUrl })
+  } catch (error) {
+    pendingSSO = undefined
+    throw error
+  }
+}
+
+async function finishNativeSSO(url: string) {
+  const pending = pendingSSO
+  if (!pending || loginViewDisposed) return
+  const { proof, attempt } = pending
+  const code = readNativeSSOReturn(url, proof)
+  if (!code) return
+  pendingSSO = undefined
+  finishingNativeSSO = true
+  loading.value = true
+  const assertCurrent = () => {
+    if (loginViewDisposed || resolveRuntimeApiBase() !== proof.apiBase) throw new Error('企业登录已取消')
+    assertAuthAttempt(auth, attempt)
+  }
+  try {
+    assertCurrent()
+    const { Browser } = await import('@capacitor/browser')
+    void Browser.close().catch(() => undefined)
+    const handoff = await exchangeSsoCode(code, { verifier: proof.verifier, assertCurrent })
+    assertCurrent()
+    if (handoff.auth_method !== 'redclaw-oidc' || !handoff.user_id || !handoff.workspace_id) {
+      throw new Error('企业登录未确认工作区归属')
+    }
+    await completeAuth(handoff.token, handoff.user || handoff.user_id, handoff.user_id, handoff.workspace_id, handoff.auth_method)
+  } catch {
+    error.value = '企业登录未完成，请重新发起登录'
+  } finally {
+    finishingNativeSSO = false
+    loading.value = false
+  }
+}
+
 /**
  * App 端无跳转企业登录（2026-11-19）：账密 POST /api/auth/sso/direct-login，
  * pocketd 服务端代办 Casdoor 登录 + OIDC 兑换，一次请求换回会话。
  * 成功收尾与本地登录完全同路径（completeAuth：connectWs / 主密码弹窗 / 跳转）。
  */
 async function ssoDirectLogin() {
+  pendingSSO = undefined
   const name = username.value.trim()
   if (!name || !password.value) {
     error.value = '请输入企业账号用户名与密码'
@@ -632,6 +718,7 @@ async function unlock() {
 // 退出重新登录：必须 await 服务端撤销 + 本地清理完成后才放行重新登录，
 // 否则在途的 logout 清理会与用户的新登录写入竞态（审计 P3）。
 async function logoutAndRelogin() {
+  pendingSSO = undefined
   try {
     await auth.logout()
     if (auth.isAuthenticated || auth.activationStatus !== 'ready') return
@@ -663,6 +750,7 @@ async function handleLogin() {
 
 /** 指纹登录：验证通过后取回本机绑定凭据走同一登录流程。 */
 async function biometricLogin() {
+  pendingSSO = undefined
   loading.value = true
   error.value = ''
   let cred: { username: string; password: string }
@@ -685,6 +773,7 @@ async function biometricLogin() {
  * 自动解绑并提示改用密码。
  */
 async function doLogin(u: string, p: string, opts: { fromBiometric: boolean }) {
+  pendingSSO = undefined
   loading.value = true
   error.value = ''
 

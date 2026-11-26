@@ -304,7 +304,7 @@ func (s *Server) handleAuthOidcCallback(w http.ResponseWriter, r *http.Request) 
 		UserID:      userID,
 		WorkspaceID: wsID,
 		AuthMethod:  authMethodCasdoorOIDC,
-	})
+	}, "")
 	if err != nil {
 		logging.Warnf("WARN: oidc issue exchange code: %v", err)
 		s.oidcRedirectError(w, r, "sso_upstream")
