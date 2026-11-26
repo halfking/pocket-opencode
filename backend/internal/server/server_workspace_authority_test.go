@@ -38,6 +38,12 @@ func authorityDelegationToken(t *testing.T, user, tenant, path string) string {
 
 func authorityDelegationPG(t *testing.T) *Server {
 	t.Helper()
+	s, _ := authorityDelegationPGWithPool(t)
+	return s
+}
+
+func authorityDelegationPGWithPool(t *testing.T) (*Server, *pgxpool.Pool) {
+	t.Helper()
 	dsn := os.Getenv("POCKET_TEST_POSTGRES_DSN")
 	if dsn == "" {
 		t.Skip("POCKET_TEST_POSTGRES_DSN not set")
@@ -69,7 +75,7 @@ func authorityDelegationPG(t *testing.T) *Server {
 	s := &Server{identityStore: store}
 	s.cfg.RedClawTenantID = "tenant-a"
 	t.Setenv("IDENTITY_SHARED_SECRET", authorityDelegationTestSecret)
-	return s
+	return s, pool
 }
 
 func authorityDelegationDo(s *Server, path, raw string) *httptest.ResponseRecorder {

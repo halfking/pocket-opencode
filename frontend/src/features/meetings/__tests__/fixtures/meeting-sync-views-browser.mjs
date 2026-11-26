@@ -8,17 +8,35 @@ const data=new Map();const key=()=>auth.userId+':'+auth.workspaceId;
 export async function listMeetings(){if(!data.has(key()))data.set(key(),[{id:key(),title:key()+' private meeting',participants:[],durationMs:1000,startedAt:1,createdAt:1,updatedAt:1,status:'completed',summary:'Minutes'}]);return structuredClone(data.get(key()))}
 export function account(user,workspace){auth.activationStatus='pending';auth.userId=user;auth.workspaceId=workspace;auth.activationVersion++;auth.activationStatus='ready'}
 export function remote(deleted){data.set(key(),deleted?[]:[{id:key(),title:key()+' REMOTE meeting',participants:[],durationMs:1000,startedAt:1,createdAt:1,updatedAt:2,status:'completed',summary:'Remote minutes'}]);window.dispatchEvent(new Event('openpocket:portal-meetings-applied'))}
+let mode='cloud', historyRelease, pauseHistory=false;export const historyCalls=[];
+export function setHistoryPolicy(next){mode=next;window.dispatchEvent(new Event('openpocket:sync-policy-changed'))}
+export function holdHistory(){pauseHistory=true}
+export function releaseHistory(){historyRelease?.()}
+export function readCachedModuleMode(){return mode}
+export function captureRecordingOperation(){
+  const version=auth.activationVersion,owner={userId:auth.userId,workspaceId:auth.workspaceId};
+  return {cloudDb:{owner},assertCloud(){if(version!==auth.activationVersion||mode!=='cloud')throw Object.assign(new Error('expired'),{name:'AbortError'})}}
+}
+export async function http(path,options){
+  const offset=Number(new URL(path,'https://pocket.example').searchParams.get('offset')),owner=key();
+  if(options.syncModule!=='meetings'||options.cache!=='no-store')throw Error('wrong meeting resource policy');
+  historyCalls.push([owner,offset]);
+  if(pauseHistory){pauseHistory=false;await new Promise(resolve=>historyRelease=resolve);}
+  const [user_id,workspace_id]=owner.split(':'),stamp='2025-06-15T15:06:40.123456Z';
+  return {user_id,workspace_id,next_offset:offset===0?20:null,meetings:[{id:owner+offset,title:owner+' archived '+offset,
+    minutes:'Stored minutes '+owner,participants:[],created_at:stamp,updated_at:stamp}]};
+}
 export const status=reactive({failed:true,running:false,blocked:1,resetPending:false,resetBlocked:false,epochUnknown:true});let retries=0;export const runtime={status,syncNow:async()=>{document.querySelector('#retry-count').textContent=String(++retries)}};
 `
 const entry = `
 import{createApp,h,KeepAlive}from'vue';import{createRouter,createMemoryHistory,RouterView}from'vue-router';import{createI18n}from'vue-i18n';
-import Meetings from'/src/features/meetings/MeetingListView.vue';import Notice from'/src/features/settings/PortalRecordSyncNotice.vue';import zh from'/src/locales/zh-CN.json';import{auth,account,remote,runtime,status}from'virtual:meeting-views-shared';
+import Meetings from'/src/features/meetings/MeetingListView.vue';import Notice from'/src/features/settings/PortalRecordSyncNotice.vue';import zh from'/src/locales/zh-CN.json';import{auth,account,remote,runtime,status,historyCalls,setHistoryPolicy,holdHistory,releaseHistory}from'virtual:meeting-views-shared';
 const router=createRouter({history:createMemoryHistory(),routes:[{path:'/meetings',component:Meetings},{path:'/other',component:{name:'OtherFixtureView',render:()=>h('input',{id:'other-draft',placeholder:'Unsaved draft'})}}]});await router.push('/meetings');
 createApp({render:()=>h('div',[h(RouterView,null,{default:({Component})=>h(KeepAlive,{include:['MeetingListView','OtherFixtureView']},()=>Component?h(Component):null)}),h(Notice,{runtime,module:'meetings',nameKey:'settings.storageModuleMeetings'})])}).use(router).use(createI18n({legacy:false,locale:'zh-CN',messages:{'zh-CN':zh}})).mount('#app');
 document.querySelector('#meetings').onclick=()=>router.push('/meetings');document.querySelector('#other').onclick=()=>router.push('/other');
 document.querySelector('#account').onclick=()=>account(auth.userId==='A'?'B':'A',auth.workspaceId);document.querySelector('#workspace').onclick=()=>account(auth.userId,auth.workspaceId==='one'?'two':'one');
 document.querySelector('#remote').onclick=()=>remote(false);document.querySelector('#delete').onclick=()=>remote(true);document.querySelector('#resolve').onclick=()=>{status.failed=false;status.blocked=0};
-window.meetingViews={auth,status};
+window.meetingViews={auth,status,historyCalls,setHistoryPolicy,holdHistory,releaseHistory};
 `
 export async function createMeetingViewsFixture() {
   const root = fileURLToPath(new URL('../../../../../', import.meta.url))
@@ -41,6 +59,9 @@ export async function createMeetingViewsFixture() {
           if (source.endsWith('/components') && importer?.endsWith('MeetingListView.vue'))
             return '\0meeting-views-components'
           if (source.endsWith('/composables/useToast')) return '\0meeting-views-toast'
+          if (importer?.endsWith('MeetingMinutesHistory.vue') && (source.endsWith('/stores/syncPolicyStore') || source === './recording-operation'))
+            return '\0meeting-views-shared'
+          if (importer?.endsWith('meeting-minutes-history.ts') && source.endsWith('/api/http')) return '\0meeting-views-shared'
           if (importer?.endsWith('MeetingListView.vue')) {
             if (source === './meetings-store') return '\0meeting-views-store'
             if (source === './recording-operation.ts') return '\0meeting-views-operation'

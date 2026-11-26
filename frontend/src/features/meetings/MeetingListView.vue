@@ -22,6 +22,7 @@
       </HeaderActionsPortal>
 
       <PullToRefresh :on-refresh="load" class="list-scroll">
+        <MeetingMinutesHistory />
         <div v-if="loading" class="state"><Skeleton :count="4" /></div>
         <!--
           §840：首屏读取失败**不得**落进下面的真空态。
@@ -112,6 +113,7 @@ import {
   Skeleton, EmptyState, DbLockedState, PullToRefresh, SwipeableListItem,
 } from '@/components'
 import HeaderActionsPortal from '../../components/layout/HeaderActionsPortal.vue'
+import MeetingMinutesHistory from './MeetingMinutesHistory.vue'
 import LocalOnlyBadge from '../../components/business/LocalOnlyBadge.vue'
 import {
   listMeetings, createMeeting, deleteMeeting, archiveMeeting, unarchiveMeeting, updateMeeting,

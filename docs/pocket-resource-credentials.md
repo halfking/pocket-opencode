@@ -48,6 +48,9 @@ Scopes are intentionally limited:
   denied, as are auth, admin and unrelated APIs.
 - `embedding`: only POST `/api/embed`, governed by the notes cloud policy.
   Generic LLM and streaming APIs are outside this scope.
+- `meeting-minutes`: only GET `/api/meeting-minutes/history`, governed by the
+  meetings cloud policy. It reads meeting IDs, titles, minutes, attendees and
+  source timestamps for the authenticated account and workspace.
 
 Allowed calls have a deadline at credential expiry, cancellation monitoring and
 an eight-MiB bounded nonstreaming response buffer. Authorization is checked again

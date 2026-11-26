@@ -16,6 +16,7 @@ import (
 const ResourceAudience = "pocket-resource-api"
 const ResourceIssuer = "pocket.resource"
 const ResourceMaxTTL = 30 * time.Second
+const MeetingMinutesScope = "meeting-minutes"
 
 type ResourceClaims struct {
 	TenantID        string   `json:"tenant_id"`
@@ -39,7 +40,7 @@ func CanonicalResourceScopes(in []string) ([]string, error) {
 	out := append([]string(nil), in...)
 	seen := map[string]bool{}
 	for _, s := range out {
-		if (s != "rss" && s != "email-metadata" && s != "embedding") || seen[s] {
+		if (s != "rss" && s != "email-metadata" && s != "embedding" && s != MeetingMinutesScope) || seen[s] {
 			return nil, errors.New("invalid resource scopes")
 		}
 		seen[s] = true
@@ -106,6 +107,8 @@ func ResourceScope(method, path, rawPath string) string {
 	}
 	if method == http.MethodGet {
 		switch path {
+		case "/api/meeting-minutes/history":
+			return MeetingMinutesScope
 		case "/api/email/accounts", "/api/emails", "/api/email/summaries", "/api/email/folders":
 			return "email-metadata"
 		}

@@ -18,8 +18,13 @@ import (
 
 func resourceExchangeTestToken(t *testing.T, workspace string, now time.Time) string {
 	t.Helper()
+	return resourceExchangeTestTokenForScope(t, "user-a", workspace, "rss", now)
+}
+
+func resourceExchangeTestTokenForScope(t *testing.T, user, workspace, scope string, now time.Time) string {
+	t.Helper()
 	path := "/internal/resource-authority/workspaces/" + workspace + "/token"
-	c := resourceDelegation{TenantID: "tenant-a", WorkspaceID: workspace, SessionID: "persisted-parent", ParentExpiresAt: now.Add(time.Minute).Unix(), Scopes: []string{"rss"}, Method: "POST", Path: path, RegisteredClaims: jwt.RegisteredClaims{Issuer: "redclaw", Subject: "user-a", Audience: jwt.ClaimStrings{resourceExchangeAudience}, ID: uuid.NewString(), IssuedAt: jwt.NewNumericDate(now), NotBefore: jwt.NewNumericDate(now), ExpiresAt: jwt.NewNumericDate(now.Add(30 * time.Second))}}
+	c := resourceDelegation{TenantID: "tenant-a", WorkspaceID: workspace, SessionID: "persisted-parent", ParentExpiresAt: now.Add(time.Minute).Unix(), Scopes: []string{scope}, Method: "POST", Path: path, RegisteredClaims: jwt.RegisteredClaims{Issuer: "redclaw", Subject: user, Audience: jwt.ClaimStrings{resourceExchangeAudience}, ID: uuid.NewString(), IssuedAt: jwt.NewNumericDate(now), NotBefore: jwt.NewNumericDate(now), ExpiresAt: jwt.NewNumericDate(now.Add(30 * time.Second))}}
 	raw, err := jwt.NewWithClaims(jwt.SigningMethodHS256, c).SignedString(auth.ResourceKey([]byte(authorityDelegationTestSecret), "openpocket-resource-exchange:v1"))
 	if err != nil {
 		t.Fatal(err)

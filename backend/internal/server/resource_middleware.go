@@ -56,7 +56,7 @@ func (s *Server) tryResourceAuth(w http.ResponseWriter, r *http.Request, raw str
 			}
 		}
 	})
-	ctx = context.WithValue(ctx, authClaimsContextKey{}, &authClaims{UserID: claims.Subject, TenantID: claims.TenantID, WorkspaceID: claims.WorkspaceID, Role: role})
+	ctx = context.WithValue(ctx, authClaimsContextKey{}, &authClaims{UserID: claims.Subject, TenantID: claims.TenantID, WorkspaceID: claims.WorkspaceID, Role: role, ResourceScope: scope})
 	r = r.Clone(ctx)
 	r.Header.Set("X-User-ID", claims.Subject)
 	r.Header.Set("X-Tenant-ID", claims.TenantID)

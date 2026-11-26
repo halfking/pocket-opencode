@@ -47,6 +47,42 @@ test('resource rejection renews only the scoped credential once and never refres
   assert.equal(f.auth.token, 'token-A')
 }))
 
+test('meeting history reads only the verified owner with a single-purpose resource credential', () => fixture(async f => {
+  const http = await setup(f)
+  await f.setModules({ meetings: 'cloud' })
+  const { captureRecordingOperation } = await f.loadModule('/src/features/meetings/recording-operation.ts')
+  const { readMeetingMinutesHistory } = await f.loadModule('/src/features/meetings/meeting-minutes-history.ts')
+  const calls = [], stamp = '2025-06-15T15:06:40.123456Z'
+  let responseUser = 'user-A'
+  globalThis.fetch = async (url, options) => {
+    calls.push(String(url))
+    if (String(url).endsWith('/resource-token')) {
+      assert.equal(options.headers.Authorization, 'Bearer token-A')
+      assert.deepEqual(JSON.parse(options.body), { scopes: ['meeting-minutes'] })
+      return Response.json(credential(f, 'resource-minutes', 'meeting-minutes'))
+    }
+    assert.equal(options.headers.Authorization, 'Bearer resource-minutes')
+    assert.equal(new URL(String(url), 'https://pocket.example').pathname, '/api/meeting-minutes/history')
+    assert.equal(options.cache, 'no-store')
+    return Response.json({ user_id: responseUser, workspace_id: 'workspace', next_offset: null,
+      meetings: [{ id: 'old', title: 'Archived', minutes: 'Approved minutes', participants: [], created_at: stamp, updated_at: stamp,
+        transcript: 'never materialize unexpected fields' }] })
+  }
+  const operation = captureRecordingOperation('meetings')
+  const result = await readMeetingMinutesHistory(operation, 0)
+  assert.equal(result.minutes[0].updated_at, stamp)
+  assert.equal('transcript' in result.minutes[0], false)
+  responseUser = 'user-B'
+  await assert.rejects(readMeetingMinutesHistory(operation, 0), /Invalid meeting history scope/)
+  for (const path of ['/api/meetings', '/api/meetings/m1', '/api/meeting-minutes/history/extra']) {
+    await assert.rejects(http(path), /pocket_resource_unavailable/)
+  }
+  await assert.rejects(http('/api/meeting-minutes/history', { method: 'POST' }), /pocket_resource_unavailable/)
+  await f.setModules({ meetings: 'local' })
+  await assert.rejects(readMeetingMinutesHistory(captureRecordingOperation('meetings'), 0), /module_policy_local/)
+  assert.equal(calls.length, 3)
+}))
+
 test('unsupported pocket resource capabilities fail closed without sending the RedClaw bearer', () => fixture(async f => {
   const http = await setup(f), calls=[]
   globalThis.fetch = async url => { calls.push(String(url)); return Response.json({}) }

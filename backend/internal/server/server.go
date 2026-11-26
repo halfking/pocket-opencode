@@ -920,6 +920,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/stt/transcribe-full", s.requireAuth(s.handleSttTranscribeFull))
 	mux.HandleFunc("/api/stt/transcribe-incremental", s.requireAuth(s.handleSttTranscribeIncremental))
 	mux.HandleFunc("/api/meetings", s.requireAuth(s.handleMeetings))
+	mux.HandleFunc("/api/meeting-minutes/history", s.requireAuth(s.handleMeetingMinutesHistory))
 	mux.HandleFunc("/api/meetings/", s.requireAuth(s.handleMeetingRouter))
 	// RSS 订阅：sources / items / filters / share 一棵子树。
 	mux.HandleFunc("/api/rss/", s.requireAuth(s.handleRSSRouter))

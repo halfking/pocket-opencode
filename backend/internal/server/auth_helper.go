@@ -12,10 +12,11 @@ type authClaimsContextKey struct{}
 
 // authClaims 是中间件注入到 request context 的身份信息。
 type authClaims struct {
-	UserID      string
-	Role        string
-	WorkspaceID string
-	TenantID    string
+	UserID        string
+	Role          string
+	WorkspaceID   string
+	TenantID      string
+	ResourceScope string
 }
 
 // claimsFromContext 从 request context 提取已认证的 claims。

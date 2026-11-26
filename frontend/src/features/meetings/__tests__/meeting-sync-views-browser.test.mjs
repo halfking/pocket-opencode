@@ -34,3 +34,34 @@ test('actual cached meeting list expires owners and reflects remote edits withou
     await fixture.server.close()
   }
 })
+
+test('archived minutes retain their original version and disappear on account or policy changes', async () => {
+  const fixture = await createMeetingViewsFixture(), browser = await chromium.launch()
+  try {
+    const page = await browser.newPage()
+    await page.goto(fixture.url)
+    const history = page.getByText('服务端会议纪要', { exact: true })
+    await history.click()
+    await page.getByText('A:one archived 0', { exact: true }).click()
+    await page.getByText('Stored minutes A:one', { exact: true }).waitFor()
+    assert.equal(await page.locator('.minutes-history time').getAttribute('datetime'), '2025-06-15T15:06:40.123456Z')
+    await page.evaluate(() => window.meetingViews.holdHistory())
+    await page.getByRole('button', { name: '加载更多纪要' }).click()
+    await page.waitForFunction(() => window.meetingViews.historyCalls.length === 2)
+    await page.locator('#account').click()
+    await page.evaluate(() => window.meetingViews.releaseHistory())
+    await page.getByText('B:one private meeting', { exact: true }).waitFor()
+    assert.equal(await page.getByText('A:one archived 0', { exact: true }).count(), 0)
+    assert.equal(await page.getByText('A:one archived 20', { exact: true }).count(), 0)
+    await history.click()
+    await page.getByText('B:one archived 0', { exact: true }).waitFor()
+    await page.getByRole('button', { name: '加载更多纪要' }).click()
+    await page.getByText('B:one archived 20', { exact: true }).waitFor()
+    await page.evaluate(() => window.meetingViews.setHistoryPolicy('local'))
+    await history.waitFor({ state: 'hidden' })
+    assert.equal(await page.getByText('B:one archived 20', { exact: true }).count(), 0)
+  } finally {
+    await browser.close()
+    await fixture.server.close()
+  }
+})

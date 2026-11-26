@@ -5,7 +5,7 @@ import { resolveRedclawPortalBase } from '../config/redclaw-portal'
 import { fetchWithTimeout } from './fetch-timeout'
 import { usesDirectPocketAuthority } from './authentication-mode'
 
-export type PocketResourceScope = 'rss' | 'email-metadata' | 'embedding'
+export type PocketResourceScope = 'rss' | 'email-metadata' | 'embedding' | 'meeting-minutes'
 type Auth = ReturnType<typeof useAuthStore>
 interface ResourceToken { token: string; expiresAt: number }
 interface CachedToken { generation: object; promise: Promise<ResourceToken> }
@@ -33,6 +33,7 @@ export function pocketResourceScope(path: string, method = 'GET'): PocketResourc
   if (verb === 'POST' && route === '/api/auth/logout') return null
   if (/^\/api\/rss(?:\/|$)/.test(route)) return 'rss'
   if (route === '/api/embed') return verb === 'POST' ? 'embedding' : 'unavailable'
+  if (verb === 'GET' && route === '/api/meeting-minutes/history') return 'meeting-minutes'
   if (/^\/api\/(?:email|emails)(?:\/|$)/.test(route)) {
     if (verb === 'GET' && (route === '/api/emails' || /^\/api\/email\/(?:accounts|folders|summaries(?:\/[^/]+)?)$/.test(route))) return 'email-metadata'
     return 'unavailable'
