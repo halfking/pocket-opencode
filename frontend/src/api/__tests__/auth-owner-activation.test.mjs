@@ -114,6 +114,42 @@ test('a direct pocket login restores only after its own live member binding, wit
   assert.equal(calls.length,1); assert.ok(calls[0].endsWith('/api/workspaces/ws-a/binding'))
 }))
 
+test('reconnect retries a failed restore once for the same owner and preserves display edits', () => fixture(async f => {
+  await f.login('a', 'legacy')
+  const initial = deferred(), retry = deferred(), enteredRetry = deferred()
+  const bindingCalls = []
+  globalThis.fetch = async (url, init) => {
+    if (!String(url).endsWith('/api/workspaces/ws-a/binding')) return Response.json({})
+    bindingCalls.push(new Headers(init?.headers).get('Authorization'))
+    if (bindingCalls.length === 1) return initial.promise
+    enteredRetry.resolve()
+    return retry.promise
+  }
+  const { startSyncPolicyRuntime } = await f.vite.ssrLoadModule('/src/stores/sync-policy-runtime.ts')
+  const { useSyncPolicyStore } = await f.vite.ssrLoadModule('/src/stores/syncPolicyStore.ts')
+  const stop = startSyncPolicyRuntime(f.auth, useSyncPolicyStore(), { startRuntimes() {}, connect() {}, disconnect() {} })
+  try {
+    await f.auth.syncFromStorage(true)
+    assert.equal(f.localDB.captureOperation({ kind: 'local-edit' }).owner.principal, null)
+    f.browser.dispatchEvent(new Event('online'))
+    f.browser.dispatchEvent(new Event('online'))
+    initial.resolve(new Response('{}', { status: 503 }))
+    await enteredRetry.promise
+    assert.equal(f.auth.ownerVerificationFailed, true)
+    assert.equal(f.localDB.captureOperation({ kind: 'local-edit' }).owner.principal, null)
+    f.auth.updateDisplayUser('Renamed account')
+    retry.resolve(Response.json(authorityBinding()))
+    await f.auth.whenOwnerReady()
+    assert.deepEqual(bindingCalls, ['Bearer token-a', 'Bearer token-a'])
+    assert.equal(f.auth.userId, 'user-a')
+    assert.equal(f.auth.workspaceId, 'ws-a')
+    assert.equal(f.auth.user, 'Renamed account')
+    assert.equal(f.auth.ownerVerificationFailed, false)
+  } finally {
+    stop()
+  }
+}))
+
 for (const mode of ['redclaw','legacy','unknown']) test(`a ${mode} restore fails visibly when its selected authority rejects, without trying another`, () => fixture(async f => {
   await f.auth.setAuthWithWorkspace('invalid-token', 'User a', 'user-a', 'ws-a', mode)
   const calls=[]

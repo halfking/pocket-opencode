@@ -52,7 +52,15 @@ export function startSyncPolicyRuntime(
     activation = { ticket, context }
     void policy.restoreFromCache().then(resume).catch(() => { /* The store keeps closed admission and its activation error. */ })
   }, { immediate: true, flush: 'sync' })
-  const online = () => { if (!disposed && auth.isAuthenticated) void policy.load() }
+  const online = () => {
+    if (disposed || !auth.isAuthenticated) return
+    void policy.load()
+    const session = captureAuthSession(auth)
+    // The first verification may still be awaiting its offline request.
+    void auth.whenOwnerReady().then(() => {
+      if (!disposed && isCurrentAuthSession(auth, session)) return auth.retryOwnerVerification()
+    })
+  }
   const storageChanged = (event: StorageEvent) => {
     if (!disposed && auth.activationStatus === 'ready' &&
       (event.key === null || event.key === SYNC_POLICY_LOCAL_INTENTS_KEY || event.key.startsWith(`${SYNC_POLICY_LOCAL_INTENTS_KEY}:`))) {

@@ -76,7 +76,7 @@ interface SessionState {
   refresh?: { session: AuthSession; promise: Promise<boolean> }
   activation?: { ticket: object; snapshot: AuthSnapshot; promise: Promise<void> }
   /** 恢复会话后向服务端确认归属的在途任务（供调用方等待）。 */
-  ownerUpgrade?: Promise<void>
+  ownerUpgrade?: { session: AuthSession; promise: Promise<void> }
 }
 
 const sessions = new WeakMap<AuthIdentity, SessionState>()
@@ -327,9 +327,25 @@ export const useAuthStore = defineStore('auth', {
       // ⚠ **不 await**：会话必须立刻可用（见上）。但把 promise 记在 session
       //   state 上 —— 需要「归属已就绪」的调用方（同步路径）可以 await 它，
       //   否则会以为「归属未知」而跳过本该上传的行。
+      void this.retryOwnerVerification()
+    },
+
+    /** A restored credential needs a fresh membership check when connectivity returns. */
+    retryOwnerVerification(): Promise<void> {
+      if (this.activationStatus !== 'ready' || !this.token || this.userId) return Promise.resolve()
       const state = sessionState(this)
-      state.ownerUpgrade = this.upgradeOwnerFromServer(next)
-      state.ownerUpgrade.catch(() => { /* 归属确认失败不是错误：保持未知即可 */ })
+      if (state.ownerUpgrade && isCurrentAuthSession(this, state.ownerUpgrade.session)) return state.ownerUpgrade.promise
+      const session = captureAuthSession(this)
+      const next: AuthSnapshot = {
+        token: this.token, user: this.user, userId: '', workspaceId: this.workspaceId, authMethod: this.authMethod,
+      }
+      const promise = this.upgradeOwnerFromServer(next).catch(() => {
+        // Superseded activation is harmless; a current activation failure is kept by activateSession.
+      }).finally(() => {
+        if (state.ownerUpgrade?.promise === promise) state.ownerUpgrade = undefined
+      })
+      state.ownerUpgrade = { session, promise }
+      return promise
     },
 
     /**
@@ -337,7 +353,7 @@ export const useAuthStore = defineStore('auth', {
      */
     async whenOwnerReady(): Promise<void> {
       const state = sessionState(this)
-      if (state.ownerUpgrade) await state.ownerUpgrade.catch(() => { /* 保持归属未知 */ })
+      if (state.ownerUpgrade) await state.ownerUpgrade.promise
     },
 
     /**
@@ -371,7 +387,7 @@ export const useAuthStore = defineStore('auth', {
       // 期间会话可能已经变了（切账号 / 登出）⇒ 不得覆盖新会话的归属。
       if (!isCurrentAuthSession(this, session) || this.token !== next.token || this.workspaceId !== next.workspaceId) return
       await this.activateSession(
-        { ...next, userId: verified.userId, workspaceId: verified.workspaceId },
+        { ...next, user: this.user, userId: verified.userId, workspaceId: verified.workspaceId },
         false,
         true,
       )
