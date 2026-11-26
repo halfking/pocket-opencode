@@ -23,7 +23,7 @@ function strictNativeClose({ platform, driver }) {
 
 // Only platform/lifecycle plumbing is replaced. SQL and transactions use the
 // installed SQLiteDBConnection, Capacitor proxy, jeep Database and SQL.js.
-async function withDatabase(run, initialize = true) {
+async function withDatabase(run, initialize = true, native = false) {
   const stored = new Map()
   const key = `__localDbExecutor_${Math.random().toString(36).slice(2)}`
   const vite = await createServer({
@@ -37,11 +37,13 @@ async function withDatabase(run, initialize = true) {
         if (source === '@capacitor-community/sqlite' && importer?.endsWith('/local-db.ts')) return '\0executor-sqlite'
         if (importer?.endsWith('/local-db.ts') && source === './sqlite-web-init') return '\0executor-web'
         if (importer?.endsWith('/local-db.ts') && source === './runtime-platform') return '\0executor-platform'
+        if (importer?.endsWith('/local-db.ts') && source === './device-backup/native-database') return '\0executor-backup'
       },
       load(id) {
         if (id === '\0executor-sqlite') return `export const { SQLiteConnection, SQLiteDBConnection, CapacitorSQLite } = globalThis[${JSON.stringify(key)}]`
         if (id === '\0executor-web') return 'export async function initSqliteWeb() {}'
-        if (id === '\0executor-platform') return 'export const isWebFallbackRuntime = () => true'
+        if (id === '\0executor-platform') return `export const isWebFallbackRuntime = () => ${!native}`
+        if (id === '\0executor-backup') return `export const deviceDatabaseBackup = globalThis[${JSON.stringify(key)}].backup`
       },
     }],
   })
@@ -88,13 +90,17 @@ async function withDatabase(run, initialize = true) {
       isTransactionActive: async () => ({ result: driver.isTransActive() }),
       loadExtension: async () => { lifecycle.push('extension') },
     }
-    globalThis[key] = { ...definitions, CapacitorSQLite: registerPlugin(key, { web: async () => platform }) }
+    const backup = {
+      snapshotDatabase: async () => assert.fail('unexpected snapshot dispatch'),
+      publishDatabase: async () => assert.fail('unexpected restore dispatch'),
+    }
+    globalThis[key] = { ...definitions, CapacitorSQLite: registerPlugin(key, { web: async () => platform }), backup }
     ;({ localDB: db } = await vite.ssrLoadModule('/src/native/local-db.ts'))
     if (initialize) {
       await db.init('')
       await db.execute('CREATE TABLE executor_records (id INTEGER PRIMARY KEY, title TEXT); INSERT INTO executor_records VALUES(1,\'original\');')
     }
-    await run({ db, driver, raw, platform, lifecycle, UtilsSQLite, SQLiteDBConnection: definitions.SQLiteDBConnection, saved: () => stored.get('lobster'), SQL })
+    await run({ db, driver, raw, platform, lifecycle, UtilsSQLite, SQLiteDBConnection: definitions.SQLiteDBConnection, saved: () => stored.get('lobster'), SQL, backup })
   } finally {
     if (db) await db.close().catch(() => {})
     try { raw?.close() } catch { /* already closed by the real driver */ }
@@ -102,6 +108,74 @@ async function withDatabase(run, initialize = true) {
     await vite.close()
   }
 }
+
+test('native snapshot waits for the checkpoint and fences queued writes until the copy completes', () => withDatabase(async ({ db, platform, backup, raw }) => {
+  const entered = deferred(), release = deferred()
+  const stage = { stageId: 'fixture-stage' }
+  const query = platform.query
+  const snapshotRows = []
+  platform.query = async request => request.statement === 'PRAGMA wal_checkpoint(TRUNCATE)'
+    ? { values: [{ busy: 0, log: 0, checkpointed: 0 }] }
+    : query(request)
+  backup.snapshotDatabase = async input => {
+    assert.deepEqual(input, stage)
+    entered.resolve()
+    await release.promise
+    snapshotRows.push(...raw.exec('SELECT title FROM executor_records ORDER BY id')[0].values.flat())
+  }
+  await db.requestOwnerActivation({ userId: 'owner', workspaceId: 'workspace' }, () => {})
+  const lease = db.captureOperation({ kind: 'local-edit' })
+  const copy = db.snapshotBackupDatabase(stage, lease)
+  await entered.promise
+  const following = db.run('INSERT INTO executor_records VALUES(2,?)', ['following'])
+  release.resolve()
+  await Promise.all([copy, following])
+  assert.deepEqual(snapshotRows, ['original'])
+  assert.deepEqual((await db.query('SELECT title FROM executor_records ORDER BY id')).map(row => row.title), ['original', 'following'])
+}, true, true))
+
+test('native snapshot refuses a busy checkpoint and cancels an owner change while checkpointing', () => withDatabase(async ({ db, platform }) => {
+  const stage = { stageId: 'fixture-stage' }
+  const first = { userId: 'first', workspaceId: 'workspace' }
+  await db.requestOwnerActivation(first, () => {})
+  const lease = db.captureOperation({ kind: 'local-edit' })
+  platform.query = async () => ({ values: [{ busy: 1, log: 7, checkpointed: 4 }] })
+  await assert.rejects(db.snapshotBackupDatabase(stage, lease), /checkpoint did not complete/)
+  const entered = deferred(), release = deferred()
+  platform.query = async () => {
+    entered.resolve()
+    await release.promise
+    return { values: [{ busy: 0, log: -1, checkpointed: -1 }] }
+  }
+  const copy = assert.rejects(db.snapshotBackupDatabase(stage, lease), { name: 'AbortError' })
+  await entered.promise
+  const activation = db.requestOwnerActivation({ ...first, userId: 'second' }, () => {})
+  release.resolve()
+  await Promise.all([copy, activation])
+}, true, true))
+
+test('native restore publishes before a queued first open and refuses a loaded database', () => withDatabase(async ({ db, backup, lifecycle }) => {
+  const entered = deferred(), release = deferred()
+  const stage = { stageId: 'fixture-stage' }
+  await db.requestOwnerActivation({ userId: 'owner', workspaceId: 'workspace' }, () => {})
+  const lease = db.captureOperation({ kind: 'local-edit' })
+  let published = 0
+  backup.publishDatabase = async request => {
+    assert.deepEqual(request, { ...stage, password: 'fixture-passphrase' })
+    entered.resolve()
+    await release.promise
+    assert.deepEqual(lifecycle, [])
+    published++
+  }
+  const restore = db.publishBackupDatabase(stage, 'fixture-passphrase', lease)
+  await entered.promise
+  const opening = db.init('')
+  release.resolve()
+  await Promise.all([restore, opening])
+  assert.deepEqual(lifecycle, ['create', 'open'])
+  await assert.rejects(db.publishBackupDatabase(stage, 'fixture-passphrase', lease), { code: 'BACKUP_TARGET' })
+  assert.equal(published, 1)
+}, false, true))
 
 test('a normal write cannot join or commit a failing batch transaction', () => withDatabase(async ({ db, UtilsSQLite }) => {
   const entered = deferred(), release = deferred()

@@ -23,6 +23,7 @@ import { migrateEmailOwnership } from './email-ownership-migration'
 import { assertNoTransactionControl, assertReadOnlyQuery } from './local-db-sql-guard'
 import type { SyncModule, SyncMode } from '../api/syncPolicyContract'
 import { LocalDbLeases, type OperationLease, type OperationOptions, type OwnerIdentity, type ActivationPublisher, type PolicySnapshot, type PolicySnapshotPublisher } from './local-db-leases'
+import { deviceDatabaseBackup, type DatabaseStage } from './device-backup/native-database'
 
 export type { OperationLease, OperationOptions, OwnerIdentity, OwnerLease, ActivationPublisher, PolicySnapshot, PolicySnapshotPublisher } from './local-db-leases'
 
@@ -726,6 +727,43 @@ class LocalDB {
       // Invalidate leases and the JS handle first so the next unlock reopens it.
       if (this.conn) await this.closeConnection()
       return this.checkEncryptionSecretSafely(dbSecret)
+    })
+  }
+
+  /** Quiesce normal writes until the native bridge has copied the checkpointed file. */
+  async snapshotBackupDatabase(stage: DatabaseStage, lease: OperationLease): Promise<void> {
+    return this.enqueue(async () => {
+      if (isWebFallbackRuntime()) throw new Error('Device database backup requires the native SQLCipher store')
+      this.requireActivationHealthy()
+      this.requireReady()
+      this.leases.assertCurrent(lease)
+      if (!lease.owner.principal) throw new Error('Device database backup requires a verified owner')
+      const conn = this.conn!
+      if ((await conn.isTransactionActive()).result !== false) throw new Error('The local database has an active transaction')
+      const rows = (await conn.query('PRAGMA wal_checkpoint(TRUNCATE)')).values
+      const checkpoint = rows?.[0]
+      if (rows?.length !== 1 || checkpoint.busy !== 0 || checkpoint.log !== checkpoint.checkpointed ||
+          (checkpoint.log !== 0 && checkpoint.log !== -1)) {
+        throw new Error('The local database checkpoint did not complete')
+      }
+      this.leases.assertCurrent(lease)
+      await deviceDatabaseBackup.snapshotDatabase(stage)
+      this.leases.assertCurrent(lease)
+    })
+  }
+
+  /** Restore must serialize with every normal open, including first-time initialization. */
+  async publishBackupDatabase(stage: DatabaseStage, password: string, lease: OperationLease): Promise<void> {
+    return this.enqueue(async () => {
+      if (isWebFallbackRuntime()) throw new Error('Device database restore requires the native SQLCipher store')
+      this.requireActivationHealthy()
+      this.leases.assertCurrent(lease)
+      if (!lease.owner.principal) throw new Error('Device database restore requires a verified owner')
+      if (this.conn || this.initialized) {
+        throw Object.assign(new Error('The local database slot is not empty'), { code: 'BACKUP_TARGET' })
+      }
+      await deviceDatabaseBackup.publishDatabase({ ...stage, password })
+      this.leases.assertCurrent(lease, 'committed')
     })
   }
 

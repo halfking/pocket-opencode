@@ -15,6 +15,7 @@ import com.getcapacitor.BridgeActivity;
 import com.kaixuan.opencode.pocket.plugins.AppSettingsPlugin;
 import com.kaixuan.opencode.pocket.plugins.SherpaPlugin;
 import com.kaixuan.opencode.pocket.plugins.BiometricAuthPlugin;
+import com.kaixuan.opencode.pocket.plugins.DeviceBackupPlugin;
 
 public class MainActivity extends BridgeActivity {
     private static final int REQ_PERMISSIONS = 1001;
@@ -88,6 +89,7 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(AppSettingsPlugin.class);
         registerPlugin(SherpaPlugin.class);
         registerPlugin(BiometricAuthPlugin.class);
+        registerPlugin(DeviceBackupPlugin.class);
         registerPlugin(com.kaixuan.opencode.pocket.plugins.BackgroundMicPlugin.class);
         registerPlugin(com.kaixuan.opencode.pocket.plugins.EmailFetchPlugin.class);
         registerPlugin(com.kaixuan.opencode.pocket.plugins.AiStreamKeepalivePlugin.class);
