@@ -64,6 +64,7 @@
 
     <div class="toolbar">
       <span class="source-note">{{ listNote }}</span>
+      <RouterLink v-if="!mockActive" :to="{ name: 'acc-unified-tasks' }" class="tool">统一任务</RouterLink>
       <button type="button" class="tool" :disabled="loading" @click="load">刷新</button>
     </div>
 

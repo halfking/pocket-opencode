@@ -4,6 +4,9 @@
       <h2 class="ls-title">事件日志</h2>
       <span class="ls-mode" :class="`mode-${mode}`">{{ modeLabel }}</span>
       <span v-if="lines.length" class="ls-count">{{ lines.length }} 条</span>
+      <button v-if="endReason === 'terminal' && !isMockActive()" type="button" class="ls-pause" @click="refreshTerminal">
+        补读回执
+      </button>
       <button
         type="button"
         class="ls-pause"
@@ -63,10 +66,15 @@ type Mode = AccLogSnapshot['mode']
 
 const lines = ref<LogLine[]>([])
 const mode = ref<Mode>(isMockActive() ? 'mock' : 'connecting')
+const endReason = ref<AccLogSnapshot['reason']>()
 const notice = ref('')
 const logSession = getAccLogSession()
 const paused = ref(false)
 const bodyEl = ref<HTMLElement | null>(null)
+
+function refreshTerminal() {
+  logSession.runtime.refreshTerminal(props.runId, logSession.runtime.captureAuthority())
+}
 
 const modeLabel = computed(() => {
   switch (mode.value) {
@@ -195,6 +203,7 @@ watch([() => props.runId, logSession.authority], ([runId]) => {
   detach = logSession.runtime.subscribe(runId, snapshot => {
     lines.value = snapshot.events.map(projectEvent)
     mode.value = snapshot.mode
+    endReason.value = snapshot.reason
     notice.value = snapshot.notice
     scrollIfAuto()
   }, isMockActive() ? 'mock' : 'live')

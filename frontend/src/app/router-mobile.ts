@@ -707,6 +707,12 @@ const router = createRouter({
       meta: { title: 'ACC 看板', bottomNav: false, canGoBack: true, scrollMode: 'self' }
     },
     {
+      path: '/acc/tasks',
+      name: 'acc-unified-tasks',
+      component: () => import('../features/acc-board/UnifiedTasksView.vue'),
+      meta: { requiresAuth: true, title: '统一任务', bottomNav: false, canGoBack: true, scrollMode: 'self' }
+    },
+    {
       path: '/acc/runs/:runId',
       name: 'acc-run-detail',
       component: () => import('../features/acc-board/TaskDetailView.vue'),

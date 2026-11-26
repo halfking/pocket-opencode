@@ -18,7 +18,7 @@ function createSession(auth: Auth) {
   captureAuthAttempt(auth)
   const sync = () => {
     let owner: AccLogAuthority | null = null
-    if (auth.isAuthenticated && auth.userId && auth.workspaceId) {
+    if (auth.activationStatus === 'ready' && auth.isAuthenticated && auth.userId && auth.workspaceId) {
       const session = captureAuthSession(auth)
       const workspaceId = auth.workspaceId
       const base = getAccBase()
@@ -26,7 +26,7 @@ function createSession(auth: Auth) {
       owner = { session: session.generation, workspaceId, base, token: credential,
         assertCurrent() {
           assertAuthSession(auth, session)
-          if (auth.workspaceId !== workspaceId || getAccBase() !== base || getAccToken() !== credential) {
+          if (auth.activationStatus !== 'ready' || auth.workspaceId !== workspaceId || getAccBase() !== base || getAccToken() !== credential) {
             throw new Error('ACC log authority changed')
           }
         },

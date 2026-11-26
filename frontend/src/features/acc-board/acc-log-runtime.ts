@@ -63,6 +63,7 @@ interface Entry {
   idleTimer?: Timer
   checkTimer?: ReturnType<typeof setInterval>
   pollFails: number
+  terminalSeen: boolean
 }
 
 export class AccLogRuntime {
@@ -80,7 +81,7 @@ export class AccLogRuntime {
     }
   }
 
-  captureAuthority(): object | null { return this.authority }
+  captureAuthority(): AccLogAuthority | null { return this.authority }
 
   /** Includes revocation originating inside transport/watchdog paths, not just settings. */
   onAuthorityChange(listener: (owner: object | null) => void): () => void {
@@ -140,7 +141,7 @@ export class AccLogRuntime {
         }
       }
       entry = { key, runId, source, owner, events: [], replayChars: 0, lastSeq: 0,
-        mode: source === 'mock' ? 'mock' : 'connecting', notice: '', subs: new Set(), pollFails: 0 }
+        mode: source === 'mock' ? 'mock' : 'connecting', notice: '', subs: new Set(), pollFails: 0, terminalSeen: false }
       this.entries.set(key, entry)
       const current = entry
       entry.checkTimer = setInterval(() => { this.admitted(current) }, this.options.authorityCheckMs)
@@ -176,6 +177,17 @@ export class AccLogRuntime {
       }
     }
     return cancelled
+  }
+
+  /** A completed run can still accrue receipts. Read ahead without opening a new SSE. */
+  refreshTerminal(runId: string, owner: object | null): void {
+    if (!owner || owner !== this.authority) return
+    const entry = this.entries.get(JSON.stringify(['live', runId]))
+    if (!entry || entry.reason !== 'terminal' || !this.admitted(entry)) return
+    entry.reason = undefined
+    entry.pollFails = 0
+    entry.checkTimer = setInterval(() => { this.admitted(entry) }, this.options.authorityCheckMs)
+    this.startPolling(entry, '正在读取终态后的回执')
   }
 
   dispose(): void { this.setAuthority(null) }
@@ -274,7 +286,7 @@ export class AccLogRuntime {
     try {
       this.armNetworkBudget(entry, ctrl)
       const response = await fetchWithTimeout(this.url(entry, true), {
-        headers: this.headers(entry, 'text/event-stream'), signal: ctrl.signal,
+        headers: this.headers(entry, 'text/event-stream'), signal: ctrl.signal, cache: 'no-store', redirect: 'error', credentials: 'omit',
       }, { timeoutMs: ACC_TIMEOUT_MS, label: 'acc-run-events-stream' })
       if (!this.admitted(entry) || entry.ctrl !== ctrl || entry.reason) {
         if (response.body) await this.releaseBody(response.body)
@@ -379,7 +391,16 @@ export class AccLogRuntime {
     while (entry.events.length > this.options.maxEvents || entry.replayChars > this.options.maxReplayChars) {
       entry.replayChars -= JSON.stringify(entry.events.shift()!).length
     }
-    if (event.eventType === 'run.terminal') this.close(entry, 'terminal')
+    if (event.eventType === 'run.terminal') {
+      if (entry.source === 'mock') this.close(entry, 'terminal')
+      else {
+        entry.terminalSeen = true
+        if (entry.mode === 'sse') {
+          this.startPolling(entry, '正在读取终态后的回执')
+          return
+        }
+      }
+    }
     this.publish(entry)
   }
 
@@ -407,6 +428,7 @@ export class AccLogRuntime {
   private async poll(entry: Entry): Promise<void> {
     if (!this.admitted(entry) || entry.reason) return
     const ctrl = new AbortController()
+    const after = entry.lastSeq, terminalAtStart = entry.terminalSeen
     entry.ctrl = ctrl
     let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
     try {
@@ -416,7 +438,7 @@ export class AccLogRuntime {
       } else {
         this.armNetworkBudget(entry, ctrl)
         const response = await fetchWithTimeout(this.url(entry, false), {
-          headers: this.headers(entry, 'application/json'), signal: ctrl.signal,
+          headers: this.headers(entry, 'application/json'), signal: ctrl.signal, cache: 'no-store', redirect: 'error', credentials: 'omit',
         }, { timeoutMs: ACC_TIMEOUT_MS, label: 'acc-run-events-poll' })
         if (!this.admitted(entry) || entry.ctrl !== ctrl || entry.reason) {
           if (response.body) await this.releaseBody(response.body)
@@ -427,7 +449,9 @@ export class AccLogRuntime {
             if (this.admitted(entry) && entry.ctrl === ctrl) this.setAuthority(null)
           }
           else if ([400, 404, 405].includes(response.status)) {
-            this.close(entry, 'unavailable'); this.publish(entry)
+            this.close(entry, entry.terminalSeen ? 'terminal' : 'unavailable')
+            if (entry.terminalSeen) entry.notice = '暂时无法补读终态后的回执'
+            this.publish(entry)
           } else {
             if (response.body) await this.releaseBody(response.body)
             throw new Error(`ACC events HTTP ${response.status}`)
@@ -458,10 +482,16 @@ export class AccLogRuntime {
       entry.pollFails = 0
       for (const event of events.sort((a, b) => a.seq - b.seq)) this.accept(entry, event)
       if (entry.reason || !this.admitted(entry)) return
+      if (entry.terminalSeen && entry.lastSeq === after) {
+        this.close(entry, 'terminal')
+        this.publish(entry)
+        return
+      }
       entry.notice = ''
       this.closeTransport(entry)
       this.publish(entry)
-      entry.pollTimer = setTimeout(() => { entry.pollTimer = undefined; void this.poll(entry) }, this.options.pollMs)
+      const delay = entry.terminalSeen && !terminalAtStart ? 0 : this.options.pollMs
+      entry.pollTimer = setTimeout(() => { entry.pollTimer = undefined; void this.poll(entry) }, delay)
     } catch (error) {
       if (!this.admitted(entry) || entry.ctrl !== ctrl || entry.reason) return
       console.warn('[acc-log-runtime] event poll failed', error)
@@ -474,7 +504,10 @@ export class AccLogRuntime {
 
   private pollFailed(entry: Entry): void {
     entry.pollFails++
-    if (entry.pollFails >= 3) this.close(entry, 'unavailable')
+    if (entry.pollFails >= 3) {
+      this.close(entry, entry.terminalSeen ? 'terminal' : 'unavailable')
+      if (entry.terminalSeen) entry.notice = '暂时无法补读终态后的回执'
+    }
     else {
       entry.notice = '轮询暂时失败，稍后重试'
       entry.pollTimer = setTimeout(() => { entry.pollTimer = undefined; void this.poll(entry) }, this.options.pollMs)

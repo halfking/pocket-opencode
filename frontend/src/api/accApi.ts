@@ -134,9 +134,19 @@ export function isAccUnreachable(e: unknown): boolean {
 }
 
 /** 底层请求：JSON 解析 + Bearer 注入 + 统一错误。 */
-async function accRequest<T>(path: string, init?: { method?: string; body?: unknown; cache?: RequestCache }): Promise<T> {
-  const base = getAccBase()
-  const token = getAccToken()
+export interface AccRequestAuthority {
+  readonly base: string
+  readonly token: string
+  assertCurrent(): void
+}
+
+async function accRequest<T>(path: string, init?: {
+  method?: string; body?: unknown; cache?: RequestCache; signal?: AbortSignal; authority?: AccRequestAuthority
+}): Promise<T> {
+  const authority = init?.authority
+  authority?.assertCurrent()
+  const base = authority?.base ?? getAccBase()
+  const token = authority?.token ?? getAccToken()
   const headers: Record<string, string> = { Accept: 'application/json' }
   if (init?.body !== undefined) headers['Content-Type'] = 'application/json'
   if (token) headers.Authorization = `Bearer ${token}`
@@ -148,6 +158,8 @@ async function accRequest<T>(path: string, init?: { method?: string; body?: unkn
       {
         method: init?.method ?? 'GET',
         cache: init?.cache,
+        signal: init?.signal,
+        ...(authority ? { redirect: 'error', credentials: 'omit' } : {}),
         headers,
         body: init?.body !== undefined ? JSON.stringify(init.body) : undefined,
       },
@@ -155,11 +167,13 @@ async function accRequest<T>(path: string, init?: { method?: string; body?: unkn
       { timeoutMs: ACC_TIMEOUT_MS },
     )
   } catch (e) {
-    if (e instanceof TimeoutError) throw e
+    if (e instanceof TimeoutError || (e instanceof Error && e.name === 'AbortError')) throw e
     throw new AccApiError(0, `无法连接 ACC（${base}）：${e instanceof Error ? e.message : String(e)}`)
   }
 
+  authority?.assertCurrent()
   const text = await res.text()
+  authority?.assertCurrent()
   let parsed: unknown = undefined
   if (text) {
     try {
@@ -178,6 +192,10 @@ async function accRequest<T>(path: string, init?: { method?: string; body?: unkn
     throw new AccApiError(res.status, msg, parsed)
   }
   return parsed as T
+}
+
+export function readAcc<T>(authority: AccRequestAuthority, path: string, signal?: AbortSignal): Promise<T> {
+  return accRequest<T>(path, { authority, signal, cache: 'no-store' })
 }
 
 // ---------------------------------------------------------------------------

@@ -95,6 +95,31 @@ test('terminal closes the actual reader and replays its final state without rest
   assert.equal(streams.length, 1)
 })
 
+test('terminal leaves the SSE but reads all later receipts and can refresh again without reopening SSE', async t => {
+  const { runtime, streams, polls, poll } = await fixture(t, { pollMs: 5 })
+  const receipts = [
+    event(14, 'dispatch receipt', { event_type: 'dispatch.completed' }),
+    event(15, 'review receipt', { event_type: 'task.review.rejected' }),
+  ]
+  poll((req, res) => {
+    const after = Number(new URL(req.url, 'http://localhost').searchParams.get('after'))
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ events: receipts.filter(row => row.sequence > after) }))
+  })
+  let snapshot
+  runtime.subscribe('run-1', current => { snapshot = current })
+  await until(() => streams.length === 1)
+  send(streams[0], event(13, 'terminal', { event_type: 'run.terminal' }))
+  await until(() => snapshot.reason === 'terminal' && snapshot.lastSeq === 15 && streams[0].closed)
+  assert.match(polls[0].url, /after=13/)
+  assert.deepEqual(snapshot.events.map(row => row.seq), [13, 14, 15])
+  receipts.push(event(16, 'late acknowledgement'))
+  runtime.refreshTerminal('run-1', runtime.captureAuthority())
+  await until(() => snapshot.reason === 'terminal' && snapshot.lastSeq === 16)
+  assert.equal(streams.length, 1)
+  assert.deepEqual(snapshot.events.map(row => row.seq), [13, 14, 15, 16])
+})
+
 test('workspace/authority changes erase replay, close old transport and isolate identical run IDs', async t => {
   const { runtime, streams, owner } = await fixture(t)
   let oldView

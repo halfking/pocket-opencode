@@ -43,7 +43,8 @@ async function fixture(t) {
     const pinia=createPinia();setActivePinia(pinia);const auth=useAuthStore();
     auth.$patch({token:'pocket-a',user:'Alice',userId:'alice',workspaceId:'one',activationStatus:'ready'});
     localStorage.setItem('acc_board_mock','1');
-    const router=createRouter({history:createMemoryHistory(),routes:[{path:'/',component:{render:()=>null}}]});
+    const router=createRouter({history:createMemoryHistory(),routes:[{path:'/',component:{render:()=>null}},
+      {path:'/acc/tasks',name:'acc-unified-tasks',component:{render:()=>null}}]});
     await router.push('/');await router.isReady();
     // 记录页面有没有被整页卸载过：reload 会重跑这段入口脚本。
     // ⚠ 计数器必须存在 **sessionStorage** 里：window 上的变量在整页 reload
