@@ -16,6 +16,8 @@ async function fixture(t, legacy = false) {
   const eventReplies = []
   const commandWrites = []
   let receipt
+  let loseCancelResponse = false
+  let failCommandRead = false
   let delayTaskPage = false, holdEventReplay = false
   let bindingStatus = 200
   let status = 200, hold = false, server, browser
@@ -111,11 +113,22 @@ async function fixture(t, legacy = false) {
             json({ run_id: task.run_id, state: 'partial', totals: { requests: 4, debited_credits: 6255, net_credits: 6255 },
               attempts: [{ task_id: task.task_id, revision_id: 'rev-' + user, attempt: 1, state: 'unobserved' }] })
           } else if (path.endsWith('/commands')) {
+            if (failCommandRead) {
+              failCommandRead = false
+              res.statusCode = 503
+              json({})
+              return
+            }
             json({run_id:task.run_id, commands:[{dispatch_id:'dispatch_'+user, task_id:task.task_id, attempt:2,
               status:receipt ? 'cancelled' : 'running', can_cancel:!receipt, cancel_state:receipt, verified_executor:true}]})
           } else if (path.endsWith('/commands/dispatch_'+user+'/cancel') && req.method === 'POST') {
             commandWrites.push([user, path])
             receipt = 'requested'
+            if (loseCancelResponse) {
+              res.statusCode = 503
+              json({})
+              return
+            }
             res.statusCode = 202
             json({run_id:task.run_id, command:{dispatch_id:'dispatch_'+user, task_id:task.task_id, attempt:2,
               status:'cancelled', can_cancel:false, cancel_state:receipt, verified_executor:true}})
@@ -152,6 +165,8 @@ async function fixture(t, legacy = false) {
   await page.waitForFunction(() => window.boardReady)
   return { page, requests, errors, held, reply, taskReads, eventCursors, delayedTasks, eventReplies,
     commandWrites, setReceipt(stage) { receipt = stage },
+    loseCancelResponse() { loseCancelResponse = true },
+    failCommandRead() { failCommandRead = true },
     holdTaskPage() { delayTaskPage = true },
     holdEventReplay() { holdEventReplay = true },
     denyBinding() { bindingStatus = 403 },
@@ -271,6 +286,7 @@ test('the task view confirms the exact dispatch and waits for cancellation evide
   assert.deepEqual(f.commandWrites, [])
   await controls.getByRole('button', {name:'确认取消', exact:true}).click()
   await controls.getByText('取消已请求', {exact:true}).waitFor()
+  assert.doesNotMatch(await controls.innerText(), /cancelled/)
   assert.equal(await controls.getByText('取消已生效', {exact:true}).count(), 0)
   assert.deepEqual(f.commandWrites, [['alice', '/api/v2/orchestration/runs/run-alice/commands/dispatch_alice/cancel']])
   f.setReceipt('delivered')
@@ -281,6 +297,30 @@ test('the task view confirms the exact dispatch and waits for cancellation evide
   await controls.getByText('取消已生效', {exact:true}).waitFor()
   await f.action('account')
   await controls.waitFor({state:'detached'})
+  assert.deepEqual(f.errors, [])
+})
+
+test('the task view recovers an uncertain cancellation through reads alone', { timeout: 30_000 }, async t => {
+  const f = await fixture(t)
+  await f.page.clock.install()
+  await f.page.getByRole('link', {name:'统一任务', exact:true}).click()
+  await f.page.getByRole('button', {name:/联跑任务 alice/}).click()
+  const controls = f.page.getByRole('region', {name:'派发与取消回执', exact:true})
+  await controls.getByRole('button', {name:'取消派发', exact:true}).click()
+  f.loseCancelResponse()
+  f.failCommandRead()
+  await controls.getByRole('button', {name:'确认取消', exact:true}).click()
+  await controls.getByText('未能确认取消请求。请刷新回执。', {exact:true}).waitFor()
+  assert.equal(await controls.getByRole('button', {name:'取消派发', exact:true}).count(), 0)
+  await f.page.clock.fastForward(2100)
+  await controls.getByText('派发回执暂不可读取。', {exact:true}).waitFor()
+  f.setReceipt('delivered')
+  await f.page.clock.fastForward(2100)
+  await controls.getByText('取消已送达', {exact:true}).waitFor()
+  f.setReceipt('effective')
+  await f.page.clock.fastForward(2100)
+  await controls.getByText('取消已生效', {exact:true}).waitFor()
+  assert.equal(f.commandWrites.length, 1)
   assert.deepEqual(f.errors, [])
 })
 

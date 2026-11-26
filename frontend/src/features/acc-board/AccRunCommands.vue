@@ -9,7 +9,7 @@
     <ul v-if="commands?.length">
       <li v-for="row in commands" :key="row.dispatch_id">
         <div :title="row.dispatch_id">
-          {{ row.task_id }} #{{ row.attempt }} · {{ row.status }}
+          {{ row.task_id }} #{{ row.attempt }}<template v-if="!row.cancel_state"> · {{ row.status }}</template>
           <span v-if="row.cancel_state" class="command-stage" role="status">
             {{ labels[row.cancel_state] }}<template v-if="row.cancel_state !== 'requested' && !row.verified_executor"> · 旧协议回执</template>
           </span>
@@ -29,7 +29,7 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { cancelRunCommand, readRunCommands, type RunCommandReceipt } from '../../api/accUnifiedTasks'
-import type { AccRequestAuthority } from '../../api/accApi'
+import { AccApiError, type AccRequestAuthority } from '../../api/accApi'
 
 const props = defineProps<{ runId: string; authority: AccRequestAuthority }>()
 const commands = ref<RunCommandReceipt[] | null>(null)
@@ -41,9 +41,8 @@ const labels = { requested: '取消已请求', delivered: '取消已送达', eff
 let pollUntil = 0
 let timer: ReturnType<typeof setTimeout> | undefined
 
-function schedule(rows: RunCommandReceipt[]) {
-  if (!controller.signal.aborted && Date.now() < pollUntil &&
-    rows.some(row => row.cancel_state === 'requested' || row.cancel_state === 'delivered')) {
+function schedule() {
+  if (!controller.signal.aborted && Date.now() < pollUntil) {
     timer = setTimeout(() => void read(), 2000)
   }
 }
@@ -57,9 +56,16 @@ async function read() {
     if (controller.signal.aborted) return
     commands.value = rows
     error.value = ''
-    schedule(rows)
-  } catch {
-    if (!controller.signal.aborted) error.value = '派发回执暂不可读取。'
+    if (rows.some(row => row.cancel_state === 'requested' || row.cancel_state === 'delivered')) schedule()
+  } catch (cause) {
+    if (controller.signal.aborted) return
+    if (cause instanceof AccApiError && [401, 403, 404].includes(cause.status)) {
+      commands.value = null
+      confirming.value = null
+    } else {
+      schedule()
+    }
+    error.value = '派发回执暂不可读取。'
   } finally {
     busy.value = false
   }
@@ -75,12 +81,15 @@ async function cancel(dispatchId: string) {
     const row = await cancelRunCommand(props.authority, props.runId, dispatchId, controller.signal)
     if (controller.signal.aborted) return
     commands.value = commands.value?.map(command => command.dispatch_id === dispatchId ? row : command) ?? null
-    pollUntil = Date.now() + 30_000
-    schedule([row])
   } catch {
-    if (!controller.signal.aborted) error.value = '未能确认取消请求。请刷新回执。'
+    if (!controller.signal.aborted) {
+      commands.value = null
+      error.value = '未能确认取消请求。请刷新回执。'
+    }
   } finally {
     busy.value = false
+    pollUntil = Date.now() + 30_000
+    schedule()
   }
 }
 
