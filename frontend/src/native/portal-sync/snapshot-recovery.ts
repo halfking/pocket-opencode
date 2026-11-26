@@ -116,13 +116,12 @@ function retireMissingMirrors(module: PortalSyncModule, scope: string[], guard: 
   const notes = module === 'notes'
   const projection = notes ? 'local_portal_notes' : 'local_portal_records'
   const outbox = notes ? 'local_portal_outbox' : 'local_portal_record_outbox'
-  const kind = notes ? "'note'" : 'p.kind'
-  const identity = `o.owner_user_id=p.owner_user_id AND o.owner_workspace_id=p.owner_workspace_id AND o.ext_id=p.ext_id
-    ${notes ? '' : 'AND o.module=p.module AND o.kind=p.kind'}`
+  const identity = `o.owner_user_id=p.owner_user_id AND o.owner_workspace_id=p.owner_workspace_id AND o.ext_id=p.ext_id AND o.kind=p.kind
+    ${notes ? '' : 'AND o.module=p.module'}`
   const missing = `p.owner_user_id=? AND p.owner_workspace_id=? ${notes ? '' : 'AND p.module=?'}
     AND (p.source_id GLOB ? OR p.source_id GLOB ?)
     AND NOT EXISTS (SELECT 1 FROM local_portal_recovery_seen s WHERE s.owner_user_id=p.owner_user_id
-      AND s.owner_workspace_id=p.owner_workspace_id AND s.module=? AND s.kind=${kind} AND s.ext_id=p.ext_id)
+      AND s.owner_workspace_id=p.owner_workspace_id AND s.module=? AND s.kind=p.kind AND s.ext_id=p.ext_id)
     AND ${guard.clause}`
   const values = [...(notes ? scope.slice(0, 2) : scope), ...generatedSourceIds, module, ...guard.values]
   const queued = `EXISTS(SELECT 1 FROM ${outbox} o WHERE ${identity})`

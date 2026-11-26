@@ -45,15 +45,15 @@ export async function reaffirmClockOperations<T extends Item>(db: SyncDb, module
     if (!validEpoch(old.epoch)) continue
     const guard = t.guard(old.epoch)
     const item = { ...old, client_updated_at: timestamp, op_id: newOperationId() }, json = await codec.encode(item)
-    const identity = `${t.scope} AND ext_id=?${t.notes ? '' : ' AND kind=?'} AND op_id=? AND version_key=? AND reset_epoch=?`
-    const identityValues = [...t.values, old.ext_id, ...(t.notes ? [] : [old.kind]), old.op_id, versionKey(old.client_updated_at), old.epoch]
+    const identity = `${t.scope} AND ext_id=? AND kind=? AND op_id=? AND version_key=? AND reset_epoch=?`
+    const identityValues = [...t.values, old.ext_id, old.kind, old.op_id, versionKey(old.client_updated_at), old.epoch]
     const admitted = `EXISTS(SELECT 1 FROM ${t.projection} WHERE ${identity})
       AND EXISTS(SELECT 1 FROM ${t.outbox} WHERE ${t.scope} AND op_id=? AND last_error=? AND reset_epoch=?) AND ${guard.clause}`
     const values = [...identityValues, ...t.values, old.op_id, row.last_error, old.epoch, ...guard.values]
     await db.runInTransaction([
-      { statement: `INSERT INTO ${t.outbox}(owner_user_id,owner_workspace_id,${t.notes ? '' : 'module,kind,'}op_id,ext_id,item_json,reset_epoch,last_error${t.notes ? '' : ',source_checked'})
-          SELECT ${t.notes ? '?,?,?,?,?,?,?' : '?,?,?,?,?,?,?,?,?,1'} WHERE ${admitted}`,
-        values: [...t.values, ...(t.notes ? [] : [old.kind]), item.op_id, item.ext_id, json, item.epoch, clockRetryReady, ...values] },
+      { statement: `INSERT INTO ${t.outbox}(owner_user_id,owner_workspace_id,${t.notes ? '' : 'module,'}kind,op_id,ext_id,item_json,reset_epoch,last_error${t.notes ? '' : ',source_checked'})
+          SELECT ${t.notes ? '?,?,?,?,?,?,?,?' : '?,?,?,?,?,?,?,?,?,1'} WHERE ${admitted}`,
+        values: [...t.values, old.kind, item.op_id, item.ext_id, json, item.epoch, clockRetryReady, ...values] },
       { statement: `UPDATE ${t.projection} SET item_json=?,op_id=?,version_key=?${t.notes ? ',version_ms=?' : ''}
           WHERE ${identity} AND EXISTS(SELECT 1 FROM ${t.outbox} WHERE ${t.scope} AND op_id=?) AND ${guard.clause}`,
         values: [json, item.op_id, correctedVersion, ...(t.notes ? [Date.parse(timestamp)] : []), ...identityValues, ...t.values, item.op_id, ...guard.values] },

@@ -27,3 +27,16 @@ test('legacy portal content/tags and empty operation ids are explicit, bounded c
   assert.equal(page.changes[0].op_id,'')
   assert.throws(()=>parsePage({changes:[{...legacy,payload:{...legacy.payload,unknown:'retain'}}],epochs:{notes:0},next_cursor:'one'}),/Unsupported/)
 })
+
+test('notes feed accepts legacy body and title-only items while rejecting ambiguous or duplicate identities', () => {
+  const item = {module:'notes',kind:'item',ext_id:'shared',title:'Historical',payload:{body:'old',tags:['legacy']},
+    client_updated_at:'2026-01-01T00:00:00Z',last_op_id:'',change_seq:1,deleted:false}
+  const envelope = {epochs:{notes:0},next_cursor:'2'}
+  const read = (changes: unknown[]) => parsePage({...envelope,changes})
+  const parsed = read([item,{ ...item, kind:'note', payload:{content:'current'},change_seq:2 }])
+  assert.deepEqual(parsed.changes.map(({kind,payload}) => [kind,payload.content]), [['item','old'],['note','current']])
+  assert.equal(read([{...item,payload:{}}]).changes[0]?.payload.content,'')
+  assert.throws(() => read([item,{...item,change_seq:2}]), /Duplicate/)
+  assert.throws(() => read([{...item,payload:{body:'old',content:'other'}}]), /Ambiguous/)
+  assert.throws(() => read([{...item,payload:{body:'old',custom:{}}}]), /Unsupported/)
+})

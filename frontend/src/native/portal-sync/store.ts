@@ -1,4 +1,4 @@
-import { validateItem, versionKey, newOperationId, localVersionOperationId, type NotePayload, type PortalAck, type PortalItem, type Statement, type SyncDb } from './contract.ts'
+import { validateItem, versionKey, newOperationId, localVersionOperationId, type NoteKind, type NotePayload, type PortalAck, type PortalItem, type Statement, type SyncDb } from './contract.ts'
 import { epochTables, currentNotesEpoch, epochGuard, observeNotesEpoch } from './epoch-state.ts'
 import { validEpoch } from './epochs.ts'
 import { recordTables } from './record-tables.ts'
@@ -18,6 +18,7 @@ export interface NoteSnapshot {
   expectedVersion?: ProjectionRow | null
 }
 export interface ProjectionRow {
+  kind: NoteKind
   ext_id: string
   source: 'note' | 'asset'
   source_id: string
@@ -27,18 +28,21 @@ export interface ProjectionRow {
   op_id: string
   reset_epoch: number | null
 }
-const tables = [
-  `CREATE TABLE IF NOT EXISTS local_portal_note_write_guards (
-    allowed INTEGER NOT NULL CONSTRAINT portal_notes_write_conflict CHECK(allowed=1))`,
-  `CREATE TABLE IF NOT EXISTS local_portal_notes (
+const notesTable = (name: string) => `CREATE TABLE IF NOT EXISTS ${name} (
     owner_user_id TEXT NOT NULL, owner_workspace_id TEXT NOT NULL,
     ext_id TEXT NOT NULL, source TEXT NOT NULL, source_id TEXT NOT NULL,
     item_json TEXT NOT NULL, version_ms INTEGER NOT NULL, version_key TEXT NOT NULL, op_id TEXT NOT NULL, reset_epoch INTEGER,
-    PRIMARY KEY(owner_user_id,owner_workspace_id,ext_id),
-    UNIQUE(owner_user_id,owner_workspace_id,source,source_id))`,
+    kind TEXT NOT NULL DEFAULT 'note',
+    PRIMARY KEY(owner_user_id,owner_workspace_id,kind,ext_id),
+    UNIQUE(owner_user_id,owner_workspace_id,source,source_id))`
+const tables = [
+  `CREATE TABLE IF NOT EXISTS local_portal_note_write_guards (
+    allowed INTEGER NOT NULL CONSTRAINT portal_notes_write_conflict CHECK(allowed=1))`,
+  notesTable('local_portal_notes'),
   `CREATE TABLE IF NOT EXISTS local_portal_outbox (
     owner_user_id TEXT NOT NULL, owner_workspace_id TEXT NOT NULL,
     op_id TEXT NOT NULL, ext_id TEXT NOT NULL, item_json TEXT NOT NULL, last_error TEXT NOT NULL DEFAULT '',reset_epoch INTEGER,
+    kind TEXT NOT NULL DEFAULT 'note',
     PRIMARY KEY(owner_user_id,owner_workspace_id,op_id))`,
   `CREATE TABLE IF NOT EXISTS local_portal_cursors (
     owner_user_id TEXT NOT NULL, owner_workspace_id TEXT NOT NULL,
@@ -49,6 +53,31 @@ const tables = [
   ...capacityTables,
 ]
 const schemaReady = new WeakMap<object, Promise<void>>()
+
+// Existing clients only wrote kind='note'. Preserve source IDs and opaque payloads.
+async function migrateNoteKinds(db: SyncDb): Promise<void> {
+  const projection = await db.query<{ name: string }>('PRAGMA table_info(local_portal_notes)')
+  const outbox = await db.query<{ name: string }>('PRAGMA table_info(local_portal_outbox)')
+  const statements: Statement[] = []
+  if (!projection.some(column => column.name === 'kind')) {
+    const epoch = projection.some(column => column.name === 'reset_epoch') ? 'reset_epoch' : 'NULL'
+    const columns = 'owner_user_id,owner_workspace_id,ext_id,source,source_id,item_json,version_ms,version_key,op_id'
+    statements.push(
+      { statement: notesTable('local_portal_notes_kind_migration'), values: [] },
+      { statement: `INSERT INTO local_portal_notes_kind_migration (${columns},reset_epoch)
+          SELECT ${columns},${epoch} FROM local_portal_notes`, values: [] },
+      { statement: 'DROP TABLE local_portal_notes', values: [] },
+      { statement: 'ALTER TABLE local_portal_notes_kind_migration RENAME TO local_portal_notes', values: [] },
+    )
+  }
+  if (!outbox.some(column => column.name === 'reset_epoch')) {
+    statements.push({ statement: 'ALTER TABLE local_portal_outbox ADD COLUMN reset_epoch INTEGER', values: [] })
+  }
+  if (!outbox.some(column => column.name === 'kind')) {
+    statements.push({ statement: "ALTER TABLE local_portal_outbox ADD COLUMN kind TEXT NOT NULL DEFAULT 'note'", values: [] })
+  }
+  if (statements.length) await db.runInTransaction(statements)
+}
 
 /** No migration scans existing note/asset rows: absence of a projection means unclaimed. */
 export class PortalNotesStore {
@@ -68,10 +97,7 @@ export class PortalNotesStore {
     if (!ready) {
       ready = (async () => {
         for (const sql of tables) await this.db.run(sql)
-        for (const table of ['local_portal_notes', 'local_portal_outbox']) {
-          const columns = await this.db.query<{ name: string }>(`PRAGMA table_info(${table})`)
-          if (!columns.some(column => column.name === 'reset_epoch')) await this.db.run(`ALTER TABLE ${table} ADD COLUMN reset_epoch INTEGER`)
-        }
+        await migrateNoteKinds(this.db)
         const records = await this.db.query<{ name: string }>('PRAGMA table_info(local_portal_record_outbox)')
         if (!records.some(column => column.name === 'source_checked')) {
           await this.db.run('ALTER TABLE local_portal_record_outbox ADD COLUMN source_checked INTEGER NOT NULL DEFAULT 0')
@@ -88,9 +114,9 @@ export class PortalNotesStore {
     await this.init()
     return this.db.queryOne<ProjectionRow>(`SELECT * FROM local_portal_notes WHERE owner_user_id=? AND owner_workspace_id=? AND source=? AND source_id=?`, [...this.scope, source, id])
   }
-  async byExternalId(id: string): Promise<ProjectionRow | null> {
+  async byExternalId(id: string, kind: NoteKind = 'note'): Promise<ProjectionRow | null> {
     await this.init()
-    return this.db.queryOne<ProjectionRow>(`SELECT * FROM local_portal_notes WHERE owner_user_id=? AND owner_workspace_id=? AND ext_id=?`, [...this.scope, id])
+    return this.db.queryOne<ProjectionRow>(`SELECT * FROM local_portal_notes WHERE owner_user_id=? AND owner_workspace_id=? AND kind=? AND ext_id=?`, [...this.scope, kind, id])
   }
   async commit(statements: Statement[], snapshot: NoteSnapshot, created: boolean): Promise<ProjectionRow | null> {
     const epoch = validEpoch(snapshot.epoch) ? snapshot.epoch : null
@@ -111,7 +137,7 @@ export class PortalNotesStore {
     const timestamp = new Date(snapshot.modifiedAt).toISOString()
     const conflictMessage = 'Note changed during this edit; original retained, keep your changes and retry the edit'
     const item: PortalItem = {
-      module: 'notes', kind: 'note', ext_id: existing?.ext_id ?? `${snapshot.source}:${snapshot.id}`,
+      module: 'notes', kind: existing?.kind ?? 'note', ext_id: existing?.ext_id ?? `${snapshot.source}:${snapshot.id}`,
       title: snapshot.title, payload: snapshot.deleted ? {} : snapshot.payload,
       client_updated_at: timestamp,
       op_id: localVersionOperationId(timestamp, existing, conflictMessage), deleted: snapshot.deleted === true, epoch,
@@ -121,8 +147,8 @@ export class PortalNotesStore {
     const json = await this.encode(item)
     const admitted = epochGuard(this.db, epoch ?? -1)
     const observed = existing ? {
-      clause: `EXISTS(SELECT 1 FROM local_portal_notes WHERE owner_user_id=? AND owner_workspace_id=? AND ext_id=? AND source=? AND source_id=? AND version_key=? AND op_id=? AND reset_epoch IS ?)`,
-      values: [...this.scope, existing.ext_id, existing.source, existing.source_id, existing.version_key, existing.op_id, existing.reset_epoch],
+      clause: `EXISTS(SELECT 1 FROM local_portal_notes WHERE owner_user_id=? AND owner_workspace_id=? AND kind=? AND ext_id=? AND source=? AND source_id=? AND version_key=? AND op_id=? AND reset_epoch IS ?)`,
+      values: [...this.scope, existing.kind, existing.ext_id, existing.source, existing.source_id, existing.version_key, existing.op_id, existing.reset_epoch],
     } : {
       clause: `NOT EXISTS(SELECT 1 FROM local_portal_notes WHERE source=? AND source_id=?)`,
       values: [snapshot.source, snapshot.id],
@@ -131,14 +157,14 @@ export class PortalNotesStore {
       { statement: `INSERT INTO local_portal_note_write_guards(allowed) SELECT 0 WHERE NOT (${observed.clause})`, values: observed.values },
       ...statements,
       { statement: `INSERT INTO local_portal_notes
-          (owner_user_id,owner_workspace_id,ext_id,source,source_id,item_json,version_ms,version_key,op_id,reset_epoch)
-        VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(owner_user_id,owner_workspace_id,ext_id)
+          (owner_user_id,owner_workspace_id,kind,ext_id,source,source_id,item_json,version_ms,version_key,op_id,reset_epoch)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(owner_user_id,owner_workspace_id,kind,ext_id)
         DO UPDATE SET item_json=excluded.item_json,version_ms=excluded.version_ms,version_key=excluded.version_key,op_id=excluded.op_id,reset_epoch=excluded.reset_epoch`,
-        values: [...this.scope, item.ext_id, snapshot.source, snapshot.id, json, snapshot.modifiedAt, versionKey(item.client_updated_at), item.op_id, epoch] },
-      { statement: `DELETE FROM local_portal_outbox WHERE owner_user_id=? AND owner_workspace_id=? AND ext_id=? AND last_error<>''`, values: [...this.scope, item.ext_id] },
-      { statement: `INSERT INTO local_portal_outbox (owner_user_id,owner_workspace_id,op_id,ext_id,item_json,reset_epoch,last_error)
-          VALUES (?,?,?,?,?,?,CASE WHEN ? IS NULL THEN 'epoch_unknown' WHEN ${admitted.clause} THEN ? ELSE 'reset_epoch_mismatch' END)`,
-        values: [...this.scope, item.op_id, item.ext_id, json, epoch, epoch, ...admitted.values, error] },
+        values: [...this.scope, item.kind, item.ext_id, snapshot.source, snapshot.id, json, snapshot.modifiedAt, versionKey(item.client_updated_at), item.op_id, epoch] },
+      { statement: `DELETE FROM local_portal_outbox WHERE owner_user_id=? AND owner_workspace_id=? AND kind=? AND ext_id=? AND last_error<>''`, values: [...this.scope, item.kind, item.ext_id] },
+      { statement: `INSERT INTO local_portal_outbox (owner_user_id,owner_workspace_id,kind,op_id,ext_id,item_json,reset_epoch,last_error)
+          VALUES (?,?,?,?,?,?,?,CASE WHEN ? IS NULL THEN 'epoch_unknown' WHEN ${admitted.clause} THEN ? ELSE 'reset_epoch_mismatch' END)`,
+        values: [...this.scope, item.kind, item.op_id, item.ext_id, json, epoch, epoch, ...admitted.values, error] },
       ...outboxCapacityStatements(this.db, 'notes'),
     ]) } catch (cause) {
       capacityFailure(cause)
@@ -148,7 +174,7 @@ export class PortalNotesStore {
     if (error) console.warn('[portal-sync] 本地笔记已保存，同步受阻：', error)
     await publishOutboxRetention(this.db, 'notes')
     if (typeof window !== 'undefined') window.dispatchEvent(new Event('openpocket:portal-notes-outbox-changed'))
-    return {ext_id:item.ext_id,source:snapshot.source,source_id:snapshot.id,item_json:json,version_ms:snapshot.modifiedAt,version_key:versionKey(timestamp),op_id:item.op_id,reset_epoch:epoch}
+    return {kind:item.kind,ext_id:item.ext_id,source:snapshot.source,source_id:snapshot.id,item_json:json,version_ms:snapshot.modifiedAt,version_key:versionKey(timestamp),op_id:item.op_id,reset_epoch:epoch}
   }
   async pending(): Promise<PortalItem[]> {
     if (!this.db.owner) return []
@@ -198,9 +224,9 @@ export class PortalNotesStore {
       if (!validEpoch(old.epoch) || old.epoch !== await currentNotesEpoch(this.db)) continue
       const item = { ...old, op_id: newOperationId() }
       await this.db.runInTransaction([
-        { statement: `INSERT INTO local_portal_outbox (owner_user_id,owner_workspace_id,op_id,ext_id,item_json,reset_epoch) VALUES (?,?,?,?,?,?)`, values: [...this.scope, item.op_id, item.ext_id, await this.encode(item), item.epoch] },
+        { statement: `INSERT INTO local_portal_outbox (owner_user_id,owner_workspace_id,kind,op_id,ext_id,item_json,reset_epoch) VALUES (?,?,?,?,?,?,?)`, values: [...this.scope, item.kind, item.op_id, item.ext_id, await this.encode(item), item.epoch] },
         { statement: `DELETE FROM local_portal_outbox WHERE owner_user_id=? AND owner_workspace_id=? AND op_id=? AND last_error='policy_local'`, values: [...this.scope, old.op_id] },
-        { statement: `UPDATE local_portal_notes SET op_id=?,item_json=? WHERE owner_user_id=? AND owner_workspace_id=? AND ext_id=? AND op_id=?`, values: [item.op_id, await this.encode(item), ...this.scope, item.ext_id, old.op_id] },
+        { statement: `UPDATE local_portal_notes SET op_id=?,item_json=? WHERE owner_user_id=? AND owner_workspace_id=? AND kind=? AND ext_id=? AND op_id=?`, values: [item.op_id, await this.encode(item), ...this.scope, item.kind, item.ext_id, old.op_id] },
       ])
     }
   }

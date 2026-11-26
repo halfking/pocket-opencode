@@ -625,7 +625,7 @@ describe('§880 · 一次操作里的多次写（普查门）', () => {
    */
   const ALLOW = new Map<string, { why: string; runs: number }>([
     ['native/outboxStore.ts::put', { runs: 2, why: 'INSERT 撞幂等键才走 UPDATE，两条互斥（不是一次调用写两次）' }],
-    ['native/portal-sync/store.ts::init', { runs: 3, why: '建表循环及 reset_epoch、source_checked 两种旧库列迁移；ALTER 前均按 PRAGMA 探测' }],
+    ['native/portal-sync/store.ts::init', { runs: 2, why: '建表循环及单独的 source_checked 列迁移，ALTER 前按 PRAGMA 探测；笔记表升级另在同一事务内完成' }],
     ['native/approvalStore.ts::upsertSnapshot', { runs: 2, why: 'if/else 二选一，两条互斥' }],
     ['features/notes/notes-store.ts::handleServerEvent', { runs: 2, why: 'if(existing) UPDATE else INSERT，两条互斥' }],
 

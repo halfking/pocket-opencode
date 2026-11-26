@@ -165,3 +165,63 @@ test('a reset epoch change during snapshot recovery restarts from the beginning'
   assert.equal(await store.byExternalId('previous-0', 'source'), null)
   assert.ok(await store.byExternalId('new', 'source'))
 }))
+
+test('legacy notes and portable notes keep separate identities during snapshot and edit', () => fixture(async f => {
+  const { db, store, PortalCursorExpired, change, page, apply } = await setup(f, cases[0])
+  const canonical = change('shared', 1)
+  const legacy = { ...change('shared', 2), kind: 'item', payload: { body: 'legacy body', tags: ['old'] } }
+  await apply(async cursor => cursor ? page([], cursor) : page([canonical, legacy], '2'))
+  const first = await store.byExternalId('shared', 'note')
+  const second = await store.byExternalId('shared', 'item')
+  assert.notEqual(first.source_id, second.source_id)
+  const readNative = id => db.queryOne('SELECT content,deleted_at FROM local_notes WHERE id=?', [id])
+  assert.equal((await readNative(first.source_id)).content, 'remote text')
+  assert.equal((await readNative(second.source_id)).content, 'legacy body')
+
+  const editPayload = (await f.loadModule('/src/native/portal-sync/contract.ts')).notePayload({ content:'edited legacy', format:'text' })
+  await store.commit([], { source:'note', id:second.source_id, title:'legacy edit', payload:editPayload, modifiedAt:10000, epoch:0 }, false)
+  const queued = (await store.pending())[0]
+  assert.equal(queued.kind, 'item')
+  assert.equal(queued.ext_id, 'shared')
+  const sent = []
+  await apply(async cursor => {
+    if (cursor === '2') throw new PortalCursorExpired()
+    if (cursor === '') return page([legacy], '10')
+    assert.equal(cursor, '10')
+    return page([], cursor)
+  }, async items => {
+    sent.push(...items)
+    return { results:items.map(item => ({ ...item, outcome:'applied', current_epoch:0 })) }
+  })
+  assert.deepEqual(sent, [queued])
+  assert.ok((await readNative(first.source_id)).deleted_at)
+  assert.equal((await readNative(second.source_id)).deleted_at, null)
+  assert.equal((await store.byExternalId('shared', 'item')).source_id, second.source_id)
+  assert.deepEqual(await store.pending(), [])
+}))
+
+test('the notes identity upgrade preserves existing source IDs, encrypted bytes and queue metadata', () => fixture(async f => {
+  const { db, store, change, page, apply } = await setup(f, cases[0])
+  const upgraded = await store.byExternalId('shared', 'note')
+  assert.equal(upgraded.source_id, 'saved-local')
+  assert.equal(upgraded.item_json, 'e1:opaque-projection')
+  assert.equal(upgraded.reset_epoch, 0)
+  assert.deepEqual(await db.queryOne('SELECT kind,item_json,last_error,reset_epoch FROM local_portal_outbox WHERE op_id=?', ['saved-op']),
+    { kind:'note', item_json:'e1:opaque-outbox', last_error:'previous_error', reset_epoch:0 })
+
+  await apply(async cursor => cursor ? page([], cursor) : page([{ ...change('shared', 2), kind:'item', payload:{ content:'legacy after upgrade' } }], '2'))
+  assert.equal((await store.byExternalId('shared', 'note')).source_id, 'saved-local')
+  assert.notEqual((await store.byExternalId('shared', 'item')).source_id, 'saved-local')
+}, { prepareDatabase(raw) {
+  raw.run(`CREATE TABLE local_portal_notes (
+    owner_user_id TEXT NOT NULL,owner_workspace_id TEXT NOT NULL,
+    ext_id TEXT NOT NULL,source TEXT NOT NULL,source_id TEXT NOT NULL,item_json TEXT NOT NULL,
+    version_ms INTEGER NOT NULL,version_key TEXT NOT NULL,op_id TEXT NOT NULL,reset_epoch INTEGER,
+    PRIMARY KEY(owner_user_id,owner_workspace_id,ext_id), UNIQUE(owner_user_id,owner_workspace_id,source,source_id));
+    CREATE TABLE local_portal_outbox (
+    owner_user_id TEXT NOT NULL,owner_workspace_id TEXT NOT NULL,
+    op_id TEXT NOT NULL,ext_id TEXT NOT NULL,item_json TEXT NOT NULL,last_error TEXT NOT NULL DEFAULT '',reset_epoch INTEGER,
+    PRIMARY KEY(owner_user_id,owner_workspace_id,op_id));
+    INSERT INTO local_portal_notes VALUES('user-A','workspace','shared','note','saved-local','e1:opaque-projection',1000,'1000','saved-op',0);
+    INSERT INTO local_portal_outbox VALUES('user-A','workspace','saved-op','shared','e1:opaque-outbox','previous_error',0);`)
+} }))

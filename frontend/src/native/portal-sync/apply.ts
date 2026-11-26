@@ -16,8 +16,8 @@ export async function applyPage(store: PortalNotesStore, page: ChangePage, encod
   for (const change of page.changes) {
     const item = { ...change, epoch }
     validateItem(item, true)
-    const existing = await store.byExternalId(item.ext_id)
-    const payload = item.deleted ? null : remoteNotePayload(item.payload)
+    const existing = await store.byExternalId(item.ext_id, item.kind)
+    const payload = item.deleted ? null : remoteNotePayload(item.payload, item.kind)
     if (existing && payload) {
       const asset = existing.source === 'asset' ? await store.db.queryOne<{ source: string }>('SELECT source FROM local_assets WHERE id=? AND workspace_id=?', [existing.source_id, store.db.owner.workspaceId]) : null
       const expectedFormat = existing.source === 'note' ? 'text' : asset?.source === 'enex_import' ? 'markdown' : 'html'
@@ -28,16 +28,16 @@ export async function applyPage(store: PortalNotesStore, page: ChangePage, encod
     const modified = Date.parse(item.client_updated_at)
     const key = versionKey(item.client_updated_at)
     statements.push({ statement: `INSERT INTO local_portal_notes
-      (owner_user_id,owner_workspace_id,ext_id,source,source_id,item_json,version_ms,version_key,op_id,reset_epoch)
-      SELECT ?,?,?,?,?,?,?,?,?,? WHERE ${admitted.clause} ON CONFLICT(owner_user_id,owner_workspace_id,ext_id)
+      (owner_user_id,owner_workspace_id,kind,ext_id,source,source_id,item_json,version_ms,version_key,op_id,reset_epoch)
+      SELECT ?,?,?,?,?,?,?,?,?,?,? WHERE ${admitted.clause} ON CONFLICT(owner_user_id,owner_workspace_id,kind,ext_id)
       DO UPDATE SET item_json=excluded.item_json,version_ms=excluded.version_ms,version_key=excluded.version_key,op_id=excluded.op_id,reset_epoch=excluded.reset_epoch
       WHERE excluded.reset_epoch > COALESCE(local_portal_notes.reset_epoch,0)
          OR (excluded.reset_epoch = COALESCE(local_portal_notes.reset_epoch,0) AND (excluded.version_key > local_portal_notes.version_key
          OR (excluded.version_key = local_portal_notes.version_key AND excluded.op_id > local_portal_notes.op_id)))`,
-      values: [...store.scope, item.ext_id, source, id, await store.encode(item), modified, key, item.op_id, epoch, ...admitted.values] })
-    const guard = `EXISTS (SELECT 1 FROM local_portal_notes WHERE owner_user_id=? AND owner_workspace_id=? AND ext_id=? AND op_id=? AND version_key=? AND reset_epoch=?)
-      AND ${admitted.clause} AND NOT EXISTS(SELECT 1 FROM local_portal_outbox WHERE owner_user_id=? AND owner_workspace_id=? AND ext_id=? AND (reset_epoch IS NULL OR reset_epoch<>?))`
-    const guardValues = [...store.scope, item.ext_id, item.op_id, key, epoch, ...admitted.values, ...store.scope, item.ext_id, epoch]
+      values: [...store.scope, item.kind, item.ext_id, source, id, await store.encode(item), modified, key, item.op_id, epoch, ...admitted.values] })
+    const guard = `EXISTS (SELECT 1 FROM local_portal_notes WHERE owner_user_id=? AND owner_workspace_id=? AND kind=? AND ext_id=? AND op_id=? AND version_key=? AND reset_epoch=?)
+      AND ${admitted.clause} AND NOT EXISTS(SELECT 1 FROM local_portal_outbox WHERE owner_user_id=? AND owner_workspace_id=? AND kind=? AND ext_id=? AND (reset_epoch IS NULL OR reset_epoch<>?))`
+    const guardValues = [...store.scope, item.kind, item.ext_id, item.op_id, key, epoch, ...admitted.values, ...store.scope, item.kind, item.ext_id, epoch]
     if (item.deleted) {
       statements.push({ statement: `UPDATE ${source === 'note' ? 'local_notes' : 'local_assets'} SET deleted_at=?,updated_at=? WHERE id=? AND workspace_id=? AND ${guard}`,
         values: [modified, modified, id, store.db.owner.workspaceId, ...guardValues] })

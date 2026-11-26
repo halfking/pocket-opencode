@@ -14,9 +14,11 @@ export interface NotePayload extends Record<string, unknown> {
   created_at: number
   import_id?: string
 }
+export type NoteKind = 'note' | 'item'
+
 export interface PortalItem {
   module: 'notes'
-  kind: 'note'
+  kind: NoteKind
   ext_id: string
   title: string
   payload: NotePayload | Record<string, never>
@@ -72,9 +74,12 @@ export function notePayload(input: Record<string, unknown>): NotePayload {
   }
 }
 
-export function remoteNotePayload(input: Record<string, unknown>): NotePayload {
-  if (input.schema_version === undefined && Object.keys(input).every(key => ['content', 'tags'].includes(key))) {
-    return notePayload({ ...input, format: 'text' })
+export function remoteNotePayload(input: Record<string, unknown>, kind: NoteKind = 'note'): NotePayload {
+  const legacyFields = kind === 'item' ? ['content', 'body', 'tags'] : ['content', 'tags']
+  if (input.schema_version === undefined && Object.keys(input).every(key => legacyFields.includes(key))) {
+    if ('body' in input && 'content' in input) throw new Error('Ambiguous legacy notes body')
+    const content = 'body' in input ? input.body : kind === 'item' && !('content' in input) ? '' : input.content
+    return notePayload({ content, tags: input.tags, format: 'text' })
   }
   if (input.schema_version !== 1) throw new Error('Unsupported notes projection version')
   if (input.import_id !== undefined && (input.format !== 'markdown' || typeof input.import_id !== 'string' || !input.import_id || new TextEncoder().encode(input.import_id).length > 512)) throw new Error('Invalid imported notes identity')
@@ -85,13 +90,13 @@ export function remoteNotePayload(input: Record<string, unknown>): NotePayload {
 
 export function validateItem(item: PortalItem, allowLegacyOperation = false): void {
   const bytes = (value: string) => new TextEncoder().encode(value).length
-  if (item.module !== 'notes' || item.kind !== 'note' || !item.ext_id || bytes(item.ext_id) > 512 || bytes(item.title) > 4096) throw new Error('Invalid portal notes identity')
+  if (item.module !== 'notes' || (item.kind !== 'note' && item.kind !== 'item') || !item.ext_id || bytes(item.ext_id) > 512 || bytes(item.title) > 4096) throw new Error('Invalid portal notes identity')
   if (typeof item.op_id !== 'string' || (!allowLegacyOperation && !item.op_id) || bytes(item.op_id) > 200) throw new Error('Invalid portal notes version')
   versionKey(item.client_updated_at)
   if (!validEpoch(item.epoch)) throw new Error('Notes sync initialization is required; original operation retained')
   if (bytes(JSON.stringify(item.payload)) > 256 * 1024) throw new Error('Notes projection exceeds 256 KiB; the full content remains on this device')
   if (!item.deleted) {
-    if (allowLegacyOperation) remoteNotePayload(item.payload)
+    if (allowLegacyOperation) remoteNotePayload(item.payload, item.kind)
     else if (item.payload.schema_version !== 1) throw new Error('Unsupported notes projection version')
     else notePayload(item.payload)
   }
@@ -139,10 +144,11 @@ export function parsePage(raw: unknown): ChangePage {
     const item = { ...value, op_id: value.last_op_id, epoch: page.epochs!.notes } as unknown as PortalChange
     if (!Number.isSafeInteger(item.change_seq) || item.change_seq <= sequence || typeof item.deleted !== 'boolean') throw new Error('Invalid portal change order')
     sequence = item.change_seq
-    if (identities.has(item.ext_id)) throw new Error('Duplicate portal notes identity in change page')
-    identities.add(item.ext_id)
     validateItem(item, true)
-    if (!item.deleted) item.payload = remoteNotePayload(item.payload)
+    const identity = JSON.stringify([item.kind, item.ext_id])
+    if (identities.has(identity)) throw new Error('Duplicate portal notes identity in change page')
+    identities.add(identity)
+    if (!item.deleted) item.payload = remoteNotePayload(item.payload, item.kind)
     return item
   })
   if (changes.length && !page.next_cursor) throw new Error('Missing portal change cursor')
