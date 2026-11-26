@@ -632,16 +632,32 @@ func (s *Server) handleAuthSsoCallback(w http.ResponseWriter, r *http.Request) {
 		s.ssoRedirectError(w, r, "sso_no_user")
 		return
 	}
-	userID := res.Claims.Sub
+	profile, err := s.redclawAdminClient.ProvisionedMe(r.Context(), res.JWT)
+	if err != nil || !profile.Provisioned || strings.TrimSpace(profile.ID) == "" ||
+		profile.TenantID == "" || profile.TenantID != res.Claims.Tenant {
+		s.auditGateway(r, "auth.sso.callback", "-", "reason=unverified_employee", false)
+		s.ssoRedirectError(w, r, "sso_no_user")
+		return
+	}
+	userID := profile.ID
+	displayUser := profile.Name
+	if strings.TrimSpace(displayUser) == "" {
+		displayUser = userID
+	}
 	wsID := s.ensureWorkspaceForRedClawUser(r.Context(), userID)
-	auth.RecordShadow("redclaw", userID, wsID, res.Claims.Name, res.Claims.Email)
+	if wsID == "default" {
+		wsID = ""
+	} else {
+		auth.RecordShadow("redclaw", userID, wsID, displayUser, profile.Email)
+	}
 
 	// 4. 签发一次性 code，302 到 SPA。
 	ssoCode, err := s.ssoXchg.Put(ssoHandoff{
 		Token:       res.JWT,
-		User:        res.Claims.Name,
+		User:        displayUser,
 		UserID:      userID,
 		WorkspaceID: wsID,
+		AuthMethod:  "redclaw",
 	})
 	if err != nil {
 		logging.Warnf("WARN: sso issue exchange code: %v", err)
@@ -649,7 +665,7 @@ func (s *Server) handleAuthSsoCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.auditGateway(r, "auth.sso.callback", userID, "sso login completed", true)
-	http.Redirect(w, r, "/auth/sso/callback?"+url.Values{"sso_code": {ssoCode}}.Encode(), http.StatusFound)
+	http.Redirect(w, r, "/auth/sso/callback?"+url.Values{"sso_code": {ssoCode}}.Encode()+"#/auth/sso/callback", http.StatusFound)
 }
 
 // handleAuthSsoExchange — POST /api/auth/sso/exchange
@@ -680,13 +696,14 @@ func (s *Server) handleAuthSsoExchange(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.auditGateway(r, "auth.sso.exchange", h.UserID, "sso token exchanged", true)
+	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, h)
 }
 
 // ssoRedirectError 把失败重定向到 SPA 回调页（SsoCallbackView 展示错误码）。
 // 只回传稳定错误码，不回传 upstream 细节；错误码文案映射见前端 SsoCallbackView。
 func (s *Server) ssoRedirectError(w http.ResponseWriter, r *http.Request, code string) {
-	http.Redirect(w, r, "/auth/sso/callback?"+url.Values{"error": {code}}.Encode(), http.StatusFound)
+	http.Redirect(w, r, "/auth/sso/callback?"+url.Values{"error": {code}}.Encode()+"#/auth/sso/callback", http.StatusFound)
 }
 
 // clearSsoTxnCookie 清掉已消费的绑定 cookie（Path 必须与签发时一致）。

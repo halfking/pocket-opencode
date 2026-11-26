@@ -195,11 +195,16 @@ export async function fetchSsoStatusDetailed(): Promise<{ enabled: boolean; mode
  * 故走服务端代办（2026-11-19）。
  */
 export async function fetchSsoDirectLogin(username: string, password: string): Promise<SsoExchangeResponse> {
-  return http<SsoExchangeResponse>('/api/auth/sso/direct-login', {
+  const result = await http<Omit<SsoExchangeResponse, 'auth_method'> & { auth_method?: string }>('/api/auth/sso/direct-login', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ username, password }),
   })
+  if (result.auth_method !== undefined && result.auth_method !== 'casdoor-oidc') {
+    throw new Error('企业登录返回了不匹配的登录权威，请重新登录')
+  }
+  // The dedicated direct endpoint also identifies older Pocketd responses.
+  return { ...result, auth_method: 'casdoor-oidc' }
 }
 
 export async function fetchSsoLoginUrl(redirectUrl?: string): Promise<string> {
@@ -215,6 +220,7 @@ export interface SsoExchangeResponse {
   user: string
   user_id: string
   workspace_id: string
+  auth_method: 'redclaw' | 'casdoor-oidc'
 }
 
 /**
@@ -222,10 +228,14 @@ export interface SsoExchangeResponse {
  * code 由后端 /api/auth/sso/callback 302 注入 SPA 回调页，90s TTL、单次有效。
  */
 export async function exchangeSsoCode(code: string): Promise<SsoExchangeResponse> {
-  return http<SsoExchangeResponse>('/api/auth/sso/exchange', {
+  const result = await http<SsoExchangeResponse>('/api/auth/sso/exchange', {
     method: 'POST',
     body: JSON.stringify({ code }),
   })
+  if (result.auth_method !== 'redclaw' && result.auth_method !== 'casdoor-oidc') {
+    throw new Error('登录服务未确认会话来源，请重新发起企业登录')
+  }
+  return result
 }
 
 /**

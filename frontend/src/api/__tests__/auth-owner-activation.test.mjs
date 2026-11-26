@@ -88,6 +88,31 @@ test('atomic snapshot wins over torn compatibility keys and restore has no asser
 const authorityBinding = (user = 'user-a', workspace = 'ws-a') => ({ binding: 'trusted-signed-binding', user_id: user,
   workspace_id: workspace, tenant_id: 'tenant-a', expires_at: Math.floor(Date.now() / 1000) + 300 })
 
+test('SSO handoff selects the issuer-specific workspace authority on restart', () => fixture(async f => {
+  const { exchangeSsoCode, fetchSsoDirectLogin } = await f.vite.ssrLoadModule('/src/api/auth.ts')
+  const login = { token: 'sso-token', user: 'SSO account', user_id: 'user-a', workspace_id: 'ws-a' }
+  const calls = []
+  globalThis.fetch = async (url, options) => {
+    if (String(url).endsWith('/api/auth/sso/exchange')) {
+      const { code } = JSON.parse(options.body)
+      return Response.json(code === 'redclaw-code' ? { ...login, auth_method: 'redclaw' } : login)
+    }
+    if (String(url).endsWith('/api/auth/sso/direct-login')) return Response.json(login)
+    calls.push(String(url))
+    return Response.json(authorityBinding())
+  }
+  await assert.rejects(exchangeSsoCode('old-unmarked-code'), /会话来源/)
+  for (const result of [await exchangeSsoCode('redclaw-code'), await fetchSsoDirectLogin('account', 'fixture-password')]) {
+    await f.auth.setAuthWithWorkspace(result.token, result.user, result.user_id, result.workspace_id, result.auth_method)
+    await f.auth.syncFromStorage(true)
+    await f.auth.whenOwnerReady()
+    assert.equal(f.auth.userId, 'user-a')
+  }
+  assert.equal(calls.length, 2)
+  assert.ok(calls[0].endsWith('/api/v1/portal/workspaces/ws-a/binding'))
+  assert.ok(calls[1].endsWith('/api/workspaces/ws-a/binding'))
+}))
+
 test('restoring a RedClaw session confirms the candidate workspace through the membership bridge', () => fixture(async f => {
   await f.login('a', 'redclaw')
   const calls = []

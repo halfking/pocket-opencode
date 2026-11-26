@@ -142,7 +142,10 @@ type ssoHandoff struct {
 	User        string `json:"user"`
 	UserID      string `json:"user_id"`
 	WorkspaceID string `json:"workspace_id"`
+	AuthMethod  string `json:"auth_method"`
 }
+
+const authMethodCasdoorOIDC = "casdoor-oidc"
 
 type ssoExchangeEntry struct {
 	h   ssoHandoff

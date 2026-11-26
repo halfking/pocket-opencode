@@ -303,6 +303,7 @@ func (s *Server) handleAuthOidcCallback(w http.ResponseWriter, r *http.Request) 
 		User:        displayName,
 		UserID:      userID,
 		WorkspaceID: wsID,
+		AuthMethod:  authMethodCasdoorOIDC,
 	})
 	if err != nil {
 		logging.Warnf("WARN: oidc issue exchange code: %v", err)
@@ -558,7 +559,14 @@ func (s *Server) handleAuthSsoDirectLogin(w http.ResponseWriter, r *http.Request
 		displayName = ui.Sub
 	}
 	s.auditGateway(r, "auth.sso.direct_login", userID, "direct login completed", true)
-	s.issueTokenAndRespond(w, r, userID, displayName, ui.Email)
+	token, wsID, err := s.mintSessionToken(r.Context(), "casdoor", userID, displayName, ui.Email)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to sign JWT")
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, ssoHandoff{Token: token, User: displayName, UserID: userID,
+		WorkspaceID: wsID, AuthMethod: authMethodCasdoorOIDC})
 }
 
 // newCasdoorVerifier builds the verifier for the tokens Casdoor issues.

@@ -254,11 +254,13 @@ func TestOIDC_StatusLoginCallbackExchange(t *testing.T) {
 		Token  string `json:"token"`
 		User   string `json:"user"`
 		UserID string `json:"user_id"`
+		Method string `json:"auth_method"`
 	}
 	_ = json.NewDecoder(resp.Body).Decode(&ex)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK || ex.Token == "" || ex.UserID != "casdoor-sub-42" || ex.User != "Alice" {
-		t.Fatalf("exchange = %d %v", resp.StatusCode, ex)
+	if resp.StatusCode != http.StatusOK || ex.Token == "" || ex.UserID != "casdoor-sub-42" || ex.User != "Alice" ||
+		ex.Method != "casdoor-oidc" || resp.Header.Get("Cache-Control") != "no-store" {
+		t.Fatalf("Casdoor exchange did not preserve the authority or identity, status=%d", resp.StatusCode)
 	}
 
 	// 5. replay 同一 code → 401（一次性）

@@ -32,8 +32,8 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { useAuthStore, captureAuthSession, assertAuthSession } from '../../stores/auth'
-import { fetchMe, exchangeSsoCode } from '../../api/auth'
+import { useAuthStore, captureAuthAttempt, assertAuthAttempt } from '../../stores/auth'
+import { exchangeSsoCode } from '../../api/auth'
 
 const router = useRouter()
 const auth = useAuthStore()
@@ -61,7 +61,7 @@ onMounted(async () => {
   const ssoCode = params.get('sso_code')
   // 无论成败先把一次性 code 从地址栏清掉（code 已消费或即将消费，
   // 留在历史/地址栏只会诱导刷新重放）。
-  window.history.replaceState({}, '', window.location.pathname)
+  window.history.replaceState(window.history.state, '', window.location.pathname + window.location.hash)
 
   if (errCode) {
     fail(ERROR_MESSAGES[errCode] || `SSO 登录失败（${errCode}）`)
@@ -73,6 +73,7 @@ onMounted(async () => {
   }
 
   // 1. 一次性 code 换登录结果（90s TTL、单次有效）
+  const attempt = captureAuthAttempt(auth)
   let handoff
   try {
     handoff = await exchangeSsoCode(ssoCode)
@@ -81,44 +82,14 @@ onMounted(async () => {
     fail('登录凭据已过期或无效，请重新发起登录')
     return
   }
-  // 1.5 确保显示用户名非空（2026-11-14 真机验收缺陷）：OIDC exchange 的
-  // user 可能为空（casdoor userinfo 缺 name claim），且回调时序下 fetchMe
-  // 可能瞬时 401 —— user 为空会让 isAuthenticated=false，路由守卫把已登录
-  // 用户弹回 /login。激活前带退避重试拉 me，仍失败则退回 user_id。
-  let displayUser = handoff.user || ''
-  if (!displayUser) {
-    for (let attempt = 0; attempt < 3 && !displayUser; attempt++) {
-      if (attempt > 0) await new Promise(resolve => setTimeout(resolve, 500))
-      try {
-        const me = await fetchMe()
-        displayUser = me.name || me.email || ''
-      } catch (e) {
-        console.debug(`fetchMe during sso activation failed (attempt ${attempt + 1}):`, e)
-      }
-    }
-    if (!displayUser) displayUser = handoff.user_id || ''
-  }
   try {
-    await auth.setAuthWithWorkspace(handoff.token, displayUser, handoff.user_id, handoff.workspace_id || '', 'redclaw-sso')
+    assertAuthAttempt(auth, attempt)
+    await auth.setAuthWithWorkspace(handoff.token, handoff.user || handoff.user_id, handoff.user_id, handoff.workspace_id, handoff.auth_method)
   } catch (error) {
     console.warn('SSO session activation failed:', error)
     fail('本地会话切换未完成，请重试登录')
     return
   }
-  const session = captureAuthSession(auth)
-
-  // 2. 拉取 employee 画像更新 UI（失败不阻塞：登入已成功）
-  try {
-    const me = await fetchMe()
-    if (me.name || me.email) {
-      assertAuthSession(auth, session)
-      auth.updateDisplayUser(me.name || displayUser)
-    }
-  } catch (e) {
-    console.debug('fetchMe after SSO failed (non-fatal):', e)
-  }
-
-  try { assertAuthSession(auth, session) } catch { fail('登录会话已变更，请重新登录'); return }
   status.value = '登录成功，正在进入…'
   router.replace('/ai')
 })

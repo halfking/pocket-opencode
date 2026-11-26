@@ -564,7 +564,7 @@ async function ssoDirectLogin() {
     // OIDC userinfo 可能缺 name claim（同 exchange 兜底）：user 为空会让
     // 路由守卫把已登录用户弹回 /login，这里直接退回 user_id。
     const displayUser = handoff.user || handoff.user_id || name
-    await completeAuth(handoff.token, displayUser, handoff.user_id, handoff.workspace_id, 'redclaw-sso')
+    await completeAuth(handoff.token, displayUser, handoff.user_id, handoff.workspace_id, handoff.auth_method)
     password.value = ''
   } catch (e: any) {
     console.warn('[login] direct sso 登录失败（原始信息）:', e?.message || e)

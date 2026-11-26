@@ -128,6 +128,8 @@ type SsoCallbackResult struct {
 // EmployeeInfo 是 RedClaw Admin 返回的当前用户画像（camelCase 与前端 AuthUser 对齐）。
 type EmployeeInfo struct {
 	ID                 string   `json:"id"`
+	TenantID           string   `json:"tenantId"`
+	Provisioned        bool     `json:"provisioned"`
 	Name               string   `json:"name"`
 	Role               string   `json:"role"`
 	Email              string   `json:"email"`
@@ -220,10 +222,19 @@ func (c *AdminAuthClient) Login(ctx context.Context, employeeID, password string
 
 // Me 用 RedClaw token 拉取当前 employee 画像。
 func (c *AdminAuthClient) Me(ctx context.Context, token string) (*MeResult, error) {
+	return c.employeeProfile(ctx, token, "/api/v1/auth/me")
+}
+
+// ProvisionedMe requires the tenant-bound business identity used by the portal.
+func (c *AdminAuthClient) ProvisionedMe(ctx context.Context, token string) (*MeResult, error) {
+	return c.employeeProfile(ctx, token, "/api/v1/auth/me?require_provisioned=1")
+}
+
+func (c *AdminAuthClient) employeeProfile(ctx context.Context, token, path string) (*MeResult, error) {
 	if token == "" {
 		return nil, fmt.Errorf("redclaw admin: token is required")
 	}
-	resp, err := c.doAdminWithToken(ctx, http.MethodGet, "/api/v1/auth/me", nil, token)
+	resp, err := c.doAdminWithToken(ctx, http.MethodGet, path, nil, token)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrRedClawUnavailable, err)
 	}

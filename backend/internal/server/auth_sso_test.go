@@ -130,6 +130,10 @@ type fakeAgentRecorder struct {
 	code, state, secret string
 	externalState       string // /sso/login 捕获的 external_state
 	callbackCalled      bool
+	profileCalls        int
+	profileStatus       int
+	profileTenant       string
+	legacyProfile       bool
 	failWith            int
 	// echoOverride 非空时替换回显值（模拟失配）；suppressEcho 为 true 时
 	// 不带 external_state 字段（模拟未升级的旧版 auth-agent）。
@@ -140,6 +144,29 @@ type fakeAgentRecorder struct {
 func fakeAuthAgent(t *testing.T, rec *fakeAgentRecorder) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/auth/me" {
+			rec.profileCalls++
+			if r.URL.Query().Get("require_provisioned") != "1" || r.Header.Get("Authorization") != "Bearer fake-platform-jwt" {
+				t.Error("SSO must resolve the provisioned identity with the issued upstream bearer")
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			if rec.profileStatus != 0 {
+				w.WriteHeader(rec.profileStatus)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			tenant := rec.profileTenant
+			if tenant == "" {
+				tenant = "default"
+			}
+			profile := map[string]any{"id": "emp-mapped-42", "name": "Mapped Alice", "tenantId": tenant}
+			if !rec.legacyProfile {
+				profile["provisioned"] = true
+			}
+			_ = json.NewEncoder(w).Encode(profile)
+			return
+		}
 		if strings.HasPrefix(r.URL.Path, "/api/v1/sso/login") {
 			rec.externalState = r.URL.Query().Get("external_state")
 			w.Header().Set("Content-Type", "application/json")
@@ -266,8 +293,8 @@ func TestSSO_FullChain_LoginCallbackExchange(t *testing.T) {
 		t.Fatalf("callback expected 302, got %d body=%s", rr.Code, rr.Body.String())
 	}
 	loc, _ := url.Parse(rr.Header().Get("Location"))
-	if loc.Path != "/auth/sso/callback" {
-		t.Fatalf("redirect path = %q", loc.Path)
+	if loc.Path != "/auth/sso/callback" || loc.Fragment != "/auth/sso/callback" {
+		t.Fatalf("redirect must mount the callback route: %q", loc)
 	}
 	ssoCode := loc.Query().Get("sso_code")
 	if ssoCode == "" {
@@ -303,8 +330,11 @@ func TestSSO_FullChain_LoginCallbackExchange(t *testing.T) {
 	if err := json.Unmarshal(rr3.Body.Bytes(), &handoff); err != nil {
 		t.Fatalf("decode exchange resp: %v", err)
 	}
-	if handoff.Token != "fake-platform-jwt" || handoff.UserID != "emp-42" || handoff.WorkspaceID != "default" {
+	if handoff.Token != "fake-platform-jwt" || handoff.UserID != "emp-mapped-42" || handoff.User != "Mapped Alice" || handoff.WorkspaceID != "" || !strings.Contains(rr3.Body.String(), `"auth_method":"redclaw"`) {
 		t.Errorf("exchange payload mismatch: %+v", handoff)
+	}
+	if rec.profileCalls != 1 {
+		t.Fatalf("profile lookups = %d, want 1", rec.profileCalls)
 	}
 
 	// 3b. 同一 code 重放 → 401
@@ -313,6 +343,34 @@ func TestSSO_FullChain_LoginCallbackExchange(t *testing.T) {
 	srv.Handler().ServeHTTP(rr4, req4)
 	if rr4.Code != http.StatusUnauthorized {
 		t.Fatalf("replayed exchange must 401, got %d", rr4.Code)
+	}
+}
+
+func TestSSO_CallbackRequiresProvisionedProfile(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup fakeAgentRecorder
+	}{
+		{"not provisioned", fakeAgentRecorder{profileStatus: http.StatusForbidden}},
+		{"legacy claims fallback", fakeAgentRecorder{legacyProfile: true}},
+		{"different tenant", fakeAgentRecorder{profileTenant: "other"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := fakeAuthAgent(t, &tc.setup)
+			defer fake.Close()
+			srv := newSSOTestServer(t, fake, true)
+			agentURL, cookie := getSsoLoginURL(t, srv)
+			visitAgentLogin(t, agentURL)
+			req := httptest.NewRequest(http.MethodGet, "/api/auth/sso/callback?code=c&state=s", nil)
+			req.AddCookie(cookie)
+			w := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(w, req)
+			loc, err := url.Parse(w.Header().Get("Location"))
+			if err != nil || w.Code != http.StatusFound || loc.Query().Get("error") != "sso_no_user" ||
+				loc.Query().Get("sso_code") != "" || tc.setup.profileCalls != 1 {
+				t.Fatalf("callback did not require provisioned profile: %d %v", w.Code, loc)
+			}
+		})
 	}
 }
 
