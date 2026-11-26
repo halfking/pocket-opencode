@@ -194,6 +194,27 @@ func (s *Store) migrate() error {
 	-- updated_at 为 NULL 而老行有值的分叉。
 	ALTER TABLE emails ADD COLUMN IF NOT EXISTS updated_at BIGINT;
 	UPDATE emails SET updated_at = created_at WHERE updated_at IS NULL;
+	-- Historical timestamps above support the inbox cache. Only writes to
+	-- portable metadata establish its source revision.
+	ALTER TABLE emails ADD COLUMN IF NOT EXISTS source_updated_at BIGINT NOT NULL DEFAULT 0;
+	CREATE OR REPLACE FUNCTION stamp_email_source_revision() RETURNS trigger
+	LANGUAGE plpgsql AS $$
+	DECLARE
+		written_at BIGINT := floor(extract(epoch FROM clock_timestamp()) * 1000);
+	BEGIN
+		IF TG_OP = 'INSERT' THEN
+			NEW.source_updated_at := written_at;
+		ELSIF ROW(NEW.from_address, NEW.subject, NEW.snippet, NEW.ai_summary, NEW.date)
+			IS DISTINCT FROM ROW(OLD.from_address, OLD.subject, OLD.snippet, OLD.ai_summary, OLD.date) THEN
+			NEW.source_updated_at := GREATEST(written_at, OLD.source_updated_at + 1);
+		END IF;
+		RETURN NEW;
+	END;
+	$$;
+	DROP TRIGGER IF EXISTS emails_stamp_source_revision ON emails;
+	CREATE TRIGGER emails_stamp_source_revision BEFORE INSERT OR
+		UPDATE OF from_address, subject, snippet, ai_summary, date ON emails
+		FOR EACH ROW EXECUTE FUNCTION stamp_email_source_revision();
 	-- S0-A: workspace_id isolation (idempotent).
 	ALTER TABLE email_accounts ADD COLUMN IF NOT EXISTS workspace_id TEXT NOT NULL DEFAULT 'default';
 	ALTER TABLE emails ADD COLUMN IF NOT EXISTS workspace_id TEXT NOT NULL DEFAULT 'default';
@@ -1919,12 +1940,14 @@ func (s *Store) DeleteAccountScoped(ctx context.Context, id, userID, workspaceID
 	return nil
 }
 
+const emailListSinceStamp = "GREATEST(e.date, COALESCE(e.processed_at, 0), e.created_at, e.source_updated_at)"
+
 // ListEmailsScoped lists mail belonging to the requested user/workspace.
 func (s *Store) ListEmailsScoped(ctx context.Context, filter ListFilter, userID, workspaceID string) ([]Email, error) {
 	q := `SELECT e.id, e.account_id, e.from_address, e.from_name, e.subject, e.snippet, e.date,
 		e.is_read, e.is_starred, e.category, e.importance, e.ai_summary, e.suggested_action,
 		COALESCE(e.action_reason, ''), e.has_attachments,
-		COALESCE(e.folder_name, '')
+		COALESCE(e.folder_name, ''), e.source_updated_at
 		FROM emails e JOIN email_accounts a ON a.id=e.account_id
 		WHERE a.user_id=$1 AND a.workspace_id=$2 AND COALESCE(e.deleted_at, 0)=0`
 	args := []any{userID, workspaceID}
@@ -1964,7 +1987,7 @@ func (s *Store) ListEmailsScoped(ctx context.Context, filter ListFilter, userID,
 		} else if sinceSec > 1_000_000_000 {
 			sinceMs = sinceSec * 1000
 		}
-		stamp := "GREATEST(e.date, COALESCE(e.processed_at, 0), e.created_at)"
+		stamp := emailListSinceStamp
 		q += fmt.Sprintf(
 			" AND ((%s > 1000000000000 AND %s > $%d) OR (%s <= 1000000000000 AND %s > $%d))",
 			stamp, stamp, len(args)+1, stamp, stamp, len(args)+2,
@@ -1991,12 +2014,7 @@ func (s *Store) ListEmailsScoped(ctx context.Context, filter ListFilter, userID,
 		if err != nil {
 			return nil, err
 		}
-		if e.UpdatedAt == 0 {
-			e.UpdatedAt = e.Date
-			if e.UpdatedAt > 0 && e.UpdatedAt < 1_000_000_000_000 {
-				e.UpdatedAt *= 1000
-			}
-		}
+		e.UpdatedAt = e.SourceUpdatedAt
 		out = append(out, *e)
 	}
 	return out, rows.Err()
@@ -2040,7 +2058,7 @@ func (s *Store) CountEmailsScoped(ctx context.Context, filter ListFilter, userID
 		} else if sinceSec > 1_000_000_000 {
 			sinceMs = sinceSec * 1000
 		}
-		stamp := "GREATEST(e.date, COALESCE(e.processed_at, 0), e.created_at)"
+		stamp := emailListSinceStamp
 		q += fmt.Sprintf(
 			" AND ((%s > 1000000000000 AND %s > $%d) OR (%s <= 1000000000000 AND %s > $%d))",
 			stamp, stamp, len(args)+1, stamp, stamp, len(args)+2,
@@ -2350,7 +2368,7 @@ func scanEmail(row interface{ Scan(...any) error }) (*Email, error) {
 	// 真库实测 122/122 为空是另一个问题（上游 DTO 曾丢字段，已修），但读路径
 	// 缺失是独立的一处：即使有值也显示不出来。
 	err := row.Scan(&e.ID, &e.AccountID, &e.FromAddress, &fromName, &subject, &snippet, &e.Date, &e.IsRead,
-		&e.IsStarred, &category, &importance, &aiSummary, &suggestedAction, &actionReason, &e.HasAttachments, &folderName)
+		&e.IsStarred, &category, &importance, &aiSummary, &suggestedAction, &actionReason, &e.HasAttachments, &folderName, &e.SourceUpdatedAt)
 	if err != nil {
 		return nil, err
 	}

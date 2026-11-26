@@ -36,7 +36,7 @@ export interface SyncReport {
 // 文件使用、又 export 保持既有 import 路径可用；测试则直接测 account-lww.ts。
 // 注意必须用 `import` + 单独 `export`，`export { x } from` 不会把名字引入
 // 本模块作用域（下面 syncAccountsBidirectional 还要用它）。
-import { planAccountSync, type AccountStamp } from './account-lww'
+import { normalizeAccountStamp, planAccountSync, type AccountStamp } from './account-lww'
 export { planAccountSync }
 export type { AccountStamp }
 
@@ -60,7 +60,7 @@ async function pullAccountsToLocal(remote: ServerAccount[], operation: EmailSync
       continue
     }
     try {
-      const updatedAt = a.updatedAt ?? a.createdAt ?? 0
+      const updatedAt = normalizeAccountStamp(a.updatedAt)
       const won = await writeAccountIfNewer({
         id: a.id,
         displayName: a.displayName,
@@ -131,7 +131,7 @@ export async function syncAccountsBidirectional(operation?: EmailSyncOperation):
         remote.map((a) => ({
           id: a.id,
           emailAddress: a.emailAddress,
-          updatedAt: a.updatedAt ?? a.createdAt ?? 0,
+          updatedAt: normalizeAccountStamp(a.updatedAt),
         })),
       )
       const remoteById = new Map(remote.map((a) => [a.id, a]))
@@ -142,7 +142,7 @@ export async function syncAccountsBidirectional(operation?: EmailSyncOperation):
         if (!l) continue
         const target = remoteById.get(id)
           ?? remote.find((a) => a.emailAddress.toLowerCase() === l.emailAddress.toLowerCase())
-        if (!target) continue
+        if (!target || normalizeAccountStamp(target.updatedAt) === 0) continue
         const ok = await pushAccountToServer({
           ...target,
           displayName: l.displayName,

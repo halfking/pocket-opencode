@@ -322,6 +322,7 @@ export async function upsertEmail(e: Partial<LocalEmail> & { accountId: string; 
           has_attachments, created_at, updated_at, folder, owner_user_id, owner_workspace_id)
        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
        ON CONFLICT(id, owner_user_id, owner_workspace_id) DO UPDATE SET
+         ${operation ? 'from_address=excluded.from_address, date=excluded.date,' : ''}
          subject=excluded.subject,
          snippet=excluded.snippet,
          from_name=excluded.from_name,
@@ -349,7 +350,8 @@ export async function upsertEmail(e: Partial<LocalEmail> & { accountId: string; 
        e.category ?? null, e.importance ?? null, e.aiSummary ?? null, e.suggestedAction ?? null,
        e.actionReason ?? null,
        e.hasAttachments ? 1 : 0, now, updatedAt, folder, ...ownerValues]
-    const projected = { from_address: existing?.from_address ?? e.fromAddress, date: existing?.date ?? e.date,
+    const projected = { from_address: operation ? e.fromAddress : existing?.from_address ?? e.fromAddress,
+      date: operation ? e.date : existing?.date ?? e.date,
       subject: e.subject ?? null, snippet: e.snippet ?? null, ai_summary: e.aiSummary ?? null }
     const guard = { clause: `EXISTS(SELECT 1 FROM local_emails WHERE id=? AND ${scope.clause}
       AND updated_at IS ? AND from_address IS ? AND subject IS ? AND snippet IS ? AND ai_summary IS ? AND date IS ? AND IFNULL(deleted_at,0)=0)`,
@@ -487,6 +489,7 @@ export async function syncEmailsFromServerDetailed(limit = 200, since = 0, opera
   let oldestDateMs = 0
   for (const e of incoming) {
     const dateMs = emailDateToMs(typeof e.date === 'number' ? e.date : Date.parse(String(e.date)) || 0)
+    const sourceUpdatedAt = e.sourceUpdatedAt ?? 0
     if (oldestDateMs === 0 || dateMs < oldestDateMs) oldestDateMs = dateMs
     const ok = await upsertEmail({
       id: e.id,
@@ -505,7 +508,7 @@ export async function syncEmailsFromServerDetailed(limit = 200, since = 0, opera
       aiSummary: e.aiSummary ?? null,
       suggestedAction: e.suggestedAction ?? null,
       hasAttachments: !!e.hasAttachments,
-      updatedAt: e.updatedAt && e.updatedAt > 0 ? e.updatedAt : 0,
+      updatedAt: Number.isSafeInteger(sourceUpdatedAt) && sourceUpdatedAt > 0 ? sourceUpdatedAt : 0,
       folder: e.folderName ?? '',
     }, operation)
     if (ok) n++

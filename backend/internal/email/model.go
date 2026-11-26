@@ -50,6 +50,8 @@ type Email struct {
 	SuggestedAction string `json:"suggestedAction,omitempty"`
 	ActionReason    string `json:"actionReason,omitempty"`
 	HasAttachments  bool   `json:"hasAttachments"`
+	// SourceUpdatedAt versions the fields used for the portable mail summary.
+	SourceUpdatedAt int64 `json:"sourceUpdatedAt,omitempty"`
 	// FolderName 是邮件当前所在目录（IMAP mailbox 名）。空串 = INBOX（历史
 	// 行默认值）。用户把邮件移进自定义目录后这里记目标目录，列表按它过滤，
 	// IMAP MOVE 之后邮件不再出现在服务器 INBOX，行本身保留作为目录视图的数据源。

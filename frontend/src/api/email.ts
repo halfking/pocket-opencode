@@ -259,8 +259,10 @@ export interface Email {
    */
   actionReason?: string
   hasAttachments: boolean
-  /** 服务端变更时间（Unix ms）；缺省时客户端回退到 date。 */
+  /** 邮件列表的变更时间（Unix ms）。兼容旧服务端的列表响应。 */
   updatedAt?: number
+  /** 服务端确认的摘要来源版本（Unix ms）。历史行可能缺省。 */
+  sourceUpdatedAt?: number
   /** 邮件所在目录（IMAP 信箱名）。空/缺省 = INBOX。 */
   folderName?: string
 }

@@ -312,6 +312,42 @@ test('unversioned source classification blocks the older queued metadata without
   assert.equal(queued.last_error, 'source_timestamp_unknown')
 }))
 
+test('remote mail mirrors enqueue only metadata with a confirmed source version', () => fixture(async ({ loadModule, db, respond }) => {
+  const emails = await loadModule('/src/features/email/emails-store.ts')
+  const { syncAccountsFromServer } = await loadModule('/src/features/email/account-sync.ts')
+  const { portalMailStore } = await loadModule('/src/features/email/portal-mail-store.ts')
+  const store = portalMailStore(db.bindOperation(db.captureOperation({ kind: 'local-edit' })))
+  await store.observeEpoch(0)
+  const received = 1_750_000_000
+  const revision = 1_780_000_000_123
+  const account = { id: 'historical-account', displayName: 'Historical mailbox', emailAddress: 'a@example.com',
+    imapHost: 'imap.example.com', imapPort: 993, authType: 'password', createdAt: received, enabled: true }
+  const message = { id: 'historical-mail', accountId: account.id, fromAddress: 'original@example.com', subject: 'Historical mail',
+    snippet: 'Historical snippet', date: received, updatedAt: received * 1000 }
+  respond(url => url.includes('/accounts') ? { accounts: [account] } : { emails: [message] })
+
+  assert.equal((await syncAccountsFromServer()).applied, 1)
+  assert.equal((await emails.getAccount(account.id)).updatedAt, 0)
+  assert.equal((await emails.syncEmailsFromServerDetailed()).inserted, 1)
+  assert.equal((await emails.getEmail(message.id)).subject, message.subject)
+  assert.deepEqual(await store.pending(), [])
+  const blocked = await db.query("SELECT kind,last_error FROM local_portal_record_outbox WHERE module='email' ORDER BY kind")
+  assert.deepEqual(blocked, [
+    { kind: 'account', last_error: 'source_timestamp_unknown' },
+    { kind: 'summary', last_error: 'source_timestamp_unknown' },
+  ])
+
+  const updated = { ...message, fromAddress: 'corrected@example.com', date: received + 1, aiSummary: 'Verified summary', sourceUpdatedAt: revision }
+  respond(() => ({ emails: [updated] }))
+  assert.equal((await emails.syncEmailsFromServerDetailed()).inserted, 1)
+  const [pending] = await store.pending()
+  assert.equal(pending.ext_id, 'summary:historical-mail')
+  assert.equal(pending.client_updated_at, new Date(revision).toISOString())
+  assert.deepEqual(pending.payload, { from: updated.fromAddress, subject: message.subject, snippet: 'Verified summary',
+    received_at: new Date(updated.date * 1000).toISOString() })
+  assert.equal((await emails.getEmail(message.id)).fromAddress, updated.fromAddress)
+}))
+
 test('encrypted email metadata and old reset operations stay local until a new explicit intent', () => fixture(async ({ loadModule, db, cryptoConfig }) => {
   const emails = await loadModule('/src/features/email/emails-store.ts')
   const { portalMailStore, editPortalMailMetadata } = await loadModule('/src/features/email/portal-mail-store.ts')

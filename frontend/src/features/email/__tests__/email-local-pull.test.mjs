@@ -6,7 +6,7 @@ import initSqlJs from 'sql.js'
 import { createPinia, setActivePinia } from 'pinia'
 
 const SQL = await initSqlJs()
-const remote = { id: 'email-1', accountId: 'account-1', fromAddress: 'sender@example.com', subject: 'Remote subject', snippet: 'Remote snippet', date: Date.now(), updatedAt: Date.now() }
+const remote = { id: 'email-1', accountId: 'account-1', fromAddress: 'sender@example.com', subject: 'Remote subject', snippet: 'Remote snippet', date: Date.now(), sourceUpdatedAt: Date.now() }
 const account = { id: 'account-1', displayName: 'Remote account', emailAddress: 'reader@example.com', imapHost: 'imap.example.com', imapPort: 993, authType: 'password', enabled: true, updatedAt: 100 }
 const localError = error => error.body?.error === 'module_policy_local'
 const cancelledSync = error => error.name === 'AbortError' || localError(error)
@@ -364,16 +364,16 @@ test('a local tombstone queued after cloud lookup cannot be resurrected by upser
 }))
 
 test('cloud rows without source timestamps do not acquire the download time', () => fixture(async f => {
-  f.setResponse(() => ({ emails: [{ ...remote, id: 'unstamped', date: '', updatedAt: 0 }] }))
+  f.setResponse(() => ({ emails: [{ ...remote, id: 'unstamped', date: '', sourceUpdatedAt: undefined }] }))
   assert.equal((await f.emails.syncEmailsFromServerDetailed()).inserted, 1)
   const row = await f.db.queryOne('SELECT date,updated_at FROM local_emails WHERE id=?', ['unstamped'])
   assert.deepEqual(row, { date: 0, updated_at: 0 })
 }))
 
 test('a late older cloud response cannot replace a newer email version', () => fixture(async f => {
-  f.setResponse(() => ({ emails: [{ ...remote, subject: 'Newer remote', updatedAt: 200 }] }))
+  f.setResponse(() => ({ emails: [{ ...remote, subject: 'Newer remote', sourceUpdatedAt: 200 }] }))
   assert.equal((await f.emails.syncEmailsFromServerDetailed()).inserted, 1)
-  f.setResponse(() => ({ emails: [{ ...remote, subject: 'Older remote', updatedAt: 100 }] }))
+  f.setResponse(() => ({ emails: [{ ...remote, subject: 'Older remote', sourceUpdatedAt: 100 }] }))
   assert.equal((await f.emails.syncEmailsFromServerDetailed()).inserted, 0)
   assert.equal((await f.page.readInboxPage(''))[0].subject, 'Newer remote')
 }))
