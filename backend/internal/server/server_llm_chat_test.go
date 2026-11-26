@@ -281,6 +281,7 @@ var lengthLimitRegistry = []struct {
 	{"rss/item_states.go", "len(x.ExtID) > 512", "A", "客户端提交的**条目外部 ID**：512 字节；整批 400（PortableItemState.validate）。**可达性：不可达**（ext_id 由前端从本地库 `pocketd-item:` 前缀键派生，键长受本地 schema 约束）"},
 	{"rss/item_states.go", "len(x.OpID) > 200", "A", "客户端提交的**操作 ID**：200 字节；整批 400（PortableItemState.validate）。**可达性：不可达**（op_id 由本地 outbox 的 newOperationId 生成，固定短格式）"},
 	{"rss/item_states.go", "len(x.Title) > 4096", "A", "客户端提交的**条目标题**：4096 字节；整批 400（PortableItemState.validate）。**可达性：不可达**（标题来自本地库的服务端镜像，入库时已受同款上界）"},
+	{"rss/queued_source.go", "len(opID) > 200", "A", "离线订阅请求的操作 ID 上限为 200 字节，超限返回 400。可达性：不可达（应用的 RSS 待发送队列用 newOperationId 生成短 ID）"},
 	{"rss/store_entities.go", "len(ids) > 100", "A", "客户端提交的**实体批量查询 ID 数**（计数）：1~100；400（store_entities 批量入口）。**可达性：不可达**（前端按 100 分批，见 rss-item-state.ts:68）"},
 	{"rss/sharecard.go", "len(lines) > 4", "O", ""},
 	{"rss/sharecard.go", "len(summaryLines) > 6", "O", ""},
@@ -360,6 +361,7 @@ var lengthLimitRegistryAKeys = []lengthLimitGateKey{
 	{"rss/item_states.go", "len(x.ExtID) > 512"},
 	{"rss/item_states.go", "len(x.OpID) > 200"},
 	{"rss/item_states.go", "len(x.Title) > 4096"},
+	{"rss/queued_source.go", "len(opID) > 200"},
 	{"rss/store_entities.go", "len(ids) > 100"},
 	{"server/flashcards_handler.go", "len([]rune(name)) > 80"},
 	{"server/server_rss.go", "len(body.IDs) > 100"},
@@ -579,8 +581,9 @@ func TestLengthLimitRegistryCoversEveryLengthGate(t *testing.T) {
 		}
 	}
 	// 2026-11-15：+6（笔记本名、推荐标签加权、任务生成派生项过滤）
-	if len(aSet) != 29 {
-		t.Errorf("A 类（客户端可提交字段上的限制）实际 %d 条，期望 29 条 ⇒ "+
+	// 2026-11-26：+1（RSS 离线订阅操作 ID）
+	if len(aSet) != 30 {
+		t.Errorf("A 类（客户端可提交字段上的限制）实际 %d 条，期望 30 条 ⇒ "+
 			"要么有人把 A 类改成了 O 类，要么新增了一处客户端可提交的限制没分类", len(aSet))
 	}
 
