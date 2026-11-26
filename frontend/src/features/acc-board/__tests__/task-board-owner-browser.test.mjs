@@ -21,6 +21,8 @@ async function fixture(t, legacy = false) {
   let receipt
   let loseCancelResponse = false
   let failCommandRead = false
+  let retryEnabled = false
+  let retryStatus
   let delayTaskPage = false, holdEventReplay = false
   let bindingStatus = 200
   let status = 200, hold = false, server, browser
@@ -122,8 +124,19 @@ async function fixture(t, legacy = false) {
               json({})
               return
             }
-            json({run_id:task.run_id, commands:[{dispatch_id:'dispatch_'+user, task_id:task.task_id, attempt:2,
-              status:receipt ? 'cancelled' : 'running', can_cancel:!receipt, cancel_state:receipt, verified_executor:true}]})
+            const commands = [{dispatch_id:'dispatch_'+user, task_id:task.task_id, attempt:2,
+              status:retryEnabled ? 'failed' : receipt ? 'cancelled' : 'running',
+              can_cancel:!retryEnabled && !receipt, cancel_state:receipt, verified_executor:true,
+              can_retry:retryEnabled && !retryStatus}]
+            if (retryStatus) commands.push({dispatch_id:'dispatch_retry_'+user, task_id:task.task_id, attempt:3,
+              status:retryStatus, can_cancel:true, verified_executor:false, retry_of_dispatch_id:'dispatch_'+user})
+            json({run_id:task.run_id, commands})
+          } else if (path.endsWith('/commands/dispatch_'+user+'/retry') && req.method === 'POST' && retryEnabled) {
+            commandWrites.push([user, path])
+            retryStatus = 'created'
+            res.statusCode = 202
+            json({run_id:task.run_id, command:{dispatch_id:'dispatch_retry_'+user, task_id:task.task_id, attempt:3,
+              status:retryStatus, can_cancel:true, verified_executor:false, retry_of_dispatch_id:'dispatch_'+user}})
           } else if (path.endsWith('/commands/dispatch_'+user+'/cancel') && req.method === 'POST') {
             commandWrites.push([user, path])
             receipt = 'requested'
@@ -145,6 +158,10 @@ async function fixture(t, legacy = false) {
                 actor_id: 'fixture-reviewer', dispatch_id: 'dispatch_alice',
                 payload: { text: '已续读评审回执', artifact_id: 'artifact_a', artifact_revision_id: 'rev_a',
                   artifact_hash: reviewDigest, decision_source: 'review' } }] : []
+            if (retryStatus && Number(url.searchParams.get('after')) < 3) {
+              events.push({ sequence: 3, event_type: 'dispatch.retry_requested', event_id: 'evt-3', run_id: task.run_id,
+                dispatch_id: 'dispatch_retry_' + user, payload: { retry_of_dispatch_id: 'dispatch_' + user } })
+            }
             if (holdEventReplay) {
               holdEventReplay = false
               res.writeHead(200, { 'Content-Type': 'application/json' })
@@ -173,6 +190,8 @@ async function fixture(t, legacy = false) {
     commandWrites, setReceipt(stage) { receipt = stage },
     loseCancelResponse() { loseCancelResponse = true },
     failCommandRead() { failCommandRead = true },
+    enableRetry() { retryEnabled = true },
+    setRetryStatus(value) { retryStatus = value },
     holdTaskPage() { delayTaskPage = true },
     holdEventReplay() { holdEventReplay = true },
     denyBinding() { bindingStatus = 403 },
@@ -337,6 +356,29 @@ test('the task view recovers an uncertain cancellation through reads alone', { t
   await f.page.clock.fastForward(2100)
   await controls.getByText('取消已生效', {exact:true}).waitFor()
   assert.equal(f.commandWrites.length, 1)
+  assert.deepEqual(f.errors, [])
+})
+
+test('retry confirms the exact failed dispatch and tracks the next attempt', { timeout: 30_000 }, async t => {
+  const f = await fixture(t)
+  f.enableRetry()
+  await f.page.clock.install()
+  await f.page.getByRole('link', {name:'统一任务', exact:true}).click()
+  await f.page.getByRole('button', {name:/联跑任务 alice/}).click()
+  const controls = f.page.getByRole('region', {name:'派发与取消回执', exact:true})
+  await controls.getByRole('button', {name:'重跑派发', exact:true}).click()
+  assert.deepEqual(f.commandWrites, [])
+  await controls.getByRole('button', {name:'确认重跑', exact:true}).click()
+  await controls.getByText('从派发重跑 dispatch_alice', {exact:true}).waitFor()
+  await controls.locator('li').filter({hasText:'task-alice #3 · created'}).waitFor()
+  f.setRetryStatus('running')
+  await f.page.clock.fastForward(2100)
+  await controls.locator('li').filter({hasText:'task-alice #3 · running'}).waitFor()
+  assert.deepEqual(f.commandWrites, [['alice', '/api/v2/orchestration/runs/run_alice/commands/dispatch_alice/retry']])
+  await f.page.getByRole('button', {name:'补读回执', exact:true}).click()
+  await f.page.getByText('重跑派发 dispatch_alice → dispatch_retry_alice', {exact:true}).waitFor()
+  await f.action('account')
+  await controls.waitFor({state:'detached'})
   assert.deepEqual(f.errors, [])
 })
 

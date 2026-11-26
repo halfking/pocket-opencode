@@ -48,6 +48,8 @@ export interface RunCommandReceipt {
   attempt: number
   status: string
   can_cancel: boolean
+  can_retry?: boolean
+  retry_of_dispatch_id?: string
   cancel_state?: 'requested' | 'delivered' | 'effective'
   verified_executor: boolean
 }
@@ -132,6 +134,21 @@ export async function cancelRunCommand(authority: AccRequestAuthority, runId: st
     throw new Error('Invalid ACC cancellation receipt')
   }
   return result.command
+}
+
+export async function retryRunCommand(authority: AccRequestAuthority, runId: string, previous: RunCommandReceipt, signal: AbortSignal) {
+  const dispatchId = previous.dispatch_id
+  if (!/^dispatch_[a-zA-Z0-9_-]{1,160}$/.test(dispatchId)) throw new Error('Invalid ACC dispatch ID')
+  const result = await postAcc<{ run_id: string; command: RunCommandReceipt }>(
+    authority, `${runPath(runId)}/commands/${encodeURIComponent(dispatchId)}/retry`, signal,
+  )
+  const receipt = result?.command
+  if (result?.run_id !== runId || receipt?.retry_of_dispatch_id !== dispatchId ||
+    !/^dispatch_[a-zA-Z0-9_-]{1,160}$/.test(receipt.dispatch_id) || receipt.dispatch_id === dispatchId ||
+    receipt.task_id !== previous.task_id || receipt.attempt !== previous.attempt + 1) {
+    throw new Error('Invalid ACC retry receipt')
+  }
+  return receipt
 }
 
 async function readRunGraph(authority: AccRequestAuthority, runId: string, signal?: AbortSignal) {

@@ -138,6 +138,10 @@ function describeEvent(e: AccOrchestrationEvent): string {
   if (t === 'task.created') return `任务已创建${e.taskId ? `（${short(e.taskId)}）` : ''}`
   if (t === 'task.ready') return '任务就绪待派发'
   if (t === 'dispatch.created') return `已派发执行${hostSuffix(e)}`
+  if (t === 'dispatch.retry_requested') {
+    const previous = e.payload?.retry_of_dispatch_id
+    if (typeof previous === 'string' && e.dispatchId) return `重跑派发 ${previous} → ${e.dispatchId}`
+  }
   if (t === 'task.aggregated') return '子任务结果已聚合'
   if (t === 'task.review.approved') return '评审通过'
   if (t === 'task.review.rejected') return '评审拒绝'

@@ -13,13 +13,17 @@
           <span v-if="row.cancel_state" class="command-stage" role="status">
             {{ labels[row.cancel_state] }}<template v-if="row.cancel_state !== 'requested' && !row.verified_executor"> · 旧协议回执</template>
           </span>
+          <span v-if="row.retry_of_dispatch_id" class="command-stage" role="status">从派发重跑 {{ row.retry_of_dispatch_id }}</span>
         </div>
-        <div v-if="row.can_cancel" class="command-actions">
-          <template v-if="confirming === row.dispatch_id">
-            <button type="button" :disabled="busy" @click="cancel(row.dispatch_id)">确认取消</button>
+        <div v-if="row.can_cancel || row.can_retry" class="command-actions">
+          <template v-if="confirming?.id === row.dispatch_id && (confirming.action === 'cancel' ? row.can_cancel : row.can_retry)">
+            <button type="button" :disabled="busy" @click="change(row, confirming.action)">{{ confirming.action === 'cancel' ? '确认取消' : '确认重跑' }}</button>
             <button type="button" @click="confirming = null">返回</button>
           </template>
-          <button v-else type="button" :disabled="busy" @click="confirming = row.dispatch_id">取消派发</button>
+          <template v-else>
+            <button v-if="row.can_cancel" type="button" :disabled="busy" @click="confirming = { id: row.dispatch_id, action: 'cancel' }">取消派发</button>
+            <button v-if="row.can_retry" type="button" :disabled="busy" @click="confirming = { id: row.dispatch_id, action: 'retry' }">重跑派发</button>
+          </template>
         </div>
       </li>
     </ul>
@@ -28,16 +32,18 @@
 
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from 'vue'
-import { cancelRunCommand, readRunCommands, type RunCommandReceipt } from '../../api/accUnifiedTasks'
+import { cancelRunCommand, readRunCommands, retryRunCommand, type RunCommandReceipt } from '../../api/accUnifiedTasks'
 import { AccApiError, type AccRequestAuthority } from '../../api/accApi'
 
 const props = defineProps<{ runId: string; authority: AccRequestAuthority }>()
 const commands = ref<RunCommandReceipt[] | null>(null)
-const confirming = ref<string | null>(null)
+type CommandAction = 'cancel' | 'retry'
+const confirming = ref<{ id: string; action: CommandAction } | null>(null)
 const busy = ref(false)
 const error = ref('')
 const controller = new AbortController()
 const labels = { requested: '取消已请求', delivered: '取消已送达', effective: '取消已生效' }
+const activeStatuses = new Set(['created', 'launching', 'leased', 'running', 'settling'])
 let pollUntil = 0
 let timer: ReturnType<typeof setTimeout> | undefined
 
@@ -56,7 +62,8 @@ async function read() {
     if (controller.signal.aborted) return
     commands.value = rows
     error.value = ''
-    if (rows.some(row => row.cancel_state === 'requested' || row.cancel_state === 'delivered')) schedule()
+    if (rows.some(row => row.cancel_state === 'requested' || row.cancel_state === 'delivered'
+      || row.retry_of_dispatch_id && activeStatuses.has(row.status))) schedule()
   } catch (cause) {
     if (controller.signal.aborted) return
     if (cause instanceof AccApiError && [401, 403, 404].includes(cause.status)) {
@@ -71,20 +78,29 @@ async function read() {
   }
 }
 
-async function cancel(dispatchId: string) {
+async function change(previous: RunCommandReceipt, action: CommandAction) {
   if (controller.signal.aborted || busy.value) return
   clearTimeout(timer)
   busy.value = true
   confirming.value = null
   error.value = ''
   try {
-    const row = await cancelRunCommand(props.authority, props.runId, dispatchId, controller.signal)
+    const row = action === 'cancel'
+      ? await cancelRunCommand(props.authority, props.runId, previous.dispatch_id, controller.signal)
+      : await retryRunCommand(props.authority, props.runId, previous, controller.signal)
     if (controller.signal.aborted) return
-    commands.value = commands.value?.map(command => command.dispatch_id === dispatchId ? row : command) ?? null
+    if (!commands.value) return
+    if (action === 'cancel') {
+      commands.value = commands.value.map(command => command.dispatch_id === previous.dispatch_id ? row : command)
+    } else {
+      commands.value = commands.value.filter(command => command.dispatch_id !== row.dispatch_id).map(command =>
+        command.dispatch_id === previous.dispatch_id ? { ...command, can_retry: false } : command)
+      commands.value.push(row)
+    }
   } catch {
     if (!controller.signal.aborted) {
       commands.value = null
-      error.value = '未能确认取消请求。请刷新回执。'
+      error.value = action === 'cancel' ? '未能确认取消请求。请刷新回执。' : '未能确认重跑请求。请刷新回执。'
     }
   } finally {
     busy.value = false
