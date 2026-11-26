@@ -24,9 +24,13 @@
           <span class="ls-time">{{ l.time }}</span>
           <span class="ls-sev" aria-hidden="true">{{ l.glyph }}</span>
           <span class="ls-type">{{ l.eventType }}</span>
-          <span class="ls-text">
-            {{ l.text }}<template v-if="l.transition">（{{ l.transition }}）</template>
-          </span>
+          <div class="ls-text">
+            <span>{{ l.text }}<template v-if="l.transition">（{{ l.transition }}）</template></span>
+            <details v-if="l.review">
+              <summary>评审回执</summary>
+              <div v-for="field in l.review" :key="field">{{ field }}</div>
+            </details>
+          </div>
         </div>
       </template>
     </div>
@@ -61,6 +65,7 @@ interface LogLine {
   eventType: string
   text: string
   transition: string
+  review?: string[]
 }
 
 type Mode = AccLogSnapshot['mode']
@@ -135,6 +140,7 @@ function describeEvent(e: AccOrchestrationEvent): string {
   if (t === 'dispatch.created') return `已派发执行${hostSuffix(e)}`
   if (t === 'task.aggregated') return '子任务结果已聚合'
   if (t === 'task.review.approved') return '评审通过'
+  if (t === 'task.review.rejected') return '评审拒绝'
   return t || '(未知事件)'
 }
 
@@ -169,7 +175,19 @@ function projectEvent(e: AccOrchestrationEvent): LogLine {
     eventType: e.eventType || 'message',
     text: describeEvent(e),
     transition,
+    review: props.authority ? reviewReceipt(e) : undefined,
   }
+}
+
+function reviewReceipt(e: AccOrchestrationEvent): string[] | undefined {
+  if ((e.eventType !== 'task.review.approved' && e.eventType !== 'task.review.rejected') || !e.eventId || !e.actorId) return
+  const actorLabel = e.payload?.decision_source === 'gate_timeout' ? '门禁超时'
+    : e.payload?.decision_source === 'bypass' ? '自动通过' : '评审主体'
+  const fields = [
+    ['事件', e.eventId], [actorLabel, e.actorId], ['派发', e.dispatchId], ['产物', e.payload?.artifact_id],
+    ['产物版本', e.payload?.artifact_revision_id], ['SHA256', e.payload?.artifact_hash],
+  ]
+  return fields.flatMap(([label, value]) => typeof value === 'string' && value ? [`${label} ${value}`] : [])
 }
 
 function scrollIfAuto(): void {

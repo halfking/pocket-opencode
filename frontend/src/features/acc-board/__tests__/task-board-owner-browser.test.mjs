@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
+import { createHash } from 'node:crypto'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -7,6 +8,8 @@ import { fileURLToPath } from 'node:url'
 import { createServer } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import { chromium } from 'playwright'
+
+const reviewDigest = 'sha256:' + createHash('sha256').update('Synthetic reviewed artifact\n').digest('hex')
 
 async function fixture(t, legacy = false) {
   const root = fileURLToPath(new URL('../../../../', import.meta.url))
@@ -95,7 +98,7 @@ async function fixture(t, legacy = false) {
             res.setHeader('Content-Type', 'application/json')
             res.end(JSON.stringify(value))
           }
-          const task = { task_id: 'task-' + user, run_id: 'run-' + user, title: '联跑任务 ' + user, status: 'running' }
+          const task = { task_id: 'task-' + user, run_id: 'run_' + user, title: '联跑任务 ' + user, status: 'running' }
           if (path === '/api/v2/auth/session') json({ authenticated: true, user_id: user, tenant_id: `tenant-${user}` })
           else if (path === '/api/v2/tasks') {
             const offset = Number(url.searchParams.get('offset'))
@@ -138,7 +141,10 @@ async function fixture(t, legacy = false) {
           } else if (path.endsWith('/events')) {
             eventCursors.push([url.pathname, url.searchParams.get('after')])
             const events = Number(url.searchParams.get('after')) < 2
-              ? [{ sequence: 2, event_type: 'task.review.approved', event_id: 'evt-2', run_id: task.run_id, payload: { text: '已续读评审回执' } }] : []
+              ? [{ sequence: 2, event_type: 'task.review.approved', event_id: 'evt-2', run_id: task.run_id,
+                actor_id: 'fixture-reviewer', dispatch_id: 'dispatch_alice',
+                payload: { text: '已续读评审回执', artifact_id: 'artifact_a', artifact_revision_id: 'rev_a',
+                  artifact_hash: reviewDigest, decision_source: 'review' } }] : []
             if (holdEventReplay) {
               holdEventReplay = false
               res.writeHead(200, { 'Content-Type': 'application/json' })
@@ -218,21 +224,31 @@ test('unified tasks show authorized progress and replay the same run without cro
   const f = await fixture(t)
   await f.page.getByRole('link', { name: '统一任务', exact: true }).click()
   await f.page.getByRole('button', { name: /联跑任务 alice/ }).click()
-  await f.page.getByText('Run run-alice', { exact: true }).waitFor()
+  await f.page.getByText('Run run_alice', { exact: true }).waitFor()
   const detail = f.page.getByRole('region', { name: '统一任务进度' })
   await detail.getByText('review · 1/2 个节点完成', { exact: true }).waitFor()
   await detail.getByText('task-alice → review', { exact: true }).waitFor()
   await detail.getByText('4 笔请求 · 净扣 6,255 credits', { exact: true }).waitFor()
   await detail.getByText('部分已对账', { exact: true }).waitFor()
+  const approvalLink = detail.getByRole('link', { name: '在 RedClaw 查看此 Run 的评审队列' })
+  const reviewURL = new URL(await approvalLink.getAttribute('href'))
+  assert.equal(reviewURL.origin, new URL(f.page.url()).origin)
+  assert.equal(reviewURL.pathname + reviewURL.search, '/approvals?run_id=run_alice')
+  assert.equal(await approvalLink.getAttribute('rel'), 'noopener noreferrer')
   await detail.getByText('已读取派发回执', { exact: true }).waitFor()
   await detail.getByText('已续读评审回执', { exact: true }).waitFor()
-  assert.ok(f.eventCursors.some(([path, after]) => path.includes('/runs/run-alice/') && after === '1'))
-  await f.page.getByLabel('Run ID', { exact: true }).fill('run-alice')
+  await detail.getByText('评审回执', { exact: true }).click()
+  await detail.getByText('评审主体 fixture-reviewer', { exact: true }).waitFor()
+  await detail.getByText('派发 dispatch_alice', { exact: true }).waitFor()
+  await detail.getByText('产物版本 rev_a', { exact: true }).waitFor()
+  await detail.getByText('SHA256 ' + reviewDigest, { exact: true }).waitFor()
+  assert.ok(f.eventCursors.some(([path, after]) => path.includes('/runs/run_alice/') && after === '1'))
+  await f.page.getByLabel('Run ID', { exact: true }).fill('run_alice')
   await f.page.getByRole('button', { name: '查看 Run', exact: true }).click()
-  await detail.getByRole('heading', { name: 'run-alice', exact: true }).waitFor()
+  await detail.getByRole('heading', { name: 'run_alice', exact: true }).waitFor()
   await detail.getByText('已续读评审回执', { exact: true }).waitFor()
   await f.page.getByRole('button', { name: '刷新', exact: true }).click()
-  await detail.getByRole('heading', { name: 'run-alice', exact: true }).waitFor()
+  await detail.getByRole('heading', { name: 'run_alice', exact: true }).waitFor()
   await detail.getByText('已续读评审回执', { exact: true }).waitFor()
   f.holdTaskPage()
   await f.page.getByRole('button', { name: '更多任务', exact: true }).click()
@@ -288,7 +304,7 @@ test('the task view confirms the exact dispatch and waits for cancellation evide
   await controls.getByText('取消已请求', {exact:true}).waitFor()
   assert.doesNotMatch(await controls.innerText(), /cancelled/)
   assert.equal(await controls.getByText('取消已生效', {exact:true}).count(), 0)
-  assert.deepEqual(f.commandWrites, [['alice', '/api/v2/orchestration/runs/run-alice/commands/dispatch_alice/cancel']])
+  assert.deepEqual(f.commandWrites, [['alice', '/api/v2/orchestration/runs/run_alice/commands/dispatch_alice/cancel']])
   f.setReceipt('delivered')
   await f.page.clock.fastForward(2100)
   await controls.getByText('取消已送达', {exact:true}).waitFor()

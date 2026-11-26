@@ -34,6 +34,9 @@
         <progress :value="detail.progress.percentage" max="100" aria-label="节点完成比例" />
       </template>
       <p v-else>{{ detail.status }}</p>
+      <a v-if="reviewHref" :href="reviewHref" target="_blank" rel="noopener noreferrer" @click="verifyReviewLink">
+        在 RedClaw 查看此 Run 的评审队列
+      </a>
       <div aria-label="费用对账" class="billing">
         <div class="billing-header">
           <h3>费用对账</h3>
@@ -73,6 +76,7 @@ import { computed, onBeforeUnmount, ref, shallowRef, watch } from 'vue'
 import { listUnifiedTasks, readUnifiedRun, readUnifiedTask, readRunBilling, type BillingTotals, type RunBilling, type UnifiedTask } from '../../api/accUnifiedTasks'
 import { AccApiError, type AccRequestAuthority } from '../../api/accApi'
 import { WorkspaceBindingRequestError } from '../../api/workspaceBinding'
+import { resolveRedclawPortalBase } from '../../config/redclaw-portal'
 import { useAuthStore } from '../../stores/auth'
 import { getAccLogSession } from './acc-log-session'
 import { verifyAccTaskAuthority } from './acc-task-authority'
@@ -93,6 +97,27 @@ const selected = ref<UnifiedTask | null>(null)
 type Detail = Awaited<ReturnType<typeof readUnifiedTask | typeof readUnifiedRun>>
 const detail = ref<Detail | null>(null)
 const detailAccess = shallowRef<Awaited<ReturnType<typeof verifyAccTaskAuthority>> | null>(null)
+const reviewHref = computed(() => {
+  const runId = detail.value?.runId
+  if (!detailAccess.value || !runId || !/^run_[a-zA-Z0-9_-]{1,160}$/.test(runId)) return ''
+  try {
+    const url = new URL('/approvals', resolveRedclawPortalBase() || window.location.origin)
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') return ''
+    url.searchParams.set('run_id', runId)
+    return url.href
+  } catch {
+    return ''
+  }
+})
+function verifyReviewLink(event: MouseEvent) {
+  try {
+    if (!detailAccess.value) throw new Error('ACC task authority is unavailable')
+    detailAccess.value.assertCurrent()
+  } catch {
+    event.preventDefault()
+    expireAuthority()
+  }
+}
 const billing = ref<RunBilling | null>(null)
 const loadingBilling = ref(false)
 let billingRequest: AbortController | null = null
