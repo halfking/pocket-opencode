@@ -60,6 +60,29 @@ function send(stream, value, newline = '\n') {
   stream.res.write(`id: ${value.sequence}${newline}event: ${value.event_type}${newline}data: ${JSON.stringify(value)}${newline}${newline}`)
 }
 
+test('an invalid terminal replay response leaves the cursor usable and reports the failure', async t => {
+  const { runtime, streams, polls, poll } = await fixture(t, { pollMs: 5 })
+  let broken = true
+  poll((req, res) => {
+    const after = Number(new URL(req.url, 'http://localhost').searchParams.get('after'))
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify(broken ? { ok: true } : { events: after < 2 ? [event(2)] : [] }))
+  })
+  let snapshot
+  runtime.subscribe('run-1', current => { snapshot = current })
+  await until(() => streams.length === 1)
+  send(streams[0], event(1, 'terminal', { event_type: 'run.terminal' }))
+  await until(() => snapshot.reason === 'terminal')
+  assert.equal(polls.length, 3)
+  assert.equal(snapshot.lastSeq, 1)
+  assert.equal(snapshot.notice, '暂时无法补读终态后的回执')
+  broken = false
+  runtime.refreshTerminal('run-1', runtime.captureAuthority())
+  await until(() => snapshot.reason === 'terminal' && snapshot.lastSeq === 2)
+  assert.match(polls[3].url, /after=1/)
+  assert.equal(snapshot.notice, '')
+})
+
 test('detach/remount replays events received offscreen, without a second request or duplicates', async t => {
   const { runtime, streams } = await fixture(t)
   let first

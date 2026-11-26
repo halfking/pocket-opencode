@@ -74,6 +74,7 @@ export async function readUnifiedTask(
 }
 
 export async function readUnifiedRun(authority: AccRequestAuthority, runId: string, signal?: AbortSignal) {
+  if (!runId || runId === '.' || runId === '..' || /[/\\]/.test(runId)) throw new Error('Invalid ACC run ID')
   const { run } = await readAcc<{ run?: { run_id: string; status: string } }>(
     authority, `/api/v2/orchestration/runs/${encodeURIComponent(runId)}`, signal,
   ) ?? {}

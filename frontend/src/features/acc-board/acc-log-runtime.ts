@@ -474,7 +474,7 @@ export class AccLogRuntime {
         }
         text += decoder.decode()
         const raw = JSON.parse(text)
-        const rows = Array.isArray(raw) ? raw : raw?.events ?? raw?.data ?? raw?.items ?? []
+        const rows = Array.isArray(raw) ? raw : raw?.events ?? raw?.data ?? raw?.items
         if (!Array.isArray(rows)) throw new Error('Invalid ACC events response')
         events = rows.filter(value => value && typeof value === 'object').map(normalizeOrchestrationEvent)
       }

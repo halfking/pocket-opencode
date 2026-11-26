@@ -17,6 +17,13 @@ import { fetchWithTimeout } from './fetch-timeout'
 import { useAuthStore } from '../stores/auth'
 import { assertDirectPocketRequest } from './pocket-resource'
 
+export class WorkspaceBindingRequestError extends Error {
+  constructor(readonly status: number) {
+    super('The server did not issue a workspace binding.')
+    this.name = 'WorkspaceBindingRequestError'
+  }
+}
+
 /** 一份已签名的成员绑定断言。 */
 export interface WorkspaceBinding {
   /** 断言本身（JWT），交给对端服务验证。 */
@@ -62,7 +69,7 @@ function bindingFromBody(value: unknown): WorkspaceBinding {
  * The caller fixes its bearer, origin and admission before any asynchronous work. */
 export async function fetchPortalWorkspaceBinding(
   workspaceId: string,
-  request: { token: string; base: string; assertCurrent: () => void },
+  request: { token: string; base: string; assertCurrent: () => void; signal?: AbortSignal },
 ): Promise<WorkspaceBinding> {
   return fetchCurrentWorkspaceBinding(workspaceId, request, '/api/v1/portal/workspaces')
 }
@@ -71,14 +78,14 @@ export async function fetchPortalWorkspaceBinding(
  * Selecting this route is never a fallback after RedClaw rejects a credential. */
 export async function fetchPocketWorkspaceBinding(
   workspaceId: string,
-  request: { token: string; base: string; assertCurrent: () => void },
+  request: { token: string; base: string; assertCurrent: () => void; signal?: AbortSignal },
 ): Promise<WorkspaceBinding> {
   return fetchCurrentWorkspaceBinding(workspaceId, request, '/api/workspaces')
 }
 
 async function fetchCurrentWorkspaceBinding(
   workspaceId: string,
-  request: { token: string; base: string; assertCurrent: () => void },
+  request: { token: string; base: string; assertCurrent: () => void; signal?: AbortSignal },
   prefix: string,
 ): Promise<WorkspaceBinding> {
   request.assertCurrent()
@@ -86,10 +93,11 @@ async function fetchCurrentWorkspaceBinding(
   if (!request.token) throw new Error('An authenticated portal session is required.')
   const response = await fetchWithTimeout(
     `${request.base}${prefix}/${encodeURIComponent(workspaceId)}/binding`,
-    { method: 'GET', headers: { Authorization: `Bearer ${request.token}` }, redirect: 'error', credentials: 'omit' },
+    { method: 'GET', headers: { Authorization: `Bearer ${request.token}` }, signal: request.signal,
+      cache: 'no-store', redirect: 'error', credentials: 'omit' },
   )
   request.assertCurrent()
-  if (!response.ok) throw new Error('The server did not issue a workspace binding.')
+  if (!response.ok) throw new WorkspaceBindingRequestError(response.status)
   const body = await response.json()
   request.assertCurrent()
   const binding = bindingFromBody(body)

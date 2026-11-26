@@ -37,18 +37,19 @@
 
 <script setup lang="ts">
 /**
- * ACC event projection only. The process-owned runtime retains transport, cursor
- * and bounded replay across route changes; this view subscribes and detaches.
+ * The board shares its process-owned replay. Unified task details use an isolated
+ * runtime with the same verified authority as the task and graph reads.
  */
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import type { AccOrchestrationEvent } from '../../api/accApi'
-import type { AccLogSnapshot } from './acc-log-runtime.ts'
+import { AccLogRuntime, type AccLogAuthority, type AccLogSnapshot } from './acc-log-runtime.ts'
 import { getAccLogSession } from './acc-log-session.ts'
 import { isMockActive } from './mock'
 
 defineOptions({ name: 'AccLogStream' })
 
-const props = defineProps<{ runId: string }>()
+const props = defineProps<{ runId: string; authority?: AccLogAuthority }>()
+const emit = defineEmits<{ invalidated: [] }>()
 
 /** 渲染行（由 AccOrchestrationEvent 投影；key 供 v-for 复用）。 */
 interface LogLine {
@@ -69,11 +70,13 @@ const mode = ref<Mode>(isMockActive() ? 'mock' : 'connecting')
 const endReason = ref<AccLogSnapshot['reason']>()
 const notice = ref('')
 const logSession = getAccLogSession()
+const scopedRuntime = new AccLogRuntime()
 const paused = ref(false)
 const bodyEl = ref<HTMLElement | null>(null)
 
 function refreshTerminal() {
-  logSession.runtime.refreshTerminal(props.runId, logSession.runtime.captureAuthority())
+  const runtime = props.authority ? scopedRuntime : logSession.runtime
+  runtime.refreshTerminal(props.runId, runtime.captureAuthority())
 }
 
 const modeLabel = computed(() => {
@@ -197,20 +200,26 @@ function togglePause(): void {
 // ---------------------------------------------------------------------------
 
 let detach = () => {}
-watch([() => props.runId, logSession.authority], ([runId]) => {
+watch([() => props.runId, () => props.authority, logSession.authority], ([runId, authority]) => {
   detach()
+  scopedRuntime.setAuthority(authority ?? null)
+  const runtime = authority ? scopedRuntime : logSession.runtime
   paused.value = false
-  detach = logSession.runtime.subscribe(runId, snapshot => {
+  detach = runtime.subscribe(runId, snapshot => {
     lines.value = snapshot.events.map(projectEvent)
     mode.value = snapshot.mode
     endReason.value = snapshot.reason
     notice.value = snapshot.notice
+    if (authority && snapshot.reason === 'invalidated') emit('invalidated')
     scrollIfAuto()
-  }, isMockActive() ? 'mock' : 'live')
+  }, !authority && isMockActive() ? 'mock' : 'live')
 }, { immediate: true, flush: 'sync' })
 
-// Leaving a route releases only this subscriber, never the process-owned IO.
-onBeforeUnmount(() => detach())
+// Leaving a route releases the subscriber and any detail-scoped transport.
+onBeforeUnmount(() => {
+  detach()
+  scopedRuntime.dispose()
+})
 
 </script>
 

@@ -24,7 +24,7 @@
 
     <p v-if="loadingDetail" role="status">正在读取任务进度…</p>
     <p v-if="detailError" role="alert">{{ detailError }}</p>
-    <section v-if="detail" aria-label="统一任务进度" class="detail">
+    <section v-if="detail && detailAccess" aria-label="统一任务进度" class="detail">
       <h2>{{ detail.title }}</h2>
       <p v-if="'description' in detail && detail.description">{{ detail.description }}</p>
       <p v-if="detail.title !== detail.runId">Run {{ detail.runId }}</p>
@@ -45,15 +45,16 @@
       <ul v-if="detail.blockers.length">
         <li v-for="edge in detail.blockers" :key="JSON.stringify([edge.from, edge.to])">{{ edge.from }} → {{ edge.to }}</li>
       </ul>
-      <LogStream :run-id="detail.runId" />
+      <LogStream :run-id="detail.runId" :authority="detailAccess" @invalidated="expireAuthority" />
     </section>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, shallowRef, watch } from 'vue'
 import { listUnifiedTasks, readUnifiedRun, readUnifiedTask, type UnifiedTask } from '../../api/accUnifiedTasks'
-import type { AccRequestAuthority } from '../../api/accApi'
+import { AccApiError, type AccRequestAuthority } from '../../api/accApi'
+import { WorkspaceBindingRequestError } from '../../api/workspaceBinding'
 import { useAuthStore } from '../../stores/auth'
 import { getAccLogSession } from './acc-log-session'
 import { verifyAccTaskAuthority } from './acc-task-authority'
@@ -72,24 +73,45 @@ const rows = ref<UnifiedTask[]>([])
 const selected = ref<UnifiedTask | null>(null)
 type Detail = Awaited<ReturnType<typeof readUnifiedTask | typeof readUnifiedRun>>
 const detail = ref<Detail | null>(null)
+const detailAccess = shallowRef<Awaited<ReturnType<typeof verifyAccTaskAuthority>> | null>(null)
 const draftRunId = ref('')
 const nextOffset = ref<number | null>(0)
 const loaded = ref(false)
 const loadingList = ref(false), loadingDetail = ref(false)
 const listError = ref(''), detailError = ref('')
 let listRequest: AbortController | null = null, detailRequest: AbortController | null = null
+let expiresAt = Infinity
+let expiryTimer: ReturnType<typeof setTimeout> | undefined
 let disposed = false
 
-function clear() {
+function clear(resetDraft = true) {
   listRequest?.abort()
   detailRequest?.abort()
   listRequest = detailRequest = null
+  clearTimeout(expiryTimer)
+  expiresAt = Infinity
   rows.value = []
   selected.value = detail.value = null
-  draftRunId.value = ''
+  detailAccess.value = null
+  if (resetDraft) draftRunId.value = ''
   nextOffset.value = 0
   loaded.value = loadingList.value = loadingDetail.value = false
   listError.value = detailError.value = ''
+}
+function expireAuthority(error?: unknown) {
+  clear(false)
+  listError.value = showError(error, '工作区或 ACC 授权已失效，请刷新后重新核验。')
+}
+function expireAt(deadline: number) {
+  // Existing pages can include rows admitted under an earlier binding.
+  if (deadline >= expiresAt) return
+  expiresAt = deadline
+  clearTimeout(expiryTimer)
+  expiryTimer = setTimeout(expireAuthority, Math.max(0, deadline - Date.now()))
+}
+function isDenied(error: unknown) {
+  return (error instanceof AccApiError || error instanceof WorkspaceBindingRequestError)
+    && (error.status === 401 || error.status === 403)
 }
 function showError(error: unknown, fallback: string) {
   return error instanceof Error && error.message === 'ACC 凭据与当前账号或租户不一致' ? error.message : fallback
@@ -104,6 +126,8 @@ async function loadPage() {
     const access = await verifyAccTaskAuthority(owner, auth, request.signal)
     const page = await listUnifiedTasks(access, offset, request.signal)
     if (listRequest !== request) return
+    access.assertCurrent()
+    expireAt(access.expiresAt)
     const byId = new Map(rows.value.map(row => [row.task_id, row]))
     for (const row of page.rows) byId.set(row.task_id, row)
     rows.value = [...byId.values()]
@@ -111,7 +135,8 @@ async function loadPage() {
     loaded.value = true
   } catch (error) {
     if (listRequest === request && !(error instanceof Error && error.name === 'AbortError')) {
-      listError.value = showError(error, '统一任务列表读取失败，请刷新后重试。')
+      if (isDenied(error)) expireAuthority(error)
+      else listError.value = showError(error, '统一任务列表读取失败，请刷新后重试。')
     }
   } finally {
     if (listRequest === request) {
@@ -129,15 +154,21 @@ async function loadDetail(
   const request = detailRequest = new AbortController()
   selected.value = selection
   detail.value = null
+  detailAccess.value = null
   detailError.value = ''
   loadingDetail.value = true
   try {
     const access = await verifyAccTaskAuthority(owner, auth, request.signal)
     const result = await query(access, request.signal)
-    if (detailRequest === request) detail.value = result
+    if (detailRequest !== request) return
+    access.assertCurrent()
+    expireAt(access.expiresAt)
+    detailAccess.value = access
+    detail.value = result
   } catch (error) {
     if (detailRequest === request && !(error instanceof Error && error.name === 'AbortError')) {
-      detailError.value = showError(error, '任务详情读取失败，请重试。')
+      if (isDenied(error)) expireAuthority(error)
+      else detailError.value = showError(error, '任务详情读取失败，请重试。')
     }
   } finally {
     if (detailRequest === request) {
@@ -154,8 +185,15 @@ function openRun() {
   if (runId) void loadDetail(null, (authority, signal) => readUnifiedRun(authority, runId, signal))
 }
 function reload() {
-  clear()
+  const selection = selected.value
+  const runId = detail.value?.runId
+  clear(false)
   void loadPage()
+  if (selection) {
+    void loadDetail(selection, (authority, signal) => readUnifiedTask(authority, selection, signal))
+  } else if (runId) {
+    void loadDetail(null, (authority, signal) => readUnifiedRun(authority, runId, signal))
+  }
 }
 watch(() => [session.authority.value, auth.activationStatus], () => {
   clear()

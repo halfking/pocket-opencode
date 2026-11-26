@@ -13,7 +13,9 @@ async function fixture(t, legacy = false) {
   const cacheDir = await mkdtemp(join(tmpdir(), 'acc-board-owner-'))
   const requests = [], held = [], errors = [], taskReads = [], eventCursors = []
   const delayedTasks = []
-  let delayTaskPage = false
+  const eventReplies = []
+  let delayTaskPage = false, holdEventReplay = false
+  let bindingStatus = 200
   let status = 200, hold = false, server, browser
   const entry = `
     import {createApp,h,ref,nextTick} from 'vue';
@@ -49,6 +51,7 @@ async function fixture(t, legacy = false) {
   t.after(async () => {
     for (const res of held) res.end()
     for (const reply of delayedTasks) reply()
+    for (const { res } of eventReplies) res.end()
     await browser?.close(); await server?.close()
     await rm(cacheDir, { recursive: true, force: true })
   })
@@ -76,6 +79,7 @@ async function fixture(t, legacy = false) {
           const ws = req.url.split('/').at(-2)
           const user = req.headers.authorization === 'Bearer pocket-b' ? 'bob' : 'alice'
           res.setHeader('Content-Type', 'application/json')
+          if (bindingStatus !== 200) { res.statusCode = bindingStatus; res.end('{}'); return }
           res.end(JSON.stringify({ binding: 'fixture-assertion', workspace_id: ws, user_id: user,
             tenant_id: ws === 'two' ? 'tenant-other' : `tenant-${user}`, expires_at: Math.floor(Date.now() / 1000) + 60 }))
         } else if (/\/api\/v2\/(auth\/session|tasks(?:[/?]|$)|orchestration\/runs\/)/.test(req.url)) {
@@ -103,10 +107,19 @@ async function fixture(t, legacy = false) {
           ] } })
           else if (path.endsWith('/events/stream')) {
             res.setHeader('Content-Type', 'text/event-stream')
-            res.end(`id: 1\ndata: ${JSON.stringify({ sequence: 1, event_type: 'dispatch.created', event_id: 'evt-1', run_id: task.run_id, payload: { text: '已读取派发回执' } })}\n\n`)
+            res.end(`id: 1\ndata: ${JSON.stringify({ sequence: 1, event_type: 'run.terminal', event_id: 'evt-1', run_id: task.run_id, payload: { text: '已读取派发回执' } })}\n\n`)
           } else if (path.endsWith('/events')) {
             eventCursors.push([url.pathname, url.searchParams.get('after')])
-            json({ events: [{ sequence: 2, event_type: 'task.review.approved', event_id: 'evt-2', run_id: task.run_id, payload: { text: '已续读评审回执' } }] })
+            const events = Number(url.searchParams.get('after')) < 2
+              ? [{ sequence: 2, event_type: 'task.review.approved', event_id: 'evt-2', run_id: task.run_id, payload: { text: '已续读评审回执' } }] : []
+            if (holdEventReplay) {
+              holdEventReplay = false
+              res.writeHead(200, { 'Content-Type': 'application/json' })
+              res.write('{"events":')
+              const pending = { res, closed: false }
+              res.on('close', () => { pending.closed = true })
+              eventReplies.push(pending)
+            } else json({ events })
           } else if (path === '/api/v2/orchestration/runs/' + task.run_id) json({ run: { run_id: task.run_id, status: 'failed' } })
           else { res.statusCode = 404; json({ error: 'unknown fixture route' }) }
         } else if (/\/api\/v2\/sop\/runs$/.test(req.url)) {
@@ -123,8 +136,10 @@ async function fixture(t, legacy = false) {
   page.on('pageerror', error => errors.push(error.message))
   await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/__board_owner__`)
   await page.waitForFunction(() => window.boardReady)
-  return { page, requests, errors, held, reply, taskReads, eventCursors, delayedTasks,
+  return { page, requests, errors, held, reply, taskReads, eventCursors, delayedTasks, eventReplies,
     holdTaskPage() { delayTaskPage = true },
+    holdEventReplay() { holdEventReplay = true },
+    denyBinding() { bindingStatus = 403 },
     setStatus(value) { status = value }, hold(value = true) { hold = value },
     action: kind => page.evaluate(kind => window.boardAction(kind), kind),
     text: () => page.locator('.page').innerText(),
@@ -184,6 +199,9 @@ test('unified tasks show authorized progress and replay the same run without cro
   await f.page.getByRole('button', { name: '查看 Run', exact: true }).click()
   await detail.getByRole('heading', { name: 'run-alice', exact: true }).waitFor()
   await detail.getByText('已续读评审回执', { exact: true }).waitFor()
+  await f.page.getByRole('button', { name: '刷新', exact: true }).click()
+  await detail.getByRole('heading', { name: 'run-alice', exact: true }).waitFor()
+  await detail.getByText('已续读评审回执', { exact: true }).waitFor()
   f.holdTaskPage()
   await f.page.getByRole('button', { name: '更多任务', exact: true }).click()
   for (let i = 0; !f.delayedTasks.length && i < 100; i++) await new Promise(resolve => setTimeout(resolve, 10))
@@ -202,5 +220,41 @@ test('unified tasks show authorized progress and replay the same run without cro
   await f.action('workspace')
   await f.page.getByText('ACC 凭据与当前账号或租户不一致', { exact: true }).waitFor()
   assert.equal(f.taskReads.filter(([owner, path]) => owner === 'bob' && path === '/api/v2/tasks').length, listCount)
+  assert.deepEqual(f.errors, [])
+})
+
+test('expiring the verified binding clears the task view and cancels an in-flight receipt replay', { timeout: 30_000 }, async t => {
+  const f = await fixture(t)
+  await f.page.clock.install()
+  await f.page.getByRole('link', { name: '统一任务', exact: true }).click()
+  f.holdEventReplay()
+  await f.page.getByRole('button', { name: /联跑任务 alice/ }).click()
+  await f.page.getByText('已读取派发回执', { exact: true }).waitFor()
+  for (let i = 0; !f.eventReplies.length && i < 100; i++) await new Promise(resolve => setTimeout(resolve, 10))
+  assert.equal(f.eventReplies.length, 1)
+  assert.equal(f.eventReplies[0].closed, false)
+  await f.page.clock.fastForward(61_000)
+  await f.page.getByText('工作区或 ACC 授权已失效，请刷新后重新核验。', { exact: true }).waitFor()
+  for (let i = 0; !f.eventReplies[0].closed && i < 100; i++) await new Promise(resolve => setTimeout(resolve, 10))
+  assert.equal(f.eventReplies[0].closed, true)
+  assert.equal(f.eventCursors.length, 1)
+  assert.ok(!(await f.text()).includes('联跑任务 alice'))
+  assert.ok(!(await f.text()).includes('已读取派发回执'))
+  assert.deepEqual(f.errors, [])
+})
+
+test('a denied workspace binding renewal clears previously admitted task data', { timeout: 30_000 }, async t => {
+  const f = await fixture(t)
+  await f.page.getByRole('link', { name: '统一任务', exact: true }).click()
+  await f.page.getByRole('button', { name: /联跑任务 alice/ }).click()
+  await f.page.getByText('已续读评审回执', { exact: true }).waitFor()
+  f.denyBinding()
+  const bindingDependentReads = () => f.taskReads.filter(([, path]) => !path.includes('/events')).length
+  const reads = bindingDependentReads()
+  await f.page.getByRole('button', { name: '更多任务', exact: true }).click()
+  await f.page.getByText('工作区或 ACC 授权已失效，请刷新后重新核验。', { exact: true }).waitFor()
+  assert.equal(bindingDependentReads(), reads)
+  assert.ok(!(await f.text()).includes('联跑任务 alice'))
+  assert.ok(!(await f.text()).includes('已续读评审回执'))
   assert.deepEqual(f.errors, [])
 })
