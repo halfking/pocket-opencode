@@ -26,6 +26,7 @@ async function fixture(t, legacy = false) {
   let wholeCancellation
   let delayTaskPage = false, holdEventReplay = false
   let bindingStatus = 200
+  let billingStatus = 200
   let status = 200, hold = false, server, browser
   const entry = `
     import {createApp,h,ref,nextTick} from 'vue';
@@ -120,6 +121,11 @@ async function fixture(t, legacy = false) {
             { kind: 'blocking_dependencies', items: [{ from: task.task_id, to: 'review' }] },
           ] } })
           else if (path.endsWith('/billing')) {
+            if (billingStatus !== 200) {
+              res.statusCode = billingStatus
+              json({})
+              return
+            }
             json({ run_id: task.run_id, state: 'partial', totals: { requests: 4, debited_credits: 6255, net_credits: 6255 },
               attempts: [{ task_id: task.task_id, revision_id: 'rev-' + user, attempt: 1, state: 'unobserved' }] })
           } else if (path.endsWith('/commands')) {
@@ -212,6 +218,7 @@ async function fixture(t, legacy = false) {
     setWholeReceipt(counts) { Object.assign(wholeCancellation, counts) },
     holdTaskPage() { delayTaskPage = true },
     holdEventReplay() { holdEventReplay = true },
+    setBillingStatus(value) { billingStatus = value },
     denyBinding() { bindingStatus = 403 },
     setStatus(value) { status = value }, hold(value = true) { hold = value },
     action: kind => page.evaluate(kind => window.boardAction(kind), kind),
@@ -442,5 +449,41 @@ test('a denied workspace binding renewal clears previously admitted task data', 
   assert.equal(bindingDependentReads(), reads)
   assert.ok(!(await f.text()).includes('联跑任务 alice'))
   assert.ok(!(await f.text()).includes('已续读评审回执'))
+  assert.deepEqual(f.errors, [])
+})
+
+test('a denied billing read removes the admitted Run and aborts its replay', { timeout: 30_000 }, async t => {
+  const f = await fixture(t)
+  await f.page.getByRole('link', { name: '统一任务', exact: true }).click()
+  f.holdEventReplay()
+  await f.page.getByRole('button', { name: /联跑任务 alice/ }).click()
+  const detail = f.page.getByRole('region', { name: '统一任务进度' })
+  await detail.getByText('已读取派发回执', { exact: true }).waitFor()
+  await detail.getByText('4 笔请求 · 净扣 6,255 credits', { exact: true }).waitFor()
+  for (let i = 0; !f.eventReplies.length && i < 100; i++) await new Promise(resolve => setTimeout(resolve, 10))
+  assert.equal(f.eventReplies.length, 1)
+
+  f.setBillingStatus(503)
+  await detail.getByRole('button', { name: '刷新费用' }).click()
+  await detail.getByText('账本暂不可读取', { exact: true }).waitFor()
+  await detail.getByText('已读取派发回执', { exact: true }).waitFor()
+  assert.equal(f.eventReplies[0].closed, false)
+
+  f.setBillingStatus(403)
+  await detail.getByRole('button', { name: '刷新费用' }).click()
+  await f.page.getByText('工作区或 ACC 授权已失效，请刷新后重新核验。', { exact: true }).waitFor()
+  await detail.waitFor({ state: 'detached' })
+  for (let i = 0; !f.eventReplies[0].closed && i < 100; i++) await new Promise(resolve => setTimeout(resolve, 10))
+  assert.equal(f.eventReplies[0].closed, true)
+  assert.ok(!(await f.text()).includes('联跑任务 alice'))
+
+  f.setBillingStatus(200)
+  await f.page.getByRole('button', { name: '刷新', exact: true }).click()
+  await f.page.getByRole('button', { name: /联跑任务 alice/ }).click()
+  await detail.getByText('4 笔请求 · 净扣 6,255 credits', { exact: true }).waitFor()
+  f.setBillingStatus(404)
+  await detail.getByRole('button', { name: '刷新费用' }).click()
+  await detail.waitFor({ state: 'detached' })
+  await f.page.getByRole('button', { name: /联跑任务 alice/ }).waitFor()
   assert.deepEqual(f.errors, [])
 })

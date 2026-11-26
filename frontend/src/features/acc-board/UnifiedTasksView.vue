@@ -145,9 +145,8 @@ function clear(resetDraft = true) {
   clearTimeout(expiryTimer)
   expiresAt = Infinity
   rows.value = []
-  selected.value = detail.value = null
-  detailAccess.value = null
-  clearBilling()
+  selected.value = null
+  clearRun()
   if (resetDraft) draftRunId.value = ''
   nextOffset.value = 0
   loaded.value = loadingList.value = loadingDetail.value = false
@@ -168,8 +167,16 @@ async function loadBilling() {
     const result = await readRunBilling(access, runId, request.signal)
     access.assertCurrent()
     if (billingRequest === request) billing.value = result
-  } catch {
-    if (billingRequest === request) billing.value = null
+  } catch (error) {
+    if (billingRequest !== request) return
+    if (isDenied(error)) expireAuthority(error)
+    else if (isMissingRun(error)) {
+      detailRequest?.abort()
+      detailRequest = null
+      loadingDetail.value = false
+      clearRun()
+      detailError.value = '任务详情读取失败，请重试。'
+    } else billing.value = null
   } finally {
     if (billingRequest === request) {
       billingRequest = null
@@ -191,6 +198,14 @@ function expireAt(deadline: number) {
 function isDenied(error: unknown) {
   return (error instanceof AccApiError || error instanceof WorkspaceBindingRequestError)
     && (error.status === 401 || error.status === 403)
+}
+function isMissingRun(error: unknown) {
+  return error instanceof AccApiError && error.status === 404
+}
+function clearRun() {
+  detail.value = null
+  detailAccess.value = null
+  clearBilling()
 }
 function showError(error: unknown, fallback: string) {
   return error instanceof Error && error.message === 'ACC 凭据与当前账号或租户不一致' ? error.message : fallback
@@ -234,9 +249,7 @@ async function loadDetail(
   const request = detailRequest = new AbortController()
   selected.value = selection
   if (!currentAccess) {
-    detail.value = null
-    detailAccess.value = null
-    clearBilling()
+    clearRun()
   }
   detailError.value = ''
   loadingDetail.value = true
@@ -253,11 +266,7 @@ async function loadDetail(
     if (detailRequest === request && !(error instanceof Error && error.name === 'AbortError')) {
       if (isDenied(error)) expireAuthority(error)
       else {
-        if (error instanceof AccApiError && error.status === 404) {
-          detail.value = null
-          detailAccess.value = null
-          clearBilling()
-        }
+        if (isMissingRun(error)) clearRun()
         detailError.value = showError(error, '任务详情读取失败，请重试。')
       }
     }
