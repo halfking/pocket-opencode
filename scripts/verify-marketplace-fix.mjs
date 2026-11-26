@@ -57,14 +57,15 @@ all = say(mktStatus === '',
 //      ⇒ **根因统一：任何「段内正则找字面量」的解析都会把注释算成声明。**
 //
 //    收口办法（两条一起做，缺一条就还会再翻）：
-//      A. **不另写解析器** —— 直接 import check-hide-app-header.mjs 的 routesOf。
+//      A. **不另写解析器** —— 直接 import check-hide-app-header.mjs 的 readRouteCatalog。
 //         （为此给门禁加了 isEntry() 闸门，否则 import 会连带 process.exit。）
 //      B. **再加一条运行期独立证词** —— 把 router 真正编译执行一次，
 //         读 vue-router 实际持有的 meta。文本解析可以被口径之争拖住，
 //         运行期读数不能。两条一致 ⇒ 「15」这件事不再依赖任何人的解析器。
-const { routesOf } = await import('./check-hide-app-header.mjs')
-const router = readFileSync(join(repo, 'frontend/src/app/router-mobile.ts'), 'utf8')
-const routes = routesOf(router)
+const { readRouteCatalog } = await import('./check-hide-app-header.mjs')
+const routerPath = join(repo, 'frontend/src/app/router-mobile.ts')
+const router = readFileSync(routerPath, 'utf8')
+const routes = readRouteCatalog(routerPath)
 all = say(routes.length > 0,
   '判据可解析出路由表（失明即拒绝给结论）',
   `解析出 ${routes.length} 条路由`) && all
@@ -99,7 +100,7 @@ const BASELINE_BEFORE_FIX = 19
 const EXPECTED = BASELINE_BEFORE_FIX - 3
 all = say(declared.length === EXPECTED,
   `全仓 hideAppHeader 声明数 = ${EXPECTED}（基线 ${BASELINE_BEFORE_FIX} 去掉本项 3 条）`,
-  `实测 ${declared.length} 条（口径 = check-hide-app-header.mjs 的 routesOf）`) && all
+  `实测 ${declared.length} 条（口径 = check-hide-app-header.mjs 的 readRouteCatalog）`) && all
 // 只数「本项应当去掉的那三条」—— 总数会被别人的合法改动带着动，这三条不会。
 // （路径表与上面 for 循环里那份保持一致；改成抽常量是可选的整洁化，
 //   这里不扩大改动面。）
@@ -112,7 +113,7 @@ all = say(leaked.length === 0,
 // ---- 运行期独立证词：文本解析可以争口径，vue-router 实际持有的 meta 不能 ----
 // 做法：用 esbuild 把 router-mobile.ts 真正编译并执行（.vue 全部打桩），
 // 读 router.options.routes[].meta.hideAppHeader === true。
-// 若它与上面 routesOf 的读数**逐条一致**，则「15」不再依赖任何一方的解析器 ——
+// 若它与上面 readRouteCatalog 的读数**逐条一致**，则「15」不再依赖任何一方的解析器 ——
 // 这直接击穿「门禁是假阴性」这一类指控的**唯一**立足点（解析口径可以被怀疑）。
 let runtimeState = '⬜ 未验成（不计入结论，但必须显式说明，不静默跳过）'
 let runtimePaths = null
@@ -161,7 +162,7 @@ try {
   const textPaths = declared.map((r) => r.path).slice().sort()
   const same = JSON.stringify(runtimePaths.slice().sort()) === JSON.stringify(textPaths)
   runtimeState = same
-    ? `✅ 一致：运行期 ${runtimePaths.length} 条，与 routesOf 逐条相同 ⇒「15」不依赖任何一方的解析器`
+    ? `✅ 一致：运行期 ${runtimePaths.length} 条，与源码路由表逐条相同`
     : `❌ 不一致：运行期 ${runtimePaths.length} 条 vs 文本 ${textPaths.length} 条`
   if (!same) {
     const onlyRt = runtimePaths.filter((p) => !textPaths.includes(p))
@@ -200,7 +201,7 @@ all = say(changed,
   changed ? '变异体已构造（下一步会落盘跑真实门禁，finally 里按 md5 还原）' : '★ 构造失败 ⇒ 无法证明门禁有牙') && all
 
 if (changed) {
-  const realPath = join(repo, 'frontend/src/app/router-mobile.ts')
+  const realPath = routerPath
   const original = router
   const md5 = (s) => createHash('md5').update(s).digest('hex')
   const before = md5(original)

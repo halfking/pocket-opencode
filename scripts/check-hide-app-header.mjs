@@ -28,6 +28,7 @@
 //
 // 运行：node scripts/check-hide-app-header.mjs [--selftest] [--list]
 import { readFileSync, existsSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -66,6 +67,77 @@ export function importAliases(src) {
   for (const m of src.matchAll(/import\s+([A-Za-z0-9_]+)\s+from\s+['"]([^'"]+)['"]/g)) map.set(m[1], m[2])
   for (const m of src.matchAll(/const\s+([A-Za-z0-9_]+)\s*=\s*\(\s*\)\s*=>\s*import\(\s*['"]([^'"]+)['"]\s*\)/g)) map.set(m[1], m[2])
   return map
+}
+
+/** Follow the route array wired into Vue Router, including local named spreads.
+ * TypeScript identifies the records and imports. Metadata is read from source
+ * so the runtime gate can independently detect a missed declaration.
+ */
+export function readRouteCatalog(entry = ROUTER) {
+  const require = createRequire(join(ROOT, 'frontend', 'package.json'))
+  const ts = require('typescript')
+  const modules = new Map()
+
+  function readModule(file) {
+    if (modules.has(file)) return modules.get(file)
+    const text = readFileSync(file, 'utf8')
+    const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true)
+    if (source.parseDiagnostics.length) throw new Error(`无法解析路由模块 ${file}`)
+    const variables = new Map()
+    const imports = new Map()
+    for (const statement of source.statements) {
+      if (ts.isVariableStatement(statement)) {
+        for (const declaration of statement.declarationList.declarations) {
+          if (ts.isIdentifier(declaration.name)) variables.set(declaration.name.text, declaration.initializer)
+        }
+      }
+      if (!ts.isImportDeclaration(statement)) continue
+      const bindings = statement.importClause?.namedBindings
+      if (!bindings || !ts.isNamedImports(bindings) || !ts.isStringLiteral(statement.moduleSpecifier)) continue
+      for (const item of bindings.elements) {
+        imports.set(item.name.text, {
+          name: (item.propertyName ?? item.name).text, specifier: statement.moduleSpecifier.text,
+        })
+      }
+    }
+    const mod = { file, source, variables, imports, aliases: importAliases(text) }
+    modules.set(file, mod)
+    return mod
+  }
+
+  function flatten(mod, array, active) {
+    if (!array || !ts.isArrayLiteralExpression(array)) throw new Error(`路由列表必须是静态数组 ${mod.file}`)
+    if (active.has(array)) throw new Error(`路由数组存在循环引用 ${mod.file}`)
+    const branch = new Set(active).add(array)
+    return array.elements.flatMap(node => {
+      if (ts.isObjectLiteralExpression(node)) {
+        const records = routesOf(node.getText(mod.source))
+        if (records.length !== 1) throw new Error(`无法解析路由声明 ${mod.file}:${mod.source.getLineAndCharacterOfPosition(node.getStart()).line + 1}`)
+        const record = records[0]
+        return { ...record, source: mod.file, importPath: record.importPath ?? mod.aliases.get(record.identifier) ?? null }
+      }
+      if (!ts.isSpreadElement(node) || !ts.isIdentifier(node.expression)) {
+        throw new Error(`无法静态展开路由声明 ${mod.file}`)
+      }
+      const name = node.expression.text
+      if (mod.variables.has(name)) return flatten(mod, mod.variables.get(name), branch)
+      const imported = mod.imports.get(name)
+      if (!imported?.specifier.startsWith('.')) throw new Error(`无法定位路由数组 ${name}（${mod.file}）`)
+      const path = resolve(dirname(mod.file), imported.specifier)
+      const sourcePath = [path.endsWith('.ts') ? path : `${path}.ts`, join(path, 'index.ts')].find(existsSync)
+      if (!sourcePath) throw new Error(`找不到路由数组模块 ${imported.specifier}（${mod.file}）`)
+      const next = readModule(sourcePath)
+      return flatten(next, next.variables.get(imported.name), branch)
+    })
+  }
+
+  const root = readModule(resolve(entry))
+  const routers = [...root.variables.values()].filter(node => node && ts.isCallExpression(node) &&
+    ts.isIdentifier(node.expression) && node.expression.text === 'createRouter')
+  const options = routers.length === 1 ? routers[0].arguments[0] : undefined
+  if (!options || !ts.isObjectLiteralExpression(options)) throw new Error(`无法识别 createRouter 路由配置 ${entry}`)
+  const routes = options.properties.find(node => ts.isPropertyAssignment(node) && node.name.text === 'routes')
+  return flatten(root, routes?.initializer, new Set())
 }
 
 /**
@@ -140,19 +212,12 @@ export function violations(routes, resolveView) {
   return { bad, unchecked }
 }
 
-function loadView(r, aliases) {
-  let rel = r.importPath
-  if (!rel && r.identifier) rel = aliases.get(r.identifier)
+function loadView(route) {
+  const rel = route.importPath
   if (!rel) return null
-  // ⚠️ 基准目录是**路由表所在目录**，不是 frontend/src。
-  //   router-mobile.ts 在 src/app/，它的 import 写的是 '../features/x.vue'，
-  //   按 src/ 拼会落到 src/../features/…（即 src 外），existsSync 失败 →
-  //   loadView 返回 null → 违规被静默跳过 → 门禁报「全部合规」。
-  //   这就是它自己注释里写的那个失效形态：判据失明长得和通过一模一样。
-  //   （2026-10-04 实际踩到过一轮，23 条全绿而 scheduled-tasks 明明没有头部。）
-  const p = join(dirname(ROUTER), rel)
-  for (const cand of [p, `${p}.vue`, `${p}.ts`]) {
-    if (existsSync(cand) && cand.endsWith('.vue')) return readFileSync(cand, 'utf8')
+  const path = rel.startsWith('@/') ? resolve(SRC, rel.slice(2)) : resolve(dirname(route.source), rel)
+  for (const candidate of [path, `${path}.vue`]) {
+    if (candidate.endsWith('.vue') && existsSync(candidate)) return readFileSync(candidate, 'utf8')
   }
   return null
 }
@@ -241,17 +306,15 @@ if (!existsSync(ROUTER)) {
   console.error(`FAIL 找不到路由表 ${ROUTER} —— 判据失明，拒绝给结论`)
   process.exit(1)
 }
-const src = readFileSync(ROUTER, 'utf8')
-const routes = routesOf(src)
+const routes = readRouteCatalog()
 if (routes.length === 0) {
   console.error('FAIL 一条路由都没解析出来 —— 判据失明，拒绝给结论')
   process.exit(1)
 }
-const aliases = importAliases(src)
 const hidden = routes.filter((r) => r.hideAppHeader)
 console.log(`路由总数 ${routes.length}；声明 hideAppHeader: true 的 ${hidden.length} 条`)
 
-const { bad, unchecked } = violations(routes, (r) => loadView(r, aliases))
+const { bad, unchecked } = violations(routes, loadView)
 if (unchecked.length) {
   console.error(`\n✗ ${unchecked.length} 条声明了 hideAppHeader 的路由，组件没解析到 —— 判据够不着，**拒绝给结论**：`)
   unchecked.forEach((p) => console.error(`  - ${p}`))
@@ -274,4 +337,11 @@ if (bad.length) {
 console.log('\n✓ 声明 hideAppHeader 的视图都自备了头部')
 }
 
-if (isEntry()) main()
+if (isEntry()) {
+  try {
+    main()
+  } catch (error) {
+    console.error(`FAIL ${error.message}`)
+    process.exitCode = 1
+  }
+}

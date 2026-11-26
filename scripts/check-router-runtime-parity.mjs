@@ -27,7 +27,7 @@ import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
-import { routesOf } from './check-hide-app-header.mjs'
+import { readRouteCatalog } from './check-hide-app-header.mjs'
 
 const require = createRequire(import.meta.url)
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -110,11 +110,22 @@ async function runtimeRoutes(entry) {
 export function diff(textRoutes, rt) {
   const textAll = textRoutes.map((r) => r.path)
   const textHidden = textRoutes.filter((r) => r.hideAppHeader).map((r) => r.path)
-  const missingFromText = rt.hidden.filter((p) => !textHidden.includes(p))
-  const onlyInText = textHidden.filter((p) => !rt.hidden.includes(p))
-  const routesLostByText = rt.allPaths.filter((p) => !textAll.includes(p))
-  const routesInventedByText = textAll.filter((p) => !rt.allPaths.includes(p))
+  const missingFromText = missing(rt.hidden, textHidden)
+  const onlyInText = missing(textHidden, rt.hidden)
+  const routesLostByText = missing(rt.allPaths, textAll)
+  const routesInventedByText = missing(textAll, rt.allPaths)
   return { missingFromText, onlyInText, routesLostByText, routesInventedByText }
+}
+
+function missing(expected, observed) {
+  const counts = new Map()
+  for (const item of observed) counts.set(item, (counts.get(item) ?? 0) + 1)
+  return expected.filter(item => {
+    const count = counts.get(item) ?? 0
+    if (count === 0) return true
+    counts.set(item, count - 1)
+    return false
+  })
 }
 
 const isClean = (d) =>
@@ -206,8 +217,7 @@ async function selftest() {
 
   // ---- ① 基线：不动任何东西 ⇒ 必须绿 ----
   {
-    const src = readFileSync(ROUTER, 'utf8')
-    const textRoutes = routesOf(src)
+    const textRoutes = readRouteCatalog(ROUTER)
     const rt = await runtimeRoutes(ROUTER)
     const d = diff(textRoutes, rt)
     const textHidden = textRoutes.filter((r) => r.hideAppHeader).length
@@ -222,15 +232,16 @@ async function selftest() {
   {
     let d, before, after
     try {
-      before = routesOf(readFileSync(ROUTER, 'utf8')).filter((r) => r.hideAppHeader).length
+      before = readRouteCatalog(ROUTER).filter((r) => r.hideAppHeader).length
       d = await withMutatedRouter(pushMetaOutOfWindow(700), async (probe) => {
-        const after = routesOf(readFileSync(probe, 'utf8')).filter((r) => r.hideAppHeader).length
-        return { d: diff(routesOf(readFileSync(probe, 'utf8')), await runtimeRoutes(probe)), after }
+        const after = readRouteCatalog(probe).filter((r) => r.hideAppHeader).length
+        const runtime = await runtimeRoutes(probe)
+        return { d: diff(readRouteCatalog(probe), runtime), after, runtimeHidden: runtime.hidden.length }
       })
       after = d.after
       add('② 真变异·把已声明路由的 meta 挤出 500 窗口 ⇒ 必须报红',
         d.d.missingFromText.length === 1 && d.d.missingFromText[0] === '/flashcards',
-        `文本口径 ${before} → ${after}（漏了 1 条），运行期仍 ${15}；漏掉的是 ${JSON.stringify(d.d.missingFromText)}`)
+        `文本口径 ${before} → ${after}（漏了 1 条），运行期仍 ${d.runtimeHidden}；漏掉的是 ${JSON.stringify(d.d.missingFromText)}`)
     } catch (e) {
       add('② 真变异·把已声明路由的 meta 挤出 500 窗口 ⇒ 必须报红', false, `★ 变异执行失败：${e.message}`)
     }
@@ -241,7 +252,7 @@ async function selftest() {
   {
     try {
       const r = await withMutatedRouter(pushMetaOutOfWindowOnUndeclared(700), async (probe) => {
-        const t = routesOf(readFileSync(probe, 'utf8'))
+        const t = readRouteCatalog(probe)
         const rt = await runtimeRoutes(probe)
         const d = diff(t, rt)
         return { v: verdict(t.filter((x) => x.hideAppHeader).length, rt.hidden.length, d), d }
@@ -266,7 +277,7 @@ async function selftest() {
         //    差点被我读成「下限守卫无效」。**是变异没打全，不是判据没反应。**
         (src) => src.replace(/hideAppHeader:\s*true\s*,?\s*/g, ''),
         async (probe) => {
-          const t = routesOf(readFileSync(probe, 'utf8'))
+          const t = readRouteCatalog(probe)
           const rt = await runtimeRoutes(probe)
           const d = diff(t, rt)
           return {
@@ -286,11 +297,33 @@ async function selftest() {
     }
   }
 
+  // Import aliases must resolve to the same feature records during both reads.
+  try {
+    const r = await withMutatedRouter(
+      src => src.replace('import { knowledgeRoutes }', 'import { knowledgeRoutes as importedRoutes }')
+        .replace('...knowledgeRoutes,', '...importedRoutes,'),
+      async probe => {
+        const text = readRouteCatalog(probe)
+        const runtime = await runtimeRoutes(probe)
+        return { same: isClean(diff(text, runtime)), imported: text.filter(route => route.source !== probe).length }
+      },
+    )
+    add('⑤ 命名导入换别名后仍读取特性路由', r.same && r.imported > 0, `展开 ${r.imported} 条导入路由`)
+  } catch (error) {
+    add('⑤ 命名导入换别名后仍读取特性路由', false, error.message)
+  }
+
+  const duplicates = diff([{ path: '/same', hideAppHeader: true }], {
+    allPaths: ['/same', '/same'], hidden: ['/same', '/same'],
+  })
+  add('⑥ 同路径重复记录不能被集合去重掩盖',
+    duplicates.routesLostByText.length === 1 && duplicates.missingFromText.length === 1)
+
   const bad = results.filter((r) => !r.pass)
   // ★ 条数下限闸（形状照抄 check-smart-quotes.mjs / check-pg-schema-scope.mjs，
   //   §103 记录过同一个假绿）。没有它：把全部 add(...) 删掉 ⇒ `自检: 0/0 通过` + EXIT=0。
-  //   阈值 3 = 当前 4 条的约八成；**只抓成批删空，不抓「少了一条」**。
-  const MIN_SELFTEST_CASES = 3
+  //   阈值 5 = 当前 6 条的约八成；**只抓成批删空，不抓「少了一条」**。
+  const MIN_SELFTEST_CASES = 5
   if (results.length < MIN_SELFTEST_CASES) {
     console.error(`[router-runtime-parity] 自检只跑了 ${results.length}/${MIN_SELFTEST_CASES} 例 —— add 调用被改过。`)
     console.error('   「0/0 通过」不是通过：守卫空转时的读数和它要抓的病一模一样。')
@@ -311,8 +344,7 @@ async function main() {
     console.error(`FAIL 找不到 ${ROUTER} —— 判据失明，拒绝给结论`)
     process.exit(2)
   }
-  const src = readFileSync(ROUTER, 'utf8')
-  const textRoutes = routesOf(src)
+  const textRoutes = readRouteCatalog(ROUTER)
   if (textRoutes.length === 0) {
     console.error('FAIL 一条路由都没解析出来 —— 判据失明，拒绝给结论')
     process.exit(2)
