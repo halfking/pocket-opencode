@@ -94,12 +94,12 @@ type Server struct {
 	// 按 runtime 的 companion 映射（POCKET_COMPANION_URLS）：派单会话的
 	// 正文在执行 runtime 的 companion 里，见 companion_client.go 的
 	// SetCompanionClients / companionForSessionRow。
-	companionByRuntime     map[string]*CompanionClient
-	registry               *registry.Registry
-	configAdapter          adapter.OpenCodeConfigAdapter
-	wsHub                  *ws.Hub
-	pluginHub              *ws.PluginHub // Plugin/Manager WebSocket Hub
-	upgrader               websocket.Upgrader
+	companionByRuntime map[string]*CompanionClient
+	registry           *registry.Registry
+	configAdapter      adapter.OpenCodeConfigAdapter
+	wsHub              *ws.Hub
+	pluginHub          *ws.PluginHub // Plugin/Manager WebSocket Hub
+	upgrader           websocket.Upgrader
 	// Phase 0: 个人助理模块 store 与依赖
 	memora           *memora.HTTPClient // memora 记忆库客户端；nil = 未配置（路由 503）
 	notesStore       *notes.Store
@@ -178,8 +178,8 @@ type Server struct {
 	accAgentsCache *accAgentsCache
 
 	// Auth
-	userStore        *auth.UserStore
-	jwtSigner        *auth.Signer
+	userStore *auth.UserStore
+	jwtSigner *auth.Signer
 	// casdoorVerifier verifies the tokens Casdoor issues (RS256 + JWKS).
 	// nil = the JWKS endpoint is not configured, so a Casdoor token is
 	// refused rather than half-trusted.
@@ -2568,18 +2568,9 @@ func defaultInstances() []model.PocketInstance {
 	}
 }
 
-// buildOriginChecker creates a WebSocket origin check function.
-// If allowedOrigins is set, only those origins are allowed.
-// In dev mode (devAuth=true), localhost and 127.0.0.1 are allowed.
-//
-// Capacitor 应用源（http(s)://localhost）**无条件放行**（2026-10-16）：
-// 移动端 APK 的 WebView 固定跑在 http://localhost（CAP_ANDROID_SCHEME=http）
-// 或 https://localhost（默认 scheme）下，而测试/生产后端 devAuth=false ⇒
-// 此前 localhost 源拿不到 ACAO，APK 对任何生产后端的所有 fetch 都被浏览器
-// 拦截（真机 2411DRN47C 对 pocket.itestu.cn 实测：curl 200、WebView 全挂，
-// 登录永远停在登录页）。放行它是安全的：API 走 Authorization Bearer 头，
-// 没有随环境自动携带的 cookie 凭据，跨源浏览器拿不到 token 就读不到任何
-// 受保护响应；Origin: localhost 只能来自用户本机的页面。
+// buildOriginChecker checks CORS and WebSocket origins. The configured
+// allowlist extends the exact Capacitor app origins. Dev auth additionally
+// permits HTTP(S) loopback development servers.
 func buildOriginChecker(allowedOrigins string, devAuth bool) func(r *http.Request) bool {
 	originSet := make(map[string]bool)
 	if allowedOrigins != "" {
@@ -2601,13 +2592,9 @@ func buildOriginChecker(allowedOrigins string, devAuth bool) func(r *http.Reques
 			return true
 		}
 
-		// Capacitor WebView 固定源：http://localhost / https://localhost。
-		// devAuth 无关 —— 生产后端也必须给 APK 发 ACAO，否则移动端整体不可用。
-		if origin == "http://localhost" || origin == "https://localhost" {
-			u, err := url.Parse(origin)
-			if err == nil && u.Path == "" && u.RawQuery == "" && u.Fragment == "" {
-				return true
-			}
+		switch origin {
+		case "http://localhost", "https://localhost", "capacitor://localhost":
+			return true
 		}
 
 		if devAuth {

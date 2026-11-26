@@ -19,11 +19,11 @@ import (
 
 func TestCapacitorAppOriginsAllowedWithoutDevAuth(t *testing.T) {
 	check := buildOriginChecker("", false)
-	for _, origin := range []string{"http://localhost", "https://localhost"} {
+	for _, origin := range []string{"http://localhost", "https://localhost", "capacitor://localhost"} {
 		r := httptest.NewRequest(http.MethodGet, "/api/auth/login", nil)
 		r.Header.Set("Origin", origin)
 		if !check(r) {
-			t.Errorf("Capacitor 源 %s 在生产模式（devAuth=false）下必须放行，否则 APK 无法调用任何生产后端", origin)
+			t.Errorf("Capacitor 源 %s 在生产模式（devAuth=false）下必须放行", origin)
 		}
 	}
 }
@@ -35,7 +35,11 @@ func TestCapacitorAppOriginsStillRejected(t *testing.T) {
 		"http://localhost.evil.com", // 后缀伪装
 		"http://evil.com",           // 完全无关
 		"http://localhost/path",     // 带路径（Origin 头理论上是裸源，防御性）
-		"capacitor://localhost",     // 非 http(s) scheme
+		"capacitor://localhost:80",
+		"capacitor://localhost.evil.com",
+		"capacitor://localhost/path",
+		"custom://localhost",
+		"null",
 	} {
 		r := httptest.NewRequest(http.MethodGet, "/api/auth/login", nil)
 		r.Header.Set("Origin", origin)
@@ -61,25 +65,24 @@ func TestCorsMiddlewareEmitsACAOForCapacitorOriginInProduction(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}), "", false)
 
-	// 预检：必须 200 且带 ACAO（此前生产模式对 localhost 返回 403）
-	pre := httptest.NewRequest(http.MethodOptions, "/api/auth/login", nil)
-	pre.Header.Set("Origin", "http://localhost")
-	pre.Header.Set("Access-Control-Request-Method", http.MethodPost)
-	preRes := httptest.NewRecorder()
-	handler.ServeHTTP(preRes, pre)
-	if preRes.Code != http.StatusOK {
-		t.Errorf("生产模式下 Capacitor 源的预检应 200，实际 %d", preRes.Code)
-	}
-	if preRes.Header().Get("Access-Control-Allow-Origin") != "http://localhost" {
-		t.Errorf("预检响应缺 ACAO: %v", preRes.Header())
-	}
-
-	// 实际请求：ACAO 必须透传，否则浏览器仍会拦掉响应
-	req := httptest.NewRequest(http.MethodPost, "/api/auth/login", nil)
-	req.Header.Set("Origin", "http://localhost")
-	res := httptest.NewRecorder()
-	handler.ServeHTTP(res, req)
-	if res.Header().Get("Access-Control-Allow-Origin") != "http://localhost" {
-		t.Errorf("实际响应缺 ACAO，WebView 会拦截登录响应: %v", res.Header())
+	for _, origin := range []string{"http://localhost", "https://localhost", "capacitor://localhost"} {
+		t.Run(origin, func(t *testing.T) {
+			for _, method := range []string{http.MethodOptions, http.MethodPost} {
+				req := httptest.NewRequest(method, "/api/auth/login", nil)
+				req.Header.Set("Origin", origin)
+				if method == http.MethodOptions {
+					req.Header.Set("Access-Control-Request-Method", http.MethodPost)
+					req.Header.Set("Access-Control-Request-Headers", "content-type,authorization")
+				}
+				res := httptest.NewRecorder()
+				handler.ServeHTTP(res, req)
+				if res.Code != http.StatusOK || res.Header().Get("Access-Control-Allow-Origin") != origin {
+					t.Errorf("%s %s got HTTP %d and headers %v", method, origin, res.Code, res.Header())
+				}
+				if res.Header().Get("Access-Control-Allow-Credentials") != "" {
+					t.Errorf("%s must not grant ambient credentials to %s", method, origin)
+				}
+			}
+		})
 	}
 }
