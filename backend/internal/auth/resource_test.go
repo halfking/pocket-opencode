@@ -33,12 +33,17 @@ func TestResourceTokenTrustDomainAndRoutes(t *testing.T) {
 	}
 	for _, tc := range []struct{ method, path string }{
 		{"GET", "/api/auth/me"}, {"POST", "/api/auth/refresh"}, {"POST", "/api/email/accounts"}, {"GET", "/api/email/accounts/a"}, {"POST", "/api/email/send"}, {"GET", "/api/email/oauth/start"}, {"GET", "/api/emails/a/body"}, {"GET", "/api/emails/a/attachments"}, {"GET", "/api/vault/sync/latest"}, {"POST", "/api/llm/stream"}, {"GET", "/api/rss//sources"}, {"GET", "/api/rss/../sources"},
+		{"POST", "/api/rss/sources/queued/extra"}, {"PUT", "/api/rss/sources/queued"},
 	} {
 		if got := ResourceScope(tc.method, tc.path, ""); got != "" {
 			t.Fatalf("overbroad route %s %s: %s", tc.method, tc.path, got)
 		}
 	}
-	for _, tc := range []struct{ method, path, want string }{{"GET", "/api/email/accounts", "email-metadata"}, {"GET", "/api/emails", "email-metadata"}, {"POST", "/api/embed", "embedding"}, {"GET", "/api/rss/sources", "rss"}, {"DELETE", "/api/rss/sources/abc", "rss"}, {"POST", "/api/rss/portable/item-states", "rss"}} {
+	for _, tc := range []struct{ method, path, want string }{
+		{"GET", "/api/email/accounts", "email-metadata"}, {"GET", "/api/emails", "email-metadata"}, {"POST", "/api/embed", "embedding"},
+		{"GET", "/api/rss/sources", "rss"}, {"POST", "/api/rss/sources/queued", "rss"},
+		{"DELETE", "/api/rss/sources/abc", "rss"}, {"POST", "/api/rss/portable/item-states", "rss"},
+	} {
 		if got := ResourceScope(tc.method, tc.path, ""); got != tc.want {
 			t.Fatalf("route %s %s=%s", tc.method, tc.path, got)
 		}
