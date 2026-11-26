@@ -50,9 +50,12 @@ export async function createPortalMailBrowserFixture() {
       document.querySelector('#clock').onclick=async()=>{
         const s=store(),old=await s.decode((await s.find('mail')).item_json),authoritative=new Date(Date.parse(old.client_updated_at)-5000).toISOString();
         await s.acknowledge(old,{...old,current_epoch:0,outcome:'rejected',clock_skew:true,client_updated_at:authoritative});
+        const held=!(await s.pending()).some(item=>item.ext_id===old.ext_id);
+        const confirmedAt=new Date(Date.parse(old.client_updated_at)-2000).toISOString();
+        await s.reaffirmClock(confirmedAt);
         const retry=(await s.pending()).find(item=>item.ext_id===old.ext_id&&item.op_id!==old.op_id);
         const acknowledged=await s.acknowledge(retry,{...retry,current_epoch:0,outcome:'applied'});
-        recovery({state:'clock-acknowledged',acknowledged,originalOp:old.op_id,newOp:retry.op_id,extId:retry.ext_id,authoritative,updatedAt:retry.client_updated_at,contentPreserved:JSON.stringify(old.payload)===JSON.stringify(retry.payload),remaining:(await s.pending()).length});
+        recovery({state:'clock-acknowledged',acknowledged,originalOp:old.op_id,newOp:retry.op_id,extId:retry.ext_id,held,authoritative,confirmedAt,updatedAt:retry.client_updated_at,contentPreserved:JSON.stringify(old.payload)===JSON.stringify(retry.payload),remaining:(await s.pending()).length});
         window.dispatchEvent(new Event('openpocket:portal-email-applied'));await inspect();
       };
       async function remote(deleted){const row=await store().byExternalId('summary:mail','summary'),old=await store().decode(row.item_json);await applyRecordPage(store(),{epoch:0,next_cursor:String(++sequence),changes:[{...old,title:'Remote mail',payload:deleted?{}:{...old.payload,snippet:'REMOTE SUMMARY'},deleted,client_updated_at:new Date(Date.now()+10000).toISOString(),op_id:'remote-'+sequence,change_seq:sequence}]});window.dispatchEvent(new Event('openpocket:portal-email-applied'));await inspect()}

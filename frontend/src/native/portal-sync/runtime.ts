@@ -15,7 +15,7 @@ let flight: Promise<void> | null = null
 let resumePolicy = false
 
 /** Startup, online, policy and timer triggers share one owner-bound flight. */
-export function syncPortalNotesNow(): Promise<void> {
+export function syncPortalNotesNow(confirmClock?: () => Promise<boolean>): Promise<void> {
   if (flight) return flight
   const auth = useAuthStore()
   if (!lobsterReady.value || auth.activationStatus !== 'ready' || !auth.userId || !auth.workspaceId) return Promise.resolve()
@@ -31,7 +31,7 @@ export function syncPortalNotesNow(): Promise<void> {
       const store = portalNotesStore(db)
       await store.init()
       if (!cloud) {
-        await refreshNotesSyncStatus(db, store.scope)
+        await refreshNotesSyncStatus(db, store.scope, false)
         const epoch = await store.currentEpoch()
         db.assertCurrent()
         markNotesResetPending(db.owner, portalNotesSyncStatus.resetPending)
@@ -39,7 +39,12 @@ export function syncPortalNotesNow(): Promise<void> {
         portalNotesSyncStatus.failed = false
         return
       }
+      db.assertCurrent()
+      if (confirmClock && !await confirmClock()) return
+      db.assertCurrent()
+      const confirmedClock = confirmClock ? new Date().toISOString() : undefined
       const context = await portalTransport(db)
+      if (confirmedClock !== undefined) await store.reaffirmClock(confirmedClock)
       if (resumePolicy) { await store.resumeSkipped(); resumePolicy = false }
       let received = 0
       const count = await syncNotesOnce(store, context.transport, context.assertCurrent, encodePortalBody, count => {
@@ -75,6 +80,7 @@ export function startPortalNotesSync(): void {
     invalidateNotesStatusReads()
     portalNotesSyncStatus.failed = false
     portalNotesSyncStatus.blocked = 0
+    portalNotesSyncStatus.clockPending = 0
     portalNotesSyncStatus.resetPending = false
     portalNotesSyncStatus.resetBlocked = false
     portalNotesSyncStatus.epochUnknown = false

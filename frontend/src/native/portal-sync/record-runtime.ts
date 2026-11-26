@@ -9,6 +9,7 @@ import { syncRecordsOnce } from './record-engine.ts'
 import { markModuleResetPending, rememberModuleEpoch, type RecordModule } from './epochs.ts'
 import type { RecordAdapter } from './record-contract.ts'
 import type { SyncDb } from './contract.ts'
+import { clockRetryReady, clockRetryRequired } from './clock-retry.ts'
 
 export function createRecordRuntime(adapter: RecordAdapter) {
   const module = adapter.module
@@ -16,6 +17,7 @@ export function createRecordRuntime(adapter: RecordAdapter) {
     failed: false,
     running: false,
     blocked: 0,
+    clockPending: 0,
     resetPending: false,
     resetBlocked: false,
     epochUnknown: false,
@@ -24,13 +26,14 @@ export function createRecordRuntime(adapter: RecordAdapter) {
     flight: Promise<number> | null = null,
     resumePolicy = false,
     version = 0
-  const refresh = async (db: SyncDb) => {
+  const refresh = async (db: SyncDb, cloud = true) => {
     const stamp = version,
       owner = [db.owner!.userId, db.owner!.workspaceId]
-    const row = await db.queryOne<{ count: number; unknown_epoch: number; reset_epoch: number }>(
+    const row = await db.queryOne<{ count: number; unknown_epoch: number; reset_epoch: number; clock_pending: number }>(
       `SELECT COUNT(*) AS count,COALESCE(SUM(last_error='epoch_unknown'),0) AS unknown_epoch,
-      COALESCE(SUM(last_error IN ('reset_epoch_mismatch','reset_pending')),0) AS reset_epoch FROM local_portal_record_outbox WHERE owner_user_id=? AND owner_workspace_id=? AND module=? AND last_error<>''`,
-      [...owner, module],
+      COALESCE(SUM(${clockRetryRequired}),0) AS clock_pending,
+      COALESCE(SUM(last_error IN ('reset_epoch_mismatch','reset_pending')),0) AS reset_epoch FROM local_portal_record_outbox WHERE owner_user_id=? AND owner_workspace_id=? AND module=? AND last_error NOT IN ('',?)`,
+      [...owner, module, clockRetryReady],
     )
     const reset = await db.queryOne(
       `SELECT reset_id FROM local_portal_resets WHERE owner_user_id=? AND owner_workspace_id=? AND completed=0 AND instr(modules_json,?)>0`,
@@ -40,13 +43,14 @@ export function createRecordRuntime(adapter: RecordAdapter) {
     if (stamp !== version) return
     Object.assign(status, {
       blocked: row?.count ?? 0,
+      clockPending: cloud ? row?.clock_pending ?? 0 : 0,
       epochUnknown: Boolean(row?.unknown_epoch),
       resetBlocked: Boolean(row?.reset_epoch),
       resetPending: Boolean(reset),
     })
     markModuleResetPending(db.owner, module, Boolean(reset))
   }
-  const syncNow = (): Promise<number> => {
+  const syncNow = (confirmClock?: () => Promise<boolean>): Promise<number> => {
     if (flight) return flight
     const auth = useAuthStore()
     if (!lobsterReady.value || auth.activationStatus !== 'ready' || !auth.userId || !auth.workspaceId)
@@ -69,14 +73,19 @@ export function createRecordRuntime(adapter: RecordAdapter) {
         const store = portalRecordStore(db, adapter)
         await store.init()
         if (!cloud) {
-          await refresh(db)
+          await refresh(db, false)
           const epoch = await store.currentEpoch()
           db.assertCurrent()
           if (epoch !== null) rememberModuleEpoch(db.owner, module, epoch)
           if (stamp === version) status.failed = false
           return 0
         }
+        db.assertCurrent()
+        if (confirmClock && !await confirmClock()) return 0
+        db.assertCurrent()
+        const confirmedClock = confirmClock ? new Date().toISOString() : undefined
         const context = await portalTransport(db, { module })
+        if (confirmedClock !== undefined) await store.reaffirmClock(confirmedClock)
         if (resumePolicy) {
           await store.resumeSkipped()
           resumePolicy = false
@@ -140,6 +149,7 @@ export function createRecordRuntime(adapter: RecordAdapter) {
           failed: false,
           running: false,
           blocked: 0,
+          clockPending: 0,
           resetPending: false,
           resetBlocked: false,
           epochUnknown: false,

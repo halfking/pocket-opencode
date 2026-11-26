@@ -251,6 +251,8 @@
     "storageModuleResetBlocked": "{module}雲端副本已重設。本機內容及舊操作已保留；如需再次上傳，請重新儲存相關內容。",
     "storageModuleInitPending": "{module}尚未完成同步初始化。本機內容已保留；連線確認後，請重新儲存需要上傳的內容。",
     "storageModuleSyncPending": "{module}尚未同步，內容已保留在本機。請檢查網路、裝置時間或內容大小；修正後重新儲存。",
+    "storageClockRetry": "校正時間後重新提交",
+    "storageClockConfirm": "請先校正裝置時間。是否以目前的裝置時間重新提交 {count} 項待處理的本機變更？雲端較早的版本可能被取代。",
     "storageNeverSynced": "尚未同步",
     "storageStatusSynced": "已同步",
     "storageStatusSkipped": "已跳過 · 僅本地",

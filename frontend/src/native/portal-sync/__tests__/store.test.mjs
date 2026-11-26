@@ -82,38 +82,59 @@ test('clock skew and ambiguous duplicate keep the local data and failed immutabl
   }
 })
 
-test('clock skew replaces an immutable operation once using the authoritative acknowledgement time', async () => {
+test('clock skew holds the original until a user-confirmed device time creates a new operation', async () => {
   const a = fixture(); noteTables(a.raw)
   await a.store.commit([], {source:'note',id:'skew',title:'N',payload:notePayload({content:'keep me',format:'text'}),epoch:0,modifiedAt:3600000},true)
   const [original] = await a.store.pending()
   const ack = {...original,current_epoch:0,outcome:'rejected',reason:'clock_skew',clock_skew:true,client_updated_at:'1970-01-01T00:00:01.000000001Z'}
   await a.store.acknowledge(original, ack)
-  const [retry] = await a.store.pending()
+  assert.deepEqual(await a.store.pending(), [])
+  const retained = await a.db.queryOne('SELECT item_json FROM local_portal_outbox')
+  assert.deepEqual(JSON.parse(retained.item_json), original)
+  const reopened = fixture(a.db.owner, new SQL.Database(a.raw.export()))
+  const corrected = '1970-01-01T00:00:02.345Z'
+  await reopened.store.reaffirmClock(corrected)
+  const [retry] = await reopened.store.pending()
   assert.ok(retry)
   assert.notEqual(retry.op_id, original.op_id)
-  assert.equal(retry.client_updated_at, '1970-01-01T00:00:01.001Z')
+  assert.equal(retry.client_updated_at, corrected)
   assert.deepEqual(retry.payload, original.payload)
-  await a.store.acknowledge(original, ack)
-  assert.deepEqual(await a.store.pending(), [retry])
+  await reopened.store.acknowledge(original, ack)
+  assert.deepEqual(await reopened.store.pending(), [retry])
   const transport = {changes:async()=>({changes:[],epochs:{notes:0},next_cursor:''}),push:async items=>({results:items.map(item=>({...item,current_epoch:0,outcome:'applied'}))})}
-  assert.equal(await syncNotesOnce(a.store,transport,()=>a.db.assertCurrent()), 1)
-  assert.deepEqual(await a.store.pending(), [])
-  assert.equal((await a.store.find('note','skew')).op_id, retry.op_id)
+  assert.equal(await syncNotesOnce(reopened.store,transport,()=>reopened.db.assertCurrent()), 1)
+  assert.deepEqual(await reopened.store.pending(), [])
+  assert.equal((await reopened.store.find('note','skew')).op_id, retry.op_id)
 })
 
 test('a second clock rejection stays explicit and does not create an endless retry', async () => {
   const a = fixture()
   await a.store.commit([], {source:'note',id:'skew',title:'N',payload:notePayload({content:'keep me',format:'text'}),epoch:0,modifiedAt:3600000},true)
   const [original] = await a.store.pending()
-  await a.store.acknowledge(original, {...original,current_epoch:0,outcome:'rejected',clock_skew:true,client_updated_at:new Date(1000).toISOString()})
+  await a.store.acknowledge(original, {...original,current_epoch:0,outcome:'rejected',clock_skew:true,client_updated_at:undefined})
+  await a.store.reaffirmClock(new Date(2000).toISOString())
   const [retry] = await a.store.pending()
   assert.ok(retry)
   await a.store.acknowledge(retry, {...retry,current_epoch:0,outcome:'rejected',clock_skew:true,client_updated_at:new Date(500).toISOString()})
   assert.deepEqual(await a.store.pending(), [])
   const row = await a.db.queryOne('SELECT item_json,last_error FROM local_portal_outbox')
-  assert.equal(row.last_error, 'clock_skew_failed')
+  assert.equal(row.last_error, 'clock_skew_pending')
   assert.equal(JSON.parse(row.item_json).op_id, retry.op_id)
   assert.deepEqual(JSON.parse(row.item_json).payload, original.payload)
+})
+
+test('legacy automatic clock replacements stay blocked until confirmed', async () => {
+  const a = fixture()
+  await a.store.commit([], {source:'note',id:'old',title:'N',payload:notePayload({content:'offline',format:'text'}),epoch:0,modifiedAt:3600000},true)
+  const [original] = await a.store.pending()
+  await a.db.run("UPDATE local_portal_outbox SET last_error='clock_retry'")
+  assert.deepEqual(await a.store.pending(), [])
+  const timestamp = new Date(1700).toISOString()
+  await a.store.reaffirmClock(timestamp)
+  const [confirmed] = await a.store.pending()
+  assert.notEqual(confirmed.op_id, original.op_id)
+  assert.deepEqual(confirmed.payload, original.payload)
+  assert.equal(confirmed.client_updated_at, timestamp)
 })
 
 for (const transition of ['edit', 'reset', 'owner']) test(`a notes clock correction is fenced by a concurrent ${transition}`, async () => {
@@ -124,7 +145,8 @@ for (const transition of ['edit', 'reset', 'owner']) test(`a notes clock correct
   let release, started
   const wait = new Promise(resolve=>{release=resolve}), entered = new Promise(resolve=>{started=resolve})
   const correcting = new PortalNotesStore(a.db,{encode:async item=>{started();await wait;return JSON.stringify(item)},decode:async json=>JSON.parse(json)})
-  const response = correcting.acknowledge(old,{...old,current_epoch:0,outcome:'rejected',clock_skew:true,client_updated_at:new Date(1000).toISOString()})
+  await a.store.acknowledge(old,{...old,current_epoch:0,outcome:'rejected',clock_skew:true})
+  const response = correcting.reaffirmClock(new Date(2400).toISOString())
   await entered
   if (transition === 'edit') await a.store.commit([],{...input,title:'Concurrent intent',modifiedAt:3600001},false)
   else if (transition === 'reset') {

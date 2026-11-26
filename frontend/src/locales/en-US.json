@@ -251,6 +251,8 @@
     "storageModuleResetBlocked": "The cloud copy of {module} was reset. Local content and old operations are retained. Save the content again to upload it.",
     "storageModuleInitPending": "Sync initialization for {module} is pending. Local content is retained. After connecting, save the content you want to upload again.",
     "storageModuleSyncPending": "{module} has not synced. Local content is retained. Check your network, device time or content size, then save again.",
+    "storageClockRetry": "Resubmit after correcting the clock",
+    "storageClockConfirm": "Correct the device clock first. Resubmit {count} pending local changes using the current device time? This may replace older cloud versions.",
     "storageNeverSynced": "Never synced",
     "storageStatusSynced": "Synced",
     "storageStatusSkipped": "Skipped · local only",

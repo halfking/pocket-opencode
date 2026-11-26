@@ -27,13 +27,21 @@
     >
       {{ t('common.retry') }}
     </button>
+    <button v-if="runtime.status.clockPending && !runtime.status.resetPending" type="button" :disabled="runtime.status.running"
+      :data-testid="`portal-${module}-clock-retry`" @click="reaffirmClock">{{ t('settings.storageClockRetry') }}</button>
   </div>
 </template>
 
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
+import { useConfirm } from '../../composables/useConfirm'
 import type { RecordRuntime } from '../../native/portal-sync/record-runtime.ts'
 import type { RecordModule } from '../../native/portal-sync/epochs.ts'
-defineProps<{ runtime: RecordRuntime; module: RecordModule; nameKey: string }>()
+const props = defineProps<{ runtime: RecordRuntime; module: RecordModule; nameKey: string }>()
 const { t } = useI18n()
+const { confirm } = useConfirm()
+function reaffirmClock() {
+  const message = t('settings.storageClockConfirm', { count: props.runtime.status.clockPending })
+  void props.runtime.syncNow(() => confirm({ message }))
+}
 </script>

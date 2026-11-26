@@ -2,7 +2,7 @@ import { validateItem, versionKey, newOperationId, localVersionOperationId, type
 import { epochTables, currentNotesEpoch, epochGuard, observeNotesEpoch } from './epoch-state.ts'
 import { validEpoch } from './epochs.ts'
 import { recordTables } from './record-tables.ts'
-import { acknowledgeClock, resumeClockCorrections } from './clock-retry.ts'
+import { acknowledgeClock, clockRetryReady, reaffirmClockOperations } from './clock-retry.ts'
 import { capacityTables, outboxCapacityStatements, capacityFailure, publishOutboxRetention } from './outbox-capacity.ts'
 
 export interface NoteSnapshot {
@@ -154,10 +154,13 @@ export class PortalNotesStore {
     const epoch = await currentNotesEpoch(this.db)
     if (epoch === null) return []
     const admitted = epochGuard(this.db, epoch)
-    await resumeClockCorrections(this.db, 'notes', this)
     const rows = await this.db.query<{ item_json: string }>(`SELECT item_json FROM local_portal_outbox
-      WHERE owner_user_id=? AND owner_workspace_id=? AND last_error IN ('','clock_retry') AND reset_epoch=? AND ${admitted.clause} ORDER BY rowid LIMIT 50`, [...this.scope, epoch, ...admitted.values])
+      WHERE owner_user_id=? AND owner_workspace_id=? AND last_error IN ('',?) AND reset_epoch=? AND ${admitted.clause} ORDER BY rowid LIMIT 50`, [...this.scope, clockRetryReady, epoch, ...admitted.values])
     return Promise.all(rows.map(row => this.decode(row.item_json)))
+  }
+  async reaffirmClock(timestamp: string): Promise<void> {
+    await this.init()
+    await reaffirmClockOperations(this.db, 'notes', timestamp, this)
   }
   async acknowledge(item: PortalItem, ack: PortalAck): Promise<boolean> {
     if (ack.module !== item.module || ack.ext_id !== item.ext_id || ack.op_id !== item.op_id) return false
@@ -169,7 +172,7 @@ export class PortalNotesStore {
     if (!validEpoch(ack.current_epoch) || ack.current_epoch !== item.epoch) { await this.block(item, 'invalid_epoch_ack'); return false }
     if (ack.outcome === 'skipped_local') { await this.block(item, 'policy_local'); return false }
     if (ack.clock_skew || (ack.outcome === 'rejected' && ack.reason === 'clock_skew')) {
-      await acknowledgeClock(this.db, item, ack, this)
+      await acknowledgeClock(this.db, item)
       return false
     }
     if (ack.outcome === 'rejected' || ack.outcome === 'duplicate') {

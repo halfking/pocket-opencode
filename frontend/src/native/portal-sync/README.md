@@ -17,12 +17,13 @@ Unknown historical rows are never assigned or uploaded. Known owner filters
 run in SQL before pagination, same-title lookups and vector top-K selection.
 
 The settings notice reports pending failures. Oversized content is retained
-without truncation. A clock-skew acknowledgement with a valid authoritative
-`client_updated_at` persists a resumable correction, then atomically replaces
-the current operation with a new ID and that time plus 1 ms. Its content and
-identity stay intact. A second clock rejection, missing server time, or an
-ordinary rejection requires an explicit edit. Owner, epoch and projection
-guards prevent an old acknowledgement from correcting a newer intention.
+without truncation. A clock rejection retains the original operation until
+the user corrects device time and confirms resubmission in sync settings. The
+confirmation time becomes the new local intention's modification time. The
+operation gets a new ID and retains its content, identity and epoch. The
+server's stored version time does not date the local change. A later rejection
+requires another confirmation. Owner, epoch and projection guards prevent
+an old operation from replacing a newer intention.
 A fresh cloud-enable intent rekeys a
 server `skipped_local` operation while retaining its original content/time.
 
