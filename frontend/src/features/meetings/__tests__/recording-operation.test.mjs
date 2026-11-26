@@ -51,7 +51,7 @@ async function fixture(run) {
         if (importer?.endsWith('/recordingRuntime.ts') && source === './vad-segmenter') return '\0meeting-vad'
         if (importer?.endsWith('/recordingRuntime.ts') && source === './audio-inputs') return '\0meeting-inputs'
         if (source === '@capacitor-community/sqlite' && importer?.endsWith('/local-db.ts')) return '\0email-sqlite'
-        if (importer?.endsWith('/local-db.ts') && source === './sqlite-web-init') return '\0email-web'
+        if (importer?.endsWith('/local-db.ts') && (source === './sqlite-web-init' || source === './web-db-lock')) return '\0email-web'
         if (importer?.endsWith('/local-db.ts') && source === './runtime-platform') return '\0email-platform'
         if (source.endsWith('/native/lobster-init')) return '\0email-ready'
       },
@@ -61,7 +61,7 @@ async function fixture(run) {
         if (id === '\0meeting-vad') return 'export class VadSegmenter { constructor(options){this.options=options};async start(){};async stop(){return new Blob(["PRESERVED_AUDIO"],{type:"audio/wav"})} }'
         if (id === '\0meeting-inputs') return 'export const listAudioInputs=async()=>[];export const openPreferredMicStream=async()=>({stream:await navigator.mediaDevices.getUserMedia(),inputs:[]})'
         if (id === '\0email-sqlite') return `export const { SQLiteConnection, SQLiteDBConnection, CapacitorSQLite } = globalThis[${JSON.stringify(key)}]`
-        if (id === '\0email-web') return 'export async function initSqliteWeb() {}'
+        if (id === '\0email-web') return 'export async function initSqliteWeb() {}; export async function acquireWebDatabaseLock() {}'
         if (id === '\0email-platform') return 'export const isWebFallbackRuntime = () => true'
         if (id === '\0email-ready') return "import {ref} from 'vue'; export const lobsterReady = ref(true)"
       },

@@ -16,6 +16,12 @@ to requests. Owner and policy leases guard network requests and SQLite writes.
 Unknown historical rows are never assigned or uploaded. Known owner filters
 run in SQL before pagination, same-title lookups and vector top-K selection.
 
+Browser tabs on the same origin share one Web Lock for the SQL.js database.
+A tab takes the lock before loading the IndexedDB snapshot and holds it through
+persistence and connection close. If another tab owns the lock, close that tab
+and retry unlocking. Browsers without Web Locks cannot open the writable
+database. Reload existing tabs when upgrading from a version without the lock.
+
 The settings notice reports pending failures. Oversized content is retained
 without truncation. A clock rejection retains the original operation until
 the user corrects device time and confirms resubmission in sync settings. The
@@ -63,6 +69,7 @@ Validation:
 
 ```sh
 npm run typecheck
+node --test src/native/__tests__/web-db-lock-browser.test.mjs
 node --test src/native/portal-sync/__tests__/*.test.* src/features/notes/__tests__/notes-operation-leases.test.mjs
 MOBILE_ALLOW_EMPTY_API_BASE=1 npm run build
 node src/native/portal-sync/__tests__/notice-browser.mjs

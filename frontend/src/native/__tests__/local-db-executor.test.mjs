@@ -23,7 +23,8 @@ function strictNativeClose({ platform, driver }) {
 
 // Only platform/lifecycle plumbing is replaced. SQL and transactions use the
 // installed SQLiteDBConnection, Capacitor proxy, jeep Database and SQL.js.
-async function withDatabase(run, initialize = true, stored = new Map()) {
+async function withDatabase(run, initialize = true) {
+  const stored = new Map()
   const key = `__localDbExecutor_${Math.random().toString(36).slice(2)}`
   const vite = await createServer({
     root: fileURLToPath(new URL('../../../', import.meta.url)),
@@ -255,26 +256,6 @@ test('a rejected begin reply cannot roll back a transaction it may not own', () 
     await driver.rollbackTransaction().catch(() => {})
   }
 }))
-
-// Separate tabs each open a private SQL.js snapshot and have independent queues.
-// This records the explicit boundary: an instance queue is not a cross-tab lock.
-test('separate runtime instances can still overwrite a shared Web store snapshot', async () => {
-  const shared = new Map()
-  await withDatabase(async ({ db: first, driver, SQL, saved }) => {
-    driver.autoSave = true
-    await first.run('UPDATE executor_records SET title=? WHERE id=1', ['snapshot'])
-    await withDatabase(async ({ db: second, driver: secondDriver }) => {
-      secondDriver.autoSave = true
-      await second.init('')
-      await first.run('UPDATE executor_records SET title=? WHERE id=1', ['new first-tab edit'])
-      await second.run('INSERT INTO executor_records VALUES(2,?)', ['second-tab edit'])
-      assert.deepEqual(await first.queryOne('SELECT title FROM executor_records WHERE id=1'), { title: 'new first-tab edit' })
-      const persisted = new SQL.Database(saved())
-      try { assert.equal(persisted.exec('SELECT title FROM executor_records WHERE id=1')[0].values[0][0], 'snapshot') }
-      finally { persisted.close() }
-    }, false, shared)
-  }, true, shared)
-})
 
 test('reads and execute wait for the complete batch transaction', () => withDatabase(async ({ db, UtilsSQLite }) => {
   const entered = deferred(), release = deferred()

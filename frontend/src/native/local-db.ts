@@ -14,6 +14,7 @@ import { Capacitor } from '@capacitor/core'
 import { CapacitorSQLite, SQLiteConnection, SQLiteDBConnection } from '@capacitor-community/sqlite'
 import { initSqliteWeb } from './sqlite-web-init'
 import { isWebFallbackRuntime } from './runtime-platform'
+import { acquireWebDatabaseLock } from './web-db-lock'
 import type { SqlDb, SqlRow } from './sqlDb'
 import { SCHEMA_SQL, splitSqlStatements, normalizeTriggerForPluginExecute } from './schema'
 import { localDbNeedsOpen } from './local-db-init'
@@ -588,8 +589,9 @@ class LocalDB {
   private initialized = false
   private transactionUncertain = false
   private activationBlocked = false
+  private webLockRelease?: () => Promise<void>
   private leases = new LocalDbLeases()
-  // One JS instance only: other tabs/WebViews and account ownership need their own boundary.
+  // Orders operations in this JS instance. Browser snapshot ownership is held separately.
   private pending: Promise<unknown> = Promise.resolve()
 
   private enqueue<T>(operation: () => Promise<T>): Promise<T> {
@@ -785,13 +787,16 @@ class LocalDB {
       const isWeb = isWebFallbackRuntime()
       const encrypted = !isWeb && dbSecret.length > 0
       if (isWeb) {
-        console.info('[localDB] web fallback runtime: no-encryption (browser/HarmonyOS Phase A)')
-        await initSqliteWeb()
-        // Web 端必须显式 initWebStore：插件的 jeepSqliteElement 引用只在
-        // initWebStore() 里捕获，漏掉这一步则后续所有操作都抛
-        // "The jeep-sqlite element is not present in the DOM!"，浏览器上
-        // 本地库永远无法建立（ISSUES #19 深度遍历排障中定位）。
-        await this.sqlite.initWebStore()
+        this.webLockRelease ??= await acquireWebDatabaseLock(DB_NAME)
+        try {
+          console.info('[localDB] web fallback runtime: no-encryption (browser/HarmonyOS Phase A)')
+          await initSqliteWeb()
+          // The Web plugin finds its jeep-sqlite element during initWebStore.
+          await this.sqlite.initWebStore()
+        } catch (error) {
+          await this.releaseWebLock()
+          throw error
+        }
       }
 
       // ✅ 关键修复：在 createConnection 之前先调用 setEncryptionSecret
@@ -833,18 +838,15 @@ class LocalDB {
       const mode = encrypted ? 'secret' : 'no-encryption'
 
       // 官方推荐：先 checkConnectionsConsistency，再 isConnection / create
-      await this.sqlite.checkConnectionsConsistency()
-      const already = (await this.sqlite.isConnection(DB_NAME, false)).result === true
-      if (already) {
-        this.conn = await this.sqlite.retrieveConnection(DB_NAME, false)
-      } else {
-        this.conn = await this.sqlite.createConnection(
-          DB_NAME,
-          encrypted,
-          mode,
-          DB_VERSION,
-          false,
-        )
+      try {
+        await this.sqlite.checkConnectionsConsistency()
+        const already = (await this.sqlite.isConnection(DB_NAME, false)).result === true
+        this.conn = already
+          ? await this.sqlite.retrieveConnection(DB_NAME, false)
+          : await this.sqlite.createConnection(DB_NAME, encrypted, mode, DB_VERSION, false)
+      } catch (error) {
+        await this.releaseWebLock()
+        throw error
       }
       await this.conn.open()
 
@@ -1695,7 +1697,13 @@ class LocalDB {
       await this.sqlite.closeConnection(DB_NAME, false)
       this.conn = null
     }
+    await this.releaseWebLock()
     this.activationBlocked = false
+  }
+
+  private async releaseWebLock(): Promise<void> {
+    await this.webLockRelease?.()
+    this.webLockRelease = undefined
   }
 
   /** 是否已初始化 */

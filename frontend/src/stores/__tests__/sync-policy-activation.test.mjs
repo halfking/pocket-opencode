@@ -42,12 +42,12 @@ async function fixture(run) {
       name: 'local-db-platform-fixture', enforce: 'pre',
       resolveId(source, importer) {
         if (source === '@capacitor-community/sqlite' && importer?.endsWith('/local-db.ts')) return '\0executor-sqlite'
-        if (importer?.endsWith('/local-db.ts') && source === './sqlite-web-init') return '\0executor-web'
+        if (importer?.endsWith('/local-db.ts') && (source === './sqlite-web-init' || source === './web-db-lock')) return '\0executor-web'
         if (importer?.endsWith('/local-db.ts') && source === './runtime-platform') return '\0executor-platform'
       },
       load(id) {
         if (id === '\0executor-sqlite') return `export const { SQLiteConnection, SQLiteDBConnection, CapacitorSQLite } = globalThis[${JSON.stringify(key)}]`
-        if (id === '\0executor-web') return 'export async function initSqliteWeb() {}'
+        if (id === '\0executor-web') return 'export async function initSqliteWeb() {}; export async function acquireWebDatabaseLock() {}'
         if (id === '\0executor-platform') return 'export const isWebFallbackRuntime = () => true'
       },
     }],

@@ -52,13 +52,13 @@ async function fixture(run, seed) {
       name: 'meeting-owner-platform', enforce: 'pre',
       resolveId(source, importer) {
         if (source === '@capacitor-community/sqlite' && importer?.endsWith('/local-db.ts')) return '\0owner-sqlite'
-        if (importer?.endsWith('/local-db.ts') && source === './sqlite-web-init') return '\0owner-web'
+        if (importer?.endsWith('/local-db.ts') && (source === './sqlite-web-init' || source === './web-db-lock')) return '\0owner-web'
         if (importer?.endsWith('/local-db.ts') && source === './runtime-platform') return '\0owner-platform'
         if (source.endsWith('/native/lobster-init')) return '\0owner-ready'
       },
       load(id) {
         if (id === '\0owner-sqlite') return `export const { SQLiteConnection, SQLiteDBConnection, CapacitorSQLite } = globalThis[${JSON.stringify(key)}]`
-        if (id === '\0owner-web') return 'export async function initSqliteWeb() {}'
+        if (id === '\0owner-web') return 'export async function initSqliteWeb() {}; export async function acquireWebDatabaseLock() {}'
         if (id === '\0owner-platform') return 'export const isWebFallbackRuntime = () => true'
         if (id === '\0owner-ready') return "import {ref} from 'vue'; export const lobsterReady = ref(true)"
       },

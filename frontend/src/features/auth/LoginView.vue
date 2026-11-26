@@ -308,6 +308,7 @@ import { useAuthStore, captureAuthSession, assertAuthSession, isCurrentAuthSessi
 import { http, ApiError } from '../../api/http'
 import { connectWs } from '../../api/websocket'
 import { initLobster, isLobsterReady } from '../../native/lobster-init'
+import { WebDatabaseLockError } from '../../native/web-db-lock'
 import {
   isBiometricAvailable,
   hasBiometricCredential,
@@ -614,10 +615,9 @@ async function unlock() {
     unlockPassword.value = ''
     router.replace(unlockRedirectPath(router.currentRoute.value.query))
   } catch (e: any) {
-    // 主密码错误和解锁机制异常对用户是同一件事：让他重输一次即可，
-    // 不必把内部异常信息（如 "Unsupported state or unable to authenticate data"）摆出来。
+    // 仅向用户展示可直接处理的数据库占用信息，其他错误保留通用解锁提示。
     console.warn('[login] 解锁失败（原始信息）:', e?.message || e)
-    error.value = '解锁失败，请确认主密码是否正确'
+    error.value = e instanceof WebDatabaseLockError ? e.message : '解锁失败，请确认主密码是否正确'
   } finally {
     loading.value = false
   }
