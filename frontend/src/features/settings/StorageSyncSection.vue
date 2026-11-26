@@ -63,6 +63,7 @@
     <PortalRecordSyncNotice :runtime="meetingSyncRuntime" module="meetings" name-key="settings.storageModuleMeetings" />
     <PortalRecordSyncNotice :runtime="rssSyncRuntime" module="rss" name-key="settings.storageModuleRss" />
     <PortalRecordSyncNotice :runtime="portalEmailRuntime" module="email" name-key="settings.storageModuleEmail" />
+    <DeviceBackupSection />
     <!-- 上次同步（只读报告） -->
     <div class="sync-report">
       <div class="report-head">
@@ -150,6 +151,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import PortalNotesSyncNotice from './PortalNotesSyncNotice.vue'
 import PortalRecordSyncNotice from './PortalRecordSyncNotice.vue'
+import DeviceBackupSection from './DeviceBackupSection.vue'
 import { meetingSyncRuntime } from '../meetings/meeting-sync-runtime.ts'
 import { rssSyncRuntime } from '../rss/rss-sync-runtime.ts'
 import { portalEmailRuntime } from '../email/portal-mail-runtime.ts'

@@ -147,7 +147,7 @@ describe('§877 IndexedDB 连接必须归还（meeting-audio 形状层）', () =
   it('★ 每个 openDB() 都配一个 db.close()，数量必须对齐', () => {
     const opens = (code.match(/await openDB\(\)/g) || []).length
     const closes = (code.match(/db\.close\(\)/g) || []).length
-    assert.equal(opens, 5, `openDB 调用点变成 ${opens} 处 —— 检查日常读写与两条备份入口是否都归还连接`)
+    assert.equal(opens, 6, `openDB 调用点变成 ${opens} 处 —— 检查日常读写、备份与恢复收尾是否都归还连接`)
     assert.equal(closes, opens, `${opens} 次开连接只有 ${closes} 次 close ⇒ 每次调用漏一条连接`)
   })
 

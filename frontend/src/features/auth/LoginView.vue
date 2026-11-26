@@ -333,6 +333,7 @@ import {
   unlockSubmitMode,
 } from './unlock-auth'
 import MasterPasswordDialog from './MasterPasswordDialog.vue'
+import { canUseDeviceBackup } from '../../native/device-backup/service'
 import { useCryptoConfig } from '../../stores/crypto-config'
 import { sendCode, codeLogin, exchangeSsoCode, fetchSsoLoginUrl, fetchSsoStatusDetailed, fetchSsoDirectLogin } from '../../api/auth'
 import { runtimePlatform } from '../../native/runtime-platform'
@@ -535,6 +536,11 @@ onMounted(async () => {
 
   if (auth.isAuthenticated && !isLobsterReady()) {
     needUnlock.value = true
+    // A process may have stopped during the first restore, before setup existed.
+    if (!cryptoConfig.cfg.hasMasterPassword && canUseDeviceBackup()) {
+      completedSession = captureAuthSession(auth)
+      showMasterPasswordDialog.value = true
+    }
   } else if (auth.isAuthenticated && isLobsterReady()) {
     // 已登录且已初始化，直接进首页
     router.push('/ai')

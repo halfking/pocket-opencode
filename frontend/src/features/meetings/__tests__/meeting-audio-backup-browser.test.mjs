@@ -88,6 +88,22 @@ test('device archive restores both real IndexedDB audio stores on a separate ins
       return [failure, after.length]
     })
     assert.deepEqual(rolledBack, ['ConstraintError', 0])
+
+    const crashOutcomes = await empty.evaluate(async () => {
+      const { restoreMeetingAudio, settleMeetingAudioRestore, snapshotMeetingAudio } = await import('/src/native/meeting-audio.ts')
+      const assertCurrent = () => {}
+      const record = { store: 'recordings', key: 'legacy', mimeType: '', blob: new Blob(['original']) }
+      await restoreMeetingAudio([record], assertCurrent, 'rollback-stage')
+      const wrongMarkerRejected = await settleMeetingAudioRestore('different-stage', false).then(() => false, () => true)
+      await settleMeetingAudioRestore('rollback-stage', false)
+      const afterRollback = (await snapshotMeetingAudio(assertCurrent)).length
+      await restoreMeetingAudio([record], assertCurrent, 'published-stage')
+      await settleMeetingAudioRestore('published-stage', true)
+      await settleMeetingAudioRestore('published-stage', true)
+      const afterPublish = await snapshotMeetingAudio(assertCurrent)
+      return [wrongMarkerRejected, afterRollback, afterPublish.length, await afterPublish[0].blob.text()]
+    })
+    assert.deepEqual(crashOutcomes, [true, 0, 1, 'original'])
   } finally {
     await browser?.close()
     await fixture.server.close()

@@ -731,7 +731,7 @@ class LocalDB {
   }
 
   /** Quiesce normal writes until the native bridge has copied the checkpointed file. */
-  async snapshotBackupDatabase(stage: DatabaseStage, lease: OperationLease): Promise<void> {
+  async snapshotBackupDatabase(stage: DatabaseStage, lease: OperationLease, captureAssets?: () => Promise<void>): Promise<void> {
     return this.enqueue(async () => {
       if (isWebFallbackRuntime()) throw new Error('Device database backup requires the native SQLCipher store')
       this.requireActivationHealthy()
@@ -748,6 +748,8 @@ class LocalDB {
       }
       this.leases.assertCurrent(lease)
       await deviceDatabaseBackup.snapshotDatabase(stage)
+      this.leases.assertCurrent(lease)
+      await captureAssets?.()
       this.leases.assertCurrent(lease)
     })
   }

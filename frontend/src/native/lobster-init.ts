@@ -15,6 +15,7 @@ import { ref, type Ref } from 'vue'
 import { localDB } from './local-db'
 import { vectorIndex } from './vector'
 import { initAppCrypto, resetCryptoKey } from './crypto'
+import { recoverAbandonedBackup, serializeBackupRestore } from './device-backup/recovery'
 
 export interface InitStatus {
   ready: boolean
@@ -63,7 +64,8 @@ export async function initLobster(masterPassword: string): Promise<void> {
   }
 
   _initializing = true
-  const p = (async () => {
+  const p = serializeBackupRestore(async () => {
+    await recoverAbandonedBackup()
     // Verify an existing secure-store secret before deriving either field key.
     if (!(await localDB.verifyMasterPassword(masterPassword))) {
       throw new Error('主密码不正确')
@@ -79,7 +81,7 @@ export async function initLobster(masterPassword: string): Promise<void> {
     }
 
     _ready.value = true
-  })()
+  })
   _initPromise = p
   try {
     await p

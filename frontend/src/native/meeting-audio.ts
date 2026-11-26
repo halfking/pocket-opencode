@@ -16,6 +16,7 @@ const recordingKey = (meetingId: string, operation: MeetingAudioOperation): stri
 const DB_NAME = 'pocket-meeting-audio'
 const [LEGACY_STORE, STORE] = recordingStores
 const DB_VERSION = 2
+const RESTORE_MARKER = ['pocket-device-restore']
 
 function openDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -76,7 +77,7 @@ export async function snapshotMeetingAudio(assertCurrent: () => void): Promise<M
 }
 
 /** Install a verified archive's recordings on an empty target, as one transaction. */
-export async function restoreMeetingAudio(entries: MeetingAudioBackupEntry[], assertCurrent: () => void): Promise<void> {
+export async function restoreMeetingAudio(entries: MeetingAudioBackupEntry[], assertCurrent: () => void, stageId?: string): Promise<void> {
   assertCurrent()
   const records = entries.map(({ blob, ...entry }) => {
     const metadata = validateBackupRecording(entry)
@@ -87,7 +88,7 @@ export async function restoreMeetingAudio(entries: MeetingAudioBackupEntry[], as
   try {
     assertCurrent()
     await new Promise<void>((resolve, reject) => {
-      const tx = db.transaction(recordingStores, 'readwrite')
+      const tx = db.transaction(recordingStores, 'readwrite', { durability: 'strict' })
       let failure: unknown
       tx.oncomplete = () => resolve()
       tx.onabort = () => reject(failure ?? tx.error ?? new Error('Meeting audio backup write was aborted'))
@@ -100,10 +101,48 @@ export async function restoreMeetingAudio(entries: MeetingAudioBackupEntry[], as
             if (--checksRemaining > 0) return
             assertCurrent()
             for (const record of records) tx.objectStore(record.store).add(record.blob, record.key)
+            if (stageId) {
+              const keys = records.map(({ store, key }) => ({ store, key }))
+              tx.objectStore(LEGACY_STORE).add({ stageId, keys }, RESTORE_MARKER)
+            }
           } catch (error) {
             failure = error
             tx.abort()
           }
+        }
+      }
+    })
+  } finally {
+    db.close()
+  }
+}
+
+/** Remove only recordings written by the recorded installation transaction. */
+export async function settleMeetingAudioRestore(stageId: string, keepRecordings: boolean): Promise<void> {
+  const db = await openDB()
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(recordingStores, 'readwrite', { durability: 'strict' })
+      const legacy = tx.objectStore(LEGACY_STORE)
+      const request = legacy.get(RESTORE_MARKER)
+      let failure: unknown
+      tx.oncomplete = () => resolve()
+      tx.onabort = () => reject(failure ?? tx.error ?? new Error('Meeting audio restore cleanup was aborted'))
+      request.onsuccess = () => {
+        const marker = request.result
+        if (marker === undefined) return
+        try {
+          if (marker.stageId !== stageId || !Array.isArray(marker.keys)) throw new Error('Unexpected meeting audio restore marker')
+          if (!keepRecordings) {
+            for (const item of marker.keys) {
+              const { store, key } = validateBackupRecording({ ...item, mimeType: '' })
+              tx.objectStore(store).delete(key)
+            }
+          }
+          legacy.delete(RESTORE_MARKER)
+        } catch (error) {
+          failure = error
+          tx.abort()
         }
       }
     })

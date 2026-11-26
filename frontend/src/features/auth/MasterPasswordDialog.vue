@@ -1,6 +1,6 @@
 <template>
   <div v-if="open" class="dialog-mask" @click.self="close">
-    <section class="dialog" role="dialog" aria-modal="true" aria-labelledby="master-password-title">
+    <section class="dialog" role="dialog" aria-modal="true" aria-labelledby="master-password-title" :aria-busy="submitting">
       <!-- ⚠§859/D26：mode='unlock' 是**本机加密配置读取失败**后的专用形态。
            它必须存在，否则用户明明早就设过主密码，却会看到一个标题写着
            「创建主密码」、提示写着「丢失后无法恢复」的对话框；
@@ -9,14 +9,20 @@
       <h2 id="master-password-title">{{ title }}</h2>
       <p class="hint">{{ hintText }}</p>
       <p v-if="mode === 'unlock'" class="recovered" role="status">{{ recoveredNote }}</p>
-      <input v-model="password" type="password" autocomplete="new-password" placeholder="主密码（至少 8 位）" />
-      <input v-model="confirm" type="password" autocomplete="new-password" placeholder="再次输入主密码" @keyup.enter="submit" />
-      <input v-model="hint" type="text" placeholder="密码提示（可选）" />
-      <p v-if="error" class="error">{{ error }}</p>
+      <input v-model="password" type="password" :disabled="submitting"
+        :autocomplete="restoreMode ? 'current-password' : 'new-password'"
+        :placeholder="restoreMode ? t('settings.deviceBackupPassword') : '主密码（至少 8 位）'"
+        :aria-label="restoreMode ? t('settings.deviceBackupPassword') : '主密码'" @keyup.enter="restoreMode && submit()" />
+      <input v-if="!restoreMode" v-model="confirm" type="password" autocomplete="new-password" placeholder="再次输入主密码" :disabled="submitting" @keyup.enter="submit" />
+      <input v-if="!restoreMode" v-model="hint" type="text" placeholder="密码提示（可选）" :disabled="submitting" />
+      <p v-if="error" class="error" role="alert">{{ error }}</p>
       <div class="actions">
-        <button class="ghost" @click="close">取消</button>
+        <button v-if="canRestore" class="ghost" :disabled="submitting" @click="switchMode">
+          {{ restoreMode ? t('settings.deviceBackupNewSetup') : t('settings.deviceBackupRestore') }}
+        </button>
+        <button class="ghost" :disabled="submitting" @click="close">取消</button>
         <button class="primary" :disabled="submitting" @click="submit">
-          {{ submitting ? '初始化中…' : '确认' }}
+          {{ submitting ? t('settings.deviceBackupWorking') : restoreMode ? t('settings.deviceBackupPick') : '确认' }}
         </button>
       </div>
     </section>
@@ -24,22 +30,29 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { initLobster } from '../../native/lobster-init'
 import { persistMasterSecretIfBound } from '../../native/biometricAuth'
 import { useCryptoConfig } from '../../stores/crypto-config'
+import { canUseDeviceBackup, describeDeviceBackupError, restoreDeviceBackup } from '../../native/device-backup/service'
 
 const props = withDefaults(defineProps<{ open: boolean; mode: 'create' | 'change' | 'unlock' }>(), { mode: 'create' })
+const { t } = useI18n()
+const restoreMode = ref(false)
+const canRestore = computed(() => props.mode === 'create' && canUseDeviceBackup())
 
 const title = computed(() =>
-  props.mode === 'create' ? '创建主密码'
+  restoreMode.value ? t('settings.deviceBackupRestore')
+    : props.mode === 'create' ? '创建主密码'
     : props.mode === 'change' ? '修改主密码'
       : '输入主密码解锁',
 )
 // ⚠ 不能叫 `hint` —— 弹窗里已有一个 `hint` ref（密码提示输入框），
 //   同名会直接撞车（第一版就撞了，typecheck 报重复标识符）。
 const hintText = computed(() =>
-  props.mode === 'unlock'
+  restoreMode.value ? t('settings.deviceBackupRestoreHint')
+    : props.mode === 'unlock'
     ? '本机加密配置无法读取，请输入你原来设置的主密码解锁本地数据。'
     : '主密码独立于登录密码，用于解锁本地数据。请妥善保管，丢失后无法恢复。',
 )
@@ -52,37 +65,69 @@ const hint = ref('')
 const error = ref('')
 const submitting = ref(false)
 
+function switchMode() {
+  restoreMode.value = !restoreMode.value
+  password.value = ''
+  confirm.value = ''
+  error.value = ''
+}
+
+watch(() => props.open, open => {
+  if (open) return
+  restoreMode.value = false
+  password.value = ''
+  confirm.value = ''
+  hint.value = ''
+  error.value = ''
+})
+
 function close() {
   if (!submitting.value) emit('close')
 }
 
 async function submit() {
+  if (submitting.value) return
   error.value = ''
-  if (password.value.length < 8) {
+  const restoring = restoreMode.value
+  if (restoring && !password.value) {
+    error.value = t('settings.deviceBackupPassword')
+    return
+  }
+  if (!restoring && password.value.length < 8) {
     error.value = '主密码至少需要 8 位'
     return
   }
-  if (password.value !== confirm.value) {
+  if (!restoreMode.value && password.value !== confirm.value) {
     error.value = '两次输入的主密码不一致'
     return
   }
 
   submitting.value = true
+  const master = password.value
+  let installed = false
   try {
-    await initLobster(password.value)
-    cryptoConfig.setMasterPassword(hint.value.trim() || null)
+    if (restoring) {
+      installed = await restoreDeviceBackup(master)
+      if (!installed) return
+    }
+    await initLobster(master)
+    cryptoConfig.setMasterPassword(restoring ? null : hint.value.trim() || null)
     // ⚠§866/D31：写失败不再冒泡（冒泡会被本函数外层的 catch 说成「初始化失败」，
     //   而初始化其实已经成功了）。这里如实区分「解锁成功但没存住」。
     if (cryptoConfig.persistFailed) {
       error.value = '主密码已通过验证并解锁成功，但设置没能写入本地存储（存储满或不可用）——下次启动可能需要重新验证。'
     }
-    await persistMasterSecretIfBound(password.value)
-    emit('success', password.value)
+    await persistMasterSecretIfBound(master)
+    emit('success', master)
     password.value = ''
     confirm.value = ''
     hint.value = ''
   } catch (cause) {
-    error.value = cause instanceof Error ? cause.message : '本地数据初始化失败'
+    if (installed) {
+      restoreMode.value = false
+      error.value = t('settings.deviceBackupInstalledUnlock')
+    } else if (restoring) error.value = t(describeDeviceBackupError(cause, true))
+    else error.value = cause instanceof Error ? cause.message : '本地数据初始化失败'
   } finally {
     submitting.value = false
   }
@@ -95,7 +140,7 @@ async function submit() {
 .hint { color: var(--text-secondary); font-size: var(--text-smd); line-height: 1.5; }
 .dialog input { width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-base); color: inherit; }
 .error { color: var(--danger); font-size: var(--text-smd); }
-.actions { display: flex; justify-content: flex-end; gap: 8px; }
+.actions { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
 .actions button { padding: 9px 16px; border-radius: var(--radius-md); border: 1px solid var(--border); cursor: pointer; }
 .ghost { background: transparent; color: inherit; }
 .primary { background: var(--brand-primary); color: #fff; border-color: transparent !important; }
