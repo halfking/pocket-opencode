@@ -51,3 +51,66 @@ test('binding failure never retries the ordinary pocket endpoint or clears the c
   assert.match(f.requests[0].url, /\/api\/v1\/portal\/workspaces\/workspace\/binding$/)
   assert.equal(f.auth.token, 'token-A')
 }))
+
+test('portal sync reauthentication retains the original and its pending operation', () => fixture(async f => {
+  const { portalTransport } = await f.loadModule('/src/native/portal-sync/transport.ts')
+  await f.setMode('local')
+  await f.notes.createNote({ content: 'offline original', workspaceId: 'workspace' })
+  const localStore = () => f.portalNotesStore(f.db.bindOperation(f.db.captureOperation({ kind: 'local-edit' })))
+  const pending = await localStore().pending()
+  assert.equal(pending.length, 1)
+  await f.setMode('cloud')
+  f.respond(async url => url.endsWith('/binding') ? binding(f) :
+    Response.json({ error: { code: 'parent_session_invalid' } }, { status: 401 }))
+  const db = f.db.bindOperation(f.db.captureOperation({ kind: 'cloud-sync', module: 'notes' }))
+  const context = await portalTransport(db)
+  await assert.rejects(context.transport.push(pending), /401/)
+  assert.equal(f.auth.token, '')
+  assert.equal(f.requests.filter(x => x.url.includes('/sync/v2/push')).length, 1)
+  await f.login('B')
+  assert.equal((await localStore().pending()).length, 0)
+  await f.login('A')
+  assert.deepEqual(await localStore().pending(), pending)
+  assert.equal(f.count('local_notes'), 1)
+}))
+
+test('a confirmed parent rejection at binding acquisition prevents a sync request', () => fixture(async f => {
+  const { portalTransport } = await f.loadModule('/src/native/portal-sync/transport.ts')
+  f.respond(async () => Response.json({ error: { code: 'parent_session_invalid' } }, { status: 401 }))
+  const db = f.db.bindOperation(f.db.captureOperation({ kind: 'cloud-sync', module: 'notes' }))
+  await assert.rejects(portalTransport(db), { status: 401, code: 'parent_session_invalid' })
+  assert.equal(f.auth.token, '')
+  assert.equal(f.requests.length, 1)
+  assert.match(f.requests[0].url, /\/binding$/)
+}))
+
+test('a workspace binding 401 does not clear the login during sync', () => fixture(async f => {
+  const { portalTransport } = await f.loadModule('/src/native/portal-sync/transport.ts')
+  f.respond(async url => url.endsWith('/binding') ? binding(f) :
+    Response.json({ error: { code: 'unauthorized' } }, { status: 401 }))
+  const db = f.db.bindOperation(f.db.captureOperation({ kind: 'cloud-sync', module: 'notes' }))
+  const context = await portalTransport(db)
+  await assert.rejects(context.transport.changes(''), /401/)
+  assert.equal(f.auth.token, 'token-A')
+}))
+
+test('a late rejection for the previous token cannot clear a renewed login', () => fixture(async f => {
+  await f.auth.setAuthWithWorkspace('token-A', 'A', 'user-A', 'workspace', 'legacy')
+  await f.setMode('cloud')
+  const { portalTransport } = await f.loadModule('/src/native/portal-sync/transport.ts')
+  const paused = gate()
+  f.respond(async url => {
+    if (url.endsWith('/binding')) return binding(f)
+    if (url.endsWith('/api/auth/refresh')) return { token: 'renewed-A', user_id: f.auth.userId, workspace_id: f.auth.workspaceId }
+    await paused.pause()
+    return Response.json({ error: { code: 'parent_session_invalid' } }, { status: 401 })
+  })
+  const db = f.db.bindOperation(f.db.captureOperation({ kind: 'cloud-sync', module: 'notes' }))
+  const context = await portalTransport(db)
+  const rejected = assert.rejects(context.transport.changes(''), { name: 'AbortError' })
+  await paused.started
+  assert.equal(await f.auth.refreshSession(), true)
+  paused.release()
+  await rejected
+  assert.equal(f.auth.token, 'renewed-A')
+}))

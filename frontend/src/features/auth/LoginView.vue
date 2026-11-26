@@ -302,7 +302,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore, captureAuthSession, assertAuthSession, isCurrentAuthSession, type AuthSession } from '../../stores/auth'
 import { http, ApiError } from '../../api/http'
@@ -375,6 +375,12 @@ const bioReady = ref(false)
 const needUnlock = ref(false)
 const unlockPassword = ref('')
 const showMasterPasswordDialog = ref(false)
+watch(() => auth.token, token => {
+  if (token) return
+  needUnlock.value = false
+  unlockPassword.value = ''
+  showMasterPasswordDialog.value = false
+})
 const cryptoConfig = useCryptoConfig()
 // ----- C6：登录模式 Tab + 验证码状态（注册已独立为 /register 页） -----
 type TabId = 'password' | 'code'

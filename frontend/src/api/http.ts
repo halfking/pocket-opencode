@@ -308,13 +308,15 @@ export async function http<T = any>(path: string, opts: HttpOptions = {}): Promi
  * 也就是说 BUG-I 的修复只打了一半：兜底存在，但没覆盖真正被大量调用的那条路。
  */
 const reauthSessions = new WeakSet<object>()
-export async function forceReauth(expectedSession?: AuthSession): Promise<void> {
+export async function forceReauth(expectedSession?: AuthSession, rejectedBearer?: string): Promise<void> {
   const auth = expectedSession?.owner ?? useAuthStore()
   const session = expectedSession ?? captureAuthSession(auth)
-  if (!isCurrentAuthSession(auth, session) || reauthSessions.has(session.generation)) return
+  if (!isCurrentAuthSession(auth, session) || reauthSessions.has(session.generation) ||
+    (rejectedBearer !== undefined && auth.token !== rejectedBearer)) return
   // 已在登录页/登录相关路径上就不再跳，避免重定向循环
   const hash = (typeof location !== 'undefined' ? location.hash : '') || ''
-  if (/#\/login|\/forgot-password|\/register/.test(hash)) return
+  const onLoginPage = /#\/login|\/forgot-password|\/register/.test(hash)
+  if (onLoginPage && rejectedBearer === undefined) return
   reauthSessions.add(session.generation)
   try {
     // 不调 logout()：它会打 /api/auth/logout，而此刻后端必然拒绝，
@@ -325,7 +327,7 @@ export async function forceReauth(expectedSession?: AuthSession): Promise<void> 
     return
   }
   if (auth.activationStatus !== 'ready' || auth.token) return
-  if (typeof location !== 'undefined') {
+  if (!onLoginPage && typeof location !== 'undefined') {
     location.hash = '#/login?reason=expired'
   }
 }

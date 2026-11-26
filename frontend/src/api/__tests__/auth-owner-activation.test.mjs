@@ -6,7 +6,7 @@ import { createPinia, setActivePinia } from 'pinia'
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r }); return { promise, resolve } }
 const aborted = error => error?.name === 'AbortError'
 async function fixture(run) {
-  const originals = Object.fromEntries(['localStorage', 'window', 'fetch'].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]))
+  const originals = Object.fromEntries(['localStorage', 'window', 'fetch', 'location'].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]))
   const values = new Map()
   const storage = { getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value), removeItem: key => values.delete(key) }
   Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: storage })
@@ -102,6 +102,29 @@ test('restoring a RedClaw session confirms the candidate workspace through the m
   assert.equal(f.localDB.captureOperation({ kind: 'local-edit' }).owner.principal.workspaceId, 'ws-a')
   assert.equal(calls.length, 1)
   assert.equal(calls[0].options.headers.Authorization, 'Bearer token-a')
+}))
+
+test('a confirmed RedClaw parent rejection clears a restored login, including the saved snapshot', () => fixture(async f => {
+  await f.login('a', 'redclaw')
+  Object.defineProperty(globalThis, 'location', { configurable: true, value: { hash: '#/login?returnTo=%2Fnotes' } })
+  globalThis.fetch = async () => Response.json({ error: { code: 'parent_session_invalid' } }, { status: 401 })
+  await f.auth.syncFromStorage(true)
+  await f.auth.whenOwnerReady()
+  assert.equal(f.auth.token, '')
+  assert.equal(f.auth.activationStatus, 'ready')
+  assert.equal(JSON.parse(f.values.get('pocket_auth_snapshot_v1')).token, '')
+  assert.equal(f.localDB.captureOperation({ kind: 'local-edit' }).owner.principal, null)
+  assert.equal(globalThis.location.hash, '#/login?returnTo=%2Fnotes')
+}))
+
+test('a workspace authority denial keeps the restored credential available for a later retry', () => fixture(async f => {
+  await f.login('a', 'redclaw')
+  globalThis.fetch = async () => Response.json({ error: { code: 'unauthorized' } }, { status: 401 })
+  await f.auth.syncFromStorage(true)
+  await f.auth.whenOwnerReady()
+  assert.equal(f.auth.token, 'token-a')
+  assert.equal(f.auth.userId, '')
+  assert.equal(f.auth.ownerVerificationFailed, true)
 }))
 
 test('a direct pocket login restores only after its own live member binding, without identity defaults', () => fixture(async f => {

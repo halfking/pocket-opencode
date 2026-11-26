@@ -13,6 +13,9 @@
 import { defineStore } from 'pinia'
 import { effectScope, watch } from 'vue'
 import { fetchAuthIdentity, logoutRemote, refreshAuth } from '../api/auth.ts'
+import { forceReauth } from '../api/http'
+import { usesDirectPocketAuthority } from '../api/authentication-mode'
+import { WorkspaceBindingRequestError } from '../api/workspaceBinding'
 import { localDB } from '../native/local-db'
 
 const TOKEN_KEY = 'pocket_token'
@@ -378,9 +381,13 @@ export const useAuthStore = defineStore('auth', {
       }
       try {
         verified = await fetchAuthIdentity(next.token, next.workspaceId, assertCurrent, next.authMethod)
-      } catch {
-        // 服务端不可达 / token 失效 ⇒ 归属保持未知。
-        if (isCurrentAuthSession(this, session) && this.token === next.token && this.workspaceId === next.workspaceId) this.ownerVerificationFailed = true
+      } catch (error) {
+        if (!isCurrentAuthSession(this, session) || this.token !== next.token || this.workspaceId !== next.workspaceId) return
+        this.ownerVerificationFailed = true
+        if (!usesDirectPocketAuthority(next.authMethod) && error instanceof WorkspaceBindingRequestError &&
+          error.status === 401 && error.code === 'parent_session_invalid') {
+          await forceReauth(session, next.token)
+        }
         return
       }
       if (!verified) return

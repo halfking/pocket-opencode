@@ -4,6 +4,7 @@ import { resolveRuntimeApiBase } from '../config/api-base'
 import { resolveRedclawPortalBase } from '../config/redclaw-portal'
 import { fetchWithTimeout } from './fetch-timeout'
 import { usesDirectPocketAuthority } from './authentication-mode'
+import { readPortalErrorCode } from './portal-error'
 
 export type PocketResourceScope = 'rss' | 'email-metadata' | 'embedding' | 'meeting-minutes'
 type Auth = ReturnType<typeof useAuthStore>
@@ -98,12 +99,7 @@ export async function pocketResourceCredential(
       })
       assertOwner()
       if (!response.ok) {
-        let code = ''
-        try {
-          const failure = await response.json()
-          if (typeof failure?.error === 'string') code = failure.error
-          else if (failure?.error && typeof failure.error === 'object' && typeof failure.error.code === 'string') code = failure.error.code
-        } catch { /* An unreadable rejection never proves parent-session revocation. */ }
+        const code = await readPortalErrorCode(response)
         assertOwner()
         throw new PocketResourceAuthorityError(response.status, code)
       }

@@ -1,7 +1,9 @@
 import { assertAuthSession, captureAuthSession, useAuthStore } from '../../stores/auth'
 import { readCachedModuleMode } from '../../stores/syncPolicyStore'
-import { fetchPortalWorkspaceBinding } from '../../api/workspaceBinding'
+import { fetchPortalWorkspaceBinding, WorkspaceBindingRequestError, type WorkspaceBinding } from '../../api/workspaceBinding'
 import { fetchWithTimeout } from '../../api/fetch-timeout'
+import { forceReauth } from '../../api/http'
+import { readPortalErrorCode } from '../../api/portal-error'
 import { resolveRedclawPortalBase } from '../../config/redclaw-portal'
 import type { SyncDb, PortalAck } from './contract.ts'
 import type { PortalTransport } from './engine.ts'
@@ -18,12 +20,22 @@ export async function portalTransport(db: SyncDb, options: { cloud?: boolean; ad
     db.assertCurrent()
     assertAuthSession(auth, session)
     options.admit?.()
-    if (!owner || !token || auth.userId !== owner.userId || auth.workspaceId !== owner.workspaceId || resolveRedclawPortalBase() !== base || (options.cloud !== false && readCachedModuleMode(module) !== 'cloud')) {
+    if (!owner || !token || auth.token !== token || auth.userId !== owner.userId || auth.workspaceId !== owner.workspaceId || resolveRedclawPortalBase() !== base || (options.cloud !== false && readCachedModuleMode(module) !== 'cloud')) {
       throw Object.assign(new Error('Portal notes sync admission changed'), { name: 'AbortError' })
     }
   }
   assertCurrent()
-  const binding = await fetchPortalWorkspaceBinding(owner!.workspaceId, { token, base, assertCurrent })
+  const reauth = async (status: number, code: string) => {
+    assertCurrent()
+    if (status === 401 && code === 'parent_session_invalid') await forceReauth(session, token)
+  }
+  let binding: WorkspaceBinding
+  try {
+    binding = await fetchPortalWorkspaceBinding(owner!.workspaceId, { token, base, assertCurrent })
+  } catch (error) {
+    if (error instanceof WorkspaceBindingRequestError) await reauth(error.status, error.code)
+    throw error
+  }
   assertCurrent()
   if (binding.userId !== owner!.userId || binding.workspaceId !== owner!.workspaceId || !binding.tenantId || binding.expiresAt * 1000 <= Date.now()) {
     throw new Error('Workspace authority did not confirm the notes owner')
@@ -32,10 +44,14 @@ export async function portalTransport(db: SyncDb, options: { cloud?: boolean; ad
     assertCurrent()
     if (binding.expiresAt * 1000 <= Date.now()) throw new Error('Workspace binding expired')
     const response = await fetchWithTimeout(`${base}/api/v1/portal/sync/v2/${path}`, {
-      ...init, headers: { Authorization: `Bearer ${token}`, 'X-Workspace-Binding': binding.binding, 'Content-Type': 'application/json' },
+      ...init, redirect: 'error', credentials: 'omit',
+      headers: { Authorization: `Bearer ${token}`, 'X-Workspace-Binding': binding.binding, 'Content-Type': 'application/json' },
     })
     assertCurrent()
-    if (!response.ok) throw new Error(`Portal notes sync request failed (${response.status})`)
+    if (!response.ok) {
+      if (response.status === 401) await reauth(response.status, await readPortalErrorCode(response))
+      throw new Error(`Portal notes sync request failed (${response.status})`)
+    }
     const body = await response.json()
     assertCurrent()
     return body

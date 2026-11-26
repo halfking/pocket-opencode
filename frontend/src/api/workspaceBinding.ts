@@ -16,9 +16,10 @@ import { resolveRuntimeApiBase } from '../config/api-base'
 import { fetchWithTimeout } from './fetch-timeout'
 import { useAuthStore } from '../stores/auth'
 import { assertDirectPocketRequest } from './pocket-resource'
+import { readPortalErrorCode } from './portal-error'
 
 export class WorkspaceBindingRequestError extends Error {
-  constructor(readonly status: number) {
+  constructor(readonly status: number, readonly code = '') {
     super('The server did not issue a workspace binding.')
     this.name = 'WorkspaceBindingRequestError'
   }
@@ -97,7 +98,11 @@ async function fetchCurrentWorkspaceBinding(
       cache: 'no-store', redirect: 'error', credentials: 'omit' },
   )
   request.assertCurrent()
-  if (!response.ok) throw new WorkspaceBindingRequestError(response.status)
+  if (!response.ok) {
+    const code = response.status === 401 ? await readPortalErrorCode(response) : ''
+    request.assertCurrent()
+    throw new WorkspaceBindingRequestError(response.status, code)
+  }
   const body = await response.json()
   request.assertCurrent()
   const binding = bindingFromBody(body)
