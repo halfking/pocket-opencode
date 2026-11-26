@@ -4,6 +4,17 @@
       <h3>派发与取消回执</h3>
       <button type="button" :disabled="busy" @click="refresh">刷新回执</button>
     </div>
+    <template v-if="runCancellation?.can_cancel">
+      <div v-if="confirmingRun" class="command-actions">
+        <button type="button" :disabled="busy" @click="cancelRun">确认取消整个 Run</button>
+        <button type="button" @click="confirmingRun = false">返回</button>
+      </div>
+      <button v-else type="button" :disabled="busy" @click="confirming = null; confirmingRun = true">取消整个 Run</button>
+    </template>
+    <div v-if="runCancellation?.event_id" role="status">
+      <p>Run 已取消 · 已关闭 {{ runCancellation.cancelled_tasks }} 个节点</p>
+      <p>{{ runCancellation.dispatches }} 条派发 · 未领取 {{ runCancellation.never_claimed }} · 等待执行器 {{ runCancellation.awaiting_executor }} · 已送达 {{ runCancellation.delivered }} · 已生效 {{ runCancellation.effective }}</p>
+    </div>
     <p v-if="error" role="alert">{{ error }}</p>
     <p v-if="commands?.length === 0">暂无派发。</p>
     <ul v-if="commands?.length">
@@ -15,7 +26,7 @@
           </span>
           <span v-if="row.retry_of_dispatch_id" class="command-stage" role="status">从派发重跑 {{ row.retry_of_dispatch_id }}</span>
         </div>
-        <div v-if="row.can_cancel || row.can_retry" class="command-actions">
+        <div v-if="!confirmingRun && !runCancellation?.event_id && (row.can_cancel || row.can_retry)" class="command-actions">
           <template v-if="confirming?.id === row.dispatch_id && (confirming.action === 'cancel' ? row.can_cancel : row.can_retry)">
             <button type="button" :disabled="busy" @click="change(row, confirming.action)">{{ confirming.action === 'cancel' ? '确认取消' : '确认重跑' }}</button>
             <button type="button" @click="confirming = null">返回</button>
@@ -32,11 +43,15 @@
 
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from 'vue'
-import { cancelRunCommand, readRunCommands, retryRunCommand, type RunCommandReceipt } from '../../api/accUnifiedTasks'
+import { cancelRunCommand, cancelWholeRun, readRunCommands, retryRunCommand,
+  type RunCancellation, type RunCommandReceipt } from '../../api/accUnifiedTasks'
 import { AccApiError, type AccRequestAuthority } from '../../api/accApi'
 
 const props = defineProps<{ runId: string; authority: AccRequestAuthority }>()
+const emit = defineEmits<{ cancelled: [] }>()
 const commands = ref<RunCommandReceipt[] | null>(null)
+const runCancellation = ref<RunCancellation>()
+const confirmingRun = ref(false)
 type CommandAction = 'cancel' | 'retry'
 const confirming = ref<{ id: string; action: CommandAction } | null>(null)
 const busy = ref(false)
@@ -46,6 +61,15 @@ const labels = { requested: '取消已请求', delivered: '取消已送达', eff
 const activeStatuses = new Set(['created', 'launching', 'leased', 'running', 'settling'])
 let pollUntil = 0
 let timer: ReturnType<typeof setTimeout> | undefined
+let notifiedRun = false
+
+function showRunCancellation(receipt?: RunCancellation) {
+  runCancellation.value = receipt
+  if (receipt?.event_id && !notifiedRun) {
+    notifiedRun = true
+    emit('cancelled')
+  }
+}
 
 function schedule() {
   if (!controller.signal.aborted && Date.now() < pollUntil) {
@@ -58,23 +82,49 @@ async function read() {
   clearTimeout(timer)
   busy.value = true
   try {
-    const rows = await readRunCommands(props.authority, props.runId, controller.signal)
+    const { commands: rows, run_cancellation: cancellation } = await readRunCommands(props.authority, props.runId, controller.signal)
     if (controller.signal.aborted) return
     commands.value = rows
+    showRunCancellation(cancellation)
     error.value = ''
     if (rows.some(row => row.cancel_state === 'requested' || row.cancel_state === 'delivered'
-      || row.retry_of_dispatch_id && activeStatuses.has(row.status))) schedule()
+      || row.retry_of_dispatch_id && activeStatuses.has(row.status))
+      || cancellation && cancellation.awaiting_executor + cancellation.delivered > 0) schedule()
   } catch (cause) {
     if (controller.signal.aborted) return
     if (cause instanceof AccApiError && [401, 403, 404].includes(cause.status)) {
       commands.value = null
       confirming.value = null
+      runCancellation.value = undefined
+      confirmingRun.value = false
     } else {
       schedule()
     }
     error.value = '派发回执暂不可读取。'
   } finally {
     busy.value = false
+  }
+}
+
+async function cancelRun() {
+  if (controller.signal.aborted || busy.value) return
+  clearTimeout(timer)
+  busy.value = true
+  confirmingRun.value = false
+  error.value = ''
+  try {
+    const receipt = await cancelWholeRun(props.authority, props.runId, controller.signal)
+    if (!controller.signal.aborted) showRunCancellation(receipt)
+  } catch {
+    if (!controller.signal.aborted) {
+      commands.value = null
+      runCancellation.value = undefined
+      error.value = '未能确认整 Run 的取消。请刷新回执。'
+    }
+  } finally {
+    busy.value = false
+    pollUntil = Date.now() + 30_000
+    schedule()
   }
 }
 

@@ -54,7 +54,7 @@
           </ul>
         </details>
       </div>
-      <AccRunCommands :key="detail.runId" :run-id="detail.runId" :authority="detailAccess" />
+      <AccRunCommands :key="detail.runId" :run-id="detail.runId" :authority="detailAccess" @cancelled="refreshCancelledRun" />
       <h3>任务图</h3>
       <p v-if="!detail.nodes.length">暂无任务节点</p>
       <ul v-else>
@@ -95,8 +95,9 @@ const hasConnection = computed(() => {
 const rows = ref<UnifiedTask[]>([])
 const selected = ref<UnifiedTask | null>(null)
 type Detail = Awaited<ReturnType<typeof readUnifiedTask | typeof readUnifiedRun>>
+type DetailAccess = Awaited<ReturnType<typeof verifyAccTaskAuthority>>
 const detail = ref<Detail | null>(null)
-const detailAccess = shallowRef<Awaited<ReturnType<typeof verifyAccTaskAuthority>> | null>(null)
+const detailAccess = shallowRef<DetailAccess | null>(null)
 const reviewHref = computed(() => {
   const runId = detail.value?.runId
   if (!detailAccess.value || !runId || !/^run_[a-zA-Z0-9_-]{1,160}$/.test(runId)) return ''
@@ -225,19 +226,22 @@ async function loadPage() {
 }
 async function loadDetail(
   selection: UnifiedTask | null, query: (authority: AccRequestAuthority, signal: AbortSignal) => Promise<Detail>,
+  currentAccess?: DetailAccess,
 ) {
   const owner = session.runtime.captureAuthority()
   if (mockActive || !hasConnection.value || !owner) return
   detailRequest?.abort()
   const request = detailRequest = new AbortController()
   selected.value = selection
-  detail.value = null
-  detailAccess.value = null
-  clearBilling()
+  if (!currentAccess) {
+    detail.value = null
+    detailAccess.value = null
+    clearBilling()
+  }
   detailError.value = ''
   loadingDetail.value = true
   try {
-    const access = await verifyAccTaskAuthority(owner, auth, request.signal)
+    const access = currentAccess ?? await verifyAccTaskAuthority(owner, auth, request.signal)
     const result = await query(access, request.signal)
     if (detailRequest !== request) return
     access.assertCurrent()
@@ -248,7 +252,14 @@ async function loadDetail(
   } catch (error) {
     if (detailRequest === request && !(error instanceof Error && error.name === 'AbortError')) {
       if (isDenied(error)) expireAuthority(error)
-      else detailError.value = showError(error, '任务详情读取失败，请重试。')
+      else {
+        if (error instanceof AccApiError && error.status === 404) {
+          detail.value = null
+          detailAccess.value = null
+          clearBilling()
+        }
+        detailError.value = showError(error, '任务详情读取失败，请重试。')
+      }
     }
   } finally {
     if (detailRequest === request) {
@@ -274,6 +285,15 @@ function reload() {
   } else if (runId) {
     void loadDetail(null, (authority, signal) => readUnifiedRun(authority, runId, signal))
   }
+}
+function refreshCancelledRun() {
+  const access = detailAccess.value
+  const selection = selected.value
+  const runId = detail.value?.runId
+  if (!access || !runId || detailRequest || detail.value?.status === 'cancelled') return
+  void loadDetail(selection, (authority, signal) => selection
+    ? readUnifiedTask(authority, selection, signal)
+    : readUnifiedRun(authority, runId, signal), access)
 }
 watch(() => [session.authority.value, auth.activationStatus], () => {
   clear()

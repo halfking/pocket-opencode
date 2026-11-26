@@ -23,6 +23,7 @@ async function fixture(t, legacy = false) {
   let failCommandRead = false
   let retryEnabled = false
   let retryStatus
+  let wholeCancellation
   let delayTaskPage = false, holdEventReplay = false
   let bindingStatus = 200
   let status = 200, hold = false, server, browser
@@ -100,7 +101,9 @@ async function fixture(t, legacy = false) {
             res.setHeader('Content-Type', 'application/json')
             res.end(JSON.stringify(value))
           }
-          const task = { task_id: 'task-' + user, run_id: 'run_' + user, title: '联跑任务 ' + user, status: 'running' }
+          const whole = user === 'alice' ? wholeCancellation : undefined
+          const task = { task_id: 'task-' + user, run_id: 'run_' + user, title: '联跑任务 ' + user,
+            status: whole?.event_id ? 'cancelled' : 'running' }
           if (path === '/api/v2/auth/session') json({ authenticated: true, user_id: user, tenant_id: `tenant-${user}` })
           else if (path === '/api/v2/tasks') {
             const offset = Number(url.searchParams.get('offset'))
@@ -108,10 +111,12 @@ async function fixture(t, legacy = false) {
             const reply = () => json({ tasks: [item], pagination: { offset, limit: 20, total: 2, has_more: !offset } })
             if (delayTaskPage) { delayTaskPage = false; delayedTasks.push(reply) } else reply()
           } else if (path.endsWith('/progress')) {
-            json({ task_id: task.task_id, status: 'review', progress: { completed: 1, total: 2, percentage: 50, review: 1 } })
+            json({ task_id: task.task_id, status: whole?.event_id ? 'cancelled' : 'review',
+              progress: { completed: 1, total: 2, percentage: 50, review: 1 } })
           } else if (path === '/api/v2/tasks/' + task.task_id) json(task)
           else if (path.endsWith('/trajectory')) json({ view: { scope: 'run', run_id: task.run_id, segments: [
-            { kind: 'dispatch_tree', items: [{ task_id: task.task_id, title: '实现', status: 'succeeded' }, { task_id: 'review', title: '审查', status: 'review' }] },
+            { kind: 'dispatch_tree', items: [{ task_id: task.task_id, title: '实现', status: 'succeeded' },
+              { task_id: 'review', title: '审查', status: whole?.event_id ? 'cancelled' : 'review' }] },
             { kind: 'blocking_dependencies', items: [{ from: task.task_id, to: 'review' }] },
           ] } })
           else if (path.endsWith('/billing')) {
@@ -130,7 +135,18 @@ async function fixture(t, legacy = false) {
               can_retry:retryEnabled && !retryStatus}]
             if (retryStatus) commands.push({dispatch_id:'dispatch_retry_'+user, task_id:task.task_id, attempt:3,
               status:retryStatus, can_cancel:true, verified_executor:false, retry_of_dispatch_id:'dispatch_'+user})
-            json({run_id:task.run_id, commands})
+            json({run_id:task.run_id, commands, run_cancellation:whole})
+          } else if (path.endsWith('/commands/cancel') && req.method === 'POST' && whole) {
+            commandWrites.push([user, path])
+            Object.assign(whole, { can_cancel:false, event_id:'evt-whole', cancelled_at:'2026-11-26T00:00:00Z',
+              cancelled_tasks:2, dispatches:2, never_claimed:1, awaiting_executor:1, delivered:0, effective:0 })
+            if (loseCancelResponse) {
+              res.statusCode = 503
+              json({})
+              return
+            }
+            res.statusCode = 202
+            json({run_id:task.run_id, run_cancellation:whole})
           } else if (path.endsWith('/commands/dispatch_'+user+'/retry') && req.method === 'POST' && retryEnabled) {
             commandWrites.push([user, path])
             retryStatus = 'created'
@@ -192,6 +208,8 @@ async function fixture(t, legacy = false) {
     failCommandRead() { failCommandRead = true },
     enableRetry() { retryEnabled = true },
     setRetryStatus(value) { retryStatus = value },
+    enableWholeCancellation() { wholeCancellation = { can_cancel:true } },
+    setWholeReceipt(counts) { Object.assign(wholeCancellation, counts) },
     holdTaskPage() { delayTaskPage = true },
     holdEventReplay() { holdEventReplay = true },
     denyBinding() { bindingStatus = 403 },
@@ -377,6 +395,34 @@ test('retry confirms the exact failed dispatch and tracks the next attempt', { t
   assert.deepEqual(f.commandWrites, [['alice', '/api/v2/orchestration/runs/run_alice/commands/dispatch_alice/retry']])
   await f.page.getByRole('button', {name:'补读回执', exact:true}).click()
   await f.page.getByText('重跑派发 dispatch_alice → dispatch_retry_alice', {exact:true}).waitFor()
+  await f.action('account')
+  await controls.waitFor({state:'detached'})
+  assert.deepEqual(f.errors, [])
+})
+
+test('whole Run cancellation refreshes the graph and follows executor receipts', { timeout: 30_000 }, async t => {
+  const f = await fixture(t)
+  f.enableWholeCancellation()
+  f.loseCancelResponse()
+  await f.page.clock.install()
+  await f.page.getByRole('link', {name:'统一任务', exact:true}).click()
+  await f.page.getByRole('button', {name:/联跑任务 alice/}).click()
+  const controls = f.page.getByRole('region', {name:'派发与取消回执', exact:true})
+  await controls.getByRole('button', {name:'取消整个 Run', exact:true}).click()
+  assert.deepEqual(f.commandWrites, [])
+  await controls.getByRole('button', {name:'确认取消整个 Run', exact:true}).click()
+  await controls.getByText('未能确认整 Run 的取消。请刷新回执。', {exact:true}).waitFor()
+  await f.page.clock.fastForward(2100)
+  await controls.getByText('Run 已取消 · 已关闭 2 个节点', {exact:true}).waitFor()
+  await controls.getByText(/等待执行器 1/).waitFor()
+  await f.page.getByText('审查 · cancelled', {exact:true}).waitFor()
+  f.setWholeReceipt({ awaiting_executor:0, delivered:1 })
+  await f.page.clock.fastForward(2100)
+  await controls.getByText(/已送达 1/).waitFor()
+  f.setWholeReceipt({ delivered:0, effective:1 })
+  await f.page.clock.fastForward(2100)
+  await controls.getByText(/已生效 1/).waitFor()
+  assert.deepEqual(f.commandWrites, [['alice', '/api/v2/orchestration/runs/run_alice/commands/cancel']])
   await f.action('account')
   await controls.waitFor({state:'detached'})
   assert.deepEqual(f.errors, [])

@@ -54,6 +54,18 @@ export interface RunCommandReceipt {
   verified_executor: boolean
 }
 
+export interface RunCancellation {
+  can_cancel: boolean
+  event_id?: string
+  cancelled_at?: string
+  cancelled_tasks: number
+  dispatches: number
+  never_claimed: number
+  awaiting_executor: number
+  delivered: number
+  effective: number
+}
+
 interface TaskTrajectory {
   view: { scope: string; run_id: string; segments: { kind: string; items?: unknown[] }[] }
 }
@@ -118,11 +130,22 @@ export async function readRunBilling(authority: AccRequestAuthority, runId: stri
 }
 
 export async function readRunCommands(authority: AccRequestAuthority, runId: string, signal: AbortSignal) {
-  const result = await readAcc<{ run_id: string; commands: RunCommandReceipt[] }>(
+  const result = await readAcc<{ run_id: string; commands: RunCommandReceipt[]; run_cancellation?: RunCancellation }>(
     authority, `${runPath(runId)}/commands`, signal,
   )
   if (result?.run_id !== runId || !Array.isArray(result.commands)) throw new Error('Invalid ACC run commands')
-  return result.commands
+  return result
+}
+
+export async function cancelWholeRun(authority: AccRequestAuthority, runId: string, signal: AbortSignal) {
+  const result = await postAcc<{ run_id: string; run_cancellation: RunCancellation }>(
+    authority, `${runPath(runId)}/commands/cancel`, signal,
+  )
+  const receipt = result?.run_cancellation
+  if (result?.run_id !== runId || !receipt?.event_id || !receipt.cancelled_at || receipt.can_cancel) {
+    throw new Error('Invalid ACC whole-run cancellation receipt')
+  }
+  return receipt
 }
 
 export async function cancelRunCommand(authority: AccRequestAuthority, runId: string, dispatchId: string, signal: AbortSignal) {
