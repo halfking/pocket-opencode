@@ -1,6 +1,11 @@
 {
   "rssPortal": {
     "copy": "Save a shared record",
+    "legacyArticleSave": "Save article metadata locally",
+    "legacyArticleConfirm": "Save the title, link, and summary for “{title}” on this device for workspace {workspace}?",
+    "legacyArticleSaved": "Article metadata saved on this device.",
+    "legacyArticleExists": "This article already has a corresponding record.",
+    "legacyArticleFailed": "Could not save the article metadata. Refresh the article and try again.",
     "title": "RSS across devices",
     "description": "These source and article records sync according to your policy. They do not enable fetching or automatically import existing subscriptions or article bodies.",
     "source": "Source record",

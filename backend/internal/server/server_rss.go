@@ -19,6 +19,7 @@
 //
 //	GET    /api/rss/items                    列表（按 sourceId / status / 关键词 / 时间窗）
 //	GET    /api/rss/items/{id}               详情（含所属源摘要）
+//	GET    /api/rss/items/{id}/migration-snapshot  读取有原始版本的旧文章资料
 //	POST   /api/rss/items/{id}/read          标记已读
 //	POST   /api/rss/items/bulk-read          {ids:[…]} 批量已读
 //	POST   /api/rss/items/{id}/star          {starred:true|false}
@@ -689,40 +690,42 @@ func (s *Server) handleRSSSourceRefresh(w http.ResponseWriter, r *http.Request, 
 // ===== /items =====
 
 type rssItemDTO struct {
-	ID            string   `json:"id"`
-	SourceID      string   `json:"sourceId"`
-	GUID          string   `json:"guid"`
-	Title         string   `json:"title"`
-	Author        string   `json:"author"`
-	URL           string   `json:"url"`
-	Summary       string   `json:"summary"`
-	Content       string   `json:"content,omitempty"`
-	Language      string   `json:"language"`
-	Categories    []string `json:"categories"`
-	PublishedAt   *string  `json:"publishedAt,omitempty"`
-	FetchedAt     string   `json:"fetchedAt"`
-	Relevance     float64  `json:"relevance"`
-	MatchReasons  []string `json:"matchReasons"`
-	Status        string   `json:"status"`
-	PortalManaged bool     `json:"portalManaged"`
+	ID                      string   `json:"id"`
+	SourceID                string   `json:"sourceId"`
+	GUID                    string   `json:"guid"`
+	Title                   string   `json:"title"`
+	Author                  string   `json:"author"`
+	URL                     string   `json:"url"`
+	Summary                 string   `json:"summary"`
+	Content                 string   `json:"content,omitempty"`
+	Language                string   `json:"language"`
+	Categories              []string `json:"categories"`
+	PublishedAt             *string  `json:"publishedAt,omitempty"`
+	FetchedAt               string   `json:"fetchedAt"`
+	Relevance               float64  `json:"relevance"`
+	MatchReasons            []string `json:"matchReasons"`
+	Status                  string   `json:"status"`
+	PortalManaged           bool     `json:"portalManaged"`
+	LegacySnapshotAvailable bool     `json:"legacySnapshotAvailable,omitempty"`
 }
 
 func toItemDTO(it rss.Item) rssItemDTO {
 	out := rssItemDTO{
-		ID:            it.ID,
-		SourceID:      it.SourceID,
-		GUID:          it.GUID,
-		Title:         it.Title,
-		Author:        it.Author,
-		URL:           it.URL,
-		Summary:       it.Summary,
-		Content:       it.Content,
-		Language:      it.Language,
-		Categories:    it.Categories,
-		Relevance:     it.Relevance,
-		MatchReasons:  it.MatchReasons,
-		Status:        string(it.Status),
-		PortalManaged: it.PortalManaged,
+		ID:                      it.ID,
+		SourceID:                it.SourceID,
+		GUID:                    it.GUID,
+		Title:                   it.Title,
+		Author:                  it.Author,
+		URL:                     it.URL,
+		Summary:                 it.Summary,
+		Content:                 it.Content,
+		Language:                it.Language,
+		Categories:              it.Categories,
+		Relevance:               it.Relevance,
+		MatchReasons:            it.MatchReasons,
+		Status:                  string(it.Status),
+		PortalManaged:           it.PortalManaged,
+		LegacySnapshotAvailable: !it.PortalManaged && it.UpdatedAt != nil && (it.URL == "" || portableRSSSnapshotURL(it.URL)),
 	}
 	if it.FetchedAt != nil {
 		out.FetchedAt = it.FetchedAt.UTC().Format(time.RFC3339Nano)
@@ -826,6 +829,12 @@ func (s *Server) handleRSSItemItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch parts[1] {
+	case "migration-snapshot":
+		if len(parts) != 2 {
+			writeError(w, http.StatusNotFound, "unknown sub-action")
+			return
+		}
+		s.handleRSSArticleMigrationSnapshot(w, r, st, id)
 	case "read":
 		s.handleRSSItemRead(w, r, id)
 	case "star":

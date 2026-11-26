@@ -11,7 +11,7 @@ import RssPortalPanel from './RssPortalPanel.vue'
 import { useAuthStore } from '../../stores/auth'
 import { captureRssPortalOperation, type RssPortalOperation } from './rss-sync-store'
 import { overlayRssItemStates } from './rss-item-state'
-import { prepareLegacyRssSource } from './legacy-rss-source'
+import { prepareLegacyRssSnapshot } from './legacy-rss-snapshot'
 
 const router = useRouter()
 const { t } = useI18n()
@@ -112,7 +112,7 @@ async function saveLegacySource(src: RSSSource) {
   savingLegacy.value = true
   errorMsg.value = legacyMessage.value = ''
   try {
-    const prepared = await prepareLegacyRssSource(src.id, sourceOperation(src))
+    const prepared = await prepareLegacyRssSnapshot('source', src.id, sourceOperation(src))
     if (!current(stamp)) return
     let imported = false
     if (prepared) {

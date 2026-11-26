@@ -1,6 +1,11 @@
 {
   "rssPortal": {
     "copy": "保存为跨端资料",
+    "legacyArticleSave": "保存文章资料到本机",
+    "legacyArticleConfirm": "将「{title}」的标题、链接和摘要保存到本机的工作区 {workspace}？",
+    "legacyArticleSaved": "文章资料已保存到本机。",
+    "legacyArticleExists": "此文章已有对应记录。",
+    "legacyArticleFailed": "无法保存文章资料。请刷新文章后重试。",
     "title": "跨端 RSS 资料",
     "description": "这里的源与条目资料可按策略同步；不会自动启用抓取。原有订阅和正文不会被自动导入。",
     "source": "源资料",

@@ -5,7 +5,7 @@ import {mkdtemp} from 'node:fs/promises'
 import {tmpdir} from 'node:os'
 import {join} from 'node:path'
 
-export async function createRssStateBrowserFixture({ legacySource = false } = {}){
+export async function createRssStateBrowserFixture({ legacySource = false, legacyArticle = false } = {}){
  const state=`
  import initSqlJs from 'sql.js';import{reactive}from'vue';import{LocalDbLeases}from'/src/native/local-db-leases.ts';
  const SQL=await initSqlJs({locateFile:()=>'/node_modules/sql.js/dist/sql-wasm.wasm'}),raw=new SQL.Database(),leases=new LocalDbLeases();
@@ -14,11 +14,12 @@ export async function createRssStateBrowserFixture({ legacySource = false } = {}
  export function activate(user){auth.activationStatus='pending';leases.activateOwner(leases.prepareOwner({userId:user,workspaceId:'one'}),()=>undefined);leases.activatePolicy(leases.preparePolicy('rss','cloud'),()=>undefined);auth.userId=user;auth.token='token-'+user;auth.activationVersion++;auth.activationStatus='ready'}
  export const localDB={captureOperation:o=>leases.capture(o),bindOperation:lease=>({schemaConnection:raw,owner:lease.owner.principal,assertCurrent:()=>leases.assertCurrent(lease),run:async(sql,v=[])=>{leases.assertCurrent(lease);raw.run(sql,v)},query:async(sql,v)=>{leases.assertCurrent(lease);return query(sql,v)},queryOne:async(sql,v)=>{leases.assertCurrent(lease);return query(sql,v)[0]??null},runInTransaction:async list=>{leases.assertCurrent(lease);raw.run('BEGIN');try{for(const s of list){leases.assertCurrent(lease);raw.run(s.statement,s.values)}raw.run('COMMIT')}catch(e){raw.run('ROLLBACK');throw e}}})};activate('A');
  export const useAuthStore=()=>auth;export const captureAuthSession=()=>auth.activationVersion;export function assertAuthSession(_a,version){if(version!==auth.activationVersion||auth.activationStatus!=='ready')throw new DOMException('Former RSS account','AbortError')}
- let nativeStatus='read';export const makeUnread=()=>nativeStatus='unread';export const article=()=>({id:'article',sourceId:'source',title:'Article '+auth.userId,content:'<p>PRIVATE BODY '+auth.userId+'</p>',url:'https://example.test/article',categories:[],fetchedAt:'2026-01-01T00:00:00Z',relevance:0,matchReasons:[],status:nativeStatus,portalManaged:true});
+ let nativeStatus='read';export const makeUnread=()=>nativeStatus='unread';export const article=()=>({id:'article',sourceId:'source',title:'Article '+auth.userId,content:'<p>PRIVATE BODY '+auth.userId+'</p>',url:'https://example.test/article',categories:[],fetchedAt:'2026-01-01T00:00:00Z',relevance:0,matchReasons:[],status:nativeStatus,portalManaged:!${legacyArticle},legacySnapshotAvailable:${legacyArticle}});
  let offline=true;export function online(){offline=false}export function disconnect(){offline=true}
  let emailPause=null,emailRelease;export function pauseHubEmail(){window.hubEmailWaiting=false;emailPause=new Promise(resolve=>emailRelease=resolve)}export const releaseHubEmail=()=>emailRelease?.();export async function readHubEmails(){const pause=emailPause;emailPause=null;if(pause){window.hubEmailWaiting=true;await pause}return[]}
  export async function http(path,options={}){options.assertCurrent?.();requests.push({path,owner:auth.userId,body:options.body});
  if(path==='/api/rss/items/article')return article();
+ if(path==='/api/rss/items/article/migration-snapshot'&&${legacyArticle})return{id:'article',source_id:'source',title:article().title,url:'https://example.test/article',summary:'Portable summary',updated_at:'2026-01-02T03:04:05.123456Z',user_id:auth.userId,workspace_id:auth.workspaceId};
  if(path==='/api/rss/sources')return{sources:${legacySource}? [{id:'src_legacy',title:'Legacy feed',url:'https://example.test/legacy',portalManaged:false,enabled:true}]:[]};
  if(path==='/api/rss/sources/src_legacy/migration-snapshot'&&${legacySource})return{id:'src_legacy',title:'Legacy feed',url:'https://example.test/legacy',category:'news',updated_at:'2026-01-02T03:04:05.123456Z',user_id:auth.userId,workspace_id:auth.workspaceId};
  if(path.startsWith('/api/notifications'))return{notifications:[]};

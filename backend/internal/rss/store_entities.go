@@ -66,6 +66,26 @@ func (s *Store) GetItem(ctx context.Context, id string, sc Scope) (*Item, error)
 	}
 	return x, e
 }
+
+// GetItemForMigration reads only portable metadata and verifies the source
+// and article share the exact owner. Body and user status stay in the native feed.
+func (s *Store) GetItemForMigration(ctx context.Context, id string, sc Scope) (*Item, error) {
+	if err := requireScope(sc); err != nil {
+		return nil, err
+	}
+	var x Item
+	err := s.pool.QueryRow(ctx, `
+		SELECT i.id,i.user_id,i.workspace_id,i.source_id,i.title,i.url,i.summary,i.updated_at,s.portal_managed
+		FROM rss_items i
+		JOIN rss_sources s ON s.id=i.source_id AND s.user_id=i.user_id AND s.workspace_id=i.workspace_id
+		WHERE i.id=$1 AND i.user_id=$2 AND i.workspace_id=$3`, id, sc.UserID, sc.WorkspaceID).
+		Scan(&x.ID, &x.UserID, &x.WorkspaceID, &x.SourceID, &x.Title, &x.URL, &x.Summary, &x.UpdatedAt, &x.PortalManaged)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	return &x, err
+}
+
 func (s *Store) ListItems(ctx context.Context, sc Scope, opt ListItemsOptions) ([]Item, error) {
 	if err := requireScope(sc); err != nil {
 		return nil, err

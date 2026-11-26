@@ -50,6 +50,7 @@ export interface RSSItem {
   matchReasons: string[]
   status: 'unread' | 'read' | 'starred' | 'archived'
   portalManaged?: boolean
+  legacySnapshotAvailable?: boolean
 }
 
 export interface RSSFilter {

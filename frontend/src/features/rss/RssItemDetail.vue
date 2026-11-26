@@ -11,6 +11,8 @@ import { useAuthStore } from '../../stores/auth'
 import { captureRssPortalOperation, copyRssItemToPortal, type RssPortalOperation } from './rss-sync-store'
 import { rssSyncRuntime } from './rss-sync-runtime'
 import { overlayRssItemStates } from './rss-item-state'
+import { useConfirm } from '../../composables/useConfirm'
+import { prepareLegacyRssSnapshot } from './legacy-rss-snapshot'
 
 const route = useRoute()
 const router = useRouter()
@@ -53,6 +55,7 @@ const shareBusy = ref(false)
  */
 const shareNotice = ref('')
 const { t } = useI18n()
+const { confirm } = useConfirm()
 
 async function load() {
   const stamp=generation
@@ -99,6 +102,36 @@ async function savePortableCopy(){
     if(stamp===generation){portalNotice.value=t('rssPortal.localSaved');void rssSyncRuntime.syncNow()}
   }catch(error){if(stamp===generation&&!(error instanceof Error&&error.name==='AbortError'))portalNotice.value=toUserMessage(error,t,t('errors.operateFailed'))}
   finally{if(stamp===generation)portalBusy.value=false}
+}
+
+async function saveLegacyMetadata() {
+  const stamp = generation, original = item.value
+  if (portalBusy.value || !original?.legacySnapshotAvailable || !loadedOperation) return
+  portalBusy.value = true
+  portalNotice.value = ''
+  try {
+    loadedOperation.assertCurrent()
+    const prepared = await prepareLegacyRssSnapshot('item', original.id, captureRssPortalOperation())
+    if (stamp !== generation) return
+    if (!prepared) {
+      portalNotice.value = t('rssPortal.legacyArticleExists')
+      return
+    }
+    const accepted = await confirm({ message: t('rssPortal.legacyArticleConfirm', {
+      title: prepared.title, workspace: prepared.workspaceId,
+    }) })
+    if (!accepted || stamp !== generation) return
+    const imported = await prepared.save()
+    if (stamp !== generation) return
+    if (imported) window.dispatchEvent(new Event('openpocket:portal-rss-applied'))
+    portalNotice.value = t(imported ? 'rssPortal.legacyArticleSaved' : 'rssPortal.legacyArticleExists')
+  } catch (error) {
+    if (stamp === generation && !(error instanceof Error && error.name === 'AbortError')) {
+      portalNotice.value = t('rssPortal.legacyArticleFailed')
+    }
+  } finally {
+    if (stamp === generation) portalBusy.value = false
+  }
 }
 
 function openShare() {
@@ -190,6 +223,8 @@ function back() {
     </article>
 
     <footer v-if="item" class="actions-bar">
+      <button v-if="item.legacySnapshotAvailable" class="btn" type="button" :disabled="portalBusy"
+        @click="saveLegacyMetadata">{{ t('rssPortal.legacyArticleSave') }}</button>
       <button class="btn" type="button" :disabled="portalBusy" @click="savePortableCopy">{{t('rssPortal.copy')}}</button>
       <button class="btn" type="button" :disabled="statusBusy" @click="toggleStar">
         <span class="material-symbols-outlined">{{ item.status === 'starred' ? 'star' : 'star_border' }}</span>
@@ -256,7 +291,7 @@ function back() {
 .meta-row a { color: var(--brand-primary); }
 .summary { font-size: var(--text-md); line-height: 1.6; margin-bottom: 16px; }
 .content { font-size: var(--text-base); line-height: 1.6; }
-.actions-bar { position: sticky; bottom: 0; display: flex; gap: 8px; padding: 12px; background: var(--bg); border-top: 1px solid var(--border); }
+.actions-bar { position: sticky; bottom: 0; display: flex; flex-wrap: wrap; gap: 8px; padding: 12px; background: var(--bg); border-top: 1px solid var(--border); }
 .btn { display: inline-flex; align-items: center; gap: 4px; padding: 8px 16px; border: 1px solid var(--border); background: var(--bg-elevated); border-radius: 6px; cursor: pointer; }
 .btn-primary { background: var(--brand-primary); color: white; border-color: var(--brand-primary); }
 .icon { padding: 4px 8px; border: none; background: transparent; cursor: pointer; font-size: 20px; }

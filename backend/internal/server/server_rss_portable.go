@@ -3,15 +3,22 @@ package server
 import (
 	"encoding/json"
 	"errors"
-	"github.com/halfking/pocket-opencode/backend/internal/identity"
-	"github.com/halfking/pocket-opencode/backend/internal/rss"
 	"io"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/halfking/pocket-opencode/backend/internal/identity"
+	"github.com/halfking/pocket-opencode/backend/internal/rss"
 )
+
+func portableRSSSnapshotURL(raw string) bool {
+	address, err := url.Parse(raw)
+	return err == nil && (address.Scheme == "http" || address.Scheme == "https") &&
+		address.Hostname() != "" && address.User == nil && !strings.ContainsAny(raw, "?#")
+}
 
 func (s *Server) handleRSSMigrationSnapshot(w http.ResponseWriter, r *http.Request, store *rss.Store, id string) {
 	w.Header().Set("Cache-Control", "no-store")
@@ -32,9 +39,7 @@ func (s *Server) handleRSSMigrationSnapshot(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusConflict, "RSS source already participates in portal synchronization")
 		return
 	}
-	address, err := url.Parse(source.URL)
-	if err != nil || (address.Scheme != "http" && address.Scheme != "https") || address.Host == "" ||
-		address.User != nil || strings.ContainsAny(source.URL, "?#") {
+	if !portableRSSSnapshotURL(source.URL) {
 		writeError(w, http.StatusUnprocessableEntity, "RSS source URL cannot be copied safely")
 		return
 	}
@@ -42,6 +47,40 @@ func (s *Server) handleRSSMigrationSnapshot(w http.ResponseWriter, r *http.Reque
 		"id": source.ID, "user_id": source.UserID, "workspace_id": source.WorkspaceID,
 		"title": source.Title, "url": source.URL, "category": source.Category,
 		"updated_at": source.UpdatedAt.UTC().Format(time.RFC3339Nano),
+	})
+}
+
+func (s *Server) handleRSSArticleMigrationSnapshot(w http.ResponseWriter, r *http.Request, store *rss.Store, id string) {
+	w.Header().Set("Cache-Control", "no-store")
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "GET only")
+		return
+	}
+	scope, ok := s.rssPortableScope(w, r)
+	if !ok {
+		return
+	}
+	item, err := store.GetItemForMigration(r.Context(), id, scope)
+	if err != nil {
+		writeRSSError(w, err)
+		return
+	}
+	if item.PortalManaged {
+		writeError(w, http.StatusConflict, "RSS article already participates in portal synchronization")
+		return
+	}
+	if item.UpdatedAt == nil {
+		writeError(w, http.StatusUnprocessableEntity, "RSS article source version unavailable")
+		return
+	}
+	if item.URL != "" && !portableRSSSnapshotURL(item.URL) {
+		writeError(w, http.StatusUnprocessableEntity, "RSS article URL cannot be copied safely")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{
+		"id": item.ID, "user_id": item.UserID, "workspace_id": item.WorkspaceID, "source_id": item.SourceID,
+		"title": item.Title, "url": item.URL, "summary": item.Summary,
+		"updated_at": item.UpdatedAt.UTC().Format(time.RFC3339Nano),
 	})
 }
 

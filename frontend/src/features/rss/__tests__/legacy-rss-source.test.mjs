@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { fixture } from '../../../test-support/notes-sqlite-fixture.mjs'
 
-const path = '/src/features/rss/legacy-rss-source.ts'
+const path = '/src/features/rss/legacy-rss-snapshot.ts'
 const original = {
   id: 'src_legacy', user_id: 'user-A', workspace_id: 'workspace', title: 'Original feed',
   updated_at: '2026-01-02T03:04:05.123456Z', url: 'https://example.test/feed', category: 'news',
@@ -11,7 +11,8 @@ const original = {
 test('legacy RSS metadata snapshot keeps the exact source version and never queues an upload', () => fixture(async f => {
   const snapshot = { ...original, description: 'native private source description', enabled: true }
   f.respond(() => snapshot)
-  const { prepareLegacyRssSource } = await f.loadModule(path)
+  const { prepareLegacyRssSnapshot } = await f.loadModule(path)
+  const prepareLegacyRssSource = (...args) => prepareLegacyRssSnapshot('source', ...args)
   const { captureRssPortalOperation, rssPortalStore, listRssPortalRecords, saveRssPortalRecord } = await f.loadModule('/src/features/rss/rss-sync-store.ts')
   const operation = captureRssPortalOperation()
   const store = rssPortalStore(operation.db)
@@ -45,7 +46,8 @@ test('legacy RSS metadata snapshot keeps the exact source version and never queu
 test('changed snapshots, wrong workspaces, unsafe addresses and stale account confirmations cannot import', () => fixture(async f => {
   let snapshot = { ...original }
   f.respond(() => snapshot)
-  const { prepareLegacyRssSource } = await f.loadModule(path)
+  const { prepareLegacyRssSnapshot } = await f.loadModule(path)
+  const prepareLegacyRssSource = (...args) => prepareLegacyRssSnapshot('source', ...args)
   const { captureRssPortalOperation } = await f.loadModule('/src/features/rss/rss-sync-store.ts')
   const operation = captureRssPortalOperation()
   const prepared = await prepareLegacyRssSource(original.id, operation)
