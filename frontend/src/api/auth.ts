@@ -8,12 +8,13 @@
  *   POST /api/auth/forgot-password
  *   POST /api/auth/reset-password（requireAuth）
  */
-import { http } from './http'
+import { ApiError, http } from './http'
 import { resolveRuntimeApiBase } from '../config/api-base'
 import { fetchWithTimeout } from './fetch-timeout'
 import { fetchPortalWorkspaceBinding, fetchPocketWorkspaceBinding } from './workspaceBinding'
 import { resolveRedclawPortalBase } from '../config/redclaw-portal'
-import { usesDirectPocketAuthority } from './authentication-mode'
+import { REDCLAW_OIDC_AUTH_METHOD, usesDirectPocketAuthority } from './authentication-mode'
+import { readPortalErrorCode } from './portal-error'
 
 export type CodePurpose = 'register' | 'reset' | 'login'
 
@@ -220,7 +221,7 @@ export interface SsoExchangeResponse {
   user: string
   user_id: string
   workspace_id: string
-  auth_method: 'redclaw' | 'casdoor-oidc'
+  auth_method: 'redclaw' | typeof REDCLAW_OIDC_AUTH_METHOD | 'casdoor-oidc'
 }
 
 /**
@@ -232,18 +233,40 @@ export async function exchangeSsoCode(code: string): Promise<SsoExchangeResponse
     method: 'POST',
     body: JSON.stringify({ code }),
   })
-  if (result.auth_method !== 'redclaw' && result.auth_method !== 'casdoor-oidc') {
+  if (result.auth_method !== 'redclaw' && result.auth_method !== REDCLAW_OIDC_AUTH_METHOD && result.auth_method !== 'casdoor-oidc') {
     throw new Error('登录服务未确认会话来源，请重新发起企业登录')
   }
   return result
 }
 
-/**
- * JWT 滑动续期（runbook §15.2 方案 c，2026-09-05 落地）：
- * 携当前 token 调 POST /api/auth/refresh，后端 requireAuth 验证 + RedClaw 模式
- * 复检撤销状态后重签短 TTL token。响应形状与登录一致。
- * 供 stores/auth 单飞调用（临期主动续期 / 401 后重放一次），勿在别处直接调。
- */
+/** Sliding renewal for credentials accepted by the ordinary Pocket path. */
 export async function refreshAuth(): Promise<AuthSuccessResponse> {
   return http<AuthSuccessResponse>('/api/auth/refresh', { method: 'POST' })
+}
+
+/** The dedicated relay authenticates this captured bearer and the selected workspace. */
+export async function refreshRedClawSSO(
+  bearer: string, workspace: string, assertCurrent: () => void,
+): Promise<SsoExchangeResponse> {
+  const base = resolveRuntimeApiBase()
+  const checkCurrent = () => {
+    assertCurrent()
+    if (resolveRuntimeApiBase() !== base) {
+      throw Object.assign(new Error('The session renewal endpoint changed.'), { name: 'AbortError' })
+    }
+  }
+  checkCurrent()
+  const response = await fetchWithTimeout(`${base}/api/auth/sso/refresh`, {
+    method: 'POST', redirect: 'error', credentials: 'omit',
+    headers: { Authorization: `Bearer ${bearer}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ workspace_id: workspace }),
+  })
+  if (!response.ok) {
+    const code = await readPortalErrorCode(response)
+    checkCurrent()
+    throw new ApiError(response.status, 'SSO session renewal failed.', { code })
+  }
+  const result = await response.json() as SsoExchangeResponse
+  checkCurrent()
+  return result
 }

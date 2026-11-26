@@ -114,3 +114,103 @@ test('a late rejection for the previous token cannot clear a renewed login', () 
   await rejected
   assert.equal(f.auth.token, 'renewed-A')
 }))
+
+const nearExpiry = () => `header.${Buffer.from(JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 60 })).toString('base64url')}.signature`
+const beginSSO = async f => {
+  await f.auth.setAuthWithWorkspace(nearExpiry(), 'A', 'user-A', 'workspace', 'redclaw-oidc')
+  await f.setMode('cloud')
+}
+const renewalResult = extra => ({ token: 'renewed-A', user_id: 'user-A', workspace_id: 'workspace',
+  auth_method: 'redclaw-oidc', ...extra })
+
+test('portal sync renews the OIDC session before acquiring the workspace binding', () => fixture(async f => {
+  await beginSSO(f)
+  const old = f.auth.token, version = f.auth.activationVersion
+  const { portalTransport } = await f.loadModule('/src/native/portal-sync/transport.ts')
+  f.respond(async (url, init) => {
+    if (url.endsWith('/api/auth/sso/refresh')) {
+      assert.equal(init.headers.Authorization, `Bearer ${old}`)
+      assert.deepEqual(JSON.parse(init.body), { workspace_id: 'workspace' })
+      assert.equal(init.redirect, 'error')
+      assert.equal(init.credentials, 'omit')
+      return renewalResult()
+    }
+    assert.equal(init.headers.Authorization, 'Bearer renewed-A')
+    if (url.endsWith('/binding')) return binding(f)
+    if (url.includes('/sync/v2/changes')) return { changes: [] }
+    assert.fail(`unexpected route ${url}`)
+  })
+  const db = f.db.bindOperation(f.db.captureOperation({ kind: 'cloud-sync', module: 'notes' }))
+  const context = await portalTransport(db)
+  await context.transport.changes('')
+  assert.deepEqual(f.requests.map(x => new URL(x.url, 'https://app.example').pathname), [
+    '/api/auth/sso/refresh', '/api/v1/portal/workspaces/workspace/binding', '/api/v1/portal/sync/v2/changes',
+  ])
+  assert.equal(f.auth.activationVersion, version)
+  assert.equal(f.auth.token, 'renewed-A')
+  assert.equal(JSON.parse(localStorage.getItem('pocket_auth_snapshot_v1')).token, 'renewed-A')
+}))
+
+test('a revoked renewal preserves the local note and pending operation across sign-in', () => fixture(async f => {
+  await beginSSO(f)
+  await f.setMode('local')
+  await f.notes.createNote({ content: 'retained during SSO renewal', workspaceId: 'workspace' })
+  const pending = () => f.portalNotesStore(f.db.bindOperation(f.db.captureOperation({ kind: 'local-edit' }))).pending()
+  const before = await pending()
+  assert.equal(before.length, 1)
+  await f.setMode('cloud')
+  const db = f.db.bindOperation(f.db.captureOperation({ kind: 'cloud-sync', module: 'notes' }))
+  const { portalTransport } = await f.loadModule('/src/native/portal-sync/transport.ts')
+  f.respond(async url => {
+    assert.ok(url.endsWith('/api/auth/sso/refresh'))
+    return Response.json({ code: 'parent_session_invalid', error: 'interactive sign-in required' }, { status: 401 })
+  })
+  await assert.rejects(portalTransport(db), { name: 'AbortError' })
+  assert.equal(f.auth.token, '')
+  assert.equal(f.requests.filter(x => x.url.endsWith('/binding')).length, 0)
+  await f.login('B')
+  assert.equal((await pending()).length, 0)
+  await f.login('A')
+  assert.deepEqual(await pending(), before)
+  assert.equal(f.count('local_notes'), 1)
+}))
+
+for (const status of [200, 401]) {
+  test(`late OIDC renewal (${status}) cannot replace or clear a later login with the same scope`, () => fixture(async f => {
+    await beginSSO(f)
+    const old = f.auth.token
+    const paused = gate()
+    f.respond(async url => {
+      assert.ok(url.endsWith('/api/auth/sso/refresh'))
+      await paused.pause()
+      return status === 200 ? renewalResult() : Response.json({ code: 'reauth_required' }, { status })
+    })
+    const renewal = f.auth.refreshSession()
+    await paused.started
+    await f.login('B')
+    await f.auth.setAuthWithWorkspace(old, 'A', 'user-A', 'workspace', 'redclaw-oidc')
+    paused.release()
+    assert.equal(await renewal, false)
+    assert.equal(f.auth.token, old)
+  }))
+}
+
+test('OIDC renewal rejects mismatched scope and keeps the current bearer after a stale response', () => fixture(async f => {
+  await beginSSO(f)
+  const old = f.auth.token
+  for (const response of [
+    renewalResult({ auth_method: 'casdoor-oidc' }),
+    renewalResult({ user_id: 'user-B' }),
+    renewalResult({ workspace_id: 'other' }),
+    renewalResult({ workspace_id: undefined }),
+    Response.json({ code: 'stale_session_token', error: 'another request already renewed' }, { status: 409 }),
+  ]) {
+    f.respond(async url => {
+      assert.ok(url.endsWith('/api/auth/sso/refresh'))
+      return response
+    })
+    assert.equal(await f.auth.refreshSession(), false)
+    assert.equal(f.auth.token, old)
+  }
+  assert.equal(f.requests.filter(x => x.url.endsWith('/api/auth/sso/refresh')).length, 5)
+}))

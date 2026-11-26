@@ -657,7 +657,7 @@ func (s *Server) handleAuthSsoCallback(w http.ResponseWriter, r *http.Request) {
 		User:        displayUser,
 		UserID:      userID,
 		WorkspaceID: wsID,
-		AuthMethod:  "redclaw",
+		AuthMethod:  redClawOIDCMethod,
 	})
 	if err != nil {
 		logging.Warnf("WARN: sso issue exchange code: %v", err)

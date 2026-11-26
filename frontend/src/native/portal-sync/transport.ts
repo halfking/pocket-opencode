@@ -3,6 +3,7 @@ import { readCachedModuleMode } from '../../stores/syncPolicyStore'
 import { fetchPortalWorkspaceBinding, WorkspaceBindingRequestError, type WorkspaceBinding } from '../../api/workspaceBinding'
 import { fetchWithTimeout } from '../../api/fetch-timeout'
 import { forceReauth } from '../../api/http'
+import { REDCLAW_OIDC_AUTH_METHOD } from '../../api/authentication-mode'
 import { readPortalErrorCode } from '../../api/portal-error'
 import { resolveRedclawPortalBase } from '../../config/redclaw-portal'
 import type { SyncDb, PortalAck } from './contract.ts'
@@ -14,17 +15,25 @@ export async function portalTransport(db: SyncDb, options: { cloud?: boolean; ad
   const auth = useAuthStore()
   const session = captureAuthSession(auth)
   const owner = db.owner
-  const token = auth.token
   const base = resolveRedclawPortalBase()
-  const assertCurrent = () => {
+  const assertOwner = () => {
     db.assertCurrent()
     assertAuthSession(auth, session)
     options.admit?.()
-    if (!owner || !token || auth.token !== token || auth.userId !== owner.userId || auth.workspaceId !== owner.workspaceId || resolveRedclawPortalBase() !== base || (options.cloud !== false && readCachedModuleMode(module) !== 'cloud')) {
+    if (!owner || !auth.token || auth.userId !== owner.userId || auth.workspaceId !== owner.workspaceId || resolveRedclawPortalBase() !== base || (options.cloud !== false && readCachedModuleMode(module) !== 'cloud')) {
       throw Object.assign(new Error('Portal notes sync admission changed'), { name: 'AbortError' })
     }
   }
-  assertCurrent()
+  assertOwner()
+  if (auth.authMethod === REDCLAW_OIDC_AUTH_METHOD) await auth.maybeRefresh()
+  assertOwner()
+  const token = auth.token
+  const assertCurrent = () => {
+    assertOwner()
+    if (auth.token !== token) {
+      throw Object.assign(new Error('Portal sync credential changed'), { name: 'AbortError' })
+    }
+  }
   const reauth = async (status: number, code: string) => {
     assertCurrent()
     if (status === 401 && code === 'parent_session_invalid') await forceReauth(session, token)

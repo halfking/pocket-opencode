@@ -12,9 +12,9 @@
  */
 import { defineStore } from 'pinia'
 import { effectScope, watch } from 'vue'
-import { fetchAuthIdentity, logoutRemote, refreshAuth } from '../api/auth.ts'
-import { forceReauth } from '../api/http'
-import { usesDirectPocketAuthority } from '../api/authentication-mode'
+import { fetchAuthIdentity, logoutRemote, refreshAuth, refreshRedClawSSO } from '../api/auth.ts'
+import { ApiError, forceReauth } from '../api/http'
+import { REDCLAW_OIDC_AUTH_METHOD, usesDirectPocketAuthority } from '../api/authentication-mode'
 import { WorkspaceBindingRequestError } from '../api/workspaceBinding'
 import { localDB } from '../native/local-db'
 
@@ -399,23 +399,27 @@ export const useAuthStore = defineStore('auth', {
         true,
       )
     },
-    /**
-     * JWT 滑动续期（runbook §15.2）：单飞调 /api/auth/refresh 换新 token。
-     * 成功返回 true 并更新 store + localStorage；失败返回 false（由调用方
-     * 决定是否登出），不抛异常。
-     */
+    /** Renew at most once per active login, using that login's authority. */
     async refreshSession(): Promise<boolean> {
-      if (!this.token || this.activationStatus !== 'ready') return false
+      const bearer = this.token
+      if (!bearer || this.activationStatus !== 'ready') return false
       const state = sessionState(this)
       const session = captureAuthSession(this)
       if (state.refresh && isCurrentAuthSession(this, state.refresh.session)) return state.refresh.promise
+      const sso = this.authMethod === REDCLAW_OIDC_AUTH_METHOD
+      const { userId, workspaceId } = this
+      if (sso && (!userId || !workspaceId)) return false
       const flight = { session, promise: Promise.resolve(false) }
       flight.promise = (async () => {
         try {
-          const res = await refreshAuth()
-          if (!isCurrentAuthSession(this, session) || !res?.token) return false
-          if ((this.userId && res.user_id && this.userId !== res.user_id)
-            || (this.workspaceId && res.workspace_id && this.workspaceId !== res.workspace_id)) return false
+          const res = sso
+            ? await refreshRedClawSSO(bearer, workspaceId, () => assertAuthSession(this, session))
+            : await refreshAuth()
+          if (!isCurrentAuthSession(this, session) || this.token !== bearer || typeof res?.token !== 'string' || !res.token.trim()) return false
+          if (sso && (!('auth_method' in res) || res.auth_method !== REDCLAW_OIDC_AUTH_METHOD ||
+            res.token === bearer || res.user_id !== userId || res.workspace_id !== workspaceId)) return false
+          if ((userId && res.user_id && userId !== res.user_id)
+            || (workspaceId && res.workspace_id && workspaceId !== res.workspace_id)) return false
           // 显示名保持不变：refresh 端点 legacy 路径只能从 claims 反推
           // user 字段（如 user-admin），覆盖会漂移 App 内的登录显示名。
           const displayUser = this.user || res.user || ''
@@ -432,7 +436,12 @@ export const useAuthStore = defineStore('auth', {
           }
           return true
         } catch (e) {
-          if (!isCurrentAuthSession(this, session)) return false
+          if (!isCurrentAuthSession(this, session) || this.token !== bearer) return false
+          if (sso && e instanceof ApiError && e.status === 401 &&
+            (e.body?.code === 'reauth_required' || e.body?.code === 'parent_session_invalid')) {
+            await forceReauth(session, bearer)
+            return false
+          }
           console.debug('auth refresh failed:', e)
           return false
         } finally {

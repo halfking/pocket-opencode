@@ -789,12 +789,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/auth/identity", s.requireAuth(s.handleAuthIdentity))
 	mux.HandleFunc("/internal/resource-authority/workspaces/", s.handleResourceAuthority)
 	mux.HandleFunc("/api/auth/workspace-binding", s.requireAuth(s.handleAuthWorkspaceBinding))
-	// JWT 滑动续期（runbook §15.2）：验当前 token → RedClaw 模式复检撤销 → 重签短 TTL
+	// Ordinary Pocket credentials use requireAuth. RedClaw OIDC renewal uses a separate route.
 	mux.HandleFunc("/api/auth/refresh", s.requireAuth(s.handleAuthRefresh))
 	mux.HandleFunc("/api/auth/sso/status", s.handleAuthSsoStatus)
 	mux.HandleFunc("/api/auth/sso/login", s.handleAuthSsoLogin)
 	mux.HandleFunc("/api/auth/sso/callback", s.handleAuthSsoCallback)
 	mux.HandleFunc("/api/auth/sso/exchange", s.handleAuthSsoExchange)
+	mux.HandleFunc("/api/auth/sso/refresh", s.handleAuthSsoRefresh)
 	// App 端（Capacitor APK）无跳转登录：pocketd 服务端代办 Casdoor
 	// 密码登录 + authorize 抓 code + token 兑换（2026-11-19）。
 	mux.HandleFunc("/api/auth/sso/direct-login", s.handleAuthSsoDirectLogin)

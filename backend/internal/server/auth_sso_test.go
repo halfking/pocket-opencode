@@ -330,7 +330,7 @@ func TestSSO_FullChain_LoginCallbackExchange(t *testing.T) {
 	if err := json.Unmarshal(rr3.Body.Bytes(), &handoff); err != nil {
 		t.Fatalf("decode exchange resp: %v", err)
 	}
-	if handoff.Token != "fake-platform-jwt" || handoff.UserID != "emp-mapped-42" || handoff.User != "Mapped Alice" || handoff.WorkspaceID != "" || !strings.Contains(rr3.Body.String(), `"auth_method":"redclaw"`) {
+	if handoff.Token != "fake-platform-jwt" || handoff.UserID != "emp-mapped-42" || handoff.User != "Mapped Alice" || handoff.WorkspaceID != "" || !strings.Contains(rr3.Body.String(), `"auth_method":"redclaw-oidc"`) {
 		t.Errorf("exchange payload mismatch: %+v", handoff)
 	}
 	if rec.profileCalls != 1 {

@@ -1,3 +1,5 @@
+export const REDCLAW_OIDC_AUTH_METHOD = 'redclaw-oidc'
+
 /** The authenticated login response selects the authority route. This value is
  * only a routing hint; persisted mode and workspace never prove membership. */
 export function usesDirectPocketAuthority(method: string): boolean {

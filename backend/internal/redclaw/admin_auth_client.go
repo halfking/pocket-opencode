@@ -166,6 +166,12 @@ var ErrInvalidCredentials = fmt.Errorf("redclaw admin: invalid credentials")
 // ErrTenantMismatch 表示 tenant_id 不一致。
 var ErrTenantMismatch = fmt.Errorf("redclaw admin: tenant mismatch")
 
+// ErrIdentityNotProvisioned means Admin could not link the verified subject to a current employee.
+var ErrIdentityNotProvisioned = fmt.Errorf("redclaw admin: identity not provisioned")
+
+// ErrStaleSSOSession means the Auth Agent has already rotated this bearer.
+var ErrStaleSSOSession = fmt.Errorf("redclaw auth agent: stale session token")
+
 // redClawAdminError 解析 RedClaw 的 { "error": { "code", "message" } } 结构。
 type redClawAdminError struct {
 	Error struct {
@@ -392,6 +398,47 @@ func (c *AdminAuthClient) SsoCallback(ctx context.Context, code, state string) (
 	return &out, nil
 }
 
+// SsoRefresh asks the Auth Agent to renew the same parent session using
+// its bound OIDC grant. The only credential returned is a platform JWT.
+func (c *AdminAuthClient) SsoRefresh(ctx context.Context, token string) (string, error) {
+	if token == "" {
+		return "", ErrInvalidCredentials
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.authBase+"/api/v1/sso/refresh", nil)
+	if err != nil {
+		return "", ErrRedClawUnavailable
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-Tenant-ID", c.cfg.TenantID)
+	client := *c.authHTTP
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", ErrRedClawUnavailable
+	}
+	defer resp.Body.Close()
+
+	switch resp.StatusCode {
+	case http.StatusUnauthorized, http.StatusForbidden:
+		return "", ErrInvalidCredentials
+	case http.StatusConflict:
+		var out redClawAdminError
+		if err := json.NewDecoder(sizedread.Limit(resp.Body, sizedread.MaxErrorBodyBytes)).Decode(&out); err == nil &&
+			out.Error.Code == "stale_session_token" {
+			return "", ErrStaleSSOSession
+		}
+	case http.StatusOK:
+		var out struct {
+			JWT string `json:"jwt"`
+		}
+		if err := json.NewDecoder(sizedread.Limit(resp.Body, sizedread.MaxJSONBodyBytes)).Decode(&out); err == nil &&
+			strings.TrimSpace(out.JWT) != "" && out.JWT != token {
+			return out.JWT, nil
+		}
+	}
+	return "", ErrRedClawUnavailable
+}
+
 // =====================================================================
 // 内部 HTTP 工具
 // =====================================================================
@@ -431,6 +478,8 @@ func (c *AdminAuthClient) parseAdminError(status int, body io.Reader) error {
 		switch env.Error.Code {
 		case "tenant_mismatch":
 			return fmt.Errorf("%w: %s", ErrTenantMismatch, env.Error.Message)
+		case "identity_not_provisioned":
+			return ErrIdentityNotProvisioned
 		case "unauthorized", "invalid_credentials":
 			return fmt.Errorf("%w: %s", ErrInvalidCredentials, env.Error.Message)
 		case "weak_password":

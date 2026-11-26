@@ -6,6 +6,7 @@
 import { resolveRuntimeApiBase } from '../config/api-base'
 import { useAuthStore, captureAuthSession, captureAuthAttempt, assertAuthAttempt, assertAuthSession, isCurrentAuthSession, type AuthSession } from '../stores/auth'
 import { assertNotHTML } from './jsonGuard'
+import { REDCLAW_OIDC_AUTH_METHOD } from './authentication-mode'
 import { isAbortError } from './abort'
 import { DEFAULT_TIMEOUT_MS, TimeoutError, fetchWithTimeout } from './fetch-timeout.ts'
 import { blockedModuleWrite } from './module-policy.ts'
@@ -250,6 +251,10 @@ export async function http<T = any>(path: string, opts: HttpOptions = {}): Promi
       }
     }
     checkResourceOperation()
+    if (auth.authMethod === REDCLAW_OIDC_AUTH_METHOD) {
+      await maybeRefreshBeforeRequest(path)
+      checkResourceOperation()
+    }
     let resource: PocketResourceCredential | undefined
     try {
       resource = await pocketResourceCredential(auth, session, resourceScope, checkResourceOperation)
