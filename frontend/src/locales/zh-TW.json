@@ -1,5 +1,13 @@
 {
   "rssPortal": {
+    "queueAdd": "新增 Feed",
+    "queueTitle": "待建立的訂閱",
+    "queueWaiting": "連線且 RSS 雲端權限開啟後，將建立這裡的訂閱。",
+    "queueReadFailed": "無法讀取待建立的訂閱。",
+    "queueLocked": "暫時無法讀取訂閱詳情",
+    "queueConflict": "此請求與現有訂閱或請求衝突。",
+    "queueInvalid": "請核對 Feed 位址和擷取間隔後重新新增。",
+    "queueRemove": "移出佇列",
     "copy": "儲存為跨端資料",
     "legacyArticleSave": "儲存文章資料到本機",
     "legacyArticleConfirm": "將「{title}」的標題、連結和摘要儲存到本機的工作區 {workspace}？",

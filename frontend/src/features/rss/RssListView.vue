@@ -12,6 +12,8 @@ import { useAuthStore } from '../../stores/auth'
 import { captureRssPortalOperation, type RssPortalOperation } from './rss-sync-store'
 import { overlayRssItemStates } from './rss-item-state'
 import { prepareLegacyRssSnapshot } from './legacy-rss-snapshot'
+import { rssSourceCreated } from './rss-source-outbox'
+import RssPendingSources from './RssPendingSources.vue'
 
 const router = useRouter()
 const { t } = useI18n()
@@ -95,10 +97,11 @@ async function refreshStatuses(){
   }
   catch(error){if(!(error instanceof Error&&error.name==='AbortError'))console.warn('[rss] Status refresh retained current list:',error)}
 }
-onMounted(()=>{void refresh();window.addEventListener('openpocket:portal-rss-applied',refreshStatuses)})
+const loadNewSource = () => { void refresh() }
+onMounted(()=>{void refresh();window.addEventListener('openpocket:portal-rss-applied',refreshStatuses);window.addEventListener(rssSourceCreated,loadNewSource)})
 watch(statusFilter,()=>{void refresh()})
 watch(()=>[auth.activationVersion,auth.userId,auth.workspaceId,auth.activationStatus],()=>{generation++;readVersion++;statusRefreshQueued=false;sourcesOperation=null;sources.value=[];items.value=[];savedLegacy.value=[];search.value='';errorMsg.value=importMsg.value=legacyMessage.value='';loading.value=importing.value=savingLegacy.value=false;if(auth.activationStatus==='ready')void refresh()},{flush:'sync'})
-onBeforeUnmount(()=>{generation++;sourcesOperation=null;window.removeEventListener('openpocket:portal-rss-applied',refreshStatuses)})
+onBeforeUnmount(()=>{generation++;sourcesOperation=null;window.removeEventListener('openpocket:portal-rss-applied',refreshStatuses);window.removeEventListener(rssSourceCreated,loadNewSource)})
 
 function openItem(id: string) {
   router.push({ name: 'rss-item', params: { id } })
@@ -203,6 +206,7 @@ const totalUnread = computed(() => sources.value.reduce((acc, s) => acc + (s.unr
       </div>
     </header>
 
+    <RssPendingSources />
     <div v-if="sources.length === 0" class="starter-hint">
       <div class="hint-text">还没有订阅。可以一键导入内置推荐源（IT / 财经 / 时事，全部经过真实抓取验证），也可以自己填地址。</div>
       <button class="btn-primary" type="button" :disabled="importing" @click="importStarter">

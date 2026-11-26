@@ -4,6 +4,7 @@
 //
 //	GET    /api/rss/sources                  列出当前用户的 RSS 源
 //	POST   /api/rss/sources                  新增源（自动 discover → first-fetch）
+//	POST   /api/rss/sources/queued           提交已持久化的订阅意图并返回幂等回执
 //	GET    /api/rss/sources/seeds            返回内置种子源（= starter 目录，向后兼容别名）
 //	GET    /api/rss/sources/starter          内置推荐源目录（it / finance / news 三类）
 //	POST   /api/rss/sources/import-starter   一键把推荐源加入初始订阅列表（幂等）
@@ -1210,6 +1211,8 @@ func (s *Server) handleRSSRouter(w http.ResponseWriter, r *http.Request) {
 			s.handleRSSImportStarter(w, r)
 		case len(parts) == 2 && parts[1] == "discover":
 			s.handleRSSDiscover(w, r)
+		case len(parts) == 2 && parts[1] == "queued":
+			s.handleRSSQueuedSource(w, r)
 		default:
 			s.handleRSSSourceItem(w, r)
 		}

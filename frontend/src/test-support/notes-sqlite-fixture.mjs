@@ -42,7 +42,8 @@ export async function fixture(run) {
   }
   globalThis.fetch = async (url, options) => {
     requests.push({ url: String(url), options })
-    return Response.json(await respond(String(url), options))
+    const result = await respond(String(url), options)
+    return result instanceof Response ? result : Response.json(result)
   }
   const vite = await createServer({ root: fileURLToPath(new URL('../../', import.meta.url)), configFile: false,
     server: { middlewareMode: true, hmr: false }, ssr: { noExternal: ['@capacitor-community/sqlite'] },

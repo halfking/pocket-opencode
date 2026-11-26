@@ -5,22 +5,36 @@ import {mkdtemp} from 'node:fs/promises'
 import {tmpdir} from 'node:os'
 import {join} from 'node:path'
 
-export async function createRssStateBrowserFixture({ legacySource = false, legacyArticle = false } = {}){
+export async function createRssStateBrowserFixture({ legacySource = false, legacyArticle = false, queuedSource = false } = {}){
  const state=`
  import initSqlJs from 'sql.js';import{reactive}from'vue';import{LocalDbLeases}from'/src/native/local-db-leases.ts';
- const SQL=await initSqlJs({locateFile:()=>'/node_modules/sql.js/dist/sql-wasm.wasm'}),raw=new SQL.Database(),leases=new LocalDbLeases();
+ const SQL=await initSqlJs({locateFile:()=>'/node_modules/sql.js/dist/sql-wasm.wasm'}),leases=new LocalDbLeases();
+ const savedDb=${queuedSource}?sessionStorage.getItem('rss-queue-db'):null;
+ const raw=new SQL.Database(savedDb?Uint8Array.from(atob(savedDb),char=>char.charCodeAt(0)):undefined);
+ function persist(){if(${queuedSource})sessionStorage.setItem('rss-queue-db',btoa(Array.from(raw.export(),n=>String.fromCharCode(n)).join('')))}
  export const auth=reactive({activationStatus:'ready',activationVersion:0,userId:'A',workspaceId:'one',token:'token-A'}),requests=[],status=reactive({failed:false,running:false,blocked:0,resetPending:false,resetBlocked:false,epochUnknown:false});
  function query(sql,values=[]){const s=raw.prepare(sql);try{s.bind(values);const rows=[];while(s.step())rows.push(s.getAsObject());return rows}finally{s.free()}}
  export function activate(user){auth.activationStatus='pending';leases.activateOwner(leases.prepareOwner({userId:user,workspaceId:'one'}),()=>undefined);leases.activatePolicy(leases.preparePolicy('rss','cloud'),()=>undefined);auth.userId=user;auth.token='token-'+user;auth.activationVersion++;auth.activationStatus='ready'}
- export const localDB={captureOperation:o=>leases.capture(o),bindOperation:lease=>({schemaConnection:raw,owner:lease.owner.principal,assertCurrent:()=>leases.assertCurrent(lease),run:async(sql,v=[])=>{leases.assertCurrent(lease);raw.run(sql,v)},query:async(sql,v)=>{leases.assertCurrent(lease);return query(sql,v)},queryOne:async(sql,v)=>{leases.assertCurrent(lease);return query(sql,v)[0]??null},runInTransaction:async list=>{leases.assertCurrent(lease);raw.run('BEGIN');try{for(const s of list){leases.assertCurrent(lease);raw.run(s.statement,s.values)}raw.run('COMMIT')}catch(e){raw.run('ROLLBACK');throw e}}})};activate('A');
+ export const localDB={captureOperation:o=>leases.capture(o),bindOperation:lease=>({schemaConnection:raw,owner:lease.owner.principal,assertCurrent:()=>leases.assertCurrent(lease),run:async(sql,v=[])=>{leases.assertCurrent(lease);raw.run(sql,v);persist()},query:async(sql,v)=>{leases.assertCurrent(lease);return query(sql,v)},queryOne:async(sql,v)=>{leases.assertCurrent(lease);return query(sql,v)[0]??null},runInTransaction:async list=>{leases.assertCurrent(lease);raw.run('BEGIN');try{for(const s of list){leases.assertCurrent(lease);raw.run(s.statement,s.values)}raw.run('COMMIT')}catch(e){raw.run('ROLLBACK');throw e}persist()}})};activate('A');
  export const useAuthStore=()=>auth;export const captureAuthSession=()=>auth.activationVersion;export function assertAuthSession(_a,version){if(version!==auth.activationVersion||auth.activationStatus!=='ready')throw new DOMException('Former RSS account','AbortError')}
  let nativeStatus='read';export const makeUnread=()=>nativeStatus='unread';export const article=()=>({id:'article',sourceId:'source',title:'Article '+auth.userId,content:'<p>PRIVATE BODY '+auth.userId+'</p>',url:'https://example.test/article',categories:[],fetchedAt:'2026-01-01T00:00:00Z',relevance:0,matchReasons:[],status:nativeStatus,portalManaged:!${legacyArticle},legacySnapshotAvailable:${legacyArticle}});
  let offline=true;export function online(){offline=false}export function disconnect(){offline=true}
+ const subscriptions = new Map();
  let emailPause=null,emailRelease;export function pauseHubEmail(){window.hubEmailWaiting=false;emailPause=new Promise(resolve=>emailRelease=resolve)}export const releaseHubEmail=()=>emailRelease?.();export async function readHubEmails(){const pause=emailPause;emailPause=null;if(pause){window.hubEmailWaiting=true;await pause}return[]}
  export async function http(path,options={}){options.assertCurrent?.();requests.push({path,owner:auth.userId,body:options.body});
  if(path==='/api/rss/items/article')return article();
  if(path==='/api/rss/items/article/migration-snapshot'&&${legacyArticle})return{id:'article',source_id:'source',title:article().title,url:'https://example.test/article',summary:'Portable summary',updated_at:'2026-01-02T03:04:05.123456Z',user_id:auth.userId,workspace_id:auth.workspaceId};
- if(path==='/api/rss/sources')return{sources:${legacySource}? [{id:'src_legacy',title:'Legacy feed',url:'https://example.test/legacy',portalManaged:false,enabled:true}]:[]};
+ if(path==='/api/rss/sources')return{sources:${legacySource}? [{id:'src_legacy',title:'Legacy feed',url:'https://example.test/legacy',portalManaged:false,enabled:true}]:Array.from(subscriptions.values())};
+ if(${queuedSource}&&path==='/api/rss/sources/starter')return{feeds:[],categories:[]};
+ if(${queuedSource}&&path==='/api/rss/sources/queued'){
+   if(offline)throw new TypeError('Connection unavailable');
+   const intent=JSON.parse(options.body);const source={id:'src_'+intent.operationId,title:intent.title,url:intent.url,portalManaged:true,enabled:intent.enabled};
+   subscriptions.set(intent.operationId,source);
+   return{operation_id:intent.operationId,source_id:source.id,user_id:auth.userId,workspace_id:auth.workspaceId}
+ }
+ if(${queuedSource}&&path.startsWith('/api/rss/portable/changes?')){
+   return{user_id:auth.userId,workspace_id:auth.workspaceId,changes:[],next_cursor:Number(new URL(path,'https://fixture').searchParams.get('cursor'))}
+ }
  if(path==='/api/rss/sources/src_legacy/migration-snapshot'&&${legacySource})return{id:'src_legacy',title:'Legacy feed',url:'https://example.test/legacy',category:'news',updated_at:'2026-01-02T03:04:05.123456Z',user_id:auth.userId,workspace_id:auth.workspaceId};
  if(path.startsWith('/api/notifications'))return{notifications:[]};
  if(path.startsWith('/api/rss/items?')){const q=new URL(path,'https://fixture').searchParams;return{items:(!q.get('status')||q.get('status')===nativeStatus)&&(!q.getAll('id').length||q.getAll('id').includes('article'))?[article()]:[]}};
@@ -28,15 +42,18 @@ export async function createRssStateBrowserFixture({ legacySource = false, legac
  throw new Error('Unexpected request '+path)}
  `
  const entry=`
- import{createApp,h,ref}from'vue';import{createI18n}from'vue-i18n';import{createRouter,createMemoryHistory}from'vue-router';import messages from'/src/locales/en-US.json';import Detail from'/src/features/rss/RssItemDetail.vue';import List from'/src/features/rss/RssListView.vue';import{auth,activate,localDB,requests,online,disconnect}from'virtual:rss-state';import{rssPortalStore}from'/src/features/rss/rss-sync-store.ts';import{reconcileRssItemStates}from'/src/features/rss/rss-item-state.ts';import{applyRecordPage}from'/src/native/portal-sync/record-engine.ts';
+ import{createApp,h,ref}from'vue';import{createI18n}from'vue-i18n';import{createRouter,createMemoryHistory,RouterView}from'vue-router';import messages from'/src/locales/en-US.json';import Detail from'/src/features/rss/RssItemDetail.vue';import List from'/src/features/rss/RssListView.vue';import Add from'/src/features/rss/RssAddSource.vue';import{auth,activate,localDB,requests,online,disconnect}from'virtual:rss-state';import{rssPortalStore}from'/src/features/rss/rss-sync-store.ts';import{reconcileRssItemStates}from'/src/features/rss/rss-item-state.ts';import{applyRecordPage}from'/src/native/portal-sync/record-engine.ts';
  import Messages from'/src/features/messages/MessagesHubView.vue';import{makeUnread,pauseHubEmail,releaseHubEmail}from'virtual:rss-state';import ConfirmDialog from'/src/components/base/ConfirmDialog.vue';
- const router=createRouter({history:createMemoryHistory(),routes:[{path:'/rss/:id',component:Detail,name:'rss-item'},{path:'/rss',component:Detail,name:'rss'}]});await router.push('/rss/article');
+ const router=createRouter({history:createMemoryHistory(),routes:[{path:'/rss/add',component:Add,name:'rss-add'},{path:'/rss/:id',component:Detail,name:'rss-item'},{path:'/rss',component:${queuedSource}?List:Detail,name:'rss'}]});
+ if(${queuedSource})router.afterEach(route=>sessionStorage.setItem('rss-queue-route',route.path));
+ await router.push(${queuedSource}?sessionStorage.getItem('rss-queue-route')||'/rss/add':'/rss/article');
  async function epoch(){await rssPortalStore(localDB.bindOperation(localDB.captureOperation({kind:'local-edit'}))).observeEpoch(0)}await epoch();
  const show=ref('detail');document.getElementById('list').onclick=()=>show.value='list';document.getElementById('messages').onclick=()=>{makeUnread();show.value='messages'};
- createApp({render:()=>[h(show.value==='list'?List:show.value==='messages'?Messages:Detail),h(ConfirmDialog)]}).use(createI18n({legacy:false,locale:'en-US',messages:{'en-US':messages}})).use(router).mount('#app');
+ createApp({render:()=>[h(${queuedSource}?RouterView:show.value==='list'?List:show.value==='messages'?Messages:Detail),h(ConfirmDialog)]}).use(createI18n({legacy:false,locale:'en-US',messages:{'en-US':messages}})).use(router).mount('#app');
+ if(${queuedSource}){const {rssSyncRuntime}=await import('/src/features/rss/rss-sync-runtime.ts');rssSyncRuntime.start()}
  async function snapshot(){const db=localDB.bindOperation(localDB.captureOperation({kind:'local-edit'}));window.stateSnapshot=await db.query("SELECT item_json FROM local_portal_records WHERE owner_user_id=? AND kind='item-state'",[auth.userId])}
  document.getElementById('alice').onclick=async()=>{activate('A');await epoch()};document.getElementById('bob').onclick=async()=>{activate('B');await epoch()};
- document.getElementById('offline').onclick=disconnect;document.getElementById('online').onclick=online;
+ document.getElementById('offline').onclick=disconnect;document.getElementById('online').onclick=()=>{online();if(${queuedSource})window.dispatchEvent(new Event('online'))};
  document.getElementById('sync').onclick=async()=>{try{await reconcileRssItemStates();document.getElementById('result').textContent='Saved to pocketd'}catch(e){document.getElementById('result').textContent=String(e)}await snapshot()};
  let remoteSequence=0;async function remoteState(status){remoteSequence++;const store=rssPortalStore(localDB.bindOperation(localDB.captureOperation({kind:'local-edit'})));await applyRecordPage(store,{epoch:0,next_cursor:'remote-'+remoteSequence,changes:[{module:'rss',kind:'item-state',ext_id:'pocketd-item:article',title:'',payload:{item_ext_id:'pocketd-item:article',status},client_updated_at:new Date(Date.now()+1000+remoteSequence).toISOString(),op_id:'remote-state-'+remoteSequence,deleted:false,epoch:0,change_seq:remoteSequence}]});window.dispatchEvent(new Event('openpocket:portal-rss-applied'));await snapshot()}
  document.getElementById('remote').onclick=()=>remoteState('starred');document.getElementById('remote-read').onclick=()=>remoteState('read');
@@ -47,7 +64,12 @@ export async function createRssStateBrowserFixture({ legacySource = false, legac
  const server=await createServer({root,configFile:false,cacheDir,optimizeDeps:{noDiscovery:true,include:['sql.js','vue','vue-i18n','vue-router','dompurify','marked']},plugins:[vue(),{name:'rss-state-fixture',enforce:'pre',resolveId(source,importer){
   if(source==='./http'&&(importer?.endsWith('/api/rss.ts')||importer?.endsWith('/api/notifications.ts')))return'\0rss-state';
   if(source==='virtual:rss-state'||/\/native\/local-db(?:\.ts)?$/.test(source)||/\/stores\/auth(?:\.ts)?$/.test(source)||/\/api\/http(?:\.ts)?$/.test(source))return'\0rss-state';
-  if(source==='virtual:rss-state-entry')return'\0rss-state-entry';if(source==='./rss-sync-runtime')return'\0rss-state-runtime';
+  if(source==='virtual:rss-state-entry')return'\0rss-state-entry';if(source==='./rss-sync-runtime'&&!queuedSource)return'\0rss-state-runtime';
+  if(queuedSource&&importer?.endsWith('/rss-sync-runtime.ts')){
+    if(source.endsWith('/record-runtime.ts'))return'\0rss-state-portable-runtime';
+    if(source.endsWith('/lobster-init'))return'\0rss-state-ready';
+    if(source.endsWith('/syncPolicyStore'))return'\0rss-state-policy';
+  }
   if(source==='../../api/rss'&&importer?.endsWith('/messages/MessagesHubView.vue'))return'\0rss-state-hub-api';
   if(source.endsWith('AddToLearningButton.vue'))return'\0rss-state-learning';
   if(source.endsWith('LocalOnlyBadge.vue'))return'\0rss-state-learning';
@@ -59,6 +81,9 @@ export async function createRssStateBrowserFixture({ legacySource = false, legac
  },load(id){
  if(id==='\0rss-state')return state;if(id==='\0rss-state-entry')return entry;
  if(id==='\0rss-state-runtime')return"import{status}from'virtual:rss-state';export const rssSyncRuntime={status,syncNow:async()=>0}";
+ if(id==='\0rss-state-portable-runtime')return"import{status}from'virtual:rss-state';export const recordRuntimes=new Map(),createRecordRuntime=()=>({status,start(){},syncNow:async()=>0})";
+ if(id==='\0rss-state-ready')return"import{ref}from'vue';export const lobsterReady=ref(true)";
+ if(id==='\0rss-state-policy')return"export const readCachedModuleMode=()=> 'cloud'";
  if(id==='\0rss-state-hub-api')return"import{rssApi as actual}from'/src/api/rss.ts';export const rssApi={...actual,async listItems(...args){window.hubRssListReady=false;const result=await actual.listItems(...args);window.hubRssListReady=true;return result}}";
  if(id==='\0rss-state-learning')return"export default {render:()=>null}";
  if(id==='\0rss-state-slot')return"export default {setup(_props,{slots}){return()=>slots.default?.()}}";

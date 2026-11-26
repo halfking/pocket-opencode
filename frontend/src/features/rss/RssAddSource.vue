@@ -6,6 +6,7 @@ import { useI18n } from 'vue-i18n'
 import { toUserMessage } from '../../api/error-message'
 import { useAuthStore } from '../../stores/auth'
 import {captureRssPortalOperation} from './rss-sync-store'
+import { queueRssSource } from './rss-source-outbox'
 
 const router = useRouter()
 const step = ref<'catalog' | 'discover'>('catalog')
@@ -100,38 +101,20 @@ async function importCategory(cat: string) {
   }
 }
 
-async function pickCandidate(c: RSSCandidate) {
-  const stamp=generation
-  busy.value = true
-  errorMsg.value = ''
-  try {
-    if(!candidates.value.includes(c))throw new DOMException('Former RSS discovery result','AbortError')
-    const operation=captureRssPortalOperation()
-    await rssApi.addSource({
-      url: c.url,
-      title: c.title || '',
-      enabled: enabled.value,
-      fetchInterval: interval.value,
-    },{assertCurrent:operation.assertCurrent})
-    operation.assertCurrent();if(!current(stamp))return
-    router.replace({ name: 'rss' })
-  } catch (e: any) {
-    if(current(stamp)&&e?.name!=='AbortError')errorMsg.value = `保存失败：${e?.message ?? e}`
-  } finally {
-    if(current(stamp))busy.value = false
-  }
+function pickCandidate(candidate: RSSCandidate) {
+  if (candidates.value.includes(candidate)) return saveSource(candidate.url, candidate.title)
 }
 
-async function addDirect() {
-  const stamp=generation
-  // 没找到候选但用户直接给了 URL
+async function saveSource(url: string, title?: string) {
+  if (busy.value || !url.trim()) return
+  const stamp = generation
   busy.value = true
   errorMsg.value = ''
   try {
-    const operation=captureRssPortalOperation()
-    await rssApi.addSource({ url: inputUrl.value.trim(), enabled: enabled.value, fetchInterval: interval.value },{assertCurrent:operation.assertCurrent})
-    operation.assertCurrent();if(!current(stamp))return
-    router.replace({ name: 'rss' })
+    const operation = captureRssPortalOperation()
+    await queueRssSource({ url, title, enabled: enabled.value, fetchInterval: interval.value.trim() }, operation)
+    operation.assertCurrent()
+    if (current(stamp)) await router.replace({ name: 'rss' })
   } catch (e: any) {
     if(current(stamp)&&e?.name!=='AbortError')errorMsg.value = toUserMessage(e, t, t('errors.operateFailed'))
   } finally {
@@ -165,6 +148,9 @@ function back() {
       <input id="rss-add-url" v-model="inputUrl" placeholder="https://example.com 或 https://example.com/feed" @keydown.enter="start" />
       <button class="btn btn-primary" :disabled="!inputUrl.trim() || busy" @click="start">
         {{ busy ? '发现中…' : '发现候选' }}
+      </button>
+      <button class="btn" type="button" :disabled="!inputUrl.trim() || busy" @click="saveSource(inputUrl)">
+        {{ t('rssPortal.queueAdd') }}
       </button>
 
       <div class="divider">或从内置目录选择（后台自动拉取最新内容）</div>
@@ -221,14 +207,13 @@ function back() {
       <div class="divider">或者手动指定 URL</div>
       <div class="manual">
         <input id="rss-add-url" v-model="inputUrl" />
-        <button class="btn" :disabled="busy" @click="addDirect">添加</button>
-      </div>
-
-      <div class="options">
-        <label><input type="checkbox" v-model="enabled" /> 启用</label>
-        <label>拉取间隔 <input v-model="interval" placeholder="30m" /></label>
+        <button class="btn" type="button" :disabled="!inputUrl.trim() || busy" @click="saveSource(inputUrl)">{{ t('rssPortal.queueAdd') }}</button>
       </div>
     </section>
+    <div class="options">
+      <label><input type="checkbox" v-model="enabled" /> 启用</label>
+      <label>拉取间隔 <input v-model="interval" placeholder="30m" /></label>
+    </div>
   </div>
 </template>
 

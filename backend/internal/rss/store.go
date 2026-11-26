@@ -78,6 +78,20 @@ CREATE INDEX IF NOT EXISTS idx_rss_digests_scope_date ON rss_digests(user_id,wor
 }
 
 func (s *Store) CreateSource(ctx context.Context, req CreateSourceRequest, sc Scope) (*Source, error) {
+	x, err := prepareCreateSource(req, sc)
+	if err != nil {
+		return nil, err
+	}
+	err = s.portableWrite(ctx, sc, func(tx pgx.Tx) error {
+		return insertSource(ctx, tx, x, req.PortalEpoch)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create source: %w", err)
+	}
+	return x, nil
+}
+
+func prepareCreateSource(req CreateSourceRequest, sc Scope) (*Source, error) {
 	if err := requireScope(sc); err != nil {
 		return nil, err
 	}
@@ -96,14 +110,13 @@ func (s *Store) CreateSource(ctx context.Context, req CreateSourceRequest, sc Sc
 		x.Status = SourceDisabled
 	}
 	x.NextFetchAt = &now
-	err := s.portableWrite(ctx, sc, func(tx pgx.Tx) error {
-		_, err := tx.Exec(ctx, `INSERT INTO rss_sources(id,user_id,workspace_id,url,title,description,site_url,language,category,status,enabled,fetch_interval,next_fetch_at,created_at,updated_at,portal_managed,portal_epoch) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$14,$15,$16)`, x.ID, x.UserID, x.WorkspaceID, x.URL, x.Title, x.Description, x.SiteURL, x.Language, x.Category, x.Status, x.Enabled, int64(x.FetchInterval/time.Second), x.NextFetchAt, x.CreatedAt, req.PortalSync, req.PortalEpoch)
-		return err
-	})
-	if err != nil {
-		return nil, fmt.Errorf("create source: %w", err)
-	}
 	return x, nil
+}
+
+func insertSource(ctx context.Context, tx pgx.Tx, x *Source, epoch *int64) error {
+	_, err := tx.Exec(ctx, `INSERT INTO rss_sources(id,user_id,workspace_id,url,title,description,site_url,language,category,status,enabled,fetch_interval,next_fetch_at,created_at,updated_at,portal_managed,portal_epoch) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$14,$15,$16)`,
+		x.ID, x.UserID, x.WorkspaceID, x.URL, x.Title, x.Description, x.SiteURL, x.Language, x.Category, x.Status, x.Enabled, int64(x.FetchInterval/time.Second), x.NextFetchAt, x.CreatedAt, x.PortalManaged, epoch)
+	return err
 }
 
 const sourceCols = `id,user_id,workspace_id,url,title,description,site_url,language,category,etag,last_modified,status,enabled,error,fetch_interval,next_fetch_at,last_fetched_at,created_at,updated_at,portal_managed`

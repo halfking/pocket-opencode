@@ -1,5 +1,13 @@
 {
   "rssPortal": {
+    "queueAdd": "添加 Feed",
+    "queueTitle": "待创建的订阅",
+    "queueWaiting": "联网且 RSS 云端权限开启后，将创建这里的订阅。",
+    "queueReadFailed": "无法读取待创建的订阅。",
+    "queueLocked": "暂时无法读取订阅详情",
+    "queueConflict": "此请求与已有订阅或请求冲突。",
+    "queueInvalid": "请核对 Feed 地址和拉取间隔，再重新添加。",
+    "queueRemove": "移出队列",
     "copy": "保存为跨端资料",
     "legacyArticleSave": "保存文章资料到本机",
     "legacyArticleConfirm": "将「{title}」的标题、链接和摘要保存到本机的工作区 {workspace}？",

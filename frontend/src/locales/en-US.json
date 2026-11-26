@@ -1,5 +1,13 @@
 {
   "rssPortal": {
+    "queueAdd": "Add feed",
+    "queueTitle": "Pending subscriptions",
+    "queueWaiting": "These feeds will be added when you are online and RSS cloud access is enabled.",
+    "queueReadFailed": "Could not read the pending subscriptions.",
+    "queueLocked": "Subscription details unavailable",
+    "queueConflict": "This request conflicts with an existing subscription or request.",
+    "queueInvalid": "Check the feed address and fetch interval, then add it again.",
+    "queueRemove": "Remove from queue",
     "copy": "Save a shared record",
     "legacyArticleSave": "Save article metadata locally",
     "legacyArticleConfirm": "Save the title, link, and summary for “{title}” on this device for workspace {workspace}?",

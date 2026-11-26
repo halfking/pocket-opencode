@@ -6,6 +6,7 @@ import { useAuthStore } from '../../stores/auth'
 import { readCachedModuleMode } from '../../stores/syncPolicyStore'
 import { captureNativeRssOperation,ingestNativeRssChanges,nativeRssBlockedCount } from './rss-native-ingest'
 import { reconcileRssItemStates } from './rss-item-state'
+import { flushQueuedRssSources } from './rss-source-outbox'
 
 const portable=createRecordRuntime(rssSyncAdapter),nativeFailed=ref(false),nativeBlocked=ref(0),nativeRunning=ref(false)
 const status=reactive({...portable.status})
@@ -20,6 +21,13 @@ async function syncNow():Promise<number>{
   const stamp=generation
   nativeRunning.value=true
   flight=(async()=>{try{
+    let queuedSourceError: unknown
+    try {
+      await flushQueuedRssSources(operation)
+    } catch (error) {
+      operation.assertCurrent()
+      queuedSourceError = error
+    }
     // Learn the verified module epoch before consuming events. Their recorded
     // epoch remains immutable and is never replaced by this snapshot.
     await portable.syncNow()
@@ -28,8 +36,10 @@ async function syncNow():Promise<number>{
     operation.assertCurrent();await ingestNativeRssChanges(operation)
     const db=operation.db
     const blocked=await nativeRssBlockedCount(db);db.assertCurrent()
+    const result = await portable.syncNow()
+    if (queuedSourceError) throw queuedSourceError
     if(stamp===generation){nativeBlocked.value=blocked;nativeFailed.value=false}
-    return await portable.syncNow()
+    return result
   }catch(error){if(stamp===generation&&!(error instanceof Error&&error.name==='AbortError')){nativeFailed.value=true;console.warn('[rss-sync] Native source changes retained for retry:',error)}return 0}
   finally{if(stamp===generation)nativeRunning.value=false;flight=null}})()
   return flight

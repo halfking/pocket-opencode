@@ -24,6 +24,11 @@ CREATE TABLE IF NOT EXISTS rss_portable_item_states (
  user_id TEXT NOT NULL,workspace_id TEXT NOT NULL,ext_id TEXT NOT NULL,operation JSONB NOT NULL,
  PRIMARY KEY(user_id,workspace_id,ext_id)
 );
+CREATE TABLE IF NOT EXISTS rss_source_create_receipts (
+ user_id TEXT NOT NULL, workspace_id TEXT NOT NULL, op_id TEXT NOT NULL,
+ request_hash BYTEA NOT NULL, source_id TEXT NOT NULL UNIQUE, client_updated_at TIMESTAMPTZ NOT NULL,
+ PRIMARY KEY(user_id,workspace_id,op_id)
+);
 CREATE OR REPLACE FUNCTION rss_portable_source_change() RETURNS trigger LANGUAGE plpgsql SET search_path FROM CURRENT AS $$
 DECLARE src rss_sources%ROWTYPE; changed JSONB; at TIMESTAMPTZ;
 BEGIN
@@ -40,6 +45,10 @@ BEGIN
  -- taking the scope lock, which portable writers acquire before row locks.
  PERFORM pg_advisory_xact_lock(hashtextextended(json_build_array('rss-portable',src.user_id,src.workspace_id)::text,0));
  at:=clock_timestamp();
+ IF TG_OP='INSERT' THEN
+  at:=COALESCE((SELECT client_updated_at FROM rss_source_create_receipts
+   WHERE source_id=src.id AND user_id=src.user_id AND workspace_id=src.workspace_id),at);
+ END IF;
  INSERT INTO rss_portable_changes(user_id,workspace_id,kind,ext_id,title,payload,client_updated_at,op_id,epoch,deleted,intent,changed_fields)
  VALUES(src.user_id,src.workspace_id,'source','pocketd-source:'||src.id,src.title,
   CASE WHEN TG_OP='DELETE' THEN '{}'::jsonb ELSE jsonb_build_object('url',src.url,'category',src.category) END,
