@@ -128,7 +128,7 @@ describe('§824 切换设备不得静默丢掉切换前的音频', () => {
 // ─────────────────────────────────────────────────────────────────────────
 // §877 D48：IndexedDB 层的连接归还。
 //
-// ⚠ **这条是形状判据，不是行为判据** —— `meeting-audio.ts` 的三个函数要行为覆盖就得
+// ⚠ **这条是形状判据，不是行为判据** —— `meeting-audio.ts` 的连接入口要行为覆盖就得
 //   在本文件里再抄一份 IndexedDB 替身；替身本身是本节最容易抄错的东西，所以行为那一层
 //   放在 `native/__tests__/pocket-native.test.mjs`（同一条性质、同一个替身、含对照组）。
 //   这里只保证「这个文件的形状没退回去」，并且**明确记录它看不见什么**。
@@ -147,7 +147,7 @@ describe('§877 IndexedDB 连接必须归还（meeting-audio 形状层）', () =
   it('★ 每个 openDB() 都配一个 db.close()，数量必须对齐', () => {
     const opens = (code.match(/await openDB\(\)/g) || []).length
     const closes = (code.match(/db\.close\(\)/g) || []).length
-    assert.equal(opens, 3, `openDB 调用点变成 ${opens} 处 —— 本节的前提要重写`)
+    assert.equal(opens, 5, `openDB 调用点变成 ${opens} 处 —— 检查日常读写与两条备份入口是否都归还连接`)
     assert.equal(closes, opens, `${opens} 次开连接只有 ${closes} 次 close ⇒ 每次调用漏一条连接`)
   })
 

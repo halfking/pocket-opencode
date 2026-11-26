@@ -4,6 +4,8 @@
  * blob URL 在 App 重启后失效；完整录音存入 IndexedDB 以便回放。
  * Sprint 4 可迁移至 @capacitor/filesystem。
  */
+import { recordingStores, validateBackupRecording, type BackupRecording } from './device-backup/manifest.ts'
+
 export interface MeetingAudioOperation {
   readonly owner: { readonly userId: string; readonly workspaceId: string } | null
   assertCurrent(): void
@@ -12,8 +14,7 @@ const recordingKey = (meetingId: string, operation: MeetingAudioOperation): stri
   JSON.stringify(['owned-v1', operation.owner?.userId ?? '', operation.owner?.workspaceId ?? '', meetingId])
 
 const DB_NAME = 'pocket-meeting-audio'
-const LEGACY_STORE = 'recordings'
-const STORE = 'owned-recordings'
+const [LEGACY_STORE, STORE] = recordingStores
 const DB_VERSION = 2
 
 function openDB(): Promise<IDBDatabase> {
@@ -31,6 +32,84 @@ function openDB(): Promise<IDBDatabase> {
     req.onsuccess = () => resolve(req.result)
     req.onerror = () => reject(req.error)
   })
+}
+
+export interface MeetingAudioBackupEntry extends BackupRecording {
+  blob: Blob
+}
+
+/** Capture Blob handles and their original store and key in one read transaction. */
+export async function snapshotMeetingAudio(assertCurrent: () => void): Promise<MeetingAudioBackupEntry[]> {
+  assertCurrent()
+  const db = await openDB()
+  try {
+    assertCurrent()
+    return await new Promise((resolve, reject) => {
+      const result: MeetingAudioBackupEntry[] = []
+      const tx = db.transaction(recordingStores, 'readonly')
+      let failure: unknown
+      tx.oncomplete = () => {
+        try { assertCurrent(); resolve(result) } catch (error) { reject(error) }
+      }
+      tx.onabort = () => reject(failure ?? tx.error ?? new Error('Meeting audio backup read was aborted'))
+      for (const store of recordingStores) {
+        const req = tx.objectStore(store).openCursor()
+        req.onsuccess = () => {
+          const cursor = req.result
+          if (!cursor) return
+          try {
+            const blob = cursor.value
+            if (!(blob instanceof Blob)) throw new Error('Unexpected meeting audio backup value')
+            const entry = validateBackupRecording({ store, key: cursor.key, mimeType: blob.type })
+            result.push({ ...entry, blob })
+            cursor.continue()
+          } catch (error) {
+            failure = error
+            tx.abort()
+          }
+        }
+      }
+    })
+  } finally {
+    db.close()
+  }
+}
+
+/** Install a verified archive's recordings on an empty target, as one transaction. */
+export async function restoreMeetingAudio(entries: MeetingAudioBackupEntry[], assertCurrent: () => void): Promise<void> {
+  assertCurrent()
+  const records = entries.map(({ blob, ...entry }) => {
+    const metadata = validateBackupRecording(entry)
+    if (!(blob instanceof Blob) || blob.type !== metadata.mimeType) throw new Error('Invalid meeting audio backup Blob')
+    return { ...metadata, blob }
+  })
+  const db = await openDB()
+  try {
+    assertCurrent()
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(recordingStores, 'readwrite')
+      let failure: unknown
+      tx.oncomplete = () => resolve()
+      tx.onabort = () => reject(failure ?? tx.error ?? new Error('Meeting audio backup write was aborted'))
+      let checksRemaining: number = recordingStores.length
+      for (const store of recordingStores) {
+        const count = tx.objectStore(store).count()
+        count.onsuccess = () => {
+          try {
+            if (count.result !== 0) throw new Error('Meeting audio restore target is not empty')
+            if (--checksRemaining > 0) return
+            assertCurrent()
+            for (const record of records) tx.objectStore(record.store).add(record.blob, record.key)
+          } catch (error) {
+            failure = error
+            tx.abort()
+          }
+        }
+      }
+    })
+  } finally {
+    db.close()
+  }
 }
 
 /** 保存会议完整录音 */
