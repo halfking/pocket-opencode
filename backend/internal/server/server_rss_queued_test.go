@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -80,12 +81,26 @@ func TestRSSQueuedSourceReceiptAndSchedule(t *testing.T) {
 		t.Fatalf("replay or conflicting writes duplicated source journal: %+v %v", journal, err)
 	}
 	change := journal.Changes[0]
-	if change.ClientUpdatedAt == nil || *change.ClientUpdatedAt != "2026-01-02T03:04:05.123Z" || change.Epoch == nil || *change.Epoch != 3 || change.ExtID != "pocketd-source:"+id {
+	if change.ClientUpdatedAt == nil || change.ClientUpdatedAt.UTC().Format(time.RFC3339Nano) != "2026-01-02T03:04:05.123Z" || change.Epoch == nil || *change.Epoch != 3 || change.ExtID != "pocketd-source:"+id {
 		t.Fatalf("original offline version was replaced: %+v", change)
 	}
 	due, err := store.ClaimDueSources(ctx, scope, time.Now().Add(time.Minute), 10)
 	if err != nil || len(due) != 1 || due[0].ID != id || due[0].FetchInterval != 45*time.Minute || !due[0].Enabled {
 		t.Fatalf("created source is unavailable to the scheduler: %+v %v", due, err)
+	}
+	// Use the real fetcher, parser and PostgreSQL store with a deterministic feed response.
+	fetcher := rss.NewFetcher(store, &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.String() != "https://example.com/feed" {
+			t.Fatalf("fetch used a different source: %s", r.URL)
+		}
+		const body = `<rss version="2.0"><channel><title>Test feed</title><link>https://example.com</link><description>Local fixture</description><item><guid>first-item</guid><title>First article</title><link>https://example.com/article</link></item></channel></rss>`
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header), Request: r}, nil
+	})})
+	if fetched, err := fetcher.RefreshSource(ctx, due[0], nil); err != nil || fetched.NewItems != 1 {
+		t.Fatalf("scheduled source could not fetch: %+v %v", fetched, err)
+	}
+	if items, err := store.ListItems(ctx, scope, rss.ListItemsOptions{SourceID: id}); err != nil || len(items) != 1 || items[0].Title != "First article" {
+		t.Fatalf("first fetch did not persist the article: %+v %v", items, err)
 	}
 	if err := store.DeleteSource(ctx, id, scope); err != nil {
 		t.Fatal(err)
@@ -95,6 +110,10 @@ func TestRSSQueuedSourceReceiptAndSchedule(t *testing.T) {
 	}
 	if sources, err := store.ListSources(ctx, scope); err != nil || len(sources) != 0 {
 		t.Fatalf("old request recreated a deleted source: %+v %v", sources, err)
+	}
+	checkpoint, err := store.ListPortableChanges(ctx, scope, 0, 10)
+	if err != nil {
+		t.Fatal(err)
 	}
 
 	// A failed journal insert must leave neither a receipt nor a native source.
@@ -120,8 +139,8 @@ func TestRSSQueuedSourceReceiptAndSchedule(t *testing.T) {
 	if err != nil || saved.Enabled || saved.Status != rss.SourceDisabled || saved.FetchInterval != 30*time.Minute {
 		t.Fatalf("disabled subscription settings: %+v %v", saved, err)
 	}
-	later, err := store.ListPortableChanges(ctx, scope, change.Sequence, 10)
-	if err != nil || len(later.Changes) != 2 || later.Changes[1].Epoch != nil {
+	later, err := store.ListPortableChanges(ctx, scope, checkpoint.NextCursor, 10)
+	if err != nil || len(later.Changes) != 1 || later.Changes[0].Epoch != nil {
 		t.Fatalf("unknown original epoch was reassigned: %+v %v", later, err)
 	}
 }
