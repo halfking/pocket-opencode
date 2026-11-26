@@ -11,6 +11,7 @@ import RssPortalPanel from './RssPortalPanel.vue'
 import { useAuthStore } from '../../stores/auth'
 import { captureRssPortalOperation, type RssPortalOperation } from './rss-sync-store'
 import { overlayRssItemStates } from './rss-item-state'
+import { prepareLegacyRssSource } from './legacy-rss-source'
 
 const router = useRouter()
 const { t } = useI18n()
@@ -24,6 +25,9 @@ const statusFilter = ref<'unread' | 'read' | 'starred' | 'archived' | ''>('unrea
 const search = ref('')
 const importing = ref(false)
 const importMsg = ref('')
+const savingLegacy = ref(false)
+const savedLegacy = ref<string[]>([])
+const legacyMessage = ref('')
 const auth=useAuthStore()
 let generation=0,readVersion=0,stateRead=0,sourcesOperation:RssPortalOperation|null=null
 let statusRefreshQueued=false
@@ -93,7 +97,7 @@ async function refreshStatuses(){
 }
 onMounted(()=>{void refresh();window.addEventListener('openpocket:portal-rss-applied',refreshStatuses)})
 watch(statusFilter,()=>{void refresh()})
-watch(()=>[auth.activationVersion,auth.userId,auth.workspaceId,auth.activationStatus],()=>{generation++;readVersion++;statusRefreshQueued=false;sourcesOperation=null;sources.value=[];items.value=[];search.value='';errorMsg.value=importMsg.value='';loading.value=importing.value=false;if(auth.activationStatus==='ready')void refresh()},{flush:'sync'})
+watch(()=>[auth.activationVersion,auth.userId,auth.workspaceId,auth.activationStatus],()=>{generation++;readVersion++;statusRefreshQueued=false;sourcesOperation=null;sources.value=[];items.value=[];savedLegacy.value=[];search.value='';errorMsg.value=importMsg.value=legacyMessage.value='';loading.value=importing.value=savingLegacy.value=false;if(auth.activationStatus==='ready')void refresh()},{flush:'sync'})
 onBeforeUnmount(()=>{generation++;sourcesOperation=null;window.removeEventListener('openpocket:portal-rss-applied',refreshStatuses)})
 
 function openItem(id: string) {
@@ -101,6 +105,32 @@ function openItem(id: string) {
 }
 function openAdd() {
   router.push({ name: 'rss-add' })
+}
+async function saveLegacySource(src: RSSSource) {
+  if (savingLegacy.value) return
+  const stamp = generation
+  savingLegacy.value = true
+  errorMsg.value = legacyMessage.value = ''
+  try {
+    const prepared = await prepareLegacyRssSource(src.id, sourceOperation(src))
+    if (!current(stamp)) return
+    let imported = false
+    if (prepared) {
+      const accepted = await confirm({ message: t('settings.legacyRssConfirm', {
+        title: prepared.title, workspace: prepared.workspaceId,
+      }) })
+      if (!accepted || !current(stamp)) return
+      imported = await prepared.save()
+      if (!current(stamp)) return
+      if (imported) window.dispatchEvent(new Event('openpocket:portal-rss-applied'))
+    }
+    savedLegacy.value = [...savedLegacy.value, src.id]
+    legacyMessage.value = t(imported ? 'settings.legacyRssSaved' : 'settings.legacyRssExists')
+  } catch (e) {
+    if (current(stamp) && !(e instanceof Error && e.name === 'AbortError')) errorMsg.value = t('settings.legacyRssFailed')
+  } finally {
+    if (current(stamp)) savingLegacy.value = false
+  }
 }
 async function refreshSource(src: RSSSource) {
   const stamp=generation
@@ -188,6 +218,7 @@ const totalUnread = computed(() => sources.value.reduce((acc, s) => acc + (s.unr
     </nav>
 
     <div v-if="errorMsg" class="error">{{ errorMsg }}</div>
+    <div v-if="legacyMessage" class="notice" role="status">{{ legacyMessage }}</div>
 
     <!-- 信息流 -->
     <section v-if="tab === 'items'" class="items">
@@ -242,6 +273,8 @@ const totalUnread = computed(() => sources.value.reduce((acc, s) => acc + (s.unr
             </div>
           </div>
           <div class="src-actions">
+            <button v-if="src.portalManaged === false && !savedLegacy.includes(src.id)" class="btn-secondary"
+              type="button" :disabled="savingLegacy" @click="saveLegacySource(src)">{{ t('settings.legacyRssSave') }}</button>
             <button class="icon" @click="refreshSource(src)" title="立即拉取">
               <span class="material-symbols-outlined">refresh</span>
             </button>
@@ -294,7 +327,7 @@ const totalUnread = computed(() => sources.value.reduce((acc, s) => acc + (s.unr
 .src-meta { font-size: var(--text-sm); color: var(--text-muted); margin-top: 4px; display: flex; gap: 8px; }
 .src-meta .err { color: var(--err-fg); }
 .src-meta .dim { color: var(--text-faint); }
-.src-actions { display: flex; gap: 4px; }
+.src-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px; }
 .icon { padding: 4px; border: none; background: transparent; cursor: pointer; border-radius: 4px; }
 .icon:hover { background: var(--bg-hover); }
 .link { background: none; border: none; color: var(--brand-primary); cursor: pointer; text-decoration: underline; padding: 0; }

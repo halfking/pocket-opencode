@@ -25,6 +25,7 @@ export interface RSSSource {
   language?: string
   status: string
   enabled: boolean
+  portalManaged?: boolean
   error?: string
   fetchIntervalSec: number
   lastFetchedAt?: string

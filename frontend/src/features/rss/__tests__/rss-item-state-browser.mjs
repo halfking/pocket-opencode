@@ -5,7 +5,7 @@ import {mkdtemp} from 'node:fs/promises'
 import {tmpdir} from 'node:os'
 import {join} from 'node:path'
 
-export async function createRssStateBrowserFixture(){
+export async function createRssStateBrowserFixture({ legacySource = false } = {}){
  const state=`
  import initSqlJs from 'sql.js';import{reactive}from'vue';import{LocalDbLeases}from'/src/native/local-db-leases.ts';
  const SQL=await initSqlJs({locateFile:()=>'/node_modules/sql.js/dist/sql-wasm.wasm'}),raw=new SQL.Database(),leases=new LocalDbLeases();
@@ -19,7 +19,8 @@ export async function createRssStateBrowserFixture(){
  let emailPause=null,emailRelease;export function pauseHubEmail(){window.hubEmailWaiting=false;emailPause=new Promise(resolve=>emailRelease=resolve)}export const releaseHubEmail=()=>emailRelease?.();export async function readHubEmails(){const pause=emailPause;emailPause=null;if(pause){window.hubEmailWaiting=true;await pause}return[]}
  export async function http(path,options={}){options.assertCurrent?.();requests.push({path,owner:auth.userId,body:options.body});
  if(path==='/api/rss/items/article')return article();
- if(path==='/api/rss/sources')return{sources:[]};
+ if(path==='/api/rss/sources')return{sources:${legacySource}? [{id:'src_legacy',title:'Legacy feed',url:'https://example.test/legacy',portalManaged:false,enabled:true}]:[]};
+ if(path==='/api/rss/sources/src_legacy/migration-snapshot'&&${legacySource})return{id:'src_legacy',title:'Legacy feed',url:'https://example.test/legacy',category:'news',updated_at:'2026-01-02T03:04:05.123456Z',user_id:auth.userId,workspace_id:auth.workspaceId};
  if(path.startsWith('/api/notifications'))return{notifications:[]};
  if(path.startsWith('/api/rss/items?')){const q=new URL(path,'https://fixture').searchParams;return{items:(!q.get('status')||q.get('status')===nativeStatus)&&(!q.getAll('id').length||q.getAll('id').includes('article'))?[article()]:[]}};
  if(path==='/api/rss/portable/item-states'){if(offline)throw new Error('offline');return{user_id:auth.userId,workspace_id:auth.workspaceId,acks:JSON.parse(options.body).items.map(item=>({ext_id:item.ext_id,op_id:item.op_id,epoch:item.epoch,outcome:'applied'}))}}
@@ -27,11 +28,11 @@ export async function createRssStateBrowserFixture(){
  `
  const entry=`
  import{createApp,h,ref}from'vue';import{createI18n}from'vue-i18n';import{createRouter,createMemoryHistory}from'vue-router';import messages from'/src/locales/en-US.json';import Detail from'/src/features/rss/RssItemDetail.vue';import List from'/src/features/rss/RssListView.vue';import{auth,activate,localDB,requests,online,disconnect}from'virtual:rss-state';import{rssPortalStore}from'/src/features/rss/rss-sync-store.ts';import{reconcileRssItemStates}from'/src/features/rss/rss-item-state.ts';import{applyRecordPage}from'/src/native/portal-sync/record-engine.ts';
- import Messages from'/src/features/messages/MessagesHubView.vue';import{makeUnread,pauseHubEmail,releaseHubEmail}from'virtual:rss-state';
+ import Messages from'/src/features/messages/MessagesHubView.vue';import{makeUnread,pauseHubEmail,releaseHubEmail}from'virtual:rss-state';import ConfirmDialog from'/src/components/base/ConfirmDialog.vue';
  const router=createRouter({history:createMemoryHistory(),routes:[{path:'/rss/:id',component:Detail,name:'rss-item'},{path:'/rss',component:Detail,name:'rss'}]});await router.push('/rss/article');
  async function epoch(){await rssPortalStore(localDB.bindOperation(localDB.captureOperation({kind:'local-edit'}))).observeEpoch(0)}await epoch();
  const show=ref('detail');document.getElementById('list').onclick=()=>show.value='list';document.getElementById('messages').onclick=()=>{makeUnread();show.value='messages'};
- createApp({render:()=>h(show.value==='list'?List:show.value==='messages'?Messages:Detail)}).use(createI18n({legacy:false,locale:'en-US',messages:{'en-US':messages}})).use(router).mount('#app');
+ createApp({render:()=>[h(show.value==='list'?List:show.value==='messages'?Messages:Detail),h(ConfirmDialog)]}).use(createI18n({legacy:false,locale:'en-US',messages:{'en-US':messages}})).use(router).mount('#app');
  async function snapshot(){const db=localDB.bindOperation(localDB.captureOperation({kind:'local-edit'}));window.stateSnapshot=await db.query("SELECT item_json FROM local_portal_records WHERE owner_user_id=? AND kind='item-state'",[auth.userId])}
  document.getElementById('alice').onclick=async()=>{activate('A');await epoch()};document.getElementById('bob').onclick=async()=>{activate('B');await epoch()};
  document.getElementById('offline').onclick=disconnect;document.getElementById('online').onclick=online;

@@ -91,7 +91,7 @@ func (s *Store) CreateSource(ctx context.Context, req CreateSourceRequest, sc Sc
 		req.FetchInterval = time.Hour
 	}
 	now := time.Now().UTC()
-	x := &Source{ID: id("src"), UserID: sc.UserID, WorkspaceID: sc.WorkspaceID, URL: strings.TrimSpace(req.URL), Title: req.Title, Description: req.Description, SiteURL: req.SiteURL, Language: req.Language, Category: strings.ToLower(strings.TrimSpace(req.Category)), Enabled: req.Enabled, Status: SourceActive, FetchInterval: req.FetchInterval, CreatedAt: now, UpdatedAt: now}
+	x := &Source{ID: id("src"), UserID: sc.UserID, WorkspaceID: sc.WorkspaceID, URL: strings.TrimSpace(req.URL), Title: req.Title, Description: req.Description, SiteURL: req.SiteURL, Language: req.Language, Category: strings.ToLower(strings.TrimSpace(req.Category)), Enabled: req.Enabled, PortalManaged: req.PortalSync, Status: SourceActive, FetchInterval: req.FetchInterval, CreatedAt: now, UpdatedAt: now}
 	if !req.Enabled {
 		x.Status = SourceDisabled
 	}
@@ -106,7 +106,7 @@ func (s *Store) CreateSource(ctx context.Context, req CreateSourceRequest, sc Sc
 	return x, nil
 }
 
-const sourceCols = `id,user_id,workspace_id,url,title,description,site_url,language,category,etag,last_modified,status,enabled,error,fetch_interval,next_fetch_at,last_fetched_at,created_at,updated_at`
+const sourceCols = `id,user_id,workspace_id,url,title,description,site_url,language,category,etag,last_modified,status,enabled,error,fetch_interval,next_fetch_at,last_fetched_at,created_at,updated_at,portal_managed`
 
 // sourceColsReturning qualifies each column with the update target alias `s`
 // for UPDATE ... FROM queries, where bare names would be ambiguous against
@@ -116,7 +116,7 @@ var sourceColsReturning = `s.` + strings.ReplaceAll(sourceCols, `,`, `,s.`)
 func scanSource(r pgx.Row) (*Source, error) {
 	var x Source
 	var sec int64
-	err := r.Scan(&x.ID, &x.UserID, &x.WorkspaceID, &x.URL, &x.Title, &x.Description, &x.SiteURL, &x.Language, &x.Category, &x.ETag, &x.LastModified, &x.Status, &x.Enabled, &x.Error, &sec, &x.NextFetchAt, &x.LastFetchedAt, &x.CreatedAt, &x.UpdatedAt)
+	err := r.Scan(&x.ID, &x.UserID, &x.WorkspaceID, &x.URL, &x.Title, &x.Description, &x.SiteURL, &x.Language, &x.Category, &x.ETag, &x.LastModified, &x.Status, &x.Enabled, &x.Error, &sec, &x.NextFetchAt, &x.LastFetchedAt, &x.CreatedAt, &x.UpdatedAt, &x.PortalManaged)
 	x.FetchInterval = time.Duration(sec) * time.Second
 	return &x, err
 }

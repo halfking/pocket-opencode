@@ -7,9 +7,43 @@ import (
 	"github.com/halfking/pocket-opencode/backend/internal/rss"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
+	"time"
 )
+
+func (s *Server) handleRSSMigrationSnapshot(w http.ResponseWriter, r *http.Request, store *rss.Store, id string) {
+	w.Header().Set("Cache-Control", "no-store")
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "GET only")
+		return
+	}
+	scope, ok := s.rssPortableScope(w, r)
+	if !ok {
+		return
+	}
+	source, err := store.GetSource(r.Context(), id, scope)
+	if err != nil {
+		writeRSSError(w, err)
+		return
+	}
+	if source.PortalManaged {
+		writeError(w, http.StatusConflict, "RSS source already participates in portal synchronization")
+		return
+	}
+	address, err := url.Parse(source.URL)
+	if err != nil || (address.Scheme != "http" && address.Scheme != "https") || address.Host == "" ||
+		address.User != nil || strings.ContainsAny(source.URL, "?#") {
+		writeError(w, http.StatusUnprocessableEntity, "RSS source URL cannot be copied safely")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{
+		"id": source.ID, "user_id": source.UserID, "workspace_id": source.WorkspaceID,
+		"title": source.Title, "url": source.URL, "category": source.Category,
+		"updated_at": source.UpdatedAt.UTC().Format(time.RFC3339Nano),
+	})
+}
 
 func (s *Server) handleRSSPortableItemStates(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {

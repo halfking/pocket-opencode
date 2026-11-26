@@ -58,6 +58,7 @@ type Source struct {
 	ETag, LastModified         string
 	Status                     SourceStatus
 	Enabled                    bool
+	PortalManaged              bool
 	Error                      string
 	FetchInterval              time.Duration
 	NextFetchAt, LastFetchedAt *time.Time

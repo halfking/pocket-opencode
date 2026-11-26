@@ -35,6 +35,46 @@ func TestRSSPortableRouteUsesVerifiedScopeAndPreservesOriginalEvents(t *testing.
 		t.Fatalf("create: %d %+v", code, body)
 	}
 	id := body["id"].(string)
+	ctx := context.Background()
+	code, legacy := doJSON(t, server, http.MethodPost, "/api/rss/sources", token, `{"url":"https://example.com/legacy","title":"legacy","description":"native-only description"}`)
+	if code != http.StatusCreated || legacy["portalManaged"] != false {
+		t.Fatalf("legacy fixture: %d %+v", code, legacy)
+	}
+	legacyID := legacy["id"].(string)
+	revision := "2026-01-02T03:04:05.123456Z"
+	if _, err = pool.Exec(ctx, "UPDATE rss_sources SET category='news',updated_at=$1::text::timestamptz WHERE id=$2", revision, legacyID); err != nil {
+		t.Fatal(err)
+	}
+	snapshotPath := "/api/rss/sources/" + legacyID + "/migration-snapshot"
+	code, snapshot := doJSON(t, server, http.MethodGet, snapshotPath, token, "")
+	if code != http.StatusOK || len(snapshot) != 7 || snapshot["id"] != legacyID ||
+		snapshot["user_id"] != "native-user" || snapshot["workspace_id"] != "native-workspace" ||
+		snapshot["updated_at"] != revision || snapshot["title"] != "legacy" || snapshot["category"] != "news" ||
+		snapshot["url"] != "https://example.com/legacy" {
+		t.Fatalf("native snapshot scope and data: %d %+v", code, snapshot)
+	}
+	if code, _ = doJSON(t, server, http.MethodPost, snapshotPath, token, "{}"); code != http.StatusMethodNotAllowed {
+		t.Fatalf("snapshot accepted write: %d", code)
+	}
+	if code, _ = doJSON(t, server, http.MethodGet, snapshotPath, emptyWorkspaceToken, ""); code != http.StatusUnauthorized {
+		t.Fatalf("snapshot admitted fallback workspace: %d", code)
+	}
+	if code, _ = doJSON(t, server, http.MethodGet, "/api/rss/sources/"+id+"/migration-snapshot", token, ""); code != http.StatusConflict {
+		t.Fatalf("snapshot admitted managed source: %d", code)
+	}
+	if _, err = pool.Exec(ctx, "UPDATE rss_sources SET url='https://example.com/legacy?key=private' WHERE id=$1", legacyID); err != nil {
+		t.Fatal(err)
+	}
+	if code, snapshot = doJSON(t, server, http.MethodGet, snapshotPath, token, ""); code != http.StatusUnprocessableEntity || snapshot["error"] != "RSS source URL cannot be copied safely" {
+		t.Fatalf("snapshot exposed an unsafe URL: %d %+v", code, snapshot)
+	}
+	otherToken, err := server.jwtSigner.SignWithWorkspace("workspace-owner", "member", "native-workspace")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code, _ = doJSON(t, server, http.MethodGet, snapshotPath, otherToken, ""); code != http.StatusNotFound {
+		t.Fatalf("snapshot disclosed another member source: %d", code)
+	}
 	code, body = doJSON(t, server, http.MethodGet, "/api/rss/portable/changes?limit=1", token, "")
 	if code != http.StatusOK || len(body["changes"].([]any)) != 1 || body["user_id"] == "attacker" || body["workspace_id"] == "other" {
 		t.Fatalf("scope: %d %+v", code, body)
@@ -142,6 +182,7 @@ func TestRSSPortableRouteUsesVerifiedScopeAndPreservesOriginalEvents(t *testing.
 	}
 	for _, request := range []struct{ method, path, body string }{
 		{http.MethodGet, "/api/rss/portable/changes", ""},
+		{http.MethodGet, snapshotPath, ""},
 		{http.MethodPost, "/api/rss/portable/item-states", statusBody},
 		{http.MethodPost, "/api/rss/sources", `{"url":"https://example.com/revoked","portalSync":true,"portalEpoch":0}`},
 		{http.MethodPatch, "/api/rss/sources/" + id, `{"title":"revoked edit"}`},

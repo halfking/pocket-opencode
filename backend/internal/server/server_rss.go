@@ -11,6 +11,7 @@
 //	PATCH  /api/rss/sources/{id}             部分更新（启用/间隔/标题等）
 //	DELETE /api/rss/sources/{id}             删除源（级联删除 items/drafts/attempts）
 //	POST   /api/rss/sources/{id}/refresh     立即拉取一次（scheduler.RunNow）
+//	GET    /api/rss/sources/{id}/migration-snapshot  读取未接入门户的订阅资料快照
 //
 //	GET    /api/rss/digest                   每日全部信息摘要（?date=YYYY-MM-DD，缺省今天）
 //	POST   /api/rss/digest/run               立即生成并落库（?date=，缺省今天）
@@ -117,6 +118,7 @@ type rssSourceDTO struct {
 	Language       string  `json:"language"`
 	Status         string  `json:"status"`
 	Enabled        bool    `json:"enabled"`
+	PortalManaged  bool    `json:"portalManaged"`
 	Error          string  `json:"error,omitempty"`
 	FetchIntervalS int64   `json:"fetchIntervalSec"`
 	LastFetchedAt  *string `json:"lastFetchedAt,omitempty"`
@@ -134,6 +136,7 @@ func toSourceDTO(src rss.Source, unread int64) rssSourceDTO {
 		Language:       src.Language,
 		Status:         string(src.Status),
 		Enabled:        src.Enabled,
+		PortalManaged:  src.PortalManaged,
 		Error:          src.Error,
 		FetchIntervalS: int64(src.FetchInterval / time.Second),
 		UnreadCount:    unread,
@@ -545,6 +548,10 @@ func (s *Server) handleRSSSourceItem(w http.ResponseWriter, r *http.Request) {
 	// 子动作：/refresh
 	if strings.HasSuffix(id, "/refresh") {
 		s.handleRSSSourceRefresh(w, r, strings.TrimSuffix(id, "/refresh"))
+		return
+	}
+	if sourceID, ok := strings.CutSuffix(id, "/migration-snapshot"); ok {
+		s.handleRSSMigrationSnapshot(w, r, st, sourceID)
 		return
 	}
 	switch r.Method {
