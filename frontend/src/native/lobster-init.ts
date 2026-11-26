@@ -64,24 +64,12 @@ export async function initLobster(masterPassword: string): Promise<void> {
 
   _initializing = true
   const p = (async () => {
-    // 0. 2026-10-06 安全修复：**先校验主密码，再碰任何加密状态**。
-    //    原顺序是 initAppCrypto → localDB.init，而 initAppCrypto 只做 PBKDF2 派生、
-    //    对任何字符串都成功 ⇒ 错口令会先用错口令把 AES key 写进模块级 cryptoKey，
-    //    才在后面抛错。放到最前面，错口令就完全碰不到 crypto 层。
-    //    真机实证（emulator-5554，A/B/C 三轮对照）：
-    //      正确口令 → 离开解锁页；错误口令 → **同样**离开解锁页；
-    //      空口令 → 被 unlockSubmitMode 挡住（证明判据非恒真）。
-    //    根因三处：crypto.ts:53 只派生不比对、local-db.ts 用「setEncryptionSecret
-    //    抛不抛」推断口令一致、插件 Database.java:245 的 open() 取的是**已存的旧 secret**。
+    // Verify an existing secure-store secret before deriving either field key.
     if (!(await localDB.verifyMasterPassword(masterPassword))) {
       throw new Error('主密码不正确')
     }
 
-    // 1. 初始化共享加密 key
-    await initAppCrypto(masterPassword)
-
-    // 2. 初始化加密数据库（masterPassword 同时作为 SQLCipher 密钥）
-    await localDB.init(masterPassword)
+    await localDB.init(masterPassword, store => initAppCrypto(masterPassword, store))
 
     // 3. 加载向量索引到内存（后台，不阻塞主流程也行，但 MVP 同步加载更简单）
     try {
@@ -95,6 +83,9 @@ export async function initLobster(masterPassword: string): Promise<void> {
   _initPromise = p
   try {
     await p
+  } catch (error) {
+    resetCryptoKey()
+    throw error
   } finally {
     _initializing = false
     _initPromise = null

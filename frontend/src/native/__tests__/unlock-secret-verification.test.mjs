@@ -172,14 +172,11 @@ test('local-db 不得再用「setEncryptionSecret 抛不抛」来推断口令一
 
   // 探针失败必须 fail-closed：isSecretStored / checkEncryptionSecret 抛错时
   // 不得被当成「已校验通过」。
-  const stored = LOCALDB.indexOf('isSecretStoredSafely')
-  const check = LOCALDB.indexOf('checkEncryptionSecretSafely')
-  assert.ok(stored > 0 && check > 0, '两个探针 helper 应存在')
-  for (const [name, at] of [['isSecretStoredSafely', stored], ['checkEncryptionSecretSafely', check]]) {
-    const seg = LOCALDB.slice(at, at + 700)
-    const retFalse = /catch[\s\S]{0,400}?return false/.test(seg)
-    assert.ok(retFalse, `${name} 的 catch 必须 return false（fail-closed），不得放行`)
-  }
+  const storedProbe = fnBody(LOCALDB, 'isSecretStored')
+  assert.ok(storedProbe && /await this\.sqlite\.isSecretStored\(\)/.test(storedProbe))
+  assert.doesNotMatch(storedProbe, /catch[\s\S]*return false/, '安全存储探针出错时不得尝试重新设密钥')
+  const checkProbe = fnBody(LOCALDB, 'checkEncryptionSecretSafely')
+  assert.match(checkProbe, /catch[\s\S]*return false/, '口令探针失败时不得放行')
 })
 
 test('LoginView.unlock 必须把 initLobster 的失败暴露出来（不得吞掉校验拒绝）', () => {

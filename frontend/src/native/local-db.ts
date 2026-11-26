@@ -18,12 +18,15 @@ import { acquireWebDatabaseLock } from './web-db-lock'
 import type { SqlDb, SqlRow } from './sqlDb'
 import { SCHEMA_SQL, splitSqlStatements, normalizeTriggerForPluginExecute } from './schema'
 import { localDbNeedsOpen } from './local-db-init'
+import type { FieldSaltStore } from './crypto'
 import { migrateEmailOwnership } from './email-ownership-migration'
 import { assertNoTransactionControl, assertReadOnlyQuery } from './local-db-sql-guard'
 import type { SyncModule, SyncMode } from '../api/syncPolicyContract'
 import { LocalDbLeases, type OperationLease, type OperationOptions, type OwnerIdentity, type ActivationPublisher, type PolicySnapshot, type PolicySnapshotPublisher } from './local-db-leases'
 
 export type { OperationLease, OperationOptions, OwnerIdentity, OwnerLease, ActivationPublisher, PolicySnapshot, PolicySnapshotPublisher } from './local-db-leases'
+
+type FieldCryptoInitializer = (store?: FieldSaltStore) => Promise<void>
 
 const MEETINGS_V2_COLUMNS = [
   { table: 'local_meetings', column: 'location', sql: 'ALTER TABLE local_meetings ADD COLUMN location TEXT' },
@@ -713,42 +716,23 @@ class LocalDB {
     this.sqlite = new SQLiteConnection(CapacitorSQLite)
   }
 
-  /**
-   * 只校验主密码，不开库、不建表、不动连接。
-   *
-   * 为什么需要单独一个入口（2026-10-06 安全修复）：
-   *   `initLobster` 的顺序是 initAppCrypto → localDB.init。若只在 init 里校验，
-   *   错口令会**先**用错口令派生出 AES key 并写进模块级 `cryptoKey`，
-   *   然后才在 init 抛错 —— crypto 状态已被污染。
-   *   把校验提前到 crypto 之前，错口令就完全碰不到加密层。
-   *
-   * 口径：库还没有 secret（首次设置）时返回 true —— 那时没有「对不对」可比，
-   * 正确性由随后的 setEncryptionSecret 建立。
-   */
+  /** Verify a remembered secret without opening or modifying the database. */
   async verifyMasterPassword(dbSecret: string): Promise<boolean> {
     return this.enqueue(async () => {
       if (isWebFallbackRuntime()) return true
       if (!dbSecret) return false
-      if (!(await this.isSecretStoredSafely())) return true
+      if (!await this.isSecretStored()) return true
+      // The native plugin closes all connections while checking the secret.
+      // Invalidate leases and the JS handle first so the next unlock reopens it.
+      if (this.conn) await this.closeConnection()
       return this.checkEncryptionSecretSafely(dbSecret)
     })
   }
 
-  /**
-   * secure store 里是否已存过 secret。
-   *
-   * ⚠️ 探针失败必须与「没存」区分开：若插件不支持（如 Web fallback / 老版本插件），
-   * 这里返回 false ⇒ 走「首次设置 secret」分支 ⇒ setEncryptionSecret 若真失败会抛出，
-   * 不会被静默吞掉。**宁可失败也不要静默放行**——那正是本次修掉的洞。
-   */
-  private async isSecretStoredSafely(): Promise<boolean> {
-    try {
-      const r = await this.sqlite.isSecretStored()
-      return r?.result === true
-    } catch (e) {
-      console.warn('[localDB] isSecretStored 探针失败，按「未存」处理:', e)
-      return false
-    }
+  private async isSecretStored(): Promise<boolean> {
+    const { result } = await this.sqlite.isSecretStored()
+    if (typeof result !== 'boolean') throw new Error('无法确认本机数据库密钥状态')
+    return result
   }
 
   /**
@@ -773,9 +757,14 @@ class LocalDB {
    * 初始化本地加密库。dbSecret 是用户主密码（由 Keystore 派生）。
    * 幂等：重复调用安全。
    */
-  async init(dbSecret: string): Promise<void> {
+  async init(dbSecret: string, prepareFieldCrypto?: FieldCryptoInitializer): Promise<void> {
     return this.enqueue(async () => {
-      if (!localDbNeedsOpen(this.initialized, this.conn !== null)) return
+      const isWeb = isWebFallbackRuntime()
+      const encrypted = !isWeb && dbSecret.length > 0
+      if (!localDbNeedsOpen(this.initialized, this.conn !== null)) {
+        if (prepareFieldCrypto) await this.prepareFieldCrypto(prepareFieldCrypto, encrypted)
+        return
+      }
       this.initialized = false
       if (this.conn) {
         await this.closeConnection()
@@ -784,9 +773,8 @@ class LocalDB {
       // Web（jeep-sqlite / sql.js）不支持 SQLCipher 加密库；HarmonyOS Phase A
       // 同样固定走这条路径，直到 ArkTS RDB bridge 经真机验证后才可启用原生加密库。
       // 原生 Android/iOS 保持 secret 模式。
-      const isWeb = isWebFallbackRuntime()
-      const encrypted = !isWeb && dbSecret.length > 0
       if (isWeb) {
+        if (prepareFieldCrypto) await prepareFieldCrypto()
         this.webLockRelease ??= await acquireWebDatabaseLock(DB_NAME)
         try {
           console.info('[localDB] web fallback runtime: no-encryption (browser/HarmonyOS Phase A)')
@@ -799,56 +787,43 @@ class LocalDB {
         }
       }
 
-      // ✅ 关键修复：在 createConnection 之前先调用 setEncryptionSecret
-      // 官方 API 文档：setEncryptionSecret "Only to be used once if you wish to encrypt database"
-      // open() 内部会从 secure store 取密码作为 SQLCipher PRAGMA key
-      // 如果在 open() 之后调用，SQLCipher 已经在未设 key 的情况下尝试读 db header，必然失败
-      // （"Open: No Passphrase stored"）。
-      if (encrypted) {
-        // 2026-10-06 安全修复（真机实锤，见 __tests__/unlock-secret-verification.test.mjs 头注）：
-        //
-        // 原形状是「setEncryptionSecret 抛不抛来判断」——catch 里只 console.warn 就继续往下。
-        // 但插件 Database.java:245 的 `password = _uSecret.getPassphrase()` 意味着
-        // **open() 用的是 secure store 里已存的那个 secret，不是本次传入的**。
-        // 加上 crypto.ts 的 initAppCrypto 只做 PBKDF2 派生、对任何字符串都成功，
-        // 三者合成 ⇒ 用户在解锁页输**任意非空错误口令**也会开库成功。
-        //
-        // 真机 A/B/C 三轮对照（emulator-5554）：
-        //   正确口令 → 离开解锁页；错误口令 → **同样**离开解锁页；
-        //   空口令 → 被 unlockSubmitMode 挡住（证明判据非恒真）。
-        //
-        // 为什么不能改成「抛错就 fail-fast」：第二次及以后启动时
-        // setEncryptionSecret **必然**抛 "a passphrase has already been set"（原生
-        // UtilsSecret.java:42），那是正常路径不是错误 ⇒ 直接抛会让所有老用户重启即崩。
-        // 正确做法是用插件提供的 checkEncryptionSecret 做**真正的比对**：
-        // 已存 → 比对，不一致就拒绝；未存 → 写入新 secret。
-        const stored = await this.isSecretStoredSafely()
-        if (stored) {
-          const ok = await this.checkEncryptionSecretSafely(dbSecret)
-          if (!ok) {
-            // 口令与库内 secret 不一致 ⇒ 绝不能用已存的 secret 继续开库，
-            // 否则就是「拿错密码开人家库」。抛给调用方，由 LoginView 显示失败。
-            throw new Error('主密码与本地加密库的密钥不一致')
-          }
-        } else {
-          await this.sqlite.setEncryptionSecret(dbSecret)
-        }
-      }
-
-      const mode = encrypted ? 'secret' : 'no-encryption'
-
-      // 官方推荐：先 checkConnectionsConsistency，再 isConnection / create
+      let provisionalSecret = false
       try {
+        if (encrypted) {
+          if (await this.isSecretStored()) {
+            if (!await this.checkEncryptionSecretSafely(dbSecret)) {
+              throw new Error('主密码与本地加密库的密钥不一致')
+            }
+          } else {
+            // The plugin saves the secret before it validates existing database files.
+            provisionalSecret = true
+            await this.sqlite.setEncryptionSecret(dbSecret)
+          }
+        }
+        const mode = encrypted ? 'secret' : 'no-encryption'
         await this.sqlite.checkConnectionsConsistency()
         const already = (await this.sqlite.isConnection(DB_NAME, false)).result === true
         this.conn = already
           ? await this.sqlite.retrieveConnection(DB_NAME, false)
           : await this.sqlite.createConnection(DB_NAME, encrypted, mode, DB_VERSION, false)
+        await this.conn.open()
       } catch (error) {
+        // On a fresh device, an incorrect guess must not lock out the right passphrase.
+        // Never clear a secret the secure store had before this attempt.
+        if (provisionalSecret && await this.checkEncryptionSecretSafely(dbSecret)) {
+          await this.sqlite.clearEncryptionSecret()
+          this.conn = null
+        }
         await this.releaseWebLock()
         throw error
       }
-      await this.conn.open()
+
+      try {
+        if (!isWeb && prepareFieldCrypto) await this.prepareFieldCrypto(prepareFieldCrypto, encrypted)
+      } catch (error) {
+        await this.closeConnection()
+        throw error
+      }
 
       // 建表（幂等 CREATE IF NOT EXISTS）。Web/sql.js 通常无 FTS5，先跳过 FTS 段。
       //
@@ -960,6 +935,23 @@ class LocalDB {
       // Fail closed: continuing with an unscoped schema would expose another account's mail.
       await migrateEmailOwnership(this.conn)
       this.initialized = true
+    })
+  }
+
+  private async prepareFieldCrypto(initialize: FieldCryptoInitializer, encrypted: boolean): Promise<void> {
+    if (!encrypted) return initialize()
+    const conn = this.conn!
+    await conn.execute('CREATE TABLE IF NOT EXISTS local_field_crypto (slot INTEGER PRIMARY KEY CHECK (slot=1), salt TEXT NOT NULL);', false)
+    const storeTables = await conn.query("SELECT count(*) AS present FROM sqlite_master WHERE type='table' AND name NOT IN ('local_field_crypto','android_metadata') AND name NOT GLOB 'sqlite_*'")
+    await initialize({
+      newDatabase: storeTables.values?.[0]?.present === 0,
+      async read() {
+        const row = (await conn.query('SELECT salt FROM local_field_crypto WHERE slot=1')).values?.[0]
+        return typeof row?.salt === 'string' ? row.salt : null
+      },
+      async save(salt) {
+        await conn.run('INSERT INTO local_field_crypto (slot,salt) VALUES (1,?)', [salt])
+      },
     })
   }
 

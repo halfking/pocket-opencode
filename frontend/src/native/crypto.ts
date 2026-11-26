@@ -6,7 +6,7 @@
  *
  * 安全改进（第六轮审计）：
  * - 随机 salt 替代静态 salt，每个用户/设备独立，防止彩虹表攻击
- * - salt 存储在 localStorage（不敏感，可明文存），首次初始化时生成
+ * - 原生库保存字段 salt，浏览器保留 localStorage 兼容路径
  *
  * 向后兼容（第七轮审计修复）：
  * - 自动检测旧静态 salt 加密的数据，尝试用旧 key 解密
@@ -20,42 +20,40 @@ let legacyCryptoKey: CryptoKey | null = null  // 用于解密旧数据
 const SALT_STORAGE_KEY = 'pocket_crypto_salt'
 const LEGACY_SALT = 'lobster-vault-salt'  // 第六轮之前使用的静态 salt
 
-/**
- * 获取或生成密钥派生 salt。
- * 首次调用时生成 16 字节随机 salt 并存储到 localStorage（base64 编码）。
- * 后续调用从 localStorage 读取。
- */
-function getOrGenerateSalt(): Uint8Array {
-  const stored = localStorage.getItem(SALT_STORAGE_KEY)
-  if (stored) {
-    // 从 base64 解码
-    const binaryString = atob(stored)
-    const bytes = new Uint8Array(binaryString.length)
-    for (let i = 0; i < binaryString.length; i++) {
-      bytes[i] = binaryString.charCodeAt(i)
+export class FieldSaltUnavailableError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'FieldSaltUnavailableError'
+  }
+}
+
+export interface FieldSaltStore {
+  read(): Promise<string | null>
+  save(salt: string): Promise<void>
+  newDatabase: boolean
+}
+
+async function loadFieldSalt(store?: FieldSaltStore): Promise<Uint8Array<ArrayBuffer>> {
+  const persisted = await store?.read()
+  const stored = persisted ?? localStorage.getItem(SALT_STORAGE_KEY)
+  if (stored !== null) {
+    if (!/^[A-Za-z0-9+/]{22}==$/.test(stored)) {
+      throw new FieldSaltUnavailableError('本地字段加密盐无效，请先恢复同一份应用备份')
     }
-    return bytes
+    const salt = Uint8Array.from(atob(stored), char => char.charCodeAt(0))
+    // The database wins over this WebView's cache after a device restore.
+    if (store && persisted === null) await store.save(stored)
+    return salt
   }
 
-  // 首次使用：生成 16 字节随机 salt
+  if (store && !store.newDatabase) throw new FieldSaltUnavailableError('缺少原字段加密盐，请先恢复同一份应用备份')
   const salt = crypto.getRandomValues(new Uint8Array(16))
-  
-  // 保存到 localStorage（base64 编码）
-  const binaryString = String.fromCharCode(...salt)
-  // ⚠⚠§867/D35：这一行原来裸奔。写不进去时抛出的**裸 DOMException**
-  //   一路冒泡到 initLobster 的调用方 ⇒ 界面显示「本地数据初始化失败」
-  //   （§866/D31 同款不属实的措辞：主密码已经验证通过了）。
-  //
-  //   ⛔⚠️⚠️ 这里**绝不能**吞掉异常、也绝不能「先继续用这个内存 salt」：
-  //   只要放过一次，下次启动会**再生成一个全新 salt** ⇒ 本次派生出的 key
-  //   既解不开任何旧密文、也无法在下一次启动被复现 ⇒ 用户数据**永久不可读**。
-  //   所以：必须硬失败，但要把「存储写不进去」这件事说清楚。
-  try {
-    localStorage.setItem(SALT_STORAGE_KEY, btoa(binaryString))
-  } catch (err) {
-    throw new Error('无法保存加密盐：本地存储不可用或空间不足，请清理存储后重试')
+  const encoded = btoa(String.fromCharCode(...salt))
+  if (store) await store.save(encoded)
+  else {
+    try { localStorage.setItem(SALT_STORAGE_KEY, encoded) }
+    catch { throw new Error('无法保存加密盐：本地存储不可用或空间不足，请清理存储后重试') }
   }
-
   return salt
 }
 
@@ -64,16 +62,16 @@ export function isCryptoReady(): boolean {
 }
 
 /** 用主密码初始化 AES-GCM key（PBKDF2 派生 + 随机 salt）。App 启动时调一次。 */
-export async function initAppCrypto(masterPassword: string): Promise<void> {
+export async function initAppCrypto(masterPassword: string, store?: FieldSaltStore): Promise<void> {
   const enc = new TextEncoder()
   const keyMaterial = await crypto.subtle.importKey(
     'raw', enc.encode(masterPassword), 'PBKDF2', false, ['deriveKey'],
   )
   
   // 使用随机 salt（每个用户/设备独立）
-  const salt = getOrGenerateSalt()
+  const salt = await loadFieldSalt(store)
   
-  cryptoKey = await crypto.subtle.deriveKey(
+  const current = await crypto.subtle.deriveKey(
     { name: 'PBKDF2', salt: salt as BufferSource, iterations: 100000, hash: 'SHA-256' },
     keyMaterial,
     { name: 'AES-GCM', length: 256 },
@@ -82,13 +80,15 @@ export async function initAppCrypto(masterPassword: string): Promise<void> {
   )
   
   // 同时派生旧 key（用于向后兼容旧数据解密）
-  legacyCryptoKey = await crypto.subtle.deriveKey(
+  const legacy = await crypto.subtle.deriveKey(
     { name: 'PBKDF2', salt: enc.encode(LEGACY_SALT), iterations: 100000, hash: 'SHA-256' },
     keyMaterial,
     { name: 'AES-GCM', length: 256 },
     false,
     ['encrypt', 'decrypt'],
   )
+  cryptoKey = current
+  legacyCryptoKey = legacy
 }
 
 /** 获取共享 key。未初始化时抛错。 */
