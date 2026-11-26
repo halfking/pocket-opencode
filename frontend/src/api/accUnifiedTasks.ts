@@ -32,6 +32,16 @@ interface TaskGraphNode {
 
 interface TaskEdge { from: string; to: string }
 
+export interface BillingTotals { requests: number; debited_credits: number; net_credits: number }
+export interface RunBilling {
+  run_id: string
+  state: 'pending' | 'reconciled' | 'partial' | 'unobserved'
+  totals?: BillingTotals
+  attempts: {
+    task_id: string; revision_id: string; attempt: number; dispatch_id?: string; state: string; totals?: BillingTotals
+  }[]
+}
+
 interface TaskTrajectory {
   view: { scope: string; run_id: string; segments: { kind: string; items?: unknown[] }[] }
 }
@@ -73,10 +83,14 @@ export async function readUnifiedTask(
     status: progress.status, progress: progress.progress, ...graph }
 }
 
-export async function readUnifiedRun(authority: AccRequestAuthority, runId: string, signal?: AbortSignal) {
+function runPath(runId: string) {
   if (!runId || runId === '.' || runId === '..' || /[/\\]/.test(runId)) throw new Error('Invalid ACC run ID')
+  return `/api/v2/orchestration/runs/${encodeURIComponent(runId)}`
+}
+
+export async function readUnifiedRun(authority: AccRequestAuthority, runId: string, signal?: AbortSignal) {
   const { run } = await readAcc<{ run?: { run_id: string; status: string } }>(
-    authority, `/api/v2/orchestration/runs/${encodeURIComponent(runId)}`, signal,
+    authority, runPath(runId), signal,
   ) ?? {}
   if (run?.run_id !== runId || typeof run.status !== 'string' || !run.status) {
     throw new Error('Invalid ACC run identity')
@@ -84,8 +98,15 @@ export async function readUnifiedRun(authority: AccRequestAuthority, runId: stri
   return { runId, title: runId, status: run.status, ...await readRunGraph(authority, runId, signal) }
 }
 
+export async function readRunBilling(authority: AccRequestAuthority, runId: string, signal?: AbortSignal): Promise<RunBilling> {
+  const report = await readAcc<RunBilling>(authority, `${runPath(runId)}/billing`, signal)
+  if (report?.run_id !== runId || !['pending', 'reconciled', 'partial', 'unobserved'].includes(report.state)
+    || !Array.isArray(report.attempts)) throw new Error('Invalid ACC run billing')
+  return report
+}
+
 async function readRunGraph(authority: AccRequestAuthority, runId: string, signal?: AbortSignal) {
-  const trajectory = await readAcc<TaskTrajectory>(authority, `/api/v2/orchestration/runs/${encodeURIComponent(runId)}/trajectory`, signal)
+  const trajectory = await readAcc<TaskTrajectory>(authority, `${runPath(runId)}/trajectory`, signal)
   const view = trajectory?.view
   if (view?.scope !== 'run' || view.run_id !== runId || !Array.isArray(view.segments)) {
     throw new Error('Invalid ACC run trajectory')

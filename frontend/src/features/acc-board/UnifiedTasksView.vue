@@ -34,6 +34,23 @@
         <progress :value="detail.progress.percentage" max="100" aria-label="节点完成比例" />
       </template>
       <p v-else>{{ detail.status }}</p>
+      <div aria-label="费用对账" class="billing">
+        <div class="billing-header">
+          <h3>费用对账</h3>
+          <button type="button" :disabled="loadingBilling" @click="loadBilling">刷新费用</button>
+        </div>
+        <p role="status">{{ billing ? billingLabel[billing.state] : loadingBilling ? '正在读取账本…' : '账本暂不可读取' }}</p>
+        <p v-if="billing?.totals">{{ formatTotals(billing.totals) }}</p>
+        <details v-if="billing?.attempts.length">
+          <summary>按任务尝试查看</summary>
+          <ul>
+            <li v-for="row in billing.attempts" :key="JSON.stringify([row.task_id, row.revision_id, row.attempt, row.dispatch_id])">
+              {{ row.task_id }} #{{ row.attempt }} · {{ billingLabel[row.state] }}
+              <span v-if="row.totals"> · {{ formatTotals(row.totals) }}</span>
+            </li>
+          </ul>
+        </details>
+      </div>
       <h3>任务图</h3>
       <p v-if="!detail.nodes.length">暂无任务节点</p>
       <ul v-else>
@@ -52,7 +69,7 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, shallowRef, watch } from 'vue'
-import { listUnifiedTasks, readUnifiedRun, readUnifiedTask, type UnifiedTask } from '../../api/accUnifiedTasks'
+import { listUnifiedTasks, readUnifiedRun, readUnifiedTask, readRunBilling, type BillingTotals, type RunBilling, type UnifiedTask } from '../../api/accUnifiedTasks'
 import { AccApiError, type AccRequestAuthority } from '../../api/accApi'
 import { WorkspaceBindingRequestError } from '../../api/workspaceBinding'
 import { useAuthStore } from '../../stores/auth'
@@ -74,6 +91,15 @@ const selected = ref<UnifiedTask | null>(null)
 type Detail = Awaited<ReturnType<typeof readUnifiedTask | typeof readUnifiedRun>>
 const detail = ref<Detail | null>(null)
 const detailAccess = shallowRef<Awaited<ReturnType<typeof verifyAccTaskAuthority>> | null>(null)
+const billing = ref<RunBilling | null>(null)
+const loadingBilling = ref(false)
+let billingRequest: AbortController | null = null
+const billingLabel: Record<string, string> = {
+  pending: '等待对账', reconciled: '已对账', partial: '部分已对账', unobserved: '暂无可核验的账目', unverified: '账目待核验',
+}
+function formatTotals(totals: BillingTotals) {
+  return `${totals.requests} 笔请求 · 净扣 ${totals.net_credits.toLocaleString('zh-CN')} credits`
+}
 const draftRunId = ref('')
 const nextOffset = ref<number | null>(0)
 const loaded = ref(false)
@@ -93,10 +119,35 @@ function clear(resetDraft = true) {
   rows.value = []
   selected.value = detail.value = null
   detailAccess.value = null
+  clearBilling()
   if (resetDraft) draftRunId.value = ''
   nextOffset.value = 0
   loaded.value = loadingList.value = loadingDetail.value = false
   listError.value = detailError.value = ''
+}
+function clearBilling() {
+  billingRequest?.abort()
+  billingRequest = null
+  loadingBilling.value = false
+  billing.value = null
+}
+async function loadBilling() {
+  const access = detailAccess.value, runId = detail.value?.runId
+  if (!access || !runId || billingRequest) return
+  const request = billingRequest = new AbortController()
+  loadingBilling.value = true
+  try {
+    const result = await readRunBilling(access, runId, request.signal)
+    access.assertCurrent()
+    if (billingRequest === request) billing.value = result
+  } catch {
+    if (billingRequest === request) billing.value = null
+  } finally {
+    if (billingRequest === request) {
+      billingRequest = null
+      loadingBilling.value = false
+    }
+  }
 }
 function expireAuthority(error?: unknown) {
   clear(false)
@@ -155,6 +206,7 @@ async function loadDetail(
   selected.value = selection
   detail.value = null
   detailAccess.value = null
+  clearBilling()
   detailError.value = ''
   loadingDetail.value = true
   try {
@@ -165,6 +217,7 @@ async function loadDetail(
     expireAt(access.expiresAt)
     detailAccess.value = access
     detail.value = result
+    void loadBilling()
   } catch (error) {
     if (detailRequest === request && !(error instanceof Error && error.name === 'AbortError')) {
       if (isDenied(error)) expireAuthority(error)
@@ -211,4 +264,6 @@ onBeforeUnmount(() => { disposed = true; clear() })
 .tasks button { display: flex; justify-content: space-between; gap: 0.75rem; padding: 0.6rem; width: 100%; text-align: start; }
 .tasks button[aria-pressed="true"] { font-weight: bold; text-decoration: underline; }
 .detail { overflow-wrap: anywhere; }
+.billing { border: 1px solid var(--border-color, #aab0ba); border-radius: .75rem; padding: .75rem; }
+.billing-header { display: flex; align-items: center; justify-content: space-between; gap: .5rem; }
 </style>

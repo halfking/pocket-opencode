@@ -105,7 +105,10 @@ async function fixture(t, legacy = false) {
             { kind: 'dispatch_tree', items: [{ task_id: task.task_id, title: '实现', status: 'succeeded' }, { task_id: 'review', title: '审查', status: 'review' }] },
             { kind: 'blocking_dependencies', items: [{ from: task.task_id, to: 'review' }] },
           ] } })
-          else if (path.endsWith('/events/stream')) {
+          else if (path.endsWith('/billing')) {
+            json({ run_id: task.run_id, state: 'partial', totals: { requests: 4, debited_credits: 6255, net_credits: 6255 },
+              attempts: [{ task_id: task.task_id, revision_id: 'rev-' + user, attempt: 1, state: 'unobserved' }] })
+          } else if (path.endsWith('/events/stream')) {
             res.setHeader('Content-Type', 'text/event-stream')
             res.end(`id: 1\ndata: ${JSON.stringify({ sequence: 1, event_type: 'run.terminal', event_id: 'evt-1', run_id: task.run_id, payload: { text: '已读取派发回执' } })}\n\n`)
           } else if (path.endsWith('/events')) {
@@ -192,6 +195,8 @@ test('unified tasks show authorized progress and replay the same run without cro
   const detail = f.page.getByRole('region', { name: '统一任务进度' })
   await detail.getByText('review · 1/2 个节点完成', { exact: true }).waitFor()
   await detail.getByText('task-alice → review', { exact: true }).waitFor()
+  await detail.getByText('4 笔请求 · 净扣 6,255 credits', { exact: true }).waitFor()
+  await detail.getByText('部分已对账', { exact: true }).waitFor()
   await detail.getByText('已读取派发回执', { exact: true }).waitFor()
   await detail.getByText('已续读评审回执', { exact: true }).waitFor()
   assert.ok(f.eventCursors.some(([path, after]) => path.includes('/runs/run-alice/') && after === '1'))
@@ -211,6 +216,7 @@ test('unified tasks show authorized progress and replay the same run without cro
   f.delayedTasks.shift()()
   assert.ok(!(await f.text()).includes('联跑任务 alice'))
   assert.ok(!(await f.text()).includes('已读取派发回执'))
+  assert.ok(!(await f.text()).includes('6,255 credits'))
   assert.ok(!(await f.text()).includes('下一页 alice'))
   await f.action('credential')
   await f.page.getByRole('button', { name: /联跑任务 bob/ }).waitFor()
@@ -248,6 +254,7 @@ test('a denied workspace binding renewal clears previously admitted task data', 
   await f.page.getByRole('link', { name: '统一任务', exact: true }).click()
   await f.page.getByRole('button', { name: /联跑任务 alice/ }).click()
   await f.page.getByText('已续读评审回执', { exact: true }).waitFor()
+  await f.page.getByText('4 笔请求 · 净扣 6,255 credits', { exact: true }).waitFor()
   f.denyBinding()
   const bindingDependentReads = () => f.taskReads.filter(([, path]) => !path.includes('/events')).length
   const reads = bindingDependentReads()
