@@ -135,16 +135,13 @@ jobs:
             export POCKET_JWT_SECRET="ci-jwt-secret-2026-openpocket-mobile-smoke"
             export POCKET_HTTP_PORT=18099
             export POCKET_DB_PATH=./data/pocket-ci.sqlite
+            # ⚠️ reactivecircus action 在 linux 用 /usr/bin/sh(dash) 逐段执行
+            #    script：多行 for/{} 块会被截断（run 46057575276 dash 语法错）。
+            #    ⇒ 健康检查写成单条 POSIX 命令链，不用循环不用花括号组。
             ./pocketd > pocketd-ci.log 2>&1 &
-            for i in $(seq 1 45); do
-              curl -sf http://127.0.0.1:18099/healthz >/dev/null && break
-              sleep 2
-            done
-            curl -sf http://127.0.0.1:18099/healthz >/dev/null || {
-              echo "::error::pocketd did not become healthy on :18099"
-              tail -100 pocketd-ci.log
-              exit 1
-            }
+            sleep 8
+            curl -sf http://127.0.0.1:18099/healthz >/dev/null || tail -100 pocketd-ci.log
+            curl -sf http://127.0.0.1:18099/healthz >/dev/null
             cd "$GITHUB_WORKSPACE"
             ./scripts/run-maestro-suite.sh ci
 
@@ -255,16 +252,13 @@ jobs:
             export POCKET_JWT_SECRET="ci-jwt-secret-2026-openpocket-mobile-smoke"
             export POCKET_HTTP_PORT=18099
             export POCKET_DB_PATH=./data/pocket-ci.sqlite
+            # ⚠️ reactivecircus action 在 linux 用 /usr/bin/sh(dash) 逐段执行
+            #    script：多行 for/{} 块会被截断（run 46057575276 dash 语法错）。
+            #    ⇒ 健康检查写成单条 POSIX 命令链，不用循环不用花括号组。
             ./pocketd > pocketd-ci.log 2>&1 &
-            for i in $(seq 1 45); do
-              curl -sf http://127.0.0.1:18099/healthz >/dev/null && break
-              sleep 2
-            done
-            curl -sf http://127.0.0.1:18099/healthz >/dev/null || {
-              echo "::error::pocketd did not become healthy on :18099"
-              tail -100 pocketd-ci.log
-              exit 1
-            }
+            sleep 8
+            curl -sf http://127.0.0.1:18099/healthz >/dev/null || tail -100 pocketd-ci.log
+            curl -sf http://127.0.0.1:18099/healthz >/dev/null
             cd "$GITHUB_WORKSPACE"
             ./scripts/run-maestro-suite.sh ci
 
@@ -378,16 +372,13 @@ jobs:
             export POCKET_JWT_SECRET="ci-jwt-secret-2026-openpocket-mobile-smoke"
             export POCKET_HTTP_PORT=18099
             export POCKET_DB_PATH=./data/pocket-ci.sqlite
+            # ⚠️ reactivecircus action 在 linux 用 /usr/bin/sh(dash) 逐段执行
+            #    script：多行 for/{} 块会被截断（run 46057575276 dash 语法错）。
+            #    ⇒ 健康检查写成单条 POSIX 命令链，不用循环不用花括号组。
             ./pocketd > pocketd-ci.log 2>&1 &
-            for i in $(seq 1 45); do
-              curl -sf http://127.0.0.1:18099/healthz >/dev/null && break
-              sleep 2
-            done
-            curl -sf http://127.0.0.1:18099/healthz >/dev/null || {
-              echo "::error::pocketd did not become healthy on :18099"
-              tail -100 pocketd-ci.log
-              exit 1
-            }
+            sleep 8
+            curl -sf http://127.0.0.1:18099/healthz >/dev/null || tail -100 pocketd-ci.log
+            curl -sf http://127.0.0.1:18099/healthz >/dev/null
             cd "$GITHUB_WORKSPACE"
             ./scripts/run-maestro-suite.sh ci
 
