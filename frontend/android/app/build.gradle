@@ -178,12 +178,20 @@ tasks.register('downloadSileroVad') {
         // ⚠️ 2026-11-27 CI 实证（run 46049149656）：上游 GitHub raw 偶发 504，
         //    mac 本地因模型已缓存 never 触发，CI 冷环境一次失败即红。
         //    ⇒ 3 次指数退避重试（2s/4s/8s），仍失败才抛。
-        def url = 'https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.onnx'
+        // 2026-11-27 CI 二次实证：github.com/.../raw/... 的 302 → media 端点在 CI
+        // 出口 IP 上持续 504（本地 curl 却 200）。直连 raw.githubusercontent.com
+        // 一步到位 200 ⇒ 镜像 URL 池逐个尝试，都是公开镜像无凭据。
+        def urls = [
+            'https://raw.githubusercontent.com/snakers4/silero-vad/master/src/silero_vad/data/silero_vad.onnx',
+            'https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.onnx',
+        ]
         def maxAttempts = 3
         def lastErr = null
         for (int attempt = 1; attempt <= maxAttempts; attempt++) {
             try {
                 if (attempt > 1) sleep((2 * (1 << (attempt - 1))) * 1000L) // 4s, 8s
+                def url = urls[(attempt - 1) % urls.size()]
+                println "Silero VAD downloading from: ${url}"
                 def conn = new URL(url).openConnection()
                 conn.setRequestProperty('User-Agent', 'openpocket-gradle/1.0')
                 conn.setConnectTimeout(30000)
