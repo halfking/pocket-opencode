@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,9 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	_ "modernc.org/sqlite" // pure-Go SQLite driver (sync-state store)
+
 	"sync"
 	"time"
 
@@ -400,6 +404,29 @@ func newServer(cfg config.Config, nps adapter.NPSAdapter, opencode adapter.OpenC
 			s.redclawBridge = redclaw.NewBridge(rcClient, s.pushRedClawEvent)
 			s.redclawBridge.Start()
 			log.Println("[Server] RedClaw bridge initialized")
+		}
+	}
+
+	// 双向同步 orchestrator（保留未来可能性轮 2026-11-27）：此前
+	// MemoraClient 接口零实现 ⇒ 恒无法装配 ⇒ /api/sync/* 恒 503。现在
+	// memora 客户端有 GetUpdatedSince 实现 + sync 包有适配器，memora 面
+	// 配置齐备（POCKET_MEMORA_BASE_URL 且 s.memora != nil）即装配。
+	// 门控与 memora 面同开关：关掉 POCKET_MEMORA_* ⇒ orchestrator 为 nil
+	// ⇒ /api/sync/* 维持 503 降级语义（既有行为完全保留）。
+	if s.memora != nil && strings.TrimSpace(cfg.MemoraBaseURL) != "" && dataDir != "" {
+		syncDBPath := filepath.Join(dataDir, "sync-state.sqlite3")
+		if syncDB, err := sql.Open("sqlite", fmt.Sprintf("%s?_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)", syncDBPath)); err == nil {
+			if syncState, err := syncsvc.NewSyncStateStore(syncDB); err == nil {
+				adapter := syncsvc.NewMemoraAdapter(s.memora)
+				if adapter != nil {
+					s.syncOrchestrator = syncsvc.NewOrchestrator(syncState, adapter, 5*time.Minute)
+					log.Println("[Server] bidirectional sync orchestrator enabled (memora configured)")
+				}
+			} else {
+				log.Printf("[Server] sync state store init failed, bidirectional sync stays disabled: %v", err)
+			}
+		} else {
+			log.Printf("[Server] sync sqlite open failed, bidirectional sync stays disabled: %v", err)
 		}
 	}
 

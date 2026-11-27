@@ -27,6 +27,8 @@ package memora
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -536,4 +538,61 @@ func (c *HTTPClient) UpdateNote(ctx context.Context, id string, baseVersion int,
 		return nil, err
 	}
 	return &out, nil
+}
+
+// GetUpdatedSince 拉取 memora 侧 updated_at 晚于 lastSync 的笔记
+// （保留未来可能性轮 2026-11-27：sync.Orchestrator.MemoraClient 接口的
+// 拉取通道——此前只有接口声明、零实现，双向同步恒 503）。
+//
+// 实现：notebook 面分页遍历（updated_at DESC 之外的通用列表），客户端按
+// NotebookNote.UpdatedAt 过滤。memora notebook 面暂无 since 服务端参数——
+// 客户端过滤是当前最优解；memora 侧若未来提供增量参数，仅本方法需改。
+// lastSync <= 0 时返回全部（首次全量对账）。
+func (c *HTTPClient) GetUpdatedSince(ctx context.Context, lastSync int64) ([]SyncNote, error) {
+	const pageLimit = 100
+	since := time.Unix(lastSync, 0)
+	out := make([]SyncNote, 0, 16)
+	for page := 1; ; page++ {
+		resp, err := c.SearchNotes(ctx, NotebookQuery{Page: page, Limit: pageLimit})
+		if err != nil {
+			return nil, fmt.Errorf("memora: list notes for delta (page %d): %w", page, err)
+		}
+		for _, n := range resp.Items {
+			updatedAt, parseErr := time.Parse(time.RFC3339, n.UpdatedAt)
+			if parseErr != nil {
+				// 时间不可解析的行按"已更新"处理，宁多勿漏（对账由 hash 兜底）。
+				updatedAt = time.Now()
+			}
+			if lastSync > 0 && !updatedAt.After(since) {
+				continue
+			}
+			out = append(out, SyncNote{
+				ID:        n.ID,
+				Title:     n.Title,
+				Content:   n.PlainText,
+				UpdatedAt: updatedAt.Unix(),
+				Hash:      noteContentHash(n.PlainText, n.UpdatedAt),
+			})
+		}
+		if len(resp.Items) < pageLimit {
+			break
+		}
+	}
+	return out, nil
+}
+
+// SyncNote 是 sync.Orchestrator.MemoraNote 的客户端侧投影（避免 sync 包
+// 反向 import memora 之外再拉一层依赖——字段语义一致）。
+type SyncNote struct {
+	ID        string
+	Title     string
+	Content   string
+	UpdatedAt int64
+	Hash      string
+}
+
+// noteContentHash 与 sync.Orchestrator 的 hash 口径保持可对账（sha256 前 16 字节 hex）。
+func noteContentHash(content, updatedAt string) string {
+	sum := sha256.Sum256([]byte(content + "|" + updatedAt))
+	return hex.EncodeToString(sum[:16])
 }
