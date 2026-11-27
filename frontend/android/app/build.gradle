@@ -126,27 +126,43 @@ tasks.register('downloadSherpaAar') {
     doLast {
         sherpaAar.parentFile.mkdirs()
         def tmp = new File(sherpaAar.path + '.part')
-        def conn = new URL('https://github.com/k2-fsa/sherpa-onnx/releases/download/v2.0.1/sherpa-onnx-2.0.1.aar').openConnection()
-        conn.setRequestProperty('User-Agent', 'openpocket-gradle/1.0')
-        conn.setConnectTimeout(30000)
-        conn.setReadTimeout(120000)
-        conn.setInstanceFollowRedirects(true)
-        if (conn.getResponseCode() < 200 || conn.getResponseCode() >= 300) {
-            throw new GradleException("sherpa AAR download HTTP ${conn.getResponseCode()}")
+        // ⚠️ 与 downloadSileroVad 同款：上游 GitHub releases 偶发 5xx，
+        //    CI 冷环境一次失败即红 ⇒ 3 次指数退避重试。
+        def url = 'https://github.com/k2-fsa/sherpa-onnx/releases/download/v2.0.1/sherpa-onnx-2.0.1.aar'
+        def maxAttempts = 3
+        def lastErr = null
+        for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+            try {
+                if (attempt > 1) sleep((2 * (1 << (attempt - 1))) * 1000L) // 4s, 8s
+                def conn = new URL(url).openConnection()
+                conn.setRequestProperty('User-Agent', 'openpocket-gradle/1.0')
+                conn.setConnectTimeout(30000)
+                conn.setReadTimeout(120000)
+                conn.setInstanceFollowRedirects(true)
+                def code = conn.getResponseCode()
+                if (code < 200 || code >= 300) throw new IOException("HTTP ${code}")
+                byte[] buf = new byte[1 << 16]
+                InputStream ins = conn.getInputStream()
+                FileOutputStream outs = new FileOutputStream(tmp)
+                try {
+                    int n
+                    while ((n = ins.read(buf)) > 0) outs.write(buf, 0, n)
+                } finally {
+                    ins.close()
+                    outs.close()
+                    conn.disconnect()
+                }
+                if (!tmp.renameTo(sherpaAar)) throw new IOException('cannot finalize rename')
+                println "sherpa-onnx AAR downloaded: ${sherpaAar.length()} bytes (attempt ${attempt})"
+                lastErr = null
+                break
+            } catch (Exception e) {
+                lastErr = e
+                tmp.delete()
+                println "sherpa AAR download attempt ${attempt}/${maxAttempts} failed: ${e.message}"
+            }
         }
-        byte[] buf = new byte[1 << 16]
-        InputStream ins = conn.getInputStream()
-        FileOutputStream outs = new FileOutputStream(tmp)
-        try {
-            int n
-            while ((n = ins.read(buf)) > 0) outs.write(buf, 0, n)
-        } finally {
-            ins.close()
-            outs.close()
-            conn.disconnect()
-        }
-        if (!tmp.renameTo(sherpaAar)) throw new GradleException('cannot finalize sherpa AAR download')
-        println "sherpa-onnx AAR downloaded: ${sherpaAar.length()} bytes"
+        if (lastErr != null) throw new GradleException("sherpa AAR download failed after ${maxAttempts} attempts: ${lastErr.message}")
     }
 }
 
@@ -159,27 +175,44 @@ tasks.register('downloadSileroVad') {
         sileroVadModel.parentFile.mkdirs()
         def tmp = new File(sileroVadModel.path + '.part')
         // Silero VAD v4 模型 (~1MB)，来自官方 GitHub 仓库
-        def conn = new URL('https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.onnx').openConnection()
-        conn.setRequestProperty('User-Agent', 'openpocket-gradle/1.0')
-        conn.setConnectTimeout(30000)
-        conn.setReadTimeout(60000)
-        conn.setInstanceFollowRedirects(true)
-        if (conn.getResponseCode() < 200 || conn.getResponseCode() >= 300) {
-            throw new GradleException("Silero VAD model download HTTP ${conn.getResponseCode()}")
+        // ⚠️ 2026-11-27 CI 实证（run 46049149656）：上游 GitHub raw 偶发 504，
+        //    mac 本地因模型已缓存 never 触发，CI 冷环境一次失败即红。
+        //    ⇒ 3 次指数退避重试（2s/4s/8s），仍失败才抛。
+        def url = 'https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.onnx'
+        def maxAttempts = 3
+        def lastErr = null
+        for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+            try {
+                if (attempt > 1) sleep((2 * (1 << (attempt - 1))) * 1000L) // 4s, 8s
+                def conn = new URL(url).openConnection()
+                conn.setRequestProperty('User-Agent', 'openpocket-gradle/1.0')
+                conn.setConnectTimeout(30000)
+                conn.setReadTimeout(60000)
+                conn.setInstanceFollowRedirects(true)
+                def code = conn.getResponseCode()
+                if (code < 200 || code >= 300) throw new IOException("HTTP ${code}")
+                byte[] buf = new byte[1 << 16]
+                InputStream ins = conn.getInputStream()
+                FileOutputStream outs = new FileOutputStream(tmp)
+                try {
+                    int n
+                    while ((n = ins.read(buf)) > 0) outs.write(buf, 0, n)
+                } finally {
+                    ins.close()
+                    outs.close()
+                    conn.disconnect()
+                }
+                if (!tmp.renameTo(sileroVadModel)) throw new IOException('cannot finalize rename')
+                println "Silero VAD model downloaded: ${sileroVadModel.length()} bytes (attempt ${attempt})"
+                lastErr = null
+                break
+            } catch (Exception e) {
+                lastErr = e
+                tmp.delete()
+                println "Silero VAD download attempt ${attempt}/${maxAttempts} failed: ${e.message}"
+            }
         }
-        byte[] buf = new byte[1 << 16]
-        InputStream ins = conn.getInputStream()
-        FileOutputStream outs = new FileOutputStream(tmp)
-        try {
-            int n
-            while ((n = ins.read(buf)) > 0) outs.write(buf, 0, n)
-        } finally {
-            ins.close()
-            outs.close()
-            conn.disconnect()
-        }
-        if (!tmp.renameTo(sileroVadModel)) throw new GradleException('cannot finalize Silero VAD model download')
-        println "Silero VAD model downloaded: ${sileroVadModel.length()} bytes"
+        if (lastErr != null) throw new GradleException("Silero VAD model download failed after ${maxAttempts} attempts: ${lastErr.message}")
     }
 }
 
