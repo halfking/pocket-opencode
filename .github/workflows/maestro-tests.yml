@@ -14,11 +14,11 @@
 #   4. API base：APK 内没有同源后端，必须构建期烘 VITE_API_BASE。
 #      10.0.2.2 是模拟器访问宿主机 loopback 的专用别名，
 #      pocketd 绑 ":$PORT"（全接口），无需 adb reverse。
-#   5. 模拟器：macos-latest 是 Apple Silicon → arm64-v8a 镜像 + google_apis。
-#      ⚠️ API 30 arm64 镜像在 GH macOS runner 上 HVF 直接崩
-#      （run 46028049508: "failed to initialize HVF: Invalid argument /
-#       HV_UNSUPPORTED"，qemu 起不来 → boot 超时）→ 用 API 34（M 系 runner
-#      实测可用的最低主流 API；本地 pocket_test AVD 也已改到 API 34 验证）。
+#   5. 模拟器跑在 ubuntu-latest + KVM：GH 托管 macOS runner 全系为 VM 且
+#      M1 宿主不支持嵌套虚拟化 → emulator HVF 必崩（4 个 run 四种组合实证，
+#      见 actions/runner-images#9472）；ubuntu runner 原生嵌套 KVM 可用。
+#      API 34 + x86_64（KVM x86 主流配方）；本地预验证用 pocket_test AVD
+#      API 34 arm64（本机 M 系列）完成端到端全绿。
 #   6. 原来的 smoke 有**两个连续** emulator-runner（第一个只 echo），
 #      每次都会完整起一台模拟器 → 合并成一个，backend 起在 runner script 里。
 name: Maestro Mobile Tests
@@ -44,13 +44,14 @@ jobs:
   # ═══════════════════════════════════════════════════════════════════
   smoke-test:
     name: Smoke Tests
-    # macos-26-arm64 (即 macos-latest) 的 HVF 使 qemu 中途 HV_UNSUPPORTED 崩溃
-    # (runs 46028049508/46031979263 实证 API 30/34 双崩于 boot 中段)。
-    # 钉 macos-15-arm64 后 run 46035390974 免费额度排队 >1h —— arm64 runner
-    # 池在免费 plan 长期饱和。改走 Intel (macos-15) + x86_64 API 34：
-    # 架构原生匹配无需 Rosetta（原 workflow 的 x86_64 旧配置本身没毛病，
-    # 毛病出在 macos-26 镜像），Intel runner 供给更充足。
-    runs-on: macos-15
+    # ⚠️ GitHub 托管 macOS runner 全系 arm64 且是 VM（actions/runner-images#9472：
+    #    M1 宿主不支持嵌套虚拟化 → Android emulator HVF 中途 HV_UNSUPPORTED 崩，
+    #    run 46028049508/46031979263 API 30/34 双崩实证；macos-15 label 也已落
+    #    arm64，run 46045634257 的 x86_64 镜像直接 FATAL CPU 不匹配）。
+    #    M3+macOS15 嵌套虚拟化尚未覆盖 GH runner 池。⇒ 模拟器面改走 ubuntu-latest：
+    #    GitHub Linux runner 2023 起原生支持嵌套 KVM，reactivecircus action 在
+    #    linux 上自动启用硬件加速（disable-linux-hw-accel: false）。
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
       POCKET_DEV_PASS: ${{ secrets.POCKET_DEV_PASS != '' && secrets.POCKET_DEV_PASS || 'ci-dev-pass-2026' }}
@@ -160,7 +161,7 @@ jobs:
     # 池在免费 plan 长期饱和。改走 Intel (macos-15) + x86_64 API 34：
     # 架构原生匹配无需 Rosetta（原 workflow 的 x86_64 旧配置本身没毛病，
     # 毛病出在 macos-26 镜像），Intel runner 供给更充足。
-    runs-on: macos-15
+    runs-on: ubuntu-latest
     timeout-minutes: 45
     if: github.event_name == 'pull_request' && github.base_ref == 'main'
     needs: smoke-test
@@ -270,7 +271,7 @@ jobs:
     # 池在免费 plan 长期饱和。改走 Intel (macos-15) + x86_64 API 34：
     # 架构原生匹配无需 Rosetta（原 workflow 的 x86_64 旧配置本身没毛病，
     # 毛病出在 macos-26 镜像），Intel runner 供给更充足。
-    runs-on: macos-15
+    runs-on: ubuntu-latest
     timeout-minutes: 60
     if: github.event_name == 'workflow_dispatch'
     needs: smoke-test
