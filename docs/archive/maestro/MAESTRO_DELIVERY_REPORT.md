@@ -124,7 +124,7 @@
 ```bash
 # 步骤 1: 配置环境（30 秒）
 export POCKET_MASTER="12345678"
-export POCKET_DEV_PASS="Veritrans&9527"
+export POCKET_DEV_PASS="<DEV-PASS-PREFIX>…<masked>"
 
 # 步骤 2: 配置端口转发（10 秒）
 adb reverse tcp:18099 tcp:8088

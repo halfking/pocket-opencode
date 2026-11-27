@@ -106,7 +106,7 @@ $ adb -s 4c308e2e shell "curl -s https://openpocket.itestu.cn/api/auth/sso/statu
 # Direct-login端点
 $ curl -X POST https://openpocket.itestu.cn/api/auth/sso/direct-login \
   -H "Content-Type: application/json" \
-  -d '{"username":"admin","password":"RedClaw@2026"}'
+  -d '{"username":"admin","password":"<DEV-ADMIN-PASS>…<masked>"}'
 {"token":"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...","user":"admin",...}  ✅
 ```
 
@@ -166,7 +166,7 @@ Error: INSTALL_FAILED_USER_RESTRICTED: Install canceled by user
 ### 手动验证覆盖项
 基于已部署APK和后端配置，需手动验证：
 - [ ] 打开App查看SSO直连登录表单渲染
-- [ ] 输入admin/RedClaw@2026登录成功
+- [ ] 输入admin/<DEV-ADMIN-PASS>…<masked>登录成功
 - [ ] 主密码创建与本地加密库初始化
 - [ ] ACC任务看板数据显示
 - [ ] Memora笔记CRUD功能

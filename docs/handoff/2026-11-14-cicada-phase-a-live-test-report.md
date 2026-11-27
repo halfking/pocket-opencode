@@ -16,7 +16,7 @@
 | 安装到真机 |✅ |首次 vivo拒装（已知坑），`KEYCODE_WAKEUP` 后重试成功 |
 | CDP（Chrome DevTools Protocol）自动化 |✅ | `adb forward tcp:9222 localabstract:webview_devtools_remote_<pid>` + Node22原生 WebSocket（`/tmp/cdp-eval.mjs`）。**比 uiautomator/screencap 可靠得多，本轮全部关键操作走 CDP** |
 | 设备侧网络验证 |✅ | WebView 内 `fetch('https://pocket.itestu.cn/healthz')` →200 "ok" |
-|登录（真实密码登录） |✅ | admin/Veritrans&9527 通过 CDP填表提交成功 |
+|登录（真实密码登录） |✅ | admin/<DEV-PASS-PREFIX>…<masked> 通过 CDP填表提交成功 |
 | 本地库解锁 |✅ | 主密码12345678，通过 CDP 注入 password input |
 |录音启动 |✅ | `aria-label=开始会议录音` FAB → 详情页「录音中」+实时字幕面板出现 |
 | sherpa zipformer模型 |✅ |首次 preload触发运行时下载 ~350MB（35KB/s慢速约75 分钟），解压后 `zipformerReady: true` |

@@ -40,7 +40,7 @@ cd /Users/xutaohuang/workspace/ai-native-tools/client/openpocket
 
 # 配置环境
 export POCKET_MASTER="12345678"
-export POCKET_DEV_PASS="Veritrans&9527"
+export POCKET_DEV_PASS="<DEV-PASS-PREFIX>…<masked>"
 adb reverse tcp:18099 tcp:8088
 
 # 运行测试
@@ -66,7 +66,7 @@ adb devices
 # 5. 执行测试（同上）
 cd /Users/xutaohuang/workspace/ai-native-tools/client/openpocket
 export POCKET_MASTER="12345678"
-export POCKET_DEV_PASS="Veritrans&9527"
+export POCKET_DEV_PASS="<DEV-PASS-PREFIX>…<masked>"
 adb reverse tcp:18099 tcp:8088
 ./scripts/run-maestro-suite.sh smoke
 ./scripts/run-maestro-suite.sh regression
@@ -90,7 +90,7 @@ sleep 20
 adb devices
 cd /Users/xutaohuang/workspace/ai-native-tools/client/openpocket
 export POCKET_MASTER="12345678"
-export POCKET_DEV_PASS="Veritrans&9527"
+export POCKET_DEV_PASS="<DEV-PASS-PREFIX>…<masked>"
 adb reverse tcp:18099 tcp:8088
 ./scripts/run-maestro-suite.sh smoke
 ```

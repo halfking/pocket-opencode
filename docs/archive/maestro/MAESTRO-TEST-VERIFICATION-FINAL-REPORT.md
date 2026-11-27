@@ -249,7 +249,7 @@
 
 **测试账户**：
 - **账号**: admin
-- **密码**: RedClaw@2026
+- **密码**: <DEV-ADMIN-PASS>…<masked>
 - **主密码**: 12345678
 
 ### 7.2 执行环境
@@ -263,7 +263,7 @@
 ```bash
 export ANDROID_HOME="$HOME/Library/Android/sdk"
 export POCKET_MASTER="12345678"
-export POCKET_DEV_PASS="RedClaw@2026"
+export POCKET_DEV_PASS="<DEV-ADMIN-PASS>…<masked>"
 ```
 
 ---

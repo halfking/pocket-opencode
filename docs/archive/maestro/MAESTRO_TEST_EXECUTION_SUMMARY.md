@@ -41,7 +41,7 @@
 ```bash
 # 1. 设置环境变量
 export POCKET_MASTER="12345678"
-export POCKET_DEV_PASS="Veritrans&9527"
+export POCKET_DEV_PASS="<DEV-PASS-PREFIX>…<masked>"
 
 # 2. 启动后端服务（在另一个终端）
 cd backend

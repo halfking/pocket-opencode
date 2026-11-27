@@ -12,7 +12,7 @@
 
 之前一直「暂无邮件」，不是 bug，是**本地加密库从没建过**。完整链路：
 
-1. 登录 admin（dev 旁路，`Veritrans&9527`）
+1. 登录 admin（dev 旁路，`<DEV-PASS-PREFIX>…<masked>`）
 2. 首次进入触发「创建主密码」对话框
 3. `adb reverse tcp:18099 tcp:18099`，Build default `http://localhost:18099` 直连宿主
 4. 填主密码解锁 → 邮箱页拉到 120 封

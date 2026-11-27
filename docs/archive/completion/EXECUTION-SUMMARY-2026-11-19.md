@@ -128,7 +128,7 @@ if (isNativeRuntime && apiBase.startsWith('https://')) {
 
 1. **SSO登录流程** (5分钟)
    - 打开App查看登录表单（应显示SSO直连表单）
-   - 输入admin/RedClaw@2026登录
+   - 输入admin/<DEV-ADMIN-PASS>…<masked>登录
    - 确认主密码创建流程
 
 2. **ACC任务管理** (5分钟)

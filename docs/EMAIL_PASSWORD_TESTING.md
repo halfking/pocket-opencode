@@ -98,7 +98,7 @@ POCKET_MASTER=TestMaster123
 # 标准测试账号
 POCKET_DEV_PASS=admin
 POCKET_OLD_PASS=admin
-POCKET_NEW_PASS=NewPass123
+POCKET_NEW_PASS=<NEW-PASS>…<masked>
 
 # 测试邮箱
 POCKET_TEST_EMAIL=test@example.com
@@ -147,7 +147,7 @@ export POCKET_MASTER="TestMaster123"
 export POCKET_DEV_PASS="admin"
 export POCKET_TEST_EMAIL="test@example.com"
 export POCKET_OLD_PASS="admin"
-export POCKET_NEW_PASS="NewPass123"
+export POCKET_NEW_PASS="<NEW-PASS>…<masked>"
 
 # 运行测试
 maestro test .maestro/email-password-change.yaml
@@ -332,7 +332,7 @@ jobs:
           POCKET_MASTER: ${{ secrets.POCKET_MASTER }}
           POCKET_TEST_EMAIL: test@example.com
           POCKET_OLD_PASS: admin
-          POCKET_NEW_PASS: NewPass123
+          POCKET_NEW_PASS: <NEW-PASS>…<masked>
         run: |
           maestro test .maestro/email-password-suite.yaml
       

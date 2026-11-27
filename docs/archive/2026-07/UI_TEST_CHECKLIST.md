@@ -9,14 +9,14 @@
 ## 环境信息
 - 前端地址: http://localhost:4174
 - 后端地址: http://localhost:8088
-- 登录凭证: admin / Veritrans&9527
+- 登录凭证: admin / <DEV-PASS-PREFIX>…<masked>
 
 ## 测试步骤
 
 ### 1. 登录验证
 - [ ] 访问 http://localhost:4174
 - [ ] 输入用户名：admin
-- [ ] 输入密码：Veritrans&9527
+- [ ] 输入密码：<DEV-PASS-PREFIX>…<masked>
 - [ ] 点击登录
 
 ### 2. 实例发现验证

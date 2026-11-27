@@ -78,7 +78,7 @@ docker compose -f deploy/bin/docker-compose.opp.yml up -d
 
 | 入口 | 行为 |
 |---|---|
-| `POST /api/auth/login` | 返回 503 `redclaw auth unavailable, please retry`(仅当 `POCKET_DEV_AUTH=true` 时降级到 admin/Veritrans&9527) |
+| `POST /api/auth/login` | 返回 503 `redclaw auth unavailable, please retry`(仅当 `POCKET_DEV_AUTH=true` 时降级到 admin/<DEV-PASS-PREFIX>…<masked>) |
 | `POST /api/auth/send-code` | **保持本地** — RedClaw 暂无对应端点,继续走本地 `codeStore` |
 | `POST /api/auth/register` | **保持本地** — 同上 |
 | `POST /api/auth/code-login` | **保持本地** — 同上 |

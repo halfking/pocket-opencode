@@ -44,7 +44,7 @@
    - 后端地址：https://openpocket.itestu.cn
 
 3. 点击密码字段
-4. 输入密码：`RedClaw@2026`
+4. 输入密码：`<DEV-ADMIN-PASS>…<masked>`
 5. 点击「企业账号登录（Casdoor）」按钮
 6. 等待登录响应（约2-3秒）
 
@@ -135,7 +135,7 @@ docker logs opencode-pocket-pocketd | grep kxmemory
 完成以上4个步骤后，以下所有项应该为✅：
 
 **功能验证**：
-- [ ] 使用admin/RedClaw@2026成功登录
+- [ ] 使用admin/<DEV-ADMIN-PASS>…<masked>成功登录
 - [ ] 主密码创建成功（如首次登录）
 - [ ] 任务看板显示2个ACC任务
 - [ ] 成功创建并编辑Memora笔记

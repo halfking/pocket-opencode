@@ -114,7 +114,7 @@ CI/CD: 1 个
 ```bash
 # 配置环境
 export POCKET_MASTER="12345678"
-export POCKET_DEV_PASS="Veritrans&9527"
+export POCKET_DEV_PASS="<DEV-PASS-PREFIX>…<masked>"
 adb reverse tcp:18099 tcp:8088
 
 # 运行测试

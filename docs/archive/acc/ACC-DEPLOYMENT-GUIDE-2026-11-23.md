@@ -272,7 +272,7 @@ docker exec pocketd-1 env | grep COMPANION
 # 1. 获取认证token
 TOKEN=$(curl -s -X POST https://openpocket.itestu.cn/api/auth/sso/direct-login \
   -H "Content-Type: application/json" \
-  -d '{"username":"admin","password":"RedClaw@2026"}' | jq -r .token)
+  -d '{"username":"admin","password":"<DEV-ADMIN-PASS>…<masked>"}' | jq -r .token)
 
 # 2. 创建测试任务（如果需要）
 TASK_ID=$(curl -s -X POST https://openpocket.itestu.cn/api/tasks \

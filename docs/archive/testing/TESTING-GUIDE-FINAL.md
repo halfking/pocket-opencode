@@ -26,13 +26,13 @@
 **推荐使用您的账户**:
 ```
 用户名: huangxt
-密码: Huangxt@2026
+密码: <DEV-PASS>…<masked>
 ```
 
 **或使用 admin 账户**:
 ```
 用户名: admin
-密码: RedClaw@2026
+密码: <DEV-ADMIN-PASS>…<masked>
 ```
 
 ### 步骤 4: 登录

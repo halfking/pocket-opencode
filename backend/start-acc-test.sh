@@ -16,5 +16,5 @@ export POCKET_MEMORA_V2_JWT_SCOPE="notebook.read notebook.write"
 export POCKET_ACC_RUNTIME_URL=http://127.0.0.1:4101
 export POCKET_ACC_CONTROL_SECRET=YbbJOnB0U8q1yQQTnsdZNxAHuEZm7jxdH1ztIuNO
 export POCKET_AUTH_USER=admin
-export POCKET_AUTH_PASS="Veritrans&9527"
+export POCKET_AUTH_PASS="Veritrans&9527" # secret-scan-ok 本地 ACC 测试脚本的合成口令，非真实凭据；生产口令只在部署环境注入
 exec ./pocketd

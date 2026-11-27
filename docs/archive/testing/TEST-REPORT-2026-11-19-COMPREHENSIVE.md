@@ -38,7 +38,7 @@ Comprehensive testing was initiated on Android device (4c308e2e) with production
 
 #### BLOCKER #1: Login Hang
 
-**Symptom**: After entering credentials (admin/Veritrans&9527) and tapping login button, app shows loading indicator (teal droplet) indefinitely and never progresses to main screen.
+**Symptom**: After entering credentials (admin/<DEV-PASS-PREFIX>…<masked>) and tapping login button, app shows loading indicator (teal droplet) indefinitely and never progresses to main screen.
 
 **Evidence**:
 - Screenshot: Black screen with teal loading droplet in center

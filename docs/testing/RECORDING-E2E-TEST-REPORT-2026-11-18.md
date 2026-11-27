@@ -25,7 +25,7 @@
 
 1. **pocketd 后端未运行** → 设置页显示「● 连接异常 · http://192.168.31.32:8088」。后台 exec 启动 pocketd（8088）解决。
 2. **APK 内置后端地址过期**（.32，本机现为 .35）→ 登录页「后端服务器」入口 → 自定义地址输入 `http://192.168.31.35:8088` → 保存。
-3. **「会议不存在」根因复现**（owner 未验证：恢复态登录没有 verifiedOwner → INSERT 的 owner 写空串 → ownerScopeSql 查不到）→ 退出登录 → 重新密码登录（admin / Veritrans&9527）→ 重建主密码 12345678 → owner 修复 ✅（会议保存后列表可见）。
+3. **「会议不存在」根因复现**（owner 未验证：恢复态登录没有 verifiedOwner → INSERT 的 owner 写空串 → ownerScopeSql 查不到）→ 退出登录 → 重新密码登录（admin / <DEV-PASS-PREFIX>…<masked>）→ 重建主密码 12345678 → owner 修复 ✅（会议保存后列表可见）。
 4. **转写模型缺失**：APK assets 无 zipformer 模型，设备直连 github.com 超时（15s），云端网关 llm.itestu.cn 无 ASR 且域名解析被拒（stt_unavailable）。→ Mac 经 ghproxy 下载 `sherpa-onnx-streaming-zipformer-small-bilingual-zh-en-2023-02-16-mobile.tar.bz2`（341MB，HTTP/2 断流后断点续传补齐），push 4 个必需文件（encoder int8/decoder/joiner/tokens.txt）到 `/sdcard/Android/data/com.kaixuan.opencode.pocket/files/sherpa-models/` → 转写引擎即通。
 5. **MIUI 麦克风后台静音**（关键发现）：`appops` 显示 RECORD_AUDIO=foreground；实测 App 前台分片 peak=48（真底噪），切后台后 peak=2（数字静音，HAL 信号功率 -94dB）。MIUI 麦克风授权只有三档（拒绝/每次询问/仅在使用中），无「总是允许」档，`appops set` 改不动。**结论：App 在前台时拾音正常，切后台（即使有前台服务）麦克风被系统数字静音**。
 6. **测试音频注入方案演进**：440Hz 正弦波（VAD 人声模型不响应）→ 设备播放器外放（切回 App 时被 AudioHardening 静音，日志证据 `background playback would be muted for com.miui.mediaviewer`）→ **最终方案：App 保持前台 + Mac `afplay -v 6` 外放 TTS 语音（空气传播）**，一次成功。

@@ -30,7 +30,7 @@
 | 设备连接 | ✅ | adb devices 可见：4c308e2e device |
 | 应用安装 | ✅ | com.kaixuan.opencode.pocket (v1.2.0-openpocket) |
 | 后端连接 | ✅ | 已连接 · https://pocket.itestu.cn |
-| 用户认证 | ✅ | admin / Veritrans&9527 密码登录成功 |
+| 用户认证 | ✅ | admin / <DEV-PASS-PREFIX>…<masked> 密码登录成功 |
 | Owner激活 | ✅ | 重新登录后工作区访问权限恢复 |
 
 ### 2. 关键问题诊断与修复

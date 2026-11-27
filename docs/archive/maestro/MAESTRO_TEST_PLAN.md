@@ -144,7 +144,7 @@
 4. **环境变量**:
    ```bash
    export POCKET_MASTER="12345678"           # 主密码
-   export POCKET_DEV_PASS="Veritrans&9527"   # 测试账号密码
+   export POCKET_DEV_PASS="<DEV-PASS-PREFIX>…<masked>"   # 测试账号密码
    ```
 
 ---

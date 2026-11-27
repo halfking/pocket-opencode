@@ -48,8 +48,8 @@
 
 | 用户 | 密码 | 邮箱 | Hash长度 | 状态 |
 |------|------|------|----------|------|
-| admin | RedClaw@2026 | [REDACTED] | 60字符 | ✅ 验证通过 |
-| huangxt | Huangxt@2026 | [REDACTED] | 60字符 | ✅ 验证通过 |
+| admin | <DEV-ADMIN-PASS>…<masked> | [REDACTED] | 60字符 | ✅ 验证通过 |
+| huangxt | <DEV-PASS>…<masked> | [REDACTED] | 60字符 | ✅ 验证通过 |
 
 **修复的问题**:
 - ✅ 密码hash截断问题（从35字符修复为60字符）
@@ -256,8 +256,8 @@ docker compose -p kaixuan-platform up -d --no-deps --force-recreate \
 ## 📞 支持信息
 
 ### 凭据信息
-- **推荐账户**: huangxt / Huangxt@2026
-- **Admin账户**: admin / RedClaw@2026
+- **推荐账户**: huangxt / <DEV-PASS>…<masked>
+- **Admin账户**: admin / <DEV-ADMIN-PASS>…<masked>
 - **Casdoor后台**: built-in/admin/Admin@2026
 
 ### 访问地址

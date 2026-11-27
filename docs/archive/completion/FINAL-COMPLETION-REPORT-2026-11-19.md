@@ -125,7 +125,7 @@ adb -s 4c308e2e shell "curl -s https://openpocket.itestu.cn/api/auth/sso/status"
 **API验证**:
 ```bash
 curl -X POST https://openpocket.itestu.cn/api/auth/sso/direct-login \
-  -d '{"username":"admin","password":"RedClaw@2026"}'
+  -d '{"username":"admin","password":"<DEV-ADMIN-PASS>…<masked>"}'
 {"token":"eyJhbGci...","user":"admin",...} ✅
 ```
 

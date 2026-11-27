@@ -4,7 +4,7 @@
 HTTP 200 body=2B
 ok
 
-### 2. login (admin / Veritrans&9527)
+### 2. login (admin / <DEV-PASS-PREFIX>…<masked>)
 {"auth_method":"dev-bypass","role":"admin","token":"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoidXNlci1hZG1pbiIsInJvbGUiOiJhZG1pbiIsIndvcmtzcGFjZV9pZCI6ImRlZmF1bHQiLCJpc3MiOiJwb2NrZXQiLCJhdWQiOlsicG9ja2V0LWFwaSJdLCJleHAiOjE3ODg4MTQ3ODEsIm5iZiI6MTc4ODcyODM4MSwiaWF0IjoxNzg4NzI4MzgxfQ.<sig-redacted>","user":"admin","user_id":"user-admin","workspace_id":"default"}
 
 HTTP_STATUS:200

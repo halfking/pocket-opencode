@@ -16,14 +16,14 @@
 
 #### Admin 账户
 - **用户名**: `admin`
-- **密码**: `RedClaw@2026`
+- **密码**: `<DEV-ADMIN-PASS>…<masked>`
 - **邮箱**: `[REDACTED]`
 - **组织**: `redclaw`
 - **数据库**: `casdoor`.`user` 表
 
 #### 你的账户
 - **用户名**: `huangxt`
-- **密码**: `Huangxt@2026`
+- **密码**: `<DEV-PASS>…<masked>`
 - **邮箱**: `huangxt@itestu.cn`
 - **组织**: `redclaw`
 
@@ -77,7 +77,7 @@ redclaw-local-stack-redclaw-casdoor-1   healthy    28000/tcp
    - 应用启动后应该显示登录界面
    - 查看是否有"企业账号登录"表单（用户名 + 密码）
    - 输入用户名: `huangxt`
-   - 输入密码: `Huangxt@2026`
+   - 输入密码: `<DEV-PASS>…<masked>`
    - 点击"企业账号登录"
 
 3. **预期结果**
@@ -99,7 +99,7 @@ redclaw-local-stack-redclaw-casdoor-1   healthy    28000/tcp
 
 2. **使用 admin 账户登录**
    - 用户名: `admin`
-   - 密码: `RedClaw@2026`
+   - 密码: `<DEV-ADMIN-PASS>…<masked>`
    - 验证能否正常登录
 
 ### 测试 3: Casdoor 管理后台
@@ -135,7 +135,7 @@ redclaw-local-stack-redclaw-casdoor-1   healthy    28000/tcp
 cd /Users/xutaohuang/workspace/ai-native-tools/client/openpocket
 
 # 设置环境变量
-export POCKET_DEV_PASS="Huangxt@2026"
+export POCKET_DEV_PASS="<DEV-PASS>…<masked>"
 export POCKET_MASTER="TestMaster@123"
 
 # 运行 SSO 登录测试

@@ -92,7 +92,7 @@ scripts/
 ```bash
 # 设置环境变量
 export POCKET_MASTER="12345678"
-export POCKET_DEV_PASS="Veritrans&9527"
+export POCKET_DEV_PASS="<DEV-PASS-PREFIX>…<masked>"
 
 # 配置端口转发
 adb reverse tcp:18099 tcp:8088
@@ -535,7 +535,7 @@ maestro test .maestro/specific-test.yaml
 
 # 2. 配置环境变量
 export POCKET_MASTER="12345678"
-export POCKET_DEV_PASS="Veritrans&9527"
+export POCKET_DEV_PASS="<DEV-PASS-PREFIX>…<masked>"
 
 # 3. 配置端口转发
 adb reverse tcp:18099 tcp:8088

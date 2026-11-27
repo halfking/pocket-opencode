@@ -745,6 +745,13 @@ var s947Ledger = []s947LedgerEntry{
 		},
 		Reason: "调用点是**副作用**（惰性建信号量），返回值在这个位置用不到。",
 	},
+	{
+		Callee: "consume", Recv: "*github.com/halfking/pocket-opencode/backend/internal/server.ssoTxnStore", Count: 1,
+		Files: []string{
+			"backend/internal/server/server_auth_extended.go",
+		},
+		Reason: "**错误路径上的清理**：native SSO 的 authorize URL 校验失败分支里，刚签发的 nonce 必须立即作废（防重放）；主错误已经返回。返回的 entry/ok 在此位置无用（同文件 728 行的合法消费点用了返回值）。",
+	},
 }
 
 // =============================================================================

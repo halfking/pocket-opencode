@@ -146,6 +146,8 @@ var s945Ledger = []s945LedgerRow{
 	{"backend/internal/server/server_audit_export.go", "Write", 2},
 	{"backend/internal/server/server_llmbff.go", "SetWriteDeadline", 1},
 	{"backend/internal/server/server_stt_settings.go", "loadSTTSettings", 4},
+	{"backend/internal/server/server_sso_native.go", "Execute", 1},
+	{"backend/internal/server/server_auth_extended.go", "Cookie", 1},
 	{"backend/internal/server/smtp_probe.go", "Close", 1},
 	{"backend/internal/server/smtp_probe.go", "Extension", 1},
 	{"backend/internal/server/smtp_send.go", "Close", 4},
@@ -194,6 +196,13 @@ var s945MethodReasons = map[string]string{
 	"Kill": "结束子进程。失败 ⇒ 进程可能残留；调用方紧接着就返回该错误 ⇒ 登记不修。",
 	"loadSTTSettings": "第二个返回值 `ok` 只表示「**有没有设置记录**」；没有记录时用零值 + 默认配置" +
 		"是**既定语义**（读失败已在函数**内部**记日志，见 §945 修复）⇒ 登记不修。",
+	"Execute": "模板渲染进响应体（native SSO 的浏览器兜底页）。⚠ §946 之后仓里**剩下**的这一处：" +
+		"页面是静态模板（渲染失败只会产生截断的兜底说明页，无持久化状态）；调用点已按 §946 " +
+		"对同函数内的 `w.Write` 显式检查并留痕，Execute 的错误与同一连接的写失败同因（连接已断）" +
+		"⇒ 单独留痕只会在同一断连上重复记一条日志 ⇒ 登记不修。",
+	"Cookie": "解析请求 cookie。`http.Request.Cookie` 的错误就是「没有这个 cookie」，" +
+		"调用点紧接着用 `ck != nil` 判缺失并走统一拒绝分支（sso_session 错误 + 审计留痕）" +
+		"⇒ 丢弃 error 不改变行为 ⇒ 登记不修。",
 }
 
 // s945PersistenceVerbs 是「持久化写」的方法名前缀集合。
@@ -218,6 +227,12 @@ var s945BenignVerbs = map[string]bool{
 	"SetDeadline":      true,
 	"SetReadDeadline":  true,
 	"SetWriteDeadline": true,
+	// `Execute` 命中 "Exec" 前缀，但仓里登记的这一处是 html/template 的
+	// 渲染进响应体（native SSO 浏览器兜底页）——不落任何存储，不是持久化写。
+	// ⚠ 若未来出现真正持久化的 `Exec*`（database Exec 等），它**不在**本排除
+	// 之内（本表按**完整方法名**精确匹配，"Exec" ≠ "Execute" 之外的方法名
+	// 一律照常走前缀判定）。
+	"Execute": true,
 }
 
 // s945IsPersistenceMethod 判一个方法名**是不是**持久化写。
@@ -597,10 +612,14 @@ func TestS945LedgerMatchesSource(t *testing.T) {
 	//	两处 `code, _ := resourceCurrent` 丢的是 role（授权判定只看 code）。
 	// ⚠ 98 → 101（2026-11-15）：diarization client 新增 3 处 multipart
 	//	`WriteField`，与既有 STT 上游转发同族；底层 writer 已坏时上游请求会失败。
-	if got, want := len(res.Discards), 101; got != want {
+	// ⚠ 101 → 103（2026-11-27 两周合并审计）：origin/main 3de3806f 合并带入 2 处：
+	//	`server_sso_native.go ::Execute`（静态兜底页渲染进响应体，无持久化）与
+	//	`server_auth_extended.go ::Cookie`（错误即「无 cookie」，下游有 nil 判定）。
+	//	同函数内的 `w.Write` 已按 §946 改为显式检查并留痕。
+	if got, want := len(res.Discards), 103; got != want {
 		t.Errorf("被丢弃的调用总处数 = %d（台账登记的是 %d 处）⇒ 数量变了必须重新定性", got, want)
 	}
-	if got, want := len(s945Ledger), 45; got != want {
+	if got, want := len(s945Ledger), 47; got != want {
 		t.Errorf("台账行数 = %d（期望 %d）⇒ 台账行数变了必须重新定性", got, want)
 	}
 }

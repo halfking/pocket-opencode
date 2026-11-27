@@ -471,7 +471,7 @@ GET    /api/health                  # 应用健康检查
 ```
 
 **关键配置**:
-- Casdoor Admin 口令: `RedClaw@2026`
+- Casdoor Admin 口令: `<DEV-ADMIN-PASS>…<masked>`
 - 分裂域名问题: `pocket.itestu.cn` (已修复 SSO fail-closed)
 - ACC MCP 端点: `http://192.168.31.211:4101/api/v2/mcp`
 

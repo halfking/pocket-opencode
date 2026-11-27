@@ -100,7 +100,7 @@ Test that dispatch sessions appear:
 # Get token
 TOKEN=$(curl -s -X POST https://openpocket.itestu.cn/api/auth/sso/direct-login \
   -H "Content-Type: application/json" \
-  -d '{"username":"admin","password":"RedClaw@2026"}' | jq -r .token)
+  -d '{"username":"admin","password":"<DEV-ADMIN-PASS>…<masked>"}' | jq -r .token)
 
 # Test session-bundle
 curl -s -H "Authorization: Bearer $TOKEN" \

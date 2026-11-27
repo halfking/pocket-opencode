@@ -10,7 +10,7 @@
 | 项 | 值 | 备注 |
 |---|---|---|
 | 真机 | Redmi 2411DRN47C（HyperOS V816），USB `4c308e2e` | harness 默认 serial 是过期 WiFi 地址，必须 `POCKET_SERIAL=4c308e2e` |
-| App 登录 | admin / Veritrans&9527（dev 旁路） | `POCKET_AUTH_PASS` + `POCKET_DEV_PASS` 都要给 |
+| App 登录 | admin / <DEV-PASS-PREFIX>…<masked>（dev 旁路） | `POCKET_AUTH_PASS` + `POCKET_DEV_PASS` 都要给 |
 | 本地库主密码 | 12345678（`POCKET_MASTER`） | 旧装置库是 14 字符未知口令 ⇒ `pm clear` 后重建 |
 | 后端 | `./pocketd` :8088（**后台任务直跑**，start-dev.sh 的 nohup 孙进程会被会话清理杀掉） | DSN 指向本机 PG `openpocket` 库（email/notes 等 store 需要 PG 才激活） |
 | 构建 | `VITE_API_BASE=http://127.0.0.1:8088 POCKET_ALLOW_PLAINTEXT_API=1 CAP_ANDROID_SCHEME=http node scripts/build-mobile.mjs android dev` + `gradlew assembleDebug` | 缺后两个开关撞 BUG-F 守卫；管线里的 exit code 会被 `| tail` 吃掉，判废要看 `[build-mobile] OK` |

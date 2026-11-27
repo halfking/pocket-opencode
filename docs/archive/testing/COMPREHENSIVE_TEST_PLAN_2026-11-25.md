@@ -79,7 +79,7 @@ Phase 4: 完整验证报告 (30 分钟)
 
 ```bash
 export POCKET_MASTER="12345678"              # 主密码
-export POCKET_DEV_PASS="Veritrans&9527"      # 开发环境口令
+export POCKET_DEV_PASS="<DEV-PASS-PREFIX>…<masked>"      # 开发环境口令
 ```
 
 ---
@@ -541,7 +541,7 @@ echo "[1/4] 环境验证..."
 
 # 2. 配置环境变量
 export POCKET_MASTER="12345678"
-export POCKET_DEV_PASS="Veritrans&9527"
+export POCKET_DEV_PASS="<DEV-PASS-PREFIX>…<masked>"
 
 # 3. 冒烟测试
 echo "[2/4] 冒烟测试 (5 分钟)..."

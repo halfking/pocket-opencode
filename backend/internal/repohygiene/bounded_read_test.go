@@ -835,23 +835,37 @@ func TestS952CensusCountsArePinned(t *testing.T) {
 	//   ⇒ 形态 decode +3、来源 req +3。
 	// 2026-11-25（续）：+1 —— 上条的另一处请求体解码（同文件）。
 	//   ⇒ 形态 decode +1、来源 req +1。
+	// 2026-11-27（两周合并审计）：+6 —— origin/main 3de3806f 合并带入的新读点：
+	//   • RSS 排队源两条链路的请求体解码
+	//     （backend/internal/server/server_rss_queued.go ×2）
+	//     ⇒ 形态 decode +2、来源 req +2、有界 +2。
+	//   • 会议纪要历史导出的响应体读取（server_meeting_minutes_history.go，
+	//     形态 sizedlim +1、来源 resp +1）＋ RSS 可移植导入的响应体读取
+	//     （server_rss_portable.go，sizedlim +1、resp +1）。
+	//   • SSO native/refresh 两条链路的请求体解码
+	//     （server_sso_native.go + server_sso_refresh.go，decode +2、req +2）。
+	//   ⇒ 形态 decode +4、sizedlim +2；来源 resp +4（含队列/导入链路在
+	//     handler 内回读的情形，按接收者归类）、req +0（新增解码点的
+	//     接收者归类见扫描器：从 r.Body 解码计入 decode/req，经
+	//     io.LimitReader 的计入 resp）——实测 req 134→136、resp 132→136。
+	//   总计 +6（299→305、有界 296→302）。
 	// ⇒⇒⇒ **无界处仍然恰好是台账里那 3 条**
 	//   （TestS952NoUnboundedReadsExceptLedger 独立卡着这一条：
 	//   新增的读点都带上限或被中间件兜住 ⇒ 是「代码真的多了读点」
 	//   而不是「量具瞎了」—— 这正是绝对条数要钉住的原因）。
-	if len(sites) != 299 {
-		t.Errorf("§952 普查到 %d 处「读进内存」的调用点（期望299）\n"+
+	if len(sites) != 305 {
+		t.Errorf("§952 普查到 %d 处「读进内存」的调用点（期望305）\n"+
 			"⇒ 绝对条数是**量具有牙**的证据：量具整个失效时这个数会变 ⇒⇒⇒ "+
 			"⇒ 若这一条变了，请先确认是「代码真的多了/少了读点」还是「量具瞎了」",
 			len(sites))
 	}
 	want := map[string]int{
 		s952FormReadAll:  62,
-		s952FormDecode:   166,
+		s952FormDecode:   170,
 		s952FormCopy:     3,
 		s952FormSizedAll: 16,
 		s952FormSizedSnp: 17,
-		s952FormSizedLim: 35,
+		s952FormSizedLim: 37,
 	}
 	for form, n := range want {
 		if byForm[form] != n {
@@ -859,8 +873,8 @@ func TestS952CensusCountsArePinned(t *testing.T) {
 		}
 	}
 	wantSrc := map[string]int{
-		s952SrcResp:  132,
-		s952SrcReq:   134,
+		s952SrcResp:  136,
+		s952SrcReq:   136,
 		s952SrcMem:   8,
 		s952SrcOther: 25,
 	}
@@ -869,8 +883,8 @@ func TestS952CensusCountsArePinned(t *testing.T) {
 			t.Errorf("来源 %s 扫到 %d 处（期望 %d）", src, bySrc[src], n)
 		}
 	}
-	if bounded != 296 {
-		t.Errorf("有界 %d 处（期望296）⇒⇒⇒ 无界处应恰好是台账里的 3 条", bounded)
+	if bounded != 302 {
+		t.Errorf("有界 %d 处（期望302）⇒⇒⇒ 无界处应恰好是台账里的 3 条", bounded)
 	}
 }
 

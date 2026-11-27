@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"html/template"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -84,8 +85,13 @@ func (s *Server) handleNativeSSOReturnFallback(w http.ResponseWriter, r *http.Re
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'; base-uri 'none'")
-	_, _ = w.Write([]byte(`<!doctype html><html lang="zh-CN"><meta charset="utf-8">
+	// §946：写失败必须留痕。这是「App 未安装时的浏览器兜底页」——
+	// 客户端已经离开（App 链接没打开成），写失败只能是连接断了，
+	// 没有补救动作，但要留一条服务端日志而不是零记录。
+	if _, err := w.Write([]byte(`<!doctype html><html lang="zh-CN"><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>在 OpenPocket 中登录</title>
-<p>此设备未能打开 OpenPocket。请确认已安装发行版且允许打开应用链接，然后回到 App 重新发起企业登录。</p></html>`))
+<p>此设备未能打开 OpenPocket。请确认已安装发行版且允许打开应用链接，然后回到 App 重新发起企业登录。</p></html>`)); err != nil {
+		log.Printf("[sso] native return fallback page write failed: %v", err)
+	}
 }

@@ -258,7 +258,7 @@
 ```
 
 **关键配置**:
-- Casdoor Admin 口令: RedClaw@2026
+- Casdoor Admin 口令: <DEV-ADMIN-PASS>…<masked>
 - ACC MCP 端点: http://192.168.31.211:4101/api/v2/mcp
 - Companion 端口: 18095
 - Pocketd API: 端口 18099
@@ -543,7 +543,7 @@ adb shell pm list packages | grep pocket
 ```bash
 # 设置环境变量
 export POCKET_MASTER="12345678"
-export POCKET_DEV_PASS="Veritrans&9527"
+export POCKET_DEV_PASS="<DEV-PASS-PREFIX>…<masked>"
 
 # 配置端口转发
 adb reverse tcp:18099 tcp:8088

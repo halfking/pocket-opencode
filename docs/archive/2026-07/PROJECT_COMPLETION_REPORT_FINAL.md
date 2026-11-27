@@ -252,7 +252,7 @@ GET  /api/app/download          - 下载 APK
 URL: http://14.103.169.56:8080
 Bridge Port: 8024
 用户: kaxuan
-密码: Veritrans&9527
+密码: <DEV-PASS-PREFIX>…<masked>
 ```
 
 **252 服务器:**

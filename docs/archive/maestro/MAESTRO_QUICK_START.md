@@ -10,7 +10,7 @@
 ```bash
 # 1. 配置环境变量
 export POCKET_MASTER="12345678"
-export POCKET_DEV_PASS="Veritrans&9527"
+export POCKET_DEV_PASS="<DEV-PASS-PREFIX>…<masked>"
 
 # 2. 配置端口转发
 adb reverse tcp:18099 tcp:8088
@@ -92,11 +92,11 @@ curl http://127.0.0.1:8088/api/health
 ```bash
 # 方式 A: 临时设置（当前会话）
 export POCKET_MASTER="12345678"
-export POCKET_DEV_PASS="Veritrans&9527"
+export POCKET_DEV_PASS="<DEV-PASS-PREFIX>…<masked>"
 
 # 方式 B: 永久设置（推荐）
 echo 'export POCKET_MASTER="12345678"' >> ~/.zshrc
-echo 'export POCKET_DEV_PASS="Veritrans&9527"' >> ~/.zshrc
+echo 'export POCKET_DEV_PASS="<DEV-PASS-PREFIX>…<masked>"' >> ~/.zshrc
 source ~/.zshrc
 
 # 配置端口转发
@@ -285,7 +285,7 @@ echo $POCKET_DEV_PASS
 
 # 重新设置
 export POCKET_MASTER="12345678"
-export POCKET_DEV_PASS="Veritrans&9527"
+export POCKET_DEV_PASS="<DEV-PASS-PREFIX>…<masked>"
 
 # 验证
 ./scripts/verify-maestro-env.sh
