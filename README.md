@@ -534,3 +534,14 @@ MIT License - 详见 [LICENSE](LICENSE) 文件
 **Built with ❤️ by the AI Work Mess Team**
 
 *Last Updated: 2026-09-07*
+
+## 最近更新
+
+### 2026-11-28（24h 同步轮自动登记）
+
+- **ci**（12 笔）：ci(maestro): 补 POCKET_AUTH_LEGACY_ONLY=true —— pocketd 无 RedClaw 配置时启动 Fatal
+- **fix**（6 笔）：fix(audit): backend门禁全绿修复 + CI actions升级 + 文档口令打码 + scripts索引
+- **feat**（4 笔）：feat(sync): 双向同步 orchestrator 接线 —— GetUpdatedSince 实现 + 门控装配
+- **docs**（2 笔）：docs(audit): ACC A1/A2 补测闭环 —— 211 实测 companion 注册与 POCKET_COMPANION_URL 全绿
+- **audit**（1 笔）：audit(2weeks): 合并主分支 + 文档整合 + 分支清理（2026-11-13至11-27）
+- 合计 25 笔提交（详见 git log --since='24 hours ago'）
