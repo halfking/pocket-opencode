@@ -56,6 +56,13 @@ jobs:
     env:
       POCKET_DEV_PASS: ${{ secrets.POCKET_DEV_PASS != '' && secrets.POCKET_DEV_PASS || 'ci-dev-pass-2026' }}
       POCKET_MASTER: ${{ secrets.POCKET_MASTER != '' && secrets.POCKET_MASTER || 'ci-master-2026' }}
+      # pocketd 配置走 job env：action 逐行 sh -c 执行 script，script 里的
+      # export 活不过下一行（runs 46060718980/46062102605 两次 FATAL 实证）。
+      POCKET_DEV_AUTH: 'true'
+      POCKET_AUTH_LEGACY_ONLY: 'true'
+      POCKET_HTTP_PORT: '18099'
+      POCKET_DB_PATH: ${{ github.workspace }}/backend/data/pocket-ci.sqlite
+      POCKET_JWT_SECRET: 'ci-jwt-secret-2026-openpocket-mobile-smoke'
 
     steps:
       - name: Checkout
@@ -128,13 +135,7 @@ jobs:
           profile: Nexus 6
           script: |
             adb install -r $GITHUB_WORKSPACE/frontend/android/app/build/outputs/apk/debug/app-debug.apk
-            export POCKET_DEV_AUTH=true
-            export POCKET_AUTH_LEGACY_ONLY=true
-            export POCKET_AUTH_PASS="$POCKET_DEV_PASS"
-            # jwt secret ≥32 bytes（config.go 硬校验；固定合成值仅 CI 本地库用）
-            export POCKET_JWT_SECRET="ci-jwt-secret-2026-openpocket-mobile-smoke"
-            export POCKET_HTTP_PORT=18099
-            export POCKET_DB_PATH=$GITHUB_WORKSPACE/backend/data/pocket-ci.sqlite
+            # pocketd 配置见 step env（script 里的 export 活不过下一行）
             # ⚠️ reactivecircus action 在 linux 用 /usr/bin/sh(dash) **逐行** sh -c
             #    执行 script（run 46057575276/46059264737 两次实证）：
             #    多行块被截断、cd 不跨行 —— 所以每一行都必须自含绝对路径，
@@ -178,6 +179,13 @@ jobs:
     env:
       POCKET_DEV_PASS: ${{ secrets.POCKET_DEV_PASS != '' && secrets.POCKET_DEV_PASS || 'ci-dev-pass-2026' }}
       POCKET_MASTER: ${{ secrets.POCKET_MASTER != '' && secrets.POCKET_MASTER || 'ci-master-2026' }}
+      # pocketd 配置走 job env：action 逐行 sh -c 执行 script，script 里的
+      # export 活不过下一行（runs 46060718980/46062102605 两次 FATAL 实证）。
+      POCKET_DEV_AUTH: 'true'
+      POCKET_AUTH_LEGACY_ONLY: 'true'
+      POCKET_HTTP_PORT: '18099'
+      POCKET_DB_PATH: ${{ github.workspace }}/backend/data/pocket-ci.sqlite
+      POCKET_JWT_SECRET: 'ci-jwt-secret-2026-openpocket-mobile-smoke'
 
     steps:
       - name: Checkout
@@ -245,13 +253,7 @@ jobs:
           profile: Nexus 6
           script: |
             adb install -r $GITHUB_WORKSPACE/frontend/android/app/build/outputs/apk/debug/app-debug.apk
-            export POCKET_DEV_AUTH=true
-            export POCKET_AUTH_LEGACY_ONLY=true
-            export POCKET_AUTH_PASS="$POCKET_DEV_PASS"
-            # jwt secret ≥32 bytes（config.go 硬校验；固定合成值仅 CI 本地库用）
-            export POCKET_JWT_SECRET="ci-jwt-secret-2026-openpocket-mobile-smoke"
-            export POCKET_HTTP_PORT=18099
-            export POCKET_DB_PATH=$GITHUB_WORKSPACE/backend/data/pocket-ci.sqlite
+            # pocketd 配置见 step env（script 里的 export 活不过下一行）
             # ⚠️ reactivecircus action 在 linux 用 /usr/bin/sh(dash) **逐行** sh -c
             #    执行 script（run 46057575276/46059264737 两次实证）：
             #    多行块被截断、cd 不跨行 —— 所以每一行都必须自含绝对路径，
@@ -298,6 +300,13 @@ jobs:
     env:
       POCKET_DEV_PASS: ${{ secrets.POCKET_DEV_PASS != '' && secrets.POCKET_DEV_PASS || 'ci-dev-pass-2026' }}
       POCKET_MASTER: ${{ secrets.POCKET_MASTER != '' && secrets.POCKET_MASTER || 'ci-master-2026' }}
+      # pocketd 配置走 job env：action 逐行 sh -c 执行 script，script 里的
+      # export 活不过下一行（runs 46060718980/46062102605 两次 FATAL 实证）。
+      POCKET_DEV_AUTH: 'true'
+      POCKET_AUTH_LEGACY_ONLY: 'true'
+      POCKET_HTTP_PORT: '18099'
+      POCKET_DB_PATH: ${{ github.workspace }}/backend/data/pocket-ci.sqlite
+      POCKET_JWT_SECRET: 'ci-jwt-secret-2026-openpocket-mobile-smoke'
 
     steps:
       - name: Checkout
@@ -365,13 +374,7 @@ jobs:
           profile: Nexus 6
           script: |
             adb install -r $GITHUB_WORKSPACE/frontend/android/app/build/outputs/apk/debug/app-debug.apk
-            export POCKET_DEV_AUTH=true
-            export POCKET_AUTH_LEGACY_ONLY=true
-            export POCKET_AUTH_PASS="$POCKET_DEV_PASS"
-            # jwt secret ≥32 bytes（config.go 硬校验；固定合成值仅 CI 本地库用）
-            export POCKET_JWT_SECRET="ci-jwt-secret-2026-openpocket-mobile-smoke"
-            export POCKET_HTTP_PORT=18099
-            export POCKET_DB_PATH=$GITHUB_WORKSPACE/backend/data/pocket-ci.sqlite
+            # pocketd 配置见 step env（script 里的 export 活不过下一行）
             # ⚠️ reactivecircus action 在 linux 用 /usr/bin/sh(dash) **逐行** sh -c
             #    执行 script（run 46057575276/46059264737 两次实证）：
             #    多行块被截断、cd 不跨行 —— 所以每一行都必须自含绝对路径，
