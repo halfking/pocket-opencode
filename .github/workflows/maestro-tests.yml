@@ -44,7 +44,9 @@ jobs:
   # ═══════════════════════════════════════════════════════════════════
   smoke-test:
     name: Smoke Tests
-    runs-on: macos-latest
+    # macos-26-arm64 (即 macos-latest) 的 HVF 使 qemu 中途 HV_UNSUPPORTED 崩溃
+    # (runs 46028049508/46031979263 实证 API 30/34 双崩于 boot 中段) → 钉 Sequoia
+    runs-on: macos-15-arm64
     timeout-minutes: 30
     env:
       POCKET_DEV_PASS: ${{ secrets.POCKET_DEV_PASS != '' && secrets.POCKET_DEV_PASS || 'ci-dev-pass-2026' }}
@@ -148,7 +150,9 @@ jobs:
   # ═══════════════════════════════════════════════════════════════════
   regression-test:
     name: Regression Tests
-    runs-on: macos-latest
+    # macos-26-arm64 (即 macos-latest) 的 HVF 使 qemu 中途 HV_UNSUPPORTED 崩溃
+    # (runs 46028049508/46031979263 实证 API 30/34 双崩于 boot 中段) → 钉 Sequoia
+    runs-on: macos-15-arm64
     timeout-minutes: 45
     if: github.event_name == 'pull_request' && github.base_ref == 'main'
     needs: smoke-test
@@ -252,7 +256,9 @@ jobs:
   # ═══════════════════════════════════════════════════════════════════
   master-test:
     name: Master Tests
-    runs-on: macos-latest
+    # macos-26-arm64 (即 macos-latest) 的 HVF 使 qemu 中途 HV_UNSUPPORTED 崩溃
+    # (runs 46028049508/46031979263 实证 API 30/34 双崩于 boot 中段) → 钉 Sequoia
+    runs-on: macos-15-arm64
     timeout-minutes: 60
     if: github.event_name == 'workflow_dispatch'
     needs: smoke-test
