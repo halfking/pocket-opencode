@@ -127,23 +127,22 @@ jobs:
           disable-linux-hw-accel: false
           profile: Nexus 6
           script: |
-            adb install -r frontend/android/app/build/outputs/apk/debug/app-debug.apk
-            cd backend
+            adb install -r $GITHUB_WORKSPACE/frontend/android/app/build/outputs/apk/debug/app-debug.apk
             export POCKET_DEV_AUTH=true
             export POCKET_AUTH_PASS="$POCKET_DEV_PASS"
             # jwt secret ≥32 bytes（config.go 硬校验；固定合成值仅 CI 本地库用）
             export POCKET_JWT_SECRET="ci-jwt-secret-2026-openpocket-mobile-smoke"
             export POCKET_HTTP_PORT=18099
-            export POCKET_DB_PATH=./data/pocket-ci.sqlite
-            # ⚠️ reactivecircus action 在 linux 用 /usr/bin/sh(dash) 逐段执行
-            #    script：多行 for/{} 块会被截断（run 46057575276 dash 语法错）。
-            #    ⇒ 健康检查写成单条 POSIX 命令链，不用循环不用花括号组。
-            ./pocketd > pocketd-ci.log 2>&1 &
+            export POCKET_DB_PATH=$GITHUB_WORKSPACE/backend/data/pocket-ci.sqlite
+            # ⚠️ reactivecircus action 在 linux 用 /usr/bin/sh(dash) **逐行** sh -c
+            #    执行 script（run 46057575276/46059264737 两次实证）：
+            #    多行块被截断、cd 不跨行 —— 所以每一行都必须自含绝对路径，
+            #    不依赖前一行 cd，不用循环/花括号组。
+            $GITHUB_WORKSPACE/backend/pocketd > $GITHUB_WORKSPACE/backend/pocketd-ci.log 2>&1 &
             sleep 8
-            curl -sf http://127.0.0.1:18099/healthz >/dev/null || tail -100 pocketd-ci.log
+            curl -sf http://127.0.0.1:18099/healthz >/dev/null || tail -100 $GITHUB_WORKSPACE/backend/pocketd-ci.log
             curl -sf http://127.0.0.1:18099/healthz >/dev/null
-            cd "$GITHUB_WORKSPACE"
-            ./scripts/run-maestro-suite.sh ci
+            $GITHUB_WORKSPACE/scripts/run-maestro-suite.sh ci
 
       - name: Upload Test Reports
         if: always()
@@ -244,23 +243,22 @@ jobs:
           disable-linux-hw-accel: false
           profile: Nexus 6
           script: |
-            adb install -r frontend/android/app/build/outputs/apk/debug/app-debug.apk
-            cd backend
+            adb install -r $GITHUB_WORKSPACE/frontend/android/app/build/outputs/apk/debug/app-debug.apk
             export POCKET_DEV_AUTH=true
             export POCKET_AUTH_PASS="$POCKET_DEV_PASS"
             # jwt secret ≥32 bytes（config.go 硬校验；固定合成值仅 CI 本地库用）
             export POCKET_JWT_SECRET="ci-jwt-secret-2026-openpocket-mobile-smoke"
             export POCKET_HTTP_PORT=18099
-            export POCKET_DB_PATH=./data/pocket-ci.sqlite
-            # ⚠️ reactivecircus action 在 linux 用 /usr/bin/sh(dash) 逐段执行
-            #    script：多行 for/{} 块会被截断（run 46057575276 dash 语法错）。
-            #    ⇒ 健康检查写成单条 POSIX 命令链，不用循环不用花括号组。
-            ./pocketd > pocketd-ci.log 2>&1 &
+            export POCKET_DB_PATH=$GITHUB_WORKSPACE/backend/data/pocket-ci.sqlite
+            # ⚠️ reactivecircus action 在 linux 用 /usr/bin/sh(dash) **逐行** sh -c
+            #    执行 script（run 46057575276/46059264737 两次实证）：
+            #    多行块被截断、cd 不跨行 —— 所以每一行都必须自含绝对路径，
+            #    不依赖前一行 cd，不用循环/花括号组。
+            $GITHUB_WORKSPACE/backend/pocketd > $GITHUB_WORKSPACE/backend/pocketd-ci.log 2>&1 &
             sleep 8
-            curl -sf http://127.0.0.1:18099/healthz >/dev/null || tail -100 pocketd-ci.log
+            curl -sf http://127.0.0.1:18099/healthz >/dev/null || tail -100 $GITHUB_WORKSPACE/backend/pocketd-ci.log
             curl -sf http://127.0.0.1:18099/healthz >/dev/null
-            cd "$GITHUB_WORKSPACE"
-            ./scripts/run-maestro-suite.sh ci
+            $GITHUB_WORKSPACE/scripts/run-maestro-suite.sh ci
 
       - name: Upload Test Reports
         if: always()
@@ -364,23 +362,22 @@ jobs:
           disable-linux-hw-accel: false
           profile: Nexus 6
           script: |
-            adb install -r frontend/android/app/build/outputs/apk/debug/app-debug.apk
-            cd backend
+            adb install -r $GITHUB_WORKSPACE/frontend/android/app/build/outputs/apk/debug/app-debug.apk
             export POCKET_DEV_AUTH=true
             export POCKET_AUTH_PASS="$POCKET_DEV_PASS"
             # jwt secret ≥32 bytes（config.go 硬校验；固定合成值仅 CI 本地库用）
             export POCKET_JWT_SECRET="ci-jwt-secret-2026-openpocket-mobile-smoke"
             export POCKET_HTTP_PORT=18099
-            export POCKET_DB_PATH=./data/pocket-ci.sqlite
-            # ⚠️ reactivecircus action 在 linux 用 /usr/bin/sh(dash) 逐段执行
-            #    script：多行 for/{} 块会被截断（run 46057575276 dash 语法错）。
-            #    ⇒ 健康检查写成单条 POSIX 命令链，不用循环不用花括号组。
-            ./pocketd > pocketd-ci.log 2>&1 &
+            export POCKET_DB_PATH=$GITHUB_WORKSPACE/backend/data/pocket-ci.sqlite
+            # ⚠️ reactivecircus action 在 linux 用 /usr/bin/sh(dash) **逐行** sh -c
+            #    执行 script（run 46057575276/46059264737 两次实证）：
+            #    多行块被截断、cd 不跨行 —— 所以每一行都必须自含绝对路径，
+            #    不依赖前一行 cd，不用循环/花括号组。
+            $GITHUB_WORKSPACE/backend/pocketd > $GITHUB_WORKSPACE/backend/pocketd-ci.log 2>&1 &
             sleep 8
-            curl -sf http://127.0.0.1:18099/healthz >/dev/null || tail -100 pocketd-ci.log
+            curl -sf http://127.0.0.1:18099/healthz >/dev/null || tail -100 $GITHUB_WORKSPACE/backend/pocketd-ci.log
             curl -sf http://127.0.0.1:18099/healthz >/dev/null
-            cd "$GITHUB_WORKSPACE"
-            ./scripts/run-maestro-suite.sh ci
+            $GITHUB_WORKSPACE/scripts/run-maestro-suite.sh ci
 
       - name: Upload Test Reports
         if: always()
