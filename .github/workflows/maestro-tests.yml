@@ -56,6 +56,10 @@ jobs:
     env:
       POCKET_DEV_PASS: ${{ secrets.POCKET_DEV_PASS != '' && secrets.POCKET_DEV_PASS || 'ci-dev-pass-2026' }}
       POCKET_MASTER: ${{ secrets.POCKET_MASTER != '' && secrets.POCKET_MASTER || 'ci-master-2026' }}
+      # 后端读的是 POCKET_AUTH_PASS（devBypassCredentials）；
+      # 必须与 POCKET_DEV_PASS 同值 —— run 46064915632 实证漏配后
+      # dev bypass 关闭，登录 401，flow 卡在登录后断言 120s 超时。
+      POCKET_AUTH_PASS: ${{ secrets.POCKET_DEV_PASS != '' && secrets.POCKET_DEV_PASS || 'ci-dev-pass-2026' }}
       # pocketd 配置走 job env：action 逐行 sh -c 执行 script，script 里的
       # export 活不过下一行（runs 46060718980/46062102605 两次 FATAL 实证）。
       POCKET_DEV_AUTH: 'true'
@@ -179,6 +183,10 @@ jobs:
     env:
       POCKET_DEV_PASS: ${{ secrets.POCKET_DEV_PASS != '' && secrets.POCKET_DEV_PASS || 'ci-dev-pass-2026' }}
       POCKET_MASTER: ${{ secrets.POCKET_MASTER != '' && secrets.POCKET_MASTER || 'ci-master-2026' }}
+      # 后端读的是 POCKET_AUTH_PASS（devBypassCredentials）；
+      # 必须与 POCKET_DEV_PASS 同值 —— run 46064915632 实证漏配后
+      # dev bypass 关闭，登录 401，flow 卡在登录后断言 120s 超时。
+      POCKET_AUTH_PASS: ${{ secrets.POCKET_DEV_PASS != '' && secrets.POCKET_DEV_PASS || 'ci-dev-pass-2026' }}
       # pocketd 配置走 job env：action 逐行 sh -c 执行 script，script 里的
       # export 活不过下一行（runs 46060718980/46062102605 两次 FATAL 实证）。
       POCKET_DEV_AUTH: 'true'
@@ -300,6 +308,10 @@ jobs:
     env:
       POCKET_DEV_PASS: ${{ secrets.POCKET_DEV_PASS != '' && secrets.POCKET_DEV_PASS || 'ci-dev-pass-2026' }}
       POCKET_MASTER: ${{ secrets.POCKET_MASTER != '' && secrets.POCKET_MASTER || 'ci-master-2026' }}
+      # 后端读的是 POCKET_AUTH_PASS（devBypassCredentials）；
+      # 必须与 POCKET_DEV_PASS 同值 —— run 46064915632 实证漏配后
+      # dev bypass 关闭，登录 401，flow 卡在登录后断言 120s 超时。
+      POCKET_AUTH_PASS: ${{ secrets.POCKET_DEV_PASS != '' && secrets.POCKET_DEV_PASS || 'ci-dev-pass-2026' }}
       # pocketd 配置走 job env：action 逐行 sh -c 执行 script，script 里的
       # export 活不过下一行（runs 46060718980/46062102605 两次 FATAL 实证）。
       POCKET_DEV_AUTH: 'true'
