@@ -1,0 +1,204 @@
+# ═══════════════════════════════════════════════════════════════════
+# CI 冒烟套件（GitHub Actions macos-latest 模拟器专用）
+# ═══════════════════════════════════════════════════════════════════
+#
+# 与 smoke-test-suite.yaml（真机/本地模拟器）的关键差异：
+#
+# 1. 登录形态：CI 后端无 Casdoor/RedClaw（POCKET_DEV_AUTH=true 的本地
+#    pocketd），/api/auth/sso/status 返回 404 ⇒ LoginView 走
+#    **标签页密码表单**（密码登录 tab → POST /api/auth/login → dev 旁路），
+#    不是真机的 Casdoor 直连表单。所以这里不引用 _login.yaml
+#    （它的 C 分支只认「企业账号登录」，CI 上永不出现）。
+#
+# 2. 口令来源：POCKET_DEV_PASS / POCKET_MASTER 由 workflow env 注入
+#    （repo secrets 优先，缺省用 workflow 里的 CI 合成值）。
+#    ⚠️ Maestro 选择器里不展开 ${VAR}（_login.yaml §C 实测过两次），
+#    但 `inputText:` 里可以正常展开 —— 只在 inputText 用变量。
+#
+# 3. 语言：GH Actions API 30 镜像默认 locale 是 en-US。
+#    所有走 i18n 的断言必须**中英并列**（nav.home=首页/Home 等）；
+#    硬编码中文（「密码登录」「用户名」「创建主密码」「跳过」等）
+#    与 locale 无关，保持单语。
+#
+# 4. 邮箱弹窗：dev 旁路用户无 email ⇒ 登录成功且已有主密码时会弹
+#    EmailVerificationDialog（required=false，有「跳过」按钮）。
+#    主密码刚创建的路径不弹（onMasterPasswordCreated 直接 router.replace）。
+#    两个终态都处理。
+appId: com.kaixuan.opencode.pocket
+---
+
+- launchApp:
+    clearState: true
+
+# ── 等登录页渲染（品牌标题硬编码中文，与 locale 无关） ──
+- extendedWaitUntil:
+    visible: ".*AI Work Mess.*|.*密码登录.*|.*打开菜单.*|.*Open menu.*|.*解锁本地数据.*|.*创建主密码.*"
+    timeout: 60000
+
+# ── 系统权限对话框（首启动通知）──
+- runFlow:
+    when:
+      visible: ".*ALLOW.*|.*DON'T ALLOW.*"
+    commands:
+      - tapOn: "ALLOW"
+
+# ── A/B 态兜底：已登录但本地库锁定 → 输主密码解锁 ──
+# CI 每次都是 clearState 冷启动，正常不会走到这里；留着是防 clearState
+# 没清干净 localStorage 时的残留态（与 _login.yaml B 分支同思路，简化版）。
+- runFlow:
+    when:
+      visible: ".*解锁本地数据.*"
+    commands:
+      - tapOn: ".*解锁主密码.*"
+      - inputText: ${POCKET_MASTER}
+      - pressKey: Enter
+      - extendedWaitUntil:
+          notVisible: ".*解锁本地数据.*"
+          timeout: 60000
+
+# ── D-1 态：上一轮死在主密码弹窗上，弹窗残留 ──
+- runFlow:
+    when:
+      visible: ".*创建主密码.*"
+    commands:
+      # 弹窗 input 定位走 aria-label（MasterPasswordDialog.vue 已带
+      # 「主密码/确认主密码」；tapOn index 在 WebView 是全屏容器，不可用）
+      - tapOn: ".*主密码.*"
+      - inputText: ${POCKET_MASTER}
+      - tapOn: ".*确认主密码.*"
+      - inputText: ${POCKET_MASTER}
+      - pressKey: Enter
+      - tapOn:
+          text: "确认"
+          optional: true
+      - extendedWaitUntil:
+          notVisible: ".*创建主密码.*"
+          timeout: 120000
+
+# ── C 态：标签页密码表单登录 ──
+# 判据必须落在标签页**专属**文案上：「密码登录」tab。
+#
+# ⚠️ 2026-11-27 模拟器三轮实测（uiautomator + Maestro hierarchy 双通道）：
+#   ① placeholder「输入用户名/输入密码」不进 a11y 树的 text —— tapOn 必落空。
+#   ② tapOn { index: N } 无其他选择器时选中的是**全屏容器**
+#      （Maestro 日志：两次 index tap 都 aim 到 (540,1170) = 屏幕中心），
+#      点不到密码框 —— _login.yaml §C 的 index 大法在本页不可靠。
+#   ③ 解法（LoginView.vue:156-176 已随本套件落地）：给两个 input 加
+#      aria-label「登录用户名/登录密码」。Chromium 把它并进 a11y name，
+#      Maestro 树里出现在 hintText；text 匹配用 `登录密码` 裸串命中
+#      （Maestro 裸串=对 text/hint **全串**匹配，`登录密码` 对
+#       hint「登录密码 输入密码」不命中 —— probe3 实测 FAILED；
+#       必须 `.*X.*` 正则形态才子串命中 —— probe2 实测命中并输入成功。）
+#   ④ 密码框的值在树上**不可见**（type=password 被 WebView 掩码），
+#      值断言只能做在用户名框；密码侧改用「登录按钮 enabled」判据
+#      （两字段任一为空按钮即 disabled，与 _login.yaml §C 同纪律）。
+- runFlow:
+    when:
+      visible: ".*密码登录.*"
+    commands:
+      - assertVisible: "密码登录"
+      # 用户名框：默认值已是 admin（LoginView.vue username=ref('admin')），
+      # eraseText 重输保证确定性；值断言在此暴露脏值/吞字（而不是下游 401）
+      - tapOn: ".*登录用户名.*"
+      - eraseText
+      # 用户名固定 admin：workflow 不设 POCKET_AUTH_USER，
+      # 后端 devBypassCredentials 缺省回退 "admin"（server_assistant.go），
+      # 两端天然一致。2026-11-27 本地实测：POCKET_AUTH_USER 一旦设了
+      # 非空值，bypass 只认那个用户名 —— 所以 workflow 里**不要**设它。
+      - inputText: "admin"
+      - assertVisible: { text: ".*admin.*" }
+      # 密码框（type=password：值不进树，只做按钮解禁断言）
+      - tapOn: ".*登录密码.*"
+      - eraseText
+      - inputText: ${POCKET_DEV_PASS}
+      # ⚠️ 不要 hideKeyboard（会触发系统导航，_login.yaml §C 三条坑）；
+      #    密码框绑 @keyup.enter="handleLogin"（LoginView.vue），Enter 即提交
+      - extendedWaitUntil:
+          visible: { text: "登录", enabled: true }
+          timeout: 20000
+      - pressKey: Enter
+      # 登录成功 → 要么进外壳（打开菜单/Open menu），要么弹主密码创建
+      # （hasMasterPassword 标志在 clearState 后必为 false ⇒ D-2 态）
+      - extendedWaitUntil:
+          visible: ".*打开菜单.*|.*Open menu.*|.*创建主密码.*"
+          timeout: 120000
+
+# ── D-2 态：这次登录触发的「创建主密码」 ──
+# ⚠️ 必须判两次（_login.yaml 的纪律）：D-1 管开场残留，D-2 管刚登录完才弹。
+- runFlow:
+    when:
+      visible: ".*创建主密码.*"
+    commands:
+      # 弹窗 input 定位走 aria-label（MasterPasswordDialog.vue 已带
+      # 「主密码/确认主密码」；tapOn index 在 WebView 是全屏容器，不可用）
+      - tapOn: ".*主密码.*"
+      - inputText: ${POCKET_MASTER}
+      - tapOn: ".*确认主密码.*"
+      - inputText: ${POCKET_MASTER}
+      - pressKey: Enter
+      - tapOn:
+          text: "确认"
+          optional: true
+      # initLobster 开 SQLCipher + 向量索引可达数十秒（_set-master-password.yaml 实测）
+      - extendedWaitUntil:
+          notVisible: ".*初始化中.*"
+          timeout: 120000
+      - extendedWaitUntil:
+          notVisible: ".*创建主密码.*"
+          timeout: 60000
+
+# ── 邮箱验证弹窗（dev 旁路用户无 email，required=false 可跳过）──
+# ⚠️ 只在已有主密码的登录路径出现；刚创建主密码的路径直接 router.replace('/ai')。
+#    用 when 条件兼容两种情况。
+- runFlow:
+    when:
+      visible: ".*邮箱地址.*"
+    commands:
+      - tapOn:
+          text: "跳过"
+          optional: true
+      - extendedWaitUntil:
+          notVisible: ".*邮箱地址.*"
+          timeout: 30000
+
+# ── 硬判据：登录页三态残留必须全清 ──
+- assertVisible: ".*打开菜单.*|.*Open menu.*"
+- assertNotVisible: ".*解锁本地数据.*"
+- assertNotVisible: "^密码登录$"
+- assertNotVisible: ".*创建主密码.*"
+
+# ── 首页验证 ──
+# 顶栏标题：route meta 硬编码中文「AI 工具」（router-mobile.ts:87，不走 i18n），
+# 但 titleResolver 有 i18n 链路兜底，中英并列保险。
+- extendedWaitUntil:
+    visible: ".*AI 工具.*|.*AI Tools.*"
+    timeout: 30000
+- takeScreenshot: "ci-smoke-01-home"
+
+# 快速提问：TasksView 的 sr-only 文字节点（TasksView.vue:44），
+# 硬编码中文，与 locale 无关
+- assertVisible: ".*快速提问.*"
+
+# ── 底部导航切换（label 走 i18n：nav.notes=笔记/Notes，nav.more=更多/More）──
+- tapOn: ".*笔记.*|.*Notes.*"
+- extendedWaitUntil:
+    visible: ".*新建笔记.*|.*New note.*|.*笔记.*|.*Notes.*"
+    timeout: 20000
+- takeScreenshot: "ci-smoke-02-notes"
+
+- tapOn: ".*更多.*|.*More.*"
+- extendedWaitUntil:
+    visible: ".*更多.*|.*More.*"
+    timeout: 20000
+- takeScreenshot: "ci-smoke-03-more"
+
+# ── 收尾 ──
+# ⚠️ 2026-11-27 实测：最后一步「点底部导航首页 → 断言 AI 工具」在这个
+#    模拟器上会点出 App（^首页$ 在 launcher 层也有匹配面，tap COMPLETED
+#    后前台变成 launcher 主屏，AI 工具断言超时）。
+#    登录后已断言过首页（AI 工具 + 快速提问），这里只需证明 App 仍活着：
+#    在「更多」页断言底部导航四 tab 齐活即可收尾。
+- assertVisible: ".*首页.*|.*Home.*"
+- assertVisible: ".*笔记.*|.*Notes.*"
+- assertVisible: ".*更多.*|.*More.*"
+- takeScreenshot: "ci-smoke-99-complete"

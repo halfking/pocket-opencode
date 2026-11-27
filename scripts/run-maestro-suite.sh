@@ -13,6 +13,7 @@
 #     - smoke: 冒烟测试（默认）
 #     - master: 完整测试
 #     - regression: 回归测试
+#     - ci: CI 冒烟（GitHub Actions macos 模拟器专用；标签页表单登录）
 #     - all: 运行所有测试
 #
 # 示例：
@@ -101,18 +102,35 @@ check_prerequisites() {
 }
 
 # 运行单个测试
+#
+# ⚠️ -e 转发：Maestro flow 里的 ${POCKET_*} 变量**必须**用 `-e NAME=VALUE`
+#    显式传入 —— Maestro 不继承进程环境（maestro-2-11 语法坑档案）。
+#    CI 套件的口令来自 workflow env（repo secrets 优先，缺省合成值）；
+#    本地跑 ci 套件时需自行 export POCKET_DEV_PASS / POCKET_MASTER。
 run_test() {
     local test_file="$1"
     local test_name
     test_name=$(basename "$test_file" .yaml)
-    
+
     log_info "运行测试: $test_name"
-    
+
     local start_time
     start_time=$(date +%s)
-    
+
+    # 只转发**已设置**的变量，避免把空串喂给 flow（空串在 Maestro 里
+    # 展开成空输入，登录必失败且不报错 —— maestro-run.mjs §preflight 同纪律）
+    local -a env_args=()
+    [[ -n "${POCKET_MASTER:-}" ]] && env_args+=(-e "POCKET_MASTER=$POCKET_MASTER")
+    [[ -n "${POCKET_DEV_PASS:-}" ]] && env_args+=(-e "POCKET_DEV_PASS=$POCKET_DEV_PASS")
+    [[ -n "${POCKET_DEV_USER:-}" ]] && env_args+=(-e "POCKET_DEV_USER=$POCKET_DEV_USER")
+
     local result=0
-    if maestro test "$test_file" \
+    # ⚠️ 设备选择必须用 --udid：Maestro **不读** ANDROID_SERIAL，
+    #    多设备时会自己挑（实测挑到真机 4c308e2e），模拟器绑定完全失效。
+    #    CI 上单设备，MAESTRO_UDID 不设时行为不变（Maestro 自选唯一设备）。
+    local -a udid_args=()
+    [[ -n "${MAESTRO_UDID:-}" ]] && udid_args+=(--udid "$MAESTRO_UDID")
+    if maestro test "${udid_args[@]}" "${env_args[@]}" "$test_file" \
         --format junit \
         --output "$REPORT_DIR/${test_name}-report.xml" \
         > "$LOGS_DIR/${test_name}.log" 2>&1; then
@@ -222,6 +240,37 @@ run_regression_tests() {
     return "$failed"
 }
 
+# 运行 CI 冒烟套件（GitHub Actions 专用）
+# ci-smoke.yaml 不依赖 _login.yaml：CI 无 Casdoor，登录页是标签页密码表单，
+# 走后端 dev 旁路（POCKET_DEV_AUTH=true + POCKET_AUTH_USER/PASS）。
+run_ci_tests() {
+    log_info "开始运行 CI 冒烟套件..."
+
+    local tests=(
+        "$MAESTRO_DIR/ci-smoke.yaml"
+    )
+
+    local passed=0
+    local failed=0
+
+    for test in "${tests[@]}"; do
+        if [ -f "$test" ]; then
+            if run_test "$test"; then
+                ((passed++))
+            else
+                ((failed++))
+            fi
+        else
+            log_warning "测试文件不存在: $test"
+        fi
+    done
+
+    echo ""
+    log_info "CI 冒烟测试完成: $passed 通过, $failed 失败"
+
+    return "$failed"
+}
+
 # 运行所有测试
 run_all_tests() {
     log_info "开始运行所有测试..."
@@ -296,12 +345,15 @@ main() {
         regression)
             run_regression_tests || exit_code=$?
             ;;
+        ci)
+            run_ci_tests || exit_code=$?
+            ;;
         all)
             run_all_tests || exit_code=$?
             ;;
         *)
             log_error "未知的测试套件: $SUITE"
-            log_info "可用套件: smoke, master, regression, all"
+            log_info "可用套件: smoke, master, regression, ci, all"
             exit 1
             ;;
     esac

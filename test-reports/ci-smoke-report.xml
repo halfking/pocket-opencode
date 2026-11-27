@@ -1,0 +1,6 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="Test Suite" device="pocket_test" tests="1" failures="0" time="70.799" timestamp="2026-11-27T23:44:46">
+    <testcase id="ci-smoke" name="ci-smoke" classname="ci-smoke" file=".maestro/ci-smoke.yaml" time="70.785" timestamp="2026-11-27T23:44:47" status="SUCCESS"/>
+  </testsuite>
+</testsuites>

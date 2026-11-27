@@ -17,8 +17,8 @@
         :autocomplete="restoreMode ? 'current-password' : 'new-password'"
         :placeholder="restoreMode ? t('settings.deviceBackupPassword') : '主密码（至少 8 位）'"
         :aria-label="restoreMode ? t('settings.deviceBackupPassword') : '主密码'" @keyup.enter="restoreMode && submit()" />
-      <input v-if="!restoreMode" id="master-password-confirm" v-model="confirm" type="password" autocomplete="new-password" placeholder="再次输入主密码" :disabled="submitting" @keyup.enter="submit" />
-      <input v-if="!restoreMode" id="master-password-hint" v-model="hint" type="text" placeholder="密码提示（可选）" :disabled="submitting" />
+      <input v-if="!restoreMode" id="master-password-confirm" v-model="confirm" type="password" autocomplete="new-password" placeholder="再次输入主密码" aria-label="确认主密码" :disabled="submitting" @keyup.enter="submit" />
+      <input v-if="!restoreMode" id="master-password-hint" v-model="hint" type="text" placeholder="密码提示（可选）" aria-label="密码提示" :disabled="submitting" />
       <p v-if="error" class="error" role="alert">{{ error }}</p>
       <div class="actions">
         <button v-if="canRestore" class="ghost" :disabled="submitting" @click="switchMode">

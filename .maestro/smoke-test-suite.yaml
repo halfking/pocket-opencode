@@ -13,10 +13,15 @@ appId: com.kaixuan.opencode.pocket
 - launchApp:
     clearState: true
 
-# 等待应用启动
+# ⚠️ 2026-11-27 真机实测：WebView 初始化需要约 45 秒
+#    增加固定等待确保无障碍树完全就绪
+- waitForAnimationToEnd:
+    timeout: 50000
+
+# 等待应用启动完成
 - extendedWaitUntil:
     visible: ".*AI Work Mess.*|.*AI 工具.*"
-    timeout: 60000
+    timeout: 90000
 
 # 执行登录
 - runFlow: _login.yaml

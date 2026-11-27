@@ -18,6 +18,7 @@
               id="unlock-master-password"
               v-model="unlockPassword"
               :type="showUnlockPassword ? 'text' : 'password'"
+              aria-label="解锁主密码"
               :placeholder="unlockPasswordPlaceholder(bioReady)"
               autocomplete="current-password"
               @keyup.enter="unlock"
@@ -152,21 +153,33 @@
         <!-- 密码登录 -->
         <template v-if="activeTab === 'password'">
           <div class="form-group">
-            <label>用户名</label>
+            <label for="login-username">用户名</label>
+            <!-- ★ 2026-11-27 补 id/for + aria-label（Maestro CI 通道）：
+                 本页 <label> 原本没有 for，input 的 a11y name 为空，
+                 Android 无障碍树里只剩 hintText（placeholder 不进树的 text，
+                 tapOn placeholder 文案必落空；tapOn index 无其他选择器时
+                 选中的是全屏容器，坐标=屏幕中心，点不到密码框 —— 两者都实测撞过）。
+                 带 id+for 后 a11y name = label 文本；再叠加 aria-label
+                 「登录用户名/登录密码」给 UI 自动化一个无歧义锚点
+                 （与 eye-btn 的 aria-label 同一实践）。 -->
             <input
+              id="login-username"
               v-model="username"
               type="text"
+              aria-label="登录用户名"
               placeholder="输入用户名"
               @keyup.enter="handleLogin"
             />
           </div>
 
           <div class="form-group">
-            <label>密码</label>
+            <label for="login-password">密码</label>
             <div class="input-wrap">
               <input
+                id="login-password"
                 v-model="password"
                 :type="showLoginPassword ? 'text' : 'password'"
+                aria-label="登录密码"
                 placeholder="输入密码"
                 autocomplete="current-password"
                 @keyup.enter="handleLogin"
