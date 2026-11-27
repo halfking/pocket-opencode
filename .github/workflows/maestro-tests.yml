@@ -45,8 +45,12 @@ jobs:
   smoke-test:
     name: Smoke Tests
     # macos-26-arm64 (即 macos-latest) 的 HVF 使 qemu 中途 HV_UNSUPPORTED 崩溃
-    # (runs 46028049508/46031979263 实证 API 30/34 双崩于 boot 中段) → 钉 Sequoia
-    runs-on: macos-15-arm64
+    # (runs 46028049508/46031979263 实证 API 30/34 双崩于 boot 中段)。
+    # 钉 macos-15-arm64 后 run 46035390974 免费额度排队 >1h —— arm64 runner
+    # 池在免费 plan 长期饱和。改走 Intel (macos-15) + x86_64 API 34：
+    # 架构原生匹配无需 Rosetta（原 workflow 的 x86_64 旧配置本身没毛病，
+    # 毛病出在 macos-26 镜像），Intel runner 供给更充足。
+    runs-on: macos-15
     timeout-minutes: 30
     env:
       POCKET_DEV_PASS: ${{ secrets.POCKET_DEV_PASS != '' && secrets.POCKET_DEV_PASS || 'ci-dev-pass-2026' }}
@@ -106,7 +110,7 @@ jobs:
         with:
           api-level: 34
           target: google_apis
-          arch: arm64-v8a
+          arch: x86_64
           profile: Nexus 6
           script: |
             adb install -r frontend/android/app/build/outputs/apk/debug/app-debug.apk
@@ -151,8 +155,12 @@ jobs:
   regression-test:
     name: Regression Tests
     # macos-26-arm64 (即 macos-latest) 的 HVF 使 qemu 中途 HV_UNSUPPORTED 崩溃
-    # (runs 46028049508/46031979263 实证 API 30/34 双崩于 boot 中段) → 钉 Sequoia
-    runs-on: macos-15-arm64
+    # (runs 46028049508/46031979263 实证 API 30/34 双崩于 boot 中段)。
+    # 钉 macos-15-arm64 后 run 46035390974 免费额度排队 >1h —— arm64 runner
+    # 池在免费 plan 长期饱和。改走 Intel (macos-15) + x86_64 API 34：
+    # 架构原生匹配无需 Rosetta（原 workflow 的 x86_64 旧配置本身没毛病，
+    # 毛病出在 macos-26 镜像），Intel runner 供给更充足。
+    runs-on: macos-15
     timeout-minutes: 45
     if: github.event_name == 'pull_request' && github.base_ref == 'main'
     needs: smoke-test
@@ -209,7 +217,7 @@ jobs:
         with:
           api-level: 34
           target: google_apis
-          arch: arm64-v8a
+          arch: x86_64
           profile: Nexus 6
           script: |
             adb install -r frontend/android/app/build/outputs/apk/debug/app-debug.apk
@@ -257,8 +265,12 @@ jobs:
   master-test:
     name: Master Tests
     # macos-26-arm64 (即 macos-latest) 的 HVF 使 qemu 中途 HV_UNSUPPORTED 崩溃
-    # (runs 46028049508/46031979263 实证 API 30/34 双崩于 boot 中段) → 钉 Sequoia
-    runs-on: macos-15-arm64
+    # (runs 46028049508/46031979263 实证 API 30/34 双崩于 boot 中段)。
+    # 钉 macos-15-arm64 后 run 46035390974 免费额度排队 >1h —— arm64 runner
+    # 池在免费 plan 长期饱和。改走 Intel (macos-15) + x86_64 API 34：
+    # 架构原生匹配无需 Rosetta（原 workflow 的 x86_64 旧配置本身没毛病，
+    # 毛病出在 macos-26 镜像），Intel runner 供给更充足。
+    runs-on: macos-15
     timeout-minutes: 60
     if: github.event_name == 'workflow_dispatch'
     needs: smoke-test
@@ -315,7 +327,7 @@ jobs:
         with:
           api-level: 34
           target: google_apis
-          arch: arm64-v8a
+          arch: x86_64
           profile: Nexus 6
           script: |
             adb install -r frontend/android/app/build/outputs/apk/debug/app-debug.apk
