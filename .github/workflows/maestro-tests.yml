@@ -112,6 +112,10 @@ jobs:
           api-level: 34
           target: google_apis
           arch: x86_64
+          # GitHub ubuntu runner 是嵌套 KVM VM；action 的 auto 档误判并关掉
+          # 加速 → '-accel off' 被 qemu 拒绝（Software CPU emulation is not
+          # supported，run 46052199071）。显式 false 启用 KVM。
+          disable-linux-hw-accel: false
           profile: Nexus 6
           script: |
             adb install -r frontend/android/app/build/outputs/apk/debug/app-debug.apk
@@ -219,6 +223,10 @@ jobs:
           api-level: 34
           target: google_apis
           arch: x86_64
+          # GitHub ubuntu runner 是嵌套 KVM VM；action 的 auto 档误判并关掉
+          # 加速 → '-accel off' 被 qemu 拒绝（Software CPU emulation is not
+          # supported，run 46052199071）。显式 false 启用 KVM。
+          disable-linux-hw-accel: false
           profile: Nexus 6
           script: |
             adb install -r frontend/android/app/build/outputs/apk/debug/app-debug.apk
@@ -329,6 +337,10 @@ jobs:
           api-level: 34
           target: google_apis
           arch: x86_64
+          # GitHub ubuntu runner 是嵌套 KVM VM；action 的 auto 档误判并关掉
+          # 加速 → '-accel off' 被 qemu 拒绝（Software CPU emulation is not
+          # supported，run 46052199071）。显式 false 启用 KVM。
+          disable-linux-hw-accel: false
           profile: Nexus 6
           script: |
             adb install -r frontend/android/app/build/outputs/apk/debug/app-debug.apk
