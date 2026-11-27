@@ -14,9 +14,11 @@
 #   4. API base：APK 内没有同源后端，必须构建期烘 VITE_API_BASE。
 #      10.0.2.2 是模拟器访问宿主机 loopback 的专用别名，
 #      pocketd 绑 ":$PORT"（全接口），无需 adb reverse。
-#   5. 模拟器：macos-latest 是 Apple Silicon → arm64-v8a 镜像 + google_apis
-#      （reactivecircus/android-emulator-runner README 的 Apple Silicon 配方）；
-#      旧写法 x86_64 在 ARM 上要靠 Rosetta 转译，慢且易超时。
+#   5. 模拟器：macos-latest 是 Apple Silicon → arm64-v8a 镜像 + google_apis。
+#      ⚠️ API 30 arm64 镜像在 GH macOS runner 上 HVF 直接崩
+#      （run 46028049508: "failed to initialize HVF: Invalid argument /
+#       HV_UNSUPPORTED"，qemu 起不来 → boot 超时）→ 用 API 34（M 系 runner
+#      实测可用的最低主流 API；本地 pocket_test AVD 也已改到 API 34 验证）。
 #   6. 原来的 smoke 有**两个连续** emulator-runner（第一个只 echo），
 #      每次都会完整起一台模拟器 → 合并成一个，backend 起在 runner script 里。
 name: Maestro Mobile Tests
@@ -100,7 +102,7 @@ jobs:
       - name: Run Smoke Tests
         uses: reactivecircus/android-emulator-runner@v2
         with:
-          api-level: 30
+          api-level: 34
           target: google_apis
           arch: arm64-v8a
           profile: Nexus 6
@@ -201,7 +203,7 @@ jobs:
       - name: Run Regression Tests
         uses: reactivecircus/android-emulator-runner@v2
         with:
-          api-level: 30
+          api-level: 34
           target: google_apis
           arch: arm64-v8a
           profile: Nexus 6
@@ -305,7 +307,7 @@ jobs:
       - name: Run Master Tests
         uses: reactivecircus/android-emulator-runner@v2
         with:
-          api-level: 30
+          api-level: 34
           target: google_apis
           arch: arm64-v8a
           profile: Nexus 6
