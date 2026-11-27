@@ -27,7 +27,7 @@ appId: com.kaixuan.opencode.pocket
 
 # Should show master password dialog
 - extendedWaitUntil:
-    visible: "创建主密码"
+    visible: ".*创建主密码.*"
     timeout: 15000
 
 - assertVisible: "创建主密码"

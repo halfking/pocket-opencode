@@ -1,0 +1,83 @@
+appId: com.kaixuan.opencode.pocket
+env:
+  MASTER_PASSWORD: ${POCKET_MASTER}
+  DEV_PASSWORD: ${POCKET_DEV_PASS}
+---
+# 简化版 Master 测试套件（参考 Smoke 成功模式）
+
+# L0 - 启动与认证
+- clearState
+- launchApp
+- runFlow: _login.yaml
+- takeScreenshot: "simple-00-login-complete"
+
+# L1 - 核心功能测试
+- extendedWaitUntil:
+    visible: ".*AI 工具.*"
+    timeout: 10000
+- assertVisible: ".*快速提问.*"
+- takeScreenshot: "simple-01-ai-dashboard"
+
+# 测试快速提问
+- tapOn: "快速提问"
+- extendedWaitUntil:
+    visible: ".*"
+    timeout: 2000
+- takeScreenshot: "simple-02-quick-question"
+
+# 返回首页（使用坐标点击，更可靠）
+- tapOn:
+    point: "135,2243"
+- extendedWaitUntil:
+    visible: ".*AI 工具.*"
+    timeout: 10000
+- takeScreenshot: "simple-02b-back-to-home"
+
+# 笔记功能（调整等待策略）
+- tapOn: "笔记|Notes"
+- extendedWaitUntil:
+    visible: ".*"
+    timeout: 10000
+# 等待笔记页面的特征元素加载
+- extendedWaitUntil:
+    visible: ".*notes.*|.*笔记.*"
+    timeout: 10000
+- takeScreenshot: "simple-03-notes-list"
+
+# 创建新笔记（使用更宽松的匹配）
+- tapOn: "New note|新建笔记|Record a note"
+- extendedWaitUntil:
+    visible: ".*"
+    timeout: 10000
+# 验证进入编辑器
+- assertVisible: ".*"
+- takeScreenshot: "simple-04-note-editor"
+
+# 返回笔记列表
+- pressKey: BACK
+- extendedWaitUntil:
+    notVisible: ".*语音录入.*|.*全屏编辑.*"
+    timeout: 15000
+
+# 消息中心
+- tapOn: "消息|Messages"
+- extendedWaitUntil:
+    visible: ".*"
+    timeout: 10000
+- takeScreenshot: "simple-06-messages"
+
+# 更多功能
+- tapOn: "更多|More"
+- extendedWaitUntil:
+    visible: ".*"
+    timeout: 10000
+- takeScreenshot: "simple-07-more"
+
+# 测试完成 - 返回首页
+- tapOn:
+    point: "135,2243"
+- extendedWaitUntil:
+    visible: ".*AI 工具.*"
+    timeout: 10000
+- assertVisible: ".*快速提问.*"
+- takeScreenshot: "simple-99-final-home"

@@ -858,6 +858,7 @@
     </div>
     <UnifiedComposer
       v-model="quickPrompt"
+      input-id="quick-prompt-input"
       placeholder="快速提问..."
       :enable="{ voice: true, image: false, camera: false, file: false, agent: true, optimize: true }"
       submit-label="提问"

@@ -42,7 +42,7 @@ appId: com.kaixuan.opencode.pocket
 #    后者才是有诊断力的那句。
 - runFlow:
     when:
-      notVisible: "AI 工具"
+      notVisible: ".*AI 工具.*"
     commands:
       - tapOn:
           text: "返回"
@@ -50,7 +50,7 @@ appId: com.kaixuan.opencode.pocket
       - waitForAnimationToEnd:
           timeout: 3000
 - extendedWaitUntil:
-    visible: "AI 工具"
+    visible: ".*AI 工具.*"
     timeout: 30000
 - assertVisible: "AI 工具"
 - assertNotVisible: "密码登录"
@@ -59,7 +59,7 @@ appId: com.kaixuan.opencode.pocket
 # MIUI 会吞掉底部导航 tap（报 COMPLETED 但界面没动）。
 # retryTapIfNoChange 管第一次，runFlow 补点管第二次，两个都要。
 - tapOn:
-    text: "更多|More"
+    text: ".*更多.*|.*More.*"
     retryTapIfNoChange: true
 # 2026-10-07 实测：这条 tap 会被吞（报 COMPLETED 但界面没动），
 # 且**同一个 flow 上一轮过、这一轮红**（22:5x vs 23:2x），属抖动不是回归。
@@ -69,17 +69,17 @@ appId: com.kaixuan.opencode.pocket
 - waitForAnimationToEnd:
     timeout: 5000
 - extendedWaitUntil:
-    visible: "更多功能|MORE FEATURES"
+    visible: ".*更多功能.*|.*MORE FEATURES.*"
     timeout: 40000
 - runFlow:
     when:
-      notVisible: "更多功能|MORE FEATURES"
+      notVisible: ".*更多功能.*|.*MORE FEATURES.*"
     commands:
       - tapOn: "更多|More"
       - waitForAnimationToEnd:
           timeout: 3000
 - extendedWaitUntil:
-    visible: "更多功能|MORE FEATURES"
+    visible: ".*更多功能.*|.*MORE FEATURES.*"
     timeout: 30000
 
 # ---------- 2. 主功能宫格：10 项全在 ----------
@@ -132,7 +132,7 @@ appId: com.kaixuan.opencode.pocket
 #     设备分辨率与行高，换一台机就错位。
 - scrollUntilVisible:
     element:
-      text: "运维与高级|Operations & advanced"
+      text: ".*运维与高级.*|.*Operations & advanced.*"
     direction: DOWN
     timeout: 20000
     visibilityPercentage: 100
@@ -140,7 +140,7 @@ appId: com.kaixuan.opencode.pocket
 
 - scrollUntilVisible:
     element:
-      text: "设置|Settings"
+      text: ".*设置.*|.*Settings.*"
     direction: DOWN
     timeout: 20000
     visibilityPercentage: 100
@@ -148,7 +148,7 @@ appId: com.kaixuan.opencode.pocket
 
 - scrollUntilVisible:
     element:
-      text: "实例|Instances"
+      text: ".*实例.*|.*Instances.*"
     direction: DOWN
     timeout: 20000
     visibilityPercentage: 100
@@ -156,7 +156,7 @@ appId: com.kaixuan.opencode.pocket
 
 - scrollUntilVisible:
     element:
-      text: "会话|Sessions"
+      text: ".*会话.*|.*Sessions.*"
     direction: DOWN
     timeout: 20000
     visibilityPercentage: 100
@@ -164,7 +164,7 @@ appId: com.kaixuan.opencode.pocket
 
 - scrollUntilVisible:
     element:
-      text: "任务|Tasks"
+      text: ".*任务.*|.*Tasks.*"
     direction: DOWN
     timeout: 20000
     visibilityPercentage: 100
@@ -172,7 +172,7 @@ appId: com.kaixuan.opencode.pocket
 
 - scrollUntilVisible:
     element:
-      text: "成本与配额|Cost & Quota"
+      text: ".*成本与配额.*|.*Cost & Quota.*"
     direction: DOWN
     timeout: 20000
     visibilityPercentage: 100
@@ -180,7 +180,7 @@ appId: com.kaixuan.opencode.pocket
 
 - scrollUntilVisible:
     element:
-      text: "网关节点|Gateway Nodes"
+      text: ".*网关节点.*|.*Gateway Nodes.*"
     direction: DOWN
     timeout: 20000
     visibilityPercentage: 100
@@ -188,7 +188,7 @@ appId: com.kaixuan.opencode.pocket
 
 - scrollUntilVisible:
     element:
-      text: "选择服务器|Select server"
+      text: ".*选择服务器.*|.*Select server.*"
     direction: DOWN
     timeout: 20000
     visibilityPercentage: 100
@@ -196,7 +196,7 @@ appId: com.kaixuan.opencode.pocket
 
 - scrollUntilVisible:
     element:
-      text: "导入导出|Import / Export"
+      text: ".*导入导出.*|.*Import / Export.*"
     direction: DOWN
     timeout: 20000
     visibilityPercentage: 100

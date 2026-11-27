@@ -62,7 +62,7 @@ appId: com.kaixuan.opencode.pocket
 #   `首页` 与 `Home` **整棵树里都不在**。所以这里改回 `AI 工具`。
 #   ⚠️ 别再改成 tab 标签。
 - extendedWaitUntil:
-    visible: "AI 工具"
+    visible: ".*AI 工具.*"
     timeout: 45000
 - assertVisible: "AI 工具"
 - assertNotVisible: "密码登录"

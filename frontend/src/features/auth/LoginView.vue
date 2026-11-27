@@ -15,6 +15,7 @@
           <label>主密码</label>
           <div class="input-wrap">
             <input
+              id="unlock-master-password"
               v-model="unlockPassword"
               :type="showUnlockPassword ? 'text' : 'password'"
               :placeholder="unlockPasswordPlaceholder(bioReady)"
@@ -274,6 +275,14 @@
         @success="onMasterPasswordCreated"
       />
 
+      <EmailVerificationDialog
+        :open="showEmailDialog"
+        :required="false"
+        @close="showEmailDialog = false"
+        @success="onEmailVerified"
+        @skip="onEmailSkipped"
+      />
+
       <!-- 版本信息 + 当前 pocketd 基址（与设置页同一 SSOT）
            BUG-C 修复: 加 .stop 防止冒泡,防止点击事件被外层
            needUnlock 表单的 submit 监听吞掉而 router.push 没执行;
@@ -333,9 +342,10 @@ import {
   unlockSubmitMode,
 } from './unlock-auth'
 import MasterPasswordDialog from './MasterPasswordDialog.vue'
+import EmailVerificationDialog from './EmailVerificationDialog.vue'
 import { canUseDeviceBackup } from '../../native/device-backup/service'
 import { useCryptoConfig } from '../../stores/crypto-config'
-import { sendCode, codeLogin, exchangeSsoCode, fetchSsoLoginUrl, fetchSsoStatusDetailed, fetchSsoDirectLogin } from '../../api/auth'
+import { sendCode, codeLogin, exchangeSsoCode, fetchSsoLoginUrl, fetchSsoStatusDetailed, fetchSsoDirectLogin, fetchMe } from '../../api/auth'
 import { runtimePlatform } from '../../native/runtime-platform'
 import { displayApiBase, resolveRuntimeApiBase } from '../../config/api-base'
 import { createNativeSSOProof, readNativeSSOReturn, type NativeSSOProof } from './native-sso'
@@ -379,6 +389,7 @@ const bioReady = ref(false)
 const needUnlock = ref(false)
 const unlockPassword = ref('')
 const showMasterPasswordDialog = ref(false)
+const showEmailDialog = ref(false)
 watch(() => auth.token, token => {
   if (token) return
   needUnlock.value = false
@@ -483,7 +494,7 @@ async function handleCodeLogin() {
 }
 
 /**
- * 登录/注册成功后统一收尾：setAuth → connectWs → 指纹绑定 → 主密码弹窗 → 跳转。
+ * 登录/注册成功后统一收尾：setAuth → connectWs → 指纹绑定 → 主密码弹窗 → 邮箱检查 → 跳转。
  */
 async function completeAuth(token: string, user: string, userId?: string, workspaceId?: string, method?: string) {
   if (userId && workspaceId) {
@@ -494,10 +505,49 @@ async function completeAuth(token: string, user: string, userId?: string, worksp
   completedSession = captureAuthSession(auth)
   connectWs()
   assertAuthSession(auth, completedSession)
+  
+  // 先检查主密码
   if (!cryptoConfig.cfg.hasMasterPassword) {
     showMasterPasswordDialog.value = true
     return
   }
+  
+  // 再检查邮箱
+  await checkAndPromptEmail()
+}
+
+/**
+ * 检查用户是否已设置邮箱，如果没有则显示邮箱设置对话框
+ */
+async function checkAndPromptEmail() {
+  try {
+    const me = await fetchMe()
+    if (!me.email || me.email.trim() === '') {
+      showEmailDialog.value = true
+      return
+    }
+  } catch (e) {
+    console.warn('[LoginView] 获取用户信息失败，跳过邮箱检查:', e)
+  }
+  // 邮箱已设置或检查失败，直接跳转
+  router.push('/ai')
+}
+
+/**
+ * 邮箱验证成功的回调
+ */
+function onEmailVerified(email: string) {
+  console.log('[LoginView] 邮箱验证成功:', email)
+  showEmailDialog.value = false
+  router.push('/ai')
+}
+
+/**
+ * 用户跳过邮箱设置的回调
+ */
+function onEmailSkipped() {
+  console.log('[LoginView] 用户跳过邮箱设置')
+  showEmailDialog.value = false
   router.push('/ai')
 }
 

@@ -1,0 +1,8 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="Test Suite" device="stremio_maestro" tests="1" failures="1" time="53.169" timestamp="2026-11-26T12:44:34">
+    <testcase id="regression-test-suite" name="regression-test-suite" classname="regression-test-suite" file=".maestro/regression-test-suite.yaml" time="53.154" timestamp="2026-11-26T12:44:34" status="ERROR">
+      <failure>Assertion is false: "录音记一笔|Record a note" is visible</failure>
+    </testcase>
+  </testsuite>
+</testsuites>

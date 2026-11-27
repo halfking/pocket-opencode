@@ -38,7 +38,7 @@ appId: com.kaixuan.opencode.pocket
 #   「返回」是 canGoBack 页的通用出口（EmailDetailView 的返回按钮 aria-label=返回）。
 - runFlow:
     when:
-      notVisible: "AI 工具"
+      notVisible: ".*AI 工具.*"
     commands:
       # ⚠️ 2026-10-12：optional:true —— 这条恢复 tap 的输入是竞态（driver 重装会打断
       #    App，step 0 取 a11y 树时多半是空的），条件修不掉，只能让它不致命。
@@ -49,7 +49,7 @@ appId: com.kaixuan.opencode.pocket
       - waitForAnimationToEnd:
           timeout: 3000
 - extendedWaitUntil:
-    visible: "AI 工具"
+    visible: ".*AI 工具.*"
     timeout: 30000
 - assertVisible: "AI 工具"
 - assertNotVisible: "密码登录"
@@ -59,20 +59,20 @@ appId: com.kaixuan.opencode.pocket
 #   （2026-10-03 15:06 在 settings-llm-gateway 上实测，失败现场仍停在首页）。
 #   retryTapIfNoChange 管第一次，runFlow 补点管第二次，两个都要。
 - tapOn:
-    text: "消息|Messages"
+    text: ".*消息.*|.*Messages.*"
     retryTapIfNoChange: true
 - extendedWaitUntil:
-    visible: "全部.*|All.*"
+    visible: ".*全部.*.*|.*All.*.*"
     timeout: 40000
 - runFlow:
     when:
-      notVisible: "邮件.*|Email.*"
+      notVisible: ".*邮件.*.*|.*Email.*.*"
     commands:
       - tapOn: "消息|Messages"
       - waitForAnimationToEnd:
           timeout: 3000
 - extendedWaitUntil:
-    visible: "邮件.*|Email.*"
+    visible: ".*邮件.*.*|.*Email.*.*"
     timeout: 30000
 
 # ---------- 2. 核心断言：chips 齐全 ----------
@@ -94,7 +94,7 @@ appId: com.kaixuan.opencode.pocket
 #   · 两段式判断留给下面的 conditional
 - runFlow:
     when:
-      visible: "没有新消息|No new messages"
+      visible: ".*没有新消息.*|.*No new messages.*"
     commands:
       - assertVisible: "重要邮件、订阅新闻和任务消息会汇总到这里|Important mail|new feeds and task messages will be summarized here"
       - takeScreenshot: "logs/maestro/messages-hub-empty"
@@ -193,7 +193,7 @@ appId: com.kaixuan.opencode.pocket
 # chip 带未读计数（实测「邮件 30」），所以点击目标与断言都要容忍计数。
 - tapOn: "邮件.*|Email.*"
 - extendedWaitUntil:
-    visible: "全部.*|All.*"
+    visible: ".*全部.*.*|.*All.*.*"
     timeout: 25000
 - assertVisible: "邮件.*|Email.*"
 - takeScreenshot: "logs/maestro/messages-hub-email"
@@ -222,6 +222,6 @@ appId: com.kaixuan.opencode.pocket
           text: ".*打开邮箱.*|.*Open mail.*"
           retryTapIfNoChange: true
       - extendedWaitUntil:
-          visible: "邮箱|Email"
+          visible: ".*邮箱.*|.*Email.*"
           timeout: 30000
       - assertVisible: "邮箱|Email"

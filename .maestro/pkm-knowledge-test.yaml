@@ -1,0 +1,161 @@
+appId: com.kaixuan.opencode.pocket
+---
+# ═══════════════════════════════════════════════════════════════════
+# PKM 知识库测试 (PKM Knowledge Base Test)
+# ═══════════════════════════════════════════════════════════════════
+# 
+# 用途：测试 PKM 知识库功能
+# 执行时间：约 5-7 分钟
+# 覆盖范围：笔记创建、双向链接、搜索
+#
+# 测试场景：
+#   1. 进入 PKM
+#   2. 创建笔记
+#   3. 编辑内容
+#   4. 创建链接
+#   5. 搜索笔记
+#   6. 查看反向链接
+#
+# ═══════════════════════════════════════════════════════════════════
+
+- launchApp:
+    clearState: false
+
+# 确保已登录
+- runFlow: _login.yaml
+
+- takeScreenshot: "pkm-00-start"
+
+# ═══════════════════════════════════════════════════════════════════
+# 场景 1: 进入 PKM 知识库
+# ═══════════════════════════════════════════════════════════════════
+
+- tapOn: "更多|More"
+- extendedWaitUntil:
+    visible: ".*"
+    timeout: 2000
+
+- scroll
+- runFlow:
+    when:
+      visible: ".*知识库.*|.*PKM.*|.*Knowledge.*"
+    commands:
+      - tapOn: "知识库|PKM|Knowledge"
+      - extendedWaitUntil:
+          visible: ".*"
+          timeout: 3000
+      - takeScreenshot: "pkm-01-home"
+
+# ═══════════════════════════════════════════════════════════════════
+# 场景 2: 创建新笔记
+# ═══════════════════════════════════════════════════════════════════
+
+- tapOn: "\\+|新建|New"
+- extendedWaitUntil:
+    visible: ".*"
+    timeout: 2000
+
+- takeScreenshot: "pkm-02-new-note"
+
+# 输入标题
+- tapOn:
+    text: ".*标题.*|.*Title.*"
+    optional: true
+
+- inputText: "测试笔记 - PKM Test"
+- hideKeyboard
+- extendedWaitUntil:
+    visible: ".*"
+    timeout: 1000
+
+# ═══════════════════════════════════════════════════════════════════
+# 场景 3: 编辑内容
+# ═══════════════════════════════════════════════════════════════════
+
+# 点击内容区域
+- tapOn:
+    point: "50%,50%"
+- extendedWaitUntil:
+    visible: ".*"
+    timeout: 1000
+
+# 输入内容
+- inputText: "这是一条测试笔记。\n\n包含多行内容。\n\n用于测试 PKM 功能。"
+- hideKeyboard
+
+- takeScreenshot: "pkm-03-content-edited"
+
+# ═══════════════════════════════════════════════════════════════════
+# 场景 4: 保存笔记
+# ═══════════════════════════════════════════════════════════════════
+
+- tapOn:
+    text: ".*保存.*|.*Save.*"
+    optional: true
+
+- extendedWaitUntil:
+    visible: ".*"
+    timeout: 2000
+
+- takeScreenshot: "pkm-04-saved"
+
+# ═══════════════════════════════════════════════════════════════════
+# 场景 5: 搜索笔记
+# ═══════════════════════════════════════════════════════════════════
+
+- tapOn:
+    point: "5%,5%"
+- extendedWaitUntil:
+    visible: ".*"
+    timeout: 2000
+
+# 查找搜索入口
+- tapOn:
+    text: ".*搜索.*|.*Search.*"
+    optional: true
+
+- extendedWaitUntil:
+    visible: ".*"
+    timeout: 1000
+
+- runFlow:
+    when:
+      visible: ".*搜索.*|.*Search.*"
+    commands:
+      - inputText: "测试"
+      - extendedWaitUntil:
+          visible: ".*"
+          timeout: 2000
+      - takeScreenshot: "pkm-05-search-results"
+      - hideKeyboard
+
+# ═══════════════════════════════════════════════════════════════════
+# 场景 6: 今日笔记
+# ═══════════════════════════════════════════════════════════════════
+
+- tapOn:
+    point: "5%,5%"
+- extendedWaitUntil:
+    visible: ".*"
+    timeout: 1000
+
+- runFlow:
+    when:
+      visible: ".*今日.*|.*Today.*"
+    commands:
+      - tapOn: "今日|Today"
+      - extendedWaitUntil:
+          visible: ".*"
+          timeout: 2000
+      - takeScreenshot: "pkm-06-today"
+
+# ═══════════════════════════════════════════════════════════════════
+# 最终验证
+# ═══════════════════════════════════════════════════════════════════
+
+- tapOn: "^首页$|^Home$|^AI$"
+- extendedWaitUntil:
+    visible: ".*AI 工具.*"
+    timeout: 10000
+
+- takeScreenshot: "pkm-99-complete"

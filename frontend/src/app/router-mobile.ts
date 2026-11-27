@@ -387,6 +387,12 @@ const router = createRouter({
       meta: { title: '注册账号', bottomNav: false, showTopBar: false, canGoBack: true }
     },
     {
+      path: '/change-password',
+      name: 'change-password',
+      component: () => import('../features/auth/ChangePasswordView.vue'),
+      meta: { requiresAuth: true, title: '修改密码', bottomNav: false, showTopBar: false, canGoBack: true }
+    },
+    {
       path: '/auth/sso/callback',
       name: 'sso-callback',
       // Phase 1: RedClaw SSO 回调落点。浏览器从 IdP 跳到 openpocket 的

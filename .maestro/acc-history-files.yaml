@@ -29,14 +29,14 @@ appId: com.kaixuan.opencode.pocket
 ---
 # ---------- 0. 前置：harness 已真实登录，起点是 #/ai ----------
 - extendedWaitUntil:
-    visible: "AI 工具"
+    visible: ".*AI 工具.*"
     timeout: 60000
 - waitForAnimationToEnd:
     timeout: 15000
 
 # ---- 1. 打开「委托给 ACC」面板，派一个任务 ----
 - extendedWaitUntil:
-    visible: "委托 ACC"
+    visible: ".*委托 ACC.*"
     timeout: 40000
 - tapOn: "委托 ACC"
 - extendedWaitUntil:
@@ -60,12 +60,12 @@ appId: com.kaixuan.opencode.pocket
 
 # ---- 3. ★ 弹窗必须**关闭**（否则下面所有断言都可能命中输入框）----
 - extendedWaitUntil:
-    notVisible: "ACC 会接管后续会话与执行.*"
+    notVisible: ".*ACC 会接管后续会话与执行.*.*"
     timeout: 90000
 
 # ---- 4. 委托出去的卡片出现 ----
 - extendedWaitUntil:
-    visible: "只回复HISTORYOK"
+    visible: ".*只回复HISTORYOK.*"
     timeout: 60000
 - assertVisible: "只回复HISTORYOK"
 
@@ -78,7 +78,7 @@ appId: com.kaixuan.opencode.pocket
 #
 #   答完的判据：待批卡片清空（daemon 侧 pending 归零才是真话）。
 - extendedWaitUntil:
-    visible: "ACC 待批.*"
+    visible: ".*ACC 待批.*.*"
     timeout: 45000
     optional: true
 - repeat:
@@ -98,7 +98,7 @@ appId: com.kaixuan.opencode.pocket
           timeout: 5000
           optional: true
 - extendedWaitUntil:
-    notVisible: "ACC 待批.*"
+    notVisible: ".*ACC 待批.*.*"
     timeout: 60000
     optional: true
 
@@ -121,7 +121,7 @@ appId: com.kaixuan.opencode.pocket
 
 # ---- 6. ★ 任务历史卡片在页面上 ----
 - extendedWaitUntil:
-    visible: "任务历史与产出"
+    visible: ".*任务历史与产出.*"
     timeout: 30000
 - assertVisible: "任务历史与产出"
 
@@ -143,23 +143,23 @@ appId: com.kaixuan.opencode.pocket
     times: 12
     commands:
       - extendedWaitUntil:
-          visible: "opencode.*成功.*"
+          visible: ".*opencode.*成功.*.*"
           timeout: 15000
           optional: true
       - runFlow:
           when:
-            notVisible: "opencode.*成功.*"
+            notVisible: ".*opencode.*成功.*.*"
           commands:
             - tapOn: "读取任务历史"
 - extendedWaitUntil:
-    visible: "opencode.*成功.*"
+    visible: ".*opencode.*成功.*.*"
     timeout: 60000
 - assertVisible: "opencode.*成功.*"
 
 # ---- 8. ★ 展开这一行 ⇒ 看到「生成的文件」 ----
 - tapOn: "opencode.*成功.*"
 - extendedWaitUntil:
-    visible: "产出文件.*"
+    visible: ".*产出文件.*.*"
     timeout: 60000
 - assertVisible: "产出文件.*"
 # 产出目录里只有 output.txt（agent 的输出文档）
@@ -190,7 +190,7 @@ appId: com.kaixuan.opencode.pocket
     timeout: 30000
 - tapOn: "output.txt"
 - extendedWaitUntil:
-    visible: "文件内容"
+    visible: ".*文件内容.*"
     timeout: 60000
 - assertVisible: "文件内容"
 

@@ -1,0 +1,8 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="Test Suite" device="nsverify" tests="1" failures="1" time="50.454" timestamp="2026-11-26T16:54:22">
+    <testcase id="master-test-suite" name="master-test-suite" classname="master-test-suite" file=".maestro/master-test-suite.yaml" time="50.438" timestamp="2026-11-26T16:54:22" status="ERROR">
+      <failure>Element not found: Id matching regex: master-password-input</failure>
+    </testcase>
+  </testsuite>
+</testsuites>

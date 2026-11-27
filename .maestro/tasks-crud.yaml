@@ -55,7 +55,7 @@ appId: com.kaixuan.opencode.pocket
 # 前置可复现：node scripts/tasks-crud-fixture.mjs（删掉上一轮同名任务，
 # 否则第 5 步的列表回显会假通过——功能彻底坏掉时断言照样绿）。
 - extendedWaitUntil:
-    visible: "AI 工具"
+    visible: ".*AI 工具.*"
     timeout: 45000
 - assertVisible: "AI 工具"
 - assertNotVisible: "密码登录"
@@ -100,14 +100,14 @@ appId: com.kaixuan.opencode.pocket
 - waitForAnimationToEnd:
     timeout: 15000
 - extendedWaitUntil:
-    visible: "\\+ 新任务"
+    visible: ".*\\+ 新任务.*"
     timeout: 30000
 - assertVisible: "\\+ 新任务"
 
 # ---- 2. 打开创建弹窗 ----
 - tapOn: "\\+ 新任务"
 - extendedWaitUntil:
-    visible: "创建任务"
+    visible: ".*创建任务.*"
     timeout: 20000
 - assertVisible: "创建任务"
 
@@ -140,7 +140,7 @@ appId: com.kaixuan.opencode.pocket
 - tapOn: { text: "创建", enabled: true }
 # 弹窗必须关掉。没关掉就说明提交没生效（后端 4xx 也会这样）。
 - extendedWaitUntil:
-    notVisible: "创建任务"
+    notVisible: ".*创建任务.*"
     timeout: 30000
 - assertNotVisible: "创建任务"
 
@@ -179,7 +179,7 @@ appId: com.kaixuan.opencode.pocket
 #      [TextView] 还没有子任务 / 还没有动态 / 当前 0 / 历史 0
 - tapOn: { text: "Maestro任务.*" }
 - extendedWaitUntil:
-    visible: "任务详情"
+    visible: ".*任务详情.*"
     timeout: 25000
 # 详情页专属标记：列表页的「+ 新任务」必须消失。
 # 这条不是凑数——它证明真的离开了列表页，而不是弹窗关了但没跳转。

@@ -1,0 +1,8 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="Test Suite" device="stremio_maestro" tests="1" failures="1" time="77.113" timestamp="2026-11-26T12:50:20">
+    <testcase id="master-test-suite" name="master-test-suite" classname="master-test-suite" file=".maestro/master-test-suite.yaml" time="77.094" timestamp="2026-11-26T12:50:20" status="ERROR">
+      <failure>Assertion is false: "开始录音|Start Recording" is visible</failure>
+    </testcase>
+  </testsuite>
+</testsuites>

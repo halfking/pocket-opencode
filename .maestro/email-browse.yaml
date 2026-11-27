@@ -48,7 +48,7 @@ appId: com.kaixuan.opencode.pocket
 #    （optional: true）；真正的门是紧随其后的 extendedWaitUntil(30s)。
 - runFlow:
     when:
-      notVisible: "AI 工具"
+      notVisible: ".*AI 工具.*"
     commands:
       - tapOn:
           text: "返回"
@@ -56,7 +56,7 @@ appId: com.kaixuan.opencode.pocket
       - waitForAnimationToEnd:
           timeout: 3000
 - extendedWaitUntil:
-    visible: "AI 工具"
+    visible: ".*AI 工具.*"
     timeout: 30000
 - assertNotVisible: "密码登录"
 
@@ -64,22 +64,22 @@ appId: com.kaixuan.opencode.pocket
 # 「邮箱」是「更多」宫格里的一格（MoreHubView 的 mainFeatures），
 # 一级底部导航里没有它 —— 这是 IA 重组后的真实形状。
 - tapOn:
-    text: "更多|More"
+    text: ".*更多.*|.*More.*"
     retryTapIfNoChange: true
 - extendedWaitUntil:
-    visible: "更多功能|More features"
+    visible: ".*更多功能.*|.*More features.*"
     timeout: 40000
 - runFlow:
     when:
-      notVisible: "更多功能|More features"
+      notVisible: ".*更多功能.*|.*More features.*"
     commands:
       - tapOn:
-          text: "更多|More"
+          text: ".*更多.*|.*More.*"
           retryTapIfNoChange: true
       - waitForAnimationToEnd:
           timeout: 3000
 - extendedWaitUntil:
-    visible: "更多功能|More features"
+    visible: ".*更多功能.*|.*More features.*"
     timeout: 40000
 - assertVisible: "更多功能|More features"
 - tapOn:
@@ -87,7 +87,7 @@ appId: com.kaixuan.opencode.pocket
     retryTapIfNoChange: true
 - runFlow:
     when:
-      notVisible: "邮箱|Email"
+      notVisible: ".*邮箱.*|.*Email.*"
     commands:
       - tapOn:
           text: ".*邮箱.*|.*Email.*"
@@ -97,7 +97,7 @@ appId: com.kaixuan.opencode.pocket
 
 # ---------- 2. 列表页渲染完整 ----------
 - extendedWaitUntil:
-    visible: "邮箱|Email"
+    visible: ".*邮箱.*|.*Email.*"
     timeout: 40000
 - assertNotVisible: "密码登录"
 # 分类 chip 齐全：只有 EmailView 会同时渲染这五个
@@ -127,7 +127,7 @@ appId: com.kaixuan.opencode.pocket
     index: 0
     retryTapIfNoChange: true
 - extendedWaitUntil:
-    visible: "邮件详情|Email detail"
+    visible: ".*邮件详情.*|.*Email detail.*"
     timeout: 40000
 - assertVisible: "邮件详情|Email detail"
 
@@ -149,6 +149,6 @@ appId: com.kaixuan.opencode.pocket
 # ---------- 5. 返回能回到列表 ----------
 - tapOn: "返回"
 - extendedWaitUntil:
-    visible: "邮箱|Email"
+    visible: ".*邮箱.*|.*Email.*"
     timeout: 30000
 - assertNotVisible: "邮件详情"

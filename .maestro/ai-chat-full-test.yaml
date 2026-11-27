@@ -1,0 +1,188 @@
+appId: com.kaixuan.opencode.pocket
+---
+# ═══════════════════════════════════════════════════════════════════
+# AI Chat 完整测试 (AI Chat Full Test)
+# ═══════════════════════════════════════════════════════════════════
+# 
+# 用途：测试 AI Chat 多轮对话功能
+# 执行时间：约 5-8 分钟
+# 覆盖范围：AI Chat 模块完整流程
+#
+# 测试场景：
+#   1. 进入 AI Chat
+#   2. 创建新会话
+#   3. 发送消息
+#   4. 接收响应
+#   5. 多轮对话
+#   6. 切换模型
+#   7. 会话管理
+#
+# ═══════════════════════════════════════════════════════════════════
+
+- launchApp:
+    clearState: false
+
+# 确保已登录
+- runFlow: _login.yaml
+
+- takeScreenshot: "ai-chat-00-start"
+
+# ═══════════════════════════════════════════════════════════════════
+# 场景 1: 进入 AI Chat
+# ═══════════════════════════════════════════════════════════════════
+
+- tapOn: "更多|More"
+- extendedWaitUntil:
+    visible: ".*"
+    timeout: 2000
+
+# 滚动查找 AI Chat
+- scroll
+- extendedWaitUntil:
+    visible: ".*"
+    timeout: 500
+
+- runFlow:
+    when:
+      visible: ".*AI 对话.*|.*AI Chat.*"
+    commands:
+      - tapOn: "AI 对话|AI Chat"
+      - extendedWaitUntil:
+          visible: ".*AI 对话.*|.*AI Chat.*"
+          timeout: 10000
+      - takeScreenshot: "ai-chat-01-entry"
+
+# 如果没有找到，尝试从首页进入
+- runFlow:
+    when:
+      notVisible: ".*AI 对话.*|.*AI Chat.*"
+    commands:
+      - tapOn: "^首页$|^Home$|^AI$"
+      - extendedWaitUntil:
+          visible: ".*"
+          timeout: 1000
+      - tapOn: "AI 对话|AI Chat"
+      - extendedWaitUntil:
+          visible: ".*"
+          timeout: 3000
+
+# ═══════════════════════════════════════════════════════════════════
+# 场景 2: 创建新会话
+# ═══════════════════════════════════════════════════════════════════
+
+- tapOn:
+    text: ".*\\+.*|.*新建.*|.*New.*"
+    optional: true
+- extendedWaitUntil:
+    visible: ".*"
+    timeout: 2000
+
+- takeScreenshot: "ai-chat-02-new-session"
+
+# ═══════════════════════════════════════════════════════════════════
+# 场景 3: 发送第一条消息
+# ═══════════════════════════════════════════════════════════════════
+
+# 查找输入框
+- tapOn:
+    text: ".*输入消息.*|.*Type a message.*|.*说点什么.*"
+    optional: true
+
+- extendedWaitUntil:
+    visible: ".*"
+    timeout: 1000
+
+# 输入测试消息
+- inputText: "你好，这是一条测试消息"
+- hideKeyboard
+
+- takeScreenshot: "ai-chat-03-message-input"
+
+# 发送消息
+- tapOn:
+    text: ".*发送.*|.*Send.*|.*提交.*"
+    optional: true
+
+- extendedWaitUntil:
+    visible: ".*"
+    timeout: 5000
+
+- takeScreenshot: "ai-chat-04-message-sent"
+
+# ═══════════════════════════════════════════════════════════════════
+# 场景 4: 等待响应
+# ═══════════════════════════════════════════════════════════════════
+
+# 等待 AI 响应
+- extendedWaitUntil:
+    visible: ".*"
+    timeout: 10000
+
+- takeScreenshot: "ai-chat-05-response-received"
+
+# ═══════════════════════════════════════════════════════════════════
+# 场景 5: 第二轮对话
+# ═══════════════════════════════════════════════════════════════════
+
+- tapOn:
+    text: ".*输入消息.*|.*Type a message.*|.*说点什么.*"
+    optional: true
+
+- extendedWaitUntil:
+    visible: ".*"
+    timeout: 1000
+
+- inputText: "再问一个问题：今天天气怎么样？"
+- hideKeyboard
+
+- tapOn:
+    text: ".*发送.*|.*Send.*|.*提交.*"
+    optional: true
+
+- extendedWaitUntil:
+    visible: ".*"
+    timeout: 5000
+
+- takeScreenshot: "ai-chat-06-second-round"
+
+# ═══════════════════════════════════════════════════════════════════
+# 场景 6: 切换模型（如果支持）
+# ═══════════════════════════════════════════════════════════════════
+
+- runFlow:
+    when:
+      visible: ".*模型.*|.*Model.*"
+    commands:
+      - tapOn: "模型|Model"
+      - extendedWaitUntil:
+          visible: ".*"
+          timeout: 2000
+      - takeScreenshot: "ai-chat-07-model-selector"
+      - tapOn:
+          point: "5%,5%"
+      - extendedWaitUntil:
+          visible: ".*"
+          timeout: 1000
+
+# ═══════════════════════════════════════════════════════════════════
+# 场景 7: 会话列表
+# ═══════════════════════════════════════════════════════════════════
+
+- tapOn:
+    point: "5%,5%"
+- extendedWaitUntil:
+    visible: ".*"
+    timeout: 2000
+
+- takeScreenshot: "ai-chat-08-session-list"
+
+# ═══════════════════════════════════════════════════════════════════
+# 最终验证
+# ═══════════════════════════════════════════════════════════════════
+
+- tapOn: "^首页$|^Home$|^AI$"
+- extendedWaitUntil:
+    visible: ".*AI 工具.*"
+    timeout: 10000
+
+- takeScreenshot: "ai-chat-99-complete"

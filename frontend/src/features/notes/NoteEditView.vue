@@ -16,6 +16,7 @@
             :key="`title-${auth.activationVersion}`"
             v-model="form.title"
             single-line
+            input-id="note-title-input"
             placeholder="一句话概括…"
             :enable="{ voice: true, image: false, camera: false, file: false, agent: false, optimize: true }"
             :allow-fullscreen="false"
@@ -33,6 +34,7 @@
             :key="`content-${auth.activationVersion}`"
             ref="composerRef"
             v-model="form.content"
+            input-id="note-content-input"
             placeholder="点击 ⛶ 全屏编辑，🎙 语音录入，或直接输入文本…"
             :submit-on-enter="false"
             :enable="{ voice: true, image: true, camera: true, file: true, agent: false, optimize: true }"

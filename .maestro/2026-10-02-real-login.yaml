@@ -94,7 +94,7 @@ appId: com.kaixuan.opencode.pocket
 # 「打开菜单|Open menu」是已登录 App 外壳 header 的 aria-label（走 i18n：
 # zh-CN「打开菜单」/ en-US「Open menu」），登录页与解锁页都没有它。
 - extendedWaitUntil:
-    visible: "打开菜单|Open menu|创建主密码|解锁本地数据"
+    visible: ".*打开菜单.*|.*Open menu.*|.*创建主密码.*|.*解锁本地数据.*"
     timeout: 60000
 
 # ---------- D 态：登录成功但本机还没有主密码 ----------
@@ -104,7 +104,7 @@ appId: com.kaixuan.opencode.pocket
 #   这里再判不会「判得太早」。
 - runFlow:
     when:
-      visible: "创建主密码"
+      visible: ".*创建主密码.*"
     commands:
       # ⚠️ 子流路径用**裸文件名**（与 _login.yaml 一致）：runFlow 的相对路径是
       #   按**当前 flow 所在目录**解析的，写成 `.maestro/xxx.yaml` 会被解析成
@@ -118,7 +118,7 @@ appId: com.kaixuan.opencode.pocket
 #   失败现场的无障碍树会带出原因（例如「登录失败：用户名或密码错误」），
 #   **别把它读成「App 坏了」**。
 - extendedWaitUntil:
-    visible: "打开菜单|Open menu"
+    visible: ".*打开菜单.*|.*Open menu.*"
     timeout: 90000
 - assertVisible: "打开菜单|Open menu"
 # 硬判据：登录成功后不该还停在登录页。

@@ -18,15 +18,57 @@
 //   node scripts/hier-dump.mjs '#/tasks'            # 导航 + 抓 + 打印
 //   node scripts/hier-dump.mjs '#/tasks' 新任务     # 带过滤子串
 import { execFileSync, spawnSync } from 'node:child_process'
-import { readFileSync, writeFileSync } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync } from 'node:fs'
+import { homedir } from 'node:os'
 
-const ADB = 'C:/Users/86133/AppData/Local/Android/platform-tools/adb.exe'
+// 可执行文件解析：env 覆盖 -> PATH -> 常见安装位置。
+// 为什么不写死：这三个常量原本是某台 Windows 开发机的绝对路径
+// （C:/Users/86133/... / C:/workspace/openpocket/... / C:\Program Files\Eclipse Adoptium\...）。
+// 换到 macOS 宿主后它们全部指向不存在的文件，于是脚本在第一步就以
+// "spawnSync adb ENOENT" 的形式死掉——**看起来像设备问题，
+// 实际是脚本自己绑死在一台机器上**。与 maestro-run.mjs 同一处理。
+const IS_WIN = process.platform === 'win32'
+
+function whichFirst(candidates) {
+  for (const c of candidates) {
+    if (!c) continue
+    if (c.includes('/') || c.includes('\\')) {
+      if (existsSync(c)) return c
+      continue
+    }
+    const r = spawnSync(IS_WIN ? 'where' : 'which', [c], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+    const first = (r.stdout || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean)[0]
+    if (r.status === 0 && first) return first
+  }
+  return null
+}
+
+const ADB = process.env.POCKET_ADB_BIN
+  || whichFirst([
+    IS_WIN ? 'C:/Users/86133/AppData/Local/Android/platform-tools/adb.exe' : null,
+    `${homedir()}/Library/Android/sdk/platform-tools/adb`,
+    `${homedir()}/Android/Sdk/platform-tools/adb`,
+    'adb',
+  ])
+  || 'adb'
+
 const SERIAL = process.env.POCKET_SERIAL || '192.168.31.19:5555'
-const PKG = 'com.kaixuan.opencode.pocket'
+const PKG = process.env.POCKET_APP_ID || 'com.kaixuan.opencode.pocket'
 const PORT = process.env.POCKET_CDP_PORT || '9600'
 const MASTER = process.env.POCKET_MASTER || 'PocketTest2026'
-const JAVA = process.env.JAVA_HOME || 'C:\\Program Files\\Eclipse Adoptium\\jdk-21.0.12.101-hotspot'
-const MAESTRO = 'C:/workspace/openpocket/logs/maestro/maestro/bin/maestro.bat'
+const JAVA = process.env.JAVA_HOME
+  || whichFirst([
+    IS_WIN ? 'C:\\Program Files\\Eclipse Adoptium\\jdk-21.0.12.101-hotspot' : null,
+    '/usr/libexec/java_home',
+  ])
+  || ''
+const MAESTRO = process.env.POCKET_MAESTRO_BIN
+  || whichFirst([
+    IS_WIN ? 'C:/workspace/openpocket/logs/maestro/maestro/bin/maestro.bat' : null,
+    `${homedir()}/.maestro/bin/maestro`,
+    'maestro',
+  ])
+  || 'maestro'
 
 const HASH = process.argv[2] || '#/tasks'
 const FILTER = process.argv[3] || ''
@@ -127,6 +169,76 @@ const page = list.find((t) => t.type === 'page')
 if (!page) { console.error('NO_PAGE_TARGET'); process.exit(4) }
 const wsUrl = page.webSocketDebuggerUrl.replace(/:\d+\//, `:${PORT}/`)
 
+// ── 本地库解锁 ────────────────────────────────────────────────────────────
+// 为什么必须先解锁：本地 SQLCipher 库的 AES key 只存在于**进程内存**，
+// App 一被 force-stop 就丢；守卫只在「导航到依赖本地库的路由」那一刻才判定，
+// 所以停在 #/ai 时**看不出**库锁着，一进 #/notes 就被弹到解锁屏。
+// 结果是「抓到的树是解锁屏而不是目标页」——读起来像「页面上没有这个文案」，
+// 于是去 Vue 模板里猜一个不存在的文案写进 flow。
+//
+// 配方与 scripts/maestro-run.mjs 的 ensureLocalDbUnlocked() 同源（那��是
+// 实测过的）：判据用 body.innerText（不是标签精确匹配——后者恒为 false），
+// 定位用 password/placeholder（不是坐标——坐标依赖机型），按钮用「解锁/认证」。
+async function ensureUnlocked() {
+  const ON_UNLOCK = '解锁本地数据'
+  const readScreen = async () => {
+    const raw = await evNow(`(function(){
+      try { return JSON.stringify({ hash: location.hash, body: (document.body.innerText || '').replace(/\\s+/g, ' ').slice(0, 1200) }); }
+      catch (e) { return JSON.stringify({ err: String(e && e.message || e) }); }
+    })()`, 12000)
+    try { return JSON.parse(String(raw)) } catch { return { err: '读屏返回非 JSON: ' + raw } }
+  }
+  // 逼守卫把解锁屏弹出来
+  await evNow(`location.hash = ${JSON.stringify('#/pkm/today?__hierunlock=' + Date.now())}; true`, 12000)
+  await sleep(2500)
+  let s = await readScreen()
+  if (!String(s.body || '').includes(ON_UNLOCK)) {
+    console.log('[hier] 本地库已解锁')
+    return true
+  }
+  console.log('[hier] 本地库锁着 → 用 CDP 填主密码解锁')
+  const filled = await evNow(`(function(){
+    var ins = Array.prototype.slice.call(document.querySelectorAll('input'));
+    var el = ins.filter(function (e) { return e.type === 'password'; })[0]
+      || ins.filter(function (e) { return (e.placeholder || '').indexOf('主密码') >= 0; })[0]
+      || ins.filter(function (e) { return e.type === 'password' || e.type === 'text'; })[0];
+    if (!el) return 'no-input:' + ins.map(function (e) { return e.placeholder || e.type; }).join('/');
+    var set = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+    set.call(el, ${JSON.stringify(MASTER)});
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    return 'ok len=' + el.value.length;
+  })()`, 12000)
+  if (!String(filled).startsWith('ok ')) {
+    console.error(`[hier] ❌ 填主密码失败：${filled}`)
+    return false
+  }
+  const clicked = await evNow(`(function(){
+    var bs = Array.prototype.slice.call(document.querySelectorAll('button'));
+    var b = bs.filter(function (e) { var t=(e.innerText||'').trim(); return t === '解锁' || t.indexOf('认证') >= 0; })[0];
+    if (!b) return 'no-button:' + bs.map(function (e) { return (e.innerText||'').trim(); }).join('/');
+    if (b.disabled) return 'still-disabled';
+    b.click();
+    return 'ok clicked';
+  })()`, 12000)
+  if (!String(clicked).startsWith('ok ')) {
+    console.error(`[hier] ❌ 点解锁失败：${clicked}`)
+    return false
+  }
+  for (let i = 0; i < 20; i++) {
+    await sleep(1000)
+    s = await readScreen()
+    if (!String(s.body || '').includes(ON_UNLOCK)) break
+  }
+  if (String(s.body || '').includes(ON_UNLOCK)) {
+    console.error('[hier] ❌ 解锁后解锁屏仍在 —— 主口令不对或解锁未生效')
+    return false
+  }
+  console.log('[hier] 已解锁 ✅')
+  return true
+}
+
+if (!(await ensureUnlocked())) process.exit(6)
+
 await evNow(`location.hash=${JSON.stringify(HASH)}`)
 // ⚠️ 判据不能用「CDP 回读 location.hash」——实测那个回读会假阴性（evaluate 返回 null，
 //    但 /json/list 里 URL 明明已经是 #/tasks），差点让我以为导航失败。
@@ -174,10 +286,32 @@ if (readFileSync(RAW).length === 0) {
 }
 const buf = readFileSync(RAW)
 // 编码自证：认不出「登录」这类已知中文就说明猜错了编码，别把乱码当「页面上没有」。
-const text = new TextDecoder('gbk').decode(buf)
-const probes = ['登录', 'AI Work Mess', 'WebView']
-const hit = probes.filter((s) => text.includes(s))
-console.error(`[hier] GBK 解码探针命中 ${hit.length}/${probes.length}: ${hit.join(' / ') || '<无，可能不是登录页或编码不对>'}`)
+//
+// ⚠️ 2026-11-23 修：原实现**固定按 GBK 解**。那是给「中文 Windows」准备的，
+// 但同一段 JVM 输出在 macOS/Linux 上是 **UTF-8**——按 GBK 解会得到
+// 「AI 宸ュ叿」这种乱码。它不只是难看：乱码里含有 U+E0A6 之类的私用区字符，
+// 于是「页面上没有这个文案」这个**错误结论**被坐实，人会去 Vue 模板里
+// 猜一个不存在的 placeholder 写进 flow。
+//
+// ⇒ 改成**两种编码都试，用探针命中率高的那个**。探针本身也是自证：
+// 认不出「AI Work Mess / WebView」就说明两种都不对，如实报出来。
+const probes = ['AI Work Mess', 'WebView', '登录', '任务']
+function decodeWith(enc) {
+  try { return new TextDecoder(enc).decode(buf) } catch { return '' }
+}
+function score(t) { return probes.filter((s) => t.includes(s)).length }
+const candidates = [
+  { enc: 'utf-8', text: decodeWith('utf-8') },
+  { enc: 'gbk', text: decodeWith('gbk') },
+]
+candidates.sort((a, b) => score(b.text) - score(a.text))
+const chosen = candidates[0]
+const hit = probes.filter((s) => chosen.text.includes(s))
+console.error(`[hier] 编码判定：选 ${chosen.enc}（探针命中 ${hit.length}/${probes.length}: ${hit.join(' / ') || '<无，可能不是登录页或编码不对>'}）`)
+if (score(chosen.text) === 0) {
+  console.error(`[hier] ⚠️ 两种编码都没认出任何探针；下面打印的可能是乱码，别据此写 flow 选择器。`)
+}
+const text = chosen.text
 const jsonPath = RAW.replace(/\.json$/, '.utf8.json')
 writeFileSync(jsonPath, text, 'utf8')
 

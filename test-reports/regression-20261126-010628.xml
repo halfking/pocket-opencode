@@ -1,0 +1,8 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="Test Suite" device="pocket_clone" tests="1" failures="1" time="32.781" timestamp="2026-11-26T01:06:32">
+    <testcase id="regression-test-suite" name="regression-test-suite" classname="regression-test-suite" file=".maestro/regression-test-suite.yaml" time="32.758" timestamp="2026-11-26T01:06:32" status="ERROR">
+      <failure>Assertion is false: "解锁", enabled is visible</failure>
+    </testcase>
+  </testsuite>
+</testsuites>

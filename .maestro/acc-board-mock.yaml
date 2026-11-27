@@ -44,27 +44,27 @@ appId: com.kaixuan.opencode.pocket
 #    启动后立刻探测 → 两次 back → tapOn「首页」红 17.9s）。
 #    所以先等一个「页面内容已经渲染出来」的信号，再探测底部导航。
 - extendedWaitUntil:
-    visible: "首页|AI 工具|ACC 看板|Mock 演示模式|更多功能"
+    visible: ".*首页.*|.*AI 工具.*|.*ACC 看板.*|.*Mock 演示模式.*|.*更多功能.*"
     timeout: 60000
 - runFlow:
     when:
-      notVisible: "首页"
+      notVisible: "首页|Home"
     commands:
       - back
       - waitForAnimationToEnd:
           timeout: 3000
 - runFlow:
     when:
-      notVisible: "首页"
+      notVisible: "首页|Home"
     commands:
       - back
       - waitForAnimationToEnd:
           timeout: 3000
-- tapOn: "首页"
+- tapOn: "首页|Home"
 - extendedWaitUntil:
-    visible: "AI 工具"
+    visible: ".*AI 工具.*"
     timeout: 45000
-- tapOn: "更多"
+- tapOn: "更多|More"
 - scrollUntilVisible:
     element: { text: "ACC.*看板" }
     direction: DOWN
@@ -74,7 +74,7 @@ appId: com.kaixuan.opencode.pocket
     timeout: 2000
 - tapOn: { text: "ACC.*看板" }
 - extendedWaitUntil:
-    visible: "ACC 连接设置"
+    visible: ".*ACC 连接设置.*"
     timeout: 20000
 # 打开设置面板（每次都开）：「保存并刷新」会把演示状态复位到种子态
 # （审批一次就推进到 3/5，不复位则这条 flow 不可重放）。
@@ -82,21 +82,21 @@ appId: com.kaixuan.opencode.pocket
 # 只在 mock **没开**时才去勾它：已经开着还去点那个勾，会把它**关掉**。
 - runFlow:
     when:
-      notVisible: "Mock 演示模式 — 数据为内置样例.*"
+      notVisible: ".*Mock 演示模式 — 数据为内置样例.*.*"
     commands:
       - tapOn: "Mock 演示模式（不请求 ACC）"
 # 总是保存：保存 = 复位演示状态 + 刷新本页数据（mock 开关没变时不整页 reload，
 # 免得把登录态一起打掉）。
 - tapOn: "保存并刷新"
 - extendedWaitUntil:
-    visible: "Mock 演示模式 — 数据为内置样例.*"
+    visible: ".*Mock 演示模式 — 数据为内置样例.*.*"
     timeout: 30000
 - extendedWaitUntil:
     visible: "run-mock-7c1a.*"
     timeout: 20000
 - tapOn: "run-mock-7c1a.*"
 - extendedWaitUntil:
-    visible: "2/5 节点完成"
+    visible: ".*2/5 节点完成.*"
     timeout: 20000
 - assertVisible: "Mock 演示模式 — 数据为内置样例.*"
 - scrollUntilVisible:
@@ -110,7 +110,7 @@ appId: com.kaixuan.opencode.pocket
     timeout: 15000
 - tapOn: { text: "^审批$" }
 - extendedWaitUntil:
-    visible: "审批：实现"
+    visible: ".*审批：实现.*"
     timeout: 10000
 - tapOn: "提交"
 - scrollUntilVisible:
@@ -118,7 +118,7 @@ appId: com.kaixuan.opencode.pocket
     direction: UP
     timeout: 15000
 - extendedWaitUntil:
-    visible: "3/5 节点完成"
+    visible: ".*3/5 节点完成.*"
     timeout: 20000
 - scrollUntilVisible:
     element: { text: "审批已通过.*" }
@@ -128,7 +128,7 @@ appId: com.kaixuan.opencode.pocket
 - assertNotVisible: "审批：实现"
 - tapOn: "返回"
 - extendedWaitUntil:
-    visible: "ACC.*看板"
+    visible: ".*ACC.*看板.*"
     timeout: 15000
 - assertVisible: "3/5 节点完成.*"
 - assertVisible: "Mock 演示模式 — 数据为内置样例.*"

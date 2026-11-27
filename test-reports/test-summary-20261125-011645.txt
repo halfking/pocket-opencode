@@ -1,0 +1,15 @@
+═══════════════════════════════════════════════════════════════════
+OpenPocket Maestro 测试报告
+═══════════════════════════════════════════════════════════════════
+
+日期: 2026-11-25 01:16:45
+套件: smoke
+
+测试结果文件:
+  (无)
+
+日志文件:
+/Users/xutaohuang/workspace/ai-native-tools/client/openpocket/logs/maestro/openpocket-e2e-full-20261118.log
+/Users/xutaohuang/workspace/ai-native-tools/client/openpocket/logs/maestro/smoke-test-suite.log
+
+═══════════════════════════════════════════════════════════════════

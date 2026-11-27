@@ -9,19 +9,23 @@
       <h2 id="master-password-title">{{ title }}</h2>
       <p class="hint">{{ hintText }}</p>
       <p v-if="mode === 'unlock'" class="recovered" role="status">{{ recoveredNote }}</p>
-      <input v-model="password" type="password" :disabled="submitting"
+      <!-- ⚠ id 是给 Maestro 用的：无障碍树里这三个 input 的 hint 不同但
+ text 相同/为空，只能靠 resource-id 精确定位。坐标点击不可靠 ——
+           实测点 label 或坐标会落空，导致第一个框为空、提交报「主密码至少需要 8 位」。
+           与 LoginView 的 sso-direct-username / sso-direct-password 同一思路。 -->
+      <input id="master-password-input" v-model="password" type="password" :disabled="submitting"
         :autocomplete="restoreMode ? 'current-password' : 'new-password'"
         :placeholder="restoreMode ? t('settings.deviceBackupPassword') : '主密码（至少 8 位）'"
         :aria-label="restoreMode ? t('settings.deviceBackupPassword') : '主密码'" @keyup.enter="restoreMode && submit()" />
-      <input v-if="!restoreMode" v-model="confirm" type="password" autocomplete="new-password" placeholder="再次输入主密码" :disabled="submitting" @keyup.enter="submit" />
-      <input v-if="!restoreMode" v-model="hint" type="text" placeholder="密码提示（可选）" :disabled="submitting" />
+      <input v-if="!restoreMode" id="master-password-confirm" v-model="confirm" type="password" autocomplete="new-password" placeholder="再次输入主密码" :disabled="submitting" @keyup.enter="submit" />
+      <input v-if="!restoreMode" id="master-password-hint" v-model="hint" type="text" placeholder="密码提示（可选）" :disabled="submitting" />
       <p v-if="error" class="error" role="alert">{{ error }}</p>
       <div class="actions">
         <button v-if="canRestore" class="ghost" :disabled="submitting" @click="switchMode">
           {{ restoreMode ? t('settings.deviceBackupNewSetup') : t('settings.deviceBackupRestore') }}
         </button>
-        <button class="ghost" :disabled="submitting" @click="close">取消</button>
-        <button class="primary" :disabled="submitting" @click="submit">
+        <button class="ghost" id="master-password-cancel" :disabled="submitting" @click="close">取消</button>
+        <button class="primary" id="master-password-submit" :disabled="submitting" @click="submit">
           {{ submitting ? t('settings.deviceBackupWorking') : restoreMode ? t('settings.deviceBackupPick') : '确认' }}
         </button>
       </div>

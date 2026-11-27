@@ -1,0 +1,4 @@
+appId: com.kaixuan.opencode.pocket
+---
+# 最小化测试 - 仅启动应用
+- launchApp

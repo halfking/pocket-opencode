@@ -1,0 +1,225 @@
+appId: com.kaixuan.opencode.pocket
+---
+# ═══════════════════════════════════════════════════════════════════
+# 回归测试套件 (Regression Test Suite)
+# ═══════════════════════════════════════════════════════════════════
+# 
+# 用途：验证核心业务流程未受破坏
+# 执行时间：约 10-12 分钟
+# 覆盖范围：高频使用功能的端到端流程
+#
+# 测试场景：
+#   1. 笔记 CRUD 完整流程
+#   2. 任务创建与管理
+#   3. 邮件浏览与操作
+#   4. 闪卡学习流程
+#   5. 会议录制与转写
+#
+# ═══════════════════════════════════════════════════════════════════
+
+- launchApp:
+    clearState: false
+
+# 确保已登录
+- runFlow: _login.yaml
+
+- takeScreenshot: "regression-00-start"
+
+# ═══════════════════════════════════════════════════════════════════
+# 场景 1: 笔记完整流程
+# ═══════════════════════════════════════════════════════════════════
+
+- tapOn: "笔记|Notes"
+- extendedWaitUntil:
+    visible: ".*笔记.*|.*Notes.*"
+    timeout: 10000
+
+# ⚠️2026-11-26 实测（三个错都踩了一遍）：
+#  1. 这里原本点 "+"，但笔记页**没有文本为 "+" 的元素**——新建入口文案是
+#     「新建笔记 / New note」（notesHub.action.newNote）；
+#     且 Maestro 把选择器当正则，"+" 单独出现还是**非法正则** ⇒ 双重打不中。
+#  2. 中枢页上其实有**两个**创建入口：「新建笔记 / New note」和
+#     「录音记一笔 / Record a note」（notesHub.action.record）。
+#     两个都点得进同一个笔记编辑器 ⇒录音入口的存在性单独断言掉。
+#  3. 原 flow 写的「开始录音 / Start Recording」在两个 locale 下都**不存在**
+#     （录音按钮在编辑器内叫「语音输入」），录音相关另有 vad-*/auto-recording-* 流程覆盖。
+- assertVisible: "新建笔记|New note"
+- assertVisible: "录音记一笔|Record a note"
+
+- tapOn: "新建笔记|New note"
+- extendedWaitUntil:
+    visible: "标题"
+    timeout: 15000
+- assertVisible: ".*保存.*"
+
+# 输入笔记内容
+# ⚠️ 标题框是 UnifiedComposer 的 textarea，**空着的时候既没有 text 也没有
+#    placeholder 进无障碍树**（实测是 `class=android.widget.EditText text=""`），
+#    点 label「标题」也不会把焦点交给它（label 的 for 指向不存在的 id）。
+#    ⇒ 2026-11-26 给它加了 DOM id（NoteEditView 传 input-id="note-title-input"），
+#      用 `tapOn: { id: ... }` 命中，不再依赖坐标。
+- tapOn: { id: "note-title-input" }
+- inputText: "测试笔记 - Regression Test"
+
+# ⚠️⚠️ 关键：保存按钮的可用性看的是**正文**，不是标题——
+#    NoteEditView.vue 里 `canSave = computed(() => form.content.trim().length > 0)`。
+#    只填标题时「保存」是 enabled=false，点下去是个空操作，
+#    编辑器纹丝不动（实测卡在这一步）。所以正文也必须填。
+- tapOn: { id: "note-content-input" }
+- inputText: "回归测试正文内容"
+
+- takeScreenshot: "regression-01-note-created"
+
+# 保存
+- tapOn: "保存|Save"
+- extendedWaitUntil:
+    notVisible: ".*语音录入.*|.*全屏编辑.*"
+    timeout: 30000
+
+# 验证笔记列表
+# ⚠️ Maestro 的文本匹配是**全串匹配**（Regex.matches），不是子串包含。
+#    笔记行的无障碍文本是**整行拼在一起**的：
+#    "测试笔记 - Regression Test 回归测试正文内容 Notes just now"
+#    ⇒ 写 "测试笔记" 匹配不上，必须写成 ".*测试笔记.*"。
+- assertVisible: ".*测试笔记.*"
+- takeScreenshot: "regression-02-note-saved"
+
+# 打开笔记详情
+- tapOn: ".*测试笔记.*"
+- extendedWaitUntil:
+    visible: ".*"
+    timeout: 5000
+- takeScreenshot: "regression-03-note-detail"
+
+# 返回
+# ⚠️ 原来这里是 tapOn { point: "5%,5%" } 想「回上一页」，但 5%,5% 是
+#    **左上角汉堡按钮**（打开菜单抽屉）——抽屉一盖住，后面所有点击全落空。
+#    回退用 BACK，语义才对（关掉当前最上层）。
+- pressKey: BACK
+
+# ═══════════════════════════════════════════════════════════════════
+# 场景 2: 任务创建流程
+# ═══════════════════════════════════════════════════════════════════
+
+- tapOn: "^首页$|^Home$|^AI$"
+- extendedWaitUntil:
+    visible: ".*"
+    timeout: 2000
+
+- tapOn: "快速提问"
+- extendedWaitUntil:
+    visible: "快速提问"
+    timeout: 15000
+
+# 输入任务描述
+# ⚠️ 必须先点输入框再 inputText：不点就没有焦点，
+#合成输入直接丢进虚空（按钮的 disabled 状态不会变，点「提问」也是空操作）。
+#    输入框是 UnifiedComposer 的 textarea，空着时无障碍树里既没 text 也没
+#    placeholder ⇒ 2026-11-26 给它加了 DOM id（quick-prompt-input）按 id 命中。
+- tapOn: { id: "quick-prompt-input" }
+- inputText: "测试任务：验证功能正常"
+
+# 提交
+# ⚠️ 快速提问面板的提交按钮文案是 **「提问」**（TasksView 里 submit-label="提问"），
+#    原 flow 写的「提交 / Submit」在页面上**根本不存在**（那个文案属于
+#    ApprovalModal / HandoffDialog 之类的别的弹窗）。
+- tapOn: "提问"
+- extendedWaitUntil:
+    visible: ".*"
+    timeout: 15000
+
+- takeScreenshot: "regression-04-task-created"
+
+# 返回
+# ⚠️ 原来这里是 tapOn { point: "5%,5%" } 想「回上一页」，但 5%,5% 是
+#    **左上角汉堡按钮**（打开菜单抽屉）——抽屉一盖住，后面所有点击全落空。
+- pressKey: BACK
+
+# ═══════════════════════════════════════════════════════════════════
+# 场景 3: 邮件浏览
+# ═══════════════════════════════════════════════════════════════════
+
+- tapOn: "更多|More"
+- extendedWaitUntil:
+    visible: ".*"
+    timeout: 1000
+
+- tapOn: "邮箱|Email"
+- extendedWaitUntil:
+    visible: ".*"
+    timeout: 3000
+
+- takeScreenshot: "regression-05-email-list"
+
+# 如果有邮件，打开第一封
+- runFlow:
+    when:
+      visible: ".*@.*"
+    commands:
+      - tapOn:
+          index: 0
+      - extendedWaitUntil:
+          visible: ".*"
+          timeout: 2000
+      - takeScreenshot: "regression-06-email-detail"
+      - tapOn:
+          point: "5%,5%"
+      - extendedWaitUntil:
+          visible: ".*"
+          timeout: 1000
+
+# 返回
+- tapOn:
+    point: "5%,5%"
+- extendedWaitUntil:
+    visible: ".*"
+    timeout: 1000
+
+# ═══════════════════════════════════════════════════════════════════
+# 场景 4: 闪卡学习
+# ═══════════════════════════════════════════════════════════════════
+
+- tapOn: "更多|More"
+- extendedWaitUntil:
+    visible: ".*"
+    timeout: 1000
+
+- scroll
+- runFlow:
+    when:
+      visible: ".*闪卡.*|.*Flashcards.*"
+    commands:
+      - tapOn: "闪卡|Flashcards"
+      - extendedWaitUntil:
+          visible: ".*"
+          timeout: 3000
+      - takeScreenshot: "regression-07-flashcards"
+      - tapOn:
+          point: "5%,5%"
+      - extendedWaitUntil:
+          visible: ".*"
+          timeout: 1000
+
+# ═══════════════════════════════════════════════════════════════════
+# 场景 5: 消息中心
+# ═══════════════════════════════════════════════════════════════════
+
+- tapOn: "消息|Messages"
+- extendedWaitUntil:
+    visible: ".*"
+    timeout: 2000
+- takeScreenshot: "regression-08-messages"
+
+# ═══════════════════════════════════════════════════════════════════
+# 最终验证
+# ═══════════════════════════════════════════════════════════════════
+
+- tapOn: "^首页$|^Home$|^AI$"
+- extendedWaitUntil:
+    visible: ".*AI 工具.*"
+    timeout: 10000
+
+- assertVisible: ".*快速提问.*"
+- assertNotVisible: "密码登录"
+
+- takeScreenshot: "regression-99-complete"

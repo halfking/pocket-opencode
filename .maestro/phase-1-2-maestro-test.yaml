@@ -2,13 +2,23 @@ appId: com.kaixuan.opencode.pocket
 
 commands:
   - launchApp
-  - wait: 3000
-  - tapOn: "笔记"
-  - wait: 2000
-  - tapOn: "+"
-  - wait: 1000
+  - extendedWaitUntil:
+      visible: ".*"
+      timeout: 3000
+  - tapOn: "笔记|Notes"
+  - extendedWaitUntil:
+      visible: ".*"
+      timeout: 2000
+  - tapOn: "\\+"
+  - extendedWaitUntil:
+      visible: ".*"
+      timeout: 1000
   - tapOn: "开始录音"
-  - wait: 15000
+  - extendedWaitUntil:
+      visible: ".*"
+      timeout: 15000
   - tapOn: "停止录音"
-  - wait: 3000
+  - extendedWaitUntil:
+      visible: ".*"
+      timeout: 3000
   - takeScreenshot: phase-test-result.png

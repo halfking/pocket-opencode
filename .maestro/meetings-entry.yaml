@@ -36,7 +36,7 @@ appId: com.kaixuan.opencode.pocket
 #    于是让这条恢复动作不致命，真正的门交给紧随其后的 extendedWaitUntil(30s)。
 - runFlow:
     when:
-      notVisible: "AI 工具"
+      notVisible: ".*AI 工具.*"
     commands:
       - tapOn:
           text: "返回"
@@ -44,7 +44,7 @@ appId: com.kaixuan.opencode.pocket
       - waitForAnimationToEnd:
           timeout: 3000
 - extendedWaitUntil:
-    visible: "AI 工具"
+    visible: ".*AI 工具.*"
     timeout: 30000
 - assertVisible: "AI 工具"
 - assertNotVisible: "密码登录"
@@ -74,25 +74,25 @@ appId: com.kaixuan.opencode.pocket
 #   另：这个按钮是**纯图标**（内含 <span class="material-symbols-outlined">mic</span>，
 #   aria-hidden），所以可见文本只有 aria-label 这一条路。
 - tapOn:
-    text: "笔记|Notes"
+    text: ".*笔记.*|.*Notes.*"
     retryTapIfNoChange: true
 - extendedWaitUntil:
-    visible: "开始会议|Start meeting"
+    visible: ".*开始会议.*|.*Start meeting.*"
     timeout: 40000
 # MIUI 会吞掉底部导航 tap（报 COMPLETED 但界面没动）——补点一次。
 - runFlow:
     when:
-      notVisible: "开始会议|Start meeting"
+      notVisible: ".*开始会议.*|.*Start meeting.*"
     commands:
       - tapOn:
-          text: "笔记|Notes"
+          text: ".*笔记.*|.*Notes.*"
       - waitForAnimationToEnd:
           timeout: 3000
 - extendedWaitUntil:
-    visible: "开始会议|Start meeting"
+    visible: ".*开始会议.*|.*Start meeting.*"
     timeout: 30000
 - tapOn:
-    text: "开始会议|Start meeting"
+    text: ".*开始会议.*|.*Start meeting.*"
     retryTapIfNoChange: true
 
 # ---------- 2. 会议录音页 ----------
@@ -136,7 +136,7 @@ appId: com.kaixuan.opencode.pocket
 # 优先选「仅在使用中允许」：录音要持续一会儿，「本次使用允许」在某些 ROM 上
 # 会在录音中途被撤销。
 - tapOn:
-    text: "仅在使用中允许"
+    text: ".*仅在使用中允许.*"
     optional: true
 - tapOn:
     text: ".*允许.*"
@@ -152,11 +152,11 @@ appId: com.kaixuan.opencode.pocket
 # （该子流程自己的注释第 12-15 行就记着「这次是在 flow 中段」）。
 # ⇒ 这里就地再清一次，与上面权限框同一处理。
 - tapOn:
-    text: "我知道了"
+    text: ".*我知道了.*"
     optional: true
 
 - extendedWaitUntil:
-    visible: "会议详情"
+    visible: ".*会议详情.*"
     timeout: 40000
 
 # ⚠️ 2026-10-03 15:45 实测修正：等「开始录音」红了 68s。
@@ -234,6 +234,6 @@ appId: com.kaixuan.opencode.pocket
 #       这里直接用**宿主页自己**的 dock 按钮，省掉一次导航。
 - tapOn: "停止录音"
 - extendedWaitUntil:
-    visible: "开始录音"
+    visible: ".*开始录音.*"
     timeout: 30000
 - assertNotVisible: "停止录音"

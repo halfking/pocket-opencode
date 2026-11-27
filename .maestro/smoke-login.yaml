@@ -48,7 +48,7 @@ appId: com.kaixuan.opencode.pocket
 ---
 # 登录后的落点：/ai → TasksView，标题由路由 meta 提供
 - extendedWaitUntil:
-    visible: "AI 工具"
+    visible: ".*AI 工具.*"
     timeout: 45000
 - assertVisible: "AI 工具"
 

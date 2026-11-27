@@ -13,70 +13,105 @@ appId: com.kaixuan.opencode.pocket
 - tapOn: "密码登录"
 - inputText: "admin"
 - tapOn:
-    text: "输入 密码"
+    text: ".*输入 密码.*"
 - inputText: "Veritrans&9527"
 - tapOn: "登录"
 
-- wait: 10000
+- extendedWaitUntil:
+    visible: ".*"
+    timeout: 10000
 - takeScreenshot: "01-after-login"
 
 # === NAVIGATION TEST ===
-- tapOn: "首页"
-- wait: 2000
+- tapOn: "首页|Home"
+- extendedWaitUntil:
+    visible: ".*"
+    timeout: 2000
 - takeScreenshot: "02-home-tab"
 
-- tapOn: "笔记"
-- wait: 2000
+- tapOn: "笔记|Notes"
+- extendedWaitUntil:
+    visible: ".*"
+    timeout: 2000
 - takeScreenshot: "03-notes-tab"
 
-- tapOn: "消息"
-- wait: 2000
+- tapOn: "消息|Messages"
+- extendedWaitUntil:
+    visible: ".*"
+    timeout: 2000
 - takeScreenshot: "04-messages-tab"
 
-- tapOn: "更多"
-- wait: 2000
+- tapOn: "更多|More"
+- extendedWaitUntil:
+    visible: ".*"
+    timeout: 2000
 - takeScreenshot: "05-more-tab"
 
 # === SETTINGS TEST ===
 - tapOn: "设置"
-- wait: 2000
+- extendedWaitUntil:
+    visible: ".*"
+    timeout: 2000
 - takeScreenshot: "06-settings-view"
 - back
-- wait: 1000
+- extendedWaitUntil:
+    visible: ".*"
+    timeout: 1000
 
 # === EMAIL TEST ===
-- tapOn: "更多"
-- wait: 1000
+- tapOn: "更多|More"
+- extendedWaitUntil:
+    visible: ".*"
+    timeout: 1000
 - tapOn: "邮箱"
-- wait: 3000
+- extendedWaitUntil:
+    visible: ".*"
+    timeout: 3000
 - takeScreenshot: "07-email-view"
 - back
-- wait: 1000
+- extendedWaitUntil:
+    visible: ".*"
+    timeout: 1000
 
 # === NOTES & RECORDING TEST ===
-- tapOn: "笔记"
-- wait: 2000
-- tapOn: "+"
-- wait: 2000
+- tapOn: "笔记|Notes"
+- extendedWaitUntil:
+    visible: ".*"
+    timeout: 2000
+- tapOn: "\\+"
+- extendedWaitUntil:
+    visible: ".*"
+    timeout: 2000
 - takeScreenshot: "08-note-create"
 
 - tapOn: "开始录音"
-- wait: 5000
+- extendedWaitUntil:
+    visible: ".*"
+    timeout: 5000
 - tapOn: "停止录音"
-- wait: 3000
+- extendedWaitUntil:
+    visible: ".*"
+    timeout: 3000
 - takeScreenshot: "09-recording-complete"
 - back
-- wait: 1000
+- extendedWaitUntil:
+    visible: ".*"
+    timeout: 1000
 
 # === ACC/TASKS TEST ===
-- tapOn: "更多"
-- wait: 1000
-- scroll:
-    direction: DOWN
-- wait: 1000
+- tapOn: "更多|More"
+- extendedWaitUntil:
+    visible: ".*"
+    timeout: 1000
+- scroll
+- extendedWaitUntil:
+    visible: ".*"
+    timeout: 1000
 - takeScreenshot: "10-more-scrolled"
 
 # Final state
-- tapOn: "首页"
-- wait: 2000
+- tapOn: "首页|Home"
+- extendedWaitUntil:
+    visible: ".*"
+    timeout: 2000
 - takeScreenshot: "11-final-home"

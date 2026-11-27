@@ -1,0 +1,137 @@
+appId: com.kaixuan.opencode.pocket
+---
+# ═══════════════════════════════════════════════════════════════════
+# 财务记账测试 (Finance Accounting Test)
+# ═══════════════════════════════════════════════════════════════════
+# 
+# 用途：测试财务记账功能
+# 执行时间：约 4-6 分钟
+# 覆盖范围：账目浏览、统计查看
+#
+# 测试场景：
+#   1. 进入财务模块
+#   2. 查看账目列表
+#   3. 查看统计信息
+#   4. 筛选账目
+#   5. 查看详情
+#
+# ═══════════════════════════════════════════════════════════════════
+
+- launchApp:
+    clearState: false
+
+# 确保已登录
+- runFlow: _login.yaml
+
+- takeScreenshot: "finance-00-start"
+
+# ═══════════════════════════════════════════════════════════════════
+# 场景 1: 进入财务模块
+# ═══════════════════════════════════════════════════════════════════
+
+- tapOn: "更多|More"
+- extendedWaitUntil:
+    visible: ".*"
+    timeout: 2000
+
+- scroll
+- runFlow:
+    when:
+      visible: ".*财务.*|.*Finance.*"
+    commands:
+      - tapOn: "财务|Finance"
+      - extendedWaitUntil:
+          visible: ".*"
+          timeout: 3000
+      - takeScreenshot: "finance-01-entry"
+
+# 如果没找到，返回首页重试
+- runFlow:
+    when:
+      notVisible: ".*财务.*|.*Finance.*"
+    commands:
+      - tapOn: "^首页$|^Home$|^AI$"
+      - extendedWaitUntil:
+          visible: ".*"
+          timeout: 1000
+
+# ═══════════════════════════════════════════════════════════════════
+# 场景 2: 查看账目列表
+# ═══════════════════════════════════════════════════════════════════
+
+- extendedWaitUntil:
+    visible: ".*"
+    timeout: 2000
+- takeScreenshot: "finance-02-list"
+
+# 滚动查看更多
+- scroll
+- extendedWaitUntil:
+    visible: ".*"
+    timeout: 1000
+
+- takeScreenshot: "finance-03-scrolled"
+
+# ═══════════════════════════════════════════════════════════════════
+# 场景 3: 查看统计信息
+# ═══════════════════════════════════════════════════════════════════
+
+- runFlow:
+    when:
+      visible: ".*统计.*|.*Statistics.*"
+    commands:
+      - tapOn: "统计|Statistics"
+      - extendedWaitUntil:
+          visible: ".*"
+          timeout: 2000
+      - takeScreenshot: "finance-04-statistics"
+
+# ═══════════════════════════════════════════════════════════════════
+# 场景 4: 筛选功能
+# ═══════════════════════════════════════════════════════════════════
+
+- runFlow:
+    when:
+      visible: ".*筛选.*|.*Filter.*"
+    commands:
+      - tapOn: "筛选|Filter"
+      - extendedWaitUntil:
+          visible: ".*"
+          timeout: 2000
+      - takeScreenshot: "finance-05-filter"
+      - tapOn:
+          point: "5%,5%"
+      - extendedWaitUntil:
+          visible: ".*"
+          timeout: 1000
+
+# ═══════════════════════════════════════════════════════════════════
+# 场景 5: 查看账目详情（如果有数据）
+# ═══════════════════════════════════════════════════════════════════
+
+- runFlow:
+    when:
+      visible: "¥|￥|CNY"
+    commands:
+      - tapOn:
+          index: 0
+      - extendedWaitUntil:
+          visible: ".*"
+          timeout: 2000
+      - takeScreenshot: "finance-06-detail"
+      - tapOn:
+          point: "5%,5%"
+      - extendedWaitUntil:
+          visible: ".*"
+          timeout: 1000
+
+# ═══════════════════════════════════════════════════════════════════
+# 最终验证
+# ═══════════════════════════════════════════════════════════════════
+
+- tapOn: "^首页$|^Home$|^AI$"
+- extendedWaitUntil:
+    visible: ".*AI 工具.*"
+    timeout: 10000
+
+- takeScreenshot: "finance-99-complete"

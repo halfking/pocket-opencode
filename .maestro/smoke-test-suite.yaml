@@ -1,0 +1,129 @@
+appId: com.kaixuan.opencode.pocket
+---
+# ═══════════════════════════════════════════════════════════════════
+# 冒烟测试套件 (Smoke Test Suite)
+# ═══════════════════════════════════════════════════════════════════
+# 
+# 用途：快速验证应用核心路径是否可用
+# 执行时间：约 3-5 分钟
+# 覆盖范围：登录 + 主要导航 + 核心功能入口
+#
+# ═══════════════════════════════════════════════════════════════════
+
+- launchApp:
+    clearState: true
+
+# 等待应用启动
+- extendedWaitUntil:
+    visible: ".*AI Work Mess.*|.*AI 工具.*"
+    timeout: 60000
+
+# 执行登录
+- runFlow: _login.yaml
+
+- takeScreenshot: "smoke-01-logged-in"
+
+# ═══════════════════════════════════════════════════════════════════
+# 核心导航验证
+# ═══════════════════════════════════════════════════════════════════
+
+# 验证首页
+- assertVisible: ".*AI 工具.*"
+- assertVisible: ".*快速提问.*"
+
+# 验证笔记
+- tapOn: "笔记|Notes"
+- extendedWaitUntil:
+    visible: ".*"
+    timeout: 2000
+- assertVisible: "笔记|Notes"
+- takeScreenshot: "smoke-02-notes"
+
+# 验证消息
+- tapOn: "消息|Messages"
+- extendedWaitUntil:
+    visible: ".*"
+    timeout: 2000
+- assertVisible: "消息|Messages"
+- takeScreenshot: "smoke-03-messages"
+
+# 验证更多
+- tapOn: "更多|More"
+- extendedWaitUntil:
+    visible: ".*"
+    timeout: 2000
+- assertVisible: "更多|More"
+- takeScreenshot: "smoke-04-more"
+
+# 返回首页
+- tapOn: "^首页$|^Home$|^AI$"
+- extendedWaitUntil:
+    visible: ".*"
+    timeout: 2000
+- assertVisible: ".*AI 工具.*"
+
+# ═══════════════════════════════════════════════════════════════════
+# 核心功能快速测试
+# ═══════════════════════════════════════════════════════════════════
+
+# 测试快速提问入口
+- tapOn: "快速提问"
+- extendedWaitUntil:
+    visible: ".*提问.*"
+    timeout: 15000
+- takeScreenshot: "smoke-05-quick-question"
+# ⚠️2026-11-26 实测：原来这里是 tapOn { point: "5%,5%" } 想「关掉面板」，
+#    但 5%,5% 命中的正是左上角的**汉堡按钮**（打开菜单抽屉），
+#    于是抽屉盖住整个页面，后续 tapOn 全部打在抽屉上 → 页面纹丝不动，
+#    最后报 "Element not found: \+"。
+#    关弹层/抽屉用 BACK 才语义正确（关的是当前最上层），坐标点没有这个语义。
+- pressKey: BACK
+# ⚠️ 抽屉关没关，不能用 "Menu" 判断——抽屉标题就叫 Menu，
+#    而**汉堡按钮的 aria-label 是 "Open menu"**，Maestro 的正则匹配忽略大小写，
+#    ⇒ `notVisible: ".*Menu.*"` 永远为假（"Open menu" 一直都在）。
+#    改用抽屉**专属**的一行文案：账户入口「查看账户与设置 / View account & settings」。
+- extendedWaitUntil:
+    notVisible: "查看账户与设置|View account & settings"
+    timeout: 15000
+
+# 测试笔记创建入口
+- tapOn: "笔记|Notes"
+# ⚠️ 原来写 visible: ".*" + timeout 1000 —— ".*" 能匹配页面上**任何**文本，
+#    这个 wait 等于没等，页面还没切完就往下点了。改成等一个页面特征文案。
+- extendedWaitUntil:
+    visible: "新建笔记|New note"
+    timeout: 15000
+# ⚠️2026-11-26 实测：这里原本点 "+"，但笔记页没有文本为 "+" 的元素——
+#    新建入口的文案是「新建笔记 / New note」（notesHub.action.newNote）。
+#    Maestro 把选择器当正则，"+" 单独出现还是非法正则 ⇒ 双重打不中。
+# 笔记中枢页上有**两个**创建入口：新建笔记（编辑器）与录音记一笔（录音）。
+# 两者文案都走 i18n（notesHub.action.newNote / notesHub.action.record），故中英并列。
+- assertVisible: "新建笔记|New note"
+- assertVisible: "录音记一笔|Record a note"
+- takeScreenshot: "smoke-06-notes-entries"
+# 打开新建笔记编辑器。注意：编辑器的「标题」「保存」是 NoteEditView.vue 里
+# **硬编码中文**（不走 i18n），所以这里只写中文。
+- tapOn: "新建笔记|New note"
+- extendedWaitUntil:
+    visible: "标题"
+    timeout: 15000
+- assertVisible: ".*保存.*"
+- takeScreenshot: "smoke-07-note-editor"
+- pressKey: BACK
+- extendedWaitUntil:
+    notVisible: ".*语音录入.*|.*全屏编辑.*"
+    timeout: 15000
+
+# ═══════════════════════════════════════════════════════════════════
+# 最终验证
+# ═══════════════════════════════════════════════════════════════════
+
+- tapOn: "^首页$|^Home$|^AI$"
+- extendedWaitUntil:
+    visible: ".*AI 工具.*"
+    timeout: 10000
+
+- assertVisible: ".*快速提问.*"
+- assertNotVisible: "密码登录"
+
+- takeScreenshot: "smoke-99-complete"

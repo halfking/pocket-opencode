@@ -1,0 +1,8 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="Test Suite" device="pocket_clone" tests="1" failures="1" time="102.614" timestamp="2026-11-26T01:43:19">
+    <testcase id="regression-test-suite" name="regression-test-suite" classname="regression-test-suite" file=".maestro/regression-test-suite.yaml" time="102.587" timestamp="2026-11-26T01:43:19" status="ERROR">
+      <failure>Element not found: Id matching regex: quick-prompt-input</failure>
+    </testcase>
+  </testsuite>
+</testsuites>

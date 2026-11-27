@@ -38,18 +38,18 @@ appId: com.kaixuan.opencode.pocket
 #（Maestro 2.11 实测报 `Unknown Property: timeout`），而 extendedWaitUntil
 # 原生带 timeout，加 optional 后两者兼得。
 - extendedWaitUntil:
-    visible: "我知道了"
+    visible: ".*我知道了.*"
     timeout: 5000
     optional: true
 - tapOn:
-    text: "我知道了"
+    text: ".*我知道了.*"
     optional: true
 
 # MIUI 另有「允许通知」等一次性系统弹，同类处理。
 - extendedWaitUntil:
-    visible: "允许|Allow"
+    visible: ".*允许.*|.*Allow.*"
     timeout: 5000
     optional: true
 - tapOn:
-    text: "允许|Allow"
+    text: ".*允许.*|.*Allow.*"
     optional: true

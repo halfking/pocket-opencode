@@ -17,9 +17,9 @@ appId: com.kaixuan.opencode.pocket
 #    所以回到任务看板必须**显式点底部导航的「首页」**，不能假设已在 #/ai。
 #    实测踩过：探针直接 tapOn "+ 新任务"，报 Element not found，
 #    而失败现场导出的树里页面标题是「会议」——是导航位置不对，不是选择器错。
-- tapOn: "首页"
+- tapOn: "首页|Home"
 - extendedWaitUntil:
-    visible: "\\+ 新任务"
+    visible: ".*\\+ 新任务.*"
     timeout: 30000
 
 # ⚠️ 2026-10-01 12:20~12:35 单变量实验：
@@ -38,10 +38,10 @@ appId: com.kaixuan.opencode.pocket
 #    闪卡建卡组那次就是这样——状态全对但 form 没 submit，后端连请求都没收到。
 #    加 retryTapIfNoChange 让它「没变化就再点一次」。
 - tapOn:
-    text: "\\+ 新任务"
+    text: ".*\\+ 新任务.*"
     retryTapIfNoChange: true
 - extendedWaitUntil:
-    visible: "创建任务"
+    visible: ".*创建任务.*"
     timeout: 20000
 - assertVisible: "创建任务"
 

@@ -1,0 +1,8 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="Test Suite" device="pocket_clone" tests="1" failures="1" time="88.19" timestamp="2026-11-26T01:34:07">
+    <testcase id="regression-test-suite" name="regression-test-suite" classname="regression-test-suite" file=".maestro/regression-test-suite.yaml" time="88.167" timestamp="2026-11-26T01:34:07" status="ERROR">
+      <failure>Assertion is false: "测试笔记" is visible</failure>
+    </testcase>
+  </testsuite>
+</testsuites>

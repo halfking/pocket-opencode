@@ -12,7 +12,7 @@ appId: com.kaixuan.opencode.pocket
 # 等待20秒，让用户说话并观察转写延迟
 - runFlow:
     when:
-      visible: "录音中"
+      visible: ".*录音中.*"
     commands:
       - inputText: "Phase 1 VAD testing - please speak naturally"
       - extendedWaitUntil:

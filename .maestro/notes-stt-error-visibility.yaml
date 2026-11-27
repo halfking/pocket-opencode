@@ -135,14 +135,14 @@ appId: com.kaixuan.opencode.pocket.sttdev
 #   （com.xiaomi.mibrain.speech/.asr.AsrRemovalNotice，logcat 实证）
 #   会在 App 起来后盖到前台。点掉它用 optional，点不到就跳过，不给别的 flow 添乱。
 - extendedWaitUntil:
-    visible: "我知道了"
+    visible: ".*我知道了.*"
     timeout: 6000
     optional: true
 - tapOn:
-    text: "我知道了"
+    text: ".*我知道了.*"
     optional: true
 - extendedWaitUntil:
-    visible: "还没有笔记|AI 工具|解锁本地数据|创建主密码"
+    visible: ".*还没有笔记.*|.*AI 工具.*|.*解锁本地数据.*|.*创建主密码.*"
     timeout: 40000
 
 # ---- 全新并存包首启会停在「创建主密码」，先把本地库建起来 ----
@@ -157,7 +157,7 @@ appId: com.kaixuan.opencode.pocket.sttdev
 #   按钮是「确认」。口令与下面的解锁分支用同一个值，库建好之后那边才命中。
 - runFlow:
     when:
-      visible: "创建主密码"
+      visible: ".*创建主密码.*"
     commands:
       - tapOn: "主密码（至少 8 位）"
       - inputText: "PocketStt9527"
@@ -166,7 +166,7 @@ appId: com.kaixuan.opencode.pocket.sttdev
       - hideKeyboard
       - tapOn: "确认"
       - extendedWaitUntil:
-          notVisible: "创建主密码"
+          notVisible: ".*创建主密码.*"
           timeout: 40000
 
 # ---- 冷启动可能停在主密码解锁页，先处理掉 ----
@@ -180,14 +180,14 @@ appId: com.kaixuan.opencode.pocket.sttdev
 #     误读成路由没跳转。
 - runFlow:
     when:
-      visible: "解锁本地数据"
+      visible: ".*解锁本地数据.*"
     commands:
       - tapOn: "主密码"
       - inputText: "PocketStt9527"
       - hideKeyboard
       - tapOn: "解锁"
       - extendedWaitUntil:
-          visible: "AI 工具|首页"
+          visible: ".*AI 工具.*|.*首页.*"
           timeout: 30000
 
 # ---- 进笔记页 → 进语音笔记列表页 ----
@@ -243,10 +243,10 @@ appId: com.kaixuan.opencode.pocket.sttdev
 #   [246,1570][294,1600] —— WebView 桥接把可点性挂在了父节点上，
 #   单次合成 tap 有时打不进去，retry 才补上。
 - tapOn:
-    text: "笔记|Notes"
+    text: ".*笔记.*|.*Notes.*"
     retryTapIfNoChange: true
 - extendedWaitUntil:
-    visible: "会议纪要"
+    visible: ".*会议纪要.*"
     timeout: 25000
 # 「全部笔记」是常驻入口（不在 v-if 里），空库也点得到 —— 这正是被修的那条。
 # 点它之前先断言它在：这一条断言就是「录音入口可达」的判据本体，
@@ -296,13 +296,13 @@ appId: com.kaixuan.opencode.pocket.sttdev
 # 优先选「仅在使用中允许」：录音要持续一会儿，「本次使用允许」在某些
 # ROM 上会在录音中途被撤销，导致转写刚起来就断。
 - tapOn:
-    text: "仅在使用中允许"
+    text: ".*仅在使用中允许.*"
     optional: true
 - tapOn:
     text: ".*允许.*"
     optional: true
 - extendedWaitUntil:
-    visible: "即时转写"
+    visible: ".*即时转写.*"
     timeout: 25000
 
 # 等一轮增量转写返回。STT 未配置时后端 1 秒内就回 503，
@@ -317,7 +317,7 @@ appId: com.kaixuan.opencode.pocket.sttdev
     text: ".*停止录音.*"
     retryTapIfNoChange: true
 - extendedWaitUntil:
-    notVisible: "即时转写"
+    notVisible: ".*即时转写.*"
     timeout: 30000
 
 # ---- 核心断言：停止后仍显示**可行动原因**，而不是通用兜底 ----

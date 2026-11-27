@@ -14,23 +14,23 @@ appId: com.kaixuan.opencode.pocket
 ---
 - runFlow: _login.yaml
 - extendedWaitUntil:
-    visible: "更多|More"
+    visible: ".*更多.*|.*More.*"
     timeout: 45000
 # retryTapIfNoChange：底部导航在 MIUI 上会「报 COMPLETED 但路由没跳」，
 # 与 more-grid-reach / more-entries-open 里记的是同一件事。
 - tapOn:
-    text: "更多|More"
+    text: ".*更多.*|.*More.*"
     retryTapIfNoChange: true
 - extendedWaitUntil:
-    visible: "更多功能"
+    visible: ".*更多功能.*"
     timeout: 30000
 - scrollUntilVisible:
     element:
-      text: "闪卡|Flashcards|Flashcard"
+      text: ".*闪卡.*|.*Flashcards.*|.*Flashcard.*"
     direction: DOWN
     timeout: 20000
 - tapOn:
-    text: "闪卡|Flashcards|Flashcard"
+    text: ".*闪卡.*|.*Flashcards.*|.*Flashcard.*"
     retryTapIfNoChange: true
 - extendedWaitUntil:
     visible: ".*回归卡组.*"

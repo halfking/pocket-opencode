@@ -44,14 +44,14 @@ appId: com.kaixuan.opencode.pocket
 ---
 # ---------- 0. 前置：harness 已真实登录，起点是 #/ai ----------
 - extendedWaitUntil:
-    visible: "AI 工具"
+    visible: ".*AI 工具.*"
     timeout: 60000
 - waitForAnimationToEnd:
     timeout: 15000
 
 # ---- 1. 打开「委托给 ACC」面板 ----
 - extendedWaitUntil:
-    visible: "委托 ACC"
+    visible: ".*委托 ACC.*"
     timeout: 40000
 - tapOn: "委托 ACC"
 - extendedWaitUntil:
@@ -63,10 +63,10 @@ appId: com.kaixuan.opencode.pocket
 #   option 的暴露有惰性（实测同一构建两轮一发过一发 3m46s 超时红）。
 #   ⇒ 改 extendedWaitUntil 有界等待，给 a11y 树刷新留窗口。
 - extendedWaitUntil:
-    visible: "派给哪个智能体（可选）"
+    visible: ".*派给哪个智能体（可选）.*"
     timeout: 15000
 - extendedWaitUntil:
-    visible: "自动选择当前可派的智能体"
+    visible: ".*自动选择当前可派的智能体.*"
     timeout: 15000
 
 # ---- 3. 填标题并提交 ----
@@ -119,7 +119,7 @@ appId: com.kaixuan.opencode.pocket
 # ⇒ 所以必须**先断言弹窗关掉了**，再断言卡片出现了。
 #   弹窗关闭后，屏上就不存在那个输入框 ⇒ 标题断言只可能命中任务卡片。
 - extendedWaitUntil:
-    notVisible: "ACC 会接管后续会话与执行.*"
+    notVisible: ".*ACC 会接管后续会话与执行.*.*"
     timeout: 60000
 
 # ---- 4. 新卡片出现（source=acc 的任务进了本地列表）----
@@ -160,7 +160,7 @@ appId: com.kaixuan.opencode.pocket
 #    而屏上任务列表已经空了 ⇒ 停止其实成功了）。
 #    ⇒ extendedWaitUntil 本身就是判据；下面第 ② 条才是持久状态。
 - extendedWaitUntil:
-    visible: "已停止"
+    visible: ".*已停止.*"
     timeout: 20000
 
 # ② 任务离开「运行中」列表：cancelled 不是 active ⇒ 它离开运行中区。
@@ -192,16 +192,16 @@ appId: com.kaixuan.opencode.pocket
 # ⚠ 「已结束」分区在长页面底部 ⇒ 不滚过去就不在无障碍树里 ⇒ 先滚。
 - scrollUntilVisible:
     element:
-      text: "已结束.*"
+      text: ".*已结束.*.*"
     direction: DOWN
     timeout: 120000
 - runFlow:
     when:
-      notVisible: "已完成|已取消|已失败"
+      notVisible: ".*已完成.*|.*已取消.*|.*已失败.*"
     commands:
       - tapOn: "已结束.*"
 - extendedWaitUntil:
-    visible: "已取消"
+    visible: ".*已取消.*"
     timeout: 60000
     optional: true
 - scrollUntilVisible:
@@ -210,6 +210,6 @@ appId: com.kaixuan.opencode.pocket
     direction: DOWN
     timeout: 120000
 - assertVisible:
-    text: "已取消"
+    text: ".*已取消.*"
     rightOf:
       text: "maestroAccStop"

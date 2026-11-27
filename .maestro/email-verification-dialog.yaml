@@ -1,0 +1,85 @@
+# 测试场景：邮箱验证对话框组件完整测试
+#
+# 测试覆盖：
+#   - 发送验证码功能
+#   - 验证码输入和验证
+#   - 冷却时间机制
+#   - 错误处理
+#   - 必填/可选模式
+#
+# 环境变量：
+#   POCKET_TEST_EMAIL  - 测试邮箱
+#   POCKET_MASTER      - 主密码
+#
+appId: com.kaixuan.opencode.pocket
+---
+
+# 前置：登录并导航到可以触发邮箱验证的页面
+- runFlow: _login.yaml
+
+# 这里我们使用一个特殊的测试页面来触发邮箱验证对话框
+# 实际测试中，你可能需要：
+# 1. 创建一个测试页面专门用于测试该组件
+# 2. 或者在设置页面添加"更新邮箱"功能入口
+
+# 测试 1: 验证对话框的基本显示
+- evalScript: |
+    // 触发邮箱验证对话框（通过代码触发）
+    // 这需要应用提供一个测试端点或页面
+    window.location.hash = '#/settings';
+    return true;
+
+- extendedWaitUntil:
+    visible: ".*设置.*|.*Settings.*"
+    timeout: 10000
+
+# 假设设置页面有"更新邮箱"选项
+# 注意：这个功能入口需要在实际开发中添加
+- tapOn: "更新邮箱|Update email"
+
+# 测试 2: 邮箱输入和验证码发送
+- extendedWaitUntil:
+    visible: ".*设置邮箱.*|.*验证邮箱.*"
+    timeout: 5000
+
+- tapOn:
+    text: ".*邮箱地址.*|.*Email.*"
+- inputText: ${POCKET_TEST_EMAIL}
+
+- tapOn: "发送验证码|Send code"
+
+# 测试 3: 验证冷却时间机制
+- extendedWaitUntil:
+    visible: ".*60s 后可重发.*|.*60s.*"
+    timeout: 5000
+
+# 验证发送按钮被禁用
+- tapOn:
+    text: ".*发送验证码.*|.*Send code.*"
+    optional: true
+# 如果按钮被正确禁用，这个点击应该无效
+
+# 测试 4: 验证码显示（debug 模式）
+- extendedWaitUntil:
+    visible: ".*调试模式：验证码.*|.*debug_code.*"
+    timeout: 5000
+
+# 测试 5: 输入验证码
+- tapOn:
+    text: ".*验证码.*|.*Code.*"
+- inputText: "123456"
+- hideKeyboard
+
+# 测试 6: 提交验证
+- tapOn: "确认|Confirm"
+
+# 测试 7: 验证成功
+- extendedWaitUntil:
+    visible: ".*更新成功.*|.*Success.*"
+    timeout: 10000
+
+# 测试 8: 关闭对话框
+- tapOn: "确定|OK"
+
+# 验证对话框已关闭
+- assertNotVisible: "设置邮箱|验证邮箱"

@@ -29,7 +29,7 @@ appId: com.kaixuan.opencode.pocket
 ---
 # ---------- 0. 前置：确认已登录并在 AI 工具页面 ----------
 - extendedWaitUntil:
-    visible: "AI 工具"
+    visible: ".*AI 工具.*"
     timeout: 45000
 - assertVisible: "AI 工具"
 - assertNotVisible: "密码登录"
@@ -48,23 +48,23 @@ appId: com.kaixuan.opencode.pocket
     text: ".*会议.*"
     index: 0
 - extendedWaitUntil:
-    visible: "录音|开始|记录"
+    visible: ".*录音.*|.*开始.*|.*记录.*"
     timeout: 20000
 
 # ---------- 3. 开始录音 ----------
 # 查找录音按钮（可能是"开始录音"、录音图标等）
 - tapOn:
-    text: "录音|开始|记录"
+    text: ".*录音.*|.*开始.*|.*记录.*"
     index: 0
 - extendedWaitUntil:
-    visible: "停止|暂停|正在录音"
+    visible: ".*停止.*|.*暂停.*|.*正在录音.*"
     timeout: 10000
 
 # ---------- 4. 等待字幕悬浮窗出现 ----------
 # Phase A 的核心功能：LiveSubtitleOverlay 应该自动显示
 # 等待字幕容器或相关元素出现
 - extendedWaitUntil:
-    visible: "实时字幕|字幕|翻译"
+    visible: ".*实时字幕.*|.*字幕.*|.*翻译.*"
     timeout: 15000
 
 # ---------- 5. 验证字幕悬浮窗基础功能 ----------
@@ -80,10 +80,10 @@ appId: com.kaixuan.opencode.pocket
 # 查找并点击翻译开关
 # 注意：UI 元素可能是开关、按钮或图标
 - tapOn:
-    text: "翻译|Translation"
+    text: ".*翻译.*|.*Translation.*"
     index: 0
 - extendedWaitUntil:
-    visible: "翻译|译文"
+    visible: ".*翻译.*|.*译文.*"
     timeout: 3000
 
 # 等待翻译内容出现（延迟应 < 2s）
@@ -93,7 +93,7 @@ appId: com.kaixuan.opencode.pocket
 # ---------- 7. 测试字号调整（如果UI中有） ----------
 # 查找字号调整按钮
 - tapOn:
-    text: "字号|大小|Size"
+    text: ".*字号.*|.*大小.*|.*Size.*"
     index: 0
     optional: true
 - waitForAnimationToEnd:
@@ -101,16 +101,16 @@ appId: com.kaixuan.opencode.pocket
 
 # ---------- 8. 停止录音 ----------
 - tapOn:
-    text: "停止|完成|结束"
+    text: ".*停止.*|.*完成.*|.*结束.*"
     index: 0
 - extendedWaitUntil:
-    visible: "导出|保存|分享"
+    visible: ".*导出.*|.*保存.*|.*分享.*"
     timeout: 10000
 
 # ---------- 9. 测试导出功能 ----------
 # 查找导出按钮
 - tapOn:
-    text: "导出|Export"
+    text: ".*导出.*|.*Export.*"
     index: 0
     optional: true
 - waitForAnimationToEnd:

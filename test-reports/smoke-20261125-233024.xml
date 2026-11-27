@@ -1,0 +1,8 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="Test Suite" device="pocket_clone" tests="1" failures="1" time="48.742" timestamp="2026-11-25T23:30:28">
+    <testcase id="smoke-test-suite" name="smoke-test-suite" classname="smoke-test-suite" file=".maestro/smoke-test-suite.yaml" time="48.726" timestamp="2026-11-25T23:30:28" status="ERROR">
+      <failure>Element not found: Text matching regex: 确认</failure>
+    </testcase>
+  </testsuite>
+</testsuites>

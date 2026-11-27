@@ -23,7 +23,7 @@ appId: com.kaixuan.opencode.pocket
 ---
 # ---------- 0. harness preflight 已真实登录，起点是 #/ai ----------
 - extendedWaitUntil:
-    visible: "AI 工具"
+    visible: ".*AI 工具.*"
     timeout: 45000
 - assertVisible: "AI 工具"
 - assertNotVisible: "密码登录"
@@ -33,28 +33,28 @@ appId: com.kaixuan.opencode.pocket
 #   在 settings-llm-gateway 上实测过，失败现场可访问性树仍停在首页）。
 #   retryTapIfNoChange 管第一次，runFlow 补点管第二次，两者都要。
 - extendedWaitUntil:
-    visible: "更多|More"
+    visible: ".*更多.*|.*More.*"
     timeout: 45000
 - tapOn:
-    text: "更多|More"
+    text: ".*更多.*|.*More.*"
     retryTapIfNoChange: true
 - extendedWaitUntil:
-    visible: "更多功能|MORE FEATURES"
+    visible: ".*更多功能.*|.*MORE FEATURES.*"
     timeout: 40000
 - runFlow:
     when:
-      notVisible: "更多功能|MORE FEATURES"
+      notVisible: ".*更多功能.*|.*MORE FEATURES.*"
     commands:
       # ⚠️ 2026-10-12：optional:true —— 与 more-grid-reach.yaml 同因。
       #    driver 重装会打断 App，step 0 取树时多半是空的 ⇒ notVisible 恒成立
       #    ⇒ 去点此刻不存在的「更多」而把 flow 打断。条件修不掉，让恢复动作不致命。
       - tapOn:
-          text: "更多|More"
+          text: ".*更多.*|.*More.*"
           optional: true
       - waitForAnimationToEnd:
           timeout: 3000
 - extendedWaitUntil:
-    visible: "更多功能|MORE FEATURES"
+    visible: ".*更多功能.*|.*MORE FEATURES.*"
     timeout: 30000
 
 # ---------- 2. 进「邮箱」 ----------
@@ -66,7 +66,7 @@ appId: com.kaixuan.opencode.pocket
 #   页面就绪信号改用收件箱自己就有的：分类 chip + 同步状态行。
 - tapOn: "邮箱|Email|Mail"
 - extendedWaitUntil:
-    visible: "全部|All"
+    visible: ".*全部.*|.*All.*"
     timeout: 40000
 # ⚠️ 2026-10-22 实测修正：原判据 `已同步|个账户|新邮件|下拉同步邮件` 等的是
 #   **两个瞬时**的东西 ⇒ 判据在等「此刻恰好不在」的节点。
@@ -80,7 +80,7 @@ appId: com.kaixuan.opencode.pocket
 #   ⚠️ 这些文案是**硬编码中文**（email-categories.ts:5-11，locales/en-US.json
 #   里没有对应条目）⇒ en-US 设备上也长这样 ⇒ **不必**补英文分支。
 - extendedWaitUntil:
-    visible: "未分类|重要|工作|账单|私人|通知"
+    visible: ".*未分类.*|.*重要.*|.*工作.*|.*账单.*|.*私人.*|.*通知.*"
     timeout: 40000
 
 # ---------- 3. 顶栏「更多」菜单 → 邮箱设置 ----------
@@ -95,9 +95,9 @@ appId: com.kaixuan.opencode.pocket
 #   菜单里那一项叫「邮箱设置」，而设置页自己的 <h2> 标题**也叫「邮箱设置」**
 #   （EmailSettingsView.vue:19）。用同名文本判到达，分不清是菜单项还是页面。
 #   改用「新增」——那是设置页 head-actions 里独有的按钮（EmailSettingsView.vue:22）。
-- tapOn: "更多"
+- tapOn: "更多|More"
 - extendedWaitUntil:
-    visible: "邮箱设置"
+    visible: ".*邮箱设置.*"
     timeout: 25000
 - tapOn: "邮箱设置"
 - extendedWaitUntil:

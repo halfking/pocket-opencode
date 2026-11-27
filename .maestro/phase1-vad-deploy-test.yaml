@@ -6,11 +6,11 @@ name: phase1-vad-deploy-test
 
 - launchApp
 - extendedWaitUntil:
-    visible: "更多"
+    visible: "更多|More"
     timeout: 15000
 
 # 1. 进入「更多」页
-- tapOn: "更多"
+- tapOn: "更多|More"
 - extendedWaitUntil:
     visible: "会议"
     timeout: 10000

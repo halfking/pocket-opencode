@@ -1,0 +1,8 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="Test Suite" device="nsverify" tests="1" failures="1" time="118.857" timestamp="2026-11-26T18:12:40">
+    <testcase id="master-test-suite" name="master-test-suite" classname="master-test-suite" file=".maestro/master-test-suite.yaml" time="118.841" timestamp="2026-11-26T18:12:40" status="ERROR">
+      <failure>Assertion is false: ".*打开菜单.*|.*创建主密码.*" is visible</failure>
+    </testcase>
+  </testsuite>
+</testsuites>

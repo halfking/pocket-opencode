@@ -1,0 +1,8 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="Test Suite" device="stremio_maestro" tests="1" failures="1" time="43.227" timestamp="2026-11-26T11:41:25">
+    <testcase id="smoke-test-suite" name="smoke-test-suite" classname="smoke-test-suite" file=".maestro/smoke-test-suite.yaml" time="43.21" timestamp="2026-11-26T11:41:25" status="ERROR">
+      <failure>Element not found: Id matching regex: master-password-input</failure>
+    </testcase>
+  </testsuite>
+</testsuites>

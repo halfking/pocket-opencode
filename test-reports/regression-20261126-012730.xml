@@ -1,0 +1,8 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="Test Suite" device="pocket_clone" tests="1" failures="1" time="101.145" timestamp="2026-11-26T01:27:35">
+    <testcase id="regression-test-suite" name="regression-test-suite" classname="regression-test-suite" file=".maestro/regression-test-suite.yaml" time="101.12" timestamp="2026-11-26T01:27:35" status="ERROR">
+      <failure>Assertion is false: ".*语音录入.*|.*全屏编辑.*" is not visible</failure>
+    </testcase>
+  </testsuite>
+</testsuites>

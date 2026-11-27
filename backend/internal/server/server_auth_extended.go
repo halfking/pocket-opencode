@@ -365,6 +365,127 @@ func (s *Server) handleAuthLogout(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
+// handleAuthChangePasswordWithCode — POST /api/auth/change-password-with-code
+//
+// 已登录用户通过邮箱验证码修改密码（无需旧密码）。
+// Body: {"email":"...", "code":"123456", "new_password":"..."}
+// 成功：200 {"ok": true}
+func (s *Server) handleAuthChangePasswordWithCode(w http.ResponseWriter, r *http.Request) {
+	if s.oidcRetiredLocalCredential(w, r) {
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "POST only")
+		return
+	}
+	if s.codeStore == nil || s.userStore == nil {
+		writeError(w, http.StatusServiceUnavailable, "change-password-with-code not enabled")
+		return
+	}
+	
+	// 获取当前登录用户
+	uid := s.userIDFromRequest(r)
+	if uid == "" {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	
+	var body struct {
+		Email       string `json:"email"`
+		Code        string `json:"code"`
+		NewPassword string `json:"new_password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	
+	if err := validatePassword(body.NewPassword); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	
+	// 验证验证码
+	if err := s.codeStore.Verify(r.Context(), body.Email, auth.PurposeReset, body.Code); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	
+	// 确认邮箱属于当前用户
+	u, err := s.userStore.GetUserByEmail(r.Context(), body.Email)
+	if err != nil || u.ID != uid {
+		writeError(w, http.StatusForbidden, "邮箱与当前用户不匹配")
+		return
+	}
+	
+	// 更新密码
+	if err := s.userStore.UpdatePasswordByEmail(r.Context(), body.Email, body.NewPassword); err != nil {
+		logging.Warnf("WARN: change-password-with-code update: %v", err)
+		writeError(w, http.StatusInternalServerError, "failed to update password")
+		return
+	}
+	
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// handleAuthUpdateEmail — POST /api/auth/update-email
+//
+// 已登录用户更新邮箱（需要验证码验证新邮箱所有权）。
+// Body: {"email":"...", "code":"123456"}
+// 成功：200 {"ok": true}
+func (s *Server) handleAuthUpdateEmail(w http.ResponseWriter, r *http.Request) {
+	if s.oidcRetiredLocalCredential(w, r) {
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "POST only")
+		return
+	}
+	if s.codeStore == nil || s.userStore == nil {
+		writeError(w, http.StatusServiceUnavailable, "update-email not enabled")
+		return
+	}
+	
+	// 获取当前登录用户
+	uid := s.userIDFromRequest(r)
+	if uid == "" {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	
+	var body struct {
+		Email string `json:"email"`
+		Code  string `json:"code"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	
+	// 验证验证码（使用 register purpose 验证新邮箱所有权）
+	if err := s.codeStore.Verify(r.Context(), body.Email, auth.PurposeRegister, body.Code); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	
+	// 检查新邮箱是否已被其他用户占用
+	existingUser, err := s.userStore.GetUserByEmail(r.Context(), body.Email)
+	if err == nil && existingUser.ID != uid {
+		writeError(w, http.StatusConflict, "该邮箱已被其他用户使用")
+		return
+	}
+	
+	// 更新用户邮箱
+	emailLower := strings.ToLower(strings.TrimSpace(body.Email))
+	if err := s.userStore.UpdateUserEmail(r.Context(), uid, emailLower); err != nil {
+		logging.Warnf("WARN: update-email: %v", err)
+		writeError(w, http.StatusInternalServerError, "failed to update email")
+		return
+	}
+	
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
 // handleAuthMe — GET /api/auth/me（一期新增：前端用它判断 token 状态）
 //
 // 返回当前 RedClaw employee 画像（id/name/role/email/...），前端用来

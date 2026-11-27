@@ -169,6 +169,28 @@ func (s *UserStore) UpdatePasswordByEmail(ctx context.Context, email, newPasswor
 	return nil
 }
 
+// UpdateUserEmail 更新用户邮箱（需要先验证新邮箱所有权）。
+func (s *UserStore) UpdateUserEmail(ctx context.Context, userID, newEmail string) error {
+	emailLower := strings.ToLower(strings.TrimSpace(newEmail))
+	if emailLower == "" {
+		return ErrEmailInvalid
+	}
+	cmd, err := s.pool.Exec(ctx, `
+		UPDATE users SET email = $1, email_verified = true WHERE id = $2
+	`, emailLower, userID)
+	if err != nil {
+		// 邮箱唯一约束冲突
+		if strings.Contains(err.Error(), "duplicate") || strings.Contains(err.Error(), "unique") || strings.Contains(err.Error(), "23505") {
+			return ErrEmailAlreadyExists
+		}
+		return fmt.Errorf("failed to update email: %w", err)
+	}
+	if cmd.RowsAffected() == 0 {
+		return ErrUserNotFound
+	}
+	return nil
+}
+
 // CountUsers 返回 users 表行数（用于 bootstrap 检测）。
 func (s *UserStore) CountUsers(ctx context.Context) (int, error) {
 	var count int

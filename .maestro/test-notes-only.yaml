@@ -1,0 +1,34 @@
+appId: com.kaixuan.opencode.pocket
+env:
+  MASTER_PASSWORD: ${POCKET_MASTER}
+  DEV_PASSWORD: ${POCKET_DEV_PASS}
+---
+# 仅测试笔记功能（不经过快速提问）
+
+- clearState
+- launchApp
+- runFlow: _login.yaml
+- takeScreenshot: "notes-only-00-login-complete"
+
+# 直接测试笔记（完全复制 Smoke 测试的成功流程）
+- tapOn: "笔记|Notes"
+- extendedWaitUntil:
+    visible: "新建笔记|New note"
+    timeout: 15000
+- assertVisible: "新建笔记|New note"
+- takeScreenshot: "notes-only-01-notes-list"
+
+# 创建新笔记
+- tapOn: "新建笔记|New note"
+- extendedWaitUntil:
+    visible: "标题"
+    timeout: 15000
+- assertVisible: ".*保存.*"
+- takeScreenshot: "notes-only-02-note-editor"
+
+# 返回
+- pressKey: BACK
+- extendedWaitUntil:
+    notVisible: ".*语音录入.*|.*全屏编辑.*"
+    timeout: 15000
+- takeScreenshot: "notes-only-03-back"

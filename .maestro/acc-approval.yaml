@@ -68,7 +68,7 @@ appId: com.kaixuan.opencode.pocket
 ---
 # ---------- 0. 前置：夹具已造出「正在等审批」的派单，起点是 #/ai ----------
 - extendedWaitUntil:
-    visible: "AI 工具"
+    visible: ".*AI 工具.*"
     timeout: 60000
 - waitForAnimationToEnd:
     timeout: 15000
@@ -98,7 +98,7 @@ appId: com.kaixuan.opencode.pocket
 # 完整匹配，「ACC 待批」匹配不上「ACC 待批（1）」——与 acc-delegate-stop.yaml
 # 里同一个坑）。
 - extendedWaitUntil:
-    visible: "ACC 待批.*"
+    visible: ".*ACC 待批.*.*"
     timeout: 90000
 - assertVisible: "ACC 待批.*"
 
@@ -138,7 +138,7 @@ appId: com.kaixuan.opencode.pocket
 # 这一条证明应答真的到了 daemon：App 只是把本地列表里那一条去掉，
 # 而 daemon 侧 pending 归零才是真话（后端读的是 daemon 的队列）。
 - extendedWaitUntil:
-    notVisible: "ACC 待批.*"
+    notVisible: ".*ACC 待批.*.*"
     timeout: 60000
 
 # ---- 4. ★ 任务真的跑完并进了「已结束」区 ----
@@ -178,7 +178,7 @@ appId: com.kaixuan.opencode.pocket
 #   ⇒ 先滚到它，再做后面的事。
 - scrollUntilVisible:
     element:
-      text: "已结束.*"
+      text: ".*已结束.*.*"
     direction: DOWN
     timeout: 120000
 # 分区默认折叠 ⇒ 卡片不渲染 ⇒ 状态标签也不在树里。
@@ -186,11 +186,11 @@ appId: com.kaixuan.opencode.pocket
 #   否则会把**已经展开**的分区点回折叠（这正是 flow2 之前栽的那一跤）。
 - runFlow:
     when:
-      notVisible: "已完成|已取消|已失败"
+      notVisible: ".*已完成.*|.*已取消.*|.*已失败.*"
     commands:
       - tapOn: "已结束.*"
 - extendedWaitUntil:
-    visible: "已完成"
+    visible: ".*已完成.*"
     timeout: 60000
     optional: true
 # 本条卡片可能已结束区底部 ⇒ 滚过去再断言。
@@ -201,6 +201,6 @@ appId: com.kaixuan.opencode.pocket
     timeout: 120000
 - assertVisible: "maestro-acc-approve"
 - assertVisible:
-    text: "已完成"
+    text: ".*已完成.*"
     rightOf:
       text: "maestro-acc-approve"

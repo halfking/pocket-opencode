@@ -1,0 +1,48 @@
+appId: com.kaixuan.opencode.pocket
+---
+# OpenPocket SSO Direct Login Test
+# 测试使用 SSO 企业账号登录（direct form，非 OIDC redirect）
+
+- launchApp:
+    clearState: true
+
+- extendedWaitUntil:
+    visible: "AI Work Mess"
+    timeout: 15000
+
+# 应该显示企业账号登录表单
+- assertVisible: "用户名"
+- assertVisible: "企业账号登录"
+
+# 输入用户名
+- tapOn:
+    id: "sso-direct-username"
+- inputText: "huangxt"
+
+# 输入密码  
+- tapOn:
+    id: "sso-direct-password"
+- inputText: "Huangxt@2026"
+
+# 点击登录按钮
+- tapOn: "企业账号登录"
+
+# 可能会弹出创建主密码对话框
+- runFlow:
+    when:
+      visible: ".*创建主密码.*"
+    commands:
+      - tapOn:
+          id: "master-password-input"
+      - inputText: "TestMaster@123"
+      - tapOn:
+          id: "master-password-confirm"
+      - inputText: "TestMaster@123"
+      - tapOn: "创建"
+
+# 等待进入主界面
+- extendedWaitUntil:
+    visible: ".*打开菜单.*|.*Open menu.*"
+    timeout: 20000
+
+- takeScreenshot: "sso-login-success"

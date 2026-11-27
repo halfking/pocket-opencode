@@ -82,7 +82,7 @@ export async function forgotPassword(email: string, code: string, newPassword: s
   })
 }
 
-/** 已登录改密码。 */
+/** 已登录改密码（需要旧密码）。 */
 export async function resetPassword(body: {
   email: string
   old_password: string
@@ -91,6 +91,22 @@ export async function resetPassword(body: {
   return http<OkResponse>('/api/auth/reset-password', {
     method: 'POST',
     body: JSON.stringify(body),
+  })
+}
+
+/** 已登录用户通过邮箱验证码修改密码（无需旧密码）。 */
+export async function changePasswordWithCode(email: string, code: string, newPassword: string): Promise<OkResponse> {
+  return http<OkResponse>('/api/auth/change-password-with-code', {
+    method: 'POST',
+    body: JSON.stringify({ email, code, new_password: newPassword }),
+  })
+}
+
+/** 已登录用户更新邮箱（需要验证码验证新邮箱所有权）。 */
+export async function updateEmail(email: string, code: string): Promise<OkResponse> {
+  return http<OkResponse>('/api/auth/update-email', {
+    method: 'POST',
+    body: JSON.stringify({ email, code }),
   })
 }
 

@@ -1,0 +1,8 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="Test Suite" device="pocket_clone" tests="1" failures="1" time="63.08" timestamp="2026-11-25T23:25:48">
+    <testcase id="smoke-test-suite" name="smoke-test-suite" classname="smoke-test-suite" file=".maestro/smoke-test-suite.yaml" time="63.064" timestamp="2026-11-25T23:25:48" status="ERROR">
+      <failure>Assertion is false: ".*企业账号登录.*|.*打开菜单.*|.*Open menu.*|.*解锁本地数据.*|.*创建主密码.*" is visible</failure>
+    </testcase>
+  </testsuite>
+</testsuites>

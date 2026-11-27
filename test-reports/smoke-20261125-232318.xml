@@ -1,0 +1,8 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="Test Suite" device="pocket_clone" tests="1" failures="1" time="20.246" timestamp="2026-11-25T23:23:22">
+    <testcase id="smoke-test-suite" name="smoke-test-suite" classname="smoke-test-suite" file=".maestro/smoke-test-suite.yaml" time="20.228" timestamp="2026-11-25T23:23:22" status="ERROR">
+      <failure>Element not found: Id matching regex: sso-direct-username</failure>
+    </testcase>
+  </testsuite>
+</testsuites>

@@ -34,7 +34,7 @@ appId: com.kaixuan.opencode.pocket
 ---
 # ---- 1. 起点必须是登录页 ----
 - extendedWaitUntil:
-    visible: "用户名|Username"
+    visible: ".*用户名.*|.*Username.*"
     timeout: 45000
 - assertVisible: "^密码$|^Password$"
 - assertNotVisible: "AI 工具"

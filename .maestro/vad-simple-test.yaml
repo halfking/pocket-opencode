@@ -7,7 +7,7 @@ appId: com.kaixuan.opencode.pocket
 
 # 等待页面完全加载
 - extendedWaitUntil:
-    visible: "开始录音"
+    visible: ".*开始录音.*"
     timeout: 5000
 
 # 点击开始录音按钮

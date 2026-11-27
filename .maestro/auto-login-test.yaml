@@ -1,0 +1,57 @@
+appId: com.kaixuan.opencode.pocket
+---
+# 自动化登录测试 - 使用 UI Automator 坐标点击
+
+- launchApp:
+    clearState: true
+
+# 等待应用加载
+- extendedWaitUntil:
+    visible: "AI Work Mess"
+    timeout: 15000
+
+# 等待登录界面元素出现
+- runFlow:
+    when:
+      visible: ".*企业账号登录.*"
+    commands:
+      # 点击用户名输入框（使用坐标）
+      - tapOn:
+          point: "50%,40%"
+      - inputText: "huangxt"
+      
+      # 点击密码输入框
+      - tapOn:
+          point: "50%,50%"
+      - inputText: "Huangxt@2026"
+      
+      # 点击登录按钮
+      - tapOn: "企业账号登录"
+      
+      # 等待登录处理
+      - extendedWaitUntil:
+          visible: ".*创建主密码.*|.*打开菜单.*|.*Open menu.*"
+          timeout: 20000
+
+# 处理主密码创建对话框（如果出现）
+- runFlow:
+    when:
+      visible: ".*创建主密码.*"
+    commands:
+      - tapOn:
+          point: "50%,45%"
+      - inputText: "TestMaster@123"
+      - tapOn:
+          point: "50%,55%"
+      - inputText: "TestMaster@123"
+      - tapOn: "创建"
+      - extendedWaitUntil:
+          visible: ".*打开菜单.*|.*Open menu.*"
+          timeout: 15000
+
+# 验证登录成功
+- assertVisible: "打开菜单|Open menu"
+- takeScreenshot: "login-success"
+
+# 验证底部导航栏
+- assertVisible: "AI|会话|任务|笔记|更多"

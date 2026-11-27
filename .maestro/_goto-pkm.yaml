@@ -34,7 +34,7 @@ appId: com.kaixuan.opencode.pocket
 #   能被 Maestro 看见的是**导航项本身**（TextView，text 走 i18n nav.*）。
 #   换成一个真实存在的导航项，并保留中英并列（设备可能是任一 locale）。
 - extendedWaitUntil:
-    visible: "笔记|Notes"
+    visible: ".*笔记.*|.*Notes.*"
     timeout: 30000
 # ⚠️ 2026-10-03 真机实测：目标从「更多」改成了「笔记」。
 # 旧写法点底部「更多」、再点宫格里的「PKM笔记」——那是 IA 重组**之前**的入口。
@@ -43,7 +43,7 @@ appId: com.kaixuan.opencode.pocket
 #   · PKM 工作台改由一级 tab「笔记」(/notes) 页里的「打开 PKM」按钮进入
 # 旧流程的实测症状：在 `visible: "PKM笔记"` 上 20s 超时，整条 flow 中止。
 - extendedWaitUntil:
-    visible: "笔记|Notes"
+    visible: ".*笔记.*|.*Notes.*"
     timeout: 20000
 
 - tapOn: "笔记|Notes"
@@ -71,7 +71,7 @@ appId: com.kaixuan.opencode.pocket
 # 不存在误点用户数据的风险。
 - runFlow:
     when:
-      notVisible: "打开 PKM"
+      notVisible: ".*打开 PKM.*"
     commands:
       - back
       - waitForAnimationToEnd:
@@ -95,7 +95,7 @@ appId: com.kaixuan.opencode.pocket
 # 列表滚完之后坐标已经漂了，而 bottom-list 元素天然容易被点错。
 # 入口在手边的另一个好处：这条 flow 也不再依赖「滚到底部」。
 - extendedWaitUntil:
-    visible: "打开 PKM|Open PKM"
+    visible: ".*打开 PKM.*|.*Open PKM.*"
     timeout: 40000
 - assertVisible: "打开 PKM|Open PKM"
 
@@ -112,7 +112,7 @@ appId: com.kaixuan.opencode.pocket
 # 「走错页要响」比「走错页还继续」值钱。
 # PKM 页独有的标题（两种日更状态）：今日 Daily Note / 继续今日笔记。
 - extendedWaitUntil:
-    visible: "今日 Daily Note|继续今日笔记"
+    visible: ".*今日 Daily Note.*|.*继续今日笔记.*"
     timeout: 20000
 - assertVisible: "今日 Daily Note|继续今日笔记"
 
@@ -136,6 +136,6 @@ appId: com.kaixuan.opencode.pocket
 - assertNotVisible: "解锁本地数据"
 
 - extendedWaitUntil:
-    visible: "新建笔记"
+    visible: ".*新建笔记.*"
     timeout: 60000
 - assertVisible: "新建笔记"

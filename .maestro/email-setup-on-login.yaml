@@ -1,0 +1,130 @@
+# 测试场景：登录后邮箱检查和设置流程
+#
+# 前置条件：
+#   - 使用一个没有邮箱的测试账号
+#   - SMTP_DEBUG_ECHO=true
+#
+# 环境变量：
+#   POCKET_NO_EMAIL_USER  - 没有邮箱的测试用户名
+#   POCKET_NO_EMAIL_PASS  - 该用户的密码
+#   POCKET_TEST_EMAIL_NEW - 用于设置的新邮箱
+#   POCKET_MASTER         - 主密码
+#
+# 测试步骤：
+#   1. 使用没有邮箱的账号登录
+#   2. 验证邮箱设置对话框自动弹出
+#   3. 测试"跳过"功能
+#   4. 重新登录并完成邮箱设置
+appId: com.kaixuan.opencode.pocket
+---
+
+# 注意：这个测试需要先创建一个没有邮箱的测试用户
+# 可以通过以下方式创建：
+# 1. 注册新用户但不设置邮箱
+# 2. 或者在数据库中将某个用户的 email 字段设为 NULL
+
+# 步骤 1: 确保在登录页
+- evalScript: |
+    localStorage.clear();
+    window.location.hash = '#/login';
+    return true;
+
+- extendedWaitUntil:
+    visible: ".*密码登录.*|.*Password.*"
+    timeout: 10000
+
+# 步骤 2: 登录没有邮箱的测试账号
+- tapOn:
+    text: ".*用户名.*|.*Username.*"
+- inputText: ${POCKET_NO_EMAIL_USER}
+- tapOn:
+    text: ".*密码.*|.*Password.*"  
+- inputText: ${POCKET_NO_EMAIL_PASS}
+- hideKeyboard
+- tapOn: "登录|Sign In"
+
+# 步骤 3: 等待登录成功
+- extendedWaitUntil:
+    visible: ".*创建主密码.*|.*设置邮箱.*|.*打开菜单.*"
+    timeout: 30000
+
+# 步骤 4: 处理主密码弹窗（优先级高于邮箱设置）
+- runFlow:
+    when:
+      visible: ".*创建主密码.*|.*Create Master Password.*"
+    file: _set-master-password.yaml
+
+# 步骤 5: 验证邮箱设置对话框弹出
+- extendedWaitUntil:
+    visible: ".*设置邮箱.*|.*Set up email.*"
+    timeout: 10000
+
+- assertVisible: "请填写你的邮箱地址，用于密码找回和安全验证|Please enter your email"
+
+# 步骤 6: 测试"跳过"功能
+- tapOn: "跳过|Skip"
+
+# 步骤 7: 验证成功进入应用
+- extendedWaitUntil:
+    visible: ".*打开菜单.*|.*Open menu.*"
+    timeout: 10000
+
+# 步骤 8: 退出登录，准备测试"设置邮箱"流程
+- tapOn: "打开菜单|Open menu"
+- tapOn: "更多|More"
+- tapOn: "设置|Settings"
+- tapOn: "退出登录|Sign Out"
+
+# 确认退出
+- runFlow:
+    when:
+      visible: ".*确认.*|.*Confirm.*"
+    commands:
+      - tapOn: "确认|Confirm"
+
+# 步骤 9: 重新登录
+- extendedWaitUntil:
+    visible: ".*密码登录.*|.*Password.*"
+    timeout: 10000
+
+- tapOn:
+    text: ".*用户名.*|.*Username.*"
+- inputText: ${POCKET_NO_EMAIL_USER}
+- tapOn:
+    text: ".*密码.*|.*Password.*"
+- inputText: ${POCKET_NO_EMAIL_PASS}
+- hideKeyboard
+- tapOn: "登录|Sign In"
+
+# 步骤 10: 主密码已设置，直接等邮箱对话框
+- extendedWaitUntil:
+    visible: ".*设置邮箱.*|.*Set up email.*"
+    timeout: 30000
+
+# 步骤 11: 这次选择设置邮箱
+- tapOn:
+    text: ".*邮箱地址.*|.*Email.*"
+- inputText: ${POCKET_TEST_EMAIL_NEW}
+
+# 步骤 12: 发送验证码
+- tapOn: "发送验证码|Send code"
+- extendedWaitUntil:
+    visible: ".*调试模式：验证码.*|.*验证邮箱.*|.*Verify email.*"
+    timeout: 10000
+
+# 步骤 13: 输入验证码
+- tapOn:
+    text: ".*验证码.*|.*Code.*"
+- inputText: "123456"
+- hideKeyboard
+
+# 步骤 14: 确认
+- tapOn: "确认|Confirm"
+
+# 步骤 15: 验证邮箱设置成功，进入应用
+- extendedWaitUntil:
+    visible: ".*打开菜单.*|.*Open menu.*"
+    timeout: 10000
+
+# 步骤 16: 验证邮箱已设置（可选：检查用户资料）
+- assertVisible: "打开菜单|Open menu"

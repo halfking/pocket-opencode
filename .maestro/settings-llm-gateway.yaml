@@ -30,7 +30,7 @@ appId: com.kaixuan.opencode.pocket
 ---
 # ---------- 0. harness preflight 已真实登录，起点是 #/ai ----------
 - extendedWaitUntil:
-    visible: "AI 工具"
+    visible: ".*AI 工具.*"
     timeout: 45000
 - assertVisible: "AI 工具"
 - assertNotVisible: "密码登录"
@@ -61,28 +61,28 @@ appId: com.kaixuan.opencode.pocket
 #   变了 ⇒ 产品没问题，是 harness/驱动在这台机型上不可用。
 #   本 flow 后续仍按原样保留：换回 MIUI/桌面模拟器即可正常执行。
 - extendedWaitUntil:
-    visible: "更多|More"
+    visible: ".*更多.*|.*More.*"
     timeout: 45000
 - tapOn:
-    text: "更多|More"
+    text: ".*更多.*|.*More.*"
     retryTapIfNoChange: true
 - extendedWaitUntil:
-    visible: "更多功能|MORE FEATURES"
+    visible: ".*更多功能.*|.*MORE FEATURES.*"
     timeout: 40000
 - runFlow:
     when:
-      notVisible: "更多功能|MORE FEATURES"
+      notVisible: ".*更多功能.*|.*MORE FEATURES.*"
     commands:
       # ⚠️ 2026-10-12：optional:true —— 与 more-grid-reach.yaml 同因。
       #    driver 重装会打断 App，step 0 取树时多半是空的 ⇒ notVisible 恒成立
       #    ⇒ 去点此刻不存在的「更多」而把 flow 打断。条件修不掉，让恢复动作不致命。
       - tapOn:
-          text: "更多|More"
+          text: ".*更多.*|.*More.*"
           optional: true
       - waitForAnimationToEnd:
           timeout: 3000
 - extendedWaitUntil:
-    visible: "更多功能|MORE FEATURES"
+    visible: ".*更多功能.*|.*MORE FEATURES.*"
     timeout: 30000
 
 # ---------- 2. 进「设置」 ----------
@@ -90,13 +90,13 @@ appId: com.kaixuan.opencode.pocket
 #    直接 tapOn 在首屏找不到时会 FAILED。这里先滚，再点。
 - scrollUntilVisible:
     element:
-      text: "设置|Settings"
+      text: ".*设置.*|.*Settings.*"
     direction: DOWN
     timeout: 25000
     visibilityPercentage: 100
 - tapOn: "设置|Settings"
 - extendedWaitUntil:
-    visible: "AI 网关|AI Gateway"
+    visible: ".*AI 网关.*|.*AI Gateway.*"
     timeout: 30000
 
 # ---------- 3. 核心断言：网关真的配置好了，不是「未配置」兜底 ----------

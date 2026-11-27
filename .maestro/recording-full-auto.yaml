@@ -11,10 +11,10 @@ name: recording-full-auto
 # ============================================================
 
 - extendedWaitUntil:
-    visible: "更多"
+    visible: "更多|More"
     timeout: 20000
 
-- tapOn: "更多"
+- tapOn: "更多|More"
   retryTapIfNoChange: true
 
 - extendedWaitUntil:

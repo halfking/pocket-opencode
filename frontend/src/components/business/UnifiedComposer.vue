@@ -27,6 +27,7 @@
     </div>
 
     <textarea
+      :id="inputId"
       ref="inputEl"
       :value="modelValue"
       class="uc-input"
@@ -262,6 +263,16 @@ const props = withDefaults(
     submitting?: boolean
     /** 会话实时录音进行中（红点，与短语音输入互斥展示）。 */
     liveRecording?: boolean
+    /**
+     * 透传到输入框的 DOM id。
+     *
+     * 为什么需要：Maestro 在 Android WebView 里**只能靠无障碍树**定位元素，
+     * 而 textarea 空着的时候既没有 text 也没有 placeholder 进树
+     * （实测笔记标题框在无障碍树里是 `class=android.widget.EditText text=""`），
+     * 只剩坐标可选 —— 坐标会随分辨率和软键盘弹出与否整体漂移。
+     * 有了 id 就能用 `tapOn: { id: ... }` 稳定命中。
+     */
+    inputId?: string
   }>(),
   {
     placeholder: '',

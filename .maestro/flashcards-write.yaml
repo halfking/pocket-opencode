@@ -72,7 +72,7 @@ appId: com.kaixuan.opencode.pocket
 #   `首页` 与 `Home` **整棵树里都不在**。所以这里改回 `AI 工具`。
 #   ⚠️ 别再改成 tab 标签。
 - extendedWaitUntil:
-    visible: "AI 工具"
+    visible: ".*AI 工具.*"
     timeout: 45000
 - assertVisible: "AI 工具"
 - assertNotVisible: "密码登录"
@@ -83,13 +83,13 @@ appId: com.kaixuan.opencode.pocket
 # 08:08 同一段是过的 ⇒ 抖动，不是回归（两次 APK 只差 BUG-AS 修复，不碰导航）。
 # 这正是 _login.yaml 注释里记过的坑：tap 底部导航会被吞掉，且没有结果校验、看起来像成功。
 - extendedWaitUntil:
-    visible: "更多|More"
+    visible: ".*更多.*|.*More.*"
     timeout: 45000
 - tapOn:
-    text: "更多|More"
+    text: ".*更多.*|.*More.*"
     retryTapIfNoChange: true
 - extendedWaitUntil:
-    visible: "闪卡|Flashcards|Flashcard"
+    visible: ".*闪卡.*|.*Flashcards.*|.*Flashcard.*"
     timeout: 40000
 - tapOn: "闪卡|Flashcards|Flashcard"
 
@@ -250,7 +250,7 @@ appId: com.kaixuan.opencode.pocket
       visible: { text: "保存|Save", index: 1, enabled: true }
     commands:
       - tapOn:
-          text: "保存|Save"
+          text: ".*保存.*|.*Save.*"
           index: 1
           enabled: true
 - runFlow:
@@ -259,7 +259,7 @@ appId: com.kaixuan.opencode.pocket
       visible: { text: "保存|Save", index: 0, enabled: true }
     commands:
       - tapOn:
-          text: "保存|Save"
+          text: ".*保存.*|.*Save.*"
           index: 0
           enabled: true
 # ⚠️ 不要在这里加「保存仍可见」的收尾断言：保存**成功**的表现恰恰是编辑页

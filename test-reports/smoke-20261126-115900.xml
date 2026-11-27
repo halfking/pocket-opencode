@@ -1,0 +1,6 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="Test Suite" device="stremio_maestro" tests="1" failures="0" time="86.639" timestamp="2026-11-26T11:59:05">
+    <testcase id="smoke-test-suite" name="smoke-test-suite" classname="smoke-test-suite" file=".maestro/smoke-test-suite.yaml" time="86.624" timestamp="2026-11-26T11:59:05" status="SUCCESS"/>
+  </testsuite>
+</testsuites>

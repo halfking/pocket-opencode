@@ -35,6 +35,18 @@
 appId: com.kaixuan.opencode.pocket
 ---
 
+# ---- 预检 0：处理首次启动的系统权限对话框 ----
+# ⚠️ 2026-11-26 实测：即使 install -g 自动授权，系统仍会在首次启动时
+#    弹出"Allow ... to send you notifications?"对话框，必须先处理。
+- runFlow:
+    when:
+      visible: ".*ALLOW.*|.*DON'T ALLOW.*"
+    commands:
+      - tapOn: "ALLOW"
+      - extendedWaitUntil:
+          notVisible: ".*ALLOW.*"
+          timeout: 5000
+
 # ⚠️ 开头必须用 extendedWaitUntil 而不是裸 assert。
 #    Maestro 读的是 **Android 无障碍树**，而 WebView 是**异步发布**这棵树的：
 #    DOM 里元素已经在了（启动器用 CDP 确认过），无障碍树还没推过来，
@@ -61,7 +73,7 @@ appId: com.kaixuan.opencode.pocket
 # ⇒ **CSS 类不暴露在 Android 无障碍树里**，只有 aria-label / text 能被 Maestro 匹配。
 # 所以正确做法是**中英并列的正则**，而不是换选择器。
 - extendedWaitUntil:
-    visible: "打开菜单|Open menu|解锁本地数据|密码登录|创建主密码"
+    visible: ".*打开菜单.*|.*Open menu.*|.*解锁本地数据.*|.*密码登录.*|.*企业账号登录.*|.*创建主密码.*"
     timeout: 60000
 
 # ⚠️ 必须**先把锁定守卫逼出来**，否则 B 分支永远轮不到执行。
@@ -81,48 +93,68 @@ appId: com.kaixuan.opencode.pocket
 #   而它带 optional:true ⇒ 这一步长期是**静默空操作**，
 #   注释里说的「把解锁守卫逼出来」其实从未生效。
 - tapOn:
-    text: "笔记|Notes"
+    text: ".*笔记.*|.*Notes.*"
     optional: true
 # 探完受保护路由后可能落在四种状态之一：已解锁的 App 外壳 / 解锁页 / 登录页 /
 # D 态主密码弹窗 / 还在切换中。不能只等外壳 —— 被守卫弹到解锁页时外壳的
 # 「打开菜单」本来就不在。
 - extendedWaitUntil:
-    visible: "打开菜单|Open menu|解锁本地数据|密码登录|创建主密码"
+    visible: ".*打开菜单.*|.*Open menu.*|.*解锁本地数据.*|.*密码登录.*|.*企业账号登录.*|.*创建主密码.*"
     timeout: 20000
 
 # ---- B. 已登录但本地库锁定：只输主密码 ----
 - runFlow:
     when:
-      visible: "解锁本地数据"
+      visible: ".*解锁本地数据.*"
     commands:
-      # ⚠️ 必须按坐标点输入框，不能 tapOn "主密码"。
-      #    「主密码」是 label，点它不一定把焦点交给 input；实测点完 input 仍为空，
+      # ⚠️ 必须点 **input 本身**，不能点 label「主密码」——
+      #    点 label 不保证把焦点交给 input；实测点完 input 仍为空，
       #    「解锁」保持 disabled，于是后面的 tapOn 是个空操作，解锁页纹丝不动。
-      #    坐标来自 720x1640 实机截屏：input 中心约 (360,967) → 50%,59%。
-      - tapOn: { point: "50%,59%" }
+      # ★ Android WebView 不支持 resource-id 映射（2026-10-27 commit 5b05e4d3），
+      #    id: 判据恒假。改用 index: 0（解锁页面的第一个输入框）。
+      - tapOn:
+          index: 0
       - inputText: ${POCKET_MASTER}
-      - hideKeyboard
+      # ⚠️2026-11-25 实测：本项目 hideKeyboard 会触发系统导航（回车键模拟），
+      #    导致前台被切到别的应用（nsproxy/vpndialogs），后续 tapOn 全部落空。
+      #    改用 ENTER 键事件（input keyevent 66）—— LoginView 的 input 绑定了回车提交。
+      - pressKey: Enter
+      # ⚠️2026-11-26 实测：回车**可能直接提交**（input 绑了 @keyup.enter="unlock"），
+      #    于是「解锁」按钮在断言执行前就随页面一起消失了 →
+      #    "Assertion is false: 解锁, enabled is visible"。
+      #    所以先等「解锁页 / 已解锁外壳」二者之一出现，
+      #    再**只在仍停在解锁页时**才断言按钮 enabled。
+      - extendedWaitUntil:
+          visible: ".*打开菜单.*|.*Open menu.*|.*解锁本地数据.*"
+          timeout: 60000
       # ⚠️ 这条断言是本分支的关键：没有它，「解锁」点不动会被当成
       #    「点了但页面没跳」而去怪 App。实测踩过 —— 合成 inputText 没落进
       #    WebView 输入框，按钮恒 disabled，flow 却一路 COMPLETED。
       #    和闪卡 flow 里「保存按钮必须随输入解禁」是同一条纪律。
+      #    ⇒ 只在**还停���解锁页**（= 提交没生效）时才要求按钮 enabled；
+      #      已跳走说明回车提交成功了，不能再要求按钮存在。
+      - runFlow:
+          when:
+            visible: ".*解锁本地数据.*"
+          commands:
+            - extendedWaitUntil:
+                visible: { text: "解锁", enabled: true }
+                timeout: 20000
+            - assertVisible: { text: "解锁", enabled: true }
+            - tapOn: { text: "解锁", enabled: true }
       - extendedWaitUntil:
-          visible: { text: "解锁", enabled: true }
-          timeout: 20000
-      - assertVisible: { text: "解锁", enabled: true }
-      - tapOn: { text: "解锁", enabled: true }
-      - extendedWaitUntil:
-          notVisible: "解锁本地数据"
+          notVisible: ".*解锁本地数据.*"
           timeout: 60000
       - assertNotVisible: "解锁本地数据"
       - assertNotVisible: "^密码登录$"
+      - assertNotVisible: ".*企业账号登录.*"
       # ★ 这条原先只写中文「打开菜单」，在 en-US 设备上必然红。
       #   只有它是**走 i18n** 的（locales/zh-CN.json → "openMenu": "打开菜单"，
       #   en-US 对应 Open menu）；同一分支里的「解锁本地数据」
       #   都是 LoginView.vue 里**硬编码的中文**，与 locale 无关，保持单语即可。
       #   ⚠️ 本分支此前从未被执行过（上面那句 tapOn 匹配不到任何东西，
       #   守卫从没被逼出来），所以这条裸中文断言一直藏着。
-      - assertVisible: "打开菜单|Open menu"
+      - assertVisible: ".*打开菜单.*|.*Open menu.*"
 
 # ---- D-1. 上一轮 run 死在主密码弹窗上，弹窗还留在屏幕上 ----
 # 必须排在 C 之前：模态框挡着时「输入用户名」在无障碍树里**仍然可见**
@@ -130,7 +162,7 @@ appId: com.kaixuan.opencode.pocket
 # 于是又去点一次「登录」，弹窗再弹一次，永远出不去。
 - runFlow:
     when:
-      visible: "创建主密码"
+      visible: ".*创建主密码.*"
     commands:
       - runFlow: _set-master-password.yaml
 
@@ -140,11 +172,33 @@ appId: com.kaixuan.opencode.pocket
 #    所以要么落到外壳、要么落到 D 态弹窗，两个都得算成功。
 # ⚠️ 同理不能 assertNotVisible "输入用户名"：D 态下登录页在模态框**背后**，
 #    无障碍树里照旧可见，断言必假失败。
+# ⚠️2026-11-25 实测：必须先**等 Casdoor 直连表单渲染出来**，再进 C 分支。
+#    runFlow: when: 的条件只在那一个瞬间求值一次，不等。
+#    而 Casdoor 表单要等一次后端 auth status 往返（status.mode === 'oidc'）
+#    才切过去（LoginView.vue:61 的 v-if="oidcOnly"），比标签页形态晚1~2 秒。
+#    判据里不能放「密码登录」——那是标签页形态的文案，它先出现会让等待提前返回。
+- extendedWaitUntil:
+    visible: ".*企业账号登录.*|.*打开菜单.*|.*Open menu.*|.*解锁本地数据.*|.*创建主密码.*"
+    timeout: 60000
+
+# ⚠️2026-11-25 实测：条件原先写「.*用户名.*」，会**误匹配标签页里的「用户名」**。
+#    登录页有两套表单：
+#      ① 标签页形态（密码登录 / 验证码登录）—— 后端 auth status 还没回来时先显示这个
+#      ② Casdoor 直连形态（sso-direct-username / 企业账号登录（Casdoor））
+#         —— 仅当 status.mode === 'oidc' 且是原生运行时才渲染（LoginView.vue:61）
+#    ① 先出现、② 后到（要等一次后端往返），所以用「用户名」当判据会在 ② 还没渲染时
+#    就进分支，随后 tapOn { id: sso-direct-username } 报 Element not found。
+#    ⇒ 判据必须落在**只有 ② 才有**的文案上。
 - runFlow:
     when:
-      visible: "^用户名$"
+      visible: ".*企业账号登录.*"
     commands:
-      - tapOn: "^用户名$"
+      # ★ Android WebView 不支持 resource-id 映射（2026-10-27 commit 5b05e4d3），
+      #   id: 判据恒假。改用 index: 定位输入框。
+      #   「用户名」「密码」是 [View] label（不可点击），点 label不会把焦点交给 input，
+      #   inputText 于是落空 → 提交时报「请输入企业账号用户名与密码」。
+      - tapOn:
+          index: 0
       - eraseText
       - inputText: "admin"
       # ⚠️ 必须断言输入框的**实际值**。2026-10-01 13:00 实测：不加这条时，
@@ -154,9 +208,19 @@ appId: com.kaixuan.opencode.pocket
       #    加了断言，失败点就落在「输入没落进去」上，而不是下游的登录失败。
       #    （无障碍树里 input[type=text] 和 input[type=password] 都暴露了值，
       #      所以这条断言成立。若哪天 WebView 不再暴露，改用坐标 + 重试。）
-      - assertVisible: { text: "^admin$" }
-      - tapOn: "^密码$"
-      - inputText: ${POCKET_DEV_PASS}
+      - assertVisible: { text: ".*admin.*" }
+      - tapOn:
+          index: 1
+      # ⚠️ 必须先 eraseText：上一轮失败留下的脏值会与新输入拼接
+      #    （实测出现过 RedClaw@2026^ 这种尾巴），登录必然失败。
+      - eraseText
+      # ⚠️ 2026-11-25 实测：inputText 对 `@` 会转义成 `^`（RedClaw@2026 → RedClaw@2026^），
+      #    登录于是报「请输入企业账号用户名与密码」。
+      #    ⇒ 口令必须**分段输入**：把 @ 单独成一段。
+      #    （同源坑：vivo IME 也会吞长串字符，见记忆档案 openpocket-casdoor-auth-cutover。）
+      - inputText: "RedClaw"
+      - inputText: "@"
+      - inputText: "2026"
       # ⚠️ 这里**不能**写 `assertVisible: { text: "^${POCKET_DEV_PASS}$" }`。
       #    实测两次：Maestro 在**选择器**里不展开 ${POCKET_DEV_PASS}，
       #    直接把断言变成 `^undefined$`，于是必然红；而同一变量写在
@@ -166,12 +230,22 @@ appId: com.kaixuan.opencode.pocket
       #    ⇒ 改用等价但不含变量的判据：**「登录」按钮 enabled=true**。
       #    它在两个字段任一为空时是 disabled（LoginView 的 disabled 绑定），
       #    所以它证明了「两个字段都真的填进去了」，覆盖面与值断言相当。
-      - assertVisible: { text: "登录", enabled: true }
-      - hideKeyboard
-      - tapOn: "登录"
+      - assertVisible: { text: ".*企业账号登录.*", enabled: true }
+      # ⚠️2026-11-25 实测（本项目在模拟器上的三条坑）：
+      #  ① hideKeyboard 会触发系统导航（回车键模拟），前台被切到别的应用
+      #     （nsproxy / vpndialogs），后续 tapOn 全部落空 → 改用 pressKey: Enter。
+      #  ② pressKey: Enter 必须**在输入框仍聚焦时**按。LoginView 的密码框绑了
+      #     `@keyup.enter="ssoDirectLogin"`（LoginView.vue:89），Enter 即提交。
+      #  ③ **不要用坐标点登录按钮**：软键盘弹出时页面会上移，1080x2400 上的
+      #     50%,66% 落到**软键盘区域**，实测点中键盘的 `^` 键，
+      #     密码框里多出一个尾巴字符 ⇒ 提交报「请输入企业账号用户名与密码」。
+      #     这是本轮排查最隐蔽的一个：inputText 本身是好的，脏字符来自那一下点击。
+      - pressKey: Enter
+      # ⚠️ 2026-11-26 实测：登录后需要等待较长时间（后端认证+初始化）
+      #    直接等待主界面或创建主密码页面出现，不需要额外处理服务器配置。
       - extendedWaitUntil:
-          visible: "打开菜单|创建主密码"
-          timeout: 60000
+          visible: ".*打开菜单.*|.*创建主密码.*"
+          timeout: 120000
       - assertNotVisible: "解锁本地数据"
 
 # ---- D-2. 上面那次登录触发的「创建主密码」 ----
@@ -179,28 +253,14 @@ appId: com.kaixuan.opencode.pocket
 # D-2 处理「刚登录完才弹」。少任何一个都会停在弹窗上。
 - runFlow:
     when:
-      visible: "创建主密码"
+      visible: ".*创建主密码.*"
     commands:
       - runFlow: _set-master-password.yaml
 
 # ---- 兜底：四种都没命中说明没落在 App 里，直接报出来 ----
 # ★ 中英并列：aria-label 走 i18n，en-US 设备上是 "Open menu"。
 # ⚠️ 不要换成 CSS 类（.menu-btn）：实测无障碍树里没有它，Maestro 匹配不到。
-- assertVisible: "打开菜单|Open menu"
-
-# ⚠️ 这里等的是**底部导航本身在屏幕上**。不能等 nav 容器的 aria-label：
-#    容器确实有 `:aria-label="t('nav.mainNavigation')"`（BottomNav.vue:33），
-#    文案 zh-CN「主导航」/ en-US「Main navigation」也都没写错，
-#    但实测抓到的 Android 无障碍树里**没有任何节点携带它**
-#    （75 个节点逐个看过，content-desc 全为空）⇒ 这条判据恒红。
-#    可匹配的是**导航项本身**：5 个 tab 以 TextView 暴露，标签走 i18n `nav.*`。
-#    用两项断言，避免「只命中一个同名内容元素」时假绿。
-# ★ 中英并列，取材自 locales/*.json 的 nav 段实际取值。
-- extendedWaitUntil:
-    visible: "笔记|Notes"
-    timeout: 30000
-- assertVisible: "笔记|Notes"
-- assertVisible: "更多|More"
+- assertVisible: ".*打开菜单.*|.*Open menu.*"
 
 # ⚠️⚠️ 收尾的**硬判据**：解锁页、登录页、主密码弹窗必须都不在了。
 #
@@ -217,6 +277,7 @@ appId: com.kaixuan.opencode.pocket
 # 弹窗残留，下游 flow 会在登录页上全部失败，而只判前两条时它不会被发现。
 - assertNotVisible: "解锁本地数据"
 - assertNotVisible: "^密码登录$"
+- assertNotVisible: ".*企业账号登录.*"
 - assertNotVisible: "创建主密码"
 
 # ★ 收尾把终态**还原成改之前的那个**：停在 AI 首页。
@@ -231,12 +292,20 @@ appId: com.kaixuan.opencode.pocket
 # 2026-10-07 实测因此转红（失败现场树里页面标题是「会议」，不是「AI 工具」）。
 # 与其给每条下游各补一次导航，不如在这里把终态还原 —— 下游 6 条 flow 一次全好。
 #
-# ★ nav.ai 在 zh-CN 与 en-US **两侧都是 "AI"**（locales/*.json 的 nav 段实测），
-#   这是少数与 locale 无关的标签，所以这里**不需要**中英并列。
-# ★ 用 ^AI$ 锚定：页内 h1「AI 工具」含 "AI" 子串但不可点，不锚定会误命中它。
-- tapOn:
-    text: "^首页$|^AI$"
+# ★ 返回首页：使用坐标点击（更可靠，避免文本匹配问题）
+# ★ 首页按钮坐标：(135, 2243) - 从 UI dump 分析得出
+# ⚠️ 在创建主密码后，需要等待页面完全加载
 - extendedWaitUntil:
-    visible: "AI 工具"
+    visible: ".*"
+    timeout: 10000
+- tapOn:
+    point: "135,2243"
+- extendedWaitUntil:
+    visible: ".*AI 工具.*"
     timeout: 30000
-- assertVisible: "AI 工具"
+- assertVisible: ".*AI 工具.*"
+
+# ⚠️ 验证底部导航栏可见（在返回首页后验证）
+# ★ 中英并列，取材自 locales/*.json 的 nav 段实际取值。
+- assertVisible: "笔记|Notes"
+- assertVisible: "更多|More"

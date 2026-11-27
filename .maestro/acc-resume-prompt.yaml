@@ -28,14 +28,14 @@ appId: com.kaixuan.opencode.pocket
 ---
 # ---------- 0. 前置：harness 已真实登录，起点是 #/ai ----------
 - extendedWaitUntil:
-    visible: "AI 工具"
+    visible: ".*AI 工具.*"
     timeout: 60000
 - waitForAnimationToEnd:
     timeout: 15000
 
 # ---- 1. 打开「委托给 ACC」面板，派一个任务 ----
 - extendedWaitUntil:
-    visible: "委托 ACC"
+    visible: ".*委托 ACC.*"
     timeout: 40000
 - tapOn: "委托 ACC"
 - extendedWaitUntil:
@@ -52,18 +52,18 @@ appId: com.kaixuan.opencode.pocket
 
 # ---- 3. ★ 弹窗必须关闭（否则下面所有断言都可能命中输入框）----
 - extendedWaitUntil:
-    notVisible: "ACC 会接管后续会话与执行.*"
+    notVisible: ".*ACC 会接管后续会话与执行.*.*"
     timeout: 90000
 
 # ---- 4. 派出去的卡片出现 ----
 - extendedWaitUntil:
-    visible: "只回复HISTORYOK"
+    visible: ".*只回复HISTORYOK.*"
     timeout: 60000
 - assertVisible: "只回复HISTORYOK"
 
 # ---- 5. ★ 把新派单要的工具批准答掉 ----
 - extendedWaitUntil:
-    visible: "ACC 待批.*"
+    visible: ".*ACC 待批.*.*"
     timeout: 45000
     optional: true
 - repeat:
@@ -83,7 +83,7 @@ appId: com.kaixuan.opencode.pocket
           timeout: 5000
           optional: true
 - extendedWaitUntil:
-    notVisible: "ACC 待批.*"
+    notVisible: ".*ACC 待批.*.*"
     timeout: 60000
     optional: true
 
@@ -108,7 +108,7 @@ appId: com.kaixuan.opencode.pocket
 #   ② 原生会话的 transcript 能被任务域读到；
 #   ③ 「继续跟进」不再是"落到查看详情兜底"。
 - extendedWaitUntil:
-    visible: "只回复HISTORYOK"
+    visible: ".*只回复HISTORYOK.*"
     timeout: 60000
 - assertVisible: "只回复HISTORYOK"
 - extendedWaitUntil:
@@ -121,7 +121,7 @@ appId: com.kaixuan.opencode.pocket
 # 预填「继续」是「继续跟进」的语义本体；它必须**可编辑**，
 # 否则"提示词的修改"只是一句声明。
 - extendedWaitUntil:
-    visible: "继续，或改写提示词后发送"
+    visible: ".*继续，或改写提示词后发送.*"
     timeout: 20000
 - assertVisible: "继续，或改写提示词后发送"
 
@@ -135,7 +135,7 @@ appId: com.kaixuan.opencode.pocket
 - tapOn: "发送"
 # 「已发送」标签只在真的投出去之后才渲染 ⇒ 看得见它 = 真的投了。
 - extendedWaitUntil:
-    visible: "已发送.*"
+    visible: ".*已发送.*.*"
     timeout: 60000
 - assertVisible: "已发送.*"
 
