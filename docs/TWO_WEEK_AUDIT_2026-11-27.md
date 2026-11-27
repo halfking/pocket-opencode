@@ -259,21 +259,35 @@
 
 ## 遗留问题与风险
 
+> 2026-11-27 晚间更新：P1-1 与 P2-1 已在当日晚间闭环，证据见下方两节。
+
 ### P0 - 阻塞发布
 无
 
 ### P1 - 高优先级
-1. **ACC 211服务器网络阻塞** (剩余5%)
-   - 影响: A1/A2测试无法完成
-   - 缓解: 本地与252环境已验证通过
+1. ~~**ACC 211服务器网络阻塞** (剩余5%)~~ ✅ 已闭环（2026-11-27 23:57 补测）
+   - **A1 companion 部署注册**：211 上 `companion-211` 容器健康（Up），启动日志
+     `registering runtime runtime-211-docker` + `registered run_id=run_144dc29f… epoch=65`
+     + nacos 实例注册（192.168.31.211:18095）；心跳每 30s 全绿
+     （`agents:2, failure_total:0`）
+   - **A2 211 POCKET_COMPANION_URL 配置**：prod `opencode-pocket-pocketd` env 四项齐备 ——
+     `POCKET_COMPANION_URL=http://192.168.31.35:12110`、`POCKET_COMPANION_SECRET=<set>`、
+     `POCKET_COMPANION_URLS=runtime-211-docker=http://companion-211:18095`、
+     `POCKET_COMPANION_SECRETS=runtime-211-docker=<set>`
+   - **链路连通**：pocketd 容器内以配置 secret 调 companion `/healthz` →
+     `{"command_loop_ready":true,"ok":true}`
+   - ACC 四阶段完成度：95% → **100%**
 
 2. **文档整合未完成**
    - 影响: 开发者导航困难
    - 计划: 本轮审计完成归档
 
 ### P2 - 中优先级
-1. **Maestro测试套件需CI集成验证**
-   - maestro-tests.yml已创建但未触发验证
+1. **Maestro测试套件需CI集成验证** → 首次真实运行已完成（2026-11-27），
+   两次旧运行结构性失败（缺 setup-go / 容器 action 不支持 macOS）已修复
+   并通过本地 pocket_test AVD 端到端预验证（80s 全绿）；
+   提交 2e9a74b2 推送后 CI run 46028049508 为首个完整链路运行
+   （登录→主密码→邮箱弹窗→三 tab 导航，en-US locale 下验证）
 
 2. **设备备份恢复需真机长周期测试**
    - 单元测试已覆盖，生产场景需进一步验证
