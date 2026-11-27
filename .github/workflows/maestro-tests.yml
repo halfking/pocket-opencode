@@ -61,6 +61,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # /dev/kvm 在 GH ubuntu runner 上存在但默认权限不给 runner 用户
+      # （run 46054885131: ProbeKVM permission denied）。reactivecircus README
+      # 的标准解法：udev 规则放行 kvm 节点。
+      - name: Grant KVM permissions
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
@@ -177,6 +186,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # /dev/kvm 在 GH ubuntu runner 上存在但默认权限不给 runner 用户
+      # （run 46054885131: ProbeKVM permission denied）。reactivecircus README
+      # 的标准解法：udev 规则放行 kvm 节点。
+      - name: Grant KVM permissions
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
@@ -290,6 +308,15 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      # /dev/kvm 在 GH ubuntu runner 上存在但默认权限不给 runner 用户
+      # （run 46054885131: ProbeKVM permission denied）。reactivecircus README
+      # 的标准解法：udev 规则放行 kvm 节点。
+      - name: Grant KVM permissions
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
 
       - name: Setup Java
         uses: actions/setup-java@v4
