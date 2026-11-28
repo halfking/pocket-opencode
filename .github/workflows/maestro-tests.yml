@@ -148,7 +148,9 @@ jobs:
             sleep 8
             curl -sf http://127.0.0.1:18099/healthz >/dev/null || tail -100 $GITHUB_WORKSPACE/backend/pocketd-ci.log
             curl -sf http://127.0.0.1:18099/healthz >/dev/null
-            $GITHUB_WORKSPACE/scripts/run-maestro-suite.sh ci
+            MAESTRO_CLI_NO_ANALYTICS=1 $GITHUB_WORKSPACE/scripts/run-maestro-suite.sh ci
+            echo "--- pocketd log tail ---"
+            tail -40 $GITHUB_WORKSPACE/backend/pocketd-ci.log
 
       - name: Upload Test Reports
         if: always()
@@ -158,6 +160,7 @@ jobs:
           path: |
             test-reports/
             logs/maestro/
+            backend/pocketd-ci.log
           retention-days: 30
 
   # ═══════════════════════════════════════════════════════════════════
@@ -270,7 +273,9 @@ jobs:
             sleep 8
             curl -sf http://127.0.0.1:18099/healthz >/dev/null || tail -100 $GITHUB_WORKSPACE/backend/pocketd-ci.log
             curl -sf http://127.0.0.1:18099/healthz >/dev/null
-            $GITHUB_WORKSPACE/scripts/run-maestro-suite.sh ci
+            MAESTRO_CLI_NO_ANALYTICS=1 $GITHUB_WORKSPACE/scripts/run-maestro-suite.sh ci
+            echo "--- pocketd log tail ---"
+            tail -40 $GITHUB_WORKSPACE/backend/pocketd-ci.log
 
       - name: Upload Test Reports
         if: always()
@@ -280,6 +285,7 @@ jobs:
           path: |
             test-reports/
             logs/maestro/
+            backend/pocketd-ci.log
           retention-days: 30
 
   # ═══════════════════════════════════════════════════════════════════
@@ -395,7 +401,9 @@ jobs:
             sleep 8
             curl -sf http://127.0.0.1:18099/healthz >/dev/null || tail -100 $GITHUB_WORKSPACE/backend/pocketd-ci.log
             curl -sf http://127.0.0.1:18099/healthz >/dev/null
-            $GITHUB_WORKSPACE/scripts/run-maestro-suite.sh ci
+            MAESTRO_CLI_NO_ANALYTICS=1 $GITHUB_WORKSPACE/scripts/run-maestro-suite.sh ci
+            echo "--- pocketd log tail ---"
+            tail -40 $GITHUB_WORKSPACE/backend/pocketd-ci.log
 
       - name: Upload Test Reports
         if: always()
@@ -405,6 +413,7 @@ jobs:
           path: |
             test-reports/
             logs/maestro/
+            backend/pocketd-ci.log
           retention-days: 90
 
   # ═══════════════════════════════════════════════════════════════════
