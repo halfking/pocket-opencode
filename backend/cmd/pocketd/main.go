@@ -1601,7 +1601,10 @@ func main() {
 	}
 
 	// HTTP server 配置超时，防止 Slowloris 攻击和资源耗尽
-	addr := ":" + cfg.HTTPPort
+	// 2026-11-28: 显式绑 0.0.0.0 强制 IPv4 —— ":port" 在 IPv6 系统上绑
+	// [::] 导致 Android 模拟器 10.0.2.2 NAT 路径无法连（run 46145557573
+	// 实证：pocketd 日志 0 个 HTTP 请求）。0.0.0.0 确保 IPv4 可达。
+	addr := "0.0.0.0:" + cfg.HTTPPort
 	server := &http.Server{
 		Addr:              addr,
 		Handler:           srv.Handler(),
